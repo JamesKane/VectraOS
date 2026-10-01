@@ -1,0 +1,12 @@
+# third_party/VENDOR.ndb: one record per vendored import (docs/04 §3.1, ADR-0003).
+# Each tree under third_party/ is the upstream release, unchanged.
+
+name=limine
+    version=12.9.1
+    upstream=https://github.com/Limine-Bootloader/Limine/releases/download/v12.9.1/limine-12.9.1.tar.xz
+    sha256=c1096fdd506487fbd92c113baa9e153a9973cf766483cc3928e13fd29b976b32
+    signed.by=05D29860D0A0668AAEFB9D691F3C021BECA23821
+    license="BSD-2-Clause; bundled parts as listed in 3RDPARTY.md"
+    adr=docs/adr/0002-limine.md
+    port=ports/limine/port.ndb
+    reviewed.by=pending

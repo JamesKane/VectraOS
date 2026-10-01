@@ -1,0 +1,879 @@
+// build.c: the VectraOS build tool (docs/04-bootstrap-toolchain.md §3.2).
+//
+// First time:  cc -std=c23 -o build build.c
+// After that:  ./build <command>        (it rebuilds itself when its sources change)
+//
+// Every first-party component is one translation unit, so there is no dependency
+// tracking: each command rebuilds what it names, and the build-time budget keeps
+// that fast. Vendored ports are built once and cached by the hash of their inputs.
+
+#define _GNU_SOURCE   // nftw with FTW_ACTIONRETVAL
+#include <elf.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <ftw.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include "lib/vx-ndb/ndb.c"
+
+// ADR-0001: the toolchain is pinned to these exact binaries and versions.
+// Each pin is one line of the tool's --version output, compared exactly.
+static const char CLANG[]   = "/usr/bin/clang";
+static const char LLD[]     = "/usr/bin/ld.lld";
+static const char OBJCOPY[] = "/usr/bin/llvm-objcopy";
+static const char NASM[]    = "/usr/bin/nasm";
+static const char CLANG_VERSION[]   = "clang version 22.1.8 (Fedora 22.1.8-4.fc44)";
+static const char LLD_VERSION[]     = "LLD 22.1.8 (compatible with GNU linkers)";
+static const char OBJCOPY_VERSION[] = "LLVM version 22.1.8";
+static const char NASM_VERSION[]    = "NASM version 3.02 compiled on Jul 14 2026";   // nasm-3.02-1.fc44
+
+// When any of these changes, ./build rebuilds itself, and cached ports rebuild.
+static const char *const BUILD_SOURCES[] = {
+    "build.c", "lib/vx-ndb/ndb.h", "lib/vx-ndb/ndb.c", "abi/vx/abi.h",
+    "abi/vx/syscalls.def", "abi/vx/rights.def", "abi/vx/status.def", nullptr,
+};
+
+constexpr int KERNEL_LOC_BUDGET = 25000;   // docs/01 §1
+
+// ---------------------------------------------------------------------------
+// Flags
+
+static const char *const HOST_FLAGS[] = {
+    "-std=c23", "-O1", "-g", "-Wall", "-Wextra", "-Werror", "-Wshadow", "-Wvla",
+    "-Wimplicit-fallthrough", nullptr,
+};
+
+// The house subset (docs/04 §1.1). Applies to the OS tree, not to applications.
+static const char *const HOUSE_FLAGS[] = {
+    "-std=c23", "-Wall", "-Wextra", "-Werror", "-Wshadow", "-Wvla",
+    "-Wimplicit-fallthrough", "-fno-strict-aliasing", "-ftrivial-auto-var-init=zero",
+    "-g", "-fno-omit-frame-pointer", nullptr,
+};
+
+static const char *const KERNEL_FLAGS[] = {
+    "-ffreestanding", "-fno-pic", "-mgeneral-regs-only",
+    "-fno-asynchronous-unwind-tables", "-fno-unwind-tables",   // frame pointers unwind the kernel
+    "-fsanitize=kcfi", "-fstack-protector-strong", "-mstack-protector-guard=global",
+    "-Iabi", "-Ikernel", nullptr,
+};
+
+static const char *const KERNEL_DEBUG_FLAGS[] = {
+    "-O1", "-fsanitize=undefined", "-fno-sanitize=function", "-fsanitize-trap=undefined", nullptr,
+};
+
+static const char *const KERNEL_RELEASE_FLAGS[] = { "-O2", nullptr };
+
+static const char *const X86_64_FLAGS[] = {
+    "--target=x86_64-unknown-none-elf", "-mno-red-zone", "-mcmodel=kernel",
+    "-fcf-protection=full", nullptr,
+};
+
+static const char *const AARCH64_FLAGS[] = {
+    "--target=aarch64-unknown-none-elf", "-mbranch-protection=standard", nullptr,
+};
+
+typedef struct arch {
+    const char        *name;
+    const char *const *flags;
+} arch;
+
+static const arch ARCHES[] = {
+    { "x86_64",  X86_64_FLAGS  },
+    { "aarch64", AARCH64_FLAGS },
+};
+constexpr int ARCH_COUNT = sizeof ARCHES / sizeof ARCHES[0];
+
+// ---------------------------------------------------------------------------
+// Helpers
+
+[[noreturn]] static void die(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    fputs("build: ", stderr);
+    vfprintf(stderr, fmt, ap);
+    fputc('\n', stderr);
+    va_end(ap);
+    exit(1);
+}
+
+static bool verbose;
+static char root[1024];   // the repository root, absolute
+
+// One arena for the whole run. build is short-lived, so nothing is freed.
+static char   arena[32 << 20];
+static size_t arena_used;
+
+static void *alloc(size_t n) {
+    n = (n + 15) & ~(size_t)15;
+    if (sizeof arena - arena_used < n) die("out of arena memory");
+    void *p = arena + arena_used;
+    arena_used += n;
+    return p;
+}
+
+static char *fmt(const char *f, ...) {
+    va_list ap;
+    va_start(ap, f);
+    int n = vsnprintf(nullptr, 0, f, ap);
+    va_end(ap);
+    char *s = alloc((size_t)n + 1);
+    va_start(ap, f);
+    vsnprintf(s, (size_t)n + 1, f, ap);
+    va_end(ap);
+    return s;
+}
+
+static char *str_dup(vx_str s) {
+    char *p = alloc(s.len + 1);
+    memcpy(p, s.ptr, s.len);
+    p[s.len] = 0;
+    return p;
+}
+
+static vx_str read_file(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) die("cannot read %s: %s", path, strerror(errno));
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *p = alloc((size_t)n + 1);
+    if (n && fread(p, 1, (size_t)n, f) != (size_t)n) die("cannot read %s", path);
+    fclose(f);
+    p[n] = 0;
+    return (vx_str){ p, (size_t)n };
+}
+
+typedef struct cmd {
+    const char *argv[1024];
+    int         argc;
+    const char *dir;   // run in this directory, if set
+} cmd;
+
+static void cmd_add(cmd *c, const char *arg) {
+    if (c->argc == 1023) die("command line too long");
+    c->argv[c->argc++] = arg;
+    c->argv[c->argc]   = nullptr;
+}
+
+static void cmd_addv(cmd *c, const char *const *args) {
+    for (; *args; args++) cmd_add(c, *args);
+}
+
+// Adds each space-separated word of s.
+static void cmd_add_words(cmd *c, vx_str s) {
+    size_t i = 0;
+    while (i < s.len) {
+        while (i < s.len && s.ptr[i] == ' ') i++;
+        size_t start = i;
+        while (i < s.len && s.ptr[i] != ' ') i++;
+        if (i > start) cmd_add(c, str_dup((vx_str){ s.ptr + start, i - start }));
+    }
+}
+
+static void cmd_print(const cmd *c) {
+    if (c->dir) fprintf(stderr, "(cd %s) ", c->dir);
+    for (int i = 0; i < c->argc; i++) fprintf(stderr, "%s%s", i ? " " : "", c->argv[i]);
+    fputc('\n', stderr);
+}
+
+static pid_t spawn(const cmd *c) {
+    if (verbose) cmd_print(c);
+    pid_t pid = fork();
+    if (pid < 0) die("fork failed");
+    if (pid == 0) {
+        if (c->dir && chdir(c->dir) != 0) {
+            fprintf(stderr, "build: cannot enter %s\n", c->dir);
+            _exit(127);
+        }
+        execv(c->argv[0], (char *const *)c->argv);
+        fprintf(stderr, "build: cannot run %s: %s\n", c->argv[0], strerror(errno));
+        _exit(127);
+    }
+    return pid;
+}
+
+static bool wait_ok(pid_t pid) {
+    int status;
+    while (waitpid(pid, &status, 0) < 0)
+        if (errno != EINTR) die("waitpid failed");
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+static bool run(const cmd *c) { return wait_ok(spawn(c)); }
+
+// Runs commands with up to one per CPU in flight. Stops starting new ones after a failure.
+static bool run_parallel(cmd *const *cmds, int count) {
+    long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+    int  slots = cpus > 0 ? (int)cpus : 1, running = 0, next = 0;
+    bool ok = true;
+    while (next < count || running > 0) {
+        while (ok && next < count && running < slots) {
+            spawn(cmds[next++]);
+            running++;
+        }
+        if (running == 0) break;
+        int status;
+        if (wait(&status) < 0) {
+            if (errno == EINTR) continue;
+            die("wait failed");
+        }
+        running--;
+        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) ok = false;
+    }
+    return ok;
+}
+
+static void mkdirs(const char *path) {
+    char *buf = fmt("%s", path);
+    for (char *p = buf + 1; *p; p++) {
+        if (*p != '/') continue;
+        *p = 0;
+        if (mkdir(buf, 0755) != 0 && errno != EEXIST) die("cannot create %s", buf);
+        *p = '/';
+    }
+    if (mkdir(buf, 0755) != 0 && errno != EEXIST) die("cannot create %s", buf);
+}
+
+static void mkdirs_for(const char *file) {
+    char *dir = fmt("%s", file);
+    char *slash = strrchr(dir, '/');
+    if (slash) {
+        *slash = 0;
+        mkdirs(dir);
+    }
+}
+
+static bool newer(const struct stat *a, const struct stat *b) {
+    if (a->st_mtim.tv_sec != b->st_mtim.tv_sec) return a->st_mtim.tv_sec > b->st_mtim.tv_sec;
+    return a->st_mtim.tv_nsec > b->st_mtim.tv_nsec;
+}
+
+static bool exists(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0;
+}
+
+// Runs `prog --version` and looks for a line equal to the pin, ignoring leading blanks.
+static void check_version(const char *prog, const char *want) {
+    FILE *f = popen(fmt("%s --version 2>/dev/null", prog), "r");
+    if (!f) die("cannot run %s", prog);
+    char line[512];
+    bool found = false;
+    while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\n")] = 0;
+        if (strcmp(line + strspn(line, " \t"), want) == 0) found = true;
+    }
+    pclose(f);
+    if (!found) die("%s does not report \"%s\", the version ADR-0001 pins", prog, want);
+}
+
+// FNV-1a. Used only to notice that a port's inputs changed, never for integrity.
+static uint64_t hash_bytes(uint64_t h, vx_str s) {
+    for (size_t i = 0; i < s.len; i++) h = (h ^ (unsigned char)s.ptr[i]) * 0x100000001b3;
+    return h;
+}
+
+// ---------------------------------------------------------------------------
+// Self-rebuild
+
+static void rebuild_self(char **argv) {
+    struct stat bin;
+    bool stale = stat("build", &bin) != 0;
+    for (const char *const *src = BUILD_SOURCES; *src; src++) {
+        struct stat st;
+        if (stat(*src, &st) != 0) die("run ./build from the repository root (missing %s)", *src);
+        if (!stale && newer(&st, &bin)) stale = true;
+    }
+    if (!stale) return;
+
+    fprintf(stderr, "build: sources changed, rebuilding ./build\n");
+    cmd c = {};
+    cmd_add(&c, CLANG);
+    cmd_addv(&c, HOST_FLAGS);
+    cmd_add(&c, "-o");
+    cmd_add(&c, "build.new");
+    cmd_add(&c, "build.c");
+    if (!run(&c)) die("rebuild failed; ./build is unchanged");
+    if (rename("build.new", "build") != 0) die("cannot replace ./build");
+    execv("./build", argv);
+    die("cannot re-run ./build");
+}
+
+// ---------------------------------------------------------------------------
+// The kernel
+
+static bool build_kernel(const arch *a, bool release) {
+    const char *dir = fmt("out/%s/%s", a->name, release ? "release" : "debug");
+    const char *obj = fmt("%s/kernel.o", dir);
+    const char *elf = fmt("%s/kernel.elf", dir);
+    mkdirs(dir);
+
+    fprintf(stderr, "  CC    kernel  %s\n", a->name);
+    cmd cc = {};
+    cmd_add(&cc, CLANG);
+    cmd_addv(&cc, a->flags);
+    cmd_addv(&cc, HOUSE_FLAGS);
+    cmd_addv(&cc, KERNEL_FLAGS);
+    cmd_addv(&cc, release ? KERNEL_RELEASE_FLAGS : KERNEL_DEBUG_FLAGS);
+    cmd_add(&cc, fmt("-ffile-prefix-map=%s=/src", root));   // docs/05 §4
+    cmd_add(&cc, "-c");
+    cmd_add(&cc, "kernel/kernel.c");
+    cmd_add(&cc, "-o");
+    cmd_add(&cc, obj);
+    if (!run(&cc)) return false;
+
+    fprintf(stderr, "  LD    kernel  %s\n", a->name);
+    cmd ld = {};
+    cmd_add(&ld, LLD);
+    cmd_addv(&ld, (const char *const[]){
+        "-static", "-nostdlib", "--build-id=sha1", "-z", "max-page-size=0x1000",
+        "-z", "noexecstack", "-T", nullptr });
+    cmd_add(&ld, fmt("kernel/linker/%s.ld", a->name));
+    cmd_add(&ld, "-o");
+    cmd_add(&ld, elf);
+    cmd_add(&ld, obj);
+    return run(&ld);
+}
+
+// ---------------------------------------------------------------------------
+// Ports: vendored code built from ports/<name>/port.ndb (docs/04 §3.1)
+
+constexpr int PORT_MAX_TARGETS = 8;
+constexpr int PORT_MAX_FILES   = 32;
+
+typedef struct port {
+    const char   *name;
+    const char   *dir;        // ports/<name>, which also holds the captured config.h
+    const char   *src;        // third_party/<name>, absolute
+    vx_ndb_record head;       // the port= record
+    vx_ndb_record targets[PORT_MAX_TARGETS];
+    int           target_count;
+    vx_ndb_record files[PORT_MAX_FILES];
+    int           file_count;
+    uint64_t      input_hash;
+} port;
+
+static port limine;
+
+static void port_load(port *p, const char *name) {
+    p->name = name;
+    p->dir  = fmt("ports/%s", name);
+    const char *path = fmt("%s/port.ndb", p->dir);
+    vx_ndb_reader r = { .src = read_file(path), .scratch = alloc(64 << 10), .scratch_cap = 64 << 10 };
+
+    for (;;) {
+        vx_ndb_record rec;
+        vx_ndb_result res = vx_ndb_next(&r, &rec);
+        if (res == VX_NDB_END) break;
+        if (res == VX_NDB_ERROR) die("%s:%zu: %s", path, r.error_line, r.error);
+        if (vx_ndb_has(&rec, "port")) {
+            p->head = rec;
+        } else if (vx_ndb_has(&rec, "target")) {
+            if (p->target_count == PORT_MAX_TARGETS) die("%s: too many targets", path);
+            p->targets[p->target_count++] = rec;
+        } else if (vx_ndb_has(&rec, "file")) {
+            if (p->file_count == PORT_MAX_FILES) die("%s: too many file records", path);
+            p->files[p->file_count++] = rec;
+        } else {
+            die("%s:%zu: a record must start with port=, target= or file=", path, rec.line);
+        }
+    }
+    vx_str src = vx_ndb_get(&p->head, "src");
+    if (!src.len) die("%s: the port= record needs src=", path);
+    p->src = fmt("%s/%s", root, str_dup(src));
+
+    // The cache key: the port's own files, the vendor record, build itself and the pins.
+    uint64_t h = 0xcbf29ce484222325;
+    h = hash_bytes(h, read_file(path));
+    if (exists(fmt("%s/config.h", p->dir))) h = hash_bytes(h, read_file(fmt("%s/config.h", p->dir)));
+    h = hash_bytes(h, read_file("third_party/VENDOR.ndb"));
+    for (const char *const *s = BUILD_SOURCES; *s; s++) h = hash_bytes(h, read_file(*s));
+    h = hash_bytes(h, (vx_str){ CLANG_VERSION, sizeof CLANG_VERSION - 1 });
+    p->input_hash = h;
+}
+
+// Collects the files under each comma-separated directory whose names end in ext.
+typedef struct file_list {
+    const char *paths[4096];
+    int         count;
+} file_list;
+
+static file_list  *walk_out;
+static const char *walk_ext;
+static size_t      walk_strip;   // length of the "<src>/" prefix
+
+static bool ends_with(const char *s, const char *suffix) {
+    size_t n = strlen(s), m = strlen(suffix);
+    return n >= m && strcmp(s + n - m, suffix) == 0;
+}
+
+static int walk_visit(const char *path, const struct stat *st, int type, struct FTW *ftw) {
+    (void)st;
+    (void)ftw;
+    if (type == FTW_F && ends_with(path, walk_ext)) {
+        if (walk_out->count == 4096) die("too many source files");
+        walk_out->paths[walk_out->count++] = fmt("%s", path + walk_strip);
+    }
+    return 0;
+}
+
+static int by_path(const void *a, const void *b) {
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+// Every file with extension ext under the listed directories, in byte order, as common.mk has it.
+static void collect(file_list *out, const port *p, vx_str dirs, const char *ext) {
+    int first = out->count;
+    walk_out   = out;
+    walk_ext   = ext;
+    walk_strip = strlen(p->src) + 1;
+    size_t i = 0;
+    while (i < dirs.len) {
+        size_t start = i;
+        while (i < dirs.len && dirs.ptr[i] != ',') i++;
+        const char *dir = fmt("%s/%s", p->src, str_dup((vx_str){ dirs.ptr + start, i - start }));
+        if (nftw(dir, walk_visit, 32, FTW_PHYS) != 0) die("cannot walk %s", dir);
+        i++;
+    }
+    qsort(out->paths + first, (size_t)(out->count - first), sizeof out->paths[0], by_path);
+}
+
+// Each comma-separated extension in its own sorted group, in the order given.
+static void collect_each(file_list *out, const port *p, vx_str dirs, vx_str exts) {
+    size_t i = 0;
+    while (i < exts.len) {
+        size_t start = i;
+        while (i < exts.len && exts.ptr[i] != ',') i++;
+        collect(out, p, dirs, str_dup((vx_str){ exts.ptr + start, i - start }));
+        i++;
+    }
+}
+
+static vx_str port_file_cflags(const port *p, const char *rel) {
+    for (int i = 0; i < p->file_count; i++) {
+        vx_str f = vx_ndb_get(&p->files[i], "file");
+        if (f.len == strlen(rel) && memcmp(f.ptr, rel, f.len) == 0) return vx_ndb_get(&p->files[i], "cflags");
+    }
+    return (vx_str){};
+}
+
+static const char *object_for(const char *objdir, const char *rel) {
+    char *o = fmt("%s/%s", objdir, rel);
+    char *dot = strrchr(o, '.');
+    strcpy(dot, ".o");   // ".o" is never longer than the extension it replaces
+    return o;
+}
+
+// Writes the symbol map Limine links into itself for its panic backtraces:
+// what common/gensyms.sh makes with objdump, sort, grep, awk and sed.
+static void write_symbol_map(const char *elf_path, const char *out_path) {
+    vx_str elf = read_file(elf_path);
+    const Elf64_Ehdr *eh = (const Elf64_Ehdr *)elf.ptr;
+    if (elf.len < sizeof *eh || memcmp(eh->e_ident, ELFMAG, SELFMAG) != 0 || eh->e_ident[EI_CLASS] != ELFCLASS64)
+        die("%s is not a 64-bit ELF file", elf_path);
+    if (eh->e_shoff + (uint64_t)eh->e_shnum * sizeof(Elf64_Shdr) > elf.len) die("%s: bad section table", elf_path);
+    const Elf64_Shdr *sh = (const Elf64_Shdr *)(elf.ptr + eh->e_shoff);
+    const char *shstr = elf.ptr + sh[eh->e_shstrndx].sh_offset;
+
+    typedef struct sym { uint64_t addr; const char *name; } sym;
+    sym   *syms  = nullptr;
+    size_t count = 0;
+    for (int i = 0; i < eh->e_shnum; i++) {
+        if (sh[i].sh_type != SHT_SYMTAB) continue;
+        const Elf64_Sym *st   = (const Elf64_Sym *)(elf.ptr + sh[i].sh_offset);
+        size_t           n    = sh[i].sh_size / sizeof *st;
+        const char      *strs = elf.ptr + sh[sh[i].sh_link].sh_offset;
+        syms = alloc(n * sizeof *syms);
+        for (size_t k = 0; k < n; k++) {
+            if (ELF64_ST_TYPE(st[k].st_info) != STT_FUNC) continue;
+            if (st[k].st_shndx == SHN_UNDEF || st[k].st_shndx >= eh->e_shnum) continue;
+            if (strncmp(shstr + sh[st[k].st_shndx].sh_name, ".text", 5) != 0) continue;
+            syms[count++] = (sym){ st[k].st_value, strs + st[k].st_name };
+        }
+    }
+    // By address, then name: the order `sort` gives objdump's lines.
+    for (size_t i = 1; i < count; i++)
+        for (size_t k = i; k > 0; k--) {
+            sym *a = &syms[k - 1], *b = &syms[k];
+            if (a->addr < b->addr || (a->addr == b->addr && strcmp(a->name, b->name) <= 0)) break;
+            sym t = *a; *a = *b; *b = t;
+        }
+
+    FILE *f = fopen(out_path, "w");
+    if (!f) die("cannot write %s", out_path);
+    fprintf(f, ".section .full_map\n.globl full_map\nfull_map:\n");
+    for (size_t i = 0; i < count; i++)
+        fprintf(f, ".quad 0x%016llx\n.asciz \"%s\"\n", (unsigned long long)syms[i].addr, syms[i].name);
+    fprintf(f, ".quad 0xffffffffffffffff\n");
+    fclose(f);
+}
+
+static bool build_port_target(const port *p, const vx_ndb_record *t) {
+    const char *target = str_dup(vx_ndb_get(t, "target"));
+    const char *output = str_dup(vx_ndb_get(t, "output"));
+    const char *outdir = fmt("%s/out/%s/%s", root, p->name, target);
+    const char *objdir = fmt("%s/obj", outdir);
+    const char *result = fmt("%s/%s", outdir, output);
+    const char *stamp  = fmt("%s/stamp", outdir);
+    const char *key    = fmt("%016llx\n", (unsigned long long)p->input_hash);
+
+    if (exists(result) && exists(stamp) && strcmp(read_file(stamp).ptr, key) == 0) {
+        fprintf(stderr, "  PORT  %s  %s (cached)\n", p->name, target);
+        return true;
+    }
+
+    vx_str cflags    = vx_ndb_get(t, "cflags");
+    vx_str cppflags  = vx_ndb_get(&p->head, "cppflags");
+    vx_str nasm_ext  = vx_ndb_get(t, "nasm.ext");
+    const char *prefix_map = fmt("-ffile-prefix-map=%s=/src", root);
+    const char *config_inc = fmt("-I%s/%s", root, p->dir);
+
+    if (nasm_ext.len) {
+        if (!exists(NASM)) die("%s %s needs nasm (ADR-0002): sudo dnf install nasm", p->name, target);
+        check_version(NASM, NASM_VERSION);
+    }
+
+    file_list *c_files   = alloc(sizeof *c_files);
+    file_list *s_files   = alloc(sizeof *s_files);
+    file_list *nasm_files = alloc(sizeof *nasm_files);
+    file_list *cpp_files = alloc(sizeof *cpp_files);
+    *c_files = *s_files = *nasm_files = *cpp_files = (file_list){};
+    collect(c_files, p, vx_ndb_get(t, "c.dirs"), ".c");
+    collect(s_files, p, vx_ndb_get(t, "S.dirs"), ".S");
+    if (nasm_ext.len) collect_each(nasm_files, p, vx_ndb_get(t, "nasm.dirs"), nasm_ext);
+    vx_str cpp_ext = vx_ndb_get(t, "cppasm.ext");
+    if (cpp_ext.len) collect_each(cpp_files, p, vx_ndb_get(t, "cppasm.dirs"), cpp_ext);
+
+    // One command per source file, in common.mk's link order.
+    int    total = c_files->count + s_files->count + nasm_files->count + cpp_files->count;
+    cmd  **cmds  = alloc((size_t)total * sizeof *cmds);
+    const char **objs = alloc((size_t)total * sizeof *objs);
+    int n = 0;
+    const file_list *clang_lists[] = { c_files, s_files };
+    for (int l = 0; l < 2; l++)
+        for (int i = 0; i < clang_lists[l]->count; i++) {
+            const char *rel = clang_lists[l]->paths[i];
+            cmd *c = alloc(sizeof *c);
+            *c = (cmd){ .dir = p->src };
+            cmd_add(c, CLANG);
+            cmd_add_words(c, cflags);
+            cmd_add_words(c, cppflags);
+            cmd_add(c, config_inc);
+            cmd_add_words(c, port_file_cflags(p, rel));
+            cmd_add(c, prefix_map);
+            cmd_add(c, "-c");
+            cmd_add(c, rel);
+            cmd_add(c, "-o");
+            cmd_add(c, objs[n] = object_for(objdir, rel));
+            cmds[n++] = c;
+        }
+    for (int i = 0; i < nasm_files->count; i++) {
+        const char *rel = nasm_files->paths[i];
+        cmd *c = alloc(sizeof *c);
+        *c = (cmd){ .dir = p->src };
+        cmd_add(c, NASM);
+        cmd_add(c, rel);
+        cmd_add_words(c, vx_ndb_get(t, "nasmflags"));
+        cmd_add(c, "-o");
+        cmd_add(c, objs[n] = object_for(objdir, rel));
+        cmds[n++] = c;
+    }
+    for (int i = 0; i < cpp_files->count; i++) {
+        const char *rel = cpp_files->paths[i];
+        cmd *c = alloc(sizeof *c);
+        *c = (cmd){ .dir = p->src };
+        cmd_add(c, CLANG);
+        cmd_add_words(c, cflags);
+        cmd_add_words(c, cppflags);
+        cmd_add(c, config_inc);
+        cmd_add(c, prefix_map);
+        cmd_add(c, "-x");
+        cmd_add(c, "assembler-with-cpp");
+        cmd_add(c, "-c");
+        cmd_add(c, rel);
+        cmd_add(c, "-o");
+        cmd_add(c, objs[n] = object_for(objdir, rel));
+        cmds[n++] = c;
+    }
+    for (int i = 0; i < n; i++) mkdirs_for(objs[i]);
+
+    fprintf(stderr, "  PORT  %s  %s (%d files)\n", p->name, target, n);
+    if (!run_parallel(cmds, n)) return false;
+
+    // Link twice: once without the symbol map, to learn the addresses, then with it.
+    const char *ldscript = fmt("%s/%s", p->src, str_dup(vx_ndb_get(t, "ldscript")));
+    const char *map_s    = fmt("%s/full.map.S", outdir);
+    const char *map_o    = fmt("%s/full.map.o", outdir);
+    for (int pass = 0; pass < 2; pass++) {
+        const char *script = fmt("%s/%s", outdir, pass == 0 ? "linker_nomap.ld" : "linker.ld");
+        const char *elf    = fmt("%s/%s", outdir, pass == 0 ? "limine_nomap.elf" : "limine.elf");
+
+        cmd pp = { .dir = p->src };
+        cmd_add(&pp, CLANG);
+        cmd_addv(&pp, (const char *const[]){ "-x", "c", "-E", "-P", "-undef", nullptr });
+        if (pass == 0) cmd_add(&pp, "-DLINKER_NOMAP");
+        cmd_add(&pp, ldscript);
+        cmd_add(&pp, "-o");
+        cmd_add(&pp, script);
+        if (!run(&pp)) return false;
+
+        if (pass == 1) {
+            write_symbol_map(fmt("%s/limine_nomap.elf", outdir), map_s);
+            cmd cc = { .dir = p->src };
+            cmd_add(&cc, CLANG);
+            cmd_add_words(&cc, cflags);
+            cmd_add_words(&cc, cppflags);
+            cmd_add(&cc, config_inc);
+            cmd_add(&cc, "-c");
+            cmd_add(&cc, map_s);
+            cmd_add(&cc, "-o");
+            cmd_add(&cc, map_o);
+            if (!run(&cc)) return false;
+        }
+
+        cmd ld = {};
+        cmd_add(&ld, LLD);
+        cmd_add(&ld, fmt("-T%s", script));
+        cmd_add_words(&ld, vx_ndb_get(t, "ldflags"));
+        for (int i = 0; i < n; i++) cmd_add(&ld, objs[i]);
+        if (pass == 1) cmd_add(&ld, map_o);
+        cmd_add(&ld, "-o");
+        cmd_add(&ld, elf);
+        if (!run(&ld)) return false;
+    }
+
+    // The loader is the raw image of the PE file the linker script lays out, padded to 4 KiB.
+    cmd oc = {};
+    cmd_add(&oc, OBJCOPY);
+    cmd_addv(&oc, (const char *const[]){ "-O", "binary", nullptr });
+    cmd_add(&oc, fmt("%s/limine.elf", outdir));
+    cmd_add(&oc, result);
+    if (!run(&oc)) return false;
+    struct stat st;
+    if (stat(result, &st) != 0) die("%s was not written", result);
+    if (truncate(result, (st.st_size + 4095) & ~(off_t)4095) != 0) die("cannot pad %s", result);
+
+    FILE *f = fopen(stamp, "w");
+    if (!f) die("cannot write %s", stamp);
+    fputs(key, f);
+    fclose(f);
+    return true;
+}
+
+// The port target for an architecture, or nullptr.
+static const vx_ndb_record *port_target_for(const port *p, const arch *a) {
+    for (int i = 0; i < p->target_count; i++) {
+        vx_str arch_name = vx_ndb_get(&p->targets[i], "arch");
+        if (arch_name.len == strlen(a->name) && memcmp(arch_name.ptr, a->name, arch_name.len) == 0)
+            return &p->targets[i];
+    }
+    return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// all
+
+static bool build_arch(const arch *a, bool release) {
+    if (!build_kernel(a, release)) return false;
+    const vx_ndb_record *t = port_target_for(&limine, a);
+    return !t || build_port_target(&limine, t);
+}
+
+static int cmd_all(const arch *only, bool release) {
+    check_version(CLANG, CLANG_VERSION);
+    check_version(LLD, LLD_VERSION);
+    check_version(OBJCOPY, OBJCOPY_VERSION);
+    port_load(&limine, "limine");
+
+    // One child per architecture; each runs its steps in order.
+    pid_t pids[ARCH_COUNT] = {};
+    for (int i = 0; i < ARCH_COUNT; i++) {
+        if (only && only != &ARCHES[i]) continue;
+        pids[i] = fork();
+        if (pids[i] < 0) die("fork failed");
+        if (pids[i] == 0) _exit(build_arch(&ARCHES[i], release) ? 0 : 1);
+    }
+    bool ok = true;
+    for (int i = 0; i < ARCH_COUNT; i++)
+        if (pids[i]) ok = wait_ok(pids[i]) && ok;
+    return ok ? 0 : 1;
+}
+
+// ---------------------------------------------------------------------------
+// loc: the line-count ledger (docs/04 §3.2)
+
+typedef struct component {
+    char name[96];
+    long lines;
+    bool vendored;
+} component;
+
+static component components[256];
+static int       component_count;
+static long      asm_lines[ARCH_COUNT];
+
+static const char *const CODE_EXTENSIONS[] = { ".c", ".h", ".S", ".s", ".ld", ".def", nullptr };
+
+static bool is_code(const char *path) {
+    const char *dot = strrchr(path, '.');
+    if (!dot) return false;
+    if (strncmp(dot, ".asm", 4) == 0) return true;   // nasm and Limine's .asm_<arch> files
+    for (const char *const *e = CODE_EXTENSIONS; *e; e++)
+        if (strcmp(dot, *e) == 0) return true;
+    return false;
+}
+
+static long count_lines(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    long n = 0;
+    char line[4096];
+    while (fgets(line, sizeof line, f))
+        if (line[strspn(line, " \t\r\n")]) n++;
+    fclose(f);
+    return n;
+}
+
+static component *component_for(const char *name, bool vendored) {
+    for (int i = 0; i < component_count; i++)
+        if (strcmp(components[i].name, name) == 0) return &components[i];
+    if (component_count == 256) die("too many components");
+    component *c = &components[component_count++];
+    snprintf(c->name, sizeof c->name, "%s", name);
+    c->vendored = vendored;
+    return c;
+}
+
+// Components are the first path segment, or the first two under these directories.
+static const char *const GROUPED[] = { "lib", "servers", "drivers", "apps", "third_party", nullptr };
+
+static int loc_visit(const char *path, const struct stat *st, int type, struct FTW *ftw) {
+    (void)st;
+    (void)ftw;
+    if (path[0] == '.' && path[1] == '/') path += 2;
+    if (type == FTW_D) {
+        if (!strcmp(path, "out") || !strcmp(path, ".git") || !strcmp(path, "docs")) return FTW_SKIP_SUBTREE;
+        return FTW_CONTINUE;
+    }
+    if (type != FTW_F || !is_code(path)) return FTW_CONTINUE;
+
+    char name[96];
+    const char *slash = strchr(path, '/');
+    if (!slash) {
+        snprintf(name, sizeof name, "%s", strcmp(path, "build.c") == 0 ? "build" : path);
+    } else {
+        size_t len = (size_t)(slash - path);
+        for (const char *const *g = GROUPED; *g; g++) {
+            if (strlen(*g) == len && strncmp(path, *g, len) == 0) {
+                const char *second = strchr(slash + 1, '/');
+                if (second) len = (size_t)(second - path);
+                break;
+            }
+        }
+        snprintf(name, sizeof name, "%.*s", (int)len, path);
+    }
+
+    long n = count_lines(path);
+    component_for(name, strncmp(path, "third_party/", 12) == 0)->lines += n;
+
+    const char *dot = strrchr(path, '.');
+    for (int i = 0; i < ARCH_COUNT; i++) {
+        char prefix[64];
+        snprintf(prefix, sizeof prefix, "kernel/arch/%s/", ARCHES[i].name);
+        if (strncmp(path, prefix, strlen(prefix)) == 0 && (!strcmp(dot, ".S") || !strcmp(dot, ".s")))
+            asm_lines[i] += n;
+    }
+    return FTW_CONTINUE;
+}
+
+static int by_name(const void *a, const void *b) {
+    const component *x = a, *y = b;
+    if (x->vendored != y->vendored) return x->vendored - y->vendored;
+    return strcmp(x->name, y->name);
+}
+
+static int count_syscalls(void) {
+    FILE *f = fopen("abi/vx/syscalls.def", "r");
+    if (!f) return 0;
+    int n = 0;
+    char line[512];
+    while (fgets(line, sizeof line, f))
+        if (strncmp(line, "VX_SYSCALL(", 11) == 0) n++;
+    fclose(f);
+    return n;
+}
+
+static int cmd_loc(void) {
+    if (nftw(".", loc_visit, 32, FTW_PHYS | FTW_ACTIONRETVAL) != 0) die("cannot walk the tree");
+    qsort(components, (size_t)component_count, sizeof components[0], by_name);
+
+    long first_party = 0, vendored = 0, kernel = 0;
+    for (int i = 0; i < component_count; i++) {
+        const component *c = &components[i];
+        printf("%-32s %8ld%s\n", c->name, c->lines, c->vendored ? "  vendored" : "");
+        if (c->vendored) vendored += c->lines;
+        else first_party += c->lines;
+        if (strcmp(c->name, "kernel") == 0) kernel = c->lines;
+    }
+    printf("\n");
+    for (int i = 0; i < ARCH_COUNT; i++)
+        printf("%-32s %8ld\n", fmt("assembly, %s kernel", ARCHES[i].name), asm_lines[i]);
+    printf("%-32s %8d\n", "syscalls", count_syscalls());
+    printf("\n%-32s %8ld\n%-32s %8ld\n%-32s %8ld\n", "first-party", first_party,
+           "vendored", vendored, "total", first_party + vendored);
+
+    if (kernel > KERNEL_LOC_BUDGET) {
+        fprintf(stderr, "build: the kernel is %ld lines; the budget is %d (docs/01 §1)\n",
+                kernel, KERNEL_LOC_BUDGET);
+        return 1;
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+
+static void usage(void) {
+    fprintf(stderr,
+        "usage: ./build [-v] <command> [options]\n"
+        "\n"
+        "  all  [--arch x86_64|aarch64] [--release]   the kernel and Limine (both architectures by default)\n"
+        "  loc                                         the line-count ledger\n"
+        "\n"
+        "Still to come in M1: image, qemu, test, check, vendor-check.\n");
+    exit(2);
+}
+
+int main(int argc, char **argv) {
+    rebuild_self(argv);
+    if (!getcwd(root, sizeof root)) die("cannot read the current directory");
+
+    int i = 1;
+    if (i < argc && strcmp(argv[i], "-v") == 0) { verbose = true; i++; }
+    if (i >= argc) usage();
+    const char *command = argv[i++];
+
+    const arch *only = nullptr;
+    bool release = false;
+    for (; i < argc; i++) {
+        if (strcmp(argv[i], "--release") == 0) {
+            release = true;
+        } else if (strcmp(argv[i], "--arch") == 0 && i + 1 < argc) {
+            i++;
+            for (int a = 0; a < ARCH_COUNT; a++)
+                if (strcmp(argv[i], ARCHES[a].name) == 0) only = &ARCHES[a];
+            if (!only) die("unknown architecture %s", argv[i]);
+        } else {
+            usage();
+        }
+    }
+
+    if (strcmp(command, "all") == 0) return cmd_all(only, release);
+    if (strcmp(command, "loc") == 0) return cmd_loc();
+    usage();
+}

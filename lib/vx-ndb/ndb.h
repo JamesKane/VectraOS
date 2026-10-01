@@ -1,0 +1,56 @@
+// vx-ndb: the one text format (docs/02-namespace-swarm.md §4.1).
+//
+// A record is one line of tuples plus the indented lines that follow it. A tuple
+// is key=value or a bare key (a flag). Values are bare, "quoted" ("" is one
+// quote), or x"hex" for bytes that are not printable UTF-8.
+//
+// The parser is strict: a record with a duplicate key, bad quoting, a control
+// character, invalid UTF-8 or more than 64 KiB is rejected whole, never repaired.
+//
+// The writer arrives with M2, when svcd and devmgr need it.
+#pragma once
+
+#include "../../abi/vx/abi.h"
+
+constexpr size_t VX_NDB_MAX_RECORD = 64 * 1024;
+constexpr int    VX_NDB_MAX_TUPLES = 128;
+
+typedef struct vx_ndb_tuple {
+    vx_str key;
+    vx_str value;       // ptr is nullptr for a flag
+} vx_ndb_tuple;
+
+typedef struct vx_ndb_record {
+    vx_ndb_tuple tuples[VX_NDB_MAX_TUPLES];
+    int          count;
+    size_t       line;  // where the record starts, 1-based
+} vx_ndb_record;
+
+// Decoded quoted and hex values are written to scratch, which the caller owns.
+// Values point into the source or into scratch, so both must outlive them.
+typedef struct vx_ndb_reader {
+    vx_str  src;
+    size_t  pos;
+    size_t  line;
+    char   *scratch;
+    size_t  scratch_cap;
+    size_t  scratch_used;
+    const char *error;       // set when vx_ndb_next returns VX_NDB_ERROR,
+    size_t      error_line;  // with the line it refers to
+} vx_ndb_reader;
+
+typedef enum vx_ndb_result : int32_t {
+    VX_NDB_RECORD = 0,
+    VX_NDB_END    = 1,
+    VX_NDB_ERROR  = -1,
+} vx_ndb_result;
+
+[[maybe_unused]] static vx_ndb_result vx_ndb_next(vx_ndb_reader *r, vx_ndb_record *rec);
+
+// The library is compiled into each component that includes it (unity builds), so
+// its API is marked maybe_unused.
+
+// The value of key, or a zero vx_str if the record lacks it. A flag gives a
+// zero-length value with a nullptr pointer, so test vx_ndb_has for flags.
+[[maybe_unused]] static vx_str vx_ndb_get(const vx_ndb_record *rec, const char *key);
+[[maybe_unused]] static bool   vx_ndb_has(const vx_ndb_record *rec, const char *key);
