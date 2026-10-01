@@ -15,7 +15,8 @@
 //    ended (9P2000's rule).
 //
 // A read or write the file server cannot do yet (a console with no input
-// typed) answers SHOULD_WAIT; p9_serve then returns P9_DEFER, without a reply,
+// typed), or an open (a listen file with no call yet, through the clone
+// hook), answers SHOULD_WAIT; p9_serve then returns P9_DEFER, without a reply,
 // and the transport holds the request and serves it again when the file
 // server's device has done something (lib/vx-9p/ring_server.c). Everything else
 // completes as it arrives, so Tflush has nothing to cancel.
@@ -34,6 +35,8 @@ typedef struct p9_fs {
   vx_status (*open)(void *ctx, uint64_t node, uint8_t mode);
   // Optional: after an open, a clone file (02 §5) makes a new node, and the
   // fid moves there, opened. NOT_FOUND: the node is not a clone file.
+  // SHOULD_WAIT: not yet (a listen file before a call comes); the open is
+  // held and made again, so open must do nothing that cannot be repeated.
   vx_status (*clone)(void *ctx, uint64_t node, uint8_t mode, uint64_t *opened);
   vx_status (*read)(void *ctx, uint64_t node, uint64_t offset, uint8_t *buf,
                     uint32_t *count);                                             // files; or SHOULD_WAIT
@@ -342,7 +345,8 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
     default: return 0;
     }
   }
-  if (e == VX_ERR_SHOULD_WAIT && (t.type == P9_Tread || t.type == P9_Twrite)) return P9_DEFER;
+  if (e == VX_ERR_SHOULD_WAIT && (t.type == P9_Tread || t.type == P9_Twrite || t.type == P9_Topen))
+    return P9_DEFER;
   if (e != VX_OK) r = (p9_msg){.type = P9_Rerror, .tag = t.tag, .ename = p9_error_text(e)};
   return p9_encode(&r, resp, cap);
 }

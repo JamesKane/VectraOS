@@ -4,9 +4,9 @@
 // function that sends a frame. Nothing here makes a system call, so the host
 // tests and the fuzzer drive it as netd does.
 //
-// So far: Ethernet, ARP, IPv4 (no fragments: they are dropped, and nothing
-// sent is bigger than the MTU), ICMP echo, UDP, and a DHCP client (RFC 2131).
-// TCP is next.
+// Ethernet, ARP, IPv4 (no fragments: they are dropped, and nothing sent is
+// bigger than the MTU), ICMP echo, UDP, a DHCP client (RFC 2131), and TCP
+// (tcp.c).
 //
 // Conversations are Plan 9's (02 §5): numbered endpoints, each one protocol,
 // a local port, and a remote address once connected. Datagrams that arrive
@@ -32,7 +32,7 @@ static constexpr uint32_t VX_NET_CONVS = 32;
 static constexpr uint32_t VX_NET_CONV_QUEUE = 8192; // bytes of datagrams a conversation holds
 static constexpr uint32_t VX_NET_ARP_ENTRIES = 16;
 
-enum : uint8_t { VX_NET_ICMP = 1, VX_NET_UDP = 17 }; // conversation protocols, by IP protocol number
+enum : uint8_t { VX_NET_ICMP = 1, VX_NET_TCP = 6, VX_NET_UDP = 17 }; // conversation protocols, by IP number
 
 typedef enum vx_net_dhcp_state : uint8_t {
   VX_DHCP_OFF,        // a static address, or none
@@ -58,6 +58,51 @@ typedef struct vx_net_datagram {
   uint16_t len; // payload bytes, after this header in the queue
 } vx_net_datagram;
 
+typedef enum vx_tcp_state : uint8_t {
+  VX_TCP_CLOSED,
+  VX_TCP_LISTEN,
+  VX_TCP_SYN_SENT,
+  VX_TCP_SYN_RCVD,
+  VX_TCP_ESTABLISHED,
+  VX_TCP_FIN_WAIT_1,
+  VX_TCP_FIN_WAIT_2,
+  VX_TCP_CLOSING,
+  VX_TCP_TIME_WAIT,
+  VX_TCP_CLOSE_WAIT,
+  VX_TCP_LAST_ACK,
+} vx_tcp_state;
+
+static constexpr uint32_t VX_TCP_BUF = 65535; // each way: a window that needs no scaling of ours
+
+// A TCP connection's state (RFC 793 names). Sequence numbers are mod 2^32.
+typedef struct vx_net_tcb {
+  vx_tcp_state state;
+  bool orphan;       // the application let go: the stack frees it once closed
+  bool fin_queued;   // the application closed its side: a FIN follows the data
+  bool fin_received; // reads end once rbuf is empty
+  bool ack_now, timing, in_recovery;
+  bool measured;   // srtt and rttvar hold a sample (a fast link can measure 0)
+  bool accepted;   // a listener's connection that its application has taken
+  vx_status error; // why it closed: REFUSED, PEER_CLOSED (reset) or TIMED_OUT
+  uint32_t parent; // the listener that made it, plus one; 0 if none
+
+  uint32_t iss, snd_una, snd_nxt, snd_max, snd_wnd, snd_wl1, snd_wl2;
+  uint32_t sbuf_seq; // the sequence number of sbuf's first byte
+  uint8_t snd_shift; // the peer's window scale
+  uint8_t dupacks, retries, persist_shift;
+  uint16_t mss; // the most a segment we send carries
+  uint32_t cwnd, ssthresh, recover;
+  uint32_t rtt_seq;
+  vx_instant rtt_start, srtt, rttvar, rto;
+  vx_instant rto_at, persist_at,
+      linger_at; // NET_NEVER when off; linger: TIME_WAIT, or an orphan's FIN_WAIT_2
+
+  uint32_t irs, rcv_nxt;
+  uint32_t shead, slen, rhead, rlen; // the two rings: where the bytes start, and how many
+  uint8_t sbuf[VX_TCP_BUF];          // written, not yet acknowledged
+  uint8_t rbuf[VX_TCP_BUF];          // received in order, not yet read
+} vx_net_tcb;
+
 typedef struct vx_net_conv {
   uint8_t proto; // 0: free
   uint16_t lport, rport;
@@ -65,6 +110,7 @@ typedef struct vx_net_conv {
   uint8_t queue[VX_NET_CONV_QUEUE];
   uint32_t head, used; // a byte ring of vx_net_datagram headers, each followed by its payload
   uint64_t dropped;
+  vx_net_tcb tcb; // TCP's
 } vx_net_conv;
 
 typedef struct vx_net_arp {
@@ -285,7 +331,7 @@ static bool net_port_used(vx_net *n, uint8_t proto, uint16_t port) {
 
 // A new conversation of this protocol, its number in *id.
 [[maybe_unused]] static vx_status vx_net_conv_new(vx_net *n, uint8_t proto, uint32_t *id) {
-  if (proto != VX_NET_ICMP && proto != VX_NET_UDP) return VX_ERR_INVALID;
+  if (proto != VX_NET_ICMP && proto != VX_NET_UDP && proto != VX_NET_TCP) return VX_ERR_INVALID;
   for (uint32_t i = 0; i < VX_NET_CONVS; i++) {
     if (n->conv[i].proto) continue;
     n->conv[i].proto = proto;
@@ -293,14 +339,24 @@ static bool net_port_used(vx_net *n, uint8_t proto, uint16_t port) {
     n->conv[i].raddr = 0;
     n->conv[i].head = n->conv[i].used = 0;
     n->conv[i].dropped = 0;
+    memset(&n->conv[i].tcb, 0, offsetof(vx_net_tcb, sbuf)); // the state, not the rings
+    n->conv[i].tcb.rto_at = n->conv[i].tcb.persist_at = n->conv[i].tcb.linger_at = NET_NEVER; // no timers
     *id = i;
     return VX_OK;
   }
   return VX_ERR_NO_MEMORY;
 }
 
-[[maybe_unused]] static void vx_net_conv_free(vx_net *n, uint32_t id) {
-  if (id < VX_NET_CONVS) n->conv[id].proto = 0;
+static void net_tcp_free(vx_net *n, vx_net_conv *c, vx_instant now);
+
+// The application let go of a conversation. A TCP connection stays until it
+// has closed (tcp.c).
+[[maybe_unused]] static void vx_net_conv_free(vx_net *n, uint32_t id, vx_instant now) {
+  if (id >= VX_NET_CONVS) return;
+  if (n->conv[id].proto == VX_NET_TCP)
+    net_tcp_free(n, &n->conv[id], now);
+  else
+    n->conv[id].proto = 0;
 }
 
 // A local port nothing of this protocol uses, from the dynamic range.
@@ -389,6 +445,8 @@ static void net_conv_queue(vx_net_conv *c, uint32_t addr, uint16_t port, const u
   net_ip_route(n, addr, 20 + len, now);
   return VX_OK;
 }
+
+#include "tcp.c"
 
 // --- DHCP (RFC 2131) ---
 
@@ -587,6 +645,8 @@ static void net_ip_input(vx_net *n, const uint8_t *ip, size_t len, vx_instant no
     net_icmp_input(n, src, dst, ip + hlen, total - hlen, now);
   else if (ip[9] == 17)
     net_udp_input(n, src, dst, ip + hlen, total - hlen, now);
+  else if (ip[9] == 6)
+    net_tcp_input(n, src, dst, ip + hlen, total - hlen, now);
   return;
 bad:
   n->stats.bad++;
@@ -623,6 +683,11 @@ bad:
       net_arp_send(n, 1, (const uint8_t[6]){}, e->ip, NET_BROADCAST_MAC);
     }
     if (e->when < next) next = e->when;
+  }
+  for (uint32_t i = 0; i < VX_NET_CONVS; i++) {
+    if (n->conv[i].proto != VX_NET_TCP) continue;
+    vx_instant due = net_tcp_poll(n, &n->conv[i], now);
+    if (due < next) next = due;
   }
   if (n->dhcp.state == VX_DHCP_OFF) return next;
   bool bound = n->dhcp.state == VX_DHCP_BOUND || n->dhcp.state == VX_DHCP_RENEWING ||

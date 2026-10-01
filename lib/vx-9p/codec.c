@@ -455,6 +455,9 @@ static bool p9_str_eq(vx_str a, const char *b) {
   X(VX_ERR_NO_MEMORY, "out of memory")                                                                       \
   X(VX_ERR_UNSUPPORTED, "operation not supported")                                                           \
   X(VX_ERR_TOO_SMALL, "message too large for msize")                                                         \
+  X(VX_ERR_REFUSED, "connection refused")                                                                    \
+  X(VX_ERR_TIMED_OUT, "connection timed out")                                                                \
+  X(VX_ERR_PEER_CLOSED, "i/o on hungup channel")                                                             \
   X(VX_ERR_INVALID, "bad message")
 
 [[maybe_unused]] static vx_str p9_error_text(vx_status st) {

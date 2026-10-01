@@ -79,6 +79,7 @@ static vx_status ram_stat(void *ctx, uint64_t node, p9_stat *out) {
   return VX_OK;
 }
 
+static bool ram_not_yet;      // reads and writes answer SHOULD_WAIT, as a console with nothing typed does
 static uint64_t ram_clone_to; // opening /docs/a.txt moves the fid here, as a clone file does
 static uint64_t ram_opened_clunks[8], ram_opened_clunk_count;
 
@@ -91,6 +92,7 @@ static vx_status ram_open(void *ctx, uint64_t node, uint8_t mode) {
 static vx_status ram_clone(void *ctx, uint64_t node, uint8_t mode, uint64_t *opened) {
   (void)ctx, (void)mode;
   if (node != 3 || !ram_clone_to) return VX_ERR_NOT_FOUND;
+  if (ram_not_yet) return VX_ERR_SHOULD_WAIT; // a listen file before a call comes
   *opened = ram_clone_to;
   return VX_OK;
 }
@@ -99,8 +101,6 @@ static void ram_clunk(void *ctx, uint64_t node, bool opened) {
   (void)ctx;
   if (opened && ram_opened_clunk_count < 8) ram_opened_clunks[ram_opened_clunk_count++] = node;
 }
-
-static bool ram_not_yet; // reads and writes answer SHOULD_WAIT, as a console with nothing typed does
 
 static vx_status ram_read(void *ctx, uint64_t node, uint64_t offset, uint8_t *buf, uint32_t *count) {
   (void)ctx;
@@ -337,8 +337,25 @@ static void test_deferral(void) {
   ram_not_yet = false;
   n = p9_serve(&server, held, held_len, resp, sizeof resp);
   CHECK(n > 0 && p9_decode(resp, n, &m) == VX_OK && m.type == P9_Rread && m.tag == 9 && m.count == 5);
+  size_t reply_len;
+  // An open that must wait (a listen file) is held too, and the fid is not
+  // open until it is made again and succeeds.
+  ram_clone_to = 4;
+  ram_not_yet = true;
+  CHECK(SERVE(.type = P9_Twalk, .tag = 1, .fid = 1, .newfid = 3, .nwname = 2,
+              .wname = {VX_STR("docs"), VX_STR("a.txt")}) > 0);
+  CHECK(SERVE(.type = P9_Topen, .tag = 13, .fid = 3, .mode = P9_OREAD) == P9_DEFER);
+  held_len = n;
+  memcpy(held, req, n);
+  reply_len = SERVE(.type = P9_Tread, .tag = 14, .fid = 3, .count = 10); // not open: an error, not a wait
+  CHECK(reply_len > 0 && reply_len != P9_DEFER && p9_decode(resp, reply_len, &m) == VX_OK &&
+        m.type == P9_Rerror);
+  ram_not_yet = false;
+  n = p9_serve(&server, held, held_len, resp, sizeof resp);
+  CHECK(n > 0 && p9_decode(resp, n, &m) == VX_OK && m.type == P9_Ropen && m.tag == 13 && m.qid.path == 4);
+  ram_clone_to = 0;
   // An unknown fid is an error, not a wait.
-  size_t reply_len = SERVE(.type = P9_Tread, .tag = 12, .fid = 77, .count = 1);
+  reply_len = SERVE(.type = P9_Tread, .tag = 12, .fid = 77, .count = 1);
   CHECK(reply_len > 0 && reply_len != P9_DEFER && p9_decode(resp, reply_len, &m) == VX_OK &&
         m.type == P9_Rerror);
 #undef SERVE

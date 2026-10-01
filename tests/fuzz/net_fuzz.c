@@ -1,7 +1,8 @@
 // net_fuzz.c: arbitrary frames into lib/vx-net. The input is frames, each a
 // big-endian 16-bit length and its bytes, with time passing between them. Two
 // stacks take each: one in the middle of DHCP, one configured with an ICMP and
-// a UDP conversation open. Whatever arrives, every frame sent must be a legal
+// a UDP conversation open, a TCP listener on 7777 and a TCP connect under way
+// to 10.0.2.2!80. Whatever arrives, every frame sent must be a legal
 // Ethernet frame whose IP header checksum holds, and no queue may grow past
 // its size.
 
@@ -21,8 +22,14 @@ static void check_sent(void *ctx, const uint8_t *frame, size_t len) {
 }
 
 static void check_stack(const vx_net *n) {
-  for (uint32_t i = 0; i < VX_NET_CONVS; i++)
-    if (n->conv[i].used > VX_NET_CONV_QUEUE || n->conv[i].head >= VX_NET_CONV_QUEUE) abort();
+  for (uint32_t i = 0; i < VX_NET_CONVS; i++) {
+    const vx_net_conv *c = &n->conv[i];
+    if (c->used > VX_NET_CONV_QUEUE || c->head >= VX_NET_CONV_QUEUE) abort();
+    const vx_net_tcb *t = &c->tcb;
+    if (t->rlen > VX_TCP_BUF || t->slen > VX_TCP_BUF || t->rhead >= VX_TCP_BUF || t->shead >= VX_TCP_BUF)
+      abort();
+    if (c->proto == VX_NET_TCP && t->state > VX_TCP_LAST_ACK) abort();
+  }
   for (uint32_t i = 0; i < VX_NET_ARP_ENTRIES; i++)
     if (n->arp[i].queued > sizeof n->arp[i].packet) abort();
 }
@@ -43,6 +50,11 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   vx_net_conv_connect(&up, &up.conv[icmp], 0x0a00'0202, 0);
   vx_net_conv_new(&up, VX_NET_UDP, &udp);
   vx_net_conv_announce(&up, &up.conv[udp], 7777);
+  uint32_t listener = 0, dial = 0;
+  vx_net_conv_new(&up, VX_NET_TCP, &listener);
+  vx_net_tcp_listen(&up, &up.conv[listener], 7777);
+  vx_net_conv_new(&up, VX_NET_TCP, &dial);
+  vx_net_tcp_connect(&up, &up.conv[dial], 0x0a00'0202, 80, now);
 
   for (size_t at = 0; at + 2 <= size;) {
     size_t len = net_get16(data + at);
@@ -56,6 +68,14 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     vx_net_poll(&up, now);
     check_stack(&dhcp);
     check_stack(&up);
+    // What the listener made can be taken, read from and written to.
+    uint32_t id;
+    static uint8_t stream[512];
+    size_t moved;
+    if (vx_net_tcp_accept(&up, &up.conv[listener], &id) == VX_OK) {
+      vx_net_tcp_read(&up, &up.conv[id], stream, sizeof stream, &moved, now);
+      vx_net_tcp_write(&up, &up.conv[id], stream, sizeof stream, &moved, now);
+    }
   }
   // Whatever queued reads back whole.
   vx_net_datagram d;

@@ -340,7 +340,7 @@ static void test_udp(void) {
         checksums_ok(last(), sent_len[0]));
   CHECK(vx_net_conv_write(&net, ca, 0, 0, big, 1473, now) == VX_ERR_RANGE); // past the MTU
 
-  vx_net_conv_free(&net, a);
+  vx_net_conv_free(&net, a, now);
   CHECK(!vx_net_conv_get(&net, a) && vx_net_conv_get(&net, b));
 }
 

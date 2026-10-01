@@ -5,13 +5,18 @@
 //
 //   /net/ipifc/0/status     dev=ether0 addr=10.0.2.15/24 gw=10.0.2.2 dhcp lease=86400s
 //   /net/ipifc/0/ctl        write "add 10.0.2.15/24 [10.0.2.2]" (a static address) or "dhcp"
-//   /net/icmp, /net/udp     conversations:
+//   /net/icmp, /net/udp, /net/tcp    conversations:
 //     clone                 opening it makes conversation N, and the fid becomes N/ctl
-//     N/ctl                 read: N; write "connect ADDR[!PORT]", "announce PORT"
+//     N/ctl                 read: N; write "connect ADDR[!PORT]", "announce PORT", "hangup";
+//                           a TCP connect returns once the connection is made, or refused
 //     N/data                a datagram a read (waiting for one), a datagram a write;
 //                           ICMP: whole messages, the identifier and checksum filled in
 //     N/local, N/remote     ADDR!PORT
-//     N/status              Open, Announced or Closed
+//     N/status              Open, Announced or Closed; TCP's state, as Plan 9 names it
+//     N/listen              TCP, announced: opening it waits for a call, and the fid
+//                           becomes the new connection's ctl
+//   TCP's data is a stream: a read returns what has arrived (0 at the end), a
+//   write takes what fits, and waits only if nothing fits.
 //
 // A conversation lasts while any of its files is open. /net is served from
 // the start, with or without a driver, since every namespace that mounts it
@@ -237,6 +242,7 @@ enum : uint8_t {
   N_LOCAL,
   N_REMOTE,
   N_STATUS,
+  N_LISTEN, // TCP's only
 };
 
 static const struct {
@@ -247,6 +253,7 @@ static const struct {
     [N_CLONE] = {VX_STR("clone"), 0666},   [N_CTL] = {VX_STR("ctl"), 0666},
     [N_DATA] = {VX_STR("data"), 0666},     [N_LOCAL] = {VX_STR("local"), 0444},
     [N_REMOTE] = {VX_STR("remote"), 0444}, [N_STATUS] = {VX_STR("status"), 0444},
+    [N_LISTEN] = {VX_STR("listen"), 0666},
 };
 
 static uint32_t conv_gen[VX_NET_CONVS];  // bumped each time a conversation is made
@@ -267,6 +274,9 @@ static vx_net_conv *conv_at(uint64_t n) {
   return c && c->proto == proto_of(n) && conv_gen[id] == (uint32_t)(n >> 32) ? c : nullptr;
 }
 
+// A conversation directory's last file: TCP's has listen too.
+static uint32_t last_file(uint64_t dir) { return proto_of(dir) == VX_NET_TCP ? N_LISTEN : N_STATUS; }
+
 static bool name_is(vx_str name, const char *s) {
   vx_str t = vx_cstr(s);
   return name.len == t.len && memcmp(name.ptr, t.ptr, t.len) == 0;
@@ -286,6 +296,7 @@ static vx_status fs_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) 
     if (name_is(name, "ipifc")) return *child = N_IPIFC, VX_OK;
     if (name_is(name, "icmp")) return *child = node(N_PROTO, VX_NET_ICMP, 0), VX_OK;
     if (name_is(name, "udp")) return *child = node(N_PROTO, VX_NET_UDP, 0), VX_OK;
+    if (name_is(name, "tcp")) return *child = node(N_PROTO, VX_NET_TCP, 0), VX_OK;
     return VX_ERR_NOT_FOUND;
   case N_IPIFC:
     if (name_is(name, "0")) return *child = N_IFC, VX_OK;
@@ -308,7 +319,7 @@ static vx_status fs_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) 
   }
   case N_CONV:
     if (!conv_at(dir)) return VX_ERR_NOT_FOUND;
-    for (uint8_t k = N_CTL; k <= N_STATUS; k++)
+    for (uint32_t k = N_CTL; k <= last_file(dir); k++)
       if (name.len == FILES[k].name.len && memcmp(name.ptr, FILES[k].name.ptr, name.len) == 0) {
         *child = (dir & ~0xffull) | k;
         return VX_OK;
@@ -343,7 +354,9 @@ static vx_status fs_stat(void *ctx, uint64_t n, p9_stat *out) {
   vx_str name = VX_STR("/");
   if (k == N_IPIFC) name = VX_STR("ipifc");
   if (k == N_IFC) name = VX_STR("0");
-  if (k == N_PROTO) name = proto_of(n) == VX_NET_ICMP ? VX_STR("icmp") : VX_STR("udp");
+  if (k == N_PROTO && proto_of(n) == VX_NET_ICMP) name = VX_STR("icmp");
+  if (k == N_PROTO && proto_of(n) == VX_NET_UDP) name = VX_STR("udp");
+  if (k == N_PROTO && proto_of(n) == VX_NET_TCP) name = VX_STR("tcp");
   if (k == N_CONV) {
     uint32_t id = conv_of(n);
     size_t len = 0;
@@ -363,9 +376,9 @@ static vx_status fs_stat(void *ctx, uint64_t n, p9_stat *out) {
 
 static vx_status fs_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *child) {
   (void)ctx;
-  static const char *const ROOT[] = {"ipifc", "icmp", "udp"};
+  static const char *const ROOT[] = {"ipifc", "icmp", "udp", "tcp"};
   switch (kind_of(dir)) {
-  case N_ROOT: return index < 3 ? fs_walk(ctx, dir, vx_cstr(ROOT[index]), child) : VX_ERR_NOT_FOUND;
+  case N_ROOT: return index < 4 ? fs_walk(ctx, dir, vx_cstr(ROOT[index]), child) : VX_ERR_NOT_FOUND;
   case N_IPIFC: return index == 0 ? (*child = N_IFC, VX_OK) : VX_ERR_NOT_FOUND;
   case N_IFC: return index < 2 ? (*child = index ? N_IFC_STATUS : N_IFC_CTL, VX_OK) : VX_ERR_NOT_FOUND;
   case N_PROTO:
@@ -375,7 +388,7 @@ static vx_status fs_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *c
         return *child = node(N_CONV, proto_of(dir), id), VX_OK;
     return VX_ERR_NOT_FOUND;
   case N_CONV:
-    if (!conv_at(dir) || index > N_STATUS - N_CTL) return VX_ERR_NOT_FOUND;
+    if (!conv_at(dir) || index > last_file(dir) - N_CTL) return VX_ERR_NOT_FOUND;
     *child = (dir & ~0xffull) | (uint8_t)(N_CTL + index);
     return VX_OK;
   default: return VX_ERR_NOT_FOUND;
@@ -389,19 +402,23 @@ static vx_status fs_open(void *ctx, uint64_t n, uint8_t mode) {
   if (mode & P9_ORCLOSE) return VX_ERR_ACCESS;
   if (writes && k < sizeof FILES / sizeof FILES[0] && !(FILES[k].mode & 0222)) return VX_ERR_ACCESS;
   if (k == N_CLONE && !stack_up) return VX_ERR_BAD_STATE; // no driver yet
-  if (k > N_CONV) {
-    if (!conv_at(n)) return VX_ERR_NOT_FOUND;
-    conv_refs[conv_of(n)]++;
-  }
+  if (k > N_CONV && !conv_at(n)) return VX_ERR_NOT_FOUND;
+  if (k == N_LISTEN) // the fid moves to a new connection (fs_clone); this open may be made again
+    return conv_at(n)->tcb.state == VX_TCP_LISTEN ? VX_OK : VX_ERR_BAD_STATE;
+  if (k > N_CONV) conv_refs[conv_of(n)]++;
   return VX_OK;
 }
 
-// Opening a clone file makes a conversation; the fid becomes its ctl.
+// Opening a clone file makes a conversation, and opening a listen file
+// takes a connection the listener made (waiting for one); either way the fid
+// becomes that conversation's ctl.
 static vx_status fs_clone(void *ctx, uint64_t n, uint8_t mode, uint64_t *opened) {
   (void)ctx, (void)mode;
-  if (kind_of(n) != N_CLONE) return VX_ERR_NOT_FOUND;
+  uint8_t k = kind_of(n);
+  if (k != N_CLONE && k != N_LISTEN) return VX_ERR_NOT_FOUND;
   uint32_t id;
-  vx_status st = vx_net_conv_new(&stack, proto_of(n), &id);
+  vx_status st =
+      k == N_CLONE ? vx_net_conv_new(&stack, proto_of(n), &id) : vx_net_tcp_accept(&stack, conv_at(n), &id);
   if (st != VX_OK) return st;
   conv_gen[id]++;
   conv_refs[id] = 1;
@@ -416,7 +433,9 @@ static void fs_clunk(void *ctx, uint64_t n, bool opened) {
   uint32_t id = conv_of(n);
   if (!conv_refs[id]) return;
   conv_refs[id]--;
-  if (!conv_refs[id]) vx_net_conv_free(&stack, id);
+  if (conv_refs[id]) return;
+  conv_gen[id]++; // fids that outlive it see it gone, even while TCP finishes closing it
+  vx_net_conv_free(&stack, id, vx_clock_read());
 }
 
 static void ifc_status(text *t) {
@@ -457,6 +476,12 @@ static vx_status fs_read(void *ctx, uint64_t n, uint64_t offset, uint8_t *buf, u
   uint8_t k = kind_of(n);
   vx_net_conv *c = k > N_CONV ? conv_at(n) : nullptr;
   if (k > N_CONV && !c) return VX_ERR_NOT_FOUND;
+  if (k == N_DATA && c->proto == VX_NET_TCP) { // what has arrived, or wait for some
+    size_t got = 0;
+    vx_status st = vx_net_tcp_read(&stack, c, buf, *count, &got, vx_clock_read());
+    *count = (uint32_t)got;
+    return st;
+  }
   if (k == N_DATA) { // a datagram, or wait for one
     vx_net_datagram d;
     size_t got = 0;
@@ -469,10 +494,14 @@ static vx_status fs_read(void *ctx, uint64_t n, uint64_t offset, uint8_t *buf, u
   if (k == N_CTL) put_u64(&t, conv_of(n));
   if (k == N_LOCAL) addr_port(&t, stack.addr, c->lport);
   if (k == N_REMOTE) addr_port(&t, c->raddr, c->rport);
-  if (k == N_STATUS && c->raddr)
+  if (k == N_STATUS && c->proto == VX_NET_TCP) {
+    put(&t, vx_cstr(vx_net_tcp_state_name(c->tcb.state)));
+    put(&t, VX_STR("\n"));
+  } else if (k == N_STATUS && c->raddr) {
     put(&t, VX_STR("Open\n"));
-  else if (k == N_STATUS)
+  } else if (k == N_STATUS) {
     put(&t, c->lport ? VX_STR("Announced\n") : VX_STR("Closed\n"));
+  }
   uint64_t left = offset < t.len ? t.len - offset : 0;
   if (*count > left) *count = (uint32_t)left;
   memcpy(buf, t.buf + offset * (*count != 0), *count);
@@ -528,9 +557,31 @@ static vx_status ifc_ctl(const vx_str *w, uint32_t n) {
   return VX_OK;
 }
 
+// A TCP connect is held until the connection is made or fails: the same
+// write is made again after every event, and finds the connection under way.
+static vx_status tcp_connect(vx_net_conv *c, uint32_t addr, uint16_t port) {
+  vx_net_tcb *t = &c->tcb;
+  if (!c->raddr) {
+    vx_status st = vx_net_tcp_connect(&stack, c, addr, port, vx_clock_read());
+    return st == VX_OK ? VX_ERR_SHOULD_WAIT : st;
+  }
+  if (c->raddr != addr || c->rport != port) return VX_ERR_BAD_STATE; // connected elsewhere already
+  if (t->state == VX_TCP_SYN_SENT || t->state == VX_TCP_SYN_RCVD) return VX_ERR_SHOULD_WAIT;
+  if (t->state == VX_TCP_CLOSED) return t->error != VX_OK ? t->error : VX_ERR_PEER_CLOSED;
+  return VX_OK;
+}
+
 static vx_status conv_ctl(vx_net_conv *c, const vx_str *w, uint32_t n) {
   uint32_t addr;
   uint16_t port;
+  if (n == 1 && name_is(w[0], "hangup")) {
+    if (c->proto == VX_NET_TCP) vx_net_tcp_close(&stack, c, vx_clock_read());
+    return VX_OK;
+  }
+  if (n == 2 && name_is(w[0], "connect") && c->proto == VX_NET_TCP) {
+    if (!parse_addr_port(w[1], &addr, &port) || !port) return VX_ERR_INVALID;
+    return tcp_connect(c, addr, port);
+  }
   if (n == 2 && name_is(w[0], "connect")) {
     if (!parse_addr_port(w[1], &addr, &port)) return VX_ERR_INVALID;
     return vx_net_conv_connect(&stack, c, addr, port);
@@ -544,7 +595,9 @@ static vx_status conv_ctl(vx_net_conv *c, const vx_str *w, uint32_t n) {
       if (p.ptr[i] < '0' || p.ptr[i] > '9') return VX_ERR_INVALID;
       v = v * 10 + (uint32_t)(p.ptr[i] - '0');
     }
-    return v > 65535 ? VX_ERR_INVALID : vx_net_conv_announce(&stack, c, (uint16_t)v);
+    if (v > 65535) return VX_ERR_INVALID;
+    if (c->proto == VX_NET_TCP) return vx_net_tcp_listen(&stack, c, (uint16_t)v);
+    return vx_net_conv_announce(&stack, c, (uint16_t)v);
   }
   return VX_ERR_INVALID;
 }
@@ -554,6 +607,12 @@ static vx_status fs_write(void *ctx, uint64_t n, uint64_t offset, const uint8_t 
   uint8_t k = kind_of(n);
   vx_net_conv *c = k > N_CONV ? conv_at(n) : nullptr;
   if (k > N_CONV && !c) return VX_ERR_NOT_FOUND;
+  if (k == N_DATA && c->proto == VX_NET_TCP) { // what fits; wait only if nothing does
+    size_t taken = 0;
+    vx_status st = vx_net_tcp_write(&stack, c, buf, *count, &taken, vx_clock_read());
+    *count = (uint32_t)taken;
+    return st;
+  }
   if (k == N_DATA) { // one datagram, all of it or none
     uint32_t len = *count;
     vx_status st = vx_net_conv_write(&stack, c, 0, 0, buf, len, vx_clock_read());

@@ -864,6 +864,7 @@ static const program USER_PROGRAMS[] = {
     {"nstest", "tests/user/nstest.c", IN_TESTS, nullptr},
     {"constest", "tests/user/constest.c", IN_TESTS, nullptr},
     {"nettest", "tests/user/nettest.c", IN_TESTS, nullptr},
+    {"tcptest", "tests/user/tcptest.c", IN_TESTS, nullptr},
     {"procfs", "servers/procfs/procfs.c", IN_BOOTFS, nullptr},
     {"devmgr", "servers/devmgr/devmgr.c", IN_BOOTFS, nullptr},
     {"netd", "servers/netd/netd.c", IN_BOOTFS, nullptr},
@@ -1278,7 +1279,9 @@ static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
   cmd_add(c, fmt("if=none,id=disk,format=raw,file=%s%s", image, o.test ? ",snapshot=on" : ""));
   cmd_addv(c, (const char *const[]){"-device", "virtio-blk-pci,drive=disk,disable-legacy=on", nullptr});
   // QEMU's user networking: the guest is 10.0.2.15, the host 10.0.2.2 (M3).
-  cmd_addv(c, (const char *const[]){"-netdev", "user,id=net0", "-device",
+  // A connection to 10.0.2.100!7 gets a `cat` on the host of its own: an
+  // echo server, for the tcp scenario.
+  cmd_addv(c, (const char *const[]){"-netdev", "user,id=net0,guestfwd=tcp:10.0.2.100:7-cmd:cat", "-device",
                                     "virtio-net-pci,netdev=net0,disable-legacy=on", nullptr});
   if (o.test)
     cmd_addv(c, (const char *const[]){"-serial", "stdio", "-monitor", "none", nullptr});
