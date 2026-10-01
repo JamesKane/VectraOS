@@ -151,6 +151,7 @@ static void kill_driver(vx_handle tasks) {
     if (vx_port_wait(port, vx_clock_read() + 5'000'000'000, 0, &pk, 1) != 1)
       fail("the session outlived the driver");
   vx_handle_close(end);
+  vx_session_unmap(&ring);
   vx_print(VX_STR("nettest: stopped the driver; its session ended\n"));
 }
 

@@ -19,6 +19,24 @@
     b trap_common
 .endm
 
+// An exception taken in the kernel checks its stack before pushing anything: a
+// kernel stack is the top half of a 32 KiB slot (mm/kstack.c), so a stack
+// pointer in it has bit 14 set, and one that has overflowed into the guard
+// below has it clear. Pushing there would fault again, for ever. The check
+// trades x0 against sp to have a register free, and trades back if all is well.
+.macro ENTRY_KERNEL index
+    .p2align 7
+    sub sp, sp, #FRAME_SIZE
+    add sp, sp, x0          // sp = sp' + x0
+    sub x0, sp, x0          // x0 = sp'
+    tbz x0, #14, kernel_stack_overflow
+    sub x0, sp, x0          // x0 = x0 again
+    sub sp, sp, x0          // sp = sp' again
+    stp x0, x1, [sp, #0]
+    mov x1, #\index
+    b trap_common
+.endm
+
     .text
     .p2align 11
     .globl aarch64_vectors
@@ -27,10 +45,10 @@ aarch64_vectors:
     ENTRY 1     //                  IRQ
     ENTRY 2     //                  FIQ
     ENTRY 3     //                  SError
-    ENTRY 4     // current EL, SPx: synchronous
-    ENTRY 5     //                  IRQ
-    ENTRY 6     //                  FIQ
-    ENTRY 7     //                  SError
+    ENTRY_KERNEL 4 // current EL, SPx: synchronous
+    ENTRY_KERNEL 5 //                  IRQ
+    ENTRY_KERNEL 6 //                  FIQ
+    ENTRY_KERNEL 7 //                  SError
     ENTRY 8     // lower EL, AArch64: synchronous
     ENTRY 9     //                    IRQ
     ENTRY 10    //                    FIQ
@@ -39,6 +57,15 @@ aarch64_vectors:
     ENTRY 13
     ENTRY 14
     ENTRY 15
+
+// x0: the stack pointer the frame would have gone to. On a stack of its own,
+// the kernel says what happened and stops (arch.c).
+kernel_stack_overflow:
+    adrp x1, overflow_stack_top
+    add x1, x1, :lo12:overflow_stack_top
+    mov sp, x1
+    bl aarch64_kernel_stack_fault
+    brk #0
 
 trap_common:
     stp x2, x3, [sp, #16]
@@ -132,3 +159,27 @@ arch_enter_frame:
     hint #34
     mov sp, x0
     b trap_restore
+
+// size_t arch_user_copy(void *dst, const void *src, size_t n): copies to or
+// from user memory. A fault inside resumes at arch_user_copy_fault (arch.c,
+// aarch64_trap), which returns the bytes not copied: 0 means it all was.
+    .globl arch_user_copy, arch_user_copy_fault, arch_user_copy_end
+arch_user_copy:
+    hint #34
+    cbz x2, 2f
+1:  ldrb w3, [x1], #1
+    strb w3, [x0], #1
+    subs x2, x2, #1
+    b.ne 1b
+2:  mov x0, #0
+    ret
+arch_user_copy_fault:
+    mov x0, x2 // counts down as it goes: what is left
+    ret
+arch_user_copy_end:
+
+    .bss
+    .p2align 4
+overflow_stack:
+    .skip 8192
+overflow_stack_top:

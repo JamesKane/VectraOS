@@ -118,6 +118,7 @@ static void ask_driver(void) {
 static void link_down(void) {
   if (link.up) vx_print(VX_STR("netd: the driver is gone; asking again\n"));
   vx_handle_close(link.end);
+  vx_session_unmap(&link.ring);
   link.up = link.bell_armed = false;
   link.gen++;
   link.retry_at = vx_clock_read() + 1'000'000'000;

@@ -229,7 +229,7 @@ static void test_threads_and_calls(void) {
 // Without an ELF loader in user space yet (M2, step 4), a child runs a few
 // instructions written here for each architecture.
 
-typedef enum child_code { EXIT_7, SPIN, BLOCK, PORT_BLOCK, USE_SIMD } child_code;
+typedef enum child_code { EXIT_7, SPIN, BLOCK, PORT_BLOCK, USE_SIMD, READ_LOOP } child_code;
 
 // Writes the child's code into `code`; returns its length in bytes.
 static uint32_t write_child(uint8_t *code, child_code what) {
@@ -247,6 +247,10 @@ static uint32_t write_child(uint8_t *code, child_code what) {
     EMIT(0x0f), EMIT(0x05);                 // syscall
   } else if (what == SPIN) {
     EMIT(0xeb), EMIT(0xfe); // jmp .
+  } else if (what == READ_LOOP) {
+    EMIT(0x48), EMIT(0x8b), EMIT(0x44), EMIT(0x24),
+        EMIT(0xf8);         // 1: mov -8(%rsp), %rax: a load from its stack
+    EMIT(0xeb), EMIT(0xf9); // jmp 1b, with no system call
   } else if (what == PORT_BLOCK) {
     EMIT(0x48), EMIT(0x8d), EMIT(0x74), EMIT(0x24), EMIT(0xf0);     // lea -16(%rsp), %rsi: the handle's place
     EMIT(0x31), EMIT(0xff);                                         // xor %edi, %edi: no options
@@ -284,6 +288,9 @@ static uint32_t write_child(uint8_t *code, child_code what) {
     EMIT(0xd4000001u);                                     // svc #0
   } else if (what == SPIN) {
     EMIT(0x14000000u); // b .
+  } else if (what == READ_LOOP) {
+    EMIT(0xf85f83e0u); // 1: ldur x0, [sp, #-8]: a load from its stack
+    EMIT(0x17ffffffu); // b 1b, with no system call
   } else if (what == PORT_BLOCK) {
     EMIT(0xd10043e1u);                                     // sub x1, sp, #16: the handle's place
     EMIT(0xd2800000u);                                     // movz x0, #0: no options
@@ -815,6 +822,100 @@ static void test_port_waiters(void) {
   vx_handle_close(port);
 }
 
+// as_unmap: whole mappings and parts of them, the hole mapped again, and the
+// pages gone for the kernel's copies too.
+static void test_unmap(void) {
+  static constexpr uint64_t PAGE = 4096;
+  vx_handle v;
+  uint64_t at = 0;
+  bool mapped =
+      vx_vmo_create(4 * PAGE, 0, &v) == VX_OK && vx_as_map(self, v, 0, 4 * PAGE, VX_MAP_WRITE, &at) == VX_OK;
+  CHECK(mapped);
+  if (!mapped || !at) return;
+  for (int p = 0; p < 4; p++) ((volatile uint8_t *)at)[p * PAGE] = (uint8_t)(p + 1);
+  CHECK(vx_as_unmap(self, at + PAGE, PAGE + 1) == VX_ERR_RANGE); // pages only
+  CHECK(vx_as_unmap(self, at + PAGE, 2 * PAGE) == VX_OK);        // the middle: two mappings now
+  uint8_t byte;
+  CHECK(vx_vmo_rw(v, VX_VMO_READ, 0, (void *)(at + PAGE), 1) == VX_ERR_INVALID); // gone for the kernel too
+  CHECK(vx_vmo_rw(v, VX_VMO_READ, 0, (void *)(at + 2 * PAGE + 100), 1) == VX_ERR_INVALID);
+  CHECK(((volatile uint8_t *)at)[0] == 1 && ((volatile uint8_t *)at)[3 * PAGE] == 4); // the ends stay
+  CHECK(vx_as_unmap(self, at + PAGE, 2 * PAGE) == VX_OK);                             // nothing there: fine
+  uint64_t hole = at + PAGE;
+  CHECK(vx_as_map(self, v, 4096, 2 * PAGE, VX_MAP_WRITE, &hole) == VX_OK && hole == at + PAGE);
+  CHECK(((volatile uint8_t *)hole)[0] == 2 && ((volatile uint8_t *)hole)[PAGE] == 3); // the VMO kept them
+  CHECK(vx_vmo_rw(v, VX_VMO_READ, 0, &byte, 1) == VX_OK && byte == 1);
+  CHECK(vx_as_unmap(self, at, 4 * PAGE) == VX_OK); // all three mappings at once
+  CHECK(vx_vmo_rw(v, VX_VMO_READ, 0, (void *)at, 1) == VX_ERR_INVALID);
+  vx_handle_close(v);
+
+  // Every CPU loses the translations: a child spinning on loads from its stack
+  // page, with no system call to switch its tables, faults once the page is
+  // unmapped. Without the shootdown it would read on, from a cached entry; that
+  // shows under TCG (and so always on aarch64), as KVM flushes a guest's TLB
+  // on its own often enough to hide it.
+  vx_handle port, child;
+  CHECK(vx_port_create(0, &port) == VX_OK);
+  CHECK(start_child(READ_LOOP, &child));
+  static _Atomic uint32_t never;
+  vx_futex_wait(&never, 0, after_ms(50)); // it is spinning, on another CPU
+  CHECK(vx_as_unmap(child, CHILD_STACK_TOP - 4096, 4096) == VX_OK);
+  CHECK(wait_exit(port, child) == -1); // killed by the fault
+  vx_handle_close(child);
+  vx_handle_close(port);
+}
+
+// Kernel copies that lose their page part-way fail, and the kernel goes on: one
+// thread unmaps and maps a page again and again while another copies into it.
+typedef struct copy_race {
+  _Atomic bool stop;
+  vx_handle vmo;
+  uint64_t page;
+  _Atomic uint32_t ok, invalid, other;
+} copy_race;
+
+static void copy_racer(uint64_t arg, uint64_t arg2) {
+  (void)arg;
+  copy_race *r = (copy_race *)arg2;
+  static uint8_t src[4096];
+  while (!atomic_load(&r->stop)) {
+    vx_status st = vx_vmo_rw(r->vmo, VX_VMO_READ, 0, (void *)r->page, sizeof src);
+    if (st == VX_OK)
+      atomic_fetch_add(&r->ok, 1);
+    else if (st == VX_ERR_INVALID)
+      atomic_fetch_add(&r->invalid, 1);
+    else
+      atomic_fetch_add(&r->other, 1);
+  }
+  vx_thread_exit(0);
+}
+
+static void test_copy_race(void) {
+  static copy_race r;
+  vx_handle target = 0;
+  r.page = 0;
+  CHECK(vx_vmo_create(4096, 0, &r.vmo) == VX_OK && vx_vmo_create(4096, 0, &target) == VX_OK);
+  CHECK(vx_as_map(self, target, 0, 4096, VX_MAP_WRITE, &r.page) == VX_OK);
+  vx_handle th;
+  CHECK(vx_thread_create(self, &th) == VX_OK);
+  CHECK(vx_thread_start(th, (uint64_t)copy_racer, new_stack(), 0, (uint64_t)&r) == VX_OK);
+  bool mapped = true, all = true;
+  for (int i = 0; i < 20000; i++) {
+    uint64_t at = r.page;
+    if (mapped)
+      all = all && vx_as_unmap(self, at, 4096) == VX_OK;
+    else
+      all = all && vx_as_map(self, target, 0, 4096, VX_MAP_WRITE, &at) == VX_OK && at == r.page;
+    mapped = !mapped;
+  }
+  CHECK(all);
+  atomic_store(&r.stop, true);
+  static _Atomic uint32_t never;
+  vx_futex_wait(&never, 0, after_ms(20));
+  CHECK(atomic_load(&r.other) == 0 && atomic_load(&r.ok) + atomic_load(&r.invalid) > 0);
+  if (!mapped) vx_as_map(self, target, 0, 4096, VX_MAP_WRITE, &r.page);
+  vx_handle_close(th);
+}
+
 int vx_main(void) {
   self = vx_self;
   test_spawn_message();
@@ -826,6 +927,8 @@ int vx_main(void) {
   test_tasks();
   test_torn_down();
   test_port_waiters();
+  test_unmap();
+  test_copy_race();
   test_nested_channels();
   test_rings();
   test_vmo_rw();

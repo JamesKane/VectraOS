@@ -57,8 +57,6 @@ static bool selftest_smp_enabled(void) { return cmdline_has(VX_STR("vx.selftest=
   sched_idle_loop();
 }
 
-static constexpr unsigned AP_STACK_ORDER = 2; // 16 KiB idle stacks
-
 // Starts every AP and waits up to a second for all of them to reach their idle loop.
 static void smp_init(void) {
   struct limine_mp_response *mp = mp_request.response;
@@ -86,12 +84,12 @@ static void smp_init(void) {
       continue;
     }
     uint32_t index = cpu_total++;
-    uint64_t stack = phys_alloc_zeroed(AP_STACK_ORDER);
+    uint64_t stack = kstack_alloc();
     if (!stack) panic(VX_STR("no memory for an idle stack"));
     cpus[index].index = index;
     cpus[index].arch_id = id;
-    cpus[index].idle_stack = (uint64_t)phys_to_virt(stack);
-    uint64_t *top = (uint64_t *)(cpus[index].idle_stack + (4096ull << AP_STACK_ORDER));
+    cpus[index].idle_stack = stack;
+    uint64_t *top = (uint64_t *)(stack + KSTACK_SIZE);
     top[-1] = index;
     info->extra_argument = (uint64_t)(top - 2); // ap_start: sp = this, and its index just above
     __atomic_store_n(&info->goto_address, ap_start, __ATOMIC_RELEASE);

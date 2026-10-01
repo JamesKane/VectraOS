@@ -281,6 +281,8 @@ static uint64_t apic_per_tsc; // APIC timer ticks per TSC tick, << 32
 static constexpr uint32_t X2APIC_ICR = 0x830;
 static constexpr uint8_t VECTOR_TIMER = 0x20;
 static constexpr uint8_t VECTOR_RESCHED = 0x21; // another CPU made a thread ready
+static constexpr uint8_t VECTOR_SHOOTDOWN =
+    0x22; // another CPU unmapped user pages: flush (arch_tlb_shootdown)
 static constexpr uint8_t VECTOR_SPURIOUS = 0xff;
 static constexpr uint8_t VECTOR_IRQ_BASE = 0x30; // device interrupts: VECTOR_IRQ_BASE + GSI
 static constexpr uint32_t MAX_GSI = 0x50;        // up to vector 0x7f
@@ -361,6 +363,9 @@ static void arch_wait(void) { __asm__ volatile("sti\n\thlt\n\tcli" : : : "memory
 static constexpr uint64_t VECTOR_SYSCALL = 0x100; // entry.S
 
 // Describes an exception: "page fault at 0x... (read, not present, user)", say.
+struct cpu;
+static void tlb_answer(struct cpu *c); // below, with arch_tlb_shootdown
+
 static void kput_exception(const trap_frame *f) {
   if (f->vector == 14) {
     kput(VX_STR("page fault at "));
@@ -395,6 +400,9 @@ void x86_trap(trap_frame *f) {
   } else if (f->vector == VECTOR_RESCHED) {
     wrmsr(X2APIC_EOI, 0);
     this_cpu()->resched = true;
+  } else if (f->vector == VECTOR_SHOOTDOWN) {
+    wrmsr(X2APIC_EOI, 0);
+    tlb_answer(this_cpu());
   } else if (f->vector == VECTOR_SPURIOUS) {
     return;
   } else if (f->vector >= VECTOR_MSI_FIRST && f->vector <= VECTOR_MSI_LAST) {
@@ -403,6 +411,9 @@ void x86_trap(trap_frame *f) {
   } else if (f->vector >= VECTOR_IRQ_BASE && f->vector < VECTOR_IRQ_BASE + MAX_GSI) {
     irq_fire((uint32_t)(f->vector - VECTOR_IRQ_BASE)); // a level line is masked before the EOI
     wrmsr(X2APIC_EOI, 0);
+  } else if (f->vector == 14 && !from_user && read_cr2() < USER_TOP && f->rip >= (uint64_t)arch_user_copy &&
+             f->rip < (uint64_t)arch_user_copy_fault) {
+    f->rip = (uint64_t)arch_user_copy_fault; // a user page gone under a copy: it reports what it missed
   } else if (from_user) {
     task_fault_start();
     kput_exception(f);
@@ -412,6 +423,8 @@ void x86_trap(trap_frame *f) {
     task_fault_exit();
   } else {
     panic_start();
+    if ((f->vector == 8 || f->vector == 14) && kstack_in_guard(read_cr2()))
+      kput(VX_STR("kernel stack overflow: ")); // a double fault: the page fault had nowhere to push its frame
     kput_exception(f);
     kput(VX_STR(" at rip "));
     kput_hex(f->rip);
@@ -637,6 +650,56 @@ static void arch_pte_publish(void) { __asm__ volatile("" ::: "memory"); }
 
 static void arch_tlb_flush_page(uint64_t va) { __asm__ volatile("invlpg (%0)" : : "r"(va) : "memory"); }
 
+// Drops this CPU's user translations (loading CR3 again keeps only global,
+// kernel, entries) if a shootdown has asked it to since it last did.
+static void tlb_answer(cpu *c) {
+  uint64_t asked = atomic_load_explicit(&c->tlb_asked, memory_order_acquire);
+  if (atomic_load_explicit(&c->tlb_done, memory_order_relaxed) >= asked) return;
+  uint64_t cr3;
+  __asm__ volatile("mov %%cr3, %0\n\tmov %0, %%cr3" : "=r"(cr3) : : "memory");
+  atomic_store_explicit(&c->tlb_done, asked, memory_order_release);
+}
+
+static _Atomic uint64_t shootdown_gen;
+
+// x86 has no broadcast invalidation: every other CPU with the tables loaded
+// gets an interrupt, and this one waits until each has flushed, or loaded
+// other tables since (a load flushes too). While waiting it answers any
+// shootdown asked of it, so two at once cannot wait for each other. The
+// caller holds no lock that a CPU it waits for might be spinning on.
+static void arch_tlb_shootdown(uint64_t root, uint64_t va, uint64_t len) {
+  cpu *me = this_cpu();
+  if (atomic_load_explicit(&me->user_root, memory_order_relaxed) == root) {
+    if (len / 4096 > 32) {
+      uint64_t cr3;
+      __asm__ volatile("mov %%cr3, %0\n\tmov %0, %%cr3" : "=r"(cr3) : : "memory");
+    } else {
+      for (uint64_t p = va; p < va + len; p += 4096) arch_tlb_flush_page(p);
+    }
+  }
+  uint64_t gen = atomic_fetch_add_explicit(&shootdown_gen, 1, memory_order_relaxed) + 1;
+  uint64_t loads[MAX_CPUS];
+  bool waiting[MAX_CPUS] = {};
+  for (uint32_t i = 0; i < cpu_total && i < MAX_CPUS; i++) {
+    cpu *c = &cpus[i];
+    if (c == me || atomic_load_explicit(&c->user_root, memory_order_acquire) != root) continue;
+    loads[i] = atomic_load_explicit(&c->root_loads, memory_order_acquire);
+    uint64_t old = atomic_load_explicit(&c->tlb_asked, memory_order_relaxed);
+    while (old < gen && !atomic_compare_exchange_weak_explicit(&c->tlb_asked, &old, gen, memory_order_release,
+                                                               memory_order_relaxed)) {}
+    waiting[i] = true;
+    wrmsr(X2APIC_ICR, c->arch_id << 32 | VECTOR_SHOOTDOWN);
+  }
+  for (uint32_t i = 0; i < cpu_total && i < MAX_CPUS; i++) {
+    cpu *c = &cpus[i];
+    while (waiting[i] && atomic_load_explicit(&c->tlb_done, memory_order_acquire) < gen &&
+           atomic_load_explicit(&c->root_loads, memory_order_acquire) == loads[i]) {
+      tlb_answer(me);
+      arch_pause();
+    }
+  }
+}
+
 static bool arch_pte_user_ok(uint64_t e, bool write) {
   return (e & X86_PRESENT) && (e & X86_USER) && (!write || (e & X86_WRITE));
 }
@@ -654,6 +717,11 @@ static void arch_switch_tables(uint64_t root) {
 }
 
 // --- Threads ---
+
+[[noreturn]] static void arch_run_on_stack(uint64_t top, void (*fn)(void)) {
+  __asm__ volatile("mov %0, %%rsp\n\txor %%ebp, %%ebp\n\tcall *%1\n\tud2" : : "r"(top), "r"(fn) : "memory");
+  __builtin_unreachable();
+}
 
 static void arch_set_kernel_stack(uint64_t top) {
   x86_cpu *xc = &x86_cpus[arch_cpu_index()];
@@ -706,8 +774,12 @@ uint64_t ap_park_tables[2];
           "jmp 1b");
 }
 
+// Its idle stack is in the kernel stack region (mm/kstack.c), which only the
+// kernel's tables map: it loads them first, as ap_park does.
 [[gnu::naked, noreturn]] void ap_start(struct limine_mp_info *info) {
   __asm__("endbr64\n\t"
+          "movq ap_park_tables(%rip), %rax\n\t"
+          "movq %rax, %cr3\n\t"
           "movq 24(%rdi), %rsp\n\t"
           "movq 8(%rsp), %rdi\n\t"
           "xorl %ebp, %ebp\n\t"

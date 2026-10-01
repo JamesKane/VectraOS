@@ -244,6 +244,12 @@ typedef struct vx_task_summary { // what task_info returns
 // task: no global lookup (01 §3).
 enum vx_task_info_flags : uint32_t { VX_TASK_NEXT = 1 };
 
+// as_map(task, vmo, offset, size, flags, &address): maps part of a VMO, at
+// *address, or where the kernel picks with *address 0.
+// as_unmap(task, address, size): unmaps the pages of [address, address + size),
+// whole mappings or parts of them; a mapping cut in the middle becomes two.
+// Pages nothing maps there are left alone. Once it returns, no CPU can reach
+// the pages through those addresses any more.
 enum vx_map_flags : uint32_t { // as_map; a mapping is always readable
   VX_MAP_WRITE = 1,
   VX_MAP_EXEC = 2,

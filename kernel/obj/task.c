@@ -8,7 +8,6 @@ static constexpr uint64_t USER_TOP = 0x0000'8000'0000'0000;      // first addres
 static constexpr uint64_t USER_MAP_BASE = 0x0000'1000'0000'0000; // where as_map puts mappings it places
 static constexpr uint64_t USER_STACK_TOP = 0x0000'7fff'ffff'0000;
 static constexpr uint64_t USER_STACK_SIZE = 256ull * 1024; // debug builds are -O0: frames do not overlap
-static constexpr unsigned KSTACK_ORDER = 2;                // 16 KiB kernel stacks
 static constexpr uint32_t TASK_MAX_IO = 4;                 // I/O port ranges per task
 
 // --- Handles ---
@@ -85,7 +84,7 @@ struct thread {
   task *task;               // nullptr for an idle thread
   struct thread *task_next; // in its task's list, under the task's lock
   uint64_t kernel_sp;       // saved by arch_context_switch
-  uint64_t kstack;          // direct-map address of the kernel stack's base
+  uint64_t kstack;          // the kernel stack's lowest address (mm/kstack.c)
   uint64_t user_entry, user_sp, user_arg, user_arg2;
   bool started;          // thread_start has taken it (under its task's lock)
   uint32_t intent;       // enum vx_intent
@@ -343,15 +342,74 @@ static vx_status task_map(task *t, vmo *v, uint64_t offset, uint64_t size, uint3
   } else {
     for (uint64_t off = 0; off < done; off += 4096) unmap_page(t->root, at + off);
   }
+  uint64_t root = t->root;
   spin_unlock(&t->lock);
+  if (st != VX_OK && done) arch_tlb_shootdown(root, at, done); // another thread may have touched them
   return st;
+}
+
+// Unmaps [va, va + size): whole mappings, or the parts of them in the range; a
+// mapping cut in the middle becomes two, so that needs a free slot. The page
+// entries are cleared under the lock, the translations shot down after it
+// (another CPU spinning on it could not answer), and only then are the VMOs
+// let go, which may free their pages.
+static vx_status task_unmap(task *t, uint64_t va, uint64_t size) {
+  uint64_t end;
+  if (!size || (va | size) & 4095 || ckd_add(&end, va, size) || end > USER_TOP) return VX_ERR_RANGE;
+  vmo *drop[TASK_MAX_MAPPINGS];
+  uint32_t dropped = 0;
+  spin_lock(&t->lock);
+  if (!t->root || !t->maps || t->ending) {
+    spin_unlock(&t->lock);
+    return VX_ERR_BAD_STATE;
+  }
+  uint32_t splits = 0, free_slots = 0;
+  for (uint32_t i = 0; i < TASK_MAX_MAPPINGS; i++) {
+    mapping *m = &t->maps[i];
+    free_slots += !m->size;
+    splits += m->size && m->va < va && m->va + m->size > end;
+  }
+  if (splits > free_slots) {
+    spin_unlock(&t->lock);
+    return VX_ERR_NO_MEMORY;
+  }
+  for (uint32_t i = 0; i < TASK_MAX_MAPPINGS; i++) {
+    mapping *m = &t->maps[i];
+    uint64_t m_end = m->va + m->size;
+    if (!m->size || m_end <= va || m->va >= end) continue;
+    uint64_t lo = m->va > va ? m->va : va, hi = m_end < end ? m_end : end;
+    for (uint64_t p = lo; p < hi; p += 4096) unmap_page(t->root, p);
+    t->mapped -= hi - lo;
+    if (lo == m->va && hi == m_end) { // all of it
+      drop[dropped++] = m->vmo;
+      *m = (mapping){};
+    } else if (lo == m->va) { // its start
+      m->offset += hi - m->va;
+      m->size = m_end - hi;
+      m->va = hi;
+    } else if (hi == m_end) { // its end
+      m->size = lo - m->va;
+    } else { // its middle: the end becomes a mapping of its own
+      mapping *rest = nullptr;
+      for (uint32_t k = 0; k < TASK_MAX_MAPPINGS && !rest; k++)
+        if (!t->maps[k].size) rest = &t->maps[k];
+      object_ref(&m->vmo->obj);
+      *rest = (mapping){.va = hi, .size = m_end - hi, .offset = m->offset + (hi - m->va), .vmo = m->vmo};
+      m->size = lo - m->va;
+    }
+  }
+  uint64_t root = t->root;
+  spin_unlock(&t->lock);
+  arch_tlb_shootdown(root, va, size);
+  for (uint32_t i = 0; i < dropped; i++) object_release(&drop[i]->obj);
+  return VX_OK;
 }
 
 // A thread of task t that has not started (thread_start, obj/process.c).
 static vx_status thread_create(task *t, thread **out) {
   thread *th = pool_alloc(&thread_pool);
   if (!th) return VX_ERR_NO_MEMORY;
-  uint64_t stack = phys_alloc_zeroed(KSTACK_ORDER);
+  uint64_t stack = kstack_alloc();
   if (!stack) {
     pool_free(&thread_pool, th);
     return VX_ERR_NO_MEMORY;
@@ -359,7 +417,7 @@ static vx_status thread_create(task *t, thread **out) {
   th->obj.type = OBJ_THREAD; // pool_alloc zeroed the rest
   atomic_store_explicit(&th->obj.refs, 1, memory_order_relaxed);
   th->task = t;
-  th->kstack = (uint64_t)phys_to_virt(stack);
+  th->kstack = stack;
   th->intent = VX_INTENT_INTERACTIVE;
   object_ref(&t->obj);
   th->kernel_sp = arch_thread_initial_sp(th);
@@ -367,4 +425,4 @@ static vx_status thread_create(task *t, thread **out) {
   return VX_OK;
 }
 
-static uint64_t thread_kstack_top(const thread *th) { return th->kstack + (4096ull << KSTACK_ORDER); }
+static uint64_t thread_kstack_top(const thread *th) { return th->kstack + KSTACK_SIZE; }

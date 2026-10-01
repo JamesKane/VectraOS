@@ -20,9 +20,15 @@ static vx_status vx_session_map(vx_handle memory, bool client, const vx_ring_par
   vx_status st = vx_ring_layout(params, &layout);
   uint64_t base = 0;
   if (st == VX_OK) st = vx_as_map(vx_self, memory, 0, layout.size, VX_MAP_WRITE, &base);
-  // The mapping stays for the life of the task until as_unmap lands (01 §5).
-  if (st == VX_OK) st = vx_ring_attach(r, (void *)base, layout.size, client, params);
+  if (st == VX_OK && (st = vx_ring_attach(r, (void *)base, layout.size, client, params)) != VX_OK)
+    vx_as_unmap(vx_self, base, layout.size); // a ring it would not attach to
   return st;
+}
+
+// A session is over: its ring's memory leaves this task's address space.
+[[maybe_unused]] static void vx_session_unmap(vx_ring *r) {
+  if (r->base) vx_as_unmap(vx_self, (uint64_t)r->base, r->h.size);
+  r->base = nullptr;
 }
 
 // Opens a session through `connector` (a post's client end, which stays the

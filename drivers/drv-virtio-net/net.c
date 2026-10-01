@@ -130,6 +130,7 @@ static void setup_device(void) {
 
 static void drop_client(void) {
   vx_handle_close(client.end);
+  vx_session_unmap(&client.ring);
   client = (client_state){};
 }
 

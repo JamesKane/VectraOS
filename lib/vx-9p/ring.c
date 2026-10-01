@@ -41,9 +41,15 @@ static vx_status p9_ring_map(vx_handle memory, bool client, vx_ring *r) {
   vx_status st = vx_ring_layout(&P9_RING_PARAMS, &layout);
   uint64_t base = 0;
   if (st == VX_OK) st = vx_as_map(vx_self, memory, 0, layout.size, VX_MAP_WRITE, &base);
-  // The mapping stays for the life of the task until as_unmap lands (01 §5).
-  if (st == VX_OK) st = vx_ring_attach(r, (void *)base, layout.size, client, &P9_RING_PARAMS);
+  if (st == VX_OK && (st = vx_ring_attach(r, (void *)base, layout.size, client, &P9_RING_PARAMS)) != VX_OK)
+    vx_as_unmap(vx_self, base, layout.size); // a ring it would not attach to
   return st;
+}
+
+// Lets a ring's memory go from this task's address space.
+static void p9_ring_unmap(vx_ring *r) {
+  if (r->base) vx_as_unmap(vx_self, (uint64_t)r->base, r->h.size);
+  r->base = nullptr;
 }
 
 // --- Client ---
@@ -127,6 +133,7 @@ static size_t p9_ring_rpc(void *ctx, const uint8_t *req, size_t len, uint8_t *re
 }
 
 [[maybe_unused]] static void p9_ring_disconnect(p9_conn *k) {
+  p9_ring_unmap(&k->ring);
   if (k->end) vx_handle_close(k->end);
   if (k->port) vx_handle_close(k->port);
   *k = (p9_conn){.dead = true};

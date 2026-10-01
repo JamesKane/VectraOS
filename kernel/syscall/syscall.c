@@ -8,10 +8,10 @@
 static task *current_task(void) { return this_cpu()->current->task; }
 
 // User pointers are checked against the current task's page tables before the
-// kernel touches them. Mappings are only ever added in M1, so nothing can
-// unmap a range between the check and the copy; with as_unmap (M2) these
-// become copies that recover from a fault. (With SMAP and PAN switched on, they
-// will also open and close user access.)
+// kernel touches them, and then touched only through arch_user_copy: another
+// thread may unmap a range between the check and the copy, and a fault there
+// makes the copy fail instead of the kernel. (With SMAP and PAN switched on,
+// these will also open and close user access.)
 static bool user_range_ok(uint64_t addr, uint64_t len, bool write) {
   uint64_t end;
   if (len == 0) return true;
@@ -23,14 +23,12 @@ static bool user_range_ok(uint64_t addr, uint64_t len, bool write) {
 
 static vx_status copy_from_user(void *dst, uint64_t src, uint64_t len) {
   if (!user_range_ok(src, len, false)) return VX_ERR_INVALID;
-  memcpy(dst, (const void *)src, len);
-  return VX_OK;
+  return arch_user_copy(dst, (const void *)src, len) ? VX_ERR_INVALID : VX_OK;
 }
 
 static vx_status copy_to_user(uint64_t dst, const void *src, uint64_t len) {
   if (!user_range_ok(dst, len, true)) return VX_ERR_INVALID;
-  memcpy((void *)dst, src, len);
-  return VX_OK;
+  return arch_user_copy((void *)dst, src, len) ? VX_ERR_INVALID : VX_OK;
 }
 
 static constexpr uint32_t ALL_RIGHTS = (1u << VX_RIGHT_BIT_COUNT) - 1;
@@ -276,6 +274,16 @@ static int64_t sys_iorange_create(vx_handle rh, uint64_t base, uint64_t count, u
   object_release(&r->obj);
   if (st != VX_OK) return st;
   return return_handle(&io->obj, VX_RIGHT_MAP | DEVICE_RIGHTS, out);
+}
+
+// as_unmap(task, address, size): the pages of a range, mapped or not.
+static int64_t sys_as_unmap(vx_handle th, uint64_t va, uint64_t size) {
+  vx_status st;
+  task *t = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_MANAGE, &st);
+  if (!t) return st;
+  st = task_unmap(t, va, size);
+  object_release(&t->obj);
+  return st;
 }
 
 // as_map(task, vmo, offset, size, flags, &address): maps part of a VMO.
@@ -660,10 +668,7 @@ static int64_t sys_vmo_rw(vx_handle h, uint64_t op, uint64_t offset, uint64_t bu
     uint64_t at = offset + done, in_page = at & 4095, n = 4096 - in_page;
     if (n > size - done) n = size - done;
     uint8_t *page = (uint8_t *)phys_to_virt(v->pages[at / 4096]) + in_page;
-    if (op == VX_VMO_READ)
-      memcpy((void *)(buf + done), page, n);
-    else
-      memcpy(page, (const void *)(buf + done), n);
+    st = op == VX_VMO_READ ? copy_to_user(buf + done, page, n) : copy_from_user(page, buf + done, n);
     done += n;
   }
   object_release(&v->obj);
@@ -726,6 +731,7 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_iorange_create: return sys_iorange_create((vx_handle)a[0], a[1], a[2], a[3]);
   case VX_SYS_vmo_rw: return sys_vmo_rw((vx_handle)a[0], a[1], a[2], a[3], a[4]);
   case VX_SYS_as_map: return sys_as_map((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4], a[5]);
+  case VX_SYS_as_unmap: return sys_as_unmap((vx_handle)a[0], a[1], a[2]);
   case VX_SYS_handle_dup: return sys_handle_dup((vx_handle)a[0], a[1], a[2]);
   case VX_SYS_handle_close: return handle_close(current_task(), (vx_handle)a[0]);
   default: return VX_ERR_UNSUPPORTED;

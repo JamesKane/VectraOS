@@ -24,7 +24,11 @@ typedef struct cpu {
   vx_instant slice_end;
   bool resched;        // call schedule before returning to user mode
   thread *reap;        // a thread that died here, for whoever runs next to free
-  uint64_t idle_stack; // direct-map address of the idle stack's base (not CPU 0)
+  uint64_t idle_stack; // the idle stack's lowest address (mm/kstack.c)
+  // Which task tables this CPU has loaded (0: none), and how many times it has
+  // loaded tables: a shootdown waits only for CPUs that may cache the pages.
+  _Atomic uint64_t user_root, root_loads;
+  _Atomic uint64_t tlb_asked, tlb_done; // x86_64's shootdowns (arch.c)
 } cpu;
 
 static cpu cpus[MAX_CPUS];
@@ -128,7 +132,10 @@ static void schedule_locked(void) {
     // Leave a task's address space even for the idle thread, so a dead task's
     // tables are on no CPU by the time its last thread is reaped.
     if (prev->task != next->task) {
-      arch_switch_user_root(next->task ? next->task->root : 0);
+      uint64_t root = next->task ? next->task->root : 0;
+      atomic_store_explicit(&c->user_root, root, memory_order_relaxed);
+      arch_switch_user_root(root);
+      atomic_fetch_add_explicit(&c->root_loads, 1, memory_order_release);
       arch_io_switch(next->task);
     }
   } else {

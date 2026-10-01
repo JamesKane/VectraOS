@@ -150,3 +150,19 @@ x86_vector_table:
     TABLE_ENTRY %i
     .set i, i + 1
     .endr
+
+// size_t arch_user_copy(void *dst, const void *src, size_t n): copies to or
+// from user memory. A fault inside resumes at arch_user_copy_fault (arch.c,
+// x86_trap), which returns the bytes not copied: 0 means it all was.
+    .text
+    .globl arch_user_copy, arch_user_copy_fault, arch_user_copy_end
+arch_user_copy:
+    endbr64
+    mov %rdx, %rcx
+    rep movsb
+    xor %eax, %eax
+    ret
+arch_user_copy_fault:
+    mov %rcx, %rax // rep movsb counts down as it goes: what is left
+    ret
+arch_user_copy_end:

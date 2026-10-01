@@ -84,12 +84,14 @@ static uint64_t user_page_pa(uint64_t root, uint64_t va) {
 // Removes the 4 KiB mapping at va, if there is one, and drops it from this
 // CPU's TLB. (Other CPUs need a shootdown once as_unmap exists; until then this
 // only undoes mappings no thread has used yet, or tears down a dead task.)
+// Clears a page's entry. Its translation may still be cached on any CPU that
+// has the tables loaded: the caller shoots it down (arch_tlb_shootdown), with
+// no lock held, before the page can be freed.
 static void unmap_page(uint64_t root, uint64_t va) {
   int level;
   uint64_t *e = leaf_entry(root, va, &level);
   if (!e || level != 3) return;
   *e = 0;
-  arch_tlb_flush_page(va);
 }
 
 // Frees the user half's page tables and the top table itself. The leaves are

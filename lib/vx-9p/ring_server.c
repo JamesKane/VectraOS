@@ -56,6 +56,7 @@ static void p9_ring_close(p9_ring_conn *c) {
   for (uint32_t i = 0; i < P9_MAX_FIDS; i++)
     if (c->srv.fids[i].used) p9_fid_drop(&c->srv, &c->srv.fids[i]);
   vx_handle_close(c->end);
+  p9_ring_unmap(&c->ring);
   c->used = false;
 }
 

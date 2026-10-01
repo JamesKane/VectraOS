@@ -78,6 +78,11 @@ static constexpr uint32_t ITS_EVENTS = 32;  // per device
 
 static uint8_t *boot_rd; // the boot CPU's redistributor
 
+[[noreturn]] static void arch_run_on_stack(uint64_t top, void (*fn)(void)) {
+  __asm__ volatile("mov sp, %0\n\tmov x29, xzr\n\tblr %1\n\tbrk #0" : : "r"(top), "r"(fn) : "memory");
+  __builtin_unreachable();
+}
+
 // The user half has its own tables in TTBR0; the kernel's stay in TTBR1.
 static uint64_t arch_new_user_root(void) { return phys_alloc_zeroed(0); }
 
@@ -104,8 +109,19 @@ static uint32_t arch_user_top_slots(void) { return 512; }
 // walker after a DSB, and by this CPU's later instructions after an ISB.
 static void arch_pte_publish(void) { __asm__ volatile("dsb ishst\n\tisb" ::: "memory"); }
 
-static void arch_tlb_flush_page(uint64_t va) {
-  __asm__ volatile("dsb ishst\n\ttlbi vale1, %0\n\tdsb ish\n\tisb" : : "r"(va >> 12) : "memory");
+// The Inner Shareable invalidations reach every CPU, and the DSB after them
+// waits until all have done them: no interrupts needed. Without ASIDs yet,
+// by address for any ASID.
+static void arch_tlb_shootdown(uint64_t root, uint64_t va, uint64_t len) {
+  (void)root;
+  __asm__ volatile("dsb ishst" ::: "memory");
+  if (len / 4096 > 64) {
+    __asm__ volatile("tlbi vmalle1is" ::: "memory");
+  } else {
+    for (uint64_t p = va; p < va + len; p += 4096)
+      __asm__ volatile("tlbi vaale1is, %0" : : "r"(p >> 12) : "memory");
+  }
+  __asm__ volatile("dsb ish\n\tisb" ::: "memory");
 }
 
 static bool arch_pte_user_ok(uint64_t e, bool write) {
@@ -587,6 +603,25 @@ static void kput_exception(const trap_frame *f, uint64_t index) {
 
 static constexpr uint32_t EC_SVC64 = 0x15;
 
+// An exception in the kernel found its stack pointer outside a kernel stack's
+// valid half (vectors.S): an overflow into the guard below, or an exception
+// before CPU 0 left the boot stack. Either way, the end.
+[[noreturn]] void aarch64_kernel_stack_fault(uint64_t sp) {
+  uint64_t elr, esr, far;
+  __asm__ volatile("mrs %0, elr_el1\n\tmrs %1, esr_el1\n\tmrs %2, far_el1" : "=r"(elr), "=r"(esr), "=r"(far));
+  panic_start();
+  kput(kstack_in_guard(sp) ? VX_STR("kernel stack overflow") : VX_STR("exception off any kernel stack"));
+  kput(VX_STR(": sp "));
+  kput_hex(sp);
+  kput(VX_STR(", ESR "));
+  kput_hex(esr);
+  kput(VX_STR(", FAR "));
+  kput_hex(far);
+  kput(VX_STR(" at pc "));
+  kput_hex(elr);
+  panic_end(elr, 0);
+}
+
 void aarch64_trap(trap_frame *f, uint64_t index) {
   bool from_user = index >= 8;
   uint32_t ec = (uint32_t)(f->esr >> 26) & 0x3f;
@@ -594,6 +629,9 @@ void aarch64_trap(trap_frame *f, uint64_t index) {
     aarch64_irq();
   } else if (from_user && (index & 3) == 0 && ec == EC_SVC64) {
     f->x[0] = (uint64_t)syscall_dispatch(f->x[8], f->x);
+  } else if (!from_user && (index & 3) == 0 && ec == 0x25 && f->far < USER_TOP &&
+             f->elr >= (uint64_t)arch_user_copy && f->elr < (uint64_t)arch_user_copy_fault) {
+    f->elr = (uint64_t)arch_user_copy_fault; // a user page gone under a copy: it reports what it missed
   } else if (from_user) {
     task_fault_start();
     kput_exception(f, index);
@@ -640,8 +678,20 @@ uint64_t ap_park_tables[2];
           "b 1b");
 }
 
+// Its idle stack is in the kernel stack region (mm/kstack.c), which only the
+// kernel's tables map: it loads them first, as ap_park does.
 [[gnu::naked, noreturn]] void ap_start(struct limine_mp_info *info) {
   __asm__("hint #34\n\t"
+          "adrp x1, ap_park_tables\n\t"
+          "add x1, x1, :lo12:ap_park_tables\n\t"
+          "ldp x2, x3, [x1]\n\t"
+          "dsb ish\n\t"
+          "msr ttbr1_el1, x2\n\t"
+          "msr ttbr0_el1, x3\n\t"
+          "isb\n\t"
+          "tlbi vmalle1\n\t"
+          "dsb ish\n\t"
+          "isb\n\t"
           "ldr x9, [x0, #32]\n\t"
           "msr spsel, #1\n\t"
           "mov sp, x9\n\t"

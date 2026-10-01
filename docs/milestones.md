@@ -11,7 +11,7 @@ Updated 2026-10-01.
 | **M1** First light | Done (2026-09-30) | `tests/qemu/boot.ndb` passes on x86_64 and aarch64 |
 | **M2** A shell in a namespace | Done (2026-10-01) | `tests/qemu/shell.ndb` passes on both |
 | **M3** Mount the network | Done (2026-10-01) | `tests/qemu/mount.ndb` passes on both (against 10.0.2.100; see below) |
-| M4 POSIX and debugging | Not started | |
+| M4 POSIX and debugging | In progress: step 1a done | — |
 | M5 Storage | Not started | |
 | M6 Pixels | Not started | |
 | M7 GPU | Not started | |
@@ -68,13 +68,29 @@ In progress.
 
 The exit test's steps all pass in `tests/qemu/mount.ndb`, with one difference: the server is at 10.0.2.100!5640, not the host's 10.0.2.2!5640, because QEMU will not forward the gateway's own address to a command. The exit test as written works by hand under `./build qemu`, with `vx9pserve --listen 127.0.0.1:5640 DIR` on the host. Booting a real UEFI PC from USB is not gated, and has not been tried.
 
+## M4 — POSIX and debugging
+
+In progress. 04 §6 gives M4's content but no steps or exit test, so they are set here (decided 2026-10-01). The userland is sbase, and the POSIX shell dash, both vendored.
+
+| Step | Status | Commit |
+|---|---|---|
+| 1a. `as_unmap` with TLB shootdown; user-memory copies that recover from a fault; kernel stack guard pages; ring mappings unmapped when their sessions end | Done | not yet committed |
+| 1b. The fault path: copy-on-write VMO clones, exception ports, faults handled in the task, `thread_interrupt` | To do | |
+| 1c. The `DEBUG` right and the five debug syscalls (05 §2) | To do | |
+| 2. musl with the vx back end, the `vectra-musl` sysroot; a C program runs | To do | |
+| 3. `posixd`: pids, `fork`, `exec`, `wait`, signals, sessions; pipes; a RAM file system for `/tmp`; `/dev/null`, `/dev/urandom` | To do | |
+| 4. `ptyd`; sockets over `/net`; `poll` and `select`; the `posix` 9Px extension | To do | |
+| 5. Lua, sbase and dash, vendored | To do | |
+| 6. The `procfs` debug files, crash directories, `lib/vx-debug`, `dbg -c`, `/sys/clock`, `vx-prof` zones | To do | |
+
+**Exit test (proposed):** a C program built against `vectra-musl` forks, execs, pipes and waits; a dash script and Lua run in the POSIX userland; `dbg -c` stops at a breakpoint and prints a backtrace; a crashing program leaves a crash directory.
+
 ## Known gaps
 
 Deferred deliberately, each with where it is due:
 
 | Gap | Effect now | Due |
 |---|---|---|
-| No `as_unmap` | Each ring session (9P connections, the driver's net session) leaves its mapping, about 0.5 MiB, until the task exits | Before M4 |
 | 9P replies always use arena offset 0 | Pipelined 9P requests would overwrite each other's replies; the client does not pipeline yet | With pipelining |
 | No `Tflush` or timeouts in the 9P client | A read held by a server (`ping` with no reply, a `listen`) waits until it is answered | M3 step 4 or M4 |
 | No per-client connection limit | One client can take all 16 of a server's ring connections | Before M8 (swarm) |
@@ -83,7 +99,8 @@ Deferred deliberately, each with where it is due:
 | Each process dials its own TCP connection for a `tcp!` mount (a child cannot be handed one) | Every command in a mounted directory opens a connection, which then waits 10 s in TIME_WAIT; a fast script could use up `netd`'s 32 conversations | Before M8 (a shared 9P connection, through a post) |
 | No loopback route | The guest cannot connect to itself, so `listen` is tested in the host tests and the 9P framework but not end to end in QEMU | M3 step 6, or when a test needs it |
 | TCP: no SACK, no timestamps, out-of-order segments dropped; TIME_WAIT 10 s | Recovery from loss is slower than it could be | After M3 |
-| Kernel stacks have no guard pages | A kernel stack overflow corrupts memory instead of faulting; the deepest path measured uses about 9 of 16 KiB at `-O0` | M4 |
+| Futexes find their word by its physical page and read it through the direct map | A word unmapped while a thread waits on it reads a freed page's value: a wrong wake-up or wait, not a crash | With the fault path (step 1b) |
+| x86_64's shootdown is tested only under TCG | KVM flushes a guest's TLB often enough to hide a missing shootdown, so the ktest check catches one only with `--tcg` (aarch64 always runs under TCG) | — |
 | IOMMU in pass-through only (QEMU) | A device can reach any memory; a dead driver's device could write freed memory before `devmgr` turns off its bus mastering | M5 |
 | `netd` restarting its driver session is not tested | | M3 |
 
@@ -110,6 +127,7 @@ Deferred deliberately, each with where it is due:
 | `tcp` | TCP against QEMU's own stack: 256 KiB echoed through a host `cat`, hangup, a refused connection |
 | `mount` | M3's exit test against `vx9pserve` at 10.0.2.100!5640: `mount`, `ls` and `cat` (children dialing their own), a write found on the host, `9p://`, `ns` |
 | `iso` | The ISO, as a CD with no disk, boots to the shell |
+| `stack-overflow` | A kernel stack that overflows hits its guard page, and the panic says so |
 | `u9fs` | Interoperability: the same against `u9fs`, a stock 9P2000 server, chrooted in a user namespace |
 
 Host tests (`tests/host/`, under ASan and UBSan) and fuzzers (`tests/fuzz/`) run in `./build check`.

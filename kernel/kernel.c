@@ -45,12 +45,20 @@ static void kput_stamp(void); // time.c
 static uint64_t arch_new_user_root(void); // a top table sharing the kernel half
 static void arch_switch_user_root(uint64_t root);
 static bool arch_pte_user_ok(uint64_t e, bool write);
-static uint32_t arch_user_top_slots(void);       // top-table entries that belong to the user half
-static void arch_tlb_flush_page(uint64_t va);    // this CPU only
+static uint32_t arch_user_top_slots(void); // top-table entries that belong to the user half
+// Every CPU drops its translations for [va, va + len) in the address space
+// with this root: after it returns, unmapped pages may be freed.
+static void arch_tlb_shootdown(uint64_t root, uint64_t va, uint64_t len);
+
+// User memory is touched only through this (syscall.c): a fault inside it
+// returns the bytes not copied, never a panic. Assembly, in entry.S or vectors.S.
+size_t arch_user_copy(void *dst, const void *src, size_t n);
+extern char arch_user_copy_fault[], arch_user_copy_end[];
 static void arch_set_kernel_stack(uint64_t top); // where traps from user mode land
 static uint64_t arch_thread_initial_sp(thread *t);
 [[noreturn]] static void arch_enter_user(uint64_t entry, uint64_t sp, uint64_t arg, uint64_t arg2,
                                          uint64_t kstack_top);
+[[noreturn]] static void arch_run_on_stack(uint64_t top, void (*fn)(void)); // fn never returns
 
 // Device interrupts and I/O for user-space drivers (obj/device.c).
 static vx_status arch_irq_canonical(uint32_t line, uint32_t *out); // the number the line is known by
@@ -73,6 +81,7 @@ static void arch_io_switch(const struct task *t); // this CPU's I/O port permiss
 #include "panic.c"
 #include "mm/phys.c"
 #include "mm/paging.c"
+#include "mm/kstack.c"
 #include "time_math.c"
 #include "time.c"
 #include "obj/object.c"

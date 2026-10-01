@@ -97,7 +97,7 @@ static vx_status thread_start(thread *th, uint64_t entry, uint64_t sp, uint64_t 
 
 // A dead thread's last rites, run by the next thread on its CPU (sched.c).
 static void thread_reap(thread *th) {
-  phys_free(th->kstack - boot.hhdm, KSTACK_ORDER);
+  kstack_free(th->kstack);
   th->kstack = 0;
   task *t = th->task;
   spin_lock(&t->lock);
@@ -163,7 +163,7 @@ static void task_destroy(task *t) {
 }
 
 static void thread_destroy(thread *th) {
-  if (th->kstack) phys_free(th->kstack - boot.hhdm, KSTACK_ORDER); // never started
+  if (th->kstack) kstack_free(th->kstack); // never started
   task *t = th->task;
   pool_free(&thread_pool, th);
   object_drop(&t->obj);

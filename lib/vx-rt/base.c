@@ -98,6 +98,10 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   return (vx_status)vx_syscall(VX_SYS_as_map, task, vmo, offset, size, flags, (uint64_t)addr);
 }
 
+[[maybe_unused]] static vx_status vx_as_unmap(vx_handle task, uint64_t addr, uint64_t size) {
+  return (vx_status)vx_syscall(VX_SYS_as_unmap, task, addr, size, 0, 0, 0);
+}
+
 [[maybe_unused]] static vx_status vx_vmo_rw(vx_handle vmo, enum vx_vmo_op op, uint64_t offset, void *buf,
                                             uint64_t size) {
   return (vx_status)vx_syscall(VX_SYS_vmo_rw, vmo, op, offset, (uint64_t)buf, size, 0);

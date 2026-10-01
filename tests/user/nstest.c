@@ -139,6 +139,20 @@ static void test_confinement(void) {
   CHECK(list("/bin").len > 6); // still serving
 }
 
+// A ring connection that ends takes its mapping with it (as_unmap): twenty
+// connections to bootfs, each ended, leave the address space as it was.
+static void test_connections_unmap(void) {
+  vx_handle connector = ns.conns[0].connector;
+  vx_task_summary before, after;
+  CHECK(connector && vx_task_info(vx_self, &before) == VX_OK);
+  for (int i = 0; i < 20; i++) {
+    static p9_conn k;
+    CHECK(p9_ring_connect(connector, &k) == VX_OK && p9c_version(&k.c, P9_RING_MSIZE, 0) == VX_OK);
+    p9_ring_disconnect(&k);
+  }
+  CHECK(vx_task_info(vx_self, &after) == VX_OK && after.mapped == before.mapped);
+}
+
 int vx_main(void) {
   test_spawn();
   vx_status st = vx_ns_from_spawn(&ns);
@@ -146,6 +160,7 @@ int vx_main(void) {
   if (st == VX_OK) {
     test_namespace();
     test_confinement();
+    test_connections_unmap();
   }
   vx_print(VX_STR("nstest: "));
   vx_print_u64(checks);

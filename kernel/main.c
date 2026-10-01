@@ -2,6 +2,16 @@
 
 // Allocates a block of every order, checks alignment and the free count, frees
 // them all and checks that the count, and the largest block, come back.
+// Recurses until the kernel stack's guard page stops it (mm/kstack.c): a
+// frame a level, which neither a tail call nor the optimizer can take away.
+// NOLINTNEXTLINE(misc-no-recursion): the recursion is the test
+[[gnu::noinline]] static uint64_t selftest_recurse(uint64_t depth) {
+  volatile uint8_t frame[512];
+  frame[0] = (uint8_t)depth;
+  if (depth > 1u << 30) return depth; // never: the guard page is far nearer
+  return selftest_recurse(depth + 1) + frame[0];
+}
+
 static void selftest_phys(void) {
   uint64_t before = phys.free_pages, taken = 0, pa[PHYS_MAX_ORDER + 1];
   for (unsigned o = 0; o <= PHYS_MAX_ORDER; o++) {
@@ -49,6 +59,7 @@ static void selftests(void) {
   if (cmdline_has(VX_STR("vx.selftest=smp"))) selftest_smp();
   if (cmdline_has(VX_STR("vx.selftest=timer"))) selftest_timer();
   if (cmdline_has(VX_STR("vx.selftest=phys"))) selftest_phys();
+  if (cmdline_has(VX_STR("vx.selftest=stack-overflow"))) selftest_recurse(0); // into the guard page
   if (cmdline_has(VX_STR("vx.selftest=fault"))) {
     // Nothing is mapped this far above the direct map's start.
     volatile const uint64_t *p = (volatile const uint64_t *)(boot.hhdm + (1ull << 46));
@@ -72,6 +83,8 @@ static void selftests(void) {
   }
 }
 
+[[noreturn]] static void kernel_main_on_kstack(void);
+
 [[noreturn, clang::no_stack_protector]] void kernel_main(void) {
   uint64_t entry = arch_counter();
   bool ok = boot_read();
@@ -81,6 +94,16 @@ static void selftests(void) {
   arch_cpu_init(0);
   phys_init();
   paging_init();
+  kstack_init();
+  // CPU 0 leaves the boot stack for a kernel stack like every other (mm/kstack.c),
+  // which it keeps as its idle stack.
+  uint64_t stack = kstack_alloc();
+  if (!stack) panic(VX_STR("no memory for CPU 0's stack"));
+  cpus[0].idle_stack = stack;
+  arch_run_on_stack(stack + KSTACK_SIZE, kernel_main_on_kstack);
+}
+
+[[noreturn]] static void kernel_main_on_kstack(void) {
   arch_devices_init();
   arch_timer_init();
   sched_enter_cpu();

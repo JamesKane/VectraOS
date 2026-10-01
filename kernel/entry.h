@@ -28,6 +28,7 @@ extern uint64_t ap_park_tables[2]; // what ap_park loads: [0] the kernel's table
 void x86_trap(struct trap_frame *f);
 #else
 void aarch64_trap(struct trap_frame *f, uint64_t index);
+[[noreturn]] void aarch64_kernel_stack_fault(uint64_t sp); // vectors.S, on an overflowed kernel stack
 #endif
 [[noreturn]] void thread_entry(thread *t);
 void arch_context_switch(uint64_t *save_sp, uint64_t load_sp);
