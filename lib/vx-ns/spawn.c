@@ -44,9 +44,30 @@ static void vx_ns_release(p9_client *c, vx_handle connector) {
   if (connector) vx_handle_close(connector);
 }
 
-// The connection through the connector the spawn message calls `name`: the
-// one already made through it, or a new one. nullptr if there is none.
-static p9_client *vx_ns_connect(vx_str name, vx_handle *connector, vx_status *st) {
+// Where records' handles come from: the spawn message's, or a list of a
+// process's own (after a fork). A handle taken is the namespace's.
+typedef struct vx_ns_handles {
+  const vx_str *names;
+  vx_handle *handles;
+  uint32_t count;
+} vx_ns_handles;
+
+static vx_handle vx_ns_take(const vx_ns_handles *from, const char *name) {
+  if (!from) return vx_spawn_take(name);
+  size_t len = vx_cstr(name).len;
+  for (uint32_t i = 0; i < from->count; i++) {
+    if (!from->handles[i] || from->names[i].len != len || memcmp(from->names[i].ptr, name, len) != 0)
+      continue;
+    vx_handle h = from->handles[i];
+    from->handles[i] = VX_HANDLE_NONE;
+    return h;
+  }
+  return VX_HANDLE_NONE;
+}
+
+// The connection through the connector `name` names: the one already made
+// through it, or a new one. nullptr if there is none.
+static p9_client *vx_ns_connect(const vx_ns_handles *from, vx_str name, vx_handle *connector, vx_status *st) {
   uint32_t free_slot = VX_NS_MAX_CONNS;
   for (uint32_t i = 0; i < VX_NS_MAX_CONNS; i++) {
     if (vx_ns_conns[i].end && vx_ns_conn_names[i][0] && vx_cstr(vx_ns_conn_names[i]).len == name.len &&
@@ -62,7 +83,7 @@ static p9_client *vx_ns_connect(vx_str name, vx_handle *connector, vx_status *st
     return nullptr;
   }
   memcpy(cname, name.ptr, name.len);
-  *connector = vx_spawn_take(cname);
+  *connector = vx_ns_take(from, cname);
   *st = *connector ? p9_ring_connect(*connector, &vx_ns_conns[free_slot]) : VX_ERR_NOT_FOUND;
   if (*st != VX_OK) {
     if (*connector) vx_handle_close(*connector);
@@ -75,9 +96,9 @@ static p9_client *vx_ns_connect(vx_str name, vx_handle *connector, vx_status *st
 
 // Replays the spawn message's namespace records in order. Stops at the first
 // that fails, and says which.
-[[maybe_unused]] static vx_status vx_ns_from_spawn(vx_ns *ns) {
+static vx_status vx_ns_replay(vx_ns *ns, vx_str records, const vx_ns_handles *from) {
   static char scratch[VX_CHANNEL_MAX_BYTES];
-  vx_ndb_reader r = {.src = vx_spawn.text, .scratch = scratch, .scratch_cap = sizeof scratch};
+  vx_ndb_reader r = {.src = records, .scratch = scratch, .scratch_cap = sizeof scratch};
   vx_ndb_record rec;
   ns->release = vx_ns_release;
   while (vx_ndb_next(&r, &rec) == VX_NDB_RECORD) {
@@ -94,7 +115,7 @@ static p9_client *vx_ns_connect(vx_str name, vx_handle *connector, vx_status *st
                          flags);
     } else if (st == VX_OK && mount) {
       vx_handle connector;
-      p9_client *c = vx_ns_connect(vx_ndb_get(&rec, "handle"), &connector, &st);
+      p9_client *c = vx_ns_connect(from, vx_ndb_get(&rec, "handle"), &connector, &st);
       if (c)
         st = vx_ns_mount(ns, c, connector, vx_ndb_get(&rec, "src"), vx_ndb_get(&rec, "aname"),
                          vx_ndb_get(&rec, "mount"), flags);
@@ -104,11 +125,15 @@ static p9_client *vx_ns_connect(vx_str name, vx_handle *connector, vx_status *st
     if (st != VX_OK) {
       vx_print(VX_STR("vx-ns: cannot replay the record on line "));
       vx_print_u64(rec.line);
-      vx_print(VX_STR(" of the spawn message\n"));
+      vx_print(from ? VX_STR(" of the namespace after a fork\n") : VX_STR(" of the spawn message\n"));
       return st;
     }
   }
   return VX_OK;
+}
+
+[[maybe_unused]] static vx_status vx_ns_from_spawn(vx_ns *ns) {
+  return vx_ns_replay(ns, vx_spawn.text, nullptr);
 }
 
 // Writes the namespace as spawn records for a child (02 §2: a child gets a
@@ -165,4 +190,32 @@ static p9_client *vx_ns_connect(vx_str name, vx_handle *connector, vx_status *st
   for (uint32_t j = first; j < *count; j++) vx_handle_close(handles[j]);
   *count = first;
   return VX_ERR_RANGE;
+}
+
+// After a fork (01 §9): the namespace's rings were not copied into this
+// process, so its connections are let go, here only (the parent keeps its
+// own), and the namespace is built again from its own records over new
+// connections, through the connectors it kept. A dialed mount is dialed
+// again; the old TCP connection's state is left behind.
+[[maybe_unused]] static vx_status vx_ns_after_fork(vx_ns *ns) {
+  static char records[16 * 1024];
+  vx_handle handles[VX_CHANNEL_MAX_HANDLES];
+  vx_str names[VX_CHANNEL_MAX_HANDLES];
+  uint32_t count = 0;
+  vx_ndb_writer w = {.buf = records, .cap = sizeof records};
+  vx_status st = vx_ns_spawn_records(ns, &w, handles, names, &count, VX_CHANNEL_MAX_HANDLES);
+  for (uint32_t i = 0; i < VX_NS_MAX_CONNS; i++) {
+    if (vx_ns_conns[i].end) p9_ring_disconnect(&vx_ns_conns[i]);
+    vx_ns_conns[i] = (p9_conn){};
+    vx_ns_conn_names[i][0] = 0;
+    if (ns->conns[i].connector) vx_handle_close(ns->conns[i].connector);
+  }
+  *ns = (vx_ns){};
+  if (st != VX_OK) return st;
+  vx_ns_handles from = {.names = names, .handles = handles, .count = count};
+  ns->release = vx_ns_release;
+  st = vx_ns_replay(ns, (vx_str){records, w.len}, &from);
+  for (uint32_t i = 0; i < count; i++)
+    if (handles[i]) vx_handle_close(handles[i]); // one the records did not use
+  return st;
 }

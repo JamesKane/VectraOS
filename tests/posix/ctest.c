@@ -60,6 +60,18 @@ static int child_main(char **argv) {
     nanosleep(&(struct timespec){.tv_nsec = 100'000'000}, nullptr);
     return 3;
   }
+  if (strcmp(argv[1], "echo") == 0) { // its standard output, a pipe the parent reads
+    printf("echo from child\n");
+    return 8;
+  }
+  if (strcmp(argv[1], "fds") == 0) { // descriptors and the working directory, as the parent left them
+    char b[3] = {}, cwd[64];
+    bool ok = read(3, b, 2) == 2 && memcmp(b, "te", 2) == 0; // inherited at offset 2
+    ok = ok && fcntl(4, F_GETFD) == -1 && errno == EBADF;    // FD_CLOEXEC: not inherited
+    ok = ok && read(5, b, 1) == 1 && b[0] == '#';            // posix_spawn_file_actions_addopen
+    ok = ok && getcwd(cwd, sizeof cwd) && strcmp(cwd, "/boot") == 0;
+    return ok ? 10 : 2;
+  }
   if (strcmp(argv[1], "env") == 0) {
     const char *greeting = getenv("GREETING");
     return greeting && strcmp(greeting, "hello") == 0 ? 4 : 2;
@@ -113,11 +125,104 @@ static void test_processes(void) {
   CHECK(waitpid(-1, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 3);
   errno = 0;
   CHECK(getpgid(child) == -1 && errno == ESRCH); // reaped
+}
+
+// Reads a pipe to its end.
+static size_t read_all(int fd, char *buf, size_t cap) {
+  size_t n = 0;
+  for (ssize_t r; n < cap && (r = read(fd, buf + n, cap - n)) > 0;) n += (size_t)r;
+  return n;
+}
+
+// fork, execve and pipes; descriptors given to children.
+static void test_fork_exec_pipes(void) {
+  static const char manifest[] = "/boot/svc/ctest.ndb"; // it starts "# tests/user/ctest.ndb"
+  char buf[64] = {}, parent[24];
+  pid_t me = getpid();
+  snprintf(parent, sizeof parent, "%d", (int)me);
+  int p[2], status = 0;
+  CHECK(pipe(p) == 0);
+  CHECK(write(p[1], "hello", 5) == 5 && read(p[0], buf, sizeof buf) == 5 && memcmp(buf, "hello", 5) == 0);
+  int q[2];
+  CHECK(pipe2(q, O_NONBLOCK) == 0);
+  errno = 0;
+  CHECK(read(q[0], buf, 1) == -1 && errno == EAGAIN);
+  close(q[0]);
+  close(q[1]);
+
+  // fork: the child has memory and descriptors as they were, and its own
+  // from then on; it reports through the pipe and its status.
+  static int marker = 1;
+  int file = open(manifest, O_RDONLY);
+  CHECK(file >= 0 && lseek(file, 2, SEEK_SET) == 2);
+  if (file < 0) return; // the rest needs it
+  pid_t child = fork();
+  if (child == 0) {
+    char b[3] = {};
+    bool ok = marker == 1 && getppid() == me && getpid() != me;
+    ok = ok && read(file, b, 2) == 2 && memcmp(b, "te", 2) == 0;
+    marker = 2;
+    const char *say = ok ? "child ok" : "child bad";
+    ok = write(p[1], say, strlen(say)) == (ssize_t)strlen(say) && ok;
+    _exit(ok ? 5 : 1);
+  }
+  CHECK(child > me);
+  close(p[1]); // the child's end is the last writer: the read ends when it exits
+  memset(buf, 0, sizeof buf);
+  CHECK(read_all(p[0], buf, sizeof buf - 1) == 8 && strcmp(buf, "child ok") == 0);
+  close(p[0]);
+  CHECK(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 5);
+  CHECK(marker == 1);
+  char b[3] = {};
+  CHECK(read(file, b, 2) == 2 && memcmp(b, "te", 2) == 0); // the offset is not shared yet (M4 step 4)
+
+  // fork, then execve: the program goes on as the same process.
+  child = fork();
+  if (child == 0) {
+    char *args[] = {"ctest", "exit", parent, "6", nullptr};
+    execv("/boot/bin/ctest", args);
+    _exit(1);
+  }
+  CHECK(child > me && waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 6);
+  child = fork();
+  if (child == 0) {
+    char *args[] = {"none", nullptr};
+    _exit(execv("/boot/bin/no-such-program", args) == -1 && errno == ENOENT ? 11 : 1);
+  }
+  CHECK(waitpid(child, &status, 0) == child && WEXITSTATUS(status) == 11);
+
+  // posix_spawn's file actions: the child's standard output into a pipe.
+  CHECK(pipe(p) == 0);
   posix_spawn_file_actions_t fa;
   posix_spawn_file_actions_init(&fa);
-  posix_spawn_file_actions_addclose(&fa, 5);
-  CHECK(posix_spawn(&child, "/boot/bin/ctest", &fa, nullptr, args, environ) == ENOTSUP); // M4 step 3c
+  posix_spawn_file_actions_adddup2(&fa, p[1], 1);
+  posix_spawn_file_actions_addclose(&fa, p[0]);
+  posix_spawn_file_actions_addclose(&fa, p[1]);
+  char *echo[] = {"ctest", "echo", parent, nullptr};
+  CHECK(posix_spawn(&child, "/boot/bin/ctest", &fa, nullptr, echo, environ) == 0);
   posix_spawn_file_actions_destroy(&fa);
+  close(p[1]);
+  memset(buf, 0, sizeof buf);
+  CHECK(read_all(p[0], buf, sizeof buf - 1) == 16 && strcmp(buf, "echo from child\n") == 0);
+  close(p[0]);
+  CHECK(waitpid(child, &status, 0) == child && WEXITSTATUS(status) == 8);
+
+  // Inherited: a file at its offset, not one marked FD_CLOEXEC, one opened
+  // by a file action, and the working directory.
+  int keep = open(manifest, O_RDONLY | O_CLOEXEC);
+  CHECK(keep >= 0 && dup3(keep, 4, O_CLOEXEC) == 4);
+  posix_spawn_file_actions_init(&fa);
+  posix_spawn_file_actions_adddup2(&fa, file, 3);
+  posix_spawn_file_actions_addopen(&fa, 5, manifest, O_RDONLY, 0);
+  CHECK(lseek(file, 2, SEEK_SET) == 2 && chdir("/boot") == 0);
+  char *fds[] = {"ctest", "fds", parent, nullptr};
+  CHECK(posix_spawn(&child, "/boot/bin/ctest", &fa, nullptr, fds, environ) == 0);
+  CHECK(chdir("/") == 0);
+  posix_spawn_file_actions_destroy(&fa);
+  CHECK(waitpid(child, &status, 0) == child && WEXITSTATUS(status) == 10);
+  close(4);
+  close(keep);
+  close(file);
 }
 
 int main(int argc, char **argv) {
@@ -217,6 +322,7 @@ int main(int argc, char **argv) {
   CHECK(uname(&u) == 0 && strcmp(u.sysname, "VectraOS") == 0);
 
   test_processes();
+  test_fork_exec_pipes();
 
   // No threads yet: pthread_create fails, and says so (docs/milestones.md).
   pthread_t thread;

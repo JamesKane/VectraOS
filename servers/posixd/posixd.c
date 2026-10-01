@@ -166,7 +166,7 @@ static void call(proc *p, const posix_msg *m, vx_handle handle) {
   uint32_t txid = m->h.txid, err = POSIX_OK;
   int64_t values[4] = {};
   uint32_t count = 0;
-  if (handle && m->h.ordinal != POSIX_CHILD) { // nothing else carries one
+  if (handle && m->h.ordinal != POSIX_CHILD && m->h.ordinal != POSIX_EXEC) { // nothing else carries one
     vx_handle_close(handle);
     handle = VX_HANDLE_NONE;
   }
@@ -183,6 +183,32 @@ static void call(proc *p, const posix_msg *m, vx_handle handle) {
     if (err == POSIX_OK) err = admit(handle, p, pgid, m->arg[1] != 0, &c, &give);
     if (err == POSIX_OK) values[count++] = c->pid;
     reply(p->chan, txid, err, values, count, give);
+    return;
+  }
+  case POSIX_EXEC: {
+    vx_task_summary info;
+    vx_handle ch[2] = {};
+    if (!handle || vx_task_info(handle, &info) != VX_OK)
+      err = POSIX_EINVAL;
+    else if (vx_channel_create(0, ch) != VX_OK)
+      err = POSIX_EAGAIN;
+    if (err != POSIX_OK) {
+      if (handle) vx_handle_close(handle);
+      break;
+    }
+    // A new generation for the slot: the old task's EXIT and the old
+    // channel's packets are ignored from here on.
+    uint32_t slot = (uint32_t)(p - procs);
+    vx_handle old_task = p->task, old_chan = p->chan;
+    p->gen++;
+    p->task = handle;
+    p->chan = ch[0];
+    vx_port_bind(port, ch[0], VX_TRIGGER_READABLE, key_for(KEY_CHANNEL, slot, p->gen), 0);
+    vx_port_bind(port, handle, VX_TRIGGER_EXIT, key_for(KEY_EXIT, slot, p->gen), 0);
+    values[0] = p->pid;
+    reply(old_chan, txid, POSIX_OK, values, 1, ch[1]);
+    vx_handle_close(old_chan);
+    vx_handle_close(old_task);
     return;
   }
   case POSIX_IDS:
@@ -278,7 +304,8 @@ static void drain(vx_handle ch, proc *p, uint64_t key) {
       if (h) vx_handle_close(h);
       reply(listen_ch, m.h.txid, POSIX_EINVAL, nullptr, 0, VX_HANDLE_NONE);
     }
-    if (p && !p->used) return; // gone while it was served
+    if (p && (!p->used || p->chan != ch))
+      return; // gone, or gone on in a new task (EXEC), while it was served
   }
   vx_port_bind(port, ch, VX_TRIGGER_READABLE, key, 0);
 }

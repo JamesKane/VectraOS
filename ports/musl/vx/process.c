@@ -68,10 +68,11 @@ static long posix_id(int i, long alone) {
   return (long)rep.arg[i];
 }
 
+static long posix_pid_cache; // never changes, but in a forked child
+
 static long posix_pid(void) {
-  static long pid; // never changes
-  if (!pid) pid = posix_id(0, (long)proc_kernel_id());
-  return pid;
+  if (!posix_pid_cache) posix_pid_cache = posix_id(0, (long)proc_kernel_id());
+  return posix_pid_cache;
 }
 
 static long posix_simple(uint32_t call, long a0, long a1, long result_alone) {
@@ -106,20 +107,20 @@ static long posix_wait4(long pid, int *status, int options, struct rusage *ru) {
   return (long)rep.arg[0];
 }
 
-// --- posix_spawn ---
+// --- posix_spawn and execve ---
 //
-// It replaces musl's, whose child is a clone sharing the parent's memory that
-// then calls execve: here the parent builds the child (vx-rt's spawn.c) from
-// the program's file, gives it the namespace, the console, an environment and
-// its arguments, and registers it with posixd before it runs.
+// The parent builds the child (vx-rt's spawn.c) from the program's file: it
+// gives it the namespace, the console, its arguments and environment, its
+// descriptors and working directory (fd.c's fd= and cwd= records), and
+// registers it with posixd before it runs: as a child (posix_spawn), or as
+// this process going on in a new task (execve). musl's posix_spawn, whose
+// child is a clone that calls execve, is left out of the build.
 //
-// The child's descriptors are the console's until descriptors can be passed
-// (M4 step 3c): file actions are refused. Signal attributes do nothing yet
-// (step 3d).
+// Signal attributes do nothing yet (M4 step 3d).
 
 typedef struct spawn_ctx {
   int64_t pgid; // -1 to inherit
-  bool setsid;
+  bool setsid, exec;
   int64_t pid;
   long error;
 } spawn_ctx;
@@ -129,6 +130,7 @@ static vx_status spawn_prepare(void *ctx, vx_handle task, vx_handle *handle, vx_
   vx_task_summary info;
   if (!posix_chan) { // alone: the child is too, and its pid is the kernel's
     s->pid = vx_task_info(task, &info) == VX_OK ? (int64_t)info.id : 0;
+    if (s->exec) s->pid = posix_pid();
     return VX_OK;
   }
   vx_handle dup;
@@ -136,7 +138,7 @@ static vx_status spawn_prepare(void *ctx, vx_handle task, vx_handle *handle, vx_
   if (st != VX_OK) return st;
   int64_t args[2] = {s->pgid, s->setsid};
   posix_msg rep;
-  s->error = posix_call(posix_chan, POSIX_CHILD, args, 2, dup, &rep, handle);
+  s->error = posix_call(posix_chan, s->exec ? POSIX_EXEC : POSIX_CHILD, args, 2, dup, &rep, handle);
   if (s->error != 0) {
     if (*handle) vx_handle_close(*handle);
     *handle = VX_HANDLE_NONE;
@@ -168,8 +170,8 @@ static long spawn_open(const char *path, bool search) {
   return fd;
 }
 
-static long spawn_records(vx_ndb_writer *w, char *const argv[], char *const envp[], vx_handle *handles,
-                          vx_str *names, uint32_t *count) {
+static long spawn_records(vx_ndb_writer *w, char *const argv[], char *const envp[], const fd_slot *table,
+                          vx_handle *handles, vx_str *names, uint32_t *count) {
   if (argv && argv[0]) {
     vx_ndb_put(w, "argv0", (vx_str){argv[0], strlen(argv[0])});
     vx_ndb_end(w);
@@ -182,38 +184,38 @@ static long spawn_records(vx_ndb_writer *w, char *const argv[], char *const envp
     vx_ndb_put(w, "env", (vx_str){envp[i], strlen(envp[i])});
     vx_ndb_end(w);
   }
+  // Handles: the descriptors' pipes and the namespace's connections, leaving
+  // room for the console, "posix" and "self".
+  uint32_t cap = VX_CHANNEL_MAX_HANDLES - 3;
+  fd_records(table, w, handles, names, count, cap);
   if (w->failed) return -E2BIG;
-  // The child's namespace is this one; one handle is left for "posix".
-  vx_status st = vx_ns_spawn_records(fd_namespace(), w, handles, names, count, VX_CHANNEL_MAX_HANDLES - 4);
+  vx_status st = vx_ns_spawn_records(fd_namespace(), w, handles, names, count, cap);
   if (st != VX_OK) return vx_errno(st);
   if (vx_console.connector && vx_handle_dup(vx_console.connector, VX_RIGHTS_SAME, &handles[*count]) == VX_OK)
     names[(*count)++] = VX_STR("console");
   return w->failed ? -E2BIG : 0;
 }
 
-int posix_spawn(pid_t *restrict pid, const char *restrict path, const posix_spawn_file_actions_t *fa,
-                const posix_spawnattr_t *restrict attr, char *const argv[restrict],
-                char *const envp[restrict]) {
-  if (fa && fa->__actions) return ENOTSUP; // M4 step 3c
-  int flags = attr ? attr->__flags : 0;
-  spawn_ctx ctx = {.pgid = -1, .setsid = flags & POSIX_SPAWN_SETSID};
-  if (flags & POSIX_SPAWN_SETPGROUP) ctx.pgid = attr->__pgrp;
-
-  long fd = spawn_open(path, attr && attr->__fn); // posix_spawnp sets __fn
-  if (fd < 0) return (int)-fd;
-  struct stat st;
+// Builds and starts the program at path, with the descriptors in table.
+// Returns 0 or a negated errno.
+static long spawn_image(const char *path, bool search, char *const argv[], char *const envp[],
+                        const fd_slot *table, spawn_ctx *ctx) {
+  long fd = spawn_open(path, search);
+  if (fd < 0) return fd;
+  struct stat st = {};
   long r = fd_fstat((int)fd, &st);
-  long image = r == 0 && st.st_size > 0 ? mem_map(0, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, (int)fd, 0)
-                                        : -ENOEXEC;
+  long image = -ENOEXEC;
+  if (r == 0 && S_ISREG(st.st_mode) && st.st_size > 0)
+    image = mem_map(0, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, (int)fd, 0);
   fd_close((int)fd);
-  if (image < 0) return (int)-image;
+  if (image < 0) return S_ISDIR(st.st_mode) ? -EACCES : image;
 
   static char records[32 * 1024];
   vx_ndb_writer w = {.buf = records, .cap = sizeof records};
   vx_handle handles[VX_CHANNEL_MAX_HANDLES];
   vx_str names[VX_CHANNEL_MAX_HANDLES];
   uint32_t count = 0;
-  r = spawn_records(&w, argv, envp, handles, names, &count);
+  r = spawn_records(&w, argv, envp, table, handles, names, &count);
   vx_str base = {path, strlen(path)}; // the task's name: the file's, without its directory
   const char *slash = strrchr(path, '/');
   if (slash) base = (vx_str){slash + 1, strlen(slash + 1)};
@@ -228,19 +230,167 @@ int posix_spawn(pid_t *restrict pid, const char *restrict path, const posix_spaw
                        .handle_count = count,
                        .records = {records, w.len},
                        .prepare = spawn_prepare,
-                       .ctx = &ctx};
+                       .ctx = ctx};
     vx_status vst = vx_spawn_elf(&a, &task);
     if (vst == VX_ERR_INVALID)
       r = -ENOEXEC; // not an image for this machine
     else if (vst != VX_OK)
       r = vx_errno(vst);
-    if (ctx.error) r = ctx.error; // posixd's refusal
+    if (ctx->error) r = ctx->error; // posixd's refusal
   } else {
     for (uint32_t i = 0; i < count; i++) vx_handle_close(handles[i]);
   }
   mem_unmap(image, (size_t)st.st_size);
+  if (task) vx_handle_close(task); // posixd has its own, and tells of its end
+  return r;
+}
+
+// The child's table: this one, with the file actions applied in order. A
+// chdir among them changes this process's working directory until the
+// child is built (*restore says to what).
+static long spawn_actions(const posix_spawn_file_actions_t *fa, fd_slot *vt, char *restore,
+                          size_t *restore_len) {
+  for (int i = 0; i < FD_MAX; i++)
+    if ((vt[i] = fd_table[i]).o) vt[i].o->refs++;
+  memcpy(restore, fd_cwd, fd_cwd_len + 1);
+  *restore_len = fd_cwd_len;
+  if (!fa || !fa->__actions) return 0;
+  const struct fdop *op = fa->__actions; // newest first: applied from the oldest
+  while (op->next) op = op->next;
+  for (; op; op = op->prev) {
+    long r = 0;
+    if ((op->cmd == FDOP_CLOSE || op->cmd == FDOP_DUP2 || op->cmd == FDOP_OPEN) &&
+        (op->fd < 0 || op->fd >= FD_MAX))
+      return -EBADF;
+    switch (op->cmd) {
+    case FDOP_CLOSE:
+      if (vt[op->fd].o) ofd_release(vt[op->fd].o);
+      vt[op->fd].o = nullptr;
+      break;
+    case FDOP_DUP2:
+      if (op->srcfd < 0 || op->srcfd >= FD_MAX || !vt[op->srcfd].o) return -EBADF;
+      if (op->srcfd != op->fd) {
+        vt[op->srcfd].o->refs++;
+        if (vt[op->fd].o) ofd_release(vt[op->fd].o);
+        vt[op->fd].o = vt[op->srcfd].o;
+      }
+      vt[op->fd].cloexec = false;
+      break;
+    case FDOP_OPEN: {
+      long fd = fd_openat(AT_FDCWD, op->path, op->oflag, op->mode);
+      if (fd < 0) return fd;
+      if (vt[op->fd].o) ofd_release(vt[op->fd].o);
+      vt[op->fd] = (fd_slot){fd_table[fd].o, false}; // moved from this table to the child's
+      fd_table[fd].o = nullptr;
+      break;
+    }
+    case FDOP_CHDIR: r = fd_chdir(op->path); break;
+    case FDOP_FCHDIR: {
+      const ofd *d = op->fd >= 0 && op->fd < FD_MAX ? vt[op->fd].o : nullptr;
+      if (!d) return -EBADF;
+      if (d->kind != OFD_FILE || !d->dir) return -ENOTDIR;
+      memcpy(fd_cwd, d->path, d->path_len);
+      fd_cwd[d->path_len] = 0;
+      fd_cwd_len = d->path_len;
+      break;
+    }
+    default: r = -EINVAL; break;
+    }
+    if (r < 0) return r;
+  }
+  return 0;
+}
+
+int posix_spawn(pid_t *restrict pid, const char *restrict path, const posix_spawn_file_actions_t *fa,
+                const posix_spawnattr_t *restrict attr, char *const argv[restrict],
+                char *const envp[restrict]) {
+  int flags = attr ? attr->__flags : 0;
+  spawn_ctx ctx = {.pgid = -1, .setsid = flags & POSIX_SPAWN_SETSID};
+  if (flags & POSIX_SPAWN_SETPGROUP) ctx.pgid = attr->__pgrp;
+  static fd_slot vt[FD_MAX];
+  char cwd[VX_NS_MAX_PATH];
+  size_t cwd_len;
+  long r = spawn_actions(fa, vt, cwd, &cwd_len);
+  if (r == 0) r = spawn_image(path, attr && attr->__fn, argv, envp, vt, &ctx); // posix_spawnp sets __fn
+  for (int i = 0; i < FD_MAX; i++)
+    if (vt[i].o) ofd_release(vt[i].o);
+  memcpy(fd_cwd, cwd, cwd_len + 1);
+  fd_cwd_len = cwd_len;
   if (r < 0) return (int)-r;
-  vx_handle_close(task); // posixd has its own, and tells of its end
   if (pid) *pid = (pid_t)ctx.pid;
   return 0;
+}
+
+// execve: the program goes on as this process (posixd keeps its pid, parent
+// and children) in a new task, with this one's descriptors but those marked
+// FD_CLOEXEC; this task then ends unseen. Only a failure returns.
+static long proc_execve(const char *path, char *const argv[], char *const envp[]) {
+  spawn_ctx ctx = {.pgid = -1, .exec = true};
+  long r = spawn_image(path, false, argv, envp, fd_table, &ctx);
+  if (r < 0) return r;
+  fd_exit();
+  vx_thread_exit(0);
+}
+
+// --- fork ---
+//
+// The kernel copies this task's memory and handles (task_create's FORK); the
+// child's one thread starts on a small stack of its own at fork_entry, which
+// sets its thread pointer and jumps back into the copy of proc_fork's frame
+// that setjmp marked. There it lets go of what the copy cannot share (the
+// parent's channel to posixd, the namespace's and the console's dead
+// connections; fd.c) and returns 0.
+
+static jmp_buf fork_jump;
+static vx_handle fork_posix; // the child's channel to posixd, given at its start
+static uint64_t fork_tls;
+alignas(16) static uint8_t fork_stack[4096];
+
+[[noreturn]] static void fork_entry(vx_handle posix, uint64_t unused) {
+  (void)unused;
+  fork_posix = posix;
+#ifdef __x86_64__
+  vx_thread_state(vx_self, 0, VX_STATE_SET_TLS, &fork_tls, sizeof fork_tls);
+#else
+  __asm__ volatile("msr tpidr_el0, %0" : : "r"(fork_tls));
+#endif
+  longjmp(fork_jump, 1);
+}
+
+static long fork_child(void) {
+  if (posix_chan) vx_handle_close(posix_chan); // the parent's, which this task holds too
+  posix_chan = fork_posix;
+  posix_pid_cache = 0;
+  vx_task_summary me;
+  if (vx_task_info(vx_self, &me) == VX_OK) proc_kernel_task_id = me.id;
+  fd_after_fork();
+  return 0;
+}
+
+static long proc_fork(void) {
+  if (vx_console.len) vx_console_flush(); // not twice, once from each
+#ifdef __x86_64__
+  vx_thread_state(vx_self, 0, VX_STATE_GET_TLS, &fork_tls, sizeof fork_tls);
+#else
+  __asm__ volatile("mrs %0, tpidr_el0" : "=r"(fork_tls));
+#endif
+  if (setjmp(fork_jump)) return fork_child();
+  vx_task_summary me;
+  vx_handle child = VX_HANDLE_NONE, thread = VX_HANDLE_NONE, posix = VX_HANDLE_NONE;
+  spawn_ctx ctx = {.pgid = -1};
+  vx_str name = VX_STR("forked");
+  if (vx_task_info(vx_self, &me) == VX_OK) name = (vx_str){me.name, strnlen(me.name, sizeof me.name)};
+  vx_status st = vx_task_fork(name, &child);
+  vx_str ignored;
+  if (st == VX_OK) st = spawn_prepare(&ctx, child, &posix, &ignored);
+  if (st == VX_OK) st = vx_thread_create(child, &thread);
+  if (st == VX_OK)
+    st = vx_thread_start(thread, (uint64_t)fork_entry, (uint64_t)(fork_stack + sizeof fork_stack), posix, 0);
+  if (st == VX_OK) posix = VX_HANDLE_NONE; // the child's now
+  if (posix) vx_handle_close(posix);
+  if (thread) vx_handle_close(thread);
+  if (st != VX_OK && child) vx_task_kill(child, -1);
+  if (child) vx_handle_close(child);
+  if (st != VX_OK) return ctx.error ? ctx.error : -EAGAIN;
+  return (long)ctx.pid;
 }

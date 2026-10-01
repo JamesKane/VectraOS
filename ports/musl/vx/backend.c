@@ -24,6 +24,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sched.h>
+#include <setjmp.h>
 #include <signal.h>
 #include <spawn.h>
 #include <limits.h>
@@ -46,6 +47,7 @@
 #include "../../../lib/vx-ns/spawn.c"
 #include "../../../lib/vx-rt/spawn.c"
 #include "../../../lib/vx-posix/posix.h"
+#include "../../../third_party/musl/src/process/fdop.h" // posix_spawn's file actions, as musl keeps them
 
 // A vx_status as a negated errno. Statuses from 9P servers arrive already
 // mapped from their error texts (vx-9p).
@@ -132,6 +134,9 @@ long __vx_syscall(long n, long a1, long a2, long a3, long a4, long a5, long a6) 
   case SYS_rmdir: return fd_unlinkat(AT_FDCWD, (const char *)a1, AT_REMOVEDIR);
   case SYS_dup2: return fd_dup2((int)a1, (int)a2);
   case SYS_readlink: return -EINVAL;
+  case SYS_fork:
+  case SYS_vfork: return proc_fork();
+  case SYS_pipe: return fd_pipe2((int *)a1, 0);
 #endif
 
   // Memory (memory.c)
@@ -155,6 +160,10 @@ long __vx_syscall(long n, long a1, long a2, long a3, long a4, long a5, long a6) 
   case SYS_setpgid: return posix_setpgid(a1, a2);
   case SYS_setsid: return posix_setsid();
   case SYS_wait4: return posix_wait4(a1, (int *)a2, (int)a3, (struct rusage *)a4);
+  case SYS_execve: return proc_execve((const char *)a1, (char *const *)a2, (char *const *)a3);
+  case SYS_clone: // musl's _Fork and vfork, where there is no SYS_fork; threads wait (docs/milestones.md)
+    return a1 == SIGCHLD && !a2 ? proc_fork() : -ENOSYS;
+  case SYS_pipe2: return fd_pipe2((int *)a1, (int)a2);
   case SYS_getuid:
   case SYS_geteuid:
   case SYS_getgid:

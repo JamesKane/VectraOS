@@ -2,16 +2,23 @@
 //
 // A descriptor names an open file description, which dup and fcntl's
 // F_DUPFD share: the offset and the status flags, as POSIX has them. A
-// description is the console, one of the spawn message's two pipes, or a
-// file or directory in the namespace, which is built from the spawn message
-// the first time a path is used.
+// description is the console, an end of a pipe, or a file or directory in
+// the namespace, which is built from the spawn message the first time a path
+// is used.
+//
+// A pipe is a channel: each write a message of a header and up to 4 KiB, as
+// vx-rt's stdio has them, so pipes join POSIX programs and first-party ones.
+// Its ends are shared as POSIX shares them: dup shares the description, and
+// a child (fork, posix_spawn, exec) holds the same channel end, so the reader
+// sees the end of the file when the last writer anywhere has closed.
 //
 // One thread is all a process has until pthreads (docs/milestones.md), so
 // nothing here locks yet.
 
 static constexpr int FD_MAX = 64;
-static constexpr uint32_t FD_PIPE_CHUNK = 4096; // the most a reader's message holds (vx-rt stdio)
-static constexpr uint32_t FD_DIR_BUFFER = 8192; // 9P directory entries read at once
+static constexpr uint32_t FD_PIPE_CHUNK = 4096;  // the most a reader's message holds (vx-rt stdio)
+static constexpr uint32_t FD_DIR_BUFFER = 8192;  // 9P directory entries read at once
+static constexpr uint32_t FD_PIPE_BUFFER = 8192; // a reader's message, in a page of its own
 
 typedef enum ofd_kind : uint8_t { OFD_FREE, OFD_CONSOLE, OFD_PIPE_IN, OFD_PIPE_OUT, OFD_FILE } ofd_kind;
 
@@ -26,15 +33,22 @@ typedef struct ofd {
   int64_t dir_next;          // getdents64's d_off for the next entry
   char path[VX_NS_MAX_PATH]; // cleaned and absolute: for *at calls and rewinding a directory
   size_t path_len;
+  vx_handle pipe;            // a pipe's channel end
+  uint8_t *msg;              // a reader's current message, in a page of its own,
+  uint32_t msg_len, msg_pos; // and how much of it has been read
+  bool ended;                // the writers have all gone
+  bool closed_bound;         // PEER_CLOSED is bound once (it fires once)
 } ofd;
 
 static ofd fd_ofds[FD_MAX];
-static struct {
+typedef struct fd_slot {
   ofd *o;
   bool cloexec;
-} fd_table[FD_MAX];
+} fd_slot;
+static fd_slot fd_table[FD_MAX];
 
 static vx_ns fd_ns;
+static vx_handle fd_port;                         // where a blocked pipe read waits
 static vx_status fd_ns_status = VX_ERR_BAD_STATE; // until it is built
 static char fd_cwd[VX_NS_MAX_PATH] = "/";
 static size_t fd_cwd_len = 1;
@@ -52,14 +66,8 @@ static void ofd_release(ofd *o) {
   if (--o->refs) return;
   if (o->kind == OFD_FILE) vx_ns_close(&o->f);
   if (o->dirs) vx_as_unmap(vx_self, (uint64_t)o->dirs, FD_DIR_BUFFER);
-  if (o->kind == OFD_PIPE_OUT && vx_stdio.out) {
-    vx_handle_close(vx_stdio.out); // the reader sees the end of the file
-    vx_stdio.out = VX_HANDLE_NONE;
-  }
-  if (o->kind == OFD_PIPE_IN && vx_stdio.in) {
-    vx_handle_close(vx_stdio.in);
-    vx_stdio.in = VX_HANDLE_NONE;
-  }
+  if (o->msg) vx_as_unmap(vx_self, (uint64_t)o->msg, FD_PIPE_BUFFER);
+  if (o->pipe) vx_handle_close(o->pipe); // the last writer gone: the reader sees the end of the file
   o->kind = OFD_FREE;
 }
 
@@ -81,14 +89,41 @@ static bool fd_valid(int fd) { return fd_get(fd) != nullptr; }
 // Descriptors 0, 1 and 2 from the spawn message: the pipes it names, and the
 // console for what it does not. Standard error goes to the console, so a
 // pipeline's errors reach its terminal; without a console, to stdout.
+static ofd *pipe_ofd(vx_handle end, bool reader, int flags) {
+  ofd *o = ofd_new(reader ? OFD_PIPE_IN : OFD_PIPE_OUT, (reader ? O_RDONLY : O_WRONLY) | flags);
+  if (o)
+    o->pipe = end;
+  else
+    vx_handle_close(end);
+  return o;
+}
+
+static void fd_place(int fd, ofd *o) {
+  if (!o) return;
+  if (fd_table[fd].o) ofd_release(fd_table[fd].o);
+  fd_table[fd].o = o;
+  fd_table[fd].cloexec = false;
+}
+
+static void fd_from_records(void); // below, with what writes them
+
+// The descriptors the spawn message gives: fd= records from a POSIX parent
+// (fd_records), or else 0, 1 and 2 from the pipes it names and the console
+// for what it does not. Standard error goes to the console, so a pipeline's
+// errors reach its terminal; without a console, to stdout.
 static void fd_init(void) {
   vx_handle console = vx_spawn_take("console");
   if (console && vx_console_attach(console) != VX_OK) vx_print(VX_STR("vx-musl: cannot open the console\n"));
-  vx_stdio.in = vx_spawn_take("stdin");
-  vx_stdio.out = vx_spawn_take("stdout");
+  vx_port_create(0, &fd_port);
+  vx_ndb_record rec;
+  if (vx_spawn_record("fd", &rec)) {
+    fd_from_records();
+    return;
+  }
+  vx_handle in_end = vx_spawn_take("stdin"), out_end = vx_spawn_take("stdout");
   ofd *cons = console ? ofd_new(OFD_CONSOLE, O_RDWR) : nullptr;
-  ofd *in = vx_stdio.in ? ofd_new(OFD_PIPE_IN, O_RDONLY) : cons;
-  ofd *out = vx_stdio.out ? ofd_new(OFD_PIPE_OUT, O_WRONLY) : cons;
+  ofd *in = in_end ? pipe_ofd(in_end, true, 0) : cons;
+  ofd *out = out_end ? pipe_ofd(out_end, false, 0) : cons;
   ofd *err = cons ? cons : out;
   ofd *std[3] = {in, out, err};
   for (int fd = 0; fd < 3; fd++) {
@@ -98,11 +133,15 @@ static void fd_init(void) {
   }
 }
 
-// At exit: what vx_print has buffered goes out, and stdout's pipe closes.
+// At exit: what vx_print has buffered goes out, and this process's pipe ends
+// close, so a reader sees the end of its file before the exit.
 static void fd_exit(void) {
   if (vx_console.len) vx_console_flush();
-  if (vx_stdio.out) vx_handle_close(vx_stdio.out);
-  vx_stdio.out = VX_HANDLE_NONE;
+  for (int i = 0; i < FD_MAX; i++)
+    if (fd_ofds[i].kind != OFD_FREE && fd_ofds[i].pipe) {
+      vx_handle_close(fd_ofds[i].pipe);
+      fd_ofds[i].pipe = VX_HANDLE_NONE;
+    }
 }
 
 static vx_ns *fd_namespace(void) {
@@ -164,7 +203,7 @@ static long console_write(const char *p, size_t n) {
   return (long)n;
 }
 
-static long pipe_write(const uint8_t *p, size_t n) {
+static long pipe_write(const ofd *o, const uint8_t *p, size_t n) {
   static uint8_t msg[sizeof(vx_msg_header) + FD_PIPE_CHUNK];
   size_t done = 0;
   while (done < n) {
@@ -173,8 +212,9 @@ static long pipe_write(const uint8_t *p, size_t n) {
     memcpy(msg + sizeof(vx_msg_header), p + done, k);
     vx_status st;
     for (int tries = 0;; tries++) {
-      st = vx_channel_write(vx_stdio.out, msg, (uint32_t)sizeof(vx_msg_header) + k, nullptr, 0);
+      st = vx_channel_write(o->pipe, msg, (uint32_t)sizeof(vx_msg_header) + k, nullptr, 0);
       if (st != VX_ERR_SHOULD_WAIT) break;
+      if (o->flags & O_NONBLOCK) return done ? (long)done : -EAGAIN;
       static const _Atomic uint32_t never; // the reader is behind: wait a little
       vx_futex_wait(&never, 0, vx_clock_read() + (tries < 10 ? 100'000 : 1'000'000));
     }
@@ -182,6 +222,44 @@ static long pipe_write(const uint8_t *p, size_t n) {
     done += k;
   }
   return (long)n;
+}
+
+// Reads what the pipe has: the rest of the current message, or the next one.
+// 0 once every writer has gone and everything is read.
+static long pipe_read(ofd *o, void *buf, uint32_t count) {
+  if (!o->msg) {
+    vx_handle vmo;
+    uint64_t at = 0;
+    vx_status st = vx_vmo_create(FD_PIPE_BUFFER, 0, &vmo);
+    if (st == VX_OK) {
+      st = vx_as_map(vx_self, vmo, 0, FD_PIPE_BUFFER, VX_MAP_WRITE, &at);
+      vx_handle_close(vmo);
+    }
+    if (st != VX_OK) return -ENOMEM;
+    o->msg = (uint8_t *)at;
+  }
+  while (o->msg_pos == o->msg_len && !o->ended) {
+    vx_msg_size size;
+    vx_status st = vx_channel_read(o->pipe, o->msg, FD_PIPE_BUFFER, nullptr, 0, &size);
+    if (st == VX_OK && size.bytes >= sizeof(vx_msg_header)) {
+      o->msg_len = size.bytes;
+      o->msg_pos = sizeof(vx_msg_header);
+    } else if (st == VX_ERR_SHOULD_WAIT) {
+      if (o->flags & O_NONBLOCK) return -EAGAIN;
+      vx_port_bind(fd_port, o->pipe, VX_TRIGGER_READABLE, 0, 0);
+      if (!o->closed_bound)
+        o->closed_bound = vx_port_bind(fd_port, o->pipe, VX_TRIGGER_PEER_CLOSED, 0, 0) == VX_OK;
+      vx_packet pk;
+      vx_port_wait(fd_port, VX_INFINITE, 0, &pk, 1); // a packet for another pipe only means trying again
+    } else if (st != VX_OK) {
+      o->ended = true; // the writers have gone (or sent more than a message holds)
+    }
+  }
+  uint32_t n = o->msg_len - o->msg_pos;
+  if (n > count) n = count;
+  memcpy(buf, o->msg + o->msg_pos, n);
+  o->msg_pos += n;
+  return n;
 }
 
 static long file_write(ofd *o, const uint8_t *p, size_t n) {
@@ -210,7 +288,7 @@ static long fd_read(int fd, void *buf, size_t n) {
   int64_t r;
   switch (o->kind) {
   case OFD_CONSOLE: r = vx_console_read(buf, count); break;
-  case OFD_PIPE_IN: r = vx_read(buf, count); break;
+  case OFD_PIPE_IN: return pipe_read(o, buf, count);
   case OFD_FILE:
     if (o->dir) return -EISDIR;
     r = vx_ns_read(&o->f, buf, count);
@@ -225,7 +303,7 @@ static long fd_write(int fd, const void *buf, size_t n) {
   if (!o || (o->flags & O_ACCMODE) == O_RDONLY) return -EBADF;
   switch (o->kind) {
   case OFD_CONSOLE: return console_write(buf, n);
-  case OFD_PIPE_OUT: return pipe_write(buf, n);
+  case OFD_PIPE_OUT: return pipe_write(o, buf, n);
   case OFD_FILE: return file_write(o, buf, n);
   default: return -EBADF;
   }
@@ -575,4 +653,173 @@ static long fd_ioctl(int fd, unsigned long request, void *arg) {
   if (o->kind != OFD_CONSOLE || request != TIOCGWINSZ) return -ENOTTY;
   *(struct winsize *)arg = (struct winsize){.ws_row = 24, .ws_col = 80};
   return 0;
+}
+
+// --- Pipes ---
+
+static long fd_pipe2(int *fds, int flags) {
+  if (flags & ~(O_CLOEXEC | O_NONBLOCK)) return -EINVAL;
+  vx_handle ch[2];
+  vx_status st = vx_channel_create(0, ch);
+  if (st != VX_OK) return vx_errno(st);
+  ofd *r = pipe_ofd(ch[0], true, flags & O_NONBLOCK), *w = pipe_ofd(ch[1], false, flags & O_NONBLOCK);
+  if (!r || !w) {
+    if (r) ofd_release(r);
+    if (w) ofd_release(w);
+    return -ENFILE;
+  }
+  long a = fd_install(r, 0, flags & O_CLOEXEC);
+  if (a < 0) {
+    ofd_release(w);
+    return a;
+  }
+  long b = fd_install(w, 0, flags & O_CLOEXEC);
+  if (b < 0) {
+    fd_close((int)a);
+    return b;
+  }
+  fds[0] = (int)a, fds[1] = (int)b;
+  return 0;
+}
+
+// --- Descriptors for a child ---
+//
+// A child (posix_spawn, execve) is given a table of descriptors as fd=
+// records in its spawn message, one per open descriptor without FD_CLOEXEC,
+// and the working directory as cwd=:
+//   fd=N console
+//   fd=N pipe=read|write end=NAME flags=F       the same channel end, shared
+//   fd=N file=PATH flags=F offset=O [dir]       opened again by the child
+//   fd=N same=M                                 the same description as M
+// A file is opened again, so its offset is the child's own from then on:
+// sharing it waits for the posix 9Px extension (M4 step 4).
+
+// A file or directory at path, opened again with the description's flags
+// (never creating or truncating) at offset.
+static ofd *file_reopen(const char *path, size_t len, int flags, uint64_t offset) {
+  int acc = flags & O_ACCMODE;
+  uint8_t mode9 = P9_OREAD;
+  if (acc == O_WRONLY) mode9 = P9_OWRITE;
+  if (acc == O_RDWR) mode9 = P9_ORDWR;
+  vx_ns_file f;
+  if (vx_ns_open(fd_namespace(), (vx_str){path, len}, mode9, &f) != VX_OK) return nullptr;
+  p9_stat s;
+  bool dir = p9c_stat(f.c, f.fid, &s) == VX_OK && (s.mode & P9_DMDIR);
+  ofd *o = ofd_new(OFD_FILE, flags & (O_ACCMODE | O_APPEND | O_NONBLOCK));
+  if (!o) {
+    vx_ns_close(&f);
+    return nullptr;
+  }
+  o->f = f;
+  o->dir = dir;
+  if (!dir) o->f.offset = offset;
+  memcpy(o->path, path, len);
+  o->path_len = len;
+  return o;
+}
+
+static void fd_records(const fd_slot *table, vx_ndb_writer *w, vx_handle *handles, vx_str *names,
+                       uint32_t *count, uint32_t cap) {
+  static char handle_names[FD_MAX][8];
+  vx_ndb_put(w, "cwd", (vx_str){fd_cwd, fd_cwd_len});
+  vx_ndb_end(w);
+  for (int fd = 0; fd < FD_MAX; fd++) {
+    const ofd *o = table[fd].o;
+    if (!o || table[fd].cloexec) continue;
+    int same = -1;
+    for (int j = 0; j < fd && same < 0; j++)
+      if (table[j].o == o && !table[j].cloexec) same = j;
+    vx_ndb_put_u64(w, "fd", (uint64_t)fd);
+    if (same >= 0) {
+      vx_ndb_put_u64(w, "same", (uint64_t)same);
+    } else if (o->kind == OFD_CONSOLE) {
+      vx_ndb_flag(w, "console");
+    } else if (o->kind == OFD_PIPE_IN || o->kind == OFD_PIPE_OUT) {
+      char *nm = handle_names[fd];
+      nm[0] = 'f', nm[1] = 'd', nm[2] = '.', nm[3] = (char)('0' + fd / 10), nm[4] = (char)('0' + fd % 10);
+      if (*count < cap && o->pipe && vx_handle_dup(o->pipe, VX_RIGHTS_SAME, &handles[*count]) == VX_OK) {
+        names[(*count)++] = (vx_str){nm, 5};
+        vx_ndb_put(w, "pipe", o->kind == OFD_PIPE_IN ? VX_STR("read") : VX_STR("write"));
+        vx_ndb_put(w, "end", (vx_str){nm, 5}); // not handle=, which declares a handle
+        vx_ndb_put_u64(w, "flags", (uint64_t)o->flags);
+      } else {
+        w->failed = true;
+      }
+    } else if (o->kind == OFD_FILE) {
+      vx_ndb_put(w, "file", (vx_str){o->path, o->path_len});
+      vx_ndb_put_u64(w, "flags", (uint64_t)o->flags);
+      vx_ndb_put_u64(w, "offset", o->f.offset);
+      if (o->dir) vx_ndb_flag(w, "dir");
+    }
+    vx_ndb_end(w);
+  }
+}
+
+static void fd_from_records(void) {
+  static char scratch[VX_CHANNEL_MAX_BYTES];
+  vx_ndb_reader r = {.src = vx_spawn.text, .scratch = scratch, .scratch_cap = sizeof scratch};
+  vx_ndb_record rec;
+  while (vx_ndb_next(&r, &rec) == VX_NDB_RECORD) {
+    uint64_t fd, n = 0, flags = 0, offset = 0;
+    if (vx_ndb_has(&rec, "cwd")) {
+      vx_str cwd = vx_ndb_get(&rec, "cwd");
+      if (cwd.len && cwd.len < sizeof fd_cwd && cwd.ptr[0] == '/') {
+        memcpy(fd_cwd, cwd.ptr, cwd.len);
+        fd_cwd[cwd.len] = 0;
+        fd_cwd_len = cwd.len;
+      }
+      continue;
+    }
+    if (!vx_ndb_get_u64(&rec, "fd", &fd) || fd >= FD_MAX) continue;
+    vx_ndb_get_u64(&rec, "flags", &flags);
+    vx_ndb_get_u64(&rec, "offset", &offset);
+    if (vx_ndb_get_u64(&rec, "same", &n)) {
+      if (n < FD_MAX && fd_table[n].o) {
+        fd_table[n].o->refs++;
+        fd_place((int)fd, fd_table[n].o);
+      }
+    } else if (vx_ndb_has(&rec, "console")) {
+      fd_place((int)fd, vx_console.connector ? ofd_new(OFD_CONSOLE, O_RDWR) : nullptr);
+    } else if (vx_ndb_has(&rec, "pipe")) {
+      char name[8] = {};
+      vx_str h = vx_ndb_get(&rec, "end");
+      if (h.len >= sizeof name) continue;
+      memcpy(name, h.ptr, h.len);
+      vx_handle end = vx_spawn_take(name);
+      bool reader = vx_ndb_get(&rec, "pipe").len == 4; // "read"
+      if (end) fd_place((int)fd, pipe_ofd(end, reader, (int)flags & O_NONBLOCK));
+    } else if (vx_ndb_has(&rec, "file")) {
+      vx_str path = vx_ndb_get(&rec, "file");
+      if (path.len < VX_NS_MAX_PATH) fd_place((int)fd, file_reopen(path.ptr, path.len, (int)flags, offset));
+    }
+  }
+}
+
+// --- After a fork ---
+//
+// The child has a copy of this memory, so the table is as it was, but not of
+// rings: the namespace's connections and the console's are gone, and so are
+// the fids its files were open on. Each is opened again by its path, at its
+// offset. A directory starts again from its first entry. Pipe ends are
+// shared, as POSIX has them; the port a blocked read waits on is the
+// child's own.
+static void fd_after_fork(void) {
+  if (vx_console.conn.end) p9_ring_disconnect(&vx_console.conn);
+  vx_console.open = false;
+  vx_handle_close(fd_port);
+  vx_port_create(0, &fd_port);
+  if (fd_ns_status != VX_ERR_BAD_STATE) fd_ns_status = vx_ns_after_fork(&fd_ns);
+  for (int i = 0; i < FD_MAX; i++) {
+    ofd *o = &fd_ofds[i];
+    o->closed_bound = false;
+    if (o->kind != OFD_FILE) continue;
+    uint64_t offset = o->f.offset;
+    o->f = (vx_ns_file){}; // the fid was on the old connection
+    ofd *n = file_reopen(o->path, o->path_len, o->flags, offset);
+    if (!n) continue; // reads and writes now fail with EBADF
+    o->f = n->f;
+    o->dirs_len = o->dirs_at = 0;
+    o->dir_next = 0;
+    *n = (ofd){}; // its fid is o's now
+  }
 }

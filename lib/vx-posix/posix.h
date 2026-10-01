@@ -25,6 +25,9 @@ enum posix_call : uint32_t {
   POSIX_GETPGID,     // {pid}, 0 for the caller -> {pgid}
   POSIX_GETSID,      // {pid}, 0 for the caller -> {sid}
   POSIX_WAIT,        // {pid, options} as wait4's -> {pid, status} once a child has ended; {0} with WNOHANG
+  POSIX_EXEC,        // handles [a new task] -> {pid}, handles [its channel]: the caller's process goes on
+                     // in the new task (execve), with its pid, parent, group, session and children; the
+                     // caller's own task and channel are let go, and its end is not reported
 };
 
 // A reply's h.flags: 0, or why the call failed, as the errno it becomes.
