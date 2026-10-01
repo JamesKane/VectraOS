@@ -1,0 +1,5 @@
+# tests/qemu/boot.ndb: the kernel boots and reports itself (M1).
+
+scenario=boot timeout=10
+expect="vx: kernel 0.1.0 $arch, "
+fail="vx: panic"

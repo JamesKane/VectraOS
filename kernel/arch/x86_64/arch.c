@@ -12,7 +12,7 @@ static inline uint8_t inb(uint16_t port) {
 
 constexpr uint16_t COM1 = 0x3f8;
 
-static void serial_init(void) {
+static void arch_console_init(void) {
     outb(COM1 + 1, 0x00);   // no interrupts
     outb(COM1 + 3, 0x80);   // divisor latch on
     outb(COM1 + 0, 0x01);   // divisor 1: 115200 baud
@@ -39,6 +39,5 @@ static void arch_console_write(vx_str s) {
 
 // Limine enters here in long mode, on its own stack, with the higher half mapped.
 [[noreturn]] void _start(void) {
-    serial_init();
     kernel_main();
 }

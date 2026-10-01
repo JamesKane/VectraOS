@@ -11,13 +11,17 @@ VectraOS is a new operating system for people who hack on systems. It combines:
 - a **hybrid WIMP + tiling desktop** in which every action can be reached by mouse, by key and by script;
 - **local-first AI**, treated as a system resource like storage or audio.
 
-Status: **M1 in progress** (2026-09-30). The blueprint is in `docs/`; the code so far is the build tool, the ABI tables, the ndb parser, a kernel skeleton that compiles and links for both architectures, and Limine 12.9.1 vendored and built from source.
+Status: **M1 in progress** (2026-09-30). The blueprint is in `docs/`; the code so far is the build tool, the ABI tables, the ndb parser, a kernel that boots through Limine 12.9.1 on x86_64 and aarch64 under QEMU and reports its memory and CPUs, and Limine vendored and built from source.
 
 ## Building
 
 ```sh
 cc -std=c23 -o build build.c     # once; after that ./build rebuilds itself
 ./build all                      # the kernel and Limine, for x86_64 and aarch64 → out/<arch>/debug/kernel.elf, out/limine/
+./build image                    # GPT disk images → out/<arch>/debug/vectra-<arch>.img (reproducible)
+./build qemu --arch aarch64      # boot one in QEMU on the serial console; Ctrl-A X quits (--kvm, --gdb)
+./build test                     # boot headless on both architectures and check tests/qemu/*.ndb
+./build vendor-check             # check third_party/ against VENDOR.ndb
 ./build loc                      # the line-count ledger
 ```
 

@@ -3,12 +3,20 @@
 
 #include "vx/abi.h"
 
+// -fstack-protector-strong with a global guard (docs/01 §11). boot_read
+// replaces this value with entropy from the bootloader.
+uintptr_t __stack_chk_guard = 0x595e9fbd94fda766;
+
 // What each architecture provides to the rest of the kernel.
+static void arch_console_init(void);
 static void arch_console_write(vx_str s);
 [[noreturn]] static void arch_halt(void);
 
 // What the rest of the kernel provides to the architecture's entry point.
 [[noreturn]] static void kernel_main(void);
+
+#include "lib.c"
+#include "boot.c"
 
 #if defined(__x86_64__)
 #  define VX_ARCH_NAME "x86_64"

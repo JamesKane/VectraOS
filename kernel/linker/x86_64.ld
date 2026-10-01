@@ -19,7 +19,13 @@ SECTIONS {
     .note.gnu.build-id : { *(.note.gnu.build-id) } :rodata
 
     . = ALIGN(CONSTANT(MAXPAGESIZE));
-    .data : { *(.data .data.*) } :data
+    .data : {
+        /* Limine looks for its requests between these markers (kernel/boot.c). */
+        KEEP(*(.limine_requests_start))
+        KEEP(*(.limine_requests))
+        KEEP(*(.limine_requests_end))
+        *(.data .data.*)
+    } :data
     .bss : { *(.bss .bss.*) *(COMMON) } :data
 
     /DISCARD/ : { *(.eh_frame*) *(.note.GNU-stack) *(.comment) }

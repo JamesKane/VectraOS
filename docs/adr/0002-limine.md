@@ -1,6 +1,6 @@
 # ADR-0002: Limine
 
-Status: proposed, 2026-09-30. Vendored and building; accepted when the review below is done.
+Status: accepted, 2026-09-30, after review by James Kane.
 
 ## Context
 
@@ -16,7 +16,7 @@ D9 chooses Limine on both architectures: it gives the memory map, framebuffer, m
   - The result was checked against Limine's own build of the same release with the same toolchain: `BOOTAA64.EFI` is byte-identical.
 - **Not built:** the BIOS stages, the ISO images and the `limine` host tool. A BIOS-bootable hybrid ISO is optional (04 §3.2) and would bring them in.
 - The kernel uses Limine's `limine.h`, from `third_party/limine/limine-protocol/include/`.
-- **Review:** `reviewed.by=pending` in `VENDOR.ndb` until the owner has reviewed the parts we build: `common/`, `picoefi/` (the x86_64 and aarch64 parts), `flanterm/src`, `libfdt/src`, `freestanding-c-hdrs/` and `limine-protocol/`.
+- **Review:** done by James Kane on 2026-09-30 (`reviewed.by` in `VENDOR.ndb`), covering the parts we build: `common/`, `picoefi/` (the x86_64 and aarch64 parts), `flanterm/src`, `libfdt/src`, `freestanding-c-hdrs/` and `limine-protocol/`.
 
 ## Consequences
 

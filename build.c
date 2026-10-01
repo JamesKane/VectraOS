@@ -9,18 +9,23 @@
 
 #define _GNU_SOURCE   // nftw with FTW_ACTIONRETVAL
 #include <elf.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <ftw.h>
+#include <poll.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "lib/vx-ndb/ndb.c"
+#include "lib/vx-sha256/sha256.c"
 
 // ADR-0001: the toolchain is pinned to these exact binaries and versions.
 // Each pin is one line of the tool's --version output, compared exactly.
@@ -35,7 +40,7 @@ static const char NASM_VERSION[]    = "NASM version 3.02 compiled on Jul 14 2026
 
 // When any of these changes, ./build rebuilds itself, and cached ports rebuild.
 static const char *const BUILD_SOURCES[] = {
-    "build.c", "lib/vx-ndb/ndb.h", "lib/vx-ndb/ndb.c", "abi/vx/abi.h",
+    "build.c", "lib/vx-ndb/ndb.h", "lib/vx-ndb/ndb.c", "lib/vx-sha256/sha256.c", "abi/vx/abi.h",
     "abi/vx/syscalls.def", "abi/vx/rights.def", "abi/vx/status.def", nullptr,
 };
 
@@ -60,7 +65,7 @@ static const char *const KERNEL_FLAGS[] = {
     "-ffreestanding", "-fno-pic", "-mgeneral-regs-only",
     "-fno-asynchronous-unwind-tables", "-fno-unwind-tables",   // frame pointers unwind the kernel
     "-fsanitize=kcfi", "-fstack-protector-strong", "-mstack-protector-guard=global",
-    "-Iabi", "-Ikernel", nullptr,
+    "-Iabi", "-Ikernel", "-Ithird_party/limine/limine-protocol/include", nullptr,
 };
 
 static const char *const KERNEL_DEBUG_FLAGS[] = {
@@ -677,7 +682,7 @@ static const vx_ndb_record *port_target_for(const port *p, const arch *a) {
 }
 
 // ---------------------------------------------------------------------------
-// all
+// all, image, qemu, test
 
 static bool build_arch(const arch *a, bool release) {
     if (!build_kernel(a, release)) return false;
@@ -685,24 +690,492 @@ static bool build_arch(const arch *a, bool release) {
     return !t || build_port_target(&limine, t);
 }
 
-static int cmd_all(const arch *only, bool release) {
+static void check_toolchain(void) {
     check_version(CLANG, CLANG_VERSION);
     check_version(LLD, LLD_VERSION);
     check_version(OBJCOPY, OBJCOPY_VERSION);
     port_load(&limine, "limine");
+}
 
-    // One child per architecture; each runs its steps in order.
+// Runs fn for each architecture (or only one) in parallel, one child each.
+static int per_arch(const arch *only, bool release, bool (*fn)(const arch *, bool)) {
     pid_t pids[ARCH_COUNT] = {};
     for (int i = 0; i < ARCH_COUNT; i++) {
         if (only && only != &ARCHES[i]) continue;
         pids[i] = fork();
         if (pids[i] < 0) die("fork failed");
-        if (pids[i] == 0) _exit(build_arch(&ARCHES[i], release) ? 0 : 1);
+        if (pids[i] == 0) _exit(fn(&ARCHES[i], release) ? 0 : 1);
     }
     bool ok = true;
     for (int i = 0; i < ARCH_COUNT; i++)
         if (pids[i]) ok = wait_ok(pids[i]) && ok;
     return ok ? 0 : 1;
+}
+
+// --- image: a GPT disk holding one EFI system partition (docs/04 §3.2) ---
+
+static const char MFORMAT[] = "/usr/bin/mformat";
+static const char MMD[]     = "/usr/bin/mmd";
+static const char MCOPY[]   = "/usr/bin/mcopy";
+
+constexpr uint64_t SECTOR      = 512;
+constexpr uint64_t ESP_BYTES   = 64ull << 20;
+constexpr uint64_t ESP_LBA     = 2048;   // 1 MiB in, as partitioning tools align it
+constexpr uint32_t GPT_ENTRIES = 128;
+
+// The EFI system partition type, C12A7328-F81F-11D2-BA4B-00A0C93EC93B, as stored on disk.
+static const uint8_t ESP_TYPE[16] = {
+    0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11, 0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b,
+};
+
+static uint32_t crc32(const uint8_t *p, size_t n) {
+    uint32_t c = 0xffffffff;
+    for (size_t i = 0; i < n; i++) {
+        c ^= p[i];
+        for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xedb88320 & -(c & 1));
+    }
+    return ~c;
+}
+
+static void put16(uint8_t *p, uint16_t v) { for (int i = 0; i < 2; i++) p[i] = (uint8_t)(v >> 8 * i); }
+static void put32(uint8_t *p, uint32_t v) { for (int i = 0; i < 4; i++) p[i] = (uint8_t)(v >> 8 * i); }
+static void put64(uint8_t *p, uint64_t v) { for (int i = 0; i < 8; i++) p[i] = (uint8_t)(v >> 8 * i); }
+
+// A GUID derived from the image's inputs, so one commit always gives the same disk (docs/04 §7).
+static void derived_guid(uint8_t out[16], uint64_t seed, const char *what) {
+    uint64_t a = hash_bytes(seed, (vx_str){ what, strlen(what) });
+    uint64_t b = hash_bytes(a, (vx_str){ what, strlen(what) });
+    put64(out, a);
+    put64(out + 8, b);
+    out[7] = (out[7] & 0x0f) | 0x40;   // version 4 layout
+    out[8] = (out[8] & 0x3f) | 0x80;   // RFC 4122 variant
+}
+
+static void gpt_header(uint8_t *h, uint64_t my_lba, uint64_t alt_lba, uint64_t entries_lba,
+                       uint64_t last_lba, const uint8_t disk_guid[16], uint32_t entries_crc) {
+    memset(h, 0, SECTOR);
+    memcpy(h, "EFI PART", 8);
+    put32(h + 8, 0x00010000);
+    put32(h + 12, 92);
+    put64(h + 24, my_lba);
+    put64(h + 32, alt_lba);
+    put64(h + 40, 34);                 // first usable LBA
+    put64(h + 48, last_lba - 33);      // last usable LBA
+    memcpy(h + 56, disk_guid, 16);
+    put64(h + 72, entries_lba);
+    put32(h + 80, GPT_ENTRIES);
+    put32(h + 84, 128);
+    put32(h + 88, entries_crc);
+    put32(h + 16, crc32(h, 92));
+}
+
+static void pwrite_all(int fd, const void *p, size_t n, uint64_t off, const char *path) {
+    if (pwrite(fd, p, n, (off_t)off) != (ssize_t)n) die("cannot write %s", path);
+}
+
+static void write_gpt_disk(const char *path, const char *esp_path, uint64_t seed) {
+    uint64_t esp_sectors = ESP_BYTES / SECTOR;
+    uint64_t total       = ESP_LBA + esp_sectors + 2048;
+    uint64_t last        = total - 1;
+
+    uint8_t disk_guid[16], part_guid[16];
+    derived_guid(disk_guid, seed, "disk");
+    derived_guid(part_guid, seed, "esp");
+
+    uint8_t *entries = alloc(GPT_ENTRIES * 128);
+    memset(entries, 0, GPT_ENTRIES * 128);
+    memcpy(entries, ESP_TYPE, 16);
+    memcpy(entries + 16, part_guid, 16);
+    put64(entries + 32, ESP_LBA);
+    put64(entries + 40, ESP_LBA + esp_sectors - 1);
+    const char *name = "EFI system partition";
+    for (size_t i = 0; name[i]; i++) put16(entries + 56 + 2 * i, (uint16_t)name[i]);
+    uint32_t entries_crc = crc32(entries, GPT_ENTRIES * 128);
+
+    // A protective MBR: one partition of type 0xEE covering the disk.
+    uint8_t mbr[SECTOR] = {};
+    uint8_t *pe = mbr + 446;
+    pe[1] = 0x00; pe[2] = 0x02; pe[3] = 0x00;          // CHS of LBA 1
+    pe[4] = 0xee;
+    pe[5] = 0xff; pe[6] = 0xff; pe[7] = 0xff;
+    put32(pe + 8, 1);
+    put32(pe + 12, last > 0xffffffff ? 0xffffffff : (uint32_t)last);
+    mbr[510] = 0x55;
+    mbr[511] = 0xaa;
+
+    uint8_t primary[SECTOR], backup[SECTOR];
+    gpt_header(primary, 1, last, 2, last, disk_guid, entries_crc);
+    gpt_header(backup, last, 1, last - 32, last, disk_guid, entries_crc);
+
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) die("cannot create %s", path);
+    if (ftruncate(fd, (off_t)(total * SECTOR)) != 0) die("cannot size %s", path);
+    pwrite_all(fd, mbr, SECTOR, 0, path);
+    pwrite_all(fd, primary, SECTOR, SECTOR, path);
+    pwrite_all(fd, entries, GPT_ENTRIES * 128, 2 * SECTOR, path);
+    pwrite_all(fd, entries, GPT_ENTRIES * 128, (last - 32) * SECTOR, path);
+    pwrite_all(fd, backup, SECTOR, last * SECTOR, path);
+
+    int in = open(esp_path, O_RDONLY);
+    if (in < 0) die("cannot read %s", esp_path);
+    static char chunk[1 << 20];
+    for (uint64_t off = 0; off < ESP_BYTES;) {
+        ssize_t n = pread(in, chunk, sizeof chunk, (off_t)off);
+        if (n <= 0) die("short read from %s", esp_path);
+        pwrite_all(fd, chunk, (size_t)n, ESP_LBA * SECTOR + off, path);
+        off += (uint64_t)n;
+    }
+    close(in);
+    if (close(fd) != 0) die("cannot write %s", path);
+}
+
+static const char *out_dir(const arch *a, bool release) {
+    return fmt("out/%s/%s", a->name, release ? "release" : "debug");
+}
+
+static const char *image_path(const arch *a, bool release) {
+    return fmt("%s/vectra-%s.img", out_dir(a, release), a->name);
+}
+
+static bool mtools(const char *tool, const char *esp, const char *const *args) {
+    cmd c = {};
+    cmd_add(&c, tool);
+    cmd_add(&c, "-i");
+    cmd_add(&c, esp);
+    cmd_addv(&c, args);
+    return run(&c);
+}
+
+static bool build_image(const arch *a, bool release) {
+    if (!build_arch(a, release)) return false;
+    const vx_ndb_record *t = port_target_for(&limine, a);
+    if (!t) die("no Limine target for %s", a->name);
+    const char *loader_name = str_dup(vx_ndb_get(t, "output"));
+    const char *loader = fmt("out/limine/%s/%s", str_dup(vx_ndb_get(t, "target")), loader_name);
+    const char *kernel = fmt("%s/kernel.elf", out_dir(a, release));
+    const char *config = "boot/limine.conf";
+    const char *esp    = fmt("%s/esp.img", out_dir(a, release));
+    const char *image  = image_path(a, release);
+
+    // Everything that goes on the disk decides its GUIDs and FAT serial number.
+    uint64_t seed = 0xcbf29ce484222325;
+    seed = hash_bytes(seed, read_file(loader));
+    seed = hash_bytes(seed, read_file(kernel));
+    seed = hash_bytes(seed, read_file(config));
+
+    int fd = open(esp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0 || ftruncate(fd, (off_t)ESP_BYTES) != 0) die("cannot create %s", esp);
+    close(fd);
+
+    fprintf(stderr, "  IMG   %s\n", image);
+    const char *serial = fmt("%08x", (unsigned)(seed >> 32));
+    if (!mtools(MFORMAT, esp, (const char *const[]){ "-F", "-N", serial, "-v", "VECTRA", "::", nullptr })) return false;
+    if (!mtools(MMD, esp, (const char *const[]){ "::/EFI", "::/EFI/BOOT", "::/boot", "::/boot/vx", "::/boot/limine", nullptr })) return false;
+    if (!mtools(MCOPY, esp, (const char *const[]){ loader, fmt("::/EFI/BOOT/%s", loader_name), nullptr })) return false;
+    if (!mtools(MCOPY, esp, (const char *const[]){ kernel, "::/boot/vx/kernel.elf", nullptr })) return false;
+    if (!mtools(MCOPY, esp, (const char *const[]){ config, "::/boot/limine/limine.conf", nullptr })) return false;
+    write_gpt_disk(image, esp, seed);
+    return true;
+}
+
+// --- qemu and test ---
+
+typedef struct qemu_opts {
+    bool kvm;
+    bool gdb;
+    bool test;   // serial on stdout, no monitor
+} qemu_opts;
+
+static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
+    if (strcmp(a->name, "x86_64") == 0) {
+        cmd_add(c, "/usr/bin/qemu-system-x86_64");
+        cmd_addv(c, (const char *const[]){ "-machine", "q35", nullptr });
+        if (o.kvm) cmd_addv(c, (const char *const[]){ "-enable-kvm", "-cpu", "host", nullptr });
+        else cmd_addv(c, (const char *const[]){ "-cpu", "max", nullptr });
+        cmd_addv(c, (const char *const[]){
+            "-drive", "if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/edk2/ovmf/OVMF_CODE.fd",
+            "-drive", "if=pflash,format=raw,unit=1,snapshot=on,file=/usr/share/edk2/ovmf/OVMF_VARS.fd",
+            nullptr });
+    } else {
+        cmd_add(c, "/usr/bin/qemu-system-aarch64");
+        cmd_addv(c, (const char *const[]){
+            "-machine", "virt,gic-version=3", "-cpu", "max",
+            "-drive", "if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/edk2/aarch64/QEMU_EFI-pflash.raw",
+            "-drive", "if=pflash,format=raw,unit=1,snapshot=on,file=/usr/share/edk2/aarch64/vars-template-pflash.raw",
+            nullptr });
+    }
+    cmd_addv(c, (const char *const[]){ "-m", "512M", "-smp", "4", "-display", "none", "-no-reboot", nullptr });
+    cmd_add(c, "-drive");
+    cmd_add(c, fmt("if=none,id=disk,format=raw,file=%s", image));
+    cmd_addv(c, (const char *const[]){ "-device", "virtio-blk-pci,drive=disk", nullptr });
+    if (o.test) cmd_addv(c, (const char *const[]){ "-serial", "stdio", "-monitor", "none", nullptr });
+    else cmd_addv(c, (const char *const[]){ "-serial", "mon:stdio", nullptr });
+    if (o.gdb) cmd_addv(c, (const char *const[]){ "-s", "-S", nullptr });
+}
+
+static bool kvm_usable(const arch *a) {
+    return strcmp(a->name, "x86_64") == 0 && access("/dev/kvm", R_OK | W_OK) == 0;
+}
+
+// A scenario (tests/qemu/NAME.ndb): one scenario= record with a timeout in seconds,
+// then expect= records, matched in order against serial output lines, and fail=
+// records, any of which fails the test when a line contains it. "$arch" in a
+// pattern stands for the architecture's name.
+static const char *scenarios[64];
+static int         scenario_count;
+
+static double now_seconds(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+static const char *substitute_arch(vx_str pattern, const arch *a) {
+    const char *p = str_dup(pattern), *at = strstr(p, "$arch");
+    if (!at) return p;
+    return fmt("%.*s%s%s", (int)(at - p), p, a->name, at + 5);
+}
+
+static bool run_scenario(const arch *a, bool release, const char *name) {
+    const char *path = fmt("tests/qemu/%s.ndb", name);
+    vx_ndb_reader r = { .src = read_file(path), .scratch = alloc(16 << 10), .scratch_cap = 16 << 10 };
+    const char *expect[64], *fail[64];
+    int expect_count = 0, fail_count = 0;
+    double timeout = 0;
+    for (;;) {
+        vx_ndb_record rec;
+        vx_ndb_result res = vx_ndb_next(&r, &rec);
+        if (res == VX_NDB_END) break;
+        if (res == VX_NDB_ERROR) die("%s:%zu: %s", path, r.error_line, r.error);
+        if (vx_ndb_has(&rec, "scenario")) timeout = atof(str_dup(vx_ndb_get(&rec, "timeout")));
+        else if (vx_ndb_has(&rec, "expect") && expect_count < 64) expect[expect_count++] = substitute_arch(vx_ndb_get(&rec, "expect"), a);
+        else if (vx_ndb_has(&rec, "fail") && fail_count < 64) fail[fail_count++] = substitute_arch(vx_ndb_get(&rec, "fail"), a);
+        else die("%s:%zu: expected scenario=, expect= or fail=", path, rec.line);
+    }
+    if (timeout <= 0 || expect_count == 0) die("%s: needs scenario= with a timeout, and an expect=", path);
+
+    const char *log_path = fmt("%s/test-%s.log", out_dir(a, release), name);
+    FILE *log = fopen(log_path, "w");
+    if (!log) die("cannot write %s", log_path);
+
+    cmd c = {};
+    qemu_cmd(&c, a, image_path(a, release), (qemu_opts){ .kvm = kvm_usable(a), .test = true });
+    if (verbose) cmd_print(&c);
+    int fds[2];
+    if (pipe(fds) != 0) die("pipe failed");
+    pid_t pid = fork();
+    if (pid < 0) die("fork failed");
+    if (pid == 0) {
+        int null = open("/dev/null", O_RDONLY);
+        dup2(null, 0);
+        dup2(fds[1], 1);
+        close(fds[0]);
+        close(fds[1]);
+        execv(c.argv[0], (char *const *)c.argv);
+        _exit(127);
+    }
+    close(fds[1]);
+
+    double start = now_seconds();
+    int next = 0;
+    const char *verdict = nullptr;
+    char line[4096];
+    size_t len = 0;
+    while (!verdict) {
+        double left = timeout - (now_seconds() - start);
+        if (left <= 0) { verdict = fmt("timed out waiting for \"%s\"", expect[next]); break; }
+        struct pollfd pfd = { .fd = fds[0], .events = POLLIN };
+        if (poll(&pfd, 1, (int)(left * 1000) + 1) <= 0) continue;
+        char buf[4096];
+        ssize_t n = read(fds[0], buf, sizeof buf);
+        if (n <= 0) { verdict = "QEMU exited"; break; }
+        fwrite(buf, 1, (size_t)n, log);
+        for (ssize_t i = 0; i < n && !verdict; i++) {
+            if (buf[i] == '\r') continue;
+            if (buf[i] != '\n' && len < sizeof line - 1) { line[len++] = buf[i]; continue; }
+            if (buf[i] != '\n') continue;
+            line[len] = 0;
+            len = 0;
+            for (int k = 0; k < fail_count; k++)
+                if (strstr(line, fail[k])) verdict = fmt("failure line: %s", line);
+            if (!verdict && strstr(line, expect[next]) && ++next == expect_count) verdict = "ok";
+        }
+    }
+    kill(pid, SIGKILL);
+    wait_ok(pid);
+    close(fds[0]);
+    fclose(log);
+
+    bool ok = strcmp(verdict, "ok") == 0;
+    fprintf(stderr, "  TEST  %-8s %-8s %s (%.1f s)%s\n", name, a->name, ok ? "ok" : "FAIL",
+            now_seconds() - start, ok ? "" : fmt(": %s; serial log in %s", verdict, log_path));
+    return ok;
+}
+
+static bool test_arch(const arch *a, bool release) {
+    if (!build_image(a, release)) return false;
+    bool ok = true;
+    for (int i = 0; i < scenario_count; i++) ok = run_scenario(a, release, scenarios[i]) && ok;
+    return ok;
+}
+
+static int cmd_test(const arch *only, bool release) {
+    if (scenario_count == 0) {
+        static file_list found;
+        port dir = { .src = fmt("%s/tests", root) };
+        collect(&found, &dir, (vx_str){ "qemu", 4 }, ".ndb");
+        for (int i = 0; i < found.count && scenario_count < 64; i++) {
+            const char *base = strrchr(found.paths[i], '/') + 1;
+            scenarios[scenario_count++] = fmt("%.*s", (int)(strlen(base) - 4), base);
+        }
+    }
+    return per_arch(only, release, test_arch);
+}
+
+static int cmd_qemu(const arch *a, bool release, qemu_opts o) {
+    if (!build_image(a, release)) return 1;
+    cmd c = {};
+    qemu_cmd(&c, a, image_path(a, release), o);
+    if (verbose) cmd_print(&c);
+    fprintf(stderr, "build: starting QEMU; Ctrl-A X quits\n");
+    execv(c.argv[0], (char *const *)c.argv);
+    die("cannot run %s", c.argv[0]);
+}
+
+// --- vendor-check: every vendored tree matches its VENDOR.ndb record (docs/04 §3.1) ---
+
+static const char *const VENDOR_KEYS[] = {   // required
+    "version", "upstream", "sha256", "tree.sha256", "license", "adr", "reviewed.by", nullptr,
+};
+static const char *const VENDOR_OPTIONAL_KEYS[] = {
+    "name", "signed.by", "port", "patches", "reviewed.date", "reviewed.scope", nullptr,
+};
+
+static bool in_list(const char *const *list, vx_str key) {
+    for (; *list; list++)
+        if (strlen(*list) == key.len && memcmp(*list, key.ptr, key.len) == 0) return true;
+    return false;
+}
+
+static void hex(char *out, const uint8_t *p, size_t n) {
+    for (size_t i = 0; i < n; i++) sprintf(out + 2 * i, "%02x", p[i]);
+}
+
+static file_list *tree_files;
+static size_t     tree_strip;
+static bool       tree_odd;
+
+static int tree_visit(const char *path, const struct stat *st, int type, struct FTW *ftw) {
+    (void)st;
+    (void)ftw;
+    if (type == FTW_D) return 0;
+    if (type != FTW_F) { tree_odd = true; return 0; }
+    if (tree_files->count == 4096) die("too many files in a vendored tree");
+    tree_files->paths[tree_files->count++] = fmt("%s", path + tree_strip);
+    return 0;
+}
+
+// The tree hash is what this gives, run inside the tree:
+//   find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum
+static bool tree_sha256(const char *dir, char out[65]) {
+    static file_list files;
+    files = (file_list){};
+    tree_files = &files;
+    tree_strip = strlen(dir) + 1;
+    tree_odd   = false;
+    if (nftw(dir, tree_visit, 32, FTW_PHYS) != 0) die("cannot walk %s", dir);
+    if (tree_odd) return false;
+    qsort(files.paths, (size_t)files.count, sizeof files.paths[0], by_path);
+
+    vx_sha256 tree = vx_sha256_begin();
+    for (int i = 0; i < files.count; i++) {
+        size_t mark = arena_used;
+        vx_str data = read_file(fmt("%s/%s", dir, files.paths[i]));
+        vx_sha256 h = vx_sha256_begin();
+        vx_sha256_add(&h, data.ptr, data.len);
+        uint8_t digest[32];
+        vx_sha256_end(&h, digest);
+        char line_hex[65];
+        hex(line_hex, digest, 32);
+        const char *line = fmt("%s  ./%s\n", line_hex, files.paths[i]);
+        vx_sha256_add(&tree, line, strlen(line));
+        arena_used = mark;   // the file's bytes are not needed again
+    }
+    uint8_t digest[32];
+    vx_sha256_end(&tree, digest);
+    hex(out, digest, 32);
+    return true;
+}
+
+static int cmd_vendor_check(void) {
+    const char *path = "third_party/VENDOR.ndb";
+    vx_ndb_reader r = { .src = read_file(path), .scratch = alloc(64 << 10), .scratch_cap = 64 << 10 };
+    const char *names[256];
+    int count = 0;
+    bool ok = true;
+    for (;;) {
+        vx_ndb_record rec;
+        vx_ndb_result res = vx_ndb_next(&r, &rec);
+        if (res == VX_NDB_END) break;
+        if (res == VX_NDB_ERROR) die("%s:%zu: %s", path, r.error_line, r.error);
+        if (!vx_ndb_has(&rec, "name")) die("%s:%zu: a record must start with name=", path, rec.line);
+        const char *name = str_dup(vx_ndb_get(&rec, "name"));
+        if (count < 256) names[count++] = name;
+
+        // Unknown keys fail, as a verifier fails closed: `reviewed.by=A Name` without
+        // quotes would otherwise pass as reviewed.by=A plus a flag called Name.
+        for (int k = 0; k < rec.count; k++) {
+            vx_str key = rec.tuples[k].key;
+            if (!in_list(VENDOR_KEYS, key) && !in_list(VENDOR_OPTIONAL_KEYS, key)) {
+                fprintf(stderr, "  VENDOR %s: unknown key %s (line %zu); quote values that hold spaces\n",
+                        name, str_dup(key), rec.line);
+                ok = false;
+            }
+        }
+        for (const char *const *k = VENDOR_KEYS; *k; k++)
+            if (!vx_ndb_get(&rec, *k).len) { fprintf(stderr, "  VENDOR %s: missing %s=\n", name, *k); ok = false; }
+        const char *adr = str_dup(vx_ndb_get(&rec, "adr"));
+        if (*adr && !exists(adr)) { fprintf(stderr, "  VENDOR %s: %s does not exist\n", name, adr); ok = false; }
+        vx_str port_file = vx_ndb_get(&rec, "port");
+        if (port_file.len && !exists(str_dup(port_file))) {
+            fprintf(stderr, "  VENDOR %s: %s does not exist\n", name, str_dup(port_file));
+            ok = false;
+        }
+
+        const char *dir = fmt("third_party/%s", name);
+        char got[65];
+        struct stat st;
+        if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            fprintf(stderr, "  VENDOR %s: %s is missing\n", name, dir);
+            ok = false;
+        } else if (!tree_sha256(dir, got)) {
+            fprintf(stderr, "  VENDOR %s: the tree holds something other than files and directories\n", name);
+            ok = false;
+        } else if (strcmp(got, str_dup(vx_ndb_get(&rec, "tree.sha256"))) != 0) {
+            fprintf(stderr, "  VENDOR %s: the tree does not match tree.sha256 (it hashes to %s)\n", name, got);
+            ok = false;
+        } else {
+            fprintf(stderr, "  VENDOR %s %s: tree matches\n", name, str_dup(vx_ndb_get(&rec, "version")));
+        }
+        if (strcmp(str_dup(vx_ndb_get(&rec, "reviewed.by")), "pending") == 0)
+            fprintf(stderr, "  VENDOR %s: warning: review pending\n", name);
+    }
+
+    // Every directory under third_party/ has a record.
+    DIR *d = opendir("third_party");
+    if (!d) die("cannot read third_party/");
+    for (struct dirent *e; (e = readdir(d));) {
+        if (e->d_name[0] == '.' || e->d_type != DT_DIR) continue;
+        bool found = false;
+        for (int i = 0; i < count; i++) found = found || strcmp(names[i], e->d_name) == 0;
+        if (!found) { fprintf(stderr, "  VENDOR third_party/%s has no record in %s\n", e->d_name, path); ok = false; }
+    }
+    closedir(d);
+    return ok ? 0 : 1;
+}
+
+static int cmd_all(const arch *only, bool release) {
+    return per_arch(only, release, build_arch);
 }
 
 // ---------------------------------------------------------------------------
@@ -838,20 +1311,42 @@ static int cmd_loc(void) {
 
 // ---------------------------------------------------------------------------
 
+// Reproducible builds (docs/04 §7): every timestamp written into an output, such
+// as the FAT entries mtools writes, is SOURCE_DATE_EPOCH. If the environment does
+// not set it, it is the time of the last commit.
+static void set_source_date_epoch(void) {
+    if (getenv("SOURCE_DATE_EPOCH")) return;
+    FILE *f = popen("git log -1 --format=%ct 2>/dev/null", "r");
+    char line[64] = {};
+    if (f && fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\n")] = 0;
+        if (*line) setenv("SOURCE_DATE_EPOCH", line, 1);
+    }
+    if (f) pclose(f);
+    if (!getenv("SOURCE_DATE_EPOCH")) setenv("SOURCE_DATE_EPOCH", "315532800", 1);   // 1980-01-01, FAT's epoch
+}
+
 static void usage(void) {
     fprintf(stderr,
         "usage: ./build [-v] <command> [options]\n"
         "\n"
-        "  all  [--arch x86_64|aarch64] [--release]   the kernel and Limine (both architectures by default)\n"
-        "  loc                                         the line-count ledger\n"
+        "  all           [--arch A] [--release]          the kernel and Limine (both architectures by default)\n"
+        "  image         [--arch A] [--release]          a GPT disk image: out/A/MODE/vectra-A.img\n"
+        "  qemu          [--arch A] [--release] [--kvm] [--gdb]   boot the image; Ctrl-A X quits\n"
+        "  test          [--arch A] [--release] [scenario...]     boot headless and check tests/qemu/*.ndb\n"
+        "  loc                                            the line-count ledger\n"
+        "  vendor-check                                   check third_party/ against VENDOR.ndb\n"
         "\n"
-        "Still to come in M1: image, qemu, test, check, vendor-check.\n");
+        "A is x86_64 or aarch64. qemu defaults to x86_64.\n"
+        "Still to come: check, bench, image --iso.\n");
     exit(2);
 }
 
 int main(int argc, char **argv) {
     rebuild_self(argv);
     if (!getcwd(root, sizeof root)) die("cannot read the current directory");
+    setenv("MTOOLS_SKIP_CHECK", "1", 1);
+    set_source_date_epoch();
 
     int i = 1;
     if (i < argc && strcmp(argv[i], "-v") == 0) { verbose = true; i++; }
@@ -860,20 +1355,36 @@ int main(int argc, char **argv) {
 
     const arch *only = nullptr;
     bool release = false;
+    qemu_opts qo = {};
     for (; i < argc; i++) {
         if (strcmp(argv[i], "--release") == 0) {
             release = true;
+        } else if (strcmp(argv[i], "--kvm") == 0) {
+            qo.kvm = true;
+        } else if (strcmp(argv[i], "--gdb") == 0) {
+            qo.gdb = true;
         } else if (strcmp(argv[i], "--arch") == 0 && i + 1 < argc) {
             i++;
             for (int a = 0; a < ARCH_COUNT; a++)
                 if (strcmp(argv[i], ARCHES[a].name) == 0) only = &ARCHES[a];
             if (!only) die("unknown architecture %s", argv[i]);
+        } else if (argv[i][0] != '-' && strcmp(command, "test") == 0 && scenario_count < 64) {
+            scenarios[scenario_count++] = argv[i];
         } else {
             usage();
         }
     }
 
-    if (strcmp(command, "all") == 0) return cmd_all(only, release);
     if (strcmp(command, "loc") == 0) return cmd_loc();
+    if (strcmp(command, "vendor-check") == 0) return cmd_vendor_check();
+    if (strcmp(command, "all") == 0 || strcmp(command, "image") == 0 ||
+        strcmp(command, "qemu") == 0 || strcmp(command, "test") == 0) {
+        check_toolchain();
+        if (strcmp(command, "all") == 0) return cmd_all(only, release);
+        if (strcmp(command, "image") == 0) return per_arch(only, release, build_image);
+        if (strcmp(command, "test") == 0) return cmd_test(only, release);
+        if (qo.kvm && !kvm_usable(only ? only : &ARCHES[0])) die("--kvm needs x86_64 and access to /dev/kvm");
+        return cmd_qemu(only ? only : &ARCHES[0], release, qo);
+    }
     usage();
 }

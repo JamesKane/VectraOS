@@ -1,12 +1,16 @@
 # third_party/VENDOR.ndb: one record per vendored import (docs/04 §3.1, ADR-0003).
-# Each tree under third_party/ is the upstream release, unchanged.
+# Each tree under third_party/ is the upstream release, unchanged. sha256= is the
+# release tarball; tree.sha256= is the unpacked tree, as this prints inside it:
+#   find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum
+# `./build vendor-check` recomputes it.
 
 name=limine
     version=12.9.1
     upstream=https://github.com/Limine-Bootloader/Limine/releases/download/v12.9.1/limine-12.9.1.tar.xz
     sha256=c1096fdd506487fbd92c113baa9e153a9973cf766483cc3928e13fd29b976b32
+    tree.sha256=d682c822cd432546e00a8ac136ddff84526ca6f0f06e0b7605e64f423477482d
     signed.by=05D29860D0A0668AAEFB9D691F3C021BECA23821
     license="BSD-2-Clause; bundled parts as listed in 3RDPARTY.md"
     adr=docs/adr/0002-limine.md
     port=ports/limine/port.ndb
-    reviewed.by=pending
+    reviewed.by="James Kane" reviewed.date=2026-09-30
