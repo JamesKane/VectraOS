@@ -1,11 +1,13 @@
-// vx-rt base: syscall stubs, output, the stack protector and the spawn
-// message; what the rest of vx-rt and the libraries under it (the 9P ring
-// client) need. Programs include rt.c, which includes this.
+// vx-rt base: syscall stubs, output and the spawn message; what the rest of
+// vx-rt and the libraries under it (the 9P ring client) need. It defines no
+// external symbol, so a C library can include it too (ports/musl/vx): the
+// start-up, the stack protector and memcpy and the rest are rt.c's.
+// Programs include rt.c, which includes this.
 
 #pragma once
 
-#include "rt.h"
-#include "../vx-mem/mem.c"
+#include "../../abi/vx/abi.h"
+#include "../vx-mem/mem.h"
 #include "../vx-ndb/ndb.c"
 
 #ifdef __clang_analyzer__
@@ -361,13 +363,6 @@ static void (*vx_print_hook)(vx_str s);
   vx_print((vx_str){frac, 4});
 }
 
-// --- Start-up ---
-
-uintptr_t __stack_chk_guard = 0x2e0f5b3c9d81a647; // to come from the kernel's entropy (M2)
-
-// A smashed stack ends the task: the trap is reported by the kernel.
-[[noreturn]] void __stack_chk_fail(void) { __builtin_trap(); }
-
 // --- The spawn message (abi.h) ---
 
 static constexpr uint32_t VX_SPAWN_MAX_ARGS = 64; // gsh's longest command line has fewer
@@ -378,6 +373,8 @@ typedef struct vx_spawn_info {
   vx_str cmdline; // the root task's
   vx_str args[VX_SPAWN_MAX_ARGS];
   uint32_t argc;
+  vx_str envs[VX_SPAWN_MAX_ARGS]; // env=, each NAME=VALUE
+  uint32_t envc;
   vx_str handle_names[VX_CHANNEL_MAX_HANDLES];
   vx_handle handles[VX_CHANNEL_MAX_HANDLES]; // VX_HANDLE_NONE once taken
   uint32_t handle_count;
@@ -439,6 +436,8 @@ static void vx_read_spawn(vx_handle bootstrap) {
       vx_spawn.cmdline = vx_ndb_get(&rec, "cmdline");
     } else if (vx_ndb_has(&rec, "arg")) {
       if (vx_spawn.argc < VX_SPAWN_MAX_ARGS) vx_spawn.args[vx_spawn.argc++] = vx_ndb_get(&rec, "arg");
+    } else if (vx_ndb_has(&rec, "env")) {
+      if (vx_spawn.envc < VX_SPAWN_MAX_ARGS) vx_spawn.envs[vx_spawn.envc++] = vx_ndb_get(&rec, "env");
     } else if (vx_ndb_has(&rec, "handle") && !vx_ndb_has(&rec, "mount")) {
       ok = vx_ndb_get_u64(&rec, "index", &index) && index < size.handles && !named[index];
       if (ok) named[index] = true, vx_spawn.handle_names[index] = vx_ndb_get(&rec, "handle");

@@ -6,6 +6,8 @@
 # tree, as this prints inside it:
 #   find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum
 # `./build vendor-check` recomputes it.
+# subset= lists the parts of a larger release that were kept, paths as in the
+# release; tree.sha256= is then over just those.
 
 name=limine
     version=12.9.1
@@ -35,4 +37,15 @@ name=musl
     signed.by=836489290BB6B70F99FFDA0556BCDB593020450F
     license=MIT
     adr=docs/adr/0007-musl.md
+    reviewed.by="James Kane" reviewed.date=2026-10-01
+
+name=compiler-rt
+    version=22.1.8
+    upstream=https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/llvm-project-22.1.8.src.tar.xz
+    sha256=922f1817a0df7b1489272d18134ee0087a8b068828f87ac63b9861b1a9965888
+    subset="compiler-rt/LICENSE.TXT compiler-rt/lib/builtins"
+    tree.sha256=b1951f11a77bc0edb2af0298b52b2fc696154092b9ec229ff58406312dc417ce
+    signed.by=FFB3368980F3E6BB5737145A316C56D064CACBA5
+    license="Apache-2.0 WITH LLVM-exception"
+    adr=docs/adr/0008-compiler-rt.md
     reviewed.by="James Kane" reviewed.date=2026-10-01

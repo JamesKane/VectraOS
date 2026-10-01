@@ -11,3 +11,4 @@ One file per decision, `NNNN-title.md`, numbered in order. An ADR records a deci
 | [0005](0005-c23-house-subset.md) | C23 and the house subset | Accepted |
 | [0006](0006-u9fs.md) | u9fs, vendored as a host test tool for 9P interoperability | Accepted |
 | [0007](0007-musl.md) | musl 1.2.6, vendored unchanged, with a VectraOS back end | Accepted |
+| [0008](0008-compiler-rt.md) | compiler-rt's builtins, vendored from LLVM 22.1.8 | Accepted |

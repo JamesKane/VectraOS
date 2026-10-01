@@ -80,7 +80,7 @@ In progress. 04 §6 gives M4's content but no steps or exit test, so they are se
 | 2a. musl 1.2.6 vendored unchanged (ADR-0007), its generated headers committed | Done | `55df068` |
 | 2b. Kernel: the thread pointer (x86_64's FS base, aarch64's `TPIDR_EL0`) kept per thread; `thread_state` `GET_TLS`/`SET_TLS`, for the caller itself or a stopped thread | Done | `e089716` |
 | 2c. Kernel: FP/SIMD state (x87/SSE by FXSAVE; arm64 v0–v31, FPCR, FPSR) saved per thread; first-party programs no longer `-mgeneral-regs-only`; `thread_start` enters as if called | Done | `f225529` |
-| 2d. The vx back end (`syscall_arch.h` and the eleven assembly files replaced), `./build` building `libc.a` and the `vectra-musl` sysroot; a C program runs | To do | |
+| 2d. The vx back end (files, directories, stdio, memory, time, the process), compiler-rt's builtins vendored (ADR-0008), `./build` building `libc.a` and the `vectra-musl` sysroot; `ctest`, a C program against it, runs (`posix`) | Done | not yet committed |
 | 3. `posixd`: pids, `fork`, `exec`, `wait`, signals, sessions; pipes; a RAM file system for `/tmp`; `/dev/null`, `/dev/urandom` | To do | |
 | 4. `ptyd`; sockets over `/net`; `poll` and `select`; the `posix` 9Px extension | To do | |
 | 5. Lua, sbase and dash, vendored | To do | |
@@ -105,6 +105,14 @@ Deferred deliberately, each with where it is due:
 | x86_64's shootdown is tested only under TCG | KVM flushes a guest's TLB often enough to hide a missing shootdown, so the ktest check catches one only with `--tcg` (aarch64 always runs under TCG) | — |
 | `vmo_clone` copies at once | Correct, and charged as 01 §5 says, but a `fork` of a large process copies all of it; sharing pages until written can come behind the same call | When `fork` is slow enough to matter |
 | No hardware watchpoints; no thread, image or exit events to a debugger yet | A debugger sees faults, breakpoints and steps only | M4 step 6 (the `procfs` debug files), M12 (watchpoints) |
+| No threads in the POSIX personality: `clone` is `ENOSYS`, so `pthread_create` fails; the back end does not lock | Single-threaded C programs only | When a port needs threads (the kernel side exists: threads, futexes, the thread pointer) |
+| No entropy for user space: `AT_RANDOM`, and so musl's stack guard and malloc's secret, come from the clock; `getrandom` is `ENOSYS` | Nothing secret can be made in user space | A kernel random source, before `keyd` (M8) |
+| No wall clock: `CLOCK_REALTIME` counts from boot | Dates read as 1970 | An RTC driver or NTP over `netd` |
+| No `as_protect`: `PROT_NONE` is mapped read-write and `mprotect` is `ENOSYS` | Guard pages do not fault; nothing else breaks (musl's malloc expects this) | When a port needs it (JITs, guard pages) |
+| Signals, `fork`, `exec`, pipes and `wait` are `ENOSYS`; `kill` and `raise` on oneself end the process | — | M4 step 3 (`posixd`) |
+| `O_APPEND` is not atomic; no `rename`, `link` or locks; `mmap` of a file is a private copy | — | M4 step 4 (the `posix` 9Px extension, `Tmap`) |
+| musl and the builtins are built without CET-IBT or BTI, so programs against musl are not marked | Indirect-branch protection is off in them | With the kernel's enforcement of it in user space |
+| Kernel messages after the console hand-off reach nowhere (`vx.kconsole` keeps them on the serial port): a scenario's `fail="killed"` cannot see a fault in a task svcd started | Such a crash shows only as a negative exit status | A debug-log object (01 §10) |
 | AVX, SVE and SME fault | Code built for x86-64-v1 and armv8-a runs; code that needs AVX or SVE does not | When a port needs them (XSAVE; SVE's state) |
 | FP/SIMD registers are not in `thread_state` or a `vx_exception` | A debugger cannot see them; an in-task handler (a signal handler, from step 3) must save them itself | M4 step 3 (signals), step 6 (`dbg`) |
 | `task_mem_rw`'s first write to code copies the whole mapping | A breakpoint in a large binary costs its text's size once | When it matters |

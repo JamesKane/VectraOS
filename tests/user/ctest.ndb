@@ -1,0 +1,8 @@
+# tests/user/ctest.ndb: the C library test's manifest (tests/qemu/posix.ndb).
+
+service=ctest program=/boot/bin/ctest console
+arg=one
+arg="two words"
+env=GREETING=hello
+env=HOME=/
+mount=/ srv=bootfs

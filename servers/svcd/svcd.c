@@ -12,6 +12,7 @@
 //   service=NAME program=/boot/bin/PROG [post=SRV] [bootimage] [console] [tasks]
 //           [resource] [acpi] [restart] [arch=A]
 //   arg=VALUE                                  an argument, in order
+//   env=NAME=VALUE                             an environment variable
 //   mount=OLD srv=SRV [aname=A] [flags=abc]    a mount in its namespace
 //   bind=OLD new=NEW [flags=abc]               a bind in its namespace
 //   ioport=BASE count=N                        a driver's I/O ports (x86_64)
@@ -284,6 +285,8 @@ static vx_status start(service *s) {
   while (st == VX_OK && vx_ndb_next(&r, &rec) == VX_NDB_RECORD && !vx_ndb_has(&rec, "service")) {
     if (vx_ndb_has(&rec, "arg")) {
       vx_ndb_put(&w, "arg", vx_ndb_get(&rec, "arg"));
+    } else if (vx_ndb_has(&rec, "env")) {
+      vx_ndb_put(&w, "env", vx_ndb_get(&rec, "env"));
     } else if (vx_ndb_has(&rec, "mount")) {
       post *p = find_post(vx_ndb_get(&rec, "srv"));
       if (!p || count == VX_CHANNEL_MAX_HANDLES - 1) {

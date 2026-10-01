@@ -39,6 +39,9 @@ static const char CLANG_TIDY[] = "/usr/bin/clang-tidy";
 static const char CLANG_VERSION[] = "clang version 22.1.8 (Fedora 22.1.8-4.fc44)";
 static const char LLD_VERSION[] = "LLD 22.1.8 (compatible with GNU linkers)";
 static const char OBJCOPY_VERSION[] = "LLVM version 22.1.8";
+static const char LLVM_AR[] = "/usr/bin/llvm-ar";
+static const char LLVM_AR_VERSION[] = "LLVM version 22.1.8";
+static const char CLANG_RESOURCE_INCLUDE[] = "/usr/lib/clang/22/include"; // the pinned clang's own headers
 static const char CLANG_FORMAT_VERSION[] = "clang-format version 22.1.8 (Fedora 22.1.8-4.fc44)";
 static const char CLANG_TIDY_VERSION[] = "LLVM version 22.1.8";
 static const char NASM_VERSION[] = "NASM version 3.02 compiled on Jul 14 2026"; // nasm-3.02-1.fc44
@@ -766,6 +769,359 @@ static const vx_ndb_record *port_target_for(const port *p, const arch *a) {
 }
 
 // ---------------------------------------------------------------------------
+// The POSIX personality: musl, compiler-rt's builtins and the vx back end,
+// into the vectra-musl sysroot (ADR-0007, ADR-0008)
+//
+// out/ARCH/MODE/vectra-musl/lib holds what a program against musl links:
+// crt1.o, crti.o, crtn.o, libc.a and libclang_rt.builtins.a, and empty libm.a
+// and the rest, as musl installs them. Programs compile against the vendored
+// headers in place (posix_flags), in the order musl's own build uses, so
+// check needs nothing built. musl and the builtins are built once, at -O2,
+// and cached (out/musl/ARCH, out/compiler-rt/ARCH); the back end is
+// first-party and built with the mode's flags.
+
+static port musl, compiler_rt;
+
+static const char *const MUSL_EMPTY_LIBS[] = {"m",    "rt",     "pthread", "crypt", "util",
+                                              "xnet", "resolv", "dl",      nullptr};
+
+// The target and include path of everything compiled for the POSIX
+// personality, per architecture.
+static const char *const *posix_flags(const arch *a) {
+  static const char *flags[ARCH_COUNT][16];
+  int i = (int)(a - ARCHES), n = 0;
+  if (!flags[i][0]) {
+    const char **f = flags[i];
+    f[n++] = fmt("--target=%s-vectra-unknown-musl", a->name);
+    f[n++] = "-nostdinc";
+    f[n++] = "-isystem";
+    f[n++] = CLANG_RESOURCE_INCLUDE;
+    f[n++] = "-isystem";
+    f[n++] = fmt("third_party/musl/arch/%s", a->name);
+    f[n++] = "-isystem";
+    f[n++] = "third_party/musl/arch/generic";
+    f[n++] = "-isystem";
+    f[n++] = fmt("ports/musl/generated/%s/include", a->name);
+    f[n++] = "-isystem";
+    f[n++] = "third_party/musl/include";
+    f[n] = nullptr;
+  }
+  return flags[i];
+}
+
+// First-party code against musl: the back end (which uses musl's global
+// stack guard, as it runs before TLS is set up) and programs.
+static const char *const POSIX_BACKEND_FLAGS[] = {
+    "-fstack-protector-strong",
+    "-mstack-protector-guard=global",
+    nullptr,
+};
+static const char *const POSIX_PROGRAM_FLAGS[] = {"-fstack-protector-strong", nullptr};
+
+static const char *vectra_musl_lib(const arch *a, bool release) {
+  return fmt("out/%s/%s/vectra-musl/lib", a->name, release ? "release" : "debug");
+}
+
+// The files directly in src/rel (not below it) ending in one of exts, sorted,
+// as paths relative to src.
+static void list_dir(file_list *out, const char *src, const char *rel, const char *const *exts) {
+  DIR *d = opendir(fmt("%s/%s", src, rel));
+  if (!d) return;
+  int first = out->count;
+  for (struct dirent *e; (e = readdir(d));) {
+    if (e->d_type != DT_REG) continue;
+    for (const char *const *x = exts; *x; x++) {
+      if (!ends_with(e->d_name, *x)) continue;
+      if (out->count == 4096) die("too many source files in %s", rel);
+      out->paths[out->count++] = fmt("%s/%s", rel, e->d_name);
+      break;
+    }
+  }
+  closedir(d);
+  qsort(out->paths + first, (size_t)(out->count - first), sizeof out->paths[0], by_path);
+}
+
+static bool words_has(vx_str words, const char *w) {
+  size_t n = strlen(w);
+  for (size_t i = 0; i < words.len;) {
+    size_t start = i;
+    while (i < words.len && words.ptr[i] != ' ') i++;
+    if (i - start == n && memcmp(words.ptr + start, w, n) == 0) return true;
+    i++;
+  }
+  return false;
+}
+
+// "dir/x86_64/name.s" and "dir/name.c" both as "dir/name": the object they make.
+static const char *object_key(const char *rel, const char *arch_dir) {
+  char *k = fmt("%s", rel);
+  char *a = strstr(k, arch_dir); // "/x86_64/"
+  if (a) memmove(a + 1, a + strlen(arch_dir), strlen(a + strlen(arch_dir)) + 1);
+  char *dot = strrchr(k, '.');
+  if (dot) *dot = 0;
+  return k;
+}
+
+typedef struct keyed_source {
+  const char *path, *key;
+} keyed_source;
+
+static int by_key(const void *a, const void *b) {
+  return strcmp(((const keyed_source *)a)->key, ((const keyed_source *)b)->key);
+}
+
+// A port's sources, generic and per architecture, the architecture's
+// replacing the generic ones of the same name, sorted by the object they make.
+static void merge_sources(file_list *out, const file_list *generic, const file_list *specific,
+                          const char *arch) {
+  const char *arch_dir = fmt("/%s/", arch);
+  keyed_source *srcs = alloc((size_t)(generic->count + specific->count) * sizeof *srcs);
+  int n = 0;
+  for (int i = 0; i < specific->count; i++)
+    srcs[n++] = (keyed_source){specific->paths[i], object_key(specific->paths[i], arch_dir)};
+  int specific_n = n;
+  for (int i = 0; i < generic->count; i++) {
+    const char *key = object_key(generic->paths[i], arch_dir);
+    bool replaced = false;
+    for (int k = 0; k < specific_n && !replaced; k++) replaced = strcmp(srcs[k].key, key) == 0;
+    if (!replaced) srcs[n++] = (keyed_source){generic->paths[i], key};
+  }
+  qsort(srcs, (size_t)n, sizeof *srcs, by_key);
+  for (int i = 0; i < n; i++) out->paths[out->count++] = srcs[i].path;
+}
+
+// musl's source set (port.ndb): src/*/ and src/malloc/mallocng, with each
+// directory's ARCH/ files replacing the generic ones, less exclude=.
+static void musl_sources(file_list *out, const arch *a, vx_str exclude) {
+  static file_list generic, specific, dirs;
+  generic = specific = dirs = (file_list){};
+  DIR *d = opendir(fmt("%s/src", musl.src));
+  if (!d) die("cannot read %s/src", musl.src);
+  for (struct dirent *e; (e = readdir(d));)
+    if (e->d_type == DT_DIR && e->d_name[0] != '.') dirs.paths[dirs.count++] = fmt("src/%s", e->d_name);
+  closedir(d);
+  qsort(dirs.paths, (size_t)dirs.count, sizeof dirs.paths[0], by_path);
+  dirs.paths[dirs.count++] = "src/malloc/mallocng";
+  static const char *const C[] = {".c", nullptr}, *const ARCH_EXTS[] = {".c", ".s", ".S", nullptr};
+  for (int i = 0; i < dirs.count; i++) {
+    list_dir(&generic, musl.src, dirs.paths[i], C);
+    int first = specific.count;
+    list_dir(&specific, musl.src, fmt("%s/%s", dirs.paths[i], a->name), ARCH_EXTS);
+    for (int k = first; k < specific.count;) { // drop the excluded, keeping the rest in order
+      if (!words_has(exclude, specific.paths[k])) {
+        k++;
+        continue;
+      }
+      memmove(&specific.paths[k], &specific.paths[k + 1],
+              (size_t)(specific.count - k - 1) * sizeof specific.paths[0]);
+      specific.count--;
+    }
+  }
+  merge_sources(out, &generic, &specific, a->name);
+}
+
+// The names in each set(NAME ...) of CMakeLists.txt that `lists` names.
+static void cmake_lists(file_list *out, vx_str text, vx_str lists) {
+  for (size_t i = 0; i < lists.len;) {
+    size_t start = i;
+    while (i < lists.len && lists.ptr[i] != ' ') i++;
+    const char *head = fmt("set(%s\n", str_dup((vx_str){lists.ptr + start, i - start}));
+    i++;
+    const char *at = strstr(text.ptr, head);
+    if (!at) die("compiler-rt: no %s in CMakeLists.txt", head);
+    at += strlen(head);
+    for (;;) {
+      at += strspn(at, " \t");
+      const char *end = at + strcspn(at, "\n");
+      if (*at == ')') break;
+      if (*at && *at != '#' && *at != '$')
+        out->paths[out->count++] = str_dup((vx_str){at, (size_t)(end - at)});
+      if (!*end) die("compiler-rt: %s does not end", head);
+      at = end + 1;
+    }
+  }
+}
+
+static void add_words(file_list *out, vx_str words) {
+  for (size_t i = 0; i < words.len;) {
+    size_t start = i;
+    while (i < words.len && words.ptr[i] != ' ') i++;
+    if (i > start) out->paths[out->count++] = str_dup((vx_str){words.ptr + start, i - start});
+    i++;
+  }
+}
+
+static void compiler_rt_sources(file_list *out, const arch *a) {
+  static file_list generic, specific;
+  generic = specific = (file_list){};
+  const vx_ndb_record *t = port_target_for(&compiler_rt, a);
+  vx_str text = read_file(fmt("%s/CMakeLists.txt", compiler_rt.src));
+  cmake_lists(&generic, text, vx_ndb_get(&compiler_rt.head, "cmake.lists"));
+  add_words(&generic, vx_ndb_get(&compiler_rt.head, "extra"));
+  cmake_lists(&generic, text, vx_ndb_get(t, "cmake.lists"));
+  for (int i = 0; i < generic.count; i++) { // the architecture's own, like cpu_model/x86.c, are not generic
+    const char *g = generic.paths[i];
+    if (strchr(g, '/')) specific.paths[specific.count++] = g;
+  }
+  int kept = 0;
+  for (int i = 0; i < generic.count; i++)
+    if (!strchr(generic.paths[i], '/')) generic.paths[kept++] = generic.paths[i];
+  generic.count = kept;
+  add_words(&specific, vx_ndb_get(t, "extra"));
+  // filter_builtin_sources: an architecture's file replaces the generic one by its base name.
+  static file_list merged;
+  merged = (file_list){};
+  for (int i = 0; i < specific.count; i++) merged.paths[merged.count++] = specific.paths[i];
+  for (int i = 0; i < generic.count; i++) {
+    const char *base = generic.paths[i];
+    size_t blen = strcspn(base, ".");
+    bool replaced = false;
+    for (int k = 0; k < specific.count && !replaced; k++) {
+      const char *sb = strrchr(specific.paths[k], '/') + 1;
+      replaced = strcspn(sb, ".") == blen && strncmp(sb, base, blen) == 0;
+    }
+    if (!replaced) merged.paths[merged.count++] = base;
+  }
+  qsort(merged.paths, (size_t)merged.count, sizeof merged.paths[0], by_path);
+  for (int i = 0; i < merged.count; i++) out->paths[out->count++] = merged.paths[i];
+}
+
+// Compiles each source (relative to src) into objdir, a batch at a time.
+// extra(rel) gives a file's own flags, if any.
+static bool compile_port_sources(const port *p, const arch *a, const file_list *files, const char *objdir,
+                                 const char **objs, vx_str (*extra)(const char *rel)) {
+  static constexpr int BATCH = 256;
+  static cmd batch[BATCH];
+  cmd *ptrs[BATCH];
+  const char *prefix_map = fmt("-ffile-prefix-map=%s=/src", root);
+  for (int start = 0; start < files->count; start += BATCH) {
+    int n = 0;
+    for (int i = start; i < files->count && n < BATCH; i++, n++) {
+      const char *rel = files->paths[i];
+      cmd *c = &batch[n];
+      *c = (cmd){.dir = root};
+      cmd_add(c, CLANG);
+      if (p == &musl) { // musl's own headers only, in its Makefile's order (CFLAGS_ALL)
+        cmd_add(c, posix_flags(a)[0]);
+        cmd_add_words(c, vx_ndb_get(&p->head, "cflags"));
+        cmd_add(c, "-Iports/musl/vx/arch/generic");
+        cmd_add(c, fmt("-I%s/arch/%s", musl.src, a->name));
+        cmd_add(c, fmt("-I%s/arch/generic", musl.src));
+        cmd_add(c, "-Iports/musl/generated/internal");
+        cmd_add(c, fmt("-I%s/src/include", musl.src));
+        cmd_add(c, fmt("-I%s/src/internal", musl.src));
+        cmd_add(c, fmt("-Iports/musl/generated/%s/include", a->name));
+        cmd_add(c, fmt("-I%s/include", musl.src));
+      } else {
+        cmd_addv(c, posix_flags(a));
+        cmd_add_words(c, vx_ndb_get(&p->head, "cflags"));
+      }
+      if (extra) cmd_add_words(c, extra(rel));
+      cmd_add(c, prefix_map);
+      cmd_add(c, "-c");
+      cmd_add(c, fmt("%s/%s", p->src, rel));
+      cmd_add(c, "-o");
+      cmd_add(c, objs[i] = object_for(objdir, rel));
+      mkdirs_for(objs[i]);
+      ptrs[n] = c;
+    }
+    if (!run_parallel(ptrs, n)) return false;
+  }
+  return true;
+}
+
+static vx_str musl_file_flags(const char *rel) {
+  const char *base = strrchr(rel, '/') + 1;
+  size_t n = strcspn(base, ".");
+  vx_str nossp = vx_ndb_get(&musl.head, "nossp");
+  if (words_has(nossp, str_dup((vx_str){base, n}))) return (vx_str){"-fno-stack-protector", 20};
+  return (vx_str){};
+}
+
+// llvm-ar, with the members in a response file in objdir: libc.a has more
+// than a command line holds.
+static bool archive(const char *lib, const char *objdir, const char *const *objs, int count) {
+  remove(lib);
+  const char *list = fmt("%s/%s.members", objdir, strrchr(lib, '/') + 1);
+  FILE *f = fopen(list, "w");
+  if (!f) die("cannot write %s", list);
+  for (int i = 0; i < count; i++) fprintf(f, "%s\n", objs[i]);
+  fclose(f);
+  cmd c = {};
+  cmd_addv(&c, (const char *const[]){LLVM_AR, "rcsD", lib, fmt("@%s", list), nullptr});
+  return run(&c);
+}
+
+// Builds a cached port's objects for one architecture: once per change of
+// its inputs, as build_port_target does for Limine.
+static bool build_cached(const port *p, const arch *a, file_list *files, const char **objs,
+                         vx_str (*extra)(const char *rel)) {
+  const char *outdir = fmt("%s/out/%s/%s", root, p->name, a->name);
+  const char *stamp = fmt("%s/stamp", outdir);
+  const char *key = fmt("%016llx\n", (unsigned long long)p->input_hash);
+  if (exists(stamp) && strcmp(read_file(stamp).ptr, key) == 0) {
+    for (int i = 0; i < files->count; i++) objs[i] = object_for(fmt("%s/obj", outdir), files->paths[i]);
+    fprintf(stderr, "  PORT  %-7s %s (cached)\n", p->name, a->name);
+    return true;
+  }
+  remove(stamp);
+  fprintf(stderr, "  PORT  %-7s %s (%d files)\n", p->name, a->name, files->count);
+  if (!compile_port_sources(p, a, files, fmt("%s/obj", outdir), objs, extra)) return false;
+  write_file(stamp, (vx_str){key, strlen(key)});
+  return true;
+}
+
+static bool build_vectra_musl(const arch *a, bool release) {
+  const char *lib = vectra_musl_lib(a, release);
+  const char *objdir = fmt("out/%s/%s/musl-vx", a->name, release ? "release" : "debug");
+  mkdirs(lib);
+  mkdirs(objdir);
+
+  static file_list musl_files, rt_files;
+  musl_files = rt_files = (file_list){};
+  musl_sources(&musl_files, a, vx_ndb_get(port_target_for(&musl, a), "exclude"));
+  compiler_rt_sources(&rt_files, a);
+  const char **musl_objs = alloc((size_t)(musl_files.count + 1) * sizeof *musl_objs);
+  const char **rt_objs = alloc((size_t)rt_files.count * sizeof *rt_objs);
+  if (!build_cached(&musl, a, &musl_files, musl_objs, musl_file_flags) ||
+      !build_cached(&compiler_rt, a, &rt_files, rt_objs, nullptr))
+    return false;
+
+  // The back end and crt1, with this mode's flags; crti and crtn, musl's.
+  static cmd cc[4];
+  const char *srcs[4] = {"ports/musl/vx/backend.c", "ports/musl/vx/crt1.c",
+                         fmt("third_party/musl/crt/%s/crti.s", a->name),
+                         fmt("third_party/musl/crt/%s/crtn.s", a->name)};
+  const char *outs[4] = {fmt("%s/backend.o", objdir), fmt("%s/crt1.o", lib), fmt("%s/crti.o", lib),
+                         fmt("%s/crtn.o", lib)};
+  cmd *ccs[4];
+  fprintf(stderr, "  CC    libc    %s (the vx back end)\n", a->name);
+  for (int i = 0; i < 4; i++) {
+    cc[i] = (cmd){};
+    cmd_add(&cc[i], CLANG);
+    cmd_add(&cc[i], posix_flags(a)[0]); // the target: crti.s and crtn.s are assembly
+    if (i < 2) {
+      cmd_addv(&cc[i], posix_flags(a) + 1);
+      cmd_addv(&cc[i], HOUSE_FLAGS);
+      cmd_addv(&cc[i], POSIX_BACKEND_FLAGS);
+      cmd_addv(&cc[i], release ? RELEASE_FLAGS : DEBUG_FLAGS);
+    }
+    cmd_add(&cc[i], fmt("-ffile-prefix-map=%s=/src", root));
+    cmd_addv(&cc[i], (const char *const[]){"-c", srcs[i], "-o", outs[i], nullptr});
+    ccs[i] = &cc[i];
+  }
+  if (!run_parallel(ccs, 4)) return false;
+
+  musl_objs[musl_files.count] = outs[0];
+  if (!archive(fmt("%s/libc.a", lib), objdir, musl_objs, musl_files.count + 1) ||
+      !archive(fmt("%s/libclang_rt.builtins.a", lib), objdir, rt_objs, rt_files.count))
+    return false;
+  for (const char *const *e = MUSL_EMPTY_LIBS; *e; e++)
+    if (!archive(fmt("%s/lib%s.a", lib, *e), objdir, nullptr, 0)) return false;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // The kernel
 
 static bool build_kernel(const arch *a, bool release) {
@@ -850,31 +1206,34 @@ typedef struct program {
   const char *name, *source;
   placement where;
   const char *arch; // the only architecture it is built for, or nullptr for every one
+  bool posix;       // against vectra-musl, rather than freestanding against vx-rt
 } program;
 
 static const program USER_PROGRAMS[] = {
-    {"svcd", "servers/svcd/svcd.c", IN_MODULE, nullptr},
-    {"ktest", "tests/kernel/ktest.c", IN_MODULE, nullptr}, // the root task instead of svcd with vx.root=ktest
-    {"bootfs", "servers/bootfs/bootfs.c", IN_BOOTFS, nullptr},
-    {"nstest", "tests/user/nstest.c", IN_TESTS, nullptr},
-    {"constest", "tests/user/constest.c", IN_TESTS, nullptr},
-    {"nettest", "tests/user/nettest.c", IN_TESTS, nullptr},
-    {"tcptest", "tests/user/tcptest.c", IN_TESTS, nullptr},
-    {"procfs", "servers/procfs/procfs.c", IN_BOOTFS, nullptr},
-    {"devmgr", "servers/devmgr/devmgr.c", IN_BOOTFS, nullptr},
-    {"netd", "servers/netd/netd.c", IN_BOOTFS, nullptr},
-    {"gsh", "cmd/gsh.c", IN_BOOTFS, nullptr},
-    {"ls", "cmd/ls.c", IN_BOOTFS, nullptr},
-    {"cat", "cmd/cat.c", IN_BOOTFS, nullptr},
-    {"echo", "cmd/echo.c", IN_BOOTFS, nullptr},
-    {"ps", "cmd/ps.c", IN_BOOTFS, nullptr},
-    {"ns", "cmd/ns.c", IN_BOOTFS, nullptr},
-    {"tail", "cmd/tail.c", IN_BOOTFS, nullptr},
-    {"ping", "cmd/ping.c", IN_BOOTFS, nullptr},
-    {"cs", "cmd/cs.c", IN_BOOTFS, nullptr},
-    {"drv-uart-16550", "drivers/drv-uart-16550/uart.c", IN_BOOTFS, "x86_64"},
-    {"drv-uart-pl011", "drivers/drv-uart-pl011/uart.c", IN_BOOTFS, "aarch64"},
-    {"drv-virtio-net", "drivers/drv-virtio-net/net.c", IN_BOOTFS, nullptr},
+    {"svcd", "servers/svcd/svcd.c", IN_MODULE, nullptr, false},
+    {"ktest", "tests/kernel/ktest.c", IN_MODULE, nullptr,
+     false}, // the root task instead of svcd with vx.root=ktest
+    {"bootfs", "servers/bootfs/bootfs.c", IN_BOOTFS, nullptr, false},
+    {"nstest", "tests/user/nstest.c", IN_TESTS, nullptr, false},
+    {"constest", "tests/user/constest.c", IN_TESTS, nullptr, false},
+    {"nettest", "tests/user/nettest.c", IN_TESTS, nullptr, false},
+    {"tcptest", "tests/user/tcptest.c", IN_TESTS, nullptr, false},
+    {"procfs", "servers/procfs/procfs.c", IN_BOOTFS, nullptr, false},
+    {"devmgr", "servers/devmgr/devmgr.c", IN_BOOTFS, nullptr, false},
+    {"netd", "servers/netd/netd.c", IN_BOOTFS, nullptr, false},
+    {"gsh", "cmd/gsh.c", IN_BOOTFS, nullptr, false},
+    {"ls", "cmd/ls.c", IN_BOOTFS, nullptr, false},
+    {"cat", "cmd/cat.c", IN_BOOTFS, nullptr, false},
+    {"echo", "cmd/echo.c", IN_BOOTFS, nullptr, false},
+    {"ps", "cmd/ps.c", IN_BOOTFS, nullptr, false},
+    {"ns", "cmd/ns.c", IN_BOOTFS, nullptr, false},
+    {"tail", "cmd/tail.c", IN_BOOTFS, nullptr, false},
+    {"ping", "cmd/ping.c", IN_BOOTFS, nullptr, false},
+    {"cs", "cmd/cs.c", IN_BOOTFS, nullptr, false},
+    {"drv-uart-16550", "drivers/drv-uart-16550/uart.c", IN_BOOTFS, "x86_64", false},
+    {"drv-uart-pl011", "drivers/drv-uart-pl011/uart.c", IN_BOOTFS, "aarch64", false},
+    {"drv-virtio-net", "drivers/drv-virtio-net/net.c", IN_BOOTFS, nullptr, false},
+    {"ctest", "tests/posix/ctest.c", IN_TESTS, nullptr, true},
 };
 
 static bool program_for(const program *p, const arch *a) { return !p->arch || strcmp(p->arch, a->name) == 0; }
@@ -894,9 +1253,9 @@ static bool build_user_programs(const arch *a, bool release) {
     fprintf(stderr, "  CC    %-7s %s\n", p->name, a->name);
     cc[n] = (cmd){};
     cmd_add(&cc[n], CLANG);
-    cmd_addv(&cc[n], a->user_flags);
+    cmd_addv(&cc[n], p->posix ? posix_flags(a) : a->user_flags);
     cmd_addv(&cc[n], HOUSE_FLAGS);
-    cmd_addv(&cc[n], USER_FLAGS);
+    cmd_addv(&cc[n], p->posix ? POSIX_PROGRAM_FLAGS : USER_FLAGS);
     cmd_addv(&cc[n], release ? RELEASE_FLAGS : DEBUG_FLAGS);
     cmd_add(&cc[n], fmt("-ffile-prefix-map=%s=/src", root));
     cmd_addv(&cc[n], (const char *const[]){"-c", p->source, "-o", obj, nullptr});
@@ -906,7 +1265,17 @@ static bool build_user_programs(const arch *a, bool release) {
              (const char *const[]){"-static", "-nostdlib", "--build-id=sha1", "-z", "max-page-size=0x1000",
                                    "-z", "noexecstack", "-e", "_start", "-o", nullptr});
     cmd_add(&ld[n], fmt("%s/%s", dir, p->name));
+    const char *lib = vectra_musl_lib(a, release);
+    if (p->posix) {
+      cmd_add(&ld[n], fmt("%s/crt1.o", lib));
+      cmd_add(&ld[n], fmt("%s/crti.o", lib));
+    }
     cmd_add(&ld[n], obj);
+    if (p->posix) {
+      cmd_add(&ld[n], fmt("%s/libc.a", lib));
+      cmd_add(&ld[n], fmt("%s/libclang_rt.builtins.a", lib));
+      cmd_add(&ld[n], fmt("%s/crtn.o", lib));
+    }
     ccs[n] = &cc[n];
     lds[n] = &ld[n];
     n++;
@@ -915,7 +1284,8 @@ static bool build_user_programs(const arch *a, bool release) {
 }
 
 static bool build_arch(const arch *a, bool release) {
-  if (!build_kernel(a, release) || !build_user_programs(a, release)) return false;
+  if (!build_kernel(a, release) || !build_vectra_musl(a, release) || !build_user_programs(a, release))
+    return false;
   const vx_ndb_record *t = port_target_for(&limine, a);
   return !t || build_port_target(&limine, t);
 }
@@ -924,7 +1294,15 @@ static void check_toolchain(void) {
   check_version(CLANG, CLANG_VERSION);
   check_version(LLD, LLD_VERSION);
   check_version(OBJCOPY, OBJCOPY_VERSION);
+  check_version(LLVM_AR, LLVM_AR_VERSION);
+  if (!exists(CLANG_RESOURCE_INCLUDE))
+    die("no %s: the pinned clang's headers (ADR-0001)", CLANG_RESOURCE_INCLUDE);
   port_load(&limine, "limine");
+  port_load(&musl, "musl");
+  port_load(&compiler_rt, "compiler-rt");
+  // musl's build also reads the back end's syscall_arch.h and the generated headers.
+  musl.input_hash = hash_tree(musl.input_hash, fmt("%s/ports/musl/vx/arch", root));
+  musl.input_hash = hash_tree(musl.input_hash, fmt("%s/ports/musl/generated", root));
 }
 
 // Runs fn for each architecture (or only one) in parallel, one child each.
@@ -1998,7 +2376,8 @@ static const char *const VENDOR_KEYS[] = {
     "version", "upstream", "tree.sha256", "license", "adr", "reviewed.by", nullptr,
 };
 static const char *const VENDOR_OPTIONAL_KEYS[] = {
-    "name", "sha256", "git.tree", "signed.by", "port", "patches", "reviewed.date", "reviewed.scope", nullptr,
+    "name",    "sha256",        "git.tree",       "signed.by", "port",
+    "patches", "reviewed.date", "reviewed.scope", "subset",    nullptr,
 };
 
 static bool in_list(const char *const *list, vx_str key) {
@@ -2205,7 +2584,11 @@ static component *component_for(const char *name, bool vendored) {
 }
 
 // Components are the first path segment, or the first two under these directories.
-static const char *const GROUPED[] = {"lib", "servers", "drivers", "apps", "host", "third_party", nullptr};
+static const char *const GROUPED[] = {"lib",  "servers",     "drivers", "apps",
+                                      "host", "third_party", "ports",   nullptr};
+
+// Made from a vendored tree, once, and counted with it.
+static bool is_generated(const char *path) { return strncmp(path, "ports/musl/generated/", 21) == 0; }
 
 static int loc_visit(const char *path, const struct stat *st, int type, struct FTW *ftw) {
   (void)st;
@@ -2232,9 +2615,10 @@ static int loc_visit(const char *path, const struct stat *st, int type, struct F
     }
     snprintf(name, sizeof name, "%.*s", (int)len, path);
   }
+  if (is_generated(path)) snprintf(name, sizeof name, "ports/musl/generated");
 
   long n = count_lines(path);
-  component_for(name, strncmp(path, "third_party/", 12) == 0)->lines += n;
+  component_for(name, strncmp(path, "third_party/", 12) == 0 || is_generated(path))->lines += n;
 
   const char *dot = strrchr(path, '.');
   for (int i = 0; i < ARCH_COUNT; i++) {
@@ -2413,11 +2797,21 @@ static int os_units(unit *units, bool with_host_tests) {
   for (int i = 0; i < ARCH_COUNT; i++) {
     units[unit_slot(&n)] = (unit){
         fmt("kernel %s", ARCHES[i].name), "kernel/kernel.c", {ARCHES[i].flags, HOUSE_FLAGS, KERNEL_FLAGS}};
-    for (int k = 0; k < USER_PROGRAM_COUNT; k++)
-      if (program_for(&USER_PROGRAMS[k], &ARCHES[i]))
-        units[unit_slot(&n)] = (unit){fmt("%s %s", USER_PROGRAMS[k].name, ARCHES[i].name),
-                                      USER_PROGRAMS[k].source,
-                                      {ARCHES[i].user_flags, HOUSE_FLAGS, USER_FLAGS}};
+    for (int k = 0; k < USER_PROGRAM_COUNT; k++) {
+      const program *p = &USER_PROGRAMS[k];
+      if (!program_for(p, &ARCHES[i])) continue;
+      unit *u = &units[unit_slot(&n)];
+      *u = (unit){fmt("%s %s", p->name, ARCHES[i].name), p->source, {}};
+      u->flags[0] = p->posix ? posix_flags(&ARCHES[i]) : ARCHES[i].user_flags;
+      u->flags[1] = HOUSE_FLAGS;
+      u->flags[2] = p->posix ? POSIX_PROGRAM_FLAGS : USER_FLAGS;
+    }
+    units[unit_slot(&n)] = (unit){fmt("libc-vx %s", ARCHES[i].name),
+                                  "ports/musl/vx/backend.c",
+                                  {posix_flags(&ARCHES[i]), HOUSE_FLAGS, POSIX_BACKEND_FLAGS}};
+    units[unit_slot(&n)] = (unit){fmt("crt1 %s", ARCHES[i].name),
+                                  "ports/musl/vx/crt1.c",
+                                  {posix_flags(&ARCHES[i]), HOUSE_FLAGS, POSIX_BACKEND_FLAGS}};
   }
   units[unit_slot(&n)] = (unit){"build", "build.c", {HOST_C23}};
   if (with_host_tests) {
@@ -2477,9 +2871,9 @@ static bool check_tidy(void) {
 
 // The house format (.clang-format, 04 §1.1) over every first-party C file.
 // Vendored code keeps its upstream format.
-static const char *const FORMATTED_DIRS[] = {"abi",        "kernel",       "lib",        "servers",
-                                             "drivers",    "cmd",          "tests/host", "tests/fuzz",
-                                             "tests/user", "tests/kernel", "host",       nullptr};
+static const char *const FORMATTED_DIRS[] = {
+    "abi",        "kernel",     "lib",          "servers", "drivers",       "cmd",         "tests/host",
+    "tests/fuzz", "tests/user", "tests/kernel", "host",    "ports/musl/vx", "tests/posix", nullptr};
 
 static bool check_format(void) {
   check_version(CLANG_FORMAT, CLANG_FORMAT_VERSION);
