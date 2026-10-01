@@ -87,18 +87,17 @@ static uint64_t ring_page_up(uint64_t v) { return (v + 4095) & ~4095ull; }
 }
 
 // Attaches to a ring mapped at `base` (mapped_size bytes) as the client or the
-// server. The header is checked against what vx_ring_layout would have made,
-// so a peer that rewrote it is caught here. Takes the indices as they stand:
-// a side attaches before it uses the ring.
-[[maybe_unused]] static vx_status vx_ring_attach(vx_ring *r, void *base, uint64_t mapped_size, bool client) {
+// server. The header must be exactly what vx_ring_layout makes of `expect`,
+// the parameters this side's protocol uses: whoever made the ring may be
+// hostile, and entry sizes and queue lengths decide how much each consume
+// copies into the caller's buffer. Takes the indices as they stand: a side
+// attaches before it uses the ring.
+[[maybe_unused]] static vx_status vx_ring_attach(vx_ring *r, void *base, uint64_t mapped_size, bool client,
+                                                 const vx_ring_params *expect) {
   *r = (vx_ring){.broken = true}; // after a failed attach, every operation fails
-  vx_ring_header h;
+  vx_ring_header h, want;
   memcpy(&h, base, sizeof h);
-  vx_ring_params p = {h.sq_entries, h.cq_entries,        h.sqe_size,
-                      h.cqe_size,   h.client_arena_size, h.server_arena_size};
-  vx_ring_header want;
-  if (h.magic != VX_RING_MAGIC || h.version != VX_RING_VERSION || vx_ring_layout(&p, &want) != VX_OK ||
-      memcmp(&h, &want, sizeof h) != 0 || h.size > mapped_size)
+  if (vx_ring_layout(expect, &want) != VX_OK || memcmp(&h, &want, sizeof h) != 0 || h.size > mapped_size)
     return VX_ERR_INVALID;
 
   uint8_t *b = base;

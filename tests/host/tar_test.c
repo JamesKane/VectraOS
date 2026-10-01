@@ -124,7 +124,27 @@ static void test_hostile(void) {
         vx_tar_next(&t2, &e) == VX_ERR_INVALID);
 }
 
+// The longest path ustar holds: a full prefix, '/', a full name. Its NUL
+// still fits the entry (ASan sees a write past it).
+static void test_longest_path(void) {
+  char path[257];
+  memset(path, 'p', 155);
+  path[155] = '/';
+  memset(path + 156, 'n', 100);
+  path[256] = 0;
+  static uint8_t img[4096];
+  vx_tar_writer w = {.buf = img, .cap = sizeof img};
+  vx_tar_add(&w, (vx_str){path, 256}, false, 0644, "x", 1);
+  size_t n = vx_tar_end(&w);
+  CHECK(n > 0);
+  vx_tar t = vx_tar_open(img, n);
+  vx_tar_entry e;
+  CHECK(vx_tar_next(&t, &e) == VX_OK && e.path.len == 256 && memcmp(e.path.ptr, path, 256) == 0);
+  CHECK(e.buf[256] == 0);
+}
+
 int main(void) {
+  test_longest_path();
   test_round_trip();
   test_hostile();
   return check_result();

@@ -39,7 +39,7 @@ static constexpr uint64_t VX_USER_TOP = 0x0000'8000'0000'0000;
 // nothing mapped below it but what the program asks for (a guard reservation
 // comes with as_reserve).
 static constexpr uint64_t VX_STACK_TOP = 0x0000'7fff'ffff'0000;
-static constexpr uint64_t VX_STACK_SIZE = 64ull * 1024;
+static constexpr uint64_t VX_STACK_SIZE = 256ull * 1024; // as the root task's (kernel/obj/task.c)
 static constexpr uint32_t VX_ALL_RIGHTS = (1u << VX_RIGHT_BIT_COUNT) - 1;
 
 // Maps each loadable segment of the image into the task. Returns the entry point in *entry.
@@ -57,14 +57,16 @@ static vx_status vx_elf_load(vx_handle task, const uint8_t *image, size_t size, 
       ckd_add(&table_end, table_end, eh.phoff) || table_end > size || eh.entry >= VX_USER_TOP)
     return VX_ERR_INVALID;
 
+  bool entry_found = false; // the entry point must be in an executable segment
   for (uint16_t i = 0; i < eh.phnum; i++) {
     vx_elf_phdr ph;
     memcpy(&ph, image + eh.phoff + (uint64_t)i * sizeof ph, sizeof ph);
     if (ph.type != VX_PT_LOAD || ph.memsz == 0) continue;
     uint64_t file_end, mem_end;
-    if (ph.filesz > ph.memsz || ckd_add(&file_end, ph.offset, ph.filesz) || file_end > size ||
-        ckd_add(&mem_end, ph.vaddr, ph.memsz) || mem_end > VX_STACK_TOP - VX_STACK_SIZE - 4096 ||
-        ((ph.flags & VX_PF_W) && (ph.flags & VX_PF_X)))
+    // Not in the first page either: there, an address of 0 asks as_map to pick one.
+    if (ph.vaddr < 4096 || ph.filesz > ph.memsz || ckd_add(&file_end, ph.offset, ph.filesz) ||
+        file_end > size || ckd_add(&mem_end, ph.vaddr, ph.memsz) ||
+        mem_end > VX_STACK_TOP - VX_STACK_SIZE - 4096 || ((ph.flags & VX_PF_W) && (ph.flags & VX_PF_X)))
       return VX_ERR_INVALID;
     uint64_t base = ph.vaddr & ~4095ull, map_size = ((mem_end + 4095) & ~4095ull) - base;
     vx_handle vmo;
@@ -77,7 +79,10 @@ static vx_status vx_elf_load(vx_handle task, const uint8_t *image, size_t size, 
                      (ph.flags & VX_PF_W ? VX_MAP_WRITE : 0) | (ph.flags & VX_PF_X ? VX_MAP_EXEC : 0), &va);
     vx_handle_close(vmo); // the mapping keeps it
     if (st != VX_OK) return st;
+    if (va != base) return VX_ERR_INVALID; // mapped, but not where the program was linked to run
+    if ((ph.flags & VX_PF_X) && eh.entry >= ph.vaddr && eh.entry < mem_end) entry_found = true;
   }
+  if (!entry_found) return VX_ERR_INVALID;
   *entry = eh.entry;
   return VX_OK;
 }

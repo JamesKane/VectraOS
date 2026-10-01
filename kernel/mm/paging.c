@@ -38,6 +38,7 @@ static bool map_range(uint64_t root, uint64_t va, uint64_t pa, uint64_t size, ui
       if (!arch_pte_valid(t[idx])) {
         uint64_t page = table_page();
         if (!page) return false;
+        arch_pte_publish(); // the new table's zeroes, before the entry that leads to it
         t[idx] = arch_pte_table(page);
       } else if (!arch_pte_is_table(t[idx], l)) {
         return false;
@@ -51,6 +52,7 @@ static bool map_range(uint64_t root, uint64_t va, uint64_t pa, uint64_t size, ui
     pa += step;
     size -= step;
   }
+  arch_pte_publish();
   return true;
 }
 
@@ -136,8 +138,8 @@ static void map_image_part(const uint8_t *start, const uint8_t *end, uint32_t fl
 
 // Builds the kernel's own page tables and switches to them:
 //  - the kernel image, each part with its own permissions (W^X);
-//  - the direct map: RAM, firmware tables and runtime services, read-write and
-//    never executable, merged across adjacent regions so large leaves fit;
+//  - the direct map: RAM, firmware tables and runtime services, never
+//    executable, read-write but for the kernel image and the modules;
 //  - the architecture's device pages (arch_kernel_mappings);
 //  - nothing in the lower half, so null pointers fault.
 static void paging_init(void) {
@@ -149,16 +151,21 @@ static void paging_init(void) {
   map_image_part(vx_data_start, vx_data_end, MAP_WRITE);
   map_image_part(vx_boot_stack_bottom, vx_boot_stack_top, MAP_WRITE); // the page below stays unmapped
 
+  // Runs of adjacent regions with the same permissions merge, so large leaves
+  // fit. The kernel image and the boot modules are read-only here: the image
+  // is written only through its own mapping, and only where it may be (W^X).
   struct limine_memmap_response *mm = memmap_request.response;
   uint64_t run_lo = 0, run_hi = 0;
+  uint32_t run_flags = 0;
   for (uint64_t i = 0; i <= mm->entry_count; i++) {
     uint64_t lo = 0, hi = 0;
+    uint32_t flags = MAP_WRITE;
     if (i < mm->entry_count) {
       struct limine_memmap_entry *e = mm->entries[i];
       switch (e->type) {
+      case LIMINE_MEMMAP_EXECUTABLE_AND_MODULES: flags = 0; [[fallthrough]];
       case LIMINE_MEMMAP_USABLE:
       case LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE:
-      case LIMINE_MEMMAP_EXECUTABLE_AND_MODULES:
       case LIMINE_MEMMAP_ACPI_RECLAIMABLE:
       case LIMINE_MEMMAP_ACPI_NVS:
       case LIMINE_MEMMAP_RESERVED_MAPPED:
@@ -167,15 +174,17 @@ static void paging_init(void) {
         break;
       default: continue;
       }
-      if (run_hi && lo <= run_hi) { // the map is sorted: extend the run
+      if (run_hi && lo <= run_hi && flags == run_flags) { // the map is sorted: extend the run
         if (hi > run_hi) run_hi = hi;
         continue;
       }
+      if (run_hi && lo < run_hi) lo = run_hi; // a page shared with the run before: that run has it
     }
-    if (run_hi && !map_range(kernel_root, boot.hhdm + run_lo, run_lo, run_hi - run_lo, MAP_WRITE))
+    if (run_hi && !map_range(kernel_root, boot.hhdm + run_lo, run_lo, run_hi - run_lo, run_flags))
       panic(VX_STR("cannot build the direct map"));
     run_lo = lo;
     run_hi = hi;
+    run_flags = flags;
   }
 
   arch_kernel_mappings(kernel_root);

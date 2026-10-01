@@ -18,7 +18,7 @@
 #include "../../abi/vx/abi.h"
 
 static constexpr size_t VX_TAR_BLOCK = 512;
-static constexpr size_t VX_TAR_MAX_PATH = 255; // prefix (155), '/', name (100)
+static constexpr size_t VX_TAR_MAX_PATH = 256; // prefix (155), '/', name (100)
 
 typedef struct vx_tar_header {
   char name[100], mode[8], uid[8], gid[8], size[12], mtime[12], chksum[8];

@@ -26,11 +26,15 @@ static struct {
   bool open;
   size_t len;
   char line[512];
+  vx_instant retry_at; // no reconnecting before this, after a failure
 } vx_console;
 
+// Connects (again). After a failure it does not try for a second, so a
+// console that is gone for good costs each line nothing, not a connect's wait.
 static vx_status vx_console_open(void) {
   if (vx_console.conn.end) p9_ring_disconnect(&vx_console.conn);
   vx_console.open = false;
+  if (vx_clock_read() < vx_console.retry_at) return VX_ERR_PEER_CLOSED;
   uint32_t root = 0;
   vx_status st = p9_ring_connect(vx_console.connector, &vx_console.conn);
   if (st == VX_OK) st = p9c_attach(&vx_console.conn.c, VX_STR(""), &root);
@@ -40,6 +44,7 @@ static vx_status vx_console_open(void) {
   }
   if (st == VX_OK) st = p9c_open(&vx_console.conn.c, vx_console.fid, P9_ORDWR);
   vx_console.open = st == VX_OK;
+  if (!vx_console.open) vx_console.retry_at = vx_clock_read() + 1'000'000'000;
   return st;
 }
 
@@ -81,10 +86,16 @@ static void vx_console_print(vx_str s) {
 // Reads what the console has: a line, in its cooked mode. 0 at end of file.
 [[maybe_unused]] static int64_t vx_console_read(void *buf, uint32_t count) {
   if (vx_console.len) vx_console_flush(); // a prompt goes out before the wait
-  if (!vx_console.open) return VX_ERR_BAD_STATE;
-  int64_t n = p9c_read(&vx_console.conn.c, vx_console.fid, 0, buf, count);
-  if (n < 0 && vx_console_open() == VX_OK) n = p9c_read(&vx_console.conn.c, vx_console.fid, 0, buf, count);
-  return n;
+  if (!vx_console.connector) return VX_ERR_BAD_STATE;
+  // Until the console is back (the driver restarting), wait for it rather
+  // than fail: a reader takes an error for the end of its input.
+  for (;;) {
+    int64_t n = vx_console.open ? p9c_read(&vx_console.conn.c, vx_console.fid, 0, buf, count) : -1;
+    if (n >= 0) return n;
+    if (vx_console_open() == VX_OK) continue;
+    static _Atomic uint32_t never;
+    vx_futex_wait(&never, 0, vx_console.retry_at); // a second, then try again
+  }
 }
 
 // --- Standard input and output: pipes ---
@@ -100,6 +111,7 @@ static struct {
   uint8_t msg[sizeof(vx_msg_header) + 4096]; // stdin's current message,
   uint32_t msg_len, msg_pos;                 // and how much of it has been read
   bool in_ended;
+  bool closed_bound; // PEER_CLOSED on stdin is bound once; it fires once
   size_t len;
   uint8_t line[sizeof(vx_msg_header) + 512]; // stdout's line, after a header
 } vx_stdio;
@@ -140,7 +152,9 @@ static void vx_stdout_print(vx_str s) {
       vx_packet pk;
       if (!vx_stdio.port && vx_port_create(0, &vx_stdio.port) != VX_OK) return VX_ERR_NO_MEMORY;
       vx_port_bind(vx_stdio.port, vx_stdio.in, VX_TRIGGER_READABLE, 0, 0);
-      vx_port_bind(vx_stdio.port, vx_stdio.in, VX_TRIGGER_PEER_CLOSED, 1, 0);
+      if (!vx_stdio.closed_bound) // once: binding it each time would leave one per read behind
+        vx_stdio.closed_bound =
+            vx_port_bind(vx_stdio.port, vx_stdio.in, VX_TRIGGER_PEER_CLOSED, 1, 0) == VX_OK;
       vx_port_wait(vx_stdio.port, VX_INFINITE, 0, &pk, 1);
     } else if (st != VX_OK) {
       vx_stdio.in_ended = true; // the writer has gone (or sent what we cannot read)

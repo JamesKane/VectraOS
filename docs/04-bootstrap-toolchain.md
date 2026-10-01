@@ -48,7 +48,7 @@ The rules below govern the OS tree: the kernel, libraries, servers, drivers, com
 
 Rust's guarantees stop at `unsafe`. The core of a kernel is unsafe by definition: page tables, context switches, MMIO, DMA and the ring memory ordering (D1). So VectraOS gets its safety from a small kernel and from tooling that covers all of the code:
 
-- **Sanitizers:** host builds of every library run their tests under ASan and UBSan. The debug kernel is built with `-fsanitize=undefined -fsanitize-trap=undefined`, which needs no runtime. A kernel address sanitizer with a first-party shadow-memory runtime comes later.
+- **Sanitizers:** host builds of every library run their tests under ASan and UBSan. The debug kernel is built with `-fsanitize=undefined -fsanitize-trap=undefined`, which needs no runtime, at `-O0`, which keeps a clean kernel build well inside its 1 s budget (§3.2); the release build is `-O2`. User stacks are 256 KiB, since `-O0` frames do not share stack slots. A kernel address sanitizer with a first-party shadow-memory runtime comes later.
 - **Control-flow integrity:** `-fsanitize=kcfi` in the kernel. `-fcf-protection=full` on x86_64 and `-mbranch-protection=standard` on aarch64 everywhere.
 - **Static analysis:** the clang static analyzer and `clang-tidy` run on every change.
 - **Fuzzing and model checking:** see §7.

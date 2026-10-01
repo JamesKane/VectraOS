@@ -65,6 +65,11 @@ static void selftests(void) {
     volatile uint8_t *p = (volatile uint8_t *)(uintptr_t)&kernel_main;
     *p = 0;
   }
+  if (cmdline_has(VX_STR("vx.selftest=write-text-alias"))) {
+    // And so is its other mapping, in the direct map.
+    volatile uint8_t *p = phys_to_virt((uintptr_t)&kernel_main - boot.kernel_virt + boot.kernel_phys);
+    *p = 0;
+  }
 }
 
 [[noreturn, clang::no_stack_protector]] void kernel_main(void) {

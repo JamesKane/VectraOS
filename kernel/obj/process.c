@@ -30,21 +30,25 @@ static vx_status task_bind(task *t, binding *b) {
 // Closes the task's handles, drops its mappings, frees its page tables and fires
 // its EXIT bindings. Its threads are all dead and no CPU uses its address space.
 static void task_teardown(task *t) {
-  for (uint32_t i = 1; i < HANDLE_SLOTS; i++) { // no one adds to an EXITED task's table
-    object *obj = t->handles[i].obj;
-    t->handles[i].obj = nullptr;
-    if (obj) object_drop(obj);
-  }
-  for (uint32_t i = 0; i < TASK_MAX_MAPPINGS; i++)
-    if (t->maps[i].size) object_drop(&t->maps[i].vmo->obj);
-  free_user_tables(t->root);
-  phys_free((uint64_t)t->maps - boot.hhdm, 0);
-  phys_free((uint64_t)t->handles - boot.hhdm, 0);
+  // The tables leave the task under its lock, so a handle_add or task_map on
+  // another CPU (through a handle to this task) sees them gone, never freed.
   spin_lock(&t->lock);
-  t->root = 0;
-  t->maps = nullptr;
+  handle_entry *handles = t->handles;
+  mapping *maps = t->maps;
+  uint64_t root = t->root;
   t->handles = nullptr;
+  t->maps = nullptr;
+  t->root = 0;
   t->mapped = 0;
+  spin_unlock(&t->lock);
+  for (uint32_t i = 1; i < HANDLE_SLOTS; i++)
+    if (handles[i].obj) object_drop(handles[i].obj);
+  for (uint32_t i = 0; i < TASK_MAX_MAPPINGS; i++)
+    if (maps[i].size) object_drop(&maps[i].vmo->obj);
+  free_user_tables(root);
+  phys_free((uint64_t)maps - boot.hhdm, 0);
+  phys_free((uint64_t)handles - boot.hhdm, 0);
+  spin_lock(&t->lock);
   t->state = VX_TASK_EXITED; // only now: an EXIT binding sees the task fully gone
   observers_fire(&t->obs, VX_TRIGGER_EXIT, (uint64_t)t->exit_status);
   spin_unlock(&t->lock);
@@ -53,12 +57,16 @@ static void task_teardown(task *t) {
 // Starts a thread that has not started: user mode at entry, with sp and two
 // arguments. The thread holds a reference to itself until it is reaped.
 static vx_status thread_start(thread *th, uint64_t entry, uint64_t sp, uint64_t arg, uint64_t arg2) {
+  // Both in the lower half: a non-canonical address would fault on the way
+  // to user mode, in the kernel (x86_64's iretq), not in the task.
+  if (entry >= USER_TOP || sp > USER_TOP) return VX_ERR_INVALID;
   task *t = th->task;
   spin_lock(&t->lock);
   vx_status st = VX_OK;
-  if (th->state != THREAD_NEW || th->user_entry || t->ending || t->killed) st = VX_ERR_BAD_STATE;
+  if (th->state != THREAD_NEW || th->started || t->ending || t->killed) st = VX_ERR_BAD_STATE;
 
   if (st == VX_OK) {
+    th->started = true; // under the task's lock: one start, even with entry 0
     th->user_entry = entry;
     th->user_sp = sp;
     th->user_arg = arg;

@@ -7,9 +7,9 @@
 static constexpr uint64_t USER_TOP = 0x0000'8000'0000'0000;      // first address past the lower half
 static constexpr uint64_t USER_MAP_BASE = 0x0000'1000'0000'0000; // where as_map puts mappings it places
 static constexpr uint64_t USER_STACK_TOP = 0x0000'7fff'ffff'0000;
-static constexpr uint64_t USER_STACK_SIZE = 64ull * 1024;
-static constexpr unsigned KSTACK_ORDER = 2; // 16 KiB kernel stacks
-static constexpr uint32_t TASK_MAX_IO = 4;  // I/O port ranges per task
+static constexpr uint64_t USER_STACK_SIZE = 256ull * 1024; // debug builds are -O0: frames do not overlap
+static constexpr unsigned KSTACK_ORDER = 2;                // 16 KiB kernel stacks
+static constexpr uint32_t TASK_MAX_IO = 4;                 // I/O port ranges per task
 
 // --- Handles ---
 //
@@ -65,7 +65,8 @@ typedef struct task {
   uint64_t parent_id;    // the task that created it, or its nearest live creator; 0 for the root task
   struct task *all_next; // in all_tasks
   uint32_t io_ranges;    // I/O ports it may use (x86_64, device.c): [io_base, io_base + io_count)
-  uint16_t io_base[TASK_MAX_IO], io_count[TASK_MAX_IO];
+  uint16_t io_base[TASK_MAX_IO];
+  uint32_t io_count[TASK_MAX_IO]; // up to 0x10000
 } task;
 
 typedef enum thread_state : uint8_t {
@@ -86,12 +87,14 @@ struct thread {
   uint64_t kernel_sp;       // saved by arch_context_switch
   uint64_t kstack;          // direct-map address of the kernel stack's base
   uint64_t user_entry, user_sp, user_arg, user_arg2;
+  bool started;          // thread_start has taken it (under its task's lock)
   uint32_t intent;       // enum vx_intent
   bool last_of_task;     // its exit ended its task (reaped in sched.c)
   uint8_t console_len;   // bytes of a debug_write line not yet ended
   char console_buf[160]; // which go out whole, at its newline
   thread_state state;
-  struct thread *next;       // in the ready queue, or in a list of waiters (under that list's lock)
+  struct thread *next;       // in the ready queue (under the scheduler's lock)
+  struct thread *wait_next;  // in a port's waiters (under the port's lock); never the same link as next
   struct thread *sleep_next; // in its CPU's sleep queue, ordered by wake_at
   struct cpu *sleep_cpu;     // the CPU whose sleep queue holds it
   struct cpu *cpu;           // the CPU it runs or last ran on
@@ -107,10 +110,12 @@ static vx_handle handle_value(uint32_t index, uint16_t generation) {
 }
 
 // Gives the task a handle to obj, taking a reference for it.
+// BAD_STATE if the task has been torn down.
 static vx_status handle_add(task *t, object *obj, uint32_t rights, vx_handle *out) {
   vx_status st = VX_ERR_NO_MEMORY;
   spin_lock(&t->lock);
-  for (uint32_t i = 1; i < HANDLE_SLOTS; i++) {
+  if (!t->handles) st = VX_ERR_BAD_STATE;
+  for (uint32_t i = 1; t->handles && i < HANDLE_SLOTS; i++) {
     handle_entry *e = &t->handles[i];
     if (e->obj) continue;
     if (e->generation == 0) e->generation = 1;
@@ -131,7 +136,7 @@ static object *handle_get(task *t, vx_handle h, obj_type type, uint32_t rights, 
   uint32_t index = h & 0xffff;
   object *obj = nullptr;
   spin_lock(&t->lock);
-  handle_entry *e = index && index < HANDLE_SLOTS ? &t->handles[index] : nullptr;
+  handle_entry *e = index && index < HANDLE_SLOTS && t->handles ? &t->handles[index] : nullptr;
   if (!e || !e->obj || e->generation != h >> 16 || e->obj->type != type) {
     *status = VX_ERR_BAD_HANDLE;
   } else if ((e->rights & rights) != rights) {
@@ -149,7 +154,7 @@ static vx_status handle_close(task *t, vx_handle h) {
   uint32_t index = h & 0xffff;
   object *obj = nullptr;
   spin_lock(&t->lock);
-  handle_entry *e = index && index < HANDLE_SLOTS ? &t->handles[index] : nullptr;
+  handle_entry *e = index && index < HANDLE_SLOTS && t->handles ? &t->handles[index] : nullptr;
   if (e && e->obj && e->generation == h >> 16) {
     obj = e->obj;
     e->obj = nullptr;
@@ -169,20 +174,22 @@ typedef struct moved_handle {
 } moved_handle;
 
 // Takes n handles out of the task's table, all or none: each must exist, carry
-// TRANSFER, appear once, and not be `forbidden` (a channel end cannot travel
-// through itself). Their references move into out.
+// TRANSFER, appear once, and be neither of the two `forbidden` objects: a
+// channel's or ring's own ends cannot travel through it, since the end that
+// receives would then hold a reference to itself (or its pair), and never be
+// freed. Their references move into out.
 static vx_status handles_take(task *t, const vx_handle *values, uint32_t n, const object *forbidden,
-                              moved_handle *out) {
+                              const object *forbidden2, moved_handle *out) {
   vx_status st = VX_OK;
   spin_lock(&t->lock);
   for (uint32_t i = 0; i < n && st == VX_OK; i++) {
     uint32_t index = values[i] & 0xffff;
-    handle_entry *e = index && index < HANDLE_SLOTS ? &t->handles[index] : nullptr;
+    handle_entry *e = index && index < HANDLE_SLOTS && t->handles ? &t->handles[index] : nullptr;
     if (!e || !e->obj || e->generation != values[i] >> 16)
       st = VX_ERR_BAD_HANDLE;
     else if (!(e->rights & VX_RIGHT_TRANSFER))
       st = VX_ERR_ACCESS;
-    else if (e->obj == forbidden)
+    else if (e->obj == forbidden || (forbidden2 && e->obj == forbidden2))
       st = VX_ERR_INVALID;
     for (uint32_t k = 0; k < i && st == VX_OK; k++)
       if (values[k] == values[i]) st = VX_ERR_INVALID;
@@ -310,17 +317,23 @@ static vx_status task_map(task *t, vmo *v, uint64_t offset, uint64_t size, uint3
   uint64_t at = *va ? *va : t->map_next;
   uint64_t end;
   mapping *slot = nullptr;
-  for (uint32_t i = 0; i < TASK_MAX_MAPPINGS && !slot; i++)
+  for (uint32_t i = 0; t->maps && i < TASK_MAX_MAPPINGS && !slot; i++) // no tables once torn down
     if (!t->maps[i].size) slot = &t->maps[i];
-  if (!t->root || t->ending)
+  if (!t->root || !t->maps || t->ending)
     st = VX_ERR_BAD_STATE;
   else if ((at & 4095) || ckd_add(&end, at, size) || end > USER_TOP)
     st = VX_ERR_RANGE;
   else if (!slot)
     st = VX_ERR_NO_MEMORY;
+  // Page by page; a page that is already mapped (by another mapping) fails
+  // it, and only the pages this call mapped are taken back out.
   uint64_t done = 0;
-  for (; st == VX_OK && done < size; done += 4096)
-    if (!map_range(t->root, at + done, v->pages[(offset + done) / 4096], 4096, mf)) st = VX_ERR_NO_MEMORY;
+  while (st == VX_OK && done < size) {
+    if (!map_range(t->root, at + done, v->pages[(offset + done) / 4096], 4096, mf))
+      st = VX_ERR_NO_MEMORY;
+    else
+      done += 4096;
+  }
   if (st == VX_OK) {
     object_ref(&v->obj);
     *slot = (mapping){.va = at, .size = size, .offset = offset, .vmo = v};
@@ -328,7 +341,7 @@ static vx_status task_map(task *t, vmo *v, uint64_t offset, uint64_t size, uint3
     if (!*va) t->map_next = end + 4096; // leave a guard page between placed mappings
     *va = at;
   } else {
-    for (uint64_t off = 0; off + 4096 <= done; off += 4096) unmap_page(t->root, at + off);
+    for (uint64_t off = 0; off < done; off += 4096) unmap_page(t->root, at + off);
   }
   spin_unlock(&t->lock);
   return st;

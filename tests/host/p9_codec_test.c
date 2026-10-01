@@ -159,7 +159,23 @@ static void test_versions(void) {
   CHECK(p9_error_status(VX_STR("something only plan 9 says")) == VX_ERR_INVALID);
 }
 
+// Directory reads: each entry is bounded by what was read, not by its own size.
+static void test_dir_next(void) {
+  p9_stat s = {.name = VX_STR("a"), .uid = VX_STR("u"), .gid = VX_STR("g"), .muid = VX_STR("m")}, d;
+  uint8_t b[256];
+  size_t one = p9_stat_encode(&s, b, sizeof b), two = one + p9_stat_encode(&s, b + one, sizeof b - one),
+         at = 0;
+  CHECK(p9_dir_next(b, two, &at, &d) && at == one && p9_dir_next(b, two, &at, &d) && at == two);
+  CHECK(!p9_dir_next(b, two, &at, &d)); // the end
+  at = 0;
+  CHECK(!p9_dir_next(b, one - 1, &at, &d) && at == 0); // cut short
+  b[one] = 0xff, b[one + 1] = 0xff;                    // the second claims 64 KiB
+  at = one;
+  CHECK(!p9_dir_next(b, two, &at, &d) && at == one);
+}
+
 int main(void) {
+  test_dir_next();
   test_round_trips();
   test_traps();
   test_stat();

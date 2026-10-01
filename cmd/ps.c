@@ -14,11 +14,8 @@ int vx_main(void) {
   static uint8_t buf[4096];
   int64_t n;
   while ((n = vx_ns_read(&dir, buf, sizeof buf)) > 0) {
-    for (int64_t off = 0; off + 2 <= n;) {
-      uint32_t size = buf[off] | (uint32_t)buf[off + 1] << 8;
-      p9_stat entry;
-      if (p9_stat_decode(buf + off, size + 2, &entry) != VX_OK) break;
-      off += size + 2;
+    p9_stat entry;
+    for (size_t off = 0; p9_dir_next(buf, (size_t)n, &off, &entry);) {
       char path[64] = "/proc/";
       if (entry.name.len > sizeof path - 14) continue;
       memcpy(path + 6, entry.name.ptr, entry.name.len);

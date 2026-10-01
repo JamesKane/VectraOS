@@ -96,7 +96,7 @@ static vx_status fs_open(void *ctx, uint64_t node, uint8_t mode) {
   bool writes = (mode & 3) == P9_OWRITE || (mode & 3) == P9_ORDWR;
   if ((node & 3) == STATUS && writes) return VX_ERR_ACCESS;
   if ((node & 3) == CTL && (mode & 3) != P9_OWRITE) return VX_ERR_ACCESS;
-  return mode & (P9_OTRUNC | P9_ORCLOSE) ? VX_ERR_ACCESS : VX_OK;
+  return mode & P9_ORCLOSE ? VX_ERR_ACCESS : VX_OK; // OTRUNC means nothing to a file made as it is read
 }
 
 // A task's status record, as it is now.

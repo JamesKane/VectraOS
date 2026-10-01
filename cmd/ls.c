@@ -41,11 +41,8 @@ static bool ls(vx_ns *ns, vx_str path) {
   size_t used = 0, count = 0;
   int64_t n;
   while ((n = vx_ns_read(&f, buf, sizeof buf)) > 0) {
-    for (int64_t off = 0; off + 2 <= n;) {
-      uint32_t size = buf[off] | (uint32_t)buf[off + 1] << 8;
-      p9_stat entry;
-      if (p9_stat_decode(buf + off, size + 2, &entry) != VX_OK) break;
-      off += size + 2;
+    p9_stat entry;
+    for (size_t off = 0; p9_dir_next(buf, (size_t)n, &off, &entry);) {
       if (count == sizeof list / sizeof list[0] || entry.name.len > sizeof names - used) continue;
       memcpy(names + used, entry.name.ptr, entry.name.len);
       vx_str name = {names + used, entry.name.len};

@@ -33,7 +33,8 @@ typedef struct irq {
 
 typedef struct iorange {
   object obj;
-  uint16_t base, count;
+  uint16_t base;
+  uint32_t count; // up to 0x10000: every port
 } iorange;
 
 static pool resource_pool = POOL_FOR(resource);
@@ -196,7 +197,7 @@ static vx_status iorange_create(uint64_t base, uint64_t count, iorange **out) {
   r->obj.type = OBJ_IORANGE;
   atomic_store_explicit(&r->obj.refs, 1, memory_order_relaxed);
   r->base = (uint16_t)base;
-  r->count = (uint16_t)count;
+  r->count = (uint32_t)count;
   if (arch_console_device(true, base, count)) console_hand_off();
   *out = r;
   return VX_OK;
@@ -243,8 +244,10 @@ static vx_status dma_domain_create(dma_domain **out) {
   return VX_OK;
 }
 
-// Holds the VMO for the device and gives the address of each page of the range.
-static vx_status dma_map(dma_domain *d, vmo *v, uint64_t offset, uint64_t size, uint64_t *addresses) {
+// Holds the VMO for the device and gives the address of each page of the
+// range; *slot says which mapping it is, to undo just this one.
+static vx_status dma_map(dma_domain *d, vmo *v, uint64_t offset, uint64_t size, uint64_t *addresses,
+                         uint32_t *slot_out) {
   uint64_t end;
   if (!size || (offset | size) & 4095 || ckd_add(&end, offset, size) || end > v->size) return VX_ERR_RANGE;
   if (v->physical) return VX_ERR_UNSUPPORTED; // device memory: peer-to-peer comes later
@@ -258,7 +261,17 @@ static vx_status dma_map(dma_domain *d, vmo *v, uint64_t offset, uint64_t size, 
   spin_unlock(&d->lock);
   if (slot == DMA_MAPPINGS) return VX_ERR_NO_MEMORY;
   for (uint64_t i = 0; i < size / 4096; i++) addresses[i] = v->pages[offset / 4096 + i];
+  *slot_out = slot;
   return VX_OK;
+}
+
+// Undoes one dma_map, by the slot it gave.
+static void dma_unmap_slot(dma_domain *d, uint32_t slot) {
+  spin_lock(&d->lock);
+  vmo *v = d->mapped[slot];
+  d->mapped[slot] = nullptr;
+  spin_unlock(&d->lock);
+  if (v) object_release(&v->obj);
 }
 
 // Lets go of every mapping of the VMO.

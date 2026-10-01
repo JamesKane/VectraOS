@@ -38,7 +38,7 @@ static constexpr uint32_t ALL_RIGHTS = (1u << VX_RIGHT_BIT_COUNT) - 1;
 static void object_destroy(object *obj) {
   switch (obj->type) {
   case OBJ_VMO: vmo_destroy((vmo *)obj); break;
-  case OBJ_PORT: pool_free(&port_pool, obj); break;
+  case OBJ_PORT: port_destroy((port *)obj); break;
   case OBJ_CHANNEL: channel_destroy((channel *)obj); break;
   case OBJ_COUNTER: counter_destroy((counter *)obj); break;
   case OBJ_RING: ring_destroy((ring_end *)obj); break;
@@ -129,9 +129,10 @@ static int64_t port_wait_on(port *p, vx_instant deadline, vx_duration leeway, ui
     if (clock_now() >= deadline) return VX_ERR_TIMED_OUT;
     thread *t = this_cpu()->current;
     if (!port_join_waiters(p, t)) continue; // a packet arrived meanwhile
-    if (thread_block(deadline, leeway) == VX_ERR_TIMED_OUT) {
+    int64_t woke = thread_block(deadline, leeway);
+    if (woke != VX_OK) { // its deadline, or a kill: still on the list, so off it
       port_remove_waiter(p, t);
-      return VX_ERR_TIMED_OUT;
+      return woke;
     }
   }
 }
@@ -243,9 +244,10 @@ static int64_t sys_dma_map(vx_handle dh, vx_handle vh, uint64_t offset, uint64_t
   vmo *v = (vmo *)handle_get(current_task(), vh, OBJ_VMO, VX_RIGHT_READ | VX_RIGHT_WRITE, &st);
   uint64_t addresses[MAX_PAGES];
   if (v) {
-    st = dma_map(d, v, offset, size, addresses);
+    uint32_t slot;
+    st = dma_map(d, v, offset, size, addresses, &slot);
     if (st == VX_OK && (st = copy_to_user(out, addresses, size / 4096 * sizeof(uint64_t))) != VX_OK)
-      dma_unmap(d, v);
+      dma_unmap_slot(d, slot); // only this one: earlier mappings of the VMO may be in use
     object_release(&v->obj);
   }
   object_release(&d->obj);
@@ -340,8 +342,9 @@ static int64_t sys_channel_create(uint64_t options, uint64_t out) {
 
 // Builds a message from user memory: the body copied in, the handles moved out
 // of the caller's table (gone whatever happens next, as with every write).
+// `through` is the channel end written to: neither it nor its peer may travel in the message.
 static vx_status msg_from_user(uint64_t bytes, uint32_t len, uint64_t handles, uint32_t count,
-                               const object *forbidden, channel_msg **out) {
+                               const channel *through, channel_msg **out) {
   if (len < sizeof(vx_msg_header) || len > VX_CHANNEL_MAX_BYTES || count > VX_CHANNEL_MAX_HANDLES)
     return VX_ERR_INVALID;
   vx_handle values[VX_CHANNEL_MAX_HANDLES];
@@ -350,7 +353,9 @@ static vx_status msg_from_user(uint64_t bytes, uint32_t len, uint64_t handles, u
   channel_msg *m = msg_alloc(len, count);
   if (!m) return VX_ERR_NO_MEMORY;
   st = copy_from_user(msg_body(m), bytes, len);
-  if (st == VX_OK) st = handles_take(current_task(), values, count, forbidden, m->handles);
+  // The peer's address is only compared, never followed: no lock is needed for that.
+  const object *peer = (const object *)through->pair->ends[1 - through->side];
+  if (st == VX_OK) st = handles_take(current_task(), values, count, &through->obj, peer, m->handles);
   if (st != VX_OK) {
     m->count = 0; // nothing was moved
     msg_free(m);
@@ -377,7 +382,9 @@ static int64_t sys_channel_write(vx_handle h, uint64_t bytes, uint64_t len, uint
   channel *c = (channel *)handle_get(current_task(), h, OBJ_CHANNEL, VX_RIGHT_WRITE, &st);
   if (!c) return st;
   channel_msg *m;
-  st = msg_from_user(bytes, (uint32_t)len, handles, (uint32_t)count, &c->obj, &m);
+  st = len > UINT32_MAX || count > UINT32_MAX
+           ? VX_ERR_INVALID
+           : msg_from_user(bytes, (uint32_t)len, handles, (uint32_t)count, c, &m);
   if (st == VX_OK) {
     st = channel_write(c, m);
     if (st != VX_OK) msg_free(m);
@@ -415,7 +422,7 @@ static int64_t sys_channel_call(vx_handle h, uint64_t args_ptr, vx_instant deadl
   channel *c = (channel *)handle_get(current_task(), h, OBJ_CHANNEL, VX_RIGHT_READ | VX_RIGHT_WRITE, &st);
   if (!c) return st;
   channel_msg *request, *reply = nullptr;
-  st = msg_from_user((uint64_t)args.wr_bytes, args.wr_len, (uint64_t)args.wr_handles, args.wr_count, &c->obj,
+  st = msg_from_user((uint64_t)args.wr_bytes, args.wr_len, (uint64_t)args.wr_handles, args.wr_count, c,
                      &request);
   if (st == VX_OK) {
     bool sent;
@@ -553,7 +560,8 @@ static int64_t sys_ring_xfer(vx_handle h, uint64_t op, uint64_t handles, uint64_
   moved_handle moved[VX_RING_SLOT_HANDLES];
   int64_t result;
   if (op == VX_RING_PUT) {
-    result = handles_take(current_task(), values, (uint32_t)count, &e->obj, moved);
+    const object *peer = (const object *)e->pair->ends[1 - e->side]; // compared only
+    result = handles_take(current_task(), values, (uint32_t)count, &e->obj, peer, moved);
     if (result == VX_OK) {
       result = ring_put(e, moved, (uint32_t)count);
       if (result < 0)
@@ -610,7 +618,7 @@ static int64_t sys_thread_start(vx_handle h, uint64_t entry, uint64_t sp, vx_han
   vx_handle moved = 0;
   if (arg) {
     moved_handle m;
-    st = handles_take(current_task(), &arg, 1, nullptr, &m);
+    st = handles_take(current_task(), &arg, 1, nullptr, nullptr, &m);
     if (st == VX_OK) {
       st = handles_put(th->task, &m, 1, &moved);
       object_release(m.obj);

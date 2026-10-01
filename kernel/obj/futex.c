@@ -24,7 +24,7 @@ static vx_status futex_wait(uint64_t word, uint32_t expected, vx_instant deadlin
   if (word & 3) return VX_ERR_INVALID;
   thread *t = this_cpu()->current;
   uint64_t key = user_page_pa(t->task->root, word);
-  if (!key) return VX_ERR_INVALID;
+  if (!key || !in_direct_map(key, 4)) return VX_ERR_INVALID; // device memory has no direct mapping
   uint32_t i = futex_bucket(key);
   futex_waiter w = {.thread = t, .key = key};
   spin_lock(&futex_buckets[i].lock);

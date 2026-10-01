@@ -229,7 +229,7 @@ static void test_threads_and_calls(void) {
 // Without an ELF loader in user space yet (M2, step 4), a child runs a few
 // instructions written here for each architecture.
 
-typedef enum child_code { EXIT_7, SPIN, BLOCK } child_code;
+typedef enum child_code { EXIT_7, SPIN, BLOCK, PORT_BLOCK, USE_SIMD } child_code;
 
 // Writes the child's code into `code`; returns its length in bytes.
 static uint32_t write_child(uint8_t *code, child_code what) {
@@ -237,12 +237,29 @@ static uint32_t write_child(uint8_t *code, child_code what) {
 #ifdef __x86_64__
 #define EMIT(b)   (code[n++] = (uint8_t)(b))
 #define EMIT32(v) (EMIT(v), EMIT((v) >> 8), EMIT((v) >> 16), EMIT((v) >> 24))
+  if (what == USE_SIMD) {
+    EMIT(0x66), EMIT(0x0f), EMIT(0xef), EMIT(0xc0); // pxor %xmm0, %xmm0: faults, as SIMD is off
+    what = EXIT_7;                                  // (it would exit 7 if it did not)
+  }
   if (what == EXIT_7) {
     EMIT(0xbf), EMIT32(7);                  // mov $7, %edi
     EMIT(0xb8), EMIT32(VX_SYS_thread_exit); // mov $thread_exit, %eax
     EMIT(0x0f), EMIT(0x05);                 // syscall
   } else if (what == SPIN) {
     EMIT(0xeb), EMIT(0xfe); // jmp .
+  } else if (what == PORT_BLOCK) {
+    EMIT(0x48), EMIT(0x8d), EMIT(0x74), EMIT(0x24), EMIT(0xf0);     // lea -16(%rsp), %rsi: the handle's place
+    EMIT(0x31), EMIT(0xff);                                         // xor %edi, %edi: no options
+    EMIT(0xb8), EMIT32(VX_SYS_port_create);                         // mov $port_create, %eax
+    EMIT(0x0f), EMIT(0x05);                                         // syscall
+    EMIT(0x8b), EMIT(0x7c), EMIT(0x24), EMIT(0xf0);                 // mov -16(%rsp), %edi: the port
+    EMIT(0x48), EMIT(0xbe), EMIT32(0xffffffff), EMIT32(0x7fffffff); // mov $INT64_MAX, %rsi: no deadline
+    EMIT(0x31), EMIT(0xd2);                                         // xor %edx, %edx: no leeway
+    EMIT(0x4c), EMIT(0x8d), EMIT(0x54), EMIT(0x24), EMIT(0xc0);     // lea -64(%rsp), %r10: a packet's place
+    EMIT(0x41), EMIT(0xb8), EMIT32(1);                              // mov $1, %r8d
+    EMIT(0xb8), EMIT32(VX_SYS_port_wait);                           // mov $port_wait, %eax
+    EMIT(0x0f), EMIT(0x05);                                         // syscall
+    EMIT(0xeb), EMIT(0xfe);                                         // jmp .
   } else {
     EMIT(0x48), EMIT(0x8d), EMIT(0x7c), EMIT(0x24), EMIT(0xf0);     // lea -16(%rsp), %rdi: a zero word
     EMIT(0x31), EMIT(0xf6);                                         // xor %esi, %esi: expect 0
@@ -257,12 +274,30 @@ static uint32_t write_child(uint8_t *code, child_code what) {
 #define EMIT(w)                                                                                              \
   (code[n] = (uint8_t)(w), code[n + 1] = (uint8_t)((w) >> 8), code[n + 2] = (uint8_t)((w) >> 16),            \
    code[n + 3] = (uint8_t)((w) >> 24), n += 4)
+  if (what == USE_SIMD) {
+    EMIT(0x9e6703e0u); // fmov d0, xzr: traps, as FP/SIMD is off
+    what = EXIT_7;     // (it would exit 7 if it did not)
+  }
   if (what == EXIT_7) {
     EMIT(0xd2800000u | 7u << 5);                           // movz x0, #7
     EMIT(0xd2800008u | (uint32_t)VX_SYS_thread_exit << 5); // movz x8, #thread_exit
     EMIT(0xd4000001u);                                     // svc #0
   } else if (what == SPIN) {
     EMIT(0x14000000u); // b .
+  } else if (what == PORT_BLOCK) {
+    EMIT(0xd10043e1u);                                     // sub x1, sp, #16: the handle's place
+    EMIT(0xd2800000u);                                     // movz x0, #0: no options
+    EMIT(0xd2800008u | (uint32_t)VX_SYS_port_create << 5); // movz x8, #port_create
+    EMIT(0xd4000001u);                                     // svc #0
+    EMIT(0xb85f03e0u);                                     // ldur w0, [sp, #-16]: the port
+    EMIT(0x92800001u);                                     // movn x1, #0
+    EMIT(0xd341fc21u);                                     // lsr x1, x1, #1: INT64_MAX, no deadline
+    EMIT(0xd2800002u);                                     // movz x2, #0: no leeway
+    EMIT(0xd10103e3u);                                     // sub x3, sp, #64: a packet's place
+    EMIT(0xd2800024u);                                     // movz x4, #1
+    EMIT(0xd2800008u | (uint32_t)VX_SYS_port_wait << 5);   // movz x8, #port_wait
+    EMIT(0xd4000001u);                                     // svc #0
+    EMIT(0x14000000u);                                     // b .
   } else {
     EMIT(0xd10043e0u);                                    // sub x0, sp, #16: a zero word
     EMIT(0xd2800001u);                                    // movz x1, #0: expect 0
@@ -279,6 +314,18 @@ static uint32_t write_child(uint8_t *code, child_code what) {
 
 static constexpr uint64_t CHILD_CODE = 0x10'0000;
 static constexpr uint64_t CHILD_STACK_TOP = 0x20'0000;
+
+// Waits until every thread of the task is blocked in the kernel (task_info
+// counts them). False if it has not happened within a second.
+static bool wait_blocked(vx_handle task) {
+  for (int i = 0; i < 1000; i++) {
+    vx_task_summary info;
+    if (vx_task_info(task, &info) == VX_OK && info.threads && info.blocked == info.threads) return true;
+    static _Atomic uint32_t never;
+    vx_futex_wait(&never, 0, after_ms(1)); // a millisecond's nap
+  }
+  return false;
+}
 
 // A child task running `what`, started. *task gets a handle to it.
 static bool start_child(child_code what, vx_handle *task) {
@@ -330,9 +377,7 @@ static void test_tasks(void) {
 
   // A child blocked in the kernel is killed too: its wait ends with KILLED.
   CHECK(start_child(BLOCK, &child));
-  vx_instant later = after_ms(20);
-  vx_packet pk;
-  vx_port_wait(port, later, 0, &pk, 1); // give it time to block
+  CHECK(wait_blocked(child)); // in futex_wait, so the kill is of a blocked thread
   CHECK(vx_task_kill(child, 55) == VX_OK);
   CHECK(wait_exit(port, child) == 55);
   vx_handle_close(child);
@@ -436,17 +481,18 @@ static void ring_submit(vx_ring *r, vx_handle end, const vx_sqe *e) {
 static void test_rings(void) {
   vx_ring_handles h;
   CHECK(vx_ring_create(&(vx_ring_params){3, 16, 64, 32, 0, 0}, &h) == VX_ERR_INVALID);
-  CHECK(vx_ring_create(&(vx_ring_params){16, 16, 64, 32, 4096, 4096}, &h) == VX_OK);
+  static const vx_ring_params params = {16, 16, 64, 32, 4096, 4096};
+  CHECK(vx_ring_create(&params, &h) == VX_OK);
   uint64_t base = 0, size;
   vx_ring_header layout;
-  vx_ring_layout(&(vx_ring_params){16, 16, 64, 32, 4096, 4096}, &layout);
+  vx_ring_layout(&params, &layout);
   size = layout.size;
   CHECK(vx_as_map(self, h.memory, 0, size, VX_MAP_WRITE, &base) == VX_OK);
 
   static ring_shared s;
   vx_ring client;
-  CHECK(vx_ring_attach(&client, (void *)base, size, true) == VX_OK);
-  CHECK(vx_ring_attach(&s.server, (void *)base, size, false) == VX_OK);
+  CHECK(vx_ring_attach(&client, (void *)base, size, true, &params) == VX_OK);
+  CHECK(vx_ring_attach(&s.server, (void *)base, size, false, &params) == VX_OK);
   s.end = h.server;
   vx_handle th;
   CHECK(vx_thread_create(self, &th) == VX_OK);
@@ -602,6 +648,8 @@ static void test_devices(void) {
   CHECK(vx_as_map(self, h, 0, 4096, 0, &at) == VX_OK);
   word = ((volatile uint32_t *)at)[0]; // HPET: capabilities and revision; PL031: the time
   CHECK(word != 0 && word != 0xffff'ffff);
+  // A futex in device memory: refused (the kernel has no direct mapping of it to read).
+  CHECK(vx_futex_wait((const _Atomic uint32_t *)at, word, after_ms(1)) == VX_ERR_INVALID);
   vx_handle_close(h);
 
 #ifdef __x86_64__
@@ -657,6 +705,116 @@ static void test_devices(void) {
   vx_handle_close(res);
 }
 
+// Review fixes (M3): a killed task's freed tables are never used, and a
+// mapping that collides with another fails without taking a page from it.
+static void test_torn_down(void) {
+  vx_handle port, child, th, vmo, ch[2];
+  CHECK(vx_port_create(0, &port) == VX_OK);
+  CHECK(vx_task_create(VX_STR("doomed"), &child) == VX_OK);
+  CHECK(vx_thread_create(child, &th) == VX_OK); // made before the kill, started after
+  CHECK(vx_task_kill(child, -5) == VX_OK);
+  CHECK(wait_exit(port, child) == -5); // torn down: no threads ever ran
+  CHECK(vx_vmo_create(4096, 0, &vmo) == VX_OK);
+  uint64_t at = 0;
+  CHECK(vx_as_map(child, vmo, 0, 4096, 0, &at) == VX_ERR_BAD_STATE); // its mapping table is gone
+  CHECK(vx_channel_create(0, ch) == VX_OK);
+  CHECK(vx_thread_start(th, 0x40'0000, 0x50'0000, ch[0], 0) != VX_OK); // and its handle table
+  vx_handle_close(ch[1]);
+  vx_handle_close(th);
+  vx_handle_close(child);
+
+  // A thread's entry and stack must be user addresses: a non-canonical entry
+  // would fault in the kernel on its way to user mode.
+  CHECK(vx_task_create(VX_STR("bad entry"), &child) == VX_OK);
+  CHECK(vx_thread_create(child, &th) == VX_OK);
+  CHECK(vx_thread_start(th, 0x8000'0000'0000'0000, 0x50'0000, 0, 0) == VX_ERR_INVALID);
+  CHECK(vx_thread_start(th, 0x40'0000, 0xffff'8000'0000'0000, 0, 0) == VX_ERR_INVALID);
+  CHECK(vx_thread_start(th, 0x0000'8000'0000'0000, 0x50'0000, 0, 0) == VX_ERR_INVALID); // just past the top
+  vx_task_kill(child, 0);
+  vx_handle_close(th);
+  vx_handle_close(child);
+
+  // vmo (one page) where the kernel puts it; then two pages ending on it:
+  // refused, and the first page is still there.
+  uint64_t a = 0;
+  vx_handle two;
+  CHECK(vx_as_map(self, vmo, 0, 4096, VX_MAP_WRITE, &a) == VX_OK);
+  volatile uint64_t *spot = (volatile uint64_t *)a;
+  *spot = 0x1234;
+  uint64_t b = a - 4096; // free: the kernel leaves a guard page before what it places
+  CHECK(vx_vmo_create(8192, 0, &two) == VX_OK);
+  CHECK(vx_as_map(self, two, 0, 8192, VX_MAP_WRITE, &b) != VX_OK);
+  CHECK(*spot == 0x1234); // would fault if the failed map took the page
+  b = a - 4096;
+  CHECK(vx_as_map(self, two, 0, 4096, VX_MAP_WRITE, &b) == VX_OK); // the page it did map was taken back
+  vx_handle_close(two);
+  vx_handle_close(vmo);
+  vx_handle_close(port);
+}
+
+// Review fixes (M3): port waiters. A waiter that times out does not cut off
+// the waiter behind it, and a kill ends a task waiting on a port.
+typedef struct port_pair {
+  vx_handle port;
+  _Atomic uint32_t stage;
+  int64_t got; // what the second waiter's port_wait returned
+} port_pair;
+
+[[noreturn]] static void second_waiter(vx_handle unused, uint64_t arg) {
+  (void)unused;
+  port_pair *pp = (port_pair *)arg;
+  while (atomic_load(&pp->stage) != 1) vx_futex_wait(&pp->stage, 0, after_ms(100));
+  vx_packet pk;
+  pp->got = vx_port_wait(pp->port, after_ms(2000), 0, &pk, 1); // queued behind the first waiter
+  atomic_store(&pp->stage, 2);
+  vx_futex_wake(&pp->stage, 1);
+  vx_thread_exit(0);
+}
+
+static void test_port_waiters(void) {
+  static port_pair pp;
+  vx_handle th;
+  vx_packet pk;
+  CHECK(vx_port_create(0, &pp.port) == VX_OK);
+  CHECK(vx_thread_create(self, &th) == VX_OK);
+  CHECK(vx_thread_start(th, (uint64_t)second_waiter, new_stack(), 0, (uint64_t)&pp) == VX_OK);
+  atomic_store(&pp.stage, 1);
+  vx_futex_wake(&pp.stage, 1);
+  CHECK(vx_port_wait(pp.port, after_ms(30), 0, &pk, 1) == VX_ERR_TIMED_OUT); // first in line, gives up
+  CHECK(vx_port_post(pp.port, &(vx_packet){.key = 5}) == VX_OK);
+  for (int i = 0; i < 100 && atomic_load(&pp.stage) != 2; i++) vx_futex_wait(&pp.stage, 1, after_ms(10));
+  CHECK(pp.got == 1); // woken by the post, not by its 2 s deadline
+  vx_handle_close(th);
+  vx_handle_close(pp.port);
+
+  // A port closed with fired bindings in it, many times over: the path that
+  // used to leak each port (its fired binding kept it alive). A leak itself
+  // does not show from here: ktest cannot see the kernel's free memory.
+  vx_handle counter;
+  CHECK(vx_counter_create(1, &counter) == VX_OK);
+  bool all = true;
+  for (int i = 0; i < 2000 && all; i++) {
+    vx_handle p;
+    all = vx_port_create(0, &p) == VX_OK && vx_port_bind(p, counter, VX_TRIGGER_COUNTER_GE, 1, 0) == VX_OK &&
+          vx_handle_close(p) == VX_OK;
+  }
+  CHECK(all);
+  vx_handle_close(counter);
+
+  vx_handle port, child;
+  CHECK(vx_port_create(0, &port) == VX_OK);
+  // FP/SIMD faults in user tasks while the kernel does not save it.
+  CHECK(start_child(USE_SIMD, &child));
+  CHECK(wait_exit(port, child) == -1); // killed by the fault, not exiting 7
+  vx_handle_close(child);
+  CHECK(start_child(PORT_BLOCK, &child));
+  CHECK(wait_blocked(child)); // in port_wait
+  CHECK(vx_task_kill(child, -3) == VX_OK);
+  CHECK(wait_exit(port, child) == -3); // the kill ends the wait
+  vx_handle_close(child);
+  vx_handle_close(port);
+}
+
 int vx_main(void) {
   self = vx_self;
   test_spawn_message();
@@ -666,6 +824,8 @@ int vx_main(void) {
   test_bindings();
   test_threads_and_calls();
   test_tasks();
+  test_torn_down();
+  test_port_waiters();
   test_nested_channels();
   test_rings();
   test_vmo_rw();

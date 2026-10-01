@@ -303,7 +303,9 @@ static void pipeline(word *w, int n) {
 
   vx_ns_file file = {};
   if (into.len) {
-    vx_status st = vx_ns_open(&ns, into, P9_OWRITE, &file);
+    // Truncated if it exists (devices ignore that), and made if it does not, as rc does.
+    vx_status st = vx_ns_open(&ns, into, P9_OWRITE | P9_OTRUNC, &file);
+    if (st == VX_ERR_NOT_FOUND) st = vx_ns_create(&ns, into, 0644, P9_OWRITE, &file);
     if (st != VX_OK) {
       report("cannot open the file", st);
       return;
@@ -342,7 +344,8 @@ static void pipeline(word *w, int n) {
     for (int64_t i = 0; i < got; i++) {
       if (pk[i].trigger == VX_TRIGGER_EXIT) {
         running--;
-        var_set(VX_STR("status"), (int64_t)pk[i].value ? VX_STR("1") : VX_STR("0"));
+        if (pk[i].key == (uint64_t)(stages - 1)) // the pipe's status is its last command's, as in rc
+          var_set(VX_STR("status"), (int64_t)pk[i].value ? VX_STR("1") : VX_STR("0"));
       } else if (sink && pk[i].key == 100) { // output to copy
         sink_armed = false;
         if (!relay(sink, &file, &broken)) {

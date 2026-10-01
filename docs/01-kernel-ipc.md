@@ -429,6 +429,7 @@ This is how LLVM, Python and Git run without touching the kernel.
 - **Randomisation:** ASLR in user space (handle values are deterministic, §3). A stack canary and W^X in every binary we build.
 - **Shared-memory discipline:** the rules in §4.3, enforced by the `vx-ring` library, which gives servers a copy-on-read API only.
 - **DMA:** the IOMMU is in deny-all mode from kernel entry (§10). Pass-through exists only under QEMU, for M3 (04 §5).
+- **FP/SIMD:** until the kernel saves and restores that state across context switches, x87, SSE, AVX and arm64 FP/SIMD, SVE and SME are turned off, and a task that uses them faults, rather than reading another task's registers. First-party code is built `-mgeneral-regs-only` meanwhile.
 - **Failure is never success:** a nil object's methods return `VX_ERR_NIL`, never zero, and the kernel and authorization paths do not use nil objects at all (04 §1.1).
 - **Secrets stay out of dumps:** `NODUMP` VMOs are never written to crash directories, and `keyd` and `tlsd` are never dumped (05 §5).
 - **SMT isolation** between trust domains (§8).

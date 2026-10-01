@@ -35,10 +35,11 @@ static void test_layout(void) {
 
 static void test_queues(void) {
   vx_ring_header h;
-  uint8_t *mem = make_ring(&(vx_ring_params){8, 8, 64, 32, 4096, 4096}, &h);
+  static const vx_ring_params p = {8, 8, 64, 32, 4096, 4096};
+  uint8_t *mem = make_ring(&p, &h);
   vx_ring client, server;
-  CHECK(vx_ring_attach(&client, mem, h.size, true) == VX_OK);
-  CHECK(vx_ring_attach(&server, mem, h.size, false) == VX_OK);
+  CHECK(vx_ring_attach(&client, mem, h.size, true, &p) == VX_OK);
+  CHECK(vx_ring_attach(&server, mem, h.size, false, &p) == VX_OK);
 
   // Three laps of the queue, filling it each time.
   uint64_t next = 0, expect = 0;
@@ -91,18 +92,31 @@ static void test_queues(void) {
 
 static void test_hostile_peer(void) {
   vx_ring_header h;
-  uint8_t *mem = make_ring(&(vx_ring_params){8, 8, 64, 32, 0, 0}, &h);
-  vx_ring client, server;
-  CHECK(vx_ring_attach(&server, mem, h.size, false) == VX_OK);
-  CHECK(vx_ring_attach(&server, mem, h.size - 1, false) == VX_ERR_INVALID); // mapping too small
-  ((vx_ring_header *)mem)->cq_offset += 64;                                 // a rewritten header
-  CHECK(vx_ring_attach(&client, mem, h.size, true) == VX_ERR_INVALID);
+  static const vx_ring_params p = {8, 8, 64, 32, 0, 0};
+  uint8_t *mem = make_ring(&p, &h);
+  vx_ring server, other;
+  CHECK(vx_ring_attach(&other, mem, h.size - 1, false, &p) == VX_ERR_INVALID); // mapping too small
+  CHECK(vx_ring_produce_slot(&other) == nullptr); // a failed attach leaves nothing usable
+  ((vx_ring_header *)mem)->cq_offset += 64;       // a rewritten header
+  CHECK(vx_ring_attach(&other, mem, h.size, true, &p) == VX_ERR_INVALID);
   ((vx_ring_header *)mem)->cq_offset -= 64;
 
+  // A ring made, consistently, with bigger entries than this side's protocol
+  // has: refused, since each consume would copy an entry that size into the
+  // caller's (smaller) buffer.
+  vx_ring_header big;
+  uint8_t *wide = make_ring(&(vx_ring_params){8, 8, 64, 256, 0, 0}, &big);
+  CHECK(big.size <= h.size + 4096); // it may even fit the same mapping
+  CHECK(vx_ring_attach(&other, wide, big.size, true, &p) == VX_ERR_INVALID);
+  free(wide);
+
   // A client whose tail runs past what fits: the server marks the ring broken.
+  CHECK(vx_ring_attach(&server, mem, h.size, false, &p) == VX_OK);
   ((vx_ring_index *)(mem + VX_RING_INDEX_OFFSET))[VX_RING_SQ_TAIL].index = 9;
   vx_sqe got;
+  CHECK(!server.broken);
   CHECK(vx_ring_consume(&server, &got) == VX_ERR_BAD_STATE);
+  CHECK(server.broken); // by the overrun check, not by an earlier failure
   ((vx_ring_index *)(mem + VX_RING_INDEX_OFFSET))[VX_RING_SQ_TAIL].index =
       1; // putting it back does not mend it
   CHECK(vx_ring_consume(&server, &got) == VX_ERR_BAD_STATE);
@@ -162,9 +176,10 @@ static void alarm_fired(int sig) {
 
 static void test_threads(void) {
   vx_ring_header h;
-  uint8_t *mem = make_ring(&(vx_ring_params){64, 64, 64, 32, 0, 0}, &h);
-  vx_ring_attach(&stress_client, mem, h.size, true);
-  vx_ring_attach(&stress_server, mem, h.size, false);
+  static const vx_ring_params p = {64, 64, 64, 32, 0, 0};
+  uint8_t *mem = make_ring(&p, &h);
+  vx_ring_attach(&stress_client, mem, h.size, true, &p);
+  vx_ring_attach(&stress_server, mem, h.size, false, &p);
   signal(SIGALRM, alarm_fired);
   alarm(60);
 

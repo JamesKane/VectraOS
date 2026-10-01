@@ -42,7 +42,7 @@ static vx_status p9_ring_map(vx_handle memory, bool client, vx_ring *r) {
   uint64_t base = 0;
   if (st == VX_OK) st = vx_as_map(vx_self, memory, 0, layout.size, VX_MAP_WRITE, &base);
   // The mapping stays for the life of the task until as_unmap lands (01 §5).
-  if (st == VX_OK) st = vx_ring_attach(r, (void *)base, layout.size, client);
+  if (st == VX_OK) st = vx_ring_attach(r, (void *)base, layout.size, client, &P9_RING_PARAMS);
   return st;
 }
 

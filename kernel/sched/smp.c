@@ -71,6 +71,7 @@ static void smp_init(void) {
   uint64_t bsp_id = mp->bsp_mpidr;
 #endif
   cpus[0].arch_id = bsp_id;
+  uint32_t parked = 0;
   for (uint64_t i = 0; i < mp->cpu_count; i++) {
     struct limine_mp_info *info = mp->cpus[i];
 #ifdef __x86_64__
@@ -79,9 +80,10 @@ static void smp_init(void) {
     uint64_t id = info->mpidr;
 #endif
     if (id == bsp_id) continue;
-    if (cpu_total == MAX_CPUS) {
-      kput(VX_STR("vx: more CPUs than MAX_CPUS; the rest stay parked\n"));
-      break;
+    if (cpu_total == MAX_CPUS) { // the rest halt for good, on the kernel's tables (ap_park)
+      if (!parked++) kput(VX_STR("vx: more CPUs than MAX_CPUS; the rest are halted\n"));
+      __atomic_store_n(&info->goto_address, ap_park, __ATOMIC_RELEASE);
+      continue;
     }
     uint32_t index = cpu_total++;
     uint64_t stack = phys_alloc_zeroed(AP_STACK_ORDER);

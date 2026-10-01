@@ -100,6 +100,10 @@ static void arch_switch_user_root(uint64_t root) {
 
 static uint32_t arch_user_top_slots(void) { return 512; }
 
+// A descriptor written by a store is only certain to be seen by the table
+// walker after a DSB, and by this CPU's later instructions after an ISB.
+static void arch_pte_publish(void) { __asm__ volatile("dsb ishst\n\tisb" ::: "memory"); }
+
 static void arch_tlb_flush_page(uint64_t va) {
   __asm__ volatile("dsb ishst\n\ttlbi vale1, %0\n\tdsb ish\n\tisb" : : "r"(va >> 12) : "memory");
 }
@@ -123,6 +127,8 @@ static void arch_switch_tables(uint64_t root) {
     empty_user_root = phys_alloc_zeroed(0); // first on the boot CPU, before the others start
   if (!empty_user_root) panic(VX_STR("no memory for page tables"));
   uint64_t empty = empty_user_root;
+  ap_park_tables[0] = root; // for CPUs past MAX_CPUS (ap_park)
+  ap_park_tables[1] = empty;
   __asm__ volatile("dsb ishst\n\t"
                    "msr ttbr1_el1, %0\n\t"
                    "msr ttbr0_el1, %1\n\t"
@@ -160,8 +166,16 @@ static void arch_console_write(vx_str s) {
 
 // --- The clock and the timer: the generic timer's virtual counter, through the GICv3 ---
 
-static constexpr uint32_t INTID_RESCHED = 0;        // an SGI: another CPU made a thread ready
-static constexpr uint32_t INTID_VIRTUAL_TIMER = 27; // a PPI
+static constexpr uint32_t INTID_RESCHED = 0; // an SGI: another CPU made a thread ready
+// The virtual timer's PPI: 27 at EL1. At EL2 with VHE the CNTV_*_EL0 names
+// reach the EL2 virtual timer instead, which raises PPI 28 (timer_ppi()).
+static constexpr uint32_t INTID_VIRTUAL_TIMER = 27, INTID_EL2_VIRTUAL_TIMER = 28;
+
+static uint32_t timer_ppi(void) {
+  uint64_t el;
+  __asm__ volatile("mrs %0, CurrentEL" : "=r"(el));
+  return (el >> 2 & 3) == 2 ? INTID_EL2_VIRTUAL_TIMER : INTID_VIRTUAL_TIMER;
+}
 
 static uint64_t arch_counter(void) {
   uint64_t v;
@@ -205,9 +219,9 @@ static void arch_timer_init(void) {
   while (*waker & (1u << 2)) {} // wait for ChildrenAsleep to clear
 
   volatile uint32_t *sgi = (volatile uint32_t *)(rd + 0x1'0000); // the SGI and PPI frame
-  uint32_t lines = 1u << INTID_VIRTUAL_TIMER | 1u << INTID_RESCHED;
-  sgi[0x080 / 4] |= lines;                                       // GICR_IGROUPR0: group 1
-  ((volatile uint8_t *)sgi)[0x400 + INTID_VIRTUAL_TIMER] = 0x80; // priorities
+  uint32_t lines = 1u << timer_ppi() | 1u << INTID_RESCHED;
+  sgi[0x080 / 4] |= lines;                               // GICR_IGROUPR0: group 1
+  ((volatile uint8_t *)sgi)[0x400 + timer_ppi()] = 0x80; // priorities
   ((volatile uint8_t *)sgi)[0x400 + INTID_RESCHED] = 0x80;
   sgi[0x100 / 4] = lines; // GICR_ISENABLER0
 
@@ -248,7 +262,7 @@ static void aarch64_irq(void) {
   __asm__ volatile("mrs %0, icc_iar1_el1" : "=r"(iar));
   uint32_t intid = (uint32_t)iar & 0xffffff;
   if (intid >= 1020) return; // spurious
-  if (intid == INTID_VIRTUAL_TIMER) {
+  if (intid == INTID_VIRTUAL_TIMER || intid == INTID_EL2_VIRTUAL_TIMER) {
     __asm__ volatile("msr cntv_ctl_el0, xzr\n\tisb"); // disarm before EOI: the line is level-triggered
     timer_interrupt();
   } else if (intid == INTID_RESCHED) {
@@ -312,11 +326,16 @@ static vx_status arch_irq_route(uint32_t line, bool *level) {
 // edge-triggered and have no active state; one is turned off by clearing its
 // enable bit in the configuration table.
 
-static volatile uint8_t *its; // the ITS's registers
-static uint8_t *lpi_config;   // a byte for each LPI: priority, and bit 0 enables it
-static uint64_t *its_queue;   // the command queue, 64 KiB
-static uint32_t its_queue_at; // bytes written
-static uint64_t its_target;   // the redistributor, as MAPC and SYNC name it
+static volatile uint8_t *its;   // the ITS's registers
+static uint8_t *lpi_config;     // a byte for each LPI: priority, and bit 0 enables it
+static uint64_t *its_queue;     // the command queue, 64 KiB
+static uint32_t its_queue_at;   // bytes written
+static uint64_t its_target;     // the redistributor, as MAPC and SYNC name it
+static uint64_t its_device_ids; // DeviceIDs below this fit the ITS and its device table
+static bool its_unusable;       // its setup failed: no MSIs (and no second try)
+
+// The LPI configuration byte: a priority, bit 1 (RES1, group 1), and bit 0, enable.
+static constexpr uint8_t LPI_OFF = 0xa2, LPI_ON = 0xa3;
 
 static struct {
   uint32_t id;     // the DeviceID: a requester ID
@@ -335,8 +354,12 @@ static void its_command(uint64_t d0, uint64_t d1, uint64_t d2, uint64_t d3) {
   c[0] = d0, c[1] = d1, c[2] = d2, c[3] = d3;
   its_queue_at = (its_queue_at + 32) % (64 * 1024);
   __asm__ volatile("dsb ishst" ::: "memory");
-  *(volatile uint64_t *)(its + 0x88) = its_queue_at;            // GITS_CWRITER
-  while (*(volatile uint64_t *)(its + 0x90) != its_queue_at) {} // GITS_CREADR: until it has run them
+  *(volatile uint64_t *)(its + 0x88) = its_queue_at; // GITS_CWRITER
+  for (;;) {                                         // GITS_CREADR: until it has run them
+    uint64_t read = *(volatile uint64_t *)(its + 0x90);
+    if (read & 1) panic(VX_STR("the GIC's ITS stalled on a command")); // Stalled: a command it refused
+    if (read == its_queue_at) break;
+  }
 }
 
 static void its_sync(void) { its_command(0x05, 0, its_target << 16, 0); }
@@ -349,6 +372,8 @@ static uint64_t its_table(unsigned order) {
 
 static vx_status its_init(void) {
   if (its) return VX_OK;
+  if (its_unusable) return VX_ERR_UNSUPPORTED;
+  its_unusable = true; // until it has all worked
   if (!boot_rd) return VX_ERR_UNSUPPORTED;
   if (!(gicd_regs()[1] & (1u << 17))) return VX_ERR_UNSUPPORTED; // GICD_TYPER.LPIS
   uint64_t pa = ITS_PHYS_DEFAULT;
@@ -362,9 +387,9 @@ static vx_status its_init(void) {
   uint64_t typer = *(volatile uint64_t *)(regs + 0x08);
 
   // The redistributor: its LPI configuration and pending tables, then LPIs on.
-  lpi_config = phys_to_virt(its_table(1));                       // 8 KiB: a byte for each of 8192 LPIs
-  for (uint32_t i = 0; i < LPI_COUNT; i++) lpi_config[i] = 0xa0; // a priority, disabled
-  uint64_t pending = its_table(4);                               // 64 KiB-aligned, as the GIC requires
+  lpi_config = phys_to_virt(its_table(1)); // 8 KiB: a byte for each of 8192 LPIs
+  for (uint32_t i = 0; i < LPI_COUNT; i++) lpi_config[i] = LPI_OFF;
+  uint64_t pending = its_table(4); // 64 KiB-aligned, as the GIC requires
   *(volatile uint64_t *)(boot_rd + 0x70) =
       ((uint64_t)lpi_config - boot.hhdm) | 1ull << 10 | 7ull << 7 | (LPI_ID_BITS - 1); // GICR_PROPBASER
   *(volatile uint64_t *)(boot_rd + 0x78) = pending | 1ull << 10 | 7ull << 7;           // GICR_PENDBASER
@@ -378,9 +403,15 @@ static vx_status its_init(void) {
     uint32_t bits = type == 1 ? (uint32_t)(typer >> 13 & 0x1f) + 1 : 16;
     uint64_t bytes = entry << bits, pages = (bytes + 4095) / 4096;
     if (pages > 256) pages = 256; // 1 MiB of entries is room for every device QEMU has
+    if (type == 1)
+      its_device_ids = pages * 4096 / entry < (1ull << bits) ? pages * 4096 / entry : 1ull << bits;
     unsigned order = 0;
     while ((1ull << order) < pages) order++;
-    *baser = 1ull << 63 | 7ull << 59 | (entry - 1) << 48 | its_table(order) | 1ull << 10 | (pages - 1);
+    uint64_t want = 1ull << 63 | 7ull << 59 | (entry - 1) << 48 | its_table(order) | 1ull << 10 | (pages - 1);
+    *baser = want;
+    // The ITS may not take 4 KiB pages or inner-shareable, cached tables; then
+    // these tables are the wrong size or need cache maintenance: no MSIs.
+    if ((*baser & (3ull << 8 | 3ull << 10)) != (want & (3ull << 8 | 3ull << 10))) return VX_ERR_UNSUPPORTED;
   }
   its_queue = phys_to_virt(its_table(4));
   *(volatile uint64_t *)(regs + 0x80) =
@@ -394,6 +425,7 @@ static vx_status its_init(void) {
   its_target = typer & (1ull << 19) ? rd_pa >> 16 : (*(volatile uint64_t *)(boot_rd + 0x08) >> 8 & 0xffff);
   its_command(0x09, 0, 1ull << 63 | its_target << 16 | 0, 0); // MAPC: valid, target, ICID 0
   its_sync();
+  its_unusable = false;
   return VX_OK;
 }
 
@@ -402,6 +434,7 @@ static vx_status arch_msi_create(uint32_t source, uint32_t *line, vx_msi *msi) {
   if (st != VX_OK) return st;
   uint32_t lpi = 0;
   while (lpi < LPI_COUNT && irq_lines[MSI_LINE_BASE + lpi]) lpi++;
+  if (source >= its_device_ids) return VX_ERR_RANGE; // a DeviceID the ITS has no room for would stall it
   int dev = -1, free_dev = -1;
   for (int i = 0; i < 64; i++) {
     if (its_devices[i].used && its_devices[i].id == source) dev = i;
@@ -419,7 +452,7 @@ static vx_status arch_msi_create(uint32_t source, uint32_t *line, vx_msi *msi) {
   if (event == ITS_EVENTS) return VX_ERR_NO_MEMORY;
   its_devices[dev].events |= 1u << event;
   lpi_events[lpi] = (typeof(lpi_events[0])){.device = (uint8_t)dev, .event = (uint8_t)event, .used = true};
-  lpi_config[lpi] = 0xa0 | 1; // enabled
+  lpi_config[lpi] = LPI_ON;
   __asm__ volatile("dsb ishst" ::: "memory");
   its_command(0x0a | (uint64_t)source << 32, event | (uint64_t)(LPI_BASE + lpi) << 32, 0,
               0);                                          // MAPTI, to ICID 0
@@ -435,7 +468,7 @@ static vx_status arch_msi_create(uint32_t source, uint32_t *line, vx_msi *msi) {
 static void arch_msi_destroy(uint32_t line) {
   uint32_t lpi = line - MSI_LINE_BASE;
   if (lpi >= LPI_COUNT || !lpi_events[lpi].used) return;
-  lpi_config[lpi] = 0xa0;
+  lpi_config[lpi] = LPI_OFF;
   uint32_t dev = lpi_events[lpi].device, event = lpi_events[lpi].event;
   its_command(0x0f | (uint64_t)its_devices[dev].id << 32, event, 0, 0); // DISCARD
   its_sync();
@@ -453,11 +486,11 @@ static void arch_irq_mask(uint32_t line, bool masked) {
 }
 
 // An SGI to one CPU, named by its affinity: ICC_SGI1R_EL1 takes Aff3, Aff2 and
-// Aff1, and Aff0 as a bit in a target list.
+// Aff1, and Aff0 as a bit in a 16-wide target list, with RS choosing which 16.
 static void arch_send_resched(cpu *c) {
   uint64_t a = c->arch_id;
   uint64_t v = (a >> 32 & 0xff) << 48 | (a >> 16 & 0xff) << 32 | (uint64_t)INTID_RESCHED << 24 |
-               (a >> 8 & 0xff) << 16 | 1ull << (a & 0xf);
+               (a >> 8 & 0xff) << 16 | (a >> 4 & 0xf) << 44 | 1ull << (a & 0xf); // RS: which 16 of Aff0
   __asm__ volatile("dsb ishst\n\tmsr icc_sgi1r_el1, %0\n\tisb" : : "r"(v) : "memory");
 }
 
@@ -470,6 +503,10 @@ static bool percpu_ready; // TPIDR_EL1 holds this CPU's index
 // Per CPU: the vector table, the CPU's index in TPIDR_EL1, and MAIR attribute 2
 // as device memory (arch_console_init sets it early on the boot CPU).
 static void arch_cpu_init(uint32_t index) {
+  // CPACR_EL1: FP/SIMD, SVE and SME trap, for user tasks too, until the
+  // kernel saves that state (01 §1); otherwise one task's registers would
+  // reach the next. The kernel itself uses none.
+  __asm__ volatile("msr cpacr_el1, xzr\n\tisb" ::: "memory");
   __asm__ volatile("msr vbar_el1, %0\n\t"
                    "msr tpidr_el1, %1\n\t"
                    "isb"
@@ -582,6 +619,26 @@ void aarch64_trap(trap_frame *f, uint64_t index) {
 // same state as the boot CPU. smp_init left the top of the CPU's idle stack in
 // extra_argument, with the CPU's index just above it.
 static_assert(offsetof(struct limine_mp_info, extra_argument) == 32);
+
+uint64_t ap_park_tables[2];
+
+[[gnu::naked, noreturn]] void ap_park(struct limine_mp_info *info) {
+  __asm__("hint #34\n\t"
+          "msr daifset, #0xf\n\t"
+          "adrp x1, ap_park_tables\n\t"
+          "add x1, x1, :lo12:ap_park_tables\n\t"
+          "ldp x2, x3, [x1]\n\t"
+          "dsb ish\n\t"
+          "msr ttbr1_el1, x2\n\t" // the kernel's tables: Limine's are about to be reclaimed
+          "msr ttbr0_el1, x3\n\t"
+          "isb\n\t"
+          "tlbi vmalle1\n\t"
+          "dsb ish\n\t"
+          "isb\n"
+          "1:\n\t"
+          "wfe\n\t"
+          "b 1b");
+}
 
 [[gnu::naked, noreturn]] void ap_start(struct limine_mp_info *info) {
   __asm__("hint #34\n\t"

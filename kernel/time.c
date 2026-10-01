@@ -1,7 +1,7 @@
 // time.c: the monotonic clock and the one-shot deadline timer (docs/01 §4.4, §8).
 //
 // The clock is the CPU's cycle counter (TSC, or the aarch64 virtual counter),
-// read without a syscall and converted to nanoseconds with a fixed-point factor.
+// read without a syscall and converted to nanoseconds exactly (time_math.c).
 // The timer is one-shot: arch_timer_arm programs the next deadline as a counter
 // value and its interrupt calls timer_interrupt. Hardware that counts down
 // rather than comparing with the counter may interrupt early, so an interrupt
@@ -12,8 +12,6 @@ static void sched_timer(void); // sched/sched.c
 
 static struct {
   uint64_t hz;         // counter frequency, published in /sys/clock/info (02 §5.1)
-  uint64_t ns_mult;    // ns = counter * ns_mult >> 32
-  uint64_t count_mult; // counter = ns * count_mult >> 24
   uint64_t boot_count; // the counter at kernel entry: log timestamps count from here
 } clock;
 
@@ -24,23 +22,14 @@ static struct {
 } cpu_timer[MAX_CPUS];
 
 static void clock_init(uint64_t hz, uint64_t boot_count) {
-  if (!hz) panic(VX_STR("the cycle counter's frequency is unknown"));
-  // Both factors fit 64 bits (1e9 << 32 is about 4.3e18; hz << 24 does up to
-  // 1 THz), so only the multiplies need 128 bits, and those are single
-  // instructions; a 128-bit division would need compiler-rt.
+  if (!hz || hz > 18'000'000'000) panic(VX_STR("the cycle counter's frequency is unknown, or past 18 GHz"));
   clock.hz = hz;
-  clock.ns_mult = (1'000'000'000ull << 32) / hz;
-  clock.count_mult = (hz << 24) / 1'000'000'000ull;
   clock.boot_count = boot_count;
 }
 
-static uint64_t counter_to_ns(uint64_t count) {
-  return (uint64_t)(((unsigned __int128)count * clock.ns_mult) >> 32);
-}
+static uint64_t counter_to_ns(uint64_t count) { return time_counter_to_ns(count, clock.hz); }
 
-static uint64_t ns_to_counter(uint64_t ns) {
-  return (uint64_t)(((unsigned __int128)ns * clock.count_mult) >> 24);
-}
+static uint64_t ns_to_counter(uint64_t ns) { return time_ns_to_counter(ns, clock.hz); }
 
 // Nanoseconds on the one monotonic clock (01 §4.4).
 static vx_instant clock_now(void) { return (vx_instant)counter_to_ns(arch_counter()); }

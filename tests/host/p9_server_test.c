@@ -282,10 +282,11 @@ static void test_hostile_client(void) {
         VX_ERR_INVALID);
   CHECK(raw((p9_msg){.type = P9_Tcreate, .tag = 1, .fid = 2, .name = VX_STR("a/b"), .mode = P9_OREAD}) ==
         VX_ERR_INVALID);
-  uint32_t made = 0;
+  uint32_t held = 0, made = 0;
+  for (uint32_t i = 0; i < P9_MAX_FIDS; i++) held += server.fids[i].used;
   for (uint32_t fid = 100; fid < 100 + P9_MAX_FIDS; fid++)
     if (raw(walk(1, fid, 0, nullptr)) == VX_OK) made++;
-  CHECK(made < P9_MAX_FIDS); // the table is bounded, and a full one says so
+  CHECK(held > 0 && made == P9_MAX_FIDS - held); // exactly the room there was, and no more
   CHECK(raw(walk(1, 999, 0, nullptr)) == VX_ERR_NO_MEMORY);
 
   // Messages that are not requests, or not messages at all, end the connection.

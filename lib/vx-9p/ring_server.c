@@ -88,18 +88,26 @@ static void p9_ring_accept(p9_ring_server *s, const vx_msg_header *req) {
   vx_channel_write(s->listen, &rep, sizeof rep, nullptr, 0);
 }
 
-// Serves every request waiting on one connection: first one it holds, if it
-// can be served now. False if the client broke the protocol, or sent
-// something too broken to answer, and must be dropped.
-static bool p9_ring_drain(p9_ring_conn *c) {
-  for (;;) {
+// Requests served on one connection before the server turns to the others: a
+// client that keeps its queue full gets its share, not the whole server.
+static constexpr uint32_t P9_RING_BUDGET = 8;
+
+typedef enum p9_drained : uint8_t { P9_DRAINED, P9_MORE, P9_BROKEN } p9_drained;
+
+// Serves the requests waiting on one connection, up to its budget: first one
+// it holds, if it can be served now. P9_MORE if requests are left; P9_BROKEN
+// if the client broke the protocol, or sent something too broken to answer,
+// and must be dropped.
+static p9_drained p9_ring_drain(p9_ring_conn *c) {
+  for (uint32_t served = 0;; served++) {
+    if (served == P9_RING_BUDGET) return P9_MORE;
     vx_sqe e = {.user_data = c->held_user_data, .len = c->held_len};
     if (!c->holding) {
       vx_status st = vx_ring_consume(&c->ring, &e);
-      if (st == VX_ERR_SHOULD_WAIT) return true;
-      if (st != VX_OK || e.opcode != P9_RING_MSG || e.len > sizeof c->req) return false;
+      if (st == VX_ERR_SHOULD_WAIT) return P9_DRAINED;
+      if (st != VX_OK || e.opcode != P9_RING_MSG || e.len > sizeof c->req) return P9_BROKEN;
       const uint8_t *p = vx_ring_peer_bytes(&c->ring, e.arena_off, e.len);
-      if (!p) return false;
+      if (!p) return P9_BROKEN;
       memcpy(c->req, p, e.len);
     }
     size_t n = p9_serve(&c->srv, c->req, e.len, c->resp, sizeof c->resp);
@@ -107,12 +115,12 @@ static bool p9_ring_drain(p9_ring_conn *c) {
     if (c->holding) {
       c->held_len = e.len;
       c->held_user_data = e.user_data;
-      return true;
+      return P9_DRAINED;
     }
     uint64_t arena_size;
     uint8_t *arena = vx_ring_arena(&c->ring, &arena_size);
     vx_cqe *out = n && n <= arena_size ? vx_ring_produce_slot(&c->ring) : nullptr;
-    if (!out) return false; // unanswerable, or a client that does not drain its completions
+    if (!out) return P9_BROKEN; // unanswerable, or a client that does not drain its completions
     memcpy(arena, c->resp, n);
     *out = (vx_cqe){.user_data = e.user_data, .result = (int64_t)n};
     if (vx_ring_produce(&c->ring)) vx_ring_notify(c->end);
@@ -126,8 +134,13 @@ static bool p9_ring_drain(p9_ring_conn *c) {
   vx_status st = s->port ? VX_OK : vx_port_create(0, &s->port);
   if (st != VX_OK) return st;
   for (;;) {
-    for (uint32_t i = 0; i < P9_RING_MAX_CONNS; i++)
-      if (s->conns[i].used && !p9_ring_drain(&s->conns[i])) p9_ring_close(&s->conns[i]);
+    bool more = false; // a connection still has requests: no sleeping this time round
+    for (uint32_t i = 0; i < P9_RING_MAX_CONNS; i++) {
+      if (!s->conns[i].used) continue;
+      p9_drained d = p9_ring_drain(&s->conns[i]);
+      if (d == P9_BROKEN) p9_ring_close(&s->conns[i]);
+      more = more || d == P9_MORE;
+    }
     for (;;) {
       vx_msg_header req;
       vx_msg_size size;
@@ -147,7 +160,7 @@ static bool p9_ring_drain(p9_ring_conn *c) {
 
     // Arm what is idle, then sleep unless something arrived meanwhile. A
     // connection holding a request waits for an event, not its doorbell.
-    bool idle = true;
+    bool idle = !more;
     for (uint32_t i = 0; i < P9_RING_MAX_CONNS && idle; i++) {
       p9_ring_conn *c = &s->conns[i];
       if (!c->used || c->holding) continue;

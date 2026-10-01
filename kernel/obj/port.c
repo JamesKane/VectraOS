@@ -28,7 +28,8 @@ typedef struct port {
 
 typedef struct binding {
   struct binding *next; // on its source's list, then on its port's ready list
-  port *port;           // holds a reference
+  port *port;           // holds a reference until it fires; then the port holds it
+  bool fired;
   uint64_t key;
   uint64_t threshold; // COUNTER_GE
   uint32_t trigger;
@@ -52,7 +53,7 @@ static vx_status port_create(port **out) {
 static void port_wake_one(port *p) {
   while (p->waiters) {
     thread *t = p->waiters;
-    p->waiters = t->next;
+    p->waiters = t->wait_next;
     if (thread_wake_token(t, p, VX_OK)) break;
   }
 }
@@ -71,7 +72,7 @@ static vx_status port_post(port *p, const vx_packet *packet) {
 }
 
 static void binding_free(binding *b) {
-  object_drop(&b->port->obj);
+  if (!b->fired) object_drop(&b->port->obj); // a fired one gave its reference up
   pool_free(&binding_pool, b);
 }
 
@@ -94,7 +95,7 @@ static uint32_t port_take(port *p, vx_packet *out, uint32_t max) {
     p->count--;
   }
   spin_unlock(&p->lock);
-  while (done) { // outside the lock: freeing drops a reference on this port
+  while (done) {
     binding *next = done->next;
     binding_free(done);
     done = next;
@@ -109,9 +110,9 @@ static bool port_join_waiters(port *p, thread *t) {
   bool join = p->count == 0 && !p->ready_head;
   if (join) {
     t->wait_token = p; // set before t is on the list; wakers only find it there, under this lock
-    t->next = nullptr;
+    t->wait_next = nullptr;
     thread **link = &p->waiters;
-    while (*link) link = &(*link)->next;
+    while (*link) link = &(*link)->wait_next;
     *link = t;
   }
   spin_unlock(&p->lock);
@@ -120,9 +121,9 @@ static bool port_join_waiters(port *p, thread *t) {
 
 static void port_remove_waiter(port *p, thread *t) {
   spin_lock(&p->lock);
-  for (thread **link = &p->waiters; *link; link = &(*link)->next) {
+  for (thread **link = &p->waiters; *link; link = &(*link)->wait_next) {
     if (*link == t) {
-      *link = t->next;
+      *link = t->wait_next;
       break;
     }
   }
@@ -152,6 +153,7 @@ static void binding_fire(binding *b, uint64_t value) {
                           .source = b->source_handle,
                           .trigger = b->trigger};
   b->next = nullptr;
+  b->fired = true;
   spin_lock(&p->lock);
   if (p->ready_tail)
     p->ready_tail->next = b;
@@ -160,6 +162,19 @@ static void binding_fire(binding *b, uint64_t value) {
   p->ready_tail = b;
   port_wake_one(p);
   spin_unlock(&p->lock);
+  // The port owns the fired binding now, so the binding no longer keeps the
+  // port alive: a port with packets no one takes is still freed (port_destroy).
+  // Only a drop: this runs under the source's lock, or in an interrupt.
+  object_drop(&p->obj);
+}
+
+// The last reference is gone: the packets fired into the port go with it.
+static void port_destroy(port *p) {
+  for (binding *b = p->ready_head, *next; b; b = next) {
+    next = b->next;
+    pool_free(&binding_pool, b);
+  }
+  pool_free(&port_pool, p);
 }
 
 static void observers_add(observers *o, binding *b) {

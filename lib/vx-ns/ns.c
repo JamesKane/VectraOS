@@ -53,6 +53,7 @@ typedef struct vx_ns_member {
   uint32_t fid;
   char from[VX_NS_MAX_PATH]; // bind: the path; mount: the aname
   uint16_t from_len;
+  uint32_t seq; // when it was added: ns output and children replay members in this order
 } vx_ns_member;
 
 typedef struct vx_ns_entry {
@@ -65,6 +66,10 @@ typedef struct vx_ns_entry {
 typedef struct vx_ns {
   vx_ns_conn conns[VX_NS_MAX_CONNS];
   vx_ns_entry entries[VX_NS_MAX_ENTRIES];
+  uint32_t next_seq;
+  // Called when unmount leaves a connection with no members, after its fids
+  // are clunked; the connection's slot is free once it returns. May be null.
+  void (*release)(p9_client *c, vx_handle connector);
 } vx_ns;
 
 // Cleans an absolute path lexically: no empty, "." or ".." components, and
@@ -170,6 +175,7 @@ static vx_status ns_add(vx_ns *ns, vx_str old, vx_ns_member m, uint8_t flags) {
         if (ns->conns[i].client == bc) base.conn = i;
       memcpy(base.from, old.ptr, old.len);
       base.from_len = (uint16_t)old.len;
+      base.seq = ns->next_seq++;
       e->members[e->count++] = base;
     }
   }
@@ -179,6 +185,7 @@ static vx_status ns_add(vx_ns *ns, vx_str old, vx_ns_member m, uint8_t flags) {
   }
   if (e->count == VX_NS_MAX_MEMBERS) return VX_ERR_NO_MEMORY;
   m.flags = flags & VX_NS_CREATE;
+  m.seq = ns->next_seq++;
   if (flags & VX_NS_BEFORE) {
     memmove(&e->members[1], &e->members[0], e->count * sizeof e->members[0]);
     e->members[0] = m;
@@ -204,13 +211,13 @@ static vx_status ns_add(vx_ns *ns, vx_str old, vx_ns_member m, uint8_t flags) {
   }
   if (slot == VX_NS_MAX_CONNS) return VX_ERR_NO_MEMORY;
   vx_ns_member m = {.conn = slot, .mounted = true, .from_len = (uint16_t)aname.len};
-  memcpy(m.from, aname.ptr, aname.len);
+  if (aname.len) memcpy(m.from, aname.ptr, aname.len); // an empty aname may have no pointer
   vx_status st = p9c_attach(c, aname, &m.fid);
   if (st != VX_OK) return st;
   bool fresh = !ns->conns[slot].client;
   if (fresh) {
     ns->conns[slot] = (vx_ns_conn){.client = c, .connector = connector, .src_len = (uint8_t)src.len};
-    memcpy(ns->conns[slot].src, src.ptr, src.len);
+    if (src.len) memcpy(ns->conns[slot].src, src.ptr, src.len);
   }
   st = ns_add(ns, (vx_str){clean, n}, m, flags);
   if (st != VX_OK) {
@@ -260,6 +267,15 @@ static vx_status ns_add(vx_ns *ns, vx_str old, vx_ns_member m, uint8_t flags) {
   }
   e->count = kept;
   if (!kept) e->path_len = 0;
+  for (uint8_t c = 0; c < VX_NS_MAX_CONNS; c++) { // a connection no member uses any more is let go
+    bool used = !ns->conns[c].client;
+    for (uint32_t i = 0; i < VX_NS_MAX_ENTRIES && !used; i++)
+      for (uint32_t k = 0; ns->entries[i].path_len && k < ns->entries[i].count && !used; k++)
+        used = ns->entries[i].members[k].mounted && ns->entries[i].members[k].conn == c;
+    if (used) continue;
+    if (ns->release) ns->release(ns->conns[c].client, ns->conns[c].connector);
+    ns->conns[c] = (vx_ns_conn){};
+  }
   return removed ? VX_OK : VX_ERR_NOT_FOUND;
 }
 
@@ -280,32 +296,69 @@ static void ns_put(ns_text *t, vx_str s) {
   t->len += s.len;
 }
 
-// Writes the namespace as a script of mount and bind lines, entries in the
-// order they were made. Returns its length, or 0 if it does not fit.
+// Every member, as (entry, member) pairs, in the order they were added: the
+// order a script or a child must replay them in, since each may resolve paths
+// that earlier ones made. Returns how many.
+typedef struct vx_ns_step {
+  uint8_t entry, member;
+} vx_ns_step;
+
+static uint32_t ns_order(const vx_ns *ns, vx_ns_step *steps) {
+  uint32_t n = 0;
+  for (uint32_t i = 0; i < VX_NS_MAX_ENTRIES; i++)
+    for (uint32_t k = 0; ns->entries[i].path_len && k < ns->entries[i].count; k++) {
+      uint32_t seq = ns->entries[i].members[k].seq, at = n++;
+      for (; at > 0 && ns->entries[steps[at - 1].entry].members[steps[at - 1].member].seq > seq; at--)
+        steps[at] = steps[at - 1]; // insertion sort: a few hundred members at most
+      steps[at] = (vx_ns_step){(uint8_t)i, (uint8_t)k};
+    }
+  return n;
+}
+
+// The flags that replay step s: none for the first member of its entry to be
+// replayed; -b if it comes before every member replayed so far, else -a; and
+// -c if it takes creates. Writes them into flags (at most 3 bytes).
+static size_t ns_step_flags(const vx_ns *ns, const vx_ns_step *steps, uint32_t s, char *flags) {
+  const vx_ns_entry *e = &ns->entries[steps[s].entry];
+  bool earlier = false, before_all = true;
+  for (uint32_t i = 0; i < s; i++) {
+    if (steps[i].entry != steps[s].entry) continue;
+    earlier = true;
+    if (steps[i].member < steps[s].member) before_all = false;
+  }
+  size_t n = 0;
+  if (earlier) flags[n++] = before_all ? 'b' : 'a';
+  if (e->members[steps[s].member].flags & VX_NS_CREATE) flags[n++] = 'c';
+  return n;
+}
+
+// Writes the namespace as a script of mount and bind lines, in the order they
+// would rebuild it. Returns its length, or 0 if it does not fit.
 [[maybe_unused]] static size_t vx_ns_print(const vx_ns *ns, char *buf, size_t cap) {
   ns_text t = {.buf = buf, .cap = cap};
-  for (uint32_t i = 0; i < VX_NS_MAX_ENTRIES; i++) {
-    const vx_ns_entry *e = &ns->entries[i];
-    for (uint32_t k = 0; e->path_len && k < e->count; k++) {
-      const vx_ns_member *m = &e->members[k];
-      ns_put(&t, m->mounted ? VX_STR("mount ") : VX_STR("bind "));
-      if (k > 0 || (m->flags & VX_NS_CREATE)) {
-        ns_put(&t, VX_STR("-"));
-        if (k > 0) ns_put(&t, VX_STR("a"));
-        if (m->flags & VX_NS_CREATE) ns_put(&t, VX_STR("c"));
-        ns_put(&t, VX_STR(" "));
-      }
-      vx_str from = m->mounted ? (vx_str){ns->conns[m->conn].src, ns->conns[m->conn].src_len}
-                               : (vx_str){m->from, m->from_len};
-      ns_put(&t, from);
+  static vx_ns_step steps[VX_NS_MAX_ENTRIES * VX_NS_MAX_MEMBERS];
+  uint32_t n = ns_order(ns, steps);
+  for (uint32_t s = 0; s < n; s++) {
+    const vx_ns_entry *e = &ns->entries[steps[s].entry];
+    const vx_ns_member *m = &e->members[steps[s].member];
+    char flags[3];
+    size_t nf = ns_step_flags(ns, steps, s, flags);
+    ns_put(&t, m->mounted ? VX_STR("mount ") : VX_STR("bind "));
+    if (nf) {
+      ns_put(&t, VX_STR("-"));
+      ns_put(&t, (vx_str){flags, nf});
       ns_put(&t, VX_STR(" "));
-      ns_put(&t, (vx_str){e->path, e->path_len});
-      if (m->mounted && m->from_len) {
-        ns_put(&t, VX_STR(" "));
-        ns_put(&t, (vx_str){m->from, m->from_len});
-      }
-      ns_put(&t, VX_STR("\n"));
     }
+    vx_str from = m->mounted ? (vx_str){ns->conns[m->conn].src, ns->conns[m->conn].src_len}
+                             : (vx_str){m->from, m->from_len};
+    ns_put(&t, from);
+    ns_put(&t, VX_STR(" "));
+    ns_put(&t, (vx_str){e->path, e->path_len});
+    if (m->mounted && m->from_len) {
+      ns_put(&t, VX_STR(" "));
+      ns_put(&t, (vx_str){m->from, m->from_len});
+    }
+    ns_put(&t, VX_STR("\n"));
   }
   return t.failed ? 0 : t.len;
 }
@@ -340,6 +393,26 @@ typedef struct vx_ns_file {
   st = p9c_open(f->c, f->fid, mode);
   if (st != VX_OK) p9c_clunk(f->c, f->fid);
   if (st != VX_OK) *f = (vx_ns_file){};
+  return st;
+}
+
+// Creates the file at path (in the directory its last '/' names), open in
+// `mode`, with permissions perm.
+[[maybe_unused]] static vx_status vx_ns_create(vx_ns *ns, vx_str path, uint32_t perm, uint8_t mode,
+                                               vx_ns_file *f) {
+  *f = (vx_ns_file){.ns = ns};
+  char clean[VX_NS_MAX_PATH];
+  size_t n = vx_ns_clean(path, clean, sizeof clean), slash = n;
+  while (slash > 0 && clean[slash - 1] != '/') slash--;
+  if (!n || slash == n) return VX_ERR_INVALID; // "/" itself
+  vx_str dir = {clean, slash > 1 ? slash - 1 : 1}, name = {clean + slash, n - slash};
+  vx_status st = vx_ns_walk(ns, dir, &f->c, &f->fid);
+  if (st != VX_OK) return st;
+  st = p9c_create(f->c, f->fid, name, perm, mode);
+  if (st != VX_OK) {
+    p9c_clunk(f->c, f->fid);
+    *f = (vx_ns_file){};
+  }
   return st;
 }
 

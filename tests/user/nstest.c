@@ -52,16 +52,15 @@ static vx_str list(const char *path) {
   static uint8_t buf[4096];
   int64_t n;
   while ((n = vx_ns_read(&f, buf, sizeof buf)) > 0) {
-    for (int64_t off = 0; off + 2 <= n;) {
-      uint32_t size = buf[off] | (uint32_t)buf[off + 1] << 8;
-      p9_stat st;
-      if (p9_stat_decode(buf + off, size + 2, &st) != VX_OK || len + st.name.len + 1 > sizeof out)
-        return VX_STR("(bad entry)");
+    p9_stat st;
+    size_t off = 0;
+    while (p9_dir_next(buf, (size_t)n, &off, &st)) {
+      if (len + st.name.len + 1 >= sizeof out) return VX_STR("(too long)"); // room for the caller's NUL too
       if (len) out[len++] = ' ';
       memcpy(out + len, st.name.ptr, st.name.len);
       len += st.name.len;
-      off += size + 2;
     }
+    if (off != (size_t)n) return VX_STR("(bad entry)");
   }
   vx_ns_close(&f);
   return n < 0 ? VX_STR("(read failed)") : (vx_str){out, len};

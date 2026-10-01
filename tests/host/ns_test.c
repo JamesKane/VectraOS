@@ -141,15 +141,14 @@ static const char *list(vx_ns *ns, const char *path) {
   uint8_t buf[2048];
   int64_t n;
   while ((n = vx_ns_read(&f, buf, sizeof buf)) > 0) {
-    for (int64_t off = 0; off + 2 <= n;) {
-      uint32_t size = buf[off] | (uint32_t)buf[off + 1] << 8;
-      p9_stat st;
-      if (p9_stat_decode(buf + off, size + 2, &st) != VX_OK) return "(bad stat)";
+    p9_stat st;
+    size_t off = 0;
+    while (p9_dir_next(buf, (size_t)n, &off, &st)) {
       if (len) out[len++] = ' ';
       memcpy(out + len, st.name.ptr, st.name.len);
       len += st.name.len;
-      off += size + 2;
     }
+    if (off != (size_t)n) return "(bad stat)";
   }
   vx_ns_close(&f);
   out[len] = 0;
@@ -220,9 +219,9 @@ static void test_namespace(void) {
   static const char want[] = "mount /srv/bootfs /\n"
                              "bind /bin /bin\n"
                              "bind -a /boot/bin /bin\n"
-                             "bind /boot /dev\n"
-                             "bind -a /dev /dev\n"
-                             "mount -a /srv/cons /dev\n";
+                             "bind /dev /dev\n"
+                             "mount -a /srv/cons /dev\n"
+                             "bind -b /boot /dev\n"; // in the order they were made
   CHECK(n == sizeof want - 1 && memcmp(out, want, n) == 0);
   CHECK(vx_ns_print(&ns, out, 10) == 0);
 
@@ -246,8 +245,84 @@ static void test_namespace(void) {
   CHECK(live == members);
 }
 
+// Replays ns output into a fresh namespace, as a child replays its spawn
+// records: mount SRC OLD [ANAME] and bind [-abc] NEW OLD lines, the sources
+// being /srv/bootfs and /srv/cons here.
+static vx_status replay(vx_ns *ns, const char *script, size_t len) {
+  char line[256];
+  for (size_t at = 0; at < len;) {
+    size_t n = 0;
+    while (at < len && script[at] != '\n' && n < sizeof line - 1) line[n++] = script[at++];
+    at++;
+    line[n] = 0;
+    char *w[6] = {};
+    int words = 0;
+    for (char *p = strtok(line, " "); p && words < 6; p = strtok(nullptr, " ")) w[words++] = p;
+    int i = 1;
+    uint8_t flags = 0;
+    if (words > 1 && w[1][0] == '-') {
+      flags = strchr(w[1], 'a') ? VX_NS_AFTER : strchr(w[1], 'b') ? VX_NS_BEFORE : 0;
+      i = 2;
+    }
+    vx_status st;
+    if (strcmp(w[0], "mount") == 0) {
+      p9_client *c = strcmp(w[i], "/srv/bootfs") == 0 ? &boot_c : &dev_c;
+      vx_str aname = words > i + 2 ? (vx_str){w[i + 2], strlen(w[i + 2])} : (vx_str){};
+      st = vx_ns_mount(ns, c, VX_HANDLE_NONE, (vx_str){w[i], strlen(w[i])}, aname,
+                       (vx_str){w[i + 1], strlen(w[i + 1])}, flags);
+    } else {
+      st = vx_ns_bind(ns, (vx_str){w[i], strlen(w[i])}, (vx_str){w[i + 1], strlen(w[i + 1])}, flags);
+    }
+    if (st != VX_OK) return st;
+  }
+  return VX_OK;
+}
+
+static int released;
+static void count_release(p9_client *c, vx_handle connector) {
+  (void)c, (void)connector;
+  released++;
+}
+
+// Review fixes (M3): ns output, and so a child's namespace, replays members in
+// the order they were made, even after a replace or an unmount reused a slot;
+// and an unmount that leaves a connection unused lets it go.
+static void test_replay_and_release(void) {
+  static vx_ns parent, child;
+  parent.release = count_release;
+  CHECK(vx_ns_mount(&parent, &boot_c, VX_HANDLE_NONE, VX_STR("/srv/bootfs"), VX_STR(""), VX_STR("/"), 0) ==
+        VX_OK);
+  CHECK(vx_ns_bind(&parent, VX_STR("/boot"), VX_STR("/bin"), 0) == VX_OK); // /bin's entry, made first
+  CHECK(vx_ns_mount(&parent, &dev_c, VX_HANDLE_NONE, VX_STR("/srv/cons"), VX_STR(""), VX_STR("/dev"), 0) ==
+        VX_OK);
+  CHECK(vx_ns_bind(&parent, VX_STR("/dev"), VX_STR("/bin"), 0) == VX_OK); // replaced: now needs /dev's mount
+  CHECK(strcmp(list(&parent, "/bin"), "cons null") == 0);
+  char script[512];
+  size_t n = vx_ns_print(&parent, script, sizeof script);
+  CHECK(n > 0 && replay(&child, script, n) == VX_OK);
+  CHECK(strcmp(list(&child, "/bin"), "cons null") == 0); // the same, not bootfs's empty /dev
+
+  CHECK(vx_ns_unmount(&parent, VX_STR(""), VX_STR("/bin")) == VX_OK);
+  CHECK(released == 0); // /dev still uses the cons connection
+  CHECK(vx_ns_unmount(&parent, VX_STR(""), VX_STR("/dev")) == VX_OK);
+  CHECK(released == 1); // its last member is gone
+  CHECK(vx_ns_mount(&parent, &dev_c, VX_HANDLE_NONE, VX_STR("/srv/cons"), VX_STR(""), VX_STR("/dev"), 0) ==
+        VX_OK);
+
+  // Creating: in the directory the path names, which these servers refuse.
+  uint32_t before = 0, after = 0;
+  for (uint32_t i = 0; i < P9_MAX_FIDS; i++) before += dev_srv.fids[i].used;
+  vx_ns_file f;
+  CHECK(vx_ns_create(&parent, VX_STR("/dev/new"), 0644, P9_OWRITE, &f) == VX_ERR_ACCESS);
+  CHECK(vx_ns_create(&parent, VX_STR("/nowhere/new"), 0644, P9_OWRITE, &f) == VX_ERR_NOT_FOUND);
+  CHECK(vx_ns_create(&parent, VX_STR("/"), 0644, P9_OWRITE, &f) == VX_ERR_INVALID);
+  for (uint32_t i = 0; i < P9_MAX_FIDS; i++) after += dev_srv.fids[i].used;
+  CHECK(after == before); // the failed creates clunked what they walked to
+}
+
 int main(void) {
   test_clean();
   test_namespace();
+  test_replay_and_release();
   return check_result();
 }

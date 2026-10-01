@@ -63,10 +63,17 @@ static void service(void) {
   }
   while (inb(base + LSR) & LSR_DATA) vx_cons_input(&cons, inb(base + RBR));
   vx_cons_pump(&cons);
+  // Still pending after the rounds above: the edge-triggered line stays up,
+  // so no new edge will come. Come back to it after the other work queued.
+  if (!(inb(base + IIR) & IIR_NONE)) vx_port_post(server.port, &(vx_packet){.key = P9_KEY_USER + 1});
 }
 
 static void event(void *ctx, const vx_packet *pk) {
   (void)ctx;
+  if (pk->key == P9_KEY_USER + 1) { // service() left something pending
+    service();
+    return;
+  }
   if (pk->trigger != VX_TRIGGER_IRQ) return;
   service();
   vx_irq_ack(irq);

@@ -57,6 +57,14 @@ static char boot_cmdline[256];
 
 static void *phys_to_virt(uint64_t pa) { return (void *)(pa + boot.hhdm); }
 
+// Whether [pa, pa + len) is RAM or firmware memory, which the direct map
+// covers (and device memory, such as a physical VMO's, is not).
+static bool in_direct_map(uint64_t pa, uint64_t len) {
+  for (uint32_t i = 0; i < boot.ram_count; i++)
+    if (pa >= boot.ram[i].base && pa < boot.ram[i].end && len <= boot.ram[i].end - pa) return true;
+  return false;
+}
+
 // Early pages, before the physical allocator exists: taken from the top of the
 // largest usable region, downwards, and never returned. phys_init hands the
 // allocator that region minus [early_next, early_top), then closes this one by
@@ -88,7 +96,8 @@ static uint64_t early_alloc(uint64_t pages) {
     struct limine_memmap_entry *e = mm->entries[i];
     bool ram = e->type == LIMINE_MEMMAP_USABLE || e->type == LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE ||
                e->type == LIMINE_MEMMAP_EXECUTABLE_AND_MODULES || e->type == LIMINE_MEMMAP_ACPI_RECLAIMABLE ||
-               e->type == LIMINE_MEMMAP_ACPI_NVS;
+               e->type == LIMINE_MEMMAP_ACPI_NVS ||
+               e->type == LIMINE_MEMMAP_RESERVED_MAPPED; // firmware's: ACPI tables, EFI runtime; mapped too
     if (ram && boot.ram_count < MAX_RAM_RANGES)
       boot.ram[boot.ram_count++] = (phys_range){e->base, e->base + e->length};
     else if (ram)

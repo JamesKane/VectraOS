@@ -14,6 +14,7 @@
 enum : uint32_t { // registers, as u32 indices
   DR = 0x00 / 4,
   FR = 0x18 / 4,
+  LCR_H = 0x2c / 4,
   IMSC = 0x38 / 4,
   MIS = 0x40 / 4,
   ICR = 0x44 / 4,
@@ -78,6 +79,7 @@ int vx_main(void) {
   vx_handle_close(mmio); // the mapping keeps it
   regs = (volatile uint32_t *)at;
 
+  regs[LCR_H] |= 1u << 4; // FEN: the FIFOs, which tx_room counts on (16 bytes when empty)
   regs[ICR] = INT_ALL;
   regs[IMSC] = imsc;
   vx_cons_print_here(&cons);

@@ -102,7 +102,8 @@ typedef struct x86_cpu {
   tss tss;
   uint8_t iomap[IO_PORTS / 8 + 1]; // one bit a port, then the 0xff the CPU requires after the last
   uint32_t open;
-  uint16_t open_base[TASK_MAX_IO], open_count[TASK_MAX_IO];
+  uint16_t open_base[TASK_MAX_IO];
+  uint32_t open_count[TASK_MAX_IO];
   cpu_local local;
 } x86_cpu;
 static_assert(offsetof(x86_cpu, iomap) == offsetof(x86_cpu, tss) + sizeof(tss));
@@ -173,9 +174,14 @@ static void arch_cpu_init(uint32_t index) {
   wrmsr(MSR_KERNEL_GS_BASE, 0);
   uint64_t cr0;
   __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
-  __asm__ volatile("mov %0, %%cr0"
-                   :
-                   : "r"(cr0 | 1ull << 16)); // WP: read-only means read-only, for the kernel too
+  // WP: read-only means read-only, for the kernel too. EM, and no OSFXSR,
+  // OSXMMEXCPT or OSXSAVE: x87, SSE and AVX instructions fault, for user
+  // tasks too, until the kernel saves that state (01 §1); otherwise one task's
+  // registers would reach the next. The kernel itself uses none.
+  __asm__ volatile("mov %0, %%cr0" : : "r"((cr0 | 1ull << 16 | 1ull << 2) & ~(1ull << 1)));
+  uint64_t cr4;
+  __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+  __asm__ volatile("mov %0, %%cr4" : : "r"(cr4 & ~(1ull << 9 | 1ull << 10 | 1ull << 18)));
 
   uint8_t *ist = index == 0 ? &boot_ist_stacks[0][0] : nullptr;
   if (!ist) {
@@ -626,6 +632,9 @@ static void arch_switch_user_root(uint64_t root) {
 
 static uint32_t arch_user_top_slots(void) { return 256; }
 
+// x86's table walker sees stores in order: only the compiler must not move them.
+static void arch_pte_publish(void) { __asm__ volatile("" ::: "memory"); }
+
 static void arch_tlb_flush_page(uint64_t va) { __asm__ volatile("invlpg (%0)" : : "r"(va) : "memory"); }
 
 static bool arch_pte_user_ok(uint64_t e, bool write) {
@@ -633,6 +642,7 @@ static bool arch_pte_user_ok(uint64_t e, bool write) {
 }
 
 static void arch_switch_tables(uint64_t root) {
+  ap_park_tables[0] = root; // for CPUs past MAX_CPUS (ap_park)
   uint64_t cr4;
   __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
   __asm__ volatile("mov %0, %%cr3\n\t"
@@ -683,6 +693,18 @@ static uint64_t arch_thread_initial_sp(thread *t) {
 // same state as the boot CPU. smp_init left the top of the CPU's idle stack in
 // extra_argument, with the CPU's index just above it.
 static_assert(offsetof(struct limine_mp_info, extra_argument) == 24);
+
+uint64_t ap_park_tables[2];
+
+[[gnu::naked, noreturn]] void ap_park(struct limine_mp_info *info) {
+  __asm__("endbr64\n\t"
+          "cli\n\t"
+          "movq ap_park_tables(%rip), %rax\n\t"
+          "movq %rax, %cr3\n" // the kernel's tables: Limine's are about to be reclaimed
+          "1:\n\t"
+          "hlt\n\t"
+          "jmp 1b");
+}
 
 [[gnu::naked, noreturn]] void ap_start(struct limine_mp_info *info) {
   __asm__("endbr64\n\t"

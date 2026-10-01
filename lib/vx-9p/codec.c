@@ -342,6 +342,18 @@ typedef struct p9_stat {
   return in.failed || in.pos != len ? VX_ERR_INVALID : VX_OK;
 }
 
+// The next stat entry in what a directory read returned (len bytes), from
+// *at, which moves past it. False at the end, and at an entry whose own size
+// runs past what was read or does not decode: the server's bytes are not
+// trusted for where the next entry starts.
+[[maybe_unused]] static bool p9_dir_next(const uint8_t *buf, size_t len, size_t *at, p9_stat *out) {
+  if (*at > len || len - *at < 2) return false;
+  size_t size = 2 + (size_t)(buf[*at] | buf[*at + 1] << 8);
+  if (size > len - *at || p9_stat_decode(buf + *at, size, out) != VX_OK) return false;
+  *at += size;
+  return true;
+}
+
 // --- Version negotiation (02 §3.1) ---
 
 typedef enum p9_dialect : uint8_t {

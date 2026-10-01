@@ -7,8 +7,8 @@
 // The tree is one file, /cons. Reads are cooked, as Plan 9's cons is: typed
 // bytes are echoed and gathered into a line, with backspace (BS or DEL) and
 // kill-line (^U), and a read returns at most one line, once it is ended (by
-// return) or sent (^D). ^D on an empty line makes one read return 0, the end
-// of the file. Writes go out with each newline as CR LF. A read with nothing
+// return) or sent (^D), never part of the next. ^D on an empty line makes one
+// read return 0, the end of the file, in its place among the lines. Writes go out with each newline as CR LF. A read with nothing
 // typed, or a write with no room, waits (p9_serve's P9_DEFER) until the
 // driver's next interrupt makes progress. (Raw mode, through consctl, comes
 // with the line editor that needs it.)
@@ -24,11 +24,15 @@ typedef struct vx_cons {
   void (*tx_wanted)(void *dev, bool on); // interrupt when it can take more
   uint8_t out[8192];                     // output not yet sent; free-running indices
   uint32_t out_head, out_tail;
-  uint8_t in[4096]; // finished lines, for reads
+  uint8_t in[4096]; // finished input, for reads
   uint32_t in_head, in_tail;
+  // Where each piece of finished input ends, in the order typed: a line (at
+  // its newline), a line sent with ^D, or an end of file (a piece with no
+  // bytes). A read returns at most one piece.
+  uint32_t ends[64];
+  uint32_t ends_head, ends_tail;
   char line[256]; // the line being typed
   uint32_t line_len;
-  uint32_t eofs; // ^D on an empty line: reads that return 0
 } vx_cons;
 
 enum : uint64_t { CONS_ROOT = 1, CONS_FILE = 2 };
@@ -53,10 +57,15 @@ static void cons_echo(vx_cons *c, uint8_t b) {
   cons_out(c, b);
 }
 
+// The line being typed becomes a piece of input (with no bytes: an end of
+// file). If the reader is so far behind that the line does not fit, it is
+// dropped whole, rather than ending up joined to another.
 static void cons_finish_line(vx_cons *c) {
   uint32_t room = (uint32_t)sizeof c->in - (c->in_tail - c->in_head);
-  for (uint32_t i = 0; i < c->line_len && i < room; i++)
-    c->in[c->in_tail++ % sizeof c->in] = (uint8_t)c->line[i];
+  if (c->line_len <= room && c->ends_tail - c->ends_head < sizeof c->ends / sizeof c->ends[0]) {
+    for (uint32_t i = 0; i < c->line_len; i++) c->in[c->in_tail++ % sizeof c->in] = (uint8_t)c->line[i];
+    c->ends[c->ends_tail++ % (sizeof c->ends / sizeof c->ends[0])] = c->in_tail;
+  }
   c->line_len = 0;
 }
 
@@ -70,11 +79,8 @@ static void cons_finish_line(vx_cons *c) {
     }
   } else if (b == 0x15) { // ^U: kill the line
     for (; c->line_len; c->line_len--) cons_out(c, '\b'), cons_out(c, ' '), cons_out(c, '\b');
-  } else if (b == 0x04) { // ^D: send the line, or end the file
-    if (c->line_len)
-      cons_finish_line(c);
-    else
-      c->eofs++;
+  } else if (b == 0x04) { // ^D: send the line, or (on an empty one) end the file
+    cons_finish_line(c);
   } else if (b == '\n' || b >= 0x20 || b == '\t') {
     if (c->line_len < sizeof c->line - 1 || b == '\n') { // a full line keeps room for its newline
       c->line[c->line_len++] = (char)b;
@@ -120,24 +126,17 @@ static vx_status cons_stat(void *ctx, uint64_t node, p9_stat *out) {
 
 static vx_status cons_open(void *ctx, uint64_t node, uint8_t mode) {
   (void)ctx, (void)node;
-  return mode & (P9_OTRUNC | P9_ORCLOSE) ? VX_ERR_ACCESS : VX_OK;
+  return mode & P9_ORCLOSE ? VX_ERR_ACCESS : VX_OK; // OTRUNC means nothing to a console
 }
 
 static vx_status cons_read(void *ctx, uint64_t node, uint64_t offset, uint8_t *buf, uint32_t *count) {
   vx_cons *c = ctx;
-  (void)node, (void)offset; // a stream: offsets mean nothing
-  if (c->in_head == c->in_tail) {
-    if (!c->eofs) return VX_ERR_SHOULD_WAIT;
-    c->eofs--;
-    *count = 0;
-    return VX_OK;
-  }
+  (void)node, (void)offset;                                    // a stream: offsets mean nothing
+  if (c->ends_head == c->ends_tail) return VX_ERR_SHOULD_WAIT; // nothing finished yet
+  uint32_t end = c->ends[c->ends_head % (sizeof c->ends / sizeof c->ends[0])];
   uint32_t n = 0;
-  while (n < *count && c->in_head != c->in_tail) {
-    uint8_t b = c->in[c->in_head++ % sizeof c->in];
-    buf[n++] = b;
-    if (b == '\n') break; // one line at a time
-  }
+  while (n < *count && c->in_head != end) buf[n++] = c->in[c->in_head++ % sizeof c->in];
+  if (c->in_head == end) c->ends_head++; // the piece is all read (an end of file reads as 0 bytes)
   *count = n;
   return VX_OK;
 }

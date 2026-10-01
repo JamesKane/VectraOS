@@ -65,6 +65,10 @@ typedef struct channel_pair {
   channel *ends[2]; // nullptr once that end is destroyed
 } channel_pair;
 
+// Kernel-picked txids have the top bit set; bit 30 says which end's call it
+// is, so a call in each direction at once is never taken for the other's reply.
+static constexpr uint32_t CALL_TXID = 0x8000'0000, SIDE_TXID = 0x4000'0000;
+
 static pool channel_pool = POOL_FOR(channel);
 static pool channel_pair_pool = POOL_FOR(channel_pair);
 
@@ -83,7 +87,7 @@ static vx_status channel_create(channel **a, channel **b) {
     atomic_store_explicit(&ends[i]->obj.refs, 1, memory_order_relaxed);
     ends[i]->pair = pair;
     ends[i]->side = i;
-    ends[i]->next_txid = 0x8000'0000; // kernel-picked txids have the top bit set
+    ends[i]->next_txid = CALL_TXID | i << 30; // each end's calls in a half of their own
     pair->ends[i] = ends[i];
   }
   *a = e0;
@@ -196,8 +200,8 @@ static vx_status channel_call(channel *c, channel_msg *request, vx_instant deadl
     spin_unlock(&c->pair->lock);
     return VX_ERR_PEER_CLOSED;
   }
-  w.txid = c->next_txid++;
-  if (!(c->next_txid & 0x8000'0000)) c->next_txid = 0x8000'0000;
+  w.txid = c->next_txid;
+  c->next_txid = CALL_TXID | (c->next_txid & SIDE_TXID) | ((c->next_txid + 1) & ~(CALL_TXID | SIDE_TXID));
   ((vx_msg_header *)msg_body(request))->txid = w.txid;
   ((vx_msg_header *)msg_body(request))->sender_intent = VX_INTENT_INTERACTIVE;
   vx_status st = channel_deliver(peer, request);

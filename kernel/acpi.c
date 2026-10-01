@@ -16,13 +16,6 @@ static uint64_t read64(const uint8_t *p) {
   return v;
 }
 
-// Whether [pa, pa + len) is firmware or RAM memory, which the direct map covers.
-static bool in_direct_map(uint64_t pa, uint64_t len) {
-  for (uint32_t i = 0; i < boot.ram_count; i++)
-    if (pa >= boot.ram[i].base && pa < boot.ram[i].end && len <= boot.ram[i].end - pa) return true;
-  return false;
-}
-
 // An ACPI table by signature, through the RSDT or XSDT; nullptr if there is none.
 static const uint8_t *acpi_table(const char sig[4]) {
   uint64_t rsdp_pa = boot.rsdp;

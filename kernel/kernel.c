@@ -30,6 +30,7 @@ static uint64_t arch_pte_table(uint64_t pa);
 static uint64_t arch_pte_leaf(uint64_t pa, uint32_t flags, int level);
 static void arch_kernel_mappings(uint64_t root); // device pages the kernel itself uses
 static void arch_switch_tables(uint64_t root);
+static void arch_pte_publish(void); // table writes so far are seen by the table walker, before any use
 
 // The cycle counter and the deadline timer (time.c).
 static uint64_t arch_counter(void);
@@ -72,6 +73,7 @@ static void arch_io_switch(const struct task *t); // this CPU's I/O port permiss
 #include "panic.c"
 #include "mm/phys.c"
 #include "mm/paging.c"
+#include "time_math.c"
 #include "time.c"
 #include "obj/object.c"
 #include "obj/vmo.c"

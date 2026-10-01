@@ -323,7 +323,7 @@ uintptr_t __stack_chk_guard = 0x2e0f5b3c9d81a647; // to come from the kernel's e
 
 // --- The spawn message (abi.h) ---
 
-static constexpr uint32_t VX_SPAWN_MAX_ARGS = 32;
+static constexpr uint32_t VX_SPAWN_MAX_ARGS = 64; // gsh's longest command line has fewer
 
 typedef struct vx_spawn_info {
   vx_str name;    // spawn=

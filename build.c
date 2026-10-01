@@ -45,9 +45,11 @@ static const char NASM_VERSION[] = "NASM version 3.02 compiled on Jul 14 2026"; 
 
 // When any of these changes, ./build rebuilds itself, and cached ports rebuild.
 static const char *const BUILD_SOURCES[] = {
-    "build.c",      "lib/vx-ndb/ndb.h",    "lib/vx-ndb/ndb.c",  "lib/vx-sha256/sha256.c",
-    "abi/vx/abi.h", "abi/vx/syscalls.def", "abi/vx/rights.def", "abi/vx/status.def",
-    nullptr,
+    "build.c",           "lib/vx-ndb/ndb.h",
+    "lib/vx-ndb/ndb.c",  "lib/vx-sha256/sha256.c",
+    "abi/vx/abi.h",      "abi/vx/syscalls.def",
+    "abi/vx/rights.def", "abi/vx/status.def",
+    "lib/vx-tar/tar.c",  nullptr,
 };
 
 static constexpr int KERNEL_LOC_BUDGET = 25000; // docs/01 §1
@@ -92,9 +94,11 @@ static const char *const KERNEL_FLAGS[] = {
     nullptr,
 };
 
-// Debug builds of the OS tree, kernel and user space, trap on undefined behaviour.
+// Debug builds of the OS tree, kernel and user space, trap on undefined
+// behaviour, at -O0: what debugging wants, and a quarter of -O1's compile
+// time, which keeps a clean kernel build within its 1 s budget (04 §3.2).
 static const char *const DEBUG_FLAGS[] = {
-    "-O1", "-fsanitize=undefined", "-fno-sanitize=function", "-fsanitize-trap=undefined", nullptr,
+    "-O0", "-fsanitize=undefined", "-fno-sanitize=function", "-fsanitize-trap=undefined", nullptr,
 };
 
 static const char *const RELEASE_FLAGS[] = {"-O2", nullptr};
@@ -414,6 +418,8 @@ typedef struct port {
 
 static port limine;
 
+static uint64_t hash_tree(uint64_t h, const char *dir); // below, with the file walker
+
 static void port_load(port *p, const char *name) {
   p->name = name;
   p->dir = fmt("ports/%s", name);
@@ -448,7 +454,9 @@ static void port_load(port *p, const char *name) {
   h = hash_bytes(h, read_file("third_party/VENDOR.ndb"));
   for (const char *const *s = BUILD_SOURCES; *s; s++) h = hash_bytes(h, read_file(*s));
   h = hash_bytes(h, (vx_str){CLANG_VERSION, sizeof CLANG_VERSION - 1});
-  p->input_hash = h;
+  // And every file of the vendored tree, path and contents, so an edited (or
+  // tampered) tree is never built over by what was cached from the old one.
+  p->input_hash = hash_tree(h, p->src);
 }
 
 // Collects the files under each comma-separated directory whose names end in ext.
@@ -495,6 +503,23 @@ static void collect(file_list *out, const port *p, vx_str dirs, const char *ext)
     i++;
   }
   qsort(out->paths + first, (size_t)(out->count - first), sizeof out->paths[0], by_path);
+}
+
+// Folds every file under dir (an absolute path under root) into h: its path
+// and its contents, in path order.
+static uint64_t hash_tree(uint64_t h, const char *dir) {
+  static file_list tree;
+  tree = (file_list){};
+  port top = {.src = root};
+  size_t skip = strlen(root) + 1;
+  collect(&tree, &top, (vx_str){dir + skip, strlen(dir + skip)}, "");
+  for (int i = 0; i < tree.count; i++) {
+    h = hash_bytes(h, (vx_str){tree.paths[i], strlen(tree.paths[i])});
+    size_t mark = arena_used;
+    h = hash_bytes(h, read_file(tree.paths[i]));
+    arena_used = mark; // the file's bytes are not needed again: a vendored tree is megabytes
+  }
+  return h;
 }
 
 // Each comma-separated extension in its own sorted group, in the order given.
@@ -762,8 +787,8 @@ static bool build_kernel(const arch *a, bool release) {
   int n = 0;
   cmd *cmds[64];
   const char *sources[64] = {"kernel/kernel.c"};
-  for (int i = 0; i < asm_files.count && i < 63; i++)
-    sources[i + 1] = fmt("kernel/arch/%s", asm_files.paths[i]);
+  if (asm_files.count > 63) die("more than 63 assembly files in kernel/arch/%s", a->name);
+  for (int i = 0; i < asm_files.count; i++) sources[i + 1] = fmt("kernel/arch/%s", asm_files.paths[i]);
   int source_count = 1 + asm_files.count;
   for (int i = 0; i < source_count; i++) {
     const char *base = strrchr(sources[i], '/') + 1;
@@ -1131,8 +1156,22 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
 // Writes a disk image for an architecture whose kernel and loader are built.
 // A non-empty cmdline is added to the boot entry, and `with` names test
 // programs for bootfs, for test scenarios.
+static bool make_image_in(const arch *a, bool release, const char *image, const char *cmdline,
+                          const char *with);
+
+// Everything an image takes from the arena (each file it reads, the boot
+// image's archive) is given back once it is written: each scenario's process
+// makes one, after the image its parent made, all in one arena.
 static bool make_image(const arch *a, bool release, const char *image, const char *cmdline,
                        const char *with) {
+  size_t mark = arena_used;
+  bool ok = make_image_in(a, release, image, cmdline, with);
+  arena_used = mark;
+  return ok;
+}
+
+static bool make_image_in(const arch *a, bool release, const char *image, const char *cmdline,
+                          const char *with) {
   const vx_ndb_record *t = port_target_for(&limine, a);
   if (!t) die("no Limine target for %s", a->name);
   const char *loader_name = str_dup(vx_ndb_get(t, "output"));
@@ -1314,6 +1353,8 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
           fmt("%.*s%.*s%s", (int)in->len, in->ptr ? in->ptr : "", (int)text.len, text.ptr, send ? "\r" : "");
       in->len += text.len + send;
     } else {
+      if (expect_count == 64 || fail_count == 64)
+        die("%s:%zu: more than 64 expect= or fail= records", path, rec.line);
       die("%s:%zu: expected scenario=, expect=, line=, prompt=, fail=, send= or type=", path, rec.line);
     }
   }
@@ -1332,7 +1373,8 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   cmd c = {};
   qemu_cmd(&c, a, image, (qemu_opts){.kvm = kvm_usable(a), .test = true});
   if (verbose) cmd_print(&c);
-  int fds[2], keys[2]; // QEMU's serial: its output, and what is typed into it
+  signal(SIGPIPE, SIG_IGN); // QEMU gone: a write to it fails, rather than ending this process
+  int fds[2], keys[2];      // QEMU's serial: its output, and what is typed into it
   if (pipe(fds) != 0 || pipe(keys) != 0) die("pipe failed");
   pid_t pid = fork();
   if (pid < 0) die("fork failed");
@@ -1356,39 +1398,49 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   size_t len = 0;
   static char since[64 * 1024]; // the output since the last thing typed, for prompt=
   size_t since_len = 0;
+  bool since_cut = false; // since[0] is mid-line: older output was let go
+  static char buf[4096];  // read from QEMU; [pos, n) not looked at yet
+  ssize_t n = 0, pos = 0;
   while (!verdict) {
     if (typed < next && input[next].len) {
-      if (write(keys[1], input[next].ptr, input[next].len) != (ssize_t)input[next].len)
-        die("cannot type into QEMU");
+      if (write(keys[1], input[next].ptr, input[next].len) != (ssize_t)input[next].len) {
+        verdict = "cannot type into QEMU (it has exited?)"; // QEMU is still killed, and the log kept
+        break;
+      }
       typed = next;
       since_len = 0;
+      since_cut = false;
     }
-    double left = timeout - (now_seconds() - start);
-    if (left <= 0) {
-      verdict = fmt("timed out waiting for \"%s\"", expect[next]);
-      break;
+    if (pos == n) { // all looked at: read more
+      double left = timeout - (now_seconds() - start);
+      if (left <= 0) {
+        verdict = fmt("timed out waiting for \"%s\"", expect[next]);
+        break;
+      }
+      struct pollfd pfd = {.fd = fds[0], .events = POLLIN};
+      if (poll(&pfd, 1, (int)(left * 1000) + 1) <= 0) continue;
+      n = read(fds[0], buf, sizeof buf);
+      pos = 0;
+      if (n <= 0) {
+        verdict = "QEMU exited";
+        break;
+      }
+      fwrite(buf, 1, (size_t)n, log);
     }
-    struct pollfd pfd = {.fd = fds[0], .events = POLLIN};
-    if (poll(&pfd, 1, (int)(left * 1000) + 1) <= 0) continue;
-    char buf[4096];
-    ssize_t n = read(fds[0], buf, sizeof buf);
-    if (n <= 0) {
-      verdict = "QEMU exited";
-      break;
-    }
-    fwrite(buf, 1, (size_t)n, log);
-    for (ssize_t i = 0; i < n && !verdict; i++) {
-      if (buf[i] == '\r') continue;
+    while (pos < n && !verdict) {
+      char ch = buf[pos++];
+      if (ch == '\r') continue;
       if (since_len == sizeof since) { // keep the newer half: a prompt is in recent output
         memmove(since, since + sizeof since / 2, sizeof since / 2);
         since_len = sizeof since / 2;
+        since_cut = true;
       }
-      since[since_len++] = buf[i];
-      if (buf[i] != '\n' && len < sizeof line - 1) {
-        line[len++] = buf[i];
+      since[since_len++] = ch;
+      if (ch != '\n' && len < sizeof line - 1) {
+        line[len++] = ch;
         continue;
       }
-      if (buf[i] != '\n') continue;
+      if (ch != '\n') continue;
       line[len] = 0;
       len = 0;
       for (int k = 0; k < fail_count; k++)
@@ -1397,6 +1449,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
           (whole[next] ? strcmp(line, expect[next]) == 0 : strstr(line, expect[next]) != nullptr)) {
         next++;
         if (next == expect_count) verdict = "ok";
+        if (input[next].len && typed < next) break; // type it before looking at what follows
       }
     }
     // A prompt has no newline after it, and may share its line with other
@@ -1404,8 +1457,10 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
     // typed.
     size_t plen = next < expect_count && prompt[next] ? strlen(expect[next]) : 0;
     for (size_t at = 0; !verdict && plen && at + plen <= since_len; at++) {
-      if ((at && since[at - 1] != '\n') || memcmp(since + at, expect[next], plen) != 0) continue;
+      bool line_start = at ? since[at - 1] == '\n' : !since_cut;
+      if (!line_start || memcmp(since + at, expect[next], plen) != 0) continue;
       since_len = 0; // used: the next prompt= needs a prompt after this one
+      since_cut = false;
       if (++next == expect_count) verdict = "ok";
       break;
     }
@@ -1423,17 +1478,39 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
 }
 
 // Builds the image, then runs every scenario at once, each in its own QEMU.
+// Runs the scenarios, a few at a time: each QEMU has 4 CPUs of its own, and
+// with every architecture's scenarios at once, all at once would starve each
+// other into their timeouts. Half the host's CPUs per architecture, at least 2.
 static bool test_arch(const arch *a, bool release) {
   if (!build_image(a, release)) return false;
+  long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+  int slots = cpus >= 4 ? (int)(cpus / 2) : 2, running = 0;
   pid_t pids[64] = {};
-  int count = scenario_count;
-  for (int i = 0; i < count; i++) {
-    pids[i] = fork();
-    if (pids[i] < 0) die("fork failed");
-    if (pids[i] == 0) _exit(run_scenario(a, release, scenarios[i]) ? 0 : 1);
-  }
   bool ok = true;
-  for (int i = 0; i < count; i++) ok = wait_ok(pids[i]) && ok;
+  for (int i = 0; i < scenario_count || running > 0;) {
+    if (i < scenario_count && running < slots) {
+      pid_t pid = fork();
+      if (pid < 0) die("fork failed");
+      if (pid == 0) _exit(run_scenario(a, release, scenarios[i]) ? 0 : 2); // 1: died (die() exits 1)
+      pids[i] = pid;
+      running++, i++;
+      continue;
+    }
+    int status;
+    pid_t done = wait(&status);
+    if (done < 0) {
+      if (errno == EINTR) continue;
+      die("wait failed");
+    }
+    running--;
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) continue;
+    ok = false;
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 2) continue; // it failed, and said so
+    for (int k = 0; k < scenario_count; k++)                     // it died before it could say anything
+      if (pids[k] == done)
+        fprintf(stderr, "  TEST  %-11s %-8s FAIL: the harness itself failed (see above)\n", scenarios[k],
+                a->name);
+  }
   return ok;
 }
 
@@ -1442,7 +1519,8 @@ static int cmd_test(const arch *only, bool release) {
     static file_list found;
     port dir = {.src = fmt("%s/tests", root)};
     collect(&found, &dir, (vx_str){"qemu", 4}, ".ndb");
-    for (int i = 0; i < found.count && scenario_count < 64; i++) {
+    if (found.count > 64) die("more than 64 scenarios in tests/qemu");
+    for (int i = 0; i < found.count; i++) {
       const char *base = strrchr(found.paths[i], '/') + 1;
       scenarios[scenario_count++] = fmt("%.*s", (int)(strlen(base) - 4), base);
     }
@@ -1519,6 +1597,11 @@ static bool tree_sha256(const char *dir, char out[65]) {
     vx_sha256_end(&h, digest);
     char line_hex[65];
     hex(line_hex, digest, 32);
+    // A name with a newline (or any control byte) could forge lines of this
+    // listing, which sha256sum would have escaped: such a name fails the check.
+    for (const char *c = files.paths[i]; *c; c++)
+      if ((unsigned char)*c < 0x20 || *c == 0x7f)
+        die("%s/%s: a control character in a file name", dir, files.paths[i]);
     const char *line = fmt("%s  ./%s\n", line_hex, files.paths[i]);
     vx_sha256_add(&tree, line, strlen(line));
     arena_used = mark; // the file's bytes are not needed again
@@ -1589,11 +1672,20 @@ static int cmd_vendor_check(void) {
       fprintf(stderr, "  VENDOR %s: warning: review pending\n", name);
   }
 
-  // Every directory under third_party/ has a record.
+  // Every directory under third_party/ has a record, and nothing else is
+  // there but VENDOR.ndb: no files, links or other entries outside a record.
   DIR *d = opendir("third_party");
   if (!d) die("cannot read third_party/");
   for (struct dirent *e; (e = readdir(d));) {
-    if (e->d_name[0] == '.' || e->d_type != DT_DIR) continue;
+    if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0 || strcmp(e->d_name, "VENDOR.ndb") == 0)
+      continue;
+    struct stat st;
+    if (lstat(fmt("third_party/%s", e->d_name), &st) != 0 || !S_ISDIR(st.st_mode)) {
+      fprintf(stderr, "  VENDOR third_party/%s is not a vendored tree (a directory with a record)\n",
+              e->d_name);
+      ok = false;
+      continue;
+    }
     bool found = false;
     for (int i = 0; i < count; i++) found = found || strcmp(names[i], e->d_name) == 0;
     if (!found) {
@@ -1828,8 +1920,9 @@ static bool check_fuzz(void) {
     cmd fuzz = {.log = fmt("out/fuzz/%s.log", name)};
     cmd_add(&fuzz, exe);
     cmd_add(&fuzz, fmt("-max_total_time=%d", FUZZ_SECONDS));
-    cmd_addv(&fuzz, (const char *const[]){"-max_len=4096", "-print_final_stats=0",
-                                          "-artifact_prefix=out/fuzz/", nullptr});
+    cmd_addv(&fuzz, (const char *const[]){"-max_len=4096", "-print_final_stats=0", nullptr});
+    // A crash is kept in the corpus, named for its target, so every later check replays it until fixed.
+    cmd_add(&fuzz, fmt("-artifact_prefix=%s/crash-", corpus));
     cmd_add(&fuzz, corpus);
     cmd_add(&fuzz, fmt("tests/fuzz/corpus/%s", name));
     bool passed = run(&cc) && run(&fuzz);
@@ -1847,26 +1940,34 @@ typedef struct unit {
 
 static const char *const HOST_C23[] = {"-std=c23", nullptr};
 
+static constexpr int MAX_UNITS = 128;
+
+// The next free slot in a units array of MAX_UNITS.
+static int unit_slot(int *n) {
+  if (*n == MAX_UNITS) die("more than %d units to check: raise MAX_UNITS", MAX_UNITS);
+  return (*n)++;
+}
+
 static int os_units(unit *units, bool with_host_tests) {
   int n = 0;
   for (int i = 0; i < ARCH_COUNT; i++) {
-    units[n++] = (unit){
+    units[unit_slot(&n)] = (unit){
         fmt("kernel %s", ARCHES[i].name), "kernel/kernel.c", {ARCHES[i].flags, HOUSE_FLAGS, KERNEL_FLAGS}};
     for (int k = 0; k < USER_PROGRAM_COUNT; k++)
       if (program_for(&USER_PROGRAMS[k], &ARCHES[i]))
-        units[n++] = (unit){fmt("%s %s", USER_PROGRAMS[k].name, ARCHES[i].name),
-                            USER_PROGRAMS[k].source,
-                            {ARCHES[i].user_flags, HOUSE_FLAGS, USER_FLAGS}};
+        units[unit_slot(&n)] = (unit){fmt("%s %s", USER_PROGRAMS[k].name, ARCHES[i].name),
+                                      USER_PROGRAMS[k].source,
+                                      {ARCHES[i].user_flags, HOUSE_FLAGS, USER_FLAGS}};
   }
-  units[n++] = (unit){"build", "build.c", {HOST_C23}};
+  units[unit_slot(&n)] = (unit){"build", "build.c", {HOST_C23}};
   if (with_host_tests) {
     static file_list tests;
     tests = (file_list){};
     port dir = {.src = fmt("%s/tests", root)};
     collect(&tests, &dir, (vx_str){"host", 4}, "_test.c");
     collect(&tests, &dir, (vx_str){"fuzz", 4}, "_fuzz.c");
-    for (int i = 0; i < tests.count && n < 64; i++)
-      units[n++] = (unit){tests.paths[i] + 5, fmt("tests/%s", tests.paths[i]), {HOST_C23}};
+    for (int i = 0; i < tests.count; i++)
+      units[unit_slot(&n)] = (unit){tests.paths[i] + 5, fmt("tests/%s", tests.paths[i]), {HOST_C23}};
   }
   return n;
 }
@@ -1877,7 +1978,7 @@ static int os_units(unit *units, bool with_host_tests) {
 // and `--`), passes that separator instead.
 static bool check_units(const char *tag, bool with_host_tests, const char *const *before,
                         const char *const *after, const char *separator) {
-  unit units[64];
+  static unit units[MAX_UNITS];
   int n = os_units(units, with_host_tests);
   bool ok = true;
   for (int i = 0; i < n; i++) {
@@ -1916,8 +2017,9 @@ static bool check_tidy(void) {
 
 // The house format (.clang-format, 04 §1.1) over every first-party C file.
 // Vendored code keeps its upstream format.
-static const char *const FORMATTED_DIRS[] = {"abi",        "kernel",     "lib",  "servers",
-                                             "tests/host", "tests/fuzz", nullptr};
+static const char *const FORMATTED_DIRS[] = {"abi",        "kernel",       "lib",        "servers",
+                                             "drivers",    "cmd",          "tests/host", "tests/fuzz",
+                                             "tests/user", "tests/kernel", nullptr};
 
 static bool check_format(void) {
   check_version(CLANG_FORMAT, CLANG_FORMAT_VERSION);

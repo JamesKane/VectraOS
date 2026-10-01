@@ -143,9 +143,18 @@ static void read_manifest(vx_str path, vx_str text) {
   vx_ndb_reader r = manifest_reader(text, 0);
   vx_ndb_record rec;
   vx_ndb_result res;
+  // Through it once for errors first: a manifest is used whole or not at all,
+  // never a service with its records cut off at a typo.
+  while ((res = vx_ndb_next(&r, &rec)) == VX_NDB_RECORD) {}
+  if (res == VX_NDB_ERROR) {
+    say(path, VX_STR(": "), vx_cstr(r.error));
+    vx_print(VX_STR(", so none of it is used\n"));
+    return;
+  }
+  r = manifest_reader(text, 0);
   size_t before = r.pos;
   service *current = nullptr; // the service the records belong to; none for one svcd skipped
-  while ((res = vx_ndb_next(&r, &rec)) == VX_NDB_RECORD) {
+  while (vx_ndb_next(&r, &rec) == VX_NDB_RECORD) { // none fails: it was all read above
     if (current && is_device_record(&rec) && !current->broken) {
       vx_status st = mint(current, &rec);
       if (st != VX_OK) {
@@ -171,23 +180,28 @@ static void read_manifest(vx_str path, vx_str text) {
                                             .name = {names[service_count], name.len},
                                             .restart = vx_ndb_has(&rec, "restart")};
         current = &services[service_count];
+        bool ok = true;
         if (srv.len && !find_post(srv)) {
           post *p = &posts[post_count];
           vx_handle ch[2];
-          if (post_count == MAX_SERVICES || srv.len >= sizeof p->buf) fail("too many posts, or a long name");
-          if (vx_channel_create(0, ch) != VX_OK) fail("channel_create");
-          *p = (post){.client = ch[0], .server = ch[1]};
-          memcpy(p->buf, srv.ptr, srv.len);
-          p->name = (vx_str){p->buf, srv.len};
-          post_count++;
+          ok = post_count < MAX_SERVICES && srv.len < sizeof p->buf && vx_channel_create(0, ch) == VX_OK;
+          if (ok) {
+            *p = (post){.client = ch[0], .server = ch[1]};
+            memcpy(p->buf, srv.ptr, srv.len);
+            p->name = (vx_str){p->buf, srv.len};
+            post_count++;
+          } else {
+            say(VX_STR("skipping "), current->name, VX_STR(": cannot post it (too many, or a long name)\n"));
+          }
         }
-        service_count++;
+        if (ok)
+          service_count++;
+        else
+          current = nullptr; // and its records with it
       }
     }
     before = r.pos;
   }
-  if (res == VX_NDB_ERROR) say(path, VX_STR(": "), vx_cstr(r.error));
-  if (res == VX_NDB_ERROR) vx_print(VX_STR("\n"));
 }
 
 // Builds the spawn message's records and handles for a service, and starts it.

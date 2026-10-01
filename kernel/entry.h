@@ -15,6 +15,10 @@ struct limine_mp_info;
 [[noreturn]] void _start(void);
 [[noreturn]] void kernel_main(void);
 [[noreturn]] void ap_start(struct limine_mp_info *info);
+// A CPU past MAX_CPUS goes here instead: onto the kernel's tables, then halted
+// for good, so the memory Limine parked it in can be reclaimed.
+[[noreturn]] void ap_park(struct limine_mp_info *info);
+extern uint64_t ap_park_tables[2]; // what ap_park loads: [0] the kernel's tables, [1] (arm64) TTBR0
 [[noreturn]] void ap_main(uint32_t index);
 
 // The entry assembly: traps land in the architecture's handler; a new thread's
