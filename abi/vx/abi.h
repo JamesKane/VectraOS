@@ -38,6 +38,7 @@ enum vx_trigger : uint32_t {
   VX_TRIGGER_PEER_CLOSED, // a channel end's peer is gone
   VX_TRIGGER_COUNTER_GE,  // a counter has reached the binding's threshold; value: the counter
   VX_TRIGGER_EXIT,        // a task has ended; value: its exit status
+  VX_TRIGGER_IRQ,         // an Irq has fired since it was last bound; value: how many times in all
 };
 
 // The intents a thread declares (01 §8). Until scheduling contexts land, every
@@ -174,6 +175,23 @@ typedef struct vx_cqe { // the generic completion entry, 32 bytes
 } vx_cqe;
 static_assert(sizeof(vx_cqe) == 32);
 
+// Devices (01 §7.1). A Resource is root authority over physical memory that
+// is not RAM, interrupt lines and I/O ports; svcd gets it, and makes narrower
+// objects from it for each driver:
+//
+//   vmo_create(size, VX_VMO_PHYSICAL, &out, resource, physical_address)
+//       MMIO: uncached device memory, never RAM; mapped like any VMO
+//   irq_create(resource, line, 0, &out)
+//       x86_64: an ISA IRQ below 16 (through the firmware's overrides), or a
+//       GSI; aarch64: a GIC SPI's INTID. Bound to a port with
+//       VX_TRIGGER_IRQ. A level-triggered line is masked when it fires until
+//       irq_ack; an edge-triggered one is never masked, and a binding made
+//       after it fired fires at once.
+//   iorange_create(resource, base, count, &out)
+//       x86_64 only: I/O ports, which a task may use once as_map has been
+//       called with the IoRange in place of a VMO (offset, size and flags 0)
+enum vx_vmo_options : uint32_t { VX_VMO_PHYSICAL = 1 };
+
 enum vx_vmo_op : uint32_t { // vmo_rw
   VX_VMO_READ = 0,
   VX_VMO_WRITE = 1,
@@ -226,4 +244,5 @@ typedef enum vx_status : int32_t {
 } vx_status;
 
 static_assert(VX_OK == 0);
-static_assert(VX_RIGHT_BIT_COUNT <= 32);
+static_assert(VX_RIGHT_BIT_COUNT <= 31);
+static constexpr uint32_t VX_RIGHTS_SAME = 1u << 31; // handle_dup: the rights the handle has

@@ -4,7 +4,7 @@
 # two connections each, more than bootfs has room for at once, so bootfs must
 # free and reuse them.
 
-service=nstest program=/boot/bin/nstest restart
+service=nstest program=/boot/bin/nstest console restart
 arg=first
 arg="second arg"
 mount=/ srv=bootfs

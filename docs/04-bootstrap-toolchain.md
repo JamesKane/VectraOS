@@ -228,7 +228,7 @@ The test (`tests/qemu/boot.ndb`) boots headless, matches these lines within 10 s
 - `vx-ring`, model-checked in `vx-check` (the wake-up protocol from 01 §4.3) and host-tested.
 - `vx-9p`: 9P2000 codec and 9Px version negotiation, client and server framework. Host tests round-trip every message and run a fuzz corpus. The server framework enforces the attach root (02 §2), and the hostile-client conformance test runs from here on.
 - `vx-ns` (`bind`, `mount`, `unmount`, union directories, `ns` output) and `bootfs`, which serves `bootfs.tar` over 9Px on a ring.
-- `drv-uart-16550` and `drv-uart-pl011` as **user-space drivers** serving `/dev/cons`. The kernel console is then used only for panics.
+- `drv-uart-16550` and `drv-uart-pl011` as **user-space drivers** serving `/dev/cons`. The kernel console is then used only for panics (01 §7.1).
 - `vx-ndb`, which `svcd` and `devmgr` need to read their manifests, with the strict parser, `x"…"` hex values and the quoting writer (02 §4.1).
 - `svcd` spawns services from `boot/svc/*.ndb` and restarts them on exit. `procfs` provides a minimal `/proc/N/status`.
 - `gsh`, plus `ls`, `cat`, `echo`, `ps` and `ns`.
@@ -296,7 +296,7 @@ Rough effort for M1–M3 is 4–6 months for one experienced person working with
 
 - **Testing:**
   - Libraries also build for the host, and their tests run in CI under ASan and UBSan.
-  - QEMU scenario tests cover everything else.
+  - QEMU scenario tests cover everything else. A scenario can type into the serial console (`send=`, `type=`) once the output it expects so far has appeared, so input paths are tested too.
   - Every protocol under `docs/proto/` has a conformance test suite that runs against both our server and our client.
   - Every server's suite includes the hostile-client test: a client that speaks raw 9Px must not leave its attach root (02 §2).
 - **`vx-check`:** a small first-party model checker (`lib/vx-check`) that explores every interleaving of a bounded concurrent program written as per-thread state machines. Its memory model is a store-buffer model: stores wait in a per-thread buffer until flushed, and a fence waits for the buffer to drain. That is the reordering behind lost wake-ups; ARM's further reorderings are excluded by the protocols' acquire and release orderings, which the models do not try to break. A full C11 relaxed-atomics model is a later extension. Every model ships with deliberately broken variants the checker must reject. It is used for the ring wake-up protocol now, and the port and counter semantics and the lease-break logic as they arrive.

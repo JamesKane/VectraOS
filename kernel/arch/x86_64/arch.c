@@ -92,12 +92,20 @@ typedef struct cpu_local {
 } cpu_local;
 
 // Each CPU has its own GDT (for its own TSS descriptor), TSS and GS data. The
-// IDT is shared.
+// IDT is shared. The TSS's I/O permission bitmap follows it: a 0 bit lets user
+// code use that port. It holds the ports of the task this CPU runs
+// (arch_io_switch), and `open` remembers which, to close them again.
+static constexpr uint32_t IO_PORTS = 0x1'0000;
+
 typedef struct x86_cpu {
   uint64_t gdt[7];
   tss tss;
+  uint8_t iomap[IO_PORTS / 8 + 1]; // one bit a port, then the 0xff the CPU requires after the last
+  uint32_t open;
+  uint16_t open_base[TASK_MAX_IO], open_count[TASK_MAX_IO];
   cpu_local local;
 } x86_cpu;
+static_assert(offsetof(x86_cpu, iomap) == offsetof(x86_cpu, tss) + sizeof(tss));
 
 static x86_cpu x86_cpus[MAX_CPUS];
 static idt_entry idt[256];
@@ -176,10 +184,12 @@ static void arch_cpu_init(uint32_t index) {
     ist = phys_to_virt(pa);
   }
   xc->tss = (tss){.iomap_base = sizeof(tss)};
+  memset(xc->iomap, 0xff, sizeof xc->iomap); // no ports for user code
+  xc->open = 0;
   for (size_t i = 0; i < 3; i++) xc->tss.ist[i] = (uint64_t)(ist + (i + 1) * IST_STACK_SIZE);
 
   memcpy(xc->gdt, GDT_TEMPLATE, sizeof xc->gdt);
-  uint64_t base = (uint64_t)&xc->tss, limit = sizeof(tss) - 1;
+  uint64_t base = (uint64_t)&xc->tss, limit = sizeof(tss) + sizeof xc->iomap - 1;
   xc->gdt[5] = (limit & 0xffff) | (base & 0xffffff) << 16 | 0x89ull << 40 | ((limit >> 16) & 0xf) << 48 |
                ((base >> 24) & 0xff) << 56;
   xc->gdt[6] = base >> 32;
@@ -266,6 +276,8 @@ static constexpr uint32_t X2APIC_ICR = 0x830;
 static constexpr uint8_t VECTOR_TIMER = 0x20;
 static constexpr uint8_t VECTOR_RESCHED = 0x21; // another CPU made a thread ready
 static constexpr uint8_t VECTOR_SPURIOUS = 0xff;
+static constexpr uint8_t VECTOR_IRQ_BASE = 0x30; // device interrupts: VECTOR_IRQ_BASE + GSI
+static constexpr uint32_t MAX_GSI = 0xc0;        // up to vector 0xef
 
 typedef struct cpuid_regs {
   uint32_t a, b, c, d;
@@ -378,6 +390,9 @@ void x86_trap(trap_frame *f) {
     this_cpu()->resched = true;
   } else if (f->vector == VECTOR_SPURIOUS) {
     return;
+  } else if (f->vector >= VECTOR_IRQ_BASE && f->vector < VECTOR_IRQ_BASE + MAX_GSI) {
+    irq_fire((uint32_t)(f->vector - VECTOR_IRQ_BASE)); // a level line is masked before the EOI
+    wrmsr(X2APIC_EOI, 0);
   } else if (from_user) {
     task_fault_start();
     kput_exception(f);
@@ -393,6 +408,179 @@ void x86_trap(trap_frame *f) {
     panic_end(f->rip, f->rbp);
   }
   if (from_user) user_return();
+}
+
+// --- Devices: I/O ports, the IOAPICs and the MADT (obj/device.c) ---
+
+static bool arch_has_io_ports(void) { return true; }
+
+static bool arch_console_device(bool io, uint64_t base, uint64_t size) {
+  return io && base < COM1 + 8u && COM1 < base + size;
+}
+
+static void iomap_set(uint8_t *map, uint32_t base, uint32_t count, bool allow) {
+  for (uint32_t p = base; p < base + count; p++) {
+    if (allow)
+      map[p / 8] &= (uint8_t)~(1u << (p % 8));
+    else
+      map[p / 8] |= (uint8_t)(1u << (p % 8));
+  }
+}
+
+static void arch_io_switch(const task *t) {
+  x86_cpu *xc = &x86_cpus[arch_cpu_index()];
+  for (uint32_t i = 0; i < xc->open; i++) iomap_set(xc->iomap, xc->open_base[i], xc->open_count[i], false);
+  xc->open = 0;
+  for (uint32_t i = 0; t && i < t->io_ranges && i < TASK_MAX_IO; i++) {
+    iomap_set(xc->iomap, t->io_base[i], t->io_count[i], true);
+    xc->open_base[i] = t->io_base[i];
+    xc->open_count[i] = t->io_count[i];
+    xc->open++;
+  }
+}
+
+typedef struct ioapic {
+  volatile uint32_t *regs; // IOREGSEL at 0, IOWIN at 0x10
+  uint32_t gsi_base, count;
+} ioapic;
+
+static ioapic ioapics[8];
+static uint32_t ioapic_count;
+static struct {
+  bool present;
+  uint32_t gsi;
+  uint16_t flags; // MPS INTI flags: polarity in bits 0-1, trigger mode in bits 2-3
+} isa_overrides[16];
+static spinlock ioapic_lock;
+
+static uint32_t ioapic_read(const ioapic *a, uint32_t reg) {
+  a->regs[0] = reg;
+  return a->regs[4];
+}
+
+static void ioapic_write(const ioapic *a, uint32_t reg, uint32_t v) {
+  a->regs[0] = reg;
+  a->regs[4] = v;
+}
+
+static uint32_t read32(const uint8_t *p) {
+  uint32_t v;
+  memcpy(&v, p, 4);
+  return v;
+}
+
+static uint64_t read64(const uint8_t *p) {
+  uint64_t v;
+  memcpy(&v, p, 8);
+  return v;
+}
+
+// Whether [pa, pa + len) is firmware or RAM memory, which the direct map covers.
+static bool in_direct_map(uint64_t pa, uint64_t len) {
+  for (uint32_t i = 0; i < boot.ram_count; i++)
+    if (pa >= boot.ram[i].base && len <= boot.ram[i].end - pa) return true;
+  return false;
+}
+
+// An ACPI table by signature, through the RSDT or XSDT; nullptr if there is none.
+static const uint8_t *acpi_table(const char sig[4]) {
+  // Limine gives the RSDP's address in the HHDM (it is physical only under base revision 3).
+  uint64_t rsdp_pa = rsdp_request.response ? (uint64_t)rsdp_request.response->address - boot.hhdm : 0;
+  if (!rsdp_pa || !in_direct_map(rsdp_pa, 36)) return nullptr;
+  const uint8_t *rsdp = phys_to_virt(rsdp_pa);
+  bool xsdt = rsdp[15] >= 2;
+  uint64_t root = xsdt ? read64(rsdp + 24) : read32(rsdp + 16);
+  if (!in_direct_map(root, 36)) return nullptr;
+  const uint8_t *sdt = phys_to_virt(root);
+  uint32_t len = read32(sdt + 4), entry = xsdt ? 8 : 4;
+  if (!in_direct_map(root, len)) return nullptr;
+  for (uint32_t off = 36; off + entry <= len; off += entry) {
+    uint64_t pa = xsdt ? read64(sdt + off) : read32(sdt + off);
+    if (!in_direct_map(pa, 36)) continue;
+    const uint8_t *t = phys_to_virt(pa);
+    if (memcmp(t, sig, 4) == 0 && in_direct_map(pa, read32(t + 4))) return t;
+  }
+  return nullptr;
+}
+
+// Finds the IOAPICs and the ISA overrides in the MADT, maps the IOAPICs and
+// masks every line. Without a MADT, irq_create has no lines to give.
+static void arch_devices_init(void) {
+  const uint8_t *madt = acpi_table("APIC");
+  if (!madt) return;
+  uint32_t len = read32(madt + 4);
+  for (uint32_t off = 44; off + 2 <= len && madt[off + 1] >= 2 && off + madt[off + 1] <= len;
+       off += madt[off + 1]) {
+    const uint8_t *e = madt + off;
+    if (e[0] == 1 && e[1] >= 12 && ioapic_count < sizeof ioapics / sizeof ioapics[0]) {
+      uint64_t pa = read32(e + 4);
+      if (!map_range(kernel_root, boot.hhdm + pa, pa, 4096, MAP_WRITE | MAP_DEVICE))
+        panic(VX_STR("cannot map an IOAPIC"));
+      ioapic *a = &ioapics[ioapic_count++];
+      a->regs = (volatile uint32_t *)(boot.hhdm + pa);
+      a->gsi_base = read32(e + 8);
+      a->count = (ioapic_read(a, 1) >> 16 & 0xff) + 1;
+      for (uint32_t i = 0; i < a->count; i++) ioapic_write(a, 0x10 + 2 * i, 1u << 16); // masked
+    } else if (e[0] == 2 && e[1] >= 10 && e[2] == 0 && e[3] < 16) {
+      isa_overrides[e[3]].present = true;
+      isa_overrides[e[3]].gsi = read32(e + 4);
+      uint16_t flags;
+      memcpy(&flags, e + 8, 2);
+      isa_overrides[e[3]].flags = flags;
+    }
+  }
+}
+
+static const ioapic *ioapic_for(uint32_t gsi) {
+  for (uint32_t i = 0; i < ioapic_count; i++)
+    if (gsi >= ioapics[i].gsi_base && gsi - ioapics[i].gsi_base < ioapics[i].count) return &ioapics[i];
+  return nullptr;
+}
+
+// An ISA IRQ (below 16) becomes its GSI through the MADT's overrides; any
+// other number is a GSI already.
+static vx_status arch_irq_canonical(uint32_t line, uint32_t *out) {
+  uint32_t gsi = line < 16 && isa_overrides[line].present ? isa_overrides[line].gsi : line;
+  if (gsi >= MAX_GSI || !ioapic_for(gsi)) return VX_ERR_RANGE;
+  *out = gsi;
+  return VX_OK;
+}
+
+// ISA lines are edge-triggered and active high unless an override says
+// otherwise; the rest (PCI) are level-triggered and active low.
+static vx_status arch_irq_route(uint32_t line, bool *level) {
+  bool isa = false;
+  uint16_t flags = 0;
+  for (uint32_t i = 0; i < 16; i++) { // the ISA IRQ that lands on this GSI, if any (line: a GSI)
+    uint32_t to = isa_overrides[i].present ? isa_overrides[i].gsi : i;
+    if (to != line) continue;
+    isa = true;
+    flags = isa_overrides[i].present ? isa_overrides[i].flags : 0;
+  }
+  bool active_low = !isa;
+  *level = !isa;
+  if ((flags & 3) == 1) active_low = false; // the override's polarity and trigger mode, where it gives them
+  if ((flags & 3) == 3) active_low = true;
+  if ((flags >> 2 & 3) == 1) *level = false;
+  if ((flags >> 2 & 3) == 3) *level = true;
+  const ioapic *a = ioapic_for(line);
+  uint32_t pin = line - a->gsi_base;
+  spin_lock(&ioapic_lock);
+  ioapic_write(a, 0x10 + 2 * pin + 1, (uint32_t)(cpus[0].arch_id << 24)); // to the boot CPU
+  ioapic_write(a, 0x10 + 2 * pin,
+               (VECTOR_IRQ_BASE + line) | (active_low ? 1u << 13 : 0) | (*level ? 1u << 15 : 0)); // unmasked
+  spin_unlock(&ioapic_lock);
+  return VX_OK;
+}
+
+static void arch_irq_mask(uint32_t line, bool masked) {
+  const ioapic *a = ioapic_for(line);
+  if (!a) return;
+  uint32_t reg = 0x10 + 2 * (line - a->gsi_base);
+  spin_lock(&ioapic_lock);
+  uint32_t low = ioapic_read(a, reg);
+  ioapic_write(a, reg, masked ? low | 1u << 16 : low & ~(1u << 16));
+  spin_unlock(&ioapic_lock);
 }
 
 [[noreturn]] static void arch_halt(void) {

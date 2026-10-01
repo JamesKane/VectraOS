@@ -84,7 +84,8 @@ static void test_writer(void) {
 }
 
 static void test_numbers(void) {
-  static const char numbers[] = "a=0 b=18446744073709551615 c=18446744073709551616 d=007 e=-1 f=1x g\n";
+  static const char numbers[] = "a=0 b=18446744073709551615 c=18446744073709551616 d=007 e=-1 f=1x g "
+                                "p=0x3f8 q=0xffffffffffffffff r=0x10000000000000000 s=0x t=0xG u=0X1 w=0xA\n";
   vx_ndb_reader r = {.src = {numbers, sizeof numbers - 1}, .scratch = scratch, .scratch_cap = sizeof scratch};
   vx_ndb_record rec;
   CHECK(vx_ndb_next(&r, &rec) == VX_NDB_RECORD);
@@ -95,6 +96,11 @@ static void test_numbers(void) {
   CHECK(!vx_ndb_get_u64(&rec, "c", &v) && !vx_ndb_get_u64(&rec, "d", &v) && !vx_ndb_get_u64(&rec, "e", &v));
   CHECK(!vx_ndb_get_u64(&rec, "f", &v) && !vx_ndb_get_u64(&rec, "g", &v) && !vx_ndb_get_u64(&rec, "h", &v));
   CHECK(v == 5);
+  CHECK(vx_ndb_get_u64(&rec, "p", &v) && v == 0x3f8);
+  CHECK(vx_ndb_get_u64(&rec, "q", &v) && v == UINT64_MAX);
+  CHECK(!vx_ndb_get_u64(&rec, "r", &v) && !vx_ndb_get_u64(&rec, "s", &v) && !vx_ndb_get_u64(&rec, "t", &v));
+  CHECK(!vx_ndb_get_u64(&rec, "u", &v) &&
+        !vx_ndb_get_u64(&rec, "w", &v)); // 0X and uppercase digits are not ours
 }
 
 int main(void) {

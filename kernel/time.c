@@ -74,5 +74,5 @@ static void kput_stamp(void) {
   buf[8] = (char)('0' + ms % 100 / 10);
   buf[9] = (char)('0' + ms % 10);
   for (int i = 5; i >= 1 && (s || i == 5); i--, s /= 10) buf[i] = (char)('0' + s % 10);
-  arch_console_write((vx_str){buf, 12});
+  console_emit((vx_str){buf, 12});
 }

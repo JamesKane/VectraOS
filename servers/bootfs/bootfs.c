@@ -10,7 +10,7 @@
 
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-tar/tar.c"
-#include "../../lib/vx-9p/ring.c"
+#include "../../lib/vx-9p/ring_server.c"
 
 static constexpr uint32_t MAX_NODES = 1024;
 static constexpr uint64_t ROOT = 1;

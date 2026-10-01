@@ -51,6 +51,17 @@ static uint64_t arch_thread_initial_sp(thread *t);
 [[noreturn]] static void arch_enter_user(uint64_t entry, uint64_t sp, uint64_t arg, uint64_t arg2,
                                          uint64_t kstack_top);
 
+// Device interrupts and I/O for user-space drivers (obj/device.c).
+static vx_status arch_irq_canonical(uint32_t line, uint32_t *out); // the number the line is known by
+static vx_status arch_irq_route(uint32_t line, bool *level);       // to the boot CPU, unmasked
+static void arch_irq_mask(uint32_t line, bool masked);
+static bool arch_has_io_ports(void);
+static void arch_devices_init(void); // finds the interrupt controllers' device lines, after paging_init
+static bool arch_console_device(bool io, uint64_t base,
+                                uint64_t size); // overlaps the kernel console's device
+struct task;
+static void arch_io_switch(const struct task *t); // this CPU's I/O port permissions become t's; t may be null
+
 #include "../lib/vx-mem/mem.c"
 #include "sync.c"
 #include "boot.c"
@@ -66,6 +77,7 @@ static uint64_t arch_thread_initial_sp(thread *t);
 #include "obj/channel.c"
 #include "obj/counter.c"
 #include "obj/futex.c"
+#include "obj/device.c"
 #include "../lib/vx-ring/ring.c"
 #include "obj/ring.c"
 #include "obj/process.c"

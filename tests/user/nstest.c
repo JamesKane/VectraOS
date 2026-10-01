@@ -38,6 +38,12 @@ static void check_str_at(vx_str got, const char *want, const char *what, int lin
 
 static vx_ns ns;
 
+#ifdef __x86_64__
+#define DRIVER "drv-uart-16550"
+#else
+#define DRIVER "drv-uart-pl011"
+#endif
+
 static bool str_is(vx_str s, const char *want) {
   vx_str w = vx_cstr(want);
   return s.len == w.len && memcmp(s.ptr, w.ptr, w.len) == 0;
@@ -76,9 +82,9 @@ static void test_spawn(void) {
 
 static void test_namespace(void) {
   CHECK_STR(list("/"), "bin boot dev proc srv tmp");
-  CHECK_STR(list("/bin"), "bootfs nstest"); // the empty /bin, then /boot/bin
-  CHECK_STR(list("/dev"), "bootfs.ndb nstest.ndb");
-  CHECK_STR(list("/boot/svc"), "bootfs.ndb nstest.ndb");
+  CHECK_STR(list("/bin"), "bootfs nstest " DRIVER); // the empty /bin, then /boot/bin
+  CHECK_STR(list("/dev"), "bootfs.ndb cons.ndb nstest.ndb");
+  CHECK_STR(list("/boot/svc"), "bootfs.ndb cons.ndb nstest.ndb");
 
   // A file, read through a bind and through a second attach.
   static const char want[] = "# boot/svc/bootfs.ndb";
@@ -128,7 +134,7 @@ static void test_confinement(void) {
   CHECK(p9c_attach(c, VX_STR("../.."), &fid) == VX_ERR_NOT_FOUND);
   CHECK(p9c_attach(c, VX_STR("boot/svc/bootfs.ndb"), &fid) == VX_ERR_NOT_FOUND); // not a directory
   p9c_clunk(c, root);
-  CHECK_STR(list("/bin"), "bootfs nstest"); // still serving
+  CHECK_STR(list("/bin"), "bootfs nstest " DRIVER); // still serving
 }
 
 int vx_main(void) {

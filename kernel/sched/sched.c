@@ -127,7 +127,10 @@ static void schedule_locked(void) {
     if (next->task) arch_set_kernel_stack(thread_kstack_top(next));
     // Leave a task's address space even for the idle thread, so a dead task's
     // tables are on no CPU by the time its last thread is reaped.
-    if (prev->task != next->task) arch_switch_user_root(next->task ? next->task->root : 0);
+    if (prev->task != next->task) {
+      arch_switch_user_root(next->task ? next->task->root : 0);
+      arch_io_switch(next->task);
+    }
   } else {
     prev->state = THREAD_RUNNING;
   }

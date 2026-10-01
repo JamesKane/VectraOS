@@ -85,8 +85,11 @@ static vx_status ram_open(void *ctx, uint64_t node, uint8_t mode) {
   return VX_OK;
 }
 
+static bool ram_not_yet; // reads and writes answer SHOULD_WAIT, as a console with nothing typed does
+
 static vx_status ram_read(void *ctx, uint64_t node, uint64_t offset, uint8_t *buf, uint32_t *count) {
   (void)ctx;
+  if (ram_not_yet) return VX_ERR_SHOULD_WAIT;
   ram_node *n = &ram[node];
   uint32_t got = offset >= n->len ? 0 : n->len - (uint32_t)offset;
   if (got > *count) got = *count;
@@ -109,6 +112,7 @@ static vx_status ram_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *
 
 static vx_status ram_write(void *ctx, uint64_t node, uint64_t offset, const uint8_t *buf, uint32_t *count) {
   (void)ctx;
+  if (ram_not_yet) return VX_ERR_SHOULD_WAIT;
   ram_node *n = &ram[node];
   if (offset >= sizeof n->data) return VX_ERR_RANGE;
   if (*count > sizeof n->data - offset) *count = (uint32_t)(sizeof n->data - offset); // a short write
@@ -216,9 +220,9 @@ static vx_status raw(p9_msg t) {
   uint8_t req[2048];
   size_t n = p9_encode(&t, req, sizeof req);
   if (!n) return VX_ERR_TOO_SMALL;
-  size_t rn = p9_serve(&server, req, n, resp, sizeof resp);
-  if (!rn) return VX_ERR_PEER_CLOSED; // the server would hang up
-  if (p9_decode(resp, rn, &reply) != VX_OK || reply.tag != t.tag) return VX_ERR_INVALID;
+  size_t reply_len = p9_serve(&server, req, n, resp, sizeof resp);
+  if (!reply_len) return VX_ERR_PEER_CLOSED; // the server would hang up
+  if (p9_decode(resp, reply_len, &reply) != VX_OK || reply.tag != t.tag) return VX_ERR_INVALID;
   return reply.type == P9_Rerror ? p9_error_status(reply.ename) : VX_OK;
 }
 
@@ -291,8 +295,40 @@ static void test_hostile_client(void) {
   CHECK(raw((p9_msg){.type = P9_Twstat, .tag = 1, .fid = 1, .stat = {junk, 4}}) == VX_ERR_UNSUPPORTED);
 }
 
+// A read or write the file system cannot do yet is deferred, without a reply,
+// and the same request served again later completes.
+static void test_deferral(void) {
+  server = (p9_server){.fs = server.fs, .max_msize = 8192};
+  uint8_t req[256];
+  size_t n;
+  p9_msg m;
+#define SERVE(...)                                                                                           \
+  (n = p9_encode(&(p9_msg){__VA_ARGS__}, req, sizeof req), p9_serve(&server, req, n, resp, sizeof resp))
+  CHECK(SERVE(.type = P9_Tversion, .tag = P9_NOTAG, .msize = 8192, .version = VX_STR("9P2000")) > 0);
+  CHECK(SERVE(.type = P9_Tattach, .tag = 1, .fid = 1, .afid = P9_NOFID) > 0);
+  CHECK(SERVE(.type = P9_Twalk, .tag = 1, .fid = 1, .newfid = 2, .nwname = 1, .wname = {VX_STR("b.txt")}) >
+        0);
+  CHECK(SERVE(.type = P9_Topen, .tag = 1, .fid = 2, .mode = P9_ORDWR) > 0);
+  ram_not_yet = true;
+  CHECK(SERVE(.type = P9_Tread, .tag = 9, .fid = 2, .count = 100) == P9_DEFER);
+  uint8_t held[256];
+  size_t held_len = n;
+  memcpy(held, req, n);
+  CHECK(SERVE(.type = P9_Twrite, .tag = 10, .fid = 2, .data = {(const uint8_t *)"zz", 2}) == P9_DEFER);
+  CHECK(SERVE(.type = P9_Tstat, .tag = 11, .fid = 2) > 0); // everything else still completes
+  ram_not_yet = false;
+  n = p9_serve(&server, held, held_len, resp, sizeof resp);
+  CHECK(n > 0 && p9_decode(resp, n, &m) == VX_OK && m.type == P9_Rread && m.tag == 9 && m.count == 5);
+  // An unknown fid is an error, not a wait.
+  size_t reply_len = SERVE(.type = P9_Tread, .tag = 12, .fid = 77, .count = 1);
+  CHECK(reply_len > 0 && reply_len != P9_DEFER && p9_decode(resp, reply_len, &m) == VX_OK &&
+        m.type == P9_Rerror);
+#undef SERVE
+}
+
 int main(void) {
   test_client();
+  test_deferral();
   test_hostile_client();
   return check_result();
 }

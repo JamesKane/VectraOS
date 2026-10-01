@@ -9,6 +9,7 @@ static constexpr uint64_t USER_MAP_BASE = 0x0000'1000'0000'0000; // where as_map
 static constexpr uint64_t USER_STACK_TOP = 0x0000'7fff'ffff'0000;
 static constexpr uint64_t USER_STACK_SIZE = 64ull * 1024;
 static constexpr unsigned KSTACK_ORDER = 2; // 16 KiB kernel stacks
+static constexpr uint32_t TASK_MAX_IO = 4;  // I/O port ranges per task
 
 // --- Handles ---
 //
@@ -61,6 +62,8 @@ typedef struct task {
   // until the console is a user-space driver's (M2, step 5).
   bool may_debug_write;
   char name[24];
+  uint32_t io_ranges; // I/O ports it may use (x86_64, device.c): [io_base, io_base + io_count)
+  uint16_t io_base[TASK_MAX_IO], io_count[TASK_MAX_IO];
 } task;
 
 typedef enum thread_state : uint8_t {
@@ -244,7 +247,8 @@ static vx_status task_map(task *t, vmo *v, uint64_t offset, uint64_t size, uint3
   if ((flags & VX_MAP_WRITE) && (flags & VX_MAP_EXEC)) return VX_ERR_ACCESS;
   if (!size || (offset | size) & 4095 || ckd_add(&vmo_end, offset, size) || vmo_end > v->size)
     return VX_ERR_RANGE;
-  uint32_t mf = MAP_USER | (flags & VX_MAP_WRITE ? MAP_WRITE : 0) | (flags & VX_MAP_EXEC ? MAP_EXEC : 0);
+  uint32_t mf = MAP_USER | (flags & VX_MAP_WRITE ? MAP_WRITE : 0) | (flags & VX_MAP_EXEC ? MAP_EXEC : 0) |
+                (v->physical ? MAP_DEVICE : 0);
   vx_status st = VX_OK;
   spin_lock(&t->lock);
   uint64_t at = *va ? *va : t->map_next;

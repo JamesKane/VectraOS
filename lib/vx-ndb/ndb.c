@@ -238,11 +238,20 @@ static bool vx_ndb_has(const vx_ndb_record *rec, const char *key) {
 
 static bool vx_ndb_get_u64(const vx_ndb_record *rec, const char *key, uint64_t *out) {
   vx_str v = vx_ndb_get(rec, key);
-  uint64_t n = 0;
-  if (!v.len || v.len > 20 || (v.len > 1 && v.ptr[0] == '0')) return false; // no leading zeros
+  bool hex = v.len > 2 && v.ptr[0] == '0' && v.ptr[1] == 'x';
+  uint64_t n = 0, base = hex ? 16 : 10;
+  if (hex)
+    v = (vx_str){v.ptr + 2, v.len - 2};
+  else if (!v.len || (v.len > 1 && v.ptr[0] == '0'))
+    return false; // no leading zeros in decimal
   for (size_t i = 0; i < v.len; i++) {
-    if (v.ptr[i] < '0' || v.ptr[i] > '9' || ckd_mul(&n, n, 10u) || ckd_add(&n, n, (uint64_t)(v.ptr[i] - '0')))
-      return false;
+    char ch = v.ptr[i];
+    uint64_t d = base; // not a digit
+    if (ch >= '0' && ch <= '9')
+      d = (uint64_t)(ch - '0');
+    else if (hex && ch >= 'a' && ch <= 'f')
+      d = (uint64_t)(ch - 'a') + 10;
+    if (d >= base || ckd_mul(&n, n, base) || ckd_add(&n, n, d)) return false;
   }
   *out = n;
   return true;
@@ -259,18 +268,24 @@ static void ndb_out(vx_ndb_writer *w, const char *p, size_t n) {
   w->len += n;
 }
 
-static void ndb_key(vx_ndb_writer *w, const char *key) {
-  size_t n = 0;
-  for (; key[n]; n++) {
-    int c = (unsigned char)key[n];
+static void ndb_key(vx_ndb_writer *w, vx_str key) {
+  for (size_t i = 0; i < key.len; i++) {
+    int c = (unsigned char)key.ptr[i];
     if (ndb_is_space(c) || c == '\n' || c == '=' || c == '"' || ndb_is_control(c)) w->failed = true;
   }
-  if (n == 0 || key[0] == '#' || !ndb_valid_utf8((const unsigned char *)key, n)) w->failed = true;
+  if (key.len == 0 || key.ptr[0] == '#' || !ndb_valid_utf8((const unsigned char *)key.ptr, key.len))
+    w->failed = true;
   if (w->len && w->buf[w->len - 1] != '\n') ndb_out(w, " ", 1);
-  ndb_out(w, key, n);
+  ndb_out(w, key.ptr, key.len);
 }
 
-static void vx_ndb_put(vx_ndb_writer *w, const char *key, vx_str v) {
+static vx_str ndb_cstr(const char *s) {
+  size_t n = 0;
+  while (s[n]) n++;
+  return (vx_str){s, n};
+}
+
+static void vx_ndb_put_key(vx_ndb_writer *w, vx_str key, vx_str v) {
   ndb_key(w, key);
   ndb_out(w, "=", 1);
   bool printable = ndb_valid_utf8((const unsigned char *)v.ptr, v.len);
@@ -323,7 +338,11 @@ static void vx_ndb_put_i64(vx_ndb_writer *w, const char *key, int64_t value) {
   vx_ndb_put(w, key, (vx_str){buf + i, sizeof buf - i});
 }
 
-static void vx_ndb_flag(vx_ndb_writer *w, const char *key) { ndb_key(w, key); }
+static void vx_ndb_put(vx_ndb_writer *w, const char *key, vx_str v) { vx_ndb_put_key(w, ndb_cstr(key), v); }
+
+static void vx_ndb_flag_key(vx_ndb_writer *w, vx_str key) { ndb_key(w, key); }
+
+static void vx_ndb_flag(vx_ndb_writer *w, const char *key) { ndb_key(w, ndb_cstr(key)); }
 
 static bool vx_ndb_end(vx_ndb_writer *w) {
   ndb_out(w, "\n", 1);

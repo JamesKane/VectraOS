@@ -1,0 +1,3 @@
+# tests/user/constest.ndb: the console test's manifest (tests/qemu/cons.ndb).
+
+service=constest program=/boot/bin/constest console

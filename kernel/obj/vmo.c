@@ -3,13 +3,15 @@
 // An anonymous VMO's pages are all allocated and zeroed when it is created:
 // commit, not overcommit, so a task learns it is out of memory from a failed
 // call, never from a fault later. The page list is one block of physical
-// addresses. Clones, pagers, physical VMOs and resizing come in later milestones.
+// addresses. Physical VMOs (device memory) are made in device.c. Clones,
+// pagers and resizing come in later milestones.
 
 typedef struct vmo {
   object obj;
   uint64_t size;       // bytes, a multiple of 4096
   uint64_t *pages;     // physical address of each page, through the direct map
   unsigned list_order; // the page list's allocation order
+  bool physical;       // device memory (device.c): its pages are not RAM, and are never freed
 } vmo;
 
 static pool vmo_pool = POOL_FOR(vmo);
@@ -49,7 +51,7 @@ static vx_status vmo_create(uint64_t size, vmo **out) {
 }
 
 static void vmo_destroy(vmo *v) {
-  for (uint64_t i = 0; i < v->size / 4096; i++) phys_free(v->pages[i], 0);
+  for (uint64_t i = 0; !v->physical && i < v->size / 4096; i++) phys_free(v->pages[i], 0);
   phys_free((uint64_t)v->pages - boot.hhdm, v->list_order);
   pool_free(&vmo_pool, v);
 }

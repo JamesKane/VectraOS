@@ -245,8 +245,59 @@ static void aarch64_irq(void) {
     timer_interrupt();
   } else if (intid == INTID_RESCHED) {
     this_cpu()->resched = true;
+  } else if (intid >= 32) {
+    irq_fire(intid); // a device's SPI: masked before the EOI, as it is level-triggered
   }
   __asm__ volatile("msr icc_eoir1_el1, %0" : : "r"(iar));
+}
+
+// --- Devices: GIC SPIs (obj/device.c) ---
+//
+// SPIs are configured level-triggered, as the GIC starts them, and routed to
+// the boot CPU. (A device tree's edge-triggered lines come with bus-dt.)
+
+static uint32_t gic_lines; // INTIDs below this exist
+
+static volatile uint32_t *gicd_regs(void) { return (volatile uint32_t *)(boot.hhdm + GICD_PHYS); }
+
+static void arch_devices_init(void) {
+  uint32_t n = 32 * ((gicd_regs()[1] & 0x1f) + 1); // GICD_TYPER.ITLinesNumber
+  gic_lines = n < 1020 ? n : 1020;
+}
+
+static bool arch_has_io_ports(void) { return false; }
+
+static bool arch_console_device(bool io, uint64_t base, uint64_t size) {
+  return !io && base < PL011_PHYS + 4096 && PL011_PHYS < base + size;
+}
+
+static void arch_io_switch(const task *t) { (void)t; }
+
+static vx_status arch_irq_canonical(uint32_t line, uint32_t *out) {
+  if (line < 32 || line >= gic_lines) return VX_ERR_RANGE; // SPIs only: SGIs and PPIs are the kernel's
+  *out = line;
+  return VX_OK;
+}
+
+static vx_status arch_irq_route(uint32_t line, bool *level) {
+  volatile uint32_t *d = gicd_regs();
+  uint32_t bit = 1u << (line % 32);
+  d[0x080 / 4 + line / 32] |= bit;                      // GICD_IGROUPR: group 1
+  ((volatile uint8_t *)d)[0x400 + line] = 0x80;         // GICD_IPRIORITYR
+  d[0xc00 / 4 + line / 16] &= ~(2u << (line % 16 * 2)); // GICD_ICFGR: level-triggered
+  *(volatile uint64_t *)((volatile uint8_t *)d + 0x6000 + 8ull * line) =
+      cpus[0].arch_id & 0xff'00ff'ffff; // IROUTER
+  d[0x100 / 4 + line / 32] = bit;       // GICD_ISENABLER
+  *level = true;
+  return VX_OK;
+}
+
+static void arch_irq_mask(uint32_t line, bool masked) {
+  if (line < 32 || line >= gic_lines) return;
+  volatile uint32_t *d = gicd_regs();
+  d[(masked ? 0x180 : 0x100) / 4 + line / 32] = 1u << (line % 32); // GICD_ICENABLER or GICD_ISENABLER
+  if (masked)
+    while (d[0] & (1u << 31)) {} // GICD_CTLR.RWP: until the disable has taken effect
 }
 
 // An SGI to one CPU, named by its affinity: ICC_SGI1R_EL1 takes Aff3, Aff2 and

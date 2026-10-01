@@ -59,8 +59,9 @@ typedef enum vx_ndb_result : int32_t {
 // zero-length value with a nullptr pointer, so test vx_ndb_has for flags.
 [[maybe_unused]] static vx_str vx_ndb_get(const vx_ndb_record *rec, const char *key);
 [[maybe_unused]] static bool vx_ndb_has(const vx_ndb_record *rec, const char *key);
-// key's value as a decimal number: digits only, no sign, no leading zeros, no
-// overflow. False, with *out unchanged, otherwise or if the record lacks it.
+// key's value as a number: decimal digits with no leading zeros, or 0x and
+// lowercase hex digits; no sign, no overflow. False, with *out unchanged,
+// otherwise or if the record lacks it.
 [[maybe_unused]] static bool vx_ndb_get_u64(const vx_ndb_record *rec, const char *key, uint64_t *out);
 
 // A record being written into a caller's buffer. Writing past the end, or a
@@ -78,5 +79,8 @@ typedef struct vx_ndb_writer {
 [[maybe_unused]] static void vx_ndb_put_i64(vx_ndb_writer *w, const char *key, int64_t value);
 // A bare key: a flag that is set.
 [[maybe_unused]] static void vx_ndb_flag(vx_ndb_writer *w, const char *key);
+// The same, with a key that is not a C string (one read from another record, say).
+[[maybe_unused]] static void vx_ndb_put_key(vx_ndb_writer *w, vx_str key, vx_str value);
+[[maybe_unused]] static void vx_ndb_flag_key(vx_ndb_writer *w, vx_str key);
 // Ends the record with a newline. Returns false if the record failed.
 [[maybe_unused]] static bool vx_ndb_end(vx_ndb_writer *w);

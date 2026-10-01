@@ -8,18 +8,37 @@
 // User threads print through debug_write (console_user_write), and they can
 // move between CPUs between two calls, so each thread has a line buffer of its
 // own, and a line goes out whole when it ends (or fills the buffer).
+//
+// Everything printed is kept in the kernel log, kmesg, a ring of the latest
+// output. It also goes to the console device until a user-space driver is
+// given that device (device.c); from then on the device is the driver's, and
+// the kernel writes to it again only to report a panic.
 static struct {
   char buf[512];
   size_t len;
 } console_line[MAX_CPUS];
 
 static spinlock console_lock;
+static _Atomic bool panicking;
+static bool console_handed_off; // a driver has the console's device (device.c)
+
+static struct {
+  char buf[16 * 1024];
+  uint64_t written; // in all; the ring holds the last sizeof buf bytes
+} kmesg;
+
+// Writes to the log, and to the device while it is the kernel's. Called with
+// the console lock held.
+static void console_emit(vx_str s) {
+  for (size_t i = 0; i < s.len; i++) kmesg.buf[kmesg.written++ % sizeof kmesg.buf] = s.ptr[i];
+  if (!console_handed_off || atomic_load_explicit(&panicking, memory_order_relaxed)) arch_console_write(s);
+}
 
 static void console_flush(void) {
   typeof(console_line[0]) *line = &console_line[arch_cpu_index()];
   spin_lock(&console_lock);
   kput_stamp();
-  arch_console_write((vx_str){line->buf, line->len});
+  console_emit((vx_str){line->buf, line->len});
   spin_unlock(&console_lock);
   line->len = 0;
 }
@@ -39,7 +58,7 @@ static void console_user_write(vx_str s, char *buf, size_t cap, uint8_t *len) {
     if (s.ptr[i] != '\n' && *len < cap) continue;
     spin_lock(&console_lock);
     kput_stamp();
-    arch_console_write((vx_str){buf, *len});
+    console_emit((vx_str){buf, *len});
     spin_unlock(&console_lock);
     *len = 0;
   }
@@ -128,8 +147,6 @@ static void backtrace(uint64_t pc, uint64_t fp) {
     fp = frame[0];
   }
 }
-
-static _Atomic bool panicking;
 
 // Starts a panic message: "vx: panic: " and whatever the caller adds with kput.
 static void panic_start(void) {

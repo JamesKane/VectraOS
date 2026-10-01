@@ -558,6 +558,68 @@ static void test_spawn_message(void) {
   vx_handle_close(image);
 }
 
+// Device objects from the root Resource (01 §7.1). ktest stays away from the
+// console's own device, which would take the console from the kernel.
+static void test_devices(void) {
+  vx_handle res = vx_spawn_take("resource"), weak, h, h2;
+  CHECK(res != VX_HANDLE_NONE);
+  CHECK(vx_handle_dup(res, VX_RIGHT_DUPLICATE | VX_RIGHT_INSPECT, &weak) == VX_OK);
+#ifdef __x86_64__
+  static constexpr uint32_t SPARE_LINE = 3;                        // ISA IRQ 3: COM2, which nothing uses
+  static constexpr uint64_t DEVICE = 0xfed0'0000, RAM = 0x10'0000; // the HPET; RAM at 1 MiB
+#else
+  static constexpr uint32_t SPARE_LINE = 40;                         // an SPI no device has
+  static constexpr uint64_t DEVICE = 0x0901'0000, RAM = 0x4000'0000; // the PL031 RTC; the start of RAM
+#endif
+
+  CHECK(vx_irq_create(weak, SPARE_LINE, &h) == VX_ERR_ACCESS); // no MANAGE
+  CHECK(vx_irq_create(res, 5000, &h) == VX_ERR_RANGE);
+#ifdef __aarch64__
+  CHECK(vx_irq_create(res, 27, &h) == VX_ERR_RANGE); // a PPI: the kernel's timer
+#endif
+  CHECK(vx_irq_create(res, SPARE_LINE, &h) == VX_OK);
+  CHECK(vx_irq_create(res, SPARE_LINE, &h2) == VX_ERR_EXISTS); // one Irq a line
+  vx_handle port;
+  vx_packet pk;
+  CHECK(vx_port_create(0, &port) == VX_OK);
+  CHECK(vx_port_bind(port, h, VX_TRIGGER_COUNTER_GE, 1, 1) == VX_ERR_INVALID);
+  CHECK(vx_port_bind(port, h, VX_TRIGGER_IRQ, 1, 0) == VX_OK);
+  CHECK(vx_port_wait(port, after_ms(2), 0, &pk, 1) == VX_ERR_TIMED_OUT); // nothing raises the line
+  CHECK(vx_irq_ack(h) == VX_OK);
+  CHECK(vx_irq_ack(port) == VX_ERR_BAD_HANDLE); // not an Irq
+  vx_handle_close(port);
+  vx_handle_close(h);
+  CHECK(vx_irq_create(res, SPARE_LINE, &h) == VX_OK); // free again once its Irq is gone
+  vx_handle_close(h);
+
+  CHECK(vx_vmo_create_physical(res, RAM, 4096, &h) == VX_ERR_ACCESS); // never RAM
+  CHECK(vx_vmo_create_physical(res, DEVICE + 1, 4096, &h) == VX_ERR_RANGE);
+  CHECK(vx_vmo_create_physical(weak, DEVICE, 4096, &h) == VX_ERR_ACCESS);
+  CHECK(vx_vmo_create_physical(res, DEVICE, 4096, &h) == VX_OK);
+  uint32_t word = 0;
+  CHECK(vx_vmo_rw(h, VX_VMO_READ, 0, &word, 4) == VX_ERR_UNSUPPORTED); // map it instead
+  uint64_t at = 0;
+  CHECK(vx_as_map(self, h, 0, 4096, 0, &at) == VX_OK);
+  word = ((volatile uint32_t *)at)[0]; // HPET: capabilities and revision; PL031: the time
+  CHECK(word != 0 && word != 0xffff'ffff);
+  vx_handle_close(h);
+
+#ifdef __x86_64__
+  CHECK(vx_iorange_create(res, 0xfff0, 0x20, &h) == VX_ERR_RANGE);
+  CHECK(vx_iorange_create(res, 0x2f8, 8, &h) == VX_OK); // COM2's ports
+  CHECK(vx_as_map(self, h, 0, 4096, 0, &at) == VX_ERR_INVALID);
+  CHECK(vx_as_map(self, h, 0, 0, 0, &at) == VX_OK);
+  uint8_t lsr;
+  __asm__ volatile("inb %1, %0" : "=a"(lsr) : "Nd"((uint16_t)0x2fd)); // faults unless the port is ours
+  CHECK(true);
+  vx_handle_close(h);
+#else
+  CHECK(vx_iorange_create(res, 0x2f8, 8, &h) == VX_ERR_UNSUPPORTED);
+#endif
+  vx_handle_close(weak);
+  vx_handle_close(res);
+}
+
 int vx_main(void) {
   self = vx_self;
   test_spawn_message();
@@ -570,6 +632,7 @@ int vx_main(void) {
   test_nested_channels();
   test_rings();
   test_vmo_rw();
+  test_devices();
   vx_print(VX_STR("ktest: "));
   vx_print_u64(checks);
   vx_print(VX_STR(" checks, "));

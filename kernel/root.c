@@ -2,8 +2,8 @@
 // svcd, or whatever `vx.root=NAME` on the kernel command line names (ktest, for
 // the kernel's own tests). It gets the debug-write capability, and starts like
 // every task, with a bootstrap channel holding its spawn message (abi.h): a
-// handle to itself, the boot image (the bootfs.tar module, copied into a VMO)
-// and the kernel command line.
+// handle to itself, the boot image (the bootfs.tar module, copied into a VMO),
+// the root Resource (device.c) and the kernel command line.
 
 LIMINE_REQUEST struct limine_module_request module_request = {.id = LIMINE_MODULE_REQUEST_ID};
 
@@ -44,6 +44,8 @@ static void find_root_module(void) {
   if (bootfs) root_module.bootfs = bootfs->address, root_module.bootfs_size = bootfs->size;
 }
 
+static constexpr uint32_t ROOT_RESOURCE_RIGHTS =
+    VX_RIGHT_MANAGE | VX_RIGHT_DUPLICATE | VX_RIGHT_TRANSFER | VX_RIGHT_INSPECT;
 static constexpr uint32_t BOOT_IMAGE_RIGHTS =
     VX_RIGHT_READ | VX_RIGHT_MAP | VX_RIGHT_DUPLICATE | VX_RIGHT_TRANSFER | VX_RIGHT_INSPECT;
 
@@ -68,11 +70,14 @@ static channel *root_spawn_message(task *t) {
     vx_ndb_put_u64(&w, "size", root_module.bootfs_size);
     vx_ndb_end(&w);
   }
+  vx_ndb_put(&w, "handle", VX_STR("resource"));
+  vx_ndb_put_u64(&w, "index", image ? 2 : 1);
+  vx_ndb_end(&w);
   vx_ndb_put(&w, "cmdline", boot.cmdline);
   vx_ndb_end(&w);
   if (w.failed) panic(VX_STR("the root task's spawn message does not fit"));
 
-  uint32_t count = image ? 2 : 1;
+  uint32_t count = image ? 3 : 2;
   channel_msg *m = msg_alloc((uint32_t)(sizeof(vx_msg_header) + w.len), count);
   channel *ours, *theirs;
   if (!m || channel_create(&ours, &theirs) != VX_OK) panic(VX_STR("cannot make the root task's channel"));
@@ -82,6 +87,7 @@ static channel *root_spawn_message(task *t) {
   m->handles[0] = (moved_handle){&t->obj, ALL_RIGHTS};
   if (image)
     m->handles[1] = (moved_handle){&image->obj, BOOT_IMAGE_RIGHTS}; // the message takes our reference
+  m->handles[count - 1] = (moved_handle){&root_resource()->obj, ROOT_RESOURCE_RIGHTS};
   if (channel_write(ours, m) != VX_OK) panic(VX_STR("cannot send the root task's spawn message"));
   object_release(&ours->obj); // the message stays queued; then the root task sees PEER_CLOSED
   return theirs;

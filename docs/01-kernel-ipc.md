@@ -297,9 +297,11 @@ Over TCP, `netd` sends straight from the `Buffer` pages with scatter-gather and 
 
 ### 7.1 What the kernel provides
 
-- `Irq` objects for legacy lines, MSI and MSI-X. The IRQ is masked when it fires and stays masked until the driver calls `irq_ack`. Delivery is a port packet.
-- MMIO through `vmo_create` of kind `physical`, with device or uncached policy.
-- `IoRange` objects on x86.
+- `Irq` objects for legacy lines, MSI and MSI-X, one per line. Delivery is a port packet (`VX_TRIGGER_IRQ`, whose value counts the interrupts); a binding made after the line fired fires at once. A level-triggered line is masked when it fires and stays masked until the driver calls `irq_ack`. An edge-triggered line is never masked, because an edge that arrived while it was masked would be lost, and the device with it; its driver handles everything the device has pending before binding again. Lines are ISA IRQs (through the MADT's overrides) or GSIs on x86_64, routed through the IOAPICs, and GIC SPIs on arm64.
+- MMIO through `vmo_create` of kind `physical`, mapped uncached as device memory. A physical VMO never covers RAM or firmware memory, which the kernel knows from the boot memory map.
+- `IoRange` objects on x86. A task may use the ports once `as_map` has been called with the range in place of a VMO; they are loaded into each CPU's TSS I/O bitmap when the task's threads run there.
+- These come from a `Resource`. Until `devmgr`, there is one, the root, which the kernel gives `svcd`; `svcd` mints each driver's objects from the `ioport=`, `mmio=` and `irq=` records of its manifest, keeps them, and gives every instance of the driver its own handles to them.
+- **The kernel console:** the kernel writes to its early console until a driver is given that device. From then on the device is the driver's, the kernel keeps its output in an in-memory log (`kmesg`), and it writes to the device again only to report a panic. `vx.kconsole` on the command line keeps the kernel writing to it, for debugging.
 - `DmaDomain` objects for the IOMMU.
 - On arm64, PSCI and SMC calls go through `svcd`'s platform service, never to drivers directly.
 
@@ -324,6 +326,7 @@ Over TCP, `netd` sends straight from the `Buffer` pages with scatter-gather and 
 
 - A **device-class tree** (02 §5). For example `drv-virtio-net` serves `/dev/net/ether0/{info,ctl,stats}` and exposes a ring pair for frames that `netd` connects to.
 - Class protocols are specified once per class and versioned: `block`, `net`, `input`, `display`, `audio`, `accel`, `sensor`, `serial`.
+- Serial drivers share `vx-driver`'s console server (`lib/vx-driver/cons.c`), which serves `/cons` with Plan 9's cooked semantics: echo, erase and kill-line, a read returns one line, and `^D` sends a line or, on an empty one, ends the file. A read with nothing typed, or a write with no room, is held by the 9Px server framework and answered after the driver's next interrupt makes progress. Programs whose manifest says `console` write to `/srv/cons` through `vx-rt`, a line at a time, and connect again if the driver restarts.
 - Drivers are written against `vx-driver`, which provides typed MMIO register accessors (one header per device of `static inline` functions over `volatile` pointers), DMA pools over `Buffer`, IRQ-to-port glue, and the class-protocol server skeletons.
 
 ### 7.4 Crash, restart and hot reload

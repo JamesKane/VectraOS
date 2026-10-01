@@ -9,17 +9,26 @@
 // A manifest is ndb records: a service= record, then the records that belong
 // to it, up to the next service=.
 //
-//   service=NAME program=/boot/bin/PROG [post=SRV] [bootimage] [restart]
+//   service=NAME program=/boot/bin/PROG [post=SRV] [bootimage] [console] [restart] [arch=A]
 //   arg=VALUE                                  an argument, in order
 //   mount=OLD srv=SRV [aname=A] [flags=abc]    a mount in its namespace
 //   bind=OLD new=NEW [flags=abc]               a bind in its namespace
+//   ioport=BASE count=N                        a driver's I/O ports (x86_64)
+//   mmio=ADDRESS size=N                        a driver's registers
+//   irq=LINE                                   a driver's interrupt
 //
 // post=SRV: svcd makes a listen channel, gives the service its server end
 // ("listen") and keeps the client end as /srv/SRV, for mounts. It keeps a
 // second handle to the server end, so connections made while the service is
 // restarting wait for it, and none is lost. bootimage: the service gets the
-// boot image, read-only. A service gets nothing that is not named here: no
-// ambient authority (01 §2).
+// boot image, read-only. console: it writes to /srv/cons (vx-rt). arch: it
+// runs only on that architecture. A service gets nothing that is not named
+// here: no ambient authority (01 §2).
+//
+// Drivers, the services with ioport, mmio or irq records, start first. svcd
+// mints their device objects from the root Resource once, keeps them, and
+// gives each instance its own handles to them, so a restarted driver gets the
+// same device. Once a service has posted /srv/cons, svcd writes there too.
 
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-rt/spawn.c"
@@ -33,11 +42,17 @@ static constexpr uint32_t BOOT_IMAGE_RIGHTS =
 static constexpr uint32_t CONNECTOR_RIGHTS = VX_RIGHT_READ | VX_RIGHT_WRITE | VX_RIGHT_WAIT |
                                              VX_RIGHT_DUPLICATE | VX_RIGHT_TRANSFER | VX_RIGHT_INSPECT;
 
+static constexpr uint32_t MAX_DEVICES = 4; // device objects per driver
+
 typedef struct service {
   vx_str manifest; // the whole file, in the boot image
   size_t at;       // where its service= record starts
-  vx_str name;     // in the boot image or in `names`
+  vx_str name;     // in `names`
   bool restart;
+  bool broken; // its device objects could not be made: never started
+  uint32_t devices;
+  vx_handle device[MAX_DEVICES]; // svcd's own handles; each instance gets duplicates
+  vx_str device_name[MAX_DEVICES];
   vx_handle task;
   uint32_t restarts;
   vx_instant window_start;
@@ -55,7 +70,14 @@ static post posts[MAX_SERVICES];
 static uint32_t post_count;
 static const uint8_t *image;
 static uint64_t image_size;
-static vx_handle image_vmo, port;
+static vx_handle image_vmo, port, resource;
+static bool console_attached;
+
+#ifdef __x86_64__
+static const vx_str ARCH = VX_STR("x86_64");
+#else
+static const vx_str ARCH = VX_STR("aarch64");
+#endif
 static char names[MAX_SERVICES][32];
 
 static void say(vx_str a, vx_str b, vx_str c) {
@@ -85,17 +107,57 @@ static vx_ndb_reader manifest_reader(vx_str text, size_t at) {
       .src = text, .pos = at, .line = 1, .scratch = scratch, .scratch_cap = sizeof scratch};
 }
 
-// Reads one manifest's service= records. A malformed manifest is reported and skipped.
+// Makes the device object a driver's ioport=, mmio= or irq= record names.
+static vx_status mint(service *s, const vx_ndb_record *rec) {
+  uint64_t a = 0, n = 0;
+  vx_handle h = VX_HANDLE_NONE;
+  vx_status st = VX_ERR_INVALID;
+  vx_str name = VX_STR("");
+  if (s->devices == MAX_DEVICES) return VX_ERR_NO_MEMORY;
+  if (vx_ndb_get_u64(rec, "ioport", &a) && vx_ndb_get_u64(rec, "count", &n) && a <= 0xffff && n <= 0x10000) {
+    st = vx_iorange_create(resource, (uint16_t)a, (uint32_t)n, &h);
+    name = VX_STR("ioport");
+  } else if (vx_ndb_get_u64(rec, "mmio", &a) && vx_ndb_get_u64(rec, "size", &n)) {
+    st = vx_vmo_create_physical(resource, a, n, &h);
+    name = VX_STR("mmio");
+  } else if (vx_ndb_get_u64(rec, "irq", &a) && a <= UINT32_MAX) {
+    st = vx_irq_create(resource, (uint32_t)a, &h);
+    name = VX_STR("irq");
+  }
+  if (st == VX_OK) s->device[s->devices] = h, s->device_name[s->devices++] = name;
+  return st;
+}
+
+static bool is_device_record(const vx_ndb_record *rec) {
+  return vx_ndb_has(rec, "ioport") || vx_ndb_has(rec, "mmio") || vx_ndb_has(rec, "irq");
+}
+
+// Reads one manifest's service= records, and mints its drivers' devices. A
+// malformed manifest is reported and skipped.
 static void read_manifest(vx_str path, vx_str text) {
   vx_ndb_reader r = manifest_reader(text, 0);
   vx_ndb_record rec;
   vx_ndb_result res;
   size_t before = r.pos;
+  service *current = nullptr; // the service the records belong to; none for one svcd skipped
   while ((res = vx_ndb_next(&r, &rec)) == VX_NDB_RECORD) {
+    if (current && is_device_record(&rec) && !current->broken) {
+      vx_status st = mint(current, &rec);
+      if (st != VX_OK) {
+        say(current->name, VX_STR(": cannot make its device, status -"), VX_STR(""));
+        vx_print_u64((uint64_t)-st);
+        vx_print(VX_STR("\n"));
+        current->broken = true;
+      }
+    }
     if (vx_ndb_has(&rec, "service")) {
-      vx_str name = vx_ndb_get(&rec, "service"), srv = vx_ndb_get(&rec, "post");
-      if (service_count == MAX_SERVICES || !name.len || name.len >= sizeof names[0] ||
-          !vx_ndb_get(&rec, "program").len) {
+      current = nullptr;
+      vx_str name = vx_ndb_get(&rec, "service"), srv = vx_ndb_get(&rec, "post"),
+             arch = vx_ndb_get(&rec, "arch");
+      if (arch.len && !str_eq(arch, ARCH)) {
+        // another architecture's
+      } else if (service_count == MAX_SERVICES || !name.len || name.len >= sizeof names[0] ||
+                 !vx_ndb_get(&rec, "program").len) {
         say(VX_STR("skipping a service in "), path, VX_STR(": no name or program, or too many services\n"));
       } else {
         memcpy(names[service_count], name.ptr, name.len); // the record's values do not outlive the reader
@@ -103,6 +165,7 @@ static void read_manifest(vx_str path, vx_str text) {
                                             .at = before,
                                             .name = {names[service_count], name.len},
                                             .restart = vx_ndb_has(&rec, "restart")};
+        current = &services[service_count];
         if (srv.len && !find_post(srv)) {
           post *p = &posts[post_count];
           vx_handle ch[2];
@@ -150,10 +213,20 @@ static vx_status start(service *s) {
     vx_ndb_end(&w);
   }
   vx_str srv = vx_ndb_get(&rec, "post");
+  bool posts_console = str_eq(srv, VX_STR("cons")); // decided now: rec moves on to the records below
   if (st == VX_OK && srv.len) {
     post *p = find_post(srv);
     st = p ? vx_handle_dup(p->server, CONNECTOR_RIGHTS, &handles[count]) : VX_ERR_NOT_FOUND;
     handle_names[count++] = VX_STR("listen");
+  }
+  post *cons = find_post(VX_STR("cons"));
+  if (st == VX_OK && vx_ndb_has(&rec, "console") && cons) {
+    st = vx_handle_dup(cons->client, CONNECTOR_RIGHTS, &handles[count]);
+    handle_names[count++] = VX_STR("console");
+  }
+  for (uint32_t i = 0; st == VX_OK && i < s->devices; i++) {
+    st = vx_handle_dup(s->device[i], VX_RIGHTS_SAME, &handles[count]);
+    handle_names[count++] = s->device_name[i];
   }
 
   while (st == VX_OK && vx_ndb_next(&r, &rec) == VX_NDB_RECORD && !vx_ndb_has(&rec, "service")) {
@@ -180,6 +253,13 @@ static vx_status start(service *s) {
       if (vx_ndb_has(&rec, "aname")) vx_ndb_put(&w, "aname", vx_ndb_get(&rec, "aname"));
       if (vx_ndb_has(&rec, "flags")) vx_ndb_put(&w, "flags", vx_ndb_get(&rec, "flags"));
       vx_ndb_put(&w, "src", (vx_str){src, 5 + n});
+    } else if (is_device_record(&rec)) { // passed on as they are, for the driver to read
+      for (int i = 0; i < rec.count; i++) {
+        if (rec.tuples[i].value.ptr)
+          vx_ndb_put_key(&w, rec.tuples[i].key, rec.tuples[i].value);
+        else
+          vx_ndb_flag_key(&w, rec.tuples[i].key);
+      }
     } else if (vx_ndb_has(&rec, "bind")) {
       vx_ndb_put(&w, "bind", vx_ndb_get(&rec, "bind"));
       vx_ndb_put(&w, "new", vx_ndb_get(&rec, "new"));
@@ -208,6 +288,11 @@ static vx_status start(service *s) {
   if (st != VX_OK) return st;
   vx_task_summary info;
   vx_task_info(s->task, &info);
+  if (posts_console && !console_attached && cons) {
+    vx_handle c;
+    console_attached =
+        vx_handle_dup(cons->client, CONNECTOR_RIGHTS, &c) == VX_OK && vx_console_attach(c) == VX_OK;
+  }
   say(VX_STR("started "), s->name, VX_STR(" (task "));
   vx_print_u64(info.id);
   vx_print(VX_STR(")\n"));
@@ -239,6 +324,7 @@ int vx_main(void) {
   if (vx_port_create(0, &port) != VX_OK) fail("port_create");
 
   vx_ndb_record rec;
+  resource = vx_spawn_take("resource");
   image_vmo = vx_spawn_take("bootimage");
   uint64_t base = 0;
   if (!image_vmo || !vx_spawn_record("bootimage", &rec) || !vx_ndb_get_u64(&rec, "size", &image_size))
@@ -259,8 +345,10 @@ int vx_main(void) {
   }
   if (st == VX_ERR_INVALID) fail("the boot image is malformed");
 
-  for (uint32_t i = 0; i < service_count; i++)
-    if (start(&services[i]) != VX_OK) say(VX_STR("cannot start "), services[i].name, VX_STR("\n"));
+  for (int drivers = 1; drivers >= 0; drivers--) // drivers first, so the console is there for the rest
+    for (uint32_t i = 0; i < service_count; i++)
+      if ((services[i].devices > 0) == drivers && !services[i].broken && start(&services[i]) != VX_OK)
+        say(VX_STR("cannot start "), services[i].name, VX_STR("\n"));
 
   for (;;) {
     vx_packet pk[8];

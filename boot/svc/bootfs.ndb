@@ -2,4 +2,4 @@
 # M2), posted as /srv/bootfs. svcd's manifest format is described in
 # servers/svcd/svcd.c.
 
-service=bootfs program=/boot/bin/bootfs post=bootfs bootimage restart
+service=bootfs program=/boot/bin/bootfs post=bootfs bootimage console restart

@@ -14,7 +14,11 @@
 //  - directory reads: whole stat entries, at offset 0 or where the last read
 //    ended (9P2000's rule).
 //
-// Requests complete as they arrive, so Tflush has nothing to cancel.
+// A read or write the file server cannot do yet (a console with no input
+// typed) answers SHOULD_WAIT; p9_serve then returns P9_DEFER, without a reply,
+// and the transport holds the request and serves it again when the file
+// server's device has done something (lib/vx-9p/ring_server.c). Everything else
+// completes as it arrives, so Tflush has nothing to cancel.
 
 #pragma once
 
@@ -28,7 +32,8 @@ typedef struct p9_fs {
   vx_status (*parent)(void *ctx, uint64_t node, uint64_t *parent); // only below an attach root
   vx_status (*stat)(void *ctx, uint64_t node, p9_stat *out);       // its strings may live until the next call
   vx_status (*open)(void *ctx, uint64_t node, uint8_t mode);
-  vx_status (*read)(void *ctx, uint64_t node, uint64_t offset, uint8_t *buf, uint32_t *count); // files
+  vx_status (*read)(void *ctx, uint64_t node, uint64_t offset, uint8_t *buf,
+                    uint32_t *count);                                             // files; or SHOULD_WAIT
   vx_status (*readdir)(void *ctx, uint64_t dir, uint32_t index, uint64_t *child); // NOT_FOUND past the end
   vx_status (*write)(void *ctx, uint64_t node, uint64_t offset, const uint8_t *buf,
                      uint32_t *count); // or null
@@ -139,9 +144,11 @@ static vx_status p9_read_dir(p9_server *s, p9_fid *f, uint64_t offset, uint8_t *
   return VX_OK;
 }
 
+static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve the request again later
+
 // Handles one request (`len` bytes, one whole message) and writes the reply
-// into resp. Returns the reply's length, or 0 if the request was too broken to
-// answer, in which case the transport should hang up.
+// into resp. Returns the reply's length; 0 if the request was too broken to
+// answer, in which case the transport should hang up; or P9_DEFER.
 [[maybe_unused]] static size_t p9_serve(p9_server *s, const uint8_t *req, size_t len, uint8_t *resp,
                                         size_t cap) {
   p9_msg t, r = {};
@@ -314,6 +321,7 @@ static vx_status p9_read_dir(p9_server *s, p9_fid *f, uint64_t offset, uint8_t *
     default: return 0;
     }
   }
+  if (e == VX_ERR_SHOULD_WAIT && (t.type == P9_Tread || t.type == P9_Twrite)) return P9_DEFER;
   if (e != VX_OK) r = (p9_msg){.type = P9_Rerror, .tag = t.tag, .ename = p9_error_text(e)};
   return p9_encode(&r, resp, cap);
 }

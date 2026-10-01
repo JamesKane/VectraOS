@@ -16,6 +16,7 @@ LIMINE_REQUEST struct limine_memmap_request memmap_request = {.id = LIMINE_MEMMA
 LIMINE_REQUEST struct limine_mp_request mp_request = {.id = LIMINE_MP_REQUEST_ID,
                                                       .flags = LIMINE_MP_REQUEST_X86_64_X2APIC};
 LIMINE_REQUEST struct limine_tsc_frequency_request tsc_request = {.id = LIMINE_TSC_FREQUENCY_REQUEST_ID};
+LIMINE_REQUEST struct limine_rsdp_request rsdp_request = {.id = LIMINE_RSDP_REQUEST_ID}; // for the MADT
 #else
 LIMINE_REQUEST struct limine_mp_request mp_request = {.id = LIMINE_MP_REQUEST_ID};
 #endif
@@ -29,6 +30,12 @@ LIMINE_REQUEST struct limine_executable_address_request address_request = {
 [[gnu::used, gnu::section(".limine_requests_end")]]
 static volatile uint64_t limine_requests_end[] = LIMINE_REQUESTS_END_MARKER;
 
+typedef struct phys_range {
+  uint64_t base, end;
+} phys_range;
+
+static constexpr uint32_t MAX_RAM_RANGES = 128;
+
 typedef struct boot_info {
   uint64_t hhdm; // virtual address = physical address + hhdm
   uint64_t usable_bytes;
@@ -36,6 +43,12 @@ typedef struct boot_info {
   vx_str cmdline;       // from limine.conf; empty if there is none
   uint64_t kernel_phys; // where the kernel image is loaded, physically contiguous
   uint64_t kernel_virt;
+  // Every range of RAM and firmware memory, whatever it is used for: a
+  // physical VMO (MMIO) may not overlap one (device.c). Kept because the
+  // memory map itself is in memory reclaim_boot_memory frees.
+  phys_range ram[MAX_RAM_RANGES];
+  uint32_t ram_count;
+  bool ram_incomplete;
 } boot_info;
 
 static boot_info boot;
@@ -72,6 +85,13 @@ static uint64_t early_alloc(uint64_t pages) {
   uint64_t largest = 0;
   for (uint64_t i = 0; i < mm->entry_count; i++) {
     struct limine_memmap_entry *e = mm->entries[i];
+    bool ram = e->type == LIMINE_MEMMAP_USABLE || e->type == LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE ||
+               e->type == LIMINE_MEMMAP_EXECUTABLE_AND_MODULES || e->type == LIMINE_MEMMAP_ACPI_RECLAIMABLE ||
+               e->type == LIMINE_MEMMAP_ACPI_NVS;
+    if (ram && boot.ram_count < MAX_RAM_RANGES)
+      boot.ram[boot.ram_count++] = (phys_range){e->base, e->base + e->length};
+    else if (ram)
+      boot.ram_incomplete = true; // then no physical VMO can be shown to be safe
     if (e->type != LIMINE_MEMMAP_USABLE) continue;
     boot.usable_bytes += e->length;
     if (e->length > largest) {

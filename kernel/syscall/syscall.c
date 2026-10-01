@@ -44,6 +44,9 @@ static void object_destroy(object *obj) {
   case OBJ_RING: ring_destroy((ring_end *)obj); break;
   case OBJ_TASK: task_destroy((task *)obj); break;
   case OBJ_THREAD: thread_destroy((thread *)obj); break;
+  case OBJ_RESOURCE: pool_free(&resource_pool, obj); break;
+  case OBJ_IRQ: irq_destroy((irq *)obj); break;
+  case OBJ_IORANGE: pool_free(&iorange_pool, obj); break;
   default: break;
   }
 }
@@ -145,23 +148,90 @@ static int64_t sys_port_post(vx_handle h, uint64_t packet) {
   return st;
 }
 
-static int64_t sys_vmo_create(uint64_t size, uint64_t options, uint64_t out) {
-  if (options) return VX_ERR_INVALID;
+// What device objects carry besides the rights to use them: they can be
+// passed on, never widened.
+static constexpr uint32_t DEVICE_RIGHTS = VX_RIGHT_DUPLICATE | VX_RIGHT_TRANSFER | VX_RIGHT_INSPECT;
+
+// vmo_create(size, options, &out, resource, physical_address): anonymous
+// memory, or with VX_VMO_PHYSICAL, device memory minted from a Resource.
+static int64_t sys_vmo_create(uint64_t size, uint64_t options, uint64_t out, vx_handle rh, uint64_t pa) {
+  if (options & ~(uint64_t)VX_VMO_PHYSICAL) return VX_ERR_INVALID;
   vmo *v;
-  vx_status st = vmo_create(size, &v);
+  vx_status st;
+  if (options & VX_VMO_PHYSICAL) {
+    resource *r = (resource *)handle_get(current_task(), rh, OBJ_RESOURCE, VX_RIGHT_MANAGE, &st);
+    if (!r) return st;
+    st = vmo_create_physical(pa, size, &v);
+    object_release(&r->obj);
+    if (st != VX_OK) return st;
+    return return_handle(&v->obj, VX_RIGHT_READ | VX_RIGHT_WRITE | VX_RIGHT_MAP | DEVICE_RIGHTS, out);
+  }
+  st = vmo_create(size, &v);
   if (st != VX_OK) return st;
   // EXEC included: loaders and JITs map their own code. W^X holds per mapping
   // (task_map), never per VMO.
   return return_handle(&v->obj, ALL_RIGHTS & ~(uint32_t)VX_RIGHT_DEBUG, out);
 }
 
+// --- Devices (obj/device.c) ---
+
+static int64_t sys_irq_create(vx_handle rh, uint64_t line, uint64_t options, uint64_t out) {
+  if (options || line > UINT32_MAX) return VX_ERR_INVALID;
+  vx_status st;
+  resource *r = (resource *)handle_get(current_task(), rh, OBJ_RESOURCE, VX_RIGHT_MANAGE, &st);
+  if (!r) return st;
+  uint32_t canonical;
+  irq *q = nullptr;
+  st = arch_irq_canonical((uint32_t)line, &canonical);
+  if (st == VX_OK) st = irq_create(canonical, &q);
+  object_release(&r->obj);
+  if (st != VX_OK) return st;
+  return return_handle(&q->obj, VX_RIGHT_WAIT | VX_RIGHT_WRITE | DEVICE_RIGHTS, out);
+}
+
+static int64_t sys_irq_ack(vx_handle h) {
+  vx_status st;
+  irq *q = (irq *)handle_get(current_task(), h, OBJ_IRQ, VX_RIGHT_WRITE, &st);
+  if (!q) return st;
+  irq_ack(q);
+  object_release(&q->obj);
+  return VX_OK;
+}
+
+static int64_t sys_iorange_create(vx_handle rh, uint64_t base, uint64_t count, uint64_t out) {
+  vx_status st;
+  resource *r = (resource *)handle_get(current_task(), rh, OBJ_RESOURCE, VX_RIGHT_MANAGE, &st);
+  if (!r) return st;
+  iorange *io = nullptr;
+  st = iorange_create(base, count, &io);
+  object_release(&r->obj);
+  if (st != VX_OK) return st;
+  return return_handle(&io->obj, VX_RIGHT_MAP | DEVICE_RIGHTS, out);
+}
+
 // as_map(task, vmo, offset, size, flags, &address): maps part of a VMO.
-// Reservations (01 §5) land with as_reserve.
+// Reservations (01 §5) land with as_reserve. With an IoRange in place of the
+// VMO (and the rest 0), it lets the task use those I/O ports instead.
 static int64_t sys_as_map(vx_handle th, vx_handle vh, uint64_t offset, uint64_t size, uint64_t flags,
                           uint64_t addr_ptr) {
+  vx_status st;
+  iorange *io = (iorange *)handle_get(current_task(), vh, OBJ_IORANGE, VX_RIGHT_MAP, &st);
+  if (io) {
+    task *t = (offset | size | flags)
+                  ? nullptr
+                  : (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_MANAGE, &st);
+    if (t) {
+      st = task_enable_io(t, io);
+      object_release(&t->obj);
+    } else if (offset | size | flags) {
+      st = VX_ERR_INVALID;
+    }
+    object_release(&io->obj);
+    return st;
+  }
   if (flags & ~(uint64_t)(VX_MAP_WRITE | VX_MAP_EXEC)) return VX_ERR_INVALID;
   uint64_t va;
-  vx_status st = copy_from_user(&va, addr_ptr, sizeof va);
+  st = copy_from_user(&va, addr_ptr, sizeof va);
   if (st != VX_OK) return st;
   task *t = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_MANAGE, &st);
   if (!t) return st;
@@ -330,14 +400,14 @@ static int64_t sys_counter_read(vx_handle h) {
 }
 
 // port_bind(port, source, trigger, key, threshold): a one-shot binding of a
-// channel end, counter or task to the port.
+// channel end, counter, task, ring end or Irq to the port.
 static int64_t sys_port_bind(vx_handle ph, vx_handle sh, uint64_t trigger, uint64_t key, uint64_t threshold) {
   vx_status st;
   port *p = (port *)handle_get(current_task(), ph, OBJ_PORT, VX_RIGHT_WRITE, &st);
   if (!p) return st;
   object *src = nullptr;
-  static const obj_type SOURCES[] = {OBJ_CHANNEL, OBJ_COUNTER, OBJ_TASK, OBJ_RING};
-  for (uint32_t i = 0; i < 4 && !src; i++)
+  static const obj_type SOURCES[] = {OBJ_CHANNEL, OBJ_COUNTER, OBJ_TASK, OBJ_RING, OBJ_IRQ};
+  for (uint32_t i = 0; i < sizeof SOURCES / sizeof SOURCES[0] && !src; i++)
     src = handle_get(current_task(), sh, SOURCES[i], VX_RIGHT_WAIT, &st);
   binding *b = src ? binding_new(p, (uint32_t)trigger, key, threshold, sh) : nullptr;
   if (src && !b) st = VX_ERR_NO_MEMORY;
@@ -348,6 +418,8 @@ static int64_t sys_port_bind(vx_handle ph, vx_handle sh, uint64_t trigger, uint6
       st = counter_bind((counter *)src, b);
     else if (src->type == OBJ_RING)
       st = ring_bind((ring_end *)src, b);
+    else if (src->type == OBJ_IRQ)
+      st = irq_bind((irq *)src, b);
     else
       st = task_bind((task *)src, b);
     if (st != VX_OK) binding_free(b);
@@ -505,7 +577,10 @@ static int64_t sys_vmo_rw(vx_handle h, uint64_t op, uint64_t offset, uint64_t bu
       (vmo *)handle_get(current_task(), h, OBJ_VMO, op == VX_VMO_READ ? VX_RIGHT_READ : VX_RIGHT_WRITE, &st);
   if (!v) return st;
   uint64_t end;
-  if (ckd_add(&end, offset, size) || end > v->size) st = VX_ERR_RANGE;
+  if (v->physical)
+    st = VX_ERR_UNSUPPORTED; // device memory is not in the direct map: map it instead
+  else if (ckd_add(&end, offset, size) || end > v->size)
+    st = VX_ERR_RANGE;
   for (uint64_t done = 0; st == VX_OK && done < size;) {
     uint64_t at = offset + done, in_page = at & 4095, n = 4096 - in_page;
     if (n > size - done) n = size - done;
@@ -529,10 +604,11 @@ static int64_t sys_handle_dup(vx_handle h, uint64_t rights, uint64_t out) {
   object *obj = nullptr;
   if (!e || !e->obj || e->generation != h >> 16)
     st = VX_ERR_BAD_HANDLE;
-  else if (!(e->rights & VX_RIGHT_DUPLICATE) || (rights & ~(uint64_t)e->rights))
+  else if (!(e->rights & VX_RIGHT_DUPLICATE) || (rights != VX_RIGHTS_SAME && (rights & ~(uint64_t)e->rights)))
     st = VX_ERR_ACCESS; // needs DUPLICATE, and can only reduce rights (01 §3)
   else
     obj = e->obj;
+  if (obj && rights == VX_RIGHTS_SAME) rights = e->rights;
   if (obj) object_ref(obj);
   spin_unlock(&t->lock);
   if (!obj) return st;
@@ -566,7 +642,10 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_ring_create: return sys_ring_create(a[0], a[1]);
   case VX_SYS_ring_notify: return sys_ring_notify((vx_handle)a[0]);
   case VX_SYS_ring_xfer_handles: return sys_ring_xfer((vx_handle)a[0], a[1], a[2], a[3], a[4]);
-  case VX_SYS_vmo_create: return sys_vmo_create(a[0], a[1], a[2]);
+  case VX_SYS_vmo_create: return sys_vmo_create(a[0], a[1], a[2], (vx_handle)a[3], a[4]);
+  case VX_SYS_irq_create: return sys_irq_create((vx_handle)a[0], a[1], a[2], a[3]);
+  case VX_SYS_irq_ack: return sys_irq_ack((vx_handle)a[0]);
+  case VX_SYS_iorange_create: return sys_iorange_create((vx_handle)a[0], a[1], a[2], a[3]);
   case VX_SYS_vmo_rw: return sys_vmo_rw((vx_handle)a[0], a[1], a[2], a[3], a[4]);
   case VX_SYS_as_map: return sys_as_map((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4], a[5]);
   case VX_SYS_handle_dup: return sys_handle_dup((vx_handle)a[0], a[1], a[2]);

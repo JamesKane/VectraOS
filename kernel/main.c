@@ -76,6 +76,7 @@ static void selftests(void) {
   arch_cpu_init(0);
   phys_init();
   paging_init();
+  arch_devices_init();
   arch_timer_init();
   sched_enter_cpu();
   smp_init();

@@ -829,14 +829,20 @@ typedef enum placement : uint8_t { IN_MODULE, IN_BOOTFS, IN_TESTS } placement;
 typedef struct program {
   const char *name, *source;
   placement where;
+  const char *arch; // the only architecture it is built for, or nullptr for every one
 } program;
 
 static const program USER_PROGRAMS[] = {
-    {"svcd", "servers/svcd/svcd.c", IN_MODULE},
-    {"ktest", "tests/kernel/ktest.c", IN_MODULE}, // the root task instead of svcd with vx.root=ktest
-    {"bootfs", "servers/bootfs/bootfs.c", IN_BOOTFS},
-    {"nstest", "tests/user/nstest.c", IN_TESTS},
+    {"svcd", "servers/svcd/svcd.c", IN_MODULE, nullptr},
+    {"ktest", "tests/kernel/ktest.c", IN_MODULE, nullptr}, // the root task instead of svcd with vx.root=ktest
+    {"bootfs", "servers/bootfs/bootfs.c", IN_BOOTFS, nullptr},
+    {"nstest", "tests/user/nstest.c", IN_TESTS, nullptr},
+    {"constest", "tests/user/constest.c", IN_TESTS, nullptr},
+    {"drv-uart-16550", "drivers/drv-uart-16550/uart.c", IN_BOOTFS, "x86_64"},
+    {"drv-uart-pl011", "drivers/drv-uart-pl011/uart.c", IN_BOOTFS, "aarch64"},
 };
+
+static bool program_for(const program *p, const arch *a) { return !p->arch || strcmp(p->arch, a->name) == 0; }
 static constexpr int USER_PROGRAM_COUNT = sizeof USER_PROGRAMS / sizeof USER_PROGRAMS[0];
 
 static bool build_user_program(const arch *a, bool release, const char *name, const char *source) {
@@ -869,7 +875,9 @@ static bool build_user_program(const arch *a, bool release, const char *name, co
 static bool build_arch(const arch *a, bool release) {
   if (!build_kernel(a, release)) return false;
   for (int i = 0; i < USER_PROGRAM_COUNT; i++)
-    if (!build_user_program(a, release, USER_PROGRAMS[i].name, USER_PROGRAMS[i].source)) return false;
+    if (program_for(&USER_PROGRAMS[i], a) &&
+        !build_user_program(a, release, USER_PROGRAMS[i].name, USER_PROGRAMS[i].source))
+      return false;
   const vx_ndb_record *t = port_target_for(&limine, a);
   return !t || build_port_target(&limine, t);
 }
@@ -1077,7 +1085,8 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
   size_t total = 0;
   for (int i = 0; i < USER_PROGRAM_COUNT; i++) {
     const program *p = &USER_PROGRAMS[i];
-    if (p->where == IN_MODULE || (p->where == IN_TESTS && !listed(with, p->name))) continue;
+    if (p->where == IN_MODULE || (p->where == IN_TESTS && !listed(with, p->name)) || !program_for(p, a))
+      continue;
     files[count] = read_file(fmt("%s/%s", out_dir(a, release), p->name));
     paths[count++] = fmt("boot/bin/%s", p->name);
   }
@@ -1226,7 +1235,10 @@ static bool kvm_usable(const arch *a) {
 // and, optionally, a kernel cmdline= and with= (test programs to add to bootfs,
 // comma-separated, from tests/user/); then expect= records, matched in order
 // against serial output lines, and fail= records, any of which fails the test
-// when a line contains it. "$arch" in a pattern stands for the architecture's name.
+// when a line contains it. "$arch" in a pattern stands for the architecture's
+// name. send= and type= records between the expect= records are typed into
+// the serial port once every expect= before them has matched; send= then
+// presses return.
 static const char *scenarios[64];
 static int scenario_count;
 
@@ -1246,6 +1258,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   const char *path = fmt("tests/qemu/%s.ndb", name);
   vx_ndb_reader r = {.src = read_file(path), .scratch = alloc(16 << 10), .scratch_cap = 16 << 10};
   const char *expect[64], *fail[64];
+  vx_str input[64] = {}; // typed once every expect before it has matched: input[k] goes before expect[k]
   int expect_count = 0, fail_count = 0;
   double timeout = 0;
   const char *cmdline = "", *with = "";
@@ -1265,8 +1278,14 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
       expect[expect_count++] = substitute_arch(vx_ndb_get(&rec, "expect"), a);
     } else if (vx_ndb_has(&rec, "fail") && fail_count < 64) {
       fail[fail_count++] = substitute_arch(vx_ndb_get(&rec, "fail"), a);
+    } else if ((vx_ndb_has(&rec, "send") || vx_ndb_has(&rec, "type")) && expect_count < 64) {
+      bool send = vx_ndb_has(&rec, "send"); // send= presses return after it; type= types exactly
+      vx_str text = vx_ndb_get(&rec, send ? "send" : "type"), *in = &input[expect_count];
+      in->ptr =
+          fmt("%.*s%.*s%s", (int)in->len, in->ptr ? in->ptr : "", (int)text.len, text.ptr, send ? "\r" : "");
+      in->len += text.len + send;
     } else {
-      die("%s:%zu: expected scenario=, expect= or fail=", path, rec.line);
+      die("%s:%zu: expected scenario=, expect=, fail=, send= or type=", path, rec.line);
     }
   }
   if (timeout <= 0 || expect_count == 0) die("%s: needs scenario= with a timeout, and an expect=", path);
@@ -1284,27 +1303,34 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   cmd c = {};
   qemu_cmd(&c, a, image, (qemu_opts){.kvm = kvm_usable(a), .test = true});
   if (verbose) cmd_print(&c);
-  int fds[2];
-  if (pipe(fds) != 0) die("pipe failed");
+  int fds[2], keys[2]; // QEMU's serial: its output, and what is typed into it
+  if (pipe(fds) != 0 || pipe(keys) != 0) die("pipe failed");
   pid_t pid = fork();
   if (pid < 0) die("fork failed");
   if (pid == 0) {
-    int null = open("/dev/null", O_RDONLY);
-    if (null < 0 || dup2(null, 0) < 0) _exit(127);
+    dup2(keys[0], 0);
     dup2(fds[1], 1);
     close(fds[0]);
     close(fds[1]);
+    close(keys[0]);
+    close(keys[1]);
     execv(c.argv[0], (char *const *)c.argv);
     _exit(127);
   }
   close(fds[1]);
+  close(keys[0]);
 
   double start = now_seconds();
-  int next = 0;
+  int next = 0, typed = -1; // input[typed] has been typed
   const char *verdict = nullptr;
   char line[4096];
   size_t len = 0;
   while (!verdict) {
+    if (typed < next && input[next].len) {
+      if (write(keys[1], input[next].ptr, input[next].len) != (ssize_t)input[next].len)
+        die("cannot type into QEMU");
+      typed = next;
+    }
     double left = timeout - (now_seconds() - start);
     if (left <= 0) {
       verdict = fmt("timed out waiting for \"%s\"", expect[next]);
@@ -1339,6 +1365,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   kill(pid, SIGKILL);
   wait_ok(pid);
   close(fds[0]);
+  close(keys[1]);
   fclose(log);
 
   bool ok = strcmp(verdict, "ok") == 0;
@@ -1778,9 +1805,10 @@ static int os_units(unit *units, bool with_host_tests) {
     units[n++] = (unit){
         fmt("kernel %s", ARCHES[i].name), "kernel/kernel.c", {ARCHES[i].flags, HOUSE_FLAGS, KERNEL_FLAGS}};
     for (int k = 0; k < USER_PROGRAM_COUNT; k++)
-      units[n++] = (unit){fmt("%s %s", USER_PROGRAMS[k].name, ARCHES[i].name),
-                          USER_PROGRAMS[k].source,
-                          {ARCHES[i].user_flags, HOUSE_FLAGS, USER_FLAGS}};
+      if (program_for(&USER_PROGRAMS[k], &ARCHES[i]))
+        units[n++] = (unit){fmt("%s %s", USER_PROGRAMS[k].name, ARCHES[i].name),
+                            USER_PROGRAMS[k].source,
+                            {ARCHES[i].user_flags, HOUSE_FLAGS, USER_FLAGS}};
   }
   units[n++] = (unit){"build", "build.c", {HOST_C23}};
   if (with_host_tests) {
@@ -1789,7 +1817,7 @@ static int os_units(unit *units, bool with_host_tests) {
     port dir = {.src = fmt("%s/tests", root)};
     collect(&tests, &dir, (vx_str){"host", 4}, "_test.c");
     collect(&tests, &dir, (vx_str){"fuzz", 4}, "_fuzz.c");
-    for (int i = 0; i < tests.count && n < 32; i++)
+    for (int i = 0; i < tests.count && n < 64; i++)
       units[n++] = (unit){tests.paths[i] + 5, fmt("tests/%s", tests.paths[i]), {HOST_C23}};
   }
   return n;
@@ -1801,7 +1829,7 @@ static int os_units(unit *units, bool with_host_tests) {
 // and `--`), passes that separator instead.
 static bool check_units(const char *tag, bool with_host_tests, const char *const *before,
                         const char *const *after, const char *separator) {
-  unit units[32];
+  unit units[64];
   int n = os_units(units, with_host_tests);
   bool ok = true;
   for (int i = 0; i < n; i++) {
@@ -1874,6 +1902,7 @@ static bool check_build_time(void) {
     if (t > worst_kernel) worst_kernel = t;
     total += t;
     for (int k = 0; k < USER_PROGRAM_COUNT; k++) {
+      if (!program_for(&USER_PROGRAMS[k], &ARCHES[i])) continue;
       t0 = now_seconds();
       ok = build_user_program(&ARCHES[i], false, USER_PROGRAMS[k].name, USER_PROGRAMS[k].source) && ok;
       total += now_seconds() - t0;
