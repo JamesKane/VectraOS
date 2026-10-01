@@ -1,16 +1,38 @@
-// devmgr: the device manager (docs/01 §7.2). M3's first part: it finds the
-// PCI functions, through the MCFG's ECAM regions, and reports them. (Matching
-// them to drivers, and starting the drivers, come next.)
+// devmgr: the device manager (docs/01 §7.2). It finds the PCI functions,
+// through the MCFG's ECAM regions, matches them against the drivers'
+// manifests in /boot/drv/*.ndb, and starts each matched driver with only its
+// device: the function's configuration space, its memory BARs, its MSIs and a
+// DMA domain, minted from the root Resource; and the server end of the post
+// the driver serves, which svcd gave devmgr (claim=). It restarts a driver
+// that exits, up to a limit.
 //
-// svcd gives it the root Resource, to map configuration space, and the ACPI
-// tables. Configuration space is mapped one bus (1 MiB) at a time, as buses
-// are found: the first in each region, then whatever bridges lead to.
+// A driver manifest:
+//
+//   match=pci vendor=0x1af4 device=0x1041 program=/boot/bin/drv-virtio-net post=ether0 msi=2
+//
+// svcd gives it the root Resource, the ACPI tables, a namespace with the boot
+// image at /, and the claims. Configuration space is mapped one bus (1 MiB) at
+// a time, as buses are found: the first in each region, then whatever bridges
+// lead to.
 
 #include "../../lib/vx-rt/rt.c"
+#include "../../lib/vx-rt/spawn.c"
 #include "../../lib/vx-acpi/acpi.c"
 #include "../../lib/vx-pci/pci.c"
+#include "../../lib/vx-ns/spawn.c"
 
-static vx_handle resource;
+static vx_handle resource, port;
+static vx_ns ns;
+
+// Every function found, for matching.
+typedef struct function {
+  vx_pci_fn fn;
+  uint64_t config_pa; // its 4 KiB of configuration space
+  uint16_t vendor, device;
+} function;
+
+static function functions[64];
+static uint32_t function_count;
 
 static const char *class_name(uint8_t c) {
   static const char *const NAMES[] = {"old",   "storage", "net",   "display", "media", "memory",    "bridge",
@@ -58,6 +80,12 @@ static void scan_bus(const vx_ecam *e, uint8_t bus) {
       uint32_t class = vx_pci_read32(&f, 0x08) >> 8;
       uint8_t header = vx_pci_read8(&f, 0x0e);
       found++;
+      if ((header & 0x7f) == 0 && function_count < sizeof functions / sizeof functions[0])
+        functions[function_count++] = (function){
+            .fn = f,
+            .config_pa = e->base + ((uint64_t)bus << 20 | (uint64_t)dev << 15 | (uint64_t)fn << 12),
+            .vendor = vendor,
+            .device = vx_pci_read16(&f, 0x02)};
       vx_print(VX_STR("devmgr: "));
       hex(bus, 2), vx_print(VX_STR(":")), hex(dev, 2), vx_print(VX_STR(".")), hex(fn, 1);
       vx_print(VX_STR(" ")), hex(vendor, 4), vx_print(VX_STR(":")), hex(vx_pci_read16(&f, 0x02), 4);
@@ -89,6 +117,173 @@ static void scan_bus(const vx_ecam *e, uint8_t bus) {
   }
 }
 
+// --- Drivers ---
+
+static constexpr uint32_t MAX_DRIVERS = 16, MAX_STARTS = 5;
+
+typedef struct driver {
+  const function *f;
+  char program[64], post[32];
+  uint32_t msis;
+  vx_handle listen; // the post's server end; each start gets a duplicate
+  vx_handle task;
+  uint32_t starts;
+} driver;
+
+static driver drivers[MAX_DRIVERS];
+static uint32_t driver_count;
+static uint8_t image[2 << 20];
+
+static void say(vx_str a, vx_str b, vx_str c) {
+  vx_print(VX_STR("devmgr: "));
+  vx_print(a), vx_print(b), vx_print(c);
+}
+
+// Reads a whole file through the namespace into buf; its length, or 0.
+static size_t read_whole(vx_str path, uint8_t *buf, size_t cap) {
+  vx_ns_file f;
+  if (vx_ns_open(&ns, path, P9_OREAD, &f) != VX_OK) return 0;
+  size_t n = 0;
+  int64_t got;
+  while (n < cap && (got = vx_ns_read(&f, buf + n, (uint32_t)(cap - n > 65536 ? 65536 : cap - n))) > 0)
+    n += (size_t)got;
+  vx_ns_close(&f);
+  return n;
+}
+
+// Starts (or starts again) a driver: makes its device objects, loads its
+// program, and spawns it with them.
+static vx_status start_driver(driver *d) {
+  vx_handle handles[VX_CHANNEL_MAX_HANDLES - 1] = {};
+  vx_str names[VX_CHANNEL_MAX_HANDLES - 1];
+  static char name_buf[VX_CHANNEL_MAX_HANDLES][8];
+  uint32_t count = 0;
+  static char records[4096];
+  vx_ndb_writer w = {.buf = records, .cap = sizeof records};
+  vx_status st = vx_vmo_create_physical(resource, d->f->config_pa, 4096, &handles[count]);
+  names[count++] = VX_STR("config");
+  for (uint32_t i = 0; st == VX_OK && i < 6; i++) { // memory BARs, mapped whole
+    bool wide = (vx_pci_read32(&d->f->fn, 0x10 + 4 * i) & 7) == 4;
+    vx_pci_bar b = vx_pci_bar_read(&d->f->fn, i);
+    if (wide) i++;
+    if (!b.size || b.io || b.base & 4095) continue;
+    uint32_t n = wide ? i - 1 : i;
+    uint64_t size = (b.size + 4095) & ~4095ull;
+    st = vx_vmo_create_physical(resource, b.base, size, &handles[count]);
+    char *nm = name_buf[count];
+    nm[0] = 'b', nm[1] = 'a', nm[2] = 'r', nm[3] = (char)('0' + n), nm[4] = 0;
+    names[count++] = (vx_str){nm, 4};
+    vx_ndb_put_u64(&w, "bar", n);
+    vx_ndb_put_u64(&w, "size", size);
+    vx_ndb_end(&w);
+  }
+  for (uint32_t i = 0; st == VX_OK && i < d->msis && i < 8; i++) {
+    vx_msi msi;
+    st = vx_irq_create_msi(resource, vx_pci_rid(&d->f->fn), &handles[count], &msi);
+    char *nm = name_buf[count];
+    nm[0] = 'm', nm[1] = 's', nm[2] = 'i', nm[3] = (char)('0' + i), nm[4] = 0;
+    names[count++] = (vx_str){nm, 4};
+    vx_ndb_put_u64(&w, "msi", i);
+    vx_ndb_put_u64(&w, "address", msi.address);
+    vx_ndb_put_u64(&w, "data", msi.data);
+    vx_ndb_end(&w);
+  }
+  if (st == VX_OK) st = vx_dma_domain_create(resource, &handles[count]);
+  names[count++] = VX_STR("dma");
+  if (st == VX_OK) st = vx_handle_dup(d->listen, VX_RIGHTS_SAME, &handles[count]);
+  names[count++] = VX_STR("listen");
+  if (st == VX_OK && vx_console.connector &&
+      vx_handle_dup(vx_console.connector, VX_RIGHTS_SAME, &handles[count]) == VX_OK)
+    names[count++] = VX_STR("console");
+  size_t size = st == VX_OK ? read_whole(vx_cstr(d->program), image, sizeof image) : 0;
+  if (st == VX_OK && !size) st = VX_ERR_NOT_FOUND;
+  if (st == VX_OK && w.failed) st = VX_ERR_RANGE;
+  if (st != VX_OK) {
+    for (uint32_t i = 0; i < count; i++)
+      if (handles[i]) vx_handle_close(handles[i]);
+    return st;
+  }
+  vx_str base = vx_cstr(d->program);
+  for (size_t i = base.len; i-- > 0;)
+    if (base.ptr[i] == '/') base = (vx_str){base.ptr + i + 1, base.len - i - 1};
+  vx_spawn_args a = {.name = base.len < 24 ? base : (vx_str){base.ptr, 23},
+                     .image = image,
+                     .image_size = size,
+                     .handles = handles,
+                     .handle_names = names,
+                     .handle_count = count,
+                     .records = {records, w.len}};
+  st = vx_spawn_elf(&a, &d->task);
+  if (st == VX_OK) st = vx_port_bind(port, d->task, VX_TRIGGER_EXIT, (uint64_t)(d - drivers), 0);
+  if (st == VX_OK) {
+    d->starts++;
+    say(VX_STR("started "), base, VX_STR("\n"));
+  }
+  return st;
+}
+
+static void driver_exited(driver *d, int64_t status) {
+  // The device may still hold addresses of the dead driver's DMA memory, which
+  // the kernel has freed: stop it reaching memory at all. (Until the IOMMU,
+  // M5, it could write there between the driver's death and now.)
+  uint16_t command = vx_pci_read16(&d->f->fn, 0x04);
+  vx_pci_write16(&d->f->fn, 0x04, (uint16_t)(command & ~(1u << 2)));
+  vx_handle_close(d->task);
+  d->task = VX_HANDLE_NONE;
+  say(vx_cstr(d->program), VX_STR(" exited"), VX_STR("\n"));
+  (void)status;
+  if (d->starts >= MAX_STARTS) {
+    say(vx_cstr(d->program), VX_STR(" keeps exiting; it is not started again"), VX_STR("\n"));
+    return;
+  }
+  if (start_driver(d) != VX_OK) say(VX_STR("cannot restart "), vx_cstr(d->program), VX_STR("\n"));
+}
+
+// Reads the driver manifests and starts a driver for each function one matches.
+static void match_drivers(void) {
+  vx_ns_file dir;
+  if (vx_ns_open(&ns, VX_STR("/boot/drv"), P9_OREAD, &dir) != VX_OK) return;
+  static uint8_t listing[4096], text[8192];
+  static char scratch[8192];
+  int64_t n;
+  while ((n = vx_ns_read(&dir, listing, sizeof listing)) > 0) {
+    p9_stat entry;
+    for (size_t off = 0; p9_dir_next(listing, (size_t)n, &off, &entry);) {
+      char path[96] = "/boot/drv/";
+      if (entry.name.len > sizeof path - 11) continue;
+      memcpy(path + 10, entry.name.ptr, entry.name.len);
+      size_t len = read_whole((vx_str){path, 10 + entry.name.len}, text, sizeof text);
+      vx_ndb_reader r = {.src = {(const char *)text, len}, .scratch = scratch, .scratch_cap = sizeof scratch};
+      vx_ndb_record rec;
+      while (vx_ndb_next(&r, &rec) == VX_NDB_RECORD) {
+        uint64_t vendor, device, msis = 0;
+        vx_str program = vx_ndb_get(&rec, "program"), post = vx_ndb_get(&rec, "post");
+        if (!vx_ndb_has(&rec, "match") || !vx_ndb_get_u64(&rec, "vendor", &vendor) ||
+            !vx_ndb_get_u64(&rec, "device", &device) || !program.len || program.len >= 64 || post.len >= 26)
+          continue;
+        vx_ndb_get_u64(&rec, "msi", &msis);
+        for (uint32_t i = 0; i < function_count && driver_count < MAX_DRIVERS; i++) {
+          if (functions[i].vendor != vendor || functions[i].device != device) continue;
+          driver *d = &drivers[driver_count];
+          *d = (driver){.f = &functions[i], .msis = (uint32_t)msis};
+          memcpy(d->program, program.ptr, program.len);
+          memcpy(d->post, post.ptr, post.len);
+          char claim[40] = "claim:";
+          memcpy(claim + 6, post.ptr, post.len);
+          d->listen = vx_spawn_take(claim); // one device to a post: the first match takes it
+          if (!d->listen) {
+            say(VX_STR("no claim on /srv/"), post, VX_STR(" for its driver\n"));
+            continue;
+          }
+          driver_count++;
+          if (start_driver(d) != VX_OK) say(VX_STR("cannot start "), program, VX_STR("\n"));
+        }
+      }
+    }
+  }
+  vx_ns_close(&dir);
+}
+
 int vx_main(void) {
   resource = vx_spawn_take("resource");
   vx_handle acpi = vx_spawn_take("acpi");
@@ -116,5 +311,17 @@ int vx_main(void) {
   vx_print(VX_STR("devmgr: "));
   vx_print_u64(found);
   vx_print(VX_STR(" PCI functions\n"));
-  for (;;) vx_port_wait(vx_self, VX_INFINITE, 0, &(vx_packet){}, 1); // drivers to watch, from step 2
+
+  if (vx_ns_from_spawn(&ns) != VX_OK || vx_port_create(0, &port) != VX_OK) {
+    vx_print(VX_STR("devmgr: FAILED: no namespace, so no drivers\n"));
+    return 1;
+  }
+  match_drivers();
+  for (;;) { // drivers that exit are started again, up to a limit
+    vx_packet pk[8];
+    int64_t n = vx_port_wait(port, VX_INFINITE, 0, pk, 8);
+    for (int64_t i = 0; i < n; i++)
+      if (pk[i].trigger == VX_TRIGGER_EXIT && pk[i].key < driver_count)
+        driver_exited(&drivers[pk[i].key], (int64_t)pk[i].value);
+  }
 }

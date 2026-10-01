@@ -88,7 +88,7 @@ NeoVectra/
 ├── host/                       vx9pserve (serves a host directory over 9P/9Px)
 ├── ports/                      one directory per C import: port.ndb (sources, flags) plus patches
 ├── third_party/                vendored sources, one directory each, plus VENDOR.ndb
-├── boot/                       limine.conf, svc manifests (boot/svc/*.ndb), namespace templates (boot/lib/ns/)
+├── boot/                       limine.conf, svc manifests (boot/svc/*.ndb), driver manifests (boot/drv/*.ndb), namespace templates (boot/lib/ns/)
 ├── tests/                      host/ (library tests), fuzz/ (libFuzzer targets and corpora), kernel/ (ktest),
 │                               user/ (test services), qemu/ (scenario files for `./build test`)
 └── docs/                       00–05 (this blueprint), adr/, proto/ (versioned protocol specs)
@@ -144,7 +144,7 @@ The vendored total is not hidden in a footnote. Once Mesa arrives at M7 it will 
 **Image assembly:**
 1. Build the kernel ELF.
 2. Build the user-space ELFs.
-3. `build` packs the boot image, `bootfs.tar`, a Limine module, with `vx-tar`'s writer: the namespace's mount points (`bin dev proc srv tmp`), the programs that live in it under `boot/bin`, and the service manifests under `boot/svc`. The archive is deterministic (fixed order, no times or owners). A test scenario's `with=` adds test services and their manifests from `tests/user/`.
+3. `build` packs the boot image, `bootfs.tar`, a Limine module, with `vx-tar`'s writer: the namespace's mount points (`bin dev proc srv tmp`), the programs that live in it under `boot/bin`, the service manifests under `boot/svc`, and the driver manifests under `boot/drv`. The archive is deterministic (fixed order, no times or owners). A test scenario's `with=` adds test services and their manifests from `tests/user/`.
 4. Build `limine.conf`.
 5. Create a FAT32 ESP with `mformat` and `mcopy` (mtools), then wrap it in a GPT disk image with `build`'s own GPT writer.
 

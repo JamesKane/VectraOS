@@ -261,7 +261,7 @@ static void aarch64_irq(void) {
   uint64_t iar;
   __asm__ volatile("mrs %0, icc_iar1_el1" : "=r"(iar));
   uint32_t intid = (uint32_t)iar & 0xffffff;
-  if (intid >= 1020) return; // spurious
+  if (intid >= 1020 && intid <= 1023) return; // spurious; LPIs (MSIs) are 8192 and up
   if (intid == INTID_VIRTUAL_TIMER || intid == INTID_EL2_VIRTUAL_TIMER) {
     __asm__ volatile("msr cntv_ctl_el0, xzr\n\tisb"); // disarm before EOI: the line is level-triggered
     timer_interrupt();

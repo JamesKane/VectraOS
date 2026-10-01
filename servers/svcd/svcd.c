@@ -17,6 +17,8 @@
 //   ioport=BASE count=N                        a driver's I/O ports (x86_64)
 //   mmio=ADDRESS size=N                        a driver's registers
 //   irq=LINE                                   a driver's interrupt
+//   claim=SRV                                  the post's server end, as "claim:SRV"
+//   connect=SRV                                a connector to the post, as "srv:SRV"
 //
 // post=SRV: svcd makes a listen channel, gives the service its server end
 // ("listen") and keeps the client end as /srv/SRV, for mounts. It keeps a
@@ -33,6 +35,11 @@
 // mints their device objects from the root Resource once, keeps them, and
 // gives each instance its own handles to them, so a restarted driver gets the
 // same device. Once a service has posted /srv/cons, svcd writes there too.
+//
+// A post is a rendezvous: whichever manifest names it first makes it, and
+// connections wait for a server. claim= is how devmgr gets the server end of
+// a post such as /srv/ether0, to give the driver it starts; connect= gives a
+// service a connector to one, such as netd's to /srv/ether0.
 
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-rt/spawn.c"
@@ -105,6 +112,23 @@ static post *find_post(vx_str name) {
   return nullptr;
 }
 
+// The post of that name, made if it is not there yet: whichever manifest
+// names it first (post=, claim=, connect=) makes the rendezvous. nullptr if
+// there is no room, or the name is too long.
+static post *ensure_post(vx_str name) {
+  post *p = find_post(name);
+  if (p || !name.len) return p;
+  p = &posts[post_count];
+  vx_handle ch[2];
+  if (post_count == MAX_SERVICES || name.len >= sizeof p->buf || vx_channel_create(0, ch) != VX_OK)
+    return nullptr;
+  *p = (post){.client = ch[0], .server = ch[1]};
+  memcpy(p->buf, name.ptr, name.len);
+  p->name = (vx_str){p->buf, name.len};
+  post_count++;
+  return p;
+}
+
 // A reader over one manifest, from `at`; values decode into its own scratch.
 static vx_ndb_reader manifest_reader(vx_str text, size_t at) {
   static char scratch[16 * 1024];
@@ -155,6 +179,11 @@ static void read_manifest(vx_str path, vx_str text) {
   size_t before = r.pos;
   service *current = nullptr; // the service the records belong to; none for one svcd skipped
   while (vx_ndb_next(&r, &rec) == VX_NDB_RECORD) { // none fails: it was all read above
+    if (current && (vx_ndb_has(&rec, "claim") || vx_ndb_has(&rec, "connect")) &&
+        !ensure_post(vx_ndb_get(&rec, vx_ndb_has(&rec, "claim") ? "claim" : "connect"))) {
+      say(current->name, VX_STR(": cannot make its post (too many, or a long name)"), VX_STR("\n"));
+      current->broken = true;
+    }
     if (current && is_device_record(&rec) && !current->broken) {
       vx_status st = mint(current, &rec);
       if (st != VX_OK) {
@@ -180,20 +209,9 @@ static void read_manifest(vx_str path, vx_str text) {
                                             .name = {names[service_count], name.len},
                                             .restart = vx_ndb_has(&rec, "restart")};
         current = &services[service_count];
-        bool ok = true;
-        if (srv.len && !find_post(srv)) {
-          post *p = &posts[post_count];
-          vx_handle ch[2];
-          ok = post_count < MAX_SERVICES && srv.len < sizeof p->buf && vx_channel_create(0, ch) == VX_OK;
-          if (ok) {
-            *p = (post){.client = ch[0], .server = ch[1]};
-            memcpy(p->buf, srv.ptr, srv.len);
-            p->name = (vx_str){p->buf, srv.len};
-            post_count++;
-          } else {
-            say(VX_STR("skipping "), current->name, VX_STR(": cannot post it (too many, or a long name)\n"));
-          }
-        }
+        bool ok = !srv.len || ensure_post(srv);
+        if (!ok)
+          say(VX_STR("skipping "), current->name, VX_STR(": cannot post it (too many, or a long name)\n"));
         if (ok)
           service_count++;
         else
@@ -210,7 +228,7 @@ static vx_status start(service *s) {
   vx_ndb_writer w = {.buf = records, .cap = sizeof records};
   vx_handle handles[VX_CHANNEL_MAX_HANDLES - 1] = {}; // NONE until given, so a failure closes only real ones
   vx_str handle_names[VX_CHANNEL_MAX_HANDLES - 1];
-  static char ns_names[VX_CHANNEL_MAX_HANDLES][8];
+  static char ns_names[VX_CHANNEL_MAX_HANDLES][40]; // "ns.NN", "claim:NAME", "srv:NAME"
   uint32_t count = 0;
   vx_status st = VX_OK;
 
@@ -287,6 +305,24 @@ static vx_status start(service *s) {
       if (vx_ndb_has(&rec, "aname")) vx_ndb_put(&w, "aname", vx_ndb_get(&rec, "aname"));
       if (vx_ndb_has(&rec, "flags")) vx_ndb_put(&w, "flags", vx_ndb_get(&rec, "flags"));
       vx_ndb_put(&w, "src", (vx_str){src, 5 + n});
+    } else if (vx_ndb_has(&rec, "claim") || vx_ndb_has(&rec, "connect")) {
+      // claim=NAME: the post's server end, to hand on (devmgr gives it to a
+      // driver); connect=NAME: a connector to it. As handles "claim:NAME" and
+      // "srv:NAME".
+      bool claim = vx_ndb_has(&rec, "claim");
+      vx_str name = vx_ndb_get(&rec, claim ? "claim" : "connect");
+      post *p = find_post(name);
+      if (!p || count == VX_CHANNEL_MAX_HANDLES - 1) {
+        st = VX_ERR_NOT_FOUND;
+        break;
+      }
+      char *hn = ns_names[count];
+      size_t prefix = claim ? 6 : 4;
+      memcpy(hn, claim ? "claim:" : "srv:", prefix);
+      memcpy(hn + prefix, p->name.ptr, p->name.len);
+      st = vx_handle_dup(claim ? p->server : p->client, CONNECTOR_RIGHTS, &handles[count]);
+      handle_names[count++] = (vx_str){hn, prefix + p->name.len};
+      continue;
     } else if (is_device_record(&rec)) { // passed on as they are, for the driver to read
       for (int i = 0; i < rec.count; i++) {
         if (rec.tuples[i].value.ptr)
