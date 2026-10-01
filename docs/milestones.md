@@ -76,7 +76,7 @@ In progress. 04 §6 gives M4's content but no steps or exit test, so they are se
 |---|---|---|
 | 1a. `as_unmap` with TLB shootdown; user-memory copies that recover from a fault; kernel stack guard pages; ring mappings unmapped when their sessions end | Done | `d3a4bf7` |
 | 1b. The fault path: exception ports, faults handled in the task, `thread_interrupt` with `ERR_INTERRUPTED`, `thread_state`, `vmo_clone`, thread ids; futex words read through the user mapping | Done | `7c4f4df` |
-| 1c. The `DEBUG` right: first-chance exception ports, `PASS` and `STEP` (single step on both architectures), `thread_suspend`/`thread_resume`, `task_mem_rw` with private copies of code for breakpoints | Done | not yet committed |
+| 1c. The `DEBUG` right: first-chance exception ports, `PASS` and `STEP` (single step on both architectures), `thread_suspend`/`thread_resume`, `task_mem_rw` with private copies of code for breakpoints | Done | `33739bc` |
 | 2. musl with the vx back end, the `vectra-musl` sysroot; a C program runs | To do | |
 | 3. `posixd`: pids, `fork`, `exec`, `wait`, signals, sessions; pipes; a RAM file system for `/tmp`; `/dev/null`, `/dev/urandom` | To do | |
 | 4. `ptyd`; sockets over `/net`; `poll` and `select`; the `posix` 9Px extension | To do | |
