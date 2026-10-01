@@ -21,6 +21,7 @@ typedef struct p9_client {
   uint32_t extensions; // negotiated
   uint16_t next_tag;
   uint32_t next_fid;
+  vx_str uname; // who attaches; empty: "none"
   p9_msg reply; // the last reply; its strings and data point into rbuf
 } p9_client;
 
@@ -54,8 +55,11 @@ static vx_status p9c_call(p9_client *c, p9_msg *t) {
 }
 
 [[maybe_unused]] static vx_status p9c_attach(p9_client *c, vx_str aname, uint32_t *fid) {
-  p9_msg t = {
-      .type = P9_Tattach, .fid = c->next_fid++, .afid = P9_NOFID, .uname = VX_STR("none"), .aname = aname};
+  p9_msg t = {.type = P9_Tattach,
+              .fid = c->next_fid++,
+              .afid = P9_NOFID,
+              .uname = c->uname.len ? c->uname : VX_STR("none"),
+              .aname = aname};
   vx_status e = p9c_call(c, &t);
   if (e == VX_OK) *fid = t.fid;
   return e;

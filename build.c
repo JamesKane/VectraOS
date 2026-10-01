@@ -1548,12 +1548,39 @@ typedef struct qemu_opts {
   bool gdb;
   bool test;         // serial on stdout, no monitor
   const char *share; // the directory vx9pserve serves at 10.0.2.100!5640
+  const char *u9fs;  // the root u9fs serves at 10.0.2.101!564, and its log; or nullptr
   const char *cdrom; // boot this ISO as a CD, with no disk
 } qemu_opts;
 
 // host/vx9pserve, built for this machine: the 9P server VectraOS mounts over
 // TCP (M3). Rebuilt when its sources or vx-9p's change.
 static const char VX9PSERVE[] = "out/host/vx9pserve";
+
+// third_party/u9fs (ADR-0006), built for this machine: the stock 9P2000
+// server the u9fs scenario tests against. As upstream left it, but for two
+// constants its rune.c uses and nothing defines.
+static const char U9FS[] = "out/host/u9fs";
+
+static bool build_u9fs(void) {
+  static const char *const UNITS[] = {
+      "authnone",    "authrhosts", "authp9any", "convD2M",  "convM2D", "convM2S", "convS2M", "des",
+      "dirmodeconv", "doprint",    "fcallconv", "oldfcall", "print",   "random",  "readn",   "remotehost",
+      "rune",        "safecpy",    "strecpy",   "tokenize", "u9fs",    "utfrune"};
+  struct stat out, src;
+  bool stale = stat(U9FS, &out) != 0;
+  for (size_t i = 0; !stale && i < sizeof UNITS / sizeof UNITS[0]; i++)
+    stale = stat(fmt("third_party/u9fs/%s.c", UNITS[i]), &src) != 0 || newer(&src, &out);
+  if (!stale) return true;
+  mkdirs("out/host");
+  fprintf(stderr, "  CC    u9fs host\n");
+  cmd cc = {};
+  cmd_add(&cc, CLANG);
+  cmd_addv(&cc, (const char *const[]){"-std=gnu89", "-D_DEFAULT_SOURCE", "-DBit5=2", "-DRunemax=0x10FFFF",
+                                      "-O2", "-g", "-w", "-Ithird_party/u9fs", "-o", U9FS, nullptr});
+  for (size_t i = 0; i < sizeof UNITS / sizeof UNITS[0]; i++)
+    cmd_add(&cc, fmt("third_party/u9fs/%s.c", UNITS[i]));
+  return run(&cc);
+}
 
 static bool build_vx9pserve(void) {
   static const char *const SOURCES[] = {"host/vx9pserve/main.c", "host/vx9pserve/fs.c",
@@ -1606,6 +1633,16 @@ static const char *fresh_share(const char *dir) {
   return dir;
 }
 
+// The same, as a root for u9fs, which chroots there: with the one user its
+// lookups find (ADR-0006).
+static const char *fresh_u9fs_root(const char *dir) {
+  fresh_share(dir);
+  mkdirs(fmt("%s/etc", dir));
+  write_file(fmt("%s/etc/passwd", dir), (vx_str){"vectra:x:0:0::/:/bin/false\n", 28});
+  write_file(fmt("%s/etc/group", dir), (vx_str){"vectra:x:0:\n", 12});
+  return dir;
+}
+
 static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
   if (strcmp(a->name, "x86_64") == 0) {
     cmd_add(c, "/usr/bin/qemu-system-x86_64");
@@ -1647,10 +1684,17 @@ static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
   // vx9pserve serving o.share, so no host port is needed. (QEMU will not
   // forward the gateway's own address, so M3's exit test as 04 §5 gives it,
   // tcp!10.0.2.2!5640, needs `vx9pserve --listen 127.0.0.1:5640` on the host.)
+  // With o.u9fs, each to 10.0.2.101!564 gets a u9fs, in a user namespace of
+  // its own so that it may chroot (ADR-0006).
   cmd_add(c, "-netdev");
-  cmd_add(c,
-          fmt("user,id=net0,guestfwd=tcp:10.0.2.100:7-cmd:cat,guestfwd=tcp:10.0.2.100:5640-cmd:%s --stdio %s",
-              VX9PSERVE, o.share));
+  const char *u9fs =
+      o.u9fs ? fmt(",guestfwd=tcp:10.0.2.101:564-cmd:unshare -r %s -a none -u vectra -n -l %s.log %s", U9FS,
+                   o.u9fs, o.u9fs)
+             : "";
+  cmd_add(
+      c,
+      fmt("user,id=net0,guestfwd=tcp:10.0.2.100:7-cmd:cat,guestfwd=tcp:10.0.2.100:5640-cmd:%s --stdio %s%s",
+          VX9PSERVE, o.share, u9fs));
   cmd_addv(c, (const char *const[]){"-device", "virtio-net-pci,netdev=net0,disable-legacy=on", nullptr});
   if (o.test)
     cmd_addv(c, (const char *const[]){"-serial", "stdio", "-monitor", "none", nullptr});
@@ -1720,9 +1764,9 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
       vx_str file = vx_ndb_get(&rec, "host");
       for (size_t k = 0; k < file.len; k++)
         if (file.ptr[k] == '/' && (k + 2 < file.len && file.ptr[k + 1] == '.' && file.ptr[k + 2] == '.'))
-          die("%s:%zu: host= names a file inside the share", path, rec.line);
+          die("%s:%zu: host= names a file inside the run directory", path, rec.line);
       if (!file.len || file.ptr[0] == '/' || (file.len >= 2 && file.ptr[0] == '.' && file.ptr[1] == '.'))
-        die("%s:%zu: host= names a file inside the share", path, rec.line);
+        die("%s:%zu: host= names a file inside the run directory", path, rec.line);
       host_file[host_count] = str_dup(file);
       host_text[host_count++] = str_dup(vx_ndb_get(&rec, "text"));
     } else if ((vx_ndb_has(&rec, "expect") || vx_ndb_has(&rec, "line") || vx_ndb_has(&rec, "prompt")) &&
@@ -1765,8 +1809,11 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   if (!log) die("cannot write %s", log_path);
 
   cmd c = {};
-  const char *share = fresh_share(fmt("%s/share-%s", out_dir(a, release), name));
-  qemu_cmd(&c, a, image, (qemu_opts){.kvm = kvm_usable(a), .test = true, .share = share, .cdrom = cdrom});
+  // What the run's servers serve, fresh: run-NAME/share for vx9pserve, run-NAME/u9fs for u9fs.
+  const char *run_dir = fmt("%s/run-%s", out_dir(a, release), name);
+  const char *share = fresh_share(fmt("%s/share", run_dir)), *u9fs = fresh_u9fs_root(fmt("%s/u9fs", run_dir));
+  qemu_cmd(&c, a, image,
+           (qemu_opts){.kvm = kvm_usable(a), .test = true, .share = share, .u9fs = u9fs, .cdrom = cdrom});
   if (verbose) cmd_print(&c);
   signal(SIGPIPE, SIG_IGN); // QEMU gone: a write to it fails, rather than ending this process
   int fds[2], keys[2];      // QEMU's serial: its output, and what is typed into it
@@ -1869,7 +1916,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   // What the guest was to leave on the host, in its copy of the share
   // (with or without a final newline).
   for (int k = 0; k < host_count && strcmp(verdict, "ok") == 0; k++) {
-    const char *file = fmt("%s/%s", share, host_file[k]);
+    const char *file = fmt("%s/%s", run_dir, host_file[k]);
     struct stat st;
     vx_str got = stat(file, &st) == 0 ? read_file(file) : (vx_str){"", 0};
     if (got.len && got.ptr[got.len - 1] == '\n') got.len--;
@@ -1932,7 +1979,7 @@ static int cmd_test(const arch *only, bool release) {
       scenarios[scenario_count++] = fmt("%.*s", (int)(strlen(base) - 4), base);
     }
   }
-  if (!build_vx9pserve()) return 1;
+  if (!build_vx9pserve() || !build_u9fs()) return 1;
   return per_arch(only, release, test_arch);
 }
 
@@ -1953,10 +2000,10 @@ static int cmd_qemu(const arch *a, bool release, qemu_opts o) {
 
 static const char *const VENDOR_KEYS[] = {
     // required
-    "version", "upstream", "sha256", "tree.sha256", "license", "adr", "reviewed.by", nullptr,
+    "version", "upstream", "tree.sha256", "license", "adr", "reviewed.by", nullptr,
 };
 static const char *const VENDOR_OPTIONAL_KEYS[] = {
-    "name", "signed.by", "port", "patches", "reviewed.date", "reviewed.scope", nullptr,
+    "name", "sha256", "git.tree", "signed.by", "port", "patches", "reviewed.date", "reviewed.scope", nullptr,
 };
 
 static bool in_list(const char *const *list, vx_str key) {
@@ -2053,6 +2100,10 @@ static int cmd_vendor_check(void) {
         fprintf(stderr, "  VENDOR %s: missing %s=\n", name, *k);
         ok = false;
       }
+    if (!vx_ndb_get(&rec, "sha256").len && !vx_ndb_get(&rec, "git.tree").len) { // a release, or a pinned tree
+      fprintf(stderr, "  VENDOR %s: missing sha256= (or git.tree=, for an import with no release)\n", name);
+      ok = false;
+    }
     const char *adr = str_dup(vx_ndb_get(&rec, "adr"));
     if (*adr && !exists(adr)) {
       fprintf(stderr, "  VENDOR %s: %s does not exist\n", name, adr);

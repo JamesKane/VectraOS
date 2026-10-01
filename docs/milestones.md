@@ -10,7 +10,7 @@ Updated 2026-10-01.
 |---|---|---|
 | **M1** First light | Done (2026-09-30) | `tests/qemu/boot.ndb` passes on x86_64 and aarch64 |
 | **M2** A shell in a namespace | Done (2026-10-01) | `tests/qemu/shell.ndb` passes on both |
-| **M3** Mount the network | In progress: all but step 5b (interoperability) done | `tests/qemu/mount.ndb` passes on both (against 10.0.2.100; see below) |
+| **M3** Mount the network | Done (2026-10-01) | `tests/qemu/mount.ndb` passes on both (against 10.0.2.100; see below) |
 | M4 POSIX and debugging | Not started | |
 | M5 Storage | Not started | |
 | M6 Pixels | Not started | |
@@ -63,7 +63,7 @@ In progress.
 | 3c. The DNS stub in `vx-net`, `/net/cs` and `/net/dns`, UDP `headers`, the `cs` command | Done | `94571ec` |
 | 4. 9P over TCP (`lib/vx-ns/dial.c`), `mount tcp!host!port` and `9p://host:port` in `gsh`, dialed mounts inherited as `dial=` records | Done | `528b511` |
 | 5a. `host/vx9pserve` (`--listen`, `--stdio`), confined with `openat` and `O_NOFOLLOW`; QEMU runs one per connection for tests | Done | `528b511` |
-| 5b. Interoperability against a stock 9P2000 server (`u9fs` or 9front's `exportfs`) | To do: none is installed | |
+| 5b. Interoperability against `u9fs` (vendored as a host test tool, ADR-0006): attach as `vectra`, not `none`; other servers' error wordings understood | Done | not yet committed |
 | 6. The exit test as a scenario, its write checked on the host (`host=`); `./build image --iso`: ISO 9660 with an El Torito UEFI entry, booted from a CD in the `iso` scenario | Done | `819c8c5` |
 
 The exit test's steps all pass in `tests/qemu/mount.ndb`, with one difference: the server is at 10.0.2.100!5640, not the host's 10.0.2.2!5640, because QEMU will not forward the gateway's own address to a command. The exit test as written works by hand under `./build qemu`, with `vx9pserve --listen 127.0.0.1:5640 DIR` on the host. Booting a real UEFI PC from USB is not gated, and has not been tried.
@@ -81,7 +81,6 @@ Deferred deliberately, each with where it is due:
 | DNS: A records only; no AAAA, no TCP fallback for truncated replies, no search domains | Names resolve to IPv4 only, from what fits in one UDP reply | With IPv6; when a name needs it |
 | UDP `headers` mode is not exercised in QEMU | Only the code path through `vx-net` is tested (host tests); netd's header format is not | When a UDP service needs it |
 | Each process dials its own TCP connection for a `tcp!` mount (a child cannot be handed one) | Every command in a mounted directory opens a connection, which then waits 10 s in TIME_WAIT; a fast script could use up `netd`'s 32 conversations | Before M8 (a shared 9P connection, through a post) |
-| No stock 9P2000 server to test against | `vx-9p` and `vx9pserve` are tested only against each other | M3 step 5b |
 | No loopback route | The guest cannot connect to itself, so `listen` is tested in the host tests and the 9P framework but not end to end in QEMU | M3 step 6, or when a test needs it |
 | TCP: no SACK, no timestamps, out-of-order segments dropped; TIME_WAIT 10 s | Recovery from loss is slower than it could be | After M3 |
 | Kernel stacks have no guard pages | A kernel stack overflow corrupts memory instead of faulting; the deepest path measured uses about 9 of 16 KiB at `-O0` | M4 |
@@ -111,5 +110,6 @@ Deferred deliberately, each with where it is due:
 | `tcp` | TCP against QEMU's own stack: 256 KiB echoed through a host `cat`, hangup, a refused connection |
 | `mount` | M3's exit test against `vx9pserve` at 10.0.2.100!5640: `mount`, `ls` and `cat` (children dialing their own), a write found on the host, `9p://`, `ns` |
 | `iso` | The ISO, as a CD with no disk, boots to the shell |
+| `u9fs` | Interoperability: the same against `u9fs`, a stock 9P2000 server, chrooted in a user namespace |
 
 Host tests (`tests/host/`, under ASan and UBSan) and fuzzers (`tests/fuzz/`) run in `./build check`.

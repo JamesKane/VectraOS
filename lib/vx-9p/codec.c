@@ -468,10 +468,34 @@ static bool p9_str_eq(vx_str a, const char *b) {
   return VX_STR("i/o error");
 }
 
+// Other servers' wordings, understood but never sent: Unix's strerror(), as
+// u9fs passes it on, and u9fs's own messages (M3's interoperability test).
+#define P9_ERRORS_HEARD(X)                                                                                   \
+  X(VX_ERR_NOT_FOUND, "no such file or directory")                                                           \
+  X(VX_ERR_NOT_FOUND, "not a directory")                                                                     \
+  X(VX_ERR_EXISTS, "file exists")                                                                            \
+  X(VX_ERR_EXISTS, "file or directory already exists")                                                       \
+  X(VX_ERR_ACCESS, "read-only file system")                                                                  \
+  X(VX_ERR_ACCESS, "is a directory")                                                                         \
+  X(VX_ERR_ACCESS, "operation not permitted")                                                                \
+  X(VX_ERR_BAD_HANDLE, "fid unknown or out of range")                                                        \
+  X(VX_ERR_NO_MEMORY, "no space left on device")
+
+static bool p9_str_eq_nocase(vx_str a, const char *b) {
+  size_t n = 0;
+  for (; b[n]; n++) {
+    if (n == a.len) return false;
+    char c = a.ptr[n] >= 'A' && a.ptr[n] <= 'Z' ? (char)(a.ptr[n] + 32) : a.ptr[n];
+    if (c != b[n]) return false;
+  }
+  return n == a.len;
+}
+
 [[maybe_unused]] static vx_status p9_error_status(vx_str text) {
 #define P9_ERROR_MATCH(status, txt)                                                                          \
-  if (p9_str_eq(text, txt)) return (status);
+  if (p9_str_eq_nocase(text, txt)) return (status);
   P9_ERRORS(P9_ERROR_MATCH)
+  P9_ERRORS_HEARD(P9_ERROR_MATCH)
 #undef P9_ERROR_MATCH
   return VX_ERR_INVALID;
 }

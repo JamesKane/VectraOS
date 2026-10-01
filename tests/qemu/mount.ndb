@@ -38,7 +38,7 @@ line="mount tcp!10.0.2.100!5640 /n/again"
 prompt="vx% "
 send="echo done"
 line="done"
-host=out.txt text=hi
+host=share/out.txt text=hi
 fail="vx: panic"
 fail="FAILED"
 fail="killed"

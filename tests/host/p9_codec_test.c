@@ -157,6 +157,12 @@ static void test_versions(void) {
   CHECK(p9_error_status(p9_error_text(VX_ERR_NOT_FOUND)) == VX_ERR_NOT_FOUND);
   CHECK(p9_error_status(p9_error_text(VX_ERR_ACCESS)) == VX_ERR_ACCESS);
   CHECK(p9_error_status(VX_STR("something only plan 9 says")) == VX_ERR_INVALID);
+  // Other servers' wordings: Unix's strerror() as u9fs passes it on, and u9fs's own.
+  CHECK(p9_error_status(VX_STR("No such file or directory")) == VX_ERR_NOT_FOUND);
+  CHECK(p9_error_status(VX_STR("Permission denied")) == VX_ERR_ACCESS);
+  CHECK(p9_error_status(VX_STR("file or directory already exists")) == VX_ERR_EXISTS);
+  CHECK(p9_error_status(VX_STR("No such file or directory!")) == VX_ERR_INVALID); // whole text only
+  CHECK(p9_error_status(VX_STR("No such file")) == VX_ERR_INVALID);
 }
 
 // Directory reads: each entry is bounded by what was read, not by its own size.

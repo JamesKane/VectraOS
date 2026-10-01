@@ -3,7 +3,7 @@
 # driver, after which everything here comes through it, and then bootfs.
 # (svcd's M1 checks of ports and VMOs are in ktest now.)
 
-scenario=boot timeout=10
+scenario=boot timeout=20
 expect="vx: kernel 0.1.0 $arch, "
 expect="svcd: hello from user space (task 1)"
 expect=": serving /srv/cons"

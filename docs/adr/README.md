@@ -9,3 +9,4 @@ One file per decision, `NNNN-title.md`, numbered in order. An ADR records a deci
 | [0003](0003-no-registries.md) | No package registries | Accepted |
 | 0004 | The ring layout; freezes `vx-abi` v0 | Written at M2, when the ring code exists |
 | [0005](0005-c23-house-subset.md) | C23 and the house subset | Accepted |
+| [0006](0006-u9fs.md) | u9fs, vendored as a host test tool for 9P interoperability | Accepted |
