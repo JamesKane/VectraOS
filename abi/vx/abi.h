@@ -288,8 +288,9 @@ static constexpr uint32_t VX_RIGHTS_SAME = 1u << 31; // handle_dup: the rights t
 
 // --- Exceptions and interrupts (docs/01 §9, 05 §2) ---
 //
-// A fault in user mode goes to the task's in-task handler, if it has one, then
-// to its exception port, then to the default: the task is killed.
+// A fault in user mode goes first to a debugger's port, if one is bound with
+// FIRST_CHANCE, then to the task's in-task handler, if it has one, then to its
+// exception port, then to the default: the task is killed (05 §2).
 //
 // exception_bind(task, port, key, options): with options 0, faults stop the
 //     thread and post a packet to port: trigger VX_TRIGGER_EXCEPTION, the
@@ -298,15 +299,28 @@ static constexpr uint32_t VX_RIGHTS_SAME = 1u << 31; // handle_dup: the rights t
 //     handler in the task (port ignored, 0 unbinds): the kernel puts a
 //     vx_exception on the faulting thread's own stack, below the 128 bytes
 //     under its stack pointer, and starts the thread at handler(exception).
-//     A handler never returns: it resumes with exception_resume.
+//     A handler never returns: it resumes with exception_resume. With
+//     VX_EXCEPTION_FIRST_CHANCE (and the DEBUG right), a debugger's port, as
+//     with options 0 but before the rest; it also gets STEP exceptions.
 // exception_resume(task, thread, action, regs): resumes a thread stopped at
 //     its port: CONTINUE (with the registers at regs, if not null; else as it
-//     stopped, retrying the instruction) or KILL. With thread 0, the caller
+//     stopped, retrying the instruction), KILL, or, from a debugger's port,
+//     PASS (to whoever is next in line) or STEP (CONTINUE for one instruction,
+//     then a STEP exception to the debugger). With thread 0, the caller
 //     resumes itself from its handler: CONTINUE with the registers its
 //     vx_exception holds, perhaps changed.
-// thread_state(task, thread, op, buffer, size): for a thread stopped at its
-//     port, GET_EXCEPTION reads its vx_exception, and GET_REGS and SET_REGS its
-//     registers.
+// thread_state(task, thread, op, buffer, size): for a thread stopped at a
+//     port, GET_EXCEPTION reads its vx_exception; for one stopped or suspended,
+//     GET_REGS and SET_REGS its registers (DEBUG for a suspended one).
+// thread_suspend(task, thread), thread_resume(task, thread): counted, with the
+//     DEBUG right. A suspended thread stops before it next returns to user
+//     mode; thread_suspend returns once it has (stopped there, or blocked in a
+//     call), or TIMED_OUT after a second.
+// task_mem_rw(task, ops, count): with the DEBUG right, copies between another
+//     task's memory and the caller's, a vx_mem_op each; each op gets its own
+//     status. A write to a mapping that is not writable (code, for a
+//     breakpoint) first gives the task a private copy of that mapping, as
+//     ptrace does: never a writable mapping of it.
 // thread_interrupt(task, thread, value): interrupts the thread (any thread of
 //     the task, with thread 0): a call it is blocked in returns
 //     ERR_INTERRUPTED, and on its way back to user mode it is diverted to the
@@ -340,6 +354,7 @@ enum vx_exception_kind : uint32_t {
   VX_EXCEPTION_FP_DISABLED, // FP/SIMD while the kernel does not save it (01 §11)
   VX_EXCEPTION_GENERAL,     // any other fault (x86 #GP, say); code: the architecture's
   VX_EXCEPTION_INTERRUPT,   // thread_interrupt; code: its value
+  VX_EXCEPTION_STEP,        // one instruction done, after exception_resume(STEP)
 };
 
 typedef struct vx_exception {
@@ -351,6 +366,14 @@ typedef struct vx_exception {
   vx_regs regs;
 } vx_exception;
 
-enum vx_exception_options : uint32_t { VX_EXCEPTION_IN_TASK = 1 };
-enum vx_resume_action : uint32_t { VX_RESUME_CONTINUE = 1, VX_RESUME_KILL };
+enum vx_exception_options : uint32_t { VX_EXCEPTION_IN_TASK = 1, VX_EXCEPTION_FIRST_CHANCE = 2 };
+enum vx_resume_action : uint32_t { VX_RESUME_CONTINUE = 1, VX_RESUME_KILL, VX_RESUME_PASS, VX_RESUME_STEP };
+
+typedef struct vx_mem_op { // task_mem_rw
+  uint64_t address;        // in the task
+  uint64_t buffer;         // in the caller
+  uint64_t size;
+  uint32_t write; // 1: buffer to address; 0: address to buffer
+  int32_t status; // set by the kernel: a vx_status
+} vx_mem_op;
 enum vx_thread_state_op : uint32_t { VX_STATE_GET_EXCEPTION = 1, VX_STATE_GET_REGS, VX_STATE_SET_REGS };

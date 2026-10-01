@@ -706,6 +706,9 @@ static int64_t sys_exception_resume(vx_handle th, uint64_t id, uint64_t action, 
 static int64_t sys_thread_state(vx_handle th, uint64_t id, uint64_t op, uint64_t buf, uint64_t size);
 static int64_t sys_thread_interrupt(vx_handle th, uint64_t id, uint64_t value);
 static int64_t sys_vmo_clone(vx_handle h, uint64_t offset, uint64_t size, uint64_t options, uint64_t out);
+static int64_t sys_thread_suspend(vx_handle th, uint64_t id);
+static int64_t sys_thread_resume(vx_handle th, uint64_t id);
+static int64_t sys_task_mem_rw(vx_handle th, uint64_t ops_ptr, uint64_t count);
 
 static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   switch (nr) {
@@ -749,6 +752,9 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_thread_state: return sys_thread_state((vx_handle)a[0], a[1], a[2], a[3], a[4]);
   case VX_SYS_thread_interrupt: return sys_thread_interrupt((vx_handle)a[0], a[1], a[2]);
   case VX_SYS_vmo_clone: return sys_vmo_clone((vx_handle)a[0], a[1], a[2], a[3], a[4]);
+  case VX_SYS_thread_suspend: return sys_thread_suspend((vx_handle)a[0], a[1]);
+  case VX_SYS_thread_resume: return sys_thread_resume((vx_handle)a[0], a[1]);
+  case VX_SYS_task_mem_rw: return sys_task_mem_rw((vx_handle)a[0], a[1], a[2]);
   case VX_SYS_handle_dup: return sys_handle_dup((vx_handle)a[0], a[1], a[2]);
   case VX_SYS_handle_close: return handle_close(current_task(), (vx_handle)a[0]);
   default: return VX_ERR_UNSUPPORTED;

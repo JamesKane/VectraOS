@@ -32,6 +32,7 @@ static constexpr uint32_t HANDLE_SLOTS = 4096 / sizeof(handle_entry);
 typedef struct mapping {
   uint64_t va, size, offset;
   struct vmo *vmo;
+  uint32_t flags; // VX_MAP_WRITE, VX_MAP_EXEC
 } mapping;
 
 static constexpr uint32_t TASK_MAX_MAPPINGS = 4096 / sizeof(mapping);
@@ -68,6 +69,8 @@ typedef struct task {
   uint64_t exc_handler;
   struct port *exc_port; // a reference, or null
   uint64_t exc_key;
+  struct port *dbg_port; // a debugger's, which sees faults first (FIRST_CHANCE); a reference, or null
+  uint64_t dbg_key;
   uint32_t io_ranges; // I/O ports it may use (x86_64, device.c): [io_base, io_base + io_count)
   uint16_t io_base[TASK_MAX_IO];
   uint32_t io_count[TASK_MAX_IO]; // up to 0x10000
@@ -110,6 +113,9 @@ struct thread {
   // Exceptions and interrupts (obj/exception.c), under its task's lock.
   uint32_t id;            // in its task
   bool exc_stopped;       // stopped at its task's exception port, until exception_resume
+  bool exc_first;         // and that port is a debugger's
+  uint32_t suspend_count; // thread_suspend, less thread_resume
+  bool parked;            // stopped on its way to user mode while suspended
   uint32_t exc_action;    // what exception_resume said: enum vx_resume_action, or 0
   bool interrupt_pending; // thread_interrupt, not yet delivered
   uint64_t interrupt_value;
@@ -347,7 +353,7 @@ static vx_status task_map(task *t, vmo *v, uint64_t offset, uint64_t size, uint3
   }
   if (st == VX_OK) {
     object_ref(&v->obj);
-    *slot = (mapping){.va = at, .size = size, .offset = offset, .vmo = v};
+    *slot = (mapping){.va = at, .size = size, .offset = offset, .vmo = v, .flags = flags};
     t->mapped += size;
     if (!*va) t->map_next = end + 4096; // leave a guard page between placed mappings
     *va = at;
@@ -406,7 +412,8 @@ static vx_status task_unmap(task *t, uint64_t va, uint64_t size) {
       for (uint32_t k = 0; k < TASK_MAX_MAPPINGS && !rest; k++)
         if (!t->maps[k].size) rest = &t->maps[k];
       object_ref(&m->vmo->obj);
-      *rest = (mapping){.va = hi, .size = m_end - hi, .offset = m->offset + (hi - m->va), .vmo = m->vmo};
+      *rest = (mapping){
+          .va = hi, .size = m_end - hi, .offset = m->offset + (hi - m->va), .vmo = m->vmo, .flags = m->flags};
       m->size = lo - m->va;
     }
   }

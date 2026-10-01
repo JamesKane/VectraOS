@@ -36,8 +36,8 @@ static void task_teardown(task *t) {
   handle_entry *handles = t->handles;
   mapping *maps = t->maps;
   uint64_t root = t->root;
-  struct port *exc_port = t->exc_port;
-  t->exc_port = nullptr;
+  struct port *exc_port = t->exc_port, *dbg_port = t->dbg_port;
+  t->exc_port = t->dbg_port = nullptr;
   t->exc_handler = 0;
   t->handles = nullptr;
   t->maps = nullptr;
@@ -45,6 +45,7 @@ static void task_teardown(task *t) {
   t->mapped = 0;
   spin_unlock(&t->lock);
   if (exc_port) object_drop((object *)exc_port);
+  if (dbg_port) object_drop((object *)dbg_port);
   for (uint32_t i = 1; i < HANDLE_SLOTS; i++)
     if (handles[i].obj) object_drop(handles[i].obj);
   for (uint32_t i = 0; i < TASK_MAX_MAPPINGS; i++)
@@ -136,6 +137,7 @@ static void task_kill(task *t, int64_t status) {
 // Every trap from user mode ends here before returning to it: a killed task's
 // thread exits, and a pending reschedule happens.
 static void exception_check_interrupt(void); // obj/exception.c
+static bool exception_check_suspend(void);
 
 static void user_return(void) {
   object_drain(); // what this trap dropped
@@ -143,6 +145,7 @@ static void user_return(void) {
     cpu *c = this_cpu();
     task *t = c->current->task;
     if (t->killed) thread_exit_current(t->exit_status);
+    if (exception_check_suspend()) continue; // parked until resumed: look at the kill again
     if (!c->resched) break;
     schedule(); // and look again: a kill may have come meanwhile
   }

@@ -523,6 +523,12 @@ static void arch_cpu_init(uint32_t index) {
   // kernel saves that state (01 §1); otherwise one task's registers would
   // reach the next. The kernel itself uses none.
   __asm__ volatile("msr cpacr_el1, xzr\n\tisb" ::: "memory");
+  // Software step for user threads (exception_resume STEP): the OS lock open,
+  // and MDSCR_EL1 with KDE off, so the kernel itself is never stepped. SS is
+  // set only on the way to a thread being stepped (step_on_return).
+  uint64_t mdscr;
+  __asm__ volatile("msr oslar_el1, xzr\n\tisb\n\tmrs %0, mdscr_el1" : "=r"(mdscr));
+  __asm__ volatile("msr mdscr_el1, %0\n\tisb" : : "r"(mdscr & ~(1ull << 13 | 1)) : "memory");
   __asm__ volatile("msr vbar_el1, %0\n\t"
                    "msr tpidr_el1, %1\n\t"
                    "isb"
@@ -571,10 +577,13 @@ static uint64_t arch_thread_initial_sp(thread *t) {
 }
 
 // Enters EL0 at entry with interrupts unmasked (SPSR = 0: EL0t, DAIF clear).
+static void step_on_return(const trap_frame *f); // below, with the user-mode registers
+
 [[noreturn]] static void arch_enter_user(uint64_t entry, uint64_t sp, uint64_t arg, uint64_t arg2,
                                          uint64_t kstack_top) {
   trap_frame *f = (trap_frame *)kstack_top - 1;
   *f = (trap_frame){.x = {arg, arg2}, .elr = entry, .spsr = 0, .sp_el0 = sp};
+  step_on_return(f); // a new thread is never being stepped
   arch_enter_frame(f);
 }
 
@@ -644,6 +653,36 @@ static vx_status arch_frame_set_regs(trap_frame *f, const vx_regs *r) {
 
 // To pc(arg), with arg (16-aligned) as the stack pointer, and no frame or
 // return address to go back to.
+static constexpr uint64_t SPSR_SS = 1ull << 21; // software step
+
+static void arch_frame_step(trap_frame *f, bool on) { f->spsr = on ? f->spsr | SPSR_SS : f->spsr & ~SPSR_SS; }
+
+// MDSCR_EL1.SS on only for a return to a thread being stepped: with it on, a
+// return with SPSR.SS clear would take a step exception at once (the
+// active-pending state), before running anything.
+static bool step_enabled[MAX_CPUS];
+
+static void step_on_return(const trap_frame *f) {
+  bool want = f->spsr & SPSR_SS;
+  uint32_t cpu = arch_cpu_index();
+  if (step_enabled[cpu] == want) return;
+  uint64_t mdscr;
+  __asm__ volatile("mrs %0, mdscr_el1" : "=r"(mdscr));
+  __asm__ volatile("msr mdscr_el1, %0\n\tisb" : : "r"(want ? mdscr | 1 : mdscr & ~1ull) : "memory");
+  step_enabled[cpu] = want;
+}
+
+// Code written through the direct map: cleaned to the point of unification,
+// then every CPU's instruction cache invalidated.
+static void arch_sync_icache(void *p, size_t len) {
+  uint64_t ctr;
+  __asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));
+  uint64_t line = 4ull << (ctr >> 16 & 15); // DminLine: log2 of words
+  for (uint64_t a = (uint64_t)p & ~(line - 1); a < (uint64_t)p + len; a += line)
+    __asm__ volatile("dc cvau, %0" : : "r"(a) : "memory");
+  __asm__ volatile("dsb ish\n\tic ialluis\n\tdsb ish\n\tisb" ::: "memory");
+}
+
 static bool arch_frame_divert(trap_frame *f, uint64_t pc, uint64_t arg) {
   f->elr = pc;
   f->sp_el0 = arg;
@@ -674,6 +713,7 @@ static uint32_t aarch64_exception_kind(const trap_frame *f, uint32_t *code, uint
   case 0x22:
   case 0x26: *address = f->far; return VX_EXCEPTION_ALIGNMENT; // PC or SP alignment
   case 0x2c: return VX_EXCEPTION_ARITHMETIC;                   // trapped FP exception
+  case 0x32: return VX_EXCEPTION_STEP;                         // software step, from EL0
   default: return VX_EXCEPTION_GENERAL;
   }
 }
@@ -706,7 +746,10 @@ void aarch64_trap(trap_frame *f, uint64_t index) {
     kput_hex(f->elr);
     panic_end(f->elr, f->x[29]);
   }
-  if (from_user) user_return();
+  if (from_user) {
+    user_return();
+    step_on_return(f);
+  }
 }
 
 [[noreturn]] static void arch_halt(void) {

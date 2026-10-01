@@ -77,7 +77,9 @@ static struct trap_frame *arch_user_frame(thread *t);
 static void arch_frame_regs(const struct trap_frame *f, vx_regs *r);
 static vx_status arch_frame_set_regs(struct trap_frame *f, const vx_regs *r);
 static bool arch_frame_divert(struct trap_frame *f, uint64_t pc,
-                              uint64_t arg); // pc(arg), on a stack just below arg
+                              uint64_t arg);                // pc(arg), on a stack just below arg
+static void arch_frame_step(struct trap_frame *f, bool on); // trap after one user instruction
+static void arch_sync_icache(void *p, size_t len); // code written through a data mapping, made runnable
 
 // Device interrupts and I/O for user-space drivers (obj/device.c).
 static vx_status arch_irq_canonical(uint32_t line, uint32_t *out); // the number the line is known by

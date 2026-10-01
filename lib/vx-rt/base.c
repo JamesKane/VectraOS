@@ -119,6 +119,18 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   return (vx_status)vx_syscall(VX_SYS_thread_state, task, thread, op, (uint64_t)buf, size, 0);
 }
 
+[[maybe_unused]] static vx_status vx_thread_suspend(vx_handle task, uint64_t thread) {
+  return (vx_status)vx_syscall(VX_SYS_thread_suspend, task, thread, 0, 0, 0, 0);
+}
+
+[[maybe_unused]] static vx_status vx_thread_resume(vx_handle task, uint64_t thread) {
+  return (vx_status)vx_syscall(VX_SYS_thread_resume, task, thread, 0, 0, 0, 0);
+}
+
+[[maybe_unused]] static vx_status vx_task_mem_rw(vx_handle task, vx_mem_op *ops, uint32_t count) {
+  return (vx_status)vx_syscall(VX_SYS_task_mem_rw, task, (uint64_t)ops, count, 0, 0, 0);
+}
+
 [[maybe_unused]] static vx_status vx_thread_interrupt(vx_handle task, uint64_t thread, uint64_t value) {
   return (vx_status)vx_syscall(VX_SYS_thread_interrupt, task, thread, value, 0, 0, 0);
 }

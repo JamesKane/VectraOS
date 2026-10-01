@@ -229,7 +229,16 @@ static void test_threads_and_calls(void) {
 // Without an ELF loader in user space yet (M2, step 4), a child runs a few
 // instructions written here for each architecture.
 
-typedef enum child_code { EXIT_7, SPIN, BLOCK, PORT_BLOCK, USE_SIMD, READ_LOOP, FAULT_LOAD } child_code;
+typedef enum child_code {
+  EXIT_7,
+  SPIN,
+  BLOCK,
+  PORT_BLOCK,
+  USE_SIMD,
+  READ_LOOP,
+  FAULT_LOAD,
+  BREAK_STEP
+} child_code;
 
 static constexpr uint64_t CHILD_DATA = 0x30'0000; // FAULT_LOAD's page, which nothing maps at first
 
@@ -242,6 +251,10 @@ static uint32_t write_child(uint8_t *code, child_code what) {
   if (what == USE_SIMD) {
     EMIT(0x66), EMIT(0x0f), EMIT(0xef), EMIT(0xc0); // pxor %xmm0, %xmm0: faults, as SIMD is off
     what = EXIT_7;                                  // (it would exit 7 if it did not)
+  }
+  if (what == BREAK_STEP) {
+    EMIT(0xcc); // int3: a breakpoint, then exit 7
+    what = EXIT_7;
   }
   if (what == EXIT_7) {
     EMIT(0xbf), EMIT32(7);                  // mov $7, %edi
@@ -288,6 +301,10 @@ static uint32_t write_child(uint8_t *code, child_code what) {
   if (what == USE_SIMD) {
     EMIT(0x9e6703e0u); // fmov d0, xzr: traps, as FP/SIMD is off
     what = EXIT_7;     // (it would exit 7 if it did not)
+  }
+  if (what == BREAK_STEP) {
+    EMIT(0xd4200020u); // brk #1: a breakpoint, then exit 7
+    what = EXIT_7;
   }
   if (what == EXIT_7) {
     EMIT(0xd2800000u | 7u << 5);                           // movz x0, #7
@@ -348,7 +365,7 @@ static bool wait_blocked(vx_handle task) {
 
 // A child task running `what`, started, with its faults going to exc_port if
 // that is not 0 (bound before it starts). *task gets a handle to it.
-static bool start_child_bound(child_code what, vx_handle exc_port, vx_handle *task) {
+static bool start_child_bound(child_code what, vx_handle exc_port, uint32_t options, vx_handle *task) {
   uint8_t code[64] = {};
   uint32_t len = write_child(code, what);
   vx_handle text = 0, stack = 0, th = 0; // closing 0 is a harmless BAD_HANDLE
@@ -358,7 +375,7 @@ static bool start_child_bound(child_code what, vx_handle exc_port, vx_handle *ta
             vx_as_map(*task, text, 0, 4096, VX_MAP_EXEC, &text_at) == VX_OK &&
             vx_vmo_create(4096, 0, &stack) == VX_OK &&
             vx_as_map(*task, stack, 0, 4096, VX_MAP_WRITE, &stack_at) == VX_OK &&
-            (!exc_port || vx_exception_bind(*task, exc_port, 5, 0) == VX_OK) &&
+            (!exc_port || vx_exception_bind(*task, exc_port, 5, options) == VX_OK) &&
             vx_thread_create(*task, &th) == VX_OK &&
             vx_thread_start(th, CHILD_CODE, CHILD_STACK_TOP, 0, 0) == VX_OK;
   vx_handle_close(text);
@@ -367,7 +384,7 @@ static bool start_child_bound(child_code what, vx_handle exc_port, vx_handle *ta
   return ok;
 }
 
-static bool start_child(child_code what, vx_handle *task) { return start_child_bound(what, 0, task); }
+static bool start_child(child_code what, vx_handle *task) { return start_child_bound(what, 0, 0, task); }
 
 // Waits for a task's EXIT binding; returns its exit status, or INT64_MIN.
 static int64_t wait_exit(vx_handle port, vx_handle task) {
@@ -956,7 +973,7 @@ static void test_exception_port(void) {
   CHECK(vx_port_create(0, &port) == VX_OK);
   // A child's fault stops it at its port; the port's holder reads what
   // happened, maps the page it missed, and continues it: the load is retried.
-  CHECK(start_child_bound(FAULT_LOAD, port, &child));
+  CHECK(start_child_bound(FAULT_LOAD, port, 0, &child));
   CHECK(child_stopped(port));
   vx_exception e = {};
   CHECK(vx_thread_state(child, 1, VX_STATE_GET_EXCEPTION, &e, sizeof e) == VX_OK);
@@ -970,7 +987,7 @@ static void test_exception_port(void) {
   vx_handle_close(child);
 
   // Its registers can be changed before it continues: the load goes elsewhere.
-  CHECK(start_child_bound(FAULT_LOAD, port, &child));
+  CHECK(start_child_bound(FAULT_LOAD, port, 0, &child));
   CHECK(child_stopped(port));
   vx_regs regs;
   CHECK(vx_thread_state(child, 1, VX_STATE_GET_REGS, &regs, sizeof regs) == VX_OK);
@@ -992,15 +1009,17 @@ static void test_exception_port(void) {
   CHECK(wait_exit(port, child) == 9);
   vx_handle_close(child);
 
-  // Or it can be killed.
-  CHECK(start_child_bound(FAULT_LOAD, port, &child));
+  // Or it can be killed. (STEP and PASS are a debugger's, from its own port.)
+  CHECK(start_child_bound(FAULT_LOAD, port, 0, &child));
   CHECK(child_stopped(port));
+  CHECK(vx_exception_resume(child, 1, VX_RESUME_STEP, nullptr) == VX_ERR_BAD_STATE);
+  CHECK(vx_exception_resume(child, 1, VX_RESUME_PASS, nullptr) == VX_ERR_BAD_STATE);
   CHECK(vx_exception_resume(child, 1, VX_RESUME_KILL, nullptr) == VX_OK);
   CHECK(wait_exit(port, child) == -1);
   vx_handle_close(child);
 
   // A kill reaches a thread stopped at its port.
-  CHECK(start_child_bound(FAULT_LOAD, port, &child));
+  CHECK(start_child_bound(FAULT_LOAD, port, 0, &child));
   CHECK(child_stopped(port));
   CHECK(vx_task_kill(child, -4) == VX_OK);
   CHECK(wait_exit(port, child) == -4);
@@ -1083,6 +1102,91 @@ static void test_in_task(void) {
   CHECK(vx_thread_interrupt(self, 0, 1) == VX_ERR_BAD_STATE);
 }
 
+// --- Debugging (05 §2) ---
+
+static void test_debugger(void) {
+  vx_handle port, child, weak;
+  vx_exception e = {};
+  vx_regs regs;
+  CHECK(vx_port_create(0, &port) == VX_OK);
+  // A breakpoint goes first to a debugger's port; it steps one instruction,
+  // sees what that did, and continues.
+  CHECK(start_child_bound(BREAK_STEP, port, VX_EXCEPTION_FIRST_CHANCE, &child));
+  CHECK(child_stopped(port));
+  CHECK(vx_thread_state(child, 1, VX_STATE_GET_EXCEPTION, &e, sizeof e) == VX_OK &&
+        e.kind == VX_EXCEPTION_BREAKPOINT);
+#ifdef __aarch64__
+  e.regs.pc += 4; // past the brk
+  CHECK(vx_thread_state(child, 1, VX_STATE_SET_REGS, &e.regs, sizeof e.regs) == VX_OK);
+#endif
+  CHECK(vx_exception_resume(child, 1, VX_RESUME_STEP, nullptr) == VX_OK);
+  CHECK(child_stopped(port));
+  CHECK(vx_thread_state(child, 1, VX_STATE_GET_EXCEPTION, &e, sizeof e) == VX_OK &&
+        e.kind == VX_EXCEPTION_STEP);
+#ifdef __x86_64__
+  CHECK(e.regs.rdi == 7 && e.regs.rip == CHILD_CODE + 1 + 5); // int3, then mov $7, %edi
+#else
+  CHECK(e.regs.x[0] == 7 && e.regs.pc == CHILD_CODE + 8); // brk, then movz x0, #7
+#endif
+  CHECK(vx_exception_resume(child, 1, VX_RESUME_CONTINUE, nullptr) == VX_OK);
+  CHECK(wait_exit(port, child) == 7);
+  vx_handle_close(child);
+
+  // Passed on, the breakpoint reaches nobody else: the default kills it.
+  CHECK(start_child_bound(BREAK_STEP, port, VX_EXCEPTION_FIRST_CHANCE, &child));
+  CHECK(child_stopped(port));
+  CHECK(vx_exception_resume(child, 1, VX_RESUME_PASS, nullptr) == VX_OK);
+  CHECK(wait_exit(port, child) == -1);
+  vx_handle_close(child);
+
+  // Suspended, a spinning child holds still: its code is patched (a private
+  // copy, as its mapping is not writable), its pc moved there, and it exits.
+  CHECK(start_child(SPIN, &child));
+  CHECK(vx_handle_dup(child, ((1u << VX_RIGHT_BIT_COUNT) - 1) & ~(uint32_t)VX_RIGHT_DEBUG, &weak) == VX_OK);
+  CHECK(vx_thread_suspend(weak, 1) == VX_ERR_ACCESS &&
+        vx_exception_bind(weak, port, 1, VX_EXCEPTION_FIRST_CHANCE) == VX_ERR_ACCESS);
+  CHECK(vx_thread_state(child, 1, VX_STATE_GET_REGS, &regs, sizeof regs) == VX_ERR_BAD_STATE); // running
+  CHECK(vx_thread_suspend(child, 1) == VX_OK);
+  CHECK(vx_thread_state(child, 1, VX_STATE_GET_REGS, &regs, sizeof regs) == VX_OK);
+  CHECK(vx_thread_state(weak, 1, VX_STATE_GET_REGS, &regs, sizeof regs) == VX_ERR_BAD_STATE); // DEBUG needed
+#ifdef __x86_64__
+  CHECK(regs.rip == CHILD_CODE);
+  regs.rip = CHILD_CODE + 64;
+#else
+  CHECK(regs.pc == CHILD_CODE);
+  regs.pc = CHILD_CODE + 64;
+#endif
+  uint8_t code[64] = {}, back[64] = {};
+  uint32_t len = write_child(code, EXIT_7);
+  uint64_t word = 0;
+  vx_mem_op ops[3] = {
+      {.address = CHILD_CODE + 64, .buffer = (uint64_t)code, .size = len, .write = 1},
+      {.address = CHILD_CODE + 64, .buffer = (uint64_t)back, .size = len},
+      {.address = CHILD_DATA, .buffer = (uint64_t)&word, .size = 8}, // nothing mapped there
+  };
+  CHECK(vx_task_mem_rw(child, ops, 3) == VX_OK);
+  CHECK(ops[0].status == VX_OK && ops[1].status == VX_OK && memcmp(code, back, len) == 0);
+  CHECK(ops[2].status == VX_ERR_INVALID);
+  CHECK(vx_task_mem_rw(weak, ops, 1) == VX_ERR_ACCESS);
+  CHECK(vx_thread_state(child, 1, VX_STATE_SET_REGS, &regs, sizeof regs) == VX_OK);
+  CHECK(vx_thread_resume(child, 1) == VX_OK);
+  CHECK(vx_thread_resume(child, 1) == VX_ERR_BAD_STATE); // counted: not suspended any more
+  CHECK(wait_exit(port, child) == 7);
+  vx_handle_close(weak);
+  vx_handle_close(child);
+
+  // A thread blocked in a call holds still too, and goes on waiting once resumed.
+  CHECK(start_child(BLOCK, &child));
+  CHECK(wait_blocked(child));
+  CHECK(vx_thread_suspend(child, 1) == VX_OK && vx_thread_suspend(child, 1) == VX_OK); // counted
+  CHECK(vx_thread_state(child, 1, VX_STATE_GET_REGS, &regs, sizeof regs) == VX_OK);
+  CHECK(vx_thread_resume(child, 1) == VX_OK && vx_thread_resume(child, 1) == VX_OK);
+  CHECK(wait_blocked(child));
+  CHECK(vx_task_kill(child, -5) == VX_OK && wait_exit(port, child) == -5);
+  vx_handle_close(child);
+  vx_handle_close(port);
+}
+
 static void test_vmo_clone(void) {
   vx_handle v, c;
   uint64_t words[2] = {11, 22}, got[2] = {};
@@ -1114,6 +1218,7 @@ int vx_main(void) {
   test_exception_port();
   test_in_task();
   test_vmo_clone();
+  test_debugger();
   test_nested_channels();
   test_rings();
   test_vmo_rw();

@@ -298,6 +298,14 @@ static void task_fault_start(void) {
 // (obj/exception.c): a blocked thread wakes with `why`, wherever it waits; one
 // running user code on another CPU gets an interrupt, and checks on its way
 // back to user mode. A kill is never downgraded to an interrupt.
+// Gets a thread running user code on another CPU into the kernel, to notice
+// something on its way back (a suspension); a thread anywhere else needs nothing.
+static void sched_poke(thread *t) {
+  spin_lock(&sched.lock);
+  if (t->state == THREAD_RUNNING && t->cpu && t->cpu != this_cpu()) arch_send_resched(t->cpu);
+  spin_unlock(&sched.lock);
+}
+
 static void sched_kick(thread *t, vx_status why) {
   spin_lock(&sched.lock);
   if (t->wake_pending && t->wait_result == VX_ERR_KILLED) why = VX_ERR_KILLED; // a kill outranks the rest

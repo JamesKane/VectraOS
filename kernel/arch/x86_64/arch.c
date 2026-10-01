@@ -430,6 +430,14 @@ static vx_status arch_frame_set_regs(trap_frame *f, const vx_regs *r) {
   return VX_OK;                                 // cs and ss stay user mode's
 }
 
+static constexpr uint64_t RFLAGS_TF = 0x100; // trap after the next instruction
+
+static void arch_frame_step(trap_frame *f, bool on) {
+  f->rflags = on ? f->rflags | RFLAGS_TF : f->rflags & ~RFLAGS_TF;
+}
+
+static void arch_sync_icache(void *p, size_t len) { (void)p, (void)len; } // x86 keeps it coherent itself
+
 // To pc(arg) as if called: a zero return address below arg, which is 16-aligned.
 static bool arch_frame_divert(trap_frame *f, uint64_t pc, uint64_t arg) {
   uint64_t zero = 0;
@@ -447,6 +455,7 @@ static uint32_t x86_exception_kind(const trap_frame *f, uint32_t *code, uint64_t
   *address = 0;
   switch (f->vector) {
   case 0: return VX_EXCEPTION_ARITHMETIC; // divide error
+  case 1: return VX_EXCEPTION_STEP;       // the trap flag (exception_raise clears it, or sets it again)
   case 3: return VX_EXCEPTION_BREAKPOINT;
   case 6: return VX_EXCEPTION_ILLEGAL;
   case 7: return VX_EXCEPTION_FP_DISABLED;

@@ -11,7 +11,7 @@ Updated 2026-10-01.
 | **M1** First light | Done (2026-09-30) | `tests/qemu/boot.ndb` passes on x86_64 and aarch64 |
 | **M2** A shell in a namespace | Done (2026-10-01) | `tests/qemu/shell.ndb` passes on both |
 | **M3** Mount the network | Done (2026-10-01) | `tests/qemu/mount.ndb` passes on both (against 10.0.2.100; see below) |
-| M4 POSIX and debugging | In progress: steps 1a–1b done | — |
+| M4 POSIX and debugging | In progress: step 1 done | — |
 | M5 Storage | Not started | |
 | M6 Pixels | Not started | |
 | M7 GPU | Not started | |
@@ -76,7 +76,7 @@ In progress. 04 §6 gives M4's content but no steps or exit test, so they are se
 |---|---|---|
 | 1a. `as_unmap` with TLB shootdown; user-memory copies that recover from a fault; kernel stack guard pages; ring mappings unmapped when their sessions end | Done | `d3a4bf7` |
 | 1b. The fault path: exception ports, faults handled in the task, `thread_interrupt` with `ERR_INTERRUPTED`, `thread_state`, `vmo_clone`, thread ids; futex words read through the user mapping | Done | `7c4f4df` |
-| 1c. The `DEBUG` right and the five debug syscalls (05 §2) | To do | |
+| 1c. The `DEBUG` right: first-chance exception ports, `PASS` and `STEP` (single step on both architectures), `thread_suspend`/`thread_resume`, `task_mem_rw` with private copies of code for breakpoints | Done | not yet committed |
 | 2. musl with the vx back end, the `vectra-musl` sysroot; a C program runs | To do | |
 | 3. `posixd`: pids, `fork`, `exec`, `wait`, signals, sessions; pipes; a RAM file system for `/tmp`; `/dev/null`, `/dev/urandom` | To do | |
 | 4. `ptyd`; sockets over `/net`; `poll` and `select`; the `posix` 9Px extension | To do | |
@@ -101,7 +101,8 @@ Deferred deliberately, each with where it is due:
 | TCP: no SACK, no timestamps, out-of-order segments dropped; TIME_WAIT 10 s | Recovery from loss is slower than it could be | After M3 |
 | x86_64's shootdown is tested only under TCG | KVM flushes a guest's TLB often enough to hide a missing shootdown, so the ktest check catches one only with `--tcg` (aarch64 always runs under TCG) | — |
 | `vmo_clone` copies at once | Correct, and charged as 01 §5 says, but a `fork` of a large process copies all of it; sharing pages until written can come behind the same call | When `fork` is slow enough to matter |
-| `thread_state` works only on a thread stopped at its port | A running thread cannot be read or changed until `thread_suspend` | M4 step 1c |
+| No hardware watchpoints; no thread, image or exit events to a debugger yet | A debugger sees faults, breakpoints and steps only | M4 step 6 (the `procfs` debug files), M12 (watchpoints) |
+| `task_mem_rw`'s first write to code copies the whole mapping | A breakpoint in a large binary costs its text's size once | When it matters |
 | IOMMU in pass-through only (QEMU) | A device can reach any memory; a dead driver's device could write freed memory before `devmgr` turns off its bus mastering | M5 |
 | `netd` restarting its driver session is not tested | | M3 |
 
