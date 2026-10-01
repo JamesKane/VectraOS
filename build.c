@@ -58,7 +58,7 @@ static const char *const HOST_FLAGS[] = {
 static const char *const HOUSE_FLAGS[] = {
     "-std=c23", "-Wall", "-Wextra", "-Werror", "-Wshadow", "-Wvla",
     "-Wimplicit-fallthrough", "-fno-strict-aliasing", "-ftrivial-auto-var-init=zero",
-    "-g", "-fno-omit-frame-pointer", nullptr,
+    "-g", "-fno-omit-frame-pointer", "-mno-omit-leaf-frame-pointer", nullptr,
 };
 
 static const char *const KERNEL_FLAGS[] = {
@@ -311,42 +311,6 @@ static void rebuild_self(char **argv) {
 }
 
 // ---------------------------------------------------------------------------
-// The kernel
-
-static bool build_kernel(const arch *a, bool release) {
-    const char *dir = fmt("out/%s/%s", a->name, release ? "release" : "debug");
-    const char *obj = fmt("%s/kernel.o", dir);
-    const char *elf = fmt("%s/kernel.elf", dir);
-    mkdirs(dir);
-
-    fprintf(stderr, "  CC    kernel  %s\n", a->name);
-    cmd cc = {};
-    cmd_add(&cc, CLANG);
-    cmd_addv(&cc, a->flags);
-    cmd_addv(&cc, HOUSE_FLAGS);
-    cmd_addv(&cc, KERNEL_FLAGS);
-    cmd_addv(&cc, release ? KERNEL_RELEASE_FLAGS : KERNEL_DEBUG_FLAGS);
-    cmd_add(&cc, fmt("-ffile-prefix-map=%s=/src", root));   // docs/05 §4
-    cmd_add(&cc, "-c");
-    cmd_add(&cc, "kernel/kernel.c");
-    cmd_add(&cc, "-o");
-    cmd_add(&cc, obj);
-    if (!run(&cc)) return false;
-
-    fprintf(stderr, "  LD    kernel  %s\n", a->name);
-    cmd ld = {};
-    cmd_add(&ld, LLD);
-    cmd_addv(&ld, (const char *const[]){
-        "-static", "-nostdlib", "--build-id=sha1", "-z", "max-page-size=0x1000",
-        "-z", "noexecstack", "-T", nullptr });
-    cmd_add(&ld, fmt("kernel/linker/%s.ld", a->name));
-    cmd_add(&ld, "-o");
-    cmd_add(&ld, elf);
-    cmd_add(&ld, obj);
-    return run(&ld);
-}
-
-// ---------------------------------------------------------------------------
 // Ports: vendored code built from ports/<name>/port.ndb (docs/04 §3.1)
 
 constexpr int PORT_MAX_TARGETS = 8;
@@ -475,9 +439,20 @@ static const char *object_for(const char *objdir, const char *rel) {
     return o;
 }
 
-// Writes the symbol map Limine links into itself for its panic backtraces:
-// what common/gensyms.sh makes with objdump, sort, grep, awk and sed.
-static void write_symbol_map(const char *elf_path, const char *out_path) {
+// Writes a symbol map as assembly: for each function in a .text section, in
+// address order, `.quad address` and `.asciz "name"`, then `.quad -1`. Limine
+// links one into itself for its panic backtraces (what common/gensyms.sh makes
+// with objdump, sort, grep, awk and sed), and so does the kernel. With no ELF
+// file, the map holds only the terminator: the first of the two links.
+static void write_symbol_map(const char *elf_path, const char *out_path, const char *section, const char *symbol) {
+    FILE *f = fopen(out_path, "w");
+    if (!f) die("cannot write %s", out_path);
+    fprintf(f, "%s\n.globl %s\n%s:\n", section, symbol, symbol);
+    if (!elf_path) {
+        fprintf(f, ".quad 0xffffffffffffffff\n");
+        fclose(f);
+        return;
+    }
     vx_str elf = read_file(elf_path);
     const Elf64_Ehdr *eh = (const Elf64_Ehdr *)elf.ptr;
     if (elf.len < sizeof *eh || memcmp(eh->e_ident, ELFMAG, SELFMAG) != 0 || eh->e_ident[EI_CLASS] != ELFCLASS64)
@@ -510,9 +485,6 @@ static void write_symbol_map(const char *elf_path, const char *out_path) {
             sym t = *a; *a = *b; *b = t;
         }
 
-    FILE *f = fopen(out_path, "w");
-    if (!f) die("cannot write %s", out_path);
-    fprintf(f, ".section .full_map\n.globl full_map\nfull_map:\n");
     for (size_t i = 0; i < count; i++)
         fprintf(f, ".quad 0x%016llx\n.asciz \"%s\"\n", (unsigned long long)syms[i].addr, syms[i].name);
     fprintf(f, ".quad 0xffffffffffffffff\n");
@@ -629,7 +601,7 @@ static bool build_port_target(const port *p, const vx_ndb_record *t) {
         if (!run(&pp)) return false;
 
         if (pass == 1) {
-            write_symbol_map(fmt("%s/limine_nomap.elf", outdir), map_s);
+            write_symbol_map(fmt("%s/limine_nomap.elf", outdir), map_s, ".section .full_map", "full_map");
             cmd cc = { .dir = p->src };
             cmd_add(&cc, CLANG);
             cmd_add_words(&cc, cflags);
@@ -679,6 +651,78 @@ static const vx_ndb_record *port_target_for(const port *p, const arch *a) {
             return &p->targets[i];
     }
     return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// The kernel
+
+static bool build_kernel(const arch *a, bool release) {
+    const char *dir = fmt("out/%s/%s", a->name, release ? "release" : "debug");
+    mkdirs(dir);
+
+    // kernel.c, the unity root, plus each assembly file under kernel/arch/<arch>/.
+    static file_list asm_files;
+    asm_files = (file_list){};
+    port arch_dir = { .src = fmt("%s/kernel/arch", root) };
+    collect(&asm_files, &arch_dir, (vx_str){ a->name, strlen(a->name) }, ".S");
+
+    const char *objs[64];
+    int n = 0;
+    cmd *cmds[64];
+    const char *sources[64] = { "kernel/kernel.c" };
+    for (int i = 0; i < asm_files.count && i < 63; i++) sources[i + 1] = fmt("kernel/arch/%s", asm_files.paths[i]);
+    int source_count = 1 + asm_files.count;
+    for (int i = 0; i < source_count; i++) {
+        const char *base = strrchr(sources[i], '/') + 1;
+        objs[n] = fmt("%s/%.*s.o", dir, (int)(strrchr(base, '.') - base), base);
+        cmd *c = alloc(sizeof *c);
+        *c = (cmd){};
+        cmd_add(c, CLANG);
+        cmd_addv(c, a->flags);
+        cmd_addv(c, HOUSE_FLAGS);
+        cmd_addv(c, KERNEL_FLAGS);
+        cmd_addv(c, release ? KERNEL_RELEASE_FLAGS : KERNEL_DEBUG_FLAGS);
+        cmd_add(c, fmt("-ffile-prefix-map=%s=/src", root));   // docs/05 §4
+        cmd_add(c, "-c");
+        cmd_add(c, sources[i]);
+        cmd_add(c, "-o");
+        cmd_add(c, objs[n]);
+        cmds[n++] = c;
+    }
+    fprintf(stderr, "  CC    kernel  %s (%d files)\n", a->name, n);
+    if (!run_parallel(cmds, n)) return false;
+
+    // Link twice: first with an empty symbol map, then with the real one. The map
+    // goes at the end of .rodata, after all code, so no function moves.
+    fprintf(stderr, "  LD    kernel  %s\n", a->name);
+    for (int pass = 0; pass < 2; pass++) {
+        const char *map_s = fmt("%s/symbols%d.S", dir, pass);
+        const char *map_o = fmt("%s/symbols%d.o", dir, pass);
+        const char *elf   = fmt("%s/%s", dir, pass == 0 ? "kernel_nomap.elf" : "kernel.elf");
+        write_symbol_map(pass == 0 ? nullptr : fmt("%s/kernel_nomap.elf", dir), map_s,
+                         ".section .vx_symbols,\"a\"", "vx_symbols");
+        cmd as = {};
+        cmd_add(&as, CLANG);
+        cmd_addv(&as, a->flags);
+        cmd_addv(&as, (const char *const[]){ "-c", nullptr });
+        cmd_add(&as, map_s);
+        cmd_add(&as, "-o");
+        cmd_add(&as, map_o);
+        if (!run(&as)) return false;
+
+        cmd ld = {};
+        cmd_add(&ld, LLD);
+        cmd_addv(&ld, (const char *const[]){
+            "-static", "-nostdlib", "--build-id=sha1", "-z", "max-page-size=0x1000",
+            "-z", "noexecstack", "-T", nullptr });
+        cmd_add(&ld, fmt("kernel/linker/%s.ld", a->name));
+        cmd_add(&ld, "-o");
+        cmd_add(&ld, elf);
+        for (int i = 0; i < n; i++) cmd_add(&ld, objs[i]);
+        cmd_add(&ld, map_o);
+        if (!run(&ld)) return false;
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -846,16 +890,23 @@ static bool mtools(const char *tool, const char *esp, const char *const *args) {
     return run(&c);
 }
 
-static bool build_image(const arch *a, bool release) {
-    if (!build_arch(a, release)) return false;
+// Writes a disk image for an architecture whose kernel and loader are built.
+// A non-empty cmdline is added to the boot entry, for test scenarios.
+static bool make_image(const arch *a, bool release, const char *image, const char *cmdline) {
     const vx_ndb_record *t = port_target_for(&limine, a);
     if (!t) die("no Limine target for %s", a->name);
     const char *loader_name = str_dup(vx_ndb_get(t, "output"));
     const char *loader = fmt("out/limine/%s/%s", str_dup(vx_ndb_get(t, "target")), loader_name);
     const char *kernel = fmt("%s/kernel.elf", out_dir(a, release));
     const char *config = "boot/limine.conf";
-    const char *esp    = fmt("%s/esp.img", out_dir(a, release));
-    const char *image  = image_path(a, release);
+    const char *esp    = fmt("%s.esp", image);
+    if (cmdline && *cmdline) {
+        config = fmt("%s.conf", image);
+        FILE *f = fopen(config, "w");
+        if (!f) die("cannot write %s", config);
+        fprintf(f, "%s    cmdline: %s\n", read_file("boot/limine.conf").ptr, cmdline);
+        fclose(f);
+    }
 
     // Everything that goes on the disk decides its GUIDs and FAT serial number.
     uint64_t seed = 0xcbf29ce484222325;
@@ -875,7 +926,12 @@ static bool build_image(const arch *a, bool release) {
     if (!mtools(MCOPY, esp, (const char *const[]){ kernel, "::/boot/vx/kernel.elf", nullptr })) return false;
     if (!mtools(MCOPY, esp, (const char *const[]){ config, "::/boot/limine/limine.conf", nullptr })) return false;
     write_gpt_disk(image, esp, seed);
+    unlink(esp);
     return true;
+}
+
+static bool build_image(const arch *a, bool release) {
+    return build_arch(a, release) && make_image(a, release, image_path(a, release), nullptr);
 }
 
 // --- qemu and test ---
@@ -913,14 +969,16 @@ static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
     if (o.gdb) cmd_addv(c, (const char *const[]){ "-s", "-S", nullptr });
 }
 
+static bool force_tcg;   // test --tcg: emulate even where KVM would work, as CI runners may have to
+
 static bool kvm_usable(const arch *a) {
-    return strcmp(a->name, "x86_64") == 0 && access("/dev/kvm", R_OK | W_OK) == 0;
+    return !force_tcg && strcmp(a->name, "x86_64") == 0 && access("/dev/kvm", R_OK | W_OK) == 0;
 }
 
-// A scenario (tests/qemu/NAME.ndb): one scenario= record with a timeout in seconds,
-// then expect= records, matched in order against serial output lines, and fail=
-// records, any of which fails the test when a line contains it. "$arch" in a
-// pattern stands for the architecture's name.
+// A scenario (tests/qemu/NAME.ndb): one scenario= record with a timeout in seconds
+// and, optionally, a kernel cmdline=; then expect= records, matched in order
+// against serial output lines, and fail= records, any of which fails the test
+// when a line contains it. "$arch" in a pattern stands for the architecture's name.
 static const char *scenarios[64];
 static int         scenario_count;
 
@@ -942,24 +1000,34 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
     const char *expect[64], *fail[64];
     int expect_count = 0, fail_count = 0;
     double timeout = 0;
+    const char *cmdline = nullptr;
     for (;;) {
         vx_ndb_record rec;
         vx_ndb_result res = vx_ndb_next(&r, &rec);
         if (res == VX_NDB_END) break;
         if (res == VX_NDB_ERROR) die("%s:%zu: %s", path, r.error_line, r.error);
-        if (vx_ndb_has(&rec, "scenario")) timeout = atof(str_dup(vx_ndb_get(&rec, "timeout")));
+        if (vx_ndb_has(&rec, "scenario")) {
+            timeout = atof(str_dup(vx_ndb_get(&rec, "timeout")));
+            cmdline = str_dup(vx_ndb_get(&rec, "cmdline"));
+        }
         else if (vx_ndb_has(&rec, "expect") && expect_count < 64) expect[expect_count++] = substitute_arch(vx_ndb_get(&rec, "expect"), a);
         else if (vx_ndb_has(&rec, "fail") && fail_count < 64) fail[fail_count++] = substitute_arch(vx_ndb_get(&rec, "fail"), a);
         else die("%s:%zu: expected scenario=, expect= or fail=", path, rec.line);
     }
     if (timeout <= 0 || expect_count == 0) die("%s: needs scenario= with a timeout, and an expect=", path);
 
+    const char *image = image_path(a, release);
+    if (*cmdline) {
+        image = fmt("%s/test-%s.img", out_dir(a, release), name);
+        if (!make_image(a, release, image, cmdline)) return false;
+    }
+
     const char *log_path = fmt("%s/test-%s.log", out_dir(a, release), name);
     FILE *log = fopen(log_path, "w");
     if (!log) die("cannot write %s", log_path);
 
     cmd c = {};
-    qemu_cmd(&c, a, image_path(a, release), (qemu_opts){ .kvm = kvm_usable(a), .test = true });
+    qemu_cmd(&c, a, image, (qemu_opts){ .kvm = kvm_usable(a), .test = true });
     if (verbose) cmd_print(&c);
     int fds[2];
     if (pipe(fds) != 0) die("pipe failed");
@@ -1007,15 +1075,22 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
     fclose(log);
 
     bool ok = strcmp(verdict, "ok") == 0;
-    fprintf(stderr, "  TEST  %-8s %-8s %s (%.1f s)%s\n", name, a->name, ok ? "ok" : "FAIL",
+    fprintf(stderr, "  TEST  %-11s %-8s %s (%.1f s)%s\n", name, a->name, ok ? "ok" : "FAIL",
             now_seconds() - start, ok ? "" : fmt(": %s; serial log in %s", verdict, log_path));
     return ok;
 }
 
+// Builds the image, then runs every scenario at once, each in its own QEMU.
 static bool test_arch(const arch *a, bool release) {
     if (!build_image(a, release)) return false;
+    pid_t pids[64];
+    for (int i = 0; i < scenario_count; i++) {
+        pids[i] = fork();
+        if (pids[i] < 0) die("fork failed");
+        if (pids[i] == 0) _exit(run_scenario(a, release, scenarios[i]) ? 0 : 1);
+    }
     bool ok = true;
-    for (int i = 0; i < scenario_count; i++) ok = run_scenario(a, release, scenarios[i]) && ok;
+    for (int i = 0; i < scenario_count; i++) ok = wait_ok(pids[i]) && ok;
     return ok;
 }
 
@@ -1333,7 +1408,8 @@ static void usage(void) {
         "  all           [--arch A] [--release]          the kernel and Limine (both architectures by default)\n"
         "  image         [--arch A] [--release]          a GPT disk image: out/A/MODE/vectra-A.img\n"
         "  qemu          [--arch A] [--release] [--kvm] [--gdb]   boot the image; Ctrl-A X quits\n"
-        "  test          [--arch A] [--release] [scenario...]     boot headless and check tests/qemu/*.ndb\n"
+        "  test          [--arch A] [--release] [--tcg] [scenario...]   boot headless and check tests/qemu/*.ndb;\n"
+        "                                                 x86_64 uses KVM when it can, unless --tcg\n"
         "  loc                                            the line-count ledger\n"
         "  vendor-check                                   check third_party/ against VENDOR.ndb\n"
         "\n"
@@ -1363,6 +1439,8 @@ int main(int argc, char **argv) {
             qo.kvm = true;
         } else if (strcmp(argv[i], "--gdb") == 0) {
             qo.gdb = true;
+        } else if (strcmp(argv[i], "--tcg") == 0) {
+            force_tcg = true;
         } else if (strcmp(argv[i], "--arch") == 0 && i + 1 < argc) {
             i++;
             for (int a = 0; a < ARCH_COUNT; a++)

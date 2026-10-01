@@ -1,0 +1,8 @@
+# tests/qemu/panic.ndb: a kernel fault reaches the panic handler, which names
+# the fault and prints a symbolized backtrace (M1).
+
+scenario=panic timeout=10 cmdline=vx.selftest=fault
+expect="vx: kernel 0.1.0 $arch, "
+expect="vx: panic: page fault at "
+expect=" kernel_main+"
+expect=" _start+"

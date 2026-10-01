@@ -19,7 +19,7 @@ _Blueprint v0, 2026-09-30._
 
 The rules below govern the OS tree: the kernel, libraries, servers, drivers, commands and `build`. They are enforced by warnings-as-errors, `clang-tidy` checks in CI, and review. Applications, including those written against `vxui.h`, build with whatever flags and style their authors choose.
 
-- **Flags everywhere:** `-std=c23 -Wall -Wextra -Werror -Wshadow -Wvla -Wimplicit-fallthrough -fno-strict-aliasing -ftrivial-auto-var-init=zero -g -fno-omit-frame-pointer`, and `--build-id` at link time. Debug information and frame pointers are always on (05 §4).
+- **Flags everywhere:** `-std=c23 -Wall -Wextra -Werror -Wshadow -Wvla -Wimplicit-fallthrough -fno-strict-aliasing -ftrivial-auto-var-init=zero -g -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer`, and `--build-id` at link time. Debug information and frame pointers are always on (05 §4), in leaf functions too, so a backtrace from a fault in a leaf does not skip its caller.
 - **C23 features we use:**
   - `constexpr`, `typeof`, `nullptr`, `bool` and `static_assert` as keywords;
   - enums with a fixed underlying type, for every ABI field;

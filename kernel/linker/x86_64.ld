@@ -12,13 +12,21 @@ PHDRS {
 SECTIONS {
     . = 0xffffffff80000000;
 
+    vx_text_start = .;
     .text : { *(.text .text.*) } :text
+    vx_text_end = .;
 
     . = ALIGN(CONSTANT(MAXPAGESIZE));
-    .rodata : { *(.rodata .rodata.*) } :rodata
+    vx_rodata_start = .;
+    .rodata : {
+        *(.rodata .rodata.*)
+        KEEP(*(.vx_symbols))   /* last, so its size moves no function (build.c) */
+    } :rodata
     .note.gnu.build-id : { *(.note.gnu.build-id) } :rodata
+    vx_rodata_end = .;
 
     . = ALIGN(CONSTANT(MAXPAGESIZE));
+    vx_data_start = .;
     .data : {
         /* Limine looks for its requests between these markers (kernel/boot.c). */
         KEEP(*(.limine_requests_start))
@@ -27,6 +35,17 @@ SECTIONS {
         *(.data .data.*)
     } :data
     .bss : { *(.bss .bss.*) *(COMMON) } :data
+    vx_data_end = .;
+
+    /* The boot stack, with a guard page below it. The guard page is part of the
+       segment Limine loads but is never mapped in the kernel's own page tables
+       (mm/paging.c), so overflowing the stack faults. */
+    . = ALIGN(4096) + 4096;
+    .boot_stack (NOLOAD) : {
+        vx_boot_stack_bottom = .;
+        . += 65536;
+        vx_boot_stack_top = .;
+    } :data
 
     /DISCARD/ : { *(.eh_frame*) *(.note.GNU-stack) *(.comment) }
 }
