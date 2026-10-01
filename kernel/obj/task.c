@@ -89,11 +89,12 @@ struct cpu;
 // Everything below `state` belongs to the scheduler and is under its lock.
 struct thread {
   object obj;
-  task *task;               // nullptr for an idle thread
-  struct thread *task_next; // in its task's list, under the task's lock
-  uint64_t kernel_sp;       // saved by arch_context_switch
-  uint64_t kstack;          // the kernel stack's lowest address (mm/kstack.c)
-  uint64_t tls;             // its user thread pointer while it is not running (arch_tls_switch)
+  task *task;                           // nullptr for an idle thread
+  struct thread *task_next;             // in its task's list, under the task's lock
+  uint64_t kernel_sp;                   // saved by arch_context_switch
+  uint64_t kstack;                      // the kernel stack's lowest address (mm/kstack.c)
+  uint64_t tls;                         // its user thread pointer while it is not running (arch_user_switch)
+  alignas(16) uint8_t fp[ARCH_FP_SIZE]; // its FP/SIMD registers while it is not running (arch_user_switch)
   uint64_t user_entry, user_sp, user_arg, user_arg2;
   bool started;          // thread_start has taken it (under its task's lock)
   uint32_t intent;       // enum vx_intent
@@ -239,6 +240,7 @@ static vx_status handles_put(task *t, const moved_handle *in, uint32_t n, vx_han
 
 static pool task_pool = POOL_FOR(task);
 static pool thread_pool = POOL_FOR(thread);
+static_assert(alignof(thread) <= 16 && sizeof(thread) <= 4096); // pool objects: 16-aligned, within a page
 static _Atomic uint64_t next_task_id = 1;
 
 // Every live task, so a task's descendants can be found (task_find). When a
@@ -444,6 +446,7 @@ static vx_status thread_create(task *t, thread **out) {
   th->intent = VX_INTENT_INTERACTIVE;
   object_ref(&t->obj);
   th->kernel_sp = arch_thread_initial_sp(th);
+  arch_fp_init(th->fp);
   *out = th;
   return VX_OK;
 }

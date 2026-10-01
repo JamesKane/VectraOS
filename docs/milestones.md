@@ -79,7 +79,8 @@ In progress. 04 §6 gives M4's content but no steps or exit test, so they are se
 | 1c. The `DEBUG` right: first-chance exception ports, `PASS` and `STEP` (single step on both architectures), `thread_suspend`/`thread_resume`, `task_mem_rw` with private copies of code for breakpoints | Done | `33739bc` |
 | 2a. musl 1.2.6 vendored unchanged (ADR-0007), its generated headers committed | Done | `55df068` |
 | 2b. Kernel: the thread pointer (x86_64's FS base, aarch64's `TPIDR_EL0`) kept per thread; `thread_state` `GET_TLS`/`SET_TLS`, for the caller itself or a stopped thread | Done | `e089716` |
-| 2c. The vx back end (`syscall_arch.h` and the eleven assembly files replaced), `./build` building `libc.a` and the `vectra-musl` sysroot; a C program runs | To do | |
+| 2c. Kernel: FP/SIMD state (x87/SSE by FXSAVE; arm64 v0–v31, FPCR, FPSR) saved per thread; first-party programs no longer `-mgeneral-regs-only`; `thread_start` enters as if called | Done | not yet committed |
+| 2d. The vx back end (`syscall_arch.h` and the eleven assembly files replaced), `./build` building `libc.a` and the `vectra-musl` sysroot; a C program runs | To do | |
 | 3. `posixd`: pids, `fork`, `exec`, `wait`, signals, sessions; pipes; a RAM file system for `/tmp`; `/dev/null`, `/dev/urandom` | To do | |
 | 4. `ptyd`; sockets over `/net`; `poll` and `select`; the `posix` 9Px extension | To do | |
 | 5. Lua, sbase and dash, vendored | To do | |
@@ -104,6 +105,8 @@ Deferred deliberately, each with where it is due:
 | x86_64's shootdown is tested only under TCG | KVM flushes a guest's TLB often enough to hide a missing shootdown, so the ktest check catches one only with `--tcg` (aarch64 always runs under TCG) | — |
 | `vmo_clone` copies at once | Correct, and charged as 01 §5 says, but a `fork` of a large process copies all of it; sharing pages until written can come behind the same call | When `fork` is slow enough to matter |
 | No hardware watchpoints; no thread, image or exit events to a debugger yet | A debugger sees faults, breakpoints and steps only | M4 step 6 (the `procfs` debug files), M12 (watchpoints) |
+| AVX, SVE and SME fault | Code built for x86-64-v1 and armv8-a runs; code that needs AVX or SVE does not | When a port needs them (XSAVE; SVE's state) |
+| FP/SIMD registers are not in `thread_state` or a `vx_exception` | A debugger cannot see them; an in-task handler (a signal handler, from step 3) must save them itself | M4 step 3 (signals), step 6 (`dbg`) |
 | `task_mem_rw`'s first write to code copies the whole mapping | A breakpoint in a large binary costs its text's size once | When it matters |
 | IOMMU in pass-through only (QEMU) | A device can reach any memory; a dead driver's device could write freed memory before `devmgr` turns off its bus mastering | M5 |
 | `netd` restarting its driver session is not tested | | M3 |

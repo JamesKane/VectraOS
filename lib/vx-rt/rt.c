@@ -2,9 +2,6 @@
 // point, syscall stubs, the spawn message, console output and the stack
 // protector. A program includes this file, as its unity build, and defines
 // vx_main.
-//
-// Programs are built with -mgeneral-regs-only: the kernel does not save
-// FP/SIMD state across context switches yet.
 
 #pragma once
 

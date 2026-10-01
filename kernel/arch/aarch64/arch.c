@@ -519,10 +519,10 @@ static bool percpu_ready; // TPIDR_EL1 holds this CPU's index
 // Per CPU: the vector table, the CPU's index in TPIDR_EL1, and MAIR attribute 2
 // as device memory (arch_console_init sets it early on the boot CPU).
 static void arch_cpu_init(uint32_t index) {
-  // CPACR_EL1: FP/SIMD, SVE and SME trap, for user tasks too, until the
-  // kernel saves that state (01 §1); otherwise one task's registers would
-  // reach the next. The kernel itself uses none.
-  __asm__ volatile("msr cpacr_el1, xzr\n\tisb" ::: "memory");
+  // CPACR_EL1: FP/SIMD on (FPEN), saved at each switch (arch_user_switch);
+  // the kernel itself uses none. SVE and SME still trap, until their larger
+  // state is saved too.
+  __asm__ volatile("msr cpacr_el1, %0\n\tisb" : : "r"(3ull << 20) : "memory");
   // Software step for user threads (exception_resume STEP): the OS lock open,
   // and MDSCR_EL1 with KDE off, so the kernel itself is never stepped. SS is
   // set only on the way to a thread being stepped (step_on_return).
@@ -662,10 +662,60 @@ static uint64_t arch_tls_read(void) {
 }
 static void arch_tls_write(uint64_t value) { __asm__ volatile("msr tpidr_el0, %0" : : "r"(value)); }
 
-static void arch_tls_switch(thread *prev, thread *next) {
-  if (prev->task) prev->tls = arch_tls_read();
-  if (next->task) arch_tls_write(next->tls);
+// The kernel is built without FP/SIMD, so the assembler is told it is here.
+// NOLINTNEXTLINE(readability-non-const-parameter): the assembly writes it
+static void fp_save(uint8_t *fp) {
+  __asm__ volatile(".arch_extension fp\n\t"
+                   ".arch_extension simd\n\t"
+                   "stp q0, q1, [%1, #0]\n\tstp q2, q3, [%1, #32]\n\t"
+                   "stp q4, q5, [%1, #64]\n\tstp q6, q7, [%1, #96]\n\t"
+                   "stp q8, q9, [%1, #128]\n\tstp q10, q11, [%1, #160]\n\t"
+                   "stp q12, q13, [%1, #192]\n\tstp q14, q15, [%1, #224]\n\t"
+                   "stp q16, q17, [%1, #256]\n\tstp q18, q19, [%1, #288]\n\t"
+                   "stp q20, q21, [%1, #320]\n\tstp q22, q23, [%1, #352]\n\t"
+                   "stp q24, q25, [%1, #384]\n\tstp q26, q27, [%1, #416]\n\t"
+                   "stp q28, q29, [%1, #448]\n\tstp q30, q31, [%1, #480]\n\t"
+                   "mrs x9, fpcr\n\tmrs x10, fpsr\n\t"
+                   "str x9, [%1, #512]\n\tstr x10, [%1, #520]"
+                   : "=m"(*(uint8_t (*)[ARCH_FP_SIZE])fp)
+                   : "r"(fp)
+                   : "x9", "x10");
 }
+
+static void fp_load(const uint8_t *fp) {
+  __asm__ volatile(".arch_extension fp\n\t"
+                   ".arch_extension simd\n\t"
+                   "ldp q0, q1, [%0, #0]\n\tldp q2, q3, [%0, #32]\n\t"
+                   "ldp q4, q5, [%0, #64]\n\tldp q6, q7, [%0, #96]\n\t"
+                   "ldp q8, q9, [%0, #128]\n\tldp q10, q11, [%0, #160]\n\t"
+                   "ldp q12, q13, [%0, #192]\n\tldp q14, q15, [%0, #224]\n\t"
+                   "ldp q16, q17, [%0, #256]\n\tldp q18, q19, [%0, #288]\n\t"
+                   "ldp q20, q21, [%0, #320]\n\tldp q22, q23, [%0, #352]\n\t"
+                   "ldp q24, q25, [%0, #384]\n\tldp q26, q27, [%0, #416]\n\t"
+                   "ldp q28, q29, [%0, #448]\n\tldp q30, q31, [%0, #480]\n\t"
+                   "ldr x9, [%0, #512]\n\tldr x10, [%0, #520]\n\t"
+                   "msr fpcr, x9\n\tmsr fpsr, x10"
+                   :
+                   : "r"(fp)
+                   : "x9", "x10", "memory");
+}
+
+// Idle threads have no user state: whoever ran last leaves its TPIDR_EL0 and
+// FP/SIMD registers in place, unused, until the next user thread loads its own.
+static void arch_user_switch(thread *prev, thread *next) {
+  if (prev->task) {
+    prev->tls = arch_tls_read();
+    fp_save(prev->fp);
+  }
+  if (next->task) {
+    arch_tls_write(next->tls);
+    fp_load(next->fp);
+  }
+}
+
+// The reset's values: every register zero; FPCR zero (round to nearest, no
+// traps), FPSR zero.
+static void arch_fp_init(uint8_t *fp) { memset(fp, 0, ARCH_FP_SIZE); }
 
 static constexpr uint64_t SPSR_SS = 1ull << 21; // software step
 

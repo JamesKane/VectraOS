@@ -12,6 +12,14 @@ uintptr_t __stack_chk_guard = 0x595e9fbd94fda766;
 // The most CPUs the kernel runs on. Limine's others stay parked.
 static constexpr uint32_t MAX_CPUS = 64;
 
+// A thread's FP/SIMD save area: FXSAVE's 512 bytes on x86_64; v0-v31, FPCR
+// and FPSR on aarch64.
+#ifdef __x86_64__
+static constexpr uint32_t ARCH_FP_SIZE = 512;
+#else
+static constexpr uint32_t ARCH_FP_SIZE = 32 * 16 + 16;
+#endif
+
 // What each architecture provides to the rest of the kernel.
 static void arch_console_init(void);
 static void arch_console_write(vx_str s);
@@ -80,9 +88,12 @@ static bool arch_frame_divert(struct trap_frame *f, uint64_t pc,
                               uint64_t arg);                // pc(arg), on a stack just below arg
 static void arch_frame_step(struct trap_frame *f, bool on); // trap after one user instruction
 static void arch_sync_icache(void *p, size_t len); // code written through a data mapping, made runnable
-// The user thread pointer (x86_64's FS base, aarch64's TPIDR_EL0): saved and
-// loaded with each switch between threads, and the running thread's, live.
-static void arch_tls_switch(thread *prev, thread *next);
+// A user thread's state that traps do not save: the thread pointer (x86_64's
+// FS base, aarch64's TPIDR_EL0) and the FP/SIMD registers. Saved and loaded
+// with each switch between threads; the kernel itself never touches FP/SIMD
+// (-mgeneral-regs-only), so nothing else needs to.
+static void arch_user_switch(thread *prev, thread *next);
+static void arch_fp_init(uint8_t *fp); // a new thread's: the architecture's reset values
 static uint64_t arch_tls_read(void);
 static void arch_tls_write(uint64_t value);
 

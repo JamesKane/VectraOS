@@ -249,8 +249,8 @@ static uint32_t write_child(uint8_t *code, child_code what) {
 #define EMIT(b)   (code[n++] = (uint8_t)(b))
 #define EMIT32(v) (EMIT(v), EMIT((v) >> 8), EMIT((v) >> 16), EMIT((v) >> 24))
   if (what == USE_SIMD) {
-    EMIT(0x66), EMIT(0x0f), EMIT(0xef), EMIT(0xc0); // pxor %xmm0, %xmm0: faults, as SIMD is off
-    what = EXIT_7;                                  // (it would exit 7 if it did not)
+    EMIT(0x66), EMIT(0x0f), EMIT(0xef), EMIT(0xc0); // pxor %xmm0, %xmm0, then exit 7
+    what = EXIT_7;
   }
   if (what == BREAK_STEP) {
     EMIT(0xcc); // int3: a breakpoint, then exit 7
@@ -299,8 +299,8 @@ static uint32_t write_child(uint8_t *code, child_code what) {
   (code[n] = (uint8_t)(w), code[n + 1] = (uint8_t)((w) >> 8), code[n + 2] = (uint8_t)((w) >> 16),            \
    code[n + 3] = (uint8_t)((w) >> 24), n += 4)
   if (what == USE_SIMD) {
-    EMIT(0x9e6703e0u); // fmov d0, xzr: traps, as FP/SIMD is off
-    what = EXIT_7;     // (it would exit 7 if it did not)
+    EMIT(0x9e6703e0u); // fmov d0, xzr, then exit 7
+    what = EXIT_7;
   }
   if (what == BREAK_STEP) {
     EMIT(0xd4200020u); // brk #1: a breakpoint, then exit 7
@@ -843,9 +843,9 @@ static void test_port_waiters(void) {
 
   vx_handle port, child;
   CHECK(vx_port_create(0, &port) == VX_OK);
-  // FP/SIMD faults in user tasks while the kernel does not save it.
+  // FP/SIMD runs in user tasks (test_fp: each thread keeps its own).
   CHECK(start_child(USE_SIMD, &child));
-  CHECK(wait_exit(port, child) == -1); // killed by the fault, not exiting 7
+  CHECK(wait_exit(port, child) == 7);
   vx_handle_close(child);
   CHECK(start_child(PORT_BLOCK, &child));
   CHECK(wait_blocked(child)); // in port_wait
@@ -1272,6 +1272,80 @@ static void test_tls(void) {
   CHECK(tls_set(0));
 }
 
+// --- FP/SIMD state, kept per thread ---
+
+// A vector register and the FP control register (MXCSR; FPCR). The register
+// is caller-saved (xmm7; v7), so declaring it clobbered makes no function save
+// and restore it, and nothing between a put and a get uses it: the futex
+// wrapper and after_ms use no SIMD.
+#ifdef __x86_64__
+static constexpr uint32_t FP_CTL_DEFAULT = 0x1f80, FP_CTL_ZERO = 0x7f80; // round toward zero
+static void fp_put(uint64_t v, uint32_t ctl) {
+  __asm__ volatile("movq %0, %%xmm7\n\tldmxcsr %1" : : "r"(v), "m"(ctl) : "xmm7");
+}
+static uint64_t fp_get(uint32_t *ctl) {
+  uint64_t v;
+  uint32_t c;
+  __asm__ volatile("movq %%xmm7, %0\n\tstmxcsr %1" : "=&r"(v), "=m"(c));
+  *ctl = c;
+  return v;
+}
+#else
+static constexpr uint32_t FP_CTL_DEFAULT = 0, FP_CTL_ZERO = 3u << 22; // FPCR.RMode: toward zero
+static void fp_put(uint64_t v, uint32_t ctl) {
+  __asm__ volatile("fmov d7, %0\n\tmsr fpcr, %1" : : "r"(v), "r"((uint64_t)ctl) : "v7");
+}
+static uint64_t fp_get(uint32_t *ctl) {
+  uint64_t v, c;
+  __asm__ volatile("fmov %0, d7\n\tmrs %1, fpcr" : "=&r"(v), "=r"(c));
+  *ctl = (uint32_t)c;
+  return v;
+}
+#endif
+
+static shared fp_shared;
+static _Atomic uint32_t fp_worker_bad;
+
+// A new thread's registers are clean; then its own survive its sleeps.
+[[noreturn]] static void fp_worker(vx_handle unused, uint64_t arg) {
+  (void)unused, (void)arg;
+  uint32_t ctl = 1;
+  if (fp_get(&ctl) != 0 || ctl != FP_CTL_DEFAULT) atomic_fetch_add(&fp_worker_bad, 1);
+  fp_put(0xb0b0'b0b0'b0b0'b0b0, FP_CTL_ZERO);
+  set_stage(&fp_shared, 1);
+  for (int i = 0; i < 20; i++) {
+    _Atomic uint32_t never = 0;
+    vx_futex_wait(&never, 0, after_ms(1));
+    if (fp_get(&ctl) != 0xb0b0'b0b0'b0b0'b0b0 || ctl != FP_CTL_ZERO) atomic_fetch_add(&fp_worker_bad, 1);
+  }
+  set_stage(&fp_shared, 2);
+  vx_thread_exit(0);
+}
+
+static void test_fp(void) {
+  vx_handle th;
+  uint32_t ctl = 0;
+  fp_put(0xa1a1'a1a1'a1a1'a1a1, FP_CTL_DEFAULT);
+  uint64_t sp = new_stack();
+  CHECK(sp != 0);
+  CHECK(vx_thread_create(self, &th) == VX_OK);
+  CHECK(vx_thread_start(th, (uint64_t)fp_worker, sp, 0, 0) == VX_OK);
+  wait_for_stage(&fp_shared, 1);
+  bool kept = true;
+  for (int i = 0; i < 20; i++) {
+    _Atomic uint32_t never = 0;
+    vx_futex_wait(&never, 0, after_ms(1));
+    kept = kept && fp_get(&ctl) == 0xa1a1'a1a1'a1a1'a1a1 && ctl == FP_CTL_DEFAULT;
+  }
+  CHECK(kept);
+  wait_for_stage(&fp_shared, 2);
+  CHECK(atomic_load(&fp_worker_bad) == 0);
+  vx_handle_close(th);
+  // And floating point itself, compiled: 1/3 rounds differently by mode.
+  volatile double third = 1.0, three = 3.0;
+  CHECK(third / three > 0.333 && third / three < 0.334);
+}
+
 static void test_vmo_clone(void) {
   vx_handle v, c;
   uint64_t words[2] = {11, 22}, got[2] = {};
@@ -1305,6 +1379,7 @@ int vx_main(void) {
   test_vmo_clone();
   test_debugger();
   test_tls();
+  test_fp();
   test_nested_channels();
   test_rings();
   test_vmo_rw();

@@ -175,16 +175,20 @@ static void arch_cpu_init(uint32_t index) {
   wrmsr(MSR_KERNEL_GS_BASE, 0);
   uint64_t cr0;
   __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
-  // WP: read-only means read-only, for the kernel too. EM, and no OSFXSR,
-  // OSXMMEXCPT or OSXSAVE: x87, SSE and AVX instructions fault, for user
-  // tasks too, until the kernel saves that state (01 §1); otherwise one task's
-  // registers would reach the next. The kernel itself uses none.
-  __asm__ volatile("mov %0, %%cr0" : : "r"((cr0 | 1ull << 16 | 1ull << 2) & ~(1ull << 1)));
+  // WP: read-only means read-only, for the kernel too. MP and NE, without EM
+  // or TS: x87 and SSE run, their errors as exceptions, and the kernel saves
+  // them with FXSAVE at each switch (arch_user_switch). The kernel itself
+  // uses none.
+  __asm__ volatile("mov %0, %%cr0"
+                   :
+                   : "r"((cr0 | 1ull << 16 | 1ull << 5 | 1ull << 1) & ~(1ull << 2 | 1ull << 3)));
   uint64_t cr4;
   __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
-  // FSGSBASE (bit 16) off as well: user code changes its FS base only
-  // through thread_state, and never its GS base, which swapgs relies on.
-  __asm__ volatile("mov %0, %%cr4" : : "r"(cr4 & ~(1ull << 9 | 1ull << 10 | 1ull << 16 | 1ull << 18)));
+  // OSFXSR and OSXMMEXCPT: SSE, with its exceptions as #XM. No OSXSAVE:
+  // AVX faults until XSAVE's larger state is saved. FSGSBASE off: user code
+  // changes its FS base only through thread_state, and never its GS base,
+  // which swapgs relies on.
+  __asm__ volatile("mov %0, %%cr4" : : "r"((cr4 | 1ull << 9 | 1ull << 10) & ~(1ull << 16 | 1ull << 18)));
 
   uint8_t *ist = index == 0 ? &boot_ist_stacks[0][0] : nullptr;
   if (!ist) {
@@ -434,11 +438,27 @@ static vx_status arch_frame_set_regs(trap_frame *f, const vx_regs *r) {
 
 static constexpr uint32_t MSR_FS_BASE = 0xc0000100;
 
-// Idle threads have no user thread pointer: the FS base of whoever ran last
-// stays, unused, until the next user thread loads its own.
-static void arch_tls_switch(thread *prev, thread *next) {
-  if (prev->task) prev->tls = rdmsr(MSR_FS_BASE);
-  if (next->task) wrmsr(MSR_FS_BASE, next->tls);
+// Idle threads have no user state: whoever ran last leaves its FS base and
+// FP/SIMD registers in place, unused, until the next user thread loads its own.
+static void arch_user_switch(thread *prev, thread *next) {
+  if (prev->task) {
+    prev->tls = rdmsr(MSR_FS_BASE);
+    __asm__ volatile("fxsave64 %0" : "=m"(*(uint8_t (*)[ARCH_FP_SIZE])prev->fp));
+  }
+  if (next->task) {
+    wrmsr(MSR_FS_BASE, next->tls);
+    __asm__ volatile("fxrstor64 %0" : : "m"(*(const uint8_t (*)[ARCH_FP_SIZE])next->fp));
+  }
+}
+
+// FINIT's and the reset's values: the x87 control word 0x37f, MXCSR 0x1f80
+// (every exception masked, round to nearest); every register zero.
+static void arch_fp_init(uint8_t *fp) {
+  memset(fp, 0, ARCH_FP_SIZE);
+  uint16_t fcw = 0x37f;
+  uint32_t mxcsr = 0x1f80;
+  memcpy(fp, &fcw, sizeof fcw);
+  memcpy(fp + 24, &mxcsr, sizeof mxcsr);
 }
 
 static uint64_t arch_tls_read(void) { return rdmsr(MSR_FS_BASE); }
@@ -845,6 +865,10 @@ static uint64_t arch_thread_initial_sp(thread *t) {
 
 [[noreturn]] static void arch_enter_user(uint64_t entry, uint64_t sp, uint64_t arg, uint64_t arg2,
                                          uint64_t kstack_top) {
+  // As if called (thread_start, abi.h): a zero return address below sp. If
+  // it cannot be written, the thread faults on its first use of its stack.
+  uint64_t zero = 0;
+  (void)copy_to_user(sp - 8, &zero, sizeof zero);
   trap_frame *f = (trap_frame *)kstack_top - 1;
   *f = (trap_frame){
       .rdi = arg,
@@ -852,7 +876,7 @@ static uint64_t arch_thread_initial_sp(thread *t) {
       .rip = entry,
       .cs = SEL_USER_CODE,
       .rflags = 0x202,
-      .rsp = sp,
+      .rsp = sp - 8,
       .ss = SEL_USER_DATA,
   };
   arch_enter_frame(f);

@@ -292,6 +292,9 @@ static constexpr uint32_t VX_RIGHTS_SAME = 1u << 31; // handle_dup: the rights t
 // FIRST_CHANCE, then to the task's in-task handler, if it has one, then to its
 // exception port, then to the default: the task is killed (05 §2).
 //
+// thread_start(thread, entry, sp, handle, arg2): runs entry(handle, arg2) as
+//     if called, sp being a 16-aligned stack top: on x86_64 with a zero
+//     return address just below it, so any C function can be the entry.
 // exception_bind(task, port, key, options): with options 0, faults stop the
 //     thread and post a packet to port: trigger VX_TRIGGER_EXCEPTION, the
 //     binding's key, and value the thread's id (from 1, in creation order). A

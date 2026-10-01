@@ -106,12 +106,7 @@ static const char *const RELEASE_FLAGS[] = {"-O2", nullptr};
 // First-party user programs in M1: freestanding, static, non-PIE, against
 // lib/vx-rt. No FP/SIMD until the kernel saves that state (M2).
 static const char *const USER_FLAGS[] = {
-    "-ffreestanding",
-    "-fno-pic",
-    "-mgeneral-regs-only",
-    "-fstack-protector-strong",
-    "-mstack-protector-guard=global",
-    nullptr,
+    "-ffreestanding", "-fno-pic", "-fstack-protector-strong", "-mstack-protector-guard=global", nullptr,
 };
 
 static const char *const X86_64_FLAGS[] = {
