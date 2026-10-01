@@ -1187,6 +1187,66 @@ static void test_debugger(void) {
   vx_handle_close(port);
 }
 
+// --- fork (01 §9) ---
+
+static uint64_t fork_page[512];
+static uint64_t fork_ring; // where a ring's memory is mapped, in the parent
+
+// The forked child's first thread. Its exit status says what it found: 77
+// if all is well, or the bits of what was not.
+[[noreturn]] static void fork_child(vx_handle unused, uint64_t my_id) {
+  (void)unused;
+  int64_t wrong = 0;
+  if (fork_page[7] != 0x1234) wrong |= 1; // memory as it was at the fork
+  fork_page[7] = 0x9999;                  // and its own: the parent never sees this
+  vx_task_summary me;
+  if (vx_task_info(self, &me) != VX_OK || me.id != my_id) wrong |= 2; // "self" is itself
+  if (fork_ring) (void)*(volatile uint64_t *)fork_ring;               // not there: a fault ends it
+  vx_thread_exit(wrong ? wrong : 77);
+}
+
+static int64_t run_fork(uint64_t sp, vx_handle port) {
+  vx_handle child, th;
+  vx_task_summary info;
+  if (vx_task_fork(VX_STR("forked"), &child) != VX_OK) return INT64_MIN;
+  fork_page[7] = 0x5555; // after the fork: not the child's
+  int64_t status = INT64_MIN;
+  if (vx_task_info(child, &info) == VX_OK && vx_thread_create(child, &th) == VX_OK) {
+    if (vx_thread_start(th, (uint64_t)fork_child, sp, 0, info.id) == VX_OK) status = wait_exit(port, child);
+    vx_handle_close(th);
+  }
+  vx_handle_close(child);
+  return status;
+}
+
+static void test_fork(void) {
+  vx_handle port;
+  CHECK(vx_port_create(0, &port) == VX_OK);
+  uint64_t sp = new_stack(); // mapped before the fork, so the child has it too
+  CHECK(sp != 0);
+  fork_page[7] = 0x1234;
+  CHECK(run_fork(sp, port) == 77);
+  CHECK(fork_page[7] == 0x5555); // the child's write stayed in the child
+
+  // A ring's memory is not copied: the child faults where the parent has it.
+  vx_ring_handles h;
+  static const vx_ring_params params = {16, 16, 64, 32, 4096, 4096};
+  vx_ring_header layout;
+  vx_ring_layout(&params, &layout);
+  CHECK(vx_ring_create(&params, &h) == VX_OK);
+  CHECK(vx_as_map(self, h.memory, 0, layout.size, VX_MAP_WRITE, &fork_ring) == VX_OK);
+  fork_page[7] = 0x1234;
+  CHECK(*(volatile uint64_t *)fork_ring != 0x5a5a); // the parent reads it
+  CHECK(run_fork(sp, port) == -1);                  // the child is killed by the fault
+  CHECK(vx_as_unmap(self, fork_ring, layout.size) == VX_OK);
+  vx_handle_close(h.memory);
+  vx_handle_close(h.client);
+  vx_handle_close(h.server);
+  vx_handle none = VX_HANDLE_NONE;
+  CHECK(vx_syscall(VX_SYS_task_create, (uint64_t)"x", 1, (uint64_t)&none, 2, 0, 0) == VX_ERR_INVALID);
+  vx_handle_close(port);
+}
+
 // --- The thread pointer (musl's TLS) ---
 
 // The word the thread pointer points at, read through it as musl does.
@@ -1379,6 +1439,7 @@ int vx_main(void) {
   test_vmo_clone();
   test_debugger();
   test_tls();
+  test_fork();
   test_fp();
   test_nested_channels();
   test_rings();

@@ -44,6 +44,7 @@ static vx_status ring_create(const vx_ring_params *p, ring_end **client, ring_en
   if (st != VX_OK) return st;
   vmo *v;
   if ((st = vmo_create(h.size, &v)) != VX_OK) return st;
+  v->ring = true;
   vmo_write(v, 0, &h, sizeof h);
   ring_pair *pair = pool_alloc(&ring_pair_pool);
   ring_end *ends[2] = {};

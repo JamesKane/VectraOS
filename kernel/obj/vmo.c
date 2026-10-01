@@ -12,6 +12,7 @@ typedef struct vmo {
   uint64_t *pages;     // physical address of each page, through the direct map
   unsigned list_order; // the page list's allocation order
   bool physical;       // device memory (device.c): its pages are not RAM, and are never freed
+  bool ring;           // a ring's memory (ring.c), never copied into a forked task
 } vmo;
 
 static pool vmo_pool = POOL_FOR(vmo);

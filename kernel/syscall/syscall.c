@@ -590,15 +590,22 @@ static int64_t sys_ring_xfer(vx_handle h, uint64_t op, uint64_t handles, uint64_
 
 // --- Tasks and threads ---
 
-static int64_t sys_task_create(uint64_t name_ptr, uint64_t name_len, uint64_t out) {
+static int64_t sys_task_create(uint64_t name_ptr, uint64_t name_len, uint64_t out, uint64_t options) {
   char name[24] = {};
   if (name_len >= sizeof name) return VX_ERR_RANGE;
+  if (options & ~(uint64_t)VX_TASK_FORK) return VX_ERR_INVALID;
   vx_status st = copy_from_user(name, name_ptr, name_len);
   if (st != VX_OK) return st;
   task *t;
   st = task_create(name, current_task()->id, &t);
   if (st != VX_OK) return st;
   t->may_debug_write = current_task()->may_debug_write;
+  if (options & VX_TASK_FORK) st = task_fork_copy(current_task(), t);
+  if (st != VX_OK) {
+    task_kill(t, VX_ERR_NO_MEMORY); // never started: torn down with its last reference
+    object_release(&t->obj);
+    return st;
+  }
   return return_handle(&t->obj, ALL_RIGHTS, out);
 }
 
@@ -714,7 +721,7 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   switch (nr) {
   case VX_SYS_debug_write: return sys_debug_write(a[0], a[1]);
   case VX_SYS_clock_read: return clock_now();
-  case VX_SYS_task_create: return sys_task_create(a[0], a[1], a[2]);
+  case VX_SYS_task_create: return sys_task_create(a[0], a[1], a[2], a[3]);
   case VX_SYS_task_kill: return sys_task_kill((vx_handle)a[0], a[1], a[2]);
   case VX_SYS_task_info: return sys_task_info((vx_handle)a[0], a[1], a[2], a[3]);
   case VX_SYS_thread_create: return sys_thread_create((vx_handle)a[0], a[1], a[2]);

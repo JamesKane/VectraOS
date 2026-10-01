@@ -288,6 +288,13 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   return (vx_status)vx_syscall(VX_SYS_task_create, (uint64_t)name.ptr, name.len, (uint64_t)out, 0, 0, 0);
 }
 
+// A copy of the caller, with no threads yet (VX_TASK_FORK).
+[[maybe_unused]] static vx_status vx_task_fork(vx_str name, vx_handle *out) {
+  *out = VX_HANDLE_NONE;
+  return (vx_status)vx_syscall(VX_SYS_task_create, (uint64_t)name.ptr, name.len, (uint64_t)out, VX_TASK_FORK,
+                               0, 0);
+}
+
 [[maybe_unused]] static vx_status vx_thread_create(vx_handle task, vx_handle *out) {
   *out = VX_HANDLE_NONE;
   return (vx_status)vx_syscall(VX_SYS_thread_create, task, (uint64_t)out, 0, 0, 0, 0);

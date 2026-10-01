@@ -294,6 +294,12 @@ static constexpr uint32_t VX_RIGHTS_SAME = 1u << 31; // handle_dup: the rights t
 // FIRST_CHANCE, then to the task's in-task handler, if it has one, then to its
 // exception port, then to the default: the task is killed (05 §2).
 //
+// task_create(name, len, &task, options): a new task, with nothing in it.
+//     With FORK, it has a copy of the caller's memory, made now, and of its
+//     handle table: the same values and rights, a handle to the caller
+//     becoming one to the new task. Rings' memory and device memory are not
+//     copied, and the copy has no threads: the caller starts one (01 §9).
+enum vx_task_options : uint32_t { VX_TASK_FORK = 1 };
 // thread_start(thread, entry, sp, handle, arg2): runs entry(handle, arg2) as
 //     if called, sp being a 16-aligned stack top: on x86_64 with a zero
 //     return address just below it, so any C function can be the entry.

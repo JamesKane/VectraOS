@@ -81,7 +81,11 @@ In progress. 04 §6 gives M4's content but no steps or exit test, so they are se
 | 2b. Kernel: the thread pointer (x86_64's FS base, aarch64's `TPIDR_EL0`) kept per thread; `thread_state` `GET_TLS`/`SET_TLS`, for the caller itself or a stopped thread | Done | `e089716` |
 | 2c. Kernel: FP/SIMD state (x87/SSE by FXSAVE; arm64 v0–v31, FPCR, FPSR) saved per thread; first-party programs no longer `-mgeneral-regs-only`; `thread_start` enters as if called | Done | `f225529` |
 | 2d. The vx back end (files, directories, stdio, memory, time, the process), compiler-rt's builtins vendored (ADR-0008), `./build` building `libc.a` and the `vectra-musl` sysroot; `ctest`, a C program against it, runs (`posix`) | Done | `a5ef5bf` |
-| 3. `posixd`: pids, `fork`, `exec`, `wait`, signals, sessions; pipes; a RAM file system for `/tmp`; `/dev/null`, `/dev/urandom` | To do | |
+| 3a. Kernel: `task_create`'s `FORK`, a copy of the caller's memory and handle table (rings' and devices' memory left out, a handle to the caller becoming the child's) | Done | not yet committed |
+| 3b. `posixd`: the process table (pids, parents, process groups, sessions), `posix_spawn`, `wait`; the back end's `getpid` and the rest from it | To do | |
+| 3c. libc: `fork` (the child reconnecting its namespace and console), `execve`, pipes over channels, descriptors passed to children | To do | |
+| 3d. Signals: `sigaction`, `kill` through `posixd`, delivery by `thread_interrupt` to a libc trampoline, faults as `SIGSEGV` and the rest, `SIGCHLD` | To do | |
+| 3e. A RAM file system for `/tmp`; `/dev/null`, `/dev/zero`, `/dev/urandom`; the POSIX namespace template (`/lib/ns/posix`) | To do | |
 | 4. `ptyd`; sockets over `/net`; `poll` and `select`; the `posix` 9Px extension | To do | |
 | 5. Lua, sbase and dash, vendored | To do | |
 | 6. The `procfs` debug files, crash directories, `lib/vx-debug`, `dbg -c`, `/sys/clock`, `vx-prof` zones | To do | |
@@ -103,7 +107,7 @@ Deferred deliberately, each with where it is due:
 | No loopback route | The guest cannot connect to itself, so `listen` is tested in the host tests and the 9P framework but not end to end in QEMU | M3 step 6, or when a test needs it |
 | TCP: no SACK, no timestamps, out-of-order segments dropped; TIME_WAIT 10 s | Recovery from loss is slower than it could be | After M3 |
 | x86_64's shootdown is tested only under TCG | KVM flushes a guest's TLB often enough to hide a missing shootdown, so the ktest check catches one only with `--tcg` (aarch64 always runs under TCG) | — |
-| `vmo_clone` copies at once | Correct, and charged as 01 §5 says, but a `fork` of a large process copies all of it; sharing pages until written can come behind the same call | When `fork` is slow enough to matter |
+| `vmo_clone` and `fork` copy at once | Correct, and charged as 01 §5 says, but a `fork` of a large process copies all of it; sharing pages until written can come behind the same call | When `fork` is slow enough to matter |
 | No hardware watchpoints; no thread, image or exit events to a debugger yet | A debugger sees faults, breakpoints and steps only | M4 step 6 (the `procfs` debug files), M12 (watchpoints) |
 | No threads in the POSIX personality: `clone` is `ENOSYS`, so `pthread_create` fails; the back end does not lock | Single-threaded C programs only | When a port needs threads (the kernel side exists: threads, futexes, the thread pointer) |
 | No entropy for user space: `AT_RANDOM`, and so musl's stack guard and malloc's secret, come from the clock; `getrandom` is `ENOSYS` | Nothing secret can be made in user space | A kernel random source, before `keyd` (M8) |

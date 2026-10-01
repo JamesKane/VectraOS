@@ -369,6 +369,47 @@ static vx_status task_map(task *t, vmo *v, uint64_t offset, uint64_t size, uint3
   return st;
 }
 
+// task_create's FORK (01 §9): the new task gets a copy of the parent's memory
+// and its handle table, and nothing else; the caller starts a thread in it.
+//   - Each mapping is a copy, made now, of what the parent sees there, at the
+//     same address with the same permissions. A ring's memory is not copied
+//     (a copied ring is broken, a shared one would have two producers), nor
+//     is device memory: the child finds those addresses unmapped, and its
+//     library connects again.
+//   - Each handle keeps its value and rights, so what the parent's memory
+//     says about its handles (its file descriptors) holds in the child. A
+//     handle to the parent itself becomes one to the child.
+//   - The in-task fault handler is the parent's (signal handlers are
+//     inherited); exception ports, a debugger and I/O ports are not.
+static vx_status task_fork_copy(task *parent, task *child) {
+  vx_status st = VX_OK;
+  spin_lock(&parent->lock);
+  if (!parent->root || parent->ending) st = VX_ERR_BAD_STATE;
+  for (uint32_t i = 0; st == VX_OK && i < TASK_MAX_MAPPINGS; i++) {
+    const mapping *m = &parent->maps[i];
+    if (!m->size || m->vmo->physical || m->vmo->ring) continue;
+    vmo *copy;
+    st = vmo_create(m->size, &copy);
+    if (st != VX_OK) break;
+    for (uint64_t off = 0; off < m->size; off += 4096)
+      memcpy(phys_to_virt(copy->pages[off / 4096]), phys_to_virt(m->vmo->pages[(m->offset + off) / 4096]),
+             4096);
+    uint64_t va = m->va;
+    st = task_map(child, copy, 0, m->size, m->flags, &va);
+    object_release(&copy->obj); // the child's mapping holds it, if it was made
+  }
+  for (uint32_t i = 0; st == VX_OK && i < HANDLE_SLOTS; i++) {
+    handle_entry e = parent->handles[i];
+    if (e.obj == &parent->obj) e.obj = &child->obj;
+    if (e.obj) object_ref(e.obj);
+    child->handles[i] = e; // free slots too: their generations go on from the parent's
+  }
+  child->map_next = parent->map_next;
+  child->exc_handler = parent->exc_handler;
+  spin_unlock(&parent->lock);
+  return st;
+}
+
 // Unmaps [va, va + size): whole mappings, or the parts of them in the range; a
 // mapping cut in the middle becomes two, so that needs a free slot. The page
 // entries are cleared under the lock, the translations shot down after it
