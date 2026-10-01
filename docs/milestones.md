@@ -60,7 +60,7 @@ In progress.
 | 2. The virtio-pci transport, `drv-virtio-net`, driver matching in `devmgr`, rendezvous posts in `svcd`; the aarch64 LPI fix | Done | `acf4107` |
 | 3a. `vx-net` (Ethernet, ARP, IPv4, ICMP echo, UDP, DHCP), `netd` serving `/net` (`ipifc`, `icmp`, `udp`), `ping` | Done | `5ed5a2b` |
 | 3b. TCP in `vx-net` (NewReno, window scaling) and `/net/tcp` with `listen` | Done | `3f536d0` |
-| 3c. The DNS stub in `vx-net`, `/net/cs` and `/net/dns`, UDP `headers`, the `cs` command | Done | not yet committed |
+| 3c. The DNS stub in `vx-net`, `/net/cs` and `/net/dns`, UDP `headers`, the `cs` command | Done | `94571ec` |
 | 4. 9Px over TCP in the `vx-9p` client; `mount tcp!host!port` and `9p://host:port` | To do | |
 | 5. `host/vx9pserve`, and interoperability against a stock 9P2000 server (`u9fs` or 9front's `exportfs`) | To do | |
 | 6. The exit test as a scenario (the harness runs `vx9pserve`); `./build image --iso` | To do | |
