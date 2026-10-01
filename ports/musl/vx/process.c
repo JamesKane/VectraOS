@@ -390,7 +390,9 @@ static long proc_fork(void) {
   spawn_ctx ctx = {.pgid = -1};
   vx_str name = VX_STR("forked");
   if (vx_task_info(vx_self, &me) == VX_OK) name = (vx_str){me.name, strnlen(me.name, sizeof me.name)};
+  fd_before_fork(); // tokens for the child to join this process's open files with
   vx_status st = vx_task_fork(name, &child);
+  fd_after_fork_parent();
   vx_str ignored;
   if (st == VX_OK) st = spawn_prepare(&ctx, child, &posix, &ignored);
   if (st == VX_OK) st = vx_thread_create(child, &thread);

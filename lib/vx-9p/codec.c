@@ -135,7 +135,21 @@ typedef struct p9_msg {
   uint64_t mask;
   p9_attr attr;
   p9_setattr setattr;
+  uint8_t lock_type, status, whence;
+  uint32_t lock_flags, proc_id, holds, desc_flags;
+  uint64_t start, length;
+  vx_str client_id;
+  uint8_t token[16];
 } p9_msg;
+
+// Tread's and Twrite's offset that means the open file's own, which the
+// server keeps and moves on (posix).
+static constexpr uint64_t P9_OFFSET_CURRENT = UINT64_MAX;
+// Topen's mode bit (posix): the open file's writes at P9_OFFSET_CURRENT go
+// to its end.
+enum : uint8_t { P9_OAPPEND = 0x80 };
+enum : uint8_t { P9_LOCK_READ = 0, P9_LOCK_WRITE = 1, P9_LOCK_UNLOCK = 2 };
+enum : uint8_t { P9_LOCK_SUCCESS = 0, P9_LOCK_BLOCKED = 1, P9_LOCK_ERROR = 2 };
 
 // The fields of each message type, in wire order; nullptr for a type that does not exist.
 #define P9_MSG(name, num, ...) static const p9_field P9_FIELDS_##name[] = {__VA_OPT__(__VA_ARGS__, ) P9F_END};
@@ -242,6 +256,17 @@ static void p9_put_qid(p9_out *o, p9_qid q) {
     case P9F_GID: p9_put(&o, m->gid, 4); break;
     case P9F_MASK: p9_put(&o, m->mask, 8); break;
     case P9F_DATASYNC: p9_put(&o, m->datasync, 4); break;
+    case P9F_LOCKTYPE: p9_put(&o, m->lock_type, 1); break;
+    case P9F_LOCKFLAGS: p9_put(&o, m->lock_flags, 4); break;
+    case P9F_START: p9_put(&o, m->start, 8); break;
+    case P9F_LENGTH: p9_put(&o, m->length, 8); break;
+    case P9F_PROCID: p9_put(&o, m->proc_id, 4); break;
+    case P9F_CLIENTID: p9_put_str(&o, m->client_id); break;
+    case P9F_STATUS: p9_put(&o, m->status, 1); break;
+    case P9F_HOLDS: p9_put(&o, m->holds, 4); break;
+    case P9F_TOKEN: p9_put_bytes(&o, m->token, sizeof m->token); break;
+    case P9F_WHENCE: p9_put(&o, m->whence, 1); break;
+    case P9F_DESCFLAGS: p9_put(&o, m->desc_flags, 4); break;
     case P9F_ATTR: {
       const p9_attr *a = &m->attr;
       p9_put(&o, a->valid, 8);
@@ -372,6 +397,19 @@ static p9_qid p9_get_qid(p9_in *in) {
     case P9F_GID: m->gid = (uint32_t)p9_get(&in, 4); break;
     case P9F_MASK: m->mask = p9_get(&in, 8); break;
     case P9F_DATASYNC: m->datasync = (uint32_t)p9_get(&in, 4); break;
+    case P9F_LOCKTYPE: m->lock_type = (uint8_t)p9_get(&in, 1); break;
+    case P9F_LOCKFLAGS: m->lock_flags = (uint32_t)p9_get(&in, 4); break;
+    case P9F_START: m->start = p9_get(&in, 8); break;
+    case P9F_LENGTH: m->length = p9_get(&in, 8); break;
+    case P9F_PROCID: m->proc_id = (uint32_t)p9_get(&in, 4); break;
+    case P9F_CLIENTID: m->client_id = p9_get_str(&in); break;
+    case P9F_STATUS: m->status = (uint8_t)p9_get(&in, 1); break;
+    case P9F_HOLDS: m->holds = (uint32_t)p9_get(&in, 4); break;
+    case P9F_TOKEN:
+      for (size_t i = 0; i < sizeof m->token; i++) m->token[i] = (uint8_t)p9_get(&in, 1);
+      break;
+    case P9F_WHENCE: m->whence = (uint8_t)p9_get(&in, 1); break;
+    case P9F_DESCFLAGS: m->desc_flags = (uint32_t)p9_get(&in, 4); break;
     case P9F_ATTR: {
       p9_attr *a = &m->attr;
       a->valid = p9_get(&in, 8);

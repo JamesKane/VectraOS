@@ -191,3 +191,73 @@ static vx_status p9c_call(p9_client *c, p9_msg *t) {
   p9_msg t = {.type = P9_Tfsync, .fid = fid};
   return p9c_call(c, &t);
 }
+
+// An open file shared between connections (posix): a token for `holds`
+// joins of it.
+[[maybe_unused]] static vx_status p9c_share(p9_client *c, uint32_t fid, uint32_t holds, uint8_t token[16]) {
+  if (!(c->extensions & P9_EXT_POSIX)) return VX_ERR_UNSUPPORTED;
+  p9_msg t = {.type = P9_Tshare, .fid = fid, .holds = holds};
+  vx_status e = p9c_call(c, &t);
+  if (e == VX_OK) memcpy(token, c->reply.token, 16);
+  return e;
+}
+
+// A new fid, open on the open file a token names (on this connection's server).
+[[maybe_unused]] static vx_status p9c_join(p9_client *c, const uint8_t token[16], uint32_t *fid) {
+  if (!(c->extensions & P9_EXT_POSIX)) return VX_ERR_UNSUPPORTED;
+  p9_msg t = {.type = P9_Tjoin, .newfid = c->next_fid++};
+  memcpy(t.token, token, 16);
+  vx_status e = p9c_call(c, &t);
+  if (e == VX_OK) *fid = t.newfid;
+  return e;
+}
+
+// Moves the open file's own offset (whence: set 0, current 1, end 2), and says where it is.
+[[maybe_unused]] static vx_status p9c_seek(p9_client *c, uint32_t fid, int64_t offset, uint8_t whence,
+                                           uint64_t *at) {
+  if (!(c->extensions & P9_EXT_POSIX)) return VX_ERR_UNSUPPORTED;
+  p9_msg t = {.type = P9_Tseek, .fid = fid, .offset = (uint64_t)offset, .whence = whence};
+  vx_status e = p9c_call(c, &t);
+  if (e == VX_OK) *at = c->reply.offset;
+  return e;
+}
+
+[[maybe_unused]] static vx_status p9c_append(p9_client *c, uint32_t fid, bool append) {
+  if (!(c->extensions & P9_EXT_POSIX)) return VX_ERR_UNSUPPORTED;
+  p9_msg t = {.type = P9_Tdesc, .fid = fid, .desc_flags = append ? 1 : 0};
+  return p9c_call(c, &t);
+}
+
+// A byte-range lock (P9_LOCK_*), owned by proc_id on this connection; length
+// 0 is to the end. *status is P9_LOCK_SUCCESS, _BLOCKED or _ERROR.
+[[maybe_unused]] static vx_status p9c_lock(p9_client *c, uint32_t fid, uint8_t type, uint64_t start,
+                                           uint64_t length, uint32_t proc_id, uint8_t *status) {
+  if (!(c->extensions & P9_EXT_POSIX)) return VX_ERR_UNSUPPORTED;
+  p9_msg t = {.type = P9_Tlock,
+              .fid = fid,
+              .lock_type = type,
+              .start = start,
+              .length = length,
+              .proc_id = proc_id,
+              .client_id = VX_STR("")};
+  vx_status e = p9c_call(c, &t);
+  if (e == VX_OK) *status = c->reply.status;
+  return e;
+}
+
+// The first lock that would stop one of `type` over the range: its type,
+// range and owner in *l, or P9_LOCK_UNLOCK as its type when none would.
+[[maybe_unused]] static vx_status p9c_getlock(p9_client *c, uint32_t fid, uint8_t type, uint64_t start,
+                                              uint64_t length, uint32_t proc_id, p9_msg *l) {
+  if (!(c->extensions & P9_EXT_POSIX)) return VX_ERR_UNSUPPORTED;
+  p9_msg t = {.type = P9_Tgetlock,
+              .fid = fid,
+              .lock_type = type,
+              .start = start,
+              .length = length,
+              .proc_id = proc_id,
+              .client_id = VX_STR("")};
+  vx_status e = p9c_call(c, &t);
+  if (e == VX_OK) *l = c->reply;
+  return e;
+}

@@ -50,6 +50,7 @@ typedef struct p9_ring_server {
   // (VX_INFINITE: never), as a protocol's retransmission timers need.
   vx_instant (*tick)(void *ctx);
   p9_ring_conn conns[P9_RING_MAX_CONNS];
+  p9_shared shared; // the open files and locks all its connections share (posix)
 } p9_ring_server;
 
 static void p9_ring_close(p9_ring_conn *c) {
@@ -82,7 +83,8 @@ static void p9_ring_accept(p9_ring_server *s, const vx_msg_header *req) {
     c->used = true;
     c->armed = c->holding = false;
     c->end = h.server;
-    c->srv = (p9_server){.fs = s->fs, .max_msize = P9_RING_MSIZE, .supported = s->supported};
+    c->srv =
+        (p9_server){.fs = s->fs, .max_msize = P9_RING_MSIZE, .supported = s->supported, .shared = &s->shared};
     return;
   }
   vx_handle_close(h.client);
@@ -134,9 +136,17 @@ static p9_drained p9_ring_drain(p9_ring_conn *c) {
 // Serves the file system on the listen channel until the channel goes away.
 // The port is made here unless the file server made it already, to bind its
 // own sources first.
+static int64_t p9_ring_now(void) { return vx_clock_read(); }
+
 [[maybe_unused]] static vx_status p9_ring_serve(p9_ring_server *s) {
   vx_status st = s->port ? VX_OK : vx_port_create(0, &s->port);
   if (st != VX_OK) return st;
+  // Tokens for shared open files come from the entropy the spawn message
+  // gives (a manifest's `entropy`); without it, Tshare is refused.
+  s->shared.now = p9_ring_now;
+  vx_ndb_record rec;
+  vx_str seed = vx_spawn_record("entropy", &rec) ? vx_ndb_get(&rec, "entropy") : (vx_str){};
+  if (seed.len >= 16 && !s->shared.random.seeded) vx_drbg_mix(&s->shared.random, seed.ptr, seed.len, true);
   for (;;) {
     bool more = false; // a connection still has requests: no sleeping this time round
     for (uint32_t i = 0; i < P9_RING_MAX_CONNS; i++) {

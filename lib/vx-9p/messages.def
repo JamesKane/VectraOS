@@ -19,6 +19,21 @@ P9_MSG(Tlink,     70, P9F_FID, P9F_NEWFID, P9F_NAME)            // dfid, fid, na
 P9_MSG(Rlink,     71)
 P9_MSG(Trenameat, 74, P9F_FID, P9F_NAME, P9F_NEWFID, P9F_NAME2) // olddirfid, oldname, newdirfid, newname
 P9_MSG(Rrenameat, 75)
+P9_MSG(Tlock,     52, P9F_FID, P9F_LOCKTYPE, P9F_LOCKFLAGS, P9F_START, P9F_LENGTH, P9F_PROCID, P9F_CLIENTID)
+P9_MSG(Rlock,     53, P9F_STATUS)
+P9_MSG(Tgetlock,  54, P9F_FID, P9F_LOCKTYPE, P9F_START, P9F_LENGTH, P9F_PROCID, P9F_CLIENTID)
+P9_MSG(Rgetlock,  55, P9F_LOCKTYPE, P9F_START, P9F_LENGTH, P9F_PROCID, P9F_CLIENTID)
+
+// 9Px's own, for posix: open files shared between connections, and their
+// offsets kept by the server (docs/proto/posix.md).
+P9_MSG(Tshare,   150, P9F_FID, P9F_HOLDS)
+P9_MSG(Rshare,   151, P9F_TOKEN)
+P9_MSG(Tjoin,    152, P9F_NEWFID, P9F_TOKEN)
+P9_MSG(Rjoin,    153, P9F_QID, P9F_IOUNIT)
+P9_MSG(Tseek,    154, P9F_FID, P9F_OFFSET, P9F_WHENCE)
+P9_MSG(Rseek,    155, P9F_OFFSET)
+P9_MSG(Tdesc,    156, P9F_FID, P9F_DESCFLAGS)
+P9_MSG(Rdesc,    157)
 
 P9_MSG(Tversion, 100, P9F_MSIZE, P9F_VERSION)
 P9_MSG(Rversion, 101, P9F_MSIZE, P9F_VERSION)

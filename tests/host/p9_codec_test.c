@@ -71,6 +71,17 @@ static p9_msg full_message(p9_type type) {
                .btime_nsec = 17,
                .gen = 18,
                .data_version = 19},
+      .lock_type = P9_LOCK_WRITE,
+      .lock_flags = 1,
+      .start = 100,
+      .length = 50,
+      .proc_id = 42,
+      .client_id = VX_STR("c"),
+      .status = P9_LOCK_BLOCKED,
+      .holds = 2,
+      .token = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+      .whence = 2,
+      .desc_flags = 1,
       .setattr = {.valid = P9_SETATTR_MODE | P9_SETATTR_SIZE | P9_SETATTR_MTIME_SET,
                   .mode = 0600,
                   .uid = 3,
@@ -97,6 +108,13 @@ static void test_posix_fields(void) {
   CHECK(n == 7 + 4 + 4 + 12 + 5 * 8);
   CHECK(p9_decode(buf, n, &d) == VX_OK && d.setattr.valid == m.setattr.valid && d.setattr.size == 5);
   CHECK(d.setattr.mode == 0600 && d.setattr.mtime_sec == 8 && d.setattr.mtime_nsec == 9);
+  m = full_message(P9_Tjoin);
+  n = p9_encode(&m, buf, sizeof buf);
+  CHECK(n == 7 + 4 + 16 && p9_decode(buf, n, &d) == VX_OK && d.newfid == 12 && d.token[15] == 16);
+  m = full_message(P9_Tlock);
+  n = p9_encode(&m, buf, sizeof buf);
+  CHECK(p9_decode(buf, n, &d) == VX_OK && d.lock_type == P9_LOCK_WRITE && d.start == 100 && d.length == 50);
+  CHECK(d.proc_id == 42 && d.client_id.len == 1);
   m = full_message(P9_Trenameat);
   n = p9_encode(&m, buf, sizeof buf);
   CHECK(p9_decode(buf, n, &d) == VX_OK && d.fid == 11 && d.newfid == 12 && d.name.len == 7 &&
@@ -133,7 +151,7 @@ static void test_round_trips(void) {
     buf[0] = (uint8_t)(n - 1);
     CHECK(p9_decode(buf, n, &d) == VX_ERR_INVALID);
   }
-  CHECK(types == 41);               // 9P2000's 27 and the 14 of 9P2000.L's that posix and xattr use
+  CHECK(types == 53);               // 9P2000's 27, 18 of 9P2000.L's, and 9Px's 8 (posix and xattr)
   CHECK(P9_FIELDS[106] == nullptr); // there is no Terror
   CHECK(p9_encode(&(p9_msg){.type = (p9_type)106}, buf, sizeof buf) == 0);
   CHECK(p9_encode(&(p9_msg){.type = P9_Tclunk}, buf, 6) == 0); // does not fit

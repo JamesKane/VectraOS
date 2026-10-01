@@ -6,6 +6,12 @@
 // the namespace, which is built from the spawn message the first time a path
 // is used.
 //
+// A file on a server with the posix extension keeps its offset and O_APPEND
+// in the server (docs/proto/posix.md): reads and writes at its current
+// offset, lseek by Tseek. A child (fork, posix_spawn, exec) joins the same
+// open file with a token, so the offset is shared as POSIX has it; a child
+// that cannot opens the file again, with an offset of its own.
+//
 // A pipe is a channel: each write a message of a header and up to 4 KiB, as
 // vx-rt's stdio has them, so pipes join POSIX programs and first-party ones.
 // Its ends are shared as POSIX shares them: dup shares the description, and
@@ -38,6 +44,8 @@ typedef struct ofd {
   uint32_t msg_len, msg_pos; // and how much of it has been read
   bool ended;                // the writers have all gone
   bool closed_bound;         // PEER_CLOSED is bound once (it fires once)
+  uint8_t token[16];         // a file's, for a forked child to join its open file (fd_before_fork)
+  bool has_token;
 } ofd;
 
 static ofd fd_ofds[FD_MAX];
@@ -362,8 +370,30 @@ static long pipe_read(ofd *o, void *buf, uint32_t count) {
   return n;
 }
 
+// Whether the file's offset is the server's (posix).
+static bool file_shared(const ofd *o) {
+  return o->kind == OFD_FILE && !o->dir && o->f.c && (o->f.c->extensions & P9_EXT_POSIX);
+}
+
+static int64_t file_offset(const ofd *o) {
+  uint64_t at = o->f.offset;
+  if (file_shared(o) && p9c_seek(o->f.c, o->f.fid, 0, 1, &at) != VX_OK) return -1;
+  return (int64_t)at;
+}
+
 static long file_write(ofd *o, const uint8_t *p, size_t n) {
-  if (o->flags & O_APPEND) { // to the end as it is now: not atomic without the posix extension (step 4)
+  if (file_shared(o)) { // at the open file's offset, or its end, which the server moves on
+    size_t done = 0;
+    while (done < n) {
+      uint32_t k = n - done < (1u << 20) ? (uint32_t)(n - done) : 1u << 20;
+      int64_t w = p9c_write(o->f.c, o->f.fid, P9_OFFSET_CURRENT, p + done, k);
+      if (w <= 0 && done) return (long)done;
+      if (w <= 0) return w ? vx_errno((vx_status)w) : -EIO;
+      done += (size_t)w;
+    }
+    return (long)n;
+  }
+  if (o->flags & O_APPEND) { // to the end as it is now: not atomic without the posix extension
     p9_stat s;
     vx_status st = p9c_stat(o->f.c, o->f.fid, &s);
     if (st != VX_OK) return vx_errno(st);
@@ -391,7 +421,8 @@ static long fd_read(int fd, void *buf, size_t n) {
   case OFD_PIPE_IN: return pipe_read(o, buf, count);
   case OFD_FILE:
     if (o->dir) return -EISDIR;
-    r = vx_ns_read(&o->f, buf, count);
+    r = file_shared(o) ? p9c_read(o->f.c, o->f.fid, P9_OFFSET_CURRENT, buf, count)
+                       : vx_ns_read(&o->f, buf, count);
     break;
   default: return -EBADF;
   }
@@ -484,6 +515,12 @@ static long fd_lseek(int fd, long offset, int whence) {
     o->dir_next = 0;
     return 0;
   }
+  if (file_shared(o)) {
+    if (whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END) return -EINVAL;
+    uint64_t at;
+    vx_status st = p9c_seek(o->f.c, o->f.fid, offset, (uint8_t)whence, &at); // SEEK_* are 0, 1, 2
+    return st == VX_OK ? (long)at : vx_errno(st);
+  }
   int64_t base = 0;
   if (whence == SEEK_CUR) {
     base = (int64_t)o->f.offset;
@@ -539,6 +576,7 @@ static long fd_openat(int dirfd, const char *path, int flags, mode_t mode) {
   o->dir = dir;
   memcpy(o->path, p, (size_t)len);
   o->path_len = (size_t)len;
+  if ((flags & O_APPEND) && file_shared(o)) p9c_append(o->f.c, o->f.fid, true); // atomic, at the server
   return fd_install(o, 0, flags & O_CLOEXEC);
 }
 
@@ -569,6 +607,60 @@ static long fd_dup(int fd, int to, int flags) {
   return fd_valid(fd) ? fd : -EBADF;
 }
 
+// fcntl's POSIX locks, held by the server (posix), owned by this process.
+// F_SETLKW asks again every 10 ms until it is granted or a signal comes.
+static long posix_pid(void); // process.c
+
+static long fd_lock(const ofd *o, int cmd, struct flock *l) {
+  if (o->kind != OFD_FILE || o->dir) return -EBADF;
+  if (!file_shared(o)) return -ENOLCK; // no server to keep it
+  if (l->l_type != F_RDLCK && l->l_type != F_WRLCK && l->l_type != F_UNLCK) return -EINVAL;
+  if (cmd == F_SETLK || cmd == F_SETLKW) {
+    if (l->l_type == F_RDLCK && (o->flags & O_ACCMODE) == O_WRONLY) return -EBADF;
+    if (l->l_type == F_WRLCK && (o->flags & O_ACCMODE) == O_RDONLY) return -EBADF;
+  }
+  int64_t base = 0;
+  if (l->l_whence == SEEK_CUR) base = file_offset(o);
+  if (l->l_whence == SEEK_END) {
+    struct stat st;
+    if (fd_stat_fid(o->f.c, o->f.fid, &st) != VX_OK) return -EIO;
+    base = st.st_size;
+  }
+  if (base < 0 || (l->l_whence != SEEK_SET && l->l_whence != SEEK_CUR && l->l_whence != SEEK_END))
+    return -EINVAL;
+  int64_t start = base + l->l_start, length = l->l_len;
+  if (length < 0) start += length, length = -length; // the bytes before
+  if (start < 0) return -EINVAL;
+  uint32_t me = (uint32_t)posix_pid();
+  if (cmd == F_GETLK) {
+    p9_msg got;
+    vx_status st =
+        p9c_getlock(o->f.c, o->f.fid, (uint8_t)l->l_type, (uint64_t)start, (uint64_t)length, me, &got);
+    if (st != VX_OK) return vx_errno(st);
+    if (got.lock_type == P9_LOCK_UNLOCK) {
+      l->l_type = F_UNLCK;
+    } else {
+      *l = (struct flock){.l_type = got.lock_type,
+                          .l_whence = SEEK_SET,
+                          .l_start = (off_t)got.start,
+                          .l_len = (off_t)got.length,
+                          .l_pid = (pid_t)got.proc_id};
+    }
+    return 0;
+  }
+  for (;;) {
+    uint8_t status = P9_LOCK_ERROR;
+    vx_status st =
+        p9c_lock(o->f.c, o->f.fid, (uint8_t)l->l_type, (uint64_t)start, (uint64_t)length, me, &status);
+    if (st != VX_OK) return vx_errno(st);
+    if (status == P9_LOCK_SUCCESS) return 0;
+    if (status != P9_LOCK_BLOCKED) return -ENOLCK;
+    if (cmd == F_SETLK) return -EAGAIN;
+    static const _Atomic uint32_t never;
+    if (vx_futex_wait(&never, 0, vx_clock_read() + 10'000'000) == VX_ERR_INTERRUPTED) return -EINTR;
+  }
+}
+
 static long fd_fcntl(int fd, int cmd, long arg) {
   ofd *o = fd_get(fd);
   if (!o) return -EBADF;
@@ -581,7 +673,14 @@ static long fd_fcntl(int fd, int cmd, long arg) {
   case F_GETFD: return fd_table[fd].cloexec ? FD_CLOEXEC : 0;
   case F_SETFD: fd_table[fd].cloexec = arg & FD_CLOEXEC; return 0;
   case F_GETFL: return o->flags;
-  case F_SETFL: o->flags = (o->flags & O_ACCMODE) | (int)(arg & (O_APPEND | O_NONBLOCK)); return 0;
+  case F_SETFL:
+    if (file_shared(o) && (o->flags & O_APPEND) != (arg & O_APPEND))
+      p9c_append(o->f.c, o->f.fid, arg & O_APPEND);
+    o->flags = (o->flags & O_ACCMODE) | (int)(arg & (O_APPEND | O_NONBLOCK));
+    return 0;
+  case F_GETLK:
+  case F_SETLK:
+  case F_SETLKW: return fd_lock(o, cmd, (struct flock *)arg);
   default: return -EINVAL; // locks come with the posix extension (M4 step 4)
   }
 }
@@ -790,10 +889,10 @@ static long fd_pipe2(int *fds, int flags) {
 // and the working directory as cwd=:
 //   fd=N console
 //   fd=N pipe=read|write end=NAME flags=F       the same channel end, shared
-//   fd=N file=PATH flags=F offset=O [dir]       opened again by the child
+//   fd=N file=PATH flags=F offset=O [dir] [token=T]   joined, or opened again
 //   fd=N same=M                                 the same description as M
-// A file is opened again, so its offset is the child's own from then on:
-// sharing it waits for the posix 9Px extension (M4 step 4).
+// A file with a token is the same open file, its offset shared; one without
+// (a server without posix) is opened again, its offset the child's own.
 
 // A file or directory at path, opened again with the description's flags
 // (never creating or truncating) at offset.
@@ -816,7 +915,34 @@ static ofd *file_reopen(const char *path, size_t len, int flags, uint64_t offset
   if (!dir) o->f.offset = offset;
   memcpy(o->path, path, len);
   o->path_len = len;
+  uint64_t at;
+  if (file_shared(o)) {
+    p9c_seek(o->f.c, o->f.fid, (int64_t)offset, 0, &at);
+    if (flags & O_APPEND) p9c_append(o->f.c, o->f.fid, true);
+  }
   return o;
+}
+
+// The open file a token names, joined on the server path is on (the
+// parent's); or, if it cannot be, the file opened again at offset.
+static ofd *file_join(const char *path, size_t len, int flags, const uint8_t token[16], uint64_t offset) {
+  p9_client *c = nullptr;
+  uint32_t fid = 0, joined = 0;
+  if (vx_ns_walk(fd_namespace(), (vx_str){path, len}, &c, &fid) == VX_OK) {
+    p9c_clunk(c, fid);
+    if (p9c_join(c, token, &joined) == VX_OK) {
+      ofd *o = ofd_new(OFD_FILE, flags & (O_ACCMODE | O_APPEND | O_NONBLOCK));
+      if (!o) {
+        p9c_clunk(c, joined);
+        return nullptr;
+      }
+      o->f = (vx_ns_file){.ns = fd_namespace(), .c = c, .fid = joined};
+      memcpy(o->path, path, len);
+      o->path_len = len;
+      return o;
+    }
+  }
+  return file_reopen(path, len, flags, offset);
 }
 
 static void fd_records(const fd_slot *table, vx_ndb_writer *w, vx_handle *handles, vx_str *names,
@@ -849,7 +975,11 @@ static void fd_records(const fd_slot *table, vx_ndb_writer *w, vx_handle *handle
     } else if (o->kind == OFD_FILE) {
       vx_ndb_put(w, "file", (vx_str){o->path, o->path_len});
       vx_ndb_put_u64(w, "flags", (uint64_t)o->flags);
-      vx_ndb_put_u64(w, "offset", o->f.offset);
+      int64_t at = file_offset(o);
+      vx_ndb_put_u64(w, "offset", at < 0 ? 0 : (uint64_t)at);
+      uint8_t token[16];
+      if (file_shared(o) && p9c_share(o->f.c, o->f.fid, 1, token) == VX_OK) // the child joins it
+        vx_ndb_put(w, "token", (vx_str){(const char *)token, sizeof token});
       if (o->dir) vx_ndb_flag(w, "dir");
     }
     vx_ndb_end(w);
@@ -890,8 +1020,11 @@ static void fd_from_records(void) {
       bool reader = vx_ndb_get(&rec, "pipe").len == 4; // "read"
       if (end) fd_place((int)fd, pipe_ofd(end, reader, (int)flags & O_NONBLOCK));
     } else if (vx_ndb_has(&rec, "file")) {
-      vx_str path = vx_ndb_get(&rec, "file");
-      if (path.len < VX_NS_MAX_PATH) fd_place((int)fd, file_reopen(path.ptr, path.len, (int)flags, offset));
+      vx_str path = vx_ndb_get(&rec, "file"), token = vx_ndb_get(&rec, "token");
+      if (path.len >= VX_NS_MAX_PATH) continue;
+      ofd *o = token.len == 16 ? file_join(path.ptr, path.len, (int)flags, (const uint8_t *)token.ptr, offset)
+                               : file_reopen(path.ptr, path.len, (int)flags, offset);
+      fd_place((int)fd, o);
     }
   }
 }
@@ -904,6 +1037,20 @@ static void fd_from_records(void) {
 // offset. A directory starts again from its first entry. Pipe ends are
 // shared, as POSIX has them; the port a blocked read waits on is the
 // child's own.
+// Before a fork: a token for each open file the child should join.
+static void fd_before_fork(void) {
+  for (int i = 0; i < FD_MAX; i++) {
+    ofd *o = &fd_ofds[i];
+    o->has_token = file_shared(o) && p9c_share(o->f.c, o->f.fid, 1, o->token) == VX_OK;
+    int64_t at = o->has_token ? file_offset(o) : -1;
+    if (at >= 0) o->f.offset = (uint64_t)at; // for the child, if it cannot join
+  }
+}
+
+static void fd_after_fork_parent(void) {
+  for (int i = 0; i < FD_MAX; i++) fd_ofds[i].has_token = false;
+}
+
 static void fd_after_fork(void) {
   if (vx_console.conn.end) p9_ring_disconnect(&vx_console.conn);
   vx_console.open = false;
@@ -916,7 +1063,9 @@ static void fd_after_fork(void) {
     if (o->kind != OFD_FILE) continue;
     uint64_t offset = o->f.offset;
     o->f = (vx_ns_file){}; // the fid was on the old connection
-    ofd *n = file_reopen(o->path, o->path_len, o->flags, offset);
+    ofd *n = o->has_token ? file_join(o->path, o->path_len, o->flags, o->token, offset)
+                          : file_reopen(o->path, o->path_len, o->flags, offset);
+    o->has_token = false;
     if (!n) continue; // reads and writes now fail with EBADF
     o->f = n->f;
     o->dirs_len = o->dirs_at = 0;

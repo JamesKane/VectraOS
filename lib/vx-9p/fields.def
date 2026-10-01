@@ -28,3 +28,15 @@ P9_FIELD(MASK,    U64,    mask)    // Tgetattr's request_mask
 P9_FIELD(DATASYNC, U32,   datasync)
 P9_FIELD(ATTR,    ATTR,   attr)    // Rgetattr's body, valid[8] first
 P9_FIELD(SETATTR, SETATTR, setattr) // Tsetattr's body, valid[4] first
+P9_FIELD(LOCKTYPE, U8,    lock_type)  // Tlock's and Tgetlock's: read 0, write 1, unlock 2
+P9_FIELD(LOCKFLAGS, U32,  lock_flags) // Tlock's: block 1, reclaim 2
+P9_FIELD(START,   U64,    start)
+P9_FIELD(LENGTH,  U64,    length)     // 0: to the end of the file
+P9_FIELD(PROCID,  U32,    proc_id)
+P9_FIELD(CLIENTID, STR,   client_id)
+P9_FIELD(STATUS,  U8,     status)     // Rlock's: success 0, blocked 1, error 2
+// 9Px's own, for posix (docs/proto/posix.md)
+P9_FIELD(HOLDS,   U32,    holds)      // Tshare's: joins to keep the open file for
+P9_FIELD(TOKEN,   TOKEN,  token)      // 16 bytes
+P9_FIELD(WHENCE,  U8,     whence)     // Tseek's: set 0, current 1, end 2
+P9_FIELD(DESCFLAGS, U32,  desc_flags) // Tdesc's: append 1

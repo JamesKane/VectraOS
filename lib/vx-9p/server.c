@@ -23,7 +23,10 @@
 
 #pragma once
 
+#include <stdckdint.h>
+
 #include "codec.c"
+#include "../vx-rand/drbg.c"
 
 typedef struct p9_fs {
   void *ctx;
@@ -58,10 +61,48 @@ typedef struct p9_fs {
 
 enum : uint32_t { P9_MAX_FIDS = 256 }; // per connection, for now
 
+// --- Open files and locks shared between connections (posix) ---
+//
+// An open fid on a server with the posix extension has an open file, kept
+// here: its node, mode, offset and O_APPEND, shared by every fid that joins
+// it, on any of the server's connections (docs/proto/posix.md). Tshare gives
+// a token for it, good for `holds` joins; a hold keeps the open file for its
+// join for P9_HOLD_TIME after its last fid has gone. Locks are POSIX's:
+// byte ranges, owned by a connection and a process id, and let go when the
+// owner lets go of any fid on the file.
+
+enum : uint32_t { P9_MAX_OPEN_FILES = 256, P9_MAX_LOCKS = 256, P9_MAX_HOLDS = 64 };
+static constexpr int64_t P9_HOLD_TIME = 10'000'000'000; // ns
+
+typedef struct p9_open_file {
+  bool used, append, shared;
+  uint8_t mode;
+  uint64_t node, offset;
+  uint32_t fids, holds;
+  int64_t hold_until;
+  uint8_t token[16];
+} p9_open_file;
+
+typedef struct p9_lock {
+  bool used;
+  uint8_t type;              // P9_LOCK_READ or P9_LOCK_WRITE
+  uint64_t node, start, end; // [start, end); end UINT64_MAX: to the end of the file
+  const void *conn;          // the owner: a connection and a process on it
+  uint32_t proc_id;
+} p9_lock;
+
+typedef struct p9_shared {
+  p9_open_file files[P9_MAX_OPEN_FILES];
+  p9_lock locks[P9_MAX_LOCKS];
+  vx_drbg random;       // tokens; unseeded: Tshare is refused
+  int64_t (*now)(void); // nanoseconds; null: holds never run out
+} p9_shared;
+
 typedef struct p9_fid {
   uint32_t fid;
   bool used, open;
   uint8_t mode;
+  uint32_t file;       // its open file in p9_shared, plus 1; 0 for none
   uint64_t node, root; // root: where it was attached; `..` stops there
   p9_qid qid;
   uint64_t dir_offset; // a directory read continues only from here
@@ -76,6 +117,7 @@ typedef struct p9_server {
   p9_dialect dialect;
   uint32_t extensions; // negotiated
   p9_fid fids[P9_MAX_FIDS];
+  p9_shared *shared;  // the server's open files and locks, for posix; may be null
   char version[96];   // Rversion's string
   uint8_t stat[1024]; // Rstat's entry
 } p9_server;
@@ -96,9 +138,66 @@ static p9_fid *p9_fid_new(p9_server *s, uint32_t fid) {
   return nullptr;
 }
 
+static int64_t p9_now(const p9_shared *sh) { return sh->now ? sh->now() : 0; }
+
+static bool p9_file_live(const p9_shared *sh, const p9_open_file *o) {
+  return o->used && (o->fids || (o->holds && (!sh->now || p9_now(sh) < o->hold_until)));
+}
+
+// Lets go of the owner's locks on node in [start, end): cut, shortened or
+// split. False, with nothing changed, when a split finds no free slot.
+static bool p9_unlock(p9_shared *sh, const void *conn, uint32_t proc_id, bool any_proc, uint64_t node,
+                      uint64_t start, uint64_t end) {
+  uint32_t free_slots = 0;
+  for (uint32_t i = 0; i < P9_MAX_LOCKS; i++) free_slots += !sh->locks[i].used;
+  for (uint32_t i = 0; i < P9_MAX_LOCKS; i++) {
+    p9_lock *l = &sh->locks[i];
+    if (!l->used || l->node != node || l->conn != conn || (!any_proc && l->proc_id != proc_id)) continue;
+    if (l->end <= start || l->start >= end) continue;
+    if (l->start < start && l->end > end) { // the middle: two pieces
+      if (!free_slots) return false;
+      for (uint32_t k = 0; k < P9_MAX_LOCKS; k++)
+        if (!sh->locks[k].used) {
+          sh->locks[k] = *l;
+          sh->locks[k].start = end;
+          free_slots--;
+          break;
+        }
+      l->end = start;
+    } else if (l->start < start) {
+      l->end = start;
+    } else if (l->end > end) {
+      l->start = end;
+    } else {
+      l->used = false;
+      free_slots++;
+    }
+  }
+  return true;
+}
+
 static void p9_fid_drop(p9_server *s, p9_fid *f) {
   if (s->fs.clunk) s->fs.clunk(s->fs.ctx, f->node, f->open);
+  if (f->file && s->shared) {
+    p9_open_file *o = &s->shared->files[f->file - 1];
+    if (o->fids) o->fids--;
+    if (!o->fids && o->holds) o->hold_until = p9_now(s->shared) + P9_HOLD_TIME;
+    if (!p9_file_live(s->shared, o)) o->used = false;
+    p9_unlock(s->shared, s, 0, true, f->node, 0, UINT64_MAX); // POSIX: any close lets go
+  }
   *f = (p9_fid){};
+}
+
+// A new open file for a fid just opened: 0 if there is no room.
+static uint32_t p9_file_new(p9_shared *sh, uint64_t node, uint8_t mode) {
+  for (uint32_t i = 0; i < P9_MAX_OPEN_FILES; i++) {
+    p9_open_file *o = &sh->files[i];
+    if (p9_file_live(sh, o)) continue;
+    *o = (p9_open_file){
+        .used = true, .append = mode & P9_OAPPEND, .mode = mode & ~P9_OAPPEND, .node = node, .fids = 1};
+    return i + 1;
+  }
+  return 0;
 }
 
 static vx_status p9_qid_of(p9_server *s, uint64_t node, p9_qid *qid) {
@@ -175,6 +274,159 @@ static vx_status p9_read_dir(p9_server *s, p9_fid *f, uint64_t offset, uint8_t *
   return VX_OK;
 }
 
+// Writes at the offset given, or at the open file's (P9_OFFSET_CURRENT): its
+// end if it appends, which is atomic, as the server does one request at a
+// time.
+static vx_status p9_write(p9_server *s, p9_fid *f, p9_msg *t, p9_msg *r) {
+  p9_open_file *o = f->file && s->shared ? &s->shared->files[f->file - 1] : nullptr;
+  uint64_t offset = t->offset;
+  if (offset == P9_OFFSET_CURRENT) {
+    if (!o) return VX_ERR_INVALID;
+    offset = o->offset;
+    if (o->append) {
+      p9_stat st;
+      vx_status e = s->fs.stat(s->fs.ctx, f->node, &st);
+      if (e != VX_OK) return e;
+      offset = st.length;
+    }
+  }
+  vx_status e = s->fs.write(s->fs.ctx, f->node, offset, t->data.ptr, &t->count);
+  if (e != VX_OK) return e;
+  if (o && t->offset == P9_OFFSET_CURRENT) o->offset = offset + t->count;
+  r->count = t->count;
+  return VX_OK;
+}
+
+static bool p9_locks_conflict(const p9_lock *l, const void *conn, uint32_t proc_id, uint64_t node,
+                              uint8_t type, uint64_t start, uint64_t end) {
+  return l->used && l->node == node && (l->conn != conn || l->proc_id != proc_id) && l->start < end &&
+         start < l->end && (type == P9_LOCK_WRITE || l->type == P9_LOCK_WRITE);
+}
+
+// Tlock and Tgetlock: POSIX's byte-range locks.
+static vx_status p9_serve_lock(p9_server *s, const p9_fid *f, const p9_msg *t, p9_msg *r) {
+  p9_shared *sh = s->shared;
+  if (!sh || !f->open) return VX_ERR_BAD_STATE;
+  uint64_t start = t->start, end = t->length ? t->start + t->length : UINT64_MAX;
+  if (t->length && end < start) return VX_ERR_RANGE;
+  if (t->lock_type > P9_LOCK_UNLOCK) return VX_ERR_INVALID;
+  if (t->type == P9_Tgetlock) {
+    *r = (p9_msg){.type = r->type,
+                  .tag = r->tag,
+                  .lock_type = P9_LOCK_UNLOCK,
+                  .start = t->start,
+                  .length = t->length,
+                  .proc_id = t->proc_id,
+                  .client_id = t->client_id};
+    for (uint32_t i = 0; i < P9_MAX_LOCKS && t->lock_type != P9_LOCK_UNLOCK; i++) {
+      const p9_lock *l = &sh->locks[i];
+      if (!p9_locks_conflict(l, s, t->proc_id, f->node, t->lock_type, start, end)) continue;
+      r->lock_type = l->type;
+      r->start = l->start;
+      r->length = l->end == UINT64_MAX ? 0 : l->end - l->start;
+      r->proc_id = l->proc_id;
+      r->client_id = VX_STR("");
+      break;
+    }
+    return VX_OK;
+  }
+  r->status = P9_LOCK_SUCCESS;
+  for (uint32_t i = 0; i < P9_MAX_LOCKS && t->lock_type != P9_LOCK_UNLOCK; i++)
+    if (p9_locks_conflict(&sh->locks[i], s, t->proc_id, f->node, t->lock_type, start, end)) {
+      r->status = P9_LOCK_BLOCKED; // the client waits and asks again (F_SETLKW)
+      return VX_OK;
+    }
+  uint32_t slot = P9_MAX_LOCKS;
+  for (uint32_t i = 0; i < P9_MAX_LOCKS && slot == P9_MAX_LOCKS; i++)
+    if (!sh->locks[i].used) slot = i;
+  if (t->lock_type != P9_LOCK_UNLOCK && slot == P9_MAX_LOCKS) {
+    r->status = P9_LOCK_ERROR;
+    return VX_OK;
+  }
+  if (!p9_unlock(sh, s, t->proc_id, false, f->node, start, end)) { // its own, replaced
+    r->status = P9_LOCK_ERROR;
+    return VX_OK;
+  }
+  if (t->lock_type == P9_LOCK_UNLOCK) return VX_OK;
+  for (slot = 0; slot < P9_MAX_LOCKS && sh->locks[slot].used; slot++) {}
+  if (slot == P9_MAX_LOCKS) {
+    r->status = P9_LOCK_ERROR;
+    return VX_OK;
+  }
+  sh->locks[slot] = (p9_lock){.used = true,
+                              .type = t->lock_type,
+                              .node = f->node,
+                              .start = start,
+                              .end = end,
+                              .conn = s,
+                              .proc_id = t->proc_id};
+  return VX_OK;
+}
+
+// Tshare, Tjoin, Tseek and Tdesc: an open file shared between connections.
+static vx_status p9_serve_share(p9_server *s, p9_fid *f, const p9_msg *t, p9_msg *r) {
+  p9_shared *sh = s->shared;
+  if (!sh) return VX_ERR_UNSUPPORTED;
+  if (t->type == P9_Tjoin) {
+    p9_open_file *o = nullptr;
+    for (uint32_t i = 0; i < P9_MAX_OPEN_FILES && !o; i++) {
+      p9_open_file *c = &sh->files[i];
+      if (!p9_file_live(sh, c) || !c->shared || !c->holds) continue;
+      uint8_t diff = 0; // the whole token, every time
+      for (size_t k = 0; k < sizeof c->token; k++) diff |= (uint8_t)(c->token[k] ^ t->token[k]);
+      if (!diff) o = c;
+    }
+    if (!o) return VX_ERR_NOT_FOUND;
+    p9_fid *n = p9_fid_new(s, t->newfid);
+    if (!n) return VX_ERR_BAD_STATE;
+    vx_status e = s->fs.open(s->fs.ctx, o->node, o->mode & ~(P9_OTRUNC | P9_ORCLOSE));
+    if (e == VX_OK) e = p9_qid_of(s, o->node, &n->qid);
+    if (e != VX_OK) {
+      *n = (p9_fid){};
+      return e;
+    }
+    o->holds--;
+    o->fids++;
+    n->node = n->root = o->node;
+    n->open = true;
+    n->mode = o->mode;
+    n->file = (uint32_t)(o - sh->files) + 1;
+    r->qid = n->qid;
+    r->iounit = s->msize - P9_IOHDRSZ;
+    return VX_OK;
+  }
+  if (!f->file) return VX_ERR_BAD_STATE; // not open, or a directory
+  p9_open_file *o = &sh->files[f->file - 1];
+  switch (t->type) {
+  case P9_Tshare:
+    if (!sh->random.seeded) return VX_ERR_UNSUPPORTED; // no token that cannot be guessed
+    if (!t->holds || t->holds > P9_MAX_HOLDS || o->holds + t->holds > P9_MAX_HOLDS) return VX_ERR_RANGE;
+    if (!o->shared) vx_drbg_read(&sh->random, o->token, sizeof o->token);
+    o->shared = true;
+    o->holds += t->holds;
+    o->hold_until = p9_now(sh) + P9_HOLD_TIME;
+    for (size_t k = 0; k < sizeof o->token; k++) r->token[k] = o->token[k];
+    return VX_OK;
+  case P9_Tseek: {
+    int64_t base = 0;
+    if (t->whence == 1) base = (int64_t)o->offset;
+    if (t->whence == 2) {
+      p9_stat st;
+      vx_status e = s->fs.stat(s->fs.ctx, o->node, &st);
+      if (e != VX_OK) return e;
+      base = (int64_t)st.length;
+    }
+    int64_t at;
+    if (t->whence > 2 || ckd_add(&at, base, (int64_t)t->offset) || at < 0) return VX_ERR_INVALID;
+    o->offset = (uint64_t)at;
+    r->offset = o->offset;
+    return VX_OK;
+  }
+  case P9_Tdesc: o->append = t->desc_flags & 1; return VX_OK;
+  default: return VX_ERR_UNSUPPORTED;
+  }
+}
+
 // A stat's mode as POSIX has it, for Rgetattr.
 static uint32_t p9_posix_mode(uint32_t mode) {
   uint32_t type = P9_S_IFREG;
@@ -192,9 +444,15 @@ static bool p9_new_name_ok(vx_str name) {
 static vx_status p9_serve_posix(p9_server *s, const p9_msg *t, p9_msg *r) {
   bool xattr = t->type == P9_Tgetattr || t->type == P9_Tsetattr;
   if (!(s->extensions & (xattr ? P9_EXT_XATTR : P9_EXT_POSIX))) return VX_ERR_UNSUPPORTED;
+  if (t->type == P9_Tjoin) return p9_serve_share(s, nullptr, t, r);
   p9_fid *f = p9_fid_find(s, t->fid);
   if (!f) return VX_ERR_BAD_HANDLE;
   switch (t->type) {
+  case P9_Tlock:
+  case P9_Tgetlock: return p9_serve_lock(s, f, t, r);
+  case P9_Tshare:
+  case P9_Tseek:
+  case P9_Tdesc: return p9_serve_share(s, f, t, r);
   case P9_Tgetattr: {
     p9_stat st;
     vx_status e = s->fs.stat(s->fs.ctx, f->node, &st);
@@ -339,7 +597,7 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
         else if (!s->fs.create)
           e = VX_ERR_ACCESS;
         else
-          e = s->fs.create(s->fs.ctx, f->node, t.name, t.perm, t.mode, &node);
+          e = s->fs.create(s->fs.ctx, f->node, t.name, t.perm, t.mode & ~P9_OAPPEND, &node);
         if (e == VX_OK) {
           if (s->fs.clunk) s->fs.clunk(s->fs.ctx, f->node, false);
           f->node = node;
@@ -350,11 +608,13 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
         if ((f->qid.type & P9_QTDIR) && writes)
           e = VX_ERR_ACCESS; // directories are only read
         else
-          e = open_node(s, f, t.mode);
+          e = open_node(s, f, t.mode & ~P9_OAPPEND);
       }
       if (e != VX_OK) break;
       f->open = true;
-      f->mode = t.mode;
+      f->mode = t.mode & ~P9_OAPPEND;
+      if ((s->extensions & P9_EXT_POSIX) && s->shared && !(f->qid.type & P9_QTDIR))
+        f->file = p9_file_new(s->shared, f->node, t.mode); // none: its I/O is at offsets the client gives
       r.qid = f->qid;
       r.iounit = s->msize - P9_IOHDRSZ;
       break;
@@ -373,10 +633,18 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
       if (cap < 11) return 0;
       if (cap - 11 < room) room = (uint32_t)(cap - 11);
       uint32_t count = t.count < room ? t.count : room;
+      p9_open_file *o = f->file && s->shared ? &s->shared->files[f->file - 1] : nullptr;
+      uint64_t offset = t.offset;
+      if (offset == P9_OFFSET_CURRENT && !o) {
+        e = VX_ERR_INVALID; // no open file keeps an offset for it
+        break;
+      }
+      if (o && offset == P9_OFFSET_CURRENT) offset = o->offset;
       if (f->qid.type & P9_QTDIR)
-        e = p9_read_dir(s, f, t.offset, resp + 11, count, &count);
+        e = p9_read_dir(s, f, offset, resp + 11, count, &count);
       else
-        e = s->fs.read(s->fs.ctx, f->node, t.offset, resp + 11, &count);
+        e = s->fs.read(s->fs.ctx, f->node, offset, resp + 11, &count);
+      if (e == VX_OK && o && t.offset == P9_OFFSET_CURRENT) o->offset = offset + count;
       r.data = (vx_bytes){resp + 11, count};
       break;
     }
@@ -387,8 +655,8 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
         e = VX_ERR_ACCESS;
       else if (t.count > s->msize - P9_IOHDRSZ)
         e = VX_ERR_TOO_SMALL;
-      else if ((e = s->fs.write(s->fs.ctx, f->node, t.offset, t.data.ptr, &t.count)) == VX_OK)
-        r.count = t.count;
+      else
+        e = p9_write(s, f, &t, &r);
       break;
     case P9_Tclunk:
     case P9_Tremove:
@@ -417,7 +685,13 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
     case P9_Tsymlink:
     case P9_Treadlink:
     case P9_Tfsync:
-    case P9_Tlink: e = p9_serve_posix(s, &t, &r); break;
+    case P9_Tlink:
+    case P9_Tlock:
+    case P9_Tgetlock:
+    case P9_Tshare:
+    case P9_Tjoin:
+    case P9_Tseek:
+    case P9_Tdesc: e = p9_serve_posix(s, &t, &r); break;
     default: return 0;
     }
   }

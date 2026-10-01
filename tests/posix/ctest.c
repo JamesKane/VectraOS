@@ -521,6 +521,66 @@ static void test_names_and_attributes(void) {
   CHECK(unlink("/tmp/rd/r3") == 0 && rmdir("/tmp/rd") == 0);
 }
 
+// The posix extension's open files, kept by the server: a child's writes
+// move its parent's offset; O_APPEND is the server's; locks between
+// processes.
+static void test_shared_offsets_and_locks(void) {
+  struct stat st;
+  int status = 0;
+  int fd = open("/tmp/shared", O_RDWR | O_CREAT | O_TRUNC, 0644);
+  CHECK(fd >= 0);
+  if (fd < 0) return;
+  CHECK(write(fd, "ab", 2) == 2);
+  pid_t child = fork();
+  if (child == 0) _exit(write(fd, "cd", 2) == 2 ? 0 : 1); // at the offset it shares
+  CHECK(child > 0 && waitpid(child, &status, 0) == child && WEXITSTATUS(status) == 0);
+  CHECK(lseek(fd, 0, SEEK_CUR) == 4 && write(fd, "ef", 2) == 2 && file_is("/tmp/shared", "abcdef"));
+  CHECK(lseek(fd, -1, SEEK_END) == 5);
+
+  // A child's standard output, twice, then the parent's: in that order.
+  int out = open("/tmp/sequence", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  CHECK(out >= 0);
+  posix_spawn_file_actions_t fa;
+  posix_spawn_file_actions_init(&fa);
+  posix_spawn_file_actions_adddup2(&fa, out, 1);
+  for (int i = 0; i < 2; i++) {
+    CHECK(spawn_child("echo", &fa, &child) == 0);
+    CHECK(waitpid(child, &status, 0) == child && WEXITSTATUS(status) == 8);
+  }
+  posix_spawn_file_actions_destroy(&fa);
+  CHECK(write(out, "parent\n", 7) == 7);
+  close(out);
+  CHECK(file_is("/tmp/sequence", "echo from child\necho from child\nparent\n"));
+
+  // O_APPEND through two opens of one file: each write at the end.
+  int a = open("/tmp/shared", O_WRONLY | O_APPEND), b = open("/tmp/shared", O_WRONLY | O_APPEND);
+  CHECK(a >= 0 && b >= 0 && write(a, "1", 1) == 1 && write(b, "2", 1) == 1 && write(a, "3", 1) == 1);
+  CHECK(file_is("/tmp/shared", "abcdef123"));
+  close(a);
+  close(b);
+
+  // Locks: a child cannot take what the parent holds, and sees who holds it.
+  struct flock whole = {.l_type = F_WRLCK, .l_whence = SEEK_SET}, first = {.l_type = F_WRLCK, .l_len = 4};
+  CHECK(fcntl(fd, F_SETLK, &first) == 0);
+  pid_t me = getpid();
+  child = fork();
+  if (child == 0) {
+    struct flock probe = whole, other = {.l_type = F_WRLCK, .l_start = 4, .l_len = 4};
+    bool ok = fcntl(fd, F_SETLK, &(struct flock){.l_type = F_WRLCK}) == -1 && errno == EAGAIN;
+    ok = ok && fcntl(fd, F_GETLK, &probe) == 0 && probe.l_type == F_WRLCK && probe.l_pid == me;
+    ok = ok && probe.l_start == 0 && probe.l_len == 4;
+    ok = ok && fcntl(fd, F_SETLK, &other) == 0; // the bytes after: free
+    ok = ok && fcntl(fd, F_SETLKW, &(struct flock){.l_type = F_RDLCK, .l_len = 4}) == 0; // once let go
+    _exit(ok ? 0 : 1);
+  }
+  nanosleep(&(struct timespec){.tv_nsec = 100'000'000}, nullptr);
+  CHECK(fcntl(fd, F_SETLK, &(struct flock){.l_type = F_UNLCK, .l_len = 4}) == 0); // the child's wait ends
+  CHECK(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+  CHECK(fcntl(fd, F_SETLK, &whole) == 0); // the child's went with it
+  close(fd);
+  CHECK(stat("/tmp/shared", &st) == 0 && unlink("/tmp/shared") == 0 && unlink("/tmp/sequence") == 0);
+}
+
 int main(int argc, char **argv) {
   if (argc >= 3 && strcmp(argv[1], "one") != 0) return child_main(argv);
   printf("ctest: hello from musl\n");
@@ -622,6 +682,7 @@ int main(int argc, char **argv) {
   test_signals();
   test_tmp_and_devices();
   test_names_and_attributes();
+  test_shared_offsets_and_locks();
 
   // No threads yet: pthread_create fails, and says so (docs/milestones.md).
   pthread_t thread;
