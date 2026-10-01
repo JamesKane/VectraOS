@@ -63,7 +63,12 @@ typedef struct task {
   char name[24];
   uint64_t parent_id;    // the task that created it, or its nearest live creator; 0 for the root task
   struct task *all_next; // in all_tasks
-  uint32_t io_ranges;    // I/O ports it may use (x86_64, device.c): [io_base, io_base + io_count)
+  uint32_t thread_ids;   // the last thread's id: ids count from 1, in creation order
+  // Where its faults go (obj/exception.c): an in-task handler, then a port.
+  uint64_t exc_handler;
+  struct port *exc_port; // a reference, or null
+  uint64_t exc_key;
+  uint32_t io_ranges; // I/O ports it may use (x86_64, device.c): [io_base, io_base + io_count)
   uint16_t io_base[TASK_MAX_IO];
   uint32_t io_count[TASK_MAX_IO]; // up to 0x10000
 } task;
@@ -102,6 +107,13 @@ struct thread {
   const void *wait_token;    // what it waits on, until it is woken or times out (sched.c)
   bool wake_pending;         // woken between joining a list of waiters and blocking
   int64_t wait_result;
+  // Exceptions and interrupts (obj/exception.c), under its task's lock.
+  uint32_t id;            // in its task
+  bool exc_stopped;       // stopped at its task's exception port, until exception_resume
+  uint32_t exc_action;    // what exception_resume said: enum vx_resume_action, or 0
+  bool interrupt_pending; // thread_interrupt, not yet delivered
+  uint64_t interrupt_value;
+  vx_exception exc; // the exception it stopped at
 };
 
 static vx_handle handle_value(uint32_t index, uint16_t generation) {
@@ -417,6 +429,9 @@ static vx_status thread_create(task *t, thread **out) {
   th->obj.type = OBJ_THREAD; // pool_alloc zeroed the rest
   atomic_store_explicit(&th->obj.refs, 1, memory_order_relaxed);
   th->task = t;
+  spin_lock(&t->lock);
+  th->id = ++t->thread_ids;
+  spin_unlock(&t->lock);
   th->kstack = stack;
   th->intent = VX_INTENT_INTERACTIVE;
   object_ref(&t->obj);

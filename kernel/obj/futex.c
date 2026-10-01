@@ -21,14 +21,21 @@ static uint32_t futex_bucket(uint64_t key) { return (uint32_t)((key >> 2) * 0x9e
 // Blocks while *word (user address, in the current task) holds `expected`, until
 // futex_wake or the deadline. BAD_STATE if the word already differs.
 static vx_status futex_wait(uint64_t word, uint32_t expected, vx_instant deadline) {
-  if (word & 3) return VX_ERR_INVALID;
+  if ((word & 3) || word >= USER_TOP) return VX_ERR_INVALID;
   thread *t = this_cpu()->current;
   uint64_t key = user_page_pa(t->task->root, word);
   if (!key || !in_direct_map(key, 4)) return VX_ERR_INVALID; // device memory has no direct mapping
   uint32_t i = futex_bucket(key);
   futex_waiter w = {.thread = t, .key = key};
   spin_lock(&futex_buckets[i].lock);
-  if (atomic_load_explicit((_Atomic uint32_t *)phys_to_virt(key), memory_order_acquire) != expected) {
+  // Read through the task's own mapping, not the page: if another thread has
+  // unmapped the word since, the load fails rather than read a freed page.
+  uint32_t now;
+  if (!arch_user_load32((const uint32_t *)word, &now)) {
+    spin_unlock(&futex_buckets[i].lock);
+    return VX_ERR_INVALID;
+  }
+  if (now != expected) {
     spin_unlock(&futex_buckets[i].lock);
     return VX_ERR_BAD_STATE;
   }

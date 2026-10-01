@@ -153,6 +153,7 @@ static void build_idt(void) {
         .offset_high = (uint32_t)(h >> 32),
     };
   }
+  idt[3].type = 0xee; // int3 may come from user mode (DPL 3): a breakpoint, not a #GP
   idt[8].ist = IST_DOUBLE_FAULT;
   idt[2].ist = IST_NMI;
   idt[18].ist = IST_MACHINE_CHECK;
@@ -389,6 +390,79 @@ static void kput_exception(const trap_frame *f) {
   }
 }
 
+// --- User-mode registers (obj/exception.c) ---
+
+static trap_frame *arch_user_frame(thread *t) { return (trap_frame *)thread_kstack_top(t) - 1; }
+
+static void arch_frame_regs(const trap_frame *f, vx_regs *r) {
+  *r = (vx_regs){.rax = f->rax,
+                 .rbx = f->rbx,
+                 .rcx = f->rcx,
+                 .rdx = f->rdx,
+                 .rsi = f->rsi,
+                 .rdi = f->rdi,
+                 .rbp = f->rbp,
+                 .rsp = f->rsp,
+                 .r8 = f->r8,
+                 .r9 = f->r9,
+                 .r10 = f->r10,
+                 .r11 = f->r11,
+                 .r12 = f->r12,
+                 .r13 = f->r13,
+                 .r14 = f->r14,
+                 .r15 = f->r15,
+                 .rip = f->rip,
+                 .rflags = f->rflags};
+}
+
+// The flags user code may set: carry, parity, adjust, zero, sign, direction,
+// overflow, alignment check and ID. Interrupts stay on; trap (single step)
+// comes with the debugger.
+static constexpr uint64_t USER_FLAGS = 0x1 | 0x4 | 0x10 | 0x40 | 0x80 | 0x400 | 0x800 | 0x40000 | 0x200000;
+
+static vx_status arch_frame_set_regs(trap_frame *f, const vx_regs *r) {
+  if (r->rip >= USER_TOP || r->rsp > USER_TOP)
+    return VX_ERR_INVALID; // iretq would fault on them, in the kernel
+  f->rax = r->rax, f->rbx = r->rbx, f->rcx = r->rcx, f->rdx = r->rdx, f->rsi = r->rsi, f->rdi = r->rdi;
+  f->rbp = r->rbp, f->rsp = r->rsp, f->r8 = r->r8, f->r9 = r->r9, f->r10 = r->r10, f->r11 = r->r11;
+  f->r12 = r->r12, f->r13 = r->r13, f->r14 = r->r14, f->r15 = r->r15, f->rip = r->rip;
+  f->rflags = (r->rflags & USER_FLAGS) | 0x202; // IF, and bit 1, which is always set
+  return VX_OK;                                 // cs and ss stay user mode's
+}
+
+// To pc(arg) as if called: a zero return address below arg, which is 16-aligned.
+static bool arch_frame_divert(trap_frame *f, uint64_t pc, uint64_t arg) {
+  uint64_t zero = 0;
+  if (copy_to_user(arg - 8, &zero, sizeof zero) != VX_OK) return false;
+  f->rip = pc;
+  f->rsp = arg - 8;
+  f->rdi = arg;
+  f->rflags &= ~(uint64_t)0x400; // the ABI starts functions with the direction flag clear
+  return true;
+}
+
+// A user-mode fault as an exception: its kind, code and address (abi.h).
+static uint32_t x86_exception_kind(const trap_frame *f, uint32_t *code, uint64_t *address) {
+  *code = (uint32_t)f->error;
+  *address = 0;
+  switch (f->vector) {
+  case 0: return VX_EXCEPTION_ARITHMETIC; // divide error
+  case 3: return VX_EXCEPTION_BREAKPOINT;
+  case 6: return VX_EXCEPTION_ILLEGAL;
+  case 7: return VX_EXCEPTION_FP_DISABLED;
+  case 14:
+    *address = read_cr2();
+    *code = 0;                    // read
+    if (f->error & 2) *code = 1;  // write
+    if (f->error & 16) *code = 2; // execute
+    return VX_EXCEPTION_PAGE_FAULT;
+  case 16:
+  case 19: return VX_EXCEPTION_ARITHMETIC; // x87 and SIMD FP exceptions
+  case 17: return VX_EXCEPTION_ALIGNMENT;
+  default: *code = (uint32_t)f->vector; return VX_EXCEPTION_GENERAL;
+  }
+}
+
 void x86_trap(trap_frame *f) {
   bool from_user = f->cs & 3;
   if (f->vector == VECTOR_SYSCALL) {
@@ -411,16 +485,20 @@ void x86_trap(trap_frame *f) {
   } else if (f->vector >= VECTOR_IRQ_BASE && f->vector < VECTOR_IRQ_BASE + MAX_GSI) {
     irq_fire((uint32_t)(f->vector - VECTOR_IRQ_BASE)); // a level line is masked before the EOI
     wrmsr(X2APIC_EOI, 0);
-  } else if (f->vector == 14 && !from_user && read_cr2() < USER_TOP && f->rip >= (uint64_t)arch_user_copy &&
-             f->rip < (uint64_t)arch_user_copy_fault) {
-    f->rip = (uint64_t)arch_user_copy_fault; // a user page gone under a copy: it reports what it missed
+  } else if (f->vector == 14 && !from_user && read_cr2() < USER_TOP && uaccess_fixup(f->rip)) {
+    f->rip = uaccess_fixup(f->rip); // a user page gone under a copy: it reports the failure
   } else if (from_user) {
-    task_fault_start();
-    kput_exception(f);
-    kput(VX_STR(" at rip "));
-    kput_hex(f->rip);
-    kput(VX_STR("\n"));
-    task_fault_exit();
+    uint32_t code;
+    uint64_t address;
+    uint32_t kind = x86_exception_kind(f, &code, &address);
+    if (!exception_raise(f, kind, code, address)) { // nobody took it
+      task_fault_start();
+      kput_exception(f);
+      kput(VX_STR(" at rip "));
+      kput_hex(f->rip);
+      kput(VX_STR("\n"));
+      task_fault_exit();
+    }
   } else {
     panic_start();
     if ((f->vector == 8 || f->vector == 14) && kstack_in_guard(read_cr2()))

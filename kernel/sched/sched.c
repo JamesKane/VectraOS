@@ -294,20 +294,22 @@ static void task_fault_start(void) {
   panic(VX_STR("a dead thread was scheduled"));
 }
 
-// Gets a thread of a task being killed to notice (obj/process.c): a blocked
-// thread wakes with ERR_KILLED, wherever it waits; one running user code on
-// another CPU gets an interrupt, and checks on its way back to user mode.
-static void sched_kick_for_kill(thread *t) {
+// Gets a thread to notice a kill (obj/process.c) or an interrupt
+// (obj/exception.c): a blocked thread wakes with `why`, wherever it waits; one
+// running user code on another CPU gets an interrupt, and checks on its way
+// back to user mode. A kill is never downgraded to an interrupt.
+static void sched_kick(thread *t, vx_status why) {
   spin_lock(&sched.lock);
+  if (t->wake_pending && t->wait_result == VX_ERR_KILLED) why = VX_ERR_KILLED; // a kill outranks the rest
   if (t->state == THREAD_BLOCKED) {
     t->wait_token = nullptr;
-    t->wait_result = VX_ERR_KILLED;
+    t->wait_result = why;
     make_ready(t);
   } else if (t->state != THREAD_DEAD) {
     // Ready, or running here or elsewhere: if it is about to block, the block
     // returns at once; if it is in user mode on another CPU, interrupt it.
     t->wake_pending = true;
-    t->wait_result = VX_ERR_KILLED;
+    t->wait_result = why;
     if (t->state == THREAD_RUNNING && t->cpu && t->cpu != this_cpu()) arch_send_resched(t->cpu);
   }
   spin_unlock(&sched.lock);

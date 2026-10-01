@@ -229,7 +229,9 @@ static void test_threads_and_calls(void) {
 // Without an ELF loader in user space yet (M2, step 4), a child runs a few
 // instructions written here for each architecture.
 
-typedef enum child_code { EXIT_7, SPIN, BLOCK, PORT_BLOCK, USE_SIMD, READ_LOOP } child_code;
+typedef enum child_code { EXIT_7, SPIN, BLOCK, PORT_BLOCK, USE_SIMD, READ_LOOP, FAULT_LOAD } child_code;
+
+static constexpr uint64_t CHILD_DATA = 0x30'0000; // FAULT_LOAD's page, which nothing maps at first
 
 // Writes the child's code into `code`; returns its length in bytes.
 static uint32_t write_child(uint8_t *code, child_code what) {
@@ -251,6 +253,11 @@ static uint32_t write_child(uint8_t *code, child_code what) {
     EMIT(0x48), EMIT(0x8b), EMIT(0x44), EMIT(0x24),
         EMIT(0xf8);         // 1: mov -8(%rsp), %rax: a load from its stack
     EMIT(0xeb), EMIT(0xf9); // jmp 1b, with no system call
+  } else if (what == FAULT_LOAD) {
+    EMIT(0x48), EMIT(0xb8), EMIT32(CHILD_DATA), EMIT32(0); // movabs $CHILD_DATA, %rax
+    EMIT(0x48), EMIT(0x8b), EMIT(0x38);                    // mov (%rax), %rdi: faults until it is mapped
+    EMIT(0xb8), EMIT32(VX_SYS_thread_exit);                // mov $thread_exit, %eax
+    EMIT(0x0f), EMIT(0x05);                                // syscall: exits with what it loaded
   } else if (what == PORT_BLOCK) {
     EMIT(0x48), EMIT(0x8d), EMIT(0x74), EMIT(0x24), EMIT(0xf0);     // lea -16(%rsp), %rsi: the handle's place
     EMIT(0x31), EMIT(0xff);                                         // xor %edi, %edi: no options
@@ -291,6 +298,11 @@ static uint32_t write_child(uint8_t *code, child_code what) {
   } else if (what == READ_LOOP) {
     EMIT(0xf85f83e0u); // 1: ldur x0, [sp, #-8]: a load from its stack
     EMIT(0x17ffffffu); // b 1b, with no system call
+  } else if (what == FAULT_LOAD) {
+    EMIT(0xd2a00001u | (uint32_t)(CHILD_DATA >> 16) << 5); // movz x1, #CHILD_DATA >> 16, lsl #16
+    EMIT(0xf9400020u);                                     // ldr x0, [x1]: faults until it is mapped
+    EMIT(0xd2800008u | (uint32_t)VX_SYS_thread_exit << 5); // movz x8, #thread_exit
+    EMIT(0xd4000001u);                                     // svc #0: exits with what it loaded
   } else if (what == PORT_BLOCK) {
     EMIT(0xd10043e1u);                                     // sub x1, sp, #16: the handle's place
     EMIT(0xd2800000u);                                     // movz x0, #0: no options
@@ -334,8 +346,9 @@ static bool wait_blocked(vx_handle task) {
   return false;
 }
 
-// A child task running `what`, started. *task gets a handle to it.
-static bool start_child(child_code what, vx_handle *task) {
+// A child task running `what`, started, with its faults going to exc_port if
+// that is not 0 (bound before it starts). *task gets a handle to it.
+static bool start_child_bound(child_code what, vx_handle exc_port, vx_handle *task) {
   uint8_t code[64] = {};
   uint32_t len = write_child(code, what);
   vx_handle text = 0, stack = 0, th = 0; // closing 0 is a harmless BAD_HANDLE
@@ -345,6 +358,7 @@ static bool start_child(child_code what, vx_handle *task) {
             vx_as_map(*task, text, 0, 4096, VX_MAP_EXEC, &text_at) == VX_OK &&
             vx_vmo_create(4096, 0, &stack) == VX_OK &&
             vx_as_map(*task, stack, 0, 4096, VX_MAP_WRITE, &stack_at) == VX_OK &&
+            (!exc_port || vx_exception_bind(*task, exc_port, 5, 0) == VX_OK) &&
             vx_thread_create(*task, &th) == VX_OK &&
             vx_thread_start(th, CHILD_CODE, CHILD_STACK_TOP, 0, 0) == VX_OK;
   vx_handle_close(text);
@@ -352,6 +366,8 @@ static bool start_child(child_code what, vx_handle *task) {
   vx_handle_close(th);
   return ok;
 }
+
+static bool start_child(child_code what, vx_handle *task) { return start_child_bound(what, 0, task); }
 
 // Waits for a task's EXIT binding; returns its exit status, or INT64_MIN.
 static int64_t wait_exit(vx_handle port, vx_handle task) {
@@ -916,6 +932,172 @@ static void test_copy_race(void) {
   vx_handle_close(th);
 }
 
+// --- Exceptions (obj/exception.c) ---
+
+// A page at a child's address, holding one word.
+static bool map_child_word(vx_handle child, uint64_t at, uint64_t value) {
+  vx_handle v = 0;
+  bool ok = vx_vmo_create(4096, 0, &v) == VX_OK &&
+            vx_vmo_rw(v, VX_VMO_WRITE, 0, &value, sizeof value) == VX_OK &&
+            vx_as_map(child, v, 0, 4096, 0, &at) == VX_OK;
+  vx_handle_close(v);
+  return ok;
+}
+
+// The packet for a child's fault, at its exception port.
+static bool child_stopped(vx_handle port) {
+  vx_packet pk;
+  return vx_port_wait(port, after_ms(2000), 0, &pk, 1) == 1 && pk.trigger == VX_TRIGGER_EXCEPTION &&
+         pk.key == 5 && pk.value == 1;
+}
+
+static void test_exception_port(void) {
+  vx_handle port, child;
+  CHECK(vx_port_create(0, &port) == VX_OK);
+  // A child's fault stops it at its port; the port's holder reads what
+  // happened, maps the page it missed, and continues it: the load is retried.
+  CHECK(start_child_bound(FAULT_LOAD, port, &child));
+  CHECK(child_stopped(port));
+  vx_exception e = {};
+  CHECK(vx_thread_state(child, 1, VX_STATE_GET_EXCEPTION, &e, sizeof e) == VX_OK);
+  CHECK(e.kind == VX_EXCEPTION_PAGE_FAULT && e.address == CHILD_DATA && e.code == 0 && e.thread == 1);
+  CHECK(vx_thread_state(child, 1, VX_STATE_GET_EXCEPTION, &e, 8) == VX_ERR_TOO_SMALL);
+  CHECK(vx_thread_state(child, 2, VX_STATE_GET_EXCEPTION, &e, sizeof e) == VX_ERR_NOT_FOUND);
+  CHECK(map_child_word(child, CHILD_DATA, 7));
+  CHECK(vx_exception_resume(child, 1, VX_RESUME_CONTINUE, nullptr) == VX_OK);
+  CHECK(vx_exception_resume(child, 1, VX_RESUME_CONTINUE, nullptr) != VX_OK); // once
+  CHECK(wait_exit(port, child) == 7);
+  vx_handle_close(child);
+
+  // Its registers can be changed before it continues: the load goes elsewhere.
+  CHECK(start_child_bound(FAULT_LOAD, port, &child));
+  CHECK(child_stopped(port));
+  vx_regs regs;
+  CHECK(vx_thread_state(child, 1, VX_STATE_GET_REGS, &regs, sizeof regs) == VX_OK);
+#ifdef __x86_64__
+  CHECK(regs.rax == CHILD_DATA);
+  regs.rax = CHILD_DATA + 4096;
+  vx_regs bad = regs;
+  bad.rip = 0xffff'8000'0000'0000; // a kernel address: refused
+#else
+  CHECK(regs.x[1] == CHILD_DATA);
+  regs.x[1] = CHILD_DATA + 4096;
+  vx_regs bad = regs;
+  bad.pc = 0xffff'8000'0000'0000;
+#endif
+  CHECK(vx_thread_state(child, 1, VX_STATE_SET_REGS, &bad, sizeof bad) == VX_ERR_INVALID);
+  CHECK(vx_thread_state(child, 1, VX_STATE_SET_REGS, &regs, sizeof regs) == VX_OK);
+  CHECK(map_child_word(child, CHILD_DATA + 4096, 9));
+  CHECK(vx_exception_resume(child, 1, VX_RESUME_CONTINUE, nullptr) == VX_OK);
+  CHECK(wait_exit(port, child) == 9);
+  vx_handle_close(child);
+
+  // Or it can be killed.
+  CHECK(start_child_bound(FAULT_LOAD, port, &child));
+  CHECK(child_stopped(port));
+  CHECK(vx_exception_resume(child, 1, VX_RESUME_KILL, nullptr) == VX_OK);
+  CHECK(wait_exit(port, child) == -1);
+  vx_handle_close(child);
+
+  // A kill reaches a thread stopped at its port.
+  CHECK(start_child_bound(FAULT_LOAD, port, &child));
+  CHECK(child_stopped(port));
+  CHECK(vx_task_kill(child, -4) == VX_OK);
+  CHECK(wait_exit(port, child) == -4);
+  vx_handle_close(child);
+  vx_handle_close(port);
+}
+
+static vx_handle missing; // what the in-task handler maps where a fault was
+static _Atomic uint32_t handled[VX_EXCEPTION_INTERRUPT + 1], interrupted_thread;
+static _Atomic uint64_t interrupt_code;
+
+static void handler(vx_exception *e) {
+  if (e->kind <= VX_EXCEPTION_INTERRUPT) atomic_fetch_add(&handled[e->kind], 1);
+  if (e->kind == VX_EXCEPTION_PAGE_FAULT) {
+    uint64_t at = e->address & ~4095ull;
+    vx_as_map(vx_self, missing, 0, 4096, 0, &at); // then the load is retried
+  } else if (e->kind == VX_EXCEPTION_BREAKPOINT) {
+#ifdef __aarch64__
+    e->regs.pc += 4; // brk stops at itself; int3 has already been stepped past
+#endif
+  } else if (e->kind == VX_EXCEPTION_INTERRUPT) {
+    atomic_store(&interrupted_thread, e->thread);
+    atomic_store(&interrupt_code, e->code);
+  }
+  vx_exception_resume(vx_self, 0, VX_RESUME_CONTINUE, &e->regs);
+}
+
+typedef struct waiter {
+  _Atomic uint32_t word;
+  _Atomic int64_t result;
+  _Atomic bool done;
+} waiter;
+
+static void interrupted_waiter(uint64_t arg, uint64_t arg2) {
+  (void)arg;
+  waiter *w = (waiter *)arg2;
+  atomic_store(&w->result, vx_futex_wait(&w->word, 0, VX_INFINITE)); // no deadline: only an interrupt ends it
+  atomic_store(&w->done, true);
+  vx_thread_exit(0);
+}
+
+static void test_in_task(void) {
+  static _Atomic uint32_t never;
+  CHECK(vx_thread_interrupt(self, 0, 1) == VX_ERR_BAD_STATE); // no handler yet
+  CHECK(vx_exception_bind(self, 0, (uint64_t)handler, VX_EXCEPTION_IN_TASK) == VX_OK);
+  // A page fault, handled by mapping the page: the load is retried, and sees it.
+  uint64_t value = 0x1234'5678, at = 0;
+  vx_handle probe;
+  CHECK(vx_vmo_create(4096, 0, &missing) == VX_OK && vx_vmo_rw(missing, VX_VMO_WRITE, 0, &value, 8) == VX_OK);
+  CHECK(vx_vmo_create(4096, 0, &probe) == VX_OK && vx_as_map(self, probe, 0, 4096, 0, &at) == VX_OK);
+  CHECK(vx_as_unmap(self, at, 4096) == VX_OK); // an address nothing maps now
+  vx_handle_close(probe);
+  CHECK(at && *(volatile uint64_t *)at == 0x1234'5678);
+  CHECK(atomic_load(&handled[VX_EXCEPTION_PAGE_FAULT]) == 1);
+  CHECK(vx_as_unmap(self, at, 4096) == VX_OK);
+  vx_handle_close(missing);
+  // A breakpoint, stepped past.
+#ifdef __x86_64__
+  __asm__ volatile("int3");
+#else
+  __asm__ volatile("brk #7");
+#endif
+  CHECK(atomic_load(&handled[VX_EXCEPTION_BREAKPOINT]) == 1);
+  // An interrupt wakes a call that would wait for ever, and goes to the handler
+  // on the way out.
+  static waiter w;
+  vx_handle th;
+  uint32_t id = 0;
+  CHECK(vx_thread_create_id(self, &th, &id) == VX_OK && id > 1);
+  CHECK(vx_thread_start(th, (uint64_t)interrupted_waiter, new_stack(), 0, (uint64_t)&w) == VX_OK);
+  vx_futex_wait(&never, 0, after_ms(30)); // it is waiting
+  CHECK(vx_thread_interrupt(self, id, 42) == VX_OK);
+  for (int i = 0; i < 1000 && !atomic_load(&w.done); i++) vx_futex_wait(&never, 0, after_ms(1));
+  CHECK(atomic_load(&w.done) && atomic_load(&w.result) == VX_ERR_INTERRUPTED);
+  CHECK(atomic_load(&handled[VX_EXCEPTION_INTERRUPT]) == 1 && atomic_load(&interrupted_thread) == id &&
+        atomic_load(&interrupt_code) == 42);
+  CHECK(vx_thread_interrupt(self, 999, 1) == VX_ERR_NOT_FOUND);
+  vx_handle_close(th);
+  CHECK(vx_exception_bind(self, 0, 0, VX_EXCEPTION_IN_TASK) == VX_OK); // unbound
+  CHECK(vx_thread_interrupt(self, 0, 1) == VX_ERR_BAD_STATE);
+}
+
+static void test_vmo_clone(void) {
+  vx_handle v, c;
+  uint64_t words[2] = {11, 22}, got[2] = {};
+  CHECK(vx_vmo_create(2ull * 4096, 0, &v) == VX_OK &&
+        vx_vmo_rw(v, VX_VMO_WRITE, 4096, words, sizeof words) == VX_OK);
+  CHECK(vx_vmo_clone(v, 4096, 4096, &c) == VX_OK); // its second page
+  words[0] = 99;
+  CHECK(vx_vmo_rw(v, VX_VMO_WRITE, 4096, words, sizeof words) ==
+        VX_OK); // the original changes; the copy does not
+  CHECK(vx_vmo_rw(c, VX_VMO_READ, 0, got, sizeof got) == VX_OK && got[0] == 11 && got[1] == 22);
+  CHECK(vx_vmo_clone(v, 4096, 2ull * 4096, &c) == VX_ERR_RANGE &&
+        vx_vmo_clone(v, 1, 4096, &c) == VX_ERR_RANGE);
+  vx_handle_close(v);
+}
+
 int vx_main(void) {
   self = vx_self;
   test_spawn_message();
@@ -929,6 +1111,9 @@ int vx_main(void) {
   test_port_waiters();
   test_unmap();
   test_copy_race();
+  test_exception_port();
+  test_in_task();
+  test_vmo_clone();
   test_nested_channels();
   test_rings();
   test_vmo_rw();

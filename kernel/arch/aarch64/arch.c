@@ -622,6 +622,62 @@ static constexpr uint32_t EC_SVC64 = 0x15;
   panic_end(elr, 0);
 }
 
+// --- User-mode registers (obj/exception.c) ---
+
+static trap_frame *arch_user_frame(thread *t) { return (trap_frame *)thread_kstack_top(t) - 1; }
+
+static void arch_frame_regs(const trap_frame *f, vx_regs *r) {
+  for (int i = 0; i < 31; i++) r->x[i] = f->x[i];
+  r->sp = f->sp_el0;
+  r->pc = f->elr;
+  r->pstate = f->spsr;
+}
+
+static vx_status arch_frame_set_regs(trap_frame *f, const vx_regs *r) {
+  if (r->pc >= USER_TOP || r->sp > USER_TOP) return VX_ERR_INVALID;
+  for (int i = 0; i < 31; i++) f->x[i] = r->x[i];
+  f->sp_el0 = r->sp;
+  f->elr = r->pc;
+  f->spsr = r->pstate & 0xf000'0000ull; // NZCV only: EL0t, every interrupt unmasked
+  return VX_OK;
+}
+
+// To pc(arg), with arg (16-aligned) as the stack pointer, and no frame or
+// return address to go back to.
+static bool arch_frame_divert(trap_frame *f, uint64_t pc, uint64_t arg) {
+  f->elr = pc;
+  f->sp_el0 = arg;
+  f->x[0] = arg;
+  f->x[29] = 0;
+  f->x[30] = 0;
+  return true;
+}
+
+// A user-mode fault as an exception: its kind, code and address (abi.h).
+static uint32_t aarch64_exception_kind(const trap_frame *f, uint32_t *code, uint64_t *address) {
+  uint32_t ec = (uint32_t)(f->esr >> 26) & 0x3f, iss = (uint32_t)f->esr & 0x1ffffff;
+  *code = (uint32_t)f->esr;
+  *address = 0;
+  switch (ec) {
+  case 0x24: // data abort
+    *address = f->far;
+    *code = iss & (1u << 6) ? 1 : 0;
+    return VX_EXCEPTION_PAGE_FAULT;
+  case 0x20: // instruction abort
+    *address = f->far;
+    *code = 2;
+    return VX_EXCEPTION_PAGE_FAULT;
+  case 0x07: return VX_EXCEPTION_FP_DISABLED;
+  case 0x3c: *code = iss & 0xffff; return VX_EXCEPTION_BREAKPOINT; // brk #imm
+  case 0x00:
+  case 0x0e: return VX_EXCEPTION_ILLEGAL; // undefined, or an illegal execution state
+  case 0x22:
+  case 0x26: *address = f->far; return VX_EXCEPTION_ALIGNMENT; // PC or SP alignment
+  case 0x2c: return VX_EXCEPTION_ARITHMETIC;                   // trapped FP exception
+  default: return VX_EXCEPTION_GENERAL;
+  }
+}
+
 void aarch64_trap(trap_frame *f, uint64_t index) {
   bool from_user = index >= 8;
   uint32_t ec = (uint32_t)(f->esr >> 26) & 0x3f;
@@ -629,16 +685,20 @@ void aarch64_trap(trap_frame *f, uint64_t index) {
     aarch64_irq();
   } else if (from_user && (index & 3) == 0 && ec == EC_SVC64) {
     f->x[0] = (uint64_t)syscall_dispatch(f->x[8], f->x);
-  } else if (!from_user && (index & 3) == 0 && ec == 0x25 && f->far < USER_TOP &&
-             f->elr >= (uint64_t)arch_user_copy && f->elr < (uint64_t)arch_user_copy_fault) {
-    f->elr = (uint64_t)arch_user_copy_fault; // a user page gone under a copy: it reports what it missed
+  } else if (!from_user && (index & 3) == 0 && ec == 0x25 && f->far < USER_TOP && uaccess_fixup(f->elr)) {
+    f->elr = uaccess_fixup(f->elr); // a user page gone under a copy: it reports the failure
   } else if (from_user) {
-    task_fault_start();
-    kput_exception(f, index);
-    kput(VX_STR(" at pc "));
-    kput_hex(f->elr);
-    kput(VX_STR("\n"));
-    task_fault_exit();
+    uint32_t code;
+    uint64_t address;
+    uint32_t kind = aarch64_exception_kind(f, &code, &address);
+    if ((index & 3) != 0 || !exception_raise(f, kind, code, address)) { // an SError or FIQ, or nobody took it
+      task_fault_start();
+      kput_exception(f, index);
+      kput(VX_STR(" at pc "));
+      kput_hex(f->elr);
+      kput(VX_STR("\n"));
+      task_fault_exit();
+    }
   } else {
     panic_start();
     kput_exception(f, index);

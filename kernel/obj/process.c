@@ -11,7 +11,7 @@
 // whose last thread died happens there too. By then that CPU has left the task's
 // address space, as every CPU that ran its threads already has.
 //
-// Killing marks the task and kicks its threads (sched_kick_for_kill). Each one
+// Killing marks the task and kicks its threads (sched_kick). Each one
 // exits the next time it heads back to user mode (user_return).
 
 static constexpr int64_t EXIT_FAULT = -1; // the status of a task killed by a fault
@@ -36,11 +36,15 @@ static void task_teardown(task *t) {
   handle_entry *handles = t->handles;
   mapping *maps = t->maps;
   uint64_t root = t->root;
+  struct port *exc_port = t->exc_port;
+  t->exc_port = nullptr;
+  t->exc_handler = 0;
   t->handles = nullptr;
   t->maps = nullptr;
   t->root = 0;
   t->mapped = 0;
   spin_unlock(&t->lock);
+  if (exc_port) object_drop((object *)exc_port);
   for (uint32_t i = 1; i < HANDLE_SLOTS; i++)
     if (handles[i].obj) object_drop(handles[i].obj);
   for (uint32_t i = 0; i < TASK_MAX_MAPPINGS; i++)
@@ -124,22 +128,25 @@ static void task_kill(task *t, int64_t status) {
   t->exit_status = status;
   bool idle = t->live_threads == 0;
   if (idle) t->ending = true;
-  for (thread *th = t->threads; th; th = th->task_next) sched_kick_for_kill(th);
+  for (thread *th = t->threads; th; th = th->task_next) sched_kick(th, VX_ERR_KILLED);
   spin_unlock(&t->lock);
   if (idle) task_teardown(t);
 }
 
 // Every trap from user mode ends here before returning to it: a killed task's
 // thread exits, and a pending reschedule happens.
+static void exception_check_interrupt(void); // obj/exception.c
+
 static void user_return(void) {
   object_drain(); // what this trap dropped
   for (;;) {
     cpu *c = this_cpu();
     task *t = c->current->task;
     if (t->killed) thread_exit_current(t->exit_status);
-    if (!c->resched) return;
+    if (!c->resched) break;
     schedule(); // and look again: a kill may have come meanwhile
   }
+  exception_check_interrupt(); // a thread_interrupt, to its handler
 }
 
 // A fault in user mode kills the whole task (01 §9: until exception ports, no

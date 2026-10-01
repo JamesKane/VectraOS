@@ -166,3 +166,16 @@ arch_user_copy_fault:
     mov %rcx, %rax // rep movsb counts down as it goes: what is left
     ret
 arch_user_copy_end:
+
+// bool arch_user_load32(const uint32_t *src, uint32_t *dst): one aligned 32-bit
+// load from user memory (a futex word), whole. A fault returns false.
+    .globl arch_user_load32, arch_user_load32_fault
+arch_user_load32:
+    endbr64
+    movl (%rdi), %eax
+    movl %eax, (%rsi)
+    movl $1, %eax
+    ret
+arch_user_load32_fault:
+    xorl %eax, %eax
+    ret

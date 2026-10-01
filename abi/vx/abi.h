@@ -39,6 +39,7 @@ enum vx_trigger : uint32_t {
   VX_TRIGGER_COUNTER_GE,  // a counter has reached the binding's threshold; value: the counter
   VX_TRIGGER_EXIT,        // a task has ended; value: its exit status
   VX_TRIGGER_IRQ,         // an Irq has fired since it was last bound; value: how many times in all
+  VX_TRIGGER_EXCEPTION,   // a thread stopped at an exception (exception_bind); value: its thread id
 };
 
 // The intents a thread declares (01 §8). Until scheduling contexts land, every
@@ -284,3 +285,72 @@ typedef enum vx_status : int32_t {
 static_assert(VX_OK == 0);
 static_assert(VX_RIGHT_BIT_COUNT <= 31);
 static constexpr uint32_t VX_RIGHTS_SAME = 1u << 31; // handle_dup: the rights the handle has
+
+// --- Exceptions and interrupts (docs/01 §9, 05 §2) ---
+//
+// A fault in user mode goes to the task's in-task handler, if it has one, then
+// to its exception port, then to the default: the task is killed.
+//
+// exception_bind(task, port, key, options): with options 0, faults stop the
+//     thread and post a packet to port: trigger VX_TRIGGER_EXCEPTION, the
+//     binding's key, and value the thread's id (from 1, in creation order). A
+//     port of VX_HANDLE_NONE unbinds. With VX_EXCEPTION_IN_TASK, key is a
+//     handler in the task (port ignored, 0 unbinds): the kernel puts a
+//     vx_exception on the faulting thread's own stack, below the 128 bytes
+//     under its stack pointer, and starts the thread at handler(exception).
+//     A handler never returns: it resumes with exception_resume.
+// exception_resume(task, thread, action, regs): resumes a thread stopped at
+//     its port: CONTINUE (with the registers at regs, if not null; else as it
+//     stopped, retrying the instruction) or KILL. With thread 0, the caller
+//     resumes itself from its handler: CONTINUE with the registers its
+//     vx_exception holds, perhaps changed.
+// thread_state(task, thread, op, buffer, size): for a thread stopped at its
+//     port, GET_EXCEPTION reads its vx_exception, and GET_REGS and SET_REGS its
+//     registers.
+// thread_interrupt(task, thread, value): interrupts the thread (any thread of
+//     the task, with thread 0): a call it is blocked in returns
+//     ERR_INTERRUPTED, and on its way back to user mode it is diverted to the
+//     in-task handler with an exception of kind INTERRUPT whose code is value.
+//     A task with no in-task handler is not interrupted (BAD_STATE).
+// vmo_clone(vmo, offset, size, options, &out): a new VMO holding a copy of the
+//     range, charged in full (01 §5: commit, not overcommit).
+//
+// Registers a handler or a debugger may change are checked: a thread can be
+// given any user-mode state, and never a privileged one.
+
+#ifdef __x86_64__
+typedef struct vx_regs {
+  uint64_t rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp;
+  uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
+  uint64_t rip, rflags;
+} vx_regs;
+#elifdef __aarch64__
+typedef struct vx_regs {
+  uint64_t x[31]; // x30 is the link register
+  uint64_t sp, pc, pstate;
+} vx_regs;
+#endif
+
+enum vx_exception_kind : uint32_t {
+  VX_EXCEPTION_PAGE_FAULT = 1, // address: what was touched; code: read 0, write 1, execute 2
+  VX_EXCEPTION_ILLEGAL,        // an undefined or privileged instruction
+  VX_EXCEPTION_BREAKPOINT,     // int3, brk
+  VX_EXCEPTION_ARITHMETIC,     // division by zero, an FP exception
+  VX_EXCEPTION_ALIGNMENT,
+  VX_EXCEPTION_FP_DISABLED, // FP/SIMD while the kernel does not save it (01 §11)
+  VX_EXCEPTION_GENERAL,     // any other fault (x86 #GP, say); code: the architecture's
+  VX_EXCEPTION_INTERRUPT,   // thread_interrupt; code: its value
+};
+
+typedef struct vx_exception {
+  uint32_t kind; // enum vx_exception_kind
+  uint32_t code;
+  uint64_t address;
+  uint32_t thread; // the id of the thread it happened to
+  uint32_t reserved;
+  vx_regs regs;
+} vx_exception;
+
+enum vx_exception_options : uint32_t { VX_EXCEPTION_IN_TASK = 1 };
+enum vx_resume_action : uint32_t { VX_RESUME_CONTINUE = 1, VX_RESUME_KILL };
+enum vx_thread_state_op : uint32_t { VX_STATE_GET_EXCEPTION = 1, VX_STATE_GET_REGS, VX_STATE_SET_REGS };

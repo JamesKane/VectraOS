@@ -19,3 +19,4 @@ VX_STATUS(ERR_TOO_SMALL, -13)   // a buffer too small for what is waiting; the s
 VX_STATUS(ERR_KILLED,    -14)   // the calling task is being killed
 VX_STATUS(ERR_NOT_FOUND, -15)   // no such name: a walk, a module, a service
 VX_STATUS(ERR_EXISTS,    -16)   // the name is taken
+VX_STATUS(ERR_INTERRUPTED,-17)  // thread_interrupt woke the call; the interrupt is delivered on the way out

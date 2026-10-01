@@ -98,6 +98,31 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   return (vx_status)vx_syscall(VX_SYS_as_map, task, vmo, offset, size, flags, (uint64_t)addr);
 }
 
+[[maybe_unused]] static vx_status vx_vmo_clone(vx_handle vmo, uint64_t offset, uint64_t size,
+                                               vx_handle *out) {
+  *out = VX_HANDLE_NONE;
+  return (vx_status)vx_syscall(VX_SYS_vmo_clone, vmo, offset, size, 0, (uint64_t)out, 0);
+}
+
+[[maybe_unused]] static vx_status vx_exception_bind(vx_handle task, vx_handle port, uint64_t key,
+                                                    uint32_t options) {
+  return (vx_status)vx_syscall(VX_SYS_exception_bind, task, port, key, options, 0, 0);
+}
+
+[[maybe_unused]] static vx_status vx_exception_resume(vx_handle task, uint64_t thread, uint32_t action,
+                                                      const vx_regs *regs) {
+  return (vx_status)vx_syscall(VX_SYS_exception_resume, task, thread, action, (uint64_t)regs, 0, 0);
+}
+
+[[maybe_unused]] static vx_status vx_thread_state(vx_handle task, uint64_t thread, uint32_t op, void *buf,
+                                                  uint64_t size) {
+  return (vx_status)vx_syscall(VX_SYS_thread_state, task, thread, op, (uint64_t)buf, size, 0);
+}
+
+[[maybe_unused]] static vx_status vx_thread_interrupt(vx_handle task, uint64_t thread, uint64_t value) {
+  return (vx_status)vx_syscall(VX_SYS_thread_interrupt, task, thread, value, 0, 0, 0);
+}
+
 [[maybe_unused]] static vx_status vx_as_unmap(vx_handle task, uint64_t addr, uint64_t size) {
   return (vx_status)vx_syscall(VX_SYS_as_unmap, task, addr, size, 0, 0, 0);
 }
@@ -252,6 +277,12 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
 [[maybe_unused]] static vx_status vx_thread_create(vx_handle task, vx_handle *out) {
   *out = VX_HANDLE_NONE;
   return (vx_status)vx_syscall(VX_SYS_thread_create, task, (uint64_t)out, 0, 0, 0, 0);
+}
+
+// The same, and the thread's id in its task (exceptions and thread_interrupt name it so).
+[[maybe_unused]] static vx_status vx_thread_create_id(vx_handle task, vx_handle *out, uint32_t *id) {
+  *out = VX_HANDLE_NONE;
+  return (vx_status)vx_syscall(VX_SYS_thread_create, task, (uint64_t)out, (uint64_t)id, 0, 0, 0);
 }
 
 // Starts a thread at entry on stack sp. `handle`, unless 0, moves to the

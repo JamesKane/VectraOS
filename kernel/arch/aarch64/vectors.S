@@ -178,6 +178,20 @@ arch_user_copy_fault:
     ret
 arch_user_copy_end:
 
+
+// bool arch_user_load32(const uint32_t *src, uint32_t *dst): one aligned 32-bit
+// load from user memory (a futex word), whole. A fault returns false.
+    .globl arch_user_load32, arch_user_load32_fault
+arch_user_load32:
+    hint #34
+    ldar w2, [x0]
+    str w2, [x1]
+    mov x0, #1
+    ret
+arch_user_load32_fault:
+    mov x0, #0
+    ret
+
     .bss
     .p2align 4
 overflow_stack:

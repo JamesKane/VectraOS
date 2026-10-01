@@ -602,7 +602,9 @@ static int64_t sys_task_create(uint64_t name_ptr, uint64_t name_len, uint64_t ou
   return return_handle(&t->obj, ALL_RIGHTS, out);
 }
 
-static int64_t sys_thread_create(vx_handle th, uint64_t out) {
+// thread_create(task, &out, &id): a thread, and (unless id is null) its id in
+// the task, which exceptions and thread_interrupt name it by.
+static int64_t sys_thread_create(vx_handle th, uint64_t out, uint64_t id_out) {
   vx_status st;
   task *t = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_MANAGE, &st);
   if (!t) return st;
@@ -613,7 +615,10 @@ static int64_t sys_thread_create(vx_handle th, uint64_t out) {
   st = ending ? VX_ERR_BAD_STATE : thread_create(t, &thr);
   object_release(&t->obj);
   if (st != VX_OK) return st;
-  return return_handle(&thr->obj, ALL_RIGHTS, out);
+  uint32_t id = thr->id;
+  st = (vx_status)return_handle(&thr->obj, ALL_RIGHTS, out);
+  if (st == VX_OK && id_out) st = copy_to_user(id_out, &id, sizeof id);
+  return st;
 }
 
 // thread_start(thread, entry, sp, handle, arg2): the handle, unless 0, moves
@@ -695,6 +700,13 @@ static int64_t sys_handle_dup(vx_handle h, uint64_t rights, uint64_t out) {
   return return_handle(obj, (uint32_t)rights, out);
 }
 
+// obj/exception.c, after this file
+static int64_t sys_exception_bind(vx_handle th, vx_handle ph, uint64_t key, uint64_t options);
+static int64_t sys_exception_resume(vx_handle th, uint64_t id, uint64_t action, uint64_t regs_ptr);
+static int64_t sys_thread_state(vx_handle th, uint64_t id, uint64_t op, uint64_t buf, uint64_t size);
+static int64_t sys_thread_interrupt(vx_handle th, uint64_t id, uint64_t value);
+static int64_t sys_vmo_clone(vx_handle h, uint64_t offset, uint64_t size, uint64_t options, uint64_t out);
+
 static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   switch (nr) {
   case VX_SYS_debug_write: return sys_debug_write(a[0], a[1]);
@@ -702,7 +714,7 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_task_create: return sys_task_create(a[0], a[1], a[2]);
   case VX_SYS_task_kill: return sys_task_kill((vx_handle)a[0], a[1], a[2]);
   case VX_SYS_task_info: return sys_task_info((vx_handle)a[0], a[1], a[2], a[3]);
-  case VX_SYS_thread_create: return sys_thread_create((vx_handle)a[0], a[1]);
+  case VX_SYS_thread_create: return sys_thread_create((vx_handle)a[0], a[1], a[2]);
   case VX_SYS_thread_start: return sys_thread_start((vx_handle)a[0], a[1], a[2], (vx_handle)a[3], a[4]);
   case VX_SYS_thread_exit: thread_exit_current((int64_t)a[0]);
   case VX_SYS_port_create: return sys_port_create(a[0], a[1]);
@@ -732,6 +744,11 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_vmo_rw: return sys_vmo_rw((vx_handle)a[0], a[1], a[2], a[3], a[4]);
   case VX_SYS_as_map: return sys_as_map((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4], a[5]);
   case VX_SYS_as_unmap: return sys_as_unmap((vx_handle)a[0], a[1], a[2]);
+  case VX_SYS_exception_bind: return sys_exception_bind((vx_handle)a[0], (vx_handle)a[1], a[2], a[3]);
+  case VX_SYS_exception_resume: return sys_exception_resume((vx_handle)a[0], a[1], a[2], a[3]);
+  case VX_SYS_thread_state: return sys_thread_state((vx_handle)a[0], a[1], a[2], a[3], a[4]);
+  case VX_SYS_thread_interrupt: return sys_thread_interrupt((vx_handle)a[0], a[1], a[2]);
+  case VX_SYS_vmo_clone: return sys_vmo_clone((vx_handle)a[0], a[1], a[2], a[3], a[4]);
   case VX_SYS_handle_dup: return sys_handle_dup((vx_handle)a[0], a[1], a[2]);
   case VX_SYS_handle_close: return handle_close(current_task(), (vx_handle)a[0]);
   default: return VX_ERR_UNSUPPORTED;
