@@ -6,7 +6,7 @@ scenario=shell timeout=30
 expect="svcd: started gsh (task "
 prompt="vx% "
 send="ls /"
-line="bin  boot  dev  net  proc  srv  tmp"
+line="bin  boot  dev  n  net  proc  srv  tmp"
 prompt="vx% "
 send="cat /proc/1/status"
 expect="name=svcd state=waiting threads=1 mem="

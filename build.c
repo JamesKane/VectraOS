@@ -1095,8 +1095,8 @@ static bool mtools(const char *tool, const char *esp, const char *const *args) {
 
 // The directories every boot image has: mount points for the namespace (02 §5)
 // and bootfs's own. In order, parents first.
-static const char *const BOOTFS_DIRS[] = {"bin", "boot", "boot/bin", "boot/drv", "boot/svc",
-                                          "dev", "net",  "proc",     "srv",      "tmp"};
+static const char *const BOOTFS_DIRS[] = {"bin", "boot", "boot/bin", "boot/drv", "boot/svc", "dev",
+                                          "n",   "net",  "proc",     "srv",      "tmp"};
 
 // Whether `name` is in the comma-separated list `with`.
 static bool listed(const char *with, const char *name) {
@@ -1247,8 +1247,64 @@ static bool build_image(const arch *a, bool release) {
 typedef struct qemu_opts {
   bool kvm;
   bool gdb;
-  bool test; // serial on stdout, no monitor
+  bool test;         // serial on stdout, no monitor
+  const char *share; // the directory vx9pserve serves at 10.0.2.100!5640
 } qemu_opts;
+
+// host/vx9pserve, built for this machine: the 9P server VectraOS mounts over
+// TCP (M3). Rebuilt when its sources or vx-9p's change.
+static const char VX9PSERVE[] = "out/host/vx9pserve";
+
+static bool build_vx9pserve(void) {
+  static const char *const SOURCES[] = {"host/vx9pserve/main.c", "host/vx9pserve/fs.c",
+                                        "lib/vx-9p/codec.c",     "lib/vx-9p/server.c",
+                                        "lib/vx-9p/fields.def",  "lib/vx-9p/messages.def"};
+  struct stat out, src;
+  bool stale = stat(VX9PSERVE, &out) != 0;
+  for (size_t i = 0; !stale && i < sizeof SOURCES / sizeof SOURCES[0]; i++)
+    stale = stat(SOURCES[i], &src) != 0 || newer(&src, &out);
+  if (!stale) return true;
+  mkdirs("out/host");
+  fprintf(stderr, "  CC    vx9pserve host\n");
+  cmd cc = {};
+  cmd_add(&cc, CLANG);
+  cmd_addv(&cc, (const char *const[]){"-std=c23", "-O2", "-g", "-Wall", "-Wextra", "-Werror", "-o", VX9PSERVE,
+                                      "host/vx9pserve/main.c", nullptr});
+  return run(&cc);
+}
+
+static int remove_entry(const char *path, const struct stat *st, int type, struct FTW *ftw) {
+  (void)st, (void)type, (void)ftw;
+  return remove(path);
+}
+
+// nftw's callback for copy_tree: each directory and regular file under
+// copy_from, made again under copy_to.
+static const char *copy_from, *copy_to;
+
+static int copy_entry(const char *path, const struct stat *st, int type, struct FTW *ftw) {
+  (void)ftw;
+  const char *dst = fmt("%s%s", copy_to, path + strlen(copy_from));
+  if (type == FTW_D)
+    mkdirs(dst);
+  else if (S_ISREG(st->st_mode))
+    write_file(dst, read_file(path));
+  return 0;
+}
+
+// Copies the regular files and directories under from into to.
+static void copy_tree(const char *from, const char *to) {
+  copy_from = from, copy_to = to;
+  if (nftw(from, copy_entry, 16, FTW_PHYS) != 0) die("cannot copy %s", from);
+}
+
+// A fresh copy of tests/fixtures/share for one QEMU to serve: what a guest
+// writes there stays out of the repository and away from other runs.
+static const char *fresh_share(const char *dir) {
+  nftw(dir, remove_entry, 16, FTW_DEPTH | FTW_PHYS); // whatever the last run left
+  copy_tree("tests/fixtures/share", dir);
+  return dir;
+}
 
 static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
   if (strcmp(a->name, "x86_64") == 0) {
@@ -1280,10 +1336,16 @@ static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
   cmd_add(c, fmt("if=none,id=disk,format=raw,file=%s%s", image, o.test ? ",snapshot=on" : ""));
   cmd_addv(c, (const char *const[]){"-device", "virtio-blk-pci,drive=disk,disable-legacy=on", nullptr});
   // QEMU's user networking: the guest is 10.0.2.15, the host 10.0.2.2 (M3).
-  // A connection to 10.0.2.100!7 gets a `cat` on the host of its own: an
-  // echo server, for the tcp scenario.
-  cmd_addv(c, (const char *const[]){"-netdev", "user,id=net0,guestfwd=tcp:10.0.2.100:7-cmd:cat", "-device",
-                                    "virtio-net-pci,netdev=net0,disable-legacy=on", nullptr});
+  // Each connection to 10.0.2.100!7 gets a `cat` on the host of its own (an
+  // echo server, for the tcp scenario), and each to 10.0.2.100!5640 a
+  // vx9pserve serving o.share, so no host port is needed. (QEMU will not
+  // forward the gateway's own address, so M3's exit test as 04 §5 gives it,
+  // tcp!10.0.2.2!5640, needs `vx9pserve --listen 127.0.0.1:5640` on the host.)
+  cmd_add(c, "-netdev");
+  cmd_add(c,
+          fmt("user,id=net0,guestfwd=tcp:10.0.2.100:7-cmd:cat,guestfwd=tcp:10.0.2.100:5640-cmd:%s --stdio %s",
+              VX9PSERVE, o.share));
+  cmd_addv(c, (const char *const[]){"-device", "virtio-net-pci,netdev=net0,disable-legacy=on", nullptr});
   if (o.test)
     cmd_addv(c, (const char *const[]){"-serial", "stdio", "-monitor", "none", nullptr});
   else
@@ -1382,7 +1444,8 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   if (!log) die("cannot write %s", log_path);
 
   cmd c = {};
-  qemu_cmd(&c, a, image, (qemu_opts){.kvm = kvm_usable(a), .test = true});
+  const char *share = fresh_share(fmt("%s/share-%s", out_dir(a, release), name));
+  qemu_cmd(&c, a, image, (qemu_opts){.kvm = kvm_usable(a), .test = true, .share = share});
   if (verbose) cmd_print(&c);
   signal(SIGPIPE, SIG_IGN); // QEMU gone: a write to it fails, rather than ending this process
   int fds[2], keys[2];      // QEMU's serial: its output, and what is typed into it
@@ -1536,11 +1599,15 @@ static int cmd_test(const arch *only, bool release) {
       scenarios[scenario_count++] = fmt("%.*s", (int)(strlen(base) - 4), base);
     }
   }
+  if (!build_vx9pserve()) return 1;
   return per_arch(only, release, test_arch);
 }
 
 static int cmd_qemu(const arch *a, bool release, qemu_opts o) {
-  if (!build_image(a, release)) return 1;
+  if (!build_image(a, release) || !build_vx9pserve()) return 1;
+  struct stat st;
+  o.share = "out/share"; // kept between runs, made once
+  if (stat(o.share, &st) != 0) fresh_share(o.share);
   cmd c = {};
   qemu_cmd(&c, a, image_path(a, release), o);
   if (verbose) cmd_print(&c);
@@ -1708,7 +1775,10 @@ static int cmd_vendor_check(void) {
   return ok ? 0 : 1;
 }
 
-static int cmd_all(const arch *only, bool release) { return per_arch(only, release, build_arch); }
+static int cmd_all(const arch *only, bool release) {
+  if (!build_vx9pserve()) return 1;
+  return per_arch(only, release, build_arch);
+}
 
 // ---------------------------------------------------------------------------
 // loc: the line-count ledger (docs/04 §3.2)
@@ -1756,7 +1826,7 @@ static component *component_for(const char *name, bool vendored) {
 }
 
 // Components are the first path segment, or the first two under these directories.
-static const char *const GROUPED[] = {"lib", "servers", "drivers", "apps", "third_party", nullptr};
+static const char *const GROUPED[] = {"lib", "servers", "drivers", "apps", "host", "third_party", nullptr};
 
 static int loc_visit(const char *path, const struct stat *st, int type, struct FTW *ftw) {
   (void)st;
@@ -2030,7 +2100,7 @@ static bool check_tidy(void) {
 // Vendored code keeps its upstream format.
 static const char *const FORMATTED_DIRS[] = {"abi",        "kernel",       "lib",        "servers",
                                              "drivers",    "cmd",          "tests/host", "tests/fuzz",
-                                             "tests/user", "tests/kernel", nullptr};
+                                             "tests/user", "tests/kernel", "host",       nullptr};
 
 static bool check_format(void) {
   check_version(CLANG_FORMAT, CLANG_FORMAT_VERSION);

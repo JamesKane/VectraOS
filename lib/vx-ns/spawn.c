@@ -1,12 +1,15 @@
 // vx-ns at start-up: builds a process's namespace from its spawn message
 // (abi.h), whose mount= and bind= records are what its parent's template made
 // (02 §2). A mount record names a connector handle in the message; each one
-// gets its own ring connection to the server behind it.
+// gets its own ring connection to the server behind it. A mount record with
+// dial=ADDRESS instead is a 9P server over TCP, which the process dials
+// itself (dial.c), through the /net its earlier records gave it.
 
 #pragma once
 
 #include "../vx-9p/ring.c"
 #include "ns.c"
+#include "dial.c"
 
 // The process's connections: a slot is free while its end is 0. Each has the
 // connector handle's name it came through, so mount records naming one
@@ -31,6 +34,7 @@ static uint8_t vx_ns_flags(vx_str f) {
 
 // The namespace let a connection go (unmount): disconnect it, and its slot is free.
 static void vx_ns_release(p9_client *c, vx_handle connector) {
+  if (vx_ns_dial_release(c)) return; // a TCP connection: no connector
   for (uint32_t i = 0; i < VX_NS_MAX_CONNS; i++)
     if (&vx_ns_conns[i].c == c) {
       p9_ring_disconnect(&vx_ns_conns[i]);
@@ -81,7 +85,14 @@ static p9_client *vx_ns_connect(vx_str name, vx_handle *connector, vx_status *st
     if (!mount && !vx_ndb_has(&rec, "bind")) continue;
     uint8_t flags = vx_ns_flags(vx_ndb_get(&rec, "flags"));
     vx_status st = flags == 0xff ? VX_ERR_INVALID : VX_OK;
-    if (st == VX_OK && mount) {
+    if (st == VX_OK && mount && vx_ndb_has(&rec, "dial")) {
+      p9_client *c;
+      vx_str src;
+      st = vx_ns_dial(ns, vx_ndb_get(&rec, "dial"), &c, &src);
+      if (st == VX_OK)
+        st = vx_ns_mount(ns, c, VX_HANDLE_NONE, src, vx_ndb_get(&rec, "aname"), vx_ndb_get(&rec, "mount"),
+                         flags);
+    } else if (st == VX_OK && mount) {
       vx_handle connector;
       p9_client *c = vx_ns_connect(vx_ndb_get(&rec, "handle"), &connector, &st);
       if (c)
@@ -120,8 +131,12 @@ static p9_client *vx_ns_connect(vx_str name, vx_handle *connector, vx_status *st
     vx_str path = {e->path, e->path_len}, from = {m->from, m->from_len};
     char flags[3];
     size_t nf = ns_step_flags(ns, steps, s, flags);
-    if (m->mounted) {
-      const vx_ns_conn *c = &ns->conns[m->conn];
+    const vx_ns_conn *c = &ns->conns[m->conn];
+    if (m->mounted && !c->connector) { // dialed: the child dials it too
+      vx_ndb_put(w, "mount", path);
+      vx_ndb_put(w, "dial", (vx_str){c->src, c->src_len});
+      if (from.len) vx_ndb_put(w, "aname", from);
+    } else if (m->mounted) {
       if (handle_of[m->conn] < 0) {
         if (*count == cap || *count >= VX_CHANNEL_MAX_HANDLES ||
             vx_handle_dup(c->connector, VX_RIGHTS_SAME, &handles[*count]) != VX_OK) {

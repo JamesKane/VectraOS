@@ -150,8 +150,10 @@ static vx_ns_entry *ns_exact(vx_ns *ns, vx_str path) {
 
 static void ns_drop_member(vx_ns *ns, const vx_ns_member *m) { p9c_clunk(ns->conns[m->conn].client, m->fid); }
 
-// Adds m at the cleaned path `old`, which must name something already (but
-// "/" may be mounted on in an empty namespace).
+// Adds m at the cleaned path `old`, which must name something already, or
+// (to replace, not to join a union) be a new name in a directory that exists:
+// /n/host for a mount needs only /n, as Plan 9's mntgen gives it. "/" may be
+// mounted on in an empty namespace.
 static vx_status ns_add(vx_ns *ns, vx_str old, vx_ns_member m, uint8_t flags) {
   vx_ns_entry *e = ns_exact(ns, old);
   if (!e) {
@@ -159,7 +161,17 @@ static vx_status ns_add(vx_ns *ns, vx_str old, vx_ns_member m, uint8_t flags) {
     bool union_with_old = flags & (VX_NS_AFTER | VX_NS_BEFORE);
     p9_client *bc = nullptr;
     vx_status st = vx_ns_walk(ns, old, &bc, &base.fid);
-    if (st != VX_OK && !(old.len == 1 && !union_with_old)) return st;
+    if (st == VX_ERR_NOT_FOUND && !union_with_old && old.len > 1) { // a new name: its directory must exist
+      size_t up = old.len;
+      while (up > 1 && old.ptr[up - 1] != '/') up--;
+      uint32_t pfid;
+      p9_client *pc = nullptr;
+      vx_status ps = vx_ns_walk(ns, (vx_str){old.ptr, up > 1 ? up - 1 : 1}, &pc, &pfid);
+      if (ps != VX_OK) return st;
+      p9c_clunk(pc, pfid);
+    } else if (st != VX_OK && !(old.len == 1 && !union_with_old)) {
+      return st;
+    }
     if (st == VX_OK && !union_with_old) p9c_clunk(bc, base.fid); // it only had to exist
     for (uint32_t i = 0; i < VX_NS_MAX_ENTRIES && !e; i++)
       if (!ns->entries[i].path_len) e = &ns->entries[i];

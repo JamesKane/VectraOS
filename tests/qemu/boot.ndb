@@ -9,7 +9,9 @@ expect="svcd: hello from user space (task 1)"
 expect=": serving /srv/cons"
 expect="svcd: started uart (task 2)"
 expect="svcd: started bootfs (task 3)"
-expect="bootfs: serving "
+# bootfs says it is serving before or after svcd says it started it, as the
+# CPUs fall; the shell's prompt comes only once its namespace has mounted it.
+prompt="vx% "
 fail="vx: panic"
 fail="killed"
 fail="FAILED"

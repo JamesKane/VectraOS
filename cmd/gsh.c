@@ -4,7 +4,7 @@
 //   ns | tail -1                        pipes
 //   echo kill > /proc/2/ctl             output into a file
 //   pid=2; echo $pid 'a b'              variables, and quoting ('' is a quote)
-//   bind -a /boot/bin /bin              builtins: bind, unmount, exit
+//   bind -a /boot/bin /bin              builtins: bind, mount, unmount, exit
 //
 // A command is a program found as given (a path) or in /bin, then /boot/bin,
 // through the shell's namespace. It is loaded by the shell and spawned with a
@@ -166,6 +166,22 @@ static bool builtin(word *w, int n) {
       vx_print(VX_STR("usage: bind [-abc] new old\n"));
     else
       report("bind", vx_ns_bind(&ns, w[first].text, w[first + 1].text, flags));
+    return true;
+  }
+  if (word_is(w[0], "mount")) { // 9P servers over TCP, so far: tcp!HOST!PORT or 9p://HOST:PORT
+    uint8_t flags = n > 1 && w[1].text.len && w[1].text.ptr[0] == '-' ? bind_flags(w[1].text) : 0;
+    int first = n > 1 && w[1].text.len && w[1].text.ptr[0] == '-' ? 2 : 1;
+    if (flags == 0xff || n - first < 2 || n - first > 3) {
+      vx_print(VX_STR("usage: mount [-abc] tcp!host!port old [aname]\n"));
+      return true;
+    }
+    p9_client *c;
+    vx_str src;
+    vx_status st = vx_ns_dial(&ns, w[first].text, &c, &src);
+    if (st == VX_OK)
+      st = vx_ns_mount(&ns, c, VX_HANDLE_NONE, src, n - first == 3 ? w[first + 2].text : (vx_str){},
+                       w[first + 1].text, flags);
+    report("mount", st);
     return true;
   }
   if (word_is(w[0], "unmount")) {

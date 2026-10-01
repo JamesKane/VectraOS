@@ -19,8 +19,9 @@ What runs today, under QEMU on x86_64 and aarch64:
 - `svcd` starting services from manifests, and restarting them;
 - user-space drivers for the UART consoles and the virtio network card, matched to PCI functions by `devmgr`;
 - 9Px over shared-memory rings, per-process namespaces, `bootfs`, `/proc`;
-- `gsh`, a shell, with `ls`, `cat`, `echo`, `ps`, `ns`, `tail` and `ping`;
-- `netd`: a first-party TCP/IP stack (ARP, IPv4, ICMP, UDP, DHCP, TCP with NewReno) serving `/net` in Plan 9's layout.
+- `gsh`, a shell, with `ls`, `cat`, `echo`, `ps`, `ns`, `tail`, `ping` and `cs`;
+- `netd`: a first-party TCP/IP stack (ARP, IPv4, ICMP, UDP, DHCP, TCP with NewReno, a DNS stub) serving `/net` and `/net/cs` in Plan 9's layout;
+- `mount tcp!host!port /n/host`: a 9P file server over TCP in the namespace, such as `host/vx9pserve` sharing a directory from the host.
 
 ## Building
 
