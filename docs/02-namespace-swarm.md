@@ -25,7 +25,7 @@ ns                           # print the namespace as a replayable script
 
 **Path resolution:** find the longest matching prefix, then send a pipelined `Twalk` for the remaining path to that mount's server. Union directories try each member in order. `..` is resolved lexically before walking, as in Plan 9, so it cannot escape a bind.
 
-**Inheritance:** `spawn` passes the child a *copy* of the parent's namespace: the table and duplicated connection handles. `spawn(NS_SHARE)` puts parent and child in a **shared namespace group** instead, served by a small `nsd` instance, for the rare programs (such as a shell and its jobs) that need live sharing.
+**Inheritance:** `spawn` passes the child a *copy* of the parent's namespace: the table, as `mount` and `bind` records, and a duplicate of each mount's connector, through which the child opens connections of its own (a ring connection is never shared, §3.2). `spawn(NS_SHARE)` puts parent and child in a **shared namespace group** instead, served by a small `nsd` instance, for the rare programs (such as a shell and its jobs) that need live sharing.
 
 **Security:** a process can only mount connections it holds handles for, so rewriting its own table gives it nothing it did not already have. Authority is the set of handles; the namespace is the *view*.
 
@@ -201,6 +201,8 @@ This is what a desktop terminal's default namespace looks like. The right-hand c
 ```
 
 ### 5.1 Processes and CPU topology
+
+M2's `procfs` serves `status` (name, state, threads, mem) and `ctl` (`kill`); the rest arrives with the features it reports.
 
 ```
 /proc/42/

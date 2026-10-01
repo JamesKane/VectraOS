@@ -210,7 +210,18 @@ typedef struct vx_task_summary { // what task_info returns
   uint32_t threads;    // live threads
   int64_t exit_status; // once EXITED
   uint64_t mapped;     // bytes mapped into its address space
+  uint32_t blocked;    // live threads that are waiting
+  uint32_t reserved;
 } vx_task_summary;
+
+// task_info(task, &summary, id, flags) and task_kill(task, status, id) act on
+// the task itself, or with an id, on that task if it is the task or one of
+// its descendants (the tasks it created, theirs, and so on; a task whose
+// creator has gone passes to its creator's creator). With VX_TASK_NEXT,
+// task_info finds the one with the next id after `id` instead, so a holder of
+// a task handle can list its tree (procfs). There is no other way to reach a
+// task: no global lookup (01 §3).
+enum vx_task_info_flags : uint32_t { VX_TASK_NEXT = 1 };
 
 enum vx_map_flags : uint32_t { // as_map; a mapping is always readable
   VX_MAP_WRITE = 1,

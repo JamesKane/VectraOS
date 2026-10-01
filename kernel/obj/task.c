@@ -62,7 +62,9 @@ typedef struct task {
   // until the console is a user-space driver's (M2, step 5).
   bool may_debug_write;
   char name[24];
-  uint32_t io_ranges; // I/O ports it may use (x86_64, device.c): [io_base, io_base + io_count)
+  uint64_t parent_id;    // the task that created it, or its nearest live creator; 0 for the root task
+  struct task *all_next; // in all_tasks
+  uint32_t io_ranges;    // I/O ports it may use (x86_64, device.c): [io_base, io_base + io_count)
   uint16_t io_base[TASK_MAX_IO], io_count[TASK_MAX_IO];
 } task;
 
@@ -214,7 +216,56 @@ static pool task_pool = POOL_FOR(task);
 static pool thread_pool = POOL_FOR(thread);
 static _Atomic uint64_t next_task_id = 1;
 
-static vx_status task_create(const char *name, task **out) {
+// Every live task, so a task's descendants can be found (task_find). When a
+// task goes, its children pass to its parent, so the chain of creators from
+// any task back to the root never breaks.
+static task *all_tasks;
+static spinlock all_tasks_lock;
+
+static task *task_by_id(uint64_t id) { // under all_tasks_lock
+  for (task *t = all_tasks; t; t = t->all_next)
+    if (t->id == id) return t;
+  return nullptr;
+}
+
+static bool task_in_tree(const task *t, uint64_t root) { // under all_tasks_lock
+  for (uint32_t hops = 0; t && hops < 4096; hops++) {
+    if (t->id == root) return true;
+    t = t->parent_id ? task_by_id(t->parent_id) : nullptr;
+  }
+  return false;
+}
+
+// The task `id` (or, with next, the one with the next id after it) in the
+// tree under `root`, with a reference; nullptr if there is none.
+static task *task_find(uint64_t root, uint64_t id, bool next) {
+  spin_lock(&all_tasks_lock);
+  task *best = nullptr;
+  for (task *t = all_tasks; t; t = t->all_next) {
+    if ((next ? t->id <= id : t->id != id) || (best && t->id >= best->id)) continue;
+    if (task_in_tree(t, root)) best = t;
+  }
+  // A task on its way to being destroyed is still listed, and still in memory
+  // while the lock is held; it is simply not found.
+  if (best && !object_tryref(&best->obj)) best = nullptr;
+  spin_unlock(&all_tasks_lock);
+  return best;
+}
+
+// The task is being destroyed: off the list, and its children to its parent.
+static void task_unlist(task *t) {
+  spin_lock(&all_tasks_lock);
+  for (task **link = &all_tasks; *link; link = &(*link)->all_next) {
+    if (*link != t) continue;
+    *link = t->all_next;
+    break;
+  }
+  for (task *c = all_tasks; c; c = c->all_next)
+    if (c->parent_id == t->id) c->parent_id = t->parent_id;
+  spin_unlock(&all_tasks_lock);
+}
+
+static vx_status task_create(const char *name, uint64_t parent_id, task **out) {
   task *t = pool_alloc(&task_pool);
   if (!t) return VX_ERR_NO_MEMORY;
   uint64_t handles = phys_alloc_zeroed(0);
@@ -234,6 +285,11 @@ static vx_status task_create(const char *name, task **out) {
   t->handles = phys_to_virt(handles);
   t->maps = phys_to_virt(maps);
   for (size_t i = 0; name[i] && i < sizeof t->name - 1; i++) t->name[i] = name[i];
+  t->parent_id = parent_id;
+  spin_lock(&all_tasks_lock);
+  t->all_next = all_tasks;
+  all_tasks = t;
+  spin_unlock(&all_tasks_lock);
   *out = t;
   return VX_OK;
 }

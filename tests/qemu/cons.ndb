@@ -2,9 +2,9 @@
 # constest through the UART driver's IRQ and cooked line discipline, with
 # erase (BS and DEL) and kill-line (^U); 300 lines of output overflow the
 # driver's queue, so writes wait for the UART; ^D on an empty line is the end
-# of the file.
+# of the file. The shell is left out, as it would read the console too.
 
-scenario=cons timeout=20 with=constest
+scenario=cons timeout=20 with=constest cmdline=vx.skip=gsh
 expect="constest: ready"
 send="hello world"
 expect="constest: got [hello world]"

@@ -150,6 +150,7 @@ static void task_destroy(task *t) {
     task_teardown(t);
   }
   observers_free(t->obs.head); // none can be left once the task has ended, but be sure
+  task_unlist(t);
   pool_free(&task_pool, t);
 }
 

@@ -77,9 +77,21 @@ static int64_t sys_debug_write(uint64_t ptr, uint64_t len) {
   return VX_OK;
 }
 
-static int64_t sys_task_info(vx_handle h, uint64_t out) {
+// The task a task_info or task_kill acts on: the handle's, or with an id, that
+// task in the handle's tree (abi.h). With a reference.
+static task *task_target(vx_handle h, uint32_t rights, uint64_t id, bool next, vx_status *st) {
+  task *t = (task *)handle_get(current_task(), h, OBJ_TASK, rights, st);
+  if (!t || (!id && !next)) return t;
+  task *found = task_find(t->id, id, next);
+  object_release(&t->obj);
+  if (!found) *st = VX_ERR_NOT_FOUND;
+  return found;
+}
+
+static int64_t sys_task_info(vx_handle h, uint64_t out, uint64_t id, uint64_t flags) {
+  if (flags & ~(uint64_t)VX_TASK_NEXT) return VX_ERR_INVALID;
   vx_status st;
-  task *t = (task *)handle_get(current_task(), h, OBJ_TASK, VX_RIGHT_INSPECT, &st);
+  task *t = task_target(h, VX_RIGHT_INSPECT, id, flags & VX_TASK_NEXT, &st);
   if (!t) return st;
   spin_lock(&t->lock);
   vx_task_summary info = {.id = t->id,
@@ -87,6 +99,7 @@ static int64_t sys_task_info(vx_handle h, uint64_t out) {
                           .threads = t->live_threads,
                           .exit_status = t->exit_status,
                           .mapped = t->mapped};
+  for (const thread *th = t->threads; th; th = th->task_next) info.blocked += th->state == THREAD_BLOCKED;
   memcpy(info.name, t->name, sizeof info.name);
   spin_unlock(&t->lock);
   object_release(&t->obj);
@@ -513,7 +526,7 @@ static int64_t sys_task_create(uint64_t name_ptr, uint64_t name_len, uint64_t ou
   vx_status st = copy_from_user(name, name_ptr, name_len);
   if (st != VX_OK) return st;
   task *t;
-  st = task_create(name, &t);
+  st = task_create(name, current_task()->id, &t);
   if (st != VX_OK) return st;
   t->may_debug_write = current_task()->may_debug_write;
   return return_handle(&t->obj, ALL_RIGHTS, out);
@@ -557,9 +570,9 @@ static int64_t sys_thread_start(vx_handle h, uint64_t entry, uint64_t sp, vx_han
   return st;
 }
 
-static int64_t sys_task_kill(vx_handle h, uint64_t status) {
+static int64_t sys_task_kill(vx_handle h, uint64_t status, uint64_t id) {
   vx_status st;
-  task *t = (task *)handle_get(current_task(), h, OBJ_TASK, VX_RIGHT_MANAGE, &st);
+  task *t = task_target(h, VX_RIGHT_MANAGE, id, false, &st);
   if (!t) return st;
   task_kill(t, (int64_t)status);
   object_release(&t->obj);
@@ -620,8 +633,8 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_debug_write: return sys_debug_write(a[0], a[1]);
   case VX_SYS_clock_read: return clock_now();
   case VX_SYS_task_create: return sys_task_create(a[0], a[1], a[2]);
-  case VX_SYS_task_kill: return sys_task_kill((vx_handle)a[0], a[1]);
-  case VX_SYS_task_info: return sys_task_info((vx_handle)a[0], a[1]);
+  case VX_SYS_task_kill: return sys_task_kill((vx_handle)a[0], a[1], a[2]);
+  case VX_SYS_task_info: return sys_task_info((vx_handle)a[0], a[1], a[2], a[3]);
   case VX_SYS_thread_create: return sys_thread_create((vx_handle)a[0], a[1]);
   case VX_SYS_thread_start: return sys_thread_start((vx_handle)a[0], a[1], a[2], (vx_handle)a[3], a[4]);
   case VX_SYS_thread_exit: thread_exit_current((int64_t)a[0]);

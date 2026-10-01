@@ -9,7 +9,7 @@
 // A manifest is ndb records: a service= record, then the records that belong
 // to it, up to the next service=.
 //
-//   service=NAME program=/boot/bin/PROG [post=SRV] [bootimage] [console] [restart] [arch=A]
+//   service=NAME program=/boot/bin/PROG [post=SRV] [bootimage] [console] [tasks] [restart] [arch=A]
 //   arg=VALUE                                  an argument, in order
 //   mount=OLD srv=SRV [aname=A] [flags=abc]    a mount in its namespace
 //   bind=OLD new=NEW [flags=abc]               a bind in its namespace
@@ -21,8 +21,10 @@
 // ("listen") and keeps the client end as /srv/SRV, for mounts. It keeps a
 // second handle to the server end, so connections made while the service is
 // restarting wait for it, and none is lost. bootimage: the service gets the
-// boot image, read-only. console: it writes to /srv/cons (vx-rt). arch: it
-// runs only on that architecture. A service gets nothing that is not named
+// boot image, read-only. console: it writes to /srv/cons (vx-rt). tasks: it
+// gets svcd's own task, and through it every task (procfs). arch: it runs
+// only on that architecture. vx.skip=NAME,... on the kernel command line
+// leaves services out. A service gets nothing that is not named
 // here: no ambient authority (01 §2).
 //
 // Drivers, the services with ioport, mmio or irq records, start first. svcd
@@ -224,6 +226,10 @@ static vx_status start(service *s) {
     st = vx_handle_dup(cons->client, CONNECTOR_RIGHTS, &handles[count]);
     handle_names[count++] = VX_STR("console");
   }
+  if (st == VX_OK && vx_ndb_has(&rec, "tasks")) { // svcd's own task: the whole tree, for procfs
+    st = vx_handle_dup(vx_self, VX_RIGHT_INSPECT | VX_RIGHT_MANAGE | VX_RIGHT_TRANSFER, &handles[count]);
+    handle_names[count++] = VX_STR("tasks");
+  }
   for (uint32_t i = 0; st == VX_OK && i < s->devices; i++) {
     st = vx_handle_dup(s->device[i], VX_RIGHTS_SAME, &handles[count]);
     handle_names[count++] = s->device_name[i];
@@ -299,20 +305,46 @@ static vx_status start(service *s) {
   return VX_OK;
 }
 
+// A service has exited: restart it if its manifest says so, then say so. In
+// that order, because the service may be the console svcd writes to.
+static void cannot(const char *what, const service *s, vx_status st) {
+  say(vx_cstr(what), s->name, VX_STR(": "));
+  vx_print(p9_error_text(st));
+  vx_print(VX_STR("\n"));
+}
+
 static void exited(service *s, int64_t status) {
   vx_handle_close(s->task);
   s->task = VX_HANDLE_NONE;
+  bool restart = s->restart, gave_up = false;
+  if (restart) {
+    vx_instant now = vx_clock_read();
+    if (now - s->window_start > RESTART_WINDOW) s->window_start = now, s->restarts = 0;
+    gave_up = ++s->restarts > MAX_RESTARTS;
+    vx_status st = gave_up ? VX_OK : start(s);
+    if (st != VX_OK) cannot("cannot restart ", s, st);
+  }
   say(s->name, VX_STR(" exited with status "), status < 0 ? VX_STR("-") : VX_STR(""));
   vx_print_u64(status < 0 ? (uint64_t)-status : (uint64_t)status);
   vx_print(VX_STR("\n"));
-  if (!s->restart) return;
-  vx_instant now = vx_clock_read();
-  if (now - s->window_start > RESTART_WINDOW) s->window_start = now, s->restarts = 0;
-  if (++s->restarts > MAX_RESTARTS) {
-    say(s->name, VX_STR(" keeps exiting; it is not restarted again"), VX_STR("\n"));
-    return;
+  if (gave_up) say(s->name, VX_STR(" keeps exiting; it is not restarted again"), VX_STR("\n"));
+}
+
+// Whether the kernel command line's vx.skip=NAME,NAME,... names the service.
+static bool skipped(vx_str name) {
+  vx_str c = vx_spawn.cmdline;
+  static const char key[] = "vx.skip=";
+  for (size_t i = 0; i + sizeof key - 1 <= c.len; i++) {
+    if ((i && c.ptr[i - 1] != ' ') || memcmp(c.ptr + i, key, sizeof key - 1) != 0) continue;
+    size_t at = i + sizeof key - 1;
+    while (at < c.len && c.ptr[at] != ' ') {
+      size_t start = at;
+      while (at < c.len && c.ptr[at] != ' ' && c.ptr[at] != ',') at++;
+      if (str_eq((vx_str){c.ptr + start, at - start}, name)) return true;
+      if (at < c.len && c.ptr[at] == ',') at++;
+    }
   }
-  if (start(s) != VX_OK) say(VX_STR("cannot restart "), s->name, VX_STR("\n"));
+  return false;
 }
 
 int vx_main(void) {
@@ -347,8 +379,10 @@ int vx_main(void) {
 
   for (int drivers = 1; drivers >= 0; drivers--) // drivers first, so the console is there for the rest
     for (uint32_t i = 0; i < service_count; i++)
-      if ((services[i].devices > 0) == drivers && !services[i].broken && start(&services[i]) != VX_OK)
-        say(VX_STR("cannot start "), services[i].name, VX_STR("\n"));
+      if ((services[i].devices > 0) == drivers && !services[i].broken && !skipped(services[i].name)) {
+        vx_status started = start(&services[i]);
+        if (started != VX_OK) cannot("cannot start ", &services[i], started);
+      }
 
   for (;;) {
     vx_packet pk[8];

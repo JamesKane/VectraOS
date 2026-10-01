@@ -96,7 +96,7 @@ static channel *root_spawn_message(task *t) {
 static void start_root_task(void) {
   const char *task_name = root_module.name;
   task *t;
-  if (task_create(task_name, &t) != VX_OK) panic(VX_STR("cannot create the root task"));
+  if (task_create(task_name, 0, &t) != VX_OK) panic(VX_STR("cannot create the root task"));
   t->may_debug_write = true;
 
   uint64_t entry;

@@ -63,6 +63,13 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   return (vx_status)vx_syscall(VX_SYS_task_info, task, (uint64_t)out, 0, 0, 0, 0);
 }
 
+// The task `id` in task's tree, or with VX_TASK_NEXT the next one after it (abi.h).
+[[maybe_unused]] static vx_status vx_task_info_of(vx_handle task, uint64_t id, uint32_t flags,
+                                                  vx_task_summary *out) {
+  *out = (vx_task_summary){};
+  return (vx_status)vx_syscall(VX_SYS_task_info, task, (uint64_t)out, id, flags, 0, 0);
+}
+
 [[maybe_unused]] static vx_status vx_port_create(uint32_t options, vx_handle *out) {
   *out = VX_HANDLE_NONE;
   return (vx_status)vx_syscall(VX_SYS_port_create, options, (uint64_t)out, 0, 0, 0, 0);
@@ -232,6 +239,11 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
 
 [[maybe_unused]] static vx_status vx_task_kill(vx_handle task, int64_t status) {
   return (vx_status)vx_syscall(VX_SYS_task_kill, task, (uint64_t)status, 0, 0, 0, 0);
+}
+
+// Kills the task `id` in task's tree (abi.h).
+[[maybe_unused]] static vx_status vx_task_kill_id(vx_handle task, uint64_t id, int64_t status) {
+  return (vx_status)vx_syscall(VX_SYS_task_kill, task, (uint64_t)status, id, 0, 0, 0);
 }
 
 [[maybe_unused]] static vx_status vx_handle_close(vx_handle h) {

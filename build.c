@@ -838,6 +838,14 @@ static const program USER_PROGRAMS[] = {
     {"bootfs", "servers/bootfs/bootfs.c", IN_BOOTFS, nullptr},
     {"nstest", "tests/user/nstest.c", IN_TESTS, nullptr},
     {"constest", "tests/user/constest.c", IN_TESTS, nullptr},
+    {"procfs", "servers/procfs/procfs.c", IN_BOOTFS, nullptr},
+    {"gsh", "cmd/gsh.c", IN_BOOTFS, nullptr},
+    {"ls", "cmd/ls.c", IN_BOOTFS, nullptr},
+    {"cat", "cmd/cat.c", IN_BOOTFS, nullptr},
+    {"echo", "cmd/echo.c", IN_BOOTFS, nullptr},
+    {"ps", "cmd/ps.c", IN_BOOTFS, nullptr},
+    {"ns", "cmd/ns.c", IN_BOOTFS, nullptr},
+    {"tail", "cmd/tail.c", IN_BOOTFS, nullptr},
     {"drv-uart-16550", "drivers/drv-uart-16550/uart.c", IN_BOOTFS, "x86_64"},
     {"drv-uart-pl011", "drivers/drv-uart-pl011/uart.c", IN_BOOTFS, "aarch64"},
 };
@@ -845,39 +853,42 @@ static const program USER_PROGRAMS[] = {
 static bool program_for(const program *p, const arch *a) { return !p->arch || strcmp(p->arch, a->name) == 0; }
 static constexpr int USER_PROGRAM_COUNT = sizeof USER_PROGRAMS / sizeof USER_PROGRAMS[0];
 
-static bool build_user_program(const arch *a, bool release, const char *name, const char *source) {
+// Every user program for an architecture: compiled in parallel, then linked
+// in parallel. Each is its own unity build, so nothing is shared between them.
+static bool build_user_programs(const arch *a, bool release) {
   const char *dir = fmt("out/%s/%s", a->name, release ? "release" : "debug");
-  const char *obj = fmt("%s/%s.o", dir, name);
-  const char *elf = fmt("%s/%s", dir, name);
-  fprintf(stderr, "  CC    %-7s %s\n", name, a->name);
-  cmd cc = {};
-  cmd_add(&cc, CLANG);
-  cmd_addv(&cc, a->user_flags);
-  cmd_addv(&cc, HOUSE_FLAGS);
-  cmd_addv(&cc, USER_FLAGS);
-  cmd_addv(&cc, release ? RELEASE_FLAGS : DEBUG_FLAGS);
-  cmd_add(&cc, fmt("-ffile-prefix-map=%s=/src", root));
-  cmd_add(&cc, "-c");
-  cmd_add(&cc, source);
-  cmd_add(&cc, "-o");
-  cmd_add(&cc, obj);
-  if (!run(&cc)) return false;
-
-  cmd ld = {};
-  cmd_add(&ld, LLD);
-  cmd_addv(&ld, (const char *const[]){"-static", "-nostdlib", "--build-id=sha1", "-z", "max-page-size=0x1000",
-                                      "-z", "noexecstack", "-e", "_start", "-o", nullptr});
-  cmd_add(&ld, elf);
-  cmd_add(&ld, obj);
-  return run(&ld);
+  static cmd cc[USER_PROGRAM_COUNT], ld[USER_PROGRAM_COUNT];
+  cmd *ccs[USER_PROGRAM_COUNT], *lds[USER_PROGRAM_COUNT];
+  int n = 0;
+  for (int i = 0; i < USER_PROGRAM_COUNT; i++) {
+    const program *p = &USER_PROGRAMS[i];
+    if (!program_for(p, a)) continue;
+    const char *obj = fmt("%s/%s.o", dir, p->name);
+    fprintf(stderr, "  CC    %-7s %s\n", p->name, a->name);
+    cc[n] = (cmd){};
+    cmd_add(&cc[n], CLANG);
+    cmd_addv(&cc[n], a->user_flags);
+    cmd_addv(&cc[n], HOUSE_FLAGS);
+    cmd_addv(&cc[n], USER_FLAGS);
+    cmd_addv(&cc[n], release ? RELEASE_FLAGS : DEBUG_FLAGS);
+    cmd_add(&cc[n], fmt("-ffile-prefix-map=%s=/src", root));
+    cmd_addv(&cc[n], (const char *const[]){"-c", p->source, "-o", obj, nullptr});
+    ld[n] = (cmd){};
+    cmd_add(&ld[n], LLD);
+    cmd_addv(&ld[n],
+             (const char *const[]){"-static", "-nostdlib", "--build-id=sha1", "-z", "max-page-size=0x1000",
+                                   "-z", "noexecstack", "-e", "_start", "-o", nullptr});
+    cmd_add(&ld[n], fmt("%s/%s", dir, p->name));
+    cmd_add(&ld[n], obj);
+    ccs[n] = &cc[n];
+    lds[n] = &ld[n];
+    n++;
+  }
+  return run_parallel(ccs, n) && run_parallel(lds, n);
 }
 
 static bool build_arch(const arch *a, bool release) {
-  if (!build_kernel(a, release)) return false;
-  for (int i = 0; i < USER_PROGRAM_COUNT; i++)
-    if (program_for(&USER_PROGRAMS[i], a) &&
-        !build_user_program(a, release, USER_PROGRAMS[i].name, USER_PROGRAMS[i].source))
-      return false;
+  if (!build_kernel(a, release) || !build_user_programs(a, release)) return false;
   const vx_ndb_record *t = port_target_for(&limine, a);
   return !t || build_port_target(&limine, t);
 }
@@ -1216,7 +1227,8 @@ static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
   }
   cmd_addv(c, (const char *const[]){"-m", "512M", "-smp", "4", "-display", "none", "-no-reboot", nullptr});
   cmd_add(c, "-drive");
-  cmd_add(c, fmt("if=none,id=disk,format=raw,file=%s", image));
+  // A test never writes the image, so several can boot one image at once.
+  cmd_add(c, fmt("if=none,id=disk,format=raw,file=%s%s", image, o.test ? ",snapshot=on" : ""));
   cmd_addv(c, (const char *const[]){"-device", "virtio-blk-pci,drive=disk", nullptr});
   if (o.test)
     cmd_addv(c, (const char *const[]){"-serial", "stdio", "-monitor", "none", nullptr});
@@ -1234,7 +1246,9 @@ static bool kvm_usable(const arch *a) {
 // A scenario (tests/qemu/NAME.ndb): one scenario= record with a timeout in seconds
 // and, optionally, a kernel cmdline= and with= (test programs to add to bootfs,
 // comma-separated, from tests/user/); then expect= records, matched in order
-// against serial output lines, and fail= records, any of which fails the test
+// against serial output lines (line= records match a whole line instead of
+// part of one, and prompt= records the start of any line since the last thing
+// typed), and fail= records, any of which fails the test
 // when a line contains it. "$arch" in a pattern stands for the architecture's
 // name. send= and type= records between the expect= records are typed into
 // the serial port once every expect= before them has matched; send= then
@@ -1258,6 +1272,8 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   const char *path = fmt("tests/qemu/%s.ndb", name);
   vx_ndb_reader r = {.src = read_file(path), .scratch = alloc(16 << 10), .scratch_cap = 16 << 10};
   const char *expect[64], *fail[64];
+  bool whole[64] = {};   // expect[k] came from line=: the whole line must be it
+  bool prompt[64] = {};  // expect[k] came from prompt=: it has started a line since the last thing typed
   vx_str input[64] = {}; // typed once every expect before it has matched: input[k] goes before expect[k]
   int expect_count = 0, fail_count = 0;
   double timeout = 0;
@@ -1274,8 +1290,17 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
       if (end == t || *end) die("%s:%zu: timeout=%s is not a number of seconds", path, rec.line, t);
       cmdline = str_dup(vx_ndb_get(&rec, "cmdline"));
       with = str_dup(vx_ndb_get(&rec, "with"));
-    } else if (vx_ndb_has(&rec, "expect") && expect_count < 64) {
-      expect[expect_count++] = substitute_arch(vx_ndb_get(&rec, "expect"), a);
+    } else if ((vx_ndb_has(&rec, "expect") || vx_ndb_has(&rec, "line") || vx_ndb_has(&rec, "prompt")) &&
+               expect_count < 64) {
+      const char *key = "expect";
+      if (vx_ndb_has(&rec, "line"))
+        key = "line";
+      else if (vx_ndb_has(&rec, "prompt"))
+        key = "prompt";
+      whole[expect_count] = strcmp(key, "line") == 0;
+      prompt[expect_count] = strcmp(key, "prompt") == 0;
+      expect[expect_count] = substitute_arch(vx_ndb_get(&rec, key), a);
+      expect_count++;
     } else if (vx_ndb_has(&rec, "fail") && fail_count < 64) {
       fail[fail_count++] = substitute_arch(vx_ndb_get(&rec, "fail"), a);
     } else if ((vx_ndb_has(&rec, "send") || vx_ndb_has(&rec, "type")) && expect_count < 64) {
@@ -1285,7 +1310,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
           fmt("%.*s%.*s%s", (int)in->len, in->ptr ? in->ptr : "", (int)text.len, text.ptr, send ? "\r" : "");
       in->len += text.len + send;
     } else {
-      die("%s:%zu: expected scenario=, expect=, fail=, send= or type=", path, rec.line);
+      die("%s:%zu: expected scenario=, expect=, line=, prompt=, fail=, send= or type=", path, rec.line);
     }
   }
   if (timeout <= 0 || expect_count == 0) die("%s: needs scenario= with a timeout, and an expect=", path);
@@ -1325,11 +1350,14 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   const char *verdict = nullptr;
   char line[4096];
   size_t len = 0;
+  static char since[64 * 1024]; // the output since the last thing typed, for prompt=
+  size_t since_len = 0;
   while (!verdict) {
     if (typed < next && input[next].len) {
       if (write(keys[1], input[next].ptr, input[next].len) != (ssize_t)input[next].len)
         die("cannot type into QEMU");
       typed = next;
+      since_len = 0;
     }
     double left = timeout - (now_seconds() - start);
     if (left <= 0) {
@@ -1347,6 +1375,11 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
     fwrite(buf, 1, (size_t)n, log);
     for (ssize_t i = 0; i < n && !verdict; i++) {
       if (buf[i] == '\r') continue;
+      if (since_len == sizeof since) { // keep the newer half: a prompt is in recent output
+        memmove(since, since + sizeof since / 2, sizeof since / 2);
+        since_len = sizeof since / 2;
+      }
+      since[since_len++] = buf[i];
       if (buf[i] != '\n' && len < sizeof line - 1) {
         line[len++] = buf[i];
         continue;
@@ -1356,10 +1389,21 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
       len = 0;
       for (int k = 0; k < fail_count; k++)
         if (strstr(line, fail[k])) verdict = fmt("failure line: %s", line);
-      if (!verdict && strstr(line, expect[next])) {
+      if (!verdict && !prompt[next] &&
+          (whole[next] ? strcmp(line, expect[next]) == 0 : strstr(line, expect[next]) != nullptr)) {
         next++;
         if (next == expect_count) verdict = "ok";
       }
+    }
+    // A prompt has no newline after it, and may share its line with other
+    // programs' output: it counts if it started any line since the last thing
+    // typed.
+    size_t plen = next < expect_count && prompt[next] ? strlen(expect[next]) : 0;
+    for (size_t at = 0; !verdict && plen && at + plen <= since_len; at++) {
+      if ((at && since[at - 1] != '\n') || memcmp(since + at, expect[next], plen) != 0) continue;
+      since_len = 0; // used: the next prompt= needs a prompt after this one
+      if (++next == expect_count) verdict = "ok";
+      break;
     }
   }
   kill(pid, SIGKILL);
@@ -1901,12 +1945,9 @@ static bool check_build_time(void) {
     double t = now_seconds() - t0;
     if (t > worst_kernel) worst_kernel = t;
     total += t;
-    for (int k = 0; k < USER_PROGRAM_COUNT; k++) {
-      if (!program_for(&USER_PROGRAMS[k], &ARCHES[i])) continue;
-      t0 = now_seconds();
-      ok = build_user_program(&ARCHES[i], false, USER_PROGRAMS[k].name, USER_PROGRAMS[k].source) && ok;
-      total += now_seconds() - t0;
-    }
+    t0 = now_seconds();
+    ok = build_user_programs(&ARCHES[i], false) && ok;
+    total += now_seconds() - t0;
   }
   bool in_budget = worst_kernel < 1.0 && total < 10.0;
   fprintf(stderr, "  TIME  kernel %.2f s (budget 1 s), all first-party %.2f s (budget 10 s) %s\n",

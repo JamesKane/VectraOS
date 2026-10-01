@@ -3,7 +3,7 @@
 # message, over ring connections to bootfs, and checks what it sees. svcd
 # restarts it each time it exits, until its restart limit.
 
-scenario=ns timeout=15 with=nstest
+scenario=ns timeout=15 with=nstest cmdline=vx.skip=gsh
 # Expected in this order, which nothing races: bootfs announces itself before
 # it serves, and nstest's checks need it served.
 expect="svcd: started bootfs (task "

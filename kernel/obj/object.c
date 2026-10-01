@@ -27,6 +27,17 @@ typedef struct object {
 
 static void object_ref(object *obj) { atomic_fetch_add_explicit(&obj->refs, 1, memory_order_relaxed); }
 
+// A reference to an object found through a list rather than a handle, unless
+// its last reference is already gone (it is about to be destroyed).
+static bool object_tryref(object *obj) {
+  uint32_t refs = atomic_load_explicit(&obj->refs, memory_order_relaxed);
+  while (refs)
+    if (atomic_compare_exchange_weak_explicit(&obj->refs, &refs, refs + 1, memory_order_relaxed,
+                                              memory_order_relaxed))
+      return true;
+  return false;
+}
+
 static void object_destroy(object *obj); // syscall/syscall.c, which knows every type
 
 // Dropping references, without recursion.

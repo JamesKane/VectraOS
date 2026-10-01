@@ -231,21 +231,23 @@ The test (`tests/qemu/boot.ndb`) boots headless, matches these lines within 10 s
 - `drv-uart-16550` and `drv-uart-pl011` as **user-space drivers** serving `/dev/cons`. The kernel console is then used only for panics (01 §7.1).
 - `vx-ndb`, which `svcd` and `devmgr` need to read their manifests, with the strict parser, `x"…"` hex values and the quoting writer (02 §4.1).
 - `svcd` spawns services from `boot/svc/*.ndb` and restarts them on exit. `procfs` provides a minimal `/proc/N/status`.
-- `gsh`, plus `ls`, `cat`, `echo`, `ps` and `ns`.
+- `gsh`, plus `ls`, `cat`, `echo`, `ps`, `ns` and `tail`.
 
-**Exit test:**
+**Exit test** (`tests/qemu/shell.ndb`; the console driver is task 2, as `svcd` starts drivers first):
 
 ```
 vx% ls /
-boot  bin  dev  proc  srv  tmp
+bin  boot  dev  proc  srv  tmp
 vx% cat /proc/1/status
-name=svcd state=waiting threads=2 mem=412K
+name=svcd state=waiting threads=1 mem=3392K
 vx% bind -a /boot/bin /bin; ns | tail -1
 bind -a /boot/bin /bin
-vx% echo kill > /proc/$uartpid/ctl       # svcd restarts the console driver…
-vx% echo still here                      # …and the shell carries on
+vx% uartpid=2; echo kill > /proc/$uartpid/ctl      # svcd restarts the console driver…
+vx% echo still here                                # …and the shell carries on
 still here
 ```
+
+(`svcd`'s `mem` includes the boot image, which it maps to read its manifests.)
 
 **Size:** about 8–10 kLOC more.
 

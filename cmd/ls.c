@@ -1,0 +1,75 @@
+// ls: lists each directory named (or /), its names sorted and on one line, two
+// spaces apart; a file is listed as its own name.
+
+#include "../lib/vx-rt/rt.c"
+#include "../lib/vx-ns/spawn.c"
+
+static char names[8192];
+static vx_str list[512];
+
+static int compare(vx_str a, vx_str b) {
+  size_t n = a.len < b.len ? a.len : b.len;
+  int c = memcmp(a.ptr, b.ptr, n);
+  return c ? c : (a.len > b.len) - (a.len < b.len);
+}
+
+static bool ls(vx_ns *ns, vx_str path) {
+  p9_client *c;
+  uint32_t fid;
+  p9_stat st;
+  vx_status e = vx_ns_walk(ns, path, &c, &fid);
+  if (e == VX_OK) {
+    e = p9c_stat(c, fid, &st);
+    p9c_clunk(c, fid);
+  }
+  if (e != VX_OK) {
+    vx_print(VX_STR("ls: "));
+    vx_print(path);
+    vx_print(VX_STR(": "));
+    vx_print(p9_error_text(e));
+    vx_print(VX_STR("\n"));
+    return false;
+  }
+  if (!(st.mode & P9_DMDIR)) {
+    vx_print(path);
+    vx_print(VX_STR("\n"));
+    return true;
+  }
+  vx_ns_file f;
+  if (vx_ns_open(ns, path, P9_OREAD, &f) != VX_OK) return false;
+  static uint8_t buf[4096];
+  size_t used = 0, count = 0;
+  int64_t n;
+  while ((n = vx_ns_read(&f, buf, sizeof buf)) > 0) {
+    for (int64_t off = 0; off + 2 <= n;) {
+      uint32_t size = buf[off] | (uint32_t)buf[off + 1] << 8;
+      p9_stat entry;
+      if (p9_stat_decode(buf + off, size + 2, &entry) != VX_OK) break;
+      off += size + 2;
+      if (count == sizeof list / sizeof list[0] || entry.name.len > sizeof names - used) continue;
+      memcpy(names + used, entry.name.ptr, entry.name.len);
+      vx_str name = {names + used, entry.name.len};
+      used += entry.name.len;
+      size_t at = count++;
+      for (; at > 0 && compare(list[at - 1], name) > 0; at--) list[at] = list[at - 1]; // insertion sort
+      list[at] = name;
+    }
+  }
+  vx_ns_close(&f);
+  for (size_t i = 0; i < count; i++) {
+    if (i) vx_print(VX_STR("  "));
+    vx_print(list[i]);
+  }
+  vx_print(VX_STR("\n"));
+  return n == 0;
+}
+
+int vx_main(void) {
+  static vx_ns ns;
+  if (vx_ns_from_spawn(&ns) != VX_OK) return 1;
+  if (vx_spawn.argc == 0) return ls(&ns, VX_STR("/")) ? 0 : 1;
+  int status = 0;
+  for (uint32_t i = 0; i < vx_spawn.argc; i++)
+    if (!ls(&ns, vx_spawn.args[i])) status = 1;
+  return status;
+}

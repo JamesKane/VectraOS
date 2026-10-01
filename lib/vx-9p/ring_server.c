@@ -15,7 +15,7 @@
 #include "ring.c"
 #include "server.c"
 
-static constexpr uint32_t P9_RING_MAX_CONNS = 8;
+static constexpr uint32_t P9_RING_MAX_CONNS = 16;
 
 // A connection's port keys carry its slot and the slot's generation, so a
 // packet from a binding on a connection that has gone is never taken for one

@@ -16,8 +16,8 @@
 // Output goes out a line at a time (or when the buffer fills), so lines from
 // different programs do not interleave. If the connection breaks, which it
 // does when svcd restarts the console driver, the next write connects again
-// through the connector, once; if that fails too, output goes back to the
-// kernel log.
+// through the connector; if that fails too, that line goes to the kernel log,
+// and the next one tries again.
 
 static struct {
   vx_handle connector;
@@ -58,7 +58,6 @@ static void vx_console_flush(void) {
   vx_console.len = 0;
   if (!n || vx_console_put(vx_console.line, n)) return;
   if (vx_console_open() == VX_OK && vx_console_put(vx_console.line, n)) return; // the driver restarted
-  vx_print_hook = nullptr;
   vx_debug_write((vx_str){vx_console.line, n});
 }
 
@@ -88,6 +87,72 @@ static void vx_console_print(vx_str s) {
   return n;
 }
 
+// --- Standard input and output: pipes ---
+//
+// A spawn message may carry "stdin" and "stdout", channel ends that the parent
+// (a shell) joins into a pipe. Each message on one is a header and some bytes;
+// the writer closing its end is the end of the file. Output to stdout goes a
+// line at a time, as to the console; without stdout, output goes to the
+// console. Without stdin, vx_read reads the console.
+
+static struct {
+  vx_handle in, out, port;
+  uint8_t msg[sizeof(vx_msg_header) + 4096]; // stdin's current message,
+  uint32_t msg_len, msg_pos;                 // and how much of it has been read
+  bool in_ended;
+  size_t len;
+  uint8_t line[sizeof(vx_msg_header) + 512]; // stdout's line, after a header
+} vx_stdio;
+
+static void vx_stdout_flush(void) {
+  size_t n = vx_stdio.len;
+  vx_stdio.len = 0;
+  if (!n || !vx_stdio.out) return;
+  *(vx_msg_header *)vx_stdio.line = (vx_msg_header){};
+  for (int tries = 0;; tries++) {
+    vx_status st =
+        vx_channel_write(vx_stdio.out, vx_stdio.line, (uint32_t)(sizeof(vx_msg_header) + n), nullptr, 0);
+    if (st != VX_ERR_SHOULD_WAIT) return; // written, or no one is reading any more
+    // The reader is behind: the channel's queue is full. Wait a little and try again.
+    static _Atomic uint32_t never;
+    vx_futex_wait(&never, 0, vx_clock_read() + (tries < 10 ? 100'000 : 1'000'000));
+  }
+}
+
+static void vx_stdout_print(vx_str s) {
+  for (size_t i = 0; i < s.len; i++) {
+    vx_stdio.line[sizeof(vx_msg_header) + vx_stdio.len++] = (uint8_t)s.ptr[i];
+    if (s.ptr[i] == '\n' || vx_stdio.len == sizeof vx_stdio.line - sizeof(vx_msg_header)) vx_stdout_flush();
+  }
+}
+
+// Reads up to count bytes of standard input: 0 at its end, or a negative vx_status.
+[[maybe_unused]] static int64_t vx_read(void *buf, uint32_t count) {
+  if (!vx_stdio.in) return vx_console_read(buf, count);
+  if (vx_stdio.len) vx_stdout_flush();
+  while (vx_stdio.msg_pos == vx_stdio.msg_len && !vx_stdio.in_ended) {
+    vx_msg_size size;
+    vx_status st = vx_channel_read(vx_stdio.in, vx_stdio.msg, sizeof vx_stdio.msg, nullptr, 0, &size);
+    if (st == VX_OK && size.bytes >= sizeof(vx_msg_header)) {
+      vx_stdio.msg_len = size.bytes;
+      vx_stdio.msg_pos = sizeof(vx_msg_header);
+    } else if (st == VX_ERR_SHOULD_WAIT) {
+      vx_packet pk;
+      if (!vx_stdio.port && vx_port_create(0, &vx_stdio.port) != VX_OK) return VX_ERR_NO_MEMORY;
+      vx_port_bind(vx_stdio.port, vx_stdio.in, VX_TRIGGER_READABLE, 0, 0);
+      vx_port_bind(vx_stdio.port, vx_stdio.in, VX_TRIGGER_PEER_CLOSED, 1, 0);
+      vx_port_wait(vx_stdio.port, VX_INFINITE, 0, &pk, 1);
+    } else if (st != VX_OK) {
+      vx_stdio.in_ended = true; // the writer has gone (or sent what we cannot read)
+    }
+  }
+  uint32_t n = vx_stdio.msg_len - vx_stdio.msg_pos;
+  if (n > count) n = count;
+  memcpy(buf, vx_stdio.msg + vx_stdio.msg_pos, n);
+  vx_stdio.msg_pos += n;
+  return n;
+}
+
 // Called by _start with the bootstrap channel. The thread ends with vx_main's
 // return value as its exit status; what it printed without a newline goes out
 // first.
@@ -95,8 +160,15 @@ static void vx_console_print(vx_str s) {
   vx_read_spawn(bootstrap);
   vx_handle console = vx_spawn_take("console");
   if (console && vx_console_attach(console) != VX_OK) vx_print(VX_STR("vx-rt: cannot open the console\n"));
+  vx_stdio.in = vx_spawn_take("stdin");
+  vx_stdio.out = vx_spawn_take("stdout");
+  if (vx_stdio.out) vx_print_hook = vx_stdout_print;
   int status = vx_main();
-  if (vx_print_hook) vx_console_flush();
+  if (vx_print_hook == vx_stdout_print)
+    vx_stdout_flush();
+  else if (vx_print_hook)
+    vx_console_flush();
+  if (vx_stdio.out) vx_handle_close(vx_stdio.out); // the end of the file, before the exit is seen
   vx_thread_exit(status);
 }
 
