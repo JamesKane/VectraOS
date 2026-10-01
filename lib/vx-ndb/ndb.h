@@ -7,7 +7,10 @@
 // The parser is strict: a record with a duplicate key, bad quoting, a control
 // character, invalid UTF-8 or more than 64 KiB is rejected whole, never repaired.
 //
-// The writer arrives with M2, when svcd and devmgr need it.
+// The writer chooses each value's form itself: bare when it can, quoted when it
+// has spaces or quotes, and x"hex" when it is not printable UTF-8. Nothing that
+// comes from another program can forge a tuple or a record (02 §4.1), so no
+// server formats ndb by hand.
 #pragma once
 
 #include "../../abi/vx/abi.h"
@@ -56,3 +59,21 @@ typedef enum vx_ndb_result : int32_t {
 // zero-length value with a nullptr pointer, so test vx_ndb_has for flags.
 [[maybe_unused]] static vx_str vx_ndb_get(const vx_ndb_record *rec, const char *key);
 [[maybe_unused]] static bool vx_ndb_has(const vx_ndb_record *rec, const char *key);
+
+// A record being written into a caller's buffer. Writing past the end, or a
+// key that could not be read back, sets `failed`, and the record must not be
+// used; nothing is ever written that would read back differently.
+typedef struct vx_ndb_writer {
+  char *buf;
+  size_t cap, len;
+  bool failed;
+} vx_ndb_writer;
+
+// key=value, in whichever form the value needs.
+[[maybe_unused]] static void vx_ndb_put(vx_ndb_writer *w, const char *key, vx_str value);
+[[maybe_unused]] static void vx_ndb_put_u64(vx_ndb_writer *w, const char *key, uint64_t value);
+[[maybe_unused]] static void vx_ndb_put_i64(vx_ndb_writer *w, const char *key, int64_t value);
+// A bare key: a flag that is set.
+[[maybe_unused]] static void vx_ndb_flag(vx_ndb_writer *w, const char *key);
+// Ends the record with a newline. Returns false if the record failed.
+[[maybe_unused]] static bool vx_ndb_end(vx_ndb_writer *w);

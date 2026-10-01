@@ -17,3 +17,5 @@ VX_STATUS(ERR_UNSUPPORTED,-11)
 VX_STATUS(ERR_BAD_STATE, -12)   // not in the state the call needs: a futex word that changed, a task already started
 VX_STATUS(ERR_TOO_SMALL, -13)   // a buffer too small for what is waiting; the sizes needed are reported
 VX_STATUS(ERR_KILLED,    -14)   // the calling task is being killed
+VX_STATUS(ERR_NOT_FOUND, -15)   // no such name: a walk, a module, a service
+VX_STATUS(ERR_EXISTS,    -16)   // the name is taken

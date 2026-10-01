@@ -233,3 +233,85 @@ static bool vx_ndb_has(const vx_ndb_record *rec, const char *key) {
     if (ndb_key_eq(rec->tuples[i].key, (vx_str){key, len})) return true;
   return false;
 }
+
+// --- Writer ---
+
+static void ndb_out(vx_ndb_writer *w, const char *p, size_t n) {
+  if (w->failed || w->cap - w->len < n) {
+    w->failed = true;
+    return;
+  }
+  for (size_t i = 0; i < n; i++) w->buf[w->len + i] = p[i];
+  w->len += n;
+}
+
+static void ndb_key(vx_ndb_writer *w, const char *key) {
+  size_t n = 0;
+  for (; key[n]; n++) {
+    int c = (unsigned char)key[n];
+    if (ndb_is_space(c) || c == '\n' || c == '=' || c == '"' || ndb_is_control(c)) w->failed = true;
+  }
+  if (n == 0 || key[0] == '#' || !ndb_valid_utf8((const unsigned char *)key, n)) w->failed = true;
+  if (w->len && w->buf[w->len - 1] != '\n') ndb_out(w, " ", 1);
+  ndb_out(w, key, n);
+}
+
+static void vx_ndb_put(vx_ndb_writer *w, const char *key, vx_str v) {
+  ndb_key(w, key);
+  ndb_out(w, "=", 1);
+  bool printable = ndb_valid_utf8((const unsigned char *)v.ptr, v.len);
+  bool bare = v.len > 0 && printable;
+  for (size_t i = 0; i < v.len && printable; i++) {
+    int c = (unsigned char)v.ptr[i];
+    if (ndb_is_control(c)) printable = bare = false;
+    if (c == ' ' || c == '"') bare = false;
+  }
+  if (bare) {
+    ndb_out(w, v.ptr, v.len);
+  } else if (printable) {
+    ndb_out(w, "\"", 1);
+    for (size_t i = 0; i < v.len; i++)
+      ndb_out(w, v.ptr[i] == '"' ? "\"\"" : &v.ptr[i], v.ptr[i] == '"' ? 2 : 1);
+    ndb_out(w, "\"", 1);
+  } else {
+    ndb_out(w, "x\"", 2);
+    for (size_t i = 0; i < v.len; i++) {
+      char hex[2] = {"0123456789abcdef"[(unsigned char)v.ptr[i] >> 4], "0123456789abcdef"[v.ptr[i] & 0xf]};
+      ndb_out(w, hex, 2);
+    }
+    ndb_out(w, "\"", 1);
+  }
+}
+
+static void vx_ndb_put_u64(vx_ndb_writer *w, const char *key, uint64_t value) {
+  char buf[20];
+  size_t i = sizeof buf;
+  do {
+    buf[--i] = (char)('0' + value % 10);
+    value /= 10;
+  } while (value);
+  vx_ndb_put(w, key, (vx_str){buf + i, sizeof buf - i});
+}
+
+static void vx_ndb_put_i64(vx_ndb_writer *w, const char *key, int64_t value) {
+  if (value >= 0) {
+    vx_ndb_put_u64(w, key, (uint64_t)value);
+    return;
+  }
+  char buf[21];
+  uint64_t mag = (uint64_t)0 - (uint64_t)value;
+  size_t i = sizeof buf;
+  do {
+    buf[--i] = (char)('0' + mag % 10);
+    mag /= 10;
+  } while (mag);
+  buf[--i] = '-';
+  vx_ndb_put(w, key, (vx_str){buf + i, sizeof buf - i});
+}
+
+static void vx_ndb_flag(vx_ndb_writer *w, const char *key) { ndb_key(w, key); }
+
+static bool vx_ndb_end(vx_ndb_writer *w) {
+  ndb_out(w, "\n", 1);
+  return !w->failed;
+}

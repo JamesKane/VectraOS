@@ -1,0 +1,462 @@
+// vx-9p codec: 9P2000 messages, stat entries and 9Px version strings
+// (docs/02 §3). Builds for the target and the host.
+//
+// A message is one flat p9_msg holding every field any message has;
+// messages.def lists which fields each type carries, in wire order, and one
+// encoder and one decoder walk that list. Decoding is strict, because the bytes
+// may come from a hostile peer: the size field must match the message exactly,
+// every field must fit, nothing may follow the last field, a walk has at most
+// 16 names, and strings may not hold NUL. Decoded strings and data point into
+// the message buffer; nothing is copied.
+
+#pragma once // server.c and client.c both include it
+
+#include "../../abi/vx/abi.h"
+
+typedef struct vx_bytes {
+  const uint8_t *ptr;
+  size_t len;
+} vx_bytes;
+
+enum : uint32_t {
+  P9_MAXWELEM = 16,       // names in one walk
+  P9_NOTAG = 0xffff,      // Tversion's tag
+  P9_NOFID = 0xffff'ffff, // no fid (Tattach's afid without auth)
+  P9_IOHDRSZ = 24,        // the Rread and Twrite overhead: a read or write carries msize - 24 bytes
+  P9_MIN_MSIZE = 256,
+  P9_MAX_MSIZE = 1 << 20,
+};
+
+enum : uint8_t { // qid.type and the top byte of a stat's mode
+  P9_QTDIR = 0x80,
+  P9_QTAPPEND = 0x40,
+  P9_QTEXCL = 0x20,
+  P9_QTAUTH = 0x08,
+  P9_QTFILE = 0x00,
+};
+
+enum : uint32_t { P9_DMDIR = 0x8000'0000 }; // a stat's mode: a directory
+
+enum : uint8_t { // Topen and Tcreate modes
+  P9_OREAD = 0,
+  P9_OWRITE = 1,
+  P9_ORDWR = 2,
+  P9_OEXEC = 3,
+  P9_OTRUNC = 0x10,
+  P9_ORCLOSE = 0x40,
+};
+
+typedef struct p9_qid {
+  uint8_t type;
+  uint32_t version;
+  uint64_t path;
+} p9_qid;
+
+typedef enum p9_type : uint8_t {
+  P9_NONE = 0, // not a message: what a zeroed p9_msg holds
+#define P9_MSG(name, num, ...) P9_##name = num,
+#include "messages.def"
+#undef P9_MSG
+} p9_type;
+
+typedef enum p9_field : uint8_t {
+  P9F_END = 0,
+#define P9_FIELD(name, kind, member) P9F_##name,
+#include "fields.def"
+#undef P9_FIELD
+} p9_field;
+
+typedef struct p9_msg {
+  p9_type type;
+  uint16_t tag;
+  uint32_t fid, newfid, afid, msize, iounit, perm, count;
+  uint64_t offset;
+  uint8_t mode;
+  uint16_t oldtag;
+  vx_str version, uname, aname, ename, name;
+  p9_qid qid;
+  uint16_t nwname, nwqid;
+  vx_str wname[P9_MAXWELEM];
+  p9_qid wqid[P9_MAXWELEM];
+  vx_bytes data; // Rread, Twrite; its length is count
+  vx_bytes stat; // Rstat, Twstat: one stat entry, its own size[2] included
+} p9_msg;
+
+// The fields of each message type, in wire order; nullptr for a type that does not exist.
+#define P9_MSG(name, num, ...) static const p9_field P9_FIELDS_##name[] = {__VA_OPT__(__VA_ARGS__, ) P9F_END};
+#include "messages.def"
+#undef P9_MSG
+
+static const p9_field *const P9_FIELDS[256] = {
+#define P9_MSG(name, num, ...) [num] = P9_FIELDS_##name,
+#include "messages.def"
+#undef P9_MSG
+};
+
+static const char *const P9_NAMES[256] = {
+#define P9_MSG(name, num, ...) [num] = #name,
+#include "messages.def"
+#undef P9_MSG
+};
+
+// --- Encoding ---
+
+typedef struct p9_out {
+  uint8_t *buf;
+  size_t cap, len;
+  bool failed;
+} p9_out;
+
+static void p9_put(p9_out *o, uint64_t v, uint32_t bytes) {
+  if (o->failed || o->cap - o->len < bytes) {
+    o->failed = true;
+    return;
+  }
+  for (uint32_t i = 0; i < bytes; i++) o->buf[o->len++] = (uint8_t)(v >> (8 * i));
+}
+
+static void p9_put_bytes(p9_out *o, const void *p, size_t n) {
+  if (o->failed || o->cap - o->len < n) {
+    o->failed = true;
+    return;
+  }
+  for (size_t i = 0; i < n; i++) o->buf[o->len + i] = ((const uint8_t *)p)[i];
+  o->len += n;
+}
+
+static void p9_put_str(p9_out *o, vx_str s) {
+  if (s.len > 0xffff) o->failed = true;
+  p9_put(o, s.len, 2);
+  p9_put_bytes(o, s.ptr, s.len);
+}
+
+static void p9_put_qid(p9_out *o, p9_qid q) {
+  p9_put(o, q.type, 1);
+  p9_put(o, q.version, 4);
+  p9_put(o, q.path, 8);
+}
+
+// Encodes m into buf. Returns its length, or 0 if it does not fit or is not a
+// message 9P2000 has.
+[[maybe_unused]] static size_t p9_encode(const p9_msg *m, uint8_t *buf, size_t cap) {
+  const p9_field *f = P9_FIELDS[m->type];
+  if (!f) return 0;
+  p9_out o = {.buf = buf, .cap = cap};
+  p9_put(&o, 0, 4); // the size, filled in below
+  p9_put(&o, m->type, 1);
+  p9_put(&o, m->tag, 2);
+  for (; *f; f++) {
+    switch (*f) {
+    case P9F_FID: p9_put(&o, m->fid, 4); break;
+    case P9F_NEWFID: p9_put(&o, m->newfid, 4); break;
+    case P9F_AFID: p9_put(&o, m->afid, 4); break;
+    case P9F_MSIZE: p9_put(&o, m->msize, 4); break;
+    case P9F_IOUNIT: p9_put(&o, m->iounit, 4); break;
+    case P9F_PERM: p9_put(&o, m->perm, 4); break;
+    case P9F_COUNT: p9_put(&o, m->count, 4); break;
+    case P9F_OFFSET: p9_put(&o, m->offset, 8); break;
+    case P9F_MODE: p9_put(&o, m->mode, 1); break;
+    case P9F_OLDTAG: p9_put(&o, m->oldtag, 2); break;
+    case P9F_VERSION: p9_put_str(&o, m->version); break;
+    case P9F_UNAME: p9_put_str(&o, m->uname); break;
+    case P9F_ANAME: p9_put_str(&o, m->aname); break;
+    case P9F_ENAME: p9_put_str(&o, m->ename); break;
+    case P9F_NAME: p9_put_str(&o, m->name); break;
+    case P9F_QID: p9_put_qid(&o, m->qid); break;
+    case P9F_WNAMES:
+      if (m->nwname > P9_MAXWELEM) o.failed = true;
+      p9_put(&o, m->nwname, 2);
+      for (uint16_t i = 0; i < m->nwname && !o.failed; i++) p9_put_str(&o, m->wname[i]);
+      break;
+    case P9F_WQIDS:
+      if (m->nwqid > P9_MAXWELEM) o.failed = true;
+      p9_put(&o, m->nwqid, 2);
+      for (uint16_t i = 0; i < m->nwqid && !o.failed; i++) p9_put_qid(&o, m->wqid[i]);
+      break;
+    case P9F_DATA:
+      if (m->data.len > UINT32_MAX) o.failed = true;
+      p9_put(&o, m->data.len, 4);
+      p9_put_bytes(&o, m->data.ptr, m->data.len);
+      break;
+    case P9F_STAT:
+      if (m->stat.len > 0xffff) o.failed = true;
+      p9_put(&o, m->stat.len, 2);
+      p9_put_bytes(&o, m->stat.ptr, m->stat.len);
+      break;
+    default: o.failed = true; break;
+    }
+  }
+  if (o.failed || o.len > UINT32_MAX) return 0;
+  for (uint32_t i = 0; i < 4; i++) buf[i] = (uint8_t)(o.len >> (8 * i));
+  return o.len;
+}
+
+// --- Decoding ---
+
+typedef struct p9_in {
+  const uint8_t *buf;
+  size_t len, pos;
+  bool failed;
+} p9_in;
+
+static uint64_t p9_get(p9_in *in, uint32_t bytes) {
+  if (in->failed || in->len - in->pos < bytes) {
+    in->failed = true;
+    return 0;
+  }
+  uint64_t v = 0;
+  for (uint32_t i = 0; i < bytes; i++) v |= (uint64_t)in->buf[in->pos + i] << (8 * i);
+  in->pos += bytes;
+  return v;
+}
+
+static const uint8_t *p9_get_bytes(p9_in *in, size_t n) {
+  if (in->failed || in->len - in->pos < n) {
+    in->failed = true;
+    return nullptr;
+  }
+  const uint8_t *p = in->buf + in->pos;
+  in->pos += n;
+  return p;
+}
+
+static vx_str p9_get_str(p9_in *in) {
+  size_t n = (size_t)p9_get(in, 2);
+  const uint8_t *p = p9_get_bytes(in, n);
+  for (size_t i = 0; p && i < n; i++)
+    if (!p[i]) in->failed = true; // 9P strings never hold NUL
+  return (vx_str){(const char *)p, p ? n : 0};
+}
+
+static p9_qid p9_get_qid(p9_in *in) {
+  p9_qid q;
+  q.type = (uint8_t)p9_get(in, 1);
+  q.version = (uint32_t)p9_get(in, 4);
+  q.path = p9_get(in, 8);
+  return q;
+}
+
+// Decodes one whole message: buf holds exactly its size[4] bytes. INVALID for
+// anything malformed; nothing is half-decoded.
+[[maybe_unused]] static vx_status p9_decode(const uint8_t *buf, size_t len, p9_msg *m) {
+  *m = (p9_msg){};
+  p9_in in = {.buf = buf, .len = len};
+  if (p9_get(&in, 4) != len || len < 7) return VX_ERR_INVALID;
+  m->type = (p9_type)p9_get(&in, 1);
+  m->tag = (uint16_t)p9_get(&in, 2);
+  const p9_field *f = P9_FIELDS[m->type];
+  if (!f) return VX_ERR_INVALID;
+  for (; *f && !in.failed; f++) {
+    switch (*f) {
+    case P9F_FID: m->fid = (uint32_t)p9_get(&in, 4); break;
+    case P9F_NEWFID: m->newfid = (uint32_t)p9_get(&in, 4); break;
+    case P9F_AFID: m->afid = (uint32_t)p9_get(&in, 4); break;
+    case P9F_MSIZE: m->msize = (uint32_t)p9_get(&in, 4); break;
+    case P9F_IOUNIT: m->iounit = (uint32_t)p9_get(&in, 4); break;
+    case P9F_PERM: m->perm = (uint32_t)p9_get(&in, 4); break;
+    case P9F_COUNT: m->count = (uint32_t)p9_get(&in, 4); break;
+    case P9F_OFFSET: m->offset = p9_get(&in, 8); break;
+    case P9F_MODE: m->mode = (uint8_t)p9_get(&in, 1); break;
+    case P9F_OLDTAG: m->oldtag = (uint16_t)p9_get(&in, 2); break;
+    case P9F_VERSION: m->version = p9_get_str(&in); break;
+    case P9F_UNAME: m->uname = p9_get_str(&in); break;
+    case P9F_ANAME: m->aname = p9_get_str(&in); break;
+    case P9F_ENAME: m->ename = p9_get_str(&in); break;
+    case P9F_NAME: m->name = p9_get_str(&in); break;
+    case P9F_QID: m->qid = p9_get_qid(&in); break;
+    case P9F_WNAMES:
+      m->nwname = (uint16_t)p9_get(&in, 2);
+      if (m->nwname > P9_MAXWELEM) in.failed = true;
+      for (uint16_t i = 0; i < m->nwname && !in.failed; i++) m->wname[i] = p9_get_str(&in);
+      break;
+    case P9F_WQIDS:
+      m->nwqid = (uint16_t)p9_get(&in, 2);
+      if (m->nwqid > P9_MAXWELEM) in.failed = true;
+      for (uint16_t i = 0; i < m->nwqid && !in.failed; i++) m->wqid[i] = p9_get_qid(&in);
+      break;
+    case P9F_DATA:
+      m->count = (uint32_t)p9_get(&in, 4);
+      m->data = (vx_bytes){p9_get_bytes(&in, m->count), m->count};
+      break;
+    case P9F_STAT: {
+      size_t n = (size_t)p9_get(&in, 2);
+      m->stat = (vx_bytes){p9_get_bytes(&in, n), n};
+      break;
+    }
+    default: in.failed = true; break;
+    }
+  }
+  if (in.failed || in.pos != len) return VX_ERR_INVALID;
+  return VX_OK;
+}
+
+// --- Stat entries ---
+
+typedef struct p9_stat {
+  uint16_t type;
+  uint32_t dev;
+  p9_qid qid;
+  uint32_t mode; // permissions, with P9_DMDIR for a directory
+  uint32_t atime, mtime;
+  uint64_t length;
+  vx_str name, uid, gid, muid;
+} p9_stat;
+
+// Encodes one stat entry, its size[2] first. Returns its length, or 0.
+[[maybe_unused]] static size_t p9_stat_encode(const p9_stat *s, uint8_t *buf, size_t cap) {
+  p9_out o = {.buf = buf, .cap = cap};
+  p9_put(&o, 0, 2);
+  p9_put(&o, s->type, 2);
+  p9_put(&o, s->dev, 4);
+  p9_put_qid(&o, s->qid);
+  p9_put(&o, s->mode, 4);
+  p9_put(&o, s->atime, 4);
+  p9_put(&o, s->mtime, 4);
+  p9_put(&o, s->length, 8);
+  p9_put_str(&o, s->name);
+  p9_put_str(&o, s->uid);
+  p9_put_str(&o, s->gid);
+  p9_put_str(&o, s->muid);
+  if (o.failed || o.len - 2 > 0xffff) return 0;
+  buf[0] = (uint8_t)(o.len - 2);
+  buf[1] = (uint8_t)((o.len - 2) >> 8);
+  return o.len;
+}
+
+// Decodes one stat entry that fills buf exactly, size[2] included.
+[[maybe_unused]] static vx_status p9_stat_decode(const uint8_t *buf, size_t len, p9_stat *s) {
+  *s = (p9_stat){};
+  p9_in in = {.buf = buf, .len = len};
+  if (p9_get(&in, 2) + 2 != len) return VX_ERR_INVALID;
+  s->type = (uint16_t)p9_get(&in, 2);
+  s->dev = (uint32_t)p9_get(&in, 4);
+  s->qid = p9_get_qid(&in);
+  s->mode = (uint32_t)p9_get(&in, 4);
+  s->atime = (uint32_t)p9_get(&in, 4);
+  s->mtime = (uint32_t)p9_get(&in, 4);
+  s->length = p9_get(&in, 8);
+  s->name = p9_get_str(&in);
+  s->uid = p9_get_str(&in);
+  s->gid = p9_get_str(&in);
+  s->muid = p9_get_str(&in);
+  return in.failed || in.pos != len ? VX_ERR_INVALID : VX_OK;
+}
+
+// --- Version negotiation (02 §3.1) ---
+
+typedef enum p9_dialect : uint8_t {
+  P9_UNKNOWN = 0,
+  P9_2000,  // plain 9P2000; also what a 9P2000.L or .u client gets from a VectraOS server
+  P9_2000X, // 9Px: "9P2000.x/1" and its extensions
+} p9_dialect;
+
+// 9Px's extensions, as words after the dialect: "9P2000.x/1 +dref +map".
+#define P9_EXTENSIONS(X)                                                                                     \
+  X(DREF, dref) X(MAP, map) X(LEASE, lease) X(NOTIFY, notify) X(XATTR, xattr) X(POSIX, posix)
+
+enum : uint32_t {
+#define P9_EXT_BIT(name, word) P9_EXT_BIT_##name,
+  P9_EXTENSIONS(P9_EXT_BIT)
+#undef P9_EXT_BIT
+};
+
+enum : uint32_t {
+#define P9_EXT(name, word) P9_EXT_##name = 1u << P9_EXT_BIT_##name,
+  P9_EXTENSIONS(P9_EXT)
+#undef P9_EXT
+};
+
+static const char *const P9_EXT_WORDS[] = {
+#define P9_EXT_WORD(name, word) #word,
+    P9_EXTENSIONS(P9_EXT_WORD)
+#undef P9_EXT_WORD
+};
+
+static bool p9_str_eq(vx_str a, const char *b) {
+  size_t n = 0;
+  while (b[n]) n++;
+  if (a.len != n) return false;
+  for (size_t i = 0; i < n; i++)
+    if (a.ptr[i] != b[i]) return false;
+  return true;
+}
+
+// Reads a version string: its dialect and, for 9Px, the extensions it names.
+// Unknown extension words are ignored, so later clients still talk to us.
+[[maybe_unused]] static p9_dialect p9_version_parse(vx_str v, uint32_t *extensions) {
+  *extensions = 0;
+  size_t i = 0;
+  while (i < v.len && v.ptr[i] != ' ') i++;
+  vx_str base = {v.ptr, i};
+  if (p9_str_eq(base, "9P2000.x/1")) {
+    while (i < v.len) {
+      while (i < v.len && v.ptr[i] == ' ') i++;
+      size_t start = i;
+      while (i < v.len && v.ptr[i] != ' ') i++;
+      vx_str word = {v.ptr + start, i - start};
+      if (word.len < 2 || word.ptr[0] != '+') continue;
+      word = (vx_str){word.ptr + 1, word.len - 1};
+      for (uint32_t b = 0; b < sizeof P9_EXT_WORDS / sizeof P9_EXT_WORDS[0]; b++)
+        if (p9_str_eq(word, P9_EXT_WORDS[b])) *extensions |= 1u << b;
+    }
+    return P9_2000X;
+  }
+  // 9P2000 itself, and any dialect of it (".L", ".u"), are answered with 9P2000.
+  if (base.len >= 6 && p9_str_eq((vx_str){base.ptr, 6}, "9P2000")) return P9_2000;
+  return P9_UNKNOWN;
+}
+
+// Writes a version string for a dialect and its extensions into buf (cap
+// bytes; 96 always suffices). Returns its length.
+[[maybe_unused]] static size_t p9_version_format(p9_dialect d, uint32_t extensions, char *buf, size_t cap) {
+  p9_out o = {.buf = (uint8_t *)buf, .cap = cap};
+  if (d == P9_2000X) {
+    p9_put_bytes(&o, "9P2000.x/1", 10);
+    for (uint32_t b = 0; b < sizeof P9_EXT_WORDS / sizeof P9_EXT_WORDS[0]; b++) {
+      if (!(extensions & (1u << b))) continue;
+      size_t n = 0;
+      while (P9_EXT_WORDS[b][n]) n++;
+      p9_put_bytes(&o, " +", 2);
+      p9_put_bytes(&o, P9_EXT_WORDS[b], n);
+    }
+  } else if (d == P9_2000) {
+    p9_put_bytes(&o, "9P2000", 6);
+  } else {
+    p9_put_bytes(&o, "unknown", 7);
+  }
+  return o.failed ? 0 : o.len;
+}
+
+// --- Errors ---
+//
+// 9P carries errors as text. A server turns a vx_status into Plan 9's wording
+// where Plan 9 has one, and a client turns the text back; text it does not
+// know becomes INVALID.
+
+#define P9_ERRORS(X)                                                                                         \
+  X(VX_ERR_NOT_FOUND, "file does not exist")                                                                 \
+  X(VX_ERR_EXISTS, "file already exists")                                                                    \
+  X(VX_ERR_ACCESS, "permission denied")                                                                      \
+  X(VX_ERR_BAD_HANDLE, "unknown fid")                                                                        \
+  X(VX_ERR_BAD_STATE, "fid already in use")                                                                  \
+  X(VX_ERR_RANGE, "offset out of range")                                                                     \
+  X(VX_ERR_NO_MEMORY, "out of memory")                                                                       \
+  X(VX_ERR_UNSUPPORTED, "operation not supported")                                                           \
+  X(VX_ERR_TOO_SMALL, "message too large for msize")                                                         \
+  X(VX_ERR_INVALID, "bad message")
+
+[[maybe_unused]] static vx_str p9_error_text(vx_status st) {
+#define P9_ERROR_CASE(status, text)                                                                          \
+  if (st == (status)) return VX_STR(text);
+  P9_ERRORS(P9_ERROR_CASE)
+#undef P9_ERROR_CASE
+  return VX_STR("i/o error");
+}
+
+[[maybe_unused]] static vx_status p9_error_status(vx_str text) {
+#define P9_ERROR_MATCH(status, txt)                                                                          \
+  if (p9_str_eq(text, txt)) return (status);
+  P9_ERRORS(P9_ERROR_MATCH)
+#undef P9_ERROR_MATCH
+  return VX_ERR_INVALID;
+}

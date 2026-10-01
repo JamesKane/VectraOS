@@ -207,6 +207,7 @@ typedef struct cmd {
   const char *argv[1024];
   int argc;
   const char *dir; // run in this directory, if set
+  const char *log; // send stdout and stderr here, if set and not verbose
 } cmd;
 
 static void cmd_add(cmd *c, const char *arg) {
@@ -244,6 +245,10 @@ static pid_t spawn(const cmd *c) {
     if (c->dir && chdir(c->dir) != 0) {
       fprintf(stderr, "build: cannot enter %s\n", c->dir);
       _exit(127);
+    }
+    if (c->log && !verbose) {
+      int fd = open(c->log, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+      if (fd < 0 || dup2(fd, 1) < 0 || dup2(fd, 2) < 0) _exit(127);
     }
     execv(c->argv[0], (char *const *)c->argv);
     fprintf(stderr, "build: cannot run %s: %s\n", c->argv[0], strerror(errno));
@@ -1627,6 +1632,43 @@ static bool check_host_tests(void) {
   return ok;
 }
 
+// Each tests/fuzz/*_fuzz.c is a libFuzzer target, built under ASan and UBSan.
+// It replays its seeds (tests/fuzz/corpus/NAME), then fuzzes for a few
+// seconds into out/fuzz/NAME, which persists, so each check starts where the
+// last one stopped. A crash is written to out/fuzz/ and fails the check; the
+// fuzzer's own output goes to out/fuzz/NAME.log.
+static constexpr int FUZZ_SECONDS = 10;
+
+static bool check_fuzz(void) {
+  static file_list targets;
+  port dir = {.src = fmt("%s/tests", root)};
+  collect(&targets, &dir, (vx_str){"fuzz", 4}, "_fuzz.c");
+  bool ok = true;
+  for (int i = 0; i < targets.count; i++) {
+    const char *base = strrchr(targets.paths[i], '/') + 1;
+    const char *name = fmt("%.*s", (int)(strlen(base) - 7), base);
+    const char *exe = fmt("out/fuzz/%s_fuzz", name);
+    const char *corpus = fmt("out/fuzz/%s", name);
+    mkdirs(corpus);
+    cmd cc = {};
+    cmd_add(&cc, CLANG);
+    cmd_addv(&cc, HOST_TEST_FLAGS);
+    cmd_addv(&cc, (const char *const[]){"-fsanitize=fuzzer", "-o", exe, nullptr});
+    cmd_add(&cc, fmt("tests/%s", targets.paths[i]));
+    cmd fuzz = {.log = fmt("out/fuzz/%s.log", name)};
+    cmd_add(&fuzz, exe);
+    cmd_add(&fuzz, fmt("-max_total_time=%d", FUZZ_SECONDS));
+    cmd_addv(&fuzz, (const char *const[]){"-max_len=4096", "-print_final_stats=0",
+                                          "-artifact_prefix=out/fuzz/", nullptr});
+    cmd_add(&fuzz, corpus);
+    cmd_add(&fuzz, fmt("tests/fuzz/corpus/%s", name));
+    bool passed = run(&cc) && run(&fuzz);
+    fprintf(stderr, "  FUZZ  %-16s %s\n", name, passed ? "ok" : fmt("FAIL: see %s", fuzz.log));
+    ok = ok && passed;
+  }
+  return ok;
+}
+
 // Every translation unit of the OS tree, with the flags it is built with.
 typedef struct unit {
   const char *name, *source;
@@ -1651,6 +1693,7 @@ static int os_units(unit *units, bool with_host_tests) {
     tests = (file_list){};
     port dir = {.src = fmt("%s/tests", root)};
     collect(&tests, &dir, (vx_str){"host", 4}, "_test.c");
+    collect(&tests, &dir, (vx_str){"fuzz", 4}, "_fuzz.c");
     for (int i = 0; i < tests.count && n < 32; i++)
       units[n++] = (unit){tests.paths[i] + 5, fmt("tests/%s", tests.paths[i]), {HOST_C23}};
   }
@@ -1702,7 +1745,8 @@ static bool check_tidy(void) {
 
 // The house format (.clang-format, 04 §1.1) over every first-party C file.
 // Vendored code keeps its upstream format.
-static const char *const FORMATTED_DIRS[] = {"abi", "kernel", "lib", "servers", "tests/host", nullptr};
+static const char *const FORMATTED_DIRS[] = {"abi",        "kernel",     "lib",  "servers",
+                                             "tests/host", "tests/fuzz", nullptr};
 
 static bool check_format(void) {
   check_version(CLANG_FORMAT, CLANG_FORMAT_VERSION);
@@ -1748,6 +1792,7 @@ static bool check_build_time(void) {
 
 static int cmd_check(void) {
   bool ok = check_host_tests();
+  ok = check_fuzz() && ok;
   ok = cmd_vendor_check() == 0 && ok;
   ok = check_format() && ok;
   ok = check_analyzer() && ok;
@@ -1771,7 +1816,8 @@ static void usage(void) {
       "                                                 x86_64 uses KVM when it can, unless --tcg\n"
       "  loc                                            the line-count ledger\n"
       "  vendor-check                                   check third_party/ against VENDOR.ndb\n"
-      "  check                                          host tests (ASan, UBSan), vendor-check, the format,\n"
+      "  check                                          host tests (ASan, UBSan), the fuzzers, vendor-check, "
+      "the format,\n"
       "                                                 the static analyzer and the build-time budget: CI's "
       "first job\n"
       "\n"
