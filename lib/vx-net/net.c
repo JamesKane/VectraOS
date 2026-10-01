@@ -5,8 +5,8 @@
 // tests and the fuzzer drive it as netd does.
 //
 // Ethernet, ARP, IPv4 (no fragments: they are dropped, and nothing sent is
-// bigger than the MTU), ICMP echo, UDP, a DHCP client (RFC 2131), and TCP
-// (tcp.c).
+// bigger than the MTU), ICMP echo, UDP, a DHCP client (RFC 2131), TCP
+// (tcp.c) and a DNS stub resolver (dns.c).
 //
 // Conversations are Plan 9's (02 §5): numbered endpoints, each one protocol,
 // a local port, and a remote address once connected. Datagrams that arrive
@@ -42,6 +42,22 @@ typedef enum vx_net_dhcp_state : uint8_t {
   VX_DHCP_RENEWING,  // past T1: REQUEST to the server
   VX_DHCP_REBINDING, // past T2: REQUEST to anyone
 } vx_net_dhcp_state;
+
+static constexpr uint32_t VX_DNS_ENTRIES = 16, VX_DNS_ADDRS = 4;
+
+// A name's cache entry, or its query in flight.
+typedef struct vx_net_dns {
+  char name[253];
+  uint8_t len; // 0: unused
+  bool pending;
+  uint8_t tries;
+  uint16_t id, port; // the query's ID, and the port it was sent from
+  uint32_t server;
+  vx_status status; // once answered: OK, NOT_FOUND, REFUSED or TIMED_OUT
+  uint32_t addrs[VX_DNS_ADDRS];
+  uint32_t count;
+  vx_instant expires, next; // next: when to ask again
+} vx_net_dns;
 
 typedef struct vx_net_dhcp {
   vx_net_dhcp_state state;
@@ -135,6 +151,7 @@ typedef struct vx_net {
   vx_net_dhcp dhcp;
 
   vx_net_arp arp[VX_NET_ARP_ENTRIES];
+  vx_net_dns dns_cache[VX_DNS_ENTRIES];
   vx_net_conv conv[VX_NET_CONVS];
   uint16_t next_port;
   uint32_t seed; // for transaction IDs and ports: not secret, only varied
@@ -447,6 +464,7 @@ static void net_conv_queue(vx_net_conv *c, uint32_t addr, uint16_t port, const u
 }
 
 #include "tcp.c"
+#include "dns.c"
 
 // --- DHCP (RFC 2131) ---
 
@@ -625,6 +643,7 @@ static void net_udp_input(vx_net *n, uint32_t src, uint32_t dst, const uint8_t *
     net_dhcp_input(n, u + 8, len - 8, now);
     return;
   }
+  if (sport == 53 && n->addr && dst == n->addr && net_dns_input(n, src, dport, u + 8, len - 8, now)) return;
   if (!n->addr || (dst != n->addr && dst != NET_BROADCAST)) return;
   net_deliver(n, VX_NET_UDP, dport, src, sport, u + 8, len - 8);
 }
@@ -689,6 +708,8 @@ bad:
     vx_instant due = net_tcp_poll(n, &n->conv[i], now);
     if (due < next) next = due;
   }
+  vx_instant dns_due = net_dns_poll(n, now);
+  if (dns_due < next) next = dns_due;
   if (n->dhcp.state == VX_DHCP_OFF) return next;
   bool bound = n->dhcp.state == VX_DHCP_BOUND || n->dhcp.state == VX_DHCP_RENEWING ||
                n->dhcp.state == VX_DHCP_REBINDING;

@@ -16,7 +16,16 @@
 //     N/listen              TCP, announced: opening it waits for a call, and the fid
 //                           becomes the new connection's ctl
 //   TCP's data is a stream: a read returns what has arrived (0 at the end), a
-//   write takes what fits, and waits only if nothing fits.
+//   write takes what fits, and waits only if nothing fits. A UDP conversation
+//   whose ctl was sent "headers" reads and writes each datagram after a
+//   52-byte header, as Plan 9's does: the remote, local and interface
+//   addresses (16 bytes each, IPv4 mapped into IPv6), the remote port and
+//   the local port; a write's header says where it goes.
+//   /net/cs                 the connection server: write "tcp!HOST!SERVICE", then each read
+//                           is a line "/net/tcp/clone ADDR!PORT", one for each address
+//   /net/dns                write "NAME ip", then each read is a line "NAME ip ADDR"
+//   Each open of cs or dns is a query of its own. A write is held while the
+//   name is looked up (vx-net's DNS stub, the server DHCP named).
 //
 // A conversation lasts while any of its files is open. /net is served from
 // the start, with or without a driver, since every namespace that mounts it
@@ -236,7 +245,10 @@ enum : uint8_t {
   N_IFC_STATUS, // /ipifc/0/status
   N_PROTO,      // /icmp, /udp
   N_CLONE,
-  N_CONV, // /PROTO/N, and its files:
+  N_CS,    // /cs
+  N_DNS,   // /dns
+  N_QUERY, // an open of cs or dns: the which in the protocol byte, a session and its generation
+  N_CONV,  // /PROTO/N, and its files:
   N_CTL,
   N_DATA,
   N_LOCAL,
@@ -253,8 +265,31 @@ static const struct {
     [N_CLONE] = {VX_STR("clone"), 0666},   [N_CTL] = {VX_STR("ctl"), 0666},
     [N_DATA] = {VX_STR("data"), 0666},     [N_LOCAL] = {VX_STR("local"), 0444},
     [N_REMOTE] = {VX_STR("remote"), 0444}, [N_STATUS] = {VX_STR("status"), 0444},
-    [N_LISTEN] = {VX_STR("listen"), 0666},
+    [N_LISTEN] = {VX_STR("listen"), 0666}, [N_CS] = {VX_STR("cs"), 0666},
+    [N_DNS] = {VX_STR("dns"), 0666},       [N_QUERY] = {VX_STR("cs"), 0666},
 };
+
+// Queries: each open of /cs or /dns, with its answer.
+enum : uint8_t { Q_CS = 1, Q_DNS = 2 };
+static constexpr uint32_t QUERIES = 16;
+
+static struct {
+  bool used;
+  uint32_t gen;
+  text answer; // lines, each read one at a time
+} queries[QUERIES];
+
+static uint64_t query_node(uint8_t which, uint32_t q) {
+  return N_QUERY | (uint64_t)which << 8 | (uint64_t)q << 16 | (uint64_t)queries[q].gen << 32;
+}
+
+// The query a node is, if it is still the one the node was made for.
+static uint32_t query_at(uint64_t n) {
+  uint32_t q = (uint32_t)(n >> 16 & 0xffff);
+  return q < QUERIES && queries[q].used && queries[q].gen == (uint32_t)(n >> 32) ? q : QUERIES;
+}
+
+static bool conv_headers[VX_NET_CONVS]; // UDP: datagrams read and written with Plan 9's header
 
 static uint32_t conv_gen[VX_NET_CONVS];  // bumped each time a conversation is made
 static uint32_t conv_refs[VX_NET_CONVS]; // open fids on its files
@@ -297,6 +332,8 @@ static vx_status fs_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) 
     if (name_is(name, "icmp")) return *child = node(N_PROTO, VX_NET_ICMP, 0), VX_OK;
     if (name_is(name, "udp")) return *child = node(N_PROTO, VX_NET_UDP, 0), VX_OK;
     if (name_is(name, "tcp")) return *child = node(N_PROTO, VX_NET_TCP, 0), VX_OK;
+    if (name_is(name, "cs")) return *child = N_CS, VX_OK;
+    if (name_is(name, "dns")) return *child = N_DNS, VX_OK;
     return VX_ERR_NOT_FOUND;
   case N_IPIFC:
     if (name_is(name, "0")) return *child = N_IFC, VX_OK;
@@ -332,7 +369,7 @@ static vx_status fs_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) 
 static vx_status fs_parent(void *ctx, uint64_t n, uint64_t *parent) {
   (void)ctx;
   uint8_t k = kind_of(n);
-  if (k == N_IPIFC || k == N_PROTO)
+  if (k == N_IPIFC || k == N_PROTO || k == N_CS || k == N_DNS || k == N_QUERY)
     *parent = N_ROOT;
   else if (k == N_IFC)
     *parent = N_IPIFC;
@@ -365,6 +402,10 @@ static vx_status fs_stat(void *ctx, uint64_t n, p9_stat *out) {
     name = (vx_str){number, len};
   }
   if (!dir && k < sizeof FILES / sizeof FILES[0]) name = FILES[k].name;
+  if (k == N_QUERY) {
+    if (query_at(n) == QUERIES) return VX_ERR_NOT_FOUND;
+    name = proto_of(n) == Q_DNS ? VX_STR("dns") : VX_STR("cs");
+  }
   *out = (p9_stat){.qid = {dir ? P9_QTDIR : P9_QTFILE, 0, n},
                    .mode = dir ? P9_DMDIR | 0555 : FILES[k].mode,
                    .name = name,
@@ -376,9 +417,9 @@ static vx_status fs_stat(void *ctx, uint64_t n, p9_stat *out) {
 
 static vx_status fs_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *child) {
   (void)ctx;
-  static const char *const ROOT[] = {"ipifc", "icmp", "udp", "tcp"};
+  static const char *const ROOT[] = {"ipifc", "icmp", "udp", "tcp", "cs", "dns"};
   switch (kind_of(dir)) {
-  case N_ROOT: return index < 4 ? fs_walk(ctx, dir, vx_cstr(ROOT[index]), child) : VX_ERR_NOT_FOUND;
+  case N_ROOT: return index < 6 ? fs_walk(ctx, dir, vx_cstr(ROOT[index]), child) : VX_ERR_NOT_FOUND;
   case N_IPIFC: return index == 0 ? (*child = N_IFC, VX_OK) : VX_ERR_NOT_FOUND;
   case N_IFC: return index < 2 ? (*child = index ? N_IFC_STATUS : N_IFC_CTL, VX_OK) : VX_ERR_NOT_FOUND;
   case N_PROTO:
@@ -402,6 +443,7 @@ static vx_status fs_open(void *ctx, uint64_t n, uint8_t mode) {
   if (mode & P9_ORCLOSE) return VX_ERR_ACCESS;
   if (writes && k < sizeof FILES / sizeof FILES[0] && !(FILES[k].mode & 0222)) return VX_ERR_ACCESS;
   if (k == N_CLONE && !stack_up) return VX_ERR_BAD_STATE; // no driver yet
+  if (k == N_QUERY && query_at(n) == QUERIES) return VX_ERR_NOT_FOUND;
   if (k > N_CONV && !conv_at(n)) return VX_ERR_NOT_FOUND;
   if (k == N_LISTEN) // the fid moves to a new connection (fs_clone); this open may be made again
     return conv_at(n)->tcb.state == VX_TCP_LISTEN ? VX_OK : VX_ERR_BAD_STATE;
@@ -415,6 +457,17 @@ static vx_status fs_open(void *ctx, uint64_t n, uint8_t mode) {
 static vx_status fs_clone(void *ctx, uint64_t n, uint8_t mode, uint64_t *opened) {
   (void)ctx, (void)mode;
   uint8_t k = kind_of(n);
+  if (k == N_CS || k == N_DNS) { // a query of its own
+    for (uint32_t q = 0; q < QUERIES; q++) {
+      if (queries[q].used) continue;
+      queries[q].used = true;
+      queries[q].gen++;
+      queries[q].answer = (text){};
+      *opened = query_node(k == N_CS ? Q_CS : Q_DNS, q);
+      return VX_OK;
+    }
+    return VX_ERR_NO_MEMORY;
+  }
   if (k != N_CLONE && k != N_LISTEN) return VX_ERR_NOT_FOUND;
   uint32_t id;
   vx_status st =
@@ -422,6 +475,7 @@ static vx_status fs_clone(void *ctx, uint64_t n, uint8_t mode, uint64_t *opened)
   if (st != VX_OK) return st;
   conv_gen[id]++;
   conv_refs[id] = 1;
+  conv_headers[id] = false;
   *opened = node(N_CTL, proto_of(n), id);
   return VX_OK;
 }
@@ -429,6 +483,10 @@ static vx_status fs_clone(void *ctx, uint64_t n, uint8_t mode, uint64_t *opened)
 // A conversation lasts while any of its files is open.
 static void fs_clunk(void *ctx, uint64_t n, bool opened) {
   (void)ctx;
+  if (opened && kind_of(n) == N_QUERY && query_at(n) < QUERIES) {
+    queries[query_at(n)].used = false;
+    return;
+  }
   if (!opened || kind_of(n) <= N_CONV || !conv_at(n)) return;
   uint32_t id = conv_of(n);
   if (!conv_refs[id]) return;
@@ -471,6 +529,117 @@ static void addr_port(text *t, uint32_t addr, uint16_t port) {
   put(t, VX_STR("\n"));
 }
 
+// --- Queries: /cs and /dns ---
+
+static const struct {
+  const char *name;
+  uint16_t port;
+} SERVICES[] = {{"echo", 7}, {"ssh", 22}, {"domain", 53}, {"http", 80}, {"https", 443}, {"9fs", 564}};
+
+// A service, by number or by name; 0 if neither.
+static uint16_t service_port(vx_str s) {
+  uint32_t v = 0;
+  bool digits = s.len && s.len <= 5;
+  for (size_t i = 0; digits && i < s.len; i++) {
+    digits = s.ptr[i] >= '0' && s.ptr[i] <= '9';
+    v = v * 10 + (uint32_t)(s.ptr[i] - '0');
+  }
+  if (digits) return v <= 65535 ? (uint16_t)v : 0;
+  for (size_t i = 0; i < sizeof SERVICES / sizeof SERVICES[0]; i++)
+    if (name_is(s, SERVICES[i].name)) return SERVICES[i].port;
+  return 0;
+}
+
+// Splits s at its first '!'.
+static vx_str split_bang(vx_str *s) {
+  size_t i = 0;
+  while (i < s->len && s->ptr[i] != '!') i++;
+  vx_str head = {s->ptr, i};
+  *s = i < s->len ? (vx_str){s->ptr + i + 1, s->len - i - 1} : (vx_str){s->ptr + s->len, 0};
+  return head;
+}
+
+// "NET!HOST!SERVICE" into the clone files and addresses to dial (or, with
+// HOST "*", to announce): a line for each address.
+static vx_status cs_query(text *answer, vx_str q, vx_instant now) {
+  vx_str net = split_bang(&q), host = split_bang(&q), service = q;
+  vx_str proto;
+  if (name_is(net, "tcp") || name_is(net, "net"))
+    proto = VX_STR("tcp");
+  else if (name_is(net, "udp"))
+    proto = VX_STR("udp");
+  else if (name_is(net, "icmp"))
+    proto = VX_STR("icmp");
+  else
+    return VX_ERR_INVALID;
+  bool ports = !name_is(proto, "icmp");
+  uint16_t port = ports ? service_port(service) : 0;
+  if (!host.len || (ports && !port) || (!ports && service.len)) return VX_ERR_INVALID;
+  uint32_t addrs[VX_DNS_ADDRS], count = 0;
+  bool any = host.len == 1 && host.ptr[0] == '*';
+  if (!any) {
+    vx_status st = vx_net_resolve(&stack, host, addrs, VX_DNS_ADDRS, &count, now);
+    if (st != VX_OK) return st;
+  }
+  *answer = (text){};
+  for (uint32_t i = 0; i < (any ? 1 : count); i++) {
+    put(answer, VX_STR("/net/"));
+    put(answer, proto);
+    put(answer, VX_STR("/clone "));
+    if (any)
+      put(answer, VX_STR("*"));
+    else
+      put_ip(answer, addrs[i]);
+    if (ports) {
+      put(answer, VX_STR("!"));
+      put_u64(answer, port);
+    }
+    put(answer, VX_STR("\n"));
+  }
+  return VX_OK;
+}
+
+// "NAME ip" (or "NAME"): a line "NAME ip ADDR" for each address.
+static vx_status dns_query(text *answer, const vx_str *w, uint32_t n, vx_instant now) {
+  if (n < 1 || n > 2 || (n == 2 && !name_is(w[1], "ip"))) return VX_ERR_INVALID; // only A records so far
+  uint32_t addrs[VX_DNS_ADDRS], count = 0;
+  vx_status st = vx_net_resolve(&stack, w[0], addrs, VX_DNS_ADDRS, &count, now);
+  if (st != VX_OK) return st;
+  *answer = (text){};
+  for (uint32_t i = 0; i < count; i++) {
+    put(answer, w[0]);
+    put(answer, VX_STR(" ip "));
+    put_ip(answer, addrs[i]);
+    put(answer, VX_STR("\n"));
+  }
+  return VX_OK;
+}
+
+// A query's answer, a line a read: the line that starts at offset.
+static void query_read(const text *answer, uint64_t offset, uint8_t *buf, uint32_t *count) {
+  if (offset >= answer->len) {
+    *count = 0;
+    return;
+  }
+  size_t end = offset;
+  while (end < answer->len && answer->buf[end] != '\n') end++;
+  if (end < answer->len) end++;
+  size_t len = end - offset < *count ? end - offset : *count;
+  memcpy(buf, answer->buf + offset, len);
+  *count = (uint32_t)len;
+}
+
+// Plan 9's UDP header: remote, local and interface addresses, each IPv6
+// (IPv4 mapped: ten zero bytes, two 0xff, the four), then the ports.
+static constexpr uint32_t UDP_HEADER = 52;
+
+static void put_mapped(uint8_t *p, uint32_t addr) {
+  memset(p, 0, 10);
+  p[10] = p[11] = 0xff;
+  p[12] = (uint8_t)(addr >> 24), p[13] = (uint8_t)(addr >> 16), p[14] = (uint8_t)(addr >> 8),
+  p[15] = (uint8_t)addr;
+}
+
 static vx_status fs_read(void *ctx, uint64_t n, uint64_t offset, uint8_t *buf, uint32_t *count) {
   (void)ctx;
   uint8_t k = kind_of(n);
@@ -482,11 +651,27 @@ static vx_status fs_read(void *ctx, uint64_t n, uint64_t offset, uint8_t *buf, u
     *count = (uint32_t)got;
     return st;
   }
-  if (k == N_DATA) { // a datagram, or wait for one
+  if (k == N_QUERY) {
+    uint32_t q = query_at(n);
+    if (q == QUERIES) return VX_ERR_NOT_FOUND;
+    query_read(&queries[q].answer, offset, buf, count);
+    return VX_OK;
+  }
+  if (k == N_DATA) { // a datagram, or wait for one; after its header, if asked for
+    bool headers = conv_headers[conv_of(n)];
+    uint32_t skip = headers ? UDP_HEADER : 0;
+    if (*count < skip) return VX_ERR_TOO_SMALL;
     vx_net_datagram d;
     size_t got = 0;
-    if (!vx_net_conv_read(c, &d, buf, *count, &got)) return VX_ERR_SHOULD_WAIT;
-    *count = (uint32_t)got;
+    if (!vx_net_conv_read(c, &d, buf + skip, *count - skip, &got)) return VX_ERR_SHOULD_WAIT;
+    if (headers) {
+      put_mapped(buf, d.addr);
+      put_mapped(buf + 16, stack.addr);
+      put_mapped(buf + 32, stack.addr);
+      buf[48] = (uint8_t)(d.port >> 8), buf[49] = (uint8_t)d.port;
+      buf[50] = (uint8_t)(c->lport >> 8), buf[51] = (uint8_t)c->lport;
+    }
+    *count = (uint32_t)(skip + got);
     return VX_OK;
   }
   text t = {};
@@ -578,6 +763,10 @@ static vx_status conv_ctl(vx_net_conv *c, const vx_str *w, uint32_t n) {
     if (c->proto == VX_NET_TCP) vx_net_tcp_close(&stack, c, vx_clock_read());
     return VX_OK;
   }
+  if (n == 1 && name_is(w[0], "headers") && c->proto == VX_NET_UDP) {
+    conv_headers[c - stack.conv] = true;
+    return VX_OK;
+  }
   if (n == 2 && name_is(w[0], "connect") && c->proto == VX_NET_TCP) {
     if (!parse_addr_port(w[1], &addr, &port) || !port) return VX_ERR_INVALID;
     return tcp_connect(c, addr, port);
@@ -611,6 +800,30 @@ static vx_status fs_write(void *ctx, uint64_t n, uint64_t offset, const uint8_t 
     size_t taken = 0;
     vx_status st = vx_net_tcp_write(&stack, c, buf, *count, &taken, vx_clock_read());
     *count = (uint32_t)taken;
+    return st;
+  }
+  if (k == N_QUERY) { // held while the name is looked up
+    uint32_t q = query_at(n);
+    if (q == QUERIES) return VX_ERR_NOT_FOUND;
+    if (!stack_up) return VX_ERR_BAD_STATE;
+    uint32_t len = *count;
+    if (len && buf[len - 1] == '\n') len--;
+    vx_str w[4];
+    uint32_t nw = words(buf, *count, w);
+    vx_status st = proto_of(n) == Q_CS
+                       ? cs_query(&queries[q].answer, (vx_str){(const char *)buf, len}, vx_clock_read())
+                       : dns_query(&queries[q].answer, w, nw, vx_clock_read());
+    return st;
+  }
+  if (k == N_DATA && conv_headers[conv_of(n)]) { // the header says where it goes
+    uint32_t len = *count;
+    const uint8_t mapped[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
+    if (len < UDP_HEADER || memcmp(buf, mapped, 12) != 0) return VX_ERR_INVALID;
+    uint32_t addr = (uint32_t)buf[12] << 24 | (uint32_t)buf[13] << 16 | (uint32_t)buf[14] << 8 | buf[15];
+    uint16_t port = (uint16_t)(buf[48] << 8 | buf[49]);
+    vx_status st =
+        vx_net_conv_write(&stack, c, addr, port, buf + UDP_HEADER, len - UDP_HEADER, vx_clock_read());
+    *count = st == VX_OK ? len : 0;
     return st;
   }
   if (k == N_DATA) { // one datagram, all of it or none

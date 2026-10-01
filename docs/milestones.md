@@ -10,7 +10,7 @@ Updated 2026-10-01.
 |---|---|---|
 | **M1** First light | Done (2026-09-30) | `tests/qemu/boot.ndb` passes on x86_64 and aarch64 |
 | **M2** A shell in a namespace | Done (2026-10-01) | `tests/qemu/shell.ndb` passes on both |
-| **M3** Mount the network | In progress: steps 1–2 done, step 3 two parts of three | — |
+| **M3** Mount the network | In progress: steps 1–3 done | — |
 | M4 POSIX and debugging | Not started | |
 | M5 Storage | Not started | |
 | M6 Pixels | Not started | |
@@ -60,7 +60,7 @@ In progress.
 | 2. The virtio-pci transport, `drv-virtio-net`, driver matching in `devmgr`, rendezvous posts in `svcd`; the aarch64 LPI fix | Done | `acf4107` |
 | 3a. `vx-net` (Ethernet, ARP, IPv4, ICMP echo, UDP, DHCP), `netd` serving `/net` (`ipifc`, `icmp`, `udp`), `ping` | Done | `5ed5a2b` |
 | 3b. TCP in `vx-net` (NewReno, window scaling) and `/net/tcp` with `listen` | Done | `3f536d0` |
-| 3c. The DNS stub and `/net/cs` | To do | |
+| 3c. The DNS stub in `vx-net`, `/net/cs` and `/net/dns`, UDP `headers`, the `cs` command | Done | not yet committed |
 | 4. 9Px over TCP in the `vx-9p` client; `mount tcp!host!port` and `9p://host:port` | To do | |
 | 5. `host/vx9pserve`, and interoperability against a stock 9P2000 server (`u9fs` or 9front's `exportfs`) | To do | |
 | 6. The exit test as a scenario (the harness runs `vx9pserve`); `./build image --iso` | To do | |
@@ -77,7 +77,8 @@ Deferred deliberately, each with where it is due:
 | 9P replies always use arena offset 0 | Pipelined 9P requests would overwrite each other's replies; the client does not pipeline yet | With pipelining |
 | No `Tflush` or timeouts in the 9P client | A read held by a server (`ping` with no reply, a `listen`) waits until it is answered | M3 step 4 or M4 |
 | No per-client connection limit | One client can take all 16 of a server's ring connections | Before M8 (swarm) |
-| UDP reads carry no source address | An announced, unconnected UDP conversation cannot tell senders apart | M3 step 3c (DNS needs it) |
+| DNS: A records only; no AAAA, no TCP fallback for truncated replies, no search domains | Names resolve to IPv4 only, from what fits in one UDP reply | With IPv6; when a name needs it |
+| UDP `headers` mode is not exercised in QEMU | Only the code path through `vx-net` is tested (host tests); netd's header format is not | When a UDP service needs it |
 | No loopback route | The guest cannot connect to itself, so `listen` is tested in the host tests and the 9P framework but not end to end in QEMU | M3 step 6, or when a test needs it |
 | TCP: no SACK, no timestamps, out-of-order segments dropped; TIME_WAIT 10 s | Recovery from loss is slower than it could be | After M3 |
 | Kernel stacks have no guard pages | A kernel stack overflow corrupts memory instead of faulting; the deepest path measured uses about 9 of 16 KiB at `-O0` | M4 |
@@ -103,7 +104,7 @@ Deferred deliberately, each with where it is due:
 | `shell` | M2's exit test |
 | `pci` | `devmgr` finds the PCI functions through ACPI |
 | `net` | `drv-virtio-net`: a session, ARP to QEMU's gateway and back, the driver killed and restarted |
-| `netd` | DHCP, `/net/ipifc/0/status` as M3's exit test reads it, `ping 10.0.2.2` |
+| `netd` | DHCP, `/net/ipifc/0/status` as M3's exit test reads it, `ping 10.0.2.2`, `cs` through `/net/cs` and `/net/dns` (a service name, `localhost` through QEMU's DNS proxy, NXDOMAIN) |
 | `tcp` | TCP against QEMU's own stack: 256 KiB echoed through a host `cat`, hangup, a refused connection |
 
 Host tests (`tests/host/`, under ASan and UBSan) and fuzzers (`tests/fuzz/`) run in `./build check`.

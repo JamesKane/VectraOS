@@ -876,6 +876,7 @@ static const program USER_PROGRAMS[] = {
     {"ns", "cmd/ns.c", IN_BOOTFS, nullptr},
     {"tail", "cmd/tail.c", IN_BOOTFS, nullptr},
     {"ping", "cmd/ping.c", IN_BOOTFS, nullptr},
+    {"cs", "cmd/cs.c", IN_BOOTFS, nullptr},
     {"drv-uart-16550", "drivers/drv-uart-16550/uart.c", IN_BOOTFS, "x86_64"},
     {"drv-uart-pl011", "drivers/drv-uart-pl011/uart.c", IN_BOOTFS, "aarch64"},
     {"drv-virtio-net", "drivers/drv-virtio-net/net.c", IN_BOOTFS, nullptr},
