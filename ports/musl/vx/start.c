@@ -30,18 +30,28 @@ static char *proc_string(size_t *used, vx_str s) {
   return p;
 }
 
-// AT_RANDOM's 16 bytes, which seed musl's stack protector and malloc. The
-// kernel gives user space no entropy yet, so they come from the clock and
-// the layout: not secret (a known gap, docs/milestones.md).
+// The process's random generator (lib/vx-rand), seeded with the entropy= its
+// parent gave it (svcd, or a POSIX parent: spawn_records). It makes AT_RANDOM,
+// which seeds musl's stack protector and malloc, answers getrandom, and
+// seeds each child. A process given no seed has an unseeded generator:
+// AT_RANDOM then comes from the clock and its layout, not secret, and
+// getrandom fails (EAGAIN) rather than pretend.
+static vx_drbg proc_entropy;
+
 static void proc_random(void) {
-  uint64_t x = (uint64_t)vx_clock_read() ^ (uintptr_t)&proc_start ^ proc_kernel_task_id << 32;
-  for (int i = 0; i < 2; i++) {
-    uint64_t z = (x += 0x9e37'79b9'7f4a'7c15);
-    z = (z ^ (z >> 30)) * 0xbf58'476d'1ce4'e5b9;
-    z = (z ^ (z >> 27)) * 0x94d0'49bb'1331'11eb;
-    z ^= z >> 31;
-    memcpy(proc_start.random + (size_t)8 * i, &z, 8);
-  }
+  vx_ndb_record rec;
+  vx_str seed = vx_spawn_record("entropy", &rec) ? vx_ndb_get(&rec, "entropy") : (vx_str){};
+  if (seed.len >= 16) vx_drbg_mix(&proc_entropy, seed.ptr, seed.len, true);
+  uint64_t fallback[2] = {(uint64_t)vx_clock_read(), (uintptr_t)&proc_start ^ proc_kernel_task_id << 32};
+  if (!proc_entropy.seeded) vx_drbg_mix(&proc_entropy, fallback, sizeof fallback, false);
+  vx_drbg_read(&proc_entropy, proc_start.random, sizeof proc_start.random);
+}
+
+static long proc_getrandom(void *buf, size_t n) {
+  if (!proc_entropy.seeded) return -EAGAIN;
+  if (n > 1u << 20) n = 1u << 20;
+  vx_drbg_read(&proc_entropy, buf, n);
+  return (long)n;
 }
 
 // Called by crt1's _start with the bootstrap channel and the program's main.

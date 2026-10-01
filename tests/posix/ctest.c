@@ -20,6 +20,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/auxv.h>
+#include <sys/random.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
@@ -372,6 +374,73 @@ static void test_signals(void) {
   signal(SIGUSR1, SIG_DFL);
 }
 
+static bool all_zero(const unsigned char *p, size_t n) {
+  for (size_t i = 0; i < n; i++)
+    if (p[i]) return false;
+  return true;
+}
+
+// /tmp (tmpfs), /dev's null, zero and urandom (nullfs), getrandom.
+static void test_tmp_and_devices(void) {
+  char buf[64] = {};
+  errno = 0;
+  CHECK(mkdir("/tmp/d", 0755) == 0);
+  CHECK(mkdir("/tmp/d", 0755) == -1 && errno == EEXIST); // made already
+  FILE *f = fopen("/tmp/d/a.txt", "w");
+  CHECK(f && fputs("hello tmp\n", f) >= 0 && fclose(f) == 0);
+  struct stat st;
+  CHECK(stat("/tmp/d/a.txt", &st) == 0 && S_ISREG(st.st_mode) && st.st_size == 10);
+  f = fopen("/tmp/d/a.txt", "a");
+  CHECK(f && fputs("more\n", f) >= 0 && fclose(f) == 0);
+  f = fopen("/tmp/d/a.txt", "r");
+  CHECK(f && fread(buf, 1, sizeof buf - 1, f) == 15 && strcmp(buf, "hello tmp\nmore\n") == 0);
+  if (f) fclose(f);
+  DIR *d = opendir("/tmp/d");
+  struct dirent *e = d ? readdir(d) : nullptr;
+  CHECK(e && strcmp(e->d_name, "a.txt") == 0 && !readdir(d));
+  if (d) closedir(d);
+
+  // Removed while open: gone from its directory, still readable.
+  int fd = open("/tmp/d/a.txt", O_RDONLY);
+  CHECK(fd >= 0 && unlink("/tmp/d/a.txt") == 0);
+  errno = 0;
+  CHECK(stat("/tmp/d/a.txt", &st) == -1 && errno == ENOENT);
+  memset(buf, 0, sizeof buf);
+  CHECK(read(fd, buf, 5) == 5 && memcmp(buf, "hello", 5) == 0);
+  close(fd);
+
+  // A hole reads as zeros; truncation; a directory goes only when empty.
+  fd = open("/tmp/d/hole", O_RDWR | O_CREAT, 0644);
+  CHECK(fd >= 0 && pwrite(fd, "x", 1, 100) == 1);
+  if (fd < 0) return; // the rest needs it
+  unsigned char c = 0xff;
+  CHECK(pread(fd, &c, 1, 50) == 1 && c == 0 && fstat(fd, &st) == 0 && st.st_size == 101);
+  close(fd);
+  CHECK(rmdir("/tmp/d") == -1); // not empty
+  fd = open("/tmp/d/hole", O_WRONLY | O_TRUNC);
+  CHECK(fd >= 0 && fstat(fd, &st) == 0 && st.st_size == 0);
+  close(fd);
+  CHECK(unlink("/tmp/d/hole") == 0 && rmdir("/tmp/d") == 0);
+  errno = 0;
+  CHECK(opendir("/tmp/d") == nullptr && errno == ENOENT);
+
+  // /dev.
+  fd = open("/dev/null", O_RDWR);
+  CHECK(fd >= 0 && write(fd, "gone", 4) == 4 && read(fd, buf, sizeof buf) == 0);
+  close(fd);
+  unsigned char zeros[16], r1[32] = {}, r2[32] = {};
+  memset(zeros, 0xff, sizeof zeros);
+  fd = open("/dev/zero", O_RDONLY);
+  CHECK(fd >= 0 && read(fd, zeros, sizeof zeros) == 16 && all_zero(zeros, sizeof zeros));
+  close(fd);
+  fd = open("/dev/urandom", O_RDONLY);
+  CHECK(fd >= 0 && read(fd, r1, sizeof r1) == 32 && read(fd, r2, sizeof r2) == 32);
+  CHECK(!all_zero(r1, sizeof r1) && memcmp(r1, r2, sizeof r1) != 0);
+  close(fd);
+  CHECK(getrandom(r1, sizeof r1, 0) == 32 && memcmp(r1, r2, sizeof r1) != 0 && !all_zero(r1, sizeof r1));
+  CHECK(getauxval(AT_RANDOM) != 0);
+}
+
 int main(int argc, char **argv) {
   if (argc >= 3 && strcmp(argv[1], "one") != 0) return child_main(argv);
   printf("ctest: hello from musl\n");
@@ -471,6 +540,7 @@ int main(int argc, char **argv) {
   test_processes();
   test_fork_exec_pipes();
   test_signals();
+  test_tmp_and_devices();
 
   // No threads yet: pthread_create fails, and says so (docs/milestones.md).
   pthread_t thread;

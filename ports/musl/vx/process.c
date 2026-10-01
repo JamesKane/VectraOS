@@ -184,6 +184,12 @@ static long spawn_records(vx_ndb_writer *w, char *const argv[], char *const envp
     vx_ndb_put(w, "env", (vx_str){envp[i], strlen(envp[i])});
     vx_ndb_end(w);
   }
+  if (proc_entropy.seeded) { // a seed of its own, from this process's generator
+    uint8_t seed[32];
+    vx_drbg_read(&proc_entropy, seed, sizeof seed);
+    vx_ndb_put(w, "entropy", (vx_str){(const char *)seed, sizeof seed});
+    vx_ndb_end(w);
+  }
   // Handles: the descriptors' pipes and the namespace's connections, leaving
   // room for the console, "posix" and "self".
   uint32_t cap = VX_CHANNEL_MAX_HANDLES - 3;
@@ -363,6 +369,10 @@ static long fork_child(void) {
   posix_pid_cache = 0;
   vx_task_summary me;
   if (vx_task_info(vx_self, &me) == VX_OK) proc_kernel_task_id = me.id;
+  // The generator was copied: the child's goes its own way from the parent's.
+  static const char child_tag[] = "fork child";
+  vx_drbg_mix(&proc_entropy, child_tag, sizeof child_tag, false);
+  vx_drbg_mix(&proc_entropy, &proc_kernel_task_id, sizeof proc_kernel_task_id, false);
   fd_after_fork();
   return 0;
 }
@@ -392,5 +402,7 @@ static long proc_fork(void) {
   if (st != VX_OK && child) vx_task_kill(child, -1);
   if (child) vx_handle_close(child);
   if (st != VX_OK) return ctx.error ? ctx.error : -EAGAIN;
+  static const char parent_tag[] = "fork parent";
+  vx_drbg_mix(&proc_entropy, parent_tag, sizeof parent_tag, false);
   return (long)ctx.pid;
 }

@@ -94,6 +94,10 @@ static channel *root_spawn_message(task *t) {
   vx_ndb_end(&w);
   vx_ndb_put(&w, "cmdline", boot.cmdline);
   vx_ndb_end(&w);
+  if (boot.seeded) { // the root task seeds everything after it from this (lib/vx-rand)
+    vx_ndb_put(&w, "entropy", (vx_str){(const char *)boot.seed, sizeof boot.seed});
+    vx_ndb_end(&w);
+  }
   if (w.failed) panic(VX_STR("the root task's spawn message does not fit"));
 
   channel_msg *m = msg_alloc((uint32_t)(sizeof(vx_msg_header) + w.len), count);

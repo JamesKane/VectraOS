@@ -48,6 +48,7 @@
 #include "../../../lib/vx-ns/spawn.c"
 #include "../../../lib/vx-rt/spawn.c"
 #include "../../../lib/vx-posix/posix.h"
+#include "../../../lib/vx-rand/drbg.c"
 #include "../../../third_party/musl/src/process/fdop.h" // posix_spawn's file actions, as musl keeps them
 
 // A vx_status as a negated errno. Statuses from 9P servers arrive already
@@ -174,6 +175,7 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
   case SYS_getgid:
   case SYS_getegid: return 0;
   case SYS_uname: return proc_uname((struct utsname *)a1);
+  case SYS_getrandom: return proc_getrandom((void *)a1, (size_t)a2);
   // Signals (signal.c)
   case SYS_tkill:
   case SYS_tgkill: return sig_kill(posix_pid(), (int)(n == SYS_tkill ? a2 : a3)); // one thread: the process

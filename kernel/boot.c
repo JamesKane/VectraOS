@@ -20,8 +20,9 @@ LIMINE_REQUEST struct limine_tsc_frequency_request tsc_request = {.id = LIMINE_T
 LIMINE_REQUEST struct limine_mp_request mp_request = {.id = LIMINE_MP_REQUEST_ID};
 #endif
 LIMINE_REQUEST struct limine_rsdp_request rsdp_request = {.id = LIMINE_RSDP_REQUEST_ID}; // ACPI (acpi.c)
+// Five values: the stack guard's, and 32 bytes for user space (root.c).
 LIMINE_REQUEST struct limine_entropy_request entropy_request = {.id = LIMINE_ENTROPY_REQUEST_ID,
-                                                                .value_count = 1};
+                                                                .value_count = 5};
 LIMINE_REQUEST struct limine_executable_cmdline_request cmdline_request = {
     .id = LIMINE_EXECUTABLE_CMDLINE_REQUEST_ID};
 LIMINE_REQUEST struct limine_executable_address_request address_request = {
@@ -40,7 +41,9 @@ typedef struct boot_info {
   uint64_t hhdm; // virtual address = physical address + hhdm
   uint64_t usable_bytes;
   uint64_t cpu_count;
-  vx_str cmdline;       // from limine.conf; empty if there is none
+  vx_str cmdline;   // from limine.conf; empty if there is none
+  uint64_t seed[4]; // the bootloader's entropy, for user space (root.c)
+  bool seeded;
   uint64_t kernel_phys; // where the kernel image is loaded, physically contiguous
   uint64_t kernel_virt;
   // Every range of RAM and firmware memory, whatever it is used for: a
@@ -130,6 +133,10 @@ static uint64_t early_alloc(uint64_t pages) {
 
   struct limine_entropy_response *entropy = entropy_request.response;
   if (entropy && entropy->value_count >= 1) __stack_chk_guard = entropy->values[0];
+  if (entropy && entropy->value_count >= 5) {
+    for (int i = 0; i < 4; i++) boot.seed[i] = entropy->values[i + 1];
+    boot.seeded = true;
+  }
   return true;
 }
 

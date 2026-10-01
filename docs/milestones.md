@@ -85,7 +85,7 @@ In progress. 04 §6 gives M4's content but no steps or exit test, so they are se
 | 3b. `posixd`: the process table (pids, parents, process groups, sessions) and `wait`; the back end's `getpid`, `setpgid`, `setsid` and the rest from it; `posix_spawn` and `posix_spawnp` in the back end, registering each child before it runs | Done | `5353e4b` |
 | 3c. libc: `fork` (the child reconnecting its namespace and console, reopening its files), `execve` (`posixd`'s `EXEC`: the same process in a new task), pipes over channels, descriptors and the working directory passed to children, `posix_spawn`'s file actions | Done | `7e09e6e` |
 | 3d. Signals: `sigaction`, `sigprocmask`, `sigsuspend`, `kill` through `posixd`, delivery by `thread_interrupt` to a libc trampoline (deferred to the back end's return, `EINTR` or `SA_RESTART`), faults as `SIGSEGV` and the rest, `SIGCHLD`. Kernel: `thread_interrupt` queues eight; a call that ends without its reply takes back an unread request; an interrupt no longer overwrites a finished wait's result | Done | `8c9b8c2` |
-| 3e. A RAM file system for `/tmp`; `/dev/null`, `/dev/zero`, `/dev/urandom`; the POSIX namespace template (`/lib/ns/posix`) | To do | |
+| 3e. `tmpfs` (`/tmp`); `nullfs` (`/dev/null`, `zero`, `random`, `urandom`); the POSIX namespace template (`boot/ns/posix.ndb`, a manifest's `ns=posix`); entropy for user space: the bootloader's, from the kernel to svcd to whoever asks (`entropy=`), through `lib/vx-rand`'s generator; `getrandom` | Done | not yet committed |
 | 4. `ptyd`; sockets over `/net`; `poll` and `select`; the `posix` 9Px extension | To do | |
 | 5. Lua, sbase and dash, vendored | To do | |
 | 6. The `procfs` debug files, crash directories, `lib/vx-debug`, `dbg -c`, `/sys/clock`, `vx-prof` zones | To do | |
@@ -110,7 +110,7 @@ Deferred deliberately, each with where it is due:
 | `vmo_clone` and `fork` copy at once | Correct, and charged as 01 §5 says, but a `fork` of a large process copies all of it; sharing pages until written can come behind the same call | When `fork` is slow enough to matter |
 | No hardware watchpoints; no thread, image or exit events to a debugger yet | A debugger sees faults, breakpoints and steps only | M4 step 6 (the `procfs` debug files), M12 (watchpoints) |
 | No threads in the POSIX personality: `clone` is `ENOSYS`, so `pthread_create` fails; the back end does not lock | Single-threaded C programs only | When a port needs threads (the kernel side exists: threads, futexes, the thread pointer) |
-| No entropy for user space: `AT_RANDOM`, and so musl's stack guard and malloc's secret, come from the clock; `getrandom` is `ENOSYS` | Nothing secret can be made in user space | A kernel random source, before `keyd` (M8) |
+| Entropy is the bootloader's only, seeded once: nothing is mixed in later (interrupt timing, the CPU's RNG instructions), and a service gets it only if its manifest says `entropy` | Enough for urandom's purposes; not a long-lived key store | Before `keyd` (M8) |
 | No wall clock: `CLOCK_REALTIME` counts from boot | Dates read as 1970 | An RTC driver or NTP over `netd` |
 | No `as_protect`: `PROT_NONE` is mapped read-write and `mprotect` is `ENOSYS` | Guard pages do not fault; nothing else breaks (musl's malloc expects this) | When a port needs it (JITs, guard pages) |
 | Signals, `fork`, `exec`, pipes and `wait` are `ENOSYS`; `kill` and `raise` on oneself end the process | — | M4 step 3 (`posixd`) |
@@ -122,6 +122,7 @@ Deferred deliberately, each with where it is due:
 | Pipes are channels of 4 KiB messages, not rings; a writer that finds the queue full polls | Throughput is modest | When a benchmark says so (01 §9 has rings) |
 | A forked child does not reconnect a dialed (TCP) mount cleanly: it dials again, and the old connection's state is left behind | — | When a POSIX program needs one |
 | Signals: no alternate signal stack, no registers in a handler's `ucontext`, no `sigqueue` or real-time queueing, no stopping (`SIGSTOP`, `SIGTSTP` are ignored); a 9P call (a file read, the console) is not interrupted, its handler runs when it is done | Job control and `Ctrl-C` at a blocked console read wait | M4 step 4 (`ptyd`, job control); the rest when a port needs it |
+| `tmpfs` holds 1024 nodes and 128 MiB, and is not restarted; no `rename`, links or permissions it enforces; templates are only what svcd's manifests name (`ns=`), not `/lib/ns` files a program reads | — | `rename` with the `posix` extension (M4 step 4); the rest when needed |
 | AVX, SVE and SME fault | Code built for x86-64-v1 and armv8-a runs; code that needs AVX or SVE does not | When a port needs them (XSAVE; SVE's state) |
 | FP/SIMD registers are not in `thread_state` or a `vx_exception` | A debugger cannot see them; the musl back end's signal entry saves them itself | M4 step 6 (`dbg`) |
 | `task_mem_rw`'s first write to code copies the whole mapping | A breakpoint in a large binary costs its text's size once | When it matters |

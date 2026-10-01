@@ -1,10 +1,9 @@
 # tests/user/ctest.ndb: the C library test's manifest (tests/qemu/posix.ndb).
+# Its namespace and environment are the POSIX template's (boot/ns/posix.ndb).
 
-service=ctest program=/boot/bin/ctest console
+service=ctest program=/boot/bin/ctest console entropy
 arg=one
 arg="two words"
 env=GREETING=hello
-env=HOME=/
-mount=/ srv=bootfs
-env=PATH=/boot/bin
+ns=posix
 connect=posixd

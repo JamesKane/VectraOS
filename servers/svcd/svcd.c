@@ -20,6 +20,8 @@
 //   irq=LINE                                   a driver's interrupt
 //   claim=SRV                                  the post's server end, as "claim:SRV"
 //   connect=SRV                                a connector to the post, as "srv:SRV"
+//   ns=NAME                                    the records of the namespace template
+//                                              boot/ns/NAME.ndb (mount, bind, env), here
 //
 // post=SRV: svcd makes a listen channel, gives the service its server end
 // ("listen") and keeps the client end as /srv/SRV, for mounts. It keeps a
@@ -30,7 +32,9 @@
 // only on that architecture. vx.skip=NAME,... on the kernel command line
 // leaves services out. A service gets nothing that is not named
 // here: no ambient authority (01 §2). resource and acpi: the root Resource
-// and the ACPI tables, which only devmgr needs.
+// and the ACPI tables, which only devmgr needs. entropy: a seed of its own
+// for a random generator, from svcd's, which the kernel seeded from the
+// bootloader's entropy (lib/vx-rand).
 //
 // Drivers, the services with ioport, mmio or irq records, start first. svcd
 // mints their device objects from the root Resource once, keeps them, and
@@ -45,6 +49,7 @@
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-rt/spawn.c"
 #include "../../lib/vx-tar/tar.c"
+#include "../../lib/vx-rand/drbg.c"
 
 static constexpr uint32_t MAX_SERVICES = 16;
 static constexpr uint32_t MAX_RESTARTS = 5;                   // in RESTART_WINDOW, then svcd gives up
@@ -223,6 +228,8 @@ static void read_manifest(vx_str path, vx_str text) {
   }
 }
 
+static vx_drbg randomness; // seeded from the kernel's entropy; each service that asks gets a seed from it
+
 // Builds the spawn message's records and handles for a service, and starts it.
 static vx_status start(service *s) {
   static char records[16 * 1024];
@@ -277,12 +284,54 @@ static vx_status start(service *s) {
     st = vx_handle_dup(vx_self, VX_RIGHT_INSPECT | VX_RIGHT_MANAGE | VX_RIGHT_TRANSFER, &handles[count]);
     handle_names[count++] = VX_STR("tasks");
   }
+  if (st == VX_OK && vx_ndb_has(&rec, "entropy") && randomness.seeded) {
+    uint8_t seed[32];
+    vx_drbg_read(&randomness, seed, sizeof seed);
+    vx_ndb_put(&w, "entropy", (vx_str){(const char *)seed, sizeof seed});
+    vx_ndb_end(&w);
+  }
   for (uint32_t i = 0; st == VX_OK && i < s->devices; i++) {
     st = vx_handle_dup(s->device[i], VX_RIGHTS_SAME, &handles[count]);
     handle_names[count++] = s->device_name[i];
   }
 
-  while (st == VX_OK && vx_ndb_next(&r, &rec) == VX_NDB_RECORD && !vx_ndb_has(&rec, "service")) {
+  // The manifest's records, and a template's in the middle of them (ns=).
+  static char template_scratch[16 * 1024];
+  vx_ndb_reader tmpl = {};
+  bool in_template = false;
+  while (st == VX_OK) {
+    if (in_template && vx_ndb_next(&tmpl, &rec) != VX_NDB_RECORD) {
+      in_template = false;
+      continue;
+    }
+    if (!in_template && (vx_ndb_next(&r, &rec) != VX_NDB_RECORD || vx_ndb_has(&rec, "service"))) break;
+    if (in_template && !vx_ndb_has(&rec, "mount") && !vx_ndb_has(&rec, "bind") && !vx_ndb_has(&rec, "env"))
+      continue; // a template names a namespace and its environment, nothing more
+    if (!in_template && vx_ndb_has(&rec, "ns")) {
+      vx_str name = vx_ndb_get(&rec, "ns");
+      char path[64];
+      vx_tar_entry t;
+      const vx_str dir = VX_STR("boot/ns/"), ext = VX_STR(".ndb"); // the path is a vx_str: no terminator
+      bool found = name.len && dir.len + name.len + ext.len <= sizeof path;
+      if (found) {
+        memcpy(path, dir.ptr, dir.len);
+        memcpy(path + dir.len, name.ptr, name.len);
+        memcpy(path + dir.len + name.len, ext.ptr, ext.len);
+        vx_str whole = {path, dir.len + name.len + ext.len};
+        found = vx_tar_find(image, image_size, whole, &t) == VX_OK && !t.dir;
+      }
+      if (!found) {
+        say(s->name, VX_STR(": no namespace template "), name);
+        vx_print(VX_STR("\n"));
+        st = VX_ERR_NOT_FOUND;
+        break;
+      }
+      tmpl = (vx_ndb_reader){.src = {(const char *)t.data, t.size},
+                             .scratch = template_scratch,
+                             .scratch_cap = sizeof template_scratch};
+      in_template = true;
+      continue;
+    }
     if (vx_ndb_has(&rec, "arg")) {
       vx_ndb_put(&w, "arg", vx_ndb_get(&rec, "arg"));
     } else if (vx_ndb_has(&rec, "env")) {
@@ -421,6 +470,12 @@ int vx_main(void) {
   vx_print_u64(info.id);
   vx_print(VX_STR(")\n"));
   if (vx_port_create(0, &port) != VX_OK) fail("port_create");
+  vx_ndb_record seed;
+  vx_str bytes = vx_spawn_record("entropy", &seed) ? vx_ndb_get(&seed, "entropy") : (vx_str){};
+  if (bytes.len >= 16)
+    vx_drbg_mix(&randomness, bytes.ptr, bytes.len, true);
+  else
+    vx_print(VX_STR("svcd: no entropy from the kernel: services get none\n"));
 
   vx_ndb_record rec;
   resource = vx_spawn_take("resource");

@@ -84,6 +84,9 @@ typedef struct vx_msg_size { // what channel_read and channel_call report
 //   env=NAME=VALUE                   an environment variable (the POSIX
 //                                    personality's); repeated
 //   cmdline=VALUE                    the kernel command line (the root task's)
+//   entropy=BYTES                    32 bytes to seed a random generator: the
+//                                    bootloader's (the root task's), or one its
+//                                    parent made for it (lib/vx-rand)
 //   bootimage size=N                 the boot image's length (the bootimage handle)
 //   mount=OLD handle=NAME [aname=A] [flags=F] [src=S]    the namespace, as
 //   bind=OLD new=NEW [flags=F]                           vx-ns replays it

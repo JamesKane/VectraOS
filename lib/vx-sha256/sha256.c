@@ -2,6 +2,8 @@
 // trees against VENDOR.ndb, and anywhere else a published hash must be checked.
 // Builds for the host and the target; no allocation, no library calls.
 
+#pragma once
+
 #include "../../abi/vx/abi.h"
 
 typedef struct vx_sha256 {
