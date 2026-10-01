@@ -890,6 +890,14 @@ static void merge_sources(file_list *out, const file_list *generic, const file_l
   for (int i = 0; i < n; i++) out->paths[out->count++] = srcs[i].path;
 }
 
+// Drops the paths `words` lists, keeping the rest in order.
+static void drop_listed(file_list *l, vx_str words) {
+  int kept = 0;
+  for (int k = 0; k < l->count; k++)
+    if (!words_has(words, l->paths[k])) l->paths[kept++] = l->paths[k];
+  l->count = kept;
+}
+
 // musl's source set (port.ndb): src/*/ and src/malloc/mallocng, with each
 // directory's ARCH/ files replacing the generic ones, less exclude=.
 static void musl_sources(file_list *out, const arch *a, vx_str exclude) {
@@ -905,18 +913,10 @@ static void musl_sources(file_list *out, const arch *a, vx_str exclude) {
   static const char *const C[] = {".c", nullptr}, *const ARCH_EXTS[] = {".c", ".s", ".S", nullptr};
   for (int i = 0; i < dirs.count; i++) {
     list_dir(&generic, musl.src, dirs.paths[i], C);
-    int first = specific.count;
     list_dir(&specific, musl.src, fmt("%s/%s", dirs.paths[i], a->name), ARCH_EXTS);
-    for (int k = first; k < specific.count;) { // drop the excluded, keeping the rest in order
-      if (!words_has(exclude, specific.paths[k])) {
-        k++;
-        continue;
-      }
-      memmove(&specific.paths[k], &specific.paths[k + 1],
-              (size_t)(specific.count - k - 1) * sizeof specific.paths[0]);
-      specific.count--;
-    }
   }
+  drop_listed(&generic, exclude);
+  drop_listed(&specific, exclude);
   merge_sources(out, &generic, &specific, a->name);
 }
 
@@ -1219,6 +1219,7 @@ static const program USER_PROGRAMS[] = {
     {"nettest", "tests/user/nettest.c", IN_TESTS, nullptr, false},
     {"tcptest", "tests/user/tcptest.c", IN_TESTS, nullptr, false},
     {"procfs", "servers/procfs/procfs.c", IN_BOOTFS, nullptr, false},
+    {"posixd", "servers/posixd/posixd.c", IN_BOOTFS, nullptr, false},
     {"devmgr", "servers/devmgr/devmgr.c", IN_BOOTFS, nullptr, false},
     {"netd", "servers/netd/netd.c", IN_BOOTFS, nullptr, false},
     {"gsh", "cmd/gsh.c", IN_BOOTFS, nullptr, false},

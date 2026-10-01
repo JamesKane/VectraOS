@@ -8,7 +8,8 @@ extern const Elf64_Ehdr __ehdr_start;
 int __libc_start_main(int (*main)(int, char **, char **), int argc, char **argv, void (*init)(void),
                       void (*fini)(void), void (*ldso)(void));
 
-static uint64_t proc_pid; // the kernel's id for the task
+static uint64_t proc_kernel_task_id; // the kernel's id for the task
+static void posix_init(void);        // process.c
 
 // What Linux puts on a new process's stack, built here instead: argc, the
 // arguments, the environment and the auxiliary vector, one array as musl
@@ -32,7 +33,7 @@ static char *proc_string(size_t *used, vx_str s) {
 // kernel gives user space no entropy yet, so they come from the clock and
 // the layout: not secret (a known gap, docs/milestones.md).
 static void proc_random(void) {
-  uint64_t x = (uint64_t)vx_clock_read() ^ (uintptr_t)&proc_start ^ proc_pid << 32;
+  uint64_t x = (uint64_t)vx_clock_read() ^ (uintptr_t)&proc_start ^ proc_kernel_task_id << 32;
   for (int i = 0; i < 2; i++) {
     uint64_t z = (x += 0x9e37'79b9'7f4a'7c15);
     z = (z ^ (z >> 30)) * 0xbf58'476d'1ce4'e5b9;
@@ -50,14 +51,16 @@ static void proc_random(void) {
   vx_read_spawn(bootstrap);
   fd_init();
   vx_task_summary me;
-  if (vx_self && vx_task_info(vx_self, &me) == VX_OK) proc_pid = me.id;
+  if (vx_self && vx_task_info(vx_self, &me) == VX_OK) proc_kernel_task_id = me.id;
+  posix_init();
   proc_random();
 
   uintptr_t *w = proc_start.words;
   size_t used = 0, n = 0;
   uint32_t argc = 1 + vx_spawn.argc;
   w[n++] = argc;
-  char *name = proc_string(&used, vx_spawn.name.len ? vx_spawn.name : VX_STR("a.out"));
+  vx_str argv0 = vx_spawn.argv0.ptr ? vx_spawn.argv0 : vx_spawn.name; // argv0= from a POSIX parent
+  char *name = proc_string(&used, argv0.len ? argv0 : VX_STR("a.out"));
   w[n++] = (uintptr_t)name;
   for (uint32_t i = 0; i < vx_spawn.argc; i++) w[n++] = (uintptr_t)proc_string(&used, vx_spawn.args[i]);
   w[n++] = 0;
@@ -86,7 +89,7 @@ static void proc_random(void) {
   vx_thread_exit(status);
 }
 
-static long proc_id(void) { return (long)proc_pid; }
+static uint64_t proc_kernel_id(void) { return proc_kernel_task_id; }
 
 // raise() and abort(): with no handlers yet, a signal does what its default
 // does. The ones that are ignored by default are; the rest end the process,

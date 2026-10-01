@@ -79,6 +79,8 @@ typedef struct vx_msg_size { // what channel_read and channel_call report
 //   spawn=NAME                       the program
 //   handle=NAME index=N              the message's handle N; "self" is the task
 //   arg=VALUE                        an argument; repeated, in order
+//   argv0=VALUE                      the POSIX argv[0], when it is not the
+//                                    program's name (posix_spawn)
 //   env=NAME=VALUE                   an environment variable (the POSIX
 //                                    personality's); repeated
 //   cmdline=VALUE                    the kernel command line (the root task's)

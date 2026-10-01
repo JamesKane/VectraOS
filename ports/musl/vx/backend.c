@@ -25,9 +25,11 @@
 #include <fcntl.h>
 #include <sched.h>
 #include <signal.h>
+#include <spawn.h>
 #include <limits.h>
 #include <stdckdint.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -36,11 +38,14 @@
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <sys/utsname.h>
+#include <sys/wait.h>
 #include <time.h>
 
 #include "vx.h"
 #include "../../../lib/vx-rt/stdio.c"
 #include "../../../lib/vx-ns/spawn.c"
+#include "../../../lib/vx-rt/spawn.c"
+#include "../../../lib/vx-posix/posix.h"
 
 // A vx_status as a negated errno. Statuses from 9P servers arrive already
 // mapped from their error texts (vx-9p).
@@ -69,6 +74,7 @@ static long vx_errno(vx_status st) {
 #include "fd.c"
 #include "memory.c"
 #include "start.c"
+#include "process.c"
 
 // The calls VectraOS does not do yet: -ENOSYS, and one line in the kernel log
 // the first time each is asked for, so a port that needs one says so.
@@ -141,9 +147,14 @@ long __vx_syscall(long n, long a1, long a2, long a3, long a4, long a5, long a6) 
   case SYS_exit:
   case SYS_exit_group: proc_exit((int)a1);
   case SYS_getpid:
-  case SYS_gettid:
-  case SYS_set_tid_address: return proc_id();
-  case SYS_getppid: // no parent known until posixd (M4 step 3)
+  case SYS_gettid: // one thread, whose id is the process's
+  case SYS_set_tid_address: return posix_pid();
+  case SYS_getppid: return posix_id(1, 0);
+  case SYS_getpgid: return posix_getpgid(a1);
+  case SYS_getsid: return posix_getsid(a1);
+  case SYS_setpgid: return posix_setpgid(a1, a2);
+  case SYS_setsid: return posix_setsid();
+  case SYS_wait4: return posix_wait4(a1, (int *)a2, (int)a3, (struct rusage *)a4);
   case SYS_getuid:
   case SYS_geteuid:
   case SYS_getgid:
@@ -151,7 +162,7 @@ long __vx_syscall(long n, long a1, long a2, long a3, long a4, long a5, long a6) 
   case SYS_uname: return proc_uname((struct utsname *)a1);
   case SYS_tkill:
   case SYS_tgkill: return proc_signal_self((int)(n == SYS_tkill ? a2 : a3));
-  case SYS_kill: return a1 == proc_id() || a1 == 0 ? proc_signal_self((int)a2) : -ESRCH;
+  case SYS_kill: return a1 == posix_pid() || a1 == 0 ? proc_signal_self((int)a2) : -ESRCH; // M4 step 3d
   case SYS_rt_sigaction:
   case SYS_rt_sigprocmask:
   case SYS_sigaltstack: return 0; // nothing is delivered yet (M4 step 3)

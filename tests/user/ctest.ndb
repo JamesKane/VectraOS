@@ -6,3 +6,5 @@ arg="two words"
 env=GREETING=hello
 env=HOME=/
 mount=/ srv=bootfs
+env=PATH=/boot/bin
+connect=posixd

@@ -82,7 +82,7 @@ In progress. 04 §6 gives M4's content but no steps or exit test, so they are se
 | 2c. Kernel: FP/SIMD state (x87/SSE by FXSAVE; arm64 v0–v31, FPCR, FPSR) saved per thread; first-party programs no longer `-mgeneral-regs-only`; `thread_start` enters as if called | Done | `f225529` |
 | 2d. The vx back end (files, directories, stdio, memory, time, the process), compiler-rt's builtins vendored (ADR-0008), `./build` building `libc.a` and the `vectra-musl` sysroot; `ctest`, a C program against it, runs (`posix`) | Done | `a5ef5bf` |
 | 3a. Kernel: `task_create`'s `FORK`, a copy of the caller's memory and handle table (rings' and devices' memory left out, a handle to the caller becoming the child's) | Done | `f5f54eb` |
-| 3b. `posixd`: the process table (pids, parents, process groups, sessions), `posix_spawn`, `wait`; the back end's `getpid` and the rest from it | To do | |
+| 3b. `posixd`: the process table (pids, parents, process groups, sessions) and `wait`; the back end's `getpid`, `setpgid`, `setsid` and the rest from it; `posix_spawn` and `posix_spawnp` in the back end, registering each child before it runs | Done | not yet committed |
 | 3c. libc: `fork` (the child reconnecting its namespace and console), `execve`, pipes over channels, descriptors passed to children | To do | |
 | 3d. Signals: `sigaction`, `kill` through `posixd`, delivery by `thread_interrupt` to a libc trampoline, faults as `SIGSEGV` and the rest, `SIGCHLD` | To do | |
 | 3e. A RAM file system for `/tmp`; `/dev/null`, `/dev/zero`, `/dev/urandom`; the POSIX namespace template (`/lib/ns/posix`) | To do | |
@@ -117,6 +117,7 @@ Deferred deliberately, each with where it is due:
 | `O_APPEND` is not atomic; no `rename`, `link` or locks; `mmap` of a file is a private copy | — | M4 step 4 (the `posix` 9Px extension, `Tmap`) |
 | musl and the builtins are built without CET-IBT or BTI, so programs against musl are not marked | Indirect-branch protection is off in them | With the kernel's enforcement of it in user space |
 | Kernel messages after the console hand-off reach nowhere (`vx.kconsole` keeps them on the serial port): a scenario's `fail="killed"` cannot see a fault in a task svcd started | Such a crash shows only as a negative exit status | A debug-log object (01 §10) |
+| `posixd` trusts the task handle a process connects with, and is not restarted; its table holds 64 processes; children get only the console as descriptors, and `posix_spawn`'s file actions are refused | — | Trust: with capability tokens (M8); descriptors: M4 step 3c |
 | AVX, SVE and SME fault | Code built for x86-64-v1 and armv8-a runs; code that needs AVX or SVE does not | When a port needs them (XSAVE; SVE's state) |
 | FP/SIMD registers are not in `thread_state` or a `vx_exception` | A debugger cannot see them; an in-task handler (a signal handler, from step 3) must save them itself | M4 step 3 (signals), step 6 (`dbg`) |
 | `task_mem_rw`'s first write to code copies the whole mapping | A breakpoint in a large binary costs its text's size once | When it matters |

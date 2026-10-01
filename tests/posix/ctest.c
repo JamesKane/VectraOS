@@ -13,11 +13,13 @@
 #include <math.h>
 #include <pthread.h>
 #include <setjmp.h>
+#include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -45,7 +47,81 @@ static void *never_runs(void *arg) { return arg; }
 
 static double seconds(const struct timespec *t) { return (double)t->tv_sec + (double)t->tv_nsec / 1e9; }
 
+// ctest run by ctest: argv[1] says what to check, argv[2] is the parent's
+// pid, and the exit status says what it found.
+extern char **environ; // POSIX's, which <unistd.h> declares only for _GNU_SOURCE
+
+static int child_main(char **argv) {
+  pid_t parent = (pid_t)strtol(argv[2], nullptr, 10);
+  if (getppid() != parent || getpid() == parent || getsid(0) != getsid(parent)) return 1;
+  if (strcmp(argv[1], "exit") == 0) return (int)strtol(argv[3], nullptr, 10);
+  if (strcmp(argv[1], "group") == 0) return getpgrp() == getpid() ? 9 : 2; // POSIX_SPAWN_SETPGROUP, 0
+  if (strcmp(argv[1], "sleep") == 0) {
+    nanosleep(&(struct timespec){.tv_nsec = 100'000'000}, nullptr);
+    return 3;
+  }
+  if (strcmp(argv[1], "env") == 0) {
+    const char *greeting = getenv("GREETING");
+    return greeting && strcmp(greeting, "hello") == 0 ? 4 : 2;
+  }
+  return 2;
+}
+
+static int spawn_wait(const char *path, bool search, const char *what, const posix_spawnattr_t *attr) {
+  char parent[24];
+  snprintf(parent, sizeof parent, "%d", (int)getpid());
+  char *args[] = {"ctest", (char *)what, parent, "7", nullptr};
+  pid_t child = 0;
+  int err = search ? posix_spawnp(&child, path, nullptr, attr, args, environ)
+                   : posix_spawn(&child, path, nullptr, attr, args, environ);
+  if (err != 0) return -err;
+  int status = 0;
+  if (waitpid(child, &status, 0) != child || !WIFEXITED(status)) return -1000;
+  return WEXITSTATUS(status);
+}
+
+// pids, groups and sessions through posixd; posix_spawn and wait.
+static void test_processes(void) {
+  pid_t me = getpid();
+  CHECK(me >= 2 && getppid() == 1); // connected through /srv/posixd: a session of its own
+  CHECK(getsid(0) == me && getpgrp() == me);
+  errno = 0;
+  CHECK(setsid() == -1 && errno == EPERM); // a group leader already
+  int status;
+  errno = 0;
+  CHECK(waitpid(-1, &status, 0) == -1 && errno == ECHILD);
+
+  CHECK(spawn_wait("/boot/bin/ctest", false, "exit", nullptr) == 7);
+  CHECK(spawn_wait("/boot/bin/ctest", false, "env", nullptr) == 4);
+  CHECK(spawn_wait("ctest", true, "exit", nullptr) == 7); // posix_spawnp, through PATH
+  posix_spawnattr_t attr;
+  posix_spawnattr_init(&attr);
+  posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
+  posix_spawnattr_setpgroup(&attr, 0);
+  CHECK(spawn_wait("/boot/bin/ctest", false, "group", &attr) == 9);
+  posix_spawnattr_destroy(&attr);
+  CHECK(spawn_wait("/boot/bin/no-such-program", false, "exit", nullptr) == -ENOENT);
+
+  // A child still running: WNOHANG finds nothing, then a wait finds it.
+  char parent[24];
+  snprintf(parent, sizeof parent, "%d", (int)me);
+  char *args[] = {"ctest", "sleep", parent, nullptr};
+  pid_t child = 0;
+  CHECK(posix_spawn(&child, "/boot/bin/ctest", nullptr, nullptr, args, environ) == 0 && child > me);
+  CHECK(getpgid(child) == me && getsid(child) == me);
+  CHECK(waitpid(child, &status, WNOHANG) == 0);
+  CHECK(waitpid(-1, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 3);
+  errno = 0;
+  CHECK(getpgid(child) == -1 && errno == ESRCH); // reaped
+  posix_spawn_file_actions_t fa;
+  posix_spawn_file_actions_init(&fa);
+  posix_spawn_file_actions_addclose(&fa, 5);
+  CHECK(posix_spawn(&child, "/boot/bin/ctest", &fa, nullptr, args, environ) == ENOTSUP); // M4 step 3c
+  posix_spawn_file_actions_destroy(&fa);
+}
+
 int main(int argc, char **argv) {
+  if (argc >= 3 && strcmp(argv[1], "one") != 0) return child_main(argv);
   printf("ctest: hello from musl\n");
   // The spawn message's arguments, after the program's name, and environment.
   bool args = argc == 3 && argv[0] && argv[1] && argv[2];
@@ -139,6 +215,8 @@ int main(int argc, char **argv) {
   CHECK(jumped == 5);
   struct utsname u;
   CHECK(uname(&u) == 0 && strcmp(u.sysname, "VectraOS") == 0);
+
+  test_processes();
 
   // No threads yet: pthread_create fails, and says so (docs/milestones.md).
   pthread_t thread;

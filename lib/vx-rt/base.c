@@ -380,6 +380,7 @@ typedef struct vx_spawn_info {
   vx_str cmdline; // the root task's
   vx_str args[VX_SPAWN_MAX_ARGS];
   uint32_t argc;
+  vx_str argv0;                   // argv0=: the POSIX argv[0], if not spawn=
   vx_str envs[VX_SPAWN_MAX_ARGS]; // env=, each NAME=VALUE
   uint32_t envc;
   vx_str handle_names[VX_CHANNEL_MAX_HANDLES];
@@ -443,6 +444,8 @@ static void vx_read_spawn(vx_handle bootstrap) {
       vx_spawn.cmdline = vx_ndb_get(&rec, "cmdline");
     } else if (vx_ndb_has(&rec, "arg")) {
       if (vx_spawn.argc < VX_SPAWN_MAX_ARGS) vx_spawn.args[vx_spawn.argc++] = vx_ndb_get(&rec, "arg");
+    } else if (vx_ndb_has(&rec, "argv0")) {
+      vx_spawn.argv0 = vx_ndb_get(&rec, "argv0");
     } else if (vx_ndb_has(&rec, "env")) {
       if (vx_spawn.envc < VX_SPAWN_MAX_ARGS) vx_spawn.envs[vx_spawn.envc++] = vx_ndb_get(&rec, "env");
     } else if (vx_ndb_has(&rec, "handle") && !vx_ndb_has(&rec, "mount")) {

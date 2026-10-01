@@ -10,7 +10,7 @@
 // input: an image that would map outside the lower half, map a page both
 // writable and executable, or reach past its own end is refused.
 //
-#include "rt.c"
+#include "base.c"
 
 typedef struct vx_elf_header {
   uint8_t ident[16];
@@ -95,6 +95,11 @@ typedef struct vx_spawn_args {
   const vx_str *handle_names;
   uint32_t handle_count; // at most VX_CHANNEL_MAX_HANDLES - 1; "self" is added
   vx_str records;        // more ndb records for the spawn message: arg=, mount=, bind=
+  // If set, called once the task exists and its image is loaded, before its
+  // message is written or its thread started: it may give the child one more
+  // handle, named (a POSIX parent registers the child with posixd here).
+  vx_status (*prepare)(void *ctx, vx_handle task, vx_handle *handle, vx_str *name);
+  void *ctx;
 } vx_spawn_args;
 
 static uint8_t vx_spawn_out[VX_CHANNEL_MAX_BYTES];
@@ -108,9 +113,26 @@ static void vx_close_all(const vx_handle *h, uint32_t n) {
 // to watch (VX_TRIGGER_EXIT) or kill.
 [[maybe_unused]] static vx_status vx_spawn_elf(const vx_spawn_args *a, vx_handle *task) {
   *task = VX_HANDLE_NONE;
-  if (a->handle_count >= VX_CHANNEL_MAX_HANDLES) {
+  vx_handle given[VX_CHANNEL_MAX_HANDLES] = {}; // "self", the caller's, and prepare's
+  vx_str names[VX_CHANNEL_MAX_HANDLES] = {VX_STR("self")};
+  uint32_t count = 1 + a->handle_count;
+  if (count > VX_CHANNEL_MAX_HANDLES - (a->prepare ? 1 : 0)) {
     vx_close_all(a->handles, a->handle_count);
     return VX_ERR_RANGE;
+  }
+  for (uint32_t i = 0; i < a->handle_count; i++)
+    given[i + 1] = a->handles[i], names[i + 1] = a->handle_names[i];
+
+  vx_handle t = VX_HANDLE_NONE, stack = VX_HANDLE_NONE, thread = VX_HANDLE_NONE, ch[2] = {};
+  uint64_t entry = 0, stack_at = VX_STACK_TOP - VX_STACK_SIZE;
+  vx_status st = vx_task_create(a->name, &t);
+  if (st == VX_OK) st = vx_elf_load(t, a->image, a->image_size, &entry);
+  if (st == VX_OK) st = vx_vmo_create(VX_STACK_SIZE, 0, &stack);
+  if (st == VX_OK) st = vx_as_map(t, stack, 0, VX_STACK_SIZE, VX_MAP_WRITE, &stack_at);
+  if (st == VX_OK) st = vx_handle_dup(t, VX_ALL_RIGHTS, &given[0]);
+  if (st == VX_OK && a->prepare) {
+    st = a->prepare(a->ctx, t, &given[count], &names[count]);
+    if (st == VX_OK && given[count]) count++;
   }
 
   // The spawn message: the header, then its records.
@@ -118,12 +140,9 @@ static void vx_close_all(const vx_handle *h, uint32_t n) {
                      .cap = sizeof vx_spawn_out - sizeof(vx_msg_header)};
   vx_ndb_put(&w, "spawn", a->name);
   vx_ndb_end(&w);
-  vx_ndb_put(&w, "handle", VX_STR("self"));
-  vx_ndb_put_u64(&w, "index", 0);
-  vx_ndb_end(&w);
-  for (uint32_t i = 0; i < a->handle_count; i++) {
-    vx_ndb_put(&w, "handle", a->handle_names[i]);
-    vx_ndb_put_u64(&w, "index", i + 1);
+  for (uint32_t i = 0; i < count; i++) {
+    vx_ndb_put(&w, "handle", names[i]);
+    vx_ndb_put_u64(&w, "index", i);
     vx_ndb_end(&w);
   }
   if (!w.failed && a->records.len <= w.cap - w.len) {
@@ -132,37 +151,22 @@ static void vx_close_all(const vx_handle *h, uint32_t n) {
   } else {
     w.failed = true;
   }
-  if (w.failed) {
-    vx_close_all(a->handles, a->handle_count);
-    return VX_ERR_RANGE;
-  }
+  if (st == VX_OK && w.failed) st = VX_ERR_RANGE;
   *(vx_msg_header *)vx_spawn_out = (vx_msg_header){.ordinal = VX_SPAWN};
 
-  vx_handle t = VX_HANDLE_NONE, self = VX_HANDLE_NONE, stack = VX_HANDLE_NONE, thread = VX_HANDLE_NONE,
-            ch[2] = {};
-  uint64_t entry = 0, stack_at = VX_STACK_TOP - VX_STACK_SIZE;
-  vx_status st = vx_task_create(a->name, &t);
-  if (st == VX_OK) st = vx_elf_load(t, a->image, a->image_size, &entry);
-  if (st == VX_OK) st = vx_vmo_create(VX_STACK_SIZE, 0, &stack);
-  if (st == VX_OK) st = vx_as_map(t, stack, 0, VX_STACK_SIZE, VX_MAP_WRITE, &stack_at);
-  if (st == VX_OK) st = vx_handle_dup(t, VX_ALL_RIGHTS, &self);
   if (st == VX_OK) st = vx_channel_create(0, ch);
-  if (st == VX_OK) {
-    vx_handle given[VX_CHANNEL_MAX_HANDLES];
-    given[0] = self;
-    for (uint32_t i = 0; i < a->handle_count; i++) given[i + 1] = a->handles[i];
-    st = vx_channel_write(ch[0], vx_spawn_out, (uint32_t)(sizeof(vx_msg_header) + w.len), given,
-                          a->handle_count + 1);
-    self = VX_HANDLE_NONE; // moved, whatever happened
-  } else {
-    vx_close_all(a->handles, a->handle_count);
-  }
+  if (st == VX_OK)
+    st = vx_channel_write(ch[0], vx_spawn_out, (uint32_t)(sizeof(vx_msg_header) + w.len), given, count);
+  else
+    vx_close_all(given, count);
+  // Moved, whatever happened. Only the caller's own were not given: a failure
+  // before the write closed them above.
+  for (uint32_t i = 0; i < count; i++) given[i] = VX_HANDLE_NONE;
   if (st == VX_OK) st = vx_thread_create(t, &thread);
   if (st == VX_OK) st = vx_thread_start(thread, entry, VX_STACK_TOP, ch[1], 0);
   if (st == VX_OK) ch[1] = VX_HANDLE_NONE; // moved into the child
 
   if (stack) vx_handle_close(stack); // the mapping keeps it
-  if (self) vx_handle_close(self);
   if (thread) vx_handle_close(thread);
   vx_close_all(ch, 2); // the child reads its message after our end is gone
   if (st != VX_OK) {

@@ -1,0 +1,4 @@
+# boot/svc/posixd.ndb: the POSIX process table (docs/01 §9), posted as
+# /srv/posixd. Not restarted: the table lives only in it.
+
+service=posixd program=/boot/bin/posixd post=posixd console
