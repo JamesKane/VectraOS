@@ -29,9 +29,6 @@ enum posix_call : uint32_t {
   POSIX_KILL,        // {pid, sig} as kill's -> {1 if the caller is among those it names}: posixd signals the
                      // others; the caller delivers to itself
   POSIX_STOP,        // {sig}: stop the caller (a stopping signal's default), until SIGCONT -> {}
-  POSIX_EXEC,        // handles [a new task] -> {pid}, handles [its channel]: the caller's process goes on
-                     // in the new task (execve), with its pid, parent, group, session and children; the
-                     // caller's own task and channel are let go, and its end is not reported
 };
 
 // A reply's h.flags: 0, or why the call failed, as the errno it becomes.

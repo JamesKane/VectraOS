@@ -319,6 +319,13 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   __builtin_unreachable();
 }
 
+// The caller takes scratch's address space and goes on as the program in it
+// (ADR-0012), with bootstrap as its only handle. Returns only on a failure.
+[[maybe_unused]] static vx_status vx_task_exec(vx_handle scratch, vx_handle bootstrap, uint64_t entry,
+                                               uint64_t sp) {
+  return (vx_status)vx_syscall(VX_SYS_task_exec, scratch, bootstrap, entry, sp, 0, 0);
+}
+
 // Ends the task with msg as its exit string: empty for success (ADR-0010).
 [[maybe_unused]] static vx_status vx_task_kill(vx_handle task, vx_str msg) {
   return (vx_status)vx_syscall(VX_SYS_task_kill, task, (uint64_t)msg.ptr, msg.len, 0, 0, 0);

@@ -15,3 +15,4 @@ One file per decision, `NNNN-title.md`, numbered in order. An ADR records a deci
 | [0009](0009-namespace-groups.md) | Namespace groups shared by default, mounts found by identity, namespace(6) templates | Accepted |
 | [0010](0010-notes-and-exit-strings.md) | Notes and exit strings, with POSIX signals built on notes | Accepted |
 | [0011](0011-one-process-model.md) | One process table in `procfs`, served as files; `posixd` folded in | Accepted |
+| [0012](0012-task-exec.md) | `task_exec`: `exec` keeps the task, and so the pid | Accepted |

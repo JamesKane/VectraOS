@@ -666,6 +666,82 @@ static int64_t sys_task_kill(vx_handle h, uint64_t msg_ptr, uint64_t len, uint64
   return VX_OK;
 }
 
+// task_exec(scratch, bootstrap, entry, sp) (ADR-0012): the caller takes the
+// address space of scratch, a task it built and never started, and goes on as
+// the program in it, keeping its id, parent and EXIT bindings. Its handles are
+// all closed but bootstrap, which a new thread gets as its first argument at
+// entry, on sp; the calling thread ends. scratch, left with the old address
+// space, ends with it. Only a task with one live thread may call it.
+static int64_t sys_task_exec(vx_handle sh, vx_handle bootstrap, uint64_t entry, uint64_t sp) {
+  if (entry >= USER_TOP || sp > USER_TOP) return VX_ERR_INVALID;
+  task *t = current_task();
+  vx_status st;
+  task *s = (task *)handle_get(t, sh, OBJ_TASK, VX_RIGHT_MANAGE, &st);
+  if (!s) return st;
+  thread *th = nullptr;
+  st = s == t ? VX_ERR_INVALID : thread_create(t, &th); // made first: a failure changes nothing
+  if (st == VX_OK) {
+    spin_lock(&t->lock);
+    bool alone = t->live_threads == 1 && !t->ending && !t->killed;
+    spin_unlock(&t->lock);
+    spin_lock(&s->lock);
+    bool fresh = s->state == VX_TASK_NEW && s->live_threads == 0 && !s->ending && !s->killed && s->root;
+    spin_unlock(&s->lock);
+    if (!alone || !fresh) st = VX_ERR_BAD_STATE;
+  }
+  moved_handle m = {};
+  if (st == VX_OK) st = handles_take(t, &bootstrap, 1, &t->obj, &s->obj, &m);
+  if (st != VX_OK) {
+    if (th) object_release(&th->obj);
+    object_release(&s->obj);
+    return st;
+  }
+
+  // The address spaces change places, and the caller takes the new program's
+  // name. Both locks, in a fixed order: nothing else maps into either meanwhile.
+  task *first = t < s ? t : s, *second = t < s ? s : t;
+  spin_lock(&first->lock);
+  spin_lock(&second->lock);
+  uint64_t root = t->root, map_next = t->map_next, mapped = t->mapped;
+  mapping *maps = t->maps;
+  t->root = s->root, t->map_next = s->map_next, t->mapped = s->mapped, t->maps = s->maps;
+  s->root = root, s->map_next = map_next, s->mapped = mapped, s->maps = maps;
+  memcpy(t->name, s->name, sizeof t->name);
+  t->exc_handler = 0; // the old program's in-task handler is not in the new one
+  spin_unlock(&second->lock);
+  spin_unlock(&first->lock);
+  // This CPU leaves the old tables now, before they go with s. No other CPU
+  // has them loaded: the caller has no other thread, and without ASIDs,
+  // loading tables drops every cached translation (ADR-0012).
+  cpu *c = this_cpu();
+  atomic_store_explicit(&c->user_root, t->root, memory_order_relaxed);
+  arch_switch_user_root(t->root);
+  atomic_fetch_add_explicit(&c->root_loads, 1, memory_order_release);
+
+  // Every handle the old program held is closed: the new one starts with only
+  // what its spawn message names (01 §3).
+  for (uint32_t i = 1; i < HANDLE_SLOTS; i++) {
+    spin_lock(&t->lock);
+    handle_entry *e = &t->handles[i];
+    object *obj = e->obj;
+    if (obj) {
+      e->obj = nullptr;
+      if (++e->generation == 0) e->generation = 1;
+    }
+    spin_unlock(&t->lock);
+    if (obj) object_release(obj);
+  }
+  vx_handle moved = VX_HANDLE_NONE;
+  st = handles_put(t, &m, 1, &moved);
+  object_release(m.obj);
+  task_kill(s, "", 0); // never started: torn down at once, with the old address space
+  object_release(&s->obj);
+  if (st == VX_OK) st = thread_start(th, entry, sp, moved, 0);
+  object_release(&th->obj); // a started thread holds its own reference
+  if (st != VX_OK) task_exit_with("exec failed", 11);
+  thread_exit_current(); // the new program goes on in the new thread
+}
+
 // --- Memory and handles ---
 
 // vmo_rw(vmo, op, offset, buffer, size): copies between a VMO and the caller's memory.
@@ -728,6 +804,7 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_clock_read: return clock_now();
   case VX_SYS_task_create: return sys_task_create(a[0], a[1], a[2], a[3]);
   case VX_SYS_task_kill: return sys_task_kill((vx_handle)a[0], a[1], a[2], a[3]);
+  case VX_SYS_task_exec: return sys_task_exec((vx_handle)a[0], (vx_handle)a[1], a[2], a[3]);
   case VX_SYS_task_info: return sys_task_info((vx_handle)a[0], a[1], a[2], a[3]);
   case VX_SYS_thread_create: return sys_thread_create((vx_handle)a[0], a[1], a[2]);
   case VX_SYS_thread_start: return sys_thread_start((vx_handle)a[0], a[1], a[2], (vx_handle)a[3], a[4]);

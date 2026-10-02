@@ -19,7 +19,7 @@ _Blueprint v0, 2026-09-30._
 
 | Object | Purpose | Notes |
 |---|---|---|
-| `Task` | Address space plus handle table; the unit of isolation | There are no process ids at this layer; `procfs` assigns pids, which outlive `exec`'s new task (ADR-0011). A task ends with an exit string (ADR-0010) |
+| `Task` | Address space plus handle table; the unit of isolation | Its id, never reused, is its process's pid; `procfs` keeps the process table (ADR-0011), and `exec` keeps the task (ADR-0012). A task ends with an exit string (ADR-0010) |
 | `Thread` | Execution context; belongs to one task | Bound to one `SchedContext` at a time |
 | `SchedContext` | CPU budget, period and intent (§8) | In the style of seL4 MCS. It can be *donated* through synchronous calls (§4.5) |
 | `Vmo` | Pages: anonymous, physical (MMIO), contiguous, or supplied by a pager | Clone (copy-on-write), seal, cache policy, resize (`vmo_op`), `NODUMP` (never written to a crash directory, 05 §5) |
@@ -49,12 +49,12 @@ _Blueprint v0, 2026-09-30._
 
   General derivation-tree revocation, as in seL4, is deferred. Where it is needed, proxy servers provide it, which suits a namespace system: interpose a server, then cut it off.
 
-### Syscall surface (61 calls)
+### Syscall surface (62 calls)
 
 This list is the whole surface, and `./build loc` counts it. A new syscall needs an ADR, and the ADR says what it replaces or why nothing can.
 
 ```
-task_create  task_kill  task_info
+task_create  task_exec  task_kill  task_info                          # task_exec: ADR-0012
 thread_create  thread_start  thread_exit  thread_interrupt  thread_state(get/set registers, debug registers, single step)
 thread_suspend  thread_resume  task_mem_rw  exception_bind  exception_resume   # debugging (05 §2)
 sched_ctx_create  sched_ctx_bind  sched_ctx_configure  sched_reserve   # intents, admission, core reservations (§8)
@@ -407,7 +407,7 @@ This is how LLVM, Python and Git run without touching the kernel.
 | sockets | The BSD socket calls translate to `/net/tcp/clone` and the files in the connection directory, as Plan 9's APE does. The data path is `netd`'s rings. |
 | `poll` `select` `epoll` `kqueue` | All built on the one port. Each fd type knows how to bind its readiness source. A 9Px fid is readable only once a read has returned, so libc keeps one read-ahead request outstanding per polled fd and buffers its reply. |
 | `fork` | libc asks the kernel to clone the address space copy-on-write, duplicates the handle table (with inheritance rules), and copies the fd table in libc. Ring mappings are not inherited: the child's first use of a connection opens a new ring, because a copied ring is broken and a shared one would have two producers. `fork` is correct but not fast; `posix_spawn` and `vfork`-then-`exec` have a fast path that never clones. |
-| `exec` | Implemented in the library. The ELF loader lives in `libvxrt`. The new image is a new task, which `procfs` registers under the same pid; the old task's end is not reported as an exit (ADR-0011). |
+| `exec` | Implemented in the library. The ELF loader in `libvxrt` builds the new image in a scratch task, and `task_exec` moves it into the caller, which keeps its task, and so its pid, parent and registration (ADR-0012), as 9front's `exec` keeps the `Proc`. |
 | process calls | `getpid`, `kill`, `killpg`, `setpgid`, `setsid` and `waitpid` are reads and writes of `/proc/N/{status,note,notepg,ctl,wait}`, as 9front's APE does (ADR-0011). Process groups are note groups. |
 | signals | Signals are built on notes (ADR-0010). `kill` writes a note; the kernel delivers it by `thread_interrupt`, which diverts a thread to the back end's note handler. That handler maps the note to a signal and applies the masks, pending sets and `SA_RESTART` kept in libc. A note at a blocked 9P call flushes it with `Tflush`. Synchronous faults arrive through the task's exception port and are turned into `SIGSEGV`, `SIGFPE` and so on. A handler never runs in the middle of a ring submission: the client library blocks signals for the few instructions of a submit, so a handler that calls `write()` cannot corrupt the ring. |
 | ttys and ptys | `ptyd` serves `/dev/pty`. Line discipline is in the server. The output path is a pass-through: with output processing off, `ptyd` forwards the writer's buffers to the terminal's ring without touching each byte, and with `ONLCR` on it scans for newlines only. `ptyd` sits on the path of the terminal throughput budget (00 §8), as conhost did in refterm's measurements. |

@@ -88,6 +88,8 @@ static int child_main(char **argv) {
   pid_t parent = (pid_t)strtol(argv[2], nullptr, 10);
   if (getppid() != parent || getpid() == parent || getsid(0) != getsid(parent)) return 1;
   if (strcmp(argv[1], "exit") == 0) return argv[3] ? (int)strtol(argv[3], nullptr, 10) : 7;
+  if (strcmp(argv[1], "same") == 0) // run by execve: still the process it was (task_exec, ADR-0012)
+    return argv[3] && getpid() == (pid_t)strtol(argv[3], nullptr, 10) ? 15 : 2;
   if (strcmp(argv[1], "group") == 0) return getpgrp() == getpid() ? 9 : 2; // POSIX_SPAWN_SETPGROUP, 0
   if (strcmp(argv[1], "sleep") == 0) {
     nanosleep(&(struct timespec){.tv_nsec = 100'000'000}, nullptr);
@@ -235,6 +237,15 @@ static void test_fork_exec_pipes(void) {
     _exit(1);
   }
   CHECK(child > me && waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 6);
+  child = fork();
+  if (child == 0) { // its pid before and after
+    char pid[16];
+    snprintf(pid, sizeof pid, "%d", (int)getpid());
+    char *args[] = {"ctest", "same", parent, pid, nullptr};
+    execv("/boot/bin/ctest", args);
+    _exit(1);
+  }
+  CHECK(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 15);
   child = fork();
   if (child == 0) {
     char *args[] = {"none", nullptr};

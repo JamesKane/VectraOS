@@ -6,6 +6,10 @@
 // (abi.h), which names the handles the child is given. Then it starts the
 // first thread. The child gets nothing else: no ambient authority (01 §2).
 //
+// To exec, a program builds the new image the same way, in a scratch task,
+// and task_exec moves it into the program's own task (ADR-0012): the task, so
+// the pid, carries on, with only the handles the spawn message names.
+//
 // The image is the parent's to trust or not, but it is checked like any other
 // input: an image that would map outside the lower half, map a page both
 // writable and executable, or reach past its own end is refused.
@@ -100,6 +104,9 @@ typedef struct vx_spawn_args {
   // handle, named (a POSIX parent registers the child with posixd here).
   vx_status (*prepare)(void *ctx, vx_handle task, vx_handle *handle, vx_str *name);
   void *ctx;
+  // Exec instead of spawn: the caller becomes the program, and vx_spawn_elf
+  // returns only on a failure. "self" names the caller's own task.
+  bool exec;
 } vx_spawn_args;
 
 alignas(vx_msg_header) static uint8_t vx_spawn_out[VX_CHANNEL_MAX_BYTES]; // written as a header first
@@ -129,7 +136,9 @@ static void vx_close_all(const vx_handle *h, uint32_t n) {
   if (st == VX_OK) st = vx_elf_load(t, a->image, a->image_size, &entry);
   if (st == VX_OK) st = vx_vmo_create(VX_STACK_SIZE, 0, &stack);
   if (st == VX_OK) st = vx_as_map(t, stack, 0, VX_STACK_SIZE, VX_MAP_WRITE, &stack_at);
-  if (st == VX_OK) st = vx_handle_dup(t, VX_ALL_RIGHTS, &given[0]);
+  if (st == VX_OK)
+    st = a->exec ? vx_handle_dup(vx_self, VX_RIGHTS_SAME, &given[0])
+                 : vx_handle_dup(t, VX_ALL_RIGHTS, &given[0]);
   if (st == VX_OK && a->prepare) {
     st = a->prepare(a->ctx, t, &given[count], &names[count]);
     if (st == VX_OK && given[count]) count++;
@@ -162,6 +171,7 @@ static void vx_close_all(const vx_handle *h, uint32_t n) {
   // Moved, whatever happened. Only the caller's own were not given: a failure
   // before the write closed them above.
   for (uint32_t i = 0; i < count; i++) given[i] = VX_HANDLE_NONE;
+  if (st == VX_OK && a->exec) st = vx_task_exec(t, ch[1], entry, VX_STACK_TOP); // returns only on a failure
   if (st == VX_OK) st = vx_thread_create(t, &thread);
   if (st == VX_OK) st = vx_thread_start(thread, entry, VX_STACK_TOP, ch[1], 0);
   if (st == VX_OK) ch[1] = VX_HANDLE_NONE; // moved into the child

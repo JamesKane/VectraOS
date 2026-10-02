@@ -5,6 +5,7 @@
 
 VX_SYSCALL(task_create)
 VX_SYSCALL(task_kill)
+VX_SYSCALL(task_exec)
 VX_SYSCALL(task_info)
 VX_SYSCALL(thread_create)
 VX_SYSCALL(thread_start)

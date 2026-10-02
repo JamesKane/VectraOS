@@ -1302,6 +1302,108 @@ static void test_fork(void) {
   vx_handle_close(port);
 }
 
+// --- task_exec (ADR-0012) ---
+
+// The program a forked child execs: it closes `probe`, a handle the child
+// held before the exec, and exits if that fails as a closed handle does, or
+// traps if the handle was still there.
+static uint32_t write_exec_probe(uint8_t *code, vx_handle probe) {
+  uint32_t n = 0;
+#ifdef __x86_64__
+#define EMIT(b)   (code[n++] = (uint8_t)(b))
+#define EMIT32(v) (EMIT(v), EMIT((v) >> 8), EMIT((v) >> 16), EMIT((v) >> 24))
+  EMIT(0xbf), EMIT32(probe);                                   // mov $probe, %edi
+  EMIT(0xb8), EMIT32(VX_SYS_handle_close);                     // mov $handle_close, %eax
+  EMIT(0x0f), EMIT(0x05);                                      // syscall
+  EMIT(0x48), EMIT(0x3d), EMIT32((uint32_t)VX_ERR_BAD_HANDLE); // cmp $BAD_HANDLE, %rax
+  EMIT(0x75), EMIT(0x07);                                      // jne 1f
+  EMIT(0xb8), EMIT32(VX_SYS_thread_exit);                      // mov $thread_exit, %eax
+  EMIT(0x0f), EMIT(0x05);                                      // syscall
+  EMIT(0x0f), EMIT(0x0b);                                      // 1: ud2
+#undef EMIT32
+#undef EMIT
+#else
+#define EMIT(w)                                                                                              \
+  (code[n] = (uint8_t)(w), code[n + 1] = (uint8_t)((w) >> 8), code[n + 2] = (uint8_t)((w) >> 16),            \
+   code[n + 3] = (uint8_t)((w) >> 24), n += 4)
+  EMIT(0x52800000u | (probe & 0xffff) << 5);              // movz w0, #probe & 0xffff
+  EMIT(0x72a00000u | (probe >> 16) << 5);                 // movk w0, #probe >> 16, lsl #16
+  EMIT(0xd2800008u | (uint32_t)VX_SYS_handle_close << 5); // movz x8, #handle_close
+  EMIT(0xd4000001u);                                      // svc #0
+  EMIT(0xb100001fu | (uint32_t)-VX_ERR_BAD_HANDLE << 10); // cmn x0, #-BAD_HANDLE
+  EMIT(0x54000061u);                                      // b.ne 1f
+  EMIT(0xd2800008u | (uint32_t)VX_SYS_thread_exit << 5);  // movz x8, #thread_exit
+  EMIT(0xd4000001u);                                      // svc #0
+  EMIT(0x00000000u);                                      // 1: udf #0
+#undef EMIT
+#endif
+  return n;
+}
+
+// A forked child's first thread: it builds the probe in a scratch task and
+// execs it. Its exit string is the probe's, or why the exec failed.
+[[noreturn]] static void exec_child(vx_handle unused, uint64_t arg2) {
+  (void)unused, (void)arg2;
+  uint8_t code[64] = {};
+  vx_handle scratch = 0, text = 0, stack = 0, ch[2] = {};
+  uint64_t text_at = CHILD_CODE, stack_at = CHILD_STACK_TOP - 4096;
+  bool ok = vx_channel_create(0, ch) == VX_OK;
+  uint32_t len = write_exec_probe(code, ch[0]); // still held at the exec: it must be closed by it
+  ok = ok && vx_task_create(VX_STR("execd"), &scratch) == VX_OK && vx_vmo_create(4096, 0, &text) == VX_OK &&
+       vx_vmo_rw(text, VX_VMO_WRITE, 0, code, len) == VX_OK &&
+       vx_as_map(scratch, text, 0, 4096, VX_MAP_EXEC, &text_at) == VX_OK &&
+       vx_vmo_create(4096, 0, &stack) == VX_OK &&
+       vx_as_map(scratch, stack, 0, 4096, VX_MAP_WRITE, &stack_at) == VX_OK;
+  vx_handle_close(text);
+  vx_handle_close(stack);
+  if (ok) vx_task_exec(scratch, ch[1], CHILD_CODE, CHILD_STACK_TOP); // returns only on a failure
+  vx_task_kill(self, VX_STR("exec failed"));
+  vx_thread_exit();
+}
+
+static void test_exec(void) {
+  vx_handle port = 0, child = 0, th = 0, scratch = 0, ch[2] = {};
+  CHECK(vx_port_create(0, &port) == VX_OK);
+  uint64_t sp = new_stack();
+  // A forked child execs: its task, so its id and its EXIT binding, carry on,
+  // under the new program's name, with none of its old handles.
+  vx_task_summary before = {}, after = {};
+  CHECK(vx_task_fork(VX_STR("forked"), &child) == VX_OK && vx_task_info(child, &before) == VX_OK);
+  CHECK(vx_port_bind(port, child, VX_TRIGGER_EXIT, 99, 0) == VX_OK); // bound before the exec
+  CHECK(vx_thread_create(child, &th) == VX_OK &&
+        vx_thread_start(th, (uint64_t)exec_child, sp, 0, 0) == VX_OK);
+  vx_handle_close(th);
+  vx_packet pk;
+  CHECK(vx_port_wait(port, after_ms(2000), 0, &pk, 1) == 1 && pk.key == 99 &&
+        pk.value == 0); // once, at the end
+  CHECK(vx_task_info(child, &after) == VX_OK && after.id == before.id && after.exit_len == 0 &&
+        memcmp(after.name, "execd", 6) == 0);
+  vx_handle_close(child);
+
+  // Refused: a task of its own, and a caller with another thread (ktest has
+  // one waiting now), before anything changes.
+  CHECK(vx_task_create(VX_STR("scratch"), &scratch) == VX_OK && vx_channel_create(0, ch) == VX_OK);
+  CHECK(vx_task_exec(self, ch[1], CHILD_CODE, CHILD_STACK_TOP) == VX_ERR_INVALID);
+  static waiter w;
+  uint32_t id = 0;
+  CHECK(vx_thread_create_id(self, &th, &id) == VX_OK &&
+        vx_thread_start(th, (uint64_t)interrupted_waiter, new_stack(), 0, (uint64_t)&w) == VX_OK);
+  static _Atomic uint32_t never;
+  vx_futex_wait(&never, 0, after_ms(20)); // it is waiting
+  CHECK(vx_task_exec(scratch, ch[1], CHILD_CODE, CHILD_STACK_TOP) == VX_ERR_BAD_STATE);
+  CHECK(vx_task_exec(scratch, ch[1], 0x0000'8000'0000'0000, CHILD_STACK_TOP) == VX_ERR_INVALID);
+  vx_exception_bind(self, 0, (uint64_t)handler, VX_EXCEPTION_IN_TASK);
+  vx_thread_interrupt(self, id, VX_STR("done")); // the waiter's wait ends, and it exits
+  for (int i = 0; i < 1000 && !atomic_load(&w.done); i++) vx_futex_wait(&never, 0, after_ms(1));
+  vx_exception_bind(self, 0, 0, VX_EXCEPTION_IN_TASK);
+  vx_handle_close(th);
+  vx_task_kill(scratch, VX_STR(""));
+  vx_handle_close(scratch);
+  vx_handle_close(ch[0]);
+  vx_handle_close(ch[1]);
+  vx_handle_close(port);
+}
+
 // --- The thread pointer (musl's TLS) ---
 
 // The word the thread pointer points at, read through it as musl does.
@@ -1495,6 +1597,7 @@ const char *vx_main(void) {
   test_debugger();
   test_tls();
   test_fork();
+  test_exec();
   test_fp();
   test_nested_channels();
   test_rings();

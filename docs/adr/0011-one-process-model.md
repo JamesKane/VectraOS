@@ -1,6 +1,6 @@
 # ADR-0011: One process model, served as files
 
-Status: accepted, 2026-10-01. `posixd` is folded into `procfs`. Amends 01 §2 and §9, 02 §5.1 and 05 §3.
+Status: accepted, 2026-10-01; revised the same day after checking 9front. `posixd` is folded into `procfs`. Amends 01 §2 and §9, 02 §5.1 and 05 §3.
 
 ## Context
 
@@ -20,38 +20,46 @@ Because of this split:
 
 ## Decision
 
-- **`procfs` holds the one process table, and `posixd` goes away.** Every process, native or POSIX, has a pid. It is assigned at spawn and kept across `exec`.
-  - The kernel task id is an internal detail, shown in `status` as `task=`.
-  - Each process has a parent, a note group, and a session id.
-- **Spawning registers the child with `procfs` before it runs**, as step 3b does for `posix_spawn`.
-  - This is the one channel call: it carries the child's task handle, with `DEBUG` and `SIGNAL` rights, which only a channel can carry.
-  - `exec` registers the new task under the same pid. `procfs` then drops the old task without reporting an exit.
+Checked against 9front (`port/sysproc.c`, `port/proc.c`, `port/devproc.c`, and APE's `wait.c`, `kill.c`, `setpgid.c`, `getpgrp.c`). Each piece below is Plan 9's, moved out of the kernel where a micro-kernel needs it to be.
+
+- **`procfs` holds the one process table, and `posixd` goes away.** Every process, native or POSIX, is in it.
+- **A pid is the kernel's task id.** 9front allocates a pid inside `rfork` (`pidalloc`), as part of making the process, and refcounts it so it is not reused while a note group or a parent names it. Here `task_create` already gives every task a 64-bit id that is never reused, so that id is the pid, and nothing needs a refcount. `getpid` is `task_info` on the process's own task, read once, as 9front's reads `_tos->pid`.
+- **`exec` keeps the task, and so the pid**, as 9front's `sysexec` keeps the `Proc`. That needs `task_exec` (ADR-0012).
+- **Spawning registers the child with `procfs` before it runs.** Here the creator is in user space, so registering is the user-space half of `rfork`. It is the one channel call, because it carries the child's task handle, with `DEBUG` and `SIGNAL` rights, which only a channel can carry. It also names the parent and note group, and says whether the parent wants a wait record (`RFNOWAIT`).
+  - `vx-rt`'s spawn does it for every spawner: `svcd`, `gsh`, the musl back end. A service `svcd` started before `procfs` is registered by `svcd` once `procfs` is up; it holds their task handles already.
+  - The reply carries a connection to `procfs` made for the child. A process's own connection is how `procfs` knows who is calling, as 9front's kernel knows `up`.
   - Everything else about processes is a file.
-- **Files under `/proc/N`, evolved from Plan 9's set:**
+- **Wait records, as in 9front's `pexit` and `pwait`.** When a registered task ends, `procfs` queues a record for its parent, at most 128 per parent, unless the parent spawned it with no-wait. A parent that has gone leaves the record undelivered. `ppid` keeps naming it, as in 9front, whatever the kernel's task tree does.
+- **Files under `/proc/N`, 9front's set where it has one:**
 
   | File | Contents |
   |---|---|
-  | `status` | One ndb record (D14): `pid= ppid= task= name= state= noteg= sid= threads= mem=` |
-  | `ctl` | Plan 9's verbs: `kill`, `stop`, `start`, `hang`, `noteg N`, `setsid`, and `intent` (rule 6) |
-  | `note`, `notepg` | Writes post a note (ADR-0010) to the process, or to every process in its note group |
-  | `wait` | Reads block until a child ends, then return one ndb record: `pid= status="…" utime= stime= real=` |
+  | `status` | One ndb record (D14): `pid= name= state= threads= mem=`, and `sid=` for POSIX's sessions |
+  | `ctl` | 9front's verbs: `kill`, `stop`, `start`, `startstop`, `waitstop`, `hang`, `nohang`; plus `setsid`, and `intent` (rule 6) |
+  | `note` | A write posts a note (ADR-0010) to the process |
+  | `notepg` | A write posts a note to every process in the process's note group, except the writer, as 9front's `postnotepg` does |
+  | `noteid` | The note group: read it, or write another group's id to join that group, as 9front checks it |
+  | `ppid` | The parent's pid |
+  | `wait` | A read blocks until a child ends, then returns one ndb record: `pid= name= status="…" utime= stime= real=`. Its stat length is the number of records queued, as 9front's is |
   | `ns` | The namespace group's table, as namespace(6) lines (ADR-0009) |
   | `args`, `fd/` | As 02 §5.1 lists them |
   | debug files | As 05 §3 lists them |
 
-  `status` stays an ndb record rather than Plan 9's fixed-width text. That is the evolution D14 already chose.
-- **Note groups are POSIX's process groups.** `killpg` writes `notepg`, as APE does. A session id is the one POSIX idea Plan 9 lacks. It is a small field in the same table, set by `ctl setsid`, so that job control (step 4c) has somewhere to live.
-- **The back end's process calls become file operations:**
-  - `getpid` and `getppid` read `status` once, and cache it.
-  - `kill` writes `note`, `killpg` writes `notepg`, and `setpgid`/`setsid` write `ctl`.
-  - `waitpid` reads `/proc/self/wait` and keeps any record for a child it was not asked about, as APE does. `WNOHANG` polls the file through the one port (01 §9).
-  - `SIGCHLD` is the note `posix: SIGCHLD`, which `procfs` posts to a parent when a child ends, if the parent has a handler for it.
-  - Stopping and continuing are `ctl stop` and `ctl start`, still done by `thread_suspend`.
+  `status` and `wait` are ndb records rather than 9front's fixed-width text and `Waitmsg` string. That is the evolution D14 already chose.
+- **The back end's process calls become file operations, as APE's are:**
+  - `getppid` reads `ppid`. `getpgrp` reads `noteid`, and `setpgid` writes it.
+  - `kill` writes `note`. `kill(0)` writes the caller's own `notepg`. `kill(-pgid)` joins that group, writes `notepg`, and goes back, as APE's does. The caller raises a signal to itself on its own, since `notepg` skips the writer.
+  - `waitpid` reads `/proc/N/wait` and keeps any record for a child it was not asked about, as APE does. `WNOHANG` stats the file first and returns at once if its length is 0.
+  - A note posted to a process blocked in a `wait` read ends that read, so it returns `EINTR`, as a 9front note ends the sleep. `ptyd` does the same with the reads it holds.
+  - `SIGCHLD` is the note `posix: SIGCHLD pid=N`, which `procfs` posts to a registered parent when a child ends, stops or continues.
+  - Stopping and continuing are `ctl stop` and `ctl start`, done by `thread_suspend`.
+- **A POSIX session id is the one idea 9front lacks.** It is a field in the same table, set by `ctl setsid`, so that job control (step 4c) has somewhere to live.
 - **Authority does not change.** `procfs` holds the rights it was given at registration. Writing `ctl` or `note`, or opening the debug files, needs a token that names the process (02 §5.1, 05 §3).
 
 ## Consequences
 
 - POSIX is a library again, as rule 13 intends. What is left of the personality is musl's back end, `ptyd`, and the `posix` 9Px extension.
 - `ps`, `kill`, `wait` and a debugger all work the same way on native and POSIX processes, over 9Px. So they also work on a remote node's `/proc`.
-- Steps 3b–3d and 4c are rewritten on top of `procfs`. The process table, job control and the back end's signal machinery carry over. What goes away is the RPC layer between them.
+- Steps 3b–3d and 4c are rewritten on top of `procfs`. The process table, job control and the back end's signal machinery carry over. What goes away is the RPC layer between them, and with `task_exec`, `posixd`'s `EXEC`.
+- `procfs` holds one connection per process, so vx-9p's limit of 16 connections per server becomes a server's own setting.
 - The `posix_spawn`, exit and `wait` round trip must still come in under 500 µs (00 §8). That is a handful of 9Px operations on a local ring, each about 1 µs.

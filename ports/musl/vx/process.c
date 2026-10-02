@@ -129,9 +129,14 @@ typedef struct spawn_ctx {
 static vx_status spawn_prepare(void *ctx, vx_handle task, vx_handle *handle, vx_str *name) {
   spawn_ctx *s = ctx;
   vx_task_summary info;
+  if (s->exec) { // the same task, so the same process (ADR-0012): it keeps its channel to posixd
+    s->pid = posix_pid();
+    if (!posix_chan) return VX_OK;
+    *name = VX_STR("posix");
+    return vx_handle_dup(posix_chan, VX_RIGHTS_SAME, handle);
+  }
   if (!posix_chan) { // alone: the child is too, and its pid is the kernel's
     s->pid = vx_task_info(task, &info) == VX_OK ? (int64_t)info.id : 0;
-    if (s->exec) s->pid = posix_pid();
     return VX_OK;
   }
   vx_handle dup;
@@ -139,7 +144,7 @@ static vx_status spawn_prepare(void *ctx, vx_handle task, vx_handle *handle, vx_
   if (st != VX_OK) return st;
   int64_t args[2] = {s->pgid, s->setsid};
   posix_msg rep;
-  s->error = posix_call(posix_chan, s->exec ? POSIX_EXEC : POSIX_CHILD, args, 2, dup, &rep, handle);
+  s->error = posix_call(posix_chan, POSIX_CHILD, args, 2, dup, &rep, handle);
   if (s->error != 0) {
     if (*handle) vx_handle_close(*handle);
     *handle = VX_HANDLE_NONE;
@@ -237,7 +242,8 @@ static long spawn_image(const char *path, bool search, char *const argv[], char 
                        .handle_count = count,
                        .records = {records, w.len},
                        .prepare = spawn_prepare,
-                       .ctx = ctx};
+                       .ctx = ctx,
+                       .exec = ctx->exec};
     vx_status vst = vx_spawn_elf(&a, &task);
     if (vst == VX_ERR_INVALID)
       r = -ENOEXEC; // not an image for this machine
@@ -328,15 +334,13 @@ int posix_spawn(pid_t *restrict pid, const char *restrict path, const posix_spaw
   return 0;
 }
 
-// execve: the program goes on as this process (posixd keeps its pid, parent
-// and children) in a new task, with this one's descriptors but those marked
-// FD_CLOEXEC; this task then ends unseen. Only a failure returns.
+// execve: the program goes on in this task, so as this process, with its
+// pid, parent and children (task_exec, ADR-0012), and with this one's
+// descriptors but those marked FD_CLOEXEC. Only a failure returns.
 static long proc_execve(const char *path, char *const argv[], char *const envp[]) {
+  if (vx_console.len) vx_console_flush(); // what this program printed goes out before it is gone
   spawn_ctx ctx = {.pgid = -1, .exec = true};
-  long r = spawn_image(path, false, argv, envp, fd_table, &ctx);
-  if (r < 0) return r;
-  fd_exit();
-  vx_thread_exit(); // unseen: posixd has moved the process to its new task
+  return spawn_image(path, false, argv, envp, fd_table, &ctx);
 }
 
 // --- fork ---

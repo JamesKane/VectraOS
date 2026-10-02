@@ -207,19 +207,21 @@ This is what a desktop terminal's default namespace looks like. The right-hand c
 
 ### 5.1 Processes and CPU topology
 
-`procfs` holds the one process table (ADR-0011). Every process has a pid, assigned at spawn and kept across `exec`; the kernel task id is shown as `task=`. M2's `procfs` serves `status` and `ctl` (`kill`); the rest arrives with the features it reports.
+`procfs` holds the one process table (ADR-0011), with 9front's files. A pid is the process's kernel task id, which is never reused, and `exec` keeps the task (ADR-0012). Every spawn registers the child before it runs. M2's `procfs` serves `status` and `ctl` (`kill`); the rest arrives with the features it reports.
 
 ```
 /proc/42/
-    status     pid=42 ppid=7 task=118 name=hx state=running noteg=42 sid=7 intent=interactive threads=3 mem=18.2M budget=user/jk/desktop
-    ctl        (write) kill · stop · start · hang · noteg 42 · setsid · intent background · trace on
+    status     pid=42 name=hx state=running sid=7 intent=interactive threads=3 mem=18.2M budget=user/jk/desktop
+    ctl        (write) kill · stop · start · startstop · waitstop · hang · nohang · setsid · intent background · trace on
+    ppid       the parent's pid
+    noteid     the note group (POSIX's process group): read it, or write a group's id to join it
     ns         the namespace group's table as namespace(6) lines
     fd/        one entry per open fd: its path, offset and server
     caps       held handles: type, rights, badge (inspect right required)
     threads/1/{status,ctl,sched}
     note       write to post a note (ADR-0010); a POSIX signal is a note too
-    notepg     write to post a note to every process in the note group (POSIX's process group)
-    wait       read blocks until a child ends: pid=43 status="sys: trap: fault read addr=0x0 pc=0x4011a0" utime= stime= real=
+    notepg     write to post a note to every process in the note group but the writer
+    wait       read blocks until a child ends: pid=43 name=cc status="sys: trap: fault read addr=0x0 pc=0x4011a0" utime= stime= real=; its stat length is the records queued
     args       the command line
     events mem maps images threads/N/{regs,fpregs}    the debug files (05 §3)
 /sys/cpu/
