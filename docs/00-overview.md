@@ -78,6 +78,8 @@ These rules are normative. A design that breaks one needs an ADR explaining why.
 | `distd` | Releases, app packages and the content store; fetching from peers, staging, trial boot and rollback. Serves `/dist` | 06 |
 
 ## 4. Key decisions
+| `webfs` | HTTP, Gemini and Gopher as files, in Plan 9's interface. Serves `/mnt/web`; the only program that speaks them | 07 §5 |
+| `plumber` | Routes data between apps by the user's rules, as Plan 9's does. Serves `/mnt/plumb` | 07 §7 |
 
 | # | Decision | Chosen | Rejected, and why |
 |---|---|---|---|
@@ -100,6 +102,7 @@ These rules are normative. A design that breaks one needs an ADR explaining why.
 | D17 | Installation and updates | **A release is one signed, reproducible tree** in a content-addressed store, signed by independent rebuilders; any peer serves it over 9Px, and the hashes make peers untrusted. It boots from one of several slots with a one-shot trial boot; filesystem snapshots protect configuration and files. Apps and their dependencies are packages, resolved per app by minimal version selection into a lock, with names scoped by publisher key. Updates apply only when the user asks (06) | A system-wide package graph for the base (apt, rpm): partial states and one version of each library for everything. A SAT solver for packages: minimal version selection resolved per app needs none. A central index of package names (D13). Updating files in place: no atomic switch, no rollback. A/B partitions holding whole copies: a full image per slot where a slot can name a tree |
 
 ## 5. Hardware tiers
+| D18 | The web and network apps | **Documents are documents; applications are native.** `hv` shows hypermedia (a versioned HTML and CSS profile, gemtext, Gopher, Markdown) and runs no code from the network. Chat, social media, mail and feeds are native clients over existing open protocols (IRC, XMPP, ActivityPub, Atom, IMAP), each an adapter file server plus a small `vxui` app, joined by the plumber (07) | A full web engine (Blink, Gecko, WebKit, Ladybird, Servo): a second operating system inside this one, every web API a second mechanism (rule 13). JavaScript or Wasm from the network: code the user never chose to run. New protocols for chat or social media: the existing ones have servers and users already |
 
 | Tier | Targets | Use |
 |---|---|---|
@@ -137,6 +140,7 @@ The API case study was written for an XNU-based system, but most of its findings
 - Formal verification of the kernel. The ring and IPC protocols are model-checked instead (04 §7).
 - Games that need kernel-level anti-cheat. Anti-cheat checks for Windows specifically, and no alternative OS can satisfy it. The gamers VectraOS serves play native and indie games and use emulators.
 - Several local users on one node. v1 is single-user per node, as a Plan 9 terminal is. POSIX uids exist for ports, with one user. People share with each other across the swarm, through tokens (02 §3.4).
+- Web applications that need JavaScript or WebAssembly. The system shows documents and runs native apps (07); a full browser is a user-land port, never part of the platform.
 
 ## 8. Budgets users feel
 
