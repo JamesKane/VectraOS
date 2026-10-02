@@ -16,3 +16,4 @@ One file per decision, `NNNN-title.md`, numbered in order. An ADR records a deci
 | [0010](0010-notes-and-exit-strings.md) | Notes and exit strings, with POSIX signals built on notes | Accepted |
 | [0011](0011-one-process-model.md) | One process table in `procfs`, served as files; `posixd` folded in | Accepted |
 | [0012](0012-task-exec.md) | `task_exec`: `exec` keeps the task, and so the pid | Accepted |
+| [0013](0013-text-is-utf8.md) | Text is UTF-8, handled in runes: `lib/vx-utf`, strings cut at rune boundaries, names without control characters, rune-aware line editors | Accepted |
