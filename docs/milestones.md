@@ -96,6 +96,14 @@ In progress. 04 §6 gives M4's content but no steps or exit test, so they are se
 
 **Exit test (proposed):** a C program built against `vectra-musl` forks, execs, pipes and waits; a dash script and Lua run in the POSIX userland; `dbg -c` stops at a breakpoint and prints a backtrace; a crashing program leaves a crash directory.
 
+**Picking M4 back up** (paused 2026-10-01, after 4d):
+
+- Next is 4e, sockets over `/net`: 01 §9 has the BSD calls translate to `/net/tcp/clone` and the files of the connection directory, as Plan 9's APE does; `netd` serves `/net` already (M3), and `tests/qemu/tcp.ndb` and `net.ndb` show it working. The back end's descriptors (`ports/musl/vx/fd.c`) need a socket kind; `poll` (`poll.c`) needs its readiness, through the read kept outstanding that terminals use, or `netd` events.
+- Then step 5 (Lua, sbase, dash, each vendored with an ADR) and step 6 (the debugger's pieces).
+- The POSIX tests are `tests/posix/ctest.c` (237 checks) in `tests/qemu/posix.ndb`. Run the scenario several times on aarch64 after any change with timing in it: the races found in steps 3d and 4c showed only there.
+- To debug a hang or a crash in a POSIX scenario, copy it with `cmdline="vx.skip=gsh vx.kconsole vx.hangdump=25"`: the kernel's messages stay on the serial line, and at 25 s every thread's state and kernel backtrace is printed.
+
+
 ## Known gaps
 
 Deferred deliberately, each with where it is due:
