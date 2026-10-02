@@ -2947,6 +2947,8 @@ static const char *const HOST_TEST_FLAGS[] = {
     "-fno-sanitize-recover=all",
     "-fno-omit-frame-pointer", // as the house builds everything (05 §4)
     "-Wl,--build-id=sha1",     // as programs are linked: debug_test reads its own
+    "-fno-pie",                // and not PIE, as programs are not: eval_test reads its own memory
+    "-no-pie",                 // at the addresses its DWARF has
     nullptr,
 };
 
