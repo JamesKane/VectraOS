@@ -1747,8 +1747,8 @@ static bool mtools(const char *tool, const char *esp, const char *const *args) {
 
 // The directories every boot image has: mount points for the namespace (02 §5)
 // and bootfs's own. In order, parents first.
-static const char *const BOOTFS_DIRS[] = {"bin", "boot", "boot/bin", "boot/drv", "boot/ns", "boot/svc",
-                                          "dev", "n",    "net",      "proc",     "srv",     "tmp"};
+static const char *const BOOTFS_DIRS[] = {"bin",    "boot", "boot/bin", "boot/drv", "boot/svc", "dev", "lib",
+                                          "lib/ns", "n",    "net",      "proc",     "srv",      "tmp"};
 
 // Whether `name` is in the comma-separated list `with`.
 static bool listed(const char *with, const char *name) {
@@ -1765,8 +1765,8 @@ static bool listed(const char *with, const char *name) {
 // mkbootfs (04 §3.4): packs the boot image's tree into a ustar archive, the
 // bootfs.tar module. The directories, boot/bin with each program that lives
 // in bootfs, boot/svc with the service manifests from boot/svc/*.ndb,
-// boot/drv with the driver manifests from boot/drv/*.ndb, and boot/ns with the
-// namespace templates from boot/ns/*.ndb.
+// boot/drv with the driver manifests from boot/drv/*.ndb, and lib/ns with the
+// namespace templates, namespace(6) files, from boot/lib/ns/ (ADR-0009).
 // `with` adds test programs and their manifests (tests/user/NAME.ndb). The
 // archive is deterministic: fixed order, no times or owners.
 static bool make_bootfs(const arch *a, bool release, const char *with, const char *out) {
@@ -1775,7 +1775,7 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
   port tree = {.src = root};
   collect(&manifests, &tree, (vx_str){"boot/svc", 8}, ".ndb");
   collect(&manifests, &tree, (vx_str){"boot/drv", 8}, ".ndb");
-  collect(&manifests, &tree, (vx_str){"boot/ns", 7}, ".ndb");
+  collect(&manifests, &tree, (vx_str){"boot/lib/ns", 11}, "");
 
   // Programs, then the system's manifests, then the tests': svcd starts
   // services in this order, so a test's run after what it tests.
@@ -1792,7 +1792,8 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
   }
   for (int i = 0; i < manifests.count && count < 64; i++) {
     files[count] = read_file(manifests.paths[i]);
-    paths[count++] = manifests.paths[i];
+    const char *path = manifests.paths[i]; // boot/lib/ns/NAME is /lib/ns/NAME in the image
+    paths[count++] = strncmp(path, "boot/lib/", 9) == 0 ? path + 5 : path;
   }
   for (int i = 0; i < USER_PROGRAM_COUNT && count < 64; i++) {
     if (USER_PROGRAMS[i].where != IN_TESTS || !listed(with, USER_PROGRAMS[i].name)) continue;

@@ -20,8 +20,8 @@
 //   irq=LINE                                   a driver's interrupt
 //   claim=SRV                                  the post's server end, as "claim:SRV"
 //   connect=SRV                                a connector to the post, as "srv:SRV"
-//   ns=NAME                                    the records of the namespace template
-//                                              boot/ns/NAME.ndb (mount, bind, env), here
+//   ns=NAME                                    the namespace template /lib/ns/NAME, a
+//                                              namespace(6) file (ADR-0009), here
 //
 // post=SRV: svcd makes a listen channel, gives the service its server end
 // ("listen") and keeps the client end as /srv/SRV, for mounts. It keeps a
@@ -50,6 +50,7 @@
 #include "../../lib/vx-rt/spawn.c"
 #include "../../lib/vx-tar/tar.c"
 #include "../../lib/vx-rand/drbg.c"
+#include "../../lib/vx-ns/newns.c"
 
 static constexpr uint32_t MAX_SERVICES = 16;
 static constexpr uint32_t MAX_RESTARTS = 5;                   // in RESTART_WINDOW, then svcd gives up
@@ -234,13 +235,110 @@ static vx_drbg randomness; // seeded from the kernel's entropy; each service tha
 // Builds the spawn message's records and handles for a service, and starts it.
 static void cannot(const char *what, const service *s, vx_status st); // below
 
+// What start() is building for a child: its spawn message's records, and the
+// handles they name.
+typedef struct child_build {
+  vx_ndb_writer w;
+  vx_handle handles[VX_CHANNEL_MAX_HANDLES - 1]; // NONE until given, so a failure closes only real ones
+  vx_str names[VX_CHANNEL_MAX_HANDLES - 1];
+  uint32_t count;
+} child_build;
+
+// A mount of the post /srv/SRV at old: a connector to it, and the record that
+// names it (lib/vx-ns/spawn.c replays it).
+static vx_status put_mount(const service *s, child_build *b, vx_str old, vx_str srv, vx_str aname,
+                           vx_str flags) {
+  static char ns_names[VX_CHANNEL_MAX_HANDLES][8]; // "ns.NN"
+  post *p = find_post(srv);
+  if (!p || b->count == VX_CHANNEL_MAX_HANDLES - 1) {
+    say(s->name, VX_STR(": cannot mount /srv/"), srv);
+    vx_print(VX_STR("\n"));
+    return VX_ERR_NOT_FOUND;
+  }
+  char *hn = ns_names[b->count];
+  hn[0] = 'n', hn[1] = 's', hn[2] = '.', hn[3] = (char)('0' + b->count / 10),
+  hn[4] = (char)('0' + b->count % 10);
+  vx_status st = vx_handle_dup(p->client, CONNECTOR_RIGHTS, &b->handles[b->count]);
+  b->names[b->count++] = (vx_str){hn, 5};
+  char src[40] = "/srv/";
+  size_t n = p->name.len < sizeof src - 5 ? p->name.len : sizeof src - 5;
+  memcpy(src + 5, p->name.ptr, n);
+  vx_ndb_put(&b->w, "mount", old);
+  vx_ndb_put(&b->w, "handle", (vx_str){hn, 5});
+  if (aname.len) vx_ndb_put(&b->w, "aname", aname);
+  if (flags.len) vx_ndb_put(&b->w, "flags", flags);
+  vx_ndb_put(&b->w, "src", (vx_str){src, 5 + n});
+  vx_ndb_end(&b->w);
+  return st;
+}
+
+static void put_bind(child_build *b, vx_str new, vx_str old, vx_str flags) {
+  vx_ndb_put(&b->w, "bind", old);
+  vx_ndb_put(&b->w, "new", new);
+  if (flags.len) vx_ndb_put(&b->w, "flags", flags);
+  vx_ndb_end(&b->w);
+}
+
+// The namespace template /lib/ns/NAME in the boot image, a namespace(6) file
+// (ADR-0009), as the child's mount and bind records: a mount's service is a
+// post, /srv/NAME.
+static vx_status put_template(const service *s, child_build *b, vx_str name) {
+  char path[64];
+  const vx_str dir = VX_STR("lib/ns/");
+  vx_tar_entry t;
+  bool found = name.len && dir.len + name.len <= sizeof path;
+  if (found) {
+    memcpy(path, dir.ptr, dir.len);
+    memcpy(path + dir.len, name.ptr, name.len);
+    found = vx_tar_find(image, image_size, (vx_str){path, dir.len + name.len}, &t) == VX_OK && !t.dir;
+  }
+  if (!found) {
+    say(s->name, VX_STR(": no namespace template "), name);
+    vx_print(VX_STR("\n"));
+    return VX_ERR_NOT_FOUND;
+  }
+  static vx_ns_script script;
+  script = (vx_ns_script){.text = {(const char *)t.data, t.size}};
+  vx_ns_op op;
+  vx_status st;
+  while ((st = vx_ns_script_next(&script, &op)) == VX_OK) {
+    char letters[4];
+    size_t nl = 0;
+    if (op.flags & VX_NS_AFTER) letters[nl++] = 'a';
+    if (op.flags & VX_NS_BEFORE) letters[nl++] = 'b';
+    if (op.flags & VX_NS_CREATE) letters[nl++] = 'c';
+    vx_str flags = {letters, nl};
+    const vx_str srv_dir = VX_STR("/srv/");
+    if (op.kind == VX_NS_OP_MOUNT && op.args[0].len > srv_dir.len &&
+        memcmp(op.args[0].ptr, srv_dir.ptr, srv_dir.len) == 0) {
+      vx_str srv = {op.args[0].ptr + srv_dir.len, op.args[0].len - srv_dir.len};
+      st = put_mount(s, b, op.args[1], srv, op.argc > 2 ? op.args[2] : (vx_str){}, flags);
+    } else if (op.kind == VX_NS_OP_BIND) {
+      put_bind(b, op.args[0], op.args[1], flags);
+    } else {
+      st = VX_ERR_UNSUPPORTED; // a template only mounts posts and binds, so far
+    }
+    if (st != VX_OK) {
+      say(s->name, VX_STR(": namespace template "), name);
+      vx_print(VX_STR(": cannot do line "));
+      vx_print_u64(op.line);
+      vx_print(VX_STR("\n"));
+      return st;
+    }
+  }
+  if (st == VX_ERR_NOT_FOUND) return VX_OK; // the end of the file
+  say(s->name, VX_STR(": namespace template "), name);
+  vx_print(VX_STR(": no operation on line "));
+  vx_print_u64(op.line);
+  vx_print(VX_STR("\n"));
+  return st;
+}
+
 static vx_status start(service *s) {
   static char records[16 * 1024];
-  vx_ndb_writer w = {.buf = records, .cap = sizeof records};
-  vx_handle handles[VX_CHANNEL_MAX_HANDLES - 1] = {}; // NONE until given, so a failure closes only real ones
-  vx_str handle_names[VX_CHANNEL_MAX_HANDLES - 1];
-  static char ns_names[VX_CHANNEL_MAX_HANDLES][40]; // "ns.NN", "claim:NAME", "srv:NAME"
-  uint32_t count = 0;
+  static child_build b;
+  b = (child_build){.w = {.buf = records, .cap = sizeof records}};
+  static char srv_names[VX_CHANNEL_MAX_HANDLES][40]; // "claim:NAME", "srv:NAME"
   vx_status st = VX_OK;
 
   vx_ndb_reader r = manifest_reader(s->manifest, s->at);
@@ -254,113 +352,66 @@ static vx_status start(service *s) {
     return VX_ERR_NOT_FOUND;
   }
   if (vx_ndb_has(&rec, "bootimage")) {
-    st = vx_handle_dup(image_vmo, BOOT_IMAGE_RIGHTS, &handles[count]);
-    handle_names[count++] = VX_STR("bootimage");
-    vx_ndb_flag(&w, "bootimage");
-    vx_ndb_put_u64(&w, "size", image_size);
-    vx_ndb_end(&w);
+    st = vx_handle_dup(image_vmo, BOOT_IMAGE_RIGHTS, &b.handles[b.count]);
+    b.names[b.count++] = VX_STR("bootimage");
+    vx_ndb_flag(&b.w, "bootimage");
+    vx_ndb_put_u64(&b.w, "size", image_size);
+    vx_ndb_end(&b.w);
   }
   vx_str srv = vx_ndb_get(&rec, "post");
   bool posts_console = str_eq(srv, VX_STR("cons")); // decided now: rec moves on to the records below
   bool posts_proc = str_eq(srv, VX_STR("proc"));
   if (st == VX_OK && srv.len) {
     post *p = find_post(srv);
-    st = p ? vx_handle_dup(p->server, CONNECTOR_RIGHTS, &handles[count]) : VX_ERR_NOT_FOUND;
-    handle_names[count++] = VX_STR("listen");
+    st = p ? vx_handle_dup(p->server, CONNECTOR_RIGHTS, &b.handles[b.count]) : VX_ERR_NOT_FOUND;
+    b.names[b.count++] = VX_STR("listen");
   }
   post *cons = find_post(VX_STR("cons"));
   if (st == VX_OK && vx_ndb_has(&rec, "console") && cons) {
-    st = vx_handle_dup(cons->client, CONNECTOR_RIGHTS, &handles[count]);
-    handle_names[count++] = VX_STR("console");
+    st = vx_handle_dup(cons->client, CONNECTOR_RIGHTS, &b.handles[b.count]);
+    b.names[b.count++] = VX_STR("console");
   }
   if (st == VX_OK && vx_ndb_has(&rec, "resource") && resource) { // root authority over devices: devmgr
-    st = vx_handle_dup(resource, VX_RIGHTS_SAME, &handles[count]);
-    handle_names[count++] = VX_STR("resource");
+    st = vx_handle_dup(resource, VX_RIGHTS_SAME, &b.handles[b.count]);
+    b.names[b.count++] = VX_STR("resource");
   }
   if (st == VX_OK && vx_ndb_has(&rec, "acpi") && acpi_vmo) {
-    st = vx_handle_dup(acpi_vmo, VX_RIGHTS_SAME, &handles[count]);
-    handle_names[count++] = VX_STR("acpi");
-    vx_ndb_flag(&w, "acpi");
-    vx_ndb_put_u64(&w, "size", acpi_size);
-    vx_ndb_end(&w);
+    st = vx_handle_dup(acpi_vmo, VX_RIGHTS_SAME, &b.handles[b.count]);
+    b.names[b.count++] = VX_STR("acpi");
+    vx_ndb_flag(&b.w, "acpi");
+    vx_ndb_put_u64(&b.w, "size", acpi_size);
+    vx_ndb_end(&b.w);
   }
   if (st == VX_OK && vx_ndb_has(&rec, "tasks")) { // svcd's own task: the whole tree, for procfs
-    st = vx_handle_dup(vx_self, VX_RIGHT_INSPECT | VX_RIGHT_MANAGE | VX_RIGHT_TRANSFER, &handles[count]);
-    handle_names[count++] = VX_STR("tasks");
+    st = vx_handle_dup(vx_self, VX_RIGHT_INSPECT | VX_RIGHT_MANAGE | VX_RIGHT_TRANSFER, &b.handles[b.count]);
+    b.names[b.count++] = VX_STR("tasks");
   }
   if (st == VX_OK && vx_ndb_has(&rec, "entropy") && randomness.seeded) {
     uint8_t seed[32];
     vx_drbg_read(&randomness, seed, sizeof seed);
-    vx_ndb_put(&w, "entropy", (vx_str){(const char *)seed, sizeof seed});
-    vx_ndb_end(&w);
+    vx_ndb_put(&b.w, "entropy", (vx_str){(const char *)seed, sizeof seed});
+    vx_ndb_end(&b.w);
   }
   for (uint32_t i = 0; st == VX_OK && i < s->devices; i++) {
-    st = vx_handle_dup(s->device[i], VX_RIGHTS_SAME, &handles[count]);
-    handle_names[count++] = s->device_name[i];
+    st = vx_handle_dup(s->device[i], VX_RIGHTS_SAME, &b.handles[b.count]);
+    b.names[b.count++] = s->device_name[i];
   }
 
-  // The manifest's records, and a template's in the middle of them (ns=).
-  static char template_scratch[16 * 1024];
-  vx_ndb_reader tmpl = {};
-  bool in_template = false;
+  // The manifest's records, and a namespace template's lines where it names
+  // one (ns=NAME: /lib/ns/NAME, a namespace(6) file).
   while (st == VX_OK) {
-    if (in_template && vx_ndb_next(&tmpl, &rec) != VX_NDB_RECORD) {
-      in_template = false;
-      continue;
-    }
-    if (!in_template && (vx_ndb_next(&r, &rec) != VX_NDB_RECORD || vx_ndb_has(&rec, "service"))) break;
-    if (in_template && !vx_ndb_has(&rec, "mount") && !vx_ndb_has(&rec, "bind") && !vx_ndb_has(&rec, "env"))
-      continue; // a template names a namespace and its environment, nothing more
-    if (!in_template && vx_ndb_has(&rec, "ns")) {
-      vx_str name = vx_ndb_get(&rec, "ns");
-      char path[64];
-      vx_tar_entry t;
-      const vx_str dir = VX_STR("boot/ns/"), ext = VX_STR(".ndb"); // the path is a vx_str: no terminator
-      bool found = name.len && dir.len + name.len + ext.len <= sizeof path;
-      if (found) {
-        memcpy(path, dir.ptr, dir.len);
-        memcpy(path + dir.len, name.ptr, name.len);
-        memcpy(path + dir.len + name.len, ext.ptr, ext.len);
-        vx_str whole = {path, dir.len + name.len + ext.len};
-        found = vx_tar_find(image, image_size, whole, &t) == VX_OK && !t.dir;
-      }
-      if (!found) {
-        say(s->name, VX_STR(": no namespace template "), name);
-        vx_print(VX_STR("\n"));
-        st = VX_ERR_NOT_FOUND;
-        break;
-      }
-      tmpl = (vx_ndb_reader){.src = {(const char *)t.data, t.size},
-                             .scratch = template_scratch,
-                             .scratch_cap = sizeof template_scratch};
-      in_template = true;
-      continue;
-    }
-    if (vx_ndb_has(&rec, "arg")) {
-      vx_ndb_put(&w, "arg", vx_ndb_get(&rec, "arg"));
+    if (vx_ndb_next(&r, &rec) != VX_NDB_RECORD || vx_ndb_has(&rec, "service")) break;
+    if (vx_ndb_has(&rec, "ns")) {
+      st = put_template(s, &b, vx_ndb_get(&rec, "ns"));
+    } else if (vx_ndb_has(&rec, "arg")) {
+      vx_ndb_put(&b.w, "arg", vx_ndb_get(&rec, "arg"));
+      vx_ndb_end(&b.w);
     } else if (vx_ndb_has(&rec, "env")) {
-      vx_ndb_put(&w, "env", vx_ndb_get(&rec, "env"));
+      vx_ndb_put(&b.w, "env", vx_ndb_get(&rec, "env"));
+      vx_ndb_end(&b.w);
     } else if (vx_ndb_has(&rec, "mount")) {
-      post *p = find_post(vx_ndb_get(&rec, "srv"));
-      if (!p || count == VX_CHANNEL_MAX_HANDLES - 1) {
-        say(s->name, VX_STR(": cannot mount /srv/"), vx_ndb_get(&rec, "srv"));
-        vx_print(VX_STR("\n"));
-        st = VX_ERR_NOT_FOUND;
-        break;
-      }
-      char *hn = ns_names[count];
-      hn[0] = 'n', hn[1] = 's', hn[2] = '.', hn[3] = (char)('0' + count / 10),
-      hn[4] = (char)('0' + count % 10);
-      st = vx_handle_dup(p->client, CONNECTOR_RIGHTS, &handles[count]);
-      handle_names[count++] = (vx_str){hn, 5};
-      char src[40] = "/srv/";
-      size_t n = p->name.len < sizeof src - 5 ? p->name.len : sizeof src - 5;
-      memcpy(src + 5, p->name.ptr, n);
-      vx_ndb_put(&w, "mount", vx_ndb_get(&rec, "mount"));
-      vx_ndb_put(&w, "handle", (vx_str){hn, 5});
-      if (vx_ndb_has(&rec, "aname")) vx_ndb_put(&w, "aname", vx_ndb_get(&rec, "aname"));
-      if (vx_ndb_has(&rec, "flags")) vx_ndb_put(&w, "flags", vx_ndb_get(&rec, "flags"));
-      vx_ndb_put(&w, "src", (vx_str){src, 5 + n});
+      st = put_mount(s, &b, vx_ndb_get(&rec, "mount"), vx_ndb_get(&rec, "srv"), vx_ndb_get(&rec, "aname"),
+                     vx_ndb_get(&rec, "flags"));
     } else if (vx_ndb_has(&rec, "claim") || vx_ndb_has(&rec, "connect")) {
       // claim=NAME: the post's server end, to hand on (devmgr gives it to a
       // driver); connect=NAME: a connector to it. As handles "claim:NAME" and
@@ -368,47 +419,42 @@ static vx_status start(service *s) {
       bool claim = vx_ndb_has(&rec, "claim");
       vx_str name = vx_ndb_get(&rec, claim ? "claim" : "connect");
       post *p = find_post(name);
-      if (!p || count == VX_CHANNEL_MAX_HANDLES - 1) {
+      if (!p || b.count == VX_CHANNEL_MAX_HANDLES - 1) {
         st = VX_ERR_NOT_FOUND;
         break;
       }
-      char *hn = ns_names[count];
+      char *hn = srv_names[b.count];
       size_t prefix = claim ? 6 : 4;
       memcpy(hn, claim ? "claim:" : "srv:", prefix);
       memcpy(hn + prefix, p->name.ptr, p->name.len);
-      st = vx_handle_dup(claim ? p->server : p->client, CONNECTOR_RIGHTS, &handles[count]);
-      handle_names[count++] = (vx_str){hn, prefix + p->name.len};
-      continue;
+      st = vx_handle_dup(claim ? p->server : p->client, CONNECTOR_RIGHTS, &b.handles[b.count]);
+      b.names[b.count++] = (vx_str){hn, prefix + p->name.len};
     } else if (is_device_record(&rec)) { // passed on as they are, for the driver to read
       for (int i = 0; i < rec.count; i++) {
         if (rec.tuples[i].value.ptr)
-          vx_ndb_put_key(&w, rec.tuples[i].key, rec.tuples[i].value);
+          vx_ndb_put_key(&b.w, rec.tuples[i].key, rec.tuples[i].value);
         else
-          vx_ndb_flag_key(&w, rec.tuples[i].key);
+          vx_ndb_flag_key(&b.w, rec.tuples[i].key);
       }
+      vx_ndb_end(&b.w);
     } else if (vx_ndb_has(&rec, "bind")) {
-      vx_ndb_put(&w, "bind", vx_ndb_get(&rec, "bind"));
-      vx_ndb_put(&w, "new", vx_ndb_get(&rec, "new"));
-      if (vx_ndb_has(&rec, "flags")) vx_ndb_put(&w, "flags", vx_ndb_get(&rec, "flags"));
-    } else {
-      continue;
+      put_bind(&b, vx_ndb_get(&rec, "new"), vx_ndb_get(&rec, "bind"), vx_ndb_get(&rec, "flags"));
     }
-    vx_ndb_end(&w);
   }
-  if (st == VX_OK && w.failed) st = VX_ERR_RANGE;
+  if (st == VX_OK && b.w.failed) st = VX_ERR_RANGE;
   if (st != VX_OK) {
-    for (uint32_t i = 0; i < count; i++)
-      if (handles[i]) vx_handle_close(handles[i]);
+    for (uint32_t i = 0; i < b.count; i++)
+      if (b.handles[i]) vx_handle_close(b.handles[i]);
     return st;
   }
 
   vx_spawn_args a = {.name = s->name,
                      .image = elf.data,
                      .image_size = elf.size,
-                     .handles = handles,
-                     .handle_names = handle_names,
-                     .handle_count = count,
-                     .records = {records, w.len},
+                     .handles = b.handles,
+                     .handle_names = b.names,
+                     .handle_count = b.count,
+                     .records = {records, b.w.len},
                      // Registered with procfs before it runs (ADR-0011): in a session
                      // and note group of its own, as Plan 9's daemons run (RFNOTEG),
                      // so a note to one group never reaches the rest of the system;

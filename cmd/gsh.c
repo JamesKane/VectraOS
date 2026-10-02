@@ -186,19 +186,27 @@ static bool builtin(word *w, int n) {
       report("bind", vx_ns_bind(&ns, w[first].text, w[first + 1].text, flags));
     return true;
   }
-  if (word_is(w[0], "mount")) { // 9P servers over TCP, so far: tcp!HOST!PORT or 9p://HOST:PORT
+  // mount: a service this namespace has a connection from (/srv/NAME, as ns
+  // prints it, so its output replays), or a 9P server over TCP, tcp!HOST!PORT
+  // or 9p://HOST:PORT.
+  if (word_is(w[0], "mount")) {
     uint8_t flags = n > 1 && w[1].text.len && w[1].text.ptr[0] == '-' ? bind_flags(w[1].text) : 0;
     int first = n > 1 && w[1].text.len && w[1].text.ptr[0] == '-' ? 2 : 1;
     if (flags == 0xff || n - first < 2 || n - first > 3) {
-      usage("usage: mount [-abc] tcp!host!port old [aname]\n");
+      usage("usage: mount [-abc] /srv/name|tcp!host!port old [aname]\n");
       return true;
     }
-    p9_client *c;
-    vx_str src;
-    vx_status st = vx_ns_dial(&ns, w[first].text, &c, &src);
-    if (st == VX_OK)
-      st = vx_ns_mount(&ns, c, VX_HANDLE_NONE, src, n - first == 3 ? w[first + 2].text : (vx_str){},
-                       w[first + 1].text, flags);
+    vx_str aname = n - first == 3 ? w[first + 2].text : (vx_str){};
+    vx_str from = w[first].text;
+    vx_status st;
+    if (from.len > 5 && memcmp(from.ptr, "/srv/", 5) == 0) {
+      st = vx_ns_mount_srv(&ns, from, aname, w[first + 1].text, flags);
+    } else {
+      p9_client *c;
+      vx_str src;
+      st = vx_ns_dial(&ns, from, &c, &src);
+      if (st == VX_OK) st = vx_ns_mount(&ns, c, VX_HANDLE_NONE, src, aname, w[first + 1].text, flags);
+    }
     report("mount", st);
     return true;
   }

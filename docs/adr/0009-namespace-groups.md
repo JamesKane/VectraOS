@@ -26,17 +26,20 @@ Both break the mental model Plan 9 scripts depend on.
   - `bind`, `mount` and `unmount` are channel calls to `nsd`, one round trip each.
   - A group with one member keeps its table private, as today, and is handed to `nsd` when a second member joins. So a process that never shares never talks to `nsd`.
 - **Connections stay per process.** A ring has one producer (01 §4.3). So a table entry names a *connector*, not a connection. Each member opens its own connection on first use, through a duplicate of the connector handle that it gets from `nsd`. Inherited descriptors still need `Tshare`/`Tjoin` (docs/proto/posix.md), because a fid belongs to one connection.
-- **A mount is found by the identity of its mount point:** the connector and the qid path of the directory it was mounted on, as in Plan 9.
-  - A `Twalk` already returns one qid per name walked. libns checks each against the table, and on a hit it continues from the mount's root with the remaining names.
+- **A mount is found by the identity of its mount point:** the connection and the qid path of the directory it was mounted on, as 9front's `findmount` matches the channel at every walk step.
+  - Resolution walks from the root. A `Twalk` already returns one qid per name walked. libns checks each against the table, and on a hit it continues from the mount's union with the remaining names.
+  - A mount on a new name in a directory (`/n/host`, which Plan 9's mntgen would provide) is found by that directory and the name. In a union directory, the directory is its first member.
+  - A `bind` or `mount` onto any name for a mount point joins that same union, as `cmount` finds its mount head by what it is mounted on. A union bound onto another directory is copied whole, in order.
+  - A create in a union goes to the first member bound with `-c`, or fails, as 9front's `createdir` does.
   - So crossing a mount costs no extra round trip, and pipelining (02 §3.3) is unchanged.
   - `..` is still resolved lexically before walking.
   - The path a user typed is kept beside each entry, for `ns`.
 - **`bind` still confines nothing** (rule 3). Confinement is still a connection attached at a restricted root.
 - **There is no `RFNOMNT` flag.** In Plan 9 it stops a sandbox mounting `#` devices and `/srv` entries. Here a process can mount only what it holds handles for, so a template that leaves out `/srv` and `/net` has the same effect, and the server enforces it.
 - **Namespace files are namespace(6).**
-  - `/lib/ns/*` are scripts of `bind`, `mount` and `unmount` lines, read by `newns` in `vx-ns`.
-  - `ns` prints the same lines, and `/proc/N/ns` serves them, so `ns` output replays through `newns` or the shell.
-  - A namespace file is a script, not data, so D14's ndb rule does not cover it. The `ns=` manifest key names a file under `/lib/ns`, and `boot/ns/*.ndb` goes away.
+  - `/lib/ns/*` are scripts of `mount`, `bind`, `unmount`, `cd`, `clear` and `. file` lines, with rc-style quotes and `$var`, read by `newns` in `vx-ns` (`lib/vx-ns/newns.c`).
+  - `ns` prints the same lines, quoted where it must, and `/proc/N/ns` serves them, so `ns` output replays through `newns` or the shell. A `mount` of `/srv/NAME` replays through a connection the namespace already has from that service.
+  - A namespace file is a script, not data, so D14's ndb rule does not cover it. The `ns=` manifest key names a file under `/lib/ns`, and `boot/ns/*.ndb` goes away. A template holds only the namespace: the environment it carried moves to the manifest.
 
 ## Consequences
 

@@ -1,20 +1,27 @@
 // vx-ns: a process's namespace, in its own address space (docs/02 §2, D4).
 // Builds for the target and the host; it sees servers only as p9_clients.
 //
-// The table maps paths to unions: each entry is an absolute path and an
-// ordered list of members, each a directory on some connection (a fid this
-// table owns, never opened, only cloned). `mount` attaches a connection and
-// adds its root; `bind` resolves a path and adds what it finds. Flags say
-// where the new member goes: replacing the union (none), after it (-a), or
-// before it (-b); -c marks the member that takes creates.
+// The table holds mount points, each a union: an ordered list of members,
+// each a directory on some connection (a fid this table owns, never opened,
+// only cloned). `mount` attaches a connection and adds its root; `bind`
+// resolves a path and adds what it finds. Flags say where the new member
+// goes: replacing the union (none), after it (-a), or before it (-b); -c
+// marks the member that takes creates.
 //
-// Resolution cleans the path lexically first, so `..` never climbs out of a
-// bind (Plan 9's rule), then takes the entry with the longest matching
-// prefix and walks the rest from each member in order until one has it.
+// A mount point is found by identity, as in Plan 9 (9front's findmount,
+// ADR-0009), not by the path it was made at: the connection and qid of the
+// directory it was made on, so it shows through every name that reaches that
+// directory. Resolution cleans the path lexically first, so `..` never climbs
+// out of a bind (Plan 9's rule), then walks from the root, a Twalk of the
+// names left at a time; each Twalk returns a qid per name, and where one is a
+// mount point's, the walk goes on from that union with the names after it.
+// A mount point may also be a new name in a directory (/n/host, which Plan
+// 9's mntgen would provide): it is found by that directory and the name.
 // Confinement is not this table's job: it is the connections' (02 §2).
 //
-// `ns` output (vx_ns_print) replays: one `mount` or `bind` line per member,
-// the first of each union without -a, the rest with it.
+// `ns` output (vx_ns_print) is namespace(6), and replays: one `mount` or
+// `bind` line per member, in the order they were added, the first of each
+// union without -a, the rest with it.
 
 #pragma once
 
@@ -51,14 +58,23 @@ typedef struct vx_ns_member {
   uint8_t flags; // VX_NS_CREATE
   bool mounted;  // a mount (src and aname) rather than a bind (the path it came from)
   uint32_t fid;
+  uint64_t qid; // the qid path of the directory its fid is: walks from it check mount points against it
   char from[VX_NS_MAX_PATH]; // bind: the path; mount: the aname
   uint16_t from_len;
   uint32_t seq; // when it was added: ns output and children replay members in this order
 } vx_ns_member;
 
+// What a mount point is: the root, a directory (a connection and its qid),
+// or a new name in a directory (that directory, and the last component of the
+// entry's path). In a union directory, the directory is its first member.
+enum vx_ns_id : uint8_t { VX_NS_ID_ROOT, VX_NS_ID_OBJECT, VX_NS_ID_NAME };
+
 typedef struct vx_ns_entry {
-  char path[VX_NS_MAX_PATH];
-  uint16_t path_len; // 0: the slot is free
+  char path[VX_NS_MAX_PATH]; // where it was made, for ns output
+  uint16_t path_len;         // 0: the slot is free
+  uint8_t id;                // enum vx_ns_id
+  uint8_t id_conn;           // OBJECT, NAME: the connection
+  uint64_t id_qid;           // OBJECT: the directory's qid path; NAME: the directory the name is in
   uint32_t count;
   vx_ns_member members[VX_NS_MAX_MEMBERS];
 } vx_ns_entry;
@@ -102,24 +118,6 @@ typedef struct vx_ns {
   return len;
 }
 
-// The entry whose path is the longest prefix of `path` at a component
-// boundary; *rest is what follows it, without a leading '/'.
-static vx_ns_entry *ns_lookup(vx_ns *ns, vx_str path, vx_str *rest) {
-  vx_ns_entry *best = nullptr;
-  for (uint32_t i = 0; i < VX_NS_MAX_ENTRIES; i++) {
-    vx_ns_entry *e = &ns->entries[i];
-    size_t n = e->path_len;
-    if (!n || n > path.len || memcmp(e->path, path.ptr, n) != 0) continue;
-    if (n > 1 && n < path.len && path.ptr[n] != '/') continue; // "/bin" is not a prefix of "/binary"
-    if (!best || n > best->path_len) best = e;
-  }
-  if (best) {
-    size_t skip = best->path_len == 1 ? 1 : best->path_len + (path.len > best->path_len);
-    *rest = (vx_str){path.ptr + skip, path.len - skip};
-  }
-  return best;
-}
-
 static vx_ns_entry *ns_exact(vx_ns *ns, vx_str path) {
   for (uint32_t i = 0; i < VX_NS_MAX_ENTRIES; i++)
     if (ns->entries[i].path_len == path.len && memcmp(ns->entries[i].path, path.ptr, path.len) == 0)
@@ -127,15 +125,158 @@ static vx_ns_entry *ns_exact(vx_ns *ns, vx_str path) {
   return nullptr;
 }
 
-// The connector of the first mount at exactly `path` (a spawner registers its
-// children with whatever serves /proc: lib/vx-proc/proc.h), or VX_HANDLE_NONE.
-// The namespace keeps it: the caller does not close it.
-[[maybe_unused]] static vx_handle vx_ns_connector(vx_ns *ns, vx_str path) {
-  vx_ns_entry *e = ns_exact(ns, path);
-  for (uint32_t i = 0; e && i < e->count; i++)
-    if (e->members[i].mounted && ns->conns[e->members[i].conn].connector)
-      return ns->conns[e->members[i].conn].connector;
-  return VX_HANDLE_NONE;
+// The last component of a cleaned path ("" for "/").
+static vx_str ns_last(vx_str path) {
+  size_t at = path.len;
+  while (at > 0 && path.ptr[at - 1] != '/') at--;
+  return (vx_str){path.ptr + at, path.len - at};
+}
+
+static vx_ns_entry *ns_root(vx_ns *ns) {
+  for (uint32_t i = 0; i < VX_NS_MAX_ENTRIES; i++)
+    if (ns->entries[i].path_len && ns->entries[i].id == VX_NS_ID_ROOT) return &ns->entries[i];
+  return nullptr;
+}
+
+// The mount point that is directory `qid` on connection `conn`, if any.
+static vx_ns_entry *ns_find_object(vx_ns *ns, uint8_t conn, uint64_t qid) {
+  for (uint32_t i = 0; i < VX_NS_MAX_ENTRIES; i++) {
+    vx_ns_entry *e = &ns->entries[i];
+    if (e->path_len && e->id == VX_NS_ID_OBJECT && e->id_conn == conn && e->id_qid == qid) return e;
+  }
+  return nullptr;
+}
+
+static bool ns_str_eq(vx_str a, vx_str b) { return a.len == b.len && memcmp(a.ptr, b.ptr, a.len) == 0; }
+
+// The mount point that is the new name `name` in directory (conn, qid), if any.
+static vx_ns_entry *ns_find_name(vx_ns *ns, uint8_t conn, uint64_t qid, vx_str name) {
+  for (uint32_t i = 0; i < VX_NS_MAX_ENTRIES; i++) {
+    vx_ns_entry *e = &ns->entries[i];
+    if (e->path_len && e->id == VX_NS_ID_NAME && e->id_conn == conn && e->id_qid == qid &&
+        ns_str_eq(ns_last((vx_str){e->path, e->path_len}), name))
+      return e;
+  }
+  return nullptr;
+}
+
+static constexpr uint32_t VX_NS_MAX_DEPTH = 64; // names in a path
+
+// A cleaned path's names. Returns how many, or -1 if there are too many.
+static int ns_split(vx_str path, vx_str *names) {
+  int n = 0;
+  for (size_t i = 0; i < path.len;) {
+    while (i < path.len && path.ptr[i] == '/') i++;
+    size_t start = i;
+    while (i < path.len && path.ptr[i] != '/') i++;
+    if (i == start) continue;
+    if (n == (int)VX_NS_MAX_DEPTH) return -1;
+    names[n++] = (vx_str){path.ptr + start, i - start};
+  }
+  return n;
+}
+
+// Where a resolution ended: a fid (the caller's to clunk) on a connection,
+// with the qid path of what it reached; and the mount point it is, if it is
+// one (the walk ended exactly on it).
+typedef struct vx_ns_at {
+  uint8_t conn;
+  uint32_t fid;
+  uint64_t qid;
+  vx_ns_entry *entry;
+} vx_ns_at;
+
+// Walks names[i..n) from fid (conn, at qid) on, checking each name reached
+// against the mount points. Returns VX_OK with *done set and *out filled when
+// it reaches the last name; VX_OK with *jump set to a mount point and *i moved
+// past what led there; or the error that stopped it. A fid this walk made is
+// clunked unless returned.
+static vx_status ns_walk_on(vx_ns *ns, uint8_t conn, uint32_t fid, uint64_t qid, const vx_str *names, int n,
+                            int *i, vx_ns_entry **jump, bool *done, vx_ns_at *out) {
+  p9_client *c = ns->conns[conn].client;
+  uint32_t cur = fid;
+  bool owned = false; // cur is a fid this walk made
+  *jump = nullptr;
+  *done = false;
+  for (;;) {
+    vx_ns_entry *hit = ns_find_name(ns, conn, qid, names[*i]); // a new name mounted here
+    if (hit) {
+      *i += 1;
+      *jump = hit;
+      break;
+    }
+    uint16_t count = (uint16_t)(n - *i < (int)P9_MAXWELEM ? n - *i : (int)P9_MAXWELEM), got = 0;
+    p9_qid qids[P9_MAXWELEM];
+    uint32_t next = P9_NOFID;
+    vx_status st = p9c_walk_names(c, cur, &names[*i], count, &next, qids, &got);
+    if (st != VX_OK || got == 0) {
+      if (owned) p9c_clunk(c, cur);
+      return st != VX_OK ? st : VX_ERR_NOT_FOUND;
+    }
+    for (uint16_t j = 0; j < got && !hit; j++) { // a mount point among the names reached, or just past one?
+      int after = *i + j + 1;                    // the names used up once qids[j] is reached
+      if ((hit = ns_find_object(ns, conn, qids[j].path)))
+        *i = after;
+      else if (after < n && (hit = ns_find_name(ns, conn, qids[j].path, names[after])))
+        *i = after + 1;
+    }
+    if (hit) {
+      if (next != P9_NOFID) p9c_clunk(c, next);
+      *jump = hit;
+      break;
+    }
+    if (got < count) { // stopped partway, at no mount point
+      if (owned) p9c_clunk(c, cur);
+      return VX_ERR_NOT_FOUND;
+    }
+    if (owned) p9c_clunk(c, cur);
+    cur = next;
+    owned = true;
+    qid = qids[got - 1].path;
+    *i += count;
+    if (*i == n) {
+      *out = (vx_ns_at){.conn = conn, .fid = cur, .qid = qid};
+      *done = true;
+      return VX_OK;
+    }
+  }
+  if (owned) p9c_clunk(c, cur);
+  return VX_OK;
+}
+
+// Resolves a cleaned path from the root, crossing mount points by identity.
+static vx_status ns_resolve(vx_ns *ns, vx_str path, vx_ns_at *out) {
+  vx_str names[VX_NS_MAX_DEPTH];
+  int n = ns_split(path, names);
+  vx_ns_entry *e = ns_root(ns);
+  if (n < 0) return VX_ERR_RANGE;
+  if (!e) return VX_ERR_NOT_FOUND;
+  int i = 0;
+  for (uint32_t hops = 0; hops <= VX_NS_MAX_DEPTH; hops++) {
+    if (i == n) { // exactly at a mount point: its first member
+      const vx_ns_member *m = &e->members[0];
+      vx_status st = p9c_walk(ns->conns[m->conn].client, m->fid, (vx_str){}, &out->fid);
+      if (st != VX_OK) return st;
+      out->conn = m->conn, out->qid = m->qid, out->entry = e;
+      return VX_OK;
+    }
+    vx_status st = VX_ERR_NOT_FOUND;
+    vx_ns_entry *jump = nullptr;
+    for (uint32_t k = 0; k < e->count && !jump; k++) { // a union: each member in turn
+      const vx_ns_member *m = &e->members[k];
+      int at = i;
+      bool done = false;
+      st = ns_walk_on(ns, m->conn, m->fid, m->qid, names, n, &at, &jump, &done, out);
+      if (st == VX_OK && done) {
+        out->entry = nullptr;
+        return VX_OK;
+      }
+      if (jump) i = at;
+    }
+    if (!jump) return st;
+    e = jump;
+  }
+  return VX_ERR_RANGE; // mount points in a loop
 }
 
 // Resolves a path to a new fid on one of the namespace's connections: the
@@ -144,79 +285,101 @@ static vx_ns_entry *ns_exact(vx_ns *ns, vx_str path) {
   char clean[VX_NS_MAX_PATH];
   size_t n = vx_ns_clean(path, clean, sizeof clean);
   if (!n) return VX_ERR_INVALID;
-  vx_str rest;
-  vx_ns_entry *e = ns_lookup(ns, (vx_str){clean, n}, &rest);
-  if (!e) return VX_ERR_NOT_FOUND;
-  vx_status st = VX_ERR_NOT_FOUND;
-  for (uint32_t i = 0; i < e->count; i++) {
-    p9_client *client = ns->conns[e->members[i].conn].client;
-    st = p9c_walk(client, e->members[i].fid, rest, fid);
-    if (st == VX_OK) {
-      *c = client;
-      return VX_OK;
-    }
-  }
-  return st;
+  vx_ns_at at;
+  vx_status st = ns_resolve(ns, (vx_str){clean, n}, &at);
+  if (st != VX_OK) return st;
+  *c = ns->conns[at.conn].client;
+  *fid = at.fid;
+  return VX_OK;
+}
+
+// The connector of the first mount at the path `path` was made at (a spawner
+// registers its children with whatever serves /proc: lib/vx-proc/proc.h), or
+// VX_HANDLE_NONE. The namespace keeps it: the caller does not close it.
+[[maybe_unused]] static vx_handle vx_ns_connector(vx_ns *ns, vx_str path) {
+  vx_ns_entry *e = ns_exact(ns, path);
+  for (uint32_t i = 0; e && i < e->count; i++)
+    if (e->members[i].mounted && ns->conns[e->members[i].conn].connector)
+      return ns->conns[e->members[i].conn].connector;
+  return VX_HANDLE_NONE;
 }
 
 static void ns_drop_member(vx_ns *ns, const vx_ns_member *m) { p9c_clunk(ns->conns[m->conn].client, m->fid); }
 
-// Adds m at the cleaned path `old`, which must name something already, or
-// (to replace, not to join a union) be a new name in a directory that exists:
-// /n/host for a mount needs only /n, as Plan 9's mntgen gives it. "/" may be
-// mounted on in an empty namespace.
-static vx_status ns_add(vx_ns *ns, vx_str old, vx_ns_member m, uint8_t flags) {
-  vx_ns_entry *e = ns_exact(ns, old);
-  if (!e) {
-    vx_ns_member base = {.conn = 0};
-    bool union_with_old = flags & (VX_NS_AFTER | VX_NS_BEFORE);
-    p9_client *bc = nullptr;
-    vx_status st = vx_ns_walk(ns, old, &bc, &base.fid);
-    if (st == VX_ERR_NOT_FOUND && !union_with_old && old.len > 1) { // a new name: its directory must exist
-      size_t up = old.len;
-      while (up > 1 && old.ptr[up - 1] != '/') up--;
-      uint32_t pfid;
-      p9_client *pc = nullptr;
-      vx_status ps = vx_ns_walk(ns, (vx_str){old.ptr, up > 1 ? up - 1 : 1}, &pc, &pfid);
-      if (ps != VX_OK) return st;
-      p9c_clunk(pc, pfid);
-    } else if (st != VX_OK && !(old.len == 1 && !union_with_old)) {
-      return st;
-    }
-    if (st == VX_OK && !union_with_old) p9c_clunk(bc, base.fid); // it only had to exist
-    for (uint32_t i = 0; i < VX_NS_MAX_ENTRIES && !e; i++)
-      if (!ns->entries[i].path_len) e = &ns->entries[i];
-    if (!e) {
-      if (st == VX_OK && union_with_old) p9c_clunk(bc, base.fid);
-      return VX_ERR_NO_MEMORY;
-    }
-    memcpy(e->path, old.ptr, old.len);
-    e->path_len = (uint16_t)old.len;
-    e->count = 0;
-    if (union_with_old) { // the union starts with what was there: a bind of the path onto itself
-      for (uint8_t i = 0; i < VX_NS_MAX_CONNS; i++)
-        if (ns->conns[i].client == bc) base.conn = i;
-      memcpy(base.from, old.ptr, old.len);
-      base.from_len = (uint16_t)old.len;
-      base.seq = ns->next_seq++;
-      e->members[e->count++] = base;
-    }
+static vx_status ns_insert(vx_ns *ns, vx_ns_entry *e, vx_ns_member m, uint8_t flags, uint32_t at) {
+  if (e->count == VX_NS_MAX_MEMBERS) return VX_ERR_NO_MEMORY;
+  m.flags = flags & VX_NS_CREATE;
+  m.seq = ns->next_seq++;
+  memmove(&e->members[at + 1], &e->members[at], (e->count - at) * sizeof e->members[0]);
+  e->members[at] = m;
+  e->count++;
+  return VX_OK;
+}
+
+// The mount point at the cleaned path `old`, found or made: what `old`
+// resolves to now, as 9front's cmount finds the mount head by what it is
+// mounted on: a mount point already (joined), or a directory; or, to replace
+// rather than join, a new name in a directory that exists (/n/host for a
+// mount needs only /n). "/" may be mounted on in an empty namespace. To join
+// a union with what was there, the union starts with it.
+static vx_status ns_point(vx_ns *ns, vx_str old, uint8_t flags, vx_ns_entry **out) {
+  bool union_with_old = flags & (VX_NS_AFTER | VX_NS_BEFORE);
+  vx_ns_entry *fresh = nullptr;
+  for (uint32_t i = 0; i < VX_NS_MAX_ENTRIES && !fresh; i++)
+    if (!ns->entries[i].path_len) fresh = &ns->entries[i];
+  vx_ns_at at;
+  vx_status st = ns_root(ns) ? ns_resolve(ns, old, &at) : VX_ERR_NOT_FOUND;
+  if (st == VX_OK && at.entry) { // a mount point already: the same one, by whatever name
+    p9c_clunk(ns->conns[at.conn].client, at.fid);
+    *out = at.entry;
+    return VX_OK;
   }
+  vx_ns_entry e = {.path_len = (uint16_t)old.len};
+  memcpy(e.path, old.ptr, old.len);
+  if (st == VX_OK) {
+    e.id = VX_NS_ID_OBJECT, e.id_conn = at.conn, e.id_qid = at.qid;
+    if (union_with_old) {
+      e.members[e.count++] = (vx_ns_member){.conn = at.conn,
+                                            .fid = at.fid,
+                                            .qid = at.qid,
+                                            .from_len = (uint16_t)old.len,
+                                            .seq = ns->next_seq++};
+      memcpy(e.members[0].from, old.ptr, old.len);
+    } else {
+      p9c_clunk(ns->conns[at.conn].client, at.fid); // it only had to exist
+    }
+  } else if (old.len == 1 && !union_with_old && !ns_root(ns)) {
+    e.id = VX_NS_ID_ROOT;
+  } else if (st == VX_ERR_NOT_FOUND && !union_with_old &&
+             old.len > 1) { // a new name: its directory must exist
+    size_t up = old.len - ns_last(old).len;
+    vx_ns_at dir;
+    if (ns_resolve(ns, (vx_str){old.ptr, up > 1 ? up - 1 : 1}, &dir) != VX_OK) return st;
+    p9c_clunk(ns->conns[dir.conn].client, dir.fid);
+    e.id = VX_NS_ID_NAME, e.id_conn = dir.conn, e.id_qid = dir.qid; // a union's: its first member's
+  } else {
+    return st;
+  }
+  if (!fresh) {
+    if (e.count) p9c_clunk(ns->conns[e.members[0].conn].client, e.members[0].fid);
+    return VX_ERR_NO_MEMORY;
+  }
+  *fresh = e;
+  *out = fresh;
+  return VX_OK;
+}
+
+// Adds m at the cleaned path `old`, as flags say: replacing the union, or
+// after it (-a), or before it (-b).
+static vx_status ns_add(vx_ns *ns, vx_str old, vx_ns_member m, uint8_t flags) {
+  vx_ns_entry *e;
+  vx_status st = ns_point(ns, old, flags, &e);
+  if (st != VX_OK) return st;
   if (!(flags & (VX_NS_AFTER | VX_NS_BEFORE))) {
     for (uint32_t i = 0; i < e->count; i++) ns_drop_member(ns, &e->members[i]);
     e->count = 0;
   }
-  if (e->count == VX_NS_MAX_MEMBERS) return VX_ERR_NO_MEMORY;
-  m.flags = flags & VX_NS_CREATE;
-  m.seq = ns->next_seq++;
-  if (flags & VX_NS_BEFORE) {
-    memmove(&e->members[1], &e->members[0], e->count * sizeof e->members[0]);
-    e->members[0] = m;
-  } else {
-    e->members[e->count] = m;
-  }
-  e->count++;
-  return VX_OK;
+  return ns_insert(ns, e, m, flags, flags & VX_NS_BEFORE ? 0 : e->count);
 }
 
 // Adds a connection (attached at its aname) at `old`. The namespace takes c:
@@ -237,6 +400,7 @@ static vx_status ns_add(vx_ns *ns, vx_str old, vx_ns_member m, uint8_t flags) {
   if (aname.len) memcpy(m.from, aname.ptr, aname.len); // an empty aname may have no pointer
   vx_status st = p9c_attach(c, aname, &m.fid);
   if (st != VX_OK) return st;
+  m.qid = c->reply.qid.path;
   bool fresh = !ns->conns[slot].client;
   if (fresh) {
     ns->conns[slot] = (vx_ns_conn){.client = c, .connector = connector, .src_len = (uint8_t)src.len};
@@ -250,20 +414,37 @@ static vx_status ns_add(vx_ns *ns, vx_str old, vx_ns_member m, uint8_t flags) {
   return st;
 }
 
-// Makes `old` show what `new` names now.
+// Makes `old` show what `new` names now. A union bound on a directory is
+// copied whole, as 9front's cmount copies one: its members in order.
 [[maybe_unused]] static vx_status vx_ns_bind(vx_ns *ns, vx_str new, vx_str old, uint8_t flags) {
   char from[VX_NS_MAX_PATH], to[VX_NS_MAX_PATH];
   size_t fn = vx_ns_clean(new, from, sizeof from), tn = vx_ns_clean(old, to, sizeof to);
   if (!fn || !tn) return VX_ERR_INVALID;
-  p9_client *c;
-  vx_ns_member m = {.from_len = (uint16_t)fn};
-  memcpy(m.from, from, fn);
-  vx_status st = vx_ns_walk(ns, (vx_str){from, fn}, &c, &m.fid);
+  vx_ns_at src;
+  vx_status st = ns_resolve(ns, (vx_str){from, fn}, &src);
   if (st != VX_OK) return st;
-  for (uint8_t i = 0; i < VX_NS_MAX_CONNS; i++)
-    if (ns->conns[i].client == c) m.conn = i;
-  st = ns_add(ns, (vx_str){to, tn}, m, flags);
-  if (st != VX_OK) p9c_clunk(c, m.fid);
+  vx_ns_member m = {.conn = src.conn, .fid = src.fid, .qid = src.qid, .from_len = (uint16_t)fn};
+  memcpy(m.from, from, fn);
+  vx_ns_entry *e;
+  st = ns_point(ns, (vx_str){to, tn}, flags, &e);
+  if (st == VX_OK && src.entry == e) st = VX_ERR_INVALID; // a union onto itself
+  if (st != VX_OK) {
+    p9c_clunk(ns->conns[src.conn].client, src.fid);
+    return st;
+  }
+  if (!(flags & (VX_NS_AFTER | VX_NS_BEFORE))) {
+    for (uint32_t i = 0; i < e->count; i++) ns_drop_member(ns, &e->members[i]);
+    e->count = 0;
+  }
+  uint32_t at = flags & VX_NS_BEFORE ? 0 : e->count;
+  st = ns_insert(ns, e, m, flags, at);
+  if (st != VX_OK) p9c_clunk(ns->conns[src.conn].client, src.fid);
+  for (uint32_t k = 1; st == VX_OK && src.entry && k < src.entry->count; k++) { // the rest of a union
+    const vx_ns_member *u = &src.entry->members[k];
+    vx_ns_member more = *u;
+    st = p9c_walk(ns->conns[u->conn].client, u->fid, (vx_str){}, &more.fid);
+    if (st == VX_OK) st = ns_insert(ns, e, more, (uint8_t)(u->flags & VX_NS_CREATE), ++at);
+  }
   return st;
 }
 
@@ -273,7 +454,13 @@ static vx_status ns_add(vx_ns *ns, vx_str old, vx_ns_member m, uint8_t flags) {
   char to[VX_NS_MAX_PATH], from[VX_NS_MAX_PATH];
   size_t tn = vx_ns_clean(old, to, sizeof to), fn = new.len ? vx_ns_clean(new, from, sizeof from) : 0;
   if (!tn || (new.len && !fn)) return VX_ERR_INVALID;
-  vx_ns_entry *e = ns_exact(ns, (vx_str){to, tn});
+  vx_ns_at at; // the mount point there, by identity, or by the path it was made at
+  vx_ns_entry *e = nullptr;
+  if (ns_resolve(ns, (vx_str){to, tn}, &at) == VX_OK) {
+    e = at.entry;
+    p9c_clunk(ns->conns[at.conn].client, at.fid);
+  }
+  if (!e) e = ns_exact(ns, (vx_str){to, tn});
   if (!e) return VX_ERR_NOT_FOUND;
   uint32_t kept = 0;
   bool removed = false;
@@ -319,6 +506,21 @@ static void ns_put(ns_text *t, vx_str s) {
   t->len += s.len;
 }
 
+// A word as namespace(6) reads it: in single quotes ('' for a quote) if it
+// holds white space, a quote, a '$' or a '#', or is empty.
+static void ns_put_word(ns_text *t, vx_str s) {
+  bool quote = s.len == 0;
+  for (size_t i = 0; i < s.len && !quote; i++)
+    quote = s.ptr[i] == ' ' || s.ptr[i] == '\t' || s.ptr[i] == '\'' || s.ptr[i] == '$' || s.ptr[i] == '#';
+  if (!quote) {
+    ns_put(t, s);
+    return;
+  }
+  ns_put(t, (vx_str){"'", 1});
+  for (size_t i = 0; i < s.len; i++) ns_put(t, s.ptr[i] == '\'' ? (vx_str){"''", 2} : (vx_str){s.ptr + i, 1});
+  ns_put(t, (vx_str){"'", 1});
+}
+
 // Every member, as (entry, member) pairs, in the order they were added: the
 // order a script or a child must replay them in, since each may resolve paths
 // that earlier ones made. Returns how many.
@@ -355,8 +557,8 @@ static size_t ns_step_flags(const vx_ns *ns, const vx_ns_step *steps, uint32_t s
   return n;
 }
 
-// Writes the namespace as a script of mount and bind lines, in the order they
-// would rebuild it. Returns its length, or 0 if it does not fit.
+// Writes the namespace as namespace(6): mount and bind lines, in the order
+// they would rebuild it. Returns its length, or 0 if it does not fit.
 [[maybe_unused]] static size_t vx_ns_print(const vx_ns *ns, char *buf, size_t cap) {
   ns_text t = {.buf = buf, .cap = cap};
   static vx_ns_step steps[VX_NS_MAX_ENTRIES * VX_NS_MAX_MEMBERS];
@@ -374,12 +576,12 @@ static size_t ns_step_flags(const vx_ns *ns, const vx_ns_step *steps, uint32_t s
     }
     vx_str from = m->mounted ? (vx_str){ns->conns[m->conn].src, ns->conns[m->conn].src_len}
                              : (vx_str){m->from, m->from_len};
-    ns_put(&t, from);
+    ns_put_word(&t, from);
     ns_put(&t, VX_STR(" "));
-    ns_put(&t, (vx_str){e->path, e->path_len});
+    ns_put_word(&t, (vx_str){e->path, e->path_len});
     if (m->mounted && m->from_len) {
       ns_put(&t, VX_STR(" "));
-      ns_put(&t, (vx_str){m->from, m->from_len});
+      ns_put_word(&t, (vx_str){m->from, m->from_len});
     }
     ns_put(&t, VX_STR("\n"));
   }
@@ -403,16 +605,12 @@ typedef struct vx_ns_file {
   char clean[VX_NS_MAX_PATH];
   size_t n = vx_ns_clean(path, clean, sizeof clean);
   if (!n) return VX_ERR_INVALID;
-  vx_ns_entry *e = ns_exact(ns, (vx_str){clean, n});
-  vx_status st;
-  if (e && e->count > 1 && (mode & 3) == P9_OREAD) {
-    f->u = e;
-    f->c = ns->conns[e->members[0].conn].client;
-    st = p9c_walk(f->c, e->members[0].fid, (vx_str){}, &f->fid);
-  } else {
-    st = vx_ns_walk(ns, (vx_str){clean, n}, &f->c, &f->fid);
-  }
+  vx_ns_at at;
+  vx_status st = ns_resolve(ns, (vx_str){clean, n}, &at);
   if (st != VX_OK) return st;
+  f->c = ns->conns[at.conn].client;
+  f->fid = at.fid; // a union's first member, if it is a union
+  if (at.entry && at.entry->count > 1 && (mode & 3) == P9_OREAD) f->u = at.entry;
   st = p9c_open(f->c, f->fid, mode);
   if (st != VX_OK) p9c_clunk(f->c, f->fid);
   if (st != VX_OK) *f = (vx_ns_file){};
@@ -429,8 +627,24 @@ typedef struct vx_ns_file {
   while (slash > 0 && clean[slash - 1] != '/') slash--;
   if (!n || slash == n) return VX_ERR_INVALID; // "/" itself
   vx_str dir = {clean, slash > 1 ? slash - 1 : 1}, name = {clean + slash, n - slash};
-  vx_status st = vx_ns_walk(ns, dir, &f->c, &f->fid);
+  vx_ns_at at;
+  vx_status st = ns_resolve(ns, dir, &at);
   if (st != VX_OK) return st;
+  f->c = ns->conns[at.conn].client;
+  f->fid = at.fid;
+  if (at.entry &&
+      at.entry->count > 1) { // a union: the first member bound with -c, or none (9front's createdir)
+    const vx_ns_member *m = nullptr;
+    for (uint32_t i = 0; i < at.entry->count && !m; i++)
+      if (at.entry->members[i].flags & VX_NS_CREATE) m = &at.entry->members[i];
+    p9c_clunk(f->c, f->fid);
+    st = m ? p9c_walk(ns->conns[m->conn].client, m->fid, (vx_str){}, &f->fid) : VX_ERR_ACCESS;
+    if (st != VX_OK) {
+      *f = (vx_ns_file){};
+      return st;
+    }
+    f->c = ns->conns[m->conn].client;
+  }
   st = p9c_create(f->c, f->fid, name, perm, mode);
   if (st != VX_OK) {
     p9c_clunk(f->c, f->fid);

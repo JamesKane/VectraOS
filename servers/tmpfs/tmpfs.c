@@ -1,5 +1,5 @@
 // tmpfs: a file system in memory (02 §5), posted as /srv/tmpfs and mounted on
-// /tmp by the POSIX template (boot/ns/posix.ndb).
+// /tmp by the POSIX template (/lib/ns/posix).
 //
 // Files and directories are made, written, truncated and removed as 9P has
 // them, and renamed, changed (mode, size, times) and linked symbolically as

@@ -1,7 +1,7 @@
 // ns_test.c: lib/vx-ns against two in-memory 9P servers: lexical path
-// cleaning, mount and bind with each flag, union directories (walks and
-// reads), longest-prefix matching at component boundaries, unmount, and ns
-// output that replays.
+// cleaning, mount and bind with each flag, union directories (walks, reads,
+// creates), mount points found by identity, unmount, and ns output that
+// replays.
 //
 //   boot server:  /bin/  /boot/bin/ls  /boot/bin/cat  /dev/  /readme
 //   dev server:   /cons  /null
@@ -10,7 +10,7 @@
 
 #include "check.h"
 #include "../../lib/vx-9p/server.c"
-#include "../../lib/vx-ns/ns.c"
+#include "../../lib/vx-ns/newns.c"
 
 typedef struct tnode {
   uint64_t parent;
@@ -320,9 +320,85 @@ static void test_replay_and_release(void) {
   CHECK(after == before); // the failed creates clunked what they walked to
 }
 
+// Mount points are found by identity (ADR-0009, 9front's findmount): a mount
+// shows through every name that reaches the directory it was made on, and
+// through no name that does not.
+static void test_identity(void) {
+  static vx_ns ns;
+  CHECK(vx_ns_mount(&ns, &boot_c, VX_HANDLE_NONE, VX_STR("/srv/bootfs"), VX_STR(""), VX_STR("/"), 0) ==
+        VX_OK);
+  CHECK(vx_ns_bind(&ns, VX_STR("/boot"), VX_STR("/dev"), 0) == VX_OK); // /dev is /boot now
+  CHECK(vx_ns_mount(&ns, &dev_c, VX_HANDLE_NONE, VX_STR("/srv/cons"), VX_STR(""), VX_STR("/boot/bin"), 0) ==
+        VX_OK);
+  CHECK(exists(&ns, "/boot/bin/cons") && exists(&ns, "/dev/bin/cons")); // the same directory, by either name
+  CHECK(strcmp(list(&ns, "/dev/bin"), "cons null") == 0);
+
+  // A bind onto the other name joins the same mount point.
+  CHECK(vx_ns_bind(&ns, VX_STR("/bin"), VX_STR("/dev/bin"), VX_NS_AFTER) == VX_OK);
+  CHECK(strcmp(list(&ns, "/boot/bin"), "cons null") == 0); // /bin is empty: the union is the same
+
+  // /boot replaced by bootfs's empty /bin: the mount's directory is not under it.
+  CHECK(vx_ns_bind(&ns, VX_STR("/bin"), VX_STR("/boot"), 0) == VX_OK);
+  CHECK(!exists(&ns, "/boot/bin") && exists(&ns, "/dev/bin/cons"));
+
+  // A new name in a directory is found by that directory, by any name for it.
+  CHECK(vx_ns_mount(&ns, &dev_c, VX_HANDLE_NONE, VX_STR("/srv/cons"), VX_STR(""), VX_STR("/boot/new"), 0) ==
+        VX_OK);
+  CHECK(exists(&ns, "/bin/new/cons")); // /bin is the directory /boot shows
+
+  // Union create: the first member bound with -c, or none. readme, a file,
+  // takes it here, and its server refuses: not the union's refusal.
+  vx_ns_file f;
+  CHECK(vx_ns_create(&ns, VX_STR("/dev/bin/x"), 0644, P9_OWRITE, &f) == VX_ERR_ACCESS); // no -c member
+  CHECK(vx_ns_bind(&ns, VX_STR("/readme"), VX_STR("/dev/bin"), VX_NS_AFTER | VX_NS_CREATE) == VX_OK);
+  CHECK(vx_ns_create(&ns, VX_STR("/dev/bin/x"), 0644, P9_OWRITE, &f) == VX_ERR_INVALID);
+
+  // A union bound elsewhere is copied whole, in order.
+  CHECK(vx_ns_bind(&ns, VX_STR("/dev/bin"), VX_STR("/bin"), 0) == VX_OK);
+  CHECK(exists(&ns, "/bin/cons"));
+}
+
+static vx_str a_var(void *ctx, vx_str name) {
+  (void)ctx;
+  return name.len == 4 && memcmp(name.ptr, "user", 4) == 0 ? VX_STR("glenda") : (vx_str){};
+}
+
+static bool word_is(vx_str w, const char *want) {
+  return w.len == strlen(want) && memcmp(w.ptr, want, w.len) == 0;
+}
+
+// namespace(6) files, as newns reads them: operations, flags, quotes, $vars,
+// comments, and lines that are none.
+static void test_script(void) {
+  static const char text[] = "# a comment, with an apostrophe's quote\n"
+                             "mount -c /srv/tmpfs /tmp\n"
+                             "\n"
+                             "  bind -a $user/bin '/a b'\n"
+                             "mount /srv/fs /n/x 'it''s'\n"
+                             "unmount /n/x\n"
+                             "bind -ab /x /y\n";
+  static vx_ns_script s;
+  s = (vx_ns_script){.text = VX_STR(text), .var = a_var};
+  vx_ns_op op;
+  CHECK(vx_ns_script_next(&s, &op) == VX_OK && op.kind == VX_NS_OP_MOUNT && op.flags == VX_NS_CREATE &&
+        op.argc == 2 && word_is(op.args[0], "/srv/tmpfs") && word_is(op.args[1], "/tmp") && op.line == 2);
+  CHECK(vx_ns_script_next(&s, &op) == VX_OK && op.kind == VX_NS_OP_BIND && op.flags == VX_NS_AFTER &&
+        word_is(op.args[0], "glenda/bin") && word_is(op.args[1], "/a b"));
+  CHECK(vx_ns_script_next(&s, &op) == VX_OK && op.argc == 3 && word_is(op.args[2], "it's"));
+  CHECK(vx_ns_script_next(&s, &op) == VX_OK && op.kind == VX_NS_OP_UNMOUNT && op.argc == 1);
+  CHECK(vx_ns_script_next(&s, &op) == VX_ERR_INVALID && op.line == 7); // -a and -b together
+  CHECK(vx_ns_script_next(&s, &op) == VX_ERR_NOT_FOUND);               // the end
+  s = (vx_ns_script){.text = VX_STR("bind /only\n")};
+  CHECK(vx_ns_script_next(&s, &op) == VX_ERR_INVALID); // one word short
+  s = (vx_ns_script){.text = VX_STR("mount '/srv/x /y\n")};
+  CHECK(vx_ns_script_next(&s, &op) == VX_ERR_INVALID); // a quote not closed
+}
+
 int main(void) {
   test_clean();
+  test_script();
   test_namespace();
   test_replay_and_release();
+  test_identity();
   return check_result();
 }

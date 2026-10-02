@@ -9,6 +9,7 @@
 
 #include "../vx-9p/ring.c"
 #include "ns.c"
+#include "newns.c"
 #include "dial.c"
 
 // The process's connections: a slot is free while its end is 0. Each has the

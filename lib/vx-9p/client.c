@@ -95,6 +95,24 @@ static vx_status p9c_call(p9_client *c, p9_msg *t) {
   return VX_OK;
 }
 
+// One Twalk of at most P9_MAXWELEM names from fid: the qid of each name it
+// reached goes in qids, and how many in *nwqid. Only a walk that reaches every
+// name makes newfid, as 9P has it. An error is the server's, for the first name.
+[[maybe_unused]] static vx_status p9c_walk_names(p9_client *c, uint32_t fid, const vx_str *names,
+                                                 uint16_t count, uint32_t *newfid, p9_qid *qids,
+                                                 uint16_t *nwqid) {
+  *nwqid = 0;
+  if (count > P9_MAXWELEM) return VX_ERR_RANGE;
+  p9_msg t = {.type = P9_Twalk, .fid = fid, .newfid = c->next_fid++, .nwname = count};
+  for (uint16_t i = 0; i < count; i++) t.wname[i] = names[i];
+  vx_status e = p9c_call(c, &t);
+  if (e != VX_OK) return e;
+  *nwqid = c->reply.nwqid <= count ? c->reply.nwqid : 0;
+  for (uint16_t i = 0; i < *nwqid; i++) qids[i] = c->reply.wqid[i];
+  if (*nwqid == count) *newfid = t.newfid;
+  return VX_OK;
+}
+
 [[maybe_unused]] static vx_status p9c_open(p9_client *c, uint32_t fid, uint8_t mode) {
   p9_msg t = {.type = P9_Topen, .fid = fid, .mode = mode};
   return p9c_call(c, &t);

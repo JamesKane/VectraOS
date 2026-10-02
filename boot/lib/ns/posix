@@ -1,0 +1,11 @@
+# /lib/ns/posix: the namespace a POSIX program expects (02 §2), a namespace(6)
+# file (ADR-0009); a manifest's ns=posix gives it. The boot image is the root;
+# /bin the programs; /tmp a RAM file system; /dev null, zero, random and
+# urandom, and the terminals (ptmx, pts/); /proc the processes.
+
+mount /srv/bootfs /
+bind -a /boot/bin /bin
+mount -c /srv/tmpfs /tmp
+mount /srv/null /dev
+mount -a /srv/ptyd /dev
+mount /srv/proc /proc

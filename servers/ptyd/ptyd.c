@@ -1,5 +1,5 @@
 // ptyd: pseudo-terminals (docs/01 §9), posted as /srv/ptyd and mounted on
-// /dev by the POSIX template (boot/ns/posix.ndb).
+// /dev by the POSIX template (/lib/ns/posix).
 //
 //   ptmx        opening it makes a new terminal: the fid becomes its master
 //   pts/N       terminal N's slave: what the program on it reads and writes
