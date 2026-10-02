@@ -111,7 +111,7 @@ These rules are normative. A design that breaks one needs an ADR explaining why.
 | Tier | Targets | Use |
 |---|---|---|
 | **T0** | QEMU `q35` (x86_64) and QEMU `virt` (aarch64, GICv3), with virtio devices, OVMF or edk2, SMP | All milestones until M6. Runs in CI. |
-| **T1** | Commodity x86_64 PC (UEFI, NVMe, xHCI, Intel/Realtek NIC, HDA); RK3588 boards such as the Orange Pi 5, with an NPU | First real hardware, around M6–M8 |
+| **T1** | Commodity x86_64 PC (UEFI, NVMe, xHCI, Intel/Realtek NIC, HDA); the Radxa Dragon Q8B (Qualcomm SC8280XP, UEFI and ACPI, Adreno 690 through Turnip, ADR-0018); RK3588 boards such as the Orange Pi 5, with an NPU | First real hardware, around M6–M8. Under review: the RK3588 may give way to the Q8B and the CIX Sky1 (Mali with CSF) |
 | **T2** | Raspberry Pi 5 (UEFI firmware), AMD APUs (UMA, RADV), Intel Xe, Apple Silicon (through the Asahi drivers and m1n1), Snapdragon X, NVIDIA Turing and later (NVK over GSP firmware) | Show the unified-memory SoC design on the hardware it was designed for |
 
 ## 6. What the API case study changes

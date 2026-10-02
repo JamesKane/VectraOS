@@ -30,7 +30,7 @@ _Blueprint v0, 2026-09-30._
 | `Ring` | Queue pair in a shared VMO, plus doorbells and a handle side channel | Data plane (§4.3) |
 | `Irq` | An interrupt line or MSI/MSI-X vector, delivered to a port | Masked until the driver acknowledges it |
 | `IoRange` | An x86 I/O-port range | Installed in the I/O permission bitmap of the TSS |
-| `DmaDomain` | An IOMMU context (VT-d, AMD-Vi, SMMUv3, Apple DART) bound to a device | Maps VMO pages for device access and pins them (§6) |
+| `DmaDomain` | An IOMMU context (VT-d, AMD-Vi, SMMUv3, Arm MMU-500 (SMMUv2), Apple DART) bound to a device | Maps VMO pages for device access and pins them (§6) |
 | `Resource` | Root authority over ranges of physical memory, IRQs and I/O ports | Held only by `svcd` and `devmgr`, which mint narrower objects from it |
 
 ## 3. Capabilities
@@ -309,8 +309,9 @@ Over TCP, `netd` sends straight from the `Buffer` pages with scatter-gather and 
 - **The kernel console:** the kernel writes to its early console until a driver is given that device. From then on the device is the driver's, the kernel keeps its output in an in-memory log (`kmesg`), and it writes to the device again only to report a panic. `vx.kconsole` on the command line keeps the kernel writing to it, for debugging.
 - MSI and MSI-X through `Irq` objects too: `irq_create` with `VX_IRQ_MSI` and the PCI function's requester ID returns the address and data to program into the device. On x86_64 that is a local-APIC vector; on arm64 an LPI, which the kernel maps through the GIC's ITS (DeviceID = requester ID), set up the first time an MSI is made.
 - `DmaDomain` objects for the IOMMU. Until the IOMMU drivers (M5), a domain is pass-through: `dma_map` holds the VMO and returns its pages' physical addresses, which is safe only with devices QEMU emulates.
+- **An SMMU the firmware's hypervisor polices** (Qualcomm's, on the Q8B's MMU-500s) is adopted, not reset. The hypervisor resets the SoC, with no crash dump, on a stage-2 context-bank type or a stream match it does not expect, so the kernel keeps the stream matches and bypass contexts the firmware left (display, USB, PCIe), writes only stage-1 context banks, and adds stream matches only with the exact ID and mask pairs the SoC record gives (§7.2). AbyssBSD's `lessons.md` lists the writes that reset the board.
 - The firmware's ACPI tables, on both architectures (edk2 provides them on arm64 QEMU too): the kernel reads the MADT itself, and gives the root task every table, end to end, in a read-only VMO, which `svcd` passes to `devmgr`.
-- On arm64, PSCI and SMC calls go through `svcd`'s platform service, never to drivers directly.
+- On arm64, PSCI and SMC calls go through `svcd`'s platform service, never to drivers directly. A driver asks for a named operation, never a raw SMC: on Qualcomm SoCs, the SCM calls (authenticating the GPU's zap shader, setting the GPU SMMU's aperture, loading a DSP's firmware), with SCM's interrupted-and-resume protocol and its argument page below 4 GiB kept inside the service.
 
 ### 7.2 Enumeration and matching
 
@@ -329,13 +330,15 @@ Over TCP, `netd` sends straight from the `Buffer` pages with scatter-gather and 
    ```
 4. For each match, `devmgr` spawns the driver with **only** that device's MMIO VMOs, IRQs, `DmaDomain` and I/O ranges, plus a channel to `devmgr`.
 
+**SoC records.** Some SoCs' ACPI tables leave out what their drivers need. The Q8B's route clocks and power through PEP, which only Windows has, and say nothing of SMMU stream pairs, register windows the GPU and display use, or operating points. Those facts go in one ndb record per SoC in the boot image (`/boot/soc/sc8280xp.ndb`), chosen by the SoC's ACPI identity (`\_SB.SOID`), never by configuration: a board that needs a setting is a driver bug. A shared clock controller (Qualcomm's GCC, used by USB, SD, I²C and the GPU) has one owner, a driver that serves the `clock` class: drivers vote for clocks and power domains through it and never touch its registers.
+
 In M3 the manifests are ndb records in the boot image, `/boot/drv/*.ndb`, one line per match: `match=pci vendor=0x1af4 device=0x1041 program=/boot/bin/drv-virtio-net post=ether0 msi=2`. A PCI driver gets the function's 4 KiB of configuration space, each memory BAR, the MSIs it asks for (with their address and data as records), a `DmaDomain`, and the server end of the post it serves. Posts are rendezvous points that `svcd` makes: `devmgr`'s manifest claims `ether0` (`claim=ether0`), a client's manifest connects to it (`connect=ether0`), and a client may connect before the driver is running. `devmgr` restarts a driver that exits, up to five times. Before it does, it turns off the function's bus mastering: in pass-through mode the device could otherwise write into the dead driver's freed DMA memory. The IOMMU (M5) closes the window between the driver's death and that write.
 
 ### 7.3 What a driver serves
 
 - A **device-class tree** (02 §5). For example `drv-virtio-net` serves `/dev/net/ether0/{info,ctl,stats}` and exposes a ring pair for frames that `netd` connects to.
 - The **net** class, as built in M3 (`lib/vx-driver/netproto.h`): a client opens a ring session on the driver's post (`/srv/ether0`; `lib/vx-ring/session.c`), one client at a time. `INFO` gives the MAC address and MTU; `TX` sends a frame from the client's arena; `RX` offers a slot of the driver's arena, and completes when a frame has been copied there. A frame that arrives with no slot offered is dropped, as a full NIC would drop it. The `/dev/net` tree comes with `netd`.
-- Class protocols are specified once per class and versioned: `block`, `net`, `input`, `display`, `audio`, `accel`, `sensor`, `serial`.
+- Class protocols are specified once per class and versioned: `clock`, `block`, `net`, `input`, `display`, `audio`, `accel`, `sensor`, `serial`.
 - Serial drivers share `vx-driver`'s console server (`lib/vx-driver/cons.c`), which serves `/cons` with Plan 9's cooked semantics: echo, erase and kill-line, a read returns one line, and `^D` sends a line or, on an empty one, ends the file. A read with nothing typed, or a write with no room, is held by the 9Px server framework and answered after the driver's next interrupt makes progress. Programs whose manifest says `console` write to `/srv/cons` through `vx-rt`, a line at a time, and connect again if the driver restarts.
 - Drivers are written against `vx-driver`, which provides typed MMIO register accessors (one header per device of `static inline` functions over `volatile` pointers), DMA pools over `Buffer`, IRQ-to-port glue, and the class-protocol server skeletons.
 
@@ -346,7 +349,7 @@ In M3 the manifests are ndb records in the boot image, `/boot/drv/*.ndb`, one li
 - **Client continuity:** clients hold their own buffers, because the arenas are client-owned. After a restart they re-attach and resubmit anything in flight, and class protocols require operations to be idempotent or tagged. A block write carries a sequence number; a dropped network frame is recovered by TCP. The client library hides this, and the application sees latency, not an error.
 - **GPU drivers are the exception.** A restarted GPU driver has lost every GPU context, and Vulkan requires reporting that: applications see `VK_ERROR_DEVICE_LOST` and recreate their devices. `winsrv` and `vxui` do this themselves, so desktop apps survive. An engine that uses Vulkan directly must handle it, as it must on any OS.
 - **Live update:** the new version is started alongside, and the old instance quiesces, finishing in-flight work and refusing new submissions. Optionally the old instance writes its state to a `handoff` VMO, then exits, and clients re-attach to the new one. This is how drivers are upgraded without a reboot.
-- **Devices without an IOMMU** can only be driven by drivers marked `trusted` in `devmgr`'s policy. This is shown in `/dev/.../info` and in `/proc/N/status`, not hidden.
+- **Devices without an IOMMU**, and GPUs whose driver chooses the page tables of the GPU's only MMU (Adreno, ADR-0018 item 9), can only be driven by drivers marked `trusted` in `devmgr`'s policy. This is shown in `/dev/.../info` and in `/proc/N/status`, not hidden.
 
 ## 8. Scheduling
 
@@ -427,7 +430,7 @@ This is how LLVM, Python and Git run without touching the kernel.
 ## 10. Boot sequence
 
 1. Firmware (UEFI or BIOS) loads **Limine**, which loads the kernel ELF and modules, sets up the higher-half direct map, and passes the memory map, framebuffer, RSDP or DTB, and SMP information. With Secure Boot on, Limine is signed, and the hash of its config is enrolled into the binary. The config gives the BLAKE2B hash of the kernel and of every module, so the firmware's measurement of Limine into TPM PCR 4 covers the whole chain. `keyd` seals keys to those PCRs (02 §6.2).
-2. The kernel sets up its page tables, physical allocator, per-CPU data, interrupt controller (APIC or GICv3), timer (TSC deadline or the arm generic timer) and IOMMU (on from the start in deny-all mode, with identity maps only for regions the firmware reserves, such as VT-d RMRRs and IORT RMRs; no device can DMA until `devmgr` gives it a `DmaDomain`, which closes the window that Thunderbolt and USB4 DMA attacks use), and brings up the other CPUs.
+2. The kernel sets up its page tables, physical allocator, per-CPU data, interrupt controller (APIC or GICv3), timer (TSC deadline or the arm generic timer) and IOMMU (on from the start in deny-all mode, with identity maps only for regions the firmware reserves, such as VT-d RMRRs and IORT RMRs, and with a hypervisor-policed SMMU's existing setup adopted as §7.1 says; no device can DMA until `devmgr` gives it a `DmaDomain`, which closes the window that Thunderbolt and USB4 DMA attacks use), and brings up the other CPUs.
 3. The kernel creates the root task, `svcd`, from the `svcd` module. Its spawn message (§3) carries a handle to the task itself, the boot image (the `bootfs.tar` module, as a read-only VMO), the ACPI tables, the root `Resource` and the kernel command line; the framebuffer VMO joins them when its user does. Until there is a debug-log object, permission to write the kernel log is a task flag that a task's children inherit, so services can report before the console moves to user space (04 §5, M2).
 4. `svcd` reads the manifests in `boot/svc/*.ndb` from the boot image itself, since the server for it is one of the services it starts. It starts `bootfs` (the boot image as a read-only 9Px tree), `devmgr`, drivers, `netd`, `nsd`, `procfs` and the rest, each with only the handles and namespace its manifest names, and restarts those marked `restart` when they exit. It then starts the console shell on `/dev/cons`.
 
