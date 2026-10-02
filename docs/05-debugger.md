@@ -79,6 +79,15 @@ Secrets stay out. VMOs created with `NODUMP` are never written, and allocators t
 
 `dbg $home/lib/crash/hx.42` opens a crash exactly as it would open a live process. Everything works except running and changing the target.
 
+### 5.1 Logs that outlive the machine
+
+A crash directory needs a running system to write it. Some failures leave none: a kernel panic, a hang, and, on the Q8B, a hypervisor that resets the SoC at once on a bad SMMU write, with no dump. AbyssBSD's rule for that board was to stream the logs off it during every test. That becomes two mechanisms:
+
+- **`netlog`**, a service `svcd` starts right after `netd`, when the kernel command line names a host: `vx.netlog=192.168.1.10:6666`. It sends every line of `kmesg` and of the console stream as a UDP datagram, `seq time source text`, so a gap in the sequence numbers shows a lost line. It starts by sending everything `kmesg` holds from boot. On the host, `./build netlog` prints the lines and keeps them in a file per boot. It is plain text and unauthenticated, for bring-up on a bench network, and off unless the command line asks for it.
+- **A persistent `kmesg`.** Where a board record names a region that keeps its contents across a warm reset (`kmesg-persist base=… size=… survives=warm`), the kernel keeps `kmesg` there instead of in ordinary memory. Each record carries the boot's id and a checksum. At the next boot, before reusing the region, the kernel checks it and, if it holds a previous boot's log, keeps it. `procfs` then writes it as `/lib/crash/kernel.<boot id>/kmesg`. A panic writes its backtrace there first, before trying any console. Whether a region survives depends on the firmware: `survives=unknown` until a board test shows it. On the Q8B that test is a deliberate bad SMMU write.
+
+Before `netd` is up and with no persistent region, the boot framebuffer is the only witness (01 §7.1).
+
 ## 6. `dbg`
 
 `dbg` is a `vxui` app, driven from the keyboard first, with panels you can arrange and tab.
