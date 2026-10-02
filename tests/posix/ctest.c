@@ -518,6 +518,99 @@ static void test_sockets(void) {
   CHECK(socket(AF_INET6, SOCK_STREAM, 0) == -1 && errno == EAFNOSUPPORT);
 }
 
+// Sockets that do not wait (4h2): accept and connect without waiting, poll
+// and select on sockets, MSG_DONTWAIT and MSG_PEEK, a writer that fills
+// netd's buffer and waits for POLLOUT, a refused connect seen through
+// SO_ERROR, a wait a signal ends (EINTR), and SIGPIPE.
+static short poll_one(int fd, short events, int ms) {
+  struct pollfd p = {.fd = fd, .events = events};
+  return poll(&p, 1, ms) == 1 ? p.revents : 0;
+}
+
+static void test_sockets_waiting(void) {
+  int l = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+  struct sockaddr_in any = loopback(0);
+  CHECK(l >= 0 && bind(l, (struct sockaddr *)&any, sizeof any) == 0 && listen(l, 4) == 0);
+  if (l < 0) return;
+  CHECK(accept(l, nullptr, nullptr) == -1 && errno == EAGAIN && poll_one(l, POLLIN, 0) == 0);
+  struct sockaddr_in to = loopback(port_of(l));
+  int c = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+  CHECK(c >= 0 && connect(c, (struct sockaddr *)&to, sizeof to) == -1 && errno == EINPROGRESS);
+  if (c < 0) return;
+  int err = -1;
+  socklen_t elen = sizeof err;
+  CHECK((poll_one(c, POLLOUT, 2000) & POLLOUT) && getsockopt(c, SOL_SOCKET, SO_ERROR, &err, &elen) == 0 &&
+        err == 0);
+  CHECK(poll_one(l, POLLIN, 2000) & POLLIN);
+  int a = accept4(l, nullptr, nullptr, SOCK_NONBLOCK);
+  CHECK(a >= 0);
+  if (a < 0) return;
+  char buf[256];
+  CHECK(recv(a, buf, sizeof buf, MSG_DONTWAIT) == -1 && errno == EAGAIN && poll_one(a, POLLIN, 0) == 0);
+  CHECK(send(c, "xy", 2, 0) == 2 && (poll_one(a, POLLIN, 2000) & POLLIN));
+  CHECK(recv(a, buf, 1, MSG_PEEK) == 1 && buf[0] == 'x' && recv(a, buf, sizeof buf, 0) == 2 && buf[1] == 'y');
+  fd_set rd;
+  FD_ZERO(&rd);
+  FD_SET(a, &rd);
+  CHECK(send(c, "z", 1, 0) == 1 &&
+        select(a + 1, &rd, nullptr, nullptr, &(struct timeval){.tv_sec = 2}) == 1 && FD_ISSET(a, &rd) &&
+        read(a, buf, sizeof buf) == 1);
+
+  // A writer that does not wait fills netd's buffers, and is writable again
+  // once the reader has taken it all.
+  static char chunk[4096];
+  memset(chunk, 'w', sizeof chunk);
+  size_t sent = 0;
+  for (int i = 0; i < 4096; i++) {
+    ssize_t w = send(c, chunk, sizeof chunk, 0);
+    if (w < 0) break;
+    sent += (size_t)w;
+  }
+  CHECK(errno == EAGAIN && sent > 0 && poll_one(c, POLLOUT, 0) == 0);
+  size_t got = 0;
+  bool same = true;
+  while (got < sent && (poll_one(a, POLLIN, 2000) & POLLIN)) {
+    ssize_t r = read(a, buf, sizeof buf);
+    if (r <= 0) break;
+    for (ssize_t i = 0; i < r; i++) same = same && buf[i] == 'w';
+    got += (size_t)r;
+  }
+  CHECK(got == sent && same && (poll_one(c, POLLOUT, 2000) & POLLOUT));
+
+  // A read that waits, and a signal (no SA_RESTART): EINTR; then the data.
+  CHECK(sigaction(SIGUSR1, &(struct sigaction){.sa_handler = on_signal}, nullptr) == 0);
+  int flags = fcntl(a, F_GETFL);
+  CHECK(fcntl(a, F_SETFL, flags & ~O_NONBLOCK) == 0);
+  pid_t child;
+  int status = 0;
+  CHECK(spawn_child("late", nullptr, &child) == 0);
+  CHECK(read(a, buf, sizeof buf) == -1 && errno == EINTR);
+  CHECK(waitpid(child, &status, 0) == child && WEXITSTATUS(status) == 14);
+  CHECK(send(c, "after", 5, 0) == 5 && recv(a, buf, 5, MSG_WAITALL) == 5 && memcmp(buf, "after", 5) == 0);
+  signal(SIGUSR1, SIG_DFL);
+
+  // SIGPIPE: a write after shutdown raises it, unless MSG_NOSIGNAL; a pipe's too.
+  CHECK(sigaction(SIGPIPE, &(struct sigaction){.sa_handler = on_signal}, nullptr) == 0);
+  int before = signals[SIGPIPE];
+  CHECK(shutdown(c, SHUT_WR) == 0);
+  CHECK(poll_one(c, POLLOUT, 2000) & POLLOUT); // what was written behind has gone
+  CHECK(send(c, "x", 1, MSG_NOSIGNAL) == -1 && errno == EPIPE && signals[SIGPIPE] == before);
+  CHECK(write(c, "x", 1) == -1 && errno == EPIPE && signals[SIGPIPE] == before + 1);
+  int p[2];
+  CHECK(pipe(p) == 0 && close(p[0]) == 0 && write(p[1], "x", 1) == -1 && errno == EPIPE &&
+        signals[SIGPIPE] == before + 2 && close(p[1]) == 0);
+  signal(SIGPIPE, SIG_DFL);
+  CHECK(close(a) == 0 && close(c) == 0 && close(l) == 0);
+
+  // A refused connect that did not wait: POLLERR, and the reason in SO_ERROR.
+  c = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+  to = loopback(1);
+  CHECK(c >= 0 && connect(c, (struct sockaddr *)&to, sizeof to) == -1 && errno == EINPROGRESS);
+  CHECK((poll_one(c, POLLOUT, 2000) & POLLERR) && getsockopt(c, SOL_SOCKET, SO_ERROR, &err, &elen) == 0 &&
+        err == ECONNREFUSED);
+  close(c);
+}
+
 static bool all_zero(const unsigned char *p, size_t n) {
   for (size_t i = 0; i < n; i++)
     if (p[i]) return false;
@@ -1013,6 +1106,7 @@ int main(int argc, char **argv) {
   test_poll();
   test_utf8();
   test_sockets();
+  test_sockets_waiting();
 
   // No threads yet: pthread_create fails, and says so (docs/milestones.md).
   pthread_t thread;

@@ -68,6 +68,10 @@ static void put_ip(text *t, uint32_t ip) {
 static vx_net stack;
 static bool stack_up; // vx_net_init done: the driver said its MAC address
 static p9_ring_server server;
+// Each socket a POSIX program polls has a connection of its own (two, writing
+// without waiting), besides its namespace's: more than the default 16.
+static constexpr uint32_t NETD_CONNS = 64;
+static p9_ring_conn conns[NETD_CONNS];
 
 // --- The driver ---
 
@@ -865,6 +869,8 @@ const char *vx_main(void) {
                       .write = fs_write,
                       .clunk = fs_clunk};
   server.name = VX_STR("netd");
+  server.conns = conns;
+  server.max_conns = NETD_CONNS;
   server.event = event;
   server.tick = tick;
   vx_print(VX_STR("netd: serving /srv/net\n"));

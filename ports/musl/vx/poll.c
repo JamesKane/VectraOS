@@ -9,6 +9,11 @@
 //   a terminal, the console  written always; read once a read kept
 //                            outstanding has its reply (the read-ahead, on a
 //                            connection of its own; its doorbell on fd_port)
+//   a socket                 as a terminal, read; listening, read once an open
+//                            of its listen file kept outstanding has its reply;
+//                            connecting, written once connect's ctl write has;
+//                            written once data written behind has gone
+//                            (socket.c)
 // A wait is one port_wait on fd_port, until something armed fires, the
 // deadline passes, or a signal comes.
 
@@ -27,16 +32,25 @@ static fd_readahead *ra_new(void) {
   return ra;
 }
 
-static void ra_free(ofd *o) {
-  fd_readahead *ra = o->ra;
-  o->ra = nullptr;
+// Lets go of a read-ahead: its connection, and with it its fids and any call
+// still outstanding.
+static void ra_drop(fd_readahead *ra) {
   if (ra->k->end) p9_ring_disconnect(ra->k);
   vx_as_unmap(vx_self, (uint64_t)ra, (sizeof(fd_readahead) + sizeof(p9_conn) + 4095) & ~4095ull);
 }
 
+static void ra_free(ofd *o) {
+  fd_readahead *ra = o->ra;
+  o->ra = nullptr;
+  ra_drop(ra);
+}
+
+static bool sock_ra_start(ofd *o); // socket.c
+
 // A connection of the read-ahead's own, and a fid on it: for a terminal, the
 // same open file, joined by token (posix); for the console, its cons file.
 static bool ra_start(ofd *o) {
+  if (o->sock) return sock_ra_start(o);
   fd_readahead *ra = ra_new();
   if (!ra) return false;
   vx_handle connector = VX_HANDLE_NONE;
@@ -67,29 +81,51 @@ static bool ra_start(ofd *o) {
   return true;
 }
 
-// Sends the read if none is outstanding, and takes its reply if it has come.
-// True once there is something to give: bytes, the end of the file, or an
-// error.
+// Sends the call (t) on the read-ahead's connection, outstanding until
+// ra_poll takes its reply. A call that cannot be sent is answered at once,
+// with why.
+static void ra_send(fd_readahead *ra, p9_msg *t) {
+  vx_status st = p9_ring_send(ra->k, t);
+  ra->ready = st != VX_OK;
+  ra->pending = st == VX_OK;
+  ra->status = st;
+  ra->tag = t->tag;
+}
+
+// A write's rest, from ra->pos: what the server did not take yet.
+static void ra_send_write(fd_readahead *ra) {
+  p9_msg t = {.type = P9_Twrite, .fid = ra->fid, .data = {ra->data + ra->pos, ra->len - ra->pos}};
+  ra_send(ra, &t);
+}
+
+// Takes the reply to the call outstanding, if it has come; for a read, sends
+// one if none is outstanding. True once there is an answer: bytes, the end of
+// the file, or an error (a read); the open or write done, or why not. A write
+// the server took only part of goes on with the rest. Idle (no call), true.
 static bool ra_poll(fd_readahead *ra, bool tty) {
-  if (ra->ready || ra->pos < ra->len) return true;
+  if (ra->ready || (ra->op == RA_READ && ra->pos < ra->len)) return true;
+  if (!ra->pending && ra->op != RA_READ) return true;
   if (!ra->pending) {
     p9_msg t = {.type = P9_Tread, .fid = ra->fid, .offset = tty ? P9_OFFSET_CURRENT : 0, .count = FD_RA_MAX};
-    vx_status st = p9_ring_send(ra->k, &t);
-    if (st != VX_OK) {
-      ra->ready = true;
-      ra->status = st;
-      return true;
-    }
-    ra->pending = true;
-    ra->tag = t.tag;
+    ra_send(ra, &t);
+    if (ra->ready) return true;
   }
   p9_msg r;
   vx_status st = p9_ring_receive(ra->k, ra->tag, &r);
   if (st == VX_ERR_SHOULD_WAIT) return false;
   vx_ring_end_sleep(&ra->k->ring);
   ra->pending = false;
-  ra->ready = true;
   ra->status = st;
+  if (ra->op == RA_WRITE) {
+    if (st == VX_OK && r.count && r.count <= ra->len - ra->pos) ra->pos += r.count;
+    if (st == VX_OK && ra->pos < ra->len) { // the rest, as the server makes room
+      ra_send_write(ra);
+      return ra->ready;
+    }
+    ra->ready = true;
+    return true;
+  }
+  ra->ready = true;
   ra->pos = 0;
   ra->len = 0;
   if (st == VX_OK && r.type == P9_Rread) {
@@ -97,6 +133,20 @@ static bool ra_poll(fd_readahead *ra, bool tty) {
     memcpy(ra->data, r.data.ptr, ra->len);
   }
   return true;
+}
+
+// Waits for the read-ahead's answer (ra_poll), its doorbell on fd_port under
+// key: 0; -EAGAIN if it must not wait; -EINTR if a signal came (the call
+// stays outstanding).
+static long ra_wait(fd_readahead *ra, uint64_t key, bool tty, bool block) {
+  while (!ra_poll(ra, tty)) {
+    if (!block) return -EAGAIN;
+    if (!ra->armed) ra->armed = p9_ring_arm(ra->k, fd_port, key);
+    if (!ra->armed) continue; // a reply may be there already
+    long w = fd_wait(VX_INFINITE);
+    if (w == -EINTR) return w;
+  }
+  return 0;
 }
 
 static void ra_arm(ofd *o) {
@@ -107,14 +157,8 @@ static void ra_arm(ofd *o) {
 // brings. A signal ends the wait (EINTR); the read stays outstanding.
 static long ra_read(ofd *o, void *buf, uint32_t count, bool block) {
   fd_readahead *ra = o->ra;
-  bool tty = o->kind == OFD_FILE;
-  while (!ra_poll(ra, tty)) {
-    if (!block) return -EAGAIN;
-    ra_arm(o);
-    if (!o->ra->armed) continue; // a reply may be there already
-    long w = fd_wait(VX_INFINITE);
-    if (w == -EINTR) return w;
-  }
+  long w = ra_wait(ra, fd_key(o), o->kind == OFD_FILE, block);
+  if (w < 0) return w;
   if (ra->status != VX_OK) {
     ra->ready = false;
     return vx_errno(ra->status); // ptyd's "interrupted" is EINTR
@@ -128,6 +172,8 @@ static long ra_read(ofd *o, void *buf, uint32_t count, bool block) {
 }
 
 // --- Readiness ---
+
+static short sock_ready(ofd *o, short events, bool arm); // socket.c
 
 // What fd is ready for, of `events`; arming fd_port to hear of the rest.
 static short fd_ready(int fd, short events, bool arm) {
@@ -151,6 +197,7 @@ static short fd_ready(int fd, short events, bool arm) {
   }
   case OFD_CONSOLE:
   case OFD_FILE:
+    if (o->sock) return sock_ready(o, events, arm);
     r = (short)(events & out);
     if (!(events & in)) return r;
     if (o->kind == OFD_FILE && !o->tty) return (short)(r | (events & in));

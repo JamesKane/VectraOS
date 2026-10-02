@@ -32,11 +32,17 @@ typedef enum ofd_kind : uint8_t { OFD_FREE, OFD_CONSOLE, OFD_PIPE_IN, OFD_PIPE_O
 // its own, so poll can hear when it can be read (01 §9): a ring server holds
 // a whole connection while it holds a read. Once a description has one, its
 // reads go through it (poll.c).
-static constexpr uint32_t FD_RA_MAX = 4096;
+static constexpr uint32_t FD_RA_MAX = P9_RING_MSIZE - P9_IOHDRSZ; // one Rread's data, or one Twrite's
+// A call kept outstanding on a connection of its own (poll.c): a read, for a
+// terminal, the console or a socket; for a socket, also an open of its listen
+// file (accept) or a write (connect's ctl message, or data written behind).
+typedef enum ra_op : uint8_t { RA_READ, RA_OPEN, RA_WRITE } ra_op;
 typedef struct fd_readahead {
   p9_conn *k; // its connection
   uint32_t fid;
-  bool pending, armed, ready; // a read sent; its doorbell bound; its reply here
+  uint32_t root; // a socket's: the attach on this connection (netd's /net)
+  ra_op op;
+  bool pending, armed, ready; // a call sent; its doorbell bound; its reply here
   uint16_t tag;
   vx_status status; // the reply's: OK, or why it failed
   uint32_t len, pos;
@@ -66,14 +72,22 @@ typedef struct ofd {
   bool locked;     // a lock was taken through it: let go at exit, before the exit is seen
   bool read_bound; // a READABLE binding is on fd_port for its pipe
   fd_readahead *ra;
-  uint8_t sock;        // a socket's type (SOCK_STREAM, SOCK_DGRAM): the file is its /net data (socket.c)
-  bool sock_bound;     // its port announced, or a connection's
-  bool sock_listening; // TCP, announced
-  uint16_t sock_port;  // TCP: what bind asked for, for listen to announce
+  uint8_t sock;         // a socket's type (SOCK_STREAM, SOCK_DGRAM): the file is its /net data (socket.c)
+  bool sock_bound;      // its port announced, or a connection's
+  bool sock_listening;  // TCP, announced
+  bool sock_connecting; // TCP: connect's ctl write outstanding, on ra
+  bool sock_shut;       // TCP: shut down for writing (a write is EPIPE without asking netd)
+  uint16_t sock_port;   // TCP: what bind asked for, for listen to announce
+  int sock_error;       // SO_ERROR: why a connect that did not wait failed
+  fd_readahead *wb;     // TCP: data written behind, without waiting (O_NONBLOCK)
 } ofd;
 
 static ofd fd_ofds[FD_MAX];
-static void ra_free(ofd *o);                                        // poll.c
+static void ra_free(ofd *o); // poll.c
+static void ra_drop(fd_readahead *ra);
+static void sig_raise_self(int sig); // signal.c
+static long ra_wait(fd_readahead *ra, uint64_t key, bool tty, bool block);
+static uint64_t fd_wb_key(const ofd *o);
 static long ra_read(ofd *o, void *buf, uint32_t count, bool block); // poll.c
 typedef struct fd_slot {
   ofd *o;
@@ -84,14 +98,21 @@ static fd_slot fd_table[FD_MAX];
 static vx_ns fd_ns;
 static vx_handle fd_port; // where a blocked pipe read waits
 
-// fd_port's keys: 1 + a description's index; a packet names its binding's
-// trigger, and a binding that fired is gone.
+// fd_port's keys: 1 + a description's index, and FD_MAX more for its
+// write-behind; a packet names its binding's trigger, and a binding that
+// fired is gone.
 static uint64_t fd_key(const ofd *o) { return 1 + (uint64_t)(o - fd_ofds); }
+static uint64_t fd_wb_key(const ofd *o) { return fd_key(o) + FD_MAX; }
 
 static void fd_noted(const vx_packet *pk, int64_t n) {
   for (int64_t i = 0; i < n; i++) {
-    if (pk[i].key == 0 || pk[i].key > FD_MAX) continue;
-    ofd *o = &fd_ofds[pk[i].key - 1];
+    if (pk[i].key == 0 || pk[i].key > 2 * (uint64_t)FD_MAX) continue;
+    bool wb = pk[i].key > FD_MAX;
+    ofd *o = &fd_ofds[(pk[i].key - 1) % FD_MAX];
+    if (wb) {
+      if (o->wb) o->wb->armed = false;
+      continue;
+    }
     if (pk[i].trigger == VX_TRIGGER_READABLE) o->read_bound = false;
     if (pk[i].trigger == VX_TRIGGER_COUNTER_GE && o->ra) o->ra->armed = false;
   }
@@ -127,6 +148,11 @@ static void ofd_release(ofd *o) {
   if (o->msg) vx_as_unmap(vx_self, (uint64_t)o->msg, FD_PIPE_BUFFER);
   if (o->pipe) vx_handle_close(o->pipe); // the last writer gone: the reader sees the end of the file
   if (o->ra) ra_free(o);
+  if (o->wb) { // what was written behind goes first, as a close lets it on Linux
+    while (ra_wait(o->wb, fd_wb_key(o), false, true) == -EINTR) {}
+    ra_drop(o->wb);
+  }
+  o->wb = nullptr;
   o->kind = OFD_FREE;
 }
 
@@ -389,7 +415,8 @@ static long pipe_write(const ofd *o, const uint8_t *p, size_t n) {
       static const _Atomic uint32_t never; // the reader is behind: wait a little
       vx_futex_wait(&never, 0, vx_clock_read() + (tries < 10 ? 100'000 : 1'000'000));
     }
-    if (st != VX_OK) return done ? (long)done : vx_errno(st); // PEER_CLOSED: EPIPE
+    if (st == VX_ERR_PEER_CLOSED && !done) sig_raise_self(SIGPIPE); // the reader has gone
+    if (st != VX_OK) return done ? (long)done : vx_errno(st);       // PEER_CLOSED: EPIPE
     done += k;
   }
   return (long)n;
@@ -479,7 +506,8 @@ static long file_write(ofd *o, const uint8_t *p, size_t n) {
   return (long)n;
 }
 
-static long sock_send(ofd *o, const void *buf, size_t n, const void *sa, socklen_t salen); // socket.c
+static long sock_send(ofd *o, const void *buf, size_t n, int flags, const void *sa,
+                      socklen_t salen); // socket.c
 static long sock_recv(ofd *o, void *buf, size_t n, int flags, void *sa, socklen_t *salen);
 
 static long fd_read(int fd, void *buf, size_t n) {
@@ -509,7 +537,7 @@ static long fd_read(int fd, void *buf, size_t n) {
 static long fd_write(int fd, const void *buf, size_t n) {
   ofd *o = fd_get(fd);
   if (!o || (o->flags & O_ACCMODE) == O_RDONLY) return -EBADF;
-  if (o->sock) return sock_send(o, buf, n, nullptr, 0);
+  if (o->sock) return sock_send(o, buf, n, 0, nullptr, 0);
   switch (o->kind) {
   case OFD_CONSOLE: return console_write(buf, n);
   case OFD_PIPE_OUT: return pipe_write(o, buf, n);
@@ -1323,6 +1351,9 @@ static void fd_after_fork(void) {
     ofd *o = &fd_ofds[i];
     o->closed_bound = o->read_bound = false;
     if (o->ra) ra_free(o); // its connection's ring was not copied
+    if (o->wb) ra_drop(o->wb);
+    o->wb = nullptr;
+    o->sock_connecting = false; // the parent's to finish
     if (o->kind != OFD_FILE) continue;
     uint64_t offset = o->f.offset;
     o->f = (vx_ns_file){}; // the fid was on the old connection
