@@ -15,6 +15,7 @@ Each Mesa driver gets one backend at the seam it already has for kernel interfac
 | Asahi (AGX) | `agx_device` (`src/asahi/lib/`), which already has a virtio back end | `agx_device_accel.c` | its vendor ADR |
 | NVK (NVIDIA) | `nvkmd` (`src/nouveau/vulkan/nvkmd/`), beside its nouveau back end | `nvkmd/accel/` | its vendor ADR |
 | panvk (Mali) | `pan_kmod` (`src/panfrost/lib/kmod/`), beside panfrost and panthor | `pan_kmod_accel.c` | its vendor ADR |
+| Rocket (Rockchip NPU), under the Teflon delegate | its kernel calls in `src/gallium/drivers/rocket/`, which today speak Linux's `accel/rocket` | an `accel` backend in the same directory | if a Rockchip NPU board is in a tier (ADR-0023 item 9) |
 | RADV (AMD) | `radv_winsys` (`src/amd/vulkan/winsys/`), beside amdgpu and null | `winsys/accel/` | its vendor ADR |
 
 Each backend is a patch to the Mesa import, counted in the ledger (04 §3.2) and offered upstream.
@@ -89,7 +90,7 @@ timestamp_ns[4]   nanoseconds per GPU timestamp tick, as a 16.16 fixed-point num
 n_heaps[4] n_families[4] vendor_off[4] vendor_len[4]
 heaps[n_heaps]    { size[8] used[8] budget[8] flags[4] pad[4] }
                   flags: DEVICE_LOCAL 1 · HOST_VISIBLE 2 · HOST_COHERENT 4 · HOST_CACHED 8 · RAM 16
-families[n_families]  { kind[4] count[4] }   kind: GRAPHICS 1 · COMPUTE 2 · COPY 3 · VIDEO_DECODE 4 · VIDEO_ENCODE 5
+families[n_families]  { kind[4] count[4] }   kind: GRAPHICS 1 · COMPUTE 2 · COPY 3 · VIDEO_DECODE 4 · VIDEO_ENCODE 5 · NPU 6
 vendor block      vendor_len bytes at vendor_off, defined by the vendor ADR (§7)
 ```
 

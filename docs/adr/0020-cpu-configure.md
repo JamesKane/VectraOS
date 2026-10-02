@@ -1,6 +1,6 @@
 # ADR-0020: `cpu_configure`, so the kernel gets the firmware's idle states and performance domains
 
-Status: proposed, 2026-10-02. A new syscall, the 63rd (01 §3). Found by looking at the Radxa Dragon Q8B (ADR-0019).
+Status: proposed, 2026-10-02. A new syscall, the 63rd (01 §3). Found by looking at the Radxa Dragon Q8B (ADR-0019). Amended the same day by ADR-0023 item 7: delegated domains, SCMI, and DT idle states.
 
 ## Context
 
@@ -11,7 +11,7 @@ Both decisions belong in the kernel:
 - The frequency choice depends on per-core utilisation and on the intents running there, both of which only the scheduler knows. Linux moved from user-space governors to `schedutil` in its scheduler for that reason.
 
 But the tables they need come from the firmware in forms only user space reads:
-- **Idle states** are ACPI `_LPI` (arm64) and `_CST` (x86_64), which are AML. `bus-acpi` runs ACPICA in user space (01 §7.2), and the kernel runs no AML.
+- **Idle states** are ACPI `_LPI` (arm64) and `_CST` (x86_64), which are AML. On a device-tree machine they are `idle-states`, which the boot stage reads (ADR-0023), and the platform service passes on the same way. `bus-acpi` runs ACPICA in user space (01 §7.2), and the kernel runs no AML.
 - **Performance domains** come from `_CPC` (AML) or from a vendor's registers. The Q8B's are EPSS's lookup table, read through MMIO that a driver maps.
 
 The kernel reads static tables itself (the MADT, and the GTDT for the always-on timer). But no existing call carries a table from user space into the scheduler:
@@ -29,7 +29,8 @@ The kernel reads static tables itself (the MADT, and the GTDT for the always-on 
     A later call for the same CPUs replaces the table.
   - `VX_CPU_PERF_DOMAIN`: a domain's CPUs and levels. Each level is a frequency and the value that selects it. A domain also says how a level is selected:
     - a register: physical address and width, which the kernel maps and writes the value to (EPSS, CPPC over MMIO);
-    - or `ARCH`: HWP on Intel, CPPC on AMD, through MSRs, where the kernel writes the energy-performance preference and the hardware picks.
+    - or `ARCH`: HWP on Intel, CPPC on AMD, through MSRs, where the kernel writes the energy-performance preference and the hardware picks;
+    - or `DELEGATE`: a page shared with a user-space platform driver and a `Counter`. The kernel writes the level it wants and signals; the driver sequences regulator and clock (an SCMI call on the RK3588), then writes back the level in force. One request is outstanding at a time (ADR-0023 item 7).
   - `VX_CPU_LIMITS`: a domain's lowest and highest allowed level, and the preference's bias, set by one caller. Each caller's limits are kept separately (the power profile's, the thermal policy's), and the kernel applies the tightest.
 - **Every table is validated:**
   - levels in increasing frequency;

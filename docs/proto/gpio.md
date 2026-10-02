@@ -54,14 +54,16 @@ Each write is one or more lines, applied in order. A failing line ends the write
 | `irq NAME rising\|falling\|both\|high\|low` | Arms NAME's interrupt with that trigger. The pin's `Counter` (§3.3) counts from then on |
 | `irq NAME off` | Disarms it |
 | `ack NAME` | Unmasks a level-triggered pin after its consumer has handled it. An edge-triggered pin needs no ack (§3.3) |
+| `state NAME` | Applies a named pin state: a set of pins with their functions, pulls and drive strengths, from the DT's `pinctrl-N` and `pinctrl-names` (`sdmmc.default`, `sdmmc.sleep`). A state is applied whole or not at all |
 | `limit NAME…` | Narrows the names this connection may use. `devmgr` writes it |
 
-A pin's function (GPIO or a peripheral) is the record's, never a command. The protocol drives only pins in the GPIO function. The SD controller's data pins, for example, are its own. Errors are 9P2000 `Rerror` strings:
+A pin's function (GPIO or a peripheral) changes only through a named state, never a raw command. On a device-tree machine, `devmgr` applies a device's `default` state before it spawns the driver, and the driver may switch among the states its grant names (`pinstate=`, ADR-0023), as Fuchsia's `PinStates.SelectState` does. The protocol drives only pins in the GPIO function. The SD controller's data pins, for example, are its own. Errors are 9P2000 `Rerror` strings:
 - `gpio: NAME: no such pin`
 - `gpio: NAME: not allowed`
 - `gpio: NAME: held`
 - `gpio: NAME: not an output`
 - `gpio: NAME: not in gpio function`
+- `gpio: NAME: no such state`
 
 ### 3.3 Interrupts
 
@@ -100,7 +102,7 @@ A driver's match record names the pins it may hold (`gpio=sd2.cd`).
 
 ## 5. Not in this protocol
 
-- **Pin multiplexing** at run time. Functions are the records', set once.
+- **Raw pin multiplexing.** Functions change only through named states (§3.2).
 - **Several pins as one value** (a bus). No first user. When one comes, `set` takes a list.
 - **Waking from sleep** through a GPIO, which needs the PDC on Qualcomm SoCs, and suspend first.
 - **PMIC GPIOs.** They sit behind the PMIC's SPMI bus, a different controller. They get their own `gpio` server when a driver needs one, and the fan's PMIC GPIO 8 is `owner=adsp` (ADR-0022).

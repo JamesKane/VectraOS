@@ -278,17 +278,13 @@ In `topology`, `llc=` groups cores that share a last-level cache and `numa=` gro
         clone      open → allocates a context N/ (for non-Vulkan clients: CUDA-shaped host API, 00 D7)
         N/{ctl,status,mem,queue}
     npu0/
-        info       kind=npu vendor=rockchip model=rk3588-npu tops.int8=6 formats=int8,int4,fp16
+        info       kind=npu vendor=rockchip model=rk3588-npu cores=3 tops.int8=6 formats=int8,int4,fp16
                        runtime=teflon ops=conv,matmul memory=uma coherent=no
-        clone
-        N/
-            ctl        load /ai/models/yolo11n.tflite · bind-input 0 buf:17 · bind-output 0 buf:18 · run
-            status     state=idle runs=1832 last_us=4210
-            wait       read blocks until the submitted run completes; also a Counter (fence)
+        status     state=idle jobs=1832 last_us=4210
     .schema
 ```
 
-Vulkan applications use the Vulkan loader, which talks to the GPU driver over rings. The GPU tree is still there for discovery, budgets and scripting, and for remote access (§6). NPUs, which have no cross-vendor API, are driven *through* this tree plus `Buffer` handles. `aid` wraps them for most users. Only NPUs with an open user-space stack are supported: the RK3588's, through Mesa's Rocket driver and its Teflon TensorFlow Lite delegate. Intel's NPU, AMD XDNA, Qualcomm Hexagon and Apple's ANE need closed Linux user-space libraries today, so they wait until open stacks exist.
+Vulkan applications use the Vulkan loader, which talks to the GPU driver over rings. The GPU tree is still there for discovery, budgets and scripting, and for remote access (§6). NPUs, which have no cross-vendor API, are driven the way GPUs are: their user-space driver (Mesa's Rocket, under the Teflon delegate) runs in the client and submits over `accel` rings, as Fuchsia drives NPUs through Magma (ADR-0023). Their tree is for discovery and status. Loading a model and running it from a shell is `aid`'s job, under `/ai/models/` (§5.6). Only NPUs with an open user-space stack are supported: the RK3588's, through Mesa's Rocket driver and its Teflon TensorFlow Lite delegate. Intel's NPU, AMD XDNA, Qualcomm Hexagon and Apple's ANE need closed Linux user-space libraries today, so they wait until open stacks exist.
 
 ### 5.4 Networking (Plan 9 style)
 
@@ -459,9 +455,9 @@ What happens:
 **3. Sensor processing on a remote NPU.** A camera on an RK3588 robot is mounted over the network. Frames stay on the robot, and its NPU runs detection *where the data is*. The laptop reads only the detections:
 
 ```sh
-mount 9px+tcp://robot/dev /n/robot/dev
-echo 'load /ai/models/yolo11n.tflite · bind-input 0 camera:/dev/camera0 · run continuous' > /n/robot/dev/accel/npu0/clone
-cat /n/robot/dev/accel/npu0/4/output     # detections as text records
+mount 9px+tcp://robot/ai /n/robot/ai
+echo 'device npu0 · bind-input 0 camera:/dev/camera0 · run continuous' > /n/robot/ai/models/yolo11n/clone
+cat /n/robot/ai/models/yolo11n/4/output     # detections as text records; the robot's aid runs Teflon on its NPU
 ```
 
 This rule applies generally: **move the computation to the data** when the result is smaller than the input.

@@ -26,3 +26,4 @@ One file per decision, `NNNN-title.md`, numbered in order. An ADR records a deci
 | [0020](0020-cpu-configure.md) | `cpu_configure`, the 63rd syscall: the firmware's idle states and performance domains into the kernel, and limits from the power profile and thermal policy | Proposed |
 | [0021](0021-thermal-policy.md) | Thermal policy: `thermd`, zones from ACPI or the SoC record, critical, passive and active trips acting through `VX_CPU_LIMITS`, GPU `freq max` and `svcd` | Proposed |
 | [0022](0022-remote-processors.md) | Remote processors: `drv-qcom-pas` boots and stops them through the secure world, `drv-qcom-glink` serves channels as ring sessions, consumers are ordinary drivers | Proposed |
+| [0023](0023-device-tree-socs.md) | Device-tree SoCs: a boot stage keeps the kernel DT-free; `bus-dt` turns references into grants; `regulator`, `registers`, `i2c`/`spi` classes and `clock` v2; delegated CPU frequency; device-MMU domains; NPUs speak `accel` | Proposed |
