@@ -197,7 +197,9 @@ static void write_file(uint32_t handle, const char *s, size_t n, bool *broken) {
 static void write_out(void *ctx, const rc_fd *fd, uint32_t which, const char *s, size_t n) {
   (void)ctx, (void)which;
   bool broken = false;
-  if (fd->kind == RC_FD_WRITE || fd->kind == RC_FD_APPEND || fd->kind == RC_FD_RDWR)
+  if (fd->kind == RC_FD_CAPTURE)
+    rc_capture_write(sh, fd, s, n);
+  else if (fd->kind == RC_FD_WRITE || fd->kind == RC_FD_APPEND || fd->kind == RC_FD_RDWR)
     write_file(fd->handle, s, n, &broken);
   else if (fd->kind == RC_FD_INHERIT && fd->dup == 2)
     vx_eprint((vx_str){s, n});
@@ -236,15 +238,37 @@ static int64_t read_whole(void *ctx, const char *path, size_t len, char *buf, si
 
 // --- Running programs ---
 
-static uint8_t image[1 << 20];
+static uint8_t image[4 << 20];
+
+// The bytes of an ELF image a spawn reads: through the end of its last
+// loadable segment (and its program headers), not the symbols and debugging
+// sections after them. 0 if it is not ELF; SIZE_MAX if they do not fit in image.
+static size_t elf_needs(size_t have) {
+  vx_elf_header eh;
+  if (have < sizeof eh || memcmp(image,
+                                 "\x7f"
+                                 "ELF",
+                                 4) != 0)
+    return 0;
+  memcpy(&eh, image, sizeof eh);
+  uint64_t end = eh.phoff + (uint64_t)eh.phnum * sizeof(vx_elf_phdr);
+  if (eh.phentsize != sizeof(vx_elf_phdr) || end > sizeof image) return SIZE_MAX;
+  if (end > have) return (size_t)end; // the headers first
+  for (uint16_t i = 0; i < eh.phnum; i++) {
+    vx_elf_phdr ph;
+    memcpy(&ph, image + eh.phoff + (uint64_t)i * sizeof ph, sizeof ph);
+    if (ph.type == VX_PT_LOAD && ph.offset + ph.filesz > end) end = ph.offset + ph.filesz;
+  }
+  return end > sizeof image ? SIZE_MAX : (size_t)end;
+}
 
 // Loads a program through the namespace: the path as given, or /bin/NAME,
-// then /boot/bin/NAME. Returns its size, or 0.
+// then /boot/bin/NAME. Returns its size (what a spawn needs of it), or 0.
 static size_t load(vx_str name) {
   static const char *const DIRS[] = {"", "/bin/", "/boot/bin/"};
+  bool has_slash = false;
+  for (size_t i = 0; i < name.len; i++) has_slash = has_slash || name.ptr[i] == '/';
   for (size_t d = 0; d < sizeof DIRS / sizeof DIRS[0]; d++) {
-    bool has_slash = false;
-    for (size_t i = 0; i < name.len; i++) has_slash = has_slash || name.ptr[i] == '/';
     if ((d == 0) != has_slash) continue;
     char path[256];
     vx_str dir = vx_cstr(DIRS[d]);
@@ -253,18 +277,65 @@ static size_t load(vx_str name) {
     memcpy(path + dir.len, name.ptr, name.len);
     vx_ns_file f;
     if (vx_ns_open(&ns, (vx_str){path, dir.len + name.len}, P9_OREAD, &f) != VX_OK) continue;
-    size_t size = 0;
-    int64_t n;
-    while (size < sizeof image && (n = vx_ns_read(&f, image + size, (uint32_t)(sizeof image - size))) > 0)
-      size += (size_t)n;
+    size_t size = 0, need = 4096;
+    int64_t n = 1;
+    while (n > 0 && size < need) { // the headers, then as much as they say
+      n = vx_ns_read(&f, image + size, (uint32_t)(need - size > 65536 ? 65536 : need - size));
+      if (n > 0) size += (size_t)n;
+      size_t want = elf_needs(size);
+      if (want == 0 || want == SIZE_MAX) break;
+      need = want > need ? want : need;
+    }
     vx_ns_close(&f);
-    if (size >= 4 && memcmp(image,
-                            "\x7f"
-                            "ELF",
-                            4) == 0)
-      return size;
+    size_t want = elf_needs(size);
+    if (want && want != SIZE_MAX && size >= want) return size;
   }
   return 0;
+}
+
+// The variables, exported as rc does: NAME=WORDS, the words of a list
+// separated by \x01; but not $* or $0 and the like, nor names a POSIX program
+// could not read.
+static void export_var(void *arg, const char *name, const rc_word *val) {
+  vx_ndb_writer *rec = arg;
+  bool plain = name[0] != 0 && !(name[0] >= '0' && name[0] <= '9');
+  for (const char *c = name; *c && plain; c++)
+    plain = (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || *c == '_';
+  if (!plain) return;
+  static char env[4096];
+  size_t n = 0, len = rc_strlen(name);
+  if (len + 1 > sizeof env) return;
+  memcpy(env, name, len), n = len, env[n++] = '=';
+  for (const rc_word *w = val; w; w = w->next) {
+    if (n + w->len + 1 > sizeof env) return; // too long to pass: left out
+    memcpy(env + n, w->s, w->len), n += w->len;
+    if (w->next) env[n++] = '\x01';
+  }
+  vx_ndb_put(rec, "env", (vx_str){env, n});
+  vx_ndb_end(rec);
+}
+
+// The environment the shell was given, as variables (rc's lists, split at \x01).
+static void import_env(void) {
+  static const char *words[64];
+  static size_t lens[64];
+  static char name[64];
+  for (uint32_t i = 0; i < vx_spawn.envc; i++) {
+    vx_str e = vx_spawn.envs[i];
+    size_t eq = 0;
+    while (eq < e.len && e.ptr[eq] != '=') eq++;
+    if (eq == e.len || eq == 0 || eq >= sizeof name) continue;
+    memcpy(name, e.ptr, eq);
+    name[eq] = 0;
+    uint32_t n = 0;
+    for (size_t at = eq + 1; at <= e.len && n < 64;) {
+      size_t end = at;
+      while (end < e.len && e.ptr[end] != '\x01') end++;
+      words[n] = e.ptr + at, lens[n++] = end - at;
+      at = end + 1;
+    }
+    rc_set(sh, name, words, lens, n);
+  }
 }
 
 // Spawns one program with its standard input, output and error (channel ends,
@@ -282,6 +353,7 @@ static vx_status spawn(const rc_word *argv, const vx_handle io[3], vx_handle *ta
     vx_ndb_put(&rec, "arg", word_str(a));
     vx_ndb_end(&rec);
   }
+  if (st == VX_OK) rc_each_var(sh, export_var, &rec);
   if (st == VX_OK) st = vx_ns_spawn_records(&ns, &rec, handles, names, &count, VX_CHANNEL_MAX_HANDLES - 5);
   if (st == VX_OK && vx_console.connector &&
       vx_handle_dup(vx_console.connector, VX_RIGHTS_SAME, &handles[count]) == VX_OK)
@@ -452,7 +524,14 @@ static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool asy
         if (io[i]) vx_handle_close(io[i]);
     if (st != VX_OK) {
       vx_str why = st == VX_ERR_NOT_FOUND ? VX_STR("not found") : VX_STR("cannot run it");
-      say("gsh: ", word_str(c->argv), st == VX_ERR_NOT_FOUND ? ": not found\n" : ": cannot run it\n");
+      // Where the command's own errors would go, as rc writes them.
+      rc_fd err = *fd[2];
+      if (err.kind == RC_FD_PIPE_OUT || err.kind == RC_FD_PIPE_IN || err.kind == RC_FD_READ)
+        err = (rc_fd){.dup = 2};
+      write_out(nullptr, &err, 2, "gsh: ", 5);
+      write_out(nullptr, &err, 2, c->argv->s, c->argv->len);
+      vx_str tail = st == VX_ERR_NOT_FOUND ? VX_STR(": not found\n") : VX_STR(": cannot run it\n");
+      write_out(nullptr, &err, 2, tail.ptr, tail.len);
       memcpy(ends[s], why.ptr, why.len);
       end_len[s] = why.len;
       tasks[s] = VX_HANDLE_NONE;
@@ -580,6 +659,7 @@ const char *vx_main(void) {
                   .close = close_file};
   sh = rc_new(heap, sizeof heap, &host);
   if (!sh) return "no memory";
+  import_env();
 
   if (vx_spawn.argc) { // gsh FILE ARG ...: a script, its arguments in $*, its name in $0
     static const char *words[64];

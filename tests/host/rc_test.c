@@ -157,6 +157,25 @@ static int64_t read_file_fake(void *ctx, const char *path, size_t len, char *buf
   return (int64_t)files[k].len;
 }
 
+static char exported[256]; // exportx's: x's value as rc_each_var gives it
+
+static void each_var(void *arg, const char *name, const rc_word *val) {
+  (void)arg;
+  if (strcmp(name, "x") != 0) return;
+  size_t at = strlen(exported);
+  for (const rc_word *w = val; w && at + w->len + 4 < sizeof exported; w = w->next)
+    at += (size_t)snprintf(exported + at, sizeof exported - at, "x=%s;", w->s);
+}
+
+static bool host_builtin(void *ctx, rc *rr, const rc_word *argv, uint32_t argc, const rc_fd *fds) {
+  (void)ctx, (void)argc, (void)fds;
+  if (strcmp(argv->s, "exportx") != 0) return false;
+  exported[0] = 0;
+  rc_each_var(rr, each_var, nullptr);
+  rc_set_status(rr, "", 0);
+  return true;
+}
+
 static alignas(16) uint8_t heap[4 << 20];
 static rc *r;
 
@@ -179,6 +198,7 @@ int main(void) {
                   .write = write_fd,
                   .readdir = readdir_fake,
                   .read_file = read_file_fake,
+                  .builtin = host_builtin,
                   .open = open_fake,
                   .close = close_fake};
   r = rc_new(heap, sizeof heap, &host);
@@ -213,6 +233,8 @@ int main(void) {
   expect("x=`{echo a b}; echo $#x", "2\n");
   expect("if(true) { y=`{echo z}; echo $y }", "z\n");
   expect("x=`:{echo a:b:c}; echo $x(2)", "b\n");
+  expect("echo `{for(i in a b) echo $i}", "a b\n");
+  expect("fn c { echo $* }; c x `{for(i in a b) echo $i}", "x a b\n");
   // Redirections and pipes.
   expect("echo data > f; cat < f", "data\n");
   expect("echo more >> f; cat < f", "data\nmore\n");
@@ -225,6 +247,9 @@ int main(void) {
   expect("echo '*.c' z* ?.h", "*.c z* x.h\n");
   expect("echo dir/*.c", "dir/one.c\n");
   expect("x=*.c; echo $#x", "2\n");
+  expect("for(f in *.c) echo $f", "a.c\nb.c\n");
+  expect("echo `{for(f in dir/*.c) echo $f}", "dir/one.c\n");
+  expect("x='*.c'; echo $x; for(f in '*.c') echo $f", "*.c\n*.c\n");
   // Scripts: comments, continuations, several lines; . and eval.
   expect("# a comment\necho a \\\n  b\necho c # another", "a b\nc\n");
   CHECK(script("echo 'echo from dot' > s.rc") == RC_OK);
@@ -241,6 +266,10 @@ int main(void) {
   expect("echo $status", "it failed\n");
   CHECK(opened > 0 && opened == closed); // every redirection's file let go
   CHECK(script("cat < nosuchfile") == RC_FAILED);
+  // Variables as a program would get them: a local hides its global.
+  CHECK(script("x=global; y=(a b); fn f { exportx }; x=local f") == RC_OK);
+  CHECK(strcmp(exported, "x=local;") == 0);
+  CHECK(script("exportx") == RC_OK && strcmp(exported, "x=global;") == 0);
   // The heap gives back what it lent: a long loop runs in it without running out.
   expect("for(i in 1 2 3 4 5 6 7 8 9 10) { x=`{echo $i $i $i}; y=$x^-; z=$y(1) }; echo $z", "10-\n");
   for (int i = 0; i < 200; i++)

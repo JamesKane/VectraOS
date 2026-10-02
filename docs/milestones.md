@@ -11,7 +11,7 @@ Updated 2026-10-01.
 | **M1** First light | Done (2026-09-30) | `tests/qemu/boot.ndb` passes on x86_64 and aarch64 |
 | **M2** A shell in a namespace | Done (2026-10-01) | `tests/qemu/shell.ndb` passes on both |
 | **M3** Mount the network | Done (2026-10-01) | `tests/qemu/mount.ndb` passes on both (against 10.0.2.100; see below) |
-| M4 POSIX and debugging | In progress: steps 1–4d done | — |
+| **M4** POSIX and debugging | Done (2026-10-02) | `tests/qemu/dbg.ndb` and `tests/qemu/rcscript.ndb` pass on both |
 | M5 Storage | Not started | |
 | M6 Pixels | Not started | |
 | M7 GPU | Not started | |
@@ -70,7 +70,7 @@ The exit test's steps all pass in `tests/qemu/mount.ndb`, with one difference: t
 
 ## M4 — POSIX and debugging
 
-In progress. 04 §6 gives M4's content but no steps or exit test, so they are set here (decided 2026-10-01). The userland is sbase, vendored. Vendoring dash, the POSIX shell, is deferred (2026-10-01): first `gsh` is remade as rc, with its commands, and dash comes only if that proves unable to fill the role.
+Done. 04 §6 gives M4's content but no steps or exit test, so they are set here (decided 2026-10-01). The exit test has two parts: the debugger's (`tests/qemu/dbg.ndb`, step 6d) and the shell's (`tests/qemu/rcscript.ndb`, step 7b), where `gsh` runs an rc script over sbase in the POSIX userland. rc filled the shell's role, so dash was not vendored. The userland is sbase, vendored. Vendoring dash, the POSIX shell, is deferred (2026-10-01): first `gsh` is remade as rc, with its commands, and dash comes only if that proves unable to fill the role.
 
 | Step | Status | Commit |
 |---|---|---|
@@ -109,8 +109,8 @@ In progress. 04 §6 gives M4's content but no steps or exit test, so they are se
 | 6c2. `lib/vx-debug/eval.c`: the frame-pointer unwinder (a pc in a prologue handled), DWARF location expressions at a frame, the C expression evaluator (05 §6.2: literals, variables, `$registers`, arithmetic, comparison and logic, pointer arithmetic, `* & . -> []`, casts, `sizeof`; no calls into the program; no recursion), value printing; `eval_test` on its own stack, and a fuzz target | Done | `f9fb698` |
 | 6d. `dbg -c` (`cmd/dbg.c`, 05 §7): launch (breakpoints set before the first instruction, through vx-rt spawn's `registered` hook), attach, or open a crash directory; `break` by function, `file:line` or address, `run`, `cont`, `step`, `bt`, `frame`, `print`, `regs`, `info`, `kill`, `quit`, from the console or `-x FILE`; after a crash, the crash directory (its `mem/` and the ELF's read-only data). M4's exit test, the debugger's part: `tests/qemu/dbg.ndb` | Done | `58c3bad` |
 | 6e. `/sys/clock/{info,now}` (`servers/sysfs`, posted as `/srv/sys`; the counter's frequency, invariance and user access through `clock_read`'s new `vx_clock_info`; user code reads the counter, `vx_cycles`, aarch64's `CNTKCTL_EL1.EL0VCTEN` now set); `vx-prof` zones (`lib/vx-prof/prof.h`: a ring in a VMO given to `procfs` with `PROC_PROF`, proved by a nonce; `/proc/N/prof/{ctl,zones}`) | Done | `de2d08f` |
-| 7a. The rc language as `lib/vx-rc` (9front's rc's: its lexer, grammar, code and machine, without recursion): lists, quoting, `^`, `$#x`, `$x(n)`, `if`/`if not`, `for`, `while`, `switch`, `~`, `fn`, `!`, `&&`, `\|\|`, pipelines, redirections, `` `{} ``, globbing, `$status`, `$*`; commands run through callbacks; host tests and a fuzz target. `gsh` remade on it, running scripts (`gsh FILE ARG ...`); `/tmp` in the console shell's namespace; `tests/qemu/rc.ndb` | Done | |
-| 7b. The exit test's shell script: `gsh` running an rc script in the POSIX userland over sbase (pipelines, redirections, functions, loops); dash only if rc cannot fill the role (decided 2026-10-02) | To do | |
+| 7a. The rc language as `lib/vx-rc` (9front's rc's: its lexer, grammar, code and machine, without recursion): lists, quoting, `^`, `$#x`, `$x(n)`, `if`/`if not`, `for`, `while`, `switch`, `~`, `fn`, `!`, `&&`, `\|\|`, pipelines, redirections, `` `{} ``, globbing, `$status`, `$*`; commands run through callbacks; host tests and a fuzz target. `gsh` remade on it, running scripts (`gsh FILE ARG ...`); `/tmp` in the console shell's namespace; `tests/qemu/rc.ndb` | Done | `9d351b6` |
+| 7b. The exit test's shell script: `gsh` running an rc script in the POSIX userland over sbase (pipelines, redirections, functions, loops); dash only if rc cannot fill the role (decided 2026-10-02). `tests/user/rctest.rc` (32 checks, including globbing, `` `{} ``, a nested script, and the environment both ways, rc's lists as `\x01`-separated words); script tests take `.rc` as well as `.lua`; `gsh` exports its variables, imports its environment, gives a command's own errors to its `>[2]`, and reads a program only through its last loadable segment; the musl back end takes a `stderr` pipe from a native parent | Done | |
 
 **Exit test (proposed):** a C program built against `vectra-musl` forks, execs, pipes and waits; a shell script (`gsh` as rc; dash only if rc cannot fill the role) and Lua run in the POSIX userland; `dbg -c` stops at a breakpoint and prints a backtrace; a crashing program leaves a crash directory.
 
@@ -154,7 +154,7 @@ Deferred deliberately, each with where it is due:
 | Ports are built without `-g` | musl, Lua and sbase have symbols but no DWARF: no lines or variables in them (05 §4 has every port built with `-g`) | With the debugger's use of them, weighing the binaries' size |
 | The index has no inlined frames, DWARF 4 or split DWARF | An inlined function shows as its caller; only clang 22's DWARF 5 is read (ADR-0017) | When `dbg` needs them |
 | One profiling ring per process, zones only | Every thread's zones share a ring (records say thread 1); no counters or samples yet (05 §9: `pmu_configure`, M12) | With pthreads; sampling at M12 |
-| No `/bin/sh` | `system`, `popen`, Lua's `os.execute` and `io.popen` fail | M4 step 7b (`gsh` as rc in the POSIX userland, or dash if rc cannot fill the role) |
+| No `/bin/sh` | `system`, `popen`, Lua's `os.execute` and `io.popen` fail: they need a POSIX shell's `sh -c`, which rc is not | When a port needs them: dash, vendored (the 2026-10-01 decision), as APE's `/bin/sh` is a POSIX shell beside rc |
 | `gsh` cannot fork: a pipeline's stages and a command run with `&` must be programs; `{...}`, `@{...}` and `` `{...} `` run in the shell, so what they assign is seen after; descriptors past 2 are not given to programs; a command run with `&` gets no file or capture redirections (the shell does not serve them while it goes on) | rc scripts that pipe into a function or a block, or background one, are refused with a message | With a way to run rc code in a child (a `gsh -c` of the function's text, or `fork` in the native personality) |
 | `lib/vx-rc` lacks some of rc: no here documents (`<<`), `<{...}` and `>{...}`, `$ifs` for `` `{...} `` (it splits at blanks and newlines unless given `` `SEPS{...} ``), `$path`, `$prompt`, `wait`, `cd` (no current directory yet), notes as functions (`fn sigint`), `rfork` | — | When a script needs them; `cd` with a current directory in the native personality |
 | No `as_protect`: `PROT_NONE` is mapped read-write and `mprotect` is `ENOSYS` | Guard pages do not fault; nothing else breaks (musl's malloc expects this) | When a port needs it (JITs, guard pages) |

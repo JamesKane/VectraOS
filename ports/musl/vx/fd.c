@@ -193,9 +193,11 @@ static void fd_place(int fd, ofd *o) {
 static void fd_from_records(void); // below, with what writes them
 
 // The descriptors the spawn message gives: fd= records from a POSIX parent
-// (fd_records), or else 0, 1 and 2 from the pipes it names and the console
-// for what it does not. Standard error goes to the console, so a pipeline's
-// errors reach its terminal; without a console, to stdout.
+// (fd_records), or else 0, 1 and 2 from the pipes it names ("stdin",
+// "stdout", "stderr", as vx-rt's programs take them: gsh's redirections) and
+// the console for what it does not. Without a pipe for it, standard error
+// goes to the console, so a pipeline's errors reach its terminal; without a
+// console either, to stdout.
 static void fd_init(void) {
   vx_handle console = vx_spawn_take("console");
   if (console && vx_console_attach(console) != VX_OK) vx_print(VX_STR("vx-musl: cannot open the console\n"));
@@ -205,11 +207,13 @@ static void fd_init(void) {
     fd_from_records();
     return;
   }
-  vx_handle in_end = vx_spawn_take("stdin"), out_end = vx_spawn_take("stdout");
+  vx_handle in_end = vx_spawn_take("stdin"), out_end = vx_spawn_take("stdout"),
+            err_end = vx_spawn_take("stderr");
   ofd *cons = console ? ofd_new(OFD_CONSOLE, O_RDWR) : nullptr;
   ofd *in = in_end ? pipe_ofd(in_end, true, 0) : cons;
   ofd *out = out_end ? pipe_ofd(out_end, false, 0) : cons;
   ofd *err = cons ? cons : out;
+  if (err_end) err = pipe_ofd(err_end, false, 0);
   ofd *std[3] = {in, out, err};
   for (int fd = 0; fd < 3; fd++) {
     if (!std[fd]) continue;

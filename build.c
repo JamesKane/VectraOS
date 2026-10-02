@@ -2017,7 +2017,8 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
     }
   }
   // A `with` name that is no program is a script test: its manifest runs a
-  // program the image has (lua), on tests/user/NAME.lua, at /boot/tests.
+  // program the image has (lua, gsh), on tests/user/NAME.lua or NAME.rc, at
+  // /boot/tests.
   for (const char *n = with; *n && count + 2 <= BOOTFS_MAX_FILES;) {
     const char *end = strchr(n, ',');
     const char *name = str_dup((vx_str){n, end ? (size_t)(end - n) : strlen(n)});
@@ -2028,9 +2029,11 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
     if (program) continue;
     files[count] = read_file(fmt("tests/user/%s.ndb", name));
     paths[count++] = fmt("boot/svc/%s.ndb", name);
-    if (exists(fmt("tests/user/%s.lua", name))) {
-      files[count] = read_file(fmt("tests/user/%s.lua", name));
-      paths[count++] = fmt("boot/tests/%s.lua", name);
+    for (int k = 0; k < 2 && count < BOOTFS_MAX_FILES; k++) { // a Lua or an rc script
+      const char *ext = k ? "rc" : "lua";
+      if (!exists(fmt("tests/user/%s.%s", name, ext))) continue;
+      files[count] = read_file(fmt("tests/user/%s.%s", name, ext));
+      paths[count++] = fmt("boot/tests/%s.%s", name, ext);
     }
   }
   for (int i = 0; i < count; i++) total += files[i].len + 2 * VX_TAR_BLOCK;

@@ -2318,6 +2318,19 @@ static void rc_execute(rc *r, uint32_t base) {
       if (!l->head) l->tail = nullptr;
       l->n--;
       w->next = nullptr;
+      // Globbed as it is taken: the names it matches go back on the front of
+      // the list, the first of them taken now (they have no marks to match again).
+      w = rc_glob(r, w);
+      if (w->next) {
+        rc_word *rest = w->next, *last = rest;
+        uint32_t k = 1;
+        for (; last->next; last = last->next) k++;
+        last->next = l->head;
+        if (!l->head) l->tail = last;
+        l->head = rest;
+        l->n += k;
+        w->next = nullptr;
+      }
       if (f->locals)
         rc_freewords(r, f->locals->val), f->locals->val = w;
       else
@@ -2541,3 +2554,16 @@ typedef enum rc_result : uint8_t { RC_OK, RC_INCOMPLETE, RC_SYNTAX, RC_FAILED, R
 }
 
 [[maybe_unused]] static const char *rc_err(const rc *r) { return r->err; }
+
+// Each variable with a value as a command would see it now (a local hiding a
+// global of its name), for the host to export as rc does: each(name, words).
+[[maybe_unused]] static void rc_each_var(rc *r, void (*each)(void *arg, const char *name, const rc_word *val),
+                                         void *arg) {
+  for (uint32_t f = r->nframes + 1; f-- > 0;) {
+    for (uint32_t b = 0; b < (f == r->nframes ? RC_VARS : 1); b++) {
+      rc_var *v = f == r->nframes ? r->vars[b] : r->frames[f].locals;
+      for (; v; v = v->next)
+        if (v->val && rc_var_find(r, v->name, rc_strlen(v->name), false) == v) each(arg, v->name, v->val);
+    }
+  }
+}
