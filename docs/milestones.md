@@ -90,9 +90,9 @@ In progress. 04 §6 gives M4's content but no steps or exit test, so they are se
 | 4b. Open files kept by the server (`posix`): offsets and `O_APPEND` shared across `fork` and children by token (`Tshare`/`Tjoin`), `Tseek`, `Tdesc`; byte-range locks (`Tlock`, `Tgetlock`, `fcntl`) | Done | `2e4ef96` |
 | 4c. `ptyd` (`/dev/ptmx`, `/dev/pts/N`, line discipline, `^C`/`^Z`/`^\` to the foreground group, ending held reads); termios and terminal ioctls in the back end; job control in `posixd` (stop by `thread_suspend`, `SIGCONT`, `WUNTRACED`/`WCONTINUED`). Kernel: an interrupted `channel_call` whose request the server has read waits for its reply; an early wake clears its token; `vx.hangdump=N` | Done | `f29d25a` |
 | 4d. `poll`, `ppoll`, `select` and `pselect6` on the one port: pipes by their channels' triggers, files always ready, terminals and the console by a read kept outstanding on a connection of its own (vx-9p's asynchronous ring calls); pipe and terminal reads now end with `EINTR` | Done | `fb75b71` |
-| 4e. Notes and exit strings (ADR-0010). Kernel: `task_kill` with a message, exit strings in `task_info` and the `EXIT` packet, trap exit strings, notes in `thread_interrupt`, a note with no handler ends the task. vx-rt: `vx_exit(msg)`, `vx_notify`, `vx_noted`. `svcd` and `gsh` keep the string. The back end: signals mapped from notes through one table, POSIX exit codes as strings | To do | |
+| 4e. Notes and exit strings (ADR-0010). Kernel: `task_kill` with a message, exit strings in `task_info` and the `EXIT` packet, trap exit strings, notes in `thread_interrupt`, a note with no handler ends the task. vx-rt: `vx_exit(msg)`, `vx_notify`, `vx_noted`. `svcd` and `gsh` keep the string. The back end: signals mapped from notes through one table, POSIX exit codes as strings. Native standard error: a `stderr` channel in the spawn message, taken by vx-rt and given by `gsh`, so errors stop going down pipes as data | To do | |
 | 4f. One process table (ADR-0011): `posixd` folded into `procfs`; pids kept across `exec`; `/proc/N/{status,ctl,note,notepg,wait,args}`; registration at spawn; the back end's process calls, job control and `SIGCHLD` over those files | To do | |
-| 4g. Namespace groups (ADR-0009): `nsd`; spawn with share, copy or clean; mounts found by qid; `newns` and namespace(6) templates in `/lib/ns` (replacing `boot/ns/*.ndb`); `/proc/N/ns`; `ns` output that replays | To do | |
+| 4g. Namespace groups (ADR-0009): `nsd`; spawn with share, copy or clean; mounts found by qid; `newns` and namespace(6) templates in `/lib/ns` (replacing `boot/ns/*.ndb`); `/proc/N/ns`; `ns` output that replays; union create honouring `-c` (create in the first member bound with it, else fail) | To do | |
 | 4h. Sockets over `/net` | To do | |
 | 5. Lua, sbase and dash, vendored | To do | |
 | 6. The `procfs` debug files, crash directories, `lib/vx-debug`, `dbg -c`, `/sys/clock`, `vx-prof` zones | To do | |
@@ -101,6 +101,7 @@ In progress. 04 §6 gives M4's content but no steps or exit test, so they are se
 
 **Picking M4 back up** (paused 2026-10-01, after 4d):
 
+- First, a fix that can't wait: `O_CREAT|O_EXCL|O_TRUNC` on an existing file empties it before returning `EEXIST` (`ports/musl/vx/fd.c`, `fd_openat`). With `O_EXCL`, go straight to `Tcreate`, which fails atomically if the file exists.
 - Next is 4e, notes and exit strings. Steps 4e–4g put the Plan 9 baseline back (00 §1, ADRs 0009–0011) before more is built on the integer exit status and `posixd`'s RPC; 4e goes first because it changes the kernel ABI. Each ADR lists what it changes.
 - Then 4h, sockets over `/net`: 01 §9 has the BSD calls translate to `/net/tcp/clone` and the files of the connection directory, as Plan 9's APE does; `netd` serves `/net` already (M3), and `tests/qemu/tcp.ndb` and `net.ndb` show it working. The back end's descriptors (`ports/musl/vx/fd.c`) need a socket kind; `poll` (`poll.c`) needs its readiness, through the read kept outstanding that terminals use, or `netd` events.
 - Then step 5 (Lua, sbase, dash, each vendored with an ADR) and step 6 (the debugger's pieces).
@@ -147,6 +148,13 @@ Deferred deliberately, each with where it is due:
 | `task_mem_rw`'s first write to code copies the whole mapping | A breakpoint in a large binary costs its text's size once | When it matters |
 | IOMMU in pass-through only (QEMU) | A device can reach any memory; a dead driver's device could write freed memory before `devmgr` turns off its bus mastering | M5 |
 | `netd` restarting its driver session is not tested | | M3 |
+| `gsh` is not rc: no `<`, `>>`, `&&`, `||`, `&`, blocks, `if`, `for`, `switch`, functions, lists or `cd`; at most 32 scalar variables | Scripts beyond a pipeline need dash | After M4 (rc, first-party C23; 04 §1) |
+| `/srv` is not a file tree: posts come only from `post=` records in manifests, and `ls /srv` fails | A program cannot post a service at run time | After M4 |
+| No `/dev/cons` or `consctl` in a namespace: the console is a handle given at spawn | A program cannot reopen the console by name; `cpu`'s `bind /mnt/term/dev/cons` has nothing to bind | After M4 |
+| No `/env` (`envfs`), `/fd` or current directory for native programs | The environment exists only as spawn records; native paths must be absolute | After M4 |
+| `Twstat` refused by every server and never sent by the client, which sends only `Tsetattr`/`Trenameat` | Rename, `chmod` and truncate fail both ways between VectraOS and 9front or `u9fs` | After M4 (map `Twstat` onto setattr/renameat in vx-9p; send it when `posix` is off) |
+| `ORCLOSE`, `DMEXCL` and `DMAPPEND` dropped without an error: the server strips `ORCLOSE`, `tmpfs` masks `perm & 0777` | Remove-on-close, exclusive-use and append-only files silently don't work | After M4 (implement in `tmpfs`, refuse elsewhere) |
+| The 9P client fails when a server answers `Tversion` with `unknown` (a 9P2000.L-only server); it does not ask again for `9P2000` | `diod`, virtfs and similar servers can't be mounted, though 02 §3.1 says they can | After M4 |
 
 ## Scenarios
 
