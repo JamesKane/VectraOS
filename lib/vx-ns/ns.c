@@ -127,6 +127,17 @@ static vx_ns_entry *ns_exact(vx_ns *ns, vx_str path) {
   return nullptr;
 }
 
+// The connector of the first mount at exactly `path` (a spawner registers its
+// children with whatever serves /proc: lib/vx-proc/proc.h), or VX_HANDLE_NONE.
+// The namespace keeps it: the caller does not close it.
+[[maybe_unused]] static vx_handle vx_ns_connector(vx_ns *ns, vx_str path) {
+  vx_ns_entry *e = ns_exact(ns, path);
+  for (uint32_t i = 0; e && i < e->count; i++)
+    if (e->members[i].mounted && ns->conns[e->members[i].conn].connector)
+      return ns->conns[e->members[i].conn].connector;
+  return VX_HANDLE_NONE;
+}
+
 // Resolves a path to a new fid on one of the namespace's connections: the
 // caller owns it and clunks it. Members of a union are tried in order.
 [[maybe_unused]] static vx_status vx_ns_walk(vx_ns *ns, vx_str path, p9_client **c, uint32_t *fid) {

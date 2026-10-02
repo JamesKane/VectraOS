@@ -10,11 +10,15 @@
 // and task_exec moves it into the program's own task (ADR-0012): the task, so
 // the pid, carries on, with only the handles the spawn message names.
 //
+// A spawned child is registered with procfs before its thread starts, when
+// the caller says where procfs is (ADR-0011): the user-space half of rfork.
+//
 // The image is the parent's to trust or not, but it is checked like any other
 // input: an image that would map outside the lower half, map a page both
 // writable and executable, or reach past its own end is refused.
 //
 #include "base.c"
+#include "../vx-proc/proc.h"
 
 typedef struct vx_elf_header {
   uint8_t ident[16];
@@ -107,7 +111,37 @@ typedef struct vx_spawn_args {
   // Exec instead of spawn: the caller becomes the program, and vx_spawn_elf
   // returns only on a failure. "self" names the caller's own task.
   bool exec;
+  // If set, a connector to procfs's listen channel: the child is registered
+  // there before it runs, with these flags (lib/vx-proc/proc.h). A child
+  // that cannot be registered is not started, unless the caller asked for no
+  // wait record (PROC_NOWAIT): it watches the child itself, so a procfs that
+  // is gone leaves it able to run programs.
+  vx_handle proc;
+  uint32_t proc_flags;
 } vx_spawn_args;
+
+// Registers a task as a child of the caller with procfs, through a connector
+// to its listen channel (lib/vx-proc/proc.h). *pid, if not null, gets its pid.
+[[maybe_unused]] static vx_status vx_proc_register(vx_handle connector, vx_handle task, uint32_t flags,
+                                                   uint64_t *pid) {
+  vx_task_summary me;
+  int64_t parent = vx_self && vx_task_info(vx_self, &me) == VX_OK ? (int64_t)me.id : 0;
+  vx_handle dup;
+  vx_status st = vx_handle_dup(task, VX_RIGHTS_SAME, &dup);
+  if (st != VX_OK) return st;
+  proc_msg req = {.h = {.ordinal = PROC_REGISTER}, .arg = {parent, flags}}, rep = {};
+  vx_call c = {.wr_bytes = &req,
+               .wr_len = sizeof req,
+               .wr_handles = &dup,
+               .wr_count = 1,
+               .rd_bytes = &rep,
+               .rd_cap = sizeof rep};
+  st = vx_channel_call(connector, &c, vx_clock_read() + 2'000'000'000);
+  if (st == VX_OK && c.actual.bytes < sizeof rep) st = VX_ERR_INVALID;
+  if (st == VX_OK && rep.h.flags) st = (vx_status)(int32_t)rep.h.flags;
+  if (st == VX_OK && pid) *pid = (uint64_t)rep.arg[0];
+  return st;
+}
 
 alignas(vx_msg_header) static uint8_t vx_spawn_out[VX_CHANNEL_MAX_BYTES]; // written as a header first
 
@@ -172,6 +206,10 @@ static void vx_close_all(const vx_handle *h, uint32_t n) {
   // before the write closed them above.
   for (uint32_t i = 0; i < count; i++) given[i] = VX_HANDLE_NONE;
   if (st == VX_OK && a->exec) st = vx_task_exec(t, ch[1], entry, VX_STACK_TOP); // returns only on a failure
+  if (st == VX_OK && a->proc) {
+    vx_status reg = vx_proc_register(a->proc, t, a->proc_flags, nullptr);
+    if (!(a->proc_flags & PROC_NOWAIT)) st = reg;
+  }
   if (st == VX_OK) st = vx_thread_create(t, &thread);
   if (st == VX_OK) st = vx_thread_start(thread, entry, VX_STACK_TOP, ch[1], 0);
   if (st == VX_OK) ch[1] = VX_HANDLE_NONE; // moved into the child

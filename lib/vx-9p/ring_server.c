@@ -49,6 +49,10 @@ typedef struct p9_ring_server {
   // Optional: does what is due by now, and says when to be called again
   // (VX_INFINITE: never), as a protocol's retransmission timers need.
   vx_instant (*tick)(void *ctx);
+  // Optional: a message on the listen channel that is not P9_CONNECT, with
+  // the one handle it may carry (VX_HANDLE_NONE if none), which becomes the
+  // hook's. procfs takes registrations this way (lib/vx-proc/proc.h).
+  void (*listen_msg)(void *ctx, const void *msg, uint32_t len, vx_handle handle);
   p9_ring_conn conns[P9_RING_MAX_CONNS];
   p9_shared shared; // the open files and locks all its connections share (posix)
 } p9_ring_server;
@@ -156,12 +160,20 @@ static int64_t p9_ring_now(void) { return vx_clock_read(); }
       more = more || d == P9_MORE;
     }
     for (;;) {
-      vx_msg_header req;
+      alignas(vx_msg_header) uint8_t msg[64];
+      vx_handle handle = VX_HANDLE_NONE;
       vx_msg_size size;
-      st = vx_channel_read(s->listen, &req, sizeof req, nullptr, 0, &size);
+      st = vx_channel_read(s->listen, msg, sizeof msg, &handle, 1, &size);
       if (st == VX_ERR_SHOULD_WAIT) break;
       if (st == VX_ERR_PEER_CLOSED) return st;
-      if (st == VX_OK && size.bytes == sizeof req && req.ordinal == P9_CONNECT) p9_ring_accept(s, &req);
+      const vx_msg_header *req = (const vx_msg_header *)msg;
+      if (st == VX_OK && size.bytes == sizeof *req && req->ordinal == P9_CONNECT && !size.handles) {
+        p9_ring_accept(s, req);
+      } else if (st == VX_OK && size.bytes >= sizeof *req && req->ordinal != P9_CONNECT && s->listen_msg) {
+        s->listen_msg(s->ctx, msg, size.bytes, size.handles ? handle : VX_HANDLE_NONE);
+      } else if (st == VX_OK && size.handles) {
+        vx_handle_close(handle);
+      }
       // Anything else, including a message too big for us (TOO_SMALL), is dropped.
       if (st == VX_ERR_TOO_SMALL) {
         static uint8_t junk[VX_CHANNEL_MAX_BYTES];

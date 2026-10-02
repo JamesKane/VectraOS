@@ -90,6 +90,7 @@ static uint64_t image_size;
 static vx_handle image_vmo, port, resource, acpi_vmo;
 static uint64_t acpi_size;
 static bool console_attached;
+static bool procfs_started; // the service posting /srv/proc: services are registered there (ADR-0011)
 
 #ifdef __x86_64__
 static const vx_str ARCH = VX_STR("x86_64");
@@ -231,6 +232,8 @@ static void read_manifest(vx_str path, vx_str text) {
 static vx_drbg randomness; // seeded from the kernel's entropy; each service that asks gets a seed from it
 
 // Builds the spawn message's records and handles for a service, and starts it.
+static void cannot(const char *what, const service *s, vx_status st); // below
+
 static vx_status start(service *s) {
   static char records[16 * 1024];
   vx_ndb_writer w = {.buf = records, .cap = sizeof records};
@@ -259,6 +262,7 @@ static vx_status start(service *s) {
   }
   vx_str srv = vx_ndb_get(&rec, "post");
   bool posts_console = str_eq(srv, VX_STR("cons")); // decided now: rec moves on to the records below
+  bool posts_proc = str_eq(srv, VX_STR("proc"));
   if (st == VX_OK && srv.len) {
     post *p = find_post(srv);
     st = p ? vx_handle_dup(p->server, CONNECTOR_RIGHTS, &handles[count]) : VX_ERR_NOT_FOUND;
@@ -408,6 +412,19 @@ static vx_status start(service *s) {
   st = vx_spawn_elf(&a, &s->task);
   if (st == VX_OK) st = vx_port_bind(port, s->task, VX_TRIGGER_EXIT, (uint64_t)(s - services), 0);
   if (st != VX_OK) return st;
+  // Registered with procfs (ADR-0011): this one, once procfs is up; when it is
+  // procfs that starts, every service already running, procfs among them.
+  // svcd watches its services' ends itself, so they leave no wait records; and
+  // each is a note group of its own, as Plan 9's daemons are (RFNOTEG), so a
+  // note to one group never reaches the rest of the system.
+  if (posts_proc) procfs_started = true;
+  for (uint32_t i = 0; procfs_started && i < service_count; i++) {
+    service *x = &services[i];
+    if (!x->task || (x != s && !posts_proc)) continue;
+    vx_status reg =
+        vx_proc_register(find_post(VX_STR("proc"))->client, x->task, PROC_NOWAIT | PROC_NOTEG, nullptr);
+    if (reg != VX_OK && reg != VX_ERR_EXISTS) cannot("cannot register ", x, reg);
+  }
   vx_task_summary info;
   vx_task_info(s->task, &info);
   if (posts_console && !console_attached && cons) {

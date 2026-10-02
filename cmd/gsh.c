@@ -282,7 +282,11 @@ static vx_status spawn(const word *w, int n, vx_handle in, vx_handle out, vx_han
                      .handles = handles,
                      .handle_names = names,
                      .handle_count = count,
-                     .records = {records, rec.len}};
+                     .records = {records, rec.len},
+                     // Registered with whatever serves /proc (ADR-0011); the shell
+                     // watches each command's end itself, so no wait record.
+                     .proc = vx_ns_connector(&ns, VX_STR("/proc")),
+                     .proc_flags = PROC_NOWAIT};
   return vx_spawn_elf(&a, task);
 }
 

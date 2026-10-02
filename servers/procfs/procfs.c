@@ -1,30 +1,196 @@
-// procfs: /proc, the tasks (docs/02 §5.1), minimal for M2.
+// procfs: /proc, the one process table (ADR-0011), with 9front's files.
 //
-// svcd gives it a handle to svcd's own task ("tasks"), so it sees svcd and
-// every task svcd's tree has made (abi.h, task_info), and nothing else; and
-// the listen channel it posts as /srv/proc.
+// A process's pid is its task's kernel id, which is never reused, and exec
+// keeps the task (ADR-0012). Whoever spawns a process registers it here
+// before it runs (lib/vx-proc/proc.h), on the listen channel posted as
+// /srv/proc, with a handle to its task; svcd is registered through the
+// "tasks" handle it gives procfs, and registers the services it started
+// before procfs.
 //
-//   /proc/N/status   one ndb record: name=svcd state=waiting threads=1 mem=412K
-//   /proc/N/ctl      write "kill" to kill the task
+//   /proc/N/status   one ndb record: pid=7 name=gsh state=waiting threads=1 mem=412K sid=7
+//   /proc/N/ctl      kill · stop · start · setsid
+//   /proc/N/note     a write posts a note (ADR-0010)
+//   /proc/N/notepg   a write posts a note to every process in N's note group
+//   /proc/N/noteid   N's note group: read it, or write a group's id to join it
+//   /proc/N/ppid     the parent's pid
+//   /proc/N/wait     a read waits for a child to end, then returns its record:
+//                    pid=9 name=ls status="" real=12 (ms); its length is the count
 //
-// A task's state reads "waiting" when every thread it has is blocked. The tree
-// is made as it is read: a task that has gone is simply not there.
+// As in 9front's pexit, a process that ends leaves a wait record for its
+// parent, at most 128 queued, unless it was registered with PROC_NOWAIT, or
+// the parent has gone or is not registered. A parent that goes leaves its
+// children's ppid as it was. A note posted to a process whose wait read procfs
+// holds ends that read, "interrupted", after the note, so the caller sees the
+// note first (as posixd does with a WAIT, and ptyd with the reads it holds).
+//
+// notepg includes the writer, unlike 9front's: a note to oneself is delivered
+// before the write returns, so kill(0) signals the caller too, as POSIX has it.
 
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-9p/ring_server.c"
+#include "../../lib/vx-proc/proc.h"
 
-static vx_handle tasks;  // the root of what procfs shows
-static uint64_t root_id; // its task id
+static constexpr uint32_t MAX_PROCS = 128;
+static constexpr uint32_t MAX_RECORDS = 512; // wait records, for every parent together
+static constexpr uint32_t MAX_WAITS = 128;   // queued for one parent, as 9front's pexit
 
-// Node numbers: 1 is /proc; a task's directory, status and ctl are its id
-// shifted left two, plus 0, 1 or 2.
-enum : uint64_t { ROOT = 1, DIR = 0, STATUS = 1, CTL = 2 };
+typedef struct proc {
+  bool used;
+  bool root;        // svcd, through "tasks": never killed
+  bool nowait;      // its parent wants no record of its end
+  bool stopped;     // ctl stop
+  bool wait_held;   // a read of its wait file is held
+  bool interrupted; // a note came while it was: the read ends
+  uint32_t gen;
+  uint64_t pid, ppid, noteid, sid;
+  vx_handle task;
+  vx_instant start;
+  uint32_t nwait;       // records queued for it
+  uint32_t first, last; // its queue, through record.next; 0 is none
+} proc;
 
-static uint64_t task_of(uint64_t node) { return node >> 2; }
+typedef struct record {
+  uint32_t next; // 0: the end
+  uint64_t pid;  // 0: the slot is free
+  uint64_t real_ms;
+  char name[24];
+  uint8_t len;
+  char status[VX_ERRMAX];
+} record;
 
-static bool task_exists(uint64_t id, vx_task_summary *info) {
-  return vx_task_info_of(tasks, id, 0, info) == VX_OK && info->state != VX_TASK_EXITED;
+static proc procs[MAX_PROCS];
+static record records[MAX_RECORDS + 1]; // records[0] is never used
+static p9_ring_server server;
+
+static proc *by_pid(uint64_t pid) {
+  for (uint32_t i = 0; pid && i < MAX_PROCS; i++)
+    if (procs[i].used && procs[i].pid == pid) return &procs[i];
+  return nullptr;
 }
+
+// The key of a process's EXIT binding: its slot and the slot's generation.
+static uint64_t exit_key(const proc *p) {
+  return P9_KEY_USER | (uint64_t)p->gen << 16 | (uint64_t)(p - procs);
+}
+
+// Whether p has living children that will leave a record, for a wait to wait for.
+static bool has_children(const proc *p) {
+  for (uint32_t i = 0; i < MAX_PROCS; i++)
+    if (procs[i].used && procs[i].ppid == p->pid && !procs[i].nowait && &procs[i] != p) return true;
+  return false;
+}
+
+// A new process for task (which it takes, if it succeeds), its parent's pid, and flags.
+static vx_status admit(vx_handle task, uint64_t ppid, uint32_t flags, bool root, proc **out) {
+  vx_task_summary info;
+  if (vx_task_info(task, &info) != VX_OK || info.state == VX_TASK_EXITED) return VX_ERR_INVALID;
+  if (by_pid(info.id)) return VX_ERR_EXISTS;
+  uint32_t slot = 0;
+  while (slot < MAX_PROCS && procs[slot].used) slot++;
+  if (slot == MAX_PROCS) return VX_ERR_NO_MEMORY;
+  proc *p = &procs[slot];
+  const proc *parent = by_pid(ppid);
+  *p = (proc){.used = true,
+              .root = root,
+              .nowait = flags & PROC_NOWAIT,
+              .gen = p->gen + 1,
+              .pid = info.id,
+              .ppid = ppid,
+              .task = task,
+              .start = vx_clock_read()};
+  p->noteid = parent && !(flags & PROC_NOTEG) ? parent->noteid : p->pid;
+  p->sid = parent ? parent->sid : p->pid;
+  // svcd, the root, never ends; its handle ("tasks") carries no WAIT right.
+  vx_status st = root ? VX_OK : vx_port_bind(server.port, task, VX_TRIGGER_EXIT, exit_key(p), 0);
+  if (st != VX_OK) {
+    *p = (proc){.gen = p->gen};
+    return st;
+  }
+  *out = p;
+  return VX_OK;
+}
+
+// A registration on the listen channel (lib/vx-proc/proc.h).
+static void registered(void *ctx, const void *msg, uint32_t len, vx_handle handle) {
+  (void)ctx;
+  proc_msg m = {};
+  memcpy(&m, msg, len < sizeof m ? len : sizeof m);
+  proc_msg rep = {.h = {.txid = m.h.txid, .ordinal = PROC_REGISTER}};
+  vx_status st = len >= sizeof m && m.h.ordinal == PROC_REGISTER && handle ? VX_OK : VX_ERR_INVALID;
+  proc *p = nullptr;
+  if (st == VX_OK) st = admit(handle, (uint64_t)m.arg[0], (uint32_t)m.arg[1], false, &p);
+  if (st == VX_OK)
+    rep.arg[0] = (int64_t)p->pid;
+  else if (handle)
+    vx_handle_close(handle);
+  rep.h.flags = (uint32_t)st;
+  vx_channel_write(server.listen, &rep, sizeof rep, nullptr, 0);
+}
+
+// The task has ended: a record for its parent, as 9front's pexit leaves one.
+static void ended(proc *p) {
+  vx_task_summary info;
+  bool known = vx_task_info(p->task, &info) == VX_OK;
+  proc *parent = by_pid(p->ppid);
+  uint32_t r = 1;
+  while (r <= MAX_RECORDS && records[r].pid) r++;
+  if (known && parent && !p->nowait && parent->nwait < MAX_WAITS && r <= MAX_RECORDS) {
+    record *rec = &records[r];
+    *rec = (record){.pid = p->pid,
+                    .real_ms = (uint64_t)(vx_clock_read() - p->start) / 1'000'000,
+                    .len = (uint8_t)info.exit_len};
+    memcpy(rec->name, info.name, sizeof rec->name);
+    memcpy(rec->status, info.exit, info.exit_len);
+    if (parent->last)
+      records[parent->last].next = r;
+    else
+      parent->first = r;
+    parent->last = r;
+    parent->nwait++;
+  }
+  for (uint32_t i = p->first; i;) { // its own records: nobody will read them now
+    uint32_t next = records[i].next;
+    records[i] = (record){};
+    i = next;
+  }
+  vx_handle_close(p->task);
+  *p = (proc){.gen = p->gen};
+}
+
+static void event(void *ctx, const vx_packet *pk) {
+  (void)ctx;
+  uint32_t slot = (uint32_t)(pk->key & 0xffff), gen = (uint32_t)(pk->key >> 16);
+  if (pk->trigger != VX_TRIGGER_EXIT || slot >= MAX_PROCS) return;
+  proc *p = &procs[slot];
+  if (p->used && p->gen == gen) ended(p);
+}
+
+// Posts a note to p. A wait read it is blocked in ends, after the note.
+static vx_status post(proc *p, vx_str note) {
+  vx_status st = vx_thread_interrupt(p->task, 0, note);
+  if (st == VX_OK && p->wait_held) p->interrupted = true;
+  return st;
+}
+
+// --- The tree ---
+//
+// Node numbers: 1 is /proc; a process's directory and files are its pid
+// shifted left four, plus the file's number below.
+
+enum : uint64_t { ROOT = 1 };
+enum : uint32_t { DIR, STATUS, CTL, NOTE, NOTEPG, NOTEID, PPID, WAIT, FILES };
+
+static const struct {
+  vx_str name;
+  uint32_t mode;
+} FILE_TABLE[FILES] = {
+    [STATUS] = {VX_STR("status"), 0444}, [CTL] = {VX_STR("ctl"), 0222},       [NOTE] = {VX_STR("note"), 0222},
+    [NOTEPG] = {VX_STR("notepg"), 0222}, [NOTEID] = {VX_STR("noteid"), 0664}, [PPID] = {VX_STR("ppid"), 0444},
+    [WAIT] = {VX_STR("wait"), 0444},
+};
+
+static proc *proc_of(uint64_t node) { return node == ROOT ? nullptr : by_pid(node >> 4); }
+static uint32_t file_of(uint64_t node) { return (uint32_t)(node & 15); }
 
 static vx_status fs_attach(void *ctx, vx_str aname, uint64_t *root) {
   (void)ctx;
@@ -33,33 +199,37 @@ static vx_status fs_attach(void *ctx, vx_str aname, uint64_t *root) {
   return VX_OK;
 }
 
+static bool parse_u64(vx_str s, uint64_t *out) {
+  uint64_t v = 0;
+  if (!s.len || s.len > 19) return false;
+  for (size_t i = 0; i < s.len; i++) {
+    if (s.ptr[i] < '0' || s.ptr[i] > '9') return false;
+    v = v * 10 + (uint64_t)(s.ptr[i] - '0');
+  }
+  *out = v;
+  return true;
+}
+
 static vx_status fs_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) {
   (void)ctx;
-  vx_task_summary info;
   if (dir == ROOT) {
-    uint64_t id = 0;
-    if (!name.len || name.len > 19 || name.ptr[0] == '0') return VX_ERR_NOT_FOUND;
-    for (size_t i = 0; i < name.len; i++) {
-      if (name.ptr[i] < '0' || name.ptr[i] > '9') return VX_ERR_NOT_FOUND;
-      id = id * 10 + (uint64_t)(name.ptr[i] - '0');
-    }
-    if (!task_exists(id, &info)) return VX_ERR_NOT_FOUND;
-    *child = id << 2 | DIR;
+    uint64_t pid;
+    if (!parse_u64(name, &pid) || name.ptr[0] == '0' || !by_pid(pid)) return VX_ERR_NOT_FOUND;
+    *child = pid << 4 | DIR;
     return VX_OK;
   }
-  if ((dir & 3) != DIR || !task_exists(task_of(dir), &info)) return VX_ERR_NOT_FOUND;
-  if (name.len == 6 && memcmp(name.ptr, "status", 6) == 0)
-    *child = dir | STATUS;
-  else if (name.len == 3 && memcmp(name.ptr, "ctl", 3) == 0)
-    *child = dir | CTL;
-  else
-    return VX_ERR_NOT_FOUND;
-  return VX_OK;
+  if (file_of(dir) != DIR || !proc_of(dir)) return VX_ERR_NOT_FOUND;
+  for (uint32_t f = 1; f < FILES; f++)
+    if (FILE_TABLE[f].name.len == name.len && memcmp(FILE_TABLE[f].name.ptr, name.ptr, name.len) == 0) {
+      *child = dir | f;
+      return VX_OK;
+    }
+  return VX_ERR_NOT_FOUND;
 }
 
 static vx_status fs_parent(void *ctx, uint64_t node, uint64_t *parent) {
   (void)ctx;
-  *parent = (node & 3) == DIR ? ROOT : (node & ~3ull);
+  *parent = file_of(node) == DIR ? ROOT : (node & ~15ull);
   return VX_OK;
 }
 
@@ -70,21 +240,20 @@ static vx_status fs_stat(void *ctx, uint64_t node, p9_stat *out) {
   if (node == ROOT) {
     *out = (p9_stat){.qid = {P9_QTDIR, 0, ROOT}, .mode = P9_DMDIR | 0555, .name = VX_STR("/")};
   } else {
-    // The name of a task's directory is its id, in decimal.
-    uint64_t id = task_of(node);
-    size_t n = sizeof name_buf;
-    do name_buf[--n] = (char)('0' + id % 10);
-    while (id /= 10);
-    static const struct {
-      uint32_t mode;
-      vx_str name;
-    } FILES[] = {[STATUS] = {0444, VX_STR("status")}, [CTL] = {0222, VX_STR("ctl")}};
-    uint64_t kind = node & 3;
-    if (kind == DIR)
+    const proc *p = proc_of(node);
+    if (!p) return VX_ERR_NOT_FOUND;
+    uint32_t f = file_of(node);
+    if (f == DIR) {
+      uint64_t pid = p->pid; // its directory's name: the pid, in decimal
+      size_t n = sizeof name_buf;
+      do name_buf[--n] = (char)('0' + pid % 10);
+      while (pid /= 10);
       *out = (p9_stat){
           .qid = {P9_QTDIR, 0, node}, .mode = P9_DMDIR | 0555, .name = {name_buf + n, sizeof name_buf - n}};
-    else
-      *out = (p9_stat){.qid = {P9_QTFILE, 0, node}, .mode = FILES[kind].mode, .name = FILES[kind].name};
+    } else {
+      *out = (p9_stat){.qid = {P9_QTFILE, 0, node}, .mode = FILE_TABLE[f].mode, .name = FILE_TABLE[f].name};
+      if (f == WAIT) out->length = p->nwait; // as 9front's: more than 0 means a read will not wait
+    }
   }
   out->uid = out->gid = out->muid = VX_STR("proc");
   return VX_OK;
@@ -92,23 +261,30 @@ static vx_status fs_stat(void *ctx, uint64_t node, p9_stat *out) {
 
 static vx_status fs_open(void *ctx, uint64_t node, uint8_t mode) {
   (void)ctx;
+  if (mode & P9_ORCLOSE) return VX_ERR_ACCESS;
+  if (node == ROOT) return (mode & 3) == P9_OREAD ? VX_OK : VX_ERR_ACCESS;
+  if (!proc_of(node)) return VX_ERR_NOT_FOUND;
+  uint32_t f = file_of(node), perm = f == DIR ? 0555 : FILE_TABLE[f].mode;
+  bool reads = (mode & 3) == P9_OREAD || (mode & 3) == P9_ORDWR;
   bool writes = (mode & 3) == P9_OWRITE || (mode & 3) == P9_ORDWR;
-  if ((node & 3) == STATUS && writes) return VX_ERR_ACCESS;
-  if ((node & 3) == CTL && (mode & 3) != P9_OWRITE) return VX_ERR_ACCESS;
-  return mode & P9_ORCLOSE ? VX_ERR_ACCESS : VX_OK; // OTRUNC means nothing to a file made as it is read
+  if ((reads && !(perm & 0444)) || (writes && !(perm & 0222))) return VX_ERR_ACCESS;
+  return VX_OK; // OTRUNC means nothing to a file made as it is read
 }
 
-// A task's status record, as it is now.
-static size_t status_text(uint64_t id, char *buf, size_t cap) {
+// A process's status record, as it is now.
+static size_t status_text(const proc *p, char *buf, size_t cap) {
   vx_task_summary info;
-  if (!task_exists(id, &info)) return 0;
+  if (vx_task_info(p->task, &info) != VX_OK) return 0;
   size_t name_len = 0;
   while (name_len < sizeof info.name && info.name[name_len]) name_len++;
   vx_ndb_writer w = {.buf = buf, .cap = cap};
+  vx_ndb_put_u64(&w, "pid", p->pid);
   vx_ndb_put(&w, "name", (vx_str){info.name, name_len});
   vx_str state = VX_STR("running");
   if (info.state == VX_TASK_NEW)
     state = VX_STR("new");
+  else if (p->stopped)
+    state = VX_STR("stopped");
   else if (info.threads && info.blocked == info.threads)
     state = VX_STR("waiting");
   vx_ndb_put(&w, "state", state);
@@ -119,72 +295,179 @@ static size_t status_text(uint64_t id, char *buf, size_t cap) {
   do mem[--n] = (char)('0' + kib % 10);
   while (kib /= 10);
   vx_ndb_put(&w, "mem", (vx_str){mem + n, sizeof mem - n});
+  vx_ndb_put_u64(&w, "sid", p->sid);
   vx_ndb_end(&w);
   return w.failed ? 0 : w.len;
 }
 
+static size_t number_text(uint64_t v, char *buf) {
+  char digits[20];
+  size_t n = sizeof digits;
+  do digits[--n] = (char)('0' + v % 10);
+  while (v /= 10);
+  memcpy(buf, digits + n, sizeof digits - n);
+  return sizeof digits - n;
+}
+
+// The next wait record for p, taken from its queue: SHOULD_WAIT if there is
+// none yet, NO_CHILD if none will come, INTERRUPTED if a note ended the wait.
+static vx_status take_record(proc *p, char *buf, size_t cap, size_t *len) {
+  if (p->interrupted) {
+    p->interrupted = p->wait_held = false;
+    return VX_ERR_INTERRUPTED;
+  }
+  if (!p->first) {
+    p->wait_held = has_children(p);
+    return p->wait_held ? VX_ERR_SHOULD_WAIT : VX_ERR_NO_CHILD;
+  }
+  p->wait_held = false;
+  record *rec = &records[p->first];
+  p->first = rec->next;
+  if (!p->first) p->last = 0;
+  p->nwait--;
+  size_t name_len = 0;
+  while (name_len < sizeof rec->name && rec->name[name_len]) name_len++;
+  vx_ndb_writer w = {.buf = buf, .cap = cap};
+  vx_ndb_put_u64(&w, "pid", rec->pid);
+  vx_ndb_put(&w, "name", (vx_str){rec->name, name_len});
+  vx_ndb_put(&w, "status", (vx_str){rec->status, rec->len});
+  vx_ndb_put_u64(&w, "real", rec->real_ms);
+  vx_ndb_end(&w);
+  *rec = (record){};
+  *len = w.failed ? 0 : w.len;
+  return VX_OK;
+}
+
 static vx_status fs_read(void *ctx, uint64_t node, uint64_t offset, uint8_t *buf, uint32_t *count) {
   (void)ctx;
-  char text[256];
-  size_t len = (node & 3) == STATUS ? status_text(task_of(node), text, sizeof text) : 0;
+  proc *p = proc_of(node);
+  if (!p) return VX_ERR_NOT_FOUND;
+  char text[512];
+  size_t len = 0;
+  switch (file_of(node)) {
+  case STATUS: len = status_text(p, text, sizeof text); break;
+  case NOTEID: len = number_text(p->noteid, text); break;
+  case PPID: len = number_text(p->ppid, text); break;
+  case WAIT: { // a record each read, whatever the offset, as 9front's
+    vx_status st = take_record(p, text, sizeof text, &len);
+    if (st != VX_OK) return st;
+    if (*count > len) *count = (uint32_t)len;
+    memcpy(buf, text, *count);
+    return VX_OK;
+  }
+  default: break;
+  }
   uint64_t left = offset < len ? len - offset : 0;
   if (*count > left) *count = (uint32_t)left;
   memcpy(buf, text + offset * (*count != 0), *count);
   return VX_OK;
 }
 
-static vx_status fs_write(void *ctx, uint64_t node, uint64_t offset, const uint8_t *buf, uint32_t *count) {
-  (void)ctx, (void)offset;
-  if ((node & 3) != CTL) return VX_ERR_ACCESS;
-  uint32_t len = *count, n = len;
-  while (n && (buf[n - 1] == '\n' || buf[n - 1] == ' ')) n--;
-  if (n != 4 || memcmp(buf, "kill", 4) != 0) return VX_ERR_INVALID;
-  if (task_of(node) == root_id) return VX_ERR_ACCESS; // not the root of the tree: the system needs it
-  if (vx_task_kill_id(tasks, task_of(node), VX_STR("killed")) != VX_OK) return VX_ERR_NOT_FOUND;
-  *count = len; // the whole message was the command
-  return VX_OK;
+// What a write says, without the newline at its end (echo adds one).
+static vx_str written(const uint8_t *buf, uint32_t count) {
+  while (count && (buf[count - 1] == '\n' || buf[count - 1] == ' ')) count--;
+  return (vx_str){(const char *)buf, count};
 }
 
-// The root's entries are the tasks in id order; entry i is the i-th.
-static vx_status fs_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *child) {
-  (void)ctx;
-  if (dir != ROOT) { // a task's directory: status, ctl
-    if (index > 1) return VX_ERR_NOT_FOUND;
-    *child = dir | (index ? CTL : STATUS);
+static bool word_is(vx_str s, const char *w) {
+  vx_str t = vx_cstr(w);
+  return s.len == t.len && memcmp(s.ptr, t.ptr, t.len) == 0;
+}
+
+static vx_status ctl(proc *p, vx_str cmd) {
+  if (word_is(cmd, "kill")) {
+    if (p->root) return VX_ERR_ACCESS; // svcd: the system needs it
+    return vx_task_kill(p->task, VX_STR("killed"));
+  }
+  if (word_is(cmd, "stop")) {
+    if (p->stopped) return VX_OK;
+    vx_status st = vx_thread_suspend(p->task, 1);
+    p->stopped = st == VX_OK;
+    return st;
+  }
+  if (word_is(cmd, "start")) {
+    if (!p->stopped) return VX_OK;
+    p->stopped = false;
+    return vx_thread_resume(p->task, 1);
+  }
+  if (word_is(cmd, "setsid")) {
+    p->sid = p->noteid = p->pid; // a session, and a note group, of its own
     return VX_OK;
   }
-  uint64_t id = 0;
-  vx_task_summary info;
-  for (uint32_t seen = 0;;) {
-    if (vx_task_info_of(tasks, id, VX_TASK_NEXT, &info) != VX_OK) return VX_ERR_NOT_FOUND;
-    id = info.id;
-    if (info.state == VX_TASK_EXITED) continue; // gone, but not yet freed: not listed
-    if (seen++ == index) break;
-  }
-  *child = id << 2 | DIR;
+  return VX_ERR_INVALID;
+}
+
+// Joins note group `group`: one that exists in p's session, or a new one
+// named by p's own pid, as 9front's changenoteid allows.
+static vx_status join_group(proc *p, uint64_t group) {
+  bool exists = group == p->pid;
+  for (uint32_t i = 0; i < MAX_PROCS && !exists; i++)
+    exists = procs[i].used && procs[i].noteid == group && procs[i].sid == p->sid;
+  if (!exists) return VX_ERR_ACCESS;
+  p->noteid = group;
   return VX_OK;
 }
 
-static p9_ring_server server = {
-    .fs = {.attach = fs_attach,
-           .walk = fs_walk,
-           .parent = fs_parent,
-           .stat = fs_stat,
-           .open = fs_open,
-           .read = fs_read,
-           .readdir = fs_readdir,
-           .write = fs_write},
-    .name = VX_STR("procfs"),
-};
+// NOLINTNEXTLINE(readability-non-const-parameter): p9_fs's signature
+static vx_status fs_write(void *ctx, uint64_t node, uint64_t offset, const uint8_t *buf, uint32_t *count) {
+  (void)ctx, (void)offset;
+  proc *p = proc_of(node);
+  if (!p) return VX_ERR_NOT_FOUND;
+  vx_str s = written(buf, *count);
+  uint64_t group;
+  switch (file_of(node)) {
+  case CTL: return ctl(p, s);
+  case NOTE: return s.len && s.len <= VX_ERRMAX ? post(p, s) : VX_ERR_INVALID;
+  case NOTEPG:
+    if (!s.len || s.len > VX_ERRMAX) return VX_ERR_INVALID;
+    group = p->noteid;
+    for (uint32_t i = 0; i < MAX_PROCS; i++)
+      if (procs[i].used && procs[i].noteid == group) post(&procs[i], s);
+    return VX_OK;
+  case NOTEID: return parse_u64(s, &group) && group ? join_group(p, group) : VX_ERR_INVALID;
+  default: return VX_ERR_ACCESS;
+  }
+}
+
+// The root's entries are the processes, in table order; a process's are its files.
+static vx_status fs_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *child) {
+  (void)ctx;
+  if (dir != ROOT) {
+    if (index + 1 >= FILES) return VX_ERR_NOT_FOUND;
+    *child = dir | (index + 1);
+    return VX_OK;
+  }
+  for (uint32_t i = 0, seen = 0; i < MAX_PROCS; i++) {
+    if (!procs[i].used) continue;
+    if (seen++ == index) {
+      *child = procs[i].pid << 4 | DIR;
+      return VX_OK;
+    }
+  }
+  return VX_ERR_NOT_FOUND;
+}
 
 const char *vx_main(void) {
-  tasks = vx_spawn_take("tasks");
+  vx_handle tasks = vx_spawn_take("tasks");
+  // Field by field: the server is too big for a compound literal, which would
+  // be built on the stack first.
+  server.fs = (p9_fs){.attach = fs_attach,
+                      .walk = fs_walk,
+                      .parent = fs_parent,
+                      .stat = fs_stat,
+                      .open = fs_open,
+                      .read = fs_read,
+                      .readdir = fs_readdir,
+                      .write = fs_write};
+  server.name = VX_STR("procfs");
+  server.event = event;
+  server.listen_msg = registered;
   server.listen = vx_spawn_take("listen");
-  vx_task_summary info;
-  if (!tasks || !server.listen || vx_task_info(tasks, &info) != VX_OK) {
+  proc *root = nullptr;
+  if (!tasks || !server.listen || vx_port_create(0, &server.port) != VX_OK ||
+      admit(tasks, 0, 0, true, &root) != VX_OK) {
     vx_print(VX_STR("procfs: FAILED: no task tree or listen channel\n"));
     return "no task tree or listen channel";
   }
-  root_id = info.id;
   return p9_ring_serve(&server) == VX_OK ? nullptr : "cannot serve";
 }

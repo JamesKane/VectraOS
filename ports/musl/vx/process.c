@@ -243,7 +243,8 @@ static long spawn_image(const char *path, bool search, char *const argv[], char 
                        .records = {records, w.len},
                        .prepare = spawn_prepare,
                        .ctx = ctx,
-                       .exec = ctx->exec};
+                       .exec = ctx->exec,
+                       .proc = vx_ns_connector(fd_namespace(), VX_STR("/proc"))}; // ADR-0011
     vx_status vst = vx_spawn_elf(&a, &task);
     if (vst == VX_ERR_INVALID)
       r = -ENOEXEC; // not an image for this machine
@@ -400,6 +401,8 @@ static long proc_fork(void) {
   fd_after_fork_parent();
   vx_str ignored;
   if (st == VX_OK) st = spawn_prepare(&ctx, child, &posix, &ignored);
+  vx_handle proc = vx_ns_connector(fd_namespace(), VX_STR("/proc"));
+  if (st == VX_OK && proc) st = vx_proc_register(proc, child, 0, nullptr); // before it runs (ADR-0011)
   if (st == VX_OK) st = vx_thread_create(child, &thread);
   if (st == VX_OK)
     st = vx_thread_start(thread, (uint64_t)fork_entry, (uint64_t)(fork_stack + sizeof fork_stack), posix, 0);

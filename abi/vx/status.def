@@ -20,3 +20,4 @@ VX_STATUS(ERR_KILLED,    -14)   // the calling task is being killed
 VX_STATUS(ERR_NOT_FOUND, -15)   // no such name: a walk, a module, a service
 VX_STATUS(ERR_EXISTS,    -16)   // the name is taken
 VX_STATUS(ERR_INTERRUPTED,-17)  // thread_interrupt woke the call; the interrupt is delivered on the way out
+VX_STATUS(ERR_NO_CHILD,  -18)   // a wait with no child to wait for: Plan 9's "no living children"

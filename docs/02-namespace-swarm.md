@@ -220,7 +220,7 @@ This is what a desktop terminal's default namespace looks like. The right-hand c
     caps       held handles: type, rights, badge (inspect right required)
     threads/1/{status,ctl,sched}
     note       write to post a note (ADR-0010); a POSIX signal is a note too
-    notepg     write to post a note to every process in the note group but the writer
+    notepg     write to post a note to every process in the note group, the writer too
     wait       read blocks until a child ends: pid=43 name=cc status="sys: trap: fault read addr=0x0 pc=0x4011a0" utime= stime= real=; its stat length is the records queued
     args       the command line
     events mem maps images threads/N/{regs,fpregs}    the debug files (05 §3)
