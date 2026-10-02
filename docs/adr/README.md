@@ -22,3 +22,4 @@ One file per decision, `NNNN-title.md`, numbered in order. An ADR records a deci
 | [0016](0016-sbase.md) | sbase, vendored unchanged: one box binary with hard links in bootfs, in `/boot/bin/posix`, bound before `/boot/bin` for POSIX programs | Proposed |
 | [0017](0017-debug-index.md) | The debug index is first-party: `vxdi`, built from DWARF 5 by `lib/vx-debug`; RDI is not vendored | Accepted |
 | [0018](0018-gpu-drivers.md) | GPU drivers: one native `accel` protocol, Mesa ported to it, hardware whose firmware does the work only, display separate and flip-only first; amended for Adreno | Proposed |
+| [0019](0019-adreno-q8b.md) | Adreno a6xx on the Q8B: `drv-gpu-adreno` with kernel-owned switched page tables, `disp-msm` ported from msmfb, `drv-qcom-gcc`, SCM operations, the SC8280XP record, pinned firmware | Proposed |
