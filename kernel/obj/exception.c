@@ -274,20 +274,67 @@ static int64_t thread_tls_self(vx_handle th, uint64_t op, uint64_t buf) {
   return VX_OK;
 }
 
+// The live thread of the task with the next id after `after`: NEXT_THREAD.
+static int64_t thread_next(vx_handle th, uint64_t after, uint64_t buf) {
+  vx_status st;
+  task *t = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_MANAGE, &st);
+  if (!t) return st;
+  vx_thread_info info = {};
+  spin_lock(&t->lock);
+  for (const thread *x = t->threads; x; x = x->task_next) {
+    if (x->id <= after || (info.id && x->id >= info.id) || x->state == THREAD_DEAD) continue;
+    uint32_t state = VX_THREAD_RUNNING;
+    if (x->exc_stopped)
+      state = VX_THREAD_STOPPED;
+    else if (x->suspend_count && x->parked)
+      state = VX_THREAD_SUSPENDED;
+    else if (x->state == THREAD_BLOCKED)
+      state = VX_THREAD_BLOCKED;
+    info = (vx_thread_info){
+        .id = x->id, .state = state, .suspend_count = x->suspend_count, .first_chance = x->exc_first};
+  }
+  spin_unlock(&t->lock);
+  object_release(&t->obj);
+  return info.id ? copy_to_user(buf, &info, sizeof info) : VX_ERR_NOT_FOUND;
+}
+
+// FP/SIMD registers a debugger gives are made safe to load: x86_64's MXCSR
+// with no reserved bit set (FXRSTOR would fault in the kernel), aarch64's
+// FPCR and FPSR with only their defined bits.
+static void fpregs_sanitize(vx_fpregs *f) {
+#ifdef __x86_64__
+  uint32_t mxcsr;
+  memcpy(&mxcsr, f->fxsave + 24, sizeof mxcsr);
+  mxcsr &= 0xffbf; // MXCSR_MASK's default: DAZ aside, every defined bit
+  memcpy(f->fxsave + 24, &mxcsr, sizeof mxcsr);
+#else
+  f->fpcr &= 0x07ff9f00;
+  f->fpsr &= 0xf800009f;
+#endif
+}
+
 static int64_t sys_thread_state(vx_handle th, uint64_t id, uint64_t op, uint64_t buf, uint64_t size) {
-  if (op < VX_STATE_GET_EXCEPTION || op > VX_STATE_SET_TLS) return VX_ERR_INVALID;
+  if (op < VX_STATE_GET_EXCEPTION || op > VX_STATE_NEXT_THREAD) return VX_ERR_INVALID;
   bool tls_op = op == VX_STATE_GET_TLS || op == VX_STATE_SET_TLS;
+  bool fp_op = op == VX_STATE_GET_FPREGS || op == VX_STATE_SET_FPREGS;
   uint64_t need = sizeof(vx_regs);
   if (op == VX_STATE_GET_EXCEPTION) need = sizeof(vx_exception);
   if (tls_op) need = sizeof(uint64_t);
+  if (fp_op) need = sizeof(vx_fpregs);
+  if (op == VX_STATE_NEXT_THREAD) need = sizeof(vx_thread_info);
   if (size < need) return VX_ERR_TOO_SMALL;
+  if (op == VX_STATE_NEXT_THREAD) return thread_next(th, id, buf);
   if (tls_op && id == 0) return thread_tls_self(th, op, buf);
   vx_regs regs;
+  static_assert(sizeof(vx_fpregs) == ARCH_FP_SIZE);
+  vx_fpregs fpr;
   uint64_t tls = 0;
   vx_status st = VX_OK;
   if (op == VX_STATE_SET_REGS) st = copy_from_user(&regs, buf, sizeof regs);
   if (op == VX_STATE_SET_TLS) st = copy_from_user(&tls, buf, sizeof tls);
+  if (op == VX_STATE_SET_FPREGS) st = copy_from_user(&fpr, buf, sizeof fpr);
   if (st != VX_OK) return st;
+  if (op == VX_STATE_SET_FPREGS) fpregs_sanitize(&fpr);
   if (op == VX_STATE_SET_TLS && tls >= USER_TOP) return VX_ERR_RANGE;
   task *t = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_MANAGE, &st);
   if (!t) return st;
@@ -314,13 +361,19 @@ static int64_t sys_thread_state(vx_handle th, uint64_t id, uint64_t op, uint64_t
     st = arch_frame_set_regs(arch_user_frame(target), &regs);
   } else if (op == VX_STATE_GET_TLS) {
     tls = target->tls; // it is not running: arch_tls_switch saved it
+  } else if (op == VX_STATE_GET_FPREGS) {
+    memcpy(&fpr, target->fp, sizeof fpr); // saved too, by arch_user_switch
+  } else if (op == VX_STATE_SET_FPREGS) {
+    memcpy(target->fp, &fpr, sizeof fpr); // loaded when it next runs
   } else {
     target->tls = tls; // loaded when it next runs
   }
   spin_unlock(&tt->lock);
   object_release(&target->obj);
-  if (st != VX_OK || op == VX_STATE_SET_REGS || op == VX_STATE_SET_TLS) return st;
+  if (st != VX_OK || op == VX_STATE_SET_REGS || op == VX_STATE_SET_TLS || op == VX_STATE_SET_FPREGS)
+    return st;
   if (op == VX_STATE_GET_TLS) return copy_to_user(buf, &tls, sizeof tls);
+  if (op == VX_STATE_GET_FPREGS) return copy_to_user(buf, &fpr, sizeof fpr);
   return op == VX_STATE_GET_EXCEPTION ? copy_to_user(buf, &e, sizeof e)
                                       : copy_to_user(buf, &e.regs, sizeof e.regs);
 }

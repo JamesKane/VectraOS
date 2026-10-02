@@ -36,7 +36,7 @@ The kernel adds one right and five syscalls, plus `pmu_configure` for profiling 
 
 ```
 /proc/42/
-    ctl        stop · start · step 3 · freeze 3 · thaw 3 · break 0x4011a0 · unbreak 0x4011a0
+    ctl        stop · start · step 3 · freeze 3 · thaw 3 · break 0x4011a0 [if rdi==3] [after 99] · unbreak 0x4011a0
                watch 0x7f001000 8 write · unwatch 0x7f001000 · detach · kill
     events     debug events, one ndb record each:
                  event=break  thread=3 pc=0x4011a0
@@ -57,7 +57,7 @@ The kernel adds one right and five syscalls, plus `pmu_configure` for profiling 
                    misses=2 last_miss=1781203.441s overrun=0.08ms     (one ndb record; F-215)
 ```
 
-- **Breakpoints live in `procfs`, not in the debugger.** `procfs` writes the trap instruction and steps each thread over it on resume. So a shell script can write `break 0x4011a0` and read `events`, and two tools can share one target. **Simple conditions are evaluated in `procfs`:** a comparison of a register, or of a word at a fixed address, with a constant (`break 0x4011a0 if rdi==3`, `break 0x4011a0 if [0x7f001000]>=100`), plus a hit count. A breakpoint in a hot loop then costs a trap and a compare, not a round trip to the debugger. `dbg` compiles a source-level condition to that form whenever it can. Conditions that need more (calls to built-ins, pointer chains, log points) are evaluated by `dbg`, which resumes the thread when they don't match; the watch panel marks such breakpoints as slow.
+- **Breakpoints live in `procfs`, not in the debugger.** `procfs` writes the trap instruction and steps each thread over it on resume. So a shell script can write `break 0x4011a0` and read `events`, and two tools can share one target. **Simple conditions are evaluated in `procfs`:** a comparison of a register, or of a word at a fixed address, with a constant (`break 0x4011a0 if rdi==3`, `break 0x4011a0 if [0x7f001000]>=100`), plus a hit count (`after 99` lets 99 hits go by). A breakpoint in a hot loop then costs a trap and a compare, not a round trip to the debugger. `dbg` compiles a source-level condition to that form whenever it can. Conditions that need more (calls to built-ins, pointer chains, log points) are evaluated by `dbg`, which resumes the thread when they don't match; the watch panel marks such breakpoints as slow.
 - **Authority:** `procfs` holds the `DEBUG` right for the tasks in its session, which whoever spawns a process hands it when registering the child (ADR-0011). A client may open `mem`, `regs` and `fpregs` for writing, or use the stopping and changing verbs, only with a capability token that names the task and carries `debug` (02 §3.4).
   - A debugger that launches a program gets that token automatically.
   - Attaching to anything else goes through the approval prompt (03 §8.5), and an agent always needs approval.

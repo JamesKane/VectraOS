@@ -129,6 +129,11 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   return (vx_status)vx_syscall(VX_SYS_thread_resume, task, thread, 0, 0, 0, 0);
 }
 
+// The first of the task's mappings that ends after address (INSPECT).
+[[maybe_unused]] static vx_status vx_as_query(vx_handle task, uint64_t address, vx_map_info *info) {
+  return (vx_status)vx_syscall(VX_SYS_as_query, task, address, (uint64_t)info, 0, 0, 0);
+}
+
 [[maybe_unused]] static vx_status vx_task_mem_rw(vx_handle task, vx_mem_op *ops, uint32_t count) {
   return (vx_status)vx_syscall(VX_SYS_task_mem_rw, task, (uint64_t)ops, count, 0, 0, 0);
 }

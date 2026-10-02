@@ -1201,6 +1201,37 @@ static void test_debugger(void) {
   CHECK(vx_thread_suspend(child, 1) == VX_OK);
   CHECK(vx_thread_state(child, 1, VX_STATE_GET_REGS, &regs, sizeof regs) == VX_OK);
   CHECK(vx_thread_state(weak, 1, VX_STATE_GET_REGS, &regs, sizeof regs) == VX_ERR_BAD_STATE); // DEBUG needed
+  // Its threads, listed; its FP registers, read and written back (a bad
+  // MXCSR made safe); its mappings, from the code page on.
+  vx_thread_info ti = {};
+  CHECK(vx_thread_state(child, 0, VX_STATE_NEXT_THREAD, &ti, sizeof ti) == VX_OK && ti.id == 1 &&
+        ti.state == VX_THREAD_SUSPENDED && ti.suspend_count == 1);
+  CHECK(vx_thread_state(child, 1, VX_STATE_NEXT_THREAD, &ti, sizeof ti) == VX_ERR_NOT_FOUND);
+  vx_fpregs fp;
+  CHECK(vx_thread_state(child, 1, VX_STATE_GET_FPREGS, &fp, sizeof fp) == VX_OK);
+#ifdef __x86_64__
+  uint32_t mxcsr;
+  memcpy(&mxcsr, fp.fxsave + 24, sizeof mxcsr);
+  CHECK(mxcsr == 0x1f80); // the reset value: every exception masked
+  mxcsr = 0xffff'1f80;    // reserved bits: FXRSTOR would fault on them
+  memcpy(fp.fxsave + 24, &mxcsr, sizeof mxcsr);
+  fp.fxsave[160] = 0x5a; // XMM0's first byte
+  CHECK(vx_thread_state(child, 1, VX_STATE_SET_FPREGS, &fp, sizeof fp) == VX_OK);
+  CHECK(vx_thread_state(child, 1, VX_STATE_GET_FPREGS, &fp, sizeof fp) == VX_OK);
+  memcpy(&mxcsr, fp.fxsave + 24, sizeof mxcsr);
+  CHECK(mxcsr == 0x1f80 && fp.fxsave[160] == 0x5a);
+#else
+  fp.v[0][0] = 0x5a;
+  fp.fpcr = ~0ull;
+  CHECK(vx_thread_state(child, 1, VX_STATE_SET_FPREGS, &fp, sizeof fp) == VX_OK);
+  CHECK(vx_thread_state(child, 1, VX_STATE_GET_FPREGS, &fp, sizeof fp) == VX_OK);
+  CHECK(fp.v[0][0] == 0x5a && fp.fpcr == 0x07ff9f00);
+#endif
+  CHECK(vx_thread_state(weak, 1, VX_STATE_GET_FPREGS, &fp, sizeof fp) == VX_ERR_BAD_STATE); // DEBUG needed
+  vx_map_info mi = {};
+  CHECK(vx_as_query(child, 0, &mi) == VX_OK && mi.base <= CHILD_CODE && mi.base + mi.size > CHILD_CODE &&
+        (mi.flags & VX_MAP_EXEC) && !(mi.flags & VX_MAP_WRITE));
+  CHECK(vx_as_query(child, ~0ull - 4096, &mi) == VX_ERR_NOT_FOUND);
 #ifdef __x86_64__
   CHECK(regs.rip == CHILD_CODE);
   regs.rip = CHILD_CODE + 64;

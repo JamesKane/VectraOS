@@ -33,6 +33,9 @@
 // before it is delivered. A process that writes `childnotes` to its ctl gets
 // the note "posix: SIGCHLD pid=N" when a child ends, stops or continues, and
 // wait records for stops (stopped=SIG) and continues (continued) too.
+//
+// The debug files (05 §3: events, mem, maps, images, threads/, and ctl's
+// break, step and the rest) are debug.c's.
 
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-9p/ring_server.c"
@@ -109,7 +112,7 @@ static vx_status admit(vx_handle task, uint64_t ppid, uint32_t flags, uint64_t g
   *p = (proc){.used = true,
               .root = root,
               .nowait = flags & PROC_NOWAIT,
-              .gen = p->gen + 1,
+              .gen = (p->gen + 1) & 0xff'ffff, // 24 bits in the keys
               .pid = info.id,
               .ppid = ppid,
               .task = task,
@@ -196,7 +199,10 @@ static void tell_parent(const proc *c, uint8_t kind, uint8_t sig) {
 }
 
 // The task has ended: its parent hears, and its own unread records go.
+static void dbg_forget(const proc *p); // debug.c
+
 static void ended(proc *p) {
+  dbg_forget(p);
   tell_parent(p, ENDED, 0);
   for (uint32_t i = p->first; i;) {
     uint32_t next = records[i].next;
@@ -226,12 +232,17 @@ static vx_status cont(proc *p) {
   return st;
 }
 
+static void dbg_exception(proc *p, uint32_t tid); // debug.c
+
 static void event(void *ctx, const vx_packet *pk) {
   (void)ctx;
-  uint32_t slot = (uint32_t)(pk->key & 0xffff), gen = (uint32_t)(pk->key >> 16);
-  if (pk->trigger != VX_TRIGGER_EXIT || slot >= MAX_PROCS) return;
+  uint32_t slot = (uint32_t)(pk->key & 0xffff),
+           gen = (uint32_t)(pk->key >> 16 & 0xff'ffff); // below DBG_KEY_BIT
+  if (slot >= MAX_PROCS) return;
   proc *p = &procs[slot];
-  if (p->used && p->gen == gen) ended(p);
+  if (!p->used || p->gen != gen) return;
+  if (pk->trigger == VX_TRIGGER_EXIT) ended(p);
+  if (pk->trigger == VX_TRIGGER_EXCEPTION) dbg_exception(p, (uint32_t)pk->value);
 }
 
 // Posts a note to p (a write to note or notepg). The signals a process cannot
@@ -247,19 +258,55 @@ static vx_status post(proc *p, vx_str note) {
 
 // --- The tree ---
 //
-// Node numbers: 1 is /proc; a process's directory and files are its pid
-// shifted left four, plus the file's number below.
+// Node numbers: 1 is /proc; the rest are a process's pid shifted left 32,
+// then a thread's id shifted left 8 (0 for the process's own files), then the
+// file's number below: a process's, or under threads/T, a thread's.
 
 enum : uint64_t { ROOT = 1 };
-enum : uint32_t { DIR, STATUS, CTL, NOTE, NOTEPG, NOTEID, PPID, WAIT, NS, FILES };
+enum : uint32_t {
+  DIR,
+  STATUS,
+  CTL,
+  NOTE,
+  NOTEPG,
+  NOTEID,
+  PPID,
+  WAIT,
+  NS,
+  EVENTS,
+  MEM,
+  MAPS,
+  IMAGES,
+  THREADS,
+  FILES
+};
+enum : uint32_t { T_DIR, T_STATUS, T_REGS, T_REGS_NDB, T_FPREGS, T_CTL, T_FILES };
 
-static const struct {
+typedef struct file_entry {
   vx_str name;
   uint32_t mode;
-} FILE_TABLE[FILES] = {
-    [STATUS] = {VX_STR("status"), 0444}, [CTL] = {VX_STR("ctl"), 0222},       [NOTE] = {VX_STR("note"), 0222},
-    [NOTEPG] = {VX_STR("notepg"), 0222}, [NOTEID] = {VX_STR("noteid"), 0664}, [PPID] = {VX_STR("ppid"), 0444},
-    [WAIT] = {VX_STR("wait"), 0444},     [NS] = {VX_STR("ns"), 0444},
+} file_entry;
+
+static const file_entry FILE_TABLE[FILES] = {
+    [STATUS] = {VX_STR("status"), 0444},
+    [CTL] = {VX_STR("ctl"), 0222},
+    [NOTE] = {VX_STR("note"), 0222},
+    [NOTEPG] = {VX_STR("notepg"), 0222},
+    [NOTEID] = {VX_STR("noteid"), 0664},
+    [PPID] = {VX_STR("ppid"), 0444},
+    [WAIT] = {VX_STR("wait"), 0444},
+    [NS] = {VX_STR("ns"), 0444},
+    [EVENTS] = {VX_STR("events"), 0444},
+    [MEM] = {VX_STR("mem"), 0664},
+    [MAPS] = {VX_STR("maps"), 0444},
+    [IMAGES] = {VX_STR("images"), 0444},
+    [THREADS] = {VX_STR("threads"), P9_DMDIR | 0555},
+};
+
+static const file_entry THREAD_FILES[T_FILES] = {
+    [T_STATUS] = {VX_STR("status"), 0444},     [T_REGS] = {VX_STR("regs"), 0664},
+    [T_REGS_NDB] = {VX_STR("regs.ndb"), 0664}, [T_FPREGS] = {VX_STR("fpregs"), 0664},
+    [T_CTL] = {VX_STR("ctl"), 0222},
 };
 
 static vx_handle nsd; // a connector to nsd's post, for /proc/N/ns
@@ -278,8 +325,23 @@ static size_t ns_text(uint64_t pid, char *buf, size_t cap) {
   return n;
 }
 
-static proc *proc_of(uint64_t node) { return node == ROOT ? nullptr : by_pid(node >> 4); }
-static uint32_t file_of(uint64_t node) { return (uint32_t)(node & 15); }
+static proc *proc_of(uint64_t node) { return node == ROOT ? nullptr : by_pid(node >> 32); }
+static uint32_t file_of(uint64_t node) { return (uint32_t)(node & 0xff); }
+static uint32_t thread_of(uint64_t node) { return (uint32_t)(node >> 8 & 0xff'ffff); }
+static uint64_t node_of(uint64_t pid, uint32_t tid, uint32_t file) {
+  return pid << 32 | (uint64_t)tid << 8 | file;
+}
+
+// Whether thread tid of p is alive.
+static bool thread_alive(const proc *p, uint32_t tid) {
+  vx_thread_info ti;
+  return tid && vx_thread_state(p->task, tid - 1, VX_STATE_NEXT_THREAD, &ti, sizeof ti) == VX_OK &&
+         ti.id == tid;
+}
+
+static const file_entry *entry_of(uint64_t node) {
+  return thread_of(node) ? &THREAD_FILES[file_of(node)] : &FILE_TABLE[file_of(node)];
+}
 
 static vx_status fs_attach(void *ctx, vx_str aname, uint64_t *root) {
   (void)ctx;
@@ -299,18 +361,35 @@ static bool parse_u64(vx_str s, uint64_t *out) {
   return true;
 }
 
+static bool word_is(vx_str s, const char *w) {
+  vx_str t = vx_cstr(w);
+  return s.len == t.len && memcmp(s.ptr, t.ptr, t.len) == 0;
+}
+
+#include "debug.c"
+
 static vx_status fs_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) {
   (void)ctx;
+  uint64_t n;
   if (dir == ROOT) {
-    uint64_t pid;
-    if (!parse_u64(name, &pid) || name.ptr[0] == '0' || !by_pid(pid)) return VX_ERR_NOT_FOUND;
-    *child = pid << 4 | DIR;
+    if (!parse_u64(name, &n) || name.ptr[0] == '0' || !by_pid(n)) return VX_ERR_NOT_FOUND;
+    *child = node_of(n, 0, DIR);
     return VX_OK;
   }
-  if (file_of(dir) != DIR || !proc_of(dir)) return VX_ERR_NOT_FOUND;
-  for (uint32_t f = 1; f < FILES; f++)
-    if (FILE_TABLE[f].name.len == name.len && memcmp(FILE_TABLE[f].name.ptr, name.ptr, name.len) == 0) {
-      *child = dir | f;
+  const proc *p = proc_of(dir);
+  if (!p) return VX_ERR_NOT_FOUND;
+  uint32_t tid = thread_of(dir), f = file_of(dir);
+  if (!tid && f == THREADS) { // a thread's directory, by its id
+    if (!parse_u64(name, &n) || name.ptr[0] == '0' || n > 0xff'ffff || !thread_alive(p, (uint32_t)n))
+      return VX_ERR_NOT_FOUND;
+    *child = node_of(p->pid, (uint32_t)n, T_DIR);
+    return VX_OK;
+  }
+  if (f != DIR) return VX_ERR_NOT_FOUND;
+  const file_entry *table = tid ? THREAD_FILES : FILE_TABLE;
+  for (uint32_t k = 1; k < (tid ? T_FILES : FILES); k++)
+    if (table[k].name.len == name.len && memcmp(table[k].name.ptr, name.ptr, name.len) == 0) {
+      *child = node_of(p->pid, tid, k);
       return VX_OK;
     }
   return VX_ERR_NOT_FOUND;
@@ -318,7 +397,14 @@ static vx_status fs_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) 
 
 static vx_status fs_parent(void *ctx, uint64_t node, uint64_t *parent) {
   (void)ctx;
-  *parent = file_of(node) == DIR ? ROOT : (node & ~15ull);
+  uint64_t pid = node >> 32;
+  uint32_t tid = thread_of(node), f = file_of(node);
+  if (node == ROOT || (!tid && f == DIR))
+    *parent = ROOT;
+  else if (tid && f == T_DIR)
+    *parent = node_of(pid, 0, THREADS);
+  else
+    *parent = node_of(pid, tid, DIR); // a file: its process's directory, or its thread's
   return VX_OK;
 }
 
@@ -331,17 +417,20 @@ static vx_status fs_stat(void *ctx, uint64_t node, p9_stat *out) {
   } else {
     const proc *p = proc_of(node);
     if (!p) return VX_ERR_NOT_FOUND;
-    uint32_t f = file_of(node);
+    uint32_t f = file_of(node), tid = thread_of(node);
     if (f == DIR) {
-      uint64_t pid = p->pid; // its directory's name: the pid, in decimal
+      uint64_t id = tid ? tid : p->pid; // its directory's name: the pid, or the thread's id, in decimal
       size_t n = sizeof name_buf;
-      do name_buf[--n] = (char)('0' + pid % 10);
-      while (pid /= 10);
+      do name_buf[--n] = (char)('0' + id % 10);
+      while (id /= 10);
       *out = (p9_stat){
           .qid = {P9_QTDIR, 0, node}, .mode = P9_DMDIR | 0555, .name = {name_buf + n, sizeof name_buf - n}};
     } else {
-      *out = (p9_stat){.qid = {P9_QTFILE, 0, node}, .mode = FILE_TABLE[f].mode, .name = FILE_TABLE[f].name};
-      if (f == WAIT) out->length = p->nwait; // as 9front's: more than 0 means a read will not wait
+      const file_entry *e = entry_of(node);
+      *out = (p9_stat){
+          .qid = {e->mode & P9_DMDIR ? P9_QTDIR : P9_QTFILE, 0, node}, .mode = e->mode, .name = e->name};
+      if (!tid && f == WAIT) out->length = p->nwait; // as 9front's: more than 0 means a read will not wait
+      if (!tid && f == EVENTS) out->length = dbg_of(p)->ev_count;
     }
   }
   out->uid = out->gid = out->muid = VX_STR("proc");
@@ -352,11 +441,13 @@ static vx_status fs_open(void *ctx, uint64_t node, uint8_t mode) {
   (void)ctx;
   if (mode & P9_ORCLOSE) return VX_ERR_ACCESS;
   if (node == ROOT) return (mode & 3) == P9_OREAD ? VX_OK : VX_ERR_ACCESS;
-  if (!proc_of(node)) return VX_ERR_NOT_FOUND;
-  uint32_t f = file_of(node), perm = f == DIR ? 0555 : FILE_TABLE[f].mode;
+  proc *p = proc_of(node);
+  if (!p) return VX_ERR_NOT_FOUND;
+  uint32_t f = file_of(node), perm = f == DIR ? 0555 : entry_of(node)->mode & 0777;
   bool reads = (mode & 3) == P9_OREAD || (mode & 3) == P9_ORDWR;
   bool writes = (mode & 3) == P9_OWRITE || (mode & 3) == P9_ORDWR;
   if ((reads && !(perm & 0444)) || (writes && !(perm & 0222))) return VX_ERR_ACCESS;
+  if (!thread_of(node) && f == EVENTS && !p->root) return dbg_bind(p); // a reader of events is a debugger
   return VX_OK; // OTRUNC means nothing to a file made as it is read
 }
 
@@ -434,13 +525,58 @@ static vx_status take_record(proc *p, char *buf, size_t cap, size_t *len) {
   return VX_OK;
 }
 
+// A thread's files: status and the registers, binary or as text.
+static vx_status thread_read(proc *p, uint32_t tid, uint32_t f, uint64_t offset, uint8_t *buf,
+                             uint32_t *count) {
+  static char text[1024];
+  size_t len = 0;
+  vx_regs r;
+  vx_fpregs fp;
+  vx_status st = VX_OK;
+  if (f == T_STATUS) len = thread_status_text(p, tid, text, sizeof text);
+  if (f == T_REGS_NDB) len = regs_ndb_text(p, tid, text, sizeof text);
+  if (f == T_REGS && (st = vx_thread_state(p->task, tid, VX_STATE_GET_REGS, &r, sizeof r)) == VX_OK)
+    memcpy(text, &r, len = sizeof r);
+  if (f == T_FPREGS && (st = vx_thread_state(p->task, tid, VX_STATE_GET_FPREGS, &fp, sizeof fp)) == VX_OK)
+    memcpy(text, &fp, len = sizeof fp);
+  if (st != VX_OK) return st; // running: its registers will not hold still
+  uint64_t left = offset < len ? len - offset : 0;
+  if (*count > left) *count = (uint32_t)left;
+  memcpy(buf, text + offset * (*count != 0), *count);
+  return VX_OK;
+}
+
+// mem: the task's memory at offset, as much of it as is mapped.
+static vx_status mem_read(const proc *p, uint64_t offset, uint8_t *buf, uint32_t *count) {
+  uint32_t done = 0;
+  while (done < *count) { // a page at a time, so a hole ends the read where it starts
+    uint64_t at = offset + done, page_left = 4096 - (at & 4095);
+    uint32_t n = *count - done < page_left ? *count - done : (uint32_t)page_left;
+    if (mem_rw(p, at, buf + done, n, false) != VX_OK) break;
+    done += n;
+  }
+  *count = done;
+  return done || !*count ? VX_OK : VX_ERR_INVALID;
+}
+
 static vx_status fs_read(void *ctx, uint64_t node, uint64_t offset, uint8_t *buf, uint32_t *count) {
   (void)ctx;
   proc *p = proc_of(node);
   if (!p) return VX_ERR_NOT_FOUND;
+  if (thread_of(node)) return thread_read(p, thread_of(node), file_of(node), offset, buf, count);
   static char text[NSD_TEXT_MAX];
   size_t len = 0;
   switch (file_of(node)) {
+  case MEM: return mem_read(p, offset, buf, count);
+  case MAPS: len = maps_text(p, text, sizeof text); break;
+  case IMAGES: len = images_text(p, text, sizeof text); break;
+  case EVENTS: { // a record each read, as wait's; a read waits for one
+    vx_status st = take_event(p, text, sizeof text, &len);
+    if (st != VX_OK) return st;
+    if (*count > len) *count = (uint32_t)len;
+    memcpy(buf, text, *count);
+    return VX_OK;
+  }
   case STATUS: len = status_text(p, text, sizeof text); break;
   case NS: len = ns_text(p->pid, text, sizeof text); break;
   case NOTEID: len = number_text(p->noteid, text); break;
@@ -466,11 +602,6 @@ static vx_str written(const uint8_t *buf, uint32_t count) {
   return (vx_str){(const char *)buf, count};
 }
 
-static bool word_is(vx_str s, const char *w) {
-  vx_str t = vx_cstr(w);
-  return s.len == t.len && memcmp(s.ptr, t.ptr, t.len) == 0;
-}
-
 static vx_status ctl(proc *p, vx_str cmd) {
   if (word_is(cmd, "kill")) {
     if (p->root) return VX_ERR_ACCESS; // svcd: the system needs it
@@ -482,7 +613,10 @@ static vx_status ctl(proc *p, vx_str cmd) {
       return VX_ERR_INVALID;
     return p->root ? VX_ERR_ACCESS : stop(p, (uint8_t)sig);
   }
-  if (word_is(cmd, "start")) return cont(p);
+  if (word_is(cmd, "start")) {
+    release_all(p); // threads held at events, and those stopped
+    return cont(p);
+  }
   if (word_is(cmd, "setsid")) {
     if (p->noteid == p->pid) return VX_ERR_ACCESS; // a group leader: its group would span two sessions
     p->sid = p->noteid = p->pid;                   // a session, and a note group, of its own
@@ -492,7 +626,8 @@ static vx_status ctl(proc *p, vx_str cmd) {
     p->childnotes = true;
     return VX_OK;
   }
-  return VX_ERR_INVALID;
+  vx_status st = dbg_ctl(p, cmd);
+  return st == VX_ERR_NOT_FOUND ? VX_ERR_INVALID : st;
 }
 
 // Joins note group `group`: one that exists in p's session, or a new one
@@ -511,9 +646,27 @@ static vx_status fs_write(void *ctx, uint64_t node, uint64_t offset, const uint8
   (void)ctx, (void)offset;
   proc *p = proc_of(node);
   if (!p) return VX_ERR_NOT_FOUND;
+  uint32_t tid = thread_of(node), f = file_of(node);
+  if (tid && (f == T_REGS || f == T_FPREGS)) { // whole, at offset 0
+    vx_fpregs whole;                           // the larger of the two
+    uint32_t size = f == T_REGS ? (uint32_t)sizeof(vx_regs) : (uint32_t)sizeof(vx_fpregs);
+    if (*count != size || offset) return VX_ERR_INVALID;
+    memcpy(&whole, buf, size);
+    return vx_thread_state(p->task, tid, f == T_REGS ? VX_STATE_SET_REGS : VX_STATE_SET_FPREGS, &whole, size);
+  }
+  if (!tid && f == MEM) {
+    if (p->root) return VX_ERR_ACCESS;
+    static uint8_t copy[P9_RING_MSIZE]; // task_mem_rw's buffer is the caller's to read and write
+    if (*count > sizeof copy) return VX_ERR_INVALID;
+    memcpy(copy, buf, *count);
+    return mem_rw(p, offset, copy, *count, true);
+  }
   vx_str s = written(buf, *count);
+  if (tid && f == T_REGS_NDB) return regs_ndb_write(p, tid, s);
+  if (tid && f == T_CTL) return thread_ctl(p, tid, s);
+  if (tid) return VX_ERR_ACCESS;
   uint64_t group;
-  switch (file_of(node)) {
+  switch (f) {
   case CTL: return ctl(p, s);
   case NOTE: return s.len && s.len <= VX_ERRMAX ? post(p, s) : VX_ERR_INVALID;
   case NOTEPG:
@@ -530,15 +683,24 @@ static vx_status fs_write(void *ctx, uint64_t node, uint64_t offset, const uint8
 // The root's entries are the processes, in table order; a process's are its files.
 static vx_status fs_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *child) {
   (void)ctx;
+  const proc *p = proc_of(dir);
+  if (dir != ROOT && !thread_of(dir) && file_of(dir) == THREADS) { // the threads, by id
+    vx_thread_info ti = {};
+    for (uint32_t i = 0; i <= index; i++)
+      if (!p || vx_thread_state(p->task, ti.id, VX_STATE_NEXT_THREAD, &ti, sizeof ti) != VX_OK)
+        return VX_ERR_NOT_FOUND;
+    *child = node_of(p->pid, ti.id, T_DIR);
+    return VX_OK;
+  }
   if (dir != ROOT) {
-    if (index + 1 >= FILES) return VX_ERR_NOT_FOUND;
+    if (!p || index + 1 >= (thread_of(dir) ? T_FILES : FILES)) return VX_ERR_NOT_FOUND;
     *child = dir | (index + 1);
     return VX_OK;
   }
   for (uint32_t i = 0, seen = 0; i < MAX_PROCS; i++) {
     if (!procs[i].used) continue;
     if (seen++ == index) {
-      *child = procs[i].pid << 4 | DIR;
+      *child = node_of(procs[i].pid, 0, DIR);
       return VX_OK;
     }
   }

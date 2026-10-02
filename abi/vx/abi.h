@@ -345,7 +345,11 @@ enum vx_task_options : uint32_t { VX_TASK_FORK = 1 };
 //     GET_REGS and SET_REGS its registers (DEBUG for a suspended one).
 //     GET_TLS and SET_TLS its thread pointer (x86_64's FS base, aarch64's
 //     TPIDR_EL0), a uint64_t, on the same terms; with thread 0, the caller's
-//     own, at any time (musl's __set_thread_area).
+//     own, at any time (musl's __set_thread_area). GET_FPREGS and SET_FPREGS
+//     its FP/SIMD registers, a vx_fpregs, on the same terms (a debugger's
+//     fpregs, 05 §3). NEXT_THREAD, at any time, describes the live thread
+//     with the next id after `thread` (0: the first) in a vx_thread_info:
+//     how procfs lists /proc/N/threads; NOT_FOUND after the last.
 // thread_suspend(task, thread), thread_resume(task, thread): counted, with the
 //     DEBUG right; with thread 0, every thread of the task (a process stopped
 //     as a whole). A suspended thread stops before it next returns to user
@@ -408,6 +412,42 @@ typedef struct vx_exception {
 enum vx_exception_options : uint32_t { VX_EXCEPTION_IN_TASK = 1, VX_EXCEPTION_FIRST_CHANCE = 2 };
 enum vx_resume_action : uint32_t { VX_RESUME_CONTINUE = 1, VX_RESUME_KILL, VX_RESUME_PASS, VX_RESUME_STEP };
 
+#ifdef __x86_64__
+typedef struct vx_fpregs { // FXSAVE's 512-byte image: x87, MXCSR, XMM0-15
+  uint8_t fxsave[512];
+} vx_fpregs;
+#elifdef __aarch64__
+typedef struct vx_fpregs {
+  uint8_t v[32][16]; // V0-V31
+  uint64_t fpcr, fpsr;
+} vx_fpregs;
+#endif
+
+enum vx_thread_run_state : uint32_t {
+  VX_THREAD_RUNNING = 1, // running or ready
+  VX_THREAD_BLOCKED,     // waiting in a call
+  VX_THREAD_STOPPED,     // at an exception port, until exception_resume
+  VX_THREAD_SUSPENDED,   // parked by thread_suspend
+};
+
+typedef struct vx_thread_info { // thread_state(NEXT_THREAD)
+  uint32_t id;
+  uint32_t state;         // enum vx_thread_run_state
+  uint32_t suspend_count; // thread_suspend's, less thread_resume's
+  uint32_t first_chance;  // STOPPED at a debugger's port (exception_bind FIRST_CHANCE)
+} vx_thread_info;
+
+// as_query(task, address, &info): with INSPECT on the task, the first of its
+// mappings that ends after address, in a vx_map_info; NOT_FOUND if none. A
+// caller lists an address space by asking again from each one's end (procfs's
+// /proc/N/maps, 05 §3).
+typedef struct vx_map_info {
+  uint64_t base, size;
+  uint64_t offset; // into the VMO mapped
+  uint32_t flags;  // VX_MAP_WRITE, VX_MAP_EXEC; always readable
+  uint32_t reserved;
+} vx_map_info;
+
 typedef struct vx_mem_op { // task_mem_rw
   uint64_t address;        // in the task
   uint64_t buffer;         // in the caller
@@ -421,4 +461,7 @@ enum vx_thread_state_op : uint32_t {
   VX_STATE_SET_REGS,
   VX_STATE_GET_TLS,
   VX_STATE_SET_TLS,
+  VX_STATE_GET_FPREGS,
+  VX_STATE_SET_FPREGS,
+  VX_STATE_NEXT_THREAD,
 };

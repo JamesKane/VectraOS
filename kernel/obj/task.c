@@ -337,6 +337,20 @@ static vx_status task_create(const char *name, uint64_t parent_id, task **out) {
 // *va == 0 the kernel picks the address; otherwise *va is used and must be
 // page-aligned and free. The mapping holds a reference on the VMO. W^X: never
 // writable and executable.
+// The first of t's mappings that ends after addr (as_query).
+static vx_status task_query(task *t, uint64_t addr, vx_map_info *out) {
+  const mapping *best = nullptr;
+  spin_lock(&t->lock);
+  for (uint32_t i = 0; i < TASK_MAX_MAPPINGS; i++) {
+    const mapping *m = &t->maps[i];
+    if (m->size && m->va + m->size > addr && (!best || m->va < best->va)) best = m;
+  }
+  if (best)
+    *out = (vx_map_info){.base = best->va, .size = best->size, .offset = best->offset, .flags = best->flags};
+  spin_unlock(&t->lock);
+  return best ? VX_OK : VX_ERR_NOT_FOUND;
+}
+
 static vx_status task_map(task *t, vmo *v, uint64_t offset, uint64_t size, uint32_t flags, uint64_t *va) {
   uint64_t vmo_end;
   if ((flags & VX_MAP_WRITE) && (flags & VX_MAP_EXEC)) return VX_ERR_ACCESS;

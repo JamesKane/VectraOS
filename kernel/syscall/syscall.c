@@ -287,6 +287,17 @@ static int64_t sys_as_unmap(vx_handle th, uint64_t va, uint64_t size) {
   return st;
 }
 
+// as_query(task, address, &info): the first mapping ending after address.
+static int64_t sys_as_query(vx_handle th, uint64_t addr, uint64_t info_ptr) {
+  vx_status st;
+  task *t = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_INSPECT, &st);
+  if (!t) return st;
+  vx_map_info info;
+  st = task_query(t, addr, &info);
+  object_release(&t->obj);
+  return st == VX_OK ? copy_to_user(info_ptr, &info, sizeof info) : st;
+}
+
 // as_map(task, vmo, offset, size, flags, &address): maps part of a VMO.
 // Reservations (01 §5) land with as_reserve. With an IoRange in place of the
 // VMO (and the rest 0), it lets the task use those I/O ports instead.
@@ -836,6 +847,7 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_vmo_rw: return sys_vmo_rw((vx_handle)a[0], a[1], a[2], a[3], a[4]);
   case VX_SYS_as_map: return sys_as_map((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4], a[5]);
   case VX_SYS_as_unmap: return sys_as_unmap((vx_handle)a[0], a[1], a[2]);
+  case VX_SYS_as_query: return sys_as_query((vx_handle)a[0], a[1], a[2]);
   case VX_SYS_exception_bind: return sys_exception_bind((vx_handle)a[0], (vx_handle)a[1], a[2], a[3]);
   case VX_SYS_exception_resume: return sys_exception_resume((vx_handle)a[0], a[1], a[2], a[3]);
   case VX_SYS_thread_state: return sys_thread_state((vx_handle)a[0], a[1], a[2], a[3], a[4]);
