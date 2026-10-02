@@ -14,18 +14,24 @@ What is new here is the set of *resources* (GPU and NPU accelerators, AI models 
 
 ## 2. Namespace mechanics
 
-**`libns` is a per-process mount table in user space** (D4). Each entry maps a path prefix to one or more *(server connection, root fid, flags)* entries; there are several for a union.
+**`libns` resolves names against the mount table of the process's namespace group, in user space** (D4, ADR-0009). Each entry maps a mount point to one or more *(connector, root, flags)* members; there are several for a union. A mount point is identified as in Plan 9: by the connector and the qid of the directory it was mounted on, not by its path. The path the user typed is kept beside it for `ns`.
 
 ```
 bind  [-b|-a|-c] new old     # -b: new goes before old in the union, -a: after, -c: allow create
 mount [-b|-a|-c] [-k key] srv|uri old [aname]
 unmount [new] old
-ns                           # print the namespace as a replayable script
+ns                           # print the namespace as namespace(6) lines, which newns replays
 ```
 
-**Path resolution:** find the longest matching prefix, then send a pipelined `Twalk` for the remaining path to that mount's server. Union directories try each member in order. `..` is resolved lexically before walking, as in Plan 9, so it cannot escape a bind.
+**Path resolution:** walk from the root's mount, checking the qid `Twalk` returns for each name against the table. At a mount point, continue from that mount's root with the names that remain. So a mount shows through every name that reaches its directory, and crossing one costs no extra round trip. Union directories try each member in order. `..` is resolved lexically before walking, as in Plan 9, so it cannot escape a bind.
 
-**Inheritance:** `spawn` passes the child a *copy* of the parent's namespace: the table, as `mount` and `bind` records, and a duplicate of each mount's connector, through which the child opens connections of its own (a ring connection is never shared, §3.2). `spawn(NS_SHARE)` puts parent and child in a **shared namespace group** instead, served by a small `nsd` instance, for the rare programs (such as a shell and its jobs) that need live sharing.
+**Inheritance:** every process belongs to a **namespace group**. As with Plan 9's `rfork`, a spawn chooses:
+
+- **share** (the default): the child joins its parent's group, so a `bind` in a script reaches the shell that ran it;
+- **copy** (`RFNAMEG`): a new group starting from a copy of the parent's table, sent as `mount` and `bind` records;
+- **clean** (`RFCNAMEG`): an empty group, which the spawner fills from a template.
+
+`nsd` holds the table of every group with more than one member. It publishes each table read-only to the members as a VMO with a sequence counter, so resolving a name takes no round trip, and `bind`, `mount` and `unmount` are one channel call each. Connections stay per process: a table entry names a connector, and each member opens its own connection through it on first use (a ring connection is never shared, §3.2).
 
 **Security:** a process can only mount connections it holds handles for, so rewriting its own table gives it nothing it did not already have. Authority is the set of handles; the namespace is the *view*.
 
@@ -37,13 +43,12 @@ Because `libns` runs inside the process, `bind` confines nothing. A process can 
 
 Every server's conformance suite plays a hostile client that speaks raw 9Px and checks that it cannot leave its attach root.
 
-**Namespace templates** (`/lib/ns/*`) are scripts of `bind` and `mount` lines, in the spirit of Plan 9's `newns`. They build sessions, POSIX environments, sandboxes and agent jails (§7):
+**Namespace templates** (`/lib/ns/*`) are namespace(6) files: scripts of `bind`, `mount` and `unmount` lines that `newns` in `vx-ns` reads, as Plan 9's `newns` does. `ns` and `/proc/N/ns` print the same form. A template is a script, not data, so D14's ndb rule does not cover it (ADR-0009). Templates build sessions, POSIX environments, sandboxes and agent jails (§7):
 
 ```
 # /lib/ns/posix — what a POSIX program expects
 mount -a /srv/bootfs /
 bind -c #home/$user /home/$user
-bind /srv/posixd/proc /proc
 bind /srv/ptyd /dev/pty
 bind -a /srv/null /dev
 mount -c /srv/tmpfs /tmp
@@ -189,7 +194,7 @@ This is what a desktop terminal's default namespace looks like. The right-hand c
 ├── tmp/                       tmpfs
 ├── env/                       envfs        per-namespace-group environment variables as files
 ├── srv/                       svcd         posted service channels
-├── proc/                      procfs       tasks and threads (posixd adds pids)
+├── proc/                      procfs       every process by pid, native and POSIX alike
 ├── sys/                       sysfs        cpu/ mem/ clock/ power/ vulns
 ├── dev/                       drivers      cons, null, random, input/, sensors/, audio/, block/, gpu/, accel/, net/, display/
 ├── net/                       netd         Plan 9 style: tcp/ udp/ ether*/ cs dns ipifc/
@@ -202,17 +207,20 @@ This is what a desktop terminal's default namespace looks like. The right-hand c
 
 ### 5.1 Processes and CPU topology
 
-M2's `procfs` serves `status` (name, state, threads, mem) and `ctl` (`kill`); the rest arrives with the features it reports.
+`procfs` holds the one process table (ADR-0011). Every process has a pid, assigned at spawn and kept across `exec`; the kernel task id is shown as `task=`. M2's `procfs` serves `status` and `ctl` (`kill`); the rest arrives with the features it reports.
 
 ```
 /proc/42/
-    status     name=hx state=running intent=interactive threads=3 mem=18.2M budget=user/jk/desktop
-    ctl        (write) kill · stop · start · intent background · trace on
-    ns         the process's namespace as a bind/mount script
+    status     pid=42 ppid=7 task=118 name=hx state=running noteg=42 sid=7 intent=interactive threads=3 mem=18.2M budget=user/jk/desktop
+    ctl        (write) kill · stop · start · hang · noteg 42 · setsid · intent background · trace on
+    ns         the namespace group's table as namespace(6) lines
     fd/        one entry per open fd: its path, offset and server
     caps       held handles: type, rights, badge (inspect right required)
     threads/1/{status,ctl,sched}
-    note       write to post a note (Plan 9) or signal (posixd)
+    note       write to post a note (ADR-0010); a POSIX signal is a note too
+    notepg     write to post a note to every process in the note group (POSIX's process group)
+    wait       read blocks until a child ends: pid=43 status="sys: trap: fault read addr=0x0 pc=0x4011a0" utime= stime= real=
+    args       the command line
     events mem maps images threads/N/{regs,fpregs}    the debug files (05 §3)
 /sys/cpu/
     topology   cpu=cpu0 cluster=0 llc=0 numa=0 type=perf capacity=1024 freq=4.8G smt=cpu1   (one record per CPU)
@@ -494,4 +502,4 @@ mount /srv/aid!session/$session /ai/self     # its own session; no other session
 
 1. **`cfs` and remote maps.** v1 gives a remote `Tmap` a private copy (§3.3). Is a coherent shared mapping across nodes ever worth its cost, or are a copy and a read lease the permanent answer?
 2. **Encoded surfaces for remote windows.** Which codec baseline (AV1 or H.265) and which latency target (under 30 ms on a LAN) should `/wsys` promise?
-3. **Namespace groups.** Is `nsd` for shared groups needed before M8? The proposal is to defer it and use copy semantics only until then.
+3. ~~**Namespace groups.**~~ Settled by ADR-0009: groups are shared by default, as in Plan 9, and `nsd` arrives in M4.

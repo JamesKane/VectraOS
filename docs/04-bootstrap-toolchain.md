@@ -81,14 +81,14 @@ NeoVectra/
 │   ├── vx-debug/               DWARF index, unwinder, expression evaluator, aarch64 disassembler (05 §11)
 │   ├── vx-prof/                profiling zones and sample decoding (05 §9)
 │   └── vx-check/               exhaustive interleaving model checker (host only, §7)
-├── servers/                    svcd bootfs devmgr netd posixd ptyd procfs fsd winsrv wm displayd audiod aid swarmd keyd tlsd exportfs auditfs
+├── servers/                    svcd bootfs devmgr netd nsd ptyd procfs fsd winsrv wm displayd audiod aid swarmd keyd tlsd exportfs auditfs
 ├── drivers/                    bus-pci bus-dt bus-acpi drv-uart-16550 drv-uart-pl011 drv-virtio-{net,blk,console,input,gpu}
 ├── cmd/                        gsh ls cat echo ps mount bind ns cpu import ...
 ├── apps/                       first-party vxui apps: dbg (05)
 ├── host/                       vx9pserve (serves a host directory over 9P/9Px)
 ├── ports/                      one directory per C import: port.ndb (sources, flags) plus patches
 ├── third_party/                vendored sources, one directory each, plus VENDOR.ndb
-├── boot/                       limine.conf, svc manifests (boot/svc/*.ndb), driver manifests (boot/drv/*.ndb), namespace templates (boot/lib/ns/)
+├── boot/                       limine.conf, svc manifests (boot/svc/*.ndb), driver manifests (boot/drv/*.ndb), namespace templates as namespace(6) files (boot/lib/ns/)
 ├── tests/                      host/ (library tests), fuzz/ (libFuzzer targets and corpora), kernel/ (ktest),
 │                               user/ (test services), qemu/ (scenario files for `./build test`)
 └── docs/                       00–05 (this blueprint), adr/, proto/ (versioned protocol specs)
@@ -284,7 +284,7 @@ Rough effort for M1–M3 is 4–6 months for one experienced person working with
 
 | Milestone | Content | Proves |
 |---|---|---|
-| **M4 POSIX and debugging** | musl with the vx back end, the `vectra-musl` sysroot, `posixd`, `ptyd`, pipes, sockets, the `posix` 9Px extension, the in-task fault path; Lua and a BusyBox-class userland. The `DEBUG` right and debug syscalls, the `procfs` debug files, crash directories, `vx-debug`, `dbg -c`, `/sys/clock` and `vx-prof` zones (05 §12) | Pillar: the POSIX personality; a debugger from here on |
+| **M4 POSIX and debugging** | musl with the vx back end, the `vectra-musl` sysroot, the Plan 9 baseline (namespace groups and `nsd`, notes and exit strings, one process table in `procfs`: ADRs 0009–0011), `ptyd`, pipes, sockets, the `posix` 9Px extension, the in-task fault path; Lua and a BusyBox-class userland. The `DEBUG` right and debug syscalls, the `procfs` debug files, crash directories, `vx-debug`, `dbg -c`, `/sys/clock` and `vx-prof` zones (05 §12) | Pillar: the POSIX personality; a debugger from here on |
 | **M5 Storage** | virtio-blk and NVMe, `fsd` with a pager and supply deadlines, IOMMU enforcement, driver hot restart under I/O load, a decision on a copy-on-write FS (native log-structured, or a port) | Zero-copy `mmap`; the undo that agents rely on |
 | **M6 Pixels** | `displayd` on simplefb and virtio-gpu 2D; `winsrv` with a CPU compositor; `/wsys` with per-app views, the trusted prompt path and the full v1 frame protocol (VRR, tearing and HDR fields, 03 §4); virtio-input; `vxui` v0 with the minimal program in 10 calls and the CPU pixel-buffer program in 12 or fewer (03 §6), kb_text_shape, stb_truetype and the glyph atlas, with a glyph-quality check on a 1x display; hot reload (03 §6.1); `dbg` GUI v0 with the zone timeline as the first real `vxui` app | Pillars: the desktop and the app framework |
 | **M7 GPU** | The GPU kernel-driver ADR (03 §3); Mesa Venus over virtio-gpu, the Vulkan profile, the `vxui` Vulkan 2D renderer, `winsrv` on Vulkan, frame feedback | Rendering pipeline, rule 8 |

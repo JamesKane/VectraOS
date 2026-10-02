@@ -6,7 +6,9 @@ _Blueprint v0, 2026-09-30._
 
 ## 1. What we are building
 
-VectraOS is a micro-kernel operating system in which **every resource is a file server** and **every fast path is a shared-memory ring**. It has four layers, described in §3.
+VectraOS is **Plan 9 evolved for modern computing**, written in standard C23 instead of Plan 9's own C dialect. It is a micro-kernel operating system in which **every resource is a file server** and **every fast path is a shared-memory ring**. It has four layers, described in §3.
+
+**Plan 9 is the baseline.** Its model is kept whole: per-process namespaces built with `bind` and `mount`, everything a file, one process table under `/proc`, notes, exit strings, `/srv`, `/dev/cons` and rc. VectraOS changes that model only to evolve it: a micro-kernel, rings, 9Px, the swarm. A design that drops a Plan 9 property needs an ADR saying why the change is better, not just different. ADRs 0009–0011 restore what the first milestones dropped by accident.
 
 - The kernel knows about address spaces, threads, capabilities and notifications, and nothing else.
 - Drivers, filesystems, the network stack, the window server, the AI runtime and the POSIX personality are ordinary processes. They serve 9Px file trees, and where speed matters they also serve rings.
@@ -41,7 +43,7 @@ These rules are normative. A design that breaks one needs an ADR explaining why.
  └──────────────┬───────────────────────────────────┬───────────────────────┘
                 │ libc (musl + vx backend), libns, lib9px, vxui              
  ┌──────────────┴──────────── system servers (user space) ───────────────────┐
- │ svcd(init)  devmgr  posixd  netd  fsd  winsrv+wm  displayd  audiod        │
+ │ svcd(init)  devmgr  procfs  nsd  netd  fsd  winsrv+wm  displayd  audiod   │
  │ aid(AI)  swarmd  keyd(auth)  tlsd  exportfs  auditfs                      │
  │ drivers: drv-virtio-*, drv-nvme, drv-xhci, drv-hda, drv-gpu-*, drv-npu-*  │
  └──────────────┬──────────── rings (shared memory) + channels ──────────────┘
@@ -62,7 +64,8 @@ These rules are normative. A design that breaks one needs an ADR explaining why.
 | `bootfs` | Read-only tree unpacked from the boot image | 04 |
 | `fsd` | Filesystem servers (one per mounted volume) and the page-cache pager | 01 §5, 02 |
 | `netd` | TCP/IP, DNS and DHCP. Serves `/net` in the Plan 9 style | 02 §5 |
-| `posixd` | The POSIX personality: pids, sessions, signals, ttys, `fork` coordination | 01 §9 |
+| `procfs` | The one process table: pids kept across `exec`, note groups, sessions, `wait`, notes, and the debug files, all under `/proc` (ADR-0011) | 01 §9, 05 §3 |
+| `nsd` | Holds the mount table of each shared namespace group, and publishes it to the group's members (ADR-0009) | 02 §2 |
 | `winsrv` | Window server and compositor. Serves `/wsys` | 03 |
 | `wm` | Window-management policy (layouts, bindings) in Lua, in its own process with a minimal namespace | 03 §5 |
 | `displayd` | Modesetting, planes, vblank and atomic commits, one per GPU | 03 §3 |
@@ -80,7 +83,7 @@ These rules are normative. A design that breaks one needs an ADR explaining why.
 | D1 | Language | **C23** for all first-party code, kernel included, compiled by clang. A house subset and tooling replace language-level safety (04 §1) | Rust: its guarantees stop at `unsafe`, and the core of a kernel (page tables, context switches, MMIO, DMA, ring memory ordering) is unsafe by definition. It would also add a second language beside the C we import, a nightly `build-std` for our own targets, `std`'s registry dependencies, and slow builds. Zig: not used anywhere in the system. |
 | D2 | Kernel model | **Capability micro-kernel** in the lineage of seL4 MCS and Zircon; IPC data never passes through the kernel | Hybrid (XNU): the scale we are avoiding. Pure seL4: formal proofs are out of reach, but its scheduling-context model is adopted. |
 | D3 | IPC | **Two tiers:** kernel *channels* carry small control messages and capabilities; shared-memory *rings* carry everything hot | Synchronous rendezvous only: per-message kernel entry is the cost rings remove. |
-| D4 | Namespace location | **Per process, in user space** (`libns`), inherited at spawn. The kernel has no notion of paths. The table only arranges names; confinement comes from connections attached at restricted roots (rule 3) | In-kernel VFS (Plan 9, Linux): the kernel would grow a path walker, a mount table and caches. Authority lives in the capabilities a process holds, so a user-space mount table grants nothing it could forge. |
+| D4 | Namespace location | **Per namespace group, in user space** (`libns`, plus `nsd` for groups with more than one member). As with `rfork`, a spawn shares the parent's group, copies it or starts clean, and mounts are found by the identity of their mount point (ADR-0009). The kernel has no notion of paths. The table only arranges names; confinement comes from connections attached at restricted roots (rule 3) | In-kernel VFS (Plan 9, Linux): the kernel would grow a path walker, a mount table and caches. Authority lives in the capabilities a process holds, so a user-space mount table grants nothing it could forge. |
 | D5 | File protocol | **9Px:** 9P2000 plus data-by-reference, map, read leases, notifications, POSIX file operations and modern auth. Where 9P2000.L already defines a message (attributes, rename, links, locks), 9Px uses it unchanged. It degrades to 9P2000 and 9P2000.L | New RPC IDL (FIDL, gRPC): loses `ls`/`cat` discoverability and 40 years of tooling. |
 | D6 | Native GPU API | **Vulkan** (Mesa) plus a published *VectraOS Vulkan Profile* is the only GPU API. Shaders are SPIR-V, compiled at build time. No GL | A new GPU API or shading language: the case study (F-104, Q5) shows every one of them is a lasting cost. GL through Zink, and portability layers over Vulkan: each is a second API wrapped around the first, solving a compatibility or portability problem a single-API system does not have (rule 13). Metal: adds no reach. |
 | D7 | Compute and AI | **Vulkan compute** baseline plus vendor NPU drivers behind a uniform `/dev/accel` tree. A CUDA-shaped host API later | A per-vendor stack as the platform API (F-105). |

@@ -12,3 +12,6 @@ One file per decision, `NNNN-title.md`, numbered in order. An ADR records a deci
 | [0006](0006-u9fs.md) | u9fs, vendored as a host test tool for 9P interoperability | Accepted |
 | [0007](0007-musl.md) | musl 1.2.6, vendored unchanged, with a VectraOS back end | Accepted |
 | [0008](0008-compiler-rt.md) | compiler-rt's builtins, vendored from LLVM 22.1.8 | Accepted |
+| [0009](0009-namespace-groups.md) | Namespace groups shared by default, mounts found by identity, namespace(6) templates | Accepted |
+| [0010](0010-notes-and-exit-strings.md) | Notes and exit strings, with POSIX signals built on notes | Accepted |
+| [0011](0011-one-process-model.md) | One process table in `procfs`, served as files; `posixd` folded in | Accepted |

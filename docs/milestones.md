@@ -11,7 +11,7 @@ Updated 2026-10-01.
 | **M1** First light | Done (2026-09-30) | `tests/qemu/boot.ndb` passes on x86_64 and aarch64 |
 | **M2** A shell in a namespace | Done (2026-10-01) | `tests/qemu/shell.ndb` passes on both |
 | **M3** Mount the network | Done (2026-10-01) | `tests/qemu/mount.ndb` passes on both (against 10.0.2.100; see below) |
-| M4 POSIX and debugging | In progress: step 1 done | — |
+| M4 POSIX and debugging | In progress: steps 1–4d done | — |
 | M5 Storage | Not started | |
 | M6 Pixels | Not started | |
 | M7 GPU | Not started | |
@@ -90,7 +90,10 @@ In progress. 04 §6 gives M4's content but no steps or exit test, so they are se
 | 4b. Open files kept by the server (`posix`): offsets and `O_APPEND` shared across `fork` and children by token (`Tshare`/`Tjoin`), `Tseek`, `Tdesc`; byte-range locks (`Tlock`, `Tgetlock`, `fcntl`) | Done | `2e4ef96` |
 | 4c. `ptyd` (`/dev/ptmx`, `/dev/pts/N`, line discipline, `^C`/`^Z`/`^\` to the foreground group, ending held reads); termios and terminal ioctls in the back end; job control in `posixd` (stop by `thread_suspend`, `SIGCONT`, `WUNTRACED`/`WCONTINUED`). Kernel: an interrupted `channel_call` whose request the server has read waits for its reply; an early wake clears its token; `vx.hangdump=N` | Done | `f29d25a` |
 | 4d. `poll`, `ppoll`, `select` and `pselect6` on the one port: pipes by their channels' triggers, files always ready, terminals and the console by a read kept outstanding on a connection of its own (vx-9p's asynchronous ring calls); pipe and terminal reads now end with `EINTR` | Done | `fb75b71` |
-| 4e. Sockets over `/net` | To do | |
+| 4e. Notes and exit strings (ADR-0010). Kernel: `task_kill` with a message, exit strings in `task_info` and the `EXIT` packet, trap exit strings, notes in `thread_interrupt`, a note with no handler ends the task. vx-rt: `vx_exit(msg)`, `vx_notify`, `vx_noted`. `svcd` and `gsh` keep the string. The back end: signals mapped from notes through one table, POSIX exit codes as strings | To do | |
+| 4f. One process table (ADR-0011): `posixd` folded into `procfs`; pids kept across `exec`; `/proc/N/{status,ctl,note,notepg,wait,args}`; registration at spawn; the back end's process calls, job control and `SIGCHLD` over those files | To do | |
+| 4g. Namespace groups (ADR-0009): `nsd`; spawn with share, copy or clean; mounts found by qid; `newns` and namespace(6) templates in `/lib/ns` (replacing `boot/ns/*.ndb`); `/proc/N/ns`; `ns` output that replays | To do | |
+| 4h. Sockets over `/net` | To do | |
 | 5. Lua, sbase and dash, vendored | To do | |
 | 6. The `procfs` debug files, crash directories, `lib/vx-debug`, `dbg -c`, `/sys/clock`, `vx-prof` zones | To do | |
 
@@ -98,7 +101,8 @@ In progress. 04 §6 gives M4's content but no steps or exit test, so they are se
 
 **Picking M4 back up** (paused 2026-10-01, after 4d):
 
-- Next is 4e, sockets over `/net`: 01 §9 has the BSD calls translate to `/net/tcp/clone` and the files of the connection directory, as Plan 9's APE does; `netd` serves `/net` already (M3), and `tests/qemu/tcp.ndb` and `net.ndb` show it working. The back end's descriptors (`ports/musl/vx/fd.c`) need a socket kind; `poll` (`poll.c`) needs its readiness, through the read kept outstanding that terminals use, or `netd` events.
+- Next is 4e, notes and exit strings. Steps 4e–4g put the Plan 9 baseline back (00 §1, ADRs 0009–0011) before more is built on the integer exit status and `posixd`'s RPC; 4e goes first because it changes the kernel ABI. Each ADR lists what it changes.
+- Then 4h, sockets over `/net`: 01 §9 has the BSD calls translate to `/net/tcp/clone` and the files of the connection directory, as Plan 9's APE does; `netd` serves `/net` already (M3), and `tests/qemu/tcp.ndb` and `net.ndb` show it working. The back end's descriptors (`ports/musl/vx/fd.c`) need a socket kind; `poll` (`poll.c`) needs its readiness, through the read kept outstanding that terminals use, or `netd` events.
 - Then step 5 (Lua, sbase, dash, each vendored with an ADR) and step 6 (the debugger's pieces).
 - The POSIX tests are `tests/posix/ctest.c` (237 checks) in `tests/qemu/posix.ndb`. Run the scenario several times on aarch64 after any change with timing in it: the races found in steps 3d and 4c showed only there.
 - To debug a hang or a crash in a POSIX scenario, copy it with `cmdline="vx.skip=gsh vx.kconsole vx.hangdump=25"`: the kernel's messages stay on the serial line, and at 25 s every thread's state and kernel backtrace is printed.
@@ -129,12 +133,12 @@ Deferred deliberately, each with where it is due:
 | `O_APPEND` is not atomic; no `rename`, `link` or locks; `mmap` of a file is a private copy | — | M4 step 4 (the `posix` 9Px extension, `Tmap`) |
 | musl and the builtins are built without CET-IBT or BTI, so programs against musl are not marked | Indirect-branch protection is off in them | With the kernel's enforcement of it in user space |
 | Kernel messages after the console hand-off reach nowhere (`vx.kconsole` keeps them on the serial port): a scenario's `fail="killed"` cannot see a fault in a task svcd started | Such a crash shows only as a negative exit status | A debug-log object (01 §10) |
-| `posixd` trusts the task handle a process connects with, and is not restarted; its table holds 64 processes | — | Trust: with capability tokens (M8) |
+| `posixd` trusts the task handle a process connects with, and is not restarted; its table holds 64 processes | — | `posixd` goes in step 4f (ADR-0011); the same questions then apply to `procfs`. Trust: with capability tokens (M8) |
 | A file's offset is shared with a child only on a server with `posix` (tmpfs); elsewhere (bootfs, u9fs) the child opens it again. A child that joins more than 10 s after its parent's last close finds nothing, and opens it again | — | When `fsd` comes (M5) |
 | POSIX locks go only when the process's last descriptor of an open file closes, not any one of several `dup`s; no `flock`, no open-file-description locks | — | When a port needs them |
 | Pipes are channels of 4 KiB messages, not rings; a writer that finds the queue full polls | Throughput is modest | When a benchmark says so (01 §9 has rings) |
 | A forked child does not reconnect a dialed (TCP) mount cleanly: it dials again, and the old connection's state is left behind | — | When a POSIX program needs one |
-| Signals: no alternate signal stack, no registers in a handler's `ucontext`, no `sigqueue` or real-time queueing; a 9P call (a file read, the console) is not interrupted, its handler runs when it is done; `ptyd` ends its own held reads, but the console (the UART driver) does not | `Ctrl-C` at a blocked console read waits for Enter | When the console is a `ptyd` terminal |
+| Signals: no alternate signal stack, no registers in a handler's `ucontext`, no `sigqueue` or real-time queueing; a 9P call (a file read, the console) is not interrupted, its handler runs when it is done (a note will flush it, ADR-0010, once the client has `Tflush`); `ptyd` ends its own held reads, but the console (the UART driver) does not | `Ctrl-C` at a blocked console read waits for Enter | When the console is a `ptyd` terminal |
 | Job control is partial: no `SIGTTIN`/`SIGTTOU` for a background group's reads and writes, no controlling terminal kept per session; `ptyd` holds 16 terminals and is not restarted; the console has no termios | dash runs without job control on the console | When a shell on a `ptyd` terminal needs them |
 | `tmpfs` holds 1024 nodes and 128 MiB, and is not restarted; no `rename`, links or permissions it enforces; templates are only what svcd's manifests name (`ns=`), not `/lib/ns` files a program reads | — | `rename` with the `posix` extension (M4 step 4); the rest when needed |
 | No `epoll` or `kqueue`; `poll` arms what it waits on each time (bindings are kept, not doubled); a polled terminal holds a connection of its own | — | When a port needs `epoll` (01 §9 has it on the same port) |

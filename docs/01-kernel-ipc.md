@@ -7,7 +7,7 @@ _Blueprint v0, 2026-09-30._
 | In the kernel | In user space |
 |---|---|
 | Physical memory allocator; page tables; VMOs; address spaces | Filesystems, the page-cache *policy* (through pagers), swap |
-| Threads; scheduling contexts; per-CPU run queues; the timer | Process and pid semantics, sessions, signals (`posixd`) |
+| Threads; scheduling contexts; per-CPU run queues; the timer | Process and pid semantics, note groups, sessions, `wait` (`procfs`) |
 | Handle tables, rights, capability transfer | Names and paths (`libns`), authentication (`keyd`) |
 | Ports, counters, channels; ring *setup* and doorbells | Every protocol that runs over rings and channels (9Px, block, net, present) |
 | IRQ routing; the MMIO, I/O-port and DMA-domain (IOMMU) objects | Every device driver, including bus enumeration (PCI, ACPI AML, device tree) |
@@ -19,7 +19,7 @@ _Blueprint v0, 2026-09-30._
 
 | Object | Purpose | Notes |
 |---|---|---|
-| `Task` | Address space plus handle table; the unit of isolation | There are no process ids at this layer; `posixd` assigns pids |
+| `Task` | Address space plus handle table; the unit of isolation | There are no process ids at this layer; `procfs` assigns pids, which outlive `exec`'s new task (ADR-0011). A task ends with an exit string (ADR-0010) |
 | `Thread` | Execution context; belongs to one task | Bound to one `SchedContext` at a time |
 | `SchedContext` | CPU budget, period and intent (§8) | In the style of seL4 MCS. It can be *donated* through synchronous calls (§4.5) |
 | `Vmo` | Pages: anonymous, physical (MMIO), contiguous, or supplied by a pager | Clone (copy-on-write), seal, cache policy, resize (`vmo_op`), `NODUMP` (never written to a crash directory, 05 §5) |
@@ -180,14 +180,14 @@ vx_status port_post(vx_handle port, const vx_packet *packet); // self-wake and u
 
 - Every source a program cares about is bound to one port. That includes ring completions, channels, IRQs, child exit, counters (GPU fences, the frame sequence) and user posts. A thread then makes one call to `port_wait`.
 - There is **no separate timer object**. The deadline is a parameter of the wait, and the leeway lets the kernel coalesce wake-ups. Periodic work is a loop on absolute deadlines.
-- Packets are 32 bytes: `{key, source, trigger, value, timestamp}`, where `value` is the counter value, IRQ count or exit status. `port_wait` returns up to `out_len` packets at once (rule 11).
+- Packets are 32 bytes: `{key, source, trigger, value, timestamp}`, where `value` is the counter value, the IRQ count, or for `EXIT` the length of the task's exit string (0: success; the string itself from `task_info`, ADR-0010). `port_wait` returns up to `out_len` packets at once (rule 11).
 - **One clock.** Every timestamp in the system is on the same monotonic clock, in nanoseconds: port packets, deadlines, frame and input events, the audio contract and debug events. Profiler zones record raw cycle counts, which `/sys/clock/info` converts to that clock (02 §5.1). No subsystem keeps a timebase of its own.
 - **Bindings are one-shot, and ports are bounded.** `port_bind` attaches a binding to a source for one trigger: `READABLE` or `PEER_CLOSED` on a channel end, `COUNTER_GE(v)` on a counter, `EXIT` on a task. It fires once, at once if its condition already holds, so no wake-up can be lost between checking and binding; a program re-binds after handling it. Each binding is the packet it will deliver, allocated when it is bound, so bindings can never overflow a port. `port_post` packets go in a fixed ring per port, and `port_post` fails with `SHOULD_WAIT` when it is full; charging them to the poster's budget comes with budgets.
 - A **Counter** is a kernel object with a monotonic value; it cannot go backwards. `counter_signal(c, v)` sets the value to `max(current, v)` and wakes every binding whose threshold is at or below it. Its current value is also visible in a read-only shared page, so polling costs no syscall. GPU drivers signal counters from their IRQ threads, which gives *timeline fences* that any process can wait on (§6.2).
 
 ### 4.5 Synchronous call fast path
 
-`channel_call(ch, msg, reply_buf, deadline)` sends a message and blocks for the reply in one kernel entry. If the server thread is waiting in `channel_read` on that channel, the kernel switches to it directly, **donating the caller's `SchedContext`**, so the server runs on the client's budget and intent, and switches back on reply. This is the seL4 IPC fast path. It exists for small latency-critical RPCs, such as `posixd` calls from libc, `keyd` signing, and `devmgr` queries. It is not used for bulk data. In v1 (M2) the kernel picks the request's `txid` and hands the reply whose `txid` matches straight to the waiting caller, never through the queue; donation and the direct switch come with scheduling contexts.
+`channel_call(ch, msg, reply_buf, deadline)` sends a message and blocks for the reply in one kernel entry. If the server thread is waiting in `channel_read` on that channel, the kernel switches to it directly, **donating the caller's `SchedContext`**, so the server runs on the client's budget and intent, and switches back on reply. This is the seL4 IPC fast path. It exists for small latency-critical RPCs, such as `nsd`'s `bind` and `mount`, registering a child with `procfs`, `keyd` signing, and `devmgr` queries. It is not used for bulk data. In v1 (M2) the kernel picks the request's `txid` and hands the reply whose `txid` matches straight to the waiting caller, never through the queue; donation and the direct switch come with scheduling contexts.
 
 ### 4.6 Futexes
 
@@ -394,7 +394,7 @@ This is how LLVM, Python and Git run without touching the kernel.
                                           │ fd table lives in the process (as in fdio)
           fd → { 9Px fid on a ring | socket (/net fid) | pipe ring | pty fid | event port }
                                           │
-          process-model calls ──channel_call──► posixd   (pids, sessions, pgrps, signals, wait, ttys)
+          process-model calls ──9Px files──► procfs   (/proc/N: status, ctl, note, notepg, wait)
 ```
 
 | POSIX area | Implementation |
@@ -403,17 +403,18 @@ This is how LLVM, Python and Git run without touching the kernel.
 | Open-file descriptions | An fd refers to an open-file description, kept by the server with the fid: the offset, `O_APPEND` and the status flags. `fork`, `dup` and fd passing share it, as POSIX requires, so `(a; b) > f` and concurrent appends to one log behave. This needs the `posix` 9Px extension (02 §3.3). |
 | `rename` `link` `symlink` `fcntl` locks `fsync` | The `posix` 9Px extension, which uses 9P2000.L's messages for these unchanged. 9P2000 alone can only rename within one directory, and Git renames objects across directories. |
 | `mmap` of a file | 9Px `Tmap` returns a pager-backed VMO cap (02 §3), and libc maps it. `MAP_SHARED` is coherent through the page cache in `fsd`. |
-| `pipe` | A ring between two processes, owned by libc. `posixd` is not involved. |
+| `pipe` | A ring between two processes, owned by libc. `procfs` is not involved. |
 | sockets | The BSD socket calls translate to `/net/tcp/clone` and the files in the connection directory, as Plan 9's APE does. The data path is `netd`'s rings. |
 | `poll` `select` `epoll` `kqueue` | All built on the one port. Each fd type knows how to bind its readiness source. A 9Px fid is readable only once a read has returned, so libc keeps one read-ahead request outstanding per polled fd and buffers its reply. |
-| `fork` | `posixd` asks the kernel to clone the address space copy-on-write, duplicates the handle table (with inheritance rules), and copies the fd table in libc. Ring mappings are not inherited: the child's first use of a connection opens a new ring, because a copied ring is broken and a shared one would have two producers. `fork` is correct but not fast; `posix_spawn` and `vfork`-then-`exec` have a fast path that never clones. |
-| `exec` | Implemented in the library. The ELF loader lives in `libvxrt`; `posixd` swaps the task image and keeps the pid. |
-| signals | `posixd` delivers a signal by `thread_interrupt`, which diverts a thread to a libc trampoline, as Plan 9 notes did. Synchronous faults arrive through the task's exception port and are turned into `SIGSEGV`, `SIGFPE` and so on. A handler never runs in the middle of a ring submission: the client library blocks signals for the few instructions of a submit, so a handler that calls `write()` cannot corrupt the ring. |
+| `fork` | libc asks the kernel to clone the address space copy-on-write, duplicates the handle table (with inheritance rules), and copies the fd table in libc. Ring mappings are not inherited: the child's first use of a connection opens a new ring, because a copied ring is broken and a shared one would have two producers. `fork` is correct but not fast; `posix_spawn` and `vfork`-then-`exec` have a fast path that never clones. |
+| `exec` | Implemented in the library. The ELF loader lives in `libvxrt`. The new image is a new task, which `procfs` registers under the same pid; the old task's end is not reported as an exit (ADR-0011). |
+| process calls | `getpid`, `kill`, `killpg`, `setpgid`, `setsid` and `waitpid` are reads and writes of `/proc/N/{status,note,notepg,ctl,wait}`, as 9front's APE does (ADR-0011). Process groups are note groups. |
+| signals | Signals are built on notes (ADR-0010). `kill` writes a note; the kernel delivers it by `thread_interrupt`, which diverts a thread to the back end's note handler. That handler maps the note to a signal and applies the masks, pending sets and `SA_RESTART` kept in libc. A note at a blocked 9P call flushes it with `Tflush`. Synchronous faults arrive through the task's exception port and are turned into `SIGSEGV`, `SIGFPE` and so on. A handler never runs in the middle of a ring submission: the client library blocks signals for the few instructions of a submit, so a handler that calls `write()` cannot corrupt the ring. |
 | ttys and ptys | `ptyd` serves `/dev/pty`. Line discipline is in the server. The output path is a pass-through: with output processing off, `ptyd` forwards the writer's buffers to the terminal's ring without touching each byte, and with `ONLCR` on it scans for newlines only. `ptyd` sits on the path of the terminal throughput budget (00 §8), as conhost did in refterm's measurements. |
 | `/proc`, `/dev/null`, `/dev/urandom`, `/tmp`, uids | Served by ordinary servers and bound into the POSIX namespace template (`/lib/ns/posix`). |
 | threads | pthreads on kernel threads; futexes are the kernel's futex calls (§4.6). |
 
-**Faults handled in the task.** Emulators such as Dolphin and RPCS3 map guest memory into large reservations and handle thousands of page faults a second themselves ("fastmem"). A trip out to an exception port and back through `posixd` would cost several context switches each. So `exception_bind` has an in-task mode: the kernel diverts the faulting thread to a handler in its own task, with the fault's registers on a handler stack, and the handler resumes with `exception_resume`. Faults go first to a debugger that asked for first chance (05 §2), then to the in-task handler, then to the exception port, then to default handling.
+**Faults handled in the task.** Emulators such as Dolphin and RPCS3 map guest memory into large reservations and handle thousands of page faults a second themselves ("fastmem"). A trip out to an exception port and back through a server would cost several context switches each. So `exception_bind` has an in-task mode: the kernel diverts the faulting thread to a handler in its own task, with the fault's registers on a handler stack, and the handler resumes with `exception_resume`. Faults go first to a debugger that asked for first chance (05 §2), then to the in-task handler, then to the exception port, then to default handling.
 
 **Targets, in order:** a BusyBox-class userland, then Lua, then Python 3, then Git, then clang and lld, then **VectraOS rebuilding itself** with its own `build` (04 §6, M10).
 
@@ -422,7 +423,7 @@ This is how LLVM, Python and Git run without touching the kernel.
 1. Firmware (UEFI or BIOS) loads **Limine**, which loads the kernel ELF and modules, sets up the higher-half direct map, and passes the memory map, framebuffer, RSDP or DTB, and SMP information. With Secure Boot on, Limine is signed, and the hash of its config is enrolled into the binary. The config gives the BLAKE2B hash of the kernel and of every module, so the firmware's measurement of Limine into TPM PCR 4 covers the whole chain. `keyd` seals keys to those PCRs (02 §6.2).
 2. The kernel sets up its page tables, physical allocator, per-CPU data, interrupt controller (APIC or GICv3), timer (TSC deadline or the arm generic timer) and IOMMU (on from the start in deny-all mode, with identity maps only for regions the firmware reserves, such as VT-d RMRRs and IORT RMRs; no device can DMA until `devmgr` gives it a `DmaDomain`, which closes the window that Thunderbolt and USB4 DMA attacks use), and brings up the other CPUs.
 3. The kernel creates the root task, `svcd`, from the `svcd` module. Its spawn message (§3) carries a handle to the task itself, the boot image (the `bootfs.tar` module, as a read-only VMO), the ACPI tables, the root `Resource` and the kernel command line; the framebuffer VMO joins them when its user does. Until there is a debug-log object, permission to write the kernel log is a task flag that a task's children inherit, so services can report before the console moves to user space (04 §5, M2).
-4. `svcd` reads the manifests in `boot/svc/*.ndb` from the boot image itself, since the server for it is one of the services it starts. It starts `bootfs` (the boot image as a read-only 9Px tree), `devmgr`, drivers, `netd`, `posixd` and the rest, each with only the handles and namespace its manifest names, and restarts those marked `restart` when they exit. It then starts the console shell on `/dev/cons`.
+4. `svcd` reads the manifests in `boot/svc/*.ndb` from the boot image itself, since the server for it is one of the services it starts. It starts `bootfs` (the boot image as a read-only 9Px tree), `devmgr`, drivers, `netd`, `nsd`, `procfs` and the rest, each with only the handles and namespace its manifest names, and restarts those marked `restart` when they exit. It then starts the console shell on `/dev/cons`.
 
 ## 11. Security hardening checklist
 
@@ -457,6 +458,6 @@ These are targets, measured in CI under KVM and on T1 hardware from M6 onward. T
 
 1. **Scheduler policy after v1.** v1 is priority bands plus a constant-bandwidth server (§8). Is pure EDF for `realtime` with EEVDF elsewhere worth its code, or one EEVDF with deadline hints? Both need to be prototyped and measured with `audiod`.
 2. **Revocation.** Are leases plus proxies enough for delegating to agents (02 §7), or do we need derivation-tree revocation?
-3. **Channel message cap.** Is 64 KiB right? Zircon uses 64 KiB, seL4 uses about 480 bytes in registers. Measure what `posixd` and `devmgr` actually send.
+3. **Channel message cap.** Is 64 KiB right? Zircon uses 64 KiB, seL4 uses about 480 bytes in registers. Measure what `procfs`, `nsd` and `devmgr` actually send.
 4. **SMP scalability of the handle table.** Use a per-task RCU table or a sharded lock? Decide once `fork` pressure shows up at M4.
 5. **Donation on rings.** A ring's class comes from the kernel-stamped intent of the client that asked for it (§4.3), so a client cannot claim a better class. Is serving in class order enough to prevent priority inversion in servers, or do servers need to borrow the client's scheduling context, as `channel_call` does?
