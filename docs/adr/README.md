@@ -21,3 +21,4 @@ One file per decision, `NNNN-title.md`, numbered in order. An ADR records a deci
 | [0015](0015-lua.md) | Lua 5.5.1, vendored unchanged, as `/bin/lua`; vendored POSIX programs in `./build` | Proposed |
 | [0016](0016-sbase.md) | sbase, vendored unchanged: one box binary with hard links in bootfs, in `/boot/bin/posix`, bound before `/boot/bin` for POSIX programs | Proposed |
 | [0017](0017-debug-index.md) | The debug index is first-party: `vxdi`, built from DWARF 5 by `lib/vx-debug`; RDI is not vendored | Accepted |
+| [0018](0018-gpu-drivers.md) | GPU drivers: one native `accel` protocol, Mesa ported to it, firmware-scheduled hardware only, display separate and flip-only first | Proposed |
