@@ -31,7 +31,7 @@ ns                           # print the namespace as namespace(6) lines, which 
 - **copy** (`RFNAMEG`): a new group starting from a copy of the parent's table, sent as `mount` and `bind` records;
 - **clean** (`RFCNAMEG`): an empty group, which the spawner fills from a template.
 
-`nsd` holds the table of every group with more than one member. It publishes each table read-only to the members as a VMO with a sequence counter, so resolving a name takes no round trip, and `bind`, `mount` and `unmount` are one channel call each. Connections stay per process: a table entry names a connector, and each member opens its own connection through it on first use (a ring connection is never shared, §3.2).
+`nsd` holds each group's namespace: its namespace(6) text, as `ns` prints it, and the connectors its `mount` lines name. It publishes the text read-only to the members as a VMO with a sequence counter. Each member keeps its own table, built from the text again whenever the counter has moved, so resolving a name takes no round trip; a `bind`, `mount` or `unmount` is made on the member's table, whose new text is then one channel call to `nsd`. Connections stay per process: each member opens its own connection through a connector on first use (a ring connection is never shared, §3.2). A process keeps a table of its own until its first child that shares it.
 
 **Security:** a process can only mount connections it holds handles for, so rewriting its own table gives it nothing it did not already have. Authority is the set of handles; the namespace is the *view*.
 

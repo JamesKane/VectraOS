@@ -1,9 +1,12 @@
 // vx-ns at start-up: builds a process's namespace from its spawn message
-// (abi.h), whose mount= and bind= records are what its parent's template made
-// (02 §2). A mount record names a connector handle in the message; each one
-// gets its own ring connection to the server behind it. A mount record with
-// dial=ADDRESS instead is a 9P server over TCP, which the process dials
-// itself (dial.c), through the /net its earlier records gave it.
+// (abi.h). A child that shares its parent's namespace group (ADR-0009) is
+// given a channel to nsd for it ("nsgroup"), and builds its table from the
+// group's text; one with a namespace of its own is given mount= and bind=
+// records, what its parent's template or table made (02 §2). A mount record
+// names a connector handle in the message; each one gets its own ring
+// connection to the server behind it. A mount record with dial=ADDRESS
+// instead is a 9P server over TCP, which the process dials itself (dial.c),
+// through the /net its earlier records gave it.
 
 #pragma once
 
@@ -11,6 +14,7 @@
 #include "ns.c"
 #include "newns.c"
 #include "dial.c"
+#include "nsd.h"
 
 // The process's connections: a slot is free while its end is 0. Each has the
 // connector handle's name it came through, so mount records naming one
@@ -95,6 +99,23 @@ static p9_client *vx_ns_connect(const vx_ns_handles *from, vx_str name, vx_handl
   return &vx_ns_conns[free_slot].c;
 }
 
+// A connection through a connector handle (which the namespace takes, if it
+// succeeds), in a free slot. nullptr if there is none.
+static p9_client *vx_ns_connect_handle(vx_handle connector, vx_status *st) {
+  for (uint32_t i = 0; i < VX_NS_MAX_CONNS; i++) {
+    if (vx_ns_conns[i].end) continue;
+    *st = p9_ring_connect(connector, &vx_ns_conns[i]);
+    if (*st != VX_OK) {
+      vx_ns_conns[i] = (p9_conn){};
+      return nullptr;
+    }
+    vx_ns_conn_names[i][0] = 0;
+    return &vx_ns_conns[i].c;
+  }
+  *st = VX_ERR_NO_MEMORY;
+  return nullptr;
+}
+
 // Replays the spawn message's namespace records in order. Stops at the first
 // that fails, and says which.
 static vx_status vx_ns_replay(vx_ns *ns, vx_str records, const vx_ns_handles *from) {
@@ -135,19 +156,226 @@ static vx_status vx_ns_replay(vx_ns *ns, vx_str records, const vx_ns_handles *fr
   return VX_OK;
 }
 
+// --- Namespace groups (ADR-0009; nsd's protocol is lib/vx-ns/nsd.h) ---
+//
+// A member keeps its own table, built from the group's text, which it maps
+// read-only from nsd: before a name is resolved, if the text's sequence has
+// moved, the table is emptied and the text replayed (refresh). A change made
+// to the table is sent to nsd as the table's new text (publish).
+
+typedef struct vx_ns_group_state {
+  vx_handle chan;       // this process's channel to nsd for its group, or none: a namespace of its own
+  vx_handle srv;        // a connector to nsd's post, to make a group with, or none
+  const nsd_page *page; // the group's text, mapped read-only
+  uint64_t seq;         // the sequence the table was last built from
+} vx_ns_group_state;
+static vx_ns_group_state vx_ns_group;
+
+static constexpr uint64_t VX_NS_PAGE_SIZE = (sizeof(nsd_page) + 4095) & ~4095ull;
+alignas(nsd_msg) static uint8_t vx_ns_msg[VX_CHANNEL_MAX_BYTES];
+
+// One call to nsd on ch: args, then text and names, giving handles; the
+// reply in *rep, its handles in got (up to got_cap). Returns the channel's
+// status, or the reply's.
+static vx_status vx_ns_nsd(vx_handle ch, uint32_t call, nsd_args a, vx_str text, vx_str names,
+                           const vx_handle *give, uint32_t ngive, nsd_msg *rep, vx_handle *got,
+                           uint32_t got_cap) {
+  nsd_msg *m = (nsd_msg *)vx_ns_msg;
+  a.text_len = (uint32_t)text.len;
+  if (sizeof *m + text.len + names.len > sizeof vx_ns_msg) return VX_ERR_RANGE;
+  *m = (nsd_msg){.h = {.ordinal = call}, .a = a};
+  memcpy(vx_ns_msg + sizeof *m, text.ptr, text.len);
+  memcpy(vx_ns_msg + sizeof *m + text.len, names.ptr, names.len);
+  *rep = (nsd_msg){};
+  vx_call c = {.wr_bytes = vx_ns_msg,
+               .wr_len = (uint32_t)(sizeof *m + text.len + names.len),
+               .wr_handles = ngive ? give : nullptr,
+               .wr_count = ngive,
+               .rd_bytes = rep,
+               .rd_cap = sizeof *rep,
+               .rd_handles = got,
+               .rd_count_cap = got_cap};
+  vx_status st = vx_channel_call(ch, &c, VX_INFINITE);
+  if (st == VX_OK && c.actual.bytes < sizeof *rep) st = VX_ERR_INVALID;
+  if (st == VX_OK && rep->h.flags) st = (vx_status)(int32_t)rep->h.flags;
+  if (st != VX_OK && got)
+    for (uint32_t i = 0; i < c.actual.handles && i < got_cap; i++) vx_handle_close(got[i]);
+  return st;
+}
+
+// Replays a group's text onto an empty table: a mount's source is a
+// connection the table has from it already, a connector nsd keeps for the
+// group (/srv/NAME), or an address to dial.
+static vx_status vx_ns_group_apply(vx_ns *ns, vx_str text) {
+  static vx_ns_script script;
+  script = (vx_ns_script){.text = text};
+  vx_ns_op op;
+  vx_status st;
+  while ((st = vx_ns_script_next(&script, &op)) == VX_OK) {
+    if (op.kind == VX_NS_OP_MOUNT) {
+      vx_str aname = op.argc > 2 ? op.args[2] : (vx_str){};
+      st = vx_ns_mount_srv(ns, op.args[0], aname, op.args[1], op.flags);
+      if (st == VX_ERR_NOT_FOUND && op.args[0].len > 5 && memcmp(op.args[0].ptr, "/srv/", 5) == 0) {
+        nsd_msg rep;
+        vx_handle connector = VX_HANDLE_NONE;
+        st = vx_ns_nsd(vx_ns_group.chan, NSD_CONNECTOR, (nsd_args){}, op.args[0], (vx_str){}, nullptr, 0,
+                       &rep, &connector, 1);
+        p9_client *c = st == VX_OK ? vx_ns_connect_handle(connector, &st) : nullptr;
+        if (c)
+          st = vx_ns_mount(ns, c, connector, op.args[0], aname, op.args[1], op.flags);
+        else if (connector)
+          vx_handle_close(connector);
+      } else if (st == VX_ERR_NOT_FOUND) { // an address: dialed
+        p9_client *c;
+        vx_str src;
+        st = vx_ns_dial(ns, op.args[0], &c, &src);
+        if (st == VX_OK) st = vx_ns_mount(ns, c, VX_HANDLE_NONE, src, aname, op.args[1], op.flags);
+      }
+    } else if (op.kind == VX_NS_OP_BIND) {
+      st = vx_ns_bind(ns, op.args[0], op.args[1], op.flags);
+    } else if (op.kind == VX_NS_OP_UNMOUNT) {
+      st = vx_ns_unmount(ns, op.argc == 2 ? op.args[0] : (vx_str){}, op.args[op.argc - 1]);
+    }
+    if (st != VX_OK) {
+      vx_print(VX_STR("vx-ns: cannot replay line "));
+      vx_print_u64(op.line);
+      vx_print(VX_STR(" of the namespace group's: "));
+      vx_print(p9_error_text(st));
+      vx_print(VX_STR("\n"));
+      return st;
+    }
+  }
+  return st == VX_ERR_NOT_FOUND ? VX_OK : st;
+}
+
+// The table, brought up to the group's: emptied and built again from its
+// text, if that has changed since the table was last built.
+static void vx_ns_group_refresh(vx_ns *ns) {
+  const nsd_page *page = vx_ns_group.page;
+  if (!page || __atomic_load_n(&page->seq, __ATOMIC_ACQUIRE) == vx_ns_group.seq) return;
+  static char text[NSD_TEXT_MAX];
+  uint64_t seq;
+  uint32_t len;
+  for (;;) { // a copy nsd was not writing: the same even sequence before and after
+    seq = __atomic_load_n(&page->seq, __ATOMIC_ACQUIRE);
+    if (seq & 1) continue;
+    len = page->len < NSD_TEXT_MAX ? page->len : NSD_TEXT_MAX;
+    memcpy(text, page->text, len);
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    if (__atomic_load_n(&page->seq, __ATOMIC_RELAXED) == seq) break;
+  }
+  ns->quiet = true;
+  vx_ns_reset(ns);
+  vx_ns_group_apply(ns, (vx_str){text, len});
+  ns->quiet = false;
+  vx_ns_group.seq = seq;
+}
+
+// The table has changed: its text, to nsd, from the sequence it was built
+// on, with the connector of a connection the change added. BAD_STATE if
+// another member changed the group first.
+static vx_status vx_ns_group_publish(vx_ns *ns, uint8_t new_conn) {
+  static char text[NSD_TEXT_MAX];
+  size_t len = vx_ns_print(ns, text, sizeof text);
+  bool empty = true;
+  for (uint32_t i = 0; i < VX_NS_MAX_ENTRIES && empty; i++) empty = !ns->entries[i].path_len;
+  if (!len && !empty) return VX_ERR_RANGE; // too long to send: never an empty text in its place
+  char names[VX_NS_MAX_SRC + 1];
+  vx_str line = {};
+  vx_handle give = VX_HANDLE_NONE;
+  if (new_conn < VX_NS_MAX_CONNS && ns->conns[new_conn].connector &&
+      vx_handle_dup(ns->conns[new_conn].connector, VX_RIGHTS_SAME, &give) == VX_OK) {
+    memcpy(names, ns->conns[new_conn].src, ns->conns[new_conn].src_len);
+    names[ns->conns[new_conn].src_len] = '\n';
+    line = (vx_str){names, ns->conns[new_conn].src_len + 1u};
+  }
+  nsd_msg rep;
+  vx_status st =
+      vx_ns_nsd(vx_ns_group.chan, NSD_UPDATE, (nsd_args){.seq = vx_ns_group.seq, .count = give ? 1 : 0},
+                (vx_str){text, len}, line, &give, give ? 1 : 0, &rep, nullptr, 0);
+  if (st == VX_OK) vx_ns_group.seq = rep.a.seq;
+  return st;
+}
+
+// Maps the group's text, given a handle to its VMO (which the mapping keeps).
+static vx_status vx_ns_group_map(vx_handle vmo) {
+  uint64_t va = 0;
+  vx_status st = vx_as_map(vx_self, vmo, 0, VX_NS_PAGE_SIZE, 0, &va);
+  vx_handle_close(vmo);
+  if (st == VX_OK) vx_ns_group.page = (const nsd_page *)va;
+  return st;
+}
+
+static void vx_ns_group_hooks(vx_ns *ns) {
+  ns->release = vx_ns_release;
+  ns->refresh = vx_ns_group_refresh;
+  ns->publish = vx_ns_group_publish;
+}
+
+// Joins the group chan is a channel for: maps its text, and builds the table from it.
+static vx_status vx_ns_group_join(vx_ns *ns, vx_handle chan) {
+  vx_task_summary me;
+  nsd_msg rep;
+  vx_handle vmo = VX_HANDLE_NONE;
+  vx_ns_group.chan = chan;
+  vx_status st =
+      vx_ns_nsd(chan, NSD_HELLO, (nsd_args){.task = vx_task_info(vx_self, &me) == VX_OK ? me.id : 0},
+                (vx_str){}, (vx_str){}, nullptr, 0, &rep, &vmo, 1);
+  if (st == VX_OK) st = vx_ns_group_map(vmo);
+  if (st != VX_OK) return st;
+  vx_ns_group.seq = ~0ull; // never a sequence: the first refresh builds the table
+  vx_ns_group_hooks(ns);
+  vx_ns_group_refresh(ns);
+  return VX_OK;
+}
+
+// Makes a group of this process's namespace, with it as the first member, so
+// a child can share it. NOT_FOUND without nsd.
+static vx_status vx_ns_group_make(vx_ns *ns) {
+  if (!vx_ns_group.srv) return VX_ERR_NOT_FOUND;
+  static char text[NSD_TEXT_MAX], names[VX_NS_MAX_CONNS * (VX_NS_MAX_SRC + 1)];
+  size_t len = vx_ns_print(ns, text, sizeof text), nl = 0;
+  vx_handle give[VX_NS_MAX_CONNS];
+  uint32_t n = 0;
+  for (uint32_t i = 0; i < VX_NS_MAX_CONNS; i++) {
+    const vx_ns_conn *c = &ns->conns[i];
+    if (!c->client || !c->connector || vx_handle_dup(c->connector, VX_RIGHTS_SAME, &give[n]) != VX_OK)
+      continue;
+    memcpy(names + nl, c->src, c->src_len);
+    nl += c->src_len;
+    names[nl++] = '\n';
+    n++;
+  }
+  nsd_msg rep;
+  vx_handle got[2] = {};
+  vx_task_summary me;
+  nsd_args a = {.task = vx_task_info(vx_self, &me) == VX_OK ? me.id : 0, .count = n};
+  vx_status st =
+      vx_ns_nsd(vx_ns_group.srv, NSD_NEW, a, (vx_str){text, len}, (vx_str){names, nl}, give, n, &rep, got, 2);
+  if (st != VX_OK) return st;
+  vx_ns_group.chan = got[0];
+  st = vx_ns_group_map(got[1]);
+  if (st != VX_OK) return st;
+  vx_ns_group.seq = rep.a.seq; // the table is the text already
+  vx_ns_group_hooks(ns);
+  return VX_OK;
+}
+
 [[maybe_unused]] static vx_status vx_ns_from_spawn(vx_ns *ns) {
+  vx_ns_group.srv = vx_spawn_take("srv:nsd");
+  vx_handle chan = vx_spawn_take("nsgroup");
+  if (chan) return vx_ns_group_join(ns, chan);
   return vx_ns_replay(ns, vx_spawn.text, nullptr);
 }
 
-// Writes the namespace as spawn records for a child (02 §2: a child gets a
-// copy of its parent's namespace), in the order the members were added (as
-// vx_ns_print writes them): a mount record for each mounted member, naming a
-// duplicate of its connection's connector, added to handles (one "ns.N" for
-// each connection, however many mounts use it); a bind record for the rest.
-// The child connects to each server itself. Adds to *count; on failure the
-// handles it added are closed and *count is as it was.
-[[maybe_unused]] static vx_status vx_ns_spawn_records(const vx_ns *ns, vx_ndb_writer *w, vx_handle *handles,
-                                                      vx_str *names, uint32_t *count, uint32_t cap) {
+// A copy of the namespace as spawn records for a child, in the order the
+// members were added (as vx_ns_print writes them): a mount record for each
+// mounted member, naming a duplicate of its connection's connector, added to
+// handles (one "ns.N" for each connection, however many mounts use it); a
+// bind record for the rest. The child connects to each server itself. Adds to
+// *count; on failure the handles it added are closed and *count is as it was.
+static vx_status vx_ns_copy_records(const vx_ns *ns, vx_ndb_writer *w, vx_handle *handles, vx_str *names,
+                                    uint32_t *count, uint32_t cap) {
   static char name_buf[VX_CHANNEL_MAX_HANDLES][8];
   static vx_ns_step steps[VX_NS_MAX_ENTRIES * VX_NS_MAX_MEMBERS];
   int32_t handle_of[VX_NS_MAX_CONNS]; // each connection's handle in this message, or -1
@@ -195,25 +423,72 @@ static vx_status vx_ns_replay(vx_ns *ns, vx_str records, const vx_ns_handles *fr
   return VX_ERR_RANGE;
 }
 
+// The namespace for a child, as spawn records and handles (02 §2). As Plan
+// 9's rfork shares a namespace unless asked not to, the child joins this
+// process's namespace group (ADR-0009), made now if this is the first child
+// to share it: a channel to nsd for it ("nsgroup"). Without nsd, a copy
+// (vx_ns_copy_records). Either way the child gets nsd's post too ("srv:nsd"),
+// to make a group of its own. Adds to *count; on failure the handles it added
+// are closed and *count is as it was.
+[[maybe_unused]] static vx_status vx_ns_spawn_records(vx_ns *ns, vx_ndb_writer *w, vx_handle *handles,
+                                                      vx_str *names, uint32_t *count, uint32_t cap) {
+  if (cap > VX_CHANNEL_MAX_HANDLES) cap = VX_CHANNEL_MAX_HANDLES;
+  if (*count + 2 > cap) return VX_ERR_NO_MEMORY;
+  vx_status st = VX_ERR_NOT_FOUND;
+  if (!vx_ns_group.chan) vx_ns_group_make(ns); // NOT_FOUND without nsd: a copy, below
+  if (vx_ns_group.chan) {
+    nsd_msg rep;
+    vx_handle chan = VX_HANDLE_NONE;
+    st = vx_ns_nsd(vx_ns_group.chan, NSD_SHARE, (nsd_args){}, (vx_str){}, (vx_str){}, nullptr, 0, &rep, &chan,
+                   1);
+    if (st == VX_OK) handles[*count] = chan, names[(*count)++] = VX_STR("nsgroup");
+  }
+  if (st != VX_OK) st = vx_ns_copy_records(ns, w, handles, names, count, cap - 1);
+  if (st == VX_OK && vx_ns_group.srv &&
+      vx_handle_dup(vx_ns_group.srv, VX_RIGHTS_SAME, &handles[*count]) == VX_OK)
+    names[(*count)++] = VX_STR("srv:nsd");
+  return st;
+}
+
 // After a fork (01 §9): the namespace's rings were not copied into this
 // process, so its connections are let go, here only (the parent keeps its
 // own), and the namespace is built again from its own records over new
 // connections, through the connectors it kept. A dialed mount is dialed
 // again; the old TCP connection's state is left behind.
 [[maybe_unused]] static vx_status vx_ns_after_fork(vx_ns *ns) {
+  if (vx_ns_group.chan) {
+    // In a group: the channel to nsd and the mapping of its text were copied
+    // from the parent's; this process gets a channel of its own, maps the
+    // text again, and builds its table from it over new connections.
+    nsd_msg rep;
+    vx_handle chan = VX_HANDLE_NONE;
+    vx_status st = vx_ns_nsd(vx_ns_group.chan, NSD_SHARE, (nsd_args){}, (vx_str){}, (vx_str){}, nullptr, 0,
+                             &rep, &chan, 1);
+    vx_handle_close(vx_ns_group.chan);
+    vx_as_unmap(vx_self, (uint64_t)vx_ns_group.page, VX_NS_PAGE_SIZE);
+    for (uint32_t i = 0; i < VX_NS_MAX_CONNS; i++) {
+      if (vx_ns_conns[i].end) p9_ring_disconnect(&vx_ns_conns[i]);
+      vx_ns_conns[i] = (p9_conn){};
+      vx_ns_conn_names[i][0] = 0;
+      if (ns->conns[i].connector) vx_handle_close(ns->conns[i].connector);
+    }
+    memset(ns, 0, sizeof *ns); // not a compound literal: too big to build on the stack first
+    vx_ns_group = (vx_ns_group_state){.srv = vx_ns_group.srv};
+    return st == VX_OK ? vx_ns_group_join(ns, chan) : st;
+  }
   static char records[16 * 1024];
   vx_handle handles[VX_CHANNEL_MAX_HANDLES];
   vx_str names[VX_CHANNEL_MAX_HANDLES];
   uint32_t count = 0;
   vx_ndb_writer w = {.buf = records, .cap = sizeof records};
-  vx_status st = vx_ns_spawn_records(ns, &w, handles, names, &count, VX_CHANNEL_MAX_HANDLES);
+  vx_status st = vx_ns_copy_records(ns, &w, handles, names, &count, VX_CHANNEL_MAX_HANDLES);
   for (uint32_t i = 0; i < VX_NS_MAX_CONNS; i++) {
     if (vx_ns_conns[i].end) p9_ring_disconnect(&vx_ns_conns[i]);
     vx_ns_conns[i] = (p9_conn){};
     vx_ns_conn_names[i][0] = 0;
     if (ns->conns[i].connector) vx_handle_close(ns->conns[i].connector);
   }
-  *ns = (vx_ns){};
+  memset(ns, 0, sizeof *ns); // not a compound literal: too big to build on the stack first
   if (st != VX_OK) return st;
   vx_ns_handles from = {.names = names, .handles = handles, .count = count};
   ns->release = vx_ns_release;

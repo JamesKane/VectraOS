@@ -3,12 +3,15 @@
 // procfs as its children, and checks /proc: status, ppid, wait records (the
 // child's exit string, or the note that ended it), note, notepg, noteid, ctl,
 // and a note ending a wait read. Each check prints a line only when it fails;
-// the last line counts them.
+// the last line counts them. It checks namespace groups too: a child's bind
+// reaches its parent, and /proc/N/ns says so.
 //
 // Run as a child (its first argument), it is:
 //   exit      ends at once, with the exit string "child done"
 //   sleep     waits for ever, so a note ends it, with the note
 //   poke      waits a little, posts the note "poke" to its parent, then sleeps
+//   bind      binds /boot on /n, in the namespace group it shares with its
+//             parent (ADR-0009), and ends
 
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-rt/spawn.c"
@@ -131,6 +134,8 @@ static vx_noted on_note(vx_exception *e, vx_str note) {
 
 static const char *child(vx_str mode) {
   if (mode.len == 4 && memcmp(mode.ptr, "exit", 4) == 0) return "child done";
+  if (mode.len == 4 && memcmp(mode.ptr, "bind", 4) == 0)
+    return vx_ns_bind(&ns, VX_STR("/boot"), VX_STR("/n"), 0) == VX_OK ? nullptr : "cannot bind";
   if (mode.len == 4 && memcmp(mode.ptr, "poke", 4) == 0) {
     nap(100); // the parent is in its wait read by now
     char buf[24] = {};
@@ -228,6 +233,19 @@ const char *vx_main(void) {
   n = wait_record(buf, sizeof buf);
   CHECK(n > 0 && has((vx_str){buf, (size_t)n}, "status=killed"));
   CHECK(wait_record(buf, sizeof buf) == VX_ERR_NO_CHILD);
+
+  // A namespace group (ADR-0009): a child shares its parent's, so its bind
+  // reaches the parent, whose /proc/N/ns says so, and stays after it has gone.
+  p9_client *pc;
+  uint32_t fid;
+  CHECK(vx_ns_walk(&ns, VX_STR("/n/bin"), &pc, &fid) == VX_ERR_NOT_FOUND); // /n is empty
+  CHECK(spawn("bind") != 0);
+  n = wait_record(buf, sizeof buf);
+  CHECK(n > 0 && has((vx_str){buf, (size_t)n}, "status=\"\""));
+  CHECK(vx_ns_walk(&ns, VX_STR("/n/bin"), &pc, &fid) == VX_OK);
+  if (pc) p9c_clunk(pc, fid);
+  n = read_file(me, "ns", buf, sizeof buf);
+  CHECK(n > 0 && has((vx_str){buf, (size_t)n}, "bind /boot /n"));
 
   vx_print(VX_STR("proctest: "));
   vx_print_u64(checks);

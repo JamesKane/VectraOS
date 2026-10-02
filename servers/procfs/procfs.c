@@ -13,6 +13,7 @@
 //   /proc/N/notepg   a write posts a note to every process in N's note group
 //   /proc/N/noteid   N's note group: read it, or write a group's id to join it
 //   /proc/N/ppid     the parent's pid
+//   /proc/N/ns       its namespace group's text, namespace(6) (ADR-0009), from nsd
 //   /proc/N/wait     a read waits for a child to end, then returns its record:
 //                    pid=9 name=ls noteid=7 status="" real=12 (ms); its length is the count
 //
@@ -37,6 +38,7 @@
 #include "../../lib/vx-9p/ring_server.c"
 #include "../../lib/vx-proc/proc.h"
 #include "../../lib/vx-posix/posix.h"
+#include "../../lib/vx-ns/nsd.h"
 
 static constexpr uint32_t MAX_PROCS = 128;
 static constexpr uint32_t MAX_RECORDS = 512; // wait records, for every parent together
@@ -249,7 +251,7 @@ static vx_status post(proc *p, vx_str note) {
 // shifted left four, plus the file's number below.
 
 enum : uint64_t { ROOT = 1 };
-enum : uint32_t { DIR, STATUS, CTL, NOTE, NOTEPG, NOTEID, PPID, WAIT, FILES };
+enum : uint32_t { DIR, STATUS, CTL, NOTE, NOTEPG, NOTEID, PPID, WAIT, NS, FILES };
 
 static const struct {
   vx_str name;
@@ -257,8 +259,24 @@ static const struct {
 } FILE_TABLE[FILES] = {
     [STATUS] = {VX_STR("status"), 0444}, [CTL] = {VX_STR("ctl"), 0222},       [NOTE] = {VX_STR("note"), 0222},
     [NOTEPG] = {VX_STR("notepg"), 0222}, [NOTEID] = {VX_STR("noteid"), 0664}, [PPID] = {VX_STR("ppid"), 0444},
-    [WAIT] = {VX_STR("wait"), 0444},
+    [WAIT] = {VX_STR("wait"), 0444},     [NS] = {VX_STR("ns"), 0444},
 };
+
+static vx_handle nsd; // a connector to nsd's post, for /proc/N/ns
+
+// The namespace text of the group pid is in, from nsd: its length in buf, or 0.
+static size_t ns_text(uint64_t pid, char *buf, size_t cap) {
+  alignas(nsd_msg) static uint8_t reply[sizeof(nsd_msg) + NSD_TEXT_MAX];
+  nsd_msg req = {.h = {.ordinal = NSD_TEXT}, .a = {.task = pid}};
+  vx_call c = {.wr_bytes = &req, .wr_len = sizeof req, .rd_bytes = reply, .rd_cap = sizeof reply};
+  if (!nsd || vx_channel_call(nsd, &c, vx_clock_read() + 1'000'000'000) != VX_OK) return 0;
+  const nsd_msg *rep = (const nsd_msg *)reply;
+  if (c.actual.bytes < sizeof *rep || rep->h.flags || rep->a.text_len > c.actual.bytes - sizeof *rep)
+    return 0;
+  size_t n = rep->a.text_len < cap ? rep->a.text_len : cap;
+  memcpy(buf, reply + sizeof *rep, n);
+  return n;
+}
 
 static proc *proc_of(uint64_t node) { return node == ROOT ? nullptr : by_pid(node >> 4); }
 static uint32_t file_of(uint64_t node) { return (uint32_t)(node & 15); }
@@ -420,10 +438,11 @@ static vx_status fs_read(void *ctx, uint64_t node, uint64_t offset, uint8_t *buf
   (void)ctx;
   proc *p = proc_of(node);
   if (!p) return VX_ERR_NOT_FOUND;
-  char text[512];
+  static char text[NSD_TEXT_MAX];
   size_t len = 0;
   switch (file_of(node)) {
   case STATUS: len = status_text(p, text, sizeof text); break;
+  case NS: len = ns_text(p->pid, text, sizeof text); break;
   case NOTEID: len = number_text(p->noteid, text); break;
   case PPID: len = number_text(p->ppid, text); break;
   case WAIT: { // a record each read, whatever the offset, as 9front's
@@ -528,6 +547,7 @@ static vx_status fs_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *c
 
 const char *vx_main(void) {
   vx_handle tasks = vx_spawn_take("tasks");
+  nsd = vx_spawn_take("srv:nsd");
   // Field by field: the server is too big for a compound literal, which would
   // be built on the stack first.
   server.fs = (p9_fs){.attach = fs_attach,

@@ -79,14 +79,27 @@ typedef struct vx_ns_entry {
   vx_ns_member members[VX_NS_MAX_MEMBERS];
 } vx_ns_entry;
 
-typedef struct vx_ns {
+typedef struct vx_ns vx_ns;
+struct vx_ns {
   vx_ns_conn conns[VX_NS_MAX_CONNS];
   vx_ns_entry entries[VX_NS_MAX_ENTRIES];
   uint32_t next_seq;
   // Called when unmount leaves a connection with no members, after its fids
   // are clunked; the connection's slot is free once it returns. May be null.
   void (*release)(p9_client *c, vx_handle connector);
-} vx_ns;
+  // A namespace group's (ADR-0009; lib/vx-ns/spawn.c and nsd), or null for a
+  // namespace of its own. refresh brings the table up to the group's, before a
+  // name is resolved; publish tells the group the table has changed, adding
+  // connection new_conn if it is not VX_NS_MAX_CONNS, and answers BAD_STATE if
+  // the group moved on meanwhile: the change is then made again, after a refresh.
+  void (*refresh)(vx_ns *ns);
+  vx_status (*publish)(vx_ns *ns, uint8_t new_conn);
+  bool quiet; // a refresh is replaying the group's table: no hooks
+};
+
+static void ns_catch_up(vx_ns *ns) {
+  if (ns->refresh && !ns->quiet) ns->refresh(ns);
+}
 
 // Cleans an absolute path lexically: no empty, "." or ".." components, and
 // ".." above the root is the root. Returns its length, or 0 for a relative
@@ -282,6 +295,7 @@ static vx_status ns_resolve(vx_ns *ns, vx_str path, vx_ns_at *out) {
 // Resolves a path to a new fid on one of the namespace's connections: the
 // caller owns it and clunks it. Members of a union are tried in order.
 [[maybe_unused]] static vx_status vx_ns_walk(vx_ns *ns, vx_str path, p9_client **c, uint32_t *fid) {
+  ns_catch_up(ns);
   char clean[VX_NS_MAX_PATH];
   size_t n = vx_ns_clean(path, clean, sizeof clean);
   if (!n) return VX_ERR_INVALID;
@@ -297,6 +311,7 @@ static vx_status ns_resolve(vx_ns *ns, vx_str path, vx_ns_at *out) {
 // registers its children with whatever serves /proc: lib/vx-proc/proc.h), or
 // VX_HANDLE_NONE. The namespace keeps it: the caller does not close it.
 [[maybe_unused]] static vx_handle vx_ns_connector(vx_ns *ns, vx_str path) {
+  ns_catch_up(ns);
   vx_ns_entry *e = ns_exact(ns, path);
   for (uint32_t i = 0; e && i < e->count; i++)
     if (e->members[i].mounted && ns->conns[e->members[i].conn].connector)
@@ -382,11 +397,9 @@ static vx_status ns_add(vx_ns *ns, vx_str old, vx_ns_member m, uint8_t flags) {
   return ns_insert(ns, e, m, flags, flags & VX_NS_BEFORE ? 0 : e->count);
 }
 
-// Adds a connection (attached at its aname) at `old`. The namespace takes c:
-// it is used until the namespace drops it. `connector` and `src` say where it
-// came from, for children and for ns output.
-[[maybe_unused]] static vx_status vx_ns_mount(vx_ns *ns, p9_client *c, vx_handle connector, vx_str src,
-                                              vx_str aname, vx_str old, uint8_t flags) {
+// vx_ns_mount's change, to this table alone.
+static vx_status ns_mount_raw(vx_ns *ns, p9_client *c, vx_handle connector, vx_str src, vx_str aname,
+                              vx_str old, uint8_t flags) {
   char clean[VX_NS_MAX_PATH];
   size_t n = vx_ns_clean(old, clean, sizeof clean);
   if (!n || src.len > VX_NS_MAX_SRC || aname.len > VX_NS_MAX_PATH) return VX_ERR_INVALID;
@@ -414,9 +427,8 @@ static vx_status ns_add(vx_ns *ns, vx_str old, vx_ns_member m, uint8_t flags) {
   return st;
 }
 
-// Makes `old` show what `new` names now. A union bound on a directory is
-// copied whole, as 9front's cmount copies one: its members in order.
-[[maybe_unused]] static vx_status vx_ns_bind(vx_ns *ns, vx_str new, vx_str old, uint8_t flags) {
+// vx_ns_bind's change, to this table alone.
+static vx_status ns_bind_raw(vx_ns *ns, vx_str new, vx_str old, uint8_t flags) {
   char from[VX_NS_MAX_PATH], to[VX_NS_MAX_PATH];
   size_t fn = vx_ns_clean(new, from, sizeof from), tn = vx_ns_clean(old, to, sizeof to);
   if (!fn || !tn) return VX_ERR_INVALID;
@@ -448,9 +460,8 @@ static vx_status ns_add(vx_ns *ns, vx_str old, vx_ns_member m, uint8_t flags) {
   return st;
 }
 
-// Removes what was bound or mounted from `new` at `old`, or, with an empty
-// `new`, everything at `old`.
-[[maybe_unused]] static vx_status vx_ns_unmount(vx_ns *ns, vx_str new, vx_str old) {
+// vx_ns_unmount's change, to this table alone.
+static vx_status ns_unmount_raw(vx_ns *ns, vx_str new, vx_str old) {
   char to[VX_NS_MAX_PATH], from[VX_NS_MAX_PATH];
   size_t tn = vx_ns_clean(old, to, sizeof to), fn = new.len ? vx_ns_clean(new, from, sizeof from) : 0;
   if (!tn || (new.len && !fn)) return VX_ERR_INVALID;
@@ -487,6 +498,72 @@ static vx_status ns_add(vx_ns *ns, vx_str old, vx_ns_member m, uint8_t flags) {
     ns->conns[c] = (vx_ns_conn){};
   }
   return removed ? VX_OK : VX_ERR_NOT_FOUND;
+}
+
+// The table, emptied: every member's fid clunked, every mount point gone. Its
+// connections stay, for a refresh to use again.
+[[maybe_unused]] static void vx_ns_reset(vx_ns *ns) {
+  for (uint32_t i = 0; i < VX_NS_MAX_ENTRIES; i++) {
+    vx_ns_entry *e = &ns->entries[i];
+    for (uint32_t k = 0; e->path_len && k < e->count; k++) ns_drop_member(ns, &e->members[k]);
+    *e = (vx_ns_entry){};
+  }
+}
+
+// A change to the table, and the group told of it: made again after catching
+// up, if the group moved on meanwhile (ADR-0009).
+static vx_status ns_publish(vx_ns *ns, vx_status st, uint8_t new_conn, bool *again) {
+  *again = false;
+  if (st != VX_OK || !ns->publish || ns->quiet) return st;
+  st = ns->publish(ns, new_conn);
+  *again = st == VX_ERR_BAD_STATE;
+  return st;
+}
+
+static uint8_t ns_conn_of(const vx_ns *ns, const p9_client *c) {
+  for (uint8_t i = 0; i < VX_NS_MAX_CONNS; i++)
+    if (ns->conns[i].client == c) return i;
+  return VX_NS_MAX_CONNS;
+}
+
+// Adds a connection (attached at its aname) at `old`. The namespace takes c:
+// it is used until the namespace drops it. `connector` and `src` say where it
+// came from, for children and for ns output.
+[[maybe_unused]] static vx_status vx_ns_mount(vx_ns *ns, p9_client *c, vx_handle connector, vx_str src,
+                                              vx_str aname, vx_str old, uint8_t flags) {
+  vx_status st = VX_ERR_BAD_STATE;
+  bool again = true;
+  for (int tries = 0; again && tries < 8; tries++) {
+    ns_catch_up(ns);
+    bool fresh = ns_conn_of(ns, c) == VX_NS_MAX_CONNS;
+    st = ns_mount_raw(ns, c, connector, src, aname, old, flags);
+    st = ns_publish(ns, st, fresh ? ns_conn_of(ns, c) : VX_NS_MAX_CONNS, &again);
+  }
+  return st;
+}
+
+// Makes `old` show what `new` names now. A union bound on a directory is
+// copied whole, as 9front's cmount copies one: its members in order.
+[[maybe_unused]] static vx_status vx_ns_bind(vx_ns *ns, vx_str new, vx_str old, uint8_t flags) {
+  vx_status st = VX_ERR_BAD_STATE;
+  bool again = true;
+  for (int tries = 0; again && tries < 8; tries++) {
+    ns_catch_up(ns);
+    st = ns_publish(ns, ns_bind_raw(ns, new, old, flags), VX_NS_MAX_CONNS, &again);
+  }
+  return st;
+}
+
+// Removes what was bound or mounted from `new` at `old`, or, with an empty
+// `new`, everything at `old`.
+[[maybe_unused]] static vx_status vx_ns_unmount(vx_ns *ns, vx_str new, vx_str old) {
+  vx_status st = VX_ERR_BAD_STATE;
+  bool again = true;
+  for (int tries = 0; again && tries < 8; tries++) {
+    ns_catch_up(ns);
+    st = ns_publish(ns, ns_unmount_raw(ns, new, old), VX_NS_MAX_CONNS, &again);
+  }
+  return st;
 }
 
 // --- ns output ---
@@ -601,6 +678,7 @@ typedef struct vx_ns_file {
 
 // Opens a path. A directory that is a union reads as each member in turn.
 [[maybe_unused]] static vx_status vx_ns_open(vx_ns *ns, vx_str path, uint8_t mode, vx_ns_file *f) {
+  ns_catch_up(ns);
   *f = (vx_ns_file){.ns = ns};
   char clean[VX_NS_MAX_PATH];
   size_t n = vx_ns_clean(path, clean, sizeof clean);
@@ -621,6 +699,7 @@ typedef struct vx_ns_file {
 // `mode`, with permissions perm.
 [[maybe_unused]] static vx_status vx_ns_create(vx_ns *ns, vx_str path, uint32_t perm, uint8_t mode,
                                                vx_ns_file *f) {
+  ns_catch_up(ns);
   *f = (vx_ns_file){.ns = ns};
   char clean[VX_NS_MAX_PATH];
   size_t n = vx_ns_clean(path, clean, sizeof clean), slash = n;

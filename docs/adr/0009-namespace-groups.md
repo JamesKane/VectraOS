@@ -20,11 +20,12 @@ Both break the mental model Plan 9 scripts depend on.
   - **share** (the default): the child joins its parent's group;
   - **copy** (`RFNAMEG`): a new group starting from a copy of the parent's table;
   - **clean** (`RFCNAMEG`): a new, empty group, which the spawner fills from a template (`svcd`'s sandboxes, 02 §7).
-- **`nsd` holds every group's table, one `nsd` per node.**
-  - It publishes each table to the group's members as a read-only VMO with a sequence counter.
-  - Members resolve names from that VMO with no round trip, and read it again when the counter moves.
-  - `bind`, `mount` and `unmount` are channel calls to `nsd`, one round trip each.
-  - A group with one member keeps its table private, as today, and is handed to `nsd` when a second member joins. So a process that never shares never talks to `nsd`.
+- **`nsd` holds every group's namespace, one `nsd` per node** (`servers/nsd`, protocol `lib/vx-ns/nsd.h`).
+  - A group's namespace is its namespace(6) text, as `ns` prints it, and the connectors its `mount` lines name. One format, which `vx-ns` already replays, rather than a second table layout.
+  - `nsd` publishes the text in a VMO each member maps read-only, after a sequence counter. Each member keeps its own table, built from the text. Before resolving a name it checks the counter, and if it has moved, it empties its table and replays the text. Resolving takes no round trip.
+  - `bind`, `mount` and `unmount` happen on the member's own table first. The member then sends `nsd` its new text, with the counter it started from: one channel call. If another member changed the group meanwhile, `nsd` refuses, and the member catches up and does it again.
+  - A process keeps a table of its own until it first spawns a child that shares it. That makes a group, with the process as its first member. So a process that never shares never talks to `nsd`. Without `nsd`, a child gets a copy.
+  - After a `fork`, the child gets a channel of its own for the group, and maps the text again: the copy of the parent's mapping would not see later changes.
 - **Connections stay per process.** A ring has one producer (01 §4.3). So a table entry names a *connector*, not a connection. Each member opens its own connection on first use, through a duplicate of the connector handle that it gets from `nsd`. Inherited descriptors still need `Tshare`/`Tjoin` (docs/proto/posix.md), because a fid belongs to one connection.
 - **A mount is found by the identity of its mount point:** the connection and the qid path of the directory it was mounted on, as 9front's `findmount` matches the channel at every walk step.
   - Resolution walks from the root. A `Twalk` already returns one qid per name walked. libns checks each against the table, and on a hit it continues from the mount's union with the remaining names.
@@ -43,7 +44,8 @@ Both break the mental model Plan 9 scripts depend on.
 
 ## Consequences
 
-- `vx-ns` matches mounts by qid, not by prefix, and gains the group protocol. `nsd` is a new server of a few hundred lines. The spawn message carries the group: a handle to it for share, or the table's records for copy and clean.
+- `vx-ns` matches mounts by qid, not by prefix, and gains the group protocol. `nsd` is a new server of a few hundred lines. The spawn message carries the group, a channel to `nsd` for it (`nsgroup`), for share; or the table's records, for copy and clean. `gsh`'s commands and the musl back end's children share; `svcd` gives each service a namespace of its own, from its manifest or template.
+- `/proc/N/ns` is the text of the group process N is in, which `procfs` asks `nsd` for.
 - Shells behave like Plan 9's. A script's `bind` reaches its caller unless the script runs in a copied group (rc's `rfork n`).
 - 02 §8's question 3 is closed. Groups arrive before M4's sockets, not at M8.
 - **Open: `nsd` restarting.** Members keep the last published table and go on resolving with it. Until `nsd` is back, binds fail, and so do spawns that share.

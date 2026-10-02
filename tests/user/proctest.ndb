@@ -5,3 +5,4 @@
 service=proctest program=/boot/bin/proctest console
 mount=/ srv=bootfs
 mount=/proc srv=proc
+connect=nsd

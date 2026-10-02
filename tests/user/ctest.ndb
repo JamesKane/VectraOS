@@ -6,6 +6,7 @@ arg=one
 arg="two words"
 env=GREETING=hello
 ns=posix
+connect=nsd
 env=PATH=/bin
 env=HOME=/tmp
 env=TMPDIR=/tmp
