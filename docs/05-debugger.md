@@ -53,6 +53,8 @@ The kernel adds one right and five syscalls, plus `pmu_configure` for profiling 
         regs.ndb   the same registers as one ndb record: rip=0x4011a0 rsp=0x7ffd… (write a tuple to set it)
         fpregs     FP and SIMD registers, binary; fpregs.ndb as text
         ctl        step · resume · freeze · thaw
+        sched      intent=realtime period=2.67ms budget=0.5ms ctx=audio/12 threads=3 admitted=yes
+                   misses=2 last_miss=1781203.441s overrun=0.08ms     (one ndb record; F-215)
 ```
 
 - **Breakpoints live in `procfs`, not in the debugger.** `procfs` writes the trap instruction and steps each thread over it on resume. So a shell script can write `break 0x4011a0` and read `events`, and two tools can share one target. **Simple conditions are evaluated in `procfs`:** a comparison of a register, or of a word at a fixed address, with a constant (`break 0x4011a0 if rdi==3`, `break 0x4011a0 if [0x7f001000]>=100`), plus a hit count. A breakpoint in a hot loop then costs a trap and a compare, not a round trip to the debugger. `dbg` compiles a source-level condition to that form whenever it can. Conditions that need more (calls to built-ins, pointer chains, log points) are evaluated by `dbg`, which resumes the thread when they don't match; the watch panel marks such breakpoints as slow.

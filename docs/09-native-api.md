@@ -204,7 +204,7 @@ typedef struct {
 vx_status vx_io_submit(vx_loop *l, const vx_io *ops, size_t n);    // B: one ring submission
 ```
 
-The flags are the study's per-request cache policy (F-217), which the blueprint dropped. They become fields of the 9Px read and write requests (02 §3.3), so `fsd` and the page cache see them, rather than per-VMO settings only.
+The flags are the study's per-request cache policy (F-217), carried by 9Px's `hint` extension (02 §3.3), so `fsd` and the page cache see them per request. Hints for mapped files are `vmo_op hint` (01 §5).
 
 ### 5.6 Time: `<vx/time.h>`
 
@@ -280,7 +280,7 @@ Channels, rings, counters and sessions, as `vx-ring` and the wrappers have them.
 
 ### 5.13 Windows, input, audio and the GPU
 
-These are `vxui` (03 §6) and the engine tier, and 03 owns them. §7 lists what the study proposed for them that 03 does not yet say.
+These are `vxui` (03 §6) and the engine tier, and 03 owns them.
 
 ### 5.14 Diagnostics: `<vx/prof.h>`, `<vx/debug.h>`
 
@@ -302,16 +302,16 @@ These are `vxui` (03 §6) and the engine tier, and 03 owns them. §7 lists what 
 | A main thread, a run loop the system owns, a callback driver | The program owns its loop (03 §6) |
 | `sleep(seconds)`, timer resolution | Absolute deadlines with leeway (§5.6) |
 
-## 7. Study findings not yet in the blueprint
+## 7. Study findings carried into the blueprint
 
-A second reading of the study found details its condensed copy in [study/](study/README.md) dropped or softened. Those that concern windows, input, audio and the GPU are now in 03: four-state visibility, one configure record with an `interactive` flag, viewports, stable output names, coordinate-free move and resize, the keymap file, IME purpose and pass-through, pointer-lock events and warp flags, buffer age, visibility driving render-thread intent, helper threads joining an audio deadline, and GPU device identity (03 §3, §4, §5.1, §6, §7). These remain, for the documents below the toolkit:
+A second reading of the study found interface details its condensed copy in [study/](study/README.md) had dropped or softened. They are now where they belong:
 
-| Finding | Proposal | Lands in |
-|---|---|---|
-| F-217: per-request cache policy, prefetch hints, a pinned-memory budget | `vx_io` flags (§5.5); 9Px read and write fields; a pin budget in 01 §5 | 02 §3.3, 01 §5 |
-| F-218: fixed reservations in release builds | Emulators and translation layers need `AS_FIXED` in release builds; 01 §5 allows it only under the `dev` policy. Allow it for any reservation in an unused range, keeping JIT under the existing W^X dual mapping | 01 §5 |
-| F-215: deadline joins and misses in the kernel | `sched_ctx` sharing for `vx_realtime_join`; the `sched` file | 01 §8, 05 §3 |
-| F-109: GPU memory priority as eviction order | Vulkan memory priority maps onto VMO purge order | 01 §5 |
+| Where | Findings |
+|---|---|
+| 01 §5 | Reservations with an alignment, and `AS_FIXED` for any program (F-218); purgeable memory and eviction priority, with Vulkan's memory priority mapped onto it (F-109); a pin budget and access hints (F-217) |
+| 01 §8, 05 §3 | Several threads sharing one real-time context; admitted parameters and deadline misses in `/proc/N/threads/T/sched` (F-215) |
+| 02 §3.3 | The `hint` extension: per-request cache policy on reads and writes, and no alignment rule (F-217) |
+| 03 §3–§7 | GPU device identity; one configure record with an `interactive` flag; viewports; four-state visibility; output names; coordinate-free move and resize; the keymap file; IME purpose and pass-through; pointer-lock events; buffer age; render-thread intent following visibility; helper threads in an audio deadline |
 
 ## 8. Examples
 
@@ -389,4 +389,3 @@ The draft also found places where the documents and the code disagree, to settle
 3. **How much of the loop is in `libvx`.** Timers here are user-space bookkeeping over the port's deadline; a kernel timer object would be another syscall family. Start with bookkeeping.
 4. **`vx_fd` or `vx_file *`.** Small integer ids match Plan 9 and the study's handle rule; pointers match the rest of `libvx`'s objects. Ids are proposed, because descriptors are passed between threads and stored in events.
 5. **`vx_heap` at all.** Arenas and pools cover the system's own code; `hx`'s buffers and long-lived app data may not fit them. Measure with `hx` before adding it.
-6. **Where the per-request cache flags live in 9Px:** new fields on `Tread` and `Twrite`, which every server must then parse, or a separate extension message.

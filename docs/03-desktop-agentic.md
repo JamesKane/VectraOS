@@ -286,11 +286,11 @@ Handmade Hero's live code editing is a convention of `vxui`, not a new mechanism
 - **The split:** during development an app builds as a small host plus a code image, `app.so`, which exports one function: `void vx_app_update(vx_app_memory *mem, vx_event *ev)`. All of the app's state lives in `mem`, one block that the host reserves with `as_reserve(AS_FIXED)` at the same address every run (01 §5), so pointers inside it stay valid across reloads and across runs. The host is app code too: a short template the app owns and may change. So the app still owns its loop (principle 1); the host's loop is the app's loop.
 - **Reload:** `./build` writes a new image to a temporary name and renames it over `app.so`, so the host never sees a half-written file. The host watches for the rename with `notify` (02 §3.3), finishes the current frame, maps the new image at a new address and carries on.
 - **Old images stay mapped** until the session ends. A string literal, function pointer or constant table that `mem` still points to keeps pointing at valid bytes after a reload, which removes Handmade Hero's classic reload crash. Address space is cheap; a long session costs a few megabytes. `dbg` sees each image as its own map event and keeps breakpoints by source line across them (05 §2).
-- **Looped playback:** `vx_loop_start` snapshots `mem` and starts recording every event `vx_wait` returns, and `vx_loop_play` restores the snapshot and replays the events in a loop while you edit the code. Replay is exact only if everything the app depends on comes through `vx_wait`, so in loop mode:
+- **Looped playback:** `vx_replay_start` snapshots `mem` and starts recording every event `vx_wait` returns, and `vx_replay_play` restores the snapshot and replays the events in a loop while you edit the code. Replay is exact only if everything the app depends on comes through `vx_wait`, so while replaying:
   - time comes from `ev.frame` (`target`, `dt`), never from `rdtsc`, `clock_read` or `/sys/clock/now`;
   - file contents and ring completions count only if they arrived as events; a direct `read()` is not recorded and is not replayed.
 - **The snapshot is `mem` and nothing else.** GPU memory, windows, voices and open files are not restored; an app that keeps state in them redraws or reloads it from `mem`.
-- **Release builds** link the code image statically. Only tasks with the `dev` policy may use `AS_FIXED`.
+- **Release builds** link the code image into the host, and do not reload. `AS_FIXED` is open to any program (01 §5); what release builds lose is the reload, not the fixed address.
 
 ## 7. Audio
 

@@ -99,6 +99,7 @@ That is the whole list: one local transport and one network transport.
 | **notify** | `Tnotify fid mask` then a stream of `Rnotify` messages (created, removed, modified, attribute changed) | File watching (IO.watch) without polling |
 | **xattr** | 9P2000.L's `Tgetattr` and `Tsetattr`, wire format unchanged, plus two attributes: content type and schema reference | POSIX `stat` fidelity with no new spec, and agent discoverability |
 | **posix** | 9P2000.L's `Trenameat`, `Tlink`, `Tsymlink`, `Treadlink`, `Tlock`, `Tgetlock` and `Tfsync`, unchanged; plus open-file state kept by the server, so every fd that shares an open shares its offset and `O_APPEND` (01 §9) | Git renames across directories, SQLite takes locks, and `fork` shares offsets. 9P2000's `wstat` can only rename within one directory |
+| **hint** | One flags field appended to `Tread` and `Twrite`: `uncached` (do not keep these pages in the cache), `once` (keep them only until this read is answered), `prefetch` (read ahead past the range). There is no alignment rule: a server bounces an unaligned request itself, so a client never gets the `EINVAL` that `O_DIRECT` gives | Per-request cache policy for streaming assets, video and large copies, without polluting the page cache (F-217). A server that does not negotiate it never parses the field |
 | **Tflush** | Unchanged | Cancellation. It is Exec's `AbortIO`, and the heritage study validates it |
 
 **Each extension waits for its first user.** An extension is frozen only when the milestone that needs it lands, and its spec in `docs/proto/` then opens with the client code that uses it. Until then, the table above is a sketch, not a promise.
@@ -111,6 +112,7 @@ That is the whole list: one local transport and one network transport.
 | `lease` | M8 | the `cfs` cache in a `cpu` session (§6.6) |
 | `xattr` | M4 | POSIX `stat` in the musl back end |
 | `posix` | M4 | Git, and the shell's redirections, in the musl back end |
+| `hint` | M5 | `vx_io_submit` loading assets through `fsd` (09 §5.5) |
 
 **Pipelining, not batching.** 9P clients choose their own fids, so walk, open and read can be sent back to back without waiting: `Twalk fid=0 newfid=5 …`, `Topen 5`, `Tread 5`. 9Px adds one rule: a server processes a request that names a fid created by an earlier request on the same connection after that request. If the walk fails, the later requests fail with `unknown fid`. That is one round trip over a WAN with no compound message; NFSv4's COMPOUND is the warning.
 

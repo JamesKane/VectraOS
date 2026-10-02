@@ -59,7 +59,7 @@ thread_create  thread_start  thread_exit  thread_interrupt  thread_state(get/set
 thread_suspend  thread_resume  task_mem_rw  exception_bind  exception_resume   # debugging (05 §2)
 sched_ctx_create  sched_ctx_bind  sched_ctx_configure  sched_reserve   # intents, admission, core reservations (§8)
 vmo_create(kind: anonymous/physical/contiguous)  vmo_clone  vmo_seal
-vmo_rw  vmo_op(commit/decommit/resize/cache_clean/cache_inval/lock)  vmo_lease  vmo_revoke
+vmo_rw  vmo_op(commit/decommit/resize/cache_clean/cache_inval/lock/hint/purgeable/priority)  vmo_lease  vmo_revoke
 pager_create  pager_supply  pager_op
 as_reserve  as_map  as_unmap  as_protect  as_query
 handle_dup  handle_close  handle_replace
@@ -222,9 +222,10 @@ vx_status futex_wake(const _Atomic uint32_t *addr, uint32_t count);
 - **NUMA placement:** `vmo_create` takes a placement: first touch (the default), one node, or interleaved across nodes. HPC programs place memory next to the cores they reserved (§8).
 - **Cache policy per VMO:** write-back, write-combining, uncached or device. Mixing policies on one physical page is refused, because mismatched attributes on aarch64 are undefined behaviour.
 - **Address spaces:**
-  - `as_reserve` creates a *reservation*: placeholder address space with no commit, in the style of Windows placeholders (F-218). It normally picks a random base (ASLR). With `AS_FIXED` it takes the base the caller names. The flag is honoured in any task started with the `dev` policy, so a program can keep its memory at the same address across runs and across code reloads (03 §6.1); release services never get it.
+  - `as_reserve` creates a *reservation*: placeholder address space with no commit, in the style of Windows placeholders (F-218). It takes a size and an alignment, so a 1 GiB-aligned arena needs no over-reservation and trimming. It normally picks a random base (ASLR).
+  - **`AS_FIXED`** takes the base the caller names, if that range is free, and otherwise fails and says what is there. Any program may ask for it, in release builds too: an emulator places guest memory at the guest's addresses, a translation layer needs the addresses a foreign binary was linked for, and hot reload keeps an app's memory at one address across runs (03 §6.1). It gives up ASLR only for the range named, and only in the program that named it.
   - `as_map` places a VMO *view* inside a reservation atomically, and `as_unmap` returns the range to the reservation. Emulators, JITs and GPU drivers need this.
-  - **W^X:** a mapping may be writable or executable, never both. JITs map one VMO twice, once RW and once RX, at unrelated addresses.
+  - **W^X:** a mapping may be writable or executable, never both. JITs map one VMO twice, once RW and once RX, at unrelated addresses. The study proposed a per-thread W^X toggle instead (F-218); the dual mapping needs no per-thread state and no entitlement, and works inside fixed reservations too, so it stays.
   - arm64 BTI and PAC, and x86 CET shadow stacks, are enabled for user space from the start.
 - **Page tables:**
   - x86_64 uses 4-level tables (5-level when the CPU supports LA57) with PCID.
@@ -233,6 +234,9 @@ vx_status futex_wake(const _Atomic uint32_t *addr, uint32_t count);
   - A program can also *ask* for large pages: `as_map` with `PAGE_2M` or `PAGE_1G` either maps the view with that page size or fails, and never falls back silently. Game and engine arenas, model weights and GPU heaps use it. 2 MiB pages come from the `contiguous` pool. 1 GiB pages come only from a pool reserved at boot, because they cannot be assembled reliably later. Both are charged to the budget like any other.
   - TLB shootdowns are batched per `as_unmap` call.
 - **Accounting:** every VMO is charged to a **memory budget** attached to a task group. GPU and NPU buffers count too, because on unified memory they *are* system memory (F-109). A budget has a limit and a pressure level (`normal`, `warn`, `critical`), and its pressure change can be bound to a port. `aid` uses this to unload models before the system has to kill anything.
+- **Eviction order:** under pressure the kernel first takes memory it can get back without harm: clean pages of pager-backed VMOs, and VMOs their owner marked purgeable (`vmo_op purgeable`), which read as zero once taken. The owner sets a priority per VMO (`vmo_op priority`), and the kernel takes the lowest first. Vulkan's memory priority (`VK_EXT_memory_priority`) maps onto it, so the GPU driver loses the textures the app said matter least, and the app learns from a pressure event rather than a corrupted frame (F-109).
+- **Pinned memory has its own budget.** `vmo_op lock` keeps pages resident, as `mlock` does, and is charged to a pin budget on the task group, beside its memory budget, instead of an `RLIMIT_MEMLOCK`. A request beyond it fails with a reason (F-217). `dma_map` pins against the same budget.
+- **Access hints:** `vmo_op hint` tells the pager how a pager-backed range will be used: `willneed` (read it ahead now), `sequential`, `random` or `dontneed`. `fsd` reads ahead or drops pages accordingly, as `madvise` does elsewhere (F-217).
 - **Commit, not overcommit:** an anonymous VMO's size is charged to the budget when it is created or resized, and a copy-on-write clone is charged in full, as on Windows. A task that cannot get memory learns it from a failed call, never from a fault that kills it later. So `fork` of a large process can fail, and `posix_spawn` is the fast path (§9).
 
 ## 6. The zero-copy fabric
@@ -347,6 +351,8 @@ In M3 the manifests are ndb records in the boot image, `/boot/drv/*.ndb`, one li
 ## 8. Scheduling
 
 **Scheduling contexts:** each has a budget, a period, an intent and a CPU class mask derived from the intent. A thread runs only while its context has budget. Contexts can be donated through `channel_call` (§4.5).
+
+**A context can hold several threads.** A thread given a handle to a `realtime` context may bind to it (`sched_ctx_bind`), and then shares its period and budget: admission counted the budget once, and all of its threads are scheduled against the same deadline. This is how an audio callback brings its helper threads into its deadline, as Apple's audio workgroups do: `audiod` gives the app the stream's context, and `vx_realtime_join` binds to it (03 §7, F-215). Each thread's admitted parameters and its deadline misses are readable in `/proc/N/threads/T/sched` (05 §3).
 
 **Intents (rule 6), and the policy behind each:**
 
