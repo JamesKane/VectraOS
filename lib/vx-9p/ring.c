@@ -64,30 +64,42 @@ typedef struct p9_conn {
   uint8_t tbuf[P9_RING_MSIZE], rbuf[P9_RING_MSIZE];
 } p9_conn;
 
-static size_t p9_ring_rpc(void *ctx, const uint8_t *req, size_t len, uint8_t *resp, size_t cap) {
-  p9_conn *k = ctx;
+// Puts one request on the ring (the connection has at most one outstanding).
+static bool p9_ring_put(p9_conn *k, const uint8_t *req, size_t len) {
   uint64_t arena_size;
   uint8_t *arena = vx_ring_arena(&k->ring, &arena_size);
   vx_sqe *e = k->dead || len > arena_size ? nullptr : vx_ring_produce_slot(&k->ring);
   if (!e) {
     k->dead = true;
-    return 0;
+    return false;
   }
   memcpy(arena, req, len);
   *e = (vx_sqe){.opcode = P9_RING_MSG, .len = (uint32_t)len};
   if (vx_ring_produce(&k->ring)) vx_ring_notify(k->end);
+  return true;
+}
+
+// Takes the reply if it has come: its length, 0 if not yet, or -1 if the
+// connection is broken.
+static int64_t p9_ring_take(p9_conn *k, uint8_t *resp, size_t cap) {
+  vx_cqe c;
+  vx_status st = vx_ring_consume(&k->ring, &c);
+  if (st == VX_ERR_SHOULD_WAIT) return 0;
+  const uint8_t *p = st == VX_OK && c.result > 0 && (uint64_t)c.result <= cap
+                         ? vx_ring_peer_bytes(&k->ring, c.aux2, (uint64_t)c.result)
+                         : nullptr;
+  if (!p) return -1;
+  memcpy(resp, p, (size_t)c.result);
+  return c.result;
+}
+
+static size_t p9_ring_rpc(void *ctx, const uint8_t *req, size_t len, uint8_t *resp, size_t cap) {
+  p9_conn *k = ctx;
+  if (!p9_ring_put(k, req, len)) return 0;
   for (;;) {
-    vx_cqe c;
-    vx_status st = vx_ring_consume(&k->ring, &c);
-    if (st == VX_OK) {
-      const uint8_t *p = c.result > 0 && (uint64_t)c.result <= cap
-                             ? vx_ring_peer_bytes(&k->ring, c.aux2, (uint64_t)c.result)
-                             : nullptr;
-      if (!p) break;
-      memcpy(resp, p, (size_t)c.result);
-      return (size_t)c.result;
-    }
-    if (st != VX_ERR_SHOULD_WAIT) break;
+    int64_t n = p9_ring_take(k, resp, cap);
+    if (n > 0) return (size_t)n;
+    if (n < 0) break;
     int64_t seen = vx_counter_read(k->end);
     if (vx_ring_prepare_sleep(&k->ring)) {
       vx_packet pk = {};
@@ -145,4 +157,41 @@ static size_t p9_ring_rpc(void *ctx, const uint8_t *req, size_t len, uint8_t *re
   if (k->end) vx_handle_close(k->end);
   if (k->port) vx_handle_close(k->port);
   *k = (p9_conn){.dead = true};
+}
+
+// --- One call at a time, its reply taken later ---
+//
+// For a reader that waits on many things at once (poll's read-ahead, in the
+// musl back end): send a request, then look for its reply, arming a port of
+// the caller's to hear when one may have come. Nothing else may use the
+// connection while a call is outstanding.
+
+[[maybe_unused]] static vx_status p9_ring_send(p9_conn *k, p9_msg *t) {
+  t->tag = k->c.next_tag++ % P9_NOTAG;
+  size_t n = p9_encode(t, k->c.tbuf, k->c.bufsize);
+  if (!n) return VX_ERR_TOO_SMALL;
+  return p9_ring_put(k, k->c.tbuf, n) ? VX_OK : VX_ERR_PEER_CLOSED;
+}
+
+// The reply to the call sent with tag: OK, with *r decoded (its data in the
+// connection's buffer, until the next call); SHOULD_WAIT if it has not come;
+// the error an Rerror names; or PEER_CLOSED.
+[[maybe_unused]] static vx_status p9_ring_receive(p9_conn *k, uint16_t tag, p9_msg *r) {
+  int64_t n = p9_ring_take(k, k->c.rbuf, k->c.bufsize);
+  if (n == 0) return VX_ERR_SHOULD_WAIT;
+  if (n < 0) {
+    k->dead = true;
+    return VX_ERR_PEER_CLOSED;
+  }
+  if (p9_decode(k->c.rbuf, (size_t)n, r) != VX_OK || r->tag != tag) return VX_ERR_INVALID;
+  if (r->type == P9_Rerror) return p9_error_status(r->ename);
+  return VX_OK;
+}
+
+// Arms port to get `key` once a reply may have come. False when one may
+// already have: look again rather than wait. vx_ring_end_sleep after.
+[[maybe_unused]] static bool p9_ring_arm(p9_conn *k, vx_handle port, uint64_t key) {
+  int64_t seen = vx_counter_read(k->end);
+  if (!vx_ring_prepare_sleep(&k->ring)) return false;
+  return vx_port_bind(port, k->end, VX_TRIGGER_COUNTER_GE, key, (uint64_t)seen + 1) == VX_OK;
 }

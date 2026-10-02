@@ -40,6 +40,7 @@ static struct {
 static uint64_t sig_mask, sig_pending;  // bit n - 1 for signal n
 static int64_t sig_sender[SIG_MAX + 1]; // who sent each pending one
 static volatile int sig_depth;          // inside __vx_syscall: delivery waits for its return
+static uint32_t sig_handlers_ran;       // how many handlers have run
 
 static uint64_t sig_bit(int sig) { return 1ull << (sig - 1); }
 static constexpr uint64_t SIG_UNBLOCKABLE = 1ull << (SIGKILL - 1) | 1ull << (SIGSTOP - 1);
@@ -85,6 +86,7 @@ static bool sig_act(int sig, int code, int64_t sender, uint64_t address, const v
   sig_mask |= sig_actions[sig].mask & ~SIG_UNBLOCKABLE;
   if (!(flags & SA_NODEFER)) sig_mask |= sig_bit(sig);
   if (flags & SA_RESETHAND) sig_actions[sig] = (typeof(sig_actions[0])){(uintptr_t)SIG_DFL, 0, 0};
+  sig_handlers_ran++;
   if (flags & SA_SIGINFO) {
     siginfo_t info = {.si_signo = sig, .si_code = code};
     if (e)

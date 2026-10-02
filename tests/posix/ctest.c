@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
+#include <poll.h>
 #include <pthread.h>
 #include <sched.h>
 #include <setjmp.h>
@@ -23,6 +24,7 @@
 #include <sys/auxv.h>
 #include <sys/ioctl.h>
 #include <sys/random.h>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
@@ -674,6 +676,77 @@ static void test_terminals(void) {
   close(s);
 }
 
+// poll and select, over pipes, files and terminals.
+static void test_poll(void) {
+  int p[2], status = 0;
+  CHECK(pipe(p) == 0);
+  struct pollfd fds[2] = {{.fd = p[0], .events = POLLIN}, {.fd = p[1], .events = POLLOUT}};
+  CHECK(poll(fds, 2, 0) == 1 && fds[0].revents == 0 && (fds[1].revents & POLLOUT)); // nothing to read yet
+  double t0 = now_seconds();
+  CHECK(poll(fds, 1, 50) == 0 && now_seconds() - t0 >= 0.05); // its timeout
+  CHECK(write(p[1], "x", 1) == 1 && poll(fds, 1, -1) == 1 && (fds[0].revents & POLLIN));
+  char c;
+  CHECK(read(p[0], &c, 1) == 1 && poll(fds, 1, 0) == 0);
+
+  // A wait that a child's write ends; then the writers gone: hang-up.
+  pid_t child = fork();
+  if (child == 0) {
+    nanosleep(&(struct timespec){.tv_nsec = 50'000'000}, nullptr);
+    _exit(write(p[1], "y", 1) == 1 ? 0 : 1);
+  }
+  t0 = now_seconds();
+  CHECK(poll(fds, 1, 5000) == 1 && (fds[0].revents & POLLIN) && now_seconds() - t0 < 4);
+  CHECK(read(p[0], &c, 1) == 1 && c == 'y');
+  CHECK(waitpid(child, &status, 0) == child);
+  close(p[1]);
+  CHECK(poll(fds, 1, 1000) == 1 && (fds[0].revents & POLLHUP));
+  close(p[0]);
+
+  // A file is always ready; a closed descriptor is not valid.
+  int f = open("/boot/svc/ctest.ndb", O_RDONLY);
+  struct pollfd ff[2] = {{.fd = f, .events = POLLIN | POLLOUT}, {.fd = 60, .events = POLLIN}};
+  CHECK(poll(ff, 2, 0) == 2 && (ff[0].revents & POLLIN) && ff[1].revents == POLLNVAL);
+  fd_set rd;
+  FD_ZERO(&rd);
+  FD_SET(f, &rd);
+  CHECK(select(f + 1, &rd, nullptr, nullptr, &(struct timeval){0}) == 1 && FD_ISSET(f, &rd));
+  close(f);
+
+  // A terminal: readable once a line is typed, through a read kept outstanding.
+  int m = posix_openpt(O_RDWR | O_NOCTTY);
+  CHECK(m >= 0 && unlockpt(m) == 0);
+  if (m < 0) return;
+  int s = open(ptsname(m), O_RDWR | O_NOCTTY);
+  CHECK(s >= 0);
+  if (s < 0) return;
+  struct pollfd tf = {.fd = s, .events = POLLIN};
+  CHECK(poll(&tf, 1, 0) == 0);
+  CHECK(write(m, "line\n", 5) == 5 && poll(&tf, 1, 2000) == 1 && (tf.revents & POLLIN));
+  char buf[16] = {};
+  CHECK(read(s, buf, sizeof buf) == 5 && memcmp(buf, "line\n", 5) == 0);
+  struct pollfd mf = {.fd = m, .events = POLLIN};
+  CHECK(poll(&mf, 1, 1000) == 1 && read(m, buf, sizeof buf) > 0); // the echo
+  // pselect, waiting with SIGUSR1 blocked but for the wait: a handler ends it.
+  sigset_t usr1, none;
+  sigemptyset(&usr1);
+  sigaddset(&usr1, SIGUSR1);
+  sigemptyset(&none);
+  CHECK(sigaction(SIGUSR1, &(struct sigaction){.sa_handler = on_signal, .sa_flags = SA_RESTART}, nullptr) ==
+        0);
+  sigprocmask(SIG_BLOCK, &usr1, nullptr);
+  CHECK(spawn_child("late", nullptr, &child) == 0);
+  FD_ZERO(&rd);
+  FD_SET(s, &rd);
+  errno = 0;
+  CHECK(pselect(s + 1, &rd, nullptr, nullptr, &(struct timespec){.tv_sec = 5}, &none) == -1 &&
+        errno == EINTR);
+  sigprocmask(SIG_UNBLOCK, &usr1, nullptr);
+  CHECK(waitpid(child, &status, 0) == child && WEXITSTATUS(status) == 14);
+  signal(SIGUSR1, SIG_DFL);
+  close(s);
+  close(m);
+}
+
 int main(int argc, char **argv) {
   if (argc >= 3 && strcmp(argv[1], "one") != 0) return child_main(argv);
   printf("ctest: hello from musl\n");
@@ -777,6 +850,7 @@ int main(int argc, char **argv) {
   test_names_and_attributes();
   test_shared_offsets_and_locks();
   test_terminals();
+  test_poll();
 
   // No threads yet: pthread_create fails, and says so (docs/milestones.md).
   pthread_t thread;

@@ -28,6 +28,21 @@ static constexpr uint32_t FD_PIPE_BUFFER = 8192; // a reader's message, in a pag
 
 typedef enum ofd_kind : uint8_t { OFD_FREE, OFD_CONSOLE, OFD_PIPE_IN, OFD_PIPE_OUT, OFD_FILE } ofd_kind;
 
+// A read kept outstanding on a terminal or the console, on a connection of
+// its own, so poll can hear when it can be read (01 §9): a ring server holds
+// a whole connection while it holds a read. Once a description has one, its
+// reads go through it (poll.c).
+static constexpr uint32_t FD_RA_MAX = 4096;
+typedef struct fd_readahead {
+  p9_conn *k; // its connection
+  uint32_t fid;
+  bool pending, armed, ready; // a read sent; its doorbell bound; its reply here
+  uint16_t tag;
+  vx_status status; // the reply's: OK, or why it failed
+  uint32_t len, pos;
+  uint8_t data[FD_RA_MAX];
+} fd_readahead;
+
 typedef struct ofd {
   ofd_kind kind;
   bool dir;
@@ -48,10 +63,14 @@ typedef struct ofd {
   bool has_token;
   bool tty, master; // a terminal's slave or master (ptyd: the file is a 9P device)
   uint32_t pty;
-  bool locked; // a lock was taken through it: let go at exit, before the exit is seen
+  bool locked;     // a lock was taken through it: let go at exit, before the exit is seen
+  bool read_bound; // a READABLE binding is on fd_port for its pipe
+  fd_readahead *ra;
 } ofd;
 
 static ofd fd_ofds[FD_MAX];
+static void ra_free(ofd *o);                                        // poll.c
+static long ra_read(ofd *o, void *buf, uint32_t count, bool block); // poll.c
 typedef struct fd_slot {
   ofd *o;
   bool cloexec;
@@ -59,7 +78,31 @@ typedef struct fd_slot {
 static fd_slot fd_table[FD_MAX];
 
 static vx_ns fd_ns;
-static vx_handle fd_port;                         // where a blocked pipe read waits
+static vx_handle fd_port; // where a blocked pipe read waits
+
+// fd_port's keys: 1 + a description's index; a packet names its binding's
+// trigger, and a binding that fired is gone.
+static uint64_t fd_key(const ofd *o) { return 1 + (uint64_t)(o - fd_ofds); }
+
+static void fd_noted(const vx_packet *pk, int64_t n) {
+  for (int64_t i = 0; i < n; i++) {
+    if (pk[i].key == 0 || pk[i].key > FD_MAX) continue;
+    ofd *o = &fd_ofds[pk[i].key - 1];
+    if (pk[i].trigger == VX_TRIGGER_READABLE) o->read_bound = false;
+    if (pk[i].trigger == VX_TRIGGER_COUNTER_GE && o->ra) o->ra->armed = false;
+  }
+}
+
+// Waits on fd_port until something armed there fires, or the deadline:
+// 0, -ETIMEDOUT, or -EINTR (a signal: the caller's call ends).
+static long fd_wait(int64_t deadline) {
+  vx_packet pk[16];
+  int64_t n = vx_port_wait(fd_port, deadline, 0, pk, 16);
+  if (n == VX_ERR_INTERRUPTED) return -EINTR;
+  if (n == VX_ERR_TIMED_OUT) return -ETIMEDOUT;
+  if (n > 0) fd_noted(pk, n);
+  return 0;
+}
 static vx_status fd_ns_status = VX_ERR_BAD_STATE; // until it is built
 static char fd_cwd[VX_NS_MAX_PATH] = "/";
 static size_t fd_cwd_len = 1;
@@ -79,6 +122,7 @@ static void ofd_release(ofd *o) {
   if (o->dirs) vx_as_unmap(vx_self, (uint64_t)o->dirs, FD_DIR_BUFFER);
   if (o->msg) vx_as_unmap(vx_self, (uint64_t)o->msg, FD_PIPE_BUFFER);
   if (o->pipe) vx_handle_close(o->pipe); // the last writer gone: the reader sees the end of the file
+  if (o->ra) ra_free(o);
   o->kind = OFD_FREE;
 }
 
@@ -341,6 +385,14 @@ static long pipe_write(const ofd *o, const uint8_t *p, size_t n) {
   return (long)n;
 }
 
+// READABLE and PEER_CLOSED on fd_port for a pipe's reader, unless they are there.
+static void pipe_arm(ofd *o) {
+  if (!o->read_bound)
+    o->read_bound = vx_port_bind(fd_port, o->pipe, VX_TRIGGER_READABLE, fd_key(o), 0) == VX_OK;
+  if (!o->closed_bound)
+    o->closed_bound = vx_port_bind(fd_port, o->pipe, VX_TRIGGER_PEER_CLOSED, fd_key(o), 0) == VX_OK;
+}
+
 // Reads what the pipe has: the rest of the current message, or the next one.
 // 0 once every writer has gone and everything is read.
 static long pipe_read(ofd *o, void *buf, uint32_t count) {
@@ -363,11 +415,9 @@ static long pipe_read(ofd *o, void *buf, uint32_t count) {
       o->msg_pos = sizeof(vx_msg_header);
     } else if (st == VX_ERR_SHOULD_WAIT) {
       if (o->flags & O_NONBLOCK) return -EAGAIN;
-      vx_port_bind(fd_port, o->pipe, VX_TRIGGER_READABLE, 0, 0);
-      if (!o->closed_bound)
-        o->closed_bound = vx_port_bind(fd_port, o->pipe, VX_TRIGGER_PEER_CLOSED, 0, 0) == VX_OK;
-      vx_packet pk;
-      vx_port_wait(fd_port, VX_INFINITE, 0, &pk, 1); // a packet for another pipe only means trying again
+      pipe_arm(o);
+      long w = fd_wait(VX_INFINITE); // a packet for another description only means trying again
+      if (w == -EINTR) return w;
     } else if (st != VX_OK) {
       o->ended = true; // the writers have gone (or sent more than a message holds)
     }
@@ -426,10 +476,14 @@ static long fd_read(int fd, void *buf, size_t n) {
   uint32_t count = n < (1u << 20) ? (uint32_t)n : 1u << 20;
   int64_t r;
   switch (o->kind) {
-  case OFD_CONSOLE: r = vx_console_read(buf, count); break;
+  case OFD_CONSOLE:
+    if (o->ra) return ra_read(o, buf, count, !(o->flags & O_NONBLOCK));
+    r = vx_console_read(buf, count);
+    break;
   case OFD_PIPE_IN: return pipe_read(o, buf, count);
   case OFD_FILE:
     if (o->dir) return -EISDIR;
+    if (o->ra) return ra_read(o, buf, count, !(o->flags & O_NONBLOCK));
     r = file_shared(o) ? p9c_read(o->f.c, o->f.fid, P9_OFFSET_CURRENT, buf, count)
                        : vx_ns_read(&o->f, buf, count);
     break;
@@ -1231,7 +1285,8 @@ static void fd_after_fork(void) {
   if (fd_ns_status != VX_ERR_BAD_STATE) fd_ns_status = vx_ns_after_fork(&fd_ns);
   for (int i = 0; i < FD_MAX; i++) {
     ofd *o = &fd_ofds[i];
-    o->closed_bound = false;
+    o->closed_bound = o->read_bound = false;
+    if (o->ra) ra_free(o); // its connection's ring was not copied
     if (o->kind != OFD_FILE) continue;
     uint64_t offset = o->f.offset;
     o->f = (vx_ns_file){}; // the fid was on the old connection

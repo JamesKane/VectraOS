@@ -89,7 +89,7 @@ In progress. 04 §6 gives M4's content but no steps or exit test, so they are se
 | 4a. The `posix` and `xattr` 9Px extensions' 9P2000.L messages (`docs/proto/posix.md`): `Tgetattr`, `Tsetattr`, `Trenameat`, `Tsymlink`, `Treadlink`, `Tfsync`; in vx-9p's codec, server and client, `tmpfs`, and the back end (`rename`, symbolic links followed by the client, `chmod`, `truncate`, `utimensat`, `fsync`) | Done | `80a3704` |
 | 4b. Open files kept by the server (`posix`): offsets and `O_APPEND` shared across `fork` and children by token (`Tshare`/`Tjoin`), `Tseek`, `Tdesc`; byte-range locks (`Tlock`, `Tgetlock`, `fcntl`) | Done | `2e4ef96` |
 | 4c. `ptyd` (`/dev/ptmx`, `/dev/pts/N`, line discipline, `^C`/`^Z`/`^\` to the foreground group, ending held reads); termios and terminal ioctls in the back end; job control in `posixd` (stop by `thread_suspend`, `SIGCONT`, `WUNTRACED`/`WCONTINUED`). Kernel: an interrupted `channel_call` whose request the server has read waits for its reply; an early wake clears its token; `vx.hangdump=N` | Done | `f29d25a` |
-| 4d. `poll`, `select` and `ppoll` over every descriptor | To do | |
+| 4d. `poll`, `ppoll`, `select` and `pselect6` on the one port: pipes by their channels' triggers, files always ready, terminals and the console by a read kept outstanding on a connection of its own (vx-9p's asynchronous ring calls); pipe and terminal reads now end with `EINTR` | Done | not yet committed |
 | 4e. Sockets over `/net` | To do | |
 | 5. Lua, sbase and dash, vendored | To do | |
 | 6. The `procfs` debug files, crash directories, `lib/vx-debug`, `dbg -c`, `/sys/clock`, `vx-prof` zones | To do | |
@@ -129,6 +129,7 @@ Deferred deliberately, each with where it is due:
 | Signals: no alternate signal stack, no registers in a handler's `ucontext`, no `sigqueue` or real-time queueing; a 9P call (a file read, the console) is not interrupted, its handler runs when it is done; `ptyd` ends its own held reads, but the console (the UART driver) does not | `Ctrl-C` at a blocked console read waits for Enter | When the console is a `ptyd` terminal |
 | Job control is partial: no `SIGTTIN`/`SIGTTOU` for a background group's reads and writes, no controlling terminal kept per session; `ptyd` holds 16 terminals and is not restarted; the console has no termios | dash runs without job control on the console | When a shell on a `ptyd` terminal needs them |
 | `tmpfs` holds 1024 nodes and 128 MiB, and is not restarted; no `rename`, links or permissions it enforces; templates are only what svcd's manifests name (`ns=`), not `/lib/ns` files a program reads | — | `rename` with the `posix` extension (M4 step 4); the rest when needed |
+| No `epoll` or `kqueue`; `poll` arms what it waits on each time (bindings are kept, not doubled); a polled terminal holds a connection of its own | — | When a port needs `epoll` (01 §9 has it on the same port) |
 | AVX, SVE and SME fault | Code built for x86-64-v1 and armv8-a runs; code that needs AVX or SVE does not | When a port needs them (XSAVE; SVE's state) |
 | FP/SIMD registers are not in `thread_state` or a `vx_exception` | A debugger cannot see them; the musl back end's signal entry saves them itself | M4 step 6 (`dbg`) |
 | `task_mem_rw`'s first write to code copies the whole mapping | A breakpoint in a large binary costs its text's size once | When it matters |

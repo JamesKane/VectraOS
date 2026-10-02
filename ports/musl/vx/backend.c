@@ -28,6 +28,7 @@
 #include <signal.h>
 #include <spawn.h>
 #include <limits.h>
+#include <poll.h>
 #include <stdckdint.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -36,6 +37,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
@@ -81,6 +83,7 @@ static long vx_errno(vx_status st) {
 #include "start.c"
 #include "process.c"
 #include "signal.c"
+#include "poll.c"
 
 // The calls VectraOS does not do yet: -ENOSYS, and one line in the kernel log
 // the first time each is asked for, so a port that needs one says so.
@@ -163,6 +166,12 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
   case SYS_chown: return fd_chown(-1, AT_FDCWD, (const char *)a1, (uid_t)a2, (gid_t)a3, true);
   case SYS_lchown: return fd_chown(-1, AT_FDCWD, (const char *)a1, (uid_t)a2, (gid_t)a3, false);
   case SYS_pause: return sig_suspend(sig_mask);
+  case SYS_poll: return sys_poll((struct pollfd *)a1, (nfds_t)a2, (int)a3);
+  case SYS_select: {
+    const struct timeval *tv = (const struct timeval *)a5;
+    struct timespec ts = tv ? (struct timespec){tv->tv_sec, tv->tv_usec * 1000} : (struct timespec){};
+    return sys_select((int)a1, (fd_set *)a2, (fd_set *)a3, (fd_set *)a4, tv ? &ts : nullptr, nullptr);
+  }
   case SYS_fork:
   case SYS_vfork: return proc_fork();
   case SYS_pipe: return fd_pipe2((int *)a1, 0);
@@ -222,9 +231,14 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
     return time_sleep(CLOCK_MONOTONIC, 0, (const struct timespec *)a1, (struct timespec *)a2);
   case SYS_clock_nanosleep:
     return time_sleep((clockid_t)a1, (int)a2, (const struct timespec *)a3, (struct timespec *)a4);
-  case SYS_ppoll: // pause(), where there is no SYS_pause; poll itself waits for M4 step 4
-    if (a2 == 0 && a3 == 0) return sig_suspend(sig_mask);
-    return vx_unimplemented(n);
+  case SYS_ppoll: // and pause(), where there is no SYS_pause
+    if (a1 == 0 && a2 == 0 && a3 == 0) return sig_suspend(a4 ? *(const uint64_t *)a4 : sig_mask);
+    return poll_masked((struct pollfd *)a1, (nfds_t)a2, (const struct timespec *)a3, (const uint64_t *)a4);
+  case SYS_pselect6: {
+    const uintptr_t *data = (const uintptr_t *)a6; // {sigset, size}, as musl passes it
+    return sys_select((int)a1, (fd_set *)a2, (fd_set *)a3, (fd_set *)a4, (const struct timespec *)a5,
+                      data ? (const uint64_t *)data[0] : nullptr);
+  }
   case SYS_sched_yield: return 0;
   case SYS_futex: return time_futex((uint32_t *)a1, (int)a2, (uint32_t)a3, (const struct timespec *)a4);
 
@@ -241,8 +255,16 @@ long __vx_syscall(long n, long a1, long a2, long a3, long a4, long a5, long a6) 
   long r = vx_dispatch(n, a1, a2, a3, a4, a5, a6);
   sig_depth = sig_depth - 1;
   while (sig_depth == 0 && (sig_pending & ~sig_mask)) {
+    uint32_t ran = sig_handlers_ran;
     bool eintr = sig_deliver_pending();
-    bool again = r == -EINTR && !eintr && n != SYS_rt_sigsuspend && n != SYS_ppoll;
+    // poll and select end with EINTR once any handler has run, SA_RESTART
+    // or not, as Linux's do; any call is made again when none has.
+    bool waits = n == SYS_ppoll || n == SYS_pselect6;
+#ifdef SYS_poll
+    waits = waits || n == SYS_poll || n == SYS_select;
+#endif
+    if (waits && ran != sig_handlers_ran) eintr = true;
+    bool again = r == -EINTR && !eintr && n != SYS_rt_sigsuspend && !(n == SYS_ppoll && a1 == 0 && a2 == 0);
 #ifdef SYS_pause
     again = again && n != SYS_pause;
 #endif
