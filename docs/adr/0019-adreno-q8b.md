@@ -83,7 +83,7 @@ Register headers are generated once, when the import is vendored (04 §3, rule 3
   - a 50 ms poll of the GMU's busy counter;
   - the top operating point above 50% busy, hold down to 40%, otherwise scale down in proportion;
   - a boost after idle.
-  A change is one GMU HFI perf vote, which moves the clock and `gfx.lvl` together. `/dev/accel/gpu0/ctl` takes `freq pin` and `freq auto`, and `status` shows the frequency and load.
+  A change is one GMU HFI perf vote, which moves the clock and `gfx.lvl` together. `/dev/accel/gpu0/ctl` takes `freq pin`, `freq auto`, and `freq max HZ`, the cap the thermal policy sets (ADR-0021), and `status` shows the frequency and load.
 
 ### 6. Display: `disp-msm`
 
