@@ -7,7 +7,8 @@
 //   /net/ipifc/0/ctl        write "add 10.0.2.15/24 [10.0.2.2]" (a static address) or "dhcp"
 //   /net/icmp, /net/udp, /net/tcp    conversations:
 //     clone                 opening it makes conversation N, and the fid becomes N/ctl
-//     N/ctl                 read: N; write "connect ADDR[!PORT]", "announce PORT", "hangup";
+//     N/ctl                 read: N; write "connect ADDR[!PORT]", "announce PORT" (0: a free
+//                           one), "hangup";
 //                           a TCP connect returns once the connection is made, or refused
 //     N/data                a datagram a read (waiting for one), a datagram a write;
 //                           ICMP: whole messages, the identifier and checksum filled in
@@ -30,7 +31,9 @@
 // A conversation lasts while any of its files is open. /net is served from
 // the start, with or without a driver, since every namespace that mounts it
 // connects when its program starts; netd dials the driver without waiting,
-// and again if the driver goes. The address comes from DHCP.
+// and again if the driver goes. The address comes from DHCP. Packets for
+// 127/8 and for the address itself are looped back (vx-net), which the C
+// library's sockets on localhost use.
 
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-9p/ring_server.c"
@@ -209,8 +212,12 @@ static vx_instant tick(void *ctx) {
     }
   }
   if (stack_up) {
+    uint64_t in = stack.stats.in;
     vx_instant due = vx_net_poll(&stack, now);
     if (due < next) next = due;
+    // Packets looped back were taken in just now, after the serving pass: a
+    // held request they settled (a refused connect, say) is served once more.
+    if (stack.stats.in != in) next = now;
     if (stack.addr != last_addr) { // say what the address became
       last_addr = stack.addr;
       text t = {};
@@ -678,7 +685,7 @@ static vx_status fs_read(void *ctx, uint64_t n, uint64_t offset, uint8_t *buf, u
   text t = {};
   if (k == N_IFC_STATUS) ifc_status(&t);
   if (k == N_CTL) put_u64(&t, conv_of(n));
-  if (k == N_LOCAL) addr_port(&t, stack.addr, c->lport);
+  if (k == N_LOCAL) addr_port(&t, c->raddr >> 24 == 127 ? c->raddr : stack.addr, c->lport); // loopback's own
   if (k == N_REMOTE) addr_port(&t, c->raddr, c->rport);
   if (k == N_STATUS && c->proto == VX_NET_TCP) {
     put(&t, vx_cstr(vx_net_tcp_state_name(c->tcb.state)));

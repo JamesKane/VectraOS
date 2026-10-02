@@ -66,6 +66,10 @@ typedef struct ofd {
   bool locked;     // a lock was taken through it: let go at exit, before the exit is seen
   bool read_bound; // a READABLE binding is on fd_port for its pipe
   fd_readahead *ra;
+  uint8_t sock;        // a socket's type (SOCK_STREAM, SOCK_DGRAM): the file is its /net data (socket.c)
+  bool sock_bound;     // its port announced, or a connection's
+  bool sock_listening; // TCP, announced
+  uint16_t sock_port;  // TCP: what bind asked for, for listen to announce
 } ofd;
 
 static ofd fd_ofds[FD_MAX];
@@ -475,9 +479,13 @@ static long file_write(ofd *o, const uint8_t *p, size_t n) {
   return (long)n;
 }
 
+static long sock_send(ofd *o, const void *buf, size_t n, const void *sa, socklen_t salen); // socket.c
+static long sock_recv(ofd *o, void *buf, size_t n, int flags, void *sa, socklen_t *salen);
+
 static long fd_read(int fd, void *buf, size_t n) {
   ofd *o = fd_get(fd);
   if (!o) return -EBADF;
+  if (o->sock) return sock_recv(o, buf, n, 0, nullptr, nullptr);
   if ((o->flags & O_ACCMODE) == O_WRONLY) return -EBADF;
   uint32_t count = n < (1u << 20) ? (uint32_t)n : 1u << 20;
   int64_t r;
@@ -501,6 +509,7 @@ static long fd_read(int fd, void *buf, size_t n) {
 static long fd_write(int fd, const void *buf, size_t n) {
   ofd *o = fd_get(fd);
   if (!o || (o->flags & O_ACCMODE) == O_RDONLY) return -EBADF;
+  if (o->sock) return sock_send(o, buf, n, nullptr, 0);
   switch (o->kind) {
   case OFD_CONSOLE: return console_write(buf, n);
   case OFD_PIPE_OUT: return pipe_write(o, buf, n);
@@ -591,7 +600,7 @@ static long fd_prw2(int fd, const struct iovec *iov, int count, long offset, int
 static long fd_lseek(int fd, long offset, int whence) {
   ofd *o = fd_get(fd);
   if (!o) return -EBADF;
-  if (o->kind != OFD_FILE) return -ESPIPE;
+  if (o->kind != OFD_FILE || o->sock) return -ESPIPE;
   if (o->dir) { // only back to the start (rewinddir): the directory is opened again
     if (offset != 0 || whence != SEEK_SET) return -EINVAL;
     vx_ns_file f;
@@ -823,6 +832,7 @@ static bool fd_walk(int dirfd, const char *path, bool follow, p9_client **c, uin
 static long fd_fstat(int fd, struct stat *st) {
   const ofd *o = fd_get(fd);
   if (!o) return -EBADF;
+  if (o->sock) return *st = (struct stat){.st_mode = S_IFSOCK | 0777, .st_nlink = 1, .st_blksize = 4096}, 0;
   if (o->kind != OFD_FILE) {
     *st = (struct stat){.st_mode = (o->kind == OFD_CONSOLE ? S_IFCHR | 0620 : S_IFIFO | 0600),
                         .st_nlink = 1,
@@ -1219,6 +1229,12 @@ static void fd_records(const fd_slot *table, vx_ndb_writer *w, vx_handle *handle
       if (file_shared(o) && p9c_share(o->f.c, o->f.fid, 1, token) == VX_OK) // the child joins it
         vx_ndb_put(w, "token", (vx_str){(const char *)token, sizeof token});
       if (o->dir) vx_ndb_flag(w, "dir");
+      if (o->sock) { // a socket: its /net data file, and what the back end keeps of it
+        vx_ndb_put_u64(w, "sock", o->sock);
+        vx_ndb_put_u64(w, "port", o->sock_port);
+        if (o->sock_bound) vx_ndb_flag(w, "bound");
+        if (o->sock_listening) vx_ndb_flag(w, "listening");
+      }
     }
     vx_ndb_end(w);
   }
@@ -1262,6 +1278,14 @@ static void fd_from_records(void) {
       if (path.len >= VX_NS_MAX_PATH) continue;
       ofd *o = token.len == 16 ? file_join(path.ptr, path.len, (int)flags, (const uint8_t *)token.ptr, offset)
                                : file_reopen(path.ptr, path.len, (int)flags, offset);
+      uint64_t sock = 0, port = 0;
+      if (o && vx_ndb_get_u64(&rec, "sock", &sock)) {
+        vx_ndb_get_u64(&rec, "port", &port);
+        o->sock = (uint8_t)sock;
+        o->sock_port = (uint16_t)port;
+        o->sock_bound = vx_ndb_has(&rec, "bound");
+        o->sock_listening = vx_ndb_has(&rec, "listening");
+      }
       fd_place((int)fd, o);
     }
   }

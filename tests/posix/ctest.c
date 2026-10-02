@@ -12,6 +12,7 @@
 #include <locale.h>
 #include <fcntl.h>
 #include <math.h>
+#include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
 #include <sched.h>
@@ -26,6 +27,7 @@
 #include <sys/ioctl.h>
 #include <sys/random.h>
 #include <sys/select.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
@@ -111,6 +113,14 @@ static int child_main(char **argv) {
     return ok ? 10 : 2;
   }
   if (strcmp(argv[1], "signal") == 0) return kill(parent, SIGUSR1) == 0 ? 12 : 2;
+  if (strcmp(argv[1], "socket") == 0) { // descriptor 3, a TCP socket the parent connected
+    struct stat st;
+    int type = 0;
+    socklen_t len = sizeof type;
+    bool ok = fstat(3, &st) == 0 && S_ISSOCK(st.st_mode);
+    ok = ok && getsockopt(3, SOL_SOCKET, SO_TYPE, &type, &len) == 0 && type == SOCK_STREAM;
+    return ok && write(3, "spawned", 7) == 7 ? 16 : 2;
+  }
   if (strcmp(argv[1], "late") == 0) { // a signal to the parent while it sleeps
     nanosleep(&(struct timespec){.tv_nsec = 50'000'000}, nullptr);
     return kill(parent, SIGUSR1) == 0 ? 14 : 2;
@@ -415,6 +425,97 @@ static void test_utf8(void) {
   int fd = open("/tmp/caf\xc3\xa9", O_WRONLY | O_CREAT, 0644); // UTF-8 names are fine
   CHECK(fd >= 0 && close(fd) == 0 && unlink("/tmp/caf\xc3\xa9") == 0);
   setlocale(LC_CTYPE, "C");
+}
+
+// Sockets over /net (01 §9), on netd's loopback: TCP's connect, accept and
+// data both ways, a forked child writing on the socket it inherited, the end
+// of the stream after shutdown, a refused connection; UDP's sendto and
+// recvfrom with addresses, and connect.
+static struct sockaddr_in loopback(uint16_t port) {
+  return (struct sockaddr_in){
+      .sin_family = AF_INET, .sin_port = htons(port), .sin_addr = {htonl(INADDR_LOOPBACK)}};
+}
+
+static uint16_t port_of(int fd) {
+  struct sockaddr_in a = {};
+  socklen_t len = sizeof a;
+  if (fd < 0) return 0;
+  return getsockname(fd, (struct sockaddr *)&a, &len) == 0 && len == sizeof a ? ntohs(a.sin_port) : 0;
+}
+
+static void test_sockets(void) {
+  int l = -1;
+  for (int tries = 0; tries < 50; tries++) { // netd may not have its driver yet
+    l = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (l >= 0 || errno != ENETDOWN) break;
+    nanosleep(&(struct timespec){.tv_nsec = 100'000'000}, nullptr);
+  }
+  CHECK(l >= 0);
+  if (l < 0) return;
+  int one = 1;
+  struct sockaddr_in any = loopback(0);
+  CHECK(setsockopt(l, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one) == 0);
+  CHECK(bind(l, (struct sockaddr *)&any, sizeof any) == 0 && listen(l, 4) == 0);
+  uint16_t port = port_of(l);
+  CHECK(port != 0);
+  int c = socket(AF_INET, SOCK_STREAM, 0);
+  struct sockaddr_in to = loopback(port);
+  CHECK(c >= 0 && connect(c, (struct sockaddr *)&to, sizeof to) == 0);
+  struct sockaddr_in peer = {};
+  socklen_t plen = sizeof peer;
+  int a = accept(l, (struct sockaddr *)&peer, &plen);
+  CHECK(a >= 0 && plen == sizeof peer && peer.sin_addr.s_addr == htonl(INADDR_LOOPBACK) &&
+        ntohs(peer.sin_port) == port_of(c));
+  if (c < 0 || a < 0) return;
+  plen = sizeof peer;
+  CHECK(getpeername(c, (struct sockaddr *)&peer, &plen) == 0 && ntohs(peer.sin_port) == port);
+  char buf[64] = {};
+  CHECK(write(c, "hello", 5) == 5 && read(a, buf, sizeof buf) == 5 && memcmp(buf, "hello", 5) == 0);
+  CHECK(send(a, "back", 4, 0) == 4 && recv(c, buf, sizeof buf, 0) == 4 && memcmp(buf, "back", 4) == 0);
+  struct stat st;
+  int type = 0;
+  socklen_t tlen = sizeof type;
+  CHECK(fstat(c, &st) == 0 && S_ISSOCK(st.st_mode) && lseek(c, 0, SEEK_SET) == -1 && errno == ESPIPE);
+  CHECK(getsockopt(c, SOL_SOCKET, SO_TYPE, &type, &tlen) == 0 && type == SOCK_STREAM);
+  pid_t pid = fork(); // the child's socket is the same conversation, opened again
+  if (pid == 0) _exit(write(c, "child", 5) == 5 ? 0 : 1);
+  int status = 0;
+  CHECK(pid > 0 && waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+  CHECK(recv(a, buf, 5, MSG_WAITALL) == 5 && memcmp(buf, "child", 5) == 0);
+  posix_spawn_file_actions_t fa; // and a spawned one's, by exec's descriptor records
+  posix_spawn_file_actions_init(&fa);
+  posix_spawn_file_actions_adddup2(&fa, c, 3);
+  CHECK(spawn_child("socket", &fa, &pid) == 0 && waitpid(pid, &status, 0) == pid && WIFEXITED(status) &&
+        WEXITSTATUS(status) == 16);
+  posix_spawn_file_actions_destroy(&fa);
+  CHECK(recv(a, buf, 7, MSG_WAITALL) == 7 && memcmp(buf, "spawned", 7) == 0);
+  CHECK(shutdown(c, SHUT_WR) == 0 && read(a, buf, sizeof buf) == 0); // the end of the stream
+  CHECK(close(a) == 0 && close(c) == 0 && close(l) == 0);
+  c = socket(AF_INET, SOCK_STREAM, 0);
+  CHECK(c >= 0);
+  if (c < 0) return;
+  to = loopback(1); // nobody listens
+  CHECK(connect(c, (struct sockaddr *)&to, sizeof to) == -1 && errno == ECONNREFUSED);
+  close(c);
+
+  int u1 = socket(AF_INET, SOCK_DGRAM, 0), u2 = socket(AF_INET, SOCK_DGRAM, 0);
+  CHECK(u1 >= 0 && u2 >= 0);
+  if (u1 < 0 || u2 < 0) return;
+  CHECK(bind(u1, (struct sockaddr *)&any, sizeof any) == 0);
+  uint16_t p1 = port_of(u1);
+  to = loopback(p1);
+  CHECK(p1 != 0 && sendto(u2, "ping", 4, 0, (struct sockaddr *)&to, sizeof to) == 4);
+  struct sockaddr_in from = {};
+  socklen_t flen = sizeof from;
+  CHECK(recvfrom(u1, buf, sizeof buf, 0, (struct sockaddr *)&from, &flen) == 4 &&
+        memcmp(buf, "ping", 4) == 0);
+  CHECK(from.sin_addr.s_addr == htonl(INADDR_LOOPBACK) && ntohs(from.sin_port) == port_of(u2));
+  CHECK(sendto(u1, "pong", 4, 0, (struct sockaddr *)&from, flen) == 4 && recv(u2, buf, sizeof buf, 0) == 4 &&
+        memcmp(buf, "pong", 4) == 0);
+  CHECK(connect(u2, (struct sockaddr *)&to, sizeof to) == 0 && send(u2, "conn", 4, 0) == 4 &&
+        read(u1, buf, sizeof buf) == 4 && memcmp(buf, "conn", 4) == 0);
+  CHECK(close(u1) == 0 && close(u2) == 0);
+  CHECK(socket(AF_INET6, SOCK_STREAM, 0) == -1 && errno == EAFNOSUPPORT);
 }
 
 static bool all_zero(const unsigned char *p, size_t n) {
@@ -911,6 +1012,7 @@ int main(int argc, char **argv) {
   test_terminals();
   test_poll();
   test_utf8();
+  test_sockets();
 
   // No threads yet: pthread_create fails, and says so (docs/milestones.md).
   pthread_t thread;

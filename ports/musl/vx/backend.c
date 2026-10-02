@@ -28,6 +28,8 @@
 #include <signal.h>
 #include <spawn.h>
 #include <limits.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <stdckdint.h>
 #include <stddef.h>
@@ -38,6 +40,7 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/select.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
@@ -86,6 +89,7 @@ static long vx_errno(vx_status st) {
 #include "process.c"
 #include "signal.c"
 #include "poll.c"
+#include "socket.c"
 
 // The calls VectraOS does not do yet: -ENOSYS, and one line in the kernel log
 // the first time each is asked for, so a port that needs one says so.
@@ -241,6 +245,26 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
     return sys_select((int)a1, (fd_set *)a2, (fd_set *)a3, (fd_set *)a4, (const struct timespec *)a5,
                       data ? (const uint64_t *)data[0] : nullptr);
   }
+  // Sockets (socket.c)
+  case SYS_socket: return sock_socket((int)a1, (int)a2, (int)a3);
+  case SYS_bind: return sock_bind((int)a1, (const void *)a2, (socklen_t)a3);
+  case SYS_listen: return sock_listen((int)a1, (int)a2);
+  case SYS_accept: return sock_accept((int)a1, (void *)a2, (socklen_t *)a3, 0);
+  case SYS_accept4: return sock_accept((int)a1, (void *)a2, (socklen_t *)a3, (int)a4);
+  case SYS_connect: return sock_connect((int)a1, (const void *)a2, (socklen_t)a3);
+  case SYS_getsockname: return sock_name((int)a1, (void *)a2, (socklen_t *)a3, false);
+  case SYS_getpeername: return sock_name((int)a1, (void *)a2, (socklen_t *)a3, true);
+  case SYS_sendto:
+    return sock_sendto((int)a1, (const void *)a2, (size_t)a3, (int)a4, (const void *)a5, (socklen_t)a6);
+  case SYS_recvfrom:
+    return sock_recvfrom((int)a1, (void *)a2, (size_t)a3, (int)a4, (void *)a5, (socklen_t *)a6);
+  case SYS_sendmsg: return sock_sendmsg((int)a1, (const struct msghdr *)a2, (int)a3);
+  case SYS_recvmsg: return sock_recvmsg((int)a1, (struct msghdr *)a2, (int)a3);
+  case SYS_shutdown: return sock_shutdown((int)a1, (int)a2);
+  case SYS_setsockopt: return sock_setsockopt((int)a1, (int)a2, (int)a3, (const void *)a4, (socklen_t)a5);
+  case SYS_getsockopt: return sock_getsockopt((int)a1, (int)a2, (int)a3, (void *)a4, (socklen_t *)a5);
+  case SYS_socketpair: return -EAFNOSUPPORT; // AF_UNIX: not yet (docs/milestones.md)
+
   case SYS_sched_yield: return 0;
   case SYS_futex: return time_futex((uint32_t *)a1, (int)a2, (uint32_t)a3, (const struct timespec *)a4);
 

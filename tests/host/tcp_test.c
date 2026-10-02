@@ -355,8 +355,72 @@ static void test_backlog_and_orphans(void) {
   CHECK(s1->proto == 0);
 }
 
+// Loopback: one stack talks to itself, on 127.0.0.1 and on its own address,
+// with nothing on the wire; a forged 127/8 packet from the wire is dropped.
+static void loop_settle(vx_net *n) {
+  for (int i = 0; i < 1000 && n->loop_used; i++) vx_net_poll(n, now);
+}
+
+static void test_loopback(void) {
+  setup();
+  uint64_t wire_before = sent_frames;
+  static const uint32_t addrs[2] = {0x7f00'0001, C_IP};
+  for (int a = 0; a < 2; a++) {
+    uint32_t lid, sid = 0;
+    vx_net_conv *l = conv(&client, &lid), *c = conv(&client, nullptr);
+    CHECK(vx_net_tcp_listen(&client, l, (uint16_t)(7000 + a)) == VX_OK);
+    CHECK(vx_net_tcp_connect(&client, c, addrs[a], (uint16_t)(7000 + a), now) == VX_OK);
+    loop_settle(&client);
+    CHECK(c->tcb.state == VX_TCP_ESTABLISHED && vx_net_tcp_accept(&client, l, &sid) == VX_OK);
+    vx_net_conv *s = &client.conv[sid];
+    CHECK(s->raddr == addrs[a] && s->rport == c->lport);
+    size_t n = 0;
+    static uint8_t big[20000], got[20000];
+    for (size_t i = 0; i < sizeof big; i++) big[i] = (uint8_t)(i * 7);
+    size_t sent = 0, recvd = 0;
+    for (int round = 0; round < 1000 && recvd < sizeof big; round++) {
+      if (sent < sizeof big && vx_net_tcp_write(&client, c, big + sent, sizeof big - sent, &n, now) == VX_OK)
+        sent += n;
+      loop_settle(&client);
+      if (vx_net_tcp_read(&client, s, got + recvd, sizeof got - recvd, &n, now) == VX_OK) recvd += n;
+    }
+    CHECK(recvd == sizeof big && memcmp(big, got, sizeof big) == 0);
+    vx_net_conv_free(&client, lid, now);
+    vx_net_tcp_close(&client, c, now);
+    vx_net_tcp_close(&client, s, now);
+    loop_settle(&client);
+    CHECK(c->tcb.state == VX_TCP_CLOSED || c->tcb.state == VX_TCP_TIME_WAIT);
+  }
+  // UDP over loopback.
+  uint32_t uid;
+  CHECK(vx_net_conv_new(&client, VX_NET_UDP, &uid) == VX_OK);
+  vx_net_conv *u = &client.conv[uid];
+  CHECK(vx_net_conv_announce(&client, u, 9000) == VX_OK);
+  CHECK(vx_net_conv_write(&client, u, 0x7f00'0001, 9000, (const uint8_t *)"ping", 4, now) == VX_OK);
+  loop_settle(&client);
+  vx_net_datagram d;
+  uint8_t buf[16];
+  size_t n = 0;
+  CHECK(vx_net_conv_read(u, &d, buf, sizeof buf, &n) && n == 4 && d.addr == 0x7f00'0001 && d.port == 9000);
+  CHECK(sent_frames == wire_before); // nothing went out
+
+  // The same datagram, from the wire: dropped, as a forgery.
+  uint8_t f[60] = {};
+  memcpy(f, C_MAC, 6), memcpy(f + 6, S_MAC, 6), f[12] = 8;
+  uint8_t *ip = f + 14;
+  ip[0] = 0x45, ip[2] = 0, ip[3] = 32, ip[8] = 64, ip[9] = 17;
+  net_put32(ip + 12, 0x7f00'0001), net_put32(ip + 16, 0x7f00'0001);
+  net_put16(ip + 10, net_fold(net_sum(0, ip, 20)));
+  net_put16(ip + 20, 9000), net_put16(ip + 22, 9000), net_put16(ip + 24, 12);
+  memcpy(ip + 28, "evil", 4);
+  uint64_t bad = client.stats.bad;
+  vx_net_input(&client, f, sizeof f, now);
+  CHECK(client.stats.bad == bad + 1 && !vx_net_conv_read(u, &d, buf, sizeof buf, &n));
+}
+
 int main(void) {
   test_handshake_and_data();
+  test_loopback();
   test_loss();
   test_refused_and_timeout();
   test_zero_window();

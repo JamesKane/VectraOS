@@ -57,8 +57,9 @@ static void tcp_emit(vx_net *n, uint32_t raddr, uint16_t lport, uint16_t rport, 
     memcpy(s + hlen, ring + start, first);
     memcpy(s + hlen + first, ring, len - first);
   }
-  net_put16(s + 16, net_fold(net_sum(net_pseudo(n->addr, raddr, 6, hlen + len), s, hlen + len)));
-  net_ip_header(n, 6, n->addr, raddr, hlen + len);
+  uint32_t src = net_src(n, raddr);
+  net_put16(s + 16, net_fold(net_sum(net_pseudo(src, raddr, 6, hlen + len), s, hlen + len)));
+  net_ip_header(n, 6, src, raddr, hlen + len);
   net_ip_route(n, raddr, 20 + hlen + len, now);
 }
 
@@ -463,7 +464,7 @@ static void net_tcp_input(vx_net *n, uint32_t src, uint32_t dst, const uint8_t *
     n->stats.bad++;
     return;
   }
-  if (!n->addr || dst != n->addr) return; // no broadcast TCP
+  if (!net_loopback(dst) && (!n->addr || dst != n->addr)) return; // no broadcast TCP
   uint16_t sport = net_get16(s), dport = net_get16(s + 2), window = net_get16(s + 14);
   uint32_t seq = net_get32(s + 4), ack = net_get32(s + 8);
   uint8_t flags = s[13] & 0x3f;
@@ -577,7 +578,7 @@ static vx_instant net_tcp_poll(vx_net *n, vx_net_conv *c, vx_instant now) {
                                                      vx_instant now) {
   if (c->proto != VX_NET_TCP || c->raddr || c->tcb.state != VX_TCP_CLOSED || !addr || !port)
     return VX_ERR_INVALID;
-  if (!n->addr) return VX_ERR_BAD_STATE;
+  if (!net_can_send(n, addr)) return VX_ERR_BAD_STATE;
   if (!c->lport) {
     vx_status st = vx_net_conv_announce(n, c, 0);
     if (st != VX_OK) return st;
@@ -594,10 +595,10 @@ static vx_instant net_tcp_poll(vx_net *n, vx_net_conv *c, vx_instant now) {
   return VX_OK;
 }
 
-// Listens on a port: SYNs that come to it make connections, for
-// vx_net_tcp_accept to take.
+// Listens on a port (0: a free one): SYNs that come to it make connections,
+// for vx_net_tcp_accept to take.
 [[maybe_unused]] static vx_status vx_net_tcp_listen(vx_net *n, vx_net_conv *c, uint16_t port) {
-  if (c->proto != VX_NET_TCP || c->raddr || c->tcb.state != VX_TCP_CLOSED || !port) return VX_ERR_INVALID;
+  if (c->proto != VX_NET_TCP || c->raddr || c->tcb.state != VX_TCP_CLOSED) return VX_ERR_INVALID;
   vx_status st = vx_net_conv_announce(n, c, port);
   if (st == VX_OK) c->tcb.state = VX_TCP_LISTEN;
   return st;

@@ -6,7 +6,11 @@
 //
 // Ethernet, ARP, IPv4 (no fragments: they are dropped, and nothing sent is
 // bigger than the MTU), ICMP echo, UDP, a DHCP client (RFC 2131), TCP
-// (tcp.c) and a DNS stub resolver (dns.c).
+// (tcp.c) and a DNS stub resolver (dns.c). Loopback: a packet for 127/8, or
+// for the interface's own address, never reaches the wire; it is queued, and
+// vx_net_poll takes it in, as if it had arrived. A packet for 127/8 comes from
+// the address it went to, as Linux's loopback has it, so both ends name the
+// same pair; it needs no driver address.
 //
 // Conversations are Plan 9's (02 §5): numbered endpoints, each one protocol,
 // a local port, and a remote address once connected. Datagrams that arrive
@@ -31,6 +35,7 @@ static constexpr uint32_t VX_ETHER_MAX_FRAME = 1514; // 14 bytes of Ethernet hea
 static constexpr uint32_t VX_NET_CONVS = 32;
 static constexpr uint32_t VX_NET_CONV_QUEUE = 8192; // bytes of datagrams a conversation holds
 static constexpr uint32_t VX_NET_ARP_ENTRIES = 16;
+static constexpr uint32_t VX_NET_LOOP_BYTES = 65536; // packets looped back, not yet taken in
 
 enum : uint8_t { VX_NET_ICMP = 1, VX_NET_TCP = 6, VX_NET_UDP = 17 }; // conversation protocols, by IP number
 
@@ -155,6 +160,10 @@ typedef struct vx_net {
   vx_net_conv conv[VX_NET_CONVS];
   uint16_t next_port;
   uint32_t seed; // for transaction IDs and ports: not secret, only varied
+
+  // Looped-back IP packets, each after its length (2 bytes, host order).
+  uint8_t loop[VX_NET_LOOP_BYTES];
+  uint32_t loop_head, loop_used;
 
   struct {
     uint64_t in, out, dropped, bad;
@@ -291,7 +300,37 @@ static vx_net_arp *net_arp_slot(vx_net *n, uint32_t ip, bool make) {
 
 // Sends the IP packet built at frame + 14 (len bytes, header included) to its
 // next hop: at once if its MAC is known, or else after ARP finds it.
+static bool net_loopback(uint32_t a) { return a >> 24 == 127; }
+
+// The address a packet to dst comes from: dst itself, for 127/8.
+static uint32_t net_src(const vx_net *n, uint32_t dst) { return net_loopback(dst) ? dst : n->addr; }
+
+// Whether dst is reachable: on loopback always; otherwise once configured.
+static bool net_can_send(const vx_net *n, uint32_t dst) { return net_loopback(dst) || n->addr; }
+
+// Queues the IP packet at frame + 14 to be taken in by vx_net_poll; a full
+// queue drops it, as a full interface queue does.
+static void net_loop_put(vx_net *n, size_t len) {
+  if (2 + len > VX_NET_LOOP_BYTES - n->loop_used) {
+    n->stats.dropped++;
+    return;
+  }
+  uint32_t at = (n->loop_head + n->loop_used) % VX_NET_LOOP_BYTES;
+  uint8_t head[2] = {(uint8_t)len, (uint8_t)(len >> 8)};
+  for (size_t i = 0; i < 2; i++) n->loop[(at + i) % VX_NET_LOOP_BYTES] = head[i];
+  at = (at + 2) % VX_NET_LOOP_BYTES;
+  size_t first = len < VX_NET_LOOP_BYTES - at ? len : VX_NET_LOOP_BYTES - at;
+  memcpy(n->loop + at, n->frame + 14, first);
+  memcpy(n->loop, n->frame + 14 + first, len - first);
+  n->loop_used += (uint32_t)(2 + len);
+}
+
 static void net_ip_route(vx_net *n, uint32_t dst, size_t len, vx_instant now) {
+  if (net_loopback(dst) || (n->addr && dst == n->addr)) {
+    n->stats.out++;
+    net_loop_put(n, len);
+    return;
+  }
   if (dst == NET_BROADCAST || (n->mask != NET_BROADCAST && n->addr && dst == (n->addr | ~n->mask))) {
     net_ether_send(n, NET_BROADCAST_MAC, 0x0800, len);
     return;
@@ -450,15 +489,15 @@ static void net_conv_queue(vx_net_conv *c, uint32_t addr, uint16_t port, const u
                                                     const uint8_t *data, size_t len, vx_instant now) {
   if (!addr) addr = c->raddr, port = c->rport;
   if (!addr || !c->lport) return VX_ERR_BAD_STATE;
-  if (!n->addr) return VX_ERR_BAD_STATE; // no address yet
-  if (c->proto == VX_NET_UDP) return net_udp_out(n, n->addr, c->lport, addr, port, data, len, now);
+  if (!net_can_send(n, addr)) return VX_ERR_BAD_STATE; // no address yet
+  if (c->proto == VX_NET_UDP) return net_udp_out(n, net_src(n, addr), c->lport, addr, port, data, len, now);
   if (len < 8 || len > n->mtu - 20) return VX_ERR_INVALID;
   uint8_t *m = n->frame + 34;
   memcpy(m, data, len);
   net_put16(m + 2, 0);
   net_put16(m + 4, c->lport);
   net_put16(m + 2, net_fold(net_sum(0, m, len)));
-  net_ip_header(n, 1, n->addr, addr, len);
+  net_ip_header(n, 1, net_src(n, addr), addr, len);
   net_ip_route(n, addr, 20 + len, now);
   return VX_OK;
 }
@@ -614,13 +653,13 @@ static void net_icmp_input(vx_net *n, uint32_t src, uint32_t dst, const uint8_t 
     n->stats.bad++;
     return;
   }
-  if (m[0] == 8 && m[1] == 0 && dst == n->addr) { // an echo request for us: the same back, as a reply
+  if (m[0] == 8 && m[1] == 0 && (dst == n->addr || net_loopback(dst))) { // an echo request for us: replied to
     uint8_t *r = n->frame + 34;
     memmove(r, m, len);
     r[0] = 0;
     net_put16(r + 2, 0);
     net_put16(r + 2, net_fold(net_sum(0, r, len)));
-    net_ip_header(n, 1, n->addr, src, len);
+    net_ip_header(n, 1, net_src(n, src), src, len);
     net_ip_route(n, src, 20 + len, now);
     return;
   }
@@ -644,11 +683,13 @@ static void net_udp_input(vx_net *n, uint32_t src, uint32_t dst, const uint8_t *
     return;
   }
   if (sport == 53 && n->addr && dst == n->addr && net_dns_input(n, src, dport, u + 8, len - 8, now)) return;
-  if (!n->addr || (dst != n->addr && dst != NET_BROADCAST)) return;
+  if (!net_loopback(dst) && (!n->addr || (dst != n->addr && dst != NET_BROADCAST))) return;
   net_deliver(n, VX_NET_UDP, dport, src, sport, u + 8, len - 8);
 }
 
-static void net_ip_input(vx_net *n, const uint8_t *ip, size_t len, vx_instant now) {
+// An IP packet, from the wire or (looped) from the loopback queue; 127/8 on
+// the wire is a forgery (RFC 1122 §3.2.1.3), and dropped.
+static void net_ip_input(vx_net *n, const uint8_t *ip, size_t len, bool looped, vx_instant now) {
   if (len < 20 || ip[0] >> 4 != 4) goto bad;
   size_t hlen = (size_t)(ip[0] & 15) * 4, total = net_get16(ip + 2);
   if (hlen < 20 || total < hlen || total > len || net_fold(net_sum(0, ip, hlen)) != 0) goto bad;
@@ -657,7 +698,9 @@ static void net_ip_input(vx_net *n, const uint8_t *ip, size_t len, vx_instant no
     return;
   }
   uint32_t src = net_get32(ip + 12), dst = net_get32(ip + 16);
-  bool ours = dst == NET_BROADCAST || (n->addr && (dst == n->addr || dst == (n->addr | ~n->mask)));
+  if (!looped && (net_loopback(src) || net_loopback(dst))) goto bad;
+  bool ours = dst == NET_BROADCAST || net_loopback(dst) ||
+              (n->addr && (dst == n->addr || dst == (n->addr | ~n->mask)));
   bool dhcp = n->dhcp.state != VX_DHCP_OFF && ip[9] == 17; // an offer may come to the address it offers
   if (!ours && !dhcp) return;
   if (ip[9] == 1)
@@ -681,13 +724,30 @@ bad:
   if (memcmp(frame, n->mac, 6) != 0 && memcmp(frame, NET_BROADCAST_MAC, 6) != 0) return; // not ours
   uint16_t type = net_get16(frame + 12);
   if (type == 0x0806) net_arp_input(n, frame + 14, len - 14, now);
-  if (type == 0x0800) net_ip_input(n, frame + 14, len - 14, now);
+  if (type == 0x0800) net_ip_input(n, frame + 14, len - 14, false, now);
 }
 
 // Does what is due by now (retransmissions, renewals, expiries) and returns
 // when to be called again.
 [[maybe_unused]] static vx_instant vx_net_poll(vx_net *n, vx_instant now) {
   vx_instant next = NET_NEVER;
+  // What was looped back, as many packets as were queued when this began:
+  // replies they make wait for the next call, which is due at once.
+  uint32_t queued = n->loop_used;
+  while (queued) {
+    uint8_t head[2] = {n->loop[n->loop_head], n->loop[(n->loop_head + 1) % VX_NET_LOOP_BYTES]};
+    uint32_t len = (uint32_t)(head[0] | head[1] << 8), at = (n->loop_head + 2) % VX_NET_LOOP_BYTES;
+    uint8_t packet[VX_ETHER_MAX_FRAME];
+    uint32_t first = len < VX_NET_LOOP_BYTES - at ? len : VX_NET_LOOP_BYTES - at;
+    memcpy(packet, n->loop + at, first);
+    memcpy(packet + first, n->loop, len - first);
+    n->loop_head = (at + len) % VX_NET_LOOP_BYTES;
+    n->loop_used -= 2 + len;
+    queued -= 2 + len;
+    n->stats.in++;
+    net_ip_input(n, packet, len, true, now);
+  }
+  if (n->loop_used) next = now;
   for (uint32_t i = 0; i < VX_NET_ARP_ENTRIES; i++) {
     vx_net_arp *e = &n->arp[i];
     if (!e->ip || e->resolved) continue;
