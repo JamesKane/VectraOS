@@ -201,6 +201,7 @@ This is what a desktop terminal's default namespace looks like. The right-hand c
 ├── wsys/                      winsrv       the app's own windows; the whole tree only by grant (§5.5)
 ├── ai/                        aid          models, sessions, ctx pools, providers, policy
 ├── swarm/                     swarmd       nodes, pools, jobs
+├── dist/                      distd        releases, packages, catalogues, the store; ctl and policy only by grant (06 §11)
 ├── n/                         (mounts)     remote nodes and volumes: /n/tower, /n/phone, /n/nas
 └── mnt/                       (mounts)     session-specific; /mnt/term inside a cpu session
 ```
