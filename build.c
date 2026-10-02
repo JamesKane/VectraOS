@@ -1243,11 +1243,13 @@ static const program USER_PROGRAMS[] = {
     {"tail", "cmd/tail.c", IN_BOOTFS, nullptr, false},
     {"ping", "cmd/ping.c", IN_BOOTFS, nullptr, false},
     {"cs", "cmd/cs.c", IN_BOOTFS, nullptr, false},
+    {"dbg", "cmd/dbg.c", IN_BOOTFS, nullptr, false},
     {"drv-uart-16550", "drivers/drv-uart-16550/uart.c", IN_BOOTFS, "x86_64", false},
     {"drv-uart-pl011", "drivers/drv-uart-pl011/uart.c", IN_BOOTFS, "aarch64", false},
     {"drv-virtio-net", "drivers/drv-virtio-net/net.c", IN_BOOTFS, nullptr, false},
     {"ctest", "tests/posix/ctest.c", IN_TESTS, nullptr, true},
     {"sbasetest", "tests/posix/sbasetest.c", IN_TESTS, nullptr, true},
+    {"dbgdemo", "tests/user/dbgdemo.c", IN_TESTS, nullptr, false},
 };
 
 static bool program_for(const program *p, const arch *a) { return !p->arch || strcmp(p->arch, a->name) == 0; }
@@ -2007,6 +2009,11 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
     if (USER_PROGRAMS[i].where != IN_TESTS || !listed(with, USER_PROGRAMS[i].name)) continue;
     files[count] = read_file(fmt("tests/user/%s.ndb", USER_PROGRAMS[i].name));
     paths[count++] = fmt("boot/svc/%s.ndb", USER_PROGRAMS[i].name);
+    if (exists(fmt("tests/user/%s.cmds", USER_PROGRAMS[i].name)) &&
+        count < BOOTFS_MAX_FILES) { // a dbg script
+      files[count] = read_file(fmt("tests/user/%s.cmds", USER_PROGRAMS[i].name));
+      paths[count++] = fmt("boot/tests/%s.cmds", USER_PROGRAMS[i].name);
+    }
   }
   // A `with` name that is no program is a script test: its manifest runs a
   // program the image has (lua), on tests/user/NAME.lua, at /boot/tests.

@@ -119,6 +119,11 @@ typedef struct vx_spawn_args {
   vx_handle proc;
   uint32_t proc_flags;
   uint64_t proc_group; // a note group to join, or 0
+  // If set (with proc), called once the child is registered, with its pid,
+  // before its thread exists: a debugger sets its breakpoints there, so the
+  // program stops at them from its first instruction (05 §7). A failure
+  // ends the spawn.
+  vx_status (*registered)(void *ctx, uint64_t pid);
 } vx_spawn_args;
 
 // Registers a task as a child of the caller with procfs, through a connector
@@ -214,8 +219,10 @@ static void vx_close_all(const vx_handle *h, uint32_t n) {
   for (uint32_t i = 0; i < count; i++) given[i] = VX_HANDLE_NONE;
   if (st == VX_OK && a->exec) st = vx_task_exec(t, ch[1], entry, VX_STACK_TOP); // returns only on a failure
   if (st == VX_OK && a->proc) {
-    vx_status reg = vx_proc_register_in(a->proc, t, a->proc_flags, a->proc_group, nullptr);
+    uint64_t pid = 0;
+    vx_status reg = vx_proc_register_in(a->proc, t, a->proc_flags, a->proc_group, &pid);
     if (!(a->proc_flags & PROC_NOWAIT)) st = reg;
+    if (st == VX_OK && reg == VX_OK && a->registered) st = a->registered(a->ctx, pid);
   }
   if (st == VX_OK) st = vx_thread_create(t, &thread);
   if (st == VX_OK) st = vx_thread_start(thread, entry, VX_STACK_TOP, ch[1], 0);
