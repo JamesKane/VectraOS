@@ -70,7 +70,7 @@ The exit test's steps all pass in `tests/qemu/mount.ndb`, with one difference: t
 
 ## M4 — POSIX and debugging
 
-In progress. 04 §6 gives M4's content but no steps or exit test, so they are set here (decided 2026-10-01). The userland is sbase, and the POSIX shell dash, both vendored.
+In progress. 04 §6 gives M4's content but no steps or exit test, so they are set here (decided 2026-10-01). The userland is sbase, vendored. Vendoring dash, the POSIX shell, is deferred (2026-10-01): first `gsh` is remade as rc, with its commands, and dash comes only if that proves unable to fill the role.
 
 | Step | Status | Commit |
 |---|---|---|
@@ -93,20 +93,20 @@ In progress. 04 §6 gives M4's content but no steps or exit test, so they are se
 | — `O_CREAT\|O_EXCL` goes straight to `Tcreate`, which refuses a name that exists, so `O_TRUNC` no longer empties the file first; `O_EXCL` doesn't follow a link in the last component; `O_CREAT` opens a file another process made between its open and its create | Done | `aa3d40b` |
 | 4e. Notes and exit strings (ADR-0010). Kernel: `task_kill` with a message, exit strings in `task_info` and the `EXIT` packet, trap exit strings, notes in `thread_interrupt`, a note with no handler ends the task. vx-rt: `vx_exit(msg)`, `vx_notify`, `vx_noted`. `svcd` and `gsh` keep the string. The back end: signals mapped from notes through one table, POSIX exit codes as strings. Native standard error: a `stderr` channel in the spawn message, taken by vx-rt and given by `gsh`, so errors stop going down pipes as data | Done | `5dda9f9` |
 | 4f1. `task_exec` (ADR-0012): the kernel moves a scratch task's address space into the caller, which keeps its id; vx-rt's loader gains an exec mode; the back end's `execve` keeps its task and its pid (no `EXEC` remap, no false exit 0); descriptors still cross by token | Done | `877b66c` |
-| 4f2. One process table (ADR-0011): `procfs` holds every process, pid = task id; registration at every spawn (vx-rt, `vx_proc_register`; `svcd` registers its services, each its own note group, and what it started before `procfs`); wait records for parents; `/proc/N/{status,ctl,note,notepg,noteid,ppid,wait}`; `proctest` (`tests/qemu/proc.ndb`) | Done | |
+| 4f2. One process table (ADR-0011): `procfs` holds every process, pid = task id; registration at every spawn (vx-rt, `vx_proc_register`; `svcd` registers its services, each its own note group, and what it started before `procfs`); wait records for parents; `/proc/N/{status,ctl,note,notepg,noteid,ppid,wait}`; `proctest` (`tests/qemu/proc.ndb`) | Done | `c292e61` |
 | 4f3. The back end and `ptyd` over `/proc` as APE does it (`note`, `notepg`, `noteid`, `ppid`, `wait`, `ctl`); job control and `SIGCHLD` from `procfs`; `posixd` removed; connections per server set by the server, as `procfs` holds one per process | To do | |
 | 4g. Namespace groups (ADR-0009): `nsd`; spawn with share, copy or clean; mounts found by qid; `newns` and namespace(6) templates in `/lib/ns` (replacing `boot/ns/*.ndb`); `/proc/N/ns`; `ns` output that replays; union create honouring `-c` (create in the first member bound with it, else fail) | To do | |
 | 4h. Sockets over `/net` | To do | |
-| 5. Lua, sbase and dash, vendored | To do | |
+| 5. Lua and sbase, vendored. dash is deferred until `gsh`, remade as rc with its commands, is shown unable to fill the role (decided 2026-10-01) | To do | |
 | 6. The `procfs` debug files, crash directories, `lib/vx-debug`, `dbg -c`, `/sys/clock`, `vx-prof` zones | To do | |
 
-**Exit test (proposed):** a C program built against `vectra-musl` forks, execs, pipes and waits; a dash script and Lua run in the POSIX userland; `dbg -c` stops at a breakpoint and prints a backtrace; a crashing program leaves a crash directory.
+**Exit test (proposed):** a C program built against `vectra-musl` forks, execs, pipes and waits; a shell script (`gsh` as rc; dash only if rc cannot fill the role) and Lua run in the POSIX userland; `dbg -c` stops at a breakpoint and prints a backtrace; a crashing program leaves a crash directory.
 
 **Picking M4 back up** (paused 2026-10-01, after 4d):
 
 - Next is 4f3 (4f1, `task_exec`, and 4f2, `procfs`'s table, are done): one process table in `procfs` (ADR-0011, revised after checking 9front: pid = task id, every spawn registers, 9front's `/proc` files). Steps 4e–4g put the Plan 9 baseline back (00 §1, ADRs 0009–0011) before more is built on `posixd`'s RPC; each ADR lists what it changes. 4e (notes and exit strings) is done: `vx_main` returns an exit string, `vx_notify` is the note handler, and the back end's signals are notes (`lib/vx-posix/posix.h` has the table).
 - Then 4h, sockets over `/net`: 01 §9 has the BSD calls translate to `/net/tcp/clone` and the files of the connection directory, as Plan 9's APE does; `netd` serves `/net` already (M3), and `tests/qemu/tcp.ndb` and `net.ndb` show it working. The back end's descriptors (`ports/musl/vx/fd.c`) need a socket kind; `poll` (`poll.c`) needs its readiness, through the read kept outstanding that terminals use, or `netd` events.
-- Then step 5 (Lua, sbase, dash, each vendored with an ADR) and step 6 (the debugger's pieces).
+- Then step 5 (Lua and sbase, each vendored with an ADR; dash only if `gsh` remade as rc cannot fill the role) and step 6 (the debugger's pieces).
 - The POSIX tests are `tests/posix/ctest.c` (244 checks) in `tests/qemu/posix.ndb`. Run the scenario several times on aarch64 after any change with timing in it: the races found in steps 3d and 4c showed only there.
 - To debug a hang or a crash in a POSIX scenario, copy it with `cmdline="vx.skip=gsh vx.kconsole vx.hangdump=25"`: the kernel's messages stay on the serial line, and at 25 s every thread's state and kernel backtrace is printed.
 
@@ -151,7 +151,7 @@ Deferred deliberately, each with where it is due:
 | `task_mem_rw`'s first write to code copies the whole mapping | A breakpoint in a large binary costs its text's size once | When it matters |
 | IOMMU in pass-through only (QEMU) | A device can reach any memory; a dead driver's device could write freed memory before `devmgr` turns off its bus mastering | M5 |
 | `netd` restarting its driver session is not tested | | M3 |
-| `gsh` is not rc: no `<`, `>>`, `&&`, `||`, `&`, blocks, `if`, `for`, `switch`, functions, lists or `cd`; at most 32 scalar variables | Scripts beyond a pipeline need dash | After M4 (rc, first-party C23; 04 §1) |
+| `gsh` is not rc: no `<`, `>>`, `&&`, `||`, `&`, blocks, `if`, `for`, `switch`, functions, lists or `cd`; at most 32 scalar variables | Scripts beyond a pipeline cannot run yet | Before dash is considered (step 5): `gsh` remade as rc, first-party C23 (04 §1) |
 | `/srv` is not a file tree: posts come only from `post=` records in manifests, and `ls /srv` fails | A program cannot post a service at run time | After M4 |
 | No `/dev/cons` or `consctl` in a namespace: the console is a handle given at spawn | A program cannot reopen the console by name; `cpu`'s `bind /mnt/term/dev/cons` has nothing to bind | After M4 |
 | No `/env` (`envfs`), `/fd` or current directory for native programs | The environment exists only as spawn records; native paths must be absolute | After M4 |
