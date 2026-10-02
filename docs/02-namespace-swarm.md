@@ -232,6 +232,8 @@ This is what a desktop terminal's default namespace looks like. The right-hand c
                cpu=cpu8 cluster=1 llc=1 numa=0 type=eff  capacity=512  freq=2.6G
                cpu=cpu2 cluster=0 llc=0 numa=0 type=perf capacity=1024 freq=4.8G reserved=42   (a core reservation, 01 §8)
     load       per-cpu utilisation, 1 s window
+    idle       per CPU: each idle state's entries and residency (01 §8)
+    perf       per performance domain: level, limits, time at each level (01 §8)
     vulns      mitigations selected
 /sys/clock/
     info       tsc.hz=3187200000 tsc.invariant tsc.user cntfrq.hz=24000000 source=tsc

@@ -11,9 +11,9 @@ _Blueprint v0, 2026-09-30._
 | Handle tables, rights, capability transfer | Names and paths (`libns`), authentication (`keyd`) |
 | Ports, counters, channels; ring *setup* and doorbells | Every protocol that runs over rings and channels (9Px, block, net, present) |
 | IRQ routing; the MMIO, I/O-port and DMA-domain (IOMMU) objects | Every device driver, including bus enumeration (PCI, ACPI AML, device tree) |
-| CPU bring-up; FPU/SIMD state; mitigations; the minimal debug console | Consoles, logging, crash reporting |
+| CPU bring-up, idle states and frequency; FPU/SIMD state; mitigations; the minimal debug console | Consoles, logging, crash reporting |
 
-**Size budget:** 15–25 kLOC of C23 including both architecture ports, with assembly confined to `arch/`. `./build loc` checks it on every build (04 §3.2). If a feature would push the kernel past this budget, it belongs in a server. The budget has to cover four IOMMU drivers (VT-d, AMD-Vi, SMMUv3, DART), hybrid-core placement, the pager, the PMU and the debug syscalls, which is why the v1 scheduler is kept minimal (§8).
+**Size budget:** 15–25 kLOC of C23 including both architecture ports, with assembly confined to `arch/`. `./build loc` checks it on every build (04 §3.2). If a feature would push the kernel past this budget, it belongs in a server. The budget has to cover five IOMMU drivers (VT-d, AMD-Vi, SMMUv3, MMU-500, DART), hybrid-core placement, CPU idle and frequency (§8), the pager, the PMU and the debug syscalls, which is why the v1 scheduler is kept minimal (§8).
 
 ## 2. Kernel objects
 
@@ -49,7 +49,7 @@ _Blueprint v0, 2026-09-30._
 
   General derivation-tree revocation, as in seL4, is deferred. Where it is needed, proxy servers provide it, which suits a namespace system: interpose a server, then cut it off.
 
-### Syscall surface (62 calls)
+### Syscall surface (63 calls)
 
 This list is the whole surface, and `./build loc` counts it. A new syscall needs an ADR, and the ADR says what it replaces or why nothing can.
 
@@ -71,6 +71,7 @@ ring_create  ring_notify  ring_xfer_handles
 irq_create  irq_ack  iorange_create  dma_domain_create  dma_map  dma_unmap
 clock_read  debug_write (only while a debug capability is held)
 pmu_configure                                                          # performance counters (05 §9)
+cpu_configure                                                          # idle states, performance domains, limits (§8, ADR-0020)
 ```
 
 `clock_read` also runs from a vDSO page without entering the kernel, as does reading counters, which live in a shared page. Batchable calls (`dma_map`, `port_bind`, `handle_close`, `vmo_rw`, `vmo_op`, `task_mem_rw`) take arrays (rule 11).
@@ -214,7 +215,7 @@ vx_status futex_wake(const _Atomic uint32_t *addr, uint32_t count);
 | Kind | Backing | Uses |
 |---|---|---|
 | Anonymous | Zero-filled on demand; copy-on-write clones | Heaps, stacks, rings, `fork` |
-| Physical | A fixed physical range | MMIO, framebuffers, firmware tables |
+| Physical | A fixed physical range | MMIO, framebuffers, firmware tables, firmware carve-outs (§7.1) |
 | Contiguous | Pinned physically contiguous pages | DMA for devices without an IOMMU or with small scatter-gather lists |
 | Pager-backed | Pages supplied by a user-space `Pager` (`fsd`) | `mmap` of files, and the page cache shared between processes |
 
@@ -303,7 +304,9 @@ Over TCP, `netd` sends straight from the `Buffer` pages with scatter-gather and 
 ### 7.1 What the kernel provides
 
 - `Irq` objects for legacy lines, MSI and MSI-X, one per line. Delivery is a port packet (`VX_TRIGGER_IRQ`, whose value counts the interrupts); a binding made after the line fired fires at once. A level-triggered line is masked when it fires and stays masked until the driver calls `irq_ack`. An edge-triggered line is never masked, because an edge that arrived while it was masked would be lost, and the device with it; its driver handles everything the device has pending before binding again. Lines are ISA IRQs (through the MADT's overrides) or GSIs on x86_64, routed through the IOAPICs, and GIC SPIs on arm64.
-- MMIO through `vmo_create` of kind `physical`, mapped uncached as device memory. A physical VMO never covers RAM or firmware memory, which the kernel knows from the boot memory map.
+- **Cascaded interrupts are Counters.** An interrupt controller that sits behind one line, such as a GPIO controller (Qualcomm's TLMM delivers every pin's interrupt through one summary SPI), is a user-space driver. It gives each consumer a `Counter` for its pin, and signals it with the pin's interrupt count each time the pin fires, so the consumer binds `COUNTER_GE` on its port exactly as it would bind an `Irq`, and gets the same count in the packet's value. The semantics are the kernel `Irq`'s: a level-triggered pin is masked when it fires and stays masked until the consumer acks it through the `gpio` class; an edge-triggered pin is never masked. A cascaded interrupt costs one more process hop than a GIC line, so a source with a tight deadline (audio) is never wired through one.
+- MMIO through `vmo_create` of kind `physical`, mapped uncached as device memory. A physical VMO never covers RAM or firmware memory, which the kernel knows from the boot memory map, except a carve-out.
+- **Firmware carve-outs** are memory the firmware set aside to share with other processors: Qualcomm's SMEM, which the DSPs and the secure world use, a DSP's firmware region, or the region the GPU's zap shader is loaded into. Some are reserved in the boot memory map; some, like the Q8B's SMEM at `0x80900000`, are not in it at all. The SoC record names each one (`carveout=smem base=0x80900000 size=0x200000 cache=wc`, §7.2), and `svcd` mints a physical VMO over it with `VX_VMO_CARVEOUT` for the drivers whose match records name it. The kernel refuses a carve-out that overlaps usable RAM, the kernel image, or the firmware's runtime services, and keeps carve-outs out of its direct map, so no page is ever mapped with two cache policies (§5). A carve-out is normal memory, write-back or write-combining as the record says, never device memory, because the processors that share it use it as memory. Once the secure world has authenticated an image in a carve-out, the non-secure side must not touch it again; the record marks those `secure-after=pas`, and the VMO's mappings are revoked when the authentication succeeds.
 - `IoRange` objects on x86. A task may use the ports once `as_map` has been called with the range in place of a VMO; they are loaded into each CPU's TSS I/O bitmap when the task's threads run there.
 - These come from a `Resource`. Until `devmgr`, there is one, the root, which the kernel gives `svcd`; `svcd` mints each driver's objects from the `ioport=`, `mmio=` and `irq=` records of its manifest, keeps them, and gives every instance of the driver its own handles to them.
 - **The kernel console:** the kernel writes to its early console until a driver is given that device. From then on the device is the driver's, the kernel keeps its output in an in-memory log (`kmesg`), and it writes to the device again only to report a panic. `vx.kconsole` on the command line keeps the kernel writing to it, for debugging.
@@ -318,7 +321,7 @@ Over TCP, `netd` sends straight from the `Buffer` pages with scatter-gather and 
   - **Costs:** page tables are charged to the driver's memory budget, and mapped pages to its pin budget, as for any `dma_map`. The kernel invalidates the TLB by ASID on every unmap and on `handle_close` of a switched domain, whether the device has that table loaded or not. A domain's tables are freed only after that.
 - **An SMMU the firmware's hypervisor polices** (Qualcomm's, on the Q8B's MMU-500s) is adopted, not reset. The hypervisor resets the SoC, with no crash dump, on a stage-2 context-bank type or a stream match it does not expect, so the kernel keeps the stream matches and bypass contexts the firmware left (display, USB, PCIe), writes only stage-1 context banks, and adds stream matches only with the exact ID and mask pairs the SoC record gives (§7.2). AbyssBSD's `lessons.md` lists the writes that reset the board.
 - The firmware's ACPI tables, on both architectures (edk2 provides them on arm64 QEMU too): the kernel reads the MADT itself, and gives the root task every table, end to end, in a read-only VMO, which `svcd` passes to `devmgr`.
-- On arm64, PSCI and SMC calls go through `svcd`'s platform service, never to drivers directly. A driver asks for a named operation, never a raw SMC: on Qualcomm SoCs, the SCM calls (authenticating the GPU's zap shader, setting the GPU SMMU's aperture, loading a DSP's firmware), with SCM's interrupted-and-resume protocol and its argument page below 4 GiB kept inside the service.
+- On arm64, the kernel makes the PSCI calls that concern CPUs: `CPU_ON` at bring-up, `CPU_SUSPEND` from the idle loop (§8), `CPU_OFF`. The system's PSCI calls (`SYSTEM_OFF`, `SYSTEM_RESET`) and every other SMC go through `svcd`'s platform service, never to drivers directly. A driver asks for a named operation, never a raw SMC: on Qualcomm SoCs, the SCM calls (authenticating the GPU's zap shader, setting the GPU SMMU's aperture, loading a DSP's firmware), with SCM's interrupted-and-resume protocol and its argument page below 4 GiB kept inside the service.
 
 ### 7.2 Enumeration and matching
 
@@ -345,7 +348,7 @@ In M3 the manifests are ndb records in the boot image, `/boot/drv/*.ndb`, one li
 
 - A **device-class tree** (02 §5). For example `drv-virtio-net` serves `/dev/net/ether0/{info,ctl,stats}` and exposes a ring pair for frames that `netd` connects to.
 - The **net** class, as built in M3 (`lib/vx-driver/netproto.h`): a client opens a ring session on the driver's post (`/srv/ether0`; `lib/vx-ring/session.c`), one client at a time. `INFO` gives the MAC address and MTU; `TX` sends a frame from the client's arena; `RX` offers a slot of the driver's arena, and completes when a frame has been copied there. A frame that arrives with no slot offered is dropped, as a full NIC would drop it. The `/dev/net` tree comes with `netd`.
-- Class protocols are specified once per class and versioned: `clock`, `block`, `net`, `input`, `display`, `audio`, `accel`, `sensor`, `serial`.
+- Class protocols are specified once per class and versioned: `clock`, `gpio`, `block`, `net`, `input`, `display`, `audio`, `accel`, `sensor`, `serial`.
 - Serial drivers share `vx-driver`'s console server (`lib/vx-driver/cons.c`), which serves `/cons` with Plan 9's cooked semantics: echo, erase and kill-line, a read returns one line, and `^D` sends a line or, on an empty one, ends the file. A read with nothing typed, or a write with no room, is held by the 9Px server framework and answered after the driver's next interrupt makes progress. Programs whose manifest says `console` write to `/srv/cons` through `vx-rt`, a line at a time, and connect again if the driver restarts.
 - Drivers are written against `vx-driver`, which provides typed MMIO register accessors (one header per device of `static inline` functions over `volatile` pointers), DMA pools over `Buffer`, IRQ-to-port glue, and the class-protocol server skeletons.
 
@@ -396,6 +399,19 @@ vx_status sched_reserve(vx_handle ctx, uint32_t count, vx_core_class cls, vx_dom
 - **Visible and scoped:** grants appear in `/sys/cpu/topology` (`reserved=42`) and in `/proc/N/status`, and are released when the task exits.
 
 **SMT and trust:** threads from different trust domains, such as different swarm users' jobs, never run on the two SMT siblings of one core at the same time, as with Linux core scheduling. Leaks between siblings of the MDS and L1TF class make this necessary once a node runs other people's work.
+
+**CPU idle:** the kernel's idle loop chooses each CPU's idle state. The states come from the firmware, as ACPI `_LPI` on arm64 and `_CST` on x86_64. Those are AML, which `bus-acpi` evaluates in user space, so `svcd`'s platform service hands the kernel the table with `cpu_configure` (ADR-0020): for each state its entry (a PSCI `CPU_SUSPEND` parameter, an MWAIT hint, or WFI), exit latency, target residency, and whether it stops the CPU's timer or loses its caches. Until the table arrives, CPUs idle in WFI or HLT.
+- **The choice is exact where it can be.** The kernel is tickless, so it knows each CPU's next timer event. It enters the deepest state whose target residency fits before that event and whose exit latency fits the CPU's latency limit.
+- **Real time limits depth.** A CPU's latency limit is a quarter of the smallest slack (period minus budget) among the `realtime` contexts admitted on its class of cores, and a reserved core (below) uses only states its reservation allows. So admission and idle never disagree.
+- **A state that stops the timer** is entered only when an always-on timer can wake the CPU. On arm64 that is a frame of the memory-mapped generic timer, which the kernel finds in ACPI's GTDT itself. It arms that timer for the earliest deadline among the CPUs in such states, and the CPU it wakes sends inter-processor interrupts to the others whose deadlines have come. The Q8B's deepest CPU state (C3) needs it.
+- **Resume restores state before C runs.** A CPU that returns from a state that loses its context comes back through `arch/` code that restores every register the kernel's C code assumes, such as the per-CPU pointer on arm64, before any C function runs.
+- `/sys/cpu/idle` publishes each state's residency and entry count per CPU (02 §5.1).
+
+**CPU frequency:** the kernel sets each performance domain's level, because the choice depends on what the scheduler knows: each core's utilisation, and which intents run there.
+- **Domains are data.** `cpu_configure` gives each domain its CPUs, its levels (frequency, and the value that selects it), and how to select one. Either a register the kernel writes the value to (Qualcomm EPSS's performance-state register, or a CPPC desired-performance register over MMIO), or the architecture's own mechanism (Intel HWP and AMD CPPC through MSRs, where the hardware picks the frequency and the kernel writes only the energy-performance preference). The platform service fills the table from the firmware: EPSS's lookup table, read from its MMIO, or ACPI `_CPC`.
+- **The policy is small.** A domain runs at the lowest level that keeps its busiest core under 80% utilisation over the last 10 ms. A domain running a `realtime` or `interactive-frame` context is held at the level that context's admission assumed, so admission stays true. A wake-up of an `interactive` thread on a low level raises the domain at once rather than at the next window. The same policy sets the energy-performance preference where the hardware chooses.
+- **Limits come from outside.** `cpu_configure` sets each domain's lowest and highest allowed level, and the preference's bias. The server of `/sys/power` sets them from the power profile (`power-saver`, `balanced`, `performance`), and the thermal policy lowers the highest when a trip needs it. The kernel takes the tightest of the limits it is given.
+- `/sys/cpu/perf` publishes each domain's level, limits and time at each level (02 §5.1).
 
 **Timers and wake-ups:** the kernel is tickless. The next timer event is set from the earliest (deadline + leeway) on each CPU. A `realtime` or `interactive-frame` wait gets near-zero leeway by default, and `background` waits get up to 10% of the interval.
 
