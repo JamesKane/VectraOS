@@ -285,6 +285,35 @@ static void test_debug(void) {
   CHECK(write_file(c, "ctl", "start") == VX_OK);
   n = wait_record(buf, sizeof buf);
   CHECK(n > 0 && has((vx_str){buf, (size_t)n}, "sys: trap: fault read addr=0x10"));
+  // Its crash directory (05 §5), shaped like /proc/N.
+  char dir[48] = "/tmp/crash/proctest.";
+  size_t dl = 20;
+  char digits[20];
+  size_t nd = sizeof digits;
+  for (uint64_t v = c; v || nd == sizeof digits; v /= 10) digits[--nd] = (char)('0' + v % 10);
+  memcpy(dir + dl, digits + nd, sizeof digits - nd), dl += sizeof digits - nd;
+  static const char *const files[] = {"/note",          "/maps", "/images", "/info", "/threads/1/regs.ndb",
+                                      "/threads/1/regs"};
+  for (size_t i = 0; i < sizeof files / sizeof files[0]; i++) {
+    char path[96];
+    vx_str fname = vx_cstr(files[i]);
+    memcpy(path, dir, dl), memcpy(path + dl, fname.ptr, fname.len);
+    n = -1;
+    if (vx_ns_open(&ns, (vx_str){path, dl + fname.len}, P9_OREAD, &f) == VX_OK) {
+      n = vx_ns_read(&f, buf, sizeof buf);
+      vx_ns_close(&f);
+    }
+    CHECK(n > 0);
+    if (i == 0) CHECK(n > 0 && has((vx_str){buf, (size_t)n}, "sys: trap: fault read addr=0x10"));
+    if (i == 4)
+      CHECK(n > 0 && has((vx_str){buf, (size_t)n}, "rsp=") != has((vx_str){buf, (size_t)n}, "x29="));
+  }
+  static const char mem_dir[4] = {'/', 'm', 'e', 'm'}; // a path piece, not a C string
+  memcpy(dir + dl, mem_dir, sizeof mem_dir);
+  CHECK(vx_ns_open(&ns, (vx_str){dir, dl + 4}, P9_OREAD, &f) == VX_OK); // the writable mappings
+  n = vx_ns_read(&f, buf, sizeof buf);
+  vx_ns_close(&f);
+  CHECK(n > 0); // at least one entry
 }
 
 const char *vx_main(void) {

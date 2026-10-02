@@ -67,6 +67,10 @@ static constexpr uint64_t SIG_UNBLOCKABLE = 1ull << (SIGKILL - 1) | 1ull << (SIG
                  (unsigned long long)e->address);
     if (n > 0) console_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
   }
+  if (e && e->kind != VX_EXCEPTION_INTERRUPT) { // a fault: again, uncaught; a crash directory, then its end
+    vx_exception again = *e;
+    vx_note_crash(&again);
+  }
   char note[VX_ERRMAX];
   proc_exit_str(fault.len ? fault : (vx_str){note, posix_note(sig, 0, note)});
 }

@@ -35,7 +35,8 @@
 // wait records for stops (stopped=SIG) and continues (continued) too.
 //
 // The debug files (05 §3: events, mem, maps, images, threads/, and ctl's
-// break, step and the rest) are debug.c's.
+// break, step and the rest) are debug.c's; crash directories (05 §5),
+// crash.c's.
 
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-9p/ring_server.c"
@@ -128,7 +129,9 @@ static vx_status admit(vx_handle task, uint64_t ppid, uint32_t flags, uint64_t g
   }
   if (group) p->noteid = group;
   // svcd, the root, never ends; its handle ("tasks") carries no WAIT right.
+  // A fault nothing else takes comes to procfs, for a crash directory (crash.c).
   vx_status st = root ? VX_OK : vx_port_bind(server.port, task, VX_TRIGGER_EXIT, exit_key(p), 0);
+  if (st == VX_OK && !root) st = vx_exception_bind(task, server.port, exit_key(p) | (1ull << 41), 0);
   if (st != VX_OK) {
     *p = (proc){.gen = p->gen};
     return st;
@@ -233,6 +236,7 @@ static vx_status cont(proc *p) {
 }
 
 static void dbg_exception(proc *p, uint32_t tid); // debug.c
+static void crash(proc *p, uint32_t tid);         // crash.c
 
 static void event(void *ctx, const vx_packet *pk) {
   (void)ctx;
@@ -242,7 +246,10 @@ static void event(void *ctx, const vx_packet *pk) {
   proc *p = &procs[slot];
   if (!p->used || p->gen != gen) return;
   if (pk->trigger == VX_TRIGGER_EXIT) ended(p);
-  if (pk->trigger == VX_TRIGGER_EXCEPTION) dbg_exception(p, (uint32_t)pk->value);
+  if (pk->trigger == VX_TRIGGER_EXCEPTION && (pk->key & 1ull << 41))
+    crash(p, (uint32_t)pk->value);
+  else if (pk->trigger == VX_TRIGGER_EXCEPTION)
+    dbg_exception(p, (uint32_t)pk->value);
 }
 
 // Posts a note to p (a write to note or notepg). The signals a process cannot
@@ -554,6 +561,8 @@ static vx_status mem_read(const proc *p, uint64_t offset, uint8_t *buf, uint32_t
   return done || !*count ? VX_OK : VX_ERR_INVALID;
 }
 
+#include "crash.c"
+
 static vx_status fs_read(void *ctx, uint64_t node, uint64_t offset, uint8_t *buf, uint32_t *count) {
   (void)ctx;
   proc *p = proc_of(node);
@@ -706,6 +715,7 @@ static vx_status fs_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *c
 const char *vx_main(void) {
   vx_handle tasks = vx_spawn_take("tasks");
   nsd = vx_spawn_take("srv:nsd");
+  tmpfs = vx_spawn_take("srv:tmpfs"); // for crash directories
   // Field by field: the server is too big for a compound literal, which would
   // be built on the stack first.
   server.fs = (p9_fs){.attach = fs_attach,

@@ -73,7 +73,7 @@ The kernel adds one right and five syscalls, plus `pmu_configure` for profiling 
 
 ## 5. Crash directories
 
-When a task faults and nothing is bound to its exception port, `svcd` saves it as a directory with the same shape as `/proc/N`: `info`, `maps`, `images`, `threads/*/{status,regs,fpregs}`, and a sparse `mem` holding the writable pages. Read-only pages are not copied, because the images are named by build ID. User programs go to `$home/lib/crash/<name>.<pid>/`, and system services to `/lib/crash/`.
+When a task faults and neither a debugger nor its own handler takes the fault, `procfs`, which holds every process and binds each one's exception port, saves it as a directory with the same shape as `/proc/N`: `info`, `status`, `maps`, `images`, `note` (the fault in Plan 9's words), `threads/*/{status,regs,regs.ndb,fpregs}`, and `mem/`, a file for each writable mapping named by its base address. Read-only pages are not copied, because the images are named by build ID. Then the task ends with the trap's words, as any unhandled fault ends it. vx-rt and the POSIX back end let a fault their handlers decline happen again with no handler, so it reaches `procfs`. User programs go to `$home/lib/crash/<name>.<pid>/`, and system services to `/lib/crash/`; until a file system keeps them, both go to `/tmp/crash/`.
 
 Secrets stay out. VMOs created with `NODUMP` are never written, and allocators that hold keys or tokens use them. `keyd` and `tlsd` are never dumped at all. The user can also have crash directories encrypted to a key in `keyd`.
 

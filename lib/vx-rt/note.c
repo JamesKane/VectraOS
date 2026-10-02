@@ -11,6 +11,12 @@
 // exit string. A program that has not called vx_notify ends with the note at
 // once: the kernel sees to that.
 //
+// A fault that no handler takes is not ended here, though: vx_note_crash
+// takes the handler away and runs the instruction again, so it faults with
+// nothing in the task to catch it, and goes where any unhandled fault goes:
+// the task's exception port (procfs, which saves a crash directory, 05 §5),
+// then the kernel's default, which ends the task with the trap's words.
+//
 // The handler runs on the thread's own stack, below where it was diverted
 // from. FP/SIMD registers, which the kernel does not put in a vx_exception,
 // are saved by vx_note_entry before any C runs and loaded again after.
@@ -36,6 +42,18 @@ static void (*vx_note_exit)(vx_str note);
   vx_thread_exit();
 }
 
+// The fault in e again, with no in-task handler: x86_64's int3 reports the
+// instruction after it, so the pc goes back to it; every other fault reports
+// the instruction itself.
+[[noreturn]] static void vx_note_crash(vx_exception *e) {
+  vx_exception_bind(vx_self, VX_HANDLE_NONE, 0, VX_EXCEPTION_IN_TASK);
+#ifdef __x86_64__
+  if (e->kind == VX_EXCEPTION_BREAKPOINT) e->regs.rip--;
+#endif
+  vx_exception_resume(vx_self, 0, VX_RESUME_CONTINUE, &e->regs);
+  __builtin_trap(); // exception_resume does not return
+}
+
 [[gnu::used]] static void vx_note_dispatch(vx_exception *e) {
   char text[VX_ERRMAX];
   vx_str note;
@@ -50,7 +68,9 @@ static void (*vx_note_exit)(vx_str note);
     note = (vx_str){text, vx_trap_note(e->kind, e->code, e->address, pc, text)};
   }
   vx_note_handler *h = vx_note_fn;
-  if (!h || h(e, note) != VX_NCONT) vx_note_default(note);
+  if (h && h(e, note) == VX_NCONT) return;
+  if (e->kind != VX_EXCEPTION_INTERRUPT) vx_note_crash(e); // a fault: where unhandled faults go
+  vx_note_default(note);
 }
 
 // Resumes the thread where it was diverted from, with the registers it has.

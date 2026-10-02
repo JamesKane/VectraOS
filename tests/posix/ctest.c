@@ -365,6 +365,17 @@ static void test_signals(void) {
   CHECK(waitpid(child, &status, 0) == child && WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
   CHECK(spawn_child("segv", nullptr, &child) == 0);
   CHECK(waitpid(child, &status, 0) == child && WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV);
+  { // and its crash directory (05 §5), its note the fault in Plan 9's words
+    char path[64], note[96] = {};
+    snprintf(path, sizeof path, "/tmp/crash/ctest.%d/note", (int)child);
+    int fd = open(path, O_RDONLY);
+    CHECK(fd >= 0 && read(fd, note, sizeof note - 1) > 0 &&
+          strncmp(note, "sys: trap: fault read addr=0x10", 31) == 0);
+    if (fd >= 0) close(fd);
+    snprintf(path, sizeof path, "/tmp/crash/ctest.%d/threads/1/regs.ndb", (int)child);
+    struct stat cst;
+    CHECK(stat(path, &cst) == 0 && cst.st_size > 0);
+  }
   errno = 0;
   CHECK(kill(99999, SIGTERM) == -1 && errno == ESRCH);
 
