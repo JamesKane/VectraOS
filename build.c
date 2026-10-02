@@ -1231,6 +1231,7 @@ static const program USER_PROGRAMS[] = {
     {"nsd", "servers/nsd/nsd.c", IN_BOOTFS, nullptr, false},
     {"tmpfs", "servers/tmpfs/tmpfs.c", IN_BOOTFS, nullptr, false},
     {"nullfs", "servers/nullfs/nullfs.c", IN_BOOTFS, nullptr, false},
+    {"sysfs", "servers/sysfs/sysfs.c", IN_BOOTFS, nullptr, false},
     {"ptyd", "servers/ptyd/ptyd.c", IN_BOOTFS, nullptr, false},
     {"devmgr", "servers/devmgr/devmgr.c", IN_BOOTFS, nullptr, false},
     {"netd", "servers/netd/netd.c", IN_BOOTFS, nullptr, false},
@@ -1922,7 +1923,7 @@ static const char *const BOOTFS_DIRS[] = {"bin",        "boot",
                                           "lib",        "lib/ns",
                                           "n",          "net",
                                           "proc",       "srv",
-                                          "tmp"};
+                                          "sys",        "tmp"};
 
 // Whether `name` is in the comma-separated list `with`.
 static bool listed(const char *with, const char *name) {

@@ -60,6 +60,25 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   return vx_syscall(VX_SYS_clock_read, 0, 0, 0, 0, 0, 0);
 }
 
+// The cycle counter the clock is made from (/sys/clock/info).
+[[maybe_unused]] static vx_status vx_clock_info_read(vx_clock_info *info) {
+  int64_t r = vx_syscall(VX_SYS_clock_read, (uint64_t)info, 0, 0, 0, 0, 0);
+  return r < 0 ? (vx_status)r : VX_OK;
+}
+
+// The cycle counter, read in user mode: no syscall (05 §9).
+[[maybe_unused]] static inline uint64_t vx_cycles(void) {
+#ifdef __x86_64__
+  uint32_t lo, hi;
+  __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+  return (uint64_t)hi << 32 | lo;
+#else
+  uint64_t v;
+  __asm__ volatile("isb\n\tmrs %0, cntvct_el0" : "=r"(v));
+  return v;
+#endif
+}
+
 [[maybe_unused]] static vx_status vx_task_info(vx_handle task, vx_task_summary *out) {
   *out = (vx_task_summary){};
   return (vx_status)vx_syscall(VX_SYS_task_info, task, (uint64_t)out, 0, 0, 0, 0);

@@ -199,6 +199,9 @@ static uint64_t arch_counter(void) {
   return v;
 }
 
+// The generic timer's virtual counter: one rate always, and user code reads it.
+static uint32_t arch_counter_flags(void) { return VX_CLOCK_USER | VX_CLOCK_INVARIANT | VX_CLOCK_CNTVCT; }
+
 static uint64_t arch_counter_hz(void) {
   uint64_t v;
   __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(v));
@@ -529,6 +532,10 @@ static void arch_cpu_init(uint32_t index) {
   uint64_t mdscr;
   __asm__ volatile("msr oslar_el1, xzr\n\tisb\n\tmrs %0, mdscr_el1" : "=r"(mdscr));
   __asm__ volatile("msr mdscr_el1, %0\n\tisb" : : "r"(mdscr & ~(1ull << 13 | 1)) : "memory");
+  // CNTKCTL_EL1.EL0VCTEN: user code may read the virtual counter (02 §5.1, 05 §9).
+  uint64_t cntkctl;
+  __asm__ volatile("mrs %0, cntkctl_el1" : "=r"(cntkctl));
+  __asm__ volatile("msr cntkctl_el1, %0\n\tisb" : : "r"(cntkctl | 1ull << 1) : "memory");
   __asm__ volatile("msr vbar_el1, %0\n\t"
                    "msr tpidr_el1, %1\n\t"
                    "isb"

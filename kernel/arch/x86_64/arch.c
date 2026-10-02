@@ -187,8 +187,11 @@ static void arch_cpu_init(uint32_t index) {
   // OSFXSR and OSXMMEXCPT: SSE, with its exceptions as #XM. No OSXSAVE:
   // AVX faults until XSAVE's larger state is saved. FSGSBASE off: user code
   // changes its FS base only through thread_state, and never its GS base,
-  // which swapgs relies on.
-  __asm__ volatile("mov %0, %%cr4" : : "r"((cr4 | 1ull << 9 | 1ull << 10) & ~(1ull << 16 | 1ull << 18)));
+  // which swapgs relies on. TSD off: user code may always read the cycle
+  // counter (02 §5.1, 05 §9), whatever the firmware left.
+  __asm__ volatile("mov %0, %%cr4"
+                   :
+                   : "r"((cr4 | 1ull << 9 | 1ull << 10) & ~(1ull << 2 | 1ull << 16 | 1ull << 18)));
 
   uint8_t *ist = index == 0 ? &boot_ist_stacks[0][0] : nullptr;
   if (!ist) {
@@ -312,6 +315,20 @@ static uint64_t arch_counter(void) {
 }
 
 static uint64_t arch_counter_hz(void) { return tsc_request.response ? tsc_request.response->frequency : 0; }
+
+// The counter's properties for /sys/clock/info: the TSC runs at one rate in
+// every power state (CPUID 80000007h, EDX bit 8), and user code reads it.
+static uint32_t arch_counter_flags(void) {
+  uint32_t a = 0x8000'0000, b, c, d;
+  __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "=c"(c), "=d"(d));
+  bool invariant = false;
+  if (a >= 0x8000'0007) {
+    a = 0x8000'0007;
+    __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "=c"(c), "=d"(d));
+    invariant = d & (1u << 8);
+  }
+  return VX_CLOCK_USER | (invariant ? VX_CLOCK_INVARIANT : 0) | VX_CLOCK_TSC;
+}
 
 // Per CPU: this CPU's local APIC and its timer. The boot CPU also masks the
 // legacy PICs and, without TSC-deadline mode, measures the APIC timer once.

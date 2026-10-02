@@ -13,7 +13,10 @@
 
 #include "../../abi/vx/abi.h"
 
-enum : uint32_t { PROC_REGISTER = 0x636f'7270 }; // "proc", beside P9_CONNECT on the same channel
+enum : uint32_t {
+  PROC_REGISTER = 0x636f'7270, // "proc", beside P9_CONNECT on the same channel
+  PROC_PROF = 0x666f'7270,     // "prof": a process's profiling ring (lib/vx-prof)
+};
 
 enum proc_flags : uint32_t {
   PROC_NOWAIT = 1, // the parent wants no wait record (Plan 9's RFNOWAIT): it watches the task itself
@@ -25,6 +28,10 @@ enum proc_flags : uint32_t {
 // group in the parent's session for the child to join (0: none, as the flags
 // say); handles [the child's task]. The reply: h.flags 0 or a vx_status,
 // arg[0] the child's pid.
+// PROC_PROF: arg[0] the process's pid, arg[1] where it maps the ring;
+// handles [the ring's VMO]. procfs maps it too, and takes it only if the
+// nonce in it is what the process's memory has at that address. The reply:
+// h.flags 0 or a vx_status.
 typedef struct proc_msg {
   vx_msg_header h;
   int64_t arg[3];

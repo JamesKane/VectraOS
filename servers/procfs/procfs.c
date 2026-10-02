@@ -36,13 +36,14 @@
 //
 // The debug files (05 §3: events, mem, maps, images, threads/, and ctl's
 // break, step and the rest) are debug.c's; crash directories (05 §5),
-// crash.c's.
+// crash.c's; profiling zones (05 §9, /proc/N/prof), prof.c's.
 
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-9p/ring_server.c"
 #include "../../lib/vx-proc/proc.h"
 #include "../../lib/vx-posix/posix.h"
 #include "../../lib/vx-ns/nsd.h"
+#include "../../lib/vx-prof/prof.h"
 
 static constexpr uint32_t MAX_PROCS = 128;
 static constexpr uint32_t MAX_RECORDS = 512; // wait records, for every parent together
@@ -141,10 +142,18 @@ static vx_status admit(vx_handle task, uint64_t ppid, uint32_t flags, uint64_t g
 }
 
 // A registration on the listen channel (lib/vx-proc/proc.h).
+static vx_status prof_register(const proc_msg *m, vx_handle vmo); // prof.c
+
 static void registered(void *ctx, const void *msg, uint32_t len, vx_handle handle) {
   (void)ctx;
   proc_msg m = {};
   memcpy(&m, msg, len < sizeof m ? len : sizeof m);
+  if (len >= sizeof m && m.h.ordinal == PROC_PROF && handle) { // a profiling ring
+    proc_msg prep = {
+        .h = {.txid = m.h.txid, .ordinal = PROC_PROF, .flags = (uint32_t)prof_register(&m, handle)}};
+    vx_channel_write(server.listen, &prep, sizeof prep, nullptr, 0);
+    return;
+  }
   proc_msg rep = {.h = {.txid = m.h.txid, .ordinal = PROC_REGISTER}};
   vx_status st = len >= sizeof m && m.h.ordinal == PROC_REGISTER && handle ? VX_OK : VX_ERR_INVALID;
   proc *p = nullptr;
@@ -202,10 +211,12 @@ static void tell_parent(const proc *c, uint8_t kind, uint8_t sig) {
 }
 
 // The task has ended: its parent hears, and its own unread records go.
-static void dbg_forget(const proc *p); // debug.c
+static void dbg_forget(const proc *p);  // debug.c
+static void prof_forget(const proc *p); // prof.c
 
 static void ended(proc *p) {
   dbg_forget(p);
+  prof_forget(p);
   tell_parent(p, ENDED, 0);
   for (uint32_t i = p->first; i;) {
     uint32_t next = records[i].next;
@@ -285,8 +296,11 @@ enum : uint32_t {
   MAPS,
   IMAGES,
   INFO,
+  PROF,
   THREADS,
-  FILES
+  FILES,
+  PROF_CTL, // in prof/, not listed in the process's directory
+  PROF_ZONES
 };
 enum : uint32_t { T_DIR, T_STATUS, T_REGS, T_REGS_NDB, T_FPREGS, T_CTL, T_FILES };
 
@@ -296,13 +310,21 @@ typedef struct file_entry {
 } file_entry;
 
 static const file_entry FILE_TABLE[FILES] = {
-    [STATUS] = {VX_STR("status"), 0444}, [CTL] = {VX_STR("ctl"), 0222},
-    [NOTE] = {VX_STR("note"), 0222},     [NOTEPG] = {VX_STR("notepg"), 0222},
-    [NOTEID] = {VX_STR("noteid"), 0664}, [PPID] = {VX_STR("ppid"), 0444},
-    [WAIT] = {VX_STR("wait"), 0444},     [NS] = {VX_STR("ns"), 0444},
-    [EVENTS] = {VX_STR("events"), 0444}, [MEM] = {VX_STR("mem"), 0664},
-    [MAPS] = {VX_STR("maps"), 0444},     [IMAGES] = {VX_STR("images"), 0444},
-    [INFO] = {VX_STR("info"), 0444},     [THREADS] = {VX_STR("threads"), P9_DMDIR | 0555},
+    [STATUS] = {VX_STR("status"), 0444},
+    [CTL] = {VX_STR("ctl"), 0222},
+    [NOTE] = {VX_STR("note"), 0222},
+    [NOTEPG] = {VX_STR("notepg"), 0222},
+    [NOTEID] = {VX_STR("noteid"), 0664},
+    [PPID] = {VX_STR("ppid"), 0444},
+    [WAIT] = {VX_STR("wait"), 0444},
+    [NS] = {VX_STR("ns"), 0444},
+    [EVENTS] = {VX_STR("events"), 0444},
+    [MEM] = {VX_STR("mem"), 0664},
+    [MAPS] = {VX_STR("maps"), 0444},
+    [IMAGES] = {VX_STR("images"), 0444},
+    [INFO] = {VX_STR("info"), 0444},
+    [PROF] = {VX_STR("prof"), P9_DMDIR | 0555},
+    [THREADS] = {VX_STR("threads"), P9_DMDIR | 0555},
 };
 
 static const file_entry THREAD_FILES[T_FILES] = {
@@ -341,8 +363,11 @@ static bool thread_alive(const proc *p, uint32_t tid) {
          ti.id == tid;
 }
 
+static const file_entry PROF_FILES[2] = {{VX_STR("ctl"), 0222}, {VX_STR("zones"), 0444}};
+
 static const file_entry *entry_of(uint64_t node) {
-  return thread_of(node) ? &THREAD_FILES[file_of(node)] : &FILE_TABLE[file_of(node)];
+  if (thread_of(node)) return &THREAD_FILES[file_of(node)];
+  return file_of(node) > FILES ? &PROF_FILES[file_of(node) - PROF_CTL] : &FILE_TABLE[file_of(node)];
 }
 
 static vx_status fs_attach(void *ctx, vx_str aname, uint64_t *root) {
@@ -387,6 +412,14 @@ static vx_status fs_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) 
     *child = node_of(p->pid, (uint32_t)n, T_DIR);
     return VX_OK;
   }
+  if (!tid && f == PROF) { // prof/'s files
+    for (uint32_t k = 0; k < 2; k++)
+      if (PROF_FILES[k].name.len == name.len && memcmp(PROF_FILES[k].name.ptr, name.ptr, name.len) == 0) {
+        *child = node_of(p->pid, 0, PROF_CTL + k);
+        return VX_OK;
+      }
+    return VX_ERR_NOT_FOUND;
+  }
   if (f != DIR) return VX_ERR_NOT_FOUND;
   const file_entry *table = tid ? THREAD_FILES : FILE_TABLE;
   for (uint32_t k = 1; k < (tid ? T_FILES : FILES); k++)
@@ -405,6 +438,8 @@ static vx_status fs_parent(void *ctx, uint64_t node, uint64_t *parent) {
     *parent = ROOT;
   else if (tid && f == T_DIR)
     *parent = node_of(pid, 0, THREADS);
+  else if (!tid && f > FILES)
+    *parent = node_of(pid, 0, PROF);
   else
     *parent = node_of(pid, tid, DIR); // a file: its process's directory, or its thread's
   return VX_OK;
@@ -562,6 +597,7 @@ static vx_status mem_read(const proc *p, uint64_t offset, uint8_t *buf, uint32_t
 }
 
 #include "crash.c"
+#include "prof.c"
 
 static vx_status fs_read(void *ctx, uint64_t node, uint64_t offset, uint8_t *buf, uint32_t *count) {
   (void)ctx;
@@ -575,6 +611,14 @@ static vx_status fs_read(void *ctx, uint64_t node, uint64_t offset, uint8_t *buf
   case MAPS: len = maps_text(p, text, sizeof text); break;
   case IMAGES: len = images_text(p, text, sizeof text); break;
   case INFO: len = info_text(p, text, sizeof text); break;
+  case PROF_ZONES: { // a whole ring: bigger than text
+    static uint8_t snap[VX_PROF_RING];
+    size_t n = prof_snapshot(p, snap, sizeof snap);
+    uint64_t left = offset < n ? n - offset : 0;
+    if (*count > left) *count = (uint32_t)left;
+    memcpy(buf, snap + offset * (*count != 0), *count);
+    return VX_OK;
+  }
   case EVENTS: { // a record each read, as wait's; a read waits for one
     vx_status st = take_event(p, text, sizeof text, &len);
     if (st != VX_OK) return st;
@@ -670,6 +714,7 @@ static vx_status fs_write(void *ctx, uint64_t node, uint64_t offset, const uint8
   if (tid && f == T_REGS_NDB) return regs_ndb_write(p, tid, s);
   if (tid && f == T_CTL) return thread_ctl(p, tid, s);
   if (tid) return VX_ERR_ACCESS;
+  if (f == PROF_CTL) return prof_ctl(p, s);
   uint64_t group;
   switch (f) {
   case CTL: return ctl(p, s);
@@ -695,6 +740,11 @@ static vx_status fs_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *c
       if (!p || vx_thread_state(p->task, ti.id, VX_STATE_NEXT_THREAD, &ti, sizeof ti) != VX_OK)
         return VX_ERR_NOT_FOUND;
     *child = node_of(p->pid, ti.id, T_DIR);
+    return VX_OK;
+  }
+  if (dir != ROOT && !thread_of(dir) && file_of(dir) == PROF) { // ctl, zones
+    if (!p || index >= 2) return VX_ERR_NOT_FOUND;
+    *child = node_of(p->pid, 0, PROF_CTL + index);
     return VX_OK;
   }
   if (dir != ROOT) {

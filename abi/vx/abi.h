@@ -20,6 +20,21 @@ typedef struct vx_str { // length-carrying slice; never NUL-terminated
 
 static constexpr vx_instant VX_INFINITE = INT64_MAX; // a deadline that never comes
 
+// clock_read(): the time on the monotonic clock. clock_read(&info): the same,
+// and the cycle counter it is made from, for /sys/clock/info (02 §5.1): its
+// frequency (the clock is counter * 10^9 / counter_hz, exactly), and flags.
+// User code may always read the counter: rdtsc, or mrs cntvct_el0.
+enum vx_clock_flags : uint32_t {
+  VX_CLOCK_INVARIANT = 1, // one rate in every power state
+  VX_CLOCK_USER = 2,      // readable in user mode
+  VX_CLOCK_TSC = 4,       // x86_64's TSC
+  VX_CLOCK_CNTVCT = 8,    // aarch64's virtual counter
+};
+typedef struct vx_clock_info {
+  uint64_t counter_hz;
+  uint32_t flags, reserved;
+} vx_clock_info;
+
 // The longest exit string or note, in bytes: Plan 9's ERRMAX (ADR-0010).
 static constexpr uint32_t VX_ERRMAX = 128;
 

@@ -287,6 +287,14 @@ static int64_t sys_as_unmap(vx_handle th, uint64_t va, uint64_t size) {
   return st;
 }
 
+// clock_read(&info): the clock's counter, for /sys/clock/info; with no
+// argument, the time (dispatched below).
+static int64_t sys_clock_info(uint64_t info_ptr) {
+  vx_clock_info info = {.counter_hz = clock.hz, .flags = arch_counter_flags()};
+  vx_status st = copy_to_user(info_ptr, &info, sizeof info);
+  return st == VX_OK ? clock_now() : st;
+}
+
 // as_query(task, address, &info): the first mapping ending after address.
 static int64_t sys_as_query(vx_handle th, uint64_t addr, uint64_t info_ptr) {
   vx_status st;
@@ -812,7 +820,7 @@ static int64_t sys_task_mem_rw(vx_handle th, uint64_t ops_ptr, uint64_t count);
 static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   switch (nr) {
   case VX_SYS_debug_write: return sys_debug_write(a[0], a[1]);
-  case VX_SYS_clock_read: return clock_now();
+  case VX_SYS_clock_read: return a[0] ? sys_clock_info(a[0]) : clock_now();
   case VX_SYS_task_create: return sys_task_create(a[0], a[1], a[2], a[3]);
   case VX_SYS_task_kill: return sys_task_kill((vx_handle)a[0], a[1], a[2], a[3]);
   case VX_SYS_task_exec: return sys_task_exec((vx_handle)a[0], (vx_handle)a[1], a[2], a[3]);

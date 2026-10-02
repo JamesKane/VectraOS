@@ -1,5 +1,5 @@
 # boot/svc/shell.ndb: the console shell (docs/01 §10), in a namespace of the
-# boot image at /, the processes at /proc and the network at /net. Its
+# boot image at /, the processes at /proc, the network at /net and /sys. Its
 # commands share its namespace group, through nsd (ADR-0009). svcd starts it
 # again when it exits.
 
@@ -7,4 +7,5 @@ service=gsh program=/boot/bin/gsh console restart
 mount=/ srv=bootfs
 mount=/proc srv=proc
 mount=/net srv=net
+mount=/sys srv=sys
 connect=nsd

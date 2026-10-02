@@ -3,7 +3,8 @@
 # /bin the programs, sbase's (/boot/bin/posix, ADR-0016) before the native
 # ones of the same names, as APE binds /bin/ape; /tmp a RAM file system; /dev
 # null, zero, random and urandom, and the terminals (ptmx, pts/); /proc the
-# processes; /net the network, which the C library's sockets use (01 §9).
+# processes; /net the network, which the C library's sockets use (01 §9);
+# /sys the system's clock (02 §5.1).
 
 mount /srv/bootfs /
 bind -a /boot/bin /bin
@@ -13,3 +14,4 @@ mount /srv/null /dev
 mount -a /srv/ptyd /dev
 mount /srv/proc /proc
 mount /srv/net /net
+mount /srv/sys /sys

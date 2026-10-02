@@ -15,10 +15,13 @@
 //   loop      calls target(0), target(1), ... every 10 ms, and ends at 20:
 //             what the debug files (05 §3) stop at a breakpoint
 //   fault     waits a little, then reads address 16, which nothing maps
+//   zones     gives procfs a profiling ring, then times a zone of work every
+//             few milliseconds, for ever (05 §9)
 
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-rt/spawn.c"
 #include "../../lib/vx-ns/spawn.c"
+#include "../../lib/vx-prof/prof.h"
 
 static uint32_t checks, failures;
 static vx_ns ns;
@@ -149,6 +152,16 @@ static const char *child(vx_str mode) {
       nap(10);
     }
     return "looped";
+  }
+  if (mode.len == 5 && memcmp(mode.ptr, "zones", 5) == 0) {
+    if (vx_prof_init(vx_ns_connector(&ns, VX_STR("/proc"))) != VX_OK) return "no ring";
+    static vx_prof_zone work = {.name = "work"};
+    for (;;) {
+      uint64_t t = vx_prof_begin(&work);
+      for (volatile int i = 0; i < 10000; i++) {}
+      vx_prof_end(&work, t);
+      nap(2);
+    }
   }
   if (mode.len == 5 && memcmp(mode.ptr, "fault", 5) == 0) {
     nap(100);
@@ -316,6 +329,63 @@ static void test_debug(void) {
   CHECK(n > 0); // at least one entry
 }
 
+// /sys/clock (02 §5.1), and profiling zones (05 §9): a child times a zone;
+// with zones on, /proc/N/prof/zones has its records, named, in cycles.
+static void test_prof(void) {
+  char buf[256] = {};
+  vx_ns_file f;
+  int64_t n = -1;
+  if (vx_ns_open(&ns, VX_STR("/sys/clock/info"), P9_OREAD, &f) == VX_OK) {
+    n = vx_ns_read(&f, buf, sizeof buf);
+    vx_ns_close(&f);
+  }
+  vx_str info = {buf, n > 0 ? (size_t)n : 0};
+  CHECK(has(info, ".hz=") && has(info, ".user") && has(info, "source="));
+  if (vx_ns_open(&ns, VX_STR("/sys/clock/now"), P9_OREAD, &f) == VX_OK) {
+    n = vx_ns_read(&f, buf, sizeof buf);
+    vx_ns_close(&f);
+  }
+  CHECK(n > 0 && has((vx_str){buf, (size_t)n}, "monotonic="));
+  vx_clock_info clock = {};
+  CHECK(vx_clock_info_read(&clock) == VX_OK && clock.counter_hz > 1'000'000);
+  uint64_t c0 = vx_cycles();
+  nap(10);
+  uint64_t c1 = vx_cycles();
+  CHECK(c1 > c0 && (c1 - c0) * 1000 / clock.counter_hz >= 9); // 10 ms of cycles, read in user mode
+
+  uint64_t c = spawn("zones");
+  CHECK(c != 0);
+  vx_status st = VX_ERR_NOT_FOUND;
+  for (int tries = 0; tries < 100 && st != VX_OK; tries++) { // until it has given procfs its ring
+    st = write_file(c, "prof/ctl", "zones on");
+    if (st != VX_OK) nap(5);
+  }
+  CHECK(st == VX_OK);
+  CHECK(write_file(c, "prof/ctl", "zones sideways") == VX_ERR_INVALID);
+  nap(100);
+  alignas(vx_prof_header) static uint8_t ring[VX_PROF_RING];
+  size_t got = 0;
+  if (vx_ns_open(&ns, proc_path(c, "prof/zones"), P9_OREAD, &f) == VX_OK) {
+    while (got < sizeof ring && (n = vx_ns_read(&f, ring + got, (uint32_t)(sizeof ring - got))) > 0)
+      got += (size_t)n;
+    vx_ns_close(&f);
+  }
+  const vx_prof_header *h = (const vx_prof_header *)ring;
+  CHECK(got >= sizeof *h && h->magic == VX_PROF_MAGIC && h->counter_hz == clock.counter_hz && h->nzones == 1);
+  CHECK(got >= sizeof *h && memcmp(h->names[0], "work", 5) == 0);
+  size_t records = got > sizeof *h ? (got - sizeof *h) / sizeof(vx_prof_record) : 0;
+  CHECK(records >= 5);
+  bool ordered = true;
+  const vx_prof_record *r = (const vx_prof_record *)(ring + sizeof *h);
+  for (size_t i = 0; i < records; i++)
+    ordered = ordered && r[i].zone == 1 && r[i].end > r[i].start && (!i || r[i].start >= r[i - 1].start);
+  CHECK(ordered);
+  CHECK(write_file(c, "prof/ctl", "zones off") == VX_OK);
+  CHECK(write_file(c, "note", "done") == VX_OK);
+  n = wait_record(buf, sizeof buf);
+  CHECK(n > 0 && has((vx_str){buf, (size_t)n}, "status=done"));
+}
+
 const char *vx_main(void) {
   if (vx_ns_from_spawn(&ns) != VX_OK) return "no namespace";
   if (vx_spawn.argc) return child(vx_spawn.args[0]);
@@ -417,6 +487,7 @@ const char *vx_main(void) {
   CHECK(n > 0 && has((vx_str){buf, (size_t)n}, "bind /boot /n"));
 
   test_debug();
+  test_prof();
   vx_print(VX_STR("proctest: "));
   vx_print_u64(checks);
   vx_print(VX_STR(" checks, "));

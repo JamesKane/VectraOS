@@ -52,7 +52,7 @@
 #include "../../lib/vx-rand/drbg.c"
 #include "../../lib/vx-ns/newns.c"
 
-static constexpr uint32_t MAX_SERVICES = 16;
+static constexpr uint32_t MAX_SERVICES = 32;
 static constexpr uint32_t MAX_RESTARTS = 5;                   // in RESTART_WINDOW, then svcd gives up
 static constexpr vx_duration RESTART_WINDOW = 10'000'000'000; // 10 s
 static constexpr uint32_t BOOT_IMAGE_RIGHTS =

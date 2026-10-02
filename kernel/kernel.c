@@ -43,6 +43,7 @@ static void arch_pte_publish(void); // table writes so far are seen by the table
 // The cycle counter and the deadline timer (time.c).
 static uint64_t arch_counter(void);
 static uint64_t arch_counter_hz(void);
+static uint32_t arch_counter_flags(void);   // its vx_clock_flags, for /sys/clock/info
 static void arch_timer_init(void);          // the interrupt controller and the timer, on this CPU
 static void arch_timer_arm(uint64_t count); // one interrupt when the counter reaches count
 static void arch_wait(void);                // sleep until an interrupt has been handled

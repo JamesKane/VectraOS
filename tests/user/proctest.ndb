@@ -7,4 +7,5 @@ service=proctest program=/boot/bin/proctest console
 mount=/ srv=bootfs
 mount=/proc srv=proc
 mount=/tmp srv=tmpfs
+mount=/sys srv=sys
 connect=nsd
