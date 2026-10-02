@@ -347,7 +347,10 @@ enum vx_task_options : uint32_t { VX_TASK_FORK = 1 };
 //     TPIDR_EL0), a uint64_t, on the same terms; with thread 0, the caller's
 //     own, at any time (musl's __set_thread_area). GET_FPREGS and SET_FPREGS
 //     its FP/SIMD registers, a vx_fpregs, on the same terms (a debugger's
-//     fpregs, 05 §3). NEXT_THREAD, at any time, describes the live thread
+//     fpregs, 05 §3). GET_WATCH and SET_WATCH (DEBUG), with thread 0, the
+//     task's watchpoints, a vx_watches, which every thread of it has, from
+//     when each next runs; GET says how many the hardware has in count.
+//     NEXT_THREAD, at any time, describes the live thread
 //     with the next id after `thread` (0: the first) in a vx_thread_info:
 //     how procfs lists /proc/N/threads; NOT_FOUND after the last.
 // thread_suspend(task, thread), thread_resume(task, thread): counted, with the
@@ -397,6 +400,9 @@ enum vx_exception_kind : uint32_t {
   VX_EXCEPTION_GENERAL,     // any other fault (x86 #GP, say); code: the architecture's
   VX_EXCEPTION_INTERRUPT,   // thread_interrupt; code: the note's length, note: its text
   VX_EXCEPTION_STEP,        // one instruction done, after exception_resume(STEP)
+  VX_EXCEPTION_WATCHPOINT,  // a watched address touched; code: the watchpoint's slot, address: what it
+                            // watches. x86_64 stops after the access, aarch64 before it (resuming
+                            // touches it again: step it with the watchpoint off)
 };
 
 typedef struct vx_exception {
@@ -422,6 +428,21 @@ typedef struct vx_fpregs {
   uint64_t fpcr, fpsr;
 } vx_fpregs;
 #endif
+
+// Watchpoints: the debug registers, x86_64's four, aarch64's two to sixteen.
+// An address aligned to its length (1, 2, 4 or 8 bytes), in user space.
+static constexpr uint32_t VX_WATCH_MAX = 16;
+enum vx_watch_kind : uint32_t { VX_WATCH_OFF, VX_WATCH_WRITE, VX_WATCH_RW };
+typedef struct vx_watch {
+  uint64_t address;
+  uint32_t len;
+  uint32_t kind; // enum vx_watch_kind
+} vx_watch;
+typedef struct vx_watches {
+  uint32_t count; // GET_WATCH: how many the hardware has; slots from there on are OFF
+  uint32_t reserved;
+  vx_watch slot[VX_WATCH_MAX];
+} vx_watches;
 
 enum vx_thread_run_state : uint32_t {
   VX_THREAD_RUNNING = 1, // running or ready
@@ -464,4 +485,6 @@ enum vx_thread_state_op : uint32_t {
   VX_STATE_GET_FPREGS,
   VX_STATE_SET_FPREGS,
   VX_STATE_NEXT_THREAD,
+  VX_STATE_GET_WATCH,
+  VX_STATE_SET_WATCH,
 };

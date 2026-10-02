@@ -700,6 +700,76 @@ static void fp_load(const uint8_t *fp) {
                    : "x9", "x10", "memory");
 }
 
+// Watchpoints (thread_state SET_WATCH): DBGWVRn_EL1 and DBGWCRn_EL1, for EL0
+// only (PAC), so the kernel's own accesses never fire them, with
+// MDSCR_EL1.MDE on while a task that has them runs. ID_AA64DFR0_EL1.WRPs says
+// how many there are.
+static bool watch_loaded[MAX_CPUS];
+
+static uint32_t arch_watch_count(void) {
+  uint64_t dfr0;
+  __asm__ volatile("mrs %0, id_aa64dfr0_el1" : "=r"(dfr0));
+  uint32_t n = (uint32_t)(dfr0 >> 20 & 15) + 1;
+  return n < VX_WATCH_MAX ? n : VX_WATCH_MAX;
+}
+
+// The registers are named in the instruction, so each slot is its own case.
+static void watch_slot(uint32_t i, uint64_t value, uint64_t control) {
+  // NOLINTBEGIN(bugprone-branch-clone): each case writes a different register
+  switch (i) {
+  case 0: __asm__ volatile("msr dbgwvr0_el1, %0\n\tmsr dbgwcr0_el1, %1" : : "r"(value), "r"(control)); break;
+  case 1: __asm__ volatile("msr dbgwvr1_el1, %0\n\tmsr dbgwcr1_el1, %1" : : "r"(value), "r"(control)); break;
+  case 2: __asm__ volatile("msr dbgwvr2_el1, %0\n\tmsr dbgwcr2_el1, %1" : : "r"(value), "r"(control)); break;
+  case 3: __asm__ volatile("msr dbgwvr3_el1, %0\n\tmsr dbgwcr3_el1, %1" : : "r"(value), "r"(control)); break;
+  case 4: __asm__ volatile("msr dbgwvr4_el1, %0\n\tmsr dbgwcr4_el1, %1" : : "r"(value), "r"(control)); break;
+  case 5: __asm__ volatile("msr dbgwvr5_el1, %0\n\tmsr dbgwcr5_el1, %1" : : "r"(value), "r"(control)); break;
+  case 6: __asm__ volatile("msr dbgwvr6_el1, %0\n\tmsr dbgwcr6_el1, %1" : : "r"(value), "r"(control)); break;
+  case 7: __asm__ volatile("msr dbgwvr7_el1, %0\n\tmsr dbgwcr7_el1, %1" : : "r"(value), "r"(control)); break;
+  case 8: __asm__ volatile("msr dbgwvr8_el1, %0\n\tmsr dbgwcr8_el1, %1" : : "r"(value), "r"(control)); break;
+  case 9: __asm__ volatile("msr dbgwvr9_el1, %0\n\tmsr dbgwcr9_el1, %1" : : "r"(value), "r"(control)); break;
+  case 10:
+    __asm__ volatile("msr dbgwvr10_el1, %0\n\tmsr dbgwcr10_el1, %1" : : "r"(value), "r"(control));
+    break;
+  case 11:
+    __asm__ volatile("msr dbgwvr11_el1, %0\n\tmsr dbgwcr11_el1, %1" : : "r"(value), "r"(control));
+    break;
+  case 12:
+    __asm__ volatile("msr dbgwvr12_el1, %0\n\tmsr dbgwcr12_el1, %1" : : "r"(value), "r"(control));
+    break;
+  case 13:
+    __asm__ volatile("msr dbgwvr13_el1, %0\n\tmsr dbgwcr13_el1, %1" : : "r"(value), "r"(control));
+    break;
+  case 14:
+    __asm__ volatile("msr dbgwvr14_el1, %0\n\tmsr dbgwcr14_el1, %1" : : "r"(value), "r"(control));
+    break;
+  case 15:
+    __asm__ volatile("msr dbgwvr15_el1, %0\n\tmsr dbgwcr15_el1, %1" : : "r"(value), "r"(control));
+    break;
+  default: break;
+  }
+  // NOLINTEND(bugprone-branch-clone)
+}
+
+static void watch_load(const task *t) {
+  uint32_t cpu = arch_cpu_index(), count = arch_watch_count();
+  if (!t->watching && !watch_loaded[cpu]) return;
+  for (uint32_t i = 0; i < count; i++) {
+    const vx_watch *w = &t->watches[i];
+    if (!t->watching || w->kind == VX_WATCH_OFF) {
+      watch_slot(i, 0, 0);
+      continue;
+    }
+    uint64_t base = w->address & ~7ull, bas = ((1ull << w->len) - 1) << (w->address & 7);
+    uint64_t lsc = w->kind == VX_WATCH_WRITE ? 2 : 3;         // stores, or loads and stores
+    watch_slot(i, base, bas << 5 | lsc << 3 | 2ull << 1 | 1); // BAS, LSC, PAC = EL0, E
+  }
+  uint64_t mdscr;
+  __asm__ volatile("mrs %0, mdscr_el1" : "=r"(mdscr));
+  mdscr = t->watching ? mdscr | 1ull << 15 : mdscr & ~(1ull << 15); // MDE
+  __asm__ volatile("msr mdscr_el1, %0\n\tisb" : : "r"(mdscr) : "memory");
+  watch_loaded[cpu] = t->watching;
+}
+
 // Idle threads have no user state: whoever ran last leaves its TPIDR_EL0 and
 // FP/SIMD registers in place, unused, until the next user thread loads its own.
 static void arch_user_switch(thread *prev, thread *next) {
@@ -710,6 +780,7 @@ static void arch_user_switch(thread *prev, thread *next) {
   if (next->task) {
     arch_tls_write(next->tls);
     fp_load(next->fp);
+    watch_load(next->task);
   }
 }
 
@@ -778,6 +849,16 @@ static uint32_t aarch64_exception_kind(const trap_frame *f, uint32_t *code, uint
   case 0x26: *address = f->far; return VX_EXCEPTION_ALIGNMENT; // PC or SP alignment
   case 0x2c: return VX_EXCEPTION_ARITHMETIC;                   // trapped FP exception
   case 0x32: return VX_EXCEPTION_STEP;                         // software step, from EL0
+  case 0x34: {                                                 // a watchpoint, from EL0: before the access
+    const task *t = this_cpu()->current->task;
+    *code = 0;
+    for (uint32_t i = 0; i < VX_WATCH_MAX; i++) { // the slot whose 8-byte span holds what was touched
+      const vx_watch *w = &t->watches[i];
+      if (w->kind != VX_WATCH_OFF && (w->address & ~7ull) == (f->far & ~7ull)) *code = i;
+    }
+    *address = t->watches[*code].address;
+    return VX_EXCEPTION_WATCHPOINT;
+  }
   default: return VX_EXCEPTION_GENERAL;
   }
 }

@@ -111,6 +111,7 @@ static bool arch_console_device(bool io, uint64_t base,
                                 uint64_t size); // overlaps the kernel console's device
 struct task;
 static void arch_io_switch(const struct task *t); // this CPU's I/O port permissions become t's; t may be null
+static uint32_t arch_watch_count(void);           // the debug registers' watchpoints (thread_state SET_WATCH)
 
 #include "../lib/vx-mem/mem.c"
 #include "../lib/vx-utf/utf.h"

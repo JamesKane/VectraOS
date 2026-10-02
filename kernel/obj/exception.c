@@ -313,8 +313,41 @@ static void fpregs_sanitize(vx_fpregs *f) {
 #endif
 }
 
+// The task's watchpoints: GET_WATCH and SET_WATCH. A set is checked whole:
+// each slot off, or an aligned user address of 1, 2, 4 or 8 bytes, within the
+// hardware's count.
+static int64_t thread_watch(vx_handle th, uint64_t op, uint64_t buf) {
+  vx_watches w = {};
+  vx_status st = VX_OK;
+  if (op == VX_STATE_SET_WATCH && (st = copy_from_user(&w, buf, sizeof w)) != VX_OK) return st;
+  uint32_t count = arch_watch_count();
+  bool any = false;
+  for (uint32_t i = 0; op == VX_STATE_SET_WATCH && i < VX_WATCH_MAX; i++) {
+    const vx_watch *s = &w.slot[i];
+    if (s->kind == VX_WATCH_OFF) continue;
+    bool len_ok = s->len == 1 || s->len == 2 || s->len == 4 || s->len == 8;
+    if (i >= count || s->kind > VX_WATCH_RW || !len_ok || s->address % s->len || s->address >= USER_TOP)
+      return VX_ERR_INVALID;
+    any = true;
+  }
+  task *t = (task *)handle_get(current_task(), th, OBJ_TASK,
+                               op == VX_STATE_SET_WATCH ? VX_RIGHT_DEBUG : VX_RIGHT_MANAGE, &st);
+  if (!t) return st;
+  spin_lock(&t->lock);
+  if (op == VX_STATE_SET_WATCH) {
+    memcpy(t->watches, w.slot, sizeof t->watches);
+    t->watching = any;
+  } else {
+    memcpy(w.slot, t->watches, sizeof w.slot);
+  }
+  spin_unlock(&t->lock);
+  object_release(&t->obj);
+  w.count = count;
+  return op == VX_STATE_GET_WATCH ? copy_to_user(buf, &w, sizeof w) : VX_OK;
+}
+
 static int64_t sys_thread_state(vx_handle th, uint64_t id, uint64_t op, uint64_t buf, uint64_t size) {
-  if (op < VX_STATE_GET_EXCEPTION || op > VX_STATE_NEXT_THREAD) return VX_ERR_INVALID;
+  if (op < VX_STATE_GET_EXCEPTION || op > VX_STATE_SET_WATCH) return VX_ERR_INVALID;
   bool tls_op = op == VX_STATE_GET_TLS || op == VX_STATE_SET_TLS;
   bool fp_op = op == VX_STATE_GET_FPREGS || op == VX_STATE_SET_FPREGS;
   uint64_t need = sizeof(vx_regs);
@@ -322,8 +355,11 @@ static int64_t sys_thread_state(vx_handle th, uint64_t id, uint64_t op, uint64_t
   if (tls_op) need = sizeof(uint64_t);
   if (fp_op) need = sizeof(vx_fpregs);
   if (op == VX_STATE_NEXT_THREAD) need = sizeof(vx_thread_info);
+  if (op == VX_STATE_GET_WATCH || op == VX_STATE_SET_WATCH) need = sizeof(vx_watches);
   if (size < need) return VX_ERR_TOO_SMALL;
   if (op == VX_STATE_NEXT_THREAD) return thread_next(th, id, buf);
+  if (op == VX_STATE_GET_WATCH || op == VX_STATE_SET_WATCH)
+    return id ? VX_ERR_INVALID : thread_watch(th, op, buf);
   if (tls_op && id == 0) return thread_tls_self(th, op, buf);
   vx_regs regs;
   static_assert(sizeof(vx_fpregs) == ARCH_FP_SIZE);

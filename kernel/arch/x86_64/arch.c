@@ -438,6 +438,43 @@ static vx_status arch_frame_set_regs(trap_frame *f, const vx_regs *r) {
 
 static constexpr uint32_t MSR_FS_BASE = 0xc0000100;
 
+// Watchpoints (thread_state SET_WATCH): DR0-DR3 and DR7, loaded on the way
+// into a task that has them, and DR7 cleared on the way into one that does
+// not. They fire in the kernel too, when it copies to or from a watched
+// address; x86_trap ignores those.
+static bool watch_loaded[MAX_CPUS];
+
+static uint32_t arch_watch_count(void) { return 4; }
+
+static const uint8_t DR7_LEN[9] = {[1] = 0, [2] = 1, [4] = 3, [8] = 2}; // LEN's odd encoding, by bytes
+
+static void watch_load(const task *t) {
+  uint32_t cpu = arch_cpu_index();
+  if (!t->watching && !watch_loaded[cpu]) return;
+  uint64_t dr7 = 0, addr[4] = {};
+  for (uint32_t i = 0; t->watching && i < 4; i++) {
+    const vx_watch *w = &t->watches[i];
+    if (w->kind == VX_WATCH_OFF) continue;
+    uint64_t rw = w->kind == VX_WATCH_WRITE ? 1 : 3; // 01 writes, 11 reads and writes
+    uint64_t len = DR7_LEN[w->len];
+    dr7 |= 1ull << (2 * i) | rw << (16 + 4 * i) | len << (18 + 4 * i);
+    addr[i] = w->address;
+  }
+  __asm__ volatile("mov %0, %%dr7" : : "r"(0ull)); // off while the addresses change
+  __asm__ volatile("mov %0, %%dr0\n\tmov %1, %%dr1\n\tmov %2, %%dr2\n\tmov %3, %%dr3"
+                   :
+                   : "r"(addr[0]), "r"(addr[1]), "r"(addr[2]), "r"(addr[3]));
+  __asm__ volatile("mov %0, %%dr7" : : "r"(dr7));
+  watch_loaded[cpu] = dr7 != 0;
+}
+
+static uint64_t read_dr6(void) {
+  uint64_t v;
+  __asm__ volatile("mov %%dr6, %0" : "=r"(v));
+  return v;
+}
+static void clear_dr6(void) { __asm__ volatile("mov %0, %%dr6" : : "r"(0xffff'0ff0ull)); }
+
 // Idle threads have no user state: whoever ran last leaves its FS base and
 // FP/SIMD registers in place, unused, until the next user thread loads its own.
 static void arch_user_switch(thread *prev, thread *next) {
@@ -448,6 +485,7 @@ static void arch_user_switch(thread *prev, thread *next) {
   if (next->task) {
     wrmsr(MSR_FS_BASE, next->tls);
     __asm__ volatile("fxrstor64 %0" : : "m"(*(const uint8_t (*)[ARCH_FP_SIZE])next->fp));
+    watch_load(next->task);
   }
 }
 
@@ -489,7 +527,15 @@ static uint32_t x86_exception_kind(const trap_frame *f, uint32_t *code, uint64_t
   *address = 0;
   switch (f->vector) {
   case 0: return VX_EXCEPTION_ARITHMETIC; // divide error
-  case 1: return VX_EXCEPTION_STEP;       // the trap flag (exception_raise clears it, or sets it again)
+  case 1: { // a watchpoint (DR6's B0-B3), or the trap flag (exception_raise clears it, or sets it again)
+    uint64_t dr6 = read_dr6();
+    clear_dr6();
+    if (!(dr6 & 15)) return VX_EXCEPTION_STEP;
+    *code = (uint32_t)__builtin_ctzll(dr6 & 15);
+    task *t = this_cpu()->current->task;
+    *address = t->watches[*code].address; // a trap: the access is done
+    return VX_EXCEPTION_WATCHPOINT;
+  }
   case 3: return VX_EXCEPTION_BREAKPOINT;
   case 6: return VX_EXCEPTION_ILLEGAL;
   case 7: return VX_EXCEPTION_FP_DISABLED;
@@ -528,6 +574,8 @@ void x86_trap(trap_frame *f) {
   } else if (f->vector >= VECTOR_IRQ_BASE && f->vector < VECTOR_IRQ_BASE + MAX_GSI) {
     irq_fire((uint32_t)(f->vector - VECTOR_IRQ_BASE)); // a level line is masked before the EOI
     wrmsr(X2APIC_EOI, 0);
+  } else if (f->vector == 1 && !from_user) {
+    clear_dr6(); // the kernel touched a watched user address for the task: not the task's access
   } else if (f->vector == 14 && !from_user && read_cr2() < USER_TOP && uaccess_fixup(f->rip)) {
     f->rip = uaccess_fixup(f->rip); // a user page gone under a copy: it reports the failure
   } else if (from_user) {

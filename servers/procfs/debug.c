@@ -2,15 +2,18 @@
 // Part of procfs.c.
 //
 //   /proc/N/ctl          also: break ADDR [if COND] [after N] · unbreak ADDR ·
-//                        step T · freeze T · thaw T · detach
+//                        watch ADDR LEN write|rw · unwatch ADDR · step T ·
+//                        freeze T · thaw T · detach
 //   /proc/N/events       a read waits for a debug event, then returns its record:
 //                          event=break thread=1 pc=0x401a20
 //                          event=step thread=1 pc=0x401a24
 //                          event=fault thread=1 pc=0x401a30 addr=0x0 access=read
 //                          event=trap thread=1 pc=0x401a40   (a breakpoint the program has)
+//                          event=watch thread=1 pc=0x401a50 addr=0x4c2008 access=write
 //   /proc/N/mem          the address space as a file: read or write at an address
 //   /proc/N/maps         one record per mapping: base= size= prot=r-x offset=
 //   /proc/N/images       one record per ELF image: name= base= build-id=
+//   /proc/N/info         arch= watchpoints= (the hardware's) breakpoints= (procfs's)
 //   /proc/N/threads/T/   status (state= reason= pc=), regs (vx_regs, binary),
 //                        regs.ndb (the same as one record; write NAME=VALUE to
 //                        set), fpregs (vx_fpregs, binary), ctl (step · resume ·
@@ -28,6 +31,9 @@
 // address, against a constant (`if rdi==3`, `if [0x7f001000]>=100`), and
 // `after N` lets N hits go by. A fault stops the thread with an event, and
 // resuming it passes the fault on, to the program's handler or the default.
+// Watchpoints are the task's debug registers (thread_state SET_WATCH); a
+// thread stopped at one is stepped past it with them off, since aarch64 stops
+// before the access and would only stop again.
 //
 // Reading registers needs the thread held still: stopped at an event, or
 // frozen (thread_suspend, as ctl's stop does to every thread).
@@ -48,7 +54,16 @@ typedef struct breakpoint {
 } breakpoint;
 
 // Why procfs holds a thread stopped at its exception port.
-typedef enum why : uint8_t { WHY_NONE, WHY_BREAK, WHY_STEP, WHY_FAULT, WHY_TRAP, WHY_OVER } why;
+typedef enum why : uint8_t {
+  WHY_NONE,
+  WHY_BREAK,
+  WHY_STEP,
+  WHY_FAULT,
+  WHY_TRAP,
+  WHY_OVER,
+  WHY_WATCH,
+  WHY_WOVER
+} why;
 
 typedef struct held {
   uint32_t tid;
@@ -61,6 +76,7 @@ typedef struct held {
 typedef struct debugger {
   bool bound; // procfs's port takes the task's exceptions first
   breakpoint bp[DBG_BREAKS];
+  vx_watches watches; // the task's watchpoints, as procfs set them
   held threads[DBG_THREADS];
   char events[DBG_EVENTS][DBG_EVENT_LEN];
   uint8_t lens[DBG_EVENTS];
@@ -249,12 +265,30 @@ static vx_status step_over(proc *p, held *h, bool user_step) {
   return vx_exception_resume(p->task, h->tid, VX_RESUME_STEP, nullptr);
 }
 
+// Sets the task's watchpoints: as procfs keeps them, or (off) none, while a
+// thread steps past one.
+static vx_status set_watches(proc *p, bool off) {
+  vx_watches none = {};
+  return vx_thread_state(p->task, 0, VX_STATE_SET_WATCH, off ? &none : &dbg_of(p)->watches, sizeof none);
+}
+
+// Steps a thread held at a watchpoint past it, the watchpoints off for the
+// one instruction (dbg_exception puts them back, at the STEP).
+static vx_status watch_over(proc *p, held *h, bool user_step) {
+  vx_status st = set_watches(p, true);
+  if (st != VX_OK) return st;
+  h->why = WHY_WOVER;
+  h->user_step = user_step;
+  return vx_exception_resume(p->task, h->tid, VX_RESUME_STEP, nullptr);
+}
+
 // Lets a held thread go: over its breakpoint, past its fault (to whoever is
 // next in line), or on.
 static vx_status release(proc *p, held *h) {
   vx_status st;
   if (h->why == WHY_BREAK) return step_over(p, h, false);
-  if (h->why == WHY_OVER) return VX_OK; // on its way already
+  if (h->why == WHY_WATCH) return watch_over(p, h, false);
+  if (h->why == WHY_OVER || h->why == WHY_WOVER) return VX_OK; // on its way already
   st = vx_exception_resume(p->task, h->tid,
                            h->why == WHY_FAULT || h->why == WHY_TRAP ? VX_RESUME_PASS : VX_RESUME_CONTINUE,
                            nullptr);
@@ -264,8 +298,10 @@ static vx_status release(proc *p, held *h) {
 
 static vx_status step_thread(proc *p, uint32_t tid) {
   held *h = held_of(p, tid, false);
-  if (!h || h->why == WHY_OVER) return VX_ERR_BAD_STATE; // only a thread stopped at an event steps
+  if (!h || h->why == WHY_OVER || h->why == WHY_WOVER)
+    return VX_ERR_BAD_STATE; // only one stopped at an event
   if (h->why == WHY_BREAK) return step_over(p, h, true);
+  if (h->why == WHY_WATCH) return watch_over(p, h, true);
   h->why = WHY_OVER; // a step with no breakpoint to put back
   h->bp = -1;
   h->user_step = true;
@@ -291,8 +327,9 @@ static void dbg_exception(proc *p, uint32_t tid) {
   uint64_t pc = *reg_pc(&e.regs);
   if (e.kind == VX_EXCEPTION_STEP) {
     if (h->why == WHY_OVER && h->bp >= 0 && d->bp[h->bp].used)
-      mem_rw(p, d->bp[h->bp].addr, (void *)TRAP, sizeof TRAP, true); // the trap, back
-    if (h->why == WHY_OVER && !h->user_step) {                       // over a breakpoint, on the way on
+      mem_rw(p, d->bp[h->bp].addr, (void *)TRAP, sizeof TRAP, true);    // the trap, back
+    if (h->why == WHY_WOVER) set_watches(p, false);                     // the watchpoints, back
+    if ((h->why == WHY_OVER || h->why == WHY_WOVER) && !h->user_step) { // past it, on the way on
       *h = (held){};
       vx_exception_resume(p->task, tid, VX_RESUME_CONTINUE, nullptr);
       return;
@@ -323,6 +360,16 @@ static void dbg_exception(proc *p, uint32_t tid) {
       return;
     }
     dbg_event(p, "break", tid, addr, nullptr);
+    return;
+  }
+  if (e.kind == VX_EXCEPTION_WATCHPOINT) {
+    *h = (held){.tid = tid, .why = WHY_WATCH, .bp = -1, .pc = pc};
+    const vx_watch *w = &d->watches.slot[e.code < VX_WATCH_MAX ? e.code : 0];
+    char extra[64] = " addr=";
+    size_t n = 6 + hex_text(e.address, extra + 6);
+    const char *access = w->kind == VX_WATCH_WRITE ? " access=write" : " access=rw";
+    memcpy(extra + n, access, vx_cstr(access).len + 1);
+    dbg_event(p, "watch", tid, pc, extra);
     return;
   }
   if (e.kind == VX_EXCEPTION_INTERRUPT) { // a note, not a fault: to the program's handler
@@ -416,11 +463,49 @@ static vx_status clear_break(proc *p, uint64_t addr) {
   return st;
 }
 
+// watch ADDR LEN write|rw: a free slot of the hardware's; the same address
+// again replaces it.
+static vx_status set_watch(proc *p, vx_str args) {
+  debugger *d = dbg_of(p);
+  uint64_t addr, len;
+  if (!parse_num(next_word(&args), &addr) || !parse_num(next_word(&args), &len)) return VX_ERR_INVALID;
+  vx_str kind = next_word(&args);
+  if (!word_is(kind, "write") && !word_is(kind, "rw")) return VX_ERR_INVALID;
+  vx_watches now;
+  vx_status st = vx_thread_state(p->task, 0, VX_STATE_GET_WATCH, &now, sizeof now); // the hardware's count
+  if (st != VX_OK) return st;
+  uint32_t slot = VX_WATCH_MAX;
+  for (uint32_t i = 0; i < now.count && slot == VX_WATCH_MAX; i++)
+    if (d->watches.slot[i].kind != VX_WATCH_OFF && d->watches.slot[i].address == addr) slot = i;
+  for (uint32_t i = 0; i < now.count && slot == VX_WATCH_MAX; i++)
+    if (d->watches.slot[i].kind == VX_WATCH_OFF) slot = i;
+  if (slot == VX_WATCH_MAX) return VX_ERR_NO_MEMORY;
+  if ((st = dbg_bind(p)) != VX_OK) return st;
+  vx_watch was = d->watches.slot[slot];
+  d->watches.slot[slot] = (vx_watch){
+      .address = addr, .len = (uint32_t)len, .kind = word_is(kind, "write") ? VX_WATCH_WRITE : VX_WATCH_RW};
+  st = set_watches(p, false);
+  if (st != VX_OK) d->watches.slot[slot] = was; // refused (not aligned, say): as it was
+  return st;
+}
+
+static vx_status clear_watch(proc *p, uint64_t addr) {
+  debugger *d = dbg_of(p);
+  for (uint32_t i = 0; i < VX_WATCH_MAX; i++)
+    if (d->watches.slot[i].kind != VX_WATCH_OFF && d->watches.slot[i].address == addr) {
+      d->watches.slot[i] = (vx_watch){};
+      return set_watches(p, false);
+    }
+  return VX_ERR_NOT_FOUND;
+}
+
 // Every breakpoint out, every held thread let go, the binding gone.
 static void detach(proc *p) {
   debugger *d = dbg_of(p);
   for (uint32_t i = 0; i < DBG_BREAKS; i++)
     if (d->bp[i].used) clear_break(p, d->bp[i].addr);
+  d->watches = (vx_watches){};
+  set_watches(p, true);
   release_all(p);
   if (d->bound) vx_exception_bind(p->task, VX_HANDLE_NONE, 0, VX_EXCEPTION_FIRST_CHANCE);
   *d = (debugger){};
@@ -432,6 +517,8 @@ static vx_status dbg_ctl(proc *p, vx_str cmd) {
   uint64_t n;
   if (word_is(verb, "break")) return p->root ? VX_ERR_ACCESS : set_break(p, args);
   if (word_is(verb, "unbreak")) return parse_num(next_word(&args), &n) ? clear_break(p, n) : VX_ERR_INVALID;
+  if (word_is(verb, "watch")) return p->root ? VX_ERR_ACCESS : set_watch(p, args);
+  if (word_is(verb, "unwatch")) return parse_num(next_word(&args), &n) ? clear_watch(p, n) : VX_ERR_INVALID;
   if (word_is(verb, "detach")) {
     detach(p);
     return VX_OK;
@@ -520,7 +607,22 @@ static size_t images_text(const proc *p, char *buf, size_t cap) {
 }
 
 static const char *const RUN_STATES[] = {"", "running", "blocked", "stopped", "frozen"};
-static const char *const REASONS[] = {"", "break", "step", "fault", "trap", "step"};
+static const char *const REASONS[] = {"", "break", "step", "fault", "trap", "step", "watch", "step"};
+
+static size_t info_text(const proc *p, char *buf, size_t cap) {
+  vx_watches w;
+  vx_ndb_writer out = {.buf = buf, .cap = cap};
+#ifdef __x86_64__
+  vx_ndb_put(&out, "arch", VX_STR("x86_64"));
+#else
+  vx_ndb_put(&out, "arch", VX_STR("aarch64"));
+#endif
+  if (vx_thread_state(p->task, 0, VX_STATE_GET_WATCH, &w, sizeof w) == VX_OK)
+    vx_ndb_put_u64(&out, "watchpoints", w.count);
+  vx_ndb_put_u64(&out, "breakpoints", DBG_BREAKS);
+  vx_ndb_end(&out);
+  return out.failed ? 0 : out.len;
+}
 
 static size_t thread_status_text(proc *p, uint32_t tid, char *buf, size_t cap) {
   vx_thread_info ti;

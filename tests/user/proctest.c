@@ -242,8 +242,34 @@ static void test_debug(void) {
         has((vx_str){buf, (size_t)n}, "build-id="));
   n = read_file(c, "threads", buf, sizeof buf); // a directory: its one thread
   CHECK(n > 0);
-  // Out, and on: it runs to its end.
+  n = read_file(c, "info", buf, sizeof buf);
+  CHECK(n > 0 && has((vx_str){buf, (size_t)n}, "watchpoints=") &&
+        has((vx_str){buf, (size_t)n}, "breakpoints=32"));
+  // The breakpoint out; a watchpoint on counter: the next write stops it.
   memcpy(cmd, "unbreak ", 8), memcpy(cmd + 8, at.ptr, at.len + 1);
+  CHECK(write_file(c, "ctl", cmd) == VX_OK);
+  vx_str watched = vx_cstr(hex((uint64_t)&counter));
+  len = 0;
+  const char *wparts[] = {"watch ", watched.ptr, " 8 write"};
+  for (size_t i = 0; i < sizeof wparts / sizeof wparts[0]; i++) {
+    vx_str s = vx_cstr(wparts[i]);
+    memcpy(cmd + len, s.ptr, s.len), len += s.len;
+  }
+  cmd[len] = 0;
+  CHECK(write_file(c, "ctl", cmd) == VX_OK);
+  CHECK(write_file(c, "ctl", "watch 0x1001 8 write") == VX_ERR_INVALID); // not aligned
+  CHECK(write_file(c, "ctl", "start") == VX_OK);
+  n = read_file(c, "events", buf, sizeof buf);
+  ev = (vx_str){buf, n > 0 ? (size_t)n : 0};
+  CHECK(has(ev, "event=watch") && has(ev, watched.ptr) && has(ev, "access=write"));
+  n = read_file(c, "threads/1/status", buf, sizeof buf);
+  CHECK(n > 0 && has((vx_str){buf, (size_t)n}, "reason=watch"));
+  // Stepped past it, it stops again at the next write: then out, and on.
+  CHECK(write_file(c, "ctl", "start") == VX_OK);
+  n = read_file(c, "events", buf, sizeof buf);
+  ev = (vx_str){buf, n > 0 ? (size_t)n : 0};
+  CHECK(has(ev, "event=watch"));
+  memcpy(cmd, "unwatch ", 8), memcpy(cmd + 8, watched.ptr, watched.len + 1);
   CHECK(write_file(c, "ctl", cmd) == VX_OK && write_file(c, "ctl", "start") == VX_OK);
   n = wait_record(buf, sizeof buf);
   CHECK(n > 0 && has((vx_str){buf, (size_t)n}, "status=looped"));

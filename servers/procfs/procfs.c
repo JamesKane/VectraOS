@@ -277,6 +277,7 @@ enum : uint32_t {
   MEM,
   MAPS,
   IMAGES,
+  INFO,
   THREADS,
   FILES
 };
@@ -288,19 +289,13 @@ typedef struct file_entry {
 } file_entry;
 
 static const file_entry FILE_TABLE[FILES] = {
-    [STATUS] = {VX_STR("status"), 0444},
-    [CTL] = {VX_STR("ctl"), 0222},
-    [NOTE] = {VX_STR("note"), 0222},
-    [NOTEPG] = {VX_STR("notepg"), 0222},
-    [NOTEID] = {VX_STR("noteid"), 0664},
-    [PPID] = {VX_STR("ppid"), 0444},
-    [WAIT] = {VX_STR("wait"), 0444},
-    [NS] = {VX_STR("ns"), 0444},
-    [EVENTS] = {VX_STR("events"), 0444},
-    [MEM] = {VX_STR("mem"), 0664},
-    [MAPS] = {VX_STR("maps"), 0444},
-    [IMAGES] = {VX_STR("images"), 0444},
-    [THREADS] = {VX_STR("threads"), P9_DMDIR | 0555},
+    [STATUS] = {VX_STR("status"), 0444}, [CTL] = {VX_STR("ctl"), 0222},
+    [NOTE] = {VX_STR("note"), 0222},     [NOTEPG] = {VX_STR("notepg"), 0222},
+    [NOTEID] = {VX_STR("noteid"), 0664}, [PPID] = {VX_STR("ppid"), 0444},
+    [WAIT] = {VX_STR("wait"), 0444},     [NS] = {VX_STR("ns"), 0444},
+    [EVENTS] = {VX_STR("events"), 0444}, [MEM] = {VX_STR("mem"), 0664},
+    [MAPS] = {VX_STR("maps"), 0444},     [IMAGES] = {VX_STR("images"), 0444},
+    [INFO] = {VX_STR("info"), 0444},     [THREADS] = {VX_STR("threads"), P9_DMDIR | 0555},
 };
 
 static const file_entry THREAD_FILES[T_FILES] = {
@@ -570,6 +565,7 @@ static vx_status fs_read(void *ctx, uint64_t node, uint64_t offset, uint8_t *buf
   case MEM: return mem_read(p, offset, buf, count);
   case MAPS: len = maps_text(p, text, sizeof text); break;
   case IMAGES: len = images_text(p, text, sizeof text); break;
+  case INFO: len = info_text(p, text, sizeof text); break;
   case EVENTS: { // a record each read, as wait's; a read waits for one
     vx_status st = take_event(p, text, sizeof text, &len);
     if (st != VX_OK) return st;
