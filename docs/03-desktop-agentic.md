@@ -98,7 +98,7 @@ _Blueprint v0, 2026-09-30._
 - **Explicit window kinds:** `toplevel`, `transient`, `popup` (anchored and constrained, like `xdg_positioner`), `tooltip`, and `layer` (panels, docks, overlays; by grant only, because a layer can cover other windows, §5.7).
 - **Scale per window,** as a rational number over 120. Buffers are in device pixels. There is one DPI mode; no "unaware" mode exists (F-205).
 - **Input:**
-  - keycodes are USB HID usages, with the modifier state after the event, and the unmodified rune (F-210);
+  - keycodes are USB HID usages, with the modifier state after the event, and the unmodified rune, a `vx_rune` (a Unicode code point, ADR-0013) (F-210);
   - IME runs in the server, through the `ime` file and `PREEDIT`, `COMMIT` and `DELETE_SURROUNDING` events (F-211);
   - pen input has proximity and tool identity (F-212);
   - `pointer lock|confine|warp` delivers raw deltas (F-213);

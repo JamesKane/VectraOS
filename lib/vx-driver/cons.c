@@ -6,7 +6,8 @@
 //
 // The tree is one file, /cons. Reads are cooked, as Plan 9's cons is: typed
 // bytes are echoed and gathered into a line, with backspace (BS or DEL) and
-// kill-line (^U), and a read returns at most one line, once it is ended (by
+// kill-line (^U), each taking back whole runes, as UTF-8 is all text is
+// (ADR-0013), and a read returns at most one line, once it is ended (by
 // return) or sent (^D), never part of the next. ^D on an empty line makes one
 // read return 0, the end of the file, in its place among the lines. Writes go out with each newline as CR LF. A read with nothing
 // typed, or a write with no room, waits (p9_serve's P9_DEFER) until the
@@ -16,6 +17,7 @@
 #pragma once
 
 #include "../vx-9p/ring_server.c"
+#include "../vx-utf/utf.h"
 
 typedef struct vx_cons {
   void *dev;
@@ -69,23 +71,42 @@ static void cons_finish_line(vx_cons *c) {
   c->line_len = 0;
 }
 
+// Takes back the last rune typed (ADR-0013), echoed as one character erased.
+static void cons_erase(vx_cons *c) {
+  c->line_len = (uint32_t)vx_utf_back(c->line, c->line_len);
+  cons_out(c, '\b'), cons_out(c, ' '), cons_out(c, '\b');
+}
+
+// The line is full: it ends at the last whole rune that fits, and a rune it
+// would have split starts the next line.
+static void cons_full(vx_cons *c) {
+  uint32_t end = c->line_len, start = end;
+  while (start > 0 && end - start < VX_UTFMAX && ((uint8_t)c->line[start - 1] & 0xc0) == 0x80) start--;
+  if (start > 0 && (uint8_t)c->line[start - 1] >= 0xc0) start--; // the lead byte of the last rune
+  if (start < end && !vx_fullrune(c->line + start, end - start)) end = start;
+  char rest[VX_UTFMAX];
+  uint32_t kept = c->line_len - end;
+  memcpy(rest, c->line + end, kept);
+  c->line_len = end;
+  cons_finish_line(c);
+  memcpy(c->line, rest, kept);
+  c->line_len = kept;
+}
+
 // A byte from the device, through the line discipline.
 [[maybe_unused]] static void vx_cons_input(vx_cons *c, uint8_t b) {
   if (b == '\r') b = '\n';
   if (b == 0x08 || b == 0x7f) { // erase
-    if (c->line_len) {
-      c->line_len--;
-      cons_out(c, '\b'), cons_out(c, ' '), cons_out(c, '\b');
-    }
+    if (c->line_len) cons_erase(c);
   } else if (b == 0x15) { // ^U: kill the line
-    for (; c->line_len; c->line_len--) cons_out(c, '\b'), cons_out(c, ' '), cons_out(c, '\b');
+    while (c->line_len) cons_erase(c);
   } else if (b == 0x04) { // ^D: send the line, or (on an empty one) end the file
     cons_finish_line(c);
   } else if (b == '\n' || b >= 0x20 || b == '\t') {
-    if (c->line_len < sizeof c->line - 1 || b == '\n') { // a full line keeps room for its newline
-      c->line[c->line_len++] = (char)b;
-      cons_echo(c, b);
-    }
+    if (c->line_len == sizeof c->line - 1 && b != '\n')
+      cons_full(c); // a full line keeps room for its newline
+    c->line[c->line_len++] = (char)b;
+    cons_echo(c, b);
     if (b == '\n') cons_finish_line(c);
   }
 }

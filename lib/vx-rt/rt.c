@@ -30,8 +30,8 @@ uintptr_t __stack_chk_guard = 0x2e0f5b3c9d81a647; // to come from the kernel's e
   if (vx_console.len) vx_console_flush();
   if (vx_stdio.out) vx_handle_close(vx_stdio.out);
   if (vx_stdio.err) vx_handle_close(vx_stdio.err);
-  if (msg.len > VX_ERRMAX) msg.len = VX_ERRMAX;
-  vx_task_kill(vx_self, msg); // every thread: the program ends, not just this one
+  msg.len = vx_utf_cut(msg.ptr, msg.len, VX_ERRMAX); // whole runes (ADR-0013)
+  vx_task_kill(vx_self, msg);                        // every thread: the program ends, not just this one
   vx_thread_exit();
 }
 

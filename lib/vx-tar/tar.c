@@ -16,6 +16,7 @@
 #pragma once
 
 #include "../../abi/vx/abi.h"
+#include "../vx-utf/utf.h"
 
 static constexpr size_t VX_TAR_BLOCK = 512;
 static constexpr size_t VX_TAR_MAX_PATH = 256; // prefix (155), '/', name (100)
@@ -74,14 +75,11 @@ static bool tar_path_ok(vx_str p) {
   if (p.len == 0) return false;
   size_t start = 0;
   for (size_t i = 0; i <= p.len; i++) {
-    if (i < p.len && p.ptr[i] != '/') {
-      if ((uint8_t)p.ptr[i] < 0x20 || p.ptr[i] == 0x7f) return false;
-      continue;
-    }
+    if (i < p.len && p.ptr[i] != '/') continue;
     size_t n = i - start;
     if (n == 0 || (n == 1 && p.ptr[start] == '.') ||
-        (n == 2 && p.ptr[start] == '.' && p.ptr[start + 1] == '.'))
-      return false;
+        (n == 2 && p.ptr[start] == '.' && p.ptr[start + 1] == '.') || !vx_utf_name(p.ptr + start, n))
+      return false; // and names as ADR-0013 has them: UTF-8, no control characters
     start = i + 1;
   }
   return true;

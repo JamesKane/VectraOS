@@ -27,6 +27,7 @@
 
 #include "codec.c"
 #include "../vx-rand/drbg.c"
+#include "../vx-utf/utf.h"
 
 typedef struct p9_fs {
   void *ctx;
@@ -226,11 +227,14 @@ static vx_status open_node(p9_server *s, p9_fid *f, uint8_t mode) {
 }
 
 // A name the file server may see: not empty, not ".", no '/'.
+// A name a client may walk to, create or rename to: never empty, ".", or
+// holding a '/'; and UTF-8 with no control characters (ADR-0013), so a server
+// is safe from a client that does not use vx-ns.
 static bool p9_good_name(vx_str n) {
   if (n.len == 0 || (n.len == 1 && n.ptr[0] == '.')) return false;
   for (size_t i = 0; i < n.len; i++)
     if (n.ptr[i] == '/') return false;
-  return true;
+  return vx_utf_name(n.ptr, n.len);
 }
 
 // Walks one step from `node`, keeping inside `root`.

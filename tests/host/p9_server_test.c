@@ -278,6 +278,12 @@ static void test_hostile_client(void) {
   CHECK(raw(walk(1, 3, 1, dot)) == VX_ERR_INVALID);
   static const char *const empty[] = {""};
   CHECK(raw(walk(1, 3, 1, empty)) == VX_ERR_INVALID);
+  // Names are UTF-8 with no control characters (ADR-0013).
+  static const char *const newline[] = {"a\nb"}, *const bad_utf8[] = {"\xc3"},
+                           *const overlong[] = {"\xc0\xae"};
+  CHECK(raw(walk(1, 3, 1, newline)) == VX_ERR_INVALID);
+  CHECK(raw(walk(1, 3, 1, bad_utf8)) == VX_ERR_INVALID);
+  CHECK(raw(walk(1, 3, 1, overlong)) == VX_ERR_INVALID);
 
   // Fids: unknown, taken, reserved, open, too many.
   static const char *const a[] = {"a.txt"};
@@ -299,6 +305,9 @@ static void test_hostile_client(void) {
         VX_ERR_INVALID);
   CHECK(raw((p9_msg){.type = P9_Tcreate, .tag = 1, .fid = 2, .name = VX_STR("a/b"), .mode = P9_OREAD}) ==
         VX_ERR_INVALID);
+  CHECK(
+      raw((p9_msg){.type = P9_Tcreate, .tag = 1, .fid = 2, .name = VX_STR("tab\there"), .mode = P9_OREAD}) ==
+      VX_ERR_INVALID);
   uint32_t held = 0, made = 0;
   for (uint32_t i = 0; i < P9_MAX_FIDS; i++) held += server.fids[i].used;
   for (uint32_t fid = 100; fid < 100 + P9_MAX_FIDS; fid++)

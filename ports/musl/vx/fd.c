@@ -214,6 +214,12 @@ static vx_ns *fd_namespace(void) {
 static long fd_path(int dirfd, const char *path, char *out) {
   size_t len = strlen(path);
   if (!len) return -ENOENT;
+  for (size_t i = 0; i < len;) { // names as ADR-0013 has them: vx-ns would refuse the rest as INVALID
+    size_t start = i;
+    while (i < len && path[i] != '/') i++;
+    if (!vx_utf_name(path + start, i - start)) return -EILSEQ;
+    while (i < len && path[i] == '/') i++;
+  }
   const char *base = "";
   size_t base_len = 0;
   if (path[0] != '/' && dirfd == AT_FDCWD) {

@@ -304,7 +304,7 @@ static long spawn_image(const char *path, bool search, char *const argv[], char 
   vx_str base = {path, strlen(path)}; // the task's name: the file's, without its directory
   const char *slash = strrchr(path, '/');
   if (slash) base = (vx_str){slash + 1, strlen(slash + 1)};
-  if (base.len > 23) base.len = 23;
+  base.len = vx_utf_cut(base.ptr, base.len, 23); // whole runes (ADR-0013)
   vx_handle task = VX_HANDLE_NONE;
   uint32_t proc_flags = 0;
   if (ctx->setsid)

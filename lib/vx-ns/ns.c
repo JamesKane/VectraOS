@@ -32,6 +32,7 @@
 #endif
 
 #include "../vx-9p/client.c"
+#include "../vx-utf/utf.h"
 
 static constexpr uint32_t VX_NS_MAX_PATH = 256;
 static constexpr uint32_t VX_NS_MAX_ENTRIES = 32;
@@ -103,7 +104,8 @@ static void ns_catch_up(vx_ns *ns) {
 
 // Cleans an absolute path lexically: no empty, "." or ".." components, and
 // ".." above the root is the root. Returns its length, or 0 for a relative
-// path or one that does not fit.
+// path, one that does not fit, or one holding a name ADR-0013 refuses (not
+// UTF-8, or with a control character).
 [[maybe_unused]] static size_t vx_ns_clean(vx_str in, char *out, size_t cap) {
   if (in.len == 0 || in.ptr[0] != '/' || cap < 2) return 0;
   size_t len = 0;
@@ -115,6 +117,7 @@ static void ns_catch_up(vx_ns *ns) {
     while (i < in.len && in.ptr[i] != '/') i++;
     size_t n = i - start;
     if (n == 0 || (n == 1 && in.ptr[start] == '.')) continue;
+    if (!vx_utf_name(in.ptr + start, n)) return 0; // UTF-8, no control characters (ADR-0013)
     if (n == 2 && in.ptr[start] == '.' && in.ptr[start + 1] == '.') {
       while (len > 1 && out[len - 1] != '/') len--;
       if (len > 1) len--; // the slash before the component

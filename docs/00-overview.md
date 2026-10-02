@@ -8,7 +8,9 @@ _Blueprint v0, 2026-09-30._
 
 VectraOS is **Plan 9 evolved for modern computing**, written in standard C23 instead of Plan 9's own C dialect. It is a micro-kernel operating system in which **every resource is a file server** and **every fast path is a shared-memory ring**. It has four layers, described in §3.
 
-**Plan 9 is the baseline.** Its model is kept whole: per-process namespaces built with `bind` and `mount`, everything a file, one process table under `/proc`, notes, exit strings, `/srv`, `/dev/cons` and rc. VectraOS changes that model only to evolve it: a micro-kernel, rings, 9Px, the swarm. A design that drops a Plan 9 property needs an ADR saying why the change is better, not just different. ADRs 0009–0011 restore what the first milestones dropped by accident.
+**Plan 9 is the baseline.** Its model is kept whole: per-process namespaces built with `bind` and `mount`, everything a file, one process table under `/proc`, notes, exit strings, `/srv`, `/dev/cons` and rc. VectraOS changes that model only to evolve it: a micro-kernel, rings, 9Px, the swarm. A design that drops a Plan 9 property needs an ADR saying why the change is better, not just different. ADRs 0009–0012 restore what the first milestones dropped by accident.
+
+**Text is UTF-8**, handled a rune at a time, as in Plan 9: names, paths, exit strings, notes, `ctl` messages, ndb, namespace(6) and the console. File contents and pipe data are bytes, never checked. ADR-0013 sets the rules: `lib/vx-utf`, strings cut only at rune boundaries, names with no control characters, and line editors that erase whole runes.
 
 - The kernel knows about address spaces, threads, capabilities and notifications, and nothing else.
 - Drivers, filesystems, the network stack, the window server, the AI runtime and the POSIX personality are ordinary processes. They serve 9Px file trees, and where speed matters they also serve rings.
@@ -76,10 +78,10 @@ These rules are normative. A design that breaks one needs an ADR explaining why.
 | `tlsd` | TLS 1.3 client for services outside the swarm (model providers, `git` over https). It asks `keyd` to attach credentials inside the session, so no app or adapter holds them | 02 §3.2, 03 §8.6 |
 | `exportfs`, `auditfs` | Export a namespace; interpose on a namespace and log writes | 02 |
 | `distd` | Releases, app packages and the content store; fetching from peers, staging, trial boot and rollback. Serves `/dist` | 06 |
-
-## 4. Key decisions
 | `webfs` | HTTP, Gemini and Gopher as files, in Plan 9's interface. Serves `/mnt/web`; the only program that speaks them | 07 §5 |
 | `plumber` | Routes data between apps by the user's rules, as Plan 9's does. Serves `/mnt/plumb` | 07 §7 |
+
+## 4. Key decisions
 
 | # | Decision | Chosen | Rejected, and why |
 |---|---|---|---|
@@ -100,9 +102,9 @@ These rules are normative. A design that breaks one needs an ADR explaining why.
 | D15 | Debugger and profiler | **`dbg`**, native, at the level of the RAD Debugger, with the profiler built in (05 §9). It debugs through `/proc` files over 9Px, as Plan 9's `acid` did, so remote debugging and scripting come free. DWARF 5 is the only debug format; `dbg` caches a flat index of it (05) | gdb or lldb as the system debugger: they expect `ptrace` and speak the gdb remote protocol, a second protocol beside 9Px. |
 | D16 | Secure channels | **Noise** (first-party, over Monocypher) inside the swarm. **One vendored TLS 1.3 client library**, used only by `tlsd`, for services outside the swarm, which need web PKI: X.509, P-256 and RSA signatures, AES-GCM. The library is chosen by ADR before M9 | TLS inside the swarm: certificate machinery the swarm's own keys don't need. QUIC: a second transport. A TLS library linked into every program: the most exposed parser in the system, many times over |
 | D17 | Installation and updates | **A release is one signed, reproducible tree** in a content-addressed store, signed by independent rebuilders; any peer serves it over 9Px, and the hashes make peers untrusted. It boots from one of several slots with a one-shot trial boot; filesystem snapshots protect configuration and files. Apps and their dependencies are packages, resolved per app by minimal version selection into a lock, with names scoped by publisher key. Updates apply only when the user asks (06) | A system-wide package graph for the base (apt, rpm): partial states and one version of each library for everything. A SAT solver for packages: minimal version selection resolved per app needs none. A central index of package names (D13). Updating files in place: no atomic switch, no rollback. A/B partitions holding whole copies: a full image per slot where a slot can name a tree |
+| D18 | The web and network apps | **Documents are documents; applications are native.** `hv` shows hypermedia (a versioned HTML and CSS profile, gemtext, Gopher, Markdown) and runs no code from the network. Chat, social media, mail and feeds are native clients over existing open protocols (IRC, XMPP, ActivityPub, Atom, IMAP), each an adapter file server plus a small `vxui` app, joined by the plumber (07) | A full web engine (Blink, Gecko, WebKit, Ladybird, Servo): a second operating system inside this one, every web API a second mechanism (rule 13). JavaScript or Wasm from the network: code the user never chose to run. New protocols for chat or social media: the existing ones have servers and users already |
 
 ## 5. Hardware tiers
-| D18 | The web and network apps | **Documents are documents; applications are native.** `hv` shows hypermedia (a versioned HTML and CSS profile, gemtext, Gopher, Markdown) and runs no code from the network. Chat, social media, mail and feeds are native clients over existing open protocols (IRC, XMPP, ActivityPub, Atom, IMAP), each an adapter file server plus a small `vxui` app, joined by the plumber (07) | A full web engine (Blink, Gecko, WebKit, Ladybird, Servo): a second operating system inside this one, every web API a second mechanism (rule 13). JavaScript or Wasm from the network: code the user never chose to run. New protocols for chat or social media: the existing ones have servers and users already |
 
 | Tier | Targets | Use |
 |---|---|---|
@@ -138,9 +140,9 @@ The API case study was written for an XNU-based system, but most of its findings
 - Hard real-time certification. Real-time scheduling here is *admission-tested soft real time* for audio and frames.
 - A new shading language, a new GPU API, or a new GUI markup language.
 - Formal verification of the kernel. The ring and IPC protocols are model-checked instead (04 §7).
+- Web applications that need JavaScript or WebAssembly. The system shows documents and runs native apps (07); a full browser is a user-land port, never part of the platform.
 - Games that need kernel-level anti-cheat. Anti-cheat checks for Windows specifically, and no alternative OS can satisfy it. The gamers VectraOS serves play native and indie games and use emulators.
 - Several local users on one node. v1 is single-user per node, as a Plan 9 terminal is. POSIX uids exist for ports, with one user. People share with each other across the swarm, through tokens (02 §3.4).
-- Web applications that need JavaScript or WebAssembly. The system shows documents and runs native apps (07); a full browser is a user-land port, never part of the platform.
 
 ## 8. Budgets users feel
 

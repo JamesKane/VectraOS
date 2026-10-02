@@ -11,6 +11,7 @@ D1 chooses C23 for all first-party code, kernel included, with safety coming fro
 - The house subset in 04 §1.1 governs the OS tree: the kernel, `abi`, libraries, servers, drivers, commands and `build`. Applications build with whatever flags and style their authors choose.
 - The flags are fixed in `build.c` (`HOUSE_FLAGS`), so they cannot drift between components.
 - Any exception to the subset needs its own ADR.
+- Source files are UTF-8, and so is clang's execution character set, so a plain `"é"` is UTF-8 bytes already. House code never uses `u8"…"`: in C23 its type is `char8_t[]`, which does not pass as `char *` (ADR-0013).
 
 ## Consequences
 

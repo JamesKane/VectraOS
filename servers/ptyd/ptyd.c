@@ -32,7 +32,15 @@ enum : uint64_t {
 }; // + pty for the last three
 
 // Linux's termios bits and control characters, as far as ptyd acts on them.
-enum : uint32_t { T_ICRNL = 0400, T_OPOST = 01, T_ONLCR = 04, T_ISIG = 01, T_ICANON = 02, T_ECHO = 010 };
+enum : uint32_t {
+  T_ICRNL = 0400,
+  T_IUTF8 = 040000,
+  T_OPOST = 01,
+  T_ONLCR = 04,
+  T_ISIG = 01,
+  T_ICANON = 02,
+  T_ECHO = 010
+};
 enum : uint32_t { T_ECHOE = 020, T_ECHOK = 040 };
 enum : uint32_t { V_INTR = 0, V_QUIT = 1, V_ERASE = 2, V_KILL = 3, V_EOF = 4, V_MIN = 6, V_SUSP = 10 };
 static constexpr int64_t SIGINT = 2, SIGQUIT = 3, SIGTSTP = 20, SIGWINCH = 28;
@@ -101,6 +109,29 @@ static void signal_group(pty *p, int64_t sig) {
   vx_ns_close(&f);
 }
 
+// Takes back the last character typed: with IUTF8, a whole rune (ADR-0013),
+// echoed as one character erased; without it, a byte.
+static void erase(pty *p) {
+  p->line_len =
+      p->iflag & T_IUTF8 ? (uint32_t)vx_utf_back((const char *)p->line, p->line_len) : p->line_len - 1;
+  if (p->lflag & T_ECHO) ring_put(&p->out, '\b'), ring_put(&p->out, ' '), ring_put(&p->out, '\b');
+}
+
+// The line is full: it ends, at the last whole rune that fits (with IUTF8;
+// at the last byte without). A rune it would have split starts the next line.
+static void full(pty *p) {
+  uint32_t end = p->line_len;
+  if (p->iflag & T_IUTF8) {
+    uint32_t start = end, back = 0;
+    while (start > 0 && back < VX_UTFMAX && (p->line[start - 1] & 0xc0) == 0x80) start--, back++;
+    if (start > 0 && p->line[start - 1] >= 0xc0) start--; // the lead byte of the last rune
+    if (start < end && !vx_fullrune((const char *)p->line + start, end - start)) end = start;
+  }
+  for (uint32_t i = 0; i < end; i++) ring_put(&p->in, p->line[i]);
+  memmove(p->line, p->line + end, p->line_len - end);
+  p->line_len -= end;
+}
+
 // One byte typed at the master, through the line discipline.
 static void typed(pty *p, uint8_t c) {
   if ((p->iflag & T_ICRNL) && c == '\r') c = '\n';
@@ -123,17 +154,11 @@ static void typed(pty *p, uint8_t c) {
     return;
   }
   if (c == p->cc[V_ERASE] || c == 0x08) {
-    if (p->line_len) {
-      p->line_len--;
-      if (p->lflag & T_ECHO) ring_put(&p->out, '\b'), ring_put(&p->out, ' '), ring_put(&p->out, '\b');
-    }
+    if (p->line_len) erase(p);
     return;
   }
   if (c == p->cc[V_KILL]) {
-    while (p->line_len) {
-      p->line_len--;
-      if (p->lflag & T_ECHO) ring_put(&p->out, '\b'), ring_put(&p->out, ' '), ring_put(&p->out, '\b');
-    }
+    while (p->line_len) erase(p);
     return;
   }
   if (c == p->cc[V_EOF]) { // the line as it is, or on an empty one the end of the file
@@ -144,7 +169,8 @@ static void typed(pty *p, uint8_t c) {
     return;
   }
   echo(p, c);
-  if (p->line_len < BUF) p->line[p->line_len++] = c;
+  if (p->line_len == BUF) full(p);
+  p->line[p->line_len++] = c;
   if (c == '\n') {
     for (uint32_t i = 0; i < p->line_len; i++) ring_put(&p->in, p->line[i]);
     p->line_len = 0;
@@ -249,7 +275,7 @@ static vx_status fs_clone(void *ctx, uint64_t node, uint8_t mode, uint64_t *open
     pty *p = &ptys[i];
     *p = (pty){.used = true,
                .masters = 1,
-               .iflag = T_ICRNL,
+               .iflag = T_ICRNL | T_IUTF8, // UTF-8 input, as Linux terminals have it (ADR-0013)
                .oflag = T_OPOST | T_ONLCR,
                .cflag = 0277, // CS8 | CREAD | B38400, as Linux reports them
                .lflag = T_ISIG | T_ICANON | T_ECHO | T_ECHOE | T_ECHOK,

@@ -9,6 +9,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <locale.h>
 #include <fcntl.h>
 #include <math.h>
 #include <poll.h>
@@ -30,7 +31,9 @@
 #include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
+#include <uchar.h>
 #include <unistd.h>
+#include <wchar.h>
 
 static int checks, failed;
 
@@ -389,6 +392,31 @@ static void test_signals(void) {
   signal(SIGUSR1, SIG_DFL);
 }
 
+// Text is UTF-8 (ADR-0013): a program that asks for the environment's locale
+// gets C.UTF-8, one that does not keeps POSIX's byte-based "C", and a name
+// that is not UTF-8, or holds a control character, is refused (EILSEQ).
+static void test_utf8(void) {
+  CHECK(MB_CUR_MAX == 1); // "C", until setlocale
+  const char *name = setlocale(LC_CTYPE, "");
+  CHECK(name && strcmp(name, "C.UTF-8") == 0 && MB_CUR_MAX == 4);
+  wchar_t w = 0;
+  mbstate_t st = {};
+  CHECK(mbrtowc(&w, "\xc3\xa9", 2, &st) == 2 && w == 0xe9);
+  char32_t c = 0;
+  st = (mbstate_t){};
+  CHECK(mbrtoc32(&c, "\xe2\x82\xac", 3, &st) == 3 && c == 0x20ac);
+  st = (mbstate_t){};
+  errno = 0;
+  CHECK(mbrtowc(&w, "\xc0\x80", 2, &st) == (size_t)-1 && errno == EILSEQ); // overlong
+  errno = 0;
+  CHECK(open("/tmp/bad\nname", O_WRONLY | O_CREAT, 0644) == -1 && errno == EILSEQ);
+  errno = 0;
+  CHECK(mkdir("/tmp/\xc3", 0755) == -1 && errno == EILSEQ);
+  int fd = open("/tmp/caf\xc3\xa9", O_WRONLY | O_CREAT, 0644); // UTF-8 names are fine
+  CHECK(fd >= 0 && close(fd) == 0 && unlink("/tmp/caf\xc3\xa9") == 0);
+  setlocale(LC_CTYPE, "C");
+}
+
 static bool all_zero(const unsigned char *p, size_t n) {
   for (size_t i = 0; i < n; i++)
     if (p[i]) return false;
@@ -651,6 +679,9 @@ static void test_terminals(void) {
               5) == 5 &&
         read(s, buf, sizeof buf) == 3 && memcmp(buf, "ac\n", 3) == 0);
   master_read(m, buf, sizeof buf);
+  // IUTF8, on by default: erase takes back a whole rune (ADR-0013), é's two bytes.
+  CHECK(write(m, "a\xc3\xa9\x7f\n", 5) == 5 && read(s, buf, sizeof buf) == 2 && memcmp(buf, "a\n", 2) == 0);
+  master_read(m, buf, sizeof buf);
   CHECK(write(s, "out\n", 4) == 4 && master_read(m, buf, sizeof buf) == 5 && strcmp(buf, "out\r\n") == 0);
   CHECK(write(m, "\x04", 1) == 1 && read(s, buf, sizeof buf) == 0); // ^D on an empty line
 
@@ -879,6 +910,7 @@ int main(int argc, char **argv) {
   test_shared_offsets_and_locks();
   test_terminals();
   test_poll();
+  test_utf8();
 
   // No threads yet: pthread_create fails, and says so (docs/milestones.md).
   pthread_t thread;

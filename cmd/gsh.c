@@ -70,8 +70,11 @@ static const char *find(vx_str s, char c) {
   return nullptr;
 }
 
+// A variable name's bytes, as rc's: letters, digits, '_', and any byte from
+// 0x80 up, so a name may be any UTF-8 word (ADR-0013).
 static bool is_name_char(char c) {
-  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' ||
+         (unsigned char)c >= 0x80;
 }
 
 // --- Words ---
@@ -156,7 +159,10 @@ static uint8_t bind_flags(vx_str f) {
   return flags;
 }
 
-static void set_status(vx_str s) { var_set(VX_STR("status"), s); }
+// $status: cut, at a rune boundary, to what a variable holds (ADR-0013).
+static void set_status(vx_str s) {
+  var_set(VX_STR("status"), (vx_str){s.ptr, vx_utf_cut(s.ptr, s.len, sizeof vars[0].value)});
+}
 
 // A builtin's outcome: $status, and on a failure, a message.
 static void report(const char *what, vx_status st) {
@@ -284,7 +290,7 @@ static vx_status spawn(const word *w, int n, vx_handle in, vx_handle out, vx_han
   vx_str base = w[0].text; // the task's name: the program's, without its directory
   for (size_t i = base.len; i-- > 0;)
     if (base.ptr[i] == '/') base = (vx_str){base.ptr + i + 1, base.len - i - 1};
-  vx_spawn_args a = {.name = base.len < 24 ? base : (vx_str){base.ptr, 23},
+  vx_spawn_args a = {.name = {base.ptr, vx_utf_cut(base.ptr, base.len, 23)}, // whole runes (ADR-0013)
                      .image = image,
                      .image_size = size,
                      .handles = handles,
@@ -480,13 +486,20 @@ const char *vx_main(void) {
       len += (size_t)n;
       if (line[len - 1] == '\n' || len == sizeof line) break;
     }
-    if (n <= 0 && len == 0) break; // the end of the input
+    if (n <= 0 && len == 0) break;                     // the end of the input
+    if (len == sizeof line && line[len - 1] != '\n') { // too long: refused whole, never run in pieces
+      char rest[64];
+      while ((n = vx_read(rest, sizeof rest)) > 0 && rest[n - 1] != '\n') {}
+      say("gsh: line too long", (vx_str){}, "\n");
+      set_status(VX_STR("line too long"));
+      continue;
+    }
     run_line((vx_str){line, len});
   }
   vx_print(VX_STR("\n"));
   static char status[VX_ERRMAX + 1]; // the last $status, as rc exits with it
   vx_str last = var_get(VX_STR("status"));
-  size_t len = last.len < VX_ERRMAX ? last.len : VX_ERRMAX;
+  size_t len = vx_utf_cut(last.ptr, last.len, VX_ERRMAX); // whole runes (ADR-0013)
   memcpy(status, last.ptr, len);
   status[len] = 0;
   return status;

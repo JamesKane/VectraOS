@@ -118,7 +118,7 @@ static void thread_reap(thread *th) {
 // threads exit when they next head for user mode. A task with no live threads
 // ends at once.
 static void task_kill(task *t, const char *msg, size_t len) {
-  if (len > VX_ERRMAX) len = VX_ERRMAX;
+  len = vx_utf_cut(msg, len, VX_ERRMAX); // whole runes, as Plan 9's kstrcpy cuts (ADR-0013)
   spin_lock(&t->lock);
   if (t->ending || t->killed) {
     spin_unlock(&t->lock);

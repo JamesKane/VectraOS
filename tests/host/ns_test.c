@@ -172,6 +172,10 @@ static void test_clean(void) {
   CHECK(vx_ns_clean(VX_STR("relative"), out, sizeof out) == 0);
   CHECK(vx_ns_clean(VX_STR(""), out, sizeof out) == 0);
   CHECK(vx_ns_clean(VX_STR("/abcdefghij"), out, sizeof out) == 0); // does not fit
+  char wide[64];
+  CHECK(vx_ns_clean(VX_STR("/a\nb"), wide, sizeof wide) == 0);   // a control character (ADR-0013)
+  CHECK(vx_ns_clean(VX_STR("/\xc3/x"), wide, sizeof wide) == 0); // not UTF-8
+  CHECK(clean_is("/caf\xc3\xa9/../x", "/x") && clean_is("/caf\xc3\xa9", "/caf\xc3\xa9"));
 }
 
 static void test_namespace(void) {

@@ -3,6 +3,7 @@
 #include <stdckdint.h>
 
 #include "ndb.h"
+#include "../vx-utf/utf.h"
 
 // The reader's line counts lines consumed, so a zeroed reader starts at line 1.
 static size_t ndb_lineno(const vx_ndb_reader *r) { return r->line + 1; }
@@ -20,40 +21,8 @@ static int ndb_peek(const vx_ndb_reader *r) {
 static bool ndb_is_space(int c) { return c == ' ' || c == '\t'; }
 static bool ndb_is_control(int c) { return (c >= 0 && c < 0x20) || c == 0x7f; }
 
-static bool ndb_valid_utf8(const unsigned char *s, size_t n) {
-  for (size_t i = 0; i < n;) {
-    unsigned c = s[i];
-    if (c < 0x80) {
-      i++;
-      continue;
-    }
-    size_t len;
-    uint32_t cp, min;
-    if ((c & 0xe0) == 0xc0) {
-      len = 2;
-      cp = c & 0x1f;
-      min = 0x80;
-    } else if ((c & 0xf0) == 0xe0) {
-      len = 3;
-      cp = c & 0x0f;
-      min = 0x800;
-    } else if ((c & 0xf8) == 0xf0) {
-      len = 4;
-      cp = c & 0x07;
-      min = 0x10000;
-    } else {
-      return false;
-    }
-    if (n - i < len) return false;
-    for (size_t k = 1; k < len; k++) {
-      if ((s[i + k] & 0xc0) != 0x80) return false;
-      cp = (cp << 6) | (s[i + k] & 0x3f);
-    }
-    if (cp < min || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return false;
-    i += len;
-  }
-  return true;
-}
+// UTF-8 as lib/vx-utf validates it, strictly (ADR-0013).
+static bool ndb_valid_utf8(const unsigned char *s, size_t n) { return vx_utf_valid((const char *)s, n); }
 
 // Skips the rest of the line, including its newline.
 static void ndb_skip_line(vx_ndb_reader *r) {

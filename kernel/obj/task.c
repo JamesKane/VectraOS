@@ -321,7 +321,9 @@ static vx_status task_create(const char *name, uint64_t parent_id, task **out) {
   t->map_next = USER_MAP_BASE;
   t->handles = phys_to_virt(handles);
   t->maps = phys_to_virt(maps);
-  for (size_t i = 0; name[i] && i < sizeof t->name - 1; i++) t->name[i] = name[i];
+  size_t len = 0;
+  while (name[len] && len < sizeof t->name) len++;
+  memcpy(t->name, name, vx_utf_cut(name, len, sizeof t->name - 1)); // whole runes (ADR-0013)
   t->parent_id = parent_id;
   spin_lock(&all_tasks_lock);
   t->all_next = all_tasks;

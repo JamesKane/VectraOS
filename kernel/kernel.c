@@ -113,6 +113,7 @@ struct task;
 static void arch_io_switch(const struct task *t); // this CPU's I/O port permissions become t's; t may be null
 
 #include "../lib/vx-mem/mem.c"
+#include "../lib/vx-utf/utf.h"
 #include "../lib/vx-note/note.c"
 #include "sync.c"
 #include "boot.c"

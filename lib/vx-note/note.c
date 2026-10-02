@@ -1,20 +1,24 @@
 // vx-note: notes and exit strings in Plan 9's words (ADR-0010). The kernel,
 // which ends a task on a fault no one handled, and vx-rt, which hands a fault
 // to a program's note handler, both include this file. It defines no external
-// symbol and needs nothing but abi.h.
+// symbol and needs only abi.h and vx-utf.
 
 #pragma once
 
 #include "../../abi/vx/abi.h"
+#include "../vx-utf/utf.h"
 
-// A string under construction in a fixed buffer, cut off at its capacity.
+// A string under construction in a fixed buffer, cut off at its capacity, at
+// a rune boundary (ADR-0013).
 typedef struct vx_note_buf {
   char *p;
   size_t len, cap;
 } vx_note_buf;
 
 [[maybe_unused]] static void vx_note_put(vx_note_buf *b, vx_str s) {
-  for (size_t i = 0; i < s.len && b->len < b->cap; i++) b->p[b->len++] = s.ptr[i];
+  size_t n = vx_utf_cut(s.ptr, s.len, b->cap - b->len);
+  for (size_t i = 0; i < n; i++) b->p[b->len++] = s.ptr[i];
+  if (n < s.len) b->cap = b->len; // full: nothing put after a cut may follow it
 }
 
 [[maybe_unused]] static void vx_note_hex(vx_note_buf *b, uint64_t v) {
