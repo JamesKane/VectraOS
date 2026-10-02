@@ -228,9 +228,9 @@ This is what a desktop terminal's default namespace looks like. The right-hand c
     args       the command line
     events mem maps images threads/N/{regs,fpregs}    the debug files (05 §3)
 /sys/cpu/
-    topology   cpu=cpu0 cluster=0 llc=0 numa=0 type=perf capacity=1024 freq=4.8G smt=cpu1   (one record per CPU)
-               cpu=cpu8 cluster=1 llc=1 numa=0 type=eff  capacity=512  freq=2.6G
-               cpu=cpu2 cluster=0 llc=0 numa=0 type=perf capacity=1024 freq=4.8G reserved=42   (a core reservation, 01 §8)
+    topology   cpu=cpu0 cluster=0 llc=0 numa=0 tier=0 capacity=1024 freq=4.8G smt=cpu1   (one record per CPU; tier 0 is the fastest)
+               cpu=cpu8 cluster=1 llc=1 numa=0 tier=1 capacity=512  freq=2.6G
+               cpu=cpu2 cluster=0 llc=0 numa=0 tier=0 capacity=1024 freq=4.8G reserved=42   (a core reservation, 01 §8)
     load       per-cpu utilisation, 1 s window
     idle       per CPU: each idle state's entries and residency (01 §8)
     perf       per performance domain: level, limits, time at each level (01 §8)

@@ -1,6 +1,6 @@
 # ADR-0020: `cpu_configure`, so the kernel gets the firmware's idle states and performance domains
 
-Status: proposed, 2026-10-02. A new syscall, the 63rd (01 §3). Found by looking at the Radxa Dragon Q8B (ADR-0019). Amended the same day by ADR-0023 item 7: delegated domains, SCMI, and DT idle states.
+Status: proposed, 2026-10-02. A new syscall, the 63rd (01 §3). Found by looking at the Radxa Dragon Q8B (ADR-0019). Amended the same day by ADR-0023 item 7 (delegated domains, SCMI, DT idle states) and ADR-0024 item 5 (`VX_CPU_WAKE_TIMER`).
 
 ## Context
 
@@ -31,6 +31,7 @@ The kernel reads static tables itself (the MADT, and the GTDT for the always-on 
     - a register: physical address and width, which the kernel maps and writes the value to (EPSS, CPPC over MMIO);
     - or `ARCH`: HWP on Intel, CPPC on AMD, through MSRs, where the kernel writes the energy-performance preference and the hardware picks;
     - or `DELEGATE`: a page shared with a user-space platform driver and a `Counter`. The kernel writes the level it wants and signals; the driver sequences regulator and clock (an SCMI call on the RK3588), then writes back the level in force. One request is outstanding at a time (ADR-0023 item 7).
+  - `VX_CPU_WAKE_TIMER`: an always-on timer's MMIO and interrupt, for a machine whose wake timer is not in the GTDT (ADR-0024 item 5). States with `TIMER_STOPS` are accepted only once a wake timer exists.
   - `VX_CPU_LIMITS`: a domain's lowest and highest allowed level, and the preference's bias, set by one caller. Each caller's limits are kept separately (the power profile's, the thermal policy's), and the kernel applies the tightest.
 - **Every table is validated:**
   - levels in increasing frequency;

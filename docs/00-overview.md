@@ -111,7 +111,7 @@ These rules are normative. A design that breaks one needs an ADR explaining why.
 | Tier | Targets | Use |
 |---|---|---|
 | **T0** | QEMU `q35` (x86_64) and QEMU `virt` (aarch64, GICv3), with virtio devices, OVMF or edk2, SMP | All milestones until M6. Runs in CI. |
-| **T1** | Commodity x86_64 PC (UEFI, NVMe, xHCI, Intel/Realtek NIC, HDA); the Radxa Dragon Q8B (Qualcomm SC8280XP, UEFI and ACPI, Adreno 690 through Turnip, ADR-0018) | First real hardware, around M6–M8. The CIX Sky1 (Mali with CSF, device tree through ADR-0023) is the candidate second arm64 board, pending a survey like the Q8B's. The RK3588 was dropped on 2026-10-02: an older SoC whose firmware does little, so it would cost about three times the Q8B's platform work (ADR-0023), and with it went the only open NPU stack on a tiered board |
+| **T1** | Commodity x86_64 PC (UEFI, NVMe, xHCI, Intel/Realtek NIC, HDA); the Radxa Dragon Q8B (Qualcomm SC8280XP, UEFI and ACPI, Adreno 690 through Turnip, ADR-0018) | First real hardware, around M6–M8. The CIX Sky1 (Radxa Orion O6; SystemReady SR, booted with ACPI; Mali-G720 with CSF) is the candidate second arm64 board. Its survey found AML-reached firmware services and three CPU tiers (ADR-0024); its tables are checked at bring-up. The RK3588 was dropped on 2026-10-02: an older SoC whose firmware does little, so it would cost about three times the Q8B's platform work (ADR-0023), and with it went the only open NPU stack on a tiered board |
 | **T2** | Raspberry Pi 5 (UEFI firmware), AMD APUs (UMA, RADV), Intel Xe, Apple Silicon (through the Asahi drivers and m1n1), Snapdragon X, NVIDIA Turing and later (NVK over GSP firmware) | Show the unified-memory SoC design on the hardware it was designed for |
 
 ## 6. What the API case study changes
