@@ -13,7 +13,7 @@ _Blueprint v0, 2026-09-30._
 | **Odin and others** | Applications, through `vxui.h` and the POSIX layer | Community tier; never in the base system |
 | **Lua** | `wm` layout policies, scripts and scripted UIs. Settings are ndb data, not Lua (D14) | Vendored Lua 5.4 |
 
-`gsh`, the system shell, is first-party C with `rc`-style syntax: lists, `{}` blocks and no word-splitting surprises. Namespace built-ins (`bind`, `mount`, `ns`) are part of it.
+`gsh`, the system shell, is first-party C speaking `rc`'s language (`lib/vx-rc`, M4 step 7): lists, `{}` blocks and no word-splitting surprises. Namespace built-ins (`bind`, `mount`, `ns`) are part of it.
 
 ### 1.1 The house subset
 
