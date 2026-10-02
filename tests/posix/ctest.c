@@ -21,10 +21,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/auxv.h>
+#include <sys/ioctl.h>
 #include <sys/random.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -581,6 +583,97 @@ static void test_shared_offsets_and_locks(void) {
   CHECK(stat("/tmp/shared", &st) == 0 && unlink("/tmp/shared") == 0 && unlink("/tmp/sequence") == 0);
 }
 
+// Reads what the master has now: the slave's output and echo.
+static size_t master_read(int m, char *buf, size_t cap) {
+  ssize_t n = read(m, buf, cap - 1);
+  buf[n > 0 ? n : 0] = 0;
+  return n > 0 ? (size_t)n : 0;
+}
+
+// ptyd's terminals and job control.
+static void test_terminals(void) {
+  char buf[64];
+  int m = posix_openpt(O_RDWR | O_NOCTTY);
+  CHECK(m >= 0 && grantpt(m) == 0 && unlockpt(m) == 0);
+  if (m < 0) return;
+  const char *name = ptsname(m);
+  CHECK(name && strcmp(name, "/dev/pts/0") == 0);
+  int s = open(name ? name : "/dev/pts/0", O_RDWR | O_NOCTTY);
+  CHECK(s >= 0);
+  if (s < 0) return;
+  struct stat st;
+  CHECK(isatty(s) && isatty(m) && fstat(s, &st) == 0 && S_ISCHR(st.st_mode));
+  int plain = open("/boot/svc/ctest.ndb", O_RDONLY);
+  CHECK(plain >= 0);
+  if (plain >= 0) {
+    CHECK(!isatty(plain));
+    close(plain);
+  }
+  struct termios t;
+  CHECK(tcgetattr(s, &t) == 0 && (t.c_lflag & ICANON) && (t.c_lflag & ECHO) && cfgetospeed(&t) == B38400);
+
+  // Cooked input: CR made NL, echoed (as CR NL), one line a read; erase.
+  CHECK(write(m, "hello\r", 6) == 6 && read(s, buf, sizeof buf) == 6 && memcmp(buf, "hello\n", 6) == 0);
+  CHECK(master_read(m, buf, sizeof buf) == 7 && strcmp(buf, "hello\r\n") == 0);
+  CHECK(write(m,
+              "ab\x7f"
+              "c\n",
+              5) == 5 &&
+        read(s, buf, sizeof buf) == 3 && memcmp(buf, "ac\n", 3) == 0);
+  master_read(m, buf, sizeof buf);
+  CHECK(write(s, "out\n", 4) == 4 && master_read(m, buf, sizeof buf) == 5 && strcmp(buf, "out\r\n") == 0);
+  CHECK(write(m, "\x04", 1) == 1 && read(s, buf, sizeof buf) == 0); // ^D on an empty line
+
+  // Raw input, a byte at a time and not echoed; then cooked again.
+  struct termios raw = t;
+  raw.c_lflag &= ~(tcflag_t)(ICANON | ECHO);
+  CHECK(tcsetattr(s, TCSANOW, &raw) == 0 && tcgetattr(s, &raw) == 0 && !(raw.c_lflag & ICANON));
+  CHECK(write(m, "xy", 2) == 2 && read(s, buf, 1) == 1 && buf[0] == 'x' && read(s, buf, 8) == 1 &&
+        buf[0] == 'y');
+  CHECK(tcsetattr(s, TCSAFLUSH, &t) == 0);
+
+  // The window's size, set at the master, read at the slave.
+  CHECK(ioctl(m, TIOCSWINSZ, &(struct winsize){.ws_row = 30, .ws_col = 100}) == 0);
+  struct winsize w = {};
+  CHECK(ioctl(s, TIOCGWINSZ, &w) == 0 && w.ws_row == 30 && w.ws_col == 100);
+
+  // ^C: SIGINT to the foreground group, which ends a read waiting for input.
+  CHECK(tcsetpgrp(s, getpgrp()) == 0 && tcgetpgrp(s) == getpgrp());
+  CHECK(sigaction(SIGINT, &(struct sigaction){.sa_handler = on_signal}, nullptr) == 0); // not SA_RESTART
+  int before = signals[SIGINT], status = 0;
+  pid_t child = fork();
+  if (child == 0) _exit(read(s, buf, sizeof buf) == -1 && errno == EINTR ? 21 : 1);
+  nanosleep(&(struct timespec){.tv_nsec = 100'000'000}, nullptr);
+  CHECK(write(m, "\x03", 1) == 1);
+  CHECK(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 21);
+  for (double end = now_seconds() + 1; signals[SIGINT] <= before && now_seconds() < end;) sched_yield();
+  CHECK(signals[SIGINT] > before); // the parent is in the group too
+  signal(SIGINT, SIG_DFL);
+  master_read(m, buf, sizeof buf); // the ^C's echo
+
+  // Job control: SIGSTOP, then SIGCONT, as waitpid reports them; a stopping
+  // signal's default stops.
+  child = fork();
+  if (child == 0)
+    for (;;) pause();
+  CHECK(kill(child, SIGSTOP) == 0);
+  CHECK(waitpid(child, &status, WUNTRACED) == child && WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP);
+  CHECK(kill(child, SIGCONT) == 0);
+  CHECK(waitpid(child, &status, WCONTINUED) == child && WIFCONTINUED(status));
+  CHECK(kill(child, SIGTERM) == 0);
+  CHECK(waitpid(child, &status, 0) == child && WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM);
+  child = fork();
+  if (child == 0) _exit(raise(SIGTSTP) == 0 ? 22 : 1);
+  CHECK(waitpid(child, &status, WUNTRACED) == child && WIFSTOPPED(status) && WSTOPSIG(status) == SIGTSTP);
+  CHECK(kill(child, SIGCONT) == 0);
+  CHECK(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 22);
+
+  // The master gone, the slave reads the end of its file.
+  close(m);
+  CHECK(read(s, buf, sizeof buf) == 0);
+  close(s);
+}
+
 int main(int argc, char **argv) {
   if (argc >= 3 && strcmp(argv[1], "one") != 0) return child_main(argv);
   printf("ctest: hello from musl\n");
@@ -683,6 +776,7 @@ int main(int argc, char **argv) {
   test_tmp_and_devices();
   test_names_and_attributes();
   test_shared_offsets_and_locks();
+  test_terminals();
 
   // No threads yet: pthread_create fails, and says so (docs/milestones.md).
   pthread_t thread;

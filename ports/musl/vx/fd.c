@@ -46,6 +46,9 @@ typedef struct ofd {
   bool closed_bound;         // PEER_CLOSED is bound once (it fires once)
   uint8_t token[16];         // a file's, for a forked child to join its open file (fd_before_fork)
   bool has_token;
+  bool tty, master; // a terminal's slave or master (ptyd: the file is a 9P device)
+  uint32_t pty;
+  bool locked; // a lock was taken through it: let go at exit, before the exit is seen
 } ofd;
 
 static ofd fd_ofds[FD_MAX];
@@ -145,6 +148,11 @@ static void fd_init(void) {
 // close, so a reader sees the end of its file before the exit.
 static void fd_exit(void) {
   if (vx_console.len) vx_console_flush();
+  // Locks go with the process, as POSIX has it: let go now, not when the
+  // server notices the connection has gone, which can be after a parent's
+  // wait has returned.
+  for (int i = 0; i < FD_MAX; i++)
+    if (fd_ofds[i].kind == OFD_FILE && fd_ofds[i].locked) vx_ns_close(&fd_ofds[i].f);
   for (int i = 0; i < FD_MAX; i++)
     if (fd_ofds[i].kind != OFD_FREE && fd_ofds[i].pipe) {
       vx_handle_close(fd_ofds[i].pipe);
@@ -187,6 +195,7 @@ static void fd_stat_fill(struct stat *st, const p9_stat *s) {
   bool dir = s->mode & P9_DMDIR;
   mode_t type = dir ? S_IFDIR : S_IFREG;
   if (s->mode & P9_DMSYMLINK) type = S_IFLNK;
+  if (s->mode & P9_DMDEVICE) type = S_IFCHR;
   *st = (struct stat){
       .st_dev = s->dev,
       .st_ino = s->qid.path,
@@ -500,6 +509,25 @@ static long fd_pwrite(int fd, const void *buf, size_t n, long offset) {
   return w < 0 ? vx_errno((vx_status)w) : (long)w;
 }
 
+// preadv2 and pwritev2, which musl's pread and pwrite use first: at the
+// offset given, or (-1) at the file's own. RWF_NOAPPEND (0x20) is what an
+// explicit offset already means here; any other flag is not supported.
+static long fd_prw2(int fd, const struct iovec *iov, int count, long offset, int flags, bool write) {
+  if (flags & ~0x20) return -EOPNOTSUPP;
+  if (offset == -1) return write ? fd_writev(fd, iov, count) : fd_readv(fd, iov, count);
+  if (count < 0 || count > IOV_MAX) return -EINVAL;
+  long done = 0;
+  for (int i = 0; i < count; i++) {
+    if (!iov[i].iov_len) continue;
+    long r = write ? fd_pwrite(fd, iov[i].iov_base, iov[i].iov_len, offset + done)
+                   : fd_pread(fd, iov[i].iov_base, iov[i].iov_len, offset + done);
+    if (r < 0) return done ? done : r;
+    done += r;
+    if ((size_t)r < iov[i].iov_len) break;
+  }
+  return done;
+}
+
 static long fd_lseek(int fd, long offset, int whence) {
   ofd *o = fd_get(fd);
   if (!o) return -EBADF;
@@ -540,6 +568,18 @@ static long fd_lseek(int fd, long offset, int whence) {
 
 // --- Opening and closing ---
 
+static void tty_note(ofd *o, bool device, uint32_t pty); // below, with the terminals
+
+// tty_note from the fid's stat: for a file opened again or joined.
+static void tty_check(ofd *o) {
+  p9_stat s;
+  if (p9c_stat(o->f.c, o->f.fid, &s) != VX_OK || !(s.mode & P9_DMDEVICE)) return;
+  uint32_t pty = 0;
+  for (size_t i = 0; i < s.name.len && s.name.ptr[i] >= '0' && s.name.ptr[i] <= '9'; i++)
+    pty = pty * 10 + (uint32_t)(s.name.ptr[i] - '0');
+  tty_note(o, true, pty);
+}
+
 static long fd_openat(int dirfd, const char *path, int flags, mode_t mode) {
   char p[VX_NS_MAX_PATH];
   long len = fd_resolve(dirfd, path, !(flags & O_NOFOLLOW), p);
@@ -565,6 +605,10 @@ static long fd_openat(int dirfd, const char *path, int flags, mode_t mode) {
   p9_stat s;
   st = p9c_stat(f.c, f.fid, &s);
   bool dir = st == VX_OK && (s.mode & P9_DMDIR);
+  bool device = st == VX_OK && (s.mode & P9_DMDEVICE);
+  uint32_t pty = 0;
+  for (size_t i = 0; device && i < s.name.len && s.name.ptr[i] >= '0' && s.name.ptr[i] <= '9'; i++)
+    pty = pty * 10 + (uint32_t)(s.name.ptr[i] - '0');
   if (st == VX_OK && (flags & O_DIRECTORY) && !dir) st = VX_ERR_INVALID;
   ofd *o = st == VX_OK ? ofd_new(OFD_FILE, flags & (O_ACCMODE | O_APPEND | O_NONBLOCK)) : nullptr;
   if (!o) {
@@ -577,6 +621,7 @@ static long fd_openat(int dirfd, const char *path, int flags, mode_t mode) {
   memcpy(o->path, p, (size_t)len);
   o->path_len = (size_t)len;
   if ((flags & O_APPEND) && file_shared(o)) p9c_append(o->f.c, o->f.fid, true); // atomic, at the server
+  tty_note(o, device, pty);
   return fd_install(o, 0, flags & O_CLOEXEC);
 }
 
@@ -610,8 +655,9 @@ static long fd_dup(int fd, int to, int flags) {
 // fcntl's POSIX locks, held by the server (posix), owned by this process.
 // F_SETLKW asks again every 10 ms until it is granted or a signal comes.
 static long posix_pid(void); // process.c
+static long posix_getsid(long pid);
 
-static long fd_lock(const ofd *o, int cmd, struct flock *l) {
+static long fd_lock(ofd *o, int cmd, struct flock *l) {
   if (o->kind != OFD_FILE || o->dir) return -EBADF;
   if (!file_shared(o)) return -ENOLCK; // no server to keep it
   if (l->l_type != F_RDLCK && l->l_type != F_WRLCK && l->l_type != F_UNLCK) return -EINVAL;
@@ -653,7 +699,10 @@ static long fd_lock(const ofd *o, int cmd, struct flock *l) {
     vx_status st =
         p9c_lock(o->f.c, o->f.fid, (uint8_t)l->l_type, (uint64_t)start, (uint64_t)length, me, &status);
     if (st != VX_OK) return vx_errno(st);
-    if (status == P9_LOCK_SUCCESS) return 0;
+    if (status == P9_LOCK_SUCCESS) {
+      o->locked = o->locked || l->l_type != F_UNLCK;
+      return 0;
+    }
     if (status != P9_LOCK_BLOCKED) return -ENOLCK;
     if (cmd == F_SETLK) return -EAGAIN;
     static const _Atomic uint32_t never;
@@ -681,7 +730,7 @@ static long fd_fcntl(int fd, int cmd, long arg) {
   case F_GETLK:
   case F_SETLK:
   case F_SETLKW: return fd_lock(o, cmd, (struct flock *)arg);
-  default: return -EINVAL; // locks come with the posix extension (M4 step 4)
+  default: return -EINVAL; // open-file-description locks and the rest
   }
 }
 
@@ -845,14 +894,135 @@ static long fd_getdents(int fd, void *buf, size_t count) {
   }
 }
 
-// isatty and line buffering ask the size of the window: the console is a
-// terminal, 80 by 24; nothing else is (ptyd, M4 step 4).
+// --- Terminals ---
+//
+// A terminal is a file its server marks a device: ptyd's ptmx (opened, the
+// master) and pts/N (the slave). Its settings are in pts/N.ctl, beside the
+// slave, read and written as one ndb record (servers/ptyd); the ioctls are
+// Linux's, the POSIX personality's. The console is a terminal of 80 by 24
+// that has no settings yet.
+
+typedef struct tty_state {
+  uint32_t iflag, oflag, cflag, lflag;
+  uint8_t cc[32];
+  uint16_t rows, cols;
+  int64_t pgrp, avail;
+} tty_state;
+
+// pts/N.ctl's path: beside the slave's path, or under the master's ptmx.
+static size_t tty_ctl_path(const ofd *o, char *out) {
+  size_t dir = o->path_len;
+  while (dir > 1 && o->path[dir - 1] != '/') dir--;
+  int n = snprintf(out, VX_NS_MAX_PATH, "%.*s%s%u.ctl", (int)dir, o->path, o->master ? "pts/" : "", o->pty);
+  return n > 0 && (uint32_t)n < VX_NS_MAX_PATH ? (size_t)n : 0;
+}
+
+static long tty_ctl(const ofd *o, const char *set, tty_state *st) {
+  char path[VX_NS_MAX_PATH];
+  size_t len = tty_ctl_path(o, path);
+  vx_ns_file f;
+  if (!len || vx_ns_open(fd_namespace(), (vx_str){path, len}, set ? P9_OWRITE : P9_OREAD, &f) != VX_OK)
+    return -ENOTTY;
+  long r = 0;
+  if (set) {
+    size_t n = strlen(set);
+    r = vx_ns_write(&f, set, (uint32_t)n) == (int64_t)n ? 0 : -EIO;
+  } else {
+    static char text[512], scratch[512];
+    int64_t n = vx_ns_read(&f, text, sizeof text);
+    vx_ndb_reader rd = {
+        .src = {text, n > 0 ? (size_t)n : 0}, .scratch = scratch, .scratch_cap = sizeof scratch};
+    vx_ndb_record rec;
+    if (n <= 0 || vx_ndb_next(&rd, &rec) != VX_NDB_RECORD) r = -EIO;
+    uint64_t v = 0;
+    *st = (tty_state){};
+    if (r == 0) {
+      if (vx_ndb_get_u64(&rec, "iflag", &v)) st->iflag = (uint32_t)v;
+      if (vx_ndb_get_u64(&rec, "oflag", &v)) st->oflag = (uint32_t)v;
+      if (vx_ndb_get_u64(&rec, "cflag", &v)) st->cflag = (uint32_t)v;
+      if (vx_ndb_get_u64(&rec, "lflag", &v)) st->lflag = (uint32_t)v;
+      if (vx_ndb_get_u64(&rec, "rows", &v)) st->rows = (uint16_t)v;
+      if (vx_ndb_get_u64(&rec, "cols", &v)) st->cols = (uint16_t)v;
+      if (vx_ndb_get_u64(&rec, "pgrp", &v)) st->pgrp = (int64_t)v;
+      if (vx_ndb_get_u64(&rec, "avail", &v)) st->avail = (int64_t)v;
+      vx_str cc = vx_ndb_get(&rec, "cc");
+      if (cc.len == sizeof st->cc) memcpy(st->cc, cc.ptr, sizeof st->cc);
+    }
+  }
+  vx_ns_close(&f);
+  return r;
+}
+
+// Sets fields, as a record ptyd reads: key=value pairs, the cc as bytes.
+static long tty_set(const ofd *o, const struct termios *t, const struct winsize *w, int64_t pgrp,
+                    bool flush) {
+  static char rec[512];
+  vx_ndb_writer wr = {.buf = rec, .cap = sizeof rec - 1};
+  if (t) {
+    vx_ndb_put_u64(&wr, "iflag", t->c_iflag);
+    vx_ndb_put_u64(&wr, "oflag", t->c_oflag);
+    vx_ndb_put_u64(&wr, "cflag", t->c_cflag);
+    vx_ndb_put_u64(&wr, "lflag", t->c_lflag);
+    vx_ndb_put(&wr, "cc", (vx_str){(const char *)t->c_cc, 32});
+  }
+  if (w) vx_ndb_put_u64(&wr, "rows", w->ws_row), vx_ndb_put_u64(&wr, "cols", w->ws_col);
+  if (pgrp >= 0) vx_ndb_put_u64(&wr, "pgrp", (uint64_t)pgrp);
+  if (flush) vx_ndb_flag(&wr, "flush");
+  if (!vx_ndb_end(&wr)) return -EINVAL;
+  rec[wr.len] = 0;
+  return tty_ctl(o, rec, nullptr);
+}
+
+static void tty_note(ofd *o, bool device, uint32_t pty) {
+  if (!device) return;
+  o->tty = true;
+  o->pty = pty;
+  o->master = o->path_len >= 5 && memcmp(o->path + o->path_len - 5, "/ptmx", 5) == 0;
+}
+
 static long fd_ioctl(int fd, unsigned long request, void *arg) {
   const ofd *o = fd_get(fd);
   if (!o) return -EBADF;
-  if (o->kind != OFD_CONSOLE || request != TIOCGWINSZ) return -ENOTTY;
-  *(struct winsize *)arg = (struct winsize){.ws_row = 24, .ws_col = 80};
-  return 0;
+  if (o->kind == OFD_CONSOLE && request == TIOCGWINSZ) {
+    *(struct winsize *)arg = (struct winsize){.ws_row = 24, .ws_col = 80};
+    return 0;
+  }
+  if (o->kind != OFD_FILE || !o->tty) return -ENOTTY;
+  tty_state st;
+  long r = 0;
+  switch (request) {
+  case TCGETS:
+  case TIOCGWINSZ:
+  case TIOCGPGRP:
+  case FIONREAD:
+    if ((r = tty_ctl(o, nullptr, &st)) < 0) return r;
+    if (request == TIOCGWINSZ)
+      *(struct winsize *)arg = (struct winsize){.ws_row = st.rows, .ws_col = st.cols};
+    if (request == TIOCGPGRP) *(pid_t *)arg = (pid_t)st.pgrp;
+    if (request == FIONREAD) *(int *)arg = (int)st.avail;
+    if (request == TCGETS) {
+      struct termios *t = arg;
+      *t = (struct termios){
+          .c_iflag = st.iflag, .c_oflag = st.oflag, .c_cflag = st.cflag, .c_lflag = st.lflag};
+      memcpy(t->c_cc, st.cc, sizeof st.cc);
+      t->__c_ispeed = t->__c_ospeed = B38400;
+    }
+    return 0;
+  case TCSETS:
+  case TCSETSW: // output is never held back: nothing to drain
+  case TCSETSF: return tty_set(o, arg, nullptr, -1, request == TCSETSF);
+  case TIOCSWINSZ: return tty_set(o, nullptr, arg, -1, false);
+  case TIOCSPGRP: return tty_set(o, nullptr, nullptr, *(const pid_t *)arg, false);
+  case TCFLSH: return (long)arg == TCOFLUSH ? 0 : tty_set(o, nullptr, nullptr, -1, true);
+  case TIOCGPTN: *(unsigned *)arg = o->pty; return 0;
+  case TIOCGSID: *(pid_t *)arg = (pid_t)posix_getsid(0); return 0;
+  case TIOCSPTLCK: // grantpt and unlockpt: a terminal is ready from the start
+  case TIOCSCTTY:  // controlling terminals are not kept apart yet
+  case TIOCNOTTY:
+  case TCSBRK:
+  case TCXONC: return 0;
+  default: return -ENOTTY;
+  }
 }
 
 // --- Pipes ---
@@ -920,6 +1090,7 @@ static ofd *file_reopen(const char *path, size_t len, int flags, uint64_t offset
     p9c_seek(o->f.c, o->f.fid, (int64_t)offset, 0, &at);
     if (flags & O_APPEND) p9c_append(o->f.c, o->f.fid, true);
   }
+  tty_check(o);
   return o;
 }
 
@@ -939,6 +1110,7 @@ static ofd *file_join(const char *path, size_t len, int flags, const uint8_t tok
       o->f = (vx_ns_file){.ns = fd_namespace(), .c = c, .fid = joined};
       memcpy(o->path, path, len);
       o->path_len = len;
+      tty_check(o);
       return o;
     }
   }

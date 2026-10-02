@@ -13,6 +13,11 @@
 // with no handler that would end it, posixd carries out itself, with
 // task_kill. A child's end is SIGCHLD to its parent.
 //
+// Job control: a stopped process is a suspended one (thread_suspend, 05 §2):
+// SIGSTOP stops it here, a stopping signal's default stops it from its own
+// library (POSIX_STOP), and SIGCONT resumes it. Its parent learns of each,
+// through SIGCHLD and a wait with WUNTRACED or WCONTINUED.
+//
 // The table lives only here, so posixd is not restarted: a new one would
 // know no processes.
 
@@ -34,10 +39,14 @@ typedef struct proc {
   uint32_t gen;
   int64_t pid, ppid, pgid, sid;
   vx_handle task, chan;
-  int64_t status;     // its wait status, once a zombie
-  bool waiting;       // a WAIT not yet answered:
-  uint32_t wait_txid; // its call,
-  int64_t wait_pid;   // and which children it waits for
+  int64_t status; // its wait status, once a zombie
+  bool stopped;   // suspended: SIGSTOP, or a stopping signal's default
+  int64_t stop_sig;
+  bool stop_unseen, cont_unseen; // stopped, continued: not yet told to a waiting parent
+  bool waiting;                  // a WAIT not yet answered:
+  uint32_t wait_txid;            // its call,
+  int64_t wait_pid;              // and which children it waits for,
+  int64_t wait_options;          // and for what (WUNTRACED, WCONTINUED)
 } proc;
 
 static proc procs[MAX_PROCS];
@@ -142,19 +151,57 @@ static void post(const proc *t, int64_t sig, int64_t sender) {
     vx_print(VX_STR("posixd: too many signals at once; one is lost\n"));
 }
 
+static bool reap_for(proc *p); // below
+
+// Tells t's parent t stopped or went on: a wait asking is answered, and SIGCHLD.
+static void tell_parent(const proc *t) {
+  proc *parent = by_pid(t->ppid);
+  if (!parent || parent->zombie) return;
+  if (parent->waiting) reap_for(parent);
+  post(parent, POSIX_SIGCHLD, t->pid);
+}
+
+static void stop(proc *t, int64_t sig) {
+  if (t->stopped) return;
+  if (vx_thread_suspend(t->task, 1) != VX_OK) return; // its one thread
+  t->stopped = true;
+  t->stop_sig = sig;
+  t->stop_unseen = true;
+  t->cont_unseen = false;
+  tell_parent(t);
+}
+
+static void resume(proc *t) {
+  if (!t->stopped) return;
+  vx_thread_resume(t->task, 1);
+  t->stopped = false;
+  t->stop_unseen = false;
+  t->cont_unseen = true;
+  tell_parent(t);
+}
+
 // Signals t, from sender (a pid, or 0). Calls t has made are answered first,
-// so that the interrupt never ends one in flight; a WAIT it is blocked in is
-// let go here, as the interrupt ends it (the library calls again).
+// and a WAIT it is blocked in is answered EINTR (the library calls again, or
+// returns EINTR as POSIX has it): an interrupt does not end a call posixd has
+// read (channel_call), so a held one must be answered.
 static void deliver(proc *t, int64_t sig, int64_t sender) {
   if (sig <= 0 || sig > POSIX_NSIG || !t->used || t->zombie) return;
   if (sig == POSIX_SIGKILL) {
-    vx_task_kill(t->task, -256 - sig);
+    vx_task_kill(t->task, -256 - sig); // a stopped one too: the kill ends its suspension
     return;
   }
+  if (sig == POSIX_SIGSTOP) { // never caught: posixd stops it
+    stop(t, sig);
+    return;
+  }
+  if (sig == POSIX_SIGCONT) resume(t); // and then its handler, if it has one
   uint32_t slot = (uint32_t)(t - procs);
   drain(t->chan, t, key_for(KEY_CHANNEL, slot, t->gen));
   if (!t->used || t->zombie) return;
-  t->waiting = false;
+  if (t->waiting) { // answered before the interrupt, which cannot end a call posixd has read
+    reply(t->chan, t->wait_txid, POSIX_EINTR, nullptr, 0, VX_HANDLE_NONE);
+    t->waiting = false;
+  }
   vx_status st = vx_thread_interrupt(t->task, 0, (uint64_t)sig | (uint64_t)sender << 16);
   if (st == VX_ERR_BAD_STATE && !posix_default_ignored(sig)) vx_task_kill(t->task, -256 - sig); // no handler
 }
@@ -171,6 +218,23 @@ static bool waits_for(const proc *parent, const proc *child) {
 // Answers p's waiting WAIT with a zombie child, if one matches. Returns
 // whether it did.
 static bool reap_for(proc *p) {
+  for (uint32_t i = 0; i < MAX_PROCS; i++) { // a child that stopped or went on, if asked about
+    proc *c = &procs[i];
+    if (!c->used || c->zombie || !waits_for(p, c)) continue;
+    int64_t status = -1;
+    if (c->stop_unseen && (p->wait_options & POSIX_WUNTRACED)) {
+      status = c->stop_sig << 8 | 0x7f;
+      c->stop_unseen = false;
+    } else if (c->cont_unseen && (p->wait_options & POSIX_WCONTINUED)) {
+      status = 0xffff;
+      c->cont_unseen = false;
+    }
+    if (status < 0) continue;
+    int64_t values[2] = {c->pid, status};
+    p->waiting = false;
+    reply(p->chan, p->wait_txid, POSIX_OK, values, 2, VX_HANDLE_NONE);
+    return true;
+  }
   for (uint32_t i = 0; i < MAX_PROCS; i++) {
     proc *c = &procs[i];
     if (!c->used || !c->zombie || !waits_for(p, c)) continue;
@@ -326,9 +390,21 @@ static void ended(proc *p, int64_t exit_status) {
       values[count++] = m->h.ordinal == POSIX_GETPGID ? t->pgid : t->sid;
     break;
   }
+  case POSIX_STOP: {
+    int64_t sig = m->arg[0];
+    if (sig < 1 || sig > POSIX_NSIG) {
+      err = POSIX_EINVAL;
+      break;
+    }
+    // Answered, then suspended: on its way back to user mode, it stops.
+    reply(p->chan, txid, POSIX_OK, values, 0, VX_HANDLE_NONE);
+    stop(p, sig);
+    return;
+  }
   case POSIX_WAIT: {
     bool any = false;
     p->wait_pid = m->arg[0];
+    p->wait_options = m->arg[1];
     for (uint32_t i = 0; i < MAX_PROCS && !any; i++) any = procs[i].used && waits_for(p, &procs[i]);
     if (!any) {
       err = POSIX_ECHILD;

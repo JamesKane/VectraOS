@@ -35,10 +35,9 @@ enum : uint8_t { // qid.type and the top byte of a stat's mode
   P9_QTFILE = 0x00,
 };
 
-enum : uint32_t {
-  P9_DMDIR = 0x8000'0000,
-  P9_DMSYMLINK = 0x0200'0000
-}; // a stat's mode: a directory; a link (9P2000.u)
+// A stat's mode: a directory; and 9P2000.u's link and device (a terminal, to
+// the musl back end).
+enum : uint32_t { P9_DMDIR = 0x8000'0000, P9_DMSYMLINK = 0x0200'0000, P9_DMDEVICE = 0x0080'0000 };
 
 enum : uint8_t { // Topen and Tcreate modes
   P9_OREAD = 0,
@@ -114,7 +113,13 @@ enum : uint32_t {
 };
 
 // POSIX's file types in a p9_attr's mode.
-enum : uint32_t { P9_S_IFMT = 0170000, P9_S_IFDIR = 0040000, P9_S_IFREG = 0100000, P9_S_IFLNK = 0120000 };
+enum : uint32_t {
+  P9_S_IFMT = 0170000,
+  P9_S_IFDIR = 0040000,
+  P9_S_IFREG = 0100000,
+  P9_S_IFLNK = 0120000,
+  P9_S_IFCHR = 0020000,
+};
 
 typedef struct p9_msg {
   p9_type type;

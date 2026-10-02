@@ -14,8 +14,10 @@
 // is not SA_RESTART ran, and is made again otherwise. A signal that arrives
 // in the program's own code is delivered at once, on its stack.
 //
-// Not yet: an alternate signal stack, the registers in a handler's ucontext,
-// and stopping (SIGSTOP and the rest are ignored until job control, M4 step 4).
+// A stopping signal's default asks posixd to stop the process (POSIX_STOP);
+// SIGSTOP from another process posixd carries out itself.
+//
+// Not yet: an alternate signal stack, and the registers in a handler's ucontext.
 
 static constexpr int SIG_MAX = 64;
 
@@ -70,8 +72,13 @@ static bool sig_act(int sig, int code, int64_t sender, uint64_t address, const v
   unsigned long flags = sig_actions[sig].flags;
   if (h == (uintptr_t)SIG_IGN) return false;
   if (h == (uintptr_t)SIG_DFL) {
-    if (posix_default_ignored(sig) || sig == SIGSTOP || sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU)
+    if (sig == SIGSTOP || sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU) { // stop, until SIGCONT
+      int64_t args[1] = {sig};
+      posix_msg rep;
+      if (posix_chan) posix_call(posix_chan, POSIX_STOP, args, 1, VX_HANDLE_NONE, &rep, nullptr);
       return false;
+    }
+    if (posix_default_ignored(sig)) return false;
     sig_terminate(sig, e);
   }
   uint64_t old = sig_mask;

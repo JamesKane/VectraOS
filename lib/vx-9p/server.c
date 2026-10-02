@@ -432,6 +432,7 @@ static uint32_t p9_posix_mode(uint32_t mode) {
   uint32_t type = P9_S_IFREG;
   if (mode & P9_DMDIR) type = P9_S_IFDIR;
   if (mode & P9_DMSYMLINK) type = P9_S_IFLNK;
+  if (mode & P9_DMDEVICE) type = P9_S_IFCHR;
   return type | (mode & 07777);
 }
 

@@ -1,0 +1,428 @@
+// ptyd: pseudo-terminals (docs/01 §9), posted as /srv/ptyd and mounted on
+// /dev by the POSIX template (boot/ns/posix.ndb).
+//
+//   ptmx        opening it makes a new terminal: the fid becomes its master
+//   pts/N       terminal N's slave: what the program on it reads and writes
+//   pts/N.ctl   its settings as an ndb record: reading gives them, writing
+//               changes those it names (the musl back end's tcgetattr,
+//               tcsetattr, TIOCGWINSZ, tcsetpgrp and the rest)
+//
+// The line discipline is here, as Linux's: input typed at the master is
+// edited in canonical mode (erase, kill, ^D), echoed, and turned into signals
+// (^C, ^Z, ^\) to the terminal's foreground process group, through posixd;
+// the slave's output has NL made CR NL (ONLCR). A read with nothing to give
+// is held until there is (the ring server's SHOULD_WAIT). A signal ptyd sends
+// ends the slave reads it holds, as "interrupted", so ^C at a prompt is seen
+// at once. The termios numbers are Linux's: the POSIX personality's.
+
+#include "../../lib/vx-rt/rt.c"
+#include "../../lib/vx-9p/ring_server.c"
+#include "../../lib/vx-posix/posix.h"
+
+static constexpr uint32_t PTYS = 16, BUF = 4096, NCCS = 32;
+enum : uint64_t {
+  ROOT = 1,
+  PTMX = 2,
+  PTS = 3,
+  MASTER = 0x100,
+  SLAVE = 0x200,
+  CTL = 0x300
+}; // + pty for the last three
+
+// Linux's termios bits and control characters, as far as ptyd acts on them.
+enum : uint32_t { T_ICRNL = 0400, T_OPOST = 01, T_ONLCR = 04, T_ISIG = 01, T_ICANON = 02, T_ECHO = 010 };
+enum : uint32_t { T_ECHOE = 020, T_ECHOK = 040 };
+enum : uint32_t { V_INTR = 0, V_QUIT = 1, V_ERASE = 2, V_KILL = 3, V_EOF = 4, V_MIN = 6, V_SUSP = 10 };
+static constexpr int64_t SIGINT = 2, SIGQUIT = 3, SIGTSTP = 20, SIGWINCH = 28;
+
+typedef struct ring {
+  uint8_t b[BUF];
+  uint32_t head, len;
+} ring;
+
+typedef struct pty {
+  bool used, master_gone;
+  uint32_t masters, slaves; // opens of each side
+  uint32_t iflag, oflag, cflag, lflag;
+  uint8_t cc[NCCS];
+  uint16_t rows, cols;
+  int64_t pgrp;      // the foreground process group, 0 for none
+  ring in;           // ended lines (canonical) or bytes, for the slave to read
+  uint32_t eofs;     // ^D markers in `in`: each a read that returns 0
+  uint8_t line[BUF]; // the line being typed (canonical)
+  uint32_t line_len;
+  ring out;         // for the master to read: the slave's output and echo
+  bool reading;     // a slave read is held, waiting for input
+  bool interrupted; // a signal was sent while one was: it ends
+} pty;
+
+static pty ptys[PTYS];
+static vx_handle posix_chan; // to posixd, to signal process groups
+
+static void ring_put(ring *r, uint8_t c) {
+  if (r->len == BUF) return; // full: dropped, as a terminal does
+  r->b[(r->head + r->len++) % BUF] = c;
+}
+
+static uint32_t ring_take(ring *r, uint8_t *out, uint32_t n) {
+  if (n > r->len) n = r->len;
+  for (uint32_t i = 0; i < n; i++) out[i] = r->b[(r->head + i) % BUF];
+  r->head = (r->head + n) % BUF;
+  r->len -= n;
+  return n;
+}
+
+static void echo(pty *p, uint8_t c) {
+  if (!(p->lflag & T_ECHO)) return;
+  if (c == '\n' && (p->oflag & T_OPOST) && (p->oflag & T_ONLCR)) ring_put(&p->out, '\r');
+  if (c < 0x20 && c != '\n' && c != '\t') { // ^C and the rest echo as Linux's do
+    ring_put(&p->out, '^');
+    c = (uint8_t)(c + '@');
+  }
+  ring_put(&p->out, c);
+}
+
+static void signal_group(pty *p, int64_t sig) {
+  if (p->reading) p->interrupted = true;
+  if (!posix_chan || p->pgrp <= 0) return;
+  posix_msg m = {.h = {.ordinal = POSIX_KILL}, .arg = {-p->pgrp, sig}}, rep;
+  vx_call c = {.wr_bytes = &m, .wr_len = sizeof m, .rd_bytes = &rep, .rd_cap = sizeof rep};
+  vx_channel_call(posix_chan, &c, vx_clock_read() + 1'000'000'000);
+}
+
+// One byte typed at the master, through the line discipline.
+static void typed(pty *p, uint8_t c) {
+  if ((p->iflag & T_ICRNL) && c == '\r') c = '\n';
+  if (p->lflag & T_ISIG) {
+    int64_t sig = 0;
+    if (c == p->cc[V_INTR]) sig = SIGINT;
+    if (c == p->cc[V_QUIT]) sig = SIGQUIT;
+    if (c == p->cc[V_SUSP]) sig = SIGTSTP;
+    if (sig) {
+      echo(p, c);
+      echo(p, '\n');
+      p->line_len = 0; // the line is thrown away
+      signal_group(p, sig);
+      return;
+    }
+  }
+  if (!(p->lflag & T_ICANON)) {
+    ring_put(&p->in, c);
+    echo(p, c);
+    return;
+  }
+  if (c == p->cc[V_ERASE] || c == 0x08) {
+    if (p->line_len) {
+      p->line_len--;
+      if (p->lflag & T_ECHO) ring_put(&p->out, '\b'), ring_put(&p->out, ' '), ring_put(&p->out, '\b');
+    }
+    return;
+  }
+  if (c == p->cc[V_KILL]) {
+    while (p->line_len) {
+      p->line_len--;
+      if (p->lflag & T_ECHO) ring_put(&p->out, '\b'), ring_put(&p->out, ' '), ring_put(&p->out, '\b');
+    }
+    return;
+  }
+  if (c == p->cc[V_EOF]) { // the line as it is, or on an empty one the end of the file
+    if (!p->line_len) p->eofs++;
+    for (uint32_t i = 0; i < p->line_len; i++) ring_put(&p->in, p->line[i]);
+    if (!p->line_len) ring_put(&p->in, 0); // the marker
+    p->line_len = 0;
+    return;
+  }
+  echo(p, c);
+  if (p->line_len < BUF) p->line[p->line_len++] = c;
+  if (c == '\n') {
+    for (uint32_t i = 0; i < p->line_len; i++) ring_put(&p->in, p->line[i]);
+    p->line_len = 0;
+  }
+}
+
+// --- The file system ---
+
+static pty *pty_of(uint64_t node) {
+  uint64_t i = node & 0xff;
+  if (node < MASTER || i >= PTYS || !ptys[i].used) return nullptr;
+  return &ptys[i];
+}
+
+static vx_status fs_attach(void *ctx, vx_str aname, uint64_t *root) {
+  (void)ctx;
+  if (aname.len) return VX_ERR_NOT_FOUND;
+  *root = ROOT;
+  return VX_OK;
+}
+
+static size_t put_u(char *out, uint64_t v) {
+  char d[20];
+  size_t n = 0, k = 0;
+  do d[n++] = (char)('0' + v % 10);
+  while ((v /= 10));
+  while (n) out[k++] = d[--n];
+  return k;
+}
+
+static vx_status fs_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) {
+  (void)ctx;
+  if (dir == ROOT && name.len == 4 && memcmp(name.ptr, "ptmx", 4) == 0) return *child = PTMX, VX_OK;
+  if (dir == ROOT && name.len == 3 && memcmp(name.ptr, "pts", 3) == 0) return *child = PTS, VX_OK;
+  if (dir != PTS) return VX_ERR_NOT_FOUND;
+  for (uint32_t i = 0; i < PTYS; i++) {
+    if (!ptys[i].used) continue;
+    char n[24];
+    size_t len = put_u(n, i);
+    if (name.len == len && memcmp(name.ptr, n, len) == 0) return *child = SLAVE + i, VX_OK;
+    static const vx_str ctl = VX_STR(".ctl"); // a vx_str: no terminator
+    memcpy(n + len, ctl.ptr, ctl.len);
+    if (name.len == len + 4 && memcmp(name.ptr, n, len + 4) == 0) return *child = CTL + i, VX_OK;
+  }
+  return VX_ERR_NOT_FOUND;
+}
+
+static vx_status fs_parent(void *ctx, uint64_t node, uint64_t *parent) {
+  (void)ctx;
+  *parent = node == ROOT || node == PTS || node == PTMX || (node >= MASTER && node < SLAVE) ? ROOT : PTS;
+  return VX_OK;
+}
+
+static char stat_name[24];
+
+// A terminal's sides are devices (9P2000.u's DMDEVICE), which the back end
+// takes for terminals; each is named by its number.
+static vx_status fs_stat(void *ctx, uint64_t node, p9_stat *out) {
+  (void)ctx;
+  bool dir = node == ROOT || node == PTS;
+  vx_str name = VX_STR("ptmx");
+  if (node == ROOT) name = VX_STR("/");
+  if (node == PTS) name = VX_STR("pts");
+  uint32_t mode = dir ? P9_DMDIR | 0555 : 0666;
+  if (node >= MASTER) {
+    if (!pty_of(node)) return VX_ERR_NOT_FOUND;
+    size_t len = put_u(stat_name, node & 0xff);
+    static const vx_str ctl = VX_STR(".ctl");
+    if (node >= CTL) memcpy(stat_name + len, ctl.ptr, ctl.len), len += ctl.len;
+    name = (vx_str){stat_name, len};
+    if (node < CTL) mode = P9_DMDEVICE | 0620;
+  }
+  *out = (p9_stat){.qid = {dir ? P9_QTDIR : P9_QTFILE, 0, node},
+                   .mode = mode,
+                   .name = name,
+                   .uid = VX_STR("sys"),
+                   .gid = VX_STR("sys"),
+                   .muid = VX_STR("sys")};
+  return VX_OK;
+}
+
+static vx_status fs_open(void *ctx, uint64_t node, uint8_t mode) {
+  (void)ctx, (void)mode;
+  if (node == ROOT || node == PTS) return (mode & 3) == P9_OREAD ? VX_OK : VX_ERR_ACCESS;
+  if (node == PTMX) return VX_OK;
+  pty *p = pty_of(node);
+  if (!p) return VX_ERR_NOT_FOUND;
+  if (node >= SLAVE && node < CTL) {
+    if (p->master_gone) return VX_ERR_PEER_CLOSED;
+    p->slaves++;
+  }
+  return VX_OK;
+}
+
+// Opening ptmx makes a terminal, with Linux's defaults: cooked, echoing,
+// signals on, 80 by 24.
+static vx_status fs_clone(void *ctx, uint64_t node, uint8_t mode, uint64_t *opened) {
+  (void)ctx, (void)mode;
+  if (node != PTMX) return VX_ERR_NOT_FOUND;
+  for (uint32_t i = 0; i < PTYS; i++) {
+    if (ptys[i].used) continue;
+    pty *p = &ptys[i];
+    *p = (pty){.used = true,
+               .masters = 1,
+               .iflag = T_ICRNL,
+               .oflag = T_OPOST | T_ONLCR,
+               .cflag = 0277, // CS8 | CREAD | B38400, as Linux reports them
+               .lflag = T_ISIG | T_ICANON | T_ECHO | T_ECHOE | T_ECHOK,
+               .rows = 24,
+               .cols = 80};
+    p->cc[V_INTR] = 3, p->cc[V_QUIT] = 0x1c, p->cc[V_ERASE] = 0x7f, p->cc[V_KILL] = 0x15;
+    p->cc[V_EOF] = 4, p->cc[V_MIN] = 1, p->cc[V_SUSP] = 0x1a;
+    *opened = MASTER + i;
+    return VX_OK;
+  }
+  return VX_ERR_NO_MEMORY;
+}
+
+static void fs_clunk(void *ctx, uint64_t node, bool opened) {
+  (void)ctx;
+  pty *p = opened ? pty_of(node) : nullptr;
+  if (!p) return;
+  if (node < SLAVE && p->masters) {
+    p->masters--;
+    if (!p->masters) p->master_gone = true; // a hang-up: the slave reads its end
+  }
+  if (node >= SLAVE && node < CTL && p->slaves) p->slaves--;
+  if (p->master_gone && !p->slaves) *p = (pty){};
+}
+
+// The settings, as one record.
+static size_t settings(const pty *p, char *buf, size_t cap) {
+  vx_ndb_writer w = {.buf = buf, .cap = cap};
+  vx_ndb_put_u64(&w, "iflag", p->iflag);
+  vx_ndb_put_u64(&w, "oflag", p->oflag);
+  vx_ndb_put_u64(&w, "cflag", p->cflag);
+  vx_ndb_put_u64(&w, "lflag", p->lflag);
+  vx_ndb_put(&w, "cc", (vx_str){(const char *)p->cc, NCCS});
+  vx_ndb_put_u64(&w, "rows", p->rows);
+  vx_ndb_put_u64(&w, "cols", p->cols);
+  vx_ndb_put_u64(&w, "pgrp", (uint64_t)p->pgrp);
+  vx_ndb_put_u64(&w, "avail", p->in.len);
+  vx_ndb_end(&w);
+  return w.failed ? 0 : w.len;
+}
+
+static vx_status fs_read(void *ctx, uint64_t node, uint64_t offset, uint8_t *buf, uint32_t *count) {
+  (void)ctx;
+  pty *p = pty_of(node);
+  if (!p) return VX_ERR_NOT_FOUND;
+  if (node >= CTL) {
+    static char text[512];
+    size_t n = settings(p, text, sizeof text);
+    uint64_t left = offset < n ? n - offset : 0;
+    if (*count > left) *count = (uint32_t)left;
+    memcpy(buf, text + offset, *count);
+    return VX_OK;
+  }
+  if (node < SLAVE) { // the master: what the slave wrote, and echo
+    if (!p->out.len) return VX_ERR_SHOULD_WAIT;
+    *count = ring_take(&p->out, buf, *count);
+    return VX_OK;
+  }
+  if (p->interrupted) { // a signal ptyd sent while this read waited: it ends
+    p->interrupted = p->reading = false;
+    return VX_ERR_INTERRUPTED;
+  }
+  if (!p->in.len) {
+    if (p->master_gone) return *count = 0, VX_OK; // the end of the file: hung up
+    p->reading = true;
+    return VX_ERR_SHOULD_WAIT;
+  }
+  p->reading = false;
+  if (!(p->lflag & T_ICANON)) {
+    *count = ring_take(&p->in, buf, *count);
+    return VX_OK;
+  }
+  // One line at most; a ^D marker on its own is the end of the file.
+  uint32_t n = 0;
+  uint8_t c;
+  while (n < *count && p->in.len) {
+    c = p->in.b[p->in.head];
+    if (c == 0 && p->eofs) {
+      if (!n) ring_take(&p->in, &c, 1), p->eofs--; // an empty read
+      break;
+    }
+    ring_take(&p->in, &buf[n++], 1);
+    if (c == '\n') break;
+  }
+  *count = n;
+  return VX_OK;
+}
+
+static uint64_t field(const vx_ndb_record *r, const char *key, uint64_t was) {
+  uint64_t v = was;
+  vx_ndb_get_u64(r, key, &v);
+  return v;
+}
+
+// NOLINTNEXTLINE(readability-non-const-parameter): p9_fs's signature
+static vx_status fs_write(void *ctx, uint64_t node, uint64_t offset, const uint8_t *buf, uint32_t *count) {
+  (void)ctx, (void)offset;
+  pty *p = pty_of(node);
+  if (!p) return VX_ERR_NOT_FOUND;
+  if (node >= CTL) { // set what the record names; `flush` throws away pending input
+    static char scratch[1024];
+    vx_ndb_reader r = {.src = {(const char *)buf, *count}, .scratch = scratch, .scratch_cap = sizeof scratch};
+    vx_ndb_record rec;
+    if (vx_ndb_next(&r, &rec) != VX_NDB_RECORD) return VX_ERR_INVALID;
+    p->iflag = (uint32_t)field(&rec, "iflag", p->iflag);
+    p->oflag = (uint32_t)field(&rec, "oflag", p->oflag);
+    p->cflag = (uint32_t)field(&rec, "cflag", p->cflag);
+    p->lflag = (uint32_t)field(&rec, "lflag", p->lflag);
+    vx_str cc = vx_ndb_get(&rec, "cc");
+    if (cc.len == NCCS) memcpy(p->cc, cc.ptr, NCCS);
+    uint16_t rows = p->rows, cols = p->cols;
+    p->rows = (uint16_t)field(&rec, "rows", p->rows);
+    p->cols = (uint16_t)field(&rec, "cols", p->cols);
+    p->pgrp = (int64_t)field(&rec, "pgrp", (uint64_t)p->pgrp);
+    if (vx_ndb_has(&rec, "flush")) p->in = (ring){}, p->line_len = 0, p->eofs = 0;
+    if (rows != p->rows || cols != p->cols) {
+      signal_group(p, SIGWINCH);
+      p->interrupted = false; // a resize does not end reads
+    }
+    return VX_OK;
+  }
+  if (node < SLAVE) { // typed at the master
+    for (uint32_t i = 0; i < *count; i++) typed(p, buf[i]);
+    return VX_OK;
+  }
+  if (p->master_gone) return VX_ERR_PEER_CLOSED;
+  for (uint32_t i = 0; i < *count; i++) { // the program's output, to the master
+    if (buf[i] == '\n' && (p->oflag & T_OPOST) && (p->oflag & T_ONLCR)) ring_put(&p->out, '\r');
+    ring_put(&p->out, buf[i]);
+  }
+  return VX_OK;
+}
+
+static vx_status fs_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *child) {
+  (void)ctx;
+  if (dir == ROOT) {
+    if (index > 1) return VX_ERR_NOT_FOUND;
+    *child = index ? PTS : PTMX;
+    return VX_OK;
+  }
+  for (uint32_t i = 0; dir == PTS && i < PTYS; i++) {
+    if (!ptys[i].used || ptys[i].master_gone) continue;
+    if (index < 2) return *child = (index ? CTL : SLAVE) + i, VX_OK;
+    index -= 2;
+  }
+  return VX_ERR_NOT_FOUND;
+}
+
+static p9_ring_server server = {
+    .fs = {.attach = fs_attach,
+           .walk = fs_walk,
+           .parent = fs_parent,
+           .stat = fs_stat,
+           .open = fs_open,
+           .clone = fs_clone,
+           .read = fs_read,
+           .write = fs_write,
+           .readdir = fs_readdir,
+           .clunk = fs_clunk},
+    .name = VX_STR("ptyd"),
+    .supported = P9_EXT_XATTR | P9_EXT_POSIX,
+};
+
+int vx_main(void) {
+  server.listen = vx_spawn_take("listen");
+  if (!server.listen) {
+    vx_print(VX_STR("ptyd: no listen channel\n"));
+    return 1;
+  }
+  // A process of its own to posixd, to signal process groups from.
+  vx_handle connector = vx_spawn_take("srv:posixd"), me = VX_HANDLE_NONE;
+  if (connector && vx_handle_dup(vx_self, VX_RIGHTS_SAME, &me) == VX_OK) {
+    posix_msg m = {.h = {.ordinal = POSIX_CONNECT}}, rep;
+    vx_call c = {.wr_bytes = &m,
+                 .wr_len = sizeof m,
+                 .wr_handles = &me,
+                 .wr_count = 1,
+                 .rd_bytes = &rep,
+                 .rd_cap = sizeof rep,
+                 .rd_handles = &posix_chan,
+                 .rd_count_cap = 1};
+    if (vx_channel_call(connector, &c, VX_INFINITE) != VX_OK || rep.h.flags) posix_chan = VX_HANDLE_NONE;
+  }
+  vx_print(posix_chan ? VX_STR("ptyd: serving /srv/ptyd\n")
+                      : VX_STR("ptyd: serving /srv/ptyd, without posixd: no signals\n"));
+  return p9_ring_serve(&server);
+}

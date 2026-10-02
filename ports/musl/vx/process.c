@@ -16,6 +16,7 @@ static long posix_errno(uint32_t error) {
   case POSIX_EPERM: return -EPERM;
   case POSIX_ECHILD: return -ECHILD;
   case POSIX_EAGAIN: return -EAGAIN;
+  case POSIX_EINTR: return -EINTR;
   default: return -EINVAL;
   }
 }
@@ -99,7 +100,7 @@ static long posix_setsid(void) { return posix_simple(POSIX_SETSID, 0, 0, -EPERM)
 static long posix_wait4(long pid, int *status, int options, struct rusage *ru) {
   if (ru) *ru = (struct rusage){};
   if (!posix_chan) return -ECHILD;
-  int64_t args[2] = {pid, options & WNOHANG ? POSIX_WNOHANG : 0};
+  int64_t args[2] = {pid, options & (WNOHANG | WUNTRACED | WCONTINUED)}; // Linux's numbers, posixd's
   posix_msg rep;
   long r = posix_call(posix_chan, POSIX_WAIT, args, 2, VX_HANDLE_NONE, &rep, nullptr);
   if (r < 0) return r;

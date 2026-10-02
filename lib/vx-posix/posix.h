@@ -27,6 +27,7 @@ enum posix_call : uint32_t {
   POSIX_WAIT,        // {pid, options} as wait4's -> {pid, status} once a child has ended; {0} with WNOHANG
   POSIX_KILL,        // {pid, sig} as kill's -> {1 if the caller is among those it names}: posixd signals the
                      // others; the caller delivers to itself
+  POSIX_STOP,        // {sig}: stop the caller (a stopping signal's default), until SIGCONT -> {}
   POSIX_EXEC,        // handles [a new task] -> {pid}, handles [its channel]: the caller's process goes on
                      // in the new task (execve), with its pid, parent, group, session and children; the
                      // caller's own task and channel are let go, and its end is not reported
@@ -40,6 +41,7 @@ enum posix_error : uint32_t {
   POSIX_ECHILD, // no child to wait for
   POSIX_EINVAL,
   POSIX_EAGAIN, // the process table is full
+  POSIX_EINTR,  // a wait ended by a signal to the caller
 };
 
 typedef struct posix_msg {
@@ -47,13 +49,14 @@ typedef struct posix_msg {
   int64_t arg[4];
 } posix_msg;
 
-static constexpr int64_t POSIX_WNOHANG = 1; // wait4's options, as Linux numbers them
+static constexpr int64_t POSIX_WNOHANG = 1, POSIX_WUNTRACED = 2,
+                         POSIX_WCONTINUED = 8; // wait4's, Linux's numbers
 
 // The wait status of a process that exited with status s (the kernel's exit
 // status): its low byte as an exit code; a fault (-1) as SIGSEGV; a kill for
 // signal n (-(256 + n), from posixd) as that signal; any other kill as SIGKILL.
 static constexpr int64_t POSIX_SIGKILL = 9, POSIX_SIGSEGV = 11, POSIX_SIGCHLD = 17, POSIX_SIGCONT = 18,
-                         POSIX_SIGURG = 23, POSIX_SIGWINCH = 28, POSIX_NSIG = 64;
+                         POSIX_SIGSTOP = 19, POSIX_SIGURG = 23, POSIX_SIGWINCH = 28, POSIX_NSIG = 64;
 
 // A signal is delivered by thread_interrupt, with the value: the signal in
 // the low 16 bits, the sending pid above them (0 from posixd itself).

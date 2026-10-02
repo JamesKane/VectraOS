@@ -214,29 +214,45 @@ static vx_status channel_call(channel *c, channel_msg *request, vx_instant deadl
   spin_unlock(&c->pair->lock);
   if (st != VX_OK) return st;
 
-  int64_t woke = thread_block(deadline, 0);
-  spin_lock(&c->pair->lock); // stop waiting, whatever woke us
-  for (call_wait **link = &c->calls; *link; link = &(*link)->next) {
-    if (*link == &w) {
-      *link = w.next;
-      break;
-    }
-  }
   // A call that ends without its reply (interrupted, timed out) takes back a
   // request the server has not read yet, so the server never answers a call
-  // nobody waits for: a request it has read is its own to finish.
-  channel *server = channel_peer(c);
-  for (channel_msg **link = server && !w.reply ? &server->head : nullptr, *prev = nullptr; link && *link;
-       prev = *link, link = &(*link)->next) {
-    if (*link != request) continue;
-    *link = request->next;
-    if (server->tail == request) server->tail = prev;
-    server->count--;
-    server->bytes -= request->len;
-    *sent = false; // the caller's again, and freed with its handles
+  // nobody waits for. An interrupted call whose request the server has read
+  // waits on for the reply, so no answer is lost: the interrupt is delivered
+  // once it returns. (A server that holds a call, as posixd does a wait,
+  // answers it before it interrupts the caller.)
+  int64_t woke;
+  for (;;) {
+    woke = thread_block(deadline, 0);
+    spin_lock(&c->pair->lock);
+    channel *server = channel_peer(c);
+    bool queued = false;
+    for (channel_msg **link = server && !w.reply ? &server->head : nullptr, *prev = nullptr; link && *link;
+         prev = *link, link = &(*link)->next) {
+      if (*link != request) continue;
+      queued = true;
+      if (woke == VX_ERR_INTERRUPTED || woke == VX_ERR_TIMED_OUT || woke == VX_ERR_KILLED) {
+        *link = request->next;
+        if (server->tail == request) server->tail = prev;
+        server->count--;
+        server->bytes -= request->len;
+        *sent = false; // the caller's again, and freed with its handles
+      }
+      break;
+    }
+    if (!w.reply && woke == VX_ERR_INTERRUPTED && server && !queued) {
+      t->wait_token = &w; // the server has it: its answer is coming
+      spin_unlock(&c->pair->lock);
+      continue;
+    }
+    for (call_wait **link = &c->calls; *link; link = &(*link)->next) { // stop waiting
+      if (*link == &w) {
+        *link = w.next;
+        break;
+      }
+    }
+    spin_unlock(&c->pair->lock);
     break;
   }
-  spin_unlock(&c->pair->lock);
   if (w.reply) {
     *reply = w.reply;
     return VX_OK;

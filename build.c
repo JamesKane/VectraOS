@@ -1224,6 +1224,7 @@ static const program USER_PROGRAMS[] = {
     {"posixd", "servers/posixd/posixd.c", IN_BOOTFS, nullptr, false},
     {"tmpfs", "servers/tmpfs/tmpfs.c", IN_BOOTFS, nullptr, false},
     {"nullfs", "servers/nullfs/nullfs.c", IN_BOOTFS, nullptr, false},
+    {"ptyd", "servers/ptyd/ptyd.c", IN_BOOTFS, nullptr, false},
     {"devmgr", "servers/devmgr/devmgr.c", IN_BOOTFS, nullptr, false},
     {"netd", "servers/netd/netd.c", IN_BOOTFS, nullptr, false},
     {"gsh", "cmd/gsh.c", IN_BOOTFS, nullptr, false},

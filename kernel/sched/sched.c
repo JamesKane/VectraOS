@@ -191,6 +191,10 @@ static int64_t thread_block(vx_instant deadline, vx_duration leeway) {
   if (t->wake_pending) { // woken before it got here
     t->wake_pending = false;
     t->wait_result = t->pending_result;
+    // This wait is over: a waker that comes later (a channel reply before
+    // the caller has left the list) must not end the next one, which may
+    // use the same token, a record at the same place on this stack.
+    t->wait_token = nullptr;
     spin_unlock(&sched.lock);
     return t->wait_result;
   }
@@ -208,6 +212,51 @@ static int64_t thread_block(vx_instant deadline, vx_duration leeway) {
   return t->wait_result;
 }
 
+// vx.hangdump=N (a debugging aid): N seconds after boot, CPU 0 prints every
+// thread: its state, what it waits on, where it is in user mode, and the
+// kernel stack it is blocked on.
+static vx_instant hangdump_at = -1; // -1: the command line not read yet
+static _Atomic bool hangdump_done;
+
+static void hang_dump(void) {
+  kput(VX_STR("vx: hangdump\n"));
+  spin_lock(&all_tasks_lock);
+  for (task *t = all_tasks; t; t = t->all_next) {
+    for (thread *th = t->threads; th; th = th->task_next) {
+      kput(VX_STR("  task "));
+      kput_u64(t->id);
+      kput(VX_STR(" ("));
+      kput_cstr(t->name);
+      kput(VX_STR(") thread "));
+      kput_u64(th->id);
+      kput(VX_STR(" state "));
+      kput_u64(th->state);
+      kput(VX_STR(" token "));
+      kput_hex((uint64_t)th->wait_token);
+      kput(VX_STR(" pending "));
+      kput_u64(th->wake_pending);
+      kput(VX_STR(" suspend "));
+      kput_u64(th->suspend_count);
+      vx_regs r;
+      arch_frame_regs(arch_user_frame(th), &r);
+#ifdef __aarch64__
+      kput(VX_STR(" pc "));
+      kput_hex(r.pc);
+      kput(VX_STR("\n"));
+      if (th->state == THREAD_BLOCKED) {
+        const uint64_t *saved = (const uint64_t *)th->kernel_sp; // arch_context_switch's frame
+        backtrace(saved[11], saved[10]);
+      }
+#else
+      kput(VX_STR(" pc "));
+      kput_hex(r.rip);
+      kput(VX_STR("\n"));
+#endif
+    }
+  }
+  spin_unlock(&all_tasks_lock);
+}
+
 // Arms this CPU's timer for the next thing that needs it: its earliest
 // sleeper's latest acceptable wake-up, or the end of the running thread's slice.
 static void sched_arm_timer(cpu *c) {
@@ -215,6 +264,14 @@ static void sched_arm_timer(cpu *c) {
   for (thread *t = c->sleepers; t; t = t->sleep_next)
     if (t->wake_late < next) next = t->wake_late;
   if (c->current != &c->idle && c->slice_end < next) next = c->slice_end;
+  if (hangdump_at < 0) {
+    uint64_t s = 0;
+    vx_str v = cmdline_value(VX_STR("vx.hangdump"));
+    for (size_t i = 0; i < v.len && v.ptr[i] >= '0' && v.ptr[i] <= '9'; i++)
+      s = s * 10 + (uint64_t)(v.ptr[i] - '0');
+    hangdump_at = s ? (vx_instant)(s * 1'000'000'000) : VX_INFINITE;
+  }
+  if (c->index == 0 && !hangdump_done && hangdump_at < next) next = hangdump_at;
   if (next != VX_INFINITE) timer_arm(next);
 }
 
@@ -240,8 +297,11 @@ static void sched_timer(void) {
     else
       c->slice_end = now + TIME_SLICE;
   }
+  bool dump = c->index == 0 && !hangdump_done && now >= hangdump_at;
+  if (dump) hangdump_done = true;
   sched_arm_timer(c);
   spin_unlock(&sched.lock);
+  if (dump) hang_dump();
 }
 
 // A CPU's idle loop: run whatever is ready, else sleep until an interrupt.

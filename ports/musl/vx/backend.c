@@ -41,6 +41,7 @@
 #include <sys/uio.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <time.h>
 
 #include "vx.h"
@@ -112,6 +113,8 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
   case SYS_writev: return fd_writev((int)a1, (const struct iovec *)a2, (int)a3);
   case SYS_pread64: return fd_pread((int)a1, (void *)a2, (size_t)a3, a4);
   case SYS_pwrite64: return fd_pwrite((int)a1, (const void *)a2, (size_t)a3, a4);
+  case SYS_preadv2: return fd_prw2((int)a1, (const struct iovec *)a2, (int)a3, a4, (int)a6, false);
+  case SYS_pwritev2: return fd_prw2((int)a1, (const struct iovec *)a2, (int)a3, a4, (int)a6, true);
   case SYS_lseek: return fd_lseek((int)a1, a2, (int)a3);
   case SYS_close: return fd_close((int)a1);
   case SYS_openat: return fd_openat((int)a1, (const char *)a2, (int)a3, (mode_t)a4);

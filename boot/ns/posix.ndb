@@ -1,12 +1,14 @@
 # boot/ns/posix.ndb: the namespace template a POSIX program expects (02 §2,
 # /lib/ns/posix): a manifest's ns=posix puts these records in its place.
 # The boot image is the root; /bin the programs; /tmp a RAM file system;
-# /dev null, zero, random and urandom; /proc the tasks.
+# /dev null, zero, random and urandom, and the terminals (ptmx, pts/);
+# /proc the tasks.
 
 mount=/ srv=bootfs
 bind=/bin new=/boot/bin flags=a
 mount=/tmp srv=tmpfs flags=c
 mount=/dev srv=null
+mount=/dev srv=ptyd flags=a
 mount=/proc srv=proc
 env=PATH=/bin
 env=HOME=/tmp
