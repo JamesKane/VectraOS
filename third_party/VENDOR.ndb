@@ -49,3 +49,13 @@ name=compiler-rt
     license="Apache-2.0 WITH LLVM-exception"
     adr=docs/adr/0008-compiler-rt.md
     reviewed.by="James Kane" reviewed.date=2026-10-01
+
+name=lua
+    version=5.5.1
+    upstream=https://www.lua.org/ftp/lua-5.5.1.tar.gz
+    sha256=1c4b4068d67061f2a2231ad2b5422e77acea1487ea9890f6320af614f4373dce
+    tree.sha256=eb6d632ef7f91b95390ed3b45d290e4befa5b7d700096b35465c14e8d77957b0
+    license=MIT
+    adr=docs/adr/0015-lua.md
+    port=ports/lua/port.ndb
+    reviewed.by="James Kane" reviewed.date=2026-10-02

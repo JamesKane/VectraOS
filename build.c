@@ -403,6 +403,7 @@ static void rebuild_self(char **argv) {
 
 static constexpr int PORT_MAX_TARGETS = 8;
 static constexpr int PORT_MAX_FILES = 32;
+static constexpr int PORT_MAX_PROGRAMS = 128;
 
 typedef struct port {
   const char *name;
@@ -413,6 +414,8 @@ typedef struct port {
   int target_count;
   vx_ndb_record files[PORT_MAX_FILES];
   int file_count;
+  vx_ndb_record programs[PORT_MAX_PROGRAMS]; // program= records: POSIX programs built from it
+  int program_count;
   uint64_t input_hash;
 } port;
 
@@ -439,8 +442,11 @@ static void port_load(port *p, const char *name) {
     } else if (vx_ndb_has(&rec, "file")) {
       if (p->file_count == PORT_MAX_FILES) die("%s: too many file records", path);
       p->files[p->file_count++] = rec;
+    } else if (vx_ndb_has(&rec, "program")) {
+      if (p->program_count == PORT_MAX_PROGRAMS) die("%s: too many program records", path);
+      p->programs[p->program_count++] = rec;
     } else {
-      die("%s:%zu: a record must start with port=, target= or file=", path, rec.line);
+      die("%s:%zu: a record must start with port=, target=, file= or program=", path, rec.line);
     }
   }
   vx_str src = vx_ndb_get(&p->head, "src");
@@ -1290,8 +1296,55 @@ static bool build_user_programs(const arch *a, bool release) {
   return run_parallel(ccs, n) && run_parallel(lds, n);
 }
 
+// Vendored POSIX programs (docs/04 §3.1): a port's sources= and each
+// program='s own, compiled once at the port's flags against vectra-musl and
+// cached, as musl is (out/NAME/ARCH), then linked with the mode's libc into
+// boot/bin, alongside the user programs.
+static port lua;
+static port *const POSIX_PORTS[] = {&lua};
+static constexpr int POSIX_PORT_COUNT = sizeof POSIX_PORTS / sizeof POSIX_PORTS[0];
+
+static bool build_port_programs(const arch *a, bool release) {
+  const char *dir = fmt("out/%s/%s", a->name, release ? "release" : "debug"),
+             *lib = vectra_musl_lib(a, release);
+  for (int k = 0; k < POSIX_PORT_COUNT; k++) {
+    const port *p = POSIX_PORTS[k];
+    static file_list files;
+    files = (file_list){};
+    add_words(&files, vx_ndb_get(&p->head, "sources"));
+    int shared = files.count, first[PORT_MAX_PROGRAMS];
+    for (int i = 0; i < p->program_count; i++) {
+      first[i] = files.count;
+      add_words(&files, vx_ndb_get(&p->programs[i], "sources"));
+    }
+    const char **objs = alloc((size_t)files.count * sizeof *objs);
+    if (!build_cached(p, a, &files, objs, nullptr)) return false;
+    static cmd ld[PORT_MAX_PROGRAMS];
+    cmd *lds[PORT_MAX_PROGRAMS];
+    for (int i = 0; i < p->program_count; i++) {
+      const char *name = str_dup(vx_ndb_get(&p->programs[i], "program"));
+      int end = i + 1 < p->program_count ? first[i + 1] : files.count;
+      ld[i] = (cmd){};
+      cmd_add(&ld[i], LLD);
+      cmd_addv(&ld[i],
+               (const char *const[]){"-static", "-nostdlib", "--build-id=sha1", "-z", "max-page-size=0x1000",
+                                     "-z", "noexecstack", "-e", "_start", "-o", fmt("%s/%s", dir, name),
+                                     fmt("%s/crt1.o", lib), fmt("%s/crti.o", lib), nullptr});
+      for (int j = first[i]; j < end; j++) cmd_add(&ld[i], objs[j]);
+      for (int j = 0; j < shared; j++) cmd_add(&ld[i], objs[j]);
+      cmd_addv(&ld[i], (const char *const[]){fmt("%s/libc.a", lib), fmt("%s/libclang_rt.builtins.a", lib),
+                                             fmt("%s/crtn.o", lib), nullptr});
+      lds[i] = &ld[i];
+      fprintf(stderr, "  LD    %-7s %s\n", name, a->name);
+    }
+    if (!run_parallel(lds, p->program_count)) return false;
+  }
+  return true;
+}
+
 static bool build_arch(const arch *a, bool release) {
-  if (!build_kernel(a, release) || !build_vectra_musl(a, release) || !build_user_programs(a, release))
+  if (!build_kernel(a, release) || !build_vectra_musl(a, release) || !build_user_programs(a, release) ||
+      !build_port_programs(a, release))
     return false;
   const vx_ndb_record *t = port_target_for(&limine, a);
   return !t || build_port_target(&limine, t);
@@ -1307,6 +1360,7 @@ static void check_toolchain(void) {
   port_load(&limine, "limine");
   port_load(&musl, "musl");
   port_load(&compiler_rt, "compiler-rt");
+  port_load(&lua, "lua");
   // musl's build also reads the back end's syscall_arch.h and the generated headers.
   musl.input_hash = hash_tree(musl.input_hash, fmt("%s/ports/musl/vx/arch", root));
   musl.input_hash = hash_tree(musl.input_hash, fmt("%s/ports/musl/generated", root));
@@ -1748,8 +1802,10 @@ static bool mtools(const char *tool, const char *esp, const char *const *args) {
 
 // The directories every boot image has: mount points for the namespace (02 §5)
 // and bootfs's own. In order, parents first.
-static const char *const BOOTFS_DIRS[] = {"bin",    "boot", "boot/bin", "boot/drv", "boot/svc", "dev", "lib",
-                                          "lib/ns", "n",    "net",      "proc",     "srv",      "tmp"};
+static constexpr int BOOTFS_MAX_FILES = 512;
+static const char *const BOOTFS_DIRS[] = {"bin",        "boot", "boot/bin", "boot/drv", "boot/svc",
+                                          "boot/tests", "dev",  "lib",      "lib/ns",   "n",
+                                          "net",        "proc", "srv",      "tmp"};
 
 // Whether `name` is in the comma-separated list `with`.
 static bool listed(const char *with, const char *name) {
@@ -1768,7 +1824,8 @@ static bool listed(const char *with, const char *name) {
 // in bootfs, boot/svc with the service manifests from boot/svc/*.ndb,
 // boot/drv with the driver manifests from boot/drv/*.ndb, and lib/ns with the
 // namespace templates, namespace(6) files, from boot/lib/ns/ (ADR-0009).
-// `with` adds test programs and their manifests (tests/user/NAME.ndb). The
+// `with` adds test programs and their manifests (tests/user/NAME.ndb), and
+// script tests (a manifest, and tests/user/NAME.lua in boot/tests). The
 // archive is deterministic: fixed order, no times or owners.
 static bool make_bootfs(const arch *a, bool release, const char *with, const char *out) {
   static file_list manifests;
@@ -1780,8 +1837,8 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
 
   // Programs, then the system's manifests, then the tests': svcd starts
   // services in this order, so a test's run after what it tests.
-  vx_str files[64];
-  const char *paths[64];
+  static vx_str files[BOOTFS_MAX_FILES];
+  static const char *paths[BOOTFS_MAX_FILES];
   int count = 0;
   size_t total = 0;
   for (int i = 0; i < USER_PROGRAM_COUNT; i++) {
@@ -1791,15 +1848,38 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
     files[count] = read_file(fmt("%s/%s", out_dir(a, release), p->name));
     paths[count++] = fmt("boot/bin/%s", p->name);
   }
-  for (int i = 0; i < manifests.count && count < 64; i++) {
+  for (int k = 0; k < POSIX_PORT_COUNT; k++) // vendored POSIX programs
+    for (int i = 0; i < POSIX_PORTS[k]->program_count && count < BOOTFS_MAX_FILES; i++) {
+      const char *name = str_dup(vx_ndb_get(&POSIX_PORTS[k]->programs[i], "program"));
+      files[count] = read_file(fmt("%s/%s", out_dir(a, release), name));
+      paths[count++] = fmt("boot/bin/%s", name);
+    }
+  for (int i = 0; i < manifests.count && count < BOOTFS_MAX_FILES; i++) {
     files[count] = read_file(manifests.paths[i]);
     const char *path = manifests.paths[i]; // boot/lib/ns/NAME is /lib/ns/NAME in the image
     paths[count++] = strncmp(path, "boot/lib/", 9) == 0 ? path + 5 : path;
   }
-  for (int i = 0; i < USER_PROGRAM_COUNT && count < 64; i++) {
+  for (int i = 0; i < USER_PROGRAM_COUNT && count < BOOTFS_MAX_FILES; i++) {
     if (USER_PROGRAMS[i].where != IN_TESTS || !listed(with, USER_PROGRAMS[i].name)) continue;
     files[count] = read_file(fmt("tests/user/%s.ndb", USER_PROGRAMS[i].name));
     paths[count++] = fmt("boot/svc/%s.ndb", USER_PROGRAMS[i].name);
+  }
+  // A `with` name that is no program is a script test: its manifest runs a
+  // program the image has (lua), on tests/user/NAME.lua, at /boot/tests.
+  for (const char *n = with; *n && count + 2 <= BOOTFS_MAX_FILES;) {
+    const char *end = strchr(n, ',');
+    const char *name = str_dup((vx_str){n, end ? (size_t)(end - n) : strlen(n)});
+    n += strlen(name) + (end != nullptr);
+    bool program = false;
+    for (int i = 0; i < USER_PROGRAM_COUNT; i++)
+      program = program || strcmp(USER_PROGRAMS[i].name, name) == 0;
+    if (program) continue;
+    files[count] = read_file(fmt("tests/user/%s.ndb", name));
+    paths[count++] = fmt("boot/svc/%s.ndb", name);
+    if (exists(fmt("tests/user/%s.lua", name))) {
+      files[count] = read_file(fmt("tests/user/%s.lua", name));
+      paths[count++] = fmt("boot/tests/%s.lua", name);
+    }
   }
   for (int i = 0; i < count; i++) total += files[i].len + 2 * VX_TAR_BLOCK;
 
