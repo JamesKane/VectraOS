@@ -20,3 +20,4 @@ One file per decision, `NNNN-title.md`, numbered in order. An ADR records a deci
 | [0014](0014-catalogues.md) | Publisher catalogues for package dependencies: one signed list per publisher key, no shared name space, no install-time code; not a registry | Accepted |
 | [0015](0015-lua.md) | Lua 5.5.1, vendored unchanged, as `/bin/lua`; vendored POSIX programs in `./build` | Proposed |
 | [0016](0016-sbase.md) | sbase, vendored unchanged: one box binary with hard links in bootfs, in `/boot/bin/posix`, bound before `/boot/bin` for POSIX programs | Proposed |
+| [0017](0017-debug-index.md) | The debug index is first-party: `vxdi`, built from DWARF 5 by `lib/vx-debug`; RDI is not vendored | Accepted |

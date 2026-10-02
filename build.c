@@ -2945,6 +2945,8 @@ static const char *const HOST_TEST_FLAGS[] = {
     "-Wimplicit-fallthrough",
     "-fsanitize=address,undefined",
     "-fno-sanitize-recover=all",
+    "-fno-omit-frame-pointer", // as the house builds everything (05 §4)
+    "-Wl,--build-id=sha1",     // as programs are linked: debug_test reads its own
     nullptr,
 };
 
