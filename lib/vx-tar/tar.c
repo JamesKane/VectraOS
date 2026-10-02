@@ -2,7 +2,9 @@
 // and bootfs and written by build's mkbootfs (docs/04 §3.4). Builds for the
 // target and the host.
 //
-// Only what a boot image holds: regular files and directories. The reader is
+// Only what a boot image holds: regular files, directories, and hard links
+// to a regular file earlier in the archive, read as that file's contents (one
+// program under many names: sbase's box, ADR-0016). The reader is
 // strict, because a boot image may be built by anyone with access to the ESP:
 // every header's checksum and octal fields are checked, every file lies inside
 // the image, and every path is relative, has no empty, "." or ".." component,
@@ -103,9 +105,12 @@ static bool tar_zero_block(const uint8_t *b) {
   return true;
 }
 
-// The next entry. NOT_FOUND at the end of the archive (a zero block, or the
-// end of the image); INVALID at a bad header, and for every call after it.
-[[maybe_unused]] static vx_status vx_tar_next(vx_tar *t, vx_tar_entry *e) {
+// The next entry, as its header has it; a link's target path in link (else
+// ""), unresolved, with no data. NOT_FOUND at the end of the archive (a zero
+// block, or the end of the image); INVALID at a bad header, and for every
+// call after it.
+static vx_status tar_entry(vx_tar *t, vx_tar_entry *e, char link[101]) {
+  link[0] = 0;
   *e = (vx_tar_entry){};
   if (t->failed) return VX_ERR_INVALID;
   if (t->done || t->size - t->pos < VX_TAR_BLOCK || tar_zero_block(t->image + t->pos)) {
@@ -123,10 +128,12 @@ static bool tar_zero_block(const uint8_t *b) {
     return VX_ERR_INVALID;
   if (!tar_octal(h.size, sizeof h.size, &size) || !tar_octal(h.mode, sizeof h.mode, &mode))
     return VX_ERR_INVALID;
+  bool is_link = h.typeflag == '1';
   if (h.typeflag == '5')
     e->dir = true;
-  else if (h.typeflag != '0' && h.typeflag != 0)
-    return VX_ERR_INVALID; // no links, devices or extensions
+  else if (h.typeflag != '0' && h.typeflag != 0 && !is_link)
+    return VX_ERR_INVALID; // no symbolic links, devices or extensions
+  if (is_link && size) return VX_ERR_INVALID;
   if ((e->dir && size) || mode > 07777) return VX_ERR_INVALID;
   e->mode = (uint32_t)mode;
 
@@ -145,8 +152,47 @@ static bool tar_zero_block(const uint8_t *b) {
   if (size > t->size || blocks > (t->size - t->pos) / VX_TAR_BLOCK - 1) return VX_ERR_INVALID;
   e->size = size;
   e->data = e->dir ? nullptr : src + VX_TAR_BLOCK;
+  if (is_link) {
+    size_t tlen = tar_field_len(h.linkname, sizeof h.linkname);
+    if (tlen == SIZE_MAX || !tar_path_ok((vx_str){h.linkname, tlen})) return VX_ERR_INVALID;
+    for (size_t i = 0; i < tlen; i++) link[i] = h.linkname[i];
+    link[tlen] = 0;
+    e->data = nullptr;
+  }
   t->pos += (size_t)(1 + blocks) * VX_TAR_BLOCK;
   t->failed = false;
+  return VX_OK;
+}
+
+// The regular file at path among the archive's first `before` bytes: what a
+// link there names. Links are not followed, so none forms a cycle.
+static bool tar_target(const uint8_t *image, size_t before, const char *path, vx_tar_entry *e) {
+  vx_tar scan = {.image = image, .size = before};
+  char link[101];
+  while (tar_entry(&scan, e, link) == VX_OK) {
+    if (e->dir || link[0]) continue;
+    size_t i = 0;
+    while (i < e->path.len && e->path.ptr[i] == path[i]) i++;
+    if (i == e->path.len && !path[i]) return true;
+  }
+  return false;
+}
+
+// The next entry; a link reads as the regular file it names, earlier in the
+// archive. NOT_FOUND at the end of the archive (a zero block, or the end of
+// the image); INVALID at a bad header, and for every call after it.
+[[maybe_unused]] static vx_status vx_tar_next(vx_tar *t, vx_tar_entry *e) {
+  char link[101];
+  size_t at = t->pos;
+  vx_status st = tar_entry(t, e, link);
+  if (st != VX_OK || !link[0]) return st;
+  vx_tar_entry target;
+  if (!tar_target(t->image, at, link, &target)) {
+    t->failed = true;
+    return VX_ERR_INVALID;
+  }
+  e->data = target.data;
+  e->size = target.size;
   return VX_OK;
 }
 
@@ -219,6 +265,24 @@ static void tar_put_octal(char *f, size_t n, uint64_t v) {
   for (uint64_t i = 0; i < blocks * VX_TAR_BLOCK; i++)
     out[VX_TAR_BLOCK + i] = i < size ? ((const uint8_t *)data)[i] : 0;
   w->len += (size_t)(1 + blocks) * VX_TAR_BLOCK;
+}
+
+// Adds a hard link at path to target, a regular file added before it.
+[[maybe_unused]] static void vx_tar_add_link(vx_tar_writer *w, vx_str path, vx_str target, uint32_t mode) {
+  if (w->failed) return;
+  size_t before = w->len;
+  vx_tar_add(w, path, false, mode, nullptr, 0);
+  if (w->failed) return;
+  vx_tar_header *h = (vx_tar_header *)(w->buf + before);
+  if (target.len > sizeof h->linkname || !tar_path_ok(target)) {
+    w->failed = true;
+    return;
+  }
+  for (size_t i = 0; i < target.len; i++) h->linkname[i] = target.ptr[i];
+  h->typeflag = '1';
+  for (size_t i = 0; i < sizeof h->chksum; i++) h->chksum[i] = ' ';
+  tar_put_octal(h->chksum, 7, tar_checksum(h));
+  h->chksum[7] = ' ';
 }
 
 // Ends the archive with its two zero blocks. Returns its length, or 0.

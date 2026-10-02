@@ -677,6 +677,8 @@ static void tty_check(ofd *o) {
   tty_note(o, true, pty);
 }
 
+static bool fd_exists(const char *p, size_t len); // below, with mkdir
+
 static long fd_openat(int dirfd, const char *path, int flags, mode_t mode) {
   char p[VX_NS_MAX_PATH];
   bool excl = (flags & O_CREAT) && (flags & O_EXCL);
@@ -703,6 +705,7 @@ static long fd_openat(int dirfd, const char *path, int flags, mode_t mode) {
     st = vx_ns_create(ns, name, mode & 0755, mode9, &f); // the umask is 022
     // Another process made it between the open and the create: open theirs.
     if (st == VX_ERR_EXISTS && !excl) st = vx_ns_open(ns, name, open9, &f);
+    if (excl && st != VX_OK && st != VX_ERR_EXISTS && fd_exists(p, (size_t)len)) st = VX_ERR_EXISTS;
   }
   if (st != VX_OK) return vx_errno(st);
   p9_stat s;
@@ -894,6 +897,17 @@ static long fd_faccessat(int dirfd, const char *path) {
   return 0; // it exists; permissions are the server's to refuse when it is opened
 }
 
+// Whether path names something: what a create that failed is told apart by,
+// since a server may refuse a create (a read-only one, or at a mount point)
+// before it looks for the name, and POSIX's answer is then EEXIST.
+static bool fd_exists(const char *p, size_t len) {
+  p9_client *c;
+  uint32_t fid;
+  if (vx_ns_walk(fd_namespace(), (vx_str){p, len}, &c, &fid) != VX_OK) return false;
+  p9c_clunk(c, fid);
+  return true;
+}
+
 static long fd_mkdirat(int dirfd, const char *path, mode_t mode) {
   char p[VX_NS_MAX_PATH];
   long len = fd_resolve(dirfd, path, false, p);
@@ -902,6 +916,7 @@ static long fd_mkdirat(int dirfd, const char *path, mode_t mode) {
   vx_status st =
       vx_ns_create(fd_namespace(), (vx_str){p, (size_t)len}, P9_DMDIR | (mode & 0755), P9_OREAD, &f);
   if (st == VX_OK) vx_ns_close(&f);
+  if (st != VX_OK && st != VX_ERR_EXISTS && fd_exists(p, (size_t)len)) st = VX_ERR_EXISTS;
   return vx_errno(st);
 }
 

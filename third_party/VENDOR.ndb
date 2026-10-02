@@ -59,3 +59,13 @@ name=lua
     adr=docs/adr/0015-lua.md
     port=ports/lua/port.ndb
     reviewed.by="James Kane" reviewed.date=2026-10-02
+
+name=sbase
+    version="git c546c3a"
+    upstream=https://git.suckless.org/sbase/commit/?id=c546c3a5724c81cee9a11d816a38ccdf17472129
+    git.tree=a58d176568a1b33d435a7628740b68289ea5c07a
+    tree.sha256=ceb8836feaf735e1bccece63f8edec0e86f5088aa7c0eaae73a5035aeabffecb
+    license="MIT (LICENSE); libutf and some files under their own permissive notices, as LICENSE lists"
+    adr=docs/adr/0016-sbase.md
+    port=ports/sbase/port.ndb
+    reviewed.by="James Kane" reviewed.date=2026-10-02

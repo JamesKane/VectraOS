@@ -19,3 +19,4 @@ One file per decision, `NNNN-title.md`, numbered in order. An ADR records a deci
 | [0013](0013-text-is-utf8.md) | Text is UTF-8, handled in runes: `lib/vx-utf`, strings cut at rune boundaries, names without control characters, rune-aware line editors | Accepted |
 | [0014](0014-catalogues.md) | Publisher catalogues for package dependencies: one signed list per publisher key, no shared name space, no install-time code; not a registry | Accepted |
 | [0015](0015-lua.md) | Lua 5.5.1, vendored unchanged, as `/bin/lua`; vendored POSIX programs in `./build` | Proposed |
+| [0016](0016-sbase.md) | sbase, vendored unchanged: one box binary with hard links in bootfs, in `/boot/bin/posix`, bound before `/boot/bin` for POSIX programs | Proposed |

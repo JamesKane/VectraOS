@@ -1,6 +1,7 @@
 // tar_test.c: lib/vx-tar. Archives the writer makes read back entry for
-// entry; long paths split into prefix and name; and the reader refuses bad
-// checksums, bad octal, unsafe paths, links, and files that run past the image.
+// entry; long paths split into prefix and name; hard links read as the file
+// they name; and the reader refuses bad checksums, bad octal, unsafe paths,
+// symbolic links, links to nothing earlier, and files that run past the image.
 
 #include <string.h>
 
@@ -143,7 +144,48 @@ static void test_longest_path(void) {
   CHECK(e.buf[256] == 0);
 }
 
+// A hard link reads as the regular file it names, which must come before it
+// and be no link itself.
+static void test_links(void) {
+  vx_tar_writer w = {.buf = image, .cap = sizeof image};
+  vx_tar_add(&w, VX_STR("bin"), true, 0755, nullptr, 0);
+  vx_tar_add(&w, VX_STR("bin/box"), false, 0755, "#!box", 5);
+  vx_tar_add_link(&w, VX_STR("bin/ls"), VX_STR("bin/box"), 0755);
+  vx_tar_add_link(&w, VX_STR("bin/cat"), VX_STR("bin/box"), 0755);
+  size_t n = vx_tar_end(&w);
+  CHECK(n == VX_TAR_BLOCK * (1 + 2 + 1 + 1 + 2));
+  vx_tar_entry e;
+  CHECK(vx_tar_find(image, n, VX_STR("bin/cat"), &e) == VX_OK && e.size == 5 &&
+        memcmp(e.data, "#!box", 5) == 0 && !e.dir && e.mode == 0755);
+  CHECK(vx_tar_find(image, n, VX_STR("bin/ls"), &e) == VX_OK && e.data == image + 2 * VX_TAR_BLOCK);
+
+  w = (vx_tar_writer){.buf = image, .cap = sizeof image}; // to a file that comes later: refused
+  vx_tar_add_link(&w, VX_STR("ls"), VX_STR("box"), 0755);
+  vx_tar_add(&w, VX_STR("box"), false, 0755, "x", 1);
+  n = vx_tar_end(&w);
+  CHECK(first_entry(n) == VX_ERR_INVALID);
+
+  w = (vx_tar_writer){.buf = image, .cap = sizeof image}; // to a link, or a directory: refused
+  vx_tar_add(&w, VX_STR("box"), false, 0755, "x", 1);
+  vx_tar_add_link(&w, VX_STR("a"), VX_STR("box"), 0755);
+  vx_tar_add_link(&w, VX_STR("b"), VX_STR("a"), 0755);
+  vx_tar_add(&w, VX_STR("d"), true, 0755, nullptr, 0);
+  vx_tar_add_link(&w, VX_STR("c"), VX_STR("d"), 0755);
+  n = vx_tar_end(&w);
+  CHECK(vx_tar_find(image, n, VX_STR("a"), &e) == VX_OK && e.size == 1);
+  CHECK(vx_tar_find(image, n, VX_STR("b"), &e) == VX_ERR_INVALID);
+  vx_tar t = vx_tar_open(image, n);
+  int ok = 0;
+  while (vx_tar_next(&t, &e) == VX_OK) ok++;
+  CHECK(ok == 2); // box and a, then b ends the archive
+
+  w = (vx_tar_writer){.buf = image, .cap = sizeof image}; // a link with data, or an unsafe target
+  vx_tar_add_link(&w, VX_STR("x"), VX_STR("../etc/passwd"), 0644);
+  CHECK(w.failed);
+}
+
 int main(void) {
+  test_links();
   test_longest_path();
   test_round_trip();
   test_hostile();

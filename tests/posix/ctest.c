@@ -424,6 +424,12 @@ static void test_utf8(void) {
   CHECK(mkdir("/tmp/\xc3", 0755) == -1 && errno == EILSEQ);
   int fd = open("/tmp/caf\xc3\xa9", O_WRONLY | O_CREAT, 0644); // UTF-8 names are fine
   CHECK(fd >= 0 && close(fd) == 0 && unlink("/tmp/caf\xc3\xa9") == 0);
+  // A name that exists is EEXIST, even where the server refuses to create
+  // (bootfs, read-only, holds the /tmp mount point).
+  errno = 0;
+  CHECK(mkdir("/tmp", 0755) == -1 && errno == EEXIST);
+  errno = 0;
+  CHECK(open("/tmp", O_WRONLY | O_CREAT | O_EXCL, 0644) == -1 && errno == EEXIST);
   setlocale(LC_CTYPE, "C");
 }
 
