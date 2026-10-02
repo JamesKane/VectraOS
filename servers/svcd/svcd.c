@@ -408,22 +408,28 @@ static vx_status start(service *s) {
                      .handles = handles,
                      .handle_names = handle_names,
                      .handle_count = count,
-                     .records = {records, w.len}};
+                     .records = {records, w.len},
+                     // Registered with procfs before it runs (ADR-0011): in a session
+                     // and note group of its own, as Plan 9's daemons run (RFNOTEG),
+                     // so a note to one group never reaches the rest of the system;
+                     // svcd watches its end itself, so it leaves no wait record.
+                     // procfs itself, and what started before it, are registered
+                     // below, once procfs serves.
+                     .proc =
+                         procfs_started && !posts_proc ? find_post(VX_STR("proc"))->client : VX_HANDLE_NONE,
+                     .proc_flags = PROC_NOWAIT | PROC_SETSID};
   st = vx_spawn_elf(&a, &s->task);
   if (st == VX_OK) st = vx_port_bind(port, s->task, VX_TRIGGER_EXIT, (uint64_t)(s - services), 0);
   if (st != VX_OK) return st;
-  // Registered with procfs (ADR-0011): this one, once procfs is up; when it is
-  // procfs that starts, every service already running, procfs among them.
-  // svcd watches its services' ends itself, so they leave no wait records; and
-  // each is a note group of its own, as Plan 9's daemons are (RFNOTEG), so a
-  // note to one group never reaches the rest of the system.
-  if (posts_proc) procfs_started = true;
-  for (uint32_t i = 0; procfs_started && i < service_count; i++) {
-    service *x = &services[i];
-    if (!x->task || (x != s && !posts_proc)) continue;
-    vx_status reg =
-        vx_proc_register(find_post(VX_STR("proc"))->client, x->task, PROC_NOWAIT | PROC_NOTEG, nullptr);
-    if (reg != VX_OK && reg != VX_ERR_EXISTS) cannot("cannot register ", x, reg);
+  if (posts_proc) { // procfs serves now: it learns of every service already running, itself among them
+    procfs_started = true;
+    for (uint32_t i = 0; i < service_count; i++) {
+      service *x = &services[i];
+      if (!x->task) continue;
+      vx_status reg =
+          vx_proc_register(find_post(VX_STR("proc"))->client, x->task, PROC_NOWAIT | PROC_SETSID, nullptr);
+      if (reg != VX_OK && reg != VX_ERR_EXISTS) cannot("cannot register ", x, reg);
+    }
   }
   vx_task_summary info;
   vx_task_info(s->task, &info);

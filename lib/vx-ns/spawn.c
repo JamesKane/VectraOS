@@ -125,7 +125,9 @@ static vx_status vx_ns_replay(vx_ns *ns, vx_str records, const vx_ns_handles *fr
     if (st != VX_OK) {
       vx_print(VX_STR("vx-ns: cannot replay the record on line "));
       vx_print_u64(rec.line);
-      vx_print(from ? VX_STR(" of the namespace after a fork\n") : VX_STR(" of the spawn message\n"));
+      vx_print(from ? VX_STR(" of the namespace after a fork: ") : VX_STR(" of the spawn message: "));
+      vx_print(p9_error_text(st));
+      vx_print(VX_STR("\n"));
       return st;
     }
   }

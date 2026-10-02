@@ -1222,7 +1222,6 @@ static const program USER_PROGRAMS[] = {
     {"tcptest", "tests/user/tcptest.c", IN_TESTS, nullptr, false},
     {"proctest", "tests/user/proctest.c", IN_TESTS, nullptr, false},
     {"procfs", "servers/procfs/procfs.c", IN_BOOTFS, nullptr, false},
-    {"posixd", "servers/posixd/posixd.c", IN_BOOTFS, nullptr, false},
     {"tmpfs", "servers/tmpfs/tmpfs.c", IN_BOOTFS, nullptr, false},
     {"nullfs", "servers/nullfs/nullfs.c", IN_BOOTFS, nullptr, false},
     {"ptyd", "servers/ptyd/ptyd.c", IN_BOOTFS, nullptr, false},

@@ -364,33 +364,65 @@ static int64_t sys_thread_interrupt(vx_handle th, uint64_t id, uint64_t note_ptr
   return VX_OK;
 }
 
-// thread_suspend: counted; returns once the thread holds still (parked on its
-// way to user mode, or blocked in a call), or after a second.
-static int64_t sys_thread_suspend(vx_handle th, uint64_t id) {
-  vx_status st;
-  task *t = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_DEBUG, &st);
-  if (!t) return st;
-  thread *target = task_thread(t, id);
-  object_release(&t->obj);
-  if (!target) return VX_ERR_NOT_FOUND;
+// Up to cap of task t's threads, each with a reference: the one with this id,
+// or with id 0, every one (a process stops as a whole: procfs's ctl stop).
+static uint32_t task_threads(task *t, uint64_t id, thread **out, uint32_t cap) {
+  uint32_t n = 0;
+  spin_lock(&t->lock);
+  for (thread *th = t->threads; th && n < cap; th = th->task_next)
+    if (!id || th->id == id) {
+      object_ref(&th->obj);
+      out[n++] = th;
+    }
+  spin_unlock(&t->lock);
+  return n;
+}
+
+static constexpr uint32_t SUSPEND_MAX = 64; // threads one thread_suspend(0) reaches
+
+// One thread's suspension: counted; returns once it holds still (parked on
+// its way to user mode, or blocked in a call), or after a second.
+static vx_status thread_suspend_one(thread *target) {
   task *tt = target->task;
   spin_lock(&tt->lock);
   target->suspend_count++;
   spin_unlock(&tt->lock);
-  st = VX_OK;
-  if (target != this_cpu()->current) { // the caller suspends itself on its own way out
-    sched_poke(target);                // in user mode elsewhere: into the kernel, to park
-    vx_instant give_up = clock_now() + 1'000'000'000;
-    while (!(__atomic_load_n(&target->parked, __ATOMIC_ACQUIRE) || target->state == THREAD_BLOCKED ||
-             target->state == THREAD_DEAD)) {
-      if (clock_now() >= give_up) {
-        st = VX_ERR_TIMED_OUT; // still counted: thread_resume undoes it
-        break;
-      }
-      thread_block(clock_now() + 100'000, 0); // a tenth of a millisecond
-    }
+  if (target == this_cpu()->current) return VX_OK; // the caller suspends itself on its own way out
+  sched_poke(target);                              // in user mode elsewhere: into the kernel, to park
+  vx_instant give_up = clock_now() + 1'000'000'000;
+  while (!(__atomic_load_n(&target->parked, __ATOMIC_ACQUIRE) || target->state == THREAD_BLOCKED ||
+           target->state == THREAD_DEAD)) {
+    if (clock_now() >= give_up) return VX_ERR_TIMED_OUT; // still counted: thread_resume undoes it
+    thread_block(clock_now() + 100'000, 0);              // a tenth of a millisecond
   }
-  object_release(&target->obj);
+  return VX_OK;
+}
+
+static vx_status thread_resume_one(thread *target) {
+  task *tt = target->task;
+  spin_lock(&tt->lock);
+  vx_status st = target->suspend_count ? VX_OK : VX_ERR_BAD_STATE;
+  bool wake = st == VX_OK && --target->suspend_count == 0;
+  spin_unlock(&tt->lock);
+  if (wake) thread_wake_token(target, &target->suspend_count, VX_OK);
+  return st;
+}
+
+// thread_suspend(task, thread) and thread_resume: the thread with that id,
+// or with 0, every thread the task has.
+static int64_t sys_thread_suspend(vx_handle th, uint64_t id) {
+  vx_status st;
+  task *t = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_DEBUG, &st);
+  if (!t) return st;
+  thread *targets[SUSPEND_MAX];
+  uint32_t n = task_threads(t, id, targets, SUSPEND_MAX);
+  object_release(&t->obj);
+  st = n ? VX_OK : VX_ERR_NOT_FOUND;
+  for (uint32_t i = 0; i < n; i++) {
+    vx_status one = thread_suspend_one(targets[i]);
+    if (st == VX_OK) st = one;
+    object_release(&targets[i]->obj);
+  }
   return st;
 }
 
@@ -398,16 +430,15 @@ static int64_t sys_thread_resume(vx_handle th, uint64_t id) {
   vx_status st;
   task *t = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_DEBUG, &st);
   if (!t) return st;
-  thread *target = task_thread(t, id);
+  thread *targets[SUSPEND_MAX];
+  uint32_t n = task_threads(t, id, targets, SUSPEND_MAX);
   object_release(&t->obj);
-  if (!target) return VX_ERR_NOT_FOUND;
-  task *tt = target->task;
-  spin_lock(&tt->lock);
-  st = target->suspend_count ? VX_OK : VX_ERR_BAD_STATE;
-  bool wake = st == VX_OK && --target->suspend_count == 0;
-  spin_unlock(&tt->lock);
-  if (wake) thread_wake_token(target, &target->suspend_count, VX_OK);
-  object_release(&target->obj);
+  st = n ? VX_OK : VX_ERR_NOT_FOUND;
+  for (uint32_t i = 0; i < n; i++) {
+    vx_status one = thread_resume_one(targets[i]);
+    if (st == VX_OK) st = one;
+    object_release(&targets[i]->obj);
+  }
   return st;
 }
 

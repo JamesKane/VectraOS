@@ -145,10 +145,10 @@ static int spawn_wait(const char *path, bool search, const char *what, const pos
   return WEXITSTATUS(status);
 }
 
-// pids, groups and sessions through posixd; posix_spawn and wait.
+// pids, groups and sessions through /proc (ADR-0011); posix_spawn and wait.
 static void test_processes(void) {
   pid_t me = getpid();
-  CHECK(me >= 2 && getppid() == 1); // connected through /srv/posixd: a session of its own
+  CHECK(me >= 2 && getppid() == 1); // registered by svcd: a session of its own
   CHECK(getsid(0) == me && getpgrp() == me);
   errno = 0;
   CHECK(setsid() == -1 && errno == EPERM); // a group leader already

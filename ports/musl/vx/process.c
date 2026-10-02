@@ -1,111 +1,202 @@
-// process.c: the process model, through posixd (lib/vx-posix/posix.h), and
-// posix_spawn. Part of backend.c.
+// process.c: the process model, through /proc as 9front's APE builds it
+// (ADR-0011), and posix_spawn. Part of backend.c.
 //
-// A process gets its own channel to posixd as "posix" in its spawn message
-// from a POSIX parent, or connects through a connector to /srv/posixd
-// ("srv:posixd") given by svcd. Without either it is alone: its pid is the
-// kernel's id for its task, and it has no parent, group or children to wait
-// for.
+// A process's pid is its task's id, which exec keeps (ADR-0012). Its parent,
+// note group (POSIX's process group), session and children are procfs's, and
+// are files in /proc/N: ppid, noteid, status (sid=), ctl, note, notepg and
+// wait. A child is registered with procfs before it runs (lib/vx-proc).
+// Without /proc in its namespace a process is alone: no parent, group or
+// children, and its group and session are itself.
 
-static vx_handle posix_chan; // this process's channel to posixd, or none
+static bool proc_mounted; // /proc is in the namespace: procfs knows this process
 
-static long posix_errno(uint32_t error) {
-  switch (error) {
-  case POSIX_OK: return 0;
-  case POSIX_ESRCH: return -ESRCH;
-  case POSIX_EPERM: return -EPERM;
-  case POSIX_ECHILD: return -ECHILD;
-  case POSIX_EAGAIN: return -EAGAIN;
-  case POSIX_EINTR: return -EINTR;
-  default: return -EINVAL;
+static long posix_pid(void) { return (long)proc_kernel_id(); }
+
+// "/proc/PID/FILE", in a buffer that lasts until the next call.
+static vx_str proc_path(long pid, const char *file) {
+  static char path[64];
+  int n = snprintf(path, sizeof path, "/proc/%ld/%s", pid, file);
+  return (vx_str){path, n > 0 && (size_t)n < sizeof path ? (size_t)n : 0};
+}
+
+// The errno for a /proc call that failed: a process that is not there is ESRCH.
+static long proc_errno(vx_status st) {
+  if (st == VX_ERR_NOT_FOUND) return -ESRCH;
+  if (st == VX_ERR_ACCESS) return -EPERM;
+  return vx_errno(st);
+}
+
+// Reads /proc/PID/FILE (one read) into buf, NUL-terminated: its length, or a negated errno.
+static long proc_read(long pid, const char *file, char *buf, size_t cap) {
+  if (!proc_mounted) return -ESRCH;
+  vx_ns_file f;
+  vx_status st = vx_ns_open(fd_namespace(), proc_path(pid, file), P9_OREAD, &f);
+  if (st != VX_OK) return proc_errno(st);
+  int64_t n = vx_ns_read(&f, buf, (uint32_t)(cap - 1));
+  vx_ns_close(&f);
+  if (n < 0) return proc_errno((vx_status)n);
+  buf[n] = 0;
+  return (long)n;
+}
+
+static long proc_write(long pid, const char *file, const char *text) {
+  if (!proc_mounted) return -ESRCH;
+  vx_ns_file f;
+  vx_status st = vx_ns_open(fd_namespace(), proc_path(pid, file), P9_OWRITE, &f);
+  if (st != VX_OK) return proc_errno(st);
+  int64_t n = vx_ns_write(&f, text, (uint32_t)strlen(text));
+  vx_ns_close(&f);
+  return n < 0 ? proc_errno((vx_status)n) : 0;
+}
+
+// A number in /proc/PID/FILE, or, with key, the value of key= in its record.
+static long proc_number(long pid, const char *file, const char *key) {
+  char buf[512];
+  long n = proc_read(pid, file, buf, sizeof buf);
+  if (n < 0) return n;
+  const char *at = buf;
+  if (key) {
+    size_t k = strlen(key);
+    for (at = buf; (at = strstr(at, key)); at += k)
+      if ((at == buf || at[-1] == ' ') && at[k] == '=') break;
+    if (!at) return -EINVAL;
+    at += k + 1;
   }
+  return strtol(at, nullptr, 10);
 }
 
-// One call; *out gets the reply's values, *got a handle it carried. Returns 0
-// or a negated errno.
-static long posix_call(vx_handle ch, uint32_t call, const int64_t *args, uint32_t count, vx_handle give,
-                       posix_msg *out, vx_handle *got) {
-  posix_msg req = {.h = {.ordinal = call}};
-  for (uint32_t i = 0; i < count; i++) req.arg[i] = args[i];
-  *out = (posix_msg){};
-  vx_handle reply_handle = VX_HANDLE_NONE;
-  vx_call c = {.wr_bytes = &req,
-               .wr_len = sizeof req,
-               .wr_handles = give ? &give : nullptr,
-               .wr_count = give ? 1 : 0,
-               .rd_bytes = out,
-               .rd_cap = sizeof *out,
-               .rd_handles = &reply_handle,
-               .rd_count_cap = 1};
-  vx_status st = vx_channel_call(ch, &c, VX_INFINITE);
-  if (got)
-    *got = reply_handle;
-  else if (reply_handle)
-    vx_handle_close(reply_handle);
-  if (st != VX_OK) return vx_errno(st);
-  if (c.actual.bytes < sizeof *out) return -EIO;
-  return posix_errno(out->h.flags);
-}
-
+// Each POSIX process asks procfs for SIGCHLD and its children's stops.
 static void posix_init(void) {
-  posix_chan = vx_spawn_take("posix");
-  if (posix_chan) return;
-  vx_handle connector = vx_spawn_take("srv:posixd");
-  vx_handle me = VX_HANDLE_NONE;
-  if (!connector || !vx_self || vx_handle_dup(vx_self, VX_RIGHTS_SAME, &me) != VX_OK) return;
-  posix_msg rep;
-  if (posix_call(connector, POSIX_CONNECT, nullptr, 0, me, &rep, &posix_chan) != 0 && posix_chan) {
-    vx_handle_close(posix_chan);
-    posix_chan = VX_HANDLE_NONE;
-  }
-  vx_handle_close(connector);
+  proc_mounted = vx_ns_connector(fd_namespace(), VX_STR("/proc")) != VX_HANDLE_NONE;
+  if (proc_mounted) proc_write(posix_pid(), "ctl", "childnotes");
 }
 
-// IDS' field i (pid, ppid, pgid, sid), or the alone answer.
-static long posix_id(int i, long alone) {
-  posix_msg rep;
-  if (!posix_chan || posix_call(posix_chan, POSIX_IDS, nullptr, 0, VX_HANDLE_NONE, &rep, nullptr) != 0)
-    return alone;
-  return (long)rep.arg[i];
-}
-
-static long posix_pid_cache; // never changes, but in a forked child
-
-static long posix_pid(void) {
-  if (!posix_pid_cache) posix_pid_cache = posix_id(0, (long)proc_kernel_id());
-  return posix_pid_cache;
-}
-
-static long posix_simple(uint32_t call, long a0, long a1, long result_alone) {
-  if (!posix_chan) return result_alone;
-  int64_t args[2] = {a0, a1};
-  posix_msg rep;
-  long r = posix_call(posix_chan, call, args, 2, VX_HANDLE_NONE, &rep, nullptr);
-  return r < 0 ? r : (long)rep.arg[0];
+static long posix_getppid(void) {
+  long r = proc_number(posix_pid(), "ppid", nullptr);
+  return r < 0 ? 0 : r;
 }
 
 static long posix_getpgid(long pid) {
-  return posix_simple(POSIX_GETPGID, pid, 0, pid == 0 || pid == posix_pid() ? posix_pid() : -ESRCH);
+  if (pid == 0) pid = posix_pid();
+  if (!proc_mounted) return pid == posix_pid() ? pid : -ESRCH;
+  return proc_number(pid, "noteid", nullptr);
 }
+
 static long posix_getsid(long pid) {
-  return posix_simple(POSIX_GETSID, pid, 0, pid == 0 || pid == posix_pid() ? posix_pid() : -ESRCH);
+  if (pid == 0) pid = posix_pid();
+  if (!proc_mounted) return pid == posix_pid() ? pid : -ESRCH;
+  return proc_number(pid, "status", "sid");
 }
+
+// setpgid writes the group to noteid, as APE does; procfs lets a process join
+// a group in its session, or start one named by its own pid.
 static long posix_setpgid(long pid, long pgid) {
-  long r = posix_simple(POSIX_SETPGID, pid, pgid, -EPERM);
-  return r < 0 ? r : 0;
+  if (pid < 0 || pgid < 0) return -EINVAL;
+  if (pid == 0) pid = posix_pid();
+  if (pgid == 0) pgid = pid;
+  if (!proc_mounted) return pid == posix_pid() && pgid == pid ? 0 : -EPERM;
+  char text[24];
+  snprintf(text, sizeof text, "%ld", pgid);
+  return proc_write(pid, "noteid", text);
 }
-static long posix_setsid(void) { return posix_simple(POSIX_SETSID, 0, 0, -EPERM); }
+
+static long posix_setsid(void) {
+  if (!proc_mounted) return -EPERM;
+  long r = proc_write(posix_pid(), "ctl", "setsid");
+  return r < 0 ? r : posix_pid();
+}
+
+// --- wait ---
+//
+// Each read of /proc/PID/wait is one child's record, as APE's waitpid reads
+// them: one for a child it was not asked about is kept here for a later call.
+// WNOHANG reads only while the file's length (records queued) says a read will
+// not wait.
+
+typedef struct waited {
+  long pid, group;
+  int status; // as wait4 reports it
+  bool stopped, continued;
+} waited;
+
+static waited wait_kept[32];
+static uint32_t wait_kept_count;
+
+// A wait record (procfs's ndb) as wait4 reports it.
+static bool wait_parse(const char *text, size_t len, waited *w) {
+  char scratch[VX_ERRMAX + 64];
+  vx_ndb_reader r = {.src = {text, len}, .scratch = scratch, .scratch_cap = sizeof scratch};
+  vx_ndb_record rec;
+  uint64_t pid = 0, group = 0, sig = 0;
+  if (vx_ndb_next(&r, &rec) != VX_NDB_RECORD || !vx_ndb_get_u64(&rec, "pid", &pid) || !pid) return false;
+  vx_ndb_get_u64(&rec, "noteid", &group);
+  *w = (waited){.pid = (long)pid, .group = (long)group};
+  if (vx_ndb_get_u64(&rec, "stopped", &sig)) {
+    w->stopped = true;
+    w->status = (int)(sig << 8 | 0x7f);
+  } else if (vx_ndb_has(&rec, "continued")) {
+    w->continued = true;
+    w->status = 0xffff;
+  } else {
+    w->status = (int)posix_wait_status(vx_ndb_get(&rec, "status"));
+  }
+  return true;
+}
+
+// Whether a record answers wait4(pid, options).
+static bool wait_matches(const waited *w, long pid, int options) {
+  if (w->stopped && !(options & WUNTRACED)) return false;
+  if (w->continued && !(options & WCONTINUED)) return false;
+  if (pid > 0) return w->pid == pid;
+  if (pid == -1) return true;
+  return w->group == (pid == 0 ? posix_getpgid(0) : -pid);
+}
+
+static bool wait_take_kept(long pid, int options, waited *out) {
+  for (uint32_t i = 0; i < wait_kept_count; i++) {
+    if (!wait_matches(&wait_kept[i], pid, options)) continue;
+    *out = wait_kept[i];
+    memmove(&wait_kept[i], &wait_kept[i + 1], (wait_kept_count - i - 1) * sizeof wait_kept[0]);
+    wait_kept_count--;
+    return true;
+  }
+  return false;
+}
+
+static void wait_keep(const waited *w) {
+  if (wait_kept_count == sizeof wait_kept / sizeof wait_kept[0]) // full: the oldest goes
+    memmove(&wait_kept[0], &wait_kept[1], --wait_kept_count * sizeof wait_kept[0]);
+  wait_kept[wait_kept_count++] = *w;
+}
 
 // wait4: rusage is not kept, and reads as zero.
 static long posix_wait4(long pid, int *status, int options, struct rusage *ru) {
   if (ru) *ru = (struct rusage){};
-  if (!posix_chan) return -ECHILD;
-  int64_t args[2] = {pid, options & (WNOHANG | WUNTRACED | WCONTINUED)}; // Linux's numbers, posixd's
-  posix_msg rep;
-  long r = posix_call(posix_chan, POSIX_WAIT, args, 2, VX_HANDLE_NONE, &rep, nullptr);
-  if (r < 0) return r;
-  if (rep.arg[0] && status) *status = (int)rep.arg[1];
-  return (long)rep.arg[0];
+  waited w;
+  bool found = wait_take_kept(pid, options, &w);
+  while (!found) {
+    if (!proc_mounted) return -ECHILD;
+    if (options & WNOHANG) { // only what is queued: the file's length
+      vx_ns_file f;
+      p9_stat st;
+      vx_status e = vx_ns_open(fd_namespace(), proc_path(posix_pid(), "wait"), P9_OREAD, &f);
+      if (e == VX_OK) {
+        e = p9c_stat(f.c, f.fid, &st);
+        vx_ns_close(&f);
+      }
+      if (e != VX_OK) return proc_errno(e);
+      if (st.length == 0) return 0; // nothing yet, as APE's waitpid answers
+    }
+    char buf[512];
+    long n = proc_read(posix_pid(), "wait", buf, sizeof buf);
+    if (n == -ESRCH) return -ECHILD;
+    if (n < 0) return n; // ECHILD (no living children), EINTR (a signal ended it)
+    if (!wait_parse(buf, (size_t)n, &w)) continue;
+    found = wait_matches(&w, pid, options);
+    if (!found) wait_keep(&w);
+  }
+  if (status) *status = w.status;
+  return w.pid;
 }
 
 // --- posix_spawn and execve ---
@@ -113,11 +204,10 @@ static long posix_wait4(long pid, int *status, int options, struct rusage *ru) {
 // The parent builds the child (vx-rt's spawn.c) from the program's file: it
 // gives it the namespace, the console, its arguments and environment, its
 // descriptors and working directory (fd.c's fd= and cwd= records), and
-// registers it with posixd before it runs: as a child (posix_spawn), or as
-// this process going on in a new task (execve). musl's posix_spawn, whose
-// child is a clone that calls execve, is left out of the build.
-//
-// Signal attributes do nothing yet (M4 step 3d).
+// registers it with procfs before it runs (posix_spawn), in the group or
+// session posix_spawn's attributes ask for; execve goes on in this task
+// (ADR-0012). musl's posix_spawn, whose child is a clone that calls execve,
+// is left out of the build.
 
 typedef struct spawn_ctx {
   int64_t pgid; // -1 to inherit
@@ -126,32 +216,15 @@ typedef struct spawn_ctx {
   long error;
 } spawn_ctx;
 
+// NOLINTNEXTLINE(readability-non-const-parameter): vx_spawn_args' prepare
 static vx_status spawn_prepare(void *ctx, vx_handle task, vx_handle *handle, vx_str *name) {
+  (void)handle, (void)name;
   spawn_ctx *s = ctx;
   vx_task_summary info;
-  if (s->exec) { // the same task, so the same process (ADR-0012): it keeps its channel to posixd
-    s->pid = posix_pid();
-    if (!posix_chan) return VX_OK;
-    *name = VX_STR("posix");
-    return vx_handle_dup(posix_chan, VX_RIGHTS_SAME, handle);
-  }
-  if (!posix_chan) { // alone: the child is too, and its pid is the kernel's
+  if (s->exec)
+    s->pid = posix_pid(); // the same task, so the same process (ADR-0012)
+  else
     s->pid = vx_task_info(task, &info) == VX_OK ? (int64_t)info.id : 0;
-    return VX_OK;
-  }
-  vx_handle dup;
-  vx_status st = vx_handle_dup(task, VX_RIGHTS_SAME, &dup);
-  if (st != VX_OK) return st;
-  int64_t args[2] = {s->pgid, s->setsid};
-  posix_msg rep;
-  s->error = posix_call(posix_chan, POSIX_CHILD, args, 2, dup, &rep, handle);
-  if (s->error != 0) {
-    if (*handle) vx_handle_close(*handle);
-    *handle = VX_HANDLE_NONE;
-    return VX_ERR_REFUSED;
-  }
-  s->pid = rep.arg[0];
-  *name = VX_STR("posix");
   return VX_OK;
 }
 
@@ -233,6 +306,11 @@ static long spawn_image(const char *path, bool search, char *const argv[], char 
   if (slash) base = (vx_str){slash + 1, strlen(slash + 1)};
   if (base.len > 23) base.len = 23;
   vx_handle task = VX_HANDLE_NONE;
+  uint32_t proc_flags = 0;
+  if (ctx->setsid)
+    proc_flags = PROC_SETSID;
+  else if (ctx->pgid == 0)
+    proc_flags = PROC_NOTEG; // a group of its own
   if (r == 0) {
     vx_spawn_args a = {.name = base,
                        .image = (const uint8_t *)image,
@@ -244,18 +322,23 @@ static long spawn_image(const char *path, bool search, char *const argv[], char 
                        .prepare = spawn_prepare,
                        .ctx = ctx,
                        .exec = ctx->exec,
-                       .proc = vx_ns_connector(fd_namespace(), VX_STR("/proc"))}; // ADR-0011
+                       // Registered before it runs (ADR-0011), in the group or
+                       // session posix_spawn's attributes ask for.
+                       .proc = vx_ns_connector(fd_namespace(), VX_STR("/proc")),
+                       .proc_flags = proc_flags,
+                       .proc_group = ctx->pgid > 0 ? (uint64_t)ctx->pgid : 0};
     vx_status vst = vx_spawn_elf(&a, &task);
     if (vst == VX_ERR_INVALID)
       r = -ENOEXEC; // not an image for this machine
+    else if (vst == VX_ERR_ACCESS)
+      r = -EPERM; // procfs refused the group
     else if (vst != VX_OK)
       r = vx_errno(vst);
-    if (ctx->error) r = ctx->error; // posixd's refusal
   } else {
     for (uint32_t i = 0; i < count; i++) vx_handle_close(handles[i]);
   }
   mem_unmap(image, (size_t)st.st_size);
-  if (task) vx_handle_close(task); // posixd has its own, and tells of its end
+  if (task) vx_handle_close(task); // procfs has its own, and tells of its end
   return r;
 }
 
@@ -350,17 +433,15 @@ static long proc_execve(const char *path, char *const argv[], char *const envp[]
 // child's one thread starts on a small stack of its own at fork_entry, which
 // sets its thread pointer and jumps back into the copy of proc_fork's frame
 // that setjmp marked. There it lets go of what the copy cannot share (the
-// parent's channel to posixd, the namespace's and the console's dead
-// connections; fd.c) and returns 0.
+// namespace's and the console's dead connections; fd.c) and returns 0. The
+// parent registers the child with procfs before it runs (ADR-0011).
 
 static jmp_buf fork_jump;
-static vx_handle fork_posix; // the child's channel to posixd, given at its start
 static uint64_t fork_tls;
 alignas(16) static uint8_t fork_stack[4096];
 
-[[noreturn]] static void fork_entry(vx_handle posix, uint64_t unused) {
-  (void)unused;
-  fork_posix = posix;
+[[noreturn]] static void fork_entry(vx_handle unused, uint64_t unused2) {
+  (void)unused, (void)unused2;
 #ifdef __x86_64__
   vx_thread_state(vx_self, 0, VX_STATE_SET_TLS, &fork_tls, sizeof fork_tls);
 #else
@@ -370,9 +451,6 @@ alignas(16) static uint8_t fork_stack[4096];
 }
 
 static long fork_child(void) {
-  if (posix_chan) vx_handle_close(posix_chan); // the parent's, which this task holds too
-  posix_chan = fork_posix;
-  posix_pid_cache = 0;
   vx_task_summary me;
   if (vx_task_info(vx_self, &me) == VX_OK) proc_kernel_task_id = me.id;
   // The generator was copied: the child's goes its own way from the parent's.
@@ -380,6 +458,8 @@ static long fork_child(void) {
   vx_drbg_mix(&proc_entropy, child_tag, sizeof child_tag, false);
   vx_drbg_mix(&proc_entropy, &proc_kernel_task_id, sizeof proc_kernel_task_id, false);
   fd_after_fork();
+  wait_kept_count = 0; // the parent's children's records are the parent's
+  if (proc_mounted) proc_write(posix_pid(), "ctl", "childnotes");
   return 0;
 }
 
@@ -392,7 +472,7 @@ static long proc_fork(void) {
 #endif
   if (setjmp(fork_jump)) return fork_child();
   vx_task_summary me;
-  vx_handle child = VX_HANDLE_NONE, thread = VX_HANDLE_NONE, posix = VX_HANDLE_NONE;
+  vx_handle child = VX_HANDLE_NONE, thread = VX_HANDLE_NONE;
   spawn_ctx ctx = {.pgid = -1};
   vx_str name = VX_STR("forked");
   if (vx_task_info(vx_self, &me) == VX_OK) name = (vx_str){me.name, strnlen(me.name, sizeof me.name)};
@@ -400,14 +480,12 @@ static long proc_fork(void) {
   vx_status st = vx_task_fork(name, &child);
   fd_after_fork_parent();
   vx_str ignored;
-  if (st == VX_OK) st = spawn_prepare(&ctx, child, &posix, &ignored);
+  if (st == VX_OK) st = spawn_prepare(&ctx, child, nullptr, &ignored);
   vx_handle proc = vx_ns_connector(fd_namespace(), VX_STR("/proc"));
   if (st == VX_OK && proc) st = vx_proc_register(proc, child, 0, nullptr); // before it runs (ADR-0011)
   if (st == VX_OK) st = vx_thread_create(child, &thread);
   if (st == VX_OK)
-    st = vx_thread_start(thread, (uint64_t)fork_entry, (uint64_t)(fork_stack + sizeof fork_stack), posix, 0);
-  if (st == VX_OK) posix = VX_HANDLE_NONE; // the child's now
-  if (posix) vx_handle_close(posix);
+    st = vx_thread_start(thread, (uint64_t)fork_entry, (uint64_t)(fork_stack + sizeof fork_stack), 0, 0);
   if (thread) vx_handle_close(thread);
   if (st != VX_OK && child) vx_task_kill(child, VX_STR("fork failed"));
   if (child) vx_handle_close(child);

@@ -194,7 +194,7 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
   case SYS_getpid:
   case SYS_gettid: // one thread, whose id is the process's
   case SYS_set_tid_address: return posix_pid();
-  case SYS_getppid: return posix_id(1, 0);
+  case SYS_getppid: return posix_getppid();
   case SYS_getpgid: return posix_getpgid(a1);
   case SYS_getsid: return posix_getsid(a1);
   case SYS_setpgid: return posix_setpgid(a1, a2);

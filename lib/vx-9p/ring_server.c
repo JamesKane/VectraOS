@@ -7,7 +7,9 @@
 //
 // A request the file server cannot do yet (p9_serve's P9_DEFER) is held, and
 // the connection takes nothing more until it completes: it is served again
-// after every event, and after every tick. (Holding one request per connection is what a
+// after every event, after every tick, and when the file server says
+// something it did may let it go on (`again`): a request on another
+// connection, say, that queued what the held one waits for. (Holding one request per connection is what a
 // synchronous client needs; Tflush of a held request comes with pipelining.)
 
 #pragma once
@@ -15,7 +17,7 @@
 #include "ring.c"
 #include "server.c"
 
-static constexpr uint32_t P9_RING_MAX_CONNS = 16;
+static constexpr uint32_t P9_RING_MAX_CONNS = 16; // a server's connections, unless it says otherwise
 
 // A connection's port keys carry its slot and the slot's generation, so a
 // packet from a binding on a connection that has gone is never taken for one
@@ -53,7 +55,14 @@ typedef struct p9_ring_server {
   // the one handle it may carry (VX_HANDLE_NONE if none), which becomes the
   // hook's. procfs takes registrations this way (lib/vx-proc/proc.h).
   void (*listen_msg)(void *ctx, const void *msg, uint32_t len, vx_handle handle);
-  p9_ring_conn conns[P9_RING_MAX_CONNS];
+  // Set by the file server when what it just did may let a held request go
+  // on: the held requests are served again before the server sleeps.
+  bool again;
+  // Its connections: these, unless the file server gives more of its own
+  // (procfs, which holds one per process) before serving. At most 256.
+  p9_ring_conn *conns;
+  uint32_t max_conns;
+  p9_ring_conn default_conns[P9_RING_MAX_CONNS];
   p9_shared shared; // the open files and locks all its connections share (posix)
 } p9_ring_server;
 
@@ -69,10 +78,10 @@ static void p9_ring_close(p9_ring_conn *c) {
 static void p9_ring_accept(p9_ring_server *s, const vx_msg_header *req) {
   vx_msg_header rep = {.txid = req->txid, .ordinal = P9_CONNECT};
   uint32_t i = 0;
-  while (i < P9_RING_MAX_CONNS && s->conns[i].used) i++;
+  while (i < s->max_conns && s->conns[i].used) i++;
   vx_ring_handles h = {};
-  vx_status st = i < P9_RING_MAX_CONNS ? vx_ring_create(&P9_RING_PARAMS, &h) : VX_ERR_NO_MEMORY;
-  p9_ring_conn *c = i < P9_RING_MAX_CONNS ? &s->conns[i] : nullptr;
+  vx_status st = i < s->max_conns ? vx_ring_create(&P9_RING_PARAMS, &h) : VX_ERR_NO_MEMORY;
+  p9_ring_conn *c = i < s->max_conns ? &s->conns[i] : nullptr;
   if (st == VX_OK) st = p9_ring_map(h.memory, false, &c->ring);
   if (st == VX_OK) c->gen++;
   if (st == VX_OK)
@@ -145,6 +154,8 @@ static int64_t p9_ring_now(void) { return vx_clock_read(); }
 [[maybe_unused]] static vx_status p9_ring_serve(p9_ring_server *s) {
   vx_status st = s->port ? VX_OK : vx_port_create(0, &s->port);
   if (st != VX_OK) return st;
+  if (!s->conns || !s->max_conns || s->max_conns > 256)
+    s->conns = s->default_conns, s->max_conns = P9_RING_MAX_CONNS;
   // Tokens for shared open files come from the entropy the spawn message
   // gives (a manifest's `entropy`); without it, Tshare is refused.
   s->shared.now = p9_ring_now;
@@ -153,7 +164,7 @@ static int64_t p9_ring_now(void) { return vx_clock_read(); }
   if (seed.len >= 16 && !s->shared.random.seeded) vx_drbg_mix(&s->shared.random, seed.ptr, seed.len, true);
   for (;;) {
     bool more = false; // a connection still has requests: no sleeping this time round
-    for (uint32_t i = 0; i < P9_RING_MAX_CONNS; i++) {
+    for (uint32_t i = 0; i < s->max_conns; i++) {
       if (!s->conns[i].used) continue;
       p9_drained d = p9_ring_drain(&s->conns[i]);
       if (d == P9_BROKEN) p9_ring_close(&s->conns[i]);
@@ -186,8 +197,9 @@ static int64_t p9_ring_now(void) { return vx_clock_read(); }
 
     // Arm what is idle, then sleep unless something arrived meanwhile. A
     // connection holding a request waits for an event, not its doorbell.
+    if (s->again) more = true, s->again = false; // a held request may go on now: once more round
     bool idle = !more;
-    for (uint32_t i = 0; i < P9_RING_MAX_CONNS && idle; i++) {
+    for (uint32_t i = 0; i < s->max_conns && idle; i++) {
       p9_ring_conn *c = &s->conns[i];
       if (!c->used || c->holding) continue;
       int64_t seen = vx_counter_read(c->end);
@@ -215,7 +227,7 @@ static int64_t p9_ring_now(void) { return vx_clock_read(); }
           s->listen_armed = false;
           continue;
         }
-        p9_ring_conn *c = slot < P9_RING_MAX_CONNS ? &s->conns[slot] : nullptr;
+        p9_ring_conn *c = slot < s->max_conns ? &s->conns[slot] : nullptr;
         if (!c || !c->used || c->gen != gen) continue; // about a connection that has gone
         if (kind == P9_KEY_CONN_CLOSED)
           p9_ring_close(c);
@@ -223,7 +235,7 @@ static int64_t p9_ring_now(void) { return vx_clock_read(); }
           c->armed = false;
       }
     }
-    for (uint32_t i = 0; i < P9_RING_MAX_CONNS; i++)
+    for (uint32_t i = 0; i < s->max_conns; i++)
       if (s->conns[i].used) vx_ring_end_sleep(&s->conns[i].ring);
   }
 }

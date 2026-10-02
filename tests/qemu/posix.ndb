@@ -6,7 +6,6 @@
 # one the back end implements.
 
 scenario=posix timeout=60 with=ctest cmdline=vx.skip=gsh
-expect="posixd: serving /srv/posixd"
 expect="ctest: hello from musl"
 expect="ctest: argv one|two words"
 expect="ctest: to stderr"

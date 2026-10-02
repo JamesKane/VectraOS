@@ -36,7 +36,7 @@ Checked against 9front (`port/sysproc.c`, `port/proc.c`, `port/devproc.c`, and A
   | File | Contents |
   |---|---|
   | `status` | One ndb record (D14): `pid= name= state= threads= mem=`, and `sid=` for POSIX's sessions |
-  | `ctl` | 9front's verbs: `kill`, `stop`, `start`, `startstop`, `waitstop`, `hang`, `nohang`; plus `setsid`, and `intent` (rule 6) |
+  | `ctl` | 9front's verbs: `kill`, `stop`, `start`, `startstop`, `waitstop`, `hang`, `nohang`; plus `setsid`, `intent` (rule 6), `stop SIG` (which signal stopped it, for its parent's wait) and `childnotes` (a POSIX process's: the `SIGCHLD` note, and records of its children's stops and continues) |
   | `note` | A write posts a note (ADR-0010) to the process |
   | `notepg` | A write posts a note to every process in the process's note group, the writer too: unlike 9front's `postnotepg`, which skips it, because here a note to oneself arrives before the write returns, so `kill(0)` signals the caller as POSIX asks |
   | `noteid` | The note group: read it, or write another group's id to join that group, as 9front checks it |

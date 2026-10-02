@@ -1,54 +1,13 @@
-// posix.h: posixd's protocol (docs/01 §9), shared by posixd and the musl back
-// end. Calls are channel_calls of one posix_msg, answered by one.
-//
-// A process has its own channel to posixd, so posixd knows who calls. A
-// process started by something that is not a POSIX process (svcd) connects
-// through /srv/posixd with CONNECT, giving posixd a handle to its own task;
-// it becomes the leader of a new session, its parent pid 1. A POSIX parent
-// registers each child with CHILD before starting it, giving posixd the
-// child's task, and passes the child the channel the reply carries. posixd
-// keeps the task handles: it is told of each exit, and (with signals) it is
-// what kills.
-//
-// pid 1 is posixd itself. An orphan's parent becomes 1, and posixd reaps it.
+// posix.h: what the POSIX personality's pieces share (docs/01 §9): the musl
+// back end, which builds signals on notes, procfs, which carries out the ones
+// a process cannot (SIGKILL, SIGSTOP, SIGCONT), and ptyd, which sends a
+// terminal's to its foreground group. The process calls themselves are files
+// in /proc (ADR-0011).
 
 #pragma once
 
 #include "../../abi/vx/abi.h"
 #include "../vx-note/note.c"
-
-enum posix_call : uint32_t {
-  POSIX_CONNECT = 1, // on /srv/posixd; handles [the caller's task] -> {pid}, handles [its channel]
-  POSIX_CHILD,       // handles [a new task]; {pgid: -1 to inherit, 0 its own; setsid} -> {pid}, [its channel]
-  POSIX_IDS,         // -> {pid, ppid, pgid, sid}
-  POSIX_SETPGID,     // {pid, pgid}, 0 for the caller and its pid -> {}
-  POSIX_SETSID,      // -> {sid}
-  POSIX_GETPGID,     // {pid}, 0 for the caller -> {pgid}
-  POSIX_GETSID,      // {pid}, 0 for the caller -> {sid}
-  POSIX_WAIT,        // {pid, options} as wait4's -> {pid, status} once a child has ended; {0} with WNOHANG
-  POSIX_KILL,        // {pid, sig} as kill's -> {1 if the caller is among those it names}: posixd signals the
-                     // others; the caller delivers to itself
-  POSIX_STOP,        // {sig}: stop the caller (a stopping signal's default), until SIGCONT -> {}
-};
-
-// A reply's h.flags: 0, or why the call failed, as the errno it becomes.
-enum posix_error : uint32_t {
-  POSIX_OK = 0,
-  POSIX_ESRCH,  // no such process or group
-  POSIX_EPERM,  // not allowed
-  POSIX_ECHILD, // no child to wait for
-  POSIX_EINVAL,
-  POSIX_EAGAIN, // the process table is full
-  POSIX_EINTR,  // a wait ended by a signal to the caller
-};
-
-typedef struct posix_msg {
-  vx_msg_header h;
-  int64_t arg[4];
-} posix_msg;
-
-static constexpr int64_t POSIX_WNOHANG = 1, POSIX_WUNTRACED = 2,
-                         POSIX_WCONTINUED = 8; // wait4's, Linux's numbers
 
 // Signals are notes (ADR-0010). A signal another process sends (kill) is the
 // note "posix: SIGTERM pid=12", which names the sender; one with Plan 9 words

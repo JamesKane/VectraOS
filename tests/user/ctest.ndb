@@ -6,4 +6,3 @@ arg=one
 arg="two words"
 env=GREETING=hello
 ns=posix
-connect=posixd

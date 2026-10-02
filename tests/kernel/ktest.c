@@ -1222,7 +1222,8 @@ static void test_debugger(void) {
   CHECK(vx_task_mem_rw(weak, ops, 1) == VX_ERR_ACCESS);
   CHECK(vx_thread_state(child, 1, VX_STATE_SET_REGS, &regs, sizeof regs) == VX_OK);
   CHECK(vx_thread_resume(child, 1) == VX_OK);
-  CHECK(vx_thread_resume(child, 1) == VX_ERR_BAD_STATE); // counted: not suspended any more
+  vx_status again = vx_thread_resume(child, 1);                  // counted: not suspended any more, or
+  CHECK(again == VX_ERR_BAD_STATE || again == VX_ERR_NOT_FOUND); // already run on to its end
   CHECK(is(wait_exit(port, child), ""));
   vx_handle_close(weak);
   vx_handle_close(child);
@@ -1233,6 +1234,10 @@ static void test_debugger(void) {
   CHECK(vx_thread_suspend(child, 1) == VX_OK && vx_thread_suspend(child, 1) == VX_OK); // counted
   CHECK(vx_thread_state(child, 1, VX_STATE_GET_REGS, &regs, sizeof regs) == VX_OK);
   CHECK(vx_thread_resume(child, 1) == VX_OK && vx_thread_resume(child, 1) == VX_OK);
+  CHECK(wait_blocked(child));
+  // Thread 0: every thread of the task, as a process stops as a whole.
+  CHECK(vx_thread_suspend(child, 0) == VX_OK && vx_thread_resume(child, 0) == VX_OK);
+  CHECK(vx_thread_resume(child, 0) == VX_ERR_BAD_STATE); // counted: not suspended any more
   CHECK(wait_blocked(child));
   CHECK(vx_task_kill(child, VX_STR("killed")) == VX_OK && is(wait_exit(port, child), "killed"));
   vx_handle_close(child);

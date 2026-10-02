@@ -18,11 +18,14 @@ enum : uint32_t { PROC_REGISTER = 0x636f'7270 }; // "proc", beside P9_CONNECT on
 enum proc_flags : uint32_t {
   PROC_NOWAIT = 1, // the parent wants no wait record (Plan 9's RFNOWAIT): it watches the task itself
   PROC_NOTEG = 2,  // a note group of its own, rather than the parent's (RFNOTEG)
+  PROC_SETSID = 4, // a session of its own too, and a note group (POSIX's setsid, posix_spawn's SETSID)
 };
 
-// The call: arg[0] the parent's pid, arg[1] enum proc_flags; handles [the
-// child's task]. The reply: h.flags 0 or a vx_status, arg[0] the child's pid.
+// The call: arg[0] the parent's pid, arg[1] enum proc_flags, arg[2] a note
+// group in the parent's session for the child to join (0: none, as the flags
+// say); handles [the child's task]. The reply: h.flags 0 or a vx_status,
+// arg[0] the child's pid.
 typedef struct proc_msg {
   vx_msg_header h;
-  int64_t arg[2];
+  int64_t arg[3];
 } proc_msg;

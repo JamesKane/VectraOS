@@ -8,27 +8,35 @@
 // before procfs.
 //
 //   /proc/N/status   one ndb record: pid=7 name=gsh state=waiting threads=1 mem=412K sid=7
-//   /proc/N/ctl      kill · stop · start · setsid
+//   /proc/N/ctl      kill · stop [SIG] · start · setsid · childnotes
 //   /proc/N/note     a write posts a note (ADR-0010)
 //   /proc/N/notepg   a write posts a note to every process in N's note group
 //   /proc/N/noteid   N's note group: read it, or write a group's id to join it
 //   /proc/N/ppid     the parent's pid
 //   /proc/N/wait     a read waits for a child to end, then returns its record:
-//                    pid=9 name=ls status="" real=12 (ms); its length is the count
+//                    pid=9 name=ls noteid=7 status="" real=12 (ms); its length is the count
 //
 // As in 9front's pexit, a process that ends leaves a wait record for its
 // parent, at most 128 queued, unless it was registered with PROC_NOWAIT, or
 // the parent has gone or is not registered. A parent that goes leaves its
 // children's ppid as it was. A note posted to a process whose wait read procfs
 // holds ends that read, "interrupted", after the note, so the caller sees the
-// note first (as posixd does with a WAIT, and ptyd with the reads it holds).
+// note first, as ptyd does with the reads it holds.
 //
 // notepg includes the writer, unlike 9front's: a note to oneself is delivered
 // before the write returns, so kill(0) signals the caller too, as POSIX has it.
+//
+// For POSIX (lib/vx-posix/posix.h), which builds signals on notes: procfs
+// carries out the ones a process cannot, being stopped or unable to catch
+// them: a note naming SIGKILL kills, SIGSTOP stops, and SIGCONT continues
+// before it is delivered. A process that writes `childnotes` to its ctl gets
+// the note "posix: SIGCHLD pid=N" when a child ends, stops or continues, and
+// wait records for stops (stopped=SIG) and continues (continued) too.
 
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-9p/ring_server.c"
 #include "../../lib/vx-proc/proc.h"
+#include "../../lib/vx-posix/posix.h"
 
 static constexpr uint32_t MAX_PROCS = 128;
 static constexpr uint32_t MAX_RECORDS = 512; // wait records, for every parent together
@@ -41,6 +49,7 @@ typedef struct proc {
   bool stopped;     // ctl stop
   bool wait_held;   // a read of its wait file is held
   bool interrupted; // a note came while it was: the read ends
+  bool childnotes;  // SIGCHLD notes, and records of children's stops and continues (POSIX)
   uint32_t gen;
   uint64_t pid, ppid, noteid, sid;
   vx_handle task;
@@ -49,9 +58,14 @@ typedef struct proc {
   uint32_t first, last; // its queue, through record.next; 0 is none
 } proc;
 
+enum record_kind : uint8_t { ENDED, STOPPED, CONTINUED };
+
 typedef struct record {
-  uint32_t next; // 0: the end
-  uint64_t pid;  // 0: the slot is free
+  uint32_t next;   // 0: the end
+  uint64_t pid;    // 0: the slot is free
+  uint8_t kind;    // enum record_kind
+  uint8_t sig;     // STOPPED: the signal that stopped it
+  uint64_t noteid; // its note group then, for a POSIX wait for a group's children
   uint64_t real_ms;
   char name[24];
   uint8_t len;
@@ -81,7 +95,7 @@ static bool has_children(const proc *p) {
 }
 
 // A new process for task (which it takes, if it succeeds), its parent's pid, and flags.
-static vx_status admit(vx_handle task, uint64_t ppid, uint32_t flags, bool root, proc **out) {
+static vx_status admit(vx_handle task, uint64_t ppid, uint32_t flags, uint64_t group, bool root, proc **out) {
   vx_task_summary info;
   if (vx_task_info(task, &info) != VX_OK || info.state == VX_TASK_EXITED) return VX_ERR_INVALID;
   if (by_pid(info.id)) return VX_ERR_EXISTS;
@@ -98,8 +112,16 @@ static vx_status admit(vx_handle task, uint64_t ppid, uint32_t flags, bool root,
               .ppid = ppid,
               .task = task,
               .start = vx_clock_read()};
-  p->noteid = parent && !(flags & PROC_NOTEG) ? parent->noteid : p->pid;
-  p->sid = parent ? parent->sid : p->pid;
+  p->noteid = parent && !(flags & (PROC_NOTEG | PROC_SETSID)) ? parent->noteid : p->pid;
+  p->sid = parent && !(flags & PROC_SETSID) ? parent->sid : p->pid;
+  bool joined = !group;
+  for (uint32_t i = 0; i < MAX_PROCS && !joined; i++)
+    joined = procs[i].used && &procs[i] != p && procs[i].noteid == group && procs[i].sid == p->sid;
+  if (!joined) {
+    *p = (proc){.gen = p->gen};
+    return VX_ERR_ACCESS; // not a group in its session
+  }
+  if (group) p->noteid = group;
   // svcd, the root, never ends; its handle ("tasks") carries no WAIT right.
   vx_status st = root ? VX_OK : vx_port_bind(server.port, task, VX_TRIGGER_EXIT, exit_key(p), 0);
   if (st != VX_OK) {
@@ -118,7 +140,7 @@ static void registered(void *ctx, const void *msg, uint32_t len, vx_handle handl
   proc_msg rep = {.h = {.txid = m.h.txid, .ordinal = PROC_REGISTER}};
   vx_status st = len >= sizeof m && m.h.ordinal == PROC_REGISTER && handle ? VX_OK : VX_ERR_INVALID;
   proc *p = nullptr;
-  if (st == VX_OK) st = admit(handle, (uint64_t)m.arg[0], (uint32_t)m.arg[1], false, &p);
+  if (st == VX_OK) st = admit(handle, (uint64_t)m.arg[0], (uint32_t)m.arg[1], (uint64_t)m.arg[2], false, &p);
   if (st == VX_OK)
     rep.arg[0] = (int64_t)p->pid;
   else if (handle)
@@ -127,34 +149,79 @@ static void registered(void *ctx, const void *msg, uint32_t len, vx_handle handl
   vx_channel_write(server.listen, &rep, sizeof rep, nullptr, 0);
 }
 
-// The task has ended: a record for its parent, as 9front's pexit leaves one.
-static void ended(proc *p) {
+// Queues a record of what happened to child c for its parent, if there is
+// room: as 9front's pexit leaves one, at most MAX_WAITS.
+static void queue_record(proc *parent, const proc *c, uint8_t kind, uint8_t sig) {
   vx_task_summary info;
-  bool known = vx_task_info(p->task, &info) == VX_OK;
-  proc *parent = by_pid(p->ppid);
   uint32_t r = 1;
   while (r <= MAX_RECORDS && records[r].pid) r++;
-  if (known && parent && !p->nowait && parent->nwait < MAX_WAITS && r <= MAX_RECORDS) {
-    record *rec = &records[r];
-    *rec = (record){.pid = p->pid,
-                    .real_ms = (uint64_t)(vx_clock_read() - p->start) / 1'000'000,
-                    .len = (uint8_t)info.exit_len};
-    memcpy(rec->name, info.name, sizeof rec->name);
-    memcpy(rec->status, info.exit, info.exit_len);
-    if (parent->last)
-      records[parent->last].next = r;
-    else
-      parent->first = r;
-    parent->last = r;
-    parent->nwait++;
-  }
-  for (uint32_t i = p->first; i;) { // its own records: nobody will read them now
+  if (r > MAX_RECORDS || parent->nwait >= MAX_WAITS || vx_task_info(c->task, &info) != VX_OK) return;
+  record *rec = &records[r];
+  *rec = (record){.pid = c->pid,
+                  .noteid = c->noteid,
+                  .kind = kind,
+                  .sig = sig,
+                  .real_ms = (uint64_t)(vx_clock_read() - c->start) / 1'000'000,
+                  .len = kind == ENDED ? (uint8_t)info.exit_len : 0};
+  memcpy(rec->name, info.name, sizeof rec->name);
+  if (kind == ENDED) memcpy(rec->status, info.exit, info.exit_len);
+  if (parent->last)
+    records[parent->last].next = r;
+  else
+    parent->first = r;
+  parent->last = r;
+  parent->nwait++;
+  server.again = true; // a wait read held for the parent may go on
+}
+
+// Delivers a note: the kernel interrupts p with it, and a wait read p is
+// blocked in ends, after the note.
+static vx_status deliver(proc *p, vx_str note) {
+  vx_status st = vx_thread_interrupt(p->task, 0, note);
+  if (st == VX_OK && p->wait_held) p->interrupted = server.again = true; // the held read ends
+  return st;
+}
+
+// Tells c's parent what happened to it: a record (a stop or a continue only
+// for a parent that asked for childnotes), and the SIGCHLD note if it did.
+static void tell_parent(const proc *c, uint8_t kind, uint8_t sig) {
+  proc *parent = by_pid(c->ppid);
+  if (!parent || c->nowait) return;
+  if (kind == ENDED || parent->childnotes) queue_record(parent, c, kind, sig);
+  if (!parent->childnotes) return;
+  char note[VX_ERRMAX];
+  deliver(parent, (vx_str){note, posix_note(POSIX_SIGCHLD, (int64_t)c->pid, note)});
+}
+
+// The task has ended: its parent hears, and its own unread records go.
+static void ended(proc *p) {
+  tell_parent(p, ENDED, 0);
+  for (uint32_t i = p->first; i;) {
     uint32_t next = records[i].next;
     records[i] = (record){};
     i = next;
   }
   vx_handle_close(p->task);
   *p = (proc){.gen = p->gen};
+}
+
+// Stops every thread of p, for signal sig (its parent hears which), or
+// continues it.
+static vx_status stop(proc *p, uint8_t sig) {
+  if (p->stopped) return VX_OK;
+  vx_status st = vx_thread_suspend(p->task, 0);
+  if (st != VX_OK) return st;
+  p->stopped = true;
+  tell_parent(p, STOPPED, sig);
+  return VX_OK;
+}
+
+static vx_status cont(proc *p) {
+  if (!p->stopped) return VX_OK;
+  p->stopped = false;
+  vx_status st = vx_thread_resume(p->task, 0);
+  tell_parent(p, CONTINUED, 0);
+  return st;
 }
 
 static void event(void *ctx, const vx_packet *pk) {
@@ -165,11 +232,15 @@ static void event(void *ctx, const vx_packet *pk) {
   if (p->used && p->gen == gen) ended(p);
 }
 
-// Posts a note to p. A wait read it is blocked in ends, after the note.
+// Posts a note to p (a write to note or notepg). The signals a process cannot
+// act on itself, procfs carries out.
 static vx_status post(proc *p, vx_str note) {
-  vx_status st = vx_thread_interrupt(p->task, 0, note);
-  if (st == VX_OK && p->wait_held) p->interrupted = true;
-  return st;
+  int64_t sender;
+  int64_t sig = posix_note_signal(note, &sender);
+  if (sig == POSIX_SIGKILL) return p->root ? VX_ERR_ACCESS : vx_task_kill(p->task, VX_STR("killed"));
+  if (sig == POSIX_SIGSTOP) return stop(p, (uint8_t)sig);
+  if (sig == POSIX_SIGCONT) cont(p); // and then its handler, if it has one
+  return deliver(p, note);
 }
 
 // --- The tree ---
@@ -330,8 +401,15 @@ static vx_status take_record(proc *p, char *buf, size_t cap, size_t *len) {
   vx_ndb_writer w = {.buf = buf, .cap = cap};
   vx_ndb_put_u64(&w, "pid", rec->pid);
   vx_ndb_put(&w, "name", (vx_str){rec->name, name_len});
-  vx_ndb_put(&w, "status", (vx_str){rec->status, rec->len});
-  vx_ndb_put_u64(&w, "real", rec->real_ms);
+  vx_ndb_put_u64(&w, "noteid", rec->noteid);
+  if (rec->kind == STOPPED) {
+    vx_ndb_put_u64(&w, "stopped", rec->sig);
+  } else if (rec->kind == CONTINUED) {
+    vx_ndb_flag(&w, "continued");
+  } else {
+    vx_ndb_put(&w, "status", (vx_str){rec->status, rec->len});
+    vx_ndb_put_u64(&w, "real", rec->real_ms);
+  }
   vx_ndb_end(&w);
   *rec = (record){};
   *len = w.failed ? 0 : w.len;
@@ -379,19 +457,20 @@ static vx_status ctl(proc *p, vx_str cmd) {
     if (p->root) return VX_ERR_ACCESS; // svcd: the system needs it
     return vx_task_kill(p->task, VX_STR("killed"));
   }
-  if (word_is(cmd, "stop")) {
-    if (p->stopped) return VX_OK;
-    vx_status st = vx_thread_suspend(p->task, 1);
-    p->stopped = st == VX_OK;
-    return st;
+  if (cmd.len >= 4 && memcmp(cmd.ptr, "stop", 4) == 0 && (cmd.len == 4 || cmd.ptr[4] == ' ')) {
+    uint64_t sig = POSIX_SIGSTOP; // stop SIG: which signal stopped it, for its parent's wait
+    if (cmd.len > 5 && (!parse_u64((vx_str){cmd.ptr + 5, cmd.len - 5}, &sig) || !sig || sig > POSIX_NSIG))
+      return VX_ERR_INVALID;
+    return p->root ? VX_ERR_ACCESS : stop(p, (uint8_t)sig);
   }
-  if (word_is(cmd, "start")) {
-    if (!p->stopped) return VX_OK;
-    p->stopped = false;
-    return vx_thread_resume(p->task, 1);
-  }
+  if (word_is(cmd, "start")) return cont(p);
   if (word_is(cmd, "setsid")) {
-    p->sid = p->noteid = p->pid; // a session, and a note group, of its own
+    if (p->noteid == p->pid) return VX_ERR_ACCESS; // a group leader: its group would span two sessions
+    p->sid = p->noteid = p->pid;                   // a session, and a note group, of its own
+    return VX_OK;
+  }
+  if (word_is(cmd, "childnotes")) {
+    p->childnotes = true;
     return VX_OK;
   }
   return VX_ERR_INVALID;
@@ -463,9 +542,12 @@ const char *vx_main(void) {
   server.event = event;
   server.listen_msg = registered;
   server.listen = vx_spawn_take("listen");
+  static p9_ring_conn conns[MAX_PROCS]; // a connection for each process, at most
+  server.conns = conns;
+  server.max_conns = MAX_PROCS;
   proc *root = nullptr;
   if (!tasks || !server.listen || vx_port_create(0, &server.port) != VX_OK ||
-      admit(tasks, 0, 0, true, &root) != VX_OK) {
+      admit(tasks, 0, 0, 0, true, &root) != VX_OK) {
     vx_print(VX_STR("procfs: FAILED: no task tree or listen channel\n"));
     return "no task tree or listen channel";
   }

@@ -347,7 +347,8 @@ enum vx_task_options : uint32_t { VX_TASK_FORK = 1 };
 //     TPIDR_EL0), a uint64_t, on the same terms; with thread 0, the caller's
 //     own, at any time (musl's __set_thread_area).
 // thread_suspend(task, thread), thread_resume(task, thread): counted, with the
-//     DEBUG right. A suspended thread stops before it next returns to user
+//     DEBUG right; with thread 0, every thread of the task (a process stopped
+//     as a whole). A suspended thread stops before it next returns to user
 //     mode; thread_suspend returns once it has (stopped there, or blocked in a
 //     call), or TIMED_OUT after a second.
 // task_mem_rw(task, ops, count): with the DEBUG right, copies between another

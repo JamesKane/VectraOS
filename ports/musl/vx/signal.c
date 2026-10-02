@@ -3,7 +3,7 @@
 // Signals are built on notes (ADR-0010). The dispositions, the mask and the
 // pending set live here, in the process. A signal from another process is a
 // note ("posix: SIGTERM pid=12", or Plan 9's "interrupt" and the like) that
-// posixd posts; sig_note, this process's note handler (lib/vx-rt/note.c),
+// procfs posts when it is written to /proc (kill, below); sig_note, this process's note handler (lib/vx-rt/note.c),
 // maps it to its signal through lib/vx-posix/posix.h's table. So does any
 // fault, which becomes SIGSEGV, SIGBUS, SIGILL, SIGFPE or SIGTRAP. A note
 // that is no signal ends the process with it, as in Plan 9. A signal to
@@ -16,8 +16,10 @@
 // is not SA_RESTART ran, and is made again otherwise. A signal that arrives
 // in the program's own code is delivered at once, on its stack.
 //
-// A stopping signal's default asks posixd to stop the process (POSIX_STOP);
-// SIGSTOP from another process posixd carries out itself.
+// A stopping signal's default stops the process through its ctl ("stop SIG",
+// so its parent's wait learns which); SIGSTOP, SIGKILL and SIGCONT from
+// another process, procfs carries out itself (ADR-0011). kill writes notes to
+// /proc, as 9front's APE does: note for a process, notepg for a group.
 //
 // Not yet: an alternate signal stack, and the registers in a handler's ucontext.
 
@@ -78,9 +80,9 @@ static bool sig_act(int sig, int code, int64_t sender, uint64_t address, const v
   if (h == (uintptr_t)SIG_IGN) return false;
   if (h == (uintptr_t)SIG_DFL) {
     if (sig == SIGSTOP || sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU) { // stop, until SIGCONT
-      int64_t args[1] = {sig};
-      posix_msg rep;
-      if (posix_chan) posix_call(posix_chan, POSIX_STOP, args, 1, VX_HANDLE_NONE, &rep, nullptr);
+      char cmd[16];
+      snprintf(cmd, sizeof cmd, "stop %d", sig);
+      proc_write(posix_pid(), "ctl", cmd); // answered, then stopped on the way out
       return false;
     }
     if (posix_default_ignored(sig)) return false;
@@ -213,18 +215,48 @@ static long sig_suspend(uint64_t mask) {
   return -EINTR;
 }
 
+// kill(-1): every process but this one and svcd (pid 1), through /proc's list.
+static long sig_kill_all(const char *note) {
+  vx_ns_file dir;
+  vx_status st = vx_ns_open(fd_namespace(), VX_STR("/proc"), P9_OREAD, &dir);
+  if (st != VX_OK) return -ESRCH;
+  static uint8_t buf[4096];
+  long sent = 0;
+  for (int64_t n; (n = vx_ns_read(&dir, buf, sizeof buf)) > 0;) {
+    p9_stat entry;
+    for (size_t off = 0; p9_dir_next(buf, (size_t)n, &off, &entry);) {
+      char name[24] = {};
+      memcpy(name, entry.name.ptr, entry.name.len < sizeof name - 1 ? entry.name.len : sizeof name - 1);
+      long pid = strtol(name, nullptr, 10);
+      if (pid > 1 && pid != posix_pid() && proc_write(pid, "note", note) == 0) sent++;
+    }
+  }
+  vx_ns_close(&dir);
+  if (sent) return 0;
+  return -ESRCH;
+}
+
 static long sig_kill(long pid, int sig) {
   if (sig < 0 || sig > SIG_MAX) return -EINVAL;
-  bool self = pid == posix_pid() || pid == 0 || pid == -1;
-  if (posix_chan) {
-    int64_t args[2] = {pid, sig};
-    posix_msg rep;
-    long r = posix_call(posix_chan, POSIX_KILL, args, 2, VX_HANDLE_NONE, &rep, nullptr);
-    if (r < 0) return r;
-    self = rep.arg[0] != 0;
-  } else if (!self) {
-    return -ESRCH;
+  if (pid == posix_pid()) { // delivered as this call returns
+    if (sig) sig_raise_self(sig);
+    return 0;
   }
-  if (self && sig) sig_raise_self(sig); // delivered as this call returns
-  return 0;
+  if (!proc_mounted) return -ESRCH; // alone: no other process to reach
+  char note[VX_ERRMAX + 1] = {};
+  posix_note(sig, posix_pid(), note);
+  if (!sig) { // only whether it is there: the process, or the group's leader
+    long who = posix_pid();
+    if (pid > 0)
+      who = pid;
+    else if (pid < -1)
+      who = -pid;
+    char buf[512];
+    long r = proc_read(who, "status", buf, sizeof buf);
+    return r < 0 ? r : 0;
+  }
+  if (pid > 0) return proc_write(pid, "note", note);
+  if (pid == 0) return proc_write(posix_pid(), "notepg", note); // which reaches this process too
+  if (pid < -1) return proc_write(-pid, "notepg", note);        // the group of its leader, -pid
+  return sig_kill_all(note);
 }

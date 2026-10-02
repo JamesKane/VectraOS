@@ -9,7 +9,8 @@
 //
 // The line discipline is here, as Linux's: input typed at the master is
 // edited in canonical mode (erase, kill, ^D), echoed, and turned into signals
-// (^C, ^Z, ^\) to the terminal's foreground process group, through posixd;
+// (^C, ^Z, ^\) to the terminal's foreground process group: a note written to
+// the group's notepg in /proc (ADR-0011), "interrupt" for ^C as in Plan 9;
 // the slave's output has NL made CR NL (ONLCR). A read with nothing to give
 // is held until there is (the ring server's SHOULD_WAIT). A signal ptyd sends
 // ends the slave reads it holds, as "interrupted", so ^C at a prompt is seen
@@ -17,6 +18,7 @@
 
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-9p/ring_server.c"
+#include "../../lib/vx-ns/spawn.c"
 #include "../../lib/vx-posix/posix.h"
 
 static constexpr uint32_t PTYS = 16, BUF = 4096, NCCS = 32;
@@ -57,7 +59,8 @@ typedef struct pty {
 } pty;
 
 static pty ptys[PTYS];
-static vx_handle posix_chan; // to posixd, to signal process groups
+static vx_ns ns;          // /proc, to signal process groups
+static bool proc_mounted; // it is there
 
 static void ring_put(ring *r, uint8_t c) {
   if (r->len == BUF) return; // full: dropped, as a terminal does
@@ -82,12 +85,20 @@ static void echo(pty *p, uint8_t c) {
   ring_put(&p->out, c);
 }
 
+// Signals the foreground group: the signal's note, written to the notepg of
+// the group's leader, whose pid names the group (lib/vx-posix/posix.h).
 static void signal_group(pty *p, int64_t sig) {
   if (p->reading) p->interrupted = true;
-  if (!posix_chan || p->pgrp <= 0) return;
-  posix_msg m = {.h = {.ordinal = POSIX_KILL}, .arg = {-p->pgrp, sig}}, rep;
-  vx_call c = {.wr_bytes = &m, .wr_len = sizeof m, .rd_bytes = &rep, .rd_cap = sizeof rep};
-  vx_channel_call(posix_chan, &c, vx_clock_read() + 1'000'000'000);
+  if (!proc_mounted || p->pgrp <= 0) return;
+  char path[48], note[VX_ERRMAX];
+  vx_note_buf b = {path, 0, sizeof path};
+  vx_note_put(&b, VX_STR("/proc/"));
+  vx_note_dec(&b, (uint64_t)p->pgrp);
+  vx_note_put(&b, VX_STR("/notepg"));
+  vx_ns_file f;
+  if (vx_ns_open(&ns, (vx_str){path, b.len}, P9_OWRITE, &f) != VX_OK) return; // the group has gone
+  vx_ns_write(&f, note, (uint32_t)posix_note(sig, 0, note));
+  vx_ns_close(&f);
 }
 
 // One byte typed at the master, through the line discipline.
@@ -333,12 +344,15 @@ static uint64_t field(const vx_ndb_record *r, const char *key, uint64_t was) {
   return v;
 }
 
+static p9_ring_server server; // below
+
 // NOLINTNEXTLINE(readability-non-const-parameter): p9_fs's signature
 static vx_status fs_write(void *ctx, uint64_t node, uint64_t offset, const uint8_t *buf, uint32_t *count) {
   (void)ctx, (void)offset;
   pty *p = pty_of(node);
   if (!p) return VX_ERR_NOT_FOUND;
-  if (node >= CTL) { // set what the record names; `flush` throws away pending input
+  server.again = true; // what is written at one end may let a read held at the other go on
+  if (node >= CTL) {   // set what the record names; `flush` throws away pending input
     static char scratch[1024];
     vx_ndb_reader r = {.src = {(const char *)buf, *count}, .scratch = scratch, .scratch_cap = sizeof scratch};
     vx_ndb_record rec;
@@ -408,21 +422,9 @@ const char *vx_main(void) {
     vx_print(VX_STR("ptyd: no listen channel\n"));
     return "no listen channel";
   }
-  // A process of its own to posixd, to signal process groups from.
-  vx_handle connector = vx_spawn_take("srv:posixd"), me = VX_HANDLE_NONE;
-  if (connector && vx_handle_dup(vx_self, VX_RIGHTS_SAME, &me) == VX_OK) {
-    posix_msg m = {.h = {.ordinal = POSIX_CONNECT}}, rep;
-    vx_call c = {.wr_bytes = &m,
-                 .wr_len = sizeof m,
-                 .wr_handles = &me,
-                 .wr_count = 1,
-                 .rd_bytes = &rep,
-                 .rd_cap = sizeof rep,
-                 .rd_handles = &posix_chan,
-                 .rd_count_cap = 1};
-    if (vx_channel_call(connector, &c, VX_INFINITE) != VX_OK || rep.h.flags) posix_chan = VX_HANDLE_NONE;
-  }
-  vx_print(posix_chan ? VX_STR("ptyd: serving /srv/ptyd\n")
-                      : VX_STR("ptyd: serving /srv/ptyd, without posixd: no signals\n"));
+  // /proc, to signal process groups through.
+  proc_mounted = vx_ns_from_spawn(&ns) == VX_OK && vx_ns_connector(&ns, VX_STR("/proc")) != VX_HANDLE_NONE;
+  vx_print(proc_mounted ? VX_STR("ptyd: serving /srv/ptyd\n")
+                        : VX_STR("ptyd: serving /srv/ptyd, without /proc: no signals\n"));
   return p9_ring_serve(&server) == VX_OK ? nullptr : "cannot serve";
 }
