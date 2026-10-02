@@ -75,6 +75,7 @@ These rules are normative. A design that breaks one needs an ADR explaining why.
 | `keyd` | Keys and authentication (a factotum). Keys never leave it | 02 §6 |
 | `tlsd` | TLS 1.3 client for services outside the swarm (model providers, `git` over https). It asks `keyd` to attach credentials inside the session, so no app or adapter holds them | 02 §3.2, 03 §8.6 |
 | `exportfs`, `auditfs` | Export a namespace; interpose on a namespace and log writes | 02 |
+| `distd` | Releases, app packages and the content store; fetching from peers, staging, trial boot and rollback. Serves `/dist` | 06 |
 
 ## 4. Key decisions
 
@@ -96,6 +97,7 @@ These rules are normative. A design that breaks one needs an ADR explaining why.
 | D14 | Text format | **ndb records**, from Plan 9's network database: `key=value` tuples, one record per line, with indented lines continuing it. Every structured text file uses it: `info`, `status`, events, `.schema`, manifests, build files and policy (02 §4.1) | TOML, JSON, YAML and JSON Schema: nesting, types and escaping rules that flat key-value files do not need, and a large parser for each. |
 | D15 | Debugger and profiler | **`dbg`**, native, at the level of the RAD Debugger, with the profiler built in (05 §9). It debugs through `/proc` files over 9Px, as Plan 9's `acid` did, so remote debugging and scripting come free. DWARF 5 is the only debug format; `dbg` caches a flat index of it (05) | gdb or lldb as the system debugger: they expect `ptrace` and speak the gdb remote protocol, a second protocol beside 9Px. |
 | D16 | Secure channels | **Noise** (first-party, over Monocypher) inside the swarm. **One vendored TLS 1.3 client library**, used only by `tlsd`, for services outside the swarm, which need web PKI: X.509, P-256 and RSA signatures, AES-GCM. The library is chosen by ADR before M9 | TLS inside the swarm: certificate machinery the swarm's own keys don't need. QUIC: a second transport. A TLS library linked into every program: the most exposed parser in the system, many times over |
+| D17 | Installation and updates | **A release is one signed, reproducible tree** in a content-addressed store, signed by independent rebuilders; any peer serves it over 9Px, and the hashes make peers untrusted. It boots from one of several slots with a one-shot trial boot; filesystem snapshots protect configuration and files. Apps and their dependencies are packages, resolved per app by minimal version selection into a lock, with names scoped by publisher key. Updates apply only when the user asks (06) | A system-wide package graph for the base (apt, rpm): partial states and one version of each library for everything. A SAT solver for packages: minimal version selection resolved per app needs none. A central index of package names (D13). Updating files in place: no atomic switch, no rollback. A/B partitions holding whole copies: a full image per slot where a slot can name a tree |
 
 ## 5. Hardware tiers
 

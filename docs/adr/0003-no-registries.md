@@ -16,3 +16,5 @@ Registries (crates.io, npm, PyPI and the like) give dependency trees too deep to
 ## Consequences
 
 `./build vendor-check` enforces this in CI and as a pre-commit hook.
+
+This ADR governs the build and the base release. Packages a user installs, and the publisher catalogues their dependencies are resolved from, are governed by ADR-0014, which keeps the protections above. (Amended 2026-10-02.)

@@ -49,6 +49,7 @@ The toolchain is pinned (ADR-0001): clang, lld and llvm-objcopy 22.1.8 from Fedo
 | [docs/03-desktop-agentic.md](docs/03-desktop-agentic.md) | **Phase 3.** Rendering pipeline (Vulkan), window server, hybrid tiling, theming, the application framework tiers, and AI in the desktop |
 | [docs/04-bootstrap-toolchain.md](docs/04-bootstrap-toolchain.md) | **Phase 4.** Language policy, repository layout, build and cross-compilation, and the milestones: M1–M3 up to a bootable image with a shell and a network mount, then M4–M12 |
 | [docs/05-debugger.md](docs/05-debugger.md) | **Phase 5.** The native debugger `dbg`: kernel debug mechanisms, the `/proc` debug files, symbols, crash directories, RAD Debugger-level features, profiling, remote debugging |
+| [docs/06-install-update.md](docs/06-install-update.md) | **Phase 6.** Installing from the ISO, releases as signed reproducible trees in a content-addressed store, peer-to-peer distribution over 9Px, boot slots with a one-shot trial boot, and rollback with filesystem snapshots |
 | [docs/adr/](docs/adr/README.md) | Architecture decision records |
 | [docs/study/](docs/study/README.md) | What this design takes from the platform API study: the friction register (F-101 … F-219), the heritage findings, the convergent API shapes, the compatibility-layer measurements and the prototype results |
 
