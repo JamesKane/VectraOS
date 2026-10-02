@@ -384,6 +384,20 @@ static bool all_zero(const unsigned char *p, size_t n) {
   return true;
 }
 
+static bool write_file(const char *path, const char *text) {
+  FILE *f = fopen(path, "w");
+  bool ok = f && fputs(text, f) >= 0;
+  return f && fclose(f) == 0 && ok;
+}
+
+static bool file_is(const char *path, const char *text) {
+  char buf[64] = {};
+  FILE *f = fopen(path, "r");
+  size_t n = f ? fread(buf, 1, sizeof buf - 1, f) : 0;
+  if (f) fclose(f);
+  return f && n == strlen(text) && memcmp(buf, text, n) == 0;
+}
+
 // /tmp (tmpfs), /dev's null, zero and urandom (nullfs), getrandom.
 static void test_tmp_and_devices(void) {
   char buf[64] = {};
@@ -412,6 +426,20 @@ static void test_tmp_and_devices(void) {
   memset(buf, 0, sizeof buf);
   CHECK(read(fd, buf, 5) == 5 && memcmp(buf, "hello", 5) == 0);
   close(fd);
+
+  // O_EXCL refuses a name that exists without touching the file, even with
+  // O_TRUNC; without O_EXCL, O_CREAT opens it.
+  CHECK(write_file("/tmp/d/keep", "kept"));
+  errno = 0;
+  CHECK(open("/tmp/d/keep", O_RDWR | O_CREAT | O_EXCL | O_TRUNC, 0644) == -1 && errno == EEXIST);
+  CHECK(file_is("/tmp/d/keep", "kept"));
+  fd = open("/tmp/d/keep", O_RDWR | O_CREAT, 0644);
+  CHECK(fd >= 0 && read(fd, buf, 4) == 4 && memcmp(buf, "kept", 4) == 0);
+  close(fd);
+  fd = open("/tmp/d/new", O_RDWR | O_CREAT | O_EXCL, 0644);
+  CHECK(fd >= 0 && write(fd, "x", 1) == 1);
+  close(fd);
+  CHECK(unlink("/tmp/d/keep") == 0 && unlink("/tmp/d/new") == 0);
 
   // A hole reads as zeros; truncation; a directory goes only when empty.
   fd = open("/tmp/d/hole", O_RDWR | O_CREAT, 0644);
@@ -443,20 +471,6 @@ static void test_tmp_and_devices(void) {
   close(fd);
   CHECK(getrandom(r1, sizeof r1, 0) == 32 && memcmp(r1, r2, sizeof r1) != 0 && !all_zero(r1, sizeof r1));
   CHECK(getauxval(AT_RANDOM) != 0);
-}
-
-static bool write_file(const char *path, const char *text) {
-  FILE *f = fopen(path, "w");
-  bool ok = f && fputs(text, f) >= 0;
-  return f && fclose(f) == 0 && ok;
-}
-
-static bool file_is(const char *path, const char *text) {
-  char buf[64] = {};
-  FILE *f = fopen(path, "r");
-  size_t n = f ? fread(buf, 1, sizeof buf - 1, f) : 0;
-  if (f) fclose(f);
-  return f && n == strlen(text) && memcmp(buf, text, n) == 0;
 }
 
 // The posix and xattr extensions, through tmpfs: rename, symbolic links,
@@ -491,6 +505,9 @@ static void test_names_and_attributes(void) {
   CHECK(symlink("/tmp/nothing", "/tmp/dangling") == 0 && lstat("/tmp/dangling", &st) == 0);
   errno = 0;
   CHECK(stat("/tmp/dangling", &st) == -1 && errno == ENOENT);
+  errno = 0; // O_EXCL doesn't follow it: the name is taken, and its target isn't made
+  CHECK(open("/tmp/dangling", O_WRONLY | O_CREAT | O_EXCL, 0644) == -1 && errno == EEXIST &&
+        stat("/tmp/nothing", &st) == -1);
   CHECK(symlink("/tmp/loop", "/tmp/loop") == 0);
   errno = 0;
   CHECK(open("/tmp/loop", O_RDONLY) == -1 && errno == ELOOP);

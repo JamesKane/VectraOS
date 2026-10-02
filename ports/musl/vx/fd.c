@@ -636,7 +636,10 @@ static void tty_check(ofd *o) {
 
 static long fd_openat(int dirfd, const char *path, int flags, mode_t mode) {
   char p[VX_NS_MAX_PATH];
-  long len = fd_resolve(dirfd, path, !(flags & O_NOFOLLOW), p);
+  bool excl = (flags & O_CREAT) && (flags & O_EXCL);
+  // O_EXCL never follows a link in the last component: a link there, even a
+  // dangling one, is a name that exists.
+  long len = fd_resolve(dirfd, path, !(flags & O_NOFOLLOW) && !excl, p);
   if (len < 0) return len;
   char target[VX_NS_MAX_PATH];
   size_t target_len;
@@ -648,13 +651,16 @@ static long fd_openat(int dirfd, const char *path, int flags, mode_t mode) {
   if (acc == O_RDWR) mode9 = P9_ORDWR;
   vx_ns *ns = fd_namespace();
   vx_ns_file f;
-  vx_status st = vx_ns_open(ns, (vx_str){p, (size_t)len}, mode9 | (flags & O_TRUNC ? P9_OTRUNC : 0), &f);
-  if (st == VX_OK && (flags & O_CREAT) && (flags & O_EXCL)) {
-    vx_ns_close(&f);
-    return -EEXIST;
+  vx_str name = {p, (size_t)len};
+  uint8_t open9 = mode9 | (flags & O_TRUNC ? P9_OTRUNC : 0);
+  // With O_EXCL, only Tcreate: the server refuses a name that exists, in the
+  // same step as making it, so nothing is opened (or truncated) first.
+  vx_status st = excl ? VX_ERR_NOT_FOUND : vx_ns_open(ns, name, open9, &f);
+  if (st == VX_ERR_NOT_FOUND && (flags & O_CREAT)) {
+    st = vx_ns_create(ns, name, mode & 0755, mode9, &f); // the umask is 022
+    // Another process made it between the open and the create: open theirs.
+    if (st == VX_ERR_EXISTS && !excl) st = vx_ns_open(ns, name, open9, &f);
   }
-  if (st == VX_ERR_NOT_FOUND && (flags & O_CREAT))
-    st = vx_ns_create(ns, (vx_str){p, (size_t)len}, mode & 0755, mode9, &f); // the umask is 022
   if (st != VX_OK) return vx_errno(st);
   p9_stat s;
   st = p9c_stat(f.c, f.fid, &s);
