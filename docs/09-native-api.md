@@ -327,8 +327,6 @@ A second reading of the study found details its condensed copy in [study/](study
 | S7 finding 3 | A buffer size independent of window size, scaled by the compositor (`wp_viewporter`) |
 | ndtk | Buffer age on CPU surfaces, for damage-only redraw |
 
-**In [study/prototypes.md](study/prototypes.md):** §5 lists manual checks as unmeasured, but the study recorded them as passed on 2026-09-28 (keyboard, gamepad, pointer lock, IME, resize). The candidate API's losses are also missing: the game loop (219 lines against SDL3's 117) and compute-to-display (249 against 105) were larger than SDL3, because of `webgpu.h`'s setup and a per-frame bind group. VectraOS's answer, `vx_gpu_surface` and its own 2D renderer, exists because of that loss, so the file should say so.
-
 ## 8. Examples
 
 `cat`, in full:

@@ -28,6 +28,20 @@ The five programs were a minimal program, a game loop, a text editor, a synth UI
 | Every event source in one wait | timers, fd readiness, post, wake and a real audio-contract change all arrive through one `wait`, on the main loop and on a background loop | **Pass** |
 | No modal call exists | by construction; the shim absorbs macOS's live-resize loop | **Pass** |
 
+### 1.1 Program size, where the candidate lost
+
+Lines of program code, and calls to the first sound or frame, from the study's generated comparison (2026-09-28):
+
+| Program | Candidate | SDL3 | Native |
+|---|---|---|---|
+| Minimal | 36 lines; 12 call sites (C ABI: 50 lines, 10 sites) | 44 lines; 11 sites | 77 lines; 40 sites |
+| Game loop | **219 lines**; 10 toolkit sites + 26 `webgpu.h` sites | **117 lines**; 18 sites | 106 sites |
+| Text editor | 44 lines | 365 lines | 367 lines |
+| Synth UI | 130 lines; 7 toolkit sites + 28 UI sites | 183 lines | 272 lines |
+| Compute to display | **249 lines**; 7 toolkit sites + 44 `webgpu.h` sites | **105 lines** | 145 lines |
+
+The candidate was smaller wherever the toolkit did the work (minimal, editor, synth) and **larger than SDL3 in both GPU programs.** The cost was `webgpu.h`: 26 calls of setup before the first frame, and in the compute program a bind group rebuilt every frame, because the surface texture is a new object each frame. Teardown was 0 calls in every candidate program. This loss is why VectraOS has a one-call GPU surface (finding 1) and its own 2D renderer in `vxui`, and does not use `webgpu.h` (03 §3).
+
 ## 2. What it costs to give macOS apps this API
 
 About 1,100 lines of shim exist only to hide macOS rules that a platform designed this way doesn't have:
@@ -63,6 +77,6 @@ The native variants needed the same workarounds, written by hand in each app: tr
 
 ## 5. What was left unmeasured
 
-- Manual checks for keyboard and gamepad, pointer lock, trackpad feel, resize artefacts and audible synth notes.
+- **Manual checks were done for the candidate variant only.** On 2026-09-28 a person ran each candidate program as a bundled app and recorded a pass for every check: key presses, gamepad input with a button sound, pointer lock entering and leaving, Japanese and Pinyin IME with the candidate window at the caret, trackpad scrolling, no artefacts during an edge-drag live resize, audible synth notes, UI responsiveness during the synth soak, and the compute pattern. SDL3 and native were not checked item by item; they were only seen to launch, run and quit without crashing. The S7 report's own "remaining work" list predates these checks and was not updated.
 - Native Win32 and Wayland variants were not built; their costs come from the corpus.
 - Platform numbers on the real system. These are the 00 §8 budgets, measured by `./build bench` from the milestone that makes each one measurable.
