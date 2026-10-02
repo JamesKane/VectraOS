@@ -7,7 +7,7 @@ _Blueprint v0, 2026-09-30._
 - **Frame truth:** every client learns when its frame actually reached the glass, and paces on that (F-101, F-102).
 - **Never stall:** no client, policy script or AI workload can make the compositor miss a vblank (rule 8).
 - **Three ways to do everything:** each action has a pointer path (WIMP), a key path (tiling or power-user) and a script or agent path (a `ctl` verb). All three drive the same verb.
-- **Simple apps are small:** the minimal program (window, frame, input, sound) takes 12 calls or fewer, matching the heritage bar the case study measured (Amiga about 12, Switch 13).
+- **Simple apps are small:** the minimal program (window, frame, input, sound) takes 12 calls or fewer, matching the heritage bar the case study measured (Amiga about 12, Switch 13; [study/heritage.md](study/heritage.md) §3).
 - **Idle is idle:** with nothing changing, nothing renders and nothing wakes up.
 
 ## 2. Stack
@@ -205,7 +205,7 @@ The case study's lesson is that platforms fail developers in two ways: they bury
 | **App** | Most applications | `vxui`: a C23 API, `vxui.h`, which is also the stable ABI. Odin and other languages bind to it directly |
 | **Engine** | Games, editors, emulators, browsers, DAWs | Raw `/wsys` rings, a CPU pixel buffer or Vulkan, `audiod` stream rings, `/dev/input` |
 
-**`vxui` principles** (carried over from the case study's charter work):
+**`vxui` principles** (carried over from the case study's charter work; [study/shapes.md](study/shapes.md) §5 says which recommendations were adopted, changed or dropped):
 
 1. **One loop, one wait, owned by the app.** `vx_wait(app, &ev, deadline)` blocks in one `port_wait` covering window events, frame events, timers, audio contract changes, file notifications, ring completions and user wake-ups. The toolkit never calls back into the app, except for the real-time audio callback (5). An engine calls the same function with a zero deadline inside its own loop.
 2. **Immediate-mode UI with a retained cache inside the library,** as in Ryan Fleury's UI series. The app describes its UI on each frame it draws and holds no widget objects:

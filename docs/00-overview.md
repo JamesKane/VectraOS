@@ -107,7 +107,7 @@ These rules are normative. A design that breaks one needs an ADR explaining why.
 
 ## 6. What the API case study changes
 
-`../NeoDarwin-api-study` was written for an XNU-based system, but most of its findings are about the platform surface rather than the kernel, so they carry over. The friction IDs below refer to its `friction/` register.
+The API case study was written for an XNU-based system, but most of its findings are about the platform surface rather than the kernel, so they carry over. [study/](study/README.md) keeps what this design takes from it. The friction IDs below refer to its register, [study/friction.md](study/friction.md); "heritage §N" to [study/heritage.md](study/heritage.md); Q2 and Q5 to [study/shapes.md](study/shapes.md) and [study/compat.md](study/compat.md); and S7 to [study/prototypes.md](study/prototypes.md).
 
 | Study finding | Where it lands here |
 |---|---|

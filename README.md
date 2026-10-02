@@ -50,7 +50,8 @@ The toolchain is pinned (ADR-0001): clang, lld and llvm-objcopy 22.1.8 from Fedo
 | [docs/04-bootstrap-toolchain.md](docs/04-bootstrap-toolchain.md) | **Phase 4.** Language policy, repository layout, build and cross-compilation, and the milestones: M1–M3 up to a bootable image with a shell and a network mount, then M4–M12 |
 | [docs/05-debugger.md](docs/05-debugger.md) | **Phase 5.** The native debugger `dbg`: kernel debug mechanisms, the `/proc` debug files, symbols, crash directories, RAD Debugger-level features, profiling, remote debugging |
 | [docs/adr/](docs/adr/README.md) | Architecture decision records |
+| [docs/study/](docs/study/README.md) | What this design takes from the platform API study: the friction register (F-101 … F-219), the heritage findings, the convergent API shapes, the compatibility-layer measurements and the prototype results |
 
 ## Background
 
-The application-framework design builds on the platform API study in `../NeoDarwin-api-study`. That study covers about 44 corpus projects, 30 admitted friction entries, heritage systems from AmigaOS to the Switch, and prototype measurements. [docs/00-overview.md §6](docs/00-overview.md#6-what-the-api-case-study-changes) records which of its findings this design adopts, and where.
+The application-framework design builds on a platform API study, written for an earlier XNU-based design and kept private. It read 44 corpus projects pinned at fixed commits, admitted 30 friction entries, compared heritage systems from AmigaOS to the Switch, and measured prototypes. [docs/study/](docs/study/README.md) keeps the findings and their evidence, cited by project and commit so they can be checked upstream. [docs/00-overview.md §6](docs/00-overview.md#6-what-the-api-case-study-changes) records which findings this design adopts, and where.
