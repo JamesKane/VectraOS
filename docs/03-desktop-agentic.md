@@ -46,6 +46,7 @@ _Blueprint v0, 2026-09-30._
 | GL and GLES | None. The OS ships no GL implementation (rule 13) |
 | Shader IR | SPIR-V only. GLSL and HLSL are compiled to SPIR-V at build time; there is no shader compiler on the device |
 | Pipeline cache | A system service keyed by (app, shader hash, driver build), warmed at install time (F-103) |
+| Device identity | Each `/dev/gpu/N/info` publishes the device UUID that Vulkan reports (`VkPhysicalDeviceIDProperties`), so two APIs or two processes sharing a buffer know they mean the same device, and `uma=yes|no coherent=yes|no`, so an app chooses the zero-copy path without probing (F-107, F-108) |
 | Kernel-side GPU drivers | User-space `drv-gpu-*` processes serving the Mesa winsys interface over rings, plus `displayd` for modesetting. Order of work: `simplefb` → virtio-gpu (2D, then **Venus** for Vulkan in QEMU) → Apple AGX (the Asahi design: a small, recent kernel interface) → NVIDIA Turing and later (NVK; the kernel driver is mostly an RPC client of the GSP firmware, as Linux's Nova driver is) → Mali (panthor-equivalent) → AMD (amdgpu-equivalent for RADV) last, because of its size. An ADR fixes the order before M7 |
 
 **Displays:** `displayd` is a user-space KMS. Each output has CRTC and plane state, and the commit is atomic: it succeeds or fails as a whole, with no half-applied mode. It serves `/wsys/outputs/NAME/{info,ctl}` and signals a per-output **vblank Counter** from the display IRQ.
@@ -74,10 +75,12 @@ _Blueprint v0, 2026-09-30._
 - **One clock:** each output has one frame clock, owned by `winsrv`. A window follows the clock of the output it mostly covers.
 - **Queue depth:** `ctl latency 1|2|3` bounds the number of queued presents. When the bound is reached, `present` fails fast and never blocks (F-102).
 - **Configure sequence:** every present carries the `config_seq` it was rendered for. A buffer rendered for the wrong size is clipped or padded for at most one frame, and never stretched (F-208).
+- **One configure record:** a change of size, scale, visibility or focus arrives as one event carrying the logical size, the pixel size, the scale, the `config_seq`, the visibility state, focus, and an `interactive` flag that is set while the user is dragging or resizing the window. Configure events during an interactive resize are coalesced to one per composited frame (F-202, F-205).
+- **Buffer size apart from window size:** a surface may keep a fixed size, such as a simulation's grid or an emulator's screen, with `ctl viewport W H`; `winsrv` scales it to the window, so a resize needs no rescaling pass in the app (S7 finding 3, as Wayland's `wp_viewporter`).
 - **Variable refresh:** on a VRR output the frame event carries a window, `target_min` and `target_max`, instead of one vblank, and a present may land anywhere in it. `refresh` reports the range. A client that presents late does not wait for the next fixed vblank.
 - **Tearing:** a fullscreen window on a direct-scanout plane may ask for `ctl present async`. Flips then happen at once, without waiting for vblank, and feedback reports `tearing=yes`. Composited windows never tear.
 - **HDR:** a `vx_buffer_desc` carries the transfer function (sRGB, PQ, HLG, linear), the primaries and mastering metadata. Outputs publish their capabilities in `info`, and `winsrv` maps content to the output. These fields are in protocol v1 even before any driver can drive an HDR output (rule 9).
-- **Visibility:** occluded or hidden windows still get frame events, throttled to a documented 1 Hz. `present` never blocks and never changes visibility (F-209).
+- **Visibility** has four states, `visible`, `partial`, `occluded` and `hidden`, reported in the configure record and in the window's `info`. Occluded and hidden windows still get frame events, throttled to the rate `/wsys/info` states (`hidden_hz=1`). `present` never blocks and never changes visibility (F-209).
 - **Idle:** if no client presents and nothing animates, `winsrv` commits nothing and the GPU stays in its low-power state.
 - **CPU surfaces** get exact feedback too, not just GPU ones (S7 finding 5).
 - **Compositor budget:** `winsrv` runs its composition thread with `realtime(period=refresh, budget=25% of the period)`: 2 ms at 120 Hz, 0.5 ms at 500 Hz. When a fullscreen window is on a direct-scanout plane, composition does not run at all. It gets the GPU's highest-priority queue and preempts other work mid-dispatch where the hardware allows it (§8.3).
@@ -93,15 +96,17 @@ _Blueprint v0, 2026-09-30._
 
 - **No thread affinity.** Any thread holding the files may use them, and a process may multiplex many windows on one thread (F-201).
 - **No modal loops.** Menus, drag and drop, move and resize are server-side and asynchronous (F-202).
-- **Server-side decorations,** drawn by the theme. `flags -titlebar` gives the title strip to the client, and a `titlebar` ctl declares drag, gadget and no-drag regions. Hit-testing stays in the server (F-207).
+- **Server-side decorations,** drawn by the theme. `flags -titlebar` gives the title strip to the client, and a `titlebar` ctl declares drag, gadget and no-drag regions. Hit-testing stays in the server. A client that draws its own title strip starts a move or a resize from its own widget with `move` or `resize EDGE`, given no coordinates: `winsrv` takes over the current press and runs the drag itself, as it does for its own decorations (F-207).
 - **Synchronous geometry.** A `ctl` write returns after the change has been applied, and the resulting `seq` can be read immediately (F-206).
 - **Explicit window kinds:** `toplevel`, `transient`, `popup` (anchored and constrained, like `xdg_positioner`), `tooltip`, and `layer` (panels, docks, overlays; by grant only, because a layer can cover other windows, §5.7).
 - **Scale per window,** as a rational number over 120. Buffers are in device pixels. There is one DPI mode; no "unaware" mode exists (F-205).
+- **Outputs have stable names,** derived from the display's EDID, so a window placed on an output returns there after a reboot or a re-plug. Adding or removing an output is an event on `/wsys/outputs/events`, and the primary output is set in `/wsys/outputs/ctl` (F-205).
 - **Input:**
   - keycodes are USB HID usages, with the modifier state after the event, and the unmodified rune, a `vx_rune` (a Unicode code point, ADR-0013) (F-210);
-  - IME runs in the server, through the `ime` file and `PREEDIT`, `COMMIT` and `DELETE_SURROUNDING` events (F-211);
+  - the active layout is named in the window's `keymap` file, and a change of layout is a `KEYMAP` event. Dead keys and compose are resolved in the server; key repeat is generated there and flagged as repeat (F-210);
+  - IME runs in the server, through the `ime` file and `PREEDIT`, `COMMIT` and `DELETE_SURROUNDING` events. `ime purpose text|password|number|url|email|terminal` tells the input method what the field holds, and a key event the IME looked at and passed on carries an `imepass` flag, so the app does not act on it twice (F-211);
   - pen input has proximity and tool identity (F-212);
-  - `pointer lock|confine|warp` delivers raw deltas (F-213);
+  - `pointer lock|confine|warp` delivers raw deltas, with the accelerated deltas beside them. A lock is honoured only while the window has focus and is dropped during a server-run drag; each grant and release is a `POINTER` event, and motion caused by a warp carries a `warped` flag, so a camera does not jump (F-213);
   - high-rate devices, such as an 8 kHz mouse, deliver every event with its device timestamp, converted to the system's one clock (01 §4.4) so it compares directly with frame times. Events are batched per wake-up but never merged, so a game sees the full history, as `getCoalescedEvents` gives on the web.
 - **Capability queries:** `/wsys/info` lists protocol version and feature bits.
 
@@ -258,17 +263,17 @@ int main(void) {
 
 Errors are sticky: a failed open makes the next `vx_wait` return `false`, and `vx_app_error(app)` gives the reason. The minimal program therefore needs no error checks.
 
-**Continuous frames:** the minimal program draws only when asked (`vx_window_redraw`), so an idle window costs nothing. A game calls `vx_window_animate(win, true)` once, and from then on gets a frame event for every frame the output shows, until it turns animation off.
+**Continuous frames:** the minimal program draws only when asked (`vx_window_redraw`), so an idle window costs nothing. A game calls `vx_window_animate(win, true)` once, and from then on gets a frame event for every frame the output shows, until it turns animation off. While a window is occluded or hidden, `vxui` sets the intent of the thread that draws it to `background`, and back to `interactive-frame` when the window is shown again; an engine with its own render thread reads the visibility state from the configure record and does the same (F-204).
 
 **Pixels, with no GPU API:** the engine tier does not require Vulkan. A program can draw into memory itself, as a software renderer or an emulator does:
 
 ```c
-vx_pixels px = vx_pixels_begin(win, &ev.frame);   // a mapped BGRA8 vx_buffer: px.data, px.w, px.h, px.stride
+vx_pixels px = vx_pixels_begin(win, &ev.frame);   // a mapped BGRA8 vx_buffer: px.data, px.w, px.h, px.stride, px.age
 draw_my_frame(px.data, px.w, px.h, px.stride);
 vx_pixels_present(win, &px);                      // with damage rects, if it has them
 ```
 
-The buffer is a CPU surface (§4): it gets exact frame feedback, and `winsrv` puts it on a scan-out plane when it can. A second exit criterion stands beside the minimal program: a window drawn by the CPU from this buffer, sound the program writes itself into a stream ring (§7), and a gamepad, in 12 calls or fewer, with no Vulkan, no callback and no widget.
+The buffer is a CPU surface (§4): it gets exact frame feedback, and `winsrv` puts it on a scan-out plane when it can. `px.age` says how many frames ago this buffer's contents were last presented (0 for a new buffer), so a program that redraws only damage repaints what changed since then, with no copy of the whole frame. A second exit criterion stands beside the minimal program: a window drawn by the CPU from this buffer, sound the program writes itself into a stream ring (§7), and a gamepad, in 12 calls or fewer, with no Vulkan, no callback and no widget.
 
 **Distribution and ABI:**
 - Apps are packages with a manifest that declares `requires="vx-abi >= 1"` and the namespace template the app needs, such as `needs=/wsys,/dev/audio,net:client`. Installing the app shows that manifest to the user (F-219).
@@ -297,6 +302,7 @@ Handmade Hero's live code editing is a convention of `vxui`, not a new mechanism
   - the **real-time callback** (§6, principle 5): `vxui` runs it on a thread `audiod` admitted as `realtime`, and it fills the ring one period at a time;
   - **voices over the mixer** (`vx_voice_open`, `vx_voice_play`) give games and UIs sound with no callback and no ring at all.
 - **Real-time admission** for app callback threads is requested by `audiod` on the app's behalf, so the app never uses magic numbers (F-215).
+- **Helper threads join the stream's deadline.** A synthesiser that spreads its voices over several threads brings them into the callback's admitted budget (`vx_realtime_join`, 09 §5.7), so they are scheduled against the same period. The admitted parameters and every deadline miss are readable as text in `/proc/N/threads/T/sched` (F-215).
 
 ## 8. Local-first AI in the desktop
 

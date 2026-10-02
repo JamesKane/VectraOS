@@ -94,7 +94,11 @@ There is one event record for the whole native API, `vx_event`: 64 bytes, a kind
 
 ### 4.8 Versions and the ABI
 
-- **`libvx` and `vxui` are linked statically,** as everything in the system is today (§10, question 1). The stable binary interface is therefore the kernel's syscalls and the file servers' protocols, not library symbols. That is Plan 9's arrangement, and it needs no dynamic loader and no symbol versioning.
+- **Static today, dynamic by design.** Today every program links statically, because the system has no dynamic loader yet. That is a present state, not the goal. The target is that `libvx` and `vxui` are shared objects the release provides, and apps link to them dynamically:
+  - **Hot reload needs a loader anyway.** Its host maps a fresh code image, `app.so`, into a running process (03 §6.1); the loader that does that also loads `libvx` and `vxui`.
+  - **A fix reaches every app** with the release that carries it, without rebuilding the app.
+  - **The stable binary interface becomes `libvx`'s and `vxui`'s exported symbols,** checked by ABI levels (below). The syscalls behind them become private between `libvx` and the kernel, as `ntdll`'s are on Windows, so they may change with a release.
+  - **The loader stays small and adds one indirection, never more:** every symbol is bound when the image loads, the binding table is then read-only, and a call into `libvx` is one indirect call. There is no lazy binding, no symbol interposition and no search path; libraries come from the app's lock (06 §3.4).
 - **ABI levels.** ADR-0004 freezes `vx-abi` v0; each later level only adds. A program declares the level it targets, `VX_TARGET_ABI`, which its manifest repeats (`requires=vx-abi>=2`, 06 §3.4). The headers declare a newer call only when the target level includes it, so using one without raising the target is a compile error, which is the study's "error on an unguarded newer symbol" (F-219). A program that wants a newer feature when present checks `vx_abi_level()` at run time.
 - **Optional services are files,** not libraries. A program that uses `aid` opens `/ai`; if `aid` is not installed the open fails with an ordinary error. There is no `dlopen` probing (F-219).
 
@@ -294,38 +298,20 @@ These are `vxui` (03 §6) and the engine tier, and 03 owns them. §7 lists what 
 | `select`, `poll`, `epoll`, `kqueue` | The loop (§5.4) |
 | Sockets | `vx_dial` over `/net` (§5.10) |
 | Locales | Text is UTF-8 (ADR-0013); formatting is not localised |
-| `dlopen` | Static linking and services as files (§4.8) |
+| Probing with `dlopen` for optional features | ABI levels checked at compile time, and services as files (§4.8). The loader maps libraries and hot-reload code images; no program loads a library to find out what the system has |
 | A main thread, a run loop the system owns, a callback driver | The program owns its loop (03 §6) |
 | `sleep(seconds)`, timer resolution | Absolute deadlines with leeway (§5.6) |
 
 ## 7. Study findings not yet in the blueprint
 
-A second reading of the study found details its condensed copy in [study/](study/README.md) dropped or softened. These are the ones that change an interface; each lands where shown.
-
-**Below the toolkit:**
+A second reading of the study found details its condensed copy in [study/](study/README.md) dropped or softened. Those that concern windows, input, audio and the GPU are now in 03: four-state visibility, one configure record with an `interactive` flag, viewports, stable output names, coordinate-free move and resize, the keymap file, IME purpose and pass-through, pointer-lock events and warp flags, buffer age, visibility driving render-thread intent, helper threads joining an audio deadline, and GPU device identity (03 §3, §4, §5.1, §6, §7). These remain, for the documents below the toolkit:
 
 | Finding | Proposal | Lands in |
 |---|---|---|
 | F-217: per-request cache policy, prefetch hints, a pinned-memory budget | `vx_io` flags (§5.5); 9Px read and write fields; a pin budget in 01 §5 | 02 §3.3, 01 §5 |
 | F-218: fixed reservations in release builds | Emulators and translation layers need `AS_FIXED` in release builds; 01 §5 allows it only under the `dev` policy. Allow it for any reservation in an unused range, keeping JIT under the existing W^X dual mapping | 01 §5 |
-| F-215: helper threads joining a real-time deadline; misses as text | `vx_realtime_join`; `/proc/N/threads/T/sched` | 01 §8, 05 §3 |
-| F-204: window visibility driving thread intent | `vxui` lowers a window's render thread to `background` when the window is hidden and raises it when shown | 03 §6 |
-| F-107, F-108: device UUID; "is this GPU cache-coherent UMA" | Fields in `/dev/gpu/N/info`, read through `vx_ndb_file` | 02 §5.3 |
+| F-215: deadline joins and misses in the kernel | `sched_ctx` sharing for `vx_realtime_join`; the `sched` file | 01 §8, 05 §3 |
 | F-109: GPU memory priority as eviction order | Vulkan memory priority maps onto VMO purge order | 01 §5 |
-
-**In `/wsys` and `vxui`, before the `/wsys` v1 freeze (03 §5.1):**
-
-| Finding | Proposal |
-|---|---|
-| F-209 | Visibility as four states (visible, partial, occluded, hidden) in the configure record, and the throttled frame rate stated in `info` |
-| F-205 | One configure record carrying logical size, pixel size, scale and `config_seq`; stable output names; an output hot-plug event |
-| F-202 | An `interactive` flag on configure events while the user is dragging or resizing |
-| F-207 | `move` and `resize edge` verbs with no coordinates, which start a server-driven move from the current press |
-| F-210 | A `keymap` file naming the active layout, and an event when it changes |
-| F-211 | A flag on key events the IME passed through; a `purpose` verb on the `ime` file |
-| F-213 | A flag on motion caused by a warp; pointer-lock state changes as events |
-| S7 finding 3 | A buffer size independent of window size, scaled by the compositor (`wp_viewporter`) |
-| ndtk | Buffer age on CPU surfaces, for damage-only redraw |
 
 ## 8. Examples
 
@@ -383,7 +369,7 @@ for (;;) {
 
 | Today | Becomes |
 |---|---|
-| `vx-rt`, `vx-mem`, `vx-utf`, `vx-ndb`, `vx-note`, `vx-ns`, `vx-9p`'s client, each included as `.c` into one unit, with `static` functions | `libvx`, with public headers under `<vx/…>`, still unity-built inside the OS tree, and shipped as headers plus a static archive in the SDK |
+| `vx-rt`, `vx-mem`, `vx-utf`, `vx-ndb`, `vx-note`, `vx-ns`, `vx-9p`'s client, each included as `.c` into one unit, with `static` functions | `libvx`, with public headers under `<vx/…>`, still unity-built inside the OS tree; shipped as headers plus a static archive until the loader exists, then as a shared object |
 | No allocator: static buffers, or `vmo_create` and `as_map` by hand (`servers/tmpfs/tmpfs.c`, `servers/nsd/nsd.c`) | Arenas and pools (§5.2); needs `as_reserve` and `vmo_op`, both unimplemented |
 | No formatting: `cmd/ping.c` hand-rolls numbers | `<vx/fmt.h>` |
 | `vx_ns_*` without stat, remove or seek; callers drop to `p9c_*` | `<vx/file.h>` in full |
@@ -398,8 +384,8 @@ The draft also found places where the documents and the code disagree, to settle
 
 ## 10. Open questions
 
-1. **Static or shared `libvx`.** Static linking keeps the ABI to syscalls and protocols and needs no loader; a shared `libvx` would let a fix reach every app without rebuilding, which 06's per-app packages make cheap anyway. 06 §16 question 8 asks the same of every library. Static is proposed.
-2. **Syscall numbers or a vDSO entry table** as the stable boundary. Static programs that make syscalls directly freeze the numbers, as Linux does; calling through the vDSO page, as Windows calls through `ntdll`, lets numbers change but adds an indirect call. ADR-0004 decides.
+1. **When the loader comes, and which programs stay static.** Dynamic linking is the direction (§4.8); the loader is needed by M6 for hot reload. The boot path, `svcd` and the servers that start before `fsd` have nothing to load libraries from, so they may stay static. 06 §16 question 8 asks the same of every library package.
+2. **Whether syscall numbers are ever frozen.** With `libvx` shared, apps never make syscalls, so the numbers can stay private. The static programs in the base release are rebuilt with the kernel and need no frozen numbers either. Only a third-party static program would, so ADR-0004 can freeze the record layouts and leave the numbers private, provided third-party programs link `libvx` dynamically once the loader exists.
 3. **How much of the loop is in `libvx`.** Timers here are user-space bookkeeping over the port's deadline; a kernel timer object would be another syscall family. Start with bookkeeping.
 4. **`vx_fd` or `vx_file *`.** Small integer ids match Plan 9 and the study's handle rule; pointers match the rest of `libvx`'s objects. Ids are proposed, because descriptors are passed between threads and stored in events.
 5. **`vx_heap` at all.** Arenas and pools cover the system's own code; `hx`'s buffers and long-lived app data may not fit them. Measure with `hx` before adding it.
