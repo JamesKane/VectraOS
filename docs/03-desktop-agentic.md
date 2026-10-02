@@ -237,13 +237,13 @@ The case study's lesson is that platforms fail developers in two ways: they bury
 ```c
 #include <vxui.h>
 
-int main(void) {
+const char *vx_main(void) {
     vx_app    *app  = vx_app_open("org.example.beep");                  // 1
     vx_window *win  = vx_window_open(app, "Beep", 640, 360);            // 2
     vx_voice  *beep = vx_voice_open(app, VX_TONE(440.0f, 120));         // 3
     float x = 320.0f;
     vx_event ev;
-    while (vx_wait(app, &ev, VX_FOREVER)) {                             // 4
+    while (vx_wait(app, &ev, VX_INFINITE)) {                            // 4
         switch (ev.kind) {
         case VX_FRAME: {
             vx_canvas *c = vx_canvas_begin(win, &ev.frame);             // 5
@@ -253,11 +253,11 @@ int main(void) {
         } break;
         case VX_KEY:     if (ev.key.down && ev.key.usage == VX_KEY_SPACE) vx_voice_play(beep); break; // 9
         case VX_POINTER: x = ev.pointer.x; vx_window_redraw(win); break; // 10
-        case VX_CLOSE:   return 0;
+        case VX_CLOSE:   return nullptr;
         default:         break;
         }
     }
-    return 0;
+    return nullptr;
 }
 ```
 

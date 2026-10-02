@@ -380,7 +380,7 @@ for (;;) {
 | `procfs` and `ptyd` speak POSIX signal numbers (`lib/vx-posix/posix.h`) | Native note names and `ctl` verbs (`stop`, `start`, `kill`) in `procfs`; signal numbers only in the POSIX back end |
 | No `[[nodiscard]]`, no nil objects, no ABI version | As 04 §1.1 already requires; `VX_TARGET_ABI` with ADR-0004 |
 
-The draft also found places where the documents and the code disagree, to settle when each call is written: `task_kill`'s argument order (ADR-0010 against `abi.h`), `port_bind`'s threshold and `port_wait`'s return type (01 §4.4), `channel_call`'s signature (01 §4.5), the syscall count (ADR-0010 says 61), pipes as rings in 01 §9 against channels in the code, badges in 01 §3 with no field to carry them, and `int main(void)` with `VX_FOREVER` in 03 §6's minimal program against `vx_main` and `VX_INFINITE` in the code. The minimal program should use `vx_main`.
+The draft also found places where the documents and the code disagreed: `task_kill`'s arguments and `vx_exits` (ADR-0010), `port_bind`'s threshold and `port_wait`'s return type (01 §4.4), `channel_call`'s `vx_call` (01 §4.5), the syscall count, pipes as channels (01 §9), badges not yet built (01 §3), and 03 §6's minimal program, which now uses `vx_main` and `VX_INFINITE`. The documents now follow the code in each case.
 
 ## 10. Open questions
 

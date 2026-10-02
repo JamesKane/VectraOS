@@ -20,7 +20,7 @@ The C dialect is not the reason. `exits(char*)`, `notify` and `noted` are plain 
 ## Decision
 
 - **A task ends with an exit string:** UTF-8, at most 128 bytes, and empty for success.
-  - `task_kill(task, id, msg)` takes the string. `vx_exit(msg)` is `task_kill` on the caller's own task. A task whose last thread exits ends with the empty string.
+  - `task_kill(task, msg, len, id)` takes the string. `vx_exits(msg)`, and `vx_exit_str` for a slice, are `task_kill` on the caller's own task. A task whose last thread exits ends with the empty string. (Amended 2026-10-02: the argument order and names as built.)
   - The kernel writes the string itself when it kills a task, in Plan 9's words: `sys: trap: fault read addr=0x… pc=0x…`, `sys: trap: illegal instruction`.
   - `task_info` returns the string. The `EXIT` packet's `value` is 0 for success and its length otherwise, so a supervisor such as `svcd` reads the string only on a failure.
 - **A note is a string of at most 128 bytes, queued per task and delivered by the kernel.**
@@ -40,7 +40,7 @@ The C dialect is not the reason. `exits(char*)`, `notify` and `noted` are plain 
 
 ## Consequences
 
-- The syscall count stays at 61: two calls change their arguments and none is added. The task object grows by 128 bytes for the exit string, plus the note queue (8 × 128 bytes).
+- The syscall count stays at 61: two calls change their arguments and none is added. (ADR-0012 later added `task_exec`, the 62nd.) The task object grows by 128 bytes for the exit string, plus the note queue (8 × 128 bytes).
 - rc-style `$status` becomes possible: the shell keeps the string, and a pipeline's statuses are joined with `|`.
 - `svcd` logs why a service died, not just a number.
 - This changes the kernel ABI, so it comes before more code is built on the integer status. It also unblocks two items in docs/milestones.md's Known gaps, SIGPIPE and SIGHUP from `ptyd`, which are now notes the kernel or `ptyd` posts.

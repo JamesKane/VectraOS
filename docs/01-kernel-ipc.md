@@ -37,7 +37,7 @@ _Blueprint v0, 2026-09-30._
 
 - **Handles:** 32-bit per-task indices into a table of `(object ref, rights, badge)` entries. Each value is a table index plus a **generation count** in the upper bits, bumped every time a slot is reused, so a stale handle fails with `BAD_HANDLE` instead of reaching a new object. Handle values are deterministic: the same program run twice sees the same handles, which keeps debugging and replay reproducible.
 - **Rights:** `READ WRITE EXEC MAP DUPLICATE TRANSFER SIGNAL WAIT MANAGE INSPECT DEBUG`. `DEBUG` on a task allows stopping it and changing its memory and registers (05 §2). Every syscall checks the rights it needs. `handle_dup(h, rights)` can only *reduce* rights.
-- **Badges:** a 64-bit value that the minter attaches when creating a channel or ring endpoint for a client. The server sees it on every message, so it can tell clients apart without trusting what they claim, as with seL4 badges.
+- **Badges:** a 64-bit value that the minter attaches when creating a channel or ring endpoint for a client. The server sees it on every message, so it can tell clients apart without trusting what they claim, as with seL4 badges. **Not built yet:** today every client dials its own channel or ring, so the end a message arrives on already says who sent it, and neither `vx_msg_header` nor `vx_packet` has a badge field. Badges come with the first server that hands one endpoint to many clients, and need an ABI addition then.
 - **Transfer:** handles move *only* through channels or through a ring's handle side channel, and the kernel moves them. A handle sent without `TRANSFER` is refused.
 - **No ambient authority:** a new task starts with exactly the handles its parent passes in the spawn message. There is no global lookup syscall.
 - **The spawn message:** a new task's first thread starts with one handle, its bootstrap channel. The first message there is the spawn message: a header, then ndb records (02 §4.1) that name each handle it carries (`self` is the task itself) and give the program its arguments and its namespace as `mount` and `bind` records, which `vx-ns` replays. The format is in `abi/vx/abi.h`. The parent builds the task with the ELF loader in `vx-rt` (§9); the kernel loads only the root task, and sends it a spawn message too. A shell joins programs into pipes by giving them `stdin` and `stdout` channel ends; a channel message is a chunk of the stream, and the writer closing its end is the end of the file.
@@ -173,8 +173,8 @@ The flag-and-recheck step with a `SeqCst` fence on both sides prevents lost wake
 ### 4.4 Ports and counters: the one wait
 
 ```c
-vx_status port_bind(vx_handle port, vx_handle source, vx_trigger trigger, uint64_t key); // READABLE, PEER_CLOSED, COUNTER_GE(v), IRQ, EXIT, ...
-size_t    port_wait(vx_handle port, vx_instant deadline, vx_duration leeway, vx_packet *out, size_t out_len);
+vx_status port_bind(vx_handle port, vx_handle source, vx_trigger trigger, uint64_t key, uint64_t threshold); // READABLE, PEER_CLOSED, COUNTER_GE (threshold v), IRQ, EXIT, ...
+int64_t   port_wait(vx_handle port, vx_instant deadline, vx_duration leeway, vx_packet *out, size_t out_len); // packets returned, or a negative status
 vx_status port_post(vx_handle port, const vx_packet *packet); // self-wake and user events; replaces eventfd and EVFILT_USER
 ```
 
@@ -187,7 +187,7 @@ vx_status port_post(vx_handle port, const vx_packet *packet); // self-wake and u
 
 ### 4.5 Synchronous call fast path
 
-`channel_call(ch, msg, reply_buf, deadline)` sends a message and blocks for the reply in one kernel entry. If the server thread is waiting in `channel_read` on that channel, the kernel switches to it directly, **donating the caller's `SchedContext`**, so the server runs on the client's budget and intent, and switches back on reply. This is the seL4 IPC fast path. It exists for small latency-critical RPCs, such as `nsd`'s `bind` and `mount`, registering a child with `procfs`, `keyd` signing, and `devmgr` queries. It is not used for bulk data. In v1 (M2) the kernel picks the request's `txid` and hands the reply whose `txid` matches straight to the waiting caller, never through the queue; donation and the direct switch come with scheduling contexts.
+`channel_call(ch, &call, deadline)` sends a message and blocks for the reply in one kernel entry. A `vx_call` holds both halves: the request's bytes and handles, and the buffers the reply's bytes and handles land in (`abi/vx/abi.h`). If the server thread is waiting in `channel_read` on that channel, the kernel switches to it directly, **donating the caller's `SchedContext`**, so the server runs on the client's budget and intent, and switches back on reply. This is the seL4 IPC fast path. It exists for small latency-critical RPCs, such as `nsd`'s `bind` and `mount`, registering a child with `procfs`, `keyd` signing, and `devmgr` queries. It is not used for bulk data. In v1 (M2) the kernel picks the request's `txid` and hands the reply whose `txid` matches straight to the waiting caller, never through the queue; donation and the direct switch come with scheduling contexts.
 
 ### 4.6 Futexes
 
@@ -398,7 +398,7 @@ This is how LLVM, Python and Git run without touching the kernel.
 ```
   app ──► musl libc (unchanged API) ──► vx back end (replaces __syscall)
                                           │ fd table lives in the process (as in fdio)
-          fd → { 9Px fid on a ring | socket (/net fid) | pipe ring | pty fid | event port }
+          fd → { 9Px fid on a ring | socket (/net fid) | pipe channel | pty fid | event port }
                                           │
           process-model calls ──9Px files──► procfs   (/proc/N: status, ctl, note, notepg, wait)
 ```
@@ -409,11 +409,11 @@ This is how LLVM, Python and Git run without touching the kernel.
 | Open-file descriptions | An fd refers to an open-file description, kept by the server with the fid: the offset, `O_APPEND` and the status flags. `fork`, `dup` and fd passing share it, as POSIX requires, so `(a; b) > f` and concurrent appends to one log behave. This needs the `posix` 9Px extension (02 §3.3). |
 | `rename` `link` `symlink` `fcntl` locks `fsync` | The `posix` 9Px extension, which uses 9P2000.L's messages for these unchanged. 9P2000 alone can only rename within one directory, and Git renames objects across directories. |
 | `mmap` of a file | 9Px `Tmap` returns a pager-backed VMO cap (02 §3), and libc maps it. `MAP_SHARED` is coherent through the page cache in `fsd`. |
-| `pipe` | A ring between two processes, owned by libc. `procfs` is not involved. |
+| `pipe` | A channel between two processes, each write one message of a header and up to 4 KiB, the same pipes `vx-rt`'s stdio uses, so POSIX and native programs share them. `procfs` is not involved. A ring replaces the channel if the terminal throughput budget (00 §8) shows a pipe in the way. |
 | sockets | The BSD socket calls translate to `/net/tcp/clone` and the files in the connection directory, as Plan 9's APE does (`ports/musl/vx/socket.c`). A socket's descriptor holds the conversation's `data` file; `bind` and `listen` are `announce`, `connect` is `connect`, `accept` opens `listen`, `getsockname` and `getpeername` read `local` and `remote`. UDP sockets use `netd`'s 52-byte headers, so `sendto` and `recvfrom` carry addresses. `fork` and `exec` reopen `data` by its path. `netd` loops back 127/8 and its own address. The data path is `netd`'s rings. |
 | `poll` `select` `epoll` `kqueue` | All built on the one port. Each fd type knows how to bind its readiness source. A 9Px fid is readable only once a read has returned, so libc keeps one read-ahead request outstanding per polled fd and buffers its reply. |
 | `fork` | libc asks the kernel to clone the address space copy-on-write, duplicates the handle table (with inheritance rules), and copies the fd table in libc. Ring mappings are not inherited: the child's first use of a connection opens a new ring, because a copied ring is broken and a shared one would have two producers. `fork` is correct but not fast; `posix_spawn` and `vfork`-then-`exec` have a fast path that never clones. |
-| `exec` | Implemented in the library. The ELF loader in `libvxrt` builds the new image in a scratch task, and `task_exec` moves it into the caller, which keeps its task, and so its pid, parent and registration (ADR-0012), as 9front's `exec` keeps the `Proc`. |
+| `exec` | Implemented in the library. The ELF loader in `vx-rt` builds the new image in a scratch task, and `task_exec` moves it into the caller, which keeps its task, and so its pid, parent and registration (ADR-0012), as 9front's `exec` keeps the `Proc`. |
 | process calls | `getpid`, `kill`, `killpg`, `setpgid`, `setsid` and `waitpid` are reads and writes of `/proc/N/{status,note,notepg,ctl,wait}`, as 9front's APE does (ADR-0011). Process groups are note groups. |
 | signals | Signals are built on notes (ADR-0010). `kill` writes a note; the kernel delivers it by `thread_interrupt`, which diverts a thread to the back end's note handler. That handler maps the note to a signal and applies the masks, pending sets and `SA_RESTART` kept in libc. A note at a blocked 9P call flushes it with `Tflush`. Synchronous faults arrive through the task's exception port and are turned into `SIGSEGV`, `SIGFPE` and so on. A handler never runs in the middle of a ring submission: the client library blocks signals for the few instructions of a submit, so a handler that calls `write()` cannot corrupt the ring. |
 | ttys and ptys | `ptyd` serves `/dev/pty`. Line discipline is in the server. The output path is a pass-through: with output processing off, `ptyd` forwards the writer's buffers to the terminal's ring without touching each byte, and with `ONLCR` on it scans for newlines only. `ptyd` sits on the path of the terminal throughput budget (00 §8), as conhost did in refterm's measurements. |
