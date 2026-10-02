@@ -355,13 +355,13 @@ static p9_ring_server server = {
     .supported = P9_EXT_POSIX | P9_EXT_XATTR,
 };
 
-int vx_main(void) {
+const char *vx_main(void) {
   server.listen = vx_spawn_take("listen");
   if (!server.listen) {
     vx_print(VX_STR("tmpfs: no listen channel\n"));
-    return 1;
+    return "no listen channel";
   }
   nodes[ROOT] = (node){.used = true, .dir = true, .mode = 0777, .mtime = now_seconds()};
   vx_print(VX_STR("tmpfs: serving /srv/tmpfs\n"));
-  return p9_ring_serve(&server);
+  return p9_ring_serve(&server) == VX_OK ? nullptr : "cannot serve";
 }

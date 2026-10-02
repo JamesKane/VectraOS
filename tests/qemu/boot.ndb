@@ -13,5 +13,5 @@ expect="svcd: started bootfs (task 3)"
 # CPUs fall; the shell's prompt comes only once its namespace has mounted it.
 prompt="vx% "
 fail="vx: panic"
-fail="killed"
+fail=") killed: "
 fail="FAILED"

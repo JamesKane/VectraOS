@@ -99,16 +99,16 @@ static p9_ring_server server = {
     .supported = P9_EXT_XATTR, // Tgetattr, for stat; nothing can be changed
 };
 
-int vx_main(void) {
+const char *vx_main(void) {
   server.listen = vx_spawn_take("listen");
   if (!server.listen) {
     vx_print(VX_STR("nullfs: no listen channel\n"));
-    return 1;
+    return "no listen channel";
   }
   vx_ndb_record rec;
   vx_str seed = vx_spawn_record("entropy", &rec) ? vx_ndb_get(&rec, "entropy") : (vx_str){};
   if (seed.len >= 16) vx_drbg_mix(&randomness, seed.ptr, seed.len, true);
   vx_print(randomness.seeded ? VX_STR("nullfs: serving /srv/null\n")
                              : VX_STR("nullfs: serving /srv/null, without entropy: random cannot be read\n"));
-  return p9_ring_serve(&server);
+  return p9_ring_serve(&server) == VX_OK ? nullptr : "cannot serve";
 }

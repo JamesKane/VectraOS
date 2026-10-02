@@ -28,7 +28,7 @@ The C dialect is not the reason. `exits(char*)`, `notify` and `noted` are plain 
   - Up to eight notes are queued, as now. A note posted to a full queue fails with `SHOULD_WAIT`.
   - Delivery works as 01 §9 and step 1b already do. A blocked call ends with `ERR_INTERRUPTED`, and the thread is diverted to the in-task handler. The exception record now carries the note's text.
 - **With no handler, a note ends the task, with the note as its exit string.** This replaces `BAD_STATE`. Every native program can now be interrupted, and a killed one says why.
-- **vx-rt gains Plan 9's API in standard C:** `vx_notify(handler)`, and `vx_noted(VX_NCONT | VX_NDFLT)` from inside the handler. A note never interrupts a ring submission: the existing rule that blocks interrupts for the few instructions of a submit still applies.
+- **vx-rt gains Plan 9's API in standard C:** `vx_notify(handler)`. The handler gets the note and the `vx_exception` it came in, and returns `VX_NCONT` or `VX_NDFLT` where Plan 9's calls `noted`, so the FP/SIMD state saved around it is restored before the thread goes on (`lib/vx-rt/note.c`). A fault reaches the handler too, as a note in Plan 9's words. A native program's `vx_main` returns its exit string, as `exits` takes one. A note never interrupts a ring submission: the existing rule that blocks interrupts for the few instructions of a submit still applies.
 - **A note interrupts a 9P call.** The client sends `Tflush` for the request in flight, as Plan 9's `devmnt` does, and the call ends with `ERR_INTERRUPTED`. This needs `Tflush` and per-request reply offsets in vx-9p (a known gap in docs/milestones.md), so it lands with them.
 - **POSIX signals are built on notes, as 9front's APE builds them.**
   - `kill` posts a note.

@@ -23,11 +23,11 @@ static bool ls(vx_ns *ns, vx_str path) {
     p9c_clunk(c, fid);
   }
   if (e != VX_OK) {
-    vx_print(VX_STR("ls: "));
-    vx_print(path);
-    vx_print(VX_STR(": "));
-    vx_print(p9_error_text(e));
-    vx_print(VX_STR("\n"));
+    vx_eprint(VX_STR("ls: "));
+    vx_eprint(path);
+    vx_eprint(VX_STR(": "));
+    vx_eprint(p9_error_text(e));
+    vx_eprint(VX_STR("\n"));
     return false;
   }
   if (!(st.mode & P9_DMDIR)) {
@@ -61,12 +61,12 @@ static bool ls(vx_ns *ns, vx_str path) {
   return n == 0;
 }
 
-int vx_main(void) {
+const char *vx_main(void) {
   static vx_ns ns;
-  if (vx_ns_from_spawn(&ns) != VX_OK) return 1;
-  if (vx_spawn.argc == 0) return ls(&ns, VX_STR("/")) ? 0 : 1;
-  int status = 0;
+  if (vx_ns_from_spawn(&ns) != VX_OK) return "no namespace";
+  if (vx_spawn.argc == 0) return ls(&ns, VX_STR("/")) ? nullptr : "error";
+  const char *status = nullptr;
   for (uint32_t i = 0; i < vx_spawn.argc; i++)
-    if (!ls(&ns, vx_spawn.args[i])) status = 1;
+    if (!ls(&ns, vx_spawn.args[i])) status = "error";
   return status;
 }

@@ -336,7 +336,7 @@ static long proc_execve(const char *path, char *const argv[], char *const envp[]
   long r = spawn_image(path, false, argv, envp, fd_table, &ctx);
   if (r < 0) return r;
   fd_exit();
-  vx_thread_exit(0);
+  vx_thread_exit(); // unseen: posixd has moved the process to its new task
 }
 
 // --- fork ---
@@ -402,7 +402,7 @@ static long proc_fork(void) {
   if (st == VX_OK) posix = VX_HANDLE_NONE; // the child's now
   if (posix) vx_handle_close(posix);
   if (thread) vx_handle_close(thread);
-  if (st != VX_OK && child) vx_task_kill(child, -1);
+  if (st != VX_OK && child) vx_task_kill(child, VX_STR("fork failed"));
   if (child) vx_handle_close(child);
   if (st != VX_OK) return ctx.error ? ctx.error : -EAGAIN;
   static const char parent_tag[] = "fork parent";

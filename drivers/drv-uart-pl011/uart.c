@@ -67,14 +67,14 @@ static void event(void *ctx, const vx_packet *pk) {
   vx_port_bind(server.port, irq, VX_TRIGGER_IRQ, P9_KEY_USER, 0);
 }
 
-int vx_main(void) {
+const char *vx_main(void) {
   vx_handle mmio = vx_spawn_take("mmio");
   irq = vx_spawn_take("irq");
   server.listen = vx_spawn_take("listen");
   uint64_t at = 0;
   if (!mmio || !irq || !server.listen || vx_as_map(vx_self, mmio, 0, 4096, VX_MAP_WRITE, &at) != VX_OK) {
     vx_print(VX_STR("drv-uart-pl011: no registers, IRQ or listen channel\n"));
-    return 1;
+    return "no registers, IRQ or listen channel";
   }
   vx_handle_close(mmio); // the mapping keeps it
   regs = (volatile uint32_t *)at;
@@ -89,10 +89,10 @@ int vx_main(void) {
   if (vx_port_create(0, &server.port) != VX_OK ||
       vx_port_bind(server.port, irq, VX_TRIGGER_IRQ, P9_KEY_USER, 0) != VX_OK) {
     vx_print(VX_STR("drv-uart-pl011: cannot wait for the IRQ\n"));
-    return 1;
+    return "cannot wait for the IRQ";
   }
   vx_irq_ack(irq);
   service();
   vx_print(VX_STR("drv-uart-pl011: serving /srv/cons\n"));
-  return p9_ring_serve(&server);
+  return p9_ring_serve(&server) == VX_OK ? nullptr : "cannot serve";
 }

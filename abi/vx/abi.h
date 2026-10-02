@@ -20,10 +20,13 @@ typedef struct vx_str { // length-carrying slice; never NUL-terminated
 
 static constexpr vx_instant VX_INFINITE = INT64_MAX; // a deadline that never comes
 
+// The longest exit string or note, in bytes: Plan 9's ERRMAX (ADR-0010).
+static constexpr uint32_t VX_ERRMAX = 128;
+
 // A port packet (docs/01 §4.4): 32 bytes.
 typedef struct vx_packet {
   uint64_t key;   // chosen by whoever bound or posted it
-  uint64_t value; // counter value, IRQ count, exit status; free for user posts
+  uint64_t value; // counter value, IRQ count, exit string's length; free for user posts
   vx_instant timestamp;
   uint32_t source;  // the handle it came from, or 0 for port_post
   uint32_t trigger; // enum vx_trigger
@@ -37,7 +40,7 @@ enum vx_trigger : uint32_t {
   VX_TRIGGER_READABLE,    // a channel end has a message to read
   VX_TRIGGER_PEER_CLOSED, // a channel end's peer is gone
   VX_TRIGGER_COUNTER_GE,  // a counter has reached the binding's threshold; value: the counter
-  VX_TRIGGER_EXIT,        // a task has ended; value: its exit status
+  VX_TRIGGER_EXIT,        // a task has ended; value: its exit string's length (0: success)
   VX_TRIGGER_IRQ,         // an Irq has fired since it was last bound; value: how many times in all
   VX_TRIGGER_EXCEPTION,   // a thread stopped at an exception (exception_bind); value: its thread id
 };
@@ -242,14 +245,20 @@ typedef struct vx_task_summary { // what task_info returns
   uint64_t id;
   char name[24]; // NUL-padded
   vx_task_state state;
-  uint32_t threads;    // live threads
-  int64_t exit_status; // once EXITED
-  uint64_t mapped;     // bytes mapped into its address space
-  uint32_t blocked;    // live threads that are waiting
-  uint32_t reserved;
+  uint32_t threads; // live threads
+  uint64_t mapped;  // bytes mapped into its address space
+  uint32_t blocked; // live threads that are waiting
+  uint32_t exit_len;
+  char exit[VX_ERRMAX]; // once EXITED, its exit string: exit_len bytes, empty for success
 } vx_task_summary;
 
-// task_info(task, &summary, id, flags) and task_kill(task, status, id) act on
+// A task ends with an exit string (ADR-0010): empty for success, else why, in
+// at most VX_ERRMAX bytes of UTF-8. task_kill(task, msg, len, id) ends it with
+// msg; a task whose last thread exits (thread_exit) ends with the empty
+// string; a fault no one handles ends it with Plan 9's words for the trap
+// ("sys: trap: fault read addr=0x0 pc=0x401000").
+//
+// task_info(task, &summary, id, flags) and task_kill(task, msg, len, id) act on
 // the task itself, or with an id, on that task if it is the task or one of
 // its descendants (the tasks it created, theirs, and so on; a task whose
 // creator has gone passes to its creator's creator). With VX_TASK_NEXT,
@@ -346,12 +355,14 @@ enum vx_task_options : uint32_t { VX_TASK_FORK = 1 };
 //     status. A write to a mapping that is not writable (code, for a
 //     breakpoint) first gives the task a private copy of that mapping, as
 //     ptrace does: never a writable mapping of it.
-// thread_interrupt(task, thread, value): interrupts the thread (any thread of
-//     the task, with thread 0): a call it is blocked in returns
-//     ERR_INTERRUPTED, and on its way back to user mode it is diverted to the
-//     in-task handler with an exception of kind INTERRUPT whose code is value.
-//     A task with no in-task handler is not interrupted (BAD_STATE). Up to
-//     eight wait for delivery, each its own exception; more is SHOULD_WAIT.
+// thread_interrupt(task, thread, note, len): posts a note (ADR-0010), a
+//     string of 1 to VX_ERRMAX bytes, to the thread (any thread of the task,
+//     with thread 0): a call it is blocked in returns ERR_INTERRUPTED, and on
+//     its way back to user mode it is diverted to the in-task handler with an
+//     exception of kind INTERRUPT carrying the note. A task with no in-task
+//     handler ends instead, with the note as its exit string, as in Plan 9.
+//     Up to eight notes wait for delivery, each its own exception; more is
+//     SHOULD_WAIT.
 // vmo_clone(vmo, offset, size, options, &out): a new VMO holding a copy of the
 //     range, charged in full (01 §5: commit, not overcommit).
 //
@@ -379,7 +390,7 @@ enum vx_exception_kind : uint32_t {
   VX_EXCEPTION_ALIGNMENT,
   VX_EXCEPTION_FP_DISABLED, // FP/SIMD while the kernel does not save it (01 §11)
   VX_EXCEPTION_GENERAL,     // any other fault (x86 #GP, say); code: the architecture's
-  VX_EXCEPTION_INTERRUPT,   // thread_interrupt; code: its value
+  VX_EXCEPTION_INTERRUPT,   // thread_interrupt; code: the note's length, note: its text
   VX_EXCEPTION_STEP,        // one instruction done, after exception_resume(STEP)
 };
 
@@ -390,6 +401,7 @@ typedef struct vx_exception {
   uint32_t thread; // the id of the thread it happened to
   uint32_t reserved;
   vx_regs regs;
+  char note[VX_ERRMAX]; // INTERRUPT: the note, `code` bytes of it
 } vx_exception;
 
 enum vx_exception_options : uint32_t { VX_EXCEPTION_IN_TASK = 1, VX_EXCEPTION_FIRST_CHANCE = 2 };

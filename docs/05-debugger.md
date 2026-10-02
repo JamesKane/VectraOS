@@ -43,7 +43,7 @@ The kernel adds one right and five syscalls, plus `pmu_configure` for profiling 
                  event=fault  thread=3 pc=0x401200 addr=0x0 access=read
                  event=watch  thread=5 pc=0x4013c8 addr=0x7f001000 access=write
                  event=image  op=map base=0x7f2000000000 path=/lib/libvxui.so build-id=3f9a…
-                 event=thread op=start thread=6 · event=exit status=0
+                 event=thread op=start thread=6 · event=exit status="sys: trap: fault read addr=0x0 pc=0x401200"
     mem        the address space as a file: seek to an address, read or write
     maps       one ndb record per mapping: base= size= prot= image= offset=
     images     one ndb record per loaded ELF: path= base= build-id=

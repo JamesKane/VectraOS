@@ -23,7 +23,7 @@ static vx_handle end, port;
   vx_print(VX_STR("nettest: FAILED: "));
   vx_print(vx_cstr(what));
   vx_print(VX_STR("\n"));
-  vx_thread_exit(1);
+  vx_exits(what);
 }
 
 static void submit(vx_sqe e) {
@@ -144,7 +144,7 @@ static void kill_driver(vx_handle tasks) {
     found = memcmp(info.name, "drv-virtio-net", 15) == 0;
   }
   if (!found) fail("no drv-virtio-net task");
-  if (vx_task_kill_id(tasks, id, -9) != VX_OK) fail("cannot kill the driver");
+  if (vx_task_kill_id(tasks, id, VX_STR("killed")) != VX_OK) fail("cannot kill the driver");
   if (vx_port_bind(port, end, VX_TRIGGER_PEER_CLOSED, 2, 0) != VX_OK) fail("port_bind");
   vx_packet pk = {};
   while (pk.key != 2)
@@ -155,7 +155,7 @@ static void kill_driver(vx_handle tasks) {
   vx_print(VX_STR("nettest: stopped the driver; its session ended\n"));
 }
 
-int vx_main(void) {
+const char *vx_main(void) {
   vx_handle connector = vx_spawn_take("srv:ether0"), tasks = vx_spawn_take("tasks");
   if (!connector || !tasks) fail("no connector to /srv/ether0, or no task tree");
   if (vx_port_create(0, &port) != VX_OK) fail("port_create");
@@ -166,5 +166,5 @@ int vx_main(void) {
   open_session(connector); // the restarted driver serves the same post
   if (!exchange()) fail("no ARP reply from the restarted driver");
   vx_print(VX_STR("nettest: ok after the restart\n"));
-  return 0;
+  return nullptr;
 }

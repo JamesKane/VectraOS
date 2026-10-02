@@ -171,7 +171,7 @@ static void vx_close_all(const vx_handle *h, uint32_t n) {
   vx_close_all(ch, 2); // the child reads its message after our end is gone
   if (st != VX_OK) {
     if (t) {
-      vx_task_kill(t, -1);
+      vx_task_kill(t, VX_STR("spawn failed"));
       vx_handle_close(t);
     }
     return st;

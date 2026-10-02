@@ -540,7 +540,7 @@ void x86_trap(trap_frame *f) {
       kput(VX_STR(" at rip "));
       kput_hex(f->rip);
       kput(VX_STR("\n"));
-      task_fault_exit();
+      task_fault_exit(kind, code, address, f->rip);
     }
   } else {
     panic_start();

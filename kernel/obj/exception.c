@@ -11,9 +11,11 @@
 // exception_resume continues it or kills it. Otherwise the arch code's default
 // reports the fault and kills the task.
 //
-// thread_interrupt is the asynchronous kind: it wakes whatever call the thread
-// is blocked in with ERR_INTERRUPTED, and on its way back to user mode the
-// thread is diverted to the in-task handler, as POSIX signals need (posixd).
+// thread_interrupt is the asynchronous kind: it posts a note (ADR-0010), which
+// wakes whatever call the thread is blocked in with ERR_INTERRUPTED, and on
+// its way back to user mode the thread is diverted to the in-task handler with
+// the note. A task with no handler ends with the note as its exit string, as
+// a Plan 9 process that has not called notify does.
 //
 // The user-mode registers are the frame at the top of the thread's kernel
 // stack, which a stopped thread does not touch: thread_state reads and writes
@@ -139,10 +141,11 @@ static void exception_check_interrupt(void) {
   if (!__atomic_load_n(&th->interrupt_pending, __ATOMIC_RELAXED)) return;
   spin_lock(&t->lock);
   bool pending = th->interrupt_count > 0;
-  uint64_t value = th->interrupt_queue[0];
+  vx_exception e = {.kind = VX_EXCEPTION_INTERRUPT, .code = th->notes[0].len, .thread = th->id};
+  memcpy(e.note, th->notes[0].text, th->notes[0].len);
   if (pending) {
     th->interrupt_count--;
-    for (uint32_t i = 0; i < th->interrupt_count; i++) th->interrupt_queue[i] = th->interrupt_queue[i + 1];
+    for (uint32_t i = 0; i < th->interrupt_count; i++) th->notes[i] = th->notes[i + 1];
   }
   th->interrupt_pending = th->interrupt_count > 0; // the next goes when this one's handler resumes
   spin_unlock(&t->lock);
@@ -152,14 +155,9 @@ static void exception_check_interrupt(void) {
   if (th->wake_pending && th->pending_result == VX_ERR_INTERRUPTED) th->wake_pending = false;
   spin_unlock(&sched.lock);
   struct trap_frame *f = arch_user_frame(th);
-  vx_exception e = {
-      .kind = VX_EXCEPTION_INTERRUPT, .code = (uint32_t)value, .address = value, .thread = th->id};
   arch_frame_regs(f, &e.regs);
-  if (!exception_divert(f, &e)) { // no handler now, or a stack that cannot take it: the end
-    task_fault_start();
-    kput(VX_STR("an interrupt it could not take\n"));
-    task_fault_exit();
-  }
+  if (!exception_divert(f, &e)) // no handler now, or a stack that cannot take it: the note ends it
+    task_exit_with(e.note, e.code);
 }
 
 // The thread of task t with this id, with a reference; or null.
@@ -327,14 +325,20 @@ static int64_t sys_thread_state(vx_handle th, uint64_t id, uint64_t op, uint64_t
                                       : copy_to_user(buf, &e.regs, sizeof e.regs);
 }
 
-static int64_t sys_thread_interrupt(vx_handle th, uint64_t id, uint64_t value) {
-  vx_status st;
+static int64_t sys_thread_interrupt(vx_handle th, uint64_t id, uint64_t note_ptr, uint64_t len) {
+  if (len == 0 || len > VX_ERRMAX) return VX_ERR_INVALID;
+  char note[VX_ERRMAX];
+  vx_status st = copy_from_user(note, note_ptr, len);
+  if (st != VX_OK) return st;
   task *t = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_MANAGE, &st);
   if (!t) return st;
   thread *target = nullptr;
   spin_lock(&t->lock);
-  if (!t->exc_handler || t->ending) {
-    st = VX_ERR_BAD_STATE; // nothing to deliver it to
+  bool handled = t->exc_handler != 0;
+  if (t->ending || t->killed) {
+    st = VX_ERR_BAD_STATE; // ending already
+  } else if (!handled) {
+    st = VX_OK; // no one to take it: it ends the task, below
   } else {
     for (thread *x = t->threads; x && !target; x = x->task_next)
       if (id ? x->id == id : !x->exc_stopped) target = x;
@@ -342,7 +346,8 @@ static int64_t sys_thread_interrupt(vx_handle th, uint64_t id, uint64_t value) {
       st = VX_ERR_SHOULD_WAIT; // its queue is full: the caller may try again
       target = nullptr;
     } else if (target) {
-      target->interrupt_queue[target->interrupt_count++] = value;
+      target->notes[target->interrupt_count].len = (uint8_t)len;
+      memcpy(target->notes[target->interrupt_count++].text, note, len);
       target->interrupt_pending = true;
       object_ref(&target->obj);
     } else {
@@ -350,6 +355,7 @@ static int64_t sys_thread_interrupt(vx_handle th, uint64_t id, uint64_t value) {
     }
   }
   spin_unlock(&t->lock);
+  if (st == VX_OK && !handled) task_kill(t, note, len);
   object_release(&t->obj);
   if (!target) return st;
   sched_kick(target, VX_ERR_INTERRUPTED); // out of a call it is blocked in,

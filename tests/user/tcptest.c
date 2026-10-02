@@ -18,7 +18,7 @@ static vx_ns ns;
     vx_print(p9_error_text((vx_status)st));
   }
   vx_print(VX_STR("\n"));
-  vx_thread_exit(1);
+  vx_exits(what);
 }
 
 typedef struct text {
@@ -108,7 +108,7 @@ static void await_address(void) {
   fail("no address", 0);
 }
 
-int vx_main(void) {
+const char *vx_main(void) {
   if (vx_ns_from_spawn(&ns) != VX_OK) fail("no namespace", 0);
   await_address();
   echo();
@@ -120,5 +120,5 @@ int vx_main(void) {
   vx_print(VX_STR("\n"));
   vx_ns_close(&c.ctl);
   vx_print(VX_STR("tcptest: ok\n"));
-  return 0;
+  return nullptr;
 }

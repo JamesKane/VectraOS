@@ -1,11 +1,13 @@
 // signal.c: POSIX signals (docs/01 §9). Part of backend.c.
 //
-// The dispositions, the mask and the pending set live here, in the process.
-// posixd delivers a signal from another process by thread_interrupt, which
-// diverts this thread to __vx_sig_entry, the task's in-task exception handler;
-// so does any fault, which becomes SIGSEGV, SIGBUS, SIGILL, SIGFPE or
-// SIGTRAP. A signal to itself (raise, abort, kill of its own pid) is made
-// pending here.
+// Signals are built on notes (ADR-0010). The dispositions, the mask and the
+// pending set live here, in the process. A signal from another process is a
+// note ("posix: SIGTERM pid=12", or Plan 9's "interrupt" and the like) that
+// posixd posts; sig_note, this process's note handler (lib/vx-rt/note.c),
+// maps it to its signal through lib/vx-posix/posix.h's table. So does any
+// fault, which becomes SIGSEGV, SIGBUS, SIGILL, SIGFPE or SIGTRAP. A note
+// that is no signal ends the process with it, as in Plan 9. A signal to
+// itself (raise, abort, kill of its own pid) is made pending here.
 //
 // A handler never runs inside the back end, which is not reentrant and may be
 // in the middle of a ring submission: a signal that arrives there is made
@@ -45,9 +47,10 @@ static uint32_t sig_handlers_ran;       // how many handlers have run
 static uint64_t sig_bit(int sig) { return 1ull << (sig - 1); }
 static constexpr uint64_t SIG_UNBLOCKABLE = 1ull << (SIGKILL - 1) | 1ull << (SIGSTOP - 1);
 
-// Ends the process as the signal does by default: the wait status says which
-// (lib/vx-posix/posix.h). A fault is reported first, as the kernel would.
-[[noreturn]] static void sig_terminate(int sig, const vx_exception *e) {
+// Ends the process as the signal does by default, with an exit string a
+// parent's wait reads as that signal (lib/vx-posix/posix.h): a fault's note,
+// or the signal's. A fault is reported first, as the kernel would.
+[[noreturn]] static void sig_terminate(int sig, const vx_exception *e, vx_str fault) {
   if (e) {
     char line[160];
     vx_str name = vx_spawn.name;
@@ -62,13 +65,14 @@ static constexpr uint64_t SIG_UNBLOCKABLE = 1ull << (SIGKILL - 1) | 1ull << (SIG
                  (unsigned long long)e->address);
     if (n > 0) console_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
   }
-  fd_exit();
-  vx_thread_exit(-256 - sig);
+  char note[VX_ERRMAX];
+  proc_exit_str(fault.len ? fault : (vx_str){note, posix_note(sig, 0, note)});
 }
 
 // Carries out sig's disposition. Returns whether a call it interrupted
 // returns EINTR: a handler ran that is not SA_RESTART.
-static bool sig_act(int sig, int code, int64_t sender, uint64_t address, const vx_exception *e) {
+static bool sig_act(int sig, int code, int64_t sender, uint64_t address, const vx_exception *e,
+                    vx_str fault) {
   uintptr_t h = sig_actions[sig].handler;
   unsigned long flags = sig_actions[sig].flags;
   if (h == (uintptr_t)SIG_IGN) return false;
@@ -80,7 +84,7 @@ static bool sig_act(int sig, int code, int64_t sender, uint64_t address, const v
       return false;
     }
     if (posix_default_ignored(sig)) return false;
-    sig_terminate(sig, e);
+    sig_terminate(sig, e, fault);
   }
   uint64_t old = sig_mask;
   sig_mask |= sig_actions[sig].mask & ~SIG_UNBLOCKABLE;
@@ -109,7 +113,8 @@ static bool sig_deliver_pending(void) {
   for (uint64_t ready; (ready = sig_pending & ~sig_mask);) {
     int sig = __builtin_ctzll(ready) + 1;
     sig_pending &= ~sig_bit(sig);
-    eintr = sig_act(sig, sig_sender[sig] ? SI_USER : SI_KERNEL, sig_sender[sig], 0, nullptr) || eintr;
+    eintr =
+        sig_act(sig, sig_sender[sig] ? SI_USER : SI_KERNEL, sig_sender[sig], 0, nullptr, (vx_str){}) || eintr;
   }
   return eintr;
 }
@@ -119,15 +124,16 @@ static void sig_raise_self(int sig) {
   sig_sender[sig] = posix_pid();
 }
 
-// The in-task handler: a fault, or an interrupt carrying a signal.
-[[gnu::used]] static void sig_handle(vx_exception *e) {
+// The note handler: a note from another process, or a fault.
+static vx_noted sig_note(vx_exception *e, vx_str note) {
   if (e->kind == VX_EXCEPTION_INTERRUPT) {
-    int sig = (int)(e->address & POSIX_SIGNAL_MASK);
-    if (sig < 1 || sig > SIG_MAX) return;
+    int64_t sender;
+    int sig = (int)posix_note_signal(note, &sender);
+    if (sig < 1 || sig > SIG_MAX) return VX_NDFLT; // no signal: the note ends the process
     sig_pending |= sig_bit(sig);
-    sig_sender[sig] = (int64_t)(e->address >> 16);
+    sig_sender[sig] = sender;
     if (sig_depth == 0) sig_deliver_pending(); // in the program's own code
-    return;
+    return VX_NCONT;
   }
   int sig = SIGSEGV, code = SEGV_MAPERR;
   switch (e->kind) {
@@ -142,64 +148,14 @@ static void sig_raise_self(int sig) {
   }
   // A fault that is blocked or ignored would only happen again: its default.
   uintptr_t h = sig_actions[sig].handler;
-  if ((sig_mask & sig_bit(sig)) || h == (uintptr_t)SIG_IGN) sig_terminate(sig, e);
-  sig_act(sig, code, 0, e->address, e); // then the instruction again, unless the handler jumped away
+  if ((sig_mask & sig_bit(sig)) || h == (uintptr_t)SIG_IGN) sig_terminate(sig, e, note);
+  sig_act(sig, code, 0, e->address, e, note); // then the instruction again, unless the handler jumped away
+  return VX_NCONT;
 }
-
-// Resumes the thread where it was diverted from, with the registers it had.
-[[gnu::used, noreturn]] static void sig_resume(vx_exception *e) {
-  vx_syscall(VX_SYS_exception_resume, vx_self, 0, VX_RESUME_CONTINUE, (uint64_t)&e->regs, 0, 0);
-  __builtin_trap(); // exception_resume does not return
-}
-
-// The handler's entry. The kernel saves the general registers in the
-// vx_exception, but not FP/SIMD: they are saved here, on the stack, before
-// any C runs, and loaded again before resuming.
-#ifdef __x86_64__
-__asm__(".text\n"
-        ".global __vx_sig_entry\n"
-        ".hidden __vx_sig_entry\n"
-        ".type __vx_sig_entry, @function\n"
-        "__vx_sig_entry:\n"
-        "  endbr64\n"
-        "  movq %rdi, %rbx\n" // the vx_exception, kept across the calls
-        "  subq $528, %rsp\n"
-        "  andq $-64, %rsp\n"
-        "  fxsave64 (%rsp)\n"
-        "  call sig_handle\n"
-        "  fxrstor64 (%rsp)\n"
-        "  movq %rbx, %rdi\n"
-        "  call sig_resume\n"
-        "  ud2\n");
-#else
-__asm__(".text\n"
-        ".global __vx_sig_entry\n"
-        ".hidden __vx_sig_entry\n"
-        ".type __vx_sig_entry, %function\n"
-        "__vx_sig_entry:\n"
-        "  bti c\n"
-        "  mov x19, x0\n" // the vx_exception, kept across the calls
-        "  sub sp, sp, #528\n"
-        "  stp q0, q1, [sp, #0]\n  stp q2, q3, [sp, #32]\n  stp q4, q5, [sp, #64]\n  stp q6, q7, [sp, #96]\n"
-        "  stp q8, q9, [sp, #128]\n  stp q10, q11, [sp, #160]\n  stp q12, q13, [sp, #192]\n"
-        "  stp q14, q15, [sp, #224]\n  stp q16, q17, [sp, #256]\n  stp q18, q19, [sp, #288]\n"
-        "  stp q20, q21, [sp, #320]\n  stp q22, q23, [sp, #352]\n  stp q24, q25, [sp, #384]\n"
-        "  stp q26, q27, [sp, #416]\n  stp q28, q29, [sp, #448]\n  stp q30, q31, [sp, #480]\n"
-        "  mrs x9, fpcr\n  mrs x10, fpsr\n  add x11, sp, #512\n  stp x9, x10, [x11]\n"
-        "  bl sig_handle\n"
-        "  ldp q0, q1, [sp, #0]\n  ldp q2, q3, [sp, #32]\n  ldp q4, q5, [sp, #64]\n  ldp q6, q7, [sp, #96]\n"
-        "  ldp q8, q9, [sp, #128]\n  ldp q10, q11, [sp, #160]\n  ldp q12, q13, [sp, #192]\n"
-        "  ldp q14, q15, [sp, #224]\n  ldp q16, q17, [sp, #256]\n  ldp q18, q19, [sp, #288]\n"
-        "  ldp q20, q21, [sp, #320]\n  ldp q22, q23, [sp, #352]\n  ldp q24, q25, [sp, #384]\n"
-        "  ldp q26, q27, [sp, #416]\n  ldp q28, q29, [sp, #448]\n  ldp q30, q31, [sp, #480]\n"
-        "  add x11, sp, #512\n  ldp x9, x10, [x11]\n  msr fpcr, x9\n  msr fpsr, x10\n"
-        "  mov x0, x19\n"
-        "  bl sig_resume\n"
-        "  brk #0\n");
-#endif
 
 static void sig_init(void) {
-  vx_exception_bind(vx_self, VX_HANDLE_NONE, (uint64_t)__vx_sig_entry, VX_EXCEPTION_IN_TASK);
+  vx_note_exit = proc_exit_str; // a note that is no signal ends the process with it
+  vx_notify(sig_note);
 }
 
 // --- The calls ---

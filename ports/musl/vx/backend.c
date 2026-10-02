@@ -48,6 +48,7 @@
 
 #include "vx.h"
 #include "../../../lib/vx-rt/stdio.c"
+#include "../../../lib/vx-rt/note.c"
 #include "../../../lib/vx-ns/spawn.c"
 #include "../../../lib/vx-rt/spawn.c"
 #include "../../../lib/vx-posix/posix.h"

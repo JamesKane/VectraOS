@@ -133,8 +133,9 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   return (vx_status)vx_syscall(VX_SYS_task_mem_rw, task, (uint64_t)ops, count, 0, 0, 0);
 }
 
-[[maybe_unused]] static vx_status vx_thread_interrupt(vx_handle task, uint64_t thread, uint64_t value) {
-  return (vx_status)vx_syscall(VX_SYS_thread_interrupt, task, thread, value, 0, 0, 0);
+// Posts a note to a thread of the task, or with thread 0 to any (ADR-0010).
+[[maybe_unused]] static vx_status vx_thread_interrupt(vx_handle task, uint64_t thread, vx_str note) {
+  return (vx_status)vx_syscall(VX_SYS_thread_interrupt, task, thread, (uint64_t)note.ptr, note.len, 0, 0);
 }
 
 [[maybe_unused]] static vx_status vx_as_unmap(vx_handle task, uint64_t addr, uint64_t size) {
@@ -313,18 +314,19 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   return (vx_status)vx_syscall(VX_SYS_thread_start, thread, entry, sp, handle, arg2, 0);
 }
 
-[[maybe_unused]] [[noreturn]] static void vx_thread_exit(int64_t status) {
-  vx_syscall(VX_SYS_thread_exit, (uint64_t)status, 0, 0, 0, 0, 0);
+[[maybe_unused]] [[noreturn]] static void vx_thread_exit(void) {
+  vx_syscall(VX_SYS_thread_exit, 0, 0, 0, 0, 0, 0);
   __builtin_unreachable();
 }
 
-[[maybe_unused]] static vx_status vx_task_kill(vx_handle task, int64_t status) {
-  return (vx_status)vx_syscall(VX_SYS_task_kill, task, (uint64_t)status, 0, 0, 0, 0);
+// Ends the task with msg as its exit string: empty for success (ADR-0010).
+[[maybe_unused]] static vx_status vx_task_kill(vx_handle task, vx_str msg) {
+  return (vx_status)vx_syscall(VX_SYS_task_kill, task, (uint64_t)msg.ptr, msg.len, 0, 0, 0);
 }
 
-// Kills the task `id` in task's tree (abi.h).
-[[maybe_unused]] static vx_status vx_task_kill_id(vx_handle task, uint64_t id, int64_t status) {
-  return (vx_status)vx_syscall(VX_SYS_task_kill, task, (uint64_t)status, id, 0, 0, 0);
+// The same for the task `id` in task's tree (abi.h).
+[[maybe_unused]] static vx_status vx_task_kill_id(vx_handle task, uint64_t id, vx_str msg) {
+  return (vx_status)vx_syscall(VX_SYS_task_kill, task, (uint64_t)msg.ptr, msg.len, id, 0, 0);
 }
 
 [[maybe_unused]] static vx_status vx_handle_close(vx_handle h) {

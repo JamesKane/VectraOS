@@ -7,11 +7,13 @@
 // none yet is answered when one ends. The reply to a call can come later
 // than the call: the kernel matches it to the caller by its txid.
 //
-// Signals: posixd delivers each by thread_interrupt, which diverts a thread
-// of the target to its C library's handler (01 §9); the library keeps the
-// dispositions and the mask, and acts on it. SIGKILL, and a signal to a task
-// with no handler that would end it, posixd carries out itself, with
-// task_kill. A child's end is SIGCHLD to its parent.
+// Signals are notes (ADR-0010): posixd posts each as one ("posix: SIGTERM
+// pid=12", lib/vx-posix/posix.h) by thread_interrupt, which diverts a thread
+// of the target to its C library's note handler (01 §9); the library keeps
+// the dispositions and the mask, and acts on it. A task with no handler ends
+// with the note, as the kernel sees to. SIGKILL posixd carries out itself,
+// with task_kill and "killed". A child's end is SIGCHLD to its parent, and
+// its wait status comes from its exit string.
 //
 // Job control: a stopped process is a suspended one (thread_suspend, 05 §2):
 // SIGSTOP stops it here, a stopping signal's default stops it from its own
@@ -187,7 +189,7 @@ static void resume(proc *t) {
 static void deliver(proc *t, int64_t sig, int64_t sender) {
   if (sig <= 0 || sig > POSIX_NSIG || !t->used || t->zombie) return;
   if (sig == POSIX_SIGKILL) {
-    vx_task_kill(t->task, -256 - sig); // a stopped one too: the kill ends its suspension
+    vx_task_kill(t->task, VX_STR("killed")); // a stopped one too: the kill ends its suspension
     return;
   }
   if (sig == POSIX_SIGSTOP) { // never caught: posixd stops it
@@ -202,8 +204,8 @@ static void deliver(proc *t, int64_t sig, int64_t sender) {
     reply(t->chan, t->wait_txid, POSIX_EINTR, nullptr, 0, VX_HANDLE_NONE);
     t->waiting = false;
   }
-  vx_status st = vx_thread_interrupt(t->task, 0, (uint64_t)sig | (uint64_t)sender << 16);
-  if (st == VX_ERR_BAD_STATE && !posix_default_ignored(sig)) vx_task_kill(t->task, -256 - sig); // no handler
+  char note[VX_ERRMAX];
+  vx_thread_interrupt(t->task, 0, (vx_str){note, posix_note(sig, sender, note)});
 }
 
 static bool waits_for(const proc *parent, const proc *child) {
@@ -247,9 +249,11 @@ static bool reap_for(proc *p) {
   return false;
 }
 
-static void ended(proc *p, int64_t exit_status) {
+static void ended(proc *p) {
+  vx_task_summary info;
   p->zombie = true;
-  p->status = posix_wait_status(exit_status);
+  p->status = vx_task_info(p->task, &info) == VX_OK ? posix_wait_status((vx_str){info.exit, info.exit_len})
+                                                    : POSIX_SIGKILL;
   p->waiting = false;
   vx_handle_close(p->task);
   vx_handle_close(p->chan);
@@ -461,11 +465,11 @@ static void drain(vx_handle ch, proc *p, uint64_t key) {
   vx_port_bind(port, ch, VX_TRIGGER_READABLE, key, 0);
 }
 
-int vx_main(void) {
+const char *vx_main(void) {
   listen_ch = vx_spawn_take("listen");
   if (!listen_ch || vx_port_create(0, &port) != VX_OK) {
     vx_print(VX_STR("posixd: no listen channel\n"));
-    return 1;
+    return "no listen channel";
   }
   vx_port_bind(port, listen_ch, VX_TRIGGER_READABLE, KEY_LISTEN, 0);
   vx_print(VX_STR("posixd: serving /srv/posixd\n"));
@@ -482,7 +486,7 @@ int vx_main(void) {
       if (slot >= MAX_PROCS || !procs[slot].used || procs[slot].gen != gen) continue; // an earlier occupant's
       proc *p = &procs[slot];
       if (kind == KEY_EXIT)
-        ended(p, (int64_t)pk[i].value);
+        ended(p);
       else if (kind == KEY_CHANNEL && !p->zombie)
         drain(p->chan, p, pk[i].key);
     }

@@ -59,7 +59,7 @@ static client_state client;
   vx_print(VX_STR("drv-virtio-net: FAILED: "));
   vx_print(vx_cstr(what));
   vx_print(VX_STR("\n"));
-  vx_thread_exit(1);
+  vx_exits(what);
 }
 
 static uint64_t buf_addr(const uint64_t *pages, uint16_t i) { return pages[i / 2] + (uint64_t)(i % 2) * BUF; }
@@ -248,7 +248,7 @@ static void accept_client(void) {
   }
 }
 
-int vx_main(void) {
+const char *vx_main(void) {
   listen = vx_spawn_take("listen");
   if (!listen) fail("no listen channel");
   setup_device();

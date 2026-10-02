@@ -222,16 +222,19 @@ static vx_status start_driver(driver *d) {
   return st;
 }
 
-static void driver_exited(driver *d, int64_t status) {
+static void driver_exited(driver *d) {
   // The device may still hold addresses of the dead driver's DMA memory, which
   // the kernel has freed: stop it reaching memory at all. (Until the IOMMU,
   // M5, it could write there between the driver's death and now.)
   uint16_t command = vx_pci_read16(&d->f->fn, 0x04);
   vx_pci_write16(&d->f->fn, 0x04, (uint16_t)(command & ~(1u << 2)));
+  vx_task_summary info;
+  vx_str why = vx_task_info(d->task, &info) == VX_OK ? (vx_str){info.exit, info.exit_len} : VX_STR("?");
   vx_handle_close(d->task);
   d->task = VX_HANDLE_NONE;
-  say(vx_cstr(d->program), VX_STR(" exited"), VX_STR("\n"));
-  (void)status;
+  say(vx_cstr(d->program), VX_STR(" exited"), why.len ? VX_STR(": ") : VX_STR(""));
+  vx_print(why);
+  vx_print(VX_STR("\n"));
   if (d->starts >= MAX_STARTS) {
     say(vx_cstr(d->program), VX_STR(" keeps exiting; it is not started again"), VX_STR("\n"));
     return;
@@ -284,7 +287,7 @@ static void match_drivers(void) {
   vx_ns_close(&dir);
 }
 
-int vx_main(void) {
+const char *vx_main(void) {
   resource = vx_spawn_take("resource");
   vx_handle acpi = vx_spawn_take("acpi");
   vx_ndb_record rec;
@@ -292,12 +295,12 @@ int vx_main(void) {
   if (!resource || !acpi || !vx_spawn_record("acpi", &rec) || !vx_ndb_get_u64(&rec, "size", &size) ||
       vx_as_map(vx_self, acpi, 0, (size + 4095) & ~4095ull, 0, &at) != VX_OK) {
     vx_print(VX_STR("devmgr: FAILED: no Resource or ACPI tables\n"));
-    return 1;
+    return "no Resource or ACPI tables";
   }
   vx_acpi_table mcfg;
   if (vx_acpi_find((const uint8_t *)at, size, "MCFG", 0, &mcfg) != VX_OK) {
     vx_print(VX_STR("devmgr: no MCFG, so no PCI\n"));
-    return 0;
+    return nullptr;
   }
   vx_ecam e;
   for (uint32_t n = 0; vx_acpi_mcfg(mcfg, n, &e) == VX_OK; n++)
@@ -314,14 +317,13 @@ int vx_main(void) {
 
   if (vx_ns_from_spawn(&ns) != VX_OK || vx_port_create(0, &port) != VX_OK) {
     vx_print(VX_STR("devmgr: FAILED: no namespace, so no drivers\n"));
-    return 1;
+    return "no namespace";
   }
   match_drivers();
   for (;;) { // drivers that exit are started again, up to a limit
     vx_packet pk[8];
     int64_t n = vx_port_wait(port, VX_INFINITE, 0, pk, 8);
     for (int64_t i = 0; i < n; i++)
-      if (pk[i].trigger == VX_TRIGGER_EXIT && pk[i].key < driver_count)
-        driver_exited(&drivers[pk[i].key], (int64_t)pk[i].value);
+      if (pk[i].trigger == VX_TRIGGER_EXIT && pk[i].key < driver_count) driver_exited(&drivers[pk[i].key]);
   }
 }

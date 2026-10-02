@@ -5,7 +5,7 @@
 
 #include "../../lib/vx-rt/rt.c"
 
-int vx_main(void) {
+const char *vx_main(void) {
   vx_print(VX_STR("constest: ready\n"));
   char line[300];
   for (;;) {
@@ -13,7 +13,7 @@ int vx_main(void) {
     if (n == 0) break;
     if (n < 0) {
       vx_print(VX_STR("constest: FAILED to read the console\n"));
-      return 1;
+      return "cannot read the console";
     }
     size_t len = (size_t)n;
     if (len && line[len - 1] == '\n') len--;
@@ -30,5 +30,5 @@ int vx_main(void) {
     }
   }
   vx_print(VX_STR("constest: end of file\n"));
-  return 0;
+  return nullptr;
 }

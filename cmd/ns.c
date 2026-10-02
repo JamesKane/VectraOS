@@ -4,11 +4,11 @@
 #include "../lib/vx-rt/rt.c"
 #include "../lib/vx-ns/spawn.c"
 
-int vx_main(void) {
+const char *vx_main(void) {
   static vx_ns ns;
   static char text[8192];
-  if (vx_ns_from_spawn(&ns) != VX_OK) return 1;
+  if (vx_ns_from_spawn(&ns) != VX_OK) return "no namespace";
   size_t n = vx_ns_print(&ns, text, sizeof text);
   vx_print((vx_str){text, n});
-  return n ? 0 : 1;
+  return n ? nullptr : "too long";
 }

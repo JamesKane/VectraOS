@@ -4,13 +4,18 @@
 //   ns | tail -1                        pipes
 //   echo kill > /proc/2/ctl             output into a file
 //   pid=2; echo $pid 'a b'              variables, and quoting ('' is a quote)
-//   bind -a /boot/bin /bin              builtins: bind, mount, unmount, exit
+//   bind -a /boot/bin /bin              builtins: bind, mount, unmount, exit [status]
 //
 // A command is a program found as given (a path) or in /bin, then /boot/bin,
 // through the shell's namespace. It is loaded by the shell and spawned with a
-// copy of the namespace, the console, and its end of any pipe. A pipe is a
-// channel; output into a file goes through one too, and the shell copies it
-// into the file. Commands exit by themselves; the shell waits for them all.
+// copy of the namespace, the console, its end of any pipe, and the shell's
+// standard error if it has one. A pipe is a channel; output into a file goes
+// through one too, and the shell copies it into the file. Commands exit by
+// themselves; the shell waits for them all.
+//
+// $status is the last command's exit string, as in rc (ADR-0010): empty for
+// success, else why it failed; a pipe's is its commands', joined by |. A
+// builtin sets it too. At the end of its input the shell exits with it.
 
 #include "../lib/vx-rt/rt.c"
 #include "../lib/vx-rt/spawn.c"
@@ -21,10 +26,11 @@ static constexpr int MAX_PIPELINE = 8;
 
 static vx_ns ns;
 
+// Errors go to standard error: the console, unless the shell has a pipe for it.
 static void say(const char *a, vx_str b, const char *c) {
-  vx_print(vx_cstr(a));
-  vx_print(b);
-  vx_print(vx_cstr(c));
+  vx_eprint(vx_cstr(a));
+  vx_eprint(b);
+  vx_eprint(vx_cstr(c));
 }
 
 // --- Variables ---
@@ -49,7 +55,7 @@ static void var_set(vx_str name, vx_str value) {
   }
   if (slot == sizeof vars / sizeof vars[0] || name.len > sizeof vars[0].name ||
       value.len > sizeof vars[0].value) {
-    vx_print(VX_STR("gsh: too many variables, or too long\n"));
+    vx_eprint(VX_STR("gsh: too many variables, or too long\n"));
     return;
   }
   memcpy(vars[slot].name, name.ptr, name.len);
@@ -150,11 +156,23 @@ static uint8_t bind_flags(vx_str f) {
   return flags;
 }
 
+static void set_status(vx_str s) { var_set(VX_STR("status"), s); }
+
+// A builtin's outcome: $status, and on a failure, a message.
 static void report(const char *what, vx_status st) {
-  if (st == VX_OK) return;
+  if (st == VX_OK) {
+    set_status((vx_str){});
+    return;
+  }
   say("gsh: ", vx_cstr(what), ": ");
-  vx_print(p9_error_text(st));
-  vx_print(VX_STR("\n"));
+  vx_eprint(p9_error_text(st));
+  vx_eprint(VX_STR("\n"));
+  set_status(p9_error_text(st));
+}
+
+static void usage(const char *text) {
+  vx_eprint(vx_cstr(text));
+  set_status(VX_STR("usage"));
 }
 
 // True if words[0] was a builtin, which then ran.
@@ -163,7 +181,7 @@ static bool builtin(word *w, int n) {
     uint8_t flags = n > 1 && w[1].text.len && w[1].text.ptr[0] == '-' ? bind_flags(w[1].text) : 0;
     int first = n > 1 && w[1].text.len && w[1].text.ptr[0] == '-' ? 2 : 1;
     if (flags == 0xff || n - first != 2)
-      vx_print(VX_STR("usage: bind [-abc] new old\n"));
+      usage("usage: bind [-abc] new old\n");
     else
       report("bind", vx_ns_bind(&ns, w[first].text, w[first + 1].text, flags));
     return true;
@@ -172,7 +190,7 @@ static bool builtin(word *w, int n) {
     uint8_t flags = n > 1 && w[1].text.len && w[1].text.ptr[0] == '-' ? bind_flags(w[1].text) : 0;
     int first = n > 1 && w[1].text.len && w[1].text.ptr[0] == '-' ? 2 : 1;
     if (flags == 0xff || n - first < 2 || n - first > 3) {
-      vx_print(VX_STR("usage: mount [-abc] tcp!host!port old [aname]\n"));
+      usage("usage: mount [-abc] tcp!host!port old [aname]\n");
       return true;
     }
     p9_client *c;
@@ -190,10 +208,10 @@ static bool builtin(word *w, int n) {
     else if (n == 3)
       report("unmount", vx_ns_unmount(&ns, w[1].text, w[2].text));
     else
-      vx_print(VX_STR("usage: unmount [new] old\n"));
+      usage("usage: unmount [new] old\n");
     return true;
   }
-  if (word_is(w[0], "exit")) vx_thread_exit(0);
+  if (word_is(w[0], "exit")) vx_exit_str(n > 1 ? w[1].text : (vx_str){}); // as rc's exit: the string given
   return false;
 }
 
@@ -249,6 +267,8 @@ static vx_status spawn(const word *w, int n, vx_handle in, vx_handle out, vx_han
     names[count++] = VX_STR("console");
   if (in) handles[count] = in, names[count++] = VX_STR("stdin");
   if (out) handles[count] = out, names[count++] = VX_STR("stdout");
+  if (st == VX_OK && vx_stdio.err && vx_handle_dup(vx_stdio.err, VX_RIGHTS_SAME, &handles[count]) == VX_OK)
+    names[count++] = VX_STR("stderr");
   if (st != VX_OK) {
     for (uint32_t i = 0; i < count; i++) vx_handle_close(handles[i]);
     return st;
@@ -296,7 +316,8 @@ static void pipeline(word *w, int n) {
       break;
     }
     if (w[i].op && w[i].op != '|') {
-      vx_print(VX_STR("gsh: syntax error\n"));
+      say("gsh: syntax error", (vx_str){}, "\n");
+      set_status(VX_STR("syntax error"));
       return;
     }
   }
@@ -304,7 +325,8 @@ static void pipeline(word *w, int n) {
   for (int i = 0; i < n; i++) {
     if (w[i].op != '|') continue;
     if (stages == MAX_PIPELINE) {
-      vx_print(VX_STR("gsh: too many commands in a pipe\n"));
+      say("gsh: too many commands in a pipe", (vx_str){}, "\n");
+      set_status(VX_STR("too many commands"));
       return;
     }
     starts[stages++] = i + 1;
@@ -312,7 +334,8 @@ static void pipeline(word *w, int n) {
   starts[stages] = n + 1;
   for (int s = 0; s < stages; s++)
     if (starts[s + 1] - 1 == starts[s]) {
-      vx_print(VX_STR("gsh: syntax error\n"));
+      say("gsh: syntax error", (vx_str){}, "\n");
+      set_status(VX_STR("syntax error"));
       return;
     }
   if (stages == 1 && builtin(w, n)) return;
@@ -327,6 +350,9 @@ static void pipeline(word *w, int n) {
       return;
     }
   }
+  // Each command's exit string, for $status.
+  static char ends[MAX_PIPELINE][VX_ERRMAX];
+  size_t end_len[MAX_PIPELINE] = {};
   vx_handle tasks[MAX_PIPELINE] = {}, prev = VX_HANDLE_NONE, sink = VX_HANDLE_NONE, port;
   if (vx_port_create(0, &port) != VX_OK) return;
   for (int s = 0; s < stages; s++) {
@@ -339,6 +365,9 @@ static void pipeline(word *w, int n) {
     prev = out ? ch[1] : VX_HANDLE_NONE;
     if (st != VX_OK) {
       say("gsh: ", w[starts[s]].text, st == VX_ERR_NOT_FOUND ? ": not found\n" : ": cannot run it\n");
+      vx_str why = st == VX_ERR_NOT_FOUND ? VX_STR("not found") : VX_STR("cannot run it");
+      memcpy(ends[s], why.ptr, why.len);
+      end_len[s] = why.len;
       continue;
     }
     vx_port_bind(port, tasks[s], VX_TRIGGER_EXIT, (uint64_t)s, 0);
@@ -360,8 +389,12 @@ static void pipeline(word *w, int n) {
     for (int64_t i = 0; i < got; i++) {
       if (pk[i].trigger == VX_TRIGGER_EXIT) {
         running--;
-        if (pk[i].key == (uint64_t)(stages - 1)) // the pipe's status is its last command's, as in rc
-          var_set(VX_STR("status"), (int64_t)pk[i].value ? VX_STR("1") : VX_STR("0"));
+        vx_task_summary info;
+        uint64_t s = pk[i].key;
+        if (s < (uint64_t)stages && pk[i].value && vx_task_info(tasks[s], &info) == VX_OK) {
+          memcpy(ends[s], info.exit, info.exit_len);
+          end_len[s] = info.exit_len;
+        }
       } else if (sink && pk[i].key == 100) { // output to copy
         sink_armed = false;
         if (!relay(sink, &file, &broken)) {
@@ -374,7 +407,15 @@ static void pipeline(word *w, int n) {
       }
     }
   }
-  if (broken) vx_print(VX_STR("gsh: write error\n"));
+  if (broken) say("gsh: write error", (vx_str){}, "\n");
+  char status[MAX_PIPELINE * (VX_ERRMAX + 1)]; // the commands' exit strings, joined by |, as rc's $status
+  size_t len = 0;
+  for (int s = 0; s < stages; s++) {
+    if (s) status[len++] = '|';
+    memcpy(status + len, ends[s], end_len[s]);
+    len += end_len[s];
+  }
+  set_status((vx_str){status, len});
   for (int s = 0; s < stages; s++)
     if (tasks[s]) vx_handle_close(tasks[s]);
   vx_handle_close(port);
@@ -387,7 +428,7 @@ static void run_command(vx_str text) {
   word w[MAX_WORDS];
   int n = split(text, w);
   if (n < 0) {
-    vx_print(n == -2 ? VX_STR("gsh: unterminated quote\n") : VX_STR("gsh: line too long\n"));
+    vx_eprint(n == -2 ? VX_STR("gsh: unterminated quote\n") : VX_STR("gsh: line too long\n"));
     return;
   }
   if (n == 0) return;
@@ -416,8 +457,8 @@ static void run_line(vx_str line) {
   }
 }
 
-int vx_main(void) {
-  if (vx_ns_from_spawn(&ns) != VX_OK) vx_print(VX_STR("gsh: the namespace is incomplete\n"));
+const char *vx_main(void) {
+  if (vx_ns_from_spawn(&ns) != VX_OK) vx_eprint(VX_STR("gsh: the namespace is incomplete\n"));
   char line[512];
   for (;;) {
     vx_print(VX_STR("vx% "));
@@ -431,5 +472,10 @@ int vx_main(void) {
     run_line((vx_str){line, len});
   }
   vx_print(VX_STR("\n"));
-  return 0;
+  static char status[VX_ERRMAX + 1]; // the last $status, as rc exits with it
+  vx_str last = var_get(VX_STR("status"));
+  size_t len = last.len < VX_ERRMAX ? last.len : VX_ERRMAX;
+  memcpy(status, last.ptr, len);
+  status[len] = 0;
+  return status;
 }

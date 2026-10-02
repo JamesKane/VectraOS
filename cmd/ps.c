@@ -3,13 +3,13 @@
 #include "../lib/vx-rt/rt.c"
 #include "../lib/vx-ns/spawn.c"
 
-int vx_main(void) {
+const char *vx_main(void) {
   static vx_ns ns;
-  if (vx_ns_from_spawn(&ns) != VX_OK) return 1;
+  if (vx_ns_from_spawn(&ns) != VX_OK) return "no namespace";
   vx_ns_file dir;
   if (vx_ns_open(&ns, VX_STR("/proc"), P9_OREAD, &dir) != VX_OK) {
-    vx_print(VX_STR("ps: cannot read /proc\n"));
-    return 1;
+    vx_eprint(VX_STR("ps: cannot read /proc\n"));
+    return "no /proc";
   }
   static uint8_t buf[4096];
   int64_t n;
@@ -36,5 +36,5 @@ int vx_main(void) {
     }
   }
   vx_ns_close(&dir);
-  return 0;
+  return nullptr;
 }

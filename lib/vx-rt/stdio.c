@@ -93,36 +93,65 @@ static void vx_console_print(vx_str s) {
   }
 }
 
-// --- Standard input and output: pipes ---
+// --- Standard input, output and error: pipes ---
 //
-// A spawn message may carry "stdin" and "stdout", channel ends that the parent
-// (a shell) joins into a pipe. Each message on one is a header and some bytes;
-// the writer closing its end is the end of the file. Output to stdout goes a
-// line at a time, as to the console; without stdout, output goes to the
-// console. Without stdin, vx_read reads the console.
+// A spawn message may carry "stdin", "stdout" and "stderr", channel ends that
+// the parent (a shell) joins into pipes. Each message on one is a header and
+// some bytes; the writer closing its end is the end of the file. Output goes
+// a line at a time, as to the console. Without stdout, output goes to the
+// console; without stderr, errors (vx_eprint) go to the console, even when
+// stdout is a pipe, so they never reach the next program as data. Without
+// stdin, vx_read reads the console.
 
 static struct {
-  vx_handle in, out, port;
+  vx_handle in, out, err, port;
   alignas(vx_msg_header) uint8_t msg[sizeof(vx_msg_header) + 4096]; // stdin's current message,
   uint32_t msg_len, msg_pos;                                        // and how much of it has been read
   bool in_ended;
   bool closed_bound; // PEER_CLOSED on stdin is bound once; it fires once
   size_t len;
   alignas(vx_msg_header) uint8_t line[sizeof(vx_msg_header) + 512]; // stdout's line, after a header
+  size_t err_len;
+  alignas(vx_msg_header) uint8_t err_line[sizeof(vx_msg_header) + 512]; // stderr's
 } vx_stdio;
 
-static void vx_stdout_flush(void) {
-  size_t n = vx_stdio.len;
-  vx_stdio.len = 0;
-  if (!n || !vx_stdio.out) return;
-  *(vx_msg_header *)vx_stdio.line = (vx_msg_header){};
+// Writes msg (a header, then n bytes) to a pipe's channel end.
+static void vx_pipe_write(vx_handle end, uint8_t *msg, size_t n) {
+  *(vx_msg_header *)msg = (vx_msg_header){};
   for (int tries = 0;; tries++) {
-    vx_status st =
-        vx_channel_write(vx_stdio.out, vx_stdio.line, (uint32_t)(sizeof(vx_msg_header) + n), nullptr, 0);
+    vx_status st = vx_channel_write(end, msg, (uint32_t)(sizeof(vx_msg_header) + n), nullptr, 0);
     if (st != VX_ERR_SHOULD_WAIT) return; // written, or no one is reading any more
     // The reader is behind: the channel's queue is full. Wait a little and try again.
     static _Atomic uint32_t never;
     vx_futex_wait(&never, 0, vx_clock_read() + (tries < 10 ? 100'000 : 1'000'000));
+  }
+}
+
+static void vx_stdout_flush(void) {
+  size_t n = vx_stdio.len;
+  vx_stdio.len = 0;
+  if (n && vx_stdio.out) vx_pipe_write(vx_stdio.out, vx_stdio.line, n);
+}
+
+static void vx_stderr_flush(void) {
+  size_t n = vx_stdio.err_len;
+  vx_stdio.err_len = 0;
+  if (n && vx_stdio.err) vx_pipe_write(vx_stdio.err, vx_stdio.err_line, n);
+}
+
+// Prints an error: to stderr, or without one, to the console.
+[[maybe_unused]] static void vx_eprint(vx_str s) {
+  if (!vx_stdio.err) {
+    if (vx_console.connector)
+      vx_console_print(s);
+    else
+      vx_print(s);
+    return;
+  }
+  for (size_t i = 0; i < s.len; i++) {
+    vx_stdio.err_line[sizeof(vx_msg_header) + vx_stdio.err_len++] = (uint8_t)s.ptr[i];
+    if (s.ptr[i] == '\n' || vx_stdio.err_len == sizeof vx_stdio.err_line - sizeof(vx_msg_header))
+      vx_stderr_flush();
   }
 }
 

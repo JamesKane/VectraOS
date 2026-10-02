@@ -5,11 +5,11 @@
 #include "../lib/vx-rt/rt.c"
 #include "../lib/vx-ns/spawn.c"
 
-int vx_main(void) {
+const char *vx_main(void) {
   bool dns = vx_spawn.argc == 2 && vx_spawn.args[0].len == 2 && memcmp(vx_spawn.args[0].ptr, "-d", 2) == 0;
   if (vx_spawn.argc != (dns ? 2u : 1u) || vx_spawn.args[dns].len > 250) {
-    vx_print(VX_STR("usage: cs NET!HOST!SERVICE, or cs -d NAME\n"));
-    return 1;
+    vx_eprint(VX_STR("usage: cs NET!HOST!SERVICE, or cs -d NAME\n"));
+    return "usage";
   }
   vx_str q = vx_spawn.args[dns];
   static vx_ns ns;
@@ -25,17 +25,17 @@ int vx_main(void) {
     st = w < 0 ? (vx_status)w : VX_OK;
   }
   if (st != VX_OK) {
-    vx_print(VX_STR("cs: "));
-    vx_print(q);
-    vx_print(VX_STR(": "));
-    vx_print(st == VX_ERR_NOT_FOUND ? VX_STR("no such name") : p9_error_text(st));
-    vx_print(VX_STR("\n"));
-    return 1;
+    vx_eprint(VX_STR("cs: "));
+    vx_eprint(q);
+    vx_eprint(VX_STR(": "));
+    vx_eprint(st == VX_ERR_NOT_FOUND ? VX_STR("no such name") : p9_error_text(st));
+    vx_eprint(VX_STR("\n"));
+    return st == VX_ERR_NOT_FOUND ? "no such name" : "error";
   }
   // Each read is a line, from the start of the answer.
   f.offset = 0;
   char line[256];
   for (int64_t n; (n = vx_ns_read(&f, line, sizeof line)) > 0;) vx_print((vx_str){line, (size_t)n});
   vx_ns_close(&f);
-  return 0;
+  return nullptr;
 }

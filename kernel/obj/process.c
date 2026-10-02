@@ -2,9 +2,9 @@
 //
 // A task runs while it has live threads. When the last one exits, or the task
 // is killed, the task is EXITED: its handles are closed, its mappings dropped
-// and its page tables freed, and its EXIT bindings fire with its exit status.
-// The task object itself lives on while anything holds a handle to it, so its
-// status can still be read.
+// and its page tables freed, and its EXIT bindings fire with the length of its
+// exit string (ADR-0010). The task object itself lives on while anything holds
+// a handle to it, so its exit string can still be read.
 //
 // A thread cannot free the kernel stack it runs on, so a dead thread is reaped
 // by the next thread to run on its CPU (sched.c), and the teardown of a task
@@ -14,13 +14,11 @@
 // Killing marks the task and kicks its threads (sched_kick). Each one
 // exits the next time it heads back to user mode (user_return).
 
-static constexpr int64_t EXIT_FAULT = -1; // the status of a task killed by a fault
-
 static vx_status task_bind(task *t, binding *b) {
   if (b->trigger != VX_TRIGGER_EXIT) return VX_ERR_INVALID;
   spin_lock(&t->lock);
   if (t->state == VX_TASK_EXITED)
-    binding_fire(b, (uint64_t)t->exit_status);
+    binding_fire(b, t->exit_len);
   else
     observers_add(&t->obs, b);
   spin_unlock(&t->lock);
@@ -55,7 +53,7 @@ static void task_teardown(task *t) {
   phys_free((uint64_t)handles - boot.hhdm, 0);
   spin_lock(&t->lock);
   t->state = VX_TASK_EXITED; // only now: an EXIT binding sees the task fully gone
-  observers_fire(&t->obs, VX_TRIGGER_EXIT, (uint64_t)t->exit_status);
+  observers_fire(&t->obs, VX_TRIGGER_EXIT, t->exit_len);
   spin_unlock(&t->lock);
 }
 
@@ -87,13 +85,12 @@ static vx_status thread_start(thread *th, uint64_t entry, uint64_t sp, uint64_t 
   return st;
 }
 
-// Ends the current thread with an exit status; the last thread's status, or a
-// kill's, becomes the task's.
-[[noreturn]] static void thread_exit_current(int64_t status) {
+// Ends the current thread. A task whose last thread exits ends with the empty
+// exit string, unless it was killed, when it ends with the kill's.
+[[noreturn]] static void thread_exit_current(void) {
   thread *th = this_cpu()->current;
   task *t = th->task;
   spin_lock(&t->lock);
-  if (!t->killed && t->live_threads == 1) t->exit_status = status;
   th->last_of_task = --t->live_threads == 0;
   if (th->last_of_task) t->ending = true;
   spin_unlock(&t->lock);
@@ -117,16 +114,19 @@ static void thread_reap(thread *th) {
   object_release(&th->obj); // the reference it held while running
 }
 
-// Kills a task: its exit status is `status`, and its threads exit when they
-// next head for user mode. A task with no live threads ends at once.
-static void task_kill(task *t, int64_t status) {
+// Kills a task: its exit string is msg (at most VX_ERRMAX bytes), and its
+// threads exit when they next head for user mode. A task with no live threads
+// ends at once.
+static void task_kill(task *t, const char *msg, size_t len) {
+  if (len > VX_ERRMAX) len = VX_ERRMAX;
   spin_lock(&t->lock);
   if (t->ending || t->killed) {
     spin_unlock(&t->lock);
     return;
   }
   t->killed = true;
-  t->exit_status = status;
+  memcpy(t->exit, msg, len);
+  t->exit_len = (uint8_t)len;
   bool idle = t->live_threads == 0;
   if (idle) t->ending = true;
   for (thread *th = t->threads; th; th = th->task_next) sched_kick(th, VX_ERR_KILLED);
@@ -144,7 +144,7 @@ static void user_return(void) {
   for (;;) {
     cpu *c = this_cpu();
     task *t = c->current->task;
-    if (t->killed) thread_exit_current(t->exit_status);
+    if (t->killed) thread_exit_current();
     if (exception_check_suspend()) continue; // parked until resumed: look at the kill again
     if (!c->resched) break;
     schedule(); // and look again: a kill may have come meanwhile
@@ -152,11 +152,17 @@ static void user_return(void) {
   exception_check_interrupt(); // a thread_interrupt, to its handler
 }
 
-// A fault in user mode kills the whole task (01 §9: until exception ports, no
-// one else could handle it).
-[[noreturn]] static void task_fault_exit(void) {
-  task_kill(this_cpu()->current->task, EXIT_FAULT);
-  thread_exit_current(EXIT_FAULT);
+// Ends the current thread's task with msg as its exit string.
+[[noreturn]] static void task_exit_with(const char *msg, size_t len) {
+  task_kill(this_cpu()->current->task, msg, len);
+  thread_exit_current();
+}
+
+// A fault in user mode that no one handled kills the whole task, with the
+// trap in Plan 9's words as its exit string.
+[[noreturn]] static void task_fault_exit(uint32_t kind, uint32_t code, uint64_t address, uint64_t pc) {
+  char msg[VX_ERRMAX];
+  task_exit_with(msg, vx_trap_note(kind, code, address, pc, msg));
 }
 
 // The last reference is gone. Threads hold references to their task, so it

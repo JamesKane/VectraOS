@@ -189,7 +189,7 @@ typedef struct request {
   }
   vx_handle_close(port);
   set_stage(s, 3);
-  vx_thread_exit(0);
+  vx_thread_exit();
 }
 
 static void test_threads_and_calls(void) {
@@ -276,9 +276,13 @@ static uint32_t write_child(uint8_t *code, child_code what) {
     EMIT(0xeb), EMIT(0xf9); // jmp 1b, with no system call
   } else if (what == FAULT_LOAD) {
     EMIT(0x48), EMIT(0xb8), EMIT32(CHILD_DATA), EMIT32(0); // movabs $CHILD_DATA, %rax
-    EMIT(0x48), EMIT(0x8b), EMIT(0x38);                    // mov (%rax), %rdi: faults until it is mapped
-    EMIT(0xb8), EMIT32(VX_SYS_thread_exit);                // mov $thread_exit, %eax
-    EMIT(0x0f), EMIT(0x05);                                // syscall: exits with what it loaded
+    EMIT(0x48), EMIT(0x8b), EMIT(0x10);                    // mov (%rax), %rdx: faults until it is mapped
+    EMIT(0x48), EMIT(0x89), EMIT(0xc6);                    // mov %rax, %rsi: what it loaded,
+    EMIT(0xba), EMIT32(1);                                 // mov $1, %edx: its first byte,
+    EMIT(0x45), EMIT(0x31), EMIT(0xd2);                    // xor %r10d, %r10d
+    EMIT(0xb8), EMIT32(VX_SYS_task_kill);                  // mov $task_kill, %eax: is its exit string
+    EMIT(0x0f), EMIT(0x05);                                // syscall (%rdi: its handle to itself)
+    EMIT(0xeb), EMIT(0xfe);                                // jmp ., until the kill takes it
   } else if (what == PORT_BLOCK) {
     EMIT(0x48), EMIT(0x8d), EMIT(0x74), EMIT(0x24), EMIT(0xf0);     // lea -16(%rsp), %rsi: the handle's place
     EMIT(0x31), EMIT(0xff);                                         // xor %edi, %edi: no options
@@ -325,9 +329,12 @@ static uint32_t write_child(uint8_t *code, child_code what) {
     EMIT(0x17ffffffu); // b 1b, with no system call
   } else if (what == FAULT_LOAD) {
     EMIT(0xd2a00001u | (uint32_t)(CHILD_DATA >> 16) << 5); // movz x1, #CHILD_DATA >> 16, lsl #16
-    EMIT(0xf9400020u);                                     // ldr x0, [x1]: faults until it is mapped
-    EMIT(0xd2800008u | (uint32_t)VX_SYS_thread_exit << 5); // movz x8, #thread_exit
-    EMIT(0xd4000001u);                                     // svc #0: exits with what it loaded
+    EMIT(0xf9400022u);                                     // ldr x2, [x1]: faults until it is mapped
+    EMIT(0xd2800022u);                                     // movz x2, #1: what it loaded, its first byte,
+    EMIT(0xd2800003u);                                     // movz x3, #0
+    EMIT(0xd2800008u | (uint32_t)VX_SYS_task_kill << 5);   // movz x8, #task_kill: is its exit string
+    EMIT(0xd4000001u);                                     // svc #0 (x0: its handle to itself)
+    EMIT(0x14000000u);                                     // b ., until the kill takes it
   } else if (what == PORT_BLOCK) {
     EMIT(0xd10043e1u);                                     // sub x1, sp, #16: the handle's place
     EMIT(0xd2800000u);                                     // movz x0, #0: no options
@@ -372,11 +379,12 @@ static bool wait_blocked(vx_handle task) {
 }
 
 // A child task running `what`, started, with its faults going to exc_port if
-// that is not 0 (bound before it starts). *task gets a handle to it.
+// that is not 0 (bound before it starts), and a handle to itself as its first
+// argument. *task gets a handle to it.
 static bool start_child_bound(child_code what, vx_handle exc_port, uint32_t options, vx_handle *task) {
   uint8_t code[64] = {};
   uint32_t len = write_child(code, what);
-  vx_handle text = 0, stack = 0, th = 0; // closing 0 is a harmless BAD_HANDLE
+  vx_handle text = 0, stack = 0, th = 0, itself = 0; // closing 0 is a harmless BAD_HANDLE
   uint64_t text_at = CHILD_CODE, stack_at = CHILD_STACK_TOP - 4096;
   bool ok = vx_task_create(VX_STR("child"), task) == VX_OK && vx_vmo_create(4096, 0, &text) == VX_OK &&
             vx_vmo_rw(text, VX_VMO_WRITE, 0, code, len) == VX_OK &&
@@ -384,8 +392,9 @@ static bool start_child_bound(child_code what, vx_handle exc_port, uint32_t opti
             vx_vmo_create(4096, 0, &stack) == VX_OK &&
             vx_as_map(*task, stack, 0, 4096, VX_MAP_WRITE, &stack_at) == VX_OK &&
             (!exc_port || vx_exception_bind(*task, exc_port, 5, options) == VX_OK) &&
-            vx_thread_create(*task, &th) == VX_OK &&
-            vx_thread_start(th, CHILD_CODE, CHILD_STACK_TOP, 0, 0) == VX_OK;
+            vx_thread_create(*task, &th) == VX_OK && vx_handle_dup(*task, VX_RIGHTS_SAME, &itself) == VX_OK &&
+            vx_thread_start(th, CHILD_CODE, CHILD_STACK_TOP, itself, 0) == VX_OK;
+  if (!ok) vx_handle_close(itself); // otherwise the child's
   vx_handle_close(text);
   vx_handle_close(stack);
   vx_handle_close(th);
@@ -394,12 +403,30 @@ static bool start_child_bound(child_code what, vx_handle exc_port, uint32_t opti
 
 static bool start_child(child_code what, vx_handle *task) { return start_child_bound(what, 0, 0, task); }
 
-// Waits for a task's EXIT binding; returns its exit status, or INT64_MIN.
-static int64_t wait_exit(vx_handle port, vx_handle task) {
+// Waits for a task's EXIT binding; returns its exit string (ADR-0010), or
+// nullptr if it did not end. The string lasts until the next call.
+static const char *wait_exit(vx_handle port, vx_handle task) {
+  static char exit[VX_ERRMAX + 1];
   vx_packet pk;
-  if (vx_port_bind(port, task, VX_TRIGGER_EXIT, 99, 0) != VX_OK) return INT64_MIN;
-  if (vx_port_wait(port, after_ms(2000), 0, &pk, 1) != 1 || pk.key != 99) return INT64_MIN;
-  return (int64_t)pk.value;
+  vx_task_summary info;
+  if (vx_port_bind(port, task, VX_TRIGGER_EXIT, 99, 0) != VX_OK) return nullptr;
+  if (vx_port_wait(port, after_ms(2000), 0, &pk, 1) != 1 || pk.key != 99) return nullptr;
+  if (vx_task_info(task, &info) != VX_OK || info.exit_len != pk.value) return nullptr;
+  memcpy(exit, info.exit, info.exit_len);
+  exit[info.exit_len] = 0;
+  return exit;
+}
+
+// Whether s begins with prefix (both C strings; s may be null).
+static bool starts(const char *s, const char *prefix) {
+  if (!s) return false;
+  size_t n = vx_cstr(prefix).len;
+  return vx_cstr(s).len >= n && memcmp(s, prefix, n) == 0;
+}
+
+// Whether s is want.
+static bool is(const char *s, const char *want) {
+  return starts(s, want) && vx_cstr(s).len == vx_cstr(want).len;
 }
 
 static void test_tasks(void) {
@@ -407,11 +434,12 @@ static void test_tasks(void) {
   vx_task_summary info;
   CHECK(vx_port_create(0, &port) == VX_OK);
 
-  // A child that exits on its own: its status is the task's, and it is torn down.
+  // A child whose thread exits on its own ends with the empty exit string
+  // (success), and is torn down.
   CHECK(start_child(EXIT_7, &child));
-  CHECK(wait_exit(port, child) == 7);
+  CHECK(is(wait_exit(port, child), ""));
   CHECK(vx_task_info(child, &info) == VX_OK);
-  CHECK(info.state == VX_TASK_EXITED && info.exit_status == 7 && info.threads == 0 && info.mapped == 0);
+  CHECK(info.state == VX_TASK_EXITED && info.exit_len == 0 && info.threads == 0 && info.mapped == 0);
   vx_handle late;
   CHECK(vx_thread_create(child, &late) == VX_ERR_BAD_STATE); // an ended task takes no threads
   vx_handle_close(child);
@@ -419,21 +447,38 @@ static void test_tasks(void) {
   // A child spinning in user mode, perhaps on another CPU, is killed.
   CHECK(start_child(SPIN, &child));
   CHECK(vx_task_info(child, &info) == VX_OK && info.state == VX_TASK_RUNNING && info.threads == 1);
-  CHECK(vx_task_kill(child, 99) == VX_OK);
-  CHECK(wait_exit(port, child) == 99);
+  CHECK(vx_task_kill(child, VX_STR("killed while spinning")) == VX_OK);
+  CHECK(is(wait_exit(port, child), "killed while spinning"));
   vx_handle_close(child);
 
   // A child blocked in the kernel is killed too: its wait ends with KILLED.
   CHECK(start_child(BLOCK, &child));
   CHECK(wait_blocked(child)); // in futex_wait, so the kill is of a blocked thread
-  CHECK(vx_task_kill(child, 55) == VX_OK);
-  CHECK(wait_exit(port, child) == 55);
+  CHECK(vx_task_kill(child, VX_STR("killed while blocked")) == VX_OK);
+  CHECK(is(wait_exit(port, child), "killed while blocked"));
   vx_handle_close(child);
 
   // A task that never ran ends at once when killed, and its binding fires.
   CHECK(vx_task_create(VX_STR("idle"), &child) == VX_OK);
-  CHECK(vx_task_kill(child, 3) == VX_OK);
-  CHECK(wait_exit(port, child) == 3);
+  CHECK(vx_task_kill(child, VX_STR("killed before it ran")) == VX_OK);
+  CHECK(is(wait_exit(port, child), "killed before it ran"));
+  vx_handle_close(child);
+
+  // An exit string is at most VX_ERRMAX bytes.
+  CHECK(vx_task_create(VX_STR("idle"), &child) == VX_OK);
+  static const char long_msg[VX_ERRMAX + 1] = {};
+  CHECK(vx_task_kill(child, (vx_str){long_msg, sizeof long_msg}) == VX_ERR_RANGE);
+  CHECK(vx_task_kill(child, VX_STR("")) == VX_OK && is(wait_exit(port, child), ""));
+  vx_handle_close(child);
+
+  // A note to a task with no note handler ends it, with the note as its exit
+  // string, as in Plan 9 (ADR-0010).
+  CHECK(start_child(SPIN, &child));
+  CHECK(vx_thread_interrupt(child, 0, VX_STR("")) == VX_ERR_INVALID);
+  CHECK(vx_thread_interrupt(child, 0, (vx_str){long_msg, sizeof long_msg}) == VX_ERR_INVALID);
+  CHECK(vx_thread_interrupt(child, 0, VX_STR("interrupt")) == VX_OK);
+  CHECK(is(wait_exit(port, child), "interrupt"));
+  CHECK(vx_thread_interrupt(child, 0, VX_STR("again")) == VX_ERR_BAD_STATE); // it has ended
   vx_handle_close(child);
   vx_handle_close(port);
 }
@@ -515,7 +560,7 @@ typedef struct ring_shared {
   vx_handle_close(port);
   atomic_store(&s->stage, 1);
   vx_futex_wake(&s->stage, 1);
-  vx_thread_exit(0);
+  vx_thread_exit();
 }
 
 // Submits an entry, waiting for room if the SQ is full.
@@ -760,8 +805,8 @@ static void test_torn_down(void) {
   CHECK(vx_port_create(0, &port) == VX_OK);
   CHECK(vx_task_create(VX_STR("doomed"), &child) == VX_OK);
   CHECK(vx_thread_create(child, &th) == VX_OK); // made before the kill, started after
-  CHECK(vx_task_kill(child, -5) == VX_OK);
-  CHECK(wait_exit(port, child) == -5); // torn down: no threads ever ran
+  CHECK(vx_task_kill(child, VX_STR("doomed")) == VX_OK);
+  CHECK(is(wait_exit(port, child), "doomed")); // torn down: no threads ever ran
   CHECK(vx_vmo_create(4096, 0, &vmo) == VX_OK);
   uint64_t at = 0;
   CHECK(vx_as_map(child, vmo, 0, 4096, 0, &at) == VX_ERR_BAD_STATE); // its mapping table is gone
@@ -778,7 +823,7 @@ static void test_torn_down(void) {
   CHECK(vx_thread_start(th, 0x8000'0000'0000'0000, 0x50'0000, 0, 0) == VX_ERR_INVALID);
   CHECK(vx_thread_start(th, 0x40'0000, 0xffff'8000'0000'0000, 0, 0) == VX_ERR_INVALID);
   CHECK(vx_thread_start(th, 0x0000'8000'0000'0000, 0x50'0000, 0, 0) == VX_ERR_INVALID); // just past the top
-  vx_task_kill(child, 0);
+  vx_task_kill(child, VX_STR(""));
   vx_handle_close(th);
   vx_handle_close(child);
 
@@ -816,7 +861,7 @@ typedef struct port_pair {
   pp->got = vx_port_wait(pp->port, after_ms(2000), 0, &pk, 1); // queued behind the first waiter
   atomic_store(&pp->stage, 2);
   vx_futex_wake(&pp->stage, 1);
-  vx_thread_exit(0);
+  vx_thread_exit();
 }
 
 static void test_port_waiters(void) {
@@ -853,12 +898,12 @@ static void test_port_waiters(void) {
   CHECK(vx_port_create(0, &port) == VX_OK);
   // FP/SIMD runs in user tasks (test_fp: each thread keeps its own).
   CHECK(start_child(USE_SIMD, &child));
-  CHECK(wait_exit(port, child) == 7);
+  CHECK(is(wait_exit(port, child), ""));
   vx_handle_close(child);
   CHECK(start_child(PORT_BLOCK, &child));
   CHECK(wait_blocked(child)); // in port_wait
-  CHECK(vx_task_kill(child, -3) == VX_OK);
-  CHECK(wait_exit(port, child) == -3); // the kill ends the wait
+  CHECK(vx_task_kill(child, VX_STR("killed in port_wait")) == VX_OK);
+  CHECK(is(wait_exit(port, child), "killed in port_wait")); // the kill ends the wait
   vx_handle_close(child);
   vx_handle_close(port);
 }
@@ -900,7 +945,7 @@ static void test_unmap(void) {
   static _Atomic uint32_t never;
   vx_futex_wait(&never, 0, after_ms(50)); // it is spinning, on another CPU
   CHECK(vx_as_unmap(child, CHILD_STACK_TOP - 4096, 4096) == VX_OK);
-  CHECK(wait_exit(port, child) == -1); // killed by the fault
+  CHECK(starts(wait_exit(port, child), "sys: trap: fault read addr=0x1ffff")); // killed by the fault
   vx_handle_close(child);
   vx_handle_close(port);
 }
@@ -927,7 +972,7 @@ static void copy_racer(uint64_t arg, uint64_t arg2) {
     else
       atomic_fetch_add(&r->other, 1);
   }
-  vx_thread_exit(0);
+  vx_thread_exit();
 }
 
 static void test_copy_race(void) {
@@ -991,7 +1036,7 @@ static void test_exception_port(void) {
   CHECK(map_child_word(child, CHILD_DATA, 7));
   CHECK(vx_exception_resume(child, 1, VX_RESUME_CONTINUE, nullptr) == VX_OK);
   CHECK(vx_exception_resume(child, 1, VX_RESUME_CONTINUE, nullptr) != VX_OK); // once
-  CHECK(wait_exit(port, child) == 7);
+  CHECK(is(wait_exit(port, child), "\x07"));                                  // it exits with what it loaded
   vx_handle_close(child);
 
   // Its registers can be changed before it continues: the load goes elsewhere.
@@ -1014,7 +1059,7 @@ static void test_exception_port(void) {
   CHECK(vx_thread_state(child, 1, VX_STATE_SET_REGS, &regs, sizeof regs) == VX_OK);
   CHECK(map_child_word(child, CHILD_DATA + 4096, 9));
   CHECK(vx_exception_resume(child, 1, VX_RESUME_CONTINUE, nullptr) == VX_OK);
-  CHECK(wait_exit(port, child) == 9);
+  CHECK(is(wait_exit(port, child), "\x09"));
   vx_handle_close(child);
 
   // Or it can be killed. (STEP and PASS are a debugger's, from its own port.)
@@ -1023,21 +1068,21 @@ static void test_exception_port(void) {
   CHECK(vx_exception_resume(child, 1, VX_RESUME_STEP, nullptr) == VX_ERR_BAD_STATE);
   CHECK(vx_exception_resume(child, 1, VX_RESUME_PASS, nullptr) == VX_ERR_BAD_STATE);
   CHECK(vx_exception_resume(child, 1, VX_RESUME_KILL, nullptr) == VX_OK);
-  CHECK(wait_exit(port, child) == -1);
+  CHECK(starts(wait_exit(port, child), "sys: trap: fault read addr=0x300000 pc=")); // the fault's default
   vx_handle_close(child);
 
   // A kill reaches a thread stopped at its port.
   CHECK(start_child_bound(FAULT_LOAD, port, 0, &child));
   CHECK(child_stopped(port));
-  CHECK(vx_task_kill(child, -4) == VX_OK);
-  CHECK(wait_exit(port, child) == -4);
+  CHECK(vx_task_kill(child, VX_STR("killed at its port")) == VX_OK);
+  CHECK(is(wait_exit(port, child), "killed at its port"));
   vx_handle_close(child);
   vx_handle_close(port);
 }
 
 static vx_handle missing; // what the in-task handler maps where a fault was
 static _Atomic uint32_t handled[VX_EXCEPTION_INTERRUPT + 1], interrupted_thread;
-static _Atomic uint64_t interrupt_code;
+static char interrupt_note[VX_ERRMAX + 1]; // the note the last interrupt carried
 
 static void handler(vx_exception *e) {
   if (e->kind <= VX_EXCEPTION_INTERRUPT) atomic_fetch_add(&handled[e->kind], 1);
@@ -1049,8 +1094,9 @@ static void handler(vx_exception *e) {
     e->regs.pc += 4; // brk stops at itself; int3 has already been stepped past
 #endif
   } else if (e->kind == VX_EXCEPTION_INTERRUPT) {
+    memcpy(interrupt_note, e->note, e->code < VX_ERRMAX ? e->code : VX_ERRMAX);
+    interrupt_note[e->code < VX_ERRMAX ? e->code : VX_ERRMAX] = 0;
     atomic_store(&interrupted_thread, e->thread);
-    atomic_store(&interrupt_code, e->code);
   }
   vx_exception_resume(vx_self, 0, VX_RESUME_CONTINUE, &e->regs);
 }
@@ -1066,12 +1112,11 @@ static void interrupted_waiter(uint64_t arg, uint64_t arg2) {
   waiter *w = (waiter *)arg2;
   atomic_store(&w->result, vx_futex_wait(&w->word, 0, VX_INFINITE)); // no deadline: only an interrupt ends it
   atomic_store(&w->done, true);
-  vx_thread_exit(0);
+  vx_thread_exit();
 }
 
 static void test_in_task(void) {
   static _Atomic uint32_t never;
-  CHECK(vx_thread_interrupt(self, 0, 1) == VX_ERR_BAD_STATE); // no handler yet
   CHECK(vx_exception_bind(self, 0, (uint64_t)handler, VX_EXCEPTION_IN_TASK) == VX_OK);
   // A page fault, handled by mapping the page: the load is retried, and sees it.
   uint64_t value = 0x1234'5678, at = 0;
@@ -1099,15 +1144,14 @@ static void test_in_task(void) {
   CHECK(vx_thread_create_id(self, &th, &id) == VX_OK && id > 1);
   CHECK(vx_thread_start(th, (uint64_t)interrupted_waiter, new_stack(), 0, (uint64_t)&w) == VX_OK);
   vx_futex_wait(&never, 0, after_ms(30)); // it is waiting
-  CHECK(vx_thread_interrupt(self, id, 42) == VX_OK);
+  CHECK(vx_thread_interrupt(self, id, VX_STR("wake up")) == VX_OK);
   for (int i = 0; i < 1000 && !atomic_load(&w.done); i++) vx_futex_wait(&never, 0, after_ms(1));
   CHECK(atomic_load(&w.done) && atomic_load(&w.result) == VX_ERR_INTERRUPTED);
   CHECK(atomic_load(&handled[VX_EXCEPTION_INTERRUPT]) == 1 && atomic_load(&interrupted_thread) == id &&
-        atomic_load(&interrupt_code) == 42);
-  CHECK(vx_thread_interrupt(self, 999, 1) == VX_ERR_NOT_FOUND);
+        is(interrupt_note, "wake up"));
+  CHECK(vx_thread_interrupt(self, 999, VX_STR("nobody")) == VX_ERR_NOT_FOUND);
   vx_handle_close(th);
-  CHECK(vx_exception_bind(self, 0, 0, VX_EXCEPTION_IN_TASK) == VX_OK); // unbound
-  CHECK(vx_thread_interrupt(self, 0, 1) == VX_ERR_BAD_STATE);
+  CHECK(vx_exception_bind(self, 0, 0, VX_EXCEPTION_IN_TASK) == VX_OK); // unbound: a note would end ktest now
 }
 
 // --- Debugging (05 §2) ---
@@ -1137,14 +1181,14 @@ static void test_debugger(void) {
   CHECK(e.regs.x[0] == 7 && e.regs.pc == CHILD_CODE + 8); // brk, then movz x0, #7
 #endif
   CHECK(vx_exception_resume(child, 1, VX_RESUME_CONTINUE, nullptr) == VX_OK);
-  CHECK(wait_exit(port, child) == 7);
+  CHECK(is(wait_exit(port, child), ""));
   vx_handle_close(child);
 
   // Passed on, the breakpoint reaches nobody else: the default kills it.
   CHECK(start_child_bound(BREAK_STEP, port, VX_EXCEPTION_FIRST_CHANCE, &child));
   CHECK(child_stopped(port));
   CHECK(vx_exception_resume(child, 1, VX_RESUME_PASS, nullptr) == VX_OK);
-  CHECK(wait_exit(port, child) == -1);
+  CHECK(starts(wait_exit(port, child), "sys: breakpoint pc="));
   vx_handle_close(child);
 
   // Suspended, a spinning child holds still: its code is patched (a private
@@ -1179,7 +1223,7 @@ static void test_debugger(void) {
   CHECK(vx_thread_state(child, 1, VX_STATE_SET_REGS, &regs, sizeof regs) == VX_OK);
   CHECK(vx_thread_resume(child, 1) == VX_OK);
   CHECK(vx_thread_resume(child, 1) == VX_ERR_BAD_STATE); // counted: not suspended any more
-  CHECK(wait_exit(port, child) == 7);
+  CHECK(is(wait_exit(port, child), ""));
   vx_handle_close(weak);
   vx_handle_close(child);
 
@@ -1190,7 +1234,7 @@ static void test_debugger(void) {
   CHECK(vx_thread_state(child, 1, VX_STATE_GET_REGS, &regs, sizeof regs) == VX_OK);
   CHECK(vx_thread_resume(child, 1) == VX_OK && vx_thread_resume(child, 1) == VX_OK);
   CHECK(wait_blocked(child));
-  CHECK(vx_task_kill(child, -5) == VX_OK && wait_exit(port, child) == -5);
+  CHECK(vx_task_kill(child, VX_STR("killed")) == VX_OK && is(wait_exit(port, child), "killed"));
   vx_handle_close(child);
   vx_handle_close(port);
 }
@@ -1200,8 +1244,8 @@ static void test_debugger(void) {
 static uint64_t fork_page[512];
 static uint64_t fork_ring; // where a ring's memory is mapped, in the parent
 
-// The forked child's first thread. Its exit status says what it found: 77
-// if all is well, or the bits of what was not.
+// The forked child's first thread. Its exit string says what it found: "ok"
+// if all is well, or "wrong N", N the bits of what was not.
 [[noreturn]] static void fork_child(vx_handle unused, uint64_t my_id) {
   (void)unused;
   int64_t wrong = 0;
@@ -1210,15 +1254,18 @@ static uint64_t fork_ring; // where a ring's memory is mapped, in the parent
   vx_task_summary me;
   if (vx_task_info(self, &me) != VX_OK || me.id != my_id) wrong |= 2; // "self" is itself
   if (fork_ring) (void)*(volatile uint64_t *)fork_ring;               // not there: a fault ends it
-  vx_thread_exit(wrong ? wrong : 77);
+  char msg[] = "wrong 0";
+  msg[6] = (char)('0' + wrong);
+  vx_task_kill(self, wrong ? (vx_str){msg, 7} : VX_STR("ok"));
+  vx_thread_exit();
 }
 
-static int64_t run_fork(uint64_t sp, vx_handle port) {
+static const char *run_fork(uint64_t sp, vx_handle port) {
   vx_handle child, th;
   vx_task_summary info;
-  if (vx_task_fork(VX_STR("forked"), &child) != VX_OK) return INT64_MIN;
+  if (vx_task_fork(VX_STR("forked"), &child) != VX_OK) return nullptr;
   fork_page[7] = 0x5555; // after the fork: not the child's
-  int64_t status = INT64_MIN;
+  const char *status = nullptr;
   if (vx_task_info(child, &info) == VX_OK && vx_thread_create(child, &th) == VX_OK) {
     if (vx_thread_start(th, (uint64_t)fork_child, sp, 0, info.id) == VX_OK) status = wait_exit(port, child);
     vx_handle_close(th);
@@ -1233,7 +1280,7 @@ static void test_fork(void) {
   uint64_t sp = new_stack(); // mapped before the fork, so the child has it too
   CHECK(sp != 0);
   fork_page[7] = 0x1234;
-  CHECK(run_fork(sp, port) == 77);
+  CHECK(is(run_fork(sp, port), "ok"));
   CHECK(fork_page[7] == 0x5555); // the child's write stayed in the child
 
   // A ring's memory is not copied: the child faults where the parent has it.
@@ -1244,8 +1291,8 @@ static void test_fork(void) {
   CHECK(vx_ring_create(&params, &h) == VX_OK);
   CHECK(vx_as_map(self, h.memory, 0, layout.size, VX_MAP_WRITE, &fork_ring) == VX_OK);
   fork_page[7] = 0x1234;
-  CHECK(*(volatile uint64_t *)fork_ring != 0x5a5a); // the parent reads it
-  CHECK(run_fork(sp, port) == -1);                  // the child is killed by the fault
+  CHECK(*(volatile uint64_t *)fork_ring != 0x5a5a);      // the parent reads it
+  CHECK(starts(run_fork(sp, port), "sys: trap: fault")); // the child is killed by the fault
   CHECK(vx_as_unmap(self, fork_ring, layout.size) == VX_OK);
   vx_handle_close(h.memory);
   vx_handle_close(h.client);
@@ -1293,7 +1340,7 @@ static _Atomic uint32_t tls_worker_bad;
     vx_futex_wait(&never, 0, after_ms(1));
   }
   set_stage(&tls_shared, 2);
-  vx_thread_exit(0);
+  vx_thread_exit();
 }
 
 static void test_tls(void) {
@@ -1335,7 +1382,7 @@ static void test_tls(void) {
   CHECK(vx_thread_state(other, 1, VX_STATE_GET_TLS, &v, sizeof v) == VX_ERR_BAD_STATE); // DEBUG needed
   vx_handle_close(other);
   CHECK(vx_thread_resume(child, 1) == VX_OK);
-  CHECK(vx_task_kill(child, -5) == VX_OK);
+  CHECK(vx_task_kill(child, VX_STR("killed")) == VX_OK);
   vx_handle_close(child);
   CHECK(tls_set(0));
 }
@@ -1387,7 +1434,7 @@ static _Atomic uint32_t fp_worker_bad;
     if (fp_get(&ctl) != 0xb0b0'b0b0'b0b0'b0b0 || ctl != FP_CTL_ZERO) atomic_fetch_add(&fp_worker_bad, 1);
   }
   set_stage(&fp_shared, 2);
-  vx_thread_exit(0);
+  vx_thread_exit();
 }
 
 static void test_fp(void) {
@@ -1429,7 +1476,7 @@ static void test_vmo_clone(void) {
   vx_handle_close(v);
 }
 
-int vx_main(void) {
+const char *vx_main(void) {
   self = vx_self;
   test_spawn_message();
   test_m1_basics();

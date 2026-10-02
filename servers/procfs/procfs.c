@@ -13,9 +13,8 @@
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-9p/ring_server.c"
 
-static vx_handle tasks;               // the root of what procfs shows
-static uint64_t root_id;              // its task id
-static constexpr int64_t KILLED = -9; // the exit status a kill through ctl gives, as Unix's SIGKILL reads
+static vx_handle tasks;  // the root of what procfs shows
+static uint64_t root_id; // its task id
 
 // Node numbers: 1 is /proc; a task's directory, status and ctl are its id
 // shifted left two, plus 0, 1 or 2.
@@ -141,7 +140,7 @@ static vx_status fs_write(void *ctx, uint64_t node, uint64_t offset, const uint8
   while (n && (buf[n - 1] == '\n' || buf[n - 1] == ' ')) n--;
   if (n != 4 || memcmp(buf, "kill", 4) != 0) return VX_ERR_INVALID;
   if (task_of(node) == root_id) return VX_ERR_ACCESS; // not the root of the tree: the system needs it
-  if (vx_task_kill_id(tasks, task_of(node), KILLED) != VX_OK) return VX_ERR_NOT_FOUND;
+  if (vx_task_kill_id(tasks, task_of(node), VX_STR("killed")) != VX_OK) return VX_ERR_NOT_FOUND;
   *count = len; // the whole message was the command
   return VX_OK;
 }
@@ -178,14 +177,14 @@ static p9_ring_server server = {
     .name = VX_STR("procfs"),
 };
 
-int vx_main(void) {
+const char *vx_main(void) {
   tasks = vx_spawn_take("tasks");
   server.listen = vx_spawn_take("listen");
   vx_task_summary info;
   if (!tasks || !server.listen || vx_task_info(tasks, &info) != VX_OK) {
     vx_print(VX_STR("procfs: FAILED: no task tree or listen channel\n"));
-    return 1;
+    return "no task tree or listen channel";
   }
   root_id = info.id;
-  return p9_ring_serve(&server);
+  return p9_ring_serve(&server) == VX_OK ? nullptr : "cannot serve";
 }

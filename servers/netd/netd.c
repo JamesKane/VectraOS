@@ -840,12 +840,12 @@ static vx_status fs_write(void *ctx, uint64_t n, uint64_t offset, const uint8_t 
   return VX_ERR_ACCESS;
 }
 
-int vx_main(void) {
+const char *vx_main(void) {
   link.connector = vx_spawn_take("srv:ether0");
   server.listen = vx_spawn_take("listen");
   if (!link.connector || !server.listen || vx_port_create(0, &server.port) != VX_OK) {
     vx_print(VX_STR("netd: FAILED: no connector to /srv/ether0, or no listen channel\n"));
-    return 1;
+    return "no connector to /srv/ether0, or no listen channel";
   }
   server.fs = (p9_fs){.attach = fs_attach,
                       .walk = fs_walk,
@@ -861,5 +861,5 @@ int vx_main(void) {
   server.event = event;
   server.tick = tick;
   vx_print(VX_STR("netd: serving /srv/net\n"));
-  return p9_ring_serve(&server);
+  return p9_ring_serve(&server) == VX_OK ? nullptr : "cannot serve";
 }

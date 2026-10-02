@@ -153,7 +153,7 @@ static void test_connections_unmap(void) {
   CHECK(vx_task_info(vx_self, &after) == VX_OK && after.mapped == before.mapped);
 }
 
-int vx_main(void) {
+const char *vx_main(void) {
   test_spawn();
   vx_status st = vx_ns_from_spawn(&ns);
   CHECK(st == VX_OK);
@@ -167,5 +167,5 @@ int vx_main(void) {
   vx_print(VX_STR(" checks, "));
   vx_print_u64(failures);
   vx_print(VX_STR(" failed\n"));
-  return failures ? 1 : 0;
+  return failures ? "failed" : nullptr;
 }

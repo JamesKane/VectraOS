@@ -402,11 +402,11 @@ static p9_ring_server server = {
     .supported = P9_EXT_XATTR | P9_EXT_POSIX,
 };
 
-int vx_main(void) {
+const char *vx_main(void) {
   server.listen = vx_spawn_take("listen");
   if (!server.listen) {
     vx_print(VX_STR("ptyd: no listen channel\n"));
-    return 1;
+    return "no listen channel";
   }
   // A process of its own to posixd, to signal process groups from.
   vx_handle connector = vx_spawn_take("srv:posixd"), me = VX_HANDLE_NONE;
@@ -424,5 +424,5 @@ int vx_main(void) {
   }
   vx_print(posix_chan ? VX_STR("ptyd: serving /srv/ptyd\n")
                       : VX_STR("ptyd: serving /srv/ptyd, without posixd: no signals\n"));
-  return p9_ring_serve(&server);
+  return p9_ring_serve(&server) == VX_OK ? nullptr : "cannot serve";
 }

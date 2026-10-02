@@ -96,8 +96,9 @@ static int64_t sys_task_info(vx_handle h, uint64_t out, uint64_t id, uint64_t fl
   vx_task_summary info = {.id = t->id,
                           .state = t->state,
                           .threads = t->live_threads,
-                          .exit_status = t->exit_status,
-                          .mapped = t->mapped};
+                          .mapped = t->mapped,
+                          .exit_len = t->exit_len};
+  memcpy(info.exit, t->exit, t->exit_len);
   for (const thread *th = t->threads; th; th = th->task_next) info.blocked += th->state == THREAD_BLOCKED;
   memcpy(info.name, t->name, sizeof info.name);
   spin_unlock(&t->lock);
@@ -602,7 +603,7 @@ static int64_t sys_task_create(uint64_t name_ptr, uint64_t name_len, uint64_t ou
   t->may_debug_write = current_task()->may_debug_write;
   if (options & VX_TASK_FORK) st = task_fork_copy(current_task(), t);
   if (st != VX_OK) {
-    task_kill(t, VX_ERR_NO_MEMORY); // never started: torn down with its last reference
+    task_kill(t, "sys: no memory", 14); // never started: torn down with its last reference
     object_release(&t->obj);
     return st;
   }
@@ -652,11 +653,15 @@ static int64_t sys_thread_start(vx_handle h, uint64_t entry, uint64_t sp, vx_han
   return st;
 }
 
-static int64_t sys_task_kill(vx_handle h, uint64_t status, uint64_t id) {
-  vx_status st;
+// task_kill(task, msg, len, id): ends it with msg as its exit string.
+static int64_t sys_task_kill(vx_handle h, uint64_t msg_ptr, uint64_t len, uint64_t id) {
+  if (len > VX_ERRMAX) return VX_ERR_RANGE;
+  char msg[VX_ERRMAX];
+  vx_status st = copy_from_user(msg, msg_ptr, len);
+  if (st != VX_OK) return st;
   task *t = task_target(h, VX_RIGHT_MANAGE, id, false, &st);
   if (!t) return st;
-  task_kill(t, (int64_t)status);
+  task_kill(t, msg, len);
   object_release(&t->obj);
   return VX_OK;
 }
@@ -711,7 +716,7 @@ static int64_t sys_handle_dup(vx_handle h, uint64_t rights, uint64_t out) {
 static int64_t sys_exception_bind(vx_handle th, vx_handle ph, uint64_t key, uint64_t options);
 static int64_t sys_exception_resume(vx_handle th, uint64_t id, uint64_t action, uint64_t regs_ptr);
 static int64_t sys_thread_state(vx_handle th, uint64_t id, uint64_t op, uint64_t buf, uint64_t size);
-static int64_t sys_thread_interrupt(vx_handle th, uint64_t id, uint64_t value);
+static int64_t sys_thread_interrupt(vx_handle th, uint64_t id, uint64_t note_ptr, uint64_t len);
 static int64_t sys_vmo_clone(vx_handle h, uint64_t offset, uint64_t size, uint64_t options, uint64_t out);
 static int64_t sys_thread_suspend(vx_handle th, uint64_t id);
 static int64_t sys_thread_resume(vx_handle th, uint64_t id);
@@ -722,11 +727,11 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_debug_write: return sys_debug_write(a[0], a[1]);
   case VX_SYS_clock_read: return clock_now();
   case VX_SYS_task_create: return sys_task_create(a[0], a[1], a[2], a[3]);
-  case VX_SYS_task_kill: return sys_task_kill((vx_handle)a[0], a[1], a[2]);
+  case VX_SYS_task_kill: return sys_task_kill((vx_handle)a[0], a[1], a[2], a[3]);
   case VX_SYS_task_info: return sys_task_info((vx_handle)a[0], a[1], a[2], a[3]);
   case VX_SYS_thread_create: return sys_thread_create((vx_handle)a[0], a[1], a[2]);
   case VX_SYS_thread_start: return sys_thread_start((vx_handle)a[0], a[1], a[2], (vx_handle)a[3], a[4]);
-  case VX_SYS_thread_exit: thread_exit_current((int64_t)a[0]);
+  case VX_SYS_thread_exit: thread_exit_current();
   case VX_SYS_port_create: return sys_port_create(a[0], a[1]);
   case VX_SYS_port_bind: return sys_port_bind((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4]);
   case VX_SYS_port_wait:
@@ -757,7 +762,7 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_exception_bind: return sys_exception_bind((vx_handle)a[0], (vx_handle)a[1], a[2], a[3]);
   case VX_SYS_exception_resume: return sys_exception_resume((vx_handle)a[0], a[1], a[2], a[3]);
   case VX_SYS_thread_state: return sys_thread_state((vx_handle)a[0], a[1], a[2], a[3], a[4]);
-  case VX_SYS_thread_interrupt: return sys_thread_interrupt((vx_handle)a[0], a[1], a[2]);
+  case VX_SYS_thread_interrupt: return sys_thread_interrupt((vx_handle)a[0], a[1], a[2], a[3]);
   case VX_SYS_vmo_clone: return sys_vmo_clone((vx_handle)a[0], a[1], a[2], a[3], a[4]);
   case VX_SYS_thread_suspend: return sys_thread_suspend((vx_handle)a[0], a[1]);
   case VX_SYS_thread_resume: return sys_thread_resume((vx_handle)a[0], a[1]);

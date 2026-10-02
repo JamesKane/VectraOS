@@ -33,7 +33,7 @@ static size_t names_used;
   vx_print(VX_STR("bootfs: FAILED: "));
   vx_print(vx_cstr(what));
   vx_print(VX_STR("\n"));
-  vx_thread_exit(-1);
+  vx_exits(what);
 }
 
 static uint64_t child_named(uint64_t dir, vx_str name) {
@@ -159,7 +159,7 @@ static p9_ring_server server = {
     .supported = P9_EXT_XATTR, // Tgetattr, for stat; nothing can be changed
 };
 
-int vx_main(void) {
+const char *vx_main(void) {
   vx_handle image = vx_spawn_take("bootimage");
   server.listen = vx_spawn_take("listen");
   vx_ndb_record rec;
@@ -178,5 +178,5 @@ int vx_main(void) {
   vx_print(VX_STR(" files in "));
   vx_print_u64(dirs);
   vx_print(VX_STR(" directories\n"));
-  return p9_ring_serve(&server);
+  return p9_ring_serve(&server) == VX_OK ? nullptr : "cannot serve";
 }

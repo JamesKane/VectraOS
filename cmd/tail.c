@@ -11,7 +11,7 @@ static void take(const uint8_t *p, size_t n) {
   for (size_t i = 0; i < n; i++) text[total++ % sizeof text] = (char)p[i];
 }
 
-int vx_main(void) {
+const char *vx_main(void) {
   uint64_t lines = 10;
   uint32_t arg = 0;
   if (vx_spawn.argc > 0 && vx_spawn.args[0].len > 1 && vx_spawn.args[0].ptr[0] == '-') {
@@ -19,8 +19,8 @@ int vx_main(void) {
     for (size_t i = 1; i < vx_spawn.args[0].len; i++) {
       char c = vx_spawn.args[0].ptr[i];
       if (c < '0' || c > '9' || lines > 100000) {
-        vx_print(VX_STR("usage: tail [-N] [file]\n"));
-        return 1;
+        vx_eprint(VX_STR("usage: tail [-N] [file]\n"));
+        return "usage";
       }
       lines = lines * 10 + (uint64_t)(c - '0');
     }
@@ -32,8 +32,8 @@ int vx_main(void) {
     static vx_ns ns;
     vx_ns_file f;
     if (vx_ns_from_spawn(&ns) != VX_OK || vx_ns_open(&ns, vx_spawn.args[arg], P9_OREAD, &f) != VX_OK) {
-      vx_print(VX_STR("tail: cannot open it\n"));
-      return 1;
+      vx_eprint(VX_STR("tail: cannot open it\n"));
+      return "cannot open";
     }
     while ((n = vx_ns_read(&f, buf, sizeof buf)) > 0) take(buf, (size_t)n);
     vx_ns_close(&f);
@@ -49,5 +49,5 @@ int vx_main(void) {
     start--;
   }
   for (uint64_t i = start; i < total; i++) vx_print((vx_str){&text[i % sizeof text], 1});
-  return 0;
+  return nullptr;
 }

@@ -55,7 +55,8 @@ typedef struct task {
   vx_task_state state; // EXITED once torn down
   bool ending;         // its last thread has exited, or it was killed: torn down soon
   bool killed;
-  int64_t exit_status;
+  uint8_t exit_len; // its exit string (ADR-0010): empty while it runs, and for success
+  char exit[VX_ERRMAX];
   observers obs; // EXIT bindings
   // The root task's debug capability, until there is a debug-log object;
   // a task gets it from the task that creates it, so services can report
@@ -122,11 +123,14 @@ struct thread {
   uint32_t suspend_count; // thread_suspend, less thread_resume
   bool parked;            // stopped on its way to user mode while suspended
   uint32_t exc_action;    // what exception_resume said: enum vx_resume_action, or 0
-  // thread_interrupt's values not yet delivered, oldest first: each is its
+  // thread_interrupt's notes not yet delivered, oldest first: each is its
   // own exception (Plan 9 queued notes the same way).
   bool interrupt_pending; // interrupt_count > 0, read without the lock
   uint8_t interrupt_count;
-  uint64_t interrupt_queue[THREAD_MAX_INTERRUPTS];
+  struct {
+    uint8_t len;
+    char text[VX_ERRMAX];
+  } notes[THREAD_MAX_INTERRUPTS];
   vx_exception exc; // the exception it stopped at
 };
 

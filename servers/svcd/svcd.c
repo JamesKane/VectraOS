@@ -429,7 +429,15 @@ static void cannot(const char *what, const service *s, vx_status st) {
   vx_print(VX_STR("\n"));
 }
 
-static void exited(service *s, int64_t status) {
+// Its exit string (ADR-0010), read before its handle goes: empty for success.
+static vx_str exit_string(vx_handle task, vx_task_summary *info) {
+  if (vx_task_info(task, info) != VX_OK) return VX_STR("?");
+  return (vx_str){info->exit, info->exit_len};
+}
+
+static void exited(service *s) {
+  vx_task_summary info;
+  vx_str why = exit_string(s->task, &info);
   vx_handle_close(s->task);
   s->task = VX_HANDLE_NONE;
   bool restart = s->restart, gave_up = false;
@@ -440,8 +448,8 @@ static void exited(service *s, int64_t status) {
     vx_status st = gave_up ? VX_OK : start(s);
     if (st != VX_OK) cannot("cannot restart ", s, st);
   }
-  say(s->name, VX_STR(" exited with status "), status < 0 ? VX_STR("-") : VX_STR(""));
-  vx_print_u64(status < 0 ? (uint64_t)-status : (uint64_t)status);
+  say(s->name, VX_STR(" exited"), why.len ? VX_STR(": ") : VX_STR(""));
+  vx_print(why);
   vx_print(VX_STR("\n"));
   if (gave_up) say(s->name, VX_STR(" keeps exiting; it is not restarted again"), VX_STR("\n"));
 }
@@ -463,7 +471,7 @@ static bool skipped(vx_str name) {
   return false;
 }
 
-int vx_main(void) {
+const char *vx_main(void) {
   vx_task_summary info;
   vx_task_info(vx_self, &info);
   vx_print(VX_STR("svcd: hello from user space (task "));
@@ -513,7 +521,6 @@ int vx_main(void) {
     vx_packet pk[8];
     int64_t n = vx_port_wait(port, VX_INFINITE, 0, pk, 8);
     for (int64_t i = 0; i < n; i++)
-      if (pk[i].trigger == VX_TRIGGER_EXIT && pk[i].key < service_count)
-        exited(&services[pk[i].key], (int64_t)pk[i].value); // the exit status, signed
+      if (pk[i].trigger == VX_TRIGGER_EXIT && pk[i].key < service_count) exited(&services[pk[i].key]);
   }
 }

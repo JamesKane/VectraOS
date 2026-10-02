@@ -13,10 +13,6 @@
 [[gnu::visibility("hidden"), noreturn]] void __vx_start(vx_handle bootstrap,
                                                         int (*main)(int, char **, char **));
 
-// The in-task exception handler (signal.c): the kernel diverts the thread here
-// with a vx_exception, for a fault or a signal.
-[[gnu::visibility("hidden")]] void __vx_sig_entry(void);
-
 // The kernel enters _start, as if called, with the bootstrap channel.
 [[noreturn]] void _start(void);
 int main(int argc, char **argv, char **envp);

@@ -801,7 +801,7 @@ void aarch64_trap(trap_frame *f, uint64_t index) {
       kput(VX_STR(" at pc "));
       kput_hex(f->elr);
       kput(VX_STR("\n"));
-      task_fault_exit();
+      task_fault_exit((index & 3) != 0 ? VX_EXCEPTION_GENERAL : kind, code, address, f->elr);
     }
   } else {
     panic_start();

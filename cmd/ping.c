@@ -14,14 +14,14 @@
 static constexpr uint32_t PAYLOAD = 56; // and 8 bytes of header: 64, as everyone's ping sends
 
 [[noreturn]] static void fail(vx_str what, int64_t st) {
-  vx_print(VX_STR("ping: "));
-  vx_print(what);
+  vx_eprint(VX_STR("ping: "));
+  vx_eprint(what);
   if (st < 0) {
-    vx_print(VX_STR(": "));
-    vx_print(p9_error_text((vx_status)st));
+    vx_eprint(VX_STR(": "));
+    vx_eprint(p9_error_text((vx_status)st));
   }
-  vx_print(VX_STR("\n"));
-  vx_thread_exit(1);
+  vx_eprint(VX_STR("\n"));
+  vx_exits("error");
 }
 
 typedef struct text {
@@ -41,7 +41,7 @@ static void put_u64(text *t, uint64_t v) {
   put(t, (vx_str){digits + d, sizeof digits - d});
 }
 
-int vx_main(void) {
+const char *vx_main(void) {
   uint64_t count = 3;
   uint32_t arg = 0;
   if (vx_spawn.argc > 1 && vx_spawn.args[0].len > 1 && vx_spawn.args[0].ptr[0] == '-') {
@@ -118,5 +118,5 @@ int vx_main(void) {
   put_u64(&line, received);
   put(&line, VX_STR(" received\n"));
   vx_print((vx_str){line.buf, line.len});
-  return received == count ? 0 : 1;
+  return received == count ? nullptr : "lost";
 }

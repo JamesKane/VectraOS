@@ -92,13 +92,23 @@ static long proc_getrandom(void *buf, size_t n) {
   __builtin_trap(); // it ends in exit, never returning
 }
 
-// exit and exit_group: musl has flushed its own buffers; the back end's go
-// out, and stdout's pipe closes so its reader sees the end of the file. One
-// thread is all there is until pthreads (docs/milestones.md), so its exit is
-// the task's.
-[[noreturn]] static void proc_exit(int status) {
+// Ends the process with msg as its exit string (ADR-0010). The back end's
+// buffers go out first, and stdout's pipe closes so its reader sees the end
+// of the file.
+[[noreturn]] static void proc_exit_str(vx_str msg) {
   fd_exit();
-  vx_thread_exit(status);
+  vx_task_kill(vx_self, msg);
+  vx_thread_exit();
+}
+
+// exit and exit_group (musl has flushed its own buffers): as APE does, exit
+// code 0 is the empty exit string, and any other is its number in decimal.
+// The code is the status's low byte, all a parent's wait can see.
+[[noreturn]] static void proc_exit(int status) {
+  char code[4];
+  vx_note_buf b = {code, 0, sizeof code};
+  if (status & 0xff) vx_note_dec(&b, (uint64_t)(status & 0xff));
+  proc_exit_str((vx_str){code, b.len});
 }
 
 static uint64_t proc_kernel_id(void) { return proc_kernel_task_id; }
