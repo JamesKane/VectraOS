@@ -284,7 +284,7 @@ In `topology`, `llc=` groups cores that share a last-level cache and `numa=` gro
     .schema
 ```
 
-Vulkan applications use the Vulkan loader, which talks to the GPU driver over rings. The GPU tree is still there for discovery, budgets and scripting, and for remote access (§6). NPUs, which have no cross-vendor API, are driven the way GPUs are: their user-space driver (Mesa's Rocket, under the Teflon delegate) runs in the client and submits over `accel` rings, as Fuchsia drives NPUs through Magma (ADR-0023). Their tree is for discovery and status. Loading a model and running it from a shell is `aid`'s job, under `/ai/models/` (§5.6). Only NPUs with an open user-space stack are supported: the RK3588's, through Mesa's Rocket driver and its Teflon TensorFlow Lite delegate. Intel's NPU, AMD XDNA, Qualcomm Hexagon and Apple's ANE need closed Linux user-space libraries today, so they wait until open stacks exist.
+Vulkan applications use the Vulkan loader, which talks to the GPU driver over rings. The GPU tree is still there for discovery, budgets and scripting, and for remote access (§6). NPUs, which have no cross-vendor API, are driven the way GPUs are: their user-space driver (Mesa's Rocket, under the Teflon delegate) runs in the client and submits over `accel` rings, as Fuchsia drives NPUs through Magma (ADR-0023). Their tree is for discovery and status. Loading a model and running it from a shell is `aid`'s job, under `/ai/models/` (§5.6). Only NPUs with an open user-space stack are supported. Today that is Rockchip's, through Mesa's Rocket driver and its Teflon TensorFlow Lite delegate, and no tiered board has one since the RK3588 left T1 (00 §5), so the tree above is the shape, not a promise for a board. Intel's NPU, AMD XDNA, Qualcomm Hexagon and Apple's ANE need closed Linux user-space libraries today, so they wait until open stacks exist.
 
 ### 5.4 Networking (Plan 9 style)
 
@@ -364,7 +364,7 @@ Plan 9 split resources into terminals, CPU servers, file servers and auth server
 |---|---|---|
 | **Terminal** | A screen, input, local devices. Exports `/mnt/term` to sessions it starts | Laptop, tablet |
 | **CPU server** | Cores and memory for `cpu` sessions | Workstation, rack server |
-| **Accelerator server** | `/dev/accel/*` and `/ai/models` for remote use | GPU tower, NPU board (RK3588), Apple Silicon Mac mini |
+| **Accelerator server** | `/dev/accel/*` and `/ai/models` for remote use | GPU tower, NPU board, Apple Silicon Mac mini |
 | **File server** | Durable volumes and context pools | NAS |
 | **Auth server** (optional) | Token issuance for multi-user swarms | Any always-on node |
 
@@ -452,7 +452,7 @@ What happens:
 
 **2. Local-first inference that grows beyond the laptop.** The editor writes a prompt to `/ai/sessions/12/prompt` with `model qwen3-32b`. The laptop's `aid` sees that the model is not resident locally, checks `/ai/policy`, finds that `tower` advertises `qwen3-32b` in `/swarm/nodes/tower/caps`, and forwards the session to `tower`'s `aid` over 9Px. Tokens stream back through `/ai/sessions/12/output`. The editor never knew. `usage` shows `placement tower:gpu0`.
 
-**3. Sensor processing on a remote NPU.** A camera on an RK3588 robot is mounted over the network. Frames stay on the robot, and its NPU runs detection *where the data is*. The laptop reads only the detections:
+**3. Sensor processing on a remote NPU.** A camera on a robot with an NPU (a Rockchip board, untiered) is mounted over the network. Frames stay on the robot, and its NPU runs detection *where the data is*. The laptop reads only the detections:
 
 ```sh
 mount 9px+tcp://robot/ai /n/robot/ai

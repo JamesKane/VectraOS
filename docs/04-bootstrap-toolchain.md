@@ -166,7 +166,7 @@ One compiler builds everything, for every architecture, with no per-target toolc
 - **Limine** is built from a vendored, pinned source release (ADR-0002); the build needs clang and nasm.
 - The kernel uses Limine's own `limine.h` protocol header, vendored with Limine.
 - **x86_64:** a GPT image with an ESP holding `BOOTX64.EFI`, plus a BIOS hybrid when built as an ISO. It boots in QEMU with OVMF (`/usr/share/edk2/ovmf/OVMF_CODE.fd` on this host) and on real PCs from USB.
-- **aarch64:** a GPT image with `BOOTAA64.EFI`. It boots in QEMU `virt` (GICv3, `-cpu max`) with edk2 (`/usr/share/edk2/aarch64`), and later on the Radxa Dragon Q8B with its own UEFI and ACPI, and on RK3588 and RPi5 through their UEFI firmware ports. Apple Silicon needs an m1n1 chain-load path, planned at T2.
+- **aarch64:** a GPT image with `BOOTAA64.EFI`. It boots in QEMU `virt` (GICv3, `-cpu max`) with edk2 (`/usr/share/edk2/aarch64`), and later on the Radxa Dragon Q8B with its own UEFI and ACPI, and on RPi5 through its UEFI firmware port. Apple Silicon needs an m1n1 chain-load path, planned at T2.
 
 ### 3.5 Host setup (Fedora 44, this workstation)
 
@@ -290,7 +290,7 @@ Rough effort for M1–M3 is 4–6 months for one experienced person working with
 | **M7 GPU** | The `accel` protocol (ADR-0018); Mesa Venus over virtio-gpu, the Vulkan profile, the `vxui` Vulkan 2D renderer, `winsrv` on Vulkan, frame feedback; `hx` v0 with tree-sitter (08 §16) | Rendering pipeline, rule 8 |
 | **M8 Swarm** | `keyd` (Monocypher), Noise over TCP, node-bound tokens, certificate renewal and revocation, NTP, `swarmd`, `exportfs` with narrow exports, `cpu`, `import`, pools | Pillar: swarms |
 | **M9 AI** | `aid` with llama.cpp on Vulkan and on CPU, sessions, context pools, the policy with labels that follow the data, `tlsd` and the TLS import (00 D16), the palette, `auditfs` | Pillar: local-first AI |
-| **M10 Self-hosting and T1 hardware** | clang, lld, flang and libomp, Git, Python and `build` running on VectraOS, which rebuilds itself; a real PC, the Radxa Dragon Q8B, and an RK3588 with its NPU; measured boot, and signed updates with a trial boot and rollback (06 §14); `hx` with `lspfs`, `clangd` and Git, so VectraOS is developed on VectraOS (08 §16) | Pillar: the hacker toolchain |
+| **M10 Self-hosting and T1 hardware** | clang, lld, flang and libomp, Git, Python and `build` running on VectraOS, which rebuilds itself; a real PC and the Radxa Dragon Q8B; measured boot, and signed updates with a trial boot and rollback (06 §14); `hx` with `lspfs`, `clangd` and Git, so VectraOS is developed on VectraOS (08 §16) | Pillar: the hacker toolchain |
 | **M11 Audio** | `audiod`, HDA and virtio-sound, the real-time admission path | Rule 6 in practice |
 | **M12 Debugger parity** | `dbg` at RAD Debugger level: watch pins, view rules, visualisers, the VectraOS views, following requests across processes, PMU sampling, `gdbfs` for the kernel (05 §6, §9, §12) | Pillar: the hacker toolchain |
 | **M13 Hypermedia and native clients** | The engine and document-profile ADRs; `webfs` and `hv`; the message shape, `lib/vx-msg`; the feed client, then IRC, then mail (07 §12) | Documents without code; apps as small native experiences |

@@ -315,7 +315,7 @@ Handmade Hero's live code editing is a convention of `vxui`, not a new mechanism
   - llama.cpp/ggml (vendored C/C++) with its Vulkan backend on any profile GPU, and CPU fallback;
   - whisper.cpp for speech;
   - an ONNX-class runtime for vision and embeddings;
-  - NPU back ends on `/dev/accel/npu*` where an open stack exists: the RK3588's, through Mesa's Teflon delegate and Rocket driver over `accel` (ADR-0023). Intel NPU, AMD XDNA, Qualcomm Hexagon and Apple ANE wait for open user-space stacks (02 §5.3).
+  - NPU back ends on `/dev/accel/npu*` where an open stack exists: Rockchip's, through Mesa's Teflon delegate and Rocket driver over `accel` (ADR-0023), on no tiered board since the RK3588 left T1 (00 §5). Intel NPU, AMD XDNA, Qualcomm Hexagon and Apple ANE wait for open user-space stacks (02 §5.3).
 
   Each runtime runs in its **own sandboxed process** with only its model files and accelerator context in its namespace. A crashing kernel inside a runtime takes down only that session.
 - **Sessions:** the `clone` → `N/` files, streaming output, and the tool-call loop.
