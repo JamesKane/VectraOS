@@ -622,6 +622,7 @@ static bool p9_str_eq(vx_str a, const char *b) {
   X(VX_ERR_PEER_CLOSED, "i/o on hungup channel")                                                             \
   X(VX_ERR_INTERRUPTED, "interrupted")                                                                       \
   X(VX_ERR_NO_CHILD, "no living children")                                                                   \
+  X(VX_ERR_IO, "i/o error")                                                                                  \
   X(VX_ERR_INVALID, "bad message")
 
 [[maybe_unused]] static vx_str p9_error_text(vx_status st) {

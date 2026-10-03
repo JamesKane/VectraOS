@@ -31,21 +31,38 @@ static vx_status vx_session_map(vx_handle memory, bool client, const vx_ring_par
   r->base = nullptr;
 }
 
-// Opens a session through `connector` (a post's client end, which stays the
-// caller's), asking with `ordinal`. On success *end is this side's ring end.
-[[maybe_unused]] static vx_status vx_session_dial(vx_handle connector, uint32_t ordinal,
-                                                  const vx_ring_params *params, vx_ring *r, vx_handle *end) {
-  *end = VX_HANDLE_NONE;
-  vx_msg_header req = {.ordinal = ordinal}, rep;
-  vx_handle got[2] = {};
-  vx_call call = {.wr_bytes = &req,
-                  .wr_len = sizeof req,
+// Asks `connector` for a session with the request `req` (a vx_msg_header,
+// perhaps with a body the protocol defines), waiting until `deadline`. On
+// success got[0] is the client's ring end and got[1] the ring's memory,
+// neither mapped; on a refusal, the server's status (from the reply's flags,
+// when it gives one) or ACCESS.
+[[maybe_unused]] static vx_status vx_session_ask_raw(vx_handle connector, const void *req, uint32_t len,
+                                                     vx_instant deadline, vx_handle got[2]) {
+  got[0] = got[1] = VX_HANDLE_NONE;
+  vx_msg_header rep;
+  vx_call call = {.wr_bytes = req,
+                  .wr_len = len,
                   .rd_bytes = &rep,
                   .rd_cap = sizeof rep,
                   .rd_handles = got,
                   .rd_count_cap = 2};
-  vx_status st = vx_channel_call(connector, &call, vx_clock_read() + 5'000'000'000);
-  if (st == VX_OK && call.actual.handles != 2) st = VX_ERR_ACCESS; // refused
+  vx_status st = vx_channel_call(connector, &call, deadline);
+  if (st == VX_OK && call.actual.handles != 2) {
+    for (uint32_t i = 0; i < call.actual.handles; i++) vx_handle_close(got[i]), got[i] = VX_HANDLE_NONE;
+    int32_t why = (int32_t)rep.flags; // a negative status, or 1: refused, no reason given
+    st = call.actual.bytes == sizeof rep && why < 0 ? (vx_status)why : VX_ERR_ACCESS;
+  }
+  return st;
+}
+
+// Opens a session with the request `req` of `len` bytes. On success *end is
+// this side's ring end.
+[[maybe_unused]] static vx_status vx_session_dial_with(vx_handle connector, const void *req, uint32_t len,
+                                                       const vx_ring_params *params, vx_ring *r,
+                                                       vx_handle *end) {
+  *end = VX_HANDLE_NONE;
+  vx_handle got[2];
+  vx_status st = vx_session_ask_raw(connector, req, len, vx_clock_read() + 5'000'000'000, got);
   if (st == VX_OK) st = vx_session_map(got[1], true, params, r);
   if (got[1]) vx_handle_close(got[1]); // the mapping keeps the memory
   if (st != VX_OK) {
@@ -56,17 +73,35 @@ static vx_status vx_session_map(vx_handle memory, bool client, const vx_ring_par
   return VX_OK;
 }
 
+// Opens a session through `connector` (a post's client end, which stays the
+// caller's), asking with `ordinal`. On success *end is this side's ring end.
+[[maybe_unused]] static vx_status vx_session_dial(vx_handle connector, uint32_t ordinal,
+                                                  const vx_ring_params *params, vx_ring *r, vx_handle *end) {
+  vx_msg_header req = {.ordinal = ordinal};
+  return vx_session_dial_with(connector, &req, sizeof req, params, r, end);
+}
+
+// Refuses one request read from `listen`, with a status the client is told.
+[[maybe_unused]] static void vx_session_refuse(vx_handle listen, const vx_msg_header *req, vx_status why) {
+  vx_msg_header rep = {.txid = req->txid, .ordinal = req->ordinal, .flags = (uint32_t)(int32_t)why};
+  vx_channel_write(listen, &rep, sizeof rep, nullptr, 0);
+}
+
 // Answers one request read from `listen` (req is its header): a new ring with
 // these parameters, mapped and attached as the server, its server end in
 // *end. On failure the request is refused, with a reply without handles.
-[[maybe_unused]] static vx_status vx_session_accept(vx_handle listen, const vx_msg_header *req,
-                                                    const vx_ring_params *params, vx_ring *r,
-                                                    vx_handle *end) {
+// With `memory`, the server keeps a handle to the ring's memory too (a driver
+// that gives the client's arena to its device, as the block class's do).
+[[maybe_unused]] static vx_status vx_session_accept_keep(vx_handle listen, const vx_msg_header *req,
+                                                         const vx_ring_params *params, vx_ring *r,
+                                                         vx_handle *end, vx_handle *memory) {
   *end = VX_HANDLE_NONE;
+  if (memory) *memory = VX_HANDLE_NONE;
   vx_msg_header rep = {.txid = req->txid, .ordinal = req->ordinal};
   vx_ring_handles h = {};
   vx_status st = vx_ring_create(params, &h);
   if (st == VX_OK) st = vx_session_map(h.memory, false, params, r);
+  if (st == VX_OK && memory) st = vx_handle_dup(h.memory, VX_RIGHTS_SAME, memory);
   if (st == VX_OK) {
     vx_handle give[2] = {h.client, h.memory};
     st = vx_channel_write(listen, &rep, sizeof rep, give, 2);
@@ -79,9 +114,17 @@ static vx_status vx_session_map(vx_handle memory, bool client, const vx_ring_par
   if (h.client) vx_handle_close(h.client);
   if (h.server) vx_handle_close(h.server);
   if (h.memory) vx_handle_close(h.memory);
+  if (memory && *memory) vx_handle_close(*memory), *memory = VX_HANDLE_NONE;
+  if (r->base) vx_session_unmap(r);
   rep.flags = 1; // refused
   vx_channel_write(listen, &rep, sizeof rep, nullptr, 0);
   return st;
+}
+
+[[maybe_unused]] static vx_status vx_session_accept(vx_handle listen, const vx_msg_header *req,
+                                                    const vx_ring_params *params, vx_ring *r,
+                                                    vx_handle *end) {
+  return vx_session_accept_keep(listen, req, params, r, end, nullptr);
 }
 
 // Dialling without waiting, for a client that cannot stall on a server that

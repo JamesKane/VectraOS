@@ -9,6 +9,10 @@
 // A driver manifest:
 //
 //   match=pci vendor=0x1af4 device=0x1041 program=/boot/bin/drv-virtio-net post=ether0 msi=2
+//   match=pci vendor=0x1af4 device=0x1042 program=/boot/bin/drv-virtio-blk post=disk# msi=1
+//
+// A post ending in # is numbered: the record's matches get disk0, disk1, ...,
+// in the order the functions were found.
 //
 // svcd gives it the root Resource, the ACPI tables, a namespace with the boot
 // image at /, and the claims. Configuration space is mapped one bus (1 MiB) at
@@ -265,17 +269,30 @@ static void match_drivers(void) {
             !vx_ndb_get_u64(&rec, "device", &device) || !program.len || program.len >= 64 || post.len >= 26)
           continue;
         vx_ndb_get_u64(&rec, "msi", &msis);
+        bool numbered = post.len && post.ptr[post.len - 1] == '#';
+        uint32_t instance = 0;
         for (uint32_t i = 0; i < function_count && driver_count < MAX_DRIVERS; i++) {
           if (functions[i].vendor != vendor || functions[i].device != device) continue;
           driver *d = &drivers[driver_count];
           *d = (driver){.f = &functions[i], .msis = (uint32_t)msis};
           memcpy(d->program, program.ptr, program.len);
-          memcpy(d->post, post.ptr, post.len);
+          size_t plen = post.len;
+          memcpy(d->post, post.ptr, plen);
+          if (numbered) { // disk# is disk0, disk1, ...
+            plen--;
+            uint32_t v = instance++;
+            char digits[10];
+            size_t nd = 0;
+            do digits[nd++] = (char)('0' + v % 10);
+            while (v /= 10);
+            while (nd && plen < sizeof d->post - 1) d->post[plen++] = digits[--nd];
+            d->post[plen] = 0;
+          }
           char claim[40] = "claim:";
-          memcpy(claim + 6, post.ptr, post.len);
+          memcpy(claim + 6, d->post, plen);
           d->listen = vx_spawn_take(claim); // one device to a post: the first match takes it
           if (!d->listen) {
-            say(VX_STR("no claim on /srv/"), post, VX_STR(" for its driver\n"));
+            say(VX_STR("no claim on /srv/"), vx_cstr(d->post), VX_STR(" for its driver\n"));
             continue;
           }
           driver_count++;

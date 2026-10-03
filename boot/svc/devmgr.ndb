@@ -6,3 +6,7 @@
 service=devmgr program=/boot/bin/devmgr resource acpi console restart
 mount=/ srv=bootfs
 claim=ether0
+claim=disk0
+claim=disk1
+claim=disk2
+claim=disk3

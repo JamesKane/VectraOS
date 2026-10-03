@@ -1248,6 +1248,8 @@ static const program USER_PROGRAMS[] = {
     {"drv-uart-16550", "drivers/drv-uart-16550/uart.c", IN_BOOTFS, "x86_64", false},
     {"drv-uart-pl011", "drivers/drv-uart-pl011/uart.c", IN_BOOTFS, "aarch64", false},
     {"drv-virtio-net", "drivers/drv-virtio-net/net.c", IN_BOOTFS, nullptr, false},
+    {"drv-virtio-blk", "drivers/drv-virtio-blk/blk.c", IN_BOOTFS, nullptr, false},
+    {"blktest", "tests/user/blktest.c", IN_TESTS, nullptr, false},
     {"ctest", "tests/posix/ctest.c", IN_TESTS, nullptr, true},
     {"sbasetest", "tests/posix/sbasetest.c", IN_TESTS, nullptr, true},
     {"dbgdemo", "tests/user/dbgdemo.c", IN_TESTS, nullptr, false},
@@ -2192,6 +2194,7 @@ typedef struct qemu_opts {
   const char *share; // the directory vx9pserve serves at 10.0.2.100!5640
   const char *u9fs;  // the root u9fs serves at 10.0.2.101!564, and its log; or nullptr
   const char *cdrom; // boot this ISO as a CD, with no disk
+  const char *disk;  // a second disk, on virtio-blk, or nullptr
 } qemu_opts;
 
 // host/vx9pserve, built for this machine: the 9P server VectraOS mounts over
@@ -2320,6 +2323,11 @@ static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
     cmd_add(c, fmt("if=none,id=disk,format=raw,file=%s%s", image, o.test ? ",snapshot=on" : ""));
     cmd_addv(c, (const char *const[]){"-device", "virtio-blk-pci,drive=disk,disable-legacy=on", nullptr});
   }
+  if (o.disk) { // after the boot disk, so devmgr finds it second: /srv/disk1
+    cmd_add(c, "-drive");
+    cmd_add(c, fmt("if=none,id=disk1,format=raw,discard=unmap,file=%s", o.disk));
+    cmd_addv(c, (const char *const[]){"-device", "virtio-blk-pci,drive=disk1,disable-legacy=on", nullptr});
+  }
   // QEMU's user networking: the guest is 10.0.2.15, the host 10.0.2.2 (M3).
   // Each connection to 10.0.2.100!7 gets a `cat` on the host of its own (an
   // echo server, for the tcp scenario), and each to 10.0.2.100!5640 a
@@ -2343,6 +2351,17 @@ static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
   else
     cmd_addv(c, (const char *const[]){"-serial", "mon:stdio", nullptr});
   if (o.gdb) cmd_addv(c, (const char *const[]){"-s", "-S", nullptr});
+}
+
+// A scenario's second disk (disk=MIB): sparse zeros, with a signature in
+// sector 0 so tests know it from the boot disk. Made fresh for each run.
+static const char *test_disk(const char *path, long mib) {
+  static const char SIGNATURE[] = "VectraOS block test disk";
+  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (fd < 0 || ftruncate(fd, (off_t)mib << 20) != 0) die("cannot make %s", path);
+  pwrite_all(fd, SIGNATURE, sizeof SIGNATURE - 1, 0, path);
+  close(fd);
+  return path;
 }
 
 static bool force_tcg; // test --tcg: emulate even where KVM would work, as CI runners may have to
@@ -2387,6 +2406,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   double timeout = 0;
   const char *cmdline = "", *with = "";
   bool iso = false;                        // scenario=... iso: boot the ISO, as a CD
+  long disk_mib = 0;                       // scenario=... disk=MIB: a second disk, made fresh for the run
   const char *host_file[8], *host_text[8]; // host=FILE text=...: in the share, once it passed
   int host_count = 0;
   for (;;) {
@@ -2402,6 +2422,12 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
       cmdline = str_dup(vx_ndb_get(&rec, "cmdline"));
       with = str_dup(vx_ndb_get(&rec, "with"));
       iso = vx_ndb_has(&rec, "iso");
+      if (vx_ndb_has(&rec, "disk")) {
+        const char *d = str_dup(vx_ndb_get(&rec, "disk"));
+        disk_mib = strtol(d, &end, 10);
+        if (end == d || *end || disk_mib <= 0 || disk_mib > 4096)
+          die("%s:%zu: disk=%s is not a size in MiB, up to 4096", path, rec.line, d);
+      }
     } else if (vx_ndb_has(&rec, "host") && host_count < 8) {
       vx_str file = vx_ndb_get(&rec, "host");
       for (size_t k = 0; k < file.len; k++)
@@ -2454,8 +2480,11 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   // What the run's servers serve, fresh: run-NAME/share for vx9pserve, run-NAME/u9fs for u9fs.
   const char *run_dir = fmt("%s/run-%s", out_dir(a, release), name);
   const char *share = fresh_share(fmt("%s/share", run_dir)), *u9fs = fresh_u9fs_root(fmt("%s/u9fs", run_dir));
-  qemu_cmd(&c, a, image,
-           (qemu_opts){.kvm = kvm_usable(a), .test = true, .share = share, .u9fs = u9fs, .cdrom = cdrom});
+  const char *disk = disk_mib ? test_disk(fmt("%s/disk.img", run_dir), disk_mib) : nullptr;
+  qemu_cmd(
+      &c, a, image,
+      (qemu_opts){
+          .kvm = kvm_usable(a), .test = true, .share = share, .u9fs = u9fs, .cdrom = cdrom, .disk = disk});
   if (verbose) cmd_print(&c);
   signal(SIGPIPE, SIG_IGN); // QEMU gone: a write to it fails, rather than ending this process
   int fds[2], keys[2];      // QEMU's serial: its output, and what is typed into it

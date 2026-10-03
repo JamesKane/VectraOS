@@ -78,6 +78,7 @@ static long vx_errno(vx_status st) {
   case VX_ERR_KILLED:
   case VX_ERR_INTERRUPTED: return -EINTR;
   case VX_ERR_NO_CHILD: return -ECHILD;
+  case VX_ERR_IO: return -EIO;
   case VX_ERR_NOT_FOUND: return -ENOENT;
   case VX_ERR_EXISTS: return -EEXIST;
   default: return -EIO;

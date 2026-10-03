@@ -196,10 +196,10 @@ The `ctl` commands:
 - **`INFO`** gives the sector size, the capacity and whether the device has a volatile write cache.
 - **Restarts.** A driver that restarts loses nothing the client has not seen completed. The client resubmits what was in flight (01 §7.4).
 
-**Partitions are capabilities, not a server.**
-- A session can be narrowed to a range of the disk, and the narrowed session handed on.
-- `svcd` reads the GPT (`lib/vx-gpt`) and gives `fsd` a session that reaches only the system volume's partition, and `dosfs` one that reaches only the EFI system partition.
-- No server sees sectors it was not given.
+**Partitions are windows.**
+- A session reaches one window of the disk, fixed when it is opened, and the session is the capability.
+- `partd` holds the whole disk's connector, reads the GPT (`lib/vx-gpt`), and claims a post for each partition its manifest names. A `CONNECT` there opens a session narrowed to that partition (docs/proto/block.md §6). `fsd` connects to the system volume's post, and `dosfs` to the EFI system partition's.
+- No server sees sectors it was not given. `svcd` and `devmgr` stay as they are: a broker of its own, not `svcd` reading disks in its one loop before their drivers have started.
 - The system volume's partition has a VectraOS GPT type GUID, fixed in `docs/proto/block.md`.
 
 **The drivers.** `drv-virtio-blk` comes first, then NVMe (`drv-nvme`) with its several queues. Both put their DMA behind the IOMMU once M5 enforces it (01 §7.1).
@@ -237,7 +237,7 @@ All in M5 (04 §6). The steps are in `docs/milestones.md`.
 
 | Step | Pieces |
 |---|---|
-| 1 | `docs/proto/block.md`; `drv-virtio-blk`; `lib/vx-gpt`; sessions narrowed to a partition |
+| 1 | `docs/proto/block.md`; `drv-virtio-blk`; `lib/vx-gpt`; `partd`, handing out partitions as windows |
 | 2 | `lib/vx-fs`, part one: the block layer and arenas, the Bε tree with upserts, keys and messages; host tests and a fuzz target |
 | 3 | `lib/vx-fs`, part two: snapshots, labels, deadlists, the commit protocol, the checker; a host power-cut test (§14); `host/vxfs` |
 | 4 | `fsd`: the 9Px server, users, the `adm` files, the dump view; ctest run against `fsd` as well as `tmpfs` |

@@ -35,6 +35,7 @@ enum : uint8_t {
 };
 
 static constexpr uint64_t VIRTIO_F_VERSION_1 = 1ull << 32;
+static constexpr uint64_t VIRTIO_RING_F_INDIRECT_DESC = 1ull << 28;
 static constexpr uint16_t VIRTIO_NO_VECTOR = 0xffff;
 
 typedef struct vx_virtio_desc {
@@ -43,7 +44,7 @@ typedef struct vx_virtio_desc {
   uint16_t flags, next;
 } vx_virtio_desc;
 
-enum : uint16_t { VIRTQ_DESC_F_NEXT = 1, VIRTQ_DESC_F_WRITE = 2 };
+enum : uint16_t { VIRTQ_DESC_F_NEXT = 1, VIRTQ_DESC_F_WRITE = 2, VIRTQ_DESC_F_INDIRECT = 4 };
 
 typedef struct vx_virtq {
   uint16_t index, size; // size: a power of two, at most 256
@@ -192,6 +193,18 @@ static volatile uint8_t *virtio_region(vx_virtio *v, uint8_t cap, uint32_t need,
   q->desc[d] = (vx_virtio_desc){.addr = addr, .len = len, .flags = device_writes ? VIRTQ_DESC_F_WRITE : 0};
   q->avail[2 + q->avail_idx % q->size] = d;
   __atomic_thread_fence(__ATOMIC_RELEASE); // the descriptor and ring entry, before the index
+  q->avail[1] = ++q->avail_idx;
+}
+
+// Makes descriptor `d` available as an indirect one (§2.7.5.3): a table of
+// `n` descriptors at device address `table`, which the driver has filled and
+// chained, and which the device reads once the descriptor is available. Needs
+// VIRTIO_RING_F_INDIRECT_DESC.
+[[maybe_unused]] static void vx_virtq_offer_indirect(vx_virtq *q, uint16_t d, uint64_t table, uint16_t n) {
+  q->desc[d] = (vx_virtio_desc){
+      .addr = table, .len = (uint32_t)n * sizeof(vx_virtio_desc), .flags = VIRTQ_DESC_F_INDIRECT};
+  q->avail[2 + q->avail_idx % q->size] = d;
+  __atomic_thread_fence(__ATOMIC_RELEASE); // the table, the descriptor and ring entry, before the index
   q->avail[1] = ++q->avail_idx;
 }
 
