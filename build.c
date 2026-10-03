@@ -1250,6 +1250,7 @@ static const program USER_PROGRAMS[] = {
     {"drv-uart-pl011", "drivers/drv-uart-pl011/uart.c", IN_BOOTFS, "aarch64", false},
     {"drv-virtio-net", "drivers/drv-virtio-net/net.c", IN_BOOTFS, nullptr, false},
     {"drv-virtio-blk", "drivers/drv-virtio-blk/blk.c", IN_BOOTFS, nullptr, false},
+    {"drv-nvme", "drivers/drv-nvme/nvme.c", IN_BOOTFS, nullptr, false},
     {"blktest", "tests/user/blktest.c", IN_TESTS, nullptr, false},
     {"partd", "servers/partd/partd.c", IN_BOOTFS, nullptr, false},
     {"fsd", "servers/fsd/fsd.c", IN_BOOTFS, nullptr, false},
@@ -2209,6 +2210,7 @@ typedef struct qemu_opts {
   const char *u9fs;  // the root u9fs serves at 10.0.2.101!564, and its log; or nullptr
   const char *cdrom; // boot this ISO as a CD, with no disk
   const char *disk;  // a second disk, on virtio-blk, or nullptr
+  bool nvme;         // and on NVMe instead
 } qemu_opts;
 
 // host/vx9pserve, built for this machine: the 9P server VectraOS mounts over
@@ -2405,7 +2407,10 @@ static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
   if (o.disk) { // after the boot disk, so devmgr finds it second: /srv/disk1
     cmd_add(c, "-drive");
     cmd_add(c, fmt("if=none,id=disk1,format=raw,discard=unmap,file=%s", o.disk));
-    cmd_addv(c, (const char *const[]){"-device", "virtio-blk-pci,drive=disk1,disable-legacy=on", nullptr});
+    if (o.nvme)
+      cmd_addv(c, (const char *const[]){"-device", "nvme,drive=disk1,serial=vxdisk1", nullptr});
+    else
+      cmd_addv(c, (const char *const[]){"-device", "virtio-blk-pci,drive=disk1,disable-legacy=on", nullptr});
   }
   // QEMU's user networking: the guest is 10.0.2.15, the host 10.0.2.2 (M3).
   // Each connection to 10.0.2.100!7 gets a `cat` on the host of its own (an
@@ -2539,6 +2544,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   const char *cmdline = "", *with = "";
   bool iso = false;                        // scenario=... iso: boot the ISO, as a CD
   long disk_mib = 0;                       // scenario=... disk=MIB: a second disk, made fresh for the run
+  bool nvme = false;                       // and bus=nvme: on NVMe, not virtio-blk
   const char *volume = nullptr;            // and volume=DIR: its system partition a volume, home DIR
   const char *host_file[8], *host_text[8]; // host=FILE text=...: in the share, once it passed
   int host_count = 0;
@@ -2562,6 +2568,12 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
           die("%s:%zu: disk=%s is not a size in MiB, up to 4096", path, rec.line, d);
       }
       if (vx_ndb_has(&rec, "volume")) volume = str_dup(vx_ndb_get(&rec, "volume"));
+      if (vx_ndb_has(&rec, "bus")) {
+        const char *b = str_dup(vx_ndb_get(&rec, "bus"));
+        if (strcmp(b, "nvme") != 0 && strcmp(b, "virtio") != 0)
+          die("%s:%zu: bus=%s is neither nvme nor virtio", path, rec.line, b);
+        nvme = strcmp(b, "nvme") == 0;
+      }
     } else if (vx_ndb_has(&rec, "host") && host_count < 8) {
       vx_str file = vx_ndb_get(&rec, "host");
       for (size_t k = 0; k < file.len; k++)
@@ -2616,10 +2628,14 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   const char *share = fresh_share(fmt("%s/share", run_dir)), *u9fs = fresh_u9fs_root(fmt("%s/u9fs", run_dir));
   if (volume && !disk_mib) die("%s: volume= needs disk=", path);
   const char *disk = disk_mib ? test_disk(fmt("%s/disk.img", run_dir), disk_mib, volume) : nullptr;
-  qemu_cmd(
-      &c, a, image,
-      (qemu_opts){
-          .kvm = kvm_usable(a), .test = true, .share = share, .u9fs = u9fs, .cdrom = cdrom, .disk = disk});
+  qemu_cmd(&c, a, image,
+           (qemu_opts){.kvm = kvm_usable(a),
+                       .test = true,
+                       .share = share,
+                       .u9fs = u9fs,
+                       .cdrom = cdrom,
+                       .disk = disk,
+                       .nvme = nvme});
   if (verbose) cmd_print(&c);
   signal(SIGPIPE, SIG_IGN); // QEMU gone: a write to it fails, rather than ending this process
   int fds[2], keys[2];      // QEMU's serial: its output, and what is typed into it

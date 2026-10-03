@@ -33,6 +33,7 @@ typedef struct function {
   vx_pci_fn fn;
   uint64_t config_pa; // its 4 KiB of configuration space
   uint16_t vendor, device;
+  uint32_t class; // class, subclass and programming interface: 0x010802, an NVMe controller
 } function;
 
 static function functions[64];
@@ -89,7 +90,8 @@ static void scan_bus(const vx_ecam *e, uint8_t bus) {
             .fn = f,
             .config_pa = e->base + ((uint64_t)bus << 20 | (uint64_t)dev << 15 | (uint64_t)fn << 12),
             .vendor = vendor,
-            .device = vx_pci_read16(&f, 0x02)};
+            .device = vx_pci_read16(&f, 0x02),
+            .class = class};
       vx_print(VX_STR("devmgr: "));
       hex(bus, 2), vx_print(VX_STR(":")), hex(dev, 2), vx_print(VX_STR(".")), hex(fn, 1);
       vx_print(VX_STR(" ")), hex(vendor, 4), vx_print(VX_STR(":")), hex(vx_pci_read16(&f, 0x02), 4);
@@ -129,6 +131,7 @@ typedef struct driver {
   const function *f;
   char program[64], post[32];
   uint32_t msis;
+  uint8_t prefix;   // a numbered post's (disk# is "disk"): its length; 0 if not numbered
   vx_handle listen; // the post's server end; each start gets a duplicate
   vx_handle task;
   uint32_t starts;
@@ -199,6 +202,10 @@ static vx_status start_driver(driver *d) {
   if (st == VX_OK && vx_console.connector &&
       vx_handle_dup(vx_console.connector, VX_RIGHTS_SAME, &handles[count]) == VX_OK)
     names[count++] = VX_STR("console");
+  if (vx_spawn.cmdline.len) { // a driver's options: PROGRAM.KEY=VALUE words, its to read
+    vx_ndb_put(&w, "cmdline", vx_spawn.cmdline);
+    vx_ndb_end(&w);
+  }
   size_t size = st == VX_OK ? read_whole(vx_cstr(d->program), image, sizeof image) : 0;
   if (st == VX_OK && !size) st = VX_ERR_NOT_FOUND;
   if (st == VX_OK && w.failed) st = VX_ERR_RANGE;
@@ -263,45 +270,57 @@ static void match_drivers(void) {
       vx_ndb_reader r = {.src = {(const char *)text, len}, .scratch = scratch, .scratch_cap = sizeof scratch};
       vx_ndb_record rec;
       while (vx_ndb_next(&r, &rec) == VX_NDB_RECORD) {
-        uint64_t vendor, device, msis = 0;
+        // A match names a vendor and device, or a class (a standard
+        // interface: NVMe's, whoever makes the controller).
+        uint64_t vendor = 0, device = 0, class = 0, msis = 0;
         vx_str program = vx_ndb_get(&rec, "program"), post = vx_ndb_get(&rec, "post");
-        if (!vx_ndb_has(&rec, "match") || !vx_ndb_get_u64(&rec, "vendor", &vendor) ||
-            !vx_ndb_get_u64(&rec, "device", &device) || !program.len || program.len >= 64 || post.len >= 26)
+        bool by_id = vx_ndb_get_u64(&rec, "vendor", &vendor) && vx_ndb_get_u64(&rec, "device", &device);
+        bool by_class = !by_id && vx_ndb_get_u64(&rec, "class", &class);
+        if (!vx_ndb_has(&rec, "match") || (!by_id && !by_class) || !program.len || program.len >= 64 ||
+            post.len >= 26)
           continue;
         vx_ndb_get_u64(&rec, "msi", &msis);
         bool numbered = post.len && post.ptr[post.len - 1] == '#';
-        uint32_t instance = 0;
         for (uint32_t i = 0; i < function_count && driver_count < MAX_DRIVERS; i++) {
-          if (functions[i].vendor != vendor || functions[i].device != device) continue;
-          driver *d = &drivers[driver_count];
+          if (by_id ? functions[i].vendor != vendor || functions[i].device != device
+                    : functions[i].class != class)
+            continue;
+          driver *d = &drivers[driver_count++];
           *d = (driver){.f = &functions[i], .msis = (uint32_t)msis};
           memcpy(d->program, program.ptr, program.len);
-          size_t plen = post.len;
-          memcpy(d->post, post.ptr, plen);
-          if (numbered) { // disk# is disk0, disk1, ...
-            plen--;
-            uint32_t v = instance++;
-            char digits[10];
-            size_t nd = 0;
-            do digits[nd++] = (char)('0' + v % 10);
-            while (v /= 10);
-            while (nd && plen < sizeof d->post - 1) d->post[plen++] = digits[--nd];
-            d->post[plen] = 0;
-          }
-          char claim[40] = "claim:";
-          memcpy(claim + 6, d->post, plen);
-          d->listen = vx_spawn_take(claim); // one device to a post: the first match takes it
-          if (!d->listen) {
-            say(VX_STR("no claim on /srv/"), vx_cstr(d->post), VX_STR(" for its driver\n"));
-            continue;
-          }
-          driver_count++;
-          if (start_driver(d) != VX_OK) say(VX_STR("cannot start "), program, VX_STR("\n"));
+          memcpy(d->post, post.ptr, post.len);
+          if (numbered) d->prefix = (uint8_t)(post.len - 1);
         }
       }
     }
   }
   vx_ns_close(&dir);
+  // Numbered posts in bus order, whichever drivers serve them: disk0 is the
+  // first disk found, virtio or NVMe; then each claimed and started.
+  for (uint32_t k = 0; k < driver_count; k++) {
+    driver *d = &drivers[k];
+    size_t plen = d->prefix ? d->prefix : vx_cstr(d->post).len;
+    if (d->prefix) { // disk# is disk0, disk1, ...
+      uint32_t v = 0;
+      for (uint32_t j = 0; j < driver_count; j++)
+        v += drivers[j].prefix == d->prefix && memcmp(drivers[j].post, d->post, d->prefix) == 0 &&
+             drivers[j].f < d->f;
+      char digits[10];
+      size_t nd = 0;
+      do digits[nd++] = (char)('0' + v % 10);
+      while (v /= 10);
+      while (nd && plen < sizeof d->post - 1) d->post[plen++] = digits[--nd];
+      d->post[plen] = 0;
+    }
+    char claim[40] = "claim:";
+    memcpy(claim + 6, d->post, plen);
+    d->listen = vx_spawn_take(claim); // one device to a post: the first match takes it
+    if (!d->listen) {
+      say(VX_STR("no claim on /srv/"), vx_cstr(d->post), VX_STR(" for its driver\n"));
+      continue;
+    }
+    if (start_driver(d) != VX_OK) say(VX_STR("cannot start "), vx_cstr(d->program), VX_STR("\n"));
+  }
 }
 
 const char *vx_main(void) {

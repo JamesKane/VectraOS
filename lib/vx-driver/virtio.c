@@ -95,31 +95,15 @@ static volatile uint8_t *virtio_region(vx_virtio *v, uint8_t cap, uint32_t need,
     if (type == 3 && !v->isr) v->isr = virtio_region(v, cap, 1, nullptr);
     if (type == 4 && !v->device) v->device = virtio_region(v, cap, 8, nullptr);
   }
-  uint8_t msix = vx_pci_cap(&v->fn, 0x11, 0);
-  if (msix) {
-    uint32_t table = vx_pci_read32(&v->fn, msix + 4), bir = table & 7;
-    v->msix_count = (vx_pci_read16(&v->fn, msix + 2) & 0x7ff) + 1;
-    if (bir < 6 && v->bar[bir] && (table & ~7u) + 16ull * v->msix_count <= v->bar_size[bir])
-      v->msix = (volatile uint32_t *)(v->bar[bir] + (table & ~7u));
-  }
+  v->msix = vx_pci_msix_table(&v->fn, v->bar, v->bar_size, &v->msix_count);
   return v->common && v->notify_base && v->isr && v->device && v->msix ? VX_OK : VX_ERR_UNSUPPORTED;
 }
 
 // Points MSI-X table entry i at an MSI (from irq_create), unmasked, and turns
 // MSI-X on (§6.8.2 of PCI 3.0).
 [[maybe_unused]] static void vx_virtio_msix(vx_virtio *v, uint32_t i, vx_msi msi) {
-  volatile uint32_t *e = v->msix + (size_t)4 * i;
-  e[0] = (uint32_t)msi.address;
-  e[1] = (uint32_t)(msi.address >> 32);
-  e[2] = msi.data;
-  e[3] = 0; // vector control: unmasked
-  uint8_t cap = vx_pci_cap(&v->fn, 0x11, 0);
-  uint16_t control = vx_pci_read16(&v->fn, cap + 2);
-  vx_pci_write16(&v->fn, cap + 2,
-                 (uint16_t)((control | 1u << 15) & ~(1u << 14))); // enable, not function-masked
-  uint16_t command = vx_pci_read16(&v->fn, 0x04);
-  vx_pci_write16(&v->fn, 0x04,
-                 (uint16_t)(command | 1u << 2 | 1u << 1 | 1u << 10)); // bus master, memory, INTx off
+  vx_pci_msix_set(&v->fn, v->msix, i, msi);
+  vx_pci_enable(&v->fn);
 }
 
 // Resets the device and negotiates features: VERSION_1 and whichever of

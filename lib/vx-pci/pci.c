@@ -80,3 +80,39 @@ typedef struct vx_pci_bar {
   }
   return b;
 }
+
+// --- MSI-X (PCI 3.0 §6.8.2) ---
+
+// The MSI-X table, in whichever of the BARs (mapped by the caller: bar[i]
+// and its size) the capability names; nullptr if there is none, or it does
+// not fit. *count: its entries.
+[[maybe_unused]] static volatile uint32_t *vx_pci_msix_table(const vx_pci_fn *f, volatile uint8_t *const *bar,
+                                                             const uint64_t *bar_size, uint32_t *count) {
+  uint8_t cap = vx_pci_cap(f, 0x11, 0);
+  if (!cap) return nullptr;
+  uint32_t table = vx_pci_read32(f, cap + 4), bir = table & 7;
+  *count = (vx_pci_read16(f, cap + 2) & 0x7ff) + 1u;
+  if (bir >= 6 || !bar[bir] || (table & ~7u) + 16ull * *count > bar_size[bir]) return nullptr;
+  return (volatile uint32_t *)(bar[bir] + (table & ~7u));
+}
+
+// Points entry i at an MSI (from irq_create), unmasked, and turns MSI-X on,
+// not function-masked.
+[[maybe_unused]] static void vx_pci_msix_set(const vx_pci_fn *f, volatile uint32_t *table, uint32_t i,
+                                             vx_msi msi) {
+  volatile uint32_t *e = table + (size_t)4 * i;
+  e[0] = (uint32_t)msi.address;
+  e[1] = (uint32_t)(msi.address >> 32);
+  e[2] = msi.data;
+  e[3] = 0; // vector control: unmasked
+  uint8_t cap = vx_pci_cap(f, 0x11, 0);
+  uint16_t control = vx_pci_read16(f, cap + 2);
+  vx_pci_write16(f, cap + 2, (uint16_t)((control | 1u << 15) & ~(1u << 14)));
+}
+
+// Memory decoding and bus mastering on, INTx off: what a driver of a device
+// with MSI-X and DMA wants before it starts it.
+[[maybe_unused]] static void vx_pci_enable(const vx_pci_fn *f) {
+  uint16_t command = vx_pci_read16(f, 0x04);
+  vx_pci_write16(f, 0x04, (uint16_t)(command | 1u << 2 | 1u << 1 | 1u << 10));
+}

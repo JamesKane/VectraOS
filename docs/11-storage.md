@@ -231,7 +231,7 @@ The `ctl` commands:
 - No server sees sectors it was not given. `svcd` and `devmgr` stay as they are: a broker of its own, not `svcd` reading disks in its one loop before their drivers have started.
 - The system volume's partition has a VectraOS GPT type GUID, fixed in `docs/proto/block.md`.
 
-**The drivers.** `drv-virtio-blk` comes first, then NVMe (`drv-nvme`) with its several queues. Both put their DMA behind the IOMMU once M5 enforces it (01 §7.1).
+**The drivers.** `drv-virtio-blk` comes first, then NVMe (`drv-nvme`) with its several queues: a queue pair for each session, as far as the controller grants them, each with its MSI-X vector. A command past its deadline is aborted, and if that does not settle it the controller is reset and everything in flight submitted again, so a client sees a delay, not an error. Both put their DMA behind the IOMMU once M5 enforces it (01 §7.1).
 
 ## 11. The interchange file systems
 

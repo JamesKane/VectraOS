@@ -10,7 +10,7 @@
 // to it, up to the next service=.
 //
 //   service=NAME program=/boot/bin/PROG [post=SRV] [bootimage] [console] [tasks]
-//           [resource] [pager] [acpi] [restart] [arch=A]
+//           [resource] [pager] [acpi] [cmdline] [restart] [arch=A]
 //   arg=VALUE                                  an argument, in order
 //   env=NAME=VALUE                             an environment variable
 //   mount=OLD srv=SRV [aname=A] [flags=abc]    a mount in its namespace
@@ -39,7 +39,8 @@
 // for a random generator, from svcd's, which the kernel seeded from the
 // bootloader's entropy (lib/vx-rand). pager: a handle to the root Resource
 // with VX_RIGHT_PAGER alone, "pager", which makes pagers and nothing else
-// (fsd: docs/11 §8).
+// (fsd: docs/11 §8). cmdline: the kernel command line, as svcd's own spawn
+// message has it (devmgr, which gives it to drivers for their options).
 //
 // Drivers, the services with ioport, mmio or irq records, start first. svcd
 // mints their device objects from the root Resource once, keeps them, and
@@ -389,6 +390,10 @@ static vx_status start(service *s) {
     b.names[b.count++] = VX_STR("acpi");
     vx_ndb_flag(&b.w, "acpi");
     vx_ndb_put_u64(&b.w, "size", acpi_size);
+    vx_ndb_end(&b.w);
+  }
+  if (st == VX_OK && vx_ndb_has(&rec, "cmdline") && vx_spawn.cmdline.len) { // the kernel's, for devmgr
+    vx_ndb_put(&b.w, "cmdline", vx_spawn.cmdline);
     vx_ndb_end(&b.w);
   }
   if (st == VX_OK && vx_ndb_has(&rec, "tasks")) { // svcd's own task: the whole tree, for procfs
