@@ -218,76 +218,169 @@ static vx_status task_enable_io(task *t, const iorange *r) {
   return st;
 }
 
-// --- DmaDomain ---
+// --- DmaDomain and DmaMapping ---
 //
-// What a device may reach by DMA (01 §6). There is no IOMMU behind it yet: a
-// pass-through domain gives devices physical addresses, so it is only safe
-// with devices QEMU emulates (04 §5, M3). It holds each VMO it maps, so the
-// pages stay where the device was told they are.
+// What a device may reach by DMA (01 §6): a domain for one PCI function
+// (its requester ID, `source`), which devmgr creates and keeps, giving the
+// driver a duplicate that can only map. Each dma_map is a DmaMapping of its
+// own: a range of a VMO, with whether the device may read it, write it or
+// both, checked against the VMO handle's rights. There is no IOMMU behind it
+// yet: a pass-through domain gives devices physical addresses, so it is only
+// safe with devices QEMU emulates (04 §5).
+//
+// Letting go. dma_unmap says the device is done with a mapping: its pages
+// are let go at once. A mapping whose last handle goes without that (its
+// driver died) cannot be trusted done: in a pass-through domain nothing
+// stops the device, so its pages are kept (held) until devmgr has reset the
+// device and says so (dma_domain_op QUIESCED). REVOKE makes every mapping
+// held at once, for a driver that will not be asked. (Fuchsia's BTIs leak
+// such pages for good and make every driver release them; here the domain's
+// owner does, once.) With an IOMMU, unmapping stops the device first.
+//
+// Faults (the IOMMU's, M5 steps 6c and 6d) are counted, and fire
+// VX_TRIGGER_DMA_FAULT on the domain.
 
-static constexpr uint32_t DMA_MAPPINGS = 128;
+typedef struct dma_mapping {
+  object obj;
+  struct dma_domain *domain; // referenced, until the mapping is freed
+  vmo *v;                    // held while the device may reach it; nullptr once let go
+  uint64_t offset, size;
+  uint32_t options; // VX_DMA_READ, VX_DMA_WRITE
+  bool revoked;     // its handles of no more use (REVOKE): let go only at QUIESCED
+  bool kept;        // its handles gone, its pages not let go: on the domain's kept list
+  struct dma_mapping *next;
+} dma_mapping;
 
 typedef struct dma_domain {
   object obj;
   spinlock lock;
-  vmo *mapped[DMA_MAPPINGS]; // a reference for each dma_map
+  uint32_t source;   // the requester ID it is for
+  dma_mapping *live; // mappings with handles
+  dma_mapping *kept; // without: freed at QUIESCED
+  uint64_t faults;
+  observers obs;
 } dma_domain;
 
 static pool dma_pool = POOL_FOR(dma_domain);
+static pool dma_mapping_pool = POOL_FOR(dma_mapping);
 
-static vx_status dma_domain_create(dma_domain **out) {
+static vx_status dma_domain_create(uint32_t source, dma_domain **out) {
   dma_domain *d = pool_alloc(&dma_pool);
   if (!d) return VX_ERR_NO_MEMORY;
   d->obj.type = OBJ_DMA_DOMAIN;
+  d->source = source;
   atomic_store_explicit(&d->obj.refs, 1, memory_order_relaxed);
   *out = d;
   return VX_OK;
 }
 
-// Holds the VMO for the device and gives the address of each page of the
-// range; *slot says which mapping it is, to undo just this one.
-static vx_status dma_map(dma_domain *d, vmo *v, uint64_t offset, uint64_t size, uint64_t *addresses,
-                         uint32_t *slot_out) {
+static void dma_unlink(dma_mapping **list, dma_mapping *m) {
+  for (dma_mapping **at = list; *at; at = &(*at)->next)
+    if (*at == m) {
+      *at = m->next;
+      return;
+    }
+}
+
+// Maps [offset, offset + size) of v for the device, as options allow, and
+// gives the address of each page.
+static vx_status dma_map(dma_domain *d, vmo *v, uint64_t offset, uint64_t size, uint32_t options,
+                         uint64_t *addresses, dma_mapping **out) {
   uint64_t end;
   if (!size || (offset | size) & 4095 || ckd_add(&end, offset, size) || end > v->size) return VX_ERR_RANGE;
   if (v->physical) return VX_ERR_UNSUPPORTED; // device memory: peer-to-peer comes later
+  dma_mapping *m = pool_alloc(&dma_mapping_pool);
+  if (!m) return VX_ERR_NO_MEMORY;
+  m->obj.type = OBJ_DMA_MAPPING;
+  atomic_store_explicit(&m->obj.refs, 1, memory_order_relaxed);
+  object_ref(&d->obj), object_ref(&v->obj);
+  m->domain = d, m->v = v, m->offset = offset, m->size = size, m->options = options;
   spin_lock(&d->lock);
-  uint32_t slot = 0;
-  while (slot < DMA_MAPPINGS && d->mapped[slot]) slot++;
-  if (slot < DMA_MAPPINGS) {
-    object_ref(&v->obj);
-    d->mapped[slot] = v;
-  }
+  m->next = d->live, d->live = m;
   spin_unlock(&d->lock);
-  if (slot == DMA_MAPPINGS) return VX_ERR_NO_MEMORY;
   for (uint64_t i = 0; i < size / 4096; i++) addresses[i] = v->pages[offset / 4096 + i];
-  *slot_out = slot;
+  *out = m;
   return VX_OK;
 }
 
-// Undoes one dma_map, by the slot it gave.
-static void dma_unmap_slot(dma_domain *d, uint32_t slot) {
+// The device is done with it: its pages let go now. Not a revoked one's:
+// the device may still be using it until QUIESCED.
+static vx_status dma_unmap(dma_mapping *m) {
+  dma_domain *d = m->domain;
   spin_lock(&d->lock);
-  vmo *v = d->mapped[slot];
-  d->mapped[slot] = nullptr;
+  vmo *v = m->revoked ? nullptr : m->v;
+  bool refused = m->revoked || !m->v;
+  if (v) m->v = nullptr;
   spin_unlock(&d->lock);
   if (v) object_release(&v->obj);
+  return refused ? VX_ERR_BAD_STATE : VX_OK;
 }
 
-// Lets go of every mapping of the VMO.
-static vx_status dma_unmap(dma_domain *d, const vmo *v) {
-  vmo *drop[DMA_MAPPINGS];
-  uint32_t n = 0;
+static void dma_mapping_free(dma_mapping *m) {
+  dma_domain *d = m->domain;
+  vmo *v = m->v;
+  pool_free(&dma_mapping_pool, m);
+  if (v) object_drop(&v->obj);
+  object_drop(&d->obj);
+}
+
+// Its last handle gone: freed if its pages were let go, else kept for QUIESCED.
+static void dma_mapping_destroy(dma_mapping *m) {
+  dma_domain *d = m->domain;
   spin_lock(&d->lock);
-  for (uint32_t i = 0; i < DMA_MAPPINGS; i++)
-    if (d->mapped[i] == v) drop[n++] = d->mapped[i], d->mapped[i] = nullptr;
+  dma_unlink(&d->live, m);
+  bool keep = m->v != nullptr;
+  if (keep) m->kept = true, m->next = d->kept, d->kept = m;
   spin_unlock(&d->lock);
-  for (uint32_t i = 0; i < n; i++) object_release(&drop[i]->obj);
-  return n ? VX_OK : VX_ERR_NOT_FOUND;
+  if (!keep) dma_mapping_free(m);
 }
 
-static void dma_domain_destroy(dma_domain *d) {
-  for (uint32_t i = 0; i < DMA_MAPPINGS; i++)
-    if (d->mapped[i]) object_drop(&d->mapped[i]->obj);
+// REVOKE: every live mapping's pages kept until QUIESCED, whatever its
+// driver does; QUIESCED: the device has been reset, so what was kept is let go.
+static void dma_revoke(dma_domain *d) {
+  spin_lock(&d->lock);
+  for (dma_mapping *m = d->live; m; m = m->next) m->revoked = true;
+  spin_unlock(&d->lock);
+}
+
+static void dma_quiesced(dma_domain *d) {
+  for (;;) {
+    spin_lock(&d->lock);
+    dma_mapping *m = d->kept;
+    if (m) d->kept = m->next;
+    vmo *v = nullptr;
+    for (dma_mapping *l = d->live; !m && !v && l; l = l->next) // revoked, its handles not yet gone
+      if (l->revoked && l->v) v = l->v, l->v = nullptr;
+    spin_unlock(&d->lock);
+    if (v) {
+      object_release(&v->obj);
+      continue;
+    }
+    if (!m) return;
+    dma_mapping_free(m);
+  }
+}
+
+// A fault the IOMMU reported for this domain's device (M5 steps 6c, 6d).
+[[maybe_unused]] static void dma_fault(dma_domain *d) {
+  spin_lock(&d->lock);
+  d->faults++;
+  observers_fire(&d->obs, VX_TRIGGER_DMA_FAULT, d->faults);
+  spin_unlock(&d->lock);
+}
+
+static vx_status dma_bind(dma_domain *d, binding *b) {
+  if (b->trigger != VX_TRIGGER_DMA_FAULT) return VX_ERR_INVALID;
+  spin_lock(&d->lock);
+  if (d->faults > b->threshold) // faults since the count the binder saw: at once
+    binding_fire(b, d->faults);
+  else
+    observers_add(&d->obs, b);
+  spin_unlock(&d->lock);
+  return VX_OK;
+}
+
+static void dma_domain_destroy(dma_domain *d) { // no mapping refers to it any more
+  observers_free(d->obs.head);
   pool_free(&dma_pool, d);
 }

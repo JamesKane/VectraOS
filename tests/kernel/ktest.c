@@ -776,23 +776,53 @@ static void test_devices(void) {
   CHECK(vx_irq_create_msi(res, 0x18, &m1, &msi2) == VX_OK && msi2.data == msi.data); // freed, so given again
   vx_handle_close(m1);
 
-  // A DMA domain (pass-through): device addresses for a VMO's pages, held until unmapped.
-  vx_handle dom, mem;
+  // A DMA domain (pass-through), for one function: device addresses for a
+  // VMO's pages, a mapping for each range, what the device may do as the
+  // VMO handle allows.
+  vx_handle dom, mem, ro, map1, map2, user;
   uint64_t addrs[4] = {};
-  CHECK(vx_dma_domain_create(weak, &dom) == VX_ERR_ACCESS);
-  CHECK(vx_dma_domain_create(res, &dom) == VX_OK);
+  CHECK(vx_dma_domain_create(weak, 0x18, &dom) == VX_ERR_ACCESS);
+  CHECK(vx_dma_domain_create(res, 0x1'0000, &dom) == VX_ERR_INVALID); // no such requester ID
+  CHECK(vx_dma_domain_create(res, 0x18, &dom) == VX_OK);
   CHECK(vx_vmo_create(16ull * 1024, 0, &mem) == VX_OK);
-  CHECK(vx_dma_map(dom, mem, 4096, 16ull * 1024, addrs) == VX_ERR_RANGE);
-  CHECK(vx_dma_map(dom, mem, 0, 16ull * 1024, addrs) == VX_OK);
+  CHECK(vx_dma_map(dom, mem, 4096, 16ull * 1024, VX_DMA_READ, addrs, &map1) == VX_ERR_RANGE);
+  CHECK(vx_dma_map(dom, mem, 0, 4096, 0, addrs, &map1) == VX_ERR_INVALID); // the device must do something
+  CHECK(vx_handle_dup(mem, VX_RIGHT_READ | VX_RIGHT_MAP, &ro) == VX_OK);
+  CHECK(vx_dma_map(dom, ro, 0, 4096, VX_DMA_WRITE, addrs, &map1) == VX_ERR_ACCESS); // a read-only handle
+  CHECK(vx_dma_map(dom, ro, 0, 4096, VX_DMA_READ, addrs, &map1) == VX_OK); // the device reads it: fine
+  CHECK(vx_dma_unmap(map1) == VX_OK);
+  vx_handle_close(ro);
+  CHECK(vx_dma_map(dom, mem, 0, 16ull * 1024, VX_DMA_READ | VX_DMA_WRITE, addrs, &map1) == VX_OK);
   CHECK(addrs[0] && addrs[3] && !(addrs[0] & 4095) && addrs[0] != addrs[1]);
   CHECK(vx_vmo_create_physical(res, DEVICE, 4096, &h) == VX_OK);
-  CHECK(vx_dma_map(dom, h, 0, 4096, addrs) == VX_ERR_UNSUPPORTED); // not RAM: peer-to-peer comes later
+  CHECK(vx_dma_map(dom, h, 0, 4096, VX_DMA_READ, addrs, &map2) == VX_ERR_UNSUPPORTED); // not RAM, yet
   vx_handle_close(h);
-  CHECK(vx_dma_unmap(dom, mem) == VX_OK);
-  CHECK(vx_dma_unmap(dom, mem) == VX_ERR_NOT_FOUND);
-  CHECK(vx_dma_map(dom, mem, 0, 4096, addrs) == VX_OK); // held by the domain when it closes, and let go
+  CHECK(vx_syscall(VX_SYS_dma_unmap, map1, 0, 0, 0, 0, 0) == VX_OK);
+  CHECK(vx_syscall(VX_SYS_dma_unmap, map1, 0, 0, 0, 0, 0) == VX_ERR_BAD_STATE); // once
+  vx_handle_close(map1);
+  // A driver's duplicate maps, and sees faults; it cannot revoke.
+  CHECK(vx_handle_dup(dom, VX_RIGHT_MAP | VX_RIGHT_WAIT | VX_RIGHT_INSPECT, &user) == VX_OK);
+  CHECK(vx_dma_map(user, mem, 0, 8192, VX_DMA_READ | VX_DMA_WRITE, addrs, &map1) == VX_OK);
+  CHECK(vx_dma_map(user, mem, 8192, 4096, VX_DMA_WRITE, addrs, &map2) == VX_OK);
+  CHECK(vx_dma_domain_op(user, VX_DMA_REVOKE) == VX_ERR_ACCESS);
+  CHECK(vx_dma_domain_op(user, VX_DMA_FAULTS) == 0);
+  CHECK(vx_port_create(0, &port) == VX_OK);
+  CHECK(vx_port_bind(port, user, VX_TRIGGER_DMA_FAULT, 9, 0) == VX_OK);
+  CHECK(vx_port_wait(port, after_ms(2), 0, &pk, 1) == VX_ERR_TIMED_OUT); // pass-through: no faults
+  vx_handle_close(port);
+  // Its owner revokes: the driver can unmap nothing now (its pages are kept
+  // for the device), until the owner says the device is quiet.
+  vx_handle_close(map2); // closed without an unmap: kept for the device
+  CHECK(vx_dma_domain_op(dom, VX_DMA_REVOKE) == VX_OK);
+  CHECK(vx_syscall(VX_SYS_dma_unmap, map1, 0, 0, 0, 0, 0) == VX_ERR_BAD_STATE);
+  CHECK(vx_dma_domain_op(dom, VX_DMA_QUIESCED) == VX_OK); // both let go
+  CHECK(vx_syscall(VX_SYS_dma_unmap, map1, 0, 0, 0, 0, 0) == VX_ERR_BAD_STATE);
+  vx_handle_close(map1);
+  CHECK(vx_dma_map(user, mem, 0, 4096, VX_DMA_READ, addrs, &map1) == VX_OK); // the domain goes on
+  vx_handle_close(user);
   vx_handle_close(mem);
-  vx_handle_close(dom);
+  vx_handle_close(dom); // the mapping keeps it, and is kept until QUIESCED: a leak no one can see but this
+  vx_handle_close(map1);
 
   vx_handle_close(weak);
   vx_handle_close(res);

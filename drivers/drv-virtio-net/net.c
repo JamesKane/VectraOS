@@ -66,10 +66,10 @@ static uint64_t buf_addr(const uint64_t *pages, uint16_t i) { return pages[i / 2
 
 // A VMO of QSIZE buffers, mapped here and given to the device.
 static uint8_t *make_buffers(uint64_t *pages) {
-  vx_handle vmo;
+  vx_handle vmo, mapping; // kept as long as the driver lives
   uint64_t at = 0, size = (uint64_t)QSIZE * BUF;
   if (vx_vmo_create(size, 0, &vmo) != VX_OK || vx_as_map(vx_self, vmo, 0, size, VX_MAP_WRITE, &at) != VX_OK ||
-      vx_dma_map(dev.dma, vmo, 0, size, pages) != VX_OK)
+      vx_dma_map(dev.dma, vmo, 0, size, VX_DMA_READ | VX_DMA_WRITE, pages, &mapping) != VX_OK)
     fail("no memory for buffers");
   vx_handle_close(vmo);
   return (uint8_t *)at;

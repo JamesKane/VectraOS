@@ -46,6 +46,7 @@ static void object_destroy(object *obj) {
   case OBJ_IRQ: irq_destroy((irq *)obj); break;
   case OBJ_IORANGE: pool_free(&iorange_pool, obj); break;
   case OBJ_DMA_DOMAIN: dma_domain_destroy((dma_domain *)obj); break;
+  case OBJ_DMA_MAPPING: dma_mapping_destroy((dma_mapping *)obj); break;
   case OBJ_PAGER: pager_destroy((pager *)obj); break;
   default: break;
   }
@@ -322,55 +323,84 @@ static int64_t sys_irq_ack(vx_handle h) {
   return VX_OK;
 }
 
-static int64_t sys_dma_domain_create(vx_handle rh, uint64_t options, uint64_t out) {
-  if (options) return VX_ERR_INVALID; // pass-through: the only kind so far
+static int64_t sys_dma_domain_create(vx_handle rh, uint64_t source, uint64_t options, uint64_t out) {
+  if (options || source > 0xffff) return VX_ERR_INVALID; // pass-through: the only kind so far
   vx_status st;
   resource *r = (resource *)handle_get(current_task(), rh, OBJ_RESOURCE, VX_RIGHT_MANAGE, &st);
   if (!r) return st;
   dma_domain *d = nullptr;
-  st = dma_domain_create(&d);
+  st = dma_domain_create((uint32_t)source, &d);
   object_release(&r->obj);
   if (st != VX_OK) return st;
-  return return_handle(&d->obj, VX_RIGHT_MAP | DEVICE_RIGHTS, out);
+  return return_handle(&d->obj, VX_RIGHT_MAP | VX_RIGHT_MANAGE | VX_RIGHT_WAIT | DEVICE_RIGHTS, out);
 }
 
-// dma_map(domain, vmo, offset, size, addresses): batched, a page at a time.
-static int64_t sys_dma_map(vx_handle dh, vx_handle vh, uint64_t offset, uint64_t size, uint64_t out) {
+// dma_map(domain, vmo, offset, size, options, mapped): what the device may
+// do is what the VMO handle allows (READ to read it, WRITE to write it).
+static int64_t sys_dma_map(vx_handle dh, vx_handle vh, uint64_t offset, uint64_t size, uint64_t options,
+                           uint64_t out) {
   static constexpr uint64_t MAX_PAGES = 512;
-  if (size / 4096 > MAX_PAGES || !user_range_ok(out, size / 4096 * sizeof(uint64_t), true))
+  vx_dma_mapped req;
+  vx_status st = copy_from_user(&req, out, sizeof req);
+  if (st != VX_OK) return st;
+  uint64_t list = (uint64_t)req.addresses;
+  if (!options || options & ~(uint64_t)(VX_DMA_READ | VX_DMA_WRITE) || size / 4096 > MAX_PAGES ||
+      !user_range_ok(list, size / 4096 * sizeof(uint64_t), true))
     return VX_ERR_INVALID;
-  vx_status st;
   dma_domain *d = (dma_domain *)handle_get(current_task(), dh, OBJ_DMA_DOMAIN, VX_RIGHT_MAP, &st);
   if (!d) return st;
-  vmo *v = (vmo *)handle_get(current_task(), vh, OBJ_VMO, VX_RIGHT_READ | VX_RIGHT_WRITE, &st);
+  uint32_t need = (options & VX_DMA_READ ? VX_RIGHT_READ : 0) | (options & VX_DMA_WRITE ? VX_RIGHT_WRITE : 0);
+  vmo *v = (vmo *)handle_get(current_task(), vh, OBJ_VMO, need, &st);
   uint64_t addresses[MAX_PAGES];
   if (v && v->pager) { // its pages come and go: no device may hold them
     object_release(&v->obj);
     v = nullptr;
     st = VX_ERR_UNSUPPORTED;
   }
+  dma_mapping *m = nullptr;
   if (v) {
-    uint32_t slot;
-    st = dma_map(d, v, offset, size, addresses, &slot);
-    if (st == VX_OK && (st = copy_to_user(out, addresses, size / 4096 * sizeof(uint64_t))) != VX_OK)
-      dma_unmap_slot(d, slot); // only this one: earlier mappings of the VMO may be in use
+    st = dma_map(d, v, offset, size, (uint32_t)options, addresses, &m);
+    if (st == VX_OK) st = copy_to_user(list, addresses, size / 4096 * sizeof(uint64_t));
+    if (st == VX_OK) {
+      st = (vx_status)return_handle(&m->obj, VX_RIGHT_INSPECT, out + offsetof(vx_dma_mapped, mapping));
+      m = nullptr; // the handle's now, or gone with it
+    }
+    if (m) { // never handed out: the device was never told of it
+      dma_unmap(m);
+      object_release(&m->obj);
+    }
     object_release(&v->obj);
   }
   object_release(&d->obj);
   return st;
 }
 
-static int64_t sys_dma_unmap(vx_handle dh, vx_handle vh) {
+static int64_t sys_dma_unmap(vx_handle mh) {
   vx_status st;
-  dma_domain *d = (dma_domain *)handle_get(current_task(), dh, OBJ_DMA_DOMAIN, VX_RIGHT_MAP, &st);
+  dma_mapping *m = (dma_mapping *)handle_get(current_task(), mh, OBJ_DMA_MAPPING, 0, &st);
+  if (!m) return st;
+  st = dma_unmap(m);
+  object_release(&m->obj);
+  return st;
+}
+
+// dma_domain_op(domain, op, 0): REVOKE and QUIESCED are the owner's (MANAGE); FAULTS, INSPECT.
+static int64_t sys_dma_domain_op(vx_handle dh, uint64_t op, uint64_t arg) {
+  if (arg || op < VX_DMA_REVOKE || op > VX_DMA_FAULTS) return VX_ERR_INVALID;
+  vx_status st;
+  dma_domain *d = (dma_domain *)handle_get(current_task(), dh, OBJ_DMA_DOMAIN,
+                                           op == VX_DMA_FAULTS ? VX_RIGHT_INSPECT : VX_RIGHT_MANAGE, &st);
   if (!d) return st;
-  vmo *v = (vmo *)handle_get(current_task(), vh, OBJ_VMO, 0, &st);
-  if (v) {
-    st = dma_unmap(d, v);
-    object_release(&v->obj);
+  int64_t r = VX_OK;
+  if (op == VX_DMA_REVOKE) dma_revoke(d);
+  if (op == VX_DMA_QUIESCED) dma_quiesced(d);
+  if (op == VX_DMA_FAULTS) {
+    spin_lock(&d->lock);
+    r = d->faults > INT64_MAX ? INT64_MAX : (int64_t)d->faults;
+    spin_unlock(&d->lock);
   }
   object_release(&d->obj);
-  return st;
+  return r;
 }
 
 static int64_t sys_iorange_create(vx_handle rh, uint64_t base, uint64_t count, uint64_t out) {
@@ -615,7 +645,7 @@ static int64_t sys_port_bind(vx_handle ph, vx_handle sh, uint64_t trigger, uint6
   port *p = (port *)handle_get(current_task(), ph, OBJ_PORT, VX_RIGHT_WRITE, &st);
   if (!p) return st;
   object *src = nullptr;
-  static const obj_type SOURCES[] = {OBJ_CHANNEL, OBJ_COUNTER, OBJ_TASK, OBJ_RING, OBJ_IRQ};
+  static const obj_type SOURCES[] = {OBJ_CHANNEL, OBJ_COUNTER, OBJ_TASK, OBJ_RING, OBJ_IRQ, OBJ_DMA_DOMAIN};
   for (uint32_t i = 0; i < sizeof SOURCES / sizeof SOURCES[0] && !src; i++)
     src = handle_get(current_task(), sh, SOURCES[i], VX_RIGHT_WAIT, &st);
   binding *b = src ? binding_new(p, (uint32_t)trigger, key, threshold, sh) : nullptr;
@@ -629,6 +659,8 @@ static int64_t sys_port_bind(vx_handle ph, vx_handle sh, uint64_t trigger, uint6
       st = ring_bind((ring_end *)src, b);
     else if (src->type == OBJ_IRQ)
       st = irq_bind((irq *)src, b);
+    else if (src->type == OBJ_DMA_DOMAIN)
+      st = dma_bind((dma_domain *)src, b);
     else
       st = task_bind((task *)src, b);
     if (st != VX_OK) binding_free(b);
@@ -990,9 +1022,10 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_vmo_create: return sys_vmo_create(a[0], a[1], a[2], (vx_handle)a[3], a[4]);
   case VX_SYS_irq_create: return sys_irq_create((vx_handle)a[0], a[1], a[2], a[3], a[4]);
   case VX_SYS_irq_ack: return sys_irq_ack((vx_handle)a[0]);
-  case VX_SYS_dma_domain_create: return sys_dma_domain_create((vx_handle)a[0], a[1], a[2]);
-  case VX_SYS_dma_map: return sys_dma_map((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4]);
-  case VX_SYS_dma_unmap: return sys_dma_unmap((vx_handle)a[0], (vx_handle)a[1]);
+  case VX_SYS_dma_domain_create: return sys_dma_domain_create((vx_handle)a[0], a[1], a[2], a[3]);
+  case VX_SYS_dma_map: return sys_dma_map((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4], a[5]);
+  case VX_SYS_dma_unmap: return sys_dma_unmap((vx_handle)a[0]);
+  case VX_SYS_dma_domain_op: return sys_dma_domain_op((vx_handle)a[0], a[1], a[2]);
   case VX_SYS_pager_create: return sys_pager_create((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4]);
   case VX_SYS_pager_supply:
     return sys_pager_supply((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], (vx_handle)a[4], a[5]);

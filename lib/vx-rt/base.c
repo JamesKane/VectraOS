@@ -237,19 +237,32 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
                                0);
 }
 
-[[maybe_unused]] static vx_status vx_dma_domain_create(vx_handle resource, vx_handle *out) {
+// A DmaDomain for the PCI function whose requester ID is source (devmgr's).
+[[maybe_unused]] static vx_status vx_dma_domain_create(vx_handle resource, uint32_t source, vx_handle *out) {
   *out = VX_HANDLE_NONE;
-  return (vx_status)vx_syscall(VX_SYS_dma_domain_create, resource, 0, (uint64_t)out, 0, 0, 0);
+  return (vx_status)vx_syscall(VX_SYS_dma_domain_create, resource, source, 0, (uint64_t)out, 0, 0);
 }
 
-// The device address of each page of [offset, offset + size), into addresses[size / 4096].
+// The device address of each page of [offset, offset + size), into
+// addresses[size / 4096], and the mapping, in *mapping: options say what
+// the device may do (VX_DMA_READ, VX_DMA_WRITE). Let go by vx_dma_unmap.
 [[maybe_unused]] static vx_status vx_dma_map(vx_handle domain, vx_handle vmo, uint64_t offset, uint64_t size,
-                                             uint64_t *addresses) {
-  return (vx_status)vx_syscall(VX_SYS_dma_map, domain, vmo, offset, size, (uint64_t)addresses, 0);
+                                             uint32_t options, uint64_t *addresses, vx_handle *mapping) {
+  vx_dma_mapped m = {.addresses = addresses};
+  vx_status st = (vx_status)vx_syscall(VX_SYS_dma_map, domain, vmo, offset, size, options, (uint64_t)&m);
+  *mapping = st == VX_OK ? m.mapping : VX_HANDLE_NONE;
+  return st;
 }
 
-[[maybe_unused]] static vx_status vx_dma_unmap(vx_handle domain, vx_handle vmo) {
-  return (vx_status)vx_syscall(VX_SYS_dma_unmap, domain, vmo, 0, 0, 0, 0);
+// The device is done with the mapping: unmapped, and its handle closed.
+[[maybe_unused]] static vx_status vx_dma_unmap(vx_handle mapping) {
+  vx_status st = (vx_status)vx_syscall(VX_SYS_dma_unmap, mapping, 0, 0, 0, 0, 0);
+  vx_syscall(VX_SYS_handle_close, mapping, 0, 0, 0, 0, 0);
+  return st;
+}
+
+[[maybe_unused]] static int64_t vx_dma_domain_op(vx_handle domain, uint32_t op) {
+  return vx_syscall(VX_SYS_dma_domain_op, domain, op, 0, 0, 0, 0);
 }
 
 [[maybe_unused]] static vx_status vx_iorange_create(vx_handle resource, uint16_t base, uint32_t count,

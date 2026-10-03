@@ -133,6 +133,7 @@ typedef struct driver {
   uint32_t msis;
   uint8_t prefix;   // a numbered post's (disk# is "disk"): its length; 0 if not numbered
   vx_handle listen; // the post's server end; each start gets a duplicate
+  vx_handle dma;    // the function's DMA domain, which each start gets a duplicate of
   vx_handle task;
   uint32_t starts;
 } driver;
@@ -195,7 +196,12 @@ static vx_status start_driver(driver *d) {
     vx_ndb_put_u64(&w, "data", msi.data);
     vx_ndb_end(&w);
   }
-  if (st == VX_OK) st = vx_dma_domain_create(resource, &handles[count]);
+  // The function's DMA domain: devmgr's, kept across the driver's restarts;
+  // the driver's duplicate only maps, and cannot revoke what it mapped.
+  if (st == VX_OK && !d->dma) st = vx_dma_domain_create(resource, vx_pci_rid(&d->f->fn), &d->dma);
+  if (st == VX_OK)
+    st = vx_handle_dup(d->dma, VX_RIGHT_MAP | VX_RIGHT_WAIT | VX_RIGHT_INSPECT | VX_RIGHT_TRANSFER,
+                       &handles[count]);
   names[count++] = VX_STR("dma");
   if (st == VX_OK) st = vx_handle_dup(d->listen, VX_RIGHTS_SAME, &handles[count]);
   names[count++] = VX_STR("listen");
@@ -234,11 +240,15 @@ static vx_status start_driver(driver *d) {
 }
 
 static void driver_exited(driver *d) {
-  // The device may still hold addresses of the dead driver's DMA memory, which
-  // the kernel has freed: stop it reaching memory at all. (Until the IOMMU,
-  // M5, it could write there between the driver's death and now.)
+  // The device may still hold addresses of the dead driver's DMA memory: the
+  // domain keeps those pages (its mappings revoked, the ones whose handles
+  // went with the driver kept) until the device cannot reach memory at all,
+  // and only then lets them go. (The reset between comes with M5 step 6e.)
+  vx_dma_domain_op(d->dma, VX_DMA_REVOKE);
   uint16_t command = vx_pci_read16(&d->f->fn, 0x04);
   vx_pci_write16(&d->f->fn, 0x04, (uint16_t)(command & ~(1u << 2)));
+  (void)vx_pci_read16(&d->f->fn, 0x04); // the write has reached the device
+  vx_dma_domain_op(d->dma, VX_DMA_QUIESCED);
   vx_task_summary info;
   vx_str why = vx_task_info(d->task, &info) == VX_OK ? (vx_str){info.exit, info.exit_len} : VX_STR("?");
   vx_handle_close(d->task);

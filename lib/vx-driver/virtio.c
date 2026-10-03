@@ -150,8 +150,9 @@ static volatile uint8_t *virtio_region(vx_virtio *v, uint8_t cap, uint32_t need,
   uint64_t at = 0, pa[3];
   vx_status st = vx_vmo_create(QUEUE_BYTES, 0, &vmo);
   if (st == VX_OK) st = vx_as_map(vx_self, vmo, 0, QUEUE_BYTES, VX_MAP_WRITE, &at);
-  if (st == VX_OK) st = vx_dma_map(v->dma, vmo, 0, QUEUE_BYTES, pa);
-  vx_handle_close(vmo); // the mapping and the domain keep it
+  vx_handle mapping; // kept as long as the driver lives: the device reads the queue and writes its used ring
+  if (st == VX_OK) st = vx_dma_map(v->dma, vmo, 0, QUEUE_BYTES, VX_DMA_READ | VX_DMA_WRITE, pa, &mapping);
+  vx_handle_close(vmo); // the mappings keep it
   if (st != VX_OK) return st;
   *q = (vx_virtq){.index = index,
                   .size = size,

@@ -49,9 +49,9 @@ typedef struct client {
   bool on, dying; // dying: gone, but with requests still in flight
   uint32_t gen;
   vx_ring ring;
-  vx_handle end, memory;
-  uint64_t pages[ARENA_PAGES]; // the arena's device addresses, by page
-  uint64_t first, count;       // the window, in sectors
+  vx_handle end, memory, mapping; // mapping: the arena's, for the device
+  uint64_t pages[ARENA_PAGES];    // the arena's device addresses, by page
+  uint64_t first, count;          // the window, in sectors
   bool readonly;
   bool armed;
   uint32_t inflight;
@@ -71,6 +71,7 @@ static vx_virtio dev;
 static vx_virtq q;
 static vx_handle irq, port, listen;
 static uint8_t *slot_mem;              // SLOTS slots, mapped here
+static vx_handle slot_mapping;         // theirs, for the device: kept as long as the driver lives
 static uint64_t slot_pages[SLOTS / 4]; // their device addresses, a page each
 static slot slots[SLOTS];
 static client clients[MAX_CLIENTS];
@@ -155,7 +156,7 @@ static void setup_device(void) {
   vx_handle vmo;
   uint64_t at = 0, size = (uint64_t)SLOTS * SLOT_BYTES;
   if (vx_vmo_create(size, 0, &vmo) != VX_OK || vx_as_map(vx_self, vmo, 0, size, VX_MAP_WRITE, &at) != VX_OK ||
-      vx_dma_map(dev.dma, vmo, 0, size, slot_pages) != VX_OK)
+      vx_dma_map(dev.dma, vmo, 0, size, VX_DMA_READ | VX_DMA_WRITE, slot_pages, &slot_mapping) != VX_OK)
     fail("no memory for request slots");
   vx_handle_close(vmo);
   slot_mem = (uint8_t *)at;
@@ -176,7 +177,7 @@ static bool complete(uint32_t c, vx_cqe e) {
 // The session's memory, given back once nothing in flight can write to it.
 static void release_client(uint32_t c) {
   client *k = &clients[c];
-  vx_dma_unmap(dev.dma, k->memory);
+  vx_dma_unmap(k->mapping);
   vx_handle_close(k->memory);
   vx_session_unmap(&k->ring);
   uint32_t gen = k->gen;
@@ -422,7 +423,8 @@ static void accept_client(void) {
       continue;
     }
     // The client arena, to the device.
-    if (vx_dma_map(dev.dma, k->memory, k->ring.h.client_arena_offset, VX_BLOCK_ARENA, k->pages) != VX_OK) {
+    if (vx_dma_map(dev.dma, k->memory, k->ring.h.client_arena_offset, VX_BLOCK_ARENA,
+                   VX_DMA_READ | VX_DMA_WRITE, k->pages, &k->mapping) != VX_OK) {
       vx_handle_close(k->end);
       vx_handle_close(k->memory);
       vx_session_unmap(&k->ring);

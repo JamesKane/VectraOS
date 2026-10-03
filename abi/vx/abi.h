@@ -59,6 +59,7 @@ enum vx_trigger : uint32_t {
   VX_TRIGGER_IRQ,         // an Irq has fired since it was last bound; value: how many times in all
   VX_TRIGGER_EXCEPTION,   // a thread stopped at an exception (exception_bind); value: its thread id
   VX_TRIGGER_PAGER,       // a page request (pager_create): source the VMO's key, value its range
+  VX_TRIGGER_DMA_FAULT,   // a DmaDomain's device faulted (more than threshold in all); value: the count
 };
 
 // The intents a thread declares (01 §8). Until scheduling contexts land, every
@@ -226,14 +227,27 @@ static_assert(sizeof(vx_cqe) == 32);
 //       it, and vx_msi says what the device must write, and where. Always
 //       edge-triggered. (x86_64: an APIC vector; arm64: an LPI, through the
 //       GIC's ITS, which knows the device by its requester ID.)
-//   dma_domain_create(resource, 0, &out)
-//       a DmaDomain: what a device may reach by DMA. In pass-through mode,
-//       the only one so far (QEMU; the IOMMU comes with M5), a device
-//       address is the physical address.
-//   dma_map(domain, vmo, offset, size, addresses)
+//   dma_domain_create(resource, source, 0, &out)
+//       a DmaDomain: what the PCI function whose requester ID is `source`
+//       may reach by DMA. devmgr makes and keeps it, and gives its driver a
+//       duplicate with MAP (and WAIT, INSPECT). In pass-through mode, the
+//       only one so far (QEMU; the IOMMU comes with M5 steps 6c, 6d), a
+//       device address is the physical address.
+//   dma_map(domain, vmo, offset, size, options, &mapped)
 //       the device address of each page of [offset, offset + size), into
-//       addresses[size / 4096]; the domain holds the VMO until dma_unmap
-//   dma_unmap(domain, vmo)
+//       mapped.addresses[size / 4096], and a DmaMapping for the range in
+//       mapped.mapping. options: VX_DMA_READ (the device reads the memory:
+//       the VMO handle needs READ), VX_DMA_WRITE (it writes it: WRITE),
+//       or both. The mapping holds the VMO's pages for the device
+//   dma_unmap(mapping)
+//       the device is done with the range: its pages let go at once. A
+//       mapping whose handles go without it keeps them until QUIESCED
+//   dma_domain_op(domain, op, 0)
+//       VX_DMA_REVOKE (MANAGE): every mapping's pages kept for the device
+//       until QUIESCED, whatever its driver does; VX_DMA_QUIESCED (MANAGE):
+//       the device has been stopped (bus mastering off, reset), so what was
+//       kept is let go; VX_DMA_FAULTS (INSPECT): returns how many faults
+//       the IOMMU has reported for the device (VX_TRIGGER_DMA_FAULT)
 //   iorange_create(resource, base, count, &out)
 //       x86_64 only: I/O ports, which a task may use once as_map has been
 //       called with the IoRange in place of a VMO (offset, size and flags 0)
@@ -274,6 +288,13 @@ static_assert(sizeof(vx_cqe) == 32);
 //       an anonymous VMO's new size: not yet (UNSUPPORTED). A pager-backed
 //       one is its pager's to resize (pager_op RESIZE): ACCESS
 enum vx_vmo_options : uint32_t { VX_VMO_PHYSICAL = 1, VX_VMO_PAGER = 2 };
+enum vx_dma_options : uint32_t { VX_DMA_READ = 1, VX_DMA_WRITE = 2 }; // what the device may do: dma_map
+enum vx_dma_op : uint32_t { VX_DMA_REVOKE = 1, VX_DMA_QUIESCED = 2, VX_DMA_FAULTS = 3 };
+typedef struct vx_dma_mapped { // dma_map's answer
+  uint64_t *addresses;         // in: where the pages' device addresses go
+  vx_handle mapping;           // out: the DmaMapping
+  uint32_t reserved;
+} vx_dma_mapped;
 enum vx_pager_op : uint32_t {
   VX_PAGER_DIRTY = 1,
   VX_PAGER_CLEAN = 2,
