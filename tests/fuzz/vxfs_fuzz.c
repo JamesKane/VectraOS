@@ -1,5 +1,7 @@
-// vxfs_fuzz.c: arbitrary bytes as a vx-fs block, for its checks. The first
-// byte picks a pivot, a leaf or a log. The next bytes, up to 64 of them, are
+// vxfs_fuzz.c: arbitrary bytes for vx-fs. The first byte picks what they
+// are. As messages, they go to a tree in batches: whatever the tree accepts,
+// a scan must give keys in order whose lookups agree, and no batch may fault.
+// As a block, the first byte picks a pivot, a leaf or a log. The next bytes, up to 64 of them, are
 // the header and the front of the block, and the rest go at its end, where a
 // table's entries are. A tree block that parse_block accepts must have every
 // entry inside the block. A log (its own hash made to match) is replayed as
@@ -8,9 +10,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../../lib/vx-fs/blk.c"
+#include "../../lib/vx-fs/tree.c"
 
-static constexpr uint64_t ARENA_BLOCKS = 64;
+static constexpr uint64_t ARENA_BLOCKS = 192;
 static uint8_t disk[(ARENA_BLOCKS + 2) * VXFS_BLKSZ];
 
 static vx_status d_read([[maybe_unused]] void *ctx, uint64_t addr, void *buf) {
@@ -46,14 +48,72 @@ static bool arena_sane(const vxfs_arena *a) {
   return free + a->used == a->size;
 }
 
+// Messages from bytes: op, key length (1-8), key bytes from a small
+// alphabet, value length; the value is the length's byte repeated, times 8.
+static void messages(const uint8_t *data, size_t size) {
+  vxfs fs;
+  vxfs_dev dev = {.read = d_read, .write = d_write, .barrier = d_barrier, .size = sizeof disk};
+  if (!vxfs_open(&fs, dev, (vxfs_mem){.alloc = m_alloc, .free = m_free}, 0) || !vxfs_arenas(&fs, 1) ||
+      !vxfs_arena_init(&fs, &fs.arenas[0], 0, ARENA_BLOCKS))
+    abort();
+  vxfs_tree t;
+  if (!vxfs_tree_init(&fs, &t)) abort();
+  static uint8_t keys[1024][8], vals[1024][VXFS_INLMAX];
+  static vxfs_msg m[1024];
+  uint32_t n = 0, bytes = 0;
+  for (size_t at = 0; at + 3 <= size && fs.err == VX_OK;) {
+    uint8_t op = (uint8_t)(1 + data[at] % 4); // insert, delete, clearb, clobber; wstat needs entries
+    uint16_t nk = (uint16_t)(1 + data[at + 1] % 8), nv = (uint16_t)(data[at + 2] % 65 * 8);
+    at += 3;
+    if (at + nk > size) break;
+    if (op != VXFS_OINSERT) nv = 0;
+    uint32_t sz = 2 + 1 + 2 + nk + 2 + nv;
+    if (bytes + sz > VXFS_BUFSPC || n == 1024) { // a batch: the tree takes it, or calls it damaged and stops
+      vx_status st = vxfs_upsert(&fs, &t, m, n);
+      if (st != VX_OK && st != VX_ERR_INVALID) abort();
+      if (st != VX_OK || !vxfs_end_op(&fs)) break;
+      n = bytes = 0;
+    }
+    uint8_t *k = keys[n], *v = vals[n];
+    for (uint16_t i = 0; i < nk; i++) k[i] = (uint8_t)(data[at + i] % 6);
+    at += nk;
+    memset(v, (uint8_t)nv, nv);
+    m[n++] = (vxfs_msg){.op = op, .k = k, .nk = nk, .v = nv ? v : nullptr, .nv = nv};
+    bytes += sz;
+  }
+  if (fs.err == VX_OK && n && vxfs_upsert(&fs, &t, m, n) == VX_OK) vxfs_end_op(&fs);
+  if (fs.err == VX_OK) {
+    vxfs_scan s;
+    vxfs_scan_start(&s, &t, nullptr, 0);
+    vxfs_kvp kv;
+    uint8_t prev[VXFS_KEYMAX], got[VXFS_INLMAX];
+    uint16_t nprev = 0, ngot = 0;
+    bool first = true;
+    while (vxfs_scan_next(&fs, &s, &kv)) {
+      if (!first && vxfs_keycmp(prev, nprev, kv.k, kv.nk) >= 0) abort();
+      if (vxfs_lookup(&fs, &t, kv.k, kv.nk, got, &ngot) != VX_OK || ngot != kv.nv ||
+          (ngot && memcmp(got, kv.v, ngot) != 0))
+        abort();
+      memcpy(prev, kv.k, kv.nk), nprev = kv.nk, first = false;
+    }
+    if (fs.err != VX_OK) abort();
+    vxfs_scan_end(&fs, &s);
+  }
+  vxfs_close(&fs);
+}
+
 // libFuzzer calls it by name, so it cannot be static.
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size); // NOLINT(misc-use-internal-linkage)
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   static vxfs_blk b;
   if (size < 1) return 0;
+  if (data[0] % 4 == 3) {
+    messages(data + 1, size - 1); // every block it reads it wrote first
+    return 0;
+  }
   static const uint16_t TYPES[] = {VXFS_TPIVOT, VXFS_TLEAF, VXFS_TLOG};
-  uint16_t type = TYPES[data[0] % 3];
+  uint16_t type = TYPES[data[0] % 4];
   data++, size--;
   memset(b.buf, 0, sizeof b.buf);
   vxfs_put16(b.buf, type);

@@ -396,7 +396,7 @@ static bool range_free(vxfs *fs, vxfs_arena *a, uint64_t off, uint64_t len) {
 // [off, off + len) is taken. False (INVALID) if it was not all free.
 static bool range_grab(vxfs *fs, vxfs_arena *a, uint64_t off, uint64_t len) {
   uint32_t i = range_at(a, off);
-  if (i == a->nfree || a->free[i].off > off || off + len > a->free[i].off + a->free[i].len)
+  if (i == a->nfree || a->free[i].off > off || len > a->free[i].off + a->free[i].len - off)
     return fs_fail(fs, VX_ERR_INVALID);
   vxfs_range *r = &a->free[i];
   uint64_t end = r->off + r->len;
@@ -541,13 +541,14 @@ static bool log_owned(vxfs *fs, vxfs_arena *a) {
         break;
       case LOG_ALLOC:
       case LOG_ALLOC1:
-        ok = len % VXFS_BLKSZ == 0 && at % VXFS_BLKSZ == 0 && range_grab(fs, a, at, len);
+        ok = len && len % VXFS_BLKSZ == 0 && at % VXFS_BLKSZ == 0 && range_grab(fs, a, at, len);
         a->used += len;
         break;
       case LOG_FREE:
       case LOG_FREE1:
-        ok = len % VXFS_BLKSZ == 0 && at % VXFS_BLKSZ == 0 && at >= base + VXFS_BLKSZ &&
-             at + len <= base + VXFS_BLKSZ + a->size && range_free(fs, a, at, len);
+        ok = len && len % VXFS_BLKSZ == 0 && at % VXFS_BLKSZ == 0 && at >= base + VXFS_BLKSZ &&
+             at <= base + VXFS_BLKSZ + a->size && len <= base + VXFS_BLKSZ + a->size - at &&
+             range_free(fs, a, at, len);
         a->used -= len;
         break;
       default: ok = false; break;
@@ -698,8 +699,9 @@ static bool block_dealloc(vxfs *fs, uint64_t addr) {
 }
 
 // The end of an operation: what it freed of this generation's is free.
+// After an error nothing is: the tree that failed may still point there.
 [[maybe_unused]] static bool vxfs_end_op(vxfs *fs) {
-  bool ok = true;
+  bool ok = fs->err == VX_OK;
   for (uint32_t i = 0; i < fs->nlimbo && ok; i++) ok = block_dealloc(fs, fs->limbo[i].addr);
   fs->nlimbo = 0;
   return ok;

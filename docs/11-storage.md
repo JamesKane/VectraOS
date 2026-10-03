@@ -44,6 +44,11 @@ Following gefs:
 - **No sibling pointers.** Balance is relaxed: nodes may be less full than a B-tree's and merge opportunistically. Fill levels are kept in the parent, so siblings never point at each other and a copy never ripples sideways.
 - **Inline data.** Values up to 512 bytes are stored inline, so small files and symbolic links take no data block.
 
+Where `lib/vx-fs` departs from gefs's algorithm (the format is the same):
+- **Flushes push whole.** gefs pulls as many of a child's messages as fit and splits a node in two. Here a child gets all of its messages, and a node splits into as many parts as its contents need. A child left under a quarter full merges with a neighbor, or shares its contents with one when the two do not fit in a single block.
+- **Scans re-enter.** A scan reads one leaf's range at a time, with the messages buffered above it applied. It starts again from the tree's current root for each range, so it holds no blocks between calls and sees changes made in between.
+- **Data blocks are freed by the tree.** When a message replaces, deletes or clears a `Kdat` value that names a block, applying it at the leaf frees that block. A clobber frees nothing: its owner frees the block.
+
 ## 4. The file system as keys
 
 **Each tree is one flat key-value store.** A tree holds one version of one file system: no directory blocks, no inode table, no indirect blocks. Its keys are gefs's three, with one added (gefs's paper, §4):
