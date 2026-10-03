@@ -58,6 +58,7 @@ static void world_open(world *w) {
   CHECK(vxfs_arenas(&w->fs, 2));
   for (uint32_t i = 0; i < 2; i++)
     CHECK(vxfs_arena_init(&w->fs, &w->fs.arenas[i], i * (ARENA_BLOCKS + 2) * VXFS_BLKSZ, ARENA_BLOCKS));
+  w->t = (vxfs_tree){};
   CHECK(vxfs_tree_init(&w->fs, &w->t));
   CHECK(vxfs_end_op(&w->fs));
 }

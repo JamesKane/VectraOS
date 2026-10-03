@@ -25,10 +25,20 @@
 
 #include "blk.c"
 
+// A tree, and the context its changes are made in: the generation its new
+// blocks are born in, its branch's base, and whether it is the snapshot
+// tree (blk.c's frees depend on all three).
 typedef struct vxfs_tree {
   vxfs_bptr root;
   uint32_t height; // 1: the root is a leaf
+  uint64_t memgen, base;
+  bool snap;
 } vxfs_tree;
+
+// Changes to t are made from here on.
+static void tree_enter(vxfs *fs, const vxfs_tree *t) {
+  fs->gen = t->memgen, fs->base = t->base, fs->snaptree = t->snap;
+}
 
 // A pivot's child, its key copied out of the block it came from.
 typedef struct vxfs_kid {
@@ -483,12 +493,15 @@ static bool put(vxfs *fs, vxfs_bptr bp, uint32_t level, const uint8_t *low, uint
   return ok;
 }
 
-// An empty tree: a leaf with nothing in it.
+// An empty tree, a leaf with nothing in it, born in the context t names
+// (fs->gen's if it names none).
 [[maybe_unused]] static bool vxfs_tree_init(vxfs *fs, vxfs_tree *t) {
+  if (!t->memgen) t->memgen = fs->gen;
+  tree_enter(fs, t);
   vxfs_blk *b = vxfs_new_block(fs, VXFS_TLEAF);
   if (!b) return false;
   bool ok = vxfs_write_block(fs, b);
-  *t = (vxfs_tree){.root = b->bp, .height = 1};
+  t->root = b->bp, t->height = 1;
   vxfs_drop(fs, b);
   return ok;
 }
@@ -500,6 +513,7 @@ static bool put(vxfs *fs, vxfs_bptr bp, uint32_t level, const uint8_t *low, uint
 [[maybe_unused]] static vx_status vxfs_upsert(vxfs *fs, vxfs_tree *t, const vxfs_msg *msgs, uint32_t n) {
   if (fs->err != VX_OK) return fs->err;
   if (!n) return VX_OK;
+  tree_enter(fs, t);
   uint32_t total = 0;
   for (uint32_t i = 0; i < n; i++) {
     const vxfs_msg *m = &msgs[i];
@@ -537,11 +551,11 @@ static bool put(vxfs *fs, vxfs_bptr bp, uint32_t level, const uint8_t *low, uint
     height++;
     if (height > VXFS_MAXHEIGHT) ok = fs_fail(fs, VX_ERR_NO_MEMORY);
   }
-  vxfs_tree nt = {};
+  vxfs_tree nt = *t;
   if (ok && out.n == 0) {
     ok = vxfs_tree_init(fs, &nt); // emptied
   } else if (ok) {
-    nt = (vxfs_tree){.root = out.v[0].bp, .height = height};
+    nt.root = out.v[0].bp, nt.height = height;
   }
   // Shrunk: a root pivot with one child and nothing buffered gives way to it.
   while (ok && nt.height > 1) {

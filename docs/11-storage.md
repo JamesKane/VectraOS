@@ -86,8 +86,10 @@ Every operation is one atomic batch of upserts:
 
 A **snapshot tree** holds the snapshots, their labels and their deadlists (gefs's paper, §5):
 - `Ksnap id[8]` holds a tree's root, generation, predecessor, successor, base and reference counts.
-- `Klabel name[]` holds a snapshot id.
-- `Kdlist snap[8] gen[8]` holds a deadlist's head and tail.
+- `Klabel name[]` holds a snapshot id, and whether the label is a branch.
+- `Kdlist snap[8] gen[8] seq[8]` holds a deadlist's head and length. Unlike gefs, each deadlist is a chain written once. Merging deadlists re-keys them under a new snapshot rather than splicing chains, so no block a commit can see is ever rewritten. The sequence number keeps several lists of one snapshot and birth apart.
+
+Snapshot records are changed by reading them and inserting them back. gefs's `Orelink`, `Oreprev` and `Oincref` messages are not needed while the snapshot tree has one writer.
 
 The snapshot tree is itself copy-on-write, but is never snapshotted.
 
@@ -113,7 +115,7 @@ There is no garbage collection pass and no per-block reference count.
 
 **The protocol** is gefs's seven phases (its paper, §6). The device needs only an ordered barrier, the block class's `FLUSH` (§10):
 1. **Update the snapshots.** A barrier makes the data writes land first; then the snapshot tree is pointed at each dirty branch's new root.
-2. **Prepare.** The superblock and arena headers are built in memory, and each arena's allocation log gets a generation marker, so a replay after a crash discards anything later. Mutation may go on from here.
+2. **Prepare.** The blocks the commit frees are written as a chain, and the superblock names it. Each arena's log is written, and its header records how much of the log's last block the commit covers, with a hash of that prefix. Mutation may go on from here.
 3. **Write the arena headers,** then a barrier.
 4. **Write the superblock,** then a barrier. This is the write that commits.
 5. **Write the arena footers.** Headers and footers back each other up across a crash.
@@ -124,11 +126,11 @@ There is no garbage collection pass and no per-block reference count.
 - Before phase 4, the old superblock still describes a consistent tree.
 - During phase 3, the headers do not match the superblock, so the footers are used.
 - After phase 4, the headers match.
-- Between phases 4 and 7, blocks can leak, not be lost. `fsd -c` reports leaks, and a later version reclaims them.
+- After phase 4, nothing leaks either. Phase 7's frees are logged past what the commit covers, so a replay does not see them. Mounting reads the superblock's chain of the commit's frees and does them again.
 
 **There are two superblocks,** in the first and last blocks of the volume, and either one is enough to mount.
 
-**Space comes from arenas.** Each arena keeps an append-only log of allocations and frees, replayed at mount into an in-memory map and compacted now and then. A compacted log is new blocks that hold only the free ranges. The old chain's blocks stay unused until the commit that points the arena at the new log is durable, because a crash before then replays the old one. The arena is chosen round-robin, offset by block type, so data, pivot and leaf blocks each tend to stay sequential. Freed ranges are sent to the device as `DISCARD` in batches.
+**Space comes from arenas.** Each arena keeps an append-only log of allocations and frees, replayed at mount into an in-memory map and compacted now and then. A replay covers the log exactly as far as the arena's header says. Appends after a commit only add to the last block, so a write torn later cannot damage the covered prefix, and gefs's per-commit sync markers are not needed. A compacted log is new blocks that hold only the free ranges. The old chain's blocks stay unused until the commit that points the arena at the new log is durable, because a crash before then replays the old one. The arena is chosen round-robin, offset by block type, so data, pivot and leaf blocks each tend to stay sequential. Freed ranges are sent to the device as `DISCARD` in batches.
 
 ## 7. `fsd`, the server
 

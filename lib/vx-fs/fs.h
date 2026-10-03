@@ -58,9 +58,9 @@ enum : uint8_t {
   VXFS_KDAT = 0,    // qid[8] off[8] -> a block pointer, or inline data
   VXFS_KENT = 1,    // pqid[8] name[] -> the entry
   VXFS_KUP = 2,     // qid[8] -> the parent's Kent key (directories only)
-  VXFS_KLABEL = 3,  // name[] -> snapid[8] (snapshot tree)
-  VXFS_KSNAP = 4,   // snapid[8] -> a tree (snapshot tree)
-  VXFS_KDLIST = 5,  // snap[8] gen[8] -> head, tail (snapshot tree)
+  VXFS_KLABEL = 3,  // name[] -> snapid[8] flags[4] (snapshot tree)
+  VXFS_KSNAP = 4,   // snapid[8] -> a snapshot, vxfs_snap (snapshot tree)
+  VXFS_KDLIST = 5,  // snap[8] birth[8] seq[8] -> head[8] count[8] (snapshot tree)
   VXFS_KORPHAN = 6, // qid[8] -> nothing: removed while open (ours)
 };
 
@@ -129,6 +129,42 @@ typedef struct vxfs_msg {
   uint16_t nv;
 } vxfs_msg;
 
+// --- The volume (11 §5, §6) ---
+
+// The superblock, in the volume's first block and its last: this, then a
+// table of arenas (base[8] blocks[8] header hash[8] each), then the XXH64
+// of everything before it.
+static constexpr uint32_t VXFS_MAGIC = 0x73667876; // "vxfs"
+static constexpr uint32_t VXFS_VERSION = 1;
+static constexpr uint32_t VXFS_SBHDSZ = 6 * 4 + VXFS_PTRSZ + 7 * 8;
+static constexpr uint32_t VXFS_MAXARENAS = (VXFS_BLKSZ - VXFS_SBHDSZ - 8) / 24;
+
+typedef struct vxfs_sb {
+  uint32_t narenas, snapht;
+  vxfs_bptr snaproot; // the snapshot tree
+  uint64_t commit;    // commits so far: the newer of two good superblocks wins
+  uint64_t nextgen, nextqid, nextdl;
+  uint64_t flags;
+  uint64_t freed; // a deadlist-format chain of the blocks the commit freed, or 0
+} vxfs_sb;
+
+// A snapshot: Ksnap's value. Generations and snapshot ids are one counter;
+// 0 is none.
+typedef struct vxfs_snap {
+  vxfs_bptr root;
+  uint32_t height, flags;
+  uint64_t gen;  // its id: the generation its newest blocks were born in
+  uint64_t pred; // the snapshot it follows, on its branch's chain
+  uint64_t succ; // the one that follows it
+  uint64_t base; // the snapshot its branch was forked from
+  uint32_t nlbl; // labels naming it
+  uint32_t nref; // branches forked from it
+} vxfs_snap;
+static constexpr uint32_t VXFS_SNAPSZ = VXFS_PTRSZ + 4 + 4 + 4 * 8 + 4 + 4;
+
+static constexpr uint32_t VXFS_LABELMAX = VXFS_KEYMAX - 1;
+enum : uint32_t { VXFS_LMUT = 1 }; // a label that is a branch: it moves at every commit
+
 // --- Packing ---
 
 static inline void vxfs_put16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v, p[1] = (uint8_t)(v >> 8); }
@@ -195,6 +231,30 @@ static inline vxfs_dir vxfs_unpackdir(const uint8_t *p) {
   d.gid = vxfs_get32(p), p += 4;
   d.muid = vxfs_get32(p);
   return d;
+}
+
+static inline void vxfs_packsnap(uint8_t *p, const vxfs_snap *s) {
+  vxfs_packbp(p, s->root), p += VXFS_PTRSZ;
+  vxfs_put32(p, s->height), vxfs_put32(p + 4, s->flags), p += 8;
+  vxfs_put64(p, s->gen), vxfs_put64(p + 8, s->pred), vxfs_put64(p + 16, s->succ), vxfs_put64(p + 24, s->base);
+  p += 32;
+  vxfs_put32(p, s->nlbl), vxfs_put32(p + 4, s->nref);
+}
+
+static inline vxfs_snap vxfs_unpacksnap(const uint8_t *p) {
+  vxfs_snap s;
+  s.root = vxfs_unpackbp(p), p += VXFS_PTRSZ;
+  s.height = vxfs_get32(p), s.flags = vxfs_get32(p + 4), p += 8;
+  s.gen = vxfs_get64(p), s.pred = vxfs_get64(p + 8), s.succ = vxfs_get64(p + 16), s.base = vxfs_get64(p + 24);
+  p += 32;
+  s.nlbl = vxfs_get32(p), s.nref = vxfs_get32(p + 4);
+  return s;
+}
+
+static inline uint16_t vxfs_namelen(const char *s, uint16_t max) { // max + 1 if longer
+  uint16_t n = 0;
+  while (n <= max && s[n]) n++;
+  return n;
 }
 
 static inline int vxfs_keycmp(const uint8_t *a, uint16_t na, const uint8_t *b, uint16_t nb) {

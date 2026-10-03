@@ -9,12 +9,21 @@
 //
 // Space comes from arenas. Each keeps its free space as sorted ranges in
 // memory, and an append-only log of allocations and frees on the disk,
-// replayed at load: the log is the one structure written in place, so it
-// carries a hash of its own. Freeing has two cases. A block born in the
-// generation being built (since the last commit) is freed when the current
-// operation ends, the epoch gefs's readers need (single-threaded here); one
-// born earlier may still be reachable from the last commit, so it is killed:
-// kept on fs->dead, for the commit's deadlists (step 3).
+// replayed at load. The log is the one structure written in place, so it
+// carries a hash of its own; and its last block is rewritten as it grows,
+// so a commit records in the arena's header how much of that block it
+// covers and that prefix's hash. A replay reads exactly that much: what was
+// logged after the commit is not durable, and a write torn after it cannot
+// touch what came before, which only grows.
+//
+// Freeing depends on the tree a block left (fs->gen, base and snaptree, set
+// by the tree being changed). A block born in its generation being built
+// (since the last commit) is freed when the current operation ends, the
+// epoch gefs's readers need (single-threaded here). One born earlier is
+// still reachable from the last commit: a branch's is killed, kept on
+// fs->dead for the commit's deadlists, unless it was born before the
+// branch's base, when the branch it came from frees it; the snapshot tree's
+// is deferred, freed once the next commit is durable (fs->deferred).
 
 #pragma once
 
@@ -43,7 +52,7 @@ typedef struct vxfs_range {
 } vxfs_range;
 
 // An arena: a header block at base, its data blocks after it, and a footer
-// after them (step 3 writes those two).
+// after them, the header's copy.
 typedef struct vxfs_arena {
   uint64_t base, size; // bytes of data blocks, from base + VXFS_BLKSZ
   uint64_t used, reserve;
@@ -55,6 +64,12 @@ typedef struct vxfs_arena {
   uint64_t *retired; // a compressed log's old chain, not yet reusable
   uint64_t nretired;
 } vxfs_arena;
+
+// A block killed: born in generation `birth`, unreachable from the tree
+// being built in `death` (a snapshot id, once committed).
+typedef struct vxfs_dead {
+  uint64_t addr, birth, death;
+} vxfs_dead;
 
 typedef struct vxfs {
   vxfs_dev dev;
@@ -71,15 +86,19 @@ typedef struct vxfs {
   uint32_t narenas;
   uint32_t rr, rr_writes; // the round robin over arenas (11 §6)
 
-  uint64_t gen; // the generation blocks are born in now
-  vxfs_bptr *limbo, *dead;
-  uint32_t nlimbo, caplimbo, ndead, capdead;
+  uint64_t gen;     // the generation blocks are born in now: the changed tree's
+  uint64_t base;    // that tree's branch's base: blocks born at or before it are another's to free
+  bool snaptree;    // the tree is the snapshot tree
+  bool use_reserve; // the commit may take the arenas' reserves
+  vxfs_bptr *limbo;
+  vxfs_dead *dead;
+  uint64_t *deferred; // freed once the next commit is durable
+  uint32_t nlimbo, caplimbo, ndead, capdead, ndeferred, capdeferred;
 
   uint64_t reads, writes; // blocks, for tests and status
 } vxfs;
 
-static constexpr uint64_t VXFS_LOG_SYNC_SHIFT = 8;
-enum : uint8_t { LOG_NOP, LOG_ALLOC1, LOG_FREE1, LOG_SYNC, LOG_ALLOC, LOG_FREE };
+enum : uint8_t { LOG_NOP, LOG_ALLOC1, LOG_FREE1, LOG_ALLOC, LOG_FREE };
 
 static bool fs_fail(vxfs *fs, vx_status st) {
   if (fs->err == VX_OK) fs->err = st;
@@ -258,12 +277,14 @@ static bool parse_block(vxfs_blk *b, uint16_t want) {
     b->data = b->buf + VXFS_LOGHDSZ;
     return b->logsz <= VXFS_LOGSPC && b->logsz % 8 == 0 &&
            vxfs_get64(p + 4) == vxfs_xxh64(b->data, b->logsz, 0);
+  case VXFS_TARENA: b->data = b->buf + 2; return true;
   default: return false;
   }
 }
 
 // The block bp points at, of type `type`, held. Its hash is checked unless
-// it is a log (whose pointers carry none: it is written in place).
+// it is a log or a deadlist, which carry their own (pointers to them have
+// none).
 [[maybe_unused]] static vxfs_blk *vxfs_get(vxfs *fs, vxfs_bptr bp, uint16_t type) {
   if (bp.addr % VXFS_BLKSZ || bp.addr >= fs->dev.size || fs->dev.size - bp.addr < VXFS_BLKSZ) {
     fs_fail(fs, VX_ERR_INVALID);
@@ -272,7 +293,7 @@ static bool parse_block(vxfs_blk *b, uint16_t want) {
   vxfs_blk *b = cache_find(fs, bp.addr);
   if (b) {
     bool kind = b->type == type || (type == VXFS_TTREE && (b->type == VXFS_TPIVOT || b->type == VXFS_TLEAF));
-    if (!kind || (type != VXFS_TLOG && b->bp.hash != bp.hash)) {
+    if (!kind || (type != VXFS_TLOG && type != VXFS_TDLIST && b->bp.hash != bp.hash)) {
       fs_fail(fs, VX_ERR_INVALID);
       return nullptr;
     }
@@ -308,6 +329,7 @@ static vxfs_blk *new_block_at(vxfs *fs, uint64_t addr, uint16_t type) {
   case VXFS_TLEAF: b->data = b->buf + VXFS_LEAFHDSZ; break;
   case VXFS_TLOG:
   case VXFS_TDLIST: b->data = b->buf + VXFS_LOGHDSZ; break;
+  case VXFS_TARENA: b->data = b->buf + 2; break;
   default: b->data = b->buf; break;
   }
   memset(b->buf, 0, sizeof b->buf);
@@ -421,7 +443,7 @@ static bool range_grab(vxfs *fs, vxfs_arena *a, uint64_t off, uint64_t len) {
 // One block from the arena's free space, unlogged: from its start
 // (sequential, for logs being rewritten) or its end. 0 if there is no room.
 static uint64_t arena_take(vxfs *fs, vxfs_arena *a, bool seq) {
-  if (!a->nfree || a->size - a->used <= a->reserve) return 0;
+  if (!a->nfree || (!fs->use_reserve && a->size - a->used <= a->reserve)) return 0;
   vxfs_range *r = seq ? &a->free[0] : &a->free[a->nfree - 1];
   uint64_t b = seq ? r->off : r->off + r->len - VXFS_BLKSZ;
   range_grab(fs, a, b, VXFS_BLKSZ);
@@ -439,9 +461,9 @@ static vxfs_arena *arena_of(vxfs *fs, uint64_t addr) {
   return nullptr;
 }
 
-// Appends an entry: an allocation or free of [off, off + len), or a sync
-// barrier for generation `off` (op LOG_SYNC). A full block chains to a new
-// one, taken from the arena and logged in the old one first.
+// Appends an entry: an allocation or a free of [off, off + len). A full
+// block chains to a new one, taken from the arena and logged in the old one
+// first.
 static bool log_append(vxfs *fs, vxfs_arena *a, uint64_t off, uint64_t len, uint8_t op) {
   vxfs_blk *lb = a->logtl;
   if (lb->logsz >= VXFS_LOGSPC - VXFS_LOGSLOP) {
@@ -458,7 +480,7 @@ static bool log_append(vxfs *fs, vxfs_arena *a, uint64_t off, uint64_t len, uint
   }
   if (op == LOG_ALLOC && len == VXFS_BLKSZ) op = LOG_ALLOC1;
   if (op == LOG_FREE && len == VXFS_BLKSZ) op = LOG_FREE1;
-  vxfs_put64(lb->data + lb->logsz, op == LOG_SYNC ? off << VXFS_LOG_SYNC_SHIFT | op : off | op);
+  vxfs_put64(lb->data + lb->logsz, off | op);
   lb->logsz += 8;
   if (op == LOG_ALLOC || op == LOG_FREE) {
     vxfs_put64(lb->data + lb->logsz, len);
@@ -472,10 +494,6 @@ static bool log_append(vxfs *fs, vxfs_arena *a, uint64_t off, uint64_t len, uint
 [[maybe_unused]] static bool vxfs_log_flush(vxfs *fs, vxfs_arena *a) {
   if (!(a->logtl->flags & VXFS_BDIRTY)) return true;
   return vxfs_write_block(fs, a->logtl);
-}
-
-[[maybe_unused]] static bool vxfs_log_barrier(vxfs *fs, vxfs_arena *a, uint64_t gen) {
-  return log_append(fs, a, gen, 0, LOG_SYNC);
 }
 
 // A new arena over [base, base + VXFS_BLKSZ * (blocks + 2)): all of its data
@@ -508,59 +526,126 @@ static bool log_owned(vxfs *fs, vxfs_arena *a) {
   return true;
 }
 
-// Loads an arena's free space by replaying its log from loghd, up to the
-// first sync barrier of generation `upto` or later, which a crash left
-// after the last commit (step 3): the log is cut there, and appended to.
-[[maybe_unused]] static bool vxfs_arena_load(vxfs *fs, vxfs_arena *a, uint64_t base, uint64_t blocks,
-                                             vxfs_bptr loghd, uint64_t upto) {
-  *a = (vxfs_arena){.base = base, .size = blocks * VXFS_BLKSZ, .loghd = loghd, .used = blocks * VXFS_BLKSZ};
-  vxfs_bptr bp = loghd;
+// What an arena's header says: where it is, and how much of its log a
+// commit covers.
+typedef struct vxfs_arena_hdr {
+  uint64_t base, blocks;
+  uint64_t loghd, logtl; // the log's first block and last
+  uint16_t tailsz;       // the bytes of the last block's entries the commit covers
+  uint64_t tailhash;     // their hash
+} vxfs_arena_hdr;
+static constexpr uint32_t VXFS_ARENA_HDRSZ = 8 + 8 + 8 + 8 + 2 + 8;
+
+[[maybe_unused]] static void vxfs_pack_arena(uint8_t *p, const vxfs_arena_hdr *h) {
+  vxfs_put64(p, h->base), vxfs_put64(p + 8, h->blocks);
+  vxfs_put64(p + 16, h->loghd), vxfs_put64(p + 24, h->logtl);
+  vxfs_put16(p + 32, h->tailsz), vxfs_put64(p + 34, h->tailhash);
+}
+
+[[maybe_unused]] static vxfs_arena_hdr vxfs_unpack_arena(const uint8_t *p) {
+  return (vxfs_arena_hdr){.base = vxfs_get64(p),
+                          .blocks = vxfs_get64(p + 8),
+                          .loghd = vxfs_get64(p + 16),
+                          .logtl = vxfs_get64(p + 24),
+                          .tailsz = vxfs_get16(p + 32),
+                          .tailhash = vxfs_get64(p + 34)};
+}
+
+// Writes the log's open block and says what a header would: the log as it
+// stands, all of it covered.
+[[maybe_unused]] static bool vxfs_arena_seal(vxfs *fs, vxfs_arena *a, vxfs_arena_hdr *h) {
+  if (!vxfs_log_flush(fs, a)) return false;
+  vxfs_blk *tl = a->logtl;
+  *h = (vxfs_arena_hdr){.base = a->base,
+                        .blocks = a->size / VXFS_BLKSZ,
+                        .loghd = a->loghd.addr,
+                        .logtl = tl->bp.addr,
+                        .tailsz = tl->logsz,
+                        .tailhash = vxfs_xxh64(tl->data, tl->logsz, 0)};
+  return true;
+}
+
+// Replays one block's entries, [0, n).
+static bool log_replay(vxfs *fs, vxfs_arena *a, const uint8_t *d, uint32_t n) {
+  for (uint32_t i = 0; i < n;) {
+    uint64_t ent = vxfs_get64(d + i), at = ent & ~0xffull;
+    uint8_t op = (uint8_t)ent;
+    uint32_t w = op >= LOG_ALLOC ? 16 : 8;
+    if (i + w > n) return fs_fail(fs, VX_ERR_INVALID);
+    uint64_t len = op >= LOG_ALLOC ? vxfs_get64(d + i + 8) : VXFS_BLKSZ, lo = a->base + VXFS_BLKSZ,
+             hi = lo + a->size;
+    bool ok = len && len % VXFS_BLKSZ == 0 && at % VXFS_BLKSZ == 0;
+    switch (op) {
+    case LOG_ALLOC:
+    case LOG_ALLOC1:
+      ok = ok && range_grab(fs, a, at, len);
+      a->used += len;
+      break;
+    case LOG_FREE:
+    case LOG_FREE1:
+      ok = ok && at >= lo && at <= hi && len <= hi - at && range_free(fs, a, at, len);
+      a->used -= len;
+      break;
+    default: ok = false; break;
+    }
+    if (!ok) return fs_fail(fs, VX_ERR_INVALID);
+    i += w;
+  }
+  return true;
+}
+
+// The log's last block, as far as the header covers it: read whole, its
+// own hash not checked (a write after the commit may have torn it), the
+// covered prefix checked against the header's hash, and the rest cleared.
+static vxfs_blk *log_tail(vxfs *fs, const vxfs_arena_hdr *h) {
+  if (h->logtl % VXFS_BLKSZ || h->logtl >= fs->dev.size || fs->dev.size - h->logtl < VXFS_BLKSZ ||
+      h->tailsz > VXFS_LOGSPC || h->tailsz % 8) {
+    fs_fail(fs, VX_ERR_INVALID);
+    return nullptr;
+  }
+  cache_forget(fs, h->logtl);
+  vxfs_blk *b = cache_take(fs);
+  if (!b) return nullptr;
+  fs->reads++;
+  vx_status st = fs->dev.read(fs->dev.ctx, h->logtl, b->buf);
+  if (st != VX_OK || vxfs_xxh64(b->buf + VXFS_LOGHDSZ, h->tailsz, 0) != h->tailhash) {
+    fs_fail(fs, st != VX_OK ? st : VX_ERR_INVALID);
+    b->ref = 0;
+    lru_push(fs, b);
+    return nullptr;
+  }
+  b->type = VXFS_TLOG;
+  b->data = b->buf + VXFS_LOGHDSZ;
+  b->logsz = h->tailsz;
+  b->logp = (vxfs_bptr){};
+  b->bp = (vxfs_bptr){.addr = h->logtl};
+  memset(b->data + h->tailsz, 0, VXFS_LOGSPC - h->tailsz);
+  cache_put(fs, b);
+  return b;
+}
+
+// Loads an arena's free space by replaying its log, as its header says:
+// whole blocks from loghd, each checked by its own hash, then the covered
+// prefix of logtl, which is left open for appending.
+[[maybe_unused]] static bool vxfs_arena_load(vxfs *fs, vxfs_arena *a, const vxfs_arena_hdr *h) {
+  *a = (vxfs_arena){.base = h->base,
+                    .size = h->blocks * VXFS_BLKSZ,
+                    .loghd = {.addr = h->loghd},
+                    .used = h->blocks * VXFS_BLKSZ};
+  if (h->blocks > fs->dev.size / VXFS_BLKSZ) return fs_fail(fs, VX_ERR_INVALID);
+  vxfs_bptr bp = a->loghd;
   for (uint64_t chain = 0;; chain++) {
-    if (chain > blocks) return fs_fail(fs, VX_ERR_INVALID); // a loop in the chain
-    vxfs_blk *b = vxfs_get(fs, bp, VXFS_TLOG);
+    if (chain > h->blocks || !bp.addr)
+      return fs_fail(fs, VX_ERR_INVALID); // a loop, or the tail never reached
+    bool last = bp.addr == h->logtl;
+    vxfs_blk *b = last ? log_tail(fs, h) : vxfs_get(fs, bp, VXFS_TLOG);
     if (!b) return false;
     a->nlog++;
-    bool cut = false;
-    for (uint32_t i = 0; i < b->logsz && !cut;) {
-      uint64_t ent = vxfs_get64(b->data + i), at = ent & ~0xffull;
-      uint8_t op = (uint8_t)ent;
-      uint32_t n = op >= LOG_ALLOC ? 16 : 8;
-      if (i + n > b->logsz) {
-        vxfs_drop(fs, b);
-        return fs_fail(fs, VX_ERR_INVALID);
-      }
-      uint64_t len = op >= LOG_ALLOC ? vxfs_get64(b->data + i + 8) : VXFS_BLKSZ;
-      bool ok = true;
-      switch (op) {
-      case LOG_SYNC:
-        if (ent >> VXFS_LOG_SYNC_SHIFT >= upto) { // after the last commit: not durable, and dropped
-          b->logsz = (uint16_t)i;
-          b->logp = (vxfs_bptr){};
-          cut = true;
-        }
-        break;
-      case LOG_ALLOC:
-      case LOG_ALLOC1:
-        ok = len && len % VXFS_BLKSZ == 0 && at % VXFS_BLKSZ == 0 && range_grab(fs, a, at, len);
-        a->used += len;
-        break;
-      case LOG_FREE:
-      case LOG_FREE1:
-        ok = len && len % VXFS_BLKSZ == 0 && at % VXFS_BLKSZ == 0 && at >= base + VXFS_BLKSZ &&
-             at <= base + VXFS_BLKSZ + a->size && len <= base + VXFS_BLKSZ + a->size - at &&
-             range_free(fs, a, at, len);
-        a->used -= len;
-        break;
-      default: ok = false; break;
-      }
-      if (!ok) {
-        vxfs_drop(fs, b);
-        return fs_fail(fs, VX_ERR_INVALID);
-      }
-      i += n;
+    if (!log_replay(fs, a, b->data, b->logsz)) {
+      vxfs_drop(fs, b);
+      return false;
     }
-    if (cut || !b->logp.addr) { // the last block: open for appending
-      if (cut) b->flags |= VXFS_BDIRTY;
+    if (last) {
       a->logtl = b;
       return log_owned(fs, a);
     }
@@ -571,9 +656,9 @@ static bool log_owned(vxfs *fs, vxfs_arena *a) {
 
 // Rewrites the log as the free ranges alone, in new blocks: a long log is
 // short again. The new log also says the old chain's blocks are free, but
-// they are kept from reuse (a->retired) until vxfs_log_retire: until the
-// commit that points the arena at the new log is durable, a crash replays
-// the old one, which must still be on the disk.
+// they are kept from reuse (a->retired, deferred by vxfs_log_retire at the
+// next commit): until the commit that points the arena at the new log is
+// durable, a crash replays the old one, which must still be on the disk.
 [[maybe_unused]] static bool vxfs_log_compress(vxfs *fs, vxfs_arena *a) {
   if (a->nretired) return fs_fail(fs, VX_ERR_BAD_STATE); // the last compression's commit has not landed
   if (!vxfs_log_flush(fs, a)) return false;
@@ -637,15 +722,18 @@ static bool log_owned(vxfs *fs, vxfs_arena *a) {
   return ok;
 }
 
-// After the commit that points the arena at its new log: the old chain's
-// blocks may be reused.
+// Defers a block: free once the next commit is durable.
+[[maybe_unused]] static bool vxfs_defer(vxfs *fs, uint64_t addr) {
+  if (!fs_grow(fs, (void **)&fs->deferred, fs->ndeferred, &fs->capdeferred, sizeof *fs->deferred))
+    return false;
+  fs->deferred[fs->ndeferred++] = addr;
+  return true;
+}
+
+// At a commit: a compressed log's old chain is deferred.
 [[maybe_unused]] static bool vxfs_log_retire(vxfs *fs, vxfs_arena *a) {
   bool ok = true;
-  for (uint64_t i = 0; i < a->nretired && ok; i++) {
-    cache_forget(fs, a->retired[i]);
-    ok = range_free(fs, a, a->retired[i], VXFS_BLKSZ);
-    a->used -= VXFS_BLKSZ;
-  }
+  for (uint64_t i = 0; i < a->nretired && ok; i++) ok = vxfs_defer(fs, a->retired[i]);
   fs_release(fs, a->retired, a->nretired * sizeof *a->retired);
   a->retired = nullptr, a->nretired = 0;
   return ok;
@@ -683,19 +771,26 @@ static bool block_dealloc(vxfs *fs, uint64_t addr) {
   return true;
 }
 
-// A block the tree no longer points at. Born in this generation, nothing
-// committed can reach it: it is freed when the current operation ends.
-// Born earlier, the last commit may: it is killed, kept for step 3's
-// deadlists.
+// A block the tree being changed no longer points at (see the top).
 [[maybe_unused]] static bool vxfs_free(vxfs *fs, vxfs_bptr bp) {
-  if (bp.gen >= fs->gen) {
+  if (bp.gen >= fs->gen) { // born since the last commit
     if (!fs_grow(fs, (void **)&fs->limbo, fs->nlimbo, &fs->caplimbo, sizeof *fs->limbo)) return false;
     fs->limbo[fs->nlimbo++] = bp;
-  } else {
+  } else if (fs->snaptree) {
+    return vxfs_defer(fs, bp.addr);
+  } else if (bp.gen > fs->base) {
     if (!fs_grow(fs, (void **)&fs->dead, fs->ndead, &fs->capdead, sizeof *fs->dead)) return false;
-    fs->dead[fs->ndead++] = bp;
+    fs->dead[fs->ndead++] = (vxfs_dead){bp.addr, bp.gen, fs->gen};
   }
   return true;
+}
+
+// After a commit is durable: what it deferred is free.
+[[maybe_unused]] static bool vxfs_free_deferred(vxfs *fs) {
+  bool ok = fs->err == VX_OK;
+  for (uint32_t i = 0; i < fs->ndeferred && ok; i++) ok = block_dealloc(fs, fs->deferred[i]);
+  fs->ndeferred = 0;
+  return ok;
 }
 
 // The end of an operation: what it freed of this generation's is free.
@@ -743,6 +838,7 @@ static bool block_dealloc(vxfs *fs, uint64_t addr) {
   fs_release(fs, fs->arenas, fs->narenas * sizeof *fs->arenas);
   fs_release(fs, fs->limbo, fs->caplimbo * sizeof *fs->limbo);
   fs_release(fs, fs->dead, fs->capdead * sizeof *fs->dead);
+  fs_release(fs, fs->deferred, fs->capdeferred * sizeof *fs->deferred);
   fs_release(fs, fs->hash, (size_t)fs->nhash * sizeof *fs->hash);
   fs_release(fs, fs->blocks, (size_t)fs->nblocks * sizeof *fs->blocks);
   *fs = (vxfs){};

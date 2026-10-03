@@ -361,17 +361,25 @@ static void test_malformed(void) {
 
 // --- Arenas and their logs ---
 
-// A fresh vxfs over the same device, its arenas loaded from the logs `fs`
-// wrote, up to generation `upto`'s barrier.
-static vxfs reload(vxfs *fs, memdev *d, uint64_t upto) {
+// A fresh vxfs over the same device, its arenas loaded as headers h say.
+static vxfs reload(memdev *d, const vxfs_arena_hdr *h, uint32_t n) {
   vxfs r;
   CHECK(vxfs_open(&r, dev_of(d), MEM, 256));
-  CHECK(vxfs_arenas(&r, fs->narenas));
-  for (uint32_t i = 0; i < fs->narenas; i++) {
-    const vxfs_arena *a = &fs->arenas[i];
-    CHECK(vxfs_arena_load(&r, &r.arenas[i], a->base, a->size / VXFS_BLKSZ, a->loghd, upto));
-  }
+  CHECK(vxfs_arenas(&r, n));
+  for (uint32_t i = 0; i < n; i++) CHECK(vxfs_arena_load(&r, &r.arenas[i], &h[i]));
   return r;
+}
+
+// Every arena's log written, and what its header would say.
+static void seal(vxfs *fs, vxfs_arena_hdr *h) {
+  for (uint32_t i = 0; i < fs->narenas; i++) CHECK(vxfs_arena_seal(fs, &fs->arenas[i], &h[i]));
+}
+
+static vxfs_arena copy_arena(const vxfs_arena *a) {
+  vxfs_arena c = *a;
+  c.free = malloc(a->nfree * sizeof *a->free);
+  memcpy(c.free, a->free, a->nfree * sizeof *a->free);
+  return c;
 }
 
 // A block taken from the arena and logged so.
@@ -383,7 +391,7 @@ static uint64_t take_logged(vxfs *fs, vxfs_arena *a) {
 static void test_logs(void) {
   memdev *d = memdev_new(2052);
   vxfs fs = fresh(d, 2, 1024, 256);
-  const uint64_t NONE = ~0ull;
+  vxfs_arena_hdr h[2];
 
   // Allocations spread over both arenas, some freed: a reload sees the same.
   uint64_t addr[600];
@@ -398,29 +406,38 @@ static void test_logs(void) {
   }
   CHECK(fs.arenas[0].used > VXFS_BLKSZ && fs.arenas[1].used > VXFS_BLKSZ);
   for (uint32_t i = 0; i < 600; i += 3) CHECK(block_dealloc(&fs, addr[i]));
-  for (uint32_t i = 0; i < 2; i++) CHECK(arena_sane(&fs.arenas[i]) && vxfs_log_flush(&fs, &fs.arenas[i]));
-  vxfs r = reload(&fs, d, NONE);
+  for (uint32_t i = 0; i < 2; i++) CHECK(arena_sane(&fs.arenas[i]));
+  seal(&fs, h);
+  vxfs r = reload(d, h, 2);
   CHECK(r.err == VX_OK);
   for (uint32_t i = 0; i < 2; i++) CHECK(arenas_equal(&fs.arenas[i], &r.arenas[i]));
   vxfs_close(&r);
 
-  // A barrier for generation 5, then more: a reload up to 5 sees what came
-  // before it, and its log goes on from there.
+  // A commit's header, then more logged and written: a reload by that
+  // header sees the log as it was, even with the tail block written over
+  // since (torn, here: its own header and hash garbage).
   vxfs_arena *a = &fs.arenas[0];
-  CHECK(vxfs_log_barrier(&fs, a, 5));
-  vxfs_arena before = *a;
-  before.free = malloc(a->nfree * sizeof *a->free);
-  memcpy(before.free, a->free, a->nfree * sizeof *a->free);
+  seal(&fs, h);
+  vxfs_arena before = copy_arena(a);
   for (uint32_t i = 0; i < 40; i++) CHECK(take_logged(&fs, a));
   CHECK(vxfs_log_flush(&fs, a));
-  r = reload(&fs, d, 5);
+  memset(d->bytes + h[0].logtl, 0xa5, 12); // type, size and hash
+  r = reload(d, h, 2);
   CHECK(r.err == VX_OK && arenas_equal(&before, &r.arenas[0]));
-  CHECK(r.arenas[0].logtl->flags & VXFS_BDIRTY); // cut, to be written again
-  vxfs_close(&r);
-  r = reload(&fs, d, 6); // a barrier older than the commit is kept
-  CHECK(r.err == VX_OK && arenas_equal(a, &r.arenas[0]));
+  CHECK(r.arenas[0].logtl->logsz == h[0].tailsz);
   vxfs_close(&r);
   free(before.free);
+  // A covered entry damaged: refused.
+  d->bytes[h[0].logtl + VXFS_LOGHDSZ + 8] ^= 0x40;
+  vxfs bad;
+  CHECK(vxfs_open(&bad, dev_of(d), MEM, 256) && vxfs_arenas(&bad, 1));
+  CHECK(!vxfs_arena_load(&bad, &bad.arenas[0], &h[0]) && bad.err == VX_ERR_INVALID);
+  vxfs_close(&bad);
+  d->bytes[h[0].logtl + VXFS_LOGHDSZ + 8] ^= 0x40;
+  seal(&fs, h);
+  r = reload(d, h, 2);
+  CHECK(r.err == VX_OK && arenas_equal(a, &r.arenas[0]));
+  vxfs_close(&r);
 
   // Enough to chain the log across blocks.
   uint64_t nlog = a->nlog;
@@ -432,22 +449,32 @@ static void test_logs(void) {
     for (uint32_t i = 0; i < n; i++) CHECK(block_dealloc(&fs, got[i]));
   }
   CHECK(a->nlog > nlog && arena_sane(a));
-  CHECK(vxfs_log_flush(&fs, a));
-  r = reload(&fs, d, NONE);
+  seal(&fs, h);
+  r = reload(d, h, 2);
   CHECK(r.err == VX_OK && arenas_equal(a, &r.arenas[0]) && r.arenas[0].nlog == a->nlog);
   vxfs_close(&r);
+  // A header whose tail is not on the chain: refused.
+  vxfs_arena_hdr wrong = h[0];
+  wrong.logtl = wrong.base + 900ull * VXFS_BLKSZ;
+  CHECK(vxfs_open(&bad, dev_of(d), MEM, 256) && vxfs_arenas(&bad, 1));
+  CHECK(!vxfs_arena_load(&bad, &bad.arenas[0], &wrong) && bad.err == VX_ERR_INVALID);
+  vxfs_close(&bad);
 
   // Compressed: the free ranges alone, in fewer blocks. The old chain is
-  // free in the new log but not reused until it is retired.
+  // free in the new log but not reused until it is retired (deferred) and
+  // the deferred blocks freed, after the commit.
   uint64_t old_head = a->loghd.addr, longer = a->nlog;
   CHECK(vxfs_log_compress(&fs, a));
   CHECK(a->nlog < longer && a->loghd.addr != old_head && a->nretired == longer && arena_sane(a));
   CHECK(!is_free(a, old_head));
   CHECK(!vxfs_log_compress(&fs, a) && fs.err == VX_ERR_BAD_STATE); // not again before the commit
   fs.err = VX_OK;
-  r = reload(&fs, d, NONE);
+  seal(&fs, h);
+  r = reload(d, h, 2);
   CHECK(r.err == VX_OK && is_free(&r.arenas[0], old_head) && arena_sane(&r.arenas[0]));
-  CHECK(vxfs_log_retire(&fs, a) && is_free(a, old_head) && arena_sane(a));
+  CHECK(vxfs_log_retire(&fs, a) && fs.ndeferred == longer && !is_free(a, old_head));
+  CHECK(vxfs_free_deferred(&fs) && is_free(a, old_head) && arena_sane(a) && fs.ndeferred == 0);
+  // The frees are logged after the header: the replay by it agrees all the same.
   CHECK(arenas_equal(a, &r.arenas[0]));
   vxfs_close(&r);
 
@@ -455,35 +482,55 @@ static void test_logs(void) {
   vxfs_blk *tl = a->logtl;
   tl->logp = a->loghd;
   CHECK(vxfs_write_block(&fs, tl));
-  vxfs bad;
-  CHECK(vxfs_open(&bad, dev_of(d), MEM, 256));
-  CHECK(vxfs_arenas(&bad, 1));
-  CHECK(!vxfs_arena_load(&bad, &bad.arenas[0], a->base, a->size / VXFS_BLKSZ, a->loghd, NONE));
-  CHECK(bad.err == VX_ERR_INVALID);
+  wrong = h[0];
+  wrong.logtl = wrong.base + 1000ull * VXFS_BLKSZ; // not on the chain, which loops
+  CHECK(vxfs_open(&bad, dev_of(d), MEM, 256) && vxfs_arenas(&bad, 1));
+  CHECK(!vxfs_arena_load(&bad, &bad.arenas[0], &wrong) && bad.err == VX_ERR_INVALID);
   vxfs_close(&bad);
 
   vxfs_close(&fs);
   memdev_free(d);
 }
 
-// Freeing: this generation's blocks at the operation's end, older ones kept.
+// Freeing, by the tree a block left: this generation's at the operation's
+// end; a branch's older ones killed, or left to the branch they came from;
+// the snapshot tree's deferred.
 static void test_free(void) {
   memdev *d = memdev_new(66);
   vxfs fs = fresh(d, 1, 64, 256);
   vxfs_arena *a = &fs.arenas[0];
+  vxfs_bptr bp[4];
+  for (uint32_t i = 0; i < 4; i++) {
+    vxfs_blk *b = vxfs_new_block(&fs, VXFS_TDAT);
+    bp[i] = b->bp;
+    vxfs_drop(&fs, b);
+  }
+  CHECK(bp[0].gen == 1);
+  fs.gen = 2; // committed since: they are the last commit's
   vxfs_blk *b = vxfs_new_block(&fs, VXFS_TDAT);
   vxfs_bptr now = b->bp;
   vxfs_drop(&fs, b);
-  vxfs_bptr old = {.addr = now.addr + VXFS_BLKSZ, .gen = 0}; // as if from an earlier commit
-  CHECK(vxfs_free(&fs, now) && vxfs_free(&fs, old));
+  CHECK(vxfs_free(&fs, now) && vxfs_free(&fs, bp[0]));
   CHECK(fs.nlimbo == 1 && fs.ndead == 1 && !is_free(a, now.addr));
+  CHECK(fs.dead[0].addr == bp[0].addr && fs.dead[0].birth == 1 && fs.dead[0].death == 2);
   CHECK(vxfs_end_op(&fs) && fs.nlimbo == 0 && is_free(a, now.addr) && arena_sane(a));
-  CHECK(fs.dead[0].addr == old.addr);
+  fs.base = 1; // a branch forked at 1: its blocks born then are the other branch's
+  CHECK(vxfs_free(&fs, bp[1]) && fs.ndead == 1 && fs.ndeferred == 0);
+  fs.base = 0, fs.snaptree = true;
+  CHECK(vxfs_free(&fs, bp[2]) && fs.ndeferred == 1 && !is_free(a, bp[2].addr));
+  CHECK(vxfs_free_deferred(&fs) && is_free(a, bp[2].addr) && arena_sane(a));
+  fs.snaptree = false;
 
-  // Full: every block taken, then NO_MEMORY.
+  // Full: every block taken, then NO_MEMORY; the reserve is the commit's.
   uint32_t n = 0;
+  a->reserve = 4ull * VXFS_BLKSZ;
   while (vxfs_new_block(&fs, VXFS_TDAT)) n++;
-  CHECK(fs.err == VX_ERR_NO_MEMORY && n == 63);
+  CHECK(fs.err == VX_ERR_NO_MEMORY);
+  fs.err = VX_OK, fs.use_reserve = true;
+  uint32_t more = 0;
+  while (vxfs_new_block(&fs, VXFS_TDAT)) more++;
+  CHECK(fs.err == VX_ERR_NO_MEMORY && more == 4 &&
+        n + more == 64 - 4); // the log, bp[0], bp[1] and bp[3] held
   vxfs_close(&fs);
   memdev_free(d);
 }

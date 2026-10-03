@@ -56,7 +56,7 @@ static void messages(const uint8_t *data, size_t size) {
   if (!vxfs_open(&fs, dev, (vxfs_mem){.alloc = m_alloc, .free = m_free}, 0) || !vxfs_arenas(&fs, 1) ||
       !vxfs_arena_init(&fs, &fs.arenas[0], 0, ARENA_BLOCKS))
     abort();
-  vxfs_tree t;
+  vxfs_tree t = {};
   if (!vxfs_tree_init(&fs, &t)) abort();
   static uint8_t keys[1024][8], vals[1024][VXFS_INLMAX];
   static vxfs_msg m[1024];
@@ -132,17 +132,29 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     return 0;
   }
 
-  // A log: its hash made to match, then replayed at the arena's first block.
+  // A log at the arena's first block, replayed as a header says. As the
+  // tail (the first byte's top bit clear): its covered prefix's hash made to
+  // match. As a whole block before the tail: its own hash made to match, and
+  // its chain led to an empty tail.
+  bool whole = data[-1] & 0x80;
   uint16_t logsz = vxfs_get16(b.buf + 2);
   if (logsz > VXFS_LOGSPC) return 0;
-  vxfs_put64(b.buf + 4, vxfs_xxh64(b.buf + VXFS_LOGHDSZ, logsz, 0));
+  vxfs_arena_hdr h = {.blocks = ARENA_BLOCKS, .loghd = VXFS_BLKSZ, .logtl = VXFS_BLKSZ, .tailsz = logsz};
   memset(disk, 0, sizeof disk);
+  if (whole) {
+    vxfs_packbp(b.buf + 12, (vxfs_bptr){.addr = 2ull * VXFS_BLKSZ});
+    vxfs_put64(b.buf + 4, vxfs_xxh64(b.buf + VXFS_LOGHDSZ, logsz, 0));
+    h.logtl = 2ull * VXFS_BLKSZ, h.tailsz = 0, h.tailhash = vxfs_xxh64(disk, 0, 0);
+  } else {
+    h.tailsz &= (uint16_t)~7u;
+    h.tailhash = vxfs_xxh64(b.buf + VXFS_LOGHDSZ, h.tailsz, 0);
+  }
   memcpy(disk + VXFS_BLKSZ, b.buf, VXFS_BLKSZ);
   vxfs fs;
   vxfs_dev dev = {.read = d_read, .write = d_write, .barrier = d_barrier, .size = sizeof disk};
   if (!vxfs_open(&fs, dev, (vxfs_mem){.alloc = m_alloc, .free = m_free}, 0) || !vxfs_arenas(&fs, 1)) abort();
   vxfs_arena *a = &fs.arenas[0];
-  if (vxfs_arena_load(&fs, a, 0, ARENA_BLOCKS, (vxfs_bptr){.addr = VXFS_BLKSZ}, 1000)) {
+  if (vxfs_arena_load(&fs, a, &h)) {
     if (!arena_sane(a)) abort();
     // It goes on: all it has allocated but two (for the log to chain), then freed.
     uint64_t got[ARENA_BLOCKS], room = (a->size - a->used) / VXFS_BLKSZ;
@@ -150,7 +162,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     while (n + 2 < room && (got[n] = block_alloc(&fs, VXFS_TDAT))) n++;
     for (uint32_t i = 0; i < n; i++)
       if (!block_dealloc(&fs, got[i])) abort();
-    if (fs.err != VX_OK || !arena_sane(a) || range_has(a, VXFS_BLKSZ)) abort();
+    if (fs.err != VX_OK || !arena_sane(a) || range_has(a, VXFS_BLKSZ) || range_has(a, h.logtl)) abort();
   }
   vxfs_close(&fs);
   return 0;
