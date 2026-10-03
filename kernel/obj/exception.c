@@ -93,6 +93,11 @@ static port *exception_port(task *t, bool first, uint64_t *key) {
 static bool exception_raise(struct trap_frame *f, uint32_t kind, uint32_t code, uint64_t address) {
   thread *th = this_cpu()->current;
   task *t = th->task;
+  if (kind == VX_EXCEPTION_PAGE_FAULT) { // a pager's page, perhaps: taken in before anyone sees a fault
+    pager_result r = pager_fault(address, code);
+    if (r == PAGER_MAPPED || r == PAGER_KILLED) return true; // made again; or user_return ends it
+    if (r == PAGER_TIMEOUT) kind = VX_EXCEPTION_PAGER_TIMEOUT, address &= ~4095ull;
+  }
   if (kind == VX_EXCEPTION_STEP) arch_frame_step(f, false); // one instruction, done
   vx_exception e = {.kind = kind, .code = code, .address = address, .thread = th->id};
   arch_frame_regs(f, &e.regs);
@@ -598,6 +603,9 @@ static vx_status mem_op(task *t, const vx_mem_op *op, bool *shoot, vmo **release
       if (t->maps[i].size && at >= t->maps[i].va && at < t->maps[i].va + t->maps[i].size) m = &t->maps[i];
     if (!m || m->vmo->physical) {
       st = m ? VX_ERR_UNSUPPORTED : VX_ERR_INVALID; // device memory, or nothing there
+    } else if (m->vmo->pager && (op->write || !vmo_page(m->vmo, (m->offset + (at - m->va)) / 4096))) {
+      st =
+          op->write ? VX_ERR_UNSUPPORTED : VX_ERR_SHOULD_WAIT; // a pager's pages: read only those it supplied
     } else if (op->write && !(m->flags & VX_MAP_WRITE) && !m->privatized && *released_count < 16) {
       st = mapping_privatize(t, m, &released[(*released_count)++]);
       *shoot = true;
@@ -643,7 +651,7 @@ static int64_t sys_vmo_clone(vx_handle h, uint64_t offset, uint64_t size, uint64
   if (!src) return st;
   uint64_t end;
   vmo *copy = nullptr;
-  if (src->physical)
+  if (src->physical || src->pager) // device memory, or pages a pager has not all supplied
     st = VX_ERR_UNSUPPORTED;
   else if (!size || (offset | size) & 4095 || ckd_add(&end, offset, size) || end > src->size)
     st = VX_ERR_RANGE;

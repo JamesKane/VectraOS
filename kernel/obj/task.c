@@ -380,14 +380,19 @@ static vx_status task_map(task *t, vmo *v, uint64_t offset, uint64_t size, uint3
   else if (!slot)
     st = VX_ERR_NO_MEMORY;
   // Page by page; a page that is already mapped (by another mapping) fails
-  // it, and only the pages this call mapped are taken back out.
+  // it, and only the pages this call mapped are taken back out. A pager's
+  // pages are mapped as far as it has supplied them, the rest as they are
+  // touched (pager.c).
   uint64_t done = 0;
+  if (v->pager) spin_lock(&v->lock);
   while (st == VX_OK && done < size) {
-    if (!map_range(t->root, at + done, v->pages[(offset + done) / 4096], 4096, mf))
+    uint64_t pa = vmo_page(v, (offset + done) / 4096);
+    if (pa && !map_range(t->root, at + done, pa, 4096, mf))
       st = VX_ERR_NO_MEMORY;
     else
       done += 4096;
   }
+  if (v->pager) spin_unlock(&v->lock);
   if (st == VX_OK) {
     object_ref(&v->obj);
     *slot = (mapping){.va = at, .size = size, .offset = offset, .vmo = v, .flags = flags};
@@ -413,6 +418,8 @@ static vx_status task_map(task *t, vmo *v, uint64_t offset, uint64_t size, uint3
 //   - Each handle keeps its value and rights, so what the parent's memory
 //     says about its handles (its file descriptors) holds in the child. A
 //     handle to the parent itself becomes one to the child.
+//   - A pager's VMO is shared, not copied: the child maps the same one, as
+//     a file mapped MAP_SHARED is in both.
 //   - The in-task fault handler is the parent's (signal handlers are
 //     inherited); exception ports, a debugger and I/O ports are not.
 static vx_status task_fork_copy(task *parent, task *child) {
@@ -422,6 +429,11 @@ static vx_status task_fork_copy(task *parent, task *child) {
   for (uint32_t i = 0; st == VX_OK && i < TASK_MAX_MAPPINGS; i++) {
     const mapping *m = &parent->maps[i];
     if (!m->size || m->vmo->physical || m->vmo->ring) continue;
+    if (m->vmo->pager) {
+      uint64_t va = m->va;
+      st = task_map(child, m->vmo, m->offset, m->size, m->flags, &va);
+      continue;
+    }
     vmo *copy;
     st = vmo_create(m->size, &copy);
     if (st != VX_OK) break;

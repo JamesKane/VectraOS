@@ -173,7 +173,12 @@ It keeps gefs's discipline anyway: blocks that leave the mutator are immutable, 
 - **Eviction.** Clean pages of these VMOs are the first memory the kernel takes back under pressure (01 §5).
 - **`dref`.** A `Tread` into a client's `Buffer` is served by mapping the page-cache pages, not copying them (02 §3.3).
 
-**The kernel's pager objects are built in M5 for this:** `pager_create`, `pager_supply`, `pager_op` (dirty ranges, clean, hints), supply deadlines, and `vmo_op resize`. They are in 01 §3's syscall list but not yet implemented.
+**The kernel's pager objects are built in M5 for this:** `pager_create`, `pager_supply`, `pager_op` (dirty ranges, clean, hints), supply deadlines, and `vmo_op resize` (01 §3's syscall list; `abi/vx/abi.h` has the calls):
+- **Who may be a pager.** `pager_create` needs a `Resource` handle with `VX_RIGHT_PAGER`. `svcd` gives one, narrowed to that right alone, to a service whose manifest says `pager`.
+- **Asking.** A fault on a page the pager has not supplied sends a packet to the pager's port (`VX_TRIGGER_PAGER`: the VMO's key and the page's offset), once however many threads fault on it. The threads wait until the pager supplies the page or its deadline passes.
+- **Supplying.** `pager_supply` copies the pages in from an anonymous VMO. A page already supplied stays as it is.
+- **Mappings** of such a VMO map what has been supplied and fault in the rest. A forked task shares them rather than copying them.
+- **The kernel's own copies** to and from user memory take no page that is not there yet. They fail as on an unmapped page, since some are made under locks. A program touches a mapped file's pages itself before handing them to a system call, as the musl back end's I/O does.
 
 **The verified base tree is `distd`'s,** which settles 06 §16 question 2:
 - `distd` serves `/boot`, `/bin` and the rest of a release's read-only tree as its own trusted pager. It reads the store's blobs from `fsd`'s `store` branch and checks each block against the release's SHA-256 hash trees (06 §4) before supplying it.

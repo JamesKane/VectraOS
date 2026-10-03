@@ -46,6 +46,7 @@ static void object_destroy(object *obj) {
   case OBJ_IRQ: irq_destroy((irq *)obj); break;
   case OBJ_IORANGE: pool_free(&iorange_pool, obj); break;
   case OBJ_DMA_DOMAIN: dma_domain_destroy((dma_domain *)obj); break;
+  case OBJ_PAGER: pager_destroy((pager *)obj); break;
   default: break;
   }
 }
@@ -167,11 +168,23 @@ static int64_t sys_port_post(vx_handle h, uint64_t packet) {
 static constexpr uint32_t DEVICE_RIGHTS = VX_RIGHT_DUPLICATE | VX_RIGHT_TRANSFER | VX_RIGHT_INSPECT;
 
 // vmo_create(size, options, &out, resource, physical_address): anonymous
-// memory, or with VX_VMO_PHYSICAL, device memory minted from a Resource.
+// memory, or with VX_VMO_PHYSICAL, device memory minted from a Resource, or
+// with VX_VMO_PAGER (the fourth argument a Pager, the fifth a key), memory
+// a pager supplies.
 static int64_t sys_vmo_create(uint64_t size, uint64_t options, uint64_t out, vx_handle rh, uint64_t pa) {
-  if (options & ~(uint64_t)VX_VMO_PHYSICAL) return VX_ERR_INVALID;
+  if ((options & ~(uint64_t)(VX_VMO_PHYSICAL | VX_VMO_PAGER)) || options == (VX_VMO_PHYSICAL | VX_VMO_PAGER))
+    return VX_ERR_INVALID;
   vmo *v;
   vx_status st;
+  if (options & VX_VMO_PAGER) {
+    if (pa > UINT32_MAX) return VX_ERR_INVALID;
+    pager *g = (pager *)handle_get(current_task(), rh, OBJ_PAGER, VX_RIGHT_WRITE, &st);
+    if (!g) return st;
+    st = vmo_create_pager(size, g, (uint32_t)pa, &v);
+    object_release(&g->obj);
+    if (st != VX_OK) return st;
+    return return_handle(&v->obj, ALL_RIGHTS & ~(uint32_t)VX_RIGHT_DEBUG, out);
+  }
   if (options & VX_VMO_PHYSICAL) {
     resource *r = (resource *)handle_get(current_task(), rh, OBJ_RESOURCE, VX_RIGHT_MANAGE, &st);
     if (!r) return st;
@@ -185,6 +198,42 @@ static int64_t sys_vmo_create(uint64_t size, uint64_t options, uint64_t out, vx_
   // EXEC included: loaders and JITs map their own code. W^X holds per mapping
   // (task_map), never per VMO.
   return return_handle(&v->obj, ALL_RIGHTS & ~(uint32_t)VX_RIGHT_DEBUG, out);
+}
+
+// --- Pagers (obj/pager.c) ---
+
+// pager_create(resource, port, key, deadline_ns, &out): needs a Resource
+// handle with VX_RIGHT_PAGER (what svcd gives a pager), or the root's.
+static int64_t sys_pager_create(vx_handle rh, vx_handle ph, uint64_t key, uint64_t deadline, uint64_t out) {
+  vx_status st;
+  resource *r = (resource *)handle_get(current_task(), rh, OBJ_RESOURCE, VX_RIGHT_PAGER, &st);
+  if (!r) r = (resource *)handle_get(current_task(), rh, OBJ_RESOURCE, VX_RIGHT_MANAGE, &st);
+  if (!r) return st;
+  object_release(&r->obj);
+  port *p = (port *)handle_get(current_task(), ph, OBJ_PORT, VX_RIGHT_SIGNAL, &st);
+  if (!p) return st;
+  pager *g;
+  st = pager_create(p, key, (vx_duration)deadline, &g);
+  object_release(&p->obj);
+  if (st != VX_OK) return st;
+  return return_handle(
+      &g->obj, VX_RIGHT_READ | VX_RIGHT_WRITE | VX_RIGHT_DUPLICATE | VX_RIGHT_TRANSFER | VX_RIGHT_INSPECT,
+      out);
+}
+
+// pager_supply(pager, vmo, offset, size, source, source_offset)
+static int64_t sys_pager_supply(vx_handle gh, vx_handle vh, uint64_t offset, uint64_t size, vx_handle sh,
+                                uint64_t src_offset) {
+  vx_status st;
+  pager *g = (pager *)handle_get(current_task(), gh, OBJ_PAGER, VX_RIGHT_WRITE, &st);
+  if (!g) return st;
+  vmo *v = (vmo *)handle_get(current_task(), vh, OBJ_VMO, 0, &st);
+  vmo *src = v ? (vmo *)handle_get(current_task(), sh, OBJ_VMO, VX_RIGHT_READ, &st) : nullptr;
+  if (src) st = pager_supply(g, v, offset, size, src, src_offset);
+  if (src) object_release(&src->obj);
+  if (v) object_release(&v->obj);
+  object_release(&g->obj);
+  return st;
 }
 
 // --- Devices (obj/device.c) ---
@@ -242,6 +291,11 @@ static int64_t sys_dma_map(vx_handle dh, vx_handle vh, uint64_t offset, uint64_t
   if (!d) return st;
   vmo *v = (vmo *)handle_get(current_task(), vh, OBJ_VMO, VX_RIGHT_READ | VX_RIGHT_WRITE, &st);
   uint64_t addresses[MAX_PAGES];
+  if (v && v->pager) { // its pages come and go: no device may hold them
+    object_release(&v->obj);
+    v = nullptr;
+    st = VX_ERR_UNSUPPORTED;
+  }
   if (v) {
     uint32_t slot;
     st = dma_map(d, v, offset, size, addresses, &slot);
@@ -797,7 +851,12 @@ static int64_t sys_vmo_rw(vx_handle h, uint64_t op, uint64_t offset, uint64_t bu
   for (uint64_t done = 0; st == VX_OK && done < size;) {
     uint64_t at = offset + done, in_page = at & 4095, n = 4096 - in_page;
     if (n > size - done) n = size - done;
-    uint8_t *page = (uint8_t *)phys_to_virt(v->pages[at / 4096]) + in_page;
+    uint64_t pa = vmo_page(v, at / 4096);
+    if (!pa) { // a pager has not supplied it
+      st = VX_ERR_SHOULD_WAIT;
+      break;
+    }
+    uint8_t *page = (uint8_t *)phys_to_virt(pa) + in_page;
     st = op == VX_VMO_READ ? copy_to_user(buf + done, page, n) : copy_from_user(page, buf + done, n);
     done += n;
   }
@@ -869,6 +928,9 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_dma_domain_create: return sys_dma_domain_create((vx_handle)a[0], a[1], a[2]);
   case VX_SYS_dma_map: return sys_dma_map((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4]);
   case VX_SYS_dma_unmap: return sys_dma_unmap((vx_handle)a[0], (vx_handle)a[1]);
+  case VX_SYS_pager_create: return sys_pager_create((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4]);
+  case VX_SYS_pager_supply:
+    return sys_pager_supply((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], (vx_handle)a[4], a[5]);
   case VX_SYS_iorange_create: return sys_iorange_create((vx_handle)a[0], a[1], a[2], a[3]);
   case VX_SYS_vmo_rw: return sys_vmo_rw((vx_handle)a[0], a[1], a[2], a[3], a[4]);
   case VX_SYS_as_map: return sys_as_map((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4], a[5]);

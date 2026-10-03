@@ -18,6 +18,7 @@ typedef enum obj_type : uint8_t {
   OBJ_IRQ,
   OBJ_IORANGE,
   OBJ_DMA_DOMAIN,
+  OBJ_PAGER,
 } obj_type;
 
 typedef struct object {

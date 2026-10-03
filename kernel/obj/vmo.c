@@ -1,10 +1,12 @@
-// vmo.c: anonymous virtual memory objects (docs/01 §5).
+// vmo.c: virtual memory objects (docs/01 §5).
 //
 // An anonymous VMO's pages are all allocated and zeroed when it is created:
 // commit, not overcommit, so a task learns it is out of memory from a failed
 // call, never from a fault later. The page list is one block of physical
-// addresses. Physical VMOs (device memory) are made in device.c. Clones,
-// pagers and resizing come in later milestones.
+// addresses. Physical VMOs (device memory) are made in device.c. A
+// pager-backed VMO (pager.c) starts with none: a page's entry is 0 until its
+// pager is asked for it, PAGE_ASKED until it is supplied, and its address
+// from then on; its lock covers the list and the threads waiting on it.
 
 typedef struct vmo {
   object obj;
@@ -13,13 +15,24 @@ typedef struct vmo {
   unsigned list_order; // the page list's allocation order
   bool physical;       // device memory (device.c): its pages are not RAM, and are never freed
   bool ring;           // a ring's memory (ring.c), never copied into a forked task
+  struct pager *pager; // its pages' supplier (pager.c), which it holds; or nullptr
+  uint32_t pager_key;  // what its page requests call it
+  spinlock lock;       // a pager-backed one's: its page list, and waiters
+  struct page_waiter *waiters;
 } vmo;
+
+static constexpr uint64_t PAGE_ASKED = 1; // a pager-backed page asked for, not yet supplied
+
+// The address of page i, or 0 if a pager has not supplied it.
+static uint64_t vmo_page(const vmo *v, uint64_t i) { return v->pages[i] > PAGE_ASKED ? v->pages[i] : 0; }
 
 static pool vmo_pool = POOL_FOR(vmo);
 
 static constexpr uint64_t VMO_MAX_SIZE = 256ull << 20; // the list fits one order-7 block
 
-static vx_status vmo_create(uint64_t size, vmo **out) {
+// A VMO of `size` bytes, its pages allocated and zeroed, or with `lazy`
+// none (a pager's to supply).
+static vx_status vmo_create_pages(uint64_t size, bool lazy, vmo **out) {
   if (size == 0 || size > VMO_MAX_SIZE) return VX_ERR_RANGE;
   size = (size + 4095) & ~4095ull;
   uint64_t count = size / 4096;
@@ -38,7 +51,8 @@ static vx_status vmo_create(uint64_t size, vmo **out) {
   v->size = size;
   v->pages = phys_to_virt(list);
   v->list_order = order;
-  for (uint64_t i = 0; i < count; i++) {
+  if (lazy) memset(v->pages, 0, 4096ull << order);
+  for (uint64_t i = 0; !lazy && i < count; i++) {
     v->pages[i] = phys_alloc_zeroed(0);
     if (!v->pages[i]) {
       while (i--) phys_free(v->pages[i], 0);
@@ -51,8 +65,14 @@ static vx_status vmo_create(uint64_t size, vmo **out) {
   return VX_OK;
 }
 
+static vx_status vmo_create(uint64_t size, vmo **out) { return vmo_create_pages(size, false, out); }
+
+static void pager_drop_vmo(vmo *v); // pager.c: a pager-backed VMO's last reference
+
 static void vmo_destroy(vmo *v) {
-  for (uint64_t i = 0; !v->physical && i < v->size / 4096; i++) phys_free(v->pages[i], 0);
+  for (uint64_t i = 0; !v->physical && i < v->size / 4096; i++)
+    if (vmo_page(v, i)) phys_free(v->pages[i], 0);
+  if (v->pager) pager_drop_vmo(v);
   phys_free((uint64_t)v->pages - boot.hhdm, v->list_order);
   pool_free(&vmo_pool, v);
 }

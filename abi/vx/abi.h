@@ -58,6 +58,7 @@ enum vx_trigger : uint32_t {
   VX_TRIGGER_EXIT,        // a task has ended; value: its exit string's length (0: success)
   VX_TRIGGER_IRQ,         // an Irq has fired since it was last bound; value: how many times in all
   VX_TRIGGER_EXCEPTION,   // a thread stopped at an exception (exception_bind); value: its thread id
+  VX_TRIGGER_PAGER,       // a page request (pager_create): source the VMO's key, value its range
 };
 
 // The intents a thread declares (01 §8). Until scheduling contexts land, every
@@ -236,7 +237,32 @@ static_assert(sizeof(vx_cqe) == 32);
 //   iorange_create(resource, base, count, &out)
 //       x86_64 only: I/O ports, which a task may use once as_map has been
 //       called with the IoRange in place of a VMO (offset, size and flags 0)
-enum vx_vmo_options : uint32_t { VX_VMO_PHYSICAL = 1 };
+//
+// Pagers (01 §5, docs/11 §8): a trusted task's supply of pages for VMOs, as
+// fsd backs mmap of files. Only a task svcd marked a pager has a Resource
+// handle with VX_RIGHT_PAGER (or the root one), which pager_create needs.
+//
+//   pager_create(resource, port, key, deadline_ns, &out)
+//       a Pager: page requests go to port as packets (key, trigger
+//       VX_TRIGGER_PAGER, source the VMO's key, value VX_PAGER_RANGE's), and
+//       a fault waits deadline_ns for its page before the thread takes a
+//       VX_EXCEPTION_PAGER_TIMEOUT
+//   vmo_create(size, VX_VMO_PAGER, &out, pager, key)
+//       a VMO whose pages the pager supplies, none yet; key (32 bits) names
+//       it in requests. A fault on a page it has not supplied asks for it
+//       (once, however many fault) and waits. vmo_rw on one is SHOULD_WAIT;
+//       vmo_clone and dma_map refuse such a VMO (UNSUPPORTED). A forked task
+//       shares its mappings of it, rather than copying them.
+//   pager_supply(pager, vmo, offset, size, source, source_offset)
+//       the VMO's pages [offset, offset + size) from an anonymous VMO's:
+//       copied in where the VMO has none (a supplied page stays as it is),
+//       and the threads that wait on them woken
+enum vx_vmo_options : uint32_t { VX_VMO_PHYSICAL = 1, VX_VMO_PAGER = 2 };
+
+// A page request's range, in its packet's value: the first byte's offset
+// (page-aligned) and how many pages, less one, in the low 12 bits.
+static inline uint64_t vx_pager_offset(uint64_t value) { return value & ~4095ull; }
+static inline uint64_t vx_pager_pages(uint64_t value) { return (value & 4095) + 1; }
 enum vx_irq_options : uint32_t { VX_IRQ_MSI = 1 };
 
 typedef struct vx_msi { // what a device writes to raise an MSI
@@ -411,13 +437,15 @@ enum vx_exception_kind : uint32_t {
   VX_EXCEPTION_BREAKPOINT,     // int3, brk
   VX_EXCEPTION_ARITHMETIC,     // division by zero, an FP exception
   VX_EXCEPTION_ALIGNMENT,
-  VX_EXCEPTION_FP_DISABLED, // FP/SIMD while the kernel does not save it (01 §11)
-  VX_EXCEPTION_GENERAL,     // any other fault (x86 #GP, say); code: the architecture's
-  VX_EXCEPTION_INTERRUPT,   // thread_interrupt; code: the note's length, note: its text
-  VX_EXCEPTION_STEP,        // one instruction done, after exception_resume(STEP)
-  VX_EXCEPTION_WATCHPOINT,  // a watched address touched; code: the watchpoint's slot, address: what it
-                            // watches. x86_64 stops after the access, aarch64 before it (resuming
-                            // touches it again: step it with the watchpoint off)
+  VX_EXCEPTION_FP_DISABLED,   // FP/SIMD while the kernel does not save it (01 §11)
+  VX_EXCEPTION_GENERAL,       // any other fault (x86 #GP, say); code: the architecture's
+  VX_EXCEPTION_INTERRUPT,     // thread_interrupt; code: the note's length, note: its text
+  VX_EXCEPTION_STEP,          // one instruction done, after exception_resume(STEP)
+  VX_EXCEPTION_WATCHPOINT,    // a watched address touched; code: the watchpoint's slot, address: what it
+                              // watches. x86_64 stops after the access, aarch64 before it (resuming
+                              // touches it again: step it with the watchpoint off)
+  VX_EXCEPTION_PAGER_TIMEOUT, // a pager-backed page not supplied by its pager's deadline; address: the
+                              // page, code: read 0, write 1, execute 2 (POSIX's SIGBUS)
 };
 
 typedef struct vx_exception {

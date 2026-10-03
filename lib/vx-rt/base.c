@@ -184,6 +184,25 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   return (vx_status)vx_syscall(VX_SYS_vmo_create, size, VX_VMO_PHYSICAL, (uint64_t)out, resource, pa, 0);
 }
 
+// Pagers (abi.h, docs/11 §8): resource needs VX_RIGHT_PAGER, or is the root one.
+[[maybe_unused]] static vx_status vx_pager_create(vx_handle resource, vx_handle port, uint64_t key,
+                                                  vx_duration deadline, vx_handle *out) {
+  *out = VX_HANDLE_NONE;
+  return (vx_status)vx_syscall(VX_SYS_pager_create, resource, port, key, (uint64_t)deadline, (uint64_t)out,
+                               0);
+}
+
+[[maybe_unused]] static vx_status vx_vmo_create_pager(vx_handle pager, uint32_t key, uint64_t size,
+                                                      vx_handle *out) {
+  *out = VX_HANDLE_NONE;
+  return (vx_status)vx_syscall(VX_SYS_vmo_create, size, VX_VMO_PAGER, (uint64_t)out, pager, key, 0);
+}
+
+[[maybe_unused]] static vx_status vx_pager_supply(vx_handle pager, vx_handle vmo, uint64_t offset,
+                                                  uint64_t size, vx_handle source, uint64_t source_offset) {
+  return (vx_status)vx_syscall(VX_SYS_pager_supply, pager, vmo, offset, size, source, source_offset);
+}
+
 [[maybe_unused]] static vx_status vx_irq_create(vx_handle resource, uint32_t line, vx_handle *out) {
   *out = VX_HANDLE_NONE;
   return (vx_status)vx_syscall(VX_SYS_irq_create, resource, line, 0, (uint64_t)out, 0, 0);

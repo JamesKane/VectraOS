@@ -177,6 +177,9 @@ static vx_noted sig_note(vx_exception *e, vx_str note) {
   int sig = SIGSEGV, code = SEGV_MAPERR;
   switch (e->kind) {
   case VX_EXCEPTION_ALIGNMENT: sig = SIGBUS, code = BUS_ADRALN; break;
+  case VX_EXCEPTION_PAGER_TIMEOUT:
+    sig = SIGBUS, code = BUS_ADRERR;
+    break; // a mapped file's page that did not come
   case VX_EXCEPTION_ILLEGAL:
   case VX_EXCEPTION_FP_DISABLED: sig = SIGILL, code = ILL_ILLOPC; break;
   case VX_EXCEPTION_ARITHMETIC: sig = SIGFPE, code = FPE_INTDIV; break;

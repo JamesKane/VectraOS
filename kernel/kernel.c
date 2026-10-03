@@ -136,6 +136,7 @@ static uint32_t arch_watch_count(void);           // the debug registers' watchp
 #include "obj/counter.c"
 #include "obj/futex.c"
 #include "obj/device.c"
+#include "obj/pager.c"
 #include "../lib/vx-ring/ring.c"
 #include "obj/ring.c"
 #include "obj/process.c"

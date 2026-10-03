@@ -1084,9 +1084,15 @@ static vx_handle missing; // what the in-task handler maps where a fault was
 static _Atomic uint32_t handled[VX_EXCEPTION_INTERRUPT + 1], interrupted_thread;
 static char interrupt_note[VX_ERRMAX + 1]; // the note the last interrupt carried
 
+static vx_handle late_pager, late_vmo, late_src; // what the handler supplies a late page from
+static _Atomic uint32_t pager_timeouts;
+
 static void handler(vx_exception *e) {
   if (e->kind <= VX_EXCEPTION_INTERRUPT) atomic_fetch_add(&handled[e->kind], 1);
-  if (e->kind == VX_EXCEPTION_PAGE_FAULT) {
+  if (e->kind == VX_EXCEPTION_PAGER_TIMEOUT) { // the page, late: supplied now, and the access made again
+    atomic_fetch_add(&pager_timeouts, 1);
+    vx_pager_supply(late_pager, late_vmo, 0, 4096, late_src, 0);
+  } else if (e->kind == VX_EXCEPTION_PAGE_FAULT) {
     uint64_t at = e->address & ~4095ull;
     vx_as_map(vx_self, missing, 0, 4096, 0, &at); // then the load is retried
   } else if (e->kind == VX_EXCEPTION_BREAKPOINT) {
@@ -1152,6 +1158,102 @@ static void test_in_task(void) {
   CHECK(vx_thread_interrupt(self, 999, VX_STR("nobody")) == VX_ERR_NOT_FOUND);
   vx_handle_close(th);
   CHECK(vx_exception_bind(self, 0, 0, VX_EXCEPTION_IN_TASK) == VX_OK); // unbound: a note would end ktest now
+}
+
+// --- Pagers (01 §5, docs/11 §8) ---
+
+typedef struct toucher {
+  volatile uint64_t *at;
+  _Atomic uint64_t seen;
+  _Atomic bool done;
+} toucher;
+
+static void touch_page(uint64_t arg, uint64_t arg2) {
+  (void)arg;
+  toucher *t = (toucher *)arg2;
+  atomic_store(&t->seen, *t->at); // waits for the pager
+  atomic_store(&t->done, true);
+  vx_thread_exit();
+}
+
+// The root Resource, looked at but left in the spawn message for test_devices.
+static vx_handle root_resource(void) {
+  for (uint32_t i = 0; i < vx_spawn.handle_count; i++)
+    if (vx_spawn.handle_names[i].len == 8 && memcmp(vx_spawn.handle_names[i].ptr, "resource", 8) == 0)
+      return vx_spawn.handles[i];
+  return VX_HANDLE_NONE;
+}
+
+static void test_pager(void) {
+  static _Atomic uint32_t never;
+  vx_handle res = root_resource(), port = VX_HANDLE_NONE, pager, vmo, src, weak;
+  CHECK(res != VX_HANDLE_NONE && vx_port_create(0, &port) == VX_OK);
+  // Only a Resource handle with PAGER (or the root one) makes a pager.
+  CHECK(vx_handle_dup(res, VX_RIGHT_INSPECT, &weak) == VX_OK);
+  CHECK(vx_pager_create(weak, port, 1, 1'000'000'000, &pager) == VX_ERR_ACCESS);
+  vx_handle_close(weak);
+  CHECK(vx_handle_dup(res, VX_RIGHT_PAGER | VX_RIGHT_DUPLICATE, &weak) == VX_OK);
+  CHECK(vx_pager_create(weak, port, 42, 2'000'000'000, &pager) == VX_OK);
+  vx_handle_close(weak);
+  CHECK(vx_vmo_create_pager(pager, 77, 16384, &vmo) == VX_OK);
+  CHECK(vx_vmo_create(16384, 0, &src) == VX_OK);
+  uint64_t pattern[4] = {0x1111, 0x2222, 0x3333, 0x4444};
+  for (int i = 0; i < 4; i++)
+    CHECK(vx_vmo_rw(src, VX_VMO_WRITE, (uint64_t)i * 4096, &pattern[i], 8) == VX_OK);
+  uint64_t got = 0;
+  CHECK(vx_vmo_rw(vmo, VX_VMO_READ, 0, &got, 8) == VX_ERR_SHOULD_WAIT); // nothing supplied yet
+  // Page 0 supplied before it is mapped: there at once.
+  CHECK(vx_pager_supply(pager, vmo, 0, 4096, src, 0) == VX_OK);
+  uint64_t at = 0;
+  CHECK(vx_as_map(self, vmo, 0, 16384, VX_MAP_WRITE, &at) == VX_OK);
+  CHECK(*(volatile uint64_t *)at == 0x1111);
+  // Page 1, touched by a thread: the pager is asked, once, and the thread waits until it supplies.
+  static toucher t;
+  t = (toucher){.at = (volatile uint64_t *)(at + 4096)};
+  vx_handle th;
+  CHECK(vx_thread_create(self, &th) == VX_OK);
+  CHECK(vx_thread_start(th, (uint64_t)touch_page, new_stack(), 0, (uint64_t)&t) == VX_OK);
+  vx_packet pk = {};
+  CHECK(vx_port_wait(port, after_ms(2000), 0, &pk, 1) == 1);
+  CHECK(pk.key == 42 && pk.trigger == VX_TRIGGER_PAGER && pk.source == 77 &&
+        vx_pager_offset(pk.value) == 4096 && vx_pager_pages(pk.value) == 1);
+  vx_futex_wait(&never, 0, after_ms(20));
+  CHECK(!atomic_load(&t.done)); // waiting, not failed
+  CHECK(vx_pager_supply(pager, vmo, 4096, 4096, src, 4096) == VX_OK);
+  for (int i = 0; i < 1000 && !atomic_load(&t.done); i++) vx_futex_wait(&never, 0, after_ms(1));
+  CHECK(atomic_load(&t.done) && atomic_load(&t.seen) == 0x2222);
+  vx_handle_close(th);
+  // A page supplied twice keeps the first; a write goes to the page and stays.
+  CHECK(vx_pager_supply(pager, vmo, 0, 4096, src, 4096) == VX_OK && *(volatile uint64_t *)at == 0x1111);
+  *(volatile uint64_t *)(at + 8) = 0x5555;
+  CHECK(vx_vmo_rw(vmo, VX_VMO_READ, 8, &got, 8) == VX_OK && got == 0x5555);
+  // Refusals: a range past the end, a supply from another pager's VMO, a clone.
+  CHECK(vx_pager_supply(pager, vmo, 16384, 4096, src, 0) == VX_ERR_RANGE);
+  CHECK(vx_pager_supply(pager, vmo, 8192, 4096, vmo, 0) == VX_ERR_UNSUPPORTED);
+  vx_handle clone;
+  CHECK(vx_vmo_clone(vmo, 0, 4096, &clone) == VX_ERR_UNSUPPORTED);
+  CHECK(vx_as_unmap(self, at, 16384) == VX_OK);
+  vx_handle_close(vmo);
+
+  // A deadline missed: the thread takes PAGER_TIMEOUT, its handler supplies
+  // the page late, and the access is made again.
+  vx_handle quick;
+  CHECK(vx_pager_create(res, port, 43, 30'000'000, &quick) == VX_OK); // 30 ms
+  CHECK(vx_vmo_create_pager(quick, 78, 4096, &late_vmo) == VX_OK);
+  late_pager = quick, late_src = src;
+  at = 0;
+  CHECK(vx_as_map(self, late_vmo, 0, 4096, 0, &at) == VX_OK);
+  CHECK(vx_exception_bind(self, 0, (uint64_t)handler, VX_EXCEPTION_IN_TASK) == VX_OK);
+  CHECK(*(volatile uint64_t *)at == 0x1111); // after the timeout, from the handler's supply
+  CHECK(vx_exception_bind(self, 0, 0, VX_EXCEPTION_IN_TASK) == VX_OK);
+  CHECK(atomic_load(&pager_timeouts) == 1);
+  CHECK(vx_port_wait(port, after_ms(100), 0, &pk, 1) == 1 && pk.key == 43 && pk.source == 78);
+  CHECK(vx_as_unmap(self, at, 4096) == VX_OK);
+  vx_handle_close(late_vmo);
+  vx_handle_close(quick);
+  vx_handle_close(pager);
+  vx_handle_close(src);
+  vx_handle_close(port);
 }
 
 // --- Debugging (05 §2) ---
@@ -1658,6 +1760,7 @@ const char *vx_main(void) {
   test_nested_channels();
   test_rings();
   test_vmo_rw();
+  test_pager();
   test_devices();
   vx_print(VX_STR("ktest: "));
   vx_print_u64(checks);

@@ -12,3 +12,4 @@ VX_RIGHT(WAIT)
 VX_RIGHT(MANAGE)
 VX_RIGHT(INSPECT)
 VX_RIGHT(DEBUG)
+VX_RIGHT(PAGER) // a Resource handle with it (and not MANAGE) makes pagers and nothing else

@@ -64,6 +64,10 @@ typedef struct vx_note_buf {
     break;
   case VX_EXCEPTION_FP_DISABLED: vx_note_put(&b, VX_STR("sys: trap: fp disabled")); break;
   case VX_EXCEPTION_STEP: vx_note_put(&b, VX_STR("sys: trap: step")); break;
+  case VX_EXCEPTION_PAGER_TIMEOUT: // its pager did not supply the page in time
+    vx_note_put(&b, VX_STR("sys: trap: page not supplied"));
+    has_address = true;
+    break;
   default: vx_note_put(&b, VX_STR("sys: trap: general fault")); break;
   }
   if (has_address) {

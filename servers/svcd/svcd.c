@@ -10,7 +10,7 @@
 // to it, up to the next service=.
 //
 //   service=NAME program=/boot/bin/PROG [post=SRV] [bootimage] [console] [tasks]
-//           [resource] [acpi] [restart] [arch=A]
+//           [resource] [pager] [acpi] [restart] [arch=A]
 //   arg=VALUE                                  an argument, in order
 //   env=NAME=VALUE                             an environment variable
 //   mount=OLD srv=SRV [aname=A] [flags=abc]    a mount in its namespace
@@ -37,7 +37,9 @@
 // here: no ambient authority (01 §2). resource and acpi: the root Resource
 // and the ACPI tables, which only devmgr needs. entropy: a seed of its own
 // for a random generator, from svcd's, which the kernel seeded from the
-// bootloader's entropy (lib/vx-rand).
+// bootloader's entropy (lib/vx-rand). pager: a handle to the root Resource
+// with VX_RIGHT_PAGER alone, "pager", which makes pagers and nothing else
+// (fsd: docs/11 §8).
 //
 // Drivers, the services with ioport, mmio or irq records, start first. svcd
 // mints their device objects from the root Resource once, keeps them, and
@@ -377,6 +379,10 @@ static vx_status start(service *s) {
   if (st == VX_OK && vx_ndb_has(&rec, "resource") && resource) { // root authority over devices: devmgr
     st = vx_handle_dup(resource, VX_RIGHTS_SAME, &b.handles[b.count]);
     b.names[b.count++] = VX_STR("resource");
+  }
+  if (st == VX_OK && vx_ndb_has(&rec, "pager") && resource) { // pagers and nothing else: fsd (docs/11 §8)
+    st = vx_handle_dup(resource, VX_RIGHT_PAGER | VX_RIGHT_INSPECT, &b.handles[b.count]);
+    b.names[b.count++] = VX_STR("pager");
   }
   if (st == VX_OK && vx_ndb_has(&rec, "acpi") && acpi_vmo) {
     st = vx_handle_dup(acpi_vmo, VX_RIGHTS_SAME, &b.handles[b.count]);
