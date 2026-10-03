@@ -473,14 +473,21 @@ static uint64_t arena_reserve(uint64_t size) {
 
 // --- Branches and snapshots ---
 
+static vxfs_branch *branch_named(vxfs_vol *v, const char *name) {
+  uint16_t n = vxfs_namelen(name, VXFS_LABELMAX);
+  for (uint32_t i = 0; i < VXFS_MAXBRANCH; i++)
+    if (v->br[i].open && v->br[i].nname == n && memcmp(v->br[i].name, name, n) == 0) return &v->br[i];
+  return nullptr;
+}
+
 // Branch `name`, open for changes: *out is valid until the volume closes.
 [[maybe_unused]] static vx_status vxfs_branch_open(vxfs_vol *v, const char *name, vxfs_branch **out) {
   uint16_t n = vxfs_namelen(name, VXFS_LABELMAX);
-  for (uint32_t i = 0; i < VXFS_MAXBRANCH; i++)
-    if (v->br[i].open && v->br[i].nname == n && memcmp(v->br[i].name, name, n) == 0) {
-      *out = &v->br[i];
-      return VX_OK;
-    }
+  vxfs_branch *open = branch_named(v, name);
+  if (open) {
+    *out = open;
+    return VX_OK;
+  }
   uint64_t gen;
   uint32_t flags;
   vx_status st = vxfs_label_get(v, name, &gen, &flags);
@@ -516,6 +523,178 @@ static uint64_t arena_reserve(uint64_t size) {
 [[maybe_unused]] static vxfs_blk *vxfs_new_data(vxfs *fs, const vxfs_tree *t) {
   tree_enter(fs, t);
   return vxfs_new_block(fs, VXFS_TDAT);
+}
+
+// --- Labels, forks and deleting snapshots ---
+
+// The blocks of a tree born after `keep`, deferred: what a deleted snapshot
+// alone held, when nothing follows it (what was born by `keep` is still its
+// predecessor's, or its base's). A node is never older than what it points
+// at, so a subtree born by `keep` is skipped whole.
+// NOLINTNEXTLINE(misc-no-recursion): as deep as the tree is tall
+static bool sweep(vxfs_vol *v, vxfs_bptr bp, uint32_t level, uint64_t keep) {
+  if (bp.gen <= keep) return true;
+  vxfs *fs = &v->fs;
+  vxfs_blk *b = vxfs_get(fs, bp, level == 1 ? VXFS_TLEAF : VXFS_TPIVOT);
+  if (!b) return false;
+  bool ok = vxfs_defer(fs, bp.addr);
+  if (level == 1) {
+    for (uint32_t i = 0; ok && i < b->nval; i++) {
+      vxfs_msg e = tab_get(b->data, i, false);
+      vxfs_bptr d = owns_block(&e) ? vxfs_unpackbp(e.v + 1) : (vxfs_bptr){};
+      if (d.addr && d.gen > keep) ok = vxfs_defer(fs, d.addr);
+    }
+  } else {
+    for (uint32_t i = 0; ok && i < b->nbuf; i++) {
+      vxfs_msg m = tab_get(b->data + VXFS_PIVSPC, i, true);
+      vxfs_bptr d = m.op == VXFS_OINSERT && owns_block(&m) ? vxfs_unpackbp(m.v + 1) : (vxfs_bptr){};
+      if (d.addr && d.gen > keep) ok = vxfs_defer(fs, d.addr);
+    }
+    for (uint32_t i = 0; ok && i < b->nval; i++)
+      ok = sweep(v, vxfs_unpackbp(tab_get(b->data, i, false).v), level - 1, keep);
+  }
+  vxfs_drop(fs, b);
+  return ok;
+}
+
+// Deletes snapshot gen, which nothing names: its neighbours linked past it,
+// its deadlists merged or dropped, and, at the end of its chain, its tree
+// swept. A fork's whole chain gone, its base loses a fork, and is deleted
+// in turn if nothing else holds it.
+static bool snap_delete(vxfs_vol *v, sbatch *b, uint64_t gen) {
+  while (gen) {
+    vxfs_snap t, n;
+    if (!snap_flush(v, b) || snap_get(v, gen, &t) != VX_OK) return false;
+    bool ok = true;
+    if (t.pred) {
+      ok = snap_get(v, t.pred, &n) == VX_OK;
+      n.succ = t.succ;
+      ok = ok && snap_set(v, b, &n);
+    }
+    if (ok && t.succ) {
+      ok = snap_get(v, t.succ, &n) == VX_OK;
+      n.pred = t.pred;
+      ok = ok && snap_set(v, b, &n);
+    }
+    uint8_t k[9];
+    ok = ok && snap_msg(v, b, VXFS_ODELETE, k, key_snap(k, t.gen), nullptr, 0) && snap_flush(v, b);
+    ok = ok && reclaim(v, b, t.gen, t.succ, t.pred);
+    if (ok && !t.succ) ok = sweep(v, t.root, t.height, t.pred ? t.pred : t.base);
+    gen = 0;
+    if (ok && !t.pred && !t.succ && t.base) {
+      ok = snap_flush(v, b) && snap_get(v, t.base, &n) == VX_OK && n.nref;
+      if (ok) n.nref--;
+      ok = ok && snap_set(v, b, &n);
+      if (ok && !n.nlbl && !n.nref) gen = n.gen;
+    }
+    if (!ok) return v->fs.err == VX_OK ? fs_fail(&v->fs, VX_ERR_INVALID) : false;
+  }
+  return snap_flush(v, b);
+}
+
+// A snapshot of `s`, forked as a branch's first: sharing its tree, based on it.
+static bool fork_of(vxfs_vol *v, sbatch *b, vxfs_snap *s, const char *name, uint16_t n) {
+  vxfs_snap f = {.root = s->root,
+                 .height = s->height,
+                 .flags = s->flags,
+                 .gen = v->nextgen++,
+                 .base = s->gen,
+                 .nlbl = 1};
+  s->nref++;
+  return snap_set(v, b, s) && snap_set(v, b, &f) &&
+         label_set(v, b, (const uint8_t *)name, n, f.gen, VXFS_LMUT);
+}
+
+static sbatch *batch_new(vxfs_vol *v) {
+  sbatch *b = fs_alloc(&v->fs, sizeof *b);
+  if (b) b->n = b->used = b->size = 0;
+  return b;
+}
+
+static vx_status vol_status(vxfs_vol *v, bool ok) {
+  if (ok) return VX_OK;
+  return v->fs.err != VX_OK ? v->fs.err : VX_ERR_INVALID;
+}
+
+// Labels the snapshot `from` names (as of the last commit) `name`: a
+// snapshot that stays, or, with VXFS_LMUT, a new branch forked from it.
+// Durable at the next commit.
+[[maybe_unused]] static vx_status vxfs_label(vxfs_vol *v, const char *from, const char *name,
+                                             uint32_t flags) {
+  uint16_t n = vxfs_namelen(name, VXFS_LABELMAX);
+  if (!n || n > VXFS_LABELMAX) return VX_ERR_INVALID;
+  uint64_t gen, g;
+  uint32_t f;
+  vx_status st = vxfs_label_get(v, from, &gen, &f);
+  if (st != VX_OK) return st;
+  if ((st = vxfs_label_get(v, name, &g, &f)) != VX_ERR_NOT_FOUND) return st == VX_OK ? VX_ERR_EXISTS : st;
+  vxfs_snap s;
+  if ((st = snap_get(v, gen, &s)) != VX_OK) return st;
+  sbatch *b = batch_new(v);
+  bool ok = b != nullptr;
+  if (ok && (flags & VXFS_LMUT)) {
+    ok = fork_of(v, b, &s, name, n);
+  } else if (ok) {
+    s.nlbl++;
+    ok = snap_set(v, b, &s) && label_set(v, b, (const uint8_t *)name, n, s.gen, 0);
+  }
+  ok = ok && snap_flush(v, b);
+  fs_release(&v->fs, b, sizeof *b);
+  return vol_status(v, ok);
+}
+
+// Removes a label. The snapshot it named is deleted if nothing else names
+// it or was forked from it. A branch must not be open.
+[[maybe_unused]] static vx_status vxfs_unlabel(vxfs_vol *v, const char *name) {
+  uint64_t gen;
+  uint32_t flags;
+  vx_status st = vxfs_label_get(v, name, &gen, &flags);
+  if (st != VX_OK) return st;
+  if (branch_named(v, name)) return VX_ERR_BAD_STATE;
+  vxfs_snap s;
+  if ((st = snap_get(v, gen, &s)) != VX_OK) return st;
+  sbatch *b = batch_new(v);
+  bool ok = b != nullptr;
+  uint8_t k[VXFS_KEYMAX];
+  uint16_t n = vxfs_namelen(name, VXFS_LABELMAX);
+  ok = ok && snap_msg(v, b, VXFS_ODELETE, k, key_label(k, (const uint8_t *)name, n), nullptr, 0);
+  if (ok && s.nlbl) s.nlbl--;
+  ok = ok && snap_set(v, b, &s);
+  if (ok && !s.nlbl && !s.nref) ok = snap_delete(v, b, s.gen);
+  ok = ok && snap_flush(v, b);
+  fs_release(&v->fs, b, sizeof *b);
+  return vol_status(v, ok);
+}
+
+// Rolls branch `name` back to the snapshot `to` names: the branch becomes
+// a fork of it (11 §5), and the snapshot it was at is deleted if nothing
+// else names it. The branch must not be open.
+[[maybe_unused]] static vx_status vxfs_rollback(vxfs_vol *v, const char *name, const char *to) {
+  uint64_t gen, target;
+  uint32_t flags, f;
+  vx_status st = vxfs_label_get(v, name, &gen, &flags);
+  if (st == VX_OK) st = vxfs_label_get(v, to, &target, &f);
+  if (st != VX_OK) return st;
+  if (!(flags & VXFS_LMUT)) return VX_ERR_ACCESS;
+  if (branch_named(v, name)) return VX_ERR_BAD_STATE;
+  vxfs_snap t, o;
+  if ((st = snap_get(v, target, &t)) != VX_OK) return st;
+  sbatch *b = batch_new(v);
+  bool ok = b != nullptr && fork_of(v, b, &t, name, vxfs_namelen(name, VXFS_LABELMAX)) && snap_flush(v, b) &&
+            snap_get(v, gen, &o) == VX_OK;
+  if (ok && o.nlbl) o.nlbl--;
+  ok = ok && snap_set(v, b, &o);
+  if (ok && !o.nlbl && !o.nref) ok = snap_delete(v, b, o.gen);
+  ok = ok && snap_flush(v, b);
+  fs_release(&v->fs, b, sizeof *b);
+  return vol_status(v, ok);
+}
+
+// Closes a branch with nothing uncommitted.
+[[maybe_unused]] static vx_status vxfs_branch_close(vxfs_branch *br) {
+  if (br->t.root.addr != br->at.root.addr || br->t.height != br->at.height) return VX_ERR_BAD_STATE;
+  br->open = false;
+  return VX_OK;
 }
 
 // --- Making and mounting volumes ---

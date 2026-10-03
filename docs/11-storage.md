@@ -109,6 +109,15 @@ The snapshot tree is itself copy-on-write, but is never snapshotted.
 
 There is no garbage collection pass and no per-block reference count.
 
+**The checker** (`lib/vx-fs/check.c`, which `fsd -c` runs) walks a mounted volume whole:
+- every block's hash and structure;
+- in each tree, key order across nodes, a single height, and each child's fill as its parent records it;
+- snapshots and labels agreeing: counts, links both ways, each branch at the end of its chain;
+- each deadlist listing only blocks its snapshot's predecessor still holds;
+- every block in use reached, and nothing else.
+
+It walks each snapshot's tree in full, so it costs time in proportion to the snapshots times their size. Skipping subtrees it has already seen is the obvious improvement when that matters.
+
 ## 6. Committing
 
 **Commits happen every 5 s, and on `fsync`.** A commit makes everything written so far durable at once. `Tfsync` forces one and waits for it; several waiting calls share one commit. Up to 5 s of writes can be lost in a crash; a program that needs less calls `fsync`, as everywhere.

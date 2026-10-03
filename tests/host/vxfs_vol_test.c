@@ -1,9 +1,7 @@
 // vxfs_vol_test.c: lib/vx-fs volumes. Formatted with branches; changed,
 // committed, and mounted again: what was committed is there and what was
 // not is gone. A branch's old snapshots are deleted as it moves, and space
-// adds up after every commit and mount: the blocks in use are exactly those
-// reachable (the snapshot tree, every snapshot's tree and data, deadlists,
-// the freed chain, the logs). A damaged superblock or arena header falls
+// adds up after every commit and mount: the checker finds the volume clean. A damaged superblock or arena header falls
 // back to its copy; both damaged, the mount refuses.
 
 #include <stdio.h>
@@ -11,7 +9,7 @@
 #include <string.h>
 
 #include "check.h"
-#include "../../lib/vx-fs/vol.c"
+#include "../../lib/vx-fs/check.c"
 
 typedef struct memdev {
   uint8_t *bytes;
@@ -44,97 +42,22 @@ static uint64_t rnd(void) {
   return rng;
 }
 
-// --- Reachability: every block the volume should have in use ---
+// --- The checker: clean, and how many snapshots ---
 
-typedef struct reach {
-  uint64_t *a;
-  uint32_t n, cap;
-  bool ok;
-} reach;
-
-static void mark(reach *r, uint64_t addr) {
-  if (r->n == r->cap) {
-    r->cap = r->cap ? r->cap * 2 : 1024;
-    uint64_t *more = realloc(r->a, r->cap * sizeof *r->a);
-    if (!more) abort();
-    r->a = more;
-  }
-  r->a[r->n++] = addr;
+static void report(const vxfs_check *c) {
+  fprintf(stderr,
+          "check: used %llu trees %llu other %llu leaked %llu unallocated %llu shared %llu damaged %llu "
+          "snaps %llu lists %llu\n",
+          (unsigned long long)c->used, (unsigned long long)c->trees, (unsigned long long)c->other,
+          (unsigned long long)c->leaked, (unsigned long long)c->unallocated, (unsigned long long)c->shared,
+          (unsigned long long)c->damaged, (unsigned long long)c->bad_snaps, (unsigned long long)c->bad_lists);
 }
 
-static int cmp_u64(const void *a, const void *b) {
-  uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
-  return x < y ? -1 : x > y;
-}
-
-// NOLINTNEXTLINE(misc-no-recursion): as deep as the tree is tall
-static void mark_tree(vxfs *fs, vxfs_bptr bp, uint32_t level, reach *r) {
-  vxfs_blk *b = vxfs_get(fs, bp, level == 1 ? VXFS_TLEAF : VXFS_TPIVOT);
-  if (!b) {
-    r->ok = false;
-    return;
-  }
-  mark(r, bp.addr);
-  if (level == 1) {
-    for (uint32_t i = 0; i < b->nval; i++) {
-      vxfs_msg v = tab_get(b->data, i, false);
-      if (owns_block(&v)) mark(r, vxfs_unpackbp(v.v + 1).addr);
-    }
-  } else {
-    for (uint32_t i = 0; i < b->nbuf; i++) {
-      vxfs_msg m = tab_get(b->data + VXFS_PIVSPC, i, true);
-      if (m.op == VXFS_OINSERT && owns_block(&m)) mark(r, vxfs_unpackbp(m.v + 1).addr);
-    }
-    for (uint32_t i = 0; i < b->nval; i++)
-      mark_tree(fs, vxfs_unpackbp(tab_get(b->data, i, false).v), level - 1, r);
-  }
-  vxfs_drop(fs, b);
-}
-
-static bool mark_chain_block(vxfs_vol *v, uint64_t addr, void *ctx) {
-  (void)v;
-  mark(ctx, addr);
-  return true;
-}
-
-// The blocks in use, counted from the arenas, against those reachable;
-// how many snapshots there are, in *nsnap.
 static bool space_adds_up(vxfs_vol *v, uint32_t *nsnap) {
-  vxfs *fs = &v->fs;
-  reach r = {.ok = true};
-  mark_tree(fs, v->snap.root, v->snap.height, &r);
-  uint64_t logs = 0, used = 0;
-  for (uint32_t i = 0; i < fs->narenas; i++) {
-    used += fs->arenas[i].used / VXFS_BLKSZ;
-    logs += fs->arenas[i].nlog;
-  }
-  vxfs_scan s;
-  uint32_t snaps = 0;
-  uint8_t pfx[1] = {VXFS_KSNAP};
-  vxfs_scan_start(&s, &v->snap, pfx, 1);
-  vxfs_kvp kv;
-  while (vxfs_scan_next(fs, &s, &kv)) {
-    vxfs_snap sn = vxfs_unpacksnap(kv.v);
-    mark_tree(fs, sn.root, sn.height, &r);
-    snaps++;
-  }
-  vxfs_scan_end(fs, &s);
-  pfx[0] = VXFS_KDLIST;
-  vxfs_scan_start(&s, &v->snap, pfx, 1);
-  while (vxfs_scan_next(fs, &s, &kv)) chain_each(v, vxfs_get64(kv.v), mark_chain_block, &r, false, true);
-  vxfs_scan_end(fs, &s);
-  for (uint32_t i = 0; i < v->nfreedchain; i++) mark(&r, v->freedchain[i]);
-  for (uint32_t i = 0; i < fs->ndeferred; i++) mark(&r, fs->deferred[i]);
-  qsort(r.a, r.n, sizeof *r.a, cmp_u64);
-  uint32_t distinct = 0;
-  for (uint32_t i = 0; i < r.n; i++)
-    if (!i || r.a[i] != r.a[i - 1]) distinct++;
-  bool ok = r.ok && fs->err == VX_OK && distinct + logs == used;
-  if (!ok)
-    fprintf(stderr, "used %llu, reachable %u + logs %llu\n", (unsigned long long)used, distinct,
-            (unsigned long long)logs);
-  free(r.a);
-  if (nsnap) *nsnap = snaps;
+  vxfs_check c;
+  bool ok = vxfs_check_volume(v, &c) == VX_OK;
+  if (!ok) report(&c);
+  if (nsnap) *nsnap = c.snapshots;
   return ok;
 }
 
@@ -350,7 +273,62 @@ static void test_damage(void) {
   memdev_free(d);
 }
 
+// The checker finds what is wrong: a leaked block, a damaged one, a
+// snapshot record that disagrees; and damage to free space is no damage.
+static void test_checker(void) {
+  memdev *d = memdev_new(4096);
+  vxfs_vol v;
+  CHECK(vxfs_format(&v, dev_of(d), MEM, 256, 2, BRANCHES, 3) == VX_OK);
+  static model m;
+  m = (model){};
+  vxfs_branch *br;
+  CHECK(vxfs_branch_open(&v, "main", &br) == VX_OK);
+  for (int i = 0; i < 40; i++) change(&v, br, &m, 50); // enough for pivots
+  CHECK(vxfs_commit(&v) == VX_OK);
+  vxfs_check c;
+  CHECK(vxfs_check_volume(&v, &c) == VX_OK && c.trees > 4 && c.snapshots == 3 && c.labels == 3);
+
+  // A block allocated and reached by nothing: leaked.
+  CHECK(block_alloc(&v.fs, VXFS_TDAT) != 0);
+  CHECK(vxfs_check_volume(&v, &c) == VX_ERR_INVALID && c.leaked == 1);
+  vxfs_unmount(&v);
+  CHECK(vxfs_mount(&v, dev_of(d), MEM, 256) == VX_OK); // never committed, so gone
+  CHECK(vxfs_check_volume(&v, &c) == VX_OK);
+
+  // A free block written over: nothing is wrong.
+  uint64_t free_at = v.fs.arenas[1].free[0].off;
+  memset(d->bytes + free_at, 0x5a, VXFS_BLKSZ);
+  CHECK(vxfs_check_volume(&v, &c) == VX_OK);
+  // A leaf of main's damaged: found, and counted rather than stopping the walk.
+  CHECK(vxfs_branch_open(&v, "main", &br) == VX_OK && br->t.height >= 2);
+  vxfs_blk *root = vxfs_get(&v.fs, br->t.root, VXFS_TPIVOT);
+  vxfs_bptr leaf = vxfs_unpackbp(tab_get(root->data, 0, false).v);
+  vxfs_drop(&v.fs, root);
+  vxfs_unmount(&v);
+  d->bytes[leaf.addr + 200] ^= 0x01;
+  CHECK(vxfs_mount(&v, dev_of(d), MEM, 256) == VX_OK);
+  CHECK(vxfs_check_volume(&v, &c) == VX_ERR_INVALID && c.damaged == 1 && c.snapshots == 3);
+  vxfs_unmount(&v);
+  d->bytes[leaf.addr + 200] ^= 0x01;
+
+  // A snapshot whose label count is wrong.
+  CHECK(vxfs_mount(&v, dev_of(d), MEM, 256) == VX_OK);
+  uint64_t gen;
+  uint32_t flags;
+  CHECK(vxfs_label_get(&v, "cfg", &gen, &flags) == VX_OK);
+  vxfs_snap s;
+  CHECK(snap_get(&v, gen, &s) == VX_OK);
+  s.nlbl = 2;
+  sbatch *b = batch_new(&v);
+  CHECK(snap_set(&v, b, &s) && snap_flush(&v, b));
+  free(b);
+  CHECK(vxfs_check_volume(&v, &c) == VX_ERR_INVALID && c.bad_snaps == 1);
+  vxfs_unmount(&v);
+  memdev_free(d);
+}
+
 int main(void) {
+  test_checker();
   test_format_mount();
   test_commits();
   test_damage();
