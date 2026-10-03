@@ -118,14 +118,24 @@ static pager_result pager_fault(uint64_t address, uint32_t access) {
     pager *g = v->pager;
     spin_unlock(&v->lock);
     spin_unlock(&t->lock);
-    if (ask)
-      port_post(g->port, &(vx_packet){.key = g->key,
-                                      .value = index * 4096,
-                                      .timestamp = clock_now(),
-                                      .source = v->pager_key,
-                                      .trigger = VX_TRIGGER_PAGER});
+    vx_status asked = !ask ? VX_OK
+                           : port_post(g->port, &(vx_packet){.key = g->key,
+                                                             .value = index * 4096,
+                                                             .timestamp = clock_now(),
+                                                             .source = v->pager_key,
+                                                             .trigger = VX_TRIGGER_PAGER});
     if (!deadline) deadline = clock_now() + g->deadline;
-    int64_t woke = thread_block(deadline, 0);
+    // A request the port had no room for is not lost: the page is left
+    // unasked, and this thread asks again shortly, until its deadline.
+    if (asked != VX_OK) {
+      spin_lock(&v->lock);
+      if (v->pages[index] == PAGE_ASKED) v->pages[index] = 0;
+      spin_unlock(&v->lock);
+    }
+    vx_instant until = deadline;
+    if (asked != VX_OK && clock_now() + 1'000'000 < deadline) until = clock_now() + 1'000'000;
+    int64_t woke = thread_block(until, 0);
+    if (woke == VX_ERR_TIMED_OUT && until != deadline) woke = VX_OK; // only the retry's wait
     spin_lock(&v->lock);
     for (page_waiter **link = &v->waiters; *link; link = &(*link)->next)
       if (*link == &w) {
@@ -163,9 +173,9 @@ static vx_status pager_supply(pager *g, vmo *v, uint64_t offset, uint64_t size, 
     }
     memcpy(phys_to_virt(pa), phys_to_virt(src->pages[src_offset / 4096 + i]), 4096);
     spin_lock(&v->lock);
-    uint64_t *slot = &v->pages[offset / 4096 + i];
-    bool taken = vmo_page(v, offset / 4096 + i) != 0;
-    if (!taken) *slot = pa;
+    // Past the end now (a shrink since the check above): not kept.
+    bool taken = offset / 4096 + i >= v->size / 4096 || vmo_page(v, offset / 4096 + i) != 0;
+    if (!taken) v->pages[offset / 4096 + i] = pa;
     spin_unlock(&v->lock);
     if (taken) phys_free(pa, 0); // supplied already: it stays as it was
   }
@@ -286,25 +296,47 @@ static vx_status vmo_resize(vmo *v, uint64_t size) {
   if (order > v->list_order && !list) return VX_ERR_NO_MEMORY;
   if (list) memset(phys_to_virt(list), 0, 4096ull << order);
   spin_lock(&v->lock);
+  if (v->resizing) { // one at a time: a shrink drops the lock between its steps
+    spin_unlock(&v->lock);
+    if (list) phys_free(list, order);
+    return VX_ERR_BAD_STATE;
+  }
+  v->resizing = true;
   uint64_t old = v->size / 4096;
-  if (count < old) v->size = size; // faults past it are ordinary from now on
-  spin_unlock(&v->lock);
-  if (count < old) vmo_unmap_everywhere(v, count, old - count);
-  spin_lock(&v->lock);
-  for (uint64_t i = count; i < old; i++) { // past the end: freed
-    uint64_t pa = vmo_page(v, i);
-    if (pa) phys_free(pa, 0);
-    v->pages[i] = 0;
+  if (count < old) {
+    // Faults and new mappings past the end are refused from now on
+    // (pager_fault, task_map). Then the pages past it, a batch at a time:
+    // each made absent under the lock, out of every mapping, and only then
+    // freed, so no mapping is ever left on a freed page (as EVICT does).
+    v->size = size;
+    for (uint64_t at = count; at < old;) {
+      uint64_t freed[64], from = at;
+      uint32_t n = 0;
+      for (; at < old && n < 64; at++) {
+        uint64_t pa = vmo_page(v, at);
+        if (pa) freed[n++] = pa;
+        v->pages[at] = 0;
+      }
+      spin_unlock(&v->lock);
+      vmo_unmap_everywhere(v, from, at - from);
+      for (uint32_t i = 0; i < n; i++) phys_free(freed[i], 0);
+      spin_lock(&v->lock);
+    }
   }
   uint64_t old_list = 0;
   unsigned old_order = v->list_order;
-  if (list) { // a bigger list: what there is, moved over
+  if (list) { // a bigger list: what there is, moved over (past the old end, every entry is 0)
     uint64_t *pages = phys_to_virt(list);
     for (uint64_t i = 0; i < old && i < count; i++) pages[i] = v->pages[i];
     old_list = (uint64_t)v->pages - boot.hhdm;
     v->pages = pages, v->list_order = order;
   }
   v->size = size;
+  v->resizing = false;
+  // Waiters look again: one whose page is now past the end faults as usual.
+  page_waiter *w = v->waiters;
+  v->waiters = nullptr;
+  for (; w; w = w->next) thread_wake_token(w->thread, w, VX_OK);
   spin_unlock(&v->lock);
   if (old_list) phys_free(old_list, old_order);
   return VX_OK;

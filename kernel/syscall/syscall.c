@@ -240,7 +240,7 @@ static int64_t sys_pager_supply(vx_handle gh, vx_handle vh, uint64_t offset, uin
 static int64_t sys_pager_op(vx_handle gh, vx_handle vh, uint64_t op, uint64_t offset, uint64_t size,
                             uint64_t out) {
   uint64_t end;
-  if (op < VX_PAGER_DIRTY || op > VX_PAGER_IDLE || (offset | size) & 4095) return VX_ERR_INVALID;
+  if (op < VX_PAGER_DIRTY || op > VX_PAGER_RESIZE || (offset | size) & 4095) return VX_ERR_INVALID;
   if (ckd_add(&end, offset, size)) return VX_ERR_RANGE;
   if (op == VX_PAGER_DIRTY && !user_range_ok(out, VX_PAGER_RANGES * sizeof(vx_pager_range), true))
     return VX_ERR_INVALID;
@@ -259,6 +259,8 @@ static int64_t sys_pager_op(vx_handle gh, vx_handle vh, uint64_t op, uint64_t of
         vx_status c = copy_to_user(out, ranges, (size_t)r * sizeof ranges[0]);
         if (c != VX_OK) r = c;
       }
+    } else if (op == VX_PAGER_RESIZE) { // the pager's alone: every mapping of the VMO shares its size
+      r = offset ? VX_ERR_INVALID : vmo_resize(v, size);
     } else if (op == VX_PAGER_IDLE) { // only the caller's handle, and this call's own reference
       r = atomic_load(&v->obj.refs) <= 2 ? 1 : 0;
     } else if (op == VX_PAGER_CLEAN) {
@@ -274,13 +276,15 @@ static int64_t sys_pager_op(vx_handle gh, vx_handle vh, uint64_t op, uint64_t of
   return r;
 }
 
-// vmo_op(vmo, op, arg): VX_VMO_RESIZE to arg bytes.
+// vmo_op(vmo, op, arg): VX_VMO_RESIZE to arg bytes. A pager-backed VMO is
+// its pager's to resize (pager_op RESIZE): anyone it is shared with may
+// write it, and a writer must not shrink it under the others.
 static int64_t sys_vmo_op(vx_handle h, uint64_t op, uint64_t arg) {
   if (op != VX_VMO_RESIZE) return VX_ERR_INVALID;
   vx_status st;
   vmo *v = (vmo *)handle_get(current_task(), h, OBJ_VMO, VX_RIGHT_WRITE, &st);
   if (!v) return st;
-  st = vmo_resize(v, arg);
+  st = v->pager ? VX_ERR_ACCESS : vmo_resize(v, arg);
   object_release(&v->obj);
   return st;
 }

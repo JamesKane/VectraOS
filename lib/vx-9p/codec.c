@@ -630,6 +630,7 @@ static bool p9_str_eq(vx_str a, const char *b) {
   X(VX_ERR_INTERRUPTED, "interrupted")                                                                       \
   X(VX_ERR_NO_CHILD, "no living children")                                                                   \
   X(VX_ERR_IO, "i/o error")                                                                                  \
+  X(VX_ERR_NO_SPACE, "file system full")                                                                     \
   X(VX_ERR_INVALID, "bad message")
 
 [[maybe_unused]] static vx_str p9_error_text(vx_status st) {
@@ -651,7 +652,7 @@ static bool p9_str_eq(vx_str a, const char *b) {
   X(VX_ERR_ACCESS, "is a directory")                                                                         \
   X(VX_ERR_ACCESS, "operation not permitted")                                                                \
   X(VX_ERR_BAD_HANDLE, "fid unknown or out of range")                                                        \
-  X(VX_ERR_NO_MEMORY, "no space left on device")
+  X(VX_ERR_NO_SPACE, "no space left on device")
 
 static bool p9_str_eq_nocase(vx_str a, const char *b) {
   size_t n = 0;

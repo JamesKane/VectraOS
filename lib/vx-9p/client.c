@@ -289,15 +289,17 @@ static vx_status p9c_call(p9_client *c, p9_msg *t) {
 }
 
 // Tmap (docs/proto/map.md): a VMO for the file's [offset, offset + length),
-// the fid open as the mapping needs, and where in it the range starts.
+// the fid open as the mapping needs, where in it the range starts, and how
+// many bytes it has from there (less than length past the file's end).
 [[maybe_unused]] static vx_status p9c_map(p9_client *c, uint32_t fid, uint64_t offset, uint64_t length,
-                                          uint32_t prot, vx_handle *vmo, uint64_t *vmo_offset) {
+                                          uint32_t prot, vx_handle *vmo, uint64_t *vmo_offset,
+                                          uint64_t *avail) {
   if (!(c->extensions & P9_EXT_MAP)) return VX_ERR_UNSUPPORTED;
   p9_msg t = {.type = P9_Tmap, .fid = fid, .offset = offset, .length = length, .prot = prot};
   vx_status e = p9c_call(c, &t);
   if (e == VX_OK && !c->handle) e = VX_ERR_INVALID; // an Rmap without its VMO
   if (e != VX_OK) return e;
-  *vmo = c->handle, *vmo_offset = c->reply.offset;
+  *vmo = c->handle, *vmo_offset = c->reply.offset, *avail = c->reply.length;
   c->handle = VX_HANDLE_NONE;
   return VX_OK;
 }

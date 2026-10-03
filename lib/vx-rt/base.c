@@ -213,6 +213,11 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   return (vx_status)vx_syscall(VX_SYS_vmo_op, vmo, VX_VMO_RESIZE, size, 0, 0, 0);
 }
 
+// A pager's own VMO's new size (pager_op RESIZE).
+[[maybe_unused]] static vx_status vx_pager_resize(vx_handle pager, vx_handle vmo, uint64_t size) {
+  return (vx_status)vx_syscall(VX_SYS_pager_op, pager, vmo, VX_PAGER_RESIZE, 0, size, 0);
+}
+
 [[maybe_unused]] static vx_status vx_irq_create(vx_handle resource, uint32_t line, vx_handle *out) {
   *out = VX_HANDLE_NONE;
   return (vx_status)vx_syscall(VX_SYS_irq_create, resource, line, 0, (uint64_t)out, 0, 0);

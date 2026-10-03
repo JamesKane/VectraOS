@@ -20,6 +20,7 @@ typedef struct vmo {
   uint32_t pager_key;  // what its page requests call it
   spinlock lock;       // a pager-backed one's: its page list, and waiters
   struct page_waiter *waiters;
+  bool resizing; // a resize under way (pager.c), which drops the lock between its steps
 } vmo;
 
 static constexpr uint64_t PAGE_ASKED = 1; // a pager-backed page asked for, not yet supplied

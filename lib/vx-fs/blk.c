@@ -91,6 +91,7 @@ typedef struct vxfs {
   uint64_t base;        // that tree's branch's base: blocks born at or before it are another's to free
   bool snaptree;        // the tree is the snapshot tree
   bool use_reserve;     // the commit may take the arenas' reserves
+  bool freeing;         // the operation frees: it may take half of them (arena_keep)
   uint32_t compress_at; // a log this long, and twice what it was compressed to, is compressed at a commit
   vxfs_bptr *limbo;
   vxfs_dead *dead;
@@ -442,10 +443,19 @@ static bool range_grab(vxfs *fs, vxfs_arena *a, uint64_t off, uint64_t len) {
   return true;
 }
 
+// What of an arena's reserve the current allocation may not take: all of
+// it normally; half for an operation that frees (a full volume can still
+// have files removed); none for the commit, or for the log itself, whose
+// next block is what lets a free be recorded at all.
+static uint64_t arena_keep(const vxfs *fs, const vxfs_arena *a, bool log) {
+  if (fs->use_reserve || log) return 0;
+  return fs->freeing ? a->reserve / 2 : a->reserve;
+}
+
 // One block from the arena's free space, unlogged: from its start
 // (sequential, for logs being rewritten) or its end. 0 if there is no room.
-static uint64_t arena_take(vxfs *fs, vxfs_arena *a, bool seq) {
-  if (!a->nfree || (!fs->use_reserve && a->size - a->used <= a->reserve)) return 0;
+static uint64_t arena_take(vxfs *fs, vxfs_arena *a, bool seq, bool log) {
+  if (!a->nfree || a->size - a->used <= arena_keep(fs, a, log)) return 0;
   vxfs_range *r = seq ? &a->free[0] : &a->free[a->nfree - 1];
   uint64_t b = seq ? r->off : r->off + r->len - VXFS_BLKSZ;
   range_grab(fs, a, b, VXFS_BLKSZ);
@@ -454,6 +464,11 @@ static uint64_t arena_take(vxfs *fs, vxfs_arena *a, bool seq) {
 }
 
 // --- The allocation log ---
+
+// Whether addr is one of the arena's data blocks.
+static bool in_arena(const vxfs_arena *a, uint64_t addr) {
+  return addr % VXFS_BLKSZ == 0 && addr >= a->base + VXFS_BLKSZ && addr < a->base + VXFS_BLKSZ + a->size;
+}
 
 static vxfs_arena *arena_of(vxfs *fs, uint64_t addr) {
   for (uint32_t i = 0; i < fs->narenas; i++) {
@@ -469,8 +484,8 @@ static vxfs_arena *arena_of(vxfs *fs, uint64_t addr) {
 static bool log_append(vxfs *fs, vxfs_arena *a, uint64_t off, uint64_t len, uint8_t op) {
   vxfs_blk *lb = a->logtl;
   if (lb->logsz >= VXFS_LOGSPC - VXFS_LOGSLOP) {
-    uint64_t o = arena_take(fs, a, false);
-    if (!o) return fs_fail(fs, VX_ERR_NO_MEMORY);
+    uint64_t o = arena_take(fs, a, false, true);
+    if (!o) return fs_fail(fs, VX_ERR_NO_SPACE);
     vxfs_put64(lb->data + lb->logsz, o | LOG_ALLOC1);
     lb->logsz += 8;
     lb->logp = (vxfs_bptr){.addr = o};
@@ -503,7 +518,7 @@ static bool log_append(vxfs *fs, vxfs_arena *a, uint64_t off, uint64_t len, uint
 [[maybe_unused]] static bool vxfs_arena_init(vxfs *fs, vxfs_arena *a, uint64_t base, uint64_t blocks) {
   *a = (vxfs_arena){.base = base, .size = blocks * VXFS_BLKSZ};
   if (!range_free(fs, a, base + VXFS_BLKSZ, a->size)) return false;
-  uint64_t first = arena_take(fs, a, true);
+  uint64_t first = arena_take(fs, a, true, true);
   if (!first) return fs_fail(fs, VX_ERR_NO_MEMORY);
   if (!(a->logtl = new_block_at(fs, first, VXFS_TLOG))) return false;
   a->loghd = (vxfs_bptr){.addr = first};
@@ -518,7 +533,7 @@ static bool log_append(vxfs *fs, vxfs_arena *a, uint64_t off, uint64_t len, uint
 static bool log_owned(vxfs *fs, vxfs_arena *a) {
   vxfs_bptr bp = a->loghd;
   for (uint64_t i = 0; i < a->nlog; i++) {
-    if (range_has(a, bp.addr)) return fs_fail(fs, VX_ERR_INVALID);
+    if (!in_arena(a, bp.addr) || range_has(a, bp.addr)) return fs_fail(fs, VX_ERR_INVALID);
     if (i + 1 == a->nlog) break;
     vxfs_blk *b = vxfs_get(fs, bp, VXFS_TLOG);
     if (!b) return false;
@@ -636,9 +651,10 @@ static vxfs_blk *log_tail(vxfs *fs, const vxfs_arena_hdr *h) {
                     .used = h->blocks * VXFS_BLKSZ};
   if (h->blocks > fs->dev.size / VXFS_BLKSZ) return fs_fail(fs, VX_ERR_INVALID);
   vxfs_bptr bp = a->loghd;
+  if (!in_arena(a, h->logtl)) return fs_fail(fs, VX_ERR_INVALID);
   for (uint64_t chain = 0;; chain++) {
-    if (chain > h->blocks || !bp.addr)
-      return fs_fail(fs, VX_ERR_INVALID); // a loop, or the tail never reached
+    if (chain > h->blocks || !in_arena(a, bp.addr))
+      return fs_fail(fs, VX_ERR_INVALID); // a loop, the tail never reached, or a log outside its arena
     bool last = bp.addr == h->logtl;
     vxfs_blk *b = last ? log_tail(fs, h) : vxfs_get(fs, bp, VXFS_TLOG);
     if (!b) return false;
@@ -673,7 +689,7 @@ static vxfs_blk *log_tail(vxfs *fs, const vxfs_arena_hdr *h) {
            *old = blks ? fs_alloc(fs, nold * sizeof *old) : nullptr;
   bool ok = old != nullptr;
   for (; ok && got < need; got++)
-    if (!(blks[got] = arena_take(fs, a, true))) ok = fs_fail(fs, VX_ERR_NO_MEMORY);
+    if (!(blks[got] = arena_take(fs, a, true, true))) ok = fs_fail(fs, VX_ERR_NO_MEMORY);
   vxfs_bptr bp = a->loghd;
   for (uint64_t i = 0; ok && i < nold; i++) { // the old chain
     old[i] = bp.addr;
@@ -748,13 +764,34 @@ static uint64_t block_alloc(vxfs *fs, uint16_t type) {
   if (fs->err != VX_OK) return 0;
   for (uint32_t tries = 0; tries < fs->narenas; tries++) {
     vxfs_arena *a = &fs->arenas[(fs->rr + type + tries) % fs->narenas];
-    uint64_t b = arena_take(fs, a, false);
+    uint64_t b = arena_take(fs, a, false, false);
     if (!b) continue;
     if (!log_append(fs, a, b, VXFS_BLKSZ, LOG_ALLOC)) return 0;
     return b;
   }
-  fs_fail(fs, VX_ERR_NO_MEMORY); // the volume is full
+  // Full, though vxfs_room said there was room: what an operation takes is
+  // undercounted somewhere, and what it did so far cannot be undone.
+  fs_fail(fs, VX_ERR_NO_SPACE);
   return 0;
+}
+
+// Blocks an operation may take besides its data: one upsert's path copied
+// and split all the way up, with the buffers flushed below it (gefs keeps
+// a reserve the same way).
+static constexpr uint64_t VXFS_OPSLACK = 2ull * VXFS_MAXHEIGHT;
+
+// Whether an operation needing `blocks` (and VXFS_OPSLACK) may start:
+// NO_SPACE, with nothing changed, if not. One that frees may count half of
+// each arena's reserve, so a full volume can be emptied.
+[[maybe_unused]] static vx_status vxfs_room(vxfs *fs, uint64_t blocks, bool freeing) {
+  if (fs->err != VX_OK) return fs->err;
+  uint64_t room = 0;
+  for (uint32_t i = 0; i < fs->narenas; i++) {
+    const vxfs_arena *a = &fs->arenas[i];
+    uint64_t keep = freeing ? a->reserve / 2 : a->reserve;
+    if (a->size - a->used > keep) room += (a->size - a->used - keep) / VXFS_BLKSZ;
+  }
+  return room >= blocks + VXFS_OPSLACK ? VX_OK : VX_ERR_NO_SPACE;
 }
 
 // A new block of `type`, born in this generation, held.

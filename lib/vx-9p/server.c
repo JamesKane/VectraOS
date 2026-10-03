@@ -65,11 +65,12 @@ typedef struct p9_fs {
   // Rwrite has none; one that commits later (fsd) commits here.
   vx_status (*fsync)(void *ctx, uint64_t node);
   // The map extension (docs/proto/map.md), optional: a VMO for the file's
-  // [offset, offset + length), with rights for prot and no more, and where
-  // in it the range starts. The handle becomes the framework's, which the
-  // transport hands to the client.
+  // [offset, offset + length), with rights for prot and no more, where in
+  // it the range starts, and how many bytes it has from there (the rest of
+  // the range is past the file). The handle becomes the framework's, which
+  // the transport hands to the client.
   vx_status (*map)(void *ctx, uint64_t node, uint64_t offset, uint64_t length, uint32_t prot, vx_handle *vmo,
-                   uint64_t *vmo_offset);
+                   uint64_t *vmo_offset, uint64_t *avail);
   // The dref extension (docs/proto/dref.md), optional: a file's bytes
   // copied into, or from, the client's VMO at roffset; *count as Tread's
   // and Twrite's. The VMO stays the framework's.
@@ -565,7 +566,7 @@ static vx_status p9_serve_map(p9_server *s, const p9_msg *t, p9_msg *r) {
     return VX_ERR_INVALID; // W^X (01 §11)
   if (ckd_add(&end, t->offset, t->length)) return VX_ERR_RANGE;
   vx_handle vmo = VX_HANDLE_NONE;
-  vx_status e = s->fs.map(s->fs.ctx, f->node, t->offset, t->length, t->prot, &vmo, &r->offset);
+  vx_status e = s->fs.map(s->fs.ctx, f->node, t->offset, t->length, t->prot, &vmo, &r->offset, &r->length);
   if (e == VX_OK) s->reply_handle = vmo;
   return e;
 }

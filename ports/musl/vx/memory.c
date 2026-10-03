@@ -11,18 +11,20 @@
 // (docs/milestones.md).
 
 // A file's pages as its server's VMO (Tmap), mapped. PROT_NONE is mapped
-// read-only: what it reserves stays reserved.
+// read-only: what it reserves stays reserved. Past the file's last page
+// there is no VMO to map: those pages are left unmapped, so a touch there
+// faults (SIGSEGV, where POSIX says SIGBUS).
 static long mem_map_file(const ofd *o, uint64_t size, int prot, int flags, long offset, long addr) {
   uint32_t p9prot =
       P9_PROT_READ | (prot & PROT_WRITE ? P9_PROT_WRITE : 0) | (prot & PROT_EXEC ? P9_PROT_EXEC : 0);
   vx_handle vmo;
-  uint64_t from;
-  vx_status st = p9c_map(o->f.c, o->f.fid, (uint64_t)offset, size, p9prot, &vmo, &from);
+  uint64_t from, avail;
+  vx_status st = p9c_map(o->f.c, o->f.fid, (uint64_t)offset, size, p9prot, &vmo, &from, &avail);
   if (st != VX_OK) return vx_errno(st);
   uint32_t vflags = (prot & PROT_WRITE ? VX_MAP_WRITE : 0) | (prot & PROT_EXEC ? VX_MAP_EXEC : 0);
   uint64_t at = (flags & (MAP_FIXED | MAP_FIXED_NOREPLACE)) ? (uint64_t)addr : 0;
   if (flags & MAP_FIXED) vx_as_unmap(vx_self, at, size);
-  st = vx_as_map(vx_self, vmo, from, size, vflags, &at);
+  st = vx_as_map(vx_self, vmo, from, avail < size ? avail : size, vflags, &at);
   vx_handle_close(vmo); // the mapping keeps it
   if (st == VX_ERR_EXISTS && (flags & MAP_FIXED_NOREPLACE)) return -EEXIST;
   if (st != VX_OK) return vx_errno(st);

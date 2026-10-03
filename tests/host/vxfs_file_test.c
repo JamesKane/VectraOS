@@ -274,7 +274,7 @@ static void op_rename(world *w) {
     snprintf(name, sizeof name, "%c%u", nodes[i].dir ? 'd' : 'f', below(40));
   vxfs_file from, dest;
   CHECK(at(w, nodes[i].parent, &from) == VX_OK && at(w, to, &dest) == VX_OK);
-  vx_status st = vxfs_rename(&w->v, &w->br->t, &from, nodes[i].name, &dest, name, ++w->now);
+  vx_status st = vxfs_rename(&w->v, &w->br->t, &from, nodes[i].name, &dest, name, ++w->now, nullptr, nullptr);
   uint32_t there = child(to, name);
   vx_status want = VX_OK;
   if (nodes[i].dir && inside(i, to))
@@ -386,7 +386,7 @@ static void test_names(void) {
   CHECK(vxfs_walk_path(&v, &br->t, "/a/b/file/x", &f) == VX_ERR_INVALID); // through a file
   CHECK(vxfs_walk_path(&v, &br->t, "/a", &a) == VX_OK && a.d.mtime == 7); // b's creation touched it
   // A directory moved: its ".." follows it.
-  CHECK(vxfs_rename(&v, &br->t, &a, "b", &root, "b2", 10) == VX_OK);
+  CHECK(vxfs_rename(&v, &br->t, &a, "b", &root, "b2", 10, nullptr, nullptr) == VX_OK);
   CHECK(vxfs_walk_path(&v, &br->t, "/b2/../a", &f) == VX_OK && f.d.qid_path == a.d.qid_path);
   CHECK(vxfs_walk_path(&v, &br->t, "/b2", &b) == VX_OK && vxfs_walk(&v, &br->t, &b, "..", &up) == VX_OK &&
         up.d.qid_path == root.d.qid_path);
@@ -436,8 +436,78 @@ static void test_names(void) {
   free(d.bytes);
 }
 
+static bool keep_all([[maybe_unused]] void *ctx, [[maybe_unused]] uint64_t qid) { return true; }
+
+static bool committed_clean(vxfs_vol *v) {
+  vxfs_check c;
+  return vxfs_commit(v) == VX_OK && vxfs_check_volume(v, &c) == VX_OK && v->fs.err == VX_OK;
+}
+
+// The review's cases (docs/milestones.md): a rename over an open file, a
+// file of many blocks removed, a rename deep in a tree, a full volume.
+static void test_limits(void) {
+  memdev d = {.size = 4096ull * VXFS_BLKSZ};
+  d.bytes = calloc(1, d.size);
+  vxfs_vol v;
+  const char *names[] = {"cfg"};
+  CHECK(vxfs_mkfs(&v, dev_of(&d), MEM, 256, 2, names, 1, 0755, 0, 0, 5) == VX_OK);
+  vxfs_branch *br;
+  vxfs_file root, a, b, f, q;
+  CHECK(vxfs_branch_open(&v, "cfg", &br) == VX_OK && vxfs_root(&v, &br->t, &root) == VX_OK);
+  uint8_t back[16];
+  uint64_t got = 0;
+
+  // Renamed over while open: the old file kept, as an orphan, until reaped.
+  CHECK(vxfs_create(&v, &br->t, &root, "old", 0600, 1, 1, 6, &a) == VX_OK);
+  CHECK(vxfs_write(&v, &br->t, &a, 0, "old data", 8, 6, 1) == VX_OK);
+  CHECK(vxfs_create(&v, &br->t, &root, "new", 0600, 1, 1, 7, &b) == VX_OK);
+  CHECK(vxfs_write(&v, &br->t, &b, 0, "new data", 8, 7, 1) == VX_OK);
+  CHECK(vxfs_rename(&v, &br->t, &root, "new", &root, "old", 8, keep_all, nullptr) == VX_OK);
+  CHECK(vxfs_walk(&v, &br->t, &root, "old", &f) == VX_OK && f.d.qid_path == b.d.qid_path);
+  CHECK(vxfs_file_by_qid(&v, &br->t, a.d.qid_path, &q) == VX_OK && vxfs_is_orphan(&q));
+  CHECK(vxfs_read(&v, &br->t, &q, 0, back, 8, &got) == VX_OK && got == 8 && memcmp(back, "old data", 8) == 0);
+  CHECK(vxfs_reap(&v, &br->t, a.d.qid_path) == VX_OK && committed_clean(&v));
+
+  // A file of many blocks (more than one chunk of clear_data's) removed.
+  static uint8_t chunk[64 * 1024];
+  memset(chunk, 0x77, sizeof chunk);
+  CHECK(vxfs_create(&v, &br->t, &root, "big", 0600, 1, 1, 9, &f) == VX_OK);
+  for (uint64_t at = 0; at < 600ull * VXFS_BLKSZ; at += sizeof chunk)
+    CHECK(vxfs_write(&v, &br->t, &f, at, chunk, sizeof chunk, 9, 1) == VX_OK);
+  CHECK(committed_clean(&v) && vxfs_remove(&v, &br->t, &root, "big", 10) == VX_OK && committed_clean(&v));
+
+  // A tree deeper than the old limit of 4096: a rename into its depths is fine.
+  vxfs_file dir = root, sub;
+  for (uint32_t i = 0; i < 5000; i++) {
+    CHECK(vxfs_create(&v, &br->t, &dir, "d", VXFS_DMDIR | 0700, 1, 1, 11, &sub) == VX_OK);
+    dir = sub;
+  }
+  CHECK(vxfs_create(&v, &br->t, &root, "x", 0600, 1, 1, 12, &f) == VX_OK);
+  CHECK(vxfs_rename(&v, &br->t, &root, "x", &dir, "x", 13, nullptr, nullptr) == VX_OK && v.fs.err == VX_OK);
+  CHECK(committed_clean(&v));
+
+  // Full: a write refused with NO_SPACE, the volume still sound; a remove
+  // makes room, and writing works again.
+  CHECK(vxfs_create(&v, &br->t, &root, "fill", 0600, 1, 1, 14, &f) == VX_OK);
+  vx_status st = VX_OK;
+  uint64_t at = 0;
+  for (; st == VX_OK && at < d.size; at += sizeof chunk)
+    st = vxfs_write(&v, &br->t, &f, at, chunk, sizeof chunk, 15, 1);
+  CHECK(st == VX_ERR_NO_SPACE && v.fs.err == VX_OK && at > d.size / 2);
+  CHECK(vxfs_commit(&v) == VX_OK); // what was written, kept
+  CHECK(vxfs_create(&v, &br->t, &root, "more", 0600, 1, 1, 16, &a) == VX_OK || v.fs.err == VX_OK);
+  CHECK(vxfs_remove(&v, &br->t, &root, "fill", 17) == VX_OK); // a remove may dig into the reserve
+  CHECK(committed_clean(&v));
+  CHECK(vxfs_walk(&v, &br->t, &root, "fill", &f) == VX_ERR_NOT_FOUND);
+  CHECK(vxfs_create(&v, &br->t, &root, "after", 0600, 1, 1, 18, &f) == VX_OK);
+  CHECK(vxfs_write(&v, &br->t, &f, 0, chunk, sizeof chunk, 18, 1) == VX_OK && committed_clean(&v));
+  vxfs_unmount(&v);
+  free(d.bytes);
+}
+
 int main(void) {
   test_names();
+  test_limits();
   for (uint64_t seed = 1; seed <= 3; seed++) test_random(seed * 0x9E3779B97F4A7C15ull, 900);
   for (uint32_t i = 0; i < MAXN; i++) drop_node(i);
   return check_result();

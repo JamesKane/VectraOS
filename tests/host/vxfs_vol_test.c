@@ -238,37 +238,92 @@ static void test_damage(void) {
   vxfs_unmount(&v);
   uint64_t last = d->size - VXFS_BLKSZ;
 
-  // The primary superblock damaged: the backup.
+  // The primary superblock damaged: the backup, and the primary made whole again.
   d->bytes[100] ^= 1;
   CHECK(vxfs_mount(&v, dev_of(d), MEM, 256) == VX_OK && v.sb.commit == 2);
   CHECK(vxfs_branch_open(&v, "main", &br) == VX_OK && agrees(&v, &br->t, &m));
   vxfs_unmount(&v);
-  d->bytes[last + 100] ^= 1; // and the backup too: nothing
+  CHECK(memcmp(d->bytes, d->bytes + last, VXFS_BLKSZ) == 0);
+  d->bytes[100] ^= 1, d->bytes[last + 100] ^= 1; // both: nothing (and nothing written)
   CHECK(vxfs_mount(&v, dev_of(d), MEM, 256) == VX_ERR_INVALID);
   vxfs_unmount(&v);
   d->bytes[100] ^= 1, d->bytes[last + 100] ^= 1;
 
-  // An arena's header damaged: its footer.
+  // An arena's header damaged: its footer, and the header made whole again.
   d->bytes[base0 + 20] ^= 1;
   CHECK(vxfs_mount(&v, dev_of(d), MEM, 256) == VX_OK);
   CHECK(vxfs_branch_open(&v, "main", &br) == VX_OK && agrees(&v, &br->t, &m) && space_adds_up(&v, nullptr));
   vxfs_unmount(&v);
-  d->bytes[foot0 + 20] ^= 1; // both
+  CHECK(memcmp(d->bytes + base0, d->bytes + foot0, VXFS_BLKSZ) == 0);
+  d->bytes[base0 + 20] ^= 1, d->bytes[foot0 + 20] ^= 1; // both
   CHECK(vxfs_mount(&v, dev_of(d), MEM, 256) == VX_ERR_INVALID);
   vxfs_unmount(&v);
   d->bytes[base0 + 20] ^= 1, d->bytes[foot0 + 20] ^= 1;
 
-  // An older superblock with a newer one beside it: the newer wins.
+  // An older superblock with a newer one beside it: the newer wins, and the
+  // older is made the newer.
+  static uint8_t *at2;
+  at2 = malloc(d->size);
+  memcpy(at2, d->bytes, d->size); // the disk as commit 2 left it
+  static model m2;
+  m2 = m;
   CHECK(vxfs_mount(&v, dev_of(d), MEM, 256) == VX_OK);
   CHECK(vxfs_branch_open(&v, "main", &br) == VX_OK);
-  static uint8_t old_sb[VXFS_BLKSZ];
-  memcpy(old_sb, d->bytes, VXFS_BLKSZ);
   change(&v, br, &m, 20);
   CHECK(vxfs_commit(&v) == VX_OK);
   vxfs_unmount(&v);
-  memcpy(d->bytes + last, old_sb, VXFS_BLKSZ);
+  memcpy(d->bytes + last, at2 + last, VXFS_BLKSZ);
   CHECK(vxfs_mount(&v, dev_of(d), MEM, 256) == VX_OK && v.sb.commit == 3);
   CHECK(vxfs_branch_open(&v, "main", &br) == VX_OK && agrees(&v, &br->t, &m));
+  vxfs_unmount(&v);
+  CHECK(memcmp(d->bytes, d->bytes + last, VXFS_BLKSZ) == 0);
+
+  // A newer superblock whose arenas match neither copy: the older one, if
+  // its arenas are what it says (commit 2's headers and footers, here).
+  memcpy(d->bytes + last, at2 + last, VXFS_BLKSZ);
+  {
+    vxfs_vol probe;
+    CHECK(vxfs_mount(&probe, dev_of(d), MEM, 256) == VX_OK); // to learn where the arenas are
+    uint32_t na = probe.fs.narenas;
+    uint64_t where[64][2];
+    for (uint32_t i = 0; i < na && i < 64; i++) {
+      where[i][0] = probe.fs.arenas[i].base;
+      where[i][1] = probe.fs.arenas[i].base + VXFS_BLKSZ + probe.fs.arenas[i].size;
+    }
+    vxfs_unmount(&probe);
+    memcpy(d->bytes + last, at2 + last, VXFS_BLKSZ); // the probe's repair undone
+    for (uint32_t i = 0; i < na && i < 64; i++)
+      for (int c = 0; c < 2; c++) memcpy(d->bytes + where[i][c], at2 + where[i][c], VXFS_BLKSZ);
+  }
+  CHECK(vxfs_mount(&v, dev_of(d), MEM, 256) == VX_OK && v.sb.commit == 2);
+  CHECK(vxfs_branch_open(&v, "main", &br) == VX_OK && agrees(&v, &br->t, &m2) && space_adds_up(&v, nullptr));
+  vxfs_unmount(&v);
+  CHECK(memcmp(d->bytes, d->bytes + last, VXFS_BLKSZ) == 0); // commit 2's, both now
+  free(at2);
+
+  // Superblocks that would have the volume hurt itself (a hostile image,
+  // checksums and all): refused at mount. A snapshot tree of no height;
+  // arenas that overlap; an arena over the primary superblock.
+  static uint8_t keep[2][VXFS_BLKSZ], bad[VXFS_BLKSZ];
+  memcpy(keep[0], d->bytes, VXFS_BLKSZ), memcpy(keep[1], d->bytes + last, VXFS_BLKSZ);
+  for (int kind = 0; kind < 3; kind++) {
+    CHECK(vxfs_mount(&v, dev_of(d), MEM, 256) == VX_OK && v.fs.narenas >= 2);
+    if (kind == 0) v.sb.snapht = 0;
+    if (kind == 1) v.fs.arenas[1].base = v.fs.arenas[0].base + VXFS_BLKSZ;
+    if (kind == 2) v.fs.arenas[0].base = 0;
+    pack_sb(&v, bad);
+    vxfs_unmount(&v);
+    memcpy(d->bytes, bad, VXFS_BLKSZ), memcpy(d->bytes + last, bad, VXFS_BLKSZ);
+    CHECK(vxfs_mount(&v, dev_of(d), MEM, 256) == VX_ERR_INVALID);
+    vxfs_unmount(&v);
+    memcpy(d->bytes, keep[0], VXFS_BLKSZ), memcpy(d->bytes + last, keep[1], VXFS_BLKSZ);
+  }
+  CHECK(vxfs_mount(&v, dev_of(d), MEM, 256) == VX_OK && v.sb.commit == 2);
+  // A tree of no height: refused by upsert, not recursed on.
+  vxfs_tree flat = {.height = 0};
+  uint8_t k1[1] = {VXFS_KENT};
+  vxfs_msg msg = {.op = VXFS_OINSERT, .k = k1, .nk = 1};
+  CHECK(vxfs_upsert(&v.fs, &flat, &msg, 1) == VX_ERR_INVALID);
   vxfs_unmount(&v);
   memdev_free(d);
 }

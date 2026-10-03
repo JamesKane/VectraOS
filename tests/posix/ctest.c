@@ -937,10 +937,59 @@ static void test_mmap(void) {
     munmap(p, 8192);
   }
   CHECK(access("/tmp/mapped", F_OK) == -1);
+
+  // Written in many places through a mapping (more dirty ranges than one
+  // DIRTY call answers), unmapped at once: every write reaches the file.
+  static constexpr size_t PAGES = 160;
+  fd = open("/tmp/many", O_RDWR | O_CREAT | O_TRUNC, 0644);
+  CHECK(fd >= 0 && ftruncate(fd, (off_t)(PAGES * 4096)) == 0);
+  p = mmap(nullptr, PAGES * 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  CHECK(p != MAP_FAILED);
+  if (p != MAP_FAILED) {
+    for (size_t i = 0; i < PAGES; i += 2) p[i * 4096 + 7] = (char)('A' + i % 26);
+    CHECK(munmap(p, PAGES * 4096) == 0);
+  }
+  size_t right = 0;
+  for (size_t i = 0; i < PAGES; i += 2)
+    right += pread(fd, &c, 1, (off_t)(i * 4096 + 7)) == 1 && c == (char)('A' + i % 26);
+  CHECK(right == PAGES / 2);
+  // Mapped past the file's end: the file's pages there, the rest not.
+  CHECK(ftruncate(fd, 100) == 0);
+  p = mmap(nullptr, 3ul * 4096, PROT_READ, MAP_SHARED, fd, 0);
+  CHECK(p != MAP_FAILED && p[7] == 'A' && p[100] == 0);
+  if (p != MAP_FAILED) munmap(p, 3ul * 4096);
+  close(fd);
+  unlink("/tmp/many");
+
+  // Renamed over while open: the open file is still the old one.
+  int old = open("/tmp/r-old", O_RDWR | O_CREAT | O_TRUNC, 0644);
+  CHECK(old >= 0 && write(old, "old", 3) == 3);
+  int fresh = open("/tmp/r-new", O_RDWR | O_CREAT | O_TRUNC, 0644);
+  CHECK(fresh >= 0 && write(fresh, "new", 3) == 3 && close(fresh) == 0);
+  CHECK(rename("/tmp/r-new", "/tmp/r-old") == 0);
+  char got[4] = {};
+  CHECK(pread(old, got, 3, 0) == 3 && memcmp(got, "old", 3) == 0);
+  CHECK(close(old) == 0);
+  fresh = open("/tmp/r-old", O_RDONLY);
+  CHECK(fresh >= 0 && read(fresh, got, 3) == 3 && memcmp(got, "new", 3) == 0);
+  close(fresh);
+  unlink("/tmp/r-old");
 }
 
 static void test_permissions(void) {
   if (!owners_kept) return;
+  // Owners are adm's to give (vectra is a member); but through an ordinary
+  // attach an adm member gets no more than anyone else, so a group the
+  // file's new owner's rules do not allow is refused (gefs: only the
+  // permissive attach bypasses them).
+  int given = open("/tmp/given", O_RDWR | O_CREAT | O_TRUNC, 0644);
+  CHECK(given >= 0);
+  if (given < 0) return;
+  CHECK(fchown(given, 0, (gid_t)-1) == 0);
+  errno = 0;
+  CHECK(fchown(given, (uid_t)-1, 0) == -1 && errno == EPERM);
+  close(given);
+  unlink("/tmp/given");
   CHECK(mkdir("/tmp/locked", 0755) == 0 && chmod("/tmp/locked", 0555) == 0);
   errno = 0;
   CHECK(open("/tmp/locked/x", O_WRONLY | O_CREAT, 0644) == -1 && errno == EACCES);

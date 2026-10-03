@@ -392,6 +392,7 @@ static vx_status task_map(task *t, vmo *v, uint64_t offset, uint64_t size, uint3
   // touched (pager.c).
   uint64_t done = 0;
   if (v->pager) spin_lock(&v->lock);
+  if (v->pager && st == VX_OK && vmo_end > v->size) st = VX_ERR_RANGE; // shrunk since the check above
   mapping shape = {.vmo = v, .flags = flags};
   while (st == VX_OK && done < size) {
     uint64_t pa = vmo_page(v, (offset + done) / 4096);

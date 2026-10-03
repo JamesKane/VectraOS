@@ -86,10 +86,17 @@ typedef struct fbatch {
   vxfs_msg m[96];
   uint8_t bytes[96 * (VXFS_KEYMAX + 64)];
   uint32_t n, used, size;
+  bool freeing; // the operation frees: it may use half the reserve (vxfs_room)
 } fbatch;
 
 static vx_status fb_flush(vxfs_vol *v, vxfs_tree *t, fbatch *b) {
-  vx_status st = vxfs_upsert(&v->fs, t, b->m, b->n);
+  // Room for each upsert, not only the first: a long removal flushes many.
+  vx_status st = vxfs_room(&v->fs, 0, b->freeing);
+  if (st != VX_OK) {
+    b->n = b->used = b->size = 0;
+    return st;
+  }
+  st = vxfs_upsert(&v->fs, t, b->m, b->n);
   b->n = b->used = b->size = 0;
   if (st == VX_OK && !vxfs_end_op(&v->fs)) st = v->fs.err;
   return st;
@@ -134,14 +141,25 @@ static vx_status fb_wstat(vxfs_vol *v, vxfs_tree *t, fbatch *b, const uint8_t *k
   return fb_put(v, t, b, VXFS_OWSTAT, k, nk, w, (uint16_t)(p - w));
 }
 
-static fbatch *fb_new(vxfs_vol *v) {
+// A batch for an operation that will take `blocks` data blocks (and an
+// upsert's slack): nullptr, *st NO_SPACE with nothing changed, if the
+// volume has no room for it (11 §6). One that frees may use more of the
+// reserve, so a full volume can still be emptied.
+static fbatch *fb_new(vxfs_vol *v, uint64_t blocks, bool freeing, vx_status *st) {
+  if ((*st = vxfs_room(&v->fs, blocks, freeing)) != VX_OK) return nullptr;
   fbatch *b = fs_alloc(&v->fs, sizeof *b);
-  if (b) b->n = b->used = b->size = 0;
+  if (!b) {
+    *st = v->fs.err;
+    return nullptr;
+  }
+  b->n = b->used = b->size = 0, b->freeing = freeing;
+  v->fs.freeing = freeing;
   return b;
 }
 
 static vx_status fb_done(vxfs_vol *v, vxfs_tree *t, fbatch *b, vx_status st) {
   if (st == VX_OK && b->n) st = fb_flush(v, t, b);
+  v->fs.freeing = false;
   fs_release(&v->fs, b, sizeof *b);
   return st;
 }
@@ -274,7 +292,9 @@ static vx_status dir_empty(vxfs_vol *v, const vxfs_tree *t, const vxfs_file *dir
   uint16_t nk = key_ent(k, 0, nullptr, 0);
   vxfs_msg m[2] = {{.op = VXFS_OINSERT, .k = k, .nk = nk, .v = val, .nv = VXFS_DIRSZ},
                    {.op = VXFS_OINSERT, .k = uk, .nk = key_up(uk, d.qid_path), .v = k, .nv = nk}};
-  vx_status st = vxfs_upsert(&v->fs, t, m, 2);
+  vx_status st = vxfs_room(&v->fs, 0, false);
+  if (st != VX_OK) return st;
+  st = vxfs_upsert(&v->fs, t, m, 2);
   if (st == VX_OK && !vxfs_end_op(&v->fs)) st = v->fs.err;
   return st;
 }
@@ -307,8 +327,8 @@ static vx_status dir_empty(vxfs_vol *v, const vxfs_tree *t, const vxfs_file *dir
                     .gid = gid,
                     .muid = uid};
   f->nkey = key_ent(f->key, dir->d.qid_path, (const uint8_t *)name, n);
-  fbatch *b = fb_new(v);
-  if (!b) return v->fs.err;
+  fbatch *b = fb_new(v, 0, false, &st);
+  if (!b) return st;
   uint8_t val[VXFS_DIRSZ];
   vxfs_packdir(val, &f->d);
   fb_add(b, VXFS_OINSERT, f->key, f->nkey, val, VXFS_DIRSZ);
@@ -389,11 +409,11 @@ static vx_status put_block(vxfs_vol *v, vxfs_tree *t, fbatch *b, const vxfs_file
   if (is_dir(f)) return VX_ERR_INVALID;
   if (off + n < off) return VX_ERR_RANGE;
   uint64_t was = f->d.length, len = off + n > was ? off + n : was;
-  fbatch *b = fb_new(v);
-  if (!b) return v->fs.err;
+  vx_status st;
+  fbatch *b = fb_new(v, n / VXFS_BLKSZ + 2, false, &st); // the blocks it touches, and a converted block 0
+  if (!b) return st;
   static uint8_t blk[VXFS_BLKSZ];
   const uint8_t *in = data;
-  vx_status st = VX_OK;
   if (len <= VXFS_INLINE) { // small: kept inline, whole
     st = read_block(v, t, f->d.qid_path, 0, blk);
     if (st == VX_OK) memcpy(blk + off, in, n), st = put_block(v, t, b, f, 0, blk, len);
@@ -421,28 +441,31 @@ static vx_status put_block(vxfs_vol *v, vxfs_tree *t, fbatch *b, const vxfs_file
   return fb_done(v, t, b, st);
 }
 
-// Every Kdat key of qid at or past `from`, cleared: the blocks they name freed.
+// Every Kdat key of qid at or past `from`, cleared: the blocks they name
+// freed. A chunk at a time, each flushed before the next is looked for, so
+// a file of any size needs no more memory than one chunk.
 static vx_status clear_data(vxfs_vol *v, vxfs_tree *t, fbatch *b, uint64_t qid, uint64_t from) {
   uint8_t pfx[9] = {VXFS_KDAT};
   vxfs_kput64(pfx + 1, qid);
-  // Collected first: the tree is changed as the batch fills.
-  uint64_t *offs = nullptr;
-  uint32_t n = 0, cap = 0;
-  vxfs_scan s;
-  vxfs_scan_start(&s, t, pfx, 9);
-  vxfs_kvp kv;
-  while (vxfs_scan_next(&v->fs, &s, &kv))
-    if (kv.nk == 17 && vxfs_kget64(kv.k + 9) >= from &&
-        fs_grow(&v->fs, (void **)&offs, n, &cap, sizeof *offs))
-      offs[n++] = vxfs_kget64(kv.k + 9);
-  vxfs_scan_end(&v->fs, &s);
-  vx_status st = v->fs.err;
-  for (uint32_t i = 0; st == VX_OK && i < n; i++) {
-    uint8_t k[17];
-    st = fb_put(v, t, b, VXFS_OCLEARB, k, key_dat(k, qid, offs[i]), nullptr, 0);
+  for (uint64_t next = from;;) {
+    uint64_t offs[256];
+    uint32_t n = 0;
+    uint8_t lo[17];
+    vxfs_scan s;
+    vxfs_scan_from(&s, t, pfx, 9, lo, key_dat(lo, qid, next));
+    vxfs_kvp kv;
+    while (n < 256 && vxfs_scan_next(&v->fs, &s, &kv))
+      if (kv.nk == 17 && vxfs_kget64(kv.k + 9) >= next) offs[n++] = vxfs_kget64(kv.k + 9);
+    vxfs_scan_end(&v->fs, &s);
+    vx_status st = v->fs.err;
+    for (uint32_t i = 0; st == VX_OK && i < n; i++) {
+      uint8_t k[17];
+      st = fb_put(v, t, b, VXFS_OCLEARB, k, key_dat(k, qid, offs[i]), nullptr, 0);
+    }
+    if (st != VX_OK || n < 256) return st;
+    if ((st = fb_flush(v, t, b)) != VX_OK) return st; // the tree must lose them before the next look
+    next = offs[n - 1] + 1;
   }
-  fs_release(&v->fs, offs, cap * sizeof *offs);
-  return st;
 }
 
 // --- Changing entries ---
@@ -459,9 +482,10 @@ typedef struct vxfs_attr {
 [[maybe_unused]] static vx_status vxfs_setattr(vxfs_vol *v, vxfs_tree *t, vxfs_file *f, const vxfs_attr *a,
                                                int64_t now) {
   if ((a->valid & VXFS_WSIZE) && (is_dir(f) || (f->d.mode & VXFS_DMSYMLINK))) return VX_ERR_INVALID;
-  fbatch *b = fb_new(v);
-  if (!b) return v->fs.err;
-  vx_status st = VX_OK;
+  vx_status st;
+  bool shrinks = (a->valid & VXFS_WSIZE) && a->length < f->d.length;
+  fbatch *b = fb_new(v, shrinks ? 1 : 0, shrinks, &st); // a shrink frees, and rewrites its last block
+  if (!b) return st;
   if ((a->valid & VXFS_WSIZE) && a->length < f->d.length) {
     static uint8_t blk[VXFS_BLKSZ];
     uint64_t keep = (a->length + VXFS_BLKSZ - 1) / VXFS_BLKSZ * VXFS_BLKSZ; // blocks wholly past the end go
@@ -501,8 +525,8 @@ typedef struct vxfs_attr {
   bool empty = true;
   if (is_dir(&f) && (st = dir_empty(v, t, &f, &empty)) != VX_OK) return st;
   if (!empty) return VX_ERR_EXISTS;
-  fbatch *b = fb_new(v);
-  if (!b) return v->fs.err;
+  fbatch *b = fb_new(v, 0, true, &st);
+  if (!b) return st;
   if (!is_dir(&f)) st = clear_data(v, t, b, f.d.qid_path, 0);
   uint8_t k[9];
   if (st == VX_OK) st = fb_put(v, t, b, VXFS_ODELETE, k, key_up(k, f.d.qid_path), nullptr, 0);
@@ -533,8 +557,8 @@ static uint16_t key_orphan(uint8_t *k, uint64_t qid) {
   vx_status st = vxfs_walk(v, t, dir, name, &f);
   if (st != VX_OK) return st;
   if (is_dir(&f)) return VX_ERR_INVALID; // a directory is removed, empty, or not at all
-  fbatch *b = fb_new(v);
-  if (!b) return v->fs.err;
+  fbatch *b = fb_new(v, 0, true, &st);
+  if (!b) return st;
   uint8_t ok[9], uk[9], val[VXFS_DIRSZ];
   uint16_t nok = key_orphan(ok, f.d.qid_path);
   vxfs_packdir(val, &f.d);
@@ -548,9 +572,10 @@ static uint16_t key_orphan(uint8_t *k, uint64_t qid) {
 
 // An orphan's end: its data cleared, its Korphan and Kup gone.
 [[maybe_unused]] static vx_status vxfs_reap(vxfs_vol *v, vxfs_tree *t, uint64_t qid) {
-  fbatch *b = fb_new(v);
-  if (!b) return v->fs.err;
-  vx_status st = clear_data(v, t, b, qid, 0);
+  vx_status st;
+  fbatch *b = fb_new(v, 0, true, &st);
+  if (!b) return st;
+  st = clear_data(v, t, b, qid, 0);
   uint8_t k[9];
   if (st == VX_OK) st = fb_put(v, t, b, VXFS_ODELETE, k, key_orphan(k, qid), nullptr, 0);
   if (st == VX_OK) st = fb_put(v, t, b, VXFS_ODELETE, k, key_up(k, qid), nullptr, 0);
@@ -582,9 +607,12 @@ static uint16_t key_orphan(uint8_t *k, uint64_t qid) {
 }
 
 // Renames from/name to to/newname, replacing as POSIX does (see the top).
+// A file replaced while it is open is kept as an orphan if keep_open says
+// so (its qid), for vxfs_reap when its last user goes, as POSIX keeps it.
 [[maybe_unused]] static vx_status vxfs_rename(vxfs_vol *v, vxfs_tree *t, const vxfs_file *from,
                                               const char *name, const vxfs_file *to, const char *newname,
-                                              int64_t now) {
+                                              int64_t now, bool (*keep_open)(void *ctx, uint64_t qid),
+                                              void *ctx) {
   if (!is_dir(to)) return VX_ERR_INVALID;
   uint16_t nn = vxfs_namelen(newname, VXFS_NAMEMAX);
   if (!name_ok(newname, nn)) return nn > VXFS_NAMEMAX ? VX_ERR_RANGE : VX_ERR_INVALID;
@@ -593,11 +621,14 @@ static uint16_t key_orphan(uint8_t *k, uint64_t qid) {
   if (st != VX_OK) return st;
   if (!name_ok(name, vxfs_namelen(name, VXFS_NAMEMAX))) return VX_ERR_INVALID;
   // Not into itself: no directory from `to` up to the root is f.
+  // As deep as the tree is: a refusal past that, not a verdict on the
+  // volume (a user can make a tree that deep).
   vxfs_file up = *to;
   for (uint32_t depth = 0;; depth++) {
     if (up.d.qid_path == f.d.qid_path) return VX_ERR_INVALID;
     if (up.nkey == 9 && vxfs_kget64(up.key + 1) == 0) break; // the root
-    if (depth > 4096 || (st = vxfs_walk(v, t, &up, "..", &up)) != VX_OK) return st == VX_OK ? vol_bad(v) : st;
+    if (depth > (1u << 16)) return VX_ERR_RANGE;
+    if ((st = vxfs_walk(v, t, &up, "..", &up)) != VX_OK) return st;
   }
   st = vxfs_walk(v, t, to, newname, &there);
   if (st == VX_OK) {
@@ -606,13 +637,14 @@ static uint16_t key_orphan(uint8_t *k, uint64_t qid) {
     bool empty = true;
     if (is_dir(&there) && ((st = dir_empty(v, t, &there, &empty)) != VX_OK || !empty))
       return st != VX_OK ? st : VX_ERR_EXISTS;
-    if ((st = vxfs_remove(v, t, to, newname, now)) != VX_OK) return st;
+    bool keep = !is_dir(&there) && keep_open && keep_open(ctx, there.d.qid_path);
+    if ((st = (keep ? vxfs_orphan : vxfs_remove)(v, t, to, newname, now)) != VX_OK) return st;
   } else if (st != VX_ERR_NOT_FOUND) {
     return st;
   }
-  // One batch: the entry moved, a directory's Kup, both directories' times.
-  fbatch *b = fb_new(v);
-  if (!b) return v->fs.err;
+  // One batch: the entry moved, its Kup, both directories' times.
+  fbatch *b = fb_new(v, 0, false, &st);
+  if (!b) return st;
   uint8_t k[VXFS_KEYMAX], val[VXFS_DIRSZ];
   uint16_t nk = key_ent(k, to->d.qid_path, (const uint8_t *)newname, nn);
   f.d.ctime = now;

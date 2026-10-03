@@ -127,6 +127,7 @@ static vx_status snap_get(vxfs_vol *v, uint64_t gen, vxfs_snap *s) {
   if (st != VX_OK) return st;
   if (nv != VXFS_SNAPSZ) return vol_bad(v);
   *s = vxfs_unpacksnap(val);
+  if (s->height < 1 || s->height > VXFS_MAXHEIGHT) return vol_bad(v); // a write would recurse that deep
   return s->gen == gen ? VX_OK : vol_bad(v);
 }
 
@@ -467,6 +468,10 @@ static uint64_t arena_reserve(uint64_t size) {
     vxfs_drop(fs, hb);
     v->hdr[i] = nullptr;
   }
+  // 6. A barrier: the backup and the footers durable before anything this
+  // commit freed can be reused, so either superblock is still enough to
+  // mount if the next commit's is torn.
+  ok = ok && fs->dev.barrier(fs->dev.ctx) == VX_OK;
   if (!ok) fs_fail(fs, VX_ERR_IO);
   // 7. What it freed is free; the trees go on in new generations.
   ok = ok && vxfs_free_deferred(fs);
@@ -641,6 +646,8 @@ static vx_status vol_status(vxfs_vol *v, bool ok) {
                                              uint32_t flags) {
   uint16_t n = vxfs_namelen(name, VXFS_LABELMAX);
   if (!n || n > VXFS_LABELMAX) return VX_ERR_INVALID;
+  vx_status room = vxfs_room(&v->fs, 0, false); // the snapshot tree grows
+  if (room != VX_OK) return room;
   uint64_t gen, g;
   uint32_t f;
   vx_status st = vxfs_label_get(v, from, &gen, &f);
@@ -666,7 +673,8 @@ static vx_status vol_status(vxfs_vol *v, bool ok) {
 [[maybe_unused]] static vx_status vxfs_unlabel(vxfs_vol *v, const char *name) {
   uint64_t gen;
   uint32_t flags;
-  vx_status st = vxfs_label_get(v, name, &gen, &flags);
+  vx_status st = vxfs_room(&v->fs, 0, true); // frees, in the end
+  if (st == VX_OK) st = vxfs_label_get(v, name, &gen, &flags);
   if (st != VX_OK) return st;
   if (branch_named(v, name)) return VX_ERR_BAD_STATE;
   vxfs_snap s;
@@ -690,7 +698,8 @@ static vx_status vol_status(vxfs_vol *v, bool ok) {
 [[maybe_unused]] static vx_status vxfs_rollback(vxfs_vol *v, const char *name, const char *to) {
   uint64_t gen, target;
   uint32_t flags, f;
-  vx_status st = vxfs_label_get(v, name, &gen, &flags);
+  vx_status st = vxfs_room(&v->fs, 0, true);
+  if (st == VX_OK) st = vxfs_label_get(v, name, &gen, &flags);
   if (st == VX_OK) st = vxfs_label_get(v, to, &target, &f);
   if (st != VX_OK) return st;
   if (!(flags & VXFS_LMUT)) return VX_ERR_ACCESS;
@@ -784,9 +793,17 @@ static bool vol_alloc(vxfs_vol *v, uint32_t narenas) {
 static bool mount_arena(vxfs_vol *v, uint32_t i, const uint8_t *ent) {
   vxfs *fs = &v->fs;
   uint64_t base = vxfs_get64(ent), blocks = vxfs_get64(ent + 8), hash = vxfs_get64(ent + 16);
-  if (base % VXFS_BLKSZ || blocks > fs->dev.size / VXFS_BLKSZ || base > fs->dev.size ||
-      (blocks + 2) * VXFS_BLKSZ > fs->dev.size - base)
+  // Between the two superblocks, and clear of every other arena: a table
+  // that says otherwise (a hostile image) would have blocks handed out twice.
+  uint64_t last = (fs->dev.size / VXFS_BLKSZ - 1) * VXFS_BLKSZ;
+  if (base % VXFS_BLKSZ || base < VXFS_BLKSZ || !blocks || blocks > fs->dev.size / VXFS_BLKSZ ||
+      base > last || (blocks + 2) * VXFS_BLKSZ > last - base)
     return fs_fail(fs, VX_ERR_INVALID);
+  for (uint32_t j = 0; j < i; j++) {
+    const vxfs_arena *o = &fs->arenas[j];
+    if (base < o->base + o->size + 2ull * VXFS_BLKSZ && o->base < base + (blocks + 2) * VXFS_BLKSZ)
+      return fs_fail(fs, VX_ERR_INVALID);
+  }
   vxfs_blk *hb = nullptr;
   for (int copy = 0; copy < 2 && !hb; copy++) {
     uint64_t at = copy == 0 ? base : base + VXFS_BLKSZ + blocks * VXFS_BLKSZ;
@@ -806,8 +823,63 @@ static bool mount_arena(vxfs_vol *v, uint32_t i, const uint8_t *ent) {
   return true;
 }
 
+[[maybe_unused]] static void vxfs_unmount(vxfs_vol *v) {
+  vxfs *fs = &v->fs;
+  if (fs->arenas)
+    for (uint32_t i = 0; i < fs->narenas; i++)
+      if (fs->arenas[i].logtl) vxfs_drop(fs, fs->arenas[i].logtl);
+  fs_release(fs, v->arenahash, fs->narenas * sizeof *v->arenahash);
+  fs_release(fs, v->hdr, fs->narenas * sizeof *v->hdr);
+  fs_release(fs, v->freedchain, v->capfreedchain * sizeof *v->freedchain);
+  vxfs_close(fs);
+  *v = (vxfs_vol){};
+}
+
+// The volume as one superblock describes it: its arenas loaded.
+static vx_status mount_from(vxfs_vol *v, const uint8_t *sbuf, const vxfs_sb *sb) {
+  vxfs *fs = &v->fs;
+  v->sb = *sb;
+  if (v->sb.snapht < 1 || v->sb.snapht > VXFS_MAXHEIGHT) return vol_bad(v);
+  if (!vol_alloc(v, v->sb.narenas)) return fs->err;
+  for (uint32_t i = 0; i < v->sb.narenas; i++)
+    if (!mount_arena(v, i, sbuf + VXFS_SBHDSZ + (size_t)24 * i))
+      return fs->err != VX_OK ? fs->err : VX_ERR_INVALID;
+  return VX_OK;
+}
+
+// After a crash the copies may differ: the backup superblock a commit
+// behind, or a footer (or header) the old one. Each is made the mounted
+// one's again, and durable, before anything is allocated, so that a cut in
+// the next commit still finds a whole copy that names what is on the disk.
+static bool mount_repair(vxfs_vol *v, const uint8_t *good_sb, uint64_t other_sb, bool other_same) {
+  vxfs *fs = &v->fs;
+  static uint8_t buf[2][VXFS_BLKSZ];
+  bool wrote = false;
+  for (uint32_t i = 0; i < fs->narenas; i++) {
+    const vxfs_arena *a = &fs->arenas[i];
+    uint64_t at[2] = {a->base, a->base + VXFS_BLKSZ + a->size};
+    bool same[2];
+    for (int c = 0; c < 2; c++) {
+      same[c] = fs->dev.read(fs->dev.ctx, at[c], buf[c]) == VX_OK &&
+                vxfs_xxh64(buf[c], VXFS_BLKSZ, 0) == v->arenahash[i];
+      fs->reads++;
+    }
+    for (int c = 0; c < 2; c++)
+      if (!same[c] && same[1 - c]) { // the copy that matches, over the one that does not
+        if (fs->dev.write(fs->dev.ctx, at[c], buf[1 - c]) != VX_OK) return fs_fail(fs, VX_ERR_IO);
+        fs->writes++, wrote = true;
+      }
+  }
+  if (wrote && fs->dev.barrier(fs->dev.ctx) != VX_OK) return fs_fail(fs, VX_ERR_IO);
+  if (other_same) return true;
+  fs->writes++;
+  return (fs->dev.write(fs->dev.ctx, other_sb, good_sb) == VX_OK && fs->dev.barrier(fs->dev.ctx) == VX_OK) ||
+         fs_fail(fs, VX_ERR_IO);
+}
+
 // Mounts the volume on the device: the newer of its two good superblocks,
-// its arenas, and the frees of the commit it describes done again.
+// or the older if the newer's arenas will not load; the other copies made
+// its again; and the frees of the commit it describes done again.
 [[maybe_unused]] static vx_status vxfs_mount(vxfs_vol *v, vxfs_dev dev, vxfs_mem mem, uint32_t cache) {
   *v = (vxfs_vol){};
   vxfs *fs = &v->fs;
@@ -822,11 +894,20 @@ static bool mount_arena(vxfs_vol *v, uint32_t i, const uint8_t *ent) {
     fs->reads++;
   }
   if (!good[0] && !good[1]) return vol_bad(v);
-  int use = !good[0] || (good[1] && sb[1].commit > sb[0].commit) ? 1 : 0;
-  v->sb = sb[use];
-  if (!vol_alloc(v, v->sb.narenas)) return fs->err;
-  for (uint32_t i = 0; i < v->sb.narenas; i++)
-    if (!mount_arena(v, i, sbuf[use] + VXFS_SBHDSZ + (size_t)24 * i)) return fs->err;
+  int first = !good[0] || (good[1] && sb[1].commit > sb[0].commit) ? 1 : 0, use = -1;
+  vx_status st = VX_ERR_INVALID;
+  for (int c = 0; c < 2 && use < 0; c++) {
+    int try = c ? 1 - first : first;
+    if (!good[try]) continue;
+    if (c) { // the newer would not do: everything it loaded let go, and the older tried
+      vxfs_unmount(v);
+      if (!vxfs_open(fs, dev, mem, cache)) return fs->err;
+    }
+    if ((st = mount_from(v, sbuf[try], &sb[try])) == VX_OK) use = try;
+  }
+  if (use < 0) return st;
+  bool same = good[1 - use] && memcmp(sbuf[0], sbuf[1], VXFS_BLKSZ) == 0;
+  if (!mount_repair(v, sbuf[use], at[1 - use], same)) return fs->err;
   v->nextgen = v->sb.nextgen, v->nextqid = v->sb.nextqid, v->nextdl = v->sb.nextdl;
   v->snap = (vxfs_tree){.root = v->sb.snaproot, .height = v->sb.snapht, .memgen = v->nextgen++, .snap = true};
   // What the commit freed: free now (those frees, logged after it, were not
@@ -843,16 +924,4 @@ static bool mount_arena(vxfs_vol *v, uint32_t i, const uint8_t *ent) {
     fs->ndeferred = 0;
   }
   return VX_OK;
-}
-
-[[maybe_unused]] static void vxfs_unmount(vxfs_vol *v) {
-  vxfs *fs = &v->fs;
-  if (fs->arenas)
-    for (uint32_t i = 0; i < fs->narenas; i++)
-      if (fs->arenas[i].logtl) vxfs_drop(fs, fs->arenas[i].logtl);
-  fs_release(fs, v->arenahash, fs->narenas * sizeof *v->arenahash);
-  fs_release(fs, v->hdr, fs->narenas * sizeof *v->hdr);
-  fs_release(fs, v->freedchain, v->capfreedchain * sizeof *v->freedchain);
-  vxfs_close(fs);
-  *v = (vxfs_vol){};
 }

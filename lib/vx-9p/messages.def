@@ -38,7 +38,7 @@ P9_MSG(Rdesc,    157)
 // 9Px's map extension (docs/proto/map.md): a file's range as a VMO, which
 // comes back in one of the transport's handle slots.
 P9_MSG(Tmap,     158, P9F_FID, P9F_OFFSET, P9F_LENGTH, P9F_PROT)
-P9_MSG(Rmap,     159, P9F_OFFSET) // where in the VMO the range starts
+P9_MSG(Rmap,     159, P9F_OFFSET, P9F_LENGTH) // where in the VMO the range starts, and how much is there
 
 // 9Px's dref extension (docs/proto/dref.md): a read or write whose data is
 // in a VMO of the client's, which comes in one of the transport's handle

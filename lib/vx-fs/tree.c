@@ -263,8 +263,9 @@ static bool write_leaves(vxfs *fs, const vxfs_msg *e, uint32_t n, const uint8_t 
     b->nval = (uint16_t)(cuts[p] - at);
     b->valsz = tab_pack(b->data, VXFS_LEAFSPC, e + at, b->nval, false);
     ok = vxfs_write_block(fs, b);
-    const uint8_t *k = p == 0 && nlow ? low : e[at].k;
-    uint16_t nk = p == 0 && nlow ? nlow : e[at].nk;
+    bool uselow = p == 0 && nlow && vxfs_keycmp(low, nlow, e[at].k, e[at].nk) <= 0;
+    const uint8_t *k = uselow ? low : e[at].k;
+    uint16_t nk = uselow ? nlow : e[at].nk;
     ok = ok && kids_push(fs, out, k, nk, b->bp, blk_fill(b));
     vxfs_drop(fs, b);
   }
@@ -305,8 +306,9 @@ static bool write_pivots(vxfs *fs, const kids *ks, const vxfs_msg *m, uint32_t n
     mi = mend;
     ok = vxfs_write_block(fs, b);
     const vxfs_kid *first = &ks->v[at];
-    const uint8_t *k = p == 0 && nlow ? low : first->k;
-    uint16_t nk = p == 0 && nlow ? nlow : first->nk;
+    bool uselow = p == 0 && nlow && vxfs_keycmp(low, nlow, first->k, first->nk) <= 0;
+    const uint8_t *k = uselow ? low : first->k;
+    uint16_t nk = uselow ? nlow : first->nk;
     ok = ok && kids_push(fs, out, k, nk, b->bp, blk_fill(b));
     vxfs_drop(fs, b);
   }
@@ -513,6 +515,10 @@ static bool put(vxfs *fs, vxfs_bptr bp, uint32_t level, const uint8_t *low, uint
 [[maybe_unused]] static vx_status vxfs_upsert(vxfs *fs, vxfs_tree *t, const vxfs_msg *msgs, uint32_t n) {
   if (fs->err != VX_OK) return fs->err;
   if (!n) return VX_OK;
+  if (t->height < 1 || t->height > VXFS_MAXHEIGHT) { // put recurses on it: a damaged snapshot's
+    fs_fail(fs, VX_ERR_INVALID);
+    return VX_ERR_INVALID;
+  }
   tree_enter(fs, t);
   uint32_t total = 0;
   for (uint32_t i = 0; i < n; i++) {

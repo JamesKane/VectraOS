@@ -1266,14 +1266,37 @@ static void test_pager(void) {
   CHECK(atomic_load(&t.done) && atomic_load(&t.seen) == 0x2222); // as supplied again
   vx_handle_close(th);
   // Resizing: grown, the new pages absent; shrunk, the pages past the end gone.
-  CHECK(vx_vmo_resize(vmo, 32768) == VX_OK &&
+  CHECK(vx_vmo_resize(vmo, 32768) == VX_ERR_ACCESS); // the pager's to resize, not a writer's
+  CHECK(vx_pager_resize(pager, vmo, 32768) == VX_OK &&
         vx_vmo_rw(vmo, VX_VMO_READ, 20480, &got, 8) == VX_ERR_SHOULD_WAIT);
   CHECK(vx_pager_supply(pager, vmo, 20480, 4096, src, 0) == VX_OK);
   CHECK(vx_vmo_rw(vmo, VX_VMO_READ, 20480, &got, 8) == VX_OK && got == 0x1111);
-  CHECK(vx_vmo_resize(vmo, 8192) == VX_OK && vx_vmo_rw(vmo, VX_VMO_READ, 8192, &got, 8) == VX_ERR_RANGE);
+  CHECK(vx_pager_resize(pager, vmo, 8192) == VX_OK &&
+        vx_vmo_rw(vmo, VX_VMO_READ, 8192, &got, 8) == VX_ERR_RANGE);
+  uint64_t past = 0; // a mapping past the new end is refused
+  CHECK(vx_as_map(self, vmo, 8192, 4096, 0, &past) == VX_ERR_RANGE);
   CHECK(vx_vmo_rw(vmo, VX_VMO_READ, 24, &got, 8) == VX_OK && got == 0x7777);         // what is kept, kept
   CHECK(vx_vmo_resize(src, 8192) == VX_ERR_UNSUPPORTED);                             // anonymous: not yet
   CHECK(vx_pager_op(pager, src, VX_PAGER_DIRTY, 0, 4096, ranges) == VX_ERR_INVALID); // not its VMO
+  // A request the port has no room for is not lost: asked again once there is.
+  CHECK(vx_pager_op(pager, vmo, VX_PAGER_CLEAN, 4096, 4096, nullptr) == VX_OK);
+  CHECK(vx_pager_op(pager, vmo, VX_PAGER_EVICT, 4096, 4096, nullptr) == VX_OK);
+  uint32_t filled = 0;
+  while (filled < 1000 && vx_port_post(port, &(vx_packet){.key = 999}) == VX_OK) filled++;
+  CHECK(filled > 0 && filled < 1000);
+  t = (toucher){.at = (volatile uint64_t *)(at + 4096)};
+  CHECK(vx_thread_create(self, &th) == VX_OK);
+  CHECK(vx_thread_start(th, (uint64_t)touch_page, new_stack(), 0, (uint64_t)&t) == VX_OK);
+  vx_futex_wait(&never, 0, after_ms(20)); // its request refused, and tried again
+  uint32_t drained = 0;
+  while (drained < filled && vx_port_wait(port, after_ms(100), 0, &pk, 1) == 1 && pk.key == 999) drained++;
+  CHECK(drained == filled);
+  CHECK(vx_port_wait(port, after_ms(2000), 0, &pk, 1) == 1 && pk.key == 42 &&
+        vx_pager_offset(pk.value) == 4096);
+  CHECK(vx_pager_supply(pager, vmo, 4096, 4096, src, 4096) == VX_OK);
+  for (int i = 0; i < 1000 && !atomic_load(&t.done); i++) vx_futex_wait(&never, 0, after_ms(1));
+  CHECK(atomic_load(&t.done) && atomic_load(&t.seen) == 0x2222);
+  vx_handle_close(th);
   // vmo_rw writes dirty a page as a store does.
   CHECK(vx_pager_op(pager, vmo, VX_PAGER_CLEAN, 0, 8192, nullptr) == VX_OK);
   got = 0x9999;

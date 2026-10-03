@@ -123,6 +123,8 @@ static uint32_t slot_of(uint64_t node) { return (uint32_t)(node >> SLOT_SHIFT); 
 static uint32_t user_of(uint64_t node) { return (uint32_t)(node >> USER_SHIFT) & 0x7f; }
 static bool permissive(uint64_t node) { return node & PERMISSIVE; }
 static uint64_t qid_of(uint64_t node) { return node & ((1ull << USER_SHIFT) - 1); }
+// The file a node is, whoever reaches it and however: its slot and qid.
+static uint64_t file_key(uint64_t node) { return (uint64_t)slot_of(node) << SLOT_SHIFT | qid_of(node); }
 
 // --- Read-only snapshots, and the dump view (11 §5) ---
 
@@ -320,9 +322,10 @@ static vx_status commit(void) {
   return VX_OK;
 }
 
-// Open fids, counted by node: an orphan's data goes with its last.
+// Open fids, counted by file (file_key: every user's, through any attach,
+// together): an orphan's data goes with the last.
 typedef struct opened {
-  uint64_t node;
+  uint64_t node; // one of them, to find the file by
   uint32_t count;
 } opened;
 static opened opens[MAX_OPEN];
@@ -330,7 +333,7 @@ static opened opens[MAX_OPEN];
 static opened *open_slot(uint64_t node, bool make) {
   opened *free = nullptr;
   for (uint32_t i = 0; i < MAX_OPEN; i++) {
-    if (opens[i].count && opens[i].node == node) return &opens[i];
+    if (opens[i].count && file_key(opens[i].node) == file_key(node)) return &opens[i];
     if (!opens[i].count && !free) free = &opens[i];
   }
   if (!make || !free) return nullptr;
@@ -348,7 +351,7 @@ typedef struct user {
   uint32_t nmemb;
 } user;
 
-static user users[MAX_USERS];
+static user users[MAX_USERS + 1];  // and none, whether the file names it or not: index 127 fits 7 bits
 static uint32_t nusers, none_user; // none_user: none's index
 
 static uint32_t user_named(vx_str name) {
@@ -857,7 +860,7 @@ static cached pcache[MAX_CACHED];
 static vx_handle pager, scratch; // scratch: the anonymous page supplies are copied from
 static uint8_t page_buf[4096];
 
-static uint64_t pcache_key(uint64_t node) { return (uint64_t)slot_of(node) << SLOT_SHIFT | qid_of(node); }
+static uint64_t pcache_key(uint64_t node) { return file_key(node); }
 
 static cached *pcache_find(uint64_t node) {
   if (!pager) return nullptr;
@@ -870,19 +873,31 @@ static cached *pcache_find(uint64_t node) {
 // Pages the mappings wrote, into the volume: each dirty range cleaned
 // first, then read, so a write after the clean is dirty for next time.
 // Only what lies within the file: past its end, a write is lost.
+static void writeback_ranges(cached *c, vxfs_file *f, const vx_pager_range *ranges, int64_t n);
+
 static void writeback(cached *c) {
   if (c->dead || halted) return;
-  vx_pager_range ranges[VX_PAGER_RANGES];
-  int64_t n = vx_pager_op(pager, c->vmo, VX_PAGER_DIRTY, 0, c->size, ranges);
   vxfs_file f;
-  if (n <= 0 || file_of(c->node, &f) != VX_OK) return;
+  if (file_of(c->node, &f) != VX_OK) return;
+  // DIRTY answers 64 ranges at most: asked again until it has none, each
+  // set cleaned before the next is asked for. Bounded, as a writer could
+  // keep dirtying pages: what is left is the next writeback's.
+  for (uint32_t round = 0; round < 4096; round++) {
+    vx_pager_range ranges[VX_PAGER_RANGES];
+    int64_t n = vx_pager_op(pager, c->vmo, VX_PAGER_DIRTY, 0, c->size, ranges);
+    if (n <= 0) return;
+    writeback_ranges(c, &f, ranges, n);
+  }
+}
+
+static void writeback_ranges(cached *c, vxfs_file *f, const vx_pager_range *ranges, int64_t n) {
   for (int64_t i = 0; i < n; i++) {
     vx_pager_op(pager, c->vmo, VX_PAGER_CLEAN, ranges[i].offset, ranges[i].size, nullptr);
-    for (uint64_t at = ranges[i].offset; at < ranges[i].offset + ranges[i].size && at < f.d.length;
+    for (uint64_t at = ranges[i].offset; at < ranges[i].offset + ranges[i].size && at < f->d.length;
          at += 4096) {
-      uint64_t len = f.d.length - at < 4096 ? f.d.length - at : 4096;
+      uint64_t len = f->d.length - at < 4096 ? f->d.length - at : 4096;
       if (vx_vmo_rw(c->vmo, VX_VMO_READ, at, page_buf, len) != VX_OK) continue;
-      if (vxfs_write(&vol, tree_of(c->node), &f, at, page_buf, (uint32_t)len, now_ns(), uid_of(c->node)) ==
+      if (vxfs_write(&vol, tree_of(c->node), f, at, page_buf, (uint32_t)len, now_ns(), uid_of(c->node)) ==
           VX_OK)
         changed();
     }
@@ -900,8 +915,11 @@ static void pcache_drop(cached *c) {
 static void writeback_all(void) {
   for (uint32_t i = 0; pager && i < MAX_CACHED; i++) {
     if (!pcache[i].used) continue;
+    // Idle first: then nothing can write it between its writeback and its
+    // going (only fsd could hand it out again, and fsd is here).
+    bool idle = vx_pager_op(pager, pcache[i].vmo, VX_PAGER_IDLE, 0, 0, nullptr) == 1;
     writeback(&pcache[i]);
-    if (vx_pager_op(pager, pcache[i].vmo, VX_PAGER_IDLE, 0, 0, nullptr) == 1) pcache_drop(&pcache[i]);
+    if (idle) pcache_drop(&pcache[i]);
   }
 }
 
@@ -953,25 +971,32 @@ static void pcache_wrote(uint64_t node, uint64_t offset, const uint8_t *buf, uin
 }
 
 // A file's new size: the cache's pages past it zeroed or gone.
+// A file's new size: its VMO's too (a page at least), pages past it gone
+// and the last page's tail zeroed; or more pages, absent, if it grew.
 static void pcache_truncated(uint64_t node, uint64_t size) {
   cached *c = pcache_find(node);
-  if (!c || size >= c->size) return;
+  if (!c) return;
   uint64_t keep = page_round(size) ? page_round(size) : 4096;
-  if (vx_vmo_resize(c->vmo, keep) == VX_OK) c->size = keep;
+  if (keep != c->size && vx_pager_resize(pager, c->vmo, keep) == VX_OK) c->size = keep;
   memset(page_buf, 0, sizeof page_buf);
   if (size & 4095) vx_vmo_rw(c->vmo, VX_VMO_WRITE, size, page_buf, keep - size); // the last page's tail
   if (!size) vx_vmo_rw(c->vmo, VX_VMO_WRITE, 0, page_buf, 4096);
 }
 
-static vx_status fs_map([[maybe_unused]] void *ctx, uint64_t node, uint64_t offset, uint64_t length,
-                        uint32_t prot, vx_handle *out, uint64_t *vmo_offset) {
+// The VMO is the file's size, in pages: a mapping past that is the
+// client's to leave unmapped (Rmap says how much there is), so no one can
+// grow a file's cache with pages of zeros (docs/proto/map.md).
+static vx_status fs_map([[maybe_unused]] void *ctx, uint64_t node, uint64_t offset,
+                        [[maybe_unused]] uint64_t length, uint32_t prot, vx_handle *out, uint64_t *vmo_offset,
+                        uint64_t *avail) {
   if (!pager) return VX_ERR_UNSUPPORTED;
   if (is_made_up(node)) return VX_ERR_ACCESS;
   vx_status st = VX_OK;
   if ((prot & P9_PROT_WRITE) && (st = mutable(node)) != VX_OK) return st;
   vxfs_file f;
   if ((st = file_of(node, &f)) != VX_OK) return st;
-  uint64_t want = page_round(f.d.length > offset + length ? f.d.length : offset + length);
+  uint64_t want = page_round(f.d.length) ? page_round(f.d.length) : 4096;
+  if (offset >= want) return VX_ERR_RANGE; // nothing of the file there
   cached *c = pcache_find(node);
   if (!c) { // a new entry: room made by letting go of those no one maps
     uint32_t i = 0;
@@ -985,15 +1010,15 @@ static vx_status fs_map([[maybe_unused]] void *ctx, uint64_t node, uint64_t offs
     o->count++;
     c = &pcache[i];
     c->used = true, c->key = pcache_key(node), c->node = node, c->size = want;
-  } else if (want > c->size) {
-    if ((st = vx_vmo_resize(c->vmo, want)) != VX_OK) return st;
+  } else if (want != c->size) { // the file grew (or shrank) by writes since
+    if ((st = vx_pager_resize(pager, c->vmo, want)) != VX_OK) return st;
     c->size = want;
   }
   uint32_t rights = VX_RIGHT_READ | VX_RIGHT_MAP | VX_RIGHT_TRANSFER | VX_RIGHT_INSPECT;
   if (prot & P9_PROT_WRITE) rights |= VX_RIGHT_WRITE;
   if (prot & P9_PROT_EXEC) rights |= VX_RIGHT_EXEC;
   if ((st = vx_handle_dup(c->vmo, rights, out)) != VX_OK) return st;
-  *vmo_offset = offset;
+  *vmo_offset = offset, *avail = c->size - offset;
   return VX_OK;
 }
 
@@ -1240,11 +1265,12 @@ static vx_status fs_remove([[maybe_unused]] void *ctx, uint64_t node) {
 // as given, the owner; the times to now, the owner or a writer.
 static bool may_setattr(uint64_t node, const vxfs_dir *d, const p9_setattr *a) {
   uint32_t me = uid_of(node);
-  bool owner = !is_none(node) && me == d->uid, adm = is_adm(node);
-  if (adm) return true;
+  bool owner = !is_none(node) && me == d->uid;
+  if (permissive(node)) return true; // %BRANCH: adm's members, without permissions (gefs's permit)
   if ((a->valid & P9_SETATTR_SIZE) && !may(node, d, MAY_W)) return false;
   if ((a->valid & P9_SETATTR_MODE) && !owner && !leads(me, d->gid)) return false;
-  if ((a->valid & P9_SETATTR_UID) && a->uid != d->uid) return false;
+  if ((a->valid & P9_SETATTR_UID) && a->uid != d->uid && !is_adm(node))
+    return false; // owners are adm's to give
   if ((a->valid & P9_SETATTR_GID) && a->gid != d->gid &&
       !((owner && in_group(me, a->gid)) || (leads(me, d->gid) && leads(me, a->gid))))
     return false;
@@ -1284,6 +1310,12 @@ static vx_status fs_setattr([[maybe_unused]] void *ctx, uint64_t node, const p9_
   return st;
 }
 
+// Whether the file qid in slot *ctx is open (or mapped): a rename over it
+// keeps it as an orphan, as POSIX does.
+static bool open_qid(void *ctx, uint64_t qid) {
+  return open_slot(node_of(*(const uint32_t *)ctx, 0, qid), false) != nullptr;
+}
+
 static vx_status fs_rename([[maybe_unused]] void *ctx, uint64_t olddir, vx_str oldname, uint64_t newdir,
                            vx_str newname) {
   char from[VXFS_NAMEMAX + 1], to[VXFS_NAMEMAX + 1];
@@ -1295,7 +1327,8 @@ static vx_status fs_rename([[maybe_unused]] void *ctx, uint64_t olddir, vx_str o
   if (st == VX_OK) st = file_of(olddir, &a);
   if (st == VX_OK) st = file_of(newdir, &b);
   if (st == VX_OK && (!may(olddir, &a.d, MAY_W) || !may(newdir, &b.d, MAY_W))) st = VX_ERR_ACCESS;
-  if (st == VX_OK) st = vxfs_rename(&vol, tree_of(olddir), &a, from, &b, to, now_ns());
+  uint32_t slot = slot_of(olddir);
+  if (st == VX_OK) st = vxfs_rename(&vol, tree_of(olddir), &a, from, &b, to, now_ns(), open_qid, &slot);
   if (st == VX_OK) changed();
   return st;
 }

@@ -145,6 +145,10 @@ static void walk_node(vxfs *fs, vxfs_bptr bp, uint32_t level, const uint8_t *lo,
   }
   w->blocks++;
   if (fill != 0xffff && fill != blk_fill(b)) w->ok = false;
+  // As the device has it, not only as the cache does: what a remount reads.
+  static vxfs_blk disk;
+  disk = (vxfs_blk){};
+  if (fs->dev.read(fs->dev.ctx, bp.addr, disk.buf) != VX_OK || !parse_block(&disk, b->type)) w->ok = false;
   for (uint32_t i = 0; i < b->nval; i++) {
     vxfs_msg v = tab_get(b->data, i, false);
     bool in = (!lo || vxfs_keycmp(v.k, v.nk, lo, nlo) >= 0 || (level > 1 && i == 0)) &&
@@ -432,6 +436,29 @@ static void test_grow_shrink(void) {
   world_close(&w);
 }
 
+// Keys below the first child's key all go to it; when it splits, the
+// parent's keys must stay in order (the first part takes the lower key).
+static void test_low_split(void) {
+  model_reset();
+  world w;
+  world_open(&w);
+  static batch b;
+  uint8_t k[4] = {VXFS_KDAT}, v[500];
+  memset(v, 0x5a, sizeof v);
+  for (int pass = 0; pass < 2; pass++) // 'm' keys, a split; then 'a' keys, all below them
+    for (int i = 0; i < 40; i += 10) {
+      b = (batch){};
+      for (int j = i; j < i + 10; j++) {
+        k[1] = pass ? 'a' : 'm', k[2] = (uint8_t)(j >> 8), k[3] = (uint8_t)j;
+        CHECK(add(&b, VXFS_OINSERT, k, 4, v, sizeof v));
+        model_set(k, 4, v, sizeof v);
+      }
+      CHECK(vxfs_upsert(&w.fs, &w.t, b.m, b.n) == VX_OK && vxfs_end_op(&w.fs));
+    }
+  CHECK(w.t.height >= 2 && lookups_agree(&w) && scan_agrees(&w, nullptr, 0) && tree_sane(&w));
+  world_close(&w);
+}
+
 static void test_refused(void) {
   model_reset();
   world w;
@@ -511,6 +538,7 @@ static void test_plan(void) {
 int main(void) {
   test_plan();
   test_refused();
+  test_low_split();
   test_grow_shrink();
   for (uint64_t seed = 1; seed <= 6; seed++)
     test_model(seed * 0x9E3779B97F4A7C15ull, 300, seed % 2 ? 40 : 400);

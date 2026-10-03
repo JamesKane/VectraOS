@@ -128,7 +128,7 @@ It walks each snapshot's tree in full, so it costs time in proportion to the sna
 3. **Write the arena headers,** then a barrier.
 4. **Write the superblock,** then a barrier. This is the write that commits.
 5. **Write the backup superblock and the arena footers.** Headers and footers back each other up across a crash. The two superblocks are never in flight together, so a cut that tears one leaves the other whole: either the last commit's or this one's. gefs writes both before one barrier, and a superblock larger than a sector (one with many arenas) could then be torn twice at once. The power-cut test found that.
-6. **Wait** for every write to land.
+6. **Wait** for every write to land: a barrier. Until it, the backup and the footers may still be the last commit's, so nothing this commit freed may be reused before it.
 7. **Free.** Blocks that were dead within the commit are made reusable. That becomes durable at the next commit.
 
 **A crash at any point loses nothing committed:**
@@ -138,6 +138,10 @@ It walks each snapshot's tree in full, so it costs time in proportion to the sna
 - After phase 4, nothing leaks either. Phase 7's frees are logged past what the commit covers, so a replay does not see them. Mounting reads the superblock's chain of the commit's frees and does them again.
 
 **There are two superblocks,** in the first and last blocks of the volume, and either one is enough to mount.
+- **Mount makes the copies agree.** A crash can leave the backup or a footer behind, or one copy torn. Mount uses the newer whole superblock, or the older one if the newer's arenas will not load. Before anything is allocated, it rewrites the other superblock and every arena copy that does not match, with barriers. Without that, a second crash in the next commit could find only a copy that names blocks already reused. The power-cut test cuts twice to check it.
+- **What mount refuses.** Arenas that are not between the superblocks, or overlap, or whose logs leave them; a snapshot whose tree height is outside 1 to 16. A hostile image could otherwise have blocks handed out twice, or a write recurse without end.
+
+**A full volume refuses, and stays whole.** Each change first asks whether there is room for its worst case: an upsert's path copied and split (`VXFS_OPSLACK`, 32 blocks), plus its data blocks. If not, it fails with `NO_SPACE` (`ENOSPC`) and changes nothing. Each arena keeps a reserve (512 KiB to 8 MiB, as gefs's) for the commit. A change that frees (a remove, a truncate, an unlabel) may use half of it, so a full volume can always be emptied. The allocation log may use all of it, since its next block is what lets a free be recorded. An allocation that still finds no room despite the check is the volume's sticky error, as before.
 
 **Space comes from arenas.** Each arena keeps an append-only log of allocations and frees, replayed at mount into an in-memory map and compacted now and then. A replay covers the log exactly as far as the arena's header says. Appends after a commit only add to the last block, so a write torn later cannot damage the covered prefix, and gefs's per-commit sync markers are not needed. A compacted log is new blocks that hold only the free ranges. The old chain's blocks stay unused until the commit that points the arena at the new log is durable, because a crash before then replays the old one. The arena is chosen round-robin, offset by block type, so data, pivot and leaf blocks each tend to stay sequential. Freed ranges are sent to the device as `DISCARD` in batches.
 
@@ -179,7 +183,8 @@ It keeps gefs's discipline anyway: blocks that leave the mutator are immutable, 
 - **Supplying.** `pager_supply` copies the pages in from an anonymous VMO. A page already supplied stays as it is.
 - **Mappings** of such a VMO map what has been supplied and fault in the rest. A forked task shares them rather than copying them.
 - **Dirty pages.** A page is mapped read-only until it is written; that write marks it dirty. `pager_op DIRTY` lists the dirty ranges. To write back, the pager cleans a range (`CLEAN`, which write-protects it in every mapping), then reads it and writes it out: a write before the clean is in what it reads, one after it is dirty for next time. `EVICT` frees clean pages, which are asked for again when touched.
-- **Resizing.** `vmo_op RESIZE` grows a pager-backed VMO with absent pages, or shrinks it, taking the pages past the end out of every mapping. Anonymous VMOs can't be resized yet.
+- **Resizing.** `pager_op RESIZE` grows a pager-backed VMO with absent pages, or shrinks it: the pages past the end are made absent, taken out of every mapping, and only then freed. It is the pager's alone (`vmo_op` on such a VMO is refused), since everyone who maps the file shares the VMO. Anonymous VMOs can't be resized yet.
+- **A full port.** A page request the pager's port has no room for is not lost: the faulting thread asks again every millisecond until its deadline.
 - **The kernel's own copies** to and from user memory take no page that is not there yet. They fail as on an unmapped page, since some are made under locks. A program touches a mapped file's pages itself before handing them to a system call, as the musl back end's I/O does.
 
 **The verified base tree is `distd`'s,** which settles 06 §16 question 2:

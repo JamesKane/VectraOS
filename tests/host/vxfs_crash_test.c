@@ -292,6 +292,86 @@ static void cut_free(cutdev *c) {
 
 static uint32_t cuts, torn, at_newer;
 
+// Whether v's labels hold what they did at commit `got`.
+static bool labels_match(vxfs_vol *v, const vxfs_check *chk, uint64_t got, uint64_t done) {
+  if (got >= nstates) return true;
+  const state *s = &states[got];
+  bool ok = chk->labels == s->n;
+  uint8_t k[32], val[VXFS_INLMAX];
+  for (uint32_t i = 0; ok && i < s->n; i++) {
+    vxfs_tree t;
+    ok = vxfs_snap_open(v, s->name[i], &t) == VX_OK;
+    for (uint32_t j = 0; ok && j < NKEYS; j++) {
+      uint16_t nv = 0;
+      vx_status ls = vxfs_lookup(&v->fs, &t, k, key_of(j, k), val, &nv);
+      ok = s->m[i].nv[j] ? ls == VX_OK && nv == s->m[i].nv[j] && memcmp(val, s->m[i].v[j], nv) == 0
+                         : ls == VX_ERR_NOT_FOUND;
+    }
+    if (!ok)
+      fprintf(stderr, "cut after commit %llu: label %s differs\n", (unsigned long long)done, s->name[i]);
+  }
+  return ok;
+}
+
+static uint32_t second_cuts;
+
+// A second cut, in what came after a first: image is the disk the first
+// left (and its mount repaired), events what two more commits on it wrote;
+// power is cut at event `at`. It must mount, be clean, and be the first
+// cut's commit (its labels as they were) or one of the two after it.
+static bool cut_again(const uint8_t *image, const recorder *r2, uint32_t at, uint64_t got) {
+  uint8_t *durable = malloc(BLOCKS * VXFS_BLKSZ);
+  memcpy(durable, image, BLOCKS * VXFS_BLKSZ);
+  event *pending[4096];
+  uint32_t np = 0;
+  for (uint32_t i = 0; i < at && i < r2->n; i++) {
+    const event *e = &r2->ev[i];
+    if (e->addr != ~0ull) {
+      if (np == 4096) abort();
+      pending[np++] = (event *)e;
+      continue;
+    }
+    for (uint32_t j = 0; j < np; j++) memcpy(durable + pending[j]->addr, pending[j]->data, VXFS_BLKSZ);
+    np = 0;
+  }
+  cutdev c = {.durable = durable};
+  for (uint32_t i = 0; i < np; i++) // in flight: each lands or not, some torn
+    if (below(2)) {
+      uint8_t *b = cut_block(&c, pending[i]->addr);
+      if (below(8) == 0)
+        for (uint32_t sct = 0; sct < VXFS_BLKSZ / SECTOR; sct++) {
+          if (below(2)) memcpy(b + (size_t)sct * SECTOR, pending[i]->data + (size_t)sct * SECTOR, SECTOR);
+        }
+      else
+        memcpy(b, pending[i]->data, VXFS_BLKSZ);
+    }
+  second_cuts++;
+  vxfs_vol v;
+  vxfs_dev dev = {
+      .ctx = &c, .read = cut_read, .write = cut_write, .barrier = cut_barrier, .size = BLOCKS * VXFS_BLKSZ};
+  vx_status st = vxfs_mount(&v, dev, MEM, 256);
+  bool ok = st == VX_OK;
+  if (!ok) fprintf(stderr, "second cut after commit %llu: mount: %d\n", (unsigned long long)got, st);
+  vxfs_check chk;
+  if (ok && vxfs_check_volume(&v, &chk) != VX_OK) {
+    fprintf(stderr,
+            "second cut after commit %llu: check: leaked %llu unalloc %llu shared %llu damaged %llu\n",
+            (unsigned long long)got, (unsigned long long)chk.leaked, (unsigned long long)chk.unallocated,
+            (unsigned long long)chk.shared, (unsigned long long)chk.damaged);
+    ok = false;
+  }
+  if (ok && (v.sb.commit < got || v.sb.commit > got + 2)) {
+    fprintf(stderr, "second cut after commit %llu: mounted %llu\n", (unsigned long long)got,
+            (unsigned long long)v.sb.commit);
+    ok = false;
+  }
+  if (ok && v.sb.commit == got) ok = labels_match(&v, &chk, got, got);
+  vxfs_unmount(&v);
+  cut_free(&c);
+  free(durable);
+  return ok;
+}
+
 // Mounts what a cut left (durable, and of the writes since the last
 // barrier, those in `pending` chosen to land) and checks it.
 // With tear_sb, every write lands, but the superblocks torn: their first
@@ -350,34 +430,37 @@ static bool try_cut(const uint8_t *durable, event **pending, uint32_t np, uint64
   }
   if (ok && got == done + 1) at_newer++;
   // Its labels, and what they hold.
-  if (ok && got < nstates) {
-    const state *s = &states[got];
-    ok = chk.labels == s->n;
-    uint8_t k[32], val[VXFS_INLMAX];
-    for (uint32_t i = 0; ok && i < s->n; i++) {
-      vxfs_tree t;
-      ok = vxfs_snap_open(&v, s->name[i], &t) == VX_OK;
-      for (uint32_t j = 0; ok && j < NKEYS; j++) {
-        uint16_t nv = 0;
-        vx_status ls = vxfs_lookup(&v.fs, &t, k, key_of(j, k), val, &nv);
-        ok = s->m[i].nv[j] ? ls == VX_OK && nv == s->m[i].nv[j] && memcmp(val, s->m[i].v[j], nv) == 0
-                           : ls == VX_ERR_NOT_FOUND;
-      }
-      if (!ok)
-        fprintf(stderr, "cut after commit %llu: label %s differs\n", (unsigned long long)done, s->name[i]);
-    }
-  }
-  // And it goes on: a change and a commit on what the cut left.
-  vxfs_branch *br;
-  if (ok && got < nstates && states[got].n && states[got].name[0][0] == 'b' &&
-      vxfs_branch_open(&v, states[got].name[0], &br) == VX_OK) {
-    uint8_t k[32], val[4] = {1, 2, 3, 4};
-    vxfs_msg m = {.op = VXFS_OINSERT, .k = k, .nk = key_of(0, k), .v = val, .nv = 4};
-    ok = vxfs_upsert(&v.fs, &br->t, &m, 1) == VX_OK && vxfs_end_op(&v.fs) && vxfs_commit(&v) == VX_OK &&
-         vxfs_check_volume(&v, &chk) == VX_OK;
-    if (!ok) fprintf(stderr, "cut after commit %llu: no commit after it\n", (unsigned long long)done);
-  }
+  if (ok) ok = labels_match(&v, &chk, got, done);
+  // And it goes on: two commits on what the cut left, recorded, the second
+  // reusing what the first freed; then power is cut again in them.
   vxfs_unmount(&v);
+  bool more = ok && got < nstates && states[got].n && states[got].name[0][0] == 'b';
+  if (more) {
+    uint8_t *image = malloc(BLOCKS * VXFS_BLKSZ);
+    for (uint64_t at = 0; at < BLOCKS * VXFS_BLKSZ; at += VXFS_BLKSZ) cut_read(&c, at, image + at);
+    recorder r2 = {.live = malloc(BLOCKS * VXFS_BLKSZ), .on = true};
+    memcpy(r2.live, image, BLOCKS * VXFS_BLKSZ);
+    vxfs_dev d2 = {.ctx = &r2,
+                   .read = rec_read,
+                   .write = rec_write,
+                   .barrier = rec_barrier,
+                   .size = BLOCKS * VXFS_BLKSZ};
+    vxfs_branch *br;
+    ok = vxfs_mount(&v, d2, MEM, 256) == VX_OK && vxfs_branch_open(&v, states[got].name[0], &br) == VX_OK;
+    for (uint32_t round = 0; ok && round < 2; round++) {
+      uint8_t k[32], val[4] = {1, 2, 3, (uint8_t)round};
+      vxfs_msg m = {.op = VXFS_OINSERT, .k = k, .nk = key_of(2 * round, k), .v = val, .nv = 4};
+      ok = vxfs_upsert(&v.fs, &br->t, &m, 1) == VX_OK && vxfs_end_op(&v.fs) && vxfs_commit(&v) == VX_OK &&
+           vxfs_check_volume(&v, &chk) == VX_OK;
+    }
+    if (!ok) fprintf(stderr, "cut after commit %llu: no commits after it\n", (unsigned long long)done);
+    vxfs_unmount(&v);
+    for (uint32_t i = 0; ok && i < 3; i++) ok = cut_again(image, &r2, below(r2.n + 1), got);
+    for (uint32_t i = 0; ok && i < r2.n; i++) // and at every barrier of the first of them
+      if (r2.ev[i].addr == ~0ull && below(4) == 0) ok = cut_again(image, &r2, i, got);
+    for (uint32_t i = 0; i < r2.n; i++) free(r2.ev[i].data);
+    free(r2.ev), free(r2.live), free(image);
+  }
   cut_free(&c);
   return ok;
 }
@@ -436,7 +519,8 @@ static void test_cuts(uint64_t seed, uint32_t rounds, uint32_t narenas) {
 int main(void) {
   // Two arenas; and 24, a superblock of more than one sector, which a cut can tear.
   for (uint64_t seed = 1; seed <= 3; seed++) test_cuts(seed * 0x9E3779B97F4A7C15ull, 220, seed == 3 ? 24 : 2);
-  CHECK(cuts > 1000 && at_newer > 100 && torn > 500); // the cuts reached what they are for
+  CHECK(cuts > 1000 && at_newer > 100 && torn > 500 &&
+        second_cuts > 2000); // the cuts reached what they are for
   free(states);
   return check_result();
 }

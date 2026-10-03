@@ -2,7 +2,7 @@
 # vectra, a member of adm, with fsd's home branch on /tmp, its adm branch on
 # /adm and home again, permissively (%home), on /n. Each ctl command is
 # written and status read back; then a file no one may read is read through
-# /n; then a rollback, and a halt. The last line counts the checks.
+# /n; a users file of 127; then a rollback, and a halt. The last line counts the checks.
 
 checks=0
 failed=0
@@ -52,6 +52,26 @@ echo secret >/tmp/secret
 chmod 000 /tmp/secret
 check denied refused `{refused cat /tmp/secret}
 check permissive secret `{cat /n/secret}
+
+# Open through one attach (%home), removed through another (home): kept
+# until it is closed, as one file, whoever has it open and however.
+echo held >/tmp/held
+{ rm /tmp/held; cat <[0=3] >/tmp/held.out } <[3]/n/held
+check kept-open held `{cat /tmp/held.out}
+
+# A users file of 127 users and no none: fsd adds none, in a slot of its
+# own, and goes on answering. Then the old one again.
+cp /adm/users /tmp/users.orig
+{
+  echo 0:adm:adm:vectra
+  echo 2:u2::
+  echo 1000:vectra:vectra:
+  seq 3 126 | sed 's/.*/&:u&::/'
+} >/adm/users
+check users-127 127 `{wc -l </adm/users}
+check still-answers 'ctl status users' `{ls /adm | sort}
+cp /tmp/users.orig /adm/users
+check users-back 'adm none vectra' `{cut -d: -f2 /adm/users}
 
 # A rollback: what came after the snapshot is gone, the old head kept.
 ctl snap home home@t2

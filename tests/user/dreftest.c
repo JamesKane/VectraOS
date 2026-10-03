@@ -61,8 +61,8 @@ const char *vx_main(void) {
   // fsd's own page cache as the region: refused, not waited on (its pages
   // were never asked for), and fsd still answers.
   vx_handle cache = VX_HANDLE_NONE;
-  uint64_t at = 0;
-  CHECK(p9c_map(f.c, f.fid, 0, 8192, P9_PROT_READ, &cache, &at) == VX_OK);
+  uint64_t at = 0, avail = 0;
+  CHECK(p9c_map(f.c, f.fid, 0, 8192, P9_PROT_READ, &cache, &at, &avail) == VX_OK && avail >= 8192);
   CHECK(p9c_readref(f.c, f.fid, 0, cache, 0, 4096, &done) != VX_OK);
   if (cache) vx_handle_close(cache);
   CHECK(p9c_readref(f.c, f.fid, 0, in, 0, 4096, &done) == VX_OK && done == 4096);

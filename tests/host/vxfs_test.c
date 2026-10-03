@@ -384,7 +384,7 @@ static vxfs_arena copy_arena(const vxfs_arena *a) {
 
 // A block taken from the arena and logged so.
 static uint64_t take_logged(vxfs *fs, vxfs_arena *a) {
-  uint64_t o = arena_take(fs, a, false);
+  uint64_t o = arena_take(fs, a, false, false);
   return o && log_append(fs, a, o, VXFS_BLKSZ, LOG_ALLOC) ? o : 0;
 }
 
@@ -524,16 +524,18 @@ static void test_free(void) {
   CHECK(vxfs_free_deferred(&fs) && is_free(a, bp[2].addr) && arena_sane(a));
   fs.snaptree = false;
 
-  // Full: every block taken, then NO_MEMORY; the reserve is the commit's.
+  // Full: every block taken, then NO_SPACE (vxfs_room says so first,
+  // with nothing changed); the reserve is the commit's.
   uint32_t n = 0;
   a->reserve = 4ull * VXFS_BLKSZ;
   while (vxfs_new_block(&fs, VXFS_TDAT)) n++;
-  CHECK(fs.err == VX_ERR_NO_MEMORY);
-  fs.err = VX_OK, fs.use_reserve = true;
+  CHECK(fs.err == VX_ERR_NO_SPACE && vxfs_room(&fs, 0, false) == VX_ERR_NO_SPACE);
+  fs.err = VX_OK;
+  CHECK(vxfs_room(&fs, 0, false) == VX_ERR_NO_SPACE && fs.err == VX_OK); // a refusal, not a failure
+  fs.use_reserve = true;
   uint32_t more = 0;
   while (vxfs_new_block(&fs, VXFS_TDAT)) more++;
-  CHECK(fs.err == VX_ERR_NO_MEMORY && more == 4 &&
-        n + more == 64 - 4); // the log, bp[0], bp[1] and bp[3] held
+  CHECK(fs.err == VX_ERR_NO_SPACE && more == 4 && n + more == 64 - 4); // the log, bp[0], bp[1] and bp[3] held
   vxfs_close(&fs);
   memdev_free(d);
 }
