@@ -1,12 +1,13 @@
 // blktest: the block class's conformance test (docs/proto/block.md §7), run
 // as a service in the block scenario (tests/qemu/block.ndb) against the
 // scenario's second disk, /srv/disk1, which ./build makes fresh for each run:
-// zeros, but for a signature in sector 0.
+// zeros, but for a signature in sector 0 and a GPT of two partitions, which
+// partd serves on /srv/disk1.esp and /srv/disk1.vectra.
 //
 // It checks INFO; reads and writes across sector and page boundaries, and as
 // large as the driver takes; FLUSH, WRITE_FUA and DISCARD; every refusal of
 // §2 and of CONNECT; a second session on a read-only window; many requests
-// in flight at once. Then it kills the disk drivers, through the task tree
+// in flight at once; partd's partitions as windows. Then it kills the disk drivers, through the task tree
 // its manifest gives it, and reads back through a new session what it wrote
 // before. Each check prints a line only when it fails; the last line counts
 // them.
@@ -17,6 +18,9 @@
 
 static constexpr char SIGNATURE[] = "VectraOS block test disk";
 static constexpr uint32_t SPAN = 3 * 512; // three sectors, across a page boundary in the arena
+// Where the whole-disk checks write: past the test partitions, which end at
+// sector 83967 (./build's test_disk), and before the backup GPT.
+static constexpr uint64_t BASE = 100'000;
 
 typedef struct session {
   vx_ring ring;
@@ -127,6 +131,43 @@ static bool same(const uint8_t *a, const uint8_t *b, uint32_t len) {
   return true;
 }
 
+// The partition partd serves on /srv/POST: `sectors` long, at `first` on the
+// disk, beginning with `marker`. `whole` is a session on the whole disk.
+static void check_partition(const char *post, uint64_t first, uint64_t sectors, const char *marker,
+                            session *whole) {
+  char name[32] = "srv:";
+  memcpy(name + 4, post, vx_cstr(post).len + 1);
+  vx_handle keep = connector;
+  connector = vx_spawn_take(name);
+  CHECK(connector != VX_HANDLE_NONE);
+  session p = {};
+  CHECK(connector && open_window(&p, 0, 0, 0) == VX_OK);
+  if (!p.end) {
+    connector = keep;
+    return;
+  }
+  vx_cqe info = call(&p, (vx_sqe){.opcode = VX_BLOCK_INFO});
+  CHECK(info.aux2 == sectors);
+  size_t m = vx_cstr(marker).len;
+  CHECK(xfer(&p, VX_BLOCK_READ, 0, 0, 512) == 512 && same(p.arena, (const uint8_t *)marker, (uint32_t)m));
+  fill(p.arena, 1024, 77);
+  CHECK(xfer(&p, VX_BLOCK_WRITE, sectors - 2, 0, 1024) == 1024); // the partition's last two sectors
+  CHECK(xfer(whole, VX_BLOCK_READ, first + sectors - 2, 0, 1024) == 1024 &&
+        same(whole->arena, p.arena, 1024));
+  CHECK(xfer(&p, VX_BLOCK_READ, sectors - 1, 0, 1024) == VX_ERR_RANGE); // past the partition's end
+  close_session(&p);
+  // A window inside it, counted from its start; one past its end refused.
+  CHECK(open_window(&p, 1, 4, VX_BLOCK_READONLY) == VX_OK);
+  vx_cqe winfo = call(&p, (vx_sqe){.opcode = VX_BLOCK_INFO});
+  CHECK(winfo.aux2 == 4 && (winfo.flags & VX_BLOCK_INFO_READONLY));
+  CHECK(xfer(&p, VX_BLOCK_WRITE, 0, 0, 512) == VX_ERR_ACCESS);
+  close_session(&p);
+  CHECK(open_window(&p, sectors, 0, 0) == VX_ERR_RANGE);
+  CHECK(open_window(&p, sectors - 1, 2, 0) == VX_ERR_RANGE);
+  vx_handle_close(connector);
+  connector = keep;
+}
+
 // Kills every disk driver (the boot disk's too: nothing here uses it), and
 // waits for this session to end.
 static void kill_drivers(session *s) {
@@ -175,21 +216,22 @@ const char *vx_main(void) {
   static uint8_t want[128 << 10];
   fill(want, SPAN, 1);
   memcpy(s.arena + 3584, want, SPAN);
-  CHECK(xfer(&s, VX_BLOCK_WRITE, 8, 3584, SPAN) == SPAN);
+  CHECK(xfer(&s, VX_BLOCK_WRITE, BASE + 8, 3584, SPAN) == SPAN);
   memset(s.arena + 65536, 0, SPAN);
-  CHECK(xfer(&s, VX_BLOCK_READ, 8, 65536, SPAN) == SPAN && same(s.arena + 65536, want, SPAN));
+  CHECK(xfer(&s, VX_BLOCK_READ, BASE + 8, 65536, SPAN) == SPAN && same(s.arena + 65536, want, SPAN));
 
   // As large as the driver takes, at the end of the arena.
   uint32_t big = max > sizeof want ? (uint32_t)sizeof want : max, at = (uint32_t)(VX_BLOCK_ARENA - big);
   fill(want, big, 9);
   memcpy(s.arena + at, want, big);
-  CHECK(xfer(&s, VX_BLOCK_WRITE_FUA, 1000, at, big) == big);
+  CHECK(xfer(&s, VX_BLOCK_WRITE_FUA, BASE + 1000, at, big) == big);
   memset(s.arena, 0, big);
-  CHECK(xfer(&s, VX_BLOCK_READ, 1000, 0, big) == big && same(s.arena, want, big));
+  CHECK(xfer(&s, VX_BLOCK_READ, BASE + 1000, 0, big) == big && same(s.arena, want, big));
   CHECK(call(&s, (vx_sqe){.opcode = VX_BLOCK_FLUSH}).result == 0);
-  CHECK(call(&s, (vx_sqe){.opcode = VX_BLOCK_DISCARD, .target = 4096, .offset = 2048}).result == 0);
-  // The last sector of the disk.
-  CHECK(xfer(&s, VX_BLOCK_WRITE, sectors - 1, 0, 512) == 512);
+  CHECK(call(&s, (vx_sqe){.opcode = VX_BLOCK_DISCARD, .target = BASE + 4096, .offset = 2048}).result == 0);
+  // The last sector of the disk (the backup GPT's header), written back as it was.
+  CHECK(xfer(&s, VX_BLOCK_READ, sectors - 1, 0, 512) == 512 &&
+        xfer(&s, VX_BLOCK_WRITE, sectors - 1, 0, 512) == 512);
 
   // Refusals (§2), none of which reaches the device.
   CHECK(xfer(&s, VX_BLOCK_READ, 0, 0, 0) == VX_ERR_INVALID);            // no length
@@ -223,7 +265,7 @@ const char *vx_main(void) {
 
   // A read-only window: sectors 8 to 23, as a second session at once.
   session w;
-  CHECK(open_window(&w, 8, 16, VX_BLOCK_READONLY) == VX_OK);
+  CHECK(open_window(&w, BASE + 8, 16, VX_BLOCK_READONLY) == VX_OK);
   vx_cqe winfo = call(&w, (vx_sqe){.opcode = VX_BLOCK_INFO});
   CHECK(winfo.aux2 == 16 && (winfo.flags & VX_BLOCK_INFO_READONLY));
   fill(want, SPAN, 1);
@@ -233,6 +275,17 @@ const char *vx_main(void) {
   CHECK(xfer(&w, VX_BLOCK_READ, 15, 0, 1024) == VX_ERR_RANGE);
   CHECK(call(&w, (vx_sqe){.opcode = VX_BLOCK_DISCARD, .target = 0, .offset = 1}).result == VX_ERR_ACCESS);
   close_session(&w);
+
+  // Partitions, through partd: each a window, its first sector the line
+  // ./build wrote there; writes land at the partition's offset on the disk.
+  check_partition("disk1.esp", 2048, 16384, "partition esp\n", &s);
+  check_partition("disk1.vectra", 18432, 65536, "partition vectra\n", &s);
+  vx_handle none = vx_spawn_take("srv:disk1.none");
+  session y;
+  vx_handle keep = connector;
+  connector = none;
+  CHECK(none && open_window(&y, 0, 0, 0) == VX_ERR_NOT_FOUND); // a partition the disk does not have
+  connector = keep;
 
   // CONNECT's refusals.
   session x;
@@ -255,7 +308,7 @@ const char *vx_main(void) {
   CHECK(st == VX_OK);
   if (st == VX_OK) {
     fill(want, big, 9);
-    CHECK(xfer(&s, VX_BLOCK_READ, 1000, 0, big) == big && same(s.arena, want, big));
+    CHECK(xfer(&s, VX_BLOCK_READ, BASE + 1000, 0, big) == big && same(s.arena, want, big));
     close_session(&s);
   }
   vx_print(VX_STR("blktest: "));

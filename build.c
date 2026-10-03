@@ -1250,6 +1250,7 @@ static const program USER_PROGRAMS[] = {
     {"drv-virtio-net", "drivers/drv-virtio-net/net.c", IN_BOOTFS, nullptr, false},
     {"drv-virtio-blk", "drivers/drv-virtio-blk/blk.c", IN_BOOTFS, nullptr, false},
     {"blktest", "tests/user/blktest.c", IN_TESTS, nullptr, false},
+    {"partd", "servers/partd/partd.c", IN_BOOTFS, nullptr, false},
     {"ctest", "tests/posix/ctest.c", IN_TESTS, nullptr, true},
     {"sbasetest", "tests/posix/sbasetest.c", IN_TESTS, nullptr, true},
     {"dbgdemo", "tests/user/dbgdemo.c", IN_TESTS, nullptr, false},
@@ -2353,13 +2354,55 @@ static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
   if (o.gdb) cmd_addv(c, (const char *const[]){"-s", "-S", nullptr});
 }
 
-// A scenario's second disk (disk=MIB): sparse zeros, with a signature in
-// sector 0 so tests know it from the boot disk. Made fresh for each run.
+// A scenario's second disk (disk=MIB), made fresh for each run: sparse
+// zeros, with a signature in sector 0 so tests know it from the boot disk, and
+// a GPT of two partitions, an EFI system partition of 8 MiB at 1 MiB and a
+// VectraOS system volume of 32 MiB after it, each with a line naming it in its
+// first sector (docs/proto/block.md §6).
 static const char *test_disk(const char *path, long mib) {
   static const char SIGNATURE[] = "VectraOS block test disk";
+  // The VectraOS system volume type, 7C6D3E1A-2B4F-4E0A-9C1D-56F2A8B90E35, as stored on disk.
+  static const uint8_t SYSTEM_TYPE[16] = {0x1a, 0x3e, 0x6d, 0x7c, 0x4f, 0x2b, 0x0a, 0x4e,
+                                          0x9c, 0x1d, 0x56, 0xf2, 0xa8, 0xb9, 0x0e, 0x35};
+  uint64_t total = (uint64_t)mib << 11, last = total - 1;
+  struct {
+    const uint8_t *type;
+    uint64_t first, sectors;
+    const char *name, *marker;
+  } parts[] = {{ESP_TYPE, 2048, 16384, "EFI system partition", "partition esp\n"},
+               {SYSTEM_TYPE, 18432, 65536, "vectra", "partition vectra\n"}};
+  if (total < 18432 + 65536 + 2048) die("disk=%ld is too small for the test partitions", mib);
   int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-  if (fd < 0 || ftruncate(fd, (off_t)mib << 20) != 0) die("cannot make %s", path);
-  pwrite_all(fd, SIGNATURE, sizeof SIGNATURE - 1, 0, path);
+  if (fd < 0 || ftruncate(fd, (off_t)(total * SECTOR)) != 0) die("cannot make %s", path);
+  uint8_t *entries = alloc(GPT_TABLE_BYTES);
+  memset(entries, 0, GPT_TABLE_BYTES);
+  for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++) {
+    uint8_t *e = entries + i * 128;
+    memcpy(e, parts[i].type, 16);
+    derived_guid(e + 16, i + 1, "test partition");
+    put64(e + 32, parts[i].first);
+    put64(e + 40, parts[i].first + parts[i].sectors - 1);
+    for (size_t k = 0; parts[i].name[k]; k++) put16(e + 56 + 2 * k, (uint16_t)parts[i].name[k]);
+    pwrite_all(fd, parts[i].marker, strlen(parts[i].marker), parts[i].first * SECTOR, path);
+  }
+  uint8_t disk_guid[16], primary[SECTOR], backup[SECTOR];
+  derived_guid(disk_guid, 0, "test disk");
+  uint32_t entries_crc = crc32(entries, GPT_TABLE_BYTES);
+  gpt_header(primary, 1, last, 2, last, disk_guid, entries_crc);
+  gpt_header(backup, last, 1, last - 32, last, disk_guid, entries_crc);
+  // Sector 0: the signature in the boot code's place, and a protective MBR.
+  uint8_t mbr[SECTOR] = {};
+  memcpy(mbr, SIGNATURE, sizeof SIGNATURE - 1);
+  uint8_t *pe = mbr + 446;
+  pe[2] = 0x02, pe[4] = 0xee, pe[5] = pe[6] = pe[7] = 0xff;
+  put32(pe + 8, 1);
+  put32(pe + 12, last > 0xffffffff ? 0xffffffff : (uint32_t)last);
+  mbr[510] = 0x55, mbr[511] = 0xaa;
+  pwrite_all(fd, mbr, SECTOR, 0, path);
+  pwrite_all(fd, primary, SECTOR, SECTOR, path);
+  pwrite_all(fd, entries, GPT_TABLE_BYTES, 2 * SECTOR, path);
+  pwrite_all(fd, entries, GPT_TABLE_BYTES, (last - 32) * SECTOR, path);
+  pwrite_all(fd, backup, SECTOR, last * SECTOR, path);
   close(fd);
   return path;
 }

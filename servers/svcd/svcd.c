@@ -20,6 +20,7 @@
 //   irq=LINE                                   a driver's interrupt
 //   claim=SRV                                  the post's server end, as "claim:SRV"
 //   connect=SRV                                a connector to the post, as "srv:SRV"
+//   part=SRV type=GUID|name=NAME               passed on as it is, for partd (docs/proto/block.md §6)
 //   ns=NAME                                    the namespace template /lib/ns/NAME, a
 //                                              namespace(6) file (ADR-0009), here
 //
@@ -429,7 +430,8 @@ static vx_status start(service *s) {
       memcpy(hn + prefix, p->name.ptr, p->name.len);
       st = vx_handle_dup(claim ? p->server : p->client, CONNECTOR_RIGHTS, &b.handles[b.count]);
       b.names[b.count++] = (vx_str){hn, prefix + p->name.len};
-    } else if (is_device_record(&rec)) { // passed on as they are, for the driver to read
+    } else if (is_device_record(&rec) || vx_ndb_has(&rec, "part")) { // passed on as they are: a driver's
+                                                                     // device, partd's partitions
       for (int i = 0; i < rec.count; i++) {
         if (rec.tuples[i].value.ptr)
           vx_ndb_put_key(&b.w, rec.tuples[i].key, rec.tuples[i].value);
