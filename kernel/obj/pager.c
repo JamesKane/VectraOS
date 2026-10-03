@@ -11,7 +11,11 @@
 //
 // Faults are resolved one page at a time, mapping only the faulting page:
 // a mapping of a pager-backed VMO maps what is supplied when it is made,
-// and the rest as it is touched. The kernel's own copies to and from user
+// and the rest as it is touched. A page is mapped read-only, even in a
+// writable mapping, until it is written: that write faults, marks it dirty
+// (PAGE_DIRTY) and maps it writable, which is how the pager learns what to
+// write back (pager_op DIRTY). Cleaning takes the pages out of every
+// mapping, so the next write marks them again. The kernel's own copies to and from user
 // memory (copy_from_user) take no page that is not there yet: they fail,
 // as on a page that is not mapped, since some are made under locks.
 
@@ -64,10 +68,6 @@ typedef enum pager_result : uint8_t {
   PAGER_KILLED,   // the thread was killed while it waited
 } pager_result;
 
-static uint32_t mapping_flags(const mapping *m) {
-  return MAP_USER | (m->flags & VX_MAP_WRITE ? MAP_WRITE : 0) | (m->flags & VX_MAP_EXEC ? MAP_EXEC : 0);
-}
-
 // A user fault at address (access: read 0, write 1, execute 2) in the
 // current task: resolved here if it is on a pager-backed mapping.
 static pager_result pager_fault(uint64_t address, uint32_t access) {
@@ -89,14 +89,24 @@ static pager_result pager_fault(uint64_t address, uint32_t access) {
     vmo *v = m->vmo;
     uint64_t index = (m->offset + (page_va - m->va)) / 4096;
     spin_lock(&v->lock);
-    uint64_t pa = vmo_page(v, index);
-    if (pa) { // supplied: mapped here now (another thread may have done it first)
-      int level;
-      bool there = leaf_entry(t->root, page_va, &level) != nullptr;
-      bool ok = there || map_range(t->root, page_va, pa, 4096, mapping_flags(m));
+    if (index >= v->size / 4096) { // past its end, since it shrank: an ordinary fault
       spin_unlock(&v->lock);
       spin_unlock(&t->lock);
-      return ok ? PAGER_MAPPED : PAGER_NOT_MINE; // no memory for a table: the fault stands
+      return PAGER_NOT_MINE;
+    }
+    uint64_t pa = vmo_page(v, index);
+    if (pa) { // supplied: mapped here now (another thread may have done it first), dirty if written
+      if (access == 1) v->pages[index] |= PAGE_DIRTY;
+      int level;
+      uint64_t *e = leaf_entry(t->root, page_va, &level);
+      bool upgrade = e && access == 1 && !arch_pte_user_ok(*e, true); // read-only until now
+      if (upgrade) unmap_page(t->root, page_va);
+      bool ok = (e && !upgrade) || map_range(t->root, page_va, pa, 4096, page_flags(m, v->pages[index]));
+      uint64_t root = t->root;
+      spin_unlock(&v->lock);
+      spin_unlock(&t->lock);
+      if (upgrade) arch_tlb_shootdown(root, page_va, 4096); // no CPU keeps the read-only translation
+      return ok ? PAGER_MAPPED : PAGER_NOT_MINE;            // no memory for a table: the fault stands
     }
     // Not there: ask for it, if no one has, and wait.
     bool ask = !v->pages[index];
@@ -166,4 +176,136 @@ static vx_status pager_supply(pager *g, vmo *v, uint64_t offset, uint64_t size, 
   for (; w; w = w->next) thread_wake_token(w->thread, w, VX_OK);
   spin_unlock(&v->lock);
   return st;
+}
+
+// --- Taking pages out of mappings ---
+
+// Pages [first, first + count) of v, out of every task's mappings of it,
+// and out of every CPU's TLB: the next touch faults (pager_fault).
+static void vmo_unmap_everywhere(vmo *v, uint64_t first, uint64_t count) {
+  uint64_t last_id = 0;
+  for (;;) {
+    task *t = nullptr; // the task with the next id
+    spin_lock(&all_tasks_lock);
+    for (task *c = all_tasks; c; c = c->all_next)
+      if (c->id > last_id && (!t || c->id < t->id)) t = c;
+    bool held = t && object_tryref(&t->obj); // one going away is skipped: its mappings go with it
+    if (t) last_id = t->id;
+    spin_unlock(&all_tasks_lock);
+    if (!t) return;
+    if (!held) continue;
+    uint64_t lo[TASK_MAX_MAPPINGS / 8], len[TASK_MAX_MAPPINGS / 8];
+    uint32_t n = 0;
+    spin_lock(&t->lock);
+    for (uint32_t i = 0; t->maps && i < TASK_MAX_MAPPINGS; i++) {
+      mapping *m = &t->maps[i];
+      if (!m->size || m->vmo != v) continue;
+      uint64_t mfirst = m->offset / 4096, mend = mfirst + m->size / 4096;
+      uint64_t a = first > mfirst ? first : mfirst, b = first + count < mend ? first + count : mend;
+      if (a >= b) continue;
+      uint64_t va = m->va + (a - mfirst) * 4096;
+      for (uint64_t p = 0; p < b - a; p++) unmap_page(t->root, va + p * 4096);
+      if (n < TASK_MAX_MAPPINGS / 8)
+        lo[n] = va, len[n++] = (b - a) * 4096;
+      else
+        lo[0] = 0, len[0] = USER_TOP, n = 1; // many: all of it
+    }
+    uint64_t root = t->root;
+    spin_unlock(&t->lock);
+    for (uint32_t i = 0; root && i < n; i++) arch_tlb_shootdown(root, lo[i], len[i]);
+    object_release(&t->obj);
+  }
+}
+
+// --- pager_op ---
+
+// DIRTY: the dirty pages of [offset, offset + size) as ranges, into out
+// (VX_PAGER_RANGES of them at most): how many.
+static int64_t pager_dirty(vmo *v, uint64_t offset, uint64_t size, vx_pager_range *out) {
+  uint32_t n = 0;
+  spin_lock(&v->lock);
+  uint64_t end = (offset + size) / 4096 < v->size / 4096 ? (offset + size) / 4096 : v->size / 4096;
+  for (uint64_t i = offset / 4096; i < end && n < VX_PAGER_RANGES; i++) {
+    if (!vmo_page(v, i) || !(v->pages[i] & PAGE_DIRTY)) continue;
+    if (n && out[n - 1].offset + out[n - 1].size == i * 4096)
+      out[n - 1].size += 4096;
+    else
+      out[n++] = (vx_pager_range){.offset = i * 4096, .size = 4096};
+  }
+  spin_unlock(&v->lock);
+  return n;
+}
+
+// CLEAN: [offset, offset + size) clean, and write-protected everywhere, so
+// that a write from now on marks it dirty again. The pager cleans before it
+// reads a range to write it back: a write that lands before the clean is in
+// what it reads, one after it is dirty for the next time.
+static void pager_clean(vmo *v, uint64_t first, uint64_t count) {
+  spin_lock(&v->lock);
+  for (uint64_t i = first; i < first + count && i < v->size / 4096; i++)
+    if (vmo_page(v, i)) v->pages[i] &= ~PAGE_DIRTY;
+  spin_unlock(&v->lock);
+  vmo_unmap_everywhere(v, first, count);
+}
+
+// EVICT: the clean pages of [offset, offset + size) freed, absent again (a
+// later touch asks the pager for them). A page is made absent before it
+// leaves the mappings, and freed only after, so nothing maps a freed page.
+static void pager_evict(vmo *v, uint64_t first, uint64_t count) {
+  for (uint64_t at = first; at < first + count;) {
+    uint64_t freed[64];
+    uint32_t n = 0;
+    uint64_t from = at;
+    spin_lock(&v->lock);
+    for (; at < first + count && at < v->size / 4096 && n < 64; at++) {
+      uint64_t pa = vmo_page(v, at);
+      if (!pa || (v->pages[at] & PAGE_DIRTY)) continue;
+      freed[n++] = pa;
+      v->pages[at] = 0;
+    }
+    bool past = at >= v->size / 4096;
+    spin_unlock(&v->lock);
+    vmo_unmap_everywhere(v, from, at - from);
+    for (uint32_t i = 0; i < n; i++) phys_free(freed[i], 0);
+    if (past) break;
+  }
+}
+
+// --- vmo_op resize ---
+
+// A pager-backed VMO's new size: pages past it out of the mappings and
+// freed; pages added absent. Its page list is made again if it outgrows it.
+static vx_status vmo_resize(vmo *v, uint64_t size) {
+  if (!v->pager) return VX_ERR_UNSUPPORTED; // anonymous memory is read without the lock: not yet
+  if (!size || size > VMO_MAX_SIZE) return VX_ERR_RANGE;
+  size = (size + 4095) & ~4095ull;
+  uint64_t count = size / 4096;
+  unsigned order = 0;
+  while ((4096ull << order) < count * sizeof(uint64_t)) order++;
+  uint64_t list = order > v->list_order ? phys_alloc(order) : 0;
+  if (order > v->list_order && !list) return VX_ERR_NO_MEMORY;
+  if (list) memset(phys_to_virt(list), 0, 4096ull << order);
+  spin_lock(&v->lock);
+  uint64_t old = v->size / 4096;
+  if (count < old) v->size = size; // faults past it are ordinary from now on
+  spin_unlock(&v->lock);
+  if (count < old) vmo_unmap_everywhere(v, count, old - count);
+  spin_lock(&v->lock);
+  for (uint64_t i = count; i < old; i++) { // past the end: freed
+    uint64_t pa = vmo_page(v, i);
+    if (pa) phys_free(pa, 0);
+    v->pages[i] = 0;
+  }
+  uint64_t old_list = 0;
+  unsigned old_order = v->list_order;
+  if (list) { // a bigger list: what there is, moved over
+    uint64_t *pages = phys_to_virt(list);
+    for (uint64_t i = 0; i < old && i < count; i++) pages[i] = v->pages[i];
+    old_list = (uint64_t)v->pages - boot.hhdm;
+    v->pages = pages, v->list_order = order;
+  }
+  v->size = size;
+  spin_unlock(&v->lock);
+  if (old_list) phys_free(old_list, old_order);
+  return VX_OK;
 }

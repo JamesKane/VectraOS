@@ -203,6 +203,16 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   return (vx_status)vx_syscall(VX_SYS_pager_supply, pager, vmo, offset, size, source, source_offset);
 }
 
+// VX_PAGER_DIRTY: how many ranges, or a negative status; CLEAN and EVICT: a status.
+[[maybe_unused]] static int64_t vx_pager_op(vx_handle pager, vx_handle vmo, uint32_t op, uint64_t offset,
+                                            uint64_t size, vx_pager_range *ranges) {
+  return vx_syscall(VX_SYS_pager_op, pager, vmo, op, offset, size, (uint64_t)ranges);
+}
+
+[[maybe_unused]] static vx_status vx_vmo_resize(vx_handle vmo, uint64_t size) {
+  return (vx_status)vx_syscall(VX_SYS_vmo_op, vmo, VX_VMO_RESIZE, size, 0, 0, 0);
+}
+
 [[maybe_unused]] static vx_status vx_irq_create(vx_handle resource, uint32_t line, vx_handle *out) {
   *out = VX_HANDLE_NONE;
   return (vx_status)vx_syscall(VX_SYS_irq_create, resource, line, 0, (uint64_t)out, 0, 0);

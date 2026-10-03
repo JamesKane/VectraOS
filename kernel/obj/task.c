@@ -359,6 +359,13 @@ static vx_status task_query(task *t, uint64_t addr, vx_map_info *out) {
   return best ? VX_OK : VX_ERR_NOT_FOUND;
 }
 
+// How a page of a mapping is mapped: writable only if the mapping is and,
+// for a pager's page, only once it is dirty (pager.c).
+static uint32_t page_flags(const mapping *m, uint64_t entry) {
+  bool write = (m->flags & VX_MAP_WRITE) && (!m->vmo->pager || (entry & PAGE_DIRTY));
+  return MAP_USER | (write ? MAP_WRITE : 0) | (m->flags & VX_MAP_EXEC ? MAP_EXEC : 0);
+}
+
 static vx_status task_map(task *t, vmo *v, uint64_t offset, uint64_t size, uint32_t flags, uint64_t *va) {
   uint64_t vmo_end;
   if ((flags & VX_MAP_WRITE) && (flags & VX_MAP_EXEC)) return VX_ERR_ACCESS;
@@ -385,9 +392,11 @@ static vx_status task_map(task *t, vmo *v, uint64_t offset, uint64_t size, uint3
   // touched (pager.c).
   uint64_t done = 0;
   if (v->pager) spin_lock(&v->lock);
+  mapping shape = {.vmo = v, .flags = flags};
   while (st == VX_OK && done < size) {
     uint64_t pa = vmo_page(v, (offset + done) / 4096);
-    if (pa && !map_range(t->root, at + done, pa, 4096, mf))
+    uint32_t pf = v->pager ? page_flags(&shape, v->pages[(offset + done) / 4096]) : mf;
+    if (pa && !map_range(t->root, at + done, pa, 4096, pf))
       st = VX_ERR_NO_MEMORY;
     else
       done += 4096;

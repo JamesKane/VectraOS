@@ -178,6 +178,8 @@ It keeps gefs's discipline anyway: blocks that leave the mutator are immutable, 
 - **Asking.** A fault on a page the pager has not supplied sends a packet to the pager's port (`VX_TRIGGER_PAGER`: the VMO's key and the page's offset), once however many threads fault on it. The threads wait until the pager supplies the page or its deadline passes.
 - **Supplying.** `pager_supply` copies the pages in from an anonymous VMO. A page already supplied stays as it is.
 - **Mappings** of such a VMO map what has been supplied and fault in the rest. A forked task shares them rather than copying them.
+- **Dirty pages.** A page is mapped read-only until it is written; that write marks it dirty. `pager_op DIRTY` lists the dirty ranges. To write back, the pager cleans a range (`CLEAN`, which write-protects it in every mapping), then reads it and writes it out: a write before the clean is in what it reads, one after it is dirty for next time. `EVICT` frees clean pages, which are asked for again when touched.
+- **Resizing.** `vmo_op RESIZE` grows a pager-backed VMO with absent pages, or shrinks it, taking the pages past the end out of every mapping. Anonymous VMOs can't be resized yet.
 - **The kernel's own copies** to and from user memory take no page that is not there yet. They fail as on an unmapped page, since some are made under locks. A program touches a mapped file's pages itself before handing them to a system call, as the musl back end's I/O does.
 
 **The verified base tree is `distd`'s,** which settles 06 §16 question 2:

@@ -6,7 +6,8 @@
 // addresses. Physical VMOs (device memory) are made in device.c. A
 // pager-backed VMO (pager.c) starts with none: a page's entry is 0 until its
 // pager is asked for it, PAGE_ASKED until it is supplied, and its address
-// from then on; its lock covers the list and the threads waiting on it.
+// from then on, with PAGE_DIRTY in its low bits once it has been written;
+// its lock covers the list and the threads waiting on it.
 
 typedef struct vmo {
   object obj;
@@ -22,9 +23,12 @@ typedef struct vmo {
 } vmo;
 
 static constexpr uint64_t PAGE_ASKED = 1; // a pager-backed page asked for, not yet supplied
+static constexpr uint64_t PAGE_DIRTY = 2; // a pager-backed page written since it was supplied or cleaned
 
 // The address of page i, or 0 if a pager has not supplied it.
-static uint64_t vmo_page(const vmo *v, uint64_t i) { return v->pages[i] > PAGE_ASKED ? v->pages[i] : 0; }
+static uint64_t vmo_page(const vmo *v, uint64_t i) {
+  return v->pages[i] > PAGE_ASKED ? v->pages[i] & ~4095ull : 0;
+}
 
 static pool vmo_pool = POOL_FOR(vmo);
 
@@ -71,7 +75,7 @@ static void pager_drop_vmo(vmo *v); // pager.c: a pager-backed VMO's last refere
 
 static void vmo_destroy(vmo *v) {
   for (uint64_t i = 0; !v->physical && i < v->size / 4096; i++)
-    if (vmo_page(v, i)) phys_free(v->pages[i], 0);
+    if (vmo_page(v, i)) phys_free(vmo_page(v, i), 0);
   if (v->pager) pager_drop_vmo(v);
   phys_free((uint64_t)v->pages - boot.hhdm, v->list_order);
   pool_free(&vmo_pool, v);

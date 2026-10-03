@@ -257,7 +257,25 @@ static_assert(sizeof(vx_cqe) == 32);
 //       the VMO's pages [offset, offset + size) from an anonymous VMO's:
 //       copied in where the VMO has none (a supplied page stays as it is),
 //       and the threads that wait on them woken
+//   pager_op(pager, vmo, op, offset, size, ranges)
+//       VX_PAGER_DIRTY: the range's written pages, as at most VX_PAGER_RANGES
+//       vx_pager_range into ranges; returns how many. A page is mapped
+//       read-only until it is written, and dirty from then on.
+//       VX_PAGER_CLEAN: the range's pages clean, and write-protected in every
+//       mapping. Clean, then read, then write back: a write before the
+//       clean is in what is read, one after it is dirty again.
+//       VX_PAGER_EVICT: the range's clean pages freed; a touch asks again.
+//   vmo_op(vmo, VX_VMO_RESIZE, size)
+//       a pager-backed VMO's new size: pages past it leave every mapping and
+//       are freed (a touch there is an ordinary fault), pages added absent.
+//       Anonymous VMOs: not yet (UNSUPPORTED)
 enum vx_vmo_options : uint32_t { VX_VMO_PHYSICAL = 1, VX_VMO_PAGER = 2 };
+enum vx_pager_op : uint32_t { VX_PAGER_DIRTY = 1, VX_PAGER_CLEAN = 2, VX_PAGER_EVICT = 3 };
+enum vx_vmo_resize_op : uint32_t { VX_VMO_RESIZE = 1 };
+static constexpr uint32_t VX_PAGER_RANGES = 64;
+typedef struct vx_pager_range {
+  uint64_t offset, size;
+} vx_pager_range;
 
 // A page request's range, in its packet's value: the first byte's offset
 // (page-aligned) and how many pages, less one, in the low 12 bits.

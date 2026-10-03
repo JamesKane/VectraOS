@@ -236,6 +236,53 @@ static int64_t sys_pager_supply(vx_handle gh, vx_handle vh, uint64_t offset, uin
   return st;
 }
 
+// pager_op(pager, vmo, op, offset, size, ranges)
+static int64_t sys_pager_op(vx_handle gh, vx_handle vh, uint64_t op, uint64_t offset, uint64_t size,
+                            uint64_t out) {
+  uint64_t end;
+  if (op < VX_PAGER_DIRTY || op > VX_PAGER_EVICT || (offset | size) & 4095) return VX_ERR_INVALID;
+  if (ckd_add(&end, offset, size)) return VX_ERR_RANGE;
+  if (op == VX_PAGER_DIRTY && !user_range_ok(out, VX_PAGER_RANGES * sizeof(vx_pager_range), true))
+    return VX_ERR_INVALID;
+  vx_status st;
+  pager *g = (pager *)handle_get(current_task(), gh, OBJ_PAGER, VX_RIGHT_WRITE, &st);
+  if (!g) return st;
+  vmo *v = (vmo *)handle_get(current_task(), vh, OBJ_VMO, 0, &st);
+  int64_t r = st;
+  if (v && v->pager != g) r = VX_ERR_INVALID;
+  if (v && v->pager == g) {
+    uint64_t first = offset / 4096, count = size / 4096;
+    if (op == VX_PAGER_DIRTY) {
+      vx_pager_range ranges[VX_PAGER_RANGES];
+      r = pager_dirty(v, offset, size, ranges);
+      if (r > 0) {
+        vx_status c = copy_to_user(out, ranges, (size_t)r * sizeof ranges[0]);
+        if (c != VX_OK) r = c;
+      }
+    } else if (op == VX_PAGER_CLEAN) {
+      pager_clean(v, first, count);
+      r = VX_OK;
+    } else {
+      pager_evict(v, first, count);
+      r = VX_OK;
+    }
+  }
+  if (v) object_release(&v->obj);
+  object_release(&g->obj);
+  return r;
+}
+
+// vmo_op(vmo, op, arg): VX_VMO_RESIZE to arg bytes.
+static int64_t sys_vmo_op(vx_handle h, uint64_t op, uint64_t arg) {
+  if (op != VX_VMO_RESIZE) return VX_ERR_INVALID;
+  vx_status st;
+  vmo *v = (vmo *)handle_get(current_task(), h, OBJ_VMO, VX_RIGHT_WRITE, &st);
+  if (!v) return st;
+  st = vmo_resize(v, arg);
+  object_release(&v->obj);
+  return st;
+}
+
 // --- Devices (obj/device.c) ---
 
 // irq_create(resource, line, options, &out, &msi): a line, or with VX_IRQ_MSI
@@ -931,6 +978,8 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_pager_create: return sys_pager_create((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4]);
   case VX_SYS_pager_supply:
     return sys_pager_supply((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], (vx_handle)a[4], a[5]);
+  case VX_SYS_pager_op: return sys_pager_op((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4], a[5]);
+  case VX_SYS_vmo_op: return sys_vmo_op((vx_handle)a[0], a[1], a[2]);
   case VX_SYS_iorange_create: return sys_iorange_create((vx_handle)a[0], a[1], a[2], a[3]);
   case VX_SYS_vmo_rw: return sys_vmo_rw((vx_handle)a[0], a[1], a[2], a[3], a[4]);
   case VX_SYS_as_map: return sys_as_map((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4], a[5]);

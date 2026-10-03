@@ -1232,6 +1232,48 @@ static void test_pager(void) {
   CHECK(vx_pager_supply(pager, vmo, 8192, 4096, vmo, 0) == VX_ERR_UNSUPPORTED);
   vx_handle clone;
   CHECK(vx_vmo_clone(vmo, 0, 4096, &clone) == VX_ERR_UNSUPPORTED);
+  // Dirty pages: a write marks one, CLEAN clears it (and the next write
+  // marks it again), and what was written stays.
+  vx_pager_range ranges[VX_PAGER_RANGES];
+  CHECK(vx_pager_op(pager, vmo, VX_PAGER_CLEAN, 0, 16384, nullptr) == VX_OK);
+  CHECK(vx_pager_op(pager, vmo, VX_PAGER_DIRTY, 0, 16384, ranges) == 0);
+  CHECK(*(volatile uint64_t *)(at + 4096) == 0x2222); // a read dirties nothing
+  CHECK(vx_pager_op(pager, vmo, VX_PAGER_DIRTY, 0, 16384, ranges) == 0);
+  *(volatile uint64_t *)(at + 4096 + 16) = 0x6666;
+  CHECK(vx_pager_op(pager, vmo, VX_PAGER_DIRTY, 0, 16384, ranges) == 1 && ranges[0].offset == 4096 &&
+        ranges[0].size == 4096);
+  *(volatile uint64_t *)(at + 24) = 0x7777; // page 0 too: two pages, one range
+  CHECK(vx_pager_op(pager, vmo, VX_PAGER_DIRTY, 0, 16384, ranges) == 1 && ranges[0].offset == 0 &&
+        ranges[0].size == 8192);
+  CHECK(vx_pager_op(pager, vmo, VX_PAGER_CLEAN, 4096, 4096, nullptr) == VX_OK);
+  CHECK(vx_pager_op(pager, vmo, VX_PAGER_DIRTY, 0, 16384, ranges) == 1 && ranges[0].offset == 0 &&
+        ranges[0].size == 4096);
+  CHECK(*(volatile uint64_t *)(at + 4096 + 16) == 0x6666); // cleaned, not lost
+  *(volatile uint64_t *)(at + 4096 + 32) = 0x8888;         // and written again: dirty again
+  CHECK(vx_pager_op(pager, vmo, VX_PAGER_DIRTY, 4096, 4096, ranges) == 1);
+  // EVICT frees clean pages, never dirty ones: page 1 cleaned and evicted
+  // is asked for again when touched; page 0, dirty, stays.
+  CHECK(vx_pager_op(pager, vmo, VX_PAGER_CLEAN, 4096, 4096, nullptr) == VX_OK);
+  CHECK(vx_pager_op(pager, vmo, VX_PAGER_EVICT, 0, 16384, nullptr) == VX_OK);
+  CHECK(vx_vmo_rw(vmo, VX_VMO_READ, 4096, &got, 8) == VX_ERR_SHOULD_WAIT);
+  CHECK(vx_vmo_rw(vmo, VX_VMO_READ, 24, &got, 8) == VX_OK && got == 0x7777);
+  t = (toucher){.at = (volatile uint64_t *)(at + 4096)};
+  CHECK(vx_thread_create(self, &th) == VX_OK);
+  CHECK(vx_thread_start(th, (uint64_t)touch_page, new_stack(), 0, (uint64_t)&t) == VX_OK);
+  CHECK(vx_port_wait(port, after_ms(2000), 0, &pk, 1) == 1 && vx_pager_offset(pk.value) == 4096);
+  CHECK(vx_pager_supply(pager, vmo, 4096, 4096, src, 4096) == VX_OK);
+  for (int i = 0; i < 1000 && !atomic_load(&t.done); i++) vx_futex_wait(&never, 0, after_ms(1));
+  CHECK(atomic_load(&t.done) && atomic_load(&t.seen) == 0x2222); // as supplied again
+  vx_handle_close(th);
+  // Resizing: grown, the new pages absent; shrunk, the pages past the end gone.
+  CHECK(vx_vmo_resize(vmo, 32768) == VX_OK &&
+        vx_vmo_rw(vmo, VX_VMO_READ, 20480, &got, 8) == VX_ERR_SHOULD_WAIT);
+  CHECK(vx_pager_supply(pager, vmo, 20480, 4096, src, 0) == VX_OK);
+  CHECK(vx_vmo_rw(vmo, VX_VMO_READ, 20480, &got, 8) == VX_OK && got == 0x1111);
+  CHECK(vx_vmo_resize(vmo, 8192) == VX_OK && vx_vmo_rw(vmo, VX_VMO_READ, 8192, &got, 8) == VX_ERR_RANGE);
+  CHECK(vx_vmo_rw(vmo, VX_VMO_READ, 24, &got, 8) == VX_OK && got == 0x7777);         // what is kept, kept
+  CHECK(vx_vmo_resize(src, 8192) == VX_ERR_UNSUPPORTED);                             // anonymous: not yet
+  CHECK(vx_pager_op(pager, src, VX_PAGER_DIRTY, 0, 4096, ranges) == VX_ERR_INVALID); // not its VMO
   CHECK(vx_as_unmap(self, at, 16384) == VX_OK);
   vx_handle_close(vmo);
 

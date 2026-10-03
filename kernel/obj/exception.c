@@ -613,7 +613,8 @@ static vx_status mem_op(task *t, const vx_mem_op *op, bool *shoot, vmo **release
       st = VX_ERR_NO_MEMORY; // too many copies at once: the caller may try again
     }
     if (st == VX_OK) {
-      uint8_t *page = (uint8_t *)phys_to_virt(m->vmo->pages[(m->offset + (at - m->va)) / 4096]) + (at & 4095);
+      uint8_t *page =
+          (uint8_t *)phys_to_virt(vmo_page(m->vmo, (m->offset + (at - m->va)) / 4096)) + (at & 4095);
       st = op->write ? copy_from_user(page, op->buffer + done, n) : copy_to_user(op->buffer + done, page, n);
       if (st == VX_OK && op->write && (m->flags & VX_MAP_EXEC)) arch_sync_icache(page, n);
     }
