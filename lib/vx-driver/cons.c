@@ -183,6 +183,18 @@ static vx_status cons_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t 
   return VX_OK;
 }
 
+// The console's connections: one for each program with console output,
+// held for as long as it runs, so many more than a server's default 16
+// (every service has one, and a test's children too).
+static constexpr uint32_t VX_CONS_CONNS = 128;
+static p9_ring_conn vx_cons_conns[VX_CONS_CONNS];
+
+// Gives a console's server room for VX_CONS_CONNS connections.
+[[maybe_unused]] static void vx_cons_conns_for(p9_ring_server *s) {
+  s->conns = vx_cons_conns;
+  s->max_conns = VX_CONS_CONNS;
+}
+
 // The file server for a console, to put in a p9_ring_server.
 [[maybe_unused]] static p9_fs vx_cons_fs(vx_cons *c) {
   return (p9_fs){.ctx = c,

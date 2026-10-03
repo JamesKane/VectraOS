@@ -1,7 +1,10 @@
 // vxfs: makes, fills, reads and checks vx-fs volume images on the build
 // machine (docs/11 §7), with the library fsd uses.
 //
-//   vxfs mkfs IMAGE MIB BRANCH...       a new volume of MIB MiB, an empty root in each branch
+//   vxfs mkfs [-u USER] IMAGE MIB BRANCH...
+//                                       a new volume of MIB MiB, an empty root in each branch;
+//                                       with an adm branch, /adm/users: adm, none and USER
+//                                       (vectra by default), who owns home's root
 //   vxfs put IMAGE BRANCH DIR           DIR's tree copied into the branch's root, committed
 //   vxfs ls IMAGE LABEL [PATH]          a directory's entries
 //   vxfs cat IMAGE LABEL PATH           a file's contents, to stdout
@@ -14,7 +17,8 @@
 //   vxfs rollback IMAGE BRANCH LABEL
 //
 // A LABEL is a snapshot's or a branch's (its last commit). Files are copied
-// with their modes, mtimes and symbolic links; owners are uid 0.
+// with their modes, mtimes and symbolic links, owned by the branch root's
+// owner.
 
 #define _GNU_SOURCE
 #include <dirent.h>
@@ -88,9 +92,33 @@ static vxfs_tree label_tree(const char *label) {
   return t;
 }
 
+// --- mkfs: the users file, and home's owner ---
+
+static constexpr uint32_t USER_ID = 1000;
+
+// users(6) as gefs's ream writes it: adm, whose group USER is in; none;
+// USER. adm is 0, as POSIX's root is.
+static vx_status make_users(const char *name, int64_t now) {
+  vxfs_branch *br;
+  vxfs_file root, f;
+  vx_status st = vxfs_branch_open(&vol, "adm", &br);
+  if (st == VX_ERR_NOT_FOUND) return VX_OK; // no adm branch: no users file
+  char text[256];
+  int n = snprintf(text, sizeof text, "0:adm:adm:%s\n1:none::\n%u:%s:%s:\n", name, USER_ID, name, name);
+  if (st == VX_OK) st = vxfs_root(&vol, &br->t, &root);
+  if (st == VX_OK) st = vxfs_create(&vol, &br->t, &root, "users", 0664, 0, 0, now, &f);
+  if (st == VX_OK) st = vxfs_write(&vol, &br->t, &f, 0, text, (uint64_t)n, now, 0);
+  if (st != VX_OK) return st;
+  if ((st = vxfs_branch_open(&vol, "home", &br)) != VX_OK) return st == VX_ERR_NOT_FOUND ? VX_OK : st;
+  vxfs_attr a = {.valid = VXFS_WUID | VXFS_WGID, .uid = USER_ID, .gid = USER_ID};
+  if ((st = vxfs_root(&vol, &br->t, &root)) == VX_OK) st = vxfs_setattr(&vol, &br->t, &root, &a, now);
+  return st;
+}
+
 // --- put: a host tree copied in ---
 
 static uint64_t copied;
+static uint32_t owner, group; // the branch root's
 
 // NOLINTNEXTLINE(misc-no-recursion): as deep as the host tree
 static void put_dir(vxfs_tree *t, const vxfs_file *dir, const char *host) {
@@ -107,7 +135,7 @@ static void put_dir(vxfs_tree *t, const vxfs_file *dir, const char *host) {
     vxfs_file f;
     vx_status s;
     if (S_ISDIR(st.st_mode)) {
-      s = vxfs_create(&vol, t, dir, e->d_name, VXFS_DMDIR | (st.st_mode & 07777), 0, 0, mtime, &f);
+      s = vxfs_create(&vol, t, dir, e->d_name, VXFS_DMDIR | (st.st_mode & 07777), owner, group, mtime, &f);
       if (s != VX_OK) die("cannot make %s", path, s);
       put_dir(t, &f, path);
     } else if (S_ISLNK(st.st_mode)) {
@@ -115,10 +143,10 @@ static void put_dir(vxfs_tree *t, const vxfs_file *dir, const char *host) {
       ssize_t n = readlink(path, target, sizeof target - 1);
       if (n <= 0) die("cannot read the link %s", path, VX_OK);
       target[n] = 0;
-      s = vxfs_symlink(&vol, t, dir, e->d_name, target, 0, 0, mtime, &f);
+      s = vxfs_symlink(&vol, t, dir, e->d_name, target, owner, group, mtime, &f);
       if (s != VX_OK) die("cannot make the link %s", path, s);
     } else if (S_ISREG(st.st_mode)) {
-      s = vxfs_create(&vol, t, dir, e->d_name, st.st_mode & 07777, 0, 0, mtime, &f);
+      s = vxfs_create(&vol, t, dir, e->d_name, st.st_mode & 07777, owner, group, mtime, &f);
       if (s != VX_OK) die("cannot make %s", path, s);
       int in = open(path, O_RDONLY);
       if (in < 0) die("cannot open %s", path, VX_OK);
@@ -234,16 +262,21 @@ static void info(void) {
 }
 
 [[noreturn]] static void usage(void) {
-  fprintf(stderr, "usage: vxfs mkfs IMAGE MIB BRANCH... | put IMAGE BRANCH DIR | ls IMAGE LABEL [PATH] |\n"
-                  "       cat IMAGE LABEL PATH | verify IMAGE LABEL DIR | check IMAGE | info IMAGE |\n"
-                  "       snap IMAGE BRANCH LABEL | fork IMAGE LABEL BRANCH | del IMAGE LABEL |\n"
-                  "       rollback IMAGE BRANCH LABEL\n");
+  fprintf(stderr,
+          "usage: vxfs mkfs [-u USER] IMAGE MIB BRANCH... | put IMAGE BRANCH DIR | ls IMAGE LABEL [PATH] |\n"
+          "       cat IMAGE LABEL PATH | verify IMAGE LABEL DIR | check IMAGE | info IMAGE |\n"
+          "       snap IMAGE BRANCH LABEL | fork IMAGE LABEL BRANCH | del IMAGE LABEL |\n"
+          "       rollback IMAGE BRANCH LABEL\n");
   exit(2);
 }
 
 int main(int argc, char **argv) {
   if (argc < 3) usage();
-  const char *cmd = argv[1];
+  const char *cmd = argv[1], *name = "vectra";
+  if (!strcmp(cmd, "mkfs") && argc >= 4 && !strcmp(argv[2], "-u")) { // -u USER: the volume's user
+    name = argv[3];
+    argv += 2, argc -= 2;
+  }
   image = argv[2];
   struct timespec now;
   clock_gettime(CLOCK_REALTIME, &now);
@@ -255,6 +288,8 @@ int main(int argc, char **argv) {
     vxfs_dev dev = open_image(image, true, (uint64_t)mib << 20);
     st = vxfs_mkfs(&vol, dev, MEM, CACHE, 0, (const char *const *)argv + 4, (uint32_t)(argc - 4), 0755, 0, 0,
                    ns_of(now));
+    if (st == VX_OK) st = make_users(name, ns_of(now));
+    if (st == VX_OK) st = vxfs_commit(&vol);
     if (st != VX_OK) die("cannot make a volume on %s", image, st);
     vxfs_unmount(&vol);
     close(fd);
@@ -266,6 +301,7 @@ int main(int argc, char **argv) {
     vxfs_file root;
     if ((st = vxfs_branch_open(&vol, argv[3], &br)) != VX_OK) die("no branch %s", argv[3], st);
     if ((st = vxfs_root(&vol, &br->t, &root)) != VX_OK) die("%s has no root", argv[3], st);
+    owner = root.d.uid, group = root.d.gid;
     put_dir(&br->t, &root, argv[4]);
     finish();
     fprintf(stderr, "vxfs: %llu bytes into %s\n", (unsigned long long)copied, argv[3]);

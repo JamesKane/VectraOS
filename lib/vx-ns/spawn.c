@@ -366,6 +366,7 @@ static vx_status vx_ns_group_make(vx_ns *ns) {
 }
 
 [[maybe_unused]] static vx_status vx_ns_from_spawn(vx_ns *ns) {
+  p9c_user = vx_spawn.user; // its attaches name its user (docs/11 §9)
   vx_ns_group.srv = vx_spawn_take("srv:nsd");
   vx_handle chan = vx_spawn_take("nsgroup");
   if (chan) return vx_ns_group_join(ns, chan);

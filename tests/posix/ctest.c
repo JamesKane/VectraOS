@@ -44,11 +44,16 @@
 static const char *self = "/boot/bin/ctest", *self_name = "ctest", *crash_dir = "/tmp/crash";
 // Its manifest, a file it knows: /boot/svc/NAME.ndb, which starts "# tests/user/NAME.ndb".
 static char manifest[64], manifest_rel[64], manifest_head[64];
+// The file server under /tmp keeps owners and checks permissions (fsd), as
+// CTEST_OWNERS=kept says, rather than keeping none (tmpfs).
+static bool owners_kept;
 
 static void where_am_i(void) {
   const char *s = getenv("CTEST_SELF"), *c = getenv("CTEST_CRASH");
   if (s && *s) self = s, self_name = strrchr(s, '/') ? strrchr(s, '/') + 1 : s;
   if (c && *c) crash_dir = c;
+  const char *o = getenv("CTEST_OWNERS");
+  owners_kept = o && strcmp(o, "kept") == 0;
   snprintf(manifest, sizeof manifest, "/boot/svc/%s.ndb", self_name);
   snprintf(manifest_rel, sizeof manifest_rel, "svc/../svc/%s.ndb", self_name);
   snprintf(manifest_head, sizeof manifest_head, "# tests/user/%s.ndb", self_name);
@@ -844,12 +849,35 @@ static void test_names_and_attributes(void) {
                   0) == 0);
   CHECK(stat("/tmp/rd/r3", &st) == 0 && st.st_mtime == 1000);
   CHECK(futimens(fd, nullptr) == 0 && fstat(fd, &st) == 0 && st.st_mtime != 1000); // now
-  CHECK(chown("/tmp/rd/r3", 0, 0) == 0); // owners are not kept, and no one may not
+  // tmpfs keeps no owners, so any change succeeds; fsd's are adm's to give,
+  // and the user ctestfsd runs as is in adm (host/vxfs mkfs's /adm/users).
+  CHECK(chown("/tmp/rd/r3", 0, 0) == 0);
   errno = 0;
   CHECK(link("/tmp/rd/r3", "/tmp/hard") == -1 && errno == EPERM);
   close(fd);
   CHECK(unlink("/tmp/dl") == 0 && unlink("/tmp/dangling") == 0 && unlink("/tmp/loop") == 0);
   CHECK(unlink("/tmp/rd/r3") == 0 && rmdir("/tmp/rd") == 0);
+}
+
+// Permissions, where the server keeps them: a directory without w takes no
+// new entries, a file without w opens for no writing, and the owner may
+// change both back.
+static void test_permissions(void) {
+  if (!owners_kept) return;
+  CHECK(mkdir("/tmp/locked", 0755) == 0 && chmod("/tmp/locked", 0555) == 0);
+  errno = 0;
+  CHECK(open("/tmp/locked/x", O_WRONLY | O_CREAT, 0644) == -1 && errno == EACCES);
+  errno = 0;
+  CHECK(mkdir("/tmp/locked/d", 0755) == -1 && errno == EACCES);
+  CHECK(chmod("/tmp/locked", 0755) == 0);
+  int fd = open("/tmp/locked/x", O_WRONLY | O_CREAT, 0644);
+  CHECK(fd >= 0 && write(fd, "x", 1) == 1 && close(fd) == 0);
+  CHECK(chmod("/tmp/locked/x", 0444) == 0);
+  errno = 0;
+  CHECK(open("/tmp/locked/x", O_WRONLY) == -1 && errno == EACCES);
+  fd = open("/tmp/locked/x", O_RDONLY);
+  CHECK(fd >= 0 && close(fd) == 0);
+  CHECK(chmod("/tmp/locked/x", 0644) == 0 && unlink("/tmp/locked/x") == 0 && rmdir("/tmp/locked") == 0);
 }
 
 // The posix extension's open files, kept by the server: a child's writes
@@ -1234,6 +1262,7 @@ int main(int argc, char **argv) {
   test_tmp_and_devices();
   test_names_and_attributes();
   test_shared_offsets_and_locks();
+  test_permissions();
   test_terminals();
   test_poll();
   test_utf8();

@@ -23,6 +23,8 @@
 //   part=SRV type=GUID|name=NAME               passed on as it is, for partd (docs/proto/block.md §6)
 //   ns=NAME                                    the namespace template /lib/ns/NAME, a
 //                                              namespace(6) file (ADR-0009), here
+//   user=NAME                                  who it runs as (docs/11 §9), which
+//                                              its attaches name; else none
 //
 // post=SRV: svcd makes a listen channel, gives the service its server end
 // ("listen") and keeps the client end as /srv/SRV, for mounts. It keeps a
@@ -400,6 +402,8 @@ static vx_status start(service *s) {
 
   // The manifest's records, and a namespace template's lines where it names
   // one (ns=NAME: /lib/ns/NAME, a namespace(6) file).
+  static char user[64]; // user=NAME, copied: the reader's values last one record
+  size_t user_len = 0;
   while (st == VX_OK) {
     if (vx_ndb_next(&r, &rec) != VX_NDB_RECORD || vx_ndb_has(&rec, "service")) break;
     if (vx_ndb_has(&rec, "ns")) {
@@ -441,6 +445,14 @@ static vx_status start(service *s) {
       vx_ndb_end(&b.w);
     } else if (vx_ndb_has(&rec, "bind")) {
       put_bind(&b, vx_ndb_get(&rec, "new"), vx_ndb_get(&rec, "bind"), vx_ndb_get(&rec, "flags"));
+    } else if (vx_ndb_has(&rec, "user")) {
+      vx_str u = vx_ndb_get(&rec, "user");
+      if (!u.len || u.len > sizeof user) {
+        st = VX_ERR_INVALID;
+        break;
+      }
+      memcpy(user, u.ptr, u.len);
+      user_len = u.len;
     }
   }
   if (st == VX_OK && b.w.failed) st = VX_ERR_RANGE;
@@ -457,6 +469,7 @@ static vx_status start(service *s) {
                      .handle_names = b.names,
                      .handle_count = b.count,
                      .records = {records, b.w.len},
+                     .user = {user, user_len},
                      // Registered with procfs before it runs (ADR-0011): in a session
                      // and note group of its own, as Plan 9's daemons run (RFNOTEG),
                      // so a note to one group never reaches the rest of the system;

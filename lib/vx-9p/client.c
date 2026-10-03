@@ -11,6 +11,10 @@
 // Returns the reply's length, or 0 if the connection is gone.
 typedef size_t (*p9_rpc_fn)(void *ctx, const uint8_t *req, size_t len, uint8_t *resp, size_t cap);
 
+// Who a client attaches as when it names no one: the program's user (its
+// spawn message's user=, which vx-ns sets here), or "none".
+static vx_str p9c_user;
+
 typedef struct p9_client {
   p9_rpc_fn rpc;
   void *ctx;
@@ -21,7 +25,7 @@ typedef struct p9_client {
   uint32_t extensions; // negotiated
   uint16_t next_tag;
   uint32_t next_fid;
-  vx_str uname; // who attaches; empty: "none"
+  vx_str uname; // who attaches; empty: p9c_user, or "none"
   p9_msg reply; // the last reply; its strings and data point into rbuf
 } p9_client;
 
@@ -55,11 +59,9 @@ static vx_status p9c_call(p9_client *c, p9_msg *t) {
 }
 
 [[maybe_unused]] static vx_status p9c_attach(p9_client *c, vx_str aname, uint32_t *fid) {
-  p9_msg t = {.type = P9_Tattach,
-              .fid = c->next_fid++,
-              .afid = P9_NOFID,
-              .uname = c->uname.len ? c->uname : VX_STR("none"),
-              .aname = aname};
+  vx_str uname = p9c_user.len ? p9c_user : VX_STR("none");
+  if (c->uname.len) uname = c->uname;
+  p9_msg t = {.type = P9_Tattach, .fid = c->next_fid++, .afid = P9_NOFID, .uname = uname, .aname = aname};
   vx_status e = p9c_call(c, &t);
   if (e == VX_OK) *fid = t.fid;
   return e;

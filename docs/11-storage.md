@@ -203,7 +203,8 @@ The `ctl` commands:
 **Permissions:**
 - Permissions are checked against the attaching user, as in Plan 9.
 - An attach name starting with `%` mounts a branch permissively (no permission checks; any attribute may be changed), for members of the `adm` group only, as gefs does.
-- Until `keyd` (M10), the user is the one the spawn message names, as for every server.
+- Until `keyd` (M10), the user is the one the spawn message names. A manifest's `user=NAME` puts it there, a child inherits its parent's, and vx-ns attaches as it (`Tattach`'s `uname`). The 9P framework hands it to a server's optional `attach_as`. This is advisory: a program can name anyone, as on Plan 9 with no authentication, until `keyd` signs who a client is.
+- `host/vxfs mkfs` writes `/adm/users` as gefs's ream does: `adm`, whose group holds the volume's user; `none`; and that user (`vectra` by default), who owns `home`'s root. `adm` is id 0, as POSIX's root is.
 
 ## 10. Disks: the `block` class
 

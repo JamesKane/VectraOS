@@ -1514,14 +1514,16 @@ static long fd_setattr(int fd, int dirfd, const char *path, bool follow, const p
 }
 
 static long fd_chmod(int fd, int dirfd, const char *path, mode_t mode) {
-  return fd_setattr(fd, dirfd, path, true, &(p9_setattr){.valid = P9_SETATTR_MODE, .mode = mode & 07777});
+  long r = fd_setattr(fd, dirfd, path, true, &(p9_setattr){.valid = P9_SETATTR_MODE, .mode = mode & 07777});
+  return r == -EACCES ? -EPERM : r; // POSIX's: not the owner's to change
 }
 
 static long fd_chown(int fd, int dirfd, const char *path, uid_t uid, gid_t gid, bool follow) {
   p9_setattr a = {.uid = uid, .gid = gid};
   if (uid != (uid_t)-1) a.valid |= P9_SETATTR_UID;
   if (gid != (gid_t)-1) a.valid |= P9_SETATTR_GID;
-  return a.valid ? fd_setattr(fd, dirfd, path, follow, &a) : 0;
+  long r = a.valid ? fd_setattr(fd, dirfd, path, follow, &a) : 0;
+  return r == -EACCES ? -EPERM : r; // POSIX's: not the owner's to change
 }
 
 static long fd_truncate(int fd, const char *path, long size) {

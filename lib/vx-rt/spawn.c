@@ -103,6 +103,9 @@ typedef struct vx_spawn_args {
   const vx_str *handle_names;
   uint32_t handle_count; // at most VX_CHANNEL_MAX_HANDLES - 1; "self" is added
   vx_str records;        // more ndb records for the spawn message: arg=, mount=, bind=
+  // Who the child runs as (user=): this, or else the caller's own. Advisory
+  // until keyd (M10): a program can say it is anyone (docs/11 §9).
+  vx_str user;
   // If set, called once the task exists and its image is loaded, before its
   // message is written or its thread started: it may give the child one more
   // handle, named.
@@ -195,6 +198,11 @@ static void vx_close_all(const vx_handle *h, uint32_t n) {
                      .cap = sizeof vx_spawn_out - sizeof(vx_msg_header)};
   vx_ndb_put(&w, "spawn", a->name);
   vx_ndb_end(&w);
+  vx_str user = a->user.len ? a->user : vx_spawn.user;
+  if (user.len) {
+    vx_ndb_put(&w, "user", user);
+    vx_ndb_end(&w);
+  }
   for (uint32_t i = 0; i < count; i++) {
     vx_ndb_put(&w, "handle", names[i]);
     vx_ndb_put_u64(&w, "index", i);

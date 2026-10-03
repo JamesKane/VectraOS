@@ -85,6 +85,7 @@ const char *vx_main(void) {
   vx_cons_print_here(&cons);
   cons = (vx_cons){.tx_room = tx_room, .tx_byte = tx_byte, .tx_wanted = tx_wanted};
   server.fs = vx_cons_fs(&cons);
+  vx_cons_conns_for(&server);
   server.event = event;
   if (vx_port_create(0, &server.port) != VX_OK ||
       vx_port_bind(server.port, irq, VX_TRIGGER_IRQ, P9_KEY_USER, 0) != VX_OK) {

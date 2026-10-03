@@ -32,6 +32,9 @@
 typedef struct p9_fs {
   void *ctx;
   vx_status (*attach)(void *ctx, vx_str aname, uint64_t *root);
+  // Optional: attach, told who attaches (Tattach's uname); used instead of
+  // attach when set. Advisory until keyd (M10): a client can name anyone.
+  vx_status (*attach_as)(void *ctx, vx_str aname, vx_str uname, uint64_t *root);
   vx_status (*walk)(void *ctx, uint64_t dir, vx_str name,
                     uint64_t *child);                              // never ".", "..", or a name with '/'
   vx_status (*parent)(void *ctx, uint64_t node, uint64_t *parent); // only below an attach root
@@ -571,7 +574,8 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
         e = VX_ERR_UNSUPPORTED;
       else if (!(f = p9_fid_new(s, t.fid)))
         e = VX_ERR_BAD_STATE;
-      else if ((e = s->fs.attach(s->fs.ctx, t.aname, &f->node)) == VX_OK)
+      else if ((e = s->fs.attach_as ? s->fs.attach_as(s->fs.ctx, t.aname, t.uname, &f->node)
+                                    : s->fs.attach(s->fs.ctx, t.aname, &f->node)) == VX_OK)
         e = p9_qid_of(s, f->node, &r.qid);
       if (e == VX_OK)
         f->root = f->node, f->qid = r.qid;
