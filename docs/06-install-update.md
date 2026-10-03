@@ -381,7 +381,7 @@ Added to 00 §8 when the milestone that makes each measurable lands:
 ## 16. Open questions
 
 1. **Writing UEFI variables.** `BootNext` and `BootOrder` are UEFI runtime variables, and runtime services run in kernel mode with the firmware's mappings. The choices are a narrow kernel call for variable services only, given as a capability to `distd`, or a boot-time mechanism in Limine that reads a trial flag from the ESP and so needs no runtime services. ADR before M12.
-2. **Who serves the verified base tree.** `distd` serving it and acting as its pager (and so a trusted pager, 01 §5), or `fsd` with a verified-tree mode that `distd` feeds. Decided with the M5 filesystem.
+2. ~~**Who serves the verified base tree.**~~ *Decided by ADR-0025 (2026-10-02):* `distd` serves it as a trusted pager of its own (01 §5), checking the store's blobs, read from `fsd`'s `store` branch, against the release's hash trees; `fsd` gains no verified mode (11 §8).
 3. **Block size and chunking.** Fixed 64 KiB blocks make verified random reads simple; content-defined chunking would make deltas smaller when bytes shift within a file. Measure on real releases before deciding; fixed until then.
 4. **The Secure Boot key.** Users enrolling the project's key or their own, against a Microsoft-signed shim so that machines boot with their default keys. The shim brings a second loader and trust in a third party's CA.
 5. **Internet peer discovery.** Rendezvous servers are a few points the heads record names, so one being down is tolerable but all being down leaves mirrors only. A first-party DHT removes that dependence and adds a large, exposed component. Start with rendezvous servers, and revisit with data.

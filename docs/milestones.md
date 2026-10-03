@@ -138,6 +138,29 @@ Done. 04 §6 gives M4's content but no steps or exit test, so they are set here 
 - To debug a hang or a crash in a POSIX scenario, copy it with `cmdline="vx.skip=gsh vx.kconsole vx.hangdump=25"`: the kernel's messages stay on the serial line, and at 25 s every thread's state and kernel backtrace is printed.
 
 
+## M5 — Storage
+
+Not started. 04 §6 gives M5's content, docs/11-storage.md its design and ADR-0025 the file system's decision; the steps and exit test are proposed here (2026-10-02).
+
+| Step | Status | Commit |
+|---|---|---|
+| 1. The `block` class (`docs/proto/block.md`: `READ`, `WRITE`, `FLUSH`, `FUA`, `DISCARD`, `INFO`, sessions narrowed to a range), `drv-virtio-blk`, `lib/vx-gpt`, `svcd` handing out partitions | To do | |
+| 2. `lib/vx-fs`, part one: the block layer and arenas with their allocation logs, the Bε tree with upserts, keys and messages (11 §3, §4); host tests and a fuzz target | To do | |
+| 3. `lib/vx-fs`, part two: the snapshot tree, labels and branches, deadlists, the seven-phase commit, the checker (11 §5, §6); the host power-cut test (11 §14); `host/vxfs`, and `./build` making volume images | To do | |
+| 4. `fsd`: 9P2000 with `posix` and `xattr`, `Korphan`, symbolic links, users, the `adm` files and the dump view (11 §7, §9); ctest run against `fsd` as well as `tmpfs` | To do | |
+| 5. The kernel's pager objects (`pager_create`, `pager_supply`, `pager_op`, deadlines, `vmo_op resize`); `Tmap` and `dref`; `MAP_SHARED` in the musl back end (11 §8) | To do | |
+| 6. `drv-nvme`; IOMMU enforcement (VT-d, SMMUv3); a driver restarted under I/O load | To do | |
+| 7. ACPICA vendored and `bus-acpi` as a process on QEMU's tables: power off through S5, `_CRS` resources as grants (ADR-0024's base) | To do | |
+| 8. `dosfs` (FAT12/16/32, long names) and `isofs` (ISO 9660, Joliet, Rock Ridge), after 9front's `dossrv` and `9660srv` (11 §11) | To do | |
+| 9. Monocypher (signature checks only); the content store, `distd` with verified reads, `/dist`, `./build release` (unsigned), `install` from the ISO onto a blank disk, boot slots in the EFI system partition, rollback by hand (06 §14) | To do | |
+
+**Exit test (proposed):**
+- QEMU boots the ISO, `install` puts VectraOS on a blank virtio disk, and the machine reboots from that disk.
+- A program writes under load and QEMU is killed mid-commit. The next boot mounts at once, `check` is clean, and every file synced before the kill is there.
+- `/cfg` is snapshotted, changed and rolled back, and yesterday's `home` is read through the dump view.
+- Two processes share a file through `MAP_SHARED`.
+- The disk driver is killed during a copy and restarted, and the copy completes intact.
+
 ## Known gaps
 
 Deferred deliberately, each with where it is due:
@@ -206,6 +229,7 @@ Deferred deliberately, each with where it is due:
 | `MAP_SHARED` anonymous mappings and `MREMAP_FIXED` are refused (EINVAL); `SO_SNDTIMEO` is taken and does nothing | Shared memory across fork needs shared VMOs | With 9Px's Tmap |
 | `readv` of a datagram: one read, into the first iovec with room; a longer datagram's rest is lost | As `recv` with a short buffer | When a port needs it |
 | Crash directories are never pruned (each at most 16 MiB of memory) | `/tmp` fills after many crashes | With a file system that keeps them (M5) |
+| No exFAT, and no ext4 even read-only (11 §11) | Large removable media formatted exFAT, and Linux disks, cannot be read | When something needs them |
 
 ## Scenarios
 
