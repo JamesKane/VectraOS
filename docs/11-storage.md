@@ -223,7 +223,7 @@ The `ctl` commands:
 **Block drivers speak the `block` class protocol** (`docs/proto/block.md`, written in M5 step 1), a ring session per client:
 - **Requests:** `READ` and `WRITE` into or out of the client's own buffer arena (01 §4.3); `FLUSH`, a barrier that completes once everything before it is durable; `WRITE` with `FUA`; `DISCARD`.
 - **`INFO`** gives the sector size, the capacity and whether the device has a volatile write cache.
-- **Restarts.** A driver that restarts loses nothing the client has not seen completed. The client resubmits what was in flight (01 §7.4).
+- **Restarts.** A driver that restarts loses nothing the client has not seen completed. The client resubmits what was in flight (01 §7.4): `vx_blk` keeps its connector, sees its session go, dials again until the driver is back, and does the request again, which the protocol lets it do twice.
 
 **Partitions are windows.**
 - A session reaches one window of the disk, fixed when it is opened, and the session is the capability.

@@ -208,6 +208,8 @@ static vx_status start_driver(driver *d) {
   if (st == VX_OK && vx_console.connector &&
       vx_handle_dup(vx_console.connector, VX_RIGHTS_SAME, &handles[count]) == VX_OK)
     names[count++] = VX_STR("console");
+  vx_ndb_put_u64(&w, "start", d->starts + 1); // which start this is: 1, then 2 after a restart
+  vx_ndb_end(&w);
   if (vx_spawn.cmdline.len) { // a driver's options: PROGRAM.KEY=VALUE words, its to read
     vx_ndb_put(&w, "cmdline", vx_spawn.cmdline);
     vx_ndb_end(&w);
@@ -239,6 +241,25 @@ static vx_status start_driver(driver *d) {
   return st;
 }
 
+// A function-level reset (PCIe's FLR), where the function has one: whatever
+// the dead driver left it doing is stopped. The configuration header is
+// saved and put back after, since the reset clears the BARs; bus mastering
+// stays off for the next driver to turn on.
+static void reset_function(const function *f) {
+  uint8_t cap = vx_pci_cap(&f->fn, 0x10, 0);                          // PCI Express
+  if (!cap || !(vx_pci_read32(&f->fn, cap + 4) & (1u << 28))) return; // Device Capabilities: FLR
+  uint32_t saved[16];
+  for (uint32_t i = 0; i < 16; i++) saved[i] = vx_pci_read32(&f->fn, 4 * i);
+  uint16_t control = vx_pci_read16(&f->fn, cap + 8);
+  vx_pci_write16(&f->fn, cap + 8, (uint16_t)(control | 1u << 15)); // Device Control: Initiate FLR
+  static _Atomic uint32_t never;
+  vx_futex_wait(&never, 0, vx_clock_read() + 100'000'000);                   // 100 ms, as PCIe asks
+  for (uint32_t i = 4; i < 10; i++) vx_pci_write32(&f->fn, 4 * i, saved[i]); // the BARs
+  vx_pci_write32(&f->fn, 0x3c, saved[15]);
+  vx_pci_write16(&f->fn, 0x04, (uint16_t)(saved[1] & ~(1u << 2))); // decoding on, mastering off
+  say(VX_STR("reset "), VX_STR("the function"), VX_STR(" (FLR)\n"));
+}
+
 static void driver_exited(driver *d) {
   // The device may still hold addresses of the dead driver's DMA memory: the
   // domain keeps those pages (its mappings revoked, the ones whose handles
@@ -248,6 +269,7 @@ static void driver_exited(driver *d) {
   uint16_t command = vx_pci_read16(&d->f->fn, 0x04);
   vx_pci_write16(&d->f->fn, 0x04, (uint16_t)(command & ~(1u << 2)));
   (void)vx_pci_read16(&d->f->fn, 0x04); // the write has reached the device
+  reset_function(d->f);
   vx_dma_domain_op(d->dma, VX_DMA_QUIESCED);
   vx_task_summary info;
   vx_str why = vx_task_info(d->task, &info) == VX_OK ? (vx_str){info.exit, info.exit_len} : VX_STR("?");

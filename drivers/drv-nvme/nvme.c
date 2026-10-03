@@ -127,7 +127,8 @@ static uint32_t nsid, sector_size, max_transfer;
 static uint64_t sectors;
 static bool has_cache, has_discard;
 static uint64_t reset_every, completions, resets;
-static bool fault_test; // drv-nvme.fault=1: see fault_once
+static bool fault_test;    // drv-nvme.fault=1: see fault_once
+static uint64_t die_after; // drv-nvme.die=N: on its first start, exit after N completions (fsdnvmerestart)
 static uint32_t next_client;
 
 [[noreturn]] static void fail(const char *what) {
@@ -703,6 +704,15 @@ static void fault_once(void) {
 // drv-nvme.reset=N on the kernel command line: a reset after every N completions.
 static void read_options(void) {
   vx_str c = vx_spawn.cmdline;
+  static const char die[] = "drv-nvme.die=";
+  vx_ndb_record rec;
+  uint64_t start = 1;
+  if (vx_spawn_record("start", &rec)) vx_ndb_get_u64(&rec, "start", &start);
+  for (size_t i = 0; start == 1 && i + sizeof die - 1 <= c.len; i++) {
+    if ((i && c.ptr[i - 1] != ' ') || memcmp(c.ptr + i, die, sizeof die - 1) != 0) continue;
+    for (size_t at = i + sizeof die - 1; at < c.len && c.ptr[at] >= '0' && c.ptr[at] <= '9'; at++)
+      die_after = die_after * 10 + (uint64_t)(c.ptr[at] - '0');
+  }
   static const char fault[] = "drv-nvme.fault=1";
   for (size_t i = 0; i + sizeof fault - 1 <= c.len; i++)
     if ((!i || c.ptr[i - 1] == ' ') && memcmp(c.ptr + i, fault, sizeof fault - 1) == 0) fault_test = true;
@@ -750,6 +760,10 @@ const char *vx_main(void) {
   uint64_t next_reset = reset_every;
   for (;;) {
     for (uint32_t i = 0; i < nqueues; i++) service_queue(&ioq[i]);
+    if (die_after && completions >= die_after) { // as a crash would: with commands in flight
+      vx_print(VX_STR("drv-nvme: exiting, as asked (drv-nvme.die)\n"));
+      vx_exits("drv-nvme.die");
+    }
     if (reset_every && completions >= next_reset) {
       next_reset = completions + reset_every;
       reset_controller("drv-nvme.reset");
