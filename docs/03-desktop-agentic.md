@@ -378,6 +378,59 @@ default   prefer=local  then=swarm  deny=provider
 - **Labels follow the data.** A tool result carries the label of what the tool read, and a session's egress limit is the highest label it has seen. A session that has read a `secret` file through a tool can no longer reach a provider, even though nothing came from a context pool.
 - `usage` reports where each request ran, and the status bar shows when anything left the machine.
 
-## 9. Open questions
+## 9. The desktop shell
+
+_Storyboarded 2026-10-03. Like everything after M3, this is provisional and is rewritten against the code at M7._
+
+### 9.1 The look
+
+- **Lit chrome, not flat.** The desktop takes its look from Amiga MUI, NeXTSTEP and SGI's Indigo Magic: bevelled chrome, sunken wells, MUI's titled group frames, and NeXT's ring around the default button. With a GPU these cost nothing: `winsrv` shades every bevel from one light source, so they stay sharp at any scale.
+- **Two themes ship,** both plain token sets (§5.4): `vx-magic`, warm grey after Indigo Magic, and `vx-next`, NeXT's charcoal with a black title bar on the key window. Proposed token families: `light.*` (angle, softness), `chrome.*` (face, light, shade, edge), `title.*` (active, inactive), `well.*` (light, dark), `lamp.*` and `lcd.*`. Switching theme is one `load`; the next frame repaints only what changed.
+- **Status is a lamp.** Green means local or running, amber means an agent is live or data has left the machine, and blue means a swarm node is in use. The clock is an LCD strip. Lamps glow but never pulse: idle is idle (§1).
+- **A black title strip is reserved for system panels,** such as the greeter and the palette.
+- **Icons follow BeOS.** Each object is seen from above at three-quarters, with a heavy dark outline, flat-shaded faces lit from the same `light.angle` as the chrome, one highlight edge, and a shadow cast down and to the right. Devices are drawn as boxes and documents as tilted sheets. Icons are vectors, one file each in `/lib/icon`, drawn at any size; one drawing serves both themes.
+- **No text-mode UIs.** Every first-party tool with an interface (palette, Activity, Settings, Disks) is a `vxui` app. The terminal is for the shell. Plan 9 never had curses, and the system does not add it.
+
+### 9.2 The bar
+
+The bar runs along the top of the screen, as Amiga's screen title strip did. It holds:
+
+- a desk pager, as in IRIX, showing each workspace;
+- the workspace's layout policy;
+- the focused window's title;
+- the lamps: egress (§8.6's "the status bar shows when anything left the machine"), a live agent session (§8.5), the swarm resources the foreground app uses (02 §6), and the holder of a broad grant while it runs (ADR-0029);
+- the clock.
+
+**Notifications drop from the bar as slips,** drawn by the shell from the adapters' `events` files (07 §6.3), with a lamp marking where each came from. A slip also reports what the user just did, such as an undo restoring files (§8.5).
+
+### 9.3 The dock
+
+- **A NeXT dock on the right edge.** The workspace tile is at the top and the recycler at the bottom. A small green lamp on a tile marks an app that is running.
+- **The dock owns its strip.** It is a `layer` surface the shell holds, with an exclusive zone. `wm` lays tiles out in the work area outside it, so a tiled window never reaches under the dock. A floating window can be dragged there; it passes under the dock, which always stays on top.
+- **Pinning.** Drag an app from Applications onto the dock, where a lit bar shows the slot, or write the record `pin app=org.vx.mail after=org.vx.activity`. Both become the same verb on `/wsys/dock`. Dragging a tile off the dock unpins it.
+- **A full dock scales,** as Aqua's does. The tiles shrink together so the dock fits the screen's height, the strip narrows, and `wm`'s work area widens to match. The smallest tile is a legibility limit, measured at M7 across screen sizes and scales.
+- **Magnification under the pointer** is a dock preference, off by default. It animates only while the pointer is on the dock.
+
+### 9.4 The bench
+
+Storage lives on the desktop surface, as on Amiga's Workbench.
+
+- **One icon per volume,** with the volume's name and a `type · location` subtitle (`vx-fs · nvme0`, `dosfs · usb1p1`, `isofs · ro`). Swarm volumes appear too, as their node.
+- **What the system cannot read is badged `?`.** This covers a partition whose filesystem no server reads (`Linux fs · mmc0p2`) and a device with no partition table (`no table · usb2`). Both get one menu: *Manage in Disks…*, *Ignore until unplugged*, *Always ignore this device*, *Eject*. Nothing is formatted or mounted until the user chooses.
+- **"Always ignore" is an ndb record keyed by the device's serial number,** kept in the bench's own data tree (`#appdata/$user/PKG`, ADR-0029 decision 6), not in `$home`.
+- **A pulled device leaves no ghost.** Its icon goes when the removal event arrives, and a slip says what happened. If writes were waiting, the slip's lamp is amber and it names the files that were lost.
+- **Home is not on the bench.** It is `home` inside System. Each session binds only `#home/$user` at `/home/$user` (02 §2), so `/home` holds the user's own folder and no one else's.
+
+### 9.5 The trusted path
+
+Prompts on the trusted path (§5.7) are drawn in a material no client theme can use: a gunmetal frame, a gold rim and an embossed seal, under the title *SYSTEM · TRUSTED PATH*. The rest of the screen dims and the bar goes dark. An image the user picks at sign-in may replace or join the seal later.
+
+## 10. Open questions
 
 1. **Remote windows.** Is a compressed surface stream enough, or should a remote `vxui` app send its *node tree* for local rendering, which would be sharper and use less bandwidth?
+2. **The login shell and `/wsys`.** §5.5 shows a script focusing another app's window, but §5.7 gives the whole `/wsys` tree only to `wm`, the shell and the palette. Does the user's interactive shell hold that grant, or does a script reach only `/wsys/self`?
+3. **`super+shift+h`.** §5.3 binds it to `move left`, while §5.5 uses it for `tile left`. Which is it?
+4. **"Explain this window" and ADR-0029.** Another window's `a11y` is a broad grant, and agents never hold one. Does the shell read the tree and hand the text to the session, so the agent never holds the grant?
+5. **Dock pins.** Do they live in `~/lib/wm/dock.ndb`, beside the key bindings, which the user writes, or in the dock's `#appdata`, as state the shell writes?
+6. **Undoing "always ignore".** Where does the user see and remove these records? Most likely the Bench section of Settings.
+7. **Verb echo.** Should the shell offer a slip that names the verb each key or drag produced, to teach the key paths? Off by default?
