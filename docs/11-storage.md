@@ -167,9 +167,9 @@ It keeps gefs's discipline anyway: blocks that leave the mutator are immutable, 
 
 ## 8. The pager and `mmap`
 
-**`fsd` is the system's trusted pager** (01 §5). `Tmap` answers with a pager-backed VMO for a range of a file, and libc maps it.
+**`fsd` is the system's trusted pager** (01 §5). `Tmap` answers with a pager-backed VMO for a range of a file, and libc maps it (docs/proto/map.md). The VMO is the file's, one for all who map it: `MAP_SHARED` and read-only `MAP_PRIVATE` map it, and a writable `MAP_PRIVATE` is a copy. `fsd` keeps it until nothing else refers to it (`pager_op IDLE`), and keeps the file open until then.
 - **Faults.** The kernel asks `fsd` for missing pages, and `fsd` supplies them with `pager_supply` before a deadline. A missed deadline is a `PAGER_TIMEOUT` exception (`SIGBUS`), not a hang.
-- **Writeback.** `MAP_SHARED` writes dirty the VMO's pages. At each commit `fsd` asks the kernel for the dirty ranges (`pager_op`), writes them to new blocks, upserts their `Kdat`, and marks the pages clean.
+- **Writeback.** `MAP_SHARED` writes dirty the VMO's pages. Before each commit `fsd` asks the kernel for the dirty ranges (`pager_op`), cleans them, and writes them to the file. It does the same before a `Tread` of the file and before its size changes, and a `Twrite` goes into the VMO's pages too, so readers and mappings see one file.
 - **Eviction.** Clean pages of these VMOs are the first memory the kernel takes back under pressure (01 §5).
 - **`dref`.** A `Tread` into a client's `Buffer` is served by mapping the page-cache pages, not copying them (02 §3.3).
 
@@ -243,7 +243,7 @@ exFAT (large removable media) and ext4 read-only (Linux disks) are Known gaps un
 
 | Later | How the format allows it |
 |---|---|
-| **Encryption** (06 §16 question 9) | Per-tree flags, and the block pointer's room: an authenticated cipher per block, keyed by `keyd` (M10) and sealed to the boot chain (M12), with the generation in the nonce |
+| **Encryption** (06 §16 question 9) | Per-tree flags, and the block pointer's room: an authenticated cipher per block, keyed by `keyd` (M10) and sealed to the boot chain (M12), with the generation in the nonce. A snapshot then exports as its encrypted blocks, so backup needs no access to the files (ADR-0029) |
 | **Compression** | A flag in the block pointer, and the hash taken over the stored bytes |
 | **Several devices, mirroring** | The arena table: arenas on more than one device, and a second copy of each block |
 | **Growing a volume** | Arenas added at the end, as gefs's `-g` does, on an unmounted volume first |

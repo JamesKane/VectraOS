@@ -176,7 +176,7 @@ Mail, chat lines and posts are all messages, so every adapter serves them in one
 ### 6.3 What this gives
 
 - **Three ways to do everything** (03 §1): the client, a key binding, and a script or agent writing the same `ctl` verb. `echo 'join #vectra' >/mnt/irc/libera/ctl` is the whole IRC API.
-- **System search** (03 §8.4) indexes `/mnt/*/msgs` and their kind with no per-app plug-in.
+- **System search** (03 §8.4) indexes `/mnt/*/msgs` and their kind with no per-app plug-in, for each service the user adds to a pool. A pool holding messages is a broad grant (ADR-0029): messages hold other people's words too, so no agent gets one.
 - **Agents** get a narrow namespace (02 §7): a summariser can be given `/mnt/feed/unread` read-only, and nothing else. Messages carry the `private` sensitivity label by default, so the routing policy keeps them local (03 §8.6).
 - **Notifications** are a client of the adapters' `events` files, drawn by the shell. No app runs in the background to show one.
 
@@ -219,7 +219,7 @@ plumb start irc $0
 ## 8. Security
 
 - **Every network parser is fuzzed** (04 §7): HTML, CSS, the image decoders, gemtext, IRC lines, XMPP's XML, the JSON of ActivityPub and JMAP, MIME and Atom.
-- **Every process that parses network data has no authority to misuse.** `hv` has no network and no `$home`; an adapter has its one service's network access and its state directory; a client has only its adapter's files. A compromised XMPP adapter can read the user's XMPP messages, which it held anyway, and nothing else.
+- **Every process that parses network data has no authority to misuse.** `hv` has no network and no `$home`; an adapter has its one service's network access and its state directory, its own data tree (`#appdata`), which no other app's namespace and not the user's home contains (ADR-0029); a client has only its adapter's files. A compromised XMPP adapter can read the user's XMPP messages, which it held anyway, and nothing else.
 - **Credentials never leave `keyd`.** `tlsd` attaches them inside the session (00 D16), as it does for AI providers.
 - **No code from the network runs,** so there is no script engine to escape, no JIT and no W^X exception (01 §5) for any of this.
 - **Link previews are fetched by no one** unless the user turns them on per adapter: a preview is a request the sender can watch for.

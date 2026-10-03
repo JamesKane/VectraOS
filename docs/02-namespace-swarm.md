@@ -46,13 +46,21 @@ Every server's conformance suite plays a hostile client that speaks raw 9Px and 
 **Namespace templates** (`/lib/ns/*`) are namespace(6) files: scripts of `bind`, `mount` and `unmount` lines that `newns` in `vx-ns` reads, as Plan 9's `newns` does. `ns` and `/proc/N/ns` print the same form. A template is a script, not data, so D14's ndb rule does not cover it (ADR-0009). Templates build sessions, POSIX environments, sandboxes and agent jails (§7):
 
 ```
-# /lib/ns/posix — what a POSIX program expects
-mount -a /srv/bootfs /
-bind -c #home/$user /home/$user
-bind /srv/ptyd /dev/pty
-bind -a /srv/null /dev
+# /lib/ns/posix — what a POSIX program expects (boot/lib/ns/posix, abridged)
+mount /srv/bootfs /
+bind -b /boot/bin/posix /bin
 mount -c /srv/tmpfs /tmp
+mount /srv/null /dev
+mount -a /srv/ptyd /dev
+mount /srv/proc /proc
+mount /srv/net /net
+
+# /lib/ns/posix.user — the user's login session only: the above, and the whole home
+. /lib/ns/posix
+bind -c #home/$user /home/$user
 ```
+
+`/lib/ns/posix` gives no home (ADR-0029). The whole home is a broad grant (§7), so only the user's own session has it, through `posix.user`. A package's POSIX program gets its own data tree as `$HOME`, plus what its manifest names (`needs=cwd` binds the directory it was started in). What the user runs directly from the session runs as the user. `newns -n /lib/ns/NAME command`, as Plan 9's `auth/newns`, runs it under a narrower template.
 
 **`/srv`** is Plan 9's service registry. A server *posts* a channel under `/srv/name`, and a client *mounts* it. `svcd` serves `/srv` for the local node.
 
@@ -350,7 +358,7 @@ An app's namespace holds only `/wsys/self`, its own windows, and a `new` verb. T
     policy                                  routing and privacy rules (03 §8.6)
 ```
 
-An agent sees only its own session and the context pools the user grants it (§7). `aid` never reads a pool on behalf of a session that was not granted it.
+An agent sees only its own session and the context pools the user grants it (§7). `aid` never reads a pool on behalf of a session that was not granted it. `aid` holds no connection to anyone's home: `add` takes a handle the caller passes, not a path for `aid` to resolve. A pool that mixes sources, or holds mail or messages, is a broad grant (§7, ADR-0029).
 
 ## 6. The distributed swarm
 
@@ -499,6 +507,8 @@ mount /srv/aid!session/$session /ai/self     # its own session; no other session
 
 - **Grants at run time:** when the agent needs more, it writes a request to `/wsys/self/ctl`, for example `request mount /home/jk/notes read`. The desktop shows an approval prompt (03 §8.5). On approval, `svcd` mints an attenuated token and mounts the extra tree into the agent's namespace group.
 - **Audit:** `auditfs` is a pass-through 9Px server. It logs every mutating operation with the session id, and uses the side-effect classes from `.schema` to decide what needs approval or a snapshot. `auditfs` is the agent's only connection to those files; the agent never holds a connection to `fsd`. Effect classes are trusted only from servers on the system's trusted list. A verb from any other server, such as one on a remote node, is treated as `destructive`, whatever its `.schema` says.
+- **Never wider than the starter.** A process can mount only connections it holds handles for, so no share, copy or clean spawn is wider than its parent. The one wider start is `svcd` starting a package under its own manifest's grants. A package started at a confined process's request runs without its broad grants. The plumber marks each message with its sender's confinement, and its rules do not start a holder of a broad grant for a confined sender.
+- **Broad grants** (ADR-0029): the whole home, another app's data tree, the dump and snapshots, `fsd`'s `adm` or an unrestricted `fsd` connection, the whole `/wsys` tree or another window's `a11y`, debugging processes other than one's own children, a context pool that mixes sources or holds mail or messages, and `auditfs`'s logs of other sessions. They are given only from the grant settings, on the trusted path, by a deliberate action. They are never given in answer to a `request`, never by a standing approval, and never to an agent. `svcd` keeps every grant as ndb records outside `$home`, so a program that can write the home cannot grant itself anything. `/proc/N/status` and the status bar show who holds one.
 - **Delegation across machines** uses the same tokens. The `cpu` session in §6.5 is itself a delegated, attenuated namespace.
 
 ## 8. Open questions
