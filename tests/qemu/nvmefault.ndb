@@ -1,0 +1,13 @@
+# tests/qemu/nvmefault.ndb: the IOMMU stops a DMA (M5 step 6c). drv-nvme, with
+# drv-nvme.fault=1, aims an Identify at a device address its domain does not
+# map: the controller's write faults in VT-d, the fault is counted against
+# the domain and reported on VX_TRIGGER_DMA_FAULT. (QEMU's controller says the
+# command worked anyway: it does not check its DMA for an identify.)
+# x86_64 only until SMMUv3 (step 6d).
+
+scenario=nvmefault timeout=60 arch=x86_64 cmdline="vx.skip=gsh drv-nvme.fault=1" disk=64 bus=nvme
+expect="vx: VT-d: 1 unit"
+expect="the fault reported, 1 counted"
+expect="drv-nvme: 64 MiB"
+fail="vx: panic"
+fail="drv-nvme: FAILED"

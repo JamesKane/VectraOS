@@ -794,6 +794,10 @@ static void test_devices(void) {
   vx_handle_close(ro);
   CHECK(vx_dma_map(dom, mem, 0, 16ull * 1024, VX_DMA_READ | VX_DMA_WRITE, addrs, &map1) == VX_OK);
   CHECK(addrs[0] && addrs[3] && !(addrs[0] & 4095) && addrs[0] != addrs[1]);
+#ifdef __x86_64__
+  // Through VT-d (QEMU's intel-iommu, always): the domain's own addresses, contiguous, from 4 GiB.
+  CHECK(addrs[1] == addrs[0] + 4096 && addrs[3] == addrs[0] + 3ull * 4096 && addrs[0] >= 1ull << 32);
+#endif
   CHECK(vx_vmo_create_physical(res, DEVICE, 4096, &h) == VX_OK);
   CHECK(vx_dma_map(dom, h, 0, 4096, VX_DMA_READ, addrs, &map2) == VX_ERR_UNSUPPORTED); // not RAM, yet
   vx_handle_close(h);

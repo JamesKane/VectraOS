@@ -593,6 +593,9 @@ void x86_trap(trap_frame *f) {
     tlb_answer(this_cpu());
   } else if (f->vector == VECTOR_SPURIOUS) {
     return;
+  } else if (f->vector == VECTOR_IOMMU) {
+    vtd_fault_interrupt();
+    wrmsr(X2APIC_EOI, 0);
   } else if (f->vector >= VECTOR_MSI_FIRST && f->vector <= VECTOR_MSI_LAST) {
     irq_fire(MSI_LINE_BASE + (uint32_t)f->vector);
     wrmsr(X2APIC_EOI, 0);

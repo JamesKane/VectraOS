@@ -239,12 +239,36 @@ static vx_status task_enable_io(task *t, const iorange *r) {
 //
 // Faults (the IOMMU's, M5 steps 6c and 6d) are counted, and fire
 // VX_TRIGGER_DMA_FAULT on the domain.
+//
+// With an IOMMU (iommu/vtd.c; SMMUv3 with step 6d) a domain translates: a
+// mapping gets device addresses of the domain's own, contiguous however its
+// pages lie, and unmapping takes them out of the device's tables and
+// invalidates before the pages go, so nothing need be kept. A function no
+// IOMMU covers gets a pass-through domain, as before.
+
+typedef struct iommu_dom { // the IOMMU's side of a domain
+  bool on;                 // translated: the IOMMU has its tables for the device
+  uint8_t unit;            // which remapping unit
+  uint16_t did;            // its domain id there
+  uint64_t root;           // the top of its page tables (physical)
+} iommu_dom;
+
+struct dma_domain;
+// The architecture's IOMMU, if any (x86_64: vtd.c). attach: OK with d->io.on
+// false if no IOMMU covers the device; map and unmap: [iova, iova + pages
+// pages) to and from pa[], invalidated before they return.
+static vx_status iommu_attach(struct dma_domain *d);
+static void iommu_detach(struct dma_domain *d);
+static bool iommu_map(struct dma_domain *d, uint64_t iova, const uint64_t *pa, uint64_t pages,
+                      uint32_t options);
+static void iommu_unmap(struct dma_domain *d, uint64_t iova, uint64_t pages);
 
 typedef struct dma_mapping {
   object obj;
   struct dma_domain *domain; // referenced, until the mapping is freed
   vmo *v;                    // held while the device may reach it; nullptr once let go
   uint64_t offset, size;
+  uint64_t iova;    // translated: where the device sees it
   uint32_t options; // VX_DMA_READ, VX_DMA_WRITE
   bool revoked;     // its handles of no more use (REVOKE): let go only at QUIESCED
   bool kept;        // its handles gone, its pages not let go: on the domain's kept list
@@ -259,6 +283,7 @@ typedef struct dma_domain {
   dma_mapping *kept; // without: freed at QUIESCED
   uint64_t faults;
   observers obs;
+  iommu_dom io;
 } dma_domain;
 
 static pool dma_pool = POOL_FOR(dma_domain);
@@ -270,8 +295,29 @@ static vx_status dma_domain_create(uint32_t source, dma_domain **out) {
   d->obj.type = OBJ_DMA_DOMAIN;
   d->source = source;
   atomic_store_explicit(&d->obj.refs, 1, memory_order_relaxed);
+  vx_status st = iommu_attach(d); // fails closed: a device an IOMMU covers is never pass-through
+  if (st != VX_OK) {
+    pool_free(&dma_pool, d);
+    return st;
+  }
   *out = d;
   return VX_OK;
+}
+
+// Device addresses for a mapping of `size` bytes in a translated domain:
+// the first gap from 4 GiB up (below, the firmware's reserved regions may
+// be identity-mapped), under the domain's lock.
+static constexpr uint64_t IOVA_BASE = 1ull << 32, IOVA_TOP = 1ull << 39;
+
+static uint64_t iova_alloc(const dma_domain *d, uint64_t size) {
+  uint64_t at = IOVA_BASE;
+  for (bool moved = true; moved;) {
+    moved = false;
+    for (int pass = 0; pass < 2; pass++)
+      for (const dma_mapping *m = pass ? d->kept : d->live; m; m = m->next)
+        if (m->iova && at < m->iova + m->size && m->iova < at + size) at = m->iova + m->size, moved = true;
+  }
+  return at + size <= IOVA_TOP ? at : 0;
 }
 
 static void dma_unlink(dma_mapping **list, dma_mapping *m) {
@@ -280,6 +326,14 @@ static void dma_unlink(dma_mapping **list, dma_mapping *m) {
       *at = m->next;
       return;
     }
+}
+
+static void dma_mapping_free(dma_mapping *m) {
+  dma_domain *d = m->domain;
+  vmo *v = m->v;
+  pool_free(&dma_mapping_pool, m);
+  if (v) object_drop(&v->obj);
+  object_drop(&d->obj);
 }
 
 // Maps [offset, offset + size) of v for the device, as options allow, and
@@ -296,9 +350,23 @@ static vx_status dma_map(dma_domain *d, vmo *v, uint64_t offset, uint64_t size, 
   object_ref(&d->obj), object_ref(&v->obj);
   m->domain = d, m->v = v, m->offset = offset, m->size = size, m->options = options;
   spin_lock(&d->lock);
+  if (d->io.on && !(m->iova = iova_alloc(d, size))) {
+    spin_unlock(&d->lock);
+    dma_mapping_free(m);
+    return VX_ERR_NO_MEMORY; // no room left in the domain's space
+  }
   m->next = d->live, d->live = m;
   spin_unlock(&d->lock);
-  for (uint64_t i = 0; i < size / 4096; i++) addresses[i] = v->pages[offset / 4096 + i];
+  const uint64_t *pages = v->pages + offset / 4096;
+  if (d->io.on && !iommu_map(d, m->iova, pages, size / 4096, options)) {
+    iommu_unmap(d, m->iova, size / 4096); // what it did of it
+    spin_lock(&d->lock);
+    dma_unlink(&d->live, m);
+    spin_unlock(&d->lock);
+    dma_mapping_free(m);
+    return VX_ERR_NO_MEMORY;
+  }
+  for (uint64_t i = 0; i < size / 4096; i++) addresses[i] = d->io.on ? m->iova + i * 4096 : pages[i];
   *out = m;
   return VX_OK;
 }
@@ -312,24 +380,18 @@ static vx_status dma_unmap(dma_mapping *m) {
   bool refused = m->revoked || !m->v;
   if (v) m->v = nullptr;
   spin_unlock(&d->lock);
+  if (v && d->io.on) iommu_unmap(d, m->iova, m->size / 4096); // out of the device's reach first
   if (v) object_release(&v->obj);
   return refused ? VX_ERR_BAD_STATE : VX_OK;
-}
-
-static void dma_mapping_free(dma_mapping *m) {
-  dma_domain *d = m->domain;
-  vmo *v = m->v;
-  pool_free(&dma_mapping_pool, m);
-  if (v) object_drop(&v->obj);
-  object_drop(&d->obj);
 }
 
 // Its last handle gone: freed if its pages were let go, else kept for QUIESCED.
 static void dma_mapping_destroy(dma_mapping *m) {
   dma_domain *d = m->domain;
+  if (d->io.on && m->v) iommu_unmap(d, m->iova, m->size / 4096); // translated: out of reach, so let go now
   spin_lock(&d->lock);
   dma_unlink(&d->live, m);
-  bool keep = m->v != nullptr;
+  bool keep = m->v != nullptr && !d->io.on;
   if (keep) m->kept = true, m->next = d->kept, d->kept = m;
   spin_unlock(&d->lock);
   if (!keep) dma_mapping_free(m);
@@ -341,6 +403,19 @@ static void dma_revoke(dma_domain *d) {
   spin_lock(&d->lock);
   for (dma_mapping *m = d->live; m; m = m->next) m->revoked = true;
   spin_unlock(&d->lock);
+  if (!d->io.on) return;
+  // Translated: every mapping out of the device's reach now, its pages let go.
+  for (;;) {
+    vmo *v = nullptr;
+    uint64_t iova = 0, pages = 0;
+    spin_lock(&d->lock);
+    for (dma_mapping *m = d->live; m && !v; m = m->next)
+      if (m->v) v = m->v, m->v = nullptr, iova = m->iova, pages = m->size / 4096;
+    spin_unlock(&d->lock);
+    if (!v) return;
+    iommu_unmap(d, iova, pages);
+    object_release(&v->obj);
+  }
 }
 
 static void dma_quiesced(dma_domain *d) {
@@ -381,6 +456,7 @@ static vx_status dma_bind(dma_domain *d, binding *b) {
 }
 
 static void dma_domain_destroy(dma_domain *d) { // no mapping refers to it any more
+  iommu_detach(d);
   observers_free(d->obs.head);
   pool_free(&dma_pool, d);
 }

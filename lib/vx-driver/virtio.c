@@ -35,6 +35,9 @@ enum : uint8_t {
 };
 
 static constexpr uint64_t VIRTIO_F_VERSION_1 = 1ull << 32;
+// The device's DMA goes through the platform's IOMMU (§6.1): accepted
+// whenever offered, since the addresses a DMA domain gives are the IOMMU's.
+static constexpr uint64_t VIRTIO_F_ACCESS_PLATFORM = 1ull << 33;
 static constexpr uint64_t VIRTIO_RING_F_INDIRECT_DESC = 1ull << 28;
 static constexpr uint16_t VIRTIO_NO_VECTOR = 0xffff;
 
@@ -118,7 +121,7 @@ static volatile uint8_t *virtio_region(vx_virtio *v, uint8_t cap, uint32_t need,
   uint64_t offered = c->device_feature;
   c->device_feature_select = 1;
   offered |= (uint64_t)c->device_feature << 32;
-  uint64_t use = offered & (wanted | VIRTIO_F_VERSION_1);
+  uint64_t use = offered & (wanted | VIRTIO_F_VERSION_1 | VIRTIO_F_ACCESS_PLATFORM);
   if (!(use & VIRTIO_F_VERSION_1)) return VX_ERR_UNSUPPORTED; // a legacy-only device
   c->driver_feature_select = 0;
   c->driver_feature = (uint32_t)use;

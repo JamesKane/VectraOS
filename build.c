@@ -2211,6 +2211,7 @@ typedef struct qemu_opts {
   const char *cdrom; // boot this ISO as a CD, with no disk
   const char *disk;  // a second disk, on virtio-blk, or nullptr
   bool nvme;         // and on NVMe instead
+  bool caching;      // the IOMMU in caching mode (VT-d's CAP.CM)
 } qemu_opts;
 
 // host/vx9pserve, built for this machine: the 9P server VectraOS mounts over
@@ -2373,6 +2374,14 @@ static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
   if (strcmp(a->name, "x86_64") == 0) {
     cmd_add(c, "/usr/bin/qemu-system-x86_64");
     cmd_addv(c, (const char *const[]){"-machine", "q35", nullptr});
+    // VT-d, always (M5 step 6c): the kernel turns it on before any driver
+    // runs. No interrupt remapping yet, which KVM's in-kernel irqchip wants off.
+    // Virtio devices go through it only with iommu_platform=on (below), and
+    // then their drivers must accept VIRTIO_F_ACCESS_PLATFORM.
+    cmd_addv(c, (const char *const[]){"-device",
+                                      o.caching ? "intel-iommu,intremap=off,caching-mode=on"
+                                                : "intel-iommu,intremap=off",
+                                      nullptr});
     if (o.kvm)
       cmd_addv(c, (const char *const[]){"-enable-kvm", "-cpu", "host", nullptr});
     else
@@ -2402,7 +2411,8 @@ static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
   } else {
     // A test never writes the image, so several can boot one image at once.
     cmd_add(c, fmt("if=none,id=disk,format=raw,file=%s%s", image, o.test ? ",snapshot=on" : ""));
-    cmd_addv(c, (const char *const[]){"-device", "virtio-blk-pci,drive=disk,disable-legacy=on", nullptr});
+    cmd_addv(c, (const char *const[]){
+                    "-device", "virtio-blk-pci,drive=disk,disable-legacy=on,iommu_platform=on", nullptr});
   }
   if (o.disk) { // after the boot disk, so devmgr finds it second: /srv/disk1
     cmd_add(c, "-drive");
@@ -2410,7 +2420,8 @@ static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
     if (o.nvme)
       cmd_addv(c, (const char *const[]){"-device", "nvme,drive=disk1,serial=vxdisk1", nullptr});
     else
-      cmd_addv(c, (const char *const[]){"-device", "virtio-blk-pci,drive=disk1,disable-legacy=on", nullptr});
+      cmd_addv(c, (const char *const[]){
+                      "-device", "virtio-blk-pci,drive=disk1,disable-legacy=on,iommu_platform=on", nullptr});
   }
   // QEMU's user networking: the guest is 10.0.2.15, the host 10.0.2.2 (M3).
   // Each connection to 10.0.2.100!7 gets a `cat` on the host of its own (an
@@ -2429,7 +2440,8 @@ static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
       c,
       fmt("user,id=net0,guestfwd=tcp:10.0.2.100:7-cmd:cat,guestfwd=tcp:10.0.2.100:5640-cmd:%s --stdio %s%s",
           VX9PSERVE, o.share, u9fs));
-  cmd_addv(c, (const char *const[]){"-device", "virtio-net-pci,netdev=net0,disable-legacy=on", nullptr});
+  cmd_addv(c, (const char *const[]){
+                  "-device", "virtio-net-pci,netdev=net0,disable-legacy=on,iommu_platform=on", nullptr});
   if (o.test)
     cmd_addv(c, (const char *const[]){"-serial", "stdio", "-monitor", "none", nullptr});
   else
@@ -2545,6 +2557,8 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   bool iso = false;                        // scenario=... iso: boot the ISO, as a CD
   long disk_mib = 0;                       // scenario=... disk=MIB: a second disk, made fresh for the run
   bool nvme = false;                       // and bus=nvme: on NVMe, not virtio-blk
+  bool caching = false;                    // scenario=... iommu=caching: VT-d's caching mode on
+  const char *only = nullptr;              // scenario=... arch=A: run on A only
   const char *volume = nullptr;            // and volume=DIR: its system partition a volume, home DIR
   const char *host_file[8], *host_text[8]; // host=FILE text=...: in the share, once it passed
   int host_count = 0;
@@ -2568,6 +2582,12 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
           die("%s:%zu: disk=%s is not a size in MiB, up to 4096", path, rec.line, d);
       }
       if (vx_ndb_has(&rec, "volume")) volume = str_dup(vx_ndb_get(&rec, "volume"));
+      if (vx_ndb_has(&rec, "arch")) only = str_dup(vx_ndb_get(&rec, "arch"));
+      if (vx_ndb_has(&rec, "iommu")) {
+        const char *m = str_dup(vx_ndb_get(&rec, "iommu"));
+        if (strcmp(m, "caching") != 0) die("%s:%zu: iommu=%s: only iommu=caching", path, rec.line, m);
+        caching = true;
+      }
       if (vx_ndb_has(&rec, "bus")) {
         const char *b = str_dup(vx_ndb_get(&rec, "bus"));
         if (strcmp(b, "nvme") != 0 && strcmp(b, "virtio") != 0)
@@ -2610,6 +2630,10 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
     }
   }
   if (timeout <= 0 || expect_count == 0) die("%s: needs scenario= with a timeout, and an expect=", path);
+  if (only && strcmp(only, a->name) != 0) { // what the other architecture lacks so far (an IOMMU, say)
+    fprintf(stderr, "  TEST  %-11s %-8s skipped (%s only)\n", name, a->name, only);
+    return true;
+  }
 
   const char *image = image_path(a, release), *cdrom = nullptr;
   if (*cmdline || *with || iso) {
@@ -2635,7 +2659,8 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
                        .u9fs = u9fs,
                        .cdrom = cdrom,
                        .disk = disk,
-                       .nvme = nvme});
+                       .nvme = nvme,
+                       .caching = caching});
   if (verbose) cmd_print(&c);
   signal(SIGPIPE, SIG_IGN); // QEMU gone: a write to it fails, rather than ending this process
   int fds[2], keys[2];      // QEMU's serial: its output, and what is typed into it

@@ -127,6 +127,7 @@ static uint32_t nsid, sector_size, max_transfer;
 static uint64_t sectors;
 static bool has_cache, has_discard;
 static uint64_t reset_every, completions, resets;
+static bool fault_test; // drv-nvme.fault=1: see fault_once
 static uint32_t next_client;
 
 [[noreturn]] static void fail(const char *what) {
@@ -304,6 +305,8 @@ static bool controller_up(bool again) {
   return true;
 }
 
+static void fault_once(void);
+
 static void setup(void) {
   fn.cfg = map_handle("config", 4096);
   dma = vx_spawn_take("dma");
@@ -376,6 +379,7 @@ static void setup(void) {
   max_transfer = MAX_TRANSFER;
   if (mdts && mdts < 16 && (4096u << mdts) < max_transfer) max_transfer = 4096u << mdts;
   max_transfer -= max_transfer % sector_size;
+  if (fault_test) fault_once();
 
   // The I/O queues: as many pairs as granted, each with its own vector while
   // they last (vector 0 is the admin queue's).
@@ -678,9 +682,30 @@ static void accept_client(void) {
   }
 }
 
+// drv-nvme.fault=1: an Identify aimed where the domain maps nothing, to see
+// the IOMMU stop the controller's write, count it, and say so (nvmefault).
+static void fault_once(void) {
+  vx_handle p;
+  if (vx_port_create(0, &p) != VX_OK) fail("port_create");
+  bool bound = vx_port_bind(p, dma, VX_TRIGGER_DMA_FAULT, 1, 0) == VX_OK;
+  uint32_t cns[6] = {1};
+  vx_status st = admin_cmd(A_IDENTIFY, 0, 1ull << 38, cns, nullptr);
+  vx_packet pk = {};
+  bool told = bound && vx_port_wait(p, vx_clock_read() + 2'000'000'000, 0, &pk, 1) == 1;
+  vx_handle_close(p);
+  vx_print(VX_STR("drv-nvme: a DMA fault, as asked: the command "));
+  vx_print(st == VX_OK ? VX_STR("completed") : VX_STR("failed"));
+  vx_print(told ? VX_STR(", the fault reported, ") : VX_STR(", no fault reported, "));
+  vx_print_u64((uint64_t)vx_dma_domain_op(dma, VX_DMA_FAULTS));
+  vx_print(VX_STR(" counted\n"));
+}
+
 // drv-nvme.reset=N on the kernel command line: a reset after every N completions.
 static void read_options(void) {
   vx_str c = vx_spawn.cmdline;
+  static const char fault[] = "drv-nvme.fault=1";
+  for (size_t i = 0; i + sizeof fault - 1 <= c.len; i++)
+    if ((!i || c.ptr[i - 1] == ' ') && memcmp(c.ptr + i, fault, sizeof fault - 1) == 0) fault_test = true;
   static const char key[] = "drv-nvme.reset=";
   for (size_t i = 0; i + sizeof key - 1 <= c.len; i++) {
     if ((i && c.ptr[i - 1] != ' ') || memcmp(c.ptr + i, key, sizeof key - 1) != 0) continue;

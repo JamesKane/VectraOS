@@ -115,6 +115,7 @@ static void selftests(void) {
   kput_u64(atomic_load(&cpus_online));
   kput(atomic_load(&cpus_online) == 1 ? VX_STR(" cpu\n") : VX_STR(" cpus\n"));
 
+  iommu_init(); // deny-all from here: no device reaches memory until devmgr gives it a domain
   find_root_module();
   reclaim_boot_memory(); // every CPU is on the kernel's tables and stacks, and the responses are read
   selftests();           // after the reclaim, so the allocator tests cover that memory too, and before
