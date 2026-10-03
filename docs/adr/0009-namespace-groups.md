@@ -8,7 +8,7 @@ VectraOS is Plan 9 evolved, in standard C (00 §1). Plan 9's namespace is a kern
 
 D4 moved the namespace into user space, so the kernel has no path walker, mount table or cache. That reason still holds. But the code went further than D4 needed, in two ways:
 
-- **Copy-only.** Each process has its own table (`lib/vx-ns/ns.c`). A child gets a copy at spawn, and nothing it binds ever reaches its parent. 02 §2 sketched a shared group served by `nsd`, but deferred it to M8 (02 §8, question 3).
+- **Copy-only.** Each process has its own table (`lib/vx-ns/ns.c`). A child gets a copy at spawn, and nothing it binds ever reaches its parent. 02 §2 sketched a shared group served by `nsd`, but deferred it to M10 (02 §8, question 3).
 - **Found by path.** The longest matching prefix wins. After `bind /n/a /n/b; mount X /n/a/m`, the name `/n/b/m` is not `X`.
 
 Both break the mental model Plan 9 scripts depend on.
@@ -47,5 +47,5 @@ Both break the mental model Plan 9 scripts depend on.
 - `vx-ns` matches mounts by qid, not by prefix, and gains the group protocol. `nsd` is a new server of a few hundred lines. The spawn message carries the group, a channel to `nsd` for it (`nsgroup`), for share; or the table's records, for copy and clean. `gsh`'s commands and the musl back end's children share; `svcd` gives each service a namespace of its own, from its manifest or template.
 - `/proc/N/ns` is the text of the group process N is in, which `procfs` asks `nsd` for.
 - Shells behave like Plan 9's. A script's `bind` reaches its caller unless the script runs in a copied group (rc's `rfork n`).
-- 02 §8's question 3 is closed. Groups arrive before M4's sockets, not at M8.
+- 02 §8's question 3 is closed. Groups arrive before M4's sockets, not at M10.
 - **Open: `nsd` restarting.** Members keep the last published table and go on resolving with it. Until `nsd` is back, binds fail, and so do spawns that share.

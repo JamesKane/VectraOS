@@ -108,11 +108,11 @@ That is the whole list: one local transport and one network transport.
 |---|---|---|
 | `dref` | M5 | `fsd` reads into a client `Buffer` without a copy |
 | `map` | M5 | `mmap` of a file through the pager |
-| `notify` | M6 | `winsrv` watching `/wsys/theme`; `gsh` completion caches |
-| `lease` | M8 | the `cfs` cache in a `cpu` session (§6.6) |
+| `notify` | M6 | `libvx`'s file watches; then `winsrv` watching `/wsys/theme` (M7) and `gsh` completion caches |
+| `lease` | M10 | the `cfs` cache in a `cpu` session (§6.6) |
 | `xattr` | M4 | POSIX `stat` in the musl back end |
 | `posix` | M4 | Git, and the shell's redirections, in the musl back end |
-| `hint` | M5 | `vx_io_submit` loading assets through `fsd` (09 §5.5) |
+| `hint` | M6 | `vx_io_submit` (`libvx`) loading assets through `fsd` (09 §5.5) |
 
 **Pipelining, not batching.** 9P clients choose their own fids, so walk, open and read can be sent back to back without waiting: `Twalk fid=0 newfid=5 …`, `Topen 5`, `Tread 5`. 9Px adds one rule: a server processes a request that names a fid created by an earlier request on the same connection after that request. If the walk fails, the later requests fail with `unknown fid`. That is one round trip over a WAN with no compound message; NFSv4's COMPOUND is the warning.
 
@@ -354,7 +354,7 @@ An agent sees only its own session and the context pools the user grants it (§7
 
 ## 6. The distributed swarm
 
-_Provisional: nothing in this section is needed before M8 (04 §6). It records the intended shape and will be rewritten against the code that M8 produces._
+_Provisional: nothing in this section is needed before M10 (04 §6). It records the intended shape and will be rewritten against the code that M10 produces._
 
 ### 6.1 Roles
 

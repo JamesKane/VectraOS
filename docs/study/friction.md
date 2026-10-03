@@ -192,7 +192,7 @@ Each entry below gives:
 - dolphin@bb3558a70e `Source/Core/VideoCommon/DriverDetails.h`: 29 bug entries with driver-version ranges.
 - Signals: 271 commits in the driver-vendor cluster in 10 Tier A projects, the largest named cluster in the graphics area.
 
-**VectraOS answer (partly open).** Drivers ship and update with the OS against one profile, so apps can key on one OS version instead of vendor × driver × device (03 §3). The study also proposed gating every driver on the Vulkan CTS for the profile plus a conformance suite built from these quirks, and publishing a machine-readable known-issues database. Neither is in the blueprint yet; they belong with the per-vendor GPU driver ADRs before M7.
+**VectraOS answer (partly open).** Drivers ship and update with the OS against one profile, so apps can key on one OS version instead of vendor × driver × device (03 §3). The study also proposed gating every driver on the Vulkan CTS for the profile plus a conformance suite built from these quirks, and publishing a machine-readable known-issues database. Neither is in the blueprint yet; they belong with the per-vendor GPU driver ADRs before M8.
 
 ### F-111: Shader IR and resource-binding models must be translated per backend
 

@@ -1,6 +1,6 @@
 # ADR-0014: Publisher catalogues for package dependencies
 
-Status: accepted, 2026-10-02. Provisional with 06: rewritten against the code when packages arrive (M6 onwards).
+Status: accepted, 2026-10-02. Provisional with 06: rewritten against the code when packages arrive (M7 onwards).
 
 ## Context
 

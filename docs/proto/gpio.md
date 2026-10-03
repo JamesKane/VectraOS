@@ -1,6 +1,6 @@
 # The `gpio` class protocol
 
-Status: draft. Written for the Q8B's platform step (ADR-0019 §9, step 1), and frozen when its first users land: SD card detect, then the audio codec's reset and wake.
+Status: draft. Written for the Q8B's platform step (ADR-0019 §9, step 1; M9), and frozen when its first users land: SD card detect, then the audio codec's reset and wake.
 
 A GPIO controller's pins are shared by many devices, so the controller has one owner, a driver that serves this protocol. On the Q8B that driver is `drv-qcom-tlmm`, for Qualcomm's TLMM: 228 pins at `0xf100000`, with every pin's interrupt behind one summary SPI.
 

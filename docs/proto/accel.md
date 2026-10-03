@@ -1,6 +1,6 @@
 # The `accel` class protocol
 
-Status: draft, written before M7 (ADR-0018). Frozen when M7 lands, with Venus as its first user. Each vendor's ADR defines the vendor parts (§7) before its driver is written.
+Status: draft, written before M8 (ADR-0018). Frozen when M8 lands, with Venus as its first user. Each vendor's ADR defines the vendor parts (§7) before its driver is written.
 
 `accel` is how a GPU's user-space Vulkan driver (Mesa, in the client's process) reaches the `drv-gpu-*` that owns the hardware. It is one protocol for every vendor, shaped like Fuchsia's Magma: the driver sets up address spaces, buffers and queues, and the client builds the command streams. Sync is explicit only: GPU work waits on and signals timeline `Counter`s (01 §4.4), and nothing else.
 
@@ -10,7 +10,7 @@ Each Mesa driver gets one backend at the seam it already has for kernel interfac
 
 | Mesa driver | Its seam | Our backend | Needed by |
 |---|---|---|---|
-| Venus (virtio-gpu) | `vn_renderer` (`src/virtio/vulkan/vn_renderer.h`), beside `vn_renderer_virtgpu.c` and `vn_renderer_vtest.c` | `vn_renderer_accel.c` | M7, first user |
+| Venus (virtio-gpu) | `vn_renderer` (`src/virtio/vulkan/vn_renderer.h`), beside `vn_renderer_virtgpu.c` and `vn_renderer_vtest.c` | `vn_renderer_accel.c` | M8, first user |
 | Turnip (Adreno) | `tu_knl` (`src/freedreno/vulkan/tu_knl.h`), beside its msm, KGSL and virtio back ends | `tu_knl_accel.cc` (Turnip is C++, 04 §1) | the Q8B (T1) |
 | Asahi (AGX) | `agx_device` (`src/asahi/lib/`), which already has a virtio back end | `agx_device_accel.c` | its vendor ADR |
 | NVK (NVIDIA) | `nvkmd` (`src/nouveau/vulkan/nvkmd/`), beside its nouveau back end | `nvkmd/accel/` | its vendor ADR |

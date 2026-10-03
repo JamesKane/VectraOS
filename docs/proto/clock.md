@@ -1,6 +1,6 @@
 # The `clock` class protocol
 
-Status: draft, version 2. Version 1 was written for the Q8B's platform step (ADR-0019 §9, step 1). Version 2 adds what device-tree SoCs need (ADR-0023): rates the hardware computes, mux selection, reset lines, and power domains that need regulators. It is frozen when the first of those platform steps lands.
+Status: draft, version 2. Version 1 was written for the Q8B's platform step (ADR-0019 §9, step 1). Version 2 adds what device-tree SoCs need (ADR-0023): rates the hardware computes, mux selection, reset lines, and power domains that need regulators. Version 1 lands in M9 (04 §6). Version 2's device-tree additions are parked with ADR-0023; its ACPI power resources come with ADR-0024. It is frozen when the first of those platform steps lands.
 
 A clock controller that several devices share has one owner, a driver that serves this protocol (01 §7.2). On the Q8B that owner is `drv-qcom-gcc`, for Qualcomm's global clock controller (GCC) and the GPU's clock controller. Other drivers never touch the controller's registers. They **vote**: they ask for a power domain or a clock to be on, or for a rate, and the server turns a resource off only when no vote holds it.
 

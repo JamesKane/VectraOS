@@ -384,7 +384,7 @@ The draft also found places where the documents and the code disagreed: `task_ki
 
 ## 10. Open questions
 
-1. **When the loader comes, and which programs stay static.** Dynamic linking is the direction (§4.8); the loader is needed by M6 for hot reload. The boot path, `svcd` and the servers that start before `fsd` have nothing to load libraries from, so they may stay static. 06 §16 question 8 asks the same of every library package.
+1. **When the loader comes, and which programs stay static.** Dynamic linking is the direction (§4.8); the loader is needed by M7 for hot reload, so it comes in M6 (Runtime), with `libvx` v0 and threads (04 §6). The boot path, `svcd` and the servers that start before `fsd` have nothing to load libraries from, so they may stay static. 06 §16 question 8 asks the same of every library package.
 2. **Whether syscall numbers are ever frozen.** With `libvx` shared, apps never make syscalls, so the numbers can stay private. The static programs in the base release are rebuilt with the kernel and need no frozen numbers either. Only a third-party static program would, so ADR-0004 can freeze the record layouts and leave the numbers private, provided third-party programs link `libvx` dynamically once the loader exists.
 3. **How much of the loop is in `libvx`.** Timers here are user-space bookkeeping over the port's deadline; a kernel timer object would be another syscall family. Start with bookkeeping.
 4. **`vx_fd` or `vx_file *`.** Small integer ids match Plan 9 and the study's handle rule; pointers match the rest of `libvx`'s objects. Ids are proposed, because descriptors are passed between threads and stored in events.

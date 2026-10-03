@@ -1,6 +1,6 @@
 # Phase 7 — Native applications and the hypermedia web
 
-_Blueprint v0, 2026-10-02. Provisional: a vision. Nothing here is needed before M9, which brings `tlsd` (00 D16). It fixes the intended shape and is rewritten against the code each piece produces (§12)._
+_Blueprint v0, 2026-10-02. Provisional: a vision. Nothing here is needed before M11, which brings `tlsd` (00 D16). It fixes the intended shape and is rewritten against the code each piece produces (§12)._
 
 ## 1. The position
 
@@ -255,9 +255,9 @@ Added to 00 §8 when the milestone that makes each measurable lands:
 
 | Milestone | Pieces |
 |---|---|
-| **M6 Pixels** | The plumber and its rules, with the terminal and the file manager as its first clients |
-| **M9 AI** | `tlsd`, which `webfs` and every adapter need |
-| **M13 Hypermedia and native clients** | The engine ADR (§5) and the profile ADR (§4); `webfs` with HTTP, Gemini and Gopher; `hv` with the `vxui` frontend, reader mode, the accessibility tree, and Markdown and gemtext; the message shape (§6.2) as a host-testable library, `lib/vx-msg`; the feed adapter and client, then IRC, then mail. Each later protocol is a package with its own ADR for any import |
+| **M7 Pixels** | The plumber and its rules, with the terminal and the file manager as its first clients |
+| **M11 AI** | `tlsd`, which `webfs` and every adapter need |
+| **M15 Hypermedia and native clients** | The engine ADR (§5) and the profile ADR (§4); `webfs` with HTTP, Gemini and Gopher; `hv` with the `vxui` frontend, reader mode, the accessibility tree, and Markdown and gemtext; the message shape (§6.2) as a host-testable library, `lib/vx-msg`; the feed adapter and client, then IRC, then mail. Each later protocol is a package with its own ADR for any import |
 
 ## 13. Heritage
 

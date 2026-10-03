@@ -1,6 +1,6 @@
 # The `registers` class protocol
 
-Status: draft (ADR-0023). Frozen when the first device-tree SoC's platform step lands.
+Status: draft (ADR-0023); parked with it, until a tiered board needs a device tree. Frozen when the first device-tree SoC's platform step lands.
 
 Some register blocks are written by many drivers. Rockchip's GRF ("general register files") and IOC hold, side by side:
 - USB PHY settings;

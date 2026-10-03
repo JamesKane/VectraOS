@@ -1,6 +1,6 @@
 # The `regulator` class protocol
 
-Status: draft (ADR-0023). Frozen when the first device-tree SoC's platform step lands.
+Status: draft (ADR-0023); parked with it, until a tiered board needs a device tree. Frozen when the first device-tree SoC's platform step lands.
 
 A voltage regulator feeds devices that several drivers run: a CPU cluster, the GPU and its power domain, the NPU and its SRAM, I/O banks. So a regulator has one owner, the driver for its PMIC or regulator chip, which serves this protocol. On the RK3588 boards those are:
 - the RK806 PMIC on SPI;

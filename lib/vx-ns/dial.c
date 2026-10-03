@@ -165,7 +165,7 @@ static size_t dial_address(vx_str in, char *out, size_t cap) {
     return st;
   }
   // A Plan 9 server refuses "none" until a connection has authenticated; and
-  // there are no user names before keyd (M8), so a dialed server sees this one.
+  // there are no user names before keyd (M10), so a dialed server sees this one.
   d->c = (p9_client){.rpc = vx_ns_dial_rpc,
                      .ctx = d,
                      .tbuf = d->tbuf,

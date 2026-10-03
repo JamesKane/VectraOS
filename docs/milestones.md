@@ -1,8 +1,8 @@
 # Milestones
 
-Where VectraOS stands against its milestones. What each milestone contains, and its exit test, are defined in [04 §5](04-bootstrap-toolchain.md#5-milestones-to-hello-world) (M1–M3) and [04 §6](04-bootstrap-toolchain.md#6-after-m3) (M4–M12); this file tracks progress against them. A step's commit is recorded in the commit after it (a commit cannot name its own hash).
+Where VectraOS stands against its milestones. What each milestone contains, and its exit test, are defined in [04 §5](04-bootstrap-toolchain.md#5-milestones-to-hello-world) (M1–M3) and [04 §6](04-bootstrap-toolchain.md#6-after-m3) (M4–M15); this file tracks progress against them. A step's commit is recorded in the commit after it (a commit cannot name its own hash).
 
-Updated 2026-10-01.
+Updated 2026-10-02.
 
 ## Summary
 
@@ -13,13 +13,18 @@ Updated 2026-10-01.
 | **M3** Mount the network | Done (2026-10-01) | `tests/qemu/mount.ndb` passes on both (against 10.0.2.100; see below) |
 | **M4** POSIX and debugging | Done (2026-10-02) | `tests/qemu/dbg.ndb` and `tests/qemu/rcscript.ndb` pass on both |
 | M5 Storage | Not started | |
-| M6 Pixels | Not started | |
-| M7 GPU | Not started | |
-| M8 Swarm | Not started | |
-| M9 AI | Not started | |
-| M10 Self-hosting and T1 hardware | Not started | |
-| M11 Audio | Not started | |
-| M12 Debugger parity | Not started | |
+| M6 Runtime | Not started | |
+| M7 Pixels | Not started | |
+| M8 GPU | Not started | |
+| M9 Q8B platform | Not started | |
+| M10 Swarm | Not started | |
+| M11 AI | Not started | |
+| M12 Self-hosting | Not started | |
+| M13 Audio | Not started | |
+| M14 Debugger parity | Not started | |
+| M15 Hypermedia and native clients | Not started | |
+
+Renumbered on 2026-10-02 into the order the milestones will happen: Runtime (M6) and the Q8B platform (M9) were added, and what was M6–M13 became M7, M8 and M10–M15. Commits and documents from before then use the old numbers.
 
 First-party code is about 20.0 kLOC (`./build loc`), against 04 §5's estimate of 25–32 kLOC for M1–M3 together.
 
@@ -139,30 +144,30 @@ Deferred deliberately, each with where it is due:
 
 | Gap | Effect now | Due |
 |---|---|---|
-| 9P replies always use arena offset 0 | Pipelined 9P requests would overwrite each other's replies; the client does not pipeline yet | With pipelining |
-| No `Tflush` or timeouts in the 9P client | A read held by a server (`ping` with no reply, a `listen`) waits until it is answered | M3 step 4 or M4 |
-| No per-client connection limit | One client can take all 16 of a server's ring connections | Before M8 (swarm) |
+| 9P replies always use arena offset 0 | Pipelined 9P requests would overwrite each other's replies; the client does not pipeline yet | M6 (the pipelined client) |
+| No `Tflush` in the 9P client; a timeout only where a connection sets one (`procfs`'s crash directories) | A read held by a server (`ping` with no reply, a `listen`) waits until it is answered | M6 (the pipelined client) |
+| No per-client connection limit | One client can take all 16 of a server's ring connections | Before M10 (swarm) |
 | DNS: A records only; no AAAA, no TCP fallback for truncated replies, no search domains | Names resolve to IPv4 only, from what fits in one UDP reply | With IPv6; when a name needs it |
 | UDP `headers` mode is not exercised in QEMU | Only the code path through `vx-net` is tested (host tests); netd's header format is not | When a UDP service needs it |
-| Each process dials its own TCP connection for a `tcp!` mount (a child cannot be handed one) | Every command in a mounted directory opens a connection, which then waits 10 s in TIME_WAIT; a fast script could use up `netd`'s 32 conversations | Before M8 (a shared 9P connection, through a post) |
+| Each process dials its own TCP connection for a `tcp!` mount (a child cannot be handed one) | Every command in a mounted directory opens a connection, which then waits 10 s in TIME_WAIT; a fast script could use up `netd`'s 32 conversations | Before M10 (a shared 9P connection, through a post) |
 | Sockets: IPv4 only, and no `AF_UNIX` | `socket(AF_INET6)` and `socketpair` give `EAFNOSUPPORT`; programs that talk to themselves through a Unix socket fail | `AF_UNIX` with `/srv`, as APE's; IPv6 with netd's |
 | A TCP socket's `bind` port is used only by `listen` | `connect` from a bound port goes from a free one (`netd` has no `connect ADDR!PORT LPORT`) | When a program needs it |
 | `getaddrinfo` does not use `/net/cs` | musl's resolver reads `/etc/resolv.conf` and `/etc/hosts`, which the POSIX namespace lacks, so names do not resolve; numeric addresses work | When a POSIX program needs names: a served `/etc`, or the back end answering from `/net/cs` |
 | UDP datagrams are at most 16 KiB with netd's header | One Twrite or Rread carries a datagram; a bigger `sendto` is `EMSGSIZE`, and a bigger datagram arriving is cut | When 9Px `Tmap` or a larger msize comes |
-| A socket's connections to `netd` | Each socket polled or read takes one ring connection (two, writing without waiting) of `netd`'s 64 | Pipelining in the 9P client, or a per-client limit (before M8) |
+| A socket's connections to `netd` | Each socket polled or read takes one ring connection (two, writing without waiting) of `netd`'s 64 | Pipelining in the 9P client, or a per-client limit (before M10) |
 | TCP: no SACK, no timestamps, out-of-order segments dropped; TIME_WAIT 10 s | Recovery from loss is slower than it could be | After M3 |
 | x86_64's shootdown is tested only under TCG | KVM flushes a guest's TLB often enough to hide a missing shootdown, so the ktest check catches one only with `--tcg` (aarch64 always runs under TCG) | — |
 | `vmo_clone` and `fork` copy at once | Correct, and charged as 01 §5 says, but a `fork` of a large process copies all of it; sharing pages until written can come behind the same call | When `fork` is slow enough to matter |
-| No hardware watchpoints; no thread, image or exit events to a debugger yet | A debugger sees faults, breakpoints and steps only | M4 step 6 (the `procfs` debug files), M12 (watchpoints) |
-| No threads in the POSIX personality: `clone` is `ENOSYS`, so `pthread_create` fails; the back end does not lock | Single-threaded C programs only | When a port needs threads (the kernel side exists: threads, futexes, the thread pointer) |
-| Entropy is the bootloader's only, seeded once: nothing is mixed in later (interrupt timing, the CPU's RNG instructions), and a service gets it only if its manifest says `entropy` | Enough for urandom's purposes; not a long-lived key store | Before `keyd` (M8) |
+| No thread, image or exit events to a debugger yet | A debugger sees faults, breakpoints, steps and watchpoints only | M14 |
+| No threads in the POSIX personality: `clone` is `ENOSYS`, so `pthread_create` fails; the back end does not lock | Single-threaded C programs only | M6 (the kernel side exists: threads, futexes, the thread pointer) |
+| Entropy is the bootloader's only, seeded once: nothing is mixed in later (interrupt timing, the CPU's RNG instructions), and a service gets it only if its manifest says `entropy` | Enough for urandom's purposes; not a long-lived key store | Before `keyd` (M10) |
 | No wall clock: `CLOCK_REALTIME` counts from boot | Dates read as 1970 | An RTC driver or NTP over `netd` |
 | Anyone who can open `/proc/N` can debug it | `mem`, `regs` and the stopping verbs check no capability token (05 §3's authority) | With capability tokens (02 §3.4) |
 | `procfs`'s debugger follows 16 held threads of a process, and steps over a breakpoint without stopping the others | A thread of a busy multithreaded process may run past a breakpoint while another steps over it | With pthreads, when processes have many threads |
 | Crash directories go to `/tmp/crash`, and keep secrets | Lost at reboot; `NODUMP` VMOs and `keyd`/`tlsd` are not yet kept out, nor encrypted (05 §5) | With a file system that keeps them, and `keyd` |
 | Ports are built without `-g` | musl, Lua and sbase have symbols but no DWARF: no lines or variables in them (05 §4 has every port built with `-g`) | With the debugger's use of them, weighing the binaries' size |
 | The index has no inlined frames, DWARF 4 or split DWARF | An inlined function shows as its caller; only clang 22's DWARF 5 is read (ADR-0017) | When `dbg` needs them |
-| One profiling ring per process, zones only | Every thread's zones share a ring (records say thread 1); no counters or samples yet (05 §9: `pmu_configure`, M12) | With pthreads; sampling at M12 |
+| One profiling ring per process, zones only | Every thread's zones share a ring (records say thread 1); no counters or samples yet (05 §9: `pmu_configure`, M14) | With pthreads; sampling at M14 |
 | No `/bin/sh` | `system`, `popen`, Lua's `os.execute` and `io.popen` fail: they need a POSIX shell's `sh -c`, which rc is not | When a port needs them: dash, vendored (the 2026-10-01 decision), as APE's `/bin/sh` is a POSIX shell beside rc |
 | `gsh` cannot fork: a pipeline's stages and a command run with `&` must be programs; `{...}`, `@{...}` and `` `{...} `` run in the shell, so what they assign is seen after; descriptors past 2 are not given to programs; a command run with `&` gets no file or capture redirections (the shell does not serve them while it goes on) | rc scripts that pipe into a function or a block, or background one, are refused with a message | With a way to run rc code in a child (a `gsh -c` of the function's text, or `fork` in the native personality) |
 | `lib/vx-rc` lacks some of rc: no here documents (`<<`), `<{...}` and `>{...}`, `$ifs` for `` `{...} `` (it splits at blanks and newlines unless given `` `SEPS{...} ``), `$path`, `$prompt`, `wait`, `cd` (no current directory yet), notes as functions (`fn sigint`), `rfork` | — | When a script needs them; `cd` with a current directory in the native personality |
@@ -172,7 +177,7 @@ Deferred deliberately, each with where it is due:
 | Kernel messages after the console hand-off reach nowhere (`vx.kconsole` keeps them on the serial port): a scenario's `fail="killed"` cannot see a fault in a task svcd started | Such a crash shows only as `svcd` reporting the task's exit string (`sys: trap: fault read addr=… pc=…`) | A debug-log object (01 §10) |
 | `nsd` is not restarted, and keeps a group's text in 16 KiB; a member replays the whole text after any change; `gsh` has no `rfork n` (a copied group), and `newns` is not a command; namespace templates take only `mount /srv/NAME` and `bind` | A process whose group is too big to publish keeps its change to itself (`publish` fails) | After M4 |
 | `procfs` is restarted by `svcd`, but its table is lost: `svcd` registers its services again, and every other process is gone from `/proc`; it holds 128 processes and 512 wait records. `ctl`'s `startstop`, `waitstop`, `hang` and `nohang`, and the `args` file, are not there yet; wait records have no CPU times | — | After M4 |
-| `procfs` trusts the task handle and the parent a registration names; anyone with `/proc` may write any process's `note` and `ctl` | — | With capability tokens (M8) |
+| `procfs` trusts the task handle and the parent a registration names; anyone with `/proc` may write any process's `note` and `ctl` | — | With capability tokens (M10) |
 | A file's offset is shared with a child only on a server with `posix` (tmpfs); elsewhere (bootfs, u9fs) the child opens it again. A child that joins more than 10 s after its parent's last close finds nothing, and opens it again | — | When `fsd` comes (M5) |
 | POSIX locks go only when the process's last descriptor of an open file closes, not any one of several `dup`s; no `flock`, no open-file-description locks | — | When a port needs them |
 | Pipes are channels of 4 KiB messages, not rings; a writer that finds the queue full polls | Throughput is modest | When a benchmark says so (01 §9 has rings) |
@@ -182,14 +187,12 @@ Deferred deliberately, each with where it is due:
 | `tmpfs` holds 1024 nodes and 128 MiB, and is not restarted; no `rename`, links or permissions it enforces; namespace templates are applied by `svcd` (`ns=`) only, and only their `mount /srv/NAME` and `bind` lines, not by a program reading `/lib/ns` | — | `rename` with the `posix` extension (M4 step 4); the rest when needed |
 | No `epoll` or `kqueue`; `poll` arms what it waits on each time (bindings are kept, not doubled); a polled terminal holds a connection of its own | — | When a port needs `epoll` (01 §9 has it on the same port) |
 | AVX, SVE and SME fault | Code built for x86-64-v1 and armv8-a runs; code that needs AVX or SVE does not | When a port needs them (XSAVE; SVE's state) |
-| FP/SIMD registers are not in `thread_state` or a `vx_exception` | A debugger cannot see them; the musl back end's signal entry saves them itself | M4 step 6 (`dbg`) |
 | `task_mem_rw`'s first write to code copies the whole mapping | A breakpoint in a large binary costs its text's size once | When it matters |
 | IOMMU in pass-through only (QEMU) | A device can reach any memory; a dead driver's device could write freed memory before `devmgr` turns off its bus mastering | M5 |
 | `netd` restarting its driver session is not tested | | M3 |
-| `gsh` is not rc: no `<`, `>>`, `&&`, `||`, `&`, blocks, `if`, `for`, `switch`, functions, lists or `cd`; at most 32 scalar variables | Scripts beyond a pipeline cannot run yet | Before dash is considered (step 5): `gsh` remade as rc, first-party C23 (04 §1) |
 | `/srv` is not a file tree: posts come only from `post=` records in manifests, and `ls /srv` fails | A program cannot post a service at run time | After M4 |
 | No `/dev/cons` or `consctl` in a namespace: the console is a handle given at spawn | A program cannot reopen the console by name; `cpu`'s `bind /mnt/term/dev/cons` has nothing to bind | After M4 |
-| No `/env` (`envfs`), `/fd` or current directory for native programs | The environment exists only as spawn records; native paths must be absolute | After M4 |
+| No `/env` (`envfs`), `/fd` or current directory for native programs | The environment exists only as spawn records; native paths must be absolute | M6 (`/env`, with `libvx`); `/fd` and a current directory after it |
 | `Twstat` refused by every server and never sent by the client, which sends only `Tsetattr`/`Trenameat` | Rename, `chmod` and truncate fail both ways between VectraOS and 9front or `u9fs` | After M4 (map `Twstat` onto setattr/renameat in vx-9p; send it when `posix` is off) |
 | `ORCLOSE`, `DMEXCL` and `DMAPPEND` dropped without an error: the server strips `ORCLOSE`, `tmpfs` masks `perm & 0777` | Remove-on-close, exclusive-use and append-only files silently don't work | After M4 (implement in `tmpfs`, refuse elsewhere) |
 | The 9P client fails when a server answers `Tversion` with `unknown` (a 9P2000.L-only server); it does not ask again for `9P2000` | `diod`, virtfs and similar servers can't be mounted, though 02 §3.1 says they can | After M4 |

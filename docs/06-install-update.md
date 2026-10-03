@@ -49,7 +49,7 @@ A release's tree is what a running system sees at `/boot`, `/bin`, `/lib` and th
 
 ### 3.2 Sets
 
-A release is split into a few **sets**, as OpenBSD's releases are: `base` (always installed), `devel` (clang, lld, Git, Python and the sysroot, M10), `desktop` (M6) and `ai` (`aid` and its runtimes, M9). Each set is a separate tree, so a node that never installs `ai` never stores or fetches it.
+A release is split into a few **sets**, as OpenBSD's releases are: `base` (always installed), `devel` (clang, lld, Git, Python and the sysroot, M12), `desktop` (M7) and `ai` (`aid` and its runtimes, M11). Each set is a separate tree, so a node that never installs `ai` never stores or fetches it.
 
 Sets are not packages. They share the release's version and signature, they cannot be mixed across releases, and installing one never resolves anything: `devel` from release 42 runs on `base` from release 42. A machine's selection is a line in its configuration (`sets=base,desktop,devel`).
 
@@ -222,16 +222,16 @@ The installer lays out a disk with GPT:
 
 - **A slot belongs to one release.** Its Limine configuration gives the BLAKE2B hashes of its kernel and `bootfs` (01 §10), and its `bootfs` holds that release's record and tree hash. So firmware measures Limine, Limine checks the kernel and `bootfs`, and `distd` serves the rest of the tree only as that tree hash verifies (§4).
 - **Slots rotate:** one is current, one holds the previous release (the rollback target), one receives the next release. Each slot is a few tens of MiB (the boot image budget is 16 MiB, 00 §8), so the ESP size leaves room to grow.
-- **Secure Boot.** The Limine binary in each slot is signed, because its enrolled configuration changes with every release. Releases are reproducible unsigned. The signature is appended afterwards, and verification strips it to compare. Which key signs (the project's, enrolled by the user, or the user's own) is an ADR before M10 (§16).
+- **Secure Boot.** The Limine binary in each slot is signed, because its enrolled configuration changes with every release. Releases are reproducible unsigned. The signature is appended afterwards, and verification strips it to compare. Which key signs (the project's, enrolled by the user, or the user's own) is an ADR before M12 (§16).
 
 ## 8. Installation
 
 1. **Boot the ISO.** Limine loads the kernel, `bootfs` and one more module, `store.tar`: the release's objects for the sets on the image. The live system runs from them in memory. Because the firmware reads the install medium, the installer needs no driver for a CD, a USB stick or an ISO 9660 filesystem; it needs a driver only for the target disk (virtio-blk or NVMe, M5). The cost is memory: a machine needs RAM for the sets it installs, plus about 256 MiB.
 2. **Check the image.** The ISO's hash is in the signed release record. Before booting, a user can check it on any system: the record lists a SHA-256 beside the BLAKE2b, and a host build of `vxverify` checks the signatures. After booting, the live system checks `store.tar` against the record in `bootfs`.
-3. **Ask, then write.** `install` (a script over `/dist`; a `vxui` front end from M6) asks for: the target disk, the sets, the update policy (§6.3, each line explained), the node's name, and the first user. It shows a summary and writes only after a confirmation that names the disk and says it will be erased.
+3. **Ask, then write.** `install` (a script over `/dist`; a `vxui` front end from M7) asks for: the target disk, the sets, the update policy (§6.3, each line explained), the node's name, and the first user. It shows a summary and writes only after a confirmation that names the disk and says it will be erased.
 4. **Partition and copy.** It writes the GPT, formats the volumes, and copies objects from the live store into the disk's store. The copy is a fetch with the live system as its only source (§6.1, 5), so installing and updating share one path and the same checks.
 5. **Make the first slot.** It writes slot `a` from the release's tree, creates its UEFI boot entry, and puts it first in `BootOrder`.
-6. **Make the node's identity.** `keyd` generates the node key and seals it to the new slot's measurements (§9.4). The node joins a swarm later, with a pairing code (02 §6.2), or never.
+6. **Make the node's identity.** `keyd` generates the node key and seals it to the new slot's measurements (§9.4). The node joins a swarm later, with a pairing code (02 §6.2), or never. (`keyd` comes in M10 and sealing in M12: an `install` before then makes no node key, and one made later is sealed when M12's resealing first runs.)
 7. **Reboot** into the installed system.
 
 Installing with the network (the newest release rather than the ISO's) is the same steps followed by an ordinary update before the first reboot.
@@ -337,7 +337,7 @@ A release never contains the machine's state, so state is the only thing an upda
 | A catalogue cannot be fetched | Installed apps are unaffected, since they run from their locks. Installing or updating anything that needs that publisher waits, and says which catalogue is missing |
 | Disk full | Space is computed from the record before fetching, and the fetch is refused with the amount needed. `gc` and a lower `keep` are offered |
 | No peers have an object | The fetch waits with backoff and reports which source has failed; mirrors are tried last |
-| The clock is wrong | Heads freshness depends on time. Until NTP (M8), freshness is advisory and `/dist/status` says so |
+| The clock is wrong | Heads freshness depends on time. Until NTP (M10), freshness is advisory and `/dist/status` says so |
 | The ESP is damaged | The firmware boots no slot. The ISO's live system can repair the slots from the system volume's store (`install --repair`) |
 
 ## 13. Budgets
@@ -347,22 +347,22 @@ Added to 00 §8 when the milestone that makes each measurable lands:
 | Budget | Target | From |
 |---|---|---|
 | Install from the ISO, `base` set, to NVMe | < 60 s on T1, after the user's last answer | M5 |
-| A check with no new release | One heads record, < 4 KiB moved | M8 |
-| Download for a release that changes one program | That program's changed blocks plus directory objects, < 2 MiB beyond it | M8 |
-| Staging a fetched release | < 5 s | M10 |
-| Rollback | One reboot | M10 |
+| A check with no new release | One heads record, < 4 KiB moved | M10 |
+| Download for a release that changes one program | That program's changed blocks plus directory objects, < 2 MiB beyond it | M10 |
+| Staging a fetched release | < 5 s | M12 |
+| Rollback | One reboot | M12 |
 | Store cost of keeping the previous release | Only the objects it does not share with the current one | M5 |
-| Idle cost | No wake-ups beyond the scheduled check, coalesced with other background work (00 §8's idle budget) | M6 |
+| Idle cost | No wake-ups beyond the scheduled check, coalesced with other background work (00 §8's idle budget) | M7 |
 
 ## 14. Where the pieces land
 
 | Milestone | Pieces |
 |---|---|
-| **M5 Storage** | The store and tree format, `distd` with verified reads, `/cfg` and `/home` subvolumes and snapshots, `install` from the ISO with `store.tar`, `./build release` (unsigned), slots written to the ESP, rollback by hand. Monocypher is vendored here rather than at M8, because the first signature check is here |
-| **M8 Swarm** | Release and heads records signed and checked; sources from the swarm and the LAN; NTP-backed freshness; owner approval |
-| **M9 AI** | Mirrors through `tlsd`; the `ai` set |
-| **M10 Self-hosting and T1 hardware** | Trial boot with `BootNext` and commit; keys resealed for a staged release; Secure Boot signing (ADR); internet peers and rendezvous servers; independent signers rebuilding on VectraOS itself; the `devel` set. This replaces "signed A/B image updates" in 04 §6 |
-| **M6 onwards** | Packages, dependency resolution, catalogues and locks, once there are apps (`vxui`, M6); the desktop's update surface. Resolution is a host-testable library (`lib/vx-dist`), fuzzed on hostile manifests and catalogues like the other parsers |
+| **M5 Storage** | The store and tree format, `distd` with verified reads, `/cfg` and `/home` subvolumes and snapshots, `install` from the ISO with `store.tar`, `./build release` (unsigned), slots written to the ESP, rollback by hand. Monocypher is vendored here rather than at M10, because the first signature check is here |
+| **M7 onwards** | Packages, dependency resolution, catalogues and locks, once there are apps (`vxui`, M7), from local media until M10 brings the swarm and the LAN, and M11 mirrors; the desktop's update surface. Resolution is a host-testable library (`lib/vx-dist`), fuzzed on hostile manifests and catalogues like the other parsers |
+| **M10 Swarm** | Release and heads records signed and checked; sources from the swarm and the LAN; NTP-backed freshness; owner approval |
+| **M11 AI** | Mirrors through `tlsd`; the `ai` set |
+| **M12 Self-hosting** | Trial boot with `BootNext` and commit; the node key sealed to the boot chain, and resealed for a staged release; Secure Boot signing (ADR); internet peers and rendezvous servers; independent signers rebuilding on VectraOS itself; the `devel` set. This replaces "signed A/B image updates" in 04 §6 |
 
 ## 15. Heritage
 
@@ -380,7 +380,7 @@ Added to 00 §8 when the milestone that makes each measurable lands:
 
 ## 16. Open questions
 
-1. **Writing UEFI variables.** `BootNext` and `BootOrder` are UEFI runtime variables, and runtime services run in kernel mode with the firmware's mappings. The choices are a narrow kernel call for variable services only, given as a capability to `distd`, or a boot-time mechanism in Limine that reads a trial flag from the ESP and so needs no runtime services. ADR before M10.
+1. **Writing UEFI variables.** `BootNext` and `BootOrder` are UEFI runtime variables, and runtime services run in kernel mode with the firmware's mappings. The choices are a narrow kernel call for variable services only, given as a capability to `distd`, or a boot-time mechanism in Limine that reads a trial flag from the ESP and so needs no runtime services. ADR before M12.
 2. **Who serves the verified base tree.** `distd` serving it and acting as its pager (and so a trusted pager, 01 §5), or `fsd` with a verified-tree mode that `distd` feeds. Decided with the M5 filesystem.
 3. **Block size and chunking.** Fixed 64 KiB blocks make verified random reads simple; content-defined chunking would make deltas smaller when bytes shift within a file. Measure on real releases before deciding; fixed until then.
 4. **The Secure Boot key.** Users enrolling the project's key or their own, against a Microsoft-signed shim so that machines boot with their default keys. The shim brings a second loader and trust in a third party's CA.

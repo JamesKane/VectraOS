@@ -71,7 +71,7 @@ ring_create  ring_notify  ring_xfer_handles
 irq_create  irq_ack  iorange_create  dma_domain_create  dma_map  dma_unmap
 clock_read  debug_write (only while a debug capability is held)
 pmu_configure                                                          # performance counters (05 §9)
-cpu_configure                                                          # idle states, performance domains, limits (§8, ADR-0020)
+cpu_configure                                                          # idle states, performance domains, limits (§8, ADR-0020; M9)
 ```
 
 `clock_read` also runs from a vDSO page without entering the kernel, as does reading counters, which live in a shared page. Batchable calls (`dma_map`, `port_bind`, `handle_close`, `vmo_rw`, `vmo_op`, `task_mem_rw`) take arrays (rule 11).
@@ -464,7 +464,7 @@ This is how LLVM, Python and Git run without touching the kernel.
 
 **Faults handled in the task.** Emulators such as Dolphin and RPCS3 map guest memory into large reservations and handle thousands of page faults a second themselves ("fastmem"). A trip out to an exception port and back through a server would cost several context switches each. So `exception_bind` has an in-task mode: the kernel diverts the faulting thread to a handler in its own task, with the fault's registers on a handler stack, and the handler resumes with `exception_resume`. Faults go first to a debugger that asked for first chance (05 §2), then to the in-task handler, then to the exception port, then to default handling.
 
-**Targets, in order:** a BusyBox-class userland, then Lua, then Python 3, then Git, then clang and lld, then **VectraOS rebuilding itself** with its own `build` (04 §6, M10).
+**Targets, in order:** a BusyBox-class userland, then Lua, then Python 3, then Git, then clang and lld, then **VectraOS rebuilding itself** with its own `build` (04 §6, M12).
 
 ## 10. Boot sequence
 
@@ -489,7 +489,7 @@ This is how LLVM, Python and Git run without touching the kernel.
 
 ## 12. Performance budgets
 
-These are targets, measured in CI under KVM and on T1 hardware from M6 onward. The end-to-end budgets a user feels are in 00 §8.
+These are targets, measured in CI under KVM and on T1 hardware from M6 onward (the PC; the Q8B from M9). The end-to-end budgets a user feels are in 00 §8.
 
 | Operation | Target |
 |---|---|

@@ -1,6 +1,6 @@
 # Phase 8 — `hx`, the editor
 
-_Blueprint v0, 2026-10-02. Provisional: a vision. Its first pieces land at M6 (§16). It fixes the intended shape and is rewritten against the code each piece produces._
+_Blueprint v0, 2026-10-02. Provisional: a vision. Its first pieces land at M7 (§16). It fixes the intended shape and is rewritten against the code each piece produces._
 
 ## 1. The position
 
@@ -73,7 +73,7 @@ g/TODO/ |fmt                          pipe each selection containing TODO throug
 
 The language server protocol is how editors get diagnostics, completion and navigation, and every language has a server. It is JSON-RPC over pipes, so it follows the rule of 07 §6: **JSON stays at the edge.**
 
-- **`lspfs`** is an adapter file server. It starts a language server, such as `clangd` from the LLVM port (M10), speaks LSP to it, and serves what it learns as files and ndb. One `lspfs` serves one server for one project.
+- **`lspfs`** is an adapter file server. It starts a language server, such as `clangd` from the LLVM port (M12), speaks LSP to it, and serves what it learns as files and ndb. One `lspfs` serves one server for one project.
 - **Positions are UTF-8.** `lspfs` negotiates `positionEncoding: utf-8` (LSP 3.17) and converts from UTF-16 only for servers that cannot.
 
 ```
@@ -100,7 +100,7 @@ The language server protocol is how editors get diagnostics, completion and navi
 ## 9. Tasks, builds and Git
 
 - **Tasks** are ndb records in the project's `hx.ndb`: `task name=build run="./build all"`, `task name=test run="./build test" errors=clang`. A task runs in a shell window (§11). With an `errors` format, its output's `file:line:col` references become a diagnostics multibuffer. Without one, every such reference can still be plumbed with a click, as in Acme.
-- **Git** runs as the Git port (M10), the system's one implementation, never as a second library beside it. `hx` reads the index's version of each open file once, through `git cat-file --batch`, and diffs against it itself on every edit, so changed hunks show in the gutter at once.
+- **Git** runs as the Git port (M12), the system's one implementation, never as a second library beside it. `hx` reads the index's version of each open file once, through `git cat-file --batch`, and diffs against it itself on every edit, so changed hunks show in the gutter at once.
 - **From the editor:** stage and unstage a hunk, revert it, blame a line, show a commit, switch a branch, and write a commit message in an ordinary buffer. Anything more is the `git` command, in a shell window.
 
 ## 10. Remote editing and collaboration
@@ -217,10 +217,10 @@ Added to 00 §8 when the milestone that makes each measurable lands:
 
 | Milestone | Pieces |
 |---|---|
-| **M6 Pixels** | `lib/vx-text`: the piece tree, anchors, the undo tree and sam's command language, host-tested and fuzzed; `dbg`'s source view on it |
-| **M7 GPU** | `hx` v0: editing, multiple selections, the command line, shell windows, plumbing (07 §7), `/mnt/hx` with Acme's files, key maps; tree-sitter vendored, with C, Lua, ndb and Markdown grammars |
-| **M10 Self-hosting** | `lspfs` and `clangd`; Git; tasks; project search and the file finder; multibuffers; proposals; remote projects. The exit test: VectraOS is developed in `hx` on VectraOS |
-| **After M10** | Shared buffers (§10.2); grammars and language servers for other languages, each a package |
+| **M7 Pixels** | `lib/vx-text`: the piece tree, anchors, the undo tree and sam's command language, host-tested and fuzzed; `dbg`'s source view on it |
+| **M8 GPU** | `hx` v0: editing, multiple selections, the command line, shell windows, plumbing (07 §7), `/mnt/hx` with Acme's files, key maps; tree-sitter vendored, with C, Lua, ndb and Markdown grammars |
+| **M12 Self-hosting** | `lspfs` and `clangd`; Git; tasks; project search and the file finder; multibuffers; proposals; remote projects. The exit test: VectraOS is developed in `hx` on VectraOS |
+| **After M12** | Shared buffers (§10.2); grammars and language servers for other languages, each a package |
 
 ## 17. Heritage
 
@@ -236,7 +236,7 @@ Added to 00 §8 when the milestone that makes each measurable lands:
 
 ## 18. Open questions
 
-1. **Piece tree or rope.** A piece tree over the mapped file opens large files instantly; a rope (Zed's) is simpler to make persistent for snapshots taken by background threads. Benchmark both inside `lib/vx-text` on the §15 budgets before M7.
+1. **Piece tree or rope.** A piece tree over the mapped file opens large files instantly; a rope (Zed's) is simpler to make persistent for snapshots taken by background threads. Benchmark both inside `lib/vx-text` on the §15 budgets before M8.
 2. **Generated parsers in-process.** Grammar packages are native code inside `hx`. The alternative is a parse server process per language, which confines a bad grammar but puts a round trip on every edit. Measure the round trip over a local ring before deciding.
 3. **Git as a library or a file server.** 9front's `git/fs` serves a repository as files, which fits the system better than parsing `git` command output; but it is a second implementation beside the Git port. Start with the port's commands.
 4. **Splits inside `hx` or windows under `wm`.** If each view were a toplevel, `wm` would tile them and nothing would be duplicated, but views would lose the shared command line and selections. Revisit once `wm` has tab groups.

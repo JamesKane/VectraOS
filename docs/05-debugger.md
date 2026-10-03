@@ -211,8 +211,8 @@ Rough size: 25–35 kLOC first-party, most of it in the DWARF index, the evaluat
 The mechanisms and the command line come early, because every later milestone is easier with a debugger (04 §6):
 
 - **M4:** the `DEBUG` right and the five syscalls, the debug files in `procfs` with its simple conditions, crash directories, `lib/vx-debug` (index, unwinder, evaluator), `dbg -c`, `/sys/clock`, and `vx-prof` zones.
-- **M6:** `dbg` GUI v0, the first real `vxui` app: source, call stacks, locals, breakpoints, threads and the zone timeline.
-- **M12:** full parity with §6: watch pins, view rules, visualisers, the VectraOS views, following requests across processes, `pmu_configure` with sampling and flame graphs, and `gdbfs` for the kernel.
+- **M7:** `dbg` GUI v0, the first real `vxui` app: source, call stacks, locals, breakpoints, threads and the zone timeline.
+- **M14:** full parity with §6: watch pins, view rules, visualisers, the VectraOS views, following requests across processes, `pmu_configure` with sampling and flame graphs, and `gdbfs` for the kernel.
 
 ## 13. Open questions
 

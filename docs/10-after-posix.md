@@ -1,12 +1,12 @@
 # 10 — After POSIX: a speculative vision
 
-_Vision, 2026-10-02. **Non-binding.** This is speculation about where the system could go after M10, written so the direction can be argued about before anything is built. Nothing here changes a rule or decision in 00, and nothing here is scheduled. A part becomes binding only through an ADR, and most parts would need rule 13 or D1, D8 or D10 amended first (§9). Facts about other projects were gathered on 2026-10-02 and are cited in §11; figures are as their authors report them._
+_Vision, 2026-10-02. **Non-binding.** This is speculation about where the system could go after M12, written so the direction can be argued about before anything is built. Nothing here changes a rule or decision in 00, and nothing here is scheduled. A part becomes binding only through an ADR, and most parts would need rule 13 or D1, D8 or D10 amended first (§9). Facts about other projects were gathered on 2026-10-02 and are cited in §11; figures are as their authors report them._
 
 ## 1. The claim
 
 **POSIX dies when a developer can spend a whole working day on VectraOS without running a single program linked against it.** That means editing, building, debugging, testing, profiling, committing and pushing. Deleting musl is not the aim. The POSIX personality stays as a guest that runs software written for other systems (01 §9), as 9front keeps APE. What changes is that nobody writes new code against it, because nothing a VectraOS developer needs lies on that side.
 
-Today the blueprint says the opposite on purpose: rule 13 makes POSIX "the foundation the development tools stand on", because "we are not reinventing LLVM, Git or the toolchains built on POSIX". That was the right call, and it stands: clang, lld and the ported tools ship first, and M10 self-hosts with them. This document is not a race with them. It asks what happens after that, once `libvx` (09) exists and every first-party program already avoids POSIX. At that point the toolchain is the last reason a developer touches POSIX, and LLVM is the largest thing in the image that no one on the project can read.
+Today the blueprint says the opposite on purpose: rule 13 makes POSIX "the foundation the development tools stand on", because "we are not reinventing LLVM, Git or the toolchains built on POSIX". That was the right call, and it stands: clang, lld and the ported tools ship first, and M12 self-hosts with them. This document is not a race with them. It asks what happens after that, once `libvx` (09) exists and every first-party program already avoids POSIX. At that point the toolchain is the last reason a developer touches POSIX, and LLVM is the largest thing in the image that no one on the project can read.
 
 ## 2. What others have done
 
@@ -30,7 +30,7 @@ Toolchains are moving the same way. Language projects are taking the debug-build
 
 ## 3. Where POSIX still stands in a developer's day
 
-After M10, as the blueprint plans it:
+After M12, as the blueprint plans it:
 
 | Activity | Tool | Native? |
 |---|---|---|
@@ -133,7 +133,7 @@ Two speculative extensions are worth naming, and the vision leans against both.
 | D1, D10: compiled by clang; clang + lld | A toolchain ADR per stage (S1–S5), each with the size budget, the DWARF requirement and the auditor lane |
 | ADR-0001: trust in Fedora's signed packages | Diverse double-compiling and a bootstrap path replace it (§5.3) |
 | 04 §1.1: house subset enforced by clang-tidy and clang-format | Enforced by `vc` and `vfmt`; `.clang-tidy` stays only for the auditor lane |
-| M10: clang, lld, Git and Python ported to VectraOS so it rebuilds itself | Unchanged. They ship first, and the ported clang is what builds `vc` and `vl` on VectraOS, and later the auditor lane and the second compiler of §5.3 |
+| M12: clang, lld, Git and Python ported to VectraOS so it rebuilds itself | Unchanged. They ship first, and the ported clang is what builds `vc` and `vl` on VectraOS, and later the auditor lane and the second compiler of §5.3 |
 | D8: musl with a vx back end | Unchanged. It stays as the personality |
 
 ## 10. Risks

@@ -115,7 +115,7 @@ There is no package manager to configure, so the rules are simple:
 
 `./build vendor-check` checks all three, in CI and as a pre-commit hook.
 
-**Toolchain trust:** clang, lld and compiler-rt come from signed Fedora packages. `build.c` pins their exact version and refuses to run with any other (ADR-0001). CI uses the same packages. Bootstrapping clang from source, and later rebuilding it on VectraOS (M10), are hardening steps.
+**Toolchain trust:** clang, lld and compiler-rt come from signed Fedora packages. `build.c` pins their exact version and refuses to run with any other (ADR-0001). CI uses the same packages. Bootstrapping clang from source, and later rebuilding it on VectraOS (M12), are hardening steps.
 
 ### 3.2 `build`
 
@@ -139,7 +139,7 @@ CI fails a change that breaks either budget. Vendored ports are built once and c
 
 **Line-count ledger:** `./build loc` reports lines of code for each first-party component and each vendored import, plus assembly lines per architecture. It ends with three totals: first-party code, vendored code, and everything that goes into the image. CI publishes it with every build, so growth is visible, and the kernel's 15–25 kLOC budget (01 §1) is checked.
 
-The vendored total is not hidden in a footnote. Once Mesa arrives at M7 it will be larger than all first-party code together. That is the price of rule 13's decision not to rewrite GPU drivers and compilers, and the ledger makes the price visible. An import that grows by more than 10% on an upgrade needs its ADR revisited.
+The vendored total is not hidden in a footnote. Once Mesa arrives at M8 it will be larger than all first-party code together. That is the price of rule 13's decision not to rewrite GPU drivers and compilers, and the ledger makes the price visible. An import that grows by more than 10% on an upgrade needs its ADR revisited.
 
 **Image assembly:**
 1. Build the kernel ELF.
@@ -285,15 +285,17 @@ Rough effort for M1–M3 is 4–6 months for one experienced person working with
 | Milestone | Content | Proves |
 |---|---|---|
 | **M4 POSIX and debugging** | musl with the vx back end, the `vectra-musl` sysroot, the Plan 9 baseline (namespace groups and `nsd`, notes and exit strings, one process table in `procfs`: ADRs 0009–0011), `ptyd`, pipes, sockets, the `posix` 9Px extension, the in-task fault path; Lua and a BusyBox-class userland. The `DEBUG` right and debug syscalls, the `procfs` debug files, crash directories, `vx-debug`, `dbg -c`, `/sys/clock` and `vx-prof` zones (05 §12) | Pillar: the POSIX personality; a debugger from here on |
-| **M5 Storage** | virtio-blk and NVMe, `fsd` with a pager and supply deadlines, IOMMU enforcement, driver hot restart under I/O load, a decision on a copy-on-write FS (native log-structured, or a port); the content store, `distd` and `install` (06 §14) | Zero-copy `mmap`; the undo that agents rely on |
-| **M6 Pixels** | `displayd` on simplefb and virtio-gpu 2D; `winsrv` with a CPU compositor; `/wsys` with per-app views, the trusted prompt path and the full v1 frame protocol (VRR, tearing and HDR fields, 03 §4); virtio-input; `vxui` v0 with the minimal program in 10 calls and the CPU pixel-buffer program in 12 or fewer (03 §6), kb_text_shape, stb_truetype and the glyph atlas, with a glyph-quality check on a 1x display; hot reload (03 §6.1); the plumber (07 §7); `lib/vx-text` (08 §16); `dbg` GUI v0 with the zone timeline as the first real `vxui` app | Pillars: the desktop and the app framework |
-| **M7 GPU** | The `accel` protocol (ADR-0018); Mesa Venus over virtio-gpu, the Vulkan profile, the `vxui` Vulkan 2D renderer, `winsrv` on Vulkan, frame feedback; `hx` v0 with tree-sitter (08 §16) | Rendering pipeline, rule 8 |
-| **M8 Swarm** | `keyd` (Monocypher), Noise over TCP, node-bound tokens, certificate renewal and revocation, NTP, `swarmd`, `exportfs` with narrow exports, `cpu`, `import`, pools | Pillar: swarms |
-| **M9 AI** | `aid` with llama.cpp on Vulkan and on CPU, sessions, context pools, the policy with labels that follow the data, `tlsd` and the TLS import (00 D16), the palette, `auditfs` | Pillar: local-first AI |
-| **M10 Self-hosting and T1 hardware** | clang, lld, flang and libomp, Git, Python and `build` running on VectraOS, which rebuilds itself; a real PC and the Radxa Dragon Q8B; measured boot, and signed updates with a trial boot and rollback (06 §14); `hx` with `lspfs`, `clangd` and Git, so VectraOS is developed on VectraOS (08 §16) | Pillar: the hacker toolchain |
-| **M11 Audio** | `audiod`, HDA and virtio-sound, the real-time admission path | Rule 6 in practice |
-| **M12 Debugger parity** | `dbg` at RAD Debugger level: watch pins, view rules, visualisers, the VectraOS views, following requests across processes, PMU sampling, `gdbfs` for the kernel (05 §6, §9, §12) | Pillar: the hacker toolchain |
-| **M13 Hypermedia and native clients** | The engine and document-profile ADRs; `webfs` and `hv`; the message shape, `lib/vx-msg`; the feed client, then IRC, then mail (07 §12) | Documents without code; apps as small native experiences |
+| **M5 Storage** | virtio-blk and NVMe, `fsd` with a pager and supply deadlines (9Px `map`, `dref`), IOMMU enforcement, driver hot restart under I/O load, a decision on a copy-on-write FS (native log-structured, or a port); ACPICA vendored and `bus-acpi` as a process on QEMU's tables (power off through S5, `_CRS` resources as grants: ADR-0024's base); Monocypher, for checking signatures only; the content store, `distd` and `install` from local media (06 §14) | Zero-copy `mmap`; the undo that agents rely on |
+| **M6 Runtime** | Threads in the POSIX personality (pthreads; a thread-safe `vx-rt` and musl back end) and `sched_ctx`; `libvx` v0 (09); `as_reserve` and `vmo_op`; the dynamic loader, with `libvx` and the back end as shared libraries (09 §4.8); 9Px `notify` and a pipelined 9P client (`Tflush`); `/env`. A real PC (T1) boots from NVMe, with xHCI and a wired NIC | What the desktop, Mesa, `aid` and the toolchain stand on |
+| **M7 Pixels** | `displayd` on simplefb and virtio-gpu 2D; `winsrv` with a CPU compositor; `/wsys` with per-app views, the trusted prompt path and the full v1 frame protocol (VRR, tearing and HDR fields, 03 §4); virtio-input; `vxui` v0 with the minimal program in 10 calls and the CPU pixel-buffer program in 12 or fewer (03 §6), kb_text_shape, stb_truetype and the glyph atlas, with a glyph-quality check on a 1x display; hot reload (03 §6.1); the plumber (07 §7); `lib/vx-text` (08 §16); `dbg` GUI v0 with the zone timeline as the first real `vxui` app | Pillars: the desktop and the app framework |
+| **M8 GPU** | The `accel` protocol (ADR-0018); Mesa Venus over virtio-gpu, the Vulkan profile, the `vxui` Vulkan 2D renderer, `winsrv` on Vulkan, frame feedback; `hx` v0 with tree-sitter (08 §16) | Rendering pipeline, rule 8 |
+| **M9 Q8B platform** | The Radxa Dragon Q8B (T1): `devmgr`'s spawn-time grants, the SoC and board records, the `clock` (v1) and `gpio` classes, the MMU-500 with switched domains, `svcd`'s platform service (SCM, PAS), firmware carve-outs; `cpu_configure` (ADR-0020), `thermd` (ADR-0021), remote processors (ADR-0022), and Adreno through Turnip (ADR-0019) | The first board that is not a PC |
+| **M10 Swarm** | `keyd` (Monocypher), Noise over TCP, node-bound tokens, certificate renewal and revocation, NTP, `swarmd`, `exportfs` with narrow exports, `cpu`, `import`, pools | Pillar: swarms |
+| **M11 AI** | `aid` with llama.cpp on Vulkan and on CPU, sessions, context pools, the policy with labels that follow the data, `tlsd` and the TLS import (00 D16), the palette, `auditfs` | Pillar: local-first AI |
+| **M12 Self-hosting** | clang, lld, flang and libomp, Git, Python and `build` running on VectraOS, which rebuilds itself; measured boot, the node key sealed, and signed updates with a trial boot and rollback (06 §14); `hx` with `lspfs`, `clangd` and Git, so VectraOS is developed on VectraOS (08 §16) | Pillar: the hacker toolchain |
+| **M13 Audio** | `audiod`, HDA and virtio-sound, the real-time admission path | Rule 6 in practice |
+| **M14 Debugger parity** | `dbg` at RAD Debugger level: watch pins, view rules, visualisers, the VectraOS views, following requests across processes, PMU sampling, `gdbfs` for the kernel (05 §6, §9, §12) | Pillar: the hacker toolchain |
+| **M15 Hypermedia and native clients** | The engine and document-profile ADRs; `webfs` and `hv`; the message shape, `lib/vx-msg`; the feed client, then IRC, then mail (07 §12) | Documents without code; apps as small native experiences |
 
 ## 7. Engineering practice
 
@@ -311,6 +313,6 @@ Rough effort for M1–M3 is 4–6 months for one experienced person working with
   - 0003: the no-registry policy (D13);
   - 0004: the ring layout, which freezes `vx-abi` v0;
   - 0005: C23 and the house subset (D1).
-  - Before M7: the GPU kernel-driver strategy and vendor order (03 §3).
-  - Before M9: the TLS 1.3 library (00 D16).
+  - Before M8: the GPU kernel-driver strategy and vendor order (03 §3).
+  - Before M11: the TLS 1.3 library (00 D16).
 - **Reproducible builds:** `SOURCE_DATE_EPOCH`, `-ffile-prefix-map`, sorted archive members and deterministic GPT GUIDs derived from the build hash. Two builds of the same commit are byte-identical.

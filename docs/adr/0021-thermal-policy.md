@@ -1,6 +1,6 @@
 # ADR-0021: Thermal policy: `thermd`, zones from the firmware or the SoC record, and actions through the limits that already exist
 
-Status: proposed, 2026-10-02. Found by looking at the Radxa Dragon Q8B (ADR-0019).
+Status: proposed, 2026-10-02. Found by looking at the Radxa Dragon Q8B (ADR-0019); built in M9 (04 §6).
 
 ## Context
 

@@ -18,4 +18,4 @@ Every binary in the system comes out of one compiler and one linker (04 §3.3). 
 ## Consequences
 
 - Upgrading the toolchain is a change to `build.c` plus an amendment to this ADR, reviewed like any other change.
-- Bootstrapping clang from source, and later rebuilding it on VectraOS (M10), are hardening steps that replace the trust in Fedora's signatures.
+- Bootstrapping clang from source, and later rebuilding it on VectraOS (M12), are hardening steps that replace the trust in Fedora's signatures.

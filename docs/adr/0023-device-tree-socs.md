@@ -1,6 +1,6 @@
 # ADR-0023: Device-tree SoCs: a boot stage that keeps the kernel DT-free, references turned into grants, and the classes such SoCs need
 
-Status: proposed, 2026-10-02. Found by surveying the RK3588 in FreeBSD, Fuchsia and Linux. It applies to any SoC described by a device tree rather than ACPI: the RK3588, the CIX Sky1 in DT mode, and later boards.
+Status: proposed, 2026-10-02; **parked** the same day, until a tiered board needs a device tree. ACPI is the direction (00 §5): the T1 boards boot with it, and the board this ADR was written for, the RK3588, was dropped. Nothing here is scheduled; it is kept so a DT board, when one comes, starts from it. Found by surveying the RK3588 in FreeBSD, Fuchsia and Linux. It applies to any SoC described by a device tree rather than ACPI: the RK3588, the CIX Sky1 in DT mode, and later boards.
 
 ## Context
 
