@@ -1,6 +1,6 @@
 # ADR-0019: Adreno a6xx on the Radxa Dragon Q8B: `drv-gpu-adreno`, its display back end, and the SC8280XP platform pieces
 
-Status: proposed, 2026-10-02. The vendor ADR for Qualcomm under ADR-0018 (item 3, the Adreno a6xx band). The Q8B is a T1 board (00 §5), brought up in M9, after the GPU stack of M8 (04 §6).
+Status: proposed, 2026-10-02. The vendor ADR for Qualcomm under ADR-0018 (item 3, the Adreno a6xx band). Amended 2026-10-03 for ADR-0026: `disp-msm` speaks the engine protocol and takes its DisplayPort code from `vx-dp`. The Q8B is a T1 board (00 §5), brought up in M9, after the GPU stack of M8 (04 §6).
 
 ## Context
 
@@ -101,7 +101,9 @@ The port comes in two stages, as ADR-0018 item 7 says:
   - modes, in msm's disable-then-enable order (push idle before stopping the INTF);
   - DPMS.
 
-  `msmfb`'s timing calculation (`msm_freebsd_dp_calc.c`) is Linux's GPL code. It is rewritten first-party from the DP specification and UEFI's values, which it must reproduce exactly for 1080p (M/N 11/200).
+  The AUX transfers, link training and timing math are `lib/vx-dp`'s (ADR-0026 item 4); `disp-msm` keeps only the Qualcomm operations under them and the PHY's swing and pre-emphasis tables. `msmfb`'s timing calculation (`msm_freebsd_dp_calc.c`) is Linux's GPL code, so it is not ported: `vx-dp`'s first-party math must reproduce UEFI's values exactly for 1080p (M/N 11/200).
+
+The pipeline's blocks (SSPP, LM, CTL, INTF and the DP controller, with their offsets and interrupt bits) are a section of the SoC record (§7, ADR-0026 item 6), not constants in `disp-msm`.
 
 Scan-out has two constraints:
 - **Buffers are physically contiguous, below 4 GiB, write-combining.** The display's SMMU streams are in bypass and SSPP addresses are 32 bits. They come from a 64 MiB pool that `disp-msm` reserves at boot from the `contiguous` zone (01 §5). AbyssBSD found that after a long build there was no contiguous low memory left at run time.
@@ -166,3 +168,4 @@ Hazards are taken from AbyssBSD's `lessons.md` as rules, not rediscovered:
 2. **CX collapse** for suspend, which needs the kernel to save and restore the GPU SMMU.
 3. **The CH7218A bridge** is not controllable from our side. A second output needs USB-C DisplayPort alt mode, which is pmic_glink work on the ADSP.
 4. **Sharing a scan-out buffer** between `drv-gpu-adreno` and `disp-msm`. With unified memory and a RAM buffer it is a VMO (`accel` §4.2). The constraint is that it must come from `disp-msm`'s pool, below 4 GiB, so `winsrv` allocates scan-out images from `disp-msm` and imports them into its `accel` session.
+5. **`msmfb`'s source is not in AbyssBSD's tree.** Its documentation was committed (`ebd2317`), but `msm_freebsd_fb.c` and `msm_freebsd_dp_calc.c` are in neither the tree nor its history, and `kmod/drm-msm/msm/Makefile` does not build them. They are probably only on the Q8B. §6 is a port of that code, so it must be recovered and committed there first.
