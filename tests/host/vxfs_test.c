@@ -460,9 +460,9 @@ static void test_logs(void) {
   CHECK(!vxfs_arena_load(&bad, &bad.arenas[0], &wrong) && bad.err == VX_ERR_INVALID);
   vxfs_close(&bad);
 
-  // Compressed: the free ranges alone, in fewer blocks. The old chain is
-  // free in the new log but not reused until it is retired (deferred) and
-  // the deferred blocks freed, after the commit.
+  // Compressed: the free ranges alone, in fewer blocks. The old chain stays
+  // taken until it is retired (deferred) and the deferred blocks freed,
+  // after the commit; only then do the logs say it is free.
   uint64_t old_head = a->loghd.addr, longer = a->nlog;
   CHECK(vxfs_log_compress(&fs, a));
   CHECK(a->nlog < longer && a->loghd.addr != old_head && a->nretired == longer && arena_sane(a));
@@ -471,11 +471,14 @@ static void test_logs(void) {
   fs.err = VX_OK;
   seal(&fs, h);
   r = reload(d, h, 2);
-  CHECK(r.err == VX_OK && is_free(&r.arenas[0], old_head) && arena_sane(&r.arenas[0]));
+  CHECK(r.err == VX_OK && !is_free(&r.arenas[0], old_head) && arena_sane(&r.arenas[0]));
+  CHECK(arenas_equal(a, &r.arenas[0]));
+  vxfs_close(&r);
   CHECK(vxfs_log_retire(&fs, a) && fs.ndeferred == longer && !is_free(a, old_head));
   CHECK(vxfs_free_deferred(&fs) && is_free(a, old_head) && arena_sane(a) && fs.ndeferred == 0);
-  // The frees are logged after the header: the replay by it agrees all the same.
-  CHECK(arenas_equal(a, &r.arenas[0]));
+  seal(&fs, h);
+  r = reload(d, h, 2);
+  CHECK(r.err == VX_OK && is_free(&r.arenas[0], old_head) && arenas_equal(a, &r.arenas[0]));
   vxfs_close(&r);
 
   // A loop in a log's chain is refused, not followed for ever.

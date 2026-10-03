@@ -410,7 +410,11 @@ static uint64_t arena_reserve(uint64_t size) {
   // 2. What the commit frees: the snapshot tree's old blocks, dropped
   // deadlists, compressed logs' old chains, and the last commit's chain of
   // these; written as a chain of its own, which the superblock names.
-  for (uint32_t i = 0; ok && i < fs->narenas; i++) ok = vxfs_log_retire(fs, &fs->arenas[i]);
+  for (uint32_t i = 0; ok && i < fs->narenas; i++) { // long logs compressed, the old chains deferred
+    vxfs_arena *a = &fs->arenas[i];
+    if (a->nlog >= fs->compress_at && a->nlog >= 2 * a->lastlog) ok = vxfs_log_compress(fs, a);
+    ok = ok && vxfs_log_retire(fs, a);
+  }
   for (uint32_t i = 0; ok && i < v->nfreedchain; i++) ok = vxfs_defer(fs, v->freedchain[i]);
   v->nfreedchain = 0;
   uint64_t freed = 0;
@@ -435,21 +439,25 @@ static uint64_t arena_reserve(uint64_t size) {
     v->hdr[i] = hb;
   }
   ok = ok && fs->dev.barrier(fs->dev.ctx) == VX_OK;
-  // 4. The superblocks; a barrier. This is the write that commits.
+  // 4. The superblock; a barrier. This is the write that commits. The
+  // backup follows with the footers: the two are never in flight together,
+  // so a cut cannot tear both (one of them is always whole, the last
+  // commit's or this one's).
   vxfs_sb was = v->sb;
+  static uint8_t sbuf[VXFS_BLKSZ];
+  uint64_t last = (fs->dev.size / VXFS_BLKSZ - 1) * VXFS_BLKSZ;
   if (ok) {
     v->sb.narenas = fs->narenas, v->sb.snapht = v->snap.height, v->sb.snaproot = v->snap.root;
     v->sb.commit++, v->sb.nextgen = v->nextgen, v->sb.nextqid = v->nextqid, v->sb.nextdl = v->nextdl;
     v->sb.freed = freed;
-    static uint8_t sbuf[VXFS_BLKSZ];
     pack_sb(v, sbuf);
-    uint64_t last = (fs->dev.size / VXFS_BLKSZ - 1) * VXFS_BLKSZ;
-    ok = fs->dev.write(fs->dev.ctx, 0, sbuf) == VX_OK && fs->dev.write(fs->dev.ctx, last, sbuf) == VX_OK &&
-         fs->dev.barrier(fs->dev.ctx) == VX_OK;
-    fs->writes += 2;
+    ok = fs->dev.write(fs->dev.ctx, 0, sbuf) == VX_OK && fs->dev.barrier(fs->dev.ctx) == VX_OK;
+    fs->writes++;
     if (!ok) v->sb = was;
   }
-  // 5. The footers: the headers' copies.
+  // 5. The backup superblock, and the footers: the headers' copies.
+  if (ok) ok = fs->dev.write(fs->dev.ctx, last, sbuf) == VX_OK;
+  fs->writes++;
   for (uint32_t i = 0; i < fs->narenas; i++) {
     vxfs_blk *hb = v->hdr[i];
     if (!hb) continue;

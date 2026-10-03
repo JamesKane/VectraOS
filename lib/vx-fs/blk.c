@@ -61,6 +61,7 @@ typedef struct vxfs_arena {
   vxfs_bptr loghd;   // the log's first block
   vxfs_blk *logtl;   // its last, held, open for appending
   uint64_t nlog;     // its blocks
+  uint64_t lastlog;  // its blocks after the last compression
   uint64_t *retired; // a compressed log's old chain, not yet reusable
   uint64_t nretired;
 } vxfs_arena;
@@ -86,10 +87,11 @@ typedef struct vxfs {
   uint32_t narenas;
   uint32_t rr, rr_writes; // the round robin over arenas (11 §6)
 
-  uint64_t gen;     // the generation blocks are born in now: the changed tree's
-  uint64_t base;    // that tree's branch's base: blocks born at or before it are another's to free
-  bool snaptree;    // the tree is the snapshot tree
-  bool use_reserve; // the commit may take the arenas' reserves
+  uint64_t gen;         // the generation blocks are born in now: the changed tree's
+  uint64_t base;        // that tree's branch's base: blocks born at or before it are another's to free
+  bool snaptree;        // the tree is the snapshot tree
+  bool use_reserve;     // the commit may take the arenas' reserves
+  uint32_t compress_at; // a log this long, and twice what it was compressed to, is compressed at a commit
   vxfs_bptr *limbo;
   vxfs_dead *dead;
   uint64_t *deferred; // freed once the next commit is durable
@@ -655,10 +657,11 @@ static vxfs_blk *log_tail(vxfs *fs, const vxfs_arena_hdr *h) {
 }
 
 // Rewrites the log as the free ranges alone, in new blocks: a long log is
-// short again. The new log also says the old chain's blocks are free, but
-// they are kept from reuse (a->retired, deferred by vxfs_log_retire at the
-// next commit): until the commit that points the arena at the new log is
-// durable, a crash replays the old one, which must still be on the disk.
+// short again. The old chain's blocks are still taken, in memory and in
+// the new log: they are kept (a->retired, deferred by vxfs_log_retire at
+// the next commit) until the commit that points the arena at the new log is
+// durable, since a crash before then replays the old one, which must still
+// be on the disk. Then they are freed, as anything a commit frees is.
 [[maybe_unused]] static bool vxfs_log_compress(vxfs *fs, vxfs_arena *a) {
   if (a->nretired) return fs_fail(fs, VX_ERR_BAD_STATE); // the last compression's commit has not landed
   if (!vxfs_log_flush(fs, a)) return false;
@@ -699,7 +702,7 @@ static vxfs_blk *log_tail(vxfs *fs, const vxfs_arena_hdr *h) {
     vxfs_drop(fs, a->logtl);
     a->loghd = (vxfs_bptr){.addr = blks[0]};
     a->logtl = b;
-    a->nlog = used;
+    a->nlog = a->lastlog = used;
     b->flags |= VXFS_BDIRTY;
     a->retired = old, a->nretired = nold;
     old = nullptr;
@@ -714,8 +717,6 @@ static vxfs_blk *log_tail(vxfs *fs, const vxfs_arena_hdr *h) {
     a->used -= VXFS_BLKSZ;
     if (ok) ok = log_append(fs, a, blks[i], VXFS_BLKSZ, LOG_FREE);
   }
-  for (uint64_t i = 0; ok && i < a->nretired; i++)
-    ok = log_append(fs, a, a->retired[i], VXFS_BLKSZ, LOG_FREE);
   ok = ok && vxfs_log_flush(fs, a);
   fs_release(fs, old, nold * sizeof *old);
   fs_release(fs, blks, need * sizeof *blks);
@@ -804,7 +805,7 @@ static bool block_dealloc(vxfs *fs, uint64_t addr) {
 
 // The library's state over a device, with a cache of `cache` blocks.
 [[maybe_unused]] static bool vxfs_open(vxfs *fs, vxfs_dev dev, vxfs_mem mem, uint32_t cache) {
-  *fs = (vxfs){.dev = dev, .mem = mem, .gen = 1};
+  *fs = (vxfs){.dev = dev, .mem = mem, .gen = 1, .compress_at = 64};
   if (cache < 4 * VXFS_MAXHEIGHT)
     cache = 4 * VXFS_MAXHEIGHT; // a whole path, its splits and siblings, held at once
   fs->nhash = 1;

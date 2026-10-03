@@ -127,7 +127,7 @@ It walks each snapshot's tree in full, so it costs time in proportion to the sna
 2. **Prepare.** The blocks the commit frees are written as a chain, and the superblock names it. Each arena's log is written, and its header records how much of the log's last block the commit covers, with a hash of that prefix. Mutation may go on from here.
 3. **Write the arena headers,** then a barrier.
 4. **Write the superblock,** then a barrier. This is the write that commits.
-5. **Write the arena footers.** Headers and footers back each other up across a crash.
+5. **Write the backup superblock and the arena footers.** Headers and footers back each other up across a crash. The two superblocks are never in flight together, so a cut that tears one leaves the other whole: either the last commit's or this one's. gefs writes both before one barrier, and a superblock larger than a sector (one with many arenas) could then be torn twice at once. The power-cut test found that.
 6. **Wait** for every write to land.
 7. **Free.** Blocks that were dead within the commit are made reusable. That becomes durable at the next commit.
 
@@ -266,7 +266,7 @@ All in M5 (04 §6). The steps are in `docs/milestones.md`.
 ## 14. Testing
 
 - **The library is host-built.** `lib/vx-fs` runs on the build machine against a file standing in for the disk, under ASan and UBSan, with its own tests and a fuzz target fed hostile blocks and message streams, as gefs's `fuzz.c` does.
-- **Power cuts on the host.** A fake device records every write and barrier. The test replays a workload, cuts power at every barrier and at random points between them (keeping any subset of the writes not yet flushed), then mounts and checks. Every cut must mount to the last commit, with `check` clean apart from leaks.
+- **Power cuts on the host** (`tests/host/vxfs_crash_test.c`). A fake device records every write and barrier while a workload runs: changes, commits, labels, forks, deletions, rollbacks and log compressions. The test replays the record and cuts power at every barrier and at random points between them. Each write not yet flushed may land or not, in any order, and may be torn sector by sector. Every cut must mount to the last commit, or to the one under way if its superblock landed, with `check` clean, no leaks, and every label holding what it did then. A commit made after the mount must also check clean.
 - **Power cuts in QEMU.** A scenario writes under load and kills QEMU mid-commit. The next boot mounts, checks, and finds every file synced before the kill.
 - **POSIX on `fsd`.** ctest's file checks run against `fsd` as well as `tmpfs`.
 - **Snapshots.** A scenario snapshots `/cfg`, changes it, rolls back, and reads the dated view.
