@@ -14,7 +14,7 @@ VectraOS is **Plan 9 evolved for modern computing**, written in standard C23 ins
 
 - The kernel knows about address spaces, threads, capabilities and notifications, and nothing else.
 - Drivers, filesystems, the network stack, the window server, the AI runtime and the POSIX personality are ordinary processes. They serve 9Px file trees, and where speed matters they also serve rings.
-- A process sees only the resources in its namespace. Because a namespace can hold mounts from other machines, a laptop can mount a workstation's GPU, a phone's sensors or a server's NPU and use them as if they were local.
+- A process sees only the resources in its namespace. Because a namespace can hold mounts from other machines, a laptop can mount a workstation's GPU or a server's NPU and use them as if they were local.
 
 The goal is a system that a single hacker can hold in their head. The kernel should fit in a weekend of reading. Any service should be explorable with `ls` and `cat`, and any action a human can take should be scriptable by a shell script or by an agent through the same interface.
 

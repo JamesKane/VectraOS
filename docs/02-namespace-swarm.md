@@ -212,7 +212,7 @@ This is what a desktop terminal's default namespace looks like. The right-hand c
 ├── ai/                        aid          models, sessions, ctx pools, providers, policy
 ├── swarm/                     swarmd       nodes, pools, jobs
 ├── dist/                      distd        releases, packages, catalogues, the store; ctl and policy only by grant (06 §11)
-├── n/                         (mounts)     remote nodes and volumes: /n/tower, /n/phone, /n/nas
+├── n/                         (mounts)     remote nodes and volumes: /n/tower, /n/laptop, /n/nas
 └── mnt/                       (mounts)     session-specific; /mnt/term inside a cpu session
 ```
 
@@ -370,7 +370,7 @@ Plan 9 split resources into terminals, CPU servers, file servers and auth server
 
 | Role | Serves | Typical node |
 |---|---|---|
-| **Terminal** | A screen, input, local devices. Exports `/mnt/term` to sessions it starts | Laptop, tablet |
+| **Terminal** | A screen, input, local devices. Exports `/mnt/term` to sessions it starts | Laptop, desktop |
 | **CPU server** | Cores and memory for `cpu` sessions | Workstation, rack server |
 | **Accelerator server** | `/dev/accel/*` and `/ai/models` for remote use | GPU tower, NPU board, Apple Silicon Mac mini |
 | **File server** | Durable volumes and context pools | NAS |
