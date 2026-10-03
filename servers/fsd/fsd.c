@@ -1080,6 +1080,50 @@ static vx_status fs_write([[maybe_unused]] void *ctx, uint64_t node, uint64_t of
   return st;
 }
 
+// dref (docs/proto/dref.md): Tread and Twrite with the data in the
+// client's VMO, through a bounce a chunk at a time, not by mapping it: a
+// VMO of fsd's own page cache, mapped here, would fault to fsd itself.
+static uint8_t ref_buf[64 * 1024];
+
+static vx_status fs_read_ref([[maybe_unused]] void *ctx, uint64_t node, uint64_t offset, vx_handle vmo,
+                             uint64_t roffset, uint32_t *count) {
+  if (is_made_up(node)) return VX_ERR_ACCESS;
+  cached *c = pcache_find(node);
+  if (c) writeback(c);
+  vxfs_file f;
+  vx_status st = file_of(node, &f);
+  uint32_t done = 0;
+  while (st == VX_OK && done < *count) {
+    uint64_t want = *count - done < sizeof ref_buf ? *count - done : sizeof ref_buf, got = 0;
+    st = vxfs_read(&vol, tree_of(node), &f, offset + done, ref_buf, want, &got);
+    if (st == VX_OK && got) st = vx_vmo_rw(vmo, VX_VMO_WRITE, roffset + done, ref_buf, got);
+    if (st == VX_OK) done += (uint32_t)got;
+    if (got < want) break; // the end of the file
+  }
+  *count = done;
+  return done ? VX_OK : st; // what was read, if anything was, as a short read
+}
+
+static vx_status fs_write_ref([[maybe_unused]] void *ctx, uint64_t node, uint64_t offset, vx_handle vmo,
+                              uint64_t roffset, uint32_t *count) {
+  if (is_made_up(node)) return VX_ERR_ACCESS; // ctl takes a command a write, inline
+  if (halted) return VX_ERR_BAD_STATE;
+  vxfs_file f;
+  vx_status st = file_of(node, &f);
+  if (st != VX_OK) return st;
+  if (f.d.mode & VXFS_DMDIR) return VX_ERR_ACCESS;
+  uint32_t done = 0;
+  while (st == VX_OK && done < *count) {
+    uint32_t n = *count - done < sizeof ref_buf ? *count - done : (uint32_t)sizeof ref_buf;
+    st = vx_vmo_rw(vmo, VX_VMO_READ, roffset + done, ref_buf, n);
+    if (st == VX_OK)
+      st = vxfs_write(&vol, tree_of(node), &f, offset + done, ref_buf, n, now_ns(), uid_of(node));
+    if (st == VX_OK) changed(), pcache_wrote(node, offset + done, ref_buf, n), done += n;
+  }
+  *count = done;
+  return done ? VX_OK : st;
+}
+
 // Listing: the entry after the last one given, when the next index is
 // asked for in turn; otherwise from the start.
 static struct {
@@ -1319,9 +1363,11 @@ static p9_ring_server server = {
            .symlink = fs_symlink,
            .readlink = fs_readlink,
            .fsync = fs_fsync,
-           .map = fs_map},
+           .map = fs_map,
+           .read_ref = fs_read_ref,
+           .write_ref = fs_write_ref},
     .name = VX_STR("fsd"),
-    .supported = P9_EXT_POSIX | P9_EXT_XATTR | P9_EXT_MAP,
+    .supported = P9_EXT_POSIX | P9_EXT_XATTR | P9_EXT_MAP | P9_EXT_DREF,
     .event = on_event,
     .tick = tick,
 };

@@ -171,7 +171,7 @@ It keeps gefs's discipline anyway: blocks that leave the mutator are immutable, 
 - **Faults.** The kernel asks `fsd` for missing pages, and `fsd` supplies them with `pager_supply` before a deadline. A missed deadline is a `PAGER_TIMEOUT` exception (`SIGBUS`), not a hang.
 - **Writeback.** `MAP_SHARED` writes dirty the VMO's pages. Before each commit `fsd` asks the kernel for the dirty ranges (`pager_op`), cleans them, and writes them to the file. It does the same before a `Tread` of the file and before its size changes, and a `Twrite` goes into the VMO's pages too, so readers and mappings see one file.
 - **Eviction.** Clean pages of these VMOs are the first memory the kernel takes back under pressure (01 §5).
-- **`dref`.** A `Tread` into a client's `Buffer` is served by mapping the page-cache pages, not copying them (02 §3.3).
+- **`dref`.** A read or write can name a VMO of the client's, its `Buffer`, instead of carrying the bytes (02 §3.3, docs/proto/dref.md). `fsd` copies between the volume and it once per chunk, through a buffer of its own, and one message moves any amount. It does not map the client's VMO, which could be one of `fsd`'s own page cache.
 
 **The kernel's pager objects are built in M5 for this:** `pager_create`, `pager_supply`, `pager_op` (dirty ranges, clean, hints), supply deadlines, and `vmo_op resize` (01 §3's syscall list; `abi/vx/abi.h` has the calls):
 - **Who may be a pager.** `pager_create` needs a `Resource` handle with `VX_RIGHT_PAGER`. `svcd` gives one, narrowed to that right alone, to a service whose manifest says `pager`.

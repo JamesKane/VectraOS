@@ -70,6 +70,13 @@ typedef struct p9_fs {
   // transport hands to the client.
   vx_status (*map)(void *ctx, uint64_t node, uint64_t offset, uint64_t length, uint32_t prot, vx_handle *vmo,
                    uint64_t *vmo_offset);
+  // The dref extension (docs/proto/dref.md), optional: a file's bytes
+  // copied into, or from, the client's VMO at roffset; *count as Tread's
+  // and Twrite's. The VMO stays the framework's.
+  vx_status (*read_ref)(void *ctx, uint64_t node, uint64_t offset, vx_handle vmo, uint64_t roffset,
+                        uint32_t *count);
+  vx_status (*write_ref)(void *ctx, uint64_t node, uint64_t offset, vx_handle vmo, uint64_t roffset,
+                         uint32_t *count);
 } p9_fs;
 
 enum : uint32_t { P9_MAX_FIDS = 256 }; // per connection, for now
@@ -137,6 +144,9 @@ typedef struct p9_server {
   // The handle the last reply carries (Rmap's VMO), for the transport to
   // pass on; VX_HANDLE_NONE when it carries none. The transport's to close.
   vx_handle reply_handle;
+  // The handle the request carried (dref's VMO), set by the transport;
+  // VX_HANDLE_NONE when it carried none. The transport's to close.
+  vx_handle request_handle;
 } p9_server;
 
 static p9_fid *p9_fid_find(p9_server *s, uint32_t fid) {
@@ -560,6 +570,38 @@ static vx_status p9_serve_map(p9_server *s, const p9_msg *t, p9_msg *r) {
   return e;
 }
 
+// Treadref and Twriteref (docs/proto/dref.md): Tread and Twrite, open
+// files' offsets and appending too, with the data in the request's VMO.
+static vx_status p9_serve_dref(p9_server *s, const p9_msg *t, p9_msg *r) {
+  bool read = t->type == P9_Treadref;
+  if (!(s->extensions & P9_EXT_DREF) || !(read ? s->fs.read_ref : s->fs.write_ref)) return VX_ERR_UNSUPPORTED;
+  p9_fid *f = p9_fid_find(s, t->fid);
+  if (!f) return VX_ERR_BAD_HANDLE;
+  uint8_t mode = f->mode & 3;
+  if (!f->open || (f->qid.type & P9_QTDIR)) return VX_ERR_ACCESS;
+  if (read ? mode == P9_OWRITE : mode != P9_OWRITE && mode != P9_ORDWR) return VX_ERR_ACCESS;
+  if (!s->request_handle) return VX_ERR_INVALID; // no VMO came with it
+  p9_open_file *o = f->file && s->shared ? &s->shared->files[f->file - 1] : nullptr;
+  uint64_t offset = t->offset;
+  if (offset == P9_OFFSET_CURRENT) {
+    if (!o) return VX_ERR_INVALID;
+    offset = o->offset;
+    if (!read && o->append) {
+      p9_stat st;
+      vx_status e = s->fs.stat(s->fs.ctx, f->node, &st);
+      if (e != VX_OK) return e;
+      offset = st.length;
+    }
+  }
+  uint32_t count = t->count;
+  vx_status e = (read ? s->fs.read_ref : s->fs.write_ref)(s->fs.ctx, f->node, offset, s->request_handle,
+                                                          t->roffset, &count);
+  if (e != VX_OK) return e;
+  if (o && t->offset == P9_OFFSET_CURRENT) o->offset = offset + count;
+  r->count = count;
+  return VX_OK;
+}
+
 static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve the request again later
 
 // Handles one request (`len` bytes, one whole message) and writes the reply
@@ -765,6 +807,8 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
     case P9_Tseek:
     case P9_Tdesc: e = p9_serve_posix(s, &t, &r); break;
     case P9_Tmap: e = p9_serve_map(s, &t, &r); break;
+    case P9_Treadref:
+    case P9_Twriteref: e = p9_serve_dref(s, &t, &r); break;
     default: return 0;
     }
   }

@@ -142,6 +142,7 @@ typedef struct p9_msg {
   p9_setattr setattr;
   uint8_t lock_type, status, whence;
   uint32_t lock_flags, proc_id, holds, desc_flags, prot;
+  uint64_t roffset;
   uint64_t start, length;
   vx_str client_id;
   uint8_t token[16];
@@ -277,6 +278,7 @@ static void p9_put_qid(p9_out *o, p9_qid q) {
     case P9F_WHENCE: p9_put(&o, m->whence, 1); break;
     case P9F_DESCFLAGS: p9_put(&o, m->desc_flags, 4); break;
     case P9F_PROT: p9_put(&o, m->prot, 4); break;
+    case P9F_ROFFSET: p9_put(&o, m->roffset, 8); break;
     case P9F_ATTR: {
       const p9_attr *a = &m->attr;
       p9_put(&o, a->valid, 8);
@@ -421,6 +423,7 @@ static p9_qid p9_get_qid(p9_in *in) {
     case P9F_WHENCE: m->whence = (uint8_t)p9_get(&in, 1); break;
     case P9F_DESCFLAGS: m->desc_flags = (uint32_t)p9_get(&in, 4); break;
     case P9F_PROT: m->prot = (uint32_t)p9_get(&in, 4); break;
+    case P9F_ROFFSET: m->roffset = p9_get(&in, 8); break;
     case P9F_ATTR: {
       p9_attr *a = &m->attr;
       a->valid = p9_get(&in, 8);

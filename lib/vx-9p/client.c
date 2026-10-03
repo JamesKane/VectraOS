@@ -30,6 +30,9 @@ typedef struct p9_client {
   // The handle the last reply carried (Rmap's VMO), set by the transport;
   // the call that wants it takes it, and the transport closes one not taken.
   vx_handle handle;
+  // A handle for the next request to carry (dref's VMO), which the
+  // transport moves to the server, or closes if it cannot.
+  vx_handle send_handle;
 } p9_client;
 
 static vx_status p9c_call(p9_client *c, p9_msg *t) {

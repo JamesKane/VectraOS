@@ -11,6 +11,7 @@
 // completion: result is its length, aux2 its offset in the server's arena.
 // A reply that carries a handle (Rmap's VMO) has P9_CQE_HANDLE in flags and
 // the ring's handle slot in aux (ring_xfer_handles), which the client takes.
+// A request that carries one (dref's VMO) has VX_SQE_HANDLES and handle_slot.
 // Each side copies the other's bytes out once before it decodes them (01
 // §4.3), and a peer that names bytes outside its arena, or sends a reply that
 // does not fit, is treated as gone. This client has one request in flight;
@@ -80,6 +81,13 @@ static bool p9_ring_put(p9_conn *k, const uint8_t *req, size_t len) {
   }
   memcpy(arena, req, len);
   *e = (vx_sqe){.opcode = P9_RING_MSG, .len = (uint32_t)len};
+  if (k->c.send_handle) { // dref's VMO, moved to a slot for the server
+    int64_t slot = vx_ring_put_handles(k->end, &k->c.send_handle, 1);
+    if (slot < 0) vx_handle_close(k->c.send_handle);
+    k->c.send_handle = VX_HANDLE_NONE;
+    if (slot < 0) return false; // the slots are full: a server not taking them
+    e->flags = VX_SQE_HANDLES, e->handle_slot = (uint32_t)slot;
+  }
   if (vx_ring_produce(&k->ring)) vx_ring_notify(k->end);
   return true;
 }
@@ -152,7 +160,8 @@ static size_t p9_ring_rpc(void *ctx, const uint8_t *req, size_t len, uint8_t *re
   if (st == VX_OK) {
     k->c =
         (p9_client){.rpc = p9_ring_rpc, .ctx = k, .tbuf = k->tbuf, .rbuf = k->rbuf, .bufsize = P9_RING_MSIZE};
-    st = p9c_version(&k->c, P9_RING_MSIZE, P9_EXT_POSIX | P9_EXT_XATTR | P9_EXT_MAP); // what the server has
+    st = p9c_version(&k->c, P9_RING_MSIZE,
+                     P9_EXT_POSIX | P9_EXT_XATTR | P9_EXT_MAP | P9_EXT_DREF); // what the server has of them
   }
   if (st != VX_OK) {
     if (k->end) vx_handle_close(k->end);
@@ -212,4 +221,34 @@ static size_t p9_ring_rpc(void *ctx, const uint8_t *req, size_t len, uint8_t *re
   int64_t seen = vx_counter_read(k->end);
   if (!vx_ring_prepare_sleep(&k->ring)) return false;
   return vx_port_bind(port, k->end, VX_TRIGGER_COUNTER_GE, key, (uint64_t)seen + 1) == VX_OK;
+}
+
+// --- dref ---
+//
+// Treadref and Twriteref (docs/proto/dref.md), here rather than in
+// client.c, which is built for the host too: count bytes of the file at
+// offset copied into (or from) vmo at roffset by the server, in one message
+// whatever the msize; *done how many. The VMO stays the caller's: the
+// request carries a duplicate (so it needs DUPLICATE and TRANSFER).
+static vx_status p9c_ref(p9_client *c, p9_type type, uint32_t fid, uint64_t offset, vx_handle vmo,
+                         uint64_t roffset, uint32_t count, uint32_t *done) {
+  if (!(c->extensions & P9_EXT_DREF)) return VX_ERR_UNSUPPORTED;
+  vx_status e = vx_handle_dup(vmo, VX_RIGHTS_SAME, &c->send_handle);
+  if (e != VX_OK) return e;
+  p9_msg t = {.type = type, .fid = fid, .offset = offset, .count = count, .roffset = roffset};
+  e = p9c_call(c, &t);
+  if (c->send_handle) vx_handle_close(c->send_handle); // never sent
+  c->send_handle = VX_HANDLE_NONE;
+  if (e == VX_OK) *done = c->reply.count;
+  return e;
+}
+
+[[maybe_unused]] static vx_status p9c_readref(p9_client *c, uint32_t fid, uint64_t offset, vx_handle vmo,
+                                              uint64_t roffset, uint32_t count, uint32_t *done) {
+  return p9c_ref(c, P9_Treadref, fid, offset, vmo, roffset, count, done);
+}
+
+[[maybe_unused]] static vx_status p9c_writeref(p9_client *c, uint32_t fid, uint64_t offset, vx_handle vmo,
+                                               uint64_t roffset, uint32_t count, uint32_t *done) {
+  return p9c_ref(c, P9_Twriteref, fid, offset, vmo, roffset, count, done);
 }

@@ -66,7 +66,14 @@ typedef struct p9_ring_server {
   p9_shared shared; // the open files and locks all its connections share (posix)
 } p9_ring_server;
 
+// The handle a request came with, if any: the server's while it serves it.
+static void p9_ring_drop_request_handle(p9_ring_conn *c) {
+  if (c->srv.request_handle) vx_handle_close(c->srv.request_handle);
+  c->srv.request_handle = VX_HANDLE_NONE;
+}
+
 static void p9_ring_close(p9_ring_conn *c) {
+  p9_ring_drop_request_handle(c);
   for (uint32_t i = 0; i < P9_MAX_FIDS; i++)
     if (c->srv.fids[i].used) p9_fid_drop(&c->srv, &c->srv.fids[i]);
   vx_handle_close(c->end);
@@ -128,9 +135,13 @@ static p9_drained p9_ring_drain(p9_ring_conn *c) {
       const uint8_t *p = vx_ring_peer_bytes(&c->ring, e.arena_off, e.len);
       if (!p) return P9_BROKEN;
       memcpy(c->req, p, e.len);
+      if ((e.flags & VX_SQE_HANDLES) &&
+          vx_ring_take_handles(c->end, e.handle_slot, &c->srv.request_handle, 1) != 1)
+        c->srv.request_handle = VX_HANDLE_NONE; // dref's VMO, for Treadref and Twriteref
     }
     size_t n = p9_serve(&c->srv, c->req, e.len, c->resp, sizeof c->resp);
     c->holding = n == P9_DEFER;
+    if (!c->holding) p9_ring_drop_request_handle(c); // a held request keeps its VMO until it is served
     if (c->holding) {
       c->held_len = e.len;
       c->held_user_data = e.user_data;

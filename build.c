@@ -1223,6 +1223,7 @@ static const program USER_PROGRAMS[] = {
      false}, // the root task instead of svcd with vx.root=ktest
     {"bootfs", "servers/bootfs/bootfs.c", IN_BOOTFS, nullptr, false},
     {"nstest", "tests/user/nstest.c", IN_TESTS, nullptr, false},
+    {"dreftest", "tests/user/dreftest.c", IN_TESTS, nullptr, false},
     {"constest", "tests/user/constest.c", IN_TESTS, nullptr, false},
     {"nettest", "tests/user/nettest.c", IN_TESTS, nullptr, false},
     {"tcptest", "tests/user/tcptest.c", IN_TESTS, nullptr, false},
