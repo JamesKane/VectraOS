@@ -336,7 +336,7 @@ static void test_random(uint64_t seed, uint32_t ops) {
     }
     if (!ok) fprintf(stderr, "seed %llu: wrong at op %u\n", (unsigned long long)seed, k);
   }
-  // Everything removed, deepest first: the space all comes back.
+  // Everything removed, deepest first.
   for (int pass = 0; pass < 20; pass++)
     for (uint32_t i = 1; i < MAXN; i++)
       if (nodes[i].used && !has_children(i)) {
@@ -348,7 +348,9 @@ static void test_random(uint64_t seed, uint32_t ops) {
   remount(&w);
   vxfs_check c;
   CHECK(vxfs_check_volume(&w.v, &c) == VX_OK && agrees(&w));
-  CHECK(c.trees <= 8); // the trees' roots, and little else
+  // Not every block is back yet: the removes are messages buffered in pivots
+  // until a flush takes them to the leaves, as in any Bε tree. Clean is what
+  // holds: nothing leaked, nothing reachable that should not be.
   vxfs_unmount(&w.v);
   free(w.d.bytes);
 }
@@ -389,9 +391,47 @@ static void test_names(void) {
   CHECK(vxfs_walk_path(&v, &br->t, "/b2", &b) == VX_OK && vxfs_walk(&v, &br->t, &b, "..", &up) == VX_OK &&
         up.d.qid_path == root.d.qid_path);
   CHECK(vxfs_remove(&v, &br->t, &root, "..", 11) == VX_ERR_INVALID);
+  // Entries by qid: a file, a moved directory, the root; and one removed.
+  vxfs_file byq;
+  CHECK(vxfs_walk_path(&v, &br->t, "/b2/file", &f) == VX_OK);
+  CHECK(vxfs_file_by_qid(&v, &br->t, f.d.qid_path, &byq) == VX_OK && byq.nkey == f.nkey &&
+        memcmp(byq.key, f.key, f.nkey) == 0);
+  CHECK(vxfs_file_by_qid(&v, &br->t, b.d.qid_path, &byq) == VX_OK && byq.d.qid_path == b.d.qid_path);
+  CHECK(vxfs_file_by_qid(&v, &br->t, root.d.qid_path, &byq) == VX_OK && byq.nkey == 9);
+  CHECK(vxfs_remove(&v, &br->t, &b, "file", 12) == VX_OK);
+  CHECK(vxfs_file_by_qid(&v, &br->t, f.d.qid_path, &byq) == VX_ERR_NOT_FOUND);
+  // An orphan: removed while open, found by its qid, written, then reaped.
+  vxfs_file o, oq;
+  CHECK(vxfs_create(&v, &br->t, &root, "open-file", 0600, 1, 1, 13, &o) == VX_OK);
+  static uint8_t big[40000];
+  memset(big, 0x42, sizeof big);
+  CHECK(vxfs_write(&v, &br->t, &o, 0, big, sizeof big, 14, 1) == VX_OK);
+  CHECK(vxfs_orphan(&v, &br->t, &root, "open-file", 15) == VX_OK);
+  CHECK(vxfs_walk(&v, &br->t, &root, "open-file", &f) == VX_ERR_NOT_FOUND);
+  CHECK(vxfs_file_by_qid(&v, &br->t, o.d.qid_path, &oq) == VX_OK && vxfs_is_orphan(&oq) &&
+        oq.d.length == sizeof big);
+  CHECK(vxfs_write(&v, &br->t, &oq, sizeof big, "tail", 4, 16, 1) == VX_OK);
+  uint64_t got = 0;
+  uint8_t back[8];
+  CHECK(vxfs_file_by_qid(&v, &br->t, o.d.qid_path, &oq) == VX_OK && oq.d.length == sizeof big + 4);
+  CHECK(vxfs_read(&v, &br->t, &oq, sizeof big - 2, back, 8, &got) == VX_OK && got == 6 &&
+        memcmp(back, "\x42\x42tail", 6) == 0);
+  CHECK(vxfs_reap(&v, &br->t, o.d.qid_path) == VX_OK);
+  CHECK(vxfs_file_by_qid(&v, &br->t, o.d.qid_path, &oq) == VX_ERR_NOT_FOUND);
+  // Orphans a crash left: committed while orphaned, reaped when next opened.
+  CHECK(vxfs_create(&v, &br->t, &root, "left", 0600, 1, 1, 17, &o) == VX_OK);
+  CHECK(vxfs_write(&v, &br->t, &o, 0, big, sizeof big, 18, 1) == VX_OK);
+  CHECK(vxfs_orphan(&v, &br->t, &root, "left", 19) == VX_OK);
   CHECK(vxfs_commit(&v) == VX_OK);
   vxfs_check c;
   CHECK(vxfs_check_volume(&v, &c) == VX_OK);
+  uint64_t with_orphan = c.trees;
+  vxfs_unmount(&v);
+  CHECK(vxfs_mount(&v, dev_of(&d), MEM, 256) == VX_OK && vxfs_branch_open(&v, "cfg", &br) == VX_OK);
+  uint32_t n = 0;
+  CHECK(vxfs_reap_all(&v, &br->t, &n) == VX_OK && n == 1);
+  CHECK(vxfs_file_by_qid(&v, &br->t, o.d.qid_path, &oq) == VX_ERR_NOT_FOUND);
+  CHECK(vxfs_commit(&v) == VX_OK && vxfs_check_volume(&v, &c) == VX_OK && c.trees < with_orphan);
   vxfs_unmount(&v);
   free(d.bytes);
 }

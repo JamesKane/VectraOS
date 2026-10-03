@@ -2,9 +2,11 @@
 // in a branch's tree, for fsd (step 4) and host/vxfs alike.
 //
 // An entry is Kent(pqid, name), its value vxfs_dir; the root's is
-// Kent(0, ""). A directory has Kup(qid), naming its own Kent key, whose
-// pqid is its parent (as gefs's): renaming a directory changes its Kup and
-// no other, so its children's stay right. A
+// Kent(0, ""). Every entry has Kup(qid), naming its own Kent key, whose
+// pqid is its parent (gefs has one for directories; fsd names files by
+// qid, so it needs one for every entry, which with no hard links is one to
+// one). Renaming an entry changes its Kup and no other, so its children's
+// stay right. A
 // file's data is Kdat(qid, off) for each block-aligned offset that holds
 // any: a block pointer (VXFS_VREF) to a block of it, or the block's first
 // bytes inline (VXFS_VINL), the rest zeros. A missing key reads as zeros. A
@@ -180,6 +182,20 @@ static vx_status fb_done(vxfs_vol *v, vxfs_tree *t, fbatch *b, vx_status st) {
   return file_at(v, t, k, key_ent(k, dir->d.qid_path, (const uint8_t *)name, n), f);
 }
 
+// The entry whose qid is qid, by its Kup.
+[[maybe_unused]] static vx_status vxfs_file_by_qid(vxfs_vol *v, const vxfs_tree *t, uint64_t qid,
+                                                   vxfs_file *f) {
+  uint8_t k[9], key[VXFS_INLMAX];
+  uint16_t nk = 0;
+  vx_status st = vxfs_lookup(&v->fs, t, k, key_up(k, qid), key, &nk);
+  if (st != VX_OK) return st;
+  bool orphan = nk == 9 && key[0] == VXFS_KORPHAN;
+  if (!orphan && (nk < 9 || nk > VXFS_KEYMAX || key[0] != VXFS_KENT)) return vol_bad(v);
+  st = file_at(v, t, key, nk, f);
+  if (st == VX_OK && f->d.qid_path != qid) return vol_bad(v);
+  return st;
+}
+
 // A path from the root, '/'-separated.
 [[maybe_unused]] static vx_status vxfs_walk_path(vxfs_vol *v, const vxfs_tree *t, const char *path,
                                                  vxfs_file *f) {
@@ -296,10 +312,8 @@ static vx_status dir_empty(vxfs_vol *v, const vxfs_tree *t, const vxfs_file *dir
   uint8_t val[VXFS_DIRSZ];
   vxfs_packdir(val, &f->d);
   fb_add(b, VXFS_OINSERT, f->key, f->nkey, val, VXFS_DIRSZ);
-  if (mode & VXFS_DMDIR) {
-    uint8_t k[9];
-    fb_add(b, VXFS_OINSERT, k, key_up(k, f->d.qid_path), f->key, f->nkey);
-  }
+  uint8_t k[9];
+  fb_add(b, VXFS_OINSERT, k, key_up(k, f->d.qid_path), f->key, f->nkey);
   vxfs_dir pd = {.mtime = now, .ctime = now};
   st = fb_wstat(v, t, b, dir->key, dir->nkey, VXFS_WMTIME | VXFS_WCTIME, &pd);
   return fb_done(v, t, b, st);
@@ -491,11 +505,80 @@ typedef struct vxfs_attr {
   if (!b) return v->fs.err;
   if (!is_dir(&f)) st = clear_data(v, t, b, f.d.qid_path, 0);
   uint8_t k[9];
-  if (st == VX_OK && is_dir(&f)) st = fb_put(v, t, b, VXFS_ODELETE, k, key_up(k, f.d.qid_path), nullptr, 0);
+  if (st == VX_OK) st = fb_put(v, t, b, VXFS_ODELETE, k, key_up(k, f.d.qid_path), nullptr, 0);
   if (st == VX_OK) st = fb_put(v, t, b, VXFS_ODELETE, f.key, f.nkey, nullptr, 0);
   vxfs_dir pd = {.mtime = now, .ctime = now};
   if (st == VX_OK) st = fb_wstat(v, t, b, dir->key, dir->nkey, VXFS_WMTIME | VXFS_WCTIME, &pd);
   return fb_done(v, t, b, st);
+}
+
+// --- Orphans: files removed while open (11 §4) ---
+
+static uint16_t key_orphan(uint8_t *k, uint64_t qid) {
+  k[0] = VXFS_KORPHAN;
+  vxfs_kput64(k + 1, qid);
+  return 9;
+}
+
+[[maybe_unused]] static bool vxfs_is_orphan(const vxfs_file *f) {
+  return f->nkey == 9 && f->key[0] == VXFS_KORPHAN;
+}
+
+// Removes name, a file, from dir but keeps it: its entry moves to
+// Korphan(qid), which its Kup names, so it is found by its qid still, and
+// its data stays until vxfs_reap. One batch.
+[[maybe_unused]] static vx_status vxfs_orphan(vxfs_vol *v, vxfs_tree *t, const vxfs_file *dir,
+                                              const char *name, int64_t now) {
+  vxfs_file f;
+  vx_status st = vxfs_walk(v, t, dir, name, &f);
+  if (st != VX_OK) return st;
+  if (is_dir(&f)) return VX_ERR_INVALID; // a directory is removed, empty, or not at all
+  fbatch *b = fb_new(v);
+  if (!b) return v->fs.err;
+  uint8_t ok[9], uk[9], val[VXFS_DIRSZ];
+  uint16_t nok = key_orphan(ok, f.d.qid_path);
+  vxfs_packdir(val, &f.d);
+  fb_add(b, VXFS_ODELETE, f.key, f.nkey, nullptr, 0);
+  fb_add(b, VXFS_OINSERT, ok, nok, val, VXFS_DIRSZ);
+  fb_add(b, VXFS_OINSERT, uk, key_up(uk, f.d.qid_path), ok, nok);
+  vxfs_dir pd = {.mtime = now, .ctime = now};
+  st = fb_wstat(v, t, b, dir->key, dir->nkey, VXFS_WMTIME | VXFS_WCTIME, &pd);
+  return fb_done(v, t, b, st);
+}
+
+// An orphan's end: its data cleared, its Korphan and Kup gone.
+[[maybe_unused]] static vx_status vxfs_reap(vxfs_vol *v, vxfs_tree *t, uint64_t qid) {
+  fbatch *b = fb_new(v);
+  if (!b) return v->fs.err;
+  vx_status st = clear_data(v, t, b, qid, 0);
+  uint8_t k[9];
+  if (st == VX_OK) st = fb_put(v, t, b, VXFS_ODELETE, k, key_orphan(k, qid), nullptr, 0);
+  if (st == VX_OK) st = fb_put(v, t, b, VXFS_ODELETE, k, key_up(k, qid), nullptr, 0);
+  return fb_done(v, t, b, st);
+}
+
+// Every orphan in tree t reaped: what a crash left of files removed while
+// open, when the tree is first opened again. The count in *n.
+[[maybe_unused]] static vx_status vxfs_reap_all(vxfs_vol *v, vxfs_tree *t, uint32_t *n) {
+  *n = 0;
+  for (;;) { // a few at a time: the tree changes as each goes
+    uint64_t qid[32];
+    uint32_t got = 0;
+    uint8_t pfx = VXFS_KORPHAN;
+    vxfs_scan s;
+    vxfs_scan_start(&s, t, &pfx, 1);
+    vxfs_kvp kv;
+    while (got < 32 && vxfs_scan_next(&v->fs, &s, &kv))
+      if (kv.nk == 9) qid[got++] = vxfs_kget64(kv.k + 1);
+    vxfs_scan_end(&v->fs, &s);
+    if (v->fs.err != VX_OK) return v->fs.err;
+    if (!got) return VX_OK;
+    for (uint32_t i = 0; i < got; i++) {
+      vx_status st = vxfs_reap(v, t, qid[i]);
+      if (st != VX_OK) return st;
+    }
+    *n += got;
+  }
 }
 
 // Renames from/name to to/newname, replacing as POSIX does (see the top).
@@ -536,10 +619,8 @@ typedef struct vxfs_attr {
   vxfs_packdir(val, &f.d);
   fb_add(b, VXFS_ODELETE, f.key, f.nkey, nullptr, 0);
   fb_add(b, VXFS_OINSERT, k, nk, val, VXFS_DIRSZ);
-  if (is_dir(&f)) {
-    uint8_t uk[9];
-    fb_add(b, VXFS_OINSERT, uk, key_up(uk, f.d.qid_path), k, nk);
-  }
+  uint8_t uk[9];
+  fb_add(b, VXFS_OINSERT, uk, key_up(uk, f.d.qid_path), k, nk);
   vxfs_dir pd = {.mtime = now, .ctime = now};
   st = fb_wstat(v, t, b, from->key, from->nkey, VXFS_WMTIME | VXFS_WCTIME, &pd);
   if (st == VX_OK && to->d.qid_path != from->d.qid_path)

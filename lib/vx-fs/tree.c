@@ -642,6 +642,7 @@ static bool descend(vxfs *fs, const vxfs_tree *t, const uint8_t *k, uint16_t nk,
   if (fs->err != VX_OK) return fs->err;
   vxfs_path p;
   if (!descend(fs, t, k, nk, &p)) return fs->err;
+  if (!p.n) return VX_ERR_INVALID; // descend holds the root at least
   vxfs_blk *leaf = p.b[p.n - 1];
   vxfs_msg kv = {.k = k, .nk = nk};
   uint32_t i = tab_search(leaf->data, leaf->nval, false, k, nk);
@@ -691,6 +692,14 @@ typedef struct vxfs_scan {
   if (npfx) memcpy(s->pfx, pfx, npfx), memcpy(s->lo, pfx, npfx);
 }
 
+// As vxfs_scan_start, but from key `from` on (within the prefix): a scan
+// taken up again where an earlier one stopped.
+[[maybe_unused]] static void vxfs_scan_from(vxfs_scan *s, const vxfs_tree *t, const uint8_t *pfx,
+                                            uint16_t npfx, const uint8_t *from, uint16_t nfrom) {
+  vxfs_scan_start(s, t, pfx, npfx);
+  if (nfrom && vxfs_keycmp(from, nfrom, pfx, npfx) > 0) memcpy(s->lo, from, nfrom), s->nlo = nfrom;
+}
+
 [[maybe_unused]] static void vxfs_scan_end(vxfs *fs, vxfs_scan *s) {
   fs_release(fs, s->bytes, s->capbytes);
   fs_release(fs, s->ents, s->capents * sizeof *s->ents);
@@ -714,6 +723,7 @@ static void scan_emit(vxfs_scan *s, const vxfs_msg *kv) {
 static bool scan_fill(vxfs *fs, vxfs_scan *s) {
   vxfs_path p;
   if (!descend(fs, s->t, s->lo, s->nlo, &p)) return false;
+  if (!p.n) return fs_fail(fs, VX_ERR_INVALID); // descend holds the root at least
   // Room for every source entry.
   size_t need = (size_t)p.n * VXFS_BLKSZ;
   uint32_t nneed = (uint32_t)(need / 5);
@@ -734,7 +744,7 @@ static bool scan_fill(vxfs *fs, vxfs_scan *s) {
   // Cursors: the leaf's values from lo, and each pivot's messages in [lo, hi).
   vxfs_blk *leaf = p.b[p.n - 1];
   uint32_t vi = ok ? tab_search(leaf->data, leaf->nval, false, s->lo, s->nlo) : 0;
-  uint32_t mi[VXFS_MAXHEIGHT], mend[VXFS_MAXHEIGHT];
+  uint32_t mi[VXFS_MAXHEIGHT] = {}, mend[VXFS_MAXHEIGHT] = {};
   for (uint32_t l = 0; ok && l + 1 < p.n; l++) {
     const uint8_t *buf = p.b[l]->data + VXFS_PIVSPC;
     mi[l] = tab_search(buf, p.b[l]->nbuf, true, s->lo, s->nlo);

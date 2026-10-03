@@ -57,8 +57,8 @@ Where `lib/vx-fs` departs from gefs's algorithm (the format is the same):
 |---|---|---|
 | `Kdat qid[8] off[8]` | a block pointer, or inline data | A file's data, by block-aligned offset. A missing key reads as zeros: files are sparse for free. |
 | `Kent pqid[8] name[]` | the entry (§4.1) | A name in a directory. A directory's entries sort together, so listing it is one range scan and a lookup is O(log n), never a scan. |
-| `Kup qid[8]` | the directory's own `Kent` key | `..`, for directories only: the key's `pqid` is the parent. Renaming a directory changes its own `Kup` and no other. |
-| `Korphan qid[8]` | nothing | Ours: a file removed while it was open. Its data is freed when the last fid on it goes, and on the next mount if the machine crashed first. |
+| `Kup qid[8]` | the entry's own `Kent` key | An entry by its qid, and `..`: the key's `pqid` is the parent. gefs has one for directories only. `fsd` names every file by its qid, as the 9P framework's node ids do, so every entry has one, and with no hard links the two are one to one. Renaming an entry changes its own `Kup` and no other. |
+| `Korphan qid[8]` | the entry | Ours: a file removed while it was open. Its entry moves here, and its `Kup` names this key, so it is still found by its qid and its writes still land. Its data is freed when the last fid on it goes, or when its branch is next opened if the machine crashed first. |
 
 A **block pointer** is `addr[8] hash[8] gen[8]`: where the block is, the hash of its contents, and the generation it was written in.
 

@@ -58,6 +58,9 @@ typedef struct p9_fs {
   vx_status (*rename)(void *ctx, uint64_t olddir, vx_str oldname, uint64_t newdir, vx_str newname);
   vx_status (*symlink)(void *ctx, uint64_t dir, vx_str name, vx_str target, uint64_t *node);
   vx_status (*readlink)(void *ctx, uint64_t node, vx_str *target); // its bytes last until the next call
+  // Optional: Tfsync, answered when it returns. A server that writes before
+  // Rwrite has none; one that commits later (fsd) commits here.
+  vx_status (*fsync)(void *ctx, uint64_t node);
 } p9_fs;
 
 enum : uint32_t { P9_MAX_FIDS = 256 }; // per connection, for now
@@ -520,7 +523,7 @@ static vx_status p9_serve_posix(p9_server *s, const p9_msg *t, p9_msg *r) {
     return e;
   }
   case P9_Treadlink: return s->fs.readlink ? s->fs.readlink(s->fs.ctx, f->node, &r->name2) : VX_ERR_INVALID;
-  case P9_Tfsync: return VX_OK;       // every server's writes are done when Rwrite is sent
+  case P9_Tfsync: return s->fs.fsync ? s->fs.fsync(s->fs.ctx, f->node) : VX_OK;
   default: return VX_ERR_UNSUPPORTED; // Tlink: no server has hard links
   }
 }

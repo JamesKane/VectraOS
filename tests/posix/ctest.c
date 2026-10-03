@@ -38,6 +38,22 @@
 #include <unistd.h>
 #include <wchar.h>
 
+// Its own program, and where procfs saves crashes: what the scenario's
+// manifest says (CTEST_SELF, CTEST_CRASH), else the posix scenario's. The
+// fsd scenario runs it as /boot/bin/ctestfsd, with /tmp on fsd.
+static const char *self = "/boot/bin/ctest", *self_name = "ctest", *crash_dir = "/tmp/crash";
+// Its manifest, a file it knows: /boot/svc/NAME.ndb, which starts "# tests/user/NAME.ndb".
+static char manifest[64], manifest_rel[64], manifest_head[64];
+
+static void where_am_i(void) {
+  const char *s = getenv("CTEST_SELF"), *c = getenv("CTEST_CRASH");
+  if (s && *s) self = s, self_name = strrchr(s, '/') ? strrchr(s, '/') + 1 : s;
+  if (c && *c) crash_dir = c;
+  snprintf(manifest, sizeof manifest, "/boot/svc/%s.ndb", self_name);
+  snprintf(manifest_rel, sizeof manifest_rel, "svc/../svc/%s.ndb", self_name);
+  snprintf(manifest_head, sizeof manifest_head, "# tests/user/%s.ndb", self_name);
+}
+
 static int checks, failed;
 
 #define CHECK(cond)                                                                                          \
@@ -178,14 +194,14 @@ static void test_processes(void) {
   errno = 0;
   CHECK(waitpid(-1, &status, 0) == -1 && errno == ECHILD);
 
-  CHECK(spawn_wait("/boot/bin/ctest", false, "exit", nullptr) == 7);
-  CHECK(spawn_wait("/boot/bin/ctest", false, "env", nullptr) == 4);
-  CHECK(spawn_wait("ctest", true, "exit", nullptr) == 7); // posix_spawnp, through PATH
+  CHECK(spawn_wait(self, false, "exit", nullptr) == 7);
+  CHECK(spawn_wait(self, false, "env", nullptr) == 4);
+  CHECK(spawn_wait(self_name, true, "exit", nullptr) == 7); // posix_spawnp, through PATH
   posix_spawnattr_t attr;
   posix_spawnattr_init(&attr);
   posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
   posix_spawnattr_setpgroup(&attr, 0);
-  CHECK(spawn_wait("/boot/bin/ctest", false, "group", &attr) == 9);
+  CHECK(spawn_wait(self, false, "group", &attr) == 9);
   posix_spawnattr_destroy(&attr);
   CHECK(spawn_wait("/boot/bin/no-such-program", false, "exit", nullptr) == -ENOENT);
 
@@ -194,7 +210,7 @@ static void test_processes(void) {
   snprintf(parent, sizeof parent, "%d", (int)me);
   char *args[] = {"ctest", "sleep", parent, nullptr};
   pid_t child = 0;
-  CHECK(posix_spawn(&child, "/boot/bin/ctest", nullptr, nullptr, args, environ) == 0 && child > me);
+  CHECK(posix_spawn(&child, self, nullptr, nullptr, args, environ) == 0 && child > me);
   CHECK(getpgid(child) == me && getsid(child) == me);
   CHECK(waitpid(child, &status, WNOHANG) == 0);
   CHECK(waitpid(-1, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 3);
@@ -211,7 +227,6 @@ static size_t read_all(int fd, char *buf, size_t cap) {
 
 // fork, execve and pipes; descriptors given to children.
 static void test_fork_exec_pipes(void) {
-  static const char manifest[] = "/boot/svc/ctest.ndb"; // it starts "# tests/user/ctest.ndb"
   char buf[64] = {}, parent[24];
   pid_t me = getpid();
   snprintf(parent, sizeof parent, "%d", (int)me);
@@ -255,7 +270,7 @@ static void test_fork_exec_pipes(void) {
   child = fork();
   if (child == 0) {
     char *args[] = {"ctest", "exit", parent, "6", nullptr};
-    execv("/boot/bin/ctest", args);
+    execv(self, args);
     _exit(1);
   }
   CHECK(child > me && waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 6);
@@ -264,7 +279,7 @@ static void test_fork_exec_pipes(void) {
     char pid[16];
     snprintf(pid, sizeof pid, "%d", (int)getpid());
     char *args[] = {"ctest", "same", parent, pid, nullptr};
-    execv("/boot/bin/ctest", args);
+    execv(self, args);
     _exit(1);
   }
   CHECK(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 15);
@@ -283,7 +298,7 @@ static void test_fork_exec_pipes(void) {
   posix_spawn_file_actions_addclose(&fa, p[0]);
   posix_spawn_file_actions_addclose(&fa, p[1]);
   char *echo[] = {"ctest", "echo", parent, nullptr};
-  CHECK(posix_spawn(&child, "/boot/bin/ctest", &fa, nullptr, echo, environ) == 0);
+  CHECK(posix_spawn(&child, self, &fa, nullptr, echo, environ) == 0);
   posix_spawn_file_actions_destroy(&fa);
   close(p[1]);
   memset(buf, 0, sizeof buf);
@@ -300,7 +315,7 @@ static void test_fork_exec_pipes(void) {
   posix_spawn_file_actions_addopen(&fa, 5, manifest, O_RDONLY, 0);
   CHECK(lseek(file, 2, SEEK_SET) == 2 && chdir("/boot") == 0);
   char *fds[] = {"ctest", "fds", parent, nullptr};
-  CHECK(posix_spawn(&child, "/boot/bin/ctest", &fa, nullptr, fds, environ) == 0);
+  CHECK(posix_spawn(&child, self, &fa, nullptr, fds, environ) == 0);
   CHECK(chdir("/") == 0);
   posix_spawn_file_actions_destroy(&fa);
   CHECK(waitpid(child, &status, 0) == child && WEXITSTATUS(status) == 10);
@@ -313,7 +328,7 @@ static int spawn_child(const char *what, posix_spawn_file_actions_t *fa, pid_t *
   char parent[24];
   snprintf(parent, sizeof parent, "%d", (int)getpid());
   char *args[] = {"ctest", (char *)what, parent, nullptr};
-  return posix_spawn(child, "/boot/bin/ctest", fa, nullptr, args, environ);
+  return posix_spawn(child, self, fa, nullptr, args, environ);
 }
 
 static double now_seconds(void) {
@@ -376,12 +391,12 @@ static void test_signals(void) {
   CHECK(waitpid(child, &status, 0) == child && WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV);
   { // and its crash directory (05 §5), its note the fault in Plan 9's words
     char path[64], note[96] = {};
-    snprintf(path, sizeof path, "/tmp/crash/ctest.%d/note", (int)child);
+    snprintf(path, sizeof path, "%s/%s.%d/note", crash_dir, self_name, (int)child);
     int fd = open(path, O_RDONLY);
     CHECK(fd >= 0 && read(fd, note, sizeof note - 1) > 0 &&
           strncmp(note, "sys: trap: fault read addr=0x10", 31) == 0);
     if (fd >= 0) close(fd);
-    snprintf(path, sizeof path, "/tmp/crash/ctest.%d/threads/1/regs.ndb", (int)child);
+    snprintf(path, sizeof path, "%s/%s.%d/threads/1/regs.ndb", crash_dir, self_name, (int)child);
     struct stat cst;
     CHECK(stat(path, &cst) == 0 && cst.st_size > 0);
   }
@@ -445,7 +460,7 @@ static void test_signals(void) {
   posix_spawnattr_init(&defaults);
   posix_spawnattr_setflags(&defaults, POSIX_SPAWN_SETSIGDEF);
   posix_spawnattr_setsigdefault(&defaults, &hup);
-  CHECK(spawn_wait("/boot/bin/ctest", false, "kept", &defaults) == 23);
+  CHECK(spawn_wait(self, false, "kept", &defaults) == 23);
   posix_spawnattr_destroy(&defaults);
   CHECK(sigprocmask(SIG_UNBLOCK, &usr1, nullptr) == 0);
   signal(SIGUSR2, SIG_DFL);
@@ -938,7 +953,7 @@ static void test_terminals(void) {
   if (s < 0) return;
   struct stat st;
   CHECK(isatty(s) && isatty(m) && fstat(s, &st) == 0 && S_ISCHR(st.st_mode));
-  int plain = open("/boot/svc/ctest.ndb", O_RDONLY);
+  int plain = open(manifest, O_RDONLY);
   CHECK(plain >= 0);
   if (plain >= 0) {
     CHECK(!isatty(plain));
@@ -1064,7 +1079,7 @@ static void test_poll(void) {
   close(p[0]);
 
   // A file is always ready; a closed descriptor is not valid.
-  int f = open("/boot/svc/ctest.ndb", O_RDONLY);
+  int f = open(manifest, O_RDONLY);
   struct pollfd ff[2] = {{.fd = f, .events = POLLIN | POLLOUT}, {.fd = 60, .events = POLLIN}};
   CHECK(poll(ff, 2, 0) == 2 && (ff[0].revents & POLLIN) && ff[1].revents == POLLNVAL);
   fd_set rd;
@@ -1109,11 +1124,20 @@ static void test_poll(void) {
 }
 
 int main(int argc, char **argv) {
+  where_am_i();
   if (argc >= 3 && strcmp(argv[1], "one") != 0) return child_main(argv);
   printf("ctest: hello from musl\n");
+  const char *file = getenv("CTEST_FILE"); // one a scenario put there, to show it is there
+  if (file) {
+    char text[128] = {};
+    FILE *f = fopen(file, "r");
+    CHECK(f && fgets(text, sizeof text, f) != nullptr);
+    if (f) fclose(f);
+    printf("ctest: %s: %s", file, text);
+  }
   // The spawn message's arguments, after the program's name, and environment.
   bool args = argc == 3 && argv[0] && argv[1] && argv[2];
-  CHECK(args && strcmp(argv[0], "ctest") == 0);
+  CHECK(args && strcmp(argv[0], self_name) == 0);
   if (args) printf("ctest: argv %s|%s\n", argv[1], argv[2]);
   CHECK(args && strcmp(argv[2], "two words") == 0);
   const char *greeting = getenv("GREETING");
@@ -1152,23 +1176,23 @@ int main(int argc, char **argv) {
   CHECK(numbers[0] == 1 && numbers[4] == 9);
 
   // Files in the namespace: its own manifest, by absolute and relative paths.
-  FILE *f = fopen("/boot/svc/ctest.ndb", "r");
+  FILE *f = fopen(manifest, "r");
   CHECK(f != nullptr);
   if (f) {
-    CHECK(fgets(buf, sizeof buf, f) && strncmp(buf, "# tests/user/ctest.ndb", 22) == 0);
+    CHECK(fgets(buf, sizeof buf, f) && strncmp(buf, manifest_head, strlen(manifest_head)) == 0);
     CHECK(fseek(f, 0, SEEK_END) == 0);
     CHECK(fseek(f, 0, SEEK_SET) == 0 && fgetc(f) == '#');
     fclose(f);
   }
   struct stat st;
-  CHECK(stat("/boot/svc/ctest.ndb", &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 100);
+  CHECK(stat(manifest, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 100);
   CHECK(stat("/boot/bin", &st) == 0 && S_ISDIR(st.st_mode));
   CHECK(getcwd(buf, sizeof buf) && strcmp(buf, "/") == 0);
   CHECK(chdir("/boot") == 0 && getcwd(buf, sizeof buf) && strcmp(buf, "/boot") == 0);
-  f = fopen("svc/../svc/ctest.ndb", "r");
+  f = fopen(manifest_rel, "r");
   CHECK(f != nullptr);
   if (f) fclose(f);
-  CHECK(chdir("/boot/svc/ctest.ndb") == -1 && errno == ENOTDIR);
+  CHECK(chdir(manifest) == -1 && errno == ENOTDIR);
 
   // A directory, read whole.
   DIR *d = opendir("/boot/bin");
@@ -1177,7 +1201,7 @@ int main(int argc, char **argv) {
   bool found = false;
   for (struct dirent *e; d && (e = readdir(d));) {
     entries++;
-    if (strcmp(e->d_name, "ctest") == 0) found = e->d_type == DT_REG;
+    if (strcmp(e->d_name, self_name) == 0) found = e->d_type == DT_REG;
   }
   if (d) closedir(d);
   CHECK(found && entries > 5);

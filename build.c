@@ -1251,7 +1251,9 @@ static const program USER_PROGRAMS[] = {
     {"drv-virtio-blk", "drivers/drv-virtio-blk/blk.c", IN_BOOTFS, nullptr, false},
     {"blktest", "tests/user/blktest.c", IN_TESTS, nullptr, false},
     {"partd", "servers/partd/partd.c", IN_BOOTFS, nullptr, false},
+    {"fsd", "servers/fsd/fsd.c", IN_BOOTFS, nullptr, false},
     {"ctest", "tests/posix/ctest.c", IN_TESTS, nullptr, true},
+    {"ctestfsd", "tests/posix/ctest.c", IN_TESTS, nullptr, true}, // ctest again, with /tmp on fsd
     {"sbasetest", "tests/posix/sbasetest.c", IN_TESTS, nullptr, true},
     {"dbgdemo", "tests/user/dbgdemo.c", IN_TESTS, nullptr, false},
 };
@@ -2423,8 +2425,9 @@ static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
 // zeros, with a signature in sector 0 so tests know it from the boot disk, and
 // a GPT of two partitions, an EFI system partition of 8 MiB at 1 MiB and a
 // VectraOS system volume of 32 MiB after it, each with a line naming it in its
-// first sector (docs/proto/block.md §6).
-static const char *test_disk(const char *path, long mib) {
+// first sector (docs/proto/block.md §6). With `home` (volume=DIR), the system
+// partition holds a vx-fs volume instead, its home branch DIR's tree.
+static const char *test_disk(const char *path, long mib, const char *home) {
   static const char SIGNATURE[] = "VectraOS block test disk";
   // The VectraOS system volume type, 7C6D3E1A-2B4F-4E0A-9C1D-56F2A8B90E35, as stored on disk.
   static const uint8_t SYSTEM_TYPE[16] = {0x1a, 0x3e, 0x6d, 0x7c, 0x4f, 0x2b, 0x0a, 0x4e,
@@ -2448,7 +2451,17 @@ static const char *test_disk(const char *path, long mib) {
     put64(e + 32, parts[i].first);
     put64(e + 40, parts[i].first + parts[i].sectors - 1);
     for (size_t k = 0; parts[i].name[k]; k++) put16(e + 56 + 2 * k, (uint16_t)parts[i].name[k]);
+    if (home && i == 1) continue;
     pwrite_all(fd, parts[i].marker, strlen(parts[i].marker), parts[i].first * SECTOR, path);
+  }
+  if (home) { // the volume, made beside the disk and copied into the partition
+    const char *vol = fmt("%s.vxfs", path);
+    const char *const trees[4] = {nullptr, nullptr, home, nullptr};
+    if (!make_volume(vol, (long)(parts[1].sectors * SECTOR >> 20), trees))
+      die("cannot make the volume %s", vol);
+    vx_str bytes = read_file(vol);
+    if (bytes.len != parts[1].sectors * SECTOR) die("the volume %s is not the partition's size", vol);
+    pwrite_all(fd, bytes.ptr, bytes.len, parts[1].first * SECTOR, path);
   }
   uint8_t disk_guid[16], primary[SECTOR], backup[SECTOR];
   derived_guid(disk_guid, 0, "test disk");
@@ -2515,6 +2528,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   const char *cmdline = "", *with = "";
   bool iso = false;                        // scenario=... iso: boot the ISO, as a CD
   long disk_mib = 0;                       // scenario=... disk=MIB: a second disk, made fresh for the run
+  const char *volume = nullptr;            // and volume=DIR: its system partition a volume, home DIR
   const char *host_file[8], *host_text[8]; // host=FILE text=...: in the share, once it passed
   int host_count = 0;
   for (;;) {
@@ -2536,6 +2550,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
         if (end == d || *end || disk_mib <= 0 || disk_mib > 4096)
           die("%s:%zu: disk=%s is not a size in MiB, up to 4096", path, rec.line, d);
       }
+      if (vx_ndb_has(&rec, "volume")) volume = str_dup(vx_ndb_get(&rec, "volume"));
     } else if (vx_ndb_has(&rec, "host") && host_count < 8) {
       vx_str file = vx_ndb_get(&rec, "host");
       for (size_t k = 0; k < file.len; k++)
@@ -2588,7 +2603,8 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   // What the run's servers serve, fresh: run-NAME/share for vx9pserve, run-NAME/u9fs for u9fs.
   const char *run_dir = fmt("%s/run-%s", out_dir(a, release), name);
   const char *share = fresh_share(fmt("%s/share", run_dir)), *u9fs = fresh_u9fs_root(fmt("%s/u9fs", run_dir));
-  const char *disk = disk_mib ? test_disk(fmt("%s/disk.img", run_dir), disk_mib) : nullptr;
+  if (volume && !disk_mib) die("%s: volume= needs disk=", path);
+  const char *disk = disk_mib ? test_disk(fmt("%s/disk.img", run_dir), disk_mib, volume) : nullptr;
   qemu_cmd(
       &c, a, image,
       (qemu_opts){

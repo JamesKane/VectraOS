@@ -37,7 +37,7 @@
 static constexpr uint32_t VX_NS_MAX_PATH = 256;
 static constexpr uint32_t VX_NS_MAX_ENTRIES = 32;
 static constexpr uint32_t VX_NS_MAX_MEMBERS = 8;
-static constexpr uint32_t VX_NS_MAX_CONNS = 8;
+static constexpr uint32_t VX_NS_MAX_CONNS = 16; // the POSIX template has 7, and fsd's branches come on top
 static constexpr uint32_t VX_NS_MAX_SRC = 64;
 
 enum : uint8_t {
