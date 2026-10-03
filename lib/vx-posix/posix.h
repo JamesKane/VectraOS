@@ -98,8 +98,10 @@ static const struct {
   }
   if (!sig) return 0;
   if (note.len - end > 5 && vx_note_prefix((vx_str){note.ptr + end, note.len - end}, VX_STR(" pid=")))
-    for (size_t j = end + 5; j < note.len && note.ptr[j] >= '0' && note.ptr[j] <= '9'; j++)
-      *sender = *sender * 10 + (note.ptr[j] - '0');
+    for (size_t j = end + 5; j < note.len && j < end + 5 + 18 && note.ptr[j] >= '0' && note.ptr[j] <= '9';
+         j++)
+      *sender =
+          *sender * 10 + (note.ptr[j] - '0'); // 18 digits at most: no overflow, whatever the sender wrote
   return sig;
 }
 

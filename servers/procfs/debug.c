@@ -319,6 +319,30 @@ static void dbg_exception(proc *p, uint32_t tid) {
   debugger *d = dbg_of(p);
   vx_exception e;
   if (vx_thread_state(p->task, tid, VX_STATE_GET_EXCEPTION, &e, sizeof e) != VX_OK) return;
+  if (!d->bound) { // queued before a detach, which let go of the port: let the thread go on
+    uint64_t pc = *reg_pc(&e.regs);
+    uint32_t go = VX_RESUME_CONTINUE; // a step or a watchpoint: nothing to see now
+    if (e.kind == VX_EXCEPTION_BREAKPOINT) {
+#ifdef __x86_64__
+      uint64_t addr = pc - 1;
+#else
+      uint64_t addr = pc;
+#endif
+      uint8_t now[sizeof TRAP];
+      // The trap still there is the program's own; one gone was a breakpoint
+      // detach took out: the instruction it replaced runs, from its start.
+      if (mem_rw(p, addr, now, sizeof now, false) == VX_OK && memcmp(now, TRAP, sizeof TRAP) != 0) {
+        *reg_pc(&e.regs) = addr;
+        vx_thread_state(p->task, tid, VX_STATE_SET_REGS, &e.regs, sizeof e.regs);
+      } else {
+        go = VX_RESUME_PASS;
+      }
+    } else if (e.kind != VX_EXCEPTION_STEP && e.kind != VX_EXCEPTION_WATCHPOINT) {
+      go = VX_RESUME_PASS; // a fault: as if no debugger had been there
+    }
+    vx_exception_resume(p->task, tid, go, nullptr);
+    return;
+  }
   held *h = held_of(p, tid, true);
   if (!h) { // more threads stopped than procfs follows: let it go
     vx_exception_resume(p->task, tid, VX_RESUME_PASS, nullptr);

@@ -119,7 +119,7 @@ typedef struct waited {
   bool stopped, continued;
 } waited;
 
-static waited wait_kept[32];
+static waited wait_kept[128]; // as many as procfs keeps for one parent
 static uint32_t wait_kept_count;
 
 // A wait record (procfs's ndb) as wait4 reports it.
@@ -174,6 +174,12 @@ static long posix_wait4(long pid, int *status, int options, struct rusage *ru) {
   if (ru) *ru = (struct rusage){};
   waited w;
   bool found = wait_take_kept(pid, options, &w);
+  // A process that is there and not a child: nothing to wait for (an ended
+  // child's entry is gone, its record still queued).
+  if (!found && pid > 0 && proc_mounted) {
+    long parent = proc_number(pid, "ppid", nullptr);
+    if (parent >= 0 && parent != posix_pid()) return -ECHILD;
+  }
   while (!found) {
     if (!proc_mounted) return -ECHILD;
     if (options & WNOHANG) { // only what is queued: the file's length
@@ -187,7 +193,7 @@ static long posix_wait4(long pid, int *status, int options, struct rusage *ru) {
       if (e != VX_OK) return proc_errno(e);
       if (st.length == 0) return 0; // nothing yet, as APE's waitpid answers
     }
-    char buf[512];
+    char buf[512] = {}; // the analyzer cannot follow proc_read's result to it
     long n = proc_read(posix_pid(), "wait", buf, sizeof buf);
     if (n == -ESRCH) return -ECHILD;
     if (n < 0) return n; // ECHILD (no living children), EINTR (a signal ended it)
@@ -214,7 +220,19 @@ typedef struct spawn_ctx {
   bool setsid, exec;
   int64_t pid;
   long error;
+  // The signals the child keeps: what is ignored stays ignored (but those in
+  // sig_default), and the mask is this one's (or sig_mask, if has_mask), as
+  // POSIX has it for exec and posix_spawn.
+  uint64_t sig_default, sig_mask;
+  bool has_mask;
 } spawn_ctx;
+
+static void sig_records(vx_ndb_writer *w, const spawn_ctx *ctx); // signal.c
+static void fd_quiet_reads(void);                                // poll.c
+static bool sig_deliver_pending(void);                           // signal.c
+static void sig_forget_pending(uint64_t which);                  // signal.c
+static volatile int sig_depth;                                   // signal.c
+static _Atomic uint64_t sig_pending;                             // signal.c
 
 // NOLINTNEXTLINE(readability-non-const-parameter): vx_spawn_args' prepare
 static vx_status spawn_prepare(void *ctx, vx_handle task, vx_handle *handle, vx_str *name) {
@@ -250,7 +268,11 @@ static long spawn_open(const char *path, bool search) {
 }
 
 static long spawn_records(vx_ndb_writer *w, char *const argv[], char *const envp[], const fd_slot *table,
-                          vx_handle *handles, vx_str *names, uint32_t *count) {
+                          const spawn_ctx *ctx, vx_handle *handles, vx_str *names, uint32_t *count) {
+  size_t args = 0, envs = 0;
+  while (argv && argv[args]) args++;
+  while (envp && envp[envs]) envs++;
+  if (args > VX_SPAWN_MAX_ARGS || envs > VX_SPAWN_MAX_ARGS) return -E2BIG; // the child would refuse them
   if (argv && argv[0]) {
     vx_ndb_put(w, "argv0", (vx_str){argv[0], strlen(argv[0])});
     vx_ndb_end(w);
@@ -263,6 +285,7 @@ static long spawn_records(vx_ndb_writer *w, char *const argv[], char *const envp
     vx_ndb_put(w, "env", (vx_str){envp[i], strlen(envp[i])});
     vx_ndb_end(w);
   }
+  sig_records(w, ctx);
   if (proc_entropy.seeded) { // a seed of its own, from this process's generator
     uint8_t seed[32];
     vx_drbg_read(&proc_entropy, seed, sizeof seed);
@@ -285,6 +308,7 @@ static long spawn_records(vx_ndb_writer *w, char *const argv[], char *const envp
 // Returns 0 or a negated errno.
 static long spawn_image(const char *path, bool search, char *const argv[], char *const envp[],
                         const fd_slot *table, spawn_ctx *ctx) {
+  fd_quiet_reads(); // the child's terminal input is the child's
   long fd = spawn_open(path, search);
   if (fd < 0) return fd;
   struct stat st = {};
@@ -300,7 +324,7 @@ static long spawn_image(const char *path, bool search, char *const argv[], char 
   vx_handle handles[VX_CHANNEL_MAX_HANDLES];
   vx_str names[VX_CHANNEL_MAX_HANDLES];
   uint32_t count = 0;
-  r = spawn_records(&w, argv, envp, table, handles, names, &count);
+  r = spawn_records(&w, argv, envp, table, ctx, handles, names, &count);
   vx_str base = {path, strlen(path)}; // the task's name: the file's, without its directory
   const char *slash = strrchr(path, '/');
   if (slash) base = (vx_str){slash + 1, strlen(slash + 1)};
@@ -404,6 +428,12 @@ int posix_spawn(pid_t *restrict pid, const char *restrict path, const posix_spaw
   int flags = attr ? attr->__flags : 0;
   spawn_ctx ctx = {.pgid = -1, .setsid = flags & POSIX_SPAWN_SETSID};
   if (flags & POSIX_SPAWN_SETPGROUP) ctx.pgid = attr->__pgrp;
+  if (flags & POSIX_SPAWN_SETSIGDEF) memcpy(&ctx.sig_default, &attr->__def, sizeof ctx.sig_default);
+  if (flags & POSIX_SPAWN_SETSIGMASK)
+    memcpy(&ctx.sig_mask, &attr->__mask, sizeof ctx.sig_mask), ctx.has_mask = true;
+  // Not through __vx_syscall: a signal now would run its handler in the middle
+  // of the back end's work. It waits, as in a call, until the child is made.
+  sig_depth = sig_depth + 1;
   static fd_slot vt[FD_MAX];
   char cwd[VX_NS_MAX_PATH];
   size_t cwd_len;
@@ -413,6 +443,8 @@ int posix_spawn(pid_t *restrict pid, const char *restrict path, const posix_spaw
     if (vt[i].o) ofd_release(vt[i].o);
   memcpy(fd_cwd, cwd, cwd_len + 1);
   fd_cwd_len = cwd_len;
+  sig_depth = sig_depth - 1;
+  if (sig_depth == 0) sig_deliver_pending();
   if (r < 0) return (int)-r;
   if (pid) *pid = (pid_t)ctx.pid;
   return 0;
@@ -438,6 +470,8 @@ static long proc_execve(const char *path, char *const argv[], char *const envp[]
 
 static jmp_buf fork_jump;
 static uint64_t fork_tls;
+static uint64_t
+    fork_pending; // the parent's pending signals as its memory was copied: the child has none of them (POSIX)
 alignas(16) static uint8_t fork_stack[4096];
 
 [[noreturn]] static void fork_entry(vx_handle unused, uint64_t unused2) {
@@ -458,7 +492,8 @@ static long fork_child(void) {
   vx_drbg_mix(&proc_entropy, child_tag, sizeof child_tag, false);
   vx_drbg_mix(&proc_entropy, &proc_kernel_task_id, sizeof proc_kernel_task_id, false);
   fd_after_fork();
-  wait_kept_count = 0; // the parent's children's records are the parent's
+  wait_kept_count = 0;              // the parent's children's records are the parent's
+  sig_forget_pending(fork_pending); // the parent's, copied with its memory; not those sent to the child since
   if (proc_mounted) proc_write(posix_pid(), "ctl", "childnotes");
   return 0;
 }
@@ -476,7 +511,9 @@ static long proc_fork(void) {
   spawn_ctx ctx = {.pgid = -1};
   vx_str name = VX_STR("forked");
   if (vx_task_info(vx_self, &me) == VX_OK) name = (vx_str){me.name, strnlen(me.name, sizeof me.name)};
+  fd_quiet_reads(); // input that comes next is for whichever reads it, not a read of this one's
   fd_before_fork(); // tokens for the child to join this process's open files with
+  fork_pending = sig_pending;
   vx_status st = vx_task_fork(name, &child);
   fd_after_fork_parent();
   vx_str ignored;

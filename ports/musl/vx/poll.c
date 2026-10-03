@@ -138,15 +138,34 @@ static bool ra_poll(fd_readahead *ra, bool tty) {
 // Waits for the read-ahead's answer (ra_poll), its doorbell on fd_port under
 // key: 0; -EAGAIN if it must not wait; -EINTR if a signal came (the call
 // stays outstanding).
-static long ra_wait(fd_readahead *ra, uint64_t key, bool tty, bool block) {
+static long ra_wait_until(fd_readahead *ra, uint64_t key, bool tty, bool block, int64_t deadline) {
   while (!ra_poll(ra, tty)) {
     if (!block) return -EAGAIN;
     if (!ra->armed) ra->armed = p9_ring_arm(ra->k, fd_port, key);
     if (!ra->armed) continue; // a reply may be there already
-    long w = fd_wait(VX_INFINITE);
+    long w = fd_wait(deadline);
     if (w == -EINTR) return w;
+    if (w == -ETIMEDOUT) return -EAGAIN; // SO_RCVTIMEO's, as Linux answers it
   }
   return 0;
+}
+
+static long ra_wait(fd_readahead *ra, uint64_t key, bool tty, bool block) {
+  return ra_wait_until(ra, key, tty, block, VX_INFINITE);
+}
+
+// Before a fork, a spawn or an exec: a terminal's or the console's read kept
+// outstanding, with nothing in hand yet, is let go with its connection, so
+// the input it waits for goes to the child that reads next, not to this
+// process's call, served first. (What it holds already stays this process's,
+// as stdio's buffer does.) The next poll sends another.
+static void fd_quiet_reads(void) {
+  for (int i = 0; i < FD_MAX; i++) {
+    ofd *o = &fd_ofds[i];
+    if (o->kind == OFD_FREE || !o->ra || o->sock || o->ra->op != RA_READ) continue;
+    if (ra_poll(o->ra, o->kind == OFD_FILE) && (o->ra->ready || o->ra->pos < o->ra->len)) continue;
+    ra_free(o);
+  }
 }
 
 static void ra_arm(ofd *o) {
@@ -227,18 +246,20 @@ static long fd_poll(struct pollfd *fds, nfds_t n, int64_t deadline) {
 
 // --- The calls ---
 
+// The deadline, kept when the call is made again after a signal; or -EINVAL
+// for a timeout that is not one (a negative time, nanoseconds past 999999999).
 static int64_t poll_deadline(const struct timespec *ts) {
-  static int64_t deadline; // kept when the call is made again after a signal
-  if (sig_restarting) return deadline;
-  deadline = VX_INFINITE;
-  if (ts) time_deadline(ts, false, &deadline);
-  return deadline;
+  if (sig_restarting) return sig_call_deadline;
+  sig_call_deadline = VX_INFINITE;
+  if (ts && time_deadline(ts, false, &sig_call_deadline) < 0) return -EINVAL;
+  return sig_call_deadline;
 }
 
 // ppoll and pselect6's mask: in place for the wait, and for the handlers a
 // signal it lets through runs (as sigsuspend's); the old one after.
 static long poll_masked(struct pollfd *fds, nfds_t n, const struct timespec *ts, const uint64_t *mask) {
   int64_t deadline = poll_deadline(ts);
+  if (deadline == -EINVAL) return -EINVAL;
   if (!mask) return fd_poll(fds, n, deadline);
   uint64_t was = sig_mask;
   sig_mask = *mask & ~SIG_UNBLOCKABLE;
@@ -273,15 +294,23 @@ static long sys_select(int nfds, fd_set *rd, fd_set *wr, fd_set *ex, const struc
   }
   long r = poll_masked(fds, n, ts, mask);
   if (r < 0) return r;
-  if (rd) FD_ZERO(rd);
-  if (wr) FD_ZERO(wr);
-  if (ex) FD_ZERO(ex);
+  for (int fd = 0; fd < nfds; fd++) { // only the first nfds bits: a caller's set may be no larger
+    if (rd) FD_CLR(fd, rd);
+    if (wr) FD_CLR(fd, wr);
+    if (ex) FD_CLR(fd, ex);
+  }
+  // Each in the sets it was asked for: a hang-up or error is readable and
+  // writable, as Linux has it; for a descriptor watched only for exceptions,
+  // exceptional, so the wait it ended is not taken for a timeout.
   long count = 0;
   for (nfds_t i = 0; i < n; i++) {
-    short got = fds[i].revents;
-    if (rd && (got & (POLLIN | POLLHUP | POLLERR))) FD_SET(fds[i].fd, rd), count++;
-    if (wr && (got & (POLLOUT | POLLERR))) FD_SET(fds[i].fd, wr), count++;
-    if (ex && (got & POLLPRI)) FD_SET(fds[i].fd, ex), count++;
+    short got = fds[i].revents, asked = fds[i].events;
+    bool in = (asked & POLLIN) && (got & (POLLIN | POLLHUP | POLLERR));
+    bool out = (asked & POLLOUT) && (got & (POLLOUT | POLLERR));
+    bool exc = (asked & POLLPRI) && (got & (POLLPRI | (asked == POLLPRI ? POLLHUP | POLLERR : 0)));
+    if (in) FD_SET(fds[i].fd, rd), count++;
+    if (out) FD_SET(fds[i].fd, wr), count++;
+    if (exc) FD_SET(fds[i].fd, ex), count++;
   }
   return count;
 }

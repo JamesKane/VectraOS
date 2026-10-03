@@ -41,10 +41,14 @@ static struct {
   uint64_t mask;
 } sig_actions[SIG_MAX + 1];
 
-static uint64_t sig_mask, sig_pending;  // bit n - 1 for signal n
+static uint64_t sig_mask; // bit n - 1 for signal n
+// Pending: atomic, as a note handler may set a bit between the load and the
+// store of a change made in the program's code.
+static _Atomic uint64_t sig_pending;
 static int64_t sig_sender[SIG_MAX + 1]; // who sent each pending one
 static volatile int sig_depth;          // inside __vx_syscall: delivery waits for its return
 static uint32_t sig_handlers_ran;       // how many handlers have run
+static uint32_t sig_eintr_ran;          // how many of them were not SA_RESTART (a call they interrupt ends)
 
 static uint64_t sig_bit(int sig) { return 1ull << (sig - 1); }
 static constexpr uint64_t SIG_UNBLOCKABLE = 1ull << (SIGKILL - 1) | 1ull << (SIGSTOP - 1);
@@ -97,6 +101,13 @@ static bool sig_act(int sig, int code, int64_t sender, uint64_t address, const v
   if (!(flags & SA_NODEFER)) sig_mask |= sig_bit(sig);
   if (flags & SA_RESETHAND) sig_actions[sig] = (typeof(sig_actions[0])){(uintptr_t)SIG_DFL, 0, 0};
   sig_handlers_ran++;
+  if (!(flags & SA_RESTART)) sig_eintr_ran++;
+  // The handler is the program's own code, even when the back end delivers
+  // it (sigsuspend, ppoll, a fault in a call): a signal during it is
+  // delivered at once, and a siglongjmp out of it leaves the back end as it
+  // is in the program's code.
+  int depth = sig_depth;
+  sig_depth = 0;
   if (flags & SA_SIGINFO) {
     siginfo_t info = {.si_signo = sig, .si_code = code};
     if (e)
@@ -109,6 +120,7 @@ static bool sig_act(int sig, int code, int64_t sender, uint64_t address, const v
   } else {
     ((void (*)(int))h)(sig);
   }
+  sig_depth = depth;
   sig_mask = old;
   return !(flags & SA_RESTART);
 }
@@ -125,6 +137,18 @@ static bool sig_deliver_pending(void) {
   return eintr;
 }
 
+// From __vx_syscall, the pending signals not blocked, delivered as from the
+// program's code; a sleep's or poll's deadline kept from a handler's own.
+static void sig_run_pending(void) {
+  if (!(sig_pending & ~sig_mask)) return;
+  int depth = sig_depth;
+  vx_instant kept = sig_call_deadline;
+  sig_depth = 0;
+  sig_deliver_pending();
+  sig_depth = depth;
+  sig_call_deadline = kept;
+}
+
 static void sig_raise_self(int sig) {
   sig_pending |= sig_bit(sig);
   sig_sender[sig] = posix_pid();
@@ -138,7 +162,16 @@ static vx_noted sig_note(vx_exception *e, vx_str note) {
     if (sig < 1 || sig > SIG_MAX) return VX_NDFLT; // no signal: the note ends the process
     sig_pending |= sig_bit(sig);
     sig_sender[sig] = sender;
-    if (sig_depth == 0) sig_deliver_pending(); // in the program's own code
+    if (sig_depth == 0) {
+      sig_deliver_pending(); // in the program's own code
+    } else if (!(sig_mask & sig_bit(sig))) {
+      // In the back end, maybe just before it waits: the kernel had this
+      // note interrupt nothing (it came in user mode), so the wait is woken
+      // here, whichever it is: fd_port's (fd_wait), or sig_seq's.
+      atomic_fetch_add(&sig_seq, 1);
+      vx_futex_wake(&sig_seq, UINT32_MAX);
+      vx_port_post(fd_port, &(vx_packet){.key = FD_KEY_SIGNAL});
+    }
     return VX_NCONT;
   }
   int sig = SIGSEGV, code = SEGV_MAPERR;
@@ -161,6 +194,15 @@ static vx_noted sig_note(vx_exception *e, vx_str note) {
 
 static void sig_init(void) {
   vx_note_exit = proc_exit_str; // a note that is no signal ends the process with it
+  vx_ndb_record rec;
+  uint64_t ignored = 0, mask = 0;
+  if (vx_spawn_record("signals", &rec) && vx_ndb_get_u64(&rec, "signals", &ignored) &&
+      vx_ndb_get_u64(&rec, "mask", &mask)) { // from a POSIX parent: what exec and posix_spawn keep
+    for (int sig = 1; sig <= SIG_MAX; sig++)
+      if ((ignored & sig_bit(sig)) && sig != SIGKILL && sig != SIGSTOP)
+        sig_actions[sig].handler = (uintptr_t)SIG_IGN;
+    sig_mask = mask & ~SIG_UNBLOCKABLE;
+  }
   vx_notify(sig_note);
 }
 
@@ -204,19 +246,40 @@ static long sig_procmask(int how, const uint64_t *set, uint64_t *old) {
 
 // sigsuspend and pause: wait with this mask until a signal is delivered, and
 // return EINTR; the old mask comes back after the handler.
+// Only a handler ends the wait: a signal that is ignored, by its
+// disposition or by default, leaves it waiting.
 static long sig_suspend(uint64_t mask) {
   uint64_t was = sig_mask;
   sig_mask = mask & ~SIG_UNBLOCKABLE;
-  static const _Atomic uint32_t never;
+  uint32_t ran = sig_handlers_ran;
   for (;;) {
+    uint32_t seq = atomic_load(&sig_seq); // before the check: a signal after it changes sig_seq
     if (sig_pending & ~sig_mask) {
       sig_deliver_pending();
-      if (!(sig_pending & ~sig_mask)) break;
+      if (sig_handlers_ran != ran) break;
+      continue;
     }
-    vx_futex_wait(&never, 0, VX_INFINITE); // an interrupt ends it, with the signal pending
+    vx_futex_wait(&sig_seq, seq, VX_INFINITE); // an interrupt, or sig_note, ends it
   }
   sig_mask = was;
   return -EINTR;
+}
+
+static void sig_forget_pending(uint64_t which) {
+  sig_pending &= ~which;
+  for (int sig = 1; sig <= SIG_MAX; sig++)
+    if (which & sig_bit(sig)) sig_sender[sig] = 0;
+}
+
+// What a child keeps of this process's signals (spawn_ctx), as a record for
+// sig_init's: the ignored ones, and the mask.
+static void sig_records(vx_ndb_writer *w, const spawn_ctx *ctx) {
+  uint64_t ignored = 0;
+  for (int sig = 1; sig <= SIG_MAX; sig++)
+    if (sig_actions[sig].handler == (uintptr_t)SIG_IGN) ignored |= sig_bit(sig);
+  vx_ndb_put_u64(w, "signals", ignored & ~ctx->sig_default);
+  vx_ndb_put_u64(w, "mask", ctx->has_mask ? ctx->sig_mask : sig_mask);
+  vx_ndb_end(w);
 }
 
 // kill(-1): every process but this one and svcd (pid 1), through /proc's list.

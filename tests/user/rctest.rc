@@ -83,6 +83,13 @@ check and-or 'yes no' `{test -d $dir && echo yes} `{test -f $dir/none || echo no
 check not ok `{if(! test -f $dir/none) echo ok}
 check status 'not found' `{nosuchcommand >[2] /dev/null; echo $status}
 check pipe-status '1|' `{false | true; echo $status}
+check pipe-true yes `{if(true | true) echo yes; if not echo no}
+printf 'c\nb\na\n' > $dir/unsorted
+sort < $dir/unsorted | uniq > $dir/sorted
+check pipe-files 'a b c' `{cat $dir/sorted}
+check pipe-dup 1 `{ls $dir/none >[2=1] | wc -l}
+check big-args 300 `{count `{seq 1 300}}
+check big-spawn 300 `{echo `{seq 1 300} | wc -w}
 
 # A script calling a script: gsh itself, with arguments.
 echo 'echo $#* $2' > $dir/inner.rc

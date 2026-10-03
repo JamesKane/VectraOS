@@ -167,19 +167,24 @@ static long time_deadline(const struct timespec *ts, bool absolute, vx_instant *
   return 0;
 }
 
-static bool sig_restarting; // backend.c
+static bool sig_restarting;          // backend.c
+static vx_instant sig_call_deadline; // backend.c: a sleep's or a poll's, kept when it is made again
+// Changed by sig_note for each signal that comes while the back end runs: a
+// sleep waits on it, so one that comes just before the sleep ends it too.
+static _Atomic uint32_t sig_seq;
 
 // A sleep ends early with EINTR when a signal interrupts it, with what was
 // left in *rem; made again after the signal (signal.c), it keeps its deadline.
 static long time_sleep(clockid_t clock, int flags, const struct timespec *req, struct timespec *rem) {
   if (clock < 0 || clock > CLOCK_BOOTTIME_ALARM) return -EINVAL;
-  static vx_instant deadline;
+  vx_instant *deadline = &sig_call_deadline;
   long st = 0;
-  if (!sig_restarting) st = time_deadline(req, flags & TIMER_ABSTIME, &deadline);
-  static const _Atomic uint32_t never;
-  while (st == 0 && vx_clock_read() < deadline) {
-    if (vx_futex_wait(&never, 0, deadline) != VX_ERR_INTERRUPTED) continue;
-    vx_instant left = deadline - vx_clock_read();
+  if (!sig_restarting) st = time_deadline(req, flags & TIMER_ABSTIME, deadline);
+  while (st == 0 && vx_clock_read() < *deadline) {
+    uint32_t seq = atomic_load(&sig_seq);
+    vx_status w = vx_futex_wait(&sig_seq, seq, *deadline);
+    if (w != VX_ERR_INTERRUPTED && w != VX_ERR_BAD_STATE) continue; // the deadline, or nothing
+    vx_instant left = *deadline - vx_clock_read();
     if (left < 0) left = 0;
     if (rem && !(flags & TIMER_ABSTIME)) *rem = (struct timespec){left / 1'000'000'000, left % 1'000'000'000};
     return -EINTR;

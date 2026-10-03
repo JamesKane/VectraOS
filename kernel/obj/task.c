@@ -32,7 +32,8 @@ static constexpr uint32_t HANDLE_SLOTS = 4096 / sizeof(handle_entry);
 typedef struct mapping {
   uint64_t va, size, offset;
   struct vmo *vmo;
-  uint32_t flags; // VX_MAP_WRITE, VX_MAP_EXEC
+  uint32_t flags;  // VX_MAP_WRITE, VX_MAP_EXEC
+  bool privatized; // its VMO is a copy of its own, made for a debugger's write (exception.c)
 } mapping;
 
 static constexpr uint32_t TASK_MAX_MAPPINGS = 4096 / sizeof(mapping);
@@ -55,6 +56,8 @@ typedef struct task {
   vx_task_state state; // EXITED once torn down
   bool ending;         // its last thread has exited, or it was killed: torn down soon
   bool killed;
+  bool
+      execing; // in or the scratch of a task_exec: no thread starts until its address spaces have changed places
   uint8_t exit_len; // its exit string (ADR-0010): empty while it runs, and for success
   char exit[VX_ERRMAX];
   observers obs; // EXIT bindings
@@ -100,10 +103,13 @@ struct thread {
   uint64_t kstack;                      // the kernel stack's lowest address (mm/kstack.c)
   uint64_t tls;                         // its user thread pointer while it is not running (arch_user_switch)
   alignas(16) uint8_t fp[ARCH_FP_SIZE]; // its FP/SIMD registers while it is not running (arch_user_switch)
+  bool user_held; // stopped at an exception: fp and tls are its own, saved, for a debugger (exception_stop)
+  bool stepping;  // a debugger asked for one instruction (arch_frame_step): aarch64 keeps MDSCR_EL1.SS on
   uint64_t user_entry, user_sp, user_arg, user_arg2;
   bool started;          // thread_start has taken it (under its task's lock)
   uint32_t intent;       // enum vx_intent
   bool last_of_task;     // its exit ended its task (reaped in sched.c)
+  bool exited;           // it has exited, and waits to be reaped: no note reaches it (under its task's lock)
   uint8_t console_len;   // bytes of a debug_write line not yet ended
   char console_buf[160]; // which go out whole, at its newline
   thread_state state;
@@ -484,8 +490,12 @@ static vx_status task_unmap(task *t, uint64_t va, uint64_t size) {
       for (uint32_t k = 0; k < TASK_MAX_MAPPINGS && !rest; k++)
         if (!t->maps[k].size) rest = &t->maps[k];
       object_ref(&m->vmo->obj);
-      *rest = (mapping){
-          .va = hi, .size = m_end - hi, .offset = m->offset + (hi - m->va), .vmo = m->vmo, .flags = m->flags};
+      *rest = (mapping){.va = hi,
+                        .size = m_end - hi,
+                        .offset = m->offset + (hi - m->va),
+                        .vmo = m->vmo,
+                        .flags = m->flags,
+                        .privatized = m->privatized};
       m->size = lo - m->va;
     }
   }

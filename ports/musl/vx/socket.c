@@ -386,6 +386,7 @@ static long sock_accept(int fd, void *sa, socklen_t *len, int flags) {
   long n = sock_number(c, ra->fid, num, sizeof num);
   long nfd = n > 0 ? sock_install("tcp", num, (size_t)n, SOCK_STREAM, flags) : n;
   p9c_clunk(c, ra->fid); // once its data file is open, which keeps the conversation
+  if (nfd >= 0) fd_get((int)nfd)->sock_connected = true;
   if (nfd < 0 || !sa) return nfd;
   uint32_t addr = 0;
   uint16_t port = 0;
@@ -441,7 +442,7 @@ static long sock_connect_done(ofd *o) {
   vx_status st = o->ra->status;
   ra_free(o); // a read-ahead for the data comes when it is wanted
   o->sock_connecting = false;
-  if (st == VX_OK) o->sock_bound = true;
+  if (st == VX_OK) o->sock_bound = o->sock_connected = true;
   if (st == VX_ERR_BAD_STATE) return -EISCONN; // connected elsewhere already
   return st == VX_OK ? 0 : sock_errno(st);
 }
@@ -461,7 +462,8 @@ static long sock_connected(ofd *o, bool block) {
 // so a signal or O_NONBLOCK need not wait for it (EINTR, EINPROGRESS).
 static long sock_connect_tcp(ofd *o, const char *msg, size_t len) {
   bool block = !(o->flags & O_NONBLOCK);
-  if (o->sock_connecting) { // made again: after EINTR, or by a program asking how it went
+  if (o->sock_connected) return -EISCONN; // done already, the connecting too
+  if (o->sock_connecting) {               // made again: after EINTR, or by a program asking how it went
     if (!block && !ra_poll(o->ra, false)) return -EALREADY;
     long r = sock_connected(o, block);
     if (r != -EINTR) o->sock_error = 0; // told here, not in SO_ERROR too
@@ -591,8 +593,10 @@ static long sock_recv(ofd *o, void *buf, size_t n, int flags, void *sa, socklen_
   fd_readahead *ra = sock_reader(o);
   if (!ra) return -ENOBUFS;
   uint32_t count = n < (1u << 20) ? (uint32_t)n : 1u << 20;
+  int64_t deadline = VX_INFINITE;
+  if (o->sock_rcvtimeo) deadline = vx_clock_read() + o->sock_rcvtimeo;
   if (o->sock == SOCK_DGRAM) {
-    long w = ra_wait(ra, fd_key(o), false, block);
+    long w = ra_wait_until(ra, fd_key(o), false, block, deadline);
     if (w < 0) return w;
     vx_status st = ra->status;
     if (st != VX_OK || ra->len < SOCK_HEADER) {
@@ -607,7 +611,7 @@ static long sock_recv(ofd *o, void *buf, size_t n, int flags, void *sa, socklen_
   }
   size_t got = 0;
   for (;;) { // once; with MSG_WAITALL, until all of it is here or the stream ends
-    long w = ra_wait(ra, fd_key(o), false, block);
+    long w = ra_wait_until(ra, fd_key(o), false, block, deadline);
     if (w < 0) return got ? (long)got : w;
     if (ra->status != VX_OK) {
       vx_status st = ra->status;
@@ -691,8 +695,9 @@ static long sock_sendmsg(int fd, const struct msghdr *m, int flags) {
   long r = sock_get(fd, &o);
   if (r < 0) return r;
   if (m->msg_controllen) return -EOPNOTSUPP;
-  size_t total = 0;
-  for (size_t i = 0; i < (size_t)m->msg_iovlen; i++) total += m->msg_iov[i].iov_len;
+  long sum = iov_total(m->msg_iov, (size_t)m->msg_iovlen);
+  if (sum < 0) return sum;
+  size_t total = (size_t)sum;
   if (o->sock == SOCK_STREAM) {
     size_t done = 0;
     for (size_t i = 0; i < (size_t)m->msg_iovlen; i++) {
@@ -748,15 +753,26 @@ static long sock_shutdown(int fd, int how) {
 }
 
 // The options programs set that netd has no use for are taken and ignored;
-// the rest are ENOPROTOOPT.
+// SO_RCVTIMEO bounds a receive's wait; the rest are ENOPROTOOPT. (SO_SNDTIMEO
+// is taken: a send waits only for room in netd's queue.)
 static long sock_setsockopt(int fd, int level, int name, const void *val, socklen_t len) {
   ofd *o;
   long r = sock_get(fd, &o);
   if (r < 0) return r;
   if (!val && len) return -EFAULT;
-  if (level == SOL_SOCKET && (name == SO_REUSEADDR || name == SO_REUSEPORT || name == SO_KEEPALIVE ||
-                              name == SO_RCVBUF || name == SO_SNDBUF || name == SO_LINGER ||
-                              name == SO_BROADCAST || name == SO_RCVTIMEO || name == SO_SNDTIMEO))
+  if (level == SOL_SOCKET && name == SO_RCVTIMEO) {
+    struct timeval tv;
+    if (len < sizeof tv) return -EINVAL;
+    memcpy(&tv, val, sizeof tv);
+    if (tv.tv_sec < 0 || tv.tv_usec < 0 || tv.tv_usec >= 1'000'000) return -EDOM;
+    if (ckd_mul(&o->sock_rcvtimeo, (int64_t)tv.tv_sec, (int64_t)1'000'000'000) ||
+        ckd_add(&o->sock_rcvtimeo, o->sock_rcvtimeo, (int64_t)tv.tv_usec * 1000))
+      o->sock_rcvtimeo = 0; // longer than can be waited: for ever
+    return 0;
+  }
+  if (level == SOL_SOCKET &&
+      (name == SO_REUSEADDR || name == SO_REUSEPORT || name == SO_KEEPALIVE || name == SO_RCVBUF ||
+       name == SO_SNDBUF || name == SO_LINGER || name == SO_BROADCAST || name == SO_SNDTIMEO))
     return 0;
   if (level == IPPROTO_TCP &&
       (name == TCP_NODELAY || name == TCP_KEEPIDLE || name == TCP_KEEPINTVL || name == TCP_KEEPCNT))

@@ -166,11 +166,16 @@ static bool read_image(uint64_t addr, void *buf, size_t n) {
   uint64_t phoff = elf_u64(image + 32);
   uint16_t phentsize = elf_u16(image + 54), phnum = elf_u16(image + 56);
   for (uint16_t i = 0; i < phnum; i++) {
-    uint64_t at = phoff + (uint64_t)i * phentsize;
-    if (at + 56 > image_size || elf_u32(image + at) != 1) continue; // PT_LOAD
+    uint64_t at;
+    if (ckd_add(&at, phoff, (uint64_t)i * phentsize) || at > image_size || image_size - at < 56 ||
+        elf_u32(image + at) != 1)
+      continue; // PT_LOAD
     uint64_t off = elf_u64(image + at + 8), vaddr = elf_u64(image + at + 16),
              filesz = elf_u64(image + at + 32);
-    if (addr < vaddr || addr + n > vaddr + filesz || off + filesz > image_size) continue;
+    // All as differences, which cannot wrap: the image and the address may be anything.
+    if (off > image_size || filesz > image_size - off || addr < vaddr || addr - vaddr > filesz ||
+        n > filesz - (addr - vaddr))
+      continue;
     memcpy(buf, image + off + (addr - vaddr), n);
     return true;
   }
@@ -197,7 +202,8 @@ static bool read_crash(uint64_t addr, void *buf, size_t n) {
     }
   }
   for (uint32_t i = 0; i < nmaps; i++) {
-    if (addr < maps[i].base || addr + n > maps[i].base + maps[i].size) continue;
+    if (addr < maps[i].base || addr - maps[i].base > maps[i].size || n > maps[i].size - (addr - maps[i].base))
+      continue;
     char name[32] = "mem/";
     size_t len = 4 + hex_text_dbg(maps[i].base, name + 4);
     name[len] = 0;
@@ -260,10 +266,22 @@ static void say_where(uint64_t pc) {
   say(")");
 }
 
+// threads/N/file, N the thread commands act on: the one the last event named.
+static const char *thread_file(const char *file) {
+  static char path[48];
+  size_t len = 0;
+  append(path, &len, sizeof path - 1, VX_STR("threads/"));
+  append_u64(path, &len, sizeof path - 1, thread);
+  append(path, &len, sizeof path - 1, VX_STR("/"));
+  append(path, &len, sizeof path - 1, vx_cstr(file));
+  path[len] = 0;
+  return path;
+}
+
 // The thread's registers and the call stack, as it stopped.
 static void refresh(void) {
   nframes = frame = 0;
-  have_regs = read_file(target_path("threads/1/regs"), &regs, sizeof regs) == (int64_t)sizeof regs;
+  have_regs = read_file(target_path(thread_file("regs")), &regs, sizeof regs) == (int64_t)sizeof regs;
   if (!have_regs) return;
 #ifdef __x86_64__
   nframes = vxd_unwind(&ix, &target, regs.rip, regs.rsp, regs.rbp, frames, 64);
@@ -278,6 +296,9 @@ static void refresh(void) {
 // crash, its crash directory.
 static void ended(void) {
   live = false;
+  nframes = frame = 0; // the last stop's stack is no more; a crash's comes from its directory
+  have_regs = false;
+  if (mem_open) vx_ns_close(&mem_file), mem_open = false; // the pid may be another's soon
   static char rec[512];
   char path[48];
   size_t len = 0;
@@ -463,7 +484,9 @@ static bool command(vx_str line) {
     uint64_t addr = resolve(rest);
     if (!addr) return say("dbg: no such function or line\n"), true;
     if (live && set_break(addr) != VX_OK) return say("dbg: cannot set it\n"), true;
-    if (!live && nbreaks < 32) breaks[nbreaks++] = addr;
+    if (!live && nbreaks == sizeof breaks / sizeof breaks[0])
+      return say("dbg: too many breakpoints before run\n"), true;
+    if (!live) breaks[nbreaks++] = addr;
     say("dbg: breakpoint at ");
     say_hex(addr);
     say(" in ");
@@ -505,7 +528,7 @@ static bool command(vx_str line) {
   } else if (word_is(verb, "print") || word_is(verb, "p")) {
     print(rest);
   } else if (word_is(verb, "regs")) {
-    show("threads/1/regs.ndb");
+    show(thread_file("regs.ndb"));
   } else if (word_is(verb, "info")) {
     show("images");
     show("maps");
@@ -526,7 +549,13 @@ static bool load(vx_str path) {
   while (image_size < sizeof image &&
          (n = vx_ns_read(&f, image + image_size, (uint32_t)(sizeof image - image_size))) > 0)
     image_size += (size_t)n;
+  uint8_t more;
+  bool whole = !(image_size == sizeof image && vx_ns_read(&f, &more, 1) > 0);
   vx_ns_close(&f);
+  if (!whole) { // never indexed, or launched, cut short
+    say("dbg: the program is larger than dbg can load (8 MiB)\n");
+    return false;
+  }
   vxd_arena arena = {.buf = arena_mem, .cap = sizeof arena_mem};
   const vxdi_header *h = vxd_elf_open(&elf, image, image_size) ? vxd_index(&elf, &arena) : nullptr;
   if (!h || !vxdi_open(&ix, h, h->size)) return false;

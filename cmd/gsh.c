@@ -29,17 +29,32 @@
 #include "../lib/vx-rc/rc.c"
 
 static constexpr uint32_t MAX_STAGES = 16, MAX_FILES = 16, MAX_BACKGROUND = 16;
+// Each stage's output and error, and the pipeline's input and output.
+static constexpr uint32_t MAX_RELAYS = 2 * MAX_STAGES + 2;
 // Port keys: a stage's exit is its number; a relay's readable and peer-closed
-// packets are its number past these.
-static constexpr uint64_t KEY_READABLE = MAX_STAGES, KEY_CLOSED = 2ull * MAX_STAGES;
+// packets are its number past these, in ranges of their own.
+static constexpr uint64_t KEY_READABLE = MAX_STAGES, KEY_CLOSED = KEY_READABLE + MAX_RELAYS;
 
 static vx_ns ns;
 static rc *sh;
 
+static void write_out(void *ctx, const rc_fd *fd, uint32_t which, const char *s, size_t n);
+
+// Where the shell's own messages go: a builtin's descriptor 2 while one runs
+// (its >[2] and >[2=1] followed), else the shell's standard error.
+static const rc_fd *errors_to;
+
+static void err(vx_str s) {
+  if (errors_to)
+    write_out(nullptr, errors_to, 2, s.ptr, s.len);
+  else
+    vx_eprint(s);
+}
+
 static void say(const char *a, vx_str b, const char *c) {
-  vx_eprint(vx_cstr(a));
-  vx_eprint(b);
-  vx_eprint(vx_cstr(c));
+  err(vx_cstr(a));
+  err(b);
+  err(vx_cstr(c));
 }
 
 static vx_str word_str(const rc_word *w) { return (vx_str){w->s, w->len}; }
@@ -79,19 +94,29 @@ static void report(const char *what, vx_status st) {
     return;
   }
   say("gsh: ", vx_cstr(what), ": ");
-  vx_eprint(p9_error_text(st));
-  vx_eprint(VX_STR("\n"));
+  err(p9_error_text(st));
+  err(VX_STR("\n"));
   set_status(p9_error_text(st));
 }
 
 static void usage(const char *text) {
-  vx_eprint(vx_cstr(text));
+  err(vx_cstr(text));
   set_status(VX_STR("usage"));
 }
 
-// rc_host's builtin: true if argv[0] was one, which then ran.
+static bool builtin_run(const rc_word *argv, uint32_t argc);
+
+// rc_host's builtin: true if argv[0] was one, which then ran, its messages
+// to its own descriptor 2.
 static bool builtin(void *ctx, rc *r, const rc_word *argv, uint32_t argc, const rc_fd *fds) {
-  (void)ctx, (void)r, (void)fds;
+  (void)ctx, (void)r;
+  errors_to = &fds[2];
+  bool was = builtin_run(argv, argc);
+  errors_to = nullptr;
+  return was;
+}
+
+static bool builtin_run(const rc_word *argv, uint32_t argc) {
   const rc_word *w[4] = {argv};
   for (uint32_t i = 1; i < 4 && i < argc; i++) w[i] = w[i - 1]->next;
   int n = (int)argc;
@@ -232,6 +257,8 @@ static int64_t read_whole(void *ctx, const char *path, size_t len, char *buf, si
   while (size < cap &&
          (n = vx_ns_read(&f, buf + size, (uint32_t)(cap - size > 8192 ? 8192 : cap - size))) > 0)
     size += (size_t)n;
+  char more;
+  if (n >= 0 && size == cap && vx_ns_read(&f, &more, 1) > 0) n = -1; // too long: refused, not cut short
   vx_ns_close(&f);
   return n < 0 ? -1 : (int64_t)size;
 }
@@ -296,29 +323,38 @@ static size_t load(vx_str name) {
 // The variables, exported as rc does: NAME=WORDS, the words of a list
 // separated by \x01; but not $* or $0 and the like, nor names a POSIX program
 // could not read.
+static uint32_t exported; // env= records, this spawn's
+
 static void export_var(void *arg, const char *name, const rc_word *val) {
   vx_ndb_writer *rec = arg;
   bool plain = name[0] != 0 && !(name[0] >= '0' && name[0] <= '9');
   for (const char *c = name; *c && plain; c++)
     plain = (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || *c == '_';
   if (!plain) return;
-  static char env[4096];
+  static char env[32 * 1024];
   size_t n = 0, len = rc_strlen(name);
-  if (len + 1 > sizeof env) return;
+  if (len + 1 > sizeof env) {
+    rec->failed = true; // too long to pass: the spawn is refused, not given less
+    return;
+  }
   memcpy(env, name, len), n = len, env[n++] = '=';
   for (const rc_word *w = val; w; w = w->next) {
-    if (n + w->len + 1 > sizeof env) return; // too long to pass: left out
+    if (n + w->len + 1 > sizeof env) {
+      rec->failed = true;
+      return;
+    }
     memcpy(env + n, w->s, w->len), n += w->len;
     if (w->next) env[n++] = '\x01';
   }
   vx_ndb_put(rec, "env", (vx_str){env, n});
   vx_ndb_end(rec);
+  exported++;
 }
 
 // The environment the shell was given, as variables (rc's lists, split at \x01).
 static void import_env(void) {
-  static const char *words[64];
-  static size_t lens[64];
+  static const char *words[VX_SPAWN_MAX_ARGS];
+  static size_t lens[VX_SPAWN_MAX_ARGS];
   static char name[64];
   for (uint32_t i = 0; i < vx_spawn.envc; i++) {
     vx_str e = vx_spawn.envs[i];
@@ -328,7 +364,7 @@ static void import_env(void) {
     memcpy(name, e.ptr, eq);
     name[eq] = 0;
     uint32_t n = 0;
-    for (size_t at = eq + 1; at <= e.len && n < 64;) {
+    for (size_t at = eq + 1; at <= e.len && n < VX_SPAWN_MAX_ARGS;) {
       size_t end = at;
       while (end < e.len && e.ptr[end] != '\x01') end++;
       words[n] = e.ptr + at, lens[n++] = end - at;
@@ -345,15 +381,21 @@ static vx_status spawn(const rc_word *argv, const vx_handle io[3], vx_handle *ta
   vx_handle handles[VX_CHANNEL_MAX_HANDLES - 1];
   vx_str names[VX_CHANNEL_MAX_HANDLES - 1];
   uint32_t count = 0;
-  static char records[16 * 1024];
+  static char records[VX_CHANNEL_MAX_BYTES - 4096]; // room left for spawn's own records
   vx_ndb_writer rec = {.buf = records, .cap = sizeof records};
   size_t size = load(word_str(argv));
   vx_status st = size ? VX_OK : VX_ERR_NOT_FOUND;
-  for (const rc_word *a = argv->next; st == VX_OK && a; a = a->next) {
+  uint32_t args = 0;
+  exported = 0;
+  for (const rc_word *a = argv->next; st == VX_OK && a; a = a->next, args++) {
     vx_ndb_put(&rec, "arg", word_str(a));
     vx_ndb_end(&rec);
   }
   if (st == VX_OK) rc_each_var(sh, export_var, &rec);
+  // More than a spawn message holds, or than the child takes: refused whole,
+  // never run with a list cut short.
+  if (st == VX_OK && (rec.failed || args > VX_SPAWN_MAX_ARGS || exported > VX_SPAWN_MAX_ARGS))
+    st = VX_ERR_RANGE;
   if (st == VX_OK) st = vx_ns_spawn_records(&ns, &rec, handles, names, &count, VX_CHANNEL_MAX_HANDLES - 5);
   if (st == VX_OK && vx_console.connector &&
       vx_handle_dup(vx_console.connector, VX_RIGHTS_SAME, &handles[count]) == VX_OK)
@@ -390,7 +432,7 @@ typedef struct relay {
   bool armed;
 } relay;
 
-static relay relays[2 * MAX_STAGES + 2];
+static relay relays[MAX_RELAYS];
 static uint32_t nrelays;
 
 // A relay for fd: the shell's end kept, the program's in *theirs.
@@ -523,15 +565,18 @@ static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool asy
       for (int i = 0; i < 3; i++)
         if (io[i]) vx_handle_close(io[i]);
     if (st != VX_OK) {
-      vx_str why = st == VX_ERR_NOT_FOUND ? VX_STR("not found") : VX_STR("cannot run it");
+      vx_str why = VX_STR("cannot run it");
+      if (st == VX_ERR_NOT_FOUND) why = VX_STR("not found");
+      if (st == VX_ERR_RANGE) why = VX_STR("argument list too long");
       // Where the command's own errors would go, as rc writes them.
       rc_fd err = *fd[2];
       if (err.kind == RC_FD_PIPE_OUT || err.kind == RC_FD_PIPE_IN || err.kind == RC_FD_READ)
         err = (rc_fd){.dup = 2};
       write_out(nullptr, &err, 2, "gsh: ", 5);
       write_out(nullptr, &err, 2, c->argv->s, c->argv->len);
-      vx_str tail = st == VX_ERR_NOT_FOUND ? VX_STR(": not found\n") : VX_STR(": cannot run it\n");
-      write_out(nullptr, &err, 2, tail.ptr, tail.len);
+      write_out(nullptr, &err, 2, ": ", 2);
+      write_out(nullptr, &err, 2, why.ptr, why.len);
+      write_out(nullptr, &err, 2, "\n", 1);
       memcpy(ends[s], why.ptr, why.len);
       end_len[s] = why.len;
       tasks[s] = VX_HANDLE_NONE;
@@ -662,10 +707,10 @@ const char *vx_main(void) {
   import_env();
 
   if (vx_spawn.argc) { // gsh FILE ARG ...: a script, its arguments in $*, its name in $0
-    static const char *words[64];
-    static size_t lens[64];
+    static const char *words[VX_SPAWN_MAX_ARGS];
+    static size_t lens[VX_SPAWN_MAX_ARGS];
     uint32_t n = 0;
-    for (uint32_t i = 1; i < vx_spawn.argc && n < 64; i++, n++)
+    for (uint32_t i = 1; i < vx_spawn.argc && n < VX_SPAWN_MAX_ARGS; i++, n++)
       words[n] = vx_spawn.args[i].ptr, lens[n] = vx_spawn.args[i].len;
     rc_set(sh, "*", words, lens, n);
     words[0] = vx_spawn.args[0].ptr, lens[0] = vx_spawn.args[0].len;

@@ -210,7 +210,7 @@ static vx_status vx_ns_group_apply(vx_ns *ns, vx_str text) {
   static vx_ns_script script;
   script = (vx_ns_script){.text = text};
   vx_ns_op op;
-  vx_status st;
+  vx_status st, first = VX_OK;
   while ((st = vx_ns_script_next(&script, &op)) == VX_OK) {
     if (op.kind == VX_NS_OP_MOUNT) {
       vx_str aname = op.argc > 2 ? op.args[2] : (vx_str){};
@@ -236,16 +236,17 @@ static vx_status vx_ns_group_apply(vx_ns *ns, vx_str text) {
     } else if (op.kind == VX_NS_OP_UNMOUNT) {
       st = vx_ns_unmount(ns, op.argc == 2 ? op.args[0] : (vx_str){}, op.args[op.argc - 1]);
     }
-    if (st != VX_OK) {
+    if (st != VX_OK) { // said, and the rest replayed: one line lost, not all after it
       vx_print(VX_STR("vx-ns: cannot replay line "));
       vx_print_u64(op.line);
       vx_print(VX_STR(" of the namespace group's: "));
       vx_print(p9_error_text(st));
       vx_print(VX_STR("\n"));
-      return st;
+      if (first == VX_OK) first = st;
     }
   }
-  return st == VX_ERR_NOT_FOUND ? VX_OK : st;
+  if (st != VX_ERR_NOT_FOUND) return st; // the text itself is bad
+  return first;
 }
 
 // The table, brought up to the group's: emptied and built again from its
@@ -335,6 +336,9 @@ static vx_status vx_ns_group_make(vx_ns *ns) {
   if (!vx_ns_group.srv) return VX_ERR_NOT_FOUND;
   static char text[NSD_TEXT_MAX], names[VX_NS_MAX_CONNS * (VX_NS_MAX_SRC + 1)];
   size_t len = vx_ns_print(ns, text, sizeof text), nl = 0;
+  bool empty = true;
+  for (uint32_t i = 0; i < VX_NS_MAX_ENTRIES && empty; i++) empty = !ns->entries[i].path_len;
+  if (!len && !empty) return VX_ERR_RANGE; // too long to send: never a group with an empty text
   vx_handle give[VX_NS_MAX_CONNS];
   uint32_t n = 0;
   for (uint32_t i = 0; i < VX_NS_MAX_CONNS; i++) {

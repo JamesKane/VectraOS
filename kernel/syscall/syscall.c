@@ -700,16 +700,31 @@ static int64_t sys_task_exec(vx_handle sh, vx_handle bootstrap, uint64_t entry, 
   thread *th = nullptr;
   st = s == t ? VX_ERR_INVALID : thread_create(t, &th); // made first: a failure changes nothing
   if (st == VX_OK) {
-    spin_lock(&t->lock);
-    bool alone = t->live_threads == 1 && !t->ending && !t->killed;
-    spin_unlock(&t->lock);
-    spin_lock(&s->lock);
-    bool fresh = s->state == VX_TASK_NEW && s->live_threads == 0 && !s->ending && !s->killed && s->root;
-    spin_unlock(&s->lock);
+    // Both are held so until the swap: a thread started meanwhile, in either,
+    // would run on tables about to change hands, and then be freed.
+    task *first = t < s ? t : s, *second = t < s ? s : t;
+    spin_lock(&first->lock);
+    spin_lock(&second->lock);
+    bool alone = t->live_threads == 1 && !t->ending && !t->killed && !t->execing;
+    bool fresh =
+        s->state == VX_TASK_NEW && s->live_threads == 0 && !s->ending && !s->killed && s->root && !s->execing;
+    if (alone && fresh) t->execing = s->execing = true;
+    spin_unlock(&second->lock);
+    spin_unlock(&first->lock);
     if (!alone || !fresh) st = VX_ERR_BAD_STATE;
   }
   moved_handle m = {};
-  if (st == VX_OK) st = handles_take(t, &bootstrap, 1, &t->obj, &s->obj, &m);
+  if (st == VX_OK) {
+    st = handles_take(t, &bootstrap, 1, &t->obj, &s->obj, &m);
+    if (st != VX_OK) {
+      spin_lock(&t->lock);
+      t->execing = false;
+      spin_unlock(&t->lock);
+      spin_lock(&s->lock);
+      s->execing = false;
+      spin_unlock(&s->lock);
+    }
+  }
   if (st != VX_OK) {
     if (th) object_release(&th->obj);
     object_release(&s->obj);
@@ -753,6 +768,9 @@ static int64_t sys_task_exec(vx_handle sh, vx_handle bootstrap, uint64_t entry, 
   vx_handle moved = VX_HANDLE_NONE;
   st = handles_put(t, &m, 1, &moved);
   object_release(m.obj);
+  spin_lock(&t->lock);
+  t->execing = false; // the new program's first thread may start now
+  spin_unlock(&t->lock);
   task_kill(s, "", 0); // never started: torn down at once, with the old address space
   object_release(&s->obj);
   if (st == VX_OK) st = thread_start(th, entry, sp, moved, 0);

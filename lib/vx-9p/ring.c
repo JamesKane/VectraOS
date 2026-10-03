@@ -61,6 +61,8 @@ typedef struct p9_conn {
   vx_ring ring;
   vx_handle end, port;
   bool dead;
+  uint8_t sent;    // the type of the call p9_ring_send sent, for its reply's
+  int64_t timeout; // ns: a call not answered in that long ends the connection (0: none)
   uint8_t tbuf[P9_RING_MSIZE], rbuf[P9_RING_MSIZE];
 } p9_conn;
 
@@ -96,6 +98,7 @@ static int64_t p9_ring_take(p9_conn *k, uint8_t *resp, size_t cap) {
 static size_t p9_ring_rpc(void *ctx, const uint8_t *req, size_t len, uint8_t *resp, size_t cap) {
   p9_conn *k = ctx;
   if (!p9_ring_put(k, req, len)) return 0;
+  vx_instant deadline = k->timeout ? vx_clock_read() + (vx_instant)k->timeout : VX_INFINITE;
   for (;;) {
     int64_t n = p9_ring_take(k, resp, cap);
     if (n > 0) return (size_t)n;
@@ -104,7 +107,7 @@ static size_t p9_ring_rpc(void *ctx, const uint8_t *req, size_t len, uint8_t *re
     if (vx_ring_prepare_sleep(&k->ring)) {
       vx_packet pk = {};
       vx_port_bind(k->port, k->end, VX_TRIGGER_COUNTER_GE, P9_KEY_BELL, (uint64_t)seen + 1);
-      int64_t got = vx_port_wait(k->port, VX_INFINITE, 0, &pk, 1);
+      int64_t got = vx_port_wait(k->port, deadline, 0, &pk, 1);
       // An interrupt (a POSIX signal) does not end a call the server is
       // answering: the wait goes on, and its handler runs once the call is
       // done (01 §9). The binding made for this wait may fire later, too.
@@ -170,6 +173,7 @@ static size_t p9_ring_rpc(void *ctx, const uint8_t *req, size_t len, uint8_t *re
   t->tag = k->c.next_tag++ % P9_NOTAG;
   size_t n = p9_encode(t, k->c.tbuf, k->c.bufsize);
   if (!n) return VX_ERR_TOO_SMALL;
+  k->sent = t->type;
   return p9_ring_put(k, k->c.tbuf, n) ? VX_OK : VX_ERR_PEER_CLOSED;
 }
 
@@ -183,8 +187,14 @@ static size_t p9_ring_rpc(void *ctx, const uint8_t *req, size_t len, uint8_t *re
     k->dead = true;
     return VX_ERR_PEER_CLOSED;
   }
-  if (p9_decode(k->c.rbuf, (size_t)n, r) != VX_OK || r->tag != tag) return VX_ERR_INVALID;
-  if (r->type == P9_Rerror) return p9_error_status(r->ename);
+  // One call at a time: anything but its reply (or its error) means the
+  // server is confused, and nothing more it says can be matched to a call.
+  bool ok = p9_decode(k->c.rbuf, (size_t)n, r) == VX_OK && r->tag == tag;
+  if (ok && r->type == P9_Rerror) return p9_error_status(r->ename);
+  if (!ok || r->type != k->sent + 1) {
+    k->dead = true;
+    return VX_ERR_PEER_CLOSED;
+  }
   return VX_OK;
 }
 

@@ -491,11 +491,14 @@ static vx_status ns_unmount_raw(vx_ns *ns, vx_str new, vx_str old) {
   }
   e->count = kept;
   if (!kept) e->path_len = 0;
-  for (uint8_t c = 0; c < VX_NS_MAX_CONNS; c++) { // a connection no member uses any more is let go
+  // A connection no member uses any more is let go: no member, mounted or
+  // bound (a bind of something under a mount walks on its connection too, and
+  // outlives the mount: mount; bind /n/x/bin /bin; unmount /n/x).
+  for (uint8_t c = 0; c < VX_NS_MAX_CONNS; c++) {
     bool used = !ns->conns[c].client;
     for (uint32_t i = 0; i < VX_NS_MAX_ENTRIES && !used; i++)
       for (uint32_t k = 0; ns->entries[i].path_len && k < ns->entries[i].count && !used; k++)
-        used = ns->entries[i].members[k].mounted && ns->entries[i].members[k].conn == c;
+        used = ns->entries[i].members[k].conn == c;
     if (used) continue;
     if (ns->release) ns->release(ns->conns[c].client, ns->conns[c].connector);
     ns->conns[c] = (vx_ns_conn){};
@@ -536,9 +539,12 @@ static uint8_t ns_conn_of(const vx_ns *ns, const p9_client *c) {
                                               vx_str aname, vx_str old, uint8_t flags) {
   vx_status st = VX_ERR_BAD_STATE;
   bool again = true;
+  // New to this namespace or not, as it was before the first try: a try made
+  // again finds c among the connections (vx_ns_reset keeps them), and the
+  // group must still be given its connector.
+  bool fresh = ns_conn_of(ns, c) == VX_NS_MAX_CONNS;
   for (int tries = 0; again && tries < 8; tries++) {
     ns_catch_up(ns);
-    bool fresh = ns_conn_of(ns, c) == VX_NS_MAX_CONNS;
     st = ns_mount_raw(ns, c, connector, src, aname, old, flags);
     st = ns_publish(ns, st, fresh ? ns_conn_of(ns, c) : VX_NS_MAX_CONNS, &again);
   }

@@ -46,8 +46,8 @@
 #include "../../lib/vx-prof/prof.h"
 
 static constexpr uint32_t MAX_PROCS = 128;
-static constexpr uint32_t MAX_RECORDS = 512; // wait records, for every parent together
-static constexpr uint32_t MAX_WAITS = 128;   // queued for one parent, as 9front's pexit
+static constexpr uint32_t MAX_RECORDS = 2048; // wait records, for every parent together: 16 parents' worth
+static constexpr uint32_t MAX_WAITS = 128;    // queued for one parent, as 9front's pexit
 
 typedef struct proc {
   bool used;
@@ -101,6 +101,8 @@ static bool has_children(const proc *p) {
   return false;
 }
 
+static uint64_t self_id; // procfs's own pid
+
 // A new process for task (which it takes, if it succeeds), its parent's pid, and flags.
 static vx_status admit(vx_handle task, uint64_t ppid, uint32_t flags, uint64_t group, bool root, proc **out) {
   vx_task_summary info;
@@ -130,9 +132,12 @@ static vx_status admit(vx_handle task, uint64_t ppid, uint32_t flags, uint64_t g
   }
   if (group) p->noteid = group;
   // svcd, the root, never ends; its handle ("tasks") carries no WAIT right.
-  // A fault nothing else takes comes to procfs, for a crash directory (crash.c).
+  // A fault nothing else takes comes to procfs, for a crash directory
+  // (crash.c); but not procfs's own, which would wait for procfs to take it:
+  // procfs ends instead, and svcd starts it again.
   vx_status st = root ? VX_OK : vx_port_bind(server.port, task, VX_TRIGGER_EXIT, exit_key(p), 0);
-  if (st == VX_OK && !root) st = vx_exception_bind(task, server.port, exit_key(p) | (1ull << 41), 0);
+  if (st == VX_OK && !root && info.id != self_id)
+    st = vx_exception_bind(task, server.port, exit_key(p) | (1ull << 41), 0);
   if (st != VX_OK) {
     *p = (proc){.gen = p->gen};
     return st;
@@ -225,6 +230,9 @@ static void ended(proc *p) {
   }
   vx_handle_close(p->task);
   *p = (proc){.gen = p->gen};
+  // Reads held for it go round again, record or not: a debugger's events
+  // read, and a parent's wait read that is now waiting for nothing.
+  server.again = true;
 }
 
 // Stops every thread of p, for signal sig (its parent hears which), or
@@ -264,11 +272,13 @@ static void event(void *ctx, const vx_packet *pk) {
 }
 
 // Posts a note to p (a write to note or notepg). The signals a process cannot
-// act on itself, procfs carries out.
+// act on itself, procfs carries out. svcd takes none: it has no handler, and
+// any note would end it, and the system with it.
 static vx_status post(proc *p, vx_str note) {
+  if (p->root) return VX_ERR_ACCESS;
   int64_t sender;
   int64_t sig = posix_note_signal(note, &sender);
-  if (sig == POSIX_SIGKILL) return p->root ? VX_ERR_ACCESS : vx_task_kill(p->task, VX_STR("killed"));
+  if (sig == POSIX_SIGKILL) return vx_task_kill(p->task, VX_STR("killed"));
   if (sig == POSIX_SIGSTOP) return stop(p, (uint8_t)sig);
   if (sig == POSIX_SIGCONT) cont(p); // and then its handler, if it has one
   return deliver(p, note);
@@ -584,16 +594,19 @@ static vx_status thread_read(proc *p, uint32_t tid, uint32_t f, uint64_t offset,
 }
 
 // mem: the task's memory at offset, as much of it as is mapped.
+// A page at a time, so a hole ends the read where it starts: what came
+// before it; at the hole itself, an error, not an empty read (the end of a
+// file).
 static vx_status mem_read(const proc *p, uint64_t offset, uint8_t *buf, uint32_t *count) {
-  uint32_t done = 0;
-  while (done < *count) { // a page at a time, so a hole ends the read where it starts
+  uint32_t done = 0, want = *count;
+  while (done < want) {
     uint64_t at = offset + done, page_left = 4096 - (at & 4095);
-    uint32_t n = *count - done < page_left ? *count - done : (uint32_t)page_left;
+    uint32_t n = want - done < page_left ? want - done : (uint32_t)page_left;
     if (mem_rw(p, at, buf + done, n, false) != VX_OK) break;
     done += n;
   }
   *count = done;
-  return done || !*count ? VX_OK : VX_ERR_INVALID;
+  return done || !want ? VX_OK : VX_ERR_INVALID;
 }
 
 #include "crash.c"
@@ -667,8 +680,12 @@ static vx_status ctl(proc *p, vx_str cmd) {
     return cont(p);
   }
   if (word_is(cmd, "setsid")) {
-    if (p->noteid == p->pid) return VX_ERR_ACCESS; // a group leader: its group would span two sessions
-    p->sid = p->noteid = p->pid;                   // a session, and a note group, of its own
+    // POSIX: refused if any process's group is the caller's pid (a leader,
+    // or one that left its group with others still in it), whose group would
+    // then span two sessions.
+    for (uint32_t i = 0; i < MAX_PROCS; i++)
+      if (procs[i].used && procs[i].noteid == p->pid) return VX_ERR_ACCESS;
+    p->sid = p->noteid = p->pid; // a session, and a note group, of its own
     return VX_OK;
   }
   if (word_is(cmd, "childnotes")) {
@@ -708,7 +725,21 @@ static vx_status fs_write(void *ctx, uint64_t node, uint64_t offset, const uint8
     static uint8_t copy[P9_RING_MSIZE]; // task_mem_rw's buffer is the caller's to read and write
     if (*count > sizeof copy) return VX_ERR_INVALID;
     memcpy(copy, buf, *count);
-    return mem_rw(p, offset, copy, *count, true);
+    // A page at a time, as reads go: what was written before a page that
+    // cannot be is counted, not reported as nothing.
+    uint32_t done = 0, want = *count;
+    while (done < want) {
+      uint64_t at = offset + done, page_left = 4096 - (at & 4095);
+      uint32_t n = want - done < page_left ? want - done : (uint32_t)page_left;
+      vx_status st = mem_rw(p, at, copy + done, n, true);
+      if (st != VX_OK) {
+        if (!done) return st;
+        break;
+      }
+      done += n;
+    }
+    *count = done;
+    return VX_OK;
   }
   vx_str s = written(buf, *count);
   if (tid && f == T_REGS_NDB) return regs_ndb_write(p, tid, s);
@@ -784,6 +815,8 @@ const char *vx_main(void) {
   server.conns = conns;
   server.max_conns = MAX_PROCS;
   proc *root = nullptr;
+  vx_task_summary me;
+  if (vx_task_info(vx_self, &me) == VX_OK) self_id = me.id;
   if (!tasks || !server.listen || vx_port_create(0, &server.port) != VX_OK ||
       admit(tasks, 0, 0, 0, true, &root) != VX_OK) {
     vx_print(VX_STR("procfs: FAILED: no task tree or listen channel\n"));

@@ -7,13 +7,16 @@
 // as_protect will give (docs/milestones.md).
 
 static long mem_map(long addr, size_t len, int prot, int flags, int fd, long offset) {
-  if (!len || (addr & 4095) || (offset & 4095)) return -EINVAL;
+  if (!len || (addr & 4095) || (offset & 4095) || offset < 0) return -EINVAL;
   uint64_t size;
   if (ckd_add(&size, (uint64_t)len, 4095)) return -ENOMEM;
   size &= ~(uint64_t)4095;
   if ((prot & PROT_WRITE) && (prot & PROT_EXEC)) return -EACCES; // W^X (01 §11)
   bool anon = flags & MAP_ANONYMOUS;
-  if (!anon && (flags & MAP_TYPE) != MAP_PRIVATE) return -ENODEV;
+  // Shared mappings wait for 9Px's Tmap and shared VMOs across fork: refused,
+  // anonymous ones too, rather than made private where a program counts on
+  // another process seeing its writes.
+  if ((flags & MAP_TYPE) != MAP_PRIVATE) return anon ? -EINVAL : -ENODEV;
   const ofd *o = anon ? nullptr : fd_get(fd);
   if (!anon && (!o || o->kind != OFD_FILE || o->dir)) return o ? -EACCES : -EBADF;
 
@@ -51,9 +54,11 @@ static long mem_map(long addr, size_t len, int prot, int flags, int fd, long off
 // realloc's large blocks, which are musl's own anonymous mappings: moved to a
 // new mapping and copied. Without MREMAP_MAYMOVE, only shrinking can be done.
 static long mem_remap(long addr, size_t old_len, size_t new_len, int flags) {
-  if ((addr & 4095) || !new_len) return -EINVAL;
-  uint64_t old_size = ((uint64_t)old_len + 4095) & ~(uint64_t)4095;
-  uint64_t new_size = ((uint64_t)new_len + 4095) & ~(uint64_t)4095;
+  if ((addr & 4095) || !new_len || (flags & ~MREMAP_MAYMOVE)) return -EINVAL; // MREMAP_FIXED: not yet
+  uint64_t old_size, new_size;
+  if (ckd_add(&old_size, (uint64_t)old_len, 4095) || ckd_add(&new_size, (uint64_t)new_len, 4095))
+    return -ENOMEM;
+  old_size &= ~(uint64_t)4095, new_size &= ~(uint64_t)4095;
   if (new_size <= old_size) {
     if (new_size < old_size) vx_as_unmap(vx_self, (uint64_t)addr + new_size, old_size - new_size);
     return addr;
@@ -68,7 +73,9 @@ static long mem_remap(long addr, size_t old_len, size_t new_len, int flags) {
 
 static long mem_unmap(long addr, size_t len) {
   if ((addr & 4095) || !len) return -EINVAL;
-  return vx_errno(vx_as_unmap(vx_self, (uint64_t)addr, len));
+  uint64_t size; // the pages it touches, as Linux takes it
+  if (ckd_add(&size, (uint64_t)len, 4095)) return -EINVAL;
+  return vx_errno(vx_as_unmap(vx_self, (uint64_t)addr, size & ~(uint64_t)4095));
 }
 
 // Until as_protect: nothing changes, and saying so is the answer musl's malloc

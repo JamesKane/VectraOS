@@ -45,6 +45,11 @@ static bool exception_divert(struct trap_frame *f, const vx_exception *e) {
 static uint32_t exception_stop(port *p, uint64_t key, bool first, const vx_exception *e) {
   thread *th = this_cpu()->current;
   task *t = th->task;
+  // Its TLS and FP/SIMD registers saved now, before the packet goes: a
+  // debugger may read them at once, before this thread has switched out,
+  // and what it sets is loaded when the thread goes on.
+  arch_user_save(th);
+  th->user_held = true;
   spin_lock(&t->lock);
   th->exc = *e;
   th->exc_stopped = true;
@@ -68,6 +73,8 @@ static uint32_t exception_stop(port *p, uint64_t key, bool first, const vx_excep
   th->exc_first = false;
   th->wait_token = nullptr;
   spin_unlock(&t->lock);
+  arch_user_load(th); // what a debugger set, or what was saved
+  th->user_held = false;
   return t->killed ? 0 : action;
 }
 
@@ -86,7 +93,6 @@ static port *exception_port(task *t, bool first, uint64_t *key) {
 static bool exception_raise(struct trap_frame *f, uint32_t kind, uint32_t code, uint64_t address) {
   thread *th = this_cpu()->current;
   task *t = th->task;
-  if (kind == VX_EXCEPTION_STEP) arch_frame_step(f, false); // one instruction, done
   if (kind == VX_EXCEPTION_STEP) arch_frame_step(f, false); // one instruction, done
   vx_exception e = {.kind = kind, .code = code, .address = address, .thread = th->id};
   arch_frame_regs(f, &e.regs);
@@ -147,7 +153,11 @@ static void exception_check_interrupt(void) {
     th->interrupt_count--;
     for (uint32_t i = 0; i < th->interrupt_count; i++) th->notes[i] = th->notes[i + 1];
   }
-  th->interrupt_pending = th->interrupt_count > 0; // the next goes when this one's handler resumes
+  // The next goes on the thread's next way back to user mode, though this
+  // one's handler may still be running: handlers nest, as POSIX's do (the
+  // musl back end masks what must not). Holding it until exception_resume
+  // would strand it when a handler leaves by longjmp, which never resumes.
+  th->interrupt_pending = th->interrupt_count > 0;
   spin_unlock(&t->lock);
   if (!pending) return;
   // The wake that brought it here must not end its next wait as well.
@@ -330,8 +340,8 @@ static int64_t thread_watch(vx_handle th, uint64_t op, uint64_t buf) {
       return VX_ERR_INVALID;
     any = true;
   }
-  task *t = (task *)handle_get(current_task(), th, OBJ_TASK,
-                               op == VX_STATE_SET_WATCH ? VX_RIGHT_DEBUG : VX_RIGHT_MANAGE, &st);
+  task *t = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_DEBUG,
+                               &st); // both: a debugger's, as abi.h has it
   if (!t) return st;
   spin_lock(&t->lock);
   if (op == VX_STATE_SET_WATCH) {
@@ -396,9 +406,9 @@ static int64_t sys_thread_state(vx_handle th, uint64_t id, uint64_t op, uint64_t
   } else if (op == VX_STATE_SET_REGS) {
     st = arch_frame_set_regs(arch_user_frame(target), &regs);
   } else if (op == VX_STATE_GET_TLS) {
-    tls = target->tls; // it is not running: arch_tls_switch saved it
+    tls = target->tls; // saved: by exception_stop, or as it switched out
   } else if (op == VX_STATE_GET_FPREGS) {
-    memcpy(&fpr, target->fp, sizeof fpr); // saved too, by arch_user_switch
+    memcpy(&fpr, target->fp, sizeof fpr); // saved too
   } else if (op == VX_STATE_SET_FPREGS) {
     memcpy(target->fp, &fpr, sizeof fpr); // loaded when it next runs
   } else {
@@ -429,8 +439,8 @@ static int64_t sys_thread_interrupt(vx_handle th, uint64_t id, uint64_t note_ptr
   } else if (!handled) {
     st = VX_OK; // no one to take it: it ends the task, below
   } else {
-    for (thread *x = t->threads; x && !target; x = x->task_next)
-      if (id ? x->id == id : !x->exc_stopped) target = x;
+    for (thread *x = t->threads; x && !target; x = x->task_next) // a thread that will take it
+      if (!x->exited && (id ? x->id == id : !x->exc_stopped)) target = x;
     if (target && target->interrupt_count == THREAD_MAX_INTERRUPTS) {
       st = VX_ERR_SHOULD_WAIT; // its queue is full: the caller may try again
       target = nullptr;
@@ -453,21 +463,26 @@ static int64_t sys_thread_interrupt(vx_handle th, uint64_t id, uint64_t note_ptr
   return VX_OK;
 }
 
-// Up to cap of task t's threads, each with a reference: the one with this id,
-// or with id 0, every one (a process stops as a whole: procfs's ctl stop).
-static uint32_t task_threads(task *t, uint64_t id, thread **out, uint32_t cap) {
+// Up to cap of task t's threads, each with a reference, after the first
+// `skip`: the one with this id, or with id 0, every one (a process stops as a
+// whole: procfs's ctl stop), a batch at a time.
+static uint32_t task_threads(task *t, uint64_t id, uint32_t skip, thread **out, uint32_t cap) {
   uint32_t n = 0;
   spin_lock(&t->lock);
-  for (thread *th = t->threads; th && n < cap; th = th->task_next)
-    if (!id || th->id == id) {
-      object_ref(&th->obj);
-      out[n++] = th;
+  for (thread *th = t->threads; th && n < cap; th = th->task_next) {
+    if (id && th->id != id) continue;
+    if (skip) {
+      skip--;
+      continue;
     }
+    object_ref(&th->obj);
+    out[n++] = th;
+  }
   spin_unlock(&t->lock);
   return n;
 }
 
-static constexpr uint32_t SUSPEND_MAX = 64; // threads one thread_suspend(0) reaches
+static constexpr uint32_t SUSPEND_MAX = 64; // threads taken at once by thread_suspend(0)
 
 // One thread's suspension: counted; returns once it holds still (parked on
 // its way to user mode, or blocked in a call), or after a second.
@@ -477,12 +492,15 @@ static vx_status thread_suspend_one(thread *target) {
   target->suspend_count++;
   spin_unlock(&tt->lock);
   if (target == this_cpu()->current) return VX_OK; // the caller suspends itself on its own way out
-  sched_poke(target);                              // in user mode elsewhere: into the kernel, to park
   vx_instant give_up = clock_now() + 1'000'000'000;
   while (!(__atomic_load_n(&target->parked, __ATOMIC_ACQUIRE) || target->state == THREAD_BLOCKED ||
            target->state == THREAD_DEAD)) {
     if (clock_now() >= give_up) return VX_ERR_TIMED_OUT; // still counted: thread_resume undoes it
-    thread_block(clock_now() + 100'000, 0);              // a tenth of a millisecond
+    // In user mode elsewhere: into the kernel, to park. Each time round, as a
+    // thread that was ready, not running, at first (one just started) may be
+    // in user mode now, where nothing else would stop it.
+    sched_poke(target);
+    thread_block(clock_now() + 100'000, 0); // a tenth of a millisecond
   }
   return VX_OK;
 }
@@ -504,14 +522,19 @@ static int64_t sys_thread_suspend(vx_handle th, uint64_t id) {
   task *t = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_DEBUG, &st);
   if (!t) return st;
   thread *targets[SUSPEND_MAX];
-  uint32_t n = task_threads(t, id, targets, SUSPEND_MAX);
+  uint32_t n = 0, done = 0;
+  st = VX_ERR_NOT_FOUND;
+  do { // a batch at a time: every thread, however many
+    n = task_threads(t, id, done, targets, SUSPEND_MAX);
+    if (n && st == VX_ERR_NOT_FOUND) st = VX_OK;
+    for (uint32_t i = 0; i < n; i++) {
+      vx_status one = thread_suspend_one(targets[i]);
+      if (st == VX_OK) st = one;
+      object_release(&targets[i]->obj);
+    }
+    done += n;
+  } while (n == SUSPEND_MAX);
   object_release(&t->obj);
-  st = n ? VX_OK : VX_ERR_NOT_FOUND;
-  for (uint32_t i = 0; i < n; i++) {
-    vx_status one = thread_suspend_one(targets[i]);
-    if (st == VX_OK) st = one;
-    object_release(&targets[i]->obj);
-  }
   return st;
 }
 
@@ -520,14 +543,19 @@ static int64_t sys_thread_resume(vx_handle th, uint64_t id) {
   task *t = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_DEBUG, &st);
   if (!t) return st;
   thread *targets[SUSPEND_MAX];
-  uint32_t n = task_threads(t, id, targets, SUSPEND_MAX);
+  uint32_t n = 0, done = 0;
+  st = VX_ERR_NOT_FOUND;
+  do {
+    n = task_threads(t, id, done, targets, SUSPEND_MAX);
+    if (n && st == VX_ERR_NOT_FOUND) st = VX_OK;
+    for (uint32_t i = 0; i < n; i++) {
+      vx_status one = thread_resume_one(targets[i]);
+      if (st == VX_OK) st = one;
+      object_release(&targets[i]->obj);
+    }
+    done += n;
+  } while (n == SUSPEND_MAX);
   object_release(&t->obj);
-  st = n ? VX_OK : VX_ERR_NOT_FOUND;
-  for (uint32_t i = 0; i < n; i++) {
-    vx_status one = thread_resume_one(targets[i]);
-    if (st == VX_OK) st = one;
-    object_release(&targets[i]->obj);
-  }
   return st;
 }
 
@@ -551,6 +579,7 @@ static vx_status mapping_privatize(task *t, mapping *m, vmo **old) {
   *old = m->vmo;
   m->vmo = copy;
   m->offset = 0;
+  m->privatized = true; // written in place from now on: copied once, not for each page
   return st;
 }
 
@@ -569,10 +598,10 @@ static vx_status mem_op(task *t, const vx_mem_op *op, bool *shoot, vmo **release
       if (t->maps[i].size && at >= t->maps[i].va && at < t->maps[i].va + t->maps[i].size) m = &t->maps[i];
     if (!m || m->vmo->physical) {
       st = m ? VX_ERR_UNSUPPORTED : VX_ERR_INVALID; // device memory, or nothing there
-    } else if (op->write && !(m->flags & VX_MAP_WRITE) && *released_count < 16) {
+    } else if (op->write && !(m->flags & VX_MAP_WRITE) && !m->privatized && *released_count < 16) {
       st = mapping_privatize(t, m, &released[(*released_count)++]);
       *shoot = true;
-    } else if (op->write && !(m->flags & VX_MAP_WRITE)) {
+    } else if (op->write && !(m->flags & VX_MAP_WRITE) && !m->privatized) {
       st = VX_ERR_NO_MEMORY; // too many copies at once: the caller may try again
     }
     if (st == VX_OK) {

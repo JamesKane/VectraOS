@@ -67,26 +67,31 @@ typedef struct ofd {
   bool closed_bound;         // PEER_CLOSED is bound once (it fires once)
   uint8_t token[16];         // a file's, for a forked child to join its open file (fd_before_fork)
   bool has_token;
+  bool lost;        // a file a forked child could not get back: every call on it is EBADF but close
   bool tty, master; // a terminal's slave or master (ptyd: the file is a 9P device)
   uint32_t pty;
   bool locked;     // a lock was taken through it: let go at exit, before the exit is seen
   bool read_bound; // a READABLE binding is on fd_port for its pipe
   fd_readahead *ra;
-  uint8_t sock;         // a socket's type (SOCK_STREAM, SOCK_DGRAM): the file is its /net data (socket.c)
-  bool sock_bound;      // its port announced, or a connection's
-  bool sock_listening;  // TCP, announced
-  bool sock_connecting; // TCP: connect's ctl write outstanding, on ra
-  bool sock_shut;       // TCP: shut down for writing (a write is EPIPE without asking netd)
-  uint16_t sock_port;   // TCP: what bind asked for, for listen to announce
-  int sock_error;       // SO_ERROR: why a connect that did not wait failed
-  fd_readahead *wb;     // TCP: data written behind, without waiting (O_NONBLOCK)
+  uint8_t sock;          // a socket's type (SOCK_STREAM, SOCK_DGRAM): the file is its /net data (socket.c)
+  bool sock_bound;       // its port announced, or a connection's
+  bool sock_listening;   // TCP, announced
+  bool sock_connecting;  // TCP: connect's ctl write outstanding, on ra
+  bool sock_connected;   // TCP: connected, by connect (another is EISCONN) or accept
+  int64_t sock_rcvtimeo; // SO_RCVTIMEO, in ns: a receive that waits longer is EAGAIN (0: for ever)
+  bool sock_shut;        // TCP: shut down for writing (a write is EPIPE without asking netd)
+  uint16_t sock_port;    // TCP: what bind asked for, for listen to announce
+  int sock_error;        // SO_ERROR: why a connect that did not wait failed
+  fd_readahead *wb;      // TCP: data written behind, without waiting (O_NONBLOCK)
 } ofd;
 
 static ofd fd_ofds[FD_MAX];
 static void ra_free(ofd *o); // poll.c
 static void ra_drop(fd_readahead *ra);
 static void sig_raise_self(int sig); // signal.c
+static long posix_pid(void);         // process.c
 static long ra_wait(fd_readahead *ra, uint64_t key, bool tty, bool block);
+static long ra_wait_until(fd_readahead *ra, uint64_t key, bool tty, bool block, int64_t deadline);
 static uint64_t fd_wb_key(const ofd *o);
 static long ra_read(ofd *o, void *buf, uint32_t count, bool block); // poll.c
 typedef struct fd_slot {
@@ -97,6 +102,9 @@ static fd_slot fd_table[FD_MAX];
 
 static vx_ns fd_ns;
 static vx_handle fd_port; // where a blocked pipe read waits
+// A packet sig_note posts there: a signal came while the back end ran, just
+// before a wait it ends.
+static constexpr uint64_t FD_KEY_SIGNAL = UINT64_MAX;
 
 // fd_port's keys: 1 + a description's index, and FD_MAX more for its
 // write-behind; a packet names its binding's trigger, and a binding that
@@ -126,6 +134,8 @@ static long fd_wait(int64_t deadline) {
   if (n == VX_ERR_INTERRUPTED) return -EINTR;
   if (n == VX_ERR_TIMED_OUT) return -ETIMEDOUT;
   if (n > 0) fd_noted(pk, n);
+  for (int64_t i = 0; i < n; i++)
+    if (pk[i].key == FD_KEY_SIGNAL) return -EINTR;
   return 0;
 }
 static vx_status fd_ns_status = VX_ERR_BAD_STATE; // until it is built
@@ -168,7 +178,10 @@ static long fd_install(ofd *o, int low, bool cloexec) {
   return -EMFILE;
 }
 
-static ofd *fd_get(int fd) { return fd >= 0 && fd < FD_MAX ? fd_table[fd].o : nullptr; }
+static ofd *fd_get(int fd) {
+  ofd *o = fd >= 0 && fd < FD_MAX ? fd_table[fd].o : nullptr;
+  return o && !o->lost ? o : nullptr;
+}
 static bool fd_valid(int fd) { return fd_get(fd) != nullptr; }
 
 // Descriptors 0, 1 and 2 from the spawn message: the pipes it names, and the
@@ -550,16 +563,31 @@ static long fd_write(int fd, const void *buf, size_t n) {
   }
 }
 
-// Short reads are allowed, so readv stops at the first one.
+// The bytes count iovecs hold, or -EINVAL if they add up to more than a
+// read or write can return (Linux's SSIZE_MAX).
+static long iov_total(const struct iovec *iov, size_t count) {
+  if (count > IOV_MAX) return -EINVAL;
+  size_t total = 0;
+  for (size_t i = 0; i < count; i++)
+    if (ckd_add(&total, total, iov[i].iov_len) || total > (size_t)LONG_MAX) return -EINVAL;
+  return (long)total;
+}
+
+// Short reads are allowed, so readv stops at the first one; and after the
+// first iovec that got anything, unless the descriptor is a file: a pipe's
+// message, a terminal's line or a datagram is what one read gives, and a
+// read for the next would wait for more.
 static long fd_readv(int fd, const struct iovec *iov, int count) {
-  if (count < 0 || count > IOV_MAX) return -EINVAL;
+  if (count < 0 || iov_total(iov, (size_t)count) < 0) return -EINVAL;
+  const ofd *o = fd_get(fd);
+  bool file = o && o->kind == OFD_FILE && !o->sock && !o->tty && !o->master;
   long total = 0;
   for (int i = 0; i < count; i++) {
     if (!iov[i].iov_len) continue;
     long r = fd_read(fd, iov[i].iov_base, iov[i].iov_len);
     if (r < 0) return total ? total : r;
     total += r;
-    if ((size_t)r < iov[i].iov_len) break;
+    if ((size_t)r < iov[i].iov_len || !file) break;
   }
   return total;
 }
@@ -567,10 +595,11 @@ static long fd_readv(int fd, const struct iovec *iov, int count) {
 // stdio's writes come as a buffer and the data after it: gathered into one
 // write, so a line reaches the console or a pipe whole.
 static long fd_writev(int fd, const struct iovec *iov, int count) {
-  if (count < 0 || count > IOV_MAX) return -EINVAL;
+  if (count < 0) return -EINVAL;
+  long sum = iov_total(iov, (size_t)count);
+  if (sum < 0) return sum;
   static uint8_t gather[FD_PIPE_CHUNK];
-  size_t total = 0;
-  for (int i = 0; i < count; i++) total += iov[i].iov_len;
+  size_t total = (size_t)sum;
   if (total <= sizeof gather) {
     size_t at = 0;
     for (int i = 0; i < count; i++) {
@@ -593,8 +622,8 @@ static long fd_writev(int fd, const struct iovec *iov, int count) {
 
 static long fd_pread(int fd, void *buf, size_t n, long offset) {
   ofd *o = fd_get(fd);
-  if (!o) return -EBADF;
-  if (o->kind != OFD_FILE) return -ESPIPE;
+  if (!o || (o->flags & O_ACCMODE) == O_WRONLY) return -EBADF;
+  if (o->kind != OFD_FILE || o->sock || o->tty || o->master) return -ESPIPE;
   if (o->dir) return -EISDIR;
   if (offset < 0) return -EINVAL;
   int64_t r = p9c_read(o->f.c, o->f.fid, (uint64_t)offset, buf, n < (1u << 20) ? (uint32_t)n : 1u << 20);
@@ -604,7 +633,7 @@ static long fd_pread(int fd, void *buf, size_t n, long offset) {
 static long fd_pwrite(int fd, const void *buf, size_t n, long offset) {
   ofd *o = fd_get(fd);
   if (!o || (o->flags & O_ACCMODE) == O_RDONLY) return -EBADF;
-  if (o->kind != OFD_FILE) return -ESPIPE;
+  if (o->kind != OFD_FILE || o->sock || o->tty || o->master) return -ESPIPE;
   if (offset < 0) return -EINVAL;
   int64_t w = p9c_write(o->f.c, o->f.fid, (uint64_t)offset, buf, n < (1u << 20) ? (uint32_t)n : 1u << 20);
   return w < 0 ? vx_errno((vx_status)w) : (long)w;
@@ -736,9 +765,15 @@ static long fd_openat(int dirfd, const char *path, int flags, mode_t mode) {
 }
 
 static long fd_close(int fd) {
-  ofd *o = fd_get(fd);
+  ofd *o = fd >= 0 && fd < FD_MAX ? fd_table[fd].o : nullptr; // a lost one too
   if (!o) return -EBADF;
   fd_table[fd].o = nullptr;
+  // POSIX: closing any descriptor for a file lets go of the process's locks
+  // on it, though another still has it open (the last one's close clunks).
+  if (o->refs > 1 && o->locked && o->kind == OFD_FILE && o->f.c) {
+    uint8_t status;
+    p9c_lock(o->f.c, o->f.fid, P9_LOCK_UNLOCK, 0, 0, (uint32_t)posix_pid(), &status);
+  }
   ofd_release(o);
   return 0;
 }
@@ -764,7 +799,6 @@ static long fd_dup(int fd, int to, int flags) {
 
 // fcntl's POSIX locks, held by the server (posix), owned by this process.
 // F_SETLKW asks again every 10 ms until it is granted or a signal comes.
-static long posix_pid(void); // process.c
 static long posix_getsid(long pid);
 
 static long fd_lock(ofd *o, int cmd, struct flock *l) {
@@ -1122,7 +1156,8 @@ static long fd_ioctl(int fd, unsigned long request, void *arg) {
     if (request == TIOCGWINSZ)
       *(struct winsize *)arg = (struct winsize){.ws_row = st.rows, .ws_col = st.cols};
     if (request == TIOCGPGRP) *(pid_t *)arg = (pid_t)st.pgrp;
-    if (request == FIONREAD) *(int *)arg = (int)st.avail;
+    if (request == FIONREAD) // ptyd's, and what the read-ahead holds already (poll.c)
+      *(int *)arg = (int)st.avail + (o->ra && o->ra->op == RA_READ ? (int)(o->ra->len - o->ra->pos) : 0);
     if (request == TCGETS) {
       struct termios *t = arg;
       *t = (struct termios){
@@ -1222,7 +1257,12 @@ static ofd *file_reopen(const char *path, size_t len, int flags, uint64_t offset
 static ofd *file_join(const char *path, size_t len, int flags, const uint8_t token[16], uint64_t offset) {
   p9_client *c = nullptr;
   uint32_t fid = 0, joined = 0;
-  if (vx_ns_walk(fd_namespace(), (vx_str){path, len}, &c, &fid) == VX_OK) {
+  // Any fid on the server picks the connection the token is good on: the
+  // file's own, or its directory's, if it was removed or renamed since.
+  size_t dir = len;
+  while (dir > 1 && path[dir - 1] != '/') dir--;
+  if (vx_ns_walk(fd_namespace(), (vx_str){path, len}, &c, &fid) == VX_OK ||
+      vx_ns_walk(fd_namespace(), (vx_str){path, dir}, &c, &fid) == VX_OK) {
     p9c_clunk(c, fid);
     if (p9c_join(c, token, &joined) == VX_OK) {
       ofd *o = ofd_new(OFD_FILE, flags & (O_ACCMODE | O_APPEND | O_NONBLOCK));
@@ -1247,7 +1287,7 @@ static void fd_records(const fd_slot *table, vx_ndb_writer *w, vx_handle *handle
   vx_ndb_end(w);
   for (int fd = 0; fd < FD_MAX; fd++) {
     const ofd *o = table[fd].o;
-    if (!o || table[fd].cloexec) continue;
+    if (!o || table[fd].cloexec || o->lost) continue;
     int same = -1;
     for (int j = 0; j < fd && same < 0; j++)
       if (table[j].o == o && !table[j].cloexec) same = j;
@@ -1379,7 +1419,10 @@ static void fd_after_fork(void) {
     ofd *n = o->has_token ? file_join(o->path, o->path_len, o->flags, o->token, offset)
                           : file_reopen(o->path, o->path_len, o->flags, offset);
     o->has_token = false;
-    if (!n) continue; // reads and writes now fail with EBADF
+    if (!n) { // gone: every call on it now fails with EBADF
+      o->lost = true;
+      continue;
+    }
     o->f = n->f;
     o->dirs_len = o->dirs_at = 0;
     o->dir_next = 0;

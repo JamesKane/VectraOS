@@ -31,6 +31,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <stdatomic.h>
 #include <stdckdint.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -111,7 +112,8 @@ static long vx_unimplemented(long n) {
   return -ENOSYS;
 }
 
-static bool sig_restarting; // the call is being made again after a signal (time_sleep keeps its deadline)
+static bool sig_restarting;          // the call is being made again after a signal (its deadline kept)
+static vx_instant sig_call_deadline; // a sleep's or poll's (start.c, poll.c)
 
 static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, long a6) {
   switch (n) {
@@ -133,7 +135,9 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
   case SYS_ioctl: return fd_ioctl((int)a1, (unsigned long)a2, (void *)a3);
   case SYS_fcntl: return fd_fcntl((int)a1, (int)a2, a3);
   case SYS_dup: return fd_dup((int)a1, -1, 0);
-  case SYS_dup3: return a1 == a2 ? -EINVAL : fd_dup((int)a1, (int)a2, (int)a3);
+  case SYS_dup3: // a target that cannot be one is EBADF, not dup's lowest free
+    if ((int)a2 < 0) return -EBADF;
+    return a1 == a2 ? -EINVAL : fd_dup((int)a1, (int)a2, (int)a3);
   case SYS_faccessat: return fd_faccessat((int)a1, (const char *)a2);
   case SYS_mkdirat: return fd_mkdirat((int)a1, (const char *)a2, (mode_t)a3);
   case SYS_unlinkat: return fd_unlinkat((int)a1, (const char *)a2, (int)a3);
@@ -163,7 +167,7 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
   case SYS_mkdir: return fd_mkdirat(AT_FDCWD, (const char *)a1, (mode_t)a2);
   case SYS_unlink: return fd_unlinkat(AT_FDCWD, (const char *)a1, 0);
   case SYS_rmdir: return fd_unlinkat(AT_FDCWD, (const char *)a1, AT_REMOVEDIR);
-  case SYS_dup2: return fd_dup2((int)a1, (int)a2);
+  case SYS_dup2: return (int)a2 < 0 ? -EBADF : fd_dup2((int)a1, (int)a2);
   case SYS_readlink: return fd_readlinkat(AT_FDCWD, (const char *)a1, (char *)a2, (size_t)a3);
   case SYS_rename: return fd_renameat(AT_FDCWD, (const char *)a1, AT_FDCWD, (const char *)a2, 0);
   case SYS_symlink: return fd_symlinkat((const char *)a1, AT_FDCWD, (const char *)a2);
@@ -175,7 +179,10 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
   case SYS_poll: return sys_poll((struct pollfd *)a1, (nfds_t)a2, (int)a3);
   case SYS_select: {
     const struct timeval *tv = (const struct timeval *)a5;
-    struct timespec ts = tv ? (struct timespec){tv->tv_sec, tv->tv_usec * 1000} : (struct timespec){};
+    struct timespec ts = {};
+    if (tv && (tv->tv_sec < 0 || tv->tv_usec < 0)) return -EINVAL;
+    if (tv) // microseconds past a second carried into the seconds, as Linux does
+      ts = (struct timespec){tv->tv_sec + tv->tv_usec / 1'000'000, tv->tv_usec % 1'000'000 * 1000};
     return sys_select((int)a1, (fd_set *)a2, (fd_set *)a3, (fd_set *)a4, tv ? &ts : nullptr, nullptr);
   }
   case SYS_fork:
@@ -273,34 +280,36 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
 }
 
 // Every call musl makes. A signal that arrives during one is delivered as it
-// returns (signal.c); the call is made again if no handler that wants EINTR
-// ran, as for SA_RESTART and ignored signals. sigsuspend and pause always
-// return EINTR.
+// returns (signal.c). A call that a signal interrupted is made again unless
+// a handler that wants EINTR ran: SA_RESTART, an ignored signal, and a
+// blocked one (the kernel ends a wait for any note) do not end it. poll and
+// select end with EINTR once any handler has run, as Linux's do; sigsuspend
+// and pause always do. Each time, a sleep's or poll's deadline is the first's.
 long __vx_syscall(long n, long a1, long a2, long a3, long a4, long a5, long a6) {
+  bool waits = n == SYS_ppoll || n == SYS_pselect6,
+       pauses = n == SYS_rt_sigsuspend || (n == SYS_ppoll && a1 == 0 && a2 == 0);
+#ifdef SYS_poll
+  waits = waits || n == SYS_poll || n == SYS_select;
+#endif
+#ifdef SYS_pause
+  pauses = pauses || n == SYS_pause;
+#endif
+  // The depth stays up until the call is done, made again or not: a signal
+  // that comes between is pending, not run before the choice is made.
+  uint32_t ran = sig_handlers_ran, cut = sig_eintr_ran;
+  bool outer = sig_depth == 0;
   sig_depth = sig_depth + 1;
   long r = vx_dispatch(n, a1, a2, a3, a4, a5, a6);
-  sig_depth = sig_depth - 1;
-  while (sig_depth == 0 && (sig_pending & ~sig_mask)) {
-    uint32_t ran = sig_handlers_ran;
-    bool eintr = sig_deliver_pending();
-    // poll and select end with EINTR once any handler has run, SA_RESTART
-    // or not, as Linux's do; any call is made again when none has.
-    bool waits = n == SYS_ppoll || n == SYS_pselect6;
-#ifdef SYS_poll
-    waits = waits || n == SYS_poll || n == SYS_select;
-#endif
-    if (waits && ran != sig_handlers_ran) eintr = true;
-    bool again = r == -EINTR && !eintr && n != SYS_rt_sigsuspend && !(n == SYS_ppoll && a1 == 0 && a2 == 0);
-#ifdef SYS_pause
-    again = again && n != SYS_pause;
-#endif
-    if (!again) break;
+  while (outer) {
+    sig_run_pending();
+    bool eintr = sig_eintr_ran != cut || (waits && sig_handlers_ran != ran);
+    if (r != -EINTR || eintr || pauses) break;
     sig_restarting = true;
-    sig_depth = sig_depth + 1;
     r = vx_dispatch(n, a1, a2, a3, a4, a5, a6);
-    sig_depth = sig_depth - 1;
     sig_restarting = false;
   }
+  sig_depth = sig_depth - 1;
+  if (outer) sig_run_pending(); // one that came after the choice: on the way out
   return r;
 }
 

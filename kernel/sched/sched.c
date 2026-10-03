@@ -326,11 +326,17 @@ static void sched_start_thread(thread *t) {
   spin_unlock(&sched.lock);
 }
 
+[[noreturn]] static void thread_exit_current(void); // obj/process.c
+
 // The first time a thread runs, arch_context_switch returns into the
 // architecture's trampoline, which calls this with the lock still held from the
-// switch. It never returns: it enters user mode.
+// switch. It never returns: it enters user mode. One suspended before it ever
+// ran parks on its first way back to the kernel, its user registers in place
+// (thread_suspend pokes it until it does); one whose task was killed
+// meanwhile ends here.
 [[noreturn]] void thread_entry(thread *t) {
   reap_after_switch();
+  if (t->task->killed) thread_exit_current();
   arch_enter_user(t->user_entry, t->user_sp, t->user_arg, t->user_arg2, thread_kstack_top(t));
 }
 
@@ -380,9 +386,13 @@ static void sched_kick(thread *t, vx_status why) {
     // Ready, or running here or elsewhere: if it is about to block, the block
     // returns at once; if it is in user mode on another CPU, interrupt it.
     // Its next block's result is pending_result, never wait_result: a wait
-    // that has already ended (a reply handed to it, say) keeps its own.
+    // that has already ended (a reply handed to it, say) keeps its own. A
+    // wake already pending with a result (thread_wake_token's, a packet
+    // taken, a futex woken) stands, but against a kill: the waker counted it
+    // as woken, and the interrupt is not lost, as the thread takes it on its
+    // way back to user mode.
+    if (!t->wake_pending || t->pending_result < 0 || why == VX_ERR_KILLED) t->pending_result = why;
     t->wake_pending = true;
-    t->pending_result = why;
     if (t->state == THREAD_RUNNING && t->cpu && t->cpu != this_cpu()) arch_send_resched(t->cpu);
   }
   spin_unlock(&sched.lock);

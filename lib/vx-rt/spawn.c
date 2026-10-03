@@ -187,7 +187,7 @@ static void vx_close_all(const vx_handle *h, uint32_t n) {
                  : vx_handle_dup(t, VX_ALL_RIGHTS, &given[0]);
   if (st == VX_OK && a->prepare) {
     st = a->prepare(a->ctx, t, &given[count], &names[count]);
-    if (st == VX_OK && given[count]) count++;
+    if (given[count]) count++; // counted, failure or not, so it is closed with the rest
   }
 
   // The spawn message: the header, then its records.

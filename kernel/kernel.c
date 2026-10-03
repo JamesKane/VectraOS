@@ -94,7 +94,9 @@ static void arch_sync_icache(void *p, size_t len); // code written through a dat
 // with each switch between threads; the kernel itself never touches FP/SIMD
 // (-mgeneral-regs-only), so nothing else needs to.
 static void arch_user_switch(thread *prev, thread *next);
-static void arch_fp_init(uint8_t *fp); // a new thread's: the architecture's reset values
+static void arch_user_save(thread *th); // the current thread's TLS and FP/SIMD registers, into th
+static void arch_user_load(thread *th); // and back
+static void arch_fp_init(uint8_t *fp);  // a new thread's: the architecture's reset values
 static uint64_t arch_tls_read(void);
 static void arch_tls_write(uint64_t value);
 

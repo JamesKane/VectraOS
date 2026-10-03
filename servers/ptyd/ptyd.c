@@ -56,9 +56,14 @@ typedef struct pty {
   uint32_t iflag, oflag, cflag, lflag;
   uint8_t cc[NCCS];
   uint16_t rows, cols;
-  int64_t pgrp;      // the foreground process group, 0 for none
-  ring in;           // ended lines (canonical) or bytes, for the slave to read
-  uint32_t eofs;     // ^D markers in `in`: each a read that returns 0
+  int64_t pgrp; // the foreground process group, 0 for none
+  ring in;      // ended lines (canonical) or bytes, for the slave to read
+  // Where a read of `in` must stop though no newline came: after a line a
+  // ^D sent as it was, or, where nothing came since, the end of the file (a
+  // read of 0). Positions count the bytes ever put in `in`.
+  uint64_t in_put, in_taken;
+  uint64_t breaks[16];
+  uint32_t nbreaks;
   uint8_t line[BUF]; // the line being typed (canonical)
   uint32_t line_len;
   ring out;         // for the master to read: the slave's output and echo
@@ -81,6 +86,35 @@ static uint32_t ring_take(ring *r, uint8_t *out, uint32_t n) {
   r->head = (r->head + n) % BUF;
   r->len -= n;
   return n;
+}
+
+static struct p9_ring_server server; // below
+
+// Input, counted, for the breaks' positions.
+static void in_put(pty *p, uint8_t c) {
+  if (p->in.len == BUF) return; // full: dropped, as a terminal does
+  ring_put(&p->in, c);
+  p->in_put++;
+}
+
+static uint32_t in_take(pty *p, uint8_t *out, uint32_t n) {
+  n = ring_take(&p->in, out, n);
+  p->in_taken += n;
+  while (p->nbreaks && p->breaks[0] < p->in_taken) // passed (a read not canonical): forgotten
+    memmove(p->breaks, p->breaks + 1, --p->nbreaks * sizeof p->breaks[0]);
+  return n;
+}
+
+static void in_break(pty *p) {
+  if (p->nbreaks == sizeof p->breaks / sizeof p->breaks[0]) return; // so many unread: the rest run on
+  p->breaks[p->nbreaks++] = p->in_put;
+}
+
+static void in_flush(pty *p) {
+  p->in = (ring){};
+  p->in_taken = p->in_put = 0;
+  p->nbreaks = 0;
+  p->line_len = 0;
 }
 
 static void echo(pty *p, uint8_t c) {
@@ -127,7 +161,7 @@ static void full(pty *p) {
     if (start > 0 && p->line[start - 1] >= 0xc0) start--; // the lead byte of the last rune
     if (start < end && !vx_fullrune((const char *)p->line + start, end - start)) end = start;
   }
-  for (uint32_t i = 0; i < end; i++) ring_put(&p->in, p->line[i]);
+  for (uint32_t i = 0; i < end; i++) in_put(p, p->line[i]);
   memmove(p->line, p->line + end, p->line_len - end);
   p->line_len -= end;
 }
@@ -149,7 +183,7 @@ static void typed(pty *p, uint8_t c) {
     }
   }
   if (!(p->lflag & T_ICANON)) {
-    ring_put(&p->in, c);
+    in_put(p, c);
     echo(p, c);
     return;
   }
@@ -162,9 +196,8 @@ static void typed(pty *p, uint8_t c) {
     return;
   }
   if (c == p->cc[V_EOF]) { // the line as it is, or on an empty one the end of the file
-    if (!p->line_len) p->eofs++;
-    for (uint32_t i = 0; i < p->line_len; i++) ring_put(&p->in, p->line[i]);
-    if (!p->line_len) ring_put(&p->in, 0); // the marker
+    for (uint32_t i = 0; i < p->line_len; i++) in_put(p, p->line[i]);
+    in_break(p);
     p->line_len = 0;
     return;
   }
@@ -172,7 +205,7 @@ static void typed(pty *p, uint8_t c) {
   if (p->line_len == BUF) full(p);
   p->line[p->line_len++] = c;
   if (c == '\n') {
-    for (uint32_t i = 0; i < p->line_len; i++) ring_put(&p->in, p->line[i]);
+    for (uint32_t i = 0; i < p->line_len; i++) in_put(p, p->line[i]);
     p->line_len = 0;
   }
 }
@@ -262,6 +295,10 @@ static vx_status fs_open(void *ctx, uint64_t node, uint8_t mode) {
     if (p->master_gone) return VX_ERR_PEER_CLOSED;
     p->slaves++;
   }
+  if (node < SLAVE) { // another fid for the master (Tjoin: a fork's, poll's): one more to close
+    if (p->master_gone) return VX_ERR_PEER_CLOSED;
+    p->masters++;
+  }
   return VX_OK;
 }
 
@@ -332,11 +369,21 @@ static vx_status fs_read(void *ctx, uint64_t node, uint64_t offset, uint8_t *buf
   if (node < SLAVE) { // the master: what the slave wrote, and echo
     if (!p->out.len) return VX_ERR_SHOULD_WAIT;
     *count = ring_take(&p->out, buf, *count);
+    server.again = true; // room for a slave write held for it
     return VX_OK;
   }
-  if (p->interrupted) { // a signal ptyd sent while this read waited: it ends
+  // A signal ptyd sent while a read waited ends it; but not one that finds
+  // input here (the read it was for may have been given up since).
+  if (p->interrupted && !p->in.len) {
     p->interrupted = p->reading = false;
     return VX_ERR_INTERRUPTED;
+  }
+  p->interrupted = false;
+  bool canonical = p->lflag & T_ICANON;
+  if (canonical && p->nbreaks && p->breaks[0] == p->in_taken) { // a ^D on an empty line: the end of the file
+    memmove(p->breaks, p->breaks + 1, --p->nbreaks * sizeof p->breaks[0]);
+    p->reading = false;
+    return *count = 0, VX_OK;
   }
   if (!p->in.len) {
     if (p->master_gone) return *count = 0, VX_OK; // the end of the file: hung up
@@ -344,21 +391,20 @@ static vx_status fs_read(void *ctx, uint64_t node, uint64_t offset, uint8_t *buf
     return VX_ERR_SHOULD_WAIT;
   }
   p->reading = false;
-  if (!(p->lflag & T_ICANON)) {
-    *count = ring_take(&p->in, buf, *count);
+  if (!canonical) {
+    *count = in_take(p, buf, *count);
     return VX_OK;
   }
-  // One line at most; a ^D marker on its own is the end of the file.
+  // One line at most: to its newline, or to where a ^D sent it.
   uint32_t n = 0;
-  uint8_t c;
   while (n < *count && p->in.len) {
-    c = p->in.b[p->in.head];
-    if (c == 0 && p->eofs) {
-      if (!n) ring_take(&p->in, &c, 1), p->eofs--; // an empty read
+    uint8_t c = p->in.b[p->in.head];
+    in_take(p, &buf[n++], 1);
+    if (c == '\n') break; // a break here too is the next read's: the end of the file
+    if (p->nbreaks && p->breaks[0] == p->in_taken) {
+      memmove(p->breaks, p->breaks + 1, --p->nbreaks * sizeof p->breaks[0]);
       break;
     }
-    ring_take(&p->in, &buf[n++], 1);
-    if (c == '\n') break;
   }
   *count = n;
   return VX_OK;
@@ -369,8 +415,6 @@ static uint64_t field(const vx_ndb_record *r, const char *key, uint64_t was) {
   vx_ndb_get_u64(r, key, &v);
   return v;
 }
-
-static p9_ring_server server; // below
 
 // NOLINTNEXTLINE(readability-non-const-parameter): p9_fs's signature
 static vx_status fs_write(void *ctx, uint64_t node, uint64_t offset, const uint8_t *buf, uint32_t *count) {
@@ -393,7 +437,7 @@ static vx_status fs_write(void *ctx, uint64_t node, uint64_t offset, const uint8
     p->rows = (uint16_t)field(&rec, "rows", p->rows);
     p->cols = (uint16_t)field(&rec, "cols", p->cols);
     p->pgrp = (int64_t)field(&rec, "pgrp", (uint64_t)p->pgrp);
-    if (vx_ndb_has(&rec, "flush")) p->in = (ring){}, p->line_len = 0, p->eofs = 0;
+    if (vx_ndb_has(&rec, "flush")) in_flush(p);
     if (rows != p->rows || cols != p->cols) {
       signal_group(p, SIGWINCH);
       p->interrupted = false; // a resize does not end reads
@@ -405,10 +449,18 @@ static vx_status fs_write(void *ctx, uint64_t node, uint64_t offset, const uint8
     return VX_OK;
   }
   if (p->master_gone) return VX_ERR_PEER_CLOSED;
-  for (uint32_t i = 0; i < *count; i++) { // the program's output, to the master
-    if (buf[i] == '\n' && (p->oflag & T_OPOST) && (p->oflag & T_ONLCR)) ring_put(&p->out, '\r');
-    ring_put(&p->out, buf[i]);
+  // The program's output, to the master: as much as there is room for (a
+  // newline may take two), the rest written again; none, and the write
+  // waits for the master to read (held, as a read is).
+  uint32_t taken = 0;
+  for (; taken < *count; taken++) {
+    bool crnl = buf[taken] == '\n' && (p->oflag & T_OPOST) && (p->oflag & T_ONLCR);
+    if (BUF - p->out.len < (crnl ? 2u : 1u)) break;
+    if (crnl) ring_put(&p->out, '\r');
+    ring_put(&p->out, buf[taken]);
   }
+  if (!taken && *count) return VX_ERR_SHOULD_WAIT;
+  *count = taken;
   return VX_OK;
 }
 

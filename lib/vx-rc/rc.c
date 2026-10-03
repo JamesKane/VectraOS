@@ -103,6 +103,7 @@ static void *rc_alloc(rc *r, size_t n) {
     return m;
   }
   rc_error(r, "out of memory", nullptr);
+  r->failed = true; // the script stops: a word or output left out would change what it does
   return nullptr;
 }
 
@@ -216,9 +217,10 @@ static void rc_setvar(rc *r, const char *name, size_t n, rc_word *w) {
   rc_setvar(r, "status", 6, rc_newword(r, s, n));
 }
 
-static bool rc_truestatus(rc *r) { // every element of $status empty, or "0"
+static bool rc_truestatus(rc *r) { // as rc's: nothing in $status but 0s and a pipeline's |s
   for (const rc_word *w = rc_getvar(r, "status"); w; w = w->next)
-    if (w->len && !(w->len == 1 && w->s[0] == '0')) return false;
+    for (size_t i = 0; i < w->len; i++)
+      if (w->s[i] != '0' && w->s[i] != '|') return false;
   return true;
 }
 
@@ -285,6 +287,7 @@ typedef struct rc_lexer {
   char *scratch; // where word texts are kept for the parse
   size_t used, cap;
   bool failed;
+  bool incomplete; // it failed only for the text ending: in a quote, or after a \ that ends a line
   const char *why;
 } rc_lexer;
 
@@ -342,14 +345,23 @@ static bool rc_lex_fds(rc_lexer *lx, uint8_t *fd0, uint8_t *fd1, bool *eq) {
   return true;
 }
 
+// A \ that ends a line, which is white space wherever it is: it ends a word.
+static bool rc_continues(const char *q, const char *end) {
+  return q < end && q[0] == '\\' && (q + 1 == end || q[1] == '\n');
+}
+
 static rc_token rc_lex_raw(rc_lexer *lx) {
   rc_token t = {.line = lx->line};
   const char *start = lx->p;
   for (;;) { // white space, line continuations, comments
     while (lx->p < lx->end && (*lx->p == ' ' || *lx->p == '\t')) lx->p++;
-    if (lx->p + 1 < lx->end && lx->p[0] == '\\' && lx->p[1] == '\n') {
+    if (lx->p + 2 < lx->end && lx->p[0] == '\\' && lx->p[1] == '\n') {
       lx->p += 2, lx->line++;
       continue;
+    }
+    if (rc_continues(lx->p, lx->end)) { // a \ that ends the text: the line goes on, in more text
+      lx->failed = lx->incomplete = true, lx->why = "unexpected end";
+      return t.kind = TK_EOF, t;
     }
     if (lx->p < lx->end && *lx->p == '#') {
       while (lx->p < lx->end && *lx->p != '\n') lx->p++;
@@ -421,7 +433,7 @@ static rc_token rc_lex_raw(rc_lexer *lx) {
     const char *s = lx->p;
     for (const char *q = s;; q++) {
       if (q >= lx->end) {
-        lx->failed = true, lx->why = "unterminated quote";
+        lx->failed = lx->incomplete = true, lx->why = "unterminated quote";
         return t.kind = TK_EOF, t;
       }
       if (*q == '\n') lx->line++;
@@ -447,12 +459,12 @@ static rc_token rc_lex_raw(rc_lexer *lx) {
   lx->p--;
   const char *s = lx->p;
   size_t n = 0;
-  for (const char *q = s; q < lx->end && rc_wordchr(*q); q++)
+  for (const char *q = s; q < lx->end && rc_wordchr(*q) && !rc_continues(q, lx->end); q++)
     n += (*q == '*' || *q == '?' || *q == '[') ? 2 : 1;
   t.s = rc_lex_keep(lx, n);
   if (!t.s) return t.kind = TK_EOF, t;
   size_t k = 0;
-  for (; lx->p < lx->end && rc_wordchr(*lx->p); lx->p++) {
+  for (; lx->p < lx->end && rc_wordchr(*lx->p) && !rc_continues(lx->p, lx->end); lx->p++) {
     if (*lx->p == '*' || *lx->p == '?' || *lx->p == '[') t.s[k++] = RC_GLOB;
     t.s[k++] = *lx->p;
   }
@@ -915,7 +927,18 @@ static rc_pstate rc_aftercmd(rc_parser *p) {
   } else if (!rc_is_terminator(t->kind)) {
     return p->why = "syntax error", S_DONE;
   }
-  if (cmd != RC_NONE) list->a = list->a == RC_NONE ? cmd : rc_node_new(p, N_SEQ, list->a, cmd, RC_NONE);
+  // The chain grows to the right, SEQ(first, SEQ(second, ...)), through its
+  // last link (c: its node + 1), so it compiles in a stack of fixed depth.
+  if (cmd == RC_NONE) return S_CMD;
+  if (list->a == RC_NONE) {
+    list->a = cmd;
+  } else if (!list->c) {
+    int32_t seq = rc_node_new(p, N_SEQ, list->a, cmd, RC_NONE);
+    list->a = seq, list->c = seq + 1;
+  } else {
+    int32_t last = list->c - 1, seq = rc_node_new(p, N_SEQ, p->nodes[last].b, cmd, RC_NONE);
+    if (seq != RC_NONE) p->nodes[last].b = seq, list->c = seq + 1;
+  }
   return S_CMD;
 }
 
@@ -1110,15 +1133,15 @@ static int32_t rc_parse(rc_parser *p) {
 // are compiled first.
 
 typedef enum rc_op : uint8_t {
-  X_MARK,     // a new list on the stack
-  X_WORD,     // a: the string, b: its length: added to the top list
-  X_DOL,      // the top list's names: their values onto the list below
-  X_COUNT,    // their count
-  X_JOIN,     // their values joined by spaces, one word
-  X_SUB,      // the top list subscripts the name in the one below: onto the list below that
-  X_CONC,     // the top two lists concatenated, onto the one below
-  X_SIMPLE,   // f0: async. The top list is a command: run it
-  X_STAGE,    // f0: the fd it pipes to the next. The top list is a pipeline's stage
+  X_MARK,   // a new list on the stack
+  X_WORD,   // a: the string, b: its length: added to the top list
+  X_DOL,    // the top list's names: their values onto the list below
+  X_COUNT,  // their count
+  X_JOIN,   // their values joined by spaces, one word
+  X_SUB,    // the top list subscripts the name in the one below: onto the list below that
+  X_CONC,   // the top two lists concatenated, onto the one below
+  X_SIMPLE, // f0: async. The top list is a command: run it
+  X_STAGE,  // f0/f1: the fds it pipes to the next/from the last; a: its redirections. The top list is a stage
   X_PIPELINE, // a: stages, f0: async
   X_ASSIGN,   // the top list names a variable, the one below its value
   X_LOCAL,    // as X_ASSIGN, a local of the frame, until X_UNLOCAL
@@ -1210,17 +1233,20 @@ static bool rc_is_case(const rc_compiler *c, int32_t n) {
   return w->kind == N_WORD && rc_streq(w->s, w->len, "case", 4);
 }
 
-// A switch's body as a list of its commands, in order (its N_SEQ chain flattened).
-static uint32_t rc_flatten(const rc_compiler *c, int32_t n, int32_t *out, uint32_t cap) {
-  int32_t stack[256];
+// A switch's body as a list of its commands, in order (its N_SEQ chain
+// flattened); a body longer than cap is an error, not cut short.
+static uint32_t rc_flatten(rc_compiler *c, int32_t n, int32_t *out, uint32_t cap) {
+  int32_t stack[64]; // the chain grows to the right (rc_aftercmd): it needs little
   uint32_t sp = 0, count = 0;
   if (n != RC_NONE) stack[sp++] = n;
-  while (sp && count < cap) {
+  while (sp) {
     int32_t x = stack[--sp];
     if (c->nodes[x].kind == N_SEQ) {
-      if (sp + 2 > 256) return count;
+      if (sp + 2 > sizeof stack / sizeof stack[0]) return c->why = "switch nested too deeply", 0;
       stack[sp++] = c->nodes[x].b; // right after left
       stack[sp++] = c->nodes[x].a;
+    } else if (count == cap) {
+      return c->why = "switch too long", 0;
     } else {
       out[count++] = x;
     }
@@ -1356,7 +1382,7 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
       } else if (it.phase == 2) { // the next word
         if (it.cur == RC_NONE) {
           if (it.stage)
-            rc_emit(c, X_STAGE, it.out_fd, it.in_fd, 0, 0);
+            rc_emit(c, X_STAGE, it.out_fd, it.in_fd, it.count, 0);
           else
             rc_emit(c, X_SIMPLE, 0, 0, 0, 0);
           if (it.count) rc_emit(c, X_POPREDIR, 0, 0, it.count, 0);
@@ -1602,8 +1628,8 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
       }
       break;
     case N_SWITCH: { // the subject once; each case's patterns tested against it; X_POPM
-      int32_t body[256];
-      uint32_t n = rc_flatten(c, t->b, body, 256);
+      static int32_t body[4096];
+      uint32_t n = rc_flatten(c, t->b, body, sizeof body / sizeof body[0]);
       if (it.phase == 0) {
         rc_emit(c, X_MARK, 0, 0, 0, 0);
         it.cur = 0;   // the next command of the body
@@ -1645,6 +1671,7 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
         int32_t ws[64];
         uint32_t nw = 0;
         for (; w != RC_NONE && nw < 64; w = c->nodes[w].next) ws[nw++] = w;
+        if (w != RC_NONE) return c->why = "too many patterns in a case", false;
         for (uint32_t k = nw; k-- > 0;) RC_PUSH(ws[k], 0);
       } else {
         it.phase = 4;
@@ -1736,7 +1763,7 @@ static void rc_glob_each(void *arg, const char *name, size_t n) {
   rc_globber *g = arg;
   if (n && name[0] == '.' && !(g->plen && g->pat[0] == '.')) return; // dot files only when asked for
   if (!rc_match(name, n, g->pat, g->plen) || g->n >= 4096) return;
-  rc_word *w = rc_alloc(g->r, sizeof *w + g->dlen + n + 1);
+  rc_word *w = rc_alloc(g->r, sizeof *w + g->dlen + n + 2); // room for the '/' rc_glob may add
   if (!w) return;
   memcpy(w->s, g->dir, g->dlen);
   memcpy(w->s + g->dlen, name, n);
@@ -1860,10 +1887,9 @@ static void rc_degloblist(rc_word *w) {
   for (; w; w = w->next) rc_deglob(w);
 }
 
-// The descriptors a command gets: the redirection stack applied, in order.
-static void rc_fds(const rc *r, rc_fd *fds) {
-  for (uint32_t i = 0; i < RC_FDS; i++) fds[i] = (rc_fd){.kind = RC_FD_INHERIT, .dup = (uint8_t)i};
-  for (uint32_t i = 0; i < r->nredirs; i++) {
+// Redirections from..to of the stack applied to fds, in order.
+static void rc_apply_redirs(const rc *r, rc_fd *fds, uint32_t from, uint32_t to) {
+  for (uint32_t i = from; i < to && i < r->nredirs; i++) {
     const rc_redir *d = &r->redirs[i];
     if (d->fd >= RC_FDS) continue;
     if (d->to.kind == RC_FD_DUP && d->to.dup < RC_FDS)
@@ -1871,6 +1897,12 @@ static void rc_fds(const rc *r, rc_fd *fds) {
     else
       fds[d->fd] = d->to;
   }
+}
+
+// The descriptors a command gets: the redirection stack applied, in order.
+static void rc_fds(const rc *r, rc_fd *fds) {
+  for (uint32_t i = 0; i < RC_FDS; i++) fds[i] = (rc_fd){.kind = RC_FD_INHERIT, .dup = (uint8_t)i};
+  rc_apply_redirs(r, fds, 0, r->nredirs);
 }
 
 // Output of the shell's own (a builtin's): to a capture, or the host.
@@ -1928,10 +1960,46 @@ static void rc_freelocals(rc *r, rc_var *v) {
   }
 }
 
+// A pipeline's stages, gathered by X_STAGE until X_PIPELINE runs them: its
+// own, the last it says, so a pipeline in a stage's `{} runs alone. A file
+// a gathered stage was given stays open until its pipeline has run, though
+// the redirection that opened it is undone at once (rc_pop_redirs): each
+// such close waits here, with how many stages were gathered then.
+typedef struct rc_stage {
+  rc_command cmd;
+} rc_stage;
+
+static constexpr uint32_t RC_STAGES = 64;
+static rc_stage rc_stages[RC_STAGES];
+static uint32_t rc_nstages;
+static struct {
+  uint32_t handle, level;
+} rc_closes[2 * RC_STAGES];
+static uint32_t rc_ncloses;
+
+// The stages from base on let go, and the files only they used closed.
+static void rc_free_stages(rc *r, uint32_t base) {
+  for (uint32_t i = base; i < rc_nstages; i++) rc_freewords(r, (rc_word *)rc_stages[i].cmd.argv);
+  if (base < rc_nstages) rc_nstages = base;
+  uint32_t kept = 0;
+  for (uint32_t i = 0; i < rc_ncloses; i++) {
+    if (rc_closes[i].level > base)
+      r->host.close(r->host.ctx, rc_closes[i].handle);
+    else
+      rc_closes[kept++] = rc_closes[i];
+  }
+  rc_ncloses = kept;
+}
+
 static void rc_pop_redirs(rc *r, uint32_t to) {
   while (r->nredirs > to) {
     rc_redir *d = &r->redirs[--r->nredirs];
-    if (d->path && r->host.close) r->host.close(r->host.ctx, d->to.handle); // a file the host opened
+    if (d->path && r->host.close) { // a file the host opened: closed, or once a stage given it has run
+      if (rc_nstages && rc_ncloses < sizeof rc_closes / sizeof rc_closes[0])
+        rc_closes[rc_ncloses++] = (typeof(rc_closes[0])){d->to.handle, rc_nstages};
+      else
+        r->host.close(r->host.ctx, d->to.handle);
+    }
     rc_freewords(r, d->path);
     d->path = nullptr;
   }
@@ -2075,20 +2143,6 @@ static void rc_simple(rc *r, rc_word *argv, bool async) {
   rc_freewords(r, argv);
 }
 
-// A pipeline's stages, gathered by X_STAGE until X_PIPELINE runs them.
-typedef struct rc_stage {
-  rc_command cmd;
-  uint8_t out_fd, in_fd;
-} rc_stage;
-
-static rc_stage rc_stages[32];
-static uint32_t rc_nstages;
-
-static void rc_free_stages(rc *r) {
-  for (uint32_t i = 0; i < rc_nstages; i++) rc_freewords(r, (rc_word *)rc_stages[i].cmd.argv);
-  rc_nstages = 0;
-}
-
 // Concatenation (rc's ^): one word with each of a list, or pairwise.
 static rc_word *rc_conc(rc *r, const rc_word *a, const rc_word *b, bool *bad) {
   uint32_t na = rc_count(a), nb = rc_count(b);
@@ -2130,10 +2184,10 @@ static rc_word *rc_values(rc *r, const rc_word *names) {
   for (; names; names = names->next) {
     bool num;
     uint32_t k = rc_parse_index(names->s, names->len, &num);
-    if (num) { // $n: the n'th of $*
+    if (num && k) { // $n: the n'th of $*; $0 is a variable of its own, the script's name
       const rc_word *w = rc_getvar(r, "*");
       for (uint32_t i = 1; w && i < k; i++) w = w->next;
-      if (w && k) rc_listadd(&out, rc_newword(r, w->s, w->len));
+      if (w) rc_listadd(&out, rc_newword(r, w->s, w->len));
       continue;
     }
     rc_var *v = rc_var_find(r, names->s, names->len, false);
@@ -2233,24 +2287,33 @@ static void rc_execute(rc *r, uint32_t base) {
       break;
     }
     case X_SIMPLE: rc_simple(r, rc_poplist(r), in->f0); break;
-    case X_STAGE: {
+    case X_STAGE: { // a: its own redirections, the top of the stack
       rc_word *argv = rc_globlist(r, rc_poplist(r));
-      if (rc_nstages == 32) {
+      if (rc_nstages == RC_STAGES) {
         rc_freewords(r, argv);
+        rc_error(r, "pipelines nested too deeply", nullptr);
+        r->failed = true;
         break;
       }
       rc_stage *st = &rc_stages[rc_nstages++];
-      *st = (rc_stage){.cmd = {.argv = argv, .argc = rc_count(argv)}, .out_fd = in->f0, .in_fd = in->f1};
-      rc_fds(r, st->cmd.fds);
+      *st = (rc_stage){.cmd = {.argv = argv, .argc = rc_count(argv)}};
+      // As rc does in the child: what encloses the pipeline, then the pipe
+      // ends, then the stage's own redirections, which may move them.
+      uint32_t own = r->nredirs >= in->a ? r->nredirs - in->a : 0;
+      rc_fd *fds = st->cmd.fds;
+      for (uint32_t i = 0; i < RC_FDS; i++) fds[i] = (rc_fd){.kind = RC_FD_INHERIT, .dup = (uint8_t)i};
+      rc_apply_redirs(r, fds, 0, own);
+      if (in->f0 < RC_FDS) fds[in->f0] = (rc_fd){.kind = RC_FD_PIPE_OUT};
+      if (in->f1 < RC_FDS) fds[in->f1] = (rc_fd){.kind = RC_FD_PIPE_IN};
+      rc_apply_redirs(r, fds, own, r->nredirs);
       break;
     }
-    case X_PIPELINE: {
-      rc_command cmds[32];
-      bool ok = rc_nstages > 0;
-      for (uint32_t i = 0; i < rc_nstages; i++) {
-        cmds[i] = rc_stages[i].cmd;
-        if (rc_stages[i].out_fd < RC_FDS) cmds[i].fds[rc_stages[i].out_fd] = (rc_fd){.kind = RC_FD_PIPE_OUT};
-        if (rc_stages[i].in_fd < RC_FDS) cmds[i].fds[rc_stages[i].in_fd] = (rc_fd){.kind = RC_FD_PIPE_IN};
+    case X_PIPELINE: { // a: how many stages, the last gathered
+      rc_command cmds[RC_STAGES];
+      uint32_t first = rc_nstages >= in->a ? rc_nstages - in->a : 0, stages = rc_nstages - first;
+      bool ok = stages > 0 && stages == in->a;
+      for (uint32_t i = 0; i < stages; i++) {
+        cmds[i] = rc_stages[first + i].cmd;
         if (!cmds[i].argc) ok = false;
         rc_var *v = cmds[i].argc ? rc_var_find(r, cmds[i].argv->s, cmds[i].argv->len, false) : nullptr;
         if (v && v->fn) ok = false;
@@ -2260,8 +2323,8 @@ static void rc_execute(rc *r, uint32_t base) {
         rc_print(r, 2, "rc: a pipeline's stages must be programs (for now)\n"),
             rc_set_status(r, "pipeline", 8);
       else if (r->host.run)
-        r->host.run(r->host.ctx, r, cmds, rc_nstages, in->f0, &pid);
-      rc_free_stages(r);
+        r->host.run(r->host.ctx, r, cmds, stages, in->f0, &pid);
+      rc_free_stages(r, first);
       break;
     }
     case X_ASSIGN:
@@ -2403,9 +2466,13 @@ static void rc_execute(rc *r, uint32_t base) {
     case X_BACKQEND: { // the capture split at the separators on top
       rc_capture cap = r->captures[--r->ncaptures];
       rc_pop_redirs(r, r->nredirs - 1);
+      // Every byte of every word of $ifs separates; none (ifs=()) makes the
+      // whole output one word.
       rc_word *ifs = rc_poplist(r);
-      const char *seps = ifs ? ifs->s : " \t\n";
-      size_t nseps = ifs ? ifs->len : 3;
+      char seps[64];
+      size_t nseps = 0;
+      for (const rc_word *w = ifs; w; w = w->next)
+        for (size_t k = 0; k < w->len && nseps < sizeof seps; k++) seps[nseps++] = w->s[k];
       for (size_t i = 0; i < cap.len && r->sp;) {
         while (i < cap.len && rc_has(seps, nseps, cap.buf[i])) i++;
         size_t start = i;
@@ -2464,7 +2531,7 @@ static rc_code *rc_compile_text(rc *r, const char *text, size_t len, uint32_t li
   rc_code *code = nullptr;
   if (p->lx.scratch && p->nodes) {
     int32_t root = rc_parse(p);
-    *incomplete = p->incomplete;
+    *incomplete = p->incomplete || p->lx.incomplete;
     if (p->why) {
       char where[16];
       size_t k = sizeof where;
@@ -2543,8 +2610,8 @@ typedef enum rc_result : uint8_t { RC_OK, RC_INCOMPLETE, RC_SYNTAX, RC_FAILED, R
   rc_execute(r, base);
   while (r->nframes > base) rc_pop_frame(r); // after an error or exit: what was running
   while (r->sp) rc_freewords(r, rc_poplist(r));
-  rc_free_stages(r);
-  r->ncaptures = 0;
+  rc_free_stages(r, 0);
+  while (r->ncaptures) rc_free(r, r->captures[--r->ncaptures].buf); // an error inside `{}
   if (r->exiting) return RC_EXIT;
   if (r->failed) {
     rc_set_status(r, "error", 5);

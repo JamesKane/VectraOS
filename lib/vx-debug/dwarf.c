@@ -390,8 +390,8 @@ static bool dw_op(const vxd_builder *b, dw_cur *c, uint8_t op, uint8_t *out, siz
   bool addr_op = op == 0xa1 || op == 0xa2; // DW_OP_addrx, DW_OP_constx
   if (addr_op) {
     uint64_t a = dw_addr_at(b, dw_uleb(c));
-    if (out) {
-      out[*n] = 0x03; // DW_OP_addr
+    if (out && !c->bad) { // a bad one is not counted (emit_expr): nor written past what was
+      out[*n] = 0x03;     // DW_OP_addr
       for (int i = 0; i < 8; i++) out[*n + 1 + i] = (uint8_t)(a >> (8 * i));
     }
     *n += 9;
@@ -426,7 +426,7 @@ static bool dw_op(const vxd_builder *b, dw_cur *c, uint8_t op, uint8_t *out, siz
   else if (!(op >= 0x06 && op <= 0x9f && op != 0x9b))
     return false; // no operands: the rest of the range
   size_t len = (size_t)(c->p - start);
-  if (out) {
+  if (out && !c->bad) {
     out[*n] = op;
     memcpy(out + *n + 1, start, len);
   }
@@ -577,11 +577,16 @@ static void dw_line_files(vxd_builder *b, dw_cur *c, const char **dirs, uint32_t
   for (uint64_t k = 0; k < count && !c->bad; k++) {
     const char *path = nullptr;
     uint64_t dir = 0;
+    const uint8_t *entry = c->p;
     for (uint8_t i = 0; i < nformats; i++) {
       dw_val v;
       dw_read(c, &b->cu, (uint16_t)formats[i][1], 0, &v);
       if (formats[i][0] == 1) path = dw_string(b, &v); // DW_LNCT_path
       if (formats[i][0] == 2) dir = v.u;               // DW_LNCT_directory_index
+    }
+    if (c->p == entry) { // an entry of no bytes: a count from a broken header would never end
+      c->bad = true;
+      break;
     }
     if (is_dirs) {
       if (*ndirs < DW_MAX_FILES) dirs[(*ndirs)++] = path;
@@ -630,6 +635,7 @@ static void dw_lines(vxd_builder *b, uint64_t off) {
   uint8_t addr_size = (uint8_t)dw_fixed(&c, 1);
   dw_fixed(&c, 1); // segment selector size
   uint64_t header_len = dw_fixed(&c, 4);
+  if (c.bad || header_len > (uint64_t)(c.end - c.p)) return; // checked before the pointer is made
   const uint8_t *program = c.p + header_len;
   uint8_t min_inst = (uint8_t)dw_fixed(&c, 1);
   dw_fixed(&c, 1); // maximum operations per instruction: 1 on our machines
@@ -660,11 +666,11 @@ static void dw_lines(vxd_builder *b, uint64_t off) {
     switch (op) {
     case 0: { // extended
       uint64_t len = dw_uleb(&c);
-      const uint8_t *next = c.p + len;
       if (len == 0 || len > (uint64_t)(c.end - c.p)) {
         c.bad = true;
         break;
       }
+      const uint8_t *next = c.p + len;
       uint8_t sub = (uint8_t)dw_fixed(&c, 1);
       if (sub == 1) { // end_sequence
         emit_row(b, addr, file, line, flags | VXDI_END);

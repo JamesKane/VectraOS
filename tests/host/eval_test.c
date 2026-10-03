@@ -132,6 +132,8 @@ static const char *hex(const void *p) {
   expect(f, "first.nope", "no such member");
   expect(f, "(1 + 2", "unbalanced brackets");
   expect(f, "1 / 0", "division by zero");
+  expect(f, "9223372036854775808 / -1", "-9223372036854775808"); // wraps, as C's would; not a trap
+  expect(f, "9223372036854775808 % -1", "0");
   expect(f, "*table[0]", "not a pointer");
   expect(f, "ratio + 1", "floating-point arithmetic is not supported");
   expect(f, "first + 1", "not a number or pointer");

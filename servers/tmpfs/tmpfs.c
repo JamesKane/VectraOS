@@ -114,7 +114,9 @@ static vx_status fs_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) 
 static vx_status fs_parent(void *ctx, uint64_t id, uint64_t *parent) {
   (void)ctx;
   const node *n = node_at(id, nullptr);
-  if (!n) return VX_ERR_NOT_FOUND;
+  // A removed directory has no parent to go back to (its slot may hold
+  // another node by now): ENOENT, as Linux answers .. in one.
+  if (!n || n->removed) return VX_ERR_NOT_FOUND;
   *parent = id_of(n->parent ? n->parent : ROOT);
   return VX_OK;
 }
@@ -139,7 +141,7 @@ static vx_status fs_stat(void *ctx, uint64_t id, p9_stat *out) {
 static vx_status fs_open(void *ctx, uint64_t id, uint8_t mode) {
   (void)ctx;
   node *n = node_at(id, nullptr);
-  if (!n || n->removed) return VX_ERR_NOT_FOUND;
+  if (!n || (n->removed && !(mode & P9_OJOIN))) return VX_ERR_NOT_FOUND; // a join: open still, removed or not
   bool writes = (mode & 3) == P9_OWRITE || (mode & 3) == P9_ORDWR || (mode & P9_OTRUNC);
   if (n->dir && writes) return VX_ERR_ACCESS;
   if (mode & P9_OTRUNC) {

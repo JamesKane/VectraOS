@@ -65,27 +65,37 @@ static void publish(group *g, vx_str text) {
 
 // Adds the connectors a NEW or UPDATE carried, named by the lines after its
 // text; a source the group has already keeps its connector, and the new
-// handle is closed. False if there is no room or the names do not match.
+// handle is closed. All or nothing: false (and nothing taken, the caller
+// closing every handle) if the names do not match or there is no room.
 static bool add_connectors(group *g, vx_str names, const vx_handle *handles, uint32_t count) {
+  vx_str srcs[VX_CHANNEL_MAX_HANDLES];
+  bool known[VX_CHANNEL_MAX_HANDLES];
+  if (count > VX_CHANNEL_MAX_HANDLES) return false;
+  uint32_t free_slots = 0, needed = 0;
+  for (uint32_t k = 0; k < MAX_CONNECTORS; k++) free_slots += !g->conns[k].len;
   size_t at = 0;
-  for (uint32_t i = 0; i < count; i++) {
+  for (uint32_t i = 0; i < count; i++) { // first, every name checked and the room counted
     size_t start = at;
     while (at < names.len && names.ptr[at] != '\n') at++;
-    vx_str src = {names.ptr + start, at - start};
+    srcs[i] = (vx_str){names.ptr + start, at - start};
     at++;
-    if (!src.len || src.len >= SRC_MAX) return false;
-    bool known = false;
-    for (uint32_t k = 0; k < MAX_CONNECTORS && !known; k++)
-      known = g->conns[k].len && str_eq((vx_str){g->conns[k].src, g->conns[k].len}, src);
-    if (known) {
+    if (!srcs[i].len || srcs[i].len >= SRC_MAX) return false;
+    known[i] = false;
+    for (uint32_t k = 0; k < MAX_CONNECTORS && !known[i]; k++)
+      known[i] = g->conns[k].len && str_eq((vx_str){g->conns[k].src, g->conns[k].len}, srcs[i]);
+    for (uint32_t j = 0; j < i && !known[i]; j++) known[i] = str_eq(srcs[j], srcs[i]); // named twice
+    needed += !known[i];
+  }
+  if (needed > free_slots) return false;
+  for (uint32_t i = 0; i < count; i++) { // then taken
+    if (known[i]) {
       vx_handle_close(handles[i]);
       continue;
     }
     uint32_t k = 0;
-    while (k < MAX_CONNECTORS && g->conns[k].len) k++;
-    if (k == MAX_CONNECTORS) return false;
-    memcpy(g->conns[k].src, src.ptr, src.len);
-    g->conns[k].len = (uint8_t)src.len;
+    while (g->conns[k].len) k++;
+    memcpy(g->conns[k].src, srcs[i].ptr, srcs[i].len);
+    g->conns[k].len = (uint8_t)srcs[i].len;
     g->conns[k].connector = handles[i];
   }
   return true;
@@ -156,7 +166,7 @@ static void new_group(const nsd_msg *m, size_t len, uint32_t handles) {
     if (st == VX_OK) {
       g->page = (nsd_page *)va;
       st = add_connectors(g, names, msg_handles, handles) ? VX_OK : VX_ERR_INVALID;
-      handles = 0; // add_connectors took them, or forget_group will close what it kept
+      if (st == VX_OK) handles = 0; // add_connectors took them; else they are closed below
     }
   }
   vx_handle give[2] = {};
@@ -166,7 +176,11 @@ static void new_group(const nsd_msg *m, size_t len, uint32_t handles) {
     give[1] = page_for(g);
     for (uint32_t i = 0; i < MAX_MEMBERS; i++) // the member just made is the caller
       if (members[i].used && members[i].g == g) members[i].task = m->a.task;
-    if (!give[0] || !give[1]) st = VX_ERR_NO_MEMORY;
+    if (!give[0] || !give[1]) {
+      st = VX_ERR_NO_MEMORY;
+      for (int i = 0; i < 2; i++)
+        if (give[i]) vx_handle_close(give[i]); // the reply gives none
+    }
   }
   for (uint32_t i = 0; i < handles; i++) vx_handle_close(msg_handles[i]);
   if (st != VX_OK && g) {

@@ -13,7 +13,10 @@
 //       mem/0xBASE                  each writable mapping's bytes, from its base
 //
 // Read-only mappings are not copied: the images are named by their build
-// IDs. Then the task is killed with the trap's words, as an unhandled fault
+// IDs; of the writable ones, at most CRASH_MEM_MAX bytes, so one crash does
+// not fill /tmp. Each call to tmpfs has a time limit: the process that faulted
+// may be tmpfs, or one tmpfs waits on, and procfs would otherwise wait on it
+// as it waits on procfs. Then the task is killed with the trap's words, as an unhandled fault
 // always ends it. The directories go to tmpfs (connect=tmpfs), reached the
 // first time one is needed; /lib/crash and $home/lib/crash wait for a file
 // system that keeps them (docs/milestones.md).
@@ -21,6 +24,7 @@
 static vx_handle tmpfs; // a connector to /srv/tmpfs
 static p9_conn crash_conn;
 static uint32_t crash_root; // /crash on it, once made
+static constexpr uint64_t CRASH_MEM_MAX = 16ull << 20, CRASH_WAIT = 5'000'000'000;
 
 // A directory `name` made in dir: a fid walked to it, not open, so files
 // can be made in it (9P walks only from a fid that is not open).
@@ -34,11 +38,17 @@ static uint32_t crash_mkdir(p9_client *c, uint32_t dir, vx_str name) {
 
 // The connection to tmpfs, and its /crash, made the first time.
 static p9_client *crash_fs(void) {
-  if (crash_root) return &crash_conn.c;
+  if (crash_root && !crash_conn.dead) return &crash_conn.c;
+  if (crash_root) p9_ring_disconnect(&crash_conn); // it timed out: made again
+  crash_root = 0;
   uint32_t root = 0, dir = 0;
   if (!tmpfs || p9_ring_connect(tmpfs, &crash_conn) != VX_OK) return nullptr;
+  crash_conn.timeout = CRASH_WAIT;
   p9_client *c = &crash_conn.c;
-  if (p9c_attach(c, VX_STR(""), &root) != VX_OK) return nullptr;
+  if (p9c_attach(c, VX_STR(""), &root) != VX_OK) {
+    p9_ring_disconnect(&crash_conn);
+    return nullptr;
+  }
   vx_status st = p9c_walk(c, root, VX_STR("crash"), &dir);
   if (st != VX_OK) { // made: then walked to, for a fid that is not open (an open one cannot be walked from)
     uint32_t made = crash_mkdir(c, root, VX_STR("crash"));
@@ -46,7 +56,10 @@ static p9_client *crash_fs(void) {
     dir = made;
   }
   p9c_clunk(c, root);
-  if (st != VX_OK) return nullptr;
+  if (st != VX_OK) {
+    p9_ring_disconnect(&crash_conn);
+    return nullptr;
+  }
   crash_root = dir;
   return c;
 }
@@ -73,13 +86,15 @@ static void crash_mem(p9_client *c, uint32_t dir, const proc *p) {
   uint32_t mem = crash_mkdir(c, dir, VX_STR("mem"));
   if (!mem) return;
   vx_map_info m;
-  for (uint64_t at = 0; vx_as_query(p->task, at, &m) == VX_OK; at = m.base + m.size) {
+  uint64_t saved = 0;
+  for (uint64_t at = 0; saved < CRASH_MEM_MAX && vx_as_query(p->task, at, &m) == VX_OK;
+       at = m.base + m.size) {
     if (!(m.flags & VX_MAP_WRITE)) continue;
     char name[18];
     uint32_t fid;
     if (p9c_walk(c, mem, VX_STR(""), &fid) != VX_OK) continue;
     if (p9c_create(c, fid, (vx_str){name, hex_text(m.base, name)}, 0644, P9_OWRITE) == VX_OK)
-      for (uint64_t off = 0; off < m.size; off += sizeof page)
+      for (uint64_t off = 0; off < m.size && saved < CRASH_MEM_MAX; off += sizeof page, saved += sizeof page)
         if (mem_rw(p, m.base + off, page, sizeof page, false) != VX_OK ||
             p9c_write(c, fid, off, page, sizeof page) != (int64_t)sizeof page)
           break;

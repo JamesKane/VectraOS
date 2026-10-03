@@ -494,14 +494,22 @@ static void clear_dr6(void) { __asm__ volatile("mov %0, %%dr6" : : "r"(0xffff'0f
 
 // Idle threads have no user state: whoever ran last leaves its FS base and
 // FP/SIMD registers in place, unused, until the next user thread loads its own.
+static void arch_user_save(thread *th) {
+  th->tls = rdmsr(MSR_FS_BASE);
+  __asm__ volatile("fxsave64 %0" : "=m"(*(uint8_t (*)[ARCH_FP_SIZE])th->fp));
+}
+
+static void arch_user_load(thread *th) {
+  wrmsr(MSR_FS_BASE, th->tls);
+  __asm__ volatile("fxrstor64 %0" : : "m"(*(const uint8_t (*)[ARCH_FP_SIZE])th->fp));
+}
+
+// A thread stopped at an exception has saved its own (user_held): what a
+// debugger set there since is not overwritten.
 static void arch_user_switch(thread *prev, thread *next) {
-  if (prev->task) {
-    prev->tls = rdmsr(MSR_FS_BASE);
-    __asm__ volatile("fxsave64 %0" : "=m"(*(uint8_t (*)[ARCH_FP_SIZE])prev->fp));
-  }
+  if (prev->task && !prev->user_held) arch_user_save(prev);
   if (next->task) {
-    wrmsr(MSR_FS_BASE, next->tls);
-    __asm__ volatile("fxrstor64 %0" : : "m"(*(const uint8_t (*)[ARCH_FP_SIZE])next->fp));
+    arch_user_load(next);
     watch_load(next->task);
   }
 }

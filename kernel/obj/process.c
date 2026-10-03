@@ -66,7 +66,7 @@ static vx_status thread_start(thread *th, uint64_t entry, uint64_t sp, uint64_t 
   task *t = th->task;
   spin_lock(&t->lock);
   vx_status st = VX_OK;
-  if (th->state != THREAD_NEW || th->started || t->ending || t->killed) st = VX_ERR_BAD_STATE;
+  if (th->state != THREAD_NEW || th->started || t->ending || t->killed || t->execing) st = VX_ERR_BAD_STATE;
 
   if (st == VX_OK) {
     th->started = true; // under the task's lock: one start, even with entry 0
@@ -91,6 +91,7 @@ static vx_status thread_start(thread *th, uint64_t entry, uint64_t sp, uint64_t 
   thread *th = this_cpu()->current;
   task *t = th->task;
   spin_lock(&t->lock);
+  th->exited = true;
   th->last_of_task = --t->live_threads == 0;
   if (th->last_of_task) t->ending = true;
   spin_unlock(&t->lock);
@@ -99,10 +100,8 @@ static vx_status thread_start(thread *th, uint64_t entry, uint64_t sp, uint64_t 
 
 // A dead thread's last rites, run by the next thread on its CPU (sched.c).
 static void thread_reap(thread *th) {
-  kstack_free(th->kstack);
-  th->kstack = 0;
   task *t = th->task;
-  spin_lock(&t->lock);
+  spin_lock(&t->lock); // off the task's list first: nothing that walks it finds a freed stack
   for (thread **link = &t->threads; *link; link = &(*link)->task_next) {
     if (*link == th) {
       *link = th->task_next;
@@ -110,6 +109,8 @@ static void thread_reap(thread *th) {
     }
   }
   spin_unlock(&t->lock);
+  kstack_free(th->kstack);
+  th->kstack = 0;
   if (th->last_of_task) task_teardown(t);
   object_release(&th->obj); // the reference it held while running
 }

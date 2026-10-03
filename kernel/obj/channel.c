@@ -29,9 +29,10 @@ typedef struct moved_handle {
 
 typedef struct channel_msg {
   struct channel_msg *next;
-  unsigned order; // the physical block it lives in
-  uint32_t len;   // body bytes, header included
-  uint32_t count; // handles
+  struct call_wait *call; // the channel_call that sent it, while it waits in a queue
+  unsigned order;         // the physical block it lives in
+  uint32_t len;           // body bytes, header included
+  uint32_t count;         // handles
   moved_handle handles[];
   // then the body
 } channel_msg;
@@ -46,6 +47,7 @@ typedef struct call_wait {
   thread *thread;
   uint32_t txid;
   channel_msg *reply; // set by the writer of the reply
+  bool read;          // its request has left the server's queue: read, and maybe freed
 } call_wait;
 
 typedef struct channel {
@@ -178,6 +180,7 @@ static vx_status channel_read(channel *c, uint32_t cap, uint32_t count_cap, chan
       if (!c->head) c->tail = nullptr;
       c->count--;
       c->bytes -= m->len;
+      if (m->call) m->call->read = true, m->call = nullptr;
       *out = m;
     }
   }
@@ -204,7 +207,9 @@ static vx_status channel_call(channel *c, channel_msg *request, vx_instant deadl
   c->next_txid = CALL_TXID | (c->next_txid & SIDE_TXID) | ((c->next_txid + 1) & ~(CALL_TXID | SIDE_TXID));
   ((vx_msg_header *)msg_body(request))->txid = w.txid;
   ((vx_msg_header *)msg_body(request))->sender_intent = VX_INTENT_INTERACTIVE;
+  request->call = &w;
   vx_status st = channel_deliver(peer, request);
+  if (st != VX_OK) request->call = nullptr;
   if (st == VX_OK) {
     *sent = true;
     t->wait_token = &w;
@@ -216,7 +221,9 @@ static vx_status channel_call(channel *c, channel_msg *request, vx_instant deadl
 
   // A call that ends without its reply (interrupted, timed out) takes back a
   // request the server has not read yet, so the server never answers a call
-  // nobody waits for. An interrupted call whose request the server has read
+  // nobody waits for. Whether it is still queued is w.read, not a search for
+  // its address: once read, its block may be freed and given to another
+  // message in the same queue. An interrupted call whose request the server has read
   // waits on for the reply, so no answer is lost: the interrupt is delivered
   // once it returns. (A server that holds a call, as posixd does a wait,
   // answers it before it interrupts the caller.)
@@ -225,16 +232,16 @@ static vx_status channel_call(channel *c, channel_msg *request, vx_instant deadl
     woke = thread_block(deadline, 0);
     spin_lock(&c->pair->lock);
     channel *server = channel_peer(c);
-    bool queued = false;
-    for (channel_msg **link = server && !w.reply ? &server->head : nullptr, *prev = nullptr; link && *link;
+    bool queued = server && !w.read && !w.reply;
+    for (channel_msg **link = queued ? &server->head : nullptr, *prev = nullptr; link && *link;
          prev = *link, link = &(*link)->next) {
       if (*link != request) continue;
-      queued = true;
       if (woke == VX_ERR_INTERRUPTED || woke == VX_ERR_TIMED_OUT || woke == VX_ERR_KILLED) {
         *link = request->next;
         if (server->tail == request) server->tail = prev;
         server->count--;
         server->bytes -= request->len;
+        request->call = nullptr;
         *sent = false; // the caller's again, and freed with its handles
       }
       break;
@@ -250,6 +257,7 @@ static vx_status channel_call(channel *c, channel_msg *request, vx_instant deadl
         break;
       }
     }
+    if (*sent && !w.read && server) request->call = nullptr; // left queued: w is gone
     spin_unlock(&c->pair->lock);
     break;
   }

@@ -779,14 +779,22 @@ static void watch_load(const task *t) {
 
 // Idle threads have no user state: whoever ran last leaves its TPIDR_EL0 and
 // FP/SIMD registers in place, unused, until the next user thread loads its own.
+static void arch_user_save(thread *th) {
+  th->tls = arch_tls_read();
+  fp_save(th->fp);
+}
+
+static void arch_user_load(thread *th) {
+  arch_tls_write(th->tls);
+  fp_load(th->fp);
+}
+
+// A thread stopped at an exception has saved its own (user_held): what a
+// debugger set there since is not overwritten.
 static void arch_user_switch(thread *prev, thread *next) {
-  if (prev->task) {
-    prev->tls = arch_tls_read();
-    fp_save(prev->fp);
-  }
+  if (prev->task && !prev->user_held) arch_user_save(prev);
   if (next->task) {
-    arch_tls_write(next->tls);
-    fp_load(next->fp);
+    arch_user_load(next);
     watch_load(next->task);
   }
 }
@@ -797,15 +805,23 @@ static void arch_fp_init(uint8_t *fp) { memset(fp, 0, ARCH_FP_SIZE); }
 
 static constexpr uint64_t SPSR_SS = 1ull << 21; // software step
 
-static void arch_frame_step(trap_frame *f, bool on) { f->spsr = on ? f->spsr | SPSR_SS : f->spsr & ~SPSR_SS; }
+// Always the current thread's frame: its own exception, or its resumption.
+static void arch_frame_step(trap_frame *f, bool on) {
+  f->spsr = on ? f->spsr | SPSR_SS : f->spsr & ~SPSR_SS;
+  this_cpu()->current->stepping = on;
+}
 
 // MDSCR_EL1.SS on only for a return to a thread being stepped: with it on, a
-// return with SPSR.SS clear would take a step exception at once (the
-// active-pending state), before running anything.
+// return with SPSR.SS clear takes a step exception at once (the
+// active-pending state), before running anything. Which is what a stepped
+// svc needs: the call leaves SPSR.SS clear, the instruction done, and the
+// step is reported as the call returns. So it follows the thread's stepping,
+// not SPSR.SS, which would lose that step.
 static bool step_enabled[MAX_CPUS];
 
 static void step_on_return(const trap_frame *f) {
-  bool want = f->spsr & SPSR_SS;
+  (void)f;
+  bool want = this_cpu()->current->stepping;
   uint32_t cpu = arch_cpu_index();
   if (step_enabled[cpu] == want) return;
   uint64_t mdscr;

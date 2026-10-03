@@ -405,7 +405,10 @@ static void (*vx_print_hook)(vx_str s);
 
 // --- The spawn message (abi.h) ---
 
-static constexpr uint32_t VX_SPAWN_MAX_ARGS = 64; // gsh's longest command line has fewer
+// arg= and env= records each: a spawn message (64 KiB) holds about that many
+// short ones. A sender with more fails (E2BIG); a message with more is
+// refused, not cut short.
+static constexpr uint32_t VX_SPAWN_MAX_ARGS = 4096;
 
 typedef struct vx_spawn_info {
   vx_str name;    // spawn=
@@ -476,11 +479,13 @@ static void vx_read_spawn(vx_handle bootstrap) {
     } else if (vx_ndb_has(&rec, "cmdline")) {
       vx_spawn.cmdline = vx_ndb_get(&rec, "cmdline");
     } else if (vx_ndb_has(&rec, "arg")) {
-      if (vx_spawn.argc < VX_SPAWN_MAX_ARGS) vx_spawn.args[vx_spawn.argc++] = vx_ndb_get(&rec, "arg");
+      ok = vx_spawn.argc < VX_SPAWN_MAX_ARGS;
+      if (ok) vx_spawn.args[vx_spawn.argc++] = vx_ndb_get(&rec, "arg");
     } else if (vx_ndb_has(&rec, "argv0")) {
       vx_spawn.argv0 = vx_ndb_get(&rec, "argv0");
     } else if (vx_ndb_has(&rec, "env")) {
-      if (vx_spawn.envc < VX_SPAWN_MAX_ARGS) vx_spawn.envs[vx_spawn.envc++] = vx_ndb_get(&rec, "env");
+      ok = vx_spawn.envc < VX_SPAWN_MAX_ARGS;
+      if (ok) vx_spawn.envs[vx_spawn.envc++] = vx_ndb_get(&rec, "env");
     } else if (vx_ndb_has(&rec, "handle") && !vx_ndb_has(&rec, "mount")) {
       ok = vx_ndb_get_u64(&rec, "index", &index) && index < size.handles && !named[index];
       if (ok) named[index] = true, vx_spawn.handle_names[index] = vx_ndb_get(&rec, "handle");

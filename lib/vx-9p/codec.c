@@ -153,6 +153,10 @@ static constexpr uint64_t P9_OFFSET_CURRENT = UINT64_MAX;
 // Topen's mode bit (posix): the open file's writes at P9_OFFSET_CURRENT go
 // to its end.
 enum : uint8_t { P9_OAPPEND = 0x80 };
+// fs.open's mode bit, never a client's (the server takes it out of theirs):
+// a Tjoin's open, another fid for a file already open, which may have been
+// removed since.
+enum : uint8_t { P9_OJOIN = 0x20 };
 enum : uint8_t { P9_LOCK_READ = 0, P9_LOCK_WRITE = 1, P9_LOCK_UNLOCK = 2 };
 enum : uint8_t { P9_LOCK_SUCCESS = 0, P9_LOCK_BLOCKED = 1, P9_LOCK_ERROR = 2 };
 

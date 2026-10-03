@@ -15,8 +15,9 @@
 //
 // vx_prof_init(connector) makes the ring and gives it to procfs, through its
 // listen channel (a connector to /proc, vx_ns_connector), as PROC_PROF: the
-// ring's address and a nonce in it, which procfs reads back through the task's
-// memory, so no process can give procfs a ring for another. Header-only; it
+// ring's address. procfs writes a challenge into the ring and reads it back
+// through the task's memory at that address, so no process can give procfs a
+// ring for another. Header-only; it
 // uses vx-rt's base (the system calls and vx_cycles).
 
 #pragma once
@@ -40,7 +41,7 @@ typedef struct vx_prof_record {
 typedef struct vx_prof_header {
   uint32_t magic, version;
   uint64_t counter_hz;      // /sys/clock/info's
-  uint64_t nonce;           // the proof procfs reads back (vx_prof_init)
+  uint64_t nonce;           // procfs's challenge, read back through the task's memory
   _Atomic uint32_t enabled; // set by procfs: ctl's "zones on"
   _Atomic uint32_t nzones;
   _Atomic uint64_t head; // records written, ever: the ring holds the last `cap` of them
@@ -74,7 +75,6 @@ static vx_prof_record *vx_prof_records(vx_prof_header *h) { return (vx_prof_reco
   h->magic = VX_PROF_MAGIC;
   h->version = 1;
   h->counter_hz = clock.counter_hz;
-  h->nonce = vx_cycles() ^ at ^ 0x9e37'79b9'7f4a'7c15;
   h->cap = (uint32_t)((VX_PROF_RING - sizeof *h) / sizeof(vx_prof_record));
   vx_task_summary me;
   vx_task_info(vx_self, &me);

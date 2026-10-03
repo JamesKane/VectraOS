@@ -380,7 +380,45 @@ static void test_prof(void) {
   for (size_t i = 0; i < records; i++)
     ordered = ordered && r[i].zone == 1 && r[i].end > r[i].start && (!i || r[i].start >= r[i - 1].start);
   CHECK(ordered);
-  CHECK(write_file(c, "prof/ctl", "zones off") == VX_OK);
+  // A ring given in another's name: procfs's challenge does not show in
+  // that process's memory, whatever the giver wrote in the ring.
+  vx_handle vmo = VX_HANDLE_NONE, given = VX_HANDLE_NONE;
+  uint64_t at = 0;
+  CHECK(vx_vmo_create(VX_PROF_RING, 0, &vmo) == VX_OK &&
+        vx_as_map(vx_self, vmo, 0, VX_PROF_RING, VX_MAP_WRITE, &at) == VX_OK &&
+        vx_handle_dup(vmo, VX_RIGHTS_SAME, &given) == VX_OK);
+  vx_handle_close(vmo);
+  vx_prof_header *forged = (vx_prof_header *)at;
+  if (forged) forged->magic = VX_PROF_MAGIC, forged->cap = 16;
+  proc_msg req = {.h = {.ordinal = PROC_PROF}, .arg = {(int64_t)c, 4096}}, rep = {};
+  vx_call call = {.wr_bytes = &req,
+                  .wr_len = sizeof req,
+                  .wr_handles = &given,
+                  .wr_count = 1,
+                  .rd_bytes = &rep,
+                  .rd_cap = sizeof rep};
+  CHECK(vx_channel_call(vx_ns_connector(&ns, VX_STR("/proc")), &call, vx_clock_read() + 2'000'000'000) ==
+            VX_OK &&
+        (vx_status)(int32_t)rep.h.flags == VX_ERR_ACCESS);
+  if (at) vx_as_unmap(vx_self, at, VX_PROF_RING);
+  CHECK(write_file(c, "prof/ctl", "zones off") == VX_OK); // its own ring is still the one
+
+  // A ring whose header lies about its size: procfs reads it within its own.
+  CHECK(vx_prof_init(vx_ns_connector(&ns, VX_STR("/proc"))) == VX_OK);
+  if (vx_prof) {
+    vx_prof->cap = 0xffff'ffff;
+    atomic_store(&vx_prof->head, 1ull << 40);
+  }
+  got = 0;
+  if (vx_ns_open(&ns, proc_path(me, "prof/zones"), P9_OREAD, &f) == VX_OK) {
+    while (got < sizeof ring && (n = vx_ns_read(&f, ring + got, (uint32_t)(sizeof ring - got))) > 0)
+      got += (size_t)n;
+    vx_ns_close(&f);
+  }
+  CHECK(got >= sizeof *h && got <= VX_PROF_RING);
+  n = read_file(me, "status", buf, sizeof buf); // procfs is still there
+  CHECK(n > 0 && has((vx_str){buf, (size_t)n}, "name=proctest"));
+
   CHECK(write_file(c, "note", "done") == VX_OK);
   n = wait_record(buf, sizeof buf);
   CHECK(n > 0 && has((vx_str){buf, (size_t)n}, "status=done"));
@@ -408,7 +446,8 @@ const char *vx_main(void) {
   CHECK(n > 0 && has((vx_str){buf, (size_t)n}, "name=proctest") && has((vx_str){buf, (size_t)n}, "pid="));
   n = read_file(me, "ppid", buf, sizeof buf);
   CHECK(n > 0 && number(buf, n) == 1);
-  CHECK(wait_record(buf, sizeof buf) == VX_ERR_NO_CHILD); // no children yet
+  CHECK(wait_record(buf, sizeof buf) == VX_ERR_NO_CHILD);  // no children yet
+  CHECK(write_file(1, "note", "hangup") == VX_ERR_ACCESS); // svcd takes no notes: one would end it
 
   // A child's end leaves a record with its exit string.
   uint64_t c = spawn("exit");

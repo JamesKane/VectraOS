@@ -29,6 +29,7 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/uio.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -138,6 +139,14 @@ static int child_main(char **argv) {
     return interrupted && signals[SIGUSR2] == 1 ? 13 : 2;
   }
   if (strcmp(argv[1], "segv") == 0) return *nowhere_at(); // default: the end, as SIGSEGV
+  if (strcmp(argv[1], "kept") == 0) { // what its parent ignored and blocked, kept through posix_spawn
+    struct sigaction now;
+    sigset_t mask;
+    bool ok = sigaction(SIGUSR2, nullptr, &now) == 0 && now.sa_handler == SIG_IGN;
+    ok = ok && sigprocmask(SIG_SETMASK, nullptr, &mask) == 0 && sigismember(&mask, SIGUSR1);
+    ok = ok && sigaction(SIGHUP, nullptr, &now) == 0 && now.sa_handler == SIG_DFL; // POSIX_SPAWN_SETSIGDEF
+    return ok ? 23 : 2;
+  }
   if (strcmp(argv[1], "env") == 0) {
     const char *greeting = getenv("GREETING");
     return greeting && strcmp(greeting, "hello") == 0 ? 4 : 2;
@@ -410,7 +419,43 @@ static void test_signals(void) {
   t0 = now_seconds();
   CHECK(nanosleep(&(struct timespec){.tv_nsec = 300'000'000}, nullptr) == 0 && now_seconds() - t0 >= 0.3);
   CHECK(waitpid(child, &status, 0) == child);
+
+  // A blocked signal ends no call: the sleep goes on, and the handler runs
+  // once it is let through.
+  int had = signals[SIGUSR1];
+  CHECK(sigprocmask(SIG_BLOCK, &usr1, nullptr) == 0 && spawn_child("late", nullptr, &child) == 0);
+  t0 = now_seconds();
+  CHECK(nanosleep(&(struct timespec){.tv_nsec = 300'000'000}, nullptr) == 0 && now_seconds() - t0 >= 0.3);
+  CHECK(signals[SIGUSR1] == had && sigpending(&pending) == 0 && sigismember(&pending, SIGUSR1));
+
+  // A forked child has none of its parent's pending signals.
+  child = fork();
+  if (child == 0) _exit(sigpending(&pending) == 0 && !sigismember(&pending, SIGUSR1) ? 0 : 1);
+  CHECK(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+  CHECK(sigprocmask(SIG_UNBLOCK, &usr1, nullptr) == 0 && signals[SIGUSR1] == had + 1);
+  CHECK(waitpid(-1, &status, 0) > 0); // the late child
+
+  // posix_spawn keeps what is ignored and the mask, but what SETSIGDEF names.
+  CHECK(signal(SIGUSR2, SIG_IGN) != SIG_ERR && signal(SIGHUP, SIG_IGN) != SIG_ERR);
+  CHECK(sigprocmask(SIG_BLOCK, &usr1, nullptr) == 0);
+  posix_spawnattr_t defaults;
+  sigset_t hup;
+  sigemptyset(&hup);
+  sigaddset(&hup, SIGHUP);
+  posix_spawnattr_init(&defaults);
+  posix_spawnattr_setflags(&defaults, POSIX_SPAWN_SETSIGDEF);
+  posix_spawnattr_setsigdefault(&defaults, &hup);
+  CHECK(spawn_wait("/boot/bin/ctest", false, "kept", &defaults) == 23);
+  posix_spawnattr_destroy(&defaults);
+  CHECK(sigprocmask(SIG_UNBLOCK, &usr1, nullptr) == 0);
+  signal(SIGUSR2, SIG_DFL);
+  signal(SIGHUP, SIG_DFL);
   signal(SIGUSR1, SIG_DFL);
+
+  // A timeout that is not one.
+  errno = 0;
+  CHECK(pselect(0, nullptr, nullptr, nullptr, &(struct timespec){.tv_nsec = 2'000'000'000}, nullptr) == -1 &&
+        errno == EINVAL);
 }
 
 // Text is UTF-8 (ADR-0013): a program that asks for the environment's locale
@@ -849,6 +894,27 @@ static void test_shared_offsets_and_locks(void) {
   CHECK(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
   CHECK(fcntl(fd, F_SETLK, &whole) == 0); // the child's went with it
   close(fd);
+
+  // A file removed while open: a forked child still has it, offset and all.
+  fd = open("/tmp/gone", O_RDWR | O_CREAT | O_TRUNC, 0644);
+  CHECK(fd >= 0 && write(fd, "kept", 4) == 4 && unlink("/tmp/gone") == 0);
+  if (fd < 0) return;
+  child = fork();
+  if (child == 0) {
+    char kept[4];
+    struct stat gone;
+    bool ok = fstat(fd, &gone) == 0 && gone.st_size == 4 && write(fd, "!", 1) == 1;
+    ok = ok && pread(fd, kept, 4, 0) == 4 && memcmp(kept, "kept", 4) == 0;
+    _exit(ok ? 0 : 1);
+  }
+  CHECK(child > 0 && waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+  CHECK(lseek(fd, 0, SEEK_CUR) == 5); // the child's write moved the offset they share
+  close(fd);
+
+  // iovecs that add up past what a write can return: EINVAL, nothing written.
+  char one = 'x';
+  struct iovec huge[2] = {{&one, SIZE_MAX}, {&one, 2}};
+  CHECK(writev(1, huge, 2) == -1 && errno == EINVAL);
   CHECK(stat("/tmp/shared", &st) == 0 && unlink("/tmp/shared") == 0 && unlink("/tmp/sequence") == 0);
 }
 
@@ -895,6 +961,31 @@ static void test_terminals(void) {
   master_read(m, buf, sizeof buf);
   CHECK(write(s, "out\n", 4) == 4 && master_read(m, buf, sizeof buf) == 5 && strcmp(buf, "out\r\n") == 0);
   CHECK(write(m, "\x04", 1) == 1 && read(s, buf, sizeof buf) == 0); // ^D on an empty line
+  // ^D after some of a line sends it as it is, alone; a NUL typed is a byte.
+  CHECK(write(m, "ab\x04", 3) == 3 && read(s, buf, sizeof buf) == 2 && memcmp(buf, "ab", 2) == 0);
+  CHECK(write(m, "cd\n", 3) == 3 && read(s, buf, sizeof buf) == 3 && memcmp(buf, "cd\n", 3) == 0);
+  CHECK(write(m, "\x04\0z\n", 4) == 4 && read(s, buf, sizeof buf) == 0 && read(s, buf, sizeof buf) == 3 &&
+        memcmp(buf, "\0z\n", 3) == 0);
+  master_read(m, buf, sizeof buf);
+
+  // Output past what ptyd holds waits for the master to read it: none lost.
+  // A child's copy of the master closed leaves the terminal as it was.
+  pid_t writer = fork();
+  if (writer == 0) {
+    close(m);
+    static char lots[10000];
+    memset(lots, 'x', sizeof lots);
+    size_t put = 0;
+    for (ssize_t w; put < sizeof lots && (w = write(s, lots + put, sizeof lots - put)) > 0;) put += (size_t)w;
+    _exit(put == sizeof lots ? 0 : 1);
+  }
+  size_t got = 0;
+  static char drain[4096];
+  for (ssize_t r; got < 10000 && (r = read(m, drain, sizeof drain)) > 0;) got += (size_t)r;
+  int wstatus = 0;
+  CHECK(got == 10000 && waitpid(writer, &wstatus, 0) == writer && WIFEXITED(wstatus) &&
+        WEXITSTATUS(wstatus) == 0);
+  CHECK(write(s, "still\n", 6) == 6 && master_read(m, buf, sizeof buf) == 7);
 
   // Raw input, a byte at a time and not echoed; then cooked again.
   struct termios raw = t;

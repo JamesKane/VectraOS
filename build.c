@@ -1476,6 +1476,13 @@ static void check_toolchain(void) {
   // musl's build also reads the back end's syscall_arch.h and the generated headers.
   musl.input_hash = hash_tree(musl.input_hash, fmt("%s/ports/musl/vx/arch", root));
   musl.input_hash = hash_tree(musl.input_hash, fmt("%s/ports/musl/generated", root));
+  // The ports built against musl's headers (posix_flags) are built again when
+  // they change: musl's hash, which covers its tree and the generated ones,
+  // goes into theirs.
+  port *against_musl[] = {&compiler_rt, &lua, &sbase};
+  for (size_t i = 0; i < sizeof against_musl / sizeof against_musl[0]; i++)
+    against_musl[i]->input_hash = hash_bytes(
+        against_musl[i]->input_hash, (vx_str){(const char *)&musl.input_hash, sizeof musl.input_hash});
 }
 
 // Runs fn for each architecture (or only one) in parallel, one child each.
@@ -1945,6 +1952,12 @@ static bool listed(const char *with, const char *name) {
 // `with` adds test programs and their manifests (tests/user/NAME.ndb), and
 // script tests (a manifest, and tests/user/NAME.lua in boot/tests). The
 // archive is deterministic: fixed order, no times or owners.
+// A slot for one more file in the image: more than it holds is an error,
+// never a file left out (a test's manifest missing shows only as a timeout).
+static void bootfs_room(int count) {
+  if (count >= BOOTFS_MAX_FILES) die("bootfs: more than %d files; raise BOOTFS_MAX_FILES", BOOTFS_MAX_FILES);
+}
+
 static bool make_bootfs(const arch *a, bool release, const char *with, const char *out) {
   static file_list manifests;
   manifests = (file_list){};
@@ -1965,6 +1978,7 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
     const program *p = &USER_PROGRAMS[i];
     if (p->where == IN_MODULE || (p->where == IN_TESTS && !listed(with, p->name)) || !program_for(p, a))
       continue;
+    bootfs_room(count);
     files[count] = read_file(fmt("%s/%s", out_dir(a, release), p->name));
     paths[count++] = fmt("boot/bin/%s", p->name);
   }
@@ -1973,12 +1987,14 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
     const char *sub = port_bin_dir(p), *box = nullptr;
     if (vx_ndb_get(&p->head, "box").len) {
       box = fmt("boot/bin/%s%s", sub, str_dup(vx_ndb_get(&p->head, "box")));
+      bootfs_room(count);
       files[count] = read_file(fmt("%s/%s%s", out_dir(a, release), sub, box + 9 + strlen(sub)));
       paths[count++] = box;
     }
     int names = p->program_count + (words_has(vx_ndb_get(&p->head, "box.alias"), "[") ? 1 : 0);
-    for (int i = 0; i < names && count < BOOTFS_MAX_FILES; i++) {
+    for (int i = 0; i < names; i++) {
       const char *name = i < p->program_count ? str_dup(vx_ndb_get(&p->programs[i], "program")) : "[";
+      bootfs_room(count);
       paths[count] = fmt("boot/bin/%s%s", sub, name);
       if (box && (i == p->program_count || !program_alone(&p->programs[i]))) {
         files[count] = (vx_str){};
@@ -1990,10 +2006,11 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
   }
   for (int k = 0; k < POSIX_PORT_COUNT; k++) { // install=FROM:TO, a file of the tree at /boot/TO
     vx_str in = vx_ndb_get(&POSIX_PORTS[k]->head, "install");
-    for (size_t i = 0; i < in.len && count < BOOTFS_MAX_FILES;) {
+    for (size_t i = 0; i < in.len;) {
       size_t start = i, colon = 0;
       while (i < in.len && in.ptr[i] != ' ') colon = in.ptr[i] == ':' ? i : colon, i++;
       if (colon > start) {
+        bootfs_room(count);
         files[count] =
             read_file(fmt("%s/%s", POSIX_PORTS[k]->src, str_dup((vx_str){in.ptr + start, colon - start})));
         paths[count++] = fmt("boot/%s", str_dup((vx_str){in.ptr + colon + 1, i - colon - 1}));
@@ -2001,17 +2018,19 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
       i++;
     }
   }
-  for (int i = 0; i < manifests.count && count < BOOTFS_MAX_FILES; i++) {
+  for (int i = 0; i < manifests.count; i++) {
+    bootfs_room(count);
     files[count] = read_file(manifests.paths[i]);
     const char *path = manifests.paths[i]; // boot/lib/ns/NAME is /lib/ns/NAME in the image
     paths[count++] = strncmp(path, "boot/lib/", 9) == 0 ? path + 5 : path;
   }
-  for (int i = 0; i < USER_PROGRAM_COUNT && count < BOOTFS_MAX_FILES; i++) {
+  for (int i = 0; i < USER_PROGRAM_COUNT; i++) {
     if (USER_PROGRAMS[i].where != IN_TESTS || !listed(with, USER_PROGRAMS[i].name)) continue;
+    bootfs_room(count);
     files[count] = read_file(fmt("tests/user/%s.ndb", USER_PROGRAMS[i].name));
     paths[count++] = fmt("boot/svc/%s.ndb", USER_PROGRAMS[i].name);
-    if (exists(fmt("tests/user/%s.cmds", USER_PROGRAMS[i].name)) &&
-        count < BOOTFS_MAX_FILES) { // a dbg script
+    if (exists(fmt("tests/user/%s.cmds", USER_PROGRAMS[i].name))) { // a dbg script
+      bootfs_room(count);
       files[count] = read_file(fmt("tests/user/%s.cmds", USER_PROGRAMS[i].name));
       paths[count++] = fmt("boot/tests/%s.cmds", USER_PROGRAMS[i].name);
     }
@@ -2019,7 +2038,7 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
   // A `with` name that is no program is a script test: its manifest runs a
   // program the image has (lua, gsh), on tests/user/NAME.lua or NAME.rc, at
   // /boot/tests.
-  for (const char *n = with; *n && count + 2 <= BOOTFS_MAX_FILES;) {
+  for (const char *n = with; *n;) {
     const char *end = strchr(n, ',');
     const char *name = str_dup((vx_str){n, end ? (size_t)(end - n) : strlen(n)});
     n += strlen(name) + (end != nullptr);
@@ -2027,11 +2046,13 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
     for (int i = 0; i < USER_PROGRAM_COUNT; i++)
       program = program || strcmp(USER_PROGRAMS[i].name, name) == 0;
     if (program) continue;
+    bootfs_room(count);
     files[count] = read_file(fmt("tests/user/%s.ndb", name));
     paths[count++] = fmt("boot/svc/%s.ndb", name);
-    for (int k = 0; k < 2 && count < BOOTFS_MAX_FILES; k++) { // a Lua or an rc script
+    for (int k = 0; k < 2; k++) { // a Lua or an rc script
       const char *ext = k ? "rc" : "lua";
       if (!exists(fmt("tests/user/%s.%s", name, ext))) continue;
+      bootfs_room(count);
       files[count] = read_file(fmt("tests/user/%s.%s", name, ext));
       paths[count++] = fmt("boot/tests/%s.%s", name, ext);
     }
@@ -2464,6 +2485,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   bool since_cut = false; // since[0] is mid-line: older output was let go
   static char buf[4096];  // read from QEMU; [pos, n) not looked at yet
   ssize_t n = 0, pos = 0;
+  ssize_t stale = 0; // bytes of buf, from pos, that came before the last typing
   while (!verdict) {
     if (typed < next && input[next].len) {
       if (write(keys[1], input[next].ptr, input[next].len) != (ssize_t)input[next].len) {
@@ -2473,6 +2495,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
       typed = next;
       since_len = 0;
       since_cut = false;
+      stale = n - pos; // read before the typing: no prompt in it answers what was typed
     }
     if (pos == n) { // all looked at: read more
       double left = timeout - (now_seconds() - start);
@@ -2498,7 +2521,10 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
         since_len = sizeof since / 2;
         since_cut = true;
       }
-      since[since_len++] = ch;
+      if (stale)
+        stale--; // seen for expects and failures, but not by a prompt= after the typing
+      else
+        since[since_len++] = ch;
       if (ch != '\n' && len < sizeof line - 1) {
         line[len++] = ch;
         continue;
@@ -2512,7 +2538,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
           (whole[next] ? strcmp(line, expect[next]) == 0 : strstr(line, expect[next]) != nullptr)) {
         next++;
         if (next == expect_count) verdict = "ok";
-        if (input[next].len && typed < next) break; // type it before looking at what follows
+        if (next < expect_count && input[next].len && typed < next) break; // type it before what follows
       }
     }
     // A prompt has no newline after it, and may share its line with other

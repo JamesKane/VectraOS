@@ -56,15 +56,25 @@ static void emit(rc *r, const rc_fd *fds, uint32_t which, const char *s, size_t 
     memcpy(out + nout, s, n), nout += n;
 }
 
+static bool open_now[8]; // the files the shell has open, by handle
+static bool used_closed; // a stage was given a file the shell had already closed
+
+// A pipeline, its stages run in turn; $status as gsh makes it, each stage's
+// joined by |.
 static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool async, uint64_t *pid) {
   (void)ctx;
   static char pipes[2][4096];
   size_t npipe[2] = {};
-  const char *status = "";
+  char status[256] = "";
+  size_t nstatus = 0;
   for (uint32_t i = 0; i < n; i++) {
     const rc_command *c = &stages[i];
     rc_fd fds[RC_FDS];
     memcpy(fds, c->fds, sizeof fds);
+    for (uint32_t k = 0; k < RC_FDS; k++)
+      if ((fds[k].kind == RC_FD_READ || fds[k].kind == RC_FD_WRITE || fds[k].kind == RC_FD_APPEND) &&
+          (fds[k].handle >= 8 || !open_now[fds[k].handle]))
+        used_closed = true;
     // Its input: the stage before's output, a file, or nothing.
     const char *in = "";
     size_t nin = 0;
@@ -75,8 +85,13 @@ static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool asy
     size_t *mynpipe = &npipe[i % 2];
     *mynpipe = 0;
     const char *name = c->argv->s;
-    status = "";
-    if (!strcmp(name, "echo")) {
+    const char *st = "";
+    if (!strcmp(name, "warn")) { // its words, on its standard error
+      for (const rc_word *w = c->argv->next; w; w = w->next) {
+        emit(r, fds, 2, w->s, w->len, mypipe, mynpipe);
+        emit(r, fds, 2, w->next ? " " : "\n", 1, mypipe, mynpipe);
+      }
+    } else if (!strcmp(name, "echo")) {
       for (const rc_word *w = c->argv->next; w; w = w->next) {
         emit(r, fds, 1, w->s, w->len, mypipe, mynpipe);
         emit(r, fds, 1, w->next ? " " : "\n", 1, mypipe, mynpipe);
@@ -96,12 +111,13 @@ static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool asy
       emit(r, fds, 1, num, (size_t)len, mypipe, mynpipe);
     } else if (!strcmp(name, "true")) {
     } else if (!strcmp(name, "false")) {
-      status = "false";
+      st = "false";
     } else if (!strcmp(name, "exitwith")) {
-      status = c->argv->next ? c->argv->next->s : "";
+      st = c->argv->next ? c->argv->next->s : "";
     } else {
-      status = "not found";
+      st = "not found";
     }
+    nstatus += (size_t)snprintf(status + nstatus, sizeof status - nstatus, "%s%s", i ? "|" : "", st);
   }
   if (async) *pid = 42;
   rc_set_status(r, status, strlen(status));
@@ -124,12 +140,14 @@ static bool open_fake(void *ctx, rc *rr, const char *path, size_t len, uint8_t k
   if (k < 0) return false;
   if (kind == RC_FD_WRITE) files[k].len = 0; // emptied once, where the redirection is
   *handle = (uint32_t)k;
+  open_now[k] = true;
   opened++;
   return true;
 }
 
 static void close_fake(void *ctx, uint32_t handle) {
-  (void)ctx, (void)handle;
+  (void)ctx;
+  if (handle < 8) open_now[handle] = false;
   closed++;
 }
 
@@ -224,7 +242,8 @@ int main(void) {
   expect("if(! ~ foo b*) echo nomatch", "nomatch\n");
   expect("true && echo t; false || echo f; false && echo no", "t\nf\n");
   expect("false; echo $status", "false\n");
-  expect("exitwith 3 | true; echo $status", "\n");
+  expect("exitwith 3 | true; echo $status", "3|\n");
+  expect("if(true | true) echo all; if(false | true) echo no", "all\n"); // | and 0s are true, as in rc
   // Functions: $*, $1, dynamic scope, local assignment.
   expect("fn greet { echo hi $1 $#* }; greet bob jo", "hi bob 2\n");
   expect("fn show { echo $x }; x=1; x=2 show; show", "2\n1\n");
@@ -242,6 +261,14 @@ int main(void) {
   expect("echo one two three | wc", "3\n");
   expect("echo a b | cat | wc", "2\n");
   expect("echo oops >[1=2]; echo fine", "fine\n");
+  // A stage's own files stay open until it runs; its redirections come after
+  // the pipe, so >[2=1] follows it, and >f takes the output from it.
+  expect("echo data > f; cat < f | wc", "1\n");
+  expect("echo a b c | wc > h; cat < h", "3\n");
+  expect("warn oops >[2=1] | wc", "1\n");
+  expect("echo hi > f | wc; cat < f", "0\nhi\n");
+  expect("echo x | echo `{echo a b | wc}", "2\n"); // the inner pipeline runs its own stages only
+  CHECK(!used_closed);
   // Globbing: marks only where written bare; no match keeps the word.
   expect("echo *.c", "a.c b.c\n");
   expect("echo '*.c' z* ?.h", "*.c z* x.h\n");
@@ -259,7 +286,28 @@ int main(void) {
   CHECK(script("if(") == RC_INCOMPLETE);
   CHECK(script("for(i in a b) {") == RC_INCOMPLETE);
   CHECK(script("echo )") == RC_SYNTAX && strstr(rc_err(r), "line 1") != nullptr);
-  CHECK(script("echo 'unterminated") == RC_SYNTAX);
+  CHECK(script("echo 'unterminated") == RC_INCOMPLETE); // more lines may close it
+  CHECK(script("echo a \\\n") == RC_INCOMPLETE);
+  expect("echo a\\\nb", "a b\n"); // a \ ending a line is white space, mid-word too
+  expect("ifs=() { x=`{echo a b}; echo $#x }", "1\n");
+  {
+    const char *name = "myscript";
+    size_t len = strlen(name);
+    rc_set(r, "0", &name, &len, 1);
+    expect("echo $0 $#0", "myscript 1\n");
+  }
+  { // Long scripts and switches: run whole, or refused, never cut short.
+    static char text[64 * 1024];
+    size_t at = 0;
+    for (int i = 0; i < 2000; i++) at += (size_t)snprintf(text + at, sizeof text - at, "x=%d\n", i);
+    snprintf(text + at, sizeof text - at, "echo $x\n");
+    expect(text, "1999\n");
+    at = (size_t)snprintf(text, sizeof text, "switch(c299){\n");
+    for (int i = 0; i < 300; i++)
+      at += (size_t)snprintf(text + at, sizeof text - at, "case c%d\n echo %d\n", i, i);
+    snprintf(text + at, sizeof text - at, "}\n");
+    expect(text, "299\n");
+  }
   CHECK(script("x=() ; echo a^$x") == RC_FAILED);
   CHECK(script("fn f { echo }; f | wc") == RC_OK && strstr(err, "pipeline") != nullptr);
   CHECK(script("echo before; exit 'it failed'; echo after") == RC_EXIT && strcmp(out, "before\n") == 0);

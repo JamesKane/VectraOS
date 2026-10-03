@@ -66,17 +66,19 @@ static bool vxd_read64(const vxd_target *t, uint64_t addr, uint64_t *v) {
   frames[n++] = (vxd_frame){.pc = pc, .sp = sp, .fp = fp, .inner = true};
   const vxdi_func *f = vxdi_func_at(ix, pc);
   if (f && pc < f->body && n < max) { // in the prologue: its frame record is not there yet
-    uint64_t ret = 0, caller_fp = fp;
+    uint64_t ret = 0, caller_fp = fp, caller_sp = sp;
     bool ok;
     if (t->machine == 183) {
-      ok = t->reg && t->reg(t->ctx, 30, &ret); // x30, the link register
+      ok = t->reg && t->reg(t->ctx, 30, &ret); // x30, the link register; sp as the caller left it at low
     } else if (pc == f->low) {
       ok = vxd_read64(t, sp, &ret); // before push %rbp
+      caller_sp = sp + 8;           // the caller's, before its call pushed the return address
     } else {
       ok = vxd_read64(t, sp + 8, &ret) && vxd_read64(t, sp, &caller_fp); // after it, before mov %rsp, %rbp
+      caller_sp = sp + 16;
     }
     if (!ok || !ret) return n;
-    frames[n++] = (vxd_frame){.pc = ret, .sp = sp, .fp = caller_fp};
+    frames[n++] = (vxd_frame){.pc = ret, .sp = caller_sp, .fp = caller_fp};
     fp = caller_fp;
   }
   while (n < max && fp && !(fp & 7)) {
@@ -692,7 +694,8 @@ static bool vxd_apply_binary(vxd_session *c, const char *op, vxd_value *a, vxd_v
       r = x + y;
   } else if (op[0] == '-' && !op[1]) {
     if (pa && pb)
-      r = scale_a ? (x - y) / scale_a : 0, type = VXD_SYN_LONG;
+      r = scale_a ? (uint64_t)((int64_t)(x - y) / (int64_t)scale_a) : 0,
+      type = VXD_SYN_LONG; // signed: &a[0] - &a[1] is -1
     else if (pb)
       return c->err = "cannot subtract a pointer from a number", false;
     else
@@ -701,7 +704,10 @@ static bool vxd_apply_binary(vxd_session *c, const char *op, vxd_value *a, vxd_v
     r = x * y;
   } else if ((op[0] == '/' || op[0] == '%') && !op[1]) {
     if (!y) return c->err = "division by zero", false;
-    if (sgn)
+    if (sgn && (int64_t)x == INT64_MIN &&
+        (int64_t)y == -1) // the one quotient that does not fit: it wraps, as C's would
+      r = op[0] == '/' ? x : 0;
+    else if (sgn)
       r = op[0] == '/' ? (uint64_t)((int64_t)x / (int64_t)y) : (uint64_t)((int64_t)x % (int64_t)y);
     else
       r = op[0] == '/' ? x / y : x % y;
@@ -757,7 +763,9 @@ static bool vxd_member(vxd_session *c, vxd_value *v, const vxd_tok *name, bool a
   for (uint32_t k = 0; k < i.count && i.first + k < c->ix->h->members.count; k++) {
     const vxdi_member *m = &c->ix->members[i.first + k];
     const char *mn = vxdi_str(c->ix, m->name);
-    if (memcmp(mn, name->s, name->len) == 0 && !mn[name->len]) {
+    size_t same = 0; // compared to mn's NUL at most: no byte past its end is read
+    while (same < name->len && mn[same] && mn[same] == name->s[same]) same++;
+    if (same == name->len && !mn[same]) {
       if (v->where != VXD_MEM) return c->err = "member of a value not in memory", false;
       *v = (vxd_value){.type = m->type, .where = VXD_MEM, .addr = v->addr + (uint64_t)m->offset};
       return true;
@@ -960,6 +968,7 @@ static void vxd_put_double(vxd_out *o, double d) {
 static void vxd_put_string(vxd_session *c, vxd_out *o, uint64_t addr, size_t max) {
   vxd_puts(o, "\"");
   for (size_t i = 0; i < max; i++) {
+    if (o->len + 8 >= o->cap) break; // the output is full: no more of the target read for nothing
     char ch;
     if (!c->t->read(c->t->ctx, addr + i, &ch, 1)) return vxd_puts(o, "<unreadable>");
     if (!ch) return vxd_puts(o, "\"");
