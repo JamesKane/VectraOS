@@ -74,3 +74,13 @@ The toolchain is pinned (ADR-0001): clang, lld and llvm-objcopy 22.1.8 from Fedo
 | [docs/12-manual.md](docs/12-manual.md) | The manual: Plan 9's sections in guide, a modernised AmigaGuide, read by `man` and `hv` |
 | [docs/adr/](docs/adr/README.md) | Architecture decision records |
 | [docs/study/](docs/study/README.md) | The platform API study's findings: friction register, heritage systems, convergent API shapes, prototypes |
+
+## Governance
+
+VectraOS is run by a BDFL (benevolent dictator for life): James Kane. Every decision passes through the BDFL after weighing its pros and cons. Substantive changes get argued in an issue, a pull request or an ADR before the code lands, and a decision says why it was made. If VectraOS ever reaches a user base the size of desktop Linux's, a steady 2–3% of desktops, we'll consider moving governance to a committee.
+
+The [code of conduct](CODE_OF_CONDUCT.md) is four rules: have fun, respect each other, build cool software, and leave politics at the door.
+
+## License
+
+VectraOS is BSD-3-Clause licensed: see [LICENSE](LICENSE). There is no contributor license agreement and no copyright assignment; contributors keep the copyright on what they write. Vendored code under `third_party/` keeps its own licenses.
