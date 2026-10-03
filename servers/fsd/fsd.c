@@ -33,9 +33,15 @@
 // write's. An attach name of %BRANCH is the branch without permissions, for
 // adm's members (gefs's permissive attach).
 //
+// An attach name that labels a snapshot, not a branch, is that snapshot,
+// read-only. `dump` is the dump view (11 §5): /YYYY/MMDD/BRANCH for every
+// label named BRANCH@YYYY-MM-DD, each BRANCH that snapshot, read-only. Up to
+// RO_SLOTS snapshots are open at once; deleting a label closes its snapshot,
+// and fids on it find nothing from then on.
+//
 // Changes are committed every 5 s, and by Tfsync, which is answered once
 // its commit is durable (11 §6). Single-threaded: one loop, which waits for
-// the disk. The dump view is M5 step 4b3's.
+// the disk.
 
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-driver/blkclient.c"
@@ -109,9 +115,138 @@ static uint32_t user_of(uint64_t node) { return (uint32_t)(node >> USER_SHIFT) &
 static bool permissive(uint64_t node) { return node & PERMISSIVE; }
 static uint64_t qid_of(uint64_t node) { return node & ((1ull << USER_SHIFT) - 1); }
 
+// --- Read-only snapshots, and the dump view (11 §5) ---
+
+static constexpr uint32_t RO_FIRST = 16, RO_SLOTS = 32, DUMP_SLOT = 0x7f; // node slots past the branches'
+
+typedef struct snapro {
+  bool used;
+  char name[VXFS_LABELMAX + 1];
+  uint16_t nname;
+  vxfs_tree t;
+  uint64_t root;       // its root's qid
+  uint32_t year, mmdd; // a dated label's, its place in the dump view; else 0
+} snapro;
+static snapro ro[RO_SLOTS];
+
+static bool digits(const char *p, uint32_t n, uint32_t *v) {
+  *v = 0;
+  for (uint32_t i = 0; i < n; i++) {
+    if (p[i] < '0' || p[i] > '9') return false;
+    *v = *v * 10 + (uint32_t)(p[i] - '0');
+  }
+  return true;
+}
+
+// A label named BRANCH@YYYY-MM-DD: its date, and the branch's length.
+static bool dated(const char *label, uint16_t n, uint32_t *year, uint32_t *mmdd, uint16_t *nbranch) {
+  if (n < 12 || label[n - 11] != '@' || label[n - 6] != '-' || label[n - 3] != '-') return false;
+  uint32_t mm, dd;
+  if (!digits(label + n - 10, 4, year) || !digits(label + n - 5, 2, &mm) || !digits(label + n - 2, 2, &dd) ||
+      !mm || mm > 12 || !dd || dd > 31 || !*year)
+    return false;
+  *mmdd = mm * 100 + dd, *nbranch = (uint16_t)(n - 11);
+  return true;
+}
+
+// Snapshot `name` open read-only, in *slot (of ro[]).
+static vx_status ro_open(const char *name, uint32_t *slot) {
+  uint16_t n = vxfs_namelen(name, VXFS_LABELMAX);
+  uint32_t free = RO_SLOTS;
+  for (uint32_t i = 0; i < RO_SLOTS; i++) {
+    if (ro[i].used && ro[i].nname == n && !memcmp(ro[i].name, name, n)) {
+      *slot = i;
+      return VX_OK;
+    }
+    if (!ro[i].used && free == RO_SLOTS) free = i;
+  }
+  if (free == RO_SLOTS) return VX_ERR_NO_MEMORY;
+  snapro *r = &ro[free];
+  *r = (snapro){.nname = n};
+  memcpy(r->name, name, n);
+  vx_status st = vxfs_snap_open(&vol, name, &r->t);
+  vxfs_file root;
+  if (st == VX_OK) st = vxfs_root(&vol, &r->t, &root);
+  if (st != VX_OK) return st;
+  uint16_t nb;
+  if (!dated(name, n, &r->year, &r->mmdd, &nb)) r->year = r->mmdd = 0;
+  r->root = root.d.qid_path, r->used = true;
+  *slot = free;
+  return VX_OK;
+}
+
+// A label going: its snapshot, if open, closed first.
+static void ro_drop(const char *name) {
+  uint16_t n = vxfs_namelen(name, VXFS_LABELMAX);
+  for (uint32_t i = 0; i < RO_SLOTS; i++)
+    if (ro[i].used && ro[i].nname == n && !memcmp(ro[i].name, name, n)) ro[i] = (snapro){};
+}
+
+static bool is_dump(uint64_t node) { return slot_of(node) == DUMP_SLOT; }
+static bool is_readonly(uint64_t node) { return slot_of(node) >= RO_FIRST; }
+
+// A dump view directory: the root (level 0), a year (1), or a day (2).
+static uint64_t dump_node(uint64_t from, uint32_t level, uint32_t year, uint32_t mmdd) {
+  return node_of(DUMP_SLOT, user_of(from), (uint64_t)level << 40 | (uint64_t)year << 16 | mmdd) |
+         (from & PERMISSIVE);
+}
+static uint32_t dump_level(uint64_t node) { return (uint32_t)(qid_of(node) >> 40); }
+static uint32_t dump_year(uint64_t node) { return (uint32_t)(qid_of(node) >> 16) & 0xffff; }
+static uint32_t dump_mmdd(uint64_t node) { return (uint32_t)qid_of(node) & 0xffff; }
+
+// The dated labels, sorted by date then branch: what the dump view lists.
+typedef struct dumped {
+  uint32_t year, mmdd;
+  char branch[VXFS_LABELMAX + 1];
+  uint16_t nbranch;
+} dumped;
+static dumped dumps[256];
+static uint32_t ndumps;
+
+static int dump_cmp(const dumped *a, const dumped *b) {
+  if (a->year != b->year) return a->year < b->year ? -1 : 1;
+  if (a->mmdd != b->mmdd) return a->mmdd < b->mmdd ? -1 : 1;
+  return vxfs_keycmp((const uint8_t *)a->branch, a->nbranch, (const uint8_t *)b->branch, b->nbranch);
+}
+
+static void scan_dumps(void) {
+  ndumps = 0;
+  uint8_t pfx = VXFS_KLABEL;
+  vxfs_scan sc;
+  vxfs_scan_start(&sc, &vol.snap, &pfx, 1);
+  vxfs_kvp kv;
+  while (ndumps < 256 && vxfs_scan_next(&vol.fs, &sc, &kv)) {
+    dumped d = {};
+    if (kv.nv != 12 || (vxfs_get32(kv.v + 8) & VXFS_LMUT) ||
+        !dated((const char *)kv.k + 1, (uint16_t)(kv.nk - 1), &d.year, &d.mmdd, &d.nbranch))
+      continue;
+    memcpy(d.branch, kv.k + 1, d.nbranch);
+    uint32_t at = ndumps;
+    while (at && dump_cmp(&dumps[at - 1], &d) > 0) dumps[at] = dumps[at - 1], at--;
+    dumps[at] = d, ndumps++;
+  }
+  vxfs_scan_end(&vol.fs, &sc);
+}
+
+static void put4(char *p, uint32_t v) {
+  for (int i = 3; i >= 0; i--) p[i] = (char)('0' + v % 10), v /= 10;
+}
+
+// A dump view directory as an entry: a name to stat, no more.
+static vx_status dump_file(uint64_t node, vxfs_file *f) {
+  *f = (vxfs_file){.d = {.qid_path = qid_of(node), .qid_type = VXFS_QTDIR, .mode = VXFS_DMDIR | 0555}};
+  char name[4];
+  uint32_t level = dump_level(node);
+  put4(name, level == 1 ? dump_year(node) : dump_mmdd(node));
+  f->nkey = key_ent(f->key, 0, (const uint8_t *)name, level ? 4 : 0);
+  return VX_OK;
+}
+
 static vxfs_tree *tree_of(uint64_t node) {
   uint32_t s = slot_of(node);
-  return s < VXFS_MAXBRANCH && vol.br[s].open ? &vol.br[s].t : nullptr;
+  if (s < VXFS_MAXBRANCH) return vol.br[s].open ? &vol.br[s].t : nullptr;
+  if (s >= RO_FIRST && s < RO_FIRST + RO_SLOTS) return ro[s - RO_FIRST].used ? &ro[s - RO_FIRST].t : nullptr;
+  return nullptr;
 }
 
 static bool is_branch(uint64_t node, const char *name) {
@@ -138,6 +273,7 @@ static vx_status made_up(uint64_t node, vxfs_file *f) {
 }
 
 static vx_status file_of(uint64_t node, vxfs_file *f) {
+  if (is_dump(node)) return dump_file(node, f);
   vxfs_tree *t = tree_of(node);
   if (!t) return VX_ERR_NOT_FOUND;
   if (is_made_up(node)) return made_up(node, f);
@@ -347,8 +483,67 @@ static bool is_adm(uint64_t node) {
 // A change, which a halted volume refuses.
 static vx_status mutable(uint64_t node) {
   if (halted) return VX_ERR_BAD_STATE;
-  if (is_made_up(node)) return VX_ERR_ACCESS;
+  if (is_made_up(node) || is_readonly(node)) return VX_ERR_ACCESS; // a snapshot, or the dump view
   return VX_OK;
+}
+
+// The dump view's names: a year, a day in it, a branch's snapshot that day.
+static vx_status dump_walk(uint64_t dir, vx_str name, uint64_t *child) {
+  uint32_t level = dump_level(dir), v;
+  scan_dumps();
+  if (level < 2) {
+    if (name.len != 4 || !digits(name.ptr, 4, &v)) return VX_ERR_NOT_FOUND;
+    for (uint32_t i = 0; i < ndumps; i++)
+      if (level == 0 ? dumps[i].year == v : dumps[i].year == dump_year(dir) && dumps[i].mmdd == v) {
+        *child = level == 0 ? dump_node(dir, 1, v, 0) : dump_node(dir, 2, dump_year(dir), v);
+        return VX_OK;
+      }
+    return VX_ERR_NOT_FOUND;
+  }
+  for (uint32_t i = 0; i < ndumps; i++) {
+    const dumped *d = &dumps[i];
+    if (d->year != dump_year(dir) || d->mmdd != dump_mmdd(dir) || d->nbranch != name.len ||
+        memcmp(d->branch, name.ptr, name.len) != 0)
+      continue;
+    char label[VXFS_LABELMAX + 1];
+    memcpy(label, d->branch, d->nbranch);
+    label[d->nbranch] = '@';
+    put4(label + d->nbranch + 1, d->year);
+    label[d->nbranch + 5] = '-';
+    label[d->nbranch + 6] = (char)('0' + d->mmdd / 1000),
+                       label[d->nbranch + 7] = (char)('0' + d->mmdd / 100 % 10);
+    label[d->nbranch + 8] = '-';
+    label[d->nbranch + 9] = (char)('0' + d->mmdd / 10 % 10),
+                       label[d->nbranch + 10] = (char)('0' + d->mmdd % 10);
+    label[d->nbranch + 11] = 0;
+    uint32_t r;
+    vx_status st = ro_open(label, &r);
+    if (st != VX_OK) return st;
+    *child = node_of(RO_FIRST + r, user_of(dir), ro[r].root) | (dir & PERMISSIVE);
+    return VX_OK;
+  }
+  return VX_ERR_NOT_FOUND;
+}
+
+// The index-th of a dump view directory's entries.
+static vx_status dump_readdir(uint64_t dir, uint32_t index, uint64_t *child) {
+  uint32_t level = dump_level(dir), n = 0;
+  scan_dumps();
+  for (uint32_t i = 0; i < ndumps; i++) {
+    const dumped *d = &dumps[i];
+    bool in = level == 0 || d->year == dump_year(dir);
+    if (level == 2) in = in && d->mmdd == dump_mmdd(dir);
+    bool first = true; // the first of its year (level 0) or day (level 1); a day's branches each
+    if (i && level == 0) first = dumps[i - 1].year != d->year;
+    if (i && level == 1) first = dumps[i - 1].year != d->year || dumps[i - 1].mmdd != d->mmdd;
+    if (!in || !first || n++ != index) continue;
+    if (level < 2) {
+      *child = level == 0 ? dump_node(dir, 1, d->year, 0) : dump_node(dir, 2, d->year, d->mmdd);
+      return VX_OK;
+    }
+    return dump_walk(dir, (vx_str){d->branch, d->nbranch}, child);
+  }
+  return VX_ERR_NOT_FOUND;
 }
 
 // --- The 9P side ---
@@ -362,9 +557,20 @@ static vx_status fs_attach([[maybe_unused]] void *ctx, vx_str aname, vx_str unam
   if (!aname.len || aname.len > VXFS_LABELMAX) return VX_ERR_NOT_FOUND;
   memcpy(name, aname.ptr, aname.len);
   name[aname.len] = 0;
+  uint64_t base = node_of(0, who, 0) | (all ? PERMISSIVE : 0);
+  if (aname.len == 4 && !memcmp(name, "dump", 4)) {
+    *root = dump_node(base, 0, 0, 0);
+    return VX_OK;
+  }
   vxfs_branch *br;
   vx_status st = vxfs_branch_open(&vol, name, &br);
-  if (st != VX_OK) return st == VX_ERR_ACCESS ? VX_ERR_ACCESS : VX_ERR_NOT_FOUND; // 4b3: snapshots, read-only
+  if (st == VX_ERR_ACCESS) { // a snapshot's label: the snapshot, read-only
+    uint32_t r;
+    if ((st = ro_open(name, &r)) != VX_OK) return st;
+    *root = node_of(RO_FIRST + r, who, ro[r].root) | (all ? PERMISSIVE : 0);
+    return VX_OK;
+  }
+  if (st != VX_OK) return VX_ERR_NOT_FOUND;
   uint32_t slot = (uint32_t)(br - vol.br);
   if (!reaped[slot]) { // what a crash left of files removed while open
     uint32_t n = 0;
@@ -383,6 +589,7 @@ static vx_status fs_walk([[maybe_unused]] void *ctx, uint64_t dir, vx_str name, 
   if (name.len > VXFS_NAMEMAX) return VX_ERR_RANGE;
   memcpy(nm, name.ptr, name.len);
   nm[name.len] = 0;
+  if (is_dump(dir)) return dump_walk(dir, name, child);
   vxfs_file d, f;
   vx_status st = file_of(dir, &d);
   if (st == VX_OK && (d.d.mode & VXFS_DMDIR) && !may(dir, &d.d, MAY_X)) st = VX_ERR_ACCESS;
@@ -398,6 +605,17 @@ static vx_status fs_walk([[maybe_unused]] void *ctx, uint64_t dir, vx_str name, 
 }
 
 static vx_status fs_parent([[maybe_unused]] void *ctx, uint64_t node, uint64_t *parent) {
+  if (is_dump(node)) { // a day's year, a year's root
+    uint32_t level = dump_level(node);
+    *parent = dump_node(node, level ? level - 1 : 0, level == 2 ? dump_year(node) : 0, 0);
+    return VX_OK;
+  }
+  uint32_t s = slot_of(node);
+  if (is_readonly(node) && s < RO_FIRST + RO_SLOTS && ro[s - RO_FIRST].used && ro[s - RO_FIRST].year &&
+      qid_of(node) == ro[s - RO_FIRST].root) { // a dated snapshot's root: its day, in the dump view
+    *parent = dump_node(node, 2, ro[s - RO_FIRST].year, ro[s - RO_FIRST].mmdd);
+    return VX_OK;
+  }
   vxfs_file f, p;
   vx_status st = file_of(node, &f);
   if (st == VX_OK && vxfs_is_orphan(&f)) st = VX_ERR_NOT_FOUND;
@@ -422,6 +640,16 @@ static vx_str user_name(char *buf, uint32_t id) {
   return u ? (vx_str){u->name, u->nname} : decimal(buf, id);
 }
 
+// A root's name: a dated snapshot's is its branch's, as the dump view lists it; others are /.
+static vx_str root_name(uint64_t node) {
+  uint32_t s = slot_of(node);
+  if (is_readonly(node) && s < RO_FIRST + RO_SLOTS && ro[s - RO_FIRST].used && ro[s - RO_FIRST].year) {
+    const snapro *r = &ro[s - RO_FIRST];
+    return (vx_str){r->name, r->nname - 11u};
+  }
+  return VX_STR("/");
+}
+
 static vxfs_file stat_file; // the name in a stat lives until the next call
 
 static vx_status fs_stat([[maybe_unused]] void *ctx, uint64_t node, p9_stat *out) {
@@ -430,16 +658,16 @@ static vx_status fs_stat([[maybe_unused]] void *ctx, uint64_t node, p9_stat *out
   const vxfs_dir *d = &stat_file.d;
   bool dir = d->mode & VXFS_DMDIR, root = stat_file.nkey == 9 && !vxfs_is_orphan(&stat_file);
   uint8_t qtype = dir ? P9_QTDIR : P9_QTFILE;
-  *out =
-      (p9_stat){.qid = {qtype, d->qid_vers, node},
-                .mode = d->mode,
-                .atime = (uint32_t)(d->atime / 1'000'000'000),
-                .mtime = (uint32_t)(d->mtime / 1'000'000'000),
-                .length = dir ? 0 : d->length,
-                .name = root ? VX_STR("/") : (vx_str){(const char *)stat_file.key + 9, stat_file.nkey - 9u},
-                .uid = user_name(uidbuf[0], d->uid),
-                .gid = user_name(uidbuf[1], d->gid),
-                .muid = user_name(uidbuf[2], d->muid)};
+  *out = (p9_stat){.qid = {qtype, d->qid_vers, node},
+                   .mode = d->mode,
+                   .atime = (uint32_t)(d->atime / 1'000'000'000),
+                   .mtime = (uint32_t)(d->mtime / 1'000'000'000),
+                   .length = dir ? 0 : d->length,
+                   .name = root ? root_name(node)
+                                : (vx_str){(const char *)stat_file.key + 9, stat_file.nkey - 9u},
+                   .uid = user_name(uidbuf[0], d->uid),
+                   .gid = user_name(uidbuf[1], d->gid),
+                   .muid = user_name(uidbuf[2], d->muid)};
   return VX_OK;
 }
 
@@ -566,6 +794,7 @@ static vx_status ctl_command(uint64_t node, vx_str cmd) {
   } else if (is(w[0], "del") && n == 2) { // del LABEL: not a branch in use, nor adm
     if (is(w[1], "adm")) return VX_ERR_ACCESS;
     if (open_branch(w[1])) return VX_ERR_BAD_STATE;
+    ro_drop(w[1]); // its snapshot, if open: fids on it find nothing now
     st = vxfs_unlabel(&vol, w[1]);
   } else if (is(w[0], "rollback") && n == 3) { // rollback BRANCH LABEL, the old head kept as BRANCH@before-N
     if (is(w[1], "adm")) return VX_ERR_ACCESS;
@@ -614,6 +843,7 @@ static vx_status fs_open([[maybe_unused]] void *ctx, uint64_t node, uint8_t mode
     if (!ctl && make_status() != VX_OK) return VX_ERR_NO_MEMORY;
     return VX_OK;
   }
+  if (writes && is_readonly(node)) return VX_ERR_ACCESS;                  // a snapshot, or the dump view
   if (!(mode & P9_OJOIN) && !may(node, &f.d, want)) return VX_ERR_ACCESS; // a join has its open's rights
   if (halted && writes) return VX_ERR_BAD_STATE;
   opened *o = open_slot(node, true);
@@ -677,6 +907,7 @@ static struct {
 } cursor;
 
 static vx_status fs_readdir([[maybe_unused]] void *ctx, uint64_t dir, uint32_t index, uint64_t *child) {
+  if (is_dump(dir)) return dump_readdir(dir, index, child);
   vxfs_file d;
   vx_status st = file_of(dir, &d);
   if (st != VX_OK) return st;

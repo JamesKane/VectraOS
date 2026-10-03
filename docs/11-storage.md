@@ -98,7 +98,7 @@ The snapshot tree is itself copy-on-write, but is never snapshotted.
 - **Branches are the subvolumes 06 asks for.** A system volume holds `store` (`/dist/store`), `cfg` (`/cfg`), `home` (`/home`) and `adm` (the administrative files, §9). Each can be snapshotted, rolled back and mounted on its own, and all of them share one pool of space.
 - **Mounting** is by the attach name, as in gefs: `mount /srv/fsd /cfg cfg`.
 - **Rolling back** forks a new branch from the chosen snapshot and moves the label.
-- **The dump is a view of labels.** Dated snapshots are labels named `home@2027-03-14`, and the `dump` attach serves them as `/n/snap/2027/0314/home/...`, read-only, as 06 §10.2 wants.
+- **The dump is a view of labels.** Dated snapshots are labels named `home@2027-03-14`, and the `dump` attach serves them as `/YYYY/MMDD/BRANCH/...` (`/n/snap/2027/0314/home/...` where it is mounted on `/n/snap`), read-only, as 06 §10.2 wants. Any other label that names a snapshot can be attached by its name, read-only too.
 - **Retention is policy, not format.** A commit every 5 s gives a snapshot that is dropped when the next one lands. `/cfg` says which dated snapshots are kept and for how long, and 06 says what updates keep (06 §10.3). `auditfs` labels a snapshot before each agent session, and undo forks from it.
 
 **Deleting a snapshot reclaims what only it held,** through deadlists, as ZFS does:
