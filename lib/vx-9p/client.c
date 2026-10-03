@@ -27,6 +27,9 @@ typedef struct p9_client {
   uint32_t next_fid;
   vx_str uname; // who attaches; empty: p9c_user, or "none"
   p9_msg reply; // the last reply; its strings and data point into rbuf
+  // The handle the last reply carried (Rmap's VMO), set by the transport;
+  // the call that wants it takes it, and the transport closes one not taken.
+  vx_handle handle;
 } p9_client;
 
 static vx_status p9c_call(p9_client *c, p9_msg *t) {
@@ -280,4 +283,18 @@ static vx_status p9c_call(p9_client *c, p9_msg *t) {
   vx_status e = p9c_call(c, &t);
   if (e == VX_OK) *l = c->reply;
   return e;
+}
+
+// Tmap (docs/proto/map.md): a VMO for the file's [offset, offset + length),
+// the fid open as the mapping needs, and where in it the range starts.
+[[maybe_unused]] static vx_status p9c_map(p9_client *c, uint32_t fid, uint64_t offset, uint64_t length,
+                                          uint32_t prot, vx_handle *vmo, uint64_t *vmo_offset) {
+  if (!(c->extensions & P9_EXT_MAP)) return VX_ERR_UNSUPPORTED;
+  p9_msg t = {.type = P9_Tmap, .fid = fid, .offset = offset, .length = length, .prot = prot};
+  vx_status e = p9c_call(c, &t);
+  if (e == VX_OK && !c->handle) e = VX_ERR_INVALID; // an Rmap without its VMO
+  if (e != VX_OK) return e;
+  *vmo = c->handle, *vmo_offset = c->reply.offset;
+  c->handle = VX_HANDLE_NONE;
+  return VX_OK;
 }

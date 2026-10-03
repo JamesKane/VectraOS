@@ -1274,7 +1274,19 @@ static void test_pager(void) {
   CHECK(vx_vmo_rw(vmo, VX_VMO_READ, 24, &got, 8) == VX_OK && got == 0x7777);         // what is kept, kept
   CHECK(vx_vmo_resize(src, 8192) == VX_ERR_UNSUPPORTED);                             // anonymous: not yet
   CHECK(vx_pager_op(pager, src, VX_PAGER_DIRTY, 0, 4096, ranges) == VX_ERR_INVALID); // not its VMO
+  // vmo_rw writes dirty a page as a store does.
+  CHECK(vx_pager_op(pager, vmo, VX_PAGER_CLEAN, 0, 8192, nullptr) == VX_OK);
+  got = 0x9999;
+  CHECK(vx_vmo_rw(vmo, VX_VMO_WRITE, 4096 + 40, &got, 8) == VX_OK);
+  CHECK(vx_pager_op(pager, vmo, VX_PAGER_DIRTY, 0, 8192, ranges) == 1 && ranges[0].offset == 4096);
+  // IDLE: not while it is mapped, nor while another handle has it; then yes.
+  CHECK(vx_pager_op(pager, vmo, VX_PAGER_IDLE, 0, 0, nullptr) == 0);
   CHECK(vx_as_unmap(self, at, 16384) == VX_OK);
+  vx_handle other;
+  CHECK(vx_handle_dup(vmo, VX_RIGHTS_SAME, &other) == VX_OK);
+  CHECK(vx_pager_op(pager, vmo, VX_PAGER_IDLE, 0, 0, nullptr) == 0);
+  vx_handle_close(other);
+  CHECK(vx_pager_op(pager, vmo, VX_PAGER_IDLE, 0, 0, nullptr) == 1);
   vx_handle_close(vmo);
 
   // A deadline missed: the thread takes PAGER_TIMEOUT, its handler supplies

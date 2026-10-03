@@ -151,7 +151,7 @@ static void test_round_trips(void) {
     buf[0] = (uint8_t)(n - 1);
     CHECK(p9_decode(buf, n, &d) == VX_ERR_INVALID);
   }
-  CHECK(types == 53);               // 9P2000's 27, 18 of 9P2000.L's, and 9Px's 8 (posix and xattr)
+  CHECK(types == 55);               // 9P2000's 27, 18 of 9P2000.L's, and 9Px's 10 (posix, xattr, map)
   CHECK(P9_FIELDS[106] == nullptr); // there is no Terror
   CHECK(p9_encode(&(p9_msg){.type = (p9_type)106}, buf, sizeof buf) == 0);
   CHECK(p9_encode(&(p9_msg){.type = P9_Tclunk}, buf, 6) == 0); // does not fit

@@ -8,5 +8,5 @@ connect=disk1
 claim=disk1.vectra
 part=disk1.vectra name=vectra
 
-service=fsd program=/boot/bin/fsd post=fsd console entropy
+service=fsd program=/boot/bin/fsd post=fsd console entropy pager
 connect=disk1.vectra

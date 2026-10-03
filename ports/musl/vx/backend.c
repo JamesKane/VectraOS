@@ -196,6 +196,10 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
   case SYS_munmap: return mem_unmap(a1, (size_t)a2);
   case SYS_mremap: return mem_remap(a1, (size_t)a2, (size_t)a3, (int)a4);
   case SYS_mprotect: return mem_protect((int)a3);
+  // Mapped files' writes reach fsd's page cache at once, and the volume
+  // within 10 s or at the file's next fsync: msync has nothing to start, and
+  // MS_SYNC does not yet wait (docs/milestones.md).
+  case SYS_msync:
   case SYS_madvise: // advice
   case SYS_brk:     // no break: musl's malloc maps instead
     return 0;

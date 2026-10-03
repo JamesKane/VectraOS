@@ -9,6 +9,8 @@
 // Messages. One 9P message is one submission: opcode P9_RING_MSG, its bytes at
 // arena_off in the client's arena, len bytes long. The reply is one
 // completion: result is its length, aux2 its offset in the server's arena.
+// A reply that carries a handle (Rmap's VMO) has P9_CQE_HANDLE in flags and
+// the ring's handle slot in aux (ring_xfer_handles), which the client takes.
 // Each side copies the other's bytes out once before it decodes them (01
 // §4.3), and a peer that names bytes outside its arena, or sends a reply that
 // does not fit, is treated as gone. This client has one request in flight;
@@ -25,6 +27,7 @@
 
 enum : uint32_t { P9_CONNECT = 0x3970'6e63 }; // the listen channel's one ordinal: "cnp9"
 enum : uint16_t { P9_RING_MSG = 1 };          // the one submission opcode
+enum : uint32_t { P9_CQE_HANDLE = 1 };        // a completion's flags: a handle in slot aux
 static constexpr uint32_t P9_RING_MSIZE = 16 * 1024;
 static const vx_ring_params P9_RING_PARAMS = {
     .sq_entries = 8,
@@ -92,6 +95,10 @@ static int64_t p9_ring_take(p9_conn *k, uint8_t *resp, size_t cap) {
                          : nullptr;
   if (!p) return -1;
   memcpy(resp, p, (size_t)c.result);
+  if (k->c.handle) vx_handle_close(k->c.handle); // one no call took
+  k->c.handle = VX_HANDLE_NONE;
+  if ((c.flags & P9_CQE_HANDLE) && vx_ring_take_handles(k->end, c.aux, &k->c.handle, 1) != 1)
+    k->c.handle = VX_HANDLE_NONE;
   return c.result;
 }
 
@@ -145,7 +152,7 @@ static size_t p9_ring_rpc(void *ctx, const uint8_t *req, size_t len, uint8_t *re
   if (st == VX_OK) {
     k->c =
         (p9_client){.rpc = p9_ring_rpc, .ctx = k, .tbuf = k->tbuf, .rbuf = k->rbuf, .bufsize = P9_RING_MSIZE};
-    st = p9c_version(&k->c, P9_RING_MSIZE, P9_EXT_POSIX | P9_EXT_XATTR); // what the server has of them
+    st = p9c_version(&k->c, P9_RING_MSIZE, P9_EXT_POSIX | P9_EXT_XATTR | P9_EXT_MAP); // what the server has
   }
   if (st != VX_OK) {
     if (k->end) vx_handle_close(k->end);
@@ -157,6 +164,7 @@ static size_t p9_ring_rpc(void *ctx, const uint8_t *req, size_t len, uint8_t *re
 
 [[maybe_unused]] static void p9_ring_disconnect(p9_conn *k) {
   p9_ring_unmap(&k->ring);
+  if (k->c.handle) vx_handle_close(k->c.handle);
   if (k->end) vx_handle_close(k->end);
   if (k->port) vx_handle_close(k->port);
   *k = (p9_conn){.dead = true};

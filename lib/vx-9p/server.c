@@ -64,6 +64,12 @@ typedef struct p9_fs {
   // Optional: Tfsync, answered when it returns. A server that writes before
   // Rwrite has none; one that commits later (fsd) commits here.
   vx_status (*fsync)(void *ctx, uint64_t node);
+  // The map extension (docs/proto/map.md), optional: a VMO for the file's
+  // [offset, offset + length), with rights for prot and no more, and where
+  // in it the range starts. The handle becomes the framework's, which the
+  // transport hands to the client.
+  vx_status (*map)(void *ctx, uint64_t node, uint64_t offset, uint64_t length, uint32_t prot, vx_handle *vmo,
+                   uint64_t *vmo_offset);
 } p9_fs;
 
 enum : uint32_t { P9_MAX_FIDS = 256 }; // per connection, for now
@@ -128,6 +134,9 @@ typedef struct p9_server {
   p9_shared *shared;  // the server's open files and locks, for posix; may be null
   char version[96];   // Rversion's string
   uint8_t stat[1024]; // Rstat's entry
+  // The handle the last reply carries (Rmap's VMO), for the transport to
+  // pass on; VX_HANDLE_NONE when it carries none. The transport's to close.
+  vx_handle reply_handle;
 } p9_server;
 
 static p9_fid *p9_fid_find(p9_server *s, uint32_t fid) {
@@ -531,6 +540,26 @@ static vx_status p9_serve_posix(p9_server *s, const p9_msg *t, p9_msg *r) {
   }
 }
 
+// Tmap (docs/proto/map.md): only on a fid open for reading, and for
+// writing too if the mapping writes, as POSIX's mmap asks of a descriptor.
+static vx_status p9_serve_map(p9_server *s, const p9_msg *t, p9_msg *r) {
+  if (!(s->extensions & P9_EXT_MAP) || !s->fs.map) return VX_ERR_UNSUPPORTED;
+  p9_fid *f = p9_fid_find(s, t->fid);
+  if (!f) return VX_ERR_BAD_HANDLE;
+  uint8_t mode = f->mode & 3;
+  uint64_t end;
+  if (!f->open || (f->qid.type & P9_QTDIR) || mode == P9_OWRITE) return VX_ERR_ACCESS;
+  if ((t->prot & P9_PROT_WRITE) && mode != P9_ORDWR) return VX_ERR_ACCESS;
+  if (!t->length || (t->prot & ~(P9_PROT_READ | P9_PROT_WRITE | P9_PROT_EXEC)) ||
+      ((t->prot & P9_PROT_WRITE) && (t->prot & P9_PROT_EXEC)))
+    return VX_ERR_INVALID; // W^X (01 §11)
+  if (ckd_add(&end, t->offset, t->length)) return VX_ERR_RANGE;
+  vx_handle vmo = VX_HANDLE_NONE;
+  vx_status e = s->fs.map(s->fs.ctx, f->node, t->offset, t->length, t->prot, &vmo, &r->offset);
+  if (e == VX_OK) s->reply_handle = vmo;
+  return e;
+}
+
 static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve the request again later
 
 // Handles one request (`len` bytes, one whole message) and writes the reply
@@ -735,6 +764,7 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
     case P9_Tjoin:
     case P9_Tseek:
     case P9_Tdesc: e = p9_serve_posix(s, &t, &r); break;
+    case P9_Tmap: e = p9_serve_map(s, &t, &r); break;
     default: return 0;
     }
   }

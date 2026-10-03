@@ -381,7 +381,7 @@ static vx_status start(service *s) {
     b.names[b.count++] = VX_STR("resource");
   }
   if (st == VX_OK && vx_ndb_has(&rec, "pager") && resource) { // pagers and nothing else: fsd (docs/11 §8)
-    st = vx_handle_dup(resource, VX_RIGHT_PAGER | VX_RIGHT_INSPECT, &b.handles[b.count]);
+    st = vx_handle_dup(resource, VX_RIGHT_PAGER | VX_RIGHT_TRANSFER | VX_RIGHT_INSPECT, &b.handles[b.count]);
     b.names[b.count++] = VX_STR("pager");
   }
   if (st == VX_OK && vx_ndb_has(&rec, "acpi") && acpi_vmo) {

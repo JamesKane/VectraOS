@@ -1,10 +1,33 @@
 // memory.c: mmap and its relatives, over VMOs. Part of backend.c.
 //
 // An anonymous mapping is a VMO of its own, mapped where the kernel picks or
-// at a fixed address. A private mapping of a file is its bytes read into one:
-// what MAP_PRIVATE promises a reader, without a pager. Shared file mappings
-// come with 9Px's Tmap (02 §3), as does the change of permissions that
-// as_protect will give (docs/milestones.md).
+// at a fixed address. A file's mapping, on a server with 9Px's map extension
+// (fsd), is the VMO Tmap gives (docs/proto/map.md): its page cache, which
+// every process mapping the file shares, so MAP_SHARED writes reach the file
+// and the others, and a read-only MAP_PRIVATE costs no copy. A private
+// mapping that may be written, or one from a server without the extension,
+// is the file's bytes read into a VMO of its own. Shared mappings of other
+// servers' files are refused. Changing permissions waits for as_protect
+// (docs/milestones.md).
+
+// A file's pages as its server's VMO (Tmap), mapped. PROT_NONE is mapped
+// read-only: what it reserves stays reserved.
+static long mem_map_file(const ofd *o, uint64_t size, int prot, int flags, long offset, long addr) {
+  uint32_t p9prot =
+      P9_PROT_READ | (prot & PROT_WRITE ? P9_PROT_WRITE : 0) | (prot & PROT_EXEC ? P9_PROT_EXEC : 0);
+  vx_handle vmo;
+  uint64_t from;
+  vx_status st = p9c_map(o->f.c, o->f.fid, (uint64_t)offset, size, p9prot, &vmo, &from);
+  if (st != VX_OK) return vx_errno(st);
+  uint32_t vflags = (prot & PROT_WRITE ? VX_MAP_WRITE : 0) | (prot & PROT_EXEC ? VX_MAP_EXEC : 0);
+  uint64_t at = (flags & (MAP_FIXED | MAP_FIXED_NOREPLACE)) ? (uint64_t)addr : 0;
+  if (flags & MAP_FIXED) vx_as_unmap(vx_self, at, size);
+  st = vx_as_map(vx_self, vmo, from, size, vflags, &at);
+  vx_handle_close(vmo); // the mapping keeps it
+  if (st == VX_ERR_EXISTS && (flags & MAP_FIXED_NOREPLACE)) return -EEXIST;
+  if (st != VX_OK) return vx_errno(st);
+  return (long)at;
+}
 
 static long mem_map(long addr, size_t len, int prot, int flags, int fd, long offset) {
   if (!len || (addr & 4095) || (offset & 4095) || offset < 0) return -EINVAL;
@@ -13,12 +36,21 @@ static long mem_map(long addr, size_t len, int prot, int flags, int fd, long off
   size &= ~(uint64_t)4095;
   if ((prot & PROT_WRITE) && (prot & PROT_EXEC)) return -EACCES; // W^X (01 §11)
   bool anon = flags & MAP_ANONYMOUS;
-  // Shared mappings wait for 9Px's Tmap and shared VMOs across fork: refused,
-  // anonymous ones too, rather than made private where a program counts on
-  // another process seeing its writes.
-  if ((flags & MAP_TYPE) != MAP_PRIVATE) return anon ? -EINVAL : -ENODEV;
+  // Anonymous shared mappings wait for shared VMOs across fork: refused,
+  // rather than made private where a program counts on another process
+  // seeing its writes.
+  bool shared = (flags & MAP_TYPE) == MAP_SHARED || (flags & MAP_TYPE) == MAP_SHARED_VALIDATE;
+  if ((flags & MAP_TYPE) != MAP_PRIVATE && !shared) return -EINVAL;
+  if (shared && anon) return -EINVAL;
   const ofd *o = anon ? nullptr : fd_get(fd);
   if (!anon && (!o || o->kind != OFD_FILE || o->dir)) return o ? -EACCES : -EBADF;
+  bool mappable = !anon && (o->f.c->extensions & P9_EXT_MAP);
+  if (shared && !mappable) return -ENODEV;
+  if (mappable && (shared || !(prot & ~(PROT_READ | PROT_EXEC)))) {
+    if ((o->flags & O_ACCMODE) == O_WRONLY) return -EACCES;
+    if (shared && (prot & PROT_WRITE) && (o->flags & O_ACCMODE) != O_RDWR) return -EACCES;
+    return mem_map_file(o, size, prot, flags, offset, addr);
+  }
 
   // Until as_protect, PROT_NONE is mapped read-write: what it reserves stays
   // reserved, but a guard page does not fault. That is what musl's malloc

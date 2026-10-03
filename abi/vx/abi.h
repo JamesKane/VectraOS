@@ -265,12 +265,14 @@ static_assert(sizeof(vx_cqe) == 32);
 //       mapping. Clean, then read, then write back: a write before the
 //       clean is in what is read, one after it is dirty again.
 //       VX_PAGER_EVICT: the range's clean pages freed; a touch asks again.
+//       VX_PAGER_IDLE: 1 if the caller's handle is the VMO's only reference
+//       (no other handle, no mapping), else 0: the pager may let it go.
 //   vmo_op(vmo, VX_VMO_RESIZE, size)
 //       a pager-backed VMO's new size: pages past it leave every mapping and
 //       are freed (a touch there is an ordinary fault), pages added absent.
 //       Anonymous VMOs: not yet (UNSUPPORTED)
 enum vx_vmo_options : uint32_t { VX_VMO_PHYSICAL = 1, VX_VMO_PAGER = 2 };
-enum vx_pager_op : uint32_t { VX_PAGER_DIRTY = 1, VX_PAGER_CLEAN = 2, VX_PAGER_EVICT = 3 };
+enum vx_pager_op : uint32_t { VX_PAGER_DIRTY = 1, VX_PAGER_CLEAN = 2, VX_PAGER_EVICT = 3, VX_PAGER_IDLE = 4 };
 enum vx_vmo_resize_op : uint32_t { VX_VMO_RESIZE = 1 };
 static constexpr uint32_t VX_PAGER_RANGES = 64;
 typedef struct vx_pager_range {

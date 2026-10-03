@@ -240,7 +240,7 @@ static int64_t sys_pager_supply(vx_handle gh, vx_handle vh, uint64_t offset, uin
 static int64_t sys_pager_op(vx_handle gh, vx_handle vh, uint64_t op, uint64_t offset, uint64_t size,
                             uint64_t out) {
   uint64_t end;
-  if (op < VX_PAGER_DIRTY || op > VX_PAGER_EVICT || (offset | size) & 4095) return VX_ERR_INVALID;
+  if (op < VX_PAGER_DIRTY || op > VX_PAGER_IDLE || (offset | size) & 4095) return VX_ERR_INVALID;
   if (ckd_add(&end, offset, size)) return VX_ERR_RANGE;
   if (op == VX_PAGER_DIRTY && !user_range_ok(out, VX_PAGER_RANGES * sizeof(vx_pager_range), true))
     return VX_ERR_INVALID;
@@ -259,6 +259,8 @@ static int64_t sys_pager_op(vx_handle gh, vx_handle vh, uint64_t op, uint64_t of
         vx_status c = copy_to_user(out, ranges, (size_t)r * sizeof ranges[0]);
         if (c != VX_OK) r = c;
       }
+    } else if (op == VX_PAGER_IDLE) { // only the caller's handle, and this call's own reference
+      r = atomic_load(&v->obj.refs) <= 2 ? 1 : 0;
     } else if (op == VX_PAGER_CLEAN) {
       pager_clean(v, first, count);
       r = VX_OK;
@@ -898,12 +900,24 @@ static int64_t sys_vmo_rw(vx_handle h, uint64_t op, uint64_t offset, uint64_t bu
   for (uint64_t done = 0; st == VX_OK && done < size;) {
     uint64_t at = offset + done, in_page = at & 4095, n = 4096 - in_page;
     if (n > size - done) n = size - done;
-    uint64_t pa = vmo_page(v, at / 4096);
-    if (!pa) { // a pager has not supplied it
-      st = VX_ERR_SHOULD_WAIT;
-      break;
+    if (v->pager) { // its pages can go (EVICT, a shrink): each touched under its lock, through a bounce
+      uint8_t bounce[256];
+      if (n > sizeof bounce) n = sizeof bounce;
+      if (op == VX_VMO_WRITE && (st = copy_from_user(bounce, buf + done, n)) != VX_OK) break;
+      spin_lock(&v->lock);
+      uint64_t pa = at / 4096 < v->size / 4096 ? vmo_page(v, at / 4096) : 0;
+      if (pa && op == VX_VMO_READ) memcpy(bounce, (uint8_t *)phys_to_virt(pa) + in_page, n);
+      if (pa && op == VX_VMO_WRITE) {
+        memcpy((uint8_t *)phys_to_virt(pa) + in_page, bounce, n);
+        v->pages[at / 4096] |= PAGE_DIRTY; // written, as a store through a mapping would mark it
+      }
+      spin_unlock(&v->lock);
+      if (!pa) st = VX_ERR_SHOULD_WAIT; // a pager has not supplied it
+      if (pa && op == VX_VMO_READ) st = copy_to_user(buf + done, bounce, n);
+      done += n;
+      continue;
     }
-    uint8_t *page = (uint8_t *)phys_to_virt(pa) + in_page;
+    uint8_t *page = (uint8_t *)phys_to_virt(vmo_page(v, at / 4096)) + in_page;
     st = op == VX_VMO_READ ? copy_to_user(buf + done, page, n) : copy_from_user(page, buf + done, n);
     done += n;
   }

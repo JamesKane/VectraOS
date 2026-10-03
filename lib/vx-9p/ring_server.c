@@ -139,9 +139,19 @@ static p9_drained p9_ring_drain(p9_ring_conn *c) {
     uint64_t arena_size;
     uint8_t *arena = vx_ring_arena(&c->ring, &arena_size);
     vx_cqe *out = n && n <= arena_size ? vx_ring_produce_slot(&c->ring) : nullptr;
+    if (!out && c->srv.reply_handle) vx_handle_close(c->srv.reply_handle); // no reply to carry it
+    if (!out) c->srv.reply_handle = VX_HANDLE_NONE;
     if (!out) return P9_BROKEN; // unanswerable, or a client that does not drain its completions
     memcpy(arena, c->resp, n);
     *out = (vx_cqe){.user_data = e.user_data, .result = (int64_t)n};
+    if (c->srv.reply_handle) { // Rmap's VMO, in a slot the completion names
+      int64_t slot = vx_ring_put_handles(c->end, &c->srv.reply_handle, 1);
+      if (slot >= 0)
+        out->flags = P9_CQE_HANDLE, out->aux = (uint32_t)slot;
+      else
+        vx_handle_close(c->srv.reply_handle); // the client finds none, and its call fails
+      c->srv.reply_handle = VX_HANDLE_NONE;
+    }
     if (vx_ring_produce(&c->ring)) vx_ring_notify(c->end);
   }
 }

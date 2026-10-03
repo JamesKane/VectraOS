@@ -25,6 +25,7 @@
 #include <string.h>
 #include <sys/auxv.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/random.h>
 #include <sys/select.h>
 #include <sys/socket.h>
@@ -47,6 +48,8 @@ static char manifest[64], manifest_rel[64], manifest_head[64];
 // The file server under /tmp keeps owners and checks permissions (fsd), as
 // CTEST_OWNERS=kept says, rather than keeping none (tmpfs).
 static bool owners_kept;
+// Its files can be mapped shared (fsd, a pager: CTEST_MAPPED=shared), not only copied.
+static bool maps_shared;
 
 static void where_am_i(void) {
   const char *s = getenv("CTEST_SELF"), *c = getenv("CTEST_CRASH");
@@ -54,6 +57,8 @@ static void where_am_i(void) {
   if (c && *c) crash_dir = c;
   const char *o = getenv("CTEST_OWNERS");
   owners_kept = o && strcmp(o, "kept") == 0;
+  const char *m = getenv("CTEST_MAPPED");
+  maps_shared = m && strcmp(m, "shared") == 0;
   snprintf(manifest, sizeof manifest, "/boot/svc/%s.ndb", self_name);
   snprintf(manifest_rel, sizeof manifest_rel, "svc/../svc/%s.ndb", self_name);
   snprintf(manifest_head, sizeof manifest_head, "# tests/user/%s.ndb", self_name);
@@ -862,6 +867,78 @@ static void test_names_and_attributes(void) {
 // Permissions, where the server keeps them: a directory without w takes no
 // new entries, a file without w opens for no writing, and the owner may
 // change both back.
+// mmap of files: on fsd, its page cache, shared by every mapping; elsewhere
+// MAP_SHARED is refused and MAP_PRIVATE is a copy.
+static void test_mmap(void) {
+  int fd = open("/tmp/mapped", O_RDWR | O_CREAT | O_TRUNC, 0644);
+  CHECK(fd >= 0);
+  if (fd < 0) return;
+  char page[4096];
+  for (int i = 0; i < 3; i++) {
+    memset(page, 'a' + i, sizeof page);
+    CHECK(write(fd, page, sizeof page) == (ssize_t)sizeof page);
+  }
+  CHECK(write(fd, "tail", 4) == 4); // 3 pages and 4 bytes
+  errno = 0;
+  char *p = mmap(nullptr, 16384, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  if (!maps_shared) {
+    CHECK(p == MAP_FAILED && errno == ENODEV);
+    p = mmap(nullptr, 16384, PROT_READ, MAP_PRIVATE, fd, 4096); // a copy
+    CHECK(p != MAP_FAILED && p[0] == 'b' && p[8192] == 't' && p[8196] == 0);
+    if (p != MAP_FAILED) munmap(p, 16384);
+    close(fd);
+    unlink("/tmp/mapped");
+    return;
+  }
+  CHECK(p != MAP_FAILED);
+  if (p == MAP_FAILED) return;
+  CHECK(p[0] == 'a' && p[4095] == 'a' && p[4096] == 'b' && p[12288] == 't' && p[12292] == 0);
+  // Written through the mapping, read with read(); written with write(), seen in the mapping.
+  p[5000] = 'Z';
+  char c = 0;
+  CHECK(pread(fd, &c, 1, 5000) == 1 && c == 'Z');
+  CHECK(pwrite(fd, "Y", 1, 6000) == 1 && p[6000] == 'Y');
+  // A forked child shares the mapping: what it writes, its parent sees.
+  pid_t pid = fork();
+  if (pid == 0) {
+    p[100] = 'C';
+    _exit(0);
+  }
+  int status = -1;
+  CHECK(pid > 0 && waitpid(pid, &status, 0) == pid && status == 0 && p[100] == 'C');
+  // A second mapping, read-only and private, is the same pages, not a copy.
+  char *q = mmap(nullptr, 8192, PROT_READ, MAP_PRIVATE, fd, 4096);
+  CHECK(q != MAP_FAILED);
+  if (q != MAP_FAILED) {
+    CHECK(q[5000 - 4096] == 'Z');
+    p[7000] = 'W';
+    CHECK(q[7000 - 4096] == 'W');
+    munmap(q, 8192);
+  }
+  CHECK(msync(p, 16384, MS_SYNC) == 0 && fsync(fd) == 0);
+  // Truncated: past the end, zeros, in the mapping and in the file grown again.
+  CHECK(ftruncate(fd, 4106) == 0 && p[4100] == 'b' && p[5000] == 0);
+  CHECK(ftruncate(fd, 8192) == 0 && pread(fd, &c, 1, 5000) == 1 && c == 0);
+  CHECK(munmap(p, 16384) == 0);
+  // What the descriptor allows: a shared writable mapping needs O_RDWR.
+  int ro = open("/tmp/mapped", O_RDONLY);
+  errno = 0;
+  CHECK(mmap(nullptr, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, ro, 0) == MAP_FAILED && errno == EACCES);
+  p = mmap(nullptr, 4096, PROT_READ, MAP_SHARED, ro, 0);
+  CHECK(p != MAP_FAILED && p[100] == 'C');
+  if (p != MAP_FAILED) munmap(p, 4096);
+  close(ro);
+  // Removed while mapped: its pages still come, until the mapping goes.
+  p = mmap(nullptr, 8192, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  close(fd);
+  CHECK(p != MAP_FAILED && unlink("/tmp/mapped") == 0);
+  if (p != MAP_FAILED) {
+    CHECK(p[4100] == 'b' && p[0] == 'a');
+    munmap(p, 8192);
+  }
+  CHECK(access("/tmp/mapped", F_OK) == -1);
+}
+
 static void test_permissions(void) {
   if (!owners_kept) return;
   CHECK(mkdir("/tmp/locked", 0755) == 0 && chmod("/tmp/locked", 0555) == 0);
@@ -1263,6 +1340,7 @@ int main(int argc, char **argv) {
   test_names_and_attributes();
   test_shared_offsets_and_locks();
   test_permissions();
+  test_mmap();
   test_terminals();
   test_poll();
   test_utf8();
