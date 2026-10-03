@@ -194,10 +194,10 @@ The `ctl` commands:
 |---|---|
 | `snap BRANCH LABEL` | An immutable snapshot of a branch, labelled |
 | `fork LABEL BRANCH` | A new branch from a snapshot |
-| `del LABEL` | Delete a label; space its snapshot alone held is reclaimed |
-| `rollback BRANCH LABEL` | Point a branch at a fork of the snapshot, keeping the old head as `BRANCH@before-…` |
+| `del LABEL` | Delete a label; space its snapshot alone held is reclaimed. Not `adm`, nor a branch in use |
+| `rollback BRANCH LABEL` | Point a branch at a fork of the snapshot, keeping the old head as `BRANCH@before-N` (N the commit). A branch in use is rolled back in place: its open files then see the snapshot's state |
 | `sync` | Commit now, and wait |
-| `check` | `fsd -c` on the mounted volume, reported to `status` |
+| `check` | `fsd -c` on the mounted volume, reported to `status` (`check=clean`, or what was found) |
 | `halt` | Commit, then refuse further writes, for shutdown |
 
 **Permissions:**

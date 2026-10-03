@@ -27,20 +27,29 @@
 // advisory until keyd (M10): a client names who it attaches as (Tattach's
 // uname), and can name anyone (docs/11 §9).
 //
+// The adm branch's root has two files fsd makes (11 §9): status, an ndb
+// text of the volume (its commit, space, the last check, every label), and
+// ctl, which takes one command a write, adm's to give, a failure the
+// write's. An attach name of %BRANCH is the branch without permissions, for
+// adm's members (gefs's permissive attach).
+//
 // Changes are committed every 5 s, and by Tfsync, which is answered once
 // its commit is durable (11 §6). Single-threaded: one loop, which waits for
-// the disk. The adm files and the dump view are M5 step 4b2 and 4b3's.
+// the disk. The dump view is M5 step 4b3's.
 
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-driver/blkclient.c"
 #include "../../lib/vx-9p/ring_server.c"
+#include "../../lib/vx-fs/check.c"
 #include "../../lib/vx-fs/file.c"
 
 static constexpr vx_duration COMMIT_EVERY = 5'000'000'000;
 static constexpr uint32_t CACHE_BLOCKS = 1024; // 16 MiB of tree nodes and data
 static constexpr uint32_t MAX_OPEN = 512;      // distinct nodes open at once
 static constexpr int SLOT_SHIFT = 56, USER_SHIFT = 48;
-static constexpr uint32_t MAX_USERS = 255, MAX_MEMBERS = 32;
+static constexpr uint32_t MAX_USERS = 127, MAX_MEMBERS = 32; // a user index is 7 bits of the node id
+static constexpr uint64_t PERMISSIVE = 1ull << 55;           // the node's attach was %BRANCH
+static constexpr uint64_t CTL_QID = (1ull << 48) - 2, STATUS_QID = (1ull << 48) - 3; // adm's, made up
 static constexpr uint32_t NONE_ID = 0xffff'fffe; // none's id when the users file has no none
 
 static vx_blk disk;
@@ -49,6 +58,7 @@ static vx_str disk_name;
 static bool dirty;
 static vx_instant next_commit;
 static bool reaped[VXFS_MAXBRANCH];
+static bool halted; // ctl's halt: committed, and no more changes
 
 [[noreturn]] static void fail(const char *what, vx_status st) {
   vx_print(VX_STR("fsd: FAILED: "));
@@ -88,27 +98,20 @@ static void mem_free([[maybe_unused]] void *ctx, void *p, size_t n) {
 
 // --- Nodes ---
 
+// Times, in ns: from boot until there is a wall clock, as sysfs's realtime is.
+static int64_t now_ns(void) { return (int64_t)vx_clock_read(); }
+
 static uint64_t node_of(uint32_t slot, uint32_t user, uint64_t qid) {
   return (uint64_t)slot << SLOT_SHIFT | (uint64_t)user << USER_SHIFT | qid;
 }
 static uint32_t slot_of(uint64_t node) { return (uint32_t)(node >> SLOT_SHIFT); }
-static uint32_t user_of(uint64_t node) { return (uint32_t)(node >> USER_SHIFT) & 0xff; }
+static uint32_t user_of(uint64_t node) { return (uint32_t)(node >> USER_SHIFT) & 0x7f; }
+static bool permissive(uint64_t node) { return node & PERMISSIVE; }
 static uint64_t qid_of(uint64_t node) { return node & ((1ull << USER_SHIFT) - 1); }
 
 static vxfs_tree *tree_of(uint64_t node) {
   uint32_t s = slot_of(node);
   return s < VXFS_MAXBRANCH && vol.br[s].open ? &vol.br[s].t : nullptr;
-}
-
-static vx_status file_of(uint64_t node, vxfs_file *f) {
-  vxfs_tree *t = tree_of(node);
-  if (!t) return VX_ERR_NOT_FOUND;
-  return vxfs_file_by_qid(&vol, t, qid_of(node), f);
-}
-
-// The node of entry f, found from dir: in its branch, for its user.
-static uint64_t node_in(uint64_t dir, const vxfs_file *f) {
-  return node_of(slot_of(dir), user_of(dir), f->d.qid_path);
 }
 
 static bool is_branch(uint64_t node, const char *name) {
@@ -117,8 +120,34 @@ static bool is_branch(uint64_t node, const char *name) {
   return s < VXFS_MAXBRANCH && vol.br[s].open && vol.br[s].nname == n && !memcmp(vol.br[s].name, name, n);
 }
 
-// Times, in ns: from boot until there is a wall clock, as sysfs's realtime is.
-static int64_t now_ns(void) { return (int64_t)vx_clock_read(); }
+static bool is_made_up(uint64_t node) {
+  return is_branch(node, "adm") && (qid_of(node) == CTL_QID || qid_of(node) == STATUS_QID);
+}
+
+// ctl or status, as an entry in the adm branch's root.
+static vx_status made_up(uint64_t node, vxfs_file *f) {
+  vxfs_file root;
+  vx_status st = vxfs_root(&vol, tree_of(node), &root);
+  if (st != VX_OK) return st;
+  bool ctl = qid_of(node) == CTL_QID;
+  const char *name = ctl ? "ctl" : "status";
+  *f = (vxfs_file){
+      .d = {.qid_path = qid_of(node), .mode = ctl ? 0660 : 0444, .mtime = now_ns(), .atime = now_ns()}};
+  f->nkey = key_ent(f->key, root.d.qid_path, (const uint8_t *)name, ctl ? 3 : 6);
+  return VX_OK;
+}
+
+static vx_status file_of(uint64_t node, vxfs_file *f) {
+  vxfs_tree *t = tree_of(node);
+  if (!t) return VX_ERR_NOT_FOUND;
+  if (is_made_up(node)) return made_up(node, f);
+  return vxfs_file_by_qid(&vol, t, qid_of(node), f);
+}
+
+// The node of entry f, found from dir: in its branch, for its user, as permissive as dir.
+static uint64_t node_in(uint64_t dir, const vxfs_file *f) {
+  return node_of(slot_of(dir), user_of(dir), f->d.qid_path) | (dir & PERMISSIVE);
+}
 
 static void changed(void) {
   if (!dirty) next_commit = vx_clock_read() + COMMIT_EVERY;
@@ -302,6 +331,7 @@ static uint32_t uid_of(uint64_t node) {
 static bool is_none(uint64_t node) { return user_of(node) == none_user || user_of(node) >= nusers; }
 
 static bool may(uint64_t node, const vxfs_dir *d, uint32_t want) {
+  if (permissive(node)) return true;
   if (!is_none(node)) {
     uint32_t me = uid_of(node);
     if (me == d->uid && ((d->mode >> 6) & want) == want) return true;
@@ -310,12 +340,25 @@ static bool may(uint64_t node, const vxfs_dir *d, uint32_t want) {
   return (d->mode & want) == want;
 }
 
-static bool is_adm(uint64_t node) { return !is_none(node) && in_group(uid_of(node), 0); }
+static bool is_adm(uint64_t node) {
+  return permissive(node) || (!is_none(node) && in_group(uid_of(node), 0));
+}
+
+// A change, which a halted volume refuses.
+static vx_status mutable(uint64_t node) {
+  if (halted) return VX_ERR_BAD_STATE;
+  if (is_made_up(node)) return VX_ERR_ACCESS;
+  return VX_OK;
+}
 
 // --- The 9P side ---
 
 static vx_status fs_attach([[maybe_unused]] void *ctx, vx_str aname, vx_str uname, uint64_t *root) {
   char name[VXFS_LABELMAX + 1];
+  bool all = aname.len && aname.ptr[0] == '%'; // permissive: adm's members only
+  if (all) aname.ptr++, aname.len--;
+  uint32_t who = user_named(uname);
+  if (all && (who == none_user || !in_group(users[who].id, 0))) return VX_ERR_ACCESS;
   if (!aname.len || aname.len > VXFS_LABELMAX) return VX_ERR_NOT_FOUND;
   memcpy(name, aname.ptr, aname.len);
   name[aname.len] = 0;
@@ -331,7 +374,7 @@ static vx_status fs_attach([[maybe_unused]] void *ctx, vx_str aname, vx_str unam
   }
   vxfs_file f;
   if ((st = vxfs_root(&vol, &br->t, &f)) != VX_OK) return st;
-  *root = node_of(slot, user_named(uname), f.d.qid_path);
+  *root = node_of(slot, who, f.d.qid_path) | (all ? PERMISSIVE : 0);
   return VX_OK;
 }
 
@@ -343,6 +386,11 @@ static vx_status fs_walk([[maybe_unused]] void *ctx, uint64_t dir, vx_str name, 
   vxfs_file d, f;
   vx_status st = file_of(dir, &d);
   if (st == VX_OK && (d.d.mode & VXFS_DMDIR) && !may(dir, &d.d, MAY_X)) st = VX_ERR_ACCESS;
+  bool ctl = name.len == 3 && !memcmp(nm, "ctl", 3), status = name.len == 6 && !memcmp(nm, "status", 6);
+  if (st == VX_OK && is_branch(dir, "adm") && d.nkey == 9 && (ctl || status)) {
+    *child = node_of(slot_of(dir), user_of(dir), ctl ? CTL_QID : STATUS_QID) | (dir & PERMISSIVE);
+    return VX_OK;
+  }
   if (st == VX_OK) st = vxfs_walk(&vol, tree_of(dir), &d, nm, &f);
   if (st == VX_ERR_INVALID) st = VX_ERR_NOT_FOUND; // through a file
   if (st == VX_OK) *child = node_in(dir, &f);
@@ -395,6 +443,154 @@ static vx_status fs_stat([[maybe_unused]] void *ctx, uint64_t node, p9_stat *out
   return VX_OK;
 }
 
+// --- The adm files (11 §9) ---
+
+static char status_text[16 * 1024];
+static uint32_t status_len;
+static char check_said[160] = "unchecked"; // the last check's verdict
+
+static void sput(const char *s, size_t n) {
+  if (status_len + n > sizeof status_text) n = sizeof status_text - status_len;
+  memcpy(status_text + status_len, s, n);
+  status_len += (uint32_t)n;
+}
+static void sputs(const char *s) { sput(s, vx_cstr(s).len); }
+static void sputn(uint64_t v) {
+  char buf[24];
+  uint32_t n = 0;
+  do buf[sizeof buf - 1 - n++] = (char)('0' + v % 10), v /= 10;
+  while (v);
+  sput(buf + sizeof buf - n, n);
+}
+
+// status: one ndb record for the volume, then one for each label.
+static vx_status make_status(void) {
+  status_len = 0;
+  uint64_t used = 0, size = 0;
+  for (uint32_t i = 0; i < vol.fs.narenas; i++) used += vol.fs.arenas[i].used, size += vol.fs.arenas[i].size;
+  sputs("volume commit="), sputn(vol.sb.commit), sputs(" arenas="), sputn(vol.fs.narenas);
+  sputs(" used="), sputn(used), sputs(" size="), sputn(size), sputs(" users="), sputn(nusers);
+  sputs(" check="), sputs(check_said), sputs(halted ? " halted\n" : "\n");
+  uint8_t pfx = VXFS_KLABEL;
+  vxfs_scan sc;
+  vxfs_scan_start(&sc, &vol.snap, &pfx, 1);
+  vxfs_kvp kv;
+  while (vxfs_scan_next(&vol.fs, &sc, &kv)) {
+    if (kv.nv != 12) continue;
+    sputs("label="), sput((const char *)kv.k + 1, kv.nk - 1u);
+    sputs(" snapshot="), sputn(vxfs_get64(kv.v));
+    sputs(vxfs_get32(kv.v + 8) & VXFS_LMUT ? " branch\n" : "\n");
+  }
+  vxfs_scan_end(&vol.fs, &sc);
+  return vol.fs.err;
+}
+
+// The words of a ctl command, at most 4, each NUL-terminated in buf.
+static uint32_t words(vx_str cmd, char *buf, size_t cap, const char **w) {
+  uint32_t n = 0;
+  size_t at = 0;
+  for (size_t i = 0; i < cmd.len && n < 4;) {
+    while (i < cmd.len && (cmd.ptr[i] == ' ' || cmd.ptr[i] == '\t' || cmd.ptr[i] == '\n')) i++;
+    if (i == cmd.len) break;
+    w[n++] = buf + at;
+    while (i < cmd.len && cmd.ptr[i] != ' ' && cmd.ptr[i] != '\t' && cmd.ptr[i] != '\n' && at + 1 < cap)
+      buf[at++] = cmd.ptr[i++];
+    buf[at++] = 0;
+  }
+  return n;
+}
+
+static bool is(const char *a, const char *b) {
+  while (*a && *a == *b) a++, b++;
+  return *a == *b;
+}
+
+// The branch named, if fsd has it open.
+static vxfs_branch *open_branch(const char *name) {
+  uint16_t n = vxfs_namelen(name, VXFS_LABELMAX);
+  for (uint32_t i = 0; i < VXFS_MAXBRANCH; i++)
+    if (vol.br[i].open && vol.br[i].nname == n && !memcmp(vol.br[i].name, name, n)) return &vol.br[i];
+  return nullptr;
+}
+
+static vx_status run_check(void) {
+  vxfs_check c;
+  vx_status st = vxfs_check_volume(&vol, &c);
+  char *p = check_said;
+  size_t at = 0;
+  const char *head = st == VX_OK ? "clean" : "NOT-CLEAN";
+  while (*head) p[at++] = *head++;
+  if (st != VX_OK) {
+    const char *what[] = {",leaked=", ",unallocated=", ",damaged=", ",bad-snapshots=", ",bad-deadlists="};
+    uint64_t n[] = {c.leaked, c.unallocated, c.damaged, c.bad_snaps, c.bad_lists};
+    for (int i = 0; i < 5; i++) {
+      for (const char *q = what[i]; *q && at + 1 < sizeof check_said; q++) p[at++] = *q;
+      char d[24];
+      uint32_t k = 0;
+      uint64_t v = n[i];
+      do d[k++] = (char)('0' + v % 10), v /= 10;
+      while (v);
+      while (k && at + 1 < sizeof check_said) p[at++] = d[--k];
+    }
+  }
+  p[at] = 0;
+  return st;
+}
+
+// One ctl command (11 §9). Its failure is the write's.
+static vx_status ctl_command(uint64_t node, vx_str cmd) {
+  if (!is_adm(node)) return VX_ERR_ACCESS;
+  char buf[3 * (VXFS_LABELMAX + 1) + 16];
+  const char *w[4];
+  uint32_t n = words(cmd, buf, sizeof buf, w);
+  if (!n) return VX_ERR_INVALID;
+  vx_status st;
+  if (is(w[0], "sync") && n == 1) return commit();
+  if (is(w[0], "check") && n == 1) {
+    if ((st = commit()) != VX_OK) return st;
+    run_check();
+    return VX_OK; // the verdict is status's to say
+  }
+  if (is(w[0], "halt") && n == 1) {
+    st = commit();
+    halted = true;
+    return st;
+  }
+  if (halted) return VX_ERR_BAD_STATE;
+  if (is(w[0], "snap") && n == 3) { // snap BRANCH LABEL: its state now, labelled
+    if ((st = commit()) != VX_OK) return st;
+    st = vxfs_label(&vol, w[1], w[2], 0);
+  } else if (is(w[0], "fork") && n == 3) { // fork LABEL BRANCH
+    if ((st = commit()) != VX_OK) return st;
+    st = vxfs_label(&vol, w[1], w[2], VXFS_LMUT);
+  } else if (is(w[0], "del") && n == 2) { // del LABEL: not a branch in use, nor adm
+    if (is(w[1], "adm")) return VX_ERR_ACCESS;
+    if (open_branch(w[1])) return VX_ERR_BAD_STATE;
+    st = vxfs_unlabel(&vol, w[1]);
+  } else if (is(w[0], "rollback") && n == 3) { // rollback BRANCH LABEL, the old head kept as BRANCH@before-N
+    if (is(w[1], "adm")) return VX_ERR_ACCESS;
+    if ((st = commit()) != VX_OK) return st;
+    char keep[VXFS_LABELMAX + 1];
+    size_t k = 0;
+    for (const char *q = w[1]; *q && k + 32 < sizeof keep; q++) keep[k++] = *q;
+    for (const char *q = "@before-"; *q; q++) keep[k++] = *q;
+    char d[24];
+    uint32_t nd = 0;
+    uint64_t c = vol.sb.commit;
+    do d[nd++] = (char)('0' + c % 10), c /= 10;
+    while (c);
+    while (nd) keep[k++] = d[--nd];
+    keep[k] = 0;
+    st = vxfs_label(&vol, w[1], keep, 0);
+    vxfs_branch *br = open_branch(w[1]);
+    if (st == VX_OK) st = br ? vxfs_branch_rollback(&vol, br, w[2]) : vxfs_rollback(&vol, w[1], w[2]);
+  } else {
+    return VX_ERR_INVALID;
+  }
+  if (st == VX_OK) changed();
+  return st;
+}
+
 static vx_status truncate_to(uint64_t node, vxfs_file *f, uint64_t size) {
   vxfs_attr a = {.valid = VXFS_WSIZE | VXFS_WMTIME, .length = size, .mtime = now_ns()};
   vx_status st = vxfs_setattr(&vol, tree_of(node), f, &a, a.mtime);
@@ -412,7 +608,14 @@ static vx_status fs_open([[maybe_unused]] void *ctx, uint64_t node, uint8_t mode
   if ((mode & 3) == P9_OREAD || (mode & 3) == P9_ORDWR) want |= MAY_R;
   if (writes) want |= MAY_W;
   if ((mode & 3) == P9_OEXEC) want |= MAY_X;
+  if (is_made_up(node)) { // ctl: adm's, to write; status: anyone's, to read
+    bool ctl = qid_of(node) == CTL_QID;
+    if (ctl ? (want & MAY_R) || !is_adm(node) : writes) return VX_ERR_ACCESS;
+    if (!ctl && make_status() != VX_OK) return VX_ERR_NO_MEMORY;
+    return VX_OK;
+  }
   if (!(mode & P9_OJOIN) && !may(node, &f.d, want)) return VX_ERR_ACCESS; // a join has its open's rights
+  if (halted && writes) return VX_ERR_BAD_STATE;
   opened *o = open_slot(node, true);
   if (!o) return VX_ERR_NO_MEMORY;
   if ((mode & P9_OTRUNC) && (st = truncate_to(node, &f, 0)) != VX_OK) return st;
@@ -435,6 +638,13 @@ static void fs_clunk([[maybe_unused]] void *ctx, uint64_t node, bool was_open) {
 
 static vx_status fs_read([[maybe_unused]] void *ctx, uint64_t node, uint64_t offset, uint8_t *buf,
                          uint32_t *count) {
+  if (is_made_up(node)) { // status, as it was when opened (or read from the start)
+    if (!offset) make_status();
+    uint64_t left = offset < status_len ? status_len - offset : 0;
+    if (*count > left) *count = (uint32_t)left;
+    memcpy(buf, status_text + offset, *count);
+    return VX_OK;
+  }
   vxfs_file f;
   vx_status st = file_of(node, &f);
   uint64_t got = 0;
@@ -445,6 +655,9 @@ static vx_status fs_read([[maybe_unused]] void *ctx, uint64_t node, uint64_t off
 
 static vx_status fs_write([[maybe_unused]] void *ctx, uint64_t node, uint64_t offset, const uint8_t *buf,
                           uint32_t *count) { // NOLINT(readability-non-const-parameter): p9_fs's signature
+  if (is_made_up(node))
+    return qid_of(node) == CTL_QID ? ctl_command(node, (vx_str){(const char *)buf, *count}) : VX_ERR_ACCESS;
+  if (halted) return VX_ERR_BAD_STATE;
   vxfs_file f;
   vx_status st = file_of(node, &f);
   if (st != VX_OK) return st;
@@ -468,6 +681,13 @@ static vx_status fs_readdir([[maybe_unused]] void *ctx, uint64_t dir, uint32_t i
   vx_status st = file_of(dir, &d);
   if (st != VX_OK) return st;
   if (!(d.d.mode & VXFS_DMDIR)) return VX_ERR_INVALID;
+  if (is_branch(dir, "adm") && d.nkey == 9) { // ctl and status first
+    if (index < 2) {
+      *child = node_of(slot_of(dir), user_of(dir), index ? STATUS_QID : CTL_QID) | (dir & PERMISSIVE);
+      return VX_OK;
+    }
+    index -= 2; // the entries after them, as the cursor counts them
+  }
   vxfs_tree *t = tree_of(dir);
   uint8_t pfx[9] = {VXFS_KENT};
   vxfs_kput64(pfx + 1, d.d.qid_path);
@@ -491,7 +711,7 @@ static vx_status fs_readdir([[maybe_unused]] void *ctx, uint64_t dir, uint32_t i
       st = VX_ERR_INVALID;
       break;
     }
-    *child = node_of(slot_of(dir), user_of(dir), vxfs_unpackdir(kv.v).qid_path);
+    *child = node_of(slot_of(dir), user_of(dir), vxfs_unpackdir(kv.v).qid_path) | (dir & PERMISSIVE);
     cursor.dir = dir, cursor.next = index + 1, cursor.nkey = kv.nk;
     memcpy(cursor.key, kv.k, kv.nk);
     st = VX_OK;
@@ -516,7 +736,11 @@ static vx_status fs_create([[maybe_unused]] void *ctx, uint64_t dir, vx_str name
   if (st == VX_OK) st = file_of(dir, &d);
   if (st != VX_OK) return st;
   if ((perm & P9_DMDIR) && (mode & 3) != P9_OREAD) return VX_ERR_ACCESS;
+  if ((st = mutable(dir)) != VX_OK) return st;
   if (!may(dir, &d.d, MAY_W)) return VX_ERR_ACCESS;
+  if (is_branch(dir, "adm") && d.nkey == 9 &&
+      ((name.len == 3 && !memcmp(nm, "ctl", 3)) || (name.len == 6 && !memcmp(nm, "status", 6))))
+    return VX_ERR_EXISTS;
   // Plan 9's: no more of the directory's bits, and in its group.
   bool isdir = perm & P9_DMDIR;
   uint32_t bits = isdir ? perm & (d.d.mode & 0777) : perm & (~0666u | (d.d.mode & 0666));
@@ -532,7 +756,8 @@ static vx_status fs_create([[maybe_unused]] void *ctx, uint64_t dir, vx_str name
 
 static vx_status fs_remove([[maybe_unused]] void *ctx, uint64_t node) {
   vxfs_file f, d;
-  vx_status st = file_of(node, &f);
+  vx_status st = mutable(node);
+  if (st == VX_OK) st = file_of(node, &f);
   if (st != VX_OK) return st;
   if (vxfs_is_orphan(&f)) return VX_ERR_NOT_FOUND;
   if (f.nkey == 9) return VX_ERR_ACCESS; // the root
@@ -572,7 +797,8 @@ static bool may_setattr(uint64_t node, const vxfs_dir *d, const p9_setattr *a) {
 
 static vx_status fs_setattr([[maybe_unused]] void *ctx, uint64_t node, const p9_setattr *a) {
   vxfs_file f;
-  vx_status st = file_of(node, &f);
+  vx_status st = mutable(node);
+  if (st == VX_OK) st = file_of(node, &f);
   if (st != VX_OK) return st;
   if (!may_setattr(node, &f.d, a)) return VX_ERR_ACCESS;
   int64_t now = now_ns();
@@ -599,7 +825,8 @@ static vx_status fs_rename([[maybe_unused]] void *ctx, uint64_t olddir, vx_str o
   char from[VXFS_NAMEMAX + 1], to[VXFS_NAMEMAX + 1];
   vxfs_file a, b;
   if (slot_of(olddir) != slot_of(newdir)) return VX_ERR_INVALID; // one branch: one tree
-  vx_status st = name_of(oldname, from);
+  vx_status st = mutable(olddir);
+  if (st == VX_OK) st = name_of(oldname, from);
   if (st == VX_OK) st = name_of(newname, to);
   if (st == VX_OK) st = file_of(olddir, &a);
   if (st == VX_OK) st = file_of(newdir, &b);
@@ -616,7 +843,8 @@ static vx_status fs_symlink([[maybe_unused]] void *ctx, uint64_t dir, vx_str nam
   if (!target.len || target.len >= sizeof tgt) return VX_ERR_INVALID;
   memcpy(tgt, target.ptr, target.len);
   tgt[target.len] = 0;
-  vx_status st = name_of(name, nm);
+  vx_status st = mutable(dir);
+  if (st == VX_OK) st = name_of(name, nm);
   if (st == VX_OK) st = file_of(dir, &d);
   if (st == VX_OK && !may(dir, &d.d, MAY_W)) st = VX_ERR_ACCESS;
   if (st == VX_OK) st = vxfs_symlink(&vol, tree_of(dir), &d, nm, tgt, uid_of(dir), d.d.gid, now_ns(), &f);

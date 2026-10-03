@@ -1,0 +1,71 @@
+# tests/user/fsdadm.rc: fsd's adm files (tests/qemu/fsdadm.ndb). gsh runs it as
+# vectra, a member of adm, with fsd's home branch on /tmp, its adm branch on
+# /adm and home again, permissively (%home), on /n. Each ctl command is
+# written and status read back; then a file no one may read is read through
+# /n; then a rollback, and a halt. The last line counts the checks.
+
+checks=0
+failed=0
+
+fn check {
+  checks=`{expr $checks + 1}
+  name=$1
+  want=$2
+  shift 2
+  if(! ~ $"* $want) {
+    failed=`{expr $failed + 1}
+    echo 'fsdadm: FAILED' $name: wanted $want, got $"*
+  }
+}
+
+fn refused {
+  if($* >[2]/dev/null) echo done
+  if not echo refused
+}
+
+# ctl WORDS: one command to /adm/ctl, by tee, so a refusal fails tee and not
+# the script (rc, as 9front's, ends a script whose redirection fails).
+fn ctl {
+  echo $* | tee /adm/ctl >/dev/null
+}
+
+check users 'adm none vectra' `{cut -d: -f2 /adm/users}
+check listed 'ctl status users' `{ls /adm | sort}
+check volume volume `{sed -n 1p /adm/status | cut -d' ' -f1}
+
+ctl snap home home@t1
+check snap 'label=home@t1' `{grep '^label=home@t1 ' /adm/status | cut -d' ' -f1}
+ctl fork home@t1 exp
+check fork 'label=exp' `{grep '^label=exp ' /adm/status | cut -d' ' -f1}
+ctl del home@t1
+check del '' `{grep '^label=home@t1 ' /adm/status}
+ctl del exp
+check del-branch '' `{grep '^label=exp ' /adm/status}
+check bogus refused `{refused ctl bogus}
+check del-adm refused `{refused ctl del adm}
+ctl sync
+ctl check
+check clean check=clean `{sed -n 1p /adm/status | tr ' ' '\n' | grep '^check='}
+
+# Permissive: a file its owner gave no bits, read only through %home.
+echo secret >/tmp/secret
+chmod 000 /tmp/secret
+check denied refused `{refused cat /tmp/secret}
+check permissive secret `{cat /n/secret}
+
+# A rollback: what came after the snapshot is gone, the old head kept.
+ctl snap home home@t2
+echo later >/tmp/later.txt
+ctl rollback home home@t2
+check rolled-back '' `{ls /tmp | grep '^later'}
+check still-there secret `{cat /n/secret}
+check head-kept 1 `{grep -c '^label=home@before-' /adm/status}
+
+# A halt: committed, and nothing more changes.
+ctl halt
+check halted refused `{refused touch /tmp/after-halt}
+check readable secret `{cat /n/secret}
+
+echo 'fsdadm:' $checks checks, $failed failed
+if(~ $failed 0) exit # an empty status: success, as rc's
+exit $failed^' failed'

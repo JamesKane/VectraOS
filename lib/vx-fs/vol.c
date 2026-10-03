@@ -488,29 +488,39 @@ static vxfs_branch *branch_named(vxfs_vol *v, const char *name) {
   return nullptr;
 }
 
-// Branch `name`, open for changes: *out is valid until the volume closes.
-[[maybe_unused]] static vx_status vxfs_branch_open(vxfs_vol *v, const char *name, vxfs_branch **out) {
+// Loads branch `name`, as its label says now, into br.
+static vx_status branch_load(vxfs_vol *v, const char *name, vxfs_branch *br) {
   uint16_t n = vxfs_namelen(name, VXFS_LABELMAX);
-  vxfs_branch *open = branch_named(v, name);
-  if (open) {
-    *out = open;
-    return VX_OK;
-  }
   uint64_t gen;
   uint32_t flags;
   vx_status st = vxfs_label_get(v, name, &gen, &flags);
   if (st != VX_OK) return st;
   if (!(flags & VXFS_LMUT)) return VX_ERR_ACCESS; // a snapshot, not a branch
-  vxfs_branch *br = nullptr;
-  for (uint32_t i = 0; i < VXFS_MAXBRANCH && !br; i++)
-    if (!v->br[i].open) br = &v->br[i];
-  if (!br) return VX_ERR_NO_MEMORY; // VXFS_MAXBRANCH open already
   vxfs_snap s;
   if ((st = snap_get(v, gen, &s)) != VX_OK)
     return st == VX_ERR_NOT_FOUND ? vol_bad(v) : st; // a label naming nothing
   *br = (vxfs_branch){.nname = n, .open = true, .at = s};
   memcpy(br->name, name, n);
   br->t = (vxfs_tree){.root = s.root, .height = s.height, .memgen = v->nextgen++, .base = s.base};
+  return VX_OK;
+}
+
+// Branch `name`, open for changes: *out is valid until the volume closes.
+[[maybe_unused]] static vx_status vxfs_branch_open(vxfs_vol *v, const char *name, vxfs_branch **out) {
+  vxfs_branch *open = branch_named(v, name);
+  if (open) {
+    *out = open;
+    return VX_OK;
+  }
+  vxfs_branch *br = nullptr;
+  for (uint32_t i = 0; i < VXFS_MAXBRANCH && !br; i++)
+    if (!v->br[i].open) br = &v->br[i];
+  if (!br) return VX_ERR_NO_MEMORY; // VXFS_MAXBRANCH open already
+  vx_status st = branch_load(v, name, br);
+  if (st != VX_OK) {
+    *br = (vxfs_branch){};
+    return st;
+  }
   *out = br;
   return VX_OK;
 }
@@ -696,6 +706,20 @@ static vx_status vol_status(vxfs_vol *v, bool ok) {
   ok = ok && snap_flush(v, b);
   fs_release(&v->fs, b, sizeof *b);
   return vol_status(v, ok);
+}
+
+// Rolls an open branch back to the snapshot `to` names (vxfs_rollback),
+// in place: br stays the branch, at its new state. Nothing in it may be
+// uncommitted.
+[[maybe_unused]] static vx_status vxfs_branch_rollback(vxfs_vol *v, vxfs_branch *br, const char *to) {
+  if (br->t.root.addr != br->at.root.addr || br->t.height != br->at.height) return VX_ERR_BAD_STATE;
+  char name[VXFS_LABELMAX + 1];
+  memcpy(name, br->name, br->nname);
+  name[br->nname] = 0;
+  br->open = false;
+  vx_status st = vxfs_rollback(v, name, to);
+  vx_status again = branch_load(v, name, br); // as it is now, rolled back or not
+  return st != VX_OK ? st : again;
 }
 
 // Closes a branch with nothing uncommitted.

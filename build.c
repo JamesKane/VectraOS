@@ -1927,15 +1927,25 @@ static bool mtools(const char *tool, const char *esp, const char *const *args) {
 // The directories every boot image has: mount points for the namespace (02 §5)
 // and bootfs's own. In order, parents first.
 static constexpr int BOOTFS_MAX_FILES = 512;
-static const char *const BOOTFS_DIRS[] = {"bin",        "boot",
-                                          "boot/bin",   "boot/bin/posix",
-                                          "boot/share", "boot/share/misc",
-                                          "boot/drv",   "boot/svc",
-                                          "boot/tests", "dev",
-                                          "lib",        "lib/ns",
-                                          "n",          "net",
-                                          "proc",       "srv",
-                                          "sys",        "tmp"};
+static const char *const BOOTFS_DIRS[] = {"adm",
+                                          "bin",
+                                          "boot",
+                                          "boot/bin",
+                                          "boot/bin/posix",
+                                          "boot/share",
+                                          "boot/share/misc",
+                                          "boot/drv",
+                                          "boot/svc",
+                                          "boot/tests",
+                                          "dev",
+                                          "lib",
+                                          "lib/ns",
+                                          "n",
+                                          "net",
+                                          "proc",
+                                          "srv",
+                                          "sys",
+                                          "tmp"};
 
 // Whether `name` is in the comma-separated list `with`.
 static bool listed(const char *with, const char *name) {
@@ -2779,7 +2789,8 @@ static int cmd_test(const arch *only, bool release) {
       scenarios[scenario_count++] = fmt("%.*s", (int)(strlen(base) - 4), base);
     }
   }
-  if (!build_vx9pserve() || !build_u9fs()) return 1;
+  if (!build_vx9pserve() || !build_u9fs() || !build_vxfs())
+    return 1; // once, before scenarios run in parallel
   return per_arch(only, release, test_arch);
 }
 

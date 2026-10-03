@@ -74,7 +74,7 @@ static void test_spawn(void) {
 }
 
 static void test_namespace(void) {
-  CHECK_STR(list("/"), "bin boot dev lib n net proc srv sys tmp");
+  CHECK_STR(list("/"), "adm bin boot dev lib n net proc srv sys tmp");
   vx_str boot_bin = list("/boot/bin");
   static char programs[512];
   memcpy(programs, boot_bin.ptr, boot_bin.len); // list's buffer is reused

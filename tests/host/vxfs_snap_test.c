@@ -359,6 +359,19 @@ static void test_cases(void) {
   CHECK(vxfs_branch_open(&w.v, s3->name, &br) == VX_ERR_ACCESS);
   commit(&w);
   CHECK(clean(&w) && labels_agree(&w));
+
+  // An open branch rolled back in place: still open, now as s3 was; and
+  // refused while it has uncommitted changes.
+  change(&w.v, m->br, m->now, 30);
+  CHECK(vxfs_branch_rollback(&w.v, m->br, s3->name) == VX_ERR_BAD_STATE);
+  commit(&w);
+  CHECK(vxfs_branch_rollback(&w.v, m->br, s3->name) == VX_OK && m->br->open);
+  memcpy(m->now, s3->committed, sizeof(model));
+  memcpy(m->committed, s3->committed, sizeof(model));
+  CHECK(agrees(&w.v, &m->br->t, m->now));
+  change(&w.v, m->br, m->now, 10); // and goes on from there
+  commit(&w);
+  CHECK(clean(&w) && labels_agree(&w));
   world_close(&w);
 }
 
