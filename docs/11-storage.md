@@ -123,7 +123,7 @@ There is no garbage collection pass and no per-block reference count.
 
 **There are two superblocks,** in the first and last blocks of the volume, and either one is enough to mount.
 
-**Space comes from arenas.** Each arena keeps an append-only log of allocations and frees, replayed at mount into an in-memory map and compacted now and then. The arena is chosen round-robin, offset by block type, so data, pivot and leaf blocks each tend to stay sequential. Freed ranges are sent to the device as `DISCARD` in batches.
+**Space comes from arenas.** Each arena keeps an append-only log of allocations and frees, replayed at mount into an in-memory map and compacted now and then. A compacted log is new blocks that hold only the free ranges. The old chain's blocks stay unused until the commit that points the arena at the new log is durable, because a crash before then replays the old one. The arena is chosen round-robin, offset by block type, so data, pivot and leaf blocks each tend to stay sequential. Freed ranges are sent to the device as `DISCARD` in batches.
 
 ## 7. `fsd`, the server
 
@@ -229,7 +229,7 @@ exFAT (large removable media) and ext4 read-only (Linux disks) are Known gaps un
 
 **All integers are little-endian,** like 9P and both machines (gefs's are big-endian).
 
-**The block hash is XXH64,** written first-party from its specification and checked against its published test vectors. It is a 64-bit, non-cryptographic hash, as gefs's MetroHash64 is. Media errors and bugs are what it is for; tampering is `distd`'s concern (§8).
+**The block hash is XXH64,** written first-party from its specification and checked against values from the reference implementation (`tests/host/vxfs_test.c`). It is a 64-bit, non-cryptographic hash, as gefs's MetroHash64 is. Media errors and bugs are what it is for; tampering is `distd`'s concern (§8).
 
 ## 13. Where the pieces land
 
