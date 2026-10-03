@@ -42,7 +42,7 @@ Following gefs:
 - **Block size.** Every block is one size, **16 KiB**. That is the file system's block; the content store's 64 KiB verification chunks (06 §4, §16 question 3) sit above it and are unaffected.
 - **Node layout.** Keys and values in a node are variable-length, reached through a sorted table of 2-byte offsets. The offsets grow from the front of the block and the data from the back.
 - **No sibling pointers.** Balance is relaxed: nodes may be less full than a B-tree's and merge opportunistically. Fill levels are kept in the parent, so siblings never point at each other and a copy never ripples sideways.
-- **Inline data.** Values up to 512 bytes are stored inline, so small files and symbolic links take no data block.
+- **Inline data.** Values up to 512 bytes are stored inline, so small files and symbolic links take no data block. A file of up to 511 bytes is kept inline whole; a longer one is kept in blocks. An inline value is the first bytes of its block, and the rest reads as zeros.
 
 Where `lib/vx-fs` departs from gefs's algorithm (the format is the same):
 - **Flushes push whole.** gefs pulls as many of a child's messages as fit and splits a node in two. Here a child gets all of its messages, and a node splits into as many parts as its contents need. A child left under a quarter full merges with a neighbor, or shares its contents with one when the two do not fit in a single block.
@@ -57,7 +57,7 @@ Where `lib/vx-fs` departs from gefs's algorithm (the format is the same):
 |---|---|---|
 | `Kdat qid[8] off[8]` | a block pointer, or inline data | A file's data, by block-aligned offset. A missing key reads as zeros: files are sparse for free. |
 | `Kent pqid[8] name[]` | the entry (§4.1) | A name in a directory. A directory's entries sort together, so listing it is one range scan and a lookup is O(log n), never a scan. |
-| `Kup qid[8]` | the parent's `Kent` key | `..`, for directories only. |
+| `Kup qid[8]` | the directory's own `Kent` key | `..`, for directories only: the key's `pqid` is the parent. Renaming a directory changes its own `Kup` and no other. |
 | `Korphan qid[8]` | nothing | Ours: a file removed while it was open. Its data is freed when the last fid on it goes, and on the next mount if the machine crashed first. |
 
 A **block pointer** is `addr[8] hash[8] gen[8]`: where the block is, the hash of its contents, and the generation it was written in.
@@ -163,7 +163,7 @@ It keeps gefs's discipline anyway: blocks that leave the mutator are immutable, 
 **Checking.**
 - `fsd -c` walks every tree and the snapshot tree, checks every hash, and reports what is wrong or leaked.
 - `fsd -r USER` reams a new volume.
-- `host/vxfs`, built from the same library, makes, inspects and checks volume images on the build machine, so `./build` can make disk images for tests and releases.
+- `host/vxfs`, built from the same library, makes, inspects and checks volume images on the build machine, so `./build` can make disk images for tests and releases. Its commands are `mkfs`, `put`, `ls`, `cat`, `verify`, `check` and `info`, plus `snap`, `fork`, `del` and `rollback`, named as `/adm/ctl`'s commands are. `./build check` round-trips `docs/` through an image.
 
 ## 8. The pager and `mmap`
 

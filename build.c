@@ -2246,6 +2246,71 @@ static bool build_vx9pserve(void) {
   return run(&cc);
 }
 
+// host/vxfs, built for this machine: makes, fills and checks vx-fs volume
+// images (docs/11 §7). Rebuilt when its source or the library's change.
+static const char VXFS[] = "out/host/vxfs";
+
+static bool build_vxfs(void) {
+  static const char *const SOURCES[] = {"host/vxfs/main.c",  "lib/vx-fs/fs.h",   "lib/vx-fs/xxh64.c",
+                                        "lib/vx-fs/blk.c",   "lib/vx-fs/tree.c", "lib/vx-fs/vol.c",
+                                        "lib/vx-fs/check.c", "lib/vx-fs/file.c"};
+  struct stat out, src;
+  bool stale = stat(VXFS, &out) != 0;
+  for (size_t i = 0; !stale && i < sizeof SOURCES / sizeof SOURCES[0]; i++)
+    stale = stat(SOURCES[i], &src) != 0 || newer(&src, &out);
+  if (!stale) return true;
+  mkdirs("out/host");
+  fprintf(stderr, "  CC    vxfs host\n");
+  cmd cc = {};
+  cmd_add(&cc, CLANG);
+  cmd_addv(&cc, (const char *const[]){"-std=c23", "-O2", "-g", "-Wall", "-Wextra", "-Werror", "-o", VXFS,
+                                      "host/vxfs/main.c", nullptr});
+  return run(&cc);
+}
+
+// A volume image of `mib` MiB at `path`, with the system volume's branches
+// (11 §5), each given the tree under the directory its entry names (or left
+// empty), then checked: what ./build makes for tests and, later, releases.
+static bool make_volume(const char *path, long mib, const char *const *trees) {
+  static const char *const BRANCHES[] = {"store", "cfg", "home", "adm"};
+  if (!build_vxfs()) return false;
+  cmd mk = {};
+  cmd_addv(&mk, (const char *const[]){VXFS, "mkfs", path, fmt("%ld", mib), nullptr});
+  for (size_t i = 0; i < 4; i++) cmd_add(&mk, BRANCHES[i]);
+  if (!run(&mk)) return false;
+  for (size_t i = 0; i < 4; i++) {
+    if (!trees[i]) continue;
+    cmd put = {.log = fmt("%s.log", path)};
+    cmd_addv(&put, (const char *const[]){VXFS, "put", path, BRANCHES[i], trees[i], nullptr});
+    if (!run(&put)) return false;
+  }
+  cmd chk = {.log = fmt("%s.log", path)};
+  cmd_addv(&chk, (const char *const[]){VXFS, "check", path, nullptr});
+  return run(&chk);
+}
+
+// check's round trip through a volume image: docs/ put in a branch, read
+// back byte for byte, a snapshot, a fork and a deletion, checked clean each
+// time.
+static bool check_vxfs_image(void) {
+  mkdirs("out/vxfs");
+  const char *img = "out/vxfs/check.img";
+  const char *const trees[4] = {nullptr, nullptr, "docs", nullptr};
+  bool ok = make_volume(img, 64, trees);
+  static const char *const STEPS[][5] = {
+      {"verify", "home", "docs"}, {"snap", "home", "home@check"}, {"fork", "home@check", "scratch"},
+      {"del", "home@check"},      {"verify", "scratch", "docs"},  {"check"},
+  };
+  for (size_t i = 0; ok && i < sizeof STEPS / sizeof STEPS[0]; i++) {
+    cmd c = {.log = "out/vxfs/check.img.log"};
+    cmd_addv(&c, (const char *const[]){VXFS, STEPS[i][0], img, nullptr});
+    for (size_t k = 1; k < 5 && STEPS[i][k]; k++) cmd_add(&c, STEPS[i][k]);
+    ok = run(&c);
+  }
+  fprintf(stderr, "  VXFS  image            %s\n", ok ? "ok" : "FAIL: see out/vxfs/check.img.log");
+  return ok;
+}
+
 static int remove_entry(const char *path, const struct stat *st, int type, struct FTW *ftw) {
   (void)st, (void)type, (void)ftw;
   return remove(path);
@@ -3268,6 +3333,7 @@ static bool check_build_time(void) {
 static int cmd_check(void) {
   bool ok = check_host_tests();
   ok = check_fuzz() && ok;
+  ok = check_vxfs_image() && ok;
   ok = cmd_vendor_check() == 0 && ok;
   ok = check_format() && ok;
   ok = check_analyzer() && ok;
@@ -3292,8 +3358,9 @@ static void usage(void) {
       "                                                 x86_64 uses KVM when it can, unless --tcg\n"
       "  loc                                            the line-count ledger\n"
       "  vendor-check                                   check third_party/ against VENDOR.ndb\n"
-      "  check                                          host tests (ASan, UBSan), the fuzzers, vendor-check, "
-      "the format,\n"
+      "  check                                          host tests (ASan, UBSan), the fuzzers, a volume "
+      "image, "
+      "vendor-check, the format,\n"
       "                                                 the static analyzer and the build-time budget: CI's "
       "first job\n"
       "\n"
