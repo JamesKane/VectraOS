@@ -286,6 +286,8 @@ static void aarch64_irq(void) {
     timer_interrupt();
   } else if (intid == INTID_RESCHED) {
     this_cpu()->resched = true;
+  } else if (intid >= 32 && intid == smmu0.event_intid) {
+    smmu_event_interrupt(); // the IOMMU's own line: its faults
   } else if (intid >= LPI_BASE && intid < LPI_BASE + LPI_COUNT) {
     irq_fire(MSI_LINE_BASE + intid - LPI_BASE); // an MSI: edge-triggered, never masked
   } else if (intid >= 32) {
@@ -389,17 +391,42 @@ static uint64_t its_table(unsigned order) {
   return pa;
 }
 
+// The kernel's own SPI (the SMMU's event queue): routed to the boot CPU,
+// edge-triggered as the SMMU raises it, and never a device's.
+static void arch_kernel_spi(uint32_t line, bool edge) {
+  volatile uint32_t *d = gicd_regs();
+  uint32_t bit = 1u << (line % 32);
+  d[0x080 / 4 + line / 32] |= bit;
+  ((volatile uint8_t *)d)[0x400 + line] = 0x80;
+  if (edge)
+    d[0xc00 / 4 + line / 16] |= 2u << (line % 16 * 2);
+  else
+    d[0xc00 / 4 + line / 16] &= ~(2u << (line % 16 * 2));
+  *(volatile uint64_t *)((volatile uint8_t *)d + 0x6000 + 8ull * line) = cpus[0].arch_id & 0xff'00ff'ffff;
+  d[0x100 / 4 + line / 32] = bit;
+}
+
+// The ITS, as the MADT says (QEMU virt's if it says nothing).
+static uint64_t its_phys(void) {
+  uint64_t pa = ITS_PHYS_DEFAULT;
+  const uint8_t *madt = acpi_table("APIC");
+  for (uint32_t off = 44, len = madt ? read32(madt + 4) : 0; off + 2 <= len && madt[off + 1] >= 2;
+       off += madt[off + 1])
+    if (madt[off] == 0xf && madt[off + 1] >= 20) pa = read64(madt + off + 8); // a GIC ITS structure
+  return pa;
+}
+
+// The page a device's MSI writes go to: the ITS's translation register's
+// (GITS_TRANSLATER, in its second 64 KiB frame), which every IOMMU domain maps.
+static uint64_t arch_msi_doorbell(void) { return its_phys() + 0x1'0000; }
+
 static vx_status its_init(void) {
   if (its) return VX_OK;
   if (its_unusable) return VX_ERR_UNSUPPORTED;
   its_unusable = true; // until it has all worked
   if (!boot_rd) return VX_ERR_UNSUPPORTED;
   if (!(gicd_regs()[1] & (1u << 17))) return VX_ERR_UNSUPPORTED; // GICD_TYPER.LPIS
-  uint64_t pa = ITS_PHYS_DEFAULT;
-  const uint8_t *madt = acpi_table("APIC");
-  for (uint32_t off = 44, len = madt ? read32(madt + 4) : 0; off + 2 <= len && madt[off + 1] >= 2;
-       off += madt[off + 1])
-    if (madt[off] == 0xf && madt[off + 1] >= 20) pa = read64(madt + off + 8); // a GIC ITS structure
+  uint64_t pa = its_phys();
   if (!map_range(kernel_root, boot.hhdm + pa, pa, 128ull * 1024, MAP_WRITE | MAP_DEVICE))
     return VX_ERR_NO_MEMORY;
   volatile uint8_t *regs = (volatile uint8_t *)(boot.hhdm + pa);

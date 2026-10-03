@@ -251,6 +251,7 @@ typedef struct iommu_dom { // the IOMMU's side of a domain
   uint8_t unit;            // which remapping unit
   uint16_t did;            // its domain id there
   uint64_t root;           // the top of its page tables (physical)
+  uint64_t ctx;            // SMMUv3: its context descriptor (physical)
 } iommu_dom;
 
 struct dma_domain;

@@ -2396,7 +2396,7 @@ static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
     cmd_addv(
         c,
         (const char *const[]){
-            "-machine", "virt,gic-version=3", "-cpu", "max", "-drive",
+            "-machine", "virt,gic-version=3,iommu=smmuv3", "-cpu", "max", "-drive",
             "if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/edk2/aarch64/QEMU_EFI-pflash.raw",
             "-drive",
             "if=pflash,format=raw,unit=1,snapshot=on,file=/usr/share/edk2/aarch64/vars-template-pflash.raw",

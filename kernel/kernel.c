@@ -154,7 +154,7 @@ static uint32_t arch_watch_count(void);           // the debug registers' watchp
 #include "arch/x86_64/arch.c"
 #elifdef __aarch64__
 #define VX_ARCH_NAME "aarch64"
-#include "iommu/none.c"
+#include "iommu/smmuv3.c"
 #include "arch/aarch64/arch.c"
 #else
 #error "unsupported architecture"
