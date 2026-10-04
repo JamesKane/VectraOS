@@ -1255,6 +1255,7 @@ static const program USER_PROGRAMS[] = {
     {"devmgr", "servers/devmgr/devmgr.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"netd", "servers/netd/netd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"gsh", "cmd/gsh.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"poweroff", "cmd/poweroff.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"ls", "cmd/ls.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"cat", "cmd/cat.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"echo", "cmd/echo.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
@@ -2598,6 +2599,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   bool nvme = false;                       // and bus=nvme: on NVMe, not virtio-blk
   bool caching = false;                    // scenario=... iommu=caching: VT-d's caching mode on
   const char *only = nullptr;              // scenario=... arch=A: run on A only
+  bool must_exit = false;                  // scenario=... exits: QEMU must then exit by itself (power off)
   const char *volume = nullptr;            // and volume=DIR: its system partition a volume, home DIR
   const char *host_file[8], *host_text[8]; // host=FILE text=...: in the share, once it passed
   int host_count = 0;
@@ -2622,6 +2624,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
       }
       if (vx_ndb_has(&rec, "volume")) volume = str_dup(vx_ndb_get(&rec, "volume"));
       if (vx_ndb_has(&rec, "arch")) only = str_dup(vx_ndb_get(&rec, "arch"));
+      must_exit = vx_ndb_has(&rec, "exits");
       if (vx_ndb_has(&rec, "iommu")) {
         const char *m = str_dup(vx_ndb_get(&rec, "iommu"));
         if (strcmp(m, "caching") != 0) die("%s:%zu: iommu=%s: only iommu=caching", path, rec.line, m);
@@ -2729,9 +2732,10 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   bool since_cut = false; // since[0] is mid-line: older output was let go
   static char buf[4096];  // read from QEMU; [pos, n) not looked at yet
   ssize_t n = 0, pos = 0;
-  ssize_t stale = 0; // bytes of buf, from pos, that came before the last typing
+  ssize_t stale = 0;     // bytes of buf, from pos, that came before the last typing
+  bool all_seen = false; // every expect= met; with exits, QEMU's exit is what is waited for now
   while (!verdict) {
-    if (typed < next && input[next].len) {
+    if (!all_seen && typed < next && input[next].len) {
       if (write(keys[1], input[next].ptr, input[next].len) != (ssize_t)input[next].len) {
         verdict = "cannot type into QEMU (it has exited?)"; // QEMU is still killed, and the log kept
         break;
@@ -2744,7 +2748,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
     if (pos == n) { // all looked at: read more
       double left = timeout - (now_seconds() - start);
       if (left <= 0) {
-        verdict = fmt("timed out waiting for \"%s\"", expect[next]);
+        verdict = all_seen ? "QEMU did not exit (exits)" : fmt("timed out waiting for \"%s\"", expect[next]);
         break;
       }
       struct pollfd pfd = {.fd = fds[0], .events = POLLIN};
@@ -2752,7 +2756,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
       n = read(fds[0], buf, sizeof buf);
       pos = 0;
       if (n <= 0) {
-        verdict = "QEMU exited";
+        verdict = all_seen ? "ok" : "QEMU exited"; // with exits, the exit was the last thing waited for
         break;
       }
       fwrite(buf, 1, (size_t)n, log);
@@ -2778,11 +2782,11 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
       len = 0;
       for (int k = 0; k < fail_count; k++)
         if (strstr(line, fail[k])) verdict = fmt("failure line: %s", line);
-      if (!verdict && !prompt[next] &&
+      if (!verdict && !all_seen && !prompt[next] &&
           (whole[next] ? strcmp(line, expect[next]) == 0 : strstr(line, expect[next]) != nullptr)) {
         next++;
-        if (next == expect_count) verdict = "ok";
-        if (next < expect_count && input[next].len && typed < next) break; // type it before what follows
+        if (next == expect_count) all_seen = true, verdict = must_exit ? nullptr : "ok";
+        if (!all_seen && input[next].len && typed < next) break; // type it before what follows
       }
     }
     // A prompt has no newline after it, and may share its line with other
@@ -2794,7 +2798,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
       if (!line_start || memcmp(since + at, expect[next], plen) != 0) continue;
       since_len = 0; // used: the next prompt= needs a prompt after this one
       since_cut = false;
-      if (++next == expect_count) verdict = "ok";
+      if (++next == expect_count) all_seen = true, verdict = must_exit ? nullptr : "ok";
       break;
     }
   }

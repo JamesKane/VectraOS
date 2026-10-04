@@ -685,6 +685,9 @@ static void ioapic_write(const ioapic *a, uint32_t reg, uint32_t v) {
 
 // Finds the IOAPICs and the ISA overrides in the MADT, maps the IOAPICs and
 // masks every line. Without a MADT, irq_create has no lines to give.
+// x86_64 powers off through ACPI's S5, which takes AML: bus-acpi's.
+static vx_status arch_system_off(void) { return VX_ERR_UNSUPPORTED; }
+
 static void arch_devices_init(void) {
   const uint8_t *madt = acpi_table("APIC");
   if (!madt) return;

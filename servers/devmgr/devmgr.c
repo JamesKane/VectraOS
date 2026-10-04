@@ -482,6 +482,9 @@ static void answer_mint(void) {
 #else
       st = VX_ERR_UNSUPPORTED; // no I/O ports here
 #endif
+    } else if (m.kind == VX_ACPI_OFF) {
+      say(VX_STR("powering off"), VX_STR(" (PSCI)"), VX_STR("\n"));
+      st = vx_system_power(resource, VX_POWER_OFF); // returns only if it did not happen
     } else if (m.kind == VX_ACPI_PCI) {
       uint32_t bus = (uint32_t)(m.base >> 8) & 0xff;
       if ((m.base >> 16) != 0 || m.size != 4096 || !pci_window.base || bus < pci_window.start_bus ||
@@ -501,8 +504,8 @@ static void answer_mint(void) {
 // duplicate of them, the console, and the channel it asks devmgr for its
 // regions on. Started once; restarts come with its service (M5 step 7).
 static void start_bus_acpi(vx_handle acpi, uint64_t size) {
-  vx_handle handles[3] = {};
-  vx_str names[3] = {VX_STR("acpi"), VX_STR("devmgr"), VX_STR("console")};
+  vx_handle handles[4] = {};
+  vx_str names[4];
   uint32_t count = 0;
   static char records[1024];
   vx_ndb_writer w = {.buf = records, .cap = sizeof records};
@@ -513,17 +516,20 @@ static void start_bus_acpi(vx_handle acpi, uint64_t size) {
     vx_ndb_put(&w, "cmdline", vx_spawn.cmdline);
     vx_ndb_end(&w);
   }
+  names[count] = VX_STR("acpi");
   vx_status st = vx_handle_dup(acpi, VX_RIGHT_READ | VX_RIGHT_MAP | VX_RIGHT_TRANSFER, &handles[count++]);
   vx_handle ends[2];
   if (st == VX_OK) st = vx_channel_create(0, ends);
   if (st == VX_OK) {
     mint_end = ends[0];
-    handles[count++] = ends[1];
+    names[count] = VX_STR("devmgr"), handles[count++] = ends[1];
     vx_port_bind(port, mint_end, VX_TRIGGER_READABLE, KEY_MINT, 0);
   }
+  vx_handle post = vx_spawn_take("claim:acpi"); // /srv/acpi, bus-acpi's to serve
+  if (st == VX_OK && post) names[count] = VX_STR("listen"), handles[count++] = post;
   if (st == VX_OK && vx_console.connector &&
       vx_handle_dup(vx_console.connector, VX_RIGHTS_SAME, &handles[count]) == VX_OK)
-    count++;
+    names[count++] = VX_STR("console");
   size_t len = st == VX_OK ? read_whole(VX_STR("/boot/bin/bus-acpi"), image, sizeof image) : 0;
   vx_handle task;
   vx_spawn_args a = {.name = VX_STR("bus-acpi"),

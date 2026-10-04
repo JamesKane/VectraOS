@@ -109,7 +109,8 @@ static vx_status arch_msi_create(uint32_t source, uint32_t *line,
                                  struct vx_msi *msi); // a free MSI line, routed
 static void arch_msi_destroy(uint32_t line);
 static bool arch_has_io_ports(void);
-static void arch_devices_init(void); // finds the interrupt controllers' device lines, after paging_init
+static void arch_devices_init(void);    // finds the interrupt controllers' device lines, after paging_init
+static vx_status arch_system_off(void); // PSCI SYSTEM_OFF where there is one; returns only if it failed
 static bool arch_console_device(bool io, uint64_t base,
                                 uint64_t size); // overlaps the kernel console's device
 struct task;

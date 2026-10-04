@@ -290,6 +290,16 @@ static int64_t sys_vmo_op(vx_handle h, uint64_t op, uint64_t arg) {
   return st;
 }
 
+// system_power(resource, op): the machine off, with the root Resource's MANAGE.
+static int64_t sys_system_power(vx_handle rh, uint64_t op) {
+  if (op != VX_POWER_OFF) return VX_ERR_INVALID;
+  vx_status st;
+  resource *r = (resource *)handle_get(current_task(), rh, OBJ_RESOURCE, VX_RIGHT_MANAGE, &st);
+  if (!r) return st;
+  object_release(&r->obj);
+  return arch_system_off();
+}
+
 // --- Devices (obj/device.c) ---
 
 // irq_create(resource, line, options, &out, &msi): a line, or with VX_IRQ_MSI
@@ -1026,6 +1036,7 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_dma_map: return sys_dma_map((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4], a[5]);
   case VX_SYS_dma_unmap: return sys_dma_unmap((vx_handle)a[0]);
   case VX_SYS_dma_domain_op: return sys_dma_domain_op((vx_handle)a[0], a[1], a[2]);
+  case VX_SYS_system_power: return sys_system_power((vx_handle)a[0], a[1]);
   case VX_SYS_pager_create: return sys_pager_create((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4]);
   case VX_SYS_pager_supply:
     return sys_pager_supply((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], (vx_handle)a[4], a[5]);

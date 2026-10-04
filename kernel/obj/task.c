@@ -8,7 +8,8 @@ static constexpr uint64_t USER_TOP = 0x0000'8000'0000'0000;      // first addres
 static constexpr uint64_t USER_MAP_BASE = 0x0000'1000'0000'0000; // where as_map puts mappings it places
 static constexpr uint64_t USER_STACK_TOP = 0x0000'7fff'ffff'0000;
 static constexpr uint64_t USER_STACK_SIZE = 256ull * 1024; // debug builds are -O0: frames do not overlap
-static constexpr uint32_t TASK_MAX_IO = 4;                 // I/O port ranges per task
+static constexpr uint32_t TASK_MAX_IO =
+    32; // I/O port ranges per task (bus-acpi: one for each its AML touches)
 
 // --- Handles ---
 //

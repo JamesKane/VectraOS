@@ -72,6 +72,7 @@ irq_create  irq_ack  iorange_create  dma_domain_create  dma_map  dma_unmap  dma_
 clock_read  debug_write (only while a debug capability is held)
 pmu_configure                                                          # performance counters (05 §9)
 cpu_configure                                                          # idle states, performance domains, limits (§8, ADR-0020; M9)
+system_power                                                           # the machine off by firmware call (PSCI; the root Resource's MANAGE)
 ```
 
 `clock_read` also runs from a vDSO page without entering the kernel, as does reading counters, which live in a shared page. Batchable calls (`dma_map`, `port_bind`, `handle_close`, `vmo_rw`, `vmo_op`, `task_mem_rw`) take arrays (rule 11).
@@ -357,7 +358,7 @@ A record never overrides what the kernel reads itself (the memory map, the MADT,
 
 A shared clock controller (Qualcomm's GCC, used by USB, SD, I²C and the GPU) has one owner, a driver that serves the `clock` class: drivers vote for clocks and power domains through it and never touch its registers.
 
-`bus-acpi` (`servers/bus-acpi`, M5 step 7) runs ACPICA (ADR-0030) as a process `devmgr` starts: it loads the DSDT and SSDTs from the kernel's copies of the tables, runs their AML, and lists the devices and their resources. What its AML reaches (memory, I/O ports, PCI configuration space) it asks `devmgr` for at first touch, and `devmgr` refuses RAM, the kernel's own MMIO and ports, and any driver's grant. ADR-0024 says what it grows into.
+`bus-acpi` (`servers/bus-acpi`, M5 step 7) runs ACPICA (ADR-0030) as a process `devmgr` starts: it loads the DSDT and SSDTs from the kernel's copies of the tables, runs their AML, and lists the devices and their resources. What its AML reaches (memory, I/O ports, PCI configuration space) it asks `devmgr` for at first touch, and `devmgr` refuses RAM, the kernel's own MMIO and ports, and any driver's grant. It serves `/srv/acpi`, whose one request so far is power off: S5 through ACPICA, or, where the firmware's ACPI has no sleep registers (hardware-reduced, as on aarch64), PSCI through `devmgr` and `system_power`. ADR-0024 says what it grows into.
 
 In M3 the manifests are ndb records in the boot image, `/boot/drv/*.ndb`, one line per match: `match=pci vendor=0x1af4 device=0x1041 program=/boot/bin/drv-virtio-net post=ether0 msi=2`, or a class for a standard interface (`class=0x010802`, NVMe). Numbered posts (`disk#`) are numbered in bus order across drivers. A driver's debugging options are words of the kernel command line named for it (`drv-nvme.reset=50`), which `devmgr` passes on. A PCI driver gets the function's 4 KiB of configuration space, each memory BAR, the MSIs it asks for (with their address and data as records), a `DmaDomain`, and the server end of the post it serves. Posts are rendezvous points that `svcd` makes: `devmgr`'s manifest claims `ether0` (`claim=ether0`), a client's manifest connects to it (`connect=ether0`), and a client may connect before the driver is running. `devmgr` restarts a driver that exits, up to five times. Before it does, it turns off the function's bus mastering: in pass-through mode the device could otherwise write into the dead driver's freed DMA memory. The IOMMU (M5) closes the window between the driver's death and that write.
 

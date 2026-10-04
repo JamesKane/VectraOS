@@ -416,6 +416,44 @@ ACPI_STATUS AcpiOsWritePciConfiguration(ACPI_PCI_ID *PciId, UINT32 Reg, UINT64 V
   return c ? AE_OK : AE_NOT_EXIST;
 }
 
+// --- Power (M5 step 7c) ---
+
+// The machine off: S5 through ACPICA where the firmware has it (_S5, and
+// the fixed hardware's sleep registers); else, as on a hardware-reduced
+// firmware with no sleep registers (QEMU's aarch64), PSCI, which devmgr
+// asks the kernel for. Returns only if the machine is still on.
+static vx_status power_off(void) {
+  vx_print(VX_STR("bus-acpi: powering off\n"));
+  AcpiOsSleep(1000); // what the console has, out first: power off does not wait for it
+  UINT8 a, b;
+  if (!AcpiGbl_ReducedHardware && ACPI_SUCCESS(AcpiGetSleepTypeData(ACPI_STATE_S5, &a, &b))) {
+    vx_print(VX_STR("bus-acpi: S5\n"));
+    if (ACPI_SUCCESS(AcpiEnterSleepStatePrep(ACPI_STATE_S5))) AcpiEnterSleepState(ACPI_STATE_S5);
+    vx_print(VX_STR("bus-acpi: S5 did not power off; PSCI then\n"));
+  }
+  vx_print(VX_STR("bus-acpi: PSCI, through devmgr\n"));
+  vx_handle h;
+  vx_status st = ask(VX_ACPI_OFF, 0, 0, &h);
+  return st == VX_OK ? VX_ERR_IO : st;
+}
+
+// /srv/acpi: one request a message, by channel_call (lib/vx-acpi/mint.h).
+static void serve(vx_handle listen, vx_handle port) {
+  for (;;) {
+    vx_port_bind(port, listen, VX_TRIGGER_READABLE, 1, 0);
+    vx_packet pk;
+    if (vx_port_wait(port, VX_INFINITE, 0, &pk, 1) != 1) continue;
+    vx_msg_header req;
+    vx_msg_size got;
+    while (vx_channel_read(listen, &req, sizeof req, nullptr, 0, &got) == VX_OK) {
+      vx_status st =
+          got.bytes == sizeof req && req.ordinal == VX_ACPI_POWER_OFF ? power_off() : VX_ERR_INVALID;
+      vx_msg_header rep = {.txid = req.txid, .ordinal = req.ordinal, .flags = (uint32_t)(int32_t)st};
+      vx_channel_write(listen, &rep, sizeof rep, nullptr, 0);
+    }
+  }
+}
+
 // bus-acpi.probe=1 on the command line: asks devmgr for what it must refuse
 // (the interrupt controller's page, RAM, the console's ports) and says what
 // it got (the acpi scenarios check it).
@@ -659,11 +697,10 @@ const char *vx_main(void) {
   if (ACPI_FAILURE(st)) fail("AcpiInitializeSubsystem", st);
   if (ACPI_FAILURE(st = AcpiInitializeTables(nullptr, 32, FALSE))) fail("AcpiInitializeTables", st);
   if (ACPI_FAILURE(st = AcpiLoadTables())) fail("AcpiLoadTables", st);
-  // The namespace, run (AML reaching hardware through devmgr's grants); the
-  // hardware's own registers and events come with step 7c.
-  if (ACPI_FAILURE(st = AcpiEnableSubsystem(ACPI_NO_HARDWARE_INIT | ACPI_NO_ACPI_ENABLE | ACPI_NO_EVENT_INIT |
-                                            ACPI_NO_HANDLER_INIT)))
-    fail("AcpiEnableSubsystem", st);
+  // The hardware on too (ACPI mode, its fixed registers, its events), all
+  // reached through devmgr's grants. Events are set up but not delivered:
+  // there is no SCI handler yet.
+  if (ACPI_FAILURE(st = AcpiEnableSubsystem(ACPI_FULL_INITIALIZATION))) fail("AcpiEnableSubsystem", st);
   if (ACPI_FAILURE(st = AcpiInitializeObjects(ACPI_FULL_INITIALIZATION))) fail("AcpiInitializeObjects", st);
   AcpiGetDevices(nullptr, print_device, nullptr, nullptr);
   vx_print(VX_STR("bus-acpi: "));
@@ -673,9 +710,13 @@ const char *vx_main(void) {
   vx_print(VX_STR(" present with a hardware ID; "));
   vx_print_u64((uint64_t)(heap_top - heap) >> 10);
   vx_print(VX_STR(" KiB of heap\n"));
-  vx_handle port;
+  vx_handle port, listen = vx_spawn_take("listen");
   vx_port_create(0, &port);
-  for (;;) { // its service comes with the next steps
+  if (listen) {
+    vx_print(VX_STR("bus-acpi: serving /srv/acpi\n"));
+    serve(listen, port);
+  }
+  for (;;) { // no post: nothing to serve
     vx_packet pk;
     vx_port_wait(port, VX_INFINITE, 0, &pk, 1);
   }

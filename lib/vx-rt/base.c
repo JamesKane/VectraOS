@@ -261,6 +261,11 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   return st;
 }
 
+// The machine off (VX_POWER_OFF), with the root Resource: returns only if it did not happen.
+[[maybe_unused]] static vx_status vx_system_power(vx_handle resource, uint32_t op) {
+  return (vx_status)vx_syscall(VX_SYS_system_power, resource, op, 0, 0, 0, 0);
+}
+
 [[maybe_unused]] static int64_t vx_dma_domain_op(vx_handle domain, uint32_t op) {
   return vx_syscall(VX_SYS_dma_domain_op, domain, op, 0, 0, 0, 0);
 }

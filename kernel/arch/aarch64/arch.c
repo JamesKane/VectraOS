@@ -312,6 +312,23 @@ static void arch_devices_init(void) {
 
 static bool arch_has_io_ports(void) { return false; }
 
+// PSCI SYSTEM_OFF (DEN 0022), by the conduit the FADT's ARM boot flags name
+// (hvc or smc); unsupported if they say there is no PSCI. Returns only if the
+// firmware did not power off.
+static vx_status arch_system_off(void) {
+  const uint8_t *fadt = acpi_table("FACP");
+  uint16_t flags = 0;
+  if (fadt && read32(fadt + 4) >= 131) flags = (uint16_t)(fadt[129] | fadt[130] << 8);
+  if (!(flags & 1)) return VX_ERR_UNSUPPORTED; // PSCI_COMPLIANT
+  register uint64_t x0 __asm__("x0") = 0x8400'0008;
+  // NOLINTNEXTLINE(bugprone-branch-clone): the instructions differ, which clang-tidy does not see
+  if (flags & 2) // PSCI_USE_HVC
+    __asm__ volatile("hvc #0" : "+r"(x0) : : "x1", "x2", "x3", "memory");
+  else
+    __asm__ volatile("smc #0" : "+r"(x0) : : "x1", "x2", "x3", "memory");
+  return VX_ERR_IO;
+}
+
 static bool arch_console_device(bool io, uint64_t base, uint64_t size) {
   return !io && base < PL011_PHYS + 4096 && PL011_PHYS < base + size;
 }

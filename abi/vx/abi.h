@@ -289,6 +289,10 @@ static_assert(sizeof(vx_cqe) == 32);
 //       one is its pager's to resize (pager_op RESIZE): ACCESS
 enum vx_vmo_options : uint32_t { VX_VMO_PHYSICAL = 1, VX_VMO_PAGER = 2 };
 enum vx_dma_options : uint32_t { VX_DMA_READ = 1, VX_DMA_WRITE = 2 }; // what the device may do: dma_map
+// system_power(resource, op): the whole machine (the root Resource, MANAGE).
+// VX_POWER_OFF: through PSCI where the firmware has it (aarch64); returns,
+// UNSUPPORTED, where powering off is ACPI's (x86_64: bus-acpi enters S5).
+enum vx_power_op : uint32_t { VX_POWER_OFF = 1 };
 enum vx_dma_op : uint32_t { VX_DMA_REVOKE = 1, VX_DMA_QUIESCED = 2, VX_DMA_FAULTS = 3 };
 typedef struct vx_dma_mapped { // dma_map's answer
   uint64_t *addresses;         // in: where the pages' device addresses go
