@@ -96,7 +96,7 @@ There is one event record for the whole native API, `vx_event`: 64 bytes, a kind
 
 - **Static today, dynamic by design.** Today every program links statically, because the system has no dynamic loader yet. That is a present state, not the goal. The target is that `libvx` and `vxui` are shared objects the release provides, and apps link to them dynamically:
   - **Hot reload needs a loader anyway.** Its host maps a fresh code image, `app.so`, into a running process (03 §6.1); the loader that does that also loads `libvx` and `vxui`.
-  - **A fix reaches every app** with the release that carries it, without rebuilding the app.
+  - **A fix reaches every app** with the release that carries it, without rebuilding the app. The other side of that is chosen, not overlooked: an app's behaviour then depends on the release as well as on its lock (06 §3.4). ABI levels guard additions, not changed behaviour, so a change in what an existing `libvx` call does is a release note and a test in the release's matrix, never silent.
   - **The stable binary interface becomes `libvx`'s and `vxui`'s exported symbols,** checked by ABI levels (below). The syscalls behind them become private between `libvx` and the kernel, as `ntdll`'s are on Windows, so they may change with a release.
   - **The loader stays small and adds one indirection, never more:** every symbol is bound when the image loads, the binding table is then read-only, and a call into `libvx` is one indirect call. There is no lazy binding, no symbol interposition and no search path; libraries come from the app's lock (06 §3.4).
 - **ABI levels.** ADR-0004 freezes `vx-abi` v0; each later level only adds. A program declares the level it targets, `VX_TARGET_ABI`, which its manifest repeats (`requires=vx-abi>=2`, 06 §3.4). The headers declare a newer call only when the target level includes it, so using one without raising the target is a compile error, which is the study's "error on an unguarded newer symbol" (F-219). A program that wants a newer feature when present checks `vx_abi_level()` at run time.
@@ -276,7 +276,7 @@ vx_status vx_accept(vx_conn *call);                  // R
 
 ### 5.12 Raw IPC: `<vx/sys.h>`, `<vx/ring.h>`
 
-Channels, rings, counters and sessions, as `vx-ring` and the wrappers have them. Most programs never use them, because files cover control and the toolkit covers bulk; servers, drivers and engines do.
+Channels, rings, counters and sessions, as `vx-ring` and the wrappers have them. Most programs never use them, because files cover control and the toolkit covers bulk; servers, drivers and engines do. A program that hands a data structure to another process, such as a host and its plugin, uses VMOs directly, as 01 §6.6 describes, rather than encoding it.
 
 ### 5.13 Windows, input, audio and the GPU
 
