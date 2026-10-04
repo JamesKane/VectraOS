@@ -274,6 +274,10 @@ UEFI's `BootNext` boots an entry once and then clears itself. So the new release
 
 The kernel cannot write UEFI variables today. How it gains that, narrowly, is an open question (§16).
 
+### 9.3a What M5 does instead (step 9d)
+
+Until M12 brings `BootNext`, applying and rolling back are by hand and take effect at the next boot. `echo apply N > /dist/ctl` checks release N's tree whole, snapshots `/cfg` (`cfg@apply-N`), writes the release's kernel, modules and `bootfs` to a free slot and reads them back against their hashes, then rewrites the slot table (`\EFI\vectra\slots.ndb`) and Limine's configuration made from it, so that slot is the default (`default_entry`). There is no trial: if the release does not come up, the previous slot is still in Limine's menu. `echo rollback > /dist/ctl` makes the previous slot the default again and rolls `/cfg` back to the snapshot taken when the release being left was applied. `/dist/status` says `current=` (the release that booted, from `vx.slot=`), `slot=` and `boot=` (the release the next boot is).
+
 ### 9.4 Keys sealed to the boot chain
 
 `keyd` seals the node key to the TPM's measurements of the boot chain (02 §6.2), and a new release changes them. Because a release is reproducible and its hashes are in the signed record, `keyd` can compute the new release's measurements before it boots, and add a second seal under them while it still runs the old one. Both seals stay until the old release is removed, so either slot unseals the key and a rollback keeps the node's identity. A slot whose measurements match no seal (a modified kernel) cannot unseal it, which is the point of sealing.

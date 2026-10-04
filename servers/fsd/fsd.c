@@ -838,7 +838,9 @@ static vx_status ctl_command(uint64_t node, vx_str cmd) {
   } else {
     return VX_ERR_INVALID;
   }
-  if (st == VX_OK) changed();
+  // Durable once ctl's write returns: a rollback, say, must outlive a power
+  // cut right after it (distd's rollback by hand, M5 step 9d).
+  if (st == VX_OK) changed(), st = commit();
   return st;
 }
 

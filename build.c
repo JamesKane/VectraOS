@@ -165,7 +165,7 @@ static char root[1024]; // the repository root, absolute
 // One arena for the whole run. build is short-lived, so nothing is freed.
 // 32 MiB ran out building aarch64's debug test images (with musl, M4); the
 // pages are the host's to map as they are touched.
-static char arena[128 << 20];
+static char arena[256 << 20];
 static size_t arena_used;
 
 static void *alloc(size_t n) {
@@ -2453,35 +2453,57 @@ static bool make_image_in(const arch *a, bool release, const char *image, const 
 // a release record, as store.tar. Its path, or nullptr.
 static bool iso_installer; // the next ISO make_image makes carries store.tar
 
+// A file copied, a chunk at a time (not through the arena: install media copy
+// bootfs more than once).
+static void copy_file(const char *from, const char *to) {
+  int in = open(from, O_RDONLY), out = open(to, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (in < 0 || out < 0) die("cannot copy %s to %s", from, to);
+  static char chunk[1 << 20];
+  for (ssize_t n; (n = read(in, chunk, sizeof chunk)) != 0;) {
+    if (n < 0 || write(out, chunk, (size_t)n) != n) die("cannot copy %s to %s", from, to);
+  }
+  close(in);
+  if (close(out) != 0) die("cannot write %s", to);
+}
+
+static bool iso_media;              // and a second release, release 2, as local media (media)
+static const char *iso_media_store; // that release's store directory, once made
+
 static const char *make_install_store(const arch *a, bool release, const char *image, const char *loader,
-                                      const char *loader_name, const char *kernel, const char *bootfs) {
+                                      const char *loader_name, const char *kernel, const char *bootfs,
+                                      uint64_t seq) {
   if (!build_vxstore()) return nullptr;
-  const char *top = fmt("%s.release", image), *rootdir = fmt("%s/root", top), *store = fmt("%s/store", top);
+  const char *top = fmt("%s.release%llu", image, (unsigned long long)seq), *rootdir = fmt("%s/root", top),
+             *store = fmt("%s/store", top);
   cmd rm = {};
   cmd_addv(&rm, (const char *const[]){"/usr/bin/rm", "-rf", top, nullptr});
   if (!run(&rm)) return nullptr;
   mkdirs(fmt("%s/boot/vx", rootdir));
   mkdirs(fmt("%s/boot/limine", rootdir));
   mkdirs(store);
-  write_file(fmt("%s/boot/limine/%s", rootdir, loader_name), read_file(loader));
-  write_file(fmt("%s/boot/limine/limine.conf", rootdir), read_file("boot/limine.conf"));
-  write_file(fmt("%s/boot/vx/kernel.elf", rootdir), read_file(kernel));
-  write_file(fmt("%s/boot/vx/bootfs.tar", rootdir), read_file(bootfs));
+  copy_file(loader, fmt("%s/boot/limine/%s", rootdir, loader_name));
+  copy_file("boot/limine.conf", fmt("%s/boot/limine/limine.conf", rootdir));
+  copy_file(kernel, fmt("%s/boot/vx/kernel.elf", rootdir));
+  copy_file(bootfs, fmt("%s/boot/vx/bootfs.tar", rootdir));
   for (int i = 0; i < USER_PROGRAM_COUNT; i++)
     if (USER_PROGRAMS[i].where == IN_MODULE)
-      write_file(fmt("%s/boot/vx/%s", rootdir, USER_PROGRAMS[i].name),
-                 read_file(fmt("%s/%s", out_dir(a, release), USER_PROGRAMS[i].name)));
+      copy_file(fmt("%s/%s", out_dir(a, release), USER_PROGRAMS[i].name),
+                fmt("%s/boot/vx/%s", rootdir, USER_PROGRAMS[i].name));
   char *out = run_capture((const char *const[]){VXSTORE, "put", store, rootdir, bootfs, nullptr});
   if (!out || !strchr(out, ' ')) return nullptr;
   *strchr(out, ' ') = 0;
-  const char *record = fmt("%s/1.ndb", top);
-  write_file(record, str_of(fmt("release=1 name=test-1 channel=dev commit=test vx-abi=0 unsigned\n"
+  unsigned long long n = (unsigned long long)seq;
+  const char *record = fmt("%s/%llu.ndb", top, n);
+  write_file(record, str_of(fmt("release=%llu name=test-%llu channel=dev commit=test vx-abi=0 unsigned\n"
                                 "set=base arch=%s tree=%s\n",
-                                a->name, out)));
+                                n, n, a->name, out)));
+  mkdirs(fmt("%s/records", store));
+  write_file(fmt("%s/records/%llu.ndb", store, n), read_file(record));
   const char *tar = fmt("%s/store.tar", top);
   cmd t = {};
-  cmd_addv(&t,
-           (const char *const[]){VXSTORE, "tar", store, out, tar, fmt("records/1.ndb=%s", record), nullptr});
+  cmd_addv(&t, (const char *const[]){VXSTORE, "tar", store, out, tar, fmt("records/%llu.ndb=%s", n, record),
+                                     nullptr});
+  if (seq != 1) iso_media_store = store;
   return run(&t) ? tar : nullptr;
 }
 
@@ -2562,8 +2584,19 @@ static bool make_image_in(const arch *a, bool release, const char *image, const 
     int nf = 0;
     const char *iso_config = config;
     if (iso_installer) { // an install medium: the release's objects too, and a command line that says so
-      const char *store = make_install_store(a, release, image, loader, loader_name, kernel, bootfs);
+      const char *store = make_install_store(a, release, image, loader, loader_name, kernel, bootfs, 1);
       if (!store) return false;
+      if (iso_media) { // release 2: the same, and a marker in its bootfs (tests/user/release2.ndb)
+        const char *bootfs2 = fmt("%s.bootfs2.tar", image);
+        size_t mark = arena_used; // what bootfs2 takes in the arena is on disk after: let it go
+        bool ok2 = make_bootfs(a, release, fmt("%s%srelease2", with, *with ? "," : ""), bootfs2) &&
+                   make_install_store(a, release, image, loader, loader_name, kernel, bootfs2, 2);
+        static char media_path[4096];
+        snprintf(media_path, sizeof media_path, "%s", ok2 && iso_media_store ? iso_media_store : "");
+        arena_used = mark;
+        iso_media_store = media_path[0] ? media_path : nullptr;
+        if (!ok2) return false;
+      }
       files[nf++] = (iso_file){.path = "boot/vx/store.tar", .from = store};
       iso_config = fmt("%s.iso.conf", image);
       FILE *f = fopen(iso_config, "w");
@@ -2740,6 +2773,7 @@ typedef struct qemu_opts {
   bool nvme;         // and on NVMe instead
   bool caching;      // the IOMMU in caching mode (VT-d's CAP.CM)
   const char *rtc;   // the real-time clock's starting time (QEMU's -rtc base=), or nullptr: the host's UTC
+  bool persist;      // the boot disk's writes kept, even in a test (a boot after reboot: the installed disk)
 } qemu_opts;
 
 // host/vx9pserve, built for this machine: the 9P server VectraOS mounts over
@@ -2939,7 +2973,8 @@ static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
                                       "scsi-cd,drive=cd,bus=scsi.0", nullptr});
   } else {
     // A test never writes the image, so several can boot one image at once.
-    cmd_add(c, fmt("if=none,id=disk,format=raw,file=%s%s", image, o.test ? ",snapshot=on" : ""));
+    cmd_add(c,
+            fmt("if=none,id=disk,format=raw,file=%s%s", image, o.test && !o.persist ? ",snapshot=on" : ""));
     cmd_addv(c, (const char *const[]){
                     "-device", "virtio-blk-pci,drive=disk,disable-legacy=on,iommu_platform=on", nullptr});
   }
@@ -3141,16 +3176,17 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   int expect_count = 0, fail_count = 0;
   double timeout = 0;
   const char *cmdline = "", *with = "";
-  bool iso = false;                        // scenario=... iso: boot the ISO, as a CD
-  long disk_mib = 0;                       // scenario=... disk=MIB: a second disk, made fresh for the run
-  bool nvme = false;                       // and bus=nvme: on NVMe, not virtio-blk
-  bool caching = false;                    // scenario=... iommu=caching: VT-d's caching mode on
-  const char *rtc = nullptr;               // scenario=... rtc=2030-01-02T03:04:05: the RTC starts then
-  int fat = 0;                             // and fat=12|16|32: the disk= is one FAT volume, no GPT
-  bool fsck = false;                       // and fsck: fsck.fat -n must find that volume sound after
-  bool isodisk = false;                    // scenario=... isodisk: the second disk is make_test_iso's ISO
-  bool installer = false;                  // scenario=... installer: the ISO an install medium (implies iso)
-  bool blank = false;                      // and blank: the disk= is all zeros, as a new disk is
+  bool iso = false;          // scenario=... iso: boot the ISO, as a CD
+  long disk_mib = 0;         // scenario=... disk=MIB: a second disk, made fresh for the run
+  bool nvme = false;         // and bus=nvme: on NVMe, not virtio-blk
+  bool caching = false;      // scenario=... iommu=caching: VT-d's caching mode on
+  const char *rtc = nullptr; // scenario=... rtc=2030-01-02T03:04:05: the RTC starts then
+  int fat = 0;               // and fat=12|16|32: the disk= is one FAT volume, no GPT
+  bool fsck = false;         // and fsck: fsck.fat -n must find that volume sound after
+  bool isodisk = false;      // scenario=... isodisk: the second disk is make_test_iso's ISO
+  bool installer = false;    // scenario=... installer: the ISO an install medium (implies iso)
+  bool blank = false;        // and blank: the disk= is all zeros, as a new disk is
+  bool media = false; // and media: release 2 on a FAT disk, the second disk of every boot after the first
   const char *only = nullptr;              // scenario=... arch=A: run on A only
   bool must_exit = false;                  // scenario=... exits: QEMU must then exit by itself (power off)
   const char *volume = nullptr;            // and volume=DIR: its system partition a volume, home DIR
@@ -3194,6 +3230,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
       installer = vx_ndb_has(&rec, "installer");
       iso = iso || installer;
       blank = vx_ndb_has(&rec, "blank");
+      media = vx_ndb_has(&rec, "media");
       if (vx_ndb_has(&rec, "iommu")) {
         const char *m = str_dup(vx_ndb_get(&rec, "iommu"));
         if (strcmp(m, "caching") != 0) die("%s:%zu: iommu=%s: only iommu=caching", path, rec.line, m);
@@ -3256,9 +3293,9 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   if (*cmdline || *with || iso) {
     image = fmt("%s/test-%s.img", out_dir(a, release), name);
     if (iso) cdrom = fmt("%s/test-%s.iso", out_dir(a, release), name);
-    iso_installer = installer;
+    iso_installer = installer, iso_media = media, iso_media_store = nullptr;
     bool made = make_image(a, release, image, cmdline, with, cdrom);
-    iso_installer = false;
+    iso_installer = iso_media = false;
     if (!made) return false;
   }
 
@@ -3291,11 +3328,22 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
     disk = test_disk(fmt("%s/disk.img", run_dir), disk_mib, volume,
                      storetree ? make_test_release(fmt("%s/store", run_dir)) : nullptr);
   }
+  const char *media_disk = nullptr; // release 2's store as files on a FAT disk, for boots after the first
+  if (media) {
+    if (!iso_media_store) die("%s: media needs installer", path);
+    media_disk = fat_disk(fmt("%s/media.img", run_dir), 128, 32);
+    cmd cp = {};
+    cmd_addv(&cp, (const char *const[]){MCOPY, "-s", "-i", media_disk, fmt("%s/b2", iso_media_store),
+                                        fmt("%s/records", iso_media_store), "::/", nullptr});
+    if (!run(&cp)) die("%s: cannot put release 2 on the media disk", path);
+  }
   const char *verdict = "ok";
   double run_start = now_seconds();
   for (int ph = 0; ph < nphases && strcmp(verdict, "ok") == 0; ph++) {
     int phase_first = ph ? phase_end[ph - 1] : 0, phase_last = phase_end[ph];
-    bool phase_exits = must_exit || ph + 1 < nphases;
+    // A boot but the last ends once its expects are met (QEMU is then stopped,
+    // as a power cut would): what it wrote must have reached the disk by then.
+    bool phase_exits = must_exit && ph + 1 == nphases;
     if (ph && !disk) die("%s: reboot boots the second disk, and there is none", path);
     if (ph) fprintf(log, "\n--- build: boot %d, from the second disk ---\n", ph + 1);
     c = (cmd){};
@@ -3305,7 +3353,8 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
                          .share = share,
                          .u9fs = u9fs,
                          .cdrom = ph ? nullptr : cdrom,
-                         .disk = ph ? nullptr : disk,
+                         .disk = ph ? media_disk : disk,
+                         .persist = ph > 0,
                          .nvme = nvme,
                          .caching = caching,
                          .rtc = rtc});

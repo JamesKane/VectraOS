@@ -20,7 +20,22 @@
 //   /dist/store/              the objects, read-only, as they are: what peers read
 //
 // A block that does not match is an IO error, said once on the console with
-// the file's path; nothing of it is returned. The running system's base
+// the file's path; nothing of it is returned.
+//
+// On an installed system (M5 step 9d) it also changes the ESP's boot slots
+// (lib/vx-slots), with the ESP (dosfs) at /tmp and fsd's adm branch at /adm
+// in its namespace, and the kernel command line (cmdline) saying which slot
+// booted (vx.slot=X):
+//
+//   apply N     release N's tree checked whole; /cfg snapshotted (cfg@apply-N);
+//               its kernel, modules and bootfs written to a free slot and read
+//               back against their hashes; then the table and Limine's
+//               configuration rewritten, the new slot the default
+//   rollback    the previous slot the default again, and /cfg rolled back to
+//               the snapshot taken when the release being left was applied
+//
+// Both take effect at the next boot; status says current= (the release that
+// booted) and boot= (the one that will). The running system's base
 // stays bootfs's: serving from the store, not switching to it (06 §3.1;
 // decided 2026-10-04).
 
@@ -28,6 +43,7 @@
 #include "../../lib/vx-9p/ring_server.c"
 #include "../../lib/vx-ns/spawn.c"
 #include "../../lib/vx-store/store.c"
+#include "../../lib/vx-slots/slots.c"
 
 #ifdef __x86_64__
 static const char ARCH[] = "x86_64";
@@ -46,6 +62,13 @@ static vx_ns ns;
   }
   vx_print(VX_STR("\n"));
   vx_exits(what);
+}
+
+static void join3(char *out, size_t cap, const char *a, const char *b, const char *c) {
+  size_t n = 0;
+  for (const char *const *p = (const char *const[]){a, b, c, nullptr}; *p; p++)
+    for (const char *q = *p; *q && n + 1 < cap; q++) out[n++] = *q;
+  out[n] = 0;
 }
 
 // --- Objects, from the store branch ---
@@ -384,6 +407,274 @@ static vx_status index_of(const node *n, uint64_t *size, const uint8_t **hashes,
   return *size == n->e.size ? VX_OK : VX_ERR_IO; // the directory's size and the index's agree
 }
 
+// --- Slots (M5 step 9d) ---
+
+static char booted = 0; // vx.slot's letter, or 0
+
+static void find_booted(void) {
+  vx_str c = vx_spawn.cmdline;
+  for (size_t i = 0; i + 9 <= c.len; i++)
+    if ((!i || c.ptr[i - 1] == ' ') && memcmp(c.ptr + i, "vx.slot=", 8) == 0) booted = c.ptr[i + 8];
+}
+
+static uint8_t table_text[4096];
+
+// All of data written at f's offset, however little each write moves (a
+// 9P write moves at most the connection's message size).
+static vx_status write_all(vx_ns_file *f, const uint8_t *data, size_t len) {
+  for (size_t at = 0; at < len;) {
+    int64_t w = vx_ns_write(f, data + at, len - at > 65536 ? 65536 : (uint32_t)(len - at));
+    if (w <= 0) return w < 0 ? (vx_status)w : VX_ERR_IO;
+    at += (size_t)w;
+  }
+  return VX_OK;
+}
+
+static vx_status read_whole(const char *path, uint8_t *buf, size_t cap, size_t *len) {
+  vx_ns_file f;
+  vx_status st = vx_ns_open(&ns, vx_cstr(path), P9_OREAD, &f);
+  if (st != VX_OK) return st;
+  size_t n = 0;
+  int64_t got;
+  while (n < cap && (got = vx_ns_read(&f, buf + n, (uint32_t)(cap - n))) > 0) n += (size_t)got;
+  vx_ns_close(&f);
+  if (got < 0) return (vx_status)got;
+  *len = n;
+  return n == cap ? VX_ERR_RANGE : VX_OK;
+}
+
+// path written whole with data (made, or cut to nothing first).
+static vx_status write_whole(const char *path, const uint8_t *data, size_t len) {
+  vx_ns_file f;
+  vx_status st = vx_ns_open(&ns, vx_cstr(path), P9_OWRITE | P9_OTRUNC, &f);
+  if (st == VX_ERR_NOT_FOUND) st = vx_ns_create(&ns, vx_cstr(path), 0644, P9_OWRITE, &f);
+  if (st != VX_OK) return st;
+  st = write_all(&f, data, len);
+  vx_ns_close(&f);
+  return st;
+}
+
+static vx_status load_table(vx_slots *t) {
+  size_t len;
+  vx_status st = read_whole("/tmp/EFI/vectra/slots.ndb", table_text, sizeof table_text, &len);
+  static char scratch[4096];
+  return st == VX_OK ? vx_slots_parse(t, (vx_str){(const char *)table_text, len}, scratch, sizeof scratch)
+                     : st;
+}
+
+// The table, then Limine's configuration made from it: in that order, so a
+// configuration never names a slot the table does not.
+static vx_status save_table(const vx_slots *t) {
+  static char text[4096], conf[4096];
+  vx_ndb_writer w = {.buf = text, .cap = sizeof text};
+  if (!vx_slots_print(t, &w)) return VX_ERR_RANGE;
+  size_t n = vx_slots_limine(t, conf, sizeof conf);
+  if (!n) return VX_ERR_RANGE;
+  vx_status st = write_whole("/tmp/EFI/vectra/slots.ndb", (const uint8_t *)text, w.len);
+  return st == VX_OK ? write_whole("/tmp/boot/limine/limine.conf", (const uint8_t *)conf, n) : st;
+}
+
+// A whole tree checked: every directory, index and block, present and
+// sound. Directories wait in a queue; each one's text is copied before its
+// entries are checked, since checking them moves the cache.
+static vx_status check_tree(const vx_hash *top) {
+  static vx_hash queue[4096];
+  static uint8_t text[OBJ_MAX];
+  static uint8_t hashes_copy[32 * 1024];
+  static char scratch[16384];
+  uint32_t head = 0, tail = 0;
+  queue[tail++] = *top;
+  while (head < tail) {
+    vx_hash dir = queue[head++];
+    uint32_t len;
+    vx_status st;
+    const uint8_t *t = dir_object(&dir, &len, &st);
+    if (!t) return st;
+    memcpy(text, t, len);
+    vx_ndb_reader r = {.src = {(const char *)text, len}, .scratch = scratch, .scratch_cap = sizeof scratch};
+    vx_ndb_record rec;
+    while (vx_ndb_next(&r, &rec) == VX_NDB_RECORD) {
+      r.scratch_used = 0;
+      vx_store_entry e;
+      if (vx_store_dir_entry(&rec, &e) != VX_OK) return VX_ERR_IO;
+      if (vx_store_is_link(&e)) continue;
+      if (vx_store_is_dir(&e)) {
+        if (tail == sizeof queue / sizeof *queue) return VX_ERR_RANGE;
+        queue[tail++] = e.hash;
+        continue;
+      }
+      node fake = {.kind = K_TREE, .e = e};
+      uint64_t size = 0, nb = 0;
+      const uint8_t *hashes = nullptr;
+      if ((st = index_of(&fake, &size, &hashes, &nb)) != VX_OK) return st;
+      if (nb * VX_STORE_HASH > sizeof hashes_copy) return VX_ERR_RANGE;
+      memcpy(hashes_copy, hashes, nb * VX_STORE_HASH);
+      for (uint64_t b = 0; b < nb; b++) {
+        vx_hash bh;
+        memcpy(bh.b, hashes_copy + b * VX_STORE_HASH, VX_STORE_HASH);
+        uint32_t bl;
+        const uint8_t *data = object(&bh, &bl, &st);
+        if (!data) return st;
+        if (vx_store_block_check(hashes_copy, nb, size, b, data, bl) != VX_OK) return VX_ERR_IO;
+      }
+    }
+  }
+  return VX_OK;
+}
+
+// A file of a tree, by path, copied to the ESP at to, verified as it is
+// read; its BLAKE2b-512, then read back from the ESP and compared.
+static vx_status copy_to_slot(const vx_hash *tree, const char *path, const char *to,
+                              char hash[VX_SLOT_HASH + 1]) {
+  vx_store_entry e = {.mode = 040555, .hash = *tree};
+  static char scratch[16384];
+  vx_status st;
+  for (const char *p = path; *p;) {
+    size_t n = 0;
+    while (p[n] && p[n] != '/') n++;
+    uint32_t len;
+    const uint8_t *t = dir_object(&e.hash, &len, &st);
+    if (!t) return st;
+    if ((st = vx_store_dir_find(t, len, (vx_str){p, n}, scratch, sizeof scratch, &e)) != VX_OK) return st;
+    p += n + (p[n] == '/');
+  }
+  node fake = {.kind = K_TREE, .e = e};
+  uint64_t size = 0, nb = 0;
+  const uint8_t *hashes = nullptr;
+  if ((st = index_of(&fake, &size, &hashes, &nb)) != VX_OK) return st;
+  static uint8_t hashes_copy[32 * 1024];
+  if (nb * VX_STORE_HASH > sizeof hashes_copy) return VX_ERR_RANGE;
+  memcpy(hashes_copy, hashes, nb * VX_STORE_HASH);
+  vx_ns_file f;
+  st = vx_ns_open(&ns, vx_cstr(to), P9_OWRITE | P9_OTRUNC, &f);
+  if (st == VX_ERR_NOT_FOUND) st = vx_ns_create(&ns, vx_cstr(to), 0644, P9_OWRITE, &f);
+  if (st != VX_OK) return st;
+  crypto_blake2b_ctx hc;
+  crypto_blake2b_init(&hc, 64);
+  for (uint64_t b = 0; st == VX_OK && b < nb; b++) {
+    vx_hash bh;
+    memcpy(bh.b, hashes_copy + b * VX_STORE_HASH, VX_STORE_HASH);
+    uint32_t bl;
+    const uint8_t *data = object(&bh, &bl, &st);
+    if (!data) break;
+    if (vx_store_block_check(hashes_copy, nb, size, b, data, bl) != VX_OK) {
+      st = VX_ERR_IO;
+      break;
+    }
+    crypto_blake2b_update(&hc, data, bl);
+    if (bl) st = write_all(&f, data, bl);
+  }
+  vx_ns_close(&f);
+  if (st != VX_OK) return st;
+  uint8_t h[64], back[64];
+  crypto_blake2b_final(&hc, h);
+  // Read back: what the ESP holds is what Limine will check.
+  if ((st = vx_ns_open(&ns, vx_cstr(to), P9_OREAD, &f)) != VX_OK) return st;
+  crypto_blake2b_init(&hc, 64);
+  static uint8_t buf[65536];
+  int64_t got;
+  while ((got = vx_ns_read(&f, buf, sizeof buf)) > 0) crypto_blake2b_update(&hc, buf, (size_t)got);
+  vx_ns_close(&f);
+  crypto_blake2b_final(&hc, back);
+  if (got < 0 || memcmp(h, back, 64) != 0) return VX_ERR_IO;
+  for (int i = 0; i < 64; i++)
+    hash[(size_t)2 * i] = "0123456789abcdef"[h[i] >> 4],
+                     hash[(size_t)2 * i + 1] = "0123456789abcdef"[h[i] & 15];
+  hash[VX_SLOT_HASH] = 0;
+  return VX_OK;
+}
+
+static vx_status adm_ctl(const char *cmd) {
+  return write_whole("/adm/ctl", (const uint8_t *)cmd, vx_cstr(cmd).len);
+}
+
+static void said(const char *a, uint64_t n, const char *b) {
+  vx_print(VX_STR("distd: "));
+  vx_print(vx_cstr(a));
+  vx_print_u64(n);
+  vx_print(vx_cstr(b));
+  vx_print(VX_STR("\n"));
+}
+
+static void seq_text(uint64_t v, char *out) {
+  char d[24];
+  int nd = 0;
+  do d[nd++] = (char)('0' + v % 10);
+  while ((v /= 10) && nd < 20);
+  int k = 0;
+  while (nd) out[k++] = d[--nd];
+  out[k] = 0;
+}
+
+// A step of apply or rollback that failed, said: the step and the error.
+static vx_status refused(const char *what, vx_status st) {
+  vx_print(VX_STR("distd: "));
+  vx_print(vx_cstr(what));
+  vx_print(VX_STR(": "));
+  vx_print(p9_error_text(st));
+  vx_print(VX_STR("\n"));
+  return st;
+}
+
+static vx_status apply(uint64_t seq) {
+  release *r = release_of(seq);
+  if (!r) return refused("apply: no such release", VX_ERR_NOT_FOUND);
+  vx_status st = check_tree(&r->tree);
+  if (st != VX_OK) {
+    vx_print(VX_STR("distd: release "));
+    vx_print_u64(seq);
+    vx_print(VX_STR(" is not whole and sound in the store ("));
+    vx_print(p9_error_text(st));
+    vx_print(VX_STR("): not applied\n"));
+    return st;
+  }
+  static vx_slots t;
+  if ((st = load_table(&t)) != VX_OK) return refused("apply: cannot read the slot table", st);
+  int slot = vx_slots_free(&t);
+  if (slot < 0) return refused("apply: no free slot", VX_ERR_NO_SPACE);
+  char num[24], cmd[96];
+  seq_text(seq, num);
+  join3(cmd, sizeof cmd, "del cfg@apply-", num, "");
+  adm_ctl(cmd); // a snapshot from an earlier apply of it, if any
+  join3(cmd, sizeof cmd, "snap cfg cfg@apply-", num, "");
+  if ((st = adm_ctl(cmd)) != VX_OK) return refused("apply: cannot snapshot /cfg", st);
+  char dir[40] = "/tmp/EFI/vectra/x", to[64];
+  dir[16] = vx_slot_name(slot);
+  vx_ns_file f;
+  if (vx_ns_create(&ns, vx_cstr(dir), P9_DMDIR | 0755, P9_OREAD, &f) == VX_OK) vx_ns_close(&f);
+  vx_slot *sl = &t.slot[slot];
+  for (int i = 0; i < VX_SLOT_FILES; i++) {
+    char from[48];
+    join3(from, sizeof from, "boot/vx/", VX_SLOT_FILE_NAMES[i], "");
+    join3(to, sizeof to, dir, "/", VX_SLOT_FILE_NAMES[i]);
+    if ((st = copy_to_slot(&r->tree, from, to, sl->hash[i])) != VX_OK)
+      return refused("apply: cannot write the slot", st);
+  }
+  sl->used = true, sl->release = seq;
+  vx_store_hex(&r->tree, sl->tree);
+  t.previous = t.boot, t.boot = slot;
+  if ((st = save_table(&t)) != VX_OK) return refused("apply: cannot write the slot table", st);
+  said("release ", seq, " staged: the next boot is its slot's");
+  return VX_OK;
+}
+
+static vx_status rollback(void) {
+  static vx_slots t;
+  vx_status st = load_table(&t);
+  if (st != VX_OK) return refused("rollback: cannot read the slot table", st);
+  if (t.previous < 0) return refused("rollback: no previous slot", VX_ERR_NOT_FOUND);
+  uint64_t leaving = t.slot[t.boot].release;
+  int b = t.boot;
+  t.boot = t.previous, t.previous = b;
+  if ((st = save_table(&t)) != VX_OK) return refused("rollback: cannot write the slot table", st);
+  char num[24], cmd[96];
+  seq_text(leaving, num);
+  join3(cmd, sizeof cmd, "rollback cfg cfg@apply-", num, "");
+  if (adm_ctl(cmd) != VX_OK) vx_print(VX_STR("distd: no snapshot of /cfg to roll back to\n"));
+  said("rolled back: the next boot is release ", t.slot[t.boot].release, "'s slot");
+  return VX_OK;
+}
+
 static char text[16384]; // status files, made when read
 
 static size_t status_text(const node *n) {
@@ -392,6 +683,14 @@ static size_t status_text(const node *n) {
     vx_ndb_put(&w, "state", VX_STR("idle"));
     vx_ndb_put_u64(&w, "releases", nreleases);
     vx_ndb_put(&w, "arch", vx_cstr(ARCH));
+    static vx_slots t;
+    if (booted && load_table(&t) == VX_OK) { // an installed system: which release booted, which will
+      int b = booted - 'a';
+      char slot[2] = {booted, 0};
+      if (b >= 0 && b < VX_SLOTS && t.slot[b].used) vx_ndb_put_u64(&w, "current", t.slot[b].release);
+      vx_ndb_put(&w, "slot", (vx_str){slot, 1});
+      vx_ndb_put_u64(&w, "boot", t.slot[t.boot].release);
+    }
     vx_ndb_end(&w);
   } else { // a release's: is every object of its tree here?
     release *r = release_of(n->seq);
@@ -542,7 +841,16 @@ static vx_status fs_write(void *ctx, uint64_t id, uint64_t offset, const uint8_t
     rescan();
     return VX_OK;
   }
-  return VX_ERR_INVALID; // fetch, apply, rollback and the rest: steps 9c and 9d
+  if (cmd.len == 8 && memcmp(cmd.ptr, "rollback", 8) == 0) return rollback();
+  if (cmd.len > 6 && memcmp(cmd.ptr, "apply ", 6) == 0) {
+    uint64_t seq = 0;
+    for (size_t i = 6; i < cmd.len; i++) {
+      if (cmd.ptr[i] < '0' || cmd.ptr[i] > '9') return VX_ERR_INVALID;
+      seq = seq * 10 + (uint64_t)(cmd.ptr[i] - '0');
+    }
+    return apply(seq);
+  }
+  return VX_ERR_INVALID; // fetch and the rest: with M10's sources
 }
 
 static vx_status fs_readlink(void *ctx, uint64_t id, vx_str *target) {
@@ -653,6 +961,7 @@ const char *vx_main(void) {
   releases_id = fixed(K_RELEASES, root_id, 0, "releases");
   store_id = fixed(K_STORE, root_id, 0, "store");
   rescan();
+  find_booted();
   vx_print(VX_STR("distd: "));
   vx_print_u64(nreleases);
   vx_print(VX_STR(" releases for "));

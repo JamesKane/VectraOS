@@ -8,9 +8,10 @@
 // 2. writes a GPT on the disk: an ESP (FAT32, 512 MiB, or -e MIB) and the
 //    system volume (the rest);
 // 3. writes slot a on the ESP (06 §7): Limine at the firmware's fallback path,
-//    the slot's kernel, bootfs and modules under \EFI\vectra\a, and Limine's
-//    configuration naming them with their BLAKE2b hashes, which Limine checks;
-//    the kernel command line vx.system, with the live one's other words;
+//    the slot's kernel, bootfs and modules under \EFI\vectra\a, the slot
+//    table (\EFI\vectra\slots.ndb) and Limine's configuration made from it
+//    (lib/vx-slots): each file with its BLAKE2b hash, which Limine checks;
+//    vx.system vx.slot=a, with the live command line's other words;
 // 4. makes the system volume (vx-fs): its branches store, cfg, home and adm,
 //    the users adm, none and vectra (vectra owning home), and the release's
 //    objects and record copied into store, where distd finds them.
@@ -31,6 +32,7 @@
 #include "../lib/vx-store/store.c"
 #include "../lib/vx-tar/tar.c"
 #include "../lib/vx-acpi/mint.h"
+#include "../lib/vx-slots/slots.c"
 
 #ifdef __x86_64__
 static const char ARCH[] = "x86_64";
@@ -55,8 +57,6 @@ static void say(const char *a, vx_str b) {
   vx_print(b);
   vx_print(VX_STR("\n"));
 }
-
-static size_t len_of(const char *s) { return vx_cstr(s).len; }
 
 // a then b into out, NUL-terminated, cut to fit.
 static void join(char *out, size_t cap, const char *a, const char *b) {
@@ -266,14 +266,9 @@ static vx_status slot_file(const vx_hash *tree, const char *from, const char *to
   return st;
 }
 
-// Limine's configuration, put together.
+// Limine's configuration, made from the slot table.
 static char conf[4096];
 static size_t conf_len;
-
-static void conf_put(const char *s) {
-  size_t n = len_of(s);
-  if (conf_len + n < sizeof conf) memcpy(conf + conf_len, s, n), conf_len += n;
-}
 
 // --- The system volume ---
 
@@ -490,38 +485,32 @@ const char *vx_main(void) {
     st = slot_file(&tree, from, to, hashes[i]);
   }
   if (st != VX_OK) fail("cannot write slot a", st);
-  // Limine's configuration: the slot, each file with its hash; vx.system, and the live command line's other words.
-  conf_put(
-      "# Written by install (M5 step 9c): one entry, slot a. Each path carries its file's BLAKE2b hash,\n"
-      "# which Limine checks.\n\ntimeout: 0\n\n/VectraOS (slot a, release ");
-  char num[24];
-  int nd = 0;
-  for (uint64_t v = seq; nd == 0 || v; v /= 10) num[nd++] = (char)('0' + v % 10);
-  char digits[24];
-  int k = 0;
-  while (nd) digits[k++] = num[--nd];
-  digits[k] = 0;
-  conf_put(digits);
-  conf_put(")\n    protocol: limine\n");
-  for (int i = 0; i < 4; i++) {
-    conf_put(i ? "    module_path: boot():/EFI/vectra/a/" : "    path: boot():/EFI/vectra/a/");
-    conf_put(files[i]);
-    conf_put("#");
-    conf_put(hashes[i]);
-    conf_put("\n");
-  }
-  conf_put("    cmdline: vx.system");
+  // The slot table, slot a booting, and Limine's configuration made from it
+  // (lib/vx-slots): the live command line's words but vx.live go on.
+  static vx_slots table;
+  table = (vx_slots){.boot = 0, .previous = -1};
+  vx_slot *sl = &table.slot[0];
+  sl->used = true, sl->release = seq;
+  vx_store_hex(&tree, sl->tree);
+  for (int i = 0; i < VX_SLOT_FILES; i++) memcpy(sl->hash[i], hashes[i], VX_SLOT_HASH + 1);
   vx_str c = vx_spawn.cmdline;
+  size_t cl = 0;
   for (size_t i = 0; i < c.len;) {
     size_t n = 0;
     while (i + n < c.len && c.ptr[i + n] != ' ') n++;
-    if (n && !(n == 7 && memcmp(c.ptr + i, "vx.live", 7) == 0) && conf_len + n + 2 < sizeof conf) {
-      conf[conf_len++] = ' ';
-      memcpy(conf + conf_len, c.ptr + i, n), conf_len += n;
+    if (n && !(n == 7 && memcmp(c.ptr + i, "vx.live", 7) == 0) && cl + n + 2 < sizeof table.cmdline) {
+      if (cl) table.cmdline[cl++] = ' ';
+      memcpy(table.cmdline + cl, c.ptr + i, n), cl += n;
     }
     i += n + 1;
   }
-  conf_put("\n");
+  static char text[4096];
+  vx_ndb_writer w = {.buf = text, .cap = sizeof text};
+  if (!vx_slots_print(&table, &w) ||
+      (st = fat_put_file("EFI/vectra/slots.ndb", (const uint8_t *)text, w.len)) != VX_OK)
+    fail("cannot write the slot table", st);
+  conf_len = vx_slots_limine(&table, conf, sizeof conf);
+  if (!conf_len) fail("Limine's configuration does not fit", VX_OK);
   if ((st = fat_put_file("boot/limine/limine.conf", (const uint8_t *)conf, conf_len)) != VX_OK ||
       (st = fat_flush(&fat)) != VX_OK)
     fail("cannot write Limine's configuration", st);
