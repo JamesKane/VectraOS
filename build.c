@@ -1326,6 +1326,61 @@ static bool build_native_ports(const arch *a) {
   return true;
 }
 
+// Usage from pages (12 §7, M6 step 6a3): a program whose page has a usage
+// fence is compiled with -include out/gen/usage/NAME.h, which defines
+// VX_USAGE from the fence, so the message and the page cannot differ.
+// Several synopsis lines are one message, each after the first under the
+// first's command, as Plan 9's are. nullptr: no page, or a page without one.
+static const char *usage_page(const program *p) {
+  static const int sects[] = {1, 8, 4, 3};
+  for (size_t k = 0; k < sizeof sects / sizeof sects[0]; k++) {
+    const char *path = fmt("man/%d/%s", sects[k], p->name);
+    if (exists(path)) return path;
+  }
+  return nullptr;
+}
+
+static const char *const *usage_flags(const program *p) {
+  static const char *const *made[USER_PROGRAM_COUNT];
+  static bool done[USER_PROGRAM_COUNT];
+  int i = (int)(p - USER_PROGRAMS);
+  if (done[i]) return made[i];
+  done[i] = true;
+  const char *path = usage_page(p);
+  if (!path) return nullptr;
+  static vx_guide g;
+  vx_str page = read_file(path);
+  if (!vx_guide_open(&g, page)) return nullptr; // the manual's check says why
+  vx_guide_block b;
+  vx_guide_kind k;
+  while ((k = vx_guide_next(&g, &b)) > VX_GUIDE_END &&
+         !(k == VX_GUIDE_FENCE && b.fence.len == 5 && !memcmp(b.fence.ptr, "usage", 5)));
+  if (k != VX_GUIDE_FENCE) return nullptr;
+  char *c = alloc(b.text.len * 4 + 256);
+  size_t n = (size_t)sprintf(c,
+                             "// Made by ./build from %s's usage fence (docs/12 §7). Not to be "
+                             "edited.\n#pragma once\nstatic const char VX_USAGE[] = \"usage: ",
+                             path);
+  for (size_t at = 0; at < b.text.len; at++) {
+    char ch = b.text.ptr[at];
+    if (ch == '\n') {
+      if (at + 1 < b.text.len) n += (size_t)sprintf(c + n, "\\n       ");
+      continue;
+    }
+    if (ch == '"' || ch == '\\') c[n++] = '\\';
+    c[n++] = ch;
+  }
+  n += (size_t)sprintf(c + n, "\";\n");
+  const char *h = fmt("out/gen/usage/%s.h", p->name);
+  mkdirs("out/gen/usage");
+  vx_str old = exists(h) ? read_file(h) : (vx_str){};
+  bool same = old.ptr && old.len == n && memcmp(old.ptr, c, n) == 0;
+  if (!same) write_file(h, (vx_str){c, n}); // rewritten only when changed
+  const char **f = alloc(3 * sizeof *f);
+  f[0] = "-include", f[1] = h, f[2] = nullptr;
+  return made[i] = f;
+}
+
 static bool build_user_programs(const arch *a, bool release) {
   const char *dir = fmt("out/%s/%s", a->name, release ? "release" : "debug");
   static cmd cc[USER_PROGRAM_COUNT], ld[USER_PROGRAM_COUNT];
@@ -1342,6 +1397,7 @@ static bool build_user_programs(const arch *a, bool release) {
     cmd_addv(&cc[n], HOUSE_FLAGS);
     cmd_addv(&cc[n], p->posix ? POSIX_PROGRAM_FLAGS : USER_FLAGS);
     if (p->lib_flags) cmd_addv(&cc[n], p->lib_flags);
+    if (usage_flags(p)) cmd_addv(&cc[n], usage_flags(p));
     cmd_addv(&cc[n], release ? RELEASE_FLAGS : DEBUG_FLAGS);
     cmd_add(&cc[n], fmt("-ffile-prefix-map=%s=/src", root));
     cmd_addv(&cc[n], (const char *const[]){"-c", p->source, "-o", obj, nullptr});
@@ -4192,7 +4248,7 @@ static bool check_fuzz(void) {
 // Every translation unit of the OS tree, with the flags it is built with.
 typedef struct unit {
   const char *name, *source;
-  const char *const *flags[4];
+  const char *const *flags[5];
 } unit;
 
 static const char *const HOST_C23[] = {"-std=c23", nullptr};
@@ -4219,6 +4275,7 @@ static int os_units(unit *units, bool with_host_tests) {
       u->flags[1] = HOUSE_FLAGS;
       u->flags[2] = p->posix ? POSIX_PROGRAM_FLAGS : USER_FLAGS;
       u->flags[3] = p->lib_flags;
+      u->flags[4] = usage_flags(p);
     }
     units[unit_slot(&n)] = (unit){fmt("libc-vx %s", ARCHES[i].name),
                                   "ports/musl/vx/backend.c",
@@ -4257,7 +4314,8 @@ static bool check_units(const char *tag, bool with_host_tests, const char *const
       cmd_add(&c, units[i].source);
       cmd_add(&c, separator);
     }
-    for (int f = 0; f < 4 && units[i].flags[f]; f++) cmd_addv(&c, units[i].flags[f]);
+    for (int f = 0; f < 5; f++)
+      if (units[i].flags[f]) cmd_addv(&c, units[i].flags[f]);
     cmd_addv(&c, after);
     if (!separator) cmd_add(&c, units[i].source);
     bool passed = run(&c);
@@ -4615,6 +4673,18 @@ static bool check_man(void) {
     if (!has && !it->listed)
       man_error("man", 0,
                 fmt("no page, and not in man/missing: kind=%s name=%s%s", it->kind, it->name, sect));
+  }
+
+  // A program with a page takes its usage message from it (6a3): VX_USAGE, never its own.
+  for (int i = 0; i < USER_PROGRAM_COUNT; i++) {
+    const program *p = &USER_PROGRAMS[i];
+    if (!usage_page(p) || strncmp(p->source, "tests/", 6) == 0) continue;
+    vx_str src = read_file(p->source);
+    bool uses = memmem(src.ptr, src.len, "VX_USAGE", 8), own = memmem(src.ptr, src.len, "\"usage:", 7);
+    if (usage_flags(p) && (!uses || own))
+      man_error(p->source, 0, "a program with a page takes its usage message from it: VX_USAGE, not its own");
+    if (!usage_flags(p) && own)
+      man_error(usage_page(p), 0, "the program has a usage message, and its page no usage fence");
   }
 
   // The index, as 12 §5 has it: one record per name and node.

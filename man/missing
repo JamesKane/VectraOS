@@ -124,7 +124,6 @@ kind=program name=grep
 kind=program name=gsh
 kind=program name=head
 kind=program name=hostname
-kind=program name=install
 kind=program name=join
 kind=program name=kill
 kind=program name=link

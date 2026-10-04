@@ -16,7 +16,7 @@
 //    the users adm, none and vectra (vectra owning home), and the release's
 //    objects and record copied into store, where distd finds them.
 //
-//   install [-y] [-p] [-e MIB]       the disk is the one connect= names (srv:NAME)
+//   install [-y] [-p] [-e mib]       the disk is the one connect= names; see install(8)
 //
 // Without -y it only checks the medium and says what it would do: the disk
 // is erased only when asked to be. -p: power off when done (through
@@ -373,7 +373,7 @@ const char *vx_main(void) {
       esp_mib = 0;
       for (size_t k = 0; k < v.len; k++) esp_mib = esp_mib * 10 + (uint64_t)(v.ptr[k] - '0');
     } else {
-      fail("usage: install [-y] [-p] [-e MIB]", VX_OK);
+      fail(VX_USAGE, VX_OK);
     }
   }
   now = vx_clock_utc();
