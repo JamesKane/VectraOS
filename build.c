@@ -1275,6 +1275,7 @@ static const program USER_PROGRAMS[] = {
     {"partd", "servers/partd/partd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"fsd", "servers/fsd/fsd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"dosfs", "servers/dosfs/dosfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"isofs", "servers/isofs/isofs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"ctest", "tests/posix/ctest.c", IN_TESTS, nullptr, true, nullptr, nullptr},
     {"ctestfsd", "tests/posix/ctest.c", IN_TESTS, nullptr, true, nullptr,
      nullptr}, // ctest again, with /tmp on fsd
@@ -1556,6 +1557,7 @@ static const char MMD[] = "/usr/bin/mmd";
 static const char MCOPY[] = "/usr/bin/mcopy";
 static const char MDEL[] = "/usr/bin/mdel";
 static const char FSCK_FAT[] = "/usr/bin/fsck.fat"; // dosfstools: checks what dosfs and lib/vx-fat wrote
+static const char SEVEN_ZIP[] = "/usr/bin/7z";      // p7zip: reads write_iso's Joliet tree
 
 static constexpr uint64_t SECTOR = 512;
 static constexpr uint64_t ESP_BYTES = 64ull << 20;
@@ -1680,24 +1682,38 @@ static void write_gpt_disk(const char *path, const char *esp_path, uint64_t seed
   if (close(fd) != 0) die("cannot write %s", path);
 }
 
-// --- ISO 9660 with El Torito (image --iso, M3's deliverables) ---
+// --- ISO 9660 with El Torito, Rock Ridge and Joliet (image --iso, M3; M5 step 8c) ---
 //
 // A CD image for UEFI. Its El Torito boot entry ("no emulation", platform
 // EFI) is a small FAT image holding only the loader; the loader then reads
 // its configuration, the kernel and the modules from the ISO 9660 tree, as
 // Limine does on a CD. An MBR in the system area also names the boot image
 // as a partition (type EFI), as xorriso's --efi-boot-part does: that is how
-// Limine finds which volume it was booted from. Names are plain ISO 9660
-// (upper case, "NAME.EXT;1"),
-// which Limine matches case-insensitively. Every date is zero, so the image
-// is reproducible.
+// Limine finds which volume it was booted from.
+//
+// Names three ways (M5 step 8c), each tree's directories its own, the
+// files' bytes shared:
+// - ISO 9660 level 2: upper case, [A-Z0-9_], "NAME.EXT;1", up to 30
+//   characters, made unique in a directory with ~N; what Limine matches
+//   case-insensitively.
+// - Rock Ridge (RRIP 1991A, over SUSP) in the same records: the real name
+//   (NM), POSIX mode, links, owner (PX, all root's), the time (TF), symbolic
+//   links (SL). What does not fit a record's 255 bytes goes to its
+//   directory's continuation area (CE), as the root's ER does.
+// - Joliet (UCS-2, escape %/E, so UTF-16 here), in a supplementary volume
+//   descriptor's tree: names up to 64 units, no symbolic links.
+// Dates are SOURCE_DATE_EPOCH's, so the image is reproducible. El Torito's
+// boot record is at sector 17, as its specification requires; the Joliet
+// descriptor follows it.
 
 static constexpr uint32_t ISO_SECTOR = 2048;
-static constexpr int ISO_MAX_DIRS = 16;
+static constexpr int ISO_MAX_DIRS = 64;
+static constexpr int ISO_MAX_KIDS = 256;
 
 typedef struct iso_file {
   const char *path; // in the ISO: "boot/vx/kernel.elf"
-  const char *from; // where it is on this machine
+  const char *from; // where it is on this machine; nullptr for a symbolic link
+  const char *link; // a symbolic link's target
   uint64_t size;    // filled in by write_iso
 } iso_file;
 
@@ -1721,21 +1737,6 @@ static void iso_both32(uint8_t *p, uint32_t v) {
   p[4] = (uint8_t)(v >> 24), p[5] = (uint8_t)(v >> 16), p[6] = (uint8_t)(v >> 8), p[7] = (uint8_t)v;
 }
 
-// A directory record at p; its length.
-static size_t iso_record(uint8_t *p, uint32_t lba, uint32_t size, bool dir, const char *name,
-                         size_t name_len) {
-  size_t len = 33 + name_len + !(name_len & 1); // padded to an even length
-  memset(p, 0, len);
-  p[0] = (uint8_t)len;
-  iso_both32(p + 2, lba);
-  iso_both32(p + 10, size);
-  p[25] = dir ? 2 : 0;
-  iso_both16(p + 28, 1); // volume sequence number
-  p[32] = (uint8_t)name_len;
-  memcpy(p + 33, name, name_len);
-  return len;
-}
-
 static void iso_put(uint8_t *p, const char *s) { // the characters, without a NUL
   for (size_t i = 0; s[i]; i++) p[i] = (uint8_t)s[i];
 }
@@ -1745,27 +1746,56 @@ static void iso_text(uint8_t *p, size_t len, const char *s) { // a-characters, p
   for (size_t i = 0; i < len && s[i]; i++) p[i] = (uint8_t)s[i];
 }
 
-// A path component as ISO 9660 names it: upper case; a file gets ".EXT;1".
-static const char *iso_name(const char *name, size_t len, bool file) {
-  char out[40];
-  size_t n = 0;
-  bool dot = false;
-  for (size_t i = 0; i < len; i++) {
-    char c = name[i] >= 'a' && name[i] <= 'z' ? (char)(name[i] - 32) : name[i];
-    bool ok = (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || (c == '.' && file && !dot);
-    if (!ok || n + 4 >= sizeof out) die("%.*s cannot be an ISO 9660 name", (int)len, name);
-    dot = dot || c == '.';
-    out[n++] = c;
-  }
-  if (file && !dot) out[n++] = '.';
-  if (file) out[n++] = ';', out[n++] = '1';
-  return fmt("%.*s", (int)n, out);
+static void iso_text16(uint8_t *p, size_t len, const char *s) { // the same in UCS-2, big-endian (Joliet)
+  for (size_t i = 0; i + 1 < len; i += 2) p[i] = 0, p[i + 1] = ' ';
+  for (size_t i = 0; 2 * i + 1 < len && s[i]; i++) p[2 * i + 1] = (uint8_t)s[i];
 }
+
+// A record's 7-byte date: SOURCE_DATE_EPOCH, UTC.
+static void iso_date(uint8_t *p) {
+  const char *e = getenv("SOURCE_DATE_EPOCH");
+  time_t t = e ? (time_t)strtoll(e, nullptr, 10) : 0;
+  struct tm tm;
+  gmtime_r(&t, &tm);
+  p[0] = (uint8_t)tm.tm_year, p[1] = (uint8_t)(tm.tm_mon + 1), p[2] = (uint8_t)tm.tm_mday;
+  p[3] = (uint8_t)tm.tm_hour, p[4] = (uint8_t)tm.tm_min, p[5] = (uint8_t)tm.tm_sec, p[6] = 0;
+}
+
+// A directory record at p, with su (system use: Rock Ridge) after its name; its length.
+static size_t iso_record(uint8_t *p, uint32_t lba, uint32_t size, bool dir, const uint8_t *name,
+                         size_t name_len, const uint8_t *su, size_t su_len) {
+  size_t len = 33 + name_len + !(name_len & 1) + su_len; // the name padded to an even length
+  len += len & 1;
+  if (len > 255) die("an ISO directory record of %zu bytes", len);
+  memset(p, 0, len);
+  p[0] = (uint8_t)len;
+  iso_both32(p + 2, lba);
+  iso_both32(p + 10, size);
+  iso_date(p + 18);
+  p[25] = dir ? 2 : 0;
+  iso_both16(p + 28, 1); // volume sequence number
+  p[32] = (uint8_t)name_len;
+  memcpy(p + 33, name, name_len);
+  if (su_len) memcpy(p + 33 + name_len + !(name_len & 1), su, su_len);
+  return len;
+}
+
+typedef struct iso_kid {
+  const char *name;    // the real name: Rock Ridge's
+  char iso[32];        // ISO 9660's, unique in the directory: "LIMINE.CONF;1"
+  uint8_t joliet[128]; // UTF-16BE, up to 64 units
+  size_t joliet_len;
+  int dir;  // the directory's index, or -1
+  int file; // the file's index, or -1; -2 the boot catalog, -3 the boot image
+} iso_kid;
 
 typedef struct iso_dir {
   const char *path; // "" for the root
   int parent;       // its index, once sorted
-  uint32_t lba;
+  iso_kid *kids;
+  int nkids;
+  uint32_t lba[2], size[2]; // the Rock Ridge tree's, the Joliet tree's
+  uint32_t ce_lba, ce_size; // its continuation area
 } iso_dir;
 
 static int iso_dir_index(const iso_dir *dirs, int count, const char *path, size_t len) {
@@ -1780,11 +1810,296 @@ static int iso_depth(const char *path) {
   return d;
 }
 
+// The ISO 9660 name for a real one, unique among the directory's first n kids.
+static void iso_mangle(const char *name, bool file, const iso_kid *kids, int n, char out[32]) {
+  const char *dot = file ? strrchr(name, '.') : nullptr;
+  if (dot == name) dot = nullptr;
+  char base[32], ext[32];
+  size_t nb = 0, ne = 0;
+  for (const char *p = name; *p && p != dot && nb < 30; p++) {
+    char c = *p >= 'a' && *p <= 'z' ? (char)(*p - 32) : *p;
+    base[nb++] = (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ? c : '_';
+  }
+  for (const char *p = dot ? dot + 1 : ""; *p && ne < 8; p++) {
+    char c = *p >= 'a' && *p <= 'z' ? (char)(*p - 32) : *p;
+    ext[ne++] = (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ? c : '_';
+  }
+  if (!nb) base[nb++] = '_';
+  size_t room = file ? 30 - 1 - ne : 31; // name, dot and extension: 30 at most
+  if (nb > room) nb = room;
+  for (int k = 0;; k++) {
+    char tail[12] = "";
+    if (k) snprintf(tail, sizeof tail, "~%d", k);
+    size_t keep = nb + strlen(tail) > room ? room - strlen(tail) : nb;
+    if (file)
+      snprintf(out, 32, "%.*s%s.%.*s;1", (int)keep, base, tail, (int)ne, ext);
+    else
+      snprintf(out, 32, "%.*s%s", (int)keep, base, tail);
+    bool taken = false;
+    for (int i = 0; i < n && !taken; i++) taken = strcmp(kids[i].iso, out) == 0;
+    if (!taken) return;
+  }
+}
+
+// The real name as Joliet's UTF-16BE, cut at 64 units (and never mid-pair).
+static size_t iso_joliet(const char *name, uint8_t out[128]) {
+  size_t n = 0;
+  for (const uint8_t *p = (const uint8_t *)name; *p;) {
+    uint32_t c = *p++;
+    int more = (c >= 0xc0) + (c >= 0xe0) + (c >= 0xf0); // continuation bytes after the lead
+    static const uint8_t lead[4] = {0x7f, 0x1f, 0x0f, 0x07};
+    c &= lead[more];
+    for (int k = 0; k < more && *p; k++) c = c << 6 | (*p++ & 0x3f);
+    if (c >= 0x1'0000) {
+      if (n + 4 > 128) break;
+      uint32_t hi = 0xd800 + ((c - 0x1'0000) >> 10), lo = 0xdc00 + ((c - 0x1'0000) & 0x3ff);
+      out[n++] = (uint8_t)(hi >> 8), out[n++] = (uint8_t)hi, out[n++] = (uint8_t)(lo >> 8),
+      out[n++] = (uint8_t)lo;
+    } else {
+      if (n + 2 > 128) break;
+      out[n++] = (uint8_t)(c >> 8), out[n++] = (uint8_t)c;
+    }
+  }
+  return n;
+}
+
+static int iso_by_name(const void *a, const void *b) {
+  return strcmp(((const iso_kid *)a)->iso, ((const iso_kid *)b)->iso);
+}
+
+static int iso_by_joliet(const void *a, const void *b) {
+  const iso_kid *x = a, *y = b;
+  size_t n = x->joliet_len < y->joliet_len ? x->joliet_len : y->joliet_len;
+  int c = memcmp(x->joliet, y->joliet, n);
+  return c ? c : (x->joliet_len > y->joliet_len) - (x->joliet_len < y->joliet_len);
+}
+
+// Rock Ridge's entries for a record: built whole, then split between the
+// record and the directory's continuation area.
+typedef struct iso_su {
+  uint8_t buf[2048];
+  size_t len, ends[64]; // each entry's end
+  int n;
+} iso_su;
+
+static void iso_su_add(iso_su *s, const char sig[2], const uint8_t *data, size_t len) {
+  if (s->len + 4 + len > sizeof s->buf || s->n == 64 || 4 + len > 255)
+    die("an ISO entry's Rock Ridge is too long");
+  uint8_t *p = s->buf + s->len;
+  p[0] = (uint8_t)sig[0], p[1] = (uint8_t)sig[1], p[2] = (uint8_t)(4 + len), p[3] = 1;
+  memcpy(p + 4, data, len);
+  s->len += 4 + len;
+  s->ends[s->n++] = s->len;
+}
+
+// The entries for one record: the root's "." gets SP and ER; every record
+// PX and TF; a named one NM (in parts of 250 at most), a link SL.
+static void iso_su_for(iso_su *s, bool root_dot, uint32_t mode, uint32_t links, const char *name,
+                       const char *link) {
+  s->len = 0, s->n = 0;
+  if (root_dot) {
+    iso_su_add(s, "SP", (const uint8_t[]){0xbe, 0xef, 0}, 3);
+    static const char
+        id[] = "RRIP_1991A",
+        des[] = "THE ROCK RIDGE INTERCHANGE PROTOCOL PROVIDES SUPPORT FOR POSIX FILE SYSTEM SEMANTICS",
+        src[] = "PLEASE CONTACT DISC PUBLISHER FOR SPECIFICATION SOURCE.  SEE PUBLISHER IDENTIFIER "
+                "IN PRIMARY VOLUME DESCRIPTOR FOR CONTACT INFORMATION.";
+    uint8_t er[4 + sizeof id + sizeof des + sizeof src];
+    er[0] = sizeof id - 1, er[1] = sizeof des - 1, er[2] = sizeof src - 1, er[3] = 1;
+    memcpy(er + 4, id, sizeof id - 1);
+    memcpy(er + 4 + sizeof id - 1, des, sizeof des - 1);
+    memcpy(er + 4 + sizeof id - 1 + sizeof des - 1, src, sizeof src - 1);
+    iso_su_add(s, "ER", er, 4 + sizeof id + sizeof des + sizeof src - 3);
+  }
+  uint8_t px[32] = {};
+  iso_both32(px, mode), iso_both32(px + 8, links); // uid and gid 0
+  iso_su_add(s, "PX", px, sizeof px);
+  uint8_t tf[8] = {0x02}; // the modification time
+  iso_date(tf + 1);
+  iso_su_add(s, "TF", tf, sizeof tf);
+  for (size_t len = name ? strlen(name) : 0, at = 0; at < len;) {
+    size_t part = len - at > 250 ? 250 : len - at;
+    uint8_t nm[251];
+    nm[0] = at + part < len ? 1 : 0; // CONTINUE
+    memcpy(nm + 1, name + at, part);
+    iso_su_add(s, "NM", nm, 1 + part);
+    at += part;
+  }
+  if (link) {
+    uint8_t sl[251] = {0};
+    size_t n = 1;
+    const char *p = link;
+    if (*p == '/') sl[n++] = 0x08, sl[n++] = 0, p++; // ROOT
+    while (*p) {
+      size_t c = strcspn(p, "/");
+      if (n + 2 + c > sizeof sl) die("a symbolic link's target is too long for the ISO");
+      bool cur = c == 1 && p[0] == '.', up = c == 2 && p[0] == '.' && p[1] == '.';
+      sl[n++] = (uint8_t)((cur ? 0x02 : 0) | (up ? 0x04 : 0)); // CURRENT, PARENT
+      sl[n++] = cur || up ? 0 : (uint8_t)c;
+      if (!cur && !up) memcpy(sl + n, p, c), n += c;
+      p += c + (p[c] == '/');
+    }
+    iso_su_add(s, "SL", sl, n);
+  }
+}
+
+// What of su fits a record with name_len bytes of name, and the rest: into
+// ce (the directory's continuation area, ce_at bytes used, at ce_lba), with
+// a CE entry pointing at it.
+static size_t iso_su_place(const iso_su *s, size_t name_len, uint8_t out[255], uint8_t *ce, uint32_t *ce_at,
+                           uint32_t ce_lba) {
+  size_t room = 255 - (33 + name_len + !(name_len & 1)) - 1, used = 0;
+  int i = 0;
+  for (size_t start = 0; i < s->n; start = s->ends[i++]) {
+    size_t len = s->ends[i] - start;
+    if (used + len + (i + 1 < s->n ? 28 : 0) > room) break;
+    memcpy(out + used, s->buf + start, len);
+    used += len;
+  }
+  if (i == s->n) return used;
+  size_t from = i ? s->ends[i - 1] : 0, rest = s->len - from;
+  if (rest > ISO_SECTOR) die("an ISO entry's continuation is too long");
+  if (*ce_at % ISO_SECTOR + rest > ISO_SECTOR) *ce_at = (*ce_at + ISO_SECTOR - 1) / ISO_SECTOR * ISO_SECTOR;
+  if (ce) memcpy(ce + *ce_at, s->buf + from, rest);
+  uint8_t *c = out + used;
+  c[0] = 'C', c[1] = 'E', c[2] = 28, c[3] = 1;
+  iso_both32(c + 4, ce_lba + *ce_at / ISO_SECTOR);
+  iso_both32(c + 12, *ce_at % ISO_SECTOR);
+  iso_both32(c + 20, (uint32_t)rest);
+  *ce_at += (uint32_t)rest;
+  return used + 28;
+}
+
+// The extent and size each kid's record names.
+typedef struct iso_where {
+  const iso_dir *dirs;
+  const iso_file *files;
+  const uint32_t *file_lba;
+  uint32_t catalog, boot_lba, boot_len;
+} iso_where;
+
+// A directory's records for tree t (0: ISO 9660 with Rock Ridge, 1:
+// Joliet) into d (nullptr: only measured); its size, a whole number of
+// sectors. Rock Ridge's overflow goes to ce (nullptr: measured into
+// dir->ce_size).
+static uint32_t iso_dir_records(iso_dir *dirs, int i, int t, const iso_where *w, uint8_t *d, uint8_t *ce) {
+  iso_dir *dir = &dirs[i];
+  qsort(dir->kids, (size_t)dir->nkids, sizeof *dir->kids, t ? iso_by_joliet : iso_by_name);
+  static uint8_t scratch[255];
+  uint32_t ce_at = 0;
+  size_t at = 0;
+  for (int k = -2; k < dir->nkids; k++) {
+    uint8_t name[128], su[255];
+    size_t name_len, su_len = 0;
+    uint32_t lba, size;
+    bool isdir;
+    iso_su s;
+    if (k < 0) { // "." and ".."
+      const iso_dir *x = k == -2 ? dir : &dirs[dir->parent];
+      name[0] = k == -2 ? 0 : 1, name_len = 1, lba = x->lba[t], size = x->size[t], isdir = true;
+      if (!t) iso_su_for(&s, i == 0 && k == -2, 040555, 2, nullptr, nullptr);
+    } else {
+      const iso_kid *kid = &dir->kids[k];
+      if (t && kid->file >= 0 && w->files[kid->file].link) continue; // Joliet has no links
+      if (t)
+        memcpy(name, kid->joliet, kid->joliet_len), name_len = kid->joliet_len;
+      else
+        memcpy(name, kid->iso, strlen(kid->iso)), name_len = strlen(kid->iso);
+      isdir = kid->dir >= 0;
+      uint32_t mode = 0100444;
+      if (isdir)
+        lba = dirs[kid->dir].lba[t], size = dirs[kid->dir].size[t], mode = 040555;
+      else if (kid->file == -2)
+        lba = w->catalog, size = ISO_SECTOR;
+      else if (kid->file == -3)
+        lba = w->boot_lba, size = w->boot_len;
+      else if (w->files[kid->file].link)
+        lba = 0, size = 0, mode = 0120777;
+      else
+        lba = w->file_lba ? w->file_lba[kid->file] : 0, size = (uint32_t)w->files[kid->file].size;
+      if (!t)
+        iso_su_for(&s, false, mode, isdir ? 2 : 1, kid->name,
+                   kid->file >= 0 ? w->files[kid->file].link : nullptr);
+    }
+    if (!t) su_len = iso_su_place(&s, name_len, su, ce, &ce_at, dir->ce_lba);
+    size_t len = iso_record(scratch, lba, size, isdir, name, name_len, su, su_len);
+    if (at % ISO_SECTOR + len > ISO_SECTOR) at = (at + ISO_SECTOR - 1) / ISO_SECTOR * ISO_SECTOR;
+    if (d) memcpy(d + at, scratch, len);
+    at += len;
+  }
+  if (!t && !ce) dir->ce_size = (ce_at + ISO_SECTOR - 1) / ISO_SECTOR * ISO_SECTOR;
+  return (uint32_t)((at + ISO_SECTOR - 1) / ISO_SECTOR * ISO_SECTOR);
+}
+
+// A path table (little-endian, or big) for tree t; its size.
+static size_t iso_path_table(const iso_dir *dirs, int ndirs, int t, bool big, uint8_t *p) {
+  size_t size = 0;
+  for (int i = 0; i < ndirs; i++) {
+    uint8_t name[128];
+    size_t nlen = 1;
+    name[0] = 0;
+    if (i) {
+      const iso_kid *self = nullptr;
+      for (int k = 0; k < dirs[dirs[i].parent].nkids && !self; k++)
+        if (dirs[dirs[i].parent].kids[k].dir == i) self = &dirs[dirs[i].parent].kids[k];
+      if (t)
+        memcpy(name, self->joliet, self->joliet_len), nlen = self->joliet_len;
+      else
+        memcpy(name, self->iso, strlen(self->iso)), nlen = strlen(self->iso);
+    }
+    if (p) {
+      uint8_t *e = p + size;
+      uint32_t lba = dirs[i].lba[t];
+      uint16_t parent = (uint16_t)(dirs[i].parent + 1);
+      e[0] = (uint8_t)nlen, e[1] = 0;
+      if (big) {
+        e[2] = (uint8_t)(lba >> 24), e[3] = (uint8_t)(lba >> 16), e[4] = (uint8_t)(lba >> 8),
+        e[5] = (uint8_t)lba;
+        e[6] = (uint8_t)(parent >> 8), e[7] = (uint8_t)parent;
+      } else {
+        put32(e + 2, lba), put16(e + 6, parent);
+      }
+      memcpy(e + 8, name, nlen);
+    }
+    size += 8 + nlen + (nlen & 1);
+  }
+  return size;
+}
+
+static uint32_t iso_sectors(uint64_t bytes) { return (uint32_t)((bytes + ISO_SECTOR - 1) / ISO_SECTOR); }
+
+static void iso_volume(uint8_t *v, int type, uint32_t total, size_t ptsize, uint32_t path_l, uint32_t path_m,
+                       const iso_dir *top, int t) {
+  v[0] = (uint8_t)type;
+  iso_put(v + 1, "CD001");
+  v[6] = 1;
+  void (*text)(uint8_t *, size_t, const char *) = t ? iso_text16 : iso_text;
+  text(v + 8, 32, "");
+  text(v + 40, 32, "VECTRAOS");
+  if (t) v[88] = '%', v[89] = '/', v[90] = 'E'; // Joliet, UCS-2 level 3
+  iso_both32(v + 80, total);
+  iso_both16(v + 120, 1);
+  iso_both16(v + 124, 1);
+  iso_both16(v + 128, ISO_SECTOR);
+  iso_both32(v + 132, (uint32_t)ptsize);
+  put32(v + 140, path_l);
+  v[148] = (uint8_t)(path_m >> 24), v[149] = (uint8_t)(path_m >> 16), v[150] = (uint8_t)(path_m >> 8),
+  v[151] = (uint8_t)path_m; // big-endian
+  iso_record(v + 156, top->lba[t], top->size[t], true, (const uint8_t[]){0}, 1, nullptr, 0);
+  text(v + 190, (size_t)128 * 4, "");
+  text(v + 574, 128, "VECTRAOS BUILD");
+  text(v + 702, (size_t)37 * 3, "");
+  for (size_t d = 0; d < 4; d++) memset(v + 813 + 17 * d, '0', 16); // dates: none
+  v[881] = 1;
+}
+
 static void write_iso(const char *path, const char *boot_image, iso_file *files, int count,
                       uint32_t disk_id) {
-  // The directories: each file's, and theirs, in path table order (by depth,
-  // then parent, then name).
-  iso_dir dirs[ISO_MAX_DIRS] = {{.path = ""}};
+  // The directories: each file's, and theirs, by depth then path, so a
+  // parent comes before its children (the path tables' order).
+  static iso_dir dirs[ISO_MAX_DIRS];
+  memset(dirs, 0, sizeof dirs);
+  dirs[0].path = "";
   int ndirs = 1;
   for (int f = 0; f < count; f++)
     for (const char *p = files[f].path; (p = strchr(p, '/')); p++) {
@@ -1806,125 +2121,91 @@ static void write_iso(const char *path, const char *boot_image, iso_file *files,
     dirs[i].parent = slash ? iso_dir_index(dirs, ndirs, dirs[i].path, (size_t)(slash - dirs[i].path)) : 0;
   }
 
-  // The layout: descriptors, path tables, a sector per directory, the boot
-  // catalog, the boot image, then the files.
-  enum : uint32_t { PVD = 16, BOOT_RECORD, TERMINATOR, PATH_L, PATH_M, DIRS };
+  // Each directory's kids, their names made three ways.
+  for (int i = 0; i < ndirs; i++) {
+    dirs[i].kids = alloc(ISO_MAX_KIDS * sizeof *dirs[i].kids);
+    size_t plen = strlen(dirs[i].path);
+    for (int k = 1; k < ndirs + count + 2; k++) {
+      iso_kid kid = {.dir = -1, .file = -1};
+      if (k < ndirs) {
+        if (dirs[k].parent != i) continue;
+        kid.name = dirs[k].path + (plen ? plen + 1 : 0), kid.dir = k;
+      } else if (k < ndirs + count) {
+        int f = k - ndirs;
+        const char *slash = strrchr(files[f].path, '/');
+        size_t dlen = slash ? (size_t)(slash - files[f].path) : 0;
+        if (dlen != plen || memcmp(files[f].path, dirs[i].path, plen) != 0) continue;
+        kid.name = slash ? slash + 1 : files[f].path, kid.file = f;
+      } else { // the boot pieces, in the root
+        if (i) continue;
+        bool cat = k == ndirs + count;
+        kid.name = cat ? "boot.catalog" : "efiboot.img", kid.file = cat ? -2 : -3;
+      }
+      if (dirs[i].nkids == ISO_MAX_KIDS) die("too many entries in an ISO directory");
+      iso_mangle(kid.name, kid.dir < 0, dirs[i].kids, dirs[i].nkids, kid.iso);
+      kid.joliet_len = iso_joliet(kid.name, kid.joliet);
+      dirs[i].kids[dirs[i].nkids++] = kid;
+    }
+  }
+
+  // Sizes, then the layout: descriptors (El Torito's at 17), path tables,
+  // directories, continuation areas, the boot catalog, the boot image, the files.
   struct stat st;
   if (stat(boot_image, &st) != 0) die("cannot stat %s", boot_image);
-  vx_str boot = {nullptr, (size_t)st.st_size}; // its length; it is copied in at the end
+  uint32_t boot_len = (uint32_t)st.st_size;
   for (int f = 0; f < count; f++) {
+    if (files[f].link) continue;
     if (stat(files[f].from, &st) != 0) die("cannot stat %s", files[f].from);
     files[f].size = (uint64_t)st.st_size;
   }
-  uint32_t lba = DIRS;
-  for (int i = 0; i < ndirs; i++) dirs[i].lba = lba++;
-  uint32_t catalog = lba++, boot_lba = lba;
-  lba += (uint32_t)((boot.len + ISO_SECTOR - 1) / ISO_SECTOR);
+  iso_where w = {.dirs = dirs, .files = files, .boot_len = boot_len};
+  for (int t = 0; t < 2; t++)
+    for (int i = 0; i < ndirs; i++) dirs[i].size[t] = iso_dir_records(dirs, i, t, &w, nullptr, nullptr);
+  enum : uint32_t { PVD = 16, BOOT_RECORD, SVD, TERMINATOR, PATHS };
+  size_t ptsize[2] = {iso_path_table(dirs, ndirs, 0, false, nullptr),
+                      iso_path_table(dirs, ndirs, 1, false, nullptr)};
+  uint32_t lba = PATHS, path_lba[2][2];
+  for (int t = 0; t < 2; t++)
+    for (int b = 0; b < 2; b++) path_lba[t][b] = lba, lba += iso_sectors(ptsize[t]);
+  for (int t = 0; t < 2; t++)
+    for (int i = 0; i < ndirs; i++) dirs[i].lba[t] = lba, lba += dirs[i].size[t] / ISO_SECTOR;
+  for (int i = 0; i < ndirs; i++) dirs[i].ce_lba = lba, lba += dirs[i].ce_size / ISO_SECTOR;
+  w.catalog = lba++, w.boot_lba = lba;
+  lba += iso_sectors(boot_len);
   uint32_t *file_lba = alloc((size_t)count * sizeof *file_lba);
   for (int f = 0; f < count; f++) {
-    file_lba[f] = lba;
-    lba += (uint32_t)((files[f].size + ISO_SECTOR - 1) / ISO_SECTOR);
+    file_lba[f] = files[f].link ? 0 : lba;
+    lba += files[f].link ? 0 : iso_sectors(files[f].size);
   }
+  w.file_lba = file_lba;
   uint32_t total = lba;
-  uint8_t *img = alloc((size_t)boot_lba * ISO_SECTOR); // the metadata; the rest is written in place
-  memset(img, 0, (size_t)boot_lba * ISO_SECTOR);
+  uint8_t *img = alloc((size_t)w.boot_lba * ISO_SECTOR); // the metadata; the rest is written in place
+  memset(img, 0, (size_t)w.boot_lba * ISO_SECTOR);
 
-  // Path tables, little-endian and big-endian.
-  uint8_t *pl = img + (size_t)PATH_L * ISO_SECTOR, *pm = img + (size_t)PATH_M * ISO_SECTOR;
-  size_t ptsize = 0;
-  for (int i = 0; i < ndirs; i++) {
-    const char *base = strrchr(dirs[i].path, '/');
-    base = base ? base + 1 : dirs[i].path;
-    const char *name = i ? iso_name(base, strlen(base), false) : "\\0";
-    size_t nlen = i ? strlen(name) : 1;
-    uint8_t *l = pl + ptsize, *m = pm + ptsize;
-    l[0] = m[0] = (uint8_t)nlen;
-    put32(l + 2, dirs[i].lba);
-    m[2] = (uint8_t)(dirs[i].lba >> 24), m[3] = (uint8_t)(dirs[i].lba >> 16),
-    m[4] = (uint8_t)(dirs[i].lba >> 8), m[5] = (uint8_t)dirs[i].lba;
-    uint16_t parent = (uint16_t)(dirs[i].parent + 1);
-    put16(l + 6, parent);
-    m[6] = (uint8_t)(parent >> 8), m[7] = (uint8_t)parent;
-    for (size_t k = 0; k < nlen; k++) l[8 + k] = m[8 + k] = (uint8_t)name[k];
-    ptsize += 8 + nlen + (nlen & 1);
+  for (int t = 0; t < 2; t++) {
+    iso_path_table(dirs, ndirs, t, false, img + (size_t)path_lba[t][0] * ISO_SECTOR);
+    iso_path_table(dirs, ndirs, t, true, img + (size_t)path_lba[t][1] * ISO_SECTOR);
+    for (int i = 0; i < ndirs; i++)
+      iso_dir_records(dirs, i, t, &w, img + (size_t)dirs[i].lba[t] * ISO_SECTOR,
+                      t ? nullptr : img + (size_t)dirs[i].ce_lba * ISO_SECTOR);
   }
-  if (ptsize > ISO_SECTOR) die("the ISO's path table does not fit a sector");
-
-  // Each directory: ".", "..", then its children sorted by name.
-  for (int i = 0; i < ndirs; i++) {
-    uint8_t *d = img + (size_t)dirs[i].lba * ISO_SECTOR;
-    size_t at = iso_record(d, dirs[i].lba, ISO_SECTOR, true, "\\0", 1);
-    at += iso_record(d + at, dirs[dirs[i].parent].lba, ISO_SECTOR, true, "\\1", 1);
-    const char *names[64];
-    uint32_t lbas[64], sizes[64];
-    bool isdir[64];
-    int n = 0;
-    size_t plen = strlen(dirs[i].path);
-    for (int k = 1; k < ndirs; k++)
-      if (dirs[k].parent == i) {
-        const char *base = dirs[k].path + (plen ? plen + 1 : 0);
-        names[n] = iso_name(base, strlen(base), false), lbas[n] = dirs[k].lba, sizes[n] = ISO_SECTOR,
-        isdir[n++] = true;
-      }
-    for (int f = 0; f < count; f++) {
-      const char *slash = strrchr(files[f].path, '/');
-      size_t dlen = slash ? (size_t)(slash - files[f].path) : 0;
-      if (dlen != plen || memcmp(files[f].path, dirs[i].path, plen) != 0) continue;
-      const char *base = slash ? slash + 1 : files[f].path;
-      names[n] = iso_name(base, strlen(base), true), lbas[n] = file_lba[f],
-      sizes[n] = (uint32_t)files[f].size, isdir[n++] = false;
-    }
-    if (i == 0) { // the boot pieces, in the root
-      names[n] = "BOOT.CAT;1", lbas[n] = catalog, sizes[n] = ISO_SECTOR, isdir[n++] = false;
-      names[n] = "EFIBOOT.IMG;1", lbas[n] = boot_lba, sizes[n] = (uint32_t)boot.len, isdir[n++] = false;
-    }
-    int order[64];
-    for (int k = 0; k < n; k++) order[k] = k;
-    for (int k = 1; k < n; k++)
-      for (int q = k; q > 0 && strcmp(names[order[q]], names[order[q - 1]]) < 0; q--) {
-        int t = order[q];
-        order[q] = order[q - 1];
-        order[q - 1] = t;
-      }
-    for (int k = 0; k < n; k++) {
-      int c = order[k];
-      if (at + 33 + strlen(names[c]) + 1 > ISO_SECTOR) die("an ISO directory does not fit a sector");
-      at += iso_record(d + at, lbas[c], sizes[c], isdir[c], names[c], strlen(names[c]));
-    }
-  }
-
-  uint8_t *pvd = img + (size_t)PVD * ISO_SECTOR;
-  pvd[0] = 1;
-  iso_put(pvd + 1, "CD001");
-  pvd[6] = 1;
-  iso_text(pvd + 8, 32, "");
-  iso_text(pvd + 40, 32, "VECTRAOS");
-  iso_both32(pvd + 80, total);
-  iso_both16(pvd + 120, 1);
-  iso_both16(pvd + 124, 1);
-  iso_both16(pvd + 128, ISO_SECTOR);
-  iso_both32(pvd + 132, (uint32_t)ptsize);
-  put32(pvd + 140, PATH_L);
-  pvd[148] = 0, pvd[149] = 0, pvd[150] = 0, pvd[151] = PATH_M; // big-endian
-  iso_record(pvd + 156, dirs[0].lba, ISO_SECTOR, true, "\\0", 1);
-  iso_text(pvd + 190, (size_t)128 * 4, "");
-  iso_text(pvd + 574, 128, "VECTRAOS BUILD");
-  iso_text(pvd + 702, (size_t)37 * 3, "");
-  for (size_t d = 0; d < 4; d++) memset(pvd + 813 + 17 * d, '0', 16); // dates: none
-  pvd[881] = 1;
+  iso_volume(img + (size_t)PVD * ISO_SECTOR, 1, total, ptsize[0], path_lba[0][0], path_lba[0][1], &dirs[0],
+             0);
+  iso_volume(img + (size_t)SVD * ISO_SECTOR, 2, total, ptsize[1], path_lba[1][0], path_lba[1][1], &dirs[0],
+             1);
 
   uint8_t *br = img + (size_t)BOOT_RECORD * ISO_SECTOR; // El Torito's boot record
   iso_put(br + 1, "CD001");
   br[6] = 1;
   iso_put(br + 7, "EL TORITO SPECIFICATION");
-  put32(br + 71, catalog);
+  put32(br + 71, w.catalog);
 
   uint8_t *term = img + (size_t)TERMINATOR * ISO_SECTOR;
   term[0] = 255;
   iso_put(term + 1, "CD001");
   term[6] = 1;
 
-  uint8_t *cat = img + (size_t)catalog * ISO_SECTOR;
+  uint8_t *cat = img + (size_t)w.catalog * ISO_SECTOR;
   cat[0] = 1;    // the validation entry
   cat[1] = 0xef; // EFI
   cat[30] = 0x55, cat[31] = 0xaa;
@@ -1932,26 +2213,29 @@ static void write_iso(const char *path, const char *boot_image, iso_file *files,
   for (int i = 0; i < 32; i += 2) sum = (uint16_t)(sum + (cat[i] | cat[i + 1] << 8));
   put16(cat + 28, (uint16_t)-sum); // the words sum to 0
   cat[32] = 0x88;                  // bootable, no emulation
-  uint64_t count512 = (boot.len + 511) / 512;
+  uint64_t count512 = ((uint64_t)boot_len + 511) / 512;
   if (count512 > 0xffff) die("the ISO's boot image is too big for its catalog entry");
   put16(cat + 38, (uint16_t)count512);
-  put32(cat + 40, boot_lba);
+  put32(cat + 40, w.boot_lba);
 
   // The MBR: one partition, the boot image, in 512-byte sectors.
   put32(img + 0x1b8, disk_id);
   uint8_t *pe = img + 446;
   pe[4] = 0xef;
-  put32(pe + 8, boot_lba * (ISO_SECTOR / 512));
+  put32(pe + 8, w.boot_lba * (ISO_SECTOR / 512));
   put32(pe + 12, (uint32_t)count512);
   img[510] = 0x55, img[511] = 0xaa;
 
   int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
   if (fd < 0 || ftruncate(fd, (off_t)total * ISO_SECTOR) != 0) die("cannot create %s", path);
-  pwrite_all(fd, img, (size_t)boot_lba * ISO_SECTOR, 0, path);
-  copy_into(fd, path, boot_image, (uint64_t)boot_lba * ISO_SECTOR);
-  for (int f = 0; f < count; f++) copy_into(fd, path, files[f].from, (uint64_t)file_lba[f] * ISO_SECTOR);
+  pwrite_all(fd, img, (size_t)w.boot_lba * ISO_SECTOR, 0, path);
+  copy_into(fd, path, boot_image, (uint64_t)w.boot_lba * ISO_SECTOR);
+  for (int f = 0; f < count; f++)
+    if (!files[f].link) copy_into(fd, path, files[f].from, (uint64_t)file_lba[f] * ISO_SECTOR);
   if (close(fd) != 0) die("cannot write %s", path);
 }
+
+static void make_test_iso(const char *path); // the isofs tests' ISO, made by write_iso
 
 static const char *out_dir(const arch *a, bool release) {
   return fmt("out/%s/%s", a->name, release ? "release" : "debug");
@@ -2620,6 +2904,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   const char *rtc = nullptr;               // scenario=... rtc=2030-01-02T03:04:05: the RTC starts then
   int fat = 0;                             // and fat=12|16|32: the disk= is one FAT volume, no GPT
   bool fsck = false;                       // and fsck: fsck.fat -n must find that volume sound after
+  bool isodisk = false;                    // scenario=... isodisk: the second disk is make_test_iso's ISO
   const char *only = nullptr;              // scenario=... arch=A: run on A only
   bool must_exit = false;                  // scenario=... exits: QEMU must then exit by itself (power off)
   const char *volume = nullptr;            // and volume=DIR: its system partition a volume, home DIR
@@ -2653,6 +2938,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
         if (fat != 12 && fat != 16 && fat != 32) die("%s:%zu: fat= is 12, 16 or 32", path, rec.line);
       }
       fsck = vx_ndb_has(&rec, "fsck");
+      isodisk = vx_ndb_has(&rec, "isodisk");
       if (vx_ndb_has(&rec, "iommu")) {
         const char *m = str_dup(vx_ndb_get(&rec, "iommu"));
         if (strcmp(m, "caching") != 0) die("%s:%zu: iommu=%s: only iommu=caching", path, rec.line, m);
@@ -2723,7 +3009,12 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   if (volume && !disk_mib) die("%s: volume= needs disk=", path);
   if ((fat || fsck) && (!disk_mib || volume)) die("%s: fat= and fsck need disk= and no volume=", path);
   if (fsck && !fat) die("%s: fsck needs fat=", path);
+  if (isodisk && (disk_mib || fat)) die("%s: isodisk is the second disk: no disk= or fat=", path);
   const char *disk = nullptr;
+  if (isodisk) {
+    disk = fmt("%s/test.iso", run_dir);
+    make_test_iso(disk);
+  }
   if (fat)
     disk = fat_disk(fmt("%s/disk.img", run_dir), disk_mib, fat);
   else if (disk_mib)
@@ -3280,6 +3571,56 @@ static const char *const HOST_TEST_FLAGS[] = {
     nullptr,
 };
 
+// The ISO the isofs tests read (tests/host/iso_test.c, tests/qemu/isofs.ndb),
+// made by write_iso with Rock Ridge and Joliet: a long name (past one
+// record: a continuation area), UTF-8 (past the BMP: a surrogate pair in
+// Joliet), two names differing only in case (one ISO 9660 name gets ~1), a
+// deep directory, symbolic links (relative, absolute, up a level), and a
+// file of many sectors.
+static const char ISO_LONG_NAME[] =
+    "A Long Mixed-Case Name That Goes On And On, Past What One Directory Record Can Hold, So Its Rock "
+    "Ridge NM Entry Has To Continue In The Directory's Continuation Area, Which Is The Point Of It.txt";
+
+static void make_test_iso(const char *path) {
+  const char *src = fmt("%s.src", path);
+  const char *dirs[] = {"deep/er/still/deeper", "dir with spaces"};
+  for (size_t i = 0; i < sizeof dirs / sizeof *dirs; i++) mkdirs(fmt("%s/%s", src, dirs[i]));
+  static const struct {
+    const char *path, *text, *link;
+  } entries[] = {
+      {"README.txt", "readme\n", nullptr},
+      {ISO_LONG_NAME, "long\n", nullptr},
+      {"\xc3\x9cn\xc3\xaf"
+       "code file.txt",
+       "unicode\n", nullptr},
+      {"\xf0\x9f\x98\x80 smile.txt", "smile\n", nullptr},
+      {"deep/er/still/deeper/file.txt", "deep\n", nullptr},
+      {"dir with spaces/same name.txt", "lower\n", nullptr},
+      {"dir with spaces/Same Name.txt", "upper\n", nullptr},
+      {"link-to-readme", nullptr, "README.txt"},
+      {"abs-link", nullptr, "/boot/limine/limine.conf"},
+      {"deep/er/up-link", nullptr, "../../dir with spaces/./same name.txt"},
+  };
+  iso_file files[16];
+  int n = 0;
+  for (size_t i = 0; i < sizeof entries / sizeof *entries; i++) {
+    files[n] = (iso_file){.path = entries[i].path, .link = entries[i].link};
+    if (entries[i].text) {
+      files[n].from = fmt("%s/f%zu", src, i);
+      write_file(files[n].from, (vx_str){entries[i].text, strlen(entries[i].text)});
+    }
+    n++;
+  }
+  static char big[300'000];
+  for (size_t i = 0; i < sizeof big; i++) big[i] = (char)((i * 7 + i / 251) & 0xff);
+  files[n] = (iso_file){.path = "big.bin", .from = fmt("%s/big", src)};
+  write_file(files[n++].from, (vx_str){big, sizeof big});
+  const char *boot = fmt("%s/boot.img", src); // El Torito needs one; nothing boots it
+  static char sectors[4096];
+  write_file(boot, (vx_str){sectors, sizeof sectors});
+  write_iso(path, boot, files, n, 0x1234'5678);
+}
+
 // The FAT images tests/host/fat_test.c reads: out/host/fat12.img, fat16.img
 // and fat32.img, each made by mtools (not by the code under test) with the
 // same tree: short and long names, UTF-8 (mtools writes none past the BMP;
@@ -3347,6 +3688,7 @@ static bool check_host_tests(void) {
   mkdirs("out/host");
   bool ok = make_fat_fixtures();
   if (!ok) fprintf(stderr, "  HOST  cannot make the FAT images\n");
+  make_test_iso("out/host/test.iso");
   for (int i = 0; i < tests.count; i++) {
     const char *base = strrchr(tests.paths[i], '/') + 1;
     const char *name = fmt("%.*s", (int)(strlen(base) - 2), base);
@@ -3374,7 +3716,22 @@ static bool check_host_tests(void) {
     fprintf(stderr, "  FSCK  fat%d-written     %s\n", k, clean ? "ok" : "FAIL");
     ok = ok && clean;
   }
-  return ok;
+  // write_iso's Joliet tree, read by another implementation.
+  cmd list = {.log = "out/host/test-iso-7z.log"};
+  cmd_addv(&list, (const char *const[]){SEVEN_ZIP, "l", "-slt", "out/host/test.iso", nullptr});
+  bool listed = run(&list);
+  vx_str got = listed ? read_file("out/host/test-iso-7z.log") : (vx_str){"", 0};
+  static const char *const want[] = {
+      "Path = \xf0\x9f\x98\x80 smile.txt\n",
+      "Path = \xc3\x9cn\xc3\xaf\x63ode file.txt\n",
+      "Path = dir with spaces/Same Name.txt\n",
+      "Path = dir with spaces/same name.txt\n",
+      "Path = deep/er/still/deeper/file.txt\n",
+      "Path = A Long Mixed-Case Name That Goes On And On, Past What One Direct\n"};
+  for (size_t i = 0; i < sizeof want / sizeof *want && listed; i++)
+    listed = memmem(got.ptr, got.len, want[i], strlen(want[i])) != nullptr;
+  fprintf(stderr, "  7Z    test.iso         %s\n", listed ? "ok" : "FAIL (out/host/test-iso-7z.log)");
+  return ok && listed;
 }
 
 // Each tests/fuzz/*_fuzz.c is a libFuzzer target, built under ASan and UBSan.
