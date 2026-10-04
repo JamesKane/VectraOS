@@ -23,6 +23,7 @@
 
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-acpi/acpi.c"
+#include "../../lib/vx-acpi/mint.h"
 
 #include "acpi.h"
 
@@ -191,69 +192,253 @@ static bool lay_out_tables(void) {
 
 ACPI_PHYSICAL_ADDRESS AcpiOsGetRootPointer(void) { return TABLES_AT; }
 
-static void said_once(const char *what, uint64_t at) { // a refused region, port or PCI access
-  static uint64_t seen[32];
+// --- What the AML reaches: asked of devmgr, kept (ADR-0024 item 4) ---
+//
+// Each region, port range and configuration space is asked for when AML
+// first touches it, and kept: devmgr refuses what is RAM, the kernel's or a
+// driver's, and a refusal is said once.
+
+static vx_handle devmgr; // the channel to ask on
+
+typedef struct range_t {
+  uint64_t base, size;
+} range_t;
+
+static const char *vx_status_name(vx_status st) {
+  switch (st) {
+  case VX_ERR_ACCESS: return "refused (RAM, the kernel's, or a driver's)";
+  case VX_ERR_RANGE: return "out of range";
+  case VX_ERR_UNSUPPORTED: return "no such thing here";
+  case VX_ERR_NO_MEMORY: return "no room";
+  case VX_ERR_PEER_CLOSED: return "devmgr is gone";
+  default: return "refused";
+  }
+}
+
+static void said_once(const char *what, uint64_t at, vx_status st) {
+  static uint64_t seen[64];
   static uint32_t nseen;
   for (uint32_t i = 0; i < nseen; i++)
     if (seen[i] == at) return;
-  if (nseen < 32) seen[nseen++] = at;
-  vx_print(VX_STR("bus-acpi: no "));
-  vx_print(vx_cstr(what));
-  char hex[24];
-  int n = snprintf(hex, sizeof hex, " at 0x%llx", (unsigned long long)at);
-  vx_print((vx_str){hex, n > 0 ? (size_t)n : 0});
-  vx_print(VX_STR(" yet (M5 step 7b)\n"));
+  if (nseen < 64) seen[nseen++] = at;
+  char line[96];
+  int n = snprintf(line, sizeof line, "bus-acpi: no %s at 0x%llx: %s\n", what, (unsigned long long)at,
+                   vx_status_name(st));
+  vx_print((vx_str){line, n > 0 && (size_t)n < sizeof line ? (size_t)n : 0});
+}
+
+// What devmgr gives for a request: a handle, or the status of its refusal.
+static vx_status ask(uint32_t kind, uint64_t base, uint64_t size, vx_handle *out) {
+  vx_acpi_mint m = {.h = {.ordinal = VX_ACPI_MINT}, .kind = kind, .base = base, .size = size};
+  vx_msg_header rep;
+  *out = VX_HANDLE_NONE;
+  vx_call call = {.wr_bytes = &m,
+                  .wr_len = sizeof m,
+                  .rd_bytes = &rep,
+                  .rd_cap = sizeof rep,
+                  .rd_handles = out,
+                  .rd_count_cap = 1};
+  vx_status st =
+      devmgr ? vx_channel_call(devmgr, &call, vx_clock_read() + 5'000'000'000) : VX_ERR_PEER_CLOSED;
+  if (st == VX_OK && rep.flags) st = (vx_status)(int32_t)rep.flags;
+  if (st == VX_OK && call.actual.handles != 1) st = VX_ERR_INVALID;
+  if (st != VX_OK && *out) vx_handle_close(*out), *out = VX_HANDLE_NONE;
+  return st;
+}
+
+typedef struct mapped {
+  uint64_t base, size; // physical, page-aligned
+  uint8_t *at;
+} mapped;
+static mapped maps[64];
+static uint32_t nmaps;
+
+// Physical memory [where, where + length), mapped: devmgr's VMO, kept.
+static void *map_physical(uint64_t where, uint64_t length) {
+  for (uint32_t i = 0; i < nmaps; i++)
+    if (where >= maps[i].base && where + length <= maps[i].base + maps[i].size)
+      return maps[i].at + (where - maps[i].base);
+  uint64_t base = where & ~4095ull, end = (where + length + 4095) & ~4095ull;
+  vx_handle vmo;
+  uint64_t at = 0;
+  vx_status st = nmaps < 64 ? ask(VX_ACPI_MEMORY, base, end - base, &vmo) : VX_ERR_NO_MEMORY;
+  if (st == VX_OK) {
+    st = vx_as_map(vx_self, vmo, 0, end - base, VX_MAP_WRITE, &at);
+    vx_handle_close(vmo);
+  }
+  if (st != VX_OK) {
+    said_once("memory", where, st);
+    return nullptr;
+  }
+  maps[nmaps++] = (mapped){base, end - base, (uint8_t *)at};
+  return (uint8_t *)at + (where - base);
 }
 
 void *AcpiOsMapMemory(ACPI_PHYSICAL_ADDRESS Where, ACPI_SIZE Length) {
   if (Where >= TABLES_AT && Where + Length <= TABLES_AT + sizeof roots) return roots + (Where - TABLES_AT);
   if (Where >= COPIES_AT && Where - COPIES_AT <= copies_size && Length <= copies_size - (Where - COPIES_AT))
     return copies + (Where - COPIES_AT);
-  said_once("memory", Where);
-  return nullptr;
+  return map_physical(Where, Length);
 }
 
-void AcpiOsUnmapMemory(void *LogicalAddress, ACPI_SIZE Size) { (void)LogicalAddress, (void)Size; }
+void AcpiOsUnmapMemory(void *LogicalAddress, ACPI_SIZE Size) { (void)LogicalAddress, (void)Size; } // kept
+
+static uint64_t load(const volatile void *p, uint32_t width) {
+  switch (width) {
+  case 8: return *(const volatile uint8_t *)p;
+  case 16: return *(const volatile uint16_t *)p;
+  case 32: return *(const volatile uint32_t *)p;
+  default: return *(const volatile uint64_t *)p;
+  }
+}
+
+static void store(volatile void *p, uint64_t v, uint32_t width) {
+  switch (width) {
+  case 8: *(volatile uint8_t *)p = (uint8_t)v; break;
+  case 16: *(volatile uint16_t *)p = (uint16_t)v; break;
+  case 32: *(volatile uint32_t *)p = (uint32_t)v; break;
+  default: *(volatile uint64_t *)p = v; break;
+  }
+}
 
 ACPI_STATUS AcpiOsReadMemory(ACPI_PHYSICAL_ADDRESS Address, UINT64 *Value, UINT32 Width) {
-  (void)Width;
-  said_once("memory", Address);
-  *Value = 0;
-  return AE_SUPPORT;
+  void *p = AcpiOsMapMemory(Address, Width / 8);
+  *Value = p ? load(p, Width) : 0;
+  return p ? AE_OK : AE_NOT_EXIST;
 }
 
 ACPI_STATUS AcpiOsWriteMemory(ACPI_PHYSICAL_ADDRESS Address, UINT64 Value, UINT32 Width) {
-  (void)Value, (void)Width;
-  said_once("memory", Address);
-  return AE_SUPPORT;
+  void *p = AcpiOsMapMemory(Address, Width / 8);
+  if (p) store(p, Value, Width);
+  return p ? AE_OK : AE_NOT_EXIST;
+}
+
+// I/O ports (x86_64): the ranges devmgr gave, each mapped into this task.
+static range_t ports[64];
+static uint32_t nports;
+
+[[maybe_unused]] static bool have_ports(uint64_t base, uint64_t count) { // x86_64's
+  for (uint32_t i = 0; i < nports; i++)
+    if (base >= ports[i].base && base + count <= ports[i].base + ports[i].size) return true;
+  vx_handle io;
+  uint64_t ignored = 0;
+  vx_status st = nports < 64 ? ask(VX_ACPI_IO, base, count, &io) : VX_ERR_NO_MEMORY;
+  if (st == VX_OK) st = vx_as_map(vx_self, io, 0, 0, 0, &ignored); // kept: the mapping holds it
+  if (st != VX_OK) {
+    said_once("I/O port", base, st);
+    return false;
+  }
+  ports[nports++] = (range_t){base, count};
+  return true;
 }
 
 ACPI_STATUS AcpiOsReadPort(ACPI_IO_ADDRESS Address, UINT32 *Value, UINT32 Width) {
-  (void)Width;
-  said_once("I/O port", Address);
   *Value = 0xffff'ffff;
-  return AE_SUPPORT;
+#ifdef __x86_64__
+  if (!have_ports(Address, Width / 8)) return AE_NOT_EXIST;
+  uint16_t port = (uint16_t)Address;
+  if (Width == 8) {
+    uint8_t v;
+    __asm__ volatile("inb %1, %0" : "=a"(v) : "Nd"(port));
+    *Value = v;
+  } else if (Width == 16) {
+    uint16_t v;
+    __asm__ volatile("inw %1, %0" : "=a"(v) : "Nd"(port));
+    *Value = v;
+  } else {
+    uint32_t v;
+    __asm__ volatile("inl %1, %0" : "=a"(v) : "Nd"(port));
+    *Value = v;
+  }
+  return AE_OK;
+#else
+  (void)Width;
+  said_once("I/O port", Address, VX_ERR_UNSUPPORTED);
+  return AE_NOT_EXIST;
+#endif
 }
 
 ACPI_STATUS AcpiOsWritePort(ACPI_IO_ADDRESS Address, UINT32 Value, UINT32 Width) {
+#ifdef __x86_64__
+  if (!have_ports(Address, Width / 8)) return AE_NOT_EXIST;
+  uint16_t port = (uint16_t)Address;
+  if (Width == 8)
+    __asm__ volatile("outb %0, %1" : : "a"((uint8_t)Value), "Nd"(port));
+  else if (Width == 16)
+    __asm__ volatile("outw %0, %1" : : "a"((uint16_t)Value), "Nd"(port));
+  else
+    __asm__ volatile("outl %0, %1" : : "a"(Value), "Nd"(port));
+  return AE_OK;
+#else
   (void)Value, (void)Width;
-  said_once("I/O port", Address);
-  return AE_SUPPORT;
+  said_once("I/O port", Address, VX_ERR_UNSUPPORTED);
+  return AE_NOT_EXIST;
+#endif
+}
+
+// PCI configuration space: a function's 4 KiB of ECAM, kept.
+typedef struct config {
+  uint32_t id; // segment << 16 | requester ID
+  volatile uint8_t *at;
+} config;
+static config configs[64];
+static uint32_t nconfigs;
+
+static volatile uint8_t *config_of(const ACPI_PCI_ID *PciId) {
+  uint32_t id = (uint32_t)PciId->Segment << 16 | (uint32_t)PciId->Bus << 8 | (uint32_t)PciId->Device << 3 |
+                PciId->Function;
+  for (uint32_t i = 0; i < nconfigs; i++)
+    if (configs[i].id == id) return configs[i].at;
+  vx_handle vmo;
+  uint64_t at = 0;
+  vx_status st = nconfigs < 64 ? ask(VX_ACPI_PCI, id, 4096, &vmo) : VX_ERR_NO_MEMORY;
+  if (st == VX_OK) {
+    st = vx_as_map(vx_self, vmo, 0, 4096, VX_MAP_WRITE, &at);
+    vx_handle_close(vmo);
+  }
+  if (st != VX_OK) {
+    said_once("PCI configuration for", id, st);
+    return nullptr;
+  }
+  configs[nconfigs++] = (config){id, (volatile uint8_t *)at};
+  return (volatile uint8_t *)at;
 }
 
 ACPI_STATUS AcpiOsReadPciConfiguration(ACPI_PCI_ID *PciId, UINT32 Reg, UINT64 *Value, UINT32 Width) {
-  (void)Width;
-  said_once("PCI configuration",
-            (uint64_t)PciId->Bus << 16 | PciId->Device << 8 | PciId->Function | (uint64_t)Reg << 24);
-  *Value = ~0ull;
-  return AE_SUPPORT;
+  volatile uint8_t *c = Reg + Width / 8 <= 4096 ? config_of(PciId) : nullptr;
+  *Value = c ? load(c + Reg, Width) : ~0ull;
+  return c ? AE_OK : AE_NOT_EXIST;
 }
 
 ACPI_STATUS AcpiOsWritePciConfiguration(ACPI_PCI_ID *PciId, UINT32 Reg, UINT64 Value, UINT32 Width) {
-  (void)Value, (void)Width;
-  said_once("PCI configuration",
-            (uint64_t)PciId->Bus << 16 | PciId->Device << 8 | PciId->Function | (uint64_t)Reg << 24);
-  return AE_SUPPORT;
+  volatile uint8_t *c = Reg + Width / 8 <= 4096 ? config_of(PciId) : nullptr;
+  if (c) store(c + Reg, Value, Width);
+  return c ? AE_OK : AE_NOT_EXIST;
+}
+
+// bus-acpi.probe=1 on the command line: asks devmgr for what it must refuse
+// (the interrupt controller's page, RAM, the console's ports) and says what
+// it got (the acpi scenarios check it).
+static void probe(void) {
+  vx_str c = vx_spawn.cmdline;
+  static const char key[] = "bus-acpi.probe=1";
+  bool asked = false;
+  for (size_t i = 0; i + sizeof key - 1 <= c.len; i++)
+    asked = asked || ((!i || c.ptr[i - 1] == ' ') && memcmp(c.ptr + i, key, sizeof key - 1) == 0);
+  if (!asked) return;
+#ifdef __x86_64__
+  uint64_t controller = 0xfee0'0000, ram = 0x10'0000; // the local APIC; the first MiB past the BIOS's
+#else
+  uint64_t controller = 0x0800'0000, ram = 0x4000'0000; // QEMU virt's GIC distributor; its RAM
+#endif
+  vx_handle h;
+  vx_status a = ask(VX_ACPI_MEMORY, controller, 4096, &h), b = ask(VX_ACPI_MEMORY, ram, 4096, &h),
+            p = ask(VX_ACPI_IO, 0x3f8, 8, &h);
+  char line[160];
+  int n = snprintf(
+      line, sizeof line, "bus-acpi: probe: the interrupt controller %s, RAM %s, the console's ports %s\n",
+      a == VX_OK ? "given" : "refused", b == VX_OK ? "given" : "refused", p == VX_OK ? "given" : "refused");
+  vx_print((vx_str){line, n > 0 && (size_t)n < sizeof line ? (size_t)n : 0});
 }
 
 // --- One thread: locks, semaphores, threads, time ---
@@ -454,6 +639,7 @@ static ACPI_STATUS print_device(ACPI_HANDLE dev, UINT32 depth, void *ctx, void *
 
 const char *vx_main(void) {
   vx_handle acpi = vx_spawn_take("acpi"), heapvmo;
+  devmgr = vx_spawn_take("devmgr");
   vx_ndb_record rec;
   uint64_t size = 0, at = 0, hat = 0;
   if (!acpi || !vx_spawn_record("acpi", &rec) || !vx_ndb_get_u64(&rec, "size", &size) || !size ||
@@ -468,11 +654,13 @@ const char *vx_main(void) {
   memcpy(copies, (const void *)at, size);
   if (!lay_out_tables()) fail("malformed tables", AE_BAD_DATA);
 
+  probe();
   ACPI_STATUS st = AcpiInitializeSubsystem();
   if (ACPI_FAILURE(st)) fail("AcpiInitializeSubsystem", st);
   if (ACPI_FAILURE(st = AcpiInitializeTables(nullptr, 32, FALSE))) fail("AcpiInitializeTables", st);
   if (ACPI_FAILURE(st = AcpiLoadTables())) fail("AcpiLoadTables", st);
-  // No hardware yet (its registers come with step 7b): the namespace, run.
+  // The namespace, run (AML reaching hardware through devmgr's grants); the
+  // hardware's own registers and events come with step 7c.
   if (ACPI_FAILURE(st = AcpiEnableSubsystem(ACPI_NO_HARDWARE_INIT | ACPI_NO_ACPI_ENABLE | ACPI_NO_EVENT_INIT |
                                             ACPI_NO_HANDLER_INIT)))
     fail("AcpiEnableSubsystem", st);

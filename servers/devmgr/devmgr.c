@@ -22,6 +22,7 @@
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-rt/spawn.c"
 #include "../../lib/vx-acpi/acpi.c"
+#include "../../lib/vx-acpi/mint.h"
 #include "../../lib/vx-pci/pci.c"
 #include "../../lib/vx-ns/spawn.c"
 
@@ -131,9 +132,10 @@ typedef struct driver {
   const function *f;
   char program[64], post[32];
   uint32_t msis;
-  uint8_t prefix;   // a numbered post's (disk# is "disk"): its length; 0 if not numbered
-  vx_handle listen; // the post's server end; each start gets a duplicate
-  vx_handle dma;    // the function's DMA domain, which each start gets a duplicate of
+  uint8_t prefix;                    // a numbered post's (disk# is "disk"): its length; 0 if not numbered
+  vx_handle listen;                  // the post's server end; each start gets a duplicate
+  vx_handle dma;                     // the function's DMA domain, which each start gets a duplicate of
+  uint64_t bar_base[6], bar_size[6]; // the memory BARs it was given: no one else's
   vx_handle task;
   uint32_t starts;
 } driver;
@@ -178,6 +180,7 @@ static vx_status start_driver(driver *d) {
     uint32_t n = wide ? i - 1 : i;
     uint64_t size = (b.size + 4095) & ~4095ull;
     st = vx_vmo_create_physical(resource, b.base, size, &handles[count]);
+    d->bar_base[n] = b.base, d->bar_size[n] = size;
     char *nm = name_buf[count];
     nm[0] = 'b', nm[1] = 'a', nm[2] = 'r', nm[3] = (char)('0' + n), nm[4] = 0;
     names[count++] = (vx_str){nm, 4};
@@ -355,19 +358,169 @@ static void match_drivers(void) {
   }
 }
 
+// --- What bus-acpi's AML may reach (ADR-0024 item 4, M5 step 7b) ---
+//
+// bus-acpi asks, on the channel it was given, for what its AML first touches:
+// memory, I/O ports, a PCI function's configuration space. It gets each unless
+// it is RAM (the kernel refuses that), the kernel's own (its interrupt
+// controllers and IOMMU, as the tables place them; the PIC, the PIT and the
+// console's ports), or a memory BAR a driver was given. Each answer is said.
+
+typedef struct range {
+  uint64_t base, size;
+} range;
+
+static range taken_memory[32];
+static uint32_t ntaken_memory;
+#ifdef __x86_64__
+static range taken_io[8]; // ports: x86_64's alone
+static uint32_t ntaken_io;
+#endif
+static vx_handle mint_end; // devmgr's end of bus-acpi's channel
+static vx_ecam pci_window; // segment 0's, for configuration space
+static constexpr uint64_t KEY_MINT = 1ull << 32;
+
+static void take(range *list, uint32_t *n, uint32_t cap, uint64_t base, uint64_t size) {
+  if (*n < cap && size) list[(*n)++] = (range){base, size};
+}
+
+static bool overlaps(const range *list, uint32_t n, uint64_t base, uint64_t size) {
+  for (uint32_t i = 0; i < n; i++)
+    if (base < list[i].base + list[i].size && list[i].base < base + size) return true;
+  return false;
+}
+
+// The kernel's MMIO, as the MADT, DMAR and IORT place it.
+static void find_taken(const uint8_t *tables, uint64_t size) {
+  vx_acpi_table t;
+  if (vx_acpi_find(tables, size, "APIC", 0, &t) == VX_OK) {
+    take(taken_memory, &ntaken_memory, 32, acpi_u32(t.ptr + 36) & ~4095ull, 4096); // the local APIC
+    for (uint32_t off = 44; off + 2 <= t.len && t.ptr[off + 1] >= 2 && off + t.ptr[off + 1] <= t.len;
+         off += t.ptr[off + 1]) {
+      const uint8_t *e = t.ptr + off;
+      if (e[0] == 1 && e[1] >= 12) take(taken_memory, &ntaken_memory, 32, acpi_u32(e + 4), 4096); // IOAPIC
+      if (e[0] == 5 && e[1] >= 12)
+        take(taken_memory, &ntaken_memory, 32, acpi_u64(e + 4), 4096); // LAPIC override
+      if (e[0] == 0xc && e[1] >= 24)
+        take(taken_memory, &ntaken_memory, 32, acpi_u64(e + 8), 0x1'0000); // GICD
+      if (e[0] == 0xe && e[1] >= 16)
+        take(taken_memory, &ntaken_memory, 32, acpi_u64(e + 4), acpi_u32(e + 12)); // GICR
+      if (e[0] == 0xf && e[1] >= 20) take(taken_memory, &ntaken_memory, 32, acpi_u64(e + 8), 0x2'0000); // ITS
+    }
+  }
+  if (vx_acpi_find(tables, size, "DMAR", 0, &t) == VX_OK)
+    for (uint32_t off = 48; off + 16 <= t.len;) {
+      uint32_t len = (uint32_t)t.ptr[off + 2] | (uint32_t)t.ptr[off + 3] << 8;
+      if (len < 4 || off + len > t.len) break;
+      if (t.ptr[off] == 0 && t.ptr[off + 1] == 0) // a remapping unit's registers
+        take(taken_memory, &ntaken_memory, 32, acpi_u64(t.ptr + off + 8), 4096ull << (t.ptr[off + 5] & 0xf));
+      off += len;
+    }
+  if (vx_acpi_find(tables, size, "IORT", 0, &t) == VX_OK)
+    for (uint32_t i = 0, at = acpi_u32(t.ptr + 40); i < acpi_u32(t.ptr + 36) && at + 24 <= t.len; i++) {
+      uint32_t len = (uint32_t)t.ptr[at + 1] | (uint32_t)t.ptr[at + 2] << 8;
+      if (len < 16 || at + len > t.len) break;
+      if (t.ptr[at] == 4)
+        take(taken_memory, &ntaken_memory, 32, acpi_u64(t.ptr + at + 16), 0x2'0000); // SMMUv3
+      at += len;
+    }
+#ifdef __x86_64__
+  take(taken_io, &ntaken_io, 8, 0x20, 2); // the PIC
+  take(taken_io, &ntaken_io, 8, 0xa0, 2);
+  take(taken_io, &ntaken_io, 8, 0x40, 4);  // the PIT
+  take(taken_io, &ntaken_io, 8, 0x3f8, 8); // the console's UART (boot/svc/cons.ndb)
+#endif
+}
+
+static bool a_drivers(uint64_t base, uint64_t size) {
+  for (uint32_t i = 0; i < driver_count; i++)
+    for (int b = 0; b < 6; b++)
+      if (drivers[i].bar_size[b] && base < drivers[i].bar_base[b] + drivers[i].bar_size[b] &&
+          drivers[i].bar_base[b] < base + size)
+        return true;
+  return false;
+}
+
+static void say_mint(const vx_acpi_mint *m, vx_status st) {
+  static const char *const kinds[] = {"?", "memory", "I/O ports", "PCI configuration"};
+  vx_print(VX_STR("devmgr: bus-acpi "));
+  vx_print(st == VX_OK ? VX_STR("gets ") : VX_STR("refused "));
+  vx_print(vx_cstr(kinds[m->kind <= 3 ? m->kind : 0]));
+  vx_print(VX_STR(" "));
+  int digits = 1;
+  while (digits < 16 && m->base >> (4 * digits)) digits++;
+  vx_print(VX_STR("0x"));
+  hex(m->base, digits);
+  vx_print(VX_STR("/"));
+  vx_print_u64(m->size);
+  vx_print(VX_STR("\n"));
+}
+
+// One request on bus-acpi's channel, answered.
+static void answer_mint(void) {
+  vx_acpi_mint m;
+  vx_msg_size got;
+  if (vx_channel_read(mint_end, &m, sizeof m, nullptr, 0, &got) != VX_OK) return;
+  vx_handle h = VX_HANDLE_NONE;
+  vx_status st = VX_ERR_INVALID;
+  if (got.bytes == sizeof m && m.h.ordinal == VX_ACPI_MINT) {
+    if (m.kind == VX_ACPI_MEMORY) {
+      if ((m.base | m.size) & 4095 || !m.size || m.size > (1ull << 30))
+        st = VX_ERR_INVALID;
+      else if (overlaps(taken_memory, ntaken_memory, m.base, m.size) || a_drivers(m.base, m.size))
+        st = VX_ERR_ACCESS;
+      else
+        st = vx_vmo_create_physical(resource, m.base, m.size, &h); // RAM: the kernel's refusal
+    } else if (m.kind == VX_ACPI_IO) {
+#ifdef __x86_64__
+      if (!m.size || m.base + m.size > 0x1'0000)
+        st = VX_ERR_RANGE;
+      else if (overlaps(taken_io, ntaken_io, m.base, m.size))
+        st = VX_ERR_ACCESS;
+      else
+        st = vx_iorange_create(resource, (uint16_t)m.base, (uint32_t)m.size, &h);
+#else
+      st = VX_ERR_UNSUPPORTED; // no I/O ports here
+#endif
+    } else if (m.kind == VX_ACPI_PCI) {
+      uint32_t bus = (uint32_t)(m.base >> 8) & 0xff;
+      if ((m.base >> 16) != 0 || m.size != 4096 || !pci_window.base || bus < pci_window.start_bus ||
+          bus > pci_window.end_bus)
+        st = VX_ERR_RANGE;
+      else
+        st = vx_vmo_create_physical(resource, pci_window.base + ((m.base & 0xffff) << 12), 4096, &h);
+    }
+    say_mint(&m, st);
+  }
+  vx_msg_header rep = {.txid = m.h.txid, .ordinal = VX_ACPI_MINT, .flags = (uint32_t)(int32_t)st};
+  if (vx_channel_write(mint_end, &rep, sizeof rep, h ? &h : nullptr, h ? 1 : 0) != VX_OK && h)
+    vx_handle_close(h);
+}
+
 // bus-acpi (ADR-0024, ADR-0030): ACPICA over the tables, given a read-only
-// duplicate of them and the console. Started once; restarts come with its
-// service (M5 step 7).
+// duplicate of them, the console, and the channel it asks devmgr for its
+// regions on. Started once; restarts come with its service (M5 step 7).
 static void start_bus_acpi(vx_handle acpi, uint64_t size) {
-  vx_handle handles[2] = {};
-  vx_str names[2] = {VX_STR("acpi"), VX_STR("console")};
+  vx_handle handles[3] = {};
+  vx_str names[3] = {VX_STR("acpi"), VX_STR("devmgr"), VX_STR("console")};
   uint32_t count = 0;
-  static char records[256];
+  static char records[1024];
   vx_ndb_writer w = {.buf = records, .cap = sizeof records};
   vx_ndb_flag(&w, "acpi");
   vx_ndb_put_u64(&w, "size", size);
   vx_ndb_end(&w);
+  if (vx_spawn.cmdline.len) { // its options: bus-acpi.KEY=VALUE words
+    vx_ndb_put(&w, "cmdline", vx_spawn.cmdline);
+    vx_ndb_end(&w);
+  }
   vx_status st = vx_handle_dup(acpi, VX_RIGHT_READ | VX_RIGHT_MAP | VX_RIGHT_TRANSFER, &handles[count++]);
+  vx_handle ends[2];
+  if (st == VX_OK) st = vx_channel_create(0, ends);
+  if (st == VX_OK) {
+    mint_end = ends[0];
+    handles[count++] = ends[1];
+    vx_port_bind(port, mint_end, VX_TRIGGER_READABLE, KEY_MINT, 0);
+  }
   if (st == VX_OK && vx_console.connector &&
       vx_handle_dup(vx_console.connector, VX_RIGHTS_SAME, &handles[count]) == VX_OK)
     count++;
@@ -405,9 +558,11 @@ const char *vx_main(void) {
     vx_print(VX_STR("devmgr: no MCFG, so no PCI\n"));
     return nullptr;
   }
+  find_taken((const uint8_t *)at, size);
   vx_ecam e;
   for (uint32_t n = 0; vx_acpi_mcfg(mcfg, n, &e) == VX_OK; n++)
     if (e.segment == 0) { // other segments: when hardware has them
+      pci_window = e;
       pending_count = 0;
       for (uint32_t b = 0; b < 256; b++) seen_bus[b] = false;
       seen_bus[e.start_bus] = true;
@@ -427,7 +582,12 @@ const char *vx_main(void) {
   for (;;) { // drivers that exit are started again, up to a limit
     vx_packet pk[8];
     int64_t n = vx_port_wait(port, VX_INFINITE, 0, pk, 8);
-    for (int64_t i = 0; i < n; i++)
+    for (int64_t i = 0; i < n; i++) {
       if (pk[i].trigger == VX_TRIGGER_EXIT && pk[i].key < driver_count) driver_exited(&drivers[pk[i].key]);
+      if (pk[i].key == KEY_MINT) { // bus-acpi asks
+        answer_mint();
+        vx_port_bind(port, mint_end, VX_TRIGGER_READABLE, KEY_MINT, 0);
+      }
+    }
   }
 }
