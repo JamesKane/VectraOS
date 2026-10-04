@@ -1,6 +1,6 @@
 # Phase 12 — The manual
 
-_Blueprint v0, 2026-10-03. Provisional. The format (§4) and the coverage rule (§7) are meant to be fixed by ADR-0028 before the first page is written; the rest is rewritten against the code it produces (§11)._
+_Blueprint v0, 2026-10-03. The format (§4), the sections (§3) and the coverage rule (§7) are fixed by ADR-0028, accepted 2026-10-04; the rest is rewritten against the code it produces (§11, M6 step 6a)._
 
 ## 1. The position
 

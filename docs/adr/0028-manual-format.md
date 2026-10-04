@@ -1,6 +1,6 @@
 # ADR-0028: The manual is written in guide, a line-typed hypertext format, and checked against the code
 
-Status: proposed, 2026-10-03. The design is docs/12-manual.md.
+Status: accepted, 2026-10-04 (proposed 2026-10-03). The design is docs/12-manual.md; M6 step 6a builds it.
 
 ## Context
 

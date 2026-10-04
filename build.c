@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -27,6 +28,7 @@
 #include "lib/vx-ndb/ndb.c"
 #include "lib/vx-sha256/sha256.c"
 #include "lib/vx-tar/tar.c"
+#include "lib/vx-guide/guide.c"
 
 // ADR-0001: the toolchain is pinned to these exact binaries and versions.
 // Each pin is one line of the tool's --version output, compared exactly.
@@ -48,11 +50,19 @@ static const char NASM_VERSION[] = "NASM version 3.02 compiled on Jul 14 2026"; 
 
 // When any of these changes, ./build rebuilds itself, and cached ports rebuild.
 static const char *const BUILD_SOURCES[] = {
-    "build.c",           "lib/vx-ndb/ndb.h",
-    "lib/vx-ndb/ndb.c",  "lib/vx-sha256/sha256.c",
-    "abi/vx/abi.h",      "abi/vx/syscalls.def",
-    "abi/vx/rights.def", "abi/vx/status.def",
-    "lib/vx-tar/tar.c",  nullptr,
+    "build.c",
+    "lib/vx-ndb/ndb.h",
+    "lib/vx-ndb/ndb.c",
+    "lib/vx-sha256/sha256.c",
+    "abi/vx/abi.h",
+    "abi/vx/syscalls.def",
+    "abi/vx/rights.def",
+    "abi/vx/status.def",
+    "lib/vx-tar/tar.c",
+    "lib/vx-guide/guide.h",
+    "lib/vx-guide/guide.c",
+    "lib/vx-utf/utf.h",
+    nullptr,
 };
 
 static constexpr int KERNEL_LOC_BUDGET = 25000; // docs/01 §1
@@ -4333,6 +4343,33 @@ static int cmd_check(void) {
   return ok ? 0 : 1;
 }
 
+// ./build man [section ...] title [node]: a page of man/, rendered as man(1)
+// renders it (12 §6.1), so the manual can be read before an image boots.
+static void man_write(void *ctx, const char *s, size_t n) { fwrite(s, 1, n, ctx); }
+
+static int cmd_man(const char *const *args, int n) {
+  int sects[8], nsect = 0;
+  while (n && args[0][0] >= '1' && args[0][0] <= '8' && !args[0][1] && nsect < 8)
+    sects[nsect++] = args[0][0] - '0', args++, n--;
+  if (n < 1 || n > 2) die("usage: ./build man [section ...] title [node]");
+  if (!nsect)
+    for (int k = 1; k <= 8; k++) sects[nsect++] = k;
+  struct winsize ws = {};
+  uint32_t width = isatty(1) && ioctl(1, TIOCGWINSZ, &ws) == 0 && ws.ws_col ? ws.ws_col : 80;
+  for (int k = 0; k < nsect; k++) {
+    const char *path = fmt("man/%d/%s", sects[k], args[0]);
+    if (!exists(path)) continue;
+    vx_str page = read_file(path);
+    vx_guide_out o = {.write = man_write, .ctx = stdout, .width = width};
+    const char *error;
+    size_t line;
+    if (!vx_guide_render(page, n == 2 ? args[1] : nullptr, &o, &error, &line))
+      die("%s:%zu: %s", path, line, error);
+    return 0;
+  }
+  die("no page %s in man/", args[0]);
+}
+
 static void usage(void) {
   fprintf(
       stderr,
@@ -4351,6 +4388,7 @@ static void usage(void) {
       "                                                 release.ndb (unsigned); --verify rebuilds and "
       "compares\n"
       "  loc                                            the line-count ledger\n"
+      "  man           [section ...] title [node]     a page of man/, as man(1) shows it\n"
       "  vendor-check                                   check third_party/ against VENDOR.ndb\n"
       "  check                                          host tests (ASan, UBSan), the fuzzers, a volume "
       "image, "
@@ -4401,6 +4439,8 @@ int main(int argc, char **argv) {
       if (!only) die("unknown architecture %s", argv[i]);
     } else if (argv[i][0] != '-' && strcmp(command, "test") == 0 && scenario_count < 64) {
       scenarios[scenario_count++] = argv[i];
+    } else if (strcmp(command, "man") == 0) {
+      return cmd_man((const char *const *)argv + i, argc - i);
     } else {
       usage();
     }
