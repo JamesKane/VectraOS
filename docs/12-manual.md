@@ -233,6 +233,8 @@ Rule 10 has every service directory serve `.help`. It is **generated from the se
 
 **The backlog is a ledger that only shrinks.** M1–M5 shipped with no pages. `man/missing` lists what is undocumented today, one ndb record each (`kind=syscall name=port_wait`). The check fails on anything undocumented that is not on the list, and on anything on the list that now has a page, so the list can only get shorter, as the line-count ledger can only be argued with (04 §3.2). The milestone that closes the list is the one that says "fully documented" (§11).
 
+**A link may name a page the ledger promises** (a record in `man/missing`), so a page can point to one not yet written; a link to anything else that resolves to nothing fails. `./build man --check` runs this pass alone (M6 step 6a2).
+
 **What is not checked** is the prose: whether DESCRIPTION is right. That is review's job, and a page is reviewed with the code it describes, in the same commit.
 
 ## 8. Writing a page

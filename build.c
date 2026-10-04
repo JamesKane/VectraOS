@@ -200,7 +200,7 @@ static char *fmt(const char *f, ...) {
 
 static char *str_dup(vx_str s) {
   char *p = alloc(s.len + 1);
-  memcpy(p, s.ptr, s.len);
+  if (s.len) memcpy(p, s.ptr, s.len);
   p[s.len] = 0;
   return p;
 }
@@ -4330,8 +4330,318 @@ static bool check_build_time(void) {
   return ok && in_budget;
 }
 
+// ---------------------------------------------------------------------------
+// The manual's check (docs/12 §5, §7; M6 step 6a2): every page parses and
+// keeps the house rules; the index, out/man/index/base, is written from the
+// pages and every link resolves through it; and everything the inventory
+// lists has a page, or a record in man/missing, the ledger that only
+// shrinks, never both.
+
+// What must have a page: kind and name, and the sections a page may be in.
+typedef struct man_item {
+  const char *kind, *name;
+  uint16_t sects; // 1 << N for each section N allowed
+  bool listed;    // in man/missing
+} man_item;
+
+typedef struct man_entry {        // the index: one per name a page documents, and per node
+  const char *name, *page, *node; // node: the node's id, for a node's entry
+  const char *about;              // the page's summary, or the node's title
+  int sect;
+} man_entry;
+
+static man_item man_items[2048];
+static int man_nitems;
+static man_entry man_index[4096];
+static int man_nindex, man_errors;
+
+// Sections as bits of man_item's mask.
+static constexpr uint16_t MAN_SECT_1 = 1u << 1;
+static constexpr uint16_t MAN_SECT_2 = 1u << 2;
+static constexpr uint16_t MAN_SECT_3 = 1u << 3;
+static constexpr uint16_t MAN_SECT_4 = 1u << 4;
+static constexpr uint16_t MAN_SECT_5 = 1u << 5;
+static constexpr uint16_t MAN_SECT_6 = 1u << 6;
+static constexpr uint16_t MAN_SECT_8 = 1u << 8;
+
+// The formats with a section 6 page, each named for its page. Their keys are
+// checked once each parser keeps a key table (12 §7; 6b adds the tables).
+static const char *const MAN_FORMATS[] = {"ndb", "guide", "namespace", "svc",     "driver", "users",
+                                          "utf", "vxfs",  "store",     "release", "slots"};
+// Plan 9's headings, in Plan 9's order (12 §8).
+static const char *const MAN_ORDER[] = {"SYNOPSIS", "DESCRIPTION", "EXAMPLES", "FILES",
+                                        "SEE ALSO", "DIAGNOSTICS", "BUGS"};
+
+static void man_error(const char *where, size_t line, const char *what) {
+  if (line)
+    fprintf(stderr, "  MAN   %s:%zu: %s\n", where, line, what);
+  else
+    fprintf(stderr, "  MAN   %s: %s\n", where, what);
+  man_errors++;
+}
+
+static void man_need(const char *kind, const char *name, uint16_t sects) {
+  for (int i = 0; i < man_nitems; i++) // a native program and sbase's of one name: one page covers both
+    if (strcmp(man_items[i].kind, kind) == 0 && strcmp(man_items[i].name, name) == 0 &&
+        (man_items[i].sects & sects)) {
+      man_items[i].sects &= sects; // the sections both allow
+      return;
+    }
+  if (man_nitems == (int)(sizeof man_items / sizeof man_items[0])) die("the manual's inventory is full");
+  man_items[man_nitems++] = (man_item){.kind = kind, .name = name, .sects = sects};
+}
+
+// Every name in a .def file's NAME(... lines, the name being the first argument.
+static void man_need_def(const char *path, const char *macro, const char *kind, uint16_t sects) {
+  vx_str text = read_file(path);
+  size_t m = strlen(macro);
+  for (size_t i = 0; i + m < text.len; i++) {
+    if ((i && text.ptr[i - 1] != '\n') || memcmp(text.ptr + i, macro, m) != 0 || text.ptr[i + m] != '(')
+      continue;
+    size_t a = i + m + 1, b = a;
+    while (b < text.len && text.ptr[b] != ',' && text.ptr[b] != ')') b++;
+    man_need(kind, str_dup((vx_str){text.ptr + a, b - a}), sects);
+  }
+}
+
+static void man_inventory(void) {
+  for (int i = 0; i < USER_PROGRAM_COUNT; i++) {
+    const program *p = &USER_PROGRAMS[i];
+    if (strncmp(p->source, "tests/", 6) == 0) continue; // a test is not a program anyone runs
+    if (strncmp(p->source, "servers/", 8) == 0)
+      man_need("server", p->name, MAN_SECT_4 | MAN_SECT_8);
+    else if (strncmp(p->source, "drivers/", 8) == 0)
+      man_need("driver", p->name, MAN_SECT_3);
+    else
+      man_need("program", p->name, MAN_SECT_1 | MAN_SECT_8);
+  }
+  for (int k = 0; k < POSIX_PORT_COUNT; k++)
+    for (int i = 0; i < POSIX_PORTS[k]->program_count; i++)
+      man_need("program", str_dup(vx_ndb_get(&POSIX_PORTS[k]->programs[i], "program")), MAN_SECT_1);
+  DIR *d = opendir("host");
+  for (struct dirent *e; d && (e = readdir(d));)
+    if (e->d_name[0] != '.')
+      man_need("program", str_dup((vx_str){e->d_name, strlen(e->d_name)}), MAN_SECT_1 | MAN_SECT_8);
+  if (d) closedir(d);
+  man_need("program", "build", MAN_SECT_1 | MAN_SECT_8);
+  man_need_def("abi/vx/syscalls.def", "VX_SYSCALL", "syscall", MAN_SECT_2);
+  man_need_def("lib/vx-9p/messages.def", "P9_MSG", "message", MAN_SECT_5);
+  for (size_t i = 0; i < sizeof MAN_FORMATS / sizeof MAN_FORMATS[0]; i++)
+    man_need("format", MAN_FORMATS[i], MAN_SECT_6);
+  for (int n = 1; n <= 8; n++) man_need("intro", "intro", (uint16_t)(1u << n));
+}
+
+static bool man_str_eq(vx_str a, const char *b) { return a.len == strlen(b) && memcmp(a.ptr, b, a.len) == 0; }
+
+// A name's entry in section sect: a page's (page nullptr), or a node of that page.
+static const man_entry *man_find(vx_str name, int sect, const char *page) {
+  for (int i = 0; i < man_nindex; i++) {
+    const man_entry *e = &man_index[i];
+    bool kind = page ? e->node && strcmp(e->page, page) == 0 : !e->node;
+    if (e->sect == sect && kind && man_str_eq(name, e->name)) return e;
+  }
+  return nullptr;
+}
+
+static void man_index_add(const char *name, const char *page, bool node, const char *about, int sect,
+                          const char *where) {
+  if (man_find((vx_str){name, strlen(name)}, sect, node ? page : nullptr))
+    man_error(where, 0, fmt(node ? "node %s twice" : "%s(%d) is named by two pages", name, sect));
+  if (man_nindex == (int)(sizeof man_index / sizeof man_index[0])) die("the manual's index is full");
+  man_index[man_nindex++] =
+      (man_entry){.name = name, .page = page, .node = node ? name : nullptr, .about = about, .sect = sect};
+}
+
+// 12 §8's house rules, on a page's raw lines.
+static void man_house(const char *where, vx_str text) {
+  bool fence = false;
+  size_t line = 1;
+  for (size_t i = 0; i < text.len; line++) {
+    size_t j = i;
+    while (j < text.len && text.ptr[j] != '\n') j++;
+    vx_str l = {text.ptr + i, j - i};
+    bool ticks = l.len >= 3 && memcmp(l.ptr, "```", 3) == 0, edge = ticks && (!fence || l.len == 3);
+    if (l.len && (l.ptr[l.len - 1] == ' ' || l.ptr[l.len - 1] == '\t'))
+      man_error(where, line, "a trailing space");
+    if (!fence && memchr(l.ptr, '\t', l.len)) man_error(where, line, "a tab outside a fence");
+    if (fence && !edge && vx_utflen(l.ptr, l.len) > 80)
+      man_error(where, line, "a fence line wider than 80 columns");
+    if (edge) fence = !fence; // opened by ```kind, closed by ``` alone
+    i = j + 1;
+  }
+}
+
+typedef struct man_page {
+  const char *path;
+  vx_str text;
+  int sect;
+  const char *page;
+} man_page;
+
+// A span's link resolves: name(N), name(N)#node, #node or a URL.
+static void man_link(const man_page *p, vx_str target, size_t line) {
+  if (!target.len) return;
+  if (target.ptr[0] == '#') {
+    if (!man_find((vx_str){target.ptr + 1, target.len - 1}, p->sect, p->page))
+      man_error(p->path, line, fmt("a link to no node of this page: %.*s", (int)target.len, target.ptr));
+    return;
+  }
+  if (target.ptr[target.len - 1] != ')' && !memchr(target.ptr, '#', target.len)) return; // a URL
+  vx_guide_inline it = {.s = target};
+  vx_guide_span sp;
+  if (vx_guide_span_next(&it, &sp) != VX_SPAN_REF) return; // a URL with a ( in it
+  const man_entry *e = man_find(sp.name, sp.sect, nullptr);
+  for (int i = 0; !e && i < man_nitems; i++) // a page the ledger promises: linked before it is written
+    if (man_items[i].listed && (man_items[i].sects & (1u << sp.sect)) &&
+        man_str_eq(sp.name, man_items[i].name)) {
+      if (it.pos < target.len) man_error(p->path, line, "a link to a node of a page not yet written");
+      return;
+    }
+  if (!e) {
+    man_error(p->path, line, fmt("a link to nothing: %.*s", (int)sp.text.len, sp.text.ptr));
+    return;
+  }
+  if (it.pos < target.len &&
+      !man_find((vx_str){target.ptr + it.pos + 1, target.len - it.pos - 1}, e->sect, e->page))
+    man_error(p->path, line, fmt("a link to no such node: %.*s", (int)target.len, target.ptr));
+}
+
+static void man_spans(const man_page *p, vx_str text, size_t line) {
+  vx_guide_inline it = {.s = text};
+  vx_guide_span sp;
+  for (vx_guide_span_kind k; (k = vx_guide_span_next(&it, &sp)) > VX_SPAN_END;) {
+    if (k == VX_SPAN_REF) man_link(p, sp.text, line);
+    if (k == VX_SPAN_LINK) man_link(p, sp.target, line);
+  }
+}
+
+// The second pass: headings in order and capitals, every link resolved.
+static void man_body(const man_page *p) {
+  static vx_guide g;
+  if (!vx_guide_open(&g, p->text)) return;
+  vx_guide_block b;
+  int last = -1;
+  while (vx_guide_next(&g, &b) > VX_GUIDE_END) {
+    if (b.kind == VX_GUIDE_HEADING) {
+      for (size_t i = 0; i < b.text.len; i++)
+        if (b.text.ptr[i] >= 'a' && b.text.ptr[i] <= 'z') {
+          man_error(p->path, b.line, "a heading not in capitals");
+          break;
+        }
+      for (int k = 0; k < (int)(sizeof MAN_ORDER / sizeof MAN_ORDER[0]); k++)
+        if (man_str_eq(b.text, MAN_ORDER[k])) {
+          if (k <= last) man_error(p->path, b.line, "a heading out of Plan 9's order (12 §8)");
+          last = k;
+        }
+    }
+    if (b.kind == VX_GUIDE_FENCE || b.kind == VX_GUIDE_NODE) continue;
+    man_spans(p, b.text, b.line);
+    if (b.body.len) man_spans(p, b.body, b.line);
+  }
+}
+
+static void man_discard(void *ctx, const char *s, size_t n) { (void)ctx, (void)s, (void)n; }
+
+static bool check_man(void) {
+  double start = now_seconds();
+  man_nitems = man_nindex = man_errors = 0;
+  man_inventory();
+  static man_page pages[1024];
+  int npages = 0;
+  for (int sect = 1; sect <= 8; sect++) { // the first pass: parse, and index
+    DIR *d = opendir(fmt("man/%d", sect));
+    for (struct dirent *e; d && (e = readdir(d));) {
+      if (e->d_name[0] == '.') continue;
+      if (npages == (int)(sizeof pages / sizeof pages[0])) die("more pages than the check holds");
+      man_page *p = &pages[npages];
+      p->path = fmt("man/%d/%s", sect, e->d_name), p->sect = sect;
+      p->text = read_file(p->path);
+      p->page = str_dup((vx_str){e->d_name, strlen(e->d_name)});
+      man_house(p->path, p->text);
+      static vx_guide g;
+      const char *error = "";
+      size_t line = 0;
+      vx_guide_out null_out = {.write = man_discard};
+      if (!vx_guide_open(&g, p->text) || !vx_guide_render(p->text, nullptr, &null_out, &error, &line)) {
+        man_error(p->path, g.error ? g.error_line : line, g.error ? g.error : error);
+        continue;
+      }
+      if (!man_str_eq(g.h.page, p->page) || g.h.sect != sect)
+        man_error(p->path, 1, "page= and sect= are its file's name and directory");
+      vx_str names = g.h.names, name;
+      const char *summary = str_dup(g.h.summary);
+      while (vx_guide_item_next(&names, &name))
+        man_index_add(str_dup(name), p->page, false, summary, sect, p->path);
+      vx_guide_block b;
+      while (vx_guide_next(&g, &b) > VX_GUIDE_END)
+        if (b.kind == VX_GUIDE_NODE)
+          man_index_add(str_dup(b.node), p->page, true, str_dup(b.title), sect, p->path);
+      npages++;
+    }
+    if (d) closedir(d);
+  }
+
+  // The ledger: each record names something the inventory has, once.
+  int missing = 0;
+  if (exists("man/missing")) {
+    vx_ndb_reader r = {.src = read_file("man/missing"), .scratch = alloc(4096), .scratch_cap = 4096};
+    vx_ndb_record rec;
+    for (vx_ndb_result res; (res = vx_ndb_next(&r, &rec)) != VX_NDB_END;) {
+      if (res == VX_NDB_ERROR) die("man/missing:%zu: %s", r.error_line, r.error);
+      vx_str kind = vx_ndb_get(&rec, "kind"), name = vx_ndb_get(&rec, "name");
+      uint64_t sect = 0;
+      vx_ndb_get_u64(&rec, "sect", &sect);
+      man_item *it = nullptr;
+      for (int i = 0; i < man_nitems && !it; i++)
+        if (man_str_eq(kind, man_items[i].kind) && man_str_eq(name, man_items[i].name) &&
+            (!sect || (sect <= 8 && man_items[i].sects == (uint16_t)(1u << sect))))
+          it = &man_items[i];
+      if (!it || it->listed)
+        man_error("man/missing", rec.line, it ? "listed twice" : "names nothing the system has: remove it");
+      if (it) it->listed = true;
+      missing++;
+    }
+  }
+  for (int i = 0; i < npages; i++) man_body(&pages[i]); // links resolve to pages, or to the ledger
+  for (int i = 0; i < man_nitems; i++) {
+    man_item *it = &man_items[i];
+    bool has = false;
+    for (int s = 1; s <= 8 && !has; s++)
+      has = (it->sects & (1u << s)) && man_find((vx_str){it->name, strlen(it->name)}, s, nullptr);
+    const char *sect = strcmp(it->kind, "intro") == 0 ? fmt(" sect=%d", __builtin_ctz(it->sects)) : "";
+    if (has && it->listed)
+      man_error("man/missing", 0,
+                fmt("documented now, so remove: kind=%s name=%s%s", it->kind, it->name, sect));
+    if (!has && !it->listed)
+      man_error("man", 0,
+                fmt("no page, and not in man/missing: kind=%s name=%s%s", it->kind, it->name, sect));
+  }
+
+  // The index, as 12 §5 has it: one record per name and node.
+  mkdirs("out/man/index");
+  size_t cap = (size_t)man_nindex * 256 + 64;
+  vx_ndb_writer w = {.buf = alloc(cap), .cap = cap};
+  for (int i = 0; i < man_nindex; i++) {
+    const man_entry *e = &man_index[i];
+    vx_ndb_put(&w, "name", (vx_str){e->name, strlen(e->name)});
+    vx_ndb_put(&w, "page", (vx_str){e->page, strlen(e->page)});
+    vx_ndb_put_u64(&w, "sect", (uint64_t)e->sect);
+    if (e->node) vx_ndb_put(&w, "node", (vx_str){e->node, strlen(e->node)});
+    if (e->about[0]) vx_ndb_put(&w, e->node ? "title" : "summary", (vx_str){e->about, strlen(e->about)});
+    vx_ndb_end(&w);
+  }
+  if (w.failed) die("the manual's index does not fit");
+  write_file("out/man/index/base", (vx_str){w.buf, w.len});
+  double ms = (now_seconds() - start) * 1000;
+  bool ok = man_errors == 0;
+  fprintf(stderr, "  MAN   %d pages, %d names, %d missing, %.0f ms (budget 200 ms) %s\n", npages, man_nindex,
+          missing, ms, ok ? "ok" : fmt("FAIL: %d errors", man_errors));
+  return ok && ms < 200;
+}
+
 static int cmd_check(void) {
-  bool ok = check_host_tests();
+  bool ok = check_man();
+  ok = check_host_tests() && ok;
   ok = check_fuzz() && ok;
   ok = check_vxfs_image() && ok;
   ok = cmd_vendor_check() == 0 && ok;
@@ -4348,6 +4658,11 @@ static int cmd_check(void) {
 static void man_write(void *ctx, const char *s, size_t n) { fwrite(s, 1, n, ctx); }
 
 static int cmd_man(const char *const *args, int n) {
+  if (n == 1 &&
+      strcmp(args[0], "--check") == 0) { // the manual's pass of check alone (12 §7), in milliseconds
+    check_toolchain();
+    return check_man() ? 0 : 1;
+  }
   int sects[8], nsect = 0;
   while (n && args[0][0] >= '1' && args[0][0] <= '8' && !args[0][1] && nsect < 8)
     sects[nsect++] = args[0][0] - '0', args++, n--;
@@ -4388,7 +4703,8 @@ static void usage(void) {
       "                                                 release.ndb (unsigned); --verify rebuilds and "
       "compares\n"
       "  loc                                            the line-count ledger\n"
-      "  man           [section ...] title [node]     a page of man/, as man(1) shows it\n"
+      "  man           [section ...] title [node]     a page of man/, as man(1) shows it;\n"
+      "                --check                         or check's manual pass alone (12 §7)\n"
       "  vendor-check                                   check third_party/ against VENDOR.ndb\n"
       "  check                                          host tests (ASan, UBSan), the fuzzers, a volume "
       "image, "
