@@ -1274,6 +1274,7 @@ static const program USER_PROGRAMS[] = {
     {"blktest", "tests/user/blktest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
     {"partd", "servers/partd/partd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"fsd", "servers/fsd/fsd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"dosfs", "servers/dosfs/dosfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"ctest", "tests/posix/ctest.c", IN_TESTS, nullptr, true, nullptr, nullptr},
     {"ctestfsd", "tests/posix/ctest.c", IN_TESTS, nullptr, true, nullptr,
      nullptr}, // ctest again, with /tmp on fsd
@@ -1553,6 +1554,7 @@ static int per_arch(const arch *only, bool release, bool (*fn)(const arch *, boo
 static const char MFORMAT[] = "/usr/bin/mformat";
 static const char MMD[] = "/usr/bin/mmd";
 static const char MCOPY[] = "/usr/bin/mcopy";
+static const char MDEL[] = "/usr/bin/mdel";
 
 static constexpr uint64_t SECTOR = 512;
 static constexpr uint64_t ESP_BYTES = 64ull << 20;
@@ -3244,6 +3246,64 @@ static const char *const HOST_TEST_FLAGS[] = {
     nullptr,
 };
 
+// The FAT images tests/host/fat_test.c reads: out/host/fat12.img, fat16.img
+// and fat32.img, each made by mtools (not by the code under test) with the
+// same tree: short and long names, UTF-8 (mtools writes none past the BMP;
+// fat_test patches that in), a file of many
+// clusters, a directory of many entries, a nested directory, a deleted
+// entry, and a file whose time is known (2001-02-03 04:05:06, written with
+// TZ=UTC since FAT keeps local time).
+static bool make_fat_fixtures(void) {
+  const char *src = "out/host/fat-src";
+  const char *dirs[] = {"A Long Directory Name", "A Long Directory Name/sub dir", "many"};
+  for (size_t i = 0; i < sizeof dirs / sizeof *dirs; i++) mkdirs(fmt("%s/%s", src, dirs[i]));
+  write_file(fmt("%s/SHORT.TXT", src), VX_STR("hello\n"));
+  write_file(fmt("%s/lower.txt", src), VX_STR("lower\n"));
+  write_file(fmt("%s/A Long Directory Name/\xc3\x9cn\xc3\xaf"
+                 "code file name with spaces.txt",
+                 src),
+             VX_STR("unicode\n"));
+  write_file(fmt("%s/A Long Directory Name/sub dir/deep.txt", src), VX_STR("deep\n"));
+  write_file(fmt("%s/gone.txt", src), VX_STR("gone\n"));
+  static char big[300'000];
+  for (size_t i = 0; i < sizeof big; i++) big[i] = (char)((i * 7 + i / 251) & 0xff);
+  write_file(fmt("%s/big.bin", src), (vx_str){big, sizeof big});
+  for (int i = 0; i < 100; i++) write_file(fmt("%s/many/f%03d.txt", src, i), (vx_str){fmt("f%03d\n", i), 5});
+  struct timespec when[2] = {{.tv_sec = 981'173'106}, {.tv_sec = 981'173'106}}; // 2001-02-03 04:05:06 UTC
+  if (utimensat(AT_FDCWD, fmt("%s/SHORT.TXT", src), when, 0) != 0) return false;
+  const char *tz = getenv("TZ");
+  setenv("TZ", "UTC", 1);
+  const struct {
+    const char *name, *label;
+    const char *const *geometry;
+  } kinds[] = {
+      {"fat12", "SMALL", (const char *const[]){"-T", "2880", "-h", "2", "-s", "18", nullptr}},
+      {"fat16", "MIDDLE", (const char *const[]){"-T", "65536", "-h", "64", "-s", "32", nullptr}},
+      {"fat32", "LARGE", (const char *const[]){"-T", "131072", "-h", "64", "-s", "32", "-F", nullptr}},
+  };
+  bool ok = true;
+  for (size_t k = 0; ok && k < sizeof kinds / sizeof *kinds; k++) {
+    const char *img = fmt("out/host/%s.img", kinds[k].name);
+    unlink(img);
+    cmd c = {};
+    cmd_addv(&c, (const char *const[]){MFORMAT, "-C", "-i", img, "-v", kinds[k].label, nullptr});
+    cmd_addv(&c, kinds[k].geometry);
+    cmd_add(&c, "::");
+    ok = run(&c);
+    cmd cp = {};
+    cmd_addv(&cp, (const char *const[]){MCOPY, "-s", "-m", "-i", img, nullptr});
+    const char *top[] = {"SHORT.TXT", "lower.txt", "A Long Directory Name", "gone.txt", "big.bin", "many"};
+    for (size_t i = 0; i < sizeof top / sizeof *top; i++) cmd_add(&cp, fmt("%s/%s", src, top[i]));
+    cmd_add(&cp, "::/");
+    ok = ok && run(&cp) && mtools(MDEL, img, (const char *const[]){"::/gone.txt", nullptr});
+  }
+  if (tz)
+    setenv("TZ", tz, 1);
+  else
+    unsetenv("TZ");
+  return ok;
+}
+
 // Each tests/host/*_test.c is one translation unit: the library it includes and
 // its checks. It is built for the host under ASan and UBSan, and run.
 static bool check_host_tests(void) {
@@ -3251,7 +3311,8 @@ static bool check_host_tests(void) {
   port dir = {.src = fmt("%s/tests", root)};
   collect(&tests, &dir, (vx_str){"host", 4}, "_test.c");
   mkdirs("out/host");
-  bool ok = true;
+  bool ok = make_fat_fixtures();
+  if (!ok) fprintf(stderr, "  HOST  cannot make the FAT images\n");
   for (int i = 0; i < tests.count; i++) {
     const char *base = strrchr(tests.paths[i], '/') + 1;
     const char *name = fmt("%.*s", (int)(strlen(base) - 2), base);
@@ -3317,7 +3378,7 @@ typedef struct unit {
 
 static const char *const HOST_C23[] = {"-std=c23", nullptr};
 
-static constexpr int MAX_UNITS = 128;
+static constexpr int MAX_UNITS = 256;
 
 // The next free slot in a units array of MAX_UNITS.
 static int unit_slot(int *n) {
