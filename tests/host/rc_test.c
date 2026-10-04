@@ -59,7 +59,7 @@ static void emit(rc *r, const rc_fd *fds, uint32_t which, const char *s, size_t 
 static bool open_now[8]; // the files the shell has open, by handle
 static bool used_closed; // a stage was given a file the shell had already closed
 
-// A pipeline, its stages run in turn; $status as gsh makes it, each stage's
+// A pipeline, its stages run in turn; $status as rc makes it, each stage's
 // joined by |.
 static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool async, uint64_t *pid) {
   (void)ctx;

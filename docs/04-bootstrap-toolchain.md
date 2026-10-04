@@ -13,7 +13,7 @@ _Blueprint v0, 2026-09-30._
 | **Odin and others** | Applications, through `vxui.h` and the POSIX layer | Community tier; never in the base system |
 | **Lua** | `wm` layout policies, scripts and scripted UIs. Settings are ndb data, not Lua (D14) | Vendored Lua 5.4 |
 
-`gsh`, the system shell, is first-party C speaking `rc`'s language (`lib/vx-rc`, M4 step 7): lists, `{}` blocks and no word-splitting surprises. Namespace built-ins (`bind`, `mount`, `ns`) are part of it.
+`rc`, the system shell, is Plan 9's rc, written first-party in C (`cmd/rc.c`, the language in `lib/vx-rc`, M4 step 7; named `gsh` until M6 step 6a4, and made fully compatible with 9front's in M6): lists, `{}` blocks and no word-splitting surprises. Namespace built-ins (`bind`, `mount`, `ns`) are part of it.
 
 ### 1.1 The house subset
 
@@ -83,7 +83,7 @@ NeoVectra/
 │   └── vx-check/               exhaustive interleaving model checker (host only, §7)
 ├── servers/                    svcd bootfs devmgr netd nsd ptyd procfs fsd winsrv wm displayd audiod aid swarmd keyd tlsd exportfs auditfs
 ├── drivers/                    bus-pci bus-dt bus-acpi drv-uart-16550 drv-uart-pl011 drv-virtio-{net,blk,console,input,gpu}
-├── cmd/                        gsh ls cat echo ps mount bind ns cpu import ...
+├── cmd/                        rc ls cat echo ps mount bind ns cpu import ...
 ├── apps/                       first-party vxui apps: dbg (05)
 ├── host/                       vx9pserve (serves a host directory over 9P/9Px)
 ├── ports/                      one directory per C import: port.ndb (sources, flags) plus patches
@@ -231,7 +231,7 @@ The test (`tests/qemu/boot.ndb`) boots headless, matches these lines within 10 s
 - `drv-uart-16550` and `drv-uart-pl011` as **user-space drivers** serving `/dev/cons`. The kernel console is then used only for panics (01 §7.1).
 - `vx-ndb`, which `svcd` and `devmgr` need to read their manifests, with the strict parser, `x"…"` hex values and the quoting writer (02 §4.1).
 - `svcd` spawns services from `boot/svc/*.ndb` and restarts them on exit. `procfs` provides a minimal `/proc/N/status`.
-- `gsh`, plus `ls`, `cat`, `echo`, `ps`, `ns` and `tail`.
+- `rc`, plus `ls`, `cat`, `echo`, `ps`, `ns` and `tail`.
 
 **Exit test** (`tests/qemu/shell.ndb`; the console driver is task 2, as `svcd` starts drivers first):
 

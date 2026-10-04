@@ -3,7 +3,7 @@
 # over configuration space. QEMU's virtio network card and disk are there,
 # with their MSI-X capability and memory BARs sized.
 
-scenario=pci timeout=15 cmdline=vx.skip=gsh
+scenario=pci timeout=15 cmdline=vx.skip=rc
 expect="svcd: started devmgr (task "
 expect=" 1af4:1041 net msi-x"
 expect=" PCI functions"

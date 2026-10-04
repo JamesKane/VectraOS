@@ -121,7 +121,7 @@ kind=program name=flock
 kind=program name=fold
 kind=program name=getconf
 kind=program name=grep
-kind=program name=gsh
+kind=program name=rc
 kind=program name=head
 kind=program name=hostname
 kind=program name=join

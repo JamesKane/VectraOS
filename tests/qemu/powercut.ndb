@@ -5,7 +5,7 @@
 # second mounts at once, finds every synced file whole, and fsd's check is
 # clean (tests/posix/powercut.c).
 
-scenario=powercut timeout=90 cmdline=vx.skip=gsh with=powercut,fsdvol disk=64 volume=tests/fsd/home
+scenario=powercut timeout=90 cmdline=vx.skip=rc with=powercut,fsdvol disk=64 volume=tests/fsd/home
 expect="fsd: serving /srv/fsd"
 expect="powercut: 32 files synced"
 expect="powercut: under load, committing"

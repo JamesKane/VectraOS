@@ -1,4 +1,5 @@
-// vx-rc: the rc shell language (Tom Duff's, as 9front's rc has it), for gsh
+// vx-rc: the rc shell language (Tom Duff's, as 9front's rc has it), for the
+// shell, cmd/rc.c
 // (docs/milestones.md, M4 step 7). A script is read by a lexer, parsed into a
 // tree, compiled into code, and run by a machine, as rc does; none of it
 // recurses (the house rules): the parser and the compiler keep stacks of their
@@ -7,7 +8,7 @@
 // What runs a command is the host's: rc_host's callbacks start programs (each
 // stage of a pipeline at once), open the files redirections name, read
 // directories for globbing, and give builtins of the host's own. So the
-// language is tested on the host (tests/host/rc_test.c), and gsh puts it on
+// language is tested on the host (tests/host/rc_test.c), and rc puts it on
 // vx-rt and the namespace.
 //
 // Freestanding: the interpreter keeps its words, variables and code in a heap
@@ -85,7 +86,7 @@ typedef struct rc_host {
   // it cannot be read.
   bool (*readdir)(void *ctx, const char *path, size_t len,
                   void (*each)(void *arg, const char *name, size_t n), void *arg);
-  // The host's builtins (cd, and gsh's namespace commands): true if argv[0]
+  // The host's builtins (cd, and rc's namespace commands): true if argv[0]
   // is one, which it ran (setting $status).
   bool (*builtin)(void *ctx, rc *r, const rc_word *argv, uint32_t argc, const rc_fd *fds);
   // A file's text, for `.`: its length into buf (cap bytes), or -1.

@@ -128,7 +128,7 @@ hx /n/tower/vectra                            # edit them here
 
 ## 11. Shell windows and the terminal
 
-- **A shell window** is Acme's `win`: a buffer whose end is connected to `gsh` through `ptyd`. Output is ordinary text, so it can be searched, edited, executed and plumbed. Commands that do not draw on a screen, which with `gsh` and the system's commands is most of them, work best here.
+- **A shell window** is Acme's `win`: a buffer whose end is connected to `rc` through `ptyd`. Output is ordinary text, so it can be searched, edited, executed and plumbed. Commands that do not draw on a screen, which with `rc` and the system's commands is most of them, work best here.
 - **Programs that need a terminal** run in the system terminal, which `hx` can dock beside the buffer. It is the same terminal and the same emulator library, not a second one inside the editor (rule 13).
 
 ## 12. The file interface: `/mnt/hx`

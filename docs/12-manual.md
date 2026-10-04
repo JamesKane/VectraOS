@@ -29,7 +29,7 @@ Plan 9's eight sections, with the same meanings except section 7, which Plan 9 b
 
 | Section | Contents | Examples | Checked against (§7) |
 |---|---|---|---|
-| **1** | Commands a user runs, `gsh`/rc builtins included, and host tools (marked `host`) | `cat(1)`, `rc(1)`, `hx(1)`, `dbg(1)`, `build(1)` | The usage message, generated from the page |
+| **1** | Commands a user runs, rc's builtins included, and host tools (marked `host`) | `cat(1)`, `rc(1)`, `hx(1)`, `dbg(1)`, `build(1)` | The usage message, generated from the page |
 | **2** | Library functions and system calls: `libvx`, `vxui`, the public `lib/vx-*` libraries, the syscalls, the Lua APIs (marked `lang=lua`) | `open(2)`, `port(2)`, `ring(2)`, `ndb(2)`, `wm(2)` | Declarations in the installed headers |
 | **3** | Devices: one page per driver class and its tree under `/dev`, one per driver | `cons(3)`, `block(3)`, `accel(3)`, `drv-virtio-blk(3)` | `.schema`, driver manifests |
 | **4** | File servers: what each serves, its files and `ctl` verbs | `fsd(4)`, `netd(4)`, `procfs(4)`, `plumber(4)`, `aid(4)` | `.schema`, service manifests |

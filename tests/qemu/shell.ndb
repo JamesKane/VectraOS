@@ -4,7 +4,7 @@
 # $status, the commands' exit strings joined by |, as rc keeps it (ADR-0010).
 
 scenario=shell timeout=30
-expect="svcd: started gsh (task "
+expect="svcd: started rc (task "
 prompt="vx% "
 send="ls /"
 line="adm  bin  boot  dev  dist  lib  n  net  proc  srv  sys  tmp"

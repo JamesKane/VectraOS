@@ -5,7 +5,7 @@
 # crash shows as svcd reporting ctest's exit string. Every call ctest makes is
 # one the back end implements.
 
-scenario=posix timeout=60 with=ctest cmdline=vx.skip=gsh
+scenario=posix timeout=60 with=ctest cmdline=vx.skip=rc
 expect="ctest: hello from musl"
 expect="ctest: argv one|two words"
 expect="ctest: to stderr"

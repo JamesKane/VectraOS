@@ -6,7 +6,7 @@
 # again through partd and does again what it was waiting for. ctest's checks
 # all pass, and fsd's commits with them.
 
-scenario=fsdnvmerestart timeout=120 cmdline="vx.skip=gsh drv-nvme.die=100" with=ctestfsd,fsdvol disk=64 bus=nvme volume=tests/fsd/home
+scenario=fsdnvmerestart timeout=120 cmdline="vx.skip=rc drv-nvme.die=100" with=ctestfsd,fsdvol disk=64 bus=nvme volume=tests/fsd/home
 expect="drv-nvme: 64 MiB, 512-byte sectors"
 expect="partd: /srv/disk1: 2 partitions"
 expect="fsd: /srv/disk1.vectra: commit "

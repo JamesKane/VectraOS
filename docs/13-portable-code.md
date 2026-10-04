@@ -106,7 +106,7 @@ A package may carry any of:
 | **`vx-rt`, `libvx`, the loader** | No | The boundary itself. Native per ISA |
 | **Boot path and early servers** (`svcd`, `fsd`, drivers before the store) | No | Nothing can be lowered before the store and the lowerer are running. They stay static and native (09 §10, question 1) |
 | **Third-party programs** | **Yes: the main case** | §1 problem 1 |
-| **First-party apps and tools** (`hx`, `hv`, `gsh`, the `vxui` apps) | Open | Benefits: one release artifact for every ISA, so `distd` peers share blocks across ISAs; a community port gets the whole user land without the project building it; `cpu` can move work to a node of any ISA (02 §6). Costs: the §5 costs, paid by first-party code that does not need them. One middle way is to ship both, with the portable module as a check that the release builds for an ISA nobody tested |
+| **First-party apps and tools** (`hx`, `hv`, `rc`, the `vxui` apps) | Open | Benefits: one release artifact for every ISA, so `distd` peers share blocks across ISAs; a community port gets the whole user land without the project building it; `cpu` can move work to a node of any ISA (02 §6). Costs: the §5 costs, paid by first-party code that does not need them. One middle way is to ship both, with the portable module as a check that the release builds for an ISA nobody tested |
 | **User-space drivers** | Speculative | MMIO is memory, through mapped regions (§4.2), and DMA buffers are VMOs. A portable NVMe or virtio driver would serve every ISA. Needs fence and barrier semantics checked against each ISA's device-memory rules. Interesting, and last |
 | **Lua and scripts** | Unchanged | Lua is already portable source. Its interpreter is just one more native or portable program |
 

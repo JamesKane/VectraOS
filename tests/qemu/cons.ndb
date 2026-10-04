@@ -4,7 +4,7 @@
 # driver's queue, so writes wait for the UART; ^D on an empty line is the end
 # of the file. The shell is left out, as it would read the console too.
 
-scenario=cons timeout=20 with=constest cmdline=vx.skip=gsh
+scenario=cons timeout=20 with=constest cmdline=vx.skip=rc
 expect="constest: ready"
 send="hello world"
 expect="constest: got [hello world]"

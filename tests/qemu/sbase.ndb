@@ -3,7 +3,7 @@
 # no /bin/sh yet): found on PATH, with pipes for its input and output; it
 # checks text tools, files in /tmp, bc and sha256sum among them.
 
-scenario=sbase timeout=60 with=sbasetest cmdline=vx.skip=gsh
+scenario=sbase timeout=60 with=sbasetest cmdline=vx.skip=rc
 expect="sbasetest: running sbase's commands"
 expect=" checks, 0 failed"
 line="svcd: sbasetest exited"

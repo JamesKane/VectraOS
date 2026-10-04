@@ -5,7 +5,7 @@
 # goes on to procfs, which saves the crash directory, and dbg prints the dead
 # program's stack and variables from it.
 
-scenario=dbg timeout=60 with=dbgdemo cmdline=vx.skip=gsh
+scenario=dbg timeout=60 with=dbgdemo cmdline=vx.skip=rc
 expect="dbg: /boot/bin/dbgdemo: "
 expect="dbg: breakpoint at 0x"
 expect="dbg: stopped: break at leaf (tests/user/dbgdemo.c:"

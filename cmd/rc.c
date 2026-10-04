@@ -1,5 +1,5 @@
-// gsh: the shell (docs/04 §5, M2; rc's language since M4 step 7). Its
-// language is rc's, from lib/vx-rc: lists, quoting, ^, $#x and $x(n), if, if
+// rc: the shell, Plan 9's rc (docs/04 §5; M2, its language since M4 step 7,
+// named gsh until M6 step 6a4). Its language is from lib/vx-rc: lists, quoting, ^, $#x and $x(n), if, if
 // not, for, while, switch, ~, fn, !, && and ||, pipes, redirections, `{...},
 // globbing, $status, $*:
 //
@@ -8,7 +8,7 @@
 //   echo kill > /proc/2/ctl             redirections: > >> < >[2=1] >[2]
 //   for(p in `{ls /proc}) echo $p       command substitution
 //   bind -a /boot/bin /bin              builtins: bind, mount, unmount, and rc's
-//   gsh script.rc a b                   a script, its arguments in $*
+//   rc script.rc a b                   a script, its arguments in $*
 //
 // A command is a program found as given (a path) or in /bin, then /boot/bin,
 // through the shell's namespace. It is loaded by the shell and spawned with a
@@ -93,7 +93,7 @@ static void report(const char *what, vx_status st) {
     set_status((vx_str){});
     return;
   }
-  say("gsh: ", vx_cstr(what), ": ");
+  say("rc: ", vx_cstr(what), ": ");
   err(p9_error_text(st));
   err(VX_STR("\n"));
   set_status(p9_error_text(st));
@@ -532,7 +532,7 @@ static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool asy
   (void)ctx, (void)r;
   reap();
   if (n > MAX_STAGES) {
-    say("gsh: too many commands in a pipe", (vx_str){}, "\n");
+    say("rc: too many commands in a pipe", (vx_str){}, "\n");
     set_status(VX_STR("too many commands"));
     return false;
   }
@@ -572,7 +572,7 @@ static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool asy
       rc_fd err = *fd[2];
       if (err.kind == RC_FD_PIPE_OUT || err.kind == RC_FD_PIPE_IN || err.kind == RC_FD_READ)
         err = (rc_fd){.dup = 2};
-      write_out(nullptr, &err, 2, "gsh: ", 5);
+      write_out(nullptr, &err, 2, "rc: ", 4);
       write_out(nullptr, &err, 2, c->argv->s, c->argv->len);
       write_out(nullptr, &err, 2, ": ", 2);
       write_out(nullptr, &err, 2, why.ptr, why.len);
@@ -654,7 +654,7 @@ static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool asy
       }
     }
   }
-  if (broken) say("gsh: write error", (vx_str){}, "\n");
+  if (broken) say("rc: write error", (vx_str){}, "\n");
   char status[MAX_STAGES * (VX_ERRMAX + 1)]; // the commands' exit strings, joined by |, as rc's $status
   size_t len = 0;
   for (uint32_t s = 0; s < n; s++) {
@@ -694,7 +694,7 @@ static void show_error(void) {
 }
 
 const char *vx_main(void) {
-  if (vx_ns_from_spawn(&ns) != VX_OK) vx_eprint(VX_STR("gsh: the namespace is incomplete\n"));
+  if (vx_ns_from_spawn(&ns) != VX_OK) vx_eprint(VX_STR("rc: the namespace is incomplete\n"));
   rc_host host = {.run = run,
                   .write = write_out,
                   .readdir = read_dir,
@@ -706,7 +706,7 @@ const char *vx_main(void) {
   if (!sh) return "no memory";
   import_env();
 
-  if (vx_spawn.argc) { // gsh FILE ARG ...: a script, its arguments in $*, its name in $0
+  if (vx_spawn.argc) { // rc FILE ARG ...: a script, its arguments in $*, its name in $0
     static const char *words[VX_SPAWN_MAX_ARGS];
     static size_t lens[VX_SPAWN_MAX_ARGS];
     uint32_t n = 0;
@@ -717,13 +717,13 @@ const char *vx_main(void) {
     rc_set(sh, "0", words, lens, 1);
     int64_t len = read_whole(nullptr, vx_spawn.args[0].ptr, vx_spawn.args[0].len, text, sizeof text);
     if (len < 0) {
-      say("gsh: ", vx_spawn.args[0], ": cannot read it\n");
+      say("rc: ", vx_spawn.args[0], ": cannot read it\n");
       return "cannot read the script";
     }
     rc_result res = rc_run(sh, text, (size_t)len);
     if (res == RC_SYNTAX || res == RC_INCOMPLETE || res == RC_FAILED) {
       if (res == RC_INCOMPLETE)
-        vx_eprint(VX_STR("gsh: the script ends inside a construct\n"));
+        vx_eprint(VX_STR("rc: the script ends inside a construct\n"));
       else
         show_error();
       return res == RC_FAILED ? exit_status() : "syntax error";
@@ -744,7 +744,7 @@ const char *vx_main(void) {
     if (len == sizeof text && text[len - 1] != '\n') { // too long: refused whole, never run in pieces
       char rest[64];
       while ((n = vx_read(rest, sizeof rest)) > 0 && rest[n - 1] != '\n') {}
-      say("gsh: line too long", (vx_str){}, "\n");
+      say("rc: line too long", (vx_str){}, "\n");
       set_status(VX_STR("line too long"));
       len = 0;
       continue;

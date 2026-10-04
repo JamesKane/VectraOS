@@ -2,7 +2,7 @@
 # second disk on QEMU's NVMe controller rather than virtio-blk: partd, fsd and
 # ctest's checks (mmap and dref among them) over drv-nvme.
 
-scenario=fsdnvme timeout=90 cmdline=vx.skip=gsh with=ctestfsd,fsdvol disk=64 bus=nvme volume=tests/fsd/home
+scenario=fsdnvme timeout=90 cmdline=vx.skip=rc with=ctestfsd,fsdvol disk=64 bus=nvme volume=tests/fsd/home
 expect="drv-nvme: 64 MiB, 512-byte sectors"
 expect="partd: /srv/disk1: 2 partitions"
 expect="fsd: /srv/disk1.vectra: commit "

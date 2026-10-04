@@ -207,7 +207,7 @@ static void fd_from_records(void); // below, with what writes them
 
 // The descriptors the spawn message gives: fd= records from a POSIX parent
 // (fd_records), or else 0, 1 and 2 from the pipes it names ("stdin",
-// "stdout", "stderr", as vx-rt's programs take them: gsh's redirections) and
+// "stdout", "stderr", as vx-rt's programs take them: rc's redirections) and
 // the console for what it does not. Without a pipe for it, standard error
 // goes to the console, so a pipeline's errors reach its terminal; without a
 // console either, to stdout.

@@ -346,7 +346,7 @@ The frame deadline always wins.
 - **Inline assist in text fields.** A `vxui` text field offers completion, rewriting and translation through the same IME-adjacent path, so it works in any `vxui` app and in any app with a text-input adapter.
 - **System search.** Exact results (file names, `ctl` verbs, windows) are merged with semantic results from `/ai/ctx/*/query`. The results are files, so they can be opened, dragged or piped.
 - **"Explain this window."** The assistant reads the window's `a11y` tree (text, not pixels) and answers in a side panel.
-- **Shell integration.** In `gsh`, a line starting with `?` asks for a command. The command is suggested and inserted into the line, never run automatically.
+- **Shell integration.** In `rc`, a line starting with `?` asks for a command. The command is suggested and inserted into the line, never run automatically.
 - **Live captions and dictation** use whisper on the NPU, taking audio from an `audiod` tap that the user has explicitly enabled.
 
 ### 8.5 Agents: permission, audit and undo

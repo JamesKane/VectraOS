@@ -116,7 +116,7 @@ That is the whole list: one local transport and one network transport.
 |---|---|---|
 | `dref` | M5 | `fsd` reads into a client `Buffer` without a copy |
 | `map` | M5 | `mmap` of a file through the pager |
-| `notify` | M6 | `libvx`'s file watches; then `winsrv` watching `/wsys/theme` (M7) and `gsh` completion caches |
+| `notify` | M6 | `libvx`'s file watches; then `winsrv` watching `/wsys/theme` (M7) and `rc` completion caches |
 | `lease` | M10 | the `cfs` cache in a `cpu` session (§6.6) |
 | `xattr` | M4 | POSIX `stat` in the musl back end |
 | `posix` | M4 | Git, and the shell's redirections, in the musl back end |

@@ -9,7 +9,7 @@
 # together, so only partd's line is waited for before blktest's ok. netd and
 # the shell are skipped: nothing here needs them.
 
-scenario=block timeout=40 cmdline=vx.skip=gsh,netd with=blktest,blkparts disk=64
+scenario=block timeout=40 cmdline=vx.skip=rc,netd with=blktest,blkparts disk=64
 expect="drv-virtio-blk: 64 MiB, 512-byte sectors"
 expect="partd: /srv/disk1: 2 partitions"
 expect="blktest: ok"

@@ -132,7 +132,7 @@ static void check_dirs(void) {
   vx_store_entry in[] = {
       {.name = VX_STR("bin"), .mode = 040555, .hash = h},
       {.name = VX_STR("a file \"quoted\""), .mode = 0100444, .size = 12, .hash = h},
-      {.name = VX_STR("sh"), .mode = 0120777, .link = VX_STR("/bin/gsh")},
+      {.name = VX_STR("sh"), .mode = 0120777, .link = VX_STR("/bin/rc")},
   };
   static char text[4096];
   vx_ndb_writer w = {.buf = text, .cap = sizeof text};
@@ -142,7 +142,7 @@ static void check_dirs(void) {
       "name=bin mode=040555 hash=b2:abababababababababababababababababababababababababababababababab\n"
       "name=\"a file \"\"quoted\"\"\" mode=0100444 size=12 "
       "hash=b2:abababababababababababababababababababababababababababababababab\n"
-      "name=sh mode=0120777 link=/bin/gsh\n";
+      "name=sh mode=0120777 link=/bin/rc\n";
   CHECK(w.len == strlen(want) && memcmp(text, want, w.len) == 0);
   static char scratch[4096];
   vx_store_entry e;
@@ -150,7 +150,7 @@ static void check_dirs(void) {
                           &e) == VX_OK &&
         e.size == 12 && e.mode == 0100444 && vx_hash_eq(&e.hash, &h));
   CHECK(vx_store_dir_find((const uint8_t *)text, w.len, VX_STR("sh"), scratch, sizeof scratch, &e) == VX_OK &&
-        vx_store_is_link(&e) && e.link.len == 8 && memcmp(e.link.ptr, "/bin/gsh", 8) == 0);
+        vx_store_is_link(&e) && e.link.len == 7 && memcmp(e.link.ptr, "/bin/rc", 7) == 0);
   CHECK(vx_store_dir_find((const uint8_t *)text, w.len, VX_STR("bin"), scratch, sizeof scratch, &e) ==
             VX_OK &&
         vx_store_is_dir(&e));

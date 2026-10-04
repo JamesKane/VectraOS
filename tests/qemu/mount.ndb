@@ -42,4 +42,4 @@ host=share/out.txt text=hi
 fail="vx: panic"
 fail="FAILED"
 fail=") killed: "
-fail="gsh: "
+fail="rc: "

@@ -3,7 +3,7 @@
 # come back, and hangup ends the stream both ways. A host port nobody listens
 # on refuses the connection.
 
-scenario=tcp timeout=40 cmdline=vx.skip=gsh with=tcptest
+scenario=tcp timeout=40 cmdline=vx.skip=rc with=tcptest
 expect="netd: 10.0.2.15/24 from dhcp, gateway 10.0.2.2"
 expect="tcptest: connected to 10.0.2.100!7"
 expect="tcptest: 262144 bytes echoed"

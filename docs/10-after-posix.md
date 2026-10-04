@@ -35,7 +35,7 @@ After M12, as the blueprint plans it:
 | Activity | Tool | Native? |
 |---|---|---|
 | Edit | `hx` (08) | Yes |
-| Shell, scripts | `gsh`; Lua | `gsh` yes. Lua builds against musl with `LUA_USE_POSIX` (ADR-0015), though without that flag it needs only ISO C |
+| Shell, scripts | `rc`; Lua | `rc` yes. Lua builds against musl with `LUA_USE_POSIX` (ADR-0015), though without that flag it needs only ISO C |
 | Build orchestration | `build` (04 §3.2) | Becomes native once it links `libvx` instead of the host libc |
 | **Compile, assemble, link** | clang, lld, compiler-rt | **No: LLVM over POSIX** |
 | **Format and lint** | clang-format, clang-tidy, the clang static analyzer | **No: LLVM** |

@@ -8,7 +8,7 @@
 # device's DMA, starts the driver again on the same post, and a new session
 # works as the first did. netd is skipped: the driver serves one client.
 
-scenario=net timeout=30 cmdline=vx.skip=gsh,netd with=nettest
+scenario=net timeout=30 cmdline=vx.skip=rc,netd with=nettest
 expect="devmgr: started drv-virtio-net"
 expect="drv-virtio-net: 52:54:00:12:34:56, serving /srv/ether0"
 expect="nettest: a second session is refused"

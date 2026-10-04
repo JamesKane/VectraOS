@@ -139,7 +139,7 @@ The rules are `hex`, `dec`, `bin`, `oct`, `array:N`, `slice:len_field`, `text[:l
 
 - **The GUI,** as above.
 - **The command line:** `dbg -c` gives a line-oriented interface with the same commands, for serial consoles and early bring-up. It runs from M4, before the desktop exists.
-- **Files:** everything in §3 works from `gsh` directly:
+- **Files:** everything in §3 works from `rc` directly:
   ```sh
   echo 'break 0x4011a0' > /proc/42/ctl
   read ev < /proc/42/events            # event=break thread=3 pc=0x4011a0

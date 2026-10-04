@@ -4,7 +4,7 @@
 # hardware-reduced ACPI with no sleep registers); QEMU must then exit by
 # itself (exits).
 
-scenario=poweroff timeout=60 exits cmdline=vx.skip=gsh with=offtest
+scenario=poweroff timeout=60 exits cmdline=vx.skip=rc with=offtest
 expect="poweroff: asking bus-acpi"
 expect="bus-acpi: serving /srv/acpi"
 expect="bus-acpi: powering off"

@@ -2,7 +2,7 @@
 # store branch (storetree), its tree served with verified reads, and a block
 # rewritten through the file system refused (tests/user/disttest.ndb, .rc).
 
-scenario=distd timeout=120 cmdline=vx.skip=gsh with=disttest,fsdvol disk=64 storetree
+scenario=distd timeout=120 cmdline=vx.skip=rc with=disttest,fsdvol disk=64 storetree
 expect="distd: 1 releases for "
 expect="distd: a block does not match its hash: /other.bin (refused)"
 expect="disttest: 13 checks, 0 failed"

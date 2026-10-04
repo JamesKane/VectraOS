@@ -1267,7 +1267,7 @@ static const program USER_PROGRAMS[] = {
     {"ptyd", "servers/ptyd/ptyd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"devmgr", "servers/devmgr/devmgr.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"netd", "servers/netd/netd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"gsh", "cmd/gsh.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"rc", "cmd/rc.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"poweroff", "cmd/poweroff.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"install", "cmd/install.c", IN_BOOTFS, nullptr, false, &monocypher, MONOCYPHER_USE_FLAGS},
     {"ls", "cmd/ls.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
@@ -2465,7 +2465,7 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
     }
   }
   // A `with` name that is no program is a script test: its manifest runs a
-  // program the image has (lua, gsh), on tests/user/NAME.lua or NAME.rc, at
+  // program the image has (lua, rc), on tests/user/NAME.lua or NAME.rc, at
   // /boot/tests.
   for (const char *n = with; *n;) {
     const char *end = strchr(n, ',');

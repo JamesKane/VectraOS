@@ -1,10 +1,10 @@
-# tests/qemu/rc.ndb: gsh's language as rc's (M4 step 7a), in the running
+# tests/qemu/rc.ndb: the shell's language as Plan 9 rc's (M4 step 7a), in the running
 # system: lists, ^, control flow, functions, `{...} from a program, redirections
 # into tmpfs and back, globbing through the namespace, a construct continued
-# over lines, and a script run with arguments, `gsh FILE ARG ...`.
+# over lines, and a script run with arguments, `rc FILE ARG ...`.
 
 scenario=rc timeout=30
-expect="svcd: started gsh (task "
+expect="svcd: started rc (task "
 prompt="vx% "
 send="x=(a b c); echo $#x $x(2) pre^$x"
 line="3 b prea preb prec"
@@ -35,7 +35,7 @@ expect="matched t"
 prompt="vx% "
 send="echo 'for(a in $*) echo arg $a' > /tmp/t.rc; echo 'exit $#*' >> /tmp/t.rc"
 prompt="vx% "
-send="gsh /tmp/t.rc x 'y z'; echo status $status"
+send="rc /tmp/t.rc x 'y z'; echo status $status"
 line="arg x"
 line="arg y z"
 line="status 2"
@@ -44,7 +44,7 @@ send="ls /nothing | tail -1 || echo failed $status"
 line="failed error|"
 prompt="vx% "
 send="nosuch; echo $status"
-expect="gsh: nosuch: not found"
+expect="rc: nosuch: not found"
 line="not found"
 fail="vx: panic"
 fail="FAILED"

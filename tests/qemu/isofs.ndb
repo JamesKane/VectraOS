@@ -4,7 +4,7 @@
 # (tests/user/isofstest.ndb, .rc). lib/vx-iso's three ways of reading it,
 # and damage, are tested on the host (tests/host/iso_test.c).
 
-scenario=isofs timeout=90 cmdline=vx.skip=gsh with=isofstest isodisk
+scenario=isofs timeout=90 cmdline=vx.skip=rc with=isofstest isodisk
 expect="isofs: /srv/disk1: ISO 9660 with " # Rock Ridge, and Joliet, in either order
 expect="isofs: /srv/disk1: ISO 9660 with "
 expect="isofstest: 16 checks, 0 failed"
