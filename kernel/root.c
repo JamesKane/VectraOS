@@ -3,8 +3,9 @@
 // the kernel's own tests). It gets the debug-write capability, and starts like
 // every task, with a bootstrap channel holding its spawn message (abi.h): a
 // handle to itself, the boot image (the bootfs.tar module, copied into a VMO),
-// the ACPI tables (acpi.c), the root Resource (device.c) and the kernel
-// command line.
+// the store image when there is one (the store.tar module, likewise: an
+// install medium's objects, docs/06 §8), the ACPI tables (acpi.c), the root
+// Resource (device.c) and the kernel command line.
 
 LIMINE_REQUEST struct limine_module_request module_request = {.id = LIMINE_MODULE_REQUEST_ID};
 
@@ -30,6 +31,8 @@ static struct {
   size_t name_len;
   const uint8_t *bootfs; // nullptr if the image has no bootfs.tar
   uint64_t bootfs_size;
+  const uint8_t *store; // nullptr if it has no store.tar
+  uint64_t store_size;
 } root_module;
 
 static void find_root_module(void) {
@@ -43,6 +46,8 @@ static void find_root_module(void) {
   root_module.name_len = name.len;
   const struct limine_file *bootfs = find_module(VX_STR("bootfs.tar"));
   if (bootfs) root_module.bootfs = bootfs->address, root_module.bootfs_size = bootfs->size;
+  const struct limine_file *store = find_module(VX_STR("store.tar"));
+  if (store) root_module.store = store->address, root_module.store_size = store->size;
 }
 
 static constexpr uint32_t ROOT_RESOURCE_RIGHTS =
@@ -58,7 +63,7 @@ static channel *root_spawn_message(task *t) {
   vx_ndb_writer w = {.buf = text, .cap = sizeof text};
   vx_ndb_put(&w, "spawn", (vx_str){root_module.name, root_module.name_len});
   vx_ndb_end(&w);
-  moved_handle given[4];
+  moved_handle given[5];
   uint32_t count = 0;
   object_ref(&t->obj);
   given[count] = (moved_handle){&t->obj, ALL_RIGHTS};
@@ -75,6 +80,18 @@ static channel *root_spawn_message(task *t) {
     vx_ndb_end(&w);
     vx_ndb_flag(&w, "bootimage");
     vx_ndb_put_u64(&w, "size", root_module.bootfs_size);
+    vx_ndb_end(&w);
+  }
+  if (root_module.store) {
+    vmo *image;
+    if (vmo_create(root_module.store_size, &image) != VX_OK) panic(VX_STR("no memory for the store image"));
+    vmo_write(image, 0, root_module.store, root_module.store_size);
+    given[count] = (moved_handle){&image->obj, READ_ONLY_RIGHTS};
+    vx_ndb_put(&w, "handle", VX_STR("storeimage"));
+    vx_ndb_put_u64(&w, "index", count++);
+    vx_ndb_end(&w);
+    vx_ndb_flag(&w, "storeimage");
+    vx_ndb_put_u64(&w, "size", root_module.store_size);
     vx_ndb_end(&w);
   }
   uint64_t acpi_size;

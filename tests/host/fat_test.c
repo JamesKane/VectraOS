@@ -388,7 +388,39 @@ static void check_writes(const char *path, const char *out) {
   free(m.bytes);
 }
 
+// fat_format's FAT32, as install makes the ESP: mounted, written to as
+// install writes it (directories, a file of many clusters), read back, and
+// saved for ./build check's fsck.fat -n; one too small refused.
+static void check_format(void) {
+  image m = {.len = (size_t)64 << 20};
+  m.bytes = calloc(1, m.len);
+  fat_dev dev = {.ctx = &m, .read = image_read, .write = image_write};
+  CHECK(fat_format(dev, m.len / 512, 2048, "VECTRA", 0x1234'5678) == VX_OK);
+  CHECK(fat_mount(&vol, dev) == VX_OK && vol.type == 32 && strcmp(vol.label, "VECTRA") == 0);
+  vol.now = 1'893'553'445;
+  fat_entry e, d;
+  CHECK(make("EFI", FAT_DIRECTORY, &d) && make("EFI/BOOT", FAT_DIRECTORY, &d) &&
+        make("EFI/vectra", FAT_DIRECTORY, &d));
+  CHECK(make("EFI/vectra/a", FAT_DIRECTORY, &d) && make("EFI/vectra/a/kernel.elf", 0, &e));
+  static uint8_t big[300'000], back[300'000];
+  for (size_t i = 0; i < sizeof big; i++) big[i] = (uint8_t)(i * 3 + i / 1021);
+  CHECK(put("EFI/vectra/a/kernel.elf", 0, big, sizeof big));
+  CHECK(fat_flush(&vol) == VX_OK);
+  CHECK(fat_mount(&vol, dev) == VX_OK);
+  uint32_t n = sizeof back;
+  CHECK(walk("EFI/vectra/a/kernel.elf", &e) && fat_read(&vol, &e, 0, back, &n) == VX_OK && n == sizeof big &&
+        memcmp(back, big, n) == 0);
+  FILE *f = fopen("out/host/fat32-formatted.img", "wb");
+  if (f) {
+    fwrite(m.bytes, 1, m.len, f);
+    fclose(f);
+  }
+  CHECK(fat_format(dev, 60'000, 0, "SMALL", 1) == VX_ERR_INVALID); // under 65525 clusters
+  free(m.bytes);
+}
+
 int main(void) {
+  check_format();
   check_image("out/host/fat12.img", 12, "SMALL");
   check_image("out/host/fat16.img", 16, "MIDDLE");
   check_image("out/host/fat32.img", 32, "LARGE");

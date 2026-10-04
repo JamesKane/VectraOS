@@ -3,8 +3,10 @@
 //
 //   vxstore put STORE DIR [TAR]     DIR's tree (and TAR's entries, at its root)
 //                                   into STORE; prints the tree's hash
-//   vxstore tar STORE TREE OUT      every object TREE reaches, as a ustar
-//                                   archive of b2/xx/<hex> paths (store.tar)
+//   vxstore tar STORE TREE OUT [NAME=FILE...]
+//                                   every object TREE reaches, as a ustar
+//                                   archive of b2/xx/<hex> paths (store.tar),
+//                                   after each FILE named NAME (records/1.ndb)
 //   vxstore check STORE TREE        every object TREE reaches, checked; exit 0
 //                                   if all are there and sound
 //   vxstore ls STORE TREE [PATH]    a directory's entries
@@ -362,7 +364,7 @@ int main(int argc, char **argv) {
     walk_tree(&tree, none, nullptr);
     return 0;
   }
-  if (strcmp(argv[1], "tar") == 0 && argc == 5) {
+  if (strcmp(argv[1], "tar") == 0 && argc >= 5) {
     names s = {};
     walk_tree(&tree, collect, &s);
     qsort(s.paths, s.n, sizeof *s.paths, by_str);
@@ -374,7 +376,21 @@ int main(int argc, char **argv) {
       if (stat(p, &st) != 0) die("cannot stat", p);
       total += 2 * VX_TAR_BLOCK + (size_t)st.st_size;
     }
+    for (int i = 5; i < argc; i++) {
+      struct stat st;
+      const char *eq = strchr(argv[i], '=');
+      if (!eq || stat(eq + 1, &st) != 0) die("not NAME=FILE", argv[i]);
+      total += 2 * VX_TAR_BLOCK + (size_t)st.st_size + 2 * VX_TAR_BLOCK; // and its directories
+    }
     vx_tar_writer w = {.buf = xalloc(total), .cap = total};
+    for (int i = 5; i < argc; i++) {
+      const char *eq = strchr(argv[i], '=');
+      size_t len;
+      uint8_t *data = slurp(eq + 1, &len);
+      if (!data) die("cannot read", eq + 1);
+      vx_tar_add(&w, (vx_str){argv[i], (size_t)(eq - argv[i])}, false, 0444, data, len);
+      free(data);
+    }
     for (size_t i = 0; i < s.n; i++) {
       if (i && strcmp(s.paths[i], s.paths[i - 1]) == 0) continue; // shared by two files
       char p[4200];

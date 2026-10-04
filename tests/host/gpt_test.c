@@ -87,7 +87,46 @@ static const uint16_t NAME_VECTRA[] = {'v', 'e', 'c', 't', 'r', 'a', 0};
 static const uint16_t NAME_ODD[] = {0x00e9, 0x20ac, 0xd83d,
                                     0xde00, 0xdc00, 0}; // é € 😀, a lone low surrogate
 
+static bool disk_write(void *ctx, uint64_t lba, uint32_t count, const uint8_t *buf) {
+  disk *d = ctx;
+  if (d->broken || lba >= d->sectors || count > d->sectors - lba) return false;
+  memcpy(d->bytes + lba * d->sector, buf, (size_t)count * d->sector);
+  return true;
+}
+
+// vx_gpt_write's tables, read back: as install writes them (an ESP and the
+// system partition), on 512-byte and 4 KiB sectors; the primary damaged, the
+// backup still there; an overlap refused before anything is written.
+static void check_write(uint32_t sector, uint64_t sectors) {
+  disk d = {.bytes = calloc(sectors, sector), .sector = sector, .sectors = sectors};
+  static vx_gpt w, g;
+  w = (vx_gpt){.sector = sector, .sectors = sectors, .count = 2};
+  memset(w.disk_guid, 0x42, 16);
+  uint64_t first = 1 << 20 >> (sector == 512 ? 9 : 12); // 1 MiB in
+  CHECK(vx_gpt_guid(ESP, 36, w.parts[0].type) && vx_gpt_guid(SYSTEM, 36, w.parts[1].type));
+  w.parts[0].first = first, w.parts[0].last = first * 9 - 1; // 8 MiB
+  w.parts[1].first = first * 9, w.parts[1].last = sectors - 1 - 33;
+  memset(w.parts[0].guid, 1, 16), memset(w.parts[1].guid, 2, 16);
+  strcpy(w.parts[0].name, "EFI system partition");
+  strcpy(w.parts[1].name, "vectra");
+  if (sector == 4096) w.parts[1].last = sectors - 1 - 5; // 128 entries are 4 sectors
+  CHECK(vx_gpt_write(&w, disk_write, &d) == VX_OK);
+  CHECK(vx_gpt_read(&g, sector, sectors, disk_read, &d) == VX_OK && !g.backup && g.count == 2);
+  CHECK(g.parts[1].first == first * 9 && strcmp(g.parts[1].name, "vectra") == 0 &&
+        memcmp(g.parts[1].type, w.parts[1].type, 16) == 0 && memcmp(g.disk_guid, w.disk_guid, 16) == 0);
+  CHECK(d.bytes[510] == 0x55 && d.bytes[511] == 0xaa && d.bytes[446 + 4] == 0xee); // the protective MBR
+  d.bytes[sector] ^= 1;                                                            // the primary's signature
+  CHECK(vx_gpt_read(&g, sector, sectors, disk_read, &d) == VX_OK && g.backup && g.count == 2);
+  w.parts[1].first = w.parts[0].last; // overlapping
+  memset(d.bytes, 0, (size_t)sectors * sector);
+  CHECK(vx_gpt_write(&w, disk_write, &d) == VX_ERR_INVALID);
+  CHECK(vx_gpt_read(&g, sector, sectors, disk_read, &d) == VX_ERR_INVALID); // nothing written
+  free(d.bytes);
+}
+
 int main(void) {
+  check_write(512, 65536);
+  check_write(4096, 8192);
   static vx_gpt g;
   part two[] = {{ESP, 2048, 4095, NAME_ESP}, {SYSTEM, 4096, 8191, NAME_VECTRA}};
 

@@ -64,12 +64,12 @@ typedef struct iso_entry {
   char target[ISO_LINK_MAX]; // a symbolic link's
 } iso_entry;
 
-static uint32_t iso_u32(const uint8_t *p) {
+[[maybe_unused]] static uint32_t iso_u32(const uint8_t *p) {
   return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
 }
 
 // A sector, through the cache: nullptr if the device fails or it is past the volume.
-static const uint8_t *iso_sector(iso_vol *v, uint64_t sector) {
+[[maybe_unused]] static const uint8_t *iso_sector(iso_vol *v, uint64_t sector) {
   uint32_t victim = 0;
   for (uint32_t i = 0; i < ISO_CACHE; i++) {
     if (v->cache[i].valid && v->cache[i].sector == sector) {
@@ -96,8 +96,8 @@ typedef struct iso_rec {
 // The record at offset off of directory [lba, lba + len): NOT_FOUND past
 // the end; *next is where the one after it is (records never straddle a
 // sector: a zero length byte means the rest of the sector is padding).
-static vx_status iso_record_at(iso_vol *v, uint32_t lba, uint32_t len, uint32_t off, iso_rec *r,
-                               uint32_t *next) {
+[[maybe_unused]] static vx_status iso_record_at(iso_vol *v, uint32_t lba, uint32_t len, uint32_t off,
+                                                iso_rec *r, uint32_t *next) {
   while (off < len) {
     const uint8_t *s = iso_sector(v, (uint64_t)lba + off / ISO_SECTOR);
     if (!s) return VX_ERR_IO;
@@ -115,7 +115,9 @@ static vx_status iso_record_at(iso_vol *v, uint32_t lba, uint32_t len, uint32_t 
   return VX_ERR_NOT_FOUND;
 }
 
-static bool iso_is_dot(const iso_rec *r) { return r->b[32] == 1 && r->b[33] <= 1; } // "." or ".."
+[[maybe_unused]] static bool iso_is_dot(const iso_rec *r) {
+  return r->b[32] == 1 && r->b[33] <= 1;
+} // "." or ".."
 
 // --- System use (SUSP and Rock Ridge) ---
 
@@ -123,7 +125,8 @@ static bool iso_is_dot(const iso_rec *r) { return r->b[32] == 1 && r->b[33] <= 1
 // fn returns false to stop.
 typedef bool (*iso_su_fn)(void *ctx, const uint8_t *e, uint32_t len);
 
-static vx_status iso_each_su(iso_vol *v, const iso_rec *r, uint32_t skip, iso_su_fn fn, void *ctx) {
+[[maybe_unused]] static vx_status iso_each_su(iso_vol *v, const iso_rec *r, uint32_t skip, iso_su_fn fn,
+                                              void *ctx) {
   uint32_t nlen = r->b[32], at = 33 + nlen + !(nlen & 1) + skip;
   static uint8_t area[ISO_SECTOR];
   const uint8_t *p = r->b;
@@ -164,7 +167,7 @@ typedef struct iso_rr {
 } iso_rr;
 
 // A 7-byte record date (and Rock Ridge's short form) as seconds since 1970, UTC.
-static int64_t iso_time7(const uint8_t *d) {
+[[maybe_unused]] static int64_t iso_time7(const uint8_t *d) {
   int64_t y = 1900 + d[0];
   uint32_t m = d[1], day = d[2];
   if (m < 1 || m > 12 || day < 1 || day > 31) return 0;
@@ -178,11 +181,11 @@ static int64_t iso_time7(const uint8_t *d) {
   return t - (int64_t)(int8_t)d[6] * 15 * 60; // the offset from GMT, in quarter hours
 }
 
-static void iso_target_put(iso_rr *rr, const char *s, uint32_t n) {
+[[maybe_unused]] static void iso_target_put(iso_rr *rr, const char *s, uint32_t n) {
   if (rr->target_len + n < ISO_LINK_MAX) memcpy(rr->target + rr->target_len, s, n), rr->target_len += n;
 }
 
-static bool iso_rr_entry(void *ctx, const uint8_t *e, uint32_t len) {
+[[maybe_unused]] static bool iso_rr_entry(void *ctx, const uint8_t *e, uint32_t len) {
   iso_rr *rr = ctx;
   if (e[0] == 'P' && e[1] == 'X' && len >= 36) {
     rr->mode = iso_u32(e + 4), rr->have_mode = true;
@@ -231,7 +234,7 @@ static bool iso_rr_entry(void *ctx, const uint8_t *e, uint32_t len) {
 
 // --- Names ---
 
-static void iso_put_utf8(char *out, size_t *n, uint32_t c) {
+[[maybe_unused]] static void iso_put_utf8(char *out, size_t *n, uint32_t c) {
   if (*n + 4 >= ISO_NAME_MAX) return;
   if (c < 0x80) {
     out[(*n)++] = (char)c;
@@ -248,7 +251,7 @@ static void iso_put_utf8(char *out, size_t *n, uint32_t c) {
 
 // A record's identifier as a name: Joliet's UTF-16BE, or ISO 9660's
 // d-characters lower-cased; ";N" and a trailing dot dropped from a file's.
-static void iso_plain_name(const iso_rec *r, bool joliet, char *out) {
+[[maybe_unused]] static void iso_plain_name(const iso_rec *r, bool joliet, char *out) {
   const uint8_t *id = r->b + 33;
   uint32_t n = r->b[32];
   size_t len = 0;
@@ -284,15 +287,16 @@ static void iso_plain_name(const iso_rec *r, bool joliet, char *out) {
   }
 }
 
-static uint64_t iso_node(uint32_t dir_lba, uint32_t off) {
+[[maybe_unused]] static uint64_t iso_node(uint32_t dir_lba, uint32_t off) {
   return 1ull << 62 | (uint64_t)dir_lba << 24 | off;
 }
-static uint32_t iso_node_dir(uint64_t node) { return (uint32_t)(node >> 24); }
-static uint32_t iso_node_off(uint64_t node) { return (uint32_t)(node & 0xff'ffff); }
+[[maybe_unused]] static uint32_t iso_node_dir(uint64_t node) { return (uint32_t)(node >> 24); }
+[[maybe_unused]] static uint32_t iso_node_off(uint64_t node) { return (uint32_t)(node & 0xff'ffff); }
 
 // An entry from its record, found at off in directory dir_lba. NOT_FOUND
 // for one Rock Ridge hides (a relocated directory, RE, seen where it was moved to).
-static vx_status iso_decode(iso_vol *v, const iso_rec *r, uint32_t dir_lba, uint32_t off, iso_entry *e) {
+[[maybe_unused]] static vx_status iso_decode(iso_vol *v, const iso_rec *r, uint32_t dir_lba, uint32_t off,
+                                             iso_entry *e) {
   *e = (iso_entry){.node = iso_node(dir_lba, off),
                    .lba = iso_u32(r->b + 2),
                    .size = iso_u32(r->b + 10),
@@ -336,7 +340,7 @@ static vx_status iso_decode(iso_vol *v, const iso_rec *r, uint32_t dir_lba, uint
 
 // --- Mounting ---
 
-static bool iso_er_rock(void *ctx, const uint8_t *e, uint32_t len) {
+[[maybe_unused]] static bool iso_er_rock(void *ctx, const uint8_t *e, uint32_t len) {
   bool *rock = ctx;
   if (e[0] == 'E' && e[1] == 'R' && len >= 8) {
     uint32_t idl = e[4];
@@ -351,7 +355,7 @@ static bool iso_er_rock(void *ctx, const uint8_t *e, uint32_t len) {
 
 // The volume on dev, read the first way it has of those not in avoid (a
 // mask of iso_kind; ISO_PLAIN cannot be avoided). INVALID if it is not ISO 9660.
-static vx_status iso_mount(iso_vol *v, iso_dev dev, uint32_t avoid) {
+[[maybe_unused]] static vx_status iso_mount(iso_vol *v, iso_dev dev, uint32_t avoid) {
   memset(v, 0, sizeof *v);
   v->dev = dev;
   uint32_t pvd_lba = 0, pvd_len = 0, joliet_lba = 0, joliet_len = 0;
@@ -398,7 +402,7 @@ static vx_status iso_mount(iso_vol *v, iso_dev dev, uint32_t avoid) {
 
 // --- Directories and files ---
 
-static void iso_root_entry(const iso_vol *v, iso_entry *e) {
+[[maybe_unused]] static void iso_root_entry(const iso_vol *v, iso_entry *e) {
   *e = (iso_entry){.node = ISO_ROOT, .lba = v->root_lba, .size = v->root_len, .dir = true, .mode = 0555};
   e->name[0] = '/';
 }
@@ -407,7 +411,7 @@ typedef struct iso_iter {
   uint32_t lba, len, off;
 } iso_iter;
 
-static vx_status iso_open_dir(const iso_vol *v, const iso_entry *d, iso_iter *it) {
+[[maybe_unused]] static vx_status iso_open_dir(const iso_vol *v, const iso_entry *d, iso_iter *it) {
   (void)v;
   if (!d->dir) return VX_ERR_INVALID;
   *it = (iso_iter){.lba = d->lba, .len = d->size};
@@ -416,7 +420,7 @@ static vx_status iso_open_dir(const iso_vol *v, const iso_entry *d, iso_iter *it
 
 // The next entry in the directory: NOT_FOUND at its end. "." and "..", and
 // directories Rock Ridge relocated, are skipped.
-static vx_status iso_dir_next(iso_vol *v, iso_iter *it, iso_entry *e) {
+[[maybe_unused]] static vx_status iso_dir_next(iso_vol *v, iso_iter *it, iso_entry *e) {
   for (;;) {
     iso_rec r;
     uint32_t at = it->off, next;
@@ -433,7 +437,7 @@ static vx_status iso_dir_next(iso_vol *v, iso_iter *it, iso_entry *e) {
   }
 }
 
-static bool iso_same(const char *a, const char *b, size_t blen, bool exact) {
+[[maybe_unused]] static bool iso_same(const char *a, const char *b, size_t blen, bool exact) {
   size_t i = 0;
   for (; i < blen && a[i]; i++) {
     char x = a[i], y = b[i];
@@ -447,7 +451,8 @@ static bool iso_same(const char *a, const char *b, size_t blen, bool exact) {
 }
 
 // The entry named name in directory d.
-static vx_status iso_lookup(iso_vol *v, const iso_entry *d, const char *name, size_t len, iso_entry *e) {
+[[maybe_unused]] static vx_status iso_lookup(iso_vol *v, const iso_entry *d, const char *name, size_t len,
+                                             iso_entry *e) {
   iso_iter it;
   vx_status st = iso_open_dir(v, d, &it);
   while (st == VX_OK && (st = iso_dir_next(v, &it, e)) == VX_OK)
@@ -456,7 +461,7 @@ static vx_status iso_lookup(iso_vol *v, const iso_entry *d, const char *name, si
 }
 
 // The entry for a node.
-static vx_status iso_get(iso_vol *v, uint64_t node, iso_entry *e) {
+[[maybe_unused]] static vx_status iso_get(iso_vol *v, uint64_t node, iso_entry *e) {
   if (node == ISO_ROOT) {
     iso_root_entry(v, e);
     return VX_OK;
@@ -473,14 +478,14 @@ static vx_status iso_get(iso_vol *v, uint64_t node, iso_entry *e) {
   return iso_decode(v, &r, lba, off, e);
 }
 
-static bool iso_pl(void *ctx, const uint8_t *e, uint32_t len) {
+[[maybe_unused]] static bool iso_pl(void *ctx, const uint8_t *e, uint32_t len) {
   uint32_t *parent = ctx;
   if (e[0] == 'P' && e[1] == 'L' && len >= 12) *parent = iso_u32(e + 4);
   return true;
 }
 
 // The directory node holding a node.
-static vx_status iso_parent(iso_vol *v, uint64_t node, uint64_t *parent) {
+[[maybe_unused]] static vx_status iso_parent(iso_vol *v, uint64_t node, uint64_t *parent) {
   uint32_t dir = node == ISO_ROOT ? v->root_lba : iso_node_dir(node);
   if (dir == v->root_lba) {
     *parent = ISO_ROOT;
@@ -511,7 +516,8 @@ static vx_status iso_parent(iso_vol *v, uint64_t node, uint64_t *parent) {
 }
 
 // Up to *count bytes of a file from offset into buf; *count, what was read.
-static vx_status iso_read(iso_vol *v, const iso_entry *f, uint64_t offset, uint8_t *buf, uint32_t *count) {
+[[maybe_unused]] static vx_status iso_read(iso_vol *v, const iso_entry *f, uint64_t offset, uint8_t *buf,
+                                           uint32_t *count) {
   if (f->dir || f->link) return VX_ERR_INVALID;
   if (offset >= f->size) {
     *count = 0;

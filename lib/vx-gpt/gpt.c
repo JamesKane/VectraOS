@@ -1,6 +1,7 @@
-// vx-gpt: the GUID partition table (UEFI 2.10 §5.3), read and checked. Pure
-// code over a read callback, so it builds for the host's tests and fuzzing as
-// well as for partd (docs/proto/block.md §6).
+// vx-gpt: the GUID partition table (UEFI 2.10 §5.3), read and checked, and
+// written (install, M5 step 9c). Pure code over read and write callbacks, so
+// it builds for the host's tests and fuzzing as well as for partd
+// (docs/proto/block.md §6) and install.
 //
 // The disk is untrusted. The primary header (LBA 1) is used if it and its
 // entries pass every check; otherwise the backup (the disk's last LBA). A
@@ -191,4 +192,101 @@ static int gpt_hex(char c) {
   if (n != 16 || len != 36) return false;
   for (int i = 0; i < 16; i++) out[i] = bytes[ORDER[i]];
   return true;
+}
+
+// --- Writing (M5 step 9c: install) ---
+
+static constexpr size_t GPT_WRITE_ENTRIES = (size_t)128 * 128; // 128 entries of 128 bytes
+
+// Writes `count` sectors from buf at `lba`; false if it cannot.
+typedef bool vx_gpt_write_fn(void *ctx, uint64_t lba, uint32_t count, const uint8_t *buf);
+
+static void gpt_put32(uint8_t *p, uint32_t v) {
+  for (int i = 0; i < 4; i++) p[i] = (uint8_t)(v >> (8 * i));
+}
+static void gpt_put64(uint8_t *p, uint64_t v) {
+  gpt_put32(p, (uint32_t)v), gpt_put32(p + 4, (uint32_t)(v >> 32));
+}
+
+// A name, UTF-8, as the entry's 36 UTF-16LE units (BMP only; cut at 36).
+static void gpt_put_name(uint8_t *p, const char *name) {
+  size_t n = 0;
+  for (const uint8_t *s = (const uint8_t *)name; *s && n < 36;) {
+    uint32_t c = *s++;
+    int more = (c >= 0xc0) + (c >= 0xe0) + (c >= 0xf0);
+    static const uint8_t lead[4] = {0x7f, 0x1f, 0x0f, 0x07};
+    c &= lead[more];
+    for (int k = 0; k < more && *s; k++) c = c << 6 | (*s++ & 0x3f);
+    if (c > 0xffff) c = 0xfffd;
+    p[2 * n] = (uint8_t)c, p[2 * n + 1] = (uint8_t)(c >> 8);
+    n++;
+  }
+}
+
+// One header, for a table at `my` whose copy is at `other` and entries at
+// `entries`, into h (a sector).
+static void gpt_header(const vx_gpt *g, uint8_t *h, uint64_t my, uint64_t other, uint64_t entries,
+                       uint32_t ecrc) {
+  memset(h, 0, g->sector);
+  for (int i = 0; i < 8; i++) h[i] = (uint8_t)"EFI PART"[i];
+  gpt_put32(h + 8, 0x00010000);
+  gpt_put32(h + 12, 92);
+  gpt_put64(h + 24, my);
+  gpt_put64(h + 32, other);
+  gpt_put64(h + 40, g->first_usable);
+  gpt_put64(h + 48, g->last_usable);
+  memcpy(h + 56, g->disk_guid, 16);
+  gpt_put64(h + 72, entries);
+  gpt_put32(h + 80, 128);
+  gpt_put32(h + 84, 128);
+  gpt_put32(h + 88, ecrc);
+  gpt_put32(h + 16, gpt_crc32(h, 92));
+}
+
+// The table g holds (sector, sectors, disk_guid, count and parts) written
+// whole: a protective MBR, the primary header and 128 entries at LBA 1 and
+// 2, their backups at the disk's end. g's usable range is set from the
+// disk's size; a part outside it, or two that overlap, is INVALID and nothing
+// is written. g->buf is used for the entries.
+[[maybe_unused]] static vx_status vx_gpt_write(vx_gpt *g, vx_gpt_write_fn *write, void *ctx) {
+  uint32_t esect = (uint32_t)(GPT_WRITE_ENTRIES / g->sector);
+  if (g->sector < 512 || g->sector > 4096 || g->sector & (g->sector - 1) || g->count > 128 ||
+      g->sectors < 2 * (2 + (uint64_t)esect) + 1)
+    return VX_ERR_INVALID;
+  g->first_usable = 2 + esect;
+  g->last_usable = g->sectors - 2 - esect;
+  for (uint32_t i = 0; i < g->count; i++) {
+    const vx_gpt_part *p = &g->parts[i];
+    if (p->first > p->last || p->first < g->first_usable || p->last > g->last_usable) return VX_ERR_INVALID;
+    for (uint32_t k = 0; k < i; k++)
+      if (p->first <= g->parts[k].last && g->parts[k].first <= p->last) return VX_ERR_INVALID;
+  }
+  uint8_t *e = g->buf;
+  memset(e, 0, GPT_WRITE_ENTRIES);
+  for (uint32_t i = 0; i < g->count; i++) {
+    uint8_t *x = e + (size_t)i * 128;
+    memcpy(x, g->parts[i].type, 16);
+    memcpy(x + 16, g->parts[i].guid, 16);
+    gpt_put64(x + 32, g->parts[i].first);
+    gpt_put64(x + 40, g->parts[i].last);
+    gpt_put64(x + 48, g->parts[i].attributes);
+    gpt_put_name(x + 56, g->parts[i].name);
+  }
+  uint32_t ecrc = gpt_crc32(e, GPT_WRITE_ENTRIES);
+  static uint8_t s[4096];
+  // The protective MBR: one partition of type 0xEE over the whole disk (or as much of it as 32 bits hold).
+  memset(s, 0, g->sector);
+  uint8_t *pe = s + 446;
+  pe[1] = 0, pe[2] = 2, pe[4] = 0xee, pe[5] = pe[6] = pe[7] = 0xff;
+  gpt_put32(pe + 8, 1);
+  gpt_put32(pe + 12, g->sectors - 1 > 0xffffffff ? 0xffffffff : (uint32_t)(g->sectors - 1));
+  s[510] = 0x55, s[511] = 0xaa;
+  if (!write(ctx, 0, 1, s)) return VX_ERR_IO;
+  uint64_t last = g->sectors - 1, backup_entries = last - esect;
+  if (!write(ctx, 2, esect, e) || !write(ctx, backup_entries, esect, e)) return VX_ERR_IO;
+  gpt_header(g, s, last, 1, backup_entries,
+             ecrc); // the backup, then the primary: a torn write leaves one whole
+  if (!write(ctx, last, 1, s)) return VX_ERR_IO;
+  gpt_header(g, s, 1, last, 2, ecrc);
+  return write(ctx, 1, 1, s) ? VX_OK : VX_ERR_IO;
 }

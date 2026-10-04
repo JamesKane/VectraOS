@@ -1259,6 +1259,7 @@ static const program USER_PROGRAMS[] = {
     {"netd", "servers/netd/netd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"gsh", "cmd/gsh.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"poweroff", "cmd/poweroff.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"install", "cmd/install.c", IN_BOOTFS, nullptr, false, &monocypher, MONOCYPHER_USE_FLAGS},
     {"ls", "cmd/ls.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"cat", "cmd/cat.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"echo", "cmd/echo.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
@@ -2245,7 +2246,10 @@ static void write_iso(const char *path, const char *boot_image, iso_file *files,
 }
 
 static void make_test_iso(const char *path); // the isofs tests' ISO, made by write_iso
-static constexpr int VX_STORE_HEX_LEN = 67;  // "b2:" and 64 hex: lib/vx-store's names
+static bool build_vxstore(void);             // host/vxstore, for releases and install media
+static const char VXSTORE[] = "out/host/vxstore";
+static vx_str str_of(const char *s) { return (vx_str){s, strlen(s)}; }
+static constexpr int VX_STORE_HEX_LEN = 67; // "b2:" and 64 hex: lib/vx-store's names
 
 static const char *out_dir(const arch *a, bool release) {
   return fmt("out/%s/%s", a->name, release ? "release" : "debug");
@@ -2443,6 +2447,44 @@ static bool make_image_in(const arch *a, bool release, const char *image, const 
 // Everything an image takes from the arena (each file it reads, the boot
 // image's archive) is given back once it is written: each scenario's process
 // makes one, after the image its parent made, all in one arena.
+// An install medium's store (06 §8, M5 step 9c): this image's own boot files
+// and bootfs as a release's base tree (so the installed system is the one
+// tested, its test services included), put in a store beside the image with
+// a release record, as store.tar. Its path, or nullptr.
+static bool iso_installer; // the next ISO make_image makes carries store.tar
+
+static const char *make_install_store(const arch *a, bool release, const char *image, const char *loader,
+                                      const char *loader_name, const char *kernel, const char *bootfs) {
+  if (!build_vxstore()) return nullptr;
+  const char *top = fmt("%s.release", image), *rootdir = fmt("%s/root", top), *store = fmt("%s/store", top);
+  cmd rm = {};
+  cmd_addv(&rm, (const char *const[]){"/usr/bin/rm", "-rf", top, nullptr});
+  if (!run(&rm)) return nullptr;
+  mkdirs(fmt("%s/boot/vx", rootdir));
+  mkdirs(fmt("%s/boot/limine", rootdir));
+  mkdirs(store);
+  write_file(fmt("%s/boot/limine/%s", rootdir, loader_name), read_file(loader));
+  write_file(fmt("%s/boot/limine/limine.conf", rootdir), read_file("boot/limine.conf"));
+  write_file(fmt("%s/boot/vx/kernel.elf", rootdir), read_file(kernel));
+  write_file(fmt("%s/boot/vx/bootfs.tar", rootdir), read_file(bootfs));
+  for (int i = 0; i < USER_PROGRAM_COUNT; i++)
+    if (USER_PROGRAMS[i].where == IN_MODULE)
+      write_file(fmt("%s/boot/vx/%s", rootdir, USER_PROGRAMS[i].name),
+                 read_file(fmt("%s/%s", out_dir(a, release), USER_PROGRAMS[i].name)));
+  char *out = run_capture((const char *const[]){VXSTORE, "put", store, rootdir, bootfs, nullptr});
+  if (!out || !strchr(out, ' ')) return nullptr;
+  *strchr(out, ' ') = 0;
+  const char *record = fmt("%s/1.ndb", top);
+  write_file(record, str_of(fmt("release=1 name=test-1 channel=dev commit=test vx-abi=0 unsigned\n"
+                                "set=base arch=%s tree=%s\n",
+                                a->name, out)));
+  const char *tar = fmt("%s/store.tar", top);
+  cmd t = {};
+  cmd_addv(&t,
+           (const char *const[]){VXSTORE, "tar", store, out, tar, fmt("records/1.ndb=%s", record), nullptr});
+  return run(&t) ? tar : nullptr;
+}
+
 static bool make_image(const arch *a, bool release, const char *image, const char *cmdline, const char *with,
                        const char *iso) {
   size_t mark = arena_used;
@@ -2518,9 +2560,21 @@ static bool make_image_in(const arch *a, bool release, const char *image, const 
       return false;
     iso_file files[16];
     int nf = 0;
+    const char *iso_config = config;
+    if (iso_installer) { // an install medium: the release's objects too, and a command line that says so
+      const char *store = make_install_store(a, release, image, loader, loader_name, kernel, bootfs);
+      if (!store) return false;
+      files[nf++] = (iso_file){.path = "boot/vx/store.tar", .from = store};
+      iso_config = fmt("%s.iso.conf", image);
+      FILE *f = fopen(iso_config, "w");
+      if (!f) die("cannot write %s", iso_config);
+      fprintf(f, "%s    module_path: boot():/boot/vx/store.tar\n    cmdline: vx.live%s%s\n",
+              read_file("boot/limine.conf").ptr, cmdline && *cmdline ? " " : "", cmdline ? cmdline : "");
+      fclose(f);
+    }
     files[nf++] = (iso_file){.path = "boot/vx/kernel.elf", .from = kernel};
     files[nf++] = (iso_file){.path = "boot/vx/bootfs.tar", .from = bootfs};
-    files[nf++] = (iso_file){.path = "boot/limine/limine.conf", .from = config};
+    files[nf++] = (iso_file){.path = "boot/limine/limine.conf", .from = iso_config};
     for (int i = 0; i < USER_PROGRAM_COUNT && nf < 16; i++)
       if (USER_PROGRAMS[i].where == IN_MODULE)
         files[nf++] = (iso_file){.path = fmt("boot/vx/%s", USER_PROGRAMS[i].name),
@@ -2545,7 +2599,6 @@ static bool build_image(const arch *a, bool release) {
 // host/vxstore, built for this machine, with lib/vx-store and Monocypher
 // (its own objects, no sanitizers, as host/vxfs is built). Rebuilt when a
 // source changes.
-static const char VXSTORE[] = "out/host/vxstore";
 
 static bool build_vxstore(void) {
   static const char *const SOURCES[] = {"host/vxstore/main.c",
@@ -2944,8 +2997,6 @@ static const char *fat_disk(const char *path, long mib, int type) {
   return path;
 }
 
-static vx_str str_of(const char *s) { return (vx_str){s, strlen(s)}; }
-
 // The distd tests' store branch (tests/qemu/distd.ndb): a small release made
 // by host/vxstore (a file of several blocks, another never read before it is
 // damaged, a nested directory, a link, a UTF-8 name), its record for both
@@ -3098,12 +3149,18 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   int fat = 0;                             // and fat=12|16|32: the disk= is one FAT volume, no GPT
   bool fsck = false;                       // and fsck: fsck.fat -n must find that volume sound after
   bool isodisk = false;                    // scenario=... isodisk: the second disk is make_test_iso's ISO
+  bool installer = false;                  // scenario=... installer: the ISO an install medium (implies iso)
+  bool blank = false;                      // and blank: the disk= is all zeros, as a new disk is
   const char *only = nullptr;              // scenario=... arch=A: run on A only
   bool must_exit = false;                  // scenario=... exits: QEMU must then exit by itself (power off)
   const char *volume = nullptr;            // and volume=DIR: its system partition a volume, home DIR
   bool storetree = false;                  // and storetree: its store branch make_test_release's
   const char *host_file[8], *host_text[8]; // host=FILE text=...: in the share, once it passed
   int host_count = 0;
+  // reboot: the scenario's boots, each its expects: phase k's are [phase_end[k-1], phase_end[k]). Each
+  // but the last ends with QEMU exiting by itself (power off); each after the first boots from the
+  // second disk, as the machine it was installed on would, with no CD.
+  int phase_end[4], nphases = 0;
   for (;;) {
     vx_ndb_record rec;
     vx_ndb_result res = vx_ndb_next(&r, &rec);
@@ -3134,6 +3191,9 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
       }
       fsck = vx_ndb_has(&rec, "fsck");
       isodisk = vx_ndb_has(&rec, "isodisk");
+      installer = vx_ndb_has(&rec, "installer");
+      iso = iso || installer;
+      blank = vx_ndb_has(&rec, "blank");
       if (vx_ndb_has(&rec, "iommu")) {
         const char *m = str_dup(vx_ndb_get(&rec, "iommu"));
         if (strcmp(m, "caching") != 0) die("%s:%zu: iommu=%s: only iommu=caching", path, rec.line, m);
@@ -3145,6 +3205,10 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
           die("%s:%zu: bus=%s is neither nvme nor virtio", path, rec.line, b);
         nvme = strcmp(b, "nvme") == 0;
       }
+    } else if (vx_ndb_has(&rec, "reboot")) { // what follows is another boot, from the second disk
+      if (nphases == 3 || expect_count == 0)
+        die("%s:%zu: reboot= after an expect=, at most 3 times", path, rec.line);
+      phase_end[nphases++] = expect_count;
     } else if (vx_ndb_has(&rec, "host") && host_count < 8) {
       vx_str file = vx_ndb_get(&rec, "host");
       for (size_t k = 0; k < file.len; k++)
@@ -3181,6 +3245,8 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
     }
   }
   if (timeout <= 0 || expect_count == 0) die("%s: needs scenario= with a timeout, and an expect=", path);
+  if (nphases && phase_end[nphases - 1] == expect_count) die("%s: reboot needs an expect= after it", path);
+  phase_end[nphases++] = expect_count;
   if (only && strcmp(only, a->name) != 0) { // what the other architecture lacks so far (an IOMMU, say)
     fprintf(stderr, "  TEST  %-11s %-8s skipped (%s only)\n", name, a->name, only);
     return true;
@@ -3190,7 +3256,10 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   if (*cmdline || *with || iso) {
     image = fmt("%s/test-%s.img", out_dir(a, release), name);
     if (iso) cdrom = fmt("%s/test-%s.iso", out_dir(a, release), name);
-    if (!make_image(a, release, image, cmdline, with, cdrom)) return false;
+    iso_installer = installer;
+    bool made = make_image(a, release, image, cmdline, with, cdrom);
+    iso_installer = false;
+    if (!made) return false;
   }
 
   const char *log_path = fmt("%s/test-%s.log", out_dir(a, release), name);
@@ -3210,124 +3279,141 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
     disk = fmt("%s/test.iso", run_dir);
     make_test_iso(disk);
   }
-  if (fat)
+  if (blank) {
+    if (!disk_mib || volume || fat || storetree) die("%s: blank needs disk= and nothing to put on it", path);
+    disk = fmt("%s/disk.img", run_dir);
+    int bfd = open(disk, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (bfd < 0 || ftruncate(bfd, (off_t)disk_mib << 20) != 0) die("cannot make %s", disk);
+    close(bfd);
+  } else if (fat) {
     disk = fat_disk(fmt("%s/disk.img", run_dir), disk_mib, fat);
-  else if (disk_mib)
+  } else if (disk_mib) {
     disk = test_disk(fmt("%s/disk.img", run_dir), disk_mib, volume,
                      storetree ? make_test_release(fmt("%s/store", run_dir)) : nullptr);
-  qemu_cmd(&c, a, image,
-           (qemu_opts){.kvm = kvm_usable(a),
-                       .test = true,
-                       .share = share,
-                       .u9fs = u9fs,
-                       .cdrom = cdrom,
-                       .disk = disk,
-                       .nvme = nvme,
-                       .caching = caching,
-                       .rtc = rtc});
-  if (verbose) cmd_print(&c);
-  signal(SIGPIPE, SIG_IGN); // QEMU gone: a write to it fails, rather than ending this process
-  int fds[2], keys[2];      // QEMU's serial: its output, and what is typed into it
-  if (pipe(fds) != 0 || pipe(keys) != 0) die("pipe failed");
-  pid_t pid = fork();
-  if (pid < 0) die("fork failed");
-  if (pid == 0) {
-    dup2(keys[0], 0);
-    dup2(fds[1], 1);
-    close(fds[0]);
+  }
+  const char *verdict = "ok";
+  double run_start = now_seconds();
+  for (int ph = 0; ph < nphases && strcmp(verdict, "ok") == 0; ph++) {
+    int phase_first = ph ? phase_end[ph - 1] : 0, phase_last = phase_end[ph];
+    bool phase_exits = must_exit || ph + 1 < nphases;
+    if (ph && !disk) die("%s: reboot boots the second disk, and there is none", path);
+    if (ph) fprintf(log, "\n--- build: boot %d, from the second disk ---\n", ph + 1);
+    c = (cmd){};
+    qemu_cmd(&c, a, ph ? disk : image,
+             (qemu_opts){.kvm = kvm_usable(a),
+                         .test = true,
+                         .share = share,
+                         .u9fs = u9fs,
+                         .cdrom = ph ? nullptr : cdrom,
+                         .disk = ph ? nullptr : disk,
+                         .nvme = nvme,
+                         .caching = caching,
+                         .rtc = rtc});
+    if (verbose) cmd_print(&c);
+    signal(SIGPIPE, SIG_IGN); // QEMU gone: a write to it fails, rather than ending this process
+    int fds[2], keys[2];      // QEMU's serial: its output, and what is typed into it
+    if (pipe(fds) != 0 || pipe(keys) != 0) die("pipe failed");
+    pid_t pid = fork();
+    if (pid < 0) die("fork failed");
+    if (pid == 0) {
+      dup2(keys[0], 0);
+      dup2(fds[1], 1);
+      close(fds[0]);
+      close(fds[1]);
+      close(keys[0]);
+      close(keys[1]);
+      execv(c.argv[0], (char *const *)c.argv);
+      _exit(127);
+    }
     close(fds[1]);
     close(keys[0]);
-    close(keys[1]);
-    execv(c.argv[0], (char *const *)c.argv);
-    _exit(127);
-  }
-  close(fds[1]);
-  close(keys[0]);
 
-  double start = now_seconds();
-  int next = 0, typed = -1; // input[typed] has been typed
-  const char *verdict = nullptr;
-  char line[4096];
-  size_t len = 0;
-  static char since[64 * 1024]; // the output since the last thing typed, for prompt=
-  size_t since_len = 0;
-  bool since_cut = false; // since[0] is mid-line: older output was let go
-  static char buf[4096];  // read from QEMU; [pos, n) not looked at yet
-  ssize_t n = 0, pos = 0;
-  ssize_t stale = 0;     // bytes of buf, from pos, that came before the last typing
-  bool all_seen = false; // every expect= met; with exits, QEMU's exit is what is waited for now
-  while (!verdict) {
-    if (!all_seen && typed < next && input[next].len) {
-      if (write(keys[1], input[next].ptr, input[next].len) != (ssize_t)input[next].len) {
-        verdict = "cannot type into QEMU (it has exited?)"; // QEMU is still killed, and the log kept
+    double start = now_seconds();
+    int next = phase_first, typed = phase_first - 1; // input[typed] has been typed
+    verdict = nullptr;
+    char line[4096];
+    size_t len = 0;
+    static char since[64 * 1024]; // the output since the last thing typed, for prompt=
+    size_t since_len = 0;
+    bool since_cut = false; // since[0] is mid-line: older output was let go
+    static char buf[4096];  // read from QEMU; [pos, n) not looked at yet
+    ssize_t n = 0, pos = 0;
+    ssize_t stale = 0;     // bytes of buf, from pos, that came before the last typing
+    bool all_seen = false; // every expect= met; with exits, QEMU's exit is what is waited for now
+    while (!verdict) {
+      if (!all_seen && typed < next && input[next].len) {
+        if (write(keys[1], input[next].ptr, input[next].len) != (ssize_t)input[next].len) {
+          verdict = "cannot type into QEMU (it has exited?)"; // QEMU is still killed, and the log kept
+          break;
+        }
+        typed = next;
+        since_len = 0;
+        since_cut = false;
+        stale = n - pos; // read before the typing: no prompt in it answers what was typed
+      }
+      if (pos == n) { // all looked at: read more
+        double left = timeout - (now_seconds() - start);
+        if (left <= 0) {
+          verdict =
+              all_seen ? "QEMU did not exit (exits)" : fmt("timed out waiting for \"%s\"", expect[next]);
+          break;
+        }
+        struct pollfd pfd = {.fd = fds[0], .events = POLLIN};
+        if (poll(&pfd, 1, (int)(left * 1000) + 1) <= 0) continue;
+        n = read(fds[0], buf, sizeof buf);
+        pos = 0;
+        if (n <= 0) {
+          verdict = all_seen ? "ok" : "QEMU exited"; // with exits, the exit was the last thing waited for
+          break;
+        }
+        fwrite(buf, 1, (size_t)n, log);
+      }
+      while (pos < n && !verdict) {
+        char ch = buf[pos++];
+        if (ch == '\r') continue;
+        if (since_len == sizeof since) { // keep the newer half: a prompt is in recent output
+          memmove(since, since + sizeof since / 2, sizeof since / 2);
+          since_len = sizeof since / 2;
+          since_cut = true;
+        }
+        if (stale)
+          stale--; // seen for expects and failures, but not by a prompt= after the typing
+        else
+          since[since_len++] = ch;
+        if (ch != '\n' && len < sizeof line - 1) {
+          line[len++] = ch;
+          continue;
+        }
+        if (ch != '\n') continue;
+        line[len] = 0;
+        len = 0;
+        for (int k = 0; k < fail_count; k++)
+          if (strstr(line, fail[k])) verdict = fmt("failure line: %s", line);
+        if (!verdict && !all_seen && !prompt[next] &&
+            (whole[next] ? strcmp(line, expect[next]) == 0 : strstr(line, expect[next]) != nullptr)) {
+          next++;
+          if (next == phase_last) all_seen = true, verdict = phase_exits ? nullptr : "ok";
+          if (!all_seen && input[next].len && typed < next) break; // type it before what follows
+        }
+      }
+      // A prompt has no newline after it, and may share its line with other
+      // programs' output: it counts if it started any line since the last thing
+      // typed.
+      size_t plen = next < phase_last && prompt[next] ? strlen(expect[next]) : 0;
+      for (size_t at = 0; !verdict && plen && at + plen <= since_len; at++) {
+        bool line_start = at ? since[at - 1] == '\n' : !since_cut;
+        if (!line_start || memcmp(since + at, expect[next], plen) != 0) continue;
+        since_len = 0; // used: the next prompt= needs a prompt after this one
+        since_cut = false;
+        if (++next == phase_last) all_seen = true, verdict = phase_exits ? nullptr : "ok";
         break;
       }
-      typed = next;
-      since_len = 0;
-      since_cut = false;
-      stale = n - pos; // read before the typing: no prompt in it answers what was typed
     }
-    if (pos == n) { // all looked at: read more
-      double left = timeout - (now_seconds() - start);
-      if (left <= 0) {
-        verdict = all_seen ? "QEMU did not exit (exits)" : fmt("timed out waiting for \"%s\"", expect[next]);
-        break;
-      }
-      struct pollfd pfd = {.fd = fds[0], .events = POLLIN};
-      if (poll(&pfd, 1, (int)(left * 1000) + 1) <= 0) continue;
-      n = read(fds[0], buf, sizeof buf);
-      pos = 0;
-      if (n <= 0) {
-        verdict = all_seen ? "ok" : "QEMU exited"; // with exits, the exit was the last thing waited for
-        break;
-      }
-      fwrite(buf, 1, (size_t)n, log);
-    }
-    while (pos < n && !verdict) {
-      char ch = buf[pos++];
-      if (ch == '\r') continue;
-      if (since_len == sizeof since) { // keep the newer half: a prompt is in recent output
-        memmove(since, since + sizeof since / 2, sizeof since / 2);
-        since_len = sizeof since / 2;
-        since_cut = true;
-      }
-      if (stale)
-        stale--; // seen for expects and failures, but not by a prompt= after the typing
-      else
-        since[since_len++] = ch;
-      if (ch != '\n' && len < sizeof line - 1) {
-        line[len++] = ch;
-        continue;
-      }
-      if (ch != '\n') continue;
-      line[len] = 0;
-      len = 0;
-      for (int k = 0; k < fail_count; k++)
-        if (strstr(line, fail[k])) verdict = fmt("failure line: %s", line);
-      if (!verdict && !all_seen && !prompt[next] &&
-          (whole[next] ? strcmp(line, expect[next]) == 0 : strstr(line, expect[next]) != nullptr)) {
-        next++;
-        if (next == expect_count) all_seen = true, verdict = must_exit ? nullptr : "ok";
-        if (!all_seen && input[next].len && typed < next) break; // type it before what follows
-      }
-    }
-    // A prompt has no newline after it, and may share its line with other
-    // programs' output: it counts if it started any line since the last thing
-    // typed.
-    size_t plen = next < expect_count && prompt[next] ? strlen(expect[next]) : 0;
-    for (size_t at = 0; !verdict && plen && at + plen <= since_len; at++) {
-      bool line_start = at ? since[at - 1] == '\n' : !since_cut;
-      if (!line_start || memcmp(since + at, expect[next], plen) != 0) continue;
-      since_len = 0; // used: the next prompt= needs a prompt after this one
-      since_cut = false;
-      if (++next == expect_count) all_seen = true, verdict = must_exit ? nullptr : "ok";
-      break;
-    }
+    kill(pid, SIGKILL);
+    wait_ok(pid);
+    close(fds[0]);
+    close(keys[1]);
   }
-  kill(pid, SIGKILL);
-  wait_ok(pid);
-  close(fds[0]);
-  close(keys[1]);
   fclose(log);
 
   // What the guest was to leave on the host, in its copy of the share
@@ -3351,7 +3437,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
 
   bool ok = strcmp(verdict, "ok") == 0;
   fprintf(stderr, "  TEST  %-11s %-8s %s (%.1f s)%s\n", name, a->name, ok ? "ok" : "FAIL",
-          now_seconds() - start, ok ? "" : fmt(": %s; serial log in %s", verdict, log_path));
+          now_seconds() - run_start, ok ? "" : fmt(": %s; serial log in %s", verdict, log_path));
   return ok;
 }
 
@@ -3933,14 +4019,14 @@ static bool check_host_tests(void) {
     ok = ok && passed;
   }
   // What fat_test wrote, checked by another implementation.
-  static const int fat_types[] = {12, 16, 32};
-  for (size_t i = 0; i < sizeof fat_types / sizeof *fat_types; i++) {
-    int k = fat_types[i];
-    const char *img = fmt("out/host/fat%d-written.img", k);
-    cmd fsck = {.log = fmt("out/host/fat%d-fsck.log", k)};
+  static const char *const written[] = {"fat12-written", "fat16-written", "fat32-written", "fat32-formatted"};
+  for (size_t i = 0; i < sizeof written / sizeof *written; i++) {
+    const char *k = written[i];
+    const char *img = fmt("out/host/%s.img", k);
+    cmd fsck = {.log = fmt("out/host/%s-fsck.log", k)};
     cmd_addv(&fsck, (const char *const[]){FSCK_FAT, "-n", img, nullptr});
     bool clean = exists(img) && run(&fsck);
-    fprintf(stderr, "  FSCK  fat%d-written     %s\n", k, clean ? "ok" : "FAIL");
+    fprintf(stderr, "  FSCK  %-16s %s\n", k, clean ? "ok" : "FAIL");
     ok = ok && clean;
   }
   // write_iso's Joliet tree, read by another implementation.

@@ -33,7 +33,9 @@
 // boot image, read-only. console: it writes to /srv/cons (vx-rt). tasks: it
 // gets svcd's own task, and through it every task (procfs). arch: it runs
 // only on that architecture. vx.skip=NAME,... on the kernel command line
-// leaves services out. A service gets nothing that is not named
+// leaves services out; when=WORD keeps a service out unless the command line
+// has WORD (vx.live, vx.system). storeimage: the store image, read-only,
+// when the kernel had a store.tar module (an install medium, 06 §8). A service gets nothing that is not named
 // here: no ambient authority (01 §2). resource and acpi: the root Resource
 // and the ACPI tables, which only devmgr needs. entropy: a seed of its own
 // for a random generator, from svcd's, which the kernel seeded from the
@@ -93,8 +95,8 @@ static uint32_t service_count;
 static post posts[MAX_SERVICES];
 static uint32_t post_count;
 static const uint8_t *image;
-static uint64_t image_size;
-static vx_handle image_vmo, port, resource, acpi_vmo;
+static uint64_t image_size, store_size;
+static vx_handle image_vmo, store_vmo, port, resource, acpi_vmo;
 static uint64_t acpi_size;
 static bool console_attached;
 static bool procfs_started; // the service posting /srv/proc: services are registered there (ADR-0011)
@@ -364,6 +366,13 @@ static vx_status start(service *s) {
     vx_ndb_put_u64(&b.w, "size", image_size);
     vx_ndb_end(&b.w);
   }
+  if (st == VX_OK && vx_ndb_has(&rec, "storeimage") && store_vmo) { // an install medium's objects (06 §8)
+    st = vx_handle_dup(store_vmo, BOOT_IMAGE_RIGHTS, &b.handles[b.count]);
+    b.names[b.count++] = VX_STR("storeimage");
+    vx_ndb_flag(&b.w, "storeimage");
+    vx_ndb_put_u64(&b.w, "size", store_size);
+    vx_ndb_end(&b.w);
+  }
   vx_str srv = vx_ndb_get(&rec, "post");
   bool posts_console = str_eq(srv, VX_STR("cons")); // decided now: rec moves on to the records below
   bool posts_proc = str_eq(srv, VX_STR("proc"));
@@ -549,6 +558,26 @@ static void exited(service *s) {
   if (gave_up) say(s->name, VX_STR(" keeps exiting; it is not restarted again"), VX_STR("\n"));
 }
 
+// Whether the kernel command line has word, alone (space-separated).
+static bool cmdline_has(vx_str word) {
+  vx_str c = vx_spawn.cmdline;
+  for (size_t i = 0; i + word.len <= c.len; i++)
+    if ((!i || c.ptr[i - 1] == ' ') && (i + word.len == c.len || c.ptr[i + word.len] == ' ') &&
+        memcmp(c.ptr + i, word.ptr, word.len) == 0)
+      return true;
+  return false;
+}
+
+// Whether the service is wanted on this boot: its when=WORD, if it has one,
+// is a word of the kernel command line (vx.live on an install medium,
+// vx.system on an installed system, M5 step 9c).
+static bool wanted(const service *s) {
+  vx_ndb_reader r = manifest_reader(s->manifest, s->at);
+  vx_ndb_record rec;
+  if (vx_ndb_next(&r, &rec) != VX_NDB_RECORD || !vx_ndb_has(&rec, "when")) return true;
+  return cmdline_has(vx_ndb_get(&rec, "when"));
+}
+
 // Whether the kernel command line's vx.skip=NAME,NAME,... names the service.
 static bool skipped(vx_str name) {
   vx_str c = vx_spawn.cmdline;
@@ -586,6 +615,9 @@ const char *vx_main(void) {
   if (acpi_vmo && (!vx_spawn_record("acpi", &rec) || !vx_ndb_get_u64(&rec, "size", &acpi_size)))
     acpi_vmo = VX_HANDLE_NONE;
   image_vmo = vx_spawn_take("bootimage");
+  store_vmo = vx_spawn_take("storeimage");
+  if (store_vmo && (!vx_spawn_record("storeimage", &rec) || !vx_ndb_get_u64(&rec, "size", &store_size)))
+    store_vmo = VX_HANDLE_NONE;
   uint64_t base = 0;
   if (!image_vmo || !vx_spawn_record("bootimage", &rec) || !vx_ndb_get_u64(&rec, "size", &image_size))
     fail("no boot image");
@@ -607,7 +639,8 @@ const char *vx_main(void) {
 
   for (int drivers = 1; drivers >= 0; drivers--) // drivers first, so the console is there for the rest
     for (uint32_t i = 0; i < service_count; i++)
-      if ((services[i].devices > 0) == drivers && !services[i].broken && !skipped(services[i].name)) {
+      if ((services[i].devices > 0) == drivers && !services[i].broken && !skipped(services[i].name) &&
+          wanted(&services[i])) {
         vx_status started = start(&services[i]);
         if (started != VX_OK) cannot("cannot start ", &services[i], started);
       }

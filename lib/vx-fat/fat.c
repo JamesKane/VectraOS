@@ -97,13 +97,13 @@ typedef struct fat_entry {
 
 // --- Bytes ---
 
-static uint16_t fat_u16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
-static uint32_t fat_u32(const uint8_t *p) {
+[[maybe_unused]] static uint16_t fat_u16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
+[[maybe_unused]] static uint32_t fat_u32(const uint8_t *p) {
   return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
 }
 
 // A sector, through the cache: nullptr if the device fails.
-static const uint8_t *fat_sector(fat_vol *v, uint64_t sector) {
+[[maybe_unused]] static const uint8_t *fat_sector(fat_vol *v, uint64_t sector) {
   uint32_t victim = 0;
   for (uint32_t i = 0; i < FAT_CACHE; i++) {
     if (v->cache[i].valid && v->cache[i].sector == sector) {
@@ -120,10 +120,10 @@ static const uint8_t *fat_sector(fat_vol *v, uint64_t sector) {
 
 // --- Mounting ---
 
-static bool fat_pow2(uint32_t x) { return x && !(x & (x - 1)); }
+[[maybe_unused]] static bool fat_pow2(uint32_t x) { return x && !(x & (x - 1)); }
 
 // The volume on dev, from its boot sector. INVALID if it is not FAT.
-static vx_status fat_mount(fat_vol *v, fat_dev dev) {
+[[maybe_unused]] static vx_status fat_mount(fat_vol *v, fat_dev dev) {
   memset(v, 0, sizeof *v);
   v->dev = dev;
   static uint8_t boot[512];
@@ -175,21 +175,23 @@ static vx_status fat_mount(fat_vol *v, fat_dev dev) {
 
 // --- The FAT ---
 
-static uint64_t fat_cluster_sector(const fat_vol *v, uint32_t c) {
+[[maybe_unused]] static uint64_t fat_cluster_sector(const fat_vol *v, uint32_t c) {
   return v->data_start + (uint64_t)(c - 2) * v->spc;
 }
 
-static bool fat_valid(const fat_vol *v, uint32_t c) { return c >= 2 && c <= v->clusters + 1; }
+[[maybe_unused]] static bool fat_valid(const fat_vol *v, uint32_t c) {
+  return c >= 2 && c <= v->clusters + 1;
+}
 
 // The FAT's byte at off (from the first FAT's start), or -1.
-static int fat_byte(fat_vol *v, uint64_t off) {
+[[maybe_unused]] static int fat_byte(fat_vol *v, uint64_t off) {
   const uint8_t *s = fat_sector(v, v->fat_start + off / v->bps);
   return s ? s[off % v->bps] : -1;
 }
 
 // The first FAT's entry for cluster c, as it is: 0 free, an end or bad
 // mark, or the next cluster.
-static vx_status fat_raw(fat_vol *v, uint32_t c, uint32_t *e) {
+[[maybe_unused]] static vx_status fat_raw(fat_vol *v, uint32_t c, uint32_t *e) {
   if (v->type == 12) {
     uint64_t off = c + c / 2;
     int lo = fat_byte(v, off), hi = fat_byte(v, off + 1);
@@ -205,14 +207,14 @@ static vx_status fat_raw(fat_vol *v, uint32_t c, uint32_t *e) {
   return VX_OK;
 }
 
-static uint32_t fat_end_mark(const fat_vol *v) {
+[[maybe_unused]] static uint32_t fat_end_mark(const fat_vol *v) {
   if (v->type == 12) return 0xff8;
   return v->type == 16 ? 0xfff8 : 0x0fff'fff8;
 }
 
 // The cluster after c: *next is 0 at the chain's end. IO if the FAT is
 // broken there (a free or bad cluster, or one out of range, in a chain).
-static vx_status fat_next(fat_vol *v, uint32_t c, uint32_t *next) {
+[[maybe_unused]] static vx_status fat_next(fat_vol *v, uint32_t c, uint32_t *next) {
   if (!fat_valid(v, c)) return VX_ERR_IO;
   uint32_t e, end = fat_end_mark(v), bad = end - 1;
   vx_status st = fat_raw(v, c, &e);
@@ -227,7 +229,7 @@ static vx_status fat_next(fat_vol *v, uint32_t c, uint32_t *next) {
 }
 
 // The chain's k-th cluster from c (0: c itself); *out 0 if the chain ends first.
-static vx_status fat_walk(fat_vol *v, uint32_t c, uint64_t k, uint32_t *out) {
+[[maybe_unused]] static vx_status fat_walk(fat_vol *v, uint32_t c, uint64_t k, uint32_t *out) {
   if (k > v->clusters) return VX_ERR_IO; // longer than the volume: a loop
   for (; k && c; k--) {
     vx_status st = fat_next(v, c, &c);
@@ -246,20 +248,22 @@ typedef struct fat_iter {
   uint32_t steps;   // clusters followed, against loops
 } fat_iter;
 
-static fat_iter fat_iter_at(const fat_vol *v, uint32_t dir) {
+[[maybe_unused]] static fat_iter fat_iter_at(const fat_vol *v, uint32_t dir) {
   if (v->type == 32 && dir == 0) dir = v->root_cluster; // ".." naming the root
   return (fat_iter){.dir = dir, .cluster = dir};
 }
 
-static uint32_t fat_dir_of(const fat_vol *v, uint64_t node) {
+[[maybe_unused]] static uint32_t fat_dir_of(const fat_vol *v, uint64_t node) {
   if (node != FAT_ROOT) return (uint32_t)(node >> 21) & 0x0fff'ffff;
   return v->type == 32 ? v->root_cluster : 0;
 }
 
-static uint64_t fat_node(uint32_t dir, uint32_t index) { return 1ull << 62 | (uint64_t)dir << 21 | index; }
+[[maybe_unused]] static uint64_t fat_node(uint32_t dir, uint32_t index) {
+  return 1ull << 62 | (uint64_t)dir << 21 | index;
+}
 
 // The slot at it->index, and the iterator past it. NOT_FOUND past the end.
-static vx_status fat_slot(fat_vol *v, fat_iter *it, const uint8_t **slot) {
+[[maybe_unused]] static vx_status fat_slot(fat_vol *v, fat_iter *it, const uint8_t **slot) {
   uint64_t off = (uint64_t)it->index * 32;
   uint64_t sector;
   if (it->dir == 0) {
@@ -282,14 +286,14 @@ static vx_status fat_slot(fat_vol *v, fat_iter *it, const uint8_t **slot) {
   return VX_OK;
 }
 
-static uint8_t fat_checksum(const uint8_t *short_name) {
+[[maybe_unused]] static uint8_t fat_checksum(const uint8_t *short_name) {
   uint8_t sum = 0;
   for (int i = 0; i < 11; i++) sum = (uint8_t)(((sum & 1) << 7) + (sum >> 1) + short_name[i]);
   return sum;
 }
 
 // UTF-8 for a code point into out[*n...]; out has room (FAT_NAME_MAX).
-static void fat_put_utf8(char *out, size_t *n, uint32_t c) {
+[[maybe_unused]] static void fat_put_utf8(char *out, size_t *n, uint32_t c) {
   if (c < 0x80) {
     out[(*n)++] = (char)c;
   } else if (c < 0x800) {
@@ -304,7 +308,7 @@ static void fat_put_utf8(char *out, size_t *n, uint32_t c) {
 }
 
 // FAT's date and time (local, taken as UTC) as seconds since 1970.
-static int64_t fat_time(uint16_t date, uint16_t time) {
+[[maybe_unused]] static int64_t fat_time(uint16_t date, uint16_t time) {
   if (!date) return 0;
   int64_t y = 1980 + (date >> 9);
   uint32_t m = date >> 5 & 15, d = date & 31;
@@ -320,7 +324,7 @@ static int64_t fat_time(uint16_t date, uint16_t time) {
 }
 
 // The 8.3 name as a file name: "README.TXT", lower-cased where NT's flags say.
-static void fat_short_name(const uint8_t *e, char *out, bool apply_case, bool as_alias) {
+[[maybe_unused]] static void fat_short_name(const uint8_t *e, char *out, bool apply_case, bool as_alias) {
   size_t n = 0;
   for (int part = 0; part < 2; part++) {
     int from = part ? 8 : 0, len = part ? 3 : 8;
@@ -345,7 +349,7 @@ static void fat_short_name(const uint8_t *e, char *out, bool apply_case, bool as
 // The next entry in the directory, its long name assembled: NOT_FOUND at
 // its end. Deleted entries, the volume label, "." and ".." are skipped; so
 // are long-name slots whose sequence or checksum do not hold.
-static vx_status fat_dir_next(fat_vol *v, fat_iter *it, fat_entry *e) {
+[[maybe_unused]] static vx_status fat_dir_next(fat_vol *v, fat_iter *it, fat_entry *e) {
   uint16_t units[260];
   int expect = 0, count = 0; // the next long-name slot's sequence number; the name's slots
   uint8_t sum = 0;
@@ -407,7 +411,7 @@ static vx_status fat_dir_next(fat_vol *v, fat_iter *it, fat_entry *e) {
   }
 }
 
-static bool fat_same_name(const char *a, const char *b, size_t blen) {
+[[maybe_unused]] static bool fat_same_name(const char *a, const char *b, size_t blen) {
   size_t i = 0;
   for (; i < blen && a[i]; i++) {
     char x = a[i], y = b[i];
@@ -419,20 +423,21 @@ static bool fat_same_name(const char *a, const char *b, size_t blen) {
 }
 
 // The root, as an entry.
-static void fat_root_entry(const fat_vol *v, fat_entry *e) {
+[[maybe_unused]] static void fat_root_entry(const fat_vol *v, fat_entry *e) {
   *e = (fat_entry){.node = FAT_ROOT, .attr = FAT_DIRECTORY, .cluster = v->type == 32 ? v->root_cluster : 0};
   e->name[0] = '/';
 }
 
 // An iterator over directory d's entries, for fat_dir_next.
-static vx_status fat_open_dir(const fat_vol *v, const fat_entry *d, fat_iter *it) {
+[[maybe_unused]] static vx_status fat_open_dir(const fat_vol *v, const fat_entry *d, fat_iter *it) {
   if (!(d->attr & FAT_DIRECTORY)) return VX_ERR_INVALID;
   *it = fat_iter_at(v, d->node == FAT_ROOT ? fat_dir_of(v, FAT_ROOT) : d->cluster);
   return it->dir || d->node == FAT_ROOT ? VX_OK : VX_ERR_IO; // a directory with no cluster
 }
 
 // The entry named name in directory d (an entry with FAT_DIRECTORY, or the root's).
-static vx_status fat_lookup(fat_vol *v, const fat_entry *d, const char *name, size_t len, fat_entry *e) {
+[[maybe_unused]] static vx_status fat_lookup(fat_vol *v, const fat_entry *d, const char *name, size_t len,
+                                             fat_entry *e) {
   fat_iter it;
   vx_status st = fat_open_dir(v, d, &it);
   if (st != VX_OK) return st;
@@ -442,7 +447,7 @@ static vx_status fat_lookup(fat_vol *v, const fat_entry *d, const char *name, si
 }
 
 // The entry for a node.
-static vx_status fat_get(fat_vol *v, uint64_t node, fat_entry *e) {
+[[maybe_unused]] static vx_status fat_get(fat_vol *v, uint64_t node, fat_entry *e) {
   if (node == FAT_ROOT) {
     fat_root_entry(v, e);
     return VX_OK;
@@ -461,7 +466,7 @@ static vx_status fat_get(fat_vol *v, uint64_t node, fat_entry *e) {
 
 // The directory node holding a node: the root, or the entry, in its own
 // parent, naming the directory the node is in.
-static vx_status fat_parent(fat_vol *v, uint64_t node, uint64_t *parent) {
+[[maybe_unused]] static vx_status fat_parent(fat_vol *v, uint64_t node, uint64_t *parent) {
   uint32_t dir = fat_dir_of(v, node);
   if (node == FAT_ROOT || dir == fat_dir_of(v, FAT_ROOT)) {
     *parent = FAT_ROOT;
@@ -488,7 +493,8 @@ static vx_status fat_parent(fat_vol *v, uint64_t node, uint64_t *parent) {
 
 // Up to *count bytes of a file from offset into buf; *count, what was read
 // (0 at or past the end). f's place in its chain is kept, for the next read.
-static vx_status fat_read(fat_vol *v, fat_entry *f, uint64_t offset, uint8_t *buf, uint32_t *count) {
+[[maybe_unused]] static vx_status fat_read(fat_vol *v, fat_entry *f, uint64_t offset, uint8_t *buf,
+                                           uint32_t *count) {
   if (f->attr & FAT_DIRECTORY) return VX_ERR_INVALID;
   if (offset >= f->size) {
     *count = 0;
@@ -528,7 +534,7 @@ static vx_status fat_read(fat_vol *v, fat_entry *f, uint64_t offset, uint8_t *bu
 // --- Writing (M5 step 8b) ---
 
 // Sectors written: to the device, and to their cached copies.
-static bool fat_store(fat_vol *v, uint64_t sector, uint32_t count, const uint8_t *data) {
+[[maybe_unused]] static bool fat_store(fat_vol *v, uint64_t sector, uint32_t count, const uint8_t *data) {
   if (!v->dev.write || sector + count > v->sectors) return false;
   if (!v->dev.write(v->dev.ctx, sector * v->bps, count * v->bps, data)) return false;
   for (uint32_t i = 0; i < FAT_CACHE; i++)
@@ -538,13 +544,17 @@ static bool fat_store(fat_vol *v, uint64_t sector, uint32_t count, const uint8_t
 }
 
 // A cached sector to change; fat_store it after.
-static uint8_t *fat_sector_rw(fat_vol *v, uint64_t sector) { return (uint8_t *)fat_sector(v, sector); }
+[[maybe_unused]] static uint8_t *fat_sector_rw(fat_vol *v, uint64_t sector) {
+  return (uint8_t *)fat_sector(v, sector);
+}
 
-static void fat_put16(uint8_t *p, uint32_t x) { p[0] = (uint8_t)x, p[1] = (uint8_t)(x >> 8); }
-static void fat_put32(uint8_t *p, uint32_t x) { fat_put16(p, x), fat_put16(p + 2, x >> 16); }
+[[maybe_unused]] static void fat_put16(uint8_t *p, uint32_t x) {
+  p[0] = (uint8_t)x, p[1] = (uint8_t)(x >> 8);
+}
+[[maybe_unused]] static void fat_put32(uint8_t *p, uint32_t x) { fat_put16(p, x), fat_put16(p + 2, x >> 16); }
 
 // A byte of FAT copy f, changed: its sector stored.
-static bool fat_set_byte(fat_vol *v, uint32_t f, uint64_t off, uint8_t keep, uint8_t value) {
+[[maybe_unused]] static bool fat_set_byte(fat_vol *v, uint32_t f, uint64_t off, uint8_t keep, uint8_t value) {
   uint64_t sector = v->fat_start + (uint64_t)f * v->fat_sectors + off / v->bps;
   uint8_t *s = fat_sector_rw(v, sector);
   if (!s) return false;
@@ -553,7 +563,7 @@ static bool fat_set_byte(fat_vol *v, uint32_t f, uint64_t off, uint8_t keep, uin
 }
 
 // Cluster c's entry set to value, in every FAT.
-static vx_status fat_set(fat_vol *v, uint32_t c, uint32_t value) {
+[[maybe_unused]] static vx_status fat_set(fat_vol *v, uint32_t c, uint32_t value) {
   if (!fat_valid(v, c)) return VX_ERR_IO;
   for (uint32_t f = 0; f < v->nfats; f++) {
     bool ok;
@@ -582,7 +592,7 @@ static vx_status fat_set(fat_vol *v, uint32_t c, uint32_t value) {
 }
 
 // The free clusters, counted once (FAT32's FSInfo may say, but is only a hint).
-static vx_status fat_count_free(fat_vol *v) {
+[[maybe_unused]] static vx_status fat_count_free(fat_vol *v) {
   if (v->free_count != UINT32_MAX) return VX_OK;
   uint32_t n = 0;
   for (uint32_t c = 2; c <= v->clusters + 1; c++) {
@@ -596,7 +606,7 @@ static vx_status fat_count_free(fat_vol *v) {
 }
 
 // Zeros over a cluster's sectors.
-static vx_status fat_zero_cluster(fat_vol *v, uint32_t c) {
+[[maybe_unused]] static vx_status fat_zero_cluster(fat_vol *v, uint32_t c) {
   static const uint8_t zeros[FAT_MAX_SECTOR];
   for (uint32_t i = 0; i < v->spc; i++)
     if (!fat_store(v, fat_cluster_sector(v, c) + i, 1, zeros)) return VX_ERR_IO;
@@ -604,7 +614,7 @@ static vx_status fat_zero_cluster(fat_vol *v, uint32_t c) {
 }
 
 // A free cluster, marked as a chain's end, and linked after prev (0: none).
-static vx_status fat_alloc(fat_vol *v, uint32_t prev, uint32_t *out) {
+[[maybe_unused]] static vx_status fat_alloc(fat_vol *v, uint32_t prev, uint32_t *out) {
   vx_status st = fat_count_free(v);
   if (st != VX_OK) return st;
   if (!v->free_count) return VX_ERR_NO_SPACE;
@@ -623,7 +633,7 @@ static vx_status fat_alloc(fat_vol *v, uint32_t prev, uint32_t *out) {
 }
 
 // The chain from c freed.
-static vx_status fat_free_chain(fat_vol *v, uint32_t c) {
+[[maybe_unused]] static vx_status fat_free_chain(fat_vol *v, uint32_t c) {
   for (uint32_t steps = 0; c; steps++) {
     if (steps > v->clusters) return VX_ERR_IO;
     uint32_t next;
@@ -638,7 +648,7 @@ static vx_status fat_free_chain(fat_vol *v, uint32_t c) {
 }
 
 // FAT's date and time for seconds since 1970 (as UTC): date, then time.
-static void fat_stamp(int64_t t, uint16_t *date, uint16_t *time) {
+[[maybe_unused]] static void fat_stamp(int64_t t, uint16_t *date, uint16_t *time) {
   if (t < 315'532'800) t = 315'532'800; // FAT's epoch, 1980-01-01
   int64_t days = t / 86400 + 719468, secs = t % 86400;
   int64_t era = days / 146097;
@@ -653,7 +663,8 @@ static void fat_stamp(int64_t t, uint16_t *date, uint16_t *time) {
 }
 
 // The sector and offset of slot index in directory dir (0: the fixed root).
-static vx_status fat_slot_place(fat_vol *v, uint32_t dir, uint32_t index, uint64_t *sector, uint32_t *at) {
+[[maybe_unused]] static vx_status fat_slot_place(fat_vol *v, uint32_t dir, uint32_t index, uint64_t *sector,
+                                                 uint32_t *at) {
   uint64_t off = (uint64_t)index * 32;
   if (dir == 0) {
     if (index >= v->root_entries) return VX_ERR_NOT_FOUND;
@@ -670,7 +681,8 @@ static vx_status fat_slot_place(fat_vol *v, uint32_t dir, uint32_t index, uint64
 }
 
 // A slot's 32 bytes written.
-static vx_status fat_put_slot(fat_vol *v, uint32_t dir, uint32_t index, const uint8_t slot[32]) {
+[[maybe_unused]] static vx_status fat_put_slot(fat_vol *v, uint32_t dir, uint32_t index,
+                                               const uint8_t slot[32]) {
   uint64_t sector;
   uint32_t at;
   vx_status st = fat_slot_place(v, dir, index, &sector, &at);
@@ -681,7 +693,7 @@ static vx_status fat_put_slot(fat_vol *v, uint32_t dir, uint32_t index, const ui
   return fat_store(v, sector, 1, s) ? VX_OK : VX_ERR_IO;
 }
 
-static vx_status fat_get_slot(fat_vol *v, uint32_t dir, uint32_t index, uint8_t slot[32]) {
+[[maybe_unused]] static vx_status fat_get_slot(fat_vol *v, uint32_t dir, uint32_t index, uint8_t slot[32]) {
   uint64_t sector;
   uint32_t at;
   vx_status st = fat_slot_place(v, dir, index, &sector, &at);
@@ -692,10 +704,10 @@ static vx_status fat_get_slot(fat_vol *v, uint32_t dir, uint32_t index, uint8_t 
   return VX_OK;
 }
 
-static uint32_t fat_index_of(uint64_t node) { return (uint32_t)(node & ((1u << 21) - 1)); }
+[[maybe_unused]] static uint32_t fat_index_of(uint64_t node) { return (uint32_t)(node & ((1u << 21) - 1)); }
 
 // An entry's cluster, size, attributes and times, written to its short slot.
-static vx_status fat_put_entry(fat_vol *v, const fat_entry *e) {
+[[maybe_unused]] static vx_status fat_put_entry(fat_vol *v, const fat_entry *e) {
   if (e->node == FAT_ROOT) return VX_OK; // the root has no entry
   uint32_t dir = fat_dir_of(v, e->node), index = fat_index_of(e->node);
   uint8_t s[32];
@@ -714,12 +726,12 @@ static vx_status fat_put_entry(fat_vol *v, const fat_entry *e) {
 }
 
 // The cluster count a file of size bytes has.
-static uint64_t fat_clusters_for(const fat_vol *v, uint64_t size) {
+[[maybe_unused]] static uint64_t fat_clusters_for(const fat_vol *v, uint64_t size) {
   return (size + v->cluster_bytes - 1) / v->cluster_bytes;
 }
 
 // The file's chain made at least want clusters long.
-static vx_status fat_grow(fat_vol *v, fat_entry *f, uint64_t want) {
+[[maybe_unused]] static vx_status fat_grow(fat_vol *v, fat_entry *f, uint64_t want) {
   uint64_t have = fat_clusters_for(v, f->size);
   vx_status st = VX_OK;
   uint32_t last = 0;
@@ -740,8 +752,8 @@ static vx_status fat_grow(fat_vol *v, fat_entry *f, uint64_t want) {
 }
 
 // Bytes written into the file's clusters at offset (which it has).
-static vx_status fat_put_bytes(fat_vol *v, fat_entry *f, uint64_t offset, const uint8_t *buf,
-                               uint32_t count) {
+[[maybe_unused]] static vx_status fat_put_bytes(fat_vol *v, fat_entry *f, uint64_t offset, const uint8_t *buf,
+                                                uint32_t count) {
   uint64_t index = offset / v->cluster_bytes;
   uint32_t c;
   bool ahead = f->at_cluster && f->at_index <= index;
@@ -775,7 +787,8 @@ static vx_status fat_put_bytes(fat_vol *v, fat_entry *f, uint64_t offset, const 
 
 // count bytes of buf written at offset, the file grown (with zeros between
 // its end and offset) as it must be; its entry's size and time then.
-static vx_status fat_write(fat_vol *v, fat_entry *f, uint64_t offset, const uint8_t *buf, uint32_t count) {
+[[maybe_unused]] static vx_status fat_write(fat_vol *v, fat_entry *f, uint64_t offset, const uint8_t *buf,
+                                            uint32_t count) {
   if (f->attr & FAT_DIRECTORY) return VX_ERR_INVALID;
   if (!v->dev.write) return VX_ERR_ACCESS;
   if (offset + count > UINT32_MAX) return VX_ERR_NO_SPACE; // FAT's files end at 4 GiB
@@ -798,7 +811,7 @@ static vx_status fat_write(fat_vol *v, fat_entry *f, uint64_t offset, const uint
 }
 
 // The file cut, or grown with zeros, to size.
-static vx_status fat_truncate(fat_vol *v, fat_entry *f, uint64_t size) {
+[[maybe_unused]] static vx_status fat_truncate(fat_vol *v, fat_entry *f, uint64_t size) {
   if (f->attr & FAT_DIRECTORY) return VX_ERR_INVALID;
   if (!v->dev.write) return VX_ERR_ACCESS;
   if (size > UINT32_MAX) return VX_ERR_NO_SPACE;
@@ -832,20 +845,20 @@ static vx_status fat_truncate(fat_vol *v, fat_entry *f, uint64_t size) {
 
 // --- Names for new entries ---
 
-static bool fat_in(const char *set, uint32_t c) {
+[[maybe_unused]] static bool fat_in(const char *set, uint32_t c) {
   for (; *set; set++)
     if ((uint8_t)*set == c) return true;
   return false;
 }
 
-static bool fat_short_char(uint32_t c) {
+[[maybe_unused]] static bool fat_short_char(uint32_t c) {
   if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) return true;
   return c < 0x80 && fat_in("!#$%&'()-@^_`{}~", c);
 }
 
 // The name's UTF-16 units, or 0 if it cannot be a FAT name: control
 // characters, "*/:<>?\|, or a trailing dot or space (Windows would drop them).
-static uint32_t fat_utf16(const char *name, size_t len, uint16_t units[260]) {
+[[maybe_unused]] static uint32_t fat_utf16(const char *name, size_t len, uint16_t units[260]) {
   uint32_t n = 0;
   if (!len || name[len - 1] == '.' || name[len - 1] == ' ') return 0;
   if ((len == 1 && name[0] == '.') || (len == 2 && name[0] == '.' && name[1] == '.')) return 0;
@@ -884,7 +897,7 @@ static uint32_t fat_utf16(const char *name, size_t len, uint16_t units[260]) {
 
 // The name as an 8.3 name with no long name, if it is one: upper case, or
 // each part all lower case (NT's flags in *nt). False if it needs a long name.
-static bool fat_fits_short(const char *name, size_t len, uint8_t out[11], uint8_t *nt) {
+[[maybe_unused]] static bool fat_fits_short(const char *name, size_t len, uint8_t out[11], uint8_t *nt) {
   memset(out, ' ', 11);
   *nt = 0;
   size_t dot = len;
@@ -916,7 +929,8 @@ static bool fat_fits_short(const char *name, size_t len, uint8_t out[11], uint8_
 }
 
 // Whether directory d has an entry whose 8.3 name is short (11 bytes).
-static vx_status fat_alias_taken(fat_vol *v, uint32_t dir, const uint8_t short_name[11], bool *taken) {
+[[maybe_unused]] static vx_status fat_alias_taken(fat_vol *v, uint32_t dir, const uint8_t short_name[11],
+                                                  bool *taken) {
   fat_iter it = fat_iter_at(v, dir);
   *taken = false;
   for (;;) {
@@ -934,8 +948,8 @@ static vx_status fat_alias_taken(fat_vol *v, uint32_t dir, const uint8_t short_n
 // An 8.3 alias for a long name, unique in the directory: Windows' basis
 // name (upper case, characters 8.3 cannot hold as '_', spaces and dots but
 // the last dropped), the first six of it with ~N.
-static vx_status fat_make_alias(fat_vol *v, uint32_t dir, const uint16_t *units, uint32_t n,
-                                uint8_t out[11]) {
+[[maybe_unused]] static vx_status fat_make_alias(fat_vol *v, uint32_t dir, const uint16_t *units, uint32_t n,
+                                                 uint8_t out[11]) {
   int dot = -1;
   for (uint32_t i = 0; i < n; i++)
     if (units[i] == '.') dot = (int)i;
@@ -976,7 +990,7 @@ static vx_status fat_make_alias(fat_vol *v, uint32_t dir, const uint16_t *units,
 // count free slots in a row in directory dir: the first's index. The
 // directory is grown by a zeroed cluster when it has no such run (the fixed
 // root cannot be: NO_SPACE).
-static vx_status fat_find_slots(fat_vol *v, uint32_t dir, uint32_t count, uint32_t *first) {
+[[maybe_unused]] static vx_status fat_find_slots(fat_vol *v, uint32_t dir, uint32_t count, uint32_t *first) {
   fat_iter it = fat_iter_at(v, dir);
   uint32_t run = 0, start = 0, last = dir;
   for (;;) {
@@ -1011,8 +1025,8 @@ static vx_status fat_find_slots(fat_vol *v, uint32_t dir, uint32_t count, uint32
 // directory, given its first cluster (with "." and ".."); or, with like, a
 // copy of like's cluster, size, attributes and times (a rename). *out is
 // the new entry. EXISTS if the name is taken.
-static vx_status fat_add(fat_vol *v, const fat_entry *d, const char *name, size_t len, uint8_t attr,
-                         const fat_entry *like, fat_entry *out) {
+[[maybe_unused]] static vx_status fat_add(fat_vol *v, const fat_entry *d, const char *name, size_t len,
+                                          uint8_t attr, const fat_entry *like, fat_entry *out) {
   if (!(d->attr & FAT_DIRECTORY)) return VX_ERR_INVALID;
   if (!v->dev.write) return VX_ERR_ACCESS;
   uint16_t units[260];
@@ -1080,13 +1094,13 @@ static vx_status fat_add(fat_vol *v, const fat_entry *d, const char *name, size_
   return fat_get(v, fat_node(dir, first + slots), out);
 }
 
-static vx_status fat_create(fat_vol *v, const fat_entry *d, const char *name, size_t len, uint8_t attr,
-                            fat_entry *out) {
+[[maybe_unused]] static vx_status fat_create(fat_vol *v, const fat_entry *d, const char *name, size_t len,
+                                             uint8_t attr, fat_entry *out) {
   return fat_add(v, d, name, len, attr, nullptr, out);
 }
 
 // The entry's slots, its long name's and its own, marked free.
-static vx_status fat_unlink(fat_vol *v, const fat_entry *e) {
+[[maybe_unused]] static vx_status fat_unlink(fat_vol *v, const fat_entry *e) {
   uint32_t dir = fat_dir_of(v, e->node), index = fat_index_of(e->node);
   uint8_t s[32];
   vx_status st = fat_get_slot(v, dir, index, s);
@@ -1108,7 +1122,7 @@ static vx_status fat_unlink(fat_vol *v, const fat_entry *e) {
 
 // An entry removed, and its clusters freed after. A directory must be empty
 // (EXISTS if not).
-static vx_status fat_remove(fat_vol *v, const fat_entry *e) {
+[[maybe_unused]] static vx_status fat_remove(fat_vol *v, const fat_entry *e) {
   if (e->node == FAT_ROOT) return VX_ERR_ACCESS;
   if (!v->dev.write) return VX_ERR_ACCESS;
   if (e->attr & FAT_DIRECTORY) {
@@ -1127,8 +1141,8 @@ static vx_status fat_remove(fat_vol *v, const fat_entry *e) {
 // old one's slots freed; a directory's ".." then names its new parent. What
 // the name had is replaced, as POSIX's rename does, if it is a file (and so
 // is e) or an empty directory (and so is e). *out is the new entry.
-static vx_status fat_rename(fat_vol *v, const fat_entry *e, const fat_entry *to, const char *name, size_t len,
-                            fat_entry *out) {
+[[maybe_unused]] static vx_status fat_rename(fat_vol *v, const fat_entry *e, const fat_entry *to,
+                                             const char *name, size_t len, fat_entry *out) {
   if (e->node == FAT_ROOT || !(to->attr & FAT_DIRECTORY)) return VX_ERR_INVALID;
   if (!v->dev.write) return VX_ERR_ACCESS;
   bool dir = e->attr & FAT_DIRECTORY;
@@ -1165,7 +1179,7 @@ static vx_status fat_rename(fat_vol *v, const fat_entry *e, const fat_entry *to,
 }
 
 // FAT32's FSInfo brought up to date, and the device flushed.
-static vx_status fat_flush(fat_vol *v) {
+[[maybe_unused]] static vx_status fat_flush(fat_vol *v) {
   if (!v->dev.write) return VX_OK;
   if (v->fsinfo_sector && v->fsinfo_dirty) {
     uint8_t *s = fat_sector_rw(v, v->fsinfo_sector);
@@ -1178,4 +1192,86 @@ static vx_status fat_flush(fat_vol *v) {
     v->fsinfo_dirty = false;
   }
   return !v->dev.flush || v->dev.flush(v->dev.ctx) ? VX_OK : VX_ERR_IO;
+}
+
+// --- Formatting (M5 step 9c: install's ESP) ---
+
+// A new FAT32 volume of `sectors` 512-byte sectors on dev (which must write),
+// labelled label (up to 11 characters, upper case), with serial; `hidden` is
+// the sectors before it on its disk (its partition's first LBA). Laid out as
+// Microsoft's specification has it: 32 reserved sectors (FSInfo at 1, the
+// boot sector's backup at 6), two FATs, the root directory at cluster 2,
+// clusters of 512 bytes up to 260 MiB, 4 KiB to 8 GiB, larger beyond.
+// INVALID if the volume is too small for FAT32's 65525 clusters (about 33 MiB).
+[[maybe_unused]] static vx_status fat_format(fat_dev dev, uint64_t sectors, uint64_t hidden,
+                                             const char *label, uint32_t serial) {
+  if (!dev.write || sectors > 0xffff'ffff) return VX_ERR_INVALID;
+  uint32_t spc = 1;
+  if (sectors > 532'480) spc = 8;     // 260 MiB
+  if (sectors > 16'777'216) spc = 16; // 8 GiB
+  if (sectors > 33'554'432) spc = 32; // 16 GiB
+  if (sectors > 67'108'864) spc = 64; // 32 GiB
+  uint32_t reserved = 32, nfats = 2;
+  uint64_t tmp1 = sectors - reserved, tmp2 = (256ull * spc + nfats) / 2;
+  uint32_t fatsz = (uint32_t)((tmp1 + tmp2 - 1) / tmp2);
+  uint64_t clusters = (sectors - reserved - (uint64_t)nfats * fatsz) / spc;
+  if (clusters < 65525 || clusters > 0x0fff'fff5) return VX_ERR_INVALID;
+  static uint8_t s[512];
+  // The boot sector.
+  memset(s, 0, sizeof s);
+  s[0] = 0xeb, s[1] = 0x58, s[2] = 0x90;
+  for (int i = 0; i < 8; i++) s[3 + i] = (uint8_t)"VECTRAOS"[i]; // the OEM name
+  fat_put16(s + 11, 512);
+  s[13] = (uint8_t)spc;
+  fat_put16(s + 14, (uint16_t)reserved);
+  s[16] = (uint8_t)nfats;
+  s[21] = 0xf8;                                  // a fixed disk
+  fat_put16(s + 24, 63), fat_put16(s + 26, 255); // geometry no one uses
+  fat_put32(s + 28, (uint32_t)hidden);
+  fat_put32(s + 32, (uint32_t)sectors);
+  fat_put32(s + 36, fatsz);
+  fat_put32(s + 44, 2); // the root directory's cluster
+  fat_put16(s + 48, 1); // FSInfo
+  fat_put16(s + 50, 6); // the boot sector's backup
+  s[64] = 0x80, s[66] = 0x29;
+  fat_put32(s + 67, serial);
+  memset(s + 71, ' ', 11);
+  for (int i = 0; i < 11 && label[i]; i++) s[71 + i] = (uint8_t)label[i];
+  for (int i = 0; i < 8; i++) s[82 + i] = (uint8_t)"FAT32   "[i];
+  s[510] = 0x55, s[511] = 0xaa;
+  if (!dev.write(dev.ctx, 0, 512, s) || !dev.write(dev.ctx, 6ull * 512, 512, s)) return VX_ERR_IO;
+  // FSInfo, and its backup.
+  memset(s, 0, sizeof s);
+  fat_put32(s, 0x4161'5252);
+  fat_put32(s + 484, 0x6141'7272);
+  fat_put32(s + 488, (uint32_t)clusters - 1); // all free but the root's
+  fat_put32(s + 492, 3);
+  fat_put32(s + 508, 0xaa55'0000);
+  if (!dev.write(dev.ctx, 512, 512, s) || !dev.write(dev.ctx, 7ull * 512, 512, s)) return VX_ERR_IO;
+  // The other reserved sectors, the FATs and the root's cluster: zeros, with
+  // the FATs' first three entries (the media byte, the end marker, the root's
+  // chain's end).
+  static uint8_t zeros[64 * 512];
+  uint64_t end = reserved + (uint64_t)nfats * fatsz + spc;
+  for (uint64_t at = 2; at < end;) {
+    if (at == 6) {
+      at = 8;
+      continue;
+    }
+    uint64_t n = end - at > 64 ? 64 : end - at;
+    if (at < 6 && at + n > 6) n = 6 - at;
+    if (!dev.write(dev.ctx, at * 512, (uint32_t)n * 512, zeros)) return VX_ERR_IO;
+    at += n;
+  }
+  memset(s, 0, sizeof s);
+  fat_put32(s, 0x0fff'fff8), fat_put32(s + 4, 0x0fff'ffff), fat_put32(s + 8, 0x0fff'ffff);
+  for (uint32_t f = 0; f < nfats; f++)
+    if (!dev.write(dev.ctx, ((uint64_t)reserved + (uint64_t)f * fatsz) * 512, 512, s)) return VX_ERR_IO;
+  // The label again, as the root directory's first entry: fsck.fat and
+  // Windows read it from there.
+  memset(s, 0, sizeof s);
+  memset(s, ' ', 11);
+  for (int i = 0; i < 11 && label[i]; i++) s[i] = (uint8_t)label[i];
+  s[11] = FAT_LABEL;
+  return dev.write(dev.ctx, ((uint64_t)reserved + (uint64_t)nfats * fatsz) * 512, 512, s) ? VX_OK : VX_ERR_IO;
 }
