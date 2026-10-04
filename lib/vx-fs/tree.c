@@ -169,17 +169,24 @@ static bool owns_block(const vxfs_msg *kv) {
   return kv->nk && kv->k[0] == VXFS_KDAT && kv->nv == 1 + VXFS_PTRSZ && kv->v[0] == VXFS_VREF;
 }
 
-// Owstat on a packed entry, in place.
-static bool wstat(uint8_t *v, const vxfs_msg *m) {
+// Whether an Owstat's payload is one: its flags byte, then exactly the
+// fields those flags name. Checked when the message is taken, so one that
+// cannot apply never reaches a buffer (M5 step 10).
+static bool wstat_well_formed(const vxfs_msg *m) {
   if (!m->nv) return false;
-  vxfs_dir d = vxfs_unpackdir(v);
-  const uint8_t *p = m->v, *end = m->v + m->nv;
-  uint8_t f = *p++;
   static const uint8_t WIDTH[8] = {8, 4, 8, 8, 4, 4, 4, 8};
   uint32_t need = 0;
   for (int i = 0; i < 8; i++)
-    if (f & 1 << i) need += WIDTH[i];
-  if ((uint32_t)(end - p) != need) return false;
+    if (m->v[0] & 1 << i) need += WIDTH[i];
+  return m->nv - 1 == need;
+}
+
+// Owstat on a packed entry, in place.
+static bool wstat(uint8_t *v, const vxfs_msg *m) {
+  if (!wstat_well_formed(m)) return false;
+  vxfs_dir d = vxfs_unpackdir(v);
+  const uint8_t *p = m->v;
+  uint8_t f = *p++;
   d.qid_vers++;
   if (f & VXFS_WSIZE) d.length = vxfs_get64(p), p += 8;
   if (f & VXFS_WMODE) d.mode = vxfs_get32(p), d.qid_type = (uint8_t)(d.mode >> 24), p += 4;
@@ -199,10 +206,7 @@ static bool wstat(uint8_t *v, const vxfs_msg *m) {
 static bool apply(vxfs_msg *kv, const vxfs_msg *m, uint8_t *scratch) {
   switch (m->op) {
   case VXFS_OINSERT: kv->v = m->v ? m->v : (const uint8_t *)"", kv->nv = m->nv; return true;
-  case VXFS_ODELETE:
-    if (!kv->v) return false;
-    kv->v = nullptr, kv->nv = 0;
-    return true;
+  case VXFS_ODELETE: // of a key that is not there too: nothing to do (it cannot be told at upsert)
   case VXFS_OCLEARB:
   case VXFS_OCLOBBER: kv->v = nullptr, kv->nv = 0; return true;
   case VXFS_OWSTAT:
@@ -524,8 +528,8 @@ static bool put(vxfs *fs, vxfs_bptr bp, uint32_t level, const uint8_t *low, uint
   for (uint32_t i = 0; i < n; i++) {
     const vxfs_msg *m = &msgs[i];
     if (m->op == VXFS_ONOP || m->op >= VXFS_NMSG || !m->nk || m->nk > VXFS_KEYMAX || m->nv > VXFS_INLMAX ||
-        (m->nv && !m->v))
-      return VX_ERR_INVALID;
+        (m->nv && !m->v) || (m->op == VXFS_OWSTAT && !wstat_well_formed(m)))
+      return VX_ERR_INVALID; // refused here, the tree untouched: a buffered message that cannot apply poisons it
     total += ent_size(m, true);
   }
   if (total > VXFS_BUFSPC) return VX_ERR_INVALID;
@@ -695,6 +699,10 @@ typedef struct vxfs_scan {
 [[maybe_unused]] static void vxfs_scan_start(vxfs_scan *s, const vxfs_tree *t, const uint8_t *pfx,
                                              uint16_t npfx) {
   *s = (vxfs_scan){.t = t, .npfx = npfx, .nlo = npfx};
+  if (npfx > VXFS_KEYMAX) { // no key has a longer prefix: nothing to scan (M5 step 10)
+    s->npfx = s->nlo = 0, s->done = true, s->t = nullptr;
+    return;
+  }
   if (npfx) memcpy(s->pfx, pfx, npfx), memcpy(s->lo, pfx, npfx);
 }
 
@@ -703,6 +711,7 @@ typedef struct vxfs_scan {
 [[maybe_unused]] static void vxfs_scan_from(vxfs_scan *s, const vxfs_tree *t, const uint8_t *pfx,
                                             uint16_t npfx, const uint8_t *from, uint16_t nfrom) {
   vxfs_scan_start(s, t, pfx, npfx);
+  if (s->done || nfrom > VXFS_KEYMAX) return; // past any key: from the prefix's start instead
   if (nfrom && vxfs_keycmp(from, nfrom, pfx, npfx) > 0) memcpy(s->lo, from, nfrom), s->nlo = nfrom;
 }
 

@@ -81,6 +81,13 @@ check rolled-back '' `{ls /tmp | grep '^later'}
 check still-there secret `{cat /n/secret}
 check head-kept 1 `{grep -c '^label=home@before-' /adm/status}
 
+# An over-long word (1024 bytes, past ctl's buffer) is refused, not cut
+# (M5 step 10: the splitter wrote past its stack buffer), and ctl still answers.
+long=x
+for(i in 1 2 3 4 5 6 7 8 9 10) long=$long$long
+check long-word refused `{refused ctl snap home $long}
+check still-answers 1 `{grep -c '^label=home@t2' /adm/status}
+
 # A halt: committed, and nothing more changes.
 ctl halt
 check halted refused `{refused touch /tmp/after-halt}

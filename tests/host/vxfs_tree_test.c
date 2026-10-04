@@ -482,9 +482,16 @@ static void test_refused(void) {
   CHECK(vxfs_upsert(&w.fs, &w.t, many, 64) == VX_ERR_INVALID);
   CHECK(w.fs.err == VX_OK && w.t.root.addr == before.root.addr);
 
-  // Applying what cannot apply: a delete or wstat of a key that is not there.
+  // A delete of a key that is not there: nothing to do, and the volume is
+  // not poisoned (M5 step 10: it once was, when the buffer was flushed).
   vxfs_msg del = {.op = VXFS_ODELETE, .k = k, .nk = 9};
-  CHECK(vxfs_upsert(&w.fs, &w.t, &del, 1) == VX_ERR_INVALID && w.fs.err == VX_ERR_INVALID);
+  CHECK(vxfs_upsert(&w.fs, &w.t, &del, 1) == VX_OK && w.fs.err == VX_OK);
+  // A wstat whose fields are not its flags' width: refused when taken, the tree untouched.
+  uint8_t short_uid[] = {VXFS_WUID, 1, 0}; // a uid is 4 bytes
+  vxfs_msg short_ws = {.op = VXFS_OWSTAT, .k = k, .nk = 9, .v = short_uid, .nv = sizeof short_uid};
+  vxfs_tree was = w.t;
+  CHECK(vxfs_upsert(&w.fs, &w.t, &short_ws, 1) == VX_ERR_INVALID && w.fs.err == VX_OK &&
+        w.t.root.addr == was.root.addr);
   world_close(&w);
 
   // A message buffered in a pivot that cannot apply: lookups and scans
@@ -535,7 +542,25 @@ static void test_plan(void) {
   }
 }
 
+// A scan given a prefix longer than any key: nothing found, no copy past
+// its buffers (M5 step 10).
+static void test_scan_bounds(void) {
+  world w;
+  world_open(&w);
+  static uint8_t big[VXFS_KEYMAX + 1];
+  vxfs_scan s;
+  vxfs_kvp kv;
+  vxfs_scan_start(&s, &w.t, big, VXFS_KEYMAX + 1);
+  CHECK(!vxfs_scan_next(&w.fs, &s, &kv) && w.fs.err == VX_OK);
+  vxfs_scan_end(&w.fs, &s);
+  uint8_t k[1] = {1};
+  vxfs_scan_from(&s, &w.t, k, 1, big, VXFS_KEYMAX + 1); // a start past any key: from the prefix's start
+  vxfs_scan_end(&w.fs, &s);
+  world_close(&w);
+}
+
 int main(void) {
+  test_scan_bounds();
   test_plan();
   test_refused();
   test_low_split();

@@ -119,8 +119,15 @@ static void fs_release(vxfs *fs, void *p, size_t n) {
 }
 
 // Grows an array of `size`-byte items to hold one more; false if it cannot.
+// The least cache a volume is opened with: a whole path, its splits and
+// siblings, held at once; and what stays held while it is mounted, each
+// arena's log tail (64 arenas, as vxfs_format makes at most) and a few
+// chains' tails (M5 step 10: these were not counted).
+static constexpr uint32_t VXFS_MINCACHE = 4 * VXFS_MAXHEIGHT + 64 + 8;
+
 static bool fs_grow(vxfs *fs, void **arr, uint32_t n, uint32_t *cap, size_t size) {
   if (n < *cap) return true;
+  if (*cap > UINT32_MAX / 2) return fs_fail(fs, VX_ERR_NO_MEMORY); // doubling would wrap (M5 step 10)
   uint32_t ncap = *cap ? *cap * 2 : 16;
   void *more = fs_alloc(fs, (size_t)ncap * size);
   if (!more) return false;
@@ -248,6 +255,14 @@ static bool check_table(const uint8_t *d, uint32_t spc, uint16_t n, uint16_t siz
   return total == size;
 }
 
+// A log or deadlist block's own hash: its entries, seeded with the rest of
+// its header (type, size and the chain's next pointer), so a damaged header
+// is found as a damaged entry is (M5 step 10: the header was left out).
+static uint64_t log_hash(const uint8_t *buf, const uint8_t *data, uint32_t logsz) {
+  uint64_t seed = vxfs_xxh64(buf, 4, 0) ^ vxfs_xxh64(buf + 12, VXFS_PTRSZ, 1);
+  return vxfs_xxh64(data, logsz, seed);
+}
+
 // Reads the header the block's type has, and checks what it says. False if
 // the block is not one of type `want` or is malformed.
 static bool parse_block(vxfs_blk *b, uint16_t want) {
@@ -279,7 +294,7 @@ static bool parse_block(vxfs_blk *b, uint16_t want) {
     b->logp = vxfs_unpackbp(p + 12);
     b->data = b->buf + VXFS_LOGHDSZ;
     return b->logsz <= VXFS_LOGSPC && b->logsz % 8 == 0 &&
-           vxfs_get64(p + 4) == vxfs_xxh64(b->data, b->logsz, 0);
+           vxfs_get64(p + 4) == log_hash(p, b->data, b->logsz);
   case VXFS_TARENA: b->data = b->buf + 2; return true;
   default: return false;
   }
@@ -354,8 +369,8 @@ static void finalize(vxfs_blk *b) {
   case VXFS_TLOG:
   case VXFS_TDLIST:
     vxfs_put16(p + 2, b->logsz);
-    vxfs_put64(p + 4, vxfs_xxh64(b->data, b->logsz, 0));
     vxfs_packbp(p + 12, b->logp);
+    vxfs_put64(p + 4, log_hash(p, b->data, b->logsz));
     break;
   default: break;
   }
@@ -369,7 +384,14 @@ static void finalize(vxfs_blk *b) {
   finalize(b);
   fs->writes++;
   vx_status st = fs->dev.write(fs->dev.ctx, b->bp.addr, b->buf);
-  if (st != VX_OK) return fs_fail(fs, st);
+  if (st != VX_OK) {
+    // The volume has failed, and says so to every caller from now on; the
+    // block is let go of rather than kept dirty, which nothing could evict
+    // (M5 step 10).
+    b->flags &= (uint8_t)~VXFS_BDIRTY;
+    cache_del(fs, b);
+    return fs_fail(fs, st);
+  }
   b->flags &= (uint8_t)~VXFS_BDIRTY;
   if (++fs->rr_writes == 4096) fs->rr++, fs->rr_writes = 0; // every few thousand writes, the next arena
   return true;
@@ -727,11 +749,13 @@ static vxfs_blk *log_tail(vxfs *fs, const vxfs_arena_hdr *h) {
   }
   // The blocks taken and not used (all of them, if it failed): never
   // written, so free at once, and logged so in the new log.
+  // The free is logged before the block is free in memory: logging can
+  // take a block for the log, which must not be this one (M5 step 10).
   for (uint32_t i = ok ? used : 0; i < got; i++) {
     cache_forget(fs, blks[i]);
+    if (ok) ok = log_append(fs, a, blks[i], VXFS_BLKSZ, LOG_FREE);
     range_free(fs, a, blks[i], VXFS_BLKSZ);
     a->used -= VXFS_BLKSZ;
-    if (ok) ok = log_append(fs, a, blks[i], VXFS_BLKSZ, LOG_FREE);
   }
   ok = ok && vxfs_log_flush(fs, a);
   fs_release(fs, old, nold * sizeof *old);
@@ -843,8 +867,10 @@ static bool block_dealloc(vxfs *fs, uint64_t addr) {
 // The library's state over a device, with a cache of `cache` blocks.
 [[maybe_unused]] static bool vxfs_open(vxfs *fs, vxfs_dev dev, vxfs_mem mem, uint32_t cache) {
   *fs = (vxfs){.dev = dev, .mem = mem, .gen = 1, .compress_at = 64};
-  if (cache < 4 * VXFS_MAXHEIGHT)
-    cache = 4 * VXFS_MAXHEIGHT; // a whole path, its splits and siblings, held at once
+  // A whole path, its splits and siblings, held at once; and what stays held
+  // while the volume is mounted: each arena's log tail (64 arenas at most),
+  // and a few chains' tails (M5 step 10: they were not counted).
+  if (cache < VXFS_MINCACHE) cache = VXFS_MINCACHE;
   fs->nhash = 1;
   while (fs->nhash < cache) fs->nhash <<= 1;
   fs->blocks = fs_alloc(fs, (size_t)cache * sizeof *fs->blocks);
@@ -861,6 +887,9 @@ static bool block_dealloc(vxfs *fs, uint64_t addr) {
 
 // Room for n arenas, each to be set up by vxfs_arena_init or _load.
 [[maybe_unused]] static bool vxfs_arenas(vxfs *fs, uint32_t n) {
+  // Each arena's log tail stays held: more arenas than the cache has room
+  // for beside a path is refused here, not found as NO_MEMORY later.
+  if (n > fs->nblocks - 4 * VXFS_MAXHEIGHT - 8) return fs_fail(fs, VX_ERR_NO_MEMORY);
   if (!(fs->arenas = fs_alloc(fs, n * sizeof *fs->arenas))) return false;
   memset(fs->arenas, 0, n * sizeof *fs->arenas);
   fs->narenas = n;

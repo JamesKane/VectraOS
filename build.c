@@ -1285,6 +1285,7 @@ static const program USER_PROGRAMS[] = {
     {"ctestfsd", "tests/posix/ctest.c", IN_TESTS, nullptr, true, nullptr,
      nullptr}, // ctest again, with /tmp on fsd
     {"sbasetest", "tests/posix/sbasetest.c", IN_TESTS, nullptr, true, nullptr, nullptr},
+    {"maptest", "tests/posix/maptest.c", IN_TESTS, nullptr, true, nullptr, nullptr},
     {"dbgdemo", "tests/user/dbgdemo.c", IN_TESTS, nullptr, false, nullptr, nullptr},
 };
 

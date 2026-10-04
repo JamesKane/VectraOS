@@ -60,7 +60,7 @@ Where `lib/vx-fs` departs from gefs's algorithm (the format is the same):
 | `Kup qid[8]` | the entry's own `Kent` key | An entry by its qid, and `..`: the key's `pqid` is the parent. gefs has one for directories only. `fsd` names every file by its qid, as the 9P framework's node ids do, so every entry has one, and with no hard links the two are one to one. Renaming an entry changes its own `Kup` and no other. |
 | `Korphan qid[8]` | the entry | Ours: a file removed while it was open. Its entry moves here, and its `Kup` names this key, so it is still found by its qid and its writes still land. Its data is freed when the last fid on it goes, or when its branch is next opened if the machine crashed first. |
 
-A **block pointer** is `addr[8] hash[8] gen[8]`: where the block is, the hash of its contents, and the generation it was written in.
+A **block pointer** is `addr[8] hash[8] gen[8]`: where the block is, the hash of its contents, and the generation it was written in. Log and deadlist blocks, which a chain links rather than a parent, carry their own hash in their header instead: XXH64 of their entries, seeded with the rest of the header (type, size and the next block's pointer), so a damaged chain pointer is found as a damaged entry is (M5 step 10; before it the header was left out, a format change made while no volume outlives a test).
 
 ### 4.1 The entry
 
@@ -188,8 +188,8 @@ It keeps gefs's discipline anyway: blocks that leave the mutator are immutable, 
 - **The kernel's own copies** to and from user memory take no page that is not there yet. They fail as on an unmapped page, since some are made under locks. A program touches a mapped file's pages itself before handing them to a system call, as the musl back end's I/O does.
 
 **The verified base tree is `distd`'s,** which settles 06 §16 question 2:
-- `distd` serves `/boot`, `/bin` and the rest of a release's read-only tree as its own trusted pager. It reads the store's blobs from `fsd`'s `store` branch and checks each block against the release's SHA-256 hash trees (06 §4) before supplying it.
-- `fsd` gains no verified mode. Its 64-bit block hashes catch failing media and bugs; `distd`'s SHA-256 catches tampering.
+- `distd` serves `/boot`, `/bin` and the rest of a release's read-only tree as its own trusted pager. It reads the store's blobs from `fsd`'s `store` branch and checks each block against the release's BLAKE2b hash trees (06 §4) before supplying it.
+- `fsd` gains no verified mode. Its 64-bit block hashes catch failing media and bugs; `distd`'s BLAKE2b catches tampering.
 
 Keeping the two apart keeps `fsd` free of release formats, and keeps the trust decision in one place.
 

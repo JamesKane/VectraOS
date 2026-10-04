@@ -505,7 +505,68 @@ static void test_limits(void) {
   free(d.bytes);
 }
 
+// How block 0 of a file is kept: VXFS_VINL (inline), VXFS_VREF (a block), or 0 (none).
+static uint8_t block0_kind(vxfs_vol *v, const vxfs_tree *t, uint64_t qid) {
+  uint8_t k[17], val[VXFS_INLMAX];
+  uint16_t nv = 0;
+  return vxfs_lookup(&v->fs, t, k, key_dat(k, qid, 0), val, &nv) == VX_OK && nv ? val[0] : 0;
+}
+
+// M5 step 10's close-out of the file layer's review findings: a write of
+// nothing does not extend; a size that would wrap when rounded up is
+// refused; setattr keeps 11 §3's rule (a file is inline whole, or in
+// blocks) both ways; "." and ".." are never removed, and say INVALID;
+// only an orphan is reaped; a link's target is inline, at most VXFS_INLINE.
+static void test_close_out(void) {
+  memdev d = {.size = 1024ull * VXFS_BLKSZ};
+  d.bytes = calloc(1, d.size);
+  vxfs_vol v;
+  const char *names[] = {"cfg"};
+  CHECK(vxfs_mkfs(&v, dev_of(&d), MEM, 256, 1, names, 1, 0755, 0, 0, 5) == VX_OK);
+  vxfs_branch *br;
+  vxfs_file root, f, l, sub;
+  CHECK(vxfs_branch_open(&v, "cfg", &br) == VX_OK && vxfs_root(&v, &br->t, &root) == VX_OK);
+  CHECK(vxfs_create(&v, &br->t, &root, "f", 0600, 1, 1, 6, &f) == VX_OK);
+  CHECK(vxfs_write(&v, &br->t, &f, 0, "hello", 5, 6, 1) == VX_OK && f.d.length == 5);
+  CHECK(vxfs_write(&v, &br->t, &f, 1000, "", 0, 7, 1) == VX_OK && f.d.length == 5); // nothing: not extended
+  vxfs_attr huge = {.valid = VXFS_WSIZE, .length = UINT64_MAX - 3};
+  CHECK(vxfs_setattr(&v, &br->t, &f, &huge, 8) == VX_ERR_RANGE && f.d.length == 5);
+  CHECK(block0_kind(&v, &br->t, f.d.qid_path) == VXFS_VINL);
+  // Grown by setattr past inline: into a block, the bytes kept and zeros after.
+  vxfs_attr grow = {.valid = VXFS_WSIZE, .length = 2000};
+  CHECK(vxfs_setattr(&v, &br->t, &f, &grow, 9) == VX_OK &&
+        block0_kind(&v, &br->t, f.d.qid_path) == VXFS_VREF);
+  uint8_t back[2000];
+  uint64_t got = 0;
+  CHECK(vxfs_read(&v, &br->t, &f, 0, back, 2000, &got) == VX_OK && got == 2000 &&
+        memcmp(back, "hello", 5) == 0 && back[5] == 0 && back[1999] == 0);
+  // Shrunk by setattr to inline size: inline again, the bytes kept.
+  vxfs_attr shrink = {.valid = VXFS_WSIZE, .length = 3};
+  CHECK(vxfs_setattr(&v, &br->t, &f, &shrink, 10) == VX_OK &&
+        block0_kind(&v, &br->t, f.d.qid_path) == VXFS_VINL);
+  CHECK(vxfs_read(&v, &br->t, &f, 0, back, 100, &got) == VX_OK && got == 3 && memcmp(back, "hel", 3) == 0);
+  CHECK(committed_clean(&v)); // no block left behind by either change
+  // "." and "..".
+  CHECK(vxfs_create(&v, &br->t, &root, "d", VXFS_DMDIR | 0700, 1, 1, 11, &sub) == VX_OK);
+  CHECK(vxfs_remove(&v, &br->t, &sub, "..", 12) == VX_ERR_INVALID);
+  CHECK(vxfs_remove(&v, &br->t, &sub, ".", 12) == VX_ERR_INVALID);
+  // Reaping what is not an orphan: refused, the file untouched.
+  CHECK(vxfs_reap(&v, &br->t, f.d.qid_path) == VX_ERR_INVALID);
+  CHECK(vxfs_read(&v, &br->t, &f, 0, back, 100, &got) == VX_OK && got == 3);
+  // A link's target: inline, so at most VXFS_INLINE bytes.
+  static char target[VXFS_INLINE + 2];
+  memset(target, 'x', VXFS_INLINE + 1);
+  CHECK(vxfs_symlink(&v, &br->t, &root, "long", target, 1, 1, 13, &l) == VX_ERR_RANGE);
+  target[VXFS_INLINE] = 0;
+  CHECK(vxfs_symlink(&v, &br->t, &root, "max", target, 1, 1, 13, &l) == VX_OK &&
+        block0_kind(&v, &br->t, l.d.qid_path) == VXFS_VINL);
+  CHECK(committed_clean(&v));
+  vxfs_unmount(&v);
+  free(d.bytes);
+}
+
 int main(void) {
+  test_close_out();
   test_names();
   test_limits();
   for (uint64_t seed = 1; seed <= 3; seed++) test_random(seed * 0x9E3779B97F4A7C15ull, 900);

@@ -17,7 +17,7 @@
 typedef struct memdev {
   uint8_t *bytes;
   uint64_t size;
-  bool fail_reads;
+  bool fail_reads, fail_writes;
   uint64_t barriers;
 } memdev;
 
@@ -30,6 +30,7 @@ static vx_status md_read(void *ctx, uint64_t addr, void *buf) {
 
 static vx_status md_write(void *ctx, uint64_t addr, const void *buf) {
   memdev *d = ctx;
+  if (d->fail_writes) return VX_ERR_IO;
   memcpy(d->bytes + addr, buf, VXFS_BLKSZ);
   return VX_OK;
 }
@@ -540,12 +541,46 @@ static void test_free(void) {
   memdev_free(d);
 }
 
+// M5 step 10's close-out of the block layer: a log block's header is in
+// its hash (its chain pointer damaged is found), and a failed write leaves
+// the volume failed and the block not dirty.
+static void test_close_out(void) {
+  memdev *d = memdev_new(1026);
+  vxfs fs = fresh(d, 1, 1024, 8);
+  vxfs_arena *a = &fs.arenas[0];
+  bool took = true;
+  for (uint32_t i = 0; i < 1200 && took;
+       i++) { // a log block holds about 2000 one-block entries: two each here
+    uint64_t at = take_logged(&fs, a);
+    took = at && block_dealloc(&fs, at);
+  }
+  CHECK(took && vxfs_log_flush(&fs, a));
+  CHECK(a->nlog >= 2);
+  vxfs_bptr head = a->loghd;
+  vxfs_blk *b = vxfs_get(&fs, head, VXFS_TLOG);
+  CHECK(b != nullptr);
+  if (b) vxfs_drop(&fs, b);
+  cache_forget(&fs, head.addr);
+  d->bytes[head.addr + 12] ^= 1; // the chain's next pointer
+  CHECK(vxfs_get(&fs, head, VXFS_TLOG) == nullptr && fs.err != VX_OK);
+  vxfs_close(&fs);
+
+  fs = fresh(d, 1, 1024, 8);
+  vxfs_blk *w = vxfs_new_block(&fs, VXFS_TDAT);
+  d->fail_writes = true;
+  CHECK(!vxfs_write_block(&fs, w) && fs.err == VX_ERR_IO && !(w->flags & VXFS_BDIRTY));
+  vxfs_drop(&fs, w);
+  d->fail_writes = false;
+  vxfs_close(&fs);
+  memdev_free(d);
+}
+
 // Every block in the cache held, and one more wanted.
 static void test_cache(void) {
   memdev *d = memdev_new(1026);
   vxfs fs = fresh(d, 1, 1024, 8); // raised to the least it takes
-  CHECK(fs.nblocks == 4 * VXFS_MAXHEIGHT);
-  vxfs_blk *held[4 * VXFS_MAXHEIGHT];
+  CHECK(fs.nblocks == VXFS_MINCACHE);
+  vxfs_blk *held[VXFS_MINCACHE];
   uint32_t n = 0;
   for (; n < fs.nblocks; n++)
     if (!(held[n] = vxfs_new_block(&fs, VXFS_TDAT))) break;
@@ -577,6 +612,7 @@ int main(void) {
   test_blocks();
   test_malformed();
   test_logs();
+  test_close_out();
   test_free();
   test_cache();
   return check_result();

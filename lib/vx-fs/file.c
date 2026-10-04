@@ -30,6 +30,8 @@ enum : uint8_t { VXFS_QTDIR = 0x80, VXFS_QTSYMLINK = 0x02 };
 enum : uint32_t { VXFS_DMDIR = 0x8000'0000, VXFS_DMSYMLINK = 0x0200'0000 };
 static constexpr uint32_t VXFS_NAMEMAX = VXFS_KEYMAX - 9;
 static constexpr uint32_t VXFS_INLINE = VXFS_INLMAX - 1; // a whole file kept inline, at most
+static constexpr uint64_t VXFS_MAXFILE =
+    1ull << 62; // a file's length, at most: rounded up to a block, it never wraps
 
 // An entry, and the key it is found by.
 typedef struct vxfs_file {
@@ -407,7 +409,8 @@ static vx_status put_block(vxfs_vol *v, vxfs_tree *t, fbatch *b, const vxfs_file
 [[maybe_unused]] static vx_status vxfs_write(vxfs_vol *v, vxfs_tree *t, vxfs_file *f, uint64_t off,
                                              const void *data, uint64_t n, int64_t now, uint32_t muid) {
   if (is_dir(f)) return VX_ERR_INVALID;
-  if (off + n < off) return VX_ERR_RANGE;
+  if (off + n < off || off + n > VXFS_MAXFILE) return VX_ERR_RANGE;
+  if (!n) return VX_OK; // nothing written: the file is not extended, as POSIX has it (M5 step 10)
   uint64_t was = f->d.length, len = off + n > was ? off + n : was;
   vx_status st;
   fbatch *b = fb_new(v, n / VXFS_BLKSZ + 2, false, &st); // the blocks it touches, and a converted block 0
@@ -482,23 +485,36 @@ typedef struct vxfs_attr {
 [[maybe_unused]] static vx_status vxfs_setattr(vxfs_vol *v, vxfs_tree *t, vxfs_file *f, const vxfs_attr *a,
                                                int64_t now) {
   if ((a->valid & VXFS_WSIZE) && (is_dir(f) || (f->d.mode & VXFS_DMSYMLINK))) return VX_ERR_INVALID;
+  if ((a->valid & VXFS_WSIZE) && a->length > VXFS_MAXFILE) return VX_ERR_RANGE; // rounding up must not wrap
   vx_status st;
   bool shrinks = (a->valid & VXFS_WSIZE) && a->length < f->d.length;
-  fbatch *b = fb_new(v, shrinks ? 1 : 0, shrinks, &st); // a shrink frees, and rewrites its last block
+  // Growing an inline file past VXFS_INLINE puts its bytes in a block of
+  // their own (11 §3: a file is inline whole, or in blocks): M5 step 10.
+  bool converts =
+      (a->valid & VXFS_WSIZE) && f->d.length && f->d.length <= VXFS_INLINE && a->length > VXFS_INLINE;
+  fbatch *b =
+      fb_new(v, shrinks || converts ? 1 : 0, shrinks, &st); // a shrink frees, and rewrites its last block
   if (!b) return st;
-  if ((a->valid & VXFS_WSIZE) && a->length < f->d.length) {
-    static uint8_t blk[VXFS_BLKSZ];
+  static uint8_t blk[VXFS_BLKSZ];
+  if (shrinks) {
     uint64_t keep = (a->length + VXFS_BLKSZ - 1) / VXFS_BLKSZ * VXFS_BLKSZ; // blocks wholly past the end go
-    st = clear_data(v, t, b, f->d.qid_path, keep);
+    if (a->length <= VXFS_INLINE) keep = 0; // inline from now: block 0 goes too, and comes back inline
+    if (a->length <= VXFS_INLINE && a->length) st = read_block(v, t, f->d.qid_path, 0, blk);
+    if (st == VX_OK) st = clear_data(v, t, b, f->d.qid_path, keep);
     uint64_t base = a->length / VXFS_BLKSZ * VXFS_BLKSZ, in = a->length - base;
-    if (st == VX_OK && in) { // the last block's tail zeroed
+    if (st == VX_OK && a->length <= VXFS_INLINE && a->length) {
+      memset(blk + a->length, 0, VXFS_BLKSZ - a->length);
+      st = put_block(v, t, b, f, 0, blk, a->length);
+    } else if (st == VX_OK && in) { // the last block's tail zeroed
       st = read_block(v, t, f->d.qid_path, base, blk);
       if (st == VX_OK) {
         memset(blk + in, 0, VXFS_BLKSZ - in);
-        bool inline_whole = a->length <= VXFS_INLINE && f->d.length <= VXFS_INLINE;
-        st = put_block(v, t, b, f, base, blk, inline_whole ? a->length : VXFS_BLKSZ);
+        st = put_block(v, t, b, f, base, blk, VXFS_BLKSZ);
       }
     }
+  } else if (converts) {
+    st = read_block(v, t, f->d.qid_path, 0, blk); // the inline bytes, the rest zeros
+    if (st == VX_OK) st = put_block(v, t, b, f, 0, blk, VXFS_BLKSZ);
   }
   if (a->valid & VXFS_WSIZE) f->d.length = a->length;
   if (a->valid & VXFS_WMODE) f->d.mode = (f->d.mode & (VXFS_DMDIR | VXFS_DMSYMLINK)) | (a->mode & 07777);
@@ -518,6 +534,8 @@ typedef struct vxfs_attr {
 // Removes name from dir: a directory only if empty; a file's data cleared.
 [[maybe_unused]] static vx_status vxfs_remove(vxfs_vol *v, vxfs_tree *t, const vxfs_file *dir,
                                               const char *name, int64_t now) {
+  if ((name[0] == '.' && !name[1]) || (name[0] == '.' && name[1] == '.' && !name[2]))
+    return VX_ERR_INVALID; // "." and "..": never removed (".." was EXISTS, its parent not being empty)
   vxfs_file f;
   vx_status st = vxfs_walk(v, t, dir, name, &f);
   if (st != VX_OK) return st;
@@ -572,7 +590,10 @@ static uint16_t key_orphan(uint8_t *k, uint64_t qid) {
 
 // An orphan's end: its data cleared, its Korphan and Kup gone.
 [[maybe_unused]] static vx_status vxfs_reap(vxfs_vol *v, vxfs_tree *t, uint64_t qid) {
-  vx_status st;
+  uint8_t ok[9], val[VXFS_INLMAX];
+  uint16_t nv = 0;
+  vx_status st = vxfs_lookup(&v->fs, t, ok, key_orphan(ok, qid), val, &nv);
+  if (st != VX_OK) return st == VX_ERR_NOT_FOUND ? VX_ERR_INVALID : st; // only an orphan's data is reaped
   fbatch *b = fb_new(v, 0, true, &st);
   if (!b) return st;
   st = clear_data(v, t, b, qid, 0);
@@ -666,7 +687,8 @@ static uint16_t key_orphan(uint8_t *k, uint64_t qid) {
                                                uint32_t gid, int64_t now, vxfs_file *f) {
   uint64_t n = 0;
   while (target[n]) n++;
-  if (!n || n > 4096) return VX_ERR_INVALID;
+  if (!n) return VX_ERR_INVALID;
+  if (n > VXFS_INLINE) return VX_ERR_RANGE; // a target is inline data (11 §3), never blocks: M5 step 10
   vx_status st = vxfs_create(v, t, dir, name, VXFS_DMSYMLINK | 0777, uid, gid, now, f);
   return st == VX_OK ? vxfs_write(v, t, f, 0, target, n, now, uid) : st;
 }

@@ -734,7 +734,9 @@ static vx_status make_status(void) {
   return vol.fs.err;
 }
 
-// The words of a ctl command, at most 4, each NUL-terminated in buf.
+// The words of a ctl command, at most 4, each NUL-terminated in buf; 0 if
+// they do not fit it (an over-long word is refused, not cut, so the command
+// that runs is never one that was not written).
 static uint32_t words(vx_str cmd, char *buf, size_t cap, const char **w) {
   uint32_t n = 0;
   size_t at = 0;
@@ -742,8 +744,11 @@ static uint32_t words(vx_str cmd, char *buf, size_t cap, const char **w) {
     while (i < cmd.len && (cmd.ptr[i] == ' ' || cmd.ptr[i] == '\t' || cmd.ptr[i] == '\n')) i++;
     if (i == cmd.len) break;
     w[n++] = buf + at;
-    while (i < cmd.len && cmd.ptr[i] != ' ' && cmd.ptr[i] != '\t' && cmd.ptr[i] != '\n' && at + 1 < cap)
-      buf[at++] = cmd.ptr[i++];
+    for (; i < cmd.len && cmd.ptr[i] != ' ' && cmd.ptr[i] != '\t' && cmd.ptr[i] != '\n'; i++) {
+      if (at + 2 > cap) return 0; // the character and the word's NUL
+      buf[at++] = cmd.ptr[i];
+    }
+    if (at + 1 > cap) return 0;
     buf[at++] = 0;
   }
   return n;

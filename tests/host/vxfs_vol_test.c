@@ -176,6 +176,9 @@ static void test_format_mount(void) {
   // Too small, and not a volume.
   memdev *tiny = memdev_new(9);
   CHECK(vxfs_format(&v, dev_of(tiny), MEM, 256, 0, BRANCHES, 1) == VX_ERR_INVALID);
+  vxfs_close(&v.fs);
+  const char *twice[] = {"home", "cfg", "home"}; // a branch name given twice: refused (M5 step 10)
+  CHECK(vxfs_format(&v, dev_of(d), MEM, 256, 2, twice, 3) == VX_ERR_INVALID);
   vxfs_unmount(&v);
   memdev_free(tiny);
   memdev *blank = memdev_new(64);

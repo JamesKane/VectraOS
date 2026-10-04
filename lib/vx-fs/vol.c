@@ -725,9 +725,11 @@ static vx_status vol_status(vxfs_vol *v, bool ok) {
   char name[VXFS_LABELMAX + 1];
   memcpy(name, br->name, br->nname);
   name[br->nname] = 0;
+  vxfs_branch was = *br;
   br->open = false;
   vx_status st = vxfs_rollback(v, name, to);
   vx_status again = branch_load(v, name, br); // as it is now, rolled back or not
+  if (again != VX_OK) *br = was;              // still open, as it was: its caller holds it (M5 step 10)
   return st != VX_OK ? st : again;
 }
 
@@ -775,6 +777,11 @@ static bool vol_alloc(vxfs_vol *v, uint32_t narenas) {
   sbatch *b = fs_alloc(fs, sizeof *b);
   bool ok = b != nullptr;
   if (ok) b->n = b->used = b->size = 0;
+  for (uint32_t i = 0; ok && i < nbranches; i++) // each name once: a second would label nothing of its own
+    for (uint32_t k = 0; k < i; k++)
+      if (vxfs_namelen(branches[i], VXFS_LABELMAX) == vxfs_namelen(branches[k], VXFS_LABELMAX) &&
+          memcmp(branches[i], branches[k], vxfs_namelen(branches[i], VXFS_LABELMAX)) == 0)
+        ok = false;
   for (uint32_t i = 0; ok && i < nbranches; i++) {
     uint16_t n = vxfs_namelen(branches[i], VXFS_LABELMAX);
     vxfs_tree t = {.memgen = v->nextgen++};
