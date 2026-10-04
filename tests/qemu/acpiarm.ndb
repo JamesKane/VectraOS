@@ -1,0 +1,13 @@
+# tests/qemu/acpiarm.ndb: bus-acpi on aarch64 (M5 step 7a), as acpi.ndb on x86_64. devmgr starts it; ACPICA loads
+# QEMU's tables from the kernel's copies (behind an RSDP and XSDT bus-acpi
+# makes), runs the AML, and bus-acpi lists the devices present with their
+# resources.
+
+scenario=acpiarm timeout=60 arch=aarch64 cmdline=vx.skip=gsh
+expect="devmgr: started bus-acpi"
+expect="ACPI: DSDT 0x00007F00"
+expect="_SB.COM0 ARMH0011 mem=0x9000000/0x1000 irq=33"
+expect=" present with a hardware ID"
+fail="vx: panic"
+fail="bus-acpi: FAILED"
+fail=") killed: "

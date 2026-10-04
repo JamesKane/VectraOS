@@ -80,7 +80,8 @@ static void test_namespace(void) {
   memcpy(programs, boot_bin.ptr, boot_bin.len); // list's buffer is reused
   programs[boot_bin.len] = 0;
   CHECK_STR(list("/bin"), programs); // the empty /bin, then /boot/bin
-  CHECK(boot_bin.len > 6 && memcmp(programs, "posix bootfs nstest ", 20) == 0); // sbase's directory first
+  CHECK(boot_bin.len > 6 &&
+        memcmp(programs, "posix bootfs bus-acpi nstest ", 29) == 0); // sbase's directory first
   vx_str svc = list("/boot/svc");
   static char manifests[512];
   memcpy(manifests, svc.ptr, svc.len); // list's buffer is reused

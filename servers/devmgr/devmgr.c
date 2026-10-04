@@ -355,6 +355,41 @@ static void match_drivers(void) {
   }
 }
 
+// bus-acpi (ADR-0024, ADR-0030): ACPICA over the tables, given a read-only
+// duplicate of them and the console. Started once; restarts come with its
+// service (M5 step 7).
+static void start_bus_acpi(vx_handle acpi, uint64_t size) {
+  vx_handle handles[2] = {};
+  vx_str names[2] = {VX_STR("acpi"), VX_STR("console")};
+  uint32_t count = 0;
+  static char records[256];
+  vx_ndb_writer w = {.buf = records, .cap = sizeof records};
+  vx_ndb_flag(&w, "acpi");
+  vx_ndb_put_u64(&w, "size", size);
+  vx_ndb_end(&w);
+  vx_status st = vx_handle_dup(acpi, VX_RIGHT_READ | VX_RIGHT_MAP | VX_RIGHT_TRANSFER, &handles[count++]);
+  if (st == VX_OK && vx_console.connector &&
+      vx_handle_dup(vx_console.connector, VX_RIGHTS_SAME, &handles[count]) == VX_OK)
+    count++;
+  size_t len = st == VX_OK ? read_whole(VX_STR("/boot/bin/bus-acpi"), image, sizeof image) : 0;
+  vx_handle task;
+  vx_spawn_args a = {.name = VX_STR("bus-acpi"),
+                     .image = image,
+                     .image_size = len,
+                     .handles = handles,
+                     .handle_names = names,
+                     .handle_count = count,
+                     .records = {records, w.len}};
+  if (st != VX_OK || !len || w.failed || vx_spawn_elf(&a, &task) != VX_OK) {
+    for (uint32_t i = 0; i < count; i++)
+      if (handles[i]) vx_handle_close(handles[i]);
+    say(VX_STR("cannot start "), VX_STR("bus-acpi"), VX_STR("\n"));
+    return;
+  }
+  vx_handle_close(task);
+  say(VX_STR("started "), VX_STR("bus-acpi"), VX_STR("\n"));
+}
+
 const char *vx_main(void) {
   resource = vx_spawn_take("resource");
   vx_handle acpi = vx_spawn_take("acpi");
@@ -388,6 +423,7 @@ const char *vx_main(void) {
     return "no namespace";
   }
   match_drivers();
+  start_bus_acpi(acpi, size);
   for (;;) { // drivers that exit are started again, up to a limit
     vx_packet pk[8];
     int64_t n = vx_port_wait(port, VX_INFINITE, 0, pk, 8);

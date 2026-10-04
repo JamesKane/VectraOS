@@ -405,7 +405,9 @@ static constexpr int PORT_MAX_TARGETS = 8;
 static constexpr int PORT_MAX_FILES = 32;
 static constexpr int PORT_MAX_PROGRAMS = 128;
 
-typedef struct port {
+typedef struct port port;
+
+struct port {
   const char *name;
   const char *dir;    // ports/<name>, which also holds the captured config.h
   const char *src;    // third_party/<name>, absolute
@@ -417,7 +419,7 @@ typedef struct port {
   vx_ndb_record programs[PORT_MAX_PROGRAMS]; // program= records: POSIX programs built from it
   int program_count;
   uint64_t input_hash;
-} port;
+};
 
 static port limine;
 
@@ -1020,6 +1022,10 @@ static bool compile_port_sources(const port *p, const arch *a, const file_list *
         cmd_add(c, fmt("-I%s/src/internal", musl.src));
         cmd_add(c, fmt("-Iports/musl/generated/%s/include", a->name));
         cmd_add(c, fmt("-I%s/include", musl.src));
+      } else if (words_has(vx_ndb_get(&p->head, "native"), "yes")) { // freestanding, as native programs are
+        cmd_addv(c, a->user_flags);
+        cmd_addv(c, USER_FLAGS);
+        cmd_add_words(c, vx_ndb_get(&p->head, "cflags"));
       } else {
         cmd_addv(c, posix_flags(a));
         cmd_add_words(c, vx_ndb_get(&p->head, "cflags"));
@@ -1213,51 +1219,64 @@ typedef enum placement : uint8_t { IN_MODULE, IN_BOOTFS, IN_TESTS } placement;
 typedef struct program {
   const char *name, *source;
   placement where;
-  const char *arch; // the only architecture it is built for, or nullptr for every one
-  bool posix;       // against vectra-musl, rather than freestanding against vx-rt
+  const char *arch;             // the only architecture it is built for, or nullptr for every one
+  bool posix;                   // against vectra-musl, rather than freestanding against vx-rt
+  const port *lib;              // a native port it links (its archive), or nullptr
+  const char *const *lib_flags; // what compiling against that port's headers takes
 } program;
 
+// ACPICA, a native port (ADR-0030), and what bus-acpi needs to include its
+// headers: its environment header first, its include directories as system
+// ones, so the house warnings stay the house's.
+static port acpica;
+static const char *const ACPICA_USE_FLAGS[] = {"-include", "ports/acpica/acvectra.h",
+                                               "-isystem", "third_party/acpica/source/include",
+                                               "-isystem", "third_party/acpica/source/include/platform",
+                                               nullptr};
+
 static const program USER_PROGRAMS[] = {
-    {"svcd", "servers/svcd/svcd.c", IN_MODULE, nullptr, false},
-    {"ktest", "tests/kernel/ktest.c", IN_MODULE, nullptr,
-     false}, // the root task instead of svcd with vx.root=ktest
-    {"bootfs", "servers/bootfs/bootfs.c", IN_BOOTFS, nullptr, false},
-    {"nstest", "tests/user/nstest.c", IN_TESTS, nullptr, false},
-    {"dreftest", "tests/user/dreftest.c", IN_TESTS, nullptr, false},
-    {"constest", "tests/user/constest.c", IN_TESTS, nullptr, false},
-    {"nettest", "tests/user/nettest.c", IN_TESTS, nullptr, false},
-    {"tcptest", "tests/user/tcptest.c", IN_TESTS, nullptr, false},
-    {"proctest", "tests/user/proctest.c", IN_TESTS, nullptr, false},
-    {"procfs", "servers/procfs/procfs.c", IN_BOOTFS, nullptr, false},
-    {"nsd", "servers/nsd/nsd.c", IN_BOOTFS, nullptr, false},
-    {"tmpfs", "servers/tmpfs/tmpfs.c", IN_BOOTFS, nullptr, false},
-    {"nullfs", "servers/nullfs/nullfs.c", IN_BOOTFS, nullptr, false},
-    {"sysfs", "servers/sysfs/sysfs.c", IN_BOOTFS, nullptr, false},
-    {"ptyd", "servers/ptyd/ptyd.c", IN_BOOTFS, nullptr, false},
-    {"devmgr", "servers/devmgr/devmgr.c", IN_BOOTFS, nullptr, false},
-    {"netd", "servers/netd/netd.c", IN_BOOTFS, nullptr, false},
-    {"gsh", "cmd/gsh.c", IN_BOOTFS, nullptr, false},
-    {"ls", "cmd/ls.c", IN_BOOTFS, nullptr, false},
-    {"cat", "cmd/cat.c", IN_BOOTFS, nullptr, false},
-    {"echo", "cmd/echo.c", IN_BOOTFS, nullptr, false},
-    {"ps", "cmd/ps.c", IN_BOOTFS, nullptr, false},
-    {"ns", "cmd/ns.c", IN_BOOTFS, nullptr, false},
-    {"tail", "cmd/tail.c", IN_BOOTFS, nullptr, false},
-    {"ping", "cmd/ping.c", IN_BOOTFS, nullptr, false},
-    {"cs", "cmd/cs.c", IN_BOOTFS, nullptr, false},
-    {"dbg", "cmd/dbg.c", IN_BOOTFS, nullptr, false},
-    {"drv-uart-16550", "drivers/drv-uart-16550/uart.c", IN_BOOTFS, "x86_64", false},
-    {"drv-uart-pl011", "drivers/drv-uart-pl011/uart.c", IN_BOOTFS, "aarch64", false},
-    {"drv-virtio-net", "drivers/drv-virtio-net/net.c", IN_BOOTFS, nullptr, false},
-    {"drv-virtio-blk", "drivers/drv-virtio-blk/blk.c", IN_BOOTFS, nullptr, false},
-    {"drv-nvme", "drivers/drv-nvme/nvme.c", IN_BOOTFS, nullptr, false},
-    {"blktest", "tests/user/blktest.c", IN_TESTS, nullptr, false},
-    {"partd", "servers/partd/partd.c", IN_BOOTFS, nullptr, false},
-    {"fsd", "servers/fsd/fsd.c", IN_BOOTFS, nullptr, false},
-    {"ctest", "tests/posix/ctest.c", IN_TESTS, nullptr, true},
-    {"ctestfsd", "tests/posix/ctest.c", IN_TESTS, nullptr, true}, // ctest again, with /tmp on fsd
-    {"sbasetest", "tests/posix/sbasetest.c", IN_TESTS, nullptr, true},
-    {"dbgdemo", "tests/user/dbgdemo.c", IN_TESTS, nullptr, false},
+    {"svcd", "servers/svcd/svcd.c", IN_MODULE, nullptr, false, nullptr, nullptr},
+    {"ktest", "tests/kernel/ktest.c", IN_MODULE, nullptr, false, nullptr,
+     nullptr}, // the root task instead of svcd with vx.root=ktest
+    {"bootfs", "servers/bootfs/bootfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"bus-acpi", "servers/bus-acpi/bus-acpi.c", IN_BOOTFS, nullptr, false, &acpica, ACPICA_USE_FLAGS},
+    {"nstest", "tests/user/nstest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
+    {"dreftest", "tests/user/dreftest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
+    {"constest", "tests/user/constest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
+    {"nettest", "tests/user/nettest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
+    {"tcptest", "tests/user/tcptest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
+    {"proctest", "tests/user/proctest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
+    {"procfs", "servers/procfs/procfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"nsd", "servers/nsd/nsd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"tmpfs", "servers/tmpfs/tmpfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"nullfs", "servers/nullfs/nullfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"sysfs", "servers/sysfs/sysfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"ptyd", "servers/ptyd/ptyd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"devmgr", "servers/devmgr/devmgr.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"netd", "servers/netd/netd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"gsh", "cmd/gsh.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"ls", "cmd/ls.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"cat", "cmd/cat.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"echo", "cmd/echo.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"ps", "cmd/ps.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"ns", "cmd/ns.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"tail", "cmd/tail.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"ping", "cmd/ping.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"cs", "cmd/cs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"dbg", "cmd/dbg.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"drv-uart-16550", "drivers/drv-uart-16550/uart.c", IN_BOOTFS, "x86_64", false, nullptr, nullptr},
+    {"drv-uart-pl011", "drivers/drv-uart-pl011/uart.c", IN_BOOTFS, "aarch64", false, nullptr, nullptr},
+    {"drv-virtio-net", "drivers/drv-virtio-net/net.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"drv-virtio-blk", "drivers/drv-virtio-blk/blk.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"drv-nvme", "drivers/drv-nvme/nvme.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"blktest", "tests/user/blktest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
+    {"partd", "servers/partd/partd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"fsd", "servers/fsd/fsd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"ctest", "tests/posix/ctest.c", IN_TESTS, nullptr, true, nullptr, nullptr},
+    {"ctestfsd", "tests/posix/ctest.c", IN_TESTS, nullptr, true, nullptr,
+     nullptr}, // ctest again, with /tmp on fsd
+    {"sbasetest", "tests/posix/sbasetest.c", IN_TESTS, nullptr, true, nullptr, nullptr},
+    {"dbgdemo", "tests/user/dbgdemo.c", IN_TESTS, nullptr, false, nullptr, nullptr},
 };
 
 static bool program_for(const program *p, const arch *a) { return !p->arch || strcmp(p->arch, a->name) == 0; }
@@ -1265,6 +1284,23 @@ static constexpr int USER_PROGRAM_COUNT = sizeof USER_PROGRAMS / sizeof USER_PRO
 
 // Every user program for an architecture: compiled in parallel, then linked
 // in parallel. Each is its own unity build, so nothing is shared between them.
+// A native port's archive, for an architecture (build_native_ports makes it).
+static const char *native_port_archive(const port *p, const arch *a) {
+  return fmt("%s/out/%s/%s/lib%s.a", root, p->name, a->name, p->name);
+}
+
+// Native ports (ACPICA): compiled once per architecture and cached, as musl
+// is, into an archive the programs that use them link.
+static bool build_native_ports(const arch *a) {
+  static file_list files;
+  files = (file_list){};
+  add_words(&files, vx_ndb_get(&acpica.head, "sources"));
+  const char **objs = alloc((size_t)files.count * sizeof *objs);
+  if (!build_cached(&acpica, a, &files, objs, nullptr)) return false;
+  const char *lib = native_port_archive(&acpica, a);
+  return archive(lib, fmt("%s/out/%s/%s", root, acpica.name, a->name), objs, files.count);
+}
+
 static bool build_user_programs(const arch *a, bool release) {
   const char *dir = fmt("out/%s/%s", a->name, release ? "release" : "debug");
   static cmd cc[USER_PROGRAM_COUNT], ld[USER_PROGRAM_COUNT];
@@ -1280,6 +1316,7 @@ static bool build_user_programs(const arch *a, bool release) {
     cmd_addv(&cc[n], p->posix ? posix_flags(a) : a->user_flags);
     cmd_addv(&cc[n], HOUSE_FLAGS);
     cmd_addv(&cc[n], p->posix ? POSIX_PROGRAM_FLAGS : USER_FLAGS);
+    if (p->lib_flags) cmd_addv(&cc[n], p->lib_flags);
     cmd_addv(&cc[n], release ? RELEASE_FLAGS : DEBUG_FLAGS);
     cmd_add(&cc[n], fmt("-ffile-prefix-map=%s=/src", root));
     cmd_addv(&cc[n], (const char *const[]){"-c", p->source, "-o", obj, nullptr});
@@ -1295,6 +1332,7 @@ static bool build_user_programs(const arch *a, bool release) {
       cmd_add(&ld[n], fmt("%s/crti.o", lib));
     }
     cmd_add(&ld[n], obj);
+    if (p->lib) cmd_add(&ld[n], native_port_archive(p->lib, a));
     if (p->posix) {
       cmd_add(&ld[n], fmt("%s/libc.a", lib));
       cmd_add(&ld[n], fmt("%s/libclang_rt.builtins.a", lib));
@@ -1460,8 +1498,8 @@ static bool build_port_programs(const arch *a, bool release) {
 }
 
 static bool build_arch(const arch *a, bool release) {
-  if (!build_kernel(a, release) || !build_vectra_musl(a, release) || !build_user_programs(a, release) ||
-      !build_port_programs(a, release))
+  if (!build_kernel(a, release) || !build_vectra_musl(a, release) || !build_native_ports(a) ||
+      !build_user_programs(a, release) || !build_port_programs(a, release))
     return false;
   const vx_ndb_record *t = port_target_for(&limine, a);
   return !t || build_port_target(&limine, t);
@@ -1479,6 +1517,7 @@ static void check_toolchain(void) {
   port_load(&compiler_rt, "compiler-rt");
   port_load(&lua, "lua");
   port_load(&sbase, "sbase");
+  port_load(&acpica, "acpica");
   sbase.input_hash = hash_tree(sbase.input_hash, fmt("%s/ports/sbase/generated", root));
   // musl's build also reads the back end's syscall_arch.h and the generated headers.
   musl.input_hash = hash_tree(musl.input_hash, fmt("%s/ports/musl/vx/arch", root));
@@ -3289,6 +3328,7 @@ static int os_units(unit *units, bool with_host_tests) {
       u->flags[0] = p->posix ? posix_flags(&ARCHES[i]) : ARCHES[i].user_flags;
       u->flags[1] = HOUSE_FLAGS;
       u->flags[2] = p->posix ? POSIX_PROGRAM_FLAGS : USER_FLAGS;
+      u->flags[3] = p->lib_flags;
     }
     units[unit_slot(&n)] = (unit){fmt("libc-vx %s", ARCHES[i].name),
                                   "ports/musl/vx/backend.c",
