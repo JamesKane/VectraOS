@@ -9,6 +9,8 @@
 //                                   if all are there and sound
 //   vxstore ls STORE TREE [PATH]    a directory's entries
 //   vxstore cat STORE TREE PATH     a file's bytes, to stdout
+//   vxstore blocks STORE TREE PATH  a file's block objects' paths in the
+//                                   store, one a line (for tests that damage one)
 //
 // Modes are not the build machine's: a file is 0444, or 0555 if any execute
 // bit is set; a directory 0555; a link 0777. Times and owners are not kept.
@@ -386,6 +388,24 @@ int main(int argc, char **argv) {
     int fd = open(argv[4], O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0 || write(fd, w.buf, w.len + 1024) != (ssize_t)(w.len + 1024) || close(fd) != 0)
       die("cannot write", argv[4]); // two zero blocks end it
+    return 0;
+  }
+  if (strcmp(argv[1], "blocks") == 0 && argc == 5) {
+    uint8_t *owner;
+    vx_store_entry e = lookup(&tree, argv[4], &owner);
+    size_t len;
+    uint8_t *obj = get_object(&e.hash, &len);
+    uint64_t size, n;
+    const uint8_t *hashes;
+    if (vx_store_is_dir(&e) || vx_store_index_check(&e.hash, obj, len, &size, &hashes, &n) != VX_OK)
+      die("not a sound file", argv[4]);
+    for (uint64_t i = 0; i < n; i++) {
+      vx_hash b;
+      memcpy(b.b, hashes + i * VX_STORE_HASH, VX_STORE_HASH);
+      char rel[71];
+      vx_store_path(&b, rel);
+      printf("%s\n", rel);
+    }
     return 0;
   }
   if ((strcmp(argv[1], "ls") == 0 && (argc == 4 || argc == 5)) ||

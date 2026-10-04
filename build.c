@@ -1230,8 +1230,8 @@ typedef struct program {
 // ones, so the house warnings stay the house's.
 static port acpica, monocypher;
 // Monocypher (ADR-0032), for distd and install: its headers as system ones.
-[[maybe_unused]] static const char *const MONOCYPHER_USE_FLAGS[] = {
-    "-isystem", "third_party/monocypher/src", "-isystem", "third_party/monocypher/src/optional", nullptr};
+static const char *const MONOCYPHER_USE_FLAGS[] = {"-isystem", "third_party/monocypher/src", "-isystem",
+                                                   "third_party/monocypher/src/optional", nullptr};
 static const char *const ACPICA_USE_FLAGS[] = {"-include", "ports/acpica/acvectra.h",
                                                "-isystem", "third_party/acpica/source/include",
                                                "-isystem", "third_party/acpica/source/include/platform",
@@ -1279,6 +1279,7 @@ static const program USER_PROGRAMS[] = {
     {"fsd", "servers/fsd/fsd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"dosfs", "servers/dosfs/dosfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"isofs", "servers/isofs/isofs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"distd", "servers/distd/distd.c", IN_BOOTFS, nullptr, false, &monocypher, MONOCYPHER_USE_FLAGS},
     {"ctest", "tests/posix/ctest.c", IN_TESTS, nullptr, true, nullptr, nullptr},
     {"ctestfsd", "tests/posix/ctest.c", IN_TESTS, nullptr, true, nullptr,
      nullptr}, // ctest again, with /tmp on fsd
@@ -2276,7 +2277,9 @@ static const char *const BOOTFS_DIRS[] = {"adm",
                                           "boot/drv",
                                           "boot/svc",
                                           "boot/tests",
+
                                           "dev",
+                                          "dist",
                                           "lib",
                                           "lib/ns",
                                           "n",
@@ -2941,7 +2944,54 @@ static const char *fat_disk(const char *path, long mib, int type) {
   return path;
 }
 
-static const char *test_disk(const char *path, long mib, const char *home) {
+static vx_str str_of(const char *s) { return (vx_str){s, strlen(s)}; }
+
+// The distd tests' store branch (tests/qemu/distd.ndb): a small release made
+// by host/vxstore (a file of several blocks, another never read before it is
+// damaged, a nested directory, a link, a UTF-8 name), its record for both
+// architectures, and beside them plain/ (not objects): the big file as it is,
+// for comparing, and the store paths of the blocks the test damages.
+static const char *make_test_release(const char *dir) {
+  if (!build_vxstore()) die("cannot build vxstore");
+  cmd rm = {};
+  cmd_addv(&rm, (const char *const[]){"/usr/bin/rm", "-rf", dir, nullptr});
+  if (!run(&rm)) die("cannot clear %s", dir);
+  const char *src = fmt("%s.src", dir);
+  cmd rm2 = {};
+  cmd_addv(&rm2, (const char *const[]){"/usr/bin/rm", "-rf", src, nullptr});
+  run(&rm2);
+  mkdirs(fmt("%s/bin/deeper", src));
+  mkdirs(fmt("%s/plain", dir));
+  mkdirs(fmt("%s/records", dir));
+  write_file(fmt("%s/README.txt", src), VX_STR("readme\n"));
+  write_file(fmt("%s/bin/deeper/file.txt", src), VX_STR("deep\n"));
+  write_file(fmt("%s/\xc3\x9cn\xc3\xaf\x63ode.txt", src), VX_STR("unicode\n"));
+  static char big[300'000], other[200'000];
+  for (size_t i = 0; i < sizeof big; i++) big[i] = (char)((i * 7 + i / 251) & 0xff);
+  for (size_t i = 0; i < sizeof other; i++) other[i] = (char)((i * 13 + i / 509) & 0xff);
+  write_file(fmt("%s/big.bin", src), (vx_str){big, sizeof big});
+  write_file(fmt("%s/other.bin", src), (vx_str){other, sizeof other});
+  write_file(fmt("%s/plain/big.bin", dir), (vx_str){big, sizeof big});
+  if (symlink("README.txt", fmt("%s/readme-link", src)) != 0) die("cannot make the link");
+  char *out = run_capture((const char *const[]){VXSTORE, "put", dir, src, nullptr});
+  if (!out || !strchr(out, ' ')) die("vxstore put failed");
+  *strchr(out, ' ') = 0;
+  char *blocks = run_capture((const char *const[]){VXSTORE, "blocks", dir, out, "other.bin", nullptr});
+  if (!blocks) die("vxstore blocks failed");
+  char *second = strchr(blocks, '\n'); // other.bin's second block
+  if (!second) die("other.bin has one block");
+  second++;
+  second[strcspn(second, "\n")] = 0;
+  write_file(fmt("%s/plain/damage", dir), str_of(second));
+  write_file(fmt("%s/records/1.ndb", dir),
+             str_of(fmt("release=1 name=test-1 channel=dev commit=test vx-abi=0 unsigned\n"
+                        "set=base arch=x86_64 tree=%s size=500021\n"
+                        "set=base arch=aarch64 tree=%s size=500021\n",
+                        out, out)));
+  return dir;
+}
+
+static const char *test_disk(const char *path, long mib, const char *home, const char *store) {
   static const char SIGNATURE[] = "VectraOS block test disk";
   // The VectraOS system volume type, 7C6D3E1A-2B4F-4E0A-9C1D-56F2A8B90E35, as stored on disk.
   static const uint8_t SYSTEM_TYPE[16] = {0x1a, 0x3e, 0x6d, 0x7c, 0x4f, 0x2b, 0x0a, 0x4e,
@@ -2965,12 +3015,12 @@ static const char *test_disk(const char *path, long mib, const char *home) {
     put64(e + 32, parts[i].first);
     put64(e + 40, parts[i].first + parts[i].sectors - 1);
     for (size_t k = 0; parts[i].name[k]; k++) put16(e + 56 + 2 * k, (uint16_t)parts[i].name[k]);
-    if (home && i == 1) continue;
+    if ((home || store) && i == 1) continue;
     pwrite_all(fd, parts[i].marker, strlen(parts[i].marker), parts[i].first * SECTOR, path);
   }
-  if (home) { // the volume, made beside the disk and copied into the partition
+  if (home || store) { // the volume, made beside the disk and copied into the partition
     const char *vol = fmt("%s.vxfs", path);
-    const char *const trees[4] = {nullptr, nullptr, home, nullptr};
+    const char *const trees[4] = {store, nullptr, home, nullptr};
     if (!make_volume(vol, (long)(parts[1].sectors * SECTOR >> 20), trees))
       die("cannot make the volume %s", vol);
     vx_str bytes = read_file(vol);
@@ -3051,6 +3101,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   const char *only = nullptr;              // scenario=... arch=A: run on A only
   bool must_exit = false;                  // scenario=... exits: QEMU must then exit by itself (power off)
   const char *volume = nullptr;            // and volume=DIR: its system partition a volume, home DIR
+  bool storetree = false;                  // and storetree: its store branch make_test_release's
   const char *host_file[8], *host_text[8]; // host=FILE text=...: in the share, once it passed
   int host_count = 0;
   for (;;) {
@@ -3073,6 +3124,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
           die("%s:%zu: disk=%s is not a size in MiB, up to 4096", path, rec.line, d);
       }
       if (vx_ndb_has(&rec, "volume")) volume = str_dup(vx_ndb_get(&rec, "volume"));
+      storetree = vx_ndb_has(&rec, "storetree");
       if (vx_ndb_has(&rec, "arch")) only = str_dup(vx_ndb_get(&rec, "arch"));
       must_exit = vx_ndb_has(&rec, "exits");
       if (vx_ndb_has(&rec, "rtc")) rtc = str_dup(vx_ndb_get(&rec, "rtc"));
@@ -3161,7 +3213,8 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   if (fat)
     disk = fat_disk(fmt("%s/disk.img", run_dir), disk_mib, fat);
   else if (disk_mib)
-    disk = test_disk(fmt("%s/disk.img", run_dir), disk_mib, volume);
+    disk = test_disk(fmt("%s/disk.img", run_dir), disk_mib, volume,
+                     storetree ? make_test_release(fmt("%s/store", run_dir)) : nullptr);
   qemu_cmd(&c, a, image,
            (qemu_opts){.kvm = kvm_usable(a),
                        .test = true,

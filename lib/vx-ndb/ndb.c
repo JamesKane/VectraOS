@@ -1,5 +1,7 @@
 // vx-ndb: the strict ndb record parser. See ndb.h for the format.
 
+#pragma once
+
 #include <stdckdint.h>
 
 #include "ndb.h"

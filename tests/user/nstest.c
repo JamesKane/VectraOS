@@ -26,12 +26,14 @@ static void check_at(bool ok, const char *what, int line) {
 static bool str_is(vx_str s, const char *want);
 
 // A string comparison that shows what it got when it fails.
+// What it got is said first: a scenario stops at the FAILED line.
 static void check_str_at(vx_str got, const char *want, const char *what, int line) {
+  if (!str_is(got, want)) {
+    vx_print(VX_STR("nstest:   got \""));
+    vx_print(got);
+    vx_print(VX_STR("\"\n"));
+  }
   check_at(str_is(got, want), what, line);
-  if (str_is(got, want)) return;
-  vx_print(VX_STR("nstest:   got \""));
-  vx_print(got);
-  vx_print(VX_STR("\"\n"));
 }
 
 #define CHECK_STR(got, want) check_str_at((got), (want), #got " is " #want, __LINE__)
@@ -74,7 +76,7 @@ static void test_spawn(void) {
 }
 
 static void test_namespace(void) {
-  CHECK_STR(list("/"), "adm bin boot dev lib n net proc srv sys tmp");
+  CHECK_STR(list("/"), "adm bin boot dev dist lib n net proc srv sys tmp");
   vx_str boot_bin = list("/boot/bin");
   static char programs[512];
   memcpy(programs, boot_bin.ptr, boot_bin.len); // list's buffer is reused
