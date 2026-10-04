@@ -604,31 +604,47 @@ void ACPI_INTERNAL_VAR_XFACE AcpiOsPrintf(const char *Format, ...) {
 
 static uint32_t devices, present;
 
+static void add_res(vx_acpi_device *d, uint32_t kind, uint64_t base, uint64_t size) {
+  if (d->count < VX_ACPI_MAX_RES)
+    d->res[d->count++] = (vx_acpi_res){.kind = kind, .base = base, .size = size};
+}
+
+// One _CRS resource: said, and added to the device's report (ctx).
 static ACPI_STATUS print_resource(ACPI_RESOURCE *r, void *ctx) {
-  (void)ctx;
+  vx_acpi_device *d = ctx;
   char buf[64];
   int n = 0;
   switch (r->Type) {
   case ACPI_RESOURCE_TYPE_IO:
-    if (r->Data.Io.AddressLength)
+    if (r->Data.Io.AddressLength) {
       n = snprintf(buf, sizeof buf, " io=0x%x/%u", r->Data.Io.Minimum, r->Data.Io.AddressLength);
+      add_res(d, VX_ACPI_RES_IO, r->Data.Io.Minimum, r->Data.Io.AddressLength);
+    }
     break;
   case ACPI_RESOURCE_TYPE_FIXED_IO:
     n = snprintf(buf, sizeof buf, " io=0x%x/%u", r->Data.FixedIo.Address, r->Data.FixedIo.AddressLength);
+    add_res(d, VX_ACPI_RES_IO, r->Data.FixedIo.Address, r->Data.FixedIo.AddressLength);
     break;
   case ACPI_RESOURCE_TYPE_MEMORY32:
     n = snprintf(buf, sizeof buf, " mem=0x%x/0x%x", r->Data.Memory32.Minimum, r->Data.Memory32.AddressLength);
+    add_res(d, VX_ACPI_RES_MEMORY, r->Data.Memory32.Minimum, r->Data.Memory32.AddressLength);
     break;
   case ACPI_RESOURCE_TYPE_FIXED_MEMORY32:
     n = snprintf(buf, sizeof buf, " mem=0x%x/0x%x", r->Data.FixedMemory32.Address,
                  r->Data.FixedMemory32.AddressLength);
+    add_res(d, VX_ACPI_RES_MEMORY, r->Data.FixedMemory32.Address, r->Data.FixedMemory32.AddressLength);
     break;
-  case ACPI_RESOURCE_TYPE_IRQ:
-    if (r->Data.Irq.InterruptCount) n = snprintf(buf, sizeof buf, " irq=%u", r->Data.Irq.Interrupts[0]);
+  case ACPI_RESOURCE_TYPE_IRQ: // the first line: a device with a choice of lines takes it
+    if (r->Data.Irq.InterruptCount) {
+      n = snprintf(buf, sizeof buf, " irq=%u", r->Data.Irq.Interrupts[0]);
+      add_res(d, VX_ACPI_RES_IRQ, r->Data.Irq.Interrupts[0], 1);
+    }
     break;
   case ACPI_RESOURCE_TYPE_EXTENDED_IRQ:
-    if (r->Data.ExtendedIrq.InterruptCount)
+    if (r->Data.ExtendedIrq.InterruptCount) {
       n = snprintf(buf, sizeof buf, " irq=%u", r->Data.ExtendedIrq.Interrupts[0]);
+      add_res(d, VX_ACPI_RES_IRQ, r->Data.ExtendedIrq.Interrupts[0], 1);
+    }
     break;
   default: break;
   }
@@ -653,14 +669,18 @@ static ACPI_STATUS print_device(ACPI_HANDLE dev, UINT32 depth, void *ctx, void *
   bool here = is_present(dev);
   if (here && (info->Valid & ACPI_VALID_HID)) {
     present++;
-    char path[128];
+    char path[128] = "";
     ACPI_BUFFER name = {.Length = sizeof path, .Pointer = path};
     vx_print(VX_STR("bus-acpi: "));
     if (ACPI_SUCCESS(AcpiGetName(dev, ACPI_FULL_PATHNAME_NO_TRAILING, &name))) vx_print(vx_cstr(path));
     vx_print(VX_STR(" "));
     vx_print(vx_cstr(info->HardwareId.String));
-    AcpiWalkResources(dev, METHOD_NAME__CRS, print_resource, nullptr);
+    vx_acpi_device d = {.h = {.ordinal = VX_ACPI_DEVICE}};
+    strncpy(d.hid, info->HardwareId.String, sizeof d.hid - 1);
+    strncpy(d.path, path, sizeof d.path - 1);
+    AcpiWalkResources(dev, METHOD_NAME__CRS, print_resource, &d);
     vx_print(VX_STR("\n"));
+    if (devmgr) vx_channel_write(devmgr, &d, sizeof d, nullptr, 0); // devmgr matches it to a driver
   }
   AcpiOsFree(info);
   return AE_OK;

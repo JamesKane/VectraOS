@@ -23,6 +23,29 @@ typedef struct vx_acpi_mint {
 // call, for a firmware whose ACPI cannot (hardware-reduced, no sleep
 // registers: QEMU's aarch64). The reply comes only if it did not happen.
 
+// VX_ACPI_DEVICE (M5 step 7d): bus-acpi says, with a channel_write and no
+// reply, a present device's hardware ID and its _CRS resources, which devmgr
+// matches against match=acpi records and grants the matched driver exactly
+// (ADR-0024 item 3). Memory and I/O are base and size; an interrupt is its
+// line (an ISA IRQ or GSI on x86_64, a GIC INTID on aarch64) in base.
+enum : uint32_t { VX_ACPI_DEVICE = 0x6365'7664 }; // "dvec"
+enum : uint32_t { VX_ACPI_RES_MEMORY = 1, VX_ACPI_RES_IO = 2, VX_ACPI_RES_IRQ = 3 };
+static constexpr uint32_t VX_ACPI_MAX_RES = 8;
+
+typedef struct vx_acpi_res {
+  uint32_t kind, reserved;
+  uint64_t base, size;
+} vx_acpi_res;
+
+typedef struct vx_acpi_device {
+  vx_msg_header h;
+  char hid[16];   // the hardware ID, NUL-terminated: PNP0B00
+  char path[48];  // the namespace path, NUL-terminated (cut short if longer): \_SB.PCI0.SF8.RTC
+  uint32_t count; // resources
+  uint32_t reserved;
+  vx_acpi_res res[VX_ACPI_MAX_RES];
+} vx_acpi_device;
+
 // /srv/acpi, bus-acpi's post: a client's request, by channel_call, is a
 // vx_msg_header with this ordinal. VX_ACPI_POWER_OFF: the machine off (S5,
 // or PSCI through devmgr); the reply, with the status in flags, comes only if

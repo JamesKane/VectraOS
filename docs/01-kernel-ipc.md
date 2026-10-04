@@ -72,7 +72,7 @@ irq_create  irq_ack  iorange_create  dma_domain_create  dma_map  dma_unmap  dma_
 clock_read  debug_write (only while a debug capability is held)
 pmu_configure                                                          # performance counters (05 §9)
 cpu_configure                                                          # idle states, performance domains, limits (§8, ADR-0020; M9)
-system_power                                                           # the machine off by firmware call (PSCI; the root Resource's MANAGE)
+system_power  clock_set                                                # the machine off by firmware call; the wall clock (ADR-0031)
 ```
 
 `clock_read` also runs from a vDSO page without entering the kernel, as does reading counters, which live in a shared page. Batchable calls (`dma_map`, `port_bind`, `handle_close`, `vmo_rw`, `vmo_op`, `task_mem_rw`) take arrays (rule 11).

@@ -66,6 +66,18 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   return r < 0 ? (vx_status)r : VX_OK;
 }
 
+// UTC, in ns since 1970: the monotonic clock until there is a wall clock.
+[[maybe_unused]] static int64_t vx_clock_utc(void) {
+  vx_clock_info info = {};
+  int64_t now = vx_syscall(VX_SYS_clock_read, (uint64_t)&info, 0, 0, 0, 0, 0);
+  return now < 0 ? (int64_t)vx_clock_read() : now + info.utc_offset;
+}
+
+// The wall clock set to utc (ns since 1970), with the root Resource.
+[[maybe_unused]] static vx_status vx_clock_set(vx_handle resource, int64_t utc) {
+  return (vx_status)vx_syscall(VX_SYS_clock_set, resource, (uint64_t)utc, 0, 0, 0, 0);
+}
+
 // The cycle counter, read in user mode: no syscall (05 §9).
 [[maybe_unused]] static inline uint64_t vx_cycles(void) {
 #ifdef __x86_64__

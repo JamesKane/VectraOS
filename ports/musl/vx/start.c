@@ -141,13 +141,20 @@ static long proc_set_tls(uint64_t p) {
 
 // --- Time ---
 //
-// Every clock is the kernel's: nanoseconds since boot. There is no wall clock
-// yet, so CLOCK_REALTIME starts in 1970 (a known gap), and the CPU-time clocks
-// are the same clock.
+// Every clock is the kernel's monotonic one, in nanoseconds since boot; the
+// realtime clocks add the kernel's UTC offset (ADR-0031), which is 0 until
+// a clock driver has set it (no RTC: 1970, as before). The CPU-time clocks
+// are the monotonic clock too.
+
+static bool time_is_utc(clockid_t clock) {
+  return clock == CLOCK_REALTIME || clock == CLOCK_REALTIME_COARSE || clock == CLOCK_REALTIME_ALARM ||
+         clock == CLOCK_TAI;
+}
 
 static long time_get(clockid_t clock, struct timespec *ts) {
-  if (clock < 0 || clock > CLOCK_BOOTTIME_ALARM) return -EINVAL;
-  vx_instant now = vx_clock_read();
+  if (clock < 0 || clock > CLOCK_TAI) return -EINVAL;
+  vx_instant now = time_is_utc(clock) ? vx_clock_utc() : vx_clock_read();
+  if (now < 0) now = 0;
   *ts = (struct timespec){.tv_sec = now / 1'000'000'000, .tv_nsec = now % 1'000'000'000};
   return 0;
 }
@@ -176,10 +183,12 @@ static _Atomic uint32_t sig_seq;
 // A sleep ends early with EINTR when a signal interrupts it, with what was
 // left in *rem; made again after the signal (signal.c), it keeps its deadline.
 static long time_sleep(clockid_t clock, int flags, const struct timespec *req, struct timespec *rem) {
-  if (clock < 0 || clock > CLOCK_BOOTTIME_ALARM) return -EINVAL;
+  if (clock < 0 || clock > CLOCK_TAI) return -EINVAL;
   vx_instant *deadline = &sig_call_deadline;
   long st = 0;
   if (!sig_restarting) st = time_deadline(req, flags & TIMER_ABSTIME, deadline);
+  if (!sig_restarting && st == 0 && (flags & TIMER_ABSTIME) && time_is_utc(clock) && *deadline != VX_INFINITE)
+    *deadline -= vx_clock_utc() - vx_clock_read(); // a time of day: on the monotonic clock
   while (st == 0 && vx_clock_read() < *deadline) {
     uint32_t seq = atomic_load(&sig_seq);
     vx_status w = vx_futex_wait(&sig_seq, seq, *deadline);

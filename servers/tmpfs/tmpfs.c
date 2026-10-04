@@ -44,7 +44,7 @@ static node *node_at(uint64_t id, uint32_t *slot) {
   return &nodes[s];
 }
 
-static uint32_t now_seconds(void) { return (uint32_t)(vx_clock_read() / 1'000'000'000); }
+static uint32_t now_seconds(void) { return (uint32_t)(vx_clock_utc() / 1'000'000'000); }
 
 static void free_data(node *n) {
   if (n->data) vx_as_unmap(vx_self, (uint64_t)n->data, n->cap);

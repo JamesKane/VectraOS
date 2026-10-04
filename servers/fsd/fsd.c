@@ -113,8 +113,9 @@ static void mem_free([[maybe_unused]] void *ctx, void *p, size_t n) {
 
 // --- Nodes ---
 
-// Times, in ns: from boot until there is a wall clock, as sysfs's realtime is.
-static int64_t now_ns(void) { return (int64_t)vx_clock_read(); }
+// Times, in ns: UTC once there is a wall clock (ADR-0031), from boot before,
+// as sysfs's realtime is.
+static int64_t now_ns(void) { return vx_clock_utc(); }
 
 static uint64_t node_of(uint32_t slot, uint32_t user, uint64_t qid) {
   return (uint64_t)slot << SLOT_SHIFT | (uint64_t)user << USER_SHIFT | qid;

@@ -14,6 +14,16 @@
 // A post ending in # is numbered: the record's matches get disk0, disk1, ...,
 // in the order the functions were found.
 //
+// An ACPI device, as bus-acpi reports it, is matched by its hardware ID:
+//
+//   match=acpi hid=PNP0B00 program=/boot/bin/drv-rtc-cmos clock
+//
+// and its driver gets exactly the device's _CRS resources (ADR-0024 item 3):
+// an IoRange for each port range, a physical VMO for each memory range, an
+// IRQ for each interrupt, unless one is the kernel's or another driver's.
+// clock: the driver keeps time, and tells devmgr, which sets the kernel's
+// wall clock (ADR-0031).
+//
 // svcd gives it the root Resource, the ACPI tables, a namespace with the boot
 // image at /, and the claims. Configuration space is mapped one bus (1 MiB) at
 // a time, as buses are found: the first in each region, then whatever bridges
@@ -23,11 +33,13 @@
 #include "../../lib/vx-rt/spawn.c"
 #include "../../lib/vx-acpi/acpi.c"
 #include "../../lib/vx-acpi/mint.h"
+#include "../../lib/vx-driver/clockproto.h"
 #include "../../lib/vx-pci/pci.c"
 #include "../../lib/vx-ns/spawn.c"
 
 static vx_handle resource, port;
 static vx_ns ns;
+static uint8_t century_reg; // the FADT's CMOS century register, for clock drivers; 0 if none
 
 // Every function found, for matching.
 typedef struct function {
@@ -129,7 +141,10 @@ static void scan_bus(const vx_ecam *e, uint8_t bus) {
 static constexpr uint32_t MAX_DRIVERS = 16, MAX_STARTS = 5;
 
 typedef struct driver {
-  const function *f;
+  const function *f;   // a PCI function's; nullptr for an ACPI device's
+  vx_acpi_device acpi; // an ACPI device's: what bus-acpi reported, its resources the grants
+  bool clock;          // it keeps time: given a channel to say it on
+  vx_handle report;    // devmgr's end of that channel
   char program[64], post[32];
   uint32_t msis;
   uint8_t prefix;                    // a numbered post's (disk# is "disk"): its length; 0 if not numbered
@@ -142,6 +157,15 @@ typedef struct driver {
 
 static driver drivers[MAX_DRIVERS];
 static uint32_t driver_count;
+static constexpr uint64_t KEY_REPORT = 1ull << 33; // | the driver's index: its clock channel
+
+// The match=acpi records, kept for bus-acpi's reports.
+typedef struct acpi_match {
+  char hid[16], program[64], post[32];
+  bool clock;
+} acpi_match;
+static acpi_match acpi_matches[8];
+static uint32_t acpi_match_count;
 static uint8_t image[2 << 20];
 
 static void say(vx_str a, vx_str b, vx_str c) {
@@ -170,9 +194,12 @@ static vx_status start_driver(driver *d) {
   uint32_t count = 0;
   static char records[4096];
   vx_ndb_writer w = {.buf = records, .cap = sizeof records};
-  vx_status st = vx_vmo_create_physical(resource, d->f->config_pa, 4096, &handles[count]);
-  names[count++] = VX_STR("config");
-  for (uint32_t i = 0; st == VX_OK && i < 6; i++) { // memory BARs, mapped whole
+  vx_status st = VX_OK;
+  if (d->f) {
+    st = vx_vmo_create_physical(resource, d->f->config_pa, 4096, &handles[count]);
+    names[count++] = VX_STR("config");
+  }
+  for (uint32_t i = 0; d->f && st == VX_OK && i < 6; i++) { // memory BARs, mapped whole
     bool wide = (vx_pci_read32(&d->f->fn, 0x10 + 4 * i) & 7) == 4;
     vx_pci_bar b = vx_pci_bar_read(&d->f->fn, i);
     if (wide) i++;
@@ -188,7 +215,7 @@ static vx_status start_driver(driver *d) {
     vx_ndb_put_u64(&w, "size", size);
     vx_ndb_end(&w);
   }
-  for (uint32_t i = 0; st == VX_OK && i < d->msis && i < 8; i++) {
+  for (uint32_t i = 0; d->f && st == VX_OK && i < d->msis && i < 8; i++) {
     vx_msi msi;
     st = vx_irq_create_msi(resource, vx_pci_rid(&d->f->fn), &handles[count], &msi);
     char *nm = name_buf[count];
@@ -201,13 +228,63 @@ static vx_status start_driver(driver *d) {
   }
   // The function's DMA domain: devmgr's, kept across the driver's restarts;
   // the driver's duplicate only maps, and cannot revoke what it mapped.
-  if (st == VX_OK && !d->dma) st = vx_dma_domain_create(resource, vx_pci_rid(&d->f->fn), &d->dma);
-  if (st == VX_OK)
-    st = vx_handle_dup(d->dma, VX_RIGHT_MAP | VX_RIGHT_WAIT | VX_RIGHT_INSPECT | VX_RIGHT_TRANSFER,
-                       &handles[count]);
-  names[count++] = VX_STR("dma");
-  if (st == VX_OK) st = vx_handle_dup(d->listen, VX_RIGHTS_SAME, &handles[count]);
-  names[count++] = VX_STR("listen");
+  if (d->f) {
+    if (st == VX_OK && !d->dma) st = vx_dma_domain_create(resource, vx_pci_rid(&d->f->fn), &d->dma);
+    if (st == VX_OK)
+      st = vx_handle_dup(d->dma, VX_RIGHT_MAP | VX_RIGHT_WAIT | VX_RIGHT_INSPECT | VX_RIGHT_TRANSFER,
+                         &handles[count]);
+    names[count++] = VX_STR("dma");
+  }
+  // An ACPI device's resources: io0, mem0, irq0, ..., each with a record
+  // (io=0 base=0x70 size=8) saying which range it is.
+  uint32_t nth[4] = {};
+  for (uint32_t i = 0; !d->f && st == VX_OK && i < d->acpi.count; i++) {
+    const vx_acpi_res *r = &d->acpi.res[i];
+    static const char *const kinds[] = {"irq", "mem", "io", "irq"}; // by VX_ACPI_RES_*
+    const char *kind = kinds[r->kind & 3];
+    if (r->kind == VX_ACPI_RES_IO) {
+#ifdef __x86_64__
+      st = vx_iorange_create(resource, (uint16_t)r->base, (uint32_t)r->size, &handles[count]);
+#else
+      st = VX_ERR_UNSUPPORTED;
+#endif
+    } else if (r->kind == VX_ACPI_RES_MEMORY) {
+      uint64_t base = r->base & ~4095ull, end = (r->base + r->size + 4095) & ~4095ull;
+      st = vx_vmo_create_physical(resource, base, end - base, &handles[count]);
+    } else {
+      st = vx_irq_create(resource, (uint32_t)r->base, &handles[count]);
+    }
+    uint32_t k = nth[r->kind & 3]++;
+    char *nm = name_buf[count];
+    size_t len = vx_cstr(kind).len;
+    memcpy(nm, kind, len);
+    nm[len] = (char)('0' + k), nm[len + 1] = 0;
+    names[count++] = (vx_str){nm, len + 1};
+    vx_ndb_put_u64(&w, kind, k);
+    vx_ndb_put_u64(&w, "base", r->base);
+    vx_ndb_put_u64(&w, "size", r->size);
+    vx_ndb_end(&w);
+  }
+  if (!d->f && d->clock && century_reg) {
+    vx_ndb_flag(&w, "fadt");
+    vx_ndb_put_u64(&w, "century", century_reg);
+    vx_ndb_end(&w);
+  }
+  if (st == VX_OK && d->clock) { // a channel to say the time on
+    vx_handle ends[2];
+    st = vx_channel_create(0, ends);
+    if (st == VX_OK) {
+      if (d->report) vx_handle_close(d->report);
+      d->report = ends[0];
+      handles[count] = ends[1];
+      names[count++] = VX_STR("devmgr");
+      vx_port_bind(port, d->report, VX_TRIGGER_READABLE, KEY_REPORT | (uint64_t)(d - drivers), 0);
+    }
+  }
+  if (st == VX_OK && d->listen) {
+    st = vx_handle_dup(d->listen, VX_RIGHTS_SAME, &handles[count]);
+    names[count++] = VX_STR("listen");
+  }
   if (st == VX_OK && vx_console.connector &&
       vx_handle_dup(vx_console.connector, VX_RIGHTS_SAME, &handles[count]) == VX_OK)
     names[count++] = VX_STR("console");
@@ -268,12 +345,14 @@ static void driver_exited(driver *d) {
   // domain keeps those pages (its mappings revoked, the ones whose handles
   // went with the driver kept) until the device cannot reach memory at all,
   // and only then lets them go. (The reset between comes with M5 step 6e.)
-  vx_dma_domain_op(d->dma, VX_DMA_REVOKE);
-  uint16_t command = vx_pci_read16(&d->f->fn, 0x04);
-  vx_pci_write16(&d->f->fn, 0x04, (uint16_t)(command & ~(1u << 2)));
-  (void)vx_pci_read16(&d->f->fn, 0x04); // the write has reached the device
-  reset_function(d->f);
-  vx_dma_domain_op(d->dma, VX_DMA_QUIESCED);
+  if (d->f) {
+    vx_dma_domain_op(d->dma, VX_DMA_REVOKE);
+    uint16_t command = vx_pci_read16(&d->f->fn, 0x04);
+    vx_pci_write16(&d->f->fn, 0x04, (uint16_t)(command & ~(1u << 2)));
+    (void)vx_pci_read16(&d->f->fn, 0x04); // the write has reached the device
+    reset_function(d->f);
+    vx_dma_domain_op(d->dma, VX_DMA_QUIESCED);
+  }
   vx_task_summary info;
   vx_str why = vx_task_info(d->task, &info) == VX_OK ? (vx_str){info.exit, info.exit_len} : VX_STR("?");
   vx_handle_close(d->task);
@@ -309,6 +388,18 @@ static void match_drivers(void) {
         // interface: NVMe's, whoever makes the controller).
         uint64_t vendor = 0, device = 0, class = 0, msis = 0;
         vx_str program = vx_ndb_get(&rec, "program"), post = vx_ndb_get(&rec, "post");
+        vx_str bus = vx_ndb_get(&rec, "match"), hid = vx_ndb_get(&rec, "hid");
+        if (bus.len == 4 && memcmp(bus.ptr, "acpi", 4) == 0) { // kept for bus-acpi's reports
+          if (hid.len && hid.len < 16 && program.len && program.len < 64 && post.len < 26 &&
+              acpi_match_count < 8) {
+            acpi_match *m = &acpi_matches[acpi_match_count++];
+            *m = (acpi_match){.clock = vx_ndb_has(&rec, "clock")};
+            memcpy(m->hid, hid.ptr, hid.len);
+            memcpy(m->program, program.ptr, program.len);
+            memcpy(m->post, post.ptr, post.len);
+          }
+          continue;
+        }
         bool by_id = vx_ndb_get_u64(&rec, "vendor", &vendor) && vx_ndb_get_u64(&rec, "device", &device);
         bool by_class = !by_id && vx_ndb_get_u64(&rec, "class", &class);
         if (!vx_ndb_has(&rec, "match") || (!by_id && !by_class) || !program.len || program.len >= 64 ||
@@ -432,14 +523,23 @@ static void find_taken(const uint8_t *tables, uint64_t size) {
 #endif
 }
 
-static bool a_drivers(uint64_t base, uint64_t size) {
-  for (uint32_t i = 0; i < driver_count; i++)
-    for (int b = 0; b < 6; b++)
+// Whether [base, base + size) of memory (or, with kind VX_ACPI_RES_IO, of
+// ports) is a driver's: a PCI function's BARs, an ACPI device's grants.
+static bool a_drivers_of(uint32_t kind, uint64_t base, uint64_t size) {
+  for (uint32_t i = 0; i < driver_count; i++) {
+    for (int b = 0; kind == VX_ACPI_RES_MEMORY && b < 6; b++)
       if (drivers[i].bar_size[b] && base < drivers[i].bar_base[b] + drivers[i].bar_size[b] &&
           drivers[i].bar_base[b] < base + size)
         return true;
+    for (uint32_t r = 0; r < drivers[i].acpi.count; r++) {
+      const vx_acpi_res *g = &drivers[i].acpi.res[r];
+      if (g->kind == kind && base < g->base + g->size && g->base < base + size) return true;
+    }
+  }
   return false;
 }
+
+static bool a_drivers(uint64_t base, uint64_t size) { return a_drivers_of(VX_ACPI_RES_MEMORY, base, size); }
 
 static void say_mint(const vx_acpi_mint *m, vx_status st) {
   static const char *const kinds[] = {"?", "memory", "I/O ports", "PCI configuration"};
@@ -456,11 +556,30 @@ static void say_mint(const vx_acpi_mint *m, vx_status st) {
   vx_print(VX_STR("\n"));
 }
 
-// One request on bus-acpi's channel, answered.
-static void answer_mint(void) {
-  vx_acpi_mint m;
+static void acpi_device(const vx_acpi_device *dev);
+static void answer_mint(const vx_acpi_mint *mp, uint32_t bytes);
+
+// What is waiting on bus-acpi's channel: its requests answered, its devices
+// matched.
+static void from_bus_acpi(void) {
+  static union {
+    vx_msg_header h;
+    vx_acpi_mint m;
+    vx_acpi_device d;
+  } u;
   vx_msg_size got;
-  if (vx_channel_read(mint_end, &m, sizeof m, nullptr, 0, &got) != VX_OK) return;
+  while (vx_channel_read(mint_end, &u, sizeof u, nullptr, 0, &got) == VX_OK) {
+    if (got.bytes == sizeof u.d && u.h.ordinal == VX_ACPI_DEVICE)
+      acpi_device(&u.d);
+    else
+      answer_mint(&u.m, got.bytes);
+  }
+}
+
+// One request on bus-acpi's channel, answered.
+static void answer_mint(const vx_acpi_mint *mp, uint32_t bytes) {
+  vx_acpi_mint m = *mp;
+  vx_msg_size got = {.bytes = bytes};
   vx_handle h = VX_HANDLE_NONE;
   vx_status st = VX_ERR_INVALID;
   if (got.bytes == sizeof m && m.h.ordinal == VX_ACPI_MINT) {
@@ -475,7 +594,7 @@ static void answer_mint(void) {
 #ifdef __x86_64__
       if (!m.size || m.base + m.size > 0x1'0000)
         st = VX_ERR_RANGE;
-      else if (overlaps(taken_io, ntaken_io, m.base, m.size))
+      else if (overlaps(taken_io, ntaken_io, m.base, m.size) || a_drivers_of(VX_ACPI_RES_IO, m.base, m.size))
         st = VX_ERR_ACCESS;
       else
         st = vx_iorange_create(resource, (uint16_t)m.base, (uint32_t)m.size, &h);
@@ -498,6 +617,92 @@ static void answer_mint(void) {
   vx_msg_header rep = {.txid = m.h.txid, .ordinal = VX_ACPI_MINT, .flags = (uint32_t)(int32_t)st};
   if (vx_channel_write(mint_end, &rep, sizeof rep, h ? &h : nullptr, h ? 1 : 0) != VX_OK && h)
     vx_handle_close(h);
+}
+
+// An ACPI device bus-acpi found: started with its driver, if a match=acpi
+// record names its hardware ID, granted its _CRS resources, unless one of
+// them is the kernel's or another driver's.
+static void acpi_device(const vx_acpi_device *dev) {
+  char hid[16];
+  memcpy(hid, dev->hid, sizeof hid);
+  hid[15] = 0;
+  const acpi_match *m = nullptr;
+  for (uint32_t i = 0; i < acpi_match_count && !m; i++)
+    if (vx_cstr(acpi_matches[i].hid).len == vx_cstr(hid).len &&
+        memcmp(acpi_matches[i].hid, hid, vx_cstr(hid).len) == 0)
+      m = &acpi_matches[i];
+  if (!m) return;
+  if (dev->count > VX_ACPI_MAX_RES || driver_count == MAX_DRIVERS) return;
+  for (uint32_t i = 0; i < dev->count; i++) {
+    const vx_acpi_res *r = &dev->res[i];
+    bool taken = r->kind == VX_ACPI_RES_MEMORY && overlaps(taken_memory, ntaken_memory, r->base, r->size);
+#ifdef __x86_64__
+    taken = taken || (r->kind == VX_ACPI_RES_IO && overlaps(taken_io, ntaken_io, r->base, r->size));
+#endif
+    if (taken || (r->kind != VX_ACPI_RES_IRQ && a_drivers_of(r->kind, r->base, r->size))) {
+      say(VX_STR("not starting "), vx_cstr(m->program),
+          VX_STR(": a resource is the kernel's or a driver's\n"));
+      return;
+    }
+  }
+  driver *d = &drivers[driver_count++];
+  *d = (driver){.acpi = *dev, .clock = m->clock};
+  d->acpi.hid[15] = 0, d->acpi.path[47] = 0;
+  memcpy(d->program, m->program, sizeof d->program);
+  memcpy(d->post, m->post, sizeof d->post);
+  if (d->post[0]) {
+    char claim[40] = "claim:";
+    memcpy(claim + 6, d->post, vx_cstr(d->post).len);
+    if (!(d->listen = vx_spawn_take(claim))) {
+      say(VX_STR("no claim on /srv/"), vx_cstr(d->post), VX_STR(" for its driver\n"));
+      return;
+    }
+  }
+  say(vx_cstr(d->acpi.path), VX_STR(" "), vx_cstr(hid));
+  vx_print(VX_STR(": "));
+  vx_print(vx_cstr(d->program));
+  vx_print(VX_STR("\n"));
+  if (start_driver(d) != VX_OK) say(VX_STR("cannot start "), vx_cstr(d->program), VX_STR("\n"));
+}
+
+// Days since 1970-01-01 as a civil date (Howard Hinnant's civil_from_days).
+static void civil(int64_t days, int64_t *y, uint32_t *m, uint32_t *d) {
+  days += 719468;
+  int64_t era = (days >= 0 ? days : days - 146096) / 146097;
+  uint32_t doe = (uint32_t)(days - era * 146097);
+  uint32_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  uint32_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100), mp = (5 * doy + 2) / 153;
+  *d = doy - (153 * mp + 2) / 5 + 1;
+  *m = mp < 10 ? mp + 3 : mp - 9;
+  *y = (int64_t)yoe + era * 400 + (*m <= 2);
+}
+
+static void two(uint64_t v, char sep) {
+  char b[3] = {(char)('0' + v / 10 % 10), (char)('0' + v % 10), sep};
+  vx_print((vx_str){b, sep ? 3u : 2u});
+}
+
+// A clock driver's time: the kernel's wall clock, set from it.
+static void clock_report(driver *d) {
+  vx_clock_report r;
+  vx_msg_size got;
+  while (vx_channel_read(d->report, &r, sizeof r, nullptr, 0, &got) == VX_OK) {
+    if (got.bytes != sizeof r || r.h.ordinal != VX_CLOCK_REPORT || r.utc <= 0) continue;
+    int64_t utc = r.utc + ((int64_t)vx_clock_read() - r.monotonic); // the time since it was read
+    if (vx_clock_set(resource, utc) != VX_OK) continue;
+    int64_t secs = utc / 1'000'000'000, y;
+    uint32_t mo, da;
+    civil(secs / 86400, &y, &mo, &da);
+    vx_print(VX_STR("devmgr: the wall clock is "));
+    vx_print_u64((uint64_t)y);
+    vx_print(VX_STR("-"));
+    two(mo, '-'), two(da, ' '), two((uint64_t)(secs % 86400 / 3600), ':'),
+        two((uint64_t)(secs % 3600 / 60), ':');
+    two((uint64_t)(secs % 60), 0);
+    vx_print(VX_STR(" UTC, from "));
+    vx_print(vx_cstr(d->program));
+    vx_print(VX_STR("\n"));
+  }
 }
 
 // bus-acpi (ADR-0024, ADR-0030): ACPICA over the tables, given a read-only
@@ -565,6 +770,9 @@ const char *vx_main(void) {
     return nullptr;
   }
   find_taken((const uint8_t *)at, size);
+  vx_acpi_table fadt;
+  if (vx_acpi_find((const uint8_t *)at, size, "FACP", 0, &fadt) == VX_OK && fadt.len > 108)
+    century_reg = fadt.ptr[108];
   vx_ecam e;
   for (uint32_t n = 0; vx_acpi_mcfg(mcfg, n, &e) == VX_OK; n++)
     if (e.segment == 0) { // other segments: when hardware has them
@@ -590,9 +798,14 @@ const char *vx_main(void) {
     int64_t n = vx_port_wait(port, VX_INFINITE, 0, pk, 8);
     for (int64_t i = 0; i < n; i++) {
       if (pk[i].trigger == VX_TRIGGER_EXIT && pk[i].key < driver_count) driver_exited(&drivers[pk[i].key]);
-      if (pk[i].key == KEY_MINT) { // bus-acpi asks
-        answer_mint();
+      if (pk[i].key == KEY_MINT) { // bus-acpi asks, or reports
+        from_bus_acpi();
         vx_port_bind(port, mint_end, VX_TRIGGER_READABLE, KEY_MINT, 0);
+      }
+      if ((pk[i].key & ~0xffffull) == KEY_REPORT && (pk[i].key & 0xffff) < driver_count) {
+        driver *d = &drivers[pk[i].key & 0xffff];
+        clock_report(d);
+        if (d->report) vx_port_bind(port, d->report, VX_TRIGGER_READABLE, pk[i].key, 0);
       }
     }
   }

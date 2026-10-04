@@ -6,8 +6,9 @@
 //                       cntfrq.hz=24000000 cntvct.invariant cntvct.user source=cntvct
 //                     so a program timing itself with rdtsc or cntvct_el0
 //                     (vx_cycles, vx-prof's zones) need not calibrate (05 §9)
-//   /sys/clock/now    monotonic=NS realtime=NS: realtime counts from boot
-//                     until there is a wall clock (docs/milestones.md)
+//   /sys/clock/now    monotonic=NS realtime=NS: realtime is UTC, ns since
+//                     1970, once a clock driver has set the kernel's wall
+//                     clock (ADR-0031); from boot until then
 //
 // cpu/, mem/, power/ and the rest of 02 §5.1 come with what measures them.
 
@@ -85,7 +86,7 @@ static vx_status fs_read(void *ctx, uint64_t n, uint64_t offset, uint8_t *buf, u
     vx_ndb_end(&w);
   } else if (n == NOW) {
     vx_ndb_put_u64(&w, "monotonic", (uint64_t)now);
-    vx_ndb_put_u64(&w, "realtime", (uint64_t)now); // from boot: no wall clock yet
+    vx_ndb_put_u64(&w, "realtime", (uint64_t)vx_clock_utc());
     vx_ndb_end(&w);
   } else if (is_dir(n)) {
     return VX_ERR_INVALID; // read as a directory, through readdir

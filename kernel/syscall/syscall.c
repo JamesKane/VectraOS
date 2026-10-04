@@ -290,6 +290,17 @@ static int64_t sys_vmo_op(vx_handle h, uint64_t op, uint64_t arg) {
   return st;
 }
 
+// clock_set(resource, utc): the wall clock, with the root Resource's MANAGE.
+static int64_t sys_clock_set(vx_handle rh, uint64_t utc) {
+  if ((int64_t)utc <= 0) return VX_ERR_INVALID;
+  vx_status st;
+  resource *r = (resource *)handle_get(current_task(), rh, OBJ_RESOURCE, VX_RIGHT_MANAGE, &st);
+  if (!r) return st;
+  object_release(&r->obj);
+  clock_set_utc((int64_t)utc);
+  return VX_OK;
+}
+
 // system_power(resource, op): the machine off, with the root Resource's MANAGE.
 static int64_t sys_system_power(vx_handle rh, uint64_t op) {
   if (op != VX_POWER_OFF) return VX_ERR_INVALID;
@@ -438,6 +449,7 @@ static int64_t sys_as_unmap(vx_handle th, uint64_t va, uint64_t size) {
 // argument, the time (dispatched below).
 static int64_t sys_clock_info(uint64_t info_ptr) {
   vx_clock_info info = {.counter_hz = clock.hz, .flags = arch_counter_flags()};
+  if (atomic_load(&utc_set)) info.flags |= VX_CLOCK_UTC, info.utc_offset = atomic_load(&utc_offset);
   vx_status st = copy_to_user(info_ptr, &info, sizeof info);
   return st == VX_OK ? clock_now() : st;
 }
@@ -1037,6 +1049,7 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_dma_unmap: return sys_dma_unmap((vx_handle)a[0]);
   case VX_SYS_dma_domain_op: return sys_dma_domain_op((vx_handle)a[0], a[1], a[2]);
   case VX_SYS_system_power: return sys_system_power((vx_handle)a[0], a[1]);
+  case VX_SYS_clock_set: return sys_clock_set((vx_handle)a[0], a[1]);
   case VX_SYS_pager_create: return sys_pager_create((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4]);
   case VX_SYS_pager_supply:
     return sys_pager_supply((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], (vx_handle)a[4], a[5]);

@@ -1266,6 +1266,7 @@ static const program USER_PROGRAMS[] = {
     {"cs", "cmd/cs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"dbg", "cmd/dbg.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"drv-uart-16550", "drivers/drv-uart-16550/uart.c", IN_BOOTFS, "x86_64", false, nullptr, nullptr},
+    {"drv-rtc-cmos", "drivers/drv-rtc-cmos/rtc.c", IN_BOOTFS, "x86_64", false, nullptr, nullptr},
     {"drv-uart-pl011", "drivers/drv-uart-pl011/uart.c", IN_BOOTFS, "aarch64", false, nullptr, nullptr},
     {"drv-virtio-net", "drivers/drv-virtio-net/net.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"drv-virtio-blk", "drivers/drv-virtio-blk/blk.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
@@ -2252,6 +2253,7 @@ typedef struct qemu_opts {
   const char *disk;  // a second disk, on virtio-blk, or nullptr
   bool nvme;         // and on NVMe instead
   bool caching;      // the IOMMU in caching mode (VT-d's CAP.CM)
+  const char *rtc;   // the real-time clock's starting time (QEMU's -rtc base=), or nullptr: the host's UTC
 } qemu_opts;
 
 // host/vx9pserve, built for this machine: the 9P server VectraOS mounts over
@@ -2443,6 +2445,7 @@ static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
             nullptr});
   }
   cmd_addv(c, (const char *const[]){"-m", "512M", "-smp", "4", "-display", "none", "-no-reboot", nullptr});
+  if (o.rtc) cmd_addv(c, (const char *const[]){"-rtc", fmt("base=%s", o.rtc), nullptr});
   cmd_add(c, "-drive");
   if (o.cdrom) { // on virtio-scsi, which both architectures' firmware boots from
     cmd_add(c, fmt("if=none,id=cd,media=cdrom,readonly=on,file=%s", o.cdrom));
@@ -2598,6 +2601,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   long disk_mib = 0;                       // scenario=... disk=MIB: a second disk, made fresh for the run
   bool nvme = false;                       // and bus=nvme: on NVMe, not virtio-blk
   bool caching = false;                    // scenario=... iommu=caching: VT-d's caching mode on
+  const char *rtc = nullptr;               // scenario=... rtc=2030-01-02T03:04:05: the RTC starts then
   const char *only = nullptr;              // scenario=... arch=A: run on A only
   bool must_exit = false;                  // scenario=... exits: QEMU must then exit by itself (power off)
   const char *volume = nullptr;            // and volume=DIR: its system partition a volume, home DIR
@@ -2625,6 +2629,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
       if (vx_ndb_has(&rec, "volume")) volume = str_dup(vx_ndb_get(&rec, "volume"));
       if (vx_ndb_has(&rec, "arch")) only = str_dup(vx_ndb_get(&rec, "arch"));
       must_exit = vx_ndb_has(&rec, "exits");
+      if (vx_ndb_has(&rec, "rtc")) rtc = str_dup(vx_ndb_get(&rec, "rtc"));
       if (vx_ndb_has(&rec, "iommu")) {
         const char *m = str_dup(vx_ndb_get(&rec, "iommu"));
         if (strcmp(m, "caching") != 0) die("%s:%zu: iommu=%s: only iommu=caching", path, rec.line, m);
@@ -2702,7 +2707,8 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
                        .cdrom = cdrom,
                        .disk = disk,
                        .nvme = nvme,
-                       .caching = caching});
+                       .caching = caching,
+                       .rtc = rtc});
   if (verbose) cmd_print(&c);
   signal(SIGPIPE, SIG_IGN); // QEMU gone: a write to it fails, rather than ending this process
   int fds[2], keys[2];      // QEMU's serial: its output, and what is typed into it

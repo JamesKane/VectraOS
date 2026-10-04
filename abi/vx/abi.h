@@ -22,17 +22,25 @@ static constexpr vx_instant VX_INFINITE = INT64_MAX; // a deadline that never co
 
 // clock_read(): the time on the monotonic clock. clock_read(&info): the same,
 // and the cycle counter it is made from, for /sys/clock/info (02 §5.1): its
-// frequency (the clock is counter * 10^9 / counter_hz, exactly), and flags.
-// User code may always read the counter: rdtsc, or mrs cntvct_el0.
+// frequency (the clock is counter * 10^9 / counter_hz, exactly), and flags;
+// and the wall clock, as UTC's offset from the monotonic clock (UTC in ns
+// since 1970 = monotonic + utc_offset), with VX_CLOCK_UTC once something has
+// set it (ADR-0031). User code may always read the counter: rdtsc, or mrs
+// cntvct_el0.
+//
+// clock_set(resource, utc): the wall clock set to utc (ns since 1970, now),
+// with the root Resource's MANAGE (ADR-0031): devmgr, from a clock driver.
 enum vx_clock_flags : uint32_t {
   VX_CLOCK_INVARIANT = 1, // one rate in every power state
   VX_CLOCK_USER = 2,      // readable in user mode
   VX_CLOCK_TSC = 4,       // x86_64's TSC
   VX_CLOCK_CNTVCT = 8,    // aarch64's virtual counter
+  VX_CLOCK_UTC = 16,      // utc_offset has been set: there is a wall clock
 };
 typedef struct vx_clock_info {
   uint64_t counter_hz;
   uint32_t flags, reserved;
+  int64_t utc_offset; // 0 until VX_CLOCK_UTC
 } vx_clock_info;
 
 // The longest exit string or note, in bytes: Plan 9's ERRMAX (ADR-0010).

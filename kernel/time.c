@@ -34,6 +34,17 @@ static uint64_t ns_to_counter(uint64_t ns) { return time_ns_to_counter(ns, clock
 // Nanoseconds on the one monotonic clock (01 §4.4).
 static vx_instant clock_now(void) { return (vx_instant)counter_to_ns(arch_counter()); }
 
+// The wall clock: UTC's offset from the monotonic clock, set by clock_set
+// (ADR-0031). Read with the flag, each atomically: a reader sees an offset
+// that was set, or none.
+static _Atomic int64_t utc_offset;
+static _Atomic bool utc_set;
+
+static void clock_set_utc(int64_t utc) {
+  atomic_store(&utc_offset, utc - clock_now());
+  atomic_store(&utc_set, true);
+}
+
 // Arms the timer for an absolute deadline on the monotonic clock.
 static void timer_arm(vx_instant deadline) {
   uint64_t count = ns_to_counter((uint64_t)deadline);
