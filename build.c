@@ -1555,6 +1555,7 @@ static const char MFORMAT[] = "/usr/bin/mformat";
 static const char MMD[] = "/usr/bin/mmd";
 static const char MCOPY[] = "/usr/bin/mcopy";
 static const char MDEL[] = "/usr/bin/mdel";
+static const char FSCK_FAT[] = "/usr/bin/fsck.fat"; // dosfstools: checks what dosfs and lib/vx-fat wrote
 
 static constexpr uint64_t SECTOR = 512;
 static constexpr uint64_t ESP_BYTES = 64ull << 20;
@@ -2500,6 +2501,19 @@ static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
 // VectraOS system volume of 32 MiB after it, each with a line naming it in its
 // first sector (docs/proto/block.md §6). With `home` (volume=DIR), the system
 // partition holds a vx-fs volume instead, its home branch DIR's tree.
+// A test disk that is one FAT volume, no partition table (as many USB sticks
+// are): FAT12, FAT16 or FAT32, made by mtools, labelled VECTRAFAT.
+static const char *fat_disk(const char *path, long mib, int type) {
+  unlink(path);
+  cmd c = {};
+  cmd_addv(&c, (const char *const[]){MFORMAT, "-C", "-i", path, "-v", "VECTRAFAT", "-T",
+                                     fmt("%ld", mib << 11), "-h", "64", "-s", "32", nullptr});
+  if (type == 32) cmd_add(&c, "-F");
+  cmd_add(&c, "::");
+  if (!run(&c)) die("cannot make the FAT test disk %s", path);
+  return path;
+}
+
 static const char *test_disk(const char *path, long mib, const char *home) {
   static const char SIGNATURE[] = "VectraOS block test disk";
   // The VectraOS system volume type, 7C6D3E1A-2B4F-4E0A-9C1D-56F2A8B90E35, as stored on disk.
@@ -2604,6 +2618,8 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   bool nvme = false;                       // and bus=nvme: on NVMe, not virtio-blk
   bool caching = false;                    // scenario=... iommu=caching: VT-d's caching mode on
   const char *rtc = nullptr;               // scenario=... rtc=2030-01-02T03:04:05: the RTC starts then
+  int fat = 0;                             // and fat=12|16|32: the disk= is one FAT volume, no GPT
+  bool fsck = false;                       // and fsck: fsck.fat -n must find that volume sound after
   const char *only = nullptr;              // scenario=... arch=A: run on A only
   bool must_exit = false;                  // scenario=... exits: QEMU must then exit by itself (power off)
   const char *volume = nullptr;            // and volume=DIR: its system partition a volume, home DIR
@@ -2632,6 +2648,11 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
       if (vx_ndb_has(&rec, "arch")) only = str_dup(vx_ndb_get(&rec, "arch"));
       must_exit = vx_ndb_has(&rec, "exits");
       if (vx_ndb_has(&rec, "rtc")) rtc = str_dup(vx_ndb_get(&rec, "rtc"));
+      if (vx_ndb_has(&rec, "fat")) {
+        fat = (int)strtol(str_dup(vx_ndb_get(&rec, "fat")), &end, 10);
+        if (fat != 12 && fat != 16 && fat != 32) die("%s:%zu: fat= is 12, 16 or 32", path, rec.line);
+      }
+      fsck = vx_ndb_has(&rec, "fsck");
       if (vx_ndb_has(&rec, "iommu")) {
         const char *m = str_dup(vx_ndb_get(&rec, "iommu"));
         if (strcmp(m, "caching") != 0) die("%s:%zu: iommu=%s: only iommu=caching", path, rec.line, m);
@@ -2700,7 +2721,13 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   const char *run_dir = fmt("%s/run-%s", out_dir(a, release), name);
   const char *share = fresh_share(fmt("%s/share", run_dir)), *u9fs = fresh_u9fs_root(fmt("%s/u9fs", run_dir));
   if (volume && !disk_mib) die("%s: volume= needs disk=", path);
-  const char *disk = disk_mib ? test_disk(fmt("%s/disk.img", run_dir), disk_mib, volume) : nullptr;
+  if ((fat || fsck) && (!disk_mib || volume)) die("%s: fat= and fsck need disk= and no volume=", path);
+  if (fsck && !fat) die("%s: fsck needs fat=", path);
+  const char *disk = nullptr;
+  if (fat)
+    disk = fat_disk(fmt("%s/disk.img", run_dir), disk_mib, fat);
+  else if (disk_mib)
+    disk = test_disk(fmt("%s/disk.img", run_dir), disk_mib, volume);
   qemu_cmd(&c, a, image,
            (qemu_opts){.kvm = kvm_usable(a),
                        .test = true,
@@ -2826,6 +2853,13 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
     if (got.len != strlen(host_text[k]) || memcmp(got.ptr, host_text[k], got.len) != 0)
       verdict =
           fmt("the host's %s is \"%.*s\", not \"%s\"", host_file[k], (int)got.len, got.ptr, host_text[k]);
+  }
+
+  // What the guest left on its FAT disk, checked by another implementation.
+  if (fsck && strcmp(verdict, "ok") == 0) {
+    cmd check = {.log = fmt("%s/fsck.log", run_dir)};
+    cmd_addv(&check, (const char *const[]){FSCK_FAT, "-n", disk, nullptr});
+    if (!run(&check)) verdict = fmt("fsck.fat -n found the FAT disk unsound (%s/fsck.log)", run_dir);
   }
 
   bool ok = strcmp(verdict, "ok") == 0;
@@ -3328,6 +3362,17 @@ static bool check_host_tests(void) {
     bool passed = run(&cc) && run(&run_test);
     fprintf(stderr, "  HOST  %-16s %s\n", name, passed ? "ok" : "FAIL");
     ok = ok && passed;
+  }
+  // What fat_test wrote, checked by another implementation.
+  static const int fat_types[] = {12, 16, 32};
+  for (size_t i = 0; i < sizeof fat_types / sizeof *fat_types; i++) {
+    int k = fat_types[i];
+    const char *img = fmt("out/host/fat%d-written.img", k);
+    cmd fsck = {.log = fmt("out/host/fat%d-fsck.log", k)};
+    cmd_addv(&fsck, (const char *const[]){FSCK_FAT, "-n", img, nullptr});
+    bool clean = exists(img) && run(&fsck);
+    fprintf(stderr, "  FSCK  fat%d-written     %s\n", k, clean ? "ok" : "FAIL");
+    ok = ok && clean;
   }
   return ok;
 }
