@@ -6,7 +6,7 @@
 # installed system starts its disk's services (vx.system), and
 # installtest.rc reads the release back (tests/user/installtest.ndb, .rc).
 
-scenario=install timeout=300 installer cmdline=vx.skip=gsh with=installtest disk=256 blank
+scenario=install timeout=300 alone installer cmdline=vx.skip=gsh with=installtest disk=256 blank
 expect="install: release 1 on the medium, checked: "
 expect="install: slot a written"
 expect="install: done: "

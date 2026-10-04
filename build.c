@@ -3494,10 +3494,13 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
 // Runs the scenarios, a few at a time: each QEMU has 4 CPUs of its own, and
 // with every architecture's scenarios at once, all at once would starve each
 // other into their timeouts. Half the host's CPUs per architecture, at least 2.
+static int test_slots; // scenarios at once per architecture; 0: half the host's CPUs
+
 static bool test_arch(const arch *a, bool release) {
   if (!build_image(a, release)) return false;
   long cpus = sysconf(_SC_NPROCESSORS_ONLN);
   int slots = cpus >= 4 ? (int)(cpus / 2) : 2, running = 0;
+  if (test_slots) slots = test_slots;
   pid_t pids[64] = {};
   bool ok = true;
   for (int i = 0; i < scenario_count || running > 0;) {
@@ -3540,7 +3543,35 @@ static int cmd_test(const arch *only, bool release) {
   }
   if (!build_vx9pserve() || !build_u9fs() || !build_vxfs())
     return 1; // once, before scenarios run in parallel
-  return per_arch(only, release, test_arch);
+  // A scenario whose record says `alone` (install's and slots' minutes of
+  // QEMU) runs after the rest, by itself, one architecture after the other:
+  // beside them, under TCG, the others starve into their timeouts.
+  static const char *apart[64];
+  int napart = 0, kept = 0;
+  for (int i = 0; i < scenario_count; i++) {
+    vx_str text = read_file(fmt("tests/qemu/%s.ndb", scenarios[i]));
+    const char *line = memmem(text.ptr, text.len, "\nscenario=", 10);
+    bool alone = false;
+    if (line) {
+      const char *end = memchr(line + 1, '\n', text.len - (size_t)(line + 1 - text.ptr));
+      size_t len = end ? (size_t)(end - line) : text.len - (size_t)(line - text.ptr);
+      alone = memmem(line, len, " alone", 6) != nullptr;
+    }
+    if (alone)
+      apart[napart++] = scenarios[i];
+    else
+      scenarios[kept++] = scenarios[i];
+  }
+  scenario_count = kept;
+  int st = scenario_count ? per_arch(only, release, test_arch) : 0;
+  test_slots = 1;
+  for (int k = 0; k < napart; k++)
+    for (int i = 0; i < ARCH_COUNT; i++) {
+      if (only && only != &ARCHES[i]) continue;
+      scenarios[0] = apart[k], scenario_count = 1;
+      if (!test_arch(&ARCHES[i], release)) st = 1;
+    }
+  return st;
 }
 
 static int cmd_qemu(const arch *a, bool release, qemu_opts o) {

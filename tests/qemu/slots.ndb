@@ -6,7 +6,7 @@
 # release 1 boots from slot a again, /cfg as before release 2
 # (tests/user/slottest.ndb, .rc).
 
-scenario=slots timeout=900 installer media cmdline=vx.skip=gsh with=slottest disk=256 blank
+scenario=slots timeout=900 alone installer media cmdline=vx.skip=gsh with=slottest disk=256 blank
 expect="install: done: "
 reboot
 expect="distd: release 2 staged"
