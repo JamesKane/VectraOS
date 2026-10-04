@@ -72,6 +72,7 @@ The toolchain is pinned (ADR-0001): clang, lld and llvm-objcopy 22.1.8 from Fedo
 | [docs/10-after-posix.md](docs/10-after-posix.md) | **Vision, non-binding.** What a world after POSIX could look like for developers |
 | [docs/11-storage.md](docs/11-storage.md) | The copy-on-write system volume after gefs, `fsd` as pager, partitions, `dosfs` and `isofs` |
 | [docs/12-manual.md](docs/12-manual.md) | The manual: Plan 9's sections in guide, a modernised AmigaGuide, read by `man` and `hv` |
+| [docs/13-portable-code.md](docs/13-portable-code.md) | **Design notes, non-binding.** A core-Wasm profile as a portable target, lowered to native on install, for third-party programs and perhaps more of the user land |
 | [docs/adr/](docs/adr/README.md) | Architecture decision records |
 | [docs/study/](docs/study/README.md) | The platform API study's findings: friction register, heritage systems, convergent API shapes, prototypes |
 
