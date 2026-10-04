@@ -1228,7 +1228,10 @@ typedef struct program {
 // ACPICA, a native port (ADR-0030), and what bus-acpi needs to include its
 // headers: its environment header first, its include directories as system
 // ones, so the house warnings stay the house's.
-static port acpica;
+static port acpica, monocypher;
+// Monocypher (ADR-0032), for distd and install: its headers as system ones.
+[[maybe_unused]] static const char *const MONOCYPHER_USE_FLAGS[] = {
+    "-isystem", "third_party/monocypher/src", "-isystem", "third_party/monocypher/src/optional", nullptr};
 static const char *const ACPICA_USE_FLAGS[] = {"-include", "ports/acpica/acvectra.h",
                                                "-isystem", "third_party/acpica/source/include",
                                                "-isystem", "third_party/acpica/source/include/platform",
@@ -1293,16 +1296,20 @@ static const char *native_port_archive(const port *p, const arch *a) {
   return fmt("%s/out/%s/%s/lib%s.a", root, p->name, a->name, p->name);
 }
 
-// Native ports (ACPICA): compiled once per architecture and cached, as musl
-// is, into an archive the programs that use them link.
+// Native ports (ACPICA, Monocypher): compiled once per architecture and
+// cached, as musl is, into an archive the programs that use them link.
 static bool build_native_ports(const arch *a) {
-  static file_list files;
-  files = (file_list){};
-  add_words(&files, vx_ndb_get(&acpica.head, "sources"));
-  const char **objs = alloc((size_t)files.count * sizeof *objs);
-  if (!build_cached(&acpica, a, &files, objs, nullptr)) return false;
-  const char *lib = native_port_archive(&acpica, a);
-  return archive(lib, fmt("%s/out/%s/%s", root, acpica.name, a->name), objs, files.count);
+  port *const ports[] = {&acpica, &monocypher};
+  for (size_t i = 0; i < sizeof ports / sizeof *ports; i++) {
+    static file_list files;
+    files = (file_list){};
+    add_words(&files, vx_ndb_get(&ports[i]->head, "sources"));
+    const char **objs = alloc((size_t)files.count * sizeof *objs);
+    if (!build_cached(ports[i], a, &files, objs, nullptr)) return false;
+    const char *lib = native_port_archive(ports[i], a);
+    if (!archive(lib, fmt("%s/out/%s/%s", root, ports[i]->name, a->name), objs, files.count)) return false;
+  }
+  return true;
 }
 
 static bool build_user_programs(const arch *a, bool release) {
@@ -1522,6 +1529,7 @@ static void check_toolchain(void) {
   port_load(&lua, "lua");
   port_load(&sbase, "sbase");
   port_load(&acpica, "acpica");
+  port_load(&monocypher, "monocypher");
   sbase.input_hash = hash_tree(sbase.input_hash, fmt("%s/ports/sbase/generated", root));
   // musl's build also reads the back end's syscall_arch.h and the generated headers.
   musl.input_hash = hash_tree(musl.input_hash, fmt("%s/ports/musl/vx/arch", root));
@@ -2236,6 +2244,7 @@ static void write_iso(const char *path, const char *boot_image, iso_file *files,
 }
 
 static void make_test_iso(const char *path); // the isofs tests' ISO, made by write_iso
+static constexpr int VX_STORE_HEX_LEN = 67;  // "b2:" and 64 hex: lib/vx-store's names
 
 static const char *out_dir(const arch *a, bool release) {
   return fmt("out/%s/%s", a->name, release ? "release" : "debug");
@@ -2526,6 +2535,140 @@ static bool want_iso; // image --iso
 static bool build_image(const arch *a, bool release) {
   const char *iso = want_iso ? fmt("%s/vectra-%s.iso", out_dir(a, release), a->name) : nullptr;
   return build_arch(a, release) && make_image(a, release, image_path(a, release), nullptr, "", iso);
+}
+
+// --- Releases (docs/06 §3.1, §4; M5 step 9a) ---
+
+// host/vxstore, built for this machine, with lib/vx-store and Monocypher
+// (its own objects, no sanitizers, as host/vxfs is built). Rebuilt when a
+// source changes.
+static const char VXSTORE[] = "out/host/vxstore";
+
+static bool build_vxstore(void) {
+  static const char *const SOURCES[] = {"host/vxstore/main.c",
+                                        "lib/vx-store/store.c",
+                                        "lib/vx-tar/tar.c",
+                                        "lib/vx-ndb/ndb.c",
+                                        "third_party/monocypher/src/monocypher.c",
+                                        "third_party/monocypher/src/optional/monocypher-ed25519.c"};
+  struct stat out, src;
+  bool stale = stat(VXSTORE, &out) != 0;
+  for (size_t i = 0; !stale && i < sizeof SOURCES / sizeof SOURCES[0]; i++)
+    stale = stat(SOURCES[i], &src) != 0 || newer(&src, &out);
+  if (!stale) return true;
+  mkdirs("out/host");
+  fprintf(stderr, "  CC    vxstore host\n");
+  const char *objs[2] = {"out/host/vxstore-monocypher.o", "out/host/vxstore-monocypher-ed25519.o"};
+  for (int i = 0; i < 2; i++) {
+    cmd mc = {};
+    cmd_addv(&mc, (const char *const[]){CLANG, "-std=c99", "-O2", "-w", "-Ithird_party/monocypher/src", "-c",
+                                        "-o", objs[i], SOURCES[4 + i], nullptr});
+    if (!run(&mc)) return false;
+  }
+  cmd cc = {};
+  cmd_add(&cc, CLANG);
+  cmd_addv(&cc, (const char *const[]){"-std=c23", "-O2", "-g", "-Wall", "-Wextra", "-Werror", "-isystem",
+                                      "third_party/monocypher/src", "-isystem",
+                                      "third_party/monocypher/src/optional", "-o", VXSTORE,
+                                      "host/vxstore/main.c", objs[0], objs[1], nullptr});
+  return run(&cc);
+}
+
+// An architecture's base tree (06 §3.1): what a boot slot holds (the
+// kernel, bootfs.tar, the root task's modules, Limine's loader and
+// configuration) under boot/, and bootfs's own files beside them, which
+// distd serves. Put into the store; its hash, and the bytes under it.
+static bool release_tree(const arch *a, const char *store, char tree[VX_STORE_HEX_LEN + 1], uint64_t *bytes) {
+  if (!build_arch(a, true)) return false;
+  const char *top = fmt("out/release/%s", a->name), *rootdir = fmt("%s/root", top);
+  cmd rm = {};
+  cmd_addv(&rm, (const char *const[]){"/usr/bin/rm", "-rf", rootdir, nullptr});
+  if (!run(&rm)) return false;
+  mkdirs(fmt("%s/boot/vx", rootdir));
+  mkdirs(fmt("%s/boot/limine", rootdir));
+  const char *bootfs = fmt("%s/boot/vx/bootfs.tar", rootdir);
+  if (!make_bootfs(a, true, "", bootfs)) return false;
+  const vx_ndb_record *t = port_target_for(&limine, a);
+  if (!t) die("no Limine target for %s", a->name);
+  const char *loader_name = str_dup(vx_ndb_get(t, "output"));
+  write_file(fmt("%s/boot/limine/%s", rootdir, loader_name),
+             read_file(fmt("out/limine/%s/%s", str_dup(vx_ndb_get(t, "target")), loader_name)));
+  write_file(fmt("%s/boot/limine/limine.conf", rootdir), read_file("boot/limine.conf"));
+  write_file(fmt("%s/boot/vx/kernel.elf", rootdir), read_file(fmt("%s/kernel.elf", out_dir(a, true))));
+  for (int i = 0; i < USER_PROGRAM_COUNT; i++)
+    if (USER_PROGRAMS[i].where == IN_MODULE) {
+      const char *to = fmt("%s/boot/vx/%s", rootdir, USER_PROGRAMS[i].name);
+      write_file(to, read_file(fmt("%s/%s", out_dir(a, true), USER_PROGRAMS[i].name)));
+      chmod(to, 0755);
+    }
+  chmod(fmt("%s/boot/vx/kernel.elf", rootdir), 0755);
+  char *out = run_capture((const char *const[]){VXSTORE, "put", store, rootdir, bootfs, nullptr});
+  // "b2:<64 hex> BYTES"
+  char *space = out ? strchr(out, ' ') : nullptr;
+  if (!space || space - out != VX_STORE_HEX_LEN) return false;
+  memcpy(tree, out, VX_STORE_HEX_LEN);
+  tree[VX_STORE_HEX_LEN] = 0;
+  char *end;
+  *bytes = strtoull(space + 1, &end, 10);
+  if (end == space + 1) return false;
+  cmd tar = {};
+  cmd_addv(&tar, (const char *const[]){VXSTORE, "tar", store, tree, fmt("out/release/store-%s.tar", a->name),
+                                       nullptr});
+  return run(&tar);
+}
+
+// ./build release: both architectures' base trees in out/release/store,
+// each one's objects as out/release/store-ARCH.tar, and the release record,
+// out/release/release.ndb, unsigned until M10 (06 §5). With --verify RECORD:
+// the trees built again and compared with the record's (06 §5.2).
+static int cmd_release(const char *verify) {
+  check_toolchain();
+  if (!build_vxstore()) return 1;
+  mkdirs("out/release");
+  const char *store = "out/release/store";
+  char *commit = run_capture((const char *const[]){"/usr/bin/git", "rev-parse", "HEAD", nullptr});
+  char *count = run_capture((const char *const[]){"/usr/bin/git", "rev-list", "--count", "HEAD", nullptr});
+  char *dirty = run_capture((const char *const[]){"/usr/bin/git", "status", "--porcelain", nullptr});
+  if (!commit || !count) die("./build release needs git");
+  commit[strcspn(commit, "\n")] = 0, count[strcspn(count, "\n")] = 0;
+  bool clean = dirty && !*dirty;
+  static char text[4096];
+  vx_ndb_writer w = {.buf = text, .cap = sizeof text};
+  vx_ndb_put(&w, "release", (vx_str){count, strlen(count)});
+  const char *name = fmt("dev-%s", count);
+  vx_ndb_put(&w, "name", (vx_str){name, strlen(name)});
+  vx_ndb_put(&w, "channel", VX_STR("dev"));
+  const char *c = clean ? commit : fmt("%s+dirty", commit);
+  vx_ndb_put(&w, "commit", (vx_str){c, strlen(c)});
+  vx_ndb_put(&w, "vx-abi", VX_STR("0")); // a draft until ADR-0004 freezes it
+  vx_ndb_flag(&w, "unsigned");
+  vx_ndb_end(&w);
+  vx_str record = verify ? read_file(verify) : (vx_str){};
+  int mismatches = 0;
+  for (int i = 0; i < ARCH_COUNT; i++) {
+    char tree[VX_STORE_HEX_LEN + 1];
+    uint64_t bytes = 0;
+    if (!release_tree(&ARCHES[i], store, tree, &bytes)) return 1;
+    fprintf(stderr, "  TREE  %-8s %s (%llu bytes)\n", ARCHES[i].name, tree, (unsigned long long)bytes);
+    vx_ndb_put(&w, "set", VX_STR("base"));
+    vx_ndb_put(&w, "arch", (vx_str){ARCHES[i].name, strlen(ARCHES[i].name)});
+    vx_ndb_put(&w, "tree", (vx_str){tree, strlen(tree)});
+    vx_ndb_put_u64(&w, "size", bytes);
+    vx_ndb_end(&w);
+    if (verify) {
+      const char *want = fmt("arch=%s tree=%s ", ARCHES[i].name, tree);
+      bool same = memmem(record.ptr, record.len, want, strlen(want)) != nullptr;
+      fprintf(stderr, "  VERIFY %-8s %s\n", ARCHES[i].name,
+              same ? "the record's tree" : "NOT the record's tree");
+      mismatches += !same;
+    }
+  }
+  if (w.failed) die("the release record does not fit");
+  if (verify) return mismatches ? 1 : 0;
+  write_file("out/release/release.ndb", (vx_str){text, w.len});
+  fprintf(stderr, "  REL   out/release/release.ndb (release %s, %s, unsigned)\n", count,
+          clean ? "a clean tree" : "uncommitted changes");
+  return 0;
 }
 
 // --- qemu and test ---
@@ -3679,6 +3822,28 @@ static bool make_fat_fixtures(void) {
   return ok;
 }
 
+// Monocypher for the host's tests and tools: its two files, each an object
+// (they share static names), its own flags, the tests' sanitizers. Rebuilt
+// when its sources change.
+static const char *const HOST_MONOCYPHER[] = {"out/host/monocypher.o", "out/host/monocypher-ed25519.o",
+                                              nullptr};
+
+static bool host_monocypher(void) {
+  static const char *const SRCS[] = {"third_party/monocypher/src/monocypher.c",
+                                     "third_party/monocypher/src/optional/monocypher-ed25519.c"};
+  mkdirs("out/host");
+  for (int i = 0; i < 2; i++) {
+    struct stat out, src;
+    if (stat(HOST_MONOCYPHER[i], &out) == 0 && stat(SRCS[i], &src) == 0 && !newer(&src, &out)) continue;
+    cmd cc = {};
+    cmd_addv(&cc, (const char *const[]){CLANG, "-std=c99", "-O2", "-g", "-w", "-fsanitize=address,undefined",
+                                        "-fno-omit-frame-pointer", "-fno-pie", "-Ithird_party/monocypher/src",
+                                        "-c", "-o", HOST_MONOCYPHER[i], SRCS[i], nullptr});
+    if (!run(&cc)) return false;
+  }
+  return true;
+}
+
 // Each tests/host/*_test.c is one translation unit: the library it includes and
 // its checks. It is built for the host under ASan and UBSan, and run.
 static bool check_host_tests(void) {
@@ -3699,6 +3864,15 @@ static bool check_host_tests(void) {
     cmd_add(&cc, "-o");
     cmd_add(&cc, exe);
     cmd_add(&cc, fmt("tests/%s", tests.paths[i]));
+    // A test that says "// host-links: monocypher" links Monocypher, built for
+    // the host with its own flags (ADR-0032), not the house's.
+    vx_str text = read_file(fmt("tests/%s", tests.paths[i]));
+    if (memmem(text.ptr, text.len, "// host-links: monocypher", 25)) {
+      if (!host_monocypher()) ok = false;
+      cmd_addv(&cc, (const char *const[]){"-isystem", "third_party/monocypher/src", "-isystem",
+                                          "third_party/monocypher/src/optional", nullptr});
+      cmd_addv(&cc, HOST_MONOCYPHER);
+    }
     cmd run_test = {};
     cmd_add(&run_test, exe);
     bool passed = run(&cc) && run(&run_test);
@@ -3757,6 +3931,13 @@ static bool check_fuzz(void) {
     cmd_addv(&cc, HOST_TEST_FLAGS);
     cmd_addv(&cc, (const char *const[]){"-fsanitize=fuzzer", "-o", exe, nullptr});
     cmd_add(&cc, fmt("tests/%s", targets.paths[i]));
+    vx_str text = read_file(fmt("tests/%s", targets.paths[i]));
+    if (memmem(text.ptr, text.len, "// host-links: monocypher", 25)) { // as the host tests do
+      if (!host_monocypher()) ok = false;
+      cmd_addv(&cc, (const char *const[]){"-isystem", "third_party/monocypher/src", "-isystem",
+                                          "third_party/monocypher/src/optional", nullptr});
+      cmd_addv(&cc, HOST_MONOCYPHER);
+    }
     cmd fuzz = {.log = fmt("out/fuzz/%s.log", name)};
     cmd_add(&fuzz, exe);
     cmd_add(&fuzz, fmt("-max_total_time=%d", FUZZ_SECONDS));
@@ -3818,7 +3999,8 @@ static int os_units(unit *units, bool with_host_tests) {
     collect(&tests, &dir, (vx_str){"host", 4}, "_test.c");
     collect(&tests, &dir, (vx_str){"fuzz", 4}, "_fuzz.c");
     for (int i = 0; i < tests.count; i++)
-      units[unit_slot(&n)] = (unit){tests.paths[i] + 5, fmt("tests/%s", tests.paths[i]), {HOST_C23}};
+      units[unit_slot(&n)] =
+          (unit){tests.paths[i] + 5, fmt("tests/%s", tests.paths[i]), {HOST_C23, MONOCYPHER_USE_FLAGS}};
   }
   return n;
 }
@@ -3938,6 +4120,10 @@ static void usage(void) {
       "  test          [--arch A] [--release] [--tcg] [scenario...]   boot headless and check "
       "tests/qemu/*.ndb;\n"
       "                                                 x86_64 uses KVM when it can, unless --tcg\n"
+      "  release       [--verify RECORD]               both base trees in out/release/store, store-A.tar, "
+      "and\n"
+      "                                                 release.ndb (unsigned); --verify rebuilds and "
+      "compares\n"
       "  loc                                            the line-count ledger\n"
       "  vendor-check                                   check third_party/ against VENDOR.ndb\n"
       "  check                                          host tests (ASan, UBSan), the fuzzers, a volume "
@@ -3967,6 +4153,7 @@ int main(int argc, char **argv) {
 
   const arch *only = nullptr;
   bool release = false;
+  const char *verify = nullptr; // release --verify RECORD
   qemu_opts qo = {};
   for (; i < argc; i++) {
     if (strcmp(argv[i], "--release") == 0) {
@@ -3979,6 +4166,8 @@ int main(int argc, char **argv) {
       force_tcg = true;
     } else if (strcmp(argv[i], "--iso") == 0 && strcmp(command, "image") == 0) {
       want_iso = true;
+    } else if (strcmp(argv[i], "--verify") == 0 && strcmp(command, "release") == 0 && i + 1 < argc) {
+      verify = argv[++i];
     } else if (strcmp(argv[i], "--arch") == 0 && i + 1 < argc) {
       i++;
       for (int a = 0; a < ARCH_COUNT; a++)
@@ -3991,6 +4180,7 @@ int main(int argc, char **argv) {
     }
   }
 
+  if (strcmp(command, "release") == 0) return cmd_release(verify);
   if (strcmp(command, "loc") == 0) return cmd_loc();
   if (strcmp(command, "vendor-check") == 0) return cmd_vendor_check();
   if (strcmp(command, "check") == 0) {

@@ -1,0 +1,14 @@
+# ports/monocypher/port.ndb: how build builds Monocypher into libmonocypher.a,
+# which distd and install link (ADR-0032): BLAKE2b for the content store's
+# hashes, and Ed25519 (the optional SHA-512 one, as doc 06's keys are) for
+# signatures when records are signed (M10).
+#
+# A native port: compiled with the native programs' freestanding flags (not
+# against vectra-musl), once per architecture, cached. Monocypher needs only
+# <stddef.h> and <stdint.h>. Warnings are its own: not linted, as ACPICA is
+# not. The host's tests and tools (host/vxstore) compile the same two files
+# for the host.
+
+port=monocypher src=third_party/monocypher native=yes archive=yes
+    cflags="-std=c99 -O2 -fno-strict-aliasing -fno-omit-frame-pointer -Ithird_party/monocypher/src -w"
+    sources="src/monocypher.c src/optional/monocypher-ed25519.c"
