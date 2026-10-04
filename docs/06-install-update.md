@@ -5,12 +5,12 @@ _Blueprint v0, 2026-10-02. Provisional: nothing here is needed before M5 (04 §6
 ## 1. Goals
 
 - **Install from one image.** A user boots the release ISO (or the same image written to USB), and the installer puts the system on a disk.
-- **Find signed updates without a central server.** Updates come from any peer that has them: the user's own swarm, the LAN, strangers on the internet, or a mirror. A peer is never trusted; a signature and a hash are.
+- **Find signed updates without a central server.** Updates come from any peer that has them: the user's own swarm, the LAN, strangers on the public network, or a mirror. A peer is never trusted; a signature and a hash are.
 - **Apply only when the user asks.** Finding and downloading can run in the background, by policy. Changing the system never does.
 - **Install new software with its dependencies.** Installing an app finds, checks and fetches the packages it needs, and the packages they need, without the user listing them (§3.4).
 - **Roll back.** A bad update costs one reboot. The previous release stays bootable, and the machine's configuration and the user's files are snapshotted before the change.
 
-Non-goals for v1: one system-wide set of library versions that all software must agree on, a central app store, live (rebootless) updates of the base system, and updates that apply themselves.
+Non-goals for v1: one system-wide set of library versions that all software must agree on, a central app store, live (rebootless) updates of the base system, and updates that apply themselves. **Payment is not the system's business either.** A developer who sells software sells it their own way, through their own site or a shop such as itch.io, and unlocks it their own way, inside their app. The system has no licences, no locked content, no revocation of purchases and no DRM, and takes no cut.
 
 ## 2. The model
 
@@ -21,7 +21,7 @@ There are three ideas, and each does one job:
 3. **Booting picks a release; snapshots keep mutable state.** The disk holds several boot slots, each naming one release's tree. A new release is tried once and kept only if it comes up healthy. What a release does not contain (the machine's configuration and the user's files) is protected by filesystem snapshots, the same mechanism as agent undo (03 §8.5).
 
 ```
- signers (independent rebuilders)         peers: swarm · LAN · internet · mirror · the ISO
+ signers (independent rebuilders)   peers: swarm · LAN · public network · mirror · the ISO
    build commit → same tree hash                serve /store objects by hash; untrusted
    sign release record (k of n)                              │
               │                                              │ 9Px reads, checked by hash
@@ -57,10 +57,12 @@ Sets are not packages. They share the release's version and signature, they cann
 
 Software that is not part of a release is a **package** (03 §6): a tree plus a manifest, in the same store format and fetched the same way. An **app** is a package a user runs; a **library** is a package other packages require (shared libraries, a language runtime, programs another package calls, data such as fonts or models). The format and the rules are the same for both:
 
+- **Built per architecture.** A package record lists a tree per architecture, as a release record does (§5.3): `arch=x86_64 tree=b2:… size=…`, one line for each the publisher built and tested. `distd` fetches only the local architecture's tree, plus the trees every architecture shares (`arch=any`: data, assets, scripts). If the portable form in 13 is adopted, a package may also carry `arch=portable`, lowered on install where no native tree matches (13 §6). Either way, a game's assets are one `arch=any` tree, fetched once and shared across architectures by every peer.
 - **Declared dependencies.** A manifest lists what the package needs: the system ABI (`requires=vx-abi>=2`), sets of the release (`requires=set:devel`) and other packages (§3.4).
 - **Namespace-confined.** The manifest declares the namespace template the app runs in (`needs=/wsys,/dev/audio,net:client`). Installing shows it to the user (F-219), and `svcd` builds exactly that namespace at launch (rule 3), whoever starts it: typing a package's command in a shell starts it through `svcd` rather than in the shell's group. A package's state lives in its own data tree, `#appdata/$user/PKG`, which is its `$HOME`. Broad grants (02 §7, ADR-0029) are not given at install: the list shows them apart, as not yet given, and the user gives them later from the grant settings.
-- **Signed by its publisher.** A package names its publisher key. The first install pins the key, as `ssh` pins a host key; an update is accepted only under the pinned key, or a successor that key signed.
-- **No central index** (D13, ADR-0003). A package is installed from a reference the user gives: its record's hash and publisher key, or a file or URL holding them. Anyone can run an index as an ordinary file server; the system ships none.
+- **Signed by its publisher.** A package names its publisher key. The first install pins the key, as `ssh` pins a host key; an update is accepted only under the pinned key, or a successor that key signed. The pinned key is the publisher's **root**, kept offline; it signs a short-lived **signing key**, which signs records and catalogues (ADR-0014). Losing a laptop then costs a signing key, not the publisher's identity.
+- **A publisher may prove a domain.** A key published at `https://example.dev/.well-known/vectra-publisher` lets the prompt that pins it say "example.dev (verified)" beside the key. The domain is a proof the user can check, fetched once at pinning through `tlsd`; the system trusts no domain and no CA for packages, and a key with no domain is shown as just a key.
+- **No central index** (D13, ADR-0003). A package is installed from a **reference** the user gives: an ndb record holding the package's name, publisher key, the catalogue's sources and optionally a version (`package=game publisher=ed25519:6b0f… mirror=https://example.dev/vx/`). It travels as a `.vxref` file, or as a `vxref:` link, which the desktop hands to `app install` so that a developer's page or a shop can have an install link. A reference grants nothing: installing from one shows everything §3.4 shows, and pins the publisher only on a yes. Anyone can run an index as an ordinary file server; the system ships none.
 - **Per user, beside the base.** Installed apps live in the store and are bound into the user's namespace (`bind -a /dist/apps/hx/bin /bin`). Updating an app is a new tree. Running instances keep the old one until they exit, so app updates need no reboot.
 
 The POSIX ports the project builds (LLVM, Git, Python) ship in a set, not as packages, so that the release's signers have rebuilt them. A package can require that set.
@@ -124,7 +126,8 @@ Every key is Ed25519, like the swarm's node keys (02 §6.2). `keyd` holds the pr
 | **Root** | Offline, k of n, by the project | The root record: the release and heads keys and their thresholds | Years. A new root record is signed by a threshold of the old one's keys, so a node follows a rotation without trusting anything new |
 | **Release** | Offline, one per signer | Release records | Rotated through the root |
 | **Heads** | Online, on the project's publishing machine | The heads record: the newest release per channel, with an expiry | Days per record |
-| **Publisher** | The package's author | Package records and its catalogue (§3.4) | Pinned at first install (§3.3) |
+| **Publisher root** | The package's author, offline | Its signing keys, and a successor root | Pinned at first install (§3.3). Years |
+| **Publisher signing** | The author's build or publishing machine | Package records and its catalogue (§3.4) | Weeks to months, chosen by the publisher. Accepted while the pinned root's statement for it is unexpired |
 | **Swarm owner** | Offline (02 §6.2) | Optionally, approval of a release for the swarm (§6.3) | |
 
 The root record a node trusts ships in its release (`/boot/lib/dist/root.ndb`), so installing from an ISO pins it. A user who builds and signs their own releases (§5.5) puts their own root there.
@@ -167,6 +170,8 @@ A node accepts a release record if: its signatures meet the threshold of release
 | A release key is stolen | It cannot reach the threshold alone. The root rotates it out |
 | The heads key is stolen | It can delay updates or point at an older signed release, which nodes refuse as a downgrade; it cannot introduce code |
 | An old catalogue is replayed to hide a revocation | A catalogue has a sequence number, which only increases, and an expiry, after which it is flagged stale (ADR-0014) |
+| A publisher's signing key is stolen | It signs until its statement from the root expires, or the root revokes it in a new statement. Installed apps do not move, since they run from their locks, and `app update` shows every change before it is accepted |
+| A rendezvous server lists hostile peers | Peers are untrusted anyway: every object is checked against its hash, and a bad peer is dropped (above) |
 | A dependency is swapped for another publisher's package | Dependencies name their publisher's key; no other key satisfies them (§3.4) |
 | The build machine is compromised | Signers sign only trees they built themselves (§5.2) |
 | The disk is altered while the machine is off | Verified reads (§4) and the boot chain's hashes (§7); keys sealed to the boot measurements do not unseal (§9.4) |
@@ -184,8 +189,8 @@ The trust root is a file, not a company. A hacker who runs a fork builds release
 
 1. **The swarm.** Every node's store is a read-only tree in its namespace, so another node of the same owner reads it over the swarm's own mounts: `/n/tower/dist/store`. One node fetches a release from outside; the others fetch from it. The swarm is a cache, not an authority: every node checks every signature and hash itself.
 2. **The LAN**, on networks the user has marked as trusted: peers found by DNS-SD (`_vxdist._tcp`), as `swarmd` finds swarm nodes (02 §6.3).
-3. **Internet peers**, found through **rendezvous servers** that the heads record names: a rendezvous server is a 9Px file server with one file per release (`/peers/<record hash>`), listing peers' addresses and public keys. A peer that seeds writes its address there; one that fetches reads it.
-4. **Mirrors**: plain HTTPS servers holding the store as files, reached through `tlsd` (00 D16). They are the fallback that works through any proxy, and the way a new node finds its first heads record. Peer-to-peer is never the only path.
+3. **The public network**: peers on the internet that seed to strangers, found through **rendezvous servers** that the heads record names. A rendezvous server is a 9Px file server with one file per record hash (`/peers/<record hash>`), for any signed record: a release, a package, or a catalogue. Each lists peers' addresses and public keys. A peer that seeds writes its address there; one that fetches reads it. A rendezvous server sees hashes and addresses, never names or contents, so it is not an index. Because the project runs the ones the heads record names, it needs an abuse policy before M12: removing listings for a hash on a valid complaint, as any tracker must.
+4. **Mirrors**: plain HTTPS servers holding the store as files, reached through `tlsd` (00 D16). They are the fallback that works through any proxy, and the way a new node finds its first heads record. Peer-to-peer is never the only path. The project's mirrors serve releases; a **publisher's mirrors** are named in its catalogue (`mirror=`, ADR-0014) and serve its packages. A static host the developer pays for once (their own site, a shop's file hosting, an object store) is enough for a package to stay available when nobody seeds it.
 5. **Local media**: the install ISO, or a USB stick, is a source like any other (§8).
 
 ### 6.2 One protocol
@@ -199,8 +204,8 @@ Downloading uses the network and disk; seeding uses upload bandwidth and tells s
 ```
 check=daily         # never | daily | weekly: read a heads record
 fetch=auto          # auto: download in the background (intent background) | manual
-sources=swarm,lan,internet,mirror
-seed=swarm,lan      # who may read this node's store; internet is opt-in
+sources=swarm,lan,public,mirror
+seed=swarm,lan      # who may read this node's store; public is opt-in
 metered=pause       # pause | allow: on networks marked metered
 keep=2              # previous releases kept bootable (§10.3)
 approve=none        # none | owner: apply only releases the swarm owner has approved
@@ -209,6 +214,7 @@ freshness=14d
 
 - **`apply` is not a policy.** The system changes only when the user asks (§9).
 - **Approval by the owner.** With `approve=owner`, a node applies a release only once the swarm owner's key has signed an approval of its record, which `swarmd` gossips. That lets the owner hold a whole swarm at a known release, or try a release on one node first.
+- **Seeding one app.** Seeding the public network is opt-in for the whole store, but a user may seed a single app's packages instead (`seed app game on`), and the desktop offers that once after an install from the public network. It is how a small developer's game stays available from peers, and it is never on by default.
 - **Timers follow rule 5.** A daily check is a deadline with hours of leeway, coalesced with other background work, so an idle machine wakes for it once.
 
 ## 7. On the disk
@@ -312,7 +318,7 @@ A release never contains the machine's state, so state is the only thing an upda
 ```
 /dist/
     status        state=idle channel=stable current=41 next=42 next.state=fetched fetch=38M/412M heads.age=2h
-    ctl           (write) check · fetch [seq] · apply seq · unstage · rollback [seq] · gc · seed on|off
+    ctl           (write) check · fetch [seq] · apply seq · unstage · rollback [seq] · gc · seed on|off · seed app NAME on|off
     policy        the policy above (§6.3); written by the user, not by programs without the grant
     root.ndb      the trust root in use
     releases/42/
@@ -363,10 +369,10 @@ Added to 00 §8 when the milestone that makes each measurable lands:
 | Milestone | Pieces |
 |---|---|
 | **M5 Storage** | The store and tree format, `distd` with verified reads, `/cfg` and `/home` subvolumes and snapshots, `install` from the ISO with `store.tar`, `./build release` (unsigned), slots written to the ESP, rollback by hand. Monocypher is vendored here rather than at M10, because the first signature check is here |
-| **M7 onwards** | Packages, dependency resolution, catalogues and locks, once there are apps (`vxui`, M7), from local media until M10 brings the swarm and the LAN, and M11 mirrors; the desktop's update surface. Resolution is a host-testable library (`lib/vx-dist`), fuzzed on hostile manifests and catalogues like the other parsers |
+| **M7 onwards** | Packages with per-architecture trees, dependency resolution, catalogues, publisher signing keys and locks, once there are apps (`vxui`, M7), from local media until M10 brings the swarm and the LAN, and M11 mirrors; references and `vxref:` links; the desktop's update surface. Resolution is a host-testable library (`lib/vx-dist`), fuzzed on hostile manifests and catalogues like the other parsers. **`vxpkg`**, a host tool built from `lib/vx-dist` and `lib/vx-store` for Linux, macOS and Windows, so a developer can make a key, build a package from a directory, sign it and its catalogue, write a reference, and lay out a mirror, without running VectraOS |
 | **M10 Swarm** | Release and heads records signed and checked; sources from the swarm and the LAN; NTP-backed freshness; owner approval |
-| **M11 AI** | Mirrors through `tlsd`; the `ai` set |
-| **M12 Self-hosting** | Trial boot with `BootNext` and commit; the node key sealed to the boot chain, and resealed for a staged release; Secure Boot signing (ADR); internet peers and rendezvous servers; independent signers rebuilding on VectraOS itself; the `devel` set. This replaces "signed A/B image updates" in 04 §6 |
+| **M11 AI** | Mirrors through `tlsd`, the project's and publishers'; domain proofs for publisher keys; the `ai` set |
+| **M12 Self-hosting** | Trial boot with `BootNext` and commit; the node key sealed to the boot chain, and resealed for a staged release; Secure Boot signing (ADR); the public network: rendezvous servers for any record, and seeding single apps; independent signers rebuilding on VectraOS itself; the `devel` set. This replaces "signed A/B image updates" in 04 §6 |
 
 ## 15. Heritage
 
@@ -388,8 +394,8 @@ Added to 00 §8 when the milestone that makes each measurable lands:
 2. ~~**Who serves the verified base tree.**~~ *Decided by ADR-0025 (2026-10-02):* `distd` serves it as a trusted pager of its own (01 §5), checking the store's blobs, read from `fsd`'s `store` branch, against the release's hash trees; `fsd` gains no verified mode (11 §8).
 3. **Block size and chunking.** Fixed 64 KiB blocks make verified random reads simple; content-defined chunking would make deltas smaller when bytes shift within a file. Measure on real releases before deciding; fixed until then.
 4. **The Secure Boot key.** Users enrolling the project's key or their own, against a Microsoft-signed shim so that machines boot with their default keys. The shim brings a second loader and trust in a third party's CA.
-5. **Internet peer discovery.** Rendezvous servers are a few points the heads record names, so one being down is tolerable but all being down leaves mirrors only. A first-party DHT removes that dependence and adds a large, exposed component. Start with rendezvous servers, and revisit with data.
+5. **Finding peers on the public network.** Rendezvous servers are a few points the heads record names, so one being down is tolerable but all being down leaves mirrors only. A first-party DHT removes that dependence and adds a large, exposed component. Start with rendezvous servers, and revisit with data.
 6. **Machines without UEFI variables:** Apple Silicon through m1n1, and boards whose firmware does not keep them. They need the boot-time mechanism of question 1.
-7. **Discovering publishers.** Resolution follows keys that manifests name, so it never needs a directory of publishers. Finding an app in the first place does: today it is a reference the user gets from somewhere. Whether the system should ever ship a way to search catalogues the user has chosen, without making any of them trusted by default, is left until there are apps to find.
+7. **Discovering publishers.** Resolution follows keys that manifests name, so it never needs a directory of publishers. Finding an app in the first place does: today it is a reference the user gets from somewhere. References and `vxref:` links (§3.3) cover the developer's page and the shop. Whether the system should ever ship a way to search catalogues the user has chosen, without making any of them trusted by default, is left until there are apps to find. The likely shape is **shelves**: a signed list of publishers and references that anyone can serve, as F-Droid's repositories are, added by the user and trusted for nothing beyond what it lists.
 8. **Shared libraries.** Per-app resolution works with static linking and with dynamic linking alike; the second needs a dynamic loader, which the system does not have yet. 09 §4.8 sets the direction for the system's own libraries: dynamic, once the loader exists. Whether libraries ship as `.so` files, as static archives that the app's own build links, or both, is decided with the first library packages.
 9. **Disk encryption.** The system volume encrypted with a key `keyd` seals to the boot chain, unlocked by a passphrase where there is no TPM. Its interaction with resealing (§9.4) is the same problem, already solved there. Encryption also lets backup run with no broad grant: `fsd` exports a snapshot as a stream of its blocks, still encrypted, which a backup program stores and restores without the key (ADR-0029).

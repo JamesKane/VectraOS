@@ -1,6 +1,6 @@
 # ADR-0014: Publisher catalogues for package dependencies
 
-Status: accepted, 2026-10-02. Provisional with 06: rewritten against the code when packages arrive (M7 onwards).
+Status: accepted, 2026-10-02; amended 2026-10-04 (publisher signing keys, mirrors). Provisional with 06: rewritten against the code when packages arrive (M7 onwards).
 
 ## Context
 
@@ -15,13 +15,16 @@ So the question is whether resolution can find versions without a registry, and 
 **A catalogue is one publisher's signed list of its own packages.** It is an ndb file (D14) plus a detached Ed25519 signature over its exact bytes, made by the publisher's key:
 
 ```
-catalogue publisher=ed25519:a1c3… seq=118 expires=2027-06-01T00:00Z
+catalogue publisher=ed25519:a1c3… signer=ed25519:44d0… seq=118 expires=2027-06-01T00:00Z
+mirror=https://example.dev/vx/
 package=lua         version=5.4.7  record=b2:5e02… vx-abi=1,2
 package=lua         version=5.4.8  record=b2:c771… vx-abi=2
 package=tree-sitter version=0.24.3 record=b2:0f9a… vx-abi=2
 revoked package=lua version=5.4.6 reason="parser overflow, CVE-…"
 ```
 
+- **Signed by a signing key the publisher's root names** (amended 2026-10-04). The key a user pins is the publisher's root, which stays offline. The root signs a short statement, `signing key=ed25519:44d0… publisher=ed25519:a1c3… expires=2027-01-01T00:00Z`, which travels with the catalogue, and the signing key signs the catalogue and the package records. `distd` accepts a signing key while its statement is unexpired and no newer statement from the root revokes it (`revoked signing key=…`). A new statement is all a lost or stolen laptop costs.
+- **It names the publisher's mirrors** (amended 2026-10-04). Each `mirror=` line is an HTTPS location holding the publisher's catalogue and store objects as files (06 §6.1). Like every source, a mirror is untrusted: the signature makes the source irrelevant. It is what keeps a package available when no peer seeds it.
 - **It lists only packages signed by its own key.** `distd` refuses a catalogue that names a record under any other key, and checks every record it fetches against both the catalogue's hash and the publisher's signature.
 - **There is no shared name space.** A package is known by (publisher key, name), everywhere: in manifests, in locks, in catalogues and on screen. Two publishers can both have a package called `lua`; neither can satisfy a dependency on the other's.
 - **The system ships no catalogue and trusts no publisher by default.** A publisher's key is trusted only once the user has said yes to it, at the first install that needs it (06 §3.3). No host is authoritative for any catalogue. It is fetched from the same sources as everything else (06 §6.1), and the signature makes the source irrelevant.
@@ -32,7 +35,7 @@ revoked package=lua version=5.4.6 reason="parser overflow, CVE-…"
 | Harm | Answer |
 |---|---|
 | Typosquatting | Dependencies name a key, not just a name. A look-alike name under another key matches nothing |
-| Maintainer takeover | A publisher's key is pinned. A new key is accepted only if a catalogue signed by the old key names it (`successor=ed25519:…`), or if the user says yes to it as a new publisher. A stolen key is still a stolen key: installed apps do not move, because they run from their locks, and `app update` shows every changed version before the user accepts it |
+| Maintainer takeover | A publisher's root key is pinned. A new key is accepted only if a catalogue signed by the old key names it (`successor=ed25519:…`), or if the user says yes to it as a new publisher. A stolen key is still a stolen key: installed apps do not move, because they run from their locks, and `app update` shows every changed version before the user accepts it |
 | Install-time code | **A package has no install-time code**: no hooks, no scripts, no post-install step. Installing stores a tree and writes a lock. Whatever a package needs to do, it does when the app runs, inside the app's namespace |
 | Dependency trees too deep to audit | The user sees the whole graph before anything is fetched: every package, version, size, publisher and namespace grant (06 §3.4). `app why` shows why any package is there. Per-app resolution means a library pulled in by one app is confined to that app's namespace |
 | A replayed old catalogue hides a revocation | `seq` only increases, and `distd` keeps the newest it has seen per key. After `expires`, the catalogue is still used, but the app's status and `/dist/status` say it is stale and revocations may be missing. The publisher chooses the expiry, so its key can stay offline between releases |
@@ -45,6 +48,6 @@ revoked package=lua version=5.4.6 reason="parser overflow, CVE-…"
 ## Consequences
 
 - `distd` gains catalogue fetching, checking and caching. `/dist/catalogues/<key>/` serves each one it holds, with its signature and `status` (`seq`, `expires`, `stale`).
-- A publisher needs one key and a way to serve two files. Any 9Px server, swarm node or HTTPS mirror will do; the system provides `./build catalogue --sign <key>` to write one.
+- A publisher needs a root key, a signing key, and a way to serve its files. Any 9Px server, swarm node or HTTPS mirror will do. The system provides `./build catalogue --sign <key>`, and `vxpkg` (06 §14) does the same on Linux, macOS and Windows for developers who do not run VectraOS.
 - A package whose publisher stops renewing its catalogue keeps working from its lock. It is flagged stale, not removed.
 - ADR-0003 gets a note that its scope is the build and the base release, and that installed packages are governed here.
