@@ -1286,6 +1286,7 @@ static const program USER_PROGRAMS[] = {
      nullptr}, // ctest again, with /tmp on fsd
     {"sbasetest", "tests/posix/sbasetest.c", IN_TESTS, nullptr, true, nullptr, nullptr},
     {"maptest", "tests/posix/maptest.c", IN_TESTS, nullptr, true, nullptr, nullptr},
+    {"powercut", "tests/posix/powercut.c", IN_TESTS, nullptr, true, nullptr, nullptr},
     {"dbgdemo", "tests/user/dbgdemo.c", IN_TESTS, nullptr, false, nullptr, nullptr},
 };
 
@@ -3197,7 +3198,10 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   // reboot: the scenario's boots, each its expects: phase k's are [phase_end[k-1], phase_end[k]). Each
   // but the last ends with QEMU exiting by itself (power off); each after the first boots from the
   // second disk, as the machine it was installed on would, with no CD.
+  // again: the next boot is the same image's, with the second disk as the
+  // last boot left it (cut there, as a power cut would: M5 step 11).
   int phase_end[4], nphases = 0;
+  bool again[4] = {};
   for (;;) {
     vx_ndb_record rec;
     vx_ndb_result res = vx_ndb_next(&r, &rec);
@@ -3243,9 +3247,10 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
           die("%s:%zu: bus=%s is neither nvme nor virtio", path, rec.line, b);
         nvme = strcmp(b, "nvme") == 0;
       }
-    } else if (vx_ndb_has(&rec, "reboot")) { // what follows is another boot, from the second disk
+    } else if (vx_ndb_has(&rec, "reboot") || vx_ndb_has(&rec, "again")) { // another boot
       if (nphases == 3 || expect_count == 0)
-        die("%s:%zu: reboot= after an expect=, at most 3 times", path, rec.line);
+        die("%s:%zu: reboot or again after an expect=, at most 3 times", path, rec.line);
+      again[nphases + 1] = vx_ndb_has(&rec, "again");
       phase_end[nphases++] = expect_count;
     } else if (vx_ndb_has(&rec, "host") && host_count < 8) {
       vx_str file = vx_ndb_get(&rec, "host");
@@ -3346,16 +3351,17 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
     // as a power cut would): what it wrote must have reached the disk by then.
     bool phase_exits = must_exit && ph + 1 == nphases;
     if (ph && !disk) die("%s: reboot boots the second disk, and there is none", path);
-    if (ph) fprintf(log, "\n--- build: boot %d, from the second disk ---\n", ph + 1);
+    bool second = ph && !again[ph]; // booting from the second disk
+    if (ph) fprintf(log, "\n--- build: boot %d, %s ---\n", ph + 1, second ? "from the second disk" : "again");
     c = (cmd){};
-    qemu_cmd(&c, a, ph ? disk : image,
+    qemu_cmd(&c, a, second ? disk : image,
              (qemu_opts){.kvm = kvm_usable(a),
                          .test = true,
                          .share = share,
                          .u9fs = u9fs,
-                         .cdrom = ph ? nullptr : cdrom,
-                         .disk = ph ? media_disk : disk,
-                         .persist = ph > 0,
+                         .cdrom = second ? nullptr : cdrom,
+                         .disk = second ? media_disk : disk,
+                         .persist = second,
                          .nvme = nvme,
                          .caching = caching,
                          .rtc = rtc});
