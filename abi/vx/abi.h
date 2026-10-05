@@ -449,7 +449,13 @@ enum vx_task_options : uint32_t { VX_TASK_FORK = 1 };
 //     TPIDR_EL0), a uint64_t, on the same terms; with thread 0, the caller's
 //     own, at any time (musl's __set_thread_area). GET_FPREGS and SET_FPREGS
 //     its FP/SIMD registers, a vx_fpregs, on the same terms (a debugger's
-//     fpregs, 05 §3). GET_WATCH and SET_WATCH (DEBUG), with thread 0, the
+//     fpregs, 05 §3): the legacy part alone, x86_64's FXSAVE image. GET_XSTATE
+//     and SET_XSTATE the whole of it, on the same terms (ADR-0035): x86_64's
+//     XSAVE standard image of every component XCR0 enables, aarch64's
+//     vx_fpregs; vx_cpu_info.xstate_size bytes. A SET_XSTATE with a header bit
+//     XCR0 lacks, reserved header bytes set, or an MXCSR bit mxcsr_mask lacks is
+//     INVALID. GET_CPU, with thread 0, a vx_cpu_info: what the kernel saves and
+//     lets user code use. GET_WATCH and SET_WATCH (DEBUG), with thread 0, the
 //     task's watchpoints, a vx_watches, which every thread of it has, from
 //     when each next runs; GET says how many the hardware has in count.
 //     NEXT_THREAD, at any time, describes the live thread
@@ -591,4 +597,24 @@ enum vx_thread_state_op : uint32_t {
   VX_STATE_NEXT_THREAD,
   VX_STATE_GET_WATCH,
   VX_STATE_SET_WATCH,
+  VX_STATE_GET_XSTATE, // ADR-0035
+  VX_STATE_SET_XSTATE,
+  VX_STATE_GET_CPU,
 };
+
+// thread_state's GET_CPU (ADR-0035): what the kernel saves of a thread's
+// FP/SIMD state, and what user code may use. x86_64 user code asks CPUID for
+// instruction sets; aarch64's ID registers trap at EL0, so they are here, as
+// the kernel read them, with the fields of what it does not save (SVE, SME)
+// zeroed.
+typedef struct vx_cpu_info {
+  uint32_t xstate_size; // GET_XSTATE's bytes
+  uint32_t keys;        // protection keys a task may allocate; 0: none
+#ifdef __x86_64__
+  uint64_t xfeatures; // XCR0: the components saved
+  uint32_t mxcsr_mask;
+  uint32_t reserved;
+#elifdef __aarch64__
+  uint64_t isar0, isar1, isar2, pfr0, pfr1, zfr0, smfr0, mmfr3; // ID_AA64*_EL1
+#endif
+} vx_cpu_info;

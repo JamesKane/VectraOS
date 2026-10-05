@@ -87,11 +87,19 @@ __asm__(".text\n"
         "vx_note_entry:\n"
         "  endbr64\n"
         "  movq %rdi, %rbx\n" // the vx_exception, kept across the calls
-        "  subq $528, %rsp\n"
+        // Every component XCR0 enables, in XSAVE's standard image: at most a
+        // page (the kernel's limit, ADR-0035), 64-aligned, its header zeroed
+        // by general registers, as XRSTOR wants it and nothing vector may be
+        // touched before it is saved.
+        "  subq $4160, %rsp\n"
         "  andq $-64, %rsp\n"
-        "  fxsave64 (%rsp)\n"
+        "  movq $0, 512(%rsp)\n  movq $0, 520(%rsp)\n  movq $0, 528(%rsp)\n  movq $0, 536(%rsp)\n"
+        "  movq $0, 544(%rsp)\n  movq $0, 552(%rsp)\n  movq $0, 560(%rsp)\n  movq $0, 568(%rsp)\n"
+        "  movl $-1, %eax\n  movl $-1, %edx\n"
+        "  xsave64 (%rsp)\n"
         "  call vx_note_dispatch\n"
-        "  fxrstor64 (%rsp)\n"
+        "  movl $-1, %eax\n  movl $-1, %edx\n"
+        "  xrstor64 (%rsp)\n"
         "  movq %rbx, %rdi\n"
         "  call vx_note_resume\n"
         "  ud2\n");

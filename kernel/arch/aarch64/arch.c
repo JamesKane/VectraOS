@@ -728,7 +728,7 @@ static void fp_save(uint8_t *fp) {
                    "stp q28, q29, [%1, #448]\n\tstp q30, q31, [%1, #480]\n\t"
                    "mrs x9, fpcr\n\tmrs x10, fpsr\n\t"
                    "str x9, [%1, #512]\n\tstr x10, [%1, #520]"
-                   : "=m"(*(uint8_t (*)[ARCH_FP_SIZE])fp)
+                   : "=m"(*(uint8_t (*)[sizeof(vx_fpregs)])fp)
                    : "r"(fp)
                    : "x9", "x10");
 }
@@ -845,7 +845,39 @@ static void arch_user_switch(thread *prev, thread *next) {
 
 // The reset's values: every register zero; FPCR zero (round to nearest, no
 // traps), FPSR zero.
-static void arch_fp_init(uint8_t *fp) { memset(fp, 0, ARCH_FP_SIZE); }
+static void arch_fp_init(uint8_t *fp) { memset(fp, 0, ARCH_FP_MAX); }
+
+// The extended state is the vx_fpregs image (ADR-0035): SVE's and SME's join
+// it when the kernel saves them, POR_EL0 with 6c5's overlays.
+static uint32_t arch_fp_size(void) { return sizeof(vx_fpregs); }
+static void arch_fp_view(const uint8_t *fp, uint8_t *out) { memcpy(out, fp, sizeof(vx_fpregs)); }
+static vx_status arch_fp_check(const uint8_t *fp) {
+  vx_fpregs f;
+  memcpy(&f, fp, sizeof f);
+  return f.fpcr & ~0x07ff9f00ull || f.fpsr & ~0xf800009full ? VX_ERR_INVALID : VX_OK;
+}
+// NOLINTNEXTLINE(readability-non-const-parameter): x86_64's marks its header; aarch64 has none
+static void arch_fp_legacy_set(uint8_t *fp) { (void)fp; }
+
+// The ID registers user code needs, as this CPU has them, with the fields of
+// what the kernel does not save or support zeroed: SVE (PFR0[35:32], ZFR0),
+// SME (PFR1[27:24], SMFR0), MTE (PFR1[11:8]), overlays (MMFR3[19:16]) until
+// 6c5. Generic encodings, as the newer names need a newer assembler; IDs a
+// CPU lacks read as zero.
+static void arch_cpu_info(vx_cpu_info *info) {
+  uint64_t isar0, isar1, isar2, pfr0, pfr1, mmfr3;
+  __asm__ volatile("mrs %0, s3_0_c0_c6_0\n\tmrs %1, s3_0_c0_c6_1\n\tmrs %2, s3_0_c0_c6_2"
+                   : "=r"(isar0), "=r"(isar1), "=r"(isar2));
+  __asm__ volatile("mrs %0, s3_0_c0_c4_0\n\tmrs %1, s3_0_c0_c4_1\n\tmrs %2, s3_0_c0_c7_3"
+                   : "=r"(pfr0), "=r"(pfr1), "=r"(mmfr3));
+  *info = (vx_cpu_info){.xstate_size = sizeof(vx_fpregs),
+                        .isar0 = isar0,
+                        .isar1 = isar1,
+                        .isar2 = isar2,
+                        .pfr0 = pfr0 & ~(0xfull << 32),
+                        .pfr1 = pfr1 & ~(0xfull << 24 | 0xfull << 8),
+                        .mmfr3 = mmfr3 & ~(0xfull << 16)};
+}
 
 static constexpr uint64_t SPSR_SS = 1ull << 21; // software step
 

@@ -381,31 +381,89 @@ static int64_t thread_watch(vx_handle th, uint64_t op, uint64_t buf) {
   return op == VX_STATE_GET_WATCH ? copy_to_user(buf, &w, sizeof w) : VX_OK;
 }
 
+// GET_FPREGS, SET_FPREGS, GET_XSTATE and SET_XSTATE: the thread's saved
+// FP/SIMD area, through a page of the kernel's (the area can be most of one).
+// A read is the debugger's view (arch_fp_view); a write of the legacy part
+// alone keeps the rest, and a whole one is checked as XRSTOR would.
+static int64_t thread_fp(vx_handle th, uint64_t id, uint64_t op, uint64_t buf) {
+  bool whole = op == VX_STATE_GET_XSTATE || op == VX_STATE_SET_XSTATE;
+  bool set = op == VX_STATE_SET_FPREGS || op == VX_STATE_SET_XSTATE;
+  uint32_t n = whole ? arch_fp_size() : (uint32_t)sizeof(vx_fpregs);
+  uint64_t pa = phys_alloc(0);
+  if (!pa) return VX_ERR_NO_MEMORY;
+  uint8_t *area = phys_to_virt(pa);
+  vx_status st = set ? copy_from_user(area, buf, n) : VX_OK;
+  if (st == VX_OK && op == VX_STATE_SET_FPREGS) fpregs_sanitize((vx_fpregs *)area);
+  task *t = st == VX_OK ? (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_MANAGE, &st) : nullptr;
+  thread *target = nullptr;
+  if (t) {
+    vx_status ignored;
+    task *as_debugger = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_DEBUG, &ignored);
+    bool debugger = as_debugger != nullptr;
+    if (as_debugger) object_release(&as_debugger->obj);
+    target = task_thread(t, id);
+    object_release(&t->obj);
+    if (!target) st = VX_ERR_NOT_FOUND;
+    task *tt = target ? target->task : nullptr;
+    if (tt) {
+      spin_lock(&tt->lock);
+      bool still = target->suspend_count && (target->parked || target->state == THREAD_BLOCKED);
+      if (!target->exc_stopped && !(still && debugger)) {
+        st = VX_ERR_BAD_STATE; // running: neither read nor changed
+      } else if (!set) {
+        static_assert(sizeof(vx_fpregs) <= ARCH_FP_MAX);
+        uint8_t *view = area + ARCH_FP_MAX / 2; // the copy for user memory in the page's top half,
+        if (whole) view = area;                 // or all of it for the whole area
+        arch_fp_view(target->fp, view);
+        if (!whole) memmove(area, view, sizeof(vx_fpregs));
+      } else if (op == VX_STATE_SET_XSTATE && (st = arch_fp_check(area)) == VX_OK) {
+        memcpy(target->fp, area, n); // loaded when it next runs
+      } else if (op == VX_STATE_SET_FPREGS) {
+        memcpy(target->fp, area, n);
+        arch_fp_legacy_set(target->fp);
+      }
+      spin_unlock(&tt->lock);
+    }
+    if (target) object_release(&target->obj);
+  }
+  if (st == VX_OK && !set) st = copy_to_user(buf, area, n);
+  phys_free(pa, 0);
+  return st;
+}
+
+// GET_CPU (ADR-0035): what the kernel saves, and lets user code use.
+static int64_t thread_cpu(uint64_t buf) {
+  vx_cpu_info info;
+  arch_cpu_info(&info);
+  return copy_to_user(buf, &info, sizeof info);
+}
+
 static int64_t sys_thread_state(vx_handle th, uint64_t id, uint64_t op, uint64_t buf, uint64_t size) {
-  if (op < VX_STATE_GET_EXCEPTION || op > VX_STATE_SET_WATCH) return VX_ERR_INVALID;
+  if (op < VX_STATE_GET_EXCEPTION || op > VX_STATE_GET_CPU) return VX_ERR_INVALID;
   bool tls_op = op == VX_STATE_GET_TLS || op == VX_STATE_SET_TLS;
   bool fp_op = op == VX_STATE_GET_FPREGS || op == VX_STATE_SET_FPREGS;
+  bool x_op = op == VX_STATE_GET_XSTATE || op == VX_STATE_SET_XSTATE;
   uint64_t need = sizeof(vx_regs);
   if (op == VX_STATE_GET_EXCEPTION) need = sizeof(vx_exception);
   if (tls_op) need = sizeof(uint64_t);
   if (fp_op) need = sizeof(vx_fpregs);
+  if (x_op) need = arch_fp_size();
+  if (op == VX_STATE_GET_CPU) need = sizeof(vx_cpu_info);
   if (op == VX_STATE_NEXT_THREAD) need = sizeof(vx_thread_info);
   if (op == VX_STATE_GET_WATCH || op == VX_STATE_SET_WATCH) need = sizeof(vx_watches);
   if (size < need) return VX_ERR_TOO_SMALL;
   if (op == VX_STATE_NEXT_THREAD) return thread_next(th, id, buf);
+  if (op == VX_STATE_GET_CPU) return id ? VX_ERR_INVALID : thread_cpu(buf);
+  if (fp_op || x_op) return thread_fp(th, id, op, buf);
   if (op == VX_STATE_GET_WATCH || op == VX_STATE_SET_WATCH)
     return id ? VX_ERR_INVALID : thread_watch(th, op, buf);
   if (tls_op && id == 0) return thread_tls_self(th, op, buf);
   vx_regs regs;
-  static_assert(sizeof(vx_fpregs) == ARCH_FP_SIZE);
-  vx_fpregs fpr;
   uint64_t tls = 0;
   vx_status st = VX_OK;
   if (op == VX_STATE_SET_REGS) st = copy_from_user(&regs, buf, sizeof regs);
   if (op == VX_STATE_SET_TLS) st = copy_from_user(&tls, buf, sizeof tls);
-  if (op == VX_STATE_SET_FPREGS) st = copy_from_user(&fpr, buf, sizeof fpr);
   if (st != VX_OK) return st;
-  if (op == VX_STATE_SET_FPREGS) fpregs_sanitize(&fpr);
   if (op == VX_STATE_SET_TLS && tls >= USER_TOP) return VX_ERR_RANGE;
   task *t = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_MANAGE, &st);
   if (!t) return st;
@@ -432,19 +490,13 @@ static int64_t sys_thread_state(vx_handle th, uint64_t id, uint64_t op, uint64_t
     st = arch_frame_set_regs(arch_user_frame(target), &regs);
   } else if (op == VX_STATE_GET_TLS) {
     tls = target->tls; // saved: by exception_stop, or as it switched out
-  } else if (op == VX_STATE_GET_FPREGS) {
-    memcpy(&fpr, target->fp, sizeof fpr); // saved too
-  } else if (op == VX_STATE_SET_FPREGS) {
-    memcpy(target->fp, &fpr, sizeof fpr); // loaded when it next runs
   } else {
     target->tls = tls; // loaded when it next runs
   }
   spin_unlock(&tt->lock);
   object_release(&target->obj);
-  if (st != VX_OK || op == VX_STATE_SET_REGS || op == VX_STATE_SET_TLS || op == VX_STATE_SET_FPREGS)
-    return st;
+  if (st != VX_OK || op == VX_STATE_SET_REGS || op == VX_STATE_SET_TLS) return st;
   if (op == VX_STATE_GET_TLS) return copy_to_user(buf, &tls, sizeof tls);
-  if (op == VX_STATE_GET_FPREGS) return copy_to_user(buf, &fpr, sizeof fpr);
   return op == VX_STATE_GET_EXCEPTION ? copy_to_user(buf, &e, sizeof e)
                                       : copy_to_user(buf, &e.regs, sizeof e.regs);
 }

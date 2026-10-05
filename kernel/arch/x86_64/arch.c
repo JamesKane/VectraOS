@@ -159,6 +159,59 @@ static void build_idt(void) {
   idt[18].ist = IST_MACHINE_CHECK;
 }
 
+// --- FP/SIMD state (ADR-0035) ---
+//
+// Every user component the CPU has, saved with XSAVE (XSAVEOPT where there is
+// one) in the standard format: x87, SSE and AVX, and AVX-512's opmask, upper
+// ZMM halves and ZMM16-31 when it has all three. Not MPX, which is gone, nor
+// AMX, whose 8 KiB of tiles want a permission first (as Linux asks). The
+// layout is CPUID's, the same on every CPU.
+
+static constexpr uint64_t XFEATURES_USER = 0x7 | 0xe0;
+static constexpr uint64_t XFEATURES_AVX512 = 0xe0;
+static uint64_t xcr0; // the components saved: set on every CPU from the boot CPU's
+static uint32_t xsave_size, mxcsr_mask = 0xffbf;
+static uint32_t xcomp_off[10], xcomp_size[10]; // each component's place, 2 to 9
+static bool have_xsaveopt;
+
+typedef struct cpuid4 {
+  uint32_t a, b, c, d;
+} cpuid4;
+
+static cpuid4 cpuid_sub(uint32_t leaf, uint32_t sub) {
+  cpuid4 r;
+  __asm__ volatile("cpuid" : "=a"(r.a), "=b"(r.b), "=c"(r.c), "=d"(r.d) : "a"(leaf), "c"(sub));
+  return r;
+}
+
+// XCR0 for this CPU (CR4.OSXSAVE set already); on the boot CPU, first what to
+// save and its layout. VectraOS's userland is x86-64-v3, so XSAVE is required.
+static void xsave_init(uint32_t index) {
+  cpuid4 r;
+  if (index == 0) {
+    r = cpuid_sub(1, 0);
+    if (!(r.c & 1u << 26)) panic(VX_STR("no XSAVE: VectraOS needs x86-64-v3 (AVX2)"));
+    r = cpuid_sub(0xd, 0);
+    xcr0 = ((uint64_t)r.d << 32 | r.a) & XFEATURES_USER;
+    if ((xcr0 & XFEATURES_AVX512) != XFEATURES_AVX512) xcr0 &= ~XFEATURES_AVX512; // all three, or none
+    r = cpuid_sub(0xd, 1);
+    have_xsaveopt = r.a & 1;
+    for (uint32_t i = 2; i < 10; i++)
+      if (xcr0 & 1ull << i) r = cpuid_sub(0xd, i), xcomp_size[i] = r.a, xcomp_off[i] = r.b;
+  }
+  __asm__ volatile("xsetbv" : : "c"(0), "a"((uint32_t)xcr0), "d"((uint32_t)(xcr0 >> 32)));
+  if (index == 0) {
+    r = cpuid_sub(0xd, 0); // EBX: the standard format's size for XCR0 as it is now
+    xsave_size = r.b;
+    if (xsave_size > ARCH_FP_MAX) panic(VX_STR("the XSAVE area is larger than a page"));
+    alignas(16) uint8_t fx[512] = {};
+    __asm__ volatile("fxsave64 %0" : "=m"(fx));
+    uint32_t mask;
+    memcpy(&mask, fx + 28, sizeof mask); // MXCSR_MASK: 0 means the default
+    if (mask) mxcsr_mask = mask;
+  }
+}
+
 // Per CPU: control registers and MSRs, this CPU's GDT, TSS and GS data, and
 // the shared IDT (built by the boot CPU).
 static void arch_cpu_init(uint32_t index) {
@@ -177,21 +230,22 @@ static void arch_cpu_init(uint32_t index) {
   __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
   // WP: read-only means read-only, for the kernel too. MP and NE, without EM
   // or TS: x87 and SSE run, their errors as exceptions, and the kernel saves
-  // them with FXSAVE at each switch (arch_user_switch). The kernel itself
+  // them with XSAVE at each switch (arch_user_switch). The kernel itself
   // uses none.
   __asm__ volatile("mov %0, %%cr0"
                    :
                    : "r"((cr0 | 1ull << 16 | 1ull << 5 | 1ull << 1) & ~(1ull << 2 | 1ull << 3)));
   uint64_t cr4;
   __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
-  // OSFXSR and OSXMMEXCPT: SSE, with its exceptions as #XM. No OSXSAVE:
-  // AVX faults until XSAVE's larger state is saved. FSGSBASE off: user code
+  // OSFXSR and OSXMMEXCPT: SSE, with its exceptions as #XM. OSXSAVE: XSAVE,
+  // and AVX and AVX-512 for user code, saved whole (xsave_init). FSGSBASE off: user code
   // changes its FS base only through thread_state, and never its GS base,
   // which swapgs relies on. TSD off: user code may always read the cycle
   // counter (02 §5.1, 05 §9), whatever the firmware left.
   __asm__ volatile("mov %0, %%cr4"
                    :
-                   : "r"((cr4 | 1ull << 9 | 1ull << 10) & ~(1ull << 2 | 1ull << 16 | 1ull << 18)));
+                   : "r"((cr4 | 1ull << 9 | 1ull << 10 | 1ull << 18) & ~(1ull << 2 | 1ull << 16)));
+  xsave_init(index);
 
   uint8_t *ist = index == 0 ? &boot_ist_stacks[0][0] : nullptr;
   if (!ist) {
@@ -494,14 +548,18 @@ static void clear_dr6(void) { __asm__ volatile("mov %0, %%dr6" : : "r"(0xffff'0f
 
 // Idle threads have no user state: whoever ran last leaves its FS base and
 // FP/SIMD registers in place, unused, until the next user thread loads its own.
+// Every component XCR0 enables (EDX:EAX all ones asks for them all).
 static void arch_user_save(thread *th) {
   th->tls = rdmsr(MSR_FS_BASE);
-  __asm__ volatile("fxsave64 %0" : "=m"(*(uint8_t (*)[ARCH_FP_SIZE])th->fp));
+  if (have_xsaveopt) // NOLINT(bugprone-branch-clone): two instructions, XSAVEOPT and XSAVE
+    __asm__ volatile("xsaveopt64 (%0)" : : "r"(th->fp), "a"(~0u), "d"(~0u) : "memory");
+  else
+    __asm__ volatile("xsave64 (%0)" : : "r"(th->fp), "a"(~0u), "d"(~0u) : "memory");
 }
 
 static void arch_user_load(thread *th) {
   wrmsr(MSR_FS_BASE, th->tls);
-  __asm__ volatile("fxrstor64 %0" : : "m"(*(const uint8_t (*)[ARCH_FP_SIZE])th->fp));
+  __asm__ volatile("xrstor64 (%0)" : : "r"(th->fp), "a"(~0u), "d"(~0u) : "memory");
 }
 
 // A thread stopped at an exception has saved its own (user_held): what a
@@ -515,13 +573,58 @@ static void arch_user_switch(thread *prev, thread *next) {
 }
 
 // FINIT's and the reset's values: the x87 control word 0x37f, MXCSR 0x1f80
-// (every exception masked, round to nearest); every register zero.
+// (every exception masked, round to nearest); every register zero. The
+// header's XSTATE_BV is 0, so XRSTOR gives each component its initial state;
+// MXCSR it loads from the area whatever the header says.
 static void arch_fp_init(uint8_t *fp) {
-  memset(fp, 0, ARCH_FP_SIZE);
+  memset(fp, 0, ARCH_FP_MAX);
   uint16_t fcw = 0x37f;
   uint32_t mxcsr = 0x1f80;
   memcpy(fp, &fcw, sizeof fcw);
   memcpy(fp + 24, &mxcsr, sizeof mxcsr);
+}
+
+static uint32_t arch_fp_size(void) { return xsave_size; }
+
+static constexpr uint32_t XHDR = 512; // the XSAVE header: XSTATE_BV, XCOMP_BV, then 48 reserved bytes
+
+static void arch_fp_view(const uint8_t *fp, uint8_t *out) {
+  memcpy(out, fp, xsave_size);
+  uint64_t bv;
+  memcpy(&bv, out + XHDR, sizeof bv);
+  if (!(bv & 1)) { // x87 initial: FCW 0x37f, the rest (FSW, FTW, pointers, ST0-7) zero
+    memset(out, 0, 24), memset(out + 32, 0, 128);
+    uint16_t fcw = 0x37f;
+    memcpy(out, &fcw, sizeof fcw);
+  }
+  if (!(bv & 2)) memset(out + 160, 0, 256); // XMM0-15 initial; MXCSR is always the area's
+  for (uint32_t i = 2; i < 10; i++)
+    if ((xcr0 & 1ull << i) && !(bv & 1ull << i)) memset(out + xcomp_off[i], 0, xcomp_size[i]);
+  bv = xcr0; // every component, now written out
+  memcpy(out + XHDR, &bv, sizeof bv);
+}
+
+static vx_status arch_fp_check(const uint8_t *fp) {
+  uint64_t bv, comp;
+  uint32_t mxcsr;
+  memcpy(&bv, fp + XHDR, sizeof bv);
+  memcpy(&comp, fp + XHDR + 8, sizeof comp);
+  memcpy(&mxcsr, fp + 24, sizeof mxcsr);
+  if (bv & ~xcr0 || comp || mxcsr & ~mxcsr_mask) return VX_ERR_INVALID;
+  for (uint32_t i = 16; i < 64; i++)
+    if (fp[XHDR + i]) return VX_ERR_INVALID;
+  return VX_OK;
+}
+
+static void arch_fp_legacy_set(uint8_t *fp) {
+  uint64_t bv;
+  memcpy(&bv, fp + XHDR, sizeof bv);
+  bv |= 3; // x87 and SSE: what was written, not their initial state
+  memcpy(fp + XHDR, &bv, sizeof bv);
+}
+
+static void arch_cpu_info(vx_cpu_info *info) {
+  *info = (vx_cpu_info){.xstate_size = xsave_size, .xfeatures = xcr0, .mxcsr_mask = mxcsr_mask};
 }
 
 static uint64_t arch_tls_read(void) { return rdmsr(MSR_FS_BASE); }

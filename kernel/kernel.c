@@ -12,13 +12,11 @@ uintptr_t __stack_chk_guard = 0x595e9fbd94fda766;
 // The most CPUs the kernel runs on. Limine's others stay parked.
 static constexpr uint32_t MAX_CPUS = 64;
 
-// A thread's FP/SIMD save area: FXSAVE's 512 bytes on x86_64; v0-v31, FPCR
-// and FPSR on aarch64.
-#ifdef __x86_64__
-static constexpr uint32_t ARCH_FP_SIZE = 512;
-#else
-static constexpr uint32_t ARCH_FP_SIZE = 32 * 16 + 16;
-#endif
+// A thread's FP/SIMD save area, a page of its own (ADR-0035): on x86_64
+// XSAVE's standard image of every component XCR0 enables, arch_fp_size()
+// bytes as CPUID gives them (about 2.7 KiB with AVX-512); on aarch64 v0-v31,
+// FPCR and FPSR. Its first sizeof(vx_fpregs) bytes are the legacy part.
+static constexpr uint32_t ARCH_FP_MAX = 4096;
 
 // What each architecture provides to the rest of the kernel.
 static void arch_console_init(void);
@@ -97,6 +95,15 @@ static void arch_user_switch(thread *prev, thread *next);
 static void arch_user_save(thread *th); // the current thread's TLS and FP/SIMD registers, into th
 static void arch_user_load(thread *th); // and back
 static void arch_fp_init(uint8_t *fp);  // a new thread's: the architecture's reset values
+static uint32_t arch_fp_size(void);     // the save area's bytes in use (GET_XSTATE's)
+// A debugger's view of a saved area: components the hardware left in their
+// initial state without writing (x86's XSAVEOPT) given their initial values.
+static void arch_fp_view(const uint8_t *fp, uint8_t *out);
+// A debugger's area made one the thread may load: INVALID if not (SET_XSTATE).
+static vx_status arch_fp_check(const uint8_t *fp);
+// After SET_FPREGS wrote the legacy part: marked to be loaded, not left initial.
+static void arch_fp_legacy_set(uint8_t *fp);
+static void arch_cpu_info(vx_cpu_info *info); // GET_CPU's
 static uint64_t arch_tls_read(void);
 static void arch_tls_write(uint64_t value);
 

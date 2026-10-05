@@ -180,7 +180,8 @@ static void task_destroy(task *t) {
 }
 
 static void thread_destroy(thread *th) {
-  if (th->kstack) kstack_free(th->kstack); // never started
+  if (th->kstack) kstack_free(th->kstack);                // never started
+  if (th->fp) phys_free((uint64_t)th->fp - boot.hhdm, 0); // last: a debugger's reference may have read it
   task *t = th->task;
   pool_free(&thread_pool, th);
   object_drop(&t->obj);

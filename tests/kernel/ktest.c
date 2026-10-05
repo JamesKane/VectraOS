@@ -257,7 +257,8 @@ static uint32_t write_child(uint8_t *code, child_code what) {
 #define EMIT(b)   (code[n++] = (uint8_t)(b))
 #define EMIT32(v) (EMIT(v), EMIT((v) >> 8), EMIT((v) >> 16), EMIT((v) >> 24))
   if (what == USE_SIMD) {
-    EMIT(0x66), EMIT(0x0f), EMIT(0xef), EMIT(0xc0); // pxor %xmm0, %xmm0, then exit 7
+    EMIT(0x66), EMIT(0x0f), EMIT(0xef), EMIT(0xc0); // pxor %xmm0, %xmm0
+    EMIT(0xc5), EMIT(0xfd), EMIT(0xef), EMIT(0xc0); // vpxor %ymm0, %ymm0, %ymm0: AVX too (XSAVE), then exit 7
     what = EXIT_7;
   }
   if (what == BREAK_STEP) {
@@ -1464,6 +1465,37 @@ static void test_debugger(void) {
   CHECK(fp.v[0][0] == 0x5a && fp.fpcr == 0x07ff9f00);
 #endif
   CHECK(vx_thread_state(weak, 1, VX_STATE_GET_FPREGS, &fp, sizeof fp) == VX_ERR_BAD_STATE); // DEBUG needed
+  // Its whole FP/SIMD state, and what the kernel saves (ADR-0035).
+  vx_cpu_info ci = {};
+  CHECK(vx_thread_state(child, 0, VX_STATE_GET_CPU, &ci, sizeof ci) == VX_OK);
+  CHECK(vx_thread_state(child, 1, VX_STATE_GET_CPU, &ci, sizeof ci) == VX_ERR_INVALID); // thread 0's
+  static uint8_t xs[4096];
+  CHECK(ci.xstate_size >= sizeof(vx_fpregs) && ci.xstate_size <= sizeof xs);
+  CHECK(vx_thread_state(child, 1, VX_STATE_GET_XSTATE, xs, ci.xstate_size - 1) == VX_ERR_TOO_SMALL);
+  CHECK(vx_thread_state(child, 1, VX_STATE_GET_XSTATE, xs, sizeof xs) == VX_OK);
+#ifdef __x86_64__
+  CHECK((ci.xfeatures & 7) == 7 && ci.mxcsr_mask != 0); // x87, SSE and AVX at least: x86-64-v3
+  uint64_t bv;
+  memcpy(&bv, xs + 512, sizeof bv);
+  CHECK(bv == ci.xfeatures && xs[160] == 0x5a); // every component written out; XMM0 as SET_FPREGS left it
+  uint32_t a, b, c, d;
+  __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0xd), "c"(2)); // AVX's place
+  CHECK(b + 16 <= ci.xstate_size);
+  xs[b] = 0xa7; // YMM0's upper half, its first byte
+  CHECK(vx_thread_state(child, 1, VX_STATE_SET_XSTATE, xs, sizeof xs) == VX_OK);
+  memset(xs, 0, sizeof xs);
+  CHECK(vx_thread_state(child, 1, VX_STATE_GET_XSTATE, xs, sizeof xs) == VX_OK && xs[b] == 0xa7 &&
+        xs[160] == 0x5a);
+  xs[512 + 20] = 1; // a reserved header byte
+  CHECK(vx_thread_state(child, 1, VX_STATE_SET_XSTATE, xs, sizeof xs) == VX_ERR_INVALID);
+  xs[512 + 20] = 0, xs[512 + 7] = 0x80; // XSTATE_BV bit 63: no such component
+  CHECK(vx_thread_state(child, 1, VX_STATE_SET_XSTATE, xs, sizeof xs) == VX_ERR_INVALID);
+#else
+  CHECK(ci.xstate_size == sizeof(vx_fpregs) && memcmp(xs, &fp, sizeof fp) == 0); // the same image
+  vx_fpregs bad = fp;
+  bad.fpcr = ~0ull;
+  CHECK(vx_thread_state(child, 1, VX_STATE_SET_XSTATE, &bad, sizeof bad) == VX_ERR_INVALID);
+#endif
   // Its watchpoints: as many as the hardware has, each checked when set.
   vx_watches w = {};
   CHECK(vx_thread_state(child, 0, VX_STATE_GET_WATCH, &w, sizeof w) == VX_OK && w.count >= 2 &&
@@ -1790,16 +1822,26 @@ static void test_tls(void) {
 // and restore it, and nothing between a put and a get uses it: the futex
 // wrapper and after_ms use no SIMD.
 #ifdef __x86_64__
+// All of ymm7, its upper half AVX's (ADR-0035: XSAVE saves it): four lanes,
+// v and three of its own, so a lane lost or mixed with another thread's shows.
 static constexpr uint32_t FP_CTL_DEFAULT = 0x1f80, FP_CTL_ZERO = 0x7f80; // round toward zero
+static void fp_lanes(uint64_t v, uint64_t lanes[4]) {
+  lanes[0] = v, lanes[1] = ~v, lanes[2] = v ^ 0x5555'5555'5555'5555, lanes[3] = v + 1;
+}
 static void fp_put(uint64_t v, uint32_t ctl) {
-  __asm__ volatile("movq %0, %%xmm7\n\tldmxcsr %1" : : "r"(v), "m"(ctl) : "xmm7");
+  alignas(32) uint64_t lanes[4];
+  fp_lanes(v, lanes);
+  __asm__ volatile("vmovdqa %0, %%ymm7\n\tldmxcsr %1" : : "m"(lanes), "m"(ctl) : "xmm7");
 }
 static uint64_t fp_get(uint32_t *ctl) {
-  uint64_t v;
+  alignas(32) uint64_t lanes[4], want[4];
   uint32_t c;
-  __asm__ volatile("movq %%xmm7, %0\n\tstmxcsr %1" : "=&r"(v), "=m"(c));
+  __asm__ volatile("vmovdqa %%ymm7, %0\n\tstmxcsr %1" : "=m"(lanes), "=m"(c));
   *ctl = c;
-  return v;
+  fp_lanes(lanes[0], want);
+  bool whole = lanes[1] == want[1] && lanes[2] == want[2] && lanes[3] == want[3];
+  bool clean = !lanes[0] && !lanes[1] && !lanes[2] && !lanes[3]; // a new thread's
+  return whole || clean ? lanes[0] : 0xbad0'bad0'bad0'bad0;
 }
 #else
 static constexpr uint32_t FP_CTL_DEFAULT = 0, FP_CTL_ZERO = 3u << 22; // FPCR.RMode: toward zero

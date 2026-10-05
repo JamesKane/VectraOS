@@ -152,6 +152,16 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   return (vx_status)vx_syscall(VX_SYS_thread_state, task, thread, op, (uint64_t)buf, size, 0);
 }
 
+// What the kernel saves of FP/SIMD state and lets user code use (ADR-0035):
+// asked once, then kept. Code choosing a path by the CPU (6c3) reads it.
+[[maybe_unused]] static const vx_cpu_info *vx_cpu(void) {
+  static vx_cpu_info info;
+  static bool known;
+  if (!known && vx_thread_state(VX_HANDLE_NONE, 0, VX_STATE_GET_CPU, &info, sizeof info) == VX_OK)
+    known = true;
+  return &info;
+}
+
 [[maybe_unused]] static vx_status vx_thread_suspend(vx_handle task, uint64_t thread) {
   return (vx_status)vx_syscall(VX_SYS_thread_suspend, task, thread, 0, 0, 0, 0);
 }

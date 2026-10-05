@@ -312,7 +312,7 @@ enum : uint32_t {
   PROF_CTL, // in prof/, not listed in the process's directory
   PROF_ZONES
 };
-enum : uint32_t { T_DIR, T_STATUS, T_REGS, T_REGS_NDB, T_FPREGS, T_CTL, T_FILES };
+enum : uint32_t { T_DIR, T_STATUS, T_REGS, T_REGS_NDB, T_FPREGS, T_XREGS, T_CTL, T_FILES };
 
 typedef struct file_entry {
   vx_str name;
@@ -340,7 +340,7 @@ static const file_entry FILE_TABLE[FILES] = {
 static const file_entry THREAD_FILES[T_FILES] = {
     [T_STATUS] = {VX_STR("status"), 0444},     [T_REGS] = {VX_STR("regs"), 0664},
     [T_REGS_NDB] = {VX_STR("regs.ndb"), 0664}, [T_FPREGS] = {VX_STR("fpregs"), 0664},
-    [T_CTL] = {VX_STR("ctl"), 0222},
+    [T_XREGS] = {VX_STR("xregs"), 0664},       [T_CTL] = {VX_STR("ctl"), 0222},
 };
 
 static vx_handle nsd; // a connector to nsd's post, for /proc/N/ns
@@ -586,10 +586,18 @@ static vx_status thread_read(proc *p, uint32_t tid, uint32_t f, uint64_t offset,
     memcpy(text, &r, len = sizeof r);
   if (f == T_FPREGS && (st = vx_thread_state(p->task, tid, VX_STATE_GET_FPREGS, &fp, sizeof fp)) == VX_OK)
     memcpy(text, &fp, len = sizeof fp);
+  static uint8_t xs[4096]; // the whole FP/SIMD state, ADR-0035: at most a page
+  const uint8_t *from = (const uint8_t *)text;
+  if (f == T_XREGS) {
+    vx_cpu_info ci;
+    st = vx_thread_state(p->task, 0, VX_STATE_GET_CPU, &ci, sizeof ci);
+    if (st == VX_OK) st = vx_thread_state(p->task, tid, VX_STATE_GET_XSTATE, xs, sizeof xs);
+    len = ci.xstate_size, from = xs;
+  }
   if (st != VX_OK) return st; // running: its registers will not hold still
   uint64_t left = offset < len ? len - offset : 0;
   if (*count > left) *count = (uint32_t)left;
-  memcpy(buf, text + offset * (*count != 0), *count);
+  memcpy(buf, from + offset * (*count != 0), *count);
   return VX_OK;
 }
 
@@ -713,6 +721,15 @@ static vx_status fs_write(void *ctx, uint64_t node, uint64_t offset, const uint8
   proc *p = proc_of(node);
   if (!p) return VX_ERR_NOT_FOUND;
   uint32_t tid = thread_of(node), f = file_of(node);
+  if (tid && f == T_XREGS) { // whole, at offset 0: the size GET_CPU says
+    vx_cpu_info ci;
+    vx_status st = vx_thread_state(p->task, 0, VX_STATE_GET_CPU, &ci, sizeof ci);
+    if (st != VX_OK) return st;
+    if (*count != ci.xstate_size || offset) return VX_ERR_INVALID;
+    static uint8_t xs[4096];
+    memcpy(xs, buf, *count);
+    return vx_thread_state(p->task, tid, VX_STATE_SET_XSTATE, xs, *count);
+  }
   if (tid && (f == T_REGS || f == T_FPREGS)) { // whole, at offset 0
     vx_fpregs whole;                           // the larger of the two
     uint32_t size = f == T_REGS ? (uint32_t)sizeof(vx_regs) : (uint32_t)sizeof(vx_fpregs);

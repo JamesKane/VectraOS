@@ -98,12 +98,12 @@ static constexpr uint32_t THREAD_MAX_INTERRUPTS = 8;
 
 struct thread {
   object obj;
-  task *task;                           // nullptr for an idle thread
-  struct thread *task_next;             // in its task's list, under the task's lock
-  uint64_t kernel_sp;                   // saved by arch_context_switch
-  uint64_t kstack;                      // the kernel stack's lowest address (mm/kstack.c)
-  uint64_t tls;                         // its user thread pointer while it is not running (arch_user_switch)
-  alignas(16) uint8_t fp[ARCH_FP_SIZE]; // its FP/SIMD registers while it is not running (arch_user_switch)
+  task *task;               // nullptr for an idle thread
+  struct thread *task_next; // in its task's list, under the task's lock
+  uint64_t kernel_sp;       // saved by arch_context_switch
+  uint64_t kstack;          // the kernel stack's lowest address (mm/kstack.c)
+  uint64_t tls;             // its user thread pointer while it is not running (arch_user_switch)
+  uint8_t *fp;    // its FP/SIMD registers while it is not running (arch_user_switch): a page, ARCH_FP_MAX
   bool user_held; // stopped at an exception: fp and tls are its own, saved, for a debugger (exception_stop)
   bool stepping;  // a debugger asked for one instruction (arch_frame_step): aarch64 keeps MDSCR_EL1.SS on
   uint64_t user_entry, user_sp, user_arg, user_arg2;
@@ -537,8 +537,10 @@ static vx_status task_unmap(task *t, uint64_t va, uint64_t size) {
 static vx_status thread_create(task *t, thread **out) {
   thread *th = pool_alloc(&thread_pool);
   if (!th) return VX_ERR_NO_MEMORY;
-  uint64_t stack = kstack_alloc();
-  if (!stack) {
+  uint64_t stack = kstack_alloc(), fp = phys_alloc(0); // the FP area page-aligned, as XSAVE wants 64
+  if (!stack || !fp) {
+    if (stack) kstack_free(stack);
+    if (fp) phys_free(fp, 0);
     pool_free(&thread_pool, th);
     return VX_ERR_NO_MEMORY;
   }
@@ -552,6 +554,7 @@ static vx_status thread_create(task *t, thread **out) {
   th->intent = VX_INTENT_INTERACTIVE;
   object_ref(&t->obj);
   th->kernel_sp = arch_thread_initial_sp(th);
+  th->fp = phys_to_virt(fp);
   arch_fp_init(th->fp);
   *out = th;
   return VX_OK;
