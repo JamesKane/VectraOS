@@ -15,10 +15,11 @@
 // "alarm", "sys: write on closed pipe", "sys: trap: ..."). Both map back to
 // the signal here, as do the exit strings a process ends with: "killed" is
 // SIGKILL's. Signal numbers are Linux's, as musl's are.
-static constexpr int64_t POSIX_SIGHUP = 1, POSIX_SIGINT = 2, POSIX_SIGILL = 4, POSIX_SIGTRAP = 5,
-                         POSIX_SIGBUS = 7, POSIX_SIGFPE = 8, POSIX_SIGKILL = 9, POSIX_SIGSEGV = 11,
-                         POSIX_SIGPIPE = 13, POSIX_SIGALRM = 14, POSIX_SIGCHLD = 17, POSIX_SIGCONT = 18,
-                         POSIX_SIGSTOP = 19, POSIX_SIGURG = 23, POSIX_SIGWINCH = 28, POSIX_NSIG = 64;
+static constexpr int64_t POSIX_SIGHUP = 1, POSIX_SIGINT = 2, POSIX_SIGQUIT = 3, POSIX_SIGILL = 4,
+                         POSIX_SIGTRAP = 5, POSIX_SIGBUS = 7, POSIX_SIGFPE = 8, POSIX_SIGKILL = 9,
+                         POSIX_SIGSEGV = 11, POSIX_SIGPIPE = 13, POSIX_SIGALRM = 14, POSIX_SIGTERM = 15,
+                         POSIX_SIGCHLD = 17, POSIX_SIGCONT = 18, POSIX_SIGSTOP = 19, POSIX_SIGURG = 23,
+                         POSIX_SIGWINCH = 28, POSIX_NSIG = 64;
 
 static const char *const POSIX_SIGNAMES[32] = {
     nullptr,     "SIGHUP",  "SIGINT",    "SIGQUIT", "SIGILL",   "SIGTRAP", "SIGABRT", "SIGBUS",
@@ -26,6 +27,14 @@ static const char *const POSIX_SIGNAMES[32] = {
     "SIGSTKFLT", "SIGCHLD", "SIGCONT",   "SIGSTOP", "SIGTSTP",  "SIGTTIN", "SIGTTOU", "SIGURG",
     "SIGXCPU",   "SIGXFSZ", "SIGVTALRM", "SIGPROF", "SIGWINCH", "SIGIO",   "SIGPWR",  "SIGSYS",
 };
+
+// A NUL-terminated string as a vx_str (vx-rt's vx_cstr, which a host test
+// does not have).
+[[maybe_unused]] static vx_str posix_cstr(const char *s) {
+  size_t n = 0;
+  while (s[n]) n++;
+  return (vx_str){s, n};
+}
 
 // The Plan 9 notes that are signals, and the prefixes of trap notes.
 static const struct {
@@ -44,6 +53,7 @@ static const struct {
     {"sys: trap: fp disabled", POSIX_SIGILL, true},
     {"sys: trap: arithmetic", POSIX_SIGFPE, true},
     {"sys: trap: misaligned", POSIX_SIGBUS, true},
+    {"sys: trap: page not supplied", POSIX_SIGBUS, true}, // a pager that did not answer in time
     {"sys: breakpoint", POSIX_SIGTRAP, true},
     {"sys: trap: step", POSIX_SIGTRAP, true},
 };
@@ -56,12 +66,12 @@ static const struct {
   if (!sender)
     for (size_t i = 0; i < sizeof POSIX_PLAN9_NOTES / sizeof POSIX_PLAN9_NOTES[0]; i++)
       if (POSIX_PLAN9_NOTES[i].sig == sig && !POSIX_PLAN9_NOTES[i].prefix && sig != POSIX_SIGKILL) {
-        vx_note_put(&b, vx_cstr(POSIX_PLAN9_NOTES[i].note));
+        vx_note_put(&b, posix_cstr(POSIX_PLAN9_NOTES[i].note));
         return b.len;
       }
   vx_note_put(&b, VX_STR("posix: "));
   if (sig > 0 && sig < 32) {
-    vx_note_put(&b, vx_cstr(POSIX_SIGNAMES[sig]));
+    vx_note_put(&b, posix_cstr(POSIX_SIGNAMES[sig]));
   } else {
     vx_note_put(&b, VX_STR("SIG"));
     vx_note_dec(&b, (uint64_t)sig);
@@ -78,7 +88,7 @@ static const struct {
 [[maybe_unused]] static int64_t posix_note_signal(vx_str note, int64_t *sender) {
   *sender = 0;
   for (size_t i = 0; i < sizeof POSIX_PLAN9_NOTES / sizeof POSIX_PLAN9_NOTES[0]; i++) {
-    vx_str n = vx_cstr(POSIX_PLAN9_NOTES[i].note);
+    vx_str n = posix_cstr(POSIX_PLAN9_NOTES[i].note);
     if (POSIX_PLAN9_NOTES[i].prefix ? vx_note_prefix(note, n) : note.len == n.len && vx_note_prefix(note, n))
       return POSIX_PLAN9_NOTES[i].sig;
   }
@@ -88,7 +98,7 @@ static const struct {
   vx_str name = {note.ptr + at, end - at};
   int64_t sig = 0;
   for (int64_t i = 1; i < 32 && !sig; i++)
-    if (vx_cstr(POSIX_SIGNAMES[i]).len == name.len && vx_note_prefix(name, vx_cstr(POSIX_SIGNAMES[i])))
+    if (posix_cstr(POSIX_SIGNAMES[i]).len == name.len && vx_note_prefix(name, posix_cstr(POSIX_SIGNAMES[i])))
       sig = i;
   if (!sig && name.len > 3 && name.len < 6) { // SIG34: a number, for those with no name
     size_t j = 3;

@@ -6,6 +6,7 @@
 
 #include "rc.h"
 #include "../vx-utf/utf.h"
+#include "../vx-posix/posix.h"
 
 // --- The heap: first fit, coalescing, in the caller's buffer ---
 
@@ -3493,6 +3494,30 @@ typedef enum rc_result : uint8_t { RC_OK, RC_INCOMPLETE, RC_SYNTAX, RC_FAILED, R
   if (sig == 0 || sig >= 8 || (sig == 2 && r->trap[2])) return;
   r->trap[sig]++;
   r->ntrap++;
+}
+
+// The number rc_trap takes for a note, 0 if rc has no function for it:
+// 9front's words first ("interrupt", "sys: fp: ", "term"), then VectraOS's
+// notes as the signals they stand for (lib/vx-posix): "sys: trap: arithmetic"
+// is sigfpe's, "posix: SIGTERM pid=12" sigterm's, "posix: SIGQUIT" (^\ at a
+// terminal) sigquit's.
+[[maybe_unused]] static uint32_t rc_note_trap(vx_str note) {
+  static const char *const names[8] = {"exit",  "hangup", "interrupt", "quit",
+                                       "alarm", "kill",   "sys: fp: ", "term"};
+  static const int64_t signals[8] = {0,
+                                     POSIX_SIGHUP,
+                                     POSIX_SIGINT,
+                                     POSIX_SIGQUIT,
+                                     POSIX_SIGALRM,
+                                     POSIX_SIGKILL,
+                                     POSIX_SIGFPE,
+                                     POSIX_SIGTERM};
+  int64_t sender, sig = posix_note_signal(note, &sender);
+  for (uint32_t i = 1; i < 8; i++) {
+    size_t n = rc_strlen(names[i]);
+    if ((note.len >= n && memcmp(note.ptr, names[i], n) == 0) || (sig && sig == signals[i])) return i;
+  }
+  return 0;
 }
 
 // Each function, for the host to export: each(name, its body's text).

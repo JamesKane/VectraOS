@@ -87,7 +87,7 @@ The C library's note handler (`ports/musl/vx/signal.c`) maps each note back to i
 | `sys: trap: fault ...`, `sys: trap: general fault` | `SIGSEGV` |
 | `sys: trap: illegal instruction`, `sys: trap: fp disabled` | `SIGILL` |
 | `sys: trap: arithmetic` | `SIGFPE` |
-| `sys: trap: misaligned` | `SIGBUS` |
+| `sys: trap: misaligned`, `sys: trap: page not supplied` | `SIGBUS` |
 | `sys: breakpoint`, `sys: trap: step` | `SIGTRAP` |
 | `posix: SIGTERM pid=12` | the signal named, sent by process 12 |
 
@@ -129,7 +129,7 @@ A POSIX program whose fault takes the default goes the same way: the C library r
 
 @node=rc title="rc and notes"
 
-rc(1) asks for its notes, and runs a function of its own for each it knows, before its next instruction: `sighup` for `hangup`, `sigint` for `interrupt`, `sigquit` for `quit`, `sigalrm` for `alarm`, `sigkill` for `kill`, `sigfpe` for `sys: fp:`, `sigterm` for `term` (rc(1)#notes).
+rc(1) asks for its notes, and runs a function of its own for each it knows, before its next instruction: `sighup` for `hangup`, `sigint` for `interrupt`, `sigquit` for `quit`, `sigalrm` for `alarm`, `sigkill` for `kill`, `sigfpe` for `sys: fp:`, `sigterm` for `term`, and for each the VectraOS note of the same signal: `sigfpe` for `sys: trap: arithmetic`, `sigterm` for `posix: SIGTERM pid=`<n> from kill(1), `sigquit` for `posix: SIGQUIT` from `^\` (rc(1)#notes).
 Without its function, an interrupt or quit stops what rc is doing and goes back to reading commands if it is interactive, and ends it if not; any other note ends it.
 
 rc's `$status` is each command's wait message, its name and pid before its exit string, as 9front's rc has it; from rc's test, a script that exits with `2`:
@@ -186,8 +186,6 @@ A full exception port, as a debugger that does not read its events leaves, kills
 
 Signals lack an alternate signal stack, the registers in a handler's `ucontext`, `sigqueue` and real-time queueing; per-thread masks and `sigaltstack` come with threads in M6 step 6d.
 Nothing posts `alarm`: the C library has no `alarm`, `setitimer` or timers (time(7)).
-
-rc's `sigfpe` waits for 9front's `sys: fp:`, which VectraOS never posts (its arithmetic trap is `sys: trap: arithmetic`); and `posix: SIGTERM` and `posix: SIGQUIT`, which kill(1) sends, are not rc's `term` and `quit`, so they end rc whatever its `sigterm` and `sigquit` say.
 
 Anyone who can open `/proc/<pid>` can post it a note, or a note to its group, until capability tokens (M10).
 Crash directories are lost at reboot, never pruned, and keep secrets: memory marked `NODUMP` is not kept out, nor is anything encrypted.

@@ -845,20 +845,14 @@ static bool wait_builtin(const rc_word *argv, uint32_t argc) {
   return true;
 }
 
-// Notes, to rc's functions for them (rc's notifyf): what rc has a name for,
-// sigint and the rest; any other, as the system does by default.
+// Notes, to rc's functions for them (rc's notifyf): what rc has a name for
+// (rc_note_trap), sigint and the rest; any other, as the system does by default.
 static vx_noted on_note(vx_exception *e, vx_str note) {
   (void)e;
-  static const char *const names[8] = {"exit",  "hangup", "interrupt", "quit",
-                                       "alarm", "kill",   "sys: fp: ", "term"};
-  for (uint32_t i = 1; i < 8; i++) {
-    vx_str nm = vx_cstr(names[i]);
-    if (note.len >= nm.len && memcmp(note.ptr, nm.ptr, nm.len) == 0) {
-      rc_trap(sh, i);
-      return VX_NCONT;
-    }
-  }
-  return VX_NDFLT;
+  uint32_t i = rc_note_trap(note);
+  if (!i) return VX_NDFLT;
+  rc_trap(sh, i);
+  return VX_NCONT;
 }
 
 // rc_host's read_line: a line of the shell's standard input ('#d/0').

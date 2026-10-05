@@ -415,6 +415,14 @@ static void test_9front_builtins(void) {
   rc_trap(r, 2);
   expect("echo next", "caught\nnext\n");
   script("fn sigint");
+  // Which function a note runs: 9front's words, and VectraOS's notes as signals.
+  CHECK(rc_note_trap(VX_STR("interrupt")) == 2 && rc_note_trap(VX_STR("hangup")) == 1);
+  CHECK(rc_note_trap(VX_STR("sys: fp: divide by zero")) == 6);
+  CHECK(rc_note_trap(VX_STR("sys: trap: arithmetic pc=0x401000")) == 6);
+  CHECK(rc_note_trap(VX_STR("term")) == 7 && rc_note_trap(VX_STR("posix: SIGTERM pid=12")) == 7);
+  CHECK(rc_note_trap(VX_STR("posix: SIGQUIT")) == 3 && rc_note_trap(VX_STR("posix: SIGQUIT pid=4")) == 3);
+  CHECK(rc_note_trap(VX_STR("posix: SIGUSR1 pid=4")) == 0 &&
+        rc_note_trap(VX_STR("sys: trap: fault read")) == 0);
   rc_trap(r, 1);
   CHECK(script("echo never") == RC_EXIT && strcmp(out, "") == 0);
 }
