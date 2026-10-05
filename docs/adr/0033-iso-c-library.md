@@ -1,6 +1,6 @@
 # ADR-0033: An ISO C library for native programs, a C++ support subset, and the native target
 
-Status: proposed, 2026-10-04. Decides 10 §12, question 1. Built in M6 step 6e2.
+Status: accepted, 2026-10-05 (proposed 2026-10-04). Decides 10 §12, question 1. Built in M6 step 6e2.
 
 ## Context
 

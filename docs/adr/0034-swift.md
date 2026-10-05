@@ -1,6 +1,6 @@
 # ADR-0034: Swift is a first-party language, in its full and embedded forms
 
-Status: proposed, 2026-10-05; toolchain moved to Swift 6.4.0 the same day. Amends D1 and 04 §1. Bring-up is in progress in `../lang/swift-on-vectra` (S1 and S2 done).
+Status: accepted, 2026-10-05 (proposed the same day; toolchain moved to Swift 6.4.0 before acceptance). Amends D1 and 04 §1. Bring-up is in progress in `../lang/swift-on-vectra` (S1 and S2 done).
 
 ## Context
 
