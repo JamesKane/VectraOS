@@ -170,7 +170,17 @@ static void p9_ring_unmap(vx_ring *r) {
 // so nothing the server still has is reused. No Rflush within the timeout
 // ends the connection.
 
-enum : uint64_t { P9_KEY_BELL = 1, P9_KEY_CLOSED = 2 };
+enum : uint64_t { P9_KEY_BELL = 1, P9_KEY_CLOSED = 2, P9_KEY_POKE = 3 };
+
+// A program's own say in how calls wait, on every connection (the musl
+// back end's, M6 step 6d4b; unset elsewhere):
+//   - flush_wanted: an interrupted call is flushed if it says so (a
+//     connection's own `interrupted` comes first);
+//   - waiting: what the thread is about to sleep on (a port, or a futex
+//     word), and (0, nullptr) after, so a note handler that runs just
+//     before the sleep can end it (a P9_KEY_POKE packet, or the word moved).
+static bool (*p9_ring_flush_wanted)(void);
+static void (*p9_ring_waiting)(vx_handle port, _Atomic uint32_t *word);
 
 typedef enum p9_slot_state : uint32_t {
   P9_SLOT_FREE,
@@ -341,6 +351,21 @@ static bool p9_ring_waited(const p9_conn *k, p9_slot *s, uint32_t any) {
   return s ? atomic_load(&s->state) == P9_SLOT_DONE : atomic_load(&k->replies) != any;
 }
 
+// Whether the caller of an interrupted call wants it flushed.
+static bool p9_ring_wants_flush(const p9_conn *k) {
+  if (k->interrupted) return k->interrupted(k->interrupted_ctx);
+  return p9_ring_flush_wanted && p9_ring_flush_wanted();
+}
+
+// Before a sleep: whether a signal already came that wants the call flushed
+// (the program's hook, which looks at what is pending; a connection's own
+// is asked only when a wait is interrupted).
+static bool p9_ring_flush_due(void) { return p9_ring_flush_wanted && p9_ring_flush_wanted(); }
+
+static void p9_ring_will_wait(vx_handle port, _Atomic uint32_t *word) {
+  if (p9_ring_waiting) p9_ring_waiting(port, word);
+}
+
 // Leads: reads every completion, until the wait is over. INTERRUPTED (only
 // with hear), TIMED_OUT, PEER_CLOSED.
 static vx_status p9_ring_lead(p9_conn *k, p9_slot *s, uint32_t any, vx_instant deadline, bool hear) {
@@ -352,14 +377,17 @@ static vx_status p9_ring_lead(p9_conn *k, p9_slot *s, uint32_t any, vx_instant d
       if (st != VX_OK || !p9_ring_deliver(k, &c)) return VX_ERR_PEER_CLOSED;
     }
     if (p9_ring_waited(k, s, any)) return VX_OK;
+    if (hear && p9_ring_flush_due()) return VX_ERR_INTERRUPTED; // one that came before the sleep
     int64_t seen = vx_counter_read(k->end);
     if (!vx_ring_prepare_sleep(&k->ring)) continue;
     vx_packet pk = {};
     vx_port_bind(k->port, k->end, VX_TRIGGER_COUNTER_GE, P9_KEY_BELL, (uint64_t)seen + 1);
+    p9_ring_will_wait(k->port, nullptr);
     int64_t got = vx_port_wait(k->port, deadline, 0, &pk, 1);
+    p9_ring_will_wait(VX_HANDLE_NONE, nullptr);
     vx_ring_end_sleep(&k->ring); // the binding made for this wait may fire later too
-    if (got == VX_ERR_INTERRUPTED) {
-      if (hear && k->interrupted && k->interrupted(k->interrupted_ctx)) return VX_ERR_INTERRUPTED;
+    if (got == VX_ERR_INTERRUPTED || (got == 1 && pk.key == P9_KEY_POKE)) {
+      if (hear && p9_ring_wants_flush(k)) return VX_ERR_INTERRUPTED;
       continue;
     }
     if (got == VX_ERR_TIMED_OUT) return VX_ERR_TIMED_OUT;
@@ -397,10 +425,13 @@ static vx_status p9_ring_wait(p9_conn *k, p9_slot *s, uint32_t any, vx_instant d
     // leader stops: one taken between the look and the sleep ends the sleep.
     uint32_t value = atomic_load(&k->replies);
     vx_mutex_unlock(&k->lock);
+    if (hear && p9_ring_flush_due()) return VX_ERR_INTERRUPTED; // one that came before the sleep
+    p9_ring_will_wait(VX_HANDLE_NONE, &k->replies);
     vx_status w = vx_futex_wait(&k->replies, value, deadline);
+    p9_ring_will_wait(VX_HANDLE_NONE, nullptr);
     if (w == VX_ERR_TIMED_OUT) return VX_ERR_TIMED_OUT;
-    if (w == VX_ERR_INTERRUPTED && hear && k->interrupted && k->interrupted(k->interrupted_ctx))
-      return VX_ERR_INTERRUPTED;
+    if (w == VX_ERR_INTERRUPTED && hear && p9_ring_wants_flush(k)) return VX_ERR_INTERRUPTED;
+    if (w == VX_ERR_BAD_STATE && hear && p9_ring_flush_due()) return VX_ERR_INTERRUPTED; // a poke
   }
 }
 

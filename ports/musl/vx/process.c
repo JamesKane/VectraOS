@@ -39,6 +39,22 @@ static long proc_read(long pid, const char *file, char *buf, size_t cap) {
   return (long)n;
 }
 
+// proc_read for a file whose read may wait for long (a child's end): the
+// back end let go for the read itself.
+static long proc_read_unlocked(long pid, const char *file, char *buf, size_t cap) {
+  if (!proc_mounted) return -ESRCH;
+  vx_ns_file f;
+  vx_status st = vx_ns_open(fd_namespace(), proc_path(pid, file), P9_OREAD, &f);
+  if (st != VX_OK) return proc_errno(st);
+  uint32_t held = be_wait_begin();
+  int64_t n = p9c_read(f.c, f.fid, 0, buf, (uint32_t)(cap - 1));
+  be_wait_end(held);
+  vx_ns_close(&f);
+  if (n < 0) return proc_errno((vx_status)n);
+  buf[n] = 0;
+  return (long)n;
+}
+
 static long proc_write(long pid, const char *file, const char *text) {
   if (!proc_mounted) return -ESRCH;
   vx_ns_file f;
@@ -194,7 +210,7 @@ static long posix_wait4(long pid, int *status, int options, struct rusage *ru) {
       if (st.length == 0) return 0; // nothing yet, as APE's waitpid answers
     }
     char buf[512] = {}; // the analyzer cannot follow proc_read's result to it
-    long n = proc_read(posix_pid(), "wait", buf, sizeof buf);
+    long n = proc_read_unlocked(posix_pid(), "wait", buf, sizeof buf); // until a child ends: others go on
     if (n == -ESRCH) return -ECHILD;
     if (n < 0) return n; // ECHILD (no living children), EINTR (a signal ended it)
     if (!wait_parse(buf, (size_t)n, &w)) continue;

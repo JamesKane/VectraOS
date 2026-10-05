@@ -263,6 +263,9 @@ static vx_noted sig_note(vx_exception *e, vx_str note, void *fp) {
       atomic_fetch_add(&sig_seq, 1);
       vx_futex_wake(&sig_seq, UINT32_MAX);
       vx_port_post(fd_port, &(vx_packet){.key = FD_KEY_SIGNAL});
+      be_thread *me = be_me(); // a 9P call's sleep: it asks whether to flush (6d4b)
+      if (me->ring_port) vx_port_post(me->ring_port, &(vx_packet){.key = P9_KEY_POKE});
+      if (me->ring_word) atomic_fetch_add(me->ring_word, 1), vx_futex_wake(me->ring_word, UINT32_MAX);
     }
     return VX_NCONT;
   }
@@ -289,7 +292,31 @@ static vx_noted sig_note(vx_exception *e, vx_str note, void *fp) {
   return VX_NCONT;
 }
 
+// The ring client's hooks (6d4b): a 9P call that a signal interrupts is
+// flushed, and ends with EINTR, when a signal this thread does not block is
+// pending and does something (a handler, or a default that is not to
+// ignore); __vx_syscall then runs it, and makes the call again for
+// SA_RESTART. A blocked or ignored one leaves the call to go on.
+static bool sig_flush_wanted(void) {
+  uint64_t ready = (sig_pending | be_me()->pending) & ~sig_mask;
+  for (int sig = 1; ready && sig <= SIG_MAX; sig++) {
+    if (!(ready & sig_bit(sig))) continue;
+    uintptr_t h = sig_actions[sig].handler;
+    if (h == (uintptr_t)SIG_IGN || (h == (uintptr_t)SIG_DFL && posix_default_ignored(sig))) continue;
+    return true;
+  }
+  return false;
+}
+
+static void sig_ring_waiting(vx_handle port, _Atomic uint32_t *word) {
+  be_thread *me = be_me();
+  me->ring_port = port;
+  me->ring_word = word;
+}
+
 static void sig_init(void) {
+  p9_ring_flush_wanted = sig_flush_wanted;
+  p9_ring_waiting = sig_ring_waiting;
   vx_note_exit = proc_exit_str; // a note that is no signal ends the process with it
   vx_ndb_record rec;
   uint64_t ignored = 0, mask = 0;

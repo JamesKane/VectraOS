@@ -35,6 +35,11 @@ typedef vx_noted vx_note_handler(vx_exception *e, vx_str note, void *fp);
 [[gnu::visibility("hidden")]] void vx_note_entry(void);
 
 static vx_note_handler *vx_note_fn;
+// The stack the entry takes for the XSAVE image: what this CPU's needs
+// (vx_cpu_info.xstate_size), 64-aligned, and 64 for the alignment; the most
+// the kernel allows (a page) until vx_notify asks. A handler on a small
+// alternate stack has the rest (SIGSTKSZ is 8 KiB on x86_64).
+[[gnu::used]] static uint64_t vx_note_xsave_bytes = 4096 + 64;
 // How VX_NDFLT ends the program: rt.c's exit, which flushes output first, or
 // the musl back end's. Without one, the task just ends.
 static void (*vx_note_exit)(vx_str note);
@@ -92,11 +97,11 @@ __asm__(".text\n"
         "vx_note_entry:\n"
         "  endbr64\n"
         "  movq %rdi, %rbx\n" // the vx_exception, kept across the calls
-        // Every component XCR0 enables, in XSAVE's standard image: at most a
-        // page (the kernel's limit, ADR-0035), 64-aligned, its header zeroed
+        // Every component XCR0 enables, in XSAVE's standard image: as much
+        // as this CPU's needs (vx_note_xsave_bytes), 64-aligned, its header zeroed
         // by general registers, as XRSTOR wants it and nothing vector may be
         // touched before it is saved.
-        "  subq $4160, %rsp\n"
+        "  subq vx_note_xsave_bytes(%rip), %rsp\n"
         "  andq $-64, %rsp\n"
         "  movq $0, 512(%rsp)\n  movq $0, 520(%rsp)\n  movq $0, 528(%rsp)\n  movq $0, 536(%rsp)\n"
         "  movq $0, 544(%rsp)\n  movq $0, 552(%rsp)\n  movq $0, 560(%rsp)\n  movq $0, 568(%rsp)\n"
@@ -142,6 +147,11 @@ __asm__(".text\n"
 // Hands every note to handler from now on; nullptr goes back to ending the
 // program at the first one.
 [[maybe_unused]] static vx_status vx_notify(vx_note_handler *handler) {
+#ifdef __x86_64__
+  const vx_cpu_info *cpu = vx_cpu();
+  if (cpu && cpu->xstate_size >= 576 && cpu->xstate_size <= 4096)
+    vx_note_xsave_bytes = ((cpu->xstate_size + 63) & ~63ull) + 64;
+#endif
   vx_note_fn = handler;
   return vx_exception_bind(vx_self, VX_HANDLE_NONE, handler ? (uint64_t)vx_note_entry : 0,
                            VX_EXCEPTION_IN_TASK);

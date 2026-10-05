@@ -72,6 +72,7 @@ typedef struct ofd {
   uint32_t pty;
   bool locked;     // a lock was taken through it: let go at exit, before the exit is seen
   bool read_bound; // a READABLE binding is on fd_port for its pipe
+  vx_mutex io;     // a file whose offset is kept here (not file_shared): one read or write at a time
   fd_readahead *ra;
   uint8_t sock;          // a socket's type (SOCK_STREAM, SOCK_DGRAM): the file is its /net data (socket.c)
   bool sock_bound;       // its port announced, or a connection's
@@ -421,7 +422,7 @@ static long console_write(const char *p, size_t n) {
 }
 
 static long pipe_write(const ofd *o, const uint8_t *p, size_t n) {
-  alignas(vx_msg_header) static uint8_t msg[sizeof(vx_msg_header) + FD_PIPE_CHUNK];
+  alignas(vx_msg_header) uint8_t msg[sizeof(vx_msg_header) + FD_PIPE_CHUNK]; // the thread's: its waits let go
   size_t done = 0;
   while (done < n) {
     uint32_t k = n - done < FD_PIPE_CHUNK ? (uint32_t)(n - done) : FD_PIPE_CHUNK;
@@ -499,12 +500,57 @@ static int64_t file_offset(const ofd *o) {
   return (int64_t)at;
 }
 
+// --- Calls that may wait for long (6d4b) ---
+//
+// A read of a terminal, the console or a server's pipe, a write a full pipe
+// holds, a wait for a child: the back end is let go for the 9P call, so the
+// process's other threads go on meanwhile. The description is held for the
+// call (a close from another thread takes effect after it), and a file whose
+// offset is kept here takes one read or write at a time. Metadata calls
+// (walk, stat, open, clunk) are quick, and keep the back end.
+
+static int64_t file_read_unlocked(ofd *o, void *buf, uint32_t count) {
+  o->refs++;
+  bool shared = file_shared(o);
+  uint32_t held = be_wait_begin();
+  int64_t r;
+  if (shared) {
+    r = p9c_read(o->f.c, o->f.fid, P9_OFFSET_CURRENT, buf, count);
+  } else {
+    vx_mutex_lock(&o->io);
+    r = vx_ns_read(&o->f, buf, count);
+    vx_mutex_unlock(&o->io);
+  }
+  be_wait_end(held);
+  ofd_release(o);
+  return r;
+}
+
+// One write of at most count bytes: at the server's offset (shared), at
+// offset (if not -1), or at the description's own.
+static int64_t file_write_unlocked(ofd *o, const void *buf, uint32_t count, int64_t offset) {
+  o->refs++;
+  bool shared = file_shared(o);
+  uint32_t held = be_wait_begin();
+  int64_t w;
+  if (offset >= 0 || shared) {
+    w = p9c_write(o->f.c, o->f.fid, offset >= 0 ? (uint64_t)offset : P9_OFFSET_CURRENT, buf, count);
+  } else {
+    vx_mutex_lock(&o->io);
+    w = vx_ns_write(&o->f, buf, count);
+    vx_mutex_unlock(&o->io);
+  }
+  be_wait_end(held);
+  ofd_release(o);
+  return w;
+}
+
 static long file_write(ofd *o, const uint8_t *p, size_t n) {
   if (file_shared(o)) { // at the open file's offset, or its end, which the server moves on
     size_t done = 0;
     while (done < n) {
       uint32_t k = n - done < (1u << 20) ? (uint32_t)(n - done) : 1u << 20;
-      int64_t w = p9c_write(o->f.c, o->f.fid, P9_OFFSET_CURRENT, p + done, k);
+      int64_t w = file_write_unlocked(o, p + done, k, -1);
       if (w <= 0 && done) return (long)done;
       if (w <= 0) return w ? vx_errno((vx_status)w) : -EIO;
       done += (size_t)w;
@@ -520,7 +566,7 @@ static long file_write(ofd *o, const uint8_t *p, size_t n) {
   size_t done = 0;
   while (done < n) {
     uint32_t k = n - done < (1u << 20) ? (uint32_t)(n - done) : 1u << 20;
-    int64_t w = vx_ns_write(&o->f, p + done, k);
+    int64_t w = file_write_unlocked(o, p + done, k, -1);
     if (w <= 0 && done) return (long)done;
     if (w <= 0) return w ? vx_errno((vx_status)w) : -EIO;
     done += (size_t)w;
@@ -532,6 +578,17 @@ static long sock_send(ofd *o, const void *buf, size_t n, int flags, const void *
                       socklen_t salen); // socket.c
 static long sock_recv(ofd *o, void *buf, size_t n, int flags, void *sa, socklen_t *salen);
 
+// The console's read (vx-rt's): one reader at a time, the back end let go.
+static int64_t fd_console_read(void *buf, uint32_t count) {
+  static vx_mutex readers;
+  uint32_t held = be_wait_begin();
+  vx_mutex_lock(&readers);
+  int64_t r = vx_console_read(buf, count);
+  vx_mutex_unlock(&readers);
+  be_wait_end(held);
+  return r;
+}
+
 static long fd_read(int fd, void *buf, size_t n) {
   ofd *o = fd_get(fd);
   if (!o) return -EBADF;
@@ -542,14 +599,13 @@ static long fd_read(int fd, void *buf, size_t n) {
   switch (o->kind) {
   case OFD_CONSOLE:
     if (o->ra) return ra_read(o, buf, count, !(o->flags & O_NONBLOCK));
-    r = vx_console_read(buf, count);
+    r = fd_console_read(buf, count);
     break;
   case OFD_PIPE_IN: return pipe_read(o, buf, count);
   case OFD_FILE:
     if (o->dir) return -EISDIR;
     if (o->ra) return ra_read(o, buf, count, !(o->flags & O_NONBLOCK));
-    r = file_shared(o) ? p9c_read(o->f.c, o->f.fid, P9_OFFSET_CURRENT, buf, count)
-                       : vx_ns_read(&o->f, buf, count);
+    r = file_read_unlocked(o, buf, count);
     break;
   default: return -EBADF;
   }
@@ -603,7 +659,7 @@ static long fd_writev(int fd, const struct iovec *iov, int count) {
   if (count < 0) return -EINVAL;
   long sum = iov_total(iov, (size_t)count);
   if (sum < 0) return sum;
-  static uint8_t gather[FD_PIPE_CHUNK];
+  uint8_t gather[FD_PIPE_CHUNK]; // the thread's: a write lets the back end go
   size_t total = (size_t)sum;
   if (total <= sizeof gather) {
     size_t at = 0;
@@ -631,7 +687,12 @@ static long fd_pread(int fd, void *buf, size_t n, long offset) {
   if (o->kind != OFD_FILE || o->sock || o->tty || o->master) return -ESPIPE;
   if (o->dir) return -EISDIR;
   if (offset < 0) return -EINVAL;
-  int64_t r = p9c_read(o->f.c, o->f.fid, (uint64_t)offset, buf, n < (1u << 20) ? (uint32_t)n : 1u << 20);
+  uint32_t count = n < (1u << 20) ? (uint32_t)n : 1u << 20;
+  o->refs++;
+  uint32_t held = be_wait_begin();
+  int64_t r = p9c_read(o->f.c, o->f.fid, (uint64_t)offset, buf, count);
+  be_wait_end(held);
+  ofd_release(o);
   return r < 0 ? vx_errno((vx_status)r) : (long)r;
 }
 
@@ -640,7 +701,7 @@ static long fd_pwrite(int fd, const void *buf, size_t n, long offset) {
   if (!o || (o->flags & O_ACCMODE) == O_RDONLY) return -EBADF;
   if (o->kind != OFD_FILE || o->sock || o->tty || o->master) return -ESPIPE;
   if (offset < 0) return -EINVAL;
-  int64_t w = p9c_write(o->f.c, o->f.fid, (uint64_t)offset, buf, n < (1u << 20) ? (uint32_t)n : 1u << 20);
+  int64_t w = file_write_unlocked(o, buf, n < (1u << 20) ? (uint32_t)n : 1u << 20, offset);
   return w < 0 ? vx_errno((vx_status)w) : (long)w;
 }
 

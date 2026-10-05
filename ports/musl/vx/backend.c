@@ -112,6 +112,8 @@ typedef struct be_thread {
   uint32_t slot;                    // in be_threads, plus 1; 0: not there
   uint32_t handlers_ran, eintr_ran; // signal.c's: the handlers run on it, and those not SA_RESTART
   uint64_t robust;                  // set_robust_list's head
+  vx_handle ring_port;              // what a 9P call of its sleeps on now (6d4b): a signal's handler ends
+  _Atomic uint32_t *ring_word;      // the sleep, as it would not end a wait it came just before
 } be_thread;
 
 static vx_mutex be_lock;
