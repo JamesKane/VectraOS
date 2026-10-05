@@ -68,14 +68,14 @@ The table after the slots test has applied release 2 and rolled back, read from 
 
 ```ndb
 slot=a release=1
-    tree=b2:155a7449f2c3a213479d5d4dfa137d5c964a7714b42f57e02a8201efbde77b8a
-    kernel=3d7b1d81…721347ea svcd=2a64addb…9b9d5300
-    ktest=f8b92b84…f37616bc bootfs=09c69e32…83f376d5
+    tree=b2:3737dbc03157d82bf47af1d28851e7a57f41a1d80c4e9852ef6347f6e9f5538d
+    kernel=2e524875…f23f09c6 svcd=ef2ed0a2…7b82cfe2
+    ktest=59daa7e8…15410802 bootfs=ea125654…b68f895d
 slot=b release=2
-    tree=b2:6d7eccaf261abb486a2b201954baed8fe62ba8a253dfcae1877fbf61afa9dd16
-    kernel=3d7b1d81…721347ea svcd=2a64addb…9b9d5300
-    ktest=f8b92b84…f37616bc bootfs=2470fba6…88fa7003
-boot=a previous=b cmdline=vx.skip=gsh
+    tree=b2:b1defffc300df1104dda8d0a913de210b60472203846ae5f0d4292f136bc8b70
+    kernel=2e524875…f23f09c6 svcd=ef2ed0a2…7b82cfe2
+    ktest=59daa7e8…15410802 bootfs=351ce9c2…014ce040
+boot=a previous=b cmdline=vx.skip=rc
 ```
 
 and the configuration made from it, its hashes shortened in the same way, its comment cut short and its second entry left out:
@@ -88,11 +88,11 @@ default_entry: 1
 
 /VectraOS (slot a, release 1)
     protocol: limine
-    path: boot():/EFI/vectra/a/kernel.elf#3d7b1d81…721347ea
-    module_path: boot():/EFI/vectra/a/svcd#2a64addb…9b9d5300
-    module_path: boot():/EFI/vectra/a/ktest#f8b92b84…f37616bc
-    module_path: boot():/EFI/vectra/a/bootfs.tar#09c69e32…83f376d5
-    cmdline: vx.system vx.slot=a vx.skip=gsh
+    path: boot():/EFI/vectra/a/kernel.elf#2e524875…f23f09c6
+    module_path: boot():/EFI/vectra/a/svcd#ef2ed0a2…7b82cfe2
+    module_path: boot():/EFI/vectra/a/ktest#59daa7e8…15410802
+    module_path: boot():/EFI/vectra/a/bootfs.tar#ea125654…b68f895d
+    cmdline: vx.system vx.slot=a vx.skip=rc
 
 /VectraOS (slot b, release 2)
 ...

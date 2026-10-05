@@ -156,7 +156,7 @@ It exits with status 1 if the kernel is over its budget of 25000 lines (`docs/01
 
 `man` shows a page of `man/` as man(1) shows it, so the manual can be read before an image boots: the page <title> in the first of the <section>s that has one, or in any section, filled to the terminal's width, or 80 columns, and only its node <node> if one is given.
 
-With `--check` it runs the manual's pass of `check` alone, in milliseconds: every page parsed, its headings in order, its links resolved, its fences within 80 columns; every program, server, driver, system call, 9Px message and format either documented or listed in `man/missing`, and nothing listed that is documented; every program with a page taking its usage message from the page's usage fence.
+With `--check` it runs the manual's pass of `check` alone, in milliseconds: every page parsed, its headings in order, its links resolved, its fences within 80 columns; every program, server, driver, system call, 9Px message and format either documented or listed in `man/missing`, and nothing listed that is documented; every program with a page taking its usage message from the page's usage fence; each format with a key table (a `.def` file of `KEY` lines) defining exactly its keys on its page.
 It writes the index, `out/man/index/base`, and fails if the pass takes more than 200 ms.
 
 The usage fences are where the native programs' usage messages come from: a program whose page has one is compiled with a header, `out/gen/usage/<name>.h`, that defines `VX_USAGE` from the fence's lines that start with its name.
