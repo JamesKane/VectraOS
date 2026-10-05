@@ -60,7 +60,7 @@ static bool open_now[8]; // the files the shell has open, by handle
 static bool used_closed; // a stage was given a file the shell had already closed
 
 // A pipeline, its stages run in turn; $status as rc makes it, each stage's
-// joined by |.
+// joined by rc_concstatus.
 static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool async, uint64_t *pid) {
   (void)ctx;
   static char pipes[2][4096];
@@ -117,10 +117,10 @@ static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool asy
     } else {
       st = "not found";
     }
-    nstatus += (size_t)snprintf(status + nstatus, sizeof status - nstatus, "%s%s", i ? "|" : "", st);
+    rc_concstatus(status, &nstatus, sizeof status - 1, st, strlen(st));
   }
   if (async) *pid = 42;
-  rc_set_status(r, status, strlen(status));
+  rc_set_status(r, status, nstatus);
   return true;
 }
 
@@ -167,6 +167,14 @@ static bool readdir_fake(void *ctx, const char *path, size_t len, void (*each)(v
   return false;
 }
 
+static bool exists_fake(void *ctx, const char *path, size_t len) {
+  (void)ctx;
+  static const char *const names[] = {"a.c", "b.c", "x.h", ".hidden", "dir", "dir/one.c", "dir/two.txt"};
+  for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
+    if (strlen(names[i]) == len && memcmp(names[i], path, len) == 0) return true;
+  return file_of(path, len, false) >= 0;
+}
+
 static int64_t read_file_fake(void *ctx, const char *path, size_t len, char *buf, size_t cap) {
   (void)ctx;
   int k = file_of(path, len, false);
@@ -211,6 +219,82 @@ static void expect(const char *text, const char *want) {
   CHECK(ok);
 }
 
+static const char *status_now(void) {
+  static char buf[256];
+  const rc_word *w = rc_getvar(r, "status");
+  snprintf(buf, sizeof buf, "%.*s", w ? (int)w->len : 0, w ? w->s : "");
+  return buf;
+}
+
+// 9front's rc, as its rc(1) and source have it (M6 step 6a6a): each line is
+// one of the differences a survey found, now the same.
+static void test_9front(void) {
+  // Syntax rc's grammar refuses.
+  CHECK(script("echo a(b c)") == RC_SYNTAX);
+  CHECK(script("not echo x") == RC_SYNTAX);
+  CHECK(script("in") == RC_SYNTAX);
+  CHECK(script("y=(a b); echo $$y") == RC_FAILED && strstr(rc_err(r), "$ variable name not singleton!"));
+  CHECK(script("y=(a b); $y=1") == RC_FAILED && strstr(rc_err(r), "= variable name not singleton!"));
+  expect("x=1; echo for$x", "for 1\n"); // no caret after a keyword
+  expect("echo for in not", "for in not\n");
+  // ~ and switch match the list as one word; ~ with no patterns does not match.
+  expect("x=(a b); if(~ $x 'a b') echo joined", "joined\n");
+  expect("if(~ () '') echo empty", "empty\n");
+  expect("if(! ~ ()) echo none", "none\n");
+  expect("x=(a b); switch($x){case a; echo A; case 'a b'; echo AB}", "AB\n");
+  expect("switch(){case ''; echo empty}", "empty\n");
+  CHECK(script("switch(a){echo x; case a; echo A}") == RC_SYNTAX &&
+        strstr(rc_err(r), "case missing in switch"));
+  expect("switch(a){case a; echo A; 'case' b; echo B}", "A\nB\n"); // a quoted case is a command
+  // if not follows an if, or is refused when compiled.
+  CHECK(script("if not echo x") == RC_SYNTAX && strstr(rc_err(r), "`if not' does not follow `if(...)'"));
+  CHECK(script("if(false) echo a; echo mid; if not echo b") == RC_SYNTAX);
+  expect("if(false) echo a\nif not echo b", "b\n");
+  CHECK(script("if(false) echo a; if not echo b; if not echo c") == RC_SYNTAX); // an if not ends iflast
+  expect("x=y; $x=hello; echo $y", "hello\n");                                  // a name from a variable
+  // while() is true; ^ of two empty lists is empty, of one an error.
+  CHECK(script("false; while(){ echo once; exit }") == RC_EXIT && strcmp(out, "once\n") == 0);
+  expect("x=(); y=(); echo a $x^$y b", "a b\n");
+  CHECK(script("x=(); echo a^$x") == RC_FAILED && strstr(rc_err(r), "null list in concatenation"));
+  CHECK(script("x=(1 2 3); y=(a b); echo $x^$y") == RC_FAILED &&
+        strstr(rc_err(r), "mismatched list lengths"));
+  // Subscripts as rc's subwords; $1(...) is a variable named 1's.
+  expect("x=(a b c); echo $x(0-2) . $x(2x) . $x(3-1) . $x(2-9)", ". b . . b c\n");
+  expect("fn f { echo $1(1) $#1 $#3 }; f a b", "1 0\n");
+  // $ifs of several words: joined by spaces, so a space separates too.
+  expect("ifs=(: ';'); x=`{echo 'a:b;c d'}; echo $#x", "4\n");
+  // An empty command is an error.
+  CHECK(script("x=(); $x") == RC_FAILED && strstr(rc_err(r), "empty argument list"));
+  // A pipeline's status, as concstatus; truth by the first word.
+  expect("exitwith '' | exitwith 3; echo $status", "3\n");
+  expect("exitwith 3 | exitwith ''; echo $status", "3|\n");
+  expect("fn t { status=('' no) }; if(t) echo first", "first\n");
+  // Functions are global: a local of the same name does not hide one.
+  expect("fn f { echo F }; f=1 f", "F\n");
+  CHECK(script("fn g { echo G }; g &") == RC_OK && strcmp(out, "") == 0 &&
+        strcmp(status_now(), "async") == 0);
+  // Globbing: . and .. alone need an explicit dot; a plain name after a
+  // pattern must exist; ? and classes match runes; ranges either way round.
+  expect("echo *", ".hidden a.c b.c dir x.h\n");
+  expect("echo */one.c", "dir/one.c\n");
+  expect("echo */nosuch", "*/nosuch\n");
+  expect("if(~ \xc3\xa9 ?) echo rune", "rune\n");
+  expect("if(~ b [c-a]) echo reversed", "reversed\n");
+  expect("if(~ \xc3\xa9 [\xc3\xa0-\xc3\xaf]) echo class", "class\n");
+  expect("echo a\x01"
+         "b; if(~ a\x01"
+         "b a\x01"
+         "b) echo same",
+         "a\x01"
+         "b\nsame\n"); // the glob byte, itself
+  // A block's redirection is the whole block's; a failed one says rc's way.
+  expect("echo data > f; { cat; cat } < f", "data\ndata\n");
+  CHECK(script("cat < nosuchfile") == RC_FAILED && strstr(rc_err(r), "rc:1: < can't open: nosuchfile"));
+  CHECK(script("echo x >\n") == RC_SYNTAX);
+  // A syntax error's message is $status, as rc's yyerror.
+  CHECK(script("echo )") == RC_SYNTAX && strcmp(status_now(), "") != 0 && strstr(rc_err(r), status_now()));
+}
+
 int main(void) {
   rc_host host = {.run = run,
                   .write = write_fd,
@@ -218,7 +302,8 @@ int main(void) {
                   .read_file = read_file_fake,
                   .builtin = host_builtin,
                   .open = open_fake,
-                  .close = close_fake};
+                  .close = close_fake,
+                  .exists = exists_fake};
   r = rc_new(heap, sizeof heap, &host);
   CHECK(r != nullptr);
   if (!r) return check_result();
@@ -230,7 +315,7 @@ int main(void) {
   expect("x=foo; echo $x.c pre^$x a^(b c)", "foo.c prefoo ab ac\n");
   expect("x=b; echo a$x^c", "abc\n");
   expect("x=(1 2); y=(a b); echo $x^$y", "1a 2b\n");
-  expect("echo a=b", "a=b\n");
+  CHECK(script("echo a=b") == RC_SYNTAX); // = is not a word, as rc's
   // Control flow.
   expect("if(false) echo no; if not echo yes", "yes\n");
   expect("if(true) echo yes; if not echo no", "yes\n");
@@ -285,7 +370,7 @@ int main(void) {
   // What it refuses, and exit.
   CHECK(script("if(") == RC_INCOMPLETE);
   CHECK(script("for(i in a b) {") == RC_INCOMPLETE);
-  CHECK(script("echo )") == RC_SYNTAX && strstr(rc_err(r), "line 1") != nullptr);
+  CHECK(script("echo )") == RC_SYNTAX && strstr(rc_err(r), "rc:1: ") != nullptr);
   CHECK(script("echo 'unterminated") == RC_INCOMPLETE); // more lines may close it
   CHECK(script("echo a \\\n") == RC_INCOMPLETE);
   expect("echo a\\\nb", "a b\n"); // a \ ending a line is white space, mid-word too
@@ -323,5 +408,6 @@ int main(void) {
   for (int i = 0; i < 200; i++)
     script("x=`{echo a b c d e f g}; y=($x $x $x); fn f { echo $y }; f > /dev/null");
   expect("echo still", "still\n");
+  test_9front();
   return check_result();
 }

@@ -183,10 +183,10 @@ static bool open_file(void *ctx, rc *r, const char *path, size_t len, uint8_t ki
     st = vx_ns_open(&ns, p, P9_OREAD, &files[h]);
   } else {
     // > truncates (devices ignore that) and makes the file if need be, as rc
-    // does; >> writes at its end; <> reads and writes.
+    // does; >> writes at its end; <> reads and writes, and makes nothing.
     uint8_t mode = kind == RC_FD_RDWR ? P9_ORDWR : P9_OWRITE;
     st = vx_ns_open(&ns, p, kind == RC_FD_WRITE ? mode | P9_OTRUNC : mode, &files[h]);
-    if (st == VX_ERR_NOT_FOUND) st = vx_ns_create(&ns, p, 0644, mode, &files[h]);
+    if (st == VX_ERR_NOT_FOUND && kind != RC_FD_RDWR) st = vx_ns_create(&ns, p, 0644, mode, &files[h]);
     if (st == VX_OK && kind == RC_FD_APPEND) {
       p9_stat s;
       if (p9c_stat(files[h].c, files[h].fid, &s) == VX_OK) files[h].offset = s.length;
@@ -230,6 +230,16 @@ static void write_out(void *ctx, const rc_fd *fd, uint32_t which, const char *s,
     vx_eprint((vx_str){s, n});
   else if (fd->kind == RC_FD_INHERIT)
     vx_print((vx_str){s, n});
+}
+
+// rc_host's exists: whether the path names something, for globbing.
+static bool exists(void *ctx, const char *path, size_t len) {
+  (void)ctx;
+  p9_client *c;
+  uint32_t fid;
+  if (vx_ns_walk(&ns, (vx_str){path, len}, &c, &fid) != VX_OK) return false;
+  p9c_clunk(c, fid);
+  return true;
 }
 
 static bool read_dir(void *ctx, const char *path, size_t len, void (*each)(void *, const char *, size_t),
@@ -547,6 +557,9 @@ static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool asy
     vx_status st = VX_OK;
     if (s + 1 < n) st = vx_channel_create(0, pipe);
     const rc_fd *fd[3] = {resolve(c, 0), resolve(c, 1), resolve(c, 2)};
+    static const rc_fd nothing = {.kind = RC_FD_CLOSED};
+    if (async && fd[0]->kind == RC_FD_INHERIT && fd[0]->dup == 0)
+      fd[0] = &nothing; // & reads nothing, as rc's /dev/null
     for (int i = 0; i < 3 && st == VX_OK; i++) {
       bool same_as_1 = i == 2 && fd[2]->kind == fd[1]->kind && fd[2]->kind >= RC_FD_WRITE &&
                        fd[2]->kind != RC_FD_DUP && fd[2]->kind != RC_FD_CLOSED &&
@@ -565,14 +578,12 @@ static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool asy
       for (int i = 0; i < 3; i++)
         if (io[i]) vx_handle_close(io[i]);
     if (st != VX_OK) {
-      vx_str why = VX_STR("cannot run it");
-      if (st == VX_ERR_NOT_FOUND) why = VX_STR("not found");
+      vx_str why = p9_error_text(st); // as rc's: the command's name and why, which is its status
       if (st == VX_ERR_RANGE) why = VX_STR("argument list too long");
       // Where the command's own errors would go, as rc writes them.
       rc_fd err = *fd[2];
       if (err.kind == RC_FD_PIPE_OUT || err.kind == RC_FD_PIPE_IN || err.kind == RC_FD_READ)
         err = (rc_fd){.dup = 2};
-      write_out(nullptr, &err, 2, "rc: ", 4);
       write_out(nullptr, &err, 2, c->argv->s, c->argv->len);
       write_out(nullptr, &err, 2, ": ", 2);
       write_out(nullptr, &err, 2, why.ptr, why.len);
@@ -601,8 +612,7 @@ static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool asy
         vx_handle_close(tasks[s]);
     }
     vx_handle_close(port);
-    set_status((vx_str){});
-    return true;
+    return true; // $status as it was, as rc's
   }
 
   // Wait for every command; meanwhile serve the relays.
@@ -636,9 +646,22 @@ static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool asy
       if (pk[k].trigger == VX_TRIGGER_EXIT && key < n) {
         running--;
         vx_task_summary info;
-        if (pk[k].value && vx_task_info(tasks[key], &info) == VX_OK) {
-          memcpy(ends[key], info.exit, info.exit_len);
-          end_len[key] = info.exit_len;
+        if (pk[k].value && vx_task_info(tasks[key], &info) == VX_OK && info.exit_len) {
+          // As the wait message rc's status comes from: name pid: exit string.
+          size_t m = 0, nl = 0;
+          while (nl < sizeof info.name && info.name[nl]) nl++;
+          char id[24];
+          size_t d = sizeof id;
+          uint64_t v = info.id;
+          do id[--d] = (char)('0' + v % 10);
+          while (v /= 10);
+          for (size_t q = 0; q < nl && m < VX_ERRMAX; q++) ends[key][m++] = info.name[q];
+          if (m < VX_ERRMAX) ends[key][m++] = ' ';
+          for (size_t q = d; q < sizeof id && m < VX_ERRMAX; q++) ends[key][m++] = id[q];
+          for (const char *q = ": "; *q && m < VX_ERRMAX; q++) ends[key][m++] = *q;
+          size_t take = vx_utf_cut(info.exit, info.exit_len, VX_ERRMAX - m);
+          memcpy(ends[key] + m, info.exit, take);
+          end_len[key] = m + take;
         }
         continue;
       }
@@ -655,13 +678,9 @@ static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool asy
     }
   }
   if (broken) say("rc: write error", (vx_str){}, "\n");
-  char status[MAX_STAGES * (VX_ERRMAX + 1)]; // the commands' exit strings, joined by |, as rc's $status
+  char status[MAX_STAGES * (VX_ERRMAX + 1)]; // the commands' statuses, as rc's concstatus joins them
   size_t len = 0;
-  for (uint32_t s = 0; s < n; s++) {
-    if (s) status[len++] = '|';
-    memcpy(status + len, ends[s], end_len[s]);
-    len += end_len[s];
-  }
+  for (uint32_t s = 0; s < n; s++) rc_concstatus(status, &len, sizeof status, ends[s], end_len[s]);
   rc_set_status(sh, status, len);
   for (uint32_t s = 0; s < n; s++)
     if (tasks[s]) vx_handle_close(tasks[s]);
@@ -674,16 +693,15 @@ static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool asy
 static alignas(16) uint8_t heap[4 << 20];
 static char text[256 * 1024]; // a script's, or the lines of a construct still open
 
-// The last $status, as rc exits with it.
+// The last $status, as rc exits with it: its first word, or nothing when it
+// is true (0s and |s), as rc's Exit.
 static const char *exit_status(void) {
   static char status[VX_ERRMAX + 1];
-  size_t len = 0;
-  for (const rc_word *w = rc_getvar(sh, "status"); w; w = w->next) {
-    size_t n = vx_utf_cut(w->s, w->len, VX_ERRMAX - len); // whole runes (ADR-0013)
-    memcpy(status + len, w->s, n);
-    len += n;
-    if (w->next && len < VX_ERRMAX) status[len++] = ' ';
-  }
+  const rc_word *w = rc_getvar(sh, "status");
+  bool truth = true;
+  for (size_t i = 0; w && i < w->len; i++) truth = truth && (w->s[i] == '0' || w->s[i] == '|');
+  size_t len = w && !truth ? vx_utf_cut(w->s, w->len, VX_ERRMAX) : 0; // whole runes (ADR-0013)
+  if (len) memcpy(status, w->s, len);
   status[len] = 0;
   return status;
 }
@@ -701,7 +719,8 @@ const char *vx_main(void) {
                   .builtin = builtin,
                   .read_file = read_whole,
                   .open = open_file,
-                  .close = close_file};
+                  .close = close_file,
+                  .exists = exists};
   sh = rc_new(heap, sizeof heap, &host);
   if (!sh) return "no memory";
   import_env();
@@ -715,6 +734,7 @@ const char *vx_main(void) {
     rc_set(sh, "*", words, lens, n);
     words[0] = vx_spawn.args[0].ptr, lens[0] = vx_spawn.args[0].len;
     rc_set(sh, "0", words, lens, 1);
+    rc_source(sh, vx_spawn.args[0].ptr, vx_spawn.args[0].len); // its errors at file:line
     int64_t len = read_whole(nullptr, vx_spawn.args[0].ptr, vx_spawn.args[0].len, text, sizeof text);
     if (len < 0) {
       say("rc: ", vx_spawn.args[0], ": cannot read it\n");

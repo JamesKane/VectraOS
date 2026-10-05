@@ -96,4 +96,7 @@ typedef struct rc_host {
   // cannot be (why, in $status). close lets it go when the redirection ends.
   bool (*open)(void *ctx, rc *r, const char *path, size_t len, uint8_t kind, uint32_t *handle);
   void (*close)(void *ctx, uint32_t handle);
+  // Whether a path exists, for globbing: a plain name after a pattern must
+  // (rc's access check). Optional: without it, such names are kept.
+  bool (*exists)(void *ctx, const char *path, size_t len);
 } rc_host;

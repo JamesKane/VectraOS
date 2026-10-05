@@ -69,9 +69,12 @@ struct rc {
   uint32_t nredirs;
   rc_capture captures[8];
   uint32_t ncaptures;
-  bool ifnot;  // the last if's condition was false: what `if not` runs on
-  bool failed; // a run-time error ended the script
+  bool ifnot;   // the last if's condition was false: what `if not` runs on
+  bool iflast;  // the last command compiled was an if, so `if not` may follow (rc's lex->iflast)
+  bool failed;  // a run-time error ended the script
+  bool failset; // and rc_fail set $status for it
   bool exiting;
+  char src[64];     // where the code being run came from, for errors: a file's name, or rc
   uint64_t budget;  // instructions a run may take (0: as many as it needs): fuzzing's guard against loops
   char err[RC_ERR]; // the last error, for the host to show
 };
@@ -197,6 +200,21 @@ static rc_var *rc_var_find(rc *r, const char *name, size_t n, bool make) {
   return v;
 }
 
+// A global variable, which is where functions live (rc's gvlook): a local of
+// the same name does not hide one.
+static rc_var *rc_gvar_find(rc *r, const char *name, size_t n, bool make) {
+  rc_var **bucket = &r->vars[rc_hash(name, n)];
+  for (rc_var *v = *bucket; v; v = v->next)
+    if (rc_streq(v->name, rc_strlen(v->name), name, n)) return v;
+  if (!make) return nullptr;
+  rc_var *v = rc_alloc(r, sizeof *v + n + 1);
+  if (!v) return nullptr;
+  memcpy(v->name, name, n);
+  v->next = *bucket;
+  *bucket = v;
+  return v;
+}
+
 static void rc_code_release(rc *r, rc_code *c);
 
 // Sets a variable to w (which it takes): an empty list unsets it, in effect.
@@ -217,10 +235,10 @@ static void rc_setvar(rc *r, const char *name, size_t n, rc_word *w) {
   rc_setvar(r, "status", 6, rc_newword(r, s, n));
 }
 
-static bool rc_truestatus(rc *r) { // as rc's: nothing in $status but 0s and a pipeline's |s
-  for (const rc_word *w = rc_getvar(r, "status"); w; w = w->next)
-    for (size_t i = 0; i < w->len; i++)
-      if (w->s[i] != '0' && w->s[i] != '|') return false;
+static bool rc_truestatus(rc *r) { // as rc's: nothing in $status's first word but 0s and a pipeline's |s
+  const rc_word *w = rc_getvar(r, "status");
+  for (size_t i = 0; w && i < w->len; i++)
+    if (w->s[i] != '0' && w->s[i] != '|') return false;
   return true;
 }
 
@@ -392,8 +410,9 @@ static rc_token rc_lex_raw(rc_lexer *lx) {
   case ';': return t.kind = TK_SEMI, t;
   case '^': return t.kind = TK_CARET, t;
   case '`': return t.kind = TK_BACKQ, t;
-  case '(': // right after a variable's name: a subscript
-    t.kind = t.adj && lx->prev.kind == TK_WORD && lx->prev.fd1 == 1 ? TK_SUBLP : TK_LP;
+  case '(': // right after a word (not a keyword): a subscript, which rc's grammar allows only after $name
+    t.kind =
+        t.adj && lx->prev.kind == TK_WORD && (lx->prev.kw == KW_NONE || lx->prev.quoted) ? TK_SUBLP : TK_LP;
     return t;
   case ')': return t.kind = TK_RP, t;
   case '{': return t.kind = TK_LBRACE, t;
@@ -460,12 +479,13 @@ static rc_token rc_lex_raw(rc_lexer *lx) {
   const char *s = lx->p;
   size_t n = 0;
   for (const char *q = s; q < lx->end && rc_wordchr(*q) && !rc_continues(q, lx->end); q++)
-    n += (*q == '*' || *q == '?' || *q == '[') ? 2 : 1;
+    n += (*q == '*' || *q == '?' || *q == '[' || *q == RC_GLOB) ? 2 : 1;
   t.s = rc_lex_keep(lx, n);
   if (!t.s) return t.kind = TK_EOF, t;
   size_t k = 0;
   for (; lx->p < lx->end && rc_wordchr(*lx->p) && !rc_continues(lx->p, lx->end); lx->p++) {
-    if (*lx->p == '*' || *lx->p == '?' || *lx->p == '[') t.s[k++] = RC_GLOB;
+    if (*lx->p == '*' || *lx->p == '?' || *lx->p == '[' || *lx->p == RC_GLOB)
+      t.s[k++] = RC_GLOB; // a mark doubled: itself
     t.s[k++] = *lx->p;
   }
   t.s[k] = 0;
@@ -492,7 +512,9 @@ static rc_token rc_lex(rc_lexer *lx) {
     t.fd1 = 1, t.kw = KW_NONE; // a variable's name: a subscript may follow, and it is never a keyword
   else if (t.kind == TK_WORD)
     t.fd1 = 0;
-  if (t.adj && lx->prev.kind == TK_WORD && rc_wordish(t.kind) && !name) {
+  // No caret after a keyword, as rc's lexer (echo for$x is two words).
+  if (t.adj && lx->prev.kind == TK_WORD && (lx->prev.kw == KW_NONE || lx->prev.quoted) &&
+      rc_wordish(t.kind) && !name) {
     lx->pending = t;
     lx->has_pending = true;
     rc_token caret = {.kind = TK_CARET, .line = t.line, .adj = true};
@@ -836,7 +858,10 @@ static rc_pstate rc_cmd(rc_parser *p) {
     rc_push(p, (rc_pframe){.kind = F_PREFIX, .op = N_DUP, .prec = 2, .fd0 = r.fd0, .fd1 = r.fd1});
     return S_CMD;
   }
-  if (t->kind == TK_WORD && !t->quoted && t->kw != KW_NONE && t->kw != KW_IN && t->kw != KW_NOT) {
+  if (t->kind == TK_WORD && !t->quoted && (t->kw == KW_IN || t->kw == KW_NOT))
+    return p->why = "syntax error",
+           S_DONE; // in and not begin no command: rc's grammar has them only after for( and if
+  if (t->kind == TK_WORD && !t->quoted && t->kw != KW_NONE) {
     rc_token k = rc_take(p);
     switch (k.kw) {
     case KW_IF:
@@ -951,9 +976,16 @@ static rc_pstate rc_collect(rc_parser *p) {
     rc_take(p);
     return S_COLLECT;
   }
+  if (t->kind == TK_EQ && f->kind == F_SIMPLE && f->a != RC_NONE && p->nodes[f->a].next == RC_NONE &&
+      f->b == RC_NONE) { // first=value: an assignment, its name any word ($x=1 too), as rc's grammar
+    rc_take(p);
+    int32_t name = f->a;
+    p->nframes--;
+    rc_push(p, (rc_pframe){.kind = F_WANT, .purpose = W_ASSIGN, .a = name});
+    return S_WORD;
+  }
   if (t->kind == TK_WORD || t->kind == TK_DOLLAR || t->kind == TK_COUNT || t->kind == TK_JOIN ||
-      t->kind == TK_BACKQ || t->kind == TK_LP || (t->kind == TK_EQ && f->kind == F_SIMPLE) ||
-      (list && t->kind == TK_EQ))
+      t->kind == TK_BACKQ || t->kind == TK_LP)
     return S_WORD;
   if (f->kind == F_SIMPLE && t->kind == TK_REDIR) {
     rc_token r = rc_take(p);
@@ -1016,14 +1048,13 @@ static rc_pstate rc_collect(rc_parser *p) {
 static rc_pstate rc_atom(rc_parser *p) {
   rc_token t = rc_take(p);
   switch (t.kind) {
-  case TK_WORD:
-  case TK_EQ: {
+  case TK_WORD: { // = is not one: rc's grammar has it only in an assignment
     int32_t n = rc_node_new(p, N_WORD, RC_NONE, RC_NONE, RC_NONE);
     if (n == RC_NONE) return S_DONE;
-    p->nodes[n].s = t.kind == TK_EQ ? "=" : t.s;
-    p->nodes[n].len = t.kind == TK_EQ ? 1 : t.len;
-    p->nodes[n].fd1 = t.fd1;             // a variable's name
-    p->nodes[n].rkind = t.kind == TK_EQ; // an = as a word: joined to what is against it
+    p->nodes[n].s = t.s;
+    p->nodes[n].len = t.len;
+    p->nodes[n].fd1 = t.fd1;    // a variable's name
+    p->nodes[n].fd0 = t.quoted; // a quoted word: never a switch's case
     rc_pushval(p, n);
     return S_AFTERATOM;
   }
@@ -1062,17 +1093,13 @@ static rc_pstate rc_afteratom(rc_parser *p) {
     atom = rc_node_new(p, (rc_nk)op, atom, RC_NONE, RC_NONE);
   }
   rc_pframe *f = rc_top(p);
-  bool eq = atom != RC_NONE && p->nodes[atom].kind == N_WORD && p->nodes[atom].rkind; // an = as a word
   if (f && f->kind == F_CONC) {
     atom = rc_node_new(p, N_CONC, f->a, atom, RC_NONE);
     p->nframes--;
   }
   rc_token *next = rc_peek(p);
-  // A word joined to an = written against it (a=b as an argument), as rc's
-  // lexer would make one word of them; rc's carets otherwise.
-  bool joined = next->adj && (next->kind == TK_EQ || (eq && rc_wordish(next->kind)));
-  if (next->kind == TK_CARET || joined) {
-    if (next->kind == TK_CARET) rc_take(p);
+  if (next->kind == TK_CARET) {
+    rc_take(p);
     rc_push(p, (rc_pframe){.kind = F_CONC, .a = atom});
     return S_WORD;
   }
@@ -1158,6 +1185,8 @@ typedef enum rc_op : uint8_t {
   X_FN,       // a: where its body ends; the top list names it (them); the body follows
   X_DELFN,    // the top list's functions removed
   X_RETURN,   // the frame ends
+  X_QW,       // the top list joined by spaces into one word ("" for none): a subject of ~ or switch
+  X_SETTRUE,  // $status true: while()'s empty condition
   X_MATCH,    // the top list (a subject) against the patterns below: $status
   X_CASE,     // a: where to go unless the subject (two lists down) matches the patterns on top
   X_BACKQ,    // fd 1 into a capture, until X_BACKQEND
@@ -1171,6 +1200,7 @@ typedef struct rc_inst {
   rc_op op;
   uint8_t f0, f1;
   uint32_t a, b;
+  uint32_t line; // the source line it came from, for errors
 } rc_inst;
 
 struct rc_code {
@@ -1180,6 +1210,44 @@ struct rc_code {
   char *strings;
 };
 
+// Where an error is, as rc's pfln: file:line, or the file alone, into buf.
+static size_t rc_where(const rc *r, uint32_t line, char *buf, size_t cap) {
+  size_t n = 0;
+  for (const char *s = r->src; *s && n + 1 < cap; s++) buf[n++] = *s;
+  if (line && n + 12 < cap) {
+    char d[12];
+    size_t k = sizeof d;
+    do d[--k] = (char)('0' + line % 10);
+    while (line /= 10);
+    buf[n++] = ':';
+    while (k < sizeof d) buf[n++] = d[k++];
+  }
+  buf[n] = 0;
+  return n;
+}
+
+// A run-time error, as rc's Xerror1 and Xerror2: `where: a[: b]` for the host
+// to show, $status `status` (nullptr: "error"), and the run ends.
+static void rc_fail(rc *r, const char *status, const char *a, const char *b) {
+  uint32_t line = 0;
+  if (r->nframes) {
+    const rc_frame *f = &r->frames[r->nframes - 1];
+    if (f->pc && f->pc <= f->code->n) line = f->code->inst[f->pc - 1].line;
+  }
+  char where[96];
+  rc_where(r, line, where, sizeof where);
+  rc_error(r, where, ": ");
+  size_t n = 0;
+  while (r->err[n]) n++;
+  for (const char *x = a; x && *x && n + 1 < RC_ERR; x++) r->err[n++] = *x;
+  if (b && n + 3 < RC_ERR) r->err[n++] = ':', r->err[n++] = ' ';
+  for (const char *x = b; x && *x && n + 1 < RC_ERR; x++) r->err[n++] = *x;
+  r->err[n] = 0;
+  const char *st = status ? status : "error";
+  rc_set_status(r, st, rc_strlen(st));
+  r->failed = r->failset = true;
+}
+
 typedef struct rc_compiler {
   rc *r;
   const rc_node *nodes;
@@ -1188,6 +1256,7 @@ typedef struct rc_compiler {
   char *str;
   size_t nstr, strcap;
   const char *why;
+  uint32_t line; // the line of the node being compiled
 } rc_compiler;
 
 static uint32_t rc_emit(rc_compiler *c, rc_op op, uint8_t f0, uint8_t f1, uint32_t a, uint32_t b) {
@@ -1195,7 +1264,7 @@ static uint32_t rc_emit(rc_compiler *c, rc_op op, uint8_t f0, uint8_t f1, uint32
     c->why = "script too long";
     return 0;
   }
-  c->inst[c->n] = (rc_inst){.op = op, .f0 = f0, .f1 = f1, .a = a, .b = b};
+  c->inst[c->n] = (rc_inst){.op = op, .f0 = f0, .f1 = f1, .a = a, .b = b, .line = c->line};
   return c->n++;
 }
 
@@ -1230,7 +1299,7 @@ enum : uint32_t { RC_CITEMS = 1024 };
 static bool rc_is_case(const rc_compiler *c, int32_t n) {
   if (n == RC_NONE || c->nodes[n].kind != N_SIMPLE || c->nodes[n].a == RC_NONE) return false;
   const rc_node *w = &c->nodes[c->nodes[n].a];
-  return w->kind == N_WORD && rc_streq(w->s, w->len, "case", 4);
+  return w->kind == N_WORD && !w->fd0 && rc_streq(w->s, w->len, "case", 4); // unquoted, as rc's iscase
 }
 
 // A switch's body as a list of its commands, in order (its N_SEQ chain
@@ -1259,6 +1328,13 @@ static rc_op rc_dolinst(rc_nk k) {
   return k == N_COUNT ? X_COUNT : X_JOIN;
 }
 
+enum : uint8_t { RC_ENDCMD = 200 }; // a compile item's phase: the command it names has been compiled
+
+static bool rc_is_cmd(rc_nk k) { // a command, not a word
+  return k != N_WORD && k != N_DOL && k != N_COUNT && k != N_JOIN && k != N_SUB && k != N_CONC &&
+         k != N_PAREN && k != N_BACKQ;
+}
+
 static bool rc_compile_tree(rc_compiler *c, int32_t root) {
   static rc_citem items[RC_CITEMS];
   uint32_t ni = 0;
@@ -1272,6 +1348,20 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
     rc_citem it = items[--ni];
     if (it.node == RC_NONE) continue;
     const rc_node *t = &c->nodes[it.node];
+    if (t->line) c->line = t->line;
+    // As rc's outcode: a command other than if not and a sequence clears
+    // iflast as it starts, and sets it, once compiled, to whether it was an if.
+    if (it.phase == RC_ENDCMD) {
+      c->r->iflast = t->kind == N_IF;
+      continue;
+    }
+    if (it.phase == 0 && rc_is_cmd(t->kind) && t->kind != N_SEQ && t->kind != N_IFNOT) {
+      c->r->iflast = false;
+      if (ni == RC_CITEMS) return c->why = "nested too deeply", false;
+      items[ni++] = (rc_citem){.node = it.node, .phase = RC_ENDCMD};
+    }
+    if (it.phase == 0 && t->kind == N_IFNOT && !c->r->iflast)
+      return c->why = "`if not' does not follow `if(...)'", false;
     // Pushes the item back at its next phase, with what it keeps.
 #define RC_AGAIN(ph)                                                                                         \
   do {                                                                                                       \
@@ -1495,6 +1585,7 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
         RC_AGAIN(1);
         RC_PUSH(t->a, 0);
       } else if (it.phase == 1) {
+        if (c->n == it.count) rc_emit(c, X_SETTRUE, 0, 0, 0, 0); // while(): an empty condition is true
         it.at = rc_emit(c, X_TRUE, 0, 0, 0, 0);
         RC_AGAIN(2);
         RC_PUSH(t->b, 0);
@@ -1601,6 +1692,7 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
           RC_PUSH(w, 0);
         }
       } else {
+        rc_emit(c, X_QW, 0, 0, 0, 0); // the subject one word, as rc's
         rc_emit(c, X_MATCH, 0, 0, 0, 0);
       }
       break;
@@ -1630,14 +1722,22 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
     case N_SWITCH: { // the subject once; each case's patterns tested against it; X_POPM
       static int32_t body[4096];
       uint32_t n = rc_flatten(c, t->b, body, sizeof body / sizeof body[0]);
+      if (it.phase == 0 && (!n || !rc_is_case(c, body[0]))) {
+        c->why = "case missing in switch";
+        break;
+      }
       if (it.phase == 0) {
         rc_emit(c, X_MARK, 0, 0, 0, 0);
         it.cur = 0;   // the next command of the body
         it.at = 0;    // the pending X_CASE to patch (0: none)
         it.count = 0; // the X_JUMPs to the end, as a chain through their a's
-        RC_AGAIN(1);
+        RC_AGAIN(6);
         RC_PUSH(t->a, 0);
         break;
+      }
+      if (it.phase == 6) { // the subject is on the stack: one word, as rc's
+        rc_emit(c, X_QW, 0, 0, 0, 0);
+        it.phase = 1;
       }
       if (it.phase == 3) {                          // a case's patterns are on the stack: its test
         it.at = rc_emit(c, X_CASE, 0, 0, 0, 0) + 1; // +1: 0 means none
@@ -1690,48 +1790,89 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
 
 // --- Patterns and globbing (rc's glob.c) ---
 
-// Whether s (n bytes) matches pattern p (m bytes), whose * ? and [ match only
-// where RC_GLOB marks them; marks are skipped. No recursion: a * is retried
-// from where it last matched.
+// The length of the UTF-8 sequence at s[i] (n bytes), 1 when it is not one,
+// as rc's nextutf; its rune in *c (-1 if malformed), as rc's unicode.
+static size_t rc_utf(const char *s, size_t i, size_t n, int32_t *c) {
+  unsigned char b = (unsigned char)s[i];
+  size_t len = 4;
+  int32_t v = b & 0x07;
+  if (b < 0x80)
+    len = 1, v = b;
+  else if (b < 0xe0)
+    len = 2, v = b & 0x1f;
+  else if (b < 0xf0)
+    len = 3, v = b & 0x0f;
+  size_t k = 1;
+  for (; k < len && i + k < n && ((unsigned char)s[i + k] & 0xc0) == 0x80; k++)
+    v = v << 6 | (s[i + k] & 0x3f);
+  *c = k == len ? v : -1;
+  return k;
+}
+
+// Whether s (n bytes) matches pattern p (m bytes), as rc's match: * ? and [
+// are special only where RC_GLOB marks them (a doubled mark is the byte
+// itself), ? and a class match one rune, and a class's range may be written
+// either way round. No recursion: a * is retried from where it last matched,
+// which is exact for patterns of *, ? and classes.
 static bool rc_match(const char *s, size_t n, const char *p, size_t m) {
   size_t si = 0, pi = 0, star_p = SIZE_MAX, star_s = 0;
-  while (si < n) {
-    if (pi < m && p[pi] == RC_GLOB && pi + 1 < m) {
-      char g = p[pi + 1];
-      if (g == '*') {
-        star_p = pi += 2, star_s = si;
+  while (si < n || pi < m) {
+    if (pi + 1 < m && p[pi] == RC_GLOB && p[pi + 1] == '*') {
+      star_p = pi += 2, star_s = si;
+      continue;
+    }
+    if (si < n && pi < m) {
+      int32_t c, pc;
+      size_t sl = rc_utf(s, si, n, &c);
+      if (p[pi] == RC_GLOB && pi + 1 < m && p[pi + 1] == '?') {
+        pi += 2, si += sl;
         continue;
       }
-      if (g == '?') {
-        pi += 2, si++;
-        continue;
-      }
-      if (g == '[') { // a class: [abc], [a-z], [~abc]
+      if (p[pi] == RC_GLOB && pi + 1 < m && p[pi + 1] == '[') { // [abc], [a-z], [~abc]
         size_t q = pi + 2;
-        bool neg = q < m && p[q] == '~', hit = false;
+        bool neg = q < m && p[q] == '~', hit = false, closed = false;
         if (neg) q++;
-        for (; q < m && p[q] != ']'; q++) {
-          if (q + 2 < m && p[q + 1] == '-' && p[q + 2] != ']') {
-            hit = hit || (s[si] >= p[q] && s[si] <= p[q + 2]);
-            q += 2;
-          } else {
-            hit = hit || s[si] == p[q];
+        while (q < m) {
+          if (p[q] == ']') {
+            closed = true;
+            break;
           }
+          int32_t lo, hi;
+          q += rc_utf(p, q, m, &lo);
+          hi = lo;
+          if (q < m && p[q] == '-') {
+            if (++q >= m) break;
+            q += rc_utf(p, q, m, &hi);
+            if (hi < lo) {
+              int32_t t = lo;
+              lo = hi, hi = t;
+            }
+          }
+          if (lo <= c && c <= hi) hit = true;
         }
-        if (q < m && hit != neg) {
-          pi = q + 1, si++;
+        if (closed && hit != neg) {
+          pi = q + 1, si += sl;
+          continue;
+        }
+      } else if (p[pi] == RC_GLOB && pi + 1 < m && p[pi + 1] == RC_GLOB) { // the byte itself
+        if (s[si] == RC_GLOB) {
+          pi += 2, si++;
+          continue;
+        }
+      } else if (p[pi] != RC_GLOB) {
+        size_t pl = rc_utf(p, pi, m, &pc);
+        if (pl == sl && memcmp(p + pi, s + si, pl) == 0) {
+          pi += pl, si += sl;
           continue;
         }
       }
-    } else if (pi < m && p[pi] == s[si]) {
-      pi++, si++;
-      continue;
     }
-    if (star_p == SIZE_MAX) return false; // no * to stretch
-    pi = star_p, si = ++star_s;
+    if (star_p == SIZE_MAX || star_s >= n) return false; // no * to stretch, or nothing left to give it
+    int32_t c;
+    star_s += rc_utf(s, star_s, n, &c);
+    pi = star_p, si = star_s;
   }
-  while (pi + 1 < m && p[pi] == RC_GLOB && p[pi + 1] == '*') pi += 2;
-  return pi == m;
+  return true;
 }
 
 static bool rc_globby(const char *s, size_t n) {
@@ -1741,10 +1882,12 @@ static bool rc_globby(const char *s, size_t n) {
 }
 
 // A word with its glob marks taken out, in place.
-static void rc_deglob(rc_word *w) {
+static void rc_deglob(rc_word *w) { // as rc's: each mark goes, and the byte after it stays (a mark too)
   size_t k = 0;
-  for (size_t i = 0; i < w->len; i++)
-    if (w->s[i] != RC_GLOB) w->s[k++] = w->s[i];
+  for (size_t i = 0; i < w->len; i++) {
+    if (w->s[i] == RC_GLOB && i + 1 < w->len) i++;
+    w->s[k++] = w->s[i];
+  }
   w->len = k;
   w->s[k] = 0;
 }
@@ -1761,7 +1904,9 @@ typedef struct rc_globber {
 
 static void rc_glob_each(void *arg, const char *name, size_t n) {
   rc_globber *g = arg;
-  if (n && name[0] == '.' && !(g->plen && g->pat[0] == '.')) return; // dot files only when asked for
+  bool dots =
+      n && name[0] == '.' && (n == 1 || (n == 2 && name[1] == '.')); // . and .. only when asked for, as rc's
+  if (dots && !(g->plen && g->pat[0] == '.')) return;
   if (!rc_match(name, n, g->pat, g->plen) || g->n >= 4096) return;
   rc_word *w = rc_alloc(g->r, sizeof *w + g->dlen + n + 2); // room for the '/' rc_glob may add
   if (!w) return;
@@ -1798,9 +1943,13 @@ static rc_word *rc_glob(rc *r, rc_word *w) {
   }
   rc_word *paths = rc_newword(r, w->s[0] == '/' ? "/" : "", w->s[0] == '/');
   size_t at = w->s[0] == '/';
+  bool globbed = false, plain_after = false; // a pattern matched, and a plain component came after it
   while (at < w->len && paths) {
     size_t end = at;
     while (end < w->len && w->s[end] != '/') end++;
+    bool glob = rc_globby(w->s + at, end - at);
+    plain_after = globbed && !glob;
+    globbed = globbed || glob;
     rc_word *next = nullptr, **tail = &next;
     for (rc_word *pth = paths; pth; pth = pth->next) {
       if (!rc_globby(w->s + at, end - at)) { // a plain component: just joined on
@@ -1824,6 +1973,18 @@ static rc_word *rc_glob(rc *r, rc_word *w) {
       x->s[x->len] = 0;
     }
     at = end + 1;
+  }
+  if (plain_after && r->host.exists) { // as rc's globdir: what follows the last pattern must exist
+    rc_word *kept = nullptr, **tail = &kept;
+    while (paths) {
+      rc_word *x = paths;
+      paths = x->next, x->next = nullptr;
+      if (r->host.exists(r->host.ctx, x->s, x->len))
+        *tail = x, tail = &x->next;
+      else
+        rc_free(r, x);
+    }
+    paths = kept;
   }
   if (!paths) {
     rc_deglob(w);
@@ -1853,7 +2014,7 @@ static void rc_listadd(rc_list *l, rc_word *w) {
 }
 
 static bool rc_mark(rc *r) {
-  if (r->sp == RC_STACK) return rc_error(r, "stack overflow", nullptr), r->failed = true, false;
+  if (r->sp == RC_STACK) return rc_fail(r, nullptr, "stack overflow", nullptr), false;
   r->stack[r->sp++] = (rc_list){};
   return true;
 }
@@ -2007,9 +2168,9 @@ static void rc_pop_redirs(rc *r, uint32_t to) {
 
 static bool rc_push_frame(rc *r, rc_code *code, uint32_t pc, rc_var *locals) {
   if (r->nframes == RC_FRAMES) {
-    rc_error(r, "functions nested too deeply", nullptr);
+    rc_fail(r, nullptr, "functions nested too deeply", nullptr);
     rc_freelocals(r, locals);
-    return r->failed = true, false;
+    return false;
   }
   code->refs++;
   r->frames[r->nframes++] = (rc_frame){.code = code, .pc = pc, .locals = locals, .redirs = r->nredirs};
@@ -2091,8 +2252,13 @@ static bool rc_run_nested(rc *r, const char *text, size_t len) {
 static void rc_simple(rc *r, rc_word *argv, bool async) {
   argv = rc_globlist(r, argv);
   uint32_t argc = rc_count(argv);
-  if (!argc) return;
-  rc_var *v = rc_var_find(r, argv->s, argv->len, false);
+  if (!argc) return rc_fail(r, nullptr, "empty argument list", nullptr);
+  rc_var *v = rc_gvar_find(r, argv->s, argv->len, false);
+  if (v && v->fn && async) { // rc runs it in a child, which needs M6's 6d: refused, not run in the foreground
+    rc_print(r, 2, "rc: a function run with & needs a child (for now)\n");
+    rc_set_status(r, "async", 5);
+    return rc_freewords(r, argv);
+  }
   if (v && v->fn) { // a function: $* the rest, in a frame of its own
     rc_var *star = rc_newlocal(r, "*", 1, argv->next);
     argv->next = nullptr;
@@ -2144,15 +2310,16 @@ static void rc_simple(rc *r, rc_word *argv, bool async) {
 }
 
 // Concatenation (rc's ^): one word with each of a list, or pairwise.
-static rc_word *rc_conc(rc *r, const rc_word *a, const rc_word *b, bool *bad) {
+static rc_word *rc_conc(rc *r, const rc_word *a, const rc_word *b, const char **bad) {
   uint32_t na = rc_count(a), nb = rc_count(b);
   rc_list out = {};
-  if (!na || !nb) { // rc: an empty side is an error
-    *bad = true;
+  if (!na && !nb) return nullptr; // both empty: empty, as rc's Xconc
+  if (!na || !nb) {
+    *bad = "null list in concatenation";
     return nullptr;
   }
   if (na != nb && na != 1 && nb != 1) {
-    *bad = true;
+    *bad = "mismatched list lengths in concatenation";
     return nullptr;
   }
   uint32_t n = na > nb ? na : nb;
@@ -2178,22 +2345,36 @@ static uint32_t rc_parse_index(const char *s, size_t n, bool *ok) {
   return v;
 }
 
-// The values of the variables named in names: $1 and the like are $*'s.
-static rc_word *rc_values(rc *r, const rc_word *names) {
-  rc_list out = {};
-  for (; names; names = names->next) {
-    bool num;
-    uint32_t k = rc_parse_index(names->s, names->len, &num);
-    if (num && k) { // $n: the n'th of $*; $0 is a variable of its own, the script's name
-      const rc_word *w = rc_getvar(r, "*");
-      for (uint32_t i = 1; w && i < k; i++) w = w->next;
-      if (w) rc_listadd(&out, rc_newword(r, w->s, w->len));
-      continue;
-    }
-    rc_var *v = rc_var_find(r, names->s, names->len, false);
-    if (v) rc_listadd(&out, rc_copywords(r, v->val));
+// The value of the variable named in names, which must be one word (rc's
+// Xdol and Xcount): $1 and the like are $*'s. False, with the run failed, if
+// names is not one word.
+static bool rc_value(rc *r, const rc_word *names, const char *what, rc_word **out, uint32_t *count) {
+  *out = nullptr, *count = 0;
+  if (!names || names->next) return rc_fail(r, nullptr, what, nullptr), false;
+  bool num;
+  uint32_t k = rc_parse_index(names->s, names->len, &num);
+  if (num && k) { // $n: the n'th of $*; $0 is a variable of its own, the script's name
+    const rc_word *w = rc_getvar(r, "*");
+    for (uint32_t i = 1; w && i < k; i++) w = w->next;
+    if (w) *out = rc_newword(r, w->s, w->len), *count = 1;
+    return true;
   }
-  return out.head;
+  rc_var *v = rc_var_find(r, names->s, names->len, false);
+  if (v) *out = rc_copywords(r, v->val), *count = rc_count(v->val);
+  return true;
+}
+
+// A list joined by spaces into one word, "" for none (rc's Xqw).
+static rc_word *rc_qw(rc *r, rc_word *list) {
+  size_t total = 0;
+  for (rc_word *w = list; w; w = w->next) total += w->len + 1;
+  rc_word *j = rc_alloc(r, sizeof *j + total + 1);
+  for (rc_word *w = list; j && w; w = w->next) {
+    memcpy(j->s + j->len, w->s, w->len), j->len += w->len;
+    if (w->next) j->s[j->len++] = ' ';
+  }
+  rc_freewords(r, list);
+  return j;
 }
 
 // Runs code from the frame on top until the frames it started with have all
@@ -2202,8 +2383,7 @@ static void rc_execute(rc *r, uint32_t base) {
   uint64_t steps = 0;
   while (r->nframes > base && !r->failed && !r->exiting) {
     if (r->budget && ++steps > r->budget) {
-      rc_error(r, "rc: too many steps", nullptr);
-      r->failed = true;
+      rc_fail(r, nullptr, "too many steps", nullptr);
       break;
     }
     rc_frame *f = &r->frames[r->nframes - 1];
@@ -2220,11 +2400,14 @@ static void rc_execute(rc *r, uint32_t base) {
     case X_DOL:
     case X_COUNT:
     case X_JOIN: {
-      rc_word *names = rc_poplist(r);
+      rc_word *names = rc_poplist(r), *vals;
       rc_degloblist(names);
-      rc_word *vals = rc_values(r, names);
+      uint32_t k;
+      bool ok = rc_value(
+          r, names, in->op == X_COUNT ? "$# variable name not singleton!" : "$ variable name not singleton!",
+          &vals, &k);
       rc_freewords(r, names);
-      if (!r->sp) {
+      if (!ok || !r->sp) {
         rc_freewords(r, vals);
         break;
       }
@@ -2232,52 +2415,60 @@ static void rc_execute(rc *r, uint32_t base) {
         rc_listadd(rc_toplist(r), vals);
       } else if (in->op == X_COUNT) {
         char digits[16];
-        uint32_t k = rc_count(vals), d = sizeof digits;
+        uint32_t d = sizeof digits;
         do digits[--d] = (char)('0' + k % 10);
         while (k /= 10);
         rc_listadd(rc_toplist(r), rc_newword(r, digits + d, sizeof digits - d));
         rc_freewords(r, vals);
       } else { // $": one word, joined by spaces
-        size_t total = 0;
-        for (rc_word *w = vals; w; w = w->next) total += w->len + 1;
-        rc_word *j = rc_alloc(r, sizeof *j + total + 1);
-        for (rc_word *w = vals; j && w; w = w->next) {
-          memcpy(j->s + j->len, w->s, w->len), j->len += w->len;
-          if (w->next) j->s[j->len++] = ' ';
-        }
-        rc_listadd(rc_toplist(r), j);
-        rc_freewords(r, vals);
+        rc_listadd(rc_toplist(r), rc_qw(r, vals));
       }
       break;
     }
-    case X_SUB: { // $x(subscripts): 1-based, ranges n-m and n-
+    case X_SUB: { // $x(subscripts) as rc's subwords: 1-based, ranges n-m and n-
       rc_word *subs = rc_poplist(r), *names = rc_poplist(r);
       rc_degloblist(subs), rc_degloblist(names);
-      rc_word *vals = rc_values(r, names);
-      uint32_t nv = rc_count(vals);
-      for (rc_word *s = subs; s && r->sp; s = s->next) {
-        size_t dash = 0;
-        while (dash < s->len && s->s[dash] != '-') dash++;
-        bool ok1, ok2 = true;
-        uint32_t from = rc_parse_index(s->s, dash, &ok1), to = from;
-        if (dash < s->len)
-          to = dash + 1 < s->len ? rc_parse_index(s->s + dash + 1, s->len - dash - 1, &ok2) : nv;
-        if (!ok1 || !ok2) continue;
-        uint32_t i = 1;
-        for (rc_word *w = vals; w; w = w->next, i++)
-          if (i >= from && i <= to) rc_listadd(rc_toplist(r), rc_newword(r, w->s, w->len));
+      if (!names || names->next) {
+        rc_fail(r, nullptr, "$() variable name not singleton!", nullptr);
+        rc_freewords(r, subs), rc_freewords(r, names);
+        break;
       }
-      rc_freewords(r, subs), rc_freewords(r, names), rc_freewords(r, vals);
+      rc_var *v = rc_var_find(r, names->s, names->len, false); // $1(2) is a variable named 1's, as rc's
+      const rc_word *vals = v ? v->val : nullptr;
+      uint32_t len = rc_count(vals);
+      for (rc_word *sw = subs; sw && r->sp; sw = sw->next) {
+        size_t i = 0;
+        uint32_t n = 0, m = 0;
+        while (i < sw->len && sw->s[i] >= '0' && sw->s[i] <= '9' && n < 100'000'000)
+          n = n * 10 + (uint32_t)(sw->s[i++] - '0');
+        bool neg = false;
+        if (i < sw->len && sw->s[i] == '-') {
+          if (++i == sw->len) {
+            neg = n > len, m = neg ? 0 : len - n;
+          } else {
+            uint32_t to = 0;
+            while (i < sw->len && sw->s[i] >= '0' && sw->s[i] <= '9' && to < 100'000'000)
+              to = to * 10 + (uint32_t)(sw->s[i++] - '0');
+            neg = to < n, m = neg ? 0 : to - n;
+          }
+        }
+        if (n < 1 || n > len || neg) continue;
+        if (n + m > len) m = len - n;
+        const rc_word *w = vals;
+        for (uint32_t k = 1; k < n; k++) w = w->next;
+        for (uint32_t k = 0; k <= m && w; k++, w = w->next)
+          rc_listadd(rc_toplist(r), rc_newword(r, w->s, w->len));
+      }
+      rc_freewords(r, subs), rc_freewords(r, names);
       break;
     }
     case X_CONC: {
       rc_word *b = rc_poplist(r), *a = rc_poplist(r);
-      bool bad = false;
+      const char *bad = nullptr;
       rc_word *c = rc_conc(r, a, b, &bad);
       rc_freewords(r, a), rc_freewords(r, b);
       if (bad) {
-        rc_error(r, "rc: ^ of lists of different lengths, or an empty one", nullptr);
-        r->failed = true;
+        rc_fail(r, nullptr, bad, nullptr);
         break;
       }
       if (r->sp)
@@ -2291,8 +2482,7 @@ static void rc_execute(rc *r, uint32_t base) {
       rc_word *argv = rc_globlist(r, rc_poplist(r));
       if (rc_nstages == RC_STAGES) {
         rc_freewords(r, argv);
-        rc_error(r, "pipelines nested too deeply", nullptr);
-        r->failed = true;
+        rc_fail(r, nullptr, "pipelines nested too deeply", nullptr);
         break;
       }
       rc_stage *st = &rc_stages[rc_nstages++];
@@ -2315,7 +2505,7 @@ static void rc_execute(rc *r, uint32_t base) {
       for (uint32_t i = 0; i < stages; i++) {
         cmds[i] = rc_stages[first + i].cmd;
         if (!cmds[i].argc) ok = false;
-        rc_var *v = cmds[i].argc ? rc_var_find(r, cmds[i].argv->s, cmds[i].argv->len, false) : nullptr;
+        rc_var *v = cmds[i].argc ? rc_gvar_find(r, cmds[i].argv->s, cmds[i].argv->len, false) : nullptr;
         if (v && v->fn) ok = false;
       }
       uint64_t pid = 0;
@@ -2332,8 +2522,10 @@ static void rc_execute(rc *r, uint32_t base) {
       rc_word *name = rc_poplist(r), *val = rc_globlist(r, rc_poplist(r));
       rc_degloblist(name);
       if (!name || name->next) {
-        rc_error(r, "rc: a variable's name must be one word", nullptr);
-        r->failed = true;
+        rc_fail(r, nullptr,
+                in->op == X_ASSIGN ? "= variable name not singleton!"
+                                   : "local variable name must be singleton",
+                nullptr);
         rc_freewords(r, name), rc_freewords(r, val);
         break;
       }
@@ -2405,7 +2597,7 @@ static void rc_execute(rc *r, uint32_t base) {
       rc_word *names = rc_poplist(r);
       rc_degloblist(names);
       for (rc_word *n = names; n; n = n->next) {
-        rc_var *v = rc_var_find(r, n->s, n->len, true);
+        rc_var *v = rc_gvar_find(r, n->s, n->len, true);
         if (!v) continue;
         rc_code_release(r, v->fn);
         v->fn = f->code, v->fn_pc = f->pc;
@@ -2419,42 +2611,42 @@ static void rc_execute(rc *r, uint32_t base) {
       rc_word *names = rc_poplist(r);
       rc_degloblist(names);
       for (rc_word *n = names; n; n = n->next) {
-        rc_var *v = rc_var_find(r, n->s, n->len, false);
+        rc_var *v = rc_gvar_find(r, n->s, n->len, false);
         if (v) rc_code_release(r, v->fn), v->fn = nullptr;
       }
       rc_freewords(r, names);
       break;
     }
     case X_RETURN: rc_pop_frame(r); break;
-    case X_MATCH: { // ~ subject patterns
+    case X_QW: { // the list on top as one word, its marks gone: a subject is never a pattern
+      rc_word *l = rc_poplist(r);
+      rc_degloblist(l);
+      if (rc_mark(r)) rc_listadd(rc_toplist(r), rc_qw(r, l));
+      break;
+    }
+    case X_SETTRUE: rc_set_status(r, "", 0); break;
+    case X_MATCH: { // ~ subject patterns: the subject (one word, X_QW's) against each
       rc_word *subj = rc_poplist(r), *pats = rc_poplist(r);
-      rc_degloblist(subj);
       bool hit = false;
-      for (rc_word *s = subj; s && !hit; s = s->next)
-        for (rc_word *p = pats; p && !hit; p = p->next) hit = rc_match(s->s, s->len, p->s, p->len);
-      if (!subj) // ~ () pattern: an empty subject matches only an empty pattern list
-        hit = !pats;
+      for (rc_word *p = pats; subj && p && !hit; p = p->next)
+        hit = rc_match(subj->s, subj->len, p->s, p->len);
       rc_set_status(r, hit ? "" : "no match", hit ? 0 : 8);
       rc_freewords(r, subj), rc_freewords(r, pats);
       break;
     }
-    case X_CASE: { // the patterns on top against the subject below them
+    case X_CASE: { // the patterns on top against the subject below them (one word, X_QW's)
       rc_word *pats = rc_poplist(r);
       rc_list *subj = rc_toplist(r);
+      const rc_word *sw = subj ? subj->head : nullptr;
       bool hit = false;
-      for (rc_word *s = subj ? subj->head : nullptr; s && !hit; s = s->next) {
-        rc_word tmp;
-        (void)tmp;
-        for (rc_word *p = pats; p && !hit; p = p->next) hit = rc_match(s->s, s->len, p->s, p->len);
-      }
+      for (rc_word *p = pats; sw && p && !hit; p = p->next) hit = rc_match(sw->s, sw->len, p->s, p->len);
       rc_freewords(r, pats);
       if (!hit) f->pc = in->a;
       break;
     }
     case X_BACKQ: { // fd 1 into a new capture
       if (r->ncaptures == 8 || r->nredirs == RC_REDIRS) {
-        rc_error(r, "rc: ` nested too deeply", nullptr);
-        r->failed = true;
+        rc_fail(r, nullptr, "` nested too deeply", nullptr);
         break;
       }
       r->captures[r->ncaptures] = (rc_capture){};
@@ -2466,13 +2658,15 @@ static void rc_execute(rc *r, uint32_t base) {
     case X_BACKQEND: { // the capture split at the separators on top
       rc_capture cap = r->captures[--r->ncaptures];
       rc_pop_redirs(r, r->nredirs - 1);
-      // Every byte of every word of $ifs separates; none (ifs=()) makes the
-      // whole output one word.
+      // Every byte of $ifs separates, its words joined by spaces as rc's (so a
+      // space too when it has several); none (ifs=()) makes the output one word.
       rc_word *ifs = rc_poplist(r);
       char seps[64];
       size_t nseps = 0;
-      for (const rc_word *w = ifs; w; w = w->next)
+      for (const rc_word *w = ifs; w; w = w->next) {
         for (size_t k = 0; k < w->len && nseps < sizeof seps; k++) seps[nseps++] = w->s[k];
+        if (w->next && nseps < sizeof seps) seps[nseps++] = ' ';
+      }
       for (size_t i = 0; i < cap.len && r->sp;) {
         while (i < cap.len && rc_has(seps, nseps, cap.buf[i])) i++;
         size_t start = i;
@@ -2485,19 +2679,39 @@ static void rc_execute(rc *r, uint32_t base) {
     }
     case X_REDIR: {
       rc_word *path = rc_globlist(r, rc_poplist(r));
-      if (!path || path->next || r->nredirs == RC_REDIRS) {
-        rc_error(r, "rc: a redirection needs one file", nullptr);
-        r->failed = true;
+      const char *op = ">";
+      if (in->f1 == RC_FD_READ) op = "<";
+      if (in->f1 == RC_FD_APPEND) op = ">>";
+      if (in->f1 == RC_FD_RDWR) op = "<>";
+      if (!path || path->next || r->nredirs == RC_REDIRS) { // as rc's: > requires file, > requires singleton
+        char msg[32];
+        size_t n = 0;
+        for (const char *x = op; *x; x++) msg[n++] = *x;
+        const char *tail = " requires singleton";
+        if (!path) tail = " requires file";
+        if (path && r->nredirs == RC_REDIRS) tail = " nested too deeply";
+        for (const char *x = tail; *x; x++) msg[n++] = *x;
+        msg[n] = 0;
+        rc_fail(r, nullptr, msg, nullptr);
         rc_freewords(r, path);
         break;
       }
       uint32_t handle = 0;
       if (r->host.open && !r->host.open(r->host.ctx, r, path->s, path->len, in->f1, &handle)) {
-        rc_print(r, 2, "rc: cannot open ");
-        rc_write(r, 2, path->s, path->len);
-        rc_print(r, 2, "\n");
+        // rc's Xerror3: `< can't open: file: why`, why (the host's, in $status) the status.
+        char msg[RC_ERR], why[RC_ERR];
+        size_t n = 0, w = 0;
+        for (const char *x = op; *x; x++) msg[n++] = *x;
+        for (const char *x = " can't open: "; *x; x++) msg[n++] = *x;
+        for (size_t k = 0; k < path->len && n + 1 < sizeof msg; k++) msg[n++] = path->s[k];
+        msg[n] = 0;
+        const rc_word *st = rc_getvar(r, "status");
+        for (size_t k = 0; st && k < st->len && w + 1 < sizeof why; k++) why[w++] = st->s[k];
+        if (!w)
+          for (const char *x = "cannot open"; *x; x++) why[w++] = *x;
+        why[w] = 0;
         rc_freewords(r, path);
-        r->failed = true;
+        rc_fail(r, why, msg, why);
         break;
       }
       r->redirs[r->nredirs++] =
@@ -2512,7 +2726,7 @@ static void rc_execute(rc *r, uint32_t base) {
           (rc_redir){.fd = in->f0, .to = {.kind = in->f1 == 255 ? RC_FD_CLOSED : RC_FD_DUP, .dup = in->f1}};
       break;
     case X_POPREDIR: rc_pop_redirs(r, r->nredirs >= in->a ? r->nredirs - in->a : 0); break;
-    default: r->failed = true; break;
+    default: rc_fail(r, nullptr, "bad instruction", nullptr); break;
     }
   }
 }
@@ -2532,17 +2746,15 @@ static rc_code *rc_compile_text(rc *r, const char *text, size_t len, uint32_t li
   if (p->lx.scratch && p->nodes) {
     int32_t root = rc_parse(p);
     *incomplete = p->incomplete || p->lx.incomplete;
-    if (p->why) {
-      char where[16];
-      size_t k = sizeof where;
-      uint32_t l = p->line;
-      do where[--k] = (char)('0' + l % 10);
-      while (l /= 10);
-      char msg[64] = "rc: line ";
-      size_t m = 9;
-      memcpy(msg + m, where + k, sizeof where - k), m += sizeof where - k;
-      memcpy(msg + m, ": ", 3);
-      rc_error(r, msg, p->why);
+    if (p->why) { // as rc's yyerror: file:line: message, which is $status too
+      char where[96];
+      rc_where(r, p->line, where, sizeof where);
+      rc_error(r, where, ": ");
+      size_t n = 0;
+      while (r->err[n]) n++;
+      for (const char *x = p->why; *x && n + 1 < RC_ERR; x++) r->err[n++] = *x;
+      r->err[n] = 0;
+      if (!*incomplete) rc_set_status(r, p->why, rc_strlen(p->why));
     } else {
       rc_compiler c = {.r = r, .nodes = p->nodes, .cap = (uint32_t)(nodes * 4 + 16), .strcap = scratch + 64};
       c.inst = rc_alloc(r, c.cap * sizeof *c.inst);
@@ -2554,7 +2766,15 @@ static rc_code *rc_compile_text(rc *r, const char *text, size_t len, uint32_t li
         else
           rc_free(r, c.inst), rc_free(r, c.str);
       } else {
-        rc_error(r, "rc: ", c.why ? c.why : "out of memory");
+        char where[96];
+        rc_where(r, c.line, where, sizeof where);
+        rc_error(r, where, ": ");
+        const char *why = c.why ? c.why : "out of memory";
+        size_t n = 0;
+        while (r->err[n]) n++;
+        for (const char *x = why; *x && n + 1 < RC_ERR; x++) r->err[n++] = *x;
+        r->err[n] = 0;
+        rc_set_status(r, why, rc_strlen(why));
         rc_free(r, c.inst), rc_free(r, c.str);
       }
     }
@@ -2583,6 +2803,7 @@ typedef enum rc_result : uint8_t { RC_OK, RC_INCOMPLETE, RC_SYNTAX, RC_FAILED, R
   r->free->next = nullptr;
   rc_setvar(r, "ifs", 3, rc_newword(r, " \t\n", 3));
   rc_set_status(r, "", 0);
+  r->src[0] = 'r', r->src[1] = 'c';
   return r;
 }
 
@@ -2600,7 +2821,7 @@ typedef enum rc_result : uint8_t { RC_OK, RC_INCOMPLETE, RC_SYNTAX, RC_FAILED, R
 // `exit` ran (its status is $status).
 [[maybe_unused]] static rc_result rc_run(rc *r, const char *text, size_t len) {
   r->err[0] = 0;
-  r->failed = r->exiting = false;
+  r->failed = r->failset = r->exiting = false;
   bool incomplete = false;
   rc_code *code = rc_compile_text(r, text, len, 1, &incomplete);
   if (!code) return incomplete ? RC_INCOMPLETE : RC_SYNTAX;
@@ -2614,13 +2835,28 @@ typedef enum rc_result : uint8_t { RC_OK, RC_INCOMPLETE, RC_SYNTAX, RC_FAILED, R
   while (r->ncaptures) rc_free(r, r->captures[--r->ncaptures].buf); // an error inside `{}
   if (r->exiting) return RC_EXIT;
   if (r->failed) {
-    rc_set_status(r, "error", 5);
+    if (!r->failset) rc_set_status(r, "error", 5); // out of memory, which rc_fail cannot report
     return RC_FAILED;
   }
   return RC_OK;
 }
 
 [[maybe_unused]] static const char *rc_err(const rc *r) { return r->err; }
+
+// Where the code run next comes from, for errors (file:line): a script's
+// name; "rc" until set.
+[[maybe_unused]] static void rc_source(rc *r, const char *name, size_t n) {
+  size_t k = 0;
+  for (; k < n && k + 1 < sizeof r->src; k++) r->src[k] = name[k];
+  r->src[k] = 0;
+}
+
+// Adds one stage's status to a pipeline's (buf, *len of cap bytes), as rc's
+// concstatus: joined by |, which is left out while what came before is empty.
+[[maybe_unused]] static void rc_concstatus(char *buf, size_t *len, size_t cap, const char *s, size_t n) {
+  if (*len && *len < cap) buf[(*len)++] = '|';
+  for (size_t i = 0; i < n && *len < cap; i++) buf[(*len)++] = s[i];
+}
 
 // Each variable with a value as a command would see it now (a local hiding a
 // global of its name), for the host to export as rc does: each(name, words).
