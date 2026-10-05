@@ -43,11 +43,15 @@ typedef struct rc_redir {
   rc_word *path; // owned
 } rc_redir;
 
+typedef struct rc_reader rc_reader;
+
 typedef struct rc_frame { // a thread of rc's: what runs, and where it goes back to
   rc_code *code;
   uint32_t pc;
   rc_var *locals;
-  uint32_t redirs; // the redirection stack's height when it started
+  uint32_t redirs;        // the redirection stack's height when it started
+  rc_reader *rd;          // a frame that reads its commands as it goes (rc's Xrdcmds): where from
+  uint32_t sp, ncaptures; // the stacks' heights when it started, for an error's unwinding to it
 } rc_frame;
 
 typedef struct rc_capture { // `{...}'s output, gathered
@@ -74,7 +78,10 @@ struct rc {
   bool failed;  // a run-time error ended the script
   bool failset; // and rc_fail set $status for it
   bool exiting;
-  char src[64];     // where the code being run came from, for errors: a file's name, or rc
+  bool syntax, incomplete; // a run's reader met a syntax error, or the text's end inside a construct
+  char src[64];            // where the code being compiled comes from, for errors: a file's name, or rc
+  bool flag[128];          // rc's flags, -e -x -s -v -r and the rest, as flag in rc(1) sets them
+  rc_code *rdcode;         // the code a reading frame runs: one X_RDCMDS
   uint64_t budget;  // instructions a run may take (0: as many as it needs): fuzzing's guard against loops
   char err[RC_ERR]; // the last error, for the host to show
 };
@@ -288,10 +295,22 @@ typedef struct rc_token {
   bool quoted; // a word written in quotes
   bool adj;    // nothing between it and the token before
   uint8_t fd0, fd1, rkind;
-  char *s; // a word's text, unquoted, its glob characters marked (RC_GLOB before them)
+  uint8_t here; // a here document's tag: its place in the lexer's heres, plus 1
+  char *s;      // a word's text, unquoted, its glob characters marked (RC_GLOB before them)
   size_t len;
   uint32_t line;
 } rc_token;
+
+typedef struct rc_here { // a here document: its tag, then (once its line has ended) its text
+  const char *tag;
+  size_t tlen;
+  bool quoted; // <<'tag': no substitution
+  bool read;
+  const char *body;
+  size_t blen;
+} rc_here;
+
+enum : uint32_t { RC_HERES = 32 };
 
 static constexpr char RC_GLOB = '\x01'; // before a * ? or [ written bare: they glob
 
@@ -307,6 +326,9 @@ typedef struct rc_lexer {
   bool failed;
   bool incomplete; // it failed only for the text ending: in a quote, or after a \ that ends a line
   const char *why;
+  bool want_tag; // the word next is a here document's tag
+  rc_here heres[RC_HERES];
+  uint32_t nheres;
 } rc_lexer;
 
 static bool rc_wordchr(char c) {
@@ -350,13 +372,24 @@ static bool rc_lex_fds(rc_lexer *lx, uint8_t *fd0, uint8_t *fd1, bool *eq) {
   *eq = false;
   if (lx->p >= lx->end || *lx->p != '[') return true;
   lx->p++;
+  // Numbers of any length, as rc's lexer reads them; past the descriptors there are, refused.
+  uint32_t n = 0;
   if (lx->p >= lx->end || *lx->p < '0' || *lx->p > '9') return false;
-  *fd0 = (uint8_t)(*lx->p++ - '0');
+  while (lx->p < lx->end && *lx->p >= '0' && *lx->p <= '9' && n < 1000)
+    n = n * 10 + (uint32_t)(*lx->p++ - '0');
+  if (n >= RC_FDS) return false;
+  *fd0 = (uint8_t)n;
   if (lx->p < lx->end && *lx->p == '=') {
     lx->p++;
     *eq = true;
     *fd1 = 255; // [n=]: close
-    if (lx->p < lx->end && *lx->p >= '0' && *lx->p <= '9') *fd1 = (uint8_t)(*lx->p++ - '0');
+    if (lx->p < lx->end && *lx->p >= '0' && *lx->p <= '9') {
+      n = 0;
+      while (lx->p < lx->end && *lx->p >= '0' && *lx->p <= '9' && n < 1000)
+        n = n * 10 + (uint32_t)(*lx->p++ - '0');
+      if (n >= RC_FDS) return false;
+      *fd1 = (uint8_t)n;
+    }
   }
   if (lx->p >= lx->end || *lx->p != ']') return false;
   lx->p++;
@@ -366,6 +399,35 @@ static bool rc_lex_fds(rc_lexer *lx, uint8_t *fd0, uint8_t *fd1, bool *eq) {
 // A \ that ends a line, which is white space wherever it is: it ends a word.
 static bool rc_continues(const char *q, const char *end) {
   return q < end && q[0] == '\\' && (q + 1 == end || q[1] == '\n');
+}
+
+// At a line's end, the bodies of the here documents begun on it: each the
+// lines up to one that is its tag alone (rc's readhere).
+static void rc_lex_heres(rc_lexer *lx) {
+  for (uint32_t i = 0; i < lx->nheres; i++) {
+    rc_here *h = &lx->heres[i];
+    if (h->read) continue;
+    const char *start = lx->p;
+    for (;;) {
+      if (lx->p >= lx->end) {
+        lx->failed = lx->incomplete = true, lx->why = "here document never ended";
+        return;
+      }
+      const char *ln = lx->p;
+      while (lx->p < lx->end && *lx->p != '\n') lx->p++;
+      bool full = lx->p < lx->end;
+      size_t n = (size_t)(lx->p - ln);
+      if (full) lx->p++, lx->line++;
+      if (n == h->tlen && memcmp(ln, h->tag, n) == 0 && full) {
+        h->body = start, h->blen = (size_t)(ln - start), h->read = true;
+        break;
+      }
+      if (!full) {
+        lx->failed = lx->incomplete = true, lx->why = "here document never ended";
+        return;
+      }
+    }
+  }
 }
 
 static rc_token rc_lex_raw(rc_lexer *lx) {
@@ -406,7 +468,10 @@ static rc_token rc_lex_raw(rc_lexer *lx) {
   lx->after_dollar = false;
   lx->p++;
   switch (c) {
-  case '\n': lx->line++; return t.kind = TK_NL, t;
+  case '\n':
+    lx->line++;
+    rc_lex_heres(lx);
+    return t.kind = TK_NL, t;
   case ';': return t.kind = TK_SEMI, t;
   case '^': return t.kind = TK_CARET, t;
   case '`': return t.kind = TK_BACKQ, t;
@@ -443,6 +508,8 @@ static rc_token rc_lex_raw(rc_lexer *lx) {
       lx->p++, t.rkind = RC_FD_APPEND;
     else if (lx->p < lx->end && *lx->p == '>' && c == '<')
       lx->p++, t.rkind = RC_FD_RDWR;
+    else if (lx->p < lx->end && *lx->p == '<' && c == '<') // <<tag: a here document, read once its line ends
+      lx->p++, t.rkind = RC_FD_HERE, lx->want_tag = true;
     if (!rc_lex_fds(lx, &t.fd0, &t.fd1, &eq)) lx->failed = true, lx->why = "bad >[n=m]";
     if (eq) t.kind = TK_DUP;
     return t;
@@ -506,8 +573,21 @@ static rc_token rc_lex(rc_lexer *lx) {
     lx->prev = lx->pending;
     return lx->pending;
   }
-  bool name = lx->after_dollar;
+  bool name = lx->after_dollar, tag = lx->want_tag;
   rc_token t = rc_lex_raw(lx);
+  if (tag && t.kind == TK_WORD) { // a here document's tag: its body is read when the line ends, as rc's
+    lx->want_tag = false;
+    if (lx->nheres == RC_HERES) {
+      lx->failed = true, lx->why = "too many here documents";
+    } else {
+      size_t k = 0; // the tag's text without its glob marks
+      for (size_t i = 0; i < t.len; i++)
+        if (t.s[i] != RC_GLOB || i + 1 == t.len || t.s[i + 1] == RC_GLOB) t.s[k++] = t.s[i];
+      t.len = k;
+      lx->heres[lx->nheres] = (rc_here){.tag = t.s, .tlen = t.len, .quoted = t.quoted};
+      t.here = (uint8_t)++lx->nheres;
+    }
+  }
   if (name)
     t.fd1 = 1, t.kw = KW_NONE; // a variable's name: a subscript may follow, and it is never a keyword
   else if (t.kind == TK_WORD)
@@ -1055,6 +1135,7 @@ static rc_pstate rc_atom(rc_parser *p) {
     p->nodes[n].len = t.len;
     p->nodes[n].fd1 = t.fd1;    // a variable's name
     p->nodes[n].fd0 = t.quoted; // a quoted word: never a switch's case
+    p->nodes[n].rkind = t.here; // a here document's tag
     rc_pushval(p, n);
     return S_AFTERATOM;
   }
@@ -1194,6 +1275,8 @@ typedef enum rc_op : uint8_t {
   X_REDIR,    // f0: fd, f1: kind; the top list is the file
   X_DUP,      // f0 = f1 (f1 255: closed)
   X_POPREDIR, // a: how many
+  X_RDCMDS,   // the frame's reader: the next command read, compiled and run, then this again (rc's Xrdcmds)
+  X_EFLAG,    // -e: exit unless $status is true
 } rc_op;
 
 typedef struct rc_inst {
@@ -1208,12 +1291,13 @@ struct rc_code {
   uint32_t n;
   rc_inst *inst;
   char *strings;
+  char src[64]; // the file it came from, for errors at file:line
 };
 
 // Where an error is, as rc's pfln: file:line, or the file alone, into buf.
-static size_t rc_where(const rc *r, uint32_t line, char *buf, size_t cap) {
+static size_t rc_where(const char *src, uint32_t line, char *buf, size_t cap) {
   size_t n = 0;
-  for (const char *s = r->src; *s && n + 1 < cap; s++) buf[n++] = *s;
+  for (const char *s = src; *s && n + 1 < cap; s++) buf[n++] = *s;
   if (line && n + 12 < cap) {
     char d[12];
     size_t k = sizeof d;
@@ -1228,14 +1312,23 @@ static size_t rc_where(const rc *r, uint32_t line, char *buf, size_t cap) {
 
 // A run-time error, as rc's Xerror1 and Xerror2: `where: a[: b]` for the host
 // to show, $status `status` (nullptr: "error"), and the run ends.
+// rc's own standard error, whatever a command's redirections are: rc's
+// messages go there, as rc's err.
+static void rc_errout(rc *r, const char *s, size_t n) {
+  rc_fd fd = {.kind = RC_FD_INHERIT, .dup = 2};
+  if (r->host.write) r->host.write(r->host.ctx, &fd, 2, s, n);
+}
+
 static void rc_fail(rc *r, const char *status, const char *a, const char *b) {
   uint32_t line = 0;
+  const char *src = r->src;
   if (r->nframes) {
     const rc_frame *f = &r->frames[r->nframes - 1];
     if (f->pc && f->pc <= f->code->n) line = f->code->inst[f->pc - 1].line;
+    if (f->code->src[0]) src = f->code->src;
   }
   char where[96];
-  rc_where(r, line, where, sizeof where);
+  rc_where(src, line, where, sizeof where);
   rc_error(r, where, ": ");
   size_t n = 0;
   while (r->err[n]) n++;
@@ -1246,6 +1339,7 @@ static void rc_fail(rc *r, const char *status, const char *a, const char *b) {
   const char *st = status ? status : "error";
   rc_set_status(r, st, rc_strlen(st));
   r->failed = r->failset = true;
+  rc_errout(r, r->err, n), rc_errout(r, "\n", 1);
 }
 
 typedef struct rc_compiler {
@@ -1256,7 +1350,9 @@ typedef struct rc_compiler {
   char *str;
   size_t nstr, strcap;
   const char *why;
-  uint32_t line; // the line of the node being compiled
+  uint32_t line;        // the line of the node being compiled
+  const rc_here *heres; // the here documents' texts, by a tag word's rkind (plus 1)
+  uint32_t nheres;
 } rc_compiler;
 
 static uint32_t rc_emit(rc_compiler *c, rc_op op, uint8_t f0, uint8_t f1, uint32_t a, uint32_t b) {
@@ -1279,6 +1375,19 @@ static void rc_emit_word(rc_compiler *c, const char *s, size_t len) {
   c->nstr += len + 1;
 }
 
+// A here document's redirection: its text as the word, then X_REDIR (b: quoted).
+static void rc_emit_here(rc_compiler *c, const rc_node *rd) {
+  uint32_t k = c->nodes[rd->a].rkind;
+  if (!k || k > c->nheres || !c->heres[k - 1].read) {
+    c->why = "here document never ended";
+    return;
+  }
+  const rc_here *h = &c->heres[k - 1];
+  rc_emit(c, X_MARK, 0, 0, 0, 0);
+  rc_emit_word(c, h->body, h->blen);
+  rc_emit(c, X_REDIR, rd->fd0, RC_FD_HERE, 0, h->quoted);
+}
+
 static void rc_patch(rc_compiler *c, uint32_t at) {
   if (at < c->n) c->inst[at].a = c->n;
 }
@@ -1291,6 +1400,7 @@ typedef struct rc_citem {
   uint32_t at;           // a jump to patch, or where a loop starts
   int32_t cur;           // a list being walked
   uint32_t count;
+  bool noe; // a condition's: -e does not apply in it (rc's outcode(c, 0))
 } rc_citem;
 
 enum : uint32_t { RC_CITEMS = 1024 };
@@ -1335,33 +1445,51 @@ static bool rc_is_cmd(rc_nk k) { // a command, not a word
          k != N_PAREN && k != N_BACKQ;
 }
 
+// -e after a command, as rc's Xeflag, unless in a condition.
+static void rc_eflag(rc_compiler *c, bool noe) {
+  if (c->r->flag['e'] && !noe) rc_emit(c, X_EFLAG, 0, 0, 0, 0);
+}
+
+// As rc's outcode: a command other than if not and a sequence clears iflast
+// as it starts, and sets it, once compiled, to whether it was an if; if not
+// is refused unless it is set. 1: the item was the marker of a command's end;
+// -1: refused (c->why); 0: go on with it.
+static int rc_iflast(rc_compiler *c, const rc_citem *it, const rc_node *t, rc_citem *items, uint32_t *ni) {
+  if (it->phase == RC_ENDCMD) {
+    c->r->iflast = t->kind == N_IF;
+    return 1;
+  }
+  if (it->phase == 0 && rc_is_cmd(t->kind) && t->kind != N_SEQ && t->kind != N_IFNOT) {
+    c->r->iflast = false;
+    if (*ni == RC_CITEMS) return c->why = "nested too deeply", -1;
+    items[(*ni)++] = (rc_citem){.node = it->node, .phase = RC_ENDCMD};
+  }
+  if (it->phase == 0 && t->kind == N_IFNOT && !c->r->iflast)
+    return c->why = "`if not' does not follow `if(...)'", -1;
+  return 0;
+}
+
 static bool rc_compile_tree(rc_compiler *c, int32_t root) {
   static rc_citem items[RC_CITEMS];
   uint32_t ni = 0;
-#define RC_PUSH(nd, ph)                                                                                      \
+  bool noe = false; // the item being compiled is in a condition
+#define RC_PUSH(nd, ph) RC_PUSHE(nd, ph, noe)
+#define RC_PUSHE(nd, ph, cond)                                                                               \
   do {                                                                                                       \
     if (ni == RC_CITEMS) return c->why = "nested too deeply", false;                                         \
-    items[ni++] = (rc_citem){.node = (nd), .phase = (ph)};                                                   \
+    items[ni++] = (rc_citem){.node = (nd), .phase = (ph), .noe = (cond)};                                    \
   } while (0)
+#define RC_EFLAG() rc_eflag(c, noe)
   if (root != RC_NONE) RC_PUSH(root, 0);
   while (ni && !c->why) {
     rc_citem it = items[--ni];
     if (it.node == RC_NONE) continue;
+    noe = it.noe;
     const rc_node *t = &c->nodes[it.node];
     if (t->line) c->line = t->line;
-    // As rc's outcode: a command other than if not and a sequence clears
-    // iflast as it starts, and sets it, once compiled, to whether it was an if.
-    if (it.phase == RC_ENDCMD) {
-      c->r->iflast = t->kind == N_IF;
-      continue;
-    }
-    if (it.phase == 0 && rc_is_cmd(t->kind) && t->kind != N_SEQ && t->kind != N_IFNOT) {
-      c->r->iflast = false;
-      if (ni == RC_CITEMS) return c->why = "nested too deeply", false;
-      items[ni++] = (rc_citem){.node = it.node, .phase = RC_ENDCMD};
-    }
-    if (it.phase == 0 && t->kind == N_IFNOT && !c->r->iflast)
-      return c->why = "`if not' does not follow `if(...)'", false;
+    int iflast = rc_iflast(c, &it, t, items, &ni);
+    if (iflast < 0) return false;
+    if (iflast > 0) continue;
     // Pushes the item back at its next phase, with what it keeps.
 #define RC_AGAIN(ph)                                                                                         \
   do {                                                                                                       \
@@ -1458,6 +1586,9 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
           if (rd->kind == N_DUP) {
             rc_emit(c, X_DUP, rd->fd0, rd->fd1, 0, 0);
             RC_AGAIN(1);
+          } else if (rd->rkind == RC_FD_HERE) {
+            rc_emit_here(c, rd);
+            RC_AGAIN(1);
           } else {
             rc_emit(c, X_MARK, 0, 0, 0, 0);
             it.at = (uint32_t)r;
@@ -1471,10 +1602,12 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
         RC_AGAIN(1);
       } else if (it.phase == 2) { // the next word
         if (it.cur == RC_NONE) {
-          if (it.stage)
+          if (it.stage) {
             rc_emit(c, X_STAGE, it.out_fd, it.in_fd, it.count, 0);
-          else
+          } else {
             rc_emit(c, X_SIMPLE, 0, 0, 0, 0);
+            RC_EFLAG();
+          }
           if (it.count) rc_emit(c, X_POPREDIR, 0, 0, it.count, 0);
         } else {
           int32_t w = it.cur;
@@ -1540,7 +1673,7 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
     case N_OR:
       if (it.phase == 0) {
         RC_AGAIN(1);
-        RC_PUSH(t->a, 0);
+        RC_PUSHE(t->a, 0, true);
       } else if (it.phase == 1) {
         it.at = rc_emit(c, t->kind == N_AND ? X_TRUE : X_FALSE, 0, 0, 0, 0);
         RC_AGAIN(2);
@@ -1560,7 +1693,7 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
     case N_IF:
       if (it.phase == 0) {
         RC_AGAIN(1);
-        RC_PUSH(t->a, 0);
+        RC_PUSHE(t->a, 0, true);
       } else if (it.phase == 1) {
         it.at = rc_emit(c, X_IF, 0, 0, 0, 0);
         RC_AGAIN(2);
@@ -1583,7 +1716,7 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
       if (it.phase == 0) {
         it.count = c->n; // where the condition starts
         RC_AGAIN(1);
-        RC_PUSH(t->a, 0);
+        RC_PUSHE(t->a, 0, true);
       } else if (it.phase == 1) {
         if (c->n == it.count) rc_emit(c, X_SETTRUE, 0, 0, 0, 0); // while(): an empty condition is true
         it.at = rc_emit(c, X_TRUE, 0, 0, 0, 0);
@@ -1654,7 +1787,11 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
       }
       break;
     case N_REDIR:
-      if (it.phase == 0) {
+      if (it.phase == 0 && t->rkind == RC_FD_HERE) {
+        rc_emit_here(c, t);
+        RC_AGAIN(2);
+        RC_PUSH(t->b, 0);
+      } else if (it.phase == 0) {
         rc_emit(c, X_MARK, 0, 0, 0, 0);
         RC_AGAIN(1);
         RC_PUSH(t->a, 0);
@@ -1694,6 +1831,7 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
       } else {
         rc_emit(c, X_QW, 0, 0, 0, 0); // the subject one word, as rc's
         rc_emit(c, X_MATCH, 0, 0, 0, 0);
+        RC_EFLAG();
       }
       break;
     case N_FN: // fn names { body }: the names, X_FN, the body inline, X_RETURN
@@ -1784,6 +1922,8 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
     }
   }
 #undef RC_PUSH
+#undef RC_PUSHE
+#undef RC_EFLAG
 #undef RC_AGAIN
   return !c->why;
 }
@@ -2173,15 +2313,19 @@ static bool rc_push_frame(rc *r, rc_code *code, uint32_t pc, rc_var *locals) {
     return false;
   }
   code->refs++;
-  r->frames[r->nframes++] = (rc_frame){.code = code, .pc = pc, .locals = locals, .redirs = r->nredirs};
+  r->frames[r->nframes++] = (rc_frame){
+      .code = code, .pc = pc, .locals = locals, .redirs = r->nredirs, .sp = r->sp, .ncaptures = r->ncaptures};
   return true;
 }
+
+static void rc_reader_free(rc *r, rc_reader *rd);
 
 static void rc_pop_frame(rc *r) {
   rc_frame *f = &r->frames[--r->nframes];
   rc_freelocals(r, f->locals);
   rc_pop_redirs(r, f->redirs);
   rc_code_release(r, f->code);
+  rc_reader_free(r, f->rd);
 }
 
 static rc_var *rc_newlocal(rc *r, const char *name, size_t n, rc_word *val) {
@@ -2190,6 +2334,144 @@ static rc_var *rc_newlocal(rc *r, const char *name, size_t n, rc_word *val) {
   memcpy(v->name, name, n);
   v->val = val;
   return v;
+}
+
+// --- Reading commands as they come (rc's Xrdcmds) ---
+
+static rc_code *rc_compile_text(rc *r, const char *text, size_t len, uint32_t line, bool *incomplete);
+
+struct rc_reader {
+  char *text;           // a file's whole text, or what has been read of standard input
+  size_t len, cap, pos; // its length, its buffer's size, and what has been read of it
+  uint32_t line;        // the lines read so far
+  bool interactive;     // -i: prompts, and an error goes back to it rather than ending everything
+  bool tty;             // its text comes a line at a time from rc's standard input
+  bool whole;           // -b: the whole text compiled at once
+  bool quiet;           // -q: -e does not apply to it
+  bool eof;
+  char name[64]; // for errors: file:line
+};
+
+static rc_reader *rc_reader_new(rc *r, const char *name, size_t n) {
+  rc_reader *rd = rc_alloc(r, sizeof *rd);
+  if (!rd) return nullptr;
+  for (size_t k = 0; k < n && k + 1 < sizeof rd->name; k++) rd->name[k] = name[k];
+  return rd;
+}
+
+static void rc_reader_free(rc *r, rc_reader *rd) {
+  if (!rd) return;
+  rc_free(r, rd->text);
+  rc_free(r, rd);
+}
+
+// A frame that reads from rd (which it takes), with locals (which it takes).
+static bool rc_push_reader(rc *r, rc_reader *rd, rc_var *locals) {
+  if (!rd) return rc_freelocals(r, locals), false;
+  if (!rc_push_frame(r, r->rdcode, 0, locals)) return rc_reader_free(r, rd), false;
+  r->frames[r->nframes - 1].rd = rd;
+  return true;
+}
+
+// Writes w as rc quotes a word (%q): bare when it can be, else in '' with '' for a quote.
+static void rc_errword(rc *r, const char *s, size_t n) {
+  bool bare = n > 0;
+  for (size_t i = 0; i < n && bare; i++) bare = rc_wordchr(s[i]) && s[i] != RC_GLOB;
+  if (bare) return rc_errout(r, s, n);
+  rc_errout(r, "'", 1);
+  for (size_t i = 0; i < n; i++) {
+    if (s[i] == '\'') rc_errout(r, "'", 1);
+    rc_errout(r, s + i, 1);
+  }
+  rc_errout(r, "'", 1);
+}
+
+static void rc_errwords(rc *r, const rc_word *w) { // rc's %v
+  for (; w; w = w->next) {
+    rc_errword(r, w->s, w->len);
+    rc_errout(r, w->next ? " " : "", w->next ? 1 : 0);
+  }
+}
+
+// One more line of rd's standard input onto its text: false at the end.
+static bool rc_reader_more(rc *r, rc_reader *rd, bool first) {
+  if (rd->eof || !r->host.read_line) return rd->eof = true, false;
+  if (rd->interactive) { // the prompt: $prompt's first word for a command, its second for a line that goes on
+    const rc_word *pr = rc_getvar(r, "prompt");
+    const rc_word *use = pr;
+    if (!first) use = pr ? pr->next : nullptr;
+    const char *def = first ? "% " : "\t";
+    if (use)
+      rc_errout(r, use->s, use->len);
+    else
+      rc_errout(r, def, rc_strlen(def));
+  }
+  if (rd->cap - rd->len < 4096) { // room for a line
+    size_t cap = rd->cap ? rd->cap * 2 : 8192;
+    if (cap > 1024ul * 1024) return rc_errout(r, "rc: line too long\n", 18), rd->eof = true, false;
+    char *more = rc_alloc(r, cap);
+    if (!more) return rd->eof = true, false;
+    if (rd->len) memcpy(more, rd->text, rd->len);
+    rc_free(r, rd->text);
+    rd->text = more, rd->cap = cap;
+  }
+  int64_t n = r->host.read_line(r->host.ctx, rd->text + rd->len, rd->cap - rd->len);
+  if (n <= 0) return rd->eof = true, false;
+  rd->len += (size_t)n;
+  return true;
+}
+
+static void rc_rdcmds(rc *r, rc_frame *f) {
+  rc_reader *rd = f->rd;
+  if (r->flag['s'] && !rc_truestatus(r)) { // -s: a status that is not true, before the next command
+    rc_errout(r, "status=", 7);
+    rc_errwords(r, rc_getvar(r, "status"));
+    rc_errout(r, "\n", 1);
+  }
+  if (rd->tty && rd->pos == rd->len) rd->pos = rd->len = 0; // what was run, let go
+  size_t start = rd->pos;
+  uint32_t line0 = rd->line + 1;
+  rc_code *code = nullptr;
+  bool incomplete = false;
+  for (;;) {
+    if (rd->pos == rd->len && (!rd->tty || !rc_reader_more(r, rd, rd->pos == start))) break;
+    size_t from = rd->pos;
+    if (rd->whole) {
+      rd->pos = rd->len;
+    } else {
+      while (rd->pos < rd->len && rd->text[rd->pos] != '\n') rd->pos++;
+      if (rd->pos < rd->len) rd->pos++;
+    }
+    for (size_t k = from; k < rd->pos; k++) rd->line += rd->text[k] == '\n';
+    if (r->flag['v'] || r->flag['V']) rc_errout(r, rd->text + from, rd->pos - from); // -v: input as read
+    char was[sizeof r->src];
+    memcpy(was, r->src, sizeof was);
+    memcpy(r->src, rd->name, sizeof r->src); // what it compiles names its file
+    bool e = r->flag['e'];
+    if (rd->quiet) r->flag['e'] = false; // . -q: no -e in it, as rc's
+    code = rc_compile_text(r, rd->text + start, rd->pos - start, line0, &incomplete);
+    r->flag['e'] = e;
+    memcpy(r->src, was, sizeof was);
+    if (code || !incomplete) break;
+  }
+  if (!code && start == rd->pos) return; // the end: the frame returns
+  if (!code) { // a syntax error, or the end inside a construct: said, and in $status
+    if (incomplete && rd->pos == rd->len) {
+      char where[96];
+      size_t n = rc_where(rd->name, rd->line, where, sizeof where);
+      rc_errout(r, where, n), rc_errout(r, ": unexpected end of file\n", 25);
+      rc_set_status(r, "unexpected end of file", 22);
+      r->incomplete = true;
+    } else {
+      rc_errout(r, r->err, rc_strlen(r->err)), rc_errout(r, "\n", 1);
+      r->syntax = true;
+    }
+    if (rd->interactive && !rd->eof) f->pc--; // the next command, as rc's
+    return;
+  }
+  f->pc--; // back for the next command once this one has run
+  rc_push_frame(r, code, 0, nullptr);
+  rc_code_release(r, code);
 }
 
 // rc's builtins: the ones the language needs. True if argv[0] is one.
@@ -2217,6 +2499,23 @@ static bool rc_builtin(rc *r, rc_word *argv, uint32_t argc) {
     rc_set_status(r, "", 0);
     return true;
   }
+  if (rc_streq(name, n, "flag", 4)) { // flag f [+-], as rc's execflag
+    unsigned char f = argc > 1 && argv->next->len == 1 ? (unsigned char)argv->next->s[0] : 0;
+    if (argc == 2 && argv->next->len) {
+      f = (unsigned char)argv->next->s[0];
+      bool set = f < 128 && r->flag[f];
+      rc_set_status(r, set ? "" : "flag not set", set ? 0 : 12);
+      return true;
+    }
+    const rc_word *v = argc == 3 ? argv->next->next : nullptr;
+    if (f && f < 128 && v && v->len == 1 && (v->s[0] == '+' || v->s[0] == '-')) {
+      r->flag[f] = v->s[0] == '+';
+      rc_set_status(r, "", 0);
+      return true;
+    }
+    rc_fail(r, nullptr, "Usage: flag [letter] [+-]", nullptr);
+    return true;
+  }
   if (rc_streq(name, n, "whatis", 6)) {
     for (rc_word *a = argv->next; a; a = a->next) {
       rc_var *v = rc_var_find(r, a->s, a->len, false);
@@ -2235,16 +2534,105 @@ static bool rc_builtin(rc *r, rc_word *argv, uint32_t argc) {
   return false;
 }
 
-static rc_code *rc_compile_text(rc *r, const char *text, size_t len, uint32_t line, bool *incomplete);
+// `.` [-biq] file [arg ...], as rc's execdot: the file, found through $path
+// unless its name says where it is, read and run a command at a time in a
+// frame of its own, $* its arguments and $0 its name. '#d/0' is rc's own
+// standard input. -b: compiled whole; -i: interactive; -q: no error if it is
+// not there, and no -e in it.
+static void rc_dot(rc *r, rc_word *argv) {
+  bool bflag = false, iflag = false, qflag = false;
+  rc_word *a = argv->next;
+  for (; a && a->len && a->s[0] == '-'; a = a->next) {
+    if (a->len == 2 && a->s[1] == '-') {
+      a = a->next;
+      break;
+    }
+    for (size_t k = 1; k < a->len; k++) {
+      if (a->s[k] == 'b')
+        bflag = true;
+      else if (a->s[k] == 'i')
+        iflag = true;
+      else if (a->s[k] == 'q')
+        qflag = true;
+      else
+        return rc_fail(r, nullptr, "Usage: . [-biq] file [arg ...]", nullptr);
+    }
+  }
+  if (!a) return rc_fail(r, nullptr, "Usage: . [-biq] file [arg ...]", nullptr);
+  rc_reader *rd = nullptr;
+  bool tty = rc_streq(a->s, a->len, "#d/0", 4);
+  if (tty) {
+    rd = rc_reader_new(r, a->s, a->len);
+    if (rd) rd->tty = true;
+  } else { // through $path, as rc's searchpath, unless it starts / ./ or ../
+    bool here = a->s[0] == '/' || (a->len > 1 && a->s[0] == '.' && a->s[1] == '/') ||
+                (a->len > 2 && a->s[0] == '.' && a->s[1] == '.' && a->s[2] == '/');
+    const rc_word *dirs = here ? nullptr : rc_getvar(r, "path");
+    rc_word dot = {.len = 0};
+    if (!dirs) dirs = &dot;
+    char *buf = rc_alloc(r, 256ul * 1024);
+    for (const rc_word *d = dirs; buf && d && !rd; d = d->next) {
+      char path[512];
+      size_t n = 0;
+      bool cur = d->len == 0 || (d->len == 1 && d->s[0] == '.');
+      if (!cur && d->len + 1 < sizeof path) {
+        memcpy(path, d->s, d->len), n = d->len;
+        if (path[n - 1] != '/') path[n++] = '/';
+      }
+      if (n + a->len >= sizeof path) continue;
+      memcpy(path + n, a->s, a->len), n += a->len;
+      int64_t got = r->host.read_file ? r->host.read_file(r->host.ctx, path, n, buf, 256ul * 1024) : -1;
+      if (got < 0) continue;
+      rd = rc_reader_new(r, path, n);
+      if (rd) rd->text = buf, rd->len = (size_t)got, rd->cap = 256ul * 1024, buf = nullptr;
+    }
+    rc_free(r, buf);
+    if (!rd) {
+      if (!qflag) { // rc's Xerror3: . can't open: file: why, why its status
+        char msg[RC_ERR];
+        size_t k = 0;
+        for (const char *x = ". can't open: "; *x; x++) msg[k++] = *x;
+        for (size_t q = 0; q < a->len && k + 1 < sizeof msg; q++) msg[k++] = a->s[q];
+        msg[k] = 0;
+        rc_fail(r, "file does not exist", msg, "file does not exist");
+      }
+      return;
+    }
+  }
+  if (!rd) return rc_fail(r, nullptr, "out of memory", nullptr);
+  rd->interactive = iflag, rd->whole = bflag && !iflag, rd->quiet = qflag;
+  rc_var *star = rc_newlocal(r, "*", 1, rc_copywords(r, a->next));
+  rc_var *zero = rc_newlocal(r, "0", 1, rc_newword(r, a->s, a->len));
+  if (star && zero) zero->next = star;
+  rc_push_reader(r, rd, zero ? zero : star);
+}
 
-// `.` and `eval`: text run in a frame of its own, on top.
-static bool rc_run_nested(rc *r, const char *text, size_t len) {
-  bool incomplete = false;
-  rc_code *c = rc_compile_text(r, text, len, 1, &incomplete);
-  if (!c) return rc_set_status(r, "syntax error", 12), false;
-  bool ok = rc_push_frame(r, c, 0, nullptr);
-  rc_code_release(r, c); // the frame holds it
-  return ok;
+// eval cmd ...: the words, joined by spaces, run as a command line (rc's execeval).
+static void rc_eval(rc *r, rc_word *argv) {
+  if (!argv->next) return rc_fail(r, nullptr, "Usage: eval cmd ...", nullptr);
+  size_t total = 1;
+  for (rc_word *w = argv->next; w; w = w->next) total += w->len + 1;
+  char *buf = rc_alloc(r, total);
+  if (!buf) return;
+  size_t at = 0;
+  for (rc_word *w = argv->next; w; w = w->next) {
+    memcpy(buf + at, w->s, w->len), at += w->len;
+    buf[at++] = w->next ? ' ' : '\n';
+  }
+  char name[64];
+  uint32_t line = 0;
+  const char *src = r->src;
+  if (r->nframes) {
+    const rc_frame *f = &r->frames[r->nframes - 1];
+    if (f->pc && f->pc <= f->code->n) line = f->code->inst[f->pc - 1].line;
+    if (f->code->src[0]) src = f->code->src;
+  }
+  size_t n = rc_where(src, line, name, sizeof name - 8);
+  for (const char *x = " *eval*"; *x && n + 1 < sizeof name; x++) name[n++] = *x;
+  rc_reader *rd = rc_reader_new(r, name, n);
+  if (!rd) return rc_free(r, buf);
+  rd->text = buf, rd->len = at, rd->cap = total;
+  rc_push_reader(r, rd, nullptr);
 }
 
 // Runs a command whose words are argv: a function, a builtin (rc's, then the
@@ -2253,6 +2641,8 @@ static void rc_simple(rc *r, rc_word *argv, bool async) {
   argv = rc_globlist(r, argv);
   uint32_t argc = rc_count(argv);
   if (!argc) return rc_fail(r, nullptr, "empty argument list", nullptr);
+  if (r->flag['x'])
+    rc_errwords(r, argv), rc_errout(r, "\n", 1); // -x: each command, as rc's (before its redirections)
   rc_var *v = rc_gvar_find(r, argv->s, argv->len, false);
   if (v && v->fn && async) { // rc runs it in a child, which needs M6's 6d: refused, not run in the foreground
     rc_print(r, 2, "rc: a function run with & needs a child (for now)\n");
@@ -2267,29 +2657,8 @@ static void rc_simple(rc *r, rc_word *argv, bool async) {
     return;
   }
   if (rc_builtin(r, argv, argc)) return rc_freewords(r, argv);
-  if (rc_streq(argv->s, argv->len, ".", 1) || rc_streq(argv->s, argv->len, "eval", 4)) {
-    bool dot = argv->s[0] == '.';
-    if (dot && argc > 1 && r->host.read_file) {
-      char *buf = rc_alloc(r, 256ul * 1024);
-      int64_t n =
-          buf ? r->host.read_file(r->host.ctx, argv->next->s, argv->next->len, buf, 256ul * 1024) : -1;
-      if (n < 0)
-        rc_print(r, 2, "rc: cannot read the file\n"), rc_set_status(r, "cannot read", 11);
-      else
-        rc_run_nested(r, buf, (size_t)n);
-      rc_free(r, buf);
-    } else if (!dot) { // eval: the words joined
-      size_t total = 0;
-      for (rc_word *w = argv->next; w; w = w->next) total += w->len + 1;
-      char *buf = rc_alloc(r, total + 1);
-      size_t at = 0;
-      for (rc_word *w = argv->next; buf && w; w = w->next)
-        memcpy(buf + at, w->s, w->len), at += w->len, buf[at++] = ' ';
-      if (buf) rc_run_nested(r, buf, at);
-      rc_free(r, buf);
-    }
-    return rc_freewords(r, argv);
-  }
+  if (rc_streq(argv->s, argv->len, ".", 1)) return rc_dot(r, argv), rc_freewords(r, argv);
+  if (rc_streq(argv->s, argv->len, "eval", 4)) return rc_eval(r, argv), rc_freewords(r, argv);
   rc_fd fds[RC_FDS];
   rc_fds(r, fds);
   if (r->host.builtin && r->host.builtin(r->host.ctx, r, argv, argc, fds)) return rc_freewords(r, argv);
@@ -2377,11 +2746,71 @@ static rc_word *rc_qw(rc *r, rc_word *list) {
   return j;
 }
 
+// A here document's text with $name, $n and $$ replaced, as rc's psubst: a
+// list's words joined by spaces, and a ^ right after a name dropped. It takes
+// body, and gives one word.
+static rc_word *rc_hsubst(rc *r, rc_word *body) {
+  size_t cap = body->len + 64, n = 0;
+  char *out = rc_alloc(r, cap);
+  for (size_t i = 0; out && i < body->len;) {
+    char piece[2] = {body->s[i], 0};
+    const char *add = piece;
+    size_t alen = 1;
+    rc_word *vals = nullptr;
+    if (body->s[i] != '$') {
+      i++;
+    } else if (i + 1 < body->len && body->s[i + 1] == '$') {
+      add = "$", i += 2;
+    } else {
+      size_t s0 = ++i;
+      while (i < body->len && rc_idchr(body->s[i])) i++;
+      rc_word *nm = rc_newword(r, body->s + s0, i - s0);
+      uint32_t count = 0;
+      if (nm && nm->len) rc_value(r, nm, "", &vals, &count);
+      rc_freewords(r, nm);
+      if (i < body->len && body->s[i] == '^') i++;
+      add = nullptr, alen = 0;
+    }
+    size_t need = alen;
+    for (rc_word *w = vals; w; w = w->next) need += w->len + 1;
+    if (n + need + 1 > cap) {
+      size_t ncap = (n + need + 1) * 2;
+      char *more = rc_alloc(r, ncap);
+      if (more) memcpy(more, out, n);
+      rc_free(r, out);
+      out = more, cap = ncap;
+      if (!out) break;
+    }
+    if (add) memcpy(out + n, add, alen), n += alen;
+    for (rc_word *w = vals; w; w = w->next) {
+      memcpy(out + n, w->s, w->len), n += w->len;
+      if (w->next) out[n++] = ' ';
+    }
+    rc_freewords(r, vals);
+  }
+  rc_freewords(r, body);
+  rc_word *w = out ? rc_newword(r, out, n) : nullptr;
+  rc_free(r, out);
+  return w;
+}
+
 // Runs code from the frame on top until the frames it started with have all
 // returned, or an error or exit stops it.
 static void rc_execute(rc *r, uint32_t base) {
   uint64_t steps = 0;
-  while (r->nframes > base && !r->failed && !r->exiting) {
+  for (;;) {
+    if (r->failed && !r->exiting) { // as rc's Xerror: back to the nearest interactive reader, if one
+      uint32_t i = r->nframes;
+      while (i > base && !(r->frames[i - 1].rd && r->frames[i - 1].rd->interactive)) i--;
+      if (i == base) break;
+      while (r->nframes > i) rc_pop_frame(r);
+      rc_frame *rf = &r->frames[i - 1];
+      while (r->sp > rf->sp) rc_freewords(r, rc_poplist(r));
+      while (r->ncaptures > rf->ncaptures) rc_free(r, r->captures[--r->ncaptures].buf);
+      rc_pop_redirs(r, rf->redirs);
+      r->failed = r->failset = false;
+    }
+    if (r->nframes <= base || r->failed || r->exiting) break;
     if (r->budget && ++steps > r->budget) {
       rc_fail(r, nullptr, "too many steps", nullptr);
       break;
@@ -2392,6 +2821,17 @@ static void rc_execute(rc *r, uint32_t base) {
       continue;
     }
     const rc_inst *in = &f->code->inst[f->pc++];
+    if (r->flag['r']) { // -r: each instruction as it runs, as rc's pfnc
+      static const char *const names[] = {
+          "Xmark",  "Xword",   "Xdol",   "Xcount",    "Xjoin",  "Xsub",   "Xconc",     "Xsimple", "Xstage",
+          "Xpipe",  "Xassign", "Xlocal", "Xunlocal",  "Xif",    "Xifnot", "Xwastrue",  "Xtrue",   "Xfalse",
+          "Xjump",  "Xbang",   "Xfor",   "Xpopm",     "Xfn",    "Xdelfn", "Xreturn",   "Xqw",     "Xsettrue",
+          "Xmatch", "Xcase",   "Xbackq", "Xbackqend", "Xredir", "Xdup",   "Xpopredir", "Xrdcmds", "Xeflag"};
+      const char *nm = in->op < sizeof names / sizeof names[0] ? names[in->op] : "X?";
+      char where[96];
+      size_t wn = rc_where(f->code->src, in->line, where, sizeof where);
+      rc_errout(r, where, wn), rc_errout(r, ": ", 2), rc_errout(r, nm, rc_strlen(nm)), rc_errout(r, "\n", 1);
+    }
     switch (in->op) {
     case X_MARK: rc_mark(r); break;
     case X_WORD:
@@ -2678,6 +3118,18 @@ static void rc_execute(rc *r, uint32_t base) {
       break;
     }
     case X_REDIR: {
+      if (in->f1 == RC_FD_HERE) { // a here document: its text, substituted unless its tag was quoted
+        rc_word *body = rc_poplist(r);
+        if (body && !in->b) body = rc_hsubst(r, body);
+        if (!body || r->nredirs == RC_REDIRS) {
+          rc_freewords(r, body);
+          rc_fail(r, nullptr, "<< nested too deeply", nullptr);
+          break;
+        }
+        r->redirs[r->nredirs++] = (rc_redir){
+            .fd = in->f0, .to = {.kind = RC_FD_HERE, .path = body->s, .path_len = body->len}, .path = body};
+        break;
+      }
       rc_word *path = rc_globlist(r, rc_poplist(r));
       const char *op = ">";
       if (in->f1 == RC_FD_READ) op = "<";
@@ -2726,6 +3178,10 @@ static void rc_execute(rc *r, uint32_t base) {
           (rc_redir){.fd = in->f0, .to = {.kind = in->f1 == 255 ? RC_FD_CLOSED : RC_FD_DUP, .dup = in->f1}};
       break;
     case X_POPREDIR: rc_pop_redirs(r, r->nredirs >= in->a ? r->nredirs - in->a : 0); break;
+    case X_RDCMDS: rc_rdcmds(r, f); break;
+    case X_EFLAG:
+      if (!rc_truestatus(r)) r->exiting = true; // -e, as rc's Xeflag: exit with the status
+      break;
     default: rc_fail(r, nullptr, "bad instruction", nullptr); break;
     }
   }
@@ -2748,7 +3204,7 @@ static rc_code *rc_compile_text(rc *r, const char *text, size_t len, uint32_t li
     *incomplete = p->incomplete || p->lx.incomplete;
     if (p->why) { // as rc's yyerror: file:line: message, which is $status too
       char where[96];
-      rc_where(r, p->line, where, sizeof where);
+      rc_where(r->src, p->line, where, sizeof where);
       rc_error(r, where, ": ");
       size_t n = 0;
       while (r->err[n]) n++;
@@ -2756,18 +3212,25 @@ static rc_code *rc_compile_text(rc *r, const char *text, size_t len, uint32_t li
       r->err[n] = 0;
       if (!*incomplete) rc_set_status(r, p->why, rc_strlen(p->why));
     } else {
-      rc_compiler c = {.r = r, .nodes = p->nodes, .cap = (uint32_t)(nodes * 4 + 16), .strcap = scratch + 64};
+      rc_compiler c = {.r = r,
+                       .nodes = p->nodes,
+                       .cap = (uint32_t)(nodes * 4 + 16),
+                       .strcap = scratch + 64,
+                       .heres = p->lx.heres,
+                       .nheres = p->lx.nheres};
       c.inst = rc_alloc(r, c.cap * sizeof *c.inst);
       c.str = rc_alloc(r, c.strcap);
       if (c.inst && c.str && rc_compile_tree(&c, root)) {
         code = rc_alloc(r, sizeof *code);
-        if (code)
+        if (code) {
           *code = (rc_code){.refs = 1, .n = c.n, .inst = c.inst, .strings = c.str};
-        else
+          for (size_t k = 0; r->src[k] && k + 1 < sizeof code->src; k++) code->src[k] = r->src[k];
+        } else {
           rc_free(r, c.inst), rc_free(r, c.str);
+        }
       } else {
         char where[96];
-        rc_where(r, c.line, where, sizeof where);
+        rc_where(r->src, c.line, where, sizeof where);
         rc_error(r, where, ": ");
         const char *why = c.why ? c.why : "out of memory";
         size_t n = 0;
@@ -2804,6 +3267,11 @@ typedef enum rc_result : uint8_t { RC_OK, RC_INCOMPLETE, RC_SYNTAX, RC_FAILED, R
   rc_setvar(r, "ifs", 3, rc_newword(r, " \t\n", 3));
   rc_set_status(r, "", 0);
   r->src[0] = 'r', r->src[1] = 'c';
+  r->rdcode = rc_alloc(r, sizeof *r->rdcode);
+  rc_inst *one = rc_alloc(r, sizeof *one);
+  if (!r->rdcode || !one) return nullptr;
+  *one = (rc_inst){.op = X_RDCMDS};
+  *r->rdcode = (rc_code){.refs = 1, .n = 1, .inst = one}; // its own reference: never freed
   return r;
 }
 
@@ -2821,13 +3289,14 @@ typedef enum rc_result : uint8_t { RC_OK, RC_INCOMPLETE, RC_SYNTAX, RC_FAILED, R
 // `exit` ran (its status is $status).
 [[maybe_unused]] static rc_result rc_run(rc *r, const char *text, size_t len) {
   r->err[0] = 0;
-  r->failed = r->failset = r->exiting = false;
-  bool incomplete = false;
-  rc_code *code = rc_compile_text(r, text, len, 1, &incomplete);
-  if (!code) return incomplete ? RC_INCOMPLETE : RC_SYNTAX;
+  r->failed = r->failset = r->exiting = r->syntax = r->incomplete = false;
+  rc_reader *rd = rc_reader_new(r, r->src, rc_strlen(r->src));
+  char *copy = rd ? rc_alloc(r, len + 1) : nullptr;
+  if (!copy) return rc_reader_free(r, rd), RC_FAILED;
+  memcpy(copy, text, len);
+  rd->text = copy, rd->len = len, rd->cap = len + 1;
   uint32_t base = r->nframes;
-  rc_push_frame(r, code, 0, nullptr);
-  rc_code_release(r, code);
+  if (!rc_push_reader(r, rd, nullptr)) return RC_FAILED;
   rc_execute(r, base);
   while (r->nframes > base) rc_pop_frame(r); // after an error or exit: what was running
   while (r->sp) rc_freewords(r, rc_poplist(r));
@@ -2838,7 +3307,8 @@ typedef enum rc_result : uint8_t { RC_OK, RC_INCOMPLETE, RC_SYNTAX, RC_FAILED, R
     if (!r->failset) rc_set_status(r, "error", 5); // out of memory, which rc_fail cannot report
     return RC_FAILED;
   }
-  return RC_OK;
+  if (r->incomplete) return RC_INCOMPLETE;
+  return r->syntax ? RC_SYNTAX : RC_OK;
 }
 
 [[maybe_unused]] static const char *rc_err(const rc *r) { return r->err; }

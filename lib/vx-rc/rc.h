@@ -52,6 +52,7 @@ enum rc_fd_kind : uint8_t {
   RC_FD_CAPTURE,  // into the shell, for `{...}: rc_capture_write
   RC_FD_PIPE_OUT, // a pipeline's: into the next stage
   RC_FD_PIPE_IN,  // from the stage before
+  RC_FD_HERE,     // a here document: its text in path, path_len (the host feeds it)
 };
 
 static constexpr uint32_t RC_FDS = 10; // 0 to 9, as rc's >[n]
@@ -99,4 +100,8 @@ typedef struct rc_host {
   // Whether a path exists, for globbing: a plain name after a pattern must
   // (rc's access check). Optional: without it, such names are kept.
   bool (*exists)(void *ctx, const char *path, size_t len);
+  // A line of rc's own standard input (rc's '#d/0', which `. -i` reads), its
+  // newline with it: its length into buf (cap bytes), 0 at the end, -1 on an
+  // error. Optional: without it, standard input is empty.
+  int64_t (*read_line)(void *ctx, char *buf, size_t cap);
 } rc_host;

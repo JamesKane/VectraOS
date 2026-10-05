@@ -1,27 +1,24 @@
 // rc: the shell, Plan 9's rc (docs/04 §5; M2, its language since M4 step 7,
-// named gsh until M6 step 6a4). Its language is from lib/vx-rc: lists, quoting, ^, $#x and $x(n), if, if
-// not, for, while, switch, ~, fn, !, && and ||, pipes, redirections, `{...},
-// globbing, $status, $*:
+// named gsh until M6 step 6a4, made 9front's in step 6a6). Its language is
+// lib/vx-rc's; this is the host it runs on, and its start.
 //
-//   ls /; cat /proc/1/status            commands, separated by ; or newlines
-//   ns | tail -1                        pipes
-//   echo kill > /proc/2/ctl             redirections: > >> < >[2=1] >[2]
-//   for(p in `{ls /proc}) echo $p       command substitution
-//   bind -a /boot/bin /bin              builtins: bind, mount, unmount, and rc's
-//   rc script.rc a b                   a script, its arguments in $*
+//   rc [-srdiIlxebpvV] [-c command] [-m initial] [file [arg ...]]
 //
-// A command is a program found as given (a path) or in /bin, then /boot/bin,
-// through the shell's namespace. It is loaded by the shell and spawned with a
-// copy of the namespace, the console, and its standard input, output and
-// error: the shell's own, a pipe, or a channel the shell copies to or from a
-// file (or into `{...}'s capture). The shell waits for a pipeline's commands,
-// unless it ends with &, and $status is their exit strings, joined by |, as
-// rc's (ADR-0010). Without fork, a pipeline's stages and & must be programs
-// (lib/vx-rc/rc.h); descriptors past 2 are not given to programs yet.
+// As 9front's rc, it reads its flags, sets $pid, $rcname and $cflag, and runs
+// `. -bq /rc/lib/rcmain $*` (-m names another rcmain), which sets $home,
+// $prompt and $path and then runs the command, the file, or standard input,
+// interactively with -i, or when there is no file and standard input is the
+// console (never with -I). It exits with $status's first word.
 //
-// With no arguments the shell reads commands from its input, prompting; a
-// construct left open (a brace, an if's condition) continues on the next line.
-// At the end of its input, or of a script, or at exit, it exits with $status.
+// A command is a program found through $path in the shell's namespace (a name
+// that starts / ./ ../ or # as written). It is loaded by the shell and spawned
+// with a copy of the namespace, the console, and its standard input, output
+// and error: the shell's own, a pipe, or a channel the shell copies to or from
+// a file, a here document or `{...}'s capture. The shell waits for a
+// pipeline's commands, unless it ends with &, and $status is each one's wait
+// message (name pid: exit string) joined as rc's concstatus (ADR-0010).
+// Without fork, a pipeline's stages and & must be programs (lib/vx-rc/rc.h);
+// descriptors past 2 are not given to programs yet.
 
 #include "../lib/vx-rt/rt.c"
 #include "../lib/vx-rt/spawn.c"
@@ -299,26 +296,34 @@ static size_t elf_needs(size_t have) {
   return end > sizeof image ? SIZE_MAX : (size_t)end;
 }
 
-// Loads a program through the namespace: the path as given, or /bin/NAME,
-// then /boot/bin/NAME. Returns its size (what a spawn needs of it), or 0.
+// Loads a program through the namespace, found as rc's searchpath finds it:
+// a name that starts / ./ ../ or # as written, any other in each of $path's
+// directories ("" and . meaning as written). Returns its size (what a spawn
+// needs of it), or 0.
 static size_t load(vx_str name) {
-  static const char *const DIRS[] = {"", "/bin/", "/boot/bin/"};
-  bool has_slash = false;
-  for (size_t i = 0; i < name.len; i++) has_slash = has_slash || name.ptr[i] == '/';
-  for (size_t d = 0; d < sizeof DIRS / sizeof DIRS[0]; d++) {
-    if ((d == 0) != has_slash) continue;
+  bool here = (name.len && (name.ptr[0] == '/' || name.ptr[0] == '#')) ||
+              (name.len > 1 && name.ptr[0] == '.' && name.ptr[1] == '/') ||
+              (name.len > 2 && name.ptr[0] == '.' && name.ptr[1] == '.' && name.ptr[2] == '/');
+  const rc_word *dirs = here ? nullptr : rc_getvar(sh, "path");
+  rc_word as_is = {.len = 0};
+  if (!dirs) dirs = &as_is;
+  for (const rc_word *d = dirs; d; d = d->next) {
     char path[256];
-    vx_str dir = vx_cstr(DIRS[d]);
-    if (dir.len + name.len > sizeof path) continue;
-    memcpy(path, dir.ptr, dir.len);
-    memcpy(path + dir.len, name.ptr, name.len);
+    size_t n = 0;
+    if (d->len && !(d->len == 1 && d->s[0] == '.')) {
+      if (d->len + 1 > sizeof path) continue;
+      memcpy(path, d->s, d->len), n = d->len;
+      if (path[n - 1] != '/') path[n++] = '/';
+    }
+    if (n + name.len > sizeof path) continue;
+    memcpy(path + n, name.ptr, name.len);
     vx_ns_file f;
-    if (vx_ns_open(&ns, (vx_str){path, dir.len + name.len}, P9_OREAD, &f) != VX_OK) continue;
+    if (vx_ns_open(&ns, (vx_str){path, n + name.len}, P9_OREAD, &f) != VX_OK) continue;
     size_t size = 0, need = 4096;
-    int64_t n = 1;
-    while (n > 0 && size < need) { // the headers, then as much as they say
-      n = vx_ns_read(&f, image + size, (uint32_t)(need - size > 65536 ? 65536 : need - size));
-      if (n > 0) size += (size_t)n;
+    int64_t got = 1;
+    while (got > 0 && size < need) { // the headers, then as much as they say
+      got = vx_ns_read(&f, image + size, (uint32_t)(need - size > 65536 ? 65536 : need - size));
+      if (got > 0) size += (size_t)got;
       size_t want = elf_needs(size);
       if (want == 0 || want == SIZE_MAX) break;
       need = want > need ? want : need;
@@ -437,9 +442,10 @@ static vx_status spawn(const rc_word *argv, const vx_handle io[3], vx_handle *ta
 // capture) or into (a file, as a program's input).
 typedef struct relay {
   vx_handle end; // the shell's end
-  rc_fd to;      // a file's, or a capture's
-  bool feed;     // into the channel, from the file
+  rc_fd to;      // a file's, a here document's, or a capture's
+  bool feed;     // into the channel, from the file or the here document
   bool armed;
+  size_t off; // a here document's: what has been fed
 } relay;
 
 static relay relays[MAX_RELAYS];
@@ -462,14 +468,22 @@ static bool relay_run(relay *rl, bool *broken) {
   static alignas(vx_msg_header) uint8_t msg[sizeof(vx_msg_header) + 4096];
   if (rl->feed) {
     for (;;) {
-      int64_t n =
-          file_used[rl->to.handle] ? vx_ns_read(&files[rl->to.handle], msg + sizeof(vx_msg_header), 4096) : 0;
+      int64_t n = 0;
+      if (rl->to.kind == RC_FD_HERE) { // from the here document's text
+        n = (int64_t)(rl->to.path_len - rl->off > 4096 ? 4096 : rl->to.path_len - rl->off);
+        if (n) memcpy(msg + sizeof(vx_msg_header), rl->to.path + rl->off, (size_t)n), rl->off += (size_t)n;
+      } else if (file_used[rl->to.handle]) {
+        n = vx_ns_read(&files[rl->to.handle], msg + sizeof(vx_msg_header), 4096);
+      }
       if (n <= 0) return false;
       *(vx_msg_header *)msg = (vx_msg_header){};
       vx_status st =
           vx_channel_write(rl->end, msg, (uint32_t)(sizeof(vx_msg_header) + (size_t)n), nullptr, 0);
       if (st == VX_ERR_SHOULD_WAIT) { // full: the rest later, from where this left off
-        files[rl->to.handle].offset -= (uint64_t)n;
+        if (rl->to.kind == RC_FD_HERE)
+          rl->off -= (size_t)n;
+        else
+          files[rl->to.handle].offset -= (uint64_t)n;
         return true;
       }
       if (st != VX_OK) return false; // the reader has gone
@@ -691,7 +705,6 @@ static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool asy
 // --- The shell ---
 
 static alignas(16) uint8_t heap[4 << 20];
-static char text[256 * 1024]; // a script's, or the lines of a construct still open
 
 // The last $status, as rc exits with it: its first word, or nothing when it
 // is true (0s and |s), as rc's Exit.
@@ -706,9 +719,35 @@ static const char *exit_status(void) {
   return status;
 }
 
-static void show_error(void) {
-  vx_eprint(vx_cstr(rc_err(sh)));
-  vx_eprint(VX_STR("\n"));
+// rc_host's read_line: a line of the shell's standard input ('#d/0').
+static int64_t read_line(void *ctx, char *buf, size_t cap) {
+  (void)ctx;
+  static char pending[4096]; // what a read gave past the line asked for
+  static size_t npending;
+  size_t n = 0;
+  for (;;) {
+    while (npending && n < cap) {
+      char c = pending[0];
+      memmove(pending, pending + 1, --npending);
+      buf[n++] = c;
+      if (c == '\n') return (int64_t)n;
+    }
+    if (n == cap) return (int64_t)n;
+    int64_t got = vx_read(pending, sizeof pending);
+    if (got <= 0) return n ? (int64_t)n : got;
+    npending = (size_t)got;
+  }
+}
+
+// Writes s into buf as an rc word, quoted.
+static size_t quoted(char *buf, size_t at, size_t cap, vx_str s) {
+  if (at < cap) buf[at++] = '\'';
+  for (size_t i = 0; i < s.len && at + 2 < cap; i++) {
+    if (s.ptr[i] == '\'') buf[at++] = '\'';
+    buf[at++] = s.ptr[i];
+  }
+  if (at < cap) buf[at++] = '\'';
+  return at;
 }
 
 const char *vx_main(void) {
@@ -720,61 +759,72 @@ const char *vx_main(void) {
                   .read_file = read_whole,
                   .open = open_file,
                   .close = close_file,
-                  .exists = exists};
+                  .exists = exists,
+                  .read_line = read_line};
   sh = rc_new(heap, sizeof heap, &host);
   if (!sh) return "no memory";
   import_env();
 
-  if (vx_spawn.argc) { // rc FILE ARG ...: a script, its arguments in $*, its name in $0
-    static const char *words[VX_SPAWN_MAX_ARGS];
-    static size_t lens[VX_SPAWN_MAX_ARGS];
-    uint32_t n = 0;
-    for (uint32_t i = 1; i < vx_spawn.argc && n < VX_SPAWN_MAX_ARGS; i++, n++)
-      words[n] = vx_spawn.args[i].ptr, lens[n] = vx_spawn.args[i].len;
-    rc_set(sh, "*", words, lens, n);
-    words[0] = vx_spawn.args[0].ptr, lens[0] = vx_spawn.args[0].len;
-    rc_set(sh, "0", words, lens, 1);
-    rc_source(sh, vx_spawn.args[0].ptr, vx_spawn.args[0].len); // its errors at file:line
-    int64_t len = read_whole(nullptr, vx_spawn.args[0].ptr, vx_spawn.args[0].len, text, sizeof text);
-    if (len < 0) {
-      say("rc: ", vx_spawn.args[0], ": cannot read it\n");
-      return "cannot read the script";
+  // The flags, as rc's getflags("srdiIlxebpvVc:1m:1").
+  static const char USAGE[] = "usage: rc [-srdiIlxebpvV] [-c command] [-m initial] [file [arg ...]]";
+  vx_str cflag = {}, rcmain = VX_STR("/rc/lib/rcmain");
+  uint32_t i = 0;
+  for (; i < vx_spawn.argc; i++) {
+    vx_str a = vx_spawn.args[i];
+    if (a.len < 2 || a.ptr[0] != '-') break;
+    if (a.len == 2 && a.ptr[1] == '-') {
+      i++;
+      break;
     }
-    rc_result res = rc_run(sh, text, (size_t)len);
-    if (res == RC_SYNTAX || res == RC_INCOMPLETE || res == RC_FAILED) {
-      if (res == RC_INCOMPLETE)
-        vx_eprint(VX_STR("rc: the script ends inside a construct\n"));
-      else
-        show_error();
-      return res == RC_FAILED ? exit_status() : "syntax error";
+    for (size_t k = 1; k < a.len; k++) {
+      char f = a.ptr[k];
+      if (f == 'c' || f == 'm') { // its argument: the rest of the word, or the next
+        vx_str v = k + 1 < a.len ? (vx_str){a.ptr + k + 1, a.len - k - 1} : (vx_str){};
+        if (!v.len && i + 1 < vx_spawn.argc) v = vx_spawn.args[++i];
+        if (!v.len) return vx_eprint(vx_cstr(USAGE)), vx_eprint(VX_STR("\n")), "usage";
+        if (f == 'c')
+          cflag = v;
+        else
+          rcmain = v;
+        sh->flag[(unsigned char)f] = true;
+        break;
+      }
+      bool known = false;
+      for (const char *x = "srdiIlxebpvV"; *x; x++) known = known || *x == f;
+      if (!known) return vx_eprint(vx_cstr(USAGE)), vx_eprint(VX_STR("\n")), "usage";
+      sh->flag[(unsigned char)f] = true;
     }
-    return exit_status();
   }
+  if (sh->flag['I'])
+    sh->flag['i'] = false;
+  else if (!sh->flag['i'] && i == vx_spawn.argc && !vx_stdio.in) // no file, and the console: interactive
+    sh->flag['i'] = true;
 
-  size_t len = 0; // of text: the lines of a construct still open
-  for (;;) {
-    vx_print(len ? VX_STR("\t") : VX_STR("vx% "));
-    size_t start = len;
-    int64_t n;
-    while ((n = vx_read(text + len, (uint32_t)(sizeof text - len))) > 0) {
-      len += (size_t)n;
-      if (text[len - 1] == '\n' || len == sizeof text) break;
-    }
-    if (n <= 0 && len == start) break;                 // the end of the input
-    if (len == sizeof text && text[len - 1] != '\n') { // too long: refused whole, never run in pieces
-      char rest[64];
-      while ((n = vx_read(rest, sizeof rest)) > 0 && rest[n - 1] != '\n') {}
-      say("rc: line too long", (vx_str){}, "\n");
-      set_status(VX_STR("line too long"));
-      len = 0;
-      continue;
-    }
-    rc_result res = rc_run(sh, text, len);
-    if (res == RC_INCOMPLETE) continue; // the next line continues it
-    len = 0;
-    if (res == RC_SYNTAX || res == RC_FAILED) show_error();
-    if (res == RC_EXIT) return exit_status();
-  }
-  vx_print(VX_STR("\n"));
+  vx_task_summary me;
+  char pid[24];
+  size_t d = sizeof pid;
+  uint64_t id = vx_self && vx_task_info(vx_self, &me) == VX_OK ? me.id : 0;
+  do pid[--d] = (char)('0' + id % 10);
+  while (id /= 10);
+  const char *one[1] = {pid + d};
+  size_t len1[1] = {sizeof pid - d};
+  rc_set(sh, "pid", one, len1, 1);
+  one[0] = "rc", len1[0] = 2;
+  rc_set(sh, "rcname", one, len1, 1);
+  if (cflag.len) one[0] = cflag.ptr, len1[0] = cflag.len, rc_set(sh, "cflag", one, len1, 1);
+  static const char *words[VX_SPAWN_MAX_ARGS];
+  static size_t lens[VX_SPAWN_MAX_ARGS];
+  uint32_t n = 0;
+  for (uint32_t k = i; k < vx_spawn.argc && n < VX_SPAWN_MAX_ARGS; k++, n++)
+    words[n] = vx_spawn.args[k].ptr, lens[n] = vx_spawn.args[k].len;
+  rc_set(sh, "*", words, lens, n);
+
+  // rc's bootstrap: . -bq rcmain $*, then exit.
+  static char boot[512];
+  size_t at = 0;
+  for (const char *x = ". -bq "; *x; x++) boot[at++] = *x;
+  at = quoted(boot, at, sizeof boot - 8, rcmain);
+  for (const char *x = " $*\n"; *x; x++) boot[at++] = *x;
+  rc_run(sh, boot, at);
   return exit_status();
 }

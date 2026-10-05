@@ -2491,6 +2491,9 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
   bootfs_room(count);
   files[count] = read_file("out/man/index/base");
   paths[count++] = "lib/man/index/base";
+  bootfs_room(count); // rc's start, as 9front's (M6 step 6a6b)
+  files[count] = read_file("boot/rc/lib/rcmain");
+  paths[count++] = "rc/lib/rcmain";
   for (int i = 0; i < manifests.count; i++) {
     bootfs_room(count);
     files[count] = read_file(manifests.paths[i]);

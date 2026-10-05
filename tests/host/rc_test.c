@@ -81,6 +81,7 @@ static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool asy
     if (fds[0].kind == RC_FD_PIPE_IN) in = pipes[(i + 1) % 2], nin = npipe[(i + 1) % 2];
     if (fds[0].kind == RC_FD_READ && fds[0].handle < 8)
       in = files[fds[0].handle].data, nin = files[fds[0].handle].len;
+    if (fds[0].kind == RC_FD_HERE) in = fds[0].path, nin = fds[0].path_len;
     char *mypipe = pipes[i % 2];
     size_t *mynpipe = &npipe[i % 2];
     *mynpipe = 0;
@@ -173,6 +174,21 @@ static bool exists_fake(void *ctx, const char *path, size_t len) {
   for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
     if (strlen(names[i]) == len && memcmp(names[i], path, len) == 0) return true;
   return file_of(path, len, false) >= 0;
+}
+
+static const char *stdin_text; // what rc's own standard input holds, a line at a time
+static size_t stdin_at;
+
+static int64_t read_line_fake(void *ctx, char *buf, size_t cap) {
+  (void)ctx;
+  if (!stdin_text || !stdin_text[stdin_at]) return 0;
+  size_t n = 0;
+  while (stdin_text[stdin_at] && n < cap) {
+    char c = stdin_text[stdin_at++];
+    buf[n++] = c;
+    if (c == '\n') break;
+  }
+  return (int64_t)n;
 }
 
 static int64_t read_file_fake(void *ctx, const char *path, size_t len, char *buf, size_t cap) {
@@ -295,6 +311,71 @@ static void test_9front(void) {
   CHECK(script("echo )") == RC_SYNTAX && strcmp(status_now(), "") != 0 && strstr(rc_err(r), status_now()));
 }
 
+static void errs_reset(void) {
+  nerr = 0;
+  memset(err, 0, sizeof err);
+}
+
+// The second part (M6 step 6a6b): reading a command at a time, here
+// documents, flag and the flags it sets, ., eval, and interactive input.
+static void test_9front_reading(void) {
+  // A script runs as it is read: a syntax error stops at its line, the lines
+  // before it run.
+  CHECK(script("echo ok\necho )\necho after") == RC_SYNTAX && strcmp(out, "ok\n") == 0);
+  // Here documents: substituted unless the tag is quoted; several on a line,
+  // in order; a block's; [n]; one that never ends asks for more.
+  expect("x=(a b); cat <<EOF\nv=$x $$x $x^y\nEOF\n", "v=a b $x a by\n");
+  expect("cat <<'EOF'\nraw $x\nEOF\n", "raw $x\n");
+  expect("fn f { cat <<EOF\n$1 $2\nEOF\n}; f p q", "p q\n");
+  expect("cat <<A; cat <<B\none\nA\ntwo\nB\n", "one\ntwo\n");
+  expect("{ cat } <<EOF\nblock\nEOF\n", "block\n");
+  expect("cat <<[0]EOF\nzero\nEOF\n", "zero\n");
+  CHECK(script("cat <<EOF\nnever ends\n") == RC_INCOMPLETE);
+  // Descriptors of more digits lex, and past the ones there are, are refused.
+  CHECK(script("echo x >[10] f\n") == RC_SYNTAX);
+  // flag, and what the flags do.
+  expect("flag z; echo $status", "flag not set\n");
+  CHECK(script("flag") == RC_FAILED && strstr(rc_err(r), "Usage: flag [letter] [+-]"));
+  errs_reset();
+  CHECK(script("flag x +\necho hi 'a b'\nflag x -") == RC_OK && strstr(err, "echo hi 'a b'\n"));
+  CHECK(script("flag e +\nif(false) echo no\necho yes\nfalse\necho never\n") == RC_EXIT &&
+        strcmp(out, "yes\n") == 0);
+  script("flag e -");
+  errs_reset();
+  CHECK(script("flag s +\nfalse\nflag s -") == RC_OK && strstr(err, "status=false\n"));
+  errs_reset();
+  CHECK(script("flag v +\necho v\nflag v -") == RC_OK && strstr(err, "echo v\n"));
+  errs_reset();
+  CHECK(script("flag r +\ntrue\nflag r -") == RC_OK && strstr(err, "Xsimple"));
+  // .: $0 and $*, $path, -q; refused with no file, or one not there.
+  CHECK(script("echo 'echo $0 $* $#*' > d.rc") == RC_OK);
+  expect(". d.rc a b", "d.rc a b 2\n");
+  expect("path=(/x .); . d.rc z", "d.rc z 1\n");
+  expect(". -q nofile; echo q", "q\n");
+  CHECK(script(". nofile") == RC_FAILED && strstr(rc_err(r), ". can't open: nofile: file does not exist"));
+  CHECK(script(".") == RC_FAILED && strstr(rc_err(r), "Usage: . [-biq] file [arg ...]"));
+  CHECK(script("echo 'echo first' > bad.rc; echo 'echo )' >> bad.rc") == RC_OK);
+  CHECK(script(". bad.rc") == RC_SYNTAX && strcmp(out, "first\n") == 0 && strstr(rc_err(r), "bad.rc:2:"));
+  script("path=()");
+  // eval.
+  CHECK(script("eval") == RC_FAILED && strstr(rc_err(r), "Usage: eval cmd ..."));
+  expect("eval 'y=5'; echo $y", "5\n");
+  CHECK(script("eval 'echo )'") == RC_SYNTAX && strstr(rc_err(r), "*eval*"));
+  // Interactive: prompts on rc's standard error; an error goes back to it,
+  // and the next line runs.
+  errs_reset();
+  stdin_text = "x=(); echo a^$x\necho two\n", stdin_at = 0;
+  CHECK(script(". -i '#d/0'") == RC_OK && strcmp(out, "two\n") == 0 && strstr(err, "% ") &&
+        strstr(err, "null list"));
+  errs_reset();
+  stdin_text = "prompt=('> ' '>> ')\nif(true) {\necho in\n}\n", stdin_at = 0;
+  CHECK(script(". -i '#d/0'") == RC_OK && strcmp(out, "in\n") == 0 && strstr(err, ">> "));
+  script("prompt=()");
+  stdin_text = "echo s1\nx=(); echo a^$x\necho s2\n", stdin_at = 0; // not interactive: an error ends it
+  CHECK(script(". '#d/0'") == RC_FAILED && strcmp(out, "s1\n") == 0);
+  stdin_text = nullptr;
+}
+
 int main(void) {
   rc_host host = {.run = run,
                   .write = write_fd,
@@ -303,7 +384,8 @@ int main(void) {
                   .builtin = host_builtin,
                   .open = open_fake,
                   .close = close_fake,
-                  .exists = exists_fake};
+                  .exists = exists_fake,
+                  .read_line = read_line_fake};
   r = rc_new(heap, sizeof heap, &host);
   CHECK(r != nullptr);
   if (!r) return check_result();
@@ -409,5 +491,6 @@ int main(void) {
     script("x=`{echo a b c d e f g}; y=($x $x $x); fn f { echo $y }; f > /dev/null");
   expect("echo still", "still\n");
   test_9front();
+  test_9front_reading();
   return check_result();
 }

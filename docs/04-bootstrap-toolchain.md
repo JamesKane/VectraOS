@@ -236,14 +236,14 @@ The test (`tests/qemu/boot.ndb`) boots headless, matches these lines within 10 s
 **Exit test** (`tests/qemu/shell.ndb`; the console driver is task 2, as `svcd` starts drivers first):
 
 ```
-vx% ls /
+% ls /
 bin  boot  dev  proc  srv  tmp
-vx% cat /proc/1/status
+% cat /proc/1/status
 name=svcd state=waiting threads=1 mem=3392K
-vx% bind -a /boot/bin /bin; ns | tail -1
+% bind -a /boot/bin /bin; ns | tail -1
 bind -a /boot/bin /bin
-vx% uartpid=2; echo kill > /proc/$uartpid/ctl      # svcd restarts the console driver…
-vx% echo still here                                # …and the shell carries on
+% uartpid=2; echo kill > /proc/$uartpid/ctl      # svcd restarts the console driver…
+% echo still here                                # …and the shell carries on
 still here
 ```
 
@@ -264,14 +264,14 @@ still here
 **Exit test** (QEMU user networking; the host runs `vx9pserve --listen 127.0.0.1:5640 ./tests/fixtures/share`):
 
 ```
-vx% cat /net/ipifc/0/status
+% cat /net/ipifc/0/status
 dev=ether0 addr=10.0.2.15/24 gw=10.0.2.2 dhcp lease=86400s
-vx% mount tcp!10.0.2.2!5640 /n/host
-vx% ls /n/host
+% mount tcp!10.0.2.2!5640 /n/host
+% ls /n/host
 hello.txt
-vx% cat /n/host/hello.txt
+% cat /n/host/hello.txt
 hello from the host
-vx% echo hi > /n/host/out.txt            # appears on the host
+% echo hi > /n/host/out.txt            # appears on the host
 ```
 
 **Deliverables:** `vectra-x86_64.img` (plus `.iso`) and `vectra-aarch64.img`. The same x86_64 image should boot a real UEFI PC from USB to the shell on its serial or framebuffer console, although that is not gated.
