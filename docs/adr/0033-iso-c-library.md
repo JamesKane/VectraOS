@@ -51,7 +51,8 @@ The clang side is missing too. Native programs build with `--target=<arch>-unkno
 - `__cxa_guard_acquire`, `__cxa_guard_release` and `__cxa_guard_abort`, over an atomic word and a futex;
 - `__cxa_atexit`, `__cxa_finalize` and `__dso_handle`;
 - `__cxa_pure_virtual` and `__cxa_deleted_virtual`, which abort with a message;
-- every form of `operator new` and `operator delete` (sized, aligned, nothrow), over `libvxc`'s heap. A failed `new` aborts, because there are no exceptions.
+- every form of `operator new` and `operator delete` (sized, aligned, nothrow, and the array forms), with `std::nothrow` and the new handler, over `libvxc`'s heap. A failed `new` aborts, because there are no exceptions, and `__throw_bad_alloc` does the same;
+- the few libc++ helpers that libc++'s headers call out of line (such as `__libcpp_verbose_abort`), listed by the Swift runtime's compile sweep (`swift-on-vectra`, R8).
 
 **Out of scope:** exceptions and RTTI. Code that needs them waits for an ADR importing libc++abi and libunwind. The Swift runtime builds without both.
 
