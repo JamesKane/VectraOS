@@ -1,6 +1,6 @@
 # ADR-0035: Extended register state and protection keys
 
-Status: proposed, 2026-10-05. M6 step 6c's changes to the ABI (01 §3): the FP/SIMD state as the hardware saves it (6c1), what user code learns of the CPU (6c1, for 6c3's dispatch), and protection keys (6c4, 6c5). No new syscall: two `thread_state` ops, a flag field on `as_map` and `as_protect`, two calls `as_key_alloc` and `as_key_free`, and an exception kind.
+Status: accepted, 2026-10-05. M6 step 6c's changes to the ABI (01 §3): the FP/SIMD state as the hardware saves it (6c1), what user code learns of the CPU (6c1, for 6c3's dispatch), and protection keys (6c4, 6c5). No new syscall: two `thread_state` ops, a flag field on `as_map` and `as_protect`, two calls `as_key_alloc` and `as_key_free`, and an exception kind.
 
 ## Context
 
