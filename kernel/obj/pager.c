@@ -171,7 +171,7 @@ static vx_status pager_supply(pager *g, vmo *v, uint64_t offset, uint64_t size, 
       st = VX_ERR_NO_MEMORY;
       break;
     }
-    memcpy(phys_to_virt(pa), phys_to_virt(src->pages[src_offset / 4096 + i]), 4096);
+    arch_page_copy(phys_to_virt(pa), phys_to_virt(src->pages[src_offset / 4096 + i]), 4096);
     spin_lock(&v->lock);
     // Past the end now (a shrink since the check above): not kept.
     bool taken = offset / 4096 + i >= v->size / 4096 || vmo_page(v, offset / 4096 + i) != 0;

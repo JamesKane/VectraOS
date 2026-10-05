@@ -94,8 +94,10 @@ static void arch_sync_icache(void *p, size_t len); // code written through a dat
 static void arch_user_switch(thread *prev, thread *next);
 static void arch_user_save(thread *th); // the current thread's TLS and FP/SIMD registers, into th
 static void arch_user_load(thread *th); // and back
-static void arch_fp_init(uint8_t *fp);  // a new thread's: the architecture's reset values
-static uint32_t arch_fp_size(void);     // the save area's bytes in use (GET_XSTATE's)
+static void arch_fp_load(thread *th); // the FP/SIMD registers alone, from th (user_return, after simd_begin)
+static void arch_page_copy(void *dst, const void *src, uint64_t bytes); // whole pages, page-aligned
+static void arch_fp_init(uint8_t *fp); // a new thread's: the architecture's reset values
+static uint32_t arch_fp_size(void);    // the save area's bytes in use (GET_XSTATE's)
 // A debugger's view of a saved area: components the hardware left in their
 // initial state without writing (x86's XSAVEOPT) given their initial values.
 static void arch_fp_view(const uint8_t *fp, uint8_t *out);
@@ -103,7 +105,8 @@ static void arch_fp_view(const uint8_t *fp, uint8_t *out);
 static vx_status arch_fp_check(const uint8_t *fp);
 // After SET_FPREGS wrote the legacy part: marked to be loaded, not left initial.
 static void arch_fp_legacy_set(uint8_t *fp);
-static void arch_cpu_info(vx_cpu_info *info); // GET_CPU's
+static void arch_cpu_info(vx_cpu_info *info);         // GET_CPU's
+static void arch_page_zero(void *va, uint64_t bytes); // whole pages, page-aligned: the fastest way there is
 static uint64_t arch_tls_read(void);
 static void arch_tls_write(uint64_t value);
 

@@ -549,17 +549,24 @@ static void clear_dr6(void) { __asm__ volatile("mov %0, %%dr6" : : "r"(0xffff'0f
 // Idle threads have no user state: whoever ran last leaves its FS base and
 // FP/SIMD registers in place, unused, until the next user thread loads its own.
 // Every component XCR0 enables (EDX:EAX all ones asks for them all).
+// An area simd_begin filled already holds them: the registers are the kernel's since.
 static void arch_user_save(thread *th) {
   th->tls = rdmsr(MSR_FS_BASE);
+  if (th->fp_in_area) return;
   if (have_xsaveopt) // NOLINT(bugprone-branch-clone): two instructions, XSAVEOPT and XSAVE
     __asm__ volatile("xsaveopt64 (%0)" : : "r"(th->fp), "a"(~0u), "d"(~0u) : "memory");
   else
     __asm__ volatile("xsave64 (%0)" : : "r"(th->fp), "a"(~0u), "d"(~0u) : "memory");
 }
 
+static void arch_fp_load(thread *th) {
+  __asm__ volatile("xrstor64 (%0)" : : "r"(th->fp), "a"(~0u), "d"(~0u) : "memory");
+  th->fp_in_area = false;
+}
+
 static void arch_user_load(thread *th) {
   wrmsr(MSR_FS_BASE, th->tls);
-  __asm__ volatile("xrstor64 (%0)" : : "r"(th->fp), "a"(~0u), "d"(~0u) : "memory");
+  arch_fp_load(th);
 }
 
 // A thread stopped at an exception has saved its own (user_held): what a
@@ -585,6 +592,11 @@ static void arch_fp_init(uint8_t *fp) {
 }
 
 static uint32_t arch_fp_size(void) { return xsave_size; }
+
+static void arch_page_zero(void *va, uint64_t bytes) { memset(va, 0, bytes); } // rep stosb (vx-mem)
+
+// rep movsb (vx-mem): with ERMS and FSRM as fast as AVX2 for a page, so no SIMD section (6c2).
+static void arch_page_copy(void *dst, const void *src, uint64_t bytes) { memcpy(dst, src, bytes); }
 
 static constexpr uint32_t XHDR = 512; // the XSAVE header: XSTATE_BV, XCOMP_BV, then 48 reserved bytes
 

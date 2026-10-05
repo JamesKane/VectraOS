@@ -648,8 +648,8 @@ static vx_status mapping_privatize(task *t, mapping *m, vmo **old) {
   uint32_t mf =
       MAP_USER | (m->flags & VX_MAP_WRITE ? MAP_WRITE : 0) | (m->flags & VX_MAP_EXEC ? MAP_EXEC : 0);
   for (uint64_t off = 0; off < m->size; off += 4096) {
-    memcpy(phys_to_virt(copy->pages[off / 4096]), phys_to_virt(m->vmo->pages[(m->offset + off) / 4096]),
-           4096);
+    arch_page_copy(phys_to_virt(copy->pages[off / 4096]),
+                   phys_to_virt(m->vmo->pages[(m->offset + off) / 4096]), 4096);
     unmap_page(t->root, m->va + off);
     if (!map_range(t->root, m->va + off, copy->pages[off / 4096], 4096, mf)) st = VX_ERR_NO_MEMORY;
   }
@@ -731,7 +731,7 @@ static int64_t sys_vmo_clone(vx_handle h, uint64_t offset, uint64_t size, uint64
   else
     st = vmo_create(size, &copy);
   for (uint64_t p = 0; st == VX_OK && p < size / 4096; p++)
-    memcpy(phys_to_virt(copy->pages[p]), phys_to_virt(src->pages[offset / 4096 + p]), 4096);
+    arch_page_copy(phys_to_virt(copy->pages[p]), phys_to_virt(src->pages[offset / 4096 + p]), 4096);
   object_release(&src->obj);
   if (st != VX_OK) return st;
   return return_handle(&copy->obj, ALL_RIGHTS & ~(uint32_t)VX_RIGHT_DEBUG, out); // as vmo_create

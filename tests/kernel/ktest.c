@@ -1894,6 +1894,15 @@ static void test_fp(void) {
   wait_for_stage(&fp_shared, 2);
   CHECK(atomic_load(&fp_worker_bad) == 0);
   vx_handle_close(th);
+  // A call whose pages the kernel copies with its own SIMD (6c2: NEON on
+  // aarch64, inside simd_begin) gives the caller back its registers.
+  vx_handle v = 0, c = 0; // closing 0 is a harmless BAD_HANDLE
+  fp_put(0xc3c3'c3c3'c3c3'c3c3, FP_CTL_ZERO);
+  CHECK(vx_vmo_create(4ull * 4096, 0, &v) == VX_OK && vx_vmo_clone(v, 0, 4ull * 4096, &c) == VX_OK);
+  CHECK(fp_get(&ctl) == 0xc3c3'c3c3'c3c3'c3c3 && ctl == FP_CTL_ZERO);
+  fp_put(0, FP_CTL_DEFAULT);
+  vx_handle_close(c);
+  vx_handle_close(v);
   // And floating point itself, compiled: 1/3 rounds differently by mode.
   volatile double third = 1.0, three = 3.0;
   CHECK(third / three > 0.333 && third / three < 0.334);

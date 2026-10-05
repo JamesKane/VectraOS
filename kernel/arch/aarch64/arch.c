@@ -823,14 +823,20 @@ static void watch_load(const task *t) {
 
 // Idle threads have no user state: whoever ran last leaves its TPIDR_EL0 and
 // FP/SIMD registers in place, unused, until the next user thread loads its own.
+// An area simd_begin filled already holds them: the registers are the kernel's since.
 static void arch_user_save(thread *th) {
   th->tls = arch_tls_read();
-  fp_save(th->fp);
+  if (!th->fp_in_area) fp_save(th->fp);
+}
+
+static void arch_fp_load(thread *th) {
+  fp_load(th->fp);
+  th->fp_in_area = false;
 }
 
 static void arch_user_load(thread *th) {
   arch_tls_write(th->tls);
-  fp_load(th->fp);
+  arch_fp_load(th);
 }
 
 // A thread stopped at an exception has saved its own (user_held): what a
@@ -846,6 +852,38 @@ static void arch_user_switch(thread *prev, thread *next) {
 // The reset's values: every register zero; FPCR zero (round to nearest, no
 // traps), FPSR zero.
 static void arch_fp_init(uint8_t *fp) { memset(fp, 0, ARCH_FP_MAX); }
+
+// DC ZVA zeroes a block of 4 << DCZID_EL0.BS bytes at once (6c2), where
+// DCZID_EL0.DZP does not prohibit it; paired stores otherwise (vx-mem).
+static void arch_page_zero(void *va, uint64_t bytes) {
+  uint64_t dczid;
+  __asm__ volatile("mrs %0, dczid_el0" : "=r"(dczid));
+  if (dczid & 1u << 4) {
+    memset(va, 0, bytes);
+    return;
+  }
+  uint64_t block = 4ull << (dczid & 0xf);
+  for (uint8_t *p = va, *end = p + bytes; p < end; p += block)
+    __asm__ volatile("dc zva, %0" : : "r"(p) : "memory");
+}
+
+// A page copied with NEON, 64 bytes a round, inside a SIMD section (6c2): the
+// kernel is built general-registers-only, so nothing it compiled holds a value
+// in q4-q7 (ktest's test_fp checks v7 across it), and simd_begin has saved the user's.
+static void arch_page_copy(void *dst, const void *src, uint64_t bytes) {
+  simd_begin();
+  const uint8_t *s = src;
+  uint8_t *d = dst;
+  for (uint64_t n = bytes / 64; n; n--)
+    __asm__ volatile(".arch_extension simd\n\t"
+                     "ldp q4, q5, [%1]\n\tldp q6, q7, [%1, #32]\n\t"
+                     "stp q4, q5, [%0]\n\tstp q6, q7, [%0, #32]\n\t"
+                     "add %0, %0, #64\n\tadd %1, %1, #64"
+                     : "+r"(d), "+r"(s)
+                     :
+                     : "memory");
+  simd_end();
+}
 
 // The extended state is the vx_fpregs image (ADR-0035): SVE's and SME's join
 // it when the kernel saves them, POR_EL0 with 6c5's overlays.

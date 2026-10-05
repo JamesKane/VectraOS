@@ -163,11 +163,35 @@ arch_enter_frame:
 // size_t arch_user_copy(void *dst, const void *src, size_t n): copies to or
 // from user memory. A fault inside resumes at arch_user_copy_fault (arch.c,
 // aarch64_trap), which returns the bytes not copied: 0 means it all was.
+// Eight bytes at a time where dst and src share their alignment (M6 step
+// 6c2), bytes otherwise and at the edges; x2 drops only once a load and its
+// store are both done, so a fault leaves it exact. Scalar: the unprivileged
+// loads and stores 6c5 moves to have no SIMD form (ADR-0035).
     .globl arch_user_copy, arch_user_copy_fault, arch_user_copy_end
 arch_user_copy:
     hint #34
     cbz x2, 2f
-1:  ldrb w3, [x1], #1
+    eor x3, x0, x1
+    tst x3, #7
+    b.ne 1f            // not co-aligned: bytes
+3:  tst x0, #7         // bytes up to the alignment
+    b.eq 4f
+    ldrb w3, [x1], #1
+    strb w3, [x0], #1
+    subs x2, x2, #1
+    b.eq 2f
+    b 3b
+4:  cmp x2, #8
+    b.lo 1f
+5:  ldr x3, [x1]
+    str x3, [x0]
+    add x1, x1, #8
+    add x0, x0, #8
+    sub x2, x2, #8
+    cmp x2, #8
+    b.hs 5b
+    cbz x2, 2f
+1:  ldrb w3, [x1], #1  // the rest, a byte at a time
     strb w3, [x0], #1
     subs x2, x2, #1
     b.ne 1b

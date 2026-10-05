@@ -150,8 +150,26 @@ static void user_return(void) {
     if (!c->resched) break;
     schedule(); // and look again: a kill may have come meanwhile
   }
-  exception_check_interrupt(); // a thread_interrupt, to its handler
+  thread *th = this_cpu()->current;
+  if (th->fp_in_area) arch_fp_load(th); // a SIMD section used the registers: the user's back
+  exception_check_interrupt();          // a thread_interrupt, to its handler
 }
+
+// The kernel's own SIMD (M6 step 6c2): a bounded section of vector code. The
+// kernel runs with interrupts masked (taken only in arch_wait and in user
+// mode) and never switches inside a section, so the only state to keep is the
+// current thread's user registers, live in the hardware: saved into its area
+// the first time, and loaded again on the way back to user mode (user_return)
+// or at its next switch. A thread stopped at an exception has saved them
+// already. Sections do not block and do not nest.
+[[maybe_unused]] static void simd_begin(void) { // x86_64's copies need none (rep movsb)
+  thread *th = this_cpu()->current;
+  if (!th->task || th->user_held || th->fp_in_area) return;
+  arch_user_save(th);
+  th->fp_in_area = true;
+}
+
+[[maybe_unused]] static void simd_end(void) {} // the registers stay the kernel's until user_return
 
 // Ends the current thread's task with msg as its exit string.
 [[noreturn]] static void task_exit_with(const char *msg, size_t len) {

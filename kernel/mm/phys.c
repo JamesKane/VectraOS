@@ -77,7 +77,7 @@ static uint64_t phys_alloc(unsigned order) {
 
 static uint64_t phys_alloc_zeroed(unsigned order) {
   uint64_t pa = phys_alloc(order);
-  if (pa) memset(phys_to_virt(pa), 0, 4096ull << order);
+  if (pa) arch_page_zero(phys_to_virt(pa), 4096ull << order);
   return pa;
 }
 
