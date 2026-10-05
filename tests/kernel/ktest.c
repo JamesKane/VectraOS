@@ -1903,6 +1903,20 @@ static void test_fp(void) {
   fp_put(0, FP_CTL_DEFAULT);
   vx_handle_close(c);
   vx_handle_close(v);
+  // What is above the baseline (6c3): AVX-512 runs where vx_cpu_has says so
+  // (the kernel's XCR0 has its state: KVM on the Zen 5), and SVE is never
+  // offered, as its state is not saved.
+#ifdef __x86_64__
+  if (vx_cpu_has(VX_CPU_AVX512)) {
+    alignas(64) uint64_t z[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    __asm__ volatile("vmovdqa64 %0, %%zmm16\n\tvpaddq %%zmm16, %%zmm16, %%zmm16\n\tvmovdqa64 %%zmm16, %0"
+                     : "+m"(z));
+    CHECK(z[0] == 2 && z[7] == 16);
+  }
+  CHECK(!vx_cpu_has(VX_CPU_AVX512) || (vx_cpu()->xfeatures & 0xe0) == 0xe0);
+#else
+  CHECK(!vx_cpu_has(VX_CPU_SVE));
+#endif
   // And floating point itself, compiled: 1/3 rounds differently by mode.
   volatile double third = 1.0, three = 3.0;
   CHECK(third / three > 0.333 && third / three < 0.334);

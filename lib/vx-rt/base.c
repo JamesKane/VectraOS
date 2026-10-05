@@ -162,6 +162,60 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   return &info;
 }
 
+// What is above userland's baseline (x86-64-v3, armv8.2-a; M6 step 6c3), to
+// choose a code path at run time: a feature counts only when the CPU has it
+// and the kernel saves what it needs (AVX-512's registers in XCR0; SVE, whose
+// state the kernel does not save yet, never).
+typedef enum vx_cpu_feature : uint32_t {
+#ifdef __x86_64__
+  VX_CPU_AVX512, // F, DQ, BW and VL
+  VX_CPU_VAES,
+  VX_CPU_VPCLMULQDQ,
+  VX_CPU_GFNI,
+  VX_CPU_SHA,
+#else
+  VX_CPU_AES,
+  VX_CPU_PMULL,
+  VX_CPU_SHA2,
+  VX_CPU_SHA512,
+  VX_CPU_SHA3,
+  VX_CPU_CRC32,
+  VX_CPU_DOTPROD,
+  VX_CPU_SVE,
+#endif
+} vx_cpu_feature;
+
+[[maybe_unused]] static bool vx_cpu_has(vx_cpu_feature f) {
+  const vx_cpu_info *c = vx_cpu();
+#ifdef __x86_64__
+  uint32_t a = 7, b, cx = 0, d;
+  __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "+c"(cx), "=d"(d));
+  switch (f) {
+  case VX_CPU_AVX512: {
+    uint32_t need = 1u << 16 | 1u << 17 | 1u << 30 | 1u << 31;
+    return (b & need) == need && (c->xfeatures & 0xe6) == 0xe6;
+  }
+  case VX_CPU_VAES: return cx >> 9 & 1;
+  case VX_CPU_VPCLMULQDQ: return cx >> 10 & 1;
+  case VX_CPU_GFNI: return cx >> 8 & 1;
+  case VX_CPU_SHA: return b >> 29 & 1;
+  }
+#else
+  uint64_t isar0 = c->isar0;
+  switch (f) {
+  case VX_CPU_AES: return (isar0 >> 4 & 0xf) >= 1;
+  case VX_CPU_PMULL: return (isar0 >> 4 & 0xf) >= 2;
+  case VX_CPU_SHA2: return (isar0 >> 12 & 0xf) >= 1;
+  case VX_CPU_SHA512: return (isar0 >> 12 & 0xf) >= 2;
+  case VX_CPU_SHA3: return (isar0 >> 32 & 0xf) >= 1;
+  case VX_CPU_CRC32: return (isar0 >> 16 & 0xf) >= 1;
+  case VX_CPU_DOTPROD: return (isar0 >> 44 & 0xf) >= 1;
+  case VX_CPU_SVE: return (c->pfr0 >> 32 & 0xf) >= 1; // zeroed by the kernel until it saves SVE's state
+  }
+#endif
+  return false;
+}
+
 [[maybe_unused]] static vx_status vx_thread_suspend(vx_handle task, uint64_t thread) {
   return (vx_status)vx_syscall(VX_SYS_thread_suspend, task, thread, 0, 0, 0, 0);
 }

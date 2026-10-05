@@ -132,14 +132,21 @@ static const char *const AARCH64_FLAGS[] = {
     nullptr,
 };
 
+// Userland's baseline (M6 step 6c3, decided 2026-10-05): x86-64-v3 (AVX2,
+// FMA, BMI2, MOVBE; Haswell and Zen on) and armv8.2-a, which every tiered
+// machine has and QEMU's TCG emulates. What is above it, AVX-512 and the
+// rest, is chosen at run time (vx_cpu_has). The kernel stays general-
+// registers-only, as before.
 static const char *const X86_64_USER_FLAGS[] = {
     "--target=x86_64-unknown-none-elf",
+    "-march=x86-64-v3",
     "-fcf-protection=full",
     nullptr,
 };
 
 static const char *const AARCH64_USER_FLAGS[] = {
     "--target=aarch64-unknown-none-elf",
+    "-march=armv8.2-a",
     "-mbranch-protection=standard",
     nullptr,
 };
@@ -813,6 +820,7 @@ static const char *const *posix_flags(const arch *a) {
   if (!flags[i][0]) {
     const char **f = flags[i];
     f[n++] = fmt("--target=%s-vectra-unknown-musl", a->name);
+    f[n++] = a->user_flags[1]; // the baseline's -march
     f[n++] = "-nostdinc";
     f[n++] = "-isystem";
     f[n++] = CLANG_RESOURCE_INCLUDE;
@@ -1023,6 +1031,7 @@ static bool compile_port_sources(const port *p, const arch *a, const file_list *
       cmd_add(c, CLANG);
       if (p == &musl) { // musl's own headers only, in its Makefile's order (CFLAGS_ALL)
         cmd_add(c, posix_flags(a)[0]);
+        cmd_add(c, posix_flags(a)[1]); // the baseline
         cmd_add_words(c, vx_ndb_get(&p->head, "cflags"));
         cmd_add(c, "-Iports/musl/vx/arch/generic");
         cmd_add(c, fmt("-I%s/arch/%s", musl.src, a->name));
