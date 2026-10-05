@@ -160,15 +160,17 @@ arch_enter_frame:
     mov sp, x0
     b trap_restore
 
-// size_t arch_user_copy(void *dst, const void *src, size_t n): copies to or
-// from user memory. A fault inside resumes at arch_user_copy_fault (arch.c,
+// size_t arch_user_copy_in(void *dst, const void *src, size_t n) and
+// arch_user_copy_out(void *dst, const void *src, size_t n): copy from user
+// memory and to it. A fault inside resumes at arch_user_copy_fault (arch.c,
 // aarch64_trap), which returns the bytes not copied: 0 means it all was.
-// Eight bytes at a time where dst and src share their alignment (M6 step
-// 6c2), bytes otherwise and at the edges; x2 drops only once a load and its
-// store are both done, so a fault leaves it exact. Scalar: the unprivileged
-// loads and stores 6c5 moves to have no SIMD form (ADR-0035).
-    .globl arch_user_copy, arch_user_copy_fault, arch_user_copy_end
-arch_user_copy:
+// The user side goes through the unprivileged loads and stores (LDTR, STTR;
+// M6 step 6c5), so it gets exactly the permissions EL0 has, as Arm's
+// permission overlays (POR_EL0) would need. Eight bytes at a time where dst
+// and src share their alignment (6c2), bytes otherwise and at the edges; x2
+// drops only once a load and its store are both done, so a fault leaves it
+// exact. Scalar: no SIMD load or store is unprivileged.
+.macro USER_COPY ld8, st8, ld1, st1
     hint #34
     cbz x2, 2f
     eor x3, x0, x1
@@ -176,27 +178,38 @@ arch_user_copy:
     b.ne 1f            // not co-aligned: bytes
 3:  tst x0, #7         // bytes up to the alignment
     b.eq 4f
-    ldrb w3, [x1], #1
-    strb w3, [x0], #1
+    \ld1 w3, [x1]
+    \st1 w3, [x0]
+    add x1, x1, #1
+    add x0, x0, #1
     subs x2, x2, #1
     b.eq 2f
     b 3b
 4:  cmp x2, #8
     b.lo 1f
-5:  ldr x3, [x1]
-    str x3, [x0]
+5:  \ld8 x3, [x1]
+    \st8 x3, [x0]
     add x1, x1, #8
     add x0, x0, #8
     sub x2, x2, #8
     cmp x2, #8
     b.hs 5b
     cbz x2, 2f
-1:  ldrb w3, [x1], #1  // the rest, a byte at a time
-    strb w3, [x0], #1
+1:  \ld1 w3, [x1]      // the rest, a byte at a time
+    \st1 w3, [x0]
+    add x1, x1, #1
+    add x0, x0, #1
     subs x2, x2, #1
     b.ne 1b
 2:  mov x0, #0
     ret
+.endm
+    .globl arch_user_copy, arch_user_copy_in, arch_user_copy_out, arch_user_copy_fault, arch_user_copy_end
+arch_user_copy:
+arch_user_copy_in:
+    USER_COPY ldtr, str, ldtrb, strb
+arch_user_copy_out:
+    USER_COPY ldr, sttr, ldrb, sttrb
 arch_user_copy_fault:
     mov x0, x2 // counts down as it goes: what is left
     ret
@@ -208,7 +221,8 @@ arch_user_copy_end:
     .globl arch_user_load32, arch_user_load32_fault
 arch_user_load32:
     hint #34
-    ldar w2, [x0]
+    ldtr w2, [x0]      // unprivileged, as the copies (6c5); then a barrier, for ldar's order
+    dmb ishld
     str w2, [x1]
     mov x0, #1
     ret

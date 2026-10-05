@@ -8,7 +8,7 @@
 static task *current_task(void) { return this_cpu()->current->task; }
 
 // User pointers are checked against the current task's page tables before the
-// kernel touches them, and then touched only through arch_user_copy: another
+// kernel touches them, and then touched only through arch_user_copy_in and _out: another
 // thread may unmap a range between the check and the copy, and a fault there
 // makes the copy fail instead of the kernel. (With SMAP and PAN switched on,
 // these will also open and close user access.)
@@ -25,13 +25,13 @@ static bool user_range_ok(uint64_t addr, uint64_t len, bool write) {
 // checks them for the kernel's accesses too) is ACCESS, any other fault INVALID.
 static vx_status copy_from_user(void *dst, uint64_t src, uint64_t len) {
   if (!user_range_ok(src, len, false)) return VX_ERR_INVALID;
-  if (!arch_user_copy(dst, (const void *)src, len)) return VX_OK;
+  if (!arch_user_copy_in(dst, (const void *)src, len)) return VX_OK;
   return arch_user_copy_denied() ? VX_ERR_ACCESS : VX_ERR_INVALID;
 }
 
 static vx_status copy_to_user(uint64_t dst, const void *src, uint64_t len) {
   if (!user_range_ok(dst, len, true)) return VX_ERR_INVALID;
-  if (!arch_user_copy((void *)dst, src, len)) return VX_OK;
+  if (!arch_user_copy_out((void *)dst, src, len)) return VX_OK;
   return arch_user_copy_denied() ? VX_ERR_ACCESS : VX_ERR_INVALID;
 }
 

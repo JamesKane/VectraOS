@@ -155,8 +155,10 @@ x86_vector_table:
 // from user memory. A fault inside resumes at arch_user_copy_fault (arch.c,
 // x86_trap), which returns the bytes not copied: 0 means it all was.
     .text
-    .globl arch_user_copy, arch_user_copy_fault, arch_user_copy_end
-arch_user_copy:
+    .globl arch_user_copy, arch_user_copy_in, arch_user_copy_out, arch_user_copy_fault, arch_user_copy_end
+arch_user_copy:     // both ways: PKU checks the kernel's accesses to user pages as it is
+arch_user_copy_in:
+arch_user_copy_out:
     endbr64
     mov %rdx, %rcx
     rep movsb

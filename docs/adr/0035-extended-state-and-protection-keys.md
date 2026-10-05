@@ -41,7 +41,7 @@ Until now x86_64 saves FXSAVE's 512 bytes at each switch and leaves OSXSAVE off,
 - The ABI grows by two `thread_state` ops, `vx_cpu_info`, two calls, `as_protect`'s implementation, a flags field and an exception kind. `vx_exception` keeps its size: `reserved` becomes `key`, and `rights` takes 8 bytes of what follows (the struct grows by 8; it is not yet frozen, ADR-0004).
 - Each x86 thread's save area is sized at boot from CPUID, about 2.7 KiB with AVX-512 where FXSAVE was 512 bytes, allocated with the thread instead of inside it.
 - Protection keys are a hardening aid inside a process, not isolation. The manual says so in as(2) and sharing(7).
-- Neither tiered arm64 board has overlays, so there `keys` is 0 and the calls answer `UNSUPPORTED`; tests of keys run on x86 under KVM, and on aarch64 only if QEMU's `max` CPU emulates FEAT_S1POE.
+- Neither tiered arm64 board has overlays, so there `keys` is 0 and the calls answer `UNSUPPORTED`; tests of keys run on x86, under KVM and TCG (QEMU's TCG emulates PKU). QEMU 10.2's `max` CPU does not emulate FEAT_S1POE either (`ID_AA64MMFR3_EL1.S1POE` reads 0; probed 2026-10-05, 6c5), so the overlay code waits for a CPU that has them; 6c5 moved aarch64's user copies to `LDTR`/`STTR` regardless, as the overlays need and as EL0's permissions should govern them anyway.
 
 ## Alternatives
 

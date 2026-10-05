@@ -885,7 +885,9 @@ static void arch_page_copy(void *dst, const void *src, uint64_t bytes) {
   simd_end();
 }
 
-// Protection keys: none until 6c5's permission overlays (ADR-0035).
+// Protection keys: none, as no CPU we run on has Arm's permission overlays
+// (FEAT_S1POE: QEMU 10.2's max does not, nor the tiered boards; 6c5,
+// ADR-0035). The user copies use LDTR and STTR, as overlays would need.
 static uint32_t arch_keys(void) { return 0; }
 static bool arch_user_copy_denied(void) { return false; }
 static uint64_t arch_rights_read(void) { return 0; }
@@ -894,7 +896,7 @@ static void arch_rights_write(uint64_t rights) { (void)rights; }
 static void arch_fp_set_rights(uint8_t *fp, uint64_t rights) { (void)fp, (void)rights; }
 
 // The extended state is the vx_fpregs image (ADR-0035): SVE's and SME's join
-// it when the kernel saves them, POR_EL0 with 6c5's overlays.
+// it when the kernel saves them, POR_EL0 with a CPU that has overlays.
 static uint32_t arch_fp_size(void) { return sizeof(vx_fpregs); }
 static void arch_fp_view(const uint8_t *fp, uint8_t *out) { memcpy(out, fp, sizeof(vx_fpregs)); }
 static vx_status arch_fp_check(const uint8_t *fp) {
@@ -907,8 +909,8 @@ static void arch_fp_legacy_set(uint8_t *fp) { (void)fp; }
 
 // The ID registers user code needs, as this CPU has them, with the fields of
 // what the kernel does not save or support zeroed: SVE (PFR0[35:32], ZFR0),
-// SME (PFR1[27:24], SMFR0), MTE (PFR1[11:8]), overlays (MMFR3[19:16]) until
-// 6c5. Generic encodings, as the newer names need a newer assembler; IDs a
+// SME (PFR1[27:24], SMFR0), MTE (PFR1[11:8]), overlays (MMFR3[19:16]), which
+// the kernel does not use. Generic encodings, as the newer names need a newer assembler; IDs a
 // CPU lacks read as zero.
 static void arch_cpu_info(vx_cpu_info *info) {
   uint64_t isar0, isar1, isar2, pfr0, pfr1, mmfr3;

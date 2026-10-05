@@ -1444,7 +1444,7 @@ static void test_keys(void) {
   vx_print(VX_STR("ktest: protection keys: "));
   vx_print_u64(ci.keys);
   vx_print(VX_STR("\n"));
-  if (!ci.keys) { // aarch64 until 6c5's overlays, or an x86 without PKU
+  if (!ci.keys) { // aarch64 (no FEAT_S1POE: 6c5), or an x86 without PKU
     CHECK(vx_as_key_alloc(self, &key) == VX_ERR_UNSUPPORTED &&
           vx_keys_set(1, VX_KEY_READ) == VX_ERR_UNSUPPORTED);
     CHECK(vx_as_unmap(self, at, 3ull * 4096) == VX_OK);

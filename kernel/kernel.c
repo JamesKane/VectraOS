@@ -59,7 +59,9 @@ static void arch_tlb_shootdown(uint64_t root, uint64_t va, uint64_t len);
 
 // User memory is touched only through this (syscall.c): a fault inside it
 // returns the bytes not copied, never a panic. Assembly, in entry.S or vectors.S.
-size_t arch_user_copy(void *dst, const void *src, size_t n);
+size_t arch_user_copy_in(void *dst, const void *src, size_t n);  // from user memory
+size_t arch_user_copy_out(void *dst, const void *src, size_t n); // to it
+extern char arch_user_copy[];                                    // where the two begin, for uaccess_fixup
 bool arch_user_load32(const uint32_t *src, uint32_t *dst); // a futex word, in one load; false on a fault
 extern char arch_user_copy_fault[], arch_user_copy_end[], arch_user_load32_fault[];
 
