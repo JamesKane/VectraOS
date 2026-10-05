@@ -1480,7 +1480,7 @@ static int rc_iflast(rc_compiler *c, const rc_citem *it, const rc_node *t, rc_ci
   }
   if (it->phase == 0 && rc_is_cmd(t->kind) && t->kind != N_SEQ && t->kind != N_IFNOT) {
     c->r->iflast = false;
-    if (*ni == RC_CITEMS) return c->why = "nested too deeply", -1;
+    if (*ni >= RC_CITEMS) return c->why = "nested too deeply", -1;
     items[(*ni)++] = (rc_citem){.node = it->node, .phase = RC_ENDCMD};
   }
   if (it->phase == 0 && t->kind == N_IFNOT && !c->r->iflast)
@@ -1495,7 +1495,7 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
 #define RC_PUSH(nd, ph) RC_PUSHE(nd, ph, noe)
 #define RC_PUSHE(nd, ph, cond)                                                                               \
   do {                                                                                                       \
-    if (ni == RC_CITEMS) return c->why = "nested too deeply", false;                                         \
+    if (ni >= RC_CITEMS) return c->why = "nested too deeply", false;                                         \
     items[ni++] = (rc_citem){.node = (nd), .phase = (ph), .noe = (cond)};                                    \
   } while (0)
 #define RC_EFLAG() rc_eflag(c, noe)
@@ -1509,6 +1509,9 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
     int iflast = rc_iflast(c, &it, t, items, &ni);
     if (iflast < 0) return false;
     if (iflast > 0) continue;
+    // Room for the item's next phase (RC_AGAIN, each case's first push): past
+    // it the pushes check for themselves (the Odin port's finding).
+    if (ni >= RC_CITEMS) return c->why = "nested too deeply", false;
     // Pushes the item back at its next phase, with what it keeps.
 #define RC_AGAIN(ph)                                                                                         \
   do {                                                                                                       \
@@ -2584,7 +2587,9 @@ static bool rc_builtin(rc *r, rc_word *argv, uint32_t argc) {
   const char *name = argv->s;
   size_t n = argv->len;
   if (rc_streq(name, n, "exit", 4)) { // exit [status]: with no status, $status as it is (rc's execexit)
-    if (argc > 2) rc_errout(r, "Usage: exit [status]\nExiting anyway\n", 34);
+    if (argc > 2)
+      rc_errout(r, "Usage: exit [status]\nExiting anyway\n",
+                sizeof "Usage: exit [status]\nExiting anyway\n" - 1);
     if (argc > 1) rc_set_status(r, argv->next->s, argv->next->len);
     r->exiting = true;
     return true;

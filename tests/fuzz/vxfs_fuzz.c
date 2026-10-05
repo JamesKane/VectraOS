@@ -143,7 +143,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   memset(disk, 0, sizeof disk);
   if (whole) {
     vxfs_packbp(b.buf + 12, (vxfs_bptr){.addr = 2ull * VXFS_BLKSZ});
-    vxfs_put64(b.buf + 4, vxfs_xxh64(b.buf + VXFS_LOGHDSZ, logsz, 0));
+    vxfs_put64(b.buf + 4, log_hash(b.buf, b.buf + VXFS_LOGHDSZ, logsz)); // seeded with its header (step 10)
     h.logtl = 2ull * VXFS_BLKSZ, h.tailsz = 0, h.tailhash = vxfs_xxh64(disk, 0, 0);
   } else {
     h.tailsz &= (uint16_t)~7u;

@@ -312,6 +312,16 @@ static void test_replay_and_release(void) {
   CHECK(released == 1); // its last member is gone
   CHECK(vx_ns_mount(&parent, &dev_c, VX_HANDLE_NONE, VX_STR("/srv/cons"), VX_STR(""), VX_STR("/dev"), 0) ==
         VX_OK);
+  // The other order: the mount unmounted while a bind still holds a fid on its
+  // connection, which stays until the bind goes (fixed in 002a9a8; the Odin
+  // port's finding, untested until now).
+  CHECK(vx_ns_bind(&parent, VX_STR("/dev"), VX_STR("/bin"), 0) == VX_OK);
+  CHECK(vx_ns_unmount(&parent, VX_STR(""), VX_STR("/dev")) == VX_OK);
+  CHECK(released == 1 && strcmp(list(&parent, "/bin"), "cons null") == 0);
+  CHECK(vx_ns_unmount(&parent, VX_STR(""), VX_STR("/bin")) == VX_OK);
+  CHECK(released == 2);
+  CHECK(vx_ns_mount(&parent, &dev_c, VX_HANDLE_NONE, VX_STR("/srv/cons"), VX_STR(""), VX_STR("/dev"), 0) ==
+        VX_OK);
 
   // Creating: in the directory the path names, which these servers refuse.
   uint32_t before = 0, after = 0;

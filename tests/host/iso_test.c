@@ -164,6 +164,11 @@ static void check_plain(image *m) {
   CHECK(reads("deep/er/still/deeper/file.txt", "deep\n"));
   iso_entry e;
   CHECK(walk("link_to_readme", &e) && !e.link && e.size == 0); // a link without Rock Ridge: an empty file
+  // The writer's longest name, 30 characters, keeps its version (the Odin port's finding: ";1" lost its 1).
+  bool versioned = false;
+  for (size_t i = 0; i + 32 <= m->len && !versioned; i++)
+    versioned = memcmp(m->bytes + i, "A_LONG_MIXED_CASE_NAME_THA.TXT;1", 32) == 0;
+  CHECK(versioned);
 }
 
 static void check_damage(image *m) {

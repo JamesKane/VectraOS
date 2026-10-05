@@ -341,6 +341,15 @@ static void test_9front_reading(void) {
   CHECK(closed - closes == 1); // the block's output alone, not a here document's slot 0
   expect("cat </tmp/o", "hi\ny\n");
   expect("cat </tmp/o | wc", "2\n");
+  // A compile nested past rc's stack is refused, not written past it.
+  static char deep[16384];
+  size_t d = (size_t)snprintf(deep, sizeof deep, "echo a");
+  for (int i = 0; i < 1020; i++) d += (size_t)snprintf(deep + d, sizeof deep - d, "^`{echo x}");
+  CHECK(script(deep) != RC_OK && strstr(err, "nested too deeply") != nullptr);
+  errs_reset();
+  // exit with more than one word: the whole usage message.
+  CHECK(script("exit a b") == RC_EXIT && strstr(err, "Exiting anyway\n") != nullptr);
+  errs_reset();
   // More redirections in one pipeline than rc keeps for it: refused, its
   // stages not run, nothing closed under them.
   static char many[8192];

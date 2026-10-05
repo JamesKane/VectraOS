@@ -134,7 +134,7 @@ typedef bool (*iso_su_fn)(void *ctx, const uint8_t *e, uint32_t len);
 [[maybe_unused]] static vx_status iso_each_su(iso_vol *v, const iso_rec *r, uint32_t skip, iso_su_fn fn,
                                               void *ctx) {
   uint32_t nlen = r->b[32], at = 33 + nlen + !(nlen & 1) + skip;
-  static uint8_t area[ISO_SECTOR];
+  uint8_t area[ISO_SECTOR]; // a local, not static: two volumes may be read at once (6d's threads)
   const uint8_t *p = r->b;
   uint32_t end = r->len;
   for (int hops = 0; hops < 16;) {
@@ -310,8 +310,7 @@ typedef struct iso_rr {
                    .mtime = iso_time7(r->b + 18)};
   e->mode = e->dir ? 0555 : 0444;
   if (v->kind == ISO_ROCK) {
-    static iso_rr rr;
-    memset(&rr, 0, sizeof rr);
+    iso_rr rr = {}; // a local, as area is
     vx_status st = iso_each_su(v, r, v->susp_skip, iso_rr_entry, &rr);
     if (st != VX_OK) return st;
     if (rr.relocated) return VX_ERR_NOT_FOUND;

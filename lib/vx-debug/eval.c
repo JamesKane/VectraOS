@@ -693,13 +693,16 @@ static bool vxd_apply_binary(vxd_session *c, const char *op, vxd_value *a, vxd_v
     else
       r = x + y;
   } else if (op[0] == '-' && !op[1]) {
-    if (pa && pb)
-      r = scale_a ? (uint64_t)((int64_t)(x - y) / (int64_t)scale_a) : 0,
-      type = VXD_SYN_LONG; // signed: &a[0] - &a[1] is -1
-    else if (pb)
+    if (pa && pb) {
+      // signed: &a[0] - &a[1] is -1. A size the target's types give past
+      // INT64_MAX is no real one: refused, not divided (INT64_MIN / -1 traps).
+      if (scale_a > INT64_MAX) return c->err = "a pointer's type is too large to subtract", false;
+      r = scale_a ? (uint64_t)((int64_t)(x - y) / (int64_t)scale_a) : 0, type = VXD_SYN_LONG;
+    } else if (pb) {
       return c->err = "cannot subtract a pointer from a number", false;
-    else
+    } else {
       r = pa ? x - y * scale_a : x - y;
+    }
   } else if (op[0] == '*' && !op[1]) {
     r = x * y;
   } else if ((op[0] == '/' || op[0] == '%') && !op[1]) {

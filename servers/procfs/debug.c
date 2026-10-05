@@ -71,13 +71,25 @@ typedef struct held {
   bool user_step; // WHY_OVER: a step the debugger asked for, which ends with an event
   int32_t bp;     // WHY_BREAK, WHY_OVER: the breakpoint
   uint64_t pc;
+  uint32_t kind, code; // WHY_FAULT: the fault, to know it again (passed below)
+  uint64_t address;
 } held;
+
+// A fault passed on to the thread's own handler: one that declines it runs
+// the instruction again (vx_note_crash), and the same fault comes back to
+// procfs first. That one is passed on again, not a second stop (the Odin
+// port's finding), so it reaches the default and the crash directory.
+typedef struct passed {
+  uint32_t tid, kind, code;
+  uint64_t address, pc;
+} passed;
 
 typedef struct debugger {
   bool bound; // procfs's port takes the task's exceptions first
   breakpoint bp[DBG_BREAKS];
   vx_watches watches; // the task's watchpoints, as procfs set them
   held threads[DBG_THREADS];
+  passed passed[DBG_THREADS];
   char events[DBG_EVENTS][DBG_EVENT_LEN];
   uint8_t lens[DBG_EVENTS];
   uint32_t ev_head, ev_count, lost;
@@ -229,6 +241,18 @@ static held *held_of(proc *p, uint32_t tid, bool make) {
   return free_slot;
 }
 
+// The fault last passed on for thread tid, or a free place for one; nullptr
+// if neither (more threads than procfs follows: it is then stopped again).
+static passed *passed_of(proc *p, uint32_t tid) {
+  debugger *d = dbg_of(p);
+  passed *free_slot = nullptr;
+  for (uint32_t i = 0; i < DBG_THREADS; i++) {
+    if (d->passed[i].tid == tid) return &d->passed[i];
+    if (!d->passed[i].tid && !free_slot) free_slot = &d->passed[i];
+  }
+  return free_slot;
+}
+
 static int32_t bp_at(const debugger *d, uint64_t addr) {
   for (uint32_t i = 0; i < DBG_BREAKS; i++)
     if (d->bp[i].used && d->bp[i].addr == addr) return (int32_t)i;
@@ -289,6 +313,10 @@ static vx_status release(proc *p, held *h) {
   if (h->why == WHY_BREAK) return step_over(p, h, false);
   if (h->why == WHY_WATCH) return watch_over(p, h, false);
   if (h->why == WHY_OVER || h->why == WHY_WOVER) return VX_OK; // on its way already
+  if (h->why == WHY_FAULT) {
+    passed *q = passed_of(p, h->tid);
+    if (q) *q = (passed){.tid = h->tid, .kind = h->kind, .code = h->code, .address = h->address, .pc = h->pc};
+  }
   st = vx_exception_resume(p->task, h->tid,
                            h->why == WHY_FAULT || h->why == WHY_TRAP ? VX_RESUME_PASS : VX_RESUME_CONTINUE,
                            nullptr);
@@ -401,7 +429,17 @@ static void dbg_exception(proc *p, uint32_t tid) {
     vx_exception_resume(p->task, tid, VX_RESUME_PASS, nullptr);
     return;
   }
-  *h = (held){.tid = tid, .why = WHY_FAULT, .bp = -1, .pc = pc};
+  passed *q = passed_of(p, tid);
+  bool again =
+      q && q->tid == tid && q->kind == e.kind && q->code == e.code && q->address == e.address && q->pc == pc;
+  if (q) *q = (passed){};
+  if (again) { // declined by its handler, and raised again: on to the default
+    *h = (held){};
+    vx_exception_resume(p->task, tid, VX_RESUME_PASS, nullptr);
+    return;
+  }
+  *h = (held){
+      .tid = tid, .why = WHY_FAULT, .bp = -1, .pc = pc, .kind = e.kind, .code = e.code, .address = e.address};
   char extra[64] = " addr=";
   size_t n = 6 + hex_text(e.address, extra + 6);
   const char *access = fault_access(&e);

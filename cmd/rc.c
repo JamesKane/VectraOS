@@ -582,6 +582,9 @@ static vx_status stage_io(const rc_fd *fd, int i, vx_handle pipe_in, vx_handle p
   case RC_FD_INHERIT: share = own_fd(fd->dup); break;
   case RC_FD_PIPE_IN: share = pipe_in; break;
   case RC_FD_PIPE_OUT: share = pipe_out; break;
+  case RC_FD_HERE: // a here document is read; on an output it is no file, as 9front's read-only one takes no writes
+    if (i == 0) return relay_for(fd, true, io);
+    [[fallthrough]];
   case RC_FD_CLOSED: { // a channel no one is at the other end of
     vx_handle ch[2];
     vx_status st = vx_channel_create(0, ch);

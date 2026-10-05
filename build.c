@@ -1366,7 +1366,13 @@ static const char *usage_page(const program *p) {
 // not the program's name and is a C name, [[maybe_unused]] VX_USAGE_word, its
 // lines joined as VX_USAGE's are.
 static char *realloc_words(char *c, size_t *n, vx_str fence, const char *name) {
-  char *out = alloc(*n + fence.len * 6 + 256);
+  // Each line is in one word's declaration, escaped (at most twice its bytes)
+  // and joined ("\\n" and seven spaces); each word costs its declaration's
+  // some 70 bytes and its name: so 3 bytes a fence byte and 96 a line, with
+  // room over (the Odin port's finding: a fence of short words overran 6x).
+  size_t lines = 1;
+  for (size_t i = 0; i < fence.len; i++) lines += fence.ptr[i] == '\n';
+  char *out = alloc(*n + fence.len * 3 + lines * 96 + 256);
   memcpy(out, c, *n);
   size_t nlen = strlen(name), m = *n;
   for (size_t at = 0; at < fence.len;) { // each line whose word has not been done
@@ -1941,7 +1947,7 @@ static size_t iso_record(uint8_t *p, uint32_t lba, uint32_t size, bool dir, cons
 
 typedef struct iso_kid {
   const char *name;    // the real name: Rock Ridge's
-  char iso[32];        // ISO 9660's, unique in the directory: "LIMINE.CONF;1"
+  char iso[33];        // ISO 9660's, unique in the directory: "LIMINE.CONF;1" (30, then ";1", and a NUL)
   uint8_t joliet[128]; // UTF-16BE, up to 64 units
   size_t joliet_len;
   int dir;  // the directory's index, or -1
@@ -1970,7 +1976,7 @@ static int iso_depth(const char *path) {
 }
 
 // The ISO 9660 name for a real one, unique among the directory's first n kids.
-static void iso_mangle(const char *name, bool file, const iso_kid *kids, int n, char out[32]) {
+static void iso_mangle(const char *name, bool file, const iso_kid *kids, int n, char out[33]) {
   const char *dot = file ? strrchr(name, '.') : nullptr;
   if (dot == name) dot = nullptr;
   char base[32], ext[32];
@@ -1991,9 +1997,9 @@ static void iso_mangle(const char *name, bool file, const iso_kid *kids, int n, 
     if (k) snprintf(tail, sizeof tail, "~%d", k);
     size_t keep = nb + strlen(tail) > room ? room - strlen(tail) : nb;
     if (file)
-      snprintf(out, 32, "%.*s%s.%.*s;1", (int)keep, base, tail, (int)ne, ext);
+      snprintf(out, 33, "%.*s%s.%.*s;1", (int)keep, base, tail, (int)ne, ext);
     else
-      snprintf(out, 32, "%.*s%s", (int)keep, base, tail);
+      snprintf(out, 33, "%.*s%s", (int)keep, base, tail);
     bool taken = false;
     for (int i = 0; i < n && !taken; i++) taken = strcmp(kids[i].iso, out) == 0;
     if (!taken) return;
@@ -2566,8 +2572,8 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
     }
   }
   // A `with` name that is no program is a script test: its manifest runs a
-  // program the image has (lua, rc), on tests/user/NAME.lua or NAME.rc, at
-  // /boot/tests.
+  // program the image has (lua, rc, dbg), on tests/user/NAME.lua, NAME.rc or
+  // NAME.cmds, at /boot/tests.
   for (const char *n = with; *n;) {
     const char *end = strchr(n, ',');
     const char *name = str_dup((vx_str){n, end ? (size_t)(end - n) : strlen(n)});
@@ -2579,8 +2585,9 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
     bootfs_room(count);
     files[count] = read_file(fmt("tests/user/%s.ndb", name));
     paths[count++] = fmt("boot/svc/%s.ndb", name);
-    for (int k = 0; k < 2; k++) { // a Lua or an rc script
-      const char *ext = k ? "rc" : "lua";
+    static const char *const exts[] = {"lua", "rc", "cmds"}; // a Lua or an rc script, or dbg's
+    for (int k = 0; k < 3; k++) {
+      const char *ext = exts[k];
       if (!exists(fmt("tests/user/%s.%s", name, ext))) continue;
       bootfs_room(count);
       files[count] = read_file(fmt("tests/user/%s.%s", name, ext));

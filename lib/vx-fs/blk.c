@@ -710,8 +710,13 @@ static vxfs_blk *log_tail(vxfs *fs, const vxfs_arena_hdr *h) {
   uint64_t *blks = fs_alloc(fs, need * sizeof *blks),
            *old = blks ? fs_alloc(fs, nold * sizeof *old) : nullptr;
   bool ok = old != nullptr;
-  for (; ok && got < need; got++)
-    if (!(blks[got] = arena_take(fs, a, true, true))) ok = fs_fail(fs, VX_ERR_NO_MEMORY);
+  while (ok && got < need) { // only the blocks taken are counted: a failed take's 0 is none to give back
+    blks[got] = arena_take(fs, a, true, true);
+    if (blks[got])
+      got++;
+    else
+      ok = fs_fail(fs, VX_ERR_NO_MEMORY);
+  }
   vxfs_bptr bp = a->loghd;
   for (uint64_t i = 0; ok && i < nold; i++) { // the old chain
     old[i] = bp.addr;

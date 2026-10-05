@@ -105,6 +105,8 @@ static vx_status make_users(const char *name, int64_t now) {
   if (st == VX_ERR_NOT_FOUND) return VX_OK; // no adm branch: no users file
   char text[256];
   int n = snprintf(text, sizeof text, "0:adm:adm:%s\n1:none::\n%u:%s:%s:\n", name, USER_ID, name, name);
+  if (n < 0 || (size_t)n >= sizeof text)
+    return VX_ERR_RANGE; // a name too long for users(6)'s 32 bytes anyway
   if (st == VX_OK) st = vxfs_root(&vol, &br->t, &root);
   if (st == VX_OK) st = vxfs_create(&vol, &br->t, &root, "users", 0664, 0, 0, now, &f);
   if (st == VX_OK) st = vxfs_write(&vol, &br->t, &f, 0, text, (uint64_t)n, now, 0);

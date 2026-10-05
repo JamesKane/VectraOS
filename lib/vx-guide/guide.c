@@ -592,7 +592,11 @@ static bool guide_cell(vx_str cell, guide_buf *b, uint32_t *cols, const char **e
   guide_fill f = {.out = &o, .width = UINT32_MAX, .bol = true};
   bool ok = guide_text(&f, cell, error);
   guide_flush(&f);
-  b->n = vx_utf_cut(b->p, b->n, b->n); // a cell cut at the buffer's end ends on a whole rune
+  if (b->n == b->cap) { // cut at the buffer's end: back to the last rune's start, dropped if it is not whole
+    size_t lead = b->n;
+    while (lead > 0 && b->n - lead < VX_UTFMAX && ((unsigned char)b->p[lead - 1] & 0xc0) == 0x80) lead--;
+    if (lead > 0 && !vx_fullrune(b->p + lead - 1, b->n - lead + 1)) b->n = lead - 1;
+  }
   *cols = guide_cols(b->p, b->n);
   return ok;
 }

@@ -443,6 +443,40 @@ static void check_format(void) {
   free(m.bytes);
 }
 
+// A hostile name of 20 slots, all 260 units used, every one a 3-byte rune:
+// cut at FAT_NAME_MAX, the alias after it intact; and a write whose end
+// wraps 64 bits refused (the Odin port's findings).
+static void check_hostile_names(void) {
+  image m = {.len = (size_t)64 << 20};
+  m.bytes = calloc(1, m.len);
+  fat_dev dev = {.ctx = &m, .read = image_read, .write = image_write};
+  CHECK(fat_format(dev, m.len / 512, 2048, "HOSTILE", 7) == VX_OK && fat_mount(&vol, dev) == VX_OK);
+  static char name[255 * 3 + 1];
+  for (size_t i = 0; i < 255; i++) // U+4E00, 255 times
+    name[3 * i] = '\xe4', name[3 * i + 1] = '\xb8', name[3 * i + 2] = '\x80';
+  fat_entry e;
+  CHECK(make(name, 0, &e));
+  CHECK(fat_flush(&vol) == VX_OK);
+  uint8_t *last = nullptr; // the name's 20th slot, its last part: units 247 to 259
+  for (size_t at = 0; at + 32 <= m.len && !last; at += 32)
+    if (m.bytes[at] == 0x54 && m.bytes[at + 11] == FAT_LONG_NAME) last = m.bytes + at;
+  CHECK(last != nullptr);
+  if (last) {
+    static const uint8_t pos[13] = {1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30};
+    for (int i = 8; i < 13; i++) last[pos[i]] = 0x00, last[pos[i] + 1] = 0x4e; // its padding, runes too
+  }
+  CHECK(fat_mount(&vol, dev) == VX_OK);
+  fat_iter it;
+  fat_entry root, got = {};
+  fat_root_entry(&vol, &root);
+  CHECK(fat_open_dir(&vol, &root, &it) == VX_OK);
+  bool found = false;
+  while (!found && fat_dir_next(&vol, &it, &got) == VX_OK) found = got.alias[0] && got.name[0] == '\xe4';
+  CHECK(found && strlen(got.name) < FAT_NAME_MAX && got.alias[0] != '\xe4'); // the alias not written over
+  CHECK(fat_write(&vol, &got, UINT64_MAX - 1, (const uint8_t *)"abcd", 4) == VX_ERR_NO_SPACE);
+  free(m.bytes);
+}
+
 int main(void) {
   check_format();
   check_image("out/host/fat12.img", 12, "SMALL");
@@ -454,5 +488,6 @@ int main(void) {
   check_writes("out/host/fat32.img", "out/host/fat32-written.img");
   check_damage();
   check_slot_zero();
+  check_hostile_names();
   return check_result();
 }

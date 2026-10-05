@@ -103,6 +103,12 @@ static void test_render(void) {
   snprintf(long_page + n, sizeof long_page - (size_t)n, " end\n");
   got = render(long_page, 20, nullptr);
   CHECK(got && vx_utf_valid(got, strlen(got)) && strstr(got, "end\n"));
+  // A table cell longer than its buffer is cut on a whole rune (the Odin port's finding).
+  n = snprintf(long_page, sizeof long_page, "page=t sect=7 summary=s\n\n| ");
+  for (int i = 0; i < 300; i++) n += snprintf(long_page + n, sizeof long_page - (size_t)n, "é");
+  snprintf(long_page + n, sizeof long_page - (size_t)n, " | b |\n| c | d |\n");
+  got = render(long_page, 80, nullptr);
+  CHECK(got && vx_utf_valid(got, strlen(got)));
 }
 
 static void test_nodes(void) {

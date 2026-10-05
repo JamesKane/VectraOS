@@ -112,6 +112,7 @@ typedef struct fat_entry {
     }
     if (!v->cache[i].valid || v->cache[i].last < v->cache[victim].last) victim = i;
   }
+  v->cache[victim].valid = false; // until a read fills it: a failed one leaves no stale sector behind
   if (sector >= v->sectors || !v->dev.read(v->dev.ctx, sector * v->bps, v->bps, v->cache[victim].data))
     return nullptr;
   v->cache[victim].sector = sector, v->cache[victim].valid = true, v->cache[victim].last = ++v->tick;
@@ -126,7 +127,7 @@ typedef struct fat_entry {
 [[maybe_unused]] static vx_status fat_mount(fat_vol *v, fat_dev dev) {
   memset(v, 0, sizeof *v);
   v->dev = dev;
-  static uint8_t boot[512];
+  uint8_t boot[512]; // a local: two volumes may be mounted at once
   if (!dev.read(dev.ctx, 0, sizeof boot, boot)) return VX_ERR_IO;
   const uint8_t *b = boot;
   uint32_t bps = fat_u16(b + 11), spc = b[13], reserved = fat_u16(b + 14), nfats = b[16];
@@ -402,6 +403,7 @@ typedef struct fat_iter {
         else if (c >= 0xd800 && c < 0xe000)
           c = 0xfffd; // a lone surrogate
         if (c == '/' || c == 0) c = 0xfffd;
+        if (len + 4 >= FAT_NAME_MAX) break; // 20 slots hold 260 units, past a name's 255: cut, not overrun
         fat_put_utf8(e->name, &len, c);
       }
       e->name[len] = 0;
@@ -791,7 +793,7 @@ typedef struct fat_iter {
                                             uint32_t count) {
   if (f->attr & FAT_DIRECTORY) return VX_ERR_INVALID;
   if (!v->dev.write) return VX_ERR_ACCESS;
-  if (offset + count > UINT32_MAX) return VX_ERR_NO_SPACE; // FAT's files end at 4 GiB
+  if (offset > UINT32_MAX || count > UINT32_MAX - offset) return VX_ERR_NO_SPACE; // FAT's files end at 4 GiB
   uint64_t end = offset + count;
   vx_status st = fat_grow(v, f, fat_clusters_for(v, end > f->size ? end : f->size));
   static const uint8_t zeros[FAT_MAX_SECTOR];
