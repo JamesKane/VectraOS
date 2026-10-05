@@ -320,7 +320,7 @@ Deferred deliberately, each with where it is due:
 
 ## Scenarios
 
-`./build test` boots each of `tests/qemu/*.ndb` on both architectures; `--release` and `--tcg` run the same set.
+`./build test` boots each of `tests/qemu/*.ndb` on both architectures; `--release` and `--tcg` run the same set. A release gate (`release` in its record: `install`) runs only when named, `./build test install`, when installs are regression-tested and at a release; it is not a milestone's gate (decided 2026-10-05).
 
 | Scenario | What it checks |
 |---|---|

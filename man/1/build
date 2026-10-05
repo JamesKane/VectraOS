@@ -75,7 +75,7 @@ The network is QEMU's user networking on virtio-net, where the guest is 10.0.2.1
 
 @node=test title="test"
 
-`test` runs the test scenarios, each a file `tests/qemu/<scenario>.ndb`: those named, or all of them, at most 64.
+`test` runs the test scenarios, each a file `tests/qemu/<scenario>.ndb`: those named, or all of them but the release gates, at most 64.
 It builds the image and the host programs the scenarios use (`vx9pserve`, `u9fs` and `vxfs`), then, for each architecture at once, boots each scenario's machine headless under QEMU, as `qemu` does, and watches its serial console for what the scenario expects.
 On x86_64 it uses KVM when it can, unless `--tcg` says not to.
 
@@ -99,6 +99,8 @@ The first is `scenario=` and the scenario's name, with these attributes:
   Test programs, and their manifests from `tests/user/<name>.ndb`, put in this image's bootfs; also script tests.
 : `alone`
   Run by itself, after the rest.
+: `release`
+  A release gate, not a milestone's: run only when named (`./build test install`), not when `test` runs them all.
 : `arch=`<arch>
   Run on that architecture only; skipped on the other.
 : `disk=`<mib>

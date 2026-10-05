@@ -3711,15 +3711,31 @@ static bool test_arch(const arch *a, bool release) {
   return ok;
 }
 
+// Whether a scenario's record (its scenario= line) has the bare word `flag`.
+static bool scenario_flag(const char *name, const char *flag) {
+  vx_str text = read_file(fmt("tests/qemu/%s.ndb", name));
+  const char *line = memmem(text.ptr, text.len, "\nscenario=", 10);
+  if (!line) return false;
+  const char *end = memchr(line + 1, '\n', text.len - (size_t)(line + 1 - text.ptr));
+  size_t len = end ? (size_t)(end - line) : text.len - (size_t)(line - text.ptr);
+  const char *word = fmt(" %s", flag);
+  for (const char *at = line; (at = memmem(at, len - (size_t)(at - line), word, strlen(word)));) {
+    at += strlen(word);
+    if (at == line + len || *at == ' ') return true;
+  }
+  return false;
+}
+
 static int cmd_test(const arch *only, bool release) {
-  if (scenario_count == 0) {
+  if (scenario_count == 0) { // every scenario but the release gates, which run when named (install's)
     static file_list found;
     port dir = {.src = fmt("%s/tests", root)};
     collect(&found, &dir, (vx_str){"qemu", 4}, ".ndb");
     if (found.count > 64) die("more than 64 scenarios in tests/qemu");
     for (int i = 0; i < found.count; i++) {
       const char *base = strrchr(found.paths[i], '/') + 1;
-      scenarios[scenario_count++] = fmt("%.*s", (int)(strlen(base) - 4), base);
+      const char *name = fmt("%.*s", (int)(strlen(base) - 4), base);
+      if (!scenario_flag(name, "release")) scenarios[scenario_count++] = name;
     }
   }
   if (!build_vx9pserve() || !build_u9fs() || !build_vxfs())
@@ -3730,15 +3746,7 @@ static int cmd_test(const arch *only, bool release) {
   static const char *apart[64];
   int napart = 0, kept = 0;
   for (int i = 0; i < scenario_count; i++) {
-    vx_str text = read_file(fmt("tests/qemu/%s.ndb", scenarios[i]));
-    const char *line = memmem(text.ptr, text.len, "\nscenario=", 10);
-    bool alone = false;
-    if (line) {
-      const char *end = memchr(line + 1, '\n', text.len - (size_t)(line + 1 - text.ptr));
-      size_t len = end ? (size_t)(end - line) : text.len - (size_t)(line - text.ptr);
-      alone = memmem(line, len, " alone", 6) != nullptr;
-    }
-    if (alone)
+    if (scenario_flag(scenarios[i], "alone"))
       apart[napart++] = scenarios[i];
     else
       scenarios[kept++] = scenarios[i];
