@@ -320,7 +320,7 @@ Deferred deliberately, each with where it is due:
 
 ## Scenarios
 
-`./build test` boots each of `tests/qemu/*.ndb` on both architectures; `--release` and `--tcg` run the same set. A release gate (`release` in its record: `install`) runs only when named, `./build test install`, when installs are regression-tested and at a release; it is not a milestone's gate (decided 2026-10-05).
+`./build test` boots each of `tests/qemu/*.ndb` on both architectures; `--release` and `--tcg` run the same set. A release gate (`release` in its record) runs only when named, as `./build test install`, when a change risks what it covers and at a release; it is no milestone's gate (decided 2026-10-05). The release gates are the scenarios that take minutes: `install` (some 6 minutes on aarch64) and `slots` (some 17). Those of about a minute on aarch64 (`rcscript`, `dosfs`, `fsdadm`; seconds on x86_64) stay in the full run.
 
 | Scenario | What it checks |
 |---|---|
