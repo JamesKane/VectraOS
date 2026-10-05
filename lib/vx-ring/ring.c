@@ -149,6 +149,15 @@ static uint64_t ring_page_up(uint64_t v) { return (v + 4095) & ~4095ull; }
   return __atomic_load_n(r->out_flags, __ATOMIC_RELAXED) & VX_RING_NEED_WAKEUP;
 }
 
+// How many entries the peer has consumed of what this side produced: the
+// head of the queue this side produces into, as a running count.
+[[maybe_unused]] static uint32_t vx_ring_peer_consumed(const vx_ring *r) {
+  return __atomic_load_n(r->out_head, __ATOMIC_ACQUIRE);
+}
+
+// How many entries this side has produced, as a running count.
+[[maybe_unused]] static uint32_t vx_ring_produced(const vx_ring *r) { return r->out_tail_local; }
+
 // --- Consuming ---
 
 // Copies the next entry into out (the entry size bytes) and frees its slot.

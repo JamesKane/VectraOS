@@ -192,7 +192,7 @@ static bool open_file(void *ctx, rc *r, const char *path, size_t len, uint8_t ki
     if (st == VX_ERR_NOT_FOUND && kind != RC_FD_RDWR) st = vx_ns_create(&ns, p, 0644, mode, &files[h]);
     if (st == VX_OK && kind == RC_FD_APPEND) {
       p9_stat s;
-      if (p9c_stat(files[h].c, files[h].fid, &s) == VX_OK) files[h].offset = s.length;
+      if (p9c_stat(files[h].c, files[h].fid, &s, nullptr) == VX_OK) files[h].offset = s.length;
     }
   }
   if (st != VX_OK) {

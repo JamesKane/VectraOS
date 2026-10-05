@@ -187,7 +187,7 @@ static long posix_wait4(long pid, int *status, int options, struct rusage *ru) {
       p9_stat st;
       vx_status e = vx_ns_open(fd_namespace(), proc_path(posix_pid(), "wait"), P9_OREAD, &f);
       if (e == VX_OK) {
-        e = p9c_stat(f.c, f.fid, &st);
+        e = p9c_stat(f.c, f.fid, &st, nullptr);
         vx_ns_close(&f);
       }
       if (e != VX_OK) return proc_errno(e);

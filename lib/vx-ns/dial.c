@@ -20,6 +20,7 @@ typedef struct vx_ns_dialed {
   char addr[VX_NS_MAX_SRC]; // as /net/cs was asked, for sharing
   uint8_t addr_len;
   vx_ns_file ctl, data;
+  vx_mutex lock; // a stream carries one call at a time: threads take turns
   uint8_t tbuf[VX_NS_DIAL_MSIZE], rbuf[VX_NS_DIAL_MSIZE];
 } vx_ns_dialed;
 
@@ -32,6 +33,14 @@ static bool dial_read_all(vx_ns_file *f, uint8_t *buf, size_t len) {
     got += (size_t)n;
   }
   return true;
+}
+
+static void vx_ns_dial_lock(void *ctx, bool take) {
+  vx_ns_dialed *d = ctx;
+  if (take)
+    vx_mutex_lock(&d->lock);
+  else
+    vx_mutex_unlock(&d->lock);
 }
 
 // One 9P exchange over the stream: the request, then a reply as long as its
@@ -171,6 +180,7 @@ static size_t dial_address(vx_str in, char *out, size_t cap) {
                      .tbuf = d->tbuf,
                      .rbuf = d->rbuf,
                      .bufsize = sizeof d->tbuf,
+                     .lock = vx_ns_dial_lock,
                      .uname = VX_STR("vectra")};
   st = p9c_version(&d->c, VX_NS_DIAL_MSIZE, 0);
   if (st != VX_OK) {

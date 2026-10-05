@@ -19,7 +19,7 @@ static bool ls(vx_ns *ns, vx_str path) {
   p9_stat st;
   vx_status e = vx_ns_walk(ns, path, &c, &fid);
   if (e == VX_OK) {
-    e = p9c_stat(c, fid, &st);
+    e = p9c_stat(c, fid, &st, nullptr);
     p9c_clunk(c, fid);
   }
   if (e != VX_OK) {

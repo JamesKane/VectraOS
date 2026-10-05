@@ -18,8 +18,9 @@
 // typed), or an open (a listen file with no call yet, through the clone
 // hook), answers SHOULD_WAIT; p9_serve then returns P9_DEFER, without a reply,
 // and the transport holds the request and serves it again when the file
-// server's device has done something (lib/vx-9p/ring_server.c). Everything else
-// completes as it arrives, so Tflush has nothing to cancel.
+// server's device has done something (lib/vx-9p/ring_server.c), dropping it
+// if a Tflush names it. Everything else completes as it arrives, so a Tflush
+// finds nothing else to cancel.
 
 #pragma once
 

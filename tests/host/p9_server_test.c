@@ -221,11 +221,12 @@ static void test_client(void) {
   CHECK(p9c_write(&c, f, 0, "hello", 5) == 5);
   CHECK(p9c_read(&c, f, 0, buf, sizeof buf) == 5 && memcmp(buf, "hello", 5) == 0);
   p9_stat st;
-  CHECK(p9c_stat(&c, f, &st) == VX_OK && st.length == 5 && st.name.len == 7);
+  p9_stat_text names;
+  CHECK(p9c_stat(&c, f, &st, &names) == VX_OK && st.length == 5 && st.name.len == 7);
   CHECK(p9c_remove(&c, f) == VX_OK);
   CHECK(p9c_walk(&c, root, VX_STR("docs/new.txt"), &f) == VX_ERR_NOT_FOUND);
   CHECK(p9c_walk(&c, root, VX_STR("docs/a.txt/../../b.txt"), &f) == VX_OK); // .. inside the root is fine
-  CHECK(p9c_stat(&c, f, &st) == VX_OK && st.qid.path == 4);
+  CHECK(p9c_stat(&c, f, &st, &names) == VX_OK && st.qid.path == 4);
   p9c_clunk(&c, f);
 }
 
@@ -385,7 +386,8 @@ static void test_open_moves(void) {
   char buf[16];
   CHECK(p9c_read(&c, f, 0, buf, sizeof buf) == 5 && memcmp(buf, "bravo", 5) == 0);
   p9_stat st;
-  CHECK(p9c_stat(&c, f, &st) == VX_OK && st.qid.path == 4);
+  p9_stat_text names;
+  CHECK(p9c_stat(&c, f, &st, &names) == VX_OK && st.qid.path == 4);
   CHECK(p9c_walk(&c, root, VX_STR("b.txt"), &g) == VX_OK);
   CHECK(p9c_clunk(&c, g) == VX_OK && ram_opened_clunk_count == 0); // never opened
   CHECK(p9c_clunk(&c, f) == VX_OK && ram_opened_clunk_count == 1 && ram_opened_clunks[0] == 4);

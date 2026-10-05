@@ -130,7 +130,8 @@ static void test_confinement(void) {
   CHECK(p9c_attach(c, VX_STR("boot/bin"), &root) == VX_OK);
   CHECK(p9c_walk(c, root, VX_STR("../../../.."), &fid) == VX_OK);
   p9_stat st;
-  CHECK(p9c_stat(c, fid, &st) == VX_OK && str_is(st.name, "bin"));
+  p9_stat_text names;
+  CHECK(p9c_stat(c, fid, &st, &names) == VX_OK && str_is(st.name, "bin"));
   p9c_clunk(c, fid);
   CHECK(p9c_walk(c, root, VX_STR("../svc"), &fid) == VX_ERR_NOT_FOUND); // ../ is bin itself; no svc there
   CHECK(p9c_walk(c, root, VX_STR("nstest"), &fid) == VX_OK);

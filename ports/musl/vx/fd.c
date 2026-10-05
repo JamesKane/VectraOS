@@ -328,7 +328,7 @@ static vx_status fd_stat_fid(p9_client *c, uint32_t fid, struct stat *st) {
     return VX_OK;
   }
   p9_stat s;
-  vx_status e = p9c_stat(c, fid, &s);
+  vx_status e = p9c_stat(c, fid, &s, nullptr);
   if (e == VX_OK) fd_stat_fill(st, &s);
   return e;
 }
@@ -350,11 +350,12 @@ static int fd_link_at(const char *p, size_t len, char *target, size_t cap, size_
   if (st != VX_OK) return (int)vx_errno(st);
   int r = 0;
   p9_stat s;
-  if ((c->extensions & P9_EXT_POSIX) && p9c_stat(c, fid, &s) == VX_OK && (s.mode & P9_DMSYMLINK)) {
-    vx_str t;
-    r = -EINVAL;
-    if (p9c_readlink(c, fid, &t) == VX_OK) r = t.len < cap ? 1 : -ENAMETOOLONG;
-    if (r == 1) memcpy(target, t.ptr, t.len), *tlen = t.len;
+  if ((c->extensions & P9_EXT_POSIX) && p9c_stat(c, fid, &s, nullptr) == VX_OK && (s.mode & P9_DMSYMLINK)) {
+    size_t n = 0;
+    vx_status e = cap ? p9c_readlink(c, fid, target, cap - 1, &n) : VX_ERR_TOO_SMALL;
+    r = e == VX_ERR_TOO_SMALL ? -ENAMETOOLONG : -EINVAL;
+    if (e == VX_OK) r = 1;
+    if (r == 1) *tlen = n;
   }
   p9c_clunk(c, fid);
   return r;
@@ -512,7 +513,7 @@ static long file_write(ofd *o, const uint8_t *p, size_t n) {
   }
   if (o->flags & O_APPEND) { // to the end as it is now: not atomic without the posix extension
     p9_stat s;
-    vx_status st = p9c_stat(o->f.c, o->f.fid, &s);
+    vx_status st = p9c_stat(o->f.c, o->f.fid, &s, nullptr);
     if (st != VX_OK) return vx_errno(st);
     o->f.offset = s.length;
   }
@@ -688,7 +689,7 @@ static long fd_lseek(int fd, long offset, int whence) {
     base = (int64_t)o->f.offset;
   } else if (whence == SEEK_END) {
     p9_stat s;
-    vx_status st = p9c_stat(o->f.c, o->f.fid, &s);
+    vx_status st = p9c_stat(o->f.c, o->f.fid, &s, nullptr);
     if (st != VX_OK) return vx_errno(st);
     base = (int64_t)s.length;
   } else if (whence != SEEK_SET) {
@@ -707,7 +708,7 @@ static void tty_note(ofd *o, bool device, uint32_t pty); // below, with the term
 // tty_note from the fid's stat: for a file opened again or joined.
 static void tty_check(ofd *o) {
   p9_stat s;
-  if (p9c_stat(o->f.c, o->f.fid, &s) != VX_OK || !(s.mode & P9_DMDEVICE)) return;
+  if (p9c_stat(o->f.c, o->f.fid, &s, nullptr) != VX_OK || !(s.mode & P9_DMDEVICE)) return;
   uint32_t pty = 0;
   for (size_t i = 0; i < s.name.len && s.name.ptr[i] >= '0' && s.name.ptr[i] <= '9'; i++)
     pty = pty * 10 + (uint32_t)(s.name.ptr[i] - '0');
@@ -746,7 +747,8 @@ static long fd_openat(int dirfd, const char *path, int flags, mode_t mode) {
   }
   if (st != VX_OK) return vx_errno(st);
   p9_stat s;
-  st = p9c_stat(f.c, f.fid, &s);
+  p9_stat_text names; // a pty's number is its name
+  st = p9c_stat(f.c, f.fid, &s, &names);
   bool dir = st == VX_OK && (s.mode & P9_DMDIR);
   bool device = st == VX_OK && (s.mode & P9_DMDEVICE);
   uint32_t pty = 0;
@@ -973,7 +975,7 @@ static long fd_unlinkat(int dirfd, const char *path, int flag) {
   long r = 0;
   if (!fd_walk(dirfd, path, false, &c, &fid, p, &len, &r)) return r;
   p9_stat s;
-  vx_status st = p9c_stat(c, fid, &s);
+  vx_status st = p9c_stat(c, fid, &s, nullptr);
   if (st == VX_OK && !(s.mode & P9_DMDIR) != !(flag & AT_REMOVEDIR)) {
     p9c_clunk(c, fid);
     return flag & AT_REMOVEDIR ? -ENOTDIR : -EISDIR;
@@ -1000,7 +1002,7 @@ static long fd_chdir(const char *path) {
   long r = 0;
   if (!fd_walk(AT_FDCWD, path, true, &c, &fid, p, &len, &r)) return r;
   p9_stat s;
-  vx_status st = p9c_stat(c, fid, &s);
+  vx_status st = p9c_stat(c, fid, &s, nullptr);
   p9c_clunk(c, fid);
   if (st != VX_OK) return vx_errno(st);
   if (!(s.mode & P9_DMDIR)) return -ENOTDIR;
@@ -1239,7 +1241,7 @@ static ofd *file_reopen(const char *path, size_t len, int flags, uint64_t offset
   vx_ns_file f;
   if (vx_ns_open(fd_namespace(), (vx_str){path, len}, mode9, &f) != VX_OK) return nullptr;
   p9_stat s;
-  bool dir = p9c_stat(f.c, f.fid, &s) == VX_OK && (s.mode & P9_DMDIR);
+  bool dir = p9c_stat(f.c, f.fid, &s, nullptr) == VX_OK && (s.mode & P9_DMDIR);
   ofd *o = ofd_new(OFD_FILE, flags & (O_ACCMODE | O_APPEND | O_NONBLOCK));
   if (!o) {
     vx_ns_close(&f);

@@ -414,9 +414,10 @@ static vx_status ns_mount_raw(vx_ns *ns, p9_client *c, vx_handle connector, vx_s
   if (slot == VX_NS_MAX_CONNS) return VX_ERR_NO_MEMORY;
   vx_ns_member m = {.conn = slot, .mounted = true, .from_len = (uint16_t)aname.len};
   if (aname.len) memcpy(m.from, aname.ptr, aname.len); // an empty aname may have no pointer
-  vx_status st = p9c_attach(c, aname, &m.fid);
+  p9_qid qid;
+  vx_status st = p9c_attach_qid(c, aname, &m.fid, &qid);
   if (st != VX_OK) return st;
-  m.qid = c->reply.qid.path;
+  m.qid = qid.path;
   bool fresh = !ns->conns[slot].client;
   if (fresh) {
     ns->conns[slot] = (vx_ns_conn){.client = c, .connector = connector, .src_len = (uint8_t)src.len};

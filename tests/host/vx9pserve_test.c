@@ -63,7 +63,9 @@ int main(void) {
   CHECK(p9c_walk(&c, root, VX_STR("hello.txt"), &f) == VX_OK && p9c_open(&c, f, P9_OREAD) == VX_OK);
   CHECK(p9c_read(&c, f, 0, buf, sizeof buf) == 20 && memcmp(buf, "hello from the host\n", 20) == 0);
   p9_stat st;
-  CHECK(p9c_stat(&c, f, &st) == VX_OK && st.length == 20 && st.name.len == 9 && !(st.qid.type & P9_QTDIR));
+  p9_stat_text names;
+  CHECK(p9c_stat(&c, f, &st, &names) == VX_OK && st.length == 20 && st.name.len == 9 &&
+        !(st.qid.type & P9_QTDIR));
   p9c_clunk(&c, f);
   CHECK(p9c_walk(&c, root, VX_STR("sub/inner.txt"), &f) == VX_OK && p9c_open(&c, f, P9_OREAD) == VX_OK);
   CHECK(p9c_read(&c, f, 0, buf, sizeof buf) == 5);

@@ -6,11 +6,18 @@
 // driver's Irq, with keys from P9_KEY_USER up, which go to its event hook.
 //
 // A request the file server cannot do yet (p9_serve's P9_DEFER) is held, and
-// the connection takes nothing more until it completes: it is served again
-// after every event, after every tick, and when the file server says
-// something it did may let it go on (`again`): a request on another
-// connection, say, that queued what the held one waits for. (Holding one request per connection is what a
-// synchronous client needs; Tflush of a held request comes with pipelining.)
+// served again after every event, after every tick, and when the file server
+// says something it did may let it go on (`again`): a request on another
+// connection, say, that queued what the held one waits for. A connection
+// holds up to P9_RING_DEPTH of them (M6 step 6d4a) and goes on taking new
+// requests meanwhile, so replies go out in any order, as 9P allows. Two rules
+// keep that safe:
+//   - a request on a fid that an earlier held request is on waits behind it,
+//     so writes to a pipe, say, stay in their order;
+//   - Tflush of a held request drops it, unanswered, before Rflush goes out
+//     (9P's rule: the flushed request's reply comes first, or never).
+// A held request's bytes stay in the client's arena until it is answered,
+// and are copied out again each time it is served.
 
 #pragma once
 
@@ -29,12 +36,23 @@ static uint64_t p9_conn_key(uint64_t kind, uint32_t slot, uint32_t gen) {
   return kind << 40 | (uint64_t)gen << 8 | slot;
 }
 
+// A request held for later: its submission (its bytes stay in the client's
+// arena), the VMO it came with, and what the rules above look at.
+typedef struct p9_held {
+  vx_sqe e;
+  vx_handle handle; // dref's VMO, the server's until it is answered
+  uint16_t tag;
+  uint32_t fid; // P9_NOFID: the message has none
+} p9_held;
+
 typedef struct p9_ring_conn {
   bool used, armed;
-  bool holding; // req holds a deferred request (held_len bytes), answered with held_user_data
-  uint32_t gen, held_len;
-  uint64_t held_user_data;
+  uint32_t gen;
+  uint32_t nheld; // held[0..nheld), oldest first
+  p9_held held[P9_RING_DEPTH];
   vx_ring ring;
+  p9_arena out;      // the server's arena: the replies' bytes
+  uint32_t released; // completions whose bytes have been given back
   vx_handle end;
   p9_server srv;
   uint8_t req[P9_RING_MSIZE], resp[P9_RING_MSIZE];
@@ -74,6 +92,9 @@ static void p9_ring_drop_request_handle(p9_ring_conn *c) {
 
 static void p9_ring_close(p9_ring_conn *c) {
   p9_ring_drop_request_handle(c);
+  for (uint32_t i = 0; i < c->nheld; i++)
+    if (c->held[i].handle) vx_handle_close(c->held[i].handle);
+  c->nheld = 0;
   for (uint32_t i = 0; i < P9_MAX_FIDS; i++)
     if (c->srv.fids[i].used) p9_fid_drop(&c->srv, &c->srv.fids[i]);
   vx_handle_close(c->end);
@@ -101,7 +122,11 @@ static void p9_ring_accept(p9_ring_server *s, const vx_msg_header *req) {
   }
   if (st == VX_OK) {
     c->used = true;
-    c->armed = c->holding = false;
+    c->armed = false;
+    c->nheld = c->released = 0;
+    uint64_t arena_size;
+    vx_ring_arena(&c->ring, &arena_size);
+    c->out = (p9_arena){.size = arena_size};
     c->end = h.server;
     c->srv =
         (p9_server){.fs = s->fs, .max_msize = P9_RING_MSIZE, .supported = s->supported, .shared = &s->shared};
@@ -120,50 +145,139 @@ static constexpr uint32_t P9_RING_BUDGET = 8;
 
 typedef enum p9_drained : uint8_t { P9_DRAINED, P9_MORE, P9_BROKEN } p9_drained;
 
-// Serves the requests waiting on one connection, up to its budget: first one
-// it holds, if it can be served now. P9_MORE if requests are left; P9_BROKEN
-// if the client broke the protocol, or sent something too broken to answer,
-// and must be dropped.
+// Gives back the arena of every completion the client has consumed.
+static void p9_ring_release(p9_ring_conn *c) {
+  uint32_t consumed = vx_ring_peer_consumed(&c->ring);
+  while (c->released != consumed && c->out.count) {
+    p9_arena_free(&c->out, (int)c->out.first);
+    c->released++;
+  }
+}
+
+// Sends a reply of n bytes for the submission e, with the reply's handle if
+// the request made one. False if the client has broken the protocol: no room
+// in the completion queue or the arena, which a client that keeps to the
+// depth always leaves.
+static bool p9_ring_reply(p9_ring_conn *c, const vx_sqe *e, size_t n) {
+  p9_ring_release(c);
+  uint64_t off;
+  vx_cqe *out = n ? vx_ring_produce_slot(&c->ring) : nullptr;
+  int region = out ? p9_arena_alloc(&c->out, n, &off) : -1;
+  if (region < 0) {
+    if (c->srv.reply_handle) vx_handle_close(c->srv.reply_handle); // no reply to carry it
+    c->srv.reply_handle = VX_HANDLE_NONE;
+    return false;
+  }
+  uint64_t arena_size;
+  uint8_t *arena = vx_ring_arena(&c->ring, &arena_size);
+  memcpy(arena + off, c->resp, n);
+  *out = (vx_cqe){.user_data = e->user_data, .result = (int64_t)n, .aux2 = off};
+  if (c->srv.reply_handle) { // Rmap's VMO, in a slot the completion names
+    int64_t slot = vx_ring_put_handles(c->end, &c->srv.reply_handle, 1);
+    if (slot >= 0)
+      out->flags = P9_CQE_HANDLE, out->aux = (uint32_t)slot;
+    else
+      vx_handle_close(c->srv.reply_handle); // the client finds none, and its call fails
+    c->srv.reply_handle = VX_HANDLE_NONE;
+  }
+  if (vx_ring_produce(&c->ring)) vx_ring_notify(c->end);
+  return true;
+}
+
+typedef enum p9_tried : uint8_t { P9_ANSWERED, P9_HELD, P9_TRY_BROKEN } p9_tried;
+
+// Serves h once: its bytes copied out of the client's arena again, its VMO
+// lent to the server for the call.
+static p9_tried p9_ring_try(p9_ring_conn *c, p9_held *h) {
+  const uint8_t *p = vx_ring_peer_bytes(&c->ring, h->e.arena_off, h->e.len);
+  if (!p || h->e.len > sizeof c->req) return P9_TRY_BROKEN;
+  memcpy(c->req, p, h->e.len);
+  c->srv.request_handle = h->handle;
+  h->handle = VX_HANDLE_NONE;
+  size_t n = p9_serve(&c->srv, c->req, h->e.len, c->resp, sizeof c->resp);
+  if (n == P9_DEFER) {
+    h->handle = c->srv.request_handle; // kept until it is served
+    c->srv.request_handle = VX_HANDLE_NONE;
+    return P9_HELD;
+  }
+  p9_ring_drop_request_handle(c);
+  return p9_ring_reply(c, &h->e, n) ? P9_ANSWERED : P9_TRY_BROKEN;
+}
+
+// Whether an older held request than held[i] (or than a new one, i ==
+// nheld) is on fid: if so, it waits behind that one.
+static bool p9_ring_behind(const p9_ring_conn *c, uint32_t i, uint32_t fid) {
+  if (fid == P9_NOFID) return false;
+  for (uint32_t j = 0; j < i; j++)
+    if (c->held[j].fid == fid) return true;
+  return false;
+}
+
+static void p9_ring_unhold(p9_ring_conn *c, uint32_t i) {
+  for (uint32_t j = i + 1; j < c->nheld; j++) c->held[j - 1] = c->held[j];
+  c->nheld--;
+}
+
+// The fid a request is on, for the ordering rule; P9_NOFID if none.
+static uint32_t p9_request_fid(const p9_msg *t) {
+  switch (t->type) {
+  case P9_Tversion:
+  case P9_Tauth:
+  case P9_Tflush: return P9_NOFID;
+  default: return t->fid;
+  }
+}
+
+// Serves the requests waiting on one connection, up to its budget: the held
+// ones first, oldest first, then new ones. P9_MORE if requests are left;
+// P9_BROKEN if the client broke the protocol, or sent something too broken
+// to answer, and must be dropped.
 static p9_drained p9_ring_drain(p9_ring_conn *c) {
+  for (uint32_t i = 0; i < c->nheld;) {
+    if (p9_ring_behind(c, i, c->held[i].fid)) {
+      i++;
+      continue;
+    }
+    p9_tried r = p9_ring_try(c, &c->held[i]);
+    if (r == P9_TRY_BROKEN) return P9_BROKEN;
+    if (r == P9_ANSWERED)
+      p9_ring_unhold(c, i);
+    else
+      i++;
+  }
   for (uint32_t served = 0;; served++) {
     if (served == P9_RING_BUDGET) return P9_MORE;
-    vx_sqe e = {.user_data = c->held_user_data, .len = c->held_len};
-    if (!c->holding) {
-      vx_status st = vx_ring_consume(&c->ring, &e);
-      if (st == VX_ERR_SHOULD_WAIT) return P9_DRAINED;
-      if (st != VX_OK || e.opcode != P9_RING_MSG || e.len > sizeof c->req) return P9_BROKEN;
-      const uint8_t *p = vx_ring_peer_bytes(&c->ring, e.arena_off, e.len);
-      if (!p) return P9_BROKEN;
-      memcpy(c->req, p, e.len);
-      if ((e.flags & VX_SQE_HANDLES) &&
-          vx_ring_take_handles(c->end, e.handle_slot, &c->srv.request_handle, 1) != 1)
-        c->srv.request_handle = VX_HANDLE_NONE; // dref's VMO, for Treadref and Twriteref
+    if (c->nheld == P9_RING_DEPTH) return P9_DRAINED; // a client past the depth waits for its answers
+    p9_held h = {.fid = P9_NOFID};
+    vx_status st = vx_ring_consume(&c->ring, &h.e);
+    if (st == VX_ERR_SHOULD_WAIT) return P9_DRAINED;
+    if (st != VX_OK || h.e.opcode != P9_RING_MSG || h.e.len > sizeof c->req) return P9_BROKEN;
+    const uint8_t *p = vx_ring_peer_bytes(&c->ring, h.e.arena_off, h.e.len);
+    if (!p) return P9_BROKEN;
+    if ((h.e.flags & VX_SQE_HANDLES) && vx_ring_take_handles(c->end, h.e.handle_slot, &h.handle, 1) != 1)
+      h.handle = VX_HANDLE_NONE; // dref's VMO, for Treadref and Twriteref
+    memcpy(c->req, p, h.e.len);
+    p9_msg t;
+    if (p9_decode(c->req, h.e.len, &t) != VX_OK) {
+      if (h.handle) vx_handle_close(h.handle);
+      return P9_BROKEN;
     }
-    size_t n = p9_serve(&c->srv, c->req, e.len, c->resp, sizeof c->resp);
-    c->holding = n == P9_DEFER;
-    if (!c->holding) p9_ring_drop_request_handle(c); // a held request keeps its VMO until it is served
-    if (c->holding) {
-      c->held_len = e.len;
-      c->held_user_data = e.user_data;
-      return P9_DRAINED;
+    h.tag = t.tag;
+    h.fid = p9_request_fid(&t);
+    if (t.type == P9_Tflush) // a held request it names goes unanswered; then Rflush
+      for (uint32_t i = 0; i < c->nheld; i++)
+        if (c->held[i].tag == t.oldtag) {
+          if (c->held[i].handle) vx_handle_close(c->held[i].handle);
+          p9_ring_unhold(c, i);
+          break;
+        }
+    if (p9_ring_behind(c, c->nheld, h.fid)) {
+      c->held[c->nheld++] = h;
+      continue;
     }
-    uint64_t arena_size;
-    uint8_t *arena = vx_ring_arena(&c->ring, &arena_size);
-    vx_cqe *out = n && n <= arena_size ? vx_ring_produce_slot(&c->ring) : nullptr;
-    if (!out && c->srv.reply_handle) vx_handle_close(c->srv.reply_handle); // no reply to carry it
-    if (!out) c->srv.reply_handle = VX_HANDLE_NONE;
-    if (!out) return P9_BROKEN; // unanswerable, or a client that does not drain its completions
-    memcpy(arena, c->resp, n);
-    *out = (vx_cqe){.user_data = e.user_data, .result = (int64_t)n};
-    if (c->srv.reply_handle) { // Rmap's VMO, in a slot the completion names
-      int64_t slot = vx_ring_put_handles(c->end, &c->srv.reply_handle, 1);
-      if (slot >= 0)
-        out->flags = P9_CQE_HANDLE, out->aux = (uint32_t)slot;
-      else
-        vx_handle_close(c->srv.reply_handle); // the client finds none, and its call fails
-      c->srv.reply_handle = VX_HANDLE_NONE;
-    }
-    if (vx_ring_produce(&c->ring)) vx_ring_notify(c->end);
+    p9_tried r = p9_ring_try(c, &h);
+    if (r == P9_TRY_BROKEN) return P9_BROKEN;
+    if (r == P9_HELD) c->held[c->nheld++] = h;
   }
 }
 
@@ -217,12 +331,13 @@ static int64_t p9_ring_now(void) { return vx_clock_read(); }
     }
 
     // Arm what is idle, then sleep unless something arrived meanwhile. A
-    // connection holding a request waits for an event, not its doorbell.
+    // connection holding requests waits for an event or its doorbell: a new
+    // request, or a Tflush of a held one.
     if (s->again) more = true, s->again = false; // a held request may go on now: once more round
     bool idle = !more;
     for (uint32_t i = 0; i < s->max_conns && idle; i++) {
       p9_ring_conn *c = &s->conns[i];
-      if (!c->used || c->holding) continue;
+      if (!c->used) continue;
       int64_t seen = vx_counter_read(c->end);
       if (!vx_ring_prepare_sleep(&c->ring)) {
         idle = false;
