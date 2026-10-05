@@ -207,6 +207,38 @@ static void check_damage(image *m) {
   free(c.bytes);
 }
 
+// A hostile volume (the Odin port's findings): a directory claiming 4 GiB of
+// records, every sector of them padding, is refused at once rather than
+// walked until its offset wraps and the walk starts again; and a sector whose
+// read fails is not kept as the sector it replaced.
+static bool zeros(void *ctx, uint64_t off, uint32_t len, uint8_t *buf) {
+  (void)ctx, (void)off;
+  memset(buf, 0, len);
+  return true;
+}
+static bool fails(void *ctx, uint64_t off, uint32_t len, uint8_t *buf) {
+  (void)ctx, (void)off;
+  memset(buf, 0xee, len); // what a partial read might leave
+  return false;
+}
+
+static void check_hostile(void) {
+  static iso_vol v;
+  v = (iso_vol){.dev = {.read = zeros}, .sectors = UINT64_MAX};
+  iso_rec r;
+  uint32_t next;
+  CHECK(iso_record_at(&v, 100, 0xffff'ffff, 0xffff'f000, &r, &next) == VX_ERR_IO);
+  CHECK(iso_record_at(&v, 100, ISO_DIR_MAX - ISO_SECTOR, 0, &r, &next) == VX_ERR_NOT_FOUND); // all padding
+  const uint8_t *s = iso_sector(&v, 7);
+  CHECK(s != nullptr);
+  for (uint32_t i = 0; i < ISO_CACHE; i++) // every slot full, sector 7's the oldest
+    CHECK(iso_sector(&v, 1000 + i) != nullptr);
+  v.dev.read = fails;
+  CHECK(iso_sector(&v, 2000) == nullptr); // evicts a slot, and fails
+  v.dev.read = zeros;
+  for (uint32_t i = 0; i < ISO_CACHE; i++) CHECK(!v.cache[i].valid || v.cache[i].data[0] != 0xee);
+}
+
 int main(void) {
   image m = load("out/host/test.iso");
   CHECK(m.len > 0);
@@ -215,6 +247,7 @@ int main(void) {
   check_joliet(&m);
   check_plain(&m);
   check_damage(&m);
+  check_hostile();
   free(m.bytes);
   return check_result();
 }

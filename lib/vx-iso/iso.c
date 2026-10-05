@@ -29,6 +29,10 @@
 #endif
 
 enum : uint32_t { ISO_SECTOR = 2048, ISO_CACHE = 16, ISO_NAME_MAX = 255 * 3 + 1, ISO_LINK_MAX = 1024 };
+// A directory's extent is refused at this size or more: offsets in it stay
+// far from 32 bits' end, and fit a node's 24 (iso_node). A real one is a few
+// sectors; this would be some 400,000 entries.
+static constexpr uint32_t ISO_DIR_MAX = 1u << 24;
 static constexpr uint64_t ISO_ROOT = 1;
 
 typedef struct iso_dev {
@@ -78,6 +82,7 @@ typedef struct iso_entry {
     }
     if (!v->cache[i].valid || v->cache[i].last < v->cache[victim].last) victim = i;
   }
+  v->cache[victim].valid = false; // until a read fills it: a failed one leaves no stale sector behind
   if ((v->sectors && sector >= v->sectors) ||
       !v->dev.read(v->dev.ctx, sector * ISO_SECTOR, ISO_SECTOR, v->cache[victim].data))
     return nullptr;
@@ -98,6 +103,7 @@ typedef struct iso_rec {
 // sector: a zero length byte means the rest of the sector is padding).
 [[maybe_unused]] static vx_status iso_record_at(iso_vol *v, uint32_t lba, uint32_t len, uint32_t off,
                                                 iso_rec *r, uint32_t *next) {
+  if (len >= ISO_DIR_MAX) return VX_ERR_IO;
   while (off < len) {
     const uint8_t *s = iso_sector(v, (uint64_t)lba + off / ISO_SECTOR);
     if (!s) return VX_ERR_IO;

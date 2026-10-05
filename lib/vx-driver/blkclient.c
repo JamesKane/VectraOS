@@ -117,7 +117,7 @@ static vx_status blk_info(vx_blk *b) {
   b->sector = info.aux, b->sectors = info.aux2, b->flags = info.flags;
   uint64_t max = (uint64_t)info.result < size ? (uint64_t)info.result : size;
   b->max = (uint32_t)(max / b->sector * b->sector);
-  return VX_OK;
+  return b->max ? VX_OK : VX_ERR_UNSUPPORTED; // a sector larger than the arena: no request could move one
 }
 
 // A session on the connector's whole window (flags: VX_BLOCK_READONLY). The

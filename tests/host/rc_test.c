@@ -331,6 +331,27 @@ static void test_9front_reading(void) {
   expect("{ cat } <<EOF\nblock\nEOF\n", "block\n");
   expect("cat <<[0]EOF\nzero\nEOF\n", "zero\n");
   CHECK(script("cat <<EOF\nnever ends\n") == RC_INCOMPLETE);
+  // A pipeline stage's here document is fed as written, not freed before the
+  // stage runs; a here document closes no file (slot 0 is a real one: the
+  // block's output here); an output here document is no file either (the
+  // Odin port's findings).
+  expect("cat <<EOF | wc\nhello there\nEOF\n", "2\n");
+  int closes = closed;
+  expect("{ cat <<EOF\nhi\nEOF\n echo y } >/tmp/o", "");
+  CHECK(closed - closes == 1); // the block's output alone, not a here document's slot 0
+  expect("cat </tmp/o", "hi\ny\n");
+  expect("cat </tmp/o | wc", "2\n");
+  // More redirections in one pipeline than rc keeps for it: refused, its
+  // stages not run, nothing closed under them.
+  static char many[8192];
+  size_t at = 0;
+  for (int i = 0; i < 60; i++)
+    at += (size_t)snprintf(many + at, sizeof many - at,
+                           "echo a >[2]/tmp/o >[3]/tmp/o >[4]/tmp/o >[5]/tmp/o >[6]/tmp/o | ");
+  snprintf(many + at, sizeof many - at, "cat");
+  used_closed = false;
+  CHECK(script(many) != RC_OK || strcmp(status_now(), "") != 0);
+  CHECK(!used_closed && strcmp(out, "") == 0);
   // Descriptors of more digits lex, and past the ones there are, are refused.
   CHECK(script("echo x >[10] f\n") == RC_SYNTAX);
   // flag, and what the flags do.

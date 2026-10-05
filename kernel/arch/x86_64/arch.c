@@ -610,7 +610,7 @@ void x86_trap(trap_frame *f) {
     uint32_t code;
     uint64_t address;
     uint32_t kind = x86_exception_kind(f, &code, &address);
-    if (!exception_raise(f, kind, code, address)) { // nobody took it
+    if (!exception_raise(f, &kind, code, &address)) { // nobody took it
       task_fault_start();
       kput_exception(f);
       kput(VX_STR(" at rip "));

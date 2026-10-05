@@ -943,7 +943,8 @@ void aarch64_trap(trap_frame *f, uint64_t index) {
     uint32_t code;
     uint64_t address;
     uint32_t kind = aarch64_exception_kind(f, &code, &address);
-    if ((index & 3) != 0 || !exception_raise(f, kind, code, address)) { // an SError or FIQ, or nobody took it
+    if ((index & 3) != 0 ||
+        !exception_raise(f, &kind, code, &address)) { // an SError or FIQ, or nobody took it
       task_fault_start();
       kput_exception(f, index);
       kput(VX_STR(" at pc "));

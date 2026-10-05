@@ -89,15 +89,19 @@ static port *exception_port(task *t, bool first, uint64_t *key) {
 }
 
 // A fault in user mode: true if the thread may go back to user mode, its frame
-// perhaps changed; false for the default, which kills the task.
-static bool exception_raise(struct trap_frame *f, uint32_t kind, uint32_t code, uint64_t address) {
+// perhaps changed; false for the default, which kills the task. *kind and
+// *address are the exception's as everyone sees it (a pager's late page is
+// PAGER_TIMEOUT at the page), so the default's exit string says the same.
+static bool exception_raise(struct trap_frame *f, uint32_t *kindp, uint32_t code, uint64_t *addressp) {
   thread *th = this_cpu()->current;
   task *t = th->task;
-  if (kind == VX_EXCEPTION_PAGE_FAULT) { // a pager's page, perhaps: taken in before anyone sees a fault
-    pager_result r = pager_fault(address, code);
+  if (*kindp == VX_EXCEPTION_PAGE_FAULT) { // a pager's page, perhaps: taken in before anyone sees a fault
+    pager_result r = pager_fault(*addressp, code);
     if (r == PAGER_MAPPED || r == PAGER_KILLED) return true; // made again; or user_return ends it
-    if (r == PAGER_TIMEOUT) kind = VX_EXCEPTION_PAGER_TIMEOUT, address &= ~4095ull;
+    if (r == PAGER_TIMEOUT) *kindp = VX_EXCEPTION_PAGER_TIMEOUT, *addressp &= ~4095ull;
   }
+  uint32_t kind = *kindp;
+  uint64_t address = *addressp;
   if (kind == VX_EXCEPTION_STEP) arch_frame_step(f, false); // one instruction, done
   vx_exception e = {.kind = kind, .code = code, .address = address, .thread = th->id};
   arch_frame_regs(f, &e.regs);

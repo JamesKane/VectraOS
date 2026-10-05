@@ -43,12 +43,18 @@
 
 // --- Text, for the files that are read ---
 
+// The longest is a DNS answer: VX_DNS_ADDRS lines of "NAME ip A.B.C.D\n", a
+// name of up to 253 bytes. Text that does not fit marks it cut, and a query
+// with a cut answer fails rather than give part of a line (an address cut
+// short can be another valid address).
 typedef struct text {
-  char buf[256];
+  char buf[VX_DNS_ADDRS * (253 + 4 + 15 + 1)];
   size_t len;
+  bool cut;
 } text;
 
 static void put(text *t, vx_str s) {
+  if (s.len > sizeof t->buf - t->len) t->cut = true;
   for (size_t i = 0; i < s.len && t->len < sizeof t->buf; i++) t->buf[t->len++] = s.ptr[i];
 }
 
@@ -608,7 +614,7 @@ static vx_status cs_query(text *answer, vx_str q, vx_instant now) {
     }
     put(answer, VX_STR("\n"));
   }
-  return VX_OK;
+  return answer->cut ? VX_ERR_RANGE : VX_OK;
 }
 
 // "NAME ip" (or "NAME"): a line "NAME ip ADDR" for each address.
@@ -624,7 +630,7 @@ static vx_status dns_query(text *answer, const vx_str *w, uint32_t n, vx_instant
     put_ip(answer, addrs[i]);
     put(answer, VX_STR("\n"));
   }
-  return VX_OK;
+  return answer->cut ? VX_ERR_RANGE : VX_OK;
 }
 
 // A query's answer, a line a read: the line that starts at offset.

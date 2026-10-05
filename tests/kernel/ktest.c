@@ -379,18 +379,21 @@ static bool wait_blocked(vx_handle task) {
 }
 
 // A child task running `what`, started, with its faults going to exc_port if
-// that is not 0 (bound before it starts), and a handle to itself as its first
-// argument. *task gets a handle to it.
-static bool start_child_bound(child_code what, vx_handle exc_port, uint32_t options, vx_handle *task) {
+// that is not 0 (bound before it starts), data's first page mapped at
+// CHILD_DATA if data is not 0, and a handle to itself as its first argument.
+// *task gets a handle to it.
+static bool start_child_mapped(child_code what, vx_handle exc_port, uint32_t options, vx_handle data,
+                               vx_handle *task) {
   uint8_t code[64] = {};
   uint32_t len = write_child(code, what);
   vx_handle text = 0, stack = 0, th = 0, itself = 0; // closing 0 is a harmless BAD_HANDLE
-  uint64_t text_at = CHILD_CODE, stack_at = CHILD_STACK_TOP - 4096;
+  uint64_t text_at = CHILD_CODE, stack_at = CHILD_STACK_TOP - 4096, data_at = CHILD_DATA;
   bool ok = vx_task_create(VX_STR("child"), task) == VX_OK && vx_vmo_create(4096, 0, &text) == VX_OK &&
             vx_vmo_rw(text, VX_VMO_WRITE, 0, code, len) == VX_OK &&
             vx_as_map(*task, text, 0, 4096, VX_MAP_EXEC, &text_at) == VX_OK &&
             vx_vmo_create(4096, 0, &stack) == VX_OK &&
             vx_as_map(*task, stack, 0, 4096, VX_MAP_WRITE, &stack_at) == VX_OK &&
+            (!data || vx_as_map(*task, data, 0, 4096, 0, &data_at) == VX_OK) &&
             (!exc_port || vx_exception_bind(*task, exc_port, 5, options) == VX_OK) &&
             vx_thread_create(*task, &th) == VX_OK && vx_handle_dup(*task, VX_RIGHTS_SAME, &itself) == VX_OK &&
             vx_thread_start(th, CHILD_CODE, CHILD_STACK_TOP, itself, 0) == VX_OK;
@@ -399,6 +402,10 @@ static bool start_child_bound(child_code what, vx_handle exc_port, uint32_t opti
   vx_handle_close(stack);
   vx_handle_close(th);
   return ok;
+}
+
+static bool start_child_bound(child_code what, vx_handle exc_port, uint32_t options, vx_handle *task) {
+  return start_child_mapped(what, exc_port, options, 0, task);
 }
 
 static bool start_child(child_code what, vx_handle *task) { return start_child_bound(what, 0, 0, task); }
@@ -1360,6 +1367,18 @@ static void test_pager(void) {
   CHECK(vx_port_wait(port, after_ms(100), 0, &pk, 1) == 1 && pk.key == 43 && pk.source == 78);
   CHECK(vx_as_unmap(self, at, 4096) == VX_OK);
   vx_handle_close(late_vmo);
+  // A deadline missed with no one to handle it: the task ends with the
+  // timeout's words, not the page fault's (the Odin port's finding), so a
+  // POSIX parent sees SIGBUS.
+  vx_handle never_vmo, child, exits;
+  CHECK(vx_port_create(0, &exits) == VX_OK); // apart from the pager's port, which gets the request
+  CHECK(vx_vmo_create_pager(quick, 79, 4096, &never_vmo) == VX_OK);
+  CHECK(start_child_mapped(FAULT_LOAD, 0, 0, never_vmo, &child));
+  CHECK(starts(wait_exit(exits, child), "sys: trap: page not supplied addr=0x300000 pc="));
+  vx_handle_close(child);
+  vx_handle_close(exits);
+  vx_handle_close(never_vmo);
+  while (vx_port_wait(port, 0, 0, &pk, 1) == 1) {} // its request, never answered
   vx_handle_close(quick);
   vx_handle_close(pager);
   vx_handle_close(src);

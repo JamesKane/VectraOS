@@ -2289,19 +2289,29 @@ typedef struct rc_stage {
 static constexpr uint32_t RC_STAGES = 64;
 static rc_stage rc_stages[RC_STAGES];
 static uint32_t rc_nstages;
+// A redirection undone while a pipeline's stages are gathered: the stages
+// given it still hold its file's handle and its word (a file's path, a here
+// document's text), so both are kept until they have run.
 static struct {
   uint32_t handle, level;
-} rc_closes[2 * RC_STAGES];
+  bool close; // a file the host opened; a here document has no handle
+  rc_word *path;
+} rc_closes[4 * RC_STAGES];
 static uint32_t rc_ncloses;
 
-// The stages from base on let go, and the files only they used closed.
+static void rc_undo_redir(rc *r, bool close, uint32_t handle, rc_word *path) {
+  if (close && r->host.close) r->host.close(r->host.ctx, handle);
+  rc_freewords(r, path);
+}
+
+// The stages from base on let go, and the files and words only they used.
 static void rc_free_stages(rc *r, uint32_t base) {
   for (uint32_t i = base; i < rc_nstages; i++) rc_freewords(r, (rc_word *)rc_stages[i].cmd.argv);
   if (base < rc_nstages) rc_nstages = base;
   uint32_t kept = 0;
   for (uint32_t i = 0; i < rc_ncloses; i++) {
     if (rc_closes[i].level > base)
-      r->host.close(r->host.ctx, rc_closes[i].handle);
+      rc_undo_redir(r, rc_closes[i].close, rc_closes[i].handle, rc_closes[i].path);
     else
       rc_closes[kept++] = rc_closes[i];
   }
@@ -2311,13 +2321,16 @@ static void rc_free_stages(rc *r, uint32_t base) {
 static void rc_pop_redirs(rc *r, uint32_t to) {
   while (r->nredirs > to) {
     rc_redir *d = &r->redirs[--r->nredirs];
-    if (d->path && r->host.close) { // a file the host opened: closed, or once a stage given it has run
-      if (rc_nstages && rc_ncloses < sizeof rc_closes / sizeof rc_closes[0])
-        rc_closes[rc_ncloses++] = (typeof(rc_closes[0])){d->to.handle, rc_nstages};
-      else
-        r->host.close(r->host.ctx, d->to.handle);
+    bool close = d->path && d->to.kind != RC_FD_HERE; // a here document's handle is none: 0 is a real file's
+    if (d->path && rc_nstages) {                      // kept until the stages given it have run
+      if (rc_ncloses < sizeof rc_closes / sizeof rc_closes[0]) {
+        rc_closes[rc_ncloses++] = (typeof(rc_closes[0])){d->to.handle, rc_nstages, close, d->path};
+        d->path = nullptr;
+        continue;
+      }
+      rc_fail(r, nullptr, "too many redirections in one pipeline", nullptr); // its stages do not run
     }
-    rc_freewords(r, d->path);
+    rc_undo_redir(r, close, d->to.handle, d->path);
     d->path = nullptr;
   }
 }

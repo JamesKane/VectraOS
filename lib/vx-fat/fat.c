@@ -370,7 +370,7 @@ typedef struct fat_iter {
           continue;
         }
         count = seq, sum = s[13];
-      } else if (seq != expect || s[13] != sum) {
+      } else if (seq < 1 || seq != expect || s[13] != sum) { // 0 would index before units[]
         expect = 0;
         continue;
       }

@@ -6,7 +6,8 @@
 // whole and in pieces; a directory spanning clusters; nodes found again and
 // their parents; a known time. Then damage: a truncated device, a FAT loop,
 // a boot sector that is not FAT. (A loop is bounded by the file's size and
-// the volume's cluster count, not found: that wants a visited set.)
+// the volume's cluster count, not found: that wants a visited set.) And a
+// long-name slot numbered 0, refused.
 
 #include <stdlib.h>
 #include <string.h>
@@ -197,6 +198,29 @@ static void check_surrogates(void) {
   slot[3] = ' ', slot[4] = 0; // the high surrogate alone, then the space
   CHECK(fat_mount(&vol, (fat_dev){.ctx = &m, .read = image_read}) == VX_OK);
   CHECK(walk("\xef\xbf\xbd Long Directory Name", &e)); // U+FFFD
+  free(m.bytes);
+}
+
+// A long-name slot numbered 0, not the name's last part, with the
+// checksum a fresh run starts with (0): refused, not written at
+// units[-13] (the Odin port's finding). The name is then no name, and its
+// entry is found by its 8.3 alias alone.
+static void check_slot_zero(void) {
+  image m = load("out/host/fat16.img");
+  if (!m.len) return;
+  CHECK(fat_mount(&vol, (fat_dev){.ctx = &m, .read = image_read}) == VX_OK);
+  uint8_t *slot = nullptr;
+  for (uint32_t i = 0; i < vol.root_entries && !slot; i++) {
+    uint8_t *s = m.bytes + (uint64_t)vol.root_start * vol.bps + (uint64_t)i * 32;
+    if (s[11] == FAT_LONG_NAME && (s[0] & 0x40) && (s[0] & 0x1f) > 1) slot = s; // a name of two slots or more
+  }
+  CHECK(slot != nullptr);
+  if (!slot) return;
+  slot[0] = 0x20, slot[13] = 0;
+  fat_entry e;
+  CHECK(fat_mount(&vol, (fat_dev){.ctx = &m, .read = image_read}) == VX_OK);
+  CHECK(!walk("Long Directory Name", &e));
+  CHECK(walk("big.bin", &e)); // the rest of the directory reads as before
   free(m.bytes);
 }
 
@@ -429,5 +453,6 @@ int main(void) {
   check_writes("out/host/fat16.img", "out/host/fat16-written.img");
   check_writes("out/host/fat32.img", "out/host/fat32-written.img");
   check_damage();
+  check_slot_zero();
   return check_result();
 }
