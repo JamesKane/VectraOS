@@ -172,8 +172,13 @@ static bool guide_header_tuple(vx_guide *g, const vx_ndb_tuple *t, const vx_ndb_
   if (res == VX_NDB_ERROR) return guide_fail(g, r.error, first + r.error_line - 1);
   if (res == VX_NDB_END || !guide_eq(rec.tuples[0].key, "page"))
     return guide_fail(g, "a page starts with a header whose first tuple is page=", first);
-  for (int i = 0; i < rec.count; i++)
+  for (int i = 0; i < rec.count; i++) {
+    // The page is UTF-8, but ndb's hex form (x"C0") decodes to any bytes: a
+    // header value is checked once decoded (found by guide_fuzz).
+    if (!vx_utf_valid(rec.tuples[i].value.ptr, rec.tuples[i].value.len))
+      return guide_fail(g, "a header value that is not UTF-8", first);
     if (!guide_header_tuple(g, &rec.tuples[i], &rec, first)) return false;
+  }
   vx_ndb_record more;
   if (vx_ndb_next(&r, &more) != VX_NDB_END) return guide_fail(g, "the header is one record", first);
   vx_guide_header *h = &g->h;

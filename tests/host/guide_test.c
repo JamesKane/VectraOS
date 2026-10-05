@@ -111,6 +111,12 @@ static void test_render(void) {
   CHECK(got && vx_utf_valid(got, strlen(got)));
 }
 
+// A header value decoded from ndb's hex form must be UTF-8 too (guide_fuzz's find).
+static void test_header_utf8(void) {
+  CHECK(!render("page=t sect=7 summary=x\"C0\"\n\nText.\n", 80, nullptr));
+  CHECK(render("page=t sect=7 summary=x\"C3A9\"\n\nText.\n", 80, nullptr)); // é
+}
+
 static void test_nodes(void) {
   const char *page = "page=rc sect=1 summary=shell\n\n# DESCRIPTION\n\nMain.\n\n"
                      "@node=quoting title=\"Quoting\"\n\nQuotes.\n\n@node=vars\n\nVariables.\n";
@@ -266,6 +272,7 @@ static void test_pages(void) {
 }
 
 int main(void) {
+  test_header_utf8();
   test_render();
   test_nodes();
   test_errors();
