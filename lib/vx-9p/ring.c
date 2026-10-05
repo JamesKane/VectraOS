@@ -138,10 +138,18 @@ static size_t p9_ring_rpc(void *ctx, const uint8_t *req, size_t len, uint8_t *re
   return 0;
 }
 
+// A connection cleared, its buffers with it; dead says it may not be used. Not
+// a compound literal, which a build without optimisation makes on the stack
+// first: the buffers would take more than a thread's stack has.
+static void p9_conn_clear(p9_conn *k, bool dead) {
+  memset(k, 0, sizeof *k);
+  k->dead = dead;
+}
+
 // Opens a connection through a connector (a listen channel's client end, which
 // stays the caller's) and negotiates 9Px. The connection is ready to attach.
 [[maybe_unused]] static vx_status p9_ring_connect(vx_handle connector, p9_conn *k) {
-  *k = (p9_conn){};
+  p9_conn_clear(k, false);
   vx_msg_header req = {.ordinal = P9_CONNECT}, rep;
   vx_handle got[2] = {};
   vx_call call = {.wr_bytes = &req,
@@ -166,7 +174,7 @@ static size_t p9_ring_rpc(void *ctx, const uint8_t *req, size_t len, uint8_t *re
   if (st != VX_OK) {
     if (k->end) vx_handle_close(k->end);
     if (k->port) vx_handle_close(k->port);
-    *k = (p9_conn){.dead = true};
+    p9_conn_clear(k, true);
   }
   return st;
 }
@@ -176,7 +184,7 @@ static size_t p9_ring_rpc(void *ctx, const uint8_t *req, size_t len, uint8_t *re
   if (k->c.handle) vx_handle_close(k->c.handle);
   if (k->end) vx_handle_close(k->end);
   if (k->port) vx_handle_close(k->port);
-  *k = (p9_conn){.dead = true};
+  p9_conn_clear(k, true);
 }
 
 // --- One call at a time, its reply taken later ---

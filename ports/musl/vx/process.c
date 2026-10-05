@@ -221,9 +221,9 @@ typedef struct spawn_ctx {
   int64_t pid;
   long error;
   // The signals the child keeps: what is ignored stays ignored (but those in
-  // sig_default), and the mask is this one's (or sig_mask, if has_mask), as
+  // sig_default), and the mask is this one's (or blocked, if has_mask), as
   // POSIX has it for exec and posix_spawn.
-  uint64_t sig_default, sig_mask;
+  uint64_t sig_default, blocked;
   bool has_mask;
 } spawn_ctx;
 
@@ -430,7 +430,7 @@ int posix_spawn(pid_t *restrict pid, const char *restrict path, const posix_spaw
   if (flags & POSIX_SPAWN_SETPGROUP) ctx.pgid = attr->__pgrp;
   if (flags & POSIX_SPAWN_SETSIGDEF) memcpy(&ctx.sig_default, &attr->__def, sizeof ctx.sig_default);
   if (flags & POSIX_SPAWN_SETSIGMASK)
-    memcpy(&ctx.sig_mask, &attr->__mask, sizeof ctx.sig_mask), ctx.has_mask = true;
+    memcpy(&ctx.blocked, &attr->__mask, sizeof ctx.blocked), ctx.has_mask = true;
   // Not through __vx_syscall: a signal now would run its handler in the middle
   // of the back end's work. It waits, as in a call, until the child is made.
   sig_depth = sig_depth + 1;
@@ -493,6 +493,7 @@ static long fork_child(void) {
   vx_drbg_mix(&proc_entropy, child_tag, sizeof child_tag, false);
   vx_drbg_mix(&proc_entropy, &proc_kernel_task_id, sizeof proc_kernel_task_id, false);
   fd_after_fork();
+  atomic_store(&be_live, 1);        // the thread that forked, alone
   wait_kept_count = 0;              // the parent's children's records are the parent's
   sig_forget_pending(fork_pending); // the parent's, copied with its memory; not those sent to the child since
   if (proc_mounted) proc_write(posix_pid(), "ctl", "childnotes");

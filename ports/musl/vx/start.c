@@ -174,8 +174,6 @@ static long time_deadline(const struct timespec *ts, bool absolute, vx_instant *
   return 0;
 }
 
-static bool sig_restarting;          // backend.c
-static vx_instant sig_call_deadline; // backend.c: a sleep's or a poll's, kept when it is made again
 // Changed by sig_note for each signal that comes while the back end runs: a
 // sleep waits on it, so one that comes just before the sleep ends it too.
 static _Atomic uint32_t sig_seq;
@@ -191,7 +189,9 @@ static long time_sleep(clockid_t clock, int flags, const struct timespec *req, s
     *deadline -= vx_clock_utc() - vx_clock_read(); // a time of day: on the monotonic clock
   while (st == 0 && vx_clock_read() < *deadline) {
     uint32_t seq = atomic_load(&sig_seq);
+    uint32_t held = be_wait_begin();
     vx_status w = vx_futex_wait(&sig_seq, seq, *deadline);
+    be_wait_end(held);
     if (w != VX_ERR_INTERRUPTED && w != VX_ERR_BAD_STATE) continue; // the deadline, or nothing
     vx_instant left = *deadline - vx_clock_read();
     if (left < 0) left = 0;
@@ -211,7 +211,9 @@ static long time_futex(uint32_t *word, int op, uint32_t value, const struct time
     vx_instant deadline = VX_INFINITE;
     long st = timeout ? time_deadline(timeout, false, &deadline) : 0;
     if (st != 0) return st;
+    uint32_t held = be_wait_begin(); // a pthread mutex's or condition's: its waker is another thread
     vx_status vst = vx_futex_wait((const _Atomic uint32_t *)word, value, deadline);
+    be_wait_end(held);
     return vst == VX_ERR_BAD_STATE ? -EAGAIN : vx_errno(vst); // the word had changed
   }
   case FUTEX_WAKE: return vx_futex_wake((const _Atomic uint32_t *)word, value);

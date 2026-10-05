@@ -92,7 +92,7 @@ static p9_client *vx_ns_connect(const vx_ns_handles *from, vx_str name, vx_handl
   *st = *connector ? p9_ring_connect(*connector, &vx_ns_conns[free_slot]) : VX_ERR_NOT_FOUND;
   if (*st != VX_OK) {
     if (*connector) vx_handle_close(*connector);
-    vx_ns_conns[free_slot] = (p9_conn){};
+    p9_conn_clear(&vx_ns_conns[free_slot], false);
     return nullptr;
   }
   memcpy(vx_ns_conn_names[free_slot], cname, sizeof cname);
@@ -106,7 +106,7 @@ static p9_client *vx_ns_connect_handle(vx_handle connector, vx_status *st) {
     if (vx_ns_conns[i].end) continue;
     *st = p9_ring_connect(connector, &vx_ns_conns[i]);
     if (*st != VX_OK) {
-      vx_ns_conns[i] = (p9_conn){};
+      p9_conn_clear(&vx_ns_conns[i], false);
       return nullptr;
     }
     vx_ns_conn_names[i][0] = 0;
@@ -473,7 +473,7 @@ static vx_status vx_ns_copy_records(const vx_ns *ns, vx_ndb_writer *w, vx_handle
     vx_as_unmap(vx_self, (uint64_t)vx_ns_group.page, VX_NS_PAGE_SIZE);
     for (uint32_t i = 0; i < VX_NS_MAX_CONNS; i++) {
       if (vx_ns_conns[i].end) p9_ring_disconnect(&vx_ns_conns[i]);
-      vx_ns_conns[i] = (p9_conn){};
+      p9_conn_clear(&vx_ns_conns[i], false);
       vx_ns_conn_names[i][0] = 0;
       if (ns->conns[i].connector) vx_handle_close(ns->conns[i].connector);
     }
@@ -489,7 +489,7 @@ static vx_status vx_ns_copy_records(const vx_ns *ns, vx_ndb_writer *w, vx_handle
   vx_status st = vx_ns_copy_records(ns, &w, handles, names, &count, VX_CHANNEL_MAX_HANDLES);
   for (uint32_t i = 0; i < VX_NS_MAX_CONNS; i++) {
     if (vx_ns_conns[i].end) p9_ring_disconnect(&vx_ns_conns[i]);
-    vx_ns_conns[i] = (p9_conn){};
+    p9_conn_clear(&vx_ns_conns[i], false);
     vx_ns_conn_names[i][0] = 0;
     if (ns->conns[i].connector) vx_handle_close(ns->conns[i].connector);
   }

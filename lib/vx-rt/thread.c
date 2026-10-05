@@ -129,38 +129,6 @@ static void vx_thread_main_init(void) {
   vx_tp_set(tp);
 }
 
-// A thread's last steps, once fn has returned: the word cleared, the joiner
-// woken, the thread ended, all in registers, as the joiner may unmap the
-// stack as soon as the word is clear.
-[[noreturn]] static void vx_thread_finish(_Atomic uint32_t *running) {
-#ifdef __x86_64__
-  __asm__ volatile("movl $0, (%0)\n\t"
-                   "mov %0, %%rdi\n\t"
-                   "mov $1, %%esi\n\t"
-                   "mov %1, %%eax\n\t"
-                   "syscall\n\t" // futex_wake(running, 1)
-                   "mov %2, %%eax\n\t"
-                   "syscall\n\t" // thread_exit()
-                   "ud2"
-                   :
-                   : "r"(running), "i"(VX_SYS_futex_wake), "i"(VX_SYS_thread_exit)
-                   : "rax", "rdi", "rsi", "rcx", "r11", "memory");
-#else
-  __asm__ volatile("stlr wzr, [%0]\n\t"
-                   "mov x0, %0\n\t"
-                   "mov x1, #1\n\t"
-                   "mov x8, %1\n\t"
-                   "svc #0\n\t" // futex_wake(running, 1)
-                   "mov x8, %2\n\t"
-                   "svc #0\n\t" // thread_exit()
-                   "brk #0"
-                   :
-                   : "r"(running), "i"(VX_SYS_futex_wake), "i"(VX_SYS_thread_exit)
-                   : "x0", "x1", "x8", "memory");
-#endif
-  __builtin_unreachable();
-}
-
 [[noreturn]] static void vx_thread_entry(vx_handle unused, uint64_t tp) {
   (void)unused;
   vx_tp_set(tp); // first: nothing before it may touch thread_local

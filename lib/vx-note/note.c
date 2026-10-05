@@ -17,6 +17,7 @@ typedef struct vx_note_buf {
 
 [[maybe_unused]] static void vx_note_put(vx_note_buf *b, vx_str s) {
   size_t n = vx_utf_cut(s.ptr, s.len, b->cap - b->len);
+  if (n > s.len) n = s.len; // never, but the analyser cannot see into the cut
   for (size_t i = 0; i < n; i++) b->p[b->len++] = s.ptr[i];
   if (n < s.len) b->cap = b->len; // full: nothing put after a cut may follow it
 }

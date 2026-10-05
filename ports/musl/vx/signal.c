@@ -41,12 +41,12 @@ static struct {
   uint64_t mask;
 } sig_actions[SIG_MAX + 1];
 
-static uint64_t sig_mask; // bit n - 1 for signal n
+#define sig_mask (be_me()->mask) // bit n - 1 for signal n: per thread (backend.c's be_thread)
 // Pending: atomic, as a note handler may set a bit between the load and the
 // store of a change made in the program's code.
 static _Atomic uint64_t sig_pending;
 static int64_t sig_sender[SIG_MAX + 1]; // who sent each pending one
-static volatile int sig_depth;          // inside __vx_syscall: delivery waits for its return
+#define sig_depth (be_me()->sig_depth)  // per thread (backend.c's be_thread)
 static uint32_t sig_handlers_ran;       // how many handlers have run
 static uint32_t sig_eintr_ran;          // how many of them were not SA_RESTART (a call they interrupt ends)
 
@@ -130,9 +130,13 @@ static bool sig_act(int sig, int code, int64_t sender, uint64_t address, const v
 // Delivers every pending signal that is not blocked, lowest first.
 static bool sig_deliver_pending(void) {
   bool eintr = false;
-  for (uint64_t ready; (ready = sig_pending & ~sig_mask);) {
+  be_thread *me = be_me();
+  for (uint64_t ready; (ready = (sig_pending | me->pending) & ~sig_mask);) {
     int sig = __builtin_ctzll(ready) + 1;
-    sig_pending &= ~sig_bit(sig);
+    if (me->pending & sig_bit(sig)) // the thread's own first (pthread_kill), then the process's
+      me->pending &= ~sig_bit(sig);
+    else
+      sig_pending &= ~sig_bit(sig);
     eintr =
         sig_act(sig, sig_sender[sig] ? SI_USER : SI_KERNEL, sig_sender[sig], 0, nullptr, (vx_str){}) || eintr;
   }
@@ -142,7 +146,7 @@ static bool sig_deliver_pending(void) {
 // From __vx_syscall, the pending signals not blocked, delivered as from the
 // program's code; a sleep's or poll's deadline kept from a handler's own.
 static void sig_run_pending(void) {
-  if (!(sig_pending & ~sig_mask)) return;
+  if (!((sig_pending | be_me()->pending) & ~sig_mask)) return;
   int depth = sig_depth;
   vx_instant kept = sig_call_deadline;
   sig_depth = 0;
@@ -162,7 +166,12 @@ static vx_noted sig_note(vx_exception *e, vx_str note) {
     int64_t sender;
     int sig = (int)posix_note_signal(note, &sender);
     if (sig < 1 || sig > SIG_MAX) return VX_NDFLT; // no signal: the note ends the process
-    sig_pending |= sig_bit(sig);
+    static const char directed[] = " thread";      // be_thread_kill's: this thread's alone
+    size_t dl = sizeof directed - 1;
+    if (note.len > dl && memcmp(note.ptr + note.len - dl, directed, dl) == 0)
+      be_me()->pending |= sig_bit(sig);
+    else
+      sig_pending |= sig_bit(sig);
     sig_sender[sig] = sender;
     if (sig_depth == 0) {
       sig_deliver_pending(); // in the program's own code
@@ -260,12 +269,14 @@ static long sig_suspend(uint64_t mask) {
   uint32_t ran = sig_handlers_ran;
   for (;;) {
     uint32_t seq = atomic_load(&sig_seq); // before the check: a signal after it changes sig_seq
-    if (sig_pending & ~sig_mask) {
+    if ((sig_pending | be_me()->pending) & ~sig_mask) {
       sig_deliver_pending();
       if (sig_handlers_ran != ran) break;
       continue;
     }
+    uint32_t held = be_wait_begin();
     vx_futex_wait(&sig_seq, seq, VX_INFINITE); // an interrupt, or sig_note, ends it
+    be_wait_end(held);
   }
   sig_mask = was;
   return -EINTR;
@@ -284,7 +295,7 @@ static void sig_records(vx_ndb_writer *w, const spawn_ctx *ctx) {
   for (int sig = 1; sig <= SIG_MAX; sig++)
     if (sig_actions[sig].handler == (uintptr_t)SIG_IGN) ignored |= sig_bit(sig);
   vx_ndb_put_u64(w, "signals", ignored & ~ctx->sig_default);
-  vx_ndb_put_u64(w, "mask", ctx->has_mask ? ctx->sig_mask : sig_mask);
+  vx_ndb_put_u64(w, "mask", ctx->has_mask ? ctx->blocked : sig_mask);
   vx_ndb_end(w);
 }
 

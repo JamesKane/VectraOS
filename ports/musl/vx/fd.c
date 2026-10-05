@@ -130,7 +130,9 @@ static void fd_noted(const vx_packet *pk, int64_t n) {
 // 0, -ETIMEDOUT, or -EINTR (a signal: the caller's call ends).
 static long fd_wait(int64_t deadline) {
   vx_packet pk[16];
+  uint32_t held = be_wait_begin(); // another thread may write the pipe this one waits on
   int64_t n = vx_port_wait(fd_port, deadline, 0, pk, 16);
+  be_wait_end(held);
   if (n == VX_ERR_INTERRUPTED) return -EINTR;
   if (n == VX_ERR_TIMED_OUT) return -ETIMEDOUT;
   if (n > 0) fd_noted(pk, n);
@@ -430,7 +432,9 @@ static long pipe_write(const ofd *o, const uint8_t *p, size_t n) {
       if (st != VX_ERR_SHOULD_WAIT) break;
       if (o->flags & O_NONBLOCK) return done ? (long)done : -EAGAIN;
       static const _Atomic uint32_t never; // the reader is behind: wait a little
+      uint32_t held = be_wait_begin();
       vx_futex_wait(&never, 0, vx_clock_read() + (tries < 10 ? 100'000 : 1'000'000));
+      be_wait_end(held);
     }
     if (st == VX_ERR_PEER_CLOSED && !done) sig_raise_self(SIGPIPE); // the reader has gone
     if (st != VX_OK) return done ? (long)done : vx_errno(st);       // PEER_CLOSED: EPIPE
@@ -850,7 +854,10 @@ static long fd_lock(ofd *o, int cmd, struct flock *l) {
     if (status != P9_LOCK_BLOCKED) return -ENOLCK;
     if (cmd == F_SETLK) return -EAGAIN;
     static const _Atomic uint32_t never;
-    if (vx_futex_wait(&never, 0, vx_clock_read() + 10'000'000) == VX_ERR_INTERRUPTED) return -EINTR;
+    uint32_t held = be_wait_begin();
+    vx_status w = vx_futex_wait(&never, 0, vx_clock_read() + 10'000'000);
+    be_wait_end(held);
+    if (w == VX_ERR_INTERRUPTED) return -EINTR;
   }
 }
 

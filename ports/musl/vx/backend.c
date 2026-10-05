@@ -31,6 +31,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdckdint.h>
 #include <stddef.h>
@@ -86,6 +87,63 @@ static long vx_errno(vx_status st) {
   }
 }
 
+// --- Threads (M6 step 6d2a) ---
+//
+// The back end's state is the process's, so its threads take turns at it: a
+// lock, held through each call, recursive within a thread (the back end calls
+// musl, which may call it again), and let go of wherever a call waits (a
+// pipe, a sleep, a futex, sigsuspend), so the thread that would end the wait
+// can come in. A 9P call holds it through the server's answer: the client is
+// one thread's at a time until 6d4.
+//
+// A thread's own state is thread_local, but musl calls in before its first
+// thread's TLS is set (set_thread_area, set_tid_address): until then it is a
+// static copy, moved to TLS at set_tid_address, musl's last step of it.
+typedef struct be_thread {
+  uint32_t depth;           // holds of be_lock
+  int sig_depth;            // inside __vx_syscall: delivery waits for its return (signal.c)
+  long tid;                 // gettid's: the process's id for the first thread
+  volatile int *ctid;       // CLONE_CHILD_CLEARTID's (and set_tid_address's): cleared and woken at its end
+  uint64_t pending;         // signals aimed at this thread (pthread_kill), delivered on it alone (signal.c)
+  uint64_t mask;            // its blocked signals: a new thread starts with its creator's
+  bool restarting;          // its call is being made again after a signal, its deadline kept
+  vx_instant call_deadline; // its sleep's or poll's (start.c, poll.c)
+} be_thread;
+
+static vx_mutex be_lock;
+static be_thread be_early;
+static thread_local be_thread be_tl;
+static bool be_tls;                  // be_tl usable: set_tid_address has come
+static _Atomic uint32_t be_live = 1; // threads alive, the first among them
+
+static be_thread *be_me(void) { return be_tls ? &be_tl : &be_early; }
+
+static void be_enter(void) {
+  if (be_me()->depth++ == 0) vx_mutex_lock(&be_lock);
+}
+
+static void be_leave(void) {
+  if (--be_me()->depth == 0) vx_mutex_unlock(&be_lock);
+}
+
+// Around a wait: all of this thread's holds let go, then taken back.
+static uint32_t be_wait_begin(void) {
+  uint32_t d = be_me()->depth;
+  if (d) be_me()->depth = 0, vx_mutex_unlock(&be_lock);
+  return d;
+}
+
+static void be_wait_end(uint32_t d) {
+  if (d) vx_mutex_lock(&be_lock), be_me()->depth = d;
+}
+
+[[noreturn]] static void be_thread_exit(int code); // below, with __clone
+static long be_thread_kill(long tid, int sig);
+
+// The call's state, the thread's own: a sleep in one thread keeps no other's deadline.
+#define sig_restarting    (be_me()->restarting)
+#define sig_call_deadline (be_me()->call_deadline)
+
 #include "fd.c"
 #include "memory.c"
 #include "start.c"
@@ -113,9 +171,6 @@ static long vx_unimplemented(long n) {
   }
   return -ENOSYS;
 }
-
-static bool sig_restarting;          // the call is being made again after a signal (its deadline kept)
-static vx_instant sig_call_deadline; // a sleep's or poll's (start.c, poll.c)
 
 static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, long a6) {
   switch (n) {
@@ -206,11 +261,14 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
     return 0;
 
   // The process (start.c)
-  case SYS_exit:
+  case SYS_exit: be_thread_exit((int)a1); // the thread; the process, if it was the last
   case SYS_exit_group: proc_exit((int)a1);
-  case SYS_getpid:
-  case SYS_gettid: // one thread, whose id is the process's
-  case SYS_set_tid_address: return posix_pid();
+  case SYS_getpid: return posix_pid();
+  case SYS_gettid: return be_me()->tid ? be_me()->tid : posix_pid();
+  case SYS_set_tid_address: // musl's last step setting up the first thread (its TLS is there now), and _Fork's
+    if (!be_tls) be_tl = be_early, be_tls = true;
+    be_tl.ctid = (volatile int *)a1, be_tl.tid = posix_pid();
+    return be_tl.tid;
   case SYS_getppid: return posix_getppid();
   case SYS_getpgid: return posix_getpgid(a1);
   case SYS_getsid: return posix_getsid(a1);
@@ -218,7 +276,7 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
   case SYS_setsid: return posix_setsid();
   case SYS_wait4: return posix_wait4(a1, (int *)a2, (int)a3, (struct rusage *)a4);
   case SYS_execve: return proc_execve((const char *)a1, (char *const *)a2, (char *const *)a3);
-  case SYS_clone: // musl's _Fork and vfork, where there is no SYS_fork; threads wait (docs/milestones.md)
+  case SYS_clone: // musl's _Fork and vfork, where there is no SYS_fork; threads come through __clone
     return a1 == SIGCHLD && !a2 ? proc_fork() : -ENOSYS;
   case SYS_pipe2: return fd_pipe2((int *)a1, (int)a2);
   case SYS_getuid:
@@ -228,8 +286,8 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
   case SYS_uname: return proc_uname((struct utsname *)a1);
   case SYS_getrandom: return proc_getrandom((void *)a1, (size_t)a2);
   // Signals (signal.c)
-  case SYS_tkill:
-  case SYS_tgkill: return sig_kill(posix_pid(), (int)(n == SYS_tkill ? a2 : a3)); // one thread: the process
+  case SYS_tkill: return be_thread_kill(a1, (int)a2);
+  case SYS_tgkill: return a1 == posix_pid() ? be_thread_kill(a2, (int)a3) : -ESRCH;
   case SYS_kill: return sig_kill(a1, (int)a2);
   case SYS_rt_sigaction: return sig_action((int)a1, (const k_sigaction *)a2, (k_sigaction *)a3);
   case SYS_rt_sigprocmask: return sig_procmask((int)a1, (const uint64_t *)a2, (uint64_t *)a3);
@@ -285,6 +343,173 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
   }
 }
 
+// --- pthread_create's thread (6d2a) ---
+
+// A thread's id: the first thread's is the process's; another's, its kernel
+// thread id with bit 30 set, so the two never meet.
+static constexpr long BE_TID_THREAD = 1L << 30;
+
+typedef struct be_clone {
+  int (*fn)(void *);
+  void *arg;
+  uint64_t tls;
+  long tid;
+  volatile int *ctid;
+  uint64_t mask;
+} be_clone;
+
+// The new thread's first steps: its thread pointer (musl's TLS) before
+// anything, then its own state, then musl's start, which ends in SYS_exit.
+[[noreturn]] static void be_clone_entry(vx_handle unused, uint64_t at) {
+  (void)unused;
+  const be_clone *c = (const be_clone *)at;
+  uint64_t tls = c->tls;
+#ifdef __x86_64__
+  vx_thread_state(vx_self, 0, VX_STATE_SET_TLS, &tls, sizeof tls);
+#else
+  __asm__ volatile("msr tpidr_el0, %0" : : "r"(tls));
+#endif
+  be_tl = (be_thread){.tid = c->tid, .ctid = c->ctid, .mask = c->mask};
+  int code = c->fn(c->arg);
+  __vx_syscall(SYS_exit, code, 0, 0, 0, 0, 0);
+  __builtin_unreachable();
+}
+
+// musl's __clone (src/thread/clone.c, whose -ENOSYS this replaces), as
+// pthread_create calls it: a thread of this task on stack, its TLS tls, its
+// id written to *ptid, *ctid cleared and woken at its end.
+// musl's pthread_create calls it (pthread_impl.h, hidden there)
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+int __clone(int (*fn)(void *), void *stack, int flags, void *arg, ...);
+int __clone(int (*fn)(void *), void *stack, int flags, void *arg, ...) {
+  constexpr int need = CLONE_VM | CLONE_THREAD | CLONE_SETTLS;
+  if ((flags & need) != need) return -ENOSYS; // fork comes through SYS_clone
+  va_list ap;
+  va_start(ap, arg);
+  int *ptid = va_arg(ap, int *);
+  void *tls = va_arg(ap, void *);
+  int *ctid = va_arg(ap, int *);
+  va_end(ap);
+  // The record on the top of the new thread's own stack, which it reads first.
+  uintptr_t top = ((uintptr_t)stack - sizeof(be_clone)) & ~(uintptr_t)15;
+  be_clone *c = (be_clone *)top;
+  *c = (be_clone){.fn = fn,
+                  .arg = arg,
+                  .tls = (uint64_t)tls,
+                  .ctid = flags & CLONE_CHILD_CLEARTID ? ctid : nullptr,
+                  .mask = be_me()->mask};
+  vx_handle th;
+  uint32_t id = 0;
+  vx_status st = vx_thread_create_id(vx_self, &th, &id);
+  if (st != VX_OK) return (int)vx_errno(st);
+  c->tid = BE_TID_THREAD | id;
+  if (flags & CLONE_PARENT_SETTID) *ptid = (int)c->tid;
+  atomic_fetch_add(&be_live, 1);
+  st = vx_thread_start(th, (uint64_t)be_clone_entry, top, VX_HANDLE_NONE, top);
+  vx_handle_close(th); // the thread goes on without it
+  if (st != VX_OK) {
+    atomic_fetch_sub(&be_live, 1);
+    return (int)vx_errno(st);
+  }
+  return (int)c->tid;
+}
+
+// SYS_exit: the thread ends; the last one ends the process, as on Linux. It
+// lets go of the back end first, then clears its ctid (musl's thread list
+// lock, which a joiner waits on) and ends in registers alone, its stack being
+// free to go from then on.
+[[noreturn]] static void be_thread_exit(int code) {
+  if (atomic_fetch_sub(&be_live, 1) == 1) proc_exit(code);
+  be_thread *me = be_me();
+  volatile int *ctid = me->ctid;
+  if (me->depth) me->depth = 0, vx_mutex_unlock(&be_lock);
+  if (ctid) vx_thread_finish((_Atomic uint32_t *)ctid);
+  vx_thread_exit();
+}
+
+// musl's __unmapself (whose generic C this replaces): a detached thread's
+// end, its stack and TLS unmapped while it runs. Everything that needs them
+// first (the lock let go, the count); then, in registers alone: the unmap,
+// ctid (musl's thread list lock, which is not on the stack) cleared and
+// woken, the thread ended.
+[[noreturn]] static void be_unmap_finish(vx_handle self, void *base, size_t size, const volatile int *ctid) {
+#ifdef __x86_64__
+  register uint64_t r10 __asm__("r10") = 0;
+  __asm__ volatile(
+      "mov %[self], %%rdi\n\t"
+      "mov %[base], %%rsi\n\t"
+      "mov %[size], %%rdx\n\t"
+      "mov %[unmap], %%eax\n\t"
+      "syscall\n\t" // as_unmap(self, base, size): the stack is gone from here
+      "test %[ctid], %[ctid]\n\t"
+      "jz 1f\n\t"
+      "movl $0, (%[ctid])\n\t"
+      "mov %[ctid], %%rdi\n\t"
+      "mov $1, %%esi\n\t"
+      "mov %[wake], %%eax\n\t"
+      "syscall\n" // futex_wake(ctid, 1)
+      "1:\n\t"
+      "mov %[exit], %%eax\n\t"
+      "syscall\n\t" // thread_exit()
+      "ud2"
+      :
+      : [self] "r"((uint64_t)self), [base] "r"(base), [size] "r"(size), [ctid] "r"(ctid),
+        "r"(r10), [unmap] "i"(VX_SYS_as_unmap), [wake] "i"(VX_SYS_futex_wake), [exit] "i"(VX_SYS_thread_exit)
+      : "rax", "rdi", "rsi", "rdx", "rcx", "r11", "memory");
+#else
+  __asm__ volatile(
+      "mov x9, %[ctid]\n\t"
+      "mov x0, %[self]\n\t"
+      "mov x1, %[base]\n\t"
+      "mov x2, %[size]\n\t"
+      "mov x8, %[unmap]\n\t"
+      "svc #0\n\t" // as_unmap(self, base, size): the stack is gone from here
+      "cbz x9, 1f\n\t"
+      "stlr wzr, [x9]\n\t"
+      "mov x0, x9\n\t"
+      "mov x1, #1\n\t"
+      "mov x8, %[wake]\n\t"
+      "svc #0\n" // futex_wake(ctid, 1)
+      "1:\n\t"
+      "mov x8, %[exit]\n\t"
+      "svc #0\n\t" // thread_exit()
+      "brk #0"
+      :
+      : [self] "r"((uint64_t)self), [base] "r"(base), [size] "r"(size), [ctid] "r"(ctid),
+        [unmap] "i"(VX_SYS_as_unmap), [wake] "i"(VX_SYS_futex_wake), [exit] "i"(VX_SYS_thread_exit)
+      : "x0", "x1", "x2", "x8", "x9", "memory");
+#endif
+  __builtin_unreachable();
+}
+
+// musl's pthread_exit calls it (pthread_impl.h, hidden there)
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void __unmapself(void *base, size_t size);
+void __unmapself(void *base, size_t size) {
+  if (atomic_fetch_sub(&be_live, 1) == 1) proc_exit(0);
+  be_thread *me = be_me();
+  volatile int *ctid = me->ctid;
+  if (me->depth) me->depth = 0, vx_mutex_unlock(&be_lock);
+  be_unmap_finish(vx_self, base, (size + 4095) & ~(size_t)4095, ctid);
+}
+
+// tkill and tgkill: to this thread, delivered as the call returns; to another,
+// a note to its kernel thread, whose handler takes it there.
+static long be_thread_kill(long tid, int sig) {
+  if (sig < 0 || sig > SIG_MAX) return -EINVAL;
+  long me = be_me()->tid ? be_me()->tid : posix_pid();
+  if (tid == me || tid == posix_pid()) return sig_kill(posix_pid(), sig);
+  if (!(tid & BE_TID_THREAD)) return -ESRCH;
+  if (!sig) return 0;
+  char note[VX_ERRMAX];
+  size_t len = posix_note(sig, posix_pid(), note);
+  static const char directed[] = " thread"; // its own: sig_note keeps it for that thread
+  if (len + sizeof directed - 1 <= sizeof note)
+    memcpy(note + len, directed, sizeof directed - 1), len += sizeof directed - 1;
+  vx_status st = vx_thread_interrupt(vx_self, (uint64_t)(tid & ~BE_TID_THREAD), (vx_str){note, len});
+  return st == VX_ERR_NOT_FOUND ? -ESRCH : vx_errno(st);
+}
+
 // Every call musl makes. A signal that arrives during one is delivered as it
 // returns (signal.c). A call that a signal interrupted is made again unless
 // a handler that wants EINTR ran: SA_RESTART, an ignored signal, and a
@@ -302,6 +527,8 @@ long __vx_syscall(long n, long a1, long a2, long a3, long a4, long a5, long a6) 
 #endif
   // The depth stays up until the call is done, made again or not: a signal
   // that comes between is pending, not run before the choice is made.
+  if (n == SYS_exit) be_thread_exit((int)a1); // never returns: holds nothing
+  be_enter();
   uint32_t ran = sig_handlers_ran, cut = sig_eintr_ran;
   bool outer = sig_depth == 0;
   sig_depth = sig_depth + 1;
@@ -316,6 +543,7 @@ long __vx_syscall(long n, long a1, long a2, long a3, long a4, long a5, long a6) 
   }
   sig_depth = sig_depth - 1;
   if (outer) sig_run_pending(); // one that came after the choice: on the way out
+  be_leave();
   return r;
 }
 

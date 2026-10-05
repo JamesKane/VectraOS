@@ -263,7 +263,7 @@ static long poll_masked(struct pollfd *fds, nfds_t n, const struct timespec *ts,
   if (!mask) return fd_poll(fds, n, deadline);
   uint64_t was = sig_mask;
   sig_mask = *mask & ~SIG_UNBLOCKABLE;
-  long r = sig_pending & ~sig_mask ? -EINTR : fd_poll(fds, n, deadline);
+  long r = (sig_pending | be_me()->pending) & ~sig_mask ? -EINTR : fd_poll(fds, n, deadline);
   if (r == -EINTR) sig_deliver_pending();
   sig_mask = was;
   return r;

@@ -19,7 +19,7 @@
 # own crt1; crti and crtn are built from crt/ARCH) and not ldso/ (static only).
 # exclude= lists files left out. Architecture files, so that the generic C file
 # of the same name is built instead, and its system calls reach the back end:
-# clone (ENOSYS until pthreads), syscall_cp (the back end's), __unmapself,
+# clone (the back end's __clone, M6 step 6d2a, and musl's generic one with it), syscall_cp (the back end's), __unmapself,
 # x86_64's __set_thread_area, vfork, and the signal restorers (until signals).
 # And generic files the back end replaces: posix_spawn, whose child is a clone
 # that calls execve.
@@ -30,7 +30,7 @@ port=musl src=third_party/musl
     nossp="__libc_start_main __init_tls __stack_chk_fail __set_thread_area memset memcpy"
 
 target=x86_64 arch=x86_64
-    exclude="src/thread/x86_64/clone.s src/thread/x86_64/syscall_cp.s src/thread/x86_64/__unmapself.s src/thread/x86_64/__set_thread_area.s src/process/x86_64/vfork.s src/signal/x86_64/restore.s src/process/posix_spawn.c"
+    exclude="src/thread/clone.c src/thread/__unmapself.c src/thread/x86_64/clone.s src/thread/x86_64/syscall_cp.s src/thread/x86_64/__unmapself.s src/thread/x86_64/__set_thread_area.s src/process/x86_64/vfork.s src/signal/x86_64/restore.s src/process/posix_spawn.c"
 
 target=aarch64 arch=aarch64
-    exclude="src/thread/aarch64/clone.s src/thread/aarch64/syscall_cp.s src/thread/aarch64/__unmapself.s src/process/aarch64/vfork.s src/signal/aarch64/restore.s src/process/posix_spawn.c"
+    exclude="src/thread/clone.c src/thread/__unmapself.c src/thread/aarch64/clone.s src/thread/aarch64/syscall_cp.s src/thread/aarch64/__unmapself.s src/process/aarch64/vfork.s src/signal/aarch64/restore.s src/process/posix_spawn.c"
