@@ -1264,6 +1264,7 @@ static const program USER_PROGRAMS[] = {
     {"bus-acpi", "servers/bus-acpi/bus-acpi.c", IN_BOOTFS, nullptr, false, &acpica, ACPICA_USE_FLAGS},
     {"nstest", "tests/user/nstest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
     {"dreftest", "tests/user/dreftest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
+    {"threadtest", "tests/user/threadtest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
     {"constest", "tests/user/constest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
     {"nettest", "tests/user/nettest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
     {"tcptest", "tests/user/tcptest.c", IN_TESTS, nullptr, false, nullptr, nullptr},

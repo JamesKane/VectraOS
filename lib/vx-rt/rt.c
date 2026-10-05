@@ -10,6 +10,7 @@
 #include "base.c"
 #include "stdio.c"
 #include "note.c"
+#include "thread.c"
 
 // --- Start-up ---
 
@@ -22,6 +23,7 @@ uintptr_t __stack_chk_guard = 0x2e0f5b3c9d81a647; // to come from the kernel's e
 // exits does. What it printed goes out first, and its pipes close, so a
 // reader sees the end of its input before the exit is seen.
 [[noreturn]] static void vx_exit_str(vx_str msg) {
+  vx_mutex_lock(&vx_stdio_lock); // held: no other thread prints over the last lines
   if (vx_print_hook == vx_stdout_print)
     vx_stdout_flush();
   else if (vx_print_hook)
@@ -44,6 +46,7 @@ uintptr_t __stack_chk_guard = 0x2e0f5b3c9d81a647; // to come from the kernel's e
 // exit string.
 [[noreturn]] void vx_start(vx_handle bootstrap) {
   vx_read_spawn(bootstrap);
+  vx_thread_main_init(); // its TLS, before anything may use thread_local
   vx_handle console = vx_spawn_take("console");
   if (console && vx_console_attach(console) != VX_OK) vx_print(VX_STR("vx-rt: cannot open the console\n"));
   vx_stdio.in = vx_spawn_take("stdin");

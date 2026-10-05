@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <stdatomic.h> // vx_mutex, threads (freestanding: clang's own)
+
 #include "../../abi/vx/abi.h"
 #include "../vx-mem/mem.h"
 #include "../vx-ndb/ndb.c"
@@ -490,6 +492,30 @@ typedef enum vx_cpu_feature : uint32_t {
 
 // --- Tasks and threads ---
 
+// A lock between a task's threads (6d1): a futex word, 0 free, 1 held, 2
+// held with waiters (Drepper's "Futexes are tricky", mutex 3). Not
+// recursive.
+typedef struct vx_mutex {
+  _Atomic uint32_t state;
+} vx_mutex;
+
+[[maybe_unused]] static void vx_mutex_lock(vx_mutex *m) {
+  uint32_t c = 0;
+  if (atomic_compare_exchange_strong(&m->state, &c, 1)) return;
+  if (c != 2) c = atomic_exchange(&m->state, 2);
+  while (c != 0) {
+    vx_futex_wait(&m->state, 2, VX_INFINITE);
+    c = atomic_exchange(&m->state, 2);
+  }
+}
+
+[[maybe_unused]] static void vx_mutex_unlock(vx_mutex *m) {
+  if (atomic_fetch_sub(&m->state, 1) != 1) {
+    atomic_store(&m->state, 0);
+    vx_futex_wake(&m->state, 1);
+  }
+}
+
 [[maybe_unused]] static vx_status vx_task_create(vx_str name, vx_handle *out) {
   *out = VX_HANDLE_NONE;
   return (vx_status)vx_syscall(VX_SYS_task_create, (uint64_t)name.ptr, name.len, (uint64_t)out, 0, 0, 0);
@@ -552,12 +578,15 @@ typedef enum vx_cpu_feature : uint32_t {
 // message's "console"), and to the kernel log before that or without one.
 
 static void (*vx_print_hook)(vx_str s);
+static vx_mutex vx_stdio_lock; // the output buffers, between a program's threads (6d1)
 
 [[maybe_unused]] static void vx_print(vx_str s) {
+  vx_mutex_lock(&vx_stdio_lock);
   if (vx_print_hook)
     vx_print_hook(s);
   else
     vx_debug_write(s);
+  vx_mutex_unlock(&vx_stdio_lock);
 }
 
 // A NUL-terminated string as a vx_str.

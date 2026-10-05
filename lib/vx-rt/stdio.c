@@ -141,18 +141,22 @@ static void vx_stderr_flush(void) {
 
 // Prints an error: to stderr, or without one, to the console.
 [[maybe_unused]] static void vx_eprint(vx_str s) {
+  vx_mutex_lock(&vx_stdio_lock);
   if (!vx_stdio.err) {
     if (vx_console.connector)
       vx_console_print(s);
+    else if (vx_print_hook)
+      vx_print_hook(s); // vx_print's way, under the lock already held
     else
-      vx_print(s);
-    return;
+      vx_debug_write(s);
+  } else {
+    for (size_t i = 0; i < s.len; i++) {
+      vx_stdio.err_line[sizeof(vx_msg_header) + vx_stdio.err_len++] = (uint8_t)s.ptr[i];
+      if (s.ptr[i] == '\n' || vx_stdio.err_len == sizeof vx_stdio.err_line - sizeof(vx_msg_header))
+        vx_stderr_flush();
+    }
   }
-  for (size_t i = 0; i < s.len; i++) {
-    vx_stdio.err_line[sizeof(vx_msg_header) + vx_stdio.err_len++] = (uint8_t)s.ptr[i];
-    if (s.ptr[i] == '\n' || vx_stdio.err_len == sizeof vx_stdio.err_line - sizeof(vx_msg_header))
-      vx_stderr_flush();
-  }
+  vx_mutex_unlock(&vx_stdio_lock);
 }
 
 [[maybe_unused]] static void vx_stdout_print(vx_str s) {
