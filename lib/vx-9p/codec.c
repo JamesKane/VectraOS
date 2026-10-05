@@ -37,7 +37,13 @@ enum : uint8_t { // qid.type and the top byte of a stat's mode
 
 // A stat's mode: a directory; and 9P2000.u's link and device (a terminal, to
 // the musl back end).
-enum : uint32_t { P9_DMDIR = 0x8000'0000, P9_DMSYMLINK = 0x0200'0000, P9_DMDEVICE = 0x0080'0000 };
+enum : uint32_t {
+  P9_DMDIR = 0x8000'0000,
+  P9_DMAPPEND = 0x4000'0000, // writes go to the end, whatever their offset
+  P9_DMEXCL = 0x2000'0000,   // open by one at a time
+  P9_DMSYMLINK = 0x0200'0000,
+  P9_DMDEVICE = 0x0080'0000,
+};
 
 enum : uint8_t { // Topen and Tcreate modes
   P9_OREAD = 0,
@@ -652,6 +658,7 @@ static bool p9_str_eq(vx_str a, const char *b) {
   X(VX_ERR_ACCESS, "is a directory")                                                                         \
   X(VX_ERR_ACCESS, "operation not permitted")                                                                \
   X(VX_ERR_BAD_HANDLE, "fid unknown or out of range")                                                        \
+  X(VX_ERR_ACCESS, "exclusive use file already open")                                                        \
   X(VX_ERR_NO_SPACE, "no space left on device")
 
 static bool p9_str_eq_nocase(vx_str a, const char *b) {

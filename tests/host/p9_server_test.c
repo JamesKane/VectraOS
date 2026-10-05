@@ -321,7 +321,8 @@ static void test_hostile_client(void) {
   CHECK(raw((p9_msg){.type = P9_Rclunk, .tag = 1}) == VX_ERR_PEER_CLOSED);
   uint8_t junk[16] = {16, 0, 0, 0, 120, 1, 0, 1, 2, 3};
   CHECK(p9_serve(&server, junk, sizeof junk, resp, sizeof resp) == 0);
-  CHECK(raw((p9_msg){.type = P9_Twstat, .tag = 1, .fid = 1, .stat = {junk, 4}}) == VX_ERR_UNSUPPORTED);
+  // A Twstat whose entry is not one: refused (6d4c1 maps a good one onto setattr and rename).
+  CHECK(raw((p9_msg){.type = P9_Twstat, .tag = 1, .fid = 1, .stat = {junk, 4}}) == VX_ERR_INVALID);
 }
 
 // A read or write the file system cannot do yet is deferred, without a reply,

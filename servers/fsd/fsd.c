@@ -528,7 +528,10 @@ static vx_status fs_parent([[maybe_unused]] void *ctx, uint64_t node, uint64_t *
   vxfs_file f, p;
   vx_status st = file_of(node, &f);
   if (st == VX_OK && vxfs_is_orphan(&f)) st = VX_ERR_NOT_FOUND;
-  if (st == VX_OK) st = vxfs_walk(&vol, tree_of(node), &f, "..", &p);
+  if (st == VX_OK && !(f.d.mode & VXFS_DMDIR)) // a file's (Twstat's rename): its key names its directory
+    st = f.nkey > 9 ? vxfs_file_by_qid(&vol, tree_of(node), vxfs_kget64(f.key + 1), &p) : VX_ERR_NOT_FOUND;
+  else if (st == VX_OK)
+    st = vxfs_walk(&vol, tree_of(node), &f, "..", &p);
   if (st == VX_OK) *parent = node_in(node, &p);
   return st;
 }
@@ -566,7 +569,7 @@ static vx_status fs_stat([[maybe_unused]] void *ctx, uint64_t node, p9_stat *out
   if (st != VX_OK) return st;
   const vxfs_dir *d = &stat_file.d;
   bool dir = d->mode & VXFS_DMDIR, root = stat_file.nkey == 9 && !vxfs_is_orphan(&stat_file);
-  uint8_t qtype = dir ? P9_QTDIR : P9_QTFILE;
+  uint8_t qtype = (uint8_t)((dir ? P9_QTDIR : P9_QTFILE) | ((d->mode >> 24) & (P9_QTAPPEND | P9_QTEXCL)));
   *out = (p9_stat){.qid = {qtype, d->qid_vers, node},
                    .mode = d->mode,
                    .atime = (uint32_t)(d->atime / 1'000'000'000),
@@ -944,6 +947,9 @@ static vx_status fs_open([[maybe_unused]] void *ctx, uint64_t node, uint8_t mode
   if (writes && is_readonly(node)) return VX_ERR_ACCESS;                  // a snapshot, or the dump view
   if (!(mode & P9_OJOIN) && !may(node, &f.d, want)) return VX_ERR_ACCESS; // a join has its open's rights
   if (halted && writes) return VX_ERR_BAD_STATE;
+  const opened *open_now = open_slot(node, false);
+  if ((f.d.mode & VXFS_DMEXCL) && !(mode & P9_OJOIN) && open_now && open_now->count)
+    return VX_ERR_ACCESS; // DMEXCL: open already (Plan 9's "exclusive use file already open")
   opened *o = open_slot(node, true);
   if (!o) return VX_ERR_NO_MEMORY;
   if ((mode & P9_OTRUNC) && (st = truncate_to(node, &f, 0)) != VX_OK) return st;
@@ -1123,8 +1129,8 @@ static vx_status fs_create([[maybe_unused]] void *ctx, uint64_t dir, vx_str name
   // Plan 9's: no more of the directory's bits, and in its group.
   bool isdir = perm & P9_DMDIR;
   uint32_t bits = isdir ? perm & (d.d.mode & 0777) : perm & (~0666u | (d.d.mode & 0666));
-  st = vxfs_create(&vol, tree_of(dir), &d, nm, (isdir ? VXFS_DMDIR : 0) | (bits & 0777), uid_of(dir), d.d.gid,
-                   now_ns(), &f);
+  uint32_t kept = isdir ? VXFS_DMDIR : perm & (P9_DMAPPEND | P9_DMEXCL); // append-only, exclusive: a file's
+  st = vxfs_create(&vol, tree_of(dir), &d, nm, kept | (bits & 0777), uid_of(dir), d.d.gid, now_ns(), &f);
   if (st != VX_OK) return st;
   changed();
   *out = node_in(dir, &f);

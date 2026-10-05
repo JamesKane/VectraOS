@@ -27,7 +27,12 @@
 #include "vol.c"
 
 enum : uint8_t { VXFS_QTDIR = 0x80, VXFS_QTSYMLINK = 0x02 };
-enum : uint32_t { VXFS_DMDIR = 0x8000'0000, VXFS_DMSYMLINK = 0x0200'0000 };
+enum : uint32_t {
+  VXFS_DMDIR = 0x8000'0000,
+  VXFS_DMAPPEND = 0x4000'0000, // Plan 9's: its qid type has 0x40 (QTAPPEND)
+  VXFS_DMEXCL = 0x2000'0000,   // and 0x20 (QTEXCL)
+  VXFS_DMSYMLINK = 0x0200'0000,
+};
 static constexpr uint32_t VXFS_NAMEMAX = VXFS_KEYMAX - 9;
 static constexpr uint32_t VXFS_INLINE = VXFS_INLMAX - 1; // a whole file kept inline, at most
 static constexpr uint64_t VXFS_MAXFILE =
@@ -315,12 +320,12 @@ static vx_status dir_empty(vxfs_vol *v, const vxfs_tree *t, const vxfs_file *dir
   vx_status st = vxfs_walk(v, t, dir, name, &there);
   if (st == VX_OK) return VX_ERR_EXISTS;
   if (st != VX_ERR_NOT_FOUND) return st;
-  uint8_t qtype = 0;
-  if (mode & VXFS_DMDIR) qtype = VXFS_QTDIR;
-  if (mode & VXFS_DMSYMLINK) qtype = VXFS_QTSYMLINK;
+  uint32_t kept = mode & (VXFS_DMDIR | VXFS_DMAPPEND | VXFS_DMEXCL | VXFS_DMSYMLINK | 07777);
+  uint8_t qtype =
+      (uint8_t)(kept >> 24); // the type bits, as Plan 9 has them: QTDIR, QTAPPEND, QTEXCL, QTSYMLINK
   f->d = (vxfs_dir){.qid_path = v->nextqid++,
                     .qid_type = qtype,
-                    .mode = mode & (VXFS_DMDIR | VXFS_DMSYMLINK | 07777),
+                    .mode = kept,
                     .atime = now,
                     .mtime = now,
                     .ctime = now,
@@ -517,7 +522,8 @@ typedef struct vxfs_attr {
     if (st == VX_OK) st = put_block(v, t, b, f, 0, blk, VXFS_BLKSZ);
   }
   if (a->valid & VXFS_WSIZE) f->d.length = a->length;
-  if (a->valid & VXFS_WMODE) f->d.mode = (f->d.mode & (VXFS_DMDIR | VXFS_DMSYMLINK)) | (a->mode & 07777);
+  if (a->valid & VXFS_WMODE)
+    f->d.mode = (f->d.mode & (VXFS_DMDIR | VXFS_DMAPPEND | VXFS_DMEXCL | VXFS_DMSYMLINK)) | (a->mode & 07777);
   if (a->valid & VXFS_WUID) f->d.uid = a->uid;
   if (a->valid & VXFS_WGID) f->d.gid = a->gid;
   if (a->valid & VXFS_WATIME) f->d.atime = a->atime;

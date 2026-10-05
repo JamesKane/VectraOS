@@ -276,6 +276,27 @@ typedef struct p9_stat_text {
   return e;
 }
 
+// A stat entry that changes nothing: every field "don't touch" (all ones, or
+// empty), for Twstat to change only what the caller then sets.
+[[maybe_unused]] static p9_stat p9_stat_untouched(void) {
+  return (p9_stat){.type = 0xffff,
+                   .dev = UINT32_MAX,
+                   .qid = {0xff, UINT32_MAX, UINT64_MAX},
+                   .mode = UINT32_MAX,
+                   .atime = UINT32_MAX,
+                   .mtime = UINT32_MAX,
+                   .length = UINT64_MAX};
+}
+
+// Twstat: what w's fields say, all or none (p9_stat_untouched for the rest).
+[[maybe_unused]] static vx_status p9c_wstat(p9_client *c, uint32_t fid, const p9_stat *w) {
+  uint8_t entry[512];
+  size_t n = p9_stat_encode(w, entry, sizeof entry);
+  if (!n) return VX_ERR_TOO_SMALL;
+  p9_msg t = {.type = P9_Twstat, .fid = fid, .stat = {entry, n}};
+  return p9c_call(c, &t);
+}
+
 [[maybe_unused]] static vx_status p9c_remove(p9_client *c, uint32_t fid) {
   p9_msg t = {.type = P9_Tremove, .fid = fid};
   return p9c_call(c, &t);
@@ -296,10 +317,44 @@ typedef struct p9_stat_text {
   return e;
 }
 
+// Without the xattr extension, as Twstat (a 9P2000 server: 9front, u9fs):
+// the mode's permission bits, the size, and times given; an owner, a group
+// or a time "now" is UNSUPPORTED there (the caller gives the time).
 [[maybe_unused]] static vx_status p9c_setattr(p9_client *c, uint32_t fid, const p9_setattr *a) {
-  if (!(c->extensions & P9_EXT_XATTR)) return VX_ERR_UNSUPPORTED;
-  p9_msg t = {.type = P9_Tsetattr, .fid = fid, .setattr = *a};
-  return p9c_call(c, &t);
+  if (c->extensions & P9_EXT_XATTR) {
+    p9_msg t = {.type = P9_Tsetattr, .fid = fid, .setattr = *a};
+    return p9c_call(c, &t);
+  }
+  constexpr uint32_t can = P9_SETATTR_MODE | P9_SETATTR_SIZE | P9_SETATTR_ATIME | P9_SETATTR_ATIME_SET |
+                           P9_SETATTR_MTIME | P9_SETATTR_MTIME_SET;
+  if ((a->valid & ~can) || ((a->valid & P9_SETATTR_ATIME) && !(a->valid & P9_SETATTR_ATIME_SET)) ||
+      ((a->valid & P9_SETATTR_MTIME) && !(a->valid & P9_SETATTR_MTIME_SET)))
+    return VX_ERR_UNSUPPORTED;
+  p9_stat w = p9_stat_untouched();
+  if (a->valid & P9_SETATTR_MODE) {
+    p9_stat cur;
+    vx_status e = p9c_stat(c, fid, &cur, nullptr); // its type bits stay
+    if (e != VX_OK) return e;
+    w.mode = (cur.mode & ~0777u) | (a->mode & 0777);
+  }
+  if (a->valid & P9_SETATTR_SIZE) w.length = a->size;
+  if (a->valid & P9_SETATTR_ATIME_SET) w.atime = (uint32_t)a->atime_sec;
+  if (a->valid & P9_SETATTR_MTIME_SET) w.mtime = (uint32_t)a->mtime_sec;
+  return p9c_wstat(c, fid, &w);
+}
+
+// Renames dir's entry oldname to newname in the same directory, by Twstat:
+// a 9P2000 server's rename. Unlike POSIX's, it fails if newname is there.
+[[maybe_unused]] static vx_status p9c_rename_wstat(p9_client *c, uint32_t dir, vx_str oldname,
+                                                   vx_str newname) {
+  uint32_t fid;
+  vx_status e = p9c_walk(c, dir, oldname, &fid);
+  if (e != VX_OK) return e;
+  p9_stat w = p9_stat_untouched();
+  w.name = newname;
+  e = p9c_wstat(c, fid, &w);
+  p9c_clunk(c, fid);
+  return e;
 }
 
 // Renames olddir's entry oldname to newname in newdir, both on this connection.

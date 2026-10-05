@@ -21,6 +21,13 @@
 // server's device has done something (lib/vx-9p/ring_server.c), dropping it
 // if a Tflush names it. Everything else completes as it arrives, so a Tflush
 // finds nothing else to cancel.
+//
+// This file also does, for every file server (M6 step 6d4c1): ORCLOSE, the
+// file removed as its last fid goes (a file server without remove refuses
+// it); DMAPPEND, a write at the end whatever its offset (a file whose qid
+// says QTAPPEND); and Twstat, mapped onto the file server's setattr and
+// rename. DMEXCL is the file server's, which counts its opens; one that
+// cannot keep DMAPPEND or DMEXCL in a mode refuses a create that asks.
 
 #pragma once
 
@@ -100,6 +107,7 @@ static constexpr int64_t P9_HOLD_TIME = 10'000'000'000; // ns
 
 typedef struct p9_open_file {
   bool used, append, shared;
+  bool orclose; // opened with ORCLOSE: removed when its last fid goes
   uint8_t mode;
   uint64_t node, offset;
   uint32_t fids, holds;
@@ -131,6 +139,7 @@ typedef struct p9_fid {
   p9_qid qid;
   uint64_t dir_offset; // a directory read continues only from here
   uint32_t dir_index;  // the next entry to read
+  bool orclose;        // opened with ORCLOSE, and no open file shares it: removed as it is clunked
 } p9_fid;
 
 typedef struct p9_server {
@@ -207,6 +216,12 @@ static bool p9_unlock(p9_shared *sh, const void *conn, uint32_t proc_id, bool an
 }
 
 static void p9_fid_drop(p9_server *s, p9_fid *f) {
+  bool remove = f->orclose;
+  if (f->file && s->shared) {
+    p9_open_file *o = &s->shared->files[f->file - 1];
+    remove = remove || (o->orclose && o->fids == 1); // its last fid
+  }
+  if (remove && s->fs.remove) s->fs.remove(s->fs.ctx, f->node); // ORCLOSE; it may already be gone
   if (s->fs.clunk) s->fs.clunk(s->fs.ctx, f->node, f->open);
   if (f->file && s->shared) {
     p9_open_file *o = &s->shared->files[f->file - 1];
@@ -315,7 +330,12 @@ static vx_status p9_read_dir(p9_server *s, p9_fid *f, uint64_t offset, uint8_t *
 static vx_status p9_write(p9_server *s, p9_fid *f, p9_msg *t, p9_msg *r) {
   p9_open_file *o = f->file && s->shared ? &s->shared->files[f->file - 1] : nullptr;
   uint64_t offset = t->offset;
-  if (offset == P9_OFFSET_CURRENT) {
+  if (f->qid.type & P9_QTAPPEND) { // DMAPPEND: at the end, whatever the offset
+    p9_stat st;
+    vx_status e = s->fs.stat(s->fs.ctx, f->node, &st);
+    if (e != VX_OK) return e;
+    offset = st.length;
+  } else if (offset == P9_OFFSET_CURRENT) {
     if (!o) return VX_ERR_INVALID;
     offset = o->offset;
     if (o->append) {
@@ -607,6 +627,68 @@ static vx_status p9_serve_dref(p9_server *s, const p9_msg *t, p9_msg *r) {
   return VX_OK;
 }
 
+// Twstat (stat(5)): the entry's fields that are not "don't touch" (all
+// ones, or an empty string) are changed, all of them or none:
+//   - name: a rename in the file's own directory (not of an attach root);
+//   - length, mode (its permission bits; DMDIR as it is), mtime and atime:
+//     the file server's setattr;
+//   - type, dev, qid and muid may not change, nor uid (no chown in 9P);
+//     gid only to what it is; DMAPPEND and DMEXCL only at create.
+// The rename goes first, and back if setattr then fails. Nothing to change
+// asks the file to be written out (fsync), as 9P has it.
+static vx_status p9_serve_wstat(p9_server *s, const p9_fid *f, const p9_msg *t) {
+  p9_stat w, cur;
+  if (p9_stat_decode(t->stat.ptr, t->stat.len, &w) != VX_OK) return VX_ERR_INVALID;
+  vx_status e = s->fs.stat(s->fs.ctx, f->node, &cur);
+  if (e != VX_OK) return e;
+  char old[256]; // the name, kept: the file server's strings last until its next call
+  if (cur.name.len >= sizeof old) return VX_ERR_RANGE;
+  memcpy(old, cur.name.ptr, cur.name.len);
+  vx_str oldname = {old, cur.name.len};
+  bool same_gid = !w.gid.len || (w.gid.len == cur.gid.len && !memcmp(w.gid.ptr, cur.gid.ptr, w.gid.len));
+  bool same_uid = !w.uid.len || (w.uid.len == cur.uid.len && !memcmp(w.uid.ptr, cur.uid.ptr, w.uid.len));
+  bool keep_qid =
+      (w.qid.type == 0xff && w.qid.version == UINT32_MAX && w.qid.path == UINT64_MAX) ||
+      (w.qid.type == cur.qid.type && w.qid.version == cur.qid.version && w.qid.path == cur.qid.path);
+  if ((w.type != 0xffff && w.type != cur.type) || (w.dev != UINT32_MAX && w.dev != cur.dev) || !keep_qid ||
+      w.muid.len)
+    return VX_ERR_INVALID;
+  if (!same_uid || !same_gid) return VX_ERR_ACCESS;
+  p9_setattr a = {};
+  if (w.mode != UINT32_MAX) {
+    if ((w.mode ^ cur.mode) & P9_DMDIR) return VX_ERR_INVALID;
+    if ((w.mode ^ cur.mode) & (P9_DMAPPEND | P9_DMEXCL | P9_DMSYMLINK | P9_DMDEVICE))
+      return VX_ERR_UNSUPPORTED;
+    a.valid |= P9_SETATTR_MODE, a.mode = w.mode & 0777;
+  }
+  if (w.length != UINT64_MAX) {
+    if ((cur.mode & P9_DMDIR) && w.length != cur.length) return VX_ERR_INVALID;
+    if (!(cur.mode & P9_DMDIR)) a.valid |= P9_SETATTR_SIZE, a.size = w.length;
+  }
+  if (w.mtime != UINT32_MAX) a.valid |= P9_SETATTR_MTIME | P9_SETATTR_MTIME_SET, a.mtime_sec = w.mtime;
+  if (w.atime != UINT32_MAX) a.valid |= P9_SETATTR_ATIME | P9_SETATTR_ATIME_SET, a.atime_sec = w.atime;
+  bool rename = w.name.len && (w.name.len != oldname.len || memcmp(w.name.ptr, old, oldname.len) != 0);
+  if (!rename && !a.valid) return s->fs.fsync ? s->fs.fsync(s->fs.ctx, f->node) : VX_OK;
+  if ((a.valid && !s->fs.setattr) || (rename && !s->fs.rename)) return VX_ERR_ACCESS;
+  uint64_t dir = 0;
+  if (rename) {
+    if (f->node == f->root || !p9_new_name_ok(w.name))
+      return f->node == f->root ? VX_ERR_ACCESS : VX_ERR_INVALID;
+    if ((e = s->fs.parent(s->fs.ctx, f->node, &dir)) != VX_OK) return e;
+    uint64_t there;
+    if (s->fs.walk(s->fs.ctx, dir, w.name, &there) == VX_OK) { // 9P's rename replaces nothing
+      if (s->fs.clunk) s->fs.clunk(s->fs.ctx, there, false);
+      return VX_ERR_EXISTS;
+    }
+    if ((e = s->fs.rename(s->fs.ctx, dir, oldname, dir, w.name)) != VX_OK) return e;
+  }
+  if (a.valid && (e = s->fs.setattr(s->fs.ctx, f->node, &a)) != VX_OK) {
+    if (rename) s->fs.rename(s->fs.ctx, dir, w.name, dir, oldname); // none of it, then
+    return e;
+  }
+  return VX_OK;
+}
+
 static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve the request again later
 
 // Handles one request (`len` bytes, one whole message) and writes the reply
@@ -702,6 +784,10 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
         e = VX_ERR_BAD_STATE;
         break;
       }
+      if ((t.mode & P9_ORCLOSE) && !s->fs.remove) {
+        e = VX_ERR_ACCESS; // nothing here is removed
+        break;
+      }
       if (t.type == P9_Tcreate) {
         uint64_t node;
         bool dotdot = t.name.len == 2 && t.name.ptr[0] == '.' && t.name.ptr[1] == '.';
@@ -734,6 +820,10 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
       }
       f->open = true;
       f->mode = t.mode & ~(P9_OAPPEND | P9_OJOIN);
+      if ((t.mode & P9_ORCLOSE) && f->file)
+        s->shared->files[f->file - 1].orclose = true; // the open file's, which forks share
+      else
+        f->orclose = t.mode & P9_ORCLOSE;
       r.qid = f->qid;
       r.iounit = s->msize - P9_IOHDRSZ;
       break;
@@ -783,7 +873,11 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
         e = VX_ERR_BAD_HANDLE;
         break;
       }
-      if (t.type == P9_Tremove) e = s->fs.remove ? s->fs.remove(s->fs.ctx, f->node) : VX_ERR_ACCESS;
+      if (t.type == P9_Tremove) {
+        e = s->fs.remove ? s->fs.remove(s->fs.ctx, f->node) : VX_ERR_ACCESS;
+        f->orclose = false; // removed already, or not to be
+        if (f->file && s->shared) s->shared->files[f->file - 1].orclose = false;
+      }
       p9_fid_drop(s, f); // a remove clunks the fid whether or not it worked
       break;
     case P9_Tstat: {
@@ -797,7 +891,12 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
       }
       break;
     }
-    case P9_Twstat: e = VX_ERR_UNSUPPORTED; break; // renames and chmod: Trenameat and Tsetattr
+    case P9_Twstat:
+      if (!(f = p9_fid_find(s, t.fid)))
+        e = VX_ERR_BAD_HANDLE;
+      else
+        e = p9_serve_wstat(s, f, &t);
+      break;
     case P9_Tgetattr:
     case P9_Tsetattr:
     case P9_Trenameat:

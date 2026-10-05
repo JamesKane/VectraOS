@@ -89,8 +89,9 @@ typedef struct ofd {
 static ofd fd_ofds[FD_MAX];
 static void ra_free(ofd *o); // poll.c
 static void ra_drop(fd_readahead *ra);
-static void sig_raise_self(int sig); // signal.c
-static long posix_pid(void);         // process.c
+static void sig_raise_self(int sig);                        // signal.c
+static long posix_pid(void);                                // process.c
+static long time_get(clockid_t clock, struct timespec *ts); // start.c
 static long ra_wait(fd_readahead *ra, uint64_t key, bool tty, bool block);
 static long ra_wait_until(fd_readahead *ra, uint64_t key, bool tty, bool block, int64_t deadline);
 static uint64_t fd_wb_key(const ofd *o);
@@ -1532,7 +1533,22 @@ static long fd_renameat(int olddirfd, const char *old, int newdirfd, const char 
     p9c_clunk(c1, f1);
     return r;
   }
-  r = c1 == c2 ? fd_status(p9c_renameat(c1, f1, n1, f2, n2)) : -EXDEV; // within one server only
+  vx_str d1 = {p1, (size_t)(n1.ptr - p1)}, d2 = {p2, (size_t)(n2.ptr - p2)};
+  bool same_dir = d1.len == d2.len && !memcmp(d1.ptr, d2.ptr, d1.len);
+  bool posix = c1 == c2 && (c1->extensions & P9_EXT_POSIX);
+  if (c1 != c2 || (!posix && !same_dir)) {
+    r = -EXDEV; // within one server only; a 9P2000 server's (Twstat) within a directory only
+  } else if (posix) {
+    r = fd_status(p9c_renameat(c1, f1, n1, f2, n2));
+  } else {
+    // Twstat does not replace what is there, as POSIX's rename does: what is
+    // there goes first (not atomically, on such a server).
+    vx_status st = p9c_rename_wstat(c1, f1, n1, n2);
+    uint32_t there = 0;
+    if (st == VX_ERR_EXISTS && p9c_walk(c1, f1, n2, &there) == VX_OK && p9c_remove(c1, there) == VX_OK)
+      st = p9c_rename_wstat(c1, f1, n1, n2);
+    r = fd_status(st);
+  }
   p9c_clunk(c1, f1);
   p9c_clunk(c2, f2);
   return r;
@@ -1617,6 +1633,14 @@ static long fd_utimens(int dirfd, const char *path, const struct timespec *times
     *(i ? &a.mtime_nsec : &a.atime_nsec) = (uint64_t)ns;
   }
   if (!a.valid) return 0;
+  // "Now", as this side's clock has it: a server without the xattr extension
+  // is told the time itself (Twstat has no "now").
+  struct timespec now;
+  time_get(CLOCK_REALTIME, &now);
+  if ((a.valid & P9_SETATTR_ATIME) && !(a.valid & P9_SETATTR_ATIME_SET))
+    a.atime_sec = (uint64_t)now.tv_sec, a.atime_nsec = (uint64_t)now.tv_nsec, a.valid |= P9_SETATTR_ATIME_SET;
+  if ((a.valid & P9_SETATTR_MTIME) && !(a.valid & P9_SETATTR_MTIME_SET))
+    a.mtime_sec = (uint64_t)now.tv_sec, a.mtime_nsec = (uint64_t)now.tv_nsec, a.valid |= P9_SETATTR_MTIME_SET;
   return fd_setattr(path ? -1 : dirfd, dirfd, path, !(flags & AT_SYMLINK_NOFOLLOW), &a);
 }
 

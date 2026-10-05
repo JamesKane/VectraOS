@@ -126,7 +126,8 @@ static vx_status fs_stat(void *ctx, uint64_t id, p9_stat *out) {
   uint32_t s;
   const node *n = node_at(id, &s);
   if (!n) return VX_ERR_NOT_FOUND;
-  *out = (p9_stat){.qid = {n->dir ? P9_QTDIR : P9_QTFILE, n->version, id},
+  uint8_t qtype = (uint8_t)((n->dir ? P9_QTDIR : P9_QTFILE) | ((n->mode >> 24) & (P9_QTAPPEND | P9_QTEXCL)));
+  *out = (p9_stat){.qid = {qtype, n->version, id},
                    .mode = (n->dir ? P9_DMDIR : 0) | (n->link ? P9_DMSYMLINK : 0) | n->mode,
                    .atime = n->atime,
                    .mtime = n->mtime,
@@ -144,6 +145,7 @@ static vx_status fs_open(void *ctx, uint64_t id, uint8_t mode) {
   if (!n || (n->removed && !(mode & P9_OJOIN))) return VX_ERR_NOT_FOUND; // a join: open still, removed or not
   bool writes = (mode & 3) == P9_OWRITE || (mode & 3) == P9_ORDWR || (mode & P9_OTRUNC);
   if (n->dir && writes) return VX_ERR_ACCESS;
+  if ((n->mode & P9_DMEXCL) && n->opens && !(mode & P9_OJOIN)) return VX_ERR_ACCESS; // open already
   if (mode & P9_OTRUNC) {
     n->size = 0;
     n->mtime = now_seconds();
@@ -214,7 +216,8 @@ static vx_status fs_create(void *ctx, uint64_t dir, vx_str name, uint32_t perm, 
               .gen = n->gen,
               .name_len = (uint8_t)name.len,
               .parent = d,
-              .mode = perm & 0777,
+              .mode = perm &
+                      (0777 | (perm & P9_DMDIR ? 0 : P9_DMAPPEND | P9_DMEXCL)), // a file's DMAPPEND, DMEXCL
               .mtime = now_seconds(),
               .opens = 1}; // create opens it
   memcpy(n->name, name.ptr, name.len);
@@ -275,7 +278,7 @@ static vx_status fs_setattr(void *ctx, uint64_t id, const p9_setattr *a) {
     n->size = a->size;
     n->version++;
   }
-  if (a->valid & P9_SETATTR_MODE) n->mode = a->mode & 07777;
+  if (a->valid & P9_SETATTR_MODE) n->mode = (n->mode & (P9_DMAPPEND | P9_DMEXCL)) | (a->mode & 07777);
   uint32_t now = now_seconds();
   if (a->valid & P9_SETATTR_ATIME) n->atime = a->valid & P9_SETATTR_ATIME_SET ? (uint32_t)a->atime_sec : now;
   if (a->valid & P9_SETATTR_MTIME) n->mtime = a->valid & P9_SETATTR_MTIME_SET ? (uint32_t)a->mtime_sec : now;
