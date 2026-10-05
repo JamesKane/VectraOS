@@ -885,6 +885,14 @@ static void arch_page_copy(void *dst, const void *src, uint64_t bytes) {
   simd_end();
 }
 
+// Protection keys: none until 6c5's permission overlays (ADR-0035).
+static uint32_t arch_keys(void) { return 0; }
+static bool arch_user_copy_denied(void) { return false; }
+static uint64_t arch_rights_read(void) { return 0; }
+static void arch_rights_write(uint64_t rights) { (void)rights; }
+// NOLINTNEXTLINE(readability-non-const-parameter): x86_64's writes its PKRU; aarch64 has none yet
+static void arch_fp_set_rights(uint8_t *fp, uint64_t rights) { (void)fp, (void)rights; }
+
 // The extended state is the vx_fpregs image (ADR-0035): SVE's and SME's join
 // it when the kernel saves them, POR_EL0 with 6c5's overlays.
 static uint32_t arch_fp_size(void) { return sizeof(vx_fpregs); }

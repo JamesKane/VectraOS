@@ -162,6 +162,60 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   return &info;
 }
 
+// The calling thread's protection-key rights (ADR-0035), its own register,
+// set with the unprivileged instruction (x86's WRPKRU): no syscall. A key
+// with VX_KEY_READ may be read, with VX_KEY_WRITE written too (PKU has no
+// write-only key: WRITE alone is read and write); with neither, not touched.
+[[maybe_unused]] static uint64_t vx_rights_get(void) {
+#ifdef __x86_64__
+  if (!vx_cpu()->keys) return 0;
+  uint32_t pkru, edx;
+  __asm__ volatile("rdpkru" : "=a"(pkru), "=d"(edx) : "c"(0));
+  return pkru;
+#else
+  return 0;
+#endif
+}
+
+[[maybe_unused]] static void vx_rights_set(uint64_t rights) {
+#ifdef __x86_64__
+  if (vx_cpu()->keys) __asm__ volatile("wrpkru" : : "a"((uint32_t)rights), "c"(0), "d"(0) : "memory");
+#else
+  (void)rights;
+#endif
+}
+
+[[maybe_unused]] static vx_status vx_keys_set(uint32_t key, uint32_t rights) {
+  if (!vx_cpu()->keys) return VX_ERR_UNSUPPORTED;
+  if (key > vx_cpu()->keys || rights & ~(uint32_t)(VX_KEY_READ | VX_KEY_WRITE)) return VX_ERR_INVALID;
+  uint64_t r = vx_rights_get() & ~(3ull << (2 * key));
+  if (!(rights & VX_KEY_WRITE)) r |= 2ull << (2 * key); // WD: no writes
+  if (!rights) r |= 1ull << (2 * key);                  // AD: no access at all
+  vx_rights_set(r);
+  return VX_OK;
+}
+
+// The calling thread's rights to key: VX_KEY_READ and VX_KEY_WRITE as it has them.
+[[maybe_unused]] static uint32_t vx_keys_get(uint32_t key) {
+  if (!vx_cpu()->keys || key > vx_cpu()->keys) return VX_KEY_READ | VX_KEY_WRITE;
+  uint64_t r = vx_rights_get() >> (2 * key) & 3;
+  if (r & 1) return 0;
+  return r & 2 ? VX_KEY_READ : VX_KEY_READ | VX_KEY_WRITE;
+}
+
+[[maybe_unused]] static vx_status vx_as_protect(vx_handle task, uint64_t address, uint64_t size,
+                                                uint32_t flags) {
+  return (vx_status)vx_syscall(VX_SYS_as_protect, task, address, size, flags, 0, 0);
+}
+
+[[maybe_unused]] static vx_status vx_as_key_alloc(vx_handle task, uint32_t *key) {
+  return (vx_status)vx_syscall(VX_SYS_as_key_alloc, task, (uint64_t)key, 0, 0, 0, 0);
+}
+
+[[maybe_unused]] static vx_status vx_as_key_free(vx_handle task, uint32_t key) {
+  return (vx_status)vx_syscall(VX_SYS_as_key_free, task, key, 0, 0, 0, 0);
+}
+
 // What is above userland's baseline (x86-64-v3, armv8.2-a; M6 step 6c3), to
 // choose a code path at run time: a feature counts only when the CPU has it
 // and the kernel saves what it needs (AVX-512's registers in XCR0; SVE, whose

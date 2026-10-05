@@ -110,10 +110,12 @@ static bool sig_act(int sig, int code, int64_t sender, uint64_t address, const v
   sig_depth = 0;
   if (flags & SA_SIGINFO) {
     siginfo_t info = {.si_signo = sig, .si_code = code};
-    if (e)
-      info.si_addr = (void *)address; // a fault's; a signal's sender shares the union with it
-    else
+    if (e) {
+      info.si_addr = (void *)address;                 // a fault's; a signal's sender shares the union with it
+      if (code == SEGV_PKUERR) info.si_pkey = e->key; // the page's protection key (ADR-0035)
+    } else {
       info.si_pid = (pid_t)sender;
+    }
     ucontext_t uc = {};
     memcpy(&uc.uc_sigmask, &old, sizeof old);
     ((void (*)(int, siginfo_t *, void *))h)(sig, &info, &uc);
@@ -186,6 +188,7 @@ static vx_noted sig_note(vx_exception *e, vx_str note) {
   case VX_EXCEPTION_BREAKPOINT:
   case VX_EXCEPTION_STEP: sig = SIGTRAP, code = TRAP_BRKPT; break;
   case VX_EXCEPTION_GENERAL: code = SI_KERNEL; break;
+  case VX_EXCEPTION_PROTECTION_KEY: code = SEGV_PKUERR; break; // SIGSEGV, si_pkey the key
   default: break;
   }
   // A fault that is blocked or ignored would only happen again: its default.

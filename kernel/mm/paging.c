@@ -7,7 +7,8 @@ enum map_flags : uint32_t { // a mapping is always readable
   MAP_WRITE = 1,
   MAP_EXEC = 2,
   MAP_USER = 4,
-  MAP_DEVICE = 8, // uncached device memory
+  MAP_DEVICE = 8,       // uncached device memory
+  MAP_KEY_MASK = 0xf00, // the page's protection key, as VX_MAP_KEY puts it (ADR-0035; x86's PKU)
 };
 
 static uint64_t kernel_root; // physical address of the kernel's top-level table

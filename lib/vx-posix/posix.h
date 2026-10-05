@@ -54,6 +54,7 @@ static const struct {
     {"sys: trap: arithmetic", POSIX_SIGFPE, true},
     {"sys: trap: misaligned", POSIX_SIGBUS, true},
     {"sys: trap: page not supplied", POSIX_SIGBUS, true}, // a pager that did not answer in time
+    {"sys: trap: protection key", POSIX_SIGSEGV, true},   // a page its key's rights deny (ADR-0035)
     {"sys: breakpoint", POSIX_SIGTRAP, true},
     {"sys: trap: step", POSIX_SIGTRAP, true},
 };

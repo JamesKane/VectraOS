@@ -1127,10 +1127,17 @@ static char interrupt_note[VX_ERRMAX + 1]; // the note the last interrupt carrie
 
 static vx_handle late_pager, late_vmo, late_src; // what the handler supplies a late page from
 static _Atomic uint32_t pager_timeouts;
+static _Atomic uint32_t key_faults, key_fault_key, key_fault_code; // PROTECTION_KEY's, test_keys
 
 static void handler(vx_exception *e) {
   if (e->kind <= VX_EXCEPTION_INTERRUPT) atomic_fetch_add(&handled[e->kind], 1);
-  if (e->kind == VX_EXCEPTION_PAGER_TIMEOUT) { // the page, late: supplied now, and the access made again
+  if (e->kind == VX_EXCEPTION_PROTECTION_KEY) { // seen, then the key given: the access made again
+    atomic_fetch_add(&key_faults, 1);
+    atomic_store(&key_fault_key, e->key);
+    atomic_store(&key_fault_code, e->code);
+    e->rights &= ~(3ull << (2 * e->key));
+  } else if (e->kind ==
+             VX_EXCEPTION_PAGER_TIMEOUT) { // the page, late: supplied now, and the access made again
     atomic_fetch_add(&pager_timeouts, 1);
     vx_pager_supply(late_pager, late_vmo, 0, 4096, late_src, 0);
   } else if (e->kind == VX_EXCEPTION_PAGE_FAULT) {
@@ -1145,6 +1152,7 @@ static void handler(vx_exception *e) {
     interrupt_note[e->code < VX_ERRMAX ? e->code : VX_ERRMAX] = 0;
     atomic_store(&interrupted_thread, e->thread);
   }
+  vx_rights_set(e->rights); // the kernel opened key 0 for the handler (ADR-0035): the thread's own, back
   vx_exception_resume(vx_self, 0, VX_RESUME_CONTINUE, &e->regs);
 }
 
@@ -1384,6 +1392,112 @@ static void test_pager(void) {
   vx_handle_close(pager);
   vx_handle_close(src);
   vx_handle_close(port);
+}
+
+// --- Protection keys and as_protect (ADR-0035) ---
+
+static _Atomic uint32_t keys_worker_ok;
+
+// A thread of the same task starts with its creator's rights, and its own
+// change of them is its own.
+static void keys_worker(vx_handle unused, uint64_t key) {
+  (void)unused;
+  bool ok = vx_keys_get((uint32_t)key) == (VX_KEY_READ | VX_KEY_WRITE); // inherited
+  ok = ok && vx_keys_set((uint32_t)key, 0) == VX_OK && vx_keys_get((uint32_t)key) == 0;
+  atomic_store(&keys_worker_ok, ok ? 1 : 2);
+  vx_thread_exit();
+}
+
+static void test_keys(void) {
+  // as_protect, on every CPU: a range's rights changed within what the
+  // mapping's handle gave, a mapping cut in three.
+  vx_handle v, ro;
+  uint64_t at = 0;
+  vx_map_info mi;
+  CHECK(vx_vmo_create(3ull * 4096, 0, &v) == VX_OK &&
+        vx_as_map(self, v, 0, 3ull * 4096, VX_MAP_WRITE, &at) == VX_OK);
+  if (!at) return;
+  CHECK(vx_as_protect(self, at + 4096, 4096, 0) == VX_OK); // the middle page read-only
+  CHECK(vx_as_query(self, at, &mi) == VX_OK && mi.base == at && mi.size == 4096 && (mi.flags & VX_MAP_WRITE));
+  CHECK(vx_as_query(self, at + 4096, &mi) == VX_OK && mi.base == at + 4096 && mi.size == 4096 &&
+        !(mi.flags & VX_MAP_WRITE));
+  CHECK(vx_as_query(self, at + 8192, &mi) == VX_OK && mi.base == at + 8192 && (mi.flags & VX_MAP_WRITE));
+  *(volatile uint64_t *)at = 1, *(volatile uint64_t *)(at + 8192) = 3; // the ends still write
+  CHECK(vx_as_protect(self, at, 3ull * 4096, VX_MAP_WRITE) == VX_OK);  // and the middle again
+  *(volatile uint64_t *)(at + 4096) = 2;
+  CHECK(vx_as_protect(self, at, 4096, VX_MAP_WRITE | VX_MAP_EXEC) == VX_ERR_ACCESS); // W^X
+  CHECK(vx_as_protect(self, at, 4096, VX_MAP_EXEC) == VX_OK &&
+        vx_as_protect(self, at, 4096, VX_MAP_WRITE) ==
+            VX_OK); // written, then run, as a JIT does: W^X, in turn
+  CHECK(vx_as_protect(self, at, 4ull * 4096, 0) == VX_ERR_NOT_FOUND); // past it: a hole
+  CHECK(vx_as_protect(self, at + 1, 4096, 0) == VX_ERR_RANGE);
+  CHECK(vx_handle_dup(v, VX_RIGHT_MAP | VX_RIGHT_READ, &ro) == VX_OK); // a handle that cannot write
+  uint64_t at2 = 0;
+  CHECK(vx_as_map(self, ro, 0, 4096, 0, &at2) == VX_OK);
+  CHECK(vx_as_protect(self, at2, 4096, VX_MAP_WRITE) == VX_ERR_ACCESS); // more than its handle gave
+  CHECK(vx_as_unmap(self, at2, 4096) == VX_OK);
+  vx_handle_close(ro);
+
+  vx_cpu_info ci = {};
+  CHECK(vx_thread_state(self, 0, VX_STATE_GET_CPU, &ci, sizeof ci) == VX_OK);
+  uint32_t key = 0;
+  vx_print(VX_STR("ktest: protection keys: "));
+  vx_print_u64(ci.keys);
+  vx_print(VX_STR("\n"));
+  if (!ci.keys) { // aarch64 until 6c5's overlays, or an x86 without PKU
+    CHECK(vx_as_key_alloc(self, &key) == VX_ERR_UNSUPPORTED &&
+          vx_keys_set(1, VX_KEY_READ) == VX_ERR_UNSUPPORTED);
+    CHECK(vx_as_unmap(self, at, 3ull * 4096) == VX_OK);
+    vx_handle_close(v);
+    return;
+  }
+  // Keys, each once, 1 to 15; then none.
+  uint32_t keys[15], n = 0;
+  while (n < 15 && vx_as_key_alloc(self, &keys[n]) == VX_OK) n++;
+  CHECK(n == ci.keys && ci.keys == 15 && keys[0] == 1 && keys[14] == 15);
+  CHECK(vx_as_key_alloc(self, &key) == VX_ERR_NO_SPACE);
+  for (uint32_t i = 1; i < n; i++) CHECK(vx_as_key_free(self, keys[i]) == VX_OK);
+  CHECK(vx_as_key_free(self, keys[1]) == VX_ERR_INVALID && vx_as_key_free(self, 0) == VX_ERR_INVALID);
+  key = keys[0];
+  CHECK(vx_as_map(self, v, 0, 4096, VX_MAP_WRITE | VX_MAP_KEY(9), &at2) == VX_ERR_INVALID); // not allocated
+  // The middle page under the key: this thread, a new task's first, has every key but 0 closed.
+  CHECK(vx_as_protect(self, at + 4096, 4096, VX_MAP_WRITE | VX_MAP_KEY(key)) == VX_OK);
+  CHECK(vx_as_query(self, at + 4096, &mi) == VX_OK && (mi.flags & VX_MAP_KEY_MASK) == VX_MAP_KEY(key));
+  CHECK(vx_keys_get(key) == 0);
+  CHECK(vx_keys_set(key, VX_KEY_READ) == VX_OK && vx_keys_get(key) == VX_KEY_READ);
+  CHECK(*(volatile uint64_t *)(at + 4096) == 2); // read
+  // A write faults, as PROTECTION_KEY with the key; the handler gives the
+  // key, and the write is made again.
+  CHECK(vx_exception_bind(self, 0, (uint64_t)handler, VX_EXCEPTION_IN_TASK) == VX_OK);
+  *(volatile uint64_t *)(at + 4096) = 4;
+  CHECK(vx_exception_bind(self, 0, 0, VX_EXCEPTION_IN_TASK) == VX_OK);
+  CHECK(atomic_load(&key_faults) == 1 && atomic_load(&key_fault_key) == key &&
+        atomic_load(&key_fault_code) == 1);
+  CHECK(*(volatile uint64_t *)(at + 4096) == 4 && vx_keys_get(key) == (VX_KEY_READ | VX_KEY_WRITE));
+  // The kernel's copies obey the caller's rights: ACCESS, not a fault.
+  uint64_t word = 5;
+  CHECK(vx_keys_set(key, VX_KEY_READ) == VX_OK);
+  CHECK(vx_vmo_rw(v, VX_VMO_READ, 0, (void *)(at + 4096), 8) ==
+        VX_ERR_ACCESS); // into a page it may not write
+  CHECK(vx_keys_set(key, 0) == VX_OK);
+  CHECK(vx_vmo_rw(v, VX_VMO_WRITE, 0, (void *)(at + 4096), 8) == VX_ERR_ACCESS); // from one it may not read
+  CHECK(vx_vmo_rw(v, VX_VMO_WRITE, 0, &word, 8) == VX_OK);                       // its own pages: as ever
+  // Another thread's rights are its own, from its creator's at its start.
+  CHECK(vx_keys_set(key, VX_KEY_READ | VX_KEY_WRITE) == VX_OK);
+  vx_handle th = 0; // closing 0 is a harmless BAD_HANDLE
+  uint64_t sp = new_stack();
+  CHECK(sp && vx_thread_create(self, &th) == VX_OK &&
+        vx_thread_start(th, (uint64_t)keys_worker, sp, 0, key) == VX_OK);
+  for (int i = 0; i < 1000 && !atomic_load(&keys_worker_ok); i++) {
+    _Atomic uint32_t never = 0;
+    vx_futex_wait(&never, 0, after_ms(1)); // switches, on this CPU or another
+  }
+  CHECK(atomic_load(&keys_worker_ok) == 1 && vx_keys_get(key) == (VX_KEY_READ | VX_KEY_WRITE));
+  vx_handle_close(th);
+  // A key a mapping uses is not freed; once unmapped, it is.
+  CHECK(vx_as_key_free(self, key) == VX_ERR_BAD_STATE);
+  CHECK(vx_as_unmap(self, at, 3ull * 4096) == VX_OK && vx_as_key_free(self, key) == VX_OK);
+  vx_handle_close(v);
 }
 
 // --- Debugging (05 §2) ---
@@ -1962,6 +2076,7 @@ const char *vx_main(void) {
   test_rings();
   test_vmo_rw();
   test_pager();
+  test_keys();
   test_devices();
   vx_print(VX_STR("ktest: "));
   vx_print_u64(checks);

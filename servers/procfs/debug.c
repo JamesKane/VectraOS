@@ -705,6 +705,17 @@ static size_t regs_ndb_text(const proc *p, uint32_t tid, char *buf, size_t cap) 
   if (vx_thread_state(p->task, tid, VX_STATE_GET_REGS, &r, sizeof r) != VX_OK) return 0;
   vx_ndb_writer w = {.buf = buf, .cap = cap};
   for (uint32_t i = 0; i < REG_COUNT; i++) put_hex(&w, REG_NAMES[i], *reg_at(&r, i));
+#ifdef __x86_64__
+  // Its protection-key rights (ADR-0035), where there are keys: PKRU, from
+  // its extended state at the place CPUID gives it. xregs sets them.
+  static uint8_t xs[4096];
+  if (vx_cpu()->keys && vx_thread_state(p->task, tid, VX_STATE_GET_XSTATE, xs, sizeof xs) == VX_OK) {
+    uint32_t a = 0xd, b, c = 9, d;
+    __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "+c"(c), "=d"(d));
+    uint32_t pkru;
+    if (b + sizeof pkru <= sizeof xs) memcpy(&pkru, xs + b, sizeof pkru), put_hex(&w, "rights", pkru);
+  }
+#endif
   vx_ndb_end(&w);
   return w.failed ? 0 : w.len;
 }

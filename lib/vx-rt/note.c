@@ -74,7 +74,9 @@ static void (*vx_note_exit)(vx_str note);
 }
 
 // Resumes the thread where it was diverted from, with the registers it has.
+// The protection-key rights the kernel opened key 0 from go back first (ADR-0035).
 [[gnu::used, noreturn]] static void vx_note_resume(vx_exception *e) {
+  vx_rights_set(e->rights);
   vx_exception_resume(vx_self, 0, VX_RESUME_CONTINUE, &e->regs);
   __builtin_trap(); // exception_resume does not return
 }

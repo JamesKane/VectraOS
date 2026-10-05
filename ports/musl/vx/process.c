@@ -469,7 +469,7 @@ static long proc_execve(const char *path, char *const argv[], char *const envp[]
 // parent registers the child with procfs before it runs (ADR-0011).
 
 static jmp_buf fork_jump;
-static uint64_t fork_tls;
+static uint64_t fork_tls, fork_rights; // its thread pointer, and its protection-key rights (ADR-0035: kept)
 static uint64_t
     fork_pending; // the parent's pending signals as its memory was copied: the child has none of them (POSIX)
 alignas(16) static uint8_t fork_stack[4096];
@@ -481,6 +481,7 @@ alignas(16) static uint8_t fork_stack[4096];
 #else
   __asm__ volatile("msr tpidr_el0, %0" : : "r"(fork_tls));
 #endif
+  vx_rights_set(fork_rights); // the child's first thread starts with key 0 alone
   longjmp(fork_jump, 1);
 }
 
@@ -505,6 +506,7 @@ static long proc_fork(void) {
 #else
   __asm__ volatile("mrs %0, tpidr_el0" : "=r"(fork_tls));
 #endif
+  fork_rights = vx_rights_get();
   if (setjmp(fork_jump)) return fork_child();
   vx_task_summary me;
   vx_handle child = VX_HANDLE_NONE, thread = VX_HANDLE_NONE;

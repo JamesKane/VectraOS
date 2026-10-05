@@ -375,10 +375,23 @@ enum vx_task_info_flags : uint32_t { VX_TASK_NEXT = 1 };
 // whole mappings or parts of them; a mapping cut in the middle becomes two.
 // Pages nothing maps there are left alone. Once it returns, no CPU can reach
 // the pages through those addresses any more.
-enum vx_map_flags : uint32_t { // as_map; a mapping is always readable
+// as_protect(task, address, size, flags): changes the rights and key of the
+// pages of [address, address + size), every one mapped, within the rights
+// each mapping's VMO handle gave when it was mapped (ACCESS past them); a
+// mapping cut by the range becomes two or three (ADR-0035).
+// as_key_alloc(task, &key) and as_key_free(task, key): a protection key of
+// the task's, 1 to vx_cpu_info.keys (key 0 is every mapping's default),
+// with the task handle's MANAGE as as_map takes it; NO_SPACE when none is
+// free, UNSUPPORTED where the CPU has none; a key a mapping still uses is not
+// freed (BAD_STATE). A thread's rights to each key are its own (PKRU,
+// POR_EL0), set with the unprivileged instruction (vx-rt's vx_keys_set).
+enum vx_map_flags : uint32_t { // as_map, as_protect; a mapping is always readable
   VX_MAP_WRITE = 1,
   VX_MAP_EXEC = 2,
+  VX_MAP_KEY_MASK = 0xf00, // the mapping's protection key: VX_MAP_KEY(k)
 };
+#define VX_MAP_KEY(k) ((uint32_t)(k) << 8)
+enum vx_key_rights : uint32_t { VX_KEY_READ = 1, VX_KEY_WRITE = 2 }; // vx_keys_set's
 
 enum vx_syscall : uint32_t {
 #define VX_SYSCALL(name) VX_SYS_##name,
@@ -504,15 +517,17 @@ enum vx_exception_kind : uint32_t {
   VX_EXCEPTION_BREAKPOINT,     // int3, brk
   VX_EXCEPTION_ARITHMETIC,     // division by zero, an FP exception
   VX_EXCEPTION_ALIGNMENT,
-  VX_EXCEPTION_FP_DISABLED,   // FP/SIMD while the kernel does not save it (01 §11)
-  VX_EXCEPTION_GENERAL,       // any other fault (x86 #GP, say); code: the architecture's
-  VX_EXCEPTION_INTERRUPT,     // thread_interrupt; code: the note's length, note: its text
-  VX_EXCEPTION_STEP,          // one instruction done, after exception_resume(STEP)
-  VX_EXCEPTION_WATCHPOINT,    // a watched address touched; code: the watchpoint's slot, address: what it
-                              // watches. x86_64 stops after the access, aarch64 before it (resuming
-                              // touches it again: step it with the watchpoint off)
-  VX_EXCEPTION_PAGER_TIMEOUT, // a pager-backed page not supplied by its pager's deadline; address: the
-                              // page, code: read 0, write 1, execute 2 (POSIX's SIGBUS)
+  VX_EXCEPTION_FP_DISABLED,    // FP/SIMD while the kernel does not save it (01 §11)
+  VX_EXCEPTION_GENERAL,        // any other fault (x86 #GP, say); code: the architecture's
+  VX_EXCEPTION_INTERRUPT,      // thread_interrupt; code: the note's length, note: its text
+  VX_EXCEPTION_STEP,           // one instruction done, after exception_resume(STEP)
+  VX_EXCEPTION_WATCHPOINT,     // a watched address touched; code: the watchpoint's slot, address: what it
+                               // watches. x86_64 stops after the access, aarch64 before it (resuming
+                               // touches it again: step it with the watchpoint off)
+  VX_EXCEPTION_PAGER_TIMEOUT,  // a pager-backed page not supplied by its pager's deadline; address: the
+                               // page, code: read 0, write 1, execute 2 (POSIX's SIGBUS)
+  VX_EXCEPTION_PROTECTION_KEY, // a page whose key the thread's rights deny; address: what was touched,
+                               // code: read 0, write 1, key: the mapping's (ADR-0035; SIGSEGV, SEGV_PKUERR)
 };
 
 typedef struct vx_exception {
@@ -520,7 +535,9 @@ typedef struct vx_exception {
   uint32_t code;
   uint64_t address;
   uint32_t thread; // the id of the thread it happened to
-  uint32_t reserved;
+  uint32_t key;    // PROTECTION_KEY: the mapping's protection key
+  uint64_t rights; // its protection-key rights (PKRU, POR_EL0) when it was diverted to its in-task
+                   // handler, which runs with key 0 opened; the handler writes them back as it leaves
   vx_regs regs;
   char note[VX_ERRMAX]; // INTERRUPT: the note, `code` bytes of it
 } vx_exception;

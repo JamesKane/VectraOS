@@ -21,14 +21,18 @@ static bool user_range_ok(uint64_t addr, uint64_t len, bool write) {
   return true;
 }
 
+// A copy the caller's protection-key rights stop (ADR-0035: the hardware
+// checks them for the kernel's accesses too) is ACCESS, any other fault INVALID.
 static vx_status copy_from_user(void *dst, uint64_t src, uint64_t len) {
   if (!user_range_ok(src, len, false)) return VX_ERR_INVALID;
-  return arch_user_copy(dst, (const void *)src, len) ? VX_ERR_INVALID : VX_OK;
+  if (!arch_user_copy(dst, (const void *)src, len)) return VX_OK;
+  return arch_user_copy_denied() ? VX_ERR_ACCESS : VX_ERR_INVALID;
 }
 
 static vx_status copy_to_user(uint64_t dst, const void *src, uint64_t len) {
   if (!user_range_ok(dst, len, true)) return VX_ERR_INVALID;
-  return arch_user_copy((void *)dst, src, len) ? VX_ERR_INVALID : VX_OK;
+  if (!arch_user_copy((void *)dst, src, len)) return VX_OK;
+  return arch_user_copy_denied() ? VX_ERR_ACCESS : VX_ERR_INVALID;
 }
 
 static constexpr uint32_t ALL_RIGHTS = (1u << VX_RIGHT_BIT_COUNT) - 1;
@@ -445,6 +449,36 @@ static int64_t sys_as_unmap(vx_handle th, uint64_t va, uint64_t size) {
   return st;
 }
 
+static int64_t sys_as_protect(vx_handle th, uint64_t va, uint64_t size, uint64_t flags) {
+  if (flags & ~(uint64_t)(VX_MAP_WRITE | VX_MAP_EXEC | VX_MAP_KEY_MASK)) return VX_ERR_INVALID;
+  vx_status st;
+  task *t = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_MANAGE, &st);
+  if (!t) return st;
+  st = task_protect(t, va, size, (uint32_t)flags);
+  object_release(&t->obj);
+  return st;
+}
+
+static int64_t sys_as_key_alloc(vx_handle th, uint64_t key_ptr) {
+  vx_status st;
+  if (!user_range_ok(key_ptr, sizeof(uint32_t), true)) return VX_ERR_INVALID;
+  task *t = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_MANAGE, &st);
+  if (!t) return st;
+  uint32_t key = 0;
+  st = task_key_alloc(t, &key);
+  object_release(&t->obj);
+  return st == VX_OK ? copy_to_user(key_ptr, &key, sizeof key) : st;
+}
+
+static int64_t sys_as_key_free(vx_handle th, uint64_t key) {
+  vx_status st;
+  task *t = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_MANAGE, &st);
+  if (!t) return st;
+  st = key > 15 ? VX_ERR_INVALID : task_key_free(t, (uint32_t)key);
+  object_release(&t->obj);
+  return st;
+}
+
 // clock_read(&info): the clock's counter, for /sys/clock/info; with no
 // argument, the time (dispatched below).
 static int64_t sys_clock_info(uint64_t info_ptr) {
@@ -485,7 +519,7 @@ static int64_t sys_as_map(vx_handle th, vx_handle vh, uint64_t offset, uint64_t 
     object_release(&io->obj);
     return st;
   }
-  if (flags & ~(uint64_t)(VX_MAP_WRITE | VX_MAP_EXEC)) return VX_ERR_INVALID;
+  if (flags & ~(uint64_t)(VX_MAP_WRITE | VX_MAP_EXEC | VX_MAP_KEY_MASK)) return VX_ERR_INVALID;
   uint64_t va;
   st = copy_from_user(&va, addr_ptr, sizeof va);
   if (st != VX_OK) return st;
@@ -495,7 +529,15 @@ static int64_t sys_as_map(vx_handle th, vx_handle vh, uint64_t offset, uint64_t 
                   (flags & VX_MAP_EXEC ? VX_RIGHT_EXEC : 0);
   vmo *v = (vmo *)handle_get(current_task(), vh, OBJ_VMO, need, &st);
   if (v) {
-    st = task_map(t, v, offset, size, (uint32_t)flags, &va);
+    // What the handle allows, for as_protect later: asked of it once more each.
+    uint32_t allowed = 0;
+    vx_status ignored;
+    for (uint32_t i = 0; i < 2; i++) {
+      uint32_t right = i ? VX_RIGHT_EXEC : VX_RIGHT_WRITE;
+      object *o = handle_get(current_task(), vh, OBJ_VMO, VX_RIGHT_MAP | right, &ignored);
+      if (o) allowed |= i ? VX_MAP_EXEC : VX_MAP_WRITE, object_release(o);
+    }
+    st = task_map(t, v, offset, size, (uint32_t)flags, allowed, &va);
     object_release(&v->obj);
   }
   object_release(&t->obj);
@@ -801,6 +843,9 @@ static int64_t sys_thread_create(vx_handle th, uint64_t out, uint64_t id_out) {
   bool ending = t->ending || t->killed;
   spin_unlock(&t->lock);
   st = ending ? VX_ERR_BAD_STATE : thread_create(t, &thr);
+  // A thread made by one of its own task takes its creator's protection-key
+  // rights; another task's first, key 0 alone (arch_fp_init) (ADR-0035).
+  if (st == VX_OK && t == current_task()) arch_fp_set_rights(thr->fp, arch_rights_read());
   object_release(&t->obj);
   if (st != VX_OK) return st;
   uint32_t id = thr->id;
@@ -1059,6 +1104,9 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_vmo_rw: return sys_vmo_rw((vx_handle)a[0], a[1], a[2], a[3], a[4]);
   case VX_SYS_as_map: return sys_as_map((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4], a[5]);
   case VX_SYS_as_unmap: return sys_as_unmap((vx_handle)a[0], a[1], a[2]);
+  case VX_SYS_as_protect: return sys_as_protect((vx_handle)a[0], a[1], a[2], a[3]);
+  case VX_SYS_as_key_alloc: return sys_as_key_alloc((vx_handle)a[0], a[1]);
+  case VX_SYS_as_key_free: return sys_as_key_free((vx_handle)a[0], a[1]);
   case VX_SYS_as_query: return sys_as_query((vx_handle)a[0], a[1], a[2]);
   case VX_SYS_exception_bind: return sys_exception_bind((vx_handle)a[0], (vx_handle)a[1], a[2], a[3]);
   case VX_SYS_exception_resume: return sys_exception_resume((vx_handle)a[0], a[1], a[2], a[3]);

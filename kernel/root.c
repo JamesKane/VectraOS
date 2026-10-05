@@ -141,7 +141,7 @@ static void start_root_task(void) {
   vmo *stack;
   uint64_t stack_va = USER_STACK_TOP - USER_STACK_SIZE; // the page below stays unmapped
   if (vmo_create(USER_STACK_SIZE, &stack) != VX_OK ||
-      task_map(t, stack, 0, stack->size, VX_MAP_WRITE, &stack_va) != VX_OK)
+      task_map(t, stack, 0, stack->size, VX_MAP_WRITE, VX_MAP_WRITE, &stack_va) != VX_OK)
     panic(VX_STR("cannot give the root task a stack"));
   object_release(&stack->obj);
 

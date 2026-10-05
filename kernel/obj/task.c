@@ -33,8 +33,9 @@ static constexpr uint32_t HANDLE_SLOTS = 4096 / sizeof(handle_entry);
 typedef struct mapping {
   uint64_t va, size, offset;
   struct vmo *vmo;
-  uint32_t flags;  // VX_MAP_WRITE, VX_MAP_EXEC
-  bool privatized; // its VMO is a copy of its own, made for a debugger's write (exception.c)
+  uint32_t flags;   // VX_MAP_WRITE, VX_MAP_EXEC, its key (VX_MAP_KEY)
+  uint32_t allowed; // the rights its VMO handle gave (VX_MAP_WRITE, VX_MAP_EXEC): as_protect's limit
+  bool privatized;  // its VMO is a copy of its own, made for a debugger's write (exception.c)
 } mapping;
 
 static constexpr uint32_t TASK_MAX_MAPPINGS = 4096 / sizeof(mapping);
@@ -49,6 +50,7 @@ typedef struct task {
   uint64_t id;
   uint64_t root;          // physical address of the address space's top table; 0 once torn down
   uint64_t map_next;      // the next address as_map places at
+  uint16_t keys;          // its protection keys, bit k for key k (ADR-0035): as_key_alloc's
   handle_entry *handles;  // HANDLE_SLOTS entries
   mapping *maps;          // TASK_MAX_MAPPINGS entries; size 0 is a free slot
   uint64_t mapped;        // bytes
@@ -369,16 +371,26 @@ static vx_status task_query(task *t, uint64_t addr, vx_map_info *out) {
 // for a pager's page, only once it is dirty (pager.c).
 static uint32_t page_flags(const mapping *m, uint64_t entry) {
   bool write = (m->flags & VX_MAP_WRITE) && (!m->vmo->pager || (entry & PAGE_DIRTY));
-  return MAP_USER | (write ? MAP_WRITE : 0) | (m->flags & VX_MAP_EXEC ? MAP_EXEC : 0);
+  return MAP_USER | (write ? MAP_WRITE : 0) | (m->flags & VX_MAP_EXEC ? MAP_EXEC : 0) |
+         (m->flags & VX_MAP_KEY_MASK) | (m->vmo->physical ? MAP_DEVICE : 0);
 }
 
-static vx_status task_map(task *t, vmo *v, uint64_t offset, uint64_t size, uint32_t flags, uint64_t *va) {
+// A key the task may put on a mapping: 0, or one it allocated.
+static bool key_ok(const task *t, uint32_t flags) {
+  uint32_t k = (flags & VX_MAP_KEY_MASK) >> 8;
+  return k == 0 || (t->keys & 1u << k);
+}
+
+// allowed: the rights the VMO's handle gave (VX_MAP_WRITE, VX_MAP_EXEC), which
+// as_protect may later give the mapping and no more.
+static vx_status task_map(task *t, vmo *v, uint64_t offset, uint64_t size, uint32_t flags, uint32_t allowed,
+                          uint64_t *va) {
   uint64_t vmo_end;
   if ((flags & VX_MAP_WRITE) && (flags & VX_MAP_EXEC)) return VX_ERR_ACCESS;
   if (!size || (offset | size) & 4095 || ckd_add(&vmo_end, offset, size) || vmo_end > v->size)
     return VX_ERR_RANGE;
   uint32_t mf = MAP_USER | (flags & VX_MAP_WRITE ? MAP_WRITE : 0) | (flags & VX_MAP_EXEC ? MAP_EXEC : 0) |
-                (v->physical ? MAP_DEVICE : 0);
+                (v->physical ? MAP_DEVICE : 0) | (flags & VX_MAP_KEY_MASK);
   vx_status st = VX_OK;
   spin_lock(&t->lock);
   uint64_t at = *va ? *va : t->map_next;
@@ -388,6 +400,8 @@ static vx_status task_map(task *t, vmo *v, uint64_t offset, uint64_t size, uint3
     if (!t->maps[i].size) slot = &t->maps[i];
   if (!t->root || !t->maps || t->ending)
     st = VX_ERR_BAD_STATE;
+  else if (!key_ok(t, flags))
+    st = VX_ERR_INVALID; // a key it has not allocated
   else if ((at & 4095) || ckd_add(&end, at, size) || end > USER_TOP)
     st = VX_ERR_RANGE;
   else if (!slot)
@@ -411,7 +425,7 @@ static vx_status task_map(task *t, vmo *v, uint64_t offset, uint64_t size, uint3
   if (v->pager) spin_unlock(&v->lock);
   if (st == VX_OK) {
     object_ref(&v->obj);
-    *slot = (mapping){.va = at, .size = size, .offset = offset, .vmo = v, .flags = flags};
+    *slot = (mapping){.va = at, .size = size, .offset = offset, .vmo = v, .flags = flags, .allowed = allowed};
     t->mapped += size;
     if (!*va) t->map_next = end + 4096; // leave a guard page between placed mappings
     *va = at;
@@ -442,12 +456,13 @@ static vx_status task_fork_copy(task *parent, task *child) {
   vx_status st = VX_OK;
   spin_lock(&parent->lock);
   if (!parent->root || parent->ending) st = VX_ERR_BAD_STATE;
+  child->keys = parent->keys; // first: the mappings below carry their keys
   for (uint32_t i = 0; st == VX_OK && i < TASK_MAX_MAPPINGS; i++) {
     const mapping *m = &parent->maps[i];
     if (!m->size || m->vmo->physical || m->vmo->ring) continue;
     if (m->vmo->pager) {
       uint64_t va = m->va;
-      st = task_map(child, m->vmo, m->offset, m->size, m->flags, &va);
+      st = task_map(child, m->vmo, m->offset, m->size, m->flags, m->allowed, &va);
       continue;
     }
     vmo *copy;
@@ -457,7 +472,7 @@ static vx_status task_fork_copy(task *parent, task *child) {
       arch_page_copy(phys_to_virt(copy->pages[off / 4096]),
                      phys_to_virt(m->vmo->pages[(m->offset + off) / 4096]), 4096);
     uint64_t va = m->va;
-    st = task_map(child, copy, 0, m->size, m->flags, &va);
+    st = task_map(child, copy, 0, m->size, m->flags, m->allowed, &va);
     object_release(&copy->obj); // the child's mapping holds it, if it was made
   }
   for (uint32_t i = 0; st == VX_OK && i < HANDLE_SLOTS; i++) {
@@ -523,6 +538,7 @@ static vx_status task_unmap(task *t, uint64_t va, uint64_t size) {
                         .offset = m->offset + (hi - m->va),
                         .vmo = m->vmo,
                         .flags = m->flags,
+                        .allowed = m->allowed,
                         .privatized = m->privatized};
       m->size = lo - m->va;
     }
@@ -532,6 +548,111 @@ static vx_status task_unmap(task *t, uint64_t va, uint64_t size) {
   arch_tlb_shootdown(root, va, size);
   for (uint32_t i = 0; i < dropped; i++) object_release(&drop[i]->obj);
   return VX_OK;
+}
+
+// Changes the rights and key of [va, va + size), every page of which must be
+// mapped (NOT_FOUND otherwise), within the rights each mapping's handle gave
+// (ACCESS past them) and W^X; a mapping the range cuts becomes two or three,
+// so that needs free slots. The pages' entries are made again with the new
+// flags (a pager's as far as it has supplied them), then shot down.
+static vx_status task_protect(task *t, uint64_t va, uint64_t size, uint32_t flags) {
+  uint64_t end;
+  if (!size || (va | size) & 4095 || ckd_add(&end, va, size) || end > USER_TOP) return VX_ERR_RANGE;
+  if ((flags & VX_MAP_WRITE) && (flags & VX_MAP_EXEC)) return VX_ERR_ACCESS;
+  vx_status st = VX_OK;
+  spin_lock(&t->lock);
+  uint64_t covered = 0;
+  uint32_t cuts = 0, free_slots = 0;
+  if (!t->root || !t->maps || t->ending) st = VX_ERR_BAD_STATE;
+  if (st == VX_OK && !key_ok(t, flags)) st = VX_ERR_INVALID;
+  for (uint32_t i = 0; st == VX_OK && i < TASK_MAX_MAPPINGS; i++) {
+    const mapping *m = &t->maps[i];
+    free_slots += !m->size;
+    uint64_t m_end = m->va + m->size;
+    if (!m->size || m_end <= va || m->va >= end) continue;
+    if (flags & (VX_MAP_WRITE | VX_MAP_EXEC) & ~m->allowed) st = VX_ERR_ACCESS;
+    covered += (m_end < end ? m_end : end) - (m->va > va ? m->va : va);
+    cuts += (m->va < va) + (m_end > end);
+  }
+  if (st == VX_OK && covered != size) st = VX_ERR_NOT_FOUND; // a hole
+  if (st == VX_OK && cuts > free_slots) st = VX_ERR_NO_MEMORY;
+  for (uint32_t i = 0; st == VX_OK && i < TASK_MAX_MAPPINGS; i++) {
+    mapping *m = &t->maps[i];
+    if (!m->size || m->va + m->size <= va || m->va >= end) continue;
+    for (int side = 0; side < 2; side++) { // what lies before the range, then after it, to slots of their own
+      uint64_t m_end = m->va + m->size;
+      uint64_t cut = side ? end : va;
+      if (side ? m_end <= cut : m->va >= cut) continue;
+      mapping *rest = nullptr;
+      for (uint32_t k = 0; k < TASK_MAX_MAPPINGS && !rest; k++)
+        if (!t->maps[k].size) rest = &t->maps[k];
+      object_ref(&m->vmo->obj);
+      *rest = *m;
+      if (side) { // the rest is [end, m_end)
+        rest->offset += cut - m->va, rest->size = m_end - cut, rest->va = cut;
+        m->size = cut - m->va;
+      } else { // the rest is [m->va, va)
+        rest->size = cut - m->va;
+        m->offset += cut - m->va, m->size = m_end - cut, m->va = cut;
+      }
+    }
+    m->flags = (m->flags & ~(uint32_t)(VX_MAP_WRITE | VX_MAP_EXEC | VX_MAP_KEY_MASK)) |
+               (flags & (VX_MAP_WRITE | VX_MAP_EXEC | VX_MAP_KEY_MASK));
+    vmo *v = m->vmo;
+    if (v->pager) spin_lock(&v->lock);
+    for (uint64_t off = 0; off < m->size && st == VX_OK; off += 4096) {
+      uint64_t idx = (m->offset + off) / 4096, pa = vmo_page(v, idx);
+      unmap_page(t->root, m->va + off);
+      if (pa && !map_range(t->root, m->va + off, pa, 4096, page_flags(m, v->pages[idx])))
+        st = VX_ERR_NO_MEMORY;
+    }
+    if (v->pager) spin_unlock(&v->lock);
+  }
+  uint64_t root = t->root;
+  spin_unlock(&t->lock);
+  if (root) arch_tlb_shootdown(root, va, size);
+  return st;
+}
+
+// The protection key of the mapping holding addr (0 if none): a PROTECTION_KEY
+// exception's.
+static uint32_t task_key_at(task *t, uint64_t addr) {
+  uint32_t key = 0;
+  spin_lock(&t->lock);
+  for (uint32_t i = 0; t->maps && i < TASK_MAX_MAPPINGS; i++) {
+    const mapping *m = &t->maps[i];
+    if (m->size && addr >= m->va && addr - m->va < m->size) key = (m->flags & VX_MAP_KEY_MASK) >> 8;
+  }
+  spin_unlock(&t->lock);
+  return key;
+}
+
+// as_key_alloc and as_key_free (ADR-0035): the task's keys, 1 to arch_keys().
+static vx_status task_key_alloc(task *t, uint32_t *key) {
+  uint32_t n = arch_keys();
+  if (!n) return VX_ERR_UNSUPPORTED;
+  spin_lock(&t->lock);
+  uint32_t k = 1;
+  while (k <= n && (t->keys & 1u << k)) k++;
+  if (k <= n) t->keys |= (uint16_t)(1u << k);
+  spin_unlock(&t->lock);
+  if (k > n) return VX_ERR_NO_SPACE;
+  *key = k;
+  return VX_OK;
+}
+
+static vx_status task_key_free(task *t, uint32_t key) {
+  uint32_t n = arch_keys();
+  if (!n) return VX_ERR_UNSUPPORTED;
+  if (key == 0 || key > n) return VX_ERR_INVALID;
+  vx_status st = VX_OK;
+  spin_lock(&t->lock);
+  if (!(t->keys & 1u << key)) st = VX_ERR_INVALID; // not its
+  for (uint32_t i = 0; st == VX_OK && t->maps && i < TASK_MAX_MAPPINGS; i++)
+    if (t->maps[i].size && (t->maps[i].flags & VX_MAP_KEY_MASK) >> 8 == key) st = VX_ERR_BAD_STATE; // in use
+  if (st == VX_OK) t->keys &= (uint16_t)~(1u << key);
+  spin_unlock(&t->lock);
+  return st;
 }
 
 // A thread of task t that has not started (thread_start, obj/process.c).

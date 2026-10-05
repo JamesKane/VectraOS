@@ -107,6 +107,15 @@ static vx_status arch_fp_check(const uint8_t *fp);
 static void arch_fp_legacy_set(uint8_t *fp);
 static void arch_cpu_info(vx_cpu_info *info);         // GET_CPU's
 static void arch_page_zero(void *va, uint64_t bytes); // whole pages, page-aligned: the fastest way there is
+// Protection keys (ADR-0035): how many a task may allocate (0: none); whether
+// the last user copy that failed was stopped by the caller's key rights; the
+// current thread's rights, live in the register (x86's PKRU).
+static uint32_t arch_keys(void);
+static bool arch_user_copy_denied(void);
+static uint64_t arch_rights_read(void);
+static void arch_rights_write(uint64_t rights);
+static void arch_fp_set_rights(uint8_t *fp,
+                               uint64_t rights); // a saved area's: a new thread's from its creator
 static uint64_t arch_tls_read(void);
 static void arch_tls_write(uint64_t value);
 

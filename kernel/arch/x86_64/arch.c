@@ -168,11 +168,13 @@ static void build_idt(void) {
 // layout is CPUID's, the same on every CPU.
 
 static constexpr uint64_t XFEATURES_USER = 0x7 | 0xe0;
+static constexpr uint64_t XFEATURE_PKRU = 1ull << 9;  // protection keys' rights, saved with the rest (6c4)
+static constexpr uint32_t PKRU_DEFAULT = 0x5555'5554; // key 0 open; every other key's access disabled
 static constexpr uint64_t XFEATURES_AVX512 = 0xe0;
 static uint64_t xcr0; // the components saved: set on every CPU from the boot CPU's
 static uint32_t xsave_size, mxcsr_mask = 0xffbf;
 static uint32_t xcomp_off[10], xcomp_size[10]; // each component's place, 2 to 9
-static bool have_xsaveopt;
+static bool have_xsaveopt, have_pku;           // PKU: CPUID.7.0:ECX[3], and CR4.PKE set
 
 typedef struct cpuid4 {
   uint32_t a, b, c, d;
@@ -192,7 +194,10 @@ static void xsave_init(uint32_t index) {
     r = cpuid_sub(1, 0);
     if (!(r.c & 1u << 26)) panic(VX_STR("no XSAVE: VectraOS needs x86-64-v3 (AVX2)"));
     r = cpuid_sub(0xd, 0);
-    xcr0 = ((uint64_t)r.d << 32 | r.a) & XFEATURES_USER;
+    uint64_t can = (uint64_t)r.d << 32 | r.a;
+    xcr0 = can & XFEATURES_USER;
+    if (have_pku && (can & XFEATURE_PKRU)) xcr0 |= XFEATURE_PKRU;
+    have_pku = xcr0 & XFEATURE_PKRU;
     if ((xcr0 & XFEATURES_AVX512) != XFEATURES_AVX512) xcr0 &= ~XFEATURES_AVX512; // all three, or none
     r = cpuid_sub(0xd, 1);
     have_xsaveopt = r.a & 1;
@@ -237,6 +242,9 @@ static void arch_cpu_init(uint32_t index) {
                    : "r"((cr0 | 1ull << 16 | 1ull << 5 | 1ull << 1) & ~(1ull << 2 | 1ull << 3)));
   uint64_t cr4;
   __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+  // PKE: protection keys (ADR-0035), where the CPU has PKU, their rights a
+  // thread's PKRU in its XSAVE state.
+  if (index == 0) have_pku = cpuid_sub(7, 0).c >> 3 & 1;
   // OSFXSR and OSXMMEXCPT: SSE, with its exceptions as #XM. OSXSAVE: XSAVE,
   // and AVX and AVX-512 for user code, saved whole (xsave_init). FSGSBASE off: user code
   // changes its FS base only through thread_state, and never its GS base,
@@ -244,7 +252,8 @@ static void arch_cpu_init(uint32_t index) {
   // counter (02 §5.1, 05 §9), whatever the firmware left.
   __asm__ volatile("mov %0, %%cr4"
                    :
-                   : "r"((cr4 | 1ull << 9 | 1ull << 10 | 1ull << 18) & ~(1ull << 2 | 1ull << 16)));
+                   : "r"((cr4 | 1ull << 9 | 1ull << 10 | 1ull << 18 | (have_pku ? 1ull << 22 : 0)) &
+                         ~(1ull << 2 | 1ull << 16)));
   xsave_init(index);
 
   uint8_t *ist = index == 0 ? &boot_ist_stacks[0][0] : nullptr;
@@ -589,6 +598,39 @@ static void arch_fp_init(uint8_t *fp) {
   uint32_t mxcsr = 0x1f80;
   memcpy(fp, &fcw, sizeof fcw);
   memcpy(fp + 24, &mxcsr, sizeof mxcsr);
+  if (have_pku) arch_fp_set_rights(fp, PKRU_DEFAULT); // a new task's first thread: key 0 alone
+}
+
+// A saved area's PKRU, written: the component marked present, so XRSTOR loads it.
+static void arch_fp_set_rights(uint8_t *fp, uint64_t rights) {
+  if (!have_pku) return;
+  uint32_t pkru = (uint32_t)rights;
+  memcpy(fp + xcomp_off[9], &pkru, sizeof pkru);
+  uint64_t bv;
+  memcpy(&bv, fp + 512, sizeof bv);
+  bv |= XFEATURE_PKRU;
+  memcpy(fp + 512, &bv, sizeof bv);
+}
+
+static uint32_t arch_keys(void) { return have_pku ? 15 : 0; }
+
+static uint64_t arch_rights_read(void) {
+  if (!have_pku) return 0;
+  uint32_t pkru, edx;
+  __asm__ volatile("rdpkru" : "=a"(pkru), "=d"(edx) : "c"(0));
+  return pkru;
+}
+
+static void arch_rights_write(uint64_t rights) {
+  if (have_pku) __asm__ volatile("wrpkru" : : "a"((uint32_t)rights), "c"(0), "d"(0) : "memory");
+}
+
+// Set by x86_trap when a user copy's fault was a protection key's (#PF's PK bit).
+static bool copy_denied[MAX_CPUS];
+static bool arch_user_copy_denied(void) {
+  bool d = copy_denied[arch_cpu_index()];
+  copy_denied[arch_cpu_index()] = false;
+  return d;
 }
 
 static uint32_t arch_fp_size(void) { return xsave_size; }
@@ -636,7 +678,8 @@ static void arch_fp_legacy_set(uint8_t *fp) {
 }
 
 static void arch_cpu_info(vx_cpu_info *info) {
-  *info = (vx_cpu_info){.xstate_size = xsave_size, .xfeatures = xcr0, .mxcsr_mask = mxcsr_mask};
+  *info = (vx_cpu_info){
+      .xstate_size = xsave_size, .keys = arch_keys(), .xfeatures = xcr0, .mxcsr_mask = mxcsr_mask};
 }
 
 static uint64_t arch_tls_read(void) { return rdmsr(MSR_FS_BASE); }
@@ -681,10 +724,10 @@ static uint32_t x86_exception_kind(const trap_frame *f, uint32_t *code, uint64_t
   case 7: return VX_EXCEPTION_FP_DISABLED;
   case 14:
     *address = read_cr2();
-    *code = 0;                    // read
-    if (f->error & 2) *code = 1;  // write
-    if (f->error & 16) *code = 2; // execute
-    return VX_EXCEPTION_PAGE_FAULT;
+    *code = 0;                                                                    // read
+    if (f->error & 2) *code = 1;                                                  // write
+    if (f->error & 16) *code = 2;                                                 // execute
+    return f->error & 32 ? VX_EXCEPTION_PROTECTION_KEY : VX_EXCEPTION_PAGE_FAULT; // PK: the page's key
   case 16:
   case 19: return VX_EXCEPTION_ARITHMETIC; // x87 and SIMD FP exceptions
   case 17: return VX_EXCEPTION_ALIGNMENT;
@@ -720,7 +763,8 @@ void x86_trap(trap_frame *f) {
   } else if (f->vector == 1 && !from_user) {
     clear_dr6(); // the kernel touched a watched user address for the task: not the task's access
   } else if (f->vector == 14 && !from_user && read_cr2() < USER_TOP && uaccess_fixup(f->rip)) {
-    f->rip = uaccess_fixup(f->rip); // a user page gone under a copy: it reports the failure
+    copy_denied[arch_cpu_index()] = f->error & 32; // PK: the caller's key rights, not a missing page
+    f->rip = uaccess_fixup(f->rip);                // a user page gone under a copy: it reports the failure
   } else if (from_user) {
     uint32_t code;
     uint64_t address;
@@ -927,6 +971,7 @@ static uint64_t arch_pte_leaf(uint64_t pa, uint32_t flags, int level) {
   if (flags & MAP_USER) e |= X86_USER;
   if (!(flags & MAP_EXEC)) e |= X86_NX;
   if (flags & MAP_DEVICE) e |= X86_PCD | X86_PWT; // uncached under the default PAT
+  e |= (uint64_t)(flags >> 8 & 0xf) << 59;        // the protection key, bits 59-62 (PKU)
   if (level < 3) e |= X86_LARGE;
   return e;
 }

@@ -35,7 +35,16 @@ static bool exception_divert(struct trap_frame *f, const vx_exception *e) {
 #endif
   if (!handler || sp < RED_ZONE + sizeof *e + 64 || sp > USER_TOP) return false;
   uint64_t at = (sp - RED_ZONE - sizeof *e) & ~15ull;
-  if (copy_to_user(at, e, sizeof *e) != VX_OK) return false;
+  // The handler runs with key 0 opened, so it can use its stack and data; the
+  // rights it interrupted go with the exception, and it writes them back as
+  // it leaves (ADR-0035).
+  vx_exception d = *e;
+  d.rights = arch_rights_read();
+  arch_rights_write(d.rights & ~3ull); // x86's PKRU: key 0's AD and WD bits
+  if (copy_to_user(at, &d, sizeof d) != VX_OK) {
+    arch_rights_write(d.rights);
+    return false;
+  }
   return arch_frame_divert(f, handler, at);
 }
 
@@ -104,6 +113,7 @@ static bool exception_raise(struct trap_frame *f, uint32_t *kindp, uint32_t code
   uint64_t address = *addressp;
   if (kind == VX_EXCEPTION_STEP) arch_frame_step(f, false); // one instruction, done
   vx_exception e = {.kind = kind, .code = code, .address = address, .thread = th->id};
+  if (kind == VX_EXCEPTION_PROTECTION_KEY) e.key = task_key_at(t, address);
   arch_frame_regs(f, &e.regs);
   uint64_t key;
   port *p = exception_port(t, true, &key);
