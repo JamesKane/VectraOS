@@ -21,7 +21,7 @@ distd(8) reads it for its `status`, and rewrites it at `apply`, which fills a fr
 Both read and write it with `lib/vx-slots`, and each time they write it they write Limine's configuration, `\boot\limine\limine.conf`, from it alone, the table first, so the two never disagree.
 There is one Limine, at the firmware's fallback path `\EFI\BOOT\BOOTX64.EFI` or `BOOTAA64.EFI`, and no UEFI boot entries: choosing a slot is rewriting the configuration.
 
-A table is refused if it is not ndb, if it names no slot that boots, or if the slot that boots is not in use.
+A table is refused if it is not ndb, if it has a key not defined below, if it names no slot that boots, or if the slot that boots is not in use.
 A slot is in use when its record has a `release` and all four file hashes; a record without them is read as a slot not in use.
 
 ## A slot
@@ -113,7 +113,7 @@ distd(8), install(8), dosfs(4), release(6), store(6), ndb(6); `docs/06-install-u
 
 # BUGS
 
-An unknown key is ignored, not refused, as intro(6) says a format's keys should be, and so is a record that is neither a slot's nor the table's.
+A record that is neither a slot's nor the table's is ignored.
 
 The table is rewritten in place, then the configuration: a crash between the two leaves a configuration naming the old slots, and a crash during either leaves a file half written.
 

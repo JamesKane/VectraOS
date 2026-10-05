@@ -177,6 +177,13 @@ static bool is_device_record(const vx_ndb_record *rec) {
   return vx_ndb_has(rec, "ioport") || vx_ndb_has(rec, "mmio") || vx_ndb_has(rec, "irq");
 }
 
+// A manifest's keys (svc(6)); any other is refused.
+static const char *const SVC_KEYS[] = {
+#define KEY(scope, key) key,
+#include "svc.def"
+#undef KEY
+};
+
 // Reads one manifest's service= records, and mints its drivers' devices. A
 // malformed manifest is reported and skipped.
 static void read_manifest(vx_str path, vx_str text) {
@@ -185,7 +192,14 @@ static void read_manifest(vx_str path, vx_str text) {
   vx_ndb_result res;
   // Through it once for errors first: a manifest is used whole or not at all,
   // never a service with its records cut off at a typo.
-  while ((res = vx_ndb_next(&r, &rec)) == VX_NDB_RECORD) {}
+  vx_str unknown = {};
+  while (!unknown.ptr && (res = vx_ndb_next(&r, &rec)) == VX_NDB_RECORD)
+    unknown = vx_ndb_unknown(&rec, SVC_KEYS, sizeof SVC_KEYS / sizeof SVC_KEYS[0]);
+  if (unknown.ptr) {
+    say(path, VX_STR(": unknown key "), unknown);
+    vx_print(VX_STR(", so none of it is used\n"));
+    return;
+  }
   if (res == VX_NDB_ERROR) {
     say(path, VX_STR(": "), vx_cstr(r.error));
     vx_print(VX_STR(", so none of it is used\n"));

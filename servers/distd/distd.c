@@ -192,16 +192,17 @@ static void rescan(void) {
       static char scratch[16384];
       vx_ndb_reader rd = {.src = {r->record, len}, .scratch = scratch, .scratch_cap = sizeof scratch};
       vx_ndb_record rec;
-      bool have_seq = false, have_tree = false;
+      bool have_seq = false, have_tree = false, known = true;
       while (vx_ndb_next(&rd, &rec) == VX_NDB_RECORD) {
         rd.scratch_used = 0;
+        known = known && vx_release_known(&rec); // a key release(6) does not name: not a release
         if (vx_ndb_has(&rec, "release")) have_seq = vx_ndb_get_u64(&rec, "release", &r->seq);
         vx_str set = vx_ndb_get(&rec, "set"), arch = vx_ndb_get(&rec, "arch");
         if (set.len == 4 && memcmp(set.ptr, "base", 4) == 0 && arch.len == sizeof ARCH - 1 &&
             memcmp(arch.ptr, ARCH, arch.len) == 0)
           have_tree = vx_store_parse(vx_ndb_get(&rec, "tree"), &r->tree);
       }
-      if (have_seq && have_tree) nreleases++;
+      if (have_seq && have_tree && known) nreleases++;
     }
   }
   vx_ns_close(&dir);

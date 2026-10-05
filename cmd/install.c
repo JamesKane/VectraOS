@@ -403,6 +403,7 @@ const char *vx_main(void) {
   vx_ndb_reader rd = {.src = record, .scratch = scratch, .scratch_cap = sizeof scratch};
   while (vx_ndb_next(&rd, &rec) == VX_NDB_RECORD) {
     rd.scratch_used = 0;
+    if (!vx_release_known(&rec)) fail("the release record has a key release(6) does not name", VX_OK);
     if (vx_ndb_has(&rec, "release")) vx_ndb_get_u64(&rec, "release", &seq);
     vx_str set = vx_ndb_get(&rec, "set"), arch = vx_ndb_get(&rec, "arch");
     if (set.len == 4 && memcmp(set.ptr, "base", 4) == 0 && arch.len == sizeof ARCH - 1 &&

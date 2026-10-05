@@ -74,7 +74,7 @@ An entry's keys are:
   A symbolic link's target, as written; not checked, and never followed by the store.
   Required, and not empty, for a link.
 
-A record without the keys its type needs, or with a value that is not one, makes the whole directory unreadable.
+A record without the keys its type needs, with a key not defined here, or with a value that is not one, makes the whole directory unreadable.
 
 # EXAMPLES
 
@@ -117,8 +117,6 @@ The index of `README.txt`, 7 bytes in one block, is 44 bytes:
 distd(8), install(8), vxstore(8), release(6), ndb(6); `docs/06-install-update.md` §4 in the repository
 
 # BUGS
-
-An unknown key in a directory's record is ignored, not refused, as intro(6) says a format's keys should be.
 
 The canonical form is written but not checked: a directory whose records are out of order, or which names an entry twice, is read if it hashes to its name, and a lookup finds the first entry of a name.
 The permission bits of `mode` are not checked either, so a directory may carry modes vxstore never writes.

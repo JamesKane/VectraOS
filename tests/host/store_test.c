@@ -4,7 +4,8 @@
 // index checked whole and each block against it, and refused when a hash,
 // a length or the size is wrong; directories written canonically and read
 // back, names with spaces and quotes included, and records that are not
-// entries refused; and one small tree's hash, fixed, so the format cannot
+// entries refused, a key store(6) does not name among them; a release
+// record's keys; and one small tree's hash, fixed, so the format cannot
 // drift unnoticed.
 // host-links: monocypher
 
@@ -180,10 +181,21 @@ static void check_dirs(void) {
       "hash=b2:abababababababababababababababababababababababababababababababab\n", // a device
       "name=x mode=0100444 size=1 "
       "hash=b2:ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB\n",
+      "name=x mode=0100444 size=1 owner=adm "
+      "hash=b2:abababababababababababababababababababababababababababababababab\n", // a key not in store(6)
   };
   for (size_t i = 0; i < sizeof bad / sizeof *bad; i++)
     CHECK(vx_store_dir_find((const uint8_t *)bad[i], strlen(bad[i]), VX_STR("y"), scratch, sizeof scratch,
                             &e) == VX_ERR_INVALID);
+
+  // A release record's keys (release(6)).
+  static char rs[256];
+  vx_ndb_reader r = {
+      .src = VX_STR("release=3 name=x unsigned set=base"), .scratch = rs, .scratch_cap = sizeof rs};
+  vx_ndb_record rec;
+  CHECK(vx_ndb_next(&r, &rec) == VX_NDB_RECORD && vx_release_known(&rec));
+  r = (vx_ndb_reader){.src = VX_STR("release=3 expires=9"), .scratch = rs, .scratch_cap = sizeof rs};
+  CHECK(vx_ndb_next(&r, &rec) == VX_NDB_RECORD && !vx_release_known(&rec));
 
   // Paths and names.
   char path[71], hex[VX_STORE_HEX + 1];

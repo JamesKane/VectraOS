@@ -61,7 +61,15 @@ static void vx_slots_copy(char *out, size_t cap, vx_str v) {
   out[n] = 0;
 }
 
-// The table from its text: INVALID if it is not one.
+// The table's keys (slots(6)); any other is refused.
+static const char *const VX_SLOTS_KEYS[] = {
+#define KEY(scope, key) key,
+#include "slots.def"
+#undef KEY
+};
+
+// The table from its text: INVALID if it is not one, or has a key slots(6)
+// does not name.
 [[maybe_unused]] static vx_status vx_slots_parse(vx_slots *s, vx_str text, char *scratch, size_t cap) {
   *s = (vx_slots){.boot = -1, .previous = -1};
   vx_ndb_reader r = {.src = text, .scratch = scratch, .scratch_cap = cap};
@@ -69,6 +77,8 @@ static void vx_slots_copy(char *out, size_t cap, vx_str v) {
   vx_ndb_result res;
   while ((res = vx_ndb_next(&r, &rec)) == VX_NDB_RECORD) {
     r.scratch_used = 0;
+    if (vx_ndb_unknown(&rec, VX_SLOTS_KEYS, sizeof VX_SLOTS_KEYS / sizeof VX_SLOTS_KEYS[0]).ptr)
+      return VX_ERR_INVALID;
     vx_str name = vx_ndb_get(&rec, "slot");
     if (name.len == 1 && name.ptr[0] >= 'a' && name.ptr[0] < 'a' + VX_SLOTS) {
       vx_slot *sl = &s->slot[name.ptr[0] - 'a'];

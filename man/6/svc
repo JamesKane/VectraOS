@@ -29,7 +29,7 @@ svcd reads every manifest in the image's order, by file name with the test manif
 
 A manifest is ndb records (see ndb(6)).
 A record with `service=` starts a service; the records after it, up to the next `service=`, belong to it.
-A manifest with an ndb error anywhere is used not at all.
+A manifest with an ndb error anywhere, or a key not defined below, is used not at all: svcd says so, naming the file and the key.
 
 Each service becomes a task whose spawn message (below) holds what its manifest names, as handles and records, and nothing more: a service has no authority its manifest does not give it.
 
@@ -253,7 +253,6 @@ svcd(8), driver(6), ndb(6), namespace(6), users(6), devmgr(8), partd(8), bootfs(
 
 # BUGS
 
-A key svcd does not know is ignored, not refused, as is a record with none it knows: a misspelt flag such as `restrat` is no flag, silently.
 A flag is its key's presence, so `restart=no` restarts.
 
 The service record's keys are read only from it, and the other records' only from them: `user=` on the service record, or `console` on a record after it, is ignored.

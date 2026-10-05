@@ -207,6 +207,19 @@ static bool vx_ndb_has(const vx_ndb_record *rec, const char *key) {
   return false;
 }
 
+static vx_str vx_ndb_unknown(const vx_ndb_record *rec, const char *const *keys, size_t n) {
+  for (int i = 0; i < rec->count; i++) {
+    bool known = false;
+    for (size_t k = 0; k < n && !known; k++) {
+      size_t len = 0;
+      while (keys[k][len]) len++;
+      known = ndb_key_eq(rec->tuples[i].key, (vx_str){keys[k], len});
+    }
+    if (!known) return rec->tuples[i].key;
+  }
+  return (vx_str){};
+}
+
 static bool vx_ndb_get_u64(const vx_ndb_record *rec, const char *key, uint64_t *out) {
   vx_str v = vx_ndb_get(rec, key);
   bool hex = v.len > 2 && v.ptr[0] == '0' && v.ptr[1] == 'x';

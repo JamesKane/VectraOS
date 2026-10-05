@@ -160,5 +160,14 @@ int main(void) {
   for (int i = 0; i <= VX_NDB_MAX_TUPLES; i++) n += (size_t)snprintf(many + n, sizeof many - n, "k%d=1 ", i);
   CHECK(parse(many).error);
 
+  // A format's key table: the first key not in it, or none.
+  static const char *const keys[] = {"service", "program", "restart"};
+  parsed k = parse("service=a program=/bin/a restart");
+  CHECK(!vx_ndb_unknown(&k.last, keys, 3).ptr);
+  k = parse("service=a restrat program=/bin/a");
+  vx_str bad = vx_ndb_unknown(&k.last, keys, 3);
+  CHECK(bad.len == 7 && memcmp(bad.ptr, "restrat", 7) == 0);
+  CHECK(vx_ndb_unknown(&k.last, keys, 1).len == 7); // restrat, before program
+
   return check_result();
 }

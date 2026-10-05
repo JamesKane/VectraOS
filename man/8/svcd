@@ -27,7 +27,7 @@ Once a service has posted `/srv/cons`, `svcd` writes its own messages there too.
 A manifest is ndb records: a `service=` record, then the records that belong to it, up to the next `service=`.
 svc(6) defines the keys; this is what `svcd` does with them.
 
-- A manifest with an ndb error anywhere is used not at all, rather than with a service cut short at the typo.
+- A manifest with an ndb error anywhere, or a key svc(6) does not define, is used not at all, rather than with a service cut short at the typo.
 - A service whose `arch=` names the other architecture is left out, as is one the command line's `vx.skip=<name>,...` names, or one whose `when=<word>` is not a word of the command line (`vx.live` on an install medium, `vx.system` on an installed system).
 - `post=<srv>` makes a post: a channel whose client end `svcd` keeps as `/srv/<srv>` and whose server end the service gets as `listen`.
   `svcd` keeps a second handle to the server end, so a connection made while the service is restarting waits for it.

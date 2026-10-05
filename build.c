@@ -4524,10 +4524,25 @@ static constexpr uint16_t MAN_SECT_5 = 1u << 5;
 static constexpr uint16_t MAN_SECT_6 = 1u << 6;
 static constexpr uint16_t MAN_SECT_8 = 1u << 8;
 
-// The formats with a section 6 page, each named for its page. Their keys are
-// checked once each parser keeps a key table (12 §7; 6b adds the tables).
-static const char *const MAN_FORMATS[] = {"ndb", "guide", "namespace", "svc",     "driver", "users",
-                                          "utf", "vxfs",  "store",     "release", "slots"};
+// The formats with a section 6 page, each named for its page, and the key
+// table of each ndb format with keys of its own (12 §7): its page defines
+// exactly those keys, each in the node the table gives.
+typedef struct man_format {
+  const char *name, *keys;
+} man_format;
+static const man_format MAN_FORMATS[] = {
+    {"ndb", nullptr},
+    {"guide", nullptr},
+    {"namespace", nullptr},
+    {"svc", "servers/svcd/svc.def"},
+    {"driver", "servers/devmgr/driver.def"},
+    {"users", nullptr},
+    {"utf", nullptr},
+    {"vxfs", nullptr},
+    {"store", "lib/vx-store/store.def"},
+    {"release", "lib/vx-store/release.def"},
+    {"slots", "lib/vx-slots/slots.def"},
+};
 // Plan 9's headings, in Plan 9's order (12 §8).
 static const char *const MAN_ORDER[] = {"SYNOPSIS", "DESCRIPTION", "EXAMPLES", "FILES",
                                         "SEE ALSO", "DIAGNOSTICS", "BUGS"};
@@ -4587,11 +4602,14 @@ static void man_inventory(void) {
   man_need_def("abi/vx/syscalls.def", "VX_SYSCALL", "syscall", MAN_SECT_2);
   man_need_def("lib/vx-9p/messages.def", "P9_MSG", "message", MAN_SECT_5);
   for (size_t i = 0; i < sizeof MAN_FORMATS / sizeof MAN_FORMATS[0]; i++)
-    man_need("format", MAN_FORMATS[i], MAN_SECT_6);
+    man_need("format", MAN_FORMATS[i].name, MAN_SECT_6);
   for (int n = 1; n <= 8; n++) man_need("intro", "intro", (uint16_t)(1u << n));
 }
 
 static bool man_str_eq(vx_str a, const char *b) { return a.len == strlen(b) && memcmp(a.ptr, b, a.len) == 0; }
+static bool man_vstr_eq(vx_str a, vx_str b) {
+  return a.len == b.len && (!a.len || memcmp(a.ptr, b.ptr, a.len) == 0);
+}
 
 // A name's entry in section sect: a page's (page nullptr), or a node of that page.
 static const man_entry *man_find(vx_str name, int sect, const char *page) {
@@ -4702,6 +4720,72 @@ static void man_body(const man_page *p) {
 
 static void man_discard(void *ctx, const char *s, size_t n) { (void)ctx, (void)s, (void)n; }
 
+typedef struct man_key {
+  vx_str scope, key;
+  bool seen;
+} man_key;
+
+// The next "..." in s from *at, or false.
+static bool man_quoted(vx_str s, size_t *at, vx_str *out) {
+  const char *q = memchr(s.ptr + *at, '"', s.len - *at);
+  if (!q) return false;
+  const char *e = memchr(q + 1, '"', (size_t)(s.ptr + s.len - q - 1));
+  if (!e) return false;
+  *out = (vx_str){q + 1, (size_t)(e - q - 1)};
+  *at = (size_t)(e + 1 - s.ptr);
+  return true;
+}
+
+// A format's page against its key table: each key defined in DESCRIPTION, in
+// the table's node for it, and nothing defined there that the table lacks.
+static void man_check_keys(const char *page, const char *table) {
+  static man_key keys[256];
+  int n = 0;
+  vx_str def = read_file(table);
+  for (size_t i = 0; i + 4 < def.len; i++) {
+    if ((i && def.ptr[i - 1] != '\n') || memcmp(def.ptr + i, "KEY(", 4) != 0) continue;
+    size_t at = i;
+    man_key k = {};
+    if (n == (int)(sizeof keys / sizeof keys[0]) || !man_quoted(def, &at, &k.scope) ||
+        !man_quoted(def, &at, &k.key))
+      die("%s: a KEY line the check cannot read, or too many", table);
+    keys[n++] = k;
+  }
+  vx_str text = read_file(page);
+  static vx_guide g;
+  if (!vx_guide_open(&g, text)) return; // the first pass reported it
+  vx_guide_block b;
+  vx_str scope = {}, heading = {};
+  while (vx_guide_next(&g, &b) > VX_GUIDE_END) {
+    if (b.kind == VX_GUIDE_NODE) scope = b.node;
+    if (b.kind == VX_GUIDE_HEADING) heading = b.text;
+    if (b.kind != VX_GUIDE_DEF || !man_str_eq(heading, "DESCRIPTION")) continue;
+    bool checked = false; // a node the table names
+    for (int k = 0; k < n; k++) checked = checked || man_vstr_eq(keys[k].scope, scope);
+    for (size_t at = 0; checked;) {
+      const char *q = memchr(b.text.ptr + at, '`', b.text.len - at);
+      const char *e = q ? memchr(q + 1, '`', (size_t)(b.text.ptr + b.text.len - q - 1)) : nullptr;
+      if (!e) break;
+      vx_str term = {q + 1, (size_t)(e - q - 1)};
+      at = (size_t)(e + 1 - b.text.ptr);
+      int found = -1;
+      for (int k = 0; k < n && found < 0; k++)
+        if (man_vstr_eq(keys[k].scope, scope) && man_vstr_eq(keys[k].key, term)) found = k;
+      if (found < 0)
+        man_error(page, b.line,
+                  fmt("defines `%.*s`, which %s does not list", (int)term.len, term.ptr, table));
+      else
+        keys[found].seen = true;
+    }
+  }
+  for (int k = 0; k < n; k++)
+    if (!keys[k].seen)
+      man_error(page, 0,
+                fmt("%s lists `%.*s`, which the page does not define%s%.*s", table, (int)keys[k].key.len,
+                    keys[k].key.ptr, keys[k].scope.len ? " in node " : "", (int)keys[k].scope.len,
+                    keys[k].scope.ptr));
+}
+
 static bool check_man(void) {
   double start = now_seconds();
   man_nitems = man_nindex = man_errors = 0;
@@ -4746,6 +4830,10 @@ static bool check_man(void) {
     }
     if (d) closedir(d);
   }
+
+  for (size_t i = 0; i < sizeof MAN_FORMATS / sizeof MAN_FORMATS[0]; i++)
+    if (MAN_FORMATS[i].keys && exists(fmt("man/6/%s", MAN_FORMATS[i].name)))
+      man_check_keys(fmt("man/6/%s", MAN_FORMATS[i].name), MAN_FORMATS[i].keys);
 
   // The ledger: each record names something the inventory has, once.
   int missing = 0;

@@ -367,6 +367,32 @@ static void driver_exited(driver *d) {
   if (start_driver(d) != VX_OK) say(VX_STR("cannot restart "), vx_cstr(d->program), VX_STR("\n"));
 }
 
+// A driver manifest's keys (driver(6)); any other is refused.
+static const char *const DRIVER_KEYS[] = {
+#define KEY(scope, key) key,
+#include "driver.def"
+#undef KEY
+};
+
+// Whether a driver manifest reads cleanly with only driver(6)'s keys: one is
+// used whole or not at all, as svcd's are.
+static bool manifest_ok(vx_str path, vx_str text, char *scratch, size_t cap) {
+  vx_ndb_reader r = {.src = text, .scratch = scratch, .scratch_cap = cap};
+  vx_ndb_record rec;
+  vx_ndb_result res;
+  vx_str unknown = {};
+  while (!unknown.ptr && (res = vx_ndb_next(&r, &rec)) == VX_NDB_RECORD)
+    unknown = vx_ndb_unknown(&rec, DRIVER_KEYS, sizeof DRIVER_KEYS / sizeof DRIVER_KEYS[0]);
+  if (unknown.ptr)
+    say(path, VX_STR(": unknown key "), unknown);
+  else if (res == VX_NDB_ERROR)
+    say(path, VX_STR(": "), vx_cstr(r.error));
+  else
+    return true;
+  vx_print(VX_STR(", so none of it is used\n"));
+  return false;
+}
+
 // Reads the driver manifests and starts a driver for each function one matches.
 static void match_drivers(void) {
   vx_ns_file dir;
@@ -381,6 +407,9 @@ static void match_drivers(void) {
       if (entry.name.len > sizeof path - 11) continue;
       memcpy(path + 10, entry.name.ptr, entry.name.len);
       size_t len = read_whole((vx_str){path, 10 + entry.name.len}, text, sizeof text);
+      if (!manifest_ok((vx_str){path, 10 + entry.name.len}, (vx_str){(const char *)text, len}, scratch,
+                       sizeof scratch))
+        continue;
       vx_ndb_reader r = {.src = {(const char *)text, len}, .scratch = scratch, .scratch_cap = sizeof scratch};
       vx_ndb_record rec;
       while (vx_ndb_next(&r, &rec) == VX_NDB_RECORD) {

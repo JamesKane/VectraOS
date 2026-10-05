@@ -63,6 +63,11 @@ typedef enum vx_ndb_result : int32_t {
 // lowercase hex digits; no sign, no overflow. False, with *out unchanged,
 // otherwise or if the record lacks it.
 [[maybe_unused]] static bool vx_ndb_get_u64(const vx_ndb_record *rec, const char *key, uint64_t *out);
+// The first key of rec that is not one of keys (n of them), or a zero vx_str if
+// every key is: how a format refuses a key it does not know (ndb(6)). A format
+// keeps its keys in a .def file of KEY("scope", "key") lines, which its page is
+// checked against.
+[[maybe_unused]] static vx_str vx_ndb_unknown(const vx_ndb_record *rec, const char *const *keys, size_t n);
 
 // A record being written into a caller's buffer. Writing past the end, or a
 // key that could not be read back, sets `failed`, and the record must not be

@@ -21,6 +21,7 @@ install(8) reads the medium's record (the last, if it carries more than one), in
 distd(8) reads every `records/*.ndb` in that branch, at the start and at `rescan`, and serves each as `/dist/releases/`<n>`/record`, exactly as it is.
 
 Neither reader needs the records in order, nor the tuples in a record: each key is looked for in every record.
+A record with a key not defined below is refused: install(8) fails, and distd(8) does not serve it.
 
 ## The release
 
@@ -99,8 +100,6 @@ set=base arch=x86_64
 distd(8), install(8), vxstore(8), store(6), slots(6), ndb(6); `docs/06-install-update.md` §5.3 in the repository
 
 # BUGS
-
-An unknown key is ignored, not refused, as intro(6) says a format's keys should be.
 
 Records are not signed, and nothing checks them: the design's signatures, `prev` chain, `image=` records with `hash` and `sha256`, and heads records with `expires` and `revoked` are not written or read, and a node accepts any record in its store, older or newer.
 

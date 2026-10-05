@@ -21,6 +21,8 @@ A manifest is ndb records (see ndb(6)), one record for each match.
 A record matches PCI functions or the ACPI devices bus-acpi(8) reports, as its `match=` says, and every function or device it matches gets its own instance of the driver.
 One device gets one driver, through its post: the first match to take the post's claim has it.
 
+A manifest with an ndb error anywhere, or a key not defined below, is used not at all: devmgr says so, naming the file and the key.
+
 Numbers are decimal, without leading zeros, or hexadecimal after `0x`, in lower case.
 
 @node=keys title="Keys"
@@ -122,12 +124,12 @@ devmgr(8), svc(6), ndb(6), bus-acpi(8), drv-nvme(3), drv-virtio-blk(3), drv-virt
 
 # BUGS
 
-A key devmgr does not know is ignored, not refused, and so is a record it cannot use: one with no program, with a PCI match that has neither `vendor` and `device` nor `class`, or with a value too long.
+A record devmgr cannot use is ignored: one with no program, with a PCI match that has neither `vendor` and `device` nor `class`, or with a value too long.
 Nothing is said of any of them.
 
 Any `match=` but `acpi` is taken as PCI, so `match=usb vendor=... device=...` matches PCI functions.
 
-devmgr reads every file in `/boot/drv`, not only `.ndb` files, and at most 8 KiB of each; an ndb error ends a file's records where it is, silently, and the records before it are used.
+devmgr reads every file in `/boot/drv`, not only `.ndb` files, and at most 8 KiB of each.
 
 `msi=` above 8 gives 8, `clock` on a PCI match does nothing, and a numbered post on an ACPI match is not numbered.
 devmgr keeps 16 drivers, 8 ACPI matches and 64 PCI functions.

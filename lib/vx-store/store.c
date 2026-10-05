@@ -220,9 +220,29 @@ typedef struct vx_store_entry {
   return vx_ndb_end(w);
 }
 
+// A directory entry's keys (store(6)), and a release record's (release(6),
+// read by install and distd); any other is refused.
+static const char *const VX_STORE_KEYS[] = {
+#define KEY(scope, key) key,
+#include "store.def"
+#undef KEY
+};
+[[maybe_unused]] static const char *const VX_RELEASE_KEYS[] = {
+#define KEY(scope, key) key,
+#include "release.def"
+#undef KEY
+};
+
+// Whether a record of a release record has only release(6)'s keys.
+[[maybe_unused]] static bool vx_release_known(const vx_ndb_record *rec) {
+  return !vx_ndb_unknown(rec, VX_RELEASE_KEYS, sizeof VX_RELEASE_KEYS / sizeof VX_RELEASE_KEYS[0]).ptr;
+}
+
 // An entry from a directory's record: INVALID if the record is not one.
 // Its strings point into the record (the reader's scratch).
 [[maybe_unused]] static vx_status vx_store_dir_entry(const vx_ndb_record *rec, vx_store_entry *e) {
+  if (vx_ndb_unknown(rec, VX_STORE_KEYS, sizeof VX_STORE_KEYS / sizeof VX_STORE_KEYS[0]).ptr)
+    return VX_ERR_INVALID;
   *e = (vx_store_entry){.name = vx_ndb_get(rec, "name")};
   vx_str mode = vx_ndb_get(rec, "mode");
   if (!e->name.len || mode.len < 2 || mode.len > 7 || mode.ptr[0] != '0') return VX_ERR_INVALID;
