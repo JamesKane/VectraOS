@@ -63,7 +63,10 @@ size_t arch_user_copy_in(void *dst, const void *src, size_t n);  // from user me
 size_t arch_user_copy_out(void *dst, const void *src, size_t n); // to it
 extern char arch_user_copy[];                                    // where the two begin, for uaccess_fixup
 bool arch_user_load32(const uint32_t *src, uint32_t *dst); // a futex word, in one load; false on a fault
-extern char arch_user_copy_fault[], arch_user_copy_end[], arch_user_load32_fault[];
+// A compare-and-swap on a user word (a robust lock's, ADR-0037): *seen gets what
+// was there, and new went in if it was old. False on a fault.
+bool arch_user_cas32(uint32_t *word, uint32_t old, uint32_t new, uint32_t *seen);
+extern char arch_user_copy_fault[], arch_user_copy_end[], arch_user_load32_fault[], arch_user_cas32_fault[];
 
 // Where a fault at pc in a user-memory routine resumes, or 0 if pc is not in one.
 static uint64_t uaccess_fixup(uint64_t pc) {
@@ -71,6 +74,8 @@ static uint64_t uaccess_fixup(uint64_t pc) {
     return (uint64_t)arch_user_copy_fault;
   if (pc >= (uint64_t)arch_user_load32 && pc < (uint64_t)arch_user_load32_fault)
     return (uint64_t)arch_user_load32_fault;
+  if (pc >= (uint64_t)arch_user_cas32 && pc < (uint64_t)arch_user_cas32_fault)
+    return (uint64_t)arch_user_cas32_fault;
   return 0;
 }
 static void arch_set_kernel_stack(uint64_t top); // where traps from user mode land

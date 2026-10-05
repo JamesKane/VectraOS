@@ -230,6 +230,26 @@ arch_user_load32_fault:
     mov x0, #0
     ret
 
+// bool arch_user_cas32(uint32_t *word, uint32_t old, uint32_t new, uint32_t *seen):
+// an exclusive pair on a user word, with acquire and release; *seen gets what
+// was there. There is no unprivileged exclusive, and no overlays to honour
+// (6c5: the CPUs lack them). A fault returns false.
+    .globl arch_user_cas32, arch_user_cas32_fault
+arch_user_cas32:
+    hint #34
+1:  ldaxr w4, [x0]
+    cmp w4, w1
+    b.ne 2f
+    stlxr w5, w2, [x0]
+    cbnz w5, 1b
+2:  str w4, [x3]
+    mov x0, #1
+    ret
+arch_user_cas32_fault:
+    clrex
+    mov x0, #0
+    ret
+
     .bss
     .p2align 4
 overflow_stack:

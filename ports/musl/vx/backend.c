@@ -111,6 +111,7 @@ typedef struct be_thread {
   uint64_t alt_base, alt_size;      // sigaltstack's; size 0: none
   uint32_t slot;                    // in be_threads, plus 1; 0: not there
   uint32_t handlers_ran, eintr_ran; // signal.c's: the handlers run on it, and those not SA_RESTART
+  uint64_t robust;                  // set_robust_list's head
 } be_thread;
 
 static vx_mutex be_lock;
@@ -149,27 +150,39 @@ static constexpr char BE_DIRECTED[] = " thread";
 
 // --- The process's threads (6d2b) ---
 //
-// Each live thread by its kernel id, for a signal from another process that
-// the thread whose note it came in blocks: be_forward passes it to one that
-// does not. A reader counts itself in before it looks at a thread's record,
-// which be_unregister waits out, so the record (in that thread's TLS) is not
-// gone from under it.
-static constexpr uint32_t BE_THREADS = 256; // past these, a thread is not offered signals
+// Each live thread in a slot, with its kernel id: slot 0 the first thread's,
+// 1 to 255 pthread_create's. A thread's id (gettid, and the owner in musl's
+// lock words) is its slot shifted left 22, plus the pid: 30 bits, unique
+// across processes while pids stay under 2^22 (ADR-0037). tkill finds the
+// kernel thread through it, and be_forward passes a signal from another
+// process, that the thread whose note it came in blocks, to one that does
+// not. A reader counts itself in before it looks at a thread's record, which
+// be_unregister waits out, so the record (in that thread's TLS) is not gone
+// from under it.
+static constexpr uint32_t BE_THREADS = 256;
+static constexpr uint32_t BE_TID_SHIFT = 22;
+static constexpr long BE_PID_MASK = (1L << BE_TID_SHIFT) - 1;
+static constexpr uint32_t BE_SLOT_TAKEN = UINT32_MAX; // reserved by __clone; its thread not made yet
 static struct be_slot {
   _Atomic uint32_t id;      // its kernel thread id; 0: free
   _Atomic uint32_t readers; // be_forwards looking at t
   be_thread *_Atomic t;
 } be_threads[BE_THREADS];
 
-static void be_register(uint32_t id, be_thread *t) {
-  for (uint32_t i = 0; i < BE_THREADS; i++) {
+// A free slot past the first's, reserved; -1 if none.
+static int be_slot_take(void) {
+  for (uint32_t i = 1; i < BE_THREADS; i++) {
     uint32_t free = 0;
-    if (atomic_compare_exchange_strong(&be_threads[i].id, &free, id)) {
-      atomic_store(&be_threads[i].t, t);
-      t->slot = i + 1;
-      return;
-    }
+    if (atomic_compare_exchange_strong(&be_threads[i].id, &free, BE_SLOT_TAKEN)) return (int)i;
   }
+  return -1;
+}
+
+// Slot i is the thread whose record is t, kernel id id.
+static void be_slot_set(uint32_t i, uint32_t id, be_thread *t) {
+  atomic_store(&be_threads[i].id, id);
+  atomic_store(&be_threads[i].t, t);
+  t->slot = i + 1;
 }
 
 static void be_unregister(be_thread *t) {
@@ -202,7 +215,7 @@ static bool be_forward(int sig, vx_str note) {
   for (uint32_t i = 0; i < BE_THREADS; i++) {
     struct be_slot *s = &be_threads[i];
     uint32_t id = atomic_load(&s->id);
-    if (!id) continue;
+    if (!id || id == BE_SLOT_TAKEN) continue;
     atomic_fetch_add(&s->readers, 1);
     const be_thread *t = atomic_load(&s->t);
     bool takes = t && t != me && !(__atomic_load_n(&t->mask, __ATOMIC_RELAXED) & bit);
@@ -312,6 +325,9 @@ static long be_altstack(const stack_t *ss, stack_t *old) {
 #include "signal.c"
 #include "poll.c"
 #include "socket.c"
+
+// A thread's id: the pid for the first thread, until set_tid_address says so too.
+static long gettid_of(const be_thread *t) { return t->tid ? t->tid : posix_pid(); }
 
 // The calls VectraOS does not do yet: -ENOSYS, and one line in the kernel log
 // the first time each is asked for, so a port that needs one says so.
@@ -425,9 +441,9 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
   case SYS_exit: be_thread_exit((int)a1); // the thread; the process, if it was the last
   case SYS_exit_group: proc_exit((int)a1);
   case SYS_getpid: return posix_pid();
-  case SYS_gettid: return be_me()->tid ? be_me()->tid : posix_pid();
+  case SYS_gettid: return gettid_of(be_me());
   case SYS_set_tid_address: // musl's last step setting up the first thread (its TLS is there now), and _Fork's
-    if (!be_tls) be_tl = be_early, be_tls = true, be_register(be_only_thread_id(), &be_tl);
+    if (!be_tls) be_tl = be_early, be_tls = true, be_slot_set(0, be_only_thread_id(), &be_tl);
     be_tl.ctid = (volatile int *)a1, be_tl.tid = posix_pid();
     return be_tl.tid;
   case SYS_getppid: return posix_getppid();
@@ -449,10 +465,21 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
   // Signals (signal.c)
   case SYS_tkill: return be_thread_kill(a1, (int)a2);
   case SYS_tgkill: return a1 == posix_pid() ? be_thread_kill(a2, (int)a3) : -ESRCH;
+  case SYS_set_robust_list: // musl's robust mutexes: the kernel marks them OWNER_DIED as the thread ends
+    if (a2 != 24) return -EINVAL;
+    if (vx_thread_set_robust((const void *)a1, (uint64_t)a2, (uint32_t)gettid_of(be_me())) != VX_OK)
+      return -EINVAL;
+    be_me()->robust = (uint64_t)a1;
+    return 0;
+  case SYS_get_robust_list: // musl asks it once, to see robust mutexes work
+    if (a1 && a1 != gettid_of(be_me())) return -EPERM;
+    *(void **)a2 = (void *)be_me()->robust, *(size_t *)a3 = 24;
+    return 0;
   case SYS_kill: return sig_kill(a1, (int)a2);
   case SYS_rt_sigaction: return sig_action((int)a1, (const k_sigaction *)a2, (k_sigaction *)a3);
   case SYS_rt_sigprocmask: return sig_procmask((int)a1, (const uint64_t *)a2, (uint64_t *)a3);
-  case SYS_rt_sigpending: return *(uint64_t *)a1 = sig_pending, 0;
+  case SYS_rt_sigpending:
+    return *(uint64_t *)a1 = sig_pending | be_me()->pending, 0; // the process's and the thread's
   case SYS_rt_sigsuspend: return sig_suspend(*(const uint64_t *)a1);
   case SYS_sigaltstack: return be_altstack((const stack_t *)a1, (stack_t *)a2);
   case SYS_prlimit64: return proc_prlimit((struct rlimit *)a4);
@@ -504,15 +531,12 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
 
 // --- pthread_create's thread (6d2a) ---
 
-// A thread's id: the first thread's is the process's; another's, its kernel
-// thread id with bit 30 set, so the two never meet.
-static constexpr long BE_TID_THREAD = 1L << 30;
-
 typedef struct be_clone {
   int (*fn)(void *);
   void *arg;
   uint64_t tls;
   long tid;
+  uint32_t slot;
   volatile int *ctid;
   uint64_t mask;
 } be_clone;
@@ -528,8 +552,8 @@ typedef struct be_clone {
 #else
   __asm__ volatile("msr tpidr_el0, %0" : : "r"(tls));
 #endif
-  be_tl = (be_thread){.tid = c->tid, .ctid = c->ctid, .mask = c->mask};
-  be_register((uint32_t)(c->tid & ~BE_TID_THREAD), &be_tl);
+  be_tl = (be_thread){.tid = c->tid, .ctid = c->ctid, .mask = c->mask, .slot = c->slot + 1};
+  atomic_store(&be_threads[c->slot].t, &be_tl); // __clone gave the slot its kernel id
   int code = c->fn(c->arg);
   __vx_syscall(SYS_exit, code, 0, 0, 0, 0, 0);
   __builtin_unreachable();
@@ -558,17 +582,25 @@ int __clone(int (*fn)(void *), void *stack, int flags, void *arg, ...) {
                   .tls = (uint64_t)tls,
                   .ctid = flags & CLONE_CHILD_CLEARTID ? ctid : nullptr,
                   .mask = be_me()->mask};
+  int slot = posix_pid() <= BE_PID_MASK ? be_slot_take() : -1;
+  if (slot < 0) return -EAGAIN; // 255 threads besides the first, or a pid past 2^22: no id fits (ADR-0037)
   vx_handle th;
   uint32_t id = 0;
   vx_status st = vx_thread_create_id(vx_self, &th, &id);
-  if (st != VX_OK) return (int)vx_errno(st);
-  c->tid = BE_TID_THREAD | id;
+  if (st != VX_OK) {
+    atomic_store(&be_threads[slot].id, 0);
+    return (int)vx_errno(st);
+  }
+  c->slot = (uint32_t)slot;
+  c->tid = (long)slot << BE_TID_SHIFT | posix_pid();
+  atomic_store(&be_threads[slot].id, id);
   if (flags & CLONE_PARENT_SETTID) *ptid = (int)c->tid;
   atomic_fetch_add(&be_live, 1);
   st = vx_thread_start(th, (uint64_t)be_clone_entry, top, VX_HANDLE_NONE, top);
   vx_handle_close(th); // the thread goes on without it
   if (st != VX_OK) {
     atomic_fetch_sub(&be_live, 1);
+    atomic_store(&be_threads[slot].id, 0);
     return (int)vx_errno(st);
   }
   return (int)c->tid;
@@ -655,19 +687,26 @@ void __unmapself(void *base, size_t size) {
   be_unmap_finish(vx_self, base, (size + 4095) & ~(size_t)4095, ctid);
 }
 
-// tkill and tgkill: to this thread, delivered as the call returns; to another,
-// a note to its kernel thread, whose handler takes it there.
+// tkill and tgkill: to this thread, its own, delivered as the call returns; to
+// another, a note to its kernel thread (its id's slot says which), whose
+// handler keeps it for that thread.
 static long be_thread_kill(long tid, int sig) {
   if (sig < 0 || sig > SIG_MAX) return -EINVAL;
-  long me = be_me()->tid ? be_me()->tid : posix_pid();
-  if (tid == me || tid == posix_pid()) return sig_kill(posix_pid(), sig);
-  if (!(tid & BE_TID_THREAD)) return -ESRCH;
+  long pid = posix_pid();
+  uint64_t slot = (uint64_t)tid >> BE_TID_SHIFT;
+  if (tid <= 0 || (tid & BE_PID_MASK) != pid || slot >= BE_THREADS) return -ESRCH;
+  uint32_t id = atomic_load(&be_threads[slot].id);
+  if (!id || id == BE_SLOT_TAKEN) return -ESRCH;
   if (!sig) return 0;
+  if (be_me()->slot == slot + 1) {
+    be_me()->pending |= sig_bit(sig), sig_sender[sig] = pid;
+    return 0;
+  }
   char note[VX_ERRMAX];
   size_t len = posix_note(sig, posix_pid(), note);
   if (len + sizeof BE_DIRECTED - 1 <= sizeof note) // its own: sig_note keeps it for that thread
     memcpy(note + len, BE_DIRECTED, sizeof BE_DIRECTED - 1), len += sizeof BE_DIRECTED - 1;
-  vx_status st = vx_thread_interrupt(vx_self, (uint64_t)(tid & ~BE_TID_THREAD), (vx_str){note, len});
+  vx_status st = vx_thread_interrupt(vx_self, id, (vx_str){note, len});
   return st == VX_ERR_NOT_FOUND ? -ESRCH : vx_errno(st);
 }
 

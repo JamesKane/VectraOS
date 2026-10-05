@@ -108,6 +108,8 @@ struct thread {
   uint8_t *fp;     // its FP/SIMD registers while it is not running (arch_user_switch): a page, ARCH_FP_MAX
   bool fp_in_area; // simd_begin saved them there and used the registers: fp is theirs until loaded
   uint64_t note_stack, note_stack_size; // where its in-task handler runs, if set (SET_NOTE_STACK, ADR-0036)
+  uint64_t robust_head;                 // its robust list (thread_set_robust, ADR-0037); 0: none
+  uint32_t robust_owner;                // the owner value its robust lock words hold
   bool user_held; // stopped at an exception: fp and tls are its own, saved, for a debugger (exception_stop)
   bool stepping;  // a debugger asked for one instruction (arch_frame_step): aarch64 keeps MDSCR_EL1.SS on
   uint64_t user_entry, user_sp, user_arg, user_arg2;

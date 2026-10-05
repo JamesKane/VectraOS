@@ -245,7 +245,8 @@ typedef enum child_code {
   USE_SIMD,
   READ_LOOP,
   FAULT_LOAD,
-  BREAK_STEP
+  BREAK_STEP,
+  ROBUST_HOLD // registers a robust list at CHILD_DATA (owner 0x1234), then as BLOCK
 } child_code;
 
 static constexpr uint64_t CHILD_DATA = 0x30'0000; // FAULT_LOAD's page, which nothing maps at first
@@ -264,6 +265,14 @@ static uint32_t write_child(uint8_t *code, child_code what) {
   if (what == BREAK_STEP) {
     EMIT(0xcc); // int3: a breakpoint, then exit 7
     what = EXIT_7;
+  }
+  if (what == ROBUST_HOLD) {
+    EMIT(0xbf), EMIT32(CHILD_DATA);               // mov $CHILD_DATA, %edi: the list's head
+    EMIT(0xbe), EMIT32(24);                       // mov $24, %esi
+    EMIT(0xba), EMIT32(0x1234);                   // mov $0x1234, %edx: its owner value
+    EMIT(0xb8), EMIT32(VX_SYS_thread_set_robust); // mov $thread_set_robust, %eax
+    EMIT(0x0f), EMIT(0x05);                       // syscall, then wait for ever
+    what = BLOCK;
   }
   if (what == EXIT_7) {
     EMIT(0xbf), EMIT32(7);                  // mov $7, %edi
@@ -318,6 +327,14 @@ static uint32_t write_child(uint8_t *code, child_code what) {
   if (what == BREAK_STEP) {
     EMIT(0xd4200020u); // brk #1: a breakpoint, then exit 7
     what = EXIT_7;
+  }
+  if (what == ROBUST_HOLD) {
+    EMIT(0xd2a00000u | (uint32_t)(CHILD_DATA >> 16) << 5);       // movz x0, #CHILD_DATA >> 16, lsl #16
+    EMIT(0xd2800001u | 24u << 5);                                // movz x1, #24
+    EMIT(0xd2800002u | 0x1234u << 5);                            // movz x2, #0x1234: its owner value
+    EMIT(0xd2800008u | (uint32_t)VX_SYS_thread_set_robust << 5); // movz x8, #thread_set_robust
+    EMIT(0xd4000001u);                                           // svc #0, then wait for ever
+    what = BLOCK;
   }
   if (what == EXIT_7) {
     EMIT(0xd2800000u | 7u << 5);                           // movz x0, #7
@@ -389,15 +406,16 @@ static bool start_child_mapped(child_code what, vx_handle exc_port, uint32_t opt
   uint32_t len = write_child(code, what);
   vx_handle text = 0, stack = 0, th = 0, itself = 0; // closing 0 is a harmless BAD_HANDLE
   uint64_t text_at = CHILD_CODE, stack_at = CHILD_STACK_TOP - 4096, data_at = CHILD_DATA;
-  bool ok = vx_task_create(VX_STR("child"), task) == VX_OK && vx_vmo_create(4096, 0, &text) == VX_OK &&
-            vx_vmo_rw(text, VX_VMO_WRITE, 0, code, len) == VX_OK &&
-            vx_as_map(*task, text, 0, 4096, VX_MAP_EXEC, &text_at) == VX_OK &&
-            vx_vmo_create(4096, 0, &stack) == VX_OK &&
-            vx_as_map(*task, stack, 0, 4096, VX_MAP_WRITE, &stack_at) == VX_OK &&
-            (!data || vx_as_map(*task, data, 0, 4096, 0, &data_at) == VX_OK) &&
-            (!exc_port || vx_exception_bind(*task, exc_port, 5, options) == VX_OK) &&
-            vx_thread_create(*task, &th) == VX_OK && vx_handle_dup(*task, VX_RIGHTS_SAME, &itself) == VX_OK &&
-            vx_thread_start(th, CHILD_CODE, CHILD_STACK_TOP, itself, 0) == VX_OK;
+  bool ok =
+      vx_task_create(VX_STR("child"), task) == VX_OK && vx_vmo_create(4096, 0, &text) == VX_OK &&
+      vx_vmo_rw(text, VX_VMO_WRITE, 0, code, len) == VX_OK &&
+      vx_as_map(*task, text, 0, 4096, VX_MAP_EXEC, &text_at) == VX_OK &&
+      vx_vmo_create(4096, 0, &stack) == VX_OK &&
+      vx_as_map(*task, stack, 0, 4096, VX_MAP_WRITE, &stack_at) == VX_OK &&
+      (!data || vx_as_map(*task, data, 0, 4096, what == ROBUST_HOLD ? VX_MAP_WRITE : 0, &data_at) == VX_OK) &&
+      (!exc_port || vx_exception_bind(*task, exc_port, 5, options) == VX_OK) &&
+      vx_thread_create(*task, &th) == VX_OK && vx_handle_dup(*task, VX_RIGHTS_SAME, &itself) == VX_OK &&
+      vx_thread_start(th, CHILD_CODE, CHILD_STACK_TOP, itself, 0) == VX_OK;
   if (!ok) vx_handle_close(itself); // otherwise the child's
   vx_handle_close(text);
   vx_handle_close(stack);
@@ -1207,6 +1225,140 @@ static void test_in_task(void) {
   CHECK(vx_thread_interrupt(self, 999, VX_STR("nobody")) == VX_ERR_NOT_FOUND);
   vx_handle_close(th);
   CHECK(vx_exception_bind(self, 0, 0, VX_EXCEPTION_IN_TASK) == VX_OK); // unbound: a note would end ktest now
+}
+
+// --- Robust futexes (ADR-0037) ---
+
+static vx_handle root_resource(void); // below, with the pagers
+
+typedef struct robust_head {
+  uint64_t next;
+  int64_t offset;
+  uint64_t pending;
+} robust_head;
+
+typedef struct robust_entry {
+  uint64_t next;
+  _Atomic uint32_t word;
+} robust_entry;
+
+static robust_head exit_head;
+static robust_entry exit_held, exit_other; // the thread's lock, and one another owner holds
+
+static void robust_exiter(uint64_t arg, uint64_t arg2) {
+  (void)arg, (void)arg2;
+  vx_thread_set_robust(&exit_head, sizeof exit_head, 77);
+  vx_thread_exit(); // holding exit_held
+}
+
+typedef struct robust_waiter {
+  const _Atomic uint32_t *word;
+  uint32_t expected;
+  _Atomic int64_t result;
+  _Atomic bool done;
+} robust_waiter;
+
+static void robust_wait(uint64_t arg, uint64_t arg2) {
+  (void)arg;
+  robust_waiter *w = (robust_waiter *)arg2;
+  atomic_store(&w->result, vx_futex_wait(w->word, w->expected, after_ms(3000)));
+  atomic_store(&w->done, true);
+  vx_thread_exit();
+}
+
+static bool robust_waited(robust_waiter *w) {
+  static _Atomic uint32_t never;
+  for (int i = 0; i < 3000 && !atomic_load(&w->done); i++) vx_futex_wait(&never, 0, after_ms(1));
+  return atomic_load(&w->done);
+}
+
+static void test_robust(void) {
+  static _Atomic uint32_t never;
+  constexpr uint32_t W = VX_FUTEX_WAITERS, DIED = VX_FUTEX_OWNER_DIED;
+  // Refusals.
+  CHECK(vx_thread_set_robust(&exit_head, 16, 77) == VX_ERR_INVALID);
+  CHECK(vx_thread_set_robust(&exit_head, 24, 0) == VX_ERR_INVALID);
+  CHECK(vx_thread_set_robust((const uint8_t *)&exit_head + 4, 24, 77) == VX_ERR_INVALID);
+  CHECK(vx_thread_set_robust(nullptr, 0, 0) == VX_OK);
+
+  // A thread that exits holding a lock: OWNER_DIED, waiters kept; a lock it
+  // lists but another owns is left alone.
+  exit_head = (robust_head){.next = (uint64_t)&exit_held, .offset = offsetof(robust_entry, word)};
+  exit_held.next = (uint64_t)&exit_other;
+  exit_other.next = (uint64_t)&exit_head;
+  atomic_store(&exit_held.word, 77 | W);
+  atomic_store(&exit_other.word, 78);
+  vx_handle th = 0;
+  CHECK(vx_thread_create(self, &th) == VX_OK &&
+        vx_thread_start(th, (uint64_t)robust_exiter, new_stack(), 0, 0) == VX_OK);
+  vx_status st = vx_futex_wait(&exit_held.word, 77 | W, after_ms(3000));
+  CHECK(st == VX_OK || st == VX_ERR_BAD_STATE); // woken, or it had gone already
+  CHECK(atomic_load(&exit_held.word) == (W | DIED) && atomic_load(&exit_other.word) == 78);
+  vx_handle_close(th);
+
+  // A task killed holding a lock in a VMO it shares: the waiter here, on the
+  // same word through its own mapping, is woken (one futex: keyed by VMO).
+  vx_handle shared = 0, child = 0;
+  uint64_t at = 0;
+  CHECK(vx_vmo_create(4096, 0, &shared) == VX_OK &&
+        vx_as_map(self, shared, 0, 4096, VX_MAP_WRITE, &at) == VX_OK);
+  if (!at) return;
+  robust_head *h = (robust_head *)at;
+  robust_entry *e = (robust_entry *)(at + 64);
+  *h =
+      (robust_head){.next = CHILD_DATA + 64, .offset = offsetof(robust_entry, word)}; // the child's addresses
+  e->next = CHILD_DATA;
+  atomic_store(&e->word, 0x1234 | W);
+  static robust_waiter w;
+  w = (robust_waiter){.word = &e->word, .expected = 0x1234 | W};
+  CHECK(vx_thread_create(self, &th) == VX_OK &&
+        vx_thread_start(th, (uint64_t)robust_wait, new_stack(), 0, (uint64_t)&w) == VX_OK);
+  CHECK(start_child_mapped(ROBUST_HOLD, 0, 0, shared, &child) && wait_blocked(child)); // registered
+  vx_futex_wait(&never, 0, after_ms(30));                                              // the waiter waits
+  CHECK(!atomic_load(&w.done));
+  CHECK(vx_task_kill(child, VX_STR("killed holding a lock")) == VX_OK);
+  CHECK(robust_waited(&w) && atomic_load(&w.result) == VX_OK && atomic_load(&e->word) == (W | DIED));
+  vx_handle_close(th);
+  vx_handle_close(child);
+  vx_as_unmap(self, at, 4096);
+  vx_handle_close(shared);
+
+  // A waiter on a pager's page that is evicted and supplied again, in another
+  // physical page: the wake still finds it (keyed by VMO and offset).
+  vx_handle res = root_resource(), port = 0, pager = 0, vmo = 0, src = 0, weak = 0;
+  CHECK(vx_port_create(0, &port) == VX_OK &&
+        vx_handle_dup(res, VX_RIGHT_PAGER | VX_RIGHT_DUPLICATE, &weak) == VX_OK &&
+        vx_pager_create(weak, port, 1, 2'000'000'000, &pager) == VX_OK);
+  vx_handle_close(weak);
+  uint32_t five = 5;
+  CHECK(vx_vmo_create_pager(pager, 9, 4096, &vmo) == VX_OK && vx_vmo_create(4096, 0, &src) == VX_OK &&
+        vx_vmo_rw(src, VX_VMO_WRITE, 0, &five, 4) == VX_OK &&
+        vx_pager_supply(pager, vmo, 0, 4096, src, 0) == VX_OK);
+  at = 0;
+  CHECK(vx_as_map(self, vmo, 0, 4096, VX_MAP_WRITE, &at) == VX_OK);
+  w = (robust_waiter){.word = (const _Atomic uint32_t *)at, .expected = 5};
+  CHECK(vx_thread_create(self, &th) == VX_OK &&
+        vx_thread_start(th, (uint64_t)robust_wait, new_stack(), 0, (uint64_t)&w) == VX_OK);
+  vx_futex_wait(&never, 0, after_ms(30)); // waiting on the page
+  CHECK(!atomic_load(&w.done));
+  CHECK(vx_pager_op(pager, vmo, VX_PAGER_EVICT, 0, 4096, nullptr) == VX_OK);
+  CHECK(vx_futex_wait((const _Atomic uint32_t *)at, 5, after_ms(10)) ==
+        VX_ERR_BAD_STATE); // absent: load, ask again
+  // The freed page taken by something else first, so the supply's is another.
+  vx_handle taker = 0;
+  uint64_t junk = 1;
+  CHECK(vx_vmo_create(4096, 0, &taker) == VX_OK && vx_vmo_rw(taker, VX_VMO_WRITE, 0, &junk, 8) == VX_OK);
+  CHECK(vx_pager_supply(pager, vmo, 0, 4096, src, 0) == VX_OK); // a new page
+  atomic_store((_Atomic uint32_t *)at, 6);
+  CHECK(vx_futex_wake((const _Atomic uint32_t *)at, 1) == 1);
+  CHECK(robust_waited(&w) && atomic_load(&w.result) == VX_OK);
+  vx_handle_close(th);
+  vx_as_unmap(self, at, 4096);
+  vx_handle_close(vmo);
+  vx_handle_close(src);
+  vx_handle_close(taker);
+  vx_handle_close(pager);
+  vx_handle_close(port);
 }
 
 // --- Note stacks (ADR-0036) ---
@@ -2140,6 +2292,7 @@ const char *vx_main(void) {
   test_exception_port();
   test_in_task();
   test_note_stack();
+  test_robust();
   test_vmo_clone();
   test_debugger();
   test_tls();

@@ -633,6 +633,17 @@ typedef struct vx_note_stack {
 } vx_note_stack;
 static constexpr uint64_t VX_NOTE_STACK_MIN = 2048; // as POSIX's MINSIGSTKSZ on x86_64
 
+// thread_set_robust(head, size, owner) (ADR-0037): the calling thread's robust
+// list, Linux's: head is three words (the first entry of a ring that ends at
+// head, the offset from an entry to its lock word, the entry being added or
+// taken off, or 0), size 24, owner the value its lock words hold (1 to
+// VX_FUTEX_OWNER_MASK); head 0 unregisters. As the thread ends (exit, kill,
+// task_exec) the kernel walks at most 2048 entries and sets each word the
+// thread still owns to OWNER_DIED, WAITERS kept, waking one waiter if it was set.
+static constexpr uint32_t VX_FUTEX_WAITERS = 0x8000'0000;
+static constexpr uint32_t VX_FUTEX_OWNER_DIED = 0x4000'0000;
+static constexpr uint32_t VX_FUTEX_OWNER_MASK = 0x3fff'ffff;
+
 // thread_state's GET_CPU (ADR-0035): what the kernel saves of a thread's
 // FP/SIMD state, and what user code may use. x86_64 user code asks CPUID for
 // instruction sets; aarch64's ID registers trap at EL0, so they are here, as

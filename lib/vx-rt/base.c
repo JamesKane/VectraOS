@@ -486,6 +486,11 @@ typedef enum vx_cpu_feature : uint32_t {
   return (vx_status)vx_syscall(VX_SYS_futex_wait, (uint64_t)word, expected, (uint64_t)deadline, 0, 0, 0);
 }
 
+// The calling thread's robust list (ADR-0037); head nullptr unregisters it.
+[[maybe_unused]] static vx_status vx_thread_set_robust(const void *head, uint64_t size, uint32_t owner) {
+  return (vx_status)vx_syscall(VX_SYS_thread_set_robust, (uint64_t)head, size, owner, 0, 0, 0);
+}
+
 [[maybe_unused]] static int64_t vx_futex_wake(const _Atomic uint32_t *word, uint32_t count) {
   return vx_syscall(VX_SYS_futex_wake, (uint64_t)word, count, 0, 0, 0, 0);
 }

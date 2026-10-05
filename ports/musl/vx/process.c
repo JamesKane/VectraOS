@@ -495,8 +495,9 @@ static long fork_child(void) {
   fd_after_fork();
   atomic_store(&be_live, 1); // the thread that forked, alone, numbered anew
   memset(be_threads, 0, sizeof be_threads);
-  be_me()->slot = 0;
-  be_register(be_only_thread_id(), be_me());
+  be_me()->robust = 0;  // the child's thread is a new one, with no list (musl registers again)
+  be_me()->pending = 0; // and none of the thread's signals pending
+  be_slot_set(0, be_only_thread_id(), be_me());
   if (be_me()->alt_size) { // its alternate stack, copied with its memory
     vx_note_stack ns = {be_me()->alt_base, be_me()->alt_size};
     vx_thread_state(vx_self, 0, VX_STATE_SET_NOTE_STACK, &ns, sizeof ns);

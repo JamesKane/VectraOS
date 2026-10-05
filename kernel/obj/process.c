@@ -90,6 +90,9 @@ static vx_status thread_start(thread *th, uint64_t entry, uint64_t sp, uint64_t 
 [[noreturn]] static void thread_exit_current(void) {
   thread *th = this_cpu()->current;
   task *t = th->task;
+  // Its robust locks marked as the owner's dead, while its address space is
+  // still there (ADR-0037): a kill comes this way too.
+  if (th->robust_head && t->root) futex_robust_walk(th);
   spin_lock(&t->lock);
   th->exited = true;
   th->last_of_task = --t->live_threads == 0;

@@ -937,6 +937,10 @@ static int64_t sys_task_exec(vx_handle sh, vx_handle bootstrap, uint64_t entry, 
     return st;
   }
 
+  // The old program's robust locks are let go while its memory is still the
+  // caller's (ADR-0037), and its list goes with it.
+  futex_robust_walk(this_cpu()->current);
+
   // The address spaces change places, and the caller takes the new program's
   // name. Both locks, in a fixed order: nothing else maps into either meanwhile.
   task *first = t < s ? t : s, *second = t < s ? s : t;
@@ -1107,6 +1111,7 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_as_protect: return sys_as_protect((vx_handle)a[0], a[1], a[2], a[3]);
   case VX_SYS_as_key_alloc: return sys_as_key_alloc((vx_handle)a[0], a[1]);
   case VX_SYS_as_key_free: return sys_as_key_free((vx_handle)a[0], a[1]);
+  case VX_SYS_thread_set_robust: return sys_thread_set_robust(a[0], a[1], a[2]);
   case VX_SYS_as_query: return sys_as_query((vx_handle)a[0], a[1], a[2]);
   case VX_SYS_exception_bind: return sys_exception_bind((vx_handle)a[0], (vx_handle)a[1], a[2], a[3]);
   case VX_SYS_exception_resume: return sys_exception_resume((vx_handle)a[0], a[1], a[2], a[3]);

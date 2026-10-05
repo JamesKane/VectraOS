@@ -181,3 +181,18 @@ arch_user_load32:
 arch_user_load32_fault:
     xorl %eax, %eax
     ret
+
+// bool arch_user_cas32(uint32_t *word, uint32_t old, uint32_t new, uint32_t *seen):
+// a locked compare-and-swap on a user word; *seen gets what was there. A
+// fault returns false.
+    .globl arch_user_cas32, arch_user_cas32_fault
+arch_user_cas32:
+    endbr64
+    movl %esi, %eax
+    lock cmpxchgl %edx, (%rdi)
+    movl %eax, (%rcx)
+    movl $1, %eax
+    ret
+arch_user_cas32_fault:
+    xorl %eax, %eax
+    ret
