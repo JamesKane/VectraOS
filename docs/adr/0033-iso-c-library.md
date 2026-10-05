@@ -60,7 +60,7 @@ The clang side is missing too. Native programs build with `--target=<arch>-unkno
 - **The triple is `<arch>-unknown-vectraos`.** It is the name the Swift work already uses, beside the POSIX personality's `<arch>-vectra-unknown-musl`.
 - **The sysroot is `out/<arch>/<mode>/vectraos/`.** It holds:
   - `include/` with `<vx/…>`, `libvxc`'s headers and our `<features.h>`;
-  - `lib/` with `vx-rt`'s start files, `libvx.a`, `libvxc.a`, `libvx-cxx.a` and compiler-rt's builtins (ADR-0008).
+  - `lib/` with `vx-rt`'s start files, `libvx.a`, `libvxc.a`, `libvxcxx.a` and compiler-rt's builtins (ADR-0008).
 - **The driver configuration is a clang configuration file** in the sysroot, `<arch>-unknown-vectraos.cfg`, which clang reads for that target. It holds the sysroot, `-std=c23`, the start files, the libraries in their order, `-static`, `-z now` and 4 KiB pages. So `clang --target=x86_64-unknown-vectraos hello.c` builds a native program on the host with the pinned Fedora clang (ADR-0001), and on VectraOS with no further flags.
 - **No compiler patches are needed for this.** An unknown OS name in a triple is valid to clang and lld, and generates the same ELF code as `none`. A driver toolchain class in clang itself, like the Swift work's patch 0004, comes only when clang is built from source (M12), under ADR-0001.
 - **Shared libraries:** static only, until the loader (6f). Whether `libvxc` then becomes shared beside `libvx` is decided in 6f.
