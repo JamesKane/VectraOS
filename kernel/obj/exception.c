@@ -232,7 +232,9 @@ static int64_t sys_exception_resume(vx_handle th, uint64_t id, uint64_t action, 
   vx_regs regs;
   vx_status st = regs_ptr ? copy_from_user(&regs, regs_ptr, sizeof regs) : VX_OK;
   if (st != VX_OK) return st;
-  task *t = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_MANAGE, &st);
+  // Its own thread leaving its handler needs MANAGE on its own task; another
+  // thread's stop is checked below, by whose stop it is.
+  task *t = (task *)handle_get(current_task(), th, OBJ_TASK, id == 0 ? VX_RIGHT_MANAGE : 0, &st);
   if (!t) return st;
   if (id == 0) { // the caller, leaving its handler
     thread *self = this_cpu()->current;
@@ -255,9 +257,23 @@ static int64_t sys_exception_resume(vx_handle th, uint64_t id, uint64_t action, 
   object_release(&t->obj);
   if (!target) return VX_ERR_NOT_FOUND;
   task *tt = target->task;
+  // A stop at the debugger's port is the debugger's to answer: DEBUG, as
+  // binding that port takes; one at the task's exception port, MANAGE, as
+  // binding that takes (M6 step 6b: MANAGE alone answered both).
+  spin_lock(&tt->lock);
+  bool first = target->exc_stopped && target->exc_first;
+  spin_unlock(&tt->lock);
+  task *auth =
+      (task *)handle_get(current_task(), th, OBJ_TASK, first ? VX_RIGHT_DEBUG : VX_RIGHT_MANAGE, &st);
+  if (!auth) {
+    object_release(&target->obj);
+    return st;
+  }
+  object_release(&auth->obj);
   spin_lock(&tt->lock);
   bool debuggers = action == VX_RESUME_PASS || action == VX_RESUME_STEP; // from a debugger's port only
-  if (!target->exc_stopped || target->exc_action || (debuggers && !target->exc_first)) {
+  if (!target->exc_stopped || target->exc_action || target->exc_first != first ||
+      (debuggers && !target->exc_first)) {
     st = VX_ERR_BAD_STATE;
   } else {
     if (regs_ptr) st = arch_frame_set_regs(arch_user_frame(target), &regs);

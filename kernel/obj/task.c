@@ -350,6 +350,10 @@ static vx_status task_create(const char *name, uint64_t parent_id, task **out) {
 static vx_status task_query(task *t, uint64_t addr, vx_map_info *out) {
   const mapping *best = nullptr;
   spin_lock(&t->lock);
+  if (!t->maps) { // an ended task's table is gone (task_teardown): nothing to find, as task_map refuses
+    spin_unlock(&t->lock);
+    return VX_ERR_BAD_STATE;
+  }
   for (uint32_t i = 0; i < TASK_MAX_MAPPINGS; i++) {
     const mapping *m = &t->maps[i];
     if (m->size && m->va + m->size > addr && (!best || m->va < best->va)) best = m;

@@ -1396,9 +1396,14 @@ static void test_debugger(void) {
   CHECK(is(wait_exit(port, child), ""));
   vx_handle_close(child);
 
-  // Passed on, the breakpoint reaches nobody else: the default kills it.
+  // Passed on, the breakpoint reaches nobody else: the default kills it. A
+  // handle without DEBUG cannot answer the debugger's stop, whatever it does.
   CHECK(start_child_bound(BREAK_STEP, port, VX_EXCEPTION_FIRST_CHANCE, &child));
   CHECK(child_stopped(port));
+  CHECK(vx_handle_dup(child, ((1u << VX_RIGHT_BIT_COUNT) - 1) & ~(uint32_t)VX_RIGHT_DEBUG, &weak) == VX_OK);
+  CHECK(vx_exception_resume(weak, 1, VX_RESUME_CONTINUE, nullptr) == VX_ERR_ACCESS &&
+        vx_exception_resume(weak, 1, VX_RESUME_PASS, nullptr) == VX_ERR_ACCESS);
+  vx_handle_close(weak);
   CHECK(vx_exception_resume(child, 1, VX_RESUME_PASS, nullptr) == VX_OK);
   CHECK(starts(wait_exit(port, child), "sys: breakpoint pc="));
   vx_handle_close(child);
@@ -1488,6 +1493,8 @@ static void test_debugger(void) {
   vx_status again = vx_thread_resume(child, 1);                  // counted: not suspended any more, or
   CHECK(again == VX_ERR_BAD_STATE || again == VX_ERR_NOT_FOUND); // already run on to its end
   CHECK(is(wait_exit(port, child), ""));
+  CHECK(vx_as_query(child, 0, &mi) ==
+        VX_ERR_BAD_STATE); // an ended task: refused, not a fault (M6 step 6b, wave B)
   vx_handle_close(weak);
   vx_handle_close(child);
 
