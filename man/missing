@@ -4,16 +4,6 @@
 # that is not here, and on anything here that now has a page, so the list
 # only shrinks. Made 2026-10-04 (M6 step 6a2), holding all of M1-M5.
 
-kind=format name=driver
-kind=format name=namespace
-kind=format name=ndb
-kind=format name=release
-kind=format name=slots
-kind=format name=store
-kind=format name=svc
-kind=format name=users
-kind=format name=utf
-kind=format name=vxfs
 kind=program name=basename
 kind=program name=bc
 kind=program name=cal

@@ -5,6 +5,7 @@
 #pragma once
 
 #include "rc.h"
+#include "../vx-utf/utf.h"
 
 // --- The heap: first fit, coalescing, in the caller's buffer ---
 
@@ -1952,23 +1953,15 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
 
 // --- Patterns and globbing (rc's glob.c) ---
 
-// The length of the UTF-8 sequence at s[i] (n bytes), 1 when it is not one,
-// as rc's nextutf; its rune in *c (-1 if malformed), as rc's unicode.
+// The length of the UTF-8 sequence at s[i] (n bytes), 1 when it is not one;
+// its rune in *c (-1 if it is not one): vx-utf's strict decoding, the one rune
+// library (ADR-0013).
 static size_t rc_utf(const char *s, size_t i, size_t n, int32_t *c) {
-  unsigned char b = (unsigned char)s[i];
-  size_t len = 4;
-  int32_t v = b & 0x07;
-  if (b < 0x80)
-    len = 1, v = b;
-  else if (b < 0xe0)
-    len = 2, v = b & 0x1f;
-  else if (b < 0xf0)
-    len = 3, v = b & 0x0f;
-  size_t k = 1;
-  for (; k < len && i + k < n && ((unsigned char)s[i + k] & 0xc0) == 0x80; k++)
-    v = v << 6 | (s[i + k] & 0x3f);
-  *c = k == len ? v : -1;
-  return k;
+  vx_rune r;
+  size_t len = vx_chartorune(&r, s + i, n - i);
+  bool bad = len == 1 && r == VX_RUNEERROR && (unsigned char)s[i] >= VX_RUNESELF;
+  *c = bad ? -1 : (int32_t)r;
+  return len ? len : 1;
 }
 
 // Whether s (n bytes) matches pattern p (m bytes), as rc's match: * ? and [
