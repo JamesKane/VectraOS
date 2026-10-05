@@ -92,7 +92,7 @@ CHECK(vx_dma_domain_op(user, VX_DMA_FAULTS) == 0);
 
 # SEE ALSO
 
-irq(2), port_bind(2), vmo_create(2), handle_dup(2), devmgr(4)
+irq(2), port_bind(2), vmo_create(2), handle_dup(2), devmgr(8)
 
 # DIAGNOSTICS
 

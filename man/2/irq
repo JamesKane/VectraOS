@@ -70,7 +70,7 @@ CHECK(vx_as_map(self, h, 0, 0, 0, &at) == VX_OK);
 
 # SEE ALSO
 
-dma(2), port_bind(2), as_map(2), vmo_create(2), devmgr(4), svcd(4)
+dma(2), port_bind(2), as_map(2), vmo_create(2), devmgr(8), svcd(8)
 
 # DIAGNOSTICS
 

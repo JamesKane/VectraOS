@@ -21,7 +21,7 @@ It is made from the CPU's cycle counter, the TSC on x86_64 and the virtual count
 `vx_clock_read` returns the time on that clock.
 It cannot fail.
 
-`vx_clock_info_read` fills <info> with the counter the clock is made from, which sysfs(8) shows as `/sys/clock/info`:
+`vx_clock_info_read` fills <info> with the counter the clock is made from, which sysfs(4) shows as `/sys/clock/info`:
 
 : `counter_hz`
   The counter's frequency, as the kernel calibrated it at boot.
@@ -58,7 +58,7 @@ CHECK(c1 > c0 && (c1 - c0) * 1000 / clock.counter_hz >= 9);
 
 # SEE ALSO
 
-futex(2), devmgr(8), sysfs(8)
+futex(2), devmgr(8), sysfs(4)
 
 # DIAGNOSTICS
 

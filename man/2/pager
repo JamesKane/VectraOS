@@ -119,7 +119,7 @@ for (uint32_t round = 0; round < 4096; round++) {
 
 # SEE ALSO
 
-vmo(2), port_create(2), port_wait(2), exception_bind(2), fsd(4), svcd(4)
+vmo(2), port_create(2), port_wait(2), exception_bind(2), fsd(4), svcd(8)
 
 # DIAGNOSTICS
 

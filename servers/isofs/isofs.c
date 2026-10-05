@@ -190,7 +190,7 @@ const char *vx_main(void) {
     else if (a.len == 2 && memcmp(a.ptr, "-j", 2) == 0)
       avoid |= ISO_JOLIET;
     else
-      fail("usage: isofs [-r] [-j] [-u user]", VX_OK);
+      fail(VX_USAGE, VX_OK);
   }
   server.listen = vx_spawn_take("listen");
   if (!server.listen) fail("no listen channel (post=)", VX_OK);

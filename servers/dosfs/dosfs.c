@@ -338,7 +338,7 @@ const char *vx_main(void) {
     else if (a.len == 2 && memcmp(a.ptr, "-r", 2) == 0)
       read_only = true;
     else
-      fail("usage: dosfs [-r] [-u user]", VX_OK);
+      fail(VX_USAGE, VX_OK);
   }
   server.listen = vx_spawn_take("listen");
   if (!server.listen) fail("no listen channel (post=)", VX_OK);

@@ -4,12 +4,6 @@
 # that is not here, and on anything here that now has a page, so the list
 # only shrinks. Made 2026-10-04 (M6 step 6a2), holding all of M1-M5.
 
-kind=driver name=drv-nvme
-kind=driver name=drv-rtc-cmos
-kind=driver name=drv-uart-16550
-kind=driver name=drv-uart-pl011
-kind=driver name=drv-virtio-blk
-kind=driver name=drv-virtio-net
 kind=format name=driver
 kind=format name=namespace
 kind=format name=ndb
@@ -81,7 +75,6 @@ kind=message name=Twriteref
 kind=message name=Twstat
 kind=program name=basename
 kind=program name=bc
-kind=program name=build
 kind=program name=cal
 kind=program name=chgrp
 kind=program name=chmod
@@ -171,28 +164,9 @@ kind=program name=uniq
 kind=program name=unlink
 kind=program name=uudecode
 kind=program name=uuencode
-kind=program name=vx9pserve
-kind=program name=vxfs
-kind=program name=vxstore
 kind=program name=wc
 kind=program name=which
 kind=program name=whoami
 kind=program name=xargs
 kind=program name=xinstall
 kind=program name=yes
-kind=server name=bootfs
-kind=server name=bus-acpi
-kind=server name=devmgr
-kind=server name=distd
-kind=server name=dosfs
-kind=server name=fsd
-kind=server name=isofs
-kind=server name=netd
-kind=server name=nsd
-kind=server name=nullfs
-kind=server name=partd
-kind=server name=procfs
-kind=server name=ptyd
-kind=server name=svcd
-kind=server name=sysfs
-kind=server name=tmpfs
