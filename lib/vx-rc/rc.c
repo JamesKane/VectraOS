@@ -27,6 +27,7 @@ typedef struct rc_var {
   rc_word *val;
   rc_code *fn; // a function: its code, from fn_pc
   uint32_t fn_pc;
+  char *fnsrc; // and its body's text, { to }, for whatis and export
   char name[]; // NUL-terminated
 } rc_var;
 
@@ -82,6 +83,8 @@ struct rc {
   char src[64];            // where the code being compiled comes from, for errors: a file's name, or rc
   bool flag[128];          // rc's flags, -e -x -s -v -r and the rest, as flag in rc(1) sets them
   rc_code *rdcode;         // the code a reading frame runs: one X_RDCMDS
+  volatile uint32_t trap[8], ntrap; // notes waiting for their functions, by rc_sig's numbers (rc's trap)
+  bool trapped;                     // sigexit has run, as rc's
   uint64_t budget;  // instructions a run may take (0: as many as it needs): fuzzing's guard against loops
   char err[RC_ERR]; // the last error, for the host to show
 };
@@ -299,6 +302,7 @@ typedef struct rc_token {
   char *s;      // a word's text, unquoted, its glob characters marked (RC_GLOB before them)
   size_t len;
   uint32_t line;
+  const char *at, *end; // where it is in the source
 } rc_token;
 
 typedef struct rc_here { // a here document: its tag, then (once its line has ended) its text
@@ -317,6 +321,7 @@ static constexpr char RC_GLOB = '\x01'; // before a * ? or [ written bare: they 
 typedef struct rc_lexer {
   rc *r;
   const char *p, *end;
+  const char *base; // the text's start
   uint32_t line;
   rc_token prev;
   rc_token pending; // a token held back behind a free caret
@@ -450,6 +455,7 @@ static rc_token rc_lex_raw(rc_lexer *lx) {
   }
   t.adj = lx->p == start;
   t.line = lx->line;
+  t.at = lx->p;
   if (lx->p >= lx->end) return t.kind = TK_EOF, t;
   char c = *lx->p;
   if (lx->after_dollar && c != '\'' && c != '(' && c != '`' && c != '$' && c != '{') { // a variable's name
@@ -575,6 +581,7 @@ static rc_token rc_lex(rc_lexer *lx) {
   }
   bool name = lx->after_dollar, tag = lx->want_tag;
   rc_token t = rc_lex_raw(lx);
+  t.end = lx->p;
   if (tag && t.kind == TK_WORD) { // a here document's tag: its body is read when the line ends, as rc's
     lx->want_tag = false;
     if (lx->nheres == RC_HERES) {
@@ -706,6 +713,7 @@ enum : uint32_t { RC_PFRAMES = 256, RC_PVALS = 256 };
 
 typedef struct rc_parser {
   rc_lexer lx;
+  const char *last_end; // where the last token taken ends: a function body's text ends there
   rc_token look[2];
   uint32_t nlook;
   rc_node *nodes;
@@ -736,6 +744,7 @@ static rc_token rc_take(rc_parser *p) {
   p->look[0] = p->look[1];
   p->nlook--;
   p->line = t.line;
+  p->last_end = t.end;
   return t;
 }
 
@@ -893,7 +902,15 @@ static rc_pstate rc_list_done(rc_parser *p) {
     rc_skipnl(p);
     return S_CMD;
   case F_SWITCHBODY: rc_pushval(p, rc_node_new(p, N_SWITCH, up.a, list.a, RC_NONE)); return S_AFTERCMD;
-  case F_FNBODY: rc_pushval(p, rc_node_new(p, N_FN, up.a, list.a, RC_NONE)); return S_AFTERCMD;
+  case F_FNBODY: { // its body's text kept, { to }, for whatis and export (rc's fnstr)
+    int32_t n = rc_node_new(p, N_FN, up.a, list.a, RC_NONE);
+    if (n != RC_NONE) {
+      const char *from = p->lx.base + up.c;
+      p->nodes[n].s = from, p->nodes[n].len = (size_t)(p->last_end - from);
+    }
+    rc_pushval(p, n);
+    return S_AFTERCMD;
+  }
   case F_BACKQBODY: rc_pushval(p, rc_node_new(p, N_BACKQ, list.a, up.b, RC_NONE)); return S_AFTERATOM;
   default: return p->why = "misplaced list", S_DONE;
   }
@@ -1110,8 +1127,8 @@ static rc_pstate rc_collect(rc_parser *p) {
   case P_FNNAMES:
     p->nframes--;
     if (t->kind == TK_LBRACE) {
-      rc_take(p);
-      rc_push(p, (rc_pframe){.kind = F_FNBODY, .a = done.a});
+      rc_token lb = rc_take(p);
+      rc_push(p, (rc_pframe){.kind = F_FNBODY, .a = done.a, .c = (int32_t)(lb.at - p->lx.base)});
       rc_push(p, (rc_pframe){.kind = F_LIST, .term = TK_RBRACE, .a = RC_NONE});
       return S_CMD;
     }
@@ -1848,7 +1865,12 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
         } else if (t->b == RC_NONE) {
           rc_emit(c, X_DELFN, 0, 0, 0, 0);
         } else {
-          it.at = rc_emit(c, X_FN, 0, 0, 0, 0);
+          uint32_t src = 0; // its text, in the strings, plus 1
+          if (t->len && c->strcap - c->nstr >= t->len + 1) {
+            memcpy(c->str + c->nstr, t->s, t->len), c->str[c->nstr + t->len] = 0;
+            src = (uint32_t)c->nstr + 1, c->nstr += t->len + 1;
+          }
+          it.at = rc_emit(c, X_FN, 0, 0, 0, src);
           RC_AGAIN(2);
           RC_PUSH(t->b, 0);
         }
@@ -2474,24 +2496,110 @@ static void rc_rdcmds(rc *r, rc_frame *f) {
   rc_code_release(r, code);
 }
 
+// rc's own builtins, by name (rc's Builtin[]: cd and the namespace's are the host's).
+static const char *const RC_BUILTINS[] = {".",    "builtin", "eval", "exec",   "exit",
+                                          "flag", "shift",   "wait", "whatis", nullptr};
+
+static bool rc_is_builtin(const rc *r, const char *s, size_t n) {
+  for (const char *const *b = RC_BUILTINS; *b; b++)
+    if (rc_streq(s, n, *b, rc_strlen(*b))) return true;
+  for (const char *const *b = r->host.builtin_names; b && *b; b++)
+    if (rc_streq(s, n, *b, rc_strlen(*b))) return true;
+  return false;
+}
+
+// A word written on fd 1 as rc's %q quotes it.
+static void rc_outword(rc *r, const char *s, size_t n) {
+  bool bare = n > 0;
+  for (size_t i = 0; i < n && bare; i++) bare = rc_wordchr(s[i]) && s[i] != RC_GLOB;
+  if (bare) return rc_write(r, 1, s, n);
+  rc_write(r, 1, "'", 1);
+  for (size_t i = 0; i < n; i++) {
+    if (s[i] == '\'') rc_write(r, 1, "'", 1);
+    rc_write(r, 1, s + i, 1);
+  }
+  rc_write(r, 1, "'", 1);
+}
+
+// whatis name ..., as rc's execwhatis: each name's value (x=val, or
+// x=(a 'b c')), then its function (fn name {body}), or builtin name, or
+// the program $path finds; $status "not found" for a name that is none.
+static void rc_whatis(rc *r, rc_word *argv) {
+  if (!argv->next) return rc_fail(r, nullptr, "Usage: whatis name ...", nullptr);
+  rc_set_status(r, "", 0);
+  for (rc_word *a = argv->next; a; a = a->next) {
+    rc_var *v = rc_var_find(r, a->s, a->len, false);
+    bool found = v && v->val;
+    if (found) {
+      rc_write(r, 1, a->s, a->len), rc_write(r, 1, "=", 1);
+      if (!v->val->next) {
+        rc_outword(r, v->val->s, v->val->len);
+      } else {
+        for (rc_word *w = v->val; w; w = w->next)
+          rc_write(r, 1, w == v->val ? "(" : " ", 1), rc_outword(r, w->s, w->len);
+        rc_write(r, 1, ")", 1);
+      }
+      rc_write(r, 1, "\n", 1);
+    }
+    rc_var *g = rc_gvar_find(r, a->s, a->len, false);
+    if (g && g->fn) {
+      rc_write(r, 1, "fn ", 3), rc_outword(r, a->s, a->len), rc_write(r, 1, " ", 1);
+      const char *src = g->fnsrc ? g->fnsrc : "{}";
+      rc_write(r, 1, src, rc_strlen(src)), rc_write(r, 1, "\n", 1);
+      continue;
+    }
+    if (rc_is_builtin(r, a->s, a->len)) {
+      rc_write(r, 1, "builtin ", 8), rc_write(r, 1, a->s, a->len), rc_write(r, 1, "\n", 1);
+      continue;
+    }
+    bool here = a->s[0] == '/' || (a->len > 1 && a->s[0] == '.' && a->s[1] == '/');
+    const rc_word *dirs = here ? nullptr : rc_getvar(r, "path");
+    rc_word as_is = {.len = 0};
+    if (!dirs) dirs = &as_is;
+    bool hit = false;
+    for (const rc_word *d = dirs; d && !hit && r->host.exists; d = d->next) {
+      char path[512];
+      size_t pn = 0;
+      if (d->len && !(d->len == 1 && d->s[0] == '.') && d->len + 1 < sizeof path) {
+        memcpy(path, d->s, d->len), pn = d->len;
+        if (path[pn - 1] != '/') path[pn++] = '/';
+      }
+      if (pn + a->len >= sizeof path) continue;
+      memcpy(path + pn, a->s, a->len), pn += a->len;
+      if ((hit = r->host.exists(r->host.ctx, path, pn))) rc_write(r, 1, path, pn), rc_write(r, 1, "\n", 1);
+    }
+    if (!hit && !found) rc_set_status(r, "not found", 9);
+  }
+}
+
 // rc's builtins: the ones the language needs. True if argv[0] is one.
 static bool rc_builtin(rc *r, rc_word *argv, uint32_t argc) {
   const char *name = argv->s;
   size_t n = argv->len;
-  if (rc_streq(name, n, "exit", 4)) {
-    rc_set_status(r, argc > 1 ? argv->next->s : "", argc > 1 ? argv->next->len : 0);
+  if (rc_streq(name, n, "exit", 4)) { // exit [status]: with no status, $status as it is (rc's execexit)
+    if (argc > 2) rc_errout(r, "Usage: exit [status]\nExiting anyway\n", 34);
+    if (argc > 1) rc_set_status(r, argv->next->s, argv->next->len);
     r->exiting = true;
     return true;
   }
-  if (rc_streq(name, n, "shift", 5)) { // shift [n]: from $*
-    uint32_t k = 1;
+  if (rc_streq(name, n, "shift", 5)) { // shift [n]: from $*, n as atoi reads it (rc's execshift)
+    if (argc > 2) {
+      rc_errout(r, "Usage: shift [n]\n", 17);
+      rc_set_status(r, "shift usage", 11);
+      return true;
+    }
+    int64_t k = 1;
     if (argc > 1) {
-      k = 0;
-      for (size_t i = 0; i < argv->next->len && argv->next->s[i] >= '0' && argv->next->s[i] <= '9'; i++)
-        k = k * 10 + (uint32_t)(argv->next->s[i] - '0');
+      const rc_word *a = argv->next;
+      size_t i = 0;
+      bool neg = i < a->len && a->s[i] == '-';
+      if (neg || (i < a->len && a->s[i] == '+')) i++;
+      for (k = 0; i < a->len && a->s[i] >= '0' && a->s[i] <= '9' && k < 1'000'000; i++)
+        k = k * 10 + (a->s[i] - '0');
+      if (neg) k = -k;
     }
     rc_var *star = rc_var_find(r, "*", 1, true);
-    for (; k && star && star->val; k--) {
+    for (; k > 0 && star && star->val; k--) {
       rc_word *first = star->val;
       star->val = first->next;
       rc_free(r, first);
@@ -2499,6 +2607,7 @@ static bool rc_builtin(rc *r, rc_word *argv, uint32_t argc) {
     rc_set_status(r, "", 0);
     return true;
   }
+  if (rc_streq(name, n, "whatis", 6)) return rc_whatis(r, argv), true;
   if (rc_streq(name, n, "flag", 4)) { // flag f [+-], as rc's execflag
     unsigned char f = argc > 1 && argv->next->len == 1 ? (unsigned char)argv->next->s[0] : 0;
     if (argc == 2 && argv->next->len) {
@@ -2643,7 +2752,17 @@ static void rc_simple(rc *r, rc_word *argv, bool async) {
   if (!argc) return rc_fail(r, nullptr, "empty argument list", nullptr);
   if (r->flag['x'])
     rc_errwords(r, argv), rc_errout(r, "\n", 1); // -x: each command, as rc's (before its redirections)
-  rc_var *v = rc_gvar_find(r, argv->s, argv->len, false);
+  bool forced = rc_streq(argv->s, argv->len, "builtin", 7); // builtin cmd: no function, as rc's
+  if (forced) {
+    if (argc == 1) return rc_freewords(r, argv), rc_fail(r, nullptr, "builtin: empty argument list", nullptr);
+    rc_word *b = argv;
+    argv = argv->next, argc--;
+    b->next = nullptr;
+    rc_freewords(r, b);
+  }
+  if (argc == 1 && rc_streq(argv->s, argv->len, "exec", 4))
+    return rc_freewords(r, argv), rc_fail(r, nullptr, "exec: empty argument list", nullptr);
+  rc_var *v = forced ? nullptr : rc_gvar_find(r, argv->s, argv->len, false);
   if (v && v->fn && async) { // rc runs it in a child, which needs M6's 6d: refused, not run in the foreground
     rc_print(r, 2, "rc: a function run with & needs a child (for now)\n");
     rc_set_status(r, "async", 5);
@@ -2796,20 +2915,52 @@ static rc_word *rc_hsubst(rc *r, rc_word *body) {
 
 // Runs code from the frame on top until the frames it started with have all
 // returned, or an error or exit stops it.
+// Back to the nearest interactive reader above base, as rc's
+// while(!runq->iflag) Xreturn(): false if there is none.
+static bool rc_unwind(rc *r, uint32_t base) {
+  uint32_t i = r->nframes;
+  while (i > base && !(r->frames[i - 1].rd && r->frames[i - 1].rd->interactive)) i--;
+  if (i == base) return false;
+  while (r->nframes > i) rc_pop_frame(r);
+  rc_frame *rf = &r->frames[i - 1];
+  while (r->sp > rf->sp) rc_freewords(r, rc_poplist(r));
+  while (r->ncaptures > rf->ncaptures) rc_free(r, r->captures[--r->ncaptures].buf);
+  rc_pop_redirs(r, rf->redirs);
+  return true;
+}
+
+// rc's signal functions, by the numbers rc_trap takes (rc's Signame).
+static const char *const RC_SIGNAMES[8] = {"sigexit", "sighup",  "sigint", "sigquit",
+                                           "sigalrm", "sigkill", "sigfpe", "sigterm"};
+
+// The notes waiting, each to its function, as rc's dotrap: with none, an
+// interrupt or quit goes back to the interactive reader (or exits, if none),
+// and anything else exits.
+static void rc_dotrap(rc *r, uint32_t base) {
+  for (uint32_t i = 0; r->ntrap && i < 8; i++) {
+    while (r->trap[i]) {
+      r->trap[i]--, r->ntrap--;
+      rc_var *v = rc_gvar_find(r, RC_SIGNAMES[i], rc_strlen(RC_SIGNAMES[i]), false);
+      if (v && v->fn) {
+        rc_var *star = rc_newlocal(r, "*", 1, rc_copywords(r, rc_getvar(r, "*")));
+        rc_push_frame(r, v->fn, v->fn_pc, star);
+      } else if (i == 2 || i == 3) {
+        if (!rc_unwind(r, base)) r->exiting = true;
+      } else {
+        r->exiting = true;
+      }
+    }
+  }
+}
+
 static void rc_execute(rc *r, uint32_t base) {
   uint64_t steps = 0;
   for (;;) {
     if (r->failed && !r->exiting) { // as rc's Xerror: back to the nearest interactive reader, if one
-      uint32_t i = r->nframes;
-      while (i > base && !(r->frames[i - 1].rd && r->frames[i - 1].rd->interactive)) i--;
-      if (i == base) break;
-      while (r->nframes > i) rc_pop_frame(r);
-      rc_frame *rf = &r->frames[i - 1];
-      while (r->sp > rf->sp) rc_freewords(r, rc_poplist(r));
-      while (r->ncaptures > rf->ncaptures) rc_free(r, r->captures[--r->ncaptures].buf);
-      rc_pop_redirs(r, rf->redirs);
+      if (!rc_unwind(r, base)) break;
       r->failed = r->failset = false;
     }
+    if (r->ntrap && !r->exiting) rc_dotrap(r, base);
     if (r->nframes <= base || r->failed || r->exiting) break;
     if (r->budget && ++steps > r->budget) {
       rc_fail(r, nullptr, "too many steps", nullptr);
@@ -3042,6 +3193,13 @@ static void rc_execute(rc *r, uint32_t base) {
         rc_code_release(r, v->fn);
         v->fn = f->code, v->fn_pc = f->pc;
         f->code->refs++;
+        rc_free(r, v->fnsrc), v->fnsrc = nullptr;
+        if (in->b) {
+          const char *t = f->code->strings + in->b - 1;
+          size_t tl = rc_strlen(t);
+          v->fnsrc = rc_alloc(r, tl + 1);
+          if (v->fnsrc) memcpy(v->fnsrc, t, tl + 1);
+        }
       }
       rc_freewords(r, names);
       f->pc = in->a;
@@ -3052,7 +3210,7 @@ static void rc_execute(rc *r, uint32_t base) {
       rc_degloblist(names);
       for (rc_word *n = names; n; n = n->next) {
         rc_var *v = rc_gvar_find(r, n->s, n->len, false);
-        if (v) rc_code_release(r, v->fn), v->fn = nullptr;
+        if (v) rc_code_release(r, v->fn), v->fn = nullptr, rc_free(r, v->fnsrc), v->fnsrc = nullptr;
       }
       rc_freewords(r, names);
       break;
@@ -3193,8 +3351,13 @@ static rc_code *rc_compile_text(rc *r, const char *text, size_t len, uint32_t li
   rc_parser *p = rc_alloc(r, sizeof *p);
   if (!p) return nullptr;
   size_t scratch = 2 * len + 64, nodes = len + 32;
-  p->lx = (rc_lexer){
-      .r = r, .p = text, .end = text + len, .line = line, .scratch = rc_alloc(r, scratch), .cap = scratch};
+  p->lx = (rc_lexer){.r = r,
+                     .p = text,
+                     .end = text + len,
+                     .base = text,
+                     .line = line,
+                     .scratch = rc_alloc(r, scratch),
+                     .cap = scratch};
   p->nodes = rc_alloc(r, nodes * sizeof *p->nodes);
   p->cap = (uint32_t)nodes;
   p->line = line;
@@ -3283,6 +3446,21 @@ typedef enum rc_result : uint8_t { RC_OK, RC_INCOMPLETE, RC_SYNTAX, RC_FAILED, R
   rc_setvar(r, name, rc_strlen(name), l.head);
 }
 
+// Runs sigexit, once, as rc does when it exits: the host calls it at its end
+// too (the end of its input, or an error that ends it).
+[[maybe_unused]] static void rc_sigexit(rc *r) {
+  rc_var *v = rc_gvar_find(r, "sigexit", 7, false);
+  if (r->trapped || !v || !v->fn) return;
+  r->trapped = true;
+  bool exiting = r->exiting;
+  r->exiting = r->failed = false;
+  uint32_t base = r->nframes;
+  rc_var *star = rc_newlocal(r, "*", 1, rc_copywords(r, rc_getvar(r, "*")));
+  if (rc_push_frame(r, v->fn, v->fn_pc, star)) rc_execute(r, base);
+  while (r->nframes > base) rc_pop_frame(r);
+  r->exiting = r->exiting || exiting;
+}
+
 // Runs text (a line, or a whole script): RC_INCOMPLETE if it ends inside a
 // construct (the caller adds the next line and tries again), RC_SYNTAX with
 // the message in rc_err, RC_FAILED after a run-time error, RC_EXIT once
@@ -3298,6 +3476,7 @@ typedef enum rc_result : uint8_t { RC_OK, RC_INCOMPLETE, RC_SYNTAX, RC_FAILED, R
   uint32_t base = r->nframes;
   if (!rc_push_reader(r, rd, nullptr)) return RC_FAILED;
   rc_execute(r, base);
+  if (r->exiting) rc_sigexit(r);             // as rc's Xexit: sigexit first, once
   while (r->nframes > base) rc_pop_frame(r); // after an error or exit: what was running
   while (r->sp) rc_freewords(r, rc_poplist(r));
   rc_free_stages(r, 0);
@@ -3312,6 +3491,24 @@ typedef enum rc_result : uint8_t { RC_OK, RC_INCOMPLETE, RC_SYNTAX, RC_FAILED, R
 }
 
 [[maybe_unused]] static const char *rc_err(const rc *r) { return r->err; }
+
+// A note for rc (by RC_SIGNAMES's numbers: 1 hangup, 2 interrupt, 3 quit, 4
+// alarm, 5 kill, 6 floating point, 7 term), from the host's note handler: its
+// function runs before the next instruction (rc's notifyf). An interrupt is
+// counted once until it has run.
+[[maybe_unused]] static void rc_trap(rc *r, uint32_t sig) {
+  if (sig == 0 || sig >= 8 || (sig == 2 && r->trap[2])) return;
+  r->trap[sig]++;
+  r->ntrap++;
+}
+
+// Each function, for the host to export: each(name, its body's text).
+[[maybe_unused]] static void rc_each_fn(rc *r, void (*each)(void *arg, const char *name, const char *src),
+                                        void *arg) {
+  for (uint32_t b = 0; b < RC_VARS; b++)
+    for (const rc_var *v = r->vars[b]; v; v = v->next)
+      if (v->fn) each(arg, v->name, v->fnsrc ? v->fnsrc : "{}");
+}
 
 // Where the code run next comes from, for errors (file:line): a script's
 // name; "rc" until set.

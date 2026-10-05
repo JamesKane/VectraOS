@@ -105,8 +105,13 @@ static bool builtin_run(const rc_word *argv, uint32_t argc);
 
 // rc_host's builtin: true if argv[0] was one, which then ran, its messages
 // to its own descriptor 2.
+static bool exec_builtin(const rc_word *argv, const rc_fd *fds);
+static bool wait_builtin(const rc_word *argv, uint32_t argc);
+
 static bool builtin(void *ctx, rc *r, const rc_word *argv, uint32_t argc, const rc_fd *fds) {
   (void)ctx, (void)r;
+  if (word_is(argv, "exec")) return exec_builtin(argv, fds);
+  if (word_is(argv, "wait")) return wait_builtin(argv, argc);
   errors_to = &fds[2];
   bool was = builtin_run(argv, argc);
   errors_to = nullptr;
@@ -366,6 +371,40 @@ static void export_var(void *arg, const char *name, const rc_word *val) {
   exported++;
 }
 
+// Each function, exported as rc does: fn#name, its text `fn name {body}`.
+static void export_fn(void *arg, const char *name, const char *src) {
+  vx_ndb_writer *rec = arg;
+  static char env[32 * 1024];
+  size_t n = 0, nl = rc_strlen(name), sl = rc_strlen(src);
+  if (2 * nl + sl + 16 > sizeof env) {
+    rec->failed = true;
+    return;
+  }
+  for (const char *x = "fn#"; *x; x++) env[n++] = *x;
+  for (size_t k = 0; k < nl; k++) env[n++] = name[k];
+  for (const char *x = "=fn "; *x; x++) env[n++] = *x;
+  for (size_t k = 0; k < nl; k++) env[n++] = name[k];
+  env[n++] = ' ';
+  for (size_t k = 0; k < sl; k++) env[n++] = src[k];
+  vx_ndb_put(rec, "env", (vx_str){env, n});
+  vx_ndb_end(rec);
+  exported++;
+}
+
+// The functions the shell was given (fn#name), defined, as rcmain's loop over
+// /env/fn#* does; not with -p.
+static void import_fns(void) {
+  for (uint32_t i = 0; i < vx_spawn.envc; i++) {
+    vx_str e = vx_spawn.envs[i];
+    size_t eq = 0;
+    while (eq < e.len && e.ptr[eq] != '=') eq++;
+    if (eq < 4 || eq == e.len || memcmp(e.ptr, "fn#", 3) != 0) continue;
+    rc_word *status = rc_copywords(sh, rc_getvar(sh, "status"));
+    rc_run(sh, e.ptr + eq + 1, e.len - eq - 1);
+    rc_setvar(sh, "status", 6, status);
+  }
+}
+
 // The environment the shell was given, as variables (rc's lists, split at \x01).
 static void import_env(void) {
   static const char *words[VX_SPAWN_MAX_ARGS];
@@ -376,6 +415,7 @@ static void import_env(void) {
     size_t eq = 0;
     while (eq < e.len && e.ptr[eq] != '=') eq++;
     if (eq == e.len || eq == 0 || eq >= sizeof name) continue;
+    if (eq > 3 && memcmp(e.ptr, "fn#", 3) == 0) continue; // a function: import_fns's
     memcpy(name, e.ptr, eq);
     name[eq] = 0;
     uint32_t n = 0;
@@ -391,7 +431,7 @@ static void import_env(void) {
 
 // Spawns one program with its standard input, output and error (channel ends,
 // or VX_HANDLE_NONE for the console), which are given away.
-static vx_status spawn(const rc_word *argv, const vx_handle io[3], vx_handle *task) {
+static vx_status spawn(const rc_word *argv, const vx_handle io[3], vx_handle *task, bool exec) {
   static const char *const IO[3] = {"stdin", "stdout", "stderr"};
   vx_handle handles[VX_CHANNEL_MAX_HANDLES - 1];
   vx_str names[VX_CHANNEL_MAX_HANDLES - 1];
@@ -407,6 +447,7 @@ static vx_status spawn(const rc_word *argv, const vx_handle io[3], vx_handle *ta
     vx_ndb_end(&rec);
   }
   if (st == VX_OK) rc_each_var(sh, export_var, &rec);
+  if (st == VX_OK) rc_each_fn(sh, export_fn, &rec);
   // More than a spawn message holds, or than the child takes: refused whole,
   // never run with a list cut short.
   if (st == VX_OK && (rec.failed || args > VX_SPAWN_MAX_ARGS || exported > VX_SPAWN_MAX_ARGS))
@@ -434,7 +475,8 @@ static vx_status spawn(const rc_word *argv, const vx_handle io[3], vx_handle *ta
                      // Registered with whatever serves /proc (ADR-0011); the shell
                      // watches each command's end itself, so no wait record.
                      .proc = vx_ns_connector(&ns, VX_STR("/proc")),
-                     .proc_flags = PROC_NOWAIT};
+                     .proc_flags = PROC_NOWAIT,
+                     .exec = exec}; // exec: the program takes this task's place (task_exec, ADR-0012)
   return vx_spawn_elf(&a, task);
 }
 
@@ -587,7 +629,7 @@ static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool asy
     if (pipe[0]) vx_handle_close(pipe[0]);
     pipe_in = pipe[1]; // the next stage's
     if (st == VX_OK)
-      st = spawn(c->argv, io, &tasks[s]);
+      st = spawn(c->argv, io, &tasks[s], false);
     else
       for (int i = 0; i < 3; i++)
         if (io[i]) vx_handle_close(io[i]);
@@ -719,6 +761,105 @@ static const char *exit_status(void) {
   return status;
 }
 
+// A task's end as rc's $status has it: the wait message, name pid: exit
+// string, or nothing for success.
+static size_t wait_message(const vx_task_summary *info, char *out, size_t cap) {
+  if (!info->exit_len) return 0;
+  size_t m = 0, nl = 0;
+  while (nl < sizeof info->name && info->name[nl]) nl++;
+  char id[24];
+  size_t d = sizeof id;
+  uint64_t v = info->id;
+  do id[--d] = (char)('0' + v % 10);
+  while (v /= 10);
+  for (size_t q = 0; q < nl && m < cap; q++) out[m++] = info->name[q];
+  if (m < cap) out[m++] = ' ';
+  for (size_t q = d; q < sizeof id && m < cap; q++) out[m++] = id[q];
+  for (const char *q = ": "; *q && m < cap; q++) out[m++] = *q;
+  size_t take = vx_utf_cut(info->exit, info->exit_len, cap - m);
+  memcpy(out + m, info->exit, take);
+  return m + take;
+}
+
+// exec cmd ...: the program in this task's place, as rc's execexec. The
+// shell relays files, here documents and captures, so a command with one of
+// those redirected is refused until the program can be given the file itself.
+static bool exec_builtin(const rc_word *argv, const rc_fd *fds) {
+  vx_handle io[3] = {};
+  vx_status st = VX_OK;
+  for (int i = 0; i < 3 && st == VX_OK; i++) {
+    const rc_fd *fd = &fds[i];
+    for (uint32_t guard = 0; fd->kind == RC_FD_DUP && fd->dup < RC_FDS && guard < RC_FDS; guard++)
+      fd = &fds[fd->dup];
+    if (fd->kind != RC_FD_INHERIT && fd->kind != RC_FD_CLOSED) {
+      say("rc: exec with a file, here document or capture redirected needs the shell to stay (for now)",
+          (vx_str){}, "\n");
+      set_status(VX_STR("exec redirection"));
+      for (int k = 0; k < i; k++)
+        if (io[k]) vx_handle_close(io[k]);
+      return true;
+    }
+    st = stage_io(fd, i, VX_HANDLE_NONE, VX_HANDLE_NONE, &io[i]);
+  }
+  vx_handle task = VX_HANDLE_NONE;
+  if (st == VX_OK) st = spawn(argv->next, io, &task, true); // returns only if it failed
+  vx_str why = p9_error_text(st);
+  say("", word_str(argv->next), ": ");
+  say("", why, "\n");
+  set_status(why);
+  sh->exiting = true; // as rc's: it exits all the same
+  return true;
+}
+
+// wait [pid]: for a command run with &, or for all of them; $status its wait
+// message (rc's execwait).
+static bool wait_builtin(const rc_word *argv, uint32_t argc) {
+  if (argc > 2) {
+    say("rc: Usage: wait [pid]", (vx_str){}, "\n");
+    set_status(VX_STR("error"));
+    return true;
+  }
+  uint64_t want = 0;
+  if (argc == 2)
+    for (size_t i = 0; i < argv->next->len && argv->next->s[i] >= '0' && argv->next->s[i] <= '9'; i++)
+      want = want * 10 + (uint64_t)(argv->next->s[i] - '0');
+  set_status((vx_str){});
+  for (uint32_t i = 0; i < MAX_BACKGROUND; i++) {
+    vx_task_summary info;
+    if (!background[i] || vx_task_info(background[i], &info) != VX_OK || (want && info.id != want)) continue;
+    vx_handle port;
+    if (info.state != VX_TASK_EXITED && vx_port_create(0, &port) == VX_OK) {
+      vx_packet pk;
+      if (vx_port_bind(port, background[i], VX_TRIGGER_EXIT, 0, 0) == VX_OK)
+        vx_port_wait(port, VX_INFINITE, 0, &pk, 1);
+      vx_handle_close(port);
+    }
+    if (vx_task_info(background[i], &info) == VX_OK) {
+      char msg[VX_ERRMAX + 64];
+      set_status((vx_str){msg, wait_message(&info, msg, sizeof msg)});
+    }
+    vx_handle_close(background[i]);
+    background[i] = VX_HANDLE_NONE;
+  }
+  return true;
+}
+
+// Notes, to rc's functions for them (rc's notifyf): what rc has a name for,
+// sigint and the rest; any other, as the system does by default.
+static vx_noted on_note(vx_exception *e, vx_str note) {
+  (void)e;
+  static const char *const names[8] = {"exit",  "hangup", "interrupt", "quit",
+                                       "alarm", "kill",   "sys: fp: ", "term"};
+  for (uint32_t i = 1; i < 8; i++) {
+    vx_str nm = vx_cstr(names[i]);
+    if (note.len >= nm.len && memcmp(note.ptr, nm.ptr, nm.len) == 0) {
+      rc_trap(sh, i);
+      return VX_NCONT;
+    }
+  }
+  return VX_NDFLT;
+}
+
 // rc_host's read_line: a line of the shell's standard input ('#d/0').
 static int64_t read_line(void *ctx, char *buf, size_t cap) {
   (void)ctx;
@@ -761,9 +902,12 @@ const char *vx_main(void) {
                   .close = close_file,
                   .exists = exists,
                   .read_line = read_line};
+  static const char *const HOST_BUILTINS[] = {"bind", "mount", "unmount", nullptr};
+  host.builtin_names = HOST_BUILTINS;
   sh = rc_new(heap, sizeof heap, &host);
   if (!sh) return "no memory";
   import_env();
+  vx_notify(on_note);
 
   // The flags, as rc's getflags("srdiIlxebpvVc:1m:1").
   static const char USAGE[] = "usage: rc [-srdiIlxebpvV] [-c command] [-m initial] [file [arg ...]]";
@@ -818,6 +962,7 @@ const char *vx_main(void) {
   for (uint32_t k = i; k < vx_spawn.argc && n < VX_SPAWN_MAX_ARGS; k++, n++)
     words[n] = vx_spawn.args[k].ptr, lens[n] = vx_spawn.args[k].len;
   rc_set(sh, "*", words, lens, n);
+  if (!sh->flag['p']) import_fns();
 
   // rc's bootstrap: . -bq rcmain $*, then exit.
   static char boot[512];
@@ -826,5 +971,6 @@ const char *vx_main(void) {
   at = quoted(boot, at, sizeof boot - 8, rcmain);
   for (const char *x = " $*\n"; *x; x++) boot[at++] = *x;
   rc_run(sh, boot, at);
+  rc_sigexit(sh); // at the end of the input too, once
   return exit_status();
 }

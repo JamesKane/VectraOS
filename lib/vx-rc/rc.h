@@ -104,4 +104,6 @@ typedef struct rc_host {
   // newline with it: its length into buf (cap bytes), 0 at the end, -1 on an
   // error. Optional: without it, standard input is empty.
   int64_t (*read_line)(void *ctx, char *buf, size_t cap);
+  // The host's builtins' names, for whatis: a list ending in nullptr.
+  const char *const *builtin_names;
 } rc_host;

@@ -376,6 +376,49 @@ static void test_9front_reading(void) {
   stdin_text = nullptr;
 }
 
+static char fns[256]; // rc_each_fn's, as name=body;
+
+static void each_fn(void *arg, const char *name, const char *src) {
+  (void)arg;
+  size_t at = strlen(fns);
+  snprintf(fns + at, sizeof fns - at, "%s=%s;", name, src);
+}
+
+// The third part (M6 step 6a6c): the builtins as rc(1) has them, functions
+// for export, sigexit, and notes as functions.
+static void test_9front_builtins(void) {
+  CHECK(script("false; exit") == RC_EXIT && strcmp(status_now(), "false") == 0); // $status kept
+  CHECK(script("exit a b") == RC_EXIT && strcmp(status_now(), "a") == 0);
+  expect("fn f { shift 2; echo $* }; f a b c d", "c d\n");
+  expect("fn f { shift x; echo $* }; f a b", "a b\n"); // as atoi: 0
+  expect("shift 1 2; echo $status", "shift usage\n");
+  expect("fn echo { builtin echo wrapped $* }; echo hi; fn echo", "wrapped hi\n");
+  CHECK(script("builtin") == RC_FAILED && strstr(rc_err(r), "builtin: empty argument list"));
+  CHECK(script("exec") == RC_FAILED && strstr(rc_err(r), "exec: empty argument list"));
+  expect("x=(a 'b c'); y=1; whatis x y", "x=(a 'b c')\ny=1\n");
+  expect("fn g {echo  G}; whatis g", "fn g {echo  G}\n");
+  expect("whatis shift", "builtin shift\n");
+  expect("whatis nosuchthing; echo $status", "not found\n");
+  expect("path=(dir); whatis one.c; path=()", "dir/one.c\n");
+  CHECK(script("whatis") == RC_FAILED && strstr(rc_err(r), "Usage: whatis name ..."));
+  fns[0] = 0;
+  rc_each_fn(r, each_fn, nullptr);
+  CHECK(strstr(fns, "g={echo  G};") != nullptr);
+  CHECK(script("fn g") == RC_OK);
+  // sigexit, once, at exit.
+  CHECK(script("fn sigexit { echo bye }; echo before; exit") == RC_EXIT && strcmp(out, "before\nbye\n") == 0);
+  CHECK(script("exit") == RC_EXIT && strcmp(out, "") == 0);
+  script("fn sigexit");
+  r->trapped = false;
+  // A note: its function before the next command; with none, a hangup ends it.
+  script("fn sigint { echo caught }");
+  rc_trap(r, 2);
+  expect("echo next", "caught\nnext\n");
+  script("fn sigint");
+  rc_trap(r, 1);
+  CHECK(script("echo never") == RC_EXIT && strcmp(out, "") == 0);
+}
+
 int main(void) {
   rc_host host = {.run = run,
                   .write = write_fd,
@@ -492,5 +535,6 @@ int main(void) {
   expect("echo still", "still\n");
   test_9front();
   test_9front_reading();
+  test_9front_builtins();
   return check_result();
 }
