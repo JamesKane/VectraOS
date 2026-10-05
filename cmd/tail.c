@@ -19,7 +19,7 @@ const char *vx_main(void) {
     for (size_t i = 1; i < vx_spawn.args[0].len; i++) {
       char c = vx_spawn.args[0].ptr[i];
       if (c < '0' || c > '9' || lines > 100000) {
-        vx_eprint(VX_STR("usage: tail [-N] [file]\n"));
+        vx_eprint(VX_STR(VX_USAGE)), vx_eprint(VX_STR("\n"));
         return "usage";
       }
       lines = lines * 10 + (uint64_t)(c - '0');

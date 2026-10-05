@@ -8,7 +8,8 @@
 const char *vx_main(void) {
   bool dns = vx_spawn.argc == 2 && vx_spawn.args[0].len == 2 && memcmp(vx_spawn.args[0].ptr, "-d", 2) == 0;
   if (vx_spawn.argc != (dns ? 2u : 1u) || vx_spawn.args[dns].len > 250) {
-    vx_eprint(VX_STR("usage: cs NET!HOST!SERVICE, or cs -d NAME\n"));
+    vx_eprint(VX_STR(VX_USAGE));
+    vx_eprint(VX_STR("\n"));
     return "usage";
   }
   vx_str q = vx_spawn.args[dns];

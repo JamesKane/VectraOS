@@ -586,7 +586,7 @@ const char *vx_main(void) {
     a++; // the command line: the only face dbg has yet
   if (a + 1 < vx_spawn.argc && word_is(vx_spawn.args[a], "-x")) script = vx_spawn.args[a + 1], a += 2;
   if (a >= vx_spawn.argc) {
-    say("usage: dbg -c [-x FILE] PROGRAM [ARG ...] | -p PID | CRASHDIR\n");
+    say(VX_USAGE), say("\n");
     return "usage";
   }
   vx_str target_arg = vx_spawn.args[a];

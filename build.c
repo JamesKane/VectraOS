@@ -1362,6 +1362,57 @@ static const char *usage_page(const program *p) {
   return nullptr;
 }
 
+// usage_flags's other words: for each first word of the fence's lines that is
+// not the program's name and is a C name, [[maybe_unused]] VX_USAGE_word, its
+// lines joined as VX_USAGE's are.
+static char *realloc_words(char *c, size_t *n, vx_str fence, const char *name) {
+  char *out = alloc(*n + fence.len * 6 + 256);
+  memcpy(out, c, *n);
+  size_t nlen = strlen(name), m = *n;
+  for (size_t at = 0; at < fence.len;) { // each line whose word has not been done
+    size_t end = at, w = at;
+    while (end < fence.len && fence.ptr[end] != '\n') end++;
+    while (w < end && fence.ptr[w] != ' ') w++;
+    bool cname = w > at && !(fence.ptr[at] >= '0' && fence.ptr[at] <= '9');
+    for (size_t q = at; q < w && cname; q++) {
+      char ch = fence.ptr[q];
+      cname = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_';
+    }
+    bool done = false;
+    for (size_t prev = 0; prev < at && cname && !done;) { // an earlier line of the same word: done then
+      size_t pe = prev, pw = prev;
+      while (pe < fence.len && fence.ptr[pe] != '\n') pe++;
+      while (pw < pe && fence.ptr[pw] != ' ') pw++;
+      done = pw - prev == w - at && memcmp(fence.ptr + prev, fence.ptr + at, w - at) == 0;
+      prev = pe + 1;
+    }
+    if (cname && !done && !(w - at == nlen && memcmp(fence.ptr + at, name, nlen) == 0)) {
+      m += (size_t)sprintf(out + m,
+                           "[[maybe_unused]] static const char VX_USAGE_%.*s[] = \"usage: ", (int)(w - at),
+                           fence.ptr + at);
+      bool first = true;
+      for (size_t l = at; l < fence.len;) {
+        size_t le = l, lw = l;
+        while (le < fence.len && fence.ptr[le] != '\n') le++;
+        while (lw < le && fence.ptr[lw] != ' ') lw++;
+        if (lw - l == w - at && memcmp(fence.ptr + l, fence.ptr + at, w - at) == 0) {
+          if (!first) m += (size_t)sprintf(out + m, "\\n       ");
+          first = false;
+          for (size_t q = l; q < le; q++) {
+            if (fence.ptr[q] == '"' || fence.ptr[q] == '\\') out[m++] = '\\';
+            out[m++] = fence.ptr[q];
+          }
+        }
+        l = le + 1;
+      }
+      m += (size_t)sprintf(out + m, "\";\n");
+    }
+    at = end + 1;
+  }
+  *n = m;
+  return out;
+}
+
 static const char *const *usage_flags(const program *p) {
   static const char *const *made[USER_PROGRAM_COUNT];
   static bool done[USER_PROGRAM_COUNT];
@@ -1398,6 +1449,9 @@ static const char *const *usage_flags(const program *p) {
   }
   if (!lines) return nullptr; // the fence has no line for it: the check says so
   n += (size_t)sprintf(c + n, "\";\n");
+  // Lines for other words (rc(1)'s builtins: bind, mount, unmount): each word
+  // its own VX_USAGE_word, for the program that has those as builtins.
+  c = realloc_words(c, &n, b.text, p->name);
   const char *h = fmt("out/gen/usage/%s.h", p->name);
   mkdirs("out/gen/usage");
   vx_str old = exists(h) ? read_file(h) : (vx_str){};
@@ -4734,8 +4788,9 @@ static bool check_man(void) {
     const program *p = &USER_PROGRAMS[i];
     if (!usage_page(p) || strncmp(p->source, "tests/", 6) == 0) continue;
     vx_str src = read_file(p->source);
-    bool uses = memmem(src.ptr, src.len, "VX_USAGE", 8), own = memmem(src.ptr, src.len, "\"usage:", 7);
-    if (usage_flags(p) && (!uses || own))
+    bool own = memmem(src.ptr, src.len, "\"usage:", 7);
+    // A program that prints no usage message needs none; one that does takes it from its page.
+    if (usage_flags(p) && own)
       man_error(p->source, 0, "a program with a page takes its usage message from it: VX_USAGE, not its own");
     if (!usage_flags(p) && own)
       man_error(usage_page(p), 0, fmt("%s has a usage message, and its page no usage line for it", p->name));

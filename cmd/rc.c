@@ -96,8 +96,9 @@ static void report(const char *what, vx_status st) {
   set_status(p9_error_text(st));
 }
 
-static void usage(const char *text) {
+static void usage(const char *text) { // a builtin's, from rc(1)'s usage fence
   err(vx_cstr(text));
+  err(VX_STR("\n"));
   set_status(VX_STR("usage"));
 }
 
@@ -127,7 +128,7 @@ static bool builtin_run(const rc_word *argv, uint32_t argc) {
   int first = flagged ? 2 : 1;
   if (word_is(argv, "bind")) {
     if (flags == 0xff || n - first != 2)
-      usage("usage: bind [-abc] new old\n");
+      usage(VX_USAGE_bind);
     else
       report("bind", vx_ns_bind(&ns, word_str(w[first]), word_str(w[first + 1]), flags));
     return true;
@@ -137,7 +138,7 @@ static bool builtin_run(const rc_word *argv, uint32_t argc) {
   // or 9p://HOST:PORT.
   if (word_is(argv, "mount")) {
     if (flags == 0xff || n - first < 2 || n - first > 3) {
-      usage("usage: mount [-abc] /srv/name|tcp!host!port old [aname]\n");
+      usage(VX_USAGE_mount);
       return true;
     }
     vx_str aname = n - first == 3 ? word_str(w[first + 2]) : (vx_str){};
@@ -160,7 +161,7 @@ static bool builtin_run(const rc_word *argv, uint32_t argc) {
     else if (n == 3)
       report("unmount", vx_ns_unmount(&ns, word_str(w[1]), word_str(w[2])));
     else
-      usage("usage: unmount [new] old\n");
+      usage(VX_USAGE_unmount);
     return true;
   }
   return false;
@@ -910,7 +911,6 @@ const char *vx_main(void) {
   vx_notify(on_note);
 
   // The flags, as rc's getflags("srdiIlxebpvVc:1m:1").
-  static const char USAGE[] = "usage: rc [-srdiIlxebpvV] [-c command] [-m initial] [file [arg ...]]";
   vx_str cflag = {}, rcmain = VX_STR("/rc/lib/rcmain");
   uint32_t i = 0;
   for (; i < vx_spawn.argc; i++) {
@@ -925,7 +925,7 @@ const char *vx_main(void) {
       if (f == 'c' || f == 'm') { // its argument: the rest of the word, or the next
         vx_str v = k + 1 < a.len ? (vx_str){a.ptr + k + 1, a.len - k - 1} : (vx_str){};
         if (!v.len && i + 1 < vx_spawn.argc) v = vx_spawn.args[++i];
-        if (!v.len) return vx_eprint(vx_cstr(USAGE)), vx_eprint(VX_STR("\n")), "usage";
+        if (!v.len) return vx_eprint(vx_cstr(VX_USAGE)), vx_eprint(VX_STR("\n")), "usage";
         if (f == 'c')
           cflag = v;
         else
@@ -935,7 +935,7 @@ const char *vx_main(void) {
       }
       bool known = false;
       for (const char *x = "srdiIlxebpvV"; *x; x++) known = known || *x == f;
-      if (!known) return vx_eprint(vx_cstr(USAGE)), vx_eprint(VX_STR("\n")), "usage";
+      if (!known) return vx_eprint(vx_cstr(VX_USAGE)), vx_eprint(VX_STR("\n")), "usage";
       sh->flag[(unsigned char)f] = true;
     }
   }

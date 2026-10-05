@@ -48,12 +48,12 @@ const char *vx_main(void) {
     count = 0;
     for (size_t i = 1; i < vx_spawn.args[0].len; i++) {
       char c = vx_spawn.args[0].ptr[i];
-      if (c < '0' || c > '9' || count > 1000) fail(VX_STR("usage: ping [-N] ADDR"), 0);
+      if (c < '0' || c > '9' || count > 1000) fail(VX_STR(VX_USAGE), 0);
       count = count * 10 + (uint64_t)(c - '0');
     }
     arg = 1;
   }
-  if (arg + 1 != vx_spawn.argc || vx_spawn.args[arg].len > 40) fail(VX_STR("usage: ping [-N] ADDR"), 0);
+  if (arg + 1 != vx_spawn.argc || vx_spawn.args[arg].len > 40) fail(VX_STR(VX_USAGE), 0);
   vx_str addr = vx_spawn.args[arg];
 
   static vx_ns ns;
