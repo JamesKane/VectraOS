@@ -1,6 +1,6 @@
 # ADR-0034: Swift is a first-party language, in its full and embedded forms
 
-Status: proposed, 2026-10-05. Amends D1 and 04 §1. Bring-up is in progress in `../lang/swift-on-vectra` (S1 and S2 done).
+Status: proposed, 2026-10-05; toolchain moved to Swift 6.4.0 the same day. Amends D1 and 04 §1. Bring-up is in progress in `../lang/swift-on-vectra` (S1 and S2 done).
 
 ## Context
 
@@ -15,7 +15,7 @@ Some of what is still to be written has a different shape:
 Swift addresses all three. It has value types with copy-on-write, classes with automatic reference counting (ARC), protocols and generics, enums with payloads, modules as namespaces, noncopyable types for handles with one owner, and `async`/`await` with actors and data-race checking at compile time. It calls C directly through its importer, so `libvx` stays the one API (D20). It has two forms:
 
 - **Full Swift**: the runtime with metadata, existentials and reflection, Concurrency and FoundationEssentials. The Swift work plans it on `libvx` with no POSIX underneath (findings.md §1). It rests on ADR-0033's ISO C library and C++ subset, a `vx` threading back end, and a global executor on `vx_loop` and native threads.
-- **Embedded Swift**: a subset with no runtime metadata, no existentials of non-class protocols and no untyped `throws`, generics specialised at compile time, and binaries tens of KB in size. Swift 6.3.1 ships it for the system's own bare-metal triples. It needs only an allocator, `putchar`, a random source and a few `libvx` symbols (findings.md §3, verified). With `-no-allocations` it needs no heap at all.
+- **Embedded Swift**: a subset with no reflection and no runtime metadata beyond what it generates, generics specialised at compile time, and binaries tens of KB in size. Swift 6.4 adds existentials (`any Protocol`) and untyped `throws` with `any Error`, which 6.3 refused. Swift ships it for the system's own bare-metal triples. On 6.3.1 it needed only an allocator, `putchar`, a random source and a few `libvx` symbols (findings.md §3, verified then; to recheck on 6.4, whose existentials may need more). With `-no-allocations` it needs no heap at all.
 
 ## Decision
 
@@ -42,7 +42,7 @@ The component's design note or ADR names which of these applies. Wanting a langu
 - **The kernel.** No general allocator, no recursion, `kcfi`, `-mgeneral-regs-only`, and every status checked (04 §1.1). Embedded Swift with `-no-allocations` may meet these one day. That needs an amendment with a prototype, not a reading of this ADR.
 - **The ABI and the boundary:** `abi/`, `vx-rt`, `libvx`, `libvxc` and `vx-cxx`. They are what every language binds to, so they stay C, and their interfaces stay the `.def` tables (10 §7).
 - **Real-time audio callbacks** (03 §6, principle 5), unless they are Embedded Swift with `-no-allocations` and Swift's performance annotations (`@_noLocks`, `@_noAllocation`) check them.
-- **System interfaces defined in Swift.** Protocols, 9Px trees, ring layouts and `.def` tables stay language-neutral. A Swift server serves files like any other. A Swift library that other languages call exports a C ABI (`@c`, or `@_cdecl` where the toolchain predates it) from a C header written in the house style.
+- **System interfaces defined in Swift.** Protocols, 9Px trees, ring layouts and `.def` tables stay language-neutral. A Swift server serves files like any other. A Swift library that other languages call exports a C ABI (`@c`, with `@implementation` where a C header in the house style already declares the function) from a C header written in the house style.
 
 ### 3. How Swift reaches the system
 
@@ -58,14 +58,14 @@ These are enforced by `./build check`, as the C rules are:
 - **The format:** `swift-format`, pinned with the toolchain, with a root configuration matching the house format: two-space indents, and braces on the same line.
 - **Debugging and backtraces:** DWARF 5 (D15, the toolchain's default for `vectraos`), and frame pointers kept in every function, so `dbg` and the profiler walk Swift frames as they walk C ones.
 - **Memory:** ARC where ownership is shared; value types and noncopyable types where it is not; `Span` and `withUnsafe…` only in binding modules and in code whose design note says why. Per-frame and per-request work still meets the system's budgets. A Swift hot path that allocates in a loop is a bug, as it is in C.
-- **Errors:** typed `throws` at module boundaries. Embedded code has nothing else. Full Swift may use untyped `throws` inside a module.
+- **Errors:** typed `throws` at module boundaries, so callers can switch on codes. Inside a module, untyped `throws` is allowed in both forms (Embedded since 6.4), except in code built with `-no-allocations`, where an `any Error` box is an allocation.
 - **Building:** `./build` compiles Swift itself, one module per component with whole-module optimisation, as unity builds do for C, by calling the pinned `swiftc` by absolute path. Linking stays with the pinned `ld.lld` (ADR-0001). The OS build never runs SwiftPM.
 
 ### 5. Trusting the toolchain (ADR-0001, D13)
 
 Swift's toolchain cannot come from Fedora's packages. It needs a triple patched in, and it carries its own LLVM, so it is built from source.
 
-- **Pinned sources.** Swift 6.3.1-RELEASE, its LLVM, and swift-foundation, each at an exact upstream tag, with its tarball's hash recorded in `toolchain/swift/VENDOR.ndb`, as `third_party/` records imports. The sources are fetched once, by a script outside `./build`, and checked against those hashes. `./build` itself still never fetches.
+- **Pinned sources.** Swift 6.4.0 (`swift-6.4.0-RELEASE`), its LLVM, and swift-foundation, each at an exact upstream tag, with its tarball's hash recorded in `toolchain/swift/VENDOR.ndb`, as `third_party/` records imports. The sources are fetched once, by a script outside `./build`, and checked against those hashes. `./build` itself still never fetches.
 - **A reviewed patch series in this repository.** It lives under `toolchain/swift/patches/`, and every patch is reviewed like first-party code. Today the series is in `../lang/swift-on-vectra/toolchain/patches/`, which is not under version control. It moves into this repository before any first-party Swift is merged.
 - **Reproducible.** Two builds of the toolchain from the same pins give the same `swiftc`, standard library and runtime archives. `build.c` checks `swiftc --version` against its pin, as it does for clang, and refuses anything else.
 - **The runtime ships as system code.** `libswiftCore`, `_Concurrency`, `Synchronization` and FoundationEssentials link into first-party programs: statically until the loader (M6 6f), then as shared libraries in the release. They are reviewed as imports under D13, by this ADR, with the patch series. FoundationEssentials' platform layer, rewritten over `VX`, is first-party code.
