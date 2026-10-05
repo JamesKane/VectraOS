@@ -108,6 +108,9 @@ typedef struct be_thread {
   uint64_t mask;            // its blocked signals: a new thread starts with its creator's
   bool restarting;          // its call is being made again after a signal, its deadline kept
   vx_instant call_deadline; // its sleep's or poll's (start.c, poll.c)
+  uint64_t alt_base, alt_size;      // sigaltstack's; size 0: none
+  uint32_t slot;                    // in be_threads, plus 1; 0: not there
+  uint32_t handlers_ran, eintr_ran; // signal.c's: the handlers run on it, and those not SA_RESTART
 } be_thread;
 
 static vx_mutex be_lock;
@@ -139,6 +142,164 @@ static void be_wait_end(uint32_t d) {
 
 [[noreturn]] static void be_thread_exit(int code); // below, with __clone
 static long be_thread_kill(long tid, int sig);
+
+// A signal's note, marked for the one thread it is posted to (be_thread_kill,
+// be_forward): kept pending there, not taken as the process's.
+static constexpr char BE_DIRECTED[] = " thread";
+
+// --- The process's threads (6d2b) ---
+//
+// Each live thread by its kernel id, for a signal from another process that
+// the thread whose note it came in blocks: be_forward passes it to one that
+// does not. A reader counts itself in before it looks at a thread's record,
+// which be_unregister waits out, so the record (in that thread's TLS) is not
+// gone from under it.
+static constexpr uint32_t BE_THREADS = 256; // past these, a thread is not offered signals
+static struct be_slot {
+  _Atomic uint32_t id;      // its kernel thread id; 0: free
+  _Atomic uint32_t readers; // be_forwards looking at t
+  be_thread *_Atomic t;
+} be_threads[BE_THREADS];
+
+static void be_register(uint32_t id, be_thread *t) {
+  for (uint32_t i = 0; i < BE_THREADS; i++) {
+    uint32_t free = 0;
+    if (atomic_compare_exchange_strong(&be_threads[i].id, &free, id)) {
+      atomic_store(&be_threads[i].t, t);
+      t->slot = i + 1;
+      return;
+    }
+  }
+}
+
+static void be_unregister(be_thread *t) {
+  if (!t->slot) return;
+  struct be_slot *s = &be_threads[t->slot - 1];
+  atomic_store(&s->t, nullptr);
+  while (atomic_load(&s->readers)) {} // a reader with t in hand: done in a few instructions
+  atomic_store(&s->id, 0);
+  t->slot = 0;
+}
+
+// The calling thread, as the kernel numbers it: the first of the task's when
+// it is the only one (start-up, a forked child).
+static uint32_t be_only_thread_id(void) {
+  vx_thread_info ti = {};
+  return vx_thread_state(vx_self, 0, VX_STATE_NEXT_THREAD, &ti, sizeof ti) == VX_OK ? ti.id : 0;
+}
+
+// The process's signal sig, which this thread blocks, posted to a thread
+// that does not, marked as its own; false if none does (or none would take
+// the note), and it stays the process's, pending.
+static bool be_forward(int sig, vx_str note) {
+  char buf[VX_ERRMAX];
+  size_t dl = sizeof BE_DIRECTED - 1;
+  if (note.len + dl > sizeof buf) return false;
+  memcpy(buf, note.ptr, note.len);
+  memcpy(buf + note.len, BE_DIRECTED, dl);
+  const be_thread *me = be_me();
+  uint64_t bit = 1ull << (sig - 1);
+  for (uint32_t i = 0; i < BE_THREADS; i++) {
+    struct be_slot *s = &be_threads[i];
+    uint32_t id = atomic_load(&s->id);
+    if (!id) continue;
+    atomic_fetch_add(&s->readers, 1);
+    const be_thread *t = atomic_load(&s->t);
+    bool takes = t && t != me && !(__atomic_load_n(&t->mask, __ATOMIC_RELAXED) & bit);
+    atomic_fetch_sub(&s->readers, 1);
+    if (takes && vx_thread_interrupt(vx_self, id, (vx_str){buf, note.len + dl}) == VX_OK) return true;
+  }
+  return false;
+}
+
+// --- The alternate signal stack (6d2b) ---
+
+// Whether the thread runs on its alternate stack now.
+static bool be_on_alt(const be_thread *t) {
+  uint64_t sp = (uint64_t)__builtin_frame_address(0);
+  return t->alt_size && sp > t->alt_base && sp <= t->alt_base + t->alt_size;
+}
+
+// sigaltstack's flags for the thread's alternate stack, on it or not.
+static int be_alt_flags(const be_thread *t, bool on) {
+  if (!t->alt_size) return SS_DISABLE;
+  return on ? SS_ONSTACK : 0;
+}
+
+// fn(a0, a1, a2) on the stack whose top is top; back on this one after.
+[[gnu::visibility("hidden")]] void be_on_stack(uint64_t top, uintptr_t fn, long a0, void *a1, void *a2);
+#ifdef __x86_64__
+__asm__(".text\n"
+        ".global be_on_stack\n"
+        ".hidden be_on_stack\n"
+        ".type be_on_stack, @function\n"
+        "be_on_stack:\n"
+        "  endbr64\n"
+        "  pushq %rbp\n"
+        "  movq %rsp, %rbp\n"
+        "  movq %rsi, %rax\n"
+        "  andq $-16, %rdi\n"
+        "  movq %rdi, %rsp\n"
+        "  movq %rdx, %rdi\n"
+        "  movq %rcx, %rsi\n"
+        "  movq %r8, %rdx\n"
+        "  call *%rax\n"
+        "  movq %rbp, %rsp\n"
+        "  popq %rbp\n"
+        "  ret\n");
+#else
+__asm__(".text\n"
+        ".global be_on_stack\n"
+        ".hidden be_on_stack\n"
+        ".type be_on_stack, %function\n"
+        "be_on_stack:\n"
+        "  bti c\n"
+        "  stp x29, x30, [sp, #-16]!\n"
+        "  mov x29, sp\n"
+        "  and x9, x0, #~15\n"
+        "  mov sp, x9\n"
+        "  mov x9, x1\n"
+        "  mov x0, x2\n"
+        "  mov x1, x3\n"
+        "  mov x2, x4\n"
+        "  blr x9\n"
+        "  mov sp, x29\n"
+        "  ldp x29, x30, [sp], #16\n"
+        "  ret\n");
+#endif
+
+// A handler called: on the alternate stack for SA_ONSTACK, unless the thread
+// is on it already (the kernel diverted it there, or a handler runs there).
+static void sig_call(unsigned long flags, uintptr_t h, int sig, siginfo_t *info, void *uc) {
+  const be_thread *me = be_me();
+  if ((flags & SA_ONSTACK) && me->alt_size && !be_on_alt(me))
+    be_on_stack(me->alt_base + me->alt_size, h, sig, info, uc);
+  else if (flags & SA_SIGINFO)
+    ((void (*)(int, siginfo_t *, void *))h)(sig, info, uc);
+  else
+    ((void (*)(int))h)(sig);
+}
+
+// sigaltstack: the stack is the thread's note stack too (ADR-0036), where the
+// kernel diverts it for a note or a fault, so an overflow's SIGSEGV has room.
+static long be_altstack(const stack_t *ss, stack_t *old) {
+  be_thread *me = be_me();
+  bool on = be_on_alt(me);
+  if (old)
+    *old =
+        (stack_t){.ss_sp = (void *)me->alt_base, .ss_size = me->alt_size, .ss_flags = be_alt_flags(me, on)};
+  if (!ss) return 0;
+  if (on) return -EPERM;
+  if (ss->ss_flags & ~SS_DISABLE) return -EINVAL; // SS_AUTODISARM: not yet
+  vx_note_stack ns = {};
+  if (!(ss->ss_flags & SS_DISABLE)) {
+    if (ss->ss_size < MINSIGSTKSZ) return -ENOMEM;
+    ns = (vx_note_stack){(uint64_t)ss->ss_sp, ss->ss_size};
+  }
+  if (vx_thread_state(vx_self, 0, VX_STATE_SET_NOTE_STACK, &ns, sizeof ns) != VX_OK) return -EINVAL;
+  me->alt_base = ns.base, me->alt_size = ns.size;
+  return 0;
+}
 
 // The call's state, the thread's own: a sleep in one thread keeps no other's deadline.
 #define sig_restarting    (be_me()->restarting)
@@ -266,7 +427,7 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
   case SYS_getpid: return posix_pid();
   case SYS_gettid: return be_me()->tid ? be_me()->tid : posix_pid();
   case SYS_set_tid_address: // musl's last step setting up the first thread (its TLS is there now), and _Fork's
-    if (!be_tls) be_tl = be_early, be_tls = true;
+    if (!be_tls) be_tl = be_early, be_tls = true, be_register(be_only_thread_id(), &be_tl);
     be_tl.ctid = (volatile int *)a1, be_tl.tid = posix_pid();
     return be_tl.tid;
   case SYS_getppid: return posix_getppid();
@@ -293,9 +454,7 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
   case SYS_rt_sigprocmask: return sig_procmask((int)a1, (const uint64_t *)a2, (uint64_t *)a3);
   case SYS_rt_sigpending: return *(uint64_t *)a1 = sig_pending, 0;
   case SYS_rt_sigsuspend: return sig_suspend(*(const uint64_t *)a1);
-  case SYS_sigaltstack: // accepted, and not used: handlers run on the thread's stack
-    if (a2) *(stack_t *)a2 = (stack_t){.ss_flags = SS_DISABLE};
-    return 0;
+  case SYS_sigaltstack: return be_altstack((const stack_t *)a1, (stack_t *)a2);
   case SYS_prlimit64: return proc_prlimit((struct rlimit *)a4);
 #ifdef SYS_set_thread_area
   case SYS_set_thread_area: return proc_set_tls((uint64_t)a1); // x86_64's
@@ -370,6 +529,7 @@ typedef struct be_clone {
   __asm__ volatile("msr tpidr_el0, %0" : : "r"(tls));
 #endif
   be_tl = (be_thread){.tid = c->tid, .ctid = c->ctid, .mask = c->mask};
+  be_register((uint32_t)(c->tid & ~BE_TID_THREAD), &be_tl);
   int code = c->fn(c->arg);
   __vx_syscall(SYS_exit, code, 0, 0, 0, 0, 0);
   __builtin_unreachable();
@@ -421,6 +581,7 @@ int __clone(int (*fn)(void *), void *stack, int flags, void *arg, ...) {
 [[noreturn]] static void be_thread_exit(int code) {
   if (atomic_fetch_sub(&be_live, 1) == 1) proc_exit(code);
   be_thread *me = be_me();
+  be_unregister(me);
   volatile int *ctid = me->ctid;
   if (me->depth) me->depth = 0, vx_mutex_unlock(&be_lock);
   if (ctid) vx_thread_finish((_Atomic uint32_t *)ctid);
@@ -488,6 +649,7 @@ void __unmapself(void *base, size_t size);
 void __unmapself(void *base, size_t size) {
   if (atomic_fetch_sub(&be_live, 1) == 1) proc_exit(0);
   be_thread *me = be_me();
+  be_unregister(me);
   volatile int *ctid = me->ctid;
   if (me->depth) me->depth = 0, vx_mutex_unlock(&be_lock);
   be_unmap_finish(vx_self, base, (size + 4095) & ~(size_t)4095, ctid);
@@ -503,9 +665,8 @@ static long be_thread_kill(long tid, int sig) {
   if (!sig) return 0;
   char note[VX_ERRMAX];
   size_t len = posix_note(sig, posix_pid(), note);
-  static const char directed[] = " thread"; // its own: sig_note keeps it for that thread
-  if (len + sizeof directed - 1 <= sizeof note)
-    memcpy(note + len, directed, sizeof directed - 1), len += sizeof directed - 1;
+  if (len + sizeof BE_DIRECTED - 1 <= sizeof note) // its own: sig_note keeps it for that thread
+    memcpy(note + len, BE_DIRECTED, sizeof BE_DIRECTED - 1), len += sizeof BE_DIRECTED - 1;
   vx_status st = vx_thread_interrupt(vx_self, (uint64_t)(tid & ~BE_TID_THREAD), (vx_str){note, len});
   return st == VX_ERR_NOT_FOUND ? -ESRCH : vx_errno(st);
 }
@@ -513,11 +674,12 @@ static long be_thread_kill(long tid, int sig) {
 // Every call musl makes. A signal that arrives during one is delivered as it
 // returns (signal.c). A call that a signal interrupted is made again unless
 // a handler that wants EINTR ran: SA_RESTART, an ignored signal, and a
-// blocked one (the kernel ends a wait for any note) do not end it. poll and
-// select end with EINTR once any handler has run, as Linux's do; sigsuspend
-// and pause always do. Each time, a sleep's or poll's deadline is the first's.
+// blocked one (the kernel ends a wait for any note) do not end it. poll,
+// select and the sleeps end with EINTR once any handler has run on the
+// thread, as Linux's do (signal(7)); sigsuspend and pause always do. Each
+// time, a sleep's or poll's deadline is the first's.
 long __vx_syscall(long n, long a1, long a2, long a3, long a4, long a5, long a6) {
-  bool waits = n == SYS_ppoll || n == SYS_pselect6,
+  bool waits = n == SYS_ppoll || n == SYS_pselect6 || n == SYS_nanosleep || n == SYS_clock_nanosleep,
        pauses = n == SYS_rt_sigsuspend || (n == SYS_ppoll && a1 == 0 && a2 == 0);
 #ifdef SYS_poll
   waits = waits || n == SYS_poll || n == SYS_select;

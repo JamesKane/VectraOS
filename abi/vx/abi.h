@@ -474,6 +474,11 @@ enum vx_task_options : uint32_t { VX_TASK_FORK = 1 };
 //     NEXT_THREAD, at any time, describes the live thread
 //     with the next id after `thread` (0: the first) in a vx_thread_info:
 //     how procfs lists /proc/N/threads; NOT_FOUND after the last.
+//     GET_NOTE_STACK and SET_NOTE_STACK, with thread 0, the caller's note
+//     stack, a vx_note_stack (ADR-0036): the kernel diverts the thread to its
+//     in-task handler there unless its stack pointer is on it already; size 0
+//     for none, else at least VX_NOTE_STACK_MIN bytes inside user memory
+//     (RANGE). A new thread has none; fork's thread and exec's have none.
 // thread_suspend(task, thread), thread_resume(task, thread): counted, with the
 //     DEBUG right; with thread 0, every thread of the task (a process stopped
 //     as a whole). A suspended thread stops before it next returns to user
@@ -617,7 +622,16 @@ enum vx_thread_state_op : uint32_t {
   VX_STATE_GET_XSTATE, // ADR-0035
   VX_STATE_SET_XSTATE,
   VX_STATE_GET_CPU,
+  VX_STATE_GET_NOTE_STACK, // ADR-0036
+  VX_STATE_SET_NOTE_STACK,
 };
+
+// thread_state's GET_NOTE_STACK and SET_NOTE_STACK (ADR-0036): the stack a
+// thread's in-task handler runs on, [base, base + size); size 0: none.
+typedef struct vx_note_stack {
+  uint64_t base, size;
+} vx_note_stack;
+static constexpr uint64_t VX_NOTE_STACK_MIN = 2048; // as POSIX's MINSIGSTKSZ on x86_64
 
 // thread_state's GET_CPU (ADR-0035): what the kernel saves of a thread's
 // FP/SIMD state, and what user code may use. x86_64 user code asks CPUID for

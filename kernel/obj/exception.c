@@ -33,6 +33,12 @@ static bool exception_divert(struct trap_frame *f, const vx_exception *e) {
 #else
   uint64_t sp = e->regs.sp;
 #endif
+  // Its note stack, if it has one and is not on it already (a handler that
+  // faults nests below itself there): a fault on an overflowed stack still
+  // finds room (ADR-0036).
+  const thread *th = this_cpu()->current;
+  uint64_t lo = th->note_stack, hi = lo + th->note_stack_size;
+  if (th->note_stack_size && !(sp > lo && sp <= hi)) sp = hi;
   if (!handler || sp < RED_ZONE + sizeof *e + 64 || sp > USER_TOP) return false;
   uint64_t at = (sp - RED_ZONE - sizeof *e) & ~15ull;
   // The handler runs with key 0 opened, so it can use its stack and data; the
@@ -319,6 +325,28 @@ static int64_t thread_tls_self(vx_handle th, uint64_t op, uint64_t buf) {
   return VX_OK;
 }
 
+// GET_NOTE_STACK and SET_NOTE_STACK: the caller's own (ADR-0036).
+static int64_t thread_note_stack(vx_handle th, uint64_t op, uint64_t buf) {
+  vx_status st;
+  task *t = (task *)handle_get(current_task(), th, OBJ_TASK, 0, &st);
+  if (!t) return st;
+  bool own = t == current_task();
+  object_release(&t->obj);
+  if (!own) return VX_ERR_INVALID;
+  thread *me = this_cpu()->current;
+  vx_note_stack ns = {.base = me->note_stack, .size = me->note_stack_size};
+  if (op == VX_STATE_GET_NOTE_STACK) return copy_to_user(buf, &ns, sizeof ns);
+  st = copy_from_user(&ns, buf, sizeof ns);
+  if (st != VX_OK) return st;
+  uint64_t end;
+  if (ns.size == 0)
+    ns.base = 0; // none: handlers run on the thread's own stack
+  else if (ns.size < VX_NOTE_STACK_MIN || ckd_add(&end, ns.base, ns.size) || end > USER_TOP)
+    return VX_ERR_RANGE;
+  me->note_stack = ns.base, me->note_stack_size = ns.size; // only this thread changes them
+  return VX_OK;
+}
+
 // The live thread of the task with the next id after `after`: NEXT_THREAD.
 static int64_t thread_next(vx_handle th, uint64_t after, uint64_t buf) {
   vx_status st;
@@ -449,7 +477,8 @@ static int64_t thread_cpu(uint64_t buf) {
 }
 
 static int64_t sys_thread_state(vx_handle th, uint64_t id, uint64_t op, uint64_t buf, uint64_t size) {
-  if (op < VX_STATE_GET_EXCEPTION || op > VX_STATE_GET_CPU) return VX_ERR_INVALID;
+  if (op < VX_STATE_GET_EXCEPTION || op > VX_STATE_SET_NOTE_STACK) return VX_ERR_INVALID;
+  bool ns_op = op == VX_STATE_GET_NOTE_STACK || op == VX_STATE_SET_NOTE_STACK;
   bool tls_op = op == VX_STATE_GET_TLS || op == VX_STATE_SET_TLS;
   bool fp_op = op == VX_STATE_GET_FPREGS || op == VX_STATE_SET_FPREGS;
   bool x_op = op == VX_STATE_GET_XSTATE || op == VX_STATE_SET_XSTATE;
@@ -461,6 +490,7 @@ static int64_t sys_thread_state(vx_handle th, uint64_t id, uint64_t op, uint64_t
   if (op == VX_STATE_GET_CPU) need = sizeof(vx_cpu_info);
   if (op == VX_STATE_NEXT_THREAD) need = sizeof(vx_thread_info);
   if (op == VX_STATE_GET_WATCH || op == VX_STATE_SET_WATCH) need = sizeof(vx_watches);
+  if (ns_op) need = sizeof(vx_note_stack);
   if (size < need) return VX_ERR_TOO_SMALL;
   if (op == VX_STATE_NEXT_THREAD) return thread_next(th, id, buf);
   if (op == VX_STATE_GET_CPU) return id ? VX_ERR_INVALID : thread_cpu(buf);
@@ -468,6 +498,7 @@ static int64_t sys_thread_state(vx_handle th, uint64_t id, uint64_t op, uint64_t
   if (op == VX_STATE_GET_WATCH || op == VX_STATE_SET_WATCH)
     return id ? VX_ERR_INVALID : thread_watch(th, op, buf);
   if (tls_op && id == 0) return thread_tls_self(th, op, buf);
+  if (ns_op) return id ? VX_ERR_INVALID : thread_note_stack(th, op, buf);
   vx_regs regs;
   uint64_t tls = 0;
   vx_status st = VX_OK;

@@ -850,7 +850,8 @@ static bool wait_builtin(const rc_word *argv, uint32_t argc) {
 
 // Notes, to rc's functions for them (rc's notifyf): what rc has a name for
 // (rc_note_trap), sigint and the rest; any other, as the system does by default.
-static vx_noted on_note(vx_exception *e, vx_str note) {
+static vx_noted on_note(vx_exception *e, vx_str note, void *fp) {
+  (void)fp;
   (void)e;
   uint32_t i = rc_note_trap(note);
   if (!i) return VX_NDFLT;

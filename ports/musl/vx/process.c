@@ -493,7 +493,14 @@ static long fork_child(void) {
   vx_drbg_mix(&proc_entropy, child_tag, sizeof child_tag, false);
   vx_drbg_mix(&proc_entropy, &proc_kernel_task_id, sizeof proc_kernel_task_id, false);
   fd_after_fork();
-  atomic_store(&be_live, 1);        // the thread that forked, alone
+  atomic_store(&be_live, 1); // the thread that forked, alone, numbered anew
+  memset(be_threads, 0, sizeof be_threads);
+  be_me()->slot = 0;
+  be_register(be_only_thread_id(), be_me());
+  if (be_me()->alt_size) { // its alternate stack, copied with its memory
+    vx_note_stack ns = {be_me()->alt_base, be_me()->alt_size};
+    vx_thread_state(vx_self, 0, VX_STATE_SET_NOTE_STACK, &ns, sizeof ns);
+  }
   wait_kept_count = 0;              // the parent's children's records are the parent's
   sig_forget_pending(fork_pending); // the parent's, copied with its memory; not those sent to the child since
   if (proc_mounted) proc_write(posix_pid(), "ctl", "childnotes");

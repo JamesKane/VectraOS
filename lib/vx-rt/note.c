@@ -18,8 +18,11 @@
 // then the kernel's default, which ends the task with the trap's words.
 //
 // The handler runs on the thread's own stack, below where it was diverted
-// from. FP/SIMD registers, which the kernel does not put in a vx_exception,
-// are saved by vx_note_entry before any C runs and loaded again after.
+// from, or on its note stack (ADR-0036). FP/SIMD registers, which the kernel
+// does not put in a vx_exception, are saved by vx_note_entry before any C
+// runs and loaded again after; the handler is given them as fp, in the
+// architecture's image (x86_64's XSAVE standard format, aarch64's vx_fpregs),
+// and what it changes there is what the thread goes on with.
 
 #pragma once
 
@@ -27,7 +30,7 @@
 #include "../vx-note/note.c"
 
 typedef enum vx_noted : uint32_t { VX_NCONT = 0, VX_NDFLT = 1 } vx_noted;
-typedef vx_noted vx_note_handler(vx_exception *e, vx_str note);
+typedef vx_noted vx_note_handler(vx_exception *e, vx_str note, void *fp);
 
 [[gnu::visibility("hidden")]] void vx_note_entry(void);
 
@@ -54,7 +57,7 @@ static void (*vx_note_exit)(vx_str note);
   __builtin_trap(); // exception_resume does not return
 }
 
-[[gnu::used]] static void vx_note_dispatch(vx_exception *e) {
+[[gnu::used]] static void vx_note_dispatch(vx_exception *e, void *fp) {
   char text[VX_ERRMAX];
   vx_str note;
   if (e->kind == VX_EXCEPTION_INTERRUPT) {
@@ -68,7 +71,7 @@ static void (*vx_note_exit)(vx_str note);
     note = (vx_str){text, vx_trap_note(e->kind, e->code, e->address, pc, text)};
   }
   vx_note_handler *h = vx_note_fn;
-  if (h && h(e, note) == VX_NCONT) return;
+  if (h && h(e, note, fp) == VX_NCONT) return;
   if (e->kind != VX_EXCEPTION_INTERRUPT) vx_note_crash(e); // a fault: where unhandled faults go
   vx_note_default(note);
 }
@@ -99,6 +102,8 @@ __asm__(".text\n"
         "  movq $0, 544(%rsp)\n  movq $0, 552(%rsp)\n  movq $0, 560(%rsp)\n  movq $0, 568(%rsp)\n"
         "  movl $-1, %eax\n  movl $-1, %edx\n"
         "  xsave64 (%rsp)\n"
+        "  movq %rbx, %rdi\n"
+        "  movq %rsp, %rsi\n" // the saved state, the handler's fp
         "  call vx_note_dispatch\n"
         "  movl $-1, %eax\n  movl $-1, %edx\n"
         "  xrstor64 (%rsp)\n"
@@ -120,6 +125,8 @@ __asm__(".text\n"
         "  stp q20, q21, [sp, #320]\n  stp q22, q23, [sp, #352]\n  stp q24, q25, [sp, #384]\n"
         "  stp q26, q27, [sp, #416]\n  stp q28, q29, [sp, #448]\n  stp q30, q31, [sp, #480]\n"
         "  mrs x9, fpcr\n  mrs x10, fpsr\n  add x11, sp, #512\n  stp x9, x10, [x11]\n"
+        "  mov x0, x19\n"
+        "  mov x1, sp\n" // the saved state, a vx_fpregs: the handler's fp
         "  bl vx_note_dispatch\n"
         "  ldp q0, q1, [sp, #0]\n  ldp q2, q3, [sp, #32]\n  ldp q4, q5, [sp, #64]\n  ldp q6, q7, [sp, #96]\n"
         "  ldp q8, q9, [sp, #128]\n  ldp q10, q11, [sp, #160]\n  ldp q12, q13, [sp, #192]\n"

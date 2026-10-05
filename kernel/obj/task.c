@@ -107,8 +107,9 @@ struct thread {
   uint64_t tls;             // its user thread pointer while it is not running (arch_user_switch)
   uint8_t *fp;     // its FP/SIMD registers while it is not running (arch_user_switch): a page, ARCH_FP_MAX
   bool fp_in_area; // simd_begin saved them there and used the registers: fp is theirs until loaded
-  bool user_held;  // stopped at an exception: fp and tls are its own, saved, for a debugger (exception_stop)
-  bool stepping;   // a debugger asked for one instruction (arch_frame_step): aarch64 keeps MDSCR_EL1.SS on
+  uint64_t note_stack, note_stack_size; // where its in-task handler runs, if set (SET_NOTE_STACK, ADR-0036)
+  bool user_held; // stopped at an exception: fp and tls are its own, saved, for a debugger (exception_stop)
+  bool stepping;  // a debugger asked for one instruction (arch_frame_step): aarch64 keeps MDSCR_EL1.SS on
   uint64_t user_entry, user_sp, user_arg, user_arg2;
   bool started;          // thread_start has taken it (under its task's lock)
   uint32_t intent;       // enum vx_intent

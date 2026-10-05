@@ -1209,6 +1209,79 @@ static void test_in_task(void) {
   CHECK(vx_exception_bind(self, 0, 0, VX_EXCEPTION_IN_TASK) == VX_OK); // unbound: a note would end ktest now
 }
 
+// --- Note stacks (ADR-0036) ---
+
+static alignas(16) uint8_t note_stack[16384];
+static _Atomic uint64_t note_handler_at, note_fault_at, note_rest_sp;
+static _Atomic bool note_finished;
+static _Atomic int64_t note_get, note_small;
+
+static void note_finish(void) {
+  atomic_store(&note_finished, true);
+  vx_thread_exit();
+}
+
+// Where it ran, and the thread sent on to note_finish on a stack that works.
+static void note_handler(vx_exception *e) {
+  volatile uint8_t here = 0;
+  atomic_store(&note_handler_at, (uint64_t)&here);
+  atomic_store(&note_fault_at, e->address);
+#ifdef __x86_64__
+  e->regs.rip = (uint64_t)note_finish;
+  e->regs.rsp = atomic_load(&note_rest_sp) - 8; // as a call leaves it
+#else
+  e->regs.pc = (uint64_t)note_finish;
+  e->regs.sp = atomic_load(&note_rest_sp);
+#endif
+  vx_rights_set(e->rights);
+  vx_exception_resume(vx_self, 0, VX_RESUME_CONTINUE, &e->regs);
+}
+
+// Its stack pointer moved to memory nothing maps, then a push: the fault has
+// nowhere on that stack to go, and goes to the note stack.
+static void note_overflow(uint64_t arg, uint64_t bad) {
+  (void)arg;
+  vx_note_stack small = {(uint64_t)note_stack, VX_NOTE_STACK_MIN - 16},
+                ns = {(uint64_t)note_stack, sizeof note_stack};
+  atomic_store(&note_small, vx_thread_state(self, 0, VX_STATE_SET_NOTE_STACK, &small, sizeof small));
+  vx_thread_state(self, 0, VX_STATE_SET_NOTE_STACK, &ns, sizeof ns);
+  vx_note_stack got = {};
+  atomic_store(&note_get, vx_thread_state(self, 0, VX_STATE_GET_NOTE_STACK, &got, sizeof got) == VX_OK &&
+                              got.base == ns.base && got.size == ns.size);
+#ifdef __x86_64__
+  __asm__ volatile("mov %0, %%rsp\n\tpush %%rax" : : "r"(bad) : "memory");
+#else
+  __asm__ volatile("mov sp, %0\n\tstr x0, [sp, #-16]!" : : "r"(bad) : "memory");
+#endif
+  __builtin_unreachable();
+}
+
+static void test_note_stack(void) {
+  static _Atomic uint32_t never;
+  uint64_t bad = 0;
+  vx_handle probe, th;
+  CHECK(vx_vmo_create(4096, 0, &probe) == VX_OK &&
+        vx_as_map(self, probe, 0, 4096, VX_MAP_WRITE, &bad) == VX_OK);
+  CHECK(vx_as_unmap(self, bad, 4096) == VX_OK); // nothing there now
+  vx_handle_close(probe);
+  atomic_store(&note_rest_sp, new_stack());
+  CHECK(vx_exception_bind(self, 0, (uint64_t)note_handler, VX_EXCEPTION_IN_TASK) == VX_OK);
+  CHECK(vx_thread_create(self, &th) == VX_OK &&
+        vx_thread_start(th, (uint64_t)note_overflow, new_stack(), 0, bad + 4096) == VX_OK);
+  for (int i = 0; i < 1000 && !atomic_load(&note_finished); i++) vx_futex_wait(&never, 0, after_ms(1));
+  CHECK(atomic_load(&note_finished));
+  uint64_t at = atomic_load(&note_handler_at);
+  CHECK(at >= (uint64_t)note_stack && at < (uint64_t)note_stack + sizeof note_stack); // on the note stack
+  CHECK((atomic_load(&note_fault_at) & ~4095ull) == bad);
+  CHECK(atomic_load(&note_get) == 1 && atomic_load(&note_small) == VX_ERR_RANGE);
+  vx_note_stack big = {UINT64_MAX - 4096, 8192}; // past user memory
+  CHECK(vx_thread_state(self, 0, VX_STATE_SET_NOTE_STACK, &big, sizeof big) == VX_ERR_RANGE);
+  CHECK(vx_thread_state(self, 1, VX_STATE_GET_NOTE_STACK, &big, sizeof big) ==
+        VX_ERR_INVALID); // the caller's only
+  vx_handle_close(th);
+  CHECK(vx_exception_bind(self, 0, 0, VX_EXCEPTION_IN_TASK) == VX_OK);
+}
+
 // --- Pagers (01 §5, docs/11 §8) ---
 
 typedef struct toucher {
@@ -2066,6 +2139,7 @@ const char *vx_main(void) {
   test_copy_race();
   test_exception_port();
   test_in_task();
+  test_note_stack();
   test_vmo_clone();
   test_debugger();
   test_tls();

@@ -45,10 +45,11 @@ static struct {
 // Pending: atomic, as a note handler may set a bit between the load and the
 // store of a change made in the program's code.
 static _Atomic uint64_t sig_pending;
-static int64_t sig_sender[SIG_MAX + 1]; // who sent each pending one
-#define sig_depth (be_me()->sig_depth)  // per thread (backend.c's be_thread)
-static uint32_t sig_handlers_ran;       // how many handlers have run
-static uint32_t sig_eintr_ran;          // how many of them were not SA_RESTART (a call they interrupt ends)
+static int64_t sig_sender[SIG_MAX + 1];          // who sent each pending one
+#define sig_depth        (be_me()->sig_depth)    // per thread (backend.c's be_thread)
+#define sig_handlers_ran (be_me()->handlers_ran) // how many handlers have run on this thread
+#define sig_eintr_ran                                                                                        \
+  (be_me()->eintr_ran) // how many of them were not SA_RESTART (a call they interrupt ends)
 
 static uint64_t sig_bit(int sig) { return 1ull << (sig - 1); }
 static constexpr uint64_t SIG_UNBLOCKABLE = 1ull << (SIGKILL - 1) | 1ull << (SIGSTOP - 1);
@@ -79,10 +80,77 @@ static constexpr uint64_t SIG_UNBLOCKABLE = 1ull << (SIGKILL - 1) | 1ull << (SIG
   proc_exit_str(fault.len ? fault : (vx_str){note, posix_note(sig, 0, note)});
 }
 
+// --- A handler's context (M6 step 6d2b) ---
+//
+// What a handler's ucontext carries, and takes back: the registers of the
+// program's code a fault or a note diverted the thread from, with the FP/SIMD
+// state vx_note_entry saved (in its image, which is Linux's: x86_64's FXSAVE
+// leads XSAVE's, aarch64's is fpsimd_context's registers). A signal delivered
+// as a call returns has none: its ucontext's registers are zero.
+typedef struct sig_context {
+  vx_exception *e;
+  void *fp; // vx_note_entry's save area
+} sig_context;
+
+static void sig_uc_fill(ucontext_t *uc, const sig_context *c) {
+  const vx_regs *r = &c->e->regs;
+#ifdef __x86_64__
+  greg_t *g = uc->uc_mcontext.gregs;
+  g[REG_R8] = (greg_t)r->r8, g[REG_R9] = (greg_t)r->r9, g[REG_R10] = (greg_t)r->r10,
+  g[REG_R11] = (greg_t)r->r11;
+  g[REG_R12] = (greg_t)r->r12, g[REG_R13] = (greg_t)r->r13, g[REG_R14] = (greg_t)r->r14;
+  g[REG_R15] = (greg_t)r->r15, g[REG_RDI] = (greg_t)r->rdi, g[REG_RSI] = (greg_t)r->rsi;
+  g[REG_RBP] = (greg_t)r->rbp, g[REG_RBX] = (greg_t)r->rbx, g[REG_RDX] = (greg_t)r->rdx;
+  g[REG_RAX] = (greg_t)r->rax, g[REG_RCX] = (greg_t)r->rcx, g[REG_RSP] = (greg_t)r->rsp;
+  g[REG_RIP] = (greg_t)r->rip, g[REG_EFL] = (greg_t)r->rflags;
+  if (c->e->kind == VX_EXCEPTION_PAGE_FAULT || c->e->kind == VX_EXCEPTION_PROTECTION_KEY) {
+    g[REG_TRAPNO] = 14; // #PF, with its error code as Linux gives it: user, write, fetch, key
+    g[REG_ERR] = 4 | (c->e->code == 1 ? 2 : 0) | (c->e->code == 2 ? 16 : 0) |
+                 (c->e->kind == VX_EXCEPTION_PROTECTION_KEY ? 32 : 0);
+    g[REG_CR2] = (greg_t)c->e->address;
+  }
+  uc->uc_mcontext.fpregs = (fpregset_t)c->fp;
+#else
+  mcontext_t *m = &uc->uc_mcontext;
+  for (int i = 0; i < 31; i++) m->regs[i] = r->x[i];
+  m->sp = r->sp, m->pc = r->pc, m->pstate = r->pstate, m->fault_address = c->e->address;
+  const vx_fpregs *f = c->fp;
+  struct fpsimd_context *fs = (struct fpsimd_context *)m->__reserved; // then a zero header: the end
+  fs->head = (struct _aarch64_ctx){.magic = FPSIMD_MAGIC, .size = sizeof *fs};
+  fs->fpsr = (unsigned)f->fpsr, fs->fpcr = (unsigned)f->fpcr;
+  memcpy(fs->vregs, f->v, sizeof fs->vregs);
+#endif
+}
+
+// What the handler changed, for the thread to go on with.
+static void sig_uc_take(const ucontext_t *uc, const sig_context *c) {
+  vx_regs *r = &c->e->regs;
+#ifdef __x86_64__
+  const greg_t *g = uc->uc_mcontext.gregs;
+  r->r8 = (uint64_t)g[REG_R8], r->r9 = (uint64_t)g[REG_R9], r->r10 = (uint64_t)g[REG_R10];
+  r->r11 = (uint64_t)g[REG_R11], r->r12 = (uint64_t)g[REG_R12], r->r13 = (uint64_t)g[REG_R13];
+  r->r14 = (uint64_t)g[REG_R14], r->r15 = (uint64_t)g[REG_R15], r->rdi = (uint64_t)g[REG_RDI];
+  r->rsi = (uint64_t)g[REG_RSI], r->rbp = (uint64_t)g[REG_RBP], r->rbx = (uint64_t)g[REG_RBX];
+  r->rdx = (uint64_t)g[REG_RDX], r->rax = (uint64_t)g[REG_RAX], r->rcx = (uint64_t)g[REG_RCX];
+  r->rsp = (uint64_t)g[REG_RSP], r->rip = (uint64_t)g[REG_RIP], r->rflags = (uint64_t)g[REG_EFL];
+  // fpregs points at the save area itself: changes there are already made.
+#else
+  const mcontext_t *m = &uc->uc_mcontext;
+  for (int i = 0; i < 31; i++) r->x[i] = m->regs[i];
+  r->sp = m->sp, r->pc = m->pc, r->pstate = m->pstate;
+  vx_fpregs *f = c->fp;
+  const struct fpsimd_context *fs = (const struct fpsimd_context *)m->__reserved;
+  if (fs->head.magic == FPSIMD_MAGIC) {
+    f->fpsr = fs->fpsr, f->fpcr = fs->fpcr;
+    memcpy(f->v, fs->vregs, sizeof f->v);
+  }
+#endif
+}
+
 // Carries out sig's disposition. Returns whether a call it interrupted
 // returns EINTR: a handler ran that is not SA_RESTART.
-static bool sig_act(int sig, int code, int64_t sender, uint64_t address, const vx_exception *e,
-                    vx_str fault) {
+static bool sig_act(int sig, int code, int64_t sender, uint64_t address, const vx_exception *e, vx_str fault,
+                    const sig_context *ctx) {
   uintptr_t h = sig_actions[sig].handler;
   unsigned long flags = sig_actions[sig].flags;
   if (h == (uintptr_t)SIG_IGN) return false;
@@ -118,17 +186,23 @@ static bool sig_act(int sig, int code, int64_t sender, uint64_t address, const v
     }
     ucontext_t uc = {};
     memcpy(&uc.uc_sigmask, &old, sizeof old);
-    ((void (*)(int, siginfo_t *, void *))h)(sig, &info, &uc);
+    be_thread *me = be_me();
+    uc.uc_stack = (stack_t){
+        .ss_sp = (void *)me->alt_base, .ss_size = me->alt_size, .ss_flags = be_alt_flags(me, be_on_alt(me))};
+    if (ctx) sig_uc_fill(&uc, ctx);
+    sig_call(flags, h, sig, &info, &uc);
+    if (ctx) sig_uc_take(&uc, ctx);
   } else {
-    ((void (*)(int))h)(sig);
+    sig_call(flags, h, sig, nullptr, nullptr);
   }
   sig_depth = depth;
   sig_mask = old;
   return !(flags & SA_RESTART);
 }
 
-// Delivers every pending signal that is not blocked, lowest first.
-static bool sig_deliver_pending(void) {
+// Delivers every pending signal that is not blocked, lowest first; ctx, if
+// the thread was diverted from the program's code, the handlers' registers.
+static bool sig_deliver_in(const sig_context *ctx) {
   bool eintr = false;
   be_thread *me = be_me();
   for (uint64_t ready; (ready = (sig_pending | me->pending) & ~sig_mask);) {
@@ -138,10 +212,13 @@ static bool sig_deliver_pending(void) {
     else
       sig_pending &= ~sig_bit(sig);
     eintr =
-        sig_act(sig, sig_sender[sig] ? SI_USER : SI_KERNEL, sig_sender[sig], 0, nullptr, (vx_str){}) || eintr;
+        sig_act(sig, sig_sender[sig] ? SI_USER : SI_KERNEL, sig_sender[sig], 0, nullptr, (vx_str){}, ctx) ||
+        eintr;
   }
   return eintr;
 }
+
+static bool sig_deliver_pending(void) { return sig_deliver_in(nullptr); }
 
 // From __vx_syscall, the pending signals not blocked, delivered as from the
 // program's code; a sleep's or poll's deadline kept from a handler's own.
@@ -161,20 +238,24 @@ static void sig_raise_self(int sig) {
 }
 
 // The note handler: a note from another process, or a fault.
-static vx_noted sig_note(vx_exception *e, vx_str note) {
+static vx_noted sig_note(vx_exception *e, vx_str note, void *fp) {
+  sig_context ctx = {e, fp};
   if (e->kind == VX_EXCEPTION_INTERRUPT) {
+    // be_thread_kill's mark: this thread's alone. Without it, the process's:
+    // taken here, or by a thread that does not block it (be_forward).
+    size_t dl = sizeof BE_DIRECTED - 1;
+    bool directed = note.len > dl && memcmp(note.ptr + note.len - dl, BE_DIRECTED, dl) == 0;
     int64_t sender;
-    int sig = (int)posix_note_signal(note, &sender);
+    int sig = (int)posix_note_signal(directed ? (vx_str){note.ptr, note.len - dl} : note, &sender);
     if (sig < 1 || sig > SIG_MAX) return VX_NDFLT; // no signal: the note ends the process
-    static const char directed[] = " thread";      // be_thread_kill's: this thread's alone
-    size_t dl = sizeof directed - 1;
-    if (note.len > dl && memcmp(note.ptr + note.len - dl, directed, dl) == 0)
+    if (!directed && (sig_mask & sig_bit(sig)) && be_forward(sig, note)) return VX_NCONT;
+    sig_sender[sig] = sender;
+    if (directed)
       be_me()->pending |= sig_bit(sig);
     else
       sig_pending |= sig_bit(sig);
-    sig_sender[sig] = sender;
     if (sig_depth == 0) {
-      sig_deliver_pending(); // in the program's own code
+      sig_deliver_in(&ctx); // in the program's own code
     } else if (!(sig_mask & sig_bit(sig))) {
       // In the back end, maybe just before it waits: the kernel had this
       // note interrupt nothing (it came in user mode), so the wait is woken
@@ -203,7 +284,8 @@ static vx_noted sig_note(vx_exception *e, vx_str note) {
   // A fault that is blocked or ignored would only happen again: its default.
   uintptr_t h = sig_actions[sig].handler;
   if ((sig_mask & sig_bit(sig)) || h == (uintptr_t)SIG_IGN) sig_terminate(sig, e, note);
-  sig_act(sig, code, 0, e->address, e, note); // then the instruction again, unless the handler jumped away
+  sig_act(sig, code, 0, e->address, e, note,
+          &ctx); // then the instruction again, unless the handler jumped away
   return VX_NCONT;
 }
 

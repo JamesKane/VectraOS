@@ -131,7 +131,8 @@ static uint64_t spawn(const char *what) {
 static int64_t wait_record(char *buf, uint32_t cap) { return read_file(me, "wait", buf, cap); }
 
 static uint32_t notes_seen;
-static vx_noted on_note(vx_exception *e, vx_str note) {
+static vx_noted on_note(vx_exception *e, vx_str note, void *fp) {
+  (void)fp;
   (void)e;
   if (!has(note, "group") && !has(note, "poke")) return VX_NDFLT;
   notes_seen++;
