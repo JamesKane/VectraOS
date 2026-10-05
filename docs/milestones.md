@@ -323,6 +323,7 @@ Deferred deliberately, each with where it is due:
 
 | Scenario | What it checks |
 |---|---|
+| `threads` | A native program's threads (6d1): `thread_local` storage from `PT_TLS`, stack bounds, `vx_mutex`, joins |
 | `boot` | M1's exit test: the kernel reaches `svcd`, which starts the console driver and `bootfs` |
 | `panic` | A kernel fault reaches the panic handler, with a symbolized backtrace |
 | `write-text`, `write-text-alias` | Kernel code is read-only (W^X), and through the direct map too |
