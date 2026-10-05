@@ -44,6 +44,7 @@
 #include "../../lib/vx-ns/spawn.c"
 #include "../../lib/vx-store/store.c"
 #include "../../lib/vx-slots/slots.c"
+#include "../../lib/vx-users/users.c"
 
 #ifdef __x86_64__
 static const char ARCH[] = "x86_64";
@@ -262,7 +263,14 @@ static uint32_t add_node(node n) {
   return nnodes++;
 }
 
-static node *node_of(uint64_t id) { return id && id < nnodes ? &nodes[id] : nullptr; }
+// A fid's node id carries ADM when its attach was by an administrator
+// (users(6): group 0), whom alone ctl obeys; walks, parents and listings keep it.
+static constexpr uint64_t ADM = 1ull << 63;
+
+static node *node_of(uint64_t id) {
+  id &= ~ADM;
+  return id && id < nnodes ? &nodes[id] : nullptr;
+}
 
 static uint32_t fixed(uint8_t kind, uint32_t parent, uint64_t seq, const char *name) {
   node n = {.kind = kind, .parent = parent, .seq = seq};
@@ -305,10 +313,12 @@ static void tree_path(uint32_t id, char *out, size_t cap) {
 
 static uint32_t root_id, status_id, ctl_id, releases_id, store_id;
 
-static vx_status fs_attach(void *ctx, vx_str aname, uint64_t *root) {
+static bool administers(vx_str uname); // below
+
+static vx_status fs_attach(void *ctx, vx_str aname, vx_str uname, uint64_t *root) {
   (void)ctx;
   if (aname.len) return VX_ERR_NOT_FOUND;
-  *root = root_id;
+  *root = root_id | (administers(uname) ? ADM : 0);
   return VX_OK;
 }
 
@@ -383,7 +393,7 @@ static vx_status fs_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) 
   default: break;
   }
   if (!id) return VX_ERR_NOT_FOUND;
-  *child = id;
+  *child = id | (dir & ADM);
   return VX_OK;
 }
 
@@ -391,7 +401,7 @@ static vx_status fs_parent(void *ctx, uint64_t id, uint64_t *parent) {
   (void)ctx;
   node *n = node_of(id);
   if (!n) return VX_ERR_NOT_FOUND;
-  *parent = n->parent ? n->parent : root_id;
+  *parent = (n->parent ? n->parent : root_id) | (id & ADM);
   return VX_OK;
 }
 
@@ -463,6 +473,23 @@ static vx_status load_table(vx_slots *t) {
                      : st;
 }
 
+// dir/name replaced by data: written whole as dir/name.new, then renamed
+// over it (Trenameat), so a crash leaves the old file or the new, not one
+// half written; FAT's rename is itself two steps, a small window (BUGS).
+static vx_status replace_whole(const char *dir, const char *name, const uint8_t *data, size_t len) {
+  char tmp[96], fresh[48];
+  join3(fresh, sizeof fresh, name, ".new", "");
+  join3(tmp, sizeof tmp, dir, "/", fresh);
+  vx_status st = write_whole(tmp, data, len);
+  if (st != VX_OK) return st;
+  p9_client *c;
+  uint32_t fid;
+  if ((st = vx_ns_walk(&ns, vx_cstr(dir), &c, &fid)) != VX_OK) return st;
+  st = p9c_renameat(c, fid, vx_cstr(fresh), fid, vx_cstr(name));
+  p9c_clunk(c, fid);
+  return st;
+}
+
 // The table, then Limine's configuration made from it: in that order, so a
 // configuration never names a slot the table does not.
 static vx_status save_table(const vx_slots *t) {
@@ -471,9 +498,12 @@ static vx_status save_table(const vx_slots *t) {
   if (!vx_slots_print(t, &w)) return VX_ERR_RANGE;
   size_t n = vx_slots_limine(t, conf, sizeof conf);
   if (!n) return VX_ERR_RANGE;
-  vx_status st = write_whole("/tmp/EFI/vectra/slots.ndb", (const uint8_t *)text, w.len);
-  return st == VX_OK ? write_whole("/tmp/boot/limine/limine.conf", (const uint8_t *)conf, n) : st;
+  vx_status st = replace_whole("/tmp/EFI/vectra", "slots.ndb", (const uint8_t *)text, w.len);
+  return st == VX_OK ? replace_whole("/tmp/boot/limine", "limine.conf", (const uint8_t *)conf, n) : st;
 }
+
+// The slot that booted, from vx.slot; -1 if the system did not boot from one.
+static int booted_slot(void) { return booted >= 'a' && booted < 'a' + VX_SLOTS ? booted - 'a' : -1; }
 
 // A whole tree checked: every directory, index and block, present and
 // sound. Directories wait in a queue; each one's text is copied before its
@@ -589,6 +619,18 @@ static vx_status adm_ctl(const char *cmd) {
   return write_whole("/adm/ctl", (const uint8_t *)cmd, vx_cstr(cmd).len);
 }
 
+// Whether uname administers, by /adm/users as it is now, or users(6)'s
+// default (adm alone) where there is none, as fsd has it.
+static bool administers(vx_str uname) {
+  static vx_users t;
+  static uint8_t text[64 * 1024];
+  size_t len;
+  if (read_whole("/adm/users", text, sizeof text, &len) != VX_OK ||
+      !vx_users_parse(&t, (vx_str){(const char *)text, len}))
+    vx_users_parse(&t, VX_STR(VX_USERS_DEFAULT));
+  return vx_users_adm(&t, uname);
+}
+
 static void said(const char *a, uint64_t n, const char *b) {
   vx_print(VX_STR("distd: "));
   vx_print(vx_cstr(a));
@@ -631,8 +673,10 @@ static vx_status apply(uint64_t seq) {
   }
   static vx_slots t;
   if ((st = load_table(&t)) != VX_OK) return refused("apply: cannot read the slot table", st);
-  int slot = vx_slots_free(&t);
-  if (slot < 0) return refused("apply: no free slot", VX_ERR_NO_SPACE);
+  int now = booted_slot();
+  if (now < 0) return refused("apply: the system did not boot from a slot", VX_ERR_BAD_STATE);
+  int slot = vx_slots_target(&t, now);
+  if (slot < 0) return refused("apply: no slot to write", VX_ERR_NO_SPACE);
   char num[24], cmd[96];
   seq_text(seq, num);
   join3(cmd, sizeof cmd, "del cfg@apply-", num, "");
@@ -653,7 +697,7 @@ static vx_status apply(uint64_t seq) {
   }
   sl->used = true, sl->release = seq;
   vx_store_hex(&r->tree, sl->tree);
-  t.previous = t.boot, t.boot = slot;
+  t.previous = now, t.boot = slot; // the running release is what a rollback returns to
   if ((st = save_table(&t)) != VX_OK) return refused("apply: cannot write the slot table", st);
   said("release ", seq, " staged: the next boot is its slot's");
   return VX_OK;
@@ -666,12 +710,13 @@ static vx_status rollback(void) {
   if (t.previous < 0) return refused("rollback: no previous slot", VX_ERR_NOT_FOUND);
   uint64_t leaving = t.slot[t.boot].release;
   int b = t.boot;
+  bool ran = b == booted_slot(); // a staged release that never booted changed no /cfg
   t.boot = t.previous, t.previous = b;
   if ((st = save_table(&t)) != VX_OK) return refused("rollback: cannot write the slot table", st);
   char num[24], cmd[96];
   seq_text(leaving, num);
   join3(cmd, sizeof cmd, "rollback cfg cfg@apply-", num, "");
-  if (adm_ctl(cmd) != VX_OK) vx_print(VX_STR("distd: no snapshot of /cfg to roll back to\n"));
+  if (ran && adm_ctl(cmd) != VX_OK) vx_print(VX_STR("distd: no snapshot of /cfg to roll back to\n"));
   said("rolled back: the next boot is release ", t.slot[t.boot].release, "'s slot");
   return VX_OK;
 }
@@ -730,7 +775,7 @@ static vx_status fs_stat(void *ctx, uint64_t id, p9_stat *out) {
       mode = n->e.mode & 0777, length = n->e.size;
     if (!*n->name) name = "tree";
   }
-  *out = (p9_stat){.qid = {dir ? P9_QTDIR : P9_QTFILE, 0, id},
+  *out = (p9_stat){.qid = {dir ? P9_QTDIR : P9_QTFILE, 0, id & ~ADM},
                    .mode = mode,
                    .length = length,
                    .name = vx_cstr(name),
@@ -835,7 +880,7 @@ static vx_status fs_read(void *ctx, uint64_t id, uint64_t offset, uint8_t *buf, 
 static vx_status fs_write(void *ctx, uint64_t id, uint64_t offset, const uint8_t *buf, uint32_t *count) {
   (void)ctx, (void)offset;
   node *n = node_of(id);
-  if (!n || n->kind != K_CTL) return VX_ERR_ACCESS;
+  if (!n || n->kind != K_CTL || !(id & ADM)) return VX_ERR_ACCESS; // adm's alone
   vx_str cmd = {(const char *)buf, *count};
   while (cmd.len && (cmd.ptr[cmd.len - 1] == '\n' || cmd.ptr[cmd.len - 1] == ' ')) cmd.len--;
   if (cmd.len == 6 && memcmp(cmd.ptr, "rescan", 6) == 0) {
@@ -890,7 +935,7 @@ static vx_status fs_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *c
     uint64_t c = 0;
     vx_status st = fs_walk(ctx, dir, vx_cstr(names[index]), &c);
     if (st != VX_OK) return st;
-    id = (uint32_t)c;
+    id = (uint32_t)(c & ~ADM);
   } else if (d->kind == K_TREE) {
     uint32_t len;
     vx_status st;
@@ -932,12 +977,12 @@ static vx_status fs_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *c
     return VX_ERR_NOT_FOUND;
   }
   if (!id) return VX_ERR_NO_MEMORY;
-  *child = id;
+  *child = id | (dir & ADM);
   return VX_OK;
 }
 
 static p9_ring_server server = {
-    .fs = {.attach = fs_attach,
+    .fs = {.attach_as = fs_attach,
            .walk = fs_walk,
            .parent = fs_parent,
            .stat = fs_stat,

@@ -1,5 +1,7 @@
 // slots_test.c: lib/vx-slots (docs/06 §7): a table printed and read back the
-// same, and one with a key slots(6) does not name, or no boot slot, refused.
+// same, and one with a key slots(6) does not name, or no boot slot, refused;
+// and the slot apply writes, which is never the one that booted, however
+// many applies come before a boot.
 
 #include <string.h>
 
@@ -29,5 +31,25 @@ int main(void) {
   CHECK(vx_slots_parse(&back, (vx_str){bad, strlen(bad)}, scratch, sizeof scratch) == VX_ERR_INVALID);
   const char *noboot = "boot=b previous=-\n";
   CHECK(vx_slots_parse(&back, (vx_str){noboot, strlen(noboot)}, scratch, sizeof scratch) == VX_ERR_INVALID);
+
+  // Applies with no boot between them: a, running, is never written.
+  vx_slots t = {.boot = 0, .previous = -1};
+  t.slot[0].used = true;
+  CHECK(vx_slots_target(&t, -1) == -1); // not booted from a slot: none
+  int first = vx_slots_target(&t, 0);
+  CHECK(first == 1);
+  t.slot[first].used = true, t.previous = 0, t.boot = first;
+  int second = vx_slots_target(&t, 0);
+  CHECK(second == 2); // not in use yet
+  t.slot[second].used = true, t.previous = 0, t.boot = second;
+  int third = vx_slots_target(&t, 0);
+  CHECK(third == 2); // the staged slot again, never a
+  // Booted from b, a the previous, c staged and not booted: c; then, c
+  // booted, the one neither booting nor previous.
+  t = (vx_slots){.boot = 2, .previous = 1};
+  for (int i = 0; i < VX_SLOTS; i++) t.slot[i].used = true;
+  CHECK(vx_slots_target(&t, 1) == 2);
+  t.boot = 1, t.previous = 0;
+  CHECK(vx_slots_target(&t, 1) == 2);
   return check_result();
 }

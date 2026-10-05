@@ -57,15 +57,15 @@
 #include "../../lib/vx-9p/ring_server.c"
 #include "../../lib/vx-fs/check.c"
 #include "../../lib/vx-fs/file.c"
+#include "../../lib/vx-users/users.c"
 
 static constexpr vx_duration COMMIT_EVERY = 5'000'000'000;
 static constexpr uint32_t CACHE_BLOCKS = 1024; // 16 MiB of tree nodes and data
 static constexpr uint32_t MAX_OPEN = 512;      // distinct nodes open at once
 static constexpr int SLOT_SHIFT = 56, USER_SHIFT = 48;
-static constexpr uint32_t MAX_USERS = 127, MAX_MEMBERS = 32; // a user index is 7 bits of the node id
-static constexpr uint64_t PERMISSIVE = 1ull << 55;           // the node's attach was %BRANCH
+static_assert(VX_USERS_MAX + 1 <= 128, "a user index is 7 bits of the node id");
+static constexpr uint64_t PERMISSIVE = 1ull << 55; // the node's attach was %BRANCH
 static constexpr uint64_t CTL_QID = (1ull << 48) - 2, STATUS_QID = (1ull << 48) - 3; // adm's, made up
-static constexpr uint32_t NONE_ID = 0xffff'fffe; // none's id when the users file has no none
 
 static vx_blk disk;
 static vxfs_vol vol;
@@ -344,119 +344,7 @@ static opened *open_slot(uint64_t node, bool make) {
 
 // --- Users (/adm/users) ---
 
-typedef struct user {
-  uint32_t id, lead; // lead: the group's leader's id, or ~0 for none
-  char name[32];
-  uint8_t nname;
-  uint32_t memb[MAX_MEMBERS];
-  uint32_t nmemb;
-} user;
-
-static user users[MAX_USERS + 1];  // and none, whether the file names it or not: index 127 fits 7 bits
-static uint32_t nusers, none_user; // none_user: none's index
-
-static uint32_t user_named(vx_str name) {
-  for (uint32_t i = 0; i < nusers; i++)
-    if (users[i].nname == name.len && memcmp(users[i].name, name.ptr, name.len) == 0) return i;
-  return none_user;
-}
-
-static const user *user_by_id(uint32_t id) {
-  for (uint32_t i = 0; i < nusers; i++)
-    if (users[i].id == id) return &users[i];
-  return nullptr;
-}
-
-static bool in_group(uint32_t uid, uint32_t gid) {
-  const user *g = user_by_id(gid);
-  if (!g) return false;
-  if (g->id == uid) return true;
-  for (uint32_t i = 0; i < g->nmemb; i++)
-    if (g->memb[i] == uid) return true;
-  return false;
-}
-
-static bool leads(uint32_t uid, uint32_t gid) {
-  const user *g = user_by_id(gid);
-  if (!g) return false;
-  if (g->lead != ~0u) return g->lead == uid;
-  return in_group(uid, gid); // no leader: every member leads
-}
-
-static vx_str field(vx_str *line, char sep) {
-  size_t n = 0;
-  while (n < line->len && line->ptr[n] != sep) n++;
-  vx_str f = {line->ptr, n};
-  size_t skip = n < line->len ? n + 1 : n;
-  line->ptr += skip, line->len -= skip;
-  return f;
-}
-
-static bool number(vx_str s, uint32_t *v) {
-  uint64_t n = 0;
-  if (!s.len) return false;
-  for (size_t i = 0; i < s.len; i++) {
-    if (s.ptr[i] < '0' || s.ptr[i] > '9') return false;
-    n = n * 10 + (uint64_t)(s.ptr[i] - '0');
-    if (n > 0xffff'ffff) return false;
-  }
-  *v = (uint32_t)n;
-  return true;
-}
-
-static uint32_t index_named(const user *t, uint32_t n, vx_str name) {
-  uint32_t k = 0;
-  while (k < n && !(t[k].nname == name.len && !memcmp(t[k].name, name.ptr, name.len))) k++;
-  return k;
-}
-
-// The table from users(6) text. False if it is malformed: a field missing,
-// an id that is no number, a leader or member who is no user; the table is
-// then left as it was.
-static bool parse_users(vx_str text) {
-  static user next[MAX_USERS];
-  uint32_t n = 0;
-  for (int pass = 0; pass < 2; pass++) { // names first, so leaders and members may come later
-    vx_str rest = text;
-    uint32_t i = 0;
-    while (rest.len) {
-      vx_str line = field(&rest, '\n');
-      if (!line.len || line.ptr[0] == '#') continue;
-      vx_str id = field(&line, ':'), name = field(&line, ':'), lead = field(&line, ':'), memb = line;
-      if (pass == 0) {
-        if (n == MAX_USERS || !name.len || name.len > sizeof next[0].name || !number(id, &next[n].id))
-          return false;
-        memcpy(next[n].name, name.ptr, name.len);
-        next[n].nname = (uint8_t)name.len, next[n].lead = ~0u, next[n].nmemb = 0;
-        n++;
-        continue;
-      }
-      user *u = &next[i++];
-      if (lead.len) {
-        uint32_t k = index_named(next, n, lead);
-        if (k == n) return false;
-        u->lead = next[k].id;
-      }
-      while (memb.len) {
-        vx_str m = field(&memb, ',');
-        if (!m.len) continue;
-        uint32_t k = index_named(next, n, m);
-        if (k == n || u->nmemb == MAX_MEMBERS) return false;
-        u->memb[u->nmemb++] = next[k].id;
-      }
-    }
-  }
-  memcpy(users, next, n * sizeof *users);
-  nusers = n;
-  none_user = index_named(users, nusers, VX_STR("none"));
-  if (none_user == nusers) { // none, whether the file says so or not
-    users[nusers] = (user){.id = NONE_ID, .lead = ~0u, .name = "none", .nname = 4};
-    none_user = nusers++;
-  }
-  return true;
-}
-
-static const char DEFAULT_USERS[] = "0:adm:adm:\n1:none::\n";
+static vx_users ut; // /adm/users, users(6)
 
 // The users table from the adm branch's /users, or the default.
 static void load_users(void) {
@@ -467,13 +355,13 @@ static void load_users(void) {
   bool ok = vxfs_branch_open(&vol, "adm", &br) == VX_OK && vxfs_root(&vol, &br->t, &root) == VX_OK &&
             vxfs_walk(&vol, &br->t, &root, "users", &f) == VX_OK && f.d.length < sizeof text &&
             vxfs_read(&vol, &br->t, &f, 0, text, sizeof text, &got) == VX_OK &&
-            parse_users((vx_str){text, got});
+            vx_users_parse(&ut, (vx_str){text, got});
   if (ok) return;
-  if (nusers) {
+  if (ut.n) {
     vx_print(VX_STR("fsd: /adm/users is malformed: the users stay as they were\n"));
     return;
   }
-  parse_users(VX_STR(DEFAULT_USERS));
+  vx_users_parse(&ut, VX_STR(VX_USERS_DEFAULT));
   vx_print(VX_STR("fsd: no /adm/users it can read: adm and none only\n"));
 }
 
@@ -482,23 +370,23 @@ enum : uint32_t { MAY_X = 1, MAY_W = 2, MAY_R = 4 };
 
 static uint32_t uid_of(uint64_t node) {
   uint32_t u = user_of(node);
-  return u < nusers ? users[u].id : NONE_ID;
+  return u < ut.n ? ut.user[u].id : VX_USERS_NONE_ID;
 }
 
-static bool is_none(uint64_t node) { return user_of(node) == none_user || user_of(node) >= nusers; }
+static bool is_none(uint64_t node) { return user_of(node) == ut.none || user_of(node) >= ut.n; }
 
 static bool may(uint64_t node, const vxfs_dir *d, uint32_t want) {
   if (permissive(node)) return true;
   if (!is_none(node)) {
     uint32_t me = uid_of(node);
     if (me == d->uid && ((d->mode >> 6) & want) == want) return true;
-    if (in_group(me, d->gid) && ((d->mode >> 3) & want) == want) return true;
+    if (vx_users_in_group(&ut, me, d->gid) && ((d->mode >> 3) & want) == want) return true;
   }
   return (d->mode & want) == want;
 }
 
 static bool is_adm(uint64_t node) {
-  return permissive(node) || (!is_none(node) && in_group(uid_of(node), 0));
+  return permissive(node) || (!is_none(node) && vx_users_in_group(&ut, uid_of(node), 0));
 }
 
 // A change, which a halted volume refuses.
@@ -573,8 +461,8 @@ static vx_status fs_attach([[maybe_unused]] void *ctx, vx_str aname, vx_str unam
   char name[VXFS_LABELMAX + 1];
   bool all = aname.len && aname.ptr[0] == '%'; // permissive: adm's members only
   if (all) aname.ptr++, aname.len--;
-  uint32_t who = user_named(uname);
-  if (all && (who == none_user || !in_group(users[who].id, 0))) return VX_ERR_ACCESS;
+  uint32_t who = vx_users_named(&ut, uname);
+  if (all && !vx_users_adm(&ut, uname)) return VX_ERR_ACCESS;
   if (!aname.len || aname.len > VXFS_LABELMAX) return VX_ERR_NOT_FOUND;
   memcpy(name, aname.ptr, aname.len);
   name[aname.len] = 0;
@@ -657,7 +545,7 @@ static vx_str decimal(char *buf, uint32_t v) {
 }
 
 static vx_str user_name(char *buf, uint32_t id) {
-  const user *u = user_by_id(id);
+  const vx_user *u = vx_users_by_id(&ut, id);
   return u ? (vx_str){u->name, u->nname} : decimal(buf, id);
 }
 
@@ -718,7 +606,7 @@ static vx_status make_status(void) {
   uint64_t used = 0, size = 0;
   for (uint32_t i = 0; i < vol.fs.narenas; i++) used += vol.fs.arenas[i].used, size += vol.fs.arenas[i].size;
   sputs("volume commit="), sputn(vol.sb.commit), sputs(" arenas="), sputn(vol.fs.narenas);
-  sputs(" used="), sputn(used), sputs(" size="), sputn(size), sputs(" users="), sputn(nusers);
+  sputs(" used="), sputn(used), sputs(" size="), sputn(size), sputs(" users="), sputn(ut.n);
   sputs(" check="), sputs(check_said), sputs(halted ? " halted\n" : "\n");
   uint8_t pfx = VXFS_KLABEL;
   vxfs_scan sc;
@@ -1276,11 +1164,12 @@ static bool may_setattr(uint64_t node, const vxfs_dir *d, const p9_setattr *a) {
   bool owner = !is_none(node) && me == d->uid;
   if (permissive(node)) return true; // %BRANCH: adm's members, without permissions (gefs's permit)
   if ((a->valid & P9_SETATTR_SIZE) && !may(node, d, MAY_W)) return false;
-  if ((a->valid & P9_SETATTR_MODE) && !owner && !leads(me, d->gid)) return false;
+  if ((a->valid & P9_SETATTR_MODE) && !owner && !vx_users_leads(&ut, me, d->gid)) return false;
   if ((a->valid & P9_SETATTR_UID) && a->uid != d->uid && !is_adm(node))
     return false; // owners are adm's to give
   if ((a->valid & P9_SETATTR_GID) && a->gid != d->gid &&
-      !((owner && in_group(me, a->gid)) || (leads(me, d->gid) && leads(me, a->gid))))
+      !((owner && vx_users_in_group(&ut, me, a->gid)) ||
+        (vx_users_leads(&ut, me, d->gid) && vx_users_leads(&ut, me, a->gid))))
     return false;
   if ((a->valid & (P9_SETATTR_ATIME_SET | P9_SETATTR_MTIME_SET)) && !owner) return false;
   if ((a->valid & (P9_SETATTR_ATIME | P9_SETATTR_MTIME)) && !owner && !may(node, d, MAY_W)) return false;
@@ -1461,7 +1350,7 @@ const char *vx_main(void) {
   vx_print(VX_STR(", "));
   vx_print_u64(vol.fs.narenas);
   vx_print(VX_STR(" arenas, "));
-  vx_print_u64(nusers);
+  vx_print_u64(ut.n);
   vx_print(VX_STR(" users\n"));
   vx_print(VX_STR("fsd: serving /srv/fsd\n"));
   return p9_ring_serve(&server) == VX_OK ? nullptr : "cannot serve";

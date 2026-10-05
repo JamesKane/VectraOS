@@ -178,9 +178,16 @@ static void vx_slots_put(char *out, size_t cap, size_t *n, const char *s) {
   return n + 1 < cap ? n : 0;
 }
 
-// The slot a new release goes to: neither the one that boots nor the previous; -1 if none (fewer than 3).
-[[maybe_unused]] static int vx_slots_free(const vx_slots *s) {
+// The slot a new release goes to, given the slot that booted (-1 if not
+// known): never that one, which is running. A slot not in use first; then
+// the one staged to boot, if it has not booted (a release applied since);
+// then one that is neither staged nor the previous. -1 if none.
+[[maybe_unused]] static int vx_slots_target(const vx_slots *s, int booted) {
+  if (booted < 0 || booted >= VX_SLOTS) return -1;
   for (int i = 0; i < VX_SLOTS; i++)
-    if (i != s->boot && i != s->previous) return i;
+    if (i != booted && !s->slot[i].used) return i;
+  if (s->boot != booted) return s->boot;
+  for (int i = 0; i < VX_SLOTS; i++)
+    if (i != booted && i != s->previous) return i;
   return -1;
 }

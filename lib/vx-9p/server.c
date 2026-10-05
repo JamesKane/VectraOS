@@ -89,7 +89,8 @@ enum : uint32_t { P9_MAX_FIDS = 256 }; // per connection, for now
 // it, on any of the server's connections (docs/proto/posix.md). Tshare gives
 // a token for it, good for `holds` joins within P9_HOLD_TIME of the last
 // Tshare (or of its last fid's going, which a hold outlives so long): holds a
-// client never used run out then, open file or not. Locks are POSIX's:
+// client never used run out then, open file or not. A Tshare with no holds
+// outstanding makes a new token, so an old one never joins again. Locks are POSIX's:
 // byte ranges, owned by a connection and a process id, and let go when the
 // owner lets go of any fid on the file.
 
@@ -455,7 +456,9 @@ static vx_status p9_serve_share(p9_server *s, p9_fid *f, const p9_msg *t, p9_msg
     if (!sh->random.seeded) return VX_ERR_UNSUPPORTED;        // no token that cannot be guessed
     if (sh->now && p9_now(sh) >= o->hold_until) o->holds = 0; // run out, unused
     if (!t->holds || t->holds > P9_MAX_HOLDS || o->holds + t->holds > P9_MAX_HOLDS) return VX_ERR_RANGE;
-    if (!o->shared) vx_drbg_read(&sh->random, o->token, sizeof o->token);
+    // A new token whenever none is outstanding (its holds used or run out), so
+    // a token once given is never good again after its holds are gone.
+    if (!o->shared || !o->holds) vx_drbg_read(&sh->random, o->token, sizeof o->token);
     o->shared = true;
     o->holds += t->holds;
     o->hold_until = p9_now(sh) + P9_HOLD_TIME;

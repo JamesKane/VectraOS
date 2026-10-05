@@ -1,7 +1,8 @@
 // p9_server_test.c: lib/vx-9p's server framework and client against a small
 // in-memory tree, then the hostile-client conformance test (docs/02 §2, 04 §7):
 // raw messages that try to leave the attach root, misuse fids, and lie about
-// sizes and counts.
+// sizes and counts; and share tokens, never good again once their holds are
+// gone.
 //
 //   /           (node 1)
 //   /docs/      (node 2)
@@ -391,10 +392,48 @@ static void test_open_moves(void) {
   ram_clone_to = 0;
 }
 
+// Tshare and Tjoin (posix): a token joins as many times as its holds; once
+// they are used or run out, it joins no more, and the next Tshare gives a new
+// token, so whoever kept the old one cannot come back with it.
+static int64_t share_clock;
+static int64_t share_now(void) { return share_clock; }
+
+static void test_share_tokens(void) {
+  static uint8_t tbuf[16384], rbuf[16384];
+  static p9_shared sh;
+  sh = (p9_shared){.now = share_now};
+  vx_drbg_mix(&sh.random, "seed", 4, true);
+  p9_server s = server;
+  s.supported = P9_EXT_POSIX, s.shared = &sh;
+  p9_client c = {.rpc = loopback, .ctx = &s, .tbuf = tbuf, .rbuf = rbuf, .bufsize = sizeof tbuf};
+  uint32_t root = 0, f = 0, g = 0;
+  CHECK(p9c_version(&c, 8192, P9_EXT_POSIX) == VX_OK && p9c_attach(&c, VX_STR(""), &root) == VX_OK);
+  CHECK(p9c_walk(&c, root, VX_STR("b.txt"), &f) == VX_OK && p9c_open(&c, f, P9_OREAD) == VX_OK);
+
+  uint8_t first[16], second[16], third[16];
+  CHECK(p9c_share(&c, f, 1, first) == VX_OK);
+  CHECK(p9c_join(&c, first, &g) == VX_OK && p9c_clunk(&c, g) == VX_OK);
+  CHECK(p9c_join(&c, first, &g) == VX_ERR_NOT_FOUND); // its one hold used
+
+  CHECK(p9c_share(&c, f, 1, second) == VX_OK);
+  CHECK(memcmp(first, second, 16) != 0);              // a new token
+  CHECK(p9c_join(&c, first, &g) == VX_ERR_NOT_FOUND); // the old one is no good
+
+  share_clock += P9_HOLD_TIME; // second's hold runs out unused
+  CHECK(p9c_join(&c, second, &g) == VX_ERR_NOT_FOUND);
+  CHECK(p9c_share(&c, f, 2, third) == VX_OK && memcmp(second, third, 16) != 0);
+  CHECK(p9c_join(&c, second, &g) == VX_ERR_NOT_FOUND);
+  CHECK(p9c_join(&c, third, &g) == VX_OK && p9c_clunk(&c, g) == VX_OK);
+  uint8_t again[16]; // holds outstanding: a Tshare adds to them, and keeps the token
+  CHECK(p9c_share(&c, f, 1, again) == VX_OK && memcmp(third, again, 16) == 0);
+  CHECK(p9c_clunk(&c, f) == VX_OK);
+}
+
 int main(void) {
   test_client();
   test_open_moves();
   test_deferral();
   test_hostile_client();
+  test_share_tokens();
   return check_result();
 }
