@@ -20,14 +20,6 @@ kind=format name=svc
 kind=format name=users
 kind=format name=utf
 kind=format name=vxfs
-kind=intro name=intro sect=1
-kind=intro name=intro sect=2
-kind=intro name=intro sect=3
-kind=intro name=intro sect=4
-kind=intro name=intro sect=5
-kind=intro name=intro sect=6
-kind=intro name=intro sect=7
-kind=intro name=intro sect=8
 kind=message name=Rattach
 kind=message name=Rauth
 kind=message name=Rclunk
@@ -236,8 +228,6 @@ kind=syscall name=dma_map
 kind=syscall name=dma_unmap
 kind=syscall name=exception_bind
 kind=syscall name=exception_resume
-kind=syscall name=futex_wait
-kind=syscall name=futex_wake
 kind=syscall name=handle_close
 kind=syscall name=handle_dup
 kind=syscall name=handle_replace

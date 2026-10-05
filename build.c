@@ -1279,6 +1279,9 @@ static const program USER_PROGRAMS[] = {
     {"ping", "cmd/ping.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"cs", "cmd/cs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"dbg", "cmd/dbg.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"man", "cmd/man.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"lookman", "cmd/lookman.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"sig", "cmd/sig.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"drv-uart-16550", "drivers/drv-uart-16550/uart.c", IN_BOOTFS, "x86_64", false, nullptr, nullptr},
     {"drv-rtc-cmos", "drivers/drv-rtc-cmos/rtc.c", IN_BOOTFS, "x86_64", false, nullptr, nullptr},
     {"drv-uart-pl011", "drivers/drv-uart-pl011/uart.c", IN_BOOTFS, "aarch64", false, nullptr, nullptr},
@@ -1331,11 +1334,30 @@ static bool build_native_ports(const arch *a) {
 // VX_USAGE from the fence, so the message and the page cannot differ.
 // Several synopsis lines are one message, each after the first under the
 // first's command, as Plan 9's are. nullptr: no page, or a page without one.
+// A program's page: its own file, or a page that names it (man(1) names man,
+// lookman and sig).
 static const char *usage_page(const program *p) {
   static const int sects[] = {1, 8, 4, 3};
   for (size_t k = 0; k < sizeof sects / sizeof sects[0]; k++) {
     const char *path = fmt("man/%d/%s", sects[k], p->name);
     if (exists(path)) return path;
+  }
+  vx_str want = {p->name, strlen(p->name)};
+  for (size_t k = 0; k < sizeof sects / sizeof sects[0]; k++) {
+    DIR *d = opendir(fmt("man/%d", sects[k]));
+    for (struct dirent *e; d && (e = readdir(d));) {
+      if (e->d_name[0] == '.') continue;
+      const char *path = fmt("man/%d/%s", sects[k], e->d_name);
+      static vx_guide g;
+      if (!vx_guide_open(&g, read_file(path))) continue;
+      vx_str names = g.h.names, name;
+      while (vx_guide_item_next(&names, &name))
+        if (name.len == want.len && memcmp(name.ptr, want.ptr, want.len) == 0) {
+          closedir(d);
+          return path;
+        }
+    }
+    if (d) closedir(d);
   }
   return nullptr;
 }
@@ -1357,19 +1379,24 @@ static const char *const *usage_flags(const program *p) {
          !(k == VX_GUIDE_FENCE && b.fence.len == 5 && !memcmp(b.fence.ptr, "usage", 5)));
   if (k != VX_GUIDE_FENCE) return nullptr;
   char *c = alloc(b.text.len * 4 + 256);
+  size_t nlen = strlen(p->name), lines = 0;
   size_t n = (size_t)sprintf(c,
                              "// Made by ./build from %s's usage fence (docs/12 §7). Not to be "
                              "edited.\n#pragma once\nstatic const char VX_USAGE[] = \"usage: ",
                              path);
-  for (size_t at = 0; at < b.text.len; at++) {
-    char ch = b.text.ptr[at];
-    if (ch == '\n') {
-      if (at + 1 < b.text.len) n += (size_t)sprintf(c + n, "\\n       ");
-      continue;
+  for (size_t at = 0; at < b.text.len;) { // the lines that start with the program's name
+    size_t end = at;
+    while (end < b.text.len && b.text.ptr[end] != '\n') end++;
+    bool mine = end - at >= nlen && memcmp(b.text.ptr + at, p->name, nlen) == 0 &&
+                (end - at == nlen || b.text.ptr[at + nlen] == ' ');
+    if (mine && lines++) n += (size_t)sprintf(c + n, "\\n       ");
+    for (size_t q = at; mine && q < end; q++) {
+      if (b.text.ptr[q] == '"' || b.text.ptr[q] == '\\') c[n++] = '\\';
+      c[n++] = b.text.ptr[q];
     }
-    if (ch == '"' || ch == '\\') c[n++] = '\\';
-    c[n++] = ch;
+    at = end + 1;
   }
+  if (!lines) return nullptr; // the fence has no line for it: the check says so
   n += (size_t)sprintf(c + n, "\";\n");
   const char *h = fmt("out/gen/usage/%s.h", p->name);
   mkdirs("out/gen/usage");
@@ -2315,6 +2342,7 @@ static void write_iso(const char *path, const char *boot_image, iso_file *files,
 
 static void make_test_iso(const char *path); // the isofs tests' ISO, made by write_iso
 static bool build_vxstore(void);             // host/vxstore, for releases and install media
+static bool check_man(void);                 // the manual's pass, which writes the index the image holds
 static const char VXSTORE[] = "out/host/vxstore";
 static vx_str str_of(const char *s) { return (vx_str){s, strlen(s)}; }
 static constexpr int VX_STORE_HEX_LEN = 67; // "b2:" and 64 hex: lib/vx-store's names
@@ -2447,6 +2475,22 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
       i++;
     }
   }
+  // The manual (12 §5): every page at /lib/man/<sect>/<page>, and the index
+  // the manual's pass writes, out/man/index/base, at /lib/man/index/base.
+  check_man();
+  for (int sect = 1; sect <= 8; sect++) {
+    DIR *d = opendir(fmt("man/%d", sect));
+    for (struct dirent *e; d && (e = readdir(d));) {
+      if (e->d_name[0] == '.') continue;
+      bootfs_room(count);
+      files[count] = read_file(fmt("man/%d/%s", sect, e->d_name));
+      paths[count++] = fmt("lib/man/%d/%s", sect, e->d_name);
+    }
+    if (d) closedir(d);
+  }
+  bootfs_room(count);
+  files[count] = read_file("out/man/index/base");
+  paths[count++] = "lib/man/index/base";
   for (int i = 0; i < manifests.count; i++) {
     bootfs_room(count);
     files[count] = read_file(manifests.paths[i]);
@@ -4405,6 +4449,7 @@ typedef struct man_item {
 typedef struct man_entry {        // the index: one per name a page documents, and per node
   const char *name, *page, *node; // node: the node's id, for a node's entry
   const char *about;              // the page's summary, or the node's title
+  const char *keys;               // the page's or the node's keys=, for lookman
   int sect;
 } man_entry;
 
@@ -4501,13 +4546,13 @@ static const man_entry *man_find(vx_str name, int sect, const char *page) {
   return nullptr;
 }
 
-static void man_index_add(const char *name, const char *page, bool node, const char *about, int sect,
-                          const char *where) {
+static void man_index_add(const char *name, const char *page, bool node, const char *about, const char *keys,
+                          int sect, const char *where) {
   if (man_find((vx_str){name, strlen(name)}, sect, node ? page : nullptr))
     man_error(where, 0, fmt(node ? "node %s twice" : "%s(%d) is named by two pages", name, sect));
   if (man_nindex == (int)(sizeof man_index / sizeof man_index[0])) die("the manual's index is full");
-  man_index[man_nindex++] =
-      (man_entry){.name = name, .page = page, .node = node ? name : nullptr, .about = about, .sect = sect};
+  man_index[man_nindex++] = (man_entry){
+      .name = name, .page = page, .node = node ? name : nullptr, .about = about, .keys = keys, .sect = sect};
 }
 
 // 12 §8's house rules, on a page's raw lines.
@@ -4628,12 +4673,18 @@ static bool check_man(void) {
         man_error(p->path, 1, "page= and sect= are its file's name and directory");
       vx_str names = g.h.names, name;
       const char *summary = str_dup(g.h.summary);
-      while (vx_guide_item_next(&names, &name))
-        man_index_add(str_dup(name), p->page, false, summary, sect, p->path);
+      const char *keys = str_dup(g.h.keys);
+      bool self =
+          false; // the page's own name is a link to it too, named or not (12 §3: open(2) and vx_create(2))
+      while (vx_guide_item_next(&names, &name)) {
+        man_index_add(str_dup(name), p->page, false, summary, keys, sect, p->path);
+        self = self || man_str_eq(name, p->page);
+      }
+      if (!self) man_index_add(p->page, p->page, false, summary, keys, sect, p->path);
       vx_guide_block b;
       while (vx_guide_next(&g, &b) > VX_GUIDE_END)
         if (b.kind == VX_GUIDE_NODE)
-          man_index_add(str_dup(b.node), p->page, true, str_dup(b.title), sect, p->path);
+          man_index_add(str_dup(b.node), p->page, true, str_dup(b.title), str_dup(b.keys), sect, p->path);
       npages++;
     }
     if (d) closedir(d);
@@ -4684,12 +4735,12 @@ static bool check_man(void) {
     if (usage_flags(p) && (!uses || own))
       man_error(p->source, 0, "a program with a page takes its usage message from it: VX_USAGE, not its own");
     if (!usage_flags(p) && own)
-      man_error(usage_page(p), 0, "the program has a usage message, and its page no usage fence");
+      man_error(usage_page(p), 0, fmt("%s has a usage message, and its page no usage line for it", p->name));
   }
 
   // The index, as 12 §5 has it: one record per name and node.
   mkdirs("out/man/index");
-  size_t cap = (size_t)man_nindex * 256 + 64;
+  size_t cap = (size_t)man_nindex * 512 + 64;
   vx_ndb_writer w = {.buf = alloc(cap), .cap = cap};
   for (int i = 0; i < man_nindex; i++) {
     const man_entry *e = &man_index[i];
@@ -4698,6 +4749,7 @@ static bool check_man(void) {
     vx_ndb_put_u64(&w, "sect", (uint64_t)e->sect);
     if (e->node) vx_ndb_put(&w, "node", (vx_str){e->node, strlen(e->node)});
     if (e->about[0]) vx_ndb_put(&w, e->node ? "title" : "summary", (vx_str){e->about, strlen(e->about)});
+    if (e->keys[0]) vx_ndb_put(&w, "keys", (vx_str){e->keys, strlen(e->keys)});
     vx_ndb_end(&w);
   }
   if (w.failed) die("the manual's index does not fit");

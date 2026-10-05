@@ -20,7 +20,7 @@ Paragraph text, with `literal`, <param>, name(N) and {label|target}.
 A page of the manual is one UTF-8 file in guide, the format this page describes.
 It holds a header, then a body of lines.
 Each body line's kind is decided by how it begins, so a reader needs no more than the current line and whether it is inside a fence.
-The page reads well with `cat`; `man` refills it to the terminal's width.
+The page reads well with `cat`; man(1) refills it to the terminal's width.
 Every reader of the format parses it with `lib/vx-guide`, and nothing else does.
 
 The parser is strict.
@@ -57,11 +57,11 @@ Its keys are:
 : `host`
   A flag: the page's program runs on the development host, not on VectraOS.
 : `keys`
-  More words for `lookman`, separated by commas.
+  More words for lookman(1), separated by commas.
 
 `page`, `sect` and `summary` are required.
 Any other key is an error.
-The author never writes NAME or SOURCE: `man` makes them from the header, and a heading of either is refused.
+The author never writes NAME or SOURCE: man(1) makes them from the header, and a heading of either is refused.
 
 @node=blocks title="Blocks"
 
@@ -130,7 +130,7 @@ Four things are special in paragraphs, list items, definitions, headings and tab
   A link to a page: a name followed by a section number in parentheses.
 : `{label|target}`, `{target}`
   A link with words of its own, or to a node, or out of the manual.
-  `man` shows it as `label (target)`, or as the target alone.
+  man(1) shows it as `label (target)`, or as the target alone.
 
 A link's target is `name(N)`, `name(N)#node`, `#node` for a node of the same page, or a URL whose scheme is `https:`, `gemini:` or `gopher:`.
 Any other target, and a `{` with no `}`, is an error.
@@ -140,7 +140,7 @@ There is no emphasis.
 @node=nodes title="Nodes"
 
 A page is one node unless it says otherwise.
-A line `@node=<id>` starts a node, its id lower-case letters, digits and `-`, unique in the page; it may carry `title=`, which a contents list shows, and `keys=`, more words for `lookman`.
+A line `@node=<id>` starts a node, its id lower-case letters, digits and `-`, unique in the page; it may carry `title=`, which a contents list shows, and `keys=`, more words for lookman(1).
 Text before the first node is the main node, which every page has, and which holds SYNOPSIS and DESCRIPTION.
 
 Reading order is the file's order, so a page split into nodes still prints, greps and pipes as one text: `man rc` prints every node, and `man rc quoting` prints one.
@@ -187,7 +187,7 @@ tail(1), read(2)
 
 # SEE ALSO
 
-`man`, ndb(6); the design is `docs/12-manual.md` in the repository
+man(1), ndb(6); the design is `docs/12-manual.md` in the repository
 
 # DIAGNOSTICS
 

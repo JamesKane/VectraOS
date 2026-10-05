@@ -776,3 +776,22 @@ typedef struct vx_ns_file {
   if (f->c) p9c_clunk(f->c, f->fid);
   *f = (vx_ns_file){};
 }
+
+// A whole file into buf, its length in *len. RANGE if it holds more than cap
+// bytes (what fitted is in buf); otherwise the open's or a read's error.
+[[maybe_unused]] static vx_status vx_ns_read_all(vx_ns *ns, vx_str path, void *buf, size_t cap, size_t *len) {
+  vx_ns_file f;
+  *len = 0;
+  vx_status st = vx_ns_open(ns, path, P9_OREAD, &f);
+  if (st != VX_OK) return st;
+  int64_t n = 0;
+  while (*len < cap) {
+    uint32_t want = cap - *len > 65536 ? 65536 : (uint32_t)(cap - *len);
+    if ((n = vx_ns_read(&f, (uint8_t *)buf + *len, want)) <= 0) break;
+    *len += (size_t)n;
+  }
+  uint8_t more;
+  if (n >= 0 && *len == cap && vx_ns_read(&f, &more, 1) > 0) n = VX_ERR_RANGE;
+  vx_ns_close(&f);
+  return n < 0 ? (vx_status)n : VX_OK;
+}
