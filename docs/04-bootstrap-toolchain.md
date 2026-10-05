@@ -155,8 +155,9 @@ xorriso is needed only for the optional hybrid ISO.
 | Component | x86_64 | aarch64 | Toolchain |
 |---|---|---|---|
 | Kernel | `--target=x86_64-unknown-none-elf`, `-ffreestanding -mno-red-zone -mgeneral-regs-only` | `--target=aarch64-unknown-none-elf`, `-ffreestanding -mgeneral-regs-only` | clang + lld; custom linker script |
-| User space, M1–M3 | Freestanding, static non-PIE ELF against `vx-rt` | The same | clang + lld |
-| User space and C ports, M4 onward | `x86_64-vectra-musl` sysroot | `aarch64-vectra-musl` sysroot | clang + lld |
+| First-party user space (commands, servers, drivers, libraries), from M1 | `--target=x86_64-unknown-none-elf`, freestanding, static non-PIE ELF against `vx-rt` and `libvx`; never the hosted headers (ADR-0033) | `--target=aarch64-unknown-none-elf`, the same | clang + lld |
+| Native imported code and developers' programs, from M6 (6e2) | `x86_64-unknown-vectraos` sysroot: `libvx`, the ISO C library `libvxc` and the C++ support subset (ADR-0033) | `aarch64-unknown-vectraos` sysroot | clang + lld, through the sysroot's clang configuration file |
+| POSIX ports (the POSIX personality), from M4 | `x86_64-vectra-unknown-musl` sysroot (ADR-0007) | `aarch64-vectra-unknown-musl` sysroot | clang + lld |
 | Host tools | host triple | host triple | clang, host libc |
 
 One compiler builds everything, for every architecture, with no per-target toolchain to install.
