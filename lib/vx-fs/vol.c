@@ -388,9 +388,14 @@ static uint64_t arena_reserve(uint64_t size) {
 // --- The commit ---
 
 // Makes everything changed so far durable at once (11 §6).
+// With readers on other threads (blk.c), its caller waits until none is
+// in a read first, and lets none in until it returns: what they kept from
+// being given back is logged free then, and what the commit frees is free at
+// once.
 [[maybe_unused]] static vx_status vxfs_commit(vxfs_vol *v) {
   vxfs *fs = &v->fs;
   if (fs->err != VX_OK) return fs->err;
+  if (!vxfs_reclaim(fs)) return fs->err;
   // 1. What is written so far lands first.
   if (fs->dev.barrier(fs->dev.ctx) != VX_OK) {
     fs_fail(fs, VX_ERR_IO);

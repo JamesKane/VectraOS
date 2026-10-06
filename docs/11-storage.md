@@ -157,7 +157,7 @@ It walks each snapshot's tree in full, so it costs time in proportion to the sna
 - writes to the device as asynchronous ring submissions, the syncers' job;
 - long deletions and snapshot cleanup in slices between requests, the sweeper's.
 
-It keeps gefs's discipline anyway: blocks that leave the mutator are immutable, and freed blocks wait in limbo by epoch. So once M6 brings threads, readers can move onto threads of their own without a change of design. gefs's epoch-based reclamation is the plan for that.
+It keeps gefs's discipline anyway: blocks that leave the mutator are immutable, and freed blocks wait in limbo by epoch. So once M6 brings threads, readers can move onto threads of their own without a change of design. gefs's epoch-based reclamation is the plan for that. M6 step 6d5b did so: walks, stats, opens, reads and listings let the server go (vx-9p's `p9_release`) at their first wait for the disk, as lib9p's servers do around what blocks, and read on, up to 8 at once, each having copied its tree and entered an epoch with the server held, and leaving it before taking the server back; frees made while a reader reads wait on gefs's three epoch lists (`lib/vx-fs/blk.c`); the block cache has a lock of its own; changes stay on whichever thread holds the server, one at a time, their device I/O with it held.
 
 **Caches.**
 - **Tree nodes** are cached in `fsd`, which sizes the cache from its memory budget (01 §5).

@@ -169,6 +169,12 @@ typedef struct p9_server {
 // for the transport to pass on. Both the transport's to close.
 static thread_local vx_handle p9_request_handle, p9_reply_handle;
 
+// While not 0, the file server's calls keep the server's lock (ring_server.c's
+// p9_release refuses): what is done in more than one call is then one step,
+// as an append's end and its write, or a read at an open file's offset and
+// the offset's moving on (M6 step 6d5b).
+static thread_local uint32_t p9_keep_lock;
+
 static p9_fid *p9_fid_find(p9_server *s, uint32_t fid) {
   for (uint32_t i = 0; i < P9_MAX_FIDS; i++)
     if (s->fids[i].used && s->fids[i].fid == fid) return &s->fids[i];
@@ -318,7 +324,11 @@ static vx_status p9_read_dir(p9_server *s, p9_fid *f, uint64_t offset, uint8_t *
     if (e == VX_ERR_NOT_FOUND) break;
     if (e != VX_OK) return e;
     p9_stat st;
-    if ((e = s->fs.stat(s->fs.ctx, child, &st)) != VX_OK) return e;
+    if ((e = s->fs.stat(s->fs.ctx, child, &st)) == VX_ERR_NOT_FOUND) { // gone since it was listed (6d5b)
+      f->dir_index++;
+      continue;
+    }
+    if (e != VX_OK) return e;
     size_t n = p9_stat_encode(&st, out + used, cap - used);
     if (!n) {
       if (used == 0) return VX_ERR_TOO_SMALL; // not even one entry fits the count asked for
@@ -333,9 +343,19 @@ static vx_status p9_read_dir(p9_server *s, p9_fid *f, uint64_t offset, uint8_t *
 }
 
 // Writes at the offset given, or at the open file's (P9_OFFSET_CURRENT): its
-// end if it appends, which is atomic, as the server does one request at a
-// time.
+// end if it appends, which is atomic, the server's lock kept for the whole
+// of it (p9_keep_lock).
+static vx_status p9_write_at(p9_server *s, p9_fid *f, p9_msg *t, p9_msg *r);
+
 static vx_status p9_write(p9_server *s, p9_fid *f, p9_msg *t, p9_msg *r) {
+  bool keep = (f->qid.type & P9_QTAPPEND) || t->offset == P9_OFFSET_CURRENT;
+  p9_keep_lock += keep;
+  vx_status e = p9_write_at(s, f, t, r);
+  p9_keep_lock -= keep;
+  return e;
+}
+
+static vx_status p9_write_at(p9_server *s, p9_fid *f, p9_msg *t, p9_msg *r) {
   p9_open_file *o = f->file && s->shared ? &s->shared->files[f->file - 1] : nullptr;
   uint64_t offset = t->offset;
   if (f->qid.type & P9_QTAPPEND) { // DMAPPEND: at the end, whatever the offset
@@ -629,8 +649,10 @@ static vx_status p9_serve_dref(p9_server *s, const p9_msg *t, p9_msg *r) {
     }
   }
   uint32_t count = t->count;
+  p9_keep_lock += t->offset == P9_OFFSET_CURRENT; // the offset, and its moving on, one step
   vx_status e = (read ? s->fs.read_ref : s->fs.write_ref)(s->fs.ctx, f->node, offset, p9_request_handle,
                                                           t->roffset, &count);
+  p9_keep_lock -= t->offset == P9_OFFSET_CURRENT;
   if (e != VX_OK) return e;
   if (o && t->offset == P9_OFFSET_CURRENT) o->offset = offset + count;
   r->count = count;
@@ -735,7 +757,8 @@ static vx_status p9_readdir_l(p9_server *s, const p9_fid *f, uint64_t cookie, ui
     if (e == VX_ERR_NOT_FOUND) break;
     if (e != VX_OK) return e;
     p9_stat st;
-    if ((e = s->fs.stat(s->fs.ctx, child, &st)) != VX_OK) return e;
+    if ((e = s->fs.stat(s->fs.ctx, child, &st)) == VX_ERR_NOT_FOUND) continue; // gone since it was listed
+    if (e != VX_OK) return e;
     p9_out o = {.buf = out + used, .cap = cap - used};
     p9_put_qid(&o, st.qid);
     p9_put(&o, i + 1, 8);
@@ -997,12 +1020,15 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
         e = VX_ERR_INVALID; // no open file keeps an offset for it
         break;
       }
-      if (o && offset == P9_OFFSET_CURRENT) offset = o->offset;
+      bool keep = o && offset == P9_OFFSET_CURRENT; // the offset, and its moving on, one step
+      if (keep) offset = o->offset;
+      p9_keep_lock += keep;
       if (f->qid.type & P9_QTDIR)
         e = p9_read_dir(s, f, offset, resp + 11, count, &count);
       else
         e = s->fs.read(s->fs.ctx, f->node, offset, resp + 11, &count);
-      if (e == VX_OK && o && t.offset == P9_OFFSET_CURRENT) o->offset = offset + count;
+      p9_keep_lock -= keep;
+      if (e == VX_OK && keep) o->offset = offset + count;
       r.data = (vx_bytes){resp + 11, count};
       break;
     }

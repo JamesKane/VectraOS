@@ -154,11 +154,12 @@ static void p9_ring_worker_main(void *arg) {
 // Lets the server go, for an operation of the file server's that is to wait
 // (6d5a): another thread serves meanwhile, a parked one or a new one if none
 // other is running. Nothing of the file server's own is kept safe by the
-// server's lock until p9_acquire takes it back. Outside a ring server's
-// call, nothing.
-[[maybe_unused]] static void p9_release(void) {
+// server's lock until p9_acquire takes it back. False, and nothing done,
+// outside a ring server's call, or while the call must keep the lock
+// (server.c's p9_keep_lock): then p9_acquire is not called.
+[[maybe_unused]] static bool p9_release(void) {
   p9_ring_server *s = p9_ring_current;
-  if (!s || !p9_ring_self) return;
+  if (!s || !p9_ring_self || p9_keep_lock) return false;
   p9_ring_self->released = true;
   s->running--;
   if (!s->running && !s->stopping) {
@@ -172,9 +173,10 @@ static void p9_ring_worker_main(void *arg) {
     }
   }
   vx_mutex_unlock(&s->lock);
+  return true;
 }
 
-// Takes the server back after p9_release.
+// Takes the server back after a p9_release that let it go.
 [[maybe_unused]] static void p9_acquire(void) {
   p9_ring_server *s = p9_ring_current;
   if (!s || !p9_ring_self) return;

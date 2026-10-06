@@ -66,14 +66,14 @@ static vx_status fs_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *c
 // Waits let go: until the deadline, or until the gate moves on from `from`.
 static void wait_released(vx_instant deadline, bool gated, uint32_t from) {
   if (++waiting > peak) peak = waiting;
-  p9_release();
+  bool released = p9_release();
   if (gated) {
     while (atomic_load(&gate) == from) vx_futex_wait(&gate, from, VX_INFINITE);
   } else {
     static thread_local _Atomic uint32_t never;
     while (vx_clock_read() < deadline) vx_futex_wait(&never, 0, deadline);
   }
-  p9_acquire();
+  if (released) p9_acquire();
   waiting--;
 }
 

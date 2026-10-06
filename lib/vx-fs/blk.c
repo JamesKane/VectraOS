@@ -24,6 +24,18 @@
 // fs->dead for the commit's deadlists, unless it was born before the
 // branch's base, when the branch it came from frees it; the snapshot tree's
 // is deferred, freed once the next commit is durable (fs->deferred).
+//
+// Readers on other threads (M6 step 6d5b), after gefs's epochs (its blk.c's
+// limbo, epochstart and epochclean): a thread may read the trees with the
+// lock their changes are made under let go, the block cache under a lock of
+// its own (vxfs_mem's), entering a read with vxfs_reader_enter and leaving
+// it with vxfs_reader_leave. It enters, and copies the tree it reads, with
+// the changes' lock held, so the copy is a root the changes have done with.
+// A block given back (block_dealloc) while a reader reads goes on the list
+// of the epoch it was freed in; the epoch moves on when every reader in a
+// read is in the current one, and the list two behind is given back then
+// (vxfs_reclaim, at each operation's end). A block given back while none
+// reads, and every one waiting, is given back at once: nothing can reach it.
 
 #pragma once
 
@@ -31,6 +43,7 @@
 #include "xxh64.c"
 
 enum : uint8_t { VXFS_BDIRTY = 1, VXFS_BCACHED = 2, VXFS_BLRU = 4 };
+static constexpr uint32_t VXFS_READERS = 32, VXFS_READING = 4; // threads that read at once; an epoch's flag
 static constexpr uint16_t VXFS_TTREE = 0xfffe; // to vxfs_get: a pivot or a leaf, whichever it is
 
 typedef struct vxfs_blk {
@@ -99,13 +112,27 @@ typedef struct vxfs {
   uint32_t nlimbo, caplimbo, ndead, capdead, ndeferred, capdeferred;
 
   uint64_t reads, writes; // blocks, for tests and status
+
+  // Readers (see the top), each word read and written with __atomic.
+  uint32_t epoch;                 // 0, 1 or 2
+  uint32_t reading[VXFS_READERS]; // a reader's epoch | VXFS_READING while it reads
+  uint64_t *gone[3];              // given back in each epoch, not yet freed in the arenas
+  uint32_t ngone[3], capgone[3];
 } vxfs;
 
 enum : uint8_t { LOG_NOP, LOG_ALLOC1, LOG_FREE1, LOG_ALLOC, LOG_FREE };
 
 static bool fs_fail(vxfs *fs, vx_status st) {
-  if (fs->err == VX_OK) fs->err = st;
+  vx_status ok = VX_OK; // the first error only, whichever thread had it
+  __atomic_compare_exchange_n(&fs->err, &ok, st, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
   return false;
+}
+
+static void cache_lock(vxfs *fs) {
+  if (fs->mem.lock) fs->mem.lock(fs->mem.ctx, true);
+}
+static void cache_unlock(vxfs *fs) {
+  if (fs->mem.lock) fs->mem.lock(fs->mem.ctx, false);
 }
 
 static void *fs_alloc(vxfs *fs, size_t n) {
@@ -203,19 +230,49 @@ static vxfs_blk *cache_take(vxfs *fs) {
   return b;
 }
 
-[[maybe_unused]] static vxfs_blk *vxfs_hold(vxfs *fs, vxfs_blk *b) {
+static vxfs_blk *hold_locked(vxfs *fs, vxfs_blk *b) {
   if (!b->ref++) lru_unlink(fs, b);
   return b;
 }
 
+[[maybe_unused]] static vxfs_blk *vxfs_hold(vxfs *fs, vxfs_blk *b) {
+  cache_lock(fs);
+  hold_locked(fs, b);
+  cache_unlock(fs);
+  return b;
+}
+
 [[maybe_unused]] static void vxfs_drop(vxfs *fs, vxfs_blk *b) {
-  if (b && !--b->ref) lru_push(fs, b);
+  if (!b) return;
+  cache_lock(fs);
+  if (!--b->ref) lru_push(fs, b);
+  cache_unlock(fs);
 }
 
 // Drops a block from the cache altogether (its address freed for reuse).
 static void cache_forget(vxfs *fs, uint64_t addr) {
+  cache_lock(fs);
   vxfs_blk *b = cache_find(fs, addr);
   if (b) cache_del(fs, b);
+  cache_unlock(fs);
+}
+
+// Sets or clears a block's dirty flag, under the cache's lock: a reader's
+// LRU flags share its byte.
+static void set_dirty(vxfs *fs, vxfs_blk *b, bool dirty) {
+  cache_lock(fs);
+  if (dirty)
+    b->flags |= VXFS_BDIRTY;
+  else
+    b->flags &= (uint8_t)~VXFS_BDIRTY;
+  cache_unlock(fs);
+}
+
+static bool is_dirty(vxfs *fs, const vxfs_blk *b) {
+  cache_lock(fs);
+  bool d = b->flags & VXFS_BDIRTY;
+  cache_unlock(fs);
+  return d;
 }
 
 // --- Checking a block read from the disk ---
@@ -308,35 +365,49 @@ static bool parse_block(vxfs_blk *b, uint16_t want) {
     fs_fail(fs, VX_ERR_INVALID);
     return nullptr;
   }
+  cache_lock(fs);
   vxfs_blk *b = cache_find(fs, bp.addr);
+  if (!b && (b = cache_take(fs))) {
+    fs->reads++;
+    cache_unlock(fs);
+    // Read with the cache's lock let go, into a block no one else can see;
+    // another reader may read the same one meanwhile, and the first in keeps it.
+    vx_status st = fs->dev.read(fs->dev.ctx, bp.addr, b->buf);
+    bool ok = st == VX_OK &&
+              (type == VXFS_TLOG || type == VXFS_TDLIST || vxfs_xxh64(b->buf, VXFS_BLKSZ, 0) == bp.hash);
+    if (ok) ok = parse_block(b, type);
+    cache_lock(fs);
+    vxfs_blk *there = ok ? cache_find(fs, bp.addr) : nullptr;
+    if (!ok || there) {
+      if (!ok) fs_fail(fs, st != VX_OK ? st : VX_ERR_INVALID);
+      b->ref = 0;
+      lru_push(fs, b);
+      b = there;
+    } else {
+      b->bp = bp;
+      cache_put(fs, b);
+      cache_unlock(fs);
+      return b;
+    }
+  }
   if (b) {
     bool kind = b->type == type || (type == VXFS_TTREE && (b->type == VXFS_TPIVOT || b->type == VXFS_TLEAF));
     if (!kind || (type != VXFS_TLOG && type != VXFS_TDLIST && b->bp.hash != bp.hash)) {
       fs_fail(fs, VX_ERR_INVALID);
-      return nullptr;
+      b = nullptr;
+    } else {
+      hold_locked(fs, b);
     }
-    return vxfs_hold(fs, b);
   }
-  if (!(b = cache_take(fs))) return nullptr;
-  fs->reads++;
-  vx_status st = fs->dev.read(fs->dev.ctx, bp.addr, b->buf);
-  bool ok = st == VX_OK &&
-            (type == VXFS_TLOG || type == VXFS_TDLIST || vxfs_xxh64(b->buf, VXFS_BLKSZ, 0) == bp.hash);
-  if (ok) ok = parse_block(b, type);
-  if (!ok) {
-    fs_fail(fs, st != VX_OK ? st : VX_ERR_INVALID);
-    b->ref = 0;
-    lru_push(fs, b);
-    return nullptr;
-  }
-  b->bp = bp;
-  cache_put(fs, b);
+  cache_unlock(fs);
   return b;
 }
 
 // A new block of `type` at addr, held, empty.
 static vxfs_blk *new_block_at(vxfs *fs, uint64_t addr, uint16_t type) {
+  cache_lock(fs);
   vxfs_blk *b = cache_take(fs);
+  cache_unlock(fs);
   if (!b) return nullptr;
   b->type = type;
   b->bp = (vxfs_bptr){.addr = addr, .gen = fs->gen};
@@ -351,8 +422,10 @@ static vxfs_blk *new_block_at(vxfs *fs, uint64_t addr, uint16_t type) {
   default: b->data = b->buf; break;
   }
   memset(b->buf, 0, sizeof b->buf);
+  cache_lock(fs);
   b->flags |= VXFS_BDIRTY;
   cache_put(fs, b);
+  cache_unlock(fs);
   return b;
 }
 
@@ -388,11 +461,13 @@ static void finalize(vxfs_blk *b) {
     // The volume has failed, and says so to every caller from now on; the
     // block is let go of rather than kept dirty, which nothing could evict
     // (M5 step 10).
+    cache_lock(fs);
     b->flags &= (uint8_t)~VXFS_BDIRTY;
     cache_del(fs, b);
+    cache_unlock(fs);
     return fs_fail(fs, st);
   }
-  b->flags &= (uint8_t)~VXFS_BDIRTY;
+  set_dirty(fs, b, false);
   if (++fs->rr_writes == 4096) fs->rr++, fs->rr_writes = 0; // every few thousand writes, the next arena
   return true;
 }
@@ -525,13 +600,13 @@ static bool log_append(vxfs *fs, vxfs_arena *a, uint64_t off, uint64_t len, uint
     vxfs_put64(lb->data + lb->logsz, len);
     lb->logsz += 8;
   }
-  lb->flags |= VXFS_BDIRTY;
+  set_dirty(fs, lb, true);
   return true;
 }
 
 // Writes the log's open block, if it has changed.
 [[maybe_unused]] static bool vxfs_log_flush(vxfs *fs, vxfs_arena *a) {
-  if (!(a->logtl->flags & VXFS_BDIRTY)) return true;
+  if (!is_dirty(fs, a->logtl)) return true;
   return vxfs_write_block(fs, a->logtl);
 }
 
@@ -643,14 +718,18 @@ static vxfs_blk *log_tail(vxfs *fs, const vxfs_arena_hdr *h) {
     return nullptr;
   }
   cache_forget(fs, h->logtl);
+  cache_lock(fs);
   vxfs_blk *b = cache_take(fs);
+  if (b) fs->reads++;
+  cache_unlock(fs);
   if (!b) return nullptr;
-  fs->reads++;
   vx_status st = fs->dev.read(fs->dev.ctx, h->logtl, b->buf);
   if (st != VX_OK || vxfs_xxh64(b->buf + VXFS_LOGHDSZ, h->tailsz, 0) != h->tailhash) {
     fs_fail(fs, st != VX_OK ? st : VX_ERR_INVALID);
+    cache_lock(fs);
     b->ref = 0;
     lru_push(fs, b);
+    cache_unlock(fs);
     return nullptr;
   }
   b->type = VXFS_TLOG;
@@ -659,7 +738,9 @@ static vxfs_blk *log_tail(vxfs *fs, const vxfs_arena_hdr *h) {
   b->logp = (vxfs_bptr){};
   b->bp = (vxfs_bptr){.addr = h->logtl};
   memset(b->data + h->tailsz, 0, VXFS_LOGSPC - h->tailsz);
+  cache_lock(fs);
   cache_put(fs, b);
+  cache_unlock(fs);
   return b;
 }
 
@@ -746,7 +827,7 @@ static vxfs_blk *log_tail(vxfs *fs, const vxfs_arena_hdr *h) {
     a->loghd = (vxfs_bptr){.addr = blks[0]};
     a->logtl = b;
     a->nlog = a->lastlog = used;
-    b->flags |= VXFS_BDIRTY;
+    set_dirty(fs, b, true);
     a->retired = old, a->nretired = nold;
     old = nullptr;
   } else if (b) {
@@ -829,12 +910,83 @@ static constexpr uint64_t VXFS_OPSLACK = 2ull * VXFS_MAXHEIGHT;
   return addr ? new_block_at(fs, addr, type) : nullptr;
 }
 
-static bool block_dealloc(vxfs *fs, uint64_t addr) {
+static bool dealloc_now(vxfs *fs, uint64_t addr) {
   vxfs_arena *a = arena_of(fs, addr);
   if (!a) return fs_fail(fs, VX_ERR_INVALID);
   cache_forget(fs, addr);
   if (!log_append(fs, a, addr, VXFS_BLKSZ, LOG_FREE) || !range_free(fs, a, addr, VXFS_BLKSZ)) return false;
   a->used -= VXFS_BLKSZ;
+  return true;
+}
+
+// --- Readers' epochs (see the top) ---
+
+static thread_local int32_t vxfs_reader_slot = -1; // this thread's in reading[], once it has read
+static uint32_t vxfs_reader_slots;                 // taken, by every thread
+
+// Enters a read from a thread other than the one making changes, with the
+// changes' lock held: what it reads from now is not freed under it. False
+// if there is no slot left for this thread: it reads with the lock held.
+[[maybe_unused]] static bool vxfs_reader_enter(vxfs *fs) {
+  if (vxfs_reader_slot < 0) {
+    if (__atomic_load_n(&vxfs_reader_slots, __ATOMIC_SEQ_CST) >= VXFS_READERS) return false;
+    uint32_t n = __atomic_fetch_add(&vxfs_reader_slots, 1, __ATOMIC_SEQ_CST);
+    if (n >= VXFS_READERS) return false;
+    vxfs_reader_slot = (int32_t)n;
+  }
+  uint32_t e = __atomic_load_n(&fs->epoch, __ATOMIC_SEQ_CST);
+  __atomic_store_n(&fs->reading[vxfs_reader_slot], e | VXFS_READING, __ATOMIC_SEQ_CST);
+  return true;
+}
+
+// Leaves the read entered.
+[[maybe_unused]] static void vxfs_reader_leave(vxfs *fs) {
+  if (vxfs_reader_slot >= 0) __atomic_store_n(&fs->reading[vxfs_reader_slot], 0, __ATOMIC_SEQ_CST);
+}
+
+// Whether any reader is in a read.
+[[maybe_unused]] static bool vxfs_readers_active(vxfs *fs) {
+  for (uint32_t i = 0; i < VXFS_READERS; i++)
+    if (__atomic_load_n(&fs->reading[i], __ATOMIC_SEQ_CST) & VXFS_READING) return true;
+  return false;
+}
+
+// Gives back every block waiting: only while no reader reads.
+static bool reclaim_all(vxfs *fs) {
+  bool ok = true;
+  for (uint32_t e = 0; e < 3; e++) {
+    for (uint32_t i = 0; i < fs->ngone[e] && ok; i++) ok = dealloc_now(fs, fs->gone[e][i]);
+    fs->ngone[e] = 0;
+  }
+  return ok;
+}
+
+// Moves the epoch on if every reader in a read is in the current one, and
+// gives back what was freed two epochs before; with no reader reading,
+// everything waiting. The changes' thread calls it, at each operation's end
+// (vxfs_end_op), and before a commit or a check, which count every block.
+[[maybe_unused]] static bool vxfs_reclaim(vxfs *fs) {
+  if (!vxfs_readers_active(fs)) return reclaim_all(fs);
+  uint32_t ge = __atomic_load_n(&fs->epoch, __ATOMIC_SEQ_CST);
+  for (uint32_t i = 0; i < VXFS_READERS; i++) {
+    uint32_t r = __atomic_load_n(&fs->reading[i], __ATOMIC_SEQ_CST);
+    if ((r & VXFS_READING) && r != (ge | VXFS_READING)) return true; // one still in an older epoch
+  }
+  uint32_t old = (ge + 1) % 3; // two behind: no reader in a read can reach it
+  bool ok = true;
+  for (uint32_t i = 0; i < fs->ngone[old] && ok; i++) ok = dealloc_now(fs, fs->gone[old][i]);
+  fs->ngone[old] = 0;
+  __atomic_store_n(&fs->epoch, old, __ATOMIC_SEQ_CST);
+  return ok;
+}
+
+// A block no longer in use given back to its arena: at once if no reader
+// reads, or else once no reader can still reach it.
+static bool block_dealloc(vxfs *fs, uint64_t addr) {
+  if (!vxfs_readers_active(fs)) return reclaim_all(fs) && dealloc_now(fs, addr);
+  uint32_t e = __atomic_load_n(&fs->epoch, __ATOMIC_SEQ_CST);
+  if (!fs_grow(fs, (void **)&fs->gone[e], fs->ngone[e], &fs->capgone[e], sizeof *fs->gone[e])) return false;
+  fs->gone[e][fs->ngone[e]++] = addr;
   return true;
 }
 
@@ -866,7 +1018,7 @@ static bool block_dealloc(vxfs *fs, uint64_t addr) {
   bool ok = fs->err == VX_OK;
   for (uint32_t i = 0; i < fs->nlimbo && ok; i++) ok = block_dealloc(fs, fs->limbo[i].addr);
   fs->nlimbo = 0;
-  return ok;
+  return ok && vxfs_reclaim(fs);
 }
 
 // The library's state over a device, with a cache of `cache` blocks.
@@ -909,6 +1061,7 @@ static bool block_dealloc(vxfs *fs, uint64_t addr) {
   }
   fs_release(fs, fs->arenas, fs->narenas * sizeof *fs->arenas);
   fs_release(fs, fs->limbo, fs->caplimbo * sizeof *fs->limbo);
+  for (uint32_t e = 0; e < 3; e++) fs_release(fs, fs->gone[e], fs->capgone[e] * sizeof *fs->gone[e]);
   fs_release(fs, fs->dead, fs->capdead * sizeof *fs->dead);
   fs_release(fs, fs->deferred, fs->capdeferred * sizeof *fs->deferred);
   fs_release(fs, fs->hash, (size_t)fs->nhash * sizeof *fs->hash);

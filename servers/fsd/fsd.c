@@ -88,13 +88,43 @@ static bool halted; // ctl's halt: committed, and no more changes
 
 // --- The volume's device and memory ---
 
+// The disk's session takes one call at a time (one arena), from whichever
+// thread: readers' with the server let go, changes' with it held.
+static vx_mutex disk_lock;
+// This thread's read in progress (read_begin), if any: its first wait for
+// the disk lets the server go, until the read ends.
+static thread_local struct reading *in_read;
+static void read_lets_go(void);
+
 static vx_status dev_read(void *ctx, uint64_t addr, void *buf) {
-  return vx_blk_read(ctx, addr, buf, VXFS_BLKSZ);
+  read_lets_go();
+  vx_mutex_lock(&disk_lock);
+  vx_status st = vx_blk_read(ctx, addr, buf, VXFS_BLKSZ);
+  vx_mutex_unlock(&disk_lock);
+  return st;
 }
 static vx_status dev_write(void *ctx, uint64_t addr, const void *buf) {
-  return vx_blk_write(ctx, addr, buf, VXFS_BLKSZ);
+  vx_mutex_lock(&disk_lock);
+  vx_status st = vx_blk_write(ctx, addr, buf, VXFS_BLKSZ);
+  vx_mutex_unlock(&disk_lock);
+  return st;
 }
-static vx_status dev_barrier(void *ctx) { return vx_blk_flush(ctx); }
+static vx_status dev_barrier(void *ctx) {
+  vx_mutex_lock(&disk_lock);
+  vx_status st = vx_blk_flush(ctx);
+  vx_mutex_unlock(&disk_lock);
+  return st;
+}
+
+// vx-fs's block cache, which readers share (lib/vx-fs/blk.c).
+static vx_mutex cache_mutex;
+static void fsd_cache_lock(void *ctx, bool take) {
+  (void)ctx;
+  if (take)
+    vx_mutex_lock(&cache_mutex);
+  else
+    vx_mutex_unlock(&cache_mutex);
+}
 
 static uint64_t page_round(size_t n) { return (n + 4095) & ~(uint64_t)4095; }
 
@@ -297,6 +327,82 @@ static vx_status file_of(uint64_t node, vxfs_file *f) {
   return vxfs_file_by_qid(&vol, t, qid_of(node), f);
 }
 
+// --- Reading with the server let go (M6 step 6d5b) ---
+//
+// As gefs's readers, and as lib9p lets a server go only for what blocks: a
+// walk, a stat, an open, a read or a listing lets the server's lock go
+// (p9_release, lib/vx-9p/ring_server.c) at its first wait for the disk
+// (dev_read), and reads the rest without it, so a read waiting on the disk
+// holds up no one else, and one the cache answers costs nothing more.
+// Changes never let it go, so they are made one at a time (gefs's mutator),
+// with fsd's own tables, the users and the page cache. A reader copies the
+// tree it reads, and enters vx-fs's epoch, with the lock held, so the copy's
+// blocks are not given back until it leaves (lib/vx-fs/blk.c); it leaves
+// before it takes the lock back, so a commit waiting for readers (quiesce)
+// never waits for one that waits for it; and what it found is used once it
+// has the lock again.
+typedef struct reading {
+  vxfs_tree t;
+  bool made_up;  // ctl or status: no lookup
+  bool entered;  // vx-fs's epoch: without it (no slot), the read keeps the server
+  bool released; // the server let go, at the first wait for the disk
+} reading;
+
+static void read_lets_go(void) {
+  if (in_read && !in_read->released) in_read->released = p9_release();
+}
+
+static vx_status read_begin(uint64_t node, reading *r) {
+  const vxfs_tree *t = is_dump(node) ? nullptr : tree_of(node);
+  if (!t && !is_dump(node)) return VX_ERR_NOT_FOUND;
+  *r = (reading){.made_up = is_made_up(node)};
+  if (t) r->t = *t;
+  r->entered = vxfs_reader_enter(&vol.fs);
+  in_read = r->entered ? r : nullptr;
+  return VX_OK;
+}
+
+static void read_end(const reading *r) {
+  in_read = nullptr;
+  if (r->entered) vxfs_reader_leave(&vol.fs);
+  if (r->released) p9_acquire();
+}
+
+// file_of, from the reader's copy of node's tree.
+static vx_status file_in(uint64_t node, const reading *r, vxfs_file *f) {
+  if (is_dump(node)) return dump_file(node, f);
+  if (r->made_up) {
+    vxfs_file root;
+    vx_status st = vxfs_root(&vol, &r->t, &root);
+    if (st != VX_OK) return st;
+    bool ctl = qid_of(node) == CTL_QID;
+    *f = (vxfs_file){
+        .d = {.qid_path = qid_of(node), .mode = ctl ? 0660 : 0444, .mtime = now_ns(), .atime = now_ns()}};
+    f->nkey = key_ent(f->key, root.d.qid_path, (const uint8_t *)(ctl ? "ctl" : "status"), ctl ? 3 : 6);
+    return VX_OK;
+  }
+  return vxfs_file_by_qid(&vol, &r->t, qid_of(node), f);
+}
+
+// file_of, read with the server let go.
+static vx_status file_read(uint64_t node, vxfs_file *f) {
+  reading r;
+  vx_status st = read_begin(node, &r);
+  if (st != VX_OK) return st;
+  st = file_in(node, &r, f);
+  read_end(&r);
+  return st;
+}
+
+// Waits until no reader is in a read, and gives back what they kept: a
+// commit, or a check, counts every block (vxfs_commit). None enters
+// meanwhile: each needs the server's lock, which the caller holds.
+static void quiesce(void) {
+  static _Atomic uint32_t never;
+  while (vxfs_readers_active(&vol.fs)) vx_futex_wait(&never, 0, vx_clock_read() + 1'000'000);
+  vxfs_reclaim(&vol.fs);
+}
+
 // The node of entry f, found from dir: in its branch, for its user, as permissive as dir.
 static uint64_t node_in(uint64_t dir, const vxfs_file *f) {
   return node_of(slot_of(dir), user_of(dir), f->d.qid_path) | (dir & PERMISSIVE);
@@ -312,6 +418,7 @@ static void changed(void) {
 static vx_status commit(void) {
   writeback_all(); // what mappings wrote, into the volume first
   if (!dirty) return VX_OK;
+  quiesce();
   vx_status st = vxfs_commit(&vol);
   if (st != VX_OK) {
     vx_print(VX_STR("fsd: the commit failed, and the volume is read-only now: "));
@@ -499,18 +606,25 @@ static vx_status fs_walk([[maybe_unused]] void *ctx, uint64_t dir, vx_str name, 
   memcpy(nm, name.ptr, name.len);
   nm[name.len] = 0;
   if (is_dump(dir)) return dump_walk(dir, name, child);
-  vxfs_file d, f;
-  vx_status st = file_of(dir, &d);
-  if (st == VX_OK && (d.d.mode & VXFS_DMDIR) && !may(dir, &d.d, MAY_X)) st = VX_ERR_ACCESS;
   bool ctl = name.len == 3 && !memcmp(nm, "ctl", 3), status = name.len == 6 && !memcmp(nm, "status", 6);
-  if (st == VX_OK && is_branch(dir, "adm") && d.nkey == 9 && (ctl || status)) {
+  bool adm = is_branch(dir, "adm");
+  vxfs_file d, f;
+  reading r;
+  vx_status st = read_begin(dir, &r), walked = VX_OK;
+  if (st != VX_OK) return st;
+  st = file_in(dir, &r, &d);
+  bool made = st == VX_OK && adm && d.nkey == 9 && (ctl || status);
+  if (st == VX_OK && !made) walked = vxfs_walk(&vol, &r.t, &d, nm, &f);
+  read_end(&r);
+  if (st == VX_OK && (d.d.mode & VXFS_DMDIR) && !may(dir, &d.d, MAY_X)) st = VX_ERR_ACCESS;
+  if (st != VX_OK) return st;
+  if (made) {
     *child = node_of(slot_of(dir), user_of(dir), ctl ? CTL_QID : STATUS_QID) | (dir & PERMISSIVE);
     return VX_OK;
   }
-  if (st == VX_OK) st = vxfs_walk(&vol, tree_of(dir), &d, nm, &f);
-  if (st == VX_ERR_INVALID) st = VX_ERR_NOT_FOUND; // through a file
-  if (st == VX_OK) *child = node_in(dir, &f);
-  return st;
+  if (walked == VX_ERR_INVALID) walked = VX_ERR_NOT_FOUND; // through a file
+  if (walked == VX_OK) *child = node_in(dir, &f);
+  return walked;
 }
 
 static vx_status fs_parent([[maybe_unused]] void *ctx, uint64_t node, uint64_t *parent) {
@@ -526,12 +640,16 @@ static vx_status fs_parent([[maybe_unused]] void *ctx, uint64_t node, uint64_t *
     return VX_OK;
   }
   vxfs_file f, p;
-  vx_status st = file_of(node, &f);
+  reading r;
+  vx_status st = read_begin(node, &r);
+  if (st != VX_OK) return st;
+  st = file_in(node, &r, &f);
   if (st == VX_OK && vxfs_is_orphan(&f)) st = VX_ERR_NOT_FOUND;
   if (st == VX_OK && !(f.d.mode & VXFS_DMDIR)) // a file's (Twstat's rename): its key names its directory
-    st = f.nkey > 9 ? vxfs_file_by_qid(&vol, tree_of(node), vxfs_kget64(f.key + 1), &p) : VX_ERR_NOT_FOUND;
+    st = f.nkey > 9 ? vxfs_file_by_qid(&vol, &r.t, vxfs_kget64(f.key + 1), &p) : VX_ERR_NOT_FOUND;
   else if (st == VX_OK)
-    st = vxfs_walk(&vol, tree_of(node), &f, "..", &p);
+    st = vxfs_walk(&vol, &r.t, &f, "..", &p);
+  read_end(&r);
   if (st == VX_OK) *parent = node_in(node, &p);
   return st;
 }
@@ -565,8 +683,10 @@ static vx_str root_name(uint64_t node) {
 static vxfs_file stat_file; // the name in a stat lives until the next call
 
 static vx_status fs_stat([[maybe_unused]] void *ctx, uint64_t node, p9_stat *out) {
-  vx_status st = file_of(node, &stat_file);
+  vxfs_file f;
+  vx_status st = file_read(node, &f);
   if (st != VX_OK) return st;
+  stat_file = f; // the lock held again: the stat's strings are kept here until the reply
   const vxfs_dir *d = &stat_file.d;
   bool dir = d->mode & VXFS_DMDIR, root = stat_file.nkey == 9 && !vxfs_is_orphan(&stat_file);
   uint8_t qtype = (uint8_t)((dir ? P9_QTDIR : P9_QTFILE) | ((d->mode >> 24) & (P9_QTAPPEND | P9_QTEXCL)));
@@ -659,6 +779,7 @@ static vxfs_branch *open_branch(const char *name) {
 }
 
 static vx_status run_check(void) {
+  quiesce();
   vxfs_check c;
   vx_status st = vxfs_check_volume(&vol, &c);
   char *p = check_said;
@@ -930,7 +1051,7 @@ static vx_status truncate_to(uint64_t node, vxfs_file *f, uint64_t size) {
 
 static vx_status fs_open([[maybe_unused]] void *ctx, uint64_t node, uint8_t mode) {
   vxfs_file f;
-  vx_status st = file_of(node, &f);
+  vx_status st = file_read(node, &f);
   if (st != VX_OK) return st;
   bool writes = (mode & 3) == P9_OWRITE || (mode & 3) == P9_ORDWR || (mode & P9_OTRUNC);
   if ((f.d.mode & VXFS_DMDIR) && writes) return VX_ERR_ACCESS;
@@ -986,9 +1107,13 @@ static vx_status fs_read([[maybe_unused]] void *ctx, uint64_t node, uint64_t off
   cached *c = pcache_find(node);
   if (c) writeback(c); // what its mappings wrote, read too
   vxfs_file f;
-  vx_status st = file_of(node, &f);
+  reading r;
+  vx_status st = read_begin(node, &r);
+  if (st != VX_OK) return st;
+  st = file_in(node, &r, &f);
   uint64_t got = 0;
-  if (st == VX_OK) st = vxfs_read(&vol, tree_of(node), &f, offset, buf, *count, &got);
+  if (st == VX_OK) st = vxfs_read(&vol, &r.t, &f, offset, buf, *count, &got);
+  read_end(&r);
   *count = (uint32_t)got;
   return st;
 }
@@ -1010,7 +1135,7 @@ static vx_status fs_write([[maybe_unused]] void *ctx, uint64_t node, uint64_t of
 // dref (docs/proto/dref.md): Tread and Twrite with the data in the
 // client's VMO, through a bounce a chunk at a time, not by mapping it: a
 // VMO of fsd's own page cache, mapped here, would fault to fsd itself.
-static uint8_t ref_buf[64 * 1024];
+static thread_local uint8_t ref_buf[64 * 1024]; // each thread's: reads use it with the server let go
 
 static vx_status fs_read_ref([[maybe_unused]] void *ctx, uint64_t node, uint64_t offset, vx_handle vmo,
                              uint64_t roffset, uint32_t *count) {
@@ -1018,15 +1143,19 @@ static vx_status fs_read_ref([[maybe_unused]] void *ctx, uint64_t node, uint64_t
   cached *c = pcache_find(node);
   if (c) writeback(c);
   vxfs_file f;
-  vx_status st = file_of(node, &f);
+  reading r;
+  vx_status st = read_begin(node, &r);
+  if (st != VX_OK) return st;
+  st = file_in(node, &r, &f);
   uint32_t done = 0;
   while (st == VX_OK && done < *count) {
     uint64_t want = *count - done < sizeof ref_buf ? *count - done : sizeof ref_buf, got = 0;
-    st = vxfs_read(&vol, tree_of(node), &f, offset + done, ref_buf, want, &got);
+    st = vxfs_read(&vol, &r.t, &f, offset + done, ref_buf, want, &got);
     if (st == VX_OK && got) st = vx_vmo_rw(vmo, VX_VMO_WRITE, roffset + done, ref_buf, got);
     if (st == VX_OK) done += (uint32_t)got;
     if (got < want) break; // the end of the file
   }
+  read_end(&r);
   *count = done;
   return done ? VX_OK : st; // what was read, if anything was, as a short read
 }
@@ -1053,56 +1182,72 @@ static vx_status fs_write_ref([[maybe_unused]] void *ctx, uint64_t node, uint64_
 
 // Listing: the entry after the last one given, when the next index is
 // asked for in turn; otherwise from the start.
-static struct {
+typedef struct listing {
   uint64_t dir;
   uint32_t next;
   uint8_t key[VXFS_KEYMAX];
   uint16_t nkey;
-} cursor;
+} listing;
+static listing cursor;
 
 static vx_status fs_readdir([[maybe_unused]] void *ctx, uint64_t dir, uint32_t index, uint64_t *child) {
   if (is_dump(dir)) return dump_readdir(dir, index, child);
+  bool adm = is_branch(dir, "adm");
+  // The cursor is the server's: copied out, and set again, with its lock held.
+  listing at = cursor, next = {};
   vxfs_file d;
-  vx_status st = file_of(dir, &d);
+  reading r;
+  vx_status st = read_begin(dir, &r);
   if (st != VX_OK) return st;
-  if (!(d.d.mode & VXFS_DMDIR)) return VX_ERR_INVALID;
-  if (is_branch(dir, "adm") && d.nkey == 9) { // ctl and status first
-    if (index < 2) {
-      *child = node_of(slot_of(dir), user_of(dir), index ? STATUS_QID : CTL_QID) | (dir & PERMISSIVE);
-      return VX_OK;
-    }
-    index -= 2; // the entries after them, as the cursor counts them
+  st = file_in(dir, &r, &d);
+  bool listed = false, made = false; // made: ctl or status, first in adm's root
+  if (st == VX_OK && !(d.d.mode & VXFS_DMDIR)) st = VX_ERR_INVALID;
+  uint32_t i = index;
+  if (st == VX_OK && adm && d.nkey == 9) {
+    made = i < 2;
+    if (!made) i -= 2; // the entries after them, as the cursor counts them
   }
-  vxfs_tree *t = tree_of(dir);
-  uint8_t pfx[9] = {VXFS_KENT};
-  vxfs_kput64(pfx + 1, d.d.qid_path);
-  bool resume = index && cursor.dir == dir && cursor.next == index;
-  vxfs_scan s;
-  if (resume)
-    vxfs_scan_from(&s, t, pfx, 9, cursor.key, cursor.nkey);
-  else
-    vxfs_scan_start(&s, t, pfx, 9);
-  vxfs_kvp kv;
-  uint32_t skip = resume ? 0 : index;
-  st = VX_ERR_NOT_FOUND;
-  while (vxfs_scan_next(&vol.fs, &s, &kv)) {
-    if (resume && kv.nk == cursor.nkey && memcmp(kv.k, cursor.key, kv.nk) == 0)
-      continue; // the last one given
-    if (skip) {
-      skip--;
-      continue;
-    }
-    if (kv.nv != VXFS_DIRSZ) {
-      st = VX_ERR_INVALID;
+  uint64_t qid = 0;
+  if (st == VX_OK && !made) {
+    uint8_t pfx[9] = {VXFS_KENT};
+    vxfs_kput64(pfx + 1, d.d.qid_path);
+    bool resume = i && at.dir == dir && at.next == i;
+    vxfs_scan s;
+    if (resume)
+      vxfs_scan_from(&s, &r.t, pfx, 9, at.key, at.nkey);
+    else
+      vxfs_scan_start(&s, &r.t, pfx, 9);
+    vxfs_kvp kv;
+    uint32_t skip = resume ? 0 : i;
+    st = VX_ERR_NOT_FOUND;
+    while (vxfs_scan_next(&vol.fs, &s, &kv)) {
+      if (resume && kv.nk == at.nkey && memcmp(kv.k, at.key, kv.nk) == 0) continue; // the last one given
+      if (skip) {
+        skip--;
+        continue;
+      }
+      if (kv.nv != VXFS_DIRSZ) {
+        st = VX_ERR_INVALID;
+        break;
+      }
+      qid = vxfs_unpackdir(kv.v).qid_path;
+      next.dir = dir, next.next = i + 1, next.nkey = kv.nk;
+      memcpy(next.key, kv.k, kv.nk);
+      listed = true;
+      st = VX_OK;
       break;
     }
-    *child = node_of(slot_of(dir), user_of(dir), vxfs_unpackdir(kv.v).qid_path) | (dir & PERMISSIVE);
-    cursor.dir = dir, cursor.next = index + 1, cursor.nkey = kv.nk;
-    memcpy(cursor.key, kv.k, kv.nk);
-    st = VX_OK;
-    break;
+    vxfs_scan_end(&vol.fs, &s);
   }
-  vxfs_scan_end(&vol.fs, &s);
+  read_end(&r);
+  if (st == VX_OK && made) {
+    *child = node_of(slot_of(dir), user_of(dir), i ? STATUS_QID : CTL_QID) | (dir & PERMISSIVE);
+    return VX_OK;
+  }
+  if (listed) {
+    *child = node_of(slot_of(dir), user_of(dir), qid) | (dir & PERMISSIVE);
+    cursor = next;
+  }
   return vol.fs.err != VX_OK ? vol.fs.err : st;
 }
 
@@ -1306,6 +1451,7 @@ static p9_ring_server server = {
     .supported = P9_EXT_POSIX | P9_EXT_XATTR | P9_EXT_MAP | P9_EXT_DREF,
     .event = on_event,
     .tick = tick,
+    .max_threads = 8, // readers waiting on the disk, and one serving the rest (6d5b)
 };
 
 // --- Starting ---
@@ -1337,7 +1483,8 @@ const char *vx_main(void) {
                   .write = dev_write,
                   .barrier = dev_barrier,
                   .size = disk.sectors * disk.sector / VXFS_BLKSZ * VXFS_BLKSZ};
-  if ((st = vxfs_mount(&vol, dev, (vxfs_mem){.alloc = mem_alloc, .free = mem_free}, CACHE_BLOCKS)) != VX_OK)
+  if ((st = vxfs_mount(&vol, dev, (vxfs_mem){.alloc = mem_alloc, .free = mem_free, .lock = fsd_cache_lock},
+                       CACHE_BLOCKS)) != VX_OK)
     fail("no volume it can mount", st);
   load_users();
   // The pager, if the manifest makes fsd one (`pager`): Tmap without it is refused.

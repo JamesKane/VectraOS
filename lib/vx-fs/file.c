@@ -375,7 +375,7 @@ static vx_status read_block(vxfs_vol *v, const vxfs_tree *t, uint64_t qid, uint6
   if (is_dir(f)) return VX_ERR_INVALID;
   if (off >= f->d.length) return VX_OK;
   if (n > f->d.length - off) n = f->d.length - off;
-  static uint8_t blk[VXFS_BLKSZ];
+  static thread_local uint8_t blk[VXFS_BLKSZ]; // each reader's own (blk.c's epochs)
   uint8_t *out = buf;
   while (*got < n) {
     uint64_t at = off + *got, base = at / VXFS_BLKSZ * VXFS_BLKSZ, in = at - base;

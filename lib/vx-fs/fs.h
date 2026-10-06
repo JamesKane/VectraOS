@@ -282,4 +282,7 @@ typedef struct vxfs_mem {
   void *ctx;
   void *(*alloc)(void *ctx, size_t n); // nullptr when there is none
   void (*free)(void *ctx, void *p, size_t n);
+  // Optional (M6 step 6d5b): takes or lets go of a lock over the block
+  // cache, for a user with readers on other threads (blk.c's epochs).
+  void (*lock)(void *ctx, bool take);
 } vxfs_mem;
