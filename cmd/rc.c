@@ -185,6 +185,69 @@ static void cd_builtin(const rc_word *argv, int n) {
   say("Can't cd ", dir, ": "), err(chdir_why(st)), err(VX_STR("\n"));
 }
 
+// --- rfork (6d7b3), as 9front's execrfork ---
+
+static bool no_mounts; // rfork m: mount refused from here on (RFNOMNT)
+
+// A note group of the shell's own (rfork s, RFNOTEG): its own pid written to
+// its noteid (procfs, as 9front's changenoteid allows).
+static vx_status own_note_group(void) {
+  vx_task_summary me;
+  if (!vx_self || vx_task_info(vx_self, &me) != VX_OK) return VX_ERR_BAD_STATE;
+  char path[40] = "/proc/", id[24];
+  size_t n = 6, d = sizeof id;
+  uint64_t v = me.id;
+  do id[--d] = (char)('0' + v % 10);
+  while (v /= 10);
+  memcpy(path + n, id + d, sizeof id - d), n += sizeof id - d;
+  memcpy(path + n, "/noteid", 8), n += 7; // its NUL too, which the length leaves out
+  vx_ns_file f;
+  vx_status st = vx_ns_open(&ns, (vx_str){path, n}, P9_OWRITE, &f);
+  if (st != VX_OK) return st;
+  int64_t w = vx_ns_write(&f, id + d, (uint32_t)(sizeof id - d));
+  vx_ns_close(&f);
+  return w < 0 ? (vx_status)w : VX_OK;
+}
+
+// rfork [fnesFNEm]; without flags, ens. n: a namespace of the shell's own, a
+// copy (it leaves its namespace group); N: a clean one, empty; m: no mounts
+// after; s: a note group of its own; F: its descriptors past 2 closed. e, E
+// and f change nothing: the environment and descriptors are the shell's own
+// already, passed to each child as it is spawned, never shared.
+static void rfork_builtin(const rc_word *argv, int n) {
+  vx_str flags = {};
+  if (n == 1) flags = VX_STR("ens");
+  if (n == 2) flags = word_str(argv->next);
+  bool ok = n <= 2 && flags.len;
+  for (size_t i = 0; ok && i < flags.len; i++) {
+    bool known = false;
+    for (const char *x = "fnesFNEm"; *x; x++) known = known || *x == flags.ptr[i];
+    ok = known;
+  }
+  if (!ok) {
+    err(VX_STR("Usage: rfork [fnesFNEm]\n"));
+    set_status(VX_STR("rfork usage"));
+    return;
+  }
+  vx_status st = VX_OK;
+  bool has[128] = {};
+  for (size_t i = 0; i < flags.len; i++) has[(unsigned char)flags.ptr[i]] = true;
+  if (has['s']) st = own_note_group(); // first: N takes /proc away
+  if (st == VX_OK && (has['n'] || has['N'])) vx_ns_group_leave(&ns);
+  if (st == VX_OK && has['N']) vx_ns_reset(&ns);
+  if (st == VX_OK && has['m']) no_mounts = true;
+  for (uint32_t i = 3; st == VX_OK && has['F'] && i < VX_FDS; i++) { // a clean table: none past 2
+    if (vx_fds[i].end) vx_handle_close(vx_fds[i].end);
+    vx_fds[i] = (vx_fd_entry){};
+  }
+  if (st != VX_OK) {
+    err(VX_STR("rc: rfork failed\n"));
+    set_status(VX_STR("rfork failed"));
+    return;
+  }
+  set_status((vx_str){});
+}
+
 static bool builtin_run(const rc_word *argv, uint32_t argc) {
   const rc_word *w[4] = {argv};
   for (uint32_t i = 1; i < 4 && i < argc; i++) w[i] = w[i - 1]->next;
@@ -207,6 +270,14 @@ static bool builtin_run(const rc_word *argv, uint32_t argc) {
   // (as ns prints it, so its output replays) or srvfs has (srv(1)'s, say); or
   // a 9P server over TCP, tcp!HOST!PORT or 9p://HOST:PORT, through a relay,
   // so the children share its session (lib/vx-ns/relay.c).
+  if (word_is(argv, "rfork")) {
+    rfork_builtin(argv, n);
+    return true;
+  }
+  if (word_is(argv, "mount") && no_mounts) { // rfork m
+    report("mount", VX_ERR_ACCESS);
+    return true;
+  }
   if (word_is(argv, "mount")) {
     if (flags == 0xff || n - first < 2 || n - first > 3) {
       usage(VX_USAGE_mount);
@@ -514,6 +585,13 @@ static const char RC_SELF[] = "/boot/bin/rc";
 // code and its $*, which a child rc runs (an rcchild= record, run_child),
 // given the shell's flags, variables, functions, namespace and directory, as
 // rc's fork gives them.
+// Whether a spawn is a command run with &'s: in a note group of its own, as
+// 9front's rc runs `rfork s` in its child (code.c's Xasync), so the
+// terminal's interrupt does not reach it. Not a <{...}'s (its Xpipefd's has
+// none).
+static bool spawn_noteg;
+static bool in_pipefd; // pipe_fd's run: not an & job
+
 // A file the shell opened, a descriptor from 3: musl's back end's fd=N
 // file=PATH flags=F offset=O token=T (ADR-0040), the open file itself, which
 // the program joins, so it takes nothing from it until it reads: a relay
@@ -620,7 +698,7 @@ static vx_status spawn(const rc_word *argv, bool child, const vx_handle io[RC_FD
                      // Registered with whatever serves /proc (ADR-0011); the shell
                      // watches each command's end itself, so no wait record.
                      .proc = vx_ns_connector(&ns, VX_STR("/proc")),
-                     .proc_flags = PROC_NOWAIT,
+                     .proc_flags = PROC_NOWAIT | (spawn_noteg ? PROC_NOTEG : 0),
                      .exec = exec}; // exec: the program takes this task's place (task_exec, ADR-0012)
   return vx_spawn_elf(&a, task);
 }
@@ -769,6 +847,7 @@ static vx_status stage_io(const rc_fd *fd, bool reads, vx_handle pipe_in, vx_han
 static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool async, uint64_t *pid) {
   (void)ctx, (void)r;
   reap();
+  spawn_noteg = async && !in_pipefd;
   if (n > MAX_STAGES) {
     say("rc: too many commands in a pipe", (vx_str){}, "\n");
     set_status(VX_STR("too many commands"));
@@ -979,7 +1058,9 @@ static bool pipe_fd(void *ctx, rc *r, const rc_command *child, bool command_read
   c.fds[command_reads ? 1 : 0] =
       (rc_fd){.kind = RC_FD_PIPEFD, .dup = !command_reads, .handle = PIPE_BASE + far};
   uint64_t pid = 0;
+  in_pipefd = true;
   bool ran = run(ctx, r, &c, 1, true, &pid);
+  in_pipefd = false;
   close_file(ctx, PIPE_BASE + far); // the child has its own
   if (!ran) {
     close_file(ctx, PIPE_BASE + near);
@@ -1130,7 +1211,7 @@ const char *vx_main(void) {
                   .close = close_file,
                   .exists = exists,
                   .read_line = read_line};
-  static const char *const HOST_BUILTINS[] = {"cd", "bind", "mount", "unmount", nullptr};
+  static const char *const HOST_BUILTINS[] = {"cd", "rfork", "bind", "mount", "unmount", nullptr};
   host.builtin_names = HOST_BUILTINS;
   host.pipefd = pipe_fd;
   sh = rc_new(heap, sizeof heap, &host);

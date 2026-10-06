@@ -332,6 +332,19 @@ static vx_status vx_ns_group_join(vx_ns *ns, vx_handle chan) {
   return VX_OK;
 }
 
+// Leaves the namespace group (rc's rfork n, 6d7b3, as RFNAMEG): the table, as
+// it is, a copy of this process's own; the group's later changes are not
+// seen, nor are this one's by the group. A child shares it in a group made
+// for it (vx_ns_spawn_records). Nothing to do without a group.
+[[maybe_unused]] static void vx_ns_group_leave(vx_ns *ns) {
+  if (!vx_ns_group.chan) return;
+  ns_catch_up(ns); // the group's table as it is now
+  ns->refresh = nullptr, ns->publish = nullptr;
+  vx_handle_close(vx_ns_group.chan);
+  if (vx_ns_group.page) vx_as_unmap(vx_self, (uint64_t)vx_ns_group.page, VX_NS_PAGE_SIZE);
+  vx_ns_group.chan = VX_HANDLE_NONE, vx_ns_group.page = nullptr, vx_ns_group.seq = 0;
+}
+
 // Makes a group of this process's namespace, with it as the first member, so
 // a child can share it. NOT_FOUND without nsd.
 static vx_status vx_ns_group_make(vx_ns *ns) {
