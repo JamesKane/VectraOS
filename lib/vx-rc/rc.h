@@ -53,6 +53,7 @@ enum rc_fd_kind : uint8_t {
   RC_FD_PIPE_OUT, // a pipeline's: into the next stage
   RC_FD_PIPE_IN,  // from the stage before
   RC_FD_HERE,     // a here document: its text in path, path_len (the host feeds it)
+  RC_FD_PIPEFD, // a pipe <{...} or >{...} made (pipefd): its end, the host's handle; dup 1 if the command reads it
 };
 
 static constexpr uint32_t RC_FDS = 10; // 0 to 9, as rc's >[n]
@@ -107,4 +108,10 @@ typedef struct rc_host {
   int64_t (*read_line)(void *ctx, char *buf, size_t cap);
   // The host's builtins' names, for whatis: a list ending in nullptr.
   const char *const *builtin_names;
+  // <{...} and >{...} (6d7b2, as 9front's Xpipefd): a pipe, child (rc code
+  // and $*, as a child stage's) started on one end, not waited for, as its
+  // standard output, or its standard input when the command writes; the
+  // other end's handle in *handle, an RC_FD_PIPEFD's, which close lets go.
+  // False if it cannot be (why, in $status).
+  bool (*pipefd)(void *ctx, rc *r, const rc_command *child, bool command_reads, uint32_t *handle);
 } rc_host;

@@ -81,6 +81,7 @@ typedef struct vx_ns_entry {
 } vx_ns_entry;
 
 typedef struct vx_ns vx_ns;
+struct vx_ns_file;
 struct vx_ns {
   vx_ns_conn conns[VX_NS_MAX_CONNS];
   vx_ns_entry entries[VX_NS_MAX_ENTRIES];
@@ -100,6 +101,10 @@ struct vx_ns {
   // relative name is resolved against: its length into buf, or 0. Null: a
   // relative name is refused (host tests).
   size_t (*getwd)(char *buf, size_t cap);
+  // A name the process serves itself, not a 9P server: /fd/N (ADR-0040;
+  // vx-ns's spawn.c). NOT_FOUND for any other, which resolves as usual.
+  // Null: none (host tests).
+  vx_status (*open_dev)(vx_ns *ns, vx_str path, uint8_t mode, struct vx_ns_file *f);
 };
 
 static void ns_catch_up(vx_ns *ns) {
@@ -712,6 +717,13 @@ static size_t ns_step_flags(const vx_ns *ns, const vx_ns_step *steps, uint32_t s
 
 // --- Files ---
 
+// What a file the process serves itself does for reads, writes and its close.
+typedef struct vx_ns_dev {
+  int64_t (*read)(struct vx_ns_file *f, void *buf, uint32_t count);
+  int64_t (*write)(struct vx_ns_file *f, const void *buf, uint32_t count);
+  void (*close)(struct vx_ns_file *f);
+} vx_ns_dev;
+
 typedef struct vx_ns_file {
   vx_ns *ns;
   p9_client *c;
@@ -719,6 +731,8 @@ typedef struct vx_ns_file {
   uint64_t offset;
   const vx_ns_entry *u; // a union directory being read member by member, or nullptr
   uint32_t member;
+  const vx_ns_dev *dev; // a file the process serves (open_dev's), not a 9P one; dev_ctx its state
+  void *dev_ctx;
 } vx_ns_file;
 
 // Opens a path. A directory that is a union reads as each member in turn.
@@ -728,6 +742,8 @@ typedef struct vx_ns_file {
   char clean[VX_NS_MAX_PATH];
   size_t n = ns_clean(ns, path, clean, sizeof clean);
   if (!n) return VX_ERR_INVALID;
+  vx_status dev = ns->open_dev ? ns->open_dev(ns, (vx_str){clean, n}, mode, f) : VX_ERR_NOT_FOUND;
+  if (dev != VX_ERR_NOT_FOUND) return dev;
   vx_ns_at at;
   vx_status st = ns_resolve(ns, (vx_str){clean, n}, &at);
   if (st != VX_OK) return st;
@@ -780,6 +796,7 @@ typedef struct vx_ns_file {
 // Reads at the file's offset and moves it on. Returns the count, 0 at the
 // end, or a negative vx_status.
 [[maybe_unused]] static int64_t vx_ns_read(vx_ns_file *f, void *buf, uint32_t count) {
+  if (f->dev) return f->dev->read(f, buf, count);
   if (!f->c) return VX_ERR_BAD_HANDLE; // not open
   for (;;) {
     int64_t n = p9c_read(f->c, f->fid, f->offset, buf, count);
@@ -802,6 +819,7 @@ typedef struct vx_ns_file {
 }
 
 [[maybe_unused]] static int64_t vx_ns_write(vx_ns_file *f, const void *buf, uint32_t count) {
+  if (f->dev) return f->dev->write(f, buf, count);
   if (!f->c) return VX_ERR_BAD_HANDLE;
   int64_t n = p9c_write(f->c, f->fid, f->offset, buf, count);
   if (n > 0) f->offset += (uint64_t)n;
@@ -809,6 +827,7 @@ typedef struct vx_ns_file {
 }
 
 [[maybe_unused]] static void vx_ns_close(vx_ns_file *f) {
+  if (f->dev) f->dev->close(f);
   if (f->c) p9c_clunk(f->c, f->fid);
   *f = (vx_ns_file){};
 }

@@ -215,8 +215,9 @@ static void fd_from_records(void); // below, with what writes them
 
 // The descriptors the spawn message gives: fd= records from a POSIX parent
 // (fd_records), or else 0, 1 and 2 from the pipes it names ("stdin",
-// "stdout", "stderr", as vx-rt's programs take them: rc's redirections) and
-// the console for what it does not. Without a pipe for it, standard error
+// "stdout", "stderr", as vx-rt's programs take them: rc's redirections), with
+// 3 to 9 from fd= records beside them (ADR-0040), and the console for what
+// it does not. Without a pipe for it, standard error
 // goes to the console, so a pipeline's errors reach its terminal; without a
 // console either, to stdout.
 static void fd_init(void) {
@@ -224,12 +225,13 @@ static void fd_init(void) {
   if (console && vx_console_attach(console) != VX_OK) vx_print(VX_STR("vx-musl: cannot open the console\n"));
   vx_port_create(0, &fd_port);
   vx_ndb_record rec;
-  if (vx_spawn_record("fd", &rec)) {
+  bool records = vx_spawn_record("fd", &rec);
+  vx_handle in_end = vx_spawn_take("stdin"), out_end = vx_spawn_take("stdout"),
+            err_end = vx_spawn_take("stderr");
+  if (records && !in_end && !out_end && !err_end) { // a POSIX parent's whole table
     fd_from_records();
     return;
   }
-  vx_handle in_end = vx_spawn_take("stdin"), out_end = vx_spawn_take("stdout"),
-            err_end = vx_spawn_take("stderr");
   ofd *cons = console ? ofd_new(OFD_CONSOLE, O_RDWR) : nullptr;
   ofd *in = in_end ? pipe_ofd(in_end, true, 0) : cons;
   ofd *out = out_end ? pipe_ofd(out_end, false, 0) : cons;
@@ -241,6 +243,7 @@ static void fd_init(void) {
     if (fd_table[0].o == std[fd] || fd_table[1].o == std[fd] || fd_table[2].o == std[fd]) std[fd]->refs++;
     fd_table[fd].o = std[fd];
   }
+  if (records) fd_from_records(); // 3 to 9 beside the three pipes: a native parent's (rc's; ADR-0040)
 }
 
 // At exit: what vx_print has buffered goes out, and this process's pipe ends
@@ -785,6 +788,8 @@ static void tty_check(ofd *o) {
 
 static bool fd_exists(const char *p, size_t len); // below, with mkdir
 
+static long fd_dup(int fd, int to, int flags); // below
+
 static long fd_openat(int dirfd, const char *path, int flags, mode_t mode) {
   char p[VX_NS_MAX_PATH];
   bool excl = (flags & O_CREAT) && (flags & O_EXCL);
@@ -792,6 +797,9 @@ static long fd_openat(int dirfd, const char *path, int flags, mode_t mode) {
   // dangling one, is a name that exists.
   long len = fd_resolve(dirfd, path, !(flags & O_NOFOLLOW) && !excl, p);
   if (len < 0) return len;
+  if (len == 5 && memcmp(p, "/fd/", 4) == 0 && p[4] >= '0' &&
+      p[4] <= '9') // a copy of that descriptor (ADR-0040)
+    return fd_get(p[4] - '0') ? fd_dup(p[4] - '0', -1, flags & O_CLOEXEC) : -ENOENT;
   char target[VX_NS_MAX_PATH];
   size_t target_len;
   if ((flags & O_NOFOLLOW) && fd_link_at(p, (size_t)len, target, sizeof target, &target_len) == 1)

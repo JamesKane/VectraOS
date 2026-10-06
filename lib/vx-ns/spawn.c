@@ -367,9 +367,108 @@ static vx_status vx_ns_group_make(vx_ns *ns) {
   return VX_OK;
 }
 
+// --- /fd (ADR-0040): the process's own descriptors, as 9front's devdup ---
+//
+// /fd/N opened is a copy of descriptor N (vx-rt's vx_fd): a pipe end, read
+// or written with the pipe protocol. Not listed, and not in the namespace.
+
+typedef struct vx_fd_opened { // an open /fd/N's state
+  bool used;
+  vx_pipe_in in; // a reading end's
+  vx_handle out; // a writing end
+} vx_fd_opened;
+
+static vx_fd_opened vx_fd_opens[8];
+static vx_mutex vx_fd_opens_lock;
+
+static int64_t vx_fd_read(vx_ns_file *f, void *buf, uint32_t count) {
+  vx_fd_opened *x = f->dev_ctx;
+  return x->in.end ? vx_pipe_read(&x->in, buf, count) : VX_ERR_ACCESS;
+}
+
+static int64_t vx_fd_write(vx_ns_file *f, const void *buf, uint32_t count) {
+  vx_fd_opened *x = f->dev_ctx;
+  if (!x->out) return VX_ERR_ACCESS;
+  alignas(vx_msg_header) static thread_local uint8_t msg[sizeof(vx_msg_header) + 4096];
+  for (uint32_t done = 0; done < count;) {
+    uint32_t n = count - done > 4096 ? 4096 : count - done;
+    memcpy(msg + sizeof(vx_msg_header), (const uint8_t *)buf + done, n);
+    vx_pipe_write(x->out, msg, n);
+    done += n;
+  }
+  return count;
+}
+
+static void vx_fd_close(vx_ns_file *f) {
+  vx_fd_opened *x = f->dev_ctx;
+  if (x->in.end) vx_handle_close(x->in.end);
+  if (x->in.port) vx_handle_close(x->in.port);
+  if (x->out) vx_handle_close(x->out);
+  vx_mutex_lock(&vx_fd_opens_lock);
+  *x = (vx_fd_opened){};
+  vx_mutex_unlock(&vx_fd_opens_lock);
+  f->dev = nullptr;
+}
+
+static const vx_ns_dev vx_fd_dev = {.read = vx_fd_read, .write = vx_fd_write, .close = vx_fd_close};
+
+// An open file given as a descriptor: joined by its token, the first time,
+// as the open file the parent had; else opened again by its name, at the
+// offset it was at.
+static vx_status vx_fd_open_file(vx_ns *ns, vx_fd_entry *e, uint8_t mode, vx_ns_file *f) {
+  vx_str path = {e->path, e->path_len};
+  if (e->has_token) {
+    e->has_token = false;
+    p9_client *c;
+    uint32_t fid, joined;
+    size_t dir = path.len; // the file's connection, or its directory's if it has gone since
+    while (dir > 1 && path.ptr[dir - 1] != '/') dir--;
+    if (vx_ns_walk(ns, path, &c, &fid) == VX_OK ||
+        vx_ns_walk(ns, (vx_str){path.ptr, dir}, &c, &fid) == VX_OK) {
+      p9c_clunk(c, fid);
+      if (p9c_join(c, e->token, &joined) == VX_OK) {
+        *f = (vx_ns_file){.ns = ns, .c = c, .fid = joined, .offset = e->offset};
+        return VX_OK;
+      }
+    }
+  }
+  vx_status st = vx_ns_open(ns, path, mode, f);
+  if (st == VX_OK) f->offset = e->offset;
+  return st;
+}
+
+// vx_ns's open_dev: /fd/N, for a descriptor this process has, opened the
+// way it goes (ACCESS otherwise); NOT_FOUND for any other name.
+static vx_status vx_fd_open(vx_ns *ns, vx_str path, uint8_t mode, vx_ns_file *f) {
+  (void)ns;
+  if (path.len != 5 || memcmp(path.ptr, "/fd/", 4) != 0 || path.ptr[4] < '0' || path.ptr[4] > '9')
+    return VX_ERR_NOT_FOUND;
+  vx_fd_entry *file = vx_fd_file((uint32_t)(path.ptr[4] - '0'));
+  if (file) return vx_fd_open_file(ns, file, mode, f);
+  bool reader;
+  vx_handle h = vx_fd((uint32_t)(path.ptr[4] - '0'), &reader);
+  if (!h) return VX_ERR_NOT_FOUND;
+  if ((mode & 3) != (reader ? P9_OREAD : P9_OWRITE)) return VX_ERR_ACCESS;
+  vx_handle copy;
+  vx_status st = vx_handle_dup(h, VX_RIGHTS_SAME, &copy);
+  if (st != VX_OK) return st;
+  vx_mutex_lock(&vx_fd_opens_lock);
+  vx_fd_opened *x = nullptr;
+  for (uint32_t i = 0; i < sizeof vx_fd_opens / sizeof vx_fd_opens[0] && !x; i++)
+    if (!vx_fd_opens[i].used) x = &vx_fd_opens[i];
+  if (x)
+    *x =
+        (vx_fd_opened){.used = true, .in = {.end = reader ? copy : VX_HANDLE_NONE}, .out = reader ? 0 : copy};
+  vx_mutex_unlock(&vx_fd_opens_lock);
+  if (!x) return vx_handle_close(copy), VX_ERR_NO_MEMORY;
+  f->dev = &vx_fd_dev, f->dev_ctx = x;
+  return VX_OK;
+}
+
 [[maybe_unused]] static vx_status vx_ns_from_spawn(vx_ns *ns) {
-  p9c_user = vx_spawn.user; // its attaches name its user (docs/11 §9)
-  ns->getwd = vx_getwd;     // relative names from the current directory (ADR-0039)
+  p9c_user = vx_spawn.user;  // its attaches name its user (docs/11 §9)
+  ns->getwd = vx_getwd;      // relative names from the current directory (ADR-0039)
+  ns->open_dev = vx_fd_open; // and /fd/N, its descriptors (ADR-0040)
   vx_ns_group.srv = vx_spawn_take("srv:nsd");
   vx_handle chan = vx_spawn_take("nsgroup");
   if (chan) return vx_ns_group_join(ns, chan);

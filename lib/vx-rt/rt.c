@@ -52,6 +52,7 @@ uintptr_t __stack_chk_guard = 0x2e0f5b3c9d81a647; // to come from the kernel's e
   vx_stdio.in = vx_spawn_take("stdin");
   vx_stdio.out = vx_spawn_take("stdout");
   vx_stdio.err = vx_spawn_take("stderr");
+  vx_fds_from_spawn(); // 3 to 9 (ADR-0040)
   if (vx_stdio.out) vx_print_hook = vx_stdout_print;
   vx_note_exit = vx_exit_str; // a note the program's handler does not take ends it the same way
   vx_exits(vx_main());

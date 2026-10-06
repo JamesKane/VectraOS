@@ -47,6 +47,19 @@ typedef struct child_io {
 static child_io children[4];
 static int nchildren;
 
+// <{...} and >{...}'s pipes (6d7b2): what one child wrote for the command to
+// read, or what the command wrote for a >{...} child, run when it closes.
+static struct {
+  bool used, command_reads;
+  char data[1024];
+  size_t len;
+  rc *r;
+  rc_fd fds[RC_FDS];        // the child's, but its end
+  char code[256], arg[64];  // a >{...}'s, run at the close: its code and $*'s one word
+  size_t code_len, arg_len; // (the tests give it no more)
+} pipes_fd[4];
+static constexpr uint32_t PIPE_HANDLE = 100; // pipes_fd[i]'s handle: PIPE_HANDLE + i
+
 // Output to where fd goes: a file, the shell's capture, or out/err; a
 // child's own descriptors are what the stage that started it had.
 static void emit(rc *r, const rc_fd *fds, uint32_t which, const char *s, size_t n, char *pipe,
@@ -71,10 +84,23 @@ static void emit(rc *r, const rc_fd *fds, uint32_t which, const char *s, size_t 
     return;
   }
   if (fd->kind == RC_FD_CLOSED) return;
+  if (fd->kind == RC_FD_PIPEFD) { // a >{...}'s
+    uint32_t k = fd->handle - PIPE_HANDLE;
+    if (k < 4 && pipes_fd[k].len + n <= sizeof pipes_fd[k].data)
+      memcpy(pipes_fd[k].data + pipes_fd[k].len, s, n), pipes_fd[k].len += n;
+    return;
+  }
   if (fd->kind == RC_FD_INHERIT && fd->dup == 2)
     memcpy(err + nerr, s, n), nerr += n;
   else
     memcpy(out + nout, s, n), nout += n;
+}
+
+// The pipe a /fd/N argument names in a stage's descriptors, or -1.
+static int pipe_of(const rc_fd *fds, const char *arg) {
+  if (strncmp(arg, "/fd/", 4) != 0 || arg[4] < '0' || arg[4] > '9' || arg[5]) return -1;
+  const rc_fd *fd = &fds[arg[4] - '0'];
+  return fd->kind == RC_FD_PIPEFD && fd->handle - PIPE_HANDLE < 4 ? (int)(fd->handle - PIPE_HANDLE) : -1;
 }
 
 static bool open_now[8]; // the files the shell has open, by handle
@@ -168,8 +194,23 @@ static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool asy
         emit(r, fds, 1, w->next ? " " : "\n", 1, mypipe, mynpipe);
       }
       if (!c->argv->next) emit(r, fds, 1, "\n", 1, mypipe, mynpipe);
+    } else if (!strcmp(name, "cat") && c->argv->next) { // each /fd/N: what its <{...} wrote
+      for (const rc_word *w = c->argv->next; w; w = w->next) {
+        int k = pipe_of(fds, w->s);
+        if (k >= 0)
+          emit(r, fds, 1, pipes_fd[k].data, pipes_fd[k].len, mypipe, mynpipe);
+        else
+          st = "no such file";
+      }
     } else if (!strcmp(name, "cat")) {
       emit(r, fds, 1, in, nin, mypipe, mynpipe);
+    } else if (!strcmp(name, "wr")) { // wr /fd/N words...: the words into descriptor N
+      int k = c->argv->next ? pipe_of(fds, c->argv->next->s) : -1;
+      if (k < 0) st = "no such file";
+      for (const rc_word *w = k >= 0 ? c->argv->next->next : nullptr; w; w = w->next) {
+        emit(r, fds, (uint32_t)(c->argv->next->s[4] - '0'), w->s, w->len, mypipe, mynpipe);
+        emit(r, fds, (uint32_t)(c->argv->next->s[4] - '0'), w->next ? " " : "\n", 1, mypipe, mynpipe);
+      }
     } else if (!strcmp(name, "wc")) { // words
       int words = 0;
       for (size_t k = 0; k < nin;) {
@@ -226,8 +267,47 @@ static bool open_fake(void *ctx, rc *rr, const char *path, size_t len, uint8_t k
   return true;
 }
 
+// rc_host's pipefd: <{...}'s child run now, into the pipe; >{...}'s kept, to
+// run on what the command wrote when the pipe closes.
+static bool pipefd_fake(void *ctx, rc *rr, const rc_command *child, bool command_reads, uint32_t *handle) {
+  (void)ctx;
+  uint32_t k = 0;
+  while (k < 4 && pipes_fd[k].used) k++;
+  if (k == 4 || child->argv->len >= sizeof pipes_fd[k].code) return false;
+  pipes_fd[k] = (typeof(pipes_fd[k])){.used = true, .command_reads = command_reads, .r = rr};
+  memcpy(pipes_fd[k].fds, child->fds, sizeof pipes_fd[k].fds);
+  *handle = PIPE_HANDLE + k;
+  if (command_reads) {
+    pipes_fd[k].fds[1] = (rc_fd){.kind = RC_FD_PIPE_OUT};
+    rc_command c = *child;
+    memcpy(c.fds, pipes_fd[k].fds, sizeof c.fds);
+    run_child(&c,
+              (child_io){.parent = rr, .fds = c.fds, .pipe = pipes_fd[k].data, .npipe = &pipes_fd[k].len});
+    return true;
+  }
+  memcpy(pipes_fd[k].code, child->argv->s, child->argv->len), pipes_fd[k].code_len = child->argv->len;
+  return true;
+}
+
 static void close_fake(void *ctx, uint32_t handle) {
   (void)ctx;
+  if (handle >= PIPE_HANDLE && handle - PIPE_HANDLE < 4) { // a pipe: a >{...}'s child reads what was written
+    uint32_t k = handle - PIPE_HANDLE;
+    if (!pipes_fd[k].command_reads) {
+      static rc_word *code;
+      static alignas(rc_word) char word[sizeof(rc_word) + 256];
+      code = (rc_word *)word;
+      *code = (rc_word){.len = pipes_fd[k].code_len};
+      memcpy(code->s, pipes_fd[k].code, pipes_fd[k].code_len), code->s[code->len] = 0;
+      rc_command c = {.argv = code, .argc = 1, .child = true};
+      memcpy(c.fds, pipes_fd[k].fds, sizeof c.fds);
+      run_child(
+          &c,
+          (child_io){.parent = pipes_fd[k].r, .fds = c.fds, .in = pipes_fd[k].data, .nin = pipes_fd[k].len});
+    }
+    pipes_fd[k].used = false;
+    return;
+  }
   if (handle < 8) open_now[handle] = false;
   closed++;
 }
@@ -516,6 +596,21 @@ static void test_9front_children(void) {
   expect("y=`:{x=1; echo a; echo b:c}; echo $#y", "2\n");             // a list of three, whole
 }
 
+// <{...} and >{...} (M6 step 6d7b2), as 9front's Xpipefd: a pipe and
+// /fd/N, the lowest descriptor from 3 free; the child sees the shell's state.
+static void test_9front_pipefd(void) {
+  expect("echo <{echo a} <{echo b}", "/fd/3 /fd/4\n");              // the words
+  expect("cat <{echo hi}", "hi\n");                                 // read
+  expect("cat <{echo a} <{echo b}", "a\nb\n");                      // two
+  expect("x=v; cat <{echo $x; echo $1} w", "v\n\n");                // the child's state: the shell's
+  expect("fn f { echo F }; cat <{f}", "F\n");                       // a function in it
+  expect("cat <{echo a b} | wc", "2\n");                            // a stage's
+  expect("wr >{cat} hello there", "hello there\n");                 // written, then read by the child
+  expect("echo <{echo a} >[3] f; cat < f", "/fd/4\n");              // past a redirected 3
+  expect("x=`{echo <{echo a}}; if(~ $x /fd/3*) echo yes", "yes\n"); // in `{...}
+  CHECK(!pipes_fd[0].used && !pipes_fd[1].used);                    // each let go once its command ran
+}
+
 static void test_9front_builtins(void) {
   CHECK(script("false; exit") == RC_EXIT && strcmp(status_now(), "false") == 0); // $status kept
   CHECK(script("exit a b") == RC_EXIT && strcmp(status_now(), "a") == 0);
@@ -566,7 +661,8 @@ int main(void) {
                    .open = open_fake,
                    .close = close_fake,
                    .exists = exists_fake,
-                   .read_line = read_line_fake};
+                   .read_line = read_line_fake,
+                   .pipefd = pipefd_fake};
   r = rc_new(heap, sizeof heap, &host);
   CHECK(r != nullptr);
   if (!r) return check_result();
@@ -675,5 +771,6 @@ int main(void) {
   test_9front_reading();
   test_9front_builtins();
   test_9front_children();
+  test_9front_pipefd();
   return check_result();
 }

@@ -271,8 +271,17 @@ static bool open_file(void *ctx, rc *r, const char *path, size_t len, uint8_t ki
   return true;
 }
 
+// <{...} and >{...}'s pipe ends (6d7b2), handles PIPE_BASE and on.
+static constexpr uint32_t PIPE_BASE = 1u << 16, MAX_PIPES = 16;
+static vx_handle pipe_ends[MAX_PIPES];
+
 static void close_file(void *ctx, uint32_t handle) {
   (void)ctx;
+  if (handle >= PIPE_BASE && handle - PIPE_BASE < MAX_PIPES) {
+    if (pipe_ends[handle - PIPE_BASE]) vx_handle_close(pipe_ends[handle - PIPE_BASE]);
+    pipe_ends[handle - PIPE_BASE] = VX_HANDLE_NONE;
+    return;
+  }
   if (handle >= MAX_FILES || !file_used[handle]) return;
   vx_ns_close(&files[handle]);
   file_used[handle] = false;
@@ -505,8 +514,48 @@ static const char RC_SELF[] = "/boot/bin/rc";
 // code and its $*, which a child rc runs (an rcchild= record, run_child),
 // given the shell's flags, variables, functions, namespace and directory, as
 // rc's fork gives them.
-static vx_status spawn(const rc_word *argv, bool child, const vx_handle io[3], vx_handle *task, bool exec) {
-  static const char *const IO[3] = {"stdin", "stdout", "stderr"};
+// A file the shell opened, a descriptor from 3: musl's back end's fd=N
+// file=PATH flags=F offset=O token=T (ADR-0040), the open file itself, which
+// the program joins, so it takes nothing from it until it reads: a relay
+// would read it for the program whether or not it does.
+static constexpr uint64_t O_WRONLY_ = 1, O_RDWR_ = 2, O_APPEND_ = 02000; // musl's, Linux's values
+
+static bool passed_file(const rc_fd *fd) {
+  return fd->kind == RC_FD_READ || fd->kind == RC_FD_WRITE || fd->kind == RC_FD_APPEND ||
+         fd->kind == RC_FD_RDWR;
+}
+
+static void file_record(vx_ndb_writer *rec, uint32_t n, const rc_fd *fd) {
+  if (fd->handle >= MAX_FILES || !file_used[fd->handle]) return;
+  vx_ns_file *f = &files[fd->handle];
+  uint64_t flags = 0;
+  if (fd->kind == RC_FD_RDWR) flags = O_RDWR_;
+  if (fd->kind == RC_FD_WRITE || fd->kind == RC_FD_APPEND) flags = O_WRONLY_;
+  if (fd->kind == RC_FD_APPEND) flags |= O_APPEND_;
+  vx_ndb_put_u64(rec, "fd", n);
+  vx_ndb_put(rec, "file", (vx_str){fd->path, fd->path_len});
+  vx_ndb_put_u64(rec, "flags", flags);
+  vx_ndb_put_u64(rec, "offset", f->offset);
+  uint8_t token[16];
+  if (f->c && p9c_share(f->c, f->fid, 1, token) == VX_OK)
+    vx_ndb_put(rec, "token", (vx_str){(const char *)token, 16});
+  vx_ndb_end(rec);
+}
+
+// One of the shell's own descriptors that is an open file it was given:
+// passed on as it was given, but for its token, which was good once.
+static void own_file_record(vx_ndb_writer *rec, uint32_t n, const vx_fd_entry *e) {
+  vx_ndb_put_u64(rec, "fd", n);
+  vx_ndb_put(rec, "file", (vx_str){e->path, e->path_len});
+  vx_ndb_put_u64(rec, "flags", e->flags);
+  vx_ndb_put_u64(rec, "offset", e->offset);
+  vx_ndb_end(rec);
+}
+
+static vx_status spawn(const rc_word *argv, bool child, const vx_handle io[RC_FDS], const bool reads[RC_FDS],
+                       const rc_fd *const fds[RC_FDS], vx_handle *task, bool exec) {
+  static const char *const IO[RC_FDS] = {"stdin", "stdout", "stderr", "fd3", "fd4",
+                                         "fd5",   "fd6",    "fd7",    "fd8", "fd9"};
   vx_handle handles[VX_CHANNEL_MAX_HANDLES - 1];
   vx_str names[VX_CHANNEL_MAX_HANDLES - 1];
   uint32_t count = 0;
@@ -529,17 +578,29 @@ static vx_status spawn(const rc_word *argv, bool child, const vx_handle io[3], v
     vx_ndb_put(&rec, "arg", word_str(a));
     vx_ndb_end(&rec);
   }
+  for (uint32_t i = 3; st == VX_OK && i < RC_FDS; i++) { // 3 to 9 as musl's records have them (ADR-0040)
+    const vx_fd_entry *own = fds[i]->kind == RC_FD_INHERIT ? vx_fd_file(fds[i]->dup) : nullptr;
+    if (passed_file(fds[i])) file_record(&rec, i, fds[i]);
+    if (own) own_file_record(&rec, i, own);
+    if (!io[i]) continue;
+    char n[2] = {(char)('0' + i), 0};
+    vx_ndb_put(&rec, "fd", (vx_str){n, 1});
+    vx_ndb_put(&rec, "pipe", reads[i] ? VX_STR("read") : VX_STR("write"));
+    vx_ndb_put(&rec, "end", vx_cstr(IO[i]));
+    vx_ndb_end(&rec);
+  }
   if (st == VX_OK) rc_each_var(sh, export_var, &rec);
   if (st == VX_OK) rc_each_fn(sh, export_fn, &rec);
   // More than a spawn message holds, or than the child takes: refused whole,
   // never run with a list cut short.
   if (st == VX_OK && (rec.failed || args > VX_SPAWN_MAX_ARGS || exported > VX_SPAWN_MAX_ARGS))
     st = VX_ERR_RANGE;
-  if (st == VX_OK) st = vx_ns_spawn_records(&ns, &rec, handles, names, &count, VX_CHANNEL_MAX_HANDLES - 5);
+  if (st == VX_OK)
+    st = vx_ns_spawn_records(&ns, &rec, handles, names, &count, VX_CHANNEL_MAX_HANDLES - 1 - 1 - RC_FDS);
   if (st == VX_OK && vx_console.connector &&
       vx_handle_dup(vx_console.connector, VX_RIGHTS_SAME, &handles[count]) == VX_OK)
     names[count++] = VX_STR("console");
-  for (int i = 0; i < 3; i++)
+  for (uint32_t i = 0; i < RC_FDS; i++)
     if (io[i]) handles[count] = io[i], names[count++] = vx_cstr(IO[i]);
   if (st != VX_OK) {
     for (uint32_t i = 0; i < count; i++) vx_handle_close(handles[i]);
@@ -650,23 +711,47 @@ static const rc_fd *resolve(const rc_command *c, int i) {
   return fd;
 }
 
-static vx_handle own_fd(uint8_t which) {
-  if (which == 0) return vx_stdio.in;
-  if (which == 1) return vx_stdio.out;
-  return which == 2 ? vx_stdio.err : VX_HANDLE_NONE;
+// One of the shell's own descriptors, 0 to 9 (vx-rt's; ADR-0040), and whether it reads.
+static vx_handle own_fd(uint8_t which, bool *reads) { return vx_fd(which, reads); }
+
+// Whether two descriptors go to the one relayed thing: the same file the
+// shell opened, here document or capture.
+static bool same_relay(const rc_fd *a, const rc_fd *b) {
+  bool relayed = a->kind == RC_FD_READ || a->kind == RC_FD_WRITE || a->kind == RC_FD_APPEND ||
+                 a->kind == RC_FD_RDWR || a->kind == RC_FD_CAPTURE || a->kind == RC_FD_HERE;
+  return relayed && a->kind == b->kind && a->handle == b->handle && a->dup == b->dup && a->path == b->path;
+}
+
+// Whether the program reads descriptor i, given where it goes: 0 always; 3 to
+// 9 as their redirection or the shell's own descriptor has it.
+static bool stage_reads(const rc_fd *fd, uint32_t i) {
+  if (i < 3) return i == 0;
+  bool reads = false;
+  switch (fd->kind) {
+  case RC_FD_INHERIT: own_fd(fd->dup, &reads); return reads;
+  case RC_FD_PIPEFD: return fd->dup; // the command's end, which it reads or writes
+  case RC_FD_READ:
+  case RC_FD_HERE:
+  case RC_FD_PIPE_IN: return true;
+  default: return false;
+  }
 }
 
 // A stage's standard descriptor i: the program's channel end (or none, for
 // the console), making relays and joining pipes as need be.
-static vx_status stage_io(const rc_fd *fd, int i, vx_handle pipe_in, vx_handle pipe_out, vx_handle *io) {
+static vx_status stage_io(const rc_fd *fd, bool reads, vx_handle pipe_in, vx_handle pipe_out, vx_handle *io) {
   *io = VX_HANDLE_NONE;
   vx_handle share = VX_HANDLE_NONE;
+  bool own_reads;
   switch (fd->kind) {
-  case RC_FD_INHERIT: share = own_fd(fd->dup); break;
+  case RC_FD_INHERIT: share = own_fd(fd->dup, &own_reads); break;
+  case RC_FD_PIPEFD:
+    share = fd->handle - PIPE_BASE < MAX_PIPES ? pipe_ends[fd->handle - PIPE_BASE] : 0;
+    break;
   case RC_FD_PIPE_IN: share = pipe_in; break;
   case RC_FD_PIPE_OUT: share = pipe_out; break;
   case RC_FD_HERE: // a here document is read; on an output it is no file, as 9front's read-only one takes no writes
-    if (i == 0) return relay_for(fd, true, io);
+    if (reads) return relay_for(fd, true, io);
     [[fallthrough]];
   case RC_FD_CLOSED: { // a channel no one is at the other end of
     vx_handle ch[2];
@@ -674,7 +759,7 @@ static vx_status stage_io(const rc_fd *fd, int i, vx_handle pipe_in, vx_handle p
     if (st == VX_OK) vx_handle_close(ch[1]), *io = ch[0];
     return st;
   }
-  default: return relay_for(fd, i == 0, io); // a file, or a capture
+  default: return relay_for(fd, reads, io); // a file, or a capture
   }
   return share ? vx_handle_dup(share, VX_RIGHTS_SAME, io) : VX_OK;
 }
@@ -696,29 +781,36 @@ static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool asy
   nrelays = 0;
   for (uint32_t s = 0; s < n; s++) {
     const rc_command *c = &stages[s];
-    vx_handle pipe[2] = {}, io[3] = {};
+    vx_handle pipe[2] = {}, io[RC_FDS] = {};
+    bool reads[RC_FDS] = {};
     vx_status st = VX_OK;
     if (s + 1 < n) st = vx_channel_create(0, pipe);
-    const rc_fd *fd[3] = {resolve(c, 0), resolve(c, 1), resolve(c, 2)};
+    const rc_fd *fd[RC_FDS];
+    for (uint32_t i = 0; i < RC_FDS; i++) fd[i] = resolve(c, (int)i);
     static const rc_fd nothing = {.kind = RC_FD_CLOSED};
     if (async && fd[0]->kind == RC_FD_INHERIT && fd[0]->dup == 0)
-      fd[0] = &nothing; // & reads nothing, as rc's /dev/null
-    for (int i = 0; i < 3 && st == VX_OK; i++) {
-      bool same_as_1 = i == 2 && fd[2]->kind == fd[1]->kind && fd[2]->kind >= RC_FD_WRITE &&
-                       fd[2]->kind != RC_FD_DUP && fd[2]->kind != RC_FD_CLOSED &&
-                       fd[2]->handle == fd[1]->handle && fd[2]->dup == fd[1]->dup && io[1];
-      if (same_as_1) // >[2=1] into a file or a capture: the 1's channel
-        st = vx_handle_dup(io[1], VX_RIGHTS_SAME, &io[2]);
+      fd[0] = &nothing;                                    // & reads nothing, as rc's /dev/null
+    for (uint32_t i = 0; i < RC_FDS && st == VX_OK; i++) { // 3 to 9 too (ADR-0040)
+      reads[i] = stage_reads(fd[i], i);
+      if (i >= 3 && passed_file(fd[i])) continue; // the open file itself (spawn's file_record)
+      // A descriptor on the same file, here document or capture as one before
+      // it (>[2=1], <[0=3]): that one's channel, as a dup shares an open file;
+      // two relays would each take part of it.
+      uint32_t same = i;
+      for (uint32_t j = 0; j < i && same == i; j++)
+        if (io[j] && same_relay(fd[i], fd[j])) same = j;
+      if (same < i)
+        reads[i] = reads[same], st = vx_handle_dup(io[same], VX_RIGHTS_SAME, &io[i]);
       else
-        st = stage_io(fd[i], i, pipe_in, pipe[0], &io[i]);
+        st = stage_io(fd[i], reads[i], pipe_in, pipe[0], &io[i]);
     }
     if (pipe_in) vx_handle_close(pipe_in);
     if (pipe[0]) vx_handle_close(pipe[0]);
     pipe_in = pipe[1]; // the next stage's
     if (st == VX_OK)
-      st = spawn(c->argv, c->child, io, &tasks[s], false);
+      st = spawn(c->argv, c->child, io, reads, fd, &tasks[s], false);
     else
-      for (int i = 0; i < 3; i++)
+      for (uint32_t i = 0; i < RC_FDS; i++)
         if (io[i]) vx_handle_close(io[i]);
     if (st != VX_OK) {
       vx_str why = p9_error_text(st); // as rc's: the command's name and why, which is its status
@@ -869,28 +961,60 @@ static size_t wait_message(const vx_task_summary *info, char *out, size_t cap) {
   return m + take;
 }
 
+// rc_host's pipefd (6d7b2): a pipe, child started with & on its far end as
+// its standard output (or input, when the command writes), as 9front's
+// Xpipefd forks it; the near end the command's, PIPE_BASE + its slot.
+static bool pipe_fd(void *ctx, rc *r, const rc_command *child, bool command_reads, uint32_t *handle) {
+  uint32_t near = 0, far = 0;
+  while (near < MAX_PIPES && pipe_ends[near]) near++;
+  far = near + 1;
+  while (far < MAX_PIPES && pipe_ends[far]) far++;
+  vx_handle ch[2];
+  if (far >= MAX_PIPES || vx_channel_create(0, ch) != VX_OK) {
+    set_status(VX_STR("can't make pipe"));
+    return false;
+  }
+  pipe_ends[near] = ch[0], pipe_ends[far] = ch[1];
+  rc_command c = *child;
+  c.fds[command_reads ? 1 : 0] =
+      (rc_fd){.kind = RC_FD_PIPEFD, .dup = !command_reads, .handle = PIPE_BASE + far};
+  uint64_t pid = 0;
+  bool ran = run(ctx, r, &c, 1, true, &pid);
+  close_file(ctx, PIPE_BASE + far); // the child has its own
+  if (!ran) {
+    close_file(ctx, PIPE_BASE + near);
+    return false;
+  }
+  *handle = PIPE_BASE + near;
+  return true;
+}
+
 // exec cmd ...: the program in this task's place, as rc's execexec. The
 // shell relays files, here documents and captures, so a command with one of
 // those redirected is refused until the program can be given the file itself.
 static bool exec_builtin(const rc_word *argv, const rc_fd *fds) {
-  vx_handle io[3] = {};
+  vx_handle io[RC_FDS] = {};
+  bool reads[RC_FDS] = {};
+  const rc_fd *efd[RC_FDS];
   vx_status st = VX_OK;
-  for (int i = 0; i < 3 && st == VX_OK; i++) {
+  for (uint32_t i = 0; i < RC_FDS && st == VX_OK; i++) {
     const rc_fd *fd = &fds[i];
     for (uint32_t guard = 0; fd->kind == RC_FD_DUP && fd->dup < RC_FDS && guard < RC_FDS; guard++)
       fd = &fds[fd->dup];
-    if (fd->kind != RC_FD_INHERIT && fd->kind != RC_FD_CLOSED) {
+    efd[i] = fd;
+    if (fd->kind != RC_FD_INHERIT && fd->kind != RC_FD_CLOSED && !(i >= 3 && passed_file(fd))) {
       say("rc: exec with a file, here document or capture redirected needs the shell to stay (for now)",
           (vx_str){}, "\n");
       set_status(VX_STR("exec redirection"));
-      for (int k = 0; k < i; k++)
+      for (uint32_t k = 0; k < i; k++)
         if (io[k]) vx_handle_close(io[k]);
       return true;
     }
-    st = stage_io(fd, i, VX_HANDLE_NONE, VX_HANDLE_NONE, &io[i]);
+    reads[i] = stage_reads(fd, i);
+    if (!(i >= 3 && passed_file(fd))) st = stage_io(fd, reads[i], VX_HANDLE_NONE, VX_HANDLE_NONE, &io[i]);
   }
   vx_handle task = VX_HANDLE_NONE;
-  if (st == VX_OK) st = spawn(argv->next, false, io, &task, true); // returns only if it failed
+  if (st == VX_OK) st = spawn(argv->next, false, io, reads, efd, &task, true); // returns only if it failed
   vx_str why = p9_error_text(st);
   say("", word_str(argv->next), ": ");
   say("", why, "\n");
@@ -1008,6 +1132,7 @@ const char *vx_main(void) {
                   .read_line = read_line};
   static const char *const HOST_BUILTINS[] = {"cd", "bind", "mount", "unmount", nullptr};
   host.builtin_names = HOST_BUILTINS;
+  host.pipefd = pipe_fd;
   sh = rc_new(heap, sizeof heap, &host);
   if (!sh) return "no memory";
   import_env();

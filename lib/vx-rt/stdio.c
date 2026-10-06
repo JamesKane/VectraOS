@@ -103,12 +103,18 @@ static void vx_console_print(vx_str s) {
 // stdout is a pipe, so they never reach the next program as data. Without
 // stdin, vx_read reads the console.
 
-static struct {
-  vx_handle in, out, err, port;
-  alignas(vx_msg_header) uint8_t msg[sizeof(vx_msg_header) + 4096]; // stdin's current message,
+// A pipe's reading end, read as a stream: its messages' bytes in turn.
+typedef struct vx_pipe_in {
+  vx_handle end, port;
+  alignas(vx_msg_header) uint8_t msg[sizeof(vx_msg_header) + 4096]; // the current message,
   uint32_t msg_len, msg_pos;                                        // and how much of it has been read
-  bool in_ended;
-  bool closed_bound; // PEER_CLOSED on stdin is bound once; it fires once
+  bool ended;
+  bool closed_bound; // PEER_CLOSED is bound once; it fires once
+} vx_pipe_in;
+
+static struct {
+  vx_handle in, out, err;
+  vx_pipe_in reader; // stdin's
   size_t len;
   alignas(vx_msg_header) uint8_t line[sizeof(vx_msg_header) + 512]; // stdout's line, after a header
   size_t err_len;
@@ -166,31 +172,106 @@ static void vx_stderr_flush(void) {
   }
 }
 
+// Reads up to count bytes from a pipe: 0 at its end, or a negative vx_status.
+static int64_t vx_pipe_read(vx_pipe_in *p, void *buf, uint32_t count) {
+  while (p->msg_pos == p->msg_len && !p->ended) {
+    vx_msg_size size;
+    vx_status st = vx_channel_read(p->end, p->msg, sizeof p->msg, nullptr, 0, &size);
+    if (st == VX_OK && size.bytes >= sizeof(vx_msg_header)) {
+      p->msg_len = size.bytes;
+      p->msg_pos = sizeof(vx_msg_header);
+    } else if (st == VX_ERR_SHOULD_WAIT) {
+      vx_packet pk;
+      if (!p->port && vx_port_create(0, &p->port) != VX_OK) return VX_ERR_NO_MEMORY;
+      vx_port_bind(p->port, p->end, VX_TRIGGER_READABLE, 0, 0);
+      if (!p->closed_bound) // once: binding it each time would leave one per read behind
+        p->closed_bound = vx_port_bind(p->port, p->end, VX_TRIGGER_PEER_CLOSED, 1, 0) == VX_OK;
+      vx_port_wait(p->port, VX_INFINITE, 0, &pk, 1);
+    } else if (st != VX_OK) {
+      p->ended = true; // the writer has gone (or sent what we cannot read)
+    }
+  }
+  uint32_t n = p->msg_len - p->msg_pos;
+  if (n > count) n = count;
+  memcpy(buf, p->msg + p->msg_pos, n);
+  p->msg_pos += n;
+  return n;
+}
+
 // Reads up to count bytes of standard input: 0 at its end, or a negative vx_status.
 [[maybe_unused]] static int64_t vx_read(void *buf, uint32_t count) {
   if (!vx_stdio.in) return vx_console_read(buf, count);
   if (vx_stdio.len) vx_stdout_flush();
-  while (vx_stdio.msg_pos == vx_stdio.msg_len && !vx_stdio.in_ended) {
-    vx_msg_size size;
-    vx_status st = vx_channel_read(vx_stdio.in, vx_stdio.msg, sizeof vx_stdio.msg, nullptr, 0, &size);
-    if (st == VX_OK && size.bytes >= sizeof(vx_msg_header)) {
-      vx_stdio.msg_len = size.bytes;
-      vx_stdio.msg_pos = sizeof(vx_msg_header);
-    } else if (st == VX_ERR_SHOULD_WAIT) {
-      vx_packet pk;
-      if (!vx_stdio.port && vx_port_create(0, &vx_stdio.port) != VX_OK) return VX_ERR_NO_MEMORY;
-      vx_port_bind(vx_stdio.port, vx_stdio.in, VX_TRIGGER_READABLE, 0, 0);
-      if (!vx_stdio.closed_bound) // once: binding it each time would leave one per read behind
-        vx_stdio.closed_bound =
-            vx_port_bind(vx_stdio.port, vx_stdio.in, VX_TRIGGER_PEER_CLOSED, 1, 0) == VX_OK;
-      vx_port_wait(vx_stdio.port, VX_INFINITE, 0, &pk, 1);
-    } else if (st != VX_OK) {
-      vx_stdio.in_ended = true; // the writer has gone (or sent what we cannot read)
+  vx_stdio.reader.end = vx_stdio.in;
+  return vx_pipe_read(&vx_stdio.reader, buf, count);
+}
+
+// --- Descriptors 3 to 9 (M6 step 6d7b2, ADR-0040) ---
+//
+// The spawn message's fd= records (musl's back end's format): fd=N
+// pipe=read|write end=NAME, a channel end carrying the pipe protocol; or fd=N
+// file=PATH flags=F offset=O [token=T], an open file, which a token joins.
+// A program passes them on to its own children (rc) and opens them as /fd/N
+// (vx-ns).
+
+static constexpr uint32_t VX_FDS = 10;
+
+typedef struct vx_fd_entry {
+  vx_handle end; // a pipe's
+  bool reader;   // the reading end
+  bool file;     // an open file instead: where it is, how it was opened, and where it was at
+  uint32_t flags;
+  uint64_t offset;
+  size_t path_len;
+  char path[256];
+  bool has_token; // a token to join it by, good once
+  uint8_t token[16];
+} vx_fd_entry;
+
+static vx_fd_entry vx_fds[VX_FDS];
+
+// Descriptor fd's open-file record, 3 to 9; nullptr if it is not one.
+[[maybe_unused]] static vx_fd_entry *vx_fd_file(uint32_t fd) {
+  return fd >= 3 && fd < VX_FDS && vx_fds[fd].file ? &vx_fds[fd] : nullptr;
+}
+
+// Descriptor fd's channel end, and whether it is a reading end (0 to 2 are
+// stdin, stdout and stderr); VX_HANDLE_NONE if the process has none.
+[[maybe_unused]] static vx_handle vx_fd(uint32_t fd, bool *reader) {
+  *reader = fd == 0;
+  if (fd == 0) return vx_stdio.in;
+  if (fd == 1 || fd == 2) return fd == 1 ? vx_stdio.out : vx_stdio.err;
+  if (fd >= VX_FDS) return VX_HANDLE_NONE;
+  *reader = vx_fds[fd].reader;
+  return vx_fds[fd].end;
+}
+
+[[maybe_unused]] static void vx_fds_from_spawn(void) { // vx-rt's start; musl's back end reads them itself
+  static char scratch[VX_CHANNEL_MAX_BYTES];
+  vx_ndb_reader r = {.src = vx_spawn.text, .scratch = scratch, .scratch_cap = sizeof scratch};
+  vx_ndb_record rec;
+  while (vx_ndb_next(&r, &rec) == VX_NDB_RECORD) {
+    uint64_t fd;
+    if (!vx_ndb_get_u64(&rec, "fd", &fd) || fd < 3 || fd >= VX_FDS) continue;
+    if (vx_ndb_has(&rec, "file")) { // an open file: opened, or joined, when /fd/N is
+      vx_str path = vx_ndb_get(&rec, "file"), token = vx_ndb_get(&rec, "token");
+      uint64_t flags = 0, offset = 0;
+      if (path.len >= sizeof vx_fds[fd].path) continue;
+      vx_ndb_get_u64(&rec, "flags", &flags), vx_ndb_get_u64(&rec, "offset", &offset);
+      vx_fds[fd] =
+          (vx_fd_entry){.file = true, .flags = (uint32_t)flags, .offset = offset, .path_len = path.len};
+      memcpy(vx_fds[fd].path, path.ptr, path.len);
+      if (token.len == 16) memcpy(vx_fds[fd].token, token.ptr, 16), vx_fds[fd].has_token = true;
+      continue;
     }
+    if (!vx_ndb_has(&rec, "pipe")) continue;
+    char name[16] = {};
+    vx_str h = vx_ndb_get(&rec, "end");
+    if (h.len >= sizeof name) continue;
+    memcpy(name, h.ptr, h.len);
+    vx_handle end = vx_spawn_take(name);
+    if (!end) continue;
+    if (vx_fds[fd].end) vx_handle_close(vx_fds[fd].end);
+    vx_fds[fd].end = end, vx_fds[fd].reader = vx_ndb_get(&rec, "pipe").len == 4; // "read"
   }
-  uint32_t n = vx_stdio.msg_len - vx_stdio.msg_pos;
-  if (n > count) n = count;
-  memcpy(buf, vx_stdio.msg + vx_stdio.msg_pos, n);
-  vx_stdio.msg_pos += n;
-  return n;
 }

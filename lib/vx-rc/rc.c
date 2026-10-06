@@ -673,6 +673,7 @@ typedef enum rc_nk : uint8_t {
   N_ASSIGN,
   N_REDIR,
   N_DUP,
+  N_PIPEFD, // <{...} or >{...}: a: the body; rkind: RC_FD_READ (the command reads) or RC_FD_WRITE
 } rc_nk;
 
 typedef struct rc_node {
@@ -698,6 +699,7 @@ typedef enum rc_fk : uint8_t {
   F_FNBODY,     // a: the names
   F_BACKQBODY,  // `{ ... }; b: the ifs words, or none
   F_BACKQWAIT,  // `word: its { next; a: the word
+  F_PIPEFDBODY, // <{ ... } or >{ ... }; rkind: which
   F_PREFIX,     // op, prec; a, b, fd0, fd1, rkind: what it holds
   F_BIN,        // op, prec, fd0, fd1
   F_SIMPLE,     // a: its words' head, b: its redirections' head; c, d: their tails
@@ -982,6 +984,13 @@ static rc_pstate rc_list_done(rc_parser *p) {
     rc_pushval(p, n);
     return S_AFTERCMD;
   }
+  case F_PIPEFDBODY: {
+    int32_t n = rc_node_new(p, N_PIPEFD, list.a, RC_NONE, RC_NONE);
+    if (n != RC_NONE) p->nodes[n].rkind = up.rkind;
+    rc_from(p, n, up.from);
+    rc_pushval(p, n);
+    return S_AFTERATOM;
+  }
   case F_BACKQBODY: {
     int32_t n = rc_node_new(p, N_BACKQ, list.a, up.b, RC_NONE);
     rc_from(p, n, up.from);
@@ -1153,6 +1162,14 @@ static rc_pstate rc_aftercmd(rc_parser *p) {
   return S_CMD;
 }
 
+// Whether the next tokens are < or > and a brace: <{...} or >{...}, a word
+// (rc's REDIR brace, PIPEFD), not a redirection.
+static bool rc_is_pipefd(rc_parser *p) {
+  const rc_token *t = rc_peek(p);
+  if (t->kind != TK_REDIR || (t->rkind != RC_FD_READ && t->rkind != RC_FD_WRITE)) return false;
+  return rc_peek2(p)->kind == TK_LBRACE;
+}
+
 // Words being gathered: for a simple command, a ( ) list, fn's names, ~'s patterns.
 static rc_pstate rc_collect(rc_parser *p) {
   rc_pframe *f = rc_top(p);
@@ -1171,7 +1188,7 @@ static rc_pstate rc_collect(rc_parser *p) {
     return S_WORD;
   }
   if (t->kind == TK_WORD || t->kind == TK_DOLLAR || t->kind == TK_COUNT || t->kind == TK_JOIN ||
-      t->kind == TK_BACKQ || t->kind == TK_LP)
+      t->kind == TK_BACKQ || t->kind == TK_LP || rc_is_pipefd(p))
     return S_WORD;
   if (f->kind == F_SIMPLE && t->kind == TK_REDIR) {
     rc_token r = rc_take(p);
@@ -1270,6 +1287,11 @@ static rc_pstate rc_atom(rc_parser *p) {
     }
     rc_push(p, (rc_pframe){.kind = F_WANT, .purpose = W_BACKQ, .from = t.at});
     return S_WORD;
+  case TK_REDIR: // <{ or >{, as rc_is_pipefd found: the brace next
+    rc_take(p);
+    rc_push(p, (rc_pframe){.kind = F_PIPEFDBODY, .rkind = t.rkind, .from = t.at});
+    rc_push(p, (rc_pframe){.kind = F_LIST, .term = TK_RBRACE, .a = RC_NONE});
+    return S_CMD;
   case TK_LP:
     rc_push(
         p, (rc_pframe){
@@ -1411,6 +1433,7 @@ typedef enum rc_op : uint8_t {
   X_POPREDIR, // a: how many
   X_RDCMDS,   // the frame's reader: the next command read, compiled and run, then this again (rc's Xrdcmds)
   X_EFLAG,    // -e: exit unless $status is true
+  X_PIPEFD,   // f0: RC_FD_READ or RC_FD_WRITE; the top list a child's code and $*: /fd/N onto the list below
 } rc_op;
 
 typedef struct rc_inst {
@@ -1609,17 +1632,25 @@ static int rc_iflast(rc_compiler *c, const rc_citem *it, const rc_node *t, rc_ci
 // A command a child rc runs (6d7b1), as 9front's rc forks for it: node n's
 // text, a word, then $*, the child's, as the command's words; a stage, or a
 // command run now or with &. What it sets is the child's, never the shell's.
-static void rc_emit_child(rc_compiler *c, const rc_citem *it) {
-  const rc_node *t = &c->nodes[it->node];
-  if (!t->from || t->to <= t->from) {
-    c->why = "no text for code run in a child";
-    return;
-  }
+// Node n's text, then $*, a list: what a child runs.
+static bool rc_emit_code(rc_compiler *c, int32_t n) {
+  const rc_node *t = n >= 0 ? &c->nodes[n] : nullptr;
+  if (!t || !t->from || t->to <= t->from) return c->why = "no text for code run in a child", false;
   rc_emit(c, X_MARK, 0, 0, 0, 0);
   rc_emit_word(c, t->from, (size_t)(t->to - t->from));
   rc_emit(c, X_MARK, 0, 0, 0, 0);
   rc_emit_word(c, "*", 1);
   rc_emit(c, X_DOL, 0, 0, 0, 0);
+  return true;
+}
+
+// <{body} or >{body}: the body a child's, X_PIPEFD its word.
+static void rc_emit_pipefd(rc_compiler *c, const rc_node *t) {
+  if (rc_emit_code(c, t->a)) rc_emit(c, X_PIPEFD, t->rkind, 0, 0, 0);
+}
+
+static void rc_emit_child(rc_compiler *c, const rc_citem *it) {
+  if (!rc_emit_code(c, it->node)) return;
   if (it->stage)
     rc_emit(c, X_STAGE, it->out_fd, it->in_fd, 0, 1);
   else
@@ -1705,6 +1736,7 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
   } while (0)
     switch (t->kind) {
     case N_WORD: rc_emit_word(c, t->s, t->len); break;
+    case N_PIPEFD: rc_emit_pipefd(c, t); break;
     case N_DOL:
     case N_COUNT:
     case N_JOIN:
@@ -2469,6 +2501,14 @@ static void rc_undo_redir(rc *r, bool close, uint32_t handle, rc_word *path) {
   rc_freewords(r, path);
 }
 
+// How many of the redirections on top are <{...}s: the command's, made as its
+// words were, let go once it has run.
+static uint32_t rc_npipefds(const rc *r) {
+  uint32_t n = 0;
+  while (n < r->nredirs && r->redirs[r->nredirs - 1 - n].to.kind == RC_FD_PIPEFD) n++;
+  return n;
+}
+
 // The stages from base on let go, and the files and words only they used.
 static void rc_free_stages(rc *r, uint32_t base) {
   for (uint32_t i = base; i < r->nstages; i++) rc_freewords(r, (rc_word *)r->stages[i].cmd.argv);
@@ -2960,6 +3000,35 @@ static void rc_run_child(rc *r, rc_word *argv, bool async) {
   rc_freewords(r, argv);
 }
 
+// <{code} or >{code} (6d7b2), as 9front's Xpipefd: a pipe, code started on
+// its far end in a child, not waited for; the near end the command's next
+// free descriptor from 3, N, a redirection until it has run, and /fd/N
+// (ADR-0040) its word, onto the list below.
+static void rc_pipefd(rc *r, rc_word *code, bool command_reads) {
+  uint8_t fd = 3;
+  for (bool taken = true; taken && fd < RC_FDS;) {
+    taken = false;
+    for (uint32_t i = 0; i < r->nredirs && !taken; i++) taken = r->redirs[i].fd == fd;
+    if (taken) fd++;
+  }
+  if (fd == RC_FDS || r->nredirs == RC_REDIRS || !r->host.pipefd) {
+    rc_freewords(r, code);
+    return rc_fail(r, nullptr, "no descriptor for <{...}", nullptr);
+  }
+  rc_command cmd = {.argv = code, .argc = rc_count(code), .child = true};
+  rc_fds(r, cmd.fds);
+  uint32_t handle = 0;
+  bool made = r->host.pipefd(r->host.ctx, r, &cmd, command_reads, &handle);
+  rc_freewords(r, code);
+  if (!made) return rc_fail(r, nullptr, "can't make pipe", nullptr);
+  char name[] = "/fd/N";
+  name[4] = (char)('0' + fd);
+  rc_word *w = rc_newword(r, name, 5), *path = rc_newword(r, name, 5);
+  r->redirs[r->nredirs++] = (rc_redir){
+      .fd = fd, .to = {.kind = RC_FD_PIPEFD, .dup = command_reads, .handle = handle}, .path = path};
+  if (w) rc_listadd(rc_toplist(r), w);
+}
+
 static void rc_simple(rc *r, rc_word *argv, bool async, bool apart, bool child) {
   if (child) return rc_run_child(r, argv, async);
   argv = rc_globlist(r, argv);
@@ -3277,7 +3346,10 @@ static void rc_execute(rc *r, uint32_t base) {
         rc_freewords(r, c);
       break;
     }
-    case X_SIMPLE: rc_simple(r, rc_poplist(r), in->f0, in->f1, in->b); break;
+    case X_SIMPLE:
+      rc_simple(r, rc_poplist(r), in->f0, in->f1, in->b);
+      rc_pop_redirs(r, r->nredirs - rc_npipefds(r)); // its <{...}s, now it has run
+      break;
     case X_STAGE: { // a: its own redirections, the top of the stack; b: a child's code and $*
       rc_word *argv = in->b ? rc_poplist(r) : rc_globlist(r, rc_poplist(r));
       bool child = in->b;
@@ -3298,15 +3370,18 @@ static void rc_execute(rc *r, uint32_t base) {
       *st = (rc_stage){.cmd = {.argv = argv, .argc = rc_count(argv), .child = child}};
       // As rc does in the child: what encloses the pipeline, then the pipe
       // ends, then the stage's own redirections, which may move them.
-      uint32_t own = r->nredirs >= in->a ? r->nredirs - in->a : 0;
+      uint32_t pf = rc_npipefds(r); // its <{...}s, above its own
+      uint32_t own = r->nredirs >= in->a + pf ? r->nredirs - in->a - pf : 0;
       rc_fd *fds = st->cmd.fds;
       for (uint32_t i = 0; i < RC_FDS; i++) fds[i] = (rc_fd){.kind = RC_FD_INHERIT, .dup = (uint8_t)i};
       rc_apply_redirs(r, fds, 0, own);
       if (in->f0 < RC_FDS) fds[in->f0] = (rc_fd){.kind = RC_FD_PIPE_OUT};
       if (in->f1 < RC_FDS) fds[in->f1] = (rc_fd){.kind = RC_FD_PIPE_IN};
       rc_apply_redirs(r, fds, own, r->nredirs);
+      rc_pop_redirs(r, r->nredirs - pf); // kept with the gathered stages until they run
       break;
     }
+    case X_PIPEFD: rc_pipefd(r, rc_poplist(r), in->f0 == RC_FD_READ); break;
     case X_PIPELINE: { // a: how many stages, the last gathered
       rc_command cmds[RC_STAGES];
       uint32_t first = r->nstages >= in->a ? r->nstages - in->a : 0, stages = r->nstages - first;
