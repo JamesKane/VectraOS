@@ -96,6 +96,10 @@ struct vx_ns {
   void (*refresh)(vx_ns *ns);
   vx_status (*publish)(vx_ns *ns, uint8_t new_conn);
   bool quiet; // a refresh is replaying the group's table: no hooks
+  // The process's current directory (ADR-0039; vx-rt's vx_getwd), which a
+  // relative name is resolved against: its length into buf, or 0. Null: a
+  // relative name is refused (host tests).
+  size_t (*getwd)(char *buf, size_t cap);
 };
 
 static void ns_catch_up(vx_ns *ns) {
@@ -132,6 +136,20 @@ static void ns_catch_up(vx_ns *ns) {
     len += n;
   }
   return len;
+}
+
+// A name as an absolute, clean path (vx_ns_clean): a relative one joined to
+// the current directory first (ADR-0039), its .. cleaned away against it, as
+// 9front's .. follows its dot's name. 0 as vx_ns_clean, or with no current
+// directory to resolve against.
+static size_t ns_clean(const vx_ns *ns, vx_str in, char *out, size_t cap) {
+  if (!in.len || in.ptr[0] == '/') return vx_ns_clean(in, out, cap);
+  char joined[2 * VX_NS_MAX_PATH];
+  size_t d = ns->getwd ? ns->getwd(joined, VX_NS_MAX_PATH) : 0;
+  if (!d || d + 1 + in.len > sizeof joined) return 0;
+  joined[d] = '/';
+  memcpy(joined + d + 1, in.ptr, in.len);
+  return vx_ns_clean((vx_str){joined, d + 1 + in.len}, out, cap);
 }
 
 static vx_ns_entry *ns_exact(vx_ns *ns, vx_str path) {
@@ -300,7 +318,7 @@ static vx_status ns_resolve(vx_ns *ns, vx_str path, vx_ns_at *out) {
 [[maybe_unused]] static vx_status vx_ns_walk(vx_ns *ns, vx_str path, p9_client **c, uint32_t *fid) {
   ns_catch_up(ns);
   char clean[VX_NS_MAX_PATH];
-  size_t n = vx_ns_clean(path, clean, sizeof clean);
+  size_t n = ns_clean(ns, path, clean, sizeof clean);
   if (!n) return VX_ERR_INVALID;
   vx_ns_at at;
   vx_status st = ns_resolve(ns, (vx_str){clean, n}, &at);
@@ -308,6 +326,23 @@ static vx_status ns_resolve(vx_ns *ns, vx_str path, vx_ns_at *out) {
   *c = ns->conns[at.conn].client;
   *fid = at.fid;
   return VX_OK;
+}
+
+// Whether path names a directory, for a change of the current directory
+// (ADR-0039): its absolute, clean form into out (VX_NS_MAX_PATH bytes) and
+// its length into *len. INVALID if it is not a directory, or the walk's error.
+[[maybe_unused]] static vx_status vx_ns_dir_check(vx_ns *ns, vx_str path, char *out, size_t *len) {
+  *len = ns_clean(ns, path, out, VX_NS_MAX_PATH);
+  if (!*len) return VX_ERR_INVALID;
+  p9_client *c;
+  uint32_t fid;
+  vx_status st = vx_ns_walk(ns, (vx_str){out, *len}, &c, &fid);
+  if (st != VX_OK) return st;
+  p9_stat sb;
+  st = p9c_stat(c, fid, &sb, nullptr);
+  p9c_clunk(c, fid);
+  if (st == VX_OK && !(sb.mode & P9_DMDIR)) st = VX_ERR_INVALID;
+  return st;
 }
 
 // The connector of the first mount at the path `path` was made at (a spawner
@@ -404,7 +439,7 @@ static vx_status ns_add(vx_ns *ns, vx_str old, vx_ns_member m, uint8_t flags) {
 static vx_status ns_mount_raw(vx_ns *ns, p9_client *c, vx_handle connector, vx_str src, vx_str aname,
                               vx_str old, uint8_t flags) {
   char clean[VX_NS_MAX_PATH];
-  size_t n = vx_ns_clean(old, clean, sizeof clean);
+  size_t n = ns_clean(ns, old, clean, sizeof clean);
   if (!n || src.len > VX_NS_MAX_SRC || aname.len > VX_NS_MAX_PATH) return VX_ERR_INVALID;
   uint8_t slot = VX_NS_MAX_CONNS;
   for (uint8_t i = 0; i < VX_NS_MAX_CONNS; i++) {
@@ -434,7 +469,7 @@ static vx_status ns_mount_raw(vx_ns *ns, p9_client *c, vx_handle connector, vx_s
 // vx_ns_bind's change, to this table alone.
 static vx_status ns_bind_raw(vx_ns *ns, vx_str new, vx_str old, uint8_t flags) {
   char from[VX_NS_MAX_PATH], to[VX_NS_MAX_PATH];
-  size_t fn = vx_ns_clean(new, from, sizeof from), tn = vx_ns_clean(old, to, sizeof to);
+  size_t fn = ns_clean(ns, new, from, sizeof from), tn = ns_clean(ns, old, to, sizeof to);
   if (!fn || !tn) return VX_ERR_INVALID;
   vx_ns_at src;
   vx_status st = ns_resolve(ns, (vx_str){from, fn}, &src);
@@ -467,7 +502,7 @@ static vx_status ns_bind_raw(vx_ns *ns, vx_str new, vx_str old, uint8_t flags) {
 // vx_ns_unmount's change, to this table alone.
 static vx_status ns_unmount_raw(vx_ns *ns, vx_str new, vx_str old) {
   char to[VX_NS_MAX_PATH], from[VX_NS_MAX_PATH];
-  size_t tn = vx_ns_clean(old, to, sizeof to), fn = new.len ? vx_ns_clean(new, from, sizeof from) : 0;
+  size_t tn = ns_clean(ns, old, to, sizeof to), fn = new.len ? ns_clean(ns, new, from, sizeof from) : 0;
   if (!tn || (new.len && !fn)) return VX_ERR_INVALID;
   vx_ns_at at; // the mount point there, by identity, or by the path it was made at
   vx_ns_entry *e = nullptr;
@@ -691,7 +726,7 @@ typedef struct vx_ns_file {
   ns_catch_up(ns);
   *f = (vx_ns_file){.ns = ns};
   char clean[VX_NS_MAX_PATH];
-  size_t n = vx_ns_clean(path, clean, sizeof clean);
+  size_t n = ns_clean(ns, path, clean, sizeof clean);
   if (!n) return VX_ERR_INVALID;
   vx_ns_at at;
   vx_status st = ns_resolve(ns, (vx_str){clean, n}, &at);
@@ -712,7 +747,7 @@ typedef struct vx_ns_file {
   ns_catch_up(ns);
   *f = (vx_ns_file){.ns = ns};
   char clean[VX_NS_MAX_PATH];
-  size_t n = vx_ns_clean(path, clean, sizeof clean), slash = n;
+  size_t n = ns_clean(ns, path, clean, sizeof clean), slash = n;
   while (slash > 0 && clean[slash - 1] != '/') slash--;
   if (!n || slash == n) return VX_ERR_INVALID; // "/" itself
   vx_str dir = {clean, slash > 1 ? slash - 1 : 1}, name = {clean + slash, n - slash};

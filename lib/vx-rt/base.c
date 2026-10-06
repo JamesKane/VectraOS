@@ -705,6 +705,42 @@ typedef struct vx_spawn_info {
 static vx_spawn_info vx_spawn;
 static vx_handle vx_self; // the task's handle to itself, or VX_HANDLE_NONE
 
+// --- The current directory (M6 step 6d7a, ADR-0039) ---
+//
+// One for the process, an absolute and clean path (as vx-ns's vx_ns_clean
+// makes them), at most 255 bytes: the spawn message's cwd=, else /. vx-ns
+// resolves relative names against it, and its vx_chdir changes it; musl's
+// back end keeps its working directory here too.
+
+static constexpr size_t VX_WD_MAX = 256; // as vx-ns's VX_NS_MAX_PATH, its NUL included
+
+static struct {
+  vx_mutex lock;
+  size_t len;
+  char path[VX_WD_MAX];
+} vx_wd = {.len = 1, .path = "/"};
+
+// The current directory into buf, NUL-ended: its length, or 0 if it needs more
+// than cap bytes.
+[[maybe_unused]] static size_t vx_getwd(char *buf, size_t cap) {
+  vx_mutex_lock(&vx_wd.lock);
+  size_t n = vx_wd.len;
+  if (n < cap) memcpy(buf, vx_wd.path, n), buf[n] = 0;
+  vx_mutex_unlock(&vx_wd.lock);
+  return n < cap ? n : 0;
+}
+
+// Sets the current directory to path, absolute and clean, which the caller
+// has found to be a directory (vx_chdir; musl's chdir). False if it is too long.
+[[maybe_unused]] static bool vx_wd_set(vx_str path) {
+  if (!path.len || path.ptr[0] != '/' || path.len >= VX_WD_MAX) return false;
+  vx_mutex_lock(&vx_wd.lock);
+  memcpy(vx_wd.path, path.ptr, path.len);
+  vx_wd.path[path.len] = 0, vx_wd.len = path.len;
+  vx_mutex_unlock(&vx_wd.lock);
+  return true;
+}
+
 alignas(vx_msg_header) static uint8_t vx_spawn_msg[VX_CHANNEL_MAX_BYTES]; // read as a header first
 static char vx_spawn_scratch[VX_CHANNEL_MAX_BYTES];                       // decoded values, which never grow
 
@@ -763,6 +799,8 @@ static void vx_read_spawn(vx_handle bootstrap) {
       vx_spawn.argv0 = vx_ndb_get(&rec, "argv0");
     } else if (vx_ndb_has(&rec, "user")) {
       vx_spawn.user = vx_ndb_get(&rec, "user");
+    } else if (vx_ndb_has(&rec, "cwd")) {
+      vx_wd_set(vx_ndb_get(&rec, "cwd")); // the parent's directory; one not absolute leaves /
     } else if (vx_ndb_has(&rec, "env")) {
       ok = vx_spawn.envc < VX_SPAWN_MAX_ARGS;
       if (ok) vx_spawn.envs[vx_spawn.envc++] = vx_ndb_get(&rec, "env");

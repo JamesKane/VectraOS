@@ -225,7 +225,7 @@ static long posix_wait4(long pid, int *status, int options, struct rusage *ru) {
 //
 // The parent builds the child (vx-rt's spawn.c) from the program's file: it
 // gives it the namespace, the console, its arguments and environment, its
-// descriptors and working directory (fd.c's fd= and cwd= records), and
+// descriptors (fd.c's fd= records) and working directory (vx-ns's cwd=, ADR-0039), and
 // registers it with procfs before it runs (posix_spawn), in the group or
 // session posix_spawn's attributes ask for; execve goes on in this task
 // (ADR-0012). musl's posix_spawn, whose child is a clone that calls execve,
@@ -389,8 +389,7 @@ static long spawn_actions(const posix_spawn_file_actions_t *fa, fd_slot *vt, cha
                           size_t *restore_len) {
   for (int i = 0; i < FD_MAX; i++)
     if ((vt[i] = fd_table[i]).o) vt[i].o->refs++;
-  memcpy(restore, fd_cwd, fd_cwd_len + 1);
-  *restore_len = fd_cwd_len;
+  *restore_len = vx_getwd(restore, VX_WD_MAX);
   if (!fa || !fa->__actions) return 0;
   const struct fdop *op = fa->__actions; // newest first: applied from the oldest
   while (op->next) op = op->next;
@@ -426,9 +425,7 @@ static long spawn_actions(const posix_spawn_file_actions_t *fa, fd_slot *vt, cha
       const ofd *d = op->fd >= 0 && op->fd < FD_MAX ? vt[op->fd].o : nullptr;
       if (!d) return -EBADF;
       if (d->kind != OFD_FILE || !d->dir) return -ENOTDIR;
-      memcpy(fd_cwd, d->path, d->path_len);
-      fd_cwd[d->path_len] = 0;
-      fd_cwd_len = d->path_len;
+      if (!vx_wd_set((vx_str){d->path, d->path_len})) return -ENAMETOOLONG;
       break;
     }
     default: r = -EINVAL; break;
@@ -451,14 +448,13 @@ int posix_spawn(pid_t *restrict pid, const char *restrict path, const posix_spaw
   // of the back end's work. It waits, as in a call, until the child is made.
   sig_depth = sig_depth + 1;
   static fd_slot vt[FD_MAX];
-  char cwd[VX_NS_MAX_PATH];
+  char cwd[VX_WD_MAX];
   size_t cwd_len;
   long r = spawn_actions(fa, vt, cwd, &cwd_len);
   if (r == 0) r = spawn_image(path, attr && attr->__fn, argv, envp, vt, &ctx); // posix_spawnp sets __fn
   for (int i = 0; i < FD_MAX; i++)
     if (vt[i].o) ofd_release(vt[i].o);
-  memcpy(fd_cwd, cwd, cwd_len + 1);
-  fd_cwd_len = cwd_len;
+  vx_wd_set((vx_str){cwd, cwd_len}); // as it was before the file actions
   sig_depth = sig_depth - 1;
   if (sig_depth == 0) sig_deliver_pending();
   if (r < 0) return (int)-r;

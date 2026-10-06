@@ -1232,7 +1232,8 @@ static bool build_kernel(const arch *a, bool release) {
 // The user programs in the boot image, each one translation unit (04 §1.1).
 // Where a program goes: a Limine module, which the kernel can start as the root
 // task; boot/bin in bootfs, where svcd finds it; or boot/bin only in the test
-// images whose scenario names it with `with=`, together with its manifest.
+// images whose scenario names it with `with=`, together with its manifest if
+// it has one (one without is run by another test).
 typedef enum placement : uint8_t { IN_MODULE, IN_BOOTFS, IN_TESTS } placement;
 
 typedef struct program {
@@ -1294,6 +1295,7 @@ static const program USER_PROGRAMS[] = {
     {"cat", "cmd/cat.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"srv", "cmd/srv.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"echo", "cmd/echo.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"pwd", "cmd/pwd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"ps", "cmd/ps.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"ns", "cmd/ns.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"tail", "cmd/tail.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
@@ -1324,6 +1326,7 @@ static const program USER_PROGRAMS[] = {
     {"dbgdemo", "tests/user/dbgdemo.c", IN_TESTS, nullptr, false, nullptr, nullptr},
     {"dbgthreads", "tests/user/dbgthreads.c", IN_TESTS, nullptr, false, nullptr, nullptr},
     {"schedtest", "tests/user/schedtest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
+    {"cdtest", "tests/user/cdtest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
 };
 
 static bool program_for(const program *p, const arch *a) { return !p->arch || strcmp(p->arch, a->name) == 0; }
@@ -2585,9 +2588,11 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
   }
   for (int i = 0; i < USER_PROGRAM_COUNT; i++) {
     if (USER_PROGRAMS[i].where != IN_TESTS || !listed(with, USER_PROGRAMS[i].name)) continue;
-    bootfs_room(count);
-    files[count] = read_file(fmt("tests/user/%s.ndb", USER_PROGRAMS[i].name));
-    paths[count++] = fmt("boot/svc/%s.ndb", USER_PROGRAMS[i].name);
+    if (exists(fmt("tests/user/%s.ndb", USER_PROGRAMS[i].name))) { // none: another test runs it
+      bootfs_room(count);
+      files[count] = read_file(fmt("tests/user/%s.ndb", USER_PROGRAMS[i].name));
+      paths[count++] = fmt("boot/svc/%s.ndb", USER_PROGRAMS[i].name);
+    }
     if (exists(fmt("tests/user/%s.cmds", USER_PROGRAMS[i].name))) { // a dbg script
       bootfs_room(count);
       files[count] = read_file(fmt("tests/user/%s.cmds", USER_PROGRAMS[i].name));

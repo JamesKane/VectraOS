@@ -369,6 +369,7 @@ static vx_status vx_ns_group_make(vx_ns *ns) {
 
 [[maybe_unused]] static vx_status vx_ns_from_spawn(vx_ns *ns) {
   p9c_user = vx_spawn.user; // its attaches name its user (docs/11 §9)
+  ns->getwd = vx_getwd;     // relative names from the current directory (ADR-0039)
   vx_ns_group.srv = vx_spawn_take("srv:nsd");
   vx_handle chan = vx_spawn_take("nsgroup");
   if (chan) return vx_ns_group_join(ns, chan);
@@ -430,7 +431,8 @@ static vx_status vx_ns_copy_records(const vx_ns *ns, vx_ndb_writer *w, vx_handle
   return VX_ERR_RANGE;
 }
 
-// The namespace for a child, as spawn records and handles (02 §2). As Plan
+// The namespace for a child, as spawn records and handles (02 §2), and the
+// current directory it starts in (cwd=, ADR-0039). As Plan
 // 9's rfork shares a namespace unless asked not to, the child joins this
 // process's namespace group (ADR-0009), made now if this is the first child
 // to share it: a channel to nsd for it ("nsgroup"). Without nsd, a copy
@@ -441,6 +443,9 @@ static vx_status vx_ns_copy_records(const vx_ns *ns, vx_ndb_writer *w, vx_handle
                                                       vx_str *names, uint32_t *count, uint32_t cap) {
   if (cap > VX_CHANNEL_MAX_HANDLES) cap = VX_CHANNEL_MAX_HANDLES;
   if (*count + 2 > cap) return VX_ERR_NO_MEMORY;
+  char wd[VX_WD_MAX]; // the child starts where this process is (ADR-0039)
+  size_t wn = vx_getwd(wd, sizeof wd);
+  if (wn) vx_ndb_put(w, "cwd", (vx_str){wd, wn}), vx_ndb_end(w);
   vx_status st = VX_ERR_NOT_FOUND;
   if (!vx_ns_group.chan) vx_ns_group_make(ns); // NOT_FOUND without nsd: a copy, below
   if (vx_ns_group.chan) {
@@ -454,6 +459,17 @@ static vx_status vx_ns_copy_records(const vx_ns *ns, vx_ndb_writer *w, vx_handle
   if (st == VX_OK && vx_ns_group.srv &&
       vx_handle_dup(vx_ns_group.srv, VX_RIGHTS_SAME, &handles[*count]) == VX_OK)
     names[(*count)++] = VX_STR("srv:nsd");
+  return st;
+}
+
+// Changes the current directory to path (ADR-0039): resolved, walked and
+// found to be a directory, else refused (INVALID if it is not one) and left
+// as it was. libvx's (6e1), until libvx.
+[[maybe_unused]] static vx_status vx_chdir(vx_ns *ns, vx_str path) {
+  char clean[VX_NS_MAX_PATH];
+  size_t len;
+  vx_status st = vx_ns_dir_check(ns, path, clean, &len);
+  if (st == VX_OK && !vx_wd_set((vx_str){clean, len})) st = VX_ERR_RANGE;
   return st;
 }
 

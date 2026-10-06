@@ -64,7 +64,7 @@ static bool ls(vx_ns *ns, vx_str path) {
 const char *vx_main(void) {
   static vx_ns ns;
   if (vx_ns_from_spawn(&ns) != VX_OK) return "no namespace";
-  if (vx_spawn.argc == 0) return ls(&ns, VX_STR("/")) ? nullptr : "error";
+  if (vx_spawn.argc == 0) return ls(&ns, VX_STR(".")) ? nullptr : "error"; // the current directory
   const char *status = nullptr;
   for (uint32_t i = 0; i < vx_spawn.argc; i++)
     if (!ls(&ns, vx_spawn.args[i])) status = "error";

@@ -120,6 +120,71 @@ static bool builtin(void *ctx, rc *r, const rc_word *argv, uint32_t argc, const 
   return was;
 }
 
+// --- cd (ADR-0039), as 9front's execcd ---
+
+// One try: dir, joined to a $cdpath entry as 9front's makepath joins them.
+static vx_status cd_try(vx_str entry, vx_str dir, char *buf, size_t cap, vx_str *tried) {
+  size_t n = entry.len;
+  while (n > 0 && entry.ptr[n - 1] == '/') n--;
+  while (entry.len && dir.len && dir.ptr[0] == '/') dir.ptr++, dir.len--;
+  if (!entry.len) {
+    *tried = dir;
+  } else {
+    if (n + 1 + dir.len >= cap) return VX_ERR_RANGE;
+    memcpy(buf, entry.ptr, n);
+    buf[n] = '/';
+    memcpy(buf + n + 1, dir.ptr, dir.len);
+    *tried = (vx_str){buf, n + 1 + dir.len};
+  }
+  return vx_chdir(&ns, *tried);
+}
+
+static vx_str chdir_why(vx_status st) {
+  return st == VX_ERR_INVALID ? VX_STR("not a directory") : p9_error_text(st);
+}
+
+// cd [dir]: to dir, a relative one through $cdpath unless it starts with /,
+// ./ or ../ (9front's searchpath), printing where it went when an entry other
+// than "" or "." found it; to $home without one.
+static void cd_builtin(const rc_word *argv, int n) {
+  set_status(VX_STR("can't cd"));
+  if (n > 2) {
+    err(VX_STR("Usage: cd [directory]\n"));
+    return;
+  }
+  if (n == 1 || !argv->next) {
+    const rc_word *home = rc_getvar(sh, "home");
+    if (!home) {
+      err(VX_STR("Can't cd -- $home empty\n"));
+      return;
+    }
+    vx_status st = vx_chdir(&ns, word_str(home));
+    if (st == VX_OK)
+      set_status((vx_str){});
+    else
+      say("Can't cd ", word_str(home), ": "), err(chdir_why(st)), err(VX_STR("\n"));
+    return;
+  }
+  vx_str dir = word_str(argv->next);
+  bool searched = dir.len && dir.ptr[0] != '/' && dir.ptr[0] != '#' &&
+                  (dir.ptr[0] != '.' || (dir.len > 1 && dir.ptr[1] != '/' &&
+                                         (dir.ptr[1] != '.' || (dir.len > 2 && dir.ptr[2] != '/'))));
+  static const rc_word none = {};
+  const rc_word *cdpath = searched ? rc_getvar(sh, "cdpath") : nullptr;
+  if (!cdpath) cdpath = &none; // the current directory alone
+  vx_status st = VX_ERR_NOT_FOUND;
+  for (const rc_word *e = cdpath; e; e = e->next) {
+    char buf[512];
+    vx_str tried;
+    st = cd_try(word_str(e), dir, buf, sizeof buf, &tried);
+    if (st != VX_OK) continue;
+    if (e->len && !(e->len == 1 && e->s[0] == '.')) err(tried), err(VX_STR("\n"));
+    set_status((vx_str){});
+    return;
+  }
+  say("Can't cd ", dir, ": "), err(chdir_why(st)), err(VX_STR("\n"));
+}
+
 static bool builtin_run(const rc_word *argv, uint32_t argc) {
   const rc_word *w[4] = {argv};
   for (uint32_t i = 1; i < 4 && i < argc; i++) w[i] = w[i - 1]->next;
@@ -127,6 +192,10 @@ static bool builtin_run(const rc_word *argv, uint32_t argc) {
   bool flagged = n > 1 && w[1]->len && w[1]->s[0] == '-';
   uint8_t flags = flagged ? bind_flags(word_str(w[1])) : 0;
   int first = flagged ? 2 : 1;
+  if (word_is(argv, "cd")) {
+    cd_builtin(argv, n);
+    return true;
+  }
   if (word_is(argv, "bind")) {
     if (flags == 0xff || n - first != 2)
       usage(VX_USAGE_bind);
@@ -899,7 +968,7 @@ const char *vx_main(void) {
                   .close = close_file,
                   .exists = exists,
                   .read_line = read_line};
-  static const char *const HOST_BUILTINS[] = {"bind", "mount", "unmount", nullptr};
+  static const char *const HOST_BUILTINS[] = {"cd", "bind", "mount", "unmount", nullptr};
   host.builtin_names = HOST_BUILTINS;
   sh = rc_new(heap, sizeof heap, &host);
   if (!sh) return "no memory";

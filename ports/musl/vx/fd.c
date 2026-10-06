@@ -149,8 +149,6 @@ static long fd_wait(int64_t deadline) {
   return 0;
 }
 static vx_status fd_ns_status = VX_ERR_BAD_STATE; // until it is built
-static char fd_cwd[VX_NS_MAX_PATH] = "/";
-static size_t fd_cwd_len = 1;
 
 static ofd *ofd_new(ofd_kind kind, int flags) {
   for (int i = 0; i < FD_MAX; i++) {
@@ -279,9 +277,10 @@ static long fd_path(int dirfd, const char *path, char *out) {
   }
   const char *base = "";
   size_t base_len = 0;
+  char wd[VX_WD_MAX]; // the working directory is vx-rt's, the native one (ADR-0039)
   if (path[0] != '/' && dirfd == AT_FDCWD) {
-    base = fd_cwd;
-    base_len = fd_cwd_len;
+    base = wd;
+    base_len = vx_getwd(wd, sizeof wd);
   } else if (path[0] != '/') {
     const ofd *d = fd_get(dirfd);
     if (!d) return -EBADF;
@@ -1057,10 +1056,8 @@ static long fd_unlinkat(int dirfd, const char *path, int flag) {
 }
 
 static long fd_getcwd(char *buf, size_t size) {
-  if (size < fd_cwd_len + 1) return -ERANGE;
-  memcpy(buf, fd_cwd, fd_cwd_len);
-  buf[fd_cwd_len] = 0;
-  return (long)fd_cwd_len + 1;
+  size_t n = vx_getwd(buf, size);
+  return n ? (long)n + 1 : -ERANGE;
 }
 
 static long fd_chdir(const char *path) {
@@ -1075,9 +1072,7 @@ static long fd_chdir(const char *path) {
   p9c_clunk(c, fid);
   if (st != VX_OK) return vx_errno(st);
   if (!(s.mode & P9_DMDIR)) return -ENOTDIR;
-  memcpy(fd_cwd, p, len);
-  fd_cwd_len = len;
-  return 0;
+  return vx_wd_set((vx_str){p, len}) ? 0 : -ENAMETOOLONG;
 }
 
 // --- Directories and terminals ---
@@ -1291,8 +1286,8 @@ static long fd_pipe2(int *fds, int flags) {
 // --- Descriptors for a child ---
 //
 // A child (posix_spawn, execve) is given a table of descriptors as fd=
-// records in its spawn message, one per open descriptor without FD_CLOEXEC,
-// and the working directory as cwd=:
+// records in its spawn message, one per open descriptor without FD_CLOEXEC
+// (the working directory goes as vx-ns's cwd=, ADR-0039):
 //   fd=N console
 //   fd=N pipe=read|write end=NAME flags=F       the same channel end, shared
 //   fd=N file=PATH flags=F offset=O [dir] [token=T]   joined, or opened again
@@ -1360,9 +1355,7 @@ static ofd *file_join(const char *path, size_t len, int flags, const uint8_t tok
 
 static void fd_records(const fd_slot *table, vx_ndb_writer *w, vx_handle *handles, vx_str *names,
                        uint32_t *count, uint32_t cap) {
-  static char handle_names[FD_MAX][8];
-  vx_ndb_put(w, "cwd", (vx_str){fd_cwd, fd_cwd_len});
-  vx_ndb_end(w);
+  static char handle_names[FD_MAX][8]; // the working directory is vx_ns_spawn_records' cwd=
   for (int fd = 0; fd < FD_MAX; fd++) {
     const ofd *o = table[fd].o;
     if (!o || table[fd].cloexec || o->lost) continue;
@@ -1411,15 +1404,7 @@ static void fd_from_records(void) {
   vx_ndb_record rec;
   while (vx_ndb_next(&r, &rec) == VX_NDB_RECORD) {
     uint64_t fd, n = 0, flags = 0, offset = 0;
-    if (vx_ndb_has(&rec, "cwd")) {
-      vx_str cwd = vx_ndb_get(&rec, "cwd");
-      if (cwd.len && cwd.len < sizeof fd_cwd && cwd.ptr[0] == '/') {
-        memcpy(fd_cwd, cwd.ptr, cwd.len);
-        fd_cwd[cwd.len] = 0;
-        fd_cwd_len = cwd.len;
-      }
-      continue;
-    }
+    if (vx_ndb_has(&rec, "cwd")) continue; // vx-rt's, read at start-up
     if (!vx_ndb_get_u64(&rec, "fd", &fd) || fd >= FD_MAX) continue;
     vx_ndb_get_u64(&rec, "flags", &flags);
     vx_ndb_get_u64(&rec, "offset", &offset);

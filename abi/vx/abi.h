@@ -143,6 +143,8 @@ typedef struct vx_msg_size { // what channel_read and channel_call report
 //   arg=VALUE                        an argument; repeated, in order
 //   argv0=VALUE                      the POSIX argv[0], when it is not the
 //                                    program's name (posix_spawn)
+//   cwd=PATH                         the current directory, absolute and
+//                                    clean (ADR-0039); without it, /
 //   env=NAME=VALUE                   an environment variable (the POSIX
 //                                    personality's); repeated
 //   cmdline=VALUE                    the kernel command line (the root task's)
