@@ -571,6 +571,35 @@ typedef struct vx_mutex {
 }
 
 // The same, and the thread's id in its task (exceptions and thread_interrupt name it so).
+// --- Scheduling contexts (ADR-0038) ---
+
+[[maybe_unused]] static vx_status vx_sched_ctx_create(const vx_sched_params *p, vx_handle *out) {
+  *out = VX_HANDLE_NONE;
+  return (vx_status)vx_syscall(VX_SYS_sched_ctx_create, (uint64_t)p, (uint64_t)out, 0, 0, 0, 0);
+}
+
+// Binds thread (VX_HANDLE_NONE: the caller) to ctx (none: unbinds), on core
+// (a CPU of its reservation) or -1.
+[[maybe_unused]] static vx_status vx_sched_ctx_bind(vx_handle ctx, vx_handle thread, int32_t core) {
+  return (vx_status)vx_syscall(VX_SYS_sched_ctx_bind, ctx, thread, (uint64_t)(int64_t)core, 0, 0, 0);
+}
+
+[[maybe_unused]] static vx_status vx_sched_ctx_configure(vx_handle ctx, const vx_sched_params *p) {
+  return (vx_status)vx_syscall(VX_SYS_sched_ctx_configure, ctx, (uint64_t)p, 0, 0, 0, 0);
+}
+
+[[maybe_unused]] static vx_status vx_sched_reserve(vx_handle ctx, uint32_t count, uint32_t cls,
+                                                   uint32_t domain, uint32_t flags, vx_core_set *out) {
+  return (vx_status)vx_syscall(VX_SYS_sched_reserve, ctx, count, cls, domain, flags, (uint64_t)out);
+}
+
+// The calling thread's intent, anything but realtime, which needs a context
+// (09 §5.7's vx_intent_set, here until libvx).
+[[maybe_unused]] static vx_status vx_intent_set(uint32_t intent) {
+  vx_sched_params p = {.intent = intent};
+  return vx_sched_ctx_configure(VX_HANDLE_NONE, &p);
+}
+
 [[maybe_unused]] static vx_status vx_thread_create_id(vx_handle task, vx_handle *out, uint32_t *id) {
   *out = VX_HANDLE_NONE;
   return (vx_status)vx_syscall(VX_SYS_thread_create, task, (uint64_t)out, (uint64_t)id, 0, 0, 0);

@@ -70,8 +70,8 @@ enum vx_trigger : uint32_t {
   VX_TRIGGER_DMA_FAULT,   // a DmaDomain's device faulted (more than threshold in all); value: the count
 };
 
-// The intents a thread declares (01 §8). Until scheduling contexts land, every
-// thread is VX_INTENT_INTERACTIVE.
+// The intents a thread declares (01 §8), each a band of the scheduler,
+// highest first (ADR-0038). A thread starts as VX_INTENT_INTERACTIVE.
 enum vx_intent : uint32_t {
   VX_INTENT_REALTIME = 1,
   VX_INTENT_INTERACTIVE_FRAME,
@@ -79,6 +79,39 @@ enum vx_intent : uint32_t {
   VX_INTENT_THROUGHPUT,
   VX_INTENT_BACKGROUND,
 };
+
+// Scheduling contexts (ADR-0038). sched_ctx_create(&params, &handle) makes
+// one, a realtime one admitted or REFUSED; sched_ctx_bind(ctx, thread, core)
+// binds a thread to it (ctx none: unbinds; thread none: the caller; core -1,
+// or a CPU of its reservation); sched_ctx_configure(ctx, &params) changes it
+// (ctx none: the caller's own intent, never realtime); and
+// sched_reserve(ctx, count, cls, domain, flags, &set) reserves whole CPUs
+// for it, all or REFUSED, or with 0 gives them back.
+typedef struct vx_sched_params {
+  uint32_t intent;            // enum vx_intent
+  uint32_t flags;             // 0
+  vx_duration period, budget; // realtime's: budget in each period (1 ms to 10 s; 100 µs to the period)
+} vx_sched_params;
+
+typedef struct vx_core_set { // sched_reserve's grant
+  uint64_t mask;             // CPU indices
+  uint32_t count, reserved;
+} vx_core_set;
+
+static constexpr uint32_t VX_CORE_ANY = 0;
+static inline uint32_t VX_CORE_TIER(uint32_t n) { return 0x100 | n; } // tier 0 the fastest (ADR-0024)
+static inline uint32_t VX_CORE_MIN_CAPACITY(uint32_t c) { return 0x2000 | c; } // not yet: REFUSED
+static constexpr uint32_t VX_DOMAIN_ANY = 0;
+enum vx_reserve_flags : uint32_t { VX_RESERVE_NO_SMT_SIBLINGS = 1, VX_RESERVE_SAME_LLC = 2 };
+
+typedef struct vx_sched_info { // thread_state(GET_SCHED): /proc/N/threads/T/sched
+  uint32_t intent;             // the thread's: its context's, or its own
+  int32_t core;                // the reserved CPU it is bound to, or -1
+  uint32_t bound, reserved_count;
+  vx_duration period, budget, left; // its context's; left, of the budget this period
+  uint64_t exhausted;               // periods its context ran out of budget in
+  uint64_t reserved;                // the CPUs its context reserved
+} vx_sched_info;
 
 // Every channel message starts with this header (01 §4.2). The kernel writes
 // sender_intent; the rest is the protocol's.
@@ -624,6 +657,7 @@ enum vx_thread_state_op : uint32_t {
   VX_STATE_GET_CPU,
   VX_STATE_GET_NOTE_STACK, // ADR-0036
   VX_STATE_SET_NOTE_STACK,
+  VX_STATE_GET_SCHED, // ADR-0038: a vx_sched_info, at any time
 };
 
 // thread_state's GET_NOTE_STACK and SET_NOTE_STACK (ADR-0036): the stack a

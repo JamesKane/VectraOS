@@ -41,6 +41,7 @@ typedef struct mapping {
 static constexpr uint32_t TASK_MAX_MAPPINGS = 4096 / sizeof(mapping);
 
 struct thread;
+struct sched_ctx; // sched.c
 
 // A task's lock covers its handle table, its address space, its threads and
 // its life (state, exit status, bindings on its exit).
@@ -114,12 +115,14 @@ struct thread {
   bool stepping;  // a debugger asked for one instruction (arch_frame_step): aarch64 keeps MDSCR_EL1.SS on
   uint64_t user_entry, user_sp, user_arg, user_arg2;
   bool started;          // thread_start has taken it (under its task's lock)
-  uint32_t intent;       // enum vx_intent
+  uint32_t intent;       // enum vx_intent: its own (sched_ctx_configure with no context)
   bool last_of_task;     // its exit ended its task (reaped in sched.c)
   bool exited;           // it has exited, and waits to be reaped: no note reaches it (under its task's lock)
   uint8_t console_len;   // bytes of a debug_write line not yet ended
   char console_buf[160]; // which go out whole, at its newline
   thread_state state;
+  struct sched_ctx *ctx;     // the scheduling context it is bound to, holding a reference; or none (ADR-0038)
+  int32_t core;              // the reserved CPU it is bound to within ctx's reservation, or -1
   struct thread *next;       // in the ready queue (under the scheduler's lock)
   struct thread *wait_next;  // in a port's waiters (under the port's lock); never the same link as next
   struct thread *sleep_next; // in its CPU's sleep queue, ordered by wake_at
@@ -677,6 +680,7 @@ static vx_status thread_create(task *t, thread **out) {
   spin_unlock(&t->lock);
   th->kstack = stack;
   th->intent = VX_INTENT_INTERACTIVE;
+  th->core = -1;
   object_ref(&t->obj);
   th->kernel_sp = arch_thread_initial_sp(th);
   th->fp = phys_to_virt(fp);

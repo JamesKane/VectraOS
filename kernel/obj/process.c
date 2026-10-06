@@ -114,6 +114,8 @@ static void thread_reap(thread *th) {
   spin_unlock(&t->lock);
   kstack_free(th->kstack);
   th->kstack = 0;
+  sched_ctx *x = sched_unbind_dead(th); // its scheduling context, let go (ADR-0038)
+  if (x) object_release(&x->obj);
   if (th->last_of_task) task_teardown(t);
   object_release(&th->obj); // the reference it held while running
 }
@@ -201,7 +203,9 @@ static void task_destroy(task *t) {
 }
 
 static void thread_destroy(thread *th) {
-  if (th->kstack) kstack_free(th->kstack);                // never started
+  if (th->kstack) kstack_free(th->kstack); // never started
+  sched_ctx *x = sched_unbind_dead(th);    // bound but never run
+  if (x) object_drop(&x->obj);
   if (th->fp) phys_free((uint64_t)th->fp - boot.hhdm, 0); // last: a debugger's reference may have read it
   task *t = th->task;
   pool_free(&thread_pool, th);

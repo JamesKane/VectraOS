@@ -313,7 +313,7 @@ enum : uint32_t {
   PROF_CTL, // in prof/, not listed in the process's directory
   PROF_ZONES
 };
-enum : uint32_t { T_DIR, T_STATUS, T_REGS, T_REGS_NDB, T_FPREGS, T_XREGS, T_CTL, T_FILES };
+enum : uint32_t { T_DIR, T_STATUS, T_REGS, T_REGS_NDB, T_FPREGS, T_XREGS, T_CTL, T_SCHED, T_FILES };
 
 typedef struct file_entry {
   vx_str name;
@@ -342,6 +342,7 @@ static const file_entry THREAD_FILES[T_FILES] = {
     [T_STATUS] = {VX_STR("status"), 0444},     [T_REGS] = {VX_STR("regs"), 0664},
     [T_REGS_NDB] = {VX_STR("regs.ndb"), 0664}, [T_FPREGS] = {VX_STR("fpregs"), 0664},
     [T_XREGS] = {VX_STR("xregs"), 0664},       [T_CTL] = {VX_STR("ctl"), 0222},
+    [T_SCHED] = {VX_STR("sched"), 0444},
 };
 
 static vx_handle nsd; // a connector to nsd's post, for /proc/N/ns
@@ -583,6 +584,7 @@ static vx_status thread_read(proc *p, uint32_t tid, uint32_t f, uint64_t offset,
   vx_status st = VX_OK;
   if (f == T_STATUS) len = thread_status_text(p, tid, text, sizeof text);
   if (f == T_REGS_NDB) len = regs_ndb_text(p, tid, text, sizeof text);
+  if (f == T_SCHED) len = sched_text(p, tid, text, sizeof text);
   if (f == T_REGS && (st = vx_thread_state(p->task, tid, VX_STATE_GET_REGS, &r, sizeof r)) == VX_OK)
     memcpy(text, &r, len = sizeof r);
   if (f == T_FPREGS && (st = vx_thread_state(p->task, tid, VX_STATE_GET_FPREGS, &fp, sizeof fp)) == VX_OK)

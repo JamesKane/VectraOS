@@ -20,6 +20,7 @@ typedef enum obj_type : uint8_t {
   OBJ_DMA_DOMAIN,
   OBJ_DMA_MAPPING,
   OBJ_PAGER,
+  OBJ_SCHED_CTX, // ADR-0038
 } obj_type;
 
 typedef struct object {

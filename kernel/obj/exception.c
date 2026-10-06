@@ -476,8 +476,26 @@ static int64_t thread_cpu(uint64_t buf) {
   return copy_to_user(buf, &info, sizeof info);
 }
 
+// GET_SCHED: a thread's scheduling (ADR-0038), id 0 the caller's own.
+static int64_t thread_sched_get(vx_handle th, uint64_t id, uint64_t buf) {
+  vx_sched_info info;
+  if (!id) {
+    sched_info(this_cpu()->current, &info);
+    return copy_to_user(buf, &info, sizeof info);
+  }
+  vx_status st;
+  task *t = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_INSPECT, &st);
+  if (!t) return st;
+  thread *target = task_thread(t, id);
+  object_release(&t->obj);
+  if (!target) return VX_ERR_NOT_FOUND;
+  sched_info(target, &info);
+  object_release(&target->obj);
+  return copy_to_user(buf, &info, sizeof info);
+}
+
 static int64_t sys_thread_state(vx_handle th, uint64_t id, uint64_t op, uint64_t buf, uint64_t size) {
-  if (op < VX_STATE_GET_EXCEPTION || op > VX_STATE_SET_NOTE_STACK) return VX_ERR_INVALID;
+  if (op < VX_STATE_GET_EXCEPTION || op > VX_STATE_GET_SCHED) return VX_ERR_INVALID;
   bool ns_op = op == VX_STATE_GET_NOTE_STACK || op == VX_STATE_SET_NOTE_STACK;
   bool tls_op = op == VX_STATE_GET_TLS || op == VX_STATE_SET_TLS;
   bool fp_op = op == VX_STATE_GET_FPREGS || op == VX_STATE_SET_FPREGS;
@@ -491,7 +509,9 @@ static int64_t sys_thread_state(vx_handle th, uint64_t id, uint64_t op, uint64_t
   if (op == VX_STATE_NEXT_THREAD) need = sizeof(vx_thread_info);
   if (op == VX_STATE_GET_WATCH || op == VX_STATE_SET_WATCH) need = sizeof(vx_watches);
   if (ns_op) need = sizeof(vx_note_stack);
+  if (op == VX_STATE_GET_SCHED) need = sizeof(vx_sched_info);
   if (size < need) return VX_ERR_TOO_SMALL;
+  if (op == VX_STATE_GET_SCHED) return thread_sched_get(th, id, buf);
   if (op == VX_STATE_NEXT_THREAD) return thread_next(th, id, buf);
   if (op == VX_STATE_GET_CPU) return id ? VX_ERR_INVALID : thread_cpu(buf);
   if (fp_op || x_op) return thread_fp(th, id, op, buf);

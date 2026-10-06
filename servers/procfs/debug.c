@@ -158,6 +158,14 @@ static size_t hex_text(uint64_t v, char *out) {
   return n + 2;
 }
 
+static void put_dec(vx_ndb_writer *w, const char *key, uint64_t v) {
+  char d[24];
+  size_t n = sizeof d;
+  do d[--n] = (char)('0' + v % 10);
+  while (v /= 10);
+  vx_ndb_put(w, key, (vx_str){d + n, sizeof d - n});
+}
+
 static void put_hex(vx_ndb_writer *w, const char *key, uint64_t v) {
   char buf[18];
   vx_ndb_put(w, key, (vx_str){buf, hex_text(v, buf)});
@@ -515,8 +523,14 @@ static void dbg_exception(proc *p, uint32_t tid) {
   }
   uint64_t pc = *reg_pc(&e.regs);
   if (e.kind == VX_EXCEPTION_STEP) {
-    if (h->why == WHY_OVER && h->bp >= 0 && d->bp[h->bp].used)
-      mem_rw(p, d->bp[h->bp].addr, (void *)TRAP, sizeof TRAP, true);    // the trap, back
+    // The trap, back, once no other thread is stepping over it still: put back
+    // under one that has not run the instruction yet, it would stop again.
+    bool others = false;
+    for (uint32_t i = 0; h->why == WHY_OVER && i < d->cap && !others; i++)
+      others = d->threads[i].tid && d->threads[i].tid != tid && d->threads[i].why == WHY_OVER &&
+               d->threads[i].bp == h->bp;
+    if (h->why == WHY_OVER && h->bp >= 0 && d->bp[h->bp].used && !others)
+      mem_rw(p, d->bp[h->bp].addr, (void *)TRAP, sizeof TRAP, true);
     if (h->why == WHY_WOVER) set_watches(p, false);                     // the watchpoints, back
     if ((h->why == WHY_OVER || h->why == WHY_WOVER) && !h->user_step) { // past it, on the way on
       *h = (held){};
@@ -850,6 +864,26 @@ static size_t thread_status_text(proc *p, uint32_t tid, char *buf, size_t cap) {
   if (h && h->why) vx_ndb_put(&w, "reason", vx_cstr(REASONS[h->why]));
   vx_regs r;
   if (vx_thread_state(p->task, tid, VX_STATE_GET_REGS, &r, sizeof r) == VX_OK) put_hex(&w, "pc", *reg_pc(&r));
+  vx_ndb_end(&w);
+  return w.failed ? 0 : w.len;
+}
+
+// threads/T/sched (ADR-0038): its intent, and its context's period, budget,
+// what is left of it this period, the periods it ran out in, and its CPUs.
+static size_t sched_text(const proc *p, uint32_t tid, char *buf, size_t cap) {
+  static const char *const INTENTS[] = {"",           "realtime",  "interactive-frame", "interactive",
+                                        "throughput", "background"};
+  vx_sched_info si;
+  if (vx_thread_state(p->task, tid, VX_STATE_GET_SCHED, &si, sizeof si) != VX_OK) return 0;
+  vx_ndb_writer w = {.buf = buf, .cap = cap};
+  vx_ndb_put(&w, "intent", vx_cstr(si.intent <= VX_INTENT_BACKGROUND ? INTENTS[si.intent] : "unknown"));
+  vx_ndb_put(&w, "context", si.bound ? VX_STR("yes") : VX_STR("no"));
+  if (si.period) {
+    put_dec(&w, "period", (uint64_t)si.period), put_dec(&w, "budget", (uint64_t)si.budget);
+    put_dec(&w, "left", (uint64_t)si.left), put_dec(&w, "exhausted", si.exhausted);
+  }
+  if (si.reserved) put_hex(&w, "reserved", si.reserved), put_dec(&w, "cores", si.reserved_count);
+  if (si.core >= 0) put_dec(&w, "core", (uint64_t)si.core);
   vx_ndb_end(&w);
   return w.failed ? 0 : w.len;
 }

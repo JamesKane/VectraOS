@@ -1,8 +1,17 @@
 // sched.c: the v1 scheduler (docs/01 §8). Every CPU serves one shared ready
-// queue round robin; each CPU keeps the threads that blocked on it, with a
-// deadline, in its own sleep queue, and runs a user thread for at most a 10 ms
-// slice while others wait. One lock covers all of it. Per-CPU ready queues,
-// intents, priority bands and the realtime class come after M1.
+// queue, one band of it for each intent, highest first, round robin within a
+// band; each CPU keeps the threads that blocked on it, with a deadline, in
+// its own sleep queue, and runs a user thread for at most a 10 ms slice while
+// others of its band wait. One lock covers all of it. Per-CPU ready queues
+// come when measurements show the lock contended.
+//
+// Scheduling contexts (M6 step 6d6c, ADR-0038): a thread bound to one runs
+// with its intent; a realtime one is a constant-bandwidth server, its budget
+// charged for the time its threads run and, spent, its threads not run again
+// until its next period fills it. Contexts are admitted or refused, at most
+// 80% of the CPUs between them. A context's reserved CPUs run its threads
+// bound to them and nothing else; one CPU, the first, is never reserved.
+// A thread made ready in a band above one running preempts it.
 //
 // The kernel runs with interrupts off. They are on only in user mode and in an
 // idle thread's wait. A CPU with nothing to run sleeps with no timer armed unless
@@ -15,6 +24,26 @@
 
 static constexpr vx_duration TIME_SLICE = 10'000'000;
 
+// The bands, highest first: realtime, interactive-frame, interactive,
+// throughput, background (enum vx_intent's order).
+static constexpr uint32_t BANDS = 5;
+
+typedef struct sched_ctx {
+  object obj;
+  uint32_t intent;            // enum vx_intent
+  vx_duration period, budget; // realtime's
+  uint64_t ppm;               // its admitted share, in millionths of a CPU
+  // Under the scheduler's lock:
+  vx_duration left;          // of its budget, this period
+  vx_instant period_end;     // when it is filled again
+  bool throttled;            // spent: its threads wait for period_end
+  uint64_t exhausted;        // periods it ran out of budget in
+  uint64_t reserved;         // the CPUs it reserved, by index
+  struct sched_ctx *th_next; // on the list of throttled contexts
+} sched_ctx;
+
+static pool sched_ctx_pool = POOL_FOR(sched_ctx);
+
 typedef struct cpu {
   uint32_t index;   // 0 is the boot CPU
   uint64_t arch_id; // local APIC ID, or MPIDR affinity
@@ -22,9 +51,11 @@ typedef struct cpu {
   thread idle;      // runs when nothing else can; the boot context on CPU 0
   thread *sleepers; // blocked here with a deadline, earliest first
   vx_instant slice_end;
-  bool resched;        // call schedule before returning to user mode
-  thread *reap;        // a thread that died here, for whoever runs next to free
-  uint64_t idle_stack; // the idle stack's lowest address (mm/kstack.c)
+  vx_instant run_start; // when current began running, for charging its context
+  sched_ctx *reserved;  // the context that reserved this CPU, or none
+  bool resched;         // call schedule before returning to user mode
+  thread *reap;         // a thread that died here, for whoever runs next to free
+  uint64_t idle_stack;  // the idle stack's lowest address (mm/kstack.c)
   // Which task tables this CPU has loaded (0: none), and how many times it has
   // loaded tables: a shootdown waits only for CPUs that may cache the pages.
   _Atomic uint64_t user_root, root_loads;
@@ -37,8 +68,11 @@ static _Atomic uint32_t cpus_online; // CPUs that reached their idle loop
 
 static struct {
   spinlock lock;
-  thread *run_head, *run_tail;
-  uint64_t idle_mask; // bit i: CPU i is running its idle thread
+  thread *run_head[BANDS], *run_tail[BANDS];
+  uint64_t idle_mask;     // bit i: CPU i is running its idle thread
+  uint64_t admitted_ppm;  // the realtime budgets admitted, in millionths of a CPU
+  uint64_t reserved_mask; // the reserved CPUs
+  sched_ctx *throttled;   // contexts waiting for their next period
 } sched;
 
 static cpu *this_cpu(void) { return &cpus[arch_cpu_index()]; }
@@ -56,24 +90,114 @@ static void reap_after_switch(void) {
   if (dead) thread_reap(dead);
 }
 
+// A thread's intent: its context's, or its own.
+static uint32_t thread_intent(const thread *t) { return t->ctx ? t->ctx->intent : t->intent; }
+
+static uint32_t band_of(const thread *t) {
+  uint32_t i = thread_intent(t);
+  return i >= VX_INTENT_REALTIME && i <= VX_INTENT_BACKGROUND ? i - VX_INTENT_REALTIME : 2;
+}
+
+// The CPU a thread is bound to, if its context still reserves it; or -1.
+static int32_t bound_cpu(const thread *t) {
+  return t->core >= 0 && t->ctx && t->ctx->reserved >> t->core & 1 ? t->core : -1;
+}
+
+// Whether t may run on c now: a reserved CPU runs its context's threads bound
+// to it alone, a bound thread runs there alone, and a spent context's
+// threads wait for its next period.
+static bool may_run(const thread *t, const cpu *c) {
+  if (t->ctx && t->ctx->throttled) return false;
+  int32_t b = bound_cpu(t);
+  if (b >= 0) return (uint32_t)b == c->index;
+  return !c->reserved;
+}
+
 static void run_enqueue(thread *t) {
   t->state = THREAD_READY;
   t->next = nullptr;
-  if (sched.run_tail)
-    sched.run_tail->next = t;
+  uint32_t b = band_of(t);
+  if (sched.run_tail[b])
+    sched.run_tail[b]->next = t;
   else
-    sched.run_head = t;
-  sched.run_tail = t;
+    sched.run_head[b] = t;
+  sched.run_tail[b] = t;
 }
 
-static thread *run_dequeue(void) {
-  thread *t = sched.run_head;
-  if (t) {
-    sched.run_head = t->next;
-    if (!sched.run_head) sched.run_tail = nullptr;
-    t->next = nullptr;
+// The first ready thread of the highest band that may run on c, taken off the queue.
+static thread *run_dequeue(const cpu *c) {
+  for (uint32_t b = 0; b < BANDS; b++) {
+    thread *prev = nullptr;
+    for (thread *t = sched.run_head[b]; t; prev = t, t = t->next) {
+      if (!may_run(t, c)) continue;
+      *(prev ? &prev->next : &sched.run_head[b]) = t->next;
+      if (sched.run_tail[b] == t) sched.run_tail[b] = prev;
+      t->next = nullptr;
+      return t;
+    }
   }
-  return t;
+  return nullptr;
+}
+
+// Whether a thread that may run on c waits in band b or above.
+static bool ready_for(const cpu *c, uint32_t b) {
+  for (uint32_t k = 0; k <= b && k < BANDS; k++)
+    for (thread *t = sched.run_head[k]; t; t = t->next)
+      if (may_run(t, c)) return true;
+  return false;
+}
+
+// --- Budgets ---
+
+// A realtime context whose period has ended is filled again.
+static void ctx_refill(sched_ctx *x, vx_instant now) {
+  if (x->intent != VX_INTENT_REALTIME || now < x->period_end) return;
+  x->left = x->budget;
+  vx_instant next = x->period_end + x->period;
+  x->period_end = next > now ? next : now + x->period; // far behind: from now
+  if (x->throttled) {
+    x->throttled = false;
+    for (sched_ctx **link = &sched.throttled; *link; link = &(*link)->th_next)
+      if (*link == x) {
+        *link = x->th_next;
+        break;
+      }
+    x->th_next = nullptr;
+  }
+}
+
+// Charges c's running thread's context for the time since it last was; true
+// if that spent its budget (the thread must stop).
+static bool charge(cpu *c, vx_instant now) {
+  thread *t = c->current;
+  sched_ctx *x = t ? t->ctx : nullptr;
+  vx_duration ran = now - c->run_start;
+  c->run_start = now;
+  if (!x || x->intent != VX_INTENT_REALTIME || x->throttled) return false;
+  ctx_refill(x, now);
+  x->left -= ran;
+  if (x->left > 0) return false;
+  x->throttled = true;
+  x->exhausted++;
+  x->th_next = sched.throttled;
+  sched.throttled = x;
+  for (uint32_t i = 0; i < cpu_total; i++) // its threads on other CPUs stop too
+    if (&cpus[i] != c && cpus[i].current && cpus[i].current->ctx == x) arch_send_resched(&cpus[i]);
+  return true;
+}
+
+// Fills the throttled contexts whose periods have ended: their threads may run
+// again, on any CPU that will take them.
+static void refill_due(vx_instant now) {
+  bool any = false;
+  for (sched_ctx *x = sched.throttled, *next; x; x = next) {
+    next = x->th_next;
+    if (now >= x->period_end) ctx_refill(x, now), any = true;
+  }
+  if (!any) return;
+  this_cpu()->resched = true;
+  for (uint32_t i = 0; i < cpu_total; i++)
+    if (&cpus[i] != this_cpu() && (sched.idle_mask & (1ull << i))) arch_send_resched(&cpus[i]);
 }
 
 static void sleep_remove(thread *t) {
@@ -91,21 +215,228 @@ static void sleep_remove(thread *t) {
 // Makes a blocked thread ready, and gets a CPU to it: this one if it is idle,
 // otherwise an idle one, by interrupt. With none idle, the next slice to end
 // picks it up. Called with the lock held.
+static void kick_for(thread *t);
+
 static void make_ready(thread *t) {
   sleep_remove(t);
   run_enqueue(t);
+  kick_for(t);
+}
+
+// Gets a CPU to a thread just queued: this one if it is idle and may run it,
+// else an idle one that may, by interrupt, else the one running the lowest
+// band below the thread's that may run it there. With none, the next slice
+// to end picks it up.
+static void kick_for(thread *t) {
   cpu *self = this_cpu();
-  if (sched.idle_mask & (1ull << self->index)) {
+  if ((sched.idle_mask & (1ull << self->index)) && may_run(t, self)) {
     self->resched = true;
     return;
   }
   for (uint32_t i = 0; i < cpu_total; i++) {
-    if (sched.idle_mask & (1ull << i)) {
+    if ((sched.idle_mask & (1ull << i)) && may_run(t, &cpus[i])) {
       sched.idle_mask &= ~(1ull << i); // one interrupt per wake is enough
       arch_send_resched(&cpus[i]);
       return;
     }
   }
+  // None idle: the CPU running the lowest band below t's, if it may run t there.
+  uint32_t b = band_of(t), worst = b;
+  cpu *victim = nullptr;
+  for (uint32_t i = 0; i < cpu_total; i++) {
+    cpu *c = &cpus[i];
+    if (!c->current || c->current == &c->idle || !may_run(t, c)) continue;
+    uint32_t cb = band_of(c->current);
+    if (cb > worst) worst = cb, victim = c;
+  }
+  if (!victim) return; // the next slice to end picks it up
+  if (victim == self)
+    self->resched = true;
+  else
+    arch_send_resched(victim);
+}
+
+// --- Scheduling contexts (ADR-0038) ---
+
+static constexpr vx_duration RT_MIN_PERIOD = 1'000'000, RT_MAX_PERIOD = 10'000'000'000,
+                             RT_MIN_BUDGET = 100'000;
+static constexpr uint64_t RT_LIMIT_PPM = 800'000; // of each CPU online
+
+static vx_status params_check(const vx_sched_params *p, bool own) {
+  if (p->flags || p->intent < VX_INTENT_REALTIME || p->intent > VX_INTENT_BACKGROUND) return VX_ERR_INVALID;
+  if (p->intent != VX_INTENT_REALTIME) return p->period || p->budget ? VX_ERR_INVALID : VX_OK;
+  if (own) return VX_ERR_INVALID; // a thread's own intent is never realtime: that needs a context
+  if (p->period < RT_MIN_PERIOD || p->period > RT_MAX_PERIOD || p->budget < RT_MIN_BUDGET ||
+      p->budget > p->period)
+    return VX_ERR_INVALID;
+  return VX_OK;
+}
+
+static uint64_t params_ppm(const vx_sched_params *p) {
+  if (p->intent != VX_INTENT_REALTIME) return 0;
+  return (uint64_t)p->budget * 1'000'000 / (uint64_t)p->period; // at most 1e16: no overflow
+}
+
+// Admits a share of `ppm`, given back `old` it had: false if they do not fit.
+// Under the scheduler's lock.
+static bool admit(uint64_t ppm, uint64_t old) {
+  uint64_t limit = RT_LIMIT_PPM * atomic_load_explicit(&cpus_online, memory_order_relaxed);
+  return sched.admitted_ppm - old + ppm <= limit;
+}
+
+static void ctx_apply(sched_ctx *x, const vx_sched_params *p, uint64_t ppm, vx_instant now) {
+  x->intent = p->intent, x->period = p->period, x->budget = p->budget, x->ppm = ppm;
+  x->left = p->budget, x->period_end = now + p->period;
+}
+
+static vx_status sched_ctx_new(const vx_sched_params *p, sched_ctx **out) {
+  vx_status st = params_check(p, false);
+  if (st != VX_OK) return st;
+  sched_ctx *x = pool_alloc(&sched_ctx_pool);
+  if (!x) return VX_ERR_NO_MEMORY;
+  x->obj.type = OBJ_SCHED_CTX;
+  atomic_store_explicit(&x->obj.refs, 1, memory_order_relaxed);
+  uint64_t ppm = params_ppm(p);
+  spin_lock(&sched.lock);
+  bool fits = admit(ppm, 0);
+  if (fits) sched.admitted_ppm += ppm, ctx_apply(x, p, ppm, clock_now());
+  spin_unlock(&sched.lock);
+  if (!fits) {
+    pool_free(&sched_ctx_pool, x);
+    return VX_ERR_REFUSED;
+  }
+  *out = x;
+  return VX_OK;
+}
+
+// Gives back the CPUs x reserved: what ran there may run anywhere again.
+static void unreserve_locked(sched_ctx *x) {
+  for (uint32_t i = 0; i < cpu_total; i++)
+    if (x->reserved >> i & 1) {
+      cpus[i].reserved = nullptr;
+      if (&cpus[i] != this_cpu()) arch_send_resched(&cpus[i]);
+    }
+  sched.reserved_mask &= ~x->reserved;
+  x->reserved = 0;
+}
+
+static void sched_ctx_destroy(sched_ctx *x) { // its last handle and its last bound thread gone
+  spin_lock(&sched.lock);
+  sched.admitted_ppm -= x->ppm;
+  unreserve_locked(x);
+  for (sched_ctx **link = &sched.throttled; *link; link = &(*link)->th_next)
+    if (*link == x) {
+      *link = x->th_next;
+      break;
+    }
+  spin_unlock(&sched.lock);
+  pool_free(&sched_ctx_pool, x);
+}
+
+static vx_status sched_ctx_set(sched_ctx *x, const vx_sched_params *p) {
+  vx_status st = params_check(p, false);
+  if (st != VX_OK) return st;
+  uint64_t ppm = params_ppm(p);
+  spin_lock(&sched.lock);
+  bool fits = admit(ppm, x->ppm);
+  if (fits) {
+    sched.admitted_ppm = sched.admitted_ppm - x->ppm + ppm;
+    bool was = x->throttled;
+    ctx_apply(x, p, ppm, clock_now());
+    if (was) x->period_end = clock_now(); // filled at once, off the throttled list by the next refill
+  }
+  spin_unlock(&sched.lock);
+  return fits ? VX_OK : VX_ERR_REFUSED;
+}
+
+// The calling thread's own intent (vx_intent_set): anything but realtime.
+static vx_status sched_set_own(thread *t, const vx_sched_params *p) {
+  vx_status st = params_check(p, true);
+  if (st != VX_OK) return st;
+  spin_lock(&sched.lock);
+  t->intent = p->intent;
+  spin_unlock(&sched.lock);
+  return VX_OK;
+}
+
+// Binds t to x (none: unbinds it), on a CPU of x's reservation or none (-1).
+// The thread holds a reference to its context while bound.
+static vx_status sched_bind(thread *t, sched_ctx *x, int32_t core) {
+  if (core >= 0 && (!x || core >= (int32_t)cpu_total)) return VX_ERR_INVALID;
+  if (x) object_ref(&x->obj);
+  spin_lock(&sched.lock);
+  if (core >= 0 && !(x->reserved >> core & 1)) {
+    spin_unlock(&sched.lock);
+    object_release(&x->obj);
+    return VX_ERR_INVALID; // not a CPU it reserved
+  }
+  sched_ctx *old = t->ctx;
+  t->ctx = x, t->core = core;
+  // A thread bound elsewhere moves: on its next switch, or now if it runs here.
+  if (t->state == THREAD_RUNNING && t->cpu && !may_run(t, t->cpu)) {
+    if (t->cpu == this_cpu())
+      t->cpu->resched = true;
+    else
+      arch_send_resched(t->cpu);
+  }
+  spin_unlock(&sched.lock);
+  if (old) object_release(&old->obj);
+  return VX_OK;
+}
+
+// A dying thread's context, taken from it: its caller drops the reference
+// (object_drop in a destructor, object_release elsewhere).
+static sched_ctx *sched_unbind_dead(thread *t) {
+  spin_lock(&sched.lock);
+  sched_ctx *x = t->ctx;
+  t->ctx = nullptr, t->core = -1;
+  spin_unlock(&sched.lock);
+  return x;
+}
+
+// Reserves `count` whole CPUs for x, or with 0 gives back its own: all or
+// REFUSED. The first CPU is never reserved; nor is one another context has.
+static vx_status sched_reserve_cpus(sched_ctx *x, uint32_t count, vx_core_set *out) {
+  spin_lock(&sched.lock);
+  unreserve_locked(x);
+  uint64_t got = 0;
+  uint32_t n = 0, online = atomic_load_explicit(&cpus_online, memory_order_relaxed);
+  for (uint32_t i = online; i-- > 1 && n < count;) // from the last, keeping the first shared
+    if (!cpus[i].reserved) got |= 1ull << i, n++;
+  if (n < count) {
+    spin_unlock(&sched.lock);
+    *out = (vx_core_set){};
+    return VX_ERR_REFUSED;
+  }
+  x->reserved = got;
+  sched.reserved_mask |= got;
+  for (uint32_t i = 0; i < cpu_total; i++)
+    if (got >> i & 1) {
+      cpus[i].reserved = x;
+      if (&cpus[i] == this_cpu())
+        cpus[i].resched = true;
+      else
+        arch_send_resched(&cpus[i]); // what runs there leaves
+    }
+  spin_unlock(&sched.lock);
+  *out = (vx_core_set){.mask = got, .count = n};
+  return VX_OK;
+}
+
+// What /proc/N/threads/T/sched shows (thread_state GET_SCHED).
+static void sched_info(const thread *t, vx_sched_info *out) {
+  spin_lock(&sched.lock);
+  const sched_ctx *x = t->ctx;
+  *out = (vx_sched_info){.intent = thread_intent(t),
+                         .core = bound_cpu(t),
+                         .bound = x != nullptr,
+                         .period = x ? x->period : 0,
+                         .budget = x ? x->budget : 0,
+                         .exhausted = x ? x->exhausted : 0,
+                         .reserved = x ? x->reserved : 0};
+  if (x && x->intent == VX_INTENT_REALTIME && x->left > 0) out->left = x->left;
+  out->reserved_count = (uint32_t)__builtin_popcountll(out->reserved);
+  spin_unlock(&sched.lock);
 }
 
 // Switches to the next ready thread, or to this CPU's idle thread. Called with
@@ -114,15 +445,23 @@ static void make_ready(thread *t) {
 static void schedule_locked(void) {
   cpu *c = this_cpu();
   thread *prev = c->current;
-  if (prev->state == THREAD_RUNNING && prev != &c->idle) run_enqueue(prev);
-  thread *next = run_dequeue();
+  vx_instant now = clock_now();
+  if (prev != &c->idle) charge(c, now);
+  if (prev->state == THREAD_RUNNING && prev != &c->idle) {
+    run_enqueue(prev);
+    if (!may_run(prev, c))
+      kick_for(prev); // bound elsewhere since, or this CPU reserved: another must take it
+  }
+  thread *next = run_dequeue(c);
   if (!next) next = &c->idle;
+  c->run_start = now;
   c->resched = false;
   if (next == &c->idle) {
     sched.idle_mask |= 1ull << c->index;
   } else {
     sched.idle_mask &= ~(1ull << c->index);
-    c->slice_end = clock_now() + TIME_SLICE;
+    c->slice_end = now + TIME_SLICE;
+    if (next->ctx) ctx_refill(next->ctx, now);
   }
   if (next != prev) {
     arch_user_switch(prev, next);
@@ -264,6 +603,12 @@ static void sched_arm_timer(cpu *c) {
   for (thread *t = c->sleepers; t; t = t->sleep_next)
     if (t->wake_late < next) next = t->wake_late;
   if (c->current != &c->idle && c->slice_end < next) next = c->slice_end;
+  const sched_ctx *x = c->current ? c->current->ctx : nullptr;
+  if (c->current != &c->idle && x && x->intent == VX_INTENT_REALTIME && !x->throttled &&
+      c->run_start + x->left < next)
+    next = c->run_start + x->left; // its budget runs out
+  for (const sched_ctx *t = sched.throttled; t; t = t->th_next)
+    if (t->period_end < next) next = t->period_end; // a spent context fills again
   if (hangdump_at < 0) {
     uint64_t s = 0;
     vx_str v = cmdline_value(VX_STR("vx.hangdump"));
@@ -288,15 +633,20 @@ static void sched_timer(void) {
     t->wait_result = VX_ERR_TIMED_OUT;
     make_ready(t);
   }
+  refill_due(now);
+  if (c->current != &c->idle && charge(c, now)) c->resched = true; // its context's budget is spent
   if (now >= c->slice_end) {
-    // The slice is over: switch if someone is waiting, else give the running
-    // thread another one. (Re-arming the old, expired end would fire at once,
-    // forever, and the thread would never get back to user mode.)
-    if (sched.run_head)
+    // The slice is over: switch if someone of its band or above is waiting,
+    // else give the running thread another one. (Re-arming the old, expired
+    // end would fire at once, forever, and the thread would never get back to
+    // user mode.)
+    if (c->current == &c->idle || ready_for(c, band_of(c->current)))
       c->resched = true;
     else
       c->slice_end = now + TIME_SLICE;
   }
+  // A thread running on a CPU reserved since, or on one it may run on no more, leaves it.
+  if (c->current != &c->idle && !may_run(c->current, c)) c->resched = true;
   bool dump = c->index == 0 && !hangdump_done && now >= hangdump_at;
   if (dump) hangdump_done = true;
   sched_arm_timer(c);

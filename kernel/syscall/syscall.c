@@ -52,6 +52,7 @@ static void object_destroy(object *obj) {
   case OBJ_DMA_DOMAIN: dma_domain_destroy((dma_domain *)obj); break;
   case OBJ_DMA_MAPPING: dma_mapping_destroy((dma_mapping *)obj); break;
   case OBJ_PAGER: pager_destroy((pager *)obj); break;
+  case OBJ_SCHED_CTX: sched_ctx_destroy((sched_ctx *)obj); break;
   default: break;
   }
 }
@@ -671,6 +672,65 @@ static int64_t sys_channel_call(vx_handle h, uint64_t args_ptr, vx_instant deadl
 
 // --- Counters, bindings, futexes ---
 
+// --- Scheduling contexts (ADR-0038) ---
+
+static int64_t sys_sched_ctx_create(uint64_t params, uint64_t out) {
+  vx_sched_params p;
+  vx_status st = copy_from_user(&p, params, sizeof p);
+  if (st != VX_OK) return st;
+  sched_ctx *x;
+  if ((st = sched_ctx_new(&p, &x)) != VX_OK) return st;
+  return return_handle(
+      &x->obj, VX_RIGHT_WRITE | VX_RIGHT_MANAGE | VX_RIGHT_INSPECT | VX_RIGHT_DUPLICATE | VX_RIGHT_TRANSFER,
+      out);
+}
+
+static int64_t sys_sched_ctx_bind(vx_handle ctx, vx_handle th, uint64_t core) {
+  vx_status st = VX_OK;
+  sched_ctx *x = ctx == VX_HANDLE_NONE
+                     ? nullptr
+                     : (sched_ctx *)handle_get(current_task(), ctx, OBJ_SCHED_CTX, VX_RIGHT_WRITE, &st);
+  if (ctx != VX_HANDLE_NONE && !x) return st;
+  thread *t = th == VX_HANDLE_NONE
+                  ? this_cpu()->current
+                  : (thread *)handle_get(current_task(), th, OBJ_THREAD, VX_RIGHT_MANAGE, &st);
+  if (!t) {
+    if (x) object_release(&x->obj);
+    return st;
+  }
+  st = sched_bind(t, x, (int32_t)(int64_t)core);
+  if (th != VX_HANDLE_NONE) object_release(&t->obj);
+  if (x) object_release(&x->obj);
+  return st;
+}
+
+static int64_t sys_sched_ctx_configure(vx_handle ctx, uint64_t params) {
+  vx_sched_params p;
+  vx_status st = copy_from_user(&p, params, sizeof p);
+  if (st != VX_OK) return st;
+  if (ctx == VX_HANDLE_NONE) return sched_set_own(this_cpu()->current, &p);
+  sched_ctx *x = (sched_ctx *)handle_get(current_task(), ctx, OBJ_SCHED_CTX, VX_RIGHT_MANAGE, &st);
+  if (!x) return st;
+  st = sched_ctx_set(x, &p);
+  object_release(&x->obj);
+  return st;
+}
+
+static int64_t sys_sched_reserve(vx_handle ctx, uint64_t count, uint64_t cls, uint64_t domain, uint64_t flags,
+                                 uint64_t out) {
+  if ((cls != VX_CORE_ANY && cls != VX_CORE_TIER(0)) || domain != VX_DOMAIN_ANY ||
+      (flags & ~(uint64_t)(VX_RESERVE_NO_SMT_SIBLINGS | VX_RESERVE_SAME_LLC)) || count > MAX_CPUS)
+    return cls >> 8 == 0x20 || (cls >> 8 == 1 && cls != VX_CORE_TIER(0)) ? VX_ERR_REFUSED : VX_ERR_INVALID;
+  vx_status st;
+  sched_ctx *x = (sched_ctx *)handle_get(current_task(), ctx, OBJ_SCHED_CTX, VX_RIGHT_MANAGE, &st);
+  if (!x) return st;
+  vx_core_set set;
+  st = sched_reserve_cpus(x, (uint32_t)count, &set);
+  object_release(&x->obj);
+  vx_status copied = copy_to_user(out, &set, sizeof set);
+  return st != VX_OK ? st : copied;
+}
+
 static int64_t sys_counter_create(uint64_t initial, uint64_t out) {
   counter *c;
   vx_status st = counter_create(initial, &c);
@@ -1078,6 +1138,10 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_port_wait:
     return sys_port_wait((vx_handle)a[0], (vx_instant)a[1], (vx_duration)a[2], a[3], a[4]);
   case VX_SYS_port_post: return sys_port_post((vx_handle)a[0], a[1]);
+  case VX_SYS_sched_ctx_create: return sys_sched_ctx_create(a[0], a[1]);
+  case VX_SYS_sched_ctx_bind: return sys_sched_ctx_bind((vx_handle)a[0], (vx_handle)a[1], a[2]);
+  case VX_SYS_sched_ctx_configure: return sys_sched_ctx_configure((vx_handle)a[0], a[1]);
+  case VX_SYS_sched_reserve: return sys_sched_reserve((vx_handle)a[0], a[1], a[2], a[3], a[4], a[5]);
   case VX_SYS_counter_create: return sys_counter_create(a[0], a[1]);
   case VX_SYS_counter_signal: return sys_counter_signal((vx_handle)a[0], a[1]);
   case VX_SYS_counter_read: return sys_counter_read((vx_handle)a[0]);
