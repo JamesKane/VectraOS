@@ -40,7 +40,7 @@ The component's design note or ADR names which of these applies. Wanting a langu
 **Not Swift:**
 
 - **The kernel.** No general allocator, no recursion, `kcfi`, `-mgeneral-regs-only`, and every status checked (04 §1.1). Embedded Swift with `-no-allocations` may meet these one day. That needs an amendment with a prototype, not a reading of this ADR.
-- **The ABI and the boundary:** `abi/`, `vx-rt`, `libvx`, `libvxc` and `vx-cxx`. They are what every language binds to, so they stay C, and their interfaces stay the `.def` tables (10 §7).
+- **The ABI and the boundary:** `abi/`, `vx-rt` and `libvx` (the C and C++ runtime libraries are the toolchain's, ADR-0033). They are what every language binds to, so they stay C, and their interfaces stay the `.def` tables (10 §7).
 - **Real-time audio callbacks** (03 §6, principle 5), unless they are Embedded Swift with `-no-allocations` and Swift's performance annotations (`@_noLocks`, `@_noAllocation`) check them.
 - **System interfaces defined in Swift.** Protocols, 9Px trees, ring layouts and `.def` tables stay language-neutral. A Swift server serves files like any other. A Swift library that other languages call exports a C ABI (`@c`, with `@implementation` where a C header in the house style already declares the function) from a C header written in the house style.
 
@@ -75,7 +75,7 @@ Swift's toolchain cannot come from Fedora's packages. It needs a triple patched 
 ### 6. Gates before first-party Swift is merged
 
 1. The toolchain is pinned, patched from this repository, and reproducible (§5).
-2. ADR-0033's `libvxc` and `vx-cxx` exist (M6 6e2), along with the threads and TLS that full Swift needs (6d).
+2. ADR-0033's C library (llvm-libc with its VectraOS platform layer) and C++ support (libc++ and libc++abi) exist (M6 6e2), along with the threads and TLS that full Swift needs (6d).
 3. `dbg` demangles Swift symbols and reads Swift's DWARF 5 types, enough to show locals and backtraces, so a Swift program can be debugged as a C one is (D15). This is the Swift work's gap G12.
 4. `./build check` runs §4's rules.
 

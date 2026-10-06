@@ -7,7 +7,7 @@ _Draft, 2026-10-05, for developers who start writing programs once M6 lands. **N
 | Ready | Not yet |
 |---|---|
 | `libvx` v0 (09 §5.1–5.12), static, and shared once the loader exists (6f) | Windows, input, audio and the GPU for apps: `vxui` and the engine tier (03 §6) arrive with M7 |
-| The native target `<arch>-unknown-vectraos`: `libvx`, the ISO C library `libvxc` and the C++ support subset (ADR-0033, 6e2) | Packages, catalogues and `vxpkg` (06 §3.3, §14): M7 onwards. Until then a program is copied into a namespace by hand |
+| The native target `<arch>-unknown-vectraos`: `libvx`, the toolchain's ISO C library (llvm-libc), and libc++ and libc++abi (ADR-0033, 6e2) | Packages, catalogues and `vxpkg` (06 §3.3, §14): M7 onwards. Until then a program is copied into a namespace by hand |
 | Swift 6.4 in both forms, on `libvx` through the `VX` bindings (ADR-0034, 6e3) | The swarm, the LAN and the public network as sources (06 §6.1): M10 to M12 |
 | Threads with intents, static TLS, futexes, robust futexes (6d) | Time zones: UTC only until M7 vendors tzdata |
 | 01 §6.6's shared structures: sealed VMOs, leases, lent leases, `<vx/shared.h>` (6e) | The portable code form (13): design notes only |
@@ -34,7 +34,7 @@ How to choose:
 
 - **New native program, simple ownership:** C23.
 - **New native program whose data is a graph, or whose logic is a set of cooperating tasks:** full Swift. ADR-0034's four reasons (OO or protocol structure, functional patterns, namespacing, ARC) are a good test for applications too.
-- **A library written to ISO C** (a codec, a parser, a maths library): build it unchanged for the native target. `libvxc` supplies clause 7, with files and without POSIX.
+- **A library written to ISO C** (a codec, a parser, a maths library): build it unchanged for the native target. The toolchain's C library, llvm-libc, supplies clause 7, with files and without POSIX.
 - **A library or program written to POSIX:** port it to the POSIX personality, or replace its platform layer with `libvx` calls if it is small. A program that needs `fork`, signals or sockets is a POSIX program.
 - **Don't** put a portability layer (an SDL-like wrapper, an event-loop library, a cross-platform runtime) between your program and `libvx` to keep it "portable". `libvx` is small and has one way to do each thing (rule 13, 09 §1). Put your program's own platform layer at the top, where it names your program's needs, not the OS's.
 
@@ -65,7 +65,7 @@ The house subset (04 §1.1) is written for the OS tree, but most of it pays off 
 - **Nil objects and sticky errors:** check once, at the point where it matters, not after every call.
 - **Zero is a valid value:** design structs so that all zeroes is empty and ready. `-ftrivial-auto-var-init=zero` then makes a forgotten initialiser harmless.
 - **Checked arithmetic** (`<stdckdint.h>`) on every size, offset or count that came from outside your process.
-- **Hosted headers:** `<stdio.h>` and the rest of `libvxc` are there for code you import. Your own code is simpler against `libvx`: `vx_fd` and your own buffering, not `FILE`. Defining `_POSIX_C_SOURCE` or `_GNU_SOURCE` is refused when you compile (ADR-0033).
+- **Hosted headers:** `<stdio.h>` and the rest of the C library are there for code you import. Your own code is simpler against `libvx`: `vx_fd` and your own buffering, not `FILE`. Defining `_POSIX_C_SOURCE` or `_GNU_SOURCE` is refused when you compile (ADR-0033).
 - **Flags worth keeping:** `-std=c23 -Wall -Wextra -Werror`, frame pointers in every function (`-fno-omit-frame-pointer -mno-omit-leaf-frame-pointer`), and DWARF 5 (`-g`), so `dbg` and the profiler see every frame (D15).
 - **Format:** any consistent style is fine. The house format (K&R, two-space indents) has a `.clang-format` you can copy.
 

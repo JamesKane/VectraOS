@@ -6,7 +6,7 @@ _Blueprint v0, 2026-09-30._
 
 | Language | Where | Rule |
 |---|---|---|
-| **C23** | Everything first-party by default, and always the kernel, `abi`, `vx-rt`, `libvx`, `libvxc`, the `build` tool and host tools | clang, `-std=c23`, the house subset in §1.1 |
+| **C23** | Everything first-party by default, and always the kernel, `abi`, `vx-rt`, `libvx`, the `build` tool and host tools | clang, `-std=c23`, the house subset in §1.1 |
 | **Swift** | First-party code whose design needs OO or protocol structure, functional patterns, namespacing or ARC (ADR-0034). Full Swift: applications, desktop programs, developer tools, agent services, servers started after the store. Embedded Swift: also drivers and boot-path servers. Never the kernel or the ABI | The pinned, in-tree-patched Swift 6.4.0 toolchain, Swift 6 mode, strict concurrency, warnings as errors, `swift-format`; through `libvx` only; ADR-0034's four gates before the first merge |
 | **Assembly** | Entry points, context switch, exception vectors | `kernel/arch/` and `vx-rt` only, assembled by clang's integrated assembler |
 | **C (vendored)** | Limine, musl, Lua, Monocypher, ACPICA, kb_text_shape, stb_truetype; later Zydis and one TLS 1.3 library (00 D16) | Built by clang + lld from `ports/`, driven by `build`; never linked into the kernel |
@@ -157,7 +157,7 @@ xorriso is needed only for the optional hybrid ISO.
 |---|---|---|---|
 | Kernel | `--target=x86_64-unknown-none-elf`, `-ffreestanding -mno-red-zone -mgeneral-regs-only` | `--target=aarch64-unknown-none-elf`, `-ffreestanding -mgeneral-regs-only` | clang + lld; custom linker script |
 | First-party user space (commands, servers, drivers, libraries), from M1 | `--target=x86_64-unknown-none-elf`, freestanding, static non-PIE ELF against `vx-rt` and `libvx`; never the hosted headers (ADR-0033) | `--target=aarch64-unknown-none-elf`, the same | clang + lld |
-| Native imported code and developers' programs, from M6 (6e2) | `x86_64-unknown-vectraos` sysroot: `libvx`, the ISO C library `libvxc` and the C++ support subset (ADR-0033) | `aarch64-unknown-vectraos` sysroot | clang + lld, through the sysroot's clang configuration file |
+| Native imported code and developers' programs, from M6 (6e2) | `x86_64-unknown-vectraos` sysroot: `libvx`, llvm-libc (the toolchain's ISO C library, with a VectraOS platform layer), and libc++ and libc++abi (ADR-0033) | `aarch64-unknown-vectraos` sysroot | clang + lld, through the sysroot's clang configuration file |
 | POSIX ports (the POSIX personality), from M4 | `x86_64-vectra-unknown-musl` sysroot (ADR-0007) | `aarch64-vectra-unknown-musl` sysroot | clang + lld |
 | Host tools | host triple | host triple | clang, host libc |
 

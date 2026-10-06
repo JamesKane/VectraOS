@@ -1,6 +1,6 @@
-# ADR-0033: An ISO C library for native programs, a C++ support subset, and the native target
+# ADR-0033: An ISO C library for native programs, C++ support, and the native target
 
-Status: accepted, 2026-10-05 (proposed 2026-10-04). Decides 10 §12, question 1. Built in M6 step 6e2.
+Status: accepted, 2026-10-05 (proposed 2026-10-04); amended 2026-10-06: the C library is llvm-libc and the C++ support libc++ and libc++abi, all toolchain runtimes, and the system supplies their platform layer (§1, §2). Decides 10 §12, question 1. Built in M6 step 6e2.
 
 ## Context
 
@@ -18,23 +18,27 @@ The clang side is missing too. Native programs build with `--target=<arch>-unkno
 
 ## Decision
 
-### 1. `libvxc`, the ISO C library
+### 1. The ISO C library is llvm-libc, from the toolchain
 
-**A hosted C23 library, clause 7 and nothing beyond it, implemented on `libvx`.** It is not POSIX and has no POSIX in it.
+**A hosted C23 library, clause 7 and nothing beyond it, reaching the system only through `libvx`.** It is not POSIX and has no POSIX in it.
 
-- **Built from musl's vendored sources** (ADR-0007), unchanged: a subset of `third_party/musl`, listed in `ports/vxc/port.ndb` as the musl port lists its own. musl's math, `strto*`, `printf` and `scanf` cores, strings, multibyte conversions, `qsort` and time formatting are the hard and reviewed part. A small first-party back end, `ports/vxc/vx`, written under the house rules, supplies everything that touches the system. The library's only outward calls are `libvx`'s. No file of musl's that reaches `__syscall` is in the subset, and the port's build checks that.
+*Amended 2026-10-06.* As first accepted, this section built an OS library, `libvxc`, from musl's vendored sources. That planned a second C library for a target whose toolchain already brings one: the Swift work builds llvm-libc for both `*-vectraos` triples from the pinned llvm-project. The C library is a toolchain runtime, as compiler-rt is (ADR-0008), so the system does not build one. What the system owes is the platform layer beneath it and the sysroot around it.
+
+- **The library is llvm-libc**, built for each `<arch>-unknown-vectraos` triple from the llvm-project revision the pinned Swift toolchain uses (ADR-0034), with an entrypoint list and configuration (`LIBC_CONFIG_PATH`) that name clause 7 only. llvm-libc's math is correctly rounded by design, and its `strtod`, `printf` and `scanf` cores, strings, multibyte conversions, `qsort` and time formatting come with it. It is reviewed and pinned as part of the toolchain (ADR-0001, ADR-0034), not vendored into this tree.
+- **Where it comes from, for now.** Fedora's clang (ADR-0001) ships no llvm-libc for these triples. Until ADR-0034's first gate puts the toolchain in this tree, the sysroot takes `libc.a` and its headers from `swift-on-vectra`'s build (`toolchain/build_libc.sh`), at the revision recorded in the sysroot. After the gate, `./build` builds it from the in-tree toolchain.
+- **A VectraOS platform layer in llvm-libc.** The Swift work's patch 0004 maps `vectraos` to llvm-libc's baremetal layer, which takes a few hooks from the platform (`__llvm_libc_stdio_write` and `_read` with their cookies, `__llvm_libc_exit`, and `__llvm_libc_errno` in the external `errno` mode), all supplied by `libvx` and `vx-rt`. Baremetal has no files, and its streams need a platform mutex and a `File` back end that llvm-libc has only for Linux. So the layer grows into llvm-libc's own `vectraos` platform: a `File` back end over `vx_fd` and a mutex over futexes, in the toolchain's patch series beside the target's other patches and written to llvm-libc's conventions. Its only outward calls are `libvx`'s. It is upstreamable, and nothing in it is visible to this tree's first-party code.
 - **What it contains:**
   - `<math.h>`, `<fenv.h>`, `<complex.h>`, `<string.h>`, `<ctype.h>`, `<inttypes.h>`, `<stdbit.h>`, `<stdckdint.h>`;
   - `<stdlib.h>`: conversions, `qsort`, `bsearch`, `rand`, the heap, `abort`, `exit`, `atexit`, `quick_exit` and `getenv`;
   - `<time.h>`: `time`, `clock`, `timespec_get`, `gmtime_r`, `strftime` and `mktime`;
   - `<wchar.h>` and `<uchar.h>`, in UTF-8 only (ADR-0013);
   - `<stdio.h>`, files included.
-- **How each part reaches the system:**
+- **How each part reaches the system (the platform layer):**
   - **The streams.** `stdin`, `stdout` and `stderr` are buffers over `vx-rt`'s standard streams.
-  - **Files.** `fopen` opens a `vx_fd` through `libvx` (09 §5), and a `FILE` is musl's buffer with the back end's read, write, seek and close. `remove` and `rename` are `libvx` calls.
-  - **The heap.** `malloc`, `calloc`, `realloc`, `free` and `aligned_alloc` use one process `vx_heap` (09 §4.3), made on first use and safe across threads once 6d's threads exist. It exists for imported code only.
-  - **Errors.** `errno` is a thread-local word, set where clause 7 says it is set, and used nowhere else. `libvx` keeps `vx_errstr`.
-  - **The environment and time.** `getenv` reads `libvx`'s environment (`/env`, 6e). `time` and `clock` read `clock_read`.
+  - **Files.** `fopen` opens a `vx_fd` through `libvx` (09 §5), and a `FILE` is llvm-libc's buffer with the layer's read, write, seek and close. `remove` and `rename` are `libvx`'s, under those names.
+  - **The heap.** `malloc`, `calloc`, `realloc`, `free` and `aligned_alloc` are `libvx`'s, over one process `vx_heap` (09 §4.3), made on first use and safe across threads once 6d's threads exist. The entrypoint list leaves out llvm-libc's own, a fixed free-list region that is neither thread-safe nor able to report usable sizes. The heap exists for imported code only.
+  - **Errors.** `errno` is a thread-local word, owned by `libvx` (which owns thread-local storage) and reached through `__llvm_libc_errno`, set where clause 7 says it is set, and used nowhere else. `libvx` keeps `vx_errstr`.
+  - **The environment and time.** `getenv` is `libvx`'s, under that name, reading `/env` (6e). `time` and `clock` read `clock_read`.
   - **Exit.** `exit` runs the `atexit` handlers, flushes the streams and ends the task through `vx-rt`.
 - **What it leaves out:**
   - **Locales.** `setlocale` accepts `"C"` and `""` (both UTF-8) and refuses anything else (ADR-0013).
@@ -42,50 +46,53 @@ The clang side is missing too. Native programs build with `--target=<arch>-unkno
   - **`<threads.h>`** waits. Native threads are `libvx`'s (6d, 6e), and C11 threads over them can come later under an amendment.
   - **`system`** reports that there is no command processor, as clause 7 allows.
   - **`tmpfile` and `tmpnam`** fail cleanly until the system has a per-user temporary directory.
-- **Headers.** The sysroot carries musl's headers, plus a `<features.h>` of our own placed ahead of musl's. It `#error`s on `_POSIX_C_SOURCE`, `_XOPEN_SOURCE`, `_GNU_SOURCE`, `_BSD_SOURCE` and `_DEFAULT_SOURCE`, then includes musl's. The native target compiles with `-std=c23`, so `__STRICT_ANSI__` hides every POSIX declaration. A program that asks for POSIX is told so when it compiles, not when it links.
+- **Headers.** The sysroot carries llvm-libc's generated headers, which declare only the configured entrypoints, so no POSIX name exists to call. The platform layer's `<features.h>` `#error`s on `_POSIX_C_SOURCE`, `_XOPEN_SOURCE`, `_GNU_SOURCE`, `_BSD_SOURCE` and `_DEFAULT_SOURCE`. A program that asks for POSIX is told so when it compiles, not when it links.
 
-### 2. `vx-cxx`, the C++ support subset
+### 2. The C++ support library is libc++ and libc++abi, from the toolchain
 
-**About ten C++ ABI functions, first-party and written in C23.** The C++ runtime ABI is plain symbols, so these can be defined in C and no C++ enters the tree (04 §1). The set:
+*Amended 2026-10-06.* As first accepted, this section wrote about ten C++ ABI functions first-party in C23 (`vx-cxx`). The same reasoning as §1 applies: they are LLVM's runtimes, built by the toolchain against the C library above, in the same llvm-project. The Swift work builds them for both triples (`toolchain/build_cxx.sh`), and the system writes none of them.
 
-- `__cxa_guard_acquire`, `__cxa_guard_release` and `__cxa_guard_abort`, over an atomic word and a futex;
-- `__cxa_atexit`, `__cxa_finalize` and `__dso_handle`;
-- `__cxa_pure_virtual` and `__cxa_deleted_virtual`, which abort with a message;
-- every form of `operator new` and `operator delete` (sized, aligned, nothrow, and the array forms), with `std::nothrow` and the new handler, over `libvxc`'s heap. A failed `new` aborts, because there are no exceptions, and `__throw_bad_alloc` does the same;
-- the few libc++ helpers that libc++'s headers call out of line (such as `__libcpp_verbose_abort`), listed by the Swift runtime's compile sweep (`swift-on-vectra`, R8).
+- **libc++ and libc++abi**, static, with no exceptions, RTTI, threads, filesystem, localization, wide characters or terminal detection, and libc++abi in its baremetal mode with no unwinder. They supply every `operator new` and `operator delete` (over the heap, §1), `std::nothrow` and the new handler, `__cxa_guard_*`, `__cxa_pure_virtual`, and the compiled parts of libc++ that its headers call out of line (`std::string`'s members, `std::to_string`, `__libcpp_verbose_abort` and the rest the Swift runtime's compile sweep lists, `swift-on-vectra` R8).
+- **What they take from elsewhere.** `__cxa_atexit` is the C library's, guarded by the platform layer's mutex (§1). `__dso_handle` is the linker's. `__cxa_guard_*` need futexes once there are threads (6d), through libc++'s threading over `libvx`.
+- **Where they come from** is the C library's answer (§1): `swift-on-vectra`'s build until ADR-0034's first gate, the in-tree toolchain after it.
+- **No C++ enters this tree** (04 §1): the runtimes are the toolchain's, as compiler-rt is.
 
-**Out of scope:** exceptions and RTTI. Code that needs them waits for an ADR importing libc++abi and libunwind. The Swift runtime builds without both.
+**Out of scope:** exceptions and RTTI. Code that needs them waits for an amendment building libc++abi with them and importing libunwind. The Swift runtime builds without both.
 
 ### 3. The native target
 
 - **The triple is `<arch>-unknown-vectraos`.** It is the name the Swift work already uses, beside the POSIX personality's `<arch>-vectra-unknown-musl`.
 - **The sysroot is `out/<arch>/<mode>/vectraos/`.** It holds:
-  - `include/` with `<vx/…>`, `libvxc`'s headers and our `<features.h>`;
-  - `lib/` with `vx-rt`'s start files, `libvx.a`, `libvxc.a`, `libvxcxx.a` and compiler-rt's builtins (ADR-0008).
+  - `include/` with `<vx/…>` and llvm-libc's headers;
+  - `lib/` with `vx-rt`'s start files, `libvx.a`, llvm-libc's `libc.a` and `libm.a`, `libc++.a` and `libc++abi.a`, and compiler-rt's builtins. The libraries keep LLVM's names; `swift-on-vectra`'s provisional `-lvxc` and `-lvxcxx` follow them (ADR-0008).
 - **The driver configuration is a clang configuration file** in the sysroot, `<arch>-unknown-vectraos.cfg`, which clang reads for that target. It holds the sysroot, `-std=c23`, the start files, the libraries in their order, `-static`, `-z now` and 4 KiB pages. So `clang --target=x86_64-unknown-vectraos hello.c` builds a native program on the host with the pinned Fedora clang (ADR-0001), and on VectraOS with no further flags.
-- **No compiler patches are needed for this.** An unknown OS name in a triple is valid to clang and lld, and generates the same ELF code as `none`. A driver toolchain class in clang itself, like the Swift work's patch 0004, comes only when clang is built from source (M12), under ADR-0001.
-- **Shared libraries:** static only, until the loader (6f). Whether `libvxc` then becomes shared beside `libvx` is decided in 6f.
+- **No compiler patches are needed to compile and link.** An unknown OS name in a triple is valid to clang and lld, and generates the same ELF code as `none`. A driver toolchain class in clang itself, like the Swift work's llvm patch 0003, comes only when clang is built from source, under ADR-0001. The C library is different: it is built by the patched llvm-project (§1), and Fedora's clang only links it.
+- **Shared libraries:** static only, until the loader (6f). Whether the C library then becomes shared beside `libvx` is decided in 6f.
 - **Shipping:** the sysroot ships in the `devel` set (06 §3.2) from M12, and is built by `./build` for every image before then.
 
 ### 4. The containment rule
 
-**First-party code never includes the hosted headers and never links `libvxc`.** That covers `cmd/`, `servers/`, `drivers/`, `lib/` and `kernel/`. Host tools under `host/` use the host's libc as before. Their programs keep `-ffreestanding` and `-nostdlib` against `vx-rt` and `libvx`, and `./build check` refuses a first-party source that includes a clause-7 header outside C23's freestanding set (`<stddef.h>`, `<stdint.h>`, `<stdarg.h>`, `<stdbit.h>`, `<limits.h>` and the rest). Imported code links `libvxc` by naming it in its `port.ndb`. A developer's own program uses the native target and may use either.
+**First-party code never includes the hosted headers and never links the C library.** That covers `cmd/`, `servers/`, `drivers/`, `lib/` and `kernel/`. Host tools under `host/` use the host's libc as before. Their programs keep `-ffreestanding` and `-nostdlib` against `vx-rt` and `libvx`, and `./build check` refuses a first-party source that includes a clause-7 header outside C23's freestanding set (`<stddef.h>`, `<stdint.h>`, `<stdarg.h>`, `<stdbit.h>`, `<limits.h>` and the rest). Imported code links the C library by naming it in its `port.ndb`. A developer's own program uses the native target and may use either.
 
 ### Why this is not a portability layer (rule 13)
 
-It wraps no other operating system and imitates none. Everything in it is defined by the language standard D1 chose, and a compiler that implements C23 is expected to supply it. POSIX stays where ADR-0007 put it, in musl. The second way to open a file that 10 §4 worried about exists only for imported code, by the rule above.
+It wraps no other operating system and imitates none. Everything in it is defined by the language standard D1 chose, and a compiler that implements C23 is expected to supply it. It comes with the toolchain, as the language's library does on most systems, and reaches VectraOS only through `libvx`. POSIX stays where ADR-0007 put it, in musl. The second way to open a file that 10 §4 worried about exists only for imported code, by the rule above.
 
 ## Alternatives
 
 - **Patch each ISO C import onto `libvx`** (10 §12's alternative). This costs a patch series per import against the habit of vendoring unchanged (ADR-0015). It cannot work for Swift, whose runtime and Foundation call clause 7 from hundreds of places.
 - **A floor without files**, as the Swift notes first proposed: math, conversions, strings and the two output streams only. It is smaller, but Lua's `io` library and most C a developer brings would still need musl. Files are clause 7 too, and over `vx_fd` they cost one small back end.
 - **Native programs on musl whole.** That brings `errno` as an interface, file-descriptor integers and `__syscall` beneath native code: the POSIX personality under another name.
-- **Writing the library first-party.** Correctly rounded math and `strtod` are exactly where independent code goes wrong. musl's are already vendored and reviewed.
+- **Writing the library first-party.** Correctly rounded math and `strtod` are exactly where independent code goes wrong.
+- **musl's syscall-free sources with a first-party back end (`libvxc`)**, this ADR's decision as first accepted. It is a second C library for the target beside the one the toolchain builds, and two to keep in step with the Swift runtime's needs. Withdrawn 2026-10-06.
+- **llvm-libc's baremetal layer as it is**, the Swift work's patch 0004. It suits Swift, which takes no files from C, but has no `fopen` and no streams beyond the hooks. It is the starting point the `vectraos` layer grows from.
 
 ## Consequences
 
 - 10 §12, question 1, is decided. 09's "freestanding, with no libc" still holds for first-party code, and imported native code gains a C library.
 - Lua can move out of the POSIX personality, built without `LUA_USE_POSIX`, with a native library giving back `io.popen` and temporary files over `libvx`. That is a later step, not part of this one.
+- There is no `vx-cxx`. 04 §1's "no C++ in the tree" holds without writing the C++ ABI in C.
 - The Swift port's S13 becomes this ADR's step. Its symbol inventory is one of the step's tests.
-- `ports/vxc/port.ndb` is captured from musl's sources alongside `ports/musl/port.ndb`. Upgrading musl rebuilds both, and both are checked.
+- There is no `ports/vxc`. musl stays the POSIX personality's alone (ADR-0007), and upgrading it touches nothing native.
+- The C library's version moves with the toolchain's pin (ADR-0034), and its platform layer is reviewed with the toolchain's patch series. Until the first gate, the sysroot records which `swift-on-vectra` build it took the library from.
 - 04 §3.3 lists three user-space targets: first-party freestanding, native through `<arch>-unknown-vectraos`, and POSIX through `<arch>-vectra-unknown-musl`.
