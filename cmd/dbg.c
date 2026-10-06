@@ -16,7 +16,14 @@
 //   frame N                            choose frame N for print
 //   print EXPR                         a C expression at that frame (05 §6.2)
 //   regs, info                         the thread's registers; the process's maps and images
+//   threads                            every thread: its state, why it stopped, where (M6 step 6d6a)
+//   thread N                           make thread N the one commands act on
+//   xregs                              the thread's FP/SIMD state: x86_64's XSAVE image, PKRU
+//                                      among it; aarch64's V registers
 //   kill, quit
+//
+// When a thread stops with an event, procfs stops the program's other threads
+// too, and starts them again with it (all-stop, procfs's debug.c).
 //
 // A launched program that crashes leaves a crash directory (procfs saves it,
 // 05 §5); dbg then turns to it, so bt and print go on working on the dead
@@ -278,6 +285,14 @@ static const char *thread_file(const char *file) {
   return path;
 }
 
+static uint64_t regs_pc(void) {
+#ifdef __x86_64__
+  return regs.rip;
+#else
+  return regs.pc;
+#endif
+}
+
 // The thread's registers and the call stack, as it stopped.
 static void refresh(void) {
   nframes = frame = 0;
@@ -458,6 +473,116 @@ static void print(vx_str expr) {
   say("\n");
 }
 
+// threads/N/status's record, for thread n, into buf: its length, or 0.
+static size_t thread_status(uint64_t n, char *buf, uint32_t cap) {
+  char path[48];
+  size_t len = 0;
+  append(path, &len, sizeof path - 1, VX_STR("threads/"));
+  append_u64(path, &len, sizeof path - 1, n);
+  append(path, &len, sizeof path - 1, VX_STR("/status"));
+  path[len] = 0;
+  int64_t got = read_file(target_path(path), buf, cap);
+  return got > 0 ? (size_t)got : 0;
+}
+
+static void threads(void) {
+  vx_ns_file d;
+  if (vx_ns_open(&ns, target_path("threads"), P9_OREAD, &d) != VX_OK) return say("dbg: no threads\n");
+  static uint8_t dir[8192];
+  uint32_t all = 0, stopped = 0;
+  for (int64_t n; (n = vx_ns_read(&d, dir, sizeof dir)) > 0;) {
+    p9_stat st;
+    for (size_t at = 0; p9_dir_next(dir, (size_t)n, &at, &st);) {
+      uint64_t tid = parse_num(st.name);
+      char rec[256];
+      size_t len = thread_status(tid, rec, sizeof rec);
+      vx_str r = {rec, len}, state = field(r, "state"), reason = field(r, "reason");
+      all++;
+      bool still = (state.len == 7 && !memcmp(state.ptr, "stopped", 7)) ||
+                   (state.len == 6 && !memcmp(state.ptr, "frozen", 6));
+      stopped += still;
+      say(tid == thread ? " *" : "  ");
+      vx_print_u64(tid);
+      say(" ");
+      say_str(state);
+      if (reason.len) say(" "), say_str(reason);
+      uint64_t pc = parse_num(field(r, "pc"));
+      if (pc) say(" at "), say_where(pc);
+      say("\n");
+    }
+  }
+  vx_ns_close(&d);
+  say("dbg: ");
+  vx_print_u64(all);
+  say(" threads, ");
+  vx_print_u64(stopped);
+  say(" stopped\n");
+}
+
+static void say_bytes(const uint8_t *p, size_t n) { // as one number, the last byte first
+  static const char HEX[] = "0123456789abcdef";
+  char out[130];
+  size_t k = 0;
+  for (size_t i = n; i-- > 0 && k + 2 < sizeof out;) out[k++] = HEX[p[i] >> 4], out[k++] = HEX[p[i] & 15];
+  say("0x"), say_str((vx_str){out, k});
+}
+
+static void say_reg(const char *name, uint32_t i, const uint8_t *p, size_t n) {
+  say(name);
+  if (i != UINT32_MAX) vx_print_u64(i);
+  say("=");
+  say_bytes(p, n);
+  say("\n");
+}
+
+#ifdef __x86_64__
+// Where XSAVE's standard image keeps component c (CPUID leaf 0xD).
+static uint32_t xsave_offset(uint32_t c) {
+  uint32_t a = 0xd, b, cx = c, d;
+  __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "+c"(cx), "=d"(d));
+  return b;
+}
+#endif
+
+// The thread's whole FP/SIMD state (threads/N/xregs, ADR-0035).
+static void xregs(void) {
+  static uint8_t x[64 * 1024];
+  int64_t n = read_file(target_path(thread_file("xregs")), x, sizeof x);
+  if (n <= 0) return say("dbg: no state: is the thread stopped?\n");
+#ifdef __x86_64__
+  if (n < 576) return say("dbg: a short XSAVE image\n");
+  uint32_t mxcsr;
+  uint64_t bv, features = vx_cpu()->xfeatures;
+  memcpy(&mxcsr, x + 24, 4), memcpy(&bv, x + 512, 8);
+  say("mxcsr="), say_hex(mxcsr), say(" xstate_bv="), say_hex(bv), say(" xcr0="), say_hex(features), say("\n");
+  uint32_t ymm = features & 4 ? xsave_offset(2) : 0;
+  for (uint32_t i = 0; i < 16; i++) {
+    uint8_t v[32];
+    memcpy(v, x + 160 + (size_t)16 * i, 16);
+    if (ymm && ymm + 16 * (i + 1) <= (uint64_t)n) memcpy(v + 16, x + ymm + (size_t)16 * i, 16);
+    say_reg(ymm ? "ymm" : "xmm", i, v, ymm ? 32 : 16);
+  }
+  if (features & 0x20) { // AVX-512's opmasks
+    uint32_t k = xsave_offset(5);
+    for (uint32_t i = 0; i < 8 && k + 8 * (i + 1) <= (uint64_t)n; i++)
+      say_reg("k", i, x + k + (size_t)8 * i, 8);
+  }
+  if (features & 0x200) { // PKRU: the thread's protection-key rights (ADR-0035)
+    uint32_t at = xsave_offset(9), pkru = 0;
+    if ((bv & 0x200) && at + 4 <= (uint64_t)n) memcpy(&pkru, x + at, 4); // not in use: its first value, 0
+    say("pkru="), say_hex(pkru), say("\n");
+  } else {
+    say("pkru: none (no protection keys)\n");
+  }
+#else
+  if ((size_t)n < sizeof(vx_fpregs)) return say("dbg: a short state\n");
+  const vx_fpregs *f = (const vx_fpregs *)x;
+  say("fpcr="), say_hex(f->fpcr), say(" fpsr="), say_hex(f->fpsr), say("\n");
+  for (uint32_t i = 0; i < 32; i++) say_reg("v", i, f->v[i], 16);
+  say("por_el0: none (no protection keys)\n");
+#endif
+}
+
 static void show(const char *file) {
   static char text[4096];
   int64_t n = read_file(target_path(file), text, sizeof text);
@@ -529,13 +654,27 @@ static bool command(vx_str line) {
     print(rest);
   } else if (word_is(verb, "regs")) {
     show(thread_file("regs.ndb"));
+  } else if (word_is(verb, "xregs")) {
+    xregs();
+  } else if (word_is(verb, "threads")) {
+    threads();
+  } else if (word_is(verb, "thread")) {
+    uint64_t n = parse_num(rest);
+    char rec[256];
+    if (!n || !thread_status(n, rec, sizeof rec)) return say("dbg: no such thread\n"), true;
+    thread = (uint32_t)n;
+    refresh();
+    say("dbg: thread ");
+    vx_print_u64(n);
+    if (have_regs) say(" at "), say_where(regs_pc());
+    say("\n");
   } else if (word_is(verb, "info")) {
     show("images");
     show("maps");
   } else if (word_is(verb, "kill")) {
     if (live) ctl("kill"), wait_event();
   } else {
-    say("dbg: break, run, cont, step, bt, frame, print, regs, info, kill, quit\n");
+    say("dbg: break, run, cont, step, bt, frame, print, regs, xregs, threads, thread, info, kill, quit\n");
   }
   return true;
 }

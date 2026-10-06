@@ -1322,6 +1322,7 @@ static const program USER_PROGRAMS[] = {
     {"maptest", "tests/posix/maptest.c", IN_TESTS, nullptr, true, nullptr, nullptr},
     {"powercut", "tests/posix/powercut.c", IN_TESTS, nullptr, true, nullptr, nullptr},
     {"dbgdemo", "tests/user/dbgdemo.c", IN_TESTS, nullptr, false, nullptr, nullptr},
+    {"dbgthreads", "tests/user/dbgthreads.c", IN_TESTS, nullptr, false, nullptr, nullptr},
 };
 
 static bool program_for(const program *p, const arch *a) { return !p->arch || strcmp(p->arch, a->name) == 0; }

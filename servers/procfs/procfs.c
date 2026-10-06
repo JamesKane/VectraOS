@@ -217,6 +217,7 @@ static void tell_parent(const proc *c, uint8_t kind, uint8_t sig) {
 
 // The task has ended: its parent hears, and its own unread records go.
 static void dbg_forget(const proc *p);  // debug.c
+static bool dbg_pending(const proc *p); // debug.c
 static void prof_forget(const proc *p); // prof.c
 
 static void ended(proc *p) {
@@ -684,7 +685,8 @@ static vx_status ctl(proc *p, vx_str cmd) {
     return p->root ? VX_ERR_ACCESS : stop(p, (uint8_t)sig);
   }
   if (word_is(cmd, "start")) {
-    release_all(p); // threads held at events, and those stopped
+    if (dbg_pending(p)) return VX_OK; // a stop not yet read: it is the next to be (as gdb reports one first)
+    release_all(p);                   // threads held at events, and those stopped
     return cont(p);
   }
   if (word_is(cmd, "setsid")) {

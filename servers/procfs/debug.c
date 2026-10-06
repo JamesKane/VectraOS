@@ -37,8 +37,18 @@
 //
 // Reading registers needs the thread held still: stopped at an event, or
 // frozen (thread_suspend, as ctl's stop does to every thread).
+//
+// All-stop (M6 step 6d6a), as a debugger expects: when a thread stops with
+// an event, procfs suspends every other thread of the task (each by its own
+// thread_suspend, which counts, so a freeze of the debugger's own outlasts
+// it), and starts them again when the stopped one is let go (its resume,
+// ctl's start); a step of the stopped one leaves them stopped. While a
+// thread steps over a breakpoint, its trap taken out, the others stay
+// stopped too, even for a breakpoint whose condition let it go on, so none
+// runs past the trap while it is out. A thread made while the others are
+// stopped runs. Any number of threads are followed: the tables grow.
 
-static constexpr uint32_t DBG_BREAKS = 32, DBG_EVENTS = 32, DBG_EVENT_LEN = 160, DBG_THREADS = 16;
+static constexpr uint32_t DBG_BREAKS = 32, DBG_EVENTS = 32, DBG_EVENT_LEN = 160, DBG_FIRST_THREADS = 16;
 
 typedef enum cmp_op : uint8_t { CMP_NONE, CMP_EQ, CMP_NE, CMP_LT, CMP_LE, CMP_GT, CMP_GE } cmp_op;
 
@@ -88,8 +98,16 @@ typedef struct debugger {
   bool bound; // procfs's port takes the task's exceptions first
   breakpoint bp[DBG_BREAKS];
   vx_watches watches; // the task's watchpoints, as procfs set them
-  held threads[DBG_THREADS];
-  passed passed[DBG_THREADS];
+  // The threads followed, and the faults passed on: cap entries each, in
+  // memory of their own (dbg_grow), freed when the debugger is forgotten.
+  held *threads;
+  passed *passed;
+  uint32_t cap;
+  // All-stop: the threads procfs suspended for an event or a step over, and
+  // whether the debugger has let the task go on since its last event.
+  uint32_t *paused;
+  uint32_t npaused, cappaused;
+  bool pausing, stopped;
   char events[DBG_EVENTS][DBG_EVENT_LEN];
   uint8_t lens[DBG_EVENTS];
   uint32_t ev_head, ev_count, lost;
@@ -229,28 +247,135 @@ static vx_status dbg_bind(proc *p) {
   return st;
 }
 
+// Memory for the tables: a VMO of n bytes, mapped; nullptr if there is none.
+static void *dbg_alloc(size_t n) {
+  vx_handle vmo;
+  uint64_t at = 0, size = (n + 4095) & ~(uint64_t)4095;
+  if (vx_vmo_create(size, 0, &vmo) != VX_OK) return nullptr;
+  vx_status st = vx_as_map(vx_self, vmo, 0, size, VX_MAP_WRITE, &at);
+  vx_handle_close(vmo); // the mapping keeps it
+  return st == VX_OK ? (void *)at : nullptr;
+}
+
+static void dbg_free(void *p, size_t n) {
+  if (p) vx_as_unmap(vx_self, (uint64_t)p, (n + 4095) & ~(uint64_t)4095);
+}
+
+// The thread tables twice as big (or made): false if there is no memory.
+static bool dbg_grow(debugger *d) {
+  uint32_t cap = d->cap ? d->cap * 2 : DBG_FIRST_THREADS;
+  held *t = dbg_alloc(cap * sizeof *t);
+  passed *q = dbg_alloc(cap * sizeof *q);
+  if (!t || !q) {
+    dbg_free(t, cap * sizeof *t), dbg_free(q, cap * sizeof *q);
+    return false;
+  }
+  memset(t, 0, cap * sizeof *t), memset(q, 0, cap * sizeof *q);
+  if (d->cap) {
+    memcpy(t, d->threads, d->cap * sizeof *t), memcpy(q, d->passed, d->cap * sizeof *q);
+    dbg_free(d->threads, d->cap * sizeof *t), dbg_free(d->passed, d->cap * sizeof *q);
+  }
+  d->threads = t, d->passed = q, d->cap = cap;
+  return true;
+}
+
 static held *held_of(proc *p, uint32_t tid, bool make) {
   debugger *d = dbg_of(p);
   held *free_slot = nullptr;
-  for (uint32_t i = 0; i < DBG_THREADS; i++) {
+  for (uint32_t i = 0; i < d->cap; i++) {
     if (d->threads[i].tid == tid) return &d->threads[i];
     if (!d->threads[i].tid && !free_slot) free_slot = &d->threads[i];
   }
-  if (!make || !free_slot) return nullptr;
+  if (!make) return nullptr;
+  if (!free_slot) {
+    uint32_t at = d->cap;
+    if (!dbg_grow(d)) return nullptr;
+    free_slot = &d->threads[at];
+  }
   *free_slot = (held){.tid = tid, .bp = -1};
   return free_slot;
 }
 
 // The fault last passed on for thread tid, or a free place for one; nullptr
-// if neither (more threads than procfs follows: it is then stopped again).
+// if neither (no memory for more: it is then stopped again).
 static passed *passed_of(proc *p, uint32_t tid) {
   debugger *d = dbg_of(p);
   passed *free_slot = nullptr;
-  for (uint32_t i = 0; i < DBG_THREADS; i++) {
+  for (uint32_t i = 0; i < d->cap; i++) {
     if (d->passed[i].tid == tid) return &d->passed[i];
     if (!d->passed[i].tid && !free_slot) free_slot = &d->passed[i];
   }
+  if (!free_slot) { // the new half is free
+    uint32_t at = d->cap;
+    if (dbg_grow(d)) free_slot = &d->passed[at];
+  }
   return free_slot;
+}
+
+// --- All-stop (see the top) ---
+
+static bool is_paused(const debugger *d, uint32_t tid) {
+  for (uint32_t i = 0; i < d->npaused; i++)
+    if (d->paused[i] == tid) return true;
+  return false;
+}
+
+// Every other thread of p suspended: those paused already stay so, and
+// threads made since are paused too; one held at an exception of its own
+// is not, as it is stopped already and must be able to step when let go.
+static void pause_others(proc *p, uint32_t tid) {
+  debugger *d = dbg_of(p);
+  d->pausing = true;
+  vx_thread_info ti = {};
+  while (vx_thread_state(p->task, ti.id, VX_STATE_NEXT_THREAD, &ti, sizeof ti) == VX_OK) {
+    if (ti.id == tid || is_paused(d, ti.id)) continue;
+    const held *h = held_of(p, ti.id, false);
+    if (h && h->why != WHY_NONE) continue;
+    if (d->npaused == d->cappaused) {
+      uint32_t cap = d->cappaused ? d->cappaused * 2 : 64;
+      uint32_t *more = dbg_alloc(cap * sizeof *more);
+      if (!more) break; // the rest run: no memory to keep them
+      if (d->paused)
+        memcpy(more, d->paused, d->npaused * sizeof *more),
+            dbg_free(d->paused, (size_t)d->cappaused * sizeof *more);
+      d->paused = more, d->cappaused = cap;
+    }
+    if (vx_thread_suspend(p->task, ti.id) == VX_OK) d->paused[d->npaused++] = ti.id;
+  }
+}
+
+// A thread whose exception came while procfs had it paused (it stopped at
+// the same time as the one that paused it): not paused any more, as it is
+// held at its exception, and a suspended thread could not step over a
+// breakpoint when let go.
+static void unpause_one(proc *p, uint32_t tid) {
+  debugger *d = dbg_of(p);
+  for (uint32_t i = 0; i < d->npaused; i++)
+    if (d->paused[i] == tid) {
+      vx_thread_resume(p->task, tid);
+      d->paused[i] = d->paused[--d->npaused];
+      return;
+    }
+}
+
+// The paused threads started again, if the debugger has let the task go on
+// and no thread is stepping over a breakpoint or a watchpoint on its own.
+static void maybe_unpause(proc *p) {
+  debugger *d = dbg_of(p);
+  if (!d->pausing || d->stopped) return;
+  for (uint32_t i = 0; i < d->cap; i++)
+    if (d->threads[i].tid && (d->threads[i].why == WHY_OVER || d->threads[i].why == WHY_WOVER) &&
+        !d->threads[i].user_step)
+      return;
+  for (uint32_t i = 0; i < d->npaused; i++) vx_thread_resume(p->task, d->paused[i]); // gone, it may be
+  d->npaused = 0;
+  d->pausing = false;
+}
+
+// An event reported: the task stays stopped until the debugger lets it go.
+static void stop_all(proc *p, uint32_t tid) {
+  dbg_of(p)->stopped = true;
+  pause_others(p, tid);
 }
 
 static int32_t bp_at(const debugger *d, uint64_t addr) {
@@ -281,6 +406,7 @@ static bool bp_condition(const proc *p, const breakpoint *b, vx_regs *r) {
 // Steps a thread held at breakpoint bp over it: the code put back for one
 // instruction, then the trap again (dbg_exception, at the STEP).
 static vx_status step_over(proc *p, held *h, bool user_step) {
+  pause_others(p, h->tid); // none runs past the breakpoint while its trap is out
   const breakpoint *b = &dbg_of(p)->bp[h->bp];
   vx_status st = mem_rw(p, b->addr, (void *)b->orig, sizeof TRAP, true);
   if (st != VX_OK) return st;
@@ -299,6 +425,7 @@ static vx_status set_watches(proc *p, bool off) {
 // Steps a thread held at a watchpoint past it, the watchpoints off for the
 // one instruction (dbg_exception puts them back, at the STEP).
 static vx_status watch_over(proc *p, held *h, bool user_step) {
+  pause_others(p, h->tid); // none passes the watchpoint while they are off
   vx_status st = set_watches(p, true);
   if (st != VX_OK) return st;
   h->why = WHY_WOVER;
@@ -321,6 +448,15 @@ static vx_status release(proc *p, held *h) {
                            h->why == WHY_FAULT || h->why == WHY_TRAP ? VX_RESUME_PASS : VX_RESUME_CONTINUE,
                            nullptr);
   *h = (held){};
+  return st;
+}
+
+// A held thread let go by the debugger: the others with it, once it is past
+// its breakpoint.
+static vx_status let_go(proc *p, held *h) {
+  dbg_of(p)->stopped = false;
+  vx_status st = release(p, h);
+  maybe_unpause(p);
   return st;
 }
 
@@ -371,8 +507,9 @@ static void dbg_exception(proc *p, uint32_t tid) {
     vx_exception_resume(p->task, tid, go, nullptr);
     return;
   }
+  unpause_one(p, tid);
   held *h = held_of(p, tid, true);
-  if (!h) { // more threads stopped than procfs follows: let it go
+  if (!h) { // no memory to follow it: let it go
     vx_exception_resume(p->task, tid, VX_RESUME_PASS, nullptr);
     return;
   }
@@ -384,9 +521,11 @@ static void dbg_exception(proc *p, uint32_t tid) {
     if ((h->why == WHY_OVER || h->why == WHY_WOVER) && !h->user_step) { // past it, on the way on
       *h = (held){};
       vx_exception_resume(p->task, tid, VX_RESUME_CONTINUE, nullptr);
+      maybe_unpause(p); // the others with it, unless the debugger holds them
       return;
     }
     *h = (held){.tid = tid, .why = WHY_STEP, .bp = -1, .pc = pc};
+    stop_all(p, tid);
     dbg_event(p, "step", tid, pc, nullptr);
     return;
   }
@@ -399,6 +538,7 @@ static void dbg_exception(proc *p, uint32_t tid) {
     int32_t i = bp_at(d, addr);
     if (i < 0) { // the program's own
       *h = (held){.tid = tid, .why = WHY_TRAP, .bp = -1, .pc = pc};
+      stop_all(p, tid);
       dbg_event(p, "trap", tid, pc, nullptr);
       return;
     }
@@ -411,6 +551,7 @@ static void dbg_exception(proc *p, uint32_t tid) {
       step_over(p, h, false);
       return;
     }
+    stop_all(p, tid);
     dbg_event(p, "break", tid, addr, nullptr);
     return;
   }
@@ -421,6 +562,7 @@ static void dbg_exception(proc *p, uint32_t tid) {
     size_t n = 6 + hex_text(e.address, extra + 6);
     const char *access = w->kind == VX_WATCH_WRITE ? " access=write" : " access=rw";
     memcpy(extra + n, access, vx_cstr(access).len + 1);
+    stop_all(p, tid);
     dbg_event(p, "watch", tid, pc, extra);
     return;
   }
@@ -444,14 +586,22 @@ static void dbg_exception(proc *p, uint32_t tid) {
   size_t n = 6 + hex_text(e.address, extra + 6);
   const char *access = fault_access(&e);
   memcpy(extra + n, access, vx_cstr(access).len + 1);
+  stop_all(p, tid);
   dbg_event(p, "fault", tid, pc, extra);
 }
+
+// Whether an event is waiting to be read: then ctl's start lets nothing go
+// (M6 step 6d6a), so a debugger that continues after one thread's stop sees
+// the stop another thread made at the same time before anything runs on.
+static bool dbg_pending(const proc *p) { return dbg_of(p)->ev_count > 0; }
 
 // Every held thread let go: ctl's start.
 static void release_all(proc *p) {
   debugger *d = dbg_of(p);
-  for (uint32_t i = 0; i < DBG_THREADS; i++)
+  d->stopped = false;
+  for (uint32_t i = 0; i < d->cap; i++)
     if (d->threads[i].tid) release(p, &d->threads[i]);
+  maybe_unpause(p);
 }
 
 // --- ctl ---
@@ -512,7 +662,7 @@ static vx_status clear_break(proc *p, uint64_t addr) {
   if (i < 0) return VX_ERR_NOT_FOUND;
   vx_status st = VX_OK;
   bool stepping = false; // a thread stepping over it has the code back already, and must not get the trap
-  for (uint32_t k = 0; k < DBG_THREADS; k++) {
+  for (uint32_t k = 0; k < d->cap; k++) {
     held *h = &d->threads[k];
     if (h->tid && h->bp == i) {
       stepping = stepping || h->why == WHY_OVER;
@@ -570,7 +720,9 @@ static void detach(proc *p) {
   set_watches(p, true);
   release_all(p);
   if (d->bound) vx_exception_bind(p->task, VX_HANDLE_NONE, 0, VX_EXCEPTION_FIRST_CHANCE);
-  *d = (debugger){};
+  d->stopped = false;
+  for (uint32_t i = 0; i < d->npaused; i++) vx_thread_resume(p->task, d->paused[i]); // whatever is in flight
+  dbg_forget(p);
 }
 
 // ctl's debug verbs; NOT_FOUND for any other.
@@ -601,7 +753,7 @@ static vx_status thread_ctl(proc *p, uint32_t tid, vx_str cmd) {
   if (word_is(cmd, "thaw")) return vx_thread_resume(p->task, tid);
   if (!word_is(cmd, "resume")) return VX_ERR_INVALID;
   held *h = held_of(p, tid, false);
-  return h ? release(p, h) : VX_ERR_BAD_STATE;
+  return h ? let_go(p, h) : VX_ERR_BAD_STATE;
 }
 
 // --- The files ---
@@ -691,7 +843,9 @@ static size_t thread_status_text(proc *p, uint32_t tid, char *buf, size_t cap) {
   if (vx_thread_state(p->task, tid - 1, VX_STATE_NEXT_THREAD, &ti, sizeof ti) != VX_OK || ti.id != tid)
     return 0;
   vx_ndb_writer w = {.buf = buf, .cap = cap};
-  vx_ndb_put(&w, "state", vx_cstr(ti.state <= VX_THREAD_SUSPENDED ? RUN_STATES[ti.state] : "unknown"));
+  // Suspended while blocked in a call: frozen, as it runs no more when the call returns (6d6a).
+  uint32_t state = ti.state == VX_THREAD_BLOCKED && ti.suspend_count ? VX_THREAD_SUSPENDED : ti.state;
+  vx_ndb_put(&w, "state", vx_cstr(state <= VX_THREAD_SUSPENDED ? RUN_STATES[state] : "unknown"));
   const held *h = held_of(p, tid, false);
   if (h && h->why) vx_ndb_put(&w, "reason", vx_cstr(REASONS[h->why]));
   vx_regs r;
@@ -738,4 +892,9 @@ static vx_status regs_ndb_write(const proc *p, uint32_t tid, vx_str s) {
 }
 
 // A process ended, or its slot is reused: nothing of its debugging is left.
-static void dbg_forget(const proc *p) { *dbg_of(p) = (debugger){}; }
+static void dbg_forget(const proc *p) {
+  debugger *d = dbg_of(p);
+  dbg_free(d->threads, d->cap * sizeof *d->threads), dbg_free(d->passed, d->cap * sizeof *d->passed);
+  dbg_free(d->paused, d->cappaused * sizeof *d->paused);
+  *d = (debugger){};
+}
