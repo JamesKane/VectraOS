@@ -1,6 +1,6 @@
 # ADR-0016: sbase, vendored unchanged, as the POSIX userland's commands
 
-Status: proposed, 2026-10-02. The import awaits review (`VENDOR.ndb`, `reviewed.by=pending`).
+Status: accepted, 2026-10-06 (proposed 2026-10-02). The import's code review is still to be recorded (`VENDOR.ndb`, `reviewed.by=pending`).
 
 ## Context
 

@@ -1,6 +1,6 @@
 # ADR-0029: Broad grants are separate, visible and revocable; no program gets the whole home by default
 
-Status: proposed, 2026-10-03.
+Status: accepted, 2026-10-06 (proposed 2026-10-03).
 
 ## Context
 

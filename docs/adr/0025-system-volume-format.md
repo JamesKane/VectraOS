@@ -1,6 +1,6 @@
 # ADR-0025: The system volume's file system is our own, after gefs: copy-on-write Bε trees in `lib/vx-fs`, served by `fsd`
 
-Status: proposed, 2026-10-02. Decides 04 §6's "a decision on a copy-on-write FS (native log-structured, or a port)" for M5. The design is docs/11-storage.md.
+Status: accepted, 2026-10-06 (proposed 2026-10-02). Decides 04 §6's "a decision on a copy-on-write FS (native log-structured, or a port)" for M5. The design is docs/11-storage.md.
 
 ## Context
 

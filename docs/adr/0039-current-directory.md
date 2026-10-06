@@ -1,6 +1,6 @@
 # ADR-0039: The current directory
 
-Status: proposed, 2026-10-06. M6 step 6d7a (Swift's R17, `swift-on-vectra`'s `docs/os-requirements.md`). It puts a current directory in the native personality, readable and settable from C and set by rc's `cd`, and makes the spawn message's `cwd=` record, until now musl's back end's own, part of the spawn message's ABI (`abi/vx/abi.h`).
+Status: accepted, 2026-10-06 (proposed 2026-10-06). M6 step 6d7a (Swift's R17, `swift-on-vectra`'s `docs/os-requirements.md`). It puts a current directory in the native personality, readable and settable from C and set by rc's `cd`, and makes the spawn message's `cwd=` record, until now musl's back end's own, part of the spawn message's ABI (`abi/vx/abi.h`).
 
 ## Context
 

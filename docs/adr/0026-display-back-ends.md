@@ -1,6 +1,6 @@
 # ADR-0026: Display back ends: a narrow engine protocol under `displayd`, firmware adoption first, one DisplayPort library, block layouts as data
 
-Status: proposed, 2026-10-03. It makes ADR-0018 item 7 concrete: what a vendor's `displayd` back end is, and what it shares with the others. Found by surveying the Q8B's display (ADR-0019 §6), the CIX Sky1's (ADR-0027), Fuchsia's display stack, Linux's DRM and 9front. It is built with the first hardware back end, `disp-msm` in M9; `simplefb` and virtio-gpu in M7 and M8 are written against it from the start.
+Status: accepted, 2026-10-06 (proposed 2026-10-03). It makes ADR-0018 item 7 concrete: what a vendor's `displayd` back end is, and what it shares with the others. Found by surveying the Q8B's display (ADR-0019 §6), the CIX Sky1's (ADR-0027), Fuchsia's display stack, Linux's DRM and 9front. It is built with the first hardware back end, `disp-msm` in M9; `simplefb` and virtio-gpu in M7 and M8 are written against it from the start.
 
 ## Context
 

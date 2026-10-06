@@ -1,6 +1,6 @@
 # ADR-0036: Note stacks
 
-Status: proposed, 2026-10-05. M6 step 6d2b's change to the ABI (01 §3): a stack per thread for its in-task handler, which POSIX's `sigaltstack` maps onto. No new syscall: two `thread_state` ops and a struct.
+Status: accepted, 2026-10-06 (proposed 2026-10-05). M6 step 6d2b's change to the ABI (01 §3): a stack per thread for its in-task handler, which POSIX's `sigaltstack` maps onto. No new syscall: two `thread_state` ops and a struct.
 
 ## Context
 

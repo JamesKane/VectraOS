@@ -1,6 +1,6 @@
 # ADR-0027: The CIX Sky1's display: `disp-linlon` for the Linlon-D6, the Trilinear DP transmitter on `vx-dp`
 
-Status: proposed, 2026-10-03. The Sky1's vendor display ADR under ADR-0026. The Sky1 (Orange Pi 6 Plus, Radxa Orion O6) is the candidate second arm64 board (00 §5), not tiered; this is built when it is promoted. Found by reading CIX's BSP kernel (`cixtech/cix_opensource__linux`, 2026-08-19), Linux's komeda and zynqmp DP drivers, and AbyssBSD's survey of the Orange Pi 6 Plus (`docs/boards/orangepi-6-plus/README.md` there). Nothing here has been run on the board yet.
+Status: accepted, 2026-10-06 (proposed 2026-10-03). The Sky1's vendor display ADR under ADR-0026. The Sky1 (Orange Pi 6 Plus, Radxa Orion O6) is the candidate second arm64 board (00 §5), not tiered; this is built when it is promoted. Found by reading CIX's BSP kernel (`cixtech/cix_opensource__linux`, 2026-08-19), Linux's komeda and zynqmp DP drivers, and AbyssBSD's survey of the Orange Pi 6 Plus (`docs/boards/orangepi-6-plus/README.md` there). Nothing here has been run on the board yet.
 
 ## Context
 

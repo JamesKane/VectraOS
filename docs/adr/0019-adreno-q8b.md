@@ -1,6 +1,6 @@
 # ADR-0019: Adreno a6xx on the Radxa Dragon Q8B: `drv-gpu-adreno`, its display back end, and the SC8280XP platform pieces
 
-Status: proposed, 2026-10-02. The vendor ADR for Qualcomm under ADR-0018 (item 3, the Adreno a6xx band). Amended 2026-10-03 for ADR-0026: `disp-msm` speaks the engine protocol and takes its DisplayPort code from `vx-dp`. The Q8B is a T1 board (00 §5), brought up in M9, after the GPU stack of M8 (04 §6).
+Status: accepted, 2026-10-06 (proposed 2026-10-02). The vendor ADR for Qualcomm under ADR-0018 (item 3, the Adreno a6xx band). Amended 2026-10-03 for ADR-0026: `disp-msm` speaks the engine protocol and takes its DisplayPort code from `vx-dp`. The Q8B is a T1 board (00 §5), brought up in M9, after the GPU stack of M8 (04 §6).
 
 ## Context
 

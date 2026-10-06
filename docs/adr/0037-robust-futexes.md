@@ -1,6 +1,6 @@
 # ADR-0037: Robust futexes
 
-Status: proposed, 2026-10-05. M6 step 6d3's change to the ABI (01 §3, §13 question 6, decided 2026-10-04: robust futexes in Linux's layout). It adds one syscall, `thread_set_robust`, which 01 §2's list already names, and changes how futexes are keyed. It also gives the POSIX layer's thread ids a form the lock words can hold.
+Status: accepted, 2026-10-06 (proposed 2026-10-05). M6 step 6d3's change to the ABI (01 §3, §13 question 6, decided 2026-10-04: robust futexes in Linux's layout). It adds one syscall, `thread_set_robust`, which 01 §2's list already names, and changes how futexes are keyed. It also gives the POSIX layer's thread ids a form the lock words can hold.
 
 ## Context
 

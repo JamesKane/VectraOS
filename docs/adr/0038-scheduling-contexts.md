@@ -1,6 +1,6 @@
 # ADR-0038: Scheduling contexts, intents, admission and core reservations
 
-Status: proposed, 2026-10-06. M6 step 6d6c's ABI (01 §8). It gives the four calls 01 §2 names and `syscalls.def` reserved, `sched_ctx_create`, `sched_ctx_bind`, `sched_ctx_configure` and `sched_reserve`, their arguments, and adds a `SchedContext` object. Decided with it (2026-10-06): limits are system-wide until keyd (M10) gives the kernel users; donation through `channel_call` is 6d6c2's. Amended 2026-10-06 for 6d6c2: decision 8, and `vx_sched_info`'s `lent_task` and `lent_thread`.
+Status: accepted, 2026-10-06 (proposed 2026-10-06). M6 step 6d6c's ABI (01 §8). It gives the four calls 01 §2 names and `syscalls.def` reserved, `sched_ctx_create`, `sched_ctx_bind`, `sched_ctx_configure` and `sched_reserve`, their arguments, and adds a `SchedContext` object. Decided with it (2026-10-06): limits are system-wide until keyd (M10) gives the kernel users; donation through `channel_call` is 6d6c2's. Amended 2026-10-06 for 6d6c2: decision 8, and `vx_sched_info`'s `lent_task` and `lent_thread`.
 
 ## Context
 

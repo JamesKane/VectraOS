@@ -1,6 +1,6 @@
 # ADR-0024: ACPI firmware services: AML methods as a service, ACPI resources turned into grants, and `bus-acpi`'s regions
 
-Status: proposed, 2026-10-02. Its base, ACPICA in `bus-acpi` with resources as grants and the operation regions, is built in M5 on QEMU's tables; the method connections with M9's platform work; the Sky1's own checks when it is promoted from candidate (00 §5). Found by surveying the CIX Sky1 (Radxa Orion O6), from CIX's Linaro Connect 2025 talk "ACPI support on Radxa Orion O6". It applies to every ACPI machine whose firmware services are reached by running AML, x86 laptops with embedded controllers among them. Board-specific checks (the IORT, GTDT, PCCT and `_CPC` of a real board) wait for bring-up.
+Status: accepted, 2026-10-06 (proposed 2026-10-02). Its base, ACPICA in `bus-acpi` with resources as grants and the operation regions, is built in M5 on QEMU's tables; the method connections with M9's platform work; the Sky1's own checks when it is promoted from candidate (00 §5). Found by surveying the CIX Sky1 (Radxa Orion O6), from CIX's Linaro Connect 2025 talk "ACPI support on Radxa Orion O6". It applies to every ACPI machine whose firmware services are reached by running AML, x86 laptops with embedded controllers among them. Board-specific checks (the IORT, GTDT, PCCT and `_CPC` of a real board) wait for bring-up.
 
 ## Context
 

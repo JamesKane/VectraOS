@@ -1,6 +1,6 @@
 # ADR-0022: Remote processors: booting them through the secure world, and talking to them over GLINK
 
-Status: proposed, 2026-10-02. Found by looking at the Radxa Dragon Q8B (ADR-0019); built in M9 (04 §6), but for audio through the ADSP, which waits for its own ADR with M13.
+Status: accepted, 2026-10-06 (proposed 2026-10-02). Found by looking at the Radxa Dragon Q8B (ADR-0019); built in M9 (04 §6), but for audio through the ADSP, which waits for its own ADR with M13.
 
 ## Context
 

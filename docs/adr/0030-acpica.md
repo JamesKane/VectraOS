@@ -1,6 +1,6 @@
 # ADR-0030: ACPICA 20260930, its core vendored unchanged, for `bus-acpi`
 
-Status: proposed, 2026-10-03. The import awaits review (`VENDOR.ndb`, `reviewed.by=pending`).
+Status: accepted, 2026-10-06 (proposed 2026-10-03). The import's code review is still to be recorded (`VENDOR.ndb`, `reviewed.by=pending`).
 
 ## Context
 

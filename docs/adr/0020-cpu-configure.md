@@ -1,6 +1,6 @@
 # ADR-0020: `cpu_configure`, so the kernel gets the firmware's idle states and performance domains
 
-Status: proposed, 2026-10-02. A new syscall, the 63rd (01 §3), delivered in M9 with the Q8B's platform (04 §6). Found by looking at the Radxa Dragon Q8B (ADR-0019). Amended the same day by ADR-0023 item 7 (delegated domains, SCMI, DT idle states) and ADR-0024 item 5 (`VX_CPU_WAKE_TIMER`).
+Status: accepted, 2026-10-06 (proposed 2026-10-02). A new syscall, the 63rd (01 §3), delivered in M9 with the Q8B's platform (04 §6). Found by looking at the Radxa Dragon Q8B (ADR-0019). Amended the same day by ADR-0023 item 7 (delegated domains, SCMI, DT idle states) and ADR-0024 item 5 (`VX_CPU_WAKE_TIMER`).
 
 ## Context
 

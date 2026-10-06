@@ -1,6 +1,6 @@
 # ADR-0018: GPU drivers: one native `accel` protocol, Mesa ported to it, hardware whose firmware does the work only
 
-Status: proposed, 2026-10-02; amended the same day for Qualcomm's Adreno, when the Radxa Dragon Q8B became a T1 board (00 §5). This is the GPU kernel-driver ADR that 03 §3 and M8 call for. Each vendor's driver gets an ADR of its own under it.
+Status: accepted, 2026-10-06 (proposed 2026-10-02); amended the same day for Qualcomm's Adreno, when the Radxa Dragon Q8B became a T1 board (00 §5). This is the GPU kernel-driver ADR that 03 §3 and M8 call for. Each vendor's driver gets an ADR of its own under it.
 
 ## Context
 

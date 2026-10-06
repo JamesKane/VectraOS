@@ -1,6 +1,6 @@
 # ADR-0031: `system_power` and `clock_set`, the machine's power and its wall clock
 
-Status: proposed, 2026-10-03. Two new syscalls (01 §3), added in M5 steps 7c and 7d. `system_power` went in with step 7c before this ADR was written; this ADR records it after the fact.
+Status: accepted, 2026-10-06 (proposed 2026-10-03). Two new syscalls (01 §3), added in M5 steps 7c and 7d. `system_power` went in with step 7c before this ADR was written; this ADR records it after the fact.
 
 ## Context
 
