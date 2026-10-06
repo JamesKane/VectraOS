@@ -89,11 +89,19 @@ What is turned on, in the order it lands:
 ### 3. The native target
 
 - **The triple is `<arch>-unknown-vectraos`.** It is the name the Swift work already uses, beside the POSIX personality's `<arch>-vectra-unknown-musl`.
-- **The sysroot is `out/<arch>/<mode>/vectraos/`.** It holds:
-  - `include/` with `<vx/…>` and llvm-libc's headers;
-  - `lib/` with `vx-rt`'s start files, `libvx.a`, llvm-libc's `libc.a` and `libm.a`, `libc++.a` and `libc++abi.a`, and compiler-rt's builtins. The libraries keep LLVM's names; `swift-on-vectra`'s provisional `-lvxc` and `-lvxcxx` follow them (ADR-0008).
-- **The driver configuration is a clang configuration file** in the sysroot, `<arch>-unknown-vectraos.cfg`, which clang reads for that target. It holds the sysroot, `-std=c23`, the start files, the libraries in their order, `-static`, `-z now` and 4 KiB pages, and a C++ section for `clang++` (`-std=c++23`, libc++'s headers, and libc++, libc++abi and, from 6f2, libunwind ahead of the C library) (§2a). So `clang --target=x86_64-unknown-vectraos hello.c` builds a native program on the host with the pinned Fedora clang (ADR-0001), and on VectraOS with no further flags.
+- **The sysroot is `out/<arch>/<mode>/vectraos/`,** laid out as the Swift work's clang driver (llvm patch 0003) searches it. It holds:
+  - `usr/include/` with `<vx/…>` and llvm-libc's headers, and `usr/include/c++/v1/` with libc++'s;
+  - `usr/lib/` with `vx-rt`'s start files, `libvx.a`, llvm-libc's `libc.a` and `libm.a`, `libc++.a` and `libc++abi.a`, and compiler-rt's builtins (ADR-0008). The libraries keep LLVM's names; `swift-on-vectra`'s provisional `-lvxc` and `-lvxcxx` follow them.
+- **The driver configuration is a clang configuration file** in the sysroot, `<arch>-unknown-vectraos.cfg`, which clang reads for that target. It gives Fedora's clang everything patches 0002 and 0003 give the patched one:
+  - `-D__vectraos__`, which patch 0002 predefines;
+  - the sysroot, its `usr/include` and `usr/include/c++/v1`, and `-std=c23` (`-std=c++23` for `clang++`);
+  - `-gdwarf-5`, `-fno-omit-frame-pointer -mno-omit-leaf-frame-pointer` (frame pointers in every function, leaf functions included, on both architectures) and `-fasynchronous-unwind-tables`;
+  - `vx-rt`'s start file first, then the libraries in patch 0003's order: `-lc++ -lc++abi` for C++ (with libunwind from 6f2, §2a), then `-lvx -lc -lm` in one group, since they call each other, then compiler-rt's builtins;
+  - `-static`, `--build-id=sha1`, `-z max-page-size=0x1000`, `-z noexecstack` and `-z now`.
+
+  So `clang --target=x86_64-unknown-vectraos hello.c` builds a native program on the host with the pinned Fedora clang (ADR-0001), and on VectraOS with no further flags.
 - **No compiler patches are needed to compile and link.** An unknown OS name in a triple is valid to clang and lld, and generates the same ELF code as `none`. A driver toolchain class in clang itself, like the Swift work's llvm patch 0003, comes only when clang is built from source, under ADR-0001. The C library is different: it is built by the patched llvm-project (§1), and Fedora's clang only links it.
+- **The two compilers are checked against each other** (ADR-0034's "must stay in agreement"). While both exist, `./build` compiles one probe program, C and C++, with each. It compares the predefined macros (`-dM -E`), the link lines (`-###`) and the frame-pointer and DWARF attributes in the objects, and refuses to build the sysroot when they differ. A change to patch 0002 or 0003 then fails here until the `.cfg` follows.
 - **Shared libraries:** static only, until the loader (6f). Whether the C library then becomes shared beside `libvx` is decided in 6f.
 - **Shipping:** the sysroot ships in the `devel` set (06 §3.2) from M12, and is built by `./build` for every image before then.
 

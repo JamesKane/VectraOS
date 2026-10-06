@@ -11,7 +11,7 @@ _Blueprint v0, 2026-09-30._
 | **Assembly** | Entry points, context switch, exception vectors | `kernel/arch/` and `vx-rt` only, assembled by clang's integrated assembler |
 | **C (vendored)** | Limine, musl, Lua, Monocypher, ACPICA, kb_text_shape, stb_truetype; later Zydis and one TLS 1.3 library (00 D16) | Built by clang + lld from `ports/`, driven by `build`; never linked into the kernel |
 | **C++ (vendored)** | Later, and only where there is no C alternative: Mesa's C++ parts (such as RADV's ACO compiler) and llama.cpp | The same rules as C imports. Each C++ import says in its ADR why no C alternative exists. Built for the native target with `clang++` and the toolchain's libc++, libc++abi and libunwind (ADR-0033 §2a) unless it needs POSIX |
-| **Odin and others** | Applications, through `vxui.h` and the POSIX layer | Community tier; never in the base system. Swift is not among them (ADR-0034) |
+| **Odin and others** | Applications, through `libvx`'s C ABI and the native target's sysroot (ADR-0033), and `vxui.h` from M7; the POSIX layer only for code written to POSIX (14 §7) | Community tier; never in the base system. Swift is not among them (ADR-0034) |
 | **Lua** | `wm` layout policies, scripts and scripted UIs. Settings are ndb data, not Lua (D14) | Vendored Lua 5.4 |
 
 `rc`, the system shell, is Plan 9's rc, written first-party in C (`cmd/rc.c`, the language in `lib/vx-rc`, M4 step 7; named `gsh` until M6 step 6a4, and made fully compatible with 9front's in M6): lists, `{}` blocks and no word-splitting surprises. Namespace built-ins (`bind`, `mount`, `ns`) are part of it.
