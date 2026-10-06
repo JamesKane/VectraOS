@@ -12,8 +12,10 @@
 //
 // channel_call writes a request and waits on its own end for the reply whose
 // txid matches; the kernel picks the txid, and the reply goes straight to the
-// waiting caller instead of the queue. (Running the server on the caller's
-// scheduling context, 01 §4.5, comes with scheduling contexts.)
+// waiting caller instead of the queue. The caller lends the server its
+// scheduling meanwhile (01 §4.5, M6 step 6d6c2, sched.c): the port waiter its
+// request wakes, then the thread that reads it, runs with its intent and on
+// its context's budget until the reply, which switches back to it.
 //
 // Both ends share one lock. Objects that leave the kernel's hands (a message's
 // handles, a dying end's bindings) are released after it is dropped, because
@@ -134,7 +136,7 @@ static vx_status channel_deliver(channel *to, channel_msg *m) {
     if (w->txid != txid) continue;
     *link = w->next;
     w->reply = m;
-    thread_wake_token(w->thread, w, VX_OK);
+    thread_wake_reply(w->thread, w, VX_OK); // its loan back, and run in the replier's place
     return VX_OK;
   }
   if (to->count == CHANNEL_QUEUE_MESSAGES || to->bytes + m->len > CHANNEL_QUEUE_BYTES)
@@ -180,7 +182,10 @@ static vx_status channel_read(channel *c, uint32_t cap, uint32_t count_cap, chan
       if (!c->head) c->tail = nullptr;
       c->count--;
       c->bytes -= m->len;
-      if (m->call) m->call->read = true, m->call = nullptr;
+      if (m->call) { // the reader serves the call: the caller's scheduling is lent to it
+        sched_lend(m->call->thread, this_cpu()->current);
+        m->call->read = true, m->call = nullptr;
+      }
       *out = m;
     }
   }
@@ -208,7 +213,9 @@ static vx_status channel_call(channel *c, channel_msg *request, vx_instant deadl
   ((vx_msg_header *)msg_body(request))->txid = w.txid;
   ((vx_msg_header *)msg_body(request))->sender_intent = thread_intent(this_cpu()->current);
   request->call = &w;
+  sched_lending(t); // the server's port waiter it wakes runs on t's scheduling
   vx_status st = channel_deliver(peer, request);
+  sched_lending(nullptr);
   if (st != VX_OK) request->call = nullptr;
   if (st == VX_OK) {
     *sent = true;
@@ -261,6 +268,7 @@ static vx_status channel_call(channel *c, channel_msg *request, vx_instant deadl
     spin_unlock(&c->pair->lock);
     break;
   }
+  sched_unlend(t); // the call is over, answered or not
   if (w.reply) {
     *reply = w.reply;
     return VX_OK;

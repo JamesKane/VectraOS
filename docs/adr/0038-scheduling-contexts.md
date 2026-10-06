@@ -1,6 +1,6 @@
 # ADR-0038: Scheduling contexts, intents, admission and core reservations
 
-Status: proposed, 2026-10-06. M6 step 6d6c's ABI (01 §8). It gives the four calls 01 §2 names and `syscalls.def` reserved, `sched_ctx_create`, `sched_ctx_bind`, `sched_ctx_configure` and `sched_reserve`, their arguments, and adds a `SchedContext` object. Decided with it (2026-10-06): limits are system-wide until keyd (M10) gives the kernel users; donation through `channel_call` is 6d6c2's.
+Status: proposed, 2026-10-06. M6 step 6d6c's ABI (01 §8). It gives the four calls 01 §2 names and `syscalls.def` reserved, `sched_ctx_create`, `sched_ctx_bind`, `sched_ctx_configure` and `sched_reserve`, their arguments, and adds a `SchedContext` object. Decided with it (2026-10-06): limits are system-wide until keyd (M10) gives the kernel users; donation through `channel_call` is 6d6c2's. Amended 2026-10-06 for 6d6c2: decision 8, and `vx_sched_info`'s `lent_task` and `lent_thread`.
 
 ## Context
 
@@ -31,9 +31,12 @@ Status: proposed, 2026-10-06. M6 step 6d6c's ABI (01 §8). It gives the four cal
 
 7. **Visible:** `thread_state`'s new `VX_STATE_GET_SCHED` gives a thread's `vx_sched_info`, and `/proc/N/threads/T/sched` gives the thread's intent, and its context's period, budget, what is left of it this period and how many periods it ran out in (01 §8's deadline misses, as the v1 server counts them).
 
+8. **Donation (6d6c2, 01 §4.5).** A thread in `channel_call` lends its scheduling, its intent and its context, to the thread serving the call, as seL4 MCS donates a scheduling context, and as Zircon makes the port waiter a call's message wakes the owner of the caller's wait (`object/channel_dispatcher.rs`'s `write_self_locked`, `queue_to_own`). The loan goes first to the thread the request wakes from a port wait, then to the thread that reads the request; it lasts until the reply, and then until that thread next blocks or ends its slice, so it gets back to its wait (seL4's reply-and-receive is one call; ours are two). A thread runs on a loan only if it is above its own; it holds one at a time, the highest; loans chain, a server calling a server, to a depth of 8, never in a loop. Its time is charged to the caller's context, so a `realtime` caller's budget bounds what its calls cost, and its spent budget stops the server too. The woken server goes first in its band on the caller's CPU, and the answered caller on the replier's: each switches straight to the other. No new call: `vx_sched_info` gains `lent_task` and `lent_thread`, the caller a thread runs for.
+
 ## Consequences
 
 - Programs say what they need rather than how; the bands can become EDF and EEVDF later (01 §13) without a change here.
 - Lower bands can starve under load from higher ones, as bands do; `realtime` takes at most 80% of the CPUs, so the rest always get some.
 - Without users the limits are the machine's: one program can take all 80%, or every CPU but the first. keyd (M10) brings per-user budgets and quotas.
-- The kernel-internal core mask 01 §8 gives `sched_ctx_configure` for drivers, IRQ steering away from reserved CPUs, tiers and NUMA domains are later work; so is donation (6d6c2).
+- The kernel-internal core mask 01 §8 gives `sched_ctx_configure` for drivers, IRQ steering away from reserved CPUs, tiers and NUMA domains are later work.
+- A server thread busy with something else when a call comes runs at its own intent until it reads the request: under a busy higher band it may wait. Priority inheritance into a running thread, as the reader a channel last had, is a later refinement.

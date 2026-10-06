@@ -13,6 +13,20 @@
 // bound to them and nothing else; one CPU, the first, is never reserved.
 // A thread made ready in a band above one running preempts it.
 //
+// Donation (M6 step 6d6c2, 01 §4.5): a thread in channel_call lends its
+// scheduling, its intent and its context, to the thread serving the call, as
+// seL4 MCS does and as Zircon's channel calls make the port waiter they wake
+// the owner of the caller's wait (object/channel_dispatcher.rs, write_self_
+// locked's queue_to_own). The loan goes first to the port waiter the request
+// wakes, then to the thread that reads it, and ends with the call; a thread
+// runs on a loan only if it is above its own. The thread woken goes on the
+// caller's CPU, which the caller is about to leave, and the reply's caller on
+// the replier's: each switches straight to the other. Answered, the server
+// keeps the loan until it next blocks, or its slice ends, so that it gets back
+// to its wait for the next call: seL4's reply and receive are one call, ours
+// two, and between them a server of a lower band would wait behind every
+// thread above it.
+//
 // The kernel runs with interrupts off. They are on only in user mode and in an
 // idle thread's wait. A CPU with nothing to run sleeps with no timer armed unless
 // a sleeper needs one; a thread made ready while it sleeps reaches it as a
@@ -54,6 +68,7 @@ typedef struct cpu {
   vx_instant run_start; // when current began running, for charging its context
   sched_ctx *reserved;  // the context that reserved this CPU, or none
   bool resched;         // call schedule before returning to user mode
+  thread *lending;      // a channel_call delivering its request: the port waiter it wakes is lent to
   thread *reap;         // a thread that died here, for whoever runs next to free
   uint64_t idle_stack;  // the idle stack's lowest address (mm/kstack.c)
   // Which task tables this CPU has loaded (0: none), and how many times it has
@@ -90,13 +105,33 @@ static void reap_after_switch(void) {
   if (dead) thread_reap(dead);
 }
 
-// A thread's intent: its context's, or its own.
-static uint32_t thread_intent(const thread *t) { return t->ctx ? t->ctx->intent : t->intent; }
+// A thread's own intent: its context's, or its own.
+static uint32_t own_intent(const thread *t) { return t->ctx ? t->ctx->intent : t->intent; }
 
-static uint32_t band_of(const thread *t) {
-  uint32_t i = thread_intent(t);
+static uint32_t intent_band(uint32_t i) {
   return i >= VX_INTENT_REALTIME && i <= VX_INTENT_BACKGROUND ? i - VX_INTENT_REALTIME : 2;
 }
+
+// Loans go at most this deep: a server calling a server calling a server.
+static constexpr int LEND_DEPTH = 8;
+
+// The thread whose scheduling t runs on: itself, or the highest of the
+// callers lending to it, along the chain, above its own.
+static const thread *sched_source(const thread *t) {
+  const thread *best = t;
+  const thread *o = t->donor;
+  for (int i = 0; i < LEND_DEPTH && o; i++, o = o->donor)
+    if (intent_band(own_intent(o)) < intent_band(own_intent(best))) best = o;
+  return best;
+}
+
+// A thread's intent: its own, or a loan's.
+static uint32_t thread_intent(const thread *t) { return own_intent(sched_source(t)); }
+
+// The context t's time is charged to: its own, or a loan's.
+static sched_ctx *ctx_of(const thread *t) { return sched_source(t)->ctx; }
+
+static uint32_t band_of(const thread *t) { return intent_band(thread_intent(t)); }
 
 // The CPU a thread is bound to, if its context still reserves it; or -1.
 static int32_t bound_cpu(const thread *t) {
@@ -107,7 +142,8 @@ static int32_t bound_cpu(const thread *t) {
 // to it alone, a bound thread runs there alone, and a spent context's
 // threads wait for its next period.
 static bool may_run(const thread *t, const cpu *c) {
-  if (t->ctx && t->ctx->throttled) return false;
+  const sched_ctx *x = ctx_of(t);
+  if (x && x->throttled) return false;
   int32_t b = bound_cpu(t);
   if (b >= 0) return (uint32_t)b == c->index;
   return !c->reserved;
@@ -122,6 +158,15 @@ static void run_enqueue(thread *t) {
   else
     sched.run_head[b] = t;
   sched.run_tail[b] = t;
+}
+
+// Queues t first in its band: a hand-off, run next.
+static void run_push(thread *t) {
+  t->state = THREAD_READY;
+  uint32_t b = band_of(t);
+  t->next = sched.run_head[b];
+  sched.run_head[b] = t;
+  if (!sched.run_tail[b]) sched.run_tail[b] = t;
 }
 
 // The first ready thread of the highest band that may run on c, taken off the queue.
@@ -170,7 +215,7 @@ static void ctx_refill(sched_ctx *x, vx_instant now) {
 // if that spent its budget (the thread must stop).
 static bool charge(cpu *c, vx_instant now) {
   thread *t = c->current;
-  sched_ctx *x = t ? t->ctx : nullptr;
+  sched_ctx *x = t ? ctx_of(t) : nullptr;
   vx_duration ran = now - c->run_start;
   c->run_start = now;
   if (!x || x->intent != VX_INTENT_REALTIME || x->throttled) return false;
@@ -182,7 +227,7 @@ static bool charge(cpu *c, vx_instant now) {
   x->th_next = sched.throttled;
   sched.throttled = x;
   for (uint32_t i = 0; i < cpu_total; i++) // its threads on other CPUs stop too
-    if (&cpus[i] != c && cpus[i].current && cpus[i].current->ctx == x) arch_send_resched(&cpus[i]);
+    if (&cpus[i] != c && cpus[i].current && ctx_of(cpus[i].current) == x) arch_send_resched(&cpus[i]);
   return true;
 }
 
@@ -221,6 +266,19 @@ static void make_ready(thread *t) {
   sleep_remove(t);
   run_enqueue(t);
   kick_for(t);
+}
+
+// Makes t ready to run next here, where the current thread is about to block
+// or to fall below it: a hand-off, if this CPU may run it; else as make_ready.
+static void make_ready_here(thread *t) {
+  cpu *self = this_cpu();
+  if (!may_run(t, self) || (self->current != &self->idle && band_of(self->current) < band_of(t))) {
+    make_ready(t);
+    return;
+  }
+  sleep_remove(t);
+  run_push(t);
+  self->resched = true;
 }
 
 // Gets a CPU to a thread just queued: this one if it is idle and may run it,
@@ -426,17 +484,92 @@ static vx_status sched_reserve_cpus(sched_ctx *x, uint32_t count, vx_core_set *o
 // What /proc/N/threads/T/sched shows (thread_state GET_SCHED).
 static void sched_info(const thread *t, vx_sched_info *out) {
   spin_lock(&sched.lock);
-  const sched_ctx *x = t->ctx;
+  const thread *from = sched_source(t);
+  const sched_ctx *x = from->ctx; // what it runs on: its own, or a loan's
   *out = (vx_sched_info){.intent = thread_intent(t),
                          .core = bound_cpu(t),
-                         .bound = x != nullptr,
+                         .bound = t->ctx != nullptr,
                          .period = x ? x->period : 0,
                          .budget = x ? x->budget : 0,
                          .exhausted = x ? x->exhausted : 0,
-                         .reserved = x ? x->reserved : 0};
+                         .reserved = t->ctx ? t->ctx->reserved : 0};
   if (x && x->intent == VX_INTENT_REALTIME && x->left > 0) out->left = x->left;
+  if (from != t) out->lent_task = from->task ? from->task->id : 0, out->lent_thread = from->id;
   out->reserved_count = (uint32_t)__builtin_popcountll(out->reserved);
   spin_unlock(&sched.lock);
+}
+
+// --- Donation (6d6c2) ---
+
+// Ends the loan t, a caller, made: its call is over. Under the lock.
+static void unlend_locked(thread *t) {
+  if (!t->donee) return;
+  if (t->donee->donor == t) t->donee->donor = nullptr, t->donee->lend_tail = false;
+  t->donee = nullptr;
+}
+
+// Ends the loan t runs on, if its call was answered: t has blocked, or used
+// its slice, since.
+static void tail_end(thread *t) {
+  if (!t->lend_tail) return;
+  t->lend_tail = false;
+  if (t->donor && t->donor->donee == t) t->donor->donee = nullptr;
+  t->donor = nullptr;
+}
+
+// from, in channel_call, lends its scheduling to to, which serves its call:
+// moved from where it was, and kept from to's loan if that is higher. Never
+// in a loop: from lending to a thread lending, along its chain, to from.
+static void lend_locked(thread *from, thread *to) {
+  if (from == to || from->donee == to) return;
+  unlend_locked(from);
+  const thread *o = from->donor;
+  for (int i = 0; i < LEND_DEPTH && o; i++, o = o->donor)
+    if (o == to) return;
+  if (to->donor) {
+    if (band_of(to->donor) <= band_of(from)) return; // what it has is as high
+    to->donor->donee = nullptr;
+  }
+  to->donor = from, from->donee = to, to->lend_tail = false;
+}
+
+static void sched_lend(thread *from, thread *to) {
+  spin_lock(&sched.lock);
+  lend_locked(from, to);
+  spin_unlock(&sched.lock);
+}
+
+// t's call is over. Unanswered, its loan ends; answered, the server keeps it
+// as a tail until it blocks (tail_end), which a new call of t's, or t's end,
+// cuts short.
+static void sched_unlend(thread *t) {
+  spin_lock(&sched.lock);
+  if (!t->donee || t->donee->donor != t || !t->donee->lend_tail) unlend_locked(t);
+  spin_unlock(&sched.lock);
+}
+
+// While a channel_call delivers its request: the port waiter it wakes is lent
+// to (thread_wake_token). Under the channel's lock, interrupts off.
+static void sched_lending(thread *caller) { this_cpu()->lending = caller; }
+
+// Wakes a channel_call caller with its reply: its loan ended, and run next
+// here, in the replier's place, if this CPU may.
+static bool thread_wake_reply(thread *t, const void *token, int64_t result) {
+  spin_lock(&sched.lock);
+  if (t->donee && t->donee->donor == t) t->donee->lend_tail = true; // until it blocks
+  bool woke = token && t->wait_token == token;
+  if (woke) {
+    t->wait_token = nullptr;
+    if (t->state == THREAD_BLOCKED) {
+      t->wait_result = result;
+      make_ready_here(t);
+    } else {
+      t->pending_result = result;
+      t->wake_pending = true;
+    }
+  }
+  spin_unlock(&sched.lock);
+  return woke;
 }
 
 // Switches to the next ready thread, or to this CPU's idle thread. Called with
@@ -461,7 +594,7 @@ static void schedule_locked(void) {
   } else {
     sched.idle_mask &= ~(1ull << c->index);
     c->slice_end = now + TIME_SLICE;
-    if (next->ctx) ctx_refill(next->ctx, now);
+    if (ctx_of(next)) ctx_refill(ctx_of(next), now);
   }
   if (next != prev) {
     arch_user_switch(prev, next);
@@ -508,9 +641,14 @@ static bool thread_wake_token(thread *t, const void *token, int64_t result) {
   bool woke = token && t->wait_token == token;
   if (woke) {
     t->wait_token = nullptr;
+    thread *caller = this_cpu()->lending;
+    if (caller) lend_locked(caller, t), this_cpu()->lending = nullptr; // the first woken serves the call
     if (t->state == THREAD_BLOCKED) {
       t->wait_result = result;
-      make_ready(t);
+      if (caller && t->donor == caller)
+        make_ready_here(t); // the caller is about to block: run the server in its place
+      else
+        make_ready(t);
     } else {
       t->pending_result = result; // for its block, which returns at once
       t->wake_pending = true;
@@ -537,6 +675,7 @@ static int64_t thread_block(vx_instant deadline, vx_duration leeway) {
     spin_unlock(&sched.lock);
     return t->wait_result;
   }
+  tail_end(t); // an answered call's loan ends as its server waits again
   t->state = THREAD_BLOCKED;
   if (deadline != VX_INFINITE) {
     t->wake_at = deadline;
@@ -603,7 +742,7 @@ static void sched_arm_timer(cpu *c) {
   for (thread *t = c->sleepers; t; t = t->sleep_next)
     if (t->wake_late < next) next = t->wake_late;
   if (c->current != &c->idle && c->slice_end < next) next = c->slice_end;
-  const sched_ctx *x = c->current ? c->current->ctx : nullptr;
+  const sched_ctx *x = c->current ? ctx_of(c->current) : nullptr;
   if (c->current != &c->idle && x && x->intent == VX_INTENT_REALTIME && !x->throttled &&
       c->run_start + x->left < next)
     next = c->run_start + x->left; // its budget runs out
@@ -640,6 +779,7 @@ static void sched_timer(void) {
     // else give the running thread another one. (Re-arming the old, expired
     // end would fire at once, forever, and the thread would never get back to
     // user mode.)
+    if (c->current != &c->idle && c->current->lend_tail) tail_end(c->current), c->resched = true;
     if (c->current == &c->idle || ready_for(c, band_of(c->current)))
       c->resched = true;
     else
@@ -707,6 +847,8 @@ static void task_fault_start(void) {
 [[noreturn]] static void sched_exit_current(void) {
   spin_lock(&sched.lock);
   cpu *c = this_cpu();
+  unlend_locked(c->current);
+  c->current->lend_tail = true, tail_end(c->current); // and any loan it runs on
   c->current->state = THREAD_DEAD;
   c->reap = c->current;
   schedule_locked();

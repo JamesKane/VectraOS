@@ -884,6 +884,7 @@ static size_t sched_text(const proc *p, uint32_t tid, char *buf, size_t cap) {
   }
   if (si.reserved) put_hex(&w, "reserved", si.reserved), put_dec(&w, "cores", si.reserved_count);
   if (si.core >= 0) put_dec(&w, "core", (uint64_t)si.core);
+  if (si.lent_task) put_dec(&w, "lent_task", si.lent_task), put_dec(&w, "lent_thread", si.lent_thread);
   vx_ndb_end(&w);
   return w.failed ? 0 : w.len;
 }

@@ -111,6 +111,7 @@ typedef struct vx_sched_info { // thread_state(GET_SCHED): /proc/N/threads/T/sch
   vx_duration period, budget, left; // its context's; left, of the budget this period
   uint64_t exhausted;               // periods its context ran out of budget in
   uint64_t reserved;                // the CPUs its context reserved
+  uint64_t lent_task, lent_thread;  // the channel_call caller it runs for, on its scheduling; or 0
 } vx_sched_info;
 
 // Every channel message starts with this header (01 §4.2). The kernel writes

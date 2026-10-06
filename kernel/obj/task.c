@@ -123,6 +123,9 @@ struct thread {
   thread_state state;
   struct sched_ctx *ctx;     // the scheduling context it is bound to, holding a reference; or none (ADR-0038)
   int32_t core;              // the reserved CPU it is bound to within ctx's reservation, or -1
+  struct thread *donor;      // the channel_call caller lending it its scheduling, or none (sched.c, 6d6c2)
+  struct thread *donee;      // the thread this one, in channel_call, lends its scheduling to, or none
+  bool lend_tail;            // its call answered: it keeps the loan only until it blocks, or its slice ends
   struct thread *next;       // in the ready queue (under the scheduler's lock)
   struct thread *wait_next;  // in a port's waiters (under the port's lock); never the same link as next
   struct thread *sleep_next; // in its CPU's sleep queue, ordered by wake_at
