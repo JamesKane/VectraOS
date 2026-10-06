@@ -28,17 +28,21 @@ static constexpr uint32_t FD_PIPE_BUFFER = 8192; // a reader's message, in a pag
 
 typedef enum ofd_kind : uint8_t { OFD_FREE, OFD_CONSOLE, OFD_PIPE_IN, OFD_PIPE_OUT, OFD_FILE } ofd_kind;
 
-// A read kept outstanding on a terminal or the console, on a connection of
-// its own, so poll can hear when it can be read (01 §9): a ring server holds
-// a whole connection while it holds a read. Once a description has one, its
-// reads go through it (poll.c).
+// A read kept outstanding on a terminal or the console, so poll can hear
+// when it can be read (01 §9), on a connection the read-aheads share (6d4d1,
+// poll.c's pool). Once a description has one, its reads go through it.
 static constexpr uint32_t FD_RA_MAX = P9_RING_MSIZE - P9_IOHDRSZ; // one Rread's data, or one Twrite's
+static constexpr uint32_t FD_RA_READ = 4096; // a read-ahead's read: its reply's room, reserved while it waits
 // A call kept outstanding on a connection of its own (poll.c): a read, for a
 // terminal, the console or a socket; for a socket, also an open of its listen
 // file (accept) or a write (connect's ctl message, or data written behind).
 typedef enum ra_op : uint8_t { RA_READ, RA_OPEN, RA_WRITE } ra_op;
 typedef struct fd_readahead {
-  p9_conn *k; // its connection
+  p9_conn *k;     // its connection: the pool's, shared
+  uint32_t pool;  // which, plus 1
+  bool big;       // it may carry a whole message (a datagram's read, a write behind): one to a connection
+  uint32_t count; // its reads' most
+  uint64_t key;   // its owner's on fd_port: a reply that comes posts it
   uint32_t fid;
   uint32_t root; // a socket's: the attach on this connection (netd's /net)
   ra_op op;
@@ -89,6 +93,8 @@ typedef struct ofd {
 static ofd fd_ofds[FD_MAX];
 static void ra_free(ofd *o); // poll.c
 static void ra_drop(fd_readahead *ra);
+static void ra_forget(fd_readahead *ra);
+static void ra_pools_forget(void);
 static void sig_raise_self(int sig);                        // signal.c
 static long posix_pid(void);                                // process.c
 static long time_get(clockid_t clock, struct timespec *ts); // start.c
@@ -1481,8 +1487,8 @@ static void fd_after_fork(void) {
   for (int i = 0; i < FD_MAX; i++) {
     ofd *o = &fd_ofds[i];
     o->closed_bound = o->read_bound = false;
-    if (o->ra) ra_free(o); // its connection's ring was not copied
-    if (o->wb) ra_drop(o->wb);
+    if (o->ra) ra_forget(o->ra), o->ra = nullptr; // their connections' rings were not copied
+    if (o->wb) ra_forget(o->wb);
     o->wb = nullptr;
     o->sock_connecting = false; // the parent's to finish
     if (o->kind != OFD_FILE) continue;
@@ -1500,6 +1506,7 @@ static void fd_after_fork(void) {
     o->dir_next = 0;
     *n = (ofd){}; // its fid is o's now
   }
+  ra_pools_forget();
 }
 
 // --- The posix and xattr extensions: names and attributes ---

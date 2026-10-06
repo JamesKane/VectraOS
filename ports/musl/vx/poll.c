@@ -19,25 +19,110 @@
 
 // --- Read-ahead ---
 
-static fd_readahead *ra_new(void) {
+// --- The read-aheads' connections (6d4d1) ---
+//
+// Apart from the namespace's, so the reads a server holds for long never
+// starve its other calls: a pool for each server, six read-aheads to a
+// connection, one of them big (a datagram's read or a write behind, a whole
+// message each), so their calls and replies always fit its arenas. A
+// connection is made when the pool has none with room, and goes with its
+// last read-ahead.
+static constexpr uint32_t RA_POOL = 16, RA_USERS = 6;
+static struct ra_pool {
+  vx_handle connector; // whose server; borrowed (the namespace's, or the console's)
+  p9_conn *k;          // in a page of its own; nullptr: free
+  uint32_t users;
+  bool big;
+} ra_pools[RA_POOL];
+
+static constexpr uint64_t RA_CONN_SIZE = (sizeof(p9_conn) + 4095) & ~4095ull;
+
+// A connection to the server behind connector with room for one more
+// read-ahead (big, or not): its index in *pool. nullptr if none can be made.
+static p9_conn *ra_pool_take(vx_handle connector, bool big, uint32_t *pool) {
+  int free = -1;
+  for (uint32_t i = 0; i < RA_POOL; i++) {
+    struct ra_pool *p = &ra_pools[i];
+    if (!p->k) {
+      if (free < 0) free = (int)i;
+      continue;
+    }
+    if (p->connector != connector || p->k->dead || p->users == RA_USERS || (big && p->big)) continue;
+    p->users++, p->big = p->big || big;
+    *pool = i;
+    return p->k;
+  }
+  if (free < 0) return nullptr;
   vx_handle vmo;
   uint64_t at = 0;
-  uint64_t size = (sizeof(fd_readahead) + sizeof(p9_conn) + 4095) & ~4095ull;
-  if (vx_vmo_create(size, 0, &vmo) != VX_OK) return nullptr;
-  vx_status st = vx_as_map(vx_self, vmo, 0, size, VX_MAP_WRITE, &at);
+  if (vx_vmo_create(RA_CONN_SIZE, 0, &vmo) != VX_OK) return nullptr;
+  vx_status st = vx_as_map(vx_self, vmo, 0, RA_CONN_SIZE, VX_MAP_WRITE, &at);
+  vx_handle_close(vmo);
+  if (st != VX_OK) return nullptr;
+  p9_conn *k = (p9_conn *)at;
+  if (p9_ring_connect(connector, k) != VX_OK) {
+    vx_as_unmap(vx_self, at, RA_CONN_SIZE);
+    return nullptr;
+  }
+  ra_pools[free] = (struct ra_pool){.connector = connector, .k = k, .users = 1, .big = big};
+  *pool = (uint32_t)free;
+  return k;
+}
+
+static void ra_pool_close(struct ra_pool *p) {
+  p9_ring_disconnect(p->k);
+  vx_as_unmap(vx_self, (uint64_t)p->k, RA_CONN_SIZE);
+  *p = (struct ra_pool){};
+}
+
+static void ra_pool_give(uint32_t pool, bool big) {
+  struct ra_pool *p = &ra_pools[pool];
+  if (big) p->big = false;
+  if (p->users) p->users--;
+  if (!p->users) ra_pool_close(p);
+}
+
+// After a fork: the connections' rings were not copied; let go of the rest.
+static void ra_pools_forget(void) {
+  for (uint32_t i = 0; i < RA_POOL; i++)
+    if (ra_pools[i].k) ra_pool_close(&ra_pools[i]);
+}
+
+static constexpr uint64_t RA_SIZE = (sizeof(fd_readahead) + 4095) & ~4095ull;
+
+// A read-ahead on the pool's connection to connector's server: big, or not;
+// key is its owner's on fd_port.
+static fd_readahead *ra_new(vx_handle connector, bool big, uint64_t key) {
+  vx_handle vmo;
+  uint64_t at = 0;
+  if (!connector || vx_vmo_create(RA_SIZE, 0, &vmo) != VX_OK) return nullptr;
+  vx_status st = vx_as_map(vx_self, vmo, 0, RA_SIZE, VX_MAP_WRITE, &at);
   vx_handle_close(vmo);
   if (st != VX_OK) return nullptr;
   fd_readahead *ra = (fd_readahead *)at;
-  ra->k = (p9_conn *)(at + ((sizeof(fd_readahead) + 15) & ~15ull));
+  uint32_t pool = 0;
+  ra->k = ra_pool_take(connector, big, &pool);
+  if (!ra->k) {
+    vx_as_unmap(vx_self, at, RA_SIZE);
+    return nullptr;
+  }
+  ra->pool = pool + 1, ra->big = big, ra->key = key;
+  ra->count = big ? FD_RA_MAX : FD_RA_READ;
   return ra;
 }
 
-// Lets go of a read-ahead: its connection, and with it its fids and any call
-// still outstanding.
+// Lets go of a read-ahead: its call still outstanding (flushed), its fids,
+// its place on the pool's connection.
 static void ra_drop(fd_readahead *ra) {
-  if (ra->k->end) p9_ring_disconnect(ra->k);
-  vx_as_unmap(vx_self, (uint64_t)ra, (sizeof(fd_readahead) + sizeof(p9_conn) + 4095) & ~4095ull);
+  if (ra->pending) p9_ring_cancel(ra->k, ra->tag);
+  if (ra->fid) p9c_clunk(&ra->k->c, ra->fid);
+  if (ra->root) p9c_clunk(&ra->k->c, ra->root);
+  if (ra->pool) ra_pool_give(ra->pool - 1, ra->big);
+  vx_as_unmap(vx_self, (uint64_t)ra, RA_SIZE);
 }
+
+// A forked child's: the connection is not there to talk to (ra_pools_forget).
+static void ra_forget(fd_readahead *ra) { vx_as_unmap(vx_self, (uint64_t)ra, RA_SIZE); }
 
 static void ra_free(ofd *o) {
   fd_readahead *ra = o->ra;
@@ -47,12 +132,10 @@ static void ra_free(ofd *o) {
 
 static bool sock_ra_start(ofd *o); // socket.c
 
-// A connection of the read-ahead's own, and a fid on it: for a terminal, the
-// same open file, joined by token (posix); for the console, its cons file.
+// A read-ahead on the pool's connection, and a fid on it: for a terminal,
+// the same open file, joined by token (posix); for the console, its cons file.
 static bool ra_start(ofd *o) {
   if (o->sock) return sock_ra_start(o);
-  fd_readahead *ra = ra_new();
-  if (!ra) return false;
   vx_handle connector = VX_HANDLE_NONE;
   bool tty = o->kind == OFD_FILE;
   if (tty) {
@@ -61,13 +144,15 @@ static bool ra_start(ofd *o) {
   } else {
     connector = vx_console.connector;
   }
+  fd_readahead *ra = ra_new(connector, false, fd_key(o));
+  if (!ra) return false;
   uint8_t token[16];
   uint32_t root = 0;
-  vx_status st = connector ? p9_ring_connect(connector, ra->k) : VX_ERR_NOT_FOUND;
-  if (st == VX_OK && tty) {
+  vx_status st = VX_OK;
+  if (tty) {
     st = p9c_share(o->f.c, o->f.fid, 1, token);
     if (st == VX_OK) st = p9c_join(&ra->k->c, token, &ra->fid);
-  } else if (st == VX_OK) {
+  } else {
     st = p9c_attach(&ra->k->c, VX_STR(""), &root);
     if (st == VX_OK) st = p9c_walk(&ra->k->c, root, VX_STR("cons"), &ra->fid);
     if (st == VX_OK) st = p9c_open(&ra->k->c, ra->fid, P9_OREAD);
@@ -85,7 +170,7 @@ static bool ra_start(ofd *o) {
 // ra_poll takes its reply. A call that cannot be sent is answered at once,
 // with why.
 static void ra_send(fd_readahead *ra, p9_msg *t) {
-  vx_status st = p9_ring_send(ra->k, t);
+  vx_status st = p9_ring_send(ra->k, t, fd_port, ra->key);
   ra->ready = st != VX_OK;
   ra->pending = st == VX_OK;
   ra->status = st;
@@ -106,7 +191,7 @@ static bool ra_poll(fd_readahead *ra, bool tty) {
   if (ra->ready || (ra->op == RA_READ && ra->pos < ra->len)) return true;
   if (!ra->pending && ra->op != RA_READ) return true;
   if (!ra->pending) {
-    p9_msg t = {.type = P9_Tread, .fid = ra->fid, .offset = tty ? P9_OFFSET_CURRENT : 0, .count = FD_RA_MAX};
+    p9_msg t = {.type = P9_Tread, .fid = ra->fid, .offset = tty ? P9_OFFSET_CURRENT : 0, .count = ra->count};
     ra_send(ra, &t);
     if (ra->ready) return true;
   }

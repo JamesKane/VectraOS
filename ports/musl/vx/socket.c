@@ -69,16 +69,16 @@ static size_t sock_rel(const ofd *o, const char *name, char *out) {
   return len;
 }
 
-// A read-ahead connected to the server the socket's data file is on (netd),
-// attached at its root.
-static fd_readahead *sock_side(const ofd *o) {
+// A read-ahead on the pool's connection to the server the socket's data file
+// is on (netd), attached at its root; key its owner's on fd_port; big for a
+// datagram's read or a write behind.
+static fd_readahead *sock_side(const ofd *o, uint64_t key, bool big) {
   vx_handle connector = VX_HANDLE_NONE;
   for (uint32_t i = 0; i < VX_NS_MAX_CONNS; i++)
     if (fd_ns.conns[i].client == o->f.c) connector = fd_ns.conns[i].connector;
-  fd_readahead *ra = connector ? ra_new() : nullptr;
+  fd_readahead *ra = ra_new(connector, big, key);
   if (!ra) return nullptr;
-  vx_status st = p9_ring_connect(connector, ra->k);
-  if (st == VX_OK) st = p9c_attach(&ra->k->c, VX_STR(""), &ra->root);
+  vx_status st = p9c_attach(&ra->k->c, VX_STR(""), &ra->root);
   if (st != VX_OK) {
     ra_drop(ra);
     return nullptr;
@@ -99,7 +99,7 @@ static vx_status sock_side_file(const ofd *o, fd_readahead *ra, const char *name
 
 // poll.c's read-ahead for a socket: a read of N/data kept outstanding.
 static bool sock_ra_start(ofd *o) {
-  fd_readahead *ra = sock_side(o);
+  fd_readahead *ra = sock_side(o, fd_key(o), o->sock == SOCK_DGRAM);
   if (!ra) return false;
   if (sock_side_file(o, ra, "data", P9_OREAD) != VX_OK) {
     ra_drop(ra);
@@ -122,7 +122,7 @@ static fd_readahead *sock_reader(ofd *o) {
 static fd_readahead *sock_listener(ofd *o) {
   if (o->ra && o->ra->op != RA_OPEN) ra_free(o);
   if (!o->ra) {
-    fd_readahead *ra = sock_side(o);
+    fd_readahead *ra = sock_side(o, fd_key(o), false);
     if (!ra) return nullptr;
     ra->op = RA_OPEN;
     o->ra = ra;
@@ -470,7 +470,7 @@ static long sock_connect_tcp(ofd *o, const char *msg, size_t len) {
     return r == 0 && !block ? -EISCONN : r;
   }
   if (o->ra) ra_free(o); // a read kept outstanding before connecting
-  fd_readahead *ra = sock_side(o);
+  fd_readahead *ra = sock_side(o, fd_key(o), false);
   if (!ra) return -ENOBUFS;
   if (sock_side_file(o, ra, "ctl", P9_ORDWR) != VX_OK) {
     ra_drop(ra);
@@ -529,7 +529,7 @@ static long sock_send_stream(ofd *o, const uint8_t *buf, size_t n, int flags) {
     return (long)n;
   }
   if (!o->wb) {
-    fd_readahead *wb = sock_side(o);
+    fd_readahead *wb = sock_side(o, fd_wb_key(o), true);
     if (wb && sock_side_file(o, wb, "data", P9_OWRITE) != VX_OK) {
       ra_drop(wb);
       wb = nullptr;

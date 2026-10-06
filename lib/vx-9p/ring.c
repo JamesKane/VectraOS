@@ -197,6 +197,12 @@ typedef struct p9_slot {
   uint64_t at, len;       // the request's bytes in the client's arena; len 0: none
   uint64_t reserve;       // its share of the server's arena
   int64_t result;         // the reply's length, or a negative vx_status
+  // p9_ring_send's call (6d4d1): its reply waits for p9_ring_receive, and its
+  // caller's port gets notify_key when it comes.
+  bool async;
+  uint8_t sent; // its type, for its reply's
+  vx_handle notify;
+  uint64_t notify_key;
 } p9_slot;
 
 typedef struct p9_conn {
@@ -204,7 +210,6 @@ typedef struct p9_conn {
   vx_ring ring;
   vx_handle end, port;
   bool dead;
-  uint8_t sent;    // the type of the call p9_ring_send sent, for its reply's
   int64_t timeout; // ns: a call not answered in that long is flushed (0: none)
   // When a wait is interrupted (a note): whether the caller wants the call
   // flushed, and INTERRUPTED. Without it the call goes on (01 §9).
@@ -218,7 +223,6 @@ typedef struct p9_conn {
   _Atomic uint32_t replies; // a futex: changes with each reply taken, and as a leader stops
   p9_chunks arena;          // the client's
   p9_slot slots[P9_RING_DEPTH];
-  p9_slot *async; // p9_ring_send's call, until p9_ring_receive takes its reply
 } p9_conn;
 
 // The most of the server's arena a reply to this request can take.
@@ -296,6 +300,7 @@ static p9_slot *p9_ring_slot_take(p9_conn *k, bool version, bool flush) {
         s->len = 0;
         s->reserve = 0;
         s->x = (p9_xfer){.req = s->buf, .resp = s->buf, .cap = P9_RING_MSIZE, .tag = tag};
+        s->async = false, s->notify = VX_HANDLE_NONE;
       }
       vx_mutex_unlock(&k->lock);
       return s->buf ? s : nullptr;
@@ -341,8 +346,11 @@ static bool p9_ring_deliver(p9_conn *k, const vx_cqe *c) {
   s->result = c->result;
   atomic_store(&s->state, P9_SLOT_DONE);
   atomic_fetch_add(&k->replies, 1);
+  vx_handle notify = s->async ? s->notify : VX_HANDLE_NONE;
+  uint64_t key = s->notify_key;
   vx_mutex_unlock(&k->lock);
   vx_futex_wake(&k->replies, UINT32_MAX);
+  if (notify) vx_port_post(notify, &(vx_packet){.key = key}); // p9_ring_send's caller: its reply is here
   return true;
 }
 
@@ -417,6 +425,11 @@ static vx_status p9_ring_wait(p9_conn *k, p9_slot *s, uint32_t any, vx_instant d
       if (st == VX_ERR_PEER_CLOSED) p9_ring_kill(k);
       atomic_fetch_add(&k->replies, 1); // the next to wait leads: every waiter looks again
       vx_futex_wake(&k->replies, UINT32_MAX);
+      for (uint32_t i = 0; i < P9_RING_DEPTH; i++) { // and p9_ring_send's callers, to arm their own ports
+        const p9_slot *a = &k->slots[i];
+        if (a->async && a->notify && atomic_load(&a->state) == P9_SLOT_SENT)
+          vx_port_post(a->notify, &(vx_packet){.key = a->notify_key});
+      }
       vx_mutex_unlock(&k->lock);
       if (st != VX_OK) return st;
       continue;
@@ -595,62 +608,100 @@ static void p9_conn_clear(p9_conn *k, bool dead) {
   p9_conn_clear(k, true);
 }
 
-// --- One call at a time, its reply taken later ---
+// --- Calls whose replies are taken later ---
 //
 // For a reader that waits on many things at once (poll's read-ahead, in the
 // musl back end): send a request, then look for its reply, arming a port of
-// the caller's to hear when one may have come. One such call at a time on a
-// connection, which its owner alone uses meanwhile.
+// the caller's to hear when one may have come. A connection carries several
+// such calls beside its ordinary ones (M6 step 6d4d1). Whoever leads at the
+// time hands a reply to its slot and posts the caller's packet; with no
+// leader, the caller's look reads the queue itself; a leader that stops
+// posts every waiting caller's packet, so each looks again and arms its port
+// on the doorbell.
 
-[[maybe_unused]] static vx_status p9_ring_send(p9_conn *k, p9_msg *t) {
-  if (k->async) return VX_ERR_BAD_STATE;
+// Sends t, its reply to be taken by p9_ring_receive with t->tag; port gets
+// `key` when it may have come (VX_HANDLE_NONE: no packet).
+[[maybe_unused]] static vx_status p9_ring_send(p9_conn *k, p9_msg *t, vx_handle port, uint64_t key) {
   p9_slot *s = p9_ring_slot_take(k, false, false);
   if (!s) return VX_ERR_PEER_CLOSED;
   t->tag = s->x.tag;
   size_t n = p9_encode(t, s->buf, P9_RING_MSIZE);
+  s->async = true, s->notify = port, s->notify_key = key, s->sent = t->type;
   vx_status st = n ? p9_ring_put(k, s, n, VX_INFINITE) : VX_ERR_TOO_SMALL;
   if (st != VX_OK) {
+    s->async = false;
     p9_ring_slot_give(k, s);
-    return st;
   }
-  k->sent = t->type;
-  k->async = s;
-  return VX_OK;
+  return st;
+}
+
+// The slot of the call sent with tag, if it is one p9_ring_send sent.
+static p9_slot *p9_ring_async(p9_conn *k, uint16_t tag) {
+  for (uint32_t i = 0; i < P9_RING_DEPTH; i++) {
+    p9_slot *s = &k->slots[i];
+    uint32_t state = atomic_load(&s->state);
+    if (s->async && s->x.tag == tag && (state == P9_SLOT_SENT || state == P9_SLOT_DONE)) return s;
+  }
+  return nullptr;
+}
+
+// Reads what has come, if no one leads: the caller's look.
+static void p9_ring_take_completions(p9_conn *k) {
+  vx_mutex_lock(&k->lock);
+  bool lead = !k->leading && !k->dead;
+  if (lead) k->leading = true;
+  vx_mutex_unlock(&k->lock);
+  if (!lead) return;
+  bool broken = false;
+  for (vx_cqe c; !broken;) {
+    vx_status st = vx_ring_consume(&k->ring, &c);
+    if (st == VX_ERR_SHOULD_WAIT) break;
+    broken = st != VX_OK || !p9_ring_deliver(k, &c);
+  }
+  vx_mutex_lock(&k->lock);
+  k->leading = false;
+  if (broken) p9_ring_kill(k);
+  atomic_fetch_add(&k->replies, 1); // a thread waiting to lead may now
+  vx_mutex_unlock(&k->lock);
+  vx_futex_wake(&k->replies, UINT32_MAX);
 }
 
 // The reply to the call p9_ring_send sent with tag: OK, with *r decoded (its
-// data in the slot's buffer, until the next call); SHOULD_WAIT if it has not
-// come; the error an Rerror names; or PEER_CLOSED.
+// data in the slot's buffer, until the slot's next call); SHOULD_WAIT if it
+// has not come; the error an Rerror names; or PEER_CLOSED.
 [[maybe_unused]] static vx_status p9_ring_receive(p9_conn *k, uint16_t tag, p9_msg *r) {
-  p9_slot *s = k->async;
-  if (!s || s->x.tag != tag) return VX_ERR_PEER_CLOSED;
-  for (;;) { // what has come, handed out: no one else leads on this connection
-    vx_cqe c;
-    vx_status st = vx_ring_consume(&k->ring, &c);
-    if (st == VX_ERR_SHOULD_WAIT) break;
-    if (st != VX_OK || !p9_ring_deliver(k, &c)) {
-      vx_mutex_lock(&k->lock);
-      p9_ring_kill(k);
-      vx_mutex_unlock(&k->lock);
-      break;
-    }
-  }
+  p9_slot *s = p9_ring_async(k, tag);
+  if (!s) return VX_ERR_PEER_CLOSED;
+  if (atomic_load(&s->state) != P9_SLOT_DONE) p9_ring_take_completions(k);
   if (atomic_load(&s->state) != P9_SLOT_DONE) return VX_ERR_SHOULD_WAIT;
-  k->async = nullptr;
   int64_t n = s->result;
+  uint8_t sent = s->sent;
+  s->async = false;
   p9_ring_slot_give(k, s); // its buffer keeps the reply until the slot's next call
   if (n < 0) return (vx_status)n;
   // Anything but its reply (or its error) means the server is confused, and
   // nothing more it says can be matched to a call.
   bool ok = p9_decode(s->buf, (size_t)n, r) == VX_OK && r->tag == tag;
   if (ok && r->type == P9_Rerror) return p9_error_status(r->ename);
-  if (!ok || r->type != k->sent + 1) {
+  if (ok && r->type == P9_Rlerror) return p9_errno_status(r->ecode);
+  if (!ok || r->type != sent + 1) {
     vx_mutex_lock(&k->lock);
     p9_ring_kill(k);
     vx_mutex_unlock(&k->lock);
     return VX_ERR_PEER_CLOSED;
   }
   return VX_OK;
+}
+
+// Lets go of the call p9_ring_send sent with tag, answered or not: Tflush if
+// it has not been, and its slot back once the server has let it go.
+[[maybe_unused]] static void p9_ring_cancel(p9_conn *k, uint16_t tag) {
+  p9_slot *s = p9_ring_async(k, tag);
+  if (!s) return;
+  s->notify = VX_HANDLE_NONE; // no packet for a caller that has gone
+  if (atomic_load(&s->state) != P9_SLOT_DONE) p9_ring_flush(k, s, VX_ERR_INTERRUPTED);
+  s->async = false;
+  p9_ring_slot_give(k, s);
 }
 
 // Arms port to get `key` once a reply may have come. False when one may
