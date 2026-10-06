@@ -14,10 +14,10 @@
 // Freestanding: the interpreter keeps its words, variables and code in a heap
 // the caller gives it (rc_new), and makes no system call itself.
 //
-// Without fork, two things are narrower than rc's: each stage of a pipeline,
-// and a command run with &, must be a program (not a function, builtin or
-// block); and `{...} and @{...} run in the shell itself, so what they assign
-// is seen after (docs/milestones.md, known gaps).
+// Without fork, what rc runs in a forked child that is not a program (a
+// stage, a command run with &, @'s and `{...}'s; M6 step 6d7b1) is given to
+// the host as an rc_command with child set: its text and $*, which the host
+// runs in a child interpreter given the shell's state.
 
 #pragma once
 
@@ -67,8 +67,9 @@ typedef struct rc_fd {
 } rc_fd;
 
 typedef struct rc_command {
-  const rc_word *argv; // the words
+  const rc_word *argv; // the words; for a child, its code, then its $*
   uint32_t argc;
+  bool child;        // rc code: the host runs it in a child rc, as 9front's rc forks for it (6d7b1)
   rc_fd fds[RC_FDS]; // after redirections; a pipeline's stages are joined by the host
 } rc_command;
 

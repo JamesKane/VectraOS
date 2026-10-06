@@ -33,11 +33,32 @@ static int file_of(const char *path, size_t n, bool make) {
   return -1;
 }
 
-// Output to where fd goes: a file, the shell's capture, or out/err.
+// The children running (6d7b1), innermost last: what each was started with,
+// so what one inherits is the stage's that started it.
+typedef struct child_io {
+  rc *parent;
+  const rc_fd *fds; // the stage's
+  const char *in;   // its input
+  size_t nin;
+  char *pipe; // where its output into a pipe goes
+  size_t *npipe;
+} child_io;
+
+static child_io children[4];
+static int nchildren;
+
+// Output to where fd goes: a file, the shell's capture, or out/err; a
+// child's own descriptors are what the stage that started it had.
 static void emit(rc *r, const rc_fd *fds, uint32_t which, const char *s, size_t n, char *pipe,
                  size_t *npipe) {
   const rc_fd *fd = &fds[which];
-  for (int guard = 0; fd->kind == RC_FD_DUP && fd->dup < RC_FDS && guard < 10; guard++) fd = &fds[fd->dup];
+  for (int d = nchildren, guard = 0; guard < 20; guard++) {
+    for (int g = 0; fd->kind == RC_FD_DUP && fd->dup < RC_FDS && g < 10; g++) fd = &fds[fd->dup];
+    if (fd->kind != RC_FD_INHERIT || d == 0) break;
+    const child_io *io = &children[--d];
+    r = io->parent, fds = io->fds, pipe = io->pipe, npipe = io->npipe;
+    fd = &fds[fd->dup];
+  }
   if (fd->kind == RC_FD_CAPTURE) return rc_capture_write(r, fd, s, n);
   if (fd->kind == RC_FD_PIPE_OUT) {
     memcpy(pipe + *npipe, s, n), *npipe += n;
@@ -59,11 +80,55 @@ static void emit(rc *r, const rc_fd *fds, uint32_t which, const char *s, size_t 
 static bool open_now[8]; // the files the shell has open, by handle
 static bool used_closed; // a stage was given a file the shell had already closed
 
+static rc_host host;
+static alignas(16) uint8_t child_heaps[4][1 << 20];
+
+static void child_var(void *arg, const char *name, const rc_word *val) {
+  rc *child = arg;
+  if (!strcmp(name, "*") || (name[0] >= '0' && name[0] <= '9')) return; // the child's own
+  const char *words[64];
+  size_t lens[64];
+  uint32_t n = 0;
+  for (const rc_word *w = val; w && n < 64; w = w->next) words[n] = w->s, lens[n++] = w->len;
+  rc_set(child, name, words, lens, n);
+}
+
+static void child_fn(void *arg, const char *name, const char *src) {
+  char text[2048];
+  int n = snprintf(text, sizeof text, "fn %s %s", name, src);
+  if (n > 0 && (size_t)n < sizeof text) rc_run(arg, text, (size_t)n);
+}
+
+// A child rc (6d7b1), as 9front's rc forks one: a new interpreter on this
+// host, given the shell's variables and functions, its $* the words after its
+// code; its descriptors the stage's. Its status, its $status at the end.
+static const char *run_child(const rc_command *c, child_io io) {
+  static char status[4][256];
+  if (nchildren == 4) return "too deep";
+  int d = nchildren;
+  rc *child = rc_new(child_heaps[d], sizeof child_heaps[d], &host);
+  if (!child) return "no memory";
+  rc_each_var(io.parent, child_var, child);
+  rc_each_fn(io.parent, child_fn, child);
+  const char *words[64];
+  size_t lens[64];
+  uint32_t n = 0;
+  for (const rc_word *w = c->argv->next; w && n < 64; w = w->next) words[n] = w->s, lens[n++] = w->len;
+  rc_set(child, "*", words, lens, n);
+  children[nchildren++] = io;
+  rc_run(child, c->argv->s, c->argv->len);
+  nchildren--;
+  const rc_word *st = rc_getvar(child, "status");
+  snprintf(status[d], sizeof status[d], "%.*s", st ? (int)st->len : 0, st ? st->s : "");
+  return status[d];
+}
+
 // A pipeline, its stages run in turn; $status as rc makes it, each stage's
 // joined by rc_concstatus.
 static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool async, uint64_t *pid) {
   (void)ctx;
-  static char pipes[2][4096];
+  static char pipes_at[5][2][4096]; // a child's pipelines have their own
+  char (*pipes)[4096] = pipes_at[nchildren];
   size_t npipe[2] = {};
   char status[256] = "";
   size_t nstatus = 0;
@@ -82,12 +147,17 @@ static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool asy
     if (fds[0].kind == RC_FD_READ && fds[0].handle < 8)
       in = files[fds[0].handle].data, nin = files[fds[0].handle].len;
     if (fds[0].kind == RC_FD_HERE) in = fds[0].path, nin = fds[0].path_len;
+    if (fds[0].kind == RC_FD_INHERIT && nchildren) // a child's: the stage's that started it
+      in = children[nchildren - 1].in, nin = children[nchildren - 1].nin;
     char *mypipe = pipes[i % 2];
     size_t *mynpipe = &npipe[i % 2];
     *mynpipe = 0;
     const char *name = c->argv->s;
     const char *st = "";
-    if (!strcmp(name, "warn")) { // its words, on its standard error
+    if (c->child) {
+      st = run_child(
+          c, (child_io){.parent = r, .fds = c->fds, .in = in, .nin = nin, .pipe = mypipe, .npipe = mynpipe});
+    } else if (!strcmp(name, "warn")) { // its words, on its standard error
       for (const rc_word *w = c->argv->next; w; w = w->next) {
         emit(r, fds, 2, w->s, w->len, mypipe, mynpipe);
         emit(r, fds, 2, w->next ? " " : "\n", 1, mypipe, mynpipe);
@@ -120,13 +190,23 @@ static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool asy
     }
     rc_concstatus(status, &nstatus, sizeof status - 1, st, strlen(st));
   }
-  if (async) *pid = 42;
+  if (async) { // not waited for: $status as it was, as the shell's host leaves it
+    *pid = 42;
+    return true;
+  }
   rc_set_status(r, status, nstatus);
   return true;
 }
 
 static void write_fd(void *ctx, const rc_fd *fd, uint32_t which, const char *s, size_t n) {
-  (void)ctx, (void)which;
+  (void)ctx;
+  if (fd->kind == RC_FD_INHERIT && nchildren) { // a child's builtin: where the stage's descriptor goes
+    const child_io *io = &children[nchildren - 1];
+    nchildren--;
+    emit(io->parent, io->fds, fd->dup < RC_FDS ? fd->dup : which, s, n, io->pipe, io->npipe);
+    nchildren++;
+    return;
+  }
   if (fd->kind == RC_FD_INHERIT && fd->dup == 2)
     memcpy(err + nerr, s, n), nerr += n;
   else
@@ -287,8 +367,7 @@ static void test_9front(void) {
   expect("fn t { status=('' no) }; if(t) echo first", "first\n");
   // Functions are global: a local of the same name does not hide one.
   expect("fn f { echo F }; f=1 f", "F\n");
-  CHECK(script("fn g { echo G }; g &") == RC_OK && strcmp(out, "") == 0 &&
-        strcmp(status_now(), "async") == 0);
+  expect("fn g { echo G }; status=kept; g &; echo $status", "G\nkept\n"); // in a child; $status unchanged
   // Globbing: . and .. alone need an explicit dot; a plain name after a
   // pattern must exist; ? and classes match runes; ranges either way round.
   expect("echo *", ".hidden a.c b.c dir x.h\n");
@@ -416,6 +495,27 @@ static void each_fn(void *arg, const char *name, const char *src) {
 
 // The third part (M6 step 6a6c): the builtins as rc(1) has them, functions
 // for export, sigexit, and notes as functions.
+// What 9front's rc runs in a forked child (M6 step 6d7b1), here a child rc
+// given the shell's variables, functions and $*: its changes are its own.
+static void test_9front_children(void) {
+  expect("fn f { echo F $* }; f a b | wc", "3\n");                    // a function as a stage
+  expect("{echo a; echo b} | wc", "2\n");                             // a block as a stage
+  expect("echo hi | {cat; echo there} | wc", "2\n");                  // and in the middle, reading
+  expect("{for(i in a b c) echo $i} | wc", "3\n");                    // a loop in a block
+  expect("exitwith '' | exit 3; echo $status after", "3 after\n");    // a builtin as a stage: its exit
+  expect("fn g { echo G }; g &; echo $apid", "G\n42\n");              // a function run with &
+  expect("x=1; {x=2; echo in} &; echo $x", "in\n1\n");                // a block run with &
+  expect("exit 3 &; echo still", "still\n");                          // a builtin run with &
+  expect("true && echo y &", "y\n");                                  // a && list run with &
+  expect("x=1; @{x=2}; echo $x", "1\n");                              // @{...}
+  expect("x=1; @ x=2; echo $x", "1\n");                               // @ of an assignment
+  expect("x=1; y=`{x=2; echo $x}; echo $x $#y", "1 1\n");             // `{...}
+  expect("fn h { {echo $1 $x} | cat }; x=q h z", "z q\n");            // its $* and the locals
+  expect("{exitwith 7} | true; echo $status", "7|\n");                // a child's status
+  expect("{fn k { echo K }} | true; k; echo $status", "not found\n"); // a function it defines
+  expect("y=`:{x=1; echo a; echo b:c}; echo $#y", "2\n");             // a list of three, whole
+}
+
 static void test_9front_builtins(void) {
   CHECK(script("false; exit") == RC_EXIT && strcmp(status_now(), "false") == 0); // $status kept
   CHECK(script("exit a b") == RC_EXIT && strcmp(status_now(), "a") == 0);
@@ -458,15 +558,15 @@ static void test_9front_builtins(void) {
 }
 
 int main(void) {
-  rc_host host = {.run = run,
-                  .write = write_fd,
-                  .readdir = readdir_fake,
-                  .read_file = read_file_fake,
-                  .builtin = host_builtin,
-                  .open = open_fake,
-                  .close = close_fake,
-                  .exists = exists_fake,
-                  .read_line = read_line_fake};
+  host = (rc_host){.run = run,
+                   .write = write_fd,
+                   .readdir = readdir_fake,
+                   .read_file = read_file_fake,
+                   .builtin = host_builtin,
+                   .open = open_fake,
+                   .close = close_fake,
+                   .exists = exists_fake,
+                   .read_line = read_line_fake};
   r = rc_new(heap, sizeof heap, &host);
   CHECK(r != nullptr);
   if (!r) return check_result();
@@ -557,7 +657,7 @@ int main(void) {
     expect(text, "299\n");
   }
   CHECK(script("x=() ; echo a^$x") == RC_FAILED);
-  CHECK(script("fn f { echo }; f | wc") == RC_OK && strstr(err, "pipeline") != nullptr);
+  expect("fn f { echo }; f | wc", "0\n"); // a function as a stage: a child's
   CHECK(script("echo before; exit 'it failed'; echo after") == RC_EXIT && strcmp(out, "before\n") == 0);
   expect("echo $status", "it failed\n");
   CHECK(opened > 0 && opened == closed); // every redirection's file let go
@@ -574,5 +674,6 @@ int main(void) {
   test_9front();
   test_9front_reading();
   test_9front_builtins();
+  test_9front_children();
   return check_result();
 }

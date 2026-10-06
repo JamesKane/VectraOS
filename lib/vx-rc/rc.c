@@ -62,6 +62,21 @@ typedef struct rc_capture { // `{...}'s output, gathered
   size_t len, cap;
 } rc_capture;
 
+typedef struct rc_stage {
+  rc_command cmd;
+} rc_stage;
+
+static constexpr uint32_t RC_STAGES = 64;
+
+// A redirection undone while a pipeline's stages are gathered: the stages
+// given it still hold its file's handle and its word (a file's path, a here
+// document's text), so both are kept until they have run.
+typedef struct rc_close {
+  uint32_t handle, level;
+  bool close; // a file the host opened; a here document has no handle
+  struct rc_word *path;
+} rc_close;
+
 struct rc {
   rc_host host;
   uint8_t *heap;
@@ -89,6 +104,10 @@ struct rc {
   bool trapped;                     // sigexit has run, as rc's
   uint64_t budget;  // instructions a run may take (0: as many as it needs): fuzzing's guard against loops
   char err[RC_ERR]; // the last error, for the host to show
+  rc_stage stages[RC_STAGES]; // a pipeline's, as they are gathered (X_STAGE)
+  uint32_t nstages;
+  rc_close closes[4 * RC_STAGES];
+  uint32_t ncloses;
 };
 
 [[maybe_unused]] static void rc_error(rc *r, const char *a, const char *b) {
@@ -664,6 +683,7 @@ typedef struct rc_node {
   int32_t next;    // the next in a list of words or redirections
   const char *s;   // N_WORD
   size_t len;
+  const char *from, *to; // its source text, for code a child runs (6d7b1)
 } rc_node;
 
 static constexpr int32_t RC_NONE = -1, RC_ALLARGS = -2; // RC_ALLARGS: for(i) loops over $*
@@ -709,13 +729,15 @@ typedef struct rc_pframe {
   uint8_t op, prec, purpose, term;
   uint8_t fd0, fd1, rkind;
   int32_t a, b, c, d;
+  const char *from; // where its construct's first token is, for its node's text
 } rc_pframe;
 
 enum : uint32_t { RC_PFRAMES = 256, RC_PVALS = 256 };
 
 typedef struct rc_parser {
   rc_lexer lx;
-  const char *last_end; // where the last token taken ends: a function body's text ends there
+  const char *last_end;   // where the last token taken ends: a function body's text ends there
+  const char *last_start; // and where it starts
   rc_token look[2];
   uint32_t nlook;
   rc_node *nodes;
@@ -746,7 +768,7 @@ static rc_token rc_take(rc_parser *p) {
   p->look[0] = p->look[1];
   p->nlook--;
   p->line = t.line;
-  p->last_end = t.end;
+  p->last_end = t.end, p->last_start = t.at;
   return t;
 }
 
@@ -755,8 +777,30 @@ static int32_t rc_node_new(rc_parser *p, rc_nk kind, int32_t a, int32_t b, int32
     p->why = "script too long";
     return RC_NONE;
   }
-  p->nodes[p->nnodes] = (rc_node){.kind = kind, .a = a, .b = b, .c = c, .next = RC_NONE, .line = p->line};
+  // Its text: from its first child's, to the last token taken (a binary
+  // node's is its children's: it is made after its operator's next is seen).
+  const char *from = nullptr;
+  int32_t kids[3] = {a, b, c};
+  for (int i = 0; i < 3; i++) {
+    const rc_node *k = kids[i] >= 0 && (uint32_t)kids[i] < p->nnodes ? &p->nodes[kids[i]] : nullptr;
+    if (k && k->from && (!from || k->from < from)) from = k->from;
+  }
+  p->nodes[p->nnodes] = (rc_node){.kind = kind,
+                                  .a = a,
+                                  .b = b,
+                                  .c = c,
+                                  .next = RC_NONE,
+                                  .line = p->line,
+                                  .from = from,
+                                  .to = p->last_end};
   return (int32_t)p->nnodes++;
+}
+
+// Lowers node n's text's start to from, a token before its children: a
+// keyword, a brace, a redirection.
+static void rc_from(rc_parser *p, int32_t n, const char *from) {
+  if (n >= 0 && (uint32_t)n < p->nnodes && from && (!p->nodes[n].from || from < p->nodes[n].from))
+    p->nodes[n].from = from;
 }
 
 static bool rc_push(rc_parser *p, rc_pframe f) {
@@ -797,6 +841,7 @@ static void rc_reduce_one(rc_parser *p) {
     int32_t b = rc_popval(p), a = rc_popval(p);
     n = rc_node_new(p, (rc_nk)f.op, a, b, RC_NONE);
     if (n != RC_NONE) p->nodes[n].fd0 = f.fd0, p->nodes[n].fd1 = f.fd1; // |[fd0=fd1]
+    if (n != RC_NONE && b >= 0) p->nodes[n].to = p->nodes[b].to;        // not the operator taken after it
   } else {                                                              // F_PREFIX
     int32_t cmd = rc_popval(p);
     if (f.op == N_FOR)
@@ -812,6 +857,7 @@ static void rc_reduce_one(rc_parser *p) {
     else
       n = rc_node_new(p, (rc_nk)f.op, RC_NONE, cmd, RC_NONE); // N_IFNOT, N_BANG, N_SUBSHELL: b is the command
     if (n != RC_NONE) p->nodes[n].fd0 = f.fd0, p->nodes[n].fd1 = f.fd1, p->nodes[n].rkind = f.rkind;
+    rc_from(p, n, f.from);
   }
   rc_pushval(p, n);
 }
@@ -842,16 +888,20 @@ static rc_pstate rc_word_done(rc_parser *p, int32_t w) {
       rc_skipnl(p);
       if (rc_peek(p)->kind != TK_LBRACE) return p->why = "switch needs { after its word", S_DONE;
       rc_take(p);
-      rc_push(p, (rc_pframe){.kind = F_SWITCHBODY, .a = w});
+      rc_push(p, (rc_pframe){.kind = F_SWITCHBODY, .a = w, .from = want.from});
       rc_push(p, (rc_pframe){.kind = F_LIST, .term = TK_RBRACE, .a = RC_NONE});
       return S_CMD;
     case W_ASSIGN:
       rc_push(p, (rc_pframe){.kind = F_PREFIX, .op = N_ASSIGN, .prec = 2, .a = want.a, .b = w});
       return S_CMD;
     case W_REDIR_PREFIX:
-      rc_push(p,
-              (rc_pframe){
-                  .kind = F_PREFIX, .op = N_REDIR, .prec = 2, .a = w, .fd0 = want.fd0, .rkind = want.rkind});
+      rc_push(p, (rc_pframe){.kind = F_PREFIX,
+                             .op = N_REDIR,
+                             .prec = 2,
+                             .a = w,
+                             .fd0 = want.fd0,
+                             .rkind = want.rkind,
+                             .from = want.from});
       return S_CMD;
     case W_REDIR_EPILOG: {
       int32_t cmd = rc_popval(p), n = rc_node_new(p, N_REDIR, w, cmd, RC_NONE);
@@ -863,19 +913,24 @@ static rc_pstate rc_word_done(rc_parser *p, int32_t w) {
       rc_pframe *s = rc_top(p); // the F_SIMPLE it is in
       int32_t n = rc_node_new(p, N_REDIR, w, RC_NONE, RC_NONE);
       if (n != RC_NONE) p->nodes[n].fd0 = want.fd0, p->nodes[n].rkind = want.rkind;
+      rc_from(p, n, want.from);
       rc_append(p, &s->b, &s->d, n);
       return S_COLLECT;
     }
-    case W_FORVAR: rc_push(p, (rc_pframe){.kind = F_FORWAIT, .a = w}); return S_CMD;
+    case W_FORVAR: rc_push(p, (rc_pframe){.kind = F_FORWAIT, .a = w, .from = want.from}); return S_CMD;
     case W_TWIDDLE:
-      rc_push(p,
-              (rc_pframe){
-                  .kind = F_WORDS, .purpose = P_TWIDDLE, .term = TK_EOF, .a = RC_NONE, .b = w, .c = RC_NONE});
+      rc_push(p, (rc_pframe){.kind = F_WORDS,
+                             .purpose = P_TWIDDLE,
+                             .term = TK_EOF,
+                             .a = RC_NONE,
+                             .b = w,
+                             .c = RC_NONE,
+                             .from = want.from});
       return S_COLLECT;
     case W_BACKQ:
       if (rc_peek(p)->kind != TK_LBRACE) return p->why = "` needs { after its separators", S_DONE;
       rc_take(p);
-      rc_push(p, (rc_pframe){.kind = F_BACKQBODY, .b = w});
+      rc_push(p, (rc_pframe){.kind = F_BACKQBODY, .b = w, .from = want.from});
       rc_push(p, (rc_pframe){.kind = F_LIST, .term = TK_RBRACE, .a = RC_NONE});
       return S_CMD;
     default: return p->why = "unexpected word", S_DONE;
@@ -896,24 +951,43 @@ static rc_pstate rc_list_done(rc_parser *p) {
   rc_pframe up = *f;
   p->nframes--;
   switch (up.kind) {
-  case F_BRACE: rc_pushval(p, rc_node_new(p, N_BRACE, list.a, RC_NONE, RC_NONE)); return S_AFTERCMD;
+  case F_BRACE: {
+    int32_t n = rc_node_new(p, N_BRACE, list.a, RC_NONE, RC_NONE);
+    rc_from(p, n, up.from);
+    rc_pushval(p, n);
+    return S_AFTERCMD;
+  }
   case F_IFCOND:
   case F_WHILECOND:
-    rc_push(
-        p, (rc_pframe){.kind = F_PREFIX, .op = up.kind == F_IFCOND ? N_IF : N_WHILE, .prec = 0, .a = list.a});
+    rc_push(p, (rc_pframe){.kind = F_PREFIX,
+                           .op = up.kind == F_IFCOND ? N_IF : N_WHILE,
+                           .prec = 0,
+                           .a = list.a,
+                           .from = up.from});
     rc_skipnl(p);
     return S_CMD;
-  case F_SWITCHBODY: rc_pushval(p, rc_node_new(p, N_SWITCH, up.a, list.a, RC_NONE)); return S_AFTERCMD;
+  case F_SWITCHBODY: {
+    int32_t n = rc_node_new(p, N_SWITCH, up.a, list.a, RC_NONE);
+    rc_from(p, n, up.from);
+    rc_pushval(p, n);
+    return S_AFTERCMD;
+  }
   case F_FNBODY: { // its body's text kept, { to }, for whatis and export (rc's fnstr)
     int32_t n = rc_node_new(p, N_FN, up.a, list.a, RC_NONE);
     if (n != RC_NONE) {
       const char *from = p->lx.base + up.c;
       p->nodes[n].s = from, p->nodes[n].len = (size_t)(p->last_end - from);
     }
+    rc_from(p, n, up.from);
     rc_pushval(p, n);
     return S_AFTERCMD;
   }
-  case F_BACKQBODY: rc_pushval(p, rc_node_new(p, N_BACKQ, list.a, up.b, RC_NONE)); return S_AFTERATOM;
+  case F_BACKQBODY: {
+    int32_t n = rc_node_new(p, N_BACKQ, list.a, up.b, RC_NONE);
+    rc_from(p, n, up.from);
+    rc_pushval(p, n);
+    return S_AFTERATOM;
+  }
   default: return p->why = "misplaced list", S_DONE;
   }
 }
@@ -942,19 +1016,21 @@ static rc_pstate rc_cmd(rc_parser *p) {
     return rc_list_done(p);
   }
   if (t->kind == TK_LBRACE) {
-    rc_take(p);
-    rc_push(p, (rc_pframe){.kind = F_BRACE});
+    rc_token lb = rc_take(p);
+    rc_push(p, (rc_pframe){.kind = F_BRACE, .from = lb.at});
     rc_push(p, (rc_pframe){.kind = F_LIST, .term = TK_RBRACE, .a = RC_NONE});
     return S_CMD;
   }
   if (t->kind == TK_REDIR) {
     rc_token r = rc_take(p);
-    rc_push(p, (rc_pframe){.kind = F_WANT, .purpose = W_REDIR_PREFIX, .fd0 = r.fd0, .rkind = r.rkind});
+    rc_push(p, (rc_pframe){
+                   .kind = F_WANT, .purpose = W_REDIR_PREFIX, .fd0 = r.fd0, .rkind = r.rkind, .from = r.at});
     return S_WORD;
   }
   if (t->kind == TK_DUP) {
     rc_token r = rc_take(p);
-    rc_push(p, (rc_pframe){.kind = F_PREFIX, .op = N_DUP, .prec = 2, .fd0 = r.fd0, .fd1 = r.fd1});
+    rc_push(p,
+            (rc_pframe){.kind = F_PREFIX, .op = N_DUP, .prec = 2, .fd0 = r.fd0, .fd1 = r.fd1, .from = r.at});
     return S_CMD;
   }
   if (t->kind == TK_WORD && !t->quoted && (t->kw == KW_IN || t->kw == KW_NOT))
@@ -967,29 +1043,39 @@ static rc_pstate rc_cmd(rc_parser *p) {
       if (rc_peek(p)->kind == TK_WORD && rc_peek(p)->kw == KW_NOT) {
         rc_take(p);
         rc_skipnl(p);
-        rc_push(p, (rc_pframe){.kind = F_PREFIX, .op = N_IFNOT, .prec = 0});
+        rc_push(p, (rc_pframe){.kind = F_PREFIX, .op = N_IFNOT, .prec = 0, .from = k.at});
         return S_CMD;
       }
       [[fallthrough]];
     case KW_WHILE:
       if (rc_peek(p)->kind != TK_LP) return p->why = "if and while need ( after them", S_DONE;
       rc_take(p);
-      rc_push(p, (rc_pframe){.kind = k.kw == KW_IF ? F_IFCOND : F_WHILECOND});
+      rc_push(p, (rc_pframe){.kind = k.kw == KW_IF ? F_IFCOND : F_WHILECOND, .from = k.at});
       rc_push(p, (rc_pframe){.kind = F_LIST, .term = TK_RP, .a = RC_NONE});
       return S_CMD;
     case KW_FOR:
       if (rc_peek(p)->kind != TK_LP) return p->why = "for needs ( after it", S_DONE;
       rc_take(p);
-      rc_push(p, (rc_pframe){.kind = F_WANT, .purpose = W_FORVAR});
+      rc_push(p, (rc_pframe){.kind = F_WANT, .purpose = W_FORVAR, .from = k.at});
       return S_WORD;
-    case KW_SWITCH: rc_push(p, (rc_pframe){.kind = F_WANT, .purpose = W_SWITCH}); return S_WORD;
+    case KW_SWITCH: rc_push(p, (rc_pframe){.kind = F_WANT, .purpose = W_SWITCH, .from = k.at}); return S_WORD;
     case KW_FN:
-      rc_push(p, (rc_pframe){
-                     .kind = F_WORDS, .purpose = P_FNNAMES, .term = TK_LBRACE, .a = RC_NONE, .c = RC_NONE});
+      rc_push(p, (rc_pframe){.kind = F_WORDS,
+                             .purpose = P_FNNAMES,
+                             .term = TK_LBRACE,
+                             .a = RC_NONE,
+                             .c = RC_NONE,
+                             .from = k.at});
       return S_COLLECT;
-    case KW_BANG: rc_push(p, (rc_pframe){.kind = F_PREFIX, .op = N_BANG, .prec = 2}); return S_CMD;
-    case KW_SUBSHELL: rc_push(p, (rc_pframe){.kind = F_PREFIX, .op = N_SUBSHELL, .prec = 2}); return S_CMD;
-    case KW_TWIDDLE: rc_push(p, (rc_pframe){.kind = F_WANT, .purpose = W_TWIDDLE}); return S_WORD;
+    case KW_BANG:
+      rc_push(p, (rc_pframe){.kind = F_PREFIX, .op = N_BANG, .prec = 2, .from = k.at});
+      return S_CMD;
+    case KW_SUBSHELL:
+      rc_push(p, (rc_pframe){.kind = F_PREFIX, .op = N_SUBSHELL, .prec = 2, .from = k.at});
+      return S_CMD;
+    case KW_TWIDDLE:
+      rc_push(p, (rc_pframe){.kind = F_WANT, .purpose = W_TWIDDLE, .from = k.at});
+      return S_WORD;
     default: break;
     }
   }
@@ -997,7 +1083,7 @@ static rc_pstate rc_cmd(rc_parser *p) {
     rc_token name = rc_take(p);
     rc_take(p);
     int32_t n = rc_node_new(p, N_WORD, RC_NONE, RC_NONE, RC_NONE);
-    if (n != RC_NONE) p->nodes[n].s = name.s, p->nodes[n].len = name.len;
+    if (n != RC_NONE) p->nodes[n].s = name.s, p->nodes[n].len = name.len, p->nodes[n].from = name.at;
     rc_push(p, (rc_pframe){.kind = F_WANT, .purpose = W_ASSIGN, .a = n});
     return S_WORD;
   }
@@ -1063,6 +1149,7 @@ static rc_pstate rc_aftercmd(rc_parser *p) {
     int32_t last = list->c - 1, seq = rc_node_new(p, N_SEQ, p->nodes[last].b, cmd, RC_NONE);
     if (seq != RC_NONE) p->nodes[last].b = seq, list->c = seq + 1;
   }
+  if (cmd >= 0 && list->a >= 0) p->nodes[list->a].to = p->nodes[cmd].to; // the list's text, to its last
   return S_CMD;
 }
 
@@ -1088,13 +1175,15 @@ static rc_pstate rc_collect(rc_parser *p) {
     return S_WORD;
   if (f->kind == F_SIMPLE && t->kind == TK_REDIR) {
     rc_token r = rc_take(p);
-    rc_push(p, (rc_pframe){.kind = F_WANT, .purpose = W_REDIR_SIMPLE, .fd0 = r.fd0, .rkind = r.rkind});
+    rc_push(p, (rc_pframe){
+                   .kind = F_WANT, .purpose = W_REDIR_SIMPLE, .fd0 = r.fd0, .rkind = r.rkind, .from = r.at});
     return S_WORD;
   }
   if (f->kind == F_SIMPLE && t->kind == TK_DUP) {
     rc_token r = rc_take(p);
     int32_t n = rc_node_new(p, N_DUP, RC_NONE, RC_NONE, RC_NONE);
     if (n != RC_NONE) p->nodes[n].fd0 = r.fd0, p->nodes[n].fd1 = r.fd1;
+    rc_from(p, n, r.at);
     rc_append(p, &f->b, &f->d, n);
     return S_COLLECT;
   }
@@ -1116,29 +1205,39 @@ static rc_pstate rc_collect(rc_parser *p) {
     rc_take(p);
     p->nframes--;
     if (done.purpose == P_PAREN) {
-      rc_pushval(p, rc_node_new(p, N_PAREN, done.a, RC_NONE, RC_NONE));
+      int32_t n = rc_node_new(p, N_PAREN, done.a, RC_NONE, RC_NONE);
+      rc_from(p, n, done.from);
+      rc_pushval(p, n);
       return S_AFTERATOM;
     }
     if (done.purpose == P_SUB) {
-      rc_pushval(p, rc_node_new(p, N_SUB, done.b, done.a, RC_NONE));
+      int32_t n = rc_node_new(p, N_SUB, done.b, done.a, RC_NONE);
+      rc_from(p, n, done.from);
+      rc_pushval(p, n);
       return S_AFTERATOM;
     }
     rc_skipnl(p); // for(i in words)
-    rc_push(p, (rc_pframe){.kind = F_PREFIX, .op = N_FOR, .prec = 0, .a = done.b, .b = done.a});
+    rc_push(p, (rc_pframe){
+                   .kind = F_PREFIX, .op = N_FOR, .prec = 0, .a = done.b, .b = done.a, .from = done.from});
     return S_CMD;
   case P_FNNAMES:
     p->nframes--;
     if (t->kind == TK_LBRACE) {
       rc_token lb = rc_take(p);
-      rc_push(p, (rc_pframe){.kind = F_FNBODY, .a = done.a, .c = (int32_t)(lb.at - p->lx.base)});
+      rc_push(p, (rc_pframe){
+                     .kind = F_FNBODY, .a = done.a, .c = (int32_t)(lb.at - p->lx.base), .from = done.from});
       rc_push(p, (rc_pframe){.kind = F_LIST, .term = TK_RBRACE, .a = RC_NONE});
       return S_CMD;
     }
-    rc_pushval(p, rc_node_new(p, N_FN, done.a, RC_NONE, RC_NONE)); // fn names: deletes them
+    int32_t del = rc_node_new(p, N_FN, done.a, RC_NONE, RC_NONE); // fn names: deletes them
+    rc_from(p, del, done.from);
+    rc_pushval(p, del);
     return S_AFTERCMD;
   case P_TWIDDLE:
     p->nframes--;
-    rc_pushval(p, rc_node_new(p, N_TWIDDLE, done.b, done.a, RC_NONE));
+    int32_t tw = rc_node_new(p, N_TWIDDLE, done.b, done.a, RC_NONE);
+    rc_from(p, tw, done.from);
+    rc_pushval(p, tw);
     return S_AFTERCMD;
   default: return p->why = "syntax error", S_DONE;
   }
@@ -1152,6 +1251,7 @@ static rc_pstate rc_atom(rc_parser *p) {
     if (n == RC_NONE) return S_DONE;
     p->nodes[n].s = t.s;
     p->nodes[n].len = t.len;
+    p->nodes[n].from = t.at;
     p->nodes[n].fd1 = t.fd1;    // a variable's name
     p->nodes[n].fd0 = t.quoted; // a quoted word: never a switch's case
     p->nodes[n].rkind = t.here; // a here document's tag
@@ -1160,18 +1260,20 @@ static rc_pstate rc_atom(rc_parser *p) {
   }
   case TK_DOLLAR:
   case TK_COUNT:
-  case TK_JOIN: rc_push(p, (rc_pframe){.kind = F_DOL, .op = rc_dolop(t.kind)}); return S_WORD;
+  case TK_JOIN: rc_push(p, (rc_pframe){.kind = F_DOL, .op = rc_dolop(t.kind), .from = t.at}); return S_WORD;
   case TK_BACKQ:
     if (rc_peek(p)->kind == TK_LBRACE) {
       rc_take(p);
-      rc_push(p, (rc_pframe){.kind = F_BACKQBODY, .b = RC_NONE});
+      rc_push(p, (rc_pframe){.kind = F_BACKQBODY, .b = RC_NONE, .from = t.at});
       rc_push(p, (rc_pframe){.kind = F_LIST, .term = TK_RBRACE, .a = RC_NONE});
       return S_CMD;
     }
-    rc_push(p, (rc_pframe){.kind = F_WANT, .purpose = W_BACKQ});
+    rc_push(p, (rc_pframe){.kind = F_WANT, .purpose = W_BACKQ, .from = t.at});
     return S_WORD;
   case TK_LP:
-    rc_push(p, (rc_pframe){.kind = F_WORDS, .purpose = P_PAREN, .term = TK_RP, .a = RC_NONE, .c = RC_NONE});
+    rc_push(
+        p, (rc_pframe){
+               .kind = F_WORDS, .purpose = P_PAREN, .term = TK_RP, .a = RC_NONE, .c = RC_NONE, .from = t.at});
     return S_COLLECT;
   case TK_EOF: p->incomplete = true; return p->why = "unexpected end", S_DONE;
   default: return p->why = "expected a word", S_DONE;
@@ -1182,15 +1284,21 @@ static rc_pstate rc_afteratom(rc_parser *p) {
   int32_t atom = rc_popval(p);
   for (rc_pframe *f = rc_top(p); f && f->kind == F_DOL; f = rc_top(p)) { // $ binds to the atom after it
     uint8_t op = f->op;
+    const char *dol = f->from;
     p->nframes--;
     if (op == N_DOL && rc_peek(p)->kind == TK_SUBLP) { // $x( subscripts )
       rc_take(p);
-      rc_push(p,
-              (rc_pframe){
-                  .kind = F_WORDS, .purpose = P_SUB, .term = TK_RP, .a = RC_NONE, .b = atom, .c = RC_NONE});
+      rc_push(p, (rc_pframe){.kind = F_WORDS,
+                             .purpose = P_SUB,
+                             .term = TK_RP,
+                             .a = RC_NONE,
+                             .b = atom,
+                             .c = RC_NONE,
+                             .from = dol});
       return S_COLLECT;
     }
     atom = rc_node_new(p, (rc_nk)op, atom, RC_NONE, RC_NONE);
+    rc_from(p, atom, dol);
   }
   rc_pframe *f = rc_top(p);
   if (f && f->kind == F_CONC) {
@@ -1212,14 +1320,20 @@ static rc_pstate rc_forwait(rc_parser *p) {
   rc_token *t = rc_peek(p);
   if (t->kind == TK_WORD && t->kw == KW_IN && !t->quoted) {
     rc_take(p);
-    rc_push(p, (rc_pframe){
-                   .kind = F_WORDS, .purpose = P_FORIN, .term = TK_RP, .a = RC_NONE, .b = f.a, .c = RC_NONE});
+    rc_push(p, (rc_pframe){.kind = F_WORDS,
+                           .purpose = P_FORIN,
+                           .term = TK_RP,
+                           .a = RC_NONE,
+                           .b = f.a,
+                           .c = RC_NONE,
+                           .from = f.from});
     return S_COLLECT;
   }
   if (t->kind != TK_RP) return p->why = "for( needs in or )", S_DONE;
   rc_take(p);
   rc_skipnl(p);
-  rc_push(p, (rc_pframe){.kind = F_PREFIX, .op = N_FOR, .prec = 0, .a = f.a, .b = RC_ALLARGS});
+  rc_push(p,
+          (rc_pframe){.kind = F_PREFIX, .op = N_FOR, .prec = 0, .a = f.a, .b = RC_ALLARGS, .from = f.from});
   return S_CMD;
 }
 
@@ -1260,15 +1374,16 @@ static int32_t rc_parse(rc_parser *p) {
 // are compiled first.
 
 typedef enum rc_op : uint8_t {
-  X_MARK,   // a new list on the stack
-  X_WORD,   // a: the string, b: its length: added to the top list
-  X_DOL,    // the top list's names: their values onto the list below
-  X_COUNT,  // their count
-  X_JOIN,   // their values joined by spaces, one word
-  X_SUB,    // the top list subscripts the name in the one below: onto the list below that
-  X_CONC,   // the top two lists concatenated, onto the one below
-  X_SIMPLE, // f0: async. The top list is a command: run it
-  X_STAGE,  // f0/f1: the fds it pipes to the next/from the last; a: its redirections. The top list is a stage
+  X_MARK,  // a new list on the stack
+  X_WORD,  // a: the string, b: its length: added to the top list
+  X_DOL,   // the top list's names: their values onto the list below
+  X_COUNT, // their count
+  X_JOIN,  // their values joined by spaces, one word
+  X_SUB,   // the top list subscripts the name in the one below: onto the list below that
+  X_CONC,  // the top two lists concatenated, onto the one below
+  X_SIMPLE, // f0: async; f1: apart (a function or builtin in a child); b: child code. The top list is a command
+  X_STAGE, // f0/f1: the fds it pipes to the next/from the last; a: its redirections; b: child code. The top
+           // list is a stage
   X_PIPELINE, // a: stages, f0: async
   X_ASSIGN,   // the top list names a variable, the one below its value
   X_LOCAL,    // as X_ASSIGN, a local of the frame, until X_UNLOCAL
@@ -1419,7 +1534,10 @@ typedef struct rc_citem {
   uint32_t at;           // a jump to patch, or where a loop starts
   int32_t cur;           // a list being walked
   uint32_t count;
-  bool noe; // a condition's: -e does not apply in it (rc's outcode(c, 0))
+  bool noe;   // a condition's: -e does not apply in it (rc's outcode(c, 0))
+  bool apart; // a simple command whose function or builtin runs in a child: in @ or `{...} (6d7b1)
+  bool child; // a command a child rc runs, from its text (6d7b1)
+  bool async; // a child's, run with &
 } rc_citem;
 
 enum : uint32_t { RC_CITEMS = 1024 };
@@ -1488,6 +1606,67 @@ static int rc_iflast(rc_compiler *c, const rc_citem *it, const rc_node *t, rc_ci
   return 0;
 }
 
+// A command a child rc runs (6d7b1), as 9front's rc forks for it: node n's
+// text, a word, then $*, the child's, as the command's words; a stage, or a
+// command run now or with &. What it sets is the child's, never the shell's.
+static void rc_emit_child(rc_compiler *c, const rc_citem *it) {
+  const rc_node *t = &c->nodes[it->node];
+  if (!t->from || t->to <= t->from) {
+    c->why = "no text for code run in a child";
+    return;
+  }
+  rc_emit(c, X_MARK, 0, 0, 0, 0);
+  rc_emit_word(c, t->from, (size_t)(t->to - t->from));
+  rc_emit(c, X_MARK, 0, 0, 0, 0);
+  rc_emit_word(c, "*", 1);
+  rc_emit(c, X_DOL, 0, 0, 0, 0);
+  if (it->stage)
+    rc_emit(c, X_STAGE, it->out_fd, it->in_fd, 0, 1);
+  else
+    rc_emit(c, X_SIMPLE, (uint8_t)it->async, 0, 0, 1);
+}
+
+// A command run apart from the shell, in @ or `{...}: a simple one as it is,
+// a function or builtin it names a child's; anything else a child's text.
+static void rc_apart(const rc_compiler *c, rc_citem *it) {
+  if (c->nodes[it->node].kind == N_SIMPLE)
+    it->apart = true;
+  else
+    it->child = true;
+}
+
+// A pipeline's stages, after its item at its next phase (X_PIPELINE's), onto
+// the stack, right to left so the leftmost compiles first, each told the
+// joints' descriptors it pipes on; a stage that is not a simple command is a
+// child's (6d7b1).
+static bool rc_push_stages(rc_compiler *c, rc_citem *it, int32_t chain, bool noe, rc_citem *items,
+                           uint32_t *ni) {
+  int32_t right[32];        // the stages, right to left
+  uint8_t fd0[32], fd1[32]; // the joints' descriptors, right to left
+  uint32_t n = 0;
+  int32_t x = chain;
+  for (; x != RC_NONE && c->nodes[x].kind == N_PIPE; x = c->nodes[x].a) {
+    if (n == 31) return c->why = "pipeline too long", false;
+    right[n] = c->nodes[x].b, fd0[n] = c->nodes[x].fd0, fd1[n] = c->nodes[x].fd1, n++;
+  }
+  right[n++] = x; // the leftmost
+  if (*ni + n + 1 > RC_CITEMS) return c->why = "nested too deeply", false;
+  it->count = n, it->phase = 1;
+  items[(*ni)++] = *it;
+  for (uint32_t k = 0; k < n; k++) {
+    int32_t node = right[k];
+    if (node == RC_NONE) return c->why = "syntax error", false;
+    // Stage k from the right: it pipes out on joint k-1's fd0, in on joint k's fd1.
+    items[(*ni)++] = (rc_citem){.node = node,
+                                .noe = noe,
+                                .stage = true,
+                                .child = c->nodes[node].kind != N_SIMPLE, // a block, a loop, ...: a child's
+                                .out_fd = k > 0 ? fd0[k - 1] : 255,
+                                .in_fd = k + 1 < n ? fd1[k] : 255};
+  }
+  return true;
+}
+
 static bool rc_compile_tree(rc_compiler *c, int32_t root) {
   static rc_citem items[RC_CITEMS];
   uint32_t ni = 0;
@@ -1506,6 +1685,12 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
     noe = it.noe;
     const rc_node *t = &c->nodes[it.node];
     if (t->line) c->line = t->line;
+    if (it.child) { // a command, whatever it is: its text, to a child
+      c->r->iflast = false;
+      rc_emit_child(c, &it);
+      if (!it.stage) RC_EFLAG();
+      continue;
+    }
     int iflast = rc_iflast(c, &it, t, items, &ni);
     if (iflast < 0) return false;
     if (iflast > 0) continue;
@@ -1583,10 +1768,13 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
           RC_AGAIN(1);
           RC_PUSH(t->b, 0);
         }
-      } else if (it.phase == 1) {
+      } else if (it.phase == 1) { // the body in a child, as rc's: a program as it is; anything else its text
         rc_emit(c, X_BACKQ, 0, 0, 0, 0);
         RC_AGAIN(2);
-        RC_PUSH(t->a, 0);
+        if (t->a != RC_NONE) {
+          RC_PUSH(t->a, 0);
+          rc_apart(c, &items[ni - 1]);
+        }
       } else {
         rc_emit(c, X_BACKQEND, 0, 0, 0, 0);
       }
@@ -1627,7 +1815,7 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
           if (it.stage) {
             rc_emit(c, X_STAGE, it.out_fd, it.in_fd, it.count, 0);
           } else {
-            rc_emit(c, X_SIMPLE, 0, 0, 0, 0);
+            rc_emit(c, X_SIMPLE, 0, (uint8_t)it.apart, 0, 0);
             RC_EFLAG();
           }
           if (it.count) rc_emit(c, X_POPREDIR, 0, 0, it.count, 0);
@@ -1643,8 +1831,12 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
       RC_PUSH(t->b, 0);
       RC_PUSH(t->a, 0);
       break;
-    case N_BRACE:
-    case N_SUBSHELL: RC_PUSH(t->kind == N_BRACE ? t->a : t->b, 0); break;
+    case N_BRACE: RC_PUSH(t->a, 0); break;
+    case N_SUBSHELL: // @ cmd: in a child, as rc's (a program as it is; anything else its text)
+      if (t->b == RC_NONE) break;
+      RC_PUSH(t->b, 0);
+      rc_apart(c, &items[ni - 1]);
+      break;
     case N_ASYNC:
     case N_PIPE: { // a pipeline of programs: each stage, leftmost first, then X_PIPELINE
       bool async = t->kind == N_ASYNC;
@@ -1662,33 +1854,17 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
         }
         break;
       }
-      if (async && (chain == RC_NONE || c->nodes[chain].kind != N_PIPE))
-        return c->why = "& runs programs only, not blocks or functions (for now)", false;
+      if (async && chain != RC_NONE && c->nodes[chain].kind != N_PIPE) { // a block, a loop, ... &: a child
+        if (ni >= RC_CITEMS) return c->why = "nested too deeply", false;
+        items[ni++] = (rc_citem){.node = chain, .child = true, .async = true};
+        break;
+      }
+      if (async && chain == RC_NONE) return c->why = "syntax error", false;
       if (it.phase == 1) {
         rc_emit(c, X_PIPELINE, (uint8_t)async, 0, it.count, 0);
         break;
       }
-      int32_t right[32];        // the stages, right to left
-      uint8_t fd0[32], fd1[32]; // the joints' descriptors, right to left
-      uint32_t n = 0;
-      int32_t x = chain;
-      for (; x != RC_NONE && c->nodes[x].kind == N_PIPE; x = c->nodes[x].a) {
-        if (n == 31) return c->why = "pipeline too long", false;
-        right[n] = c->nodes[x].b, fd0[n] = c->nodes[x].fd0, fd1[n] = c->nodes[x].fd1, n++;
-      }
-      right[n++] = x; // the leftmost
-      it.count = n;
-      RC_AGAIN(1);
-      for (uint32_t k = 0; k < n; k++) { // right to left onto the stack: the leftmost compiles first
-        int32_t node = right[k];
-        if (node == RC_NONE || c->nodes[node].kind != N_SIMPLE)
-          return c->why = "a pipeline's stages must be programs, not blocks or functions (for now)", false;
-        // Stage k from the right: it pipes out on joint k-1's fd0, in on joint k's fd1.
-        RC_PUSH(node, 0);
-        items[ni - 1].stage = true;
-        items[ni - 1].out_fd = k > 0 ? fd0[k - 1] : 255;
-        items[ni - 1].in_fd = k + 1 < n ? fd1[k] : 255;
-      }
+      if (!rc_push_stages(c, &it, chain, noe, items, &ni)) return false;
       break;
     }
     case N_AND:
@@ -2285,22 +2461,8 @@ static void rc_freelocals(rc *r, rc_var *v) {
 // a gathered stage was given stays open until its pipeline has run, though
 // the redirection that opened it is undone at once (rc_pop_redirs): each
 // such close waits here, with how many stages were gathered then.
-typedef struct rc_stage {
-  rc_command cmd;
-} rc_stage;
-
-static constexpr uint32_t RC_STAGES = 64;
-static rc_stage rc_stages[RC_STAGES];
-static uint32_t rc_nstages;
-// A redirection undone while a pipeline's stages are gathered: the stages
-// given it still hold its file's handle and its word (a file's path, a here
-// document's text), so both are kept until they have run.
-static struct {
-  uint32_t handle, level;
-  bool close; // a file the host opened; a here document has no handle
-  rc_word *path;
-} rc_closes[4 * RC_STAGES];
-static uint32_t rc_ncloses;
+// The stages and closes are the interpreter's (struct rc's stages, closes):
+// a child rc on the same host (a test's) gathers its own.
 
 static void rc_undo_redir(rc *r, bool close, uint32_t handle, rc_word *path) {
   if (close && r->host.close) r->host.close(r->host.ctx, handle);
@@ -2309,25 +2471,25 @@ static void rc_undo_redir(rc *r, bool close, uint32_t handle, rc_word *path) {
 
 // The stages from base on let go, and the files and words only they used.
 static void rc_free_stages(rc *r, uint32_t base) {
-  for (uint32_t i = base; i < rc_nstages; i++) rc_freewords(r, (rc_word *)rc_stages[i].cmd.argv);
-  if (base < rc_nstages) rc_nstages = base;
+  for (uint32_t i = base; i < r->nstages; i++) rc_freewords(r, (rc_word *)r->stages[i].cmd.argv);
+  if (base < r->nstages) r->nstages = base;
   uint32_t kept = 0;
-  for (uint32_t i = 0; i < rc_ncloses; i++) {
-    if (rc_closes[i].level > base)
-      rc_undo_redir(r, rc_closes[i].close, rc_closes[i].handle, rc_closes[i].path);
+  for (uint32_t i = 0; i < r->ncloses; i++) {
+    if (r->closes[i].level > base)
+      rc_undo_redir(r, r->closes[i].close, r->closes[i].handle, r->closes[i].path);
     else
-      rc_closes[kept++] = rc_closes[i];
+      r->closes[kept++] = r->closes[i];
   }
-  rc_ncloses = kept;
+  r->ncloses = kept;
 }
 
 static void rc_pop_redirs(rc *r, uint32_t to) {
   while (r->nredirs > to) {
     rc_redir *d = &r->redirs[--r->nredirs];
     bool close = d->path && d->to.kind != RC_FD_HERE; // a here document's handle is none: 0 is a real file's
-    if (d->path && rc_nstages) {                      // kept until the stages given it have run
-      if (rc_ncloses < sizeof rc_closes / sizeof rc_closes[0]) {
-        rc_closes[rc_ncloses++] = (typeof(rc_closes[0])){d->to.handle, rc_nstages, close, d->path};
+    if (d->path && r->nstages) {                      // kept until the stages given it have run
+      if (r->ncloses < sizeof r->closes / sizeof r->closes[0]) {
+        r->closes[r->ncloses++] = (rc_close){d->to.handle, r->nstages, close, d->path};
         d->path = nullptr;
         continue;
       }
@@ -2756,9 +2918,50 @@ static void rc_eval(rc *r, rc_word *argv) {
   rc_push_reader(r, rd, nullptr);
 }
 
+// $apid: what a command run with & started.
+static void rc_set_apid(rc *r, uint64_t pid) {
+  char digits[24];
+  size_t k = sizeof digits;
+  do digits[--k] = (char)('0' + pid % 10);
+  while (pid /= 10);
+  rc_setvar(r, "apid", 4, rc_newword(r, digits + k, sizeof digits - k));
+}
+
+// Whether a command whose words are argv runs in the shell itself if it can:
+// a function or a builtin, which a child must run when it is apart from the
+// shell (a stage, run with &, in @ or `{...}). forced: `builtin` said so.
+static bool rc_in_shell(rc *r, const rc_word *argv, bool forced) {
+  if (!argv) return false;
+  const rc_var *v = forced ? nullptr : rc_gvar_find(r, argv->s, argv->len, false);
+  return (v && v->fn) || rc_is_builtin(r, argv->s, argv->len) || rc_streq(argv->s, argv->len, ".", 1) ||
+         rc_streq(argv->s, argv->len, "eval", 4) || rc_streq(argv->s, argv->len, "builtin", 7);
+}
+
+// argv for a child that runs the command whose words are argv (6d7b1): its
+// code, `$*` (or `builtin $*`), then the words as the child's $*.
+static rc_word *rc_child_argv(rc *r, rc_word *argv, bool forced) {
+  rc_word *code = forced ? rc_newword(r, "builtin $*", 10) : rc_newword(r, "$*", 2);
+  if (!code) return rc_freewords(r, argv), nullptr;
+  code->next = argv;
+  return code;
+}
+
 // Runs a command whose words are argv: a function, a builtin (rc's, then the
-// host's), or a program. Returns false to stop (an error).
-static void rc_simple(rc *r, rc_word *argv, bool async) {
+// host's), or a program. Apart from the shell (async, or in @ or `{...}), a
+// function or a builtin runs in a child, as rc's fork runs it; child: argv is
+// already a child's, its code then its $* (6d7b1).
+static void rc_run_child(rc *r, rc_word *argv, bool async) {
+  rc_command cmd = {.argv = argv, .argc = rc_count(argv), .child = true};
+  rc_fds(r, cmd.fds);
+  uint64_t pid = 0;
+  if (!r->host.run) rc_set_status(r, "no way to run programs", 22);
+  if (r->host.run) r->host.run(r->host.ctx, r, &cmd, 1, async, &pid);
+  if (async) rc_set_apid(r, pid);
+  rc_freewords(r, argv);
+}
+
+static void rc_simple(rc *r, rc_word *argv, bool async, bool apart, bool child) {
+  if (child) return rc_run_child(r, argv, async);
   argv = rc_globlist(r, argv);
   uint32_t argc = rc_count(argv);
   if (!argc) return rc_fail(r, nullptr, "empty argument list", nullptr);
@@ -2774,12 +2977,12 @@ static void rc_simple(rc *r, rc_word *argv, bool async) {
   }
   if (argc == 1 && rc_streq(argv->s, argv->len, "exec", 4))
     return rc_freewords(r, argv), rc_fail(r, nullptr, "exec: empty argument list", nullptr);
-  rc_var *v = forced ? nullptr : rc_gvar_find(r, argv->s, argv->len, false);
-  if (v && v->fn && async) { // rc runs it in a child, which needs M6's 6d: refused, not run in the foreground
-    rc_print(r, 2, "rc: a function run with & needs a child (for now)\n");
-    rc_set_status(r, "async", 5);
-    return rc_freewords(r, argv);
+  if ((async || apart) && rc_in_shell(r, argv, forced)) {
+    rc_word *cargv = rc_child_argv(r, argv, forced);
+    if (cargv) rc_run_child(r, cargv, async);
+    return;
   }
+  rc_var *v = forced ? nullptr : rc_gvar_find(r, argv->s, argv->len, false);
   if (v && v->fn) { // a function: $* the rest, in a frame of its own
     rc_var *star = rc_newlocal(r, "*", 1, argv->next);
     argv->next = nullptr;
@@ -2799,13 +3002,7 @@ static void rc_simple(rc *r, rc_word *argv, bool async) {
   if (!r->host.run || !r->host.run(r->host.ctx, r, &cmd, 1, async, &pid)) {
     if (!r->host.run) rc_set_status(r, "no way to run programs", 22);
   }
-  if (async) {
-    char digits[24];
-    size_t k = sizeof digits;
-    do digits[--k] = (char)('0' + pid % 10);
-    while (pid /= 10);
-    rc_setvar(r, "apid", 4, rc_newword(r, digits + k, sizeof digits - k));
-  }
+  if (async) rc_set_apid(r, pid);
   rc_freewords(r, argv);
 }
 
@@ -3080,16 +3277,25 @@ static void rc_execute(rc *r, uint32_t base) {
         rc_freewords(r, c);
       break;
     }
-    case X_SIMPLE: rc_simple(r, rc_poplist(r), in->f0); break;
-    case X_STAGE: { // a: its own redirections, the top of the stack
-      rc_word *argv = rc_globlist(r, rc_poplist(r));
-      if (rc_nstages == RC_STAGES) {
+    case X_SIMPLE: rc_simple(r, rc_poplist(r), in->f0, in->f1, in->b); break;
+    case X_STAGE: { // a: its own redirections, the top of the stack; b: a child's code and $*
+      rc_word *argv = in->b ? rc_poplist(r) : rc_globlist(r, rc_poplist(r));
+      bool child = in->b;
+      if (!child && argv) { // a function or a builtin: a child runs it, as rc's fork does
+        bool forced = rc_streq(argv->s, argv->len, "builtin", 7) && argv->next;
+        if (forced) {
+          rc_word *b = argv;
+          argv = argv->next, b->next = nullptr, rc_freewords(r, b);
+        }
+        if (rc_in_shell(r, argv, forced)) argv = rc_child_argv(r, argv, forced), child = true;
+      }
+      if (r->nstages == RC_STAGES) {
         rc_freewords(r, argv);
         rc_fail(r, nullptr, "pipelines nested too deeply", nullptr);
         break;
       }
-      rc_stage *st = &rc_stages[rc_nstages++];
-      *st = (rc_stage){.cmd = {.argv = argv, .argc = rc_count(argv)}};
+      rc_stage *st = &r->stages[r->nstages++];
+      *st = (rc_stage){.cmd = {.argv = argv, .argc = rc_count(argv), .child = child}};
       // As rc does in the child: what encloses the pipeline, then the pipe
       // ends, then the stage's own redirections, which may move them.
       uint32_t own = r->nredirs >= in->a ? r->nredirs - in->a : 0;
@@ -3103,18 +3309,15 @@ static void rc_execute(rc *r, uint32_t base) {
     }
     case X_PIPELINE: { // a: how many stages, the last gathered
       rc_command cmds[RC_STAGES];
-      uint32_t first = rc_nstages >= in->a ? rc_nstages - in->a : 0, stages = rc_nstages - first;
+      uint32_t first = r->nstages >= in->a ? r->nstages - in->a : 0, stages = r->nstages - first;
       bool ok = stages > 0 && stages == in->a;
       for (uint32_t i = 0; i < stages; i++) {
-        cmds[i] = rc_stages[first + i].cmd;
+        cmds[i] = r->stages[first + i].cmd;
         if (!cmds[i].argc) ok = false;
-        rc_var *v = cmds[i].argc ? rc_gvar_find(r, cmds[i].argv->s, cmds[i].argv->len, false) : nullptr;
-        if (v && v->fn) ok = false;
       }
       uint64_t pid = 0;
       if (!ok)
-        rc_print(r, 2, "rc: a pipeline's stages must be programs (for now)\n"),
-            rc_set_status(r, "pipeline", 8);
+        rc_fail(r, nullptr, "empty argument list", nullptr);
       else if (r->host.run)
         r->host.run(r->host.ctx, r, cmds, stages, in->f0, &pid);
       rc_free_stages(r, first);

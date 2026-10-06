@@ -497,19 +497,34 @@ static void import_env(void) {
   }
 }
 
+// The shell itself, for what 9front's rc runs in a forked child (6d7b1).
+static const char RC_SELF[] = "/boot/bin/rc";
+
 // Spawns one program with its standard input, output and error (channel ends,
-// or VX_HANDLE_NONE for the console), which are given away.
-static vx_status spawn(const rc_word *argv, const vx_handle io[3], vx_handle *task, bool exec) {
+// or VX_HANDLE_NONE for the console), which are given away. child: argv is rc
+// code and its $*, which a child rc runs (an rcchild= record, run_child),
+// given the shell's flags, variables, functions, namespace and directory, as
+// rc's fork gives them.
+static vx_status spawn(const rc_word *argv, bool child, const vx_handle io[3], vx_handle *task, bool exec) {
   static const char *const IO[3] = {"stdin", "stdout", "stderr"};
   vx_handle handles[VX_CHANNEL_MAX_HANDLES - 1];
   vx_str names[VX_CHANNEL_MAX_HANDLES - 1];
   uint32_t count = 0;
   static char records[VX_CHANNEL_MAX_BYTES - 4096]; // room left for spawn's own records
   vx_ndb_writer rec = {.buf = records, .cap = sizeof records};
-  size_t size = load(word_str(argv));
+  size_t size = load(child ? VX_STR(RC_SELF) : word_str(argv));
   vx_status st = size ? VX_OK : VX_ERR_NOT_FOUND;
   uint32_t args = 0;
   exported = 0;
+  if (child && st == VX_OK) {
+    char flags[64];
+    size_t nf = 0;
+    for (int f = 'A'; f <= 'z' && nf < sizeof flags; f++)
+      if (sh->flag[f] && f != 'c' && f != 'm') flags[nf++] = (char)f;
+    vx_ndb_put(&rec, "rcchild", word_str(argv)); // the code; its $* as the arguments
+    if (nf) vx_ndb_put(&rec, "flags", (vx_str){flags, nf});
+    vx_ndb_end(&rec);
+  }
   for (const rc_word *a = argv->next; st == VX_OK && a; a = a->next, args++) {
     vx_ndb_put(&rec, "arg", word_str(a));
     vx_ndb_end(&rec);
@@ -530,7 +545,8 @@ static vx_status spawn(const rc_word *argv, const vx_handle io[3], vx_handle *ta
     for (uint32_t i = 0; i < count; i++) vx_handle_close(handles[i]);
     return st;
   }
-  vx_str base = word_str(argv); // the task's name: the program's, without its directory
+  vx_str base =
+      child ? VX_STR("rc") : word_str(argv); // the task's name: the program's, without its directory
   for (size_t i = base.len; i-- > 0;)
     if (base.ptr[i] == '/') base = (vx_str){base.ptr + i + 1, base.len - i - 1};
   vx_spawn_args a = {.name = {base.ptr, vx_utf_cut(base.ptr, base.len, 23)}, // whole runes (ADR-0013)
@@ -700,7 +716,7 @@ static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool asy
     if (pipe[0]) vx_handle_close(pipe[0]);
     pipe_in = pipe[1]; // the next stage's
     if (st == VX_OK)
-      st = spawn(c->argv, io, &tasks[s], false);
+      st = spawn(c->argv, c->child, io, &tasks[s], false);
     else
       for (int i = 0; i < 3; i++)
         if (io[i]) vx_handle_close(io[i]);
@@ -711,7 +727,8 @@ static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool asy
       rc_fd err = *fd[2];
       if (err.kind == RC_FD_PIPE_OUT || err.kind == RC_FD_PIPE_IN || err.kind == RC_FD_READ)
         err = (rc_fd){.dup = 2};
-      write_out(nullptr, &err, 2, c->argv->s, c->argv->len);
+      vx_str name = c->child ? VX_STR("rc") : word_str(c->argv);
+      write_out(nullptr, &err, 2, name.ptr, name.len);
       write_out(nullptr, &err, 2, ": ", 2);
       write_out(nullptr, &err, 2, why.ptr, why.len);
       write_out(nullptr, &err, 2, "\n", 1);
@@ -873,7 +890,7 @@ static bool exec_builtin(const rc_word *argv, const rc_fd *fds) {
     st = stage_io(fd, i, VX_HANDLE_NONE, VX_HANDLE_NONE, &io[i]);
   }
   vx_handle task = VX_HANDLE_NONE;
-  if (st == VX_OK) st = spawn(argv->next, io, &task, true); // returns only if it failed
+  if (st == VX_OK) st = spawn(argv->next, false, io, &task, true); // returns only if it failed
   vx_str why = p9_error_text(st);
   say("", word_str(argv->next), ": ");
   say("", why, "\n");
@@ -957,6 +974,27 @@ static size_t quoted(char *buf, size_t at, size_t cap, vx_str s) {
   return at;
 }
 
+// A shell's child (6d7b1): its code, run with the shell's state as the spawn
+// message gives it, its flags, $*, variables (its $status and $pid the
+// shell's) and functions; no rcmain, and no sigexit at its end, as 9front's
+// forked rc runs neither.
+static const char *run_child(const vx_ndb_record *rec) {
+  static char code[VX_CHANNEL_MAX_BYTES];
+  vx_str c = vx_ndb_get(rec, "rcchild"), flags = vx_ndb_get(rec, "flags");
+  if (c.len > sizeof code) return "child code too long";
+  memcpy(code, c.ptr, c.len);
+  for (size_t k = 0; k < flags.len; k++) sh->flag[(unsigned char)flags.ptr[k]] = true;
+  static const char *words[VX_SPAWN_MAX_ARGS];
+  static size_t lens[VX_SPAWN_MAX_ARGS];
+  uint32_t n = 0;
+  for (uint32_t k = 0; k < vx_spawn.argc && n < VX_SPAWN_MAX_ARGS; k++, n++)
+    words[n] = vx_spawn.args[k].ptr, lens[n] = vx_spawn.args[k].len;
+  rc_set(sh, "*", words, lens, n);
+  import_fns();
+  rc_run(sh, code, c.len);
+  return exit_status();
+}
+
 const char *vx_main(void) {
   if (vx_ns_from_spawn(&ns) != VX_OK) vx_eprint(VX_STR("rc: the namespace is incomplete\n"));
   rc_host host = {.run = run,
@@ -974,6 +1012,8 @@ const char *vx_main(void) {
   if (!sh) return "no memory";
   import_env();
   vx_notify(on_note);
+  vx_ndb_record child;
+  if (vx_spawn_record("rcchild", &child)) return run_child(&child);
 
   // The flags, as rc's getflags("srdiIlxebpvVc:1m:1").
   vx_str cflag = {}, rcmain = VX_STR("/rc/lib/rcmain");
