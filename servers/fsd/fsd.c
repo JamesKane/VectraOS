@@ -61,11 +61,14 @@
 
 static constexpr vx_duration COMMIT_EVERY = 5'000'000'000;
 static constexpr uint32_t CACHE_BLOCKS = 1024; // 16 MiB of tree nodes and data
-static constexpr uint32_t MAX_OPEN = 512;      // distinct nodes open at once
+static constexpr uint32_t FIRST_OPEN = 512;    // distinct nodes open at once, to start with: the table grows
 static constexpr int SLOT_SHIFT = 56, USER_SHIFT = 48;
 static_assert(VX_USERS_MAX + 1 <= 128, "a user index is 7 bits of the node id");
 static constexpr uint64_t PERMISSIVE = 1ull << 55; // the node's attach was %BRANCH
 static constexpr uint64_t CTL_QID = (1ull << 48) - 2, STATUS_QID = (1ull << 48) - 3; // adm's, made up
+// An open of status's own copy of it (M6 step 6d5c): STATUS_COPY_QID + its index.
+static constexpr uint32_t STATUS_COPIES = 16;
+static constexpr uint64_t STATUS_COPY_QID = (1ull << 48) - 64;
 
 static vx_blk disk;
 static vxfs_vol vol;
@@ -161,8 +164,15 @@ static uint64_t file_key(uint64_t node) { return (uint64_t)slot_of(node) << SLOT
 
 static constexpr uint32_t RO_FIRST = 16, RO_SLOTS = 32, DUMP_SLOT = 0x7f; // node slots past the branches'
 
+// A snapshot open read-only (M6 step 6d5c): kept while fids are on it (the
+// framework's fid_node), even once its label is deleted (dead: they find
+// nothing then), so its slot is never another snapshot's under them; and,
+// when all 32 are open, the least recently opened that nothing holds is
+// closed for a new one.
 typedef struct snapro {
-  bool used;
+  bool used, dead;
+  uint32_t fids; // fids on its nodes
+  uint64_t seq;  // when it was opened, for choosing one to close
   char name[VXFS_LABELMAX + 1];
   uint16_t nname;
   vxfs_tree t;
@@ -170,6 +180,7 @@ typedef struct snapro {
   uint32_t year, mmdd; // a dated label's, its place in the dump view; else 0
 } snapro;
 static snapro ro[RO_SLOTS];
+static uint64_t ro_seq;
 
 static bool digits(const char *p, uint32_t n, uint32_t *v) {
   *v = 0;
@@ -191,20 +202,31 @@ static bool dated(const char *label, uint16_t n, uint32_t *year, uint32_t *mmdd,
   return true;
 }
 
+static bool slot_mapped(uint32_t slot); // below
+
 // Snapshot `name` open read-only, in *slot (of ro[]).
 static vx_status ro_open(const char *name, uint32_t *slot) {
   uint16_t n = vxfs_namelen(name, VXFS_LABELMAX);
   uint32_t free = RO_SLOTS;
   for (uint32_t i = 0; i < RO_SLOTS; i++) {
-    if (ro[i].used && ro[i].nname == n && !memcmp(ro[i].name, name, n)) {
+    if (ro[i].used && !ro[i].dead && ro[i].nname == n && !memcmp(ro[i].name, name, n)) {
       *slot = i;
       return VX_OK;
     }
     if (!ro[i].used && free == RO_SLOTS) free = i;
   }
-  if (free == RO_SLOTS) return VX_ERR_NO_MEMORY;
+  if (free == RO_SLOTS) { // all open: close the oldest no one holds
+    uint32_t best = RO_SLOTS;
+    for (uint32_t k = 0; k < RO_SLOTS; k++)
+      if (ro[k].used && !ro[k].dead && !ro[k].fids && !slot_mapped(RO_FIRST + k) &&
+          (best == RO_SLOTS || ro[k].seq < ro[best].seq))
+        best = k;
+    if (best == RO_SLOTS) return VX_ERR_NO_MEMORY; // every one held
+    ro[best] = (snapro){};
+    free = best;
+  }
   snapro *r = &ro[free];
-  *r = (snapro){.nname = n};
+  *r = (snapro){.nname = n, .seq = ++ro_seq};
   memcpy(r->name, name, n);
   vx_status st = vxfs_snap_open(&vol, name, &r->t);
   vxfs_file root;
@@ -219,12 +241,16 @@ static vx_status ro_open(const char *name, uint32_t *slot) {
 
 static void pcache_forget(uint32_t slot, bool dead);
 
-// A label going: its snapshot, if open, closed first.
+// A label going: its snapshot, if open, closed first; its slot kept, dead,
+// while fids are on it.
 static void ro_drop(const char *name) {
   uint16_t n = vxfs_namelen(name, VXFS_LABELMAX);
   for (uint32_t i = 0; i < RO_SLOTS; i++)
-    if (ro[i].used && ro[i].nname == n && !memcmp(ro[i].name, name, n)) {
-      ro[i] = (snapro){};
+    if (ro[i].used && !ro[i].dead && ro[i].nname == n && !memcmp(ro[i].name, name, n)) {
+      if (ro[i].fids)
+        ro[i].dead = true;
+      else
+        ro[i] = (snapro){};
       pcache_forget(RO_FIRST + i, true); // its slot may be another snapshot's next
     }
 }
@@ -247,8 +273,8 @@ typedef struct dumped {
   char branch[VXFS_LABELMAX + 1];
   uint16_t nbranch;
 } dumped;
-static dumped dumps[256];
-static uint32_t ndumps;
+static dumped *dumps; // every dated label, as long as memory lasts (M6 step 6d5c: 256 before)
+static uint32_t ndumps, capdumps;
 
 static int dump_cmp(const dumped *a, const dumped *b) {
   if (a->year != b->year) return a->year < b->year ? -1 : 1;
@@ -262,7 +288,16 @@ static void scan_dumps(void) {
   vxfs_scan sc;
   vxfs_scan_start(&sc, &vol.snap, &pfx, 1);
   vxfs_kvp kv;
-  while (ndumps < 256 && vxfs_scan_next(&vol.fs, &sc, &kv)) {
+  while (vxfs_scan_next(&vol.fs, &sc, &kv)) {
+    if (ndumps == capdumps) {
+      uint32_t n = capdumps ? capdumps * 2 : 256;
+      dumped *more = mem_alloc(nullptr, (size_t)n * sizeof *more);
+      if (!more) break; // the first ones, then
+      if (dumps)
+        memcpy(more, dumps, (size_t)ndumps * sizeof *more),
+            mem_free(nullptr, dumps, (size_t)capdumps * sizeof *more);
+      dumps = more, capdumps = n;
+    }
     dumped d = {};
     if (kv.nv != 12 || (vxfs_get32(kv.v + 8) & VXFS_LMUT) ||
         !dated((const char *)kv.k + 1, (uint16_t)(kv.nk - 1), &d.year, &d.mmdd, &d.nbranch))
@@ -292,7 +327,8 @@ static vx_status dump_file(uint64_t node, vxfs_file *f) {
 static vxfs_tree *tree_of(uint64_t node) {
   uint32_t s = slot_of(node);
   if (s < VXFS_MAXBRANCH) return vol.br[s].open ? &vol.br[s].t : nullptr;
-  if (s >= RO_FIRST && s < RO_FIRST + RO_SLOTS) return ro[s - RO_FIRST].used ? &ro[s - RO_FIRST].t : nullptr;
+  if (s >= RO_FIRST && s < RO_FIRST + RO_SLOTS)
+    return ro[s - RO_FIRST].used && !ro[s - RO_FIRST].dead ? &ro[s - RO_FIRST].t : nullptr;
   return nullptr;
 }
 
@@ -302,8 +338,13 @@ static bool is_branch(uint64_t node, const char *name) {
   return s < VXFS_MAXBRANCH && vol.br[s].open && vol.br[s].nname == n && !memcmp(vol.br[s].name, name, n);
 }
 
+static bool is_status_copy(uint64_t node) {
+  return qid_of(node) >= STATUS_COPY_QID && qid_of(node) < STATUS_COPY_QID + STATUS_COPIES;
+}
+
 static bool is_made_up(uint64_t node) {
-  return is_branch(node, "adm") && (qid_of(node) == CTL_QID || qid_of(node) == STATUS_QID);
+  return is_branch(node, "adm") &&
+         (qid_of(node) == CTL_QID || qid_of(node) == STATUS_QID || is_status_copy(node));
 }
 
 // ctl or status, as an entry in the adm branch's root.
@@ -436,17 +477,44 @@ typedef struct opened {
   uint64_t node; // one of them, to find the file by
   uint32_t count;
 } opened;
-static opened opens[MAX_OPEN];
+// The table grows as it fills (M6 step 6d5c: a fixed 512 let any client fill
+// it for everyone), doubling, in memory of its own.
+static opened *opens;
+static uint32_t nopens; // its entries
+
+static bool opens_grow(void) {
+  uint32_t n = nopens ? nopens * 2 : FIRST_OPEN;
+  opened *more = mem_alloc(nullptr, (size_t)n * sizeof *more);
+  if (!more) return false;
+  memset(more, 0, (size_t)n * sizeof *more);
+  if (opens)
+    memcpy(more, opens, (size_t)nopens * sizeof *more),
+        mem_free(nullptr, opens, (size_t)nopens * sizeof *more);
+  opens = more, nopens = n;
+  return true;
+}
 
 static opened *open_slot(uint64_t node, bool make) {
   opened *free = nullptr;
-  for (uint32_t i = 0; i < MAX_OPEN; i++) {
+  for (uint32_t i = 0; i < nopens; i++) {
     if (opens[i].count && file_key(opens[i].node) == file_key(node)) return &opens[i];
     if (!opens[i].count && !free) free = &opens[i];
   }
-  if (!make || !free) return nullptr;
+  if (!make) return nullptr;
+  if (!free) {
+    uint32_t at = nopens;
+    if (!opens_grow()) return nullptr;
+    free = &opens[at];
+  }
   *free = (opened){.node = node};
   return free;
+}
+
+// Whether a file could be opened now: an entry free, or room to grow.
+static bool open_room(void) {
+  for (uint32_t i = 0; i < nopens; i++)
+    if (!opens[i].count) return true;
+  return opens_grow();
 }
 
 // --- Users (/adm/users) ---
@@ -454,21 +522,30 @@ static opened *open_slot(uint64_t node, bool make) {
 static vx_users ut; // /adm/users, users(6)
 
 // The users table from the adm branch's /users, or the default.
+// The users keep their places in the table across a reload (vx_users_merge,
+// M6 step 6d5c): a node carries its user's index.
 static void load_users(void) {
   static char text[64 * 1024];
+  static vx_users fresh;
   vxfs_branch *br;
   vxfs_file root, f;
   uint64_t got = 0;
   bool ok = vxfs_branch_open(&vol, "adm", &br) == VX_OK && vxfs_root(&vol, &br->t, &root) == VX_OK &&
             vxfs_walk(&vol, &br->t, &root, "users", &f) == VX_OK && f.d.length < sizeof text &&
             vxfs_read(&vol, &br->t, &f, 0, text, sizeof text, &got) == VX_OK &&
-            vx_users_parse(&ut, (vx_str){text, got});
-  if (ok) return;
+            vx_users_parse(&fresh, (vx_str){text, got});
+  if (ok && vx_users_merge(&ut, &fresh)) return;
+  if (ok) {
+    vx_print(VX_STR("fsd: /adm/users has more users than fit beside those gone since fsd started: the users "
+                    "stay as they were\n"));
+    return;
+  }
   if (ut.n) {
     vx_print(VX_STR("fsd: /adm/users is malformed: the users stay as they were\n"));
     return;
   }
-  vx_users_parse(&ut, VX_STR(VX_USERS_DEFAULT));
+  vx_users_parse(&fresh, VX_STR(VX_USERS_DEFAULT));
+  vx_users_merge(&ut, &fresh);
   vx_print(VX_STR("fsd: no /adm/users it can read: adm and none only\n"));
 }
 
@@ -707,6 +784,17 @@ static vx_status fs_stat([[maybe_unused]] void *ctx, uint64_t node, p9_stat *out
 
 static char status_text[16 * 1024];
 static uint32_t status_len;
+
+// Each open of status reads a copy of its own, made at the open (and again
+// at a read from its start), so two readers at once never share one (M6
+// step 6d5c): the open moves its fid to the copy's node (the framework's
+// clone), and the copy goes with its last fid.
+typedef struct status_copy {
+  bool used;
+  uint32_t fids, len;
+  char text[sizeof status_text];
+} status_copy;
+static status_copy copies[STATUS_COPIES];
 static char check_said[160] = "unchecked"; // the last check's verdict
 
 static void sput(const char *s, size_t n) {
@@ -881,6 +969,13 @@ static vx_handle pager, scratch; // scratch: the anonymous page supplies are cop
 static uint8_t page_buf[4096];
 
 static uint64_t pcache_key(uint64_t node) { return file_key(node); }
+
+// Whether a mapped file keeps a node on the slot.
+static bool slot_mapped(uint32_t slot) {
+  for (uint32_t i = 0; i < MAX_CACHED; i++)
+    if (pcache[i].used && slot_of(pcache[i].node) == slot) return true;
+  return false;
+}
 
 static cached *pcache_find(uint64_t node) {
   if (!pager) return nullptr;
@@ -1062,8 +1157,7 @@ static vx_status fs_open([[maybe_unused]] void *ctx, uint64_t node, uint8_t mode
   if (is_made_up(node)) { // ctl: adm's, to write; status: anyone's, to read
     bool ctl = qid_of(node) == CTL_QID;
     if (ctl ? (want & MAY_R) || !is_adm(node) : writes) return VX_ERR_ACCESS;
-    if (!ctl && make_status() != VX_OK) return VX_ERR_NO_MEMORY;
-    return VX_OK;
+    return VX_OK; // status: its copy is made by fs_clone
   }
   if (writes && is_readonly(node)) return VX_ERR_ACCESS;                  // a snapshot, or the dump view
   if (!(mode & P9_OJOIN) && !may(node, &f.d, want)) return VX_ERR_ACCESS; // a join has its open's rights
@@ -1079,7 +1173,40 @@ static vx_status fs_open([[maybe_unused]] void *ctx, uint64_t node, uint8_t mode
 }
 
 static void fs_clunk([[maybe_unused]] void *ctx, uint64_t node, bool was_open) {
+  if (is_status_copy(node) && !copies[qid_of(node) - STATUS_COPY_QID].fids) // an open that never got its fid
+    copies[qid_of(node) - STATUS_COPY_QID].used = false;
   if (was_open) fs_clunk_node(node);
+}
+
+// status's open: a copy of its own (status_copy).
+static vx_status fs_clone([[maybe_unused]] void *ctx, uint64_t node, [[maybe_unused]] uint8_t mode,
+                          uint64_t *opened) {
+  if (!is_made_up(node) || qid_of(node) != STATUS_QID) return VX_ERR_NOT_FOUND; // not a clone file
+  uint32_t k = 0;
+  while (k < STATUS_COPIES && copies[k].used) k++;
+  if (k == STATUS_COPIES) return VX_ERR_NO_MEMORY;
+  vx_status st = make_status();
+  if (st != VX_OK) return st;
+  copies[k] = (status_copy){.used = true, .len = status_len};
+  memcpy(copies[k].text, status_text, status_len);
+  *opened = node_of(slot_of(node), user_of(node), STATUS_COPY_QID + k) | (node & PERMISSIVE);
+  return VX_OK;
+}
+
+// A fid took node, or let it go (the framework's fid_node): what holds a
+// snapshot's slot, and a copy of status.
+static void fs_fid_node([[maybe_unused]] void *ctx, uint64_t node, int delta) {
+  uint32_t s = slot_of(node);
+  if (s >= RO_FIRST && s < RO_FIRST + RO_SLOTS && ro[s - RO_FIRST].used) {
+    snapro *r = &ro[s - RO_FIRST];
+    r->fids = delta < 0 && !r->fids ? 0 : r->fids + (uint32_t)delta;
+    if (!r->fids && r->dead) *r = (snapro){}; // deleted, and the last fid gone: the slot is free
+  }
+  if (is_status_copy(node) && is_made_up(node)) {
+    status_copy *c = &copies[qid_of(node) - STATUS_COPY_QID];
+    c->fids = delta < 0 && !c->fids ? 0 : c->fids + (uint32_t)delta;
+    if (!c->fids) c->used = false;
+  }
 }
 
 // One open of node let go: a fid's, or a cache entry's.
@@ -1088,20 +1215,28 @@ static void fs_clunk_node(uint64_t node) {
   if (!o || --o->count) return;
   vxfs_file f;
   if (file_of(node, &f) != VX_OK) return;
-  if (vxfs_is_orphan(&f)) { // the last of a removed file
-    if (vxfs_reap(&vol, tree_of(node), qid_of(node)) == VX_OK) changed();
-  } else if (is_branch(node, "adm") && f.nkey == 9 + 5 && !memcmp(f.key + 9, "users", 5)) {
-    load_users(); // /adm/users, as it is now
+  vxfs_file root;
+  if (vxfs_is_orphan(&f)) { // the last of a removed file; after halt, its branch's next attach frees it
+    if (!halted && vxfs_reap(&vol, tree_of(node), qid_of(node)) == VX_OK) changed();
+  } else if (is_branch(node, "adm") && f.nkey == 9 + 5 && !memcmp(f.key + 9, "users", 5) &&
+             vxfs_root(&vol, tree_of(node), &root) == VX_OK && vxfs_kget64(f.key + 1) == root.d.qid_path) {
+    load_users(); // /adm/users, as it is now: the root's, not any file called users
   }
 }
 
 static vx_status fs_read([[maybe_unused]] void *ctx, uint64_t node, uint64_t offset, uint8_t *buf,
                          uint32_t *count) {
-  if (is_made_up(node)) { // status, as it was when opened (or read from the start)
-    if (!offset) make_status();
-    uint64_t left = offset < status_len ? status_len - offset : 0;
+  if (is_made_up(node)) { // status, as it was when opened (or read from the start): the open's copy
+    if (!is_status_copy(node)) return VX_ERR_ACCESS;
+    status_copy *c = &copies[qid_of(node) - STATUS_COPY_QID];
+    if (!offset) {
+      make_status();
+      memcpy(c->text, status_text, status_len);
+      c->len = status_len;
+    }
+    uint64_t left = offset < c->len ? c->len - offset : 0;
     if (*count > left) *count = (uint32_t)left;
-    memcpy(buf, status_text + offset, *count);
+    memcpy(buf, c->text + offset, *count);
     return VX_OK;
   }
   cached *c = pcache_find(node);
@@ -1258,6 +1393,14 @@ static vx_status name_of(vx_str s, char *out) {
   return VX_OK;
 }
 
+// Whether name in dir is one of adm's made-up files, ctl and status, which
+// no create, rename or symlink may make real (M6 step 6d5c).
+static bool made_up_name(uint64_t dir, const vxfs_file *d, vx_str name) {
+  return is_branch(dir, "adm") && d->nkey == 9 &&
+         ((name.len == 3 && !memcmp(name.ptr, "ctl", 3)) ||
+          (name.len == 6 && !memcmp(name.ptr, "status", 6)));
+}
+
 static vx_status fs_create([[maybe_unused]] void *ctx, uint64_t dir, vx_str name, uint32_t perm, uint8_t mode,
                            uint64_t *out) {
   char nm[VXFS_NAMEMAX + 1];
@@ -1268,9 +1411,8 @@ static vx_status fs_create([[maybe_unused]] void *ctx, uint64_t dir, vx_str name
   if ((perm & P9_DMDIR) && (mode & 3) != P9_OREAD) return VX_ERR_ACCESS;
   if ((st = mutable(dir)) != VX_OK) return st;
   if (!may(dir, &d.d, MAY_W)) return VX_ERR_ACCESS;
-  if (is_branch(dir, "adm") && d.nkey == 9 &&
-      ((name.len == 3 && !memcmp(nm, "ctl", 3)) || (name.len == 6 && !memcmp(nm, "status", 6))))
-    return VX_ERR_EXISTS;
+  if (made_up_name(dir, &d, name)) return VX_ERR_EXISTS;
+  if (!open_room()) return VX_ERR_NO_MEMORY; // the create opens it: room first, not after
   // Plan 9's: no more of the directory's bits, and in its group.
   bool isdir = perm & P9_DMDIR;
   uint32_t bits = isdir ? perm & (d.d.mode & 0777) : perm & (~0666u | (d.d.mode & 0666));
@@ -1375,6 +1517,7 @@ static vx_status fs_rename([[maybe_unused]] void *ctx, uint64_t olddir, vx_str o
   if (st == VX_OK) st = file_of(olddir, &a);
   if (st == VX_OK) st = file_of(newdir, &b);
   if (st == VX_OK && (!may(olddir, &a.d, MAY_W) || !may(newdir, &b.d, MAY_W))) st = VX_ERR_ACCESS;
+  if (st == VX_OK && made_up_name(newdir, &b, newname)) st = VX_ERR_EXISTS;
   uint32_t slot = slot_of(olddir);
   if (st == VX_OK) st = vxfs_rename(&vol, tree_of(olddir), &a, from, &b, to, now_ns(), open_qid, &slot);
   if (st == VX_OK) changed();
@@ -1392,6 +1535,7 @@ static vx_status fs_symlink([[maybe_unused]] void *ctx, uint64_t dir, vx_str nam
   if (st == VX_OK) st = name_of(name, nm);
   if (st == VX_OK) st = file_of(dir, &d);
   if (st == VX_OK && !may(dir, &d.d, MAY_W)) st = VX_ERR_ACCESS;
+  if (st == VX_OK && made_up_name(dir, &d, name)) st = VX_ERR_EXISTS;
   if (st == VX_OK) st = vxfs_symlink(&vol, tree_of(dir), &d, nm, tgt, uid_of(dir), d.d.gid, now_ns(), &f);
   if (st != VX_OK) return st;
   changed();
@@ -1439,6 +1583,8 @@ static p9_ring_server server = {
            .create = fs_create,
            .remove = fs_remove,
            .clunk = fs_clunk,
+           .clone = fs_clone,
+           .fid_node = fs_fid_node,
            .setattr = fs_setattr,
            .rename = fs_rename,
            .symlink = fs_symlink,

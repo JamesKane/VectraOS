@@ -141,3 +141,38 @@ static uint32_t vx_users_index(const vx_user *u, uint32_t n, vx_str name) {
   }
   return true;
 }
+
+// A user the file no longer has, kept in its place in a table (vx_users_merge).
+static constexpr uint32_t VX_USERS_GONE_ID = 0xffff'fffd;
+
+// t made fresh, each user t has still at the index it has in t, a user
+// fresh adds where t has no one, and a user fresh no longer has left in
+// its place as gone (VX_USERS_GONE_ID, no name), for an index handed out
+// (fsd's nodes carry one) never to come to mean someone else (M6 step
+// 6d5c). Users are the same user by id. False, and t as it was, if they do
+// not fit.
+[[maybe_unused]] static bool vx_users_merge(vx_users *t, const vx_users *fresh) {
+  static vx_users out;
+  bool placed[VX_USERS_MAX + 1] = {};
+  out = (vx_users){};
+  uint32_t n = t->n;
+  for (uint32_t i = 0; i < t->n; i++) {
+    uint32_t j = 0;
+    while (j < fresh->n &&
+           (placed[j] || fresh->user[j].id != t->user[i].id || t->user[i].id == VX_USERS_GONE_ID))
+      j++;
+    if (j < fresh->n)
+      out.user[i] = fresh->user[j], placed[j] = true;
+    else
+      out.user[i] = (vx_user){.id = VX_USERS_GONE_ID, .lead = ~0u};
+  }
+  for (uint32_t j = 0; j < fresh->n; j++) {
+    if (placed[j]) continue;
+    if (n == VX_USERS_MAX + 1) return false;
+    out.user[n++] = fresh->user[j];
+  }
+  out.n = n;
+  out.none = vx_users_index(out.user, out.n, VX_STR("none"));
+  *t = out;
+  return true;
+}

@@ -30,5 +30,26 @@ int main(void) {
   // No none in the file: none is added.
   CHECK(vx_users_parse(&t, VX_STR("0:adm:adm:\n")));
   CHECK(t.n == 2 && t.user[t.none].id == VX_USERS_NONE_ID);
+
+  // A merge keeps every user in its place (M6 step 6d5c): one added before
+  // them goes after; one removed stays, gone; a table too full is refused.
+  static vx_users live, fresh;
+  CHECK(vx_users_parse(&fresh, VX_STR("0:adm:adm:\n1:none::\n100:glenda::\n101:ken::\n")) &&
+        vx_users_merge(&live, &fresh));
+  uint32_t glenda = vx_users_named(&live, VX_STR("glenda")), ken = vx_users_named(&live, VX_STR("ken"));
+  CHECK(vx_users_parse(&fresh, VX_STR("300:alice::\n0:adm:adm:\n1:none::\n101:ken::\n")) &&
+        vx_users_merge(&live, &fresh));
+  CHECK(vx_users_named(&live, VX_STR("ken")) == ken && live.user[ken].id == 101);
+  CHECK(live.user[glenda].id == VX_USERS_GONE_ID && !live.user[glenda].nname); // gone, its place kept
+  CHECK(vx_users_named(&live, VX_STR("alice")) == 4 && live.n == 5);
+  CHECK(vx_users_named(&live, VX_STR("glenda")) == live.none);
+  static char many[8192];
+  size_t at = 0;
+  for (uint32_t i = 0; i < 126; i++) { // 126 new ones, with the 5 places taken: more than 128
+    char line[24];
+    int n = snprintf(line, sizeof line, "%u:u%u::\n", 1000 + i, i);
+    memcpy(many + at, line, (size_t)n), at += (size_t)n;
+  }
+  CHECK(vx_users_parse(&fresh, (vx_str){many, at}) && !vx_users_merge(&live, &fresh) && live.n == 5);
   return check_result();
 }

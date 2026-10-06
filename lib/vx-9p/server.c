@@ -62,6 +62,11 @@ typedef struct p9_fs {
                       uint64_t *node);                  // or null
   vx_status (*remove)(void *ctx, uint64_t node);        // or null
   void (*clunk)(void *ctx, uint64_t node, bool opened); // optional: a fid let the node go
+  // Optional (M6 step 6d5c): a fid has come to hold the node (+1), at an
+  // attach, a walk, a create, a clone or a join, or let it go (-1), when it
+  // is clunked or moves on; exactly paired, unlike clunk, which is told of
+  // nodes no fid held. fsd counts the fids on each snapshot with it.
+  void (*fid_node)(void *ctx, uint64_t node, int delta);
   // The posix and xattr extensions (docs/proto/posix.md), each optional: a
   // server without one refuses its message. Rgetattr needs nothing new: it
   // is made from stat.
@@ -229,7 +234,12 @@ static bool p9_unlock(p9_shared *sh, const void *conn, uint32_t proc_id, bool an
   return true;
 }
 
+static void p9_fid_holds(p9_server *s, uint64_t node, int delta) {
+  if (s->fs.fid_node) s->fs.fid_node(s->fs.ctx, node, delta);
+}
+
 static void p9_fid_drop(p9_server *s, p9_fid *f) {
+  p9_fid_holds(s, f->node, -1);
   bool remove = f->orclose;
   if (f->file && s->shared) {
     p9_open_file *o = &s->shared->files[f->file - 1];
@@ -281,7 +291,9 @@ static vx_status open_node(p9_server *s, p9_fid *f, uint8_t mode) {
     return e;
   }
   if (s->fs.clunk) s->fs.clunk(s->fs.ctx, f->node, false);
+  p9_fid_holds(s, f->node, -1);
   f->node = node;
+  p9_fid_holds(s, node, 1);
   f->qid = qid;
   return VX_OK;
 }
@@ -491,6 +503,7 @@ static vx_status p9_serve_share(p9_server *s, p9_fid *f, const p9_msg *t, p9_msg
     o->holds--;
     o->fids++;
     n->node = n->root = o->node;
+    p9_fid_holds(s, n->node, 1);
     n->open = true;
     n->mode = o->mode;
     n->file = (uint32_t)(o - sh->files) + 1;
@@ -899,7 +912,7 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
                                     : s->fs.attach(s->fs.ctx, t.aname, &f->node)) == VX_OK)
         e = p9_qid_of(s, f->node, &r.qid);
       if (e == VX_OK)
-        f->root = f->node, f->qid = r.qid;
+        f->root = f->node, f->qid = r.qid, p9_fid_holds(s, f->node, 1);
       else if (f)
         *f = (p9_fid){};
       break;
@@ -933,8 +946,10 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
         break;
       }
       if (n == f && s->fs.clunk) s->fs.clunk(s->fs.ctx, f->node, false); // walked fids are never open
+      if (n == f) p9_fid_holds(s, f->node, -1);
       uint64_t root = f->root;
       *n = (p9_fid){.fid = t.newfid, .used = true, .node = node, .root = root, .qid = qid};
+      p9_fid_holds(s, node, 1);
       break;
     }
     case P9_Topen:
@@ -962,7 +977,9 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
           e = s->fs.create(s->fs.ctx, f->node, t.name, t.perm, t.mode & ~(P9_OAPPEND | P9_OJOIN), &node);
         if (e == VX_OK) {
           if (s->fs.clunk) s->fs.clunk(s->fs.ctx, f->node, false);
+          p9_fid_holds(s, f->node, -1);
           f->node = node;
+          p9_fid_holds(s, node, 1);
           e = p9_qid_of(s, node, &f->qid);
         }
       } else {
