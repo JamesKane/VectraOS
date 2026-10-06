@@ -159,13 +159,15 @@ typedef struct p9_server {
   p9_shared *shared;  // the server's open files and locks, for posix; may be null
   char version[96];   // Rversion's string
   uint8_t stat[1024]; // Rstat's entry
-  // The handle the last reply carries (Rmap's VMO), for the transport to
-  // pass on; VX_HANDLE_NONE when it carries none. The transport's to close.
-  vx_handle reply_handle;
-  // The handle the request carried (dref's VMO), set by the transport;
-  // VX_HANDLE_NONE when it carried none. The transport's to close.
-  vx_handle request_handle;
 } p9_server;
+
+// The handles of the call being served, each thread's own: a call is served
+// by one thread from start to finish, whether or not it lets the server go
+// meanwhile (ring_server.c's p9_release, M6 step 6d5a), and other calls on
+// the connection may be served then. The request's (dref's VMO), set by the
+// transport, VX_HANDLE_NONE when it carried none; the reply's (Rmap's VMO),
+// for the transport to pass on. Both the transport's to close.
+static thread_local vx_handle p9_request_handle, p9_reply_handle;
 
 static p9_fid *p9_fid_find(p9_server *s, uint32_t fid) {
   for (uint32_t i = 0; i < P9_MAX_FIDS; i++)
@@ -599,7 +601,7 @@ static vx_status p9_serve_map(p9_server *s, const p9_msg *t, p9_msg *r) {
   if (ckd_add(&end, t->offset, t->length)) return VX_ERR_RANGE;
   vx_handle vmo = VX_HANDLE_NONE;
   vx_status e = s->fs.map(s->fs.ctx, f->node, t->offset, t->length, t->prot, &vmo, &r->offset, &r->length);
-  if (e == VX_OK) s->reply_handle = vmo;
+  if (e == VX_OK) p9_reply_handle = vmo;
   return e;
 }
 
@@ -613,7 +615,7 @@ static vx_status p9_serve_dref(p9_server *s, const p9_msg *t, p9_msg *r) {
   uint8_t mode = f->mode & 3;
   if (!f->open || (f->qid.type & P9_QTDIR)) return VX_ERR_ACCESS;
   if (read ? mode == P9_OWRITE : mode != P9_OWRITE && mode != P9_ORDWR) return VX_ERR_ACCESS;
-  if (!s->request_handle) return VX_ERR_INVALID; // no VMO came with it
+  if (!p9_request_handle) return VX_ERR_INVALID; // no VMO came with it
   p9_open_file *o = f->file && s->shared ? &s->shared->files[f->file - 1] : nullptr;
   uint64_t offset = t->offset;
   if (offset == P9_OFFSET_CURRENT) {
@@ -627,7 +629,7 @@ static vx_status p9_serve_dref(p9_server *s, const p9_msg *t, p9_msg *r) {
     }
   }
   uint32_t count = t->count;
-  vx_status e = (read ? s->fs.read_ref : s->fs.write_ref)(s->fs.ctx, f->node, offset, s->request_handle,
+  vx_status e = (read ? s->fs.read_ref : s->fs.write_ref)(s->fs.ctx, f->node, offset, p9_request_handle,
                                                           t->roffset, &count);
   if (e != VX_OK) return e;
   if (o && t->offset == P9_OFFSET_CURRENT) o->offset = offset + count;
@@ -963,7 +965,7 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
           if (s->fs.clunk) s->fs.clunk(s->fs.ctx, f->node, true);
           break;
         }
-        s->reply_handle = h; // none, for a file that has no handle to give
+        p9_reply_handle = h; // none, for a file that has no handle to give
       }
       f->open = true;
       f->mode = t.mode & ~(P9_OAPPEND | P9_OJOIN);
@@ -1011,9 +1013,9 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
         e = VX_ERR_ACCESS;
       } else if (t.count > s->msize - P9_IOHDRSZ) {
         e = VX_ERR_TOO_SMALL;
-      } else if (s->request_handle && (s->extensions & P9_EXT_SRV) && s->fs.write_handle) {
-        e = s->fs.write_handle(s->fs.ctx, f->node, s->request_handle); // srv: a post; the file server's now
-        s->request_handle = VX_HANDLE_NONE;
+      } else if (p9_request_handle && (s->extensions & P9_EXT_SRV) && s->fs.write_handle) {
+        e = s->fs.write_handle(s->fs.ctx, f->node, p9_request_handle); // srv: a post; the file server's now
+        p9_request_handle = VX_HANDLE_NONE;
         r.count = t.count;
       } else {
         e = p9_write(s, f, &t, &r);

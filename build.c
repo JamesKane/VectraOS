@@ -1269,6 +1269,8 @@ static const program USER_PROGRAMS[] = {
     {"wstattest", "tests/user/wstattest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
     {"srvtest", "tests/user/srvtest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
     {"relaytest", "tests/user/relaytest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
+    {"pooltestd", "tests/user/pooltestd.c", IN_TESTS, nullptr, false, nullptr, nullptr},
+    {"pooltest", "tests/user/pooltest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
     {"constest", "tests/user/constest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
     {"nettest", "tests/user/nettest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
     {"tcptest", "tests/user/tcptest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
