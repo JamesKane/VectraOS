@@ -17,6 +17,8 @@
 // input: an image that would map outside the lower half, map a page both
 // writable and executable, or reach past its own end is refused.
 //
+#pragma once
+
 #include "base.c"
 #include "../vx-proc/proc.h"
 

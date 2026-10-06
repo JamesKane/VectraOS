@@ -7,6 +7,8 @@
 // A child cannot be handed a TCP connection as it is handed a ring
 // connector, so its spawn records say dial=ADDRESS, and it dials its own
 // (spawn.c). Within a process, mounts of one address share a connection.
+// A program that mounts by name (rc, srv) goes through a relay instead
+// (relay.c), whose session its children and namespace group share.
 
 #pragma once
 

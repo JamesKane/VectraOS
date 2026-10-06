@@ -1288,6 +1288,7 @@ static const program USER_PROGRAMS[] = {
     {"install", "cmd/install.c", IN_BOOTFS, nullptr, false, &monocypher, MONOCYPHER_USE_FLAGS},
     {"ls", "cmd/ls.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"cat", "cmd/cat.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"srv", "cmd/srv.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"echo", "cmd/echo.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"ps", "cmd/ps.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"ns", "cmd/ns.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},

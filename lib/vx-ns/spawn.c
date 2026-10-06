@@ -215,7 +215,8 @@ static vx_status vx_ns_group_apply(vx_ns *ns, vx_str text) {
     if (op.kind == VX_NS_OP_MOUNT) {
       vx_str aname = op.argc > 2 ? op.args[2] : (vx_str){};
       st = vx_ns_mount_srv(ns, op.args[0], aname, op.args[1], op.flags);
-      if (st == VX_ERR_NOT_FOUND && op.args[0].len > 5 && memcmp(op.args[0].ptr, "/srv/", 5) == 0) {
+      bool post = op.args[0].len > 5 && memcmp(op.args[0].ptr, "/srv/", 5) == 0;
+      if (st == VX_ERR_NOT_FOUND) { // a post, or an address mounted through a relay (relay.c): nsd has it
         nsd_msg rep;
         vx_handle connector = VX_HANDLE_NONE;
         st = vx_ns_nsd(vx_ns_group.chan, NSD_CONNECTOR, (nsd_args){}, op.args[0], (vx_str){}, nullptr, 0,
@@ -225,7 +226,8 @@ static vx_status vx_ns_group_apply(vx_ns *ns, vx_str text) {
           st = vx_ns_mount(ns, c, connector, op.args[0], aname, op.args[1], op.flags);
         else if (connector)
           vx_handle_close(connector);
-      } else if (st == VX_ERR_NOT_FOUND) { // an address: dialed
+      }
+      if (st == VX_ERR_NOT_FOUND && !post) { // an address dialed by its first member: dialed
         p9_client *c;
         vx_str src;
         st = vx_ns_dial(ns, op.args[0], &c, &src);

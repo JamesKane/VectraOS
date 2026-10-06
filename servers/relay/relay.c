@@ -350,6 +350,11 @@ static size_t forward(uint32_t conn, const p9_msg *t, uint8_t *resp, size_t cap)
   if (!f || (t->type & 1)) return refuse(t->tag, VX_ERR_UNSUPPORTED, resp, cap);
   p9_msg u = *t;
   uint32_t newfid = P9_NOFID;
+  // As dial.c's attaches: a Plan 9 server refuses "none" until the session
+  // has authenticated, and nothing can before keyd (M10), so a client with
+  // no user (the console shell, as yet) attaches as vectra.
+  if ((t->type == P9_Tattach || t->type == P9_Tauth) && (!t->uname.len || p9_str_eq(t->uname, "none")))
+    u.uname = VX_STR("vectra");
   relay_fid *m;
   for (; *f; f++) {
     uint32_t *field = nullptr, local = 0;

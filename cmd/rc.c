@@ -23,6 +23,7 @@
 #include "../lib/vx-rt/rt.c"
 #include "../lib/vx-rt/spawn.c"
 #include "../lib/vx-ns/spawn.c"
+#include "../lib/vx-ns/relay.c"
 #include "../lib/vx-rc/rc.c"
 
 static constexpr uint32_t MAX_STAGES = 16, MAX_FILES = 16, MAX_BACKGROUND = 16;
@@ -133,9 +134,10 @@ static bool builtin_run(const rc_word *argv, uint32_t argc) {
       report("bind", vx_ns_bind(&ns, word_str(w[first]), word_str(w[first + 1]), flags));
     return true;
   }
-  // mount: a service this namespace has a connection from (/srv/NAME, as ns
-  // prints it, so its output replays), or a 9P server over TCP, tcp!HOST!PORT
-  // or 9p://HOST:PORT.
+  // mount: a post, /srv/NAME, which this namespace has a connection from
+  // (as ns prints it, so its output replays) or srvfs has (srv(1)'s, say); or
+  // a 9P server over TCP, tcp!HOST!PORT or 9p://HOST:PORT, through a relay,
+  // so the children share its session (lib/vx-ns/relay.c).
   if (word_is(argv, "mount")) {
     if (flags == 0xff || n - first < 2 || n - first > 3) {
       usage(VX_USAGE_mount);
@@ -144,14 +146,10 @@ static bool builtin_run(const rc_word *argv, uint32_t argc) {
     vx_str aname = n - first == 3 ? word_str(w[first + 2]) : (vx_str){};
     vx_str from = word_str(w[first]), old = word_str(w[first + 1]);
     vx_status st;
-    if (from.len > 5 && memcmp(from.ptr, "/srv/", 5) == 0) {
-      st = vx_ns_mount_srv(&ns, from, aname, old, flags);
-    } else {
-      p9_client *c;
-      vx_str src;
-      st = vx_ns_dial(&ns, from, &c, &src);
-      if (st == VX_OK) st = vx_ns_mount(&ns, c, VX_HANDLE_NONE, src, aname, old, flags);
-    }
+    if (from.len > 5 && memcmp(from.ptr, "/srv/", 5) == 0)
+      st = vx_ns_mount_post(&ns, from, aname, old, flags);
+    else
+      st = vx_ns_mount_addr(&ns, from, aname, old, flags);
     report("mount", st);
     return true;
   }
