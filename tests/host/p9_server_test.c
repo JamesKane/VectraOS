@@ -158,6 +158,18 @@ static vx_status ram_remove(void *ctx, uint64_t node) {
   return VX_OK;
 }
 
+// 9P2000.L's Trename and Trenameat need one (6d4c2): within the tree, by name.
+static vx_status ram_rename(void *ctx, uint64_t olddir, vx_str oldname, uint64_t newdir, vx_str newname) {
+  uint64_t n;
+  if (ram_walk(ctx, olddir, oldname, &n) != VX_OK) return VX_ERR_NOT_FOUND;
+  if (newname.len > 15) return VX_ERR_RANGE;
+  static char renamed[16][16];
+  memcpy(renamed[n], newname.ptr, newname.len);
+  renamed[n][newname.len] = 0;
+  ram[n].name = renamed[n], ram[n].parent = newdir;
+  return VX_OK;
+}
+
 static p9_server server = {
     .fs = {.attach = ram_attach,
            .walk = ram_walk,
@@ -169,6 +181,7 @@ static p9_server server = {
            .write = ram_write,
            .create = ram_create,
            .remove = ram_remove,
+           .rename = ram_rename,
            .clone = ram_clone,
            .clunk = ram_clunk},
     .max_msize = 8192,
@@ -257,9 +270,9 @@ static void test_hostile_client(void) {
   CHECK(raw((p9_msg){.type = P9_Tattach, .tag = 1, .fid = 1, .afid = P9_NOFID}) == VX_ERR_BAD_STATE);
   CHECK(raw((p9_msg){.type = P9_Tversion, .tag = P9_NOTAG, .msize = 100, .version = VX_STR("9P2000")}) !=
         VX_OK);
-  CHECK(raw((p9_msg){.type = P9_Tversion, .tag = P9_NOTAG, .msize = 4096, .version = VX_STR("9P2000.L")}) ==
+  CHECK(raw((p9_msg){.type = P9_Tversion, .tag = P9_NOTAG, .msize = 4096, .version = VX_STR("9P2000.u")}) ==
         VX_OK);
-  CHECK(reply.msize == 4096 && reply.version.len == 6); // .L is answered with plain 9P2000
+  CHECK(reply.msize == 4096 && reply.version.len == 6); // .u is answered with plain 9P2000 (.L as .L, 6d4c2)
 
   // Attached at "docs": no walk may leave /docs.
   CHECK(raw((p9_msg){.type = P9_Tattach, .tag = 1, .fid = 1, .afid = P9_NOFID, .aname = VX_STR("docs")}) ==
@@ -432,11 +445,86 @@ static void test_share_tokens(void) {
   CHECK(p9c_clunk(&c, f) == VX_OK);
 }
 
+// --- 9P2000.L (M6 step 6d4c2) ---
+
+// A server that knows 9P2000.L and not 9Px, as diod and QEMU's virtfs are:
+// "unknown" to a 9Px Tversion, and the rest is the server's.
+static size_t dotl_only(void *ctx, const uint8_t *req, size_t len, uint8_t *out, size_t cap) {
+  p9_msg t;
+  if (p9_decode(req, len, &t) == VX_OK && t.type == P9_Tversion && t.version.len >= 8 &&
+      !memcmp(t.version.ptr, "9P2000.x", 8)) {
+    p9_msg r = {.type = P9_Rversion, .tag = t.tag, .msize = t.msize, .version = VX_STR("unknown")};
+    return p9_encode(&r, out, cap);
+  }
+  return p9_serve(ctx, req, len, out, cap);
+}
+
+// One request in Linux's own bytes, and the reply's.
+static size_t dotl_raw(const uint8_t *req, size_t len) {
+  return p9_serve(&server, req, len, resp, sizeof resp);
+}
+
+static void test_dotl(void) {
+  static uint8_t tbuf[8192], rbuf[8192];
+  p9_client c = {.rpc = dotl_only, .ctx = &server, .tbuf = tbuf, .rbuf = rbuf, .bufsize = sizeof tbuf};
+  CHECK(p9c_version(&c, 8192, P9_EXT_POSIX | P9_EXT_XATTR) == VX_OK);
+  CHECK(c.dialect == P9_2000L && c.extensions == 0 && server.dialect == P9_2000L);
+  uint32_t root, docs, d2;
+  CHECK(p9c_attach(&c, VX_STR(""), &root) == VX_OK);
+  CHECK(p9c_walk(&c, root, VX_STR("nothing"), &docs) == VX_ERR_NOT_FOUND); // an errno, Rlerror's
+  CHECK(p9c_walk(&c, root, VX_STR("docs"), &docs) == VX_OK &&
+        p9c_open(&c, docs, P9_OREAD) == VX_OK); // Tlopen
+
+  // A directory read: Treaddir, made into stat entries.
+  uint8_t dir[1024];
+  int64_t n = p9c_read(&c, docs, 0, dir, sizeof dir);
+  bool a = false, sub = false;
+  p9_stat st;
+  for (size_t off = 0; n > 0 && p9_dir_next(dir, (size_t)n, &off, &st);) {
+    if (st.name.len == 5 && !memcmp(st.name.ptr, "a.txt", 5)) a = !(st.mode & P9_DMDIR);
+    if (st.name.len == 3 && !memcmp(st.name.ptr, "sub", 3)) sub = st.mode & P9_DMDIR;
+  }
+  CHECK(n > 0 && a && sub);
+  CHECK(p9c_read(&c, docs, (uint64_t)n, dir, sizeof dir) == 0); // where it ended: the end
+  CHECK(p9c_read(&c, docs, 1, dir, sizeof dir) == VX_ERR_RANGE);
+
+  // Tlcreate, Tmkdir, Tgetattr as a stat, Trenameat.
+  CHECK(p9c_walk(&c, root, VX_STR("docs"), &d2) == VX_OK);
+  CHECK(p9c_create(&c, d2, VX_STR("n.txt"), 0644, P9_ORDWR) == VX_OK);
+  CHECK(p9c_stat(&c, d2, &st, nullptr) == VX_OK && !(st.mode & P9_DMDIR) && (st.mode & 0777) == 0644);
+  CHECK(p9c_clunk(&c, d2) == VX_OK);
+  CHECK(p9c_walk(&c, root, VX_STR("docs"), &d2) == VX_OK);
+  CHECK(p9c_create(&c, d2, VX_STR("nd"), P9_DMDIR | 0755, P9_OREAD) == VX_OK);
+  CHECK(p9c_stat(&c, d2, &st, nullptr) == VX_OK && (st.mode & P9_DMDIR));
+  CHECK(p9c_clunk(&c, d2) == VX_OK);
+  uint32_t docs2;
+  CHECK(p9c_walk(&c, root, VX_STR("docs"), &docs2) == VX_OK);
+  CHECK(p9c_renameat(&c, docs2, VX_STR("n.txt"), docs2, VX_STR("m.txt")) == VX_OK);
+  CHECK(p9c_walk(&c, docs2, VX_STR("m.txt"), &d2) == VX_OK && p9c_clunk(&c, d2) == VX_OK);
+  CHECK(p9c_create(&c, docs2, VX_STR("x"), P9_DMAPPEND | 0644, P9_OWRITE) == VX_ERR_UNSUPPORTED);
+
+  // Linux's bytes: Tlopen of a fid not open, then Tstatfs, Tunlinkat, and a
+  // message the server lacks (Txattrwalk), which is Rlerror, not a hang-up.
+  CHECK(p9c_walk(&c, docs2, VX_STR("m.txt"), &d2) == VX_OK);
+  uint8_t lopen[15] = {15, 0, 0, 0, 12, 9, 0, (uint8_t)d2, (uint8_t)(d2 >> 8), 0, 0, 2, 0, 0, 0}; // O_RDWR
+  CHECK(dotl_raw(lopen, sizeof lopen) == 24 && resp[4] == 13 && resp[5] == 9); // Rlopen: qid[13] iounit[4]
+  uint8_t statfs[11] = {11, 0, 0, 0, 8, 3, 0, (uint8_t)root, (uint8_t)(root >> 8), 0, 0};
+  CHECK(dotl_raw(statfs, sizeof statfs) == 67 && resp[4] == 9 && resp[7] == 0x97 && resp[10] == 0x01);
+  // Tunlinkat docs2 "nd" AT_REMOVEDIR
+  uint8_t unlink[19] = {19, 0,   0,   0, 76, 4, 0, (uint8_t)docs2, (uint8_t)(docs2 >> 8), 0, 0, 2,
+                        0,  'n', 'd', 0, 2,  0, 0};
+  CHECK(dotl_raw(unlink, sizeof unlink) == 7 && resp[4] == 77);
+  CHECK(dotl_raw(unlink, sizeof unlink) == 11 && resp[4] == 7 && resp[7] == 2); // Rlerror ENOENT now
+  uint8_t xattr[17] = {17, 0, 0, 0, 30, 5, 0, (uint8_t)root, (uint8_t)(root >> 8), 0, 0, 77, 0, 0, 0, 0, 0};
+  CHECK(dotl_raw(xattr, sizeof xattr) == 11 && resp[4] == 7 && resp[5] == 5 && resp[7] == 95); // EOPNOTSUPP
+}
+
 int main(void) {
   test_client();
   test_open_moves();
   test_deferral();
   test_hostile_client();
   test_share_tokens();
+  test_dotl(); // last: it makes and renames files in the tree
   return check_result();
 }

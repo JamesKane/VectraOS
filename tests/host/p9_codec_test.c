@@ -151,7 +151,7 @@ static void test_round_trips(void) {
     buf[0] = (uint8_t)(n - 1);
     CHECK(p9_decode(buf, n, &d) == VX_ERR_INVALID);
   }
-  CHECK(types == 59);               // 9P2000's 27, 18 of 9P2000.L's, and 9Px's 14 (posix, xattr, map, dref)
+  CHECK(types == 74); // 9P2000's 27, 33 of 9P2000.L's (6d4c2: all it has but xattrs and mknod), 9Px's 14
   CHECK(P9_FIELDS[106] == nullptr); // there is no Terror
   CHECK(p9_encode(&(p9_msg){.type = (p9_type)106}, buf, sizeof buf) == 0);
   CHECK(p9_encode(&(p9_msg){.type = P9_Tclunk}, buf, 6) == 0); // does not fit
@@ -215,7 +215,8 @@ static void test_versions(void) {
   CHECK(ext == (P9_EXT_DREF | P9_EXT_MAP));
   CHECK(p9_version_parse(VX_STR("9P2000.x/1"), &ext) == P9_2000X && ext == 0);
   CHECK(p9_version_parse(VX_STR("9P2000"), &ext) == P9_2000);
-  CHECK(p9_version_parse(VX_STR("9P2000.L"), &ext) == P9_2000);
+  CHECK(p9_version_parse(VX_STR("9P2000.L"), &ext) == P9_2000L); // Linux's dialect (6d4c2)
+  CHECK(p9_version_parse(VX_STR("9P2000.u"), &ext) == P9_2000);
   CHECK(p9_version_parse(VX_STR("9P1999"), &ext) == P9_UNKNOWN);
   CHECK(p9_version_parse(VX_STR(""), &ext) == P9_UNKNOWN);
   char buf[96];

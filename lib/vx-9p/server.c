@@ -522,7 +522,9 @@ static bool p9_new_name_ok(vx_str name) {
 // once its extension is negotiated.
 static vx_status p9_serve_posix(p9_server *s, const p9_msg *t, p9_msg *r) {
   bool xattr = t->type == P9_Tgetattr || t->type == P9_Tsetattr;
-  if (!(s->extensions & (xattr ? P9_EXT_XATTR : P9_EXT_POSIX))) return VX_ERR_UNSUPPORTED;
+  bool linux_has = t->type != P9_Tshare && t->type != P9_Tjoin && t->type != P9_Tseek && t->type != P9_Tdesc;
+  bool dotl = s->dialect == P9_2000L && linux_has; // 9P2000.L's own messages, which these extensions borrow
+  if (!dotl && !(s->extensions & (xattr ? P9_EXT_XATTR : P9_EXT_POSIX))) return VX_ERR_UNSUPPORTED;
   if (t->type == P9_Tjoin) return p9_serve_share(s, nullptr, t, r);
   p9_fid *f = p9_fid_find(s, t->fid);
   if (!f) return VX_ERR_BAD_HANDLE;
@@ -689,6 +691,123 @@ static vx_status p9_serve_wstat(p9_server *s, const p9_fid *f, const p9_msg *t) 
   return VX_OK;
 }
 
+// --- 9P2000.L (M6 step 6d4c2) ---
+//
+// Linux's dialect, for its `mount -t 9p` and the servers it speaks to. Its
+// Tlopen and Tlcreate are Topen and Tcreate with Linux's flags (p9_serve
+// turns them into those); its Tgetattr, Tsetattr, Trenameat, Tsymlink,
+// Treadlink, Tfsync, Tlock and Tgetlock are the posix and xattr extensions'
+// (which borrowed them); the rest are here. Errors go back as Rlerror, an
+// errno.
+
+// A 9P open mode from Linux's open flags.
+static uint8_t p9_mode_of_flags(uint32_t flags) {
+  uint8_t mode = P9_OREAD;
+  if ((flags & P9_L_O_ACCMODE) == 1) mode = P9_OWRITE;
+  if ((flags & P9_L_O_ACCMODE) == 2) mode = P9_ORDWR;
+  if (flags & P9_L_O_TRUNC) mode |= P9_OTRUNC;
+  return mode; // O_APPEND: Linux's client writes at the end itself
+}
+
+static uint8_t p9_dirent_type(uint32_t mode) {
+  if (mode & P9_DMDIR) return P9_DT_DIR;
+  if (mode & P9_DMSYMLINK) return P9_DT_LNK;
+  if (mode & P9_DMDEVICE) return P9_DT_CHR;
+  return P9_DT_REG;
+}
+
+// Rreaddir's entries from the cookie offset (an entry's index): qid[13]
+// offset[8] type[1] name[s], each entry's offset the next one's cookie.
+static vx_status p9_readdir_l(p9_server *s, const p9_fid *f, uint64_t cookie, uint8_t *out, uint32_t cap,
+                              uint32_t *count) {
+  uint32_t used = 0;
+  for (uint64_t i = cookie; i < UINT32_MAX; i++) {
+    uint64_t child;
+    vx_status e = s->fs.readdir(s->fs.ctx, f->node, (uint32_t)i, &child);
+    if (e == VX_ERR_NOT_FOUND) break;
+    if (e != VX_OK) return e;
+    p9_stat st;
+    if ((e = s->fs.stat(s->fs.ctx, child, &st)) != VX_OK) return e;
+    p9_out o = {.buf = out + used, .cap = cap - used};
+    p9_put_qid(&o, st.qid);
+    p9_put(&o, i + 1, 8);
+    p9_put(&o, p9_dirent_type(st.mode), 1);
+    p9_put_str(&o, st.name);
+    if (o.failed) {
+      if (used == 0) return VX_ERR_TOO_SMALL; // not even one entry fits the count asked for
+      break;
+    }
+    used += (uint32_t)o.len;
+  }
+  *count = used;
+  return VX_OK;
+}
+
+// Tmkdir, Tunlinkat, Trename, Treaddir and Tstatfs.
+static vx_status p9_serve_l(p9_server *s, const p9_msg *t, p9_msg *r, uint8_t *resp, size_t cap) {
+  p9_fid *f = p9_fid_find(s, t->fid);
+  if (!f) return VX_ERR_BAD_HANDLE;
+  switch (t->type) {
+  case P9_Tmkdir: {
+    if (!(f->qid.type & P9_QTDIR) || !p9_new_name_ok(t->name)) return VX_ERR_INVALID;
+    if (!s->fs.create) return VX_ERR_ACCESS;
+    uint64_t node;
+    vx_status e = s->fs.create(s->fs.ctx, f->node, t->name, P9_DMDIR | (t->lmode & 0777), P9_OREAD, &node);
+    if (e != VX_OK) return e;
+    e = p9_qid_of(s, node, &r->qid);
+    if (s->fs.clunk) s->fs.clunk(s->fs.ctx, node, true); // the create opened it; no fid holds it
+    return e;
+  }
+  case P9_Tunlinkat: {
+    if (!(f->qid.type & P9_QTDIR) || !p9_new_name_ok(t->name)) return VX_ERR_INVALID;
+    if (!s->fs.remove) return VX_ERR_ACCESS;
+    uint64_t child;
+    vx_status e = s->fs.walk(s->fs.ctx, f->node, t->name, &child);
+    if (e != VX_OK) return e;
+    p9_stat st;
+    if ((e = s->fs.stat(s->fs.ctx, child, &st)) == VX_OK) {
+      bool dir = st.mode & P9_DMDIR;
+      if (dir != !!(t->lflags & P9_L_AT_REMOVEDIR))
+        e = dir ? VX_ERR_ACCESS : VX_ERR_NOT_FOUND; // EISDIR, ENOTDIR as errno has them
+      else
+        e = s->fs.remove(s->fs.ctx, child);
+    }
+    if (s->fs.clunk) s->fs.clunk(s->fs.ctx, child, false);
+    return e;
+  }
+  case P9_Trename: {
+    p9_fid *to = p9_fid_find(s, t->newfid);
+    if (!to) return VX_ERR_BAD_HANDLE;
+    if (!(to->qid.type & P9_QTDIR) || !p9_new_name_ok(t->name)) return VX_ERR_INVALID;
+    if (!s->fs.rename) return VX_ERR_ACCESS;
+    if (f->node == f->root) return VX_ERR_ACCESS;
+    p9_stat st;
+    uint64_t dir;
+    vx_status e = s->fs.stat(s->fs.ctx, f->node, &st);
+    if (e != VX_OK) return e;
+    char old[256];
+    if (st.name.len >= sizeof old) return VX_ERR_RANGE;
+    memcpy(old, st.name.ptr, st.name.len);
+    if ((e = s->fs.parent(s->fs.ctx, f->node, &dir)) != VX_OK) return e;
+    return s->fs.rename(s->fs.ctx, dir, (vx_str){old, st.name.len}, to->node, t->name);
+  }
+  case P9_Treaddir: {
+    if (!f->open || !(f->qid.type & P9_QTDIR)) return VX_ERR_ACCESS;
+    uint32_t room = s->msize - P9_IOHDRSZ;
+    if (cap < 11) return VX_ERR_TOO_SMALL;
+    if (cap - 11 < room) room = (uint32_t)(cap - 11);
+    uint32_t count = t->count < room ? t->count : room;
+    vx_status e = p9_readdir_l(s, f, t->offset, resp + 11, count, &count);
+    if (e == VX_OK) r->data = (vx_bytes){resp + 11, count};
+    return e;
+  }
+  case P9_Tstatfs: // what Linux's statfs asks for; the file servers keep no such numbers
+    r->statfs = (p9_statfs){.type = 0x01021997, .bsize = 4096, .namelen = 255}; // V9FS_MAGIC
+    return VX_OK;
+  default: return VX_ERR_UNSUPPORTED;
+  }
+}
+
 static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve the request again later
 
 // Handles one request (`len` bytes, one whole message) and writes the reply
@@ -697,10 +816,23 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
 [[maybe_unused]] static size_t p9_serve(p9_server *s, const uint8_t *req, size_t len, uint8_t *resp,
                                         size_t cap) {
   p9_msg t, r = {};
-  if (p9_decode(req, len, &t) != VX_OK) return 0;
-  if (t.type % 2 || t.type == P9_Rerror) return 0; // only T-messages come to a server
+  bool dotl = s->dialect == P9_2000L;
+  if (p9_decode(req, len, &t) != VX_OK) {
+    // A .L request this server does not know (Txattrwalk, Tmknod): Rlerror,
+    // as Linux's client expects, not a hang-up.
+    bool whole = len >= 7 && (req[0] | req[1] << 8 | req[2] << 16 | (uint32_t)req[3] << 24) == len;
+    if (!dotl || !whole || req[4] % 2 || P9_FIELDS[req[4]]) return 0;
+    r = (p9_msg){.type = P9_Rlerror, .tag = (uint16_t)(req[5] | req[6] << 8), .ecode = 95}; // EOPNOTSUPP
+    return p9_encode(&r, resp, cap);
+  }
+  if (t.type % 2 || t.type == P9_Rerror || t.type == P9_Rlerror) return 0; // only T-messages come to a server
   r.type = (p9_type)(t.type + 1);
   r.tag = t.tag;
+  if (dotl && t.type == P9_Tlopen) { // Topen, in Linux's words; Rlopen is Ropen's shape
+    t.type = P9_Topen, t.mode = p9_mode_of_flags(t.lflags);
+  } else if (dotl && t.type == P9_Tlcreate) { // Tcreate, likewise; a file, never a directory (Tmkdir)
+    t.type = P9_Tcreate, t.perm = t.lmode & 0777, t.mode = p9_mode_of_flags(t.lflags);
+  }
   vx_status e = VX_OK;
   p9_fid *f = nullptr;
 
@@ -911,6 +1043,11 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
     case P9_Tseek:
     case P9_Tdesc: e = p9_serve_posix(s, &t, &r); break;
     case P9_Tmap: e = p9_serve_map(s, &t, &r); break;
+    case P9_Tmkdir:
+    case P9_Tunlinkat:
+    case P9_Trename:
+    case P9_Treaddir:
+    case P9_Tstatfs: e = dotl ? p9_serve_l(s, &t, &r, resp, cap) : VX_ERR_UNSUPPORTED; break;
     case P9_Treadref:
     case P9_Twriteref: e = p9_serve_dref(s, &t, &r); break;
     default: return 0;
@@ -918,6 +1055,9 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
   }
   if (e == VX_ERR_SHOULD_WAIT && (t.type == P9_Tread || t.type == P9_Twrite || t.type == P9_Topen))
     return P9_DEFER;
-  if (e != VX_OK) r = (p9_msg){.type = P9_Rerror, .tag = t.tag, .ename = p9_error_text(e)};
+  if (e != VX_OK && s->dialect == P9_2000L)
+    r = (p9_msg){.type = P9_Rlerror, .tag = t.tag, .ecode = p9_status_errno(e)};
+  else if (e != VX_OK)
+    r = (p9_msg){.type = P9_Rerror, .tag = t.tag, .ename = p9_error_text(e)};
   return p9_encode(&r, resp, cap);
 }

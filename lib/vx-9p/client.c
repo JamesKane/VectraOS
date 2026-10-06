@@ -64,6 +64,13 @@ typedef struct p9_client {
   uint32_t next_fid;   // taken atomically: threads share a connection
   vx_str uname;        // who attaches; empty: p9c_user, or "none"
   p9_xfer serial;      // a serial transport's one call
+  // 9P2000.L (6d4c2): the directories open on it, whose reads are Treaddir
+  // made into stat entries, each with the cookie and offset to go on from.
+  uint32_t dirs_lock; // a spin lock: threads share a connection
+  struct {
+    uint32_t fid; // 0: free
+    uint64_t cookie, at;
+  } dirs[16];
 } p9_client;
 
 // A reply, decoded where it landed; its strings and data are the call's
@@ -108,6 +115,7 @@ static vx_status p9c_rpc(p9_client *c, p9_msg *t, p9_rcall *rc, vx_handle send) 
   if (rn < 0) return (vx_status)rn;
   if (p9_decode(x->resp, (size_t)rn, &rc->r) != VX_OK || rc->r.tag != t->tag) return VX_ERR_INVALID;
   if (rc->r.type == P9_Rerror) return p9_error_status(rc->r.ename);
+  if (rc->r.type == P9_Rlerror) return p9_errno_status(rc->r.ecode); // 9P2000.L's: an errno
   return rc->r.type == t->type + 1 ? VX_OK : VX_ERR_INVALID;
 }
 
@@ -119,13 +127,38 @@ static vx_status p9c_call(p9_client *c, p9_msg *t) {
   return e;
 }
 
-// Negotiates a session: 9Px with the given extensions, and an msize no larger
-// than the buffers. A 9P2000 server answers 9P2000, and then extensions are 0.
-[[maybe_unused]] static vx_status p9c_version(p9_client *c, uint32_t msize, uint32_t extensions) {
+// --- 9P2000.L's directory reads (6d4c2) ---
+
+static bool p9c_dotl(const p9_client *c) { return c->dialect == P9_2000L; }
+
+static void p9c_dirs_lock(p9_client *c) {
+  while (__atomic_exchange_n(&c->dirs_lock, 1, __ATOMIC_ACQUIRE)) {}
+}
+static void p9c_dirs_unlock(p9_client *c) { __atomic_store_n(&c->dirs_lock, 0, __ATOMIC_RELEASE); }
+
+// fid's slot in the table, or -1; with add, a free one taken for it.
+static int p9c_dir_slot(p9_client *c, uint32_t fid, bool add) {
+  int free = -1;
+  for (int i = 0; i < 16; i++) {
+    if (c->dirs[i].fid == fid) return i;
+    if (!c->dirs[i].fid && free < 0) free = i;
+  }
+  if (add && free >= 0) c->dirs[free].fid = fid, c->dirs[free].cookie = c->dirs[free].at = 0;
+  return add ? free : -1;
+}
+
+static void p9c_dir_note(p9_client *c, uint32_t fid, bool dir) {
+  p9c_dirs_lock(c);
+  int i = p9c_dir_slot(c, fid, dir);
+  if (!dir && i >= 0) c->dirs[i].fid = 0;
+  p9c_dirs_unlock(c);
+}
+
+// One Tversion of dialect d: what the server answers, in c.
+static vx_status p9c_version_as(p9_client *c, uint32_t msize, p9_dialect d, uint32_t extensions) {
   char version[96];
-  if (msize > c->bufsize) msize = (uint32_t)c->bufsize;
   p9_msg t = {.type = P9_Tversion, .tag = P9_NOTAG, .msize = msize};
-  t.version = (vx_str){version, p9_version_format(P9_2000X, extensions, version, sizeof version)};
+  t.version = (vx_str){version, p9_version_format(d, extensions, version, sizeof version)};
   p9_rcall rc = {};
   vx_status e = p9c_rpc(c, &t, &rc, VX_HANDLE_NONE);
   if (e == VX_OK) {
@@ -140,11 +173,24 @@ static vx_status p9c_call(p9_client *c, p9_msg *t) {
   return e;
 }
 
+// Negotiates a session: 9Px with the given extensions, and an msize no larger
+// than the buffers. A 9P2000 server answers 9P2000, and then extensions are
+// 0. One that answers "unknown" is asked for 9P2000.L (diod, QEMU's virtfs:
+// Linux's dialect), then for plain 9P2000 (02 §3.1).
+[[maybe_unused]] static vx_status p9c_version(p9_client *c, uint32_t msize, uint32_t extensions) {
+  if (msize > c->bufsize) msize = (uint32_t)c->bufsize;
+  vx_status e = p9c_version_as(c, msize, P9_2000X, extensions);
+  if (e == VX_ERR_UNSUPPORTED && c->dialect == P9_UNKNOWN) e = p9c_version_as(c, msize, P9_2000L, 0);
+  if (e == VX_ERR_UNSUPPORTED && c->dialect == P9_UNKNOWN) e = p9c_version_as(c, msize, P9_2000, 0);
+  return e;
+}
+
 // Attaches to aname: the new fid, and the root's qid if qid is not nullptr.
 [[maybe_unused]] static vx_status p9c_attach_qid(p9_client *c, vx_str aname, uint32_t *fid, p9_qid *qid) {
   vx_str uname = p9c_user.len ? p9c_user : VX_STR("none");
   if (c->uname.len) uname = c->uname;
   p9_msg t = {.type = P9_Tattach, .fid = p9c_fid(c), .afid = P9_NOFID, .uname = uname, .aname = aname};
+  if (p9c_dotl(c)) t.has_n_uname = true, t.n_uname = P9_NONUNAME; // by name, as there are no numbers to give
   p9_rcall rc = {};
   vx_status e = p9c_rpc(c, &t, &rc, VX_HANDLE_NONE);
   if (e == VX_OK) *fid = t.fid;
@@ -159,6 +205,7 @@ static vx_status p9c_call(p9_client *c, p9_msg *t) {
 
 [[maybe_unused]] static vx_status p9c_clunk(p9_client *c, uint32_t fid) {
   p9_msg t = {.type = P9_Tclunk, .fid = fid};
+  if (p9c_dotl(c)) p9c_dir_note(c, fid, false);
   return p9c_call(c, &t);
 }
 
@@ -210,22 +257,126 @@ static vx_status p9c_call(p9_client *c, p9_msg *t) {
   return e;
 }
 
+// Linux's open flags from a 9P mode (9P2000.L's Tlopen and Tlcreate).
+static uint32_t p9c_flags_of_mode(uint8_t mode) {
+  uint32_t flags = 0; // O_RDONLY, for OREAD and OEXEC
+  if ((mode & 3) == P9_OWRITE) flags = 1;
+  if ((mode & 3) == P9_ORDWR) flags = 2;
+  if (mode & P9_OTRUNC) flags |= P9_L_O_TRUNC;
+  return flags;
+}
+
+// Tlopen: Topen in 9P2000.L's words; a directory open is noted for its reads.
+static vx_status p9c_lopen(p9_client *c, uint32_t fid, uint8_t mode) {
+  if (mode & P9_ORCLOSE) return VX_ERR_UNSUPPORTED; // .L has no remove-on-close
+  p9_msg t = {.type = P9_Tlopen, .fid = fid, .lflags = p9c_flags_of_mode(mode)};
+  p9_rcall rc = {};
+  vx_status e = p9c_rpc(c, &t, &rc, VX_HANDLE_NONE);
+  if (e == VX_OK) p9c_dir_note(c, fid, rc.r.qid.type & P9_QTDIR);
+  p9c_done(c, &rc);
+  return e;
+}
+
 [[maybe_unused]] static vx_status p9c_open(p9_client *c, uint32_t fid, uint8_t mode) {
+  if (p9c_dotl(c)) return p9c_lopen(c, fid, mode);
   p9_msg t = {.type = P9_Topen, .fid = fid, .mode = mode};
   return p9c_call(c, &t);
 }
 
-// Creates `name` in the directory fid, which then refers to the new file, open.
+// Creates `name` in the directory fid, which then refers to the new file,
+// open. Under 9P2000.L a file is Tlcreate's, and a directory Tmkdir's, then
+// walked to and opened.
 [[maybe_unused]] static vx_status p9c_create(p9_client *c, uint32_t fid, vx_str name, uint32_t perm,
                                              uint8_t mode) {
+  if (p9c_dotl(c) && (perm & ~(P9_DMDIR | 0777))) return VX_ERR_UNSUPPORTED; // DMAPPEND and the rest
+  if (p9c_dotl(c) && (perm & P9_DMDIR)) {
+    p9_msg t = {.type = P9_Tmkdir, .fid = fid, .name = name, .lmode = perm & 0777};
+    vx_status e = p9c_call(c, &t);
+    if (e != VX_OK) return e;
+    p9_msg w = {.type = P9_Twalk, .fid = fid, .newfid = fid, .nwname = 1, .wname = {name}};
+    if ((e = p9c_call(c, &w)) != VX_OK) return e;
+    return p9c_lopen(c, fid, mode);
+  }
+  if (p9c_dotl(c)) {
+    if (mode & P9_ORCLOSE) return VX_ERR_UNSUPPORTED;
+    p9_msg t = {.type = P9_Tlcreate,
+                .fid = fid,
+                .name = name,
+                .lflags = p9c_flags_of_mode(mode),
+                .lmode = perm & 0777};
+    return p9c_call(c, &t);
+  }
   p9_msg t = {.type = P9_Tcreate, .fid = fid, .name = name, .perm = perm, .mode = mode};
   return p9c_call(c, &t);
 }
 
 // Reads up to count bytes (at most msize - 24) at offset into buf. Returns how
 // many, 0 at the end, or a negative vx_status.
+// A Treaddir entry's type as a 9P mode: the type, and permissions it does
+// not carry (any reader may stat the file for its own).
+static uint32_t p9c_mode_of_dirent(uint8_t type) {
+  if (type == P9_DT_DIR) return P9_DMDIR | 0755;
+  if (type == P9_DT_LNK) return P9_DMSYMLINK | 0777;
+  return 0644;
+}
+
+// POSIX's file type as 9P's mode bits.
+static uint32_t p9c_type_bits(uint32_t type) {
+  if (type == P9_S_IFDIR) return P9_DMDIR;
+  if (type == P9_S_IFLNK) return P9_DMSYMLINK;
+  if (type == P9_S_IFCHR) return P9_DMDEVICE;
+  return 0;
+}
+
+// A directory's read under 9P2000.L: Treaddir from the cookie the last read
+// ended at, its entries written into buf as 9P2000's stat entries (whole,
+// as a directory read has them), each with its type in its mode and nothing
+// else; offset 0, or where the last read ended (9P2000's rule).
+static int64_t p9c_readdir_as_stat(p9_client *c, int slot, uint64_t offset, uint8_t *buf, uint32_t count) {
+  p9c_dirs_lock(c);
+  uint32_t fid = c->dirs[slot].fid;
+  uint64_t cookie = c->dirs[slot].cookie, at = c->dirs[slot].at;
+  p9c_dirs_unlock(c);
+  if (offset == 0) cookie = at = 0;
+  if (offset != at) return VX_ERR_RANGE;
+  // A dirent is 24 bytes and its name; a stat entry 49 and the name: ask
+  // for what will fit made over.
+  uint32_t ask = count / 2 < c->msize - P9_IOHDRSZ ? count / 2 : c->msize - P9_IOHDRSZ;
+  p9_msg t = {.type = P9_Treaddir, .fid = fid, .offset = cookie, .count = ask};
+  p9_rcall rc = {};
+  vx_status e = p9c_rpc(c, &t, &rc, VX_HANDLE_NONE);
+  uint32_t used = 0;
+  if (e == VX_OK) {
+    p9_in in = {.buf = rc.r.data.ptr, .len = rc.r.data.len};
+    while (in.pos < in.len && !in.failed) {
+      p9_qid q = p9_get_qid(&in);
+      uint64_t next = p9_get(&in, 8);
+      uint8_t type = (uint8_t)p9_get(&in, 1);
+      vx_str name = p9_get_str(&in);
+      if (in.failed) break;
+      p9_stat st = {.qid = q, .mode = p9c_mode_of_dirent(type), .name = name};
+      size_t n = p9_stat_encode(&st, buf + used, count - used);
+      if (!n) break;
+      used += (uint32_t)n, cookie = next;
+    }
+    if (used == 0 && in.pos < in.len) e = VX_ERR_TOO_SMALL; // not one entry fits
+  }
+  p9c_done(c, &rc);
+  if (e != VX_OK) return e;
+  p9c_dirs_lock(c);
+  if (c->dirs[slot].fid == fid) c->dirs[slot].cookie = cookie, c->dirs[slot].at = at + used;
+  p9c_dirs_unlock(c);
+  return used;
+}
+
 [[maybe_unused]] static int64_t p9c_read(p9_client *c, uint32_t fid, uint64_t offset, void *buf,
                                          uint32_t count) {
+  if (p9c_dotl(c)) {
+    p9c_dirs_lock(c);
+    int slot = p9c_dir_slot(c, fid, false);
+    p9c_dirs_unlock(c);
+    if (slot >= 0) return p9c_readdir_as_stat(c, slot, offset, buf, count);
+  }
   if (count > c->msize - P9_IOHDRSZ) count = c->msize - P9_IOHDRSZ;
   p9_msg t = {.type = P9_Tread, .fid = fid, .offset = offset, .count = count};
   p9_rcall rc = {};
@@ -260,7 +411,22 @@ typedef struct p9_stat_text {
 
 // The fid's stat entry. Its strings are in *keep, or empty if keep is
 // nullptr (TOO_SMALL if they do not fit).
+static vx_status p9c_getattr(p9_client *c, uint32_t fid, p9_attr *out);
+
 [[maybe_unused]] static vx_status p9c_stat(p9_client *c, uint32_t fid, p9_stat *out, p9_stat_text *keep) {
+  if (p9c_dotl(c)) { // 9P2000.L has no Tstat: Tgetattr's, without a name (it carries none)
+    (void)keep;
+    p9_attr a;
+    vx_status e = p9c_getattr(c, fid, &a);
+    if (e != VX_OK) return e;
+    uint32_t bits = p9c_type_bits(a.mode & P9_S_IFMT);
+    *out = (p9_stat){.qid = a.qid,
+                     .mode = bits | (a.mode & 0777),
+                     .atime = (uint32_t)a.atime_sec,
+                     .mtime = (uint32_t)a.mtime_sec,
+                     .length = a.size};
+    return VX_OK;
+  }
   p9_msg t = {.type = P9_Tstat, .fid = fid};
   p9_rcall rc = {};
   vx_status e = p9c_rpc(c, &t, &rc, VX_HANDLE_NONE);
@@ -308,7 +474,7 @@ typedef struct p9_stat_text {
 // is UNSUPPORTED and sends nothing.
 
 [[maybe_unused]] static vx_status p9c_getattr(p9_client *c, uint32_t fid, p9_attr *out) {
-  if (!(c->extensions & P9_EXT_XATTR)) return VX_ERR_UNSUPPORTED;
+  if (!(c->extensions & P9_EXT_XATTR) && !p9c_dotl(c)) return VX_ERR_UNSUPPORTED;
   p9_msg t = {.type = P9_Tgetattr, .fid = fid, .mask = P9_GETATTR_BASIC};
   p9_rcall rc = {};
   vx_status e = p9c_rpc(c, &t, &rc, VX_HANDLE_NONE);
@@ -321,7 +487,7 @@ typedef struct p9_stat_text {
 // the mode's permission bits, the size, and times given; an owner, a group
 // or a time "now" is UNSUPPORTED there (the caller gives the time).
 [[maybe_unused]] static vx_status p9c_setattr(p9_client *c, uint32_t fid, const p9_setattr *a) {
-  if (c->extensions & P9_EXT_XATTR) {
+  if ((c->extensions & P9_EXT_XATTR) || p9c_dotl(c)) {
     p9_msg t = {.type = P9_Tsetattr, .fid = fid, .setattr = *a};
     return p9c_call(c, &t);
   }
@@ -360,13 +526,13 @@ typedef struct p9_stat_text {
 // Renames olddir's entry oldname to newname in newdir, both on this connection.
 [[maybe_unused]] static vx_status p9c_renameat(p9_client *c, uint32_t olddir, vx_str oldname, uint32_t newdir,
                                                vx_str newname) {
-  if (!(c->extensions & P9_EXT_POSIX)) return VX_ERR_UNSUPPORTED;
+  if (!(c->extensions & P9_EXT_POSIX) && !p9c_dotl(c)) return VX_ERR_UNSUPPORTED;
   p9_msg t = {.type = P9_Trenameat, .fid = olddir, .name = oldname, .newfid = newdir, .name2 = newname};
   return p9c_call(c, &t);
 }
 
 [[maybe_unused]] static vx_status p9c_symlink(p9_client *c, uint32_t dir, vx_str name, vx_str target) {
-  if (!(c->extensions & P9_EXT_POSIX)) return VX_ERR_UNSUPPORTED;
+  if (!(c->extensions & P9_EXT_POSIX) && !p9c_dotl(c)) return VX_ERR_UNSUPPORTED;
   p9_msg t = {.type = P9_Tsymlink, .fid = dir, .name = name, .name2 = target};
   return p9c_call(c, &t);
 }
@@ -375,7 +541,7 @@ typedef struct p9_stat_text {
 // does not fit): *len its length.
 [[maybe_unused]] static vx_status p9c_readlink(p9_client *c, uint32_t fid, char *buf, size_t cap,
                                                size_t *len) {
-  if (!(c->extensions & P9_EXT_POSIX)) return VX_ERR_UNSUPPORTED;
+  if (!(c->extensions & P9_EXT_POSIX) && !p9c_dotl(c)) return VX_ERR_UNSUPPORTED;
   p9_msg t = {.type = P9_Treadlink, .fid = fid};
   p9_rcall rc = {};
   vx_status e = p9c_rpc(c, &t, &rc, VX_HANDLE_NONE);
@@ -389,7 +555,8 @@ typedef struct p9_stat_text {
 }
 
 [[maybe_unused]] static vx_status p9c_fsync(p9_client *c, uint32_t fid) {
-  if (!(c->extensions & P9_EXT_POSIX)) return VX_OK; // a server without it has no later to write at
+  if (!(c->extensions & P9_EXT_POSIX) && !p9c_dotl(c))
+    return VX_OK; // a server without it has no later to write at
   p9_msg t = {.type = P9_Tfsync, .fid = fid};
   return p9c_call(c, &t);
 }
@@ -438,7 +605,7 @@ typedef struct p9_stat_text {
 // 0 is to the end. *status is P9_LOCK_SUCCESS, _BLOCKED or _ERROR.
 [[maybe_unused]] static vx_status p9c_lock(p9_client *c, uint32_t fid, uint8_t type, uint64_t start,
                                            uint64_t length, uint32_t proc_id, uint8_t *status) {
-  if (!(c->extensions & P9_EXT_POSIX)) return VX_ERR_UNSUPPORTED;
+  if (!(c->extensions & P9_EXT_POSIX) && !p9c_dotl(c)) return VX_ERR_UNSUPPORTED;
   p9_msg t = {.type = P9_Tlock,
               .fid = fid,
               .lock_type = type,
@@ -458,7 +625,7 @@ typedef struct p9_stat_text {
 // when none would.
 [[maybe_unused]] static vx_status p9c_getlock(p9_client *c, uint32_t fid, uint8_t type, uint64_t start,
                                               uint64_t length, uint32_t proc_id, p9_msg *l) {
-  if (!(c->extensions & P9_EXT_POSIX)) return VX_ERR_UNSUPPORTED;
+  if (!(c->extensions & P9_EXT_POSIX) && !p9c_dotl(c)) return VX_ERR_UNSUPPORTED;
   p9_msg t = {.type = P9_Tgetlock,
               .fid = fid,
               .lock_type = type,

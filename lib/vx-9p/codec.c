@@ -127,6 +127,13 @@ enum : uint32_t {
   P9_S_IFCHR = 0020000,
 };
 
+// Rstatfs's body (9P2000.L).
+typedef struct p9_statfs {
+  uint32_t type, bsize;
+  uint64_t blocks, bfree, bavail, files, ffree, fsid;
+  uint32_t namelen;
+} p9_statfs;
+
 typedef struct p9_msg {
   p9_type type;
   uint16_t tag;
@@ -152,7 +159,25 @@ typedef struct p9_msg {
   uint64_t start, length;
   vx_str client_id;
   uint8_t token[16];
+  // 9P2000.L's (6d4c2):
+  uint32_t lflags, lmode, ecode;
+  uint32_t n_uname; // Tattach's and Tauth's numeric user (P9_NONUNAME: none)
+  bool has_n_uname; // it is on the wire (a .L or .u client's)
+  p9_statfs statfs;
 } p9_msg;
+
+static constexpr uint32_t P9_NONUNAME = UINT32_MAX;
+// Linux's open flags, as Tlopen and Tlcreate carry them, and Tunlinkat's.
+enum : uint32_t {
+  P9_L_O_ACCMODE = 3,
+  P9_L_O_CREAT = 0100,
+  P9_L_O_EXCL = 0200,
+  P9_L_O_TRUNC = 01000,
+  P9_L_O_APPEND = 02000,
+  P9_L_AT_REMOVEDIR = 0x200,
+};
+// Rreaddir's entries' types: Linux's DT_*.
+enum : uint8_t { P9_DT_REG = 8, P9_DT_DIR = 4, P9_DT_LNK = 10, P9_DT_CHR = 2 };
 
 // Tread's and Twrite's offset that means the open file's own, which the
 // server keeps and moves on (posix).
@@ -296,6 +321,21 @@ static void p9_put_qid(p9_out *o, p9_qid q) {
                                a->atime_sec,  a->atime_nsec, a->mtime_sec,  a->mtime_nsec, a->ctime_sec,
                                a->ctime_nsec, a->btime_sec,  a->btime_nsec, a->gen,        a->data_version};
       for (size_t i = 0; i < sizeof rest / sizeof rest[0]; i++) p9_put(&o, rest[i], 8);
+      break;
+    }
+    case P9F_LFLAGS: p9_put(&o, m->lflags, 4); break;
+    case P9F_LMODE: p9_put(&o, m->lmode, 4); break;
+    case P9F_ECODE: p9_put(&o, m->ecode, 4); break;
+    case P9F_NUNAME:
+      if (m->has_n_uname) p9_put(&o, m->n_uname, 4);
+      break;
+    case P9F_STATFS: {
+      const p9_statfs *sf = &m->statfs;
+      p9_put(&o, sf->type, 4);
+      p9_put(&o, sf->bsize, 4);
+      const uint64_t rest[] = {sf->blocks, sf->bfree, sf->bavail, sf->files, sf->ffree, sf->fsid};
+      for (size_t i = 0; i < sizeof rest / sizeof rest[0]; i++) p9_put(&o, rest[i], 8);
+      p9_put(&o, sf->namelen, 4);
       break;
     }
     case P9F_SETATTR: {
@@ -443,6 +483,22 @@ static p9_qid p9_get_qid(p9_in *in) {
       for (size_t i = 0; i < sizeof rest / sizeof rest[0]; i++) *rest[i] = p9_get(&in, 8);
       break;
     }
+    case P9F_LFLAGS: m->lflags = (uint32_t)p9_get(&in, 4); break;
+    case P9F_LMODE: m->lmode = (uint32_t)p9_get(&in, 4); break;
+    case P9F_ECODE: m->ecode = (uint32_t)p9_get(&in, 4); break;
+    case P9F_NUNAME: // the last field: a 9P2000 client sends none
+      m->has_n_uname = in.len - in.pos >= 4;
+      m->n_uname = m->has_n_uname ? (uint32_t)p9_get(&in, 4) : P9_NONUNAME;
+      break;
+    case P9F_STATFS: {
+      p9_statfs *sf = &m->statfs;
+      sf->type = (uint32_t)p9_get(&in, 4);
+      sf->bsize = (uint32_t)p9_get(&in, 4);
+      uint64_t *rest[] = {&sf->blocks, &sf->bfree, &sf->bavail, &sf->files, &sf->ffree, &sf->fsid};
+      for (size_t i = 0; i < sizeof rest / sizeof rest[0]; i++) *rest[i] = p9_get(&in, 8);
+      sf->namelen = (uint32_t)p9_get(&in, 4);
+      break;
+    }
     case P9F_SETATTR: {
       p9_setattr *a = &m->setattr;
       a->valid = (uint32_t)p9_get(&in, 4);
@@ -533,6 +589,7 @@ typedef enum p9_dialect : uint8_t {
   P9_UNKNOWN = 0,
   P9_2000,  // plain 9P2000; also what a 9P2000.L or .u client gets from a VectraOS server
   P9_2000X, // 9Px: "9P2000.x/1" and its extensions
+  P9_2000L, // Linux's 9P2000.L (M6 step 6d4c2): its own messages, and errors as errno
 } p9_dialect;
 
 // 9Px's extensions, as words after the dialect: "9P2000.x/1 +dref +map".
@@ -588,7 +645,8 @@ static bool p9_str_eq(vx_str a, const char *b) {
     }
     return P9_2000X;
   }
-  // 9P2000 itself, and any dialect of it (".L", ".u"), are answered with 9P2000.
+  if (p9_str_eq(base, "9P2000.L")) return P9_2000L;
+  // 9P2000 itself, and any other dialect of it (".u"), are answered with 9P2000.
   if (base.len >= 6 && p9_str_eq((vx_str){base.ptr, 6}, "9P2000")) return P9_2000;
   return P9_UNKNOWN;
 }
@@ -608,6 +666,8 @@ static bool p9_str_eq(vx_str a, const char *b) {
     }
   } else if (d == P9_2000) {
     p9_put_bytes(&o, "9P2000", 6);
+  } else if (d == P9_2000L) {
+    p9_put_bytes(&o, "9P2000.L", 8);
   } else {
     p9_put_bytes(&o, "unknown", 7);
   }
@@ -638,6 +698,55 @@ static bool p9_str_eq(vx_str a, const char *b) {
   X(VX_ERR_IO, "i/o error")                                                                                  \
   X(VX_ERR_NO_SPACE, "file system full")                                                                     \
   X(VX_ERR_INVALID, "bad message")
+
+// 9P2000.L's errors are Linux's errno numbers (Rlerror): each status's, and
+// back. A number not here is EIO's.
+#define P9_ERRNOS(X)                                                                                         \
+  X(VX_ERR_NOT_FOUND, 2)                                                                                     \
+  X(VX_ERR_EXISTS, 17)                                                                                       \
+  X(VX_ERR_ACCESS, 13)                                                                                       \
+  X(VX_ERR_BAD_HANDLE, 9)                                                                                    \
+  X(VX_ERR_BAD_STATE, 16)                                                                                    \
+  X(VX_ERR_RANGE, 34)                                                                                        \
+  X(VX_ERR_NO_MEMORY, 12)                                                                                    \
+  X(VX_ERR_UNSUPPORTED, 95)                                                                                  \
+  X(VX_ERR_TOO_SMALL, 90)                                                                                    \
+  X(VX_ERR_REFUSED, 111)                                                                                     \
+  X(VX_ERR_TIMED_OUT, 110)                                                                                   \
+  X(VX_ERR_PEER_CLOSED, 32)                                                                                  \
+  X(VX_ERR_INTERRUPTED, 4)                                                                                   \
+  X(VX_ERR_NO_CHILD, 10)                                                                                     \
+  X(VX_ERR_IO, 5)                                                                                            \
+  X(VX_ERR_NO_SPACE, 28)                                                                                     \
+  X(VX_ERR_SHOULD_WAIT, 11)                                                                                  \
+  X(VX_ERR_INVALID, 22)
+
+// Numbers a .L server sends that mean one of these too.
+#define P9_ERRNOS_HEARD(X)                                                                                   \
+  X(VX_ERR_ACCESS, 1)       /* EPERM */                                                                      \
+  X(VX_ERR_NOT_FOUND, 20)   /* ENOTDIR */                                                                    \
+  X(VX_ERR_ACCESS, 21)      /* EISDIR */                                                                     \
+  X(VX_ERR_RANGE, 36)       /* ENAMETOOLONG */                                                               \
+  X(VX_ERR_UNSUPPORTED, 38) /* ENOSYS */                                                                     \
+  X(VX_ERR_EXISTS, 39)      /* ENOTEMPTY */                                                                  \
+  X(VX_ERR_ACCESS, 30)      /* EROFS */
+
+[[maybe_unused]] static uint32_t p9_status_errno(vx_status st) {
+#define P9_ERRNO_CASE(status, n)                                                                             \
+  if (st == (status)) return n;
+  P9_ERRNOS(P9_ERRNO_CASE)
+#undef P9_ERRNO_CASE
+  return 5;
+}
+
+[[maybe_unused]] static vx_status p9_errno_status(uint32_t n) {
+#define P9_ERRNO_CASE(status, num)                                                                           \
+  if (n == (num)) return status;
+  P9_ERRNOS(P9_ERRNO_CASE)
+  P9_ERRNOS_HEARD(P9_ERRNO_CASE)
+#undef P9_ERRNO_CASE
+  return VX_ERR_IO;
+}
 
 [[maybe_unused]] static vx_str p9_error_text(vx_status st) {
 #define P9_ERROR_CASE(status, text)                                                                          \

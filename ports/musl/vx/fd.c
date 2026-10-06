@@ -352,7 +352,8 @@ static int fd_link_at(const char *p, size_t len, char *target, size_t cap, size_
   if (st != VX_OK) return (int)vx_errno(st);
   int r = 0;
   p9_stat s;
-  if ((c->extensions & P9_EXT_POSIX) && p9c_stat(c, fid, &s, nullptr) == VX_OK && (s.mode & P9_DMSYMLINK)) {
+  bool links = (c->extensions & P9_EXT_POSIX) || c->dialect == P9_2000L; // a 9P2000.L server's too
+  if (links && p9c_stat(c, fid, &s, nullptr) == VX_OK && (s.mode & P9_DMSYMLINK)) {
     size_t n = 0;
     vx_status e = cap ? p9c_readlink(c, fid, target, cap - 1, &n) : VX_ERR_TOO_SMALL;
     r = e == VX_ERR_TOO_SMALL ? -ENAMETOOLONG : -EINVAL;
@@ -1535,7 +1536,7 @@ static long fd_renameat(int olddirfd, const char *old, int newdirfd, const char 
   }
   vx_str d1 = {p1, (size_t)(n1.ptr - p1)}, d2 = {p2, (size_t)(n2.ptr - p2)};
   bool same_dir = d1.len == d2.len && !memcmp(d1.ptr, d2.ptr, d1.len);
-  bool posix = c1 == c2 && (c1->extensions & P9_EXT_POSIX);
+  bool posix = c1 == c2 && ((c1->extensions & P9_EXT_POSIX) || c1->dialect == P9_2000L); // Trenameat's
   if (c1 != c2 || (!posix && !same_dir)) {
     r = -EXDEV; // within one server only; a 9P2000 server's (Twstat) within a directory only
   } else if (posix) {
