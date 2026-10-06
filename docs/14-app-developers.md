@@ -27,6 +27,7 @@ So the first programs are command-line tools, file servers, background services 
 | **Swift, Embedded** | Small tools and services that want Swift's types without its runtime: tens of KB, no reflection | `import VX`, the Embedded standard library | The same, in Embedded mode |
 | **Lua** | Scripts, `wm` layout policies (D12, 03 §5.2), glue over files | Files: `/proc`, `/env`, a service's `ctl` | The system's Lua |
 | **rc** | Shell scripts, namespace set-up | Files and programs | — |
+| **C++, native** | A library or program written to standard C++ that you import or bring: an inference engine, a codec, a game engine's core. Not for first-party code, which is C23 or Swift | libc++ and the C library from the toolchain, `libvx` for the system (ADR-0033 §2a: RTTI, threads, `std::filesystem` and iostreams in the C locale; exceptions from 6f2) | `clang++ --target=<arch>-unknown-vectraos` |
 | **Odin, Zig, Rust and others** | Whatever their authors like | `libvx`'s C ABI, through the native target's sysroot | Their own compilers, linking against the sysroot |
 | **C or C++ through POSIX** | Porting an existing Unix program or library: a compiler, an interpreter, a game whose source assumes Unix | musl and the POSIX personality (01 §9) | `--target=<arch>-vectra-unknown-musl` |
 
@@ -35,6 +36,7 @@ How to choose:
 - **New native program, simple ownership:** C23.
 - **New native program whose data is a graph, or whose logic is a set of cooperating tasks:** full Swift. ADR-0034's four reasons (OO or protocol structure, functional patterns, namespacing, ARC) are a good test for applications too.
 - **A library written to ISO C** (a codec, a parser, a maths library): build it unchanged for the native target. The toolchain's C library, llvm-libc, supplies clause 7, with files and without POSIX.
+- **A library written to standard C++** (an inference engine, a physics library): build it unchanged with `clang++` for the native target. libc++ comes from the toolchain, with threads, `std::filesystem` and exceptions over `libvx` (ADR-0033 §2a).
 - **A library or program written to POSIX:** port it to the POSIX personality, or replace its platform layer with `libvx` calls if it is small. A program that needs `fork`, signals or sockets is a POSIX program.
 - **Don't** put a portability layer (an SDL-like wrapper, an event-loop library, a cross-platform runtime) between your program and `libvx` to keep it "portable". `libvx` is small and has one way to do each thing (rule 13, 09 §1). Put your program's own platform layer at the top, where it names your program's needs, not the OS's.
 
