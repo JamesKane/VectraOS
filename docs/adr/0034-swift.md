@@ -93,5 +93,5 @@ Until all four hold, Swift on VectraOS is bring-up and experiment, in the Swift 
 - D1 reads "C23, and Swift where ADR-0034 allows". 04 §1's table gains a Swift row, and "Odin and others" no longer speaks for Swift.
 - The system has a second language to review, format, debug and build. `dbg`, `./build check`, the manual's tooling (12) and the profiler each grow a Swift path.
 - The toolchain is the largest import the system has, and the first built from source. Its pin and patch series are reviewed like the kernel.
-- M6 6e2's target `<arch>-unknown-vectraos` is the one Swift uses. The Swift work's clang driver patch (llvm 0003) and ADR-0033's configuration file give the same link line, and must stay in agreement.
+- M6 6e2's target `<arch>-unknown-vectraos` is the one Swift uses. The Swift work's clang driver patch (llvm 0003) and ADR-0033's configuration and response files give the same compile options and link line, and must stay in agreement.
 - Swift work can proceed in parallel with M6, and joins the tree only through §6's gates.

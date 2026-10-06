@@ -98,7 +98,7 @@ The house subset (04 §1.1) is written for the OS tree, but most of it pays off 
 
 ## 8. Building, debugging and shipping
 
-- **Build:** `clang --target=<arch>-unknown-vectraos prog.c` with the sysroot's configuration file, or `swiftc` with the `vectraos` SDK. Declare `VX_TARGET_ABI`, and repeat it in the manifest (`requires=vx-abi>=N`), so using a newer call is a compile error rather than a surprise on an older release (09 §4.8).
+- **Build:** `clang --target=<arch>-unknown-vectraos prog.c` with the toolchain's clang (on the host with Fedora's clang, compile with `--config-system-dir=<sysroot>` and link with `ld.lld` and the sysroot's response files, ADR-0033 §3), or `swiftc` with the `vectraos` SDK. Declare `VX_TARGET_ABI`, and repeat it in the manifest (`requires=vx-abi>=N`), so using a newer call is a compile error rather than a surprise on an older release (09 §4.8).
 - **Static or shared:** static until the loader (6f), then `libvx` (and `vxui`, from M7) as the release's shared libraries. A fix in `libvx` then reaches your program with the release. Changed behaviour is announced in the release notes, never silent.
 - **Debug:** `dbg` reads `/proc` over 9Px, so remote debugging needs nothing extra. A crash leaves a crash directory with the backtrace, registers and the exit string. Keep frame pointers and DWARF 5.
 - **Profile:** `vx_prof_begin` and `vx_prof_end` zones around the work you care about (05 §9).
@@ -123,6 +123,6 @@ The house subset (04 §1.1) is written for the OS tree, but most of it pays off 
 
 - Names in §4 and §5 against `libvx` v0's headers and the `VX` module as built.
 - §1's table against what M6 actually delivered, including 6f's shared libraries.
-- §2's build commands against the sysroot's configuration file and the Swift SDK.
+- §2's build commands against the sysroot's configuration and link files and the Swift SDK.
 - A worked example per language: a small file server in C23, the same in Swift, and a Lua script that drives it.
 - Whether this document becomes a manual page in section 7 (12 §3), so `man 7 apps` serves it on the system.

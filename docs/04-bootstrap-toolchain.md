@@ -157,7 +157,7 @@ xorriso is needed only for the optional hybrid ISO.
 |---|---|---|---|
 | Kernel | `--target=x86_64-unknown-none-elf`, `-ffreestanding -mno-red-zone -mgeneral-regs-only` | `--target=aarch64-unknown-none-elf`, `-ffreestanding -mgeneral-regs-only` | clang + lld; custom linker script |
 | First-party user space (commands, servers, drivers, libraries), from M1 | `--target=x86_64-unknown-none-elf`, freestanding, static non-PIE ELF against `vx-rt` and `libvx`; never the hosted headers (ADR-0033) | `--target=aarch64-unknown-none-elf`, the same | clang + lld |
-| Native imported code and developers' programs, from M6 (6e2) | `x86_64-unknown-vectraos` sysroot: `libvx`, llvm-libc (the toolchain's ISO C library, with a VectraOS platform layer), and libc++ and libc++abi (ADR-0033) | `aarch64-unknown-vectraos` sysroot | clang + lld, through the sysroot's clang configuration file |
+| Native imported code and developers' programs, from M6 (6e2) | `x86_64-unknown-vectraos` sysroot: `libvx`, llvm-libc (the toolchain's ISO C library, with a VectraOS platform layer), and libc++ and libc++abi (ADR-0033) | `aarch64-unknown-vectraos` sysroot | The patched clang, which knows the triple; or the pinned clang through the sysroot's configuration files, linking with `ld.lld` and its response files (ADR-0033 §3) |
 | POSIX ports (the POSIX personality), from M4 | `x86_64-vectra-unknown-musl` sysroot (ADR-0007) | `aarch64-vectra-unknown-musl` sysroot | clang + lld |
 | Host tools | host triple | host triple | clang, host libc |
 
