@@ -131,6 +131,17 @@ static uint64_t spawn(const char *what) {
 static int64_t wait_record(char *buf, uint32_t cap) { return read_file(me, "wait", buf, cap); }
 
 static uint32_t notes_seen;
+// A busy thread timing zones, 50 of them (6d6b).
+static void zones_thread(void *arg) {
+  (void)arg;
+  static vx_prof_zone tick = {.name = "tick"};
+  for (int i = 0; i < 50; i++) {
+    uint64_t t = vx_prof_begin(&tick);
+    for (volatile int k = 0; k < 2000; k++) {}
+    vx_prof_end(&tick, t);
+  }
+}
+
 static vx_noted on_note(vx_exception *e, vx_str note, void *fp) {
   (void)fp;
   (void)e;
@@ -404,8 +415,49 @@ static void test_prof(void) {
   if (at) vx_as_unmap(vx_self, at, VX_PROF_RING);
   CHECK(write_file(c, "prof/ctl", "zones off") == VX_OK); // its own ring is still the one
 
-  // A ring whose header lies about its size: procfs reads it within its own.
+  // A ring per thread (M6 step 6d6b): four busy threads of this process's
+  // own, each one's records in a ring it claimed, carrying its id; the file
+  // has all four, merged by their ends.
   CHECK(vx_prof_init(vx_ns_connector(&ns, VX_STR("/proc"))) == VX_OK);
+  CHECK(write_file(me, "prof/ctl", "zones on") == VX_OK);
+  static vx_thread busy[4];
+  for (int i = 0; i < 4; i++) CHECK(vx_thread_spawn(&busy[i], zones_thread, nullptr, 0) == VX_OK);
+  for (int i = 0; i < 4; i++) vx_thread_join(&busy[i]);
+  uint32_t owners[4] = {}, owned = 0;
+  bool own = true;
+  for (uint32_t i = 1; vx_prof && i <= VX_PROF_THREADS; i++) {
+    vx_prof_ring *rg = vx_prof_ring_at(vx_prof, i);
+    uint32_t who = atomic_load(&rg->thread);
+    uint64_t head = atomic_load(&rg->head);
+    if (!who || !head) continue;
+    if (owned < 4) owners[owned] = who;
+    owned++;
+    for (uint64_t k = 0; k < head && k < VX_PROF_CAP; k++)
+      own = own && vx_prof_ring_records(rg)[k].thread == who;
+    own = own && head >= 50;
+  }
+  CHECK(owned == 4 && own && owners[0] != owners[1] && owners[2] != owners[3] && owners[0] != owners[3]);
+  CHECK(atomic_load(&vx_prof_ring_at(vx_prof, 0)->head) == 0); // none shared
+  CHECK(write_file(me, "prof/ctl", "zones off") == VX_OK);
+  static uint8_t merged[VX_PROF_RING];
+  got = 0;
+  if (vx_ns_open(&ns, proc_path(me, "prof/zones"), P9_OREAD, &f) == VX_OK) {
+    while (got < sizeof merged && (n = vx_ns_read(&f, merged + got, (uint32_t)(sizeof merged - got))) > 0)
+      got += (size_t)n;
+    vx_ns_close(&f);
+  }
+  const vx_prof_record *m = (const vx_prof_record *)(merged + sizeof(vx_prof_header));
+  size_t nm = got > sizeof(vx_prof_header) ? (got - sizeof(vx_prof_header)) / sizeof *m : 0;
+  bool by_end = nm >= 200;
+  uint32_t seen = 0;
+  for (size_t i = 0; i < nm; i++) {
+    by_end = by_end && (!i || m[i].end >= m[i - 1].end);
+    for (uint32_t k = 0; k < 4; k++)
+      if (m[i].thread == owners[k]) seen |= 1u << k;
+  }
+  CHECK(by_end && seen == 0xf);
+
+  // A ring whose header lies about its size: procfs reads it within its own.
   if (vx_prof) {
     vx_prof->cap = 0xffff'ffff;
     atomic_store(&vx_prof->head, 1ull << 40);

@@ -13,7 +13,6 @@
 // name bytes another process happens to hold.)
 
 static vx_prof_header *rings[MAX_PROCS]; // each process's, mapped here; null if none
-static constexpr uint32_t PROF_SLOTS = (VX_PROF_RING - sizeof(vx_prof_header)) / sizeof(vx_prof_record);
 
 static void prof_forget(const proc *p) {
   vx_prof_header **r = &rings[p - procs];
@@ -53,21 +52,42 @@ static vx_status prof_ctl(const proc *p, vx_str cmd) {
   return VX_OK;
 }
 
-// The ring, as it is now: its header, then its records in order. The process
-// still writes the header, so what it says is read once and held to the
-// ring's size: a cap or head it changed gives it nonsense, not procfs a fault.
+// The rings, as they are now: the header, then every ring's records merged
+// oldest first by their end (each thread's ring is in that order already;
+// ring 0, shared, nearly). The process still writes all of it, so what it
+// says is read once and held to the VMO's layout: a head it changed gives it
+// nonsense, not procfs a fault; and a record its thread may have been
+// writing over while it was copied is left out (6d6b).
 static size_t prof_snapshot(const proc *p, uint8_t *out, size_t cap) {
-  const vx_prof_header *h = rings[p - procs];
+  vx_prof_header *h = rings[p - procs];
+  constexpr uint32_t n_rings = VX_PROF_THREADS + 1;
+  static vx_prof_record all[n_rings * VX_PROF_CAP];
+  uint32_t from[n_rings], to[n_rings];
   if (!h || cap < sizeof *h) return 0;
   memcpy(out, h, sizeof *h);
-  uint64_t head = atomic_load_explicit(&h->head, memory_order_acquire);
-  uint32_t ring = ((vx_prof_header *)out)->cap;
-  if (!ring || ring > PROF_SLOTS) ring = PROF_SLOTS;
-  ((vx_prof_header *)out)->cap = ring;
-  uint64_t n = head < ring ? head : ring, first = head - n;
+  for (uint32_t i = 0; i < n_rings; i++) {
+    vx_prof_ring *r = vx_prof_ring_at(h, i);
+    uint64_t head = atomic_load_explicit(&r->head, memory_order_acquire);
+    uint64_t n = head < VX_PROF_CAP ? head : VX_PROF_CAP, first = head - n;
+    vx_prof_record *mine = &all[(size_t)i * VX_PROF_CAP];
+    for (uint64_t k = 0; k < n; k++) mine[k] = vx_prof_ring_records(r)[(first + k) % VX_PROF_CAP];
+    uint64_t after = atomic_load_explicit(&r->head, memory_order_acquire); // what was written meanwhile
+    uint64_t lost = after > head ? after - head : 0;                       // over the oldest ones
+    if (after < head) lost = n; // a head it set back: nothing trusted
+    uint64_t base = (uint64_t)i * VX_PROF_CAP;
+    from[i] = (uint32_t)(base + (lost < n ? lost : n)), to[i] = (uint32_t)(base + n);
+  }
   size_t len = sizeof *h;
-  const vx_prof_record *recs = (const vx_prof_record *)(h + 1);
-  for (uint64_t i = 0; i < n && len + sizeof *recs <= cap; i++, len += sizeof *recs)
-    memcpy(out + len, &recs[(first + i) % ring], sizeof *recs);
+  for (; len + sizeof(vx_prof_record) <= cap; len += sizeof(vx_prof_record)) { // the earliest end among them
+    int32_t best = -1;
+    for (uint32_t i = 0; i < n_rings; i++)
+      if (from[i] < to[i] && (best < 0 || all[from[i]].end < all[from[best]].end)) best = (int32_t)i;
+    if (best < 0) break;
+    memcpy(out + len, &all[from[best]++], sizeof(vx_prof_record));
+  }
+  vx_prof_header *o = (vx_prof_header *)out;
+  uint64_t written = (len - sizeof *h) / sizeof(vx_prof_record);
+  atomic_store_explicit(&o->head, written, memory_order_relaxed);
+  o->cap = (uint32_t)written, o->rings = 0;
   return len;
 }

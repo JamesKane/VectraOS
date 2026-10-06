@@ -372,6 +372,7 @@ Deferred deliberately, each with where it is due:
 | `fsdconc` | `fsd`'s readers with the server let go (6d5b): four reader threads checking every byte, one file larger than the block cache, a writer making, removing and committing meanwhile; `fsd` with more than one thread after; a clean check |
 | `fsdfix` | `fsd`'s review findings (6d5c): each open of status its own copy; `ctl` and `status` never made real by rename or symlink; more than 256 dated labels in the dump view; 40 snapshots opened in turn, 32 held and a 33rd refused until one goes; a snapshot deleted under a fid finds it nothing, before and after another opens; users kept in their places across a reload; no reaping or commit after `halt` |
 | `dbgthreads` | The debugger and threads (6d6a): each of 32 threads stopped at a breakpoint in turn, more than the 16 procfs followed; then one at another with the other 32 seen stopped (frozen), before and after it steps; another thread's call stack, and its FP/SIMD state (`ymm`, `k`, `pkru` on x86_64; `v` on aarch64); the program going on to its end |
+| `proc` (6d6b) | A ring per thread: four busy threads of proctest's own each claim a ring and write only their own records into it, none into the shared one; `/proc/N/prof/zones` has all four merged by their ends |
 | `boot` | M1's exit test: the kernel reaches `svcd`, which starts the console driver and `bootfs` |
 | `panic` | A kernel fault reaches the panic handler, with a symbolized backtrace |
 | `write-text`, `write-text-alias` | Kernel code is read-only (W^X), and through the direct map too |

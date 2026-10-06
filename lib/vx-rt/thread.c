@@ -33,6 +33,7 @@ typedef struct vx_tcb {
   void *arg;
   uint64_t stack_lo, stack_hi;
   _Atomic uint32_t running; // 1 until fn returns: vx_thread_join waits on it
+  uint32_t id;              // the kernel's id for the thread (thread_create's; the first thread's 1)
 } vx_tcb;
 
 // A thread vx_thread_spawn made, for vx_thread_join.
@@ -109,6 +110,12 @@ static void vx_tp_set(uint64_t tp) {
 #endif
 }
 
+// The calling thread's id, as the kernel gives it (/proc/N/threads/ID).
+[[maybe_unused]] static uint32_t vx_thread_self_id(void) {
+  const vx_tcb *t = vx_tcb_get();
+  return t && t->id ? t->id : 1;
+}
+
 // The first thread's TLS and record, at start-up: a VMO of its own; its stack
 // is the mapping its stack pointer is in.
 static void vx_thread_main_init(void) {
@@ -126,6 +133,7 @@ static void vx_thread_main_init(void) {
   if (vx_as_query(vx_self, sp, &mi) == VX_OK && mi.base <= sp)
     tcb->stack_lo = mi.base, tcb->stack_hi = mi.base + mi.size;
   atomic_store(&tcb->running, 1);
+  tcb->id = 1; // a task's first thread
   vx_tp_set(tp);
 }
 
@@ -154,7 +162,7 @@ static void vx_thread_main_init(void) {
   uint64_t tp = vx_tls_layout(at + stack, &tcb);
   tcb->fn = fn, tcb->arg = arg, tcb->stack_lo = at, tcb->stack_hi = at + stack;
   atomic_store(&tcb->running, 1);
-  st = vx_thread_create(vx_self, &th);
+  st = vx_thread_create_id(vx_self, &th, &tcb->id);
   if (st == VX_OK) st = vx_thread_start(th, (uint64_t)vx_thread_entry, at + stack, VX_HANDLE_NONE, tp);
   if (st != VX_OK) {
     vx_handle_close(th);
