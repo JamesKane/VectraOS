@@ -45,9 +45,12 @@ typedef struct p9_held {
   uint32_t fid; // P9_NOFID: the message has none
 } p9_held;
 
+typedef struct p9_ring_server p9_ring_server;
+
 typedef struct p9_ring_conn {
   bool used, armed;
-  uint32_t gen;
+  uint32_t gen, slot;
+  p9_ring_server *owner;
   uint32_t nheld; // held[0..nheld), oldest first
   p9_held held[P9_RING_DEPTH];
   vx_ring ring;
@@ -76,6 +79,18 @@ typedef struct p9_ring_server {
   // Set by the file server when what it just did may let a held request go
   // on: the held requests are served again before the server sleeps.
   bool again;
+  // Optional, in place of fs: each request as it came, on connection `conn`
+  // (its slot), for a server that forwards requests rather than serving them
+  // (the relay, M6 step 6d4d2b). Returns the reply's length in resp, or
+  // P9_DEFER to be asked again; the rules above hold as for fs, Tflush's
+  // too. `closed` is told when a connection has gone, its held requests
+  // dropped unanswered.
+  size_t (*raw)(void *ctx, uint32_t conn, const uint8_t *req, size_t len, uint8_t *resp, size_t cap);
+  void (*closed)(void *ctx, uint32_t conn);
+  // Whether to go on serving the connections it has once the listen
+  // channel's peer has gone: p9_ring_serve then returns when the last one
+  // goes. Without it, it returns at once.
+  bool linger;
   // Its connections: these, unless the file server gives more of its own
   // (procfs, which holds one per process) before serving. At most 256.
   p9_ring_conn *conns;
@@ -92,6 +107,7 @@ static void p9_ring_drop_request_handle(p9_ring_conn *c) {
 
 static void p9_ring_close(p9_ring_conn *c) {
   p9_ring_drop_request_handle(c);
+  if (c->owner && c->owner->closed) c->owner->closed(c->owner->ctx, c->slot);
   for (uint32_t i = 0; i < c->nheld; i++)
     if (c->held[i].handle) vx_handle_close(c->held[i].handle);
   c->nheld = 0;
@@ -128,6 +144,7 @@ static void p9_ring_accept(p9_ring_server *s, const vx_msg_header *req) {
     vx_ring_arena(&c->ring, &arena_size);
     c->out = (p9_arena){.size = arena_size};
     c->end = h.server;
+    c->slot = i, c->owner = s;
     c->srv =
         (p9_server){.fs = s->fs, .max_msize = P9_RING_MSIZE, .supported = s->supported, .shared = &s->shared};
     return;
@@ -194,7 +211,9 @@ static p9_tried p9_ring_try(p9_ring_conn *c, p9_held *h) {
   memcpy(c->req, p, h->e.len);
   c->srv.request_handle = h->handle;
   h->handle = VX_HANDLE_NONE;
-  size_t n = p9_serve(&c->srv, c->req, h->e.len, c->resp, sizeof c->resp);
+  const p9_ring_server *s = c->owner;
+  size_t n = s && s->raw ? s->raw(s->ctx, c->slot, c->req, h->e.len, c->resp, sizeof c->resp)
+                         : p9_serve(&c->srv, c->req, h->e.len, c->resp, sizeof c->resp);
   if (n == P9_DEFER) {
     h->handle = c->srv.request_handle; // kept until it is served
     c->srv.request_handle = VX_HANDLE_NONE;
@@ -297,6 +316,7 @@ static int64_t p9_ring_now(void) { return vx_clock_read(); }
   vx_ndb_record rec;
   vx_str seed = vx_spawn_record("entropy", &rec) ? vx_ndb_get(&rec, "entropy") : (vx_str){};
   if (seed.len >= 16 && !s->shared.random.seeded) vx_drbg_mix(&s->shared.random, seed.ptr, seed.len, true);
+  bool listening = true; // the listen channel's peer is there (linger)
   for (;;) {
     bool more = false; // a connection still has requests: no sleeping this time round
     for (uint32_t i = 0; i < s->max_conns; i++) {
@@ -305,13 +325,17 @@ static int64_t p9_ring_now(void) { return vx_clock_read(); }
       if (d == P9_BROKEN) p9_ring_close(&s->conns[i]);
       more = more || d == P9_MORE;
     }
-    for (;;) {
+    for (; listening;) {
       alignas(vx_msg_header) uint8_t msg[64];
       vx_handle handle = VX_HANDLE_NONE;
       vx_msg_size size;
       st = vx_channel_read(s->listen, msg, sizeof msg, &handle, 1, &size);
       if (st == VX_ERR_SHOULD_WAIT) break;
-      if (st == VX_ERR_PEER_CLOSED) return st;
+      if (st == VX_ERR_PEER_CLOSED && !s->linger) return st;
+      if (st == VX_ERR_PEER_CLOSED) {
+        listening = false;
+        break;
+      }
       const vx_msg_header *req = (const vx_msg_header *)msg;
       if (st == VX_OK && size.bytes == sizeof *req && req->ordinal == P9_CONNECT && !size.handles) {
         p9_ring_accept(s, req);
@@ -330,6 +354,12 @@ static int64_t p9_ring_now(void) { return vx_clock_read(); }
       }
     }
 
+    if (!listening) { // lingering: until the last connection goes
+      bool any = false;
+      for (uint32_t i = 0; i < s->max_conns && !any; i++) any = s->conns[i].used;
+      if (!any) return VX_ERR_PEER_CLOSED;
+    }
+
     // Arm what is idle, then sleep unless something arrived meanwhile. A
     // connection holding requests waits for an event or its doorbell: a new
     // request, or a Tflush of a held one.
@@ -346,7 +376,7 @@ static int64_t p9_ring_now(void) { return vx_clock_read(); }
                                 p9_conn_key(P9_KEY_CONN_BELL, i, c->gen), (uint64_t)seen + 1) == VX_OK;
       }
     }
-    if (idle && !s->listen_armed)
+    if (idle && listening && !s->listen_armed)
       s->listen_armed = vx_port_bind(s->port, s->listen, VX_TRIGGER_READABLE, P9_KEY_LISTEN, 0) == VX_OK;
     vx_instant deadline = s->tick ? s->tick(s->ctx) : VX_INFINITE;
     if (idle) {

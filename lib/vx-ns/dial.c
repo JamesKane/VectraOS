@@ -20,6 +20,8 @@ typedef struct vx_ns_dialed {
   char addr[VX_NS_MAX_SRC]; // as /net/cs was asked, for sharing
   uint8_t addr_len;
   vx_ns_file ctl, data;
+  char data_path[64]; // /net/tcp/N/data, for a second open (the relay's reader)
+  uint8_t data_path_len;
   vx_mutex lock; // a stream carries one call at a time: threads take turns
   uint8_t tbuf[VX_NS_DIAL_MSIZE], rbuf[VX_NS_DIAL_MSIZE];
 } vx_ns_dialed;
@@ -165,6 +167,8 @@ static size_t dial_address(vx_str in, char *out, size_t cap) {
               dial_put(path, &plen, sizeof path, VX_STR("/data"));
   if (st == VX_OK && fits) {
     st = vx_ns_open(ns, (vx_str){path, plen}, P9_ORDWR, &d->data);
+    memcpy(d->data_path, path, plen);
+    d->data_path_len = (uint8_t)plen;
   } else if (st == VX_OK) {
     st = VX_ERR_INVALID;
   }
