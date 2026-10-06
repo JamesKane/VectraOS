@@ -588,7 +588,8 @@ static void p9_conn_clear(p9_conn *k, bool dead) {
     k->arena = (p9_chunks){.size = arena_size};
     k->c = (p9_client){.pipe = &P9_RING_PIPE, .ctx = k, .bufsize = P9_RING_MSIZE};
     st = p9c_version(&k->c, P9_RING_MSIZE,
-                     P9_EXT_POSIX | P9_EXT_XATTR | P9_EXT_MAP | P9_EXT_DREF); // what the server has of them
+                     P9_EXT_POSIX | P9_EXT_XATTR | P9_EXT_MAP | P9_EXT_DREF |
+                         P9_EXT_SRV); // what the server has
   }
   if (st != VX_OK) {
     p9_ring_slots_unmap(k);
@@ -730,6 +731,36 @@ static vx_status p9c_ref(p9_client *c, p9_type type, uint32_t fid, uint64_t offs
   e = p9c_rpc(c, &t, &rc, dup);
   if (!rc.x) vx_handle_close(dup); // no call to carry it
   if (e == VX_OK) *done = rc.r.count;
+  p9c_done(c, &rc);
+  return e;
+}
+
+// --- srv (docs/proto/srv.md, 6d4d2a) ---
+
+// Opens fid, the reply's handle (srvfs's connector) in *out.
+[[maybe_unused]] static vx_status p9c_open_handle(p9_client *c, uint32_t fid, uint8_t mode, vx_handle *out) {
+  *out = VX_HANDLE_NONE;
+  if (!(c->extensions & P9_EXT_SRV)) return VX_ERR_UNSUPPORTED;
+  p9_msg t = {.type = P9_Topen, .fid = fid, .mode = mode};
+  p9_rcall rc = {};
+  vx_status e = p9c_rpc(c, &t, &rc, VX_HANDLE_NONE);
+  if (e == VX_OK && !rc.x->handle) e = VX_ERR_INVALID; // an Ropen without it
+  if (e == VX_OK) *out = rc.x->handle, rc.x->handle = VX_HANDLE_NONE;
+  p9c_done(c, &rc);
+  return e;
+}
+
+// Writes to fid with h beside the message (a post), which goes to the server
+// whatever the answer.
+[[maybe_unused]] static vx_status p9c_write_handle(p9_client *c, uint32_t fid, vx_handle h) {
+  if (!(c->extensions & P9_EXT_SRV)) {
+    vx_handle_close(h);
+    return VX_ERR_UNSUPPORTED;
+  }
+  p9_msg t = {.type = P9_Twrite, .fid = fid, .data = {(const uint8_t *)"post", 4}};
+  p9_rcall rc = {};
+  vx_status e = p9c_rpc(c, &t, &rc, h);
+  if (!rc.x) vx_handle_close(h); // no call to carry it
   p9c_done(c, &rc);
   return e;
 }

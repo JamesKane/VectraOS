@@ -86,6 +86,12 @@ typedef struct p9_fs {
                         uint32_t *count);
   vx_status (*write_ref)(void *ctx, uint64_t node, uint64_t offset, vx_handle vmo, uint64_t roffset,
                          uint32_t *count);
+  // The srv extension (docs/proto/srv.md, M6 step 6d4d2a): an open whose
+  // reply carries a handle (srvfs's connector; *out left VX_HANDLE_NONE for a
+  // file with none to give), and a write that carries one (a post's), which
+  // the file server takes. Both optional.
+  vx_status (*open_handle)(void *ctx, uint64_t node, uint8_t mode, vx_handle *out);
+  vx_status (*write_handle)(void *ctx, uint64_t node, vx_handle h);
 } p9_fs;
 
 enum : uint32_t { P9_MAX_FIDS = 256 }; // per connection, for now
@@ -950,6 +956,15 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
           break;
         }
       }
+      if (t.type == P9_Topen && (s->extensions & P9_EXT_SRV) && s->fs.open_handle) {
+        vx_handle h = VX_HANDLE_NONE; // srv: the reply carries it (a connector)
+        e = s->fs.open_handle(s->fs.ctx, f->node, t.mode, &h);
+        if (e != VX_OK) {
+          if (s->fs.clunk) s->fs.clunk(s->fs.ctx, f->node, true);
+          break;
+        }
+        s->reply_handle = h; // none, for a file that has no handle to give
+      }
       f->open = true;
       f->mode = t.mode & ~(P9_OAPPEND | P9_OJOIN);
       if ((t.mode & P9_ORCLOSE) && f->file)
@@ -990,14 +1005,19 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
       break;
     }
     case P9_Twrite:
-      if (!(f = p9_fid_find(s, t.fid)))
+      if (!(f = p9_fid_find(s, t.fid))) {
         e = VX_ERR_BAD_HANDLE;
-      else if (!f->open || ((f->mode & 3) != P9_OWRITE && (f->mode & 3) != P9_ORDWR) || !s->fs.write)
+      } else if (!f->open || ((f->mode & 3) != P9_OWRITE && (f->mode & 3) != P9_ORDWR) || !s->fs.write) {
         e = VX_ERR_ACCESS;
-      else if (t.count > s->msize - P9_IOHDRSZ)
+      } else if (t.count > s->msize - P9_IOHDRSZ) {
         e = VX_ERR_TOO_SMALL;
-      else
+      } else if (s->request_handle && (s->extensions & P9_EXT_SRV) && s->fs.write_handle) {
+        e = s->fs.write_handle(s->fs.ctx, f->node, s->request_handle); // srv: a post; the file server's now
+        s->request_handle = VX_HANDLE_NONE;
+        r.count = t.count;
+      } else {
         e = p9_write(s, f, &t, &r);
+      }
       break;
     case P9_Tclunk:
     case P9_Tremove:

@@ -594,7 +594,7 @@ typedef enum p9_dialect : uint8_t {
 
 // 9Px's extensions, as words after the dialect: "9P2000.x/1 +dref +map".
 #define P9_EXTENSIONS(X)                                                                                     \
-  X(DREF, dref) X(MAP, map) X(LEASE, lease) X(NOTIFY, notify) X(XATTR, xattr) X(POSIX, posix)
+  X(DREF, dref) X(MAP, map) X(LEASE, lease) X(NOTIFY, notify) X(XATTR, xattr) X(POSIX, posix) X(SRV, srv)
 
 enum : uint32_t {
 #define P9_EXT_BIT(name, word) P9_EXT_BIT_##name,

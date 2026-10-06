@@ -87,6 +87,8 @@ typedef struct service {
 typedef struct post {
   vx_str name;              // into buf
   vx_handle client, server; // /srv/NAME, and svcd's handle to the service's end
+  uint32_t srvmode;         // srvmode=: listed in srvfs's /srv with these permissions, owned by sys
+  bool listed;
   char buf[32];
 } post;
 
@@ -143,6 +145,43 @@ static post *ensure_post(vx_str name) {
   p->name = (vx_str){p->buf, name.len};
   post_count++;
   return p;
+}
+
+// The manifest posts that say srvmode=, listed in srvfs's /srv (6d4d2a),
+// owned by sys: created there, then written with a connector of their own.
+// Without srvfs (skipped), nothing; a srvfs that does not answer within a
+// few seconds is given up on.
+static bool skipped(vx_str name); // below
+
+static void list_posts(void) {
+  const post *srv = find_post(VX_STR("srv"));
+  if (!srv || skipped(VX_STR("srvfs"))) return;
+  static p9_conn conn;
+  vx_handle connector;
+  if (vx_handle_dup(srv->client, VX_RIGHTS_SAME, &connector) != VX_OK) return;
+  if (p9_ring_connect(connector, &conn) != VX_OK) {
+    vx_handle_close(connector);
+    return;
+  }
+  conn.timeout = 5'000'000'000;
+  conn.c.uname = VX_STR("sys");
+  uint32_t root = 0;
+  if (p9c_attach(&conn.c, VX_STR(""), &root) == VX_OK) {
+    for (uint32_t i = 0; i < post_count; i++) {
+      if (!posts[i].listed) continue;
+      uint32_t fid = 0;
+      vx_handle dup;
+      bool made = p9c_walk(&conn.c, root, VX_STR(""), &fid) == VX_OK &&
+                  p9c_create(&conn.c, fid, posts[i].name, posts[i].srvmode, P9_OWRITE) == VX_OK &&
+                  vx_handle_dup(posts[i].client, VX_RIGHTS_SAME, &dup) == VX_OK;
+      if (!made || p9c_write_handle(&conn.c, fid, dup) != VX_OK)
+        say(VX_STR("cannot list /srv/"), posts[i].name, VX_STR(" in srvfs\n"));
+      if (fid) p9c_clunk(&conn.c, fid);
+    }
+    p9c_clunk(&conn.c, root);
+  }
+  p9_ring_disconnect(&conn);
+  vx_handle_close(connector);
 }
 
 // A reader over one manifest, from `at`; values decode into its own scratch.
@@ -239,7 +278,15 @@ static void read_manifest(vx_str path, vx_str text) {
                                             .name = {names[service_count], name.len},
                                             .restart = vx_ndb_has(&rec, "restart")};
         current = &services[service_count];
-        bool ok = !srv.len || ensure_post(srv);
+        post *made = srv.len ? ensure_post(srv) : nullptr;
+        bool ok = !srv.len || made;
+        vx_str mode = vx_ndb_get(&rec, "srvmode");
+        if (made && mode.len) { // octal, as chmod has it
+          uint32_t m = 0;
+          for (size_t i = 0; i < mode.len && mode.ptr[i] >= '0' && mode.ptr[i] <= '7'; i++)
+            m = m * 8 + (uint32_t)(mode.ptr[i] - '0');
+          made->srvmode = m & 0777, made->listed = true;
+        }
         if (!ok)
           say(VX_STR("skipping "), current->name, VX_STR(": cannot post it (too many, or a long name)\n"));
         if (ok)
@@ -657,6 +704,8 @@ const char *vx_main(void) {
           wanted(&services[i])) {
         vx_status started = start(&services[i]);
         if (started != VX_OK) cannot("cannot start ", &services[i], started);
+        // srvfs up: the posts that say srvmode= are listed before the services after it look.
+        if (started == VX_OK && str_eq(services[i].name, VX_STR("srvfs"))) list_posts();
       }
 
   for (;;) {
