@@ -91,19 +91,21 @@ const char *vx_main(void) {
       case 'n': break; // no authentication: there is none before keyd (M10)
       case 'q': domount = true, reallymount = false; break;
       case 's':
-        if (++i == vx_spawn.argc) return VX_USAGE;
-        for (size_t k = 0; k < vx_spawn.args[i].len; k++)
+        if (++i == vx_spawn.argc) return vx_eprint(vx_cstr(VX_USAGE)), vx_eprint(VX_STR("\n")), "usage";
+        for (size_t k = 0;
+             k < vx_spawn.args[i].len && vx_spawn.args[i].ptr[k] >= '0' && vx_spawn.args[i].ptr[k] <= '9';
+             k++) // as atoi reads it: to the first byte not a digit
           sleeptime = sleeptime * 10 + (uint64_t)(vx_spawn.args[i].ptr[k] - '0');
         j = a.len;
         break;
-      default: vx_eprint(vx_cstr(VX_USAGE)); return "usage";
+      default: vx_eprint(vx_cstr(VX_USAGE)), vx_eprint(VX_STR("\n")); return "usage";
       }
     }
   }
   uint32_t n = vx_spawn.argc - i;
   if ((flags & VX_NS_AFTER) && (flags & VX_NS_BEFORE)) n = 0;
   if (n < 1 || n > 3) {
-    vx_eprint(vx_cstr(VX_USAGE));
+    vx_eprint(vx_cstr(VX_USAGE)), vx_eprint(VX_STR("\n"));
     return "usage";
   }
   dest = vx_spawn.args[i];

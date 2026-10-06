@@ -33,8 +33,9 @@ typedef struct vx_users {
 
 // The index of the user named name, or none's.
 [[maybe_unused]] static uint32_t vx_users_named(const vx_users *t, vx_str name) {
-  for (uint32_t i = 0; i < t->n; i++)
-    if (t->user[i].nname == name.len && memcmp(t->user[i].name, name.ptr, name.len) == 0) return i;
+  for (uint32_t i = 0; i < t->n; i++) // a removed user's place has no name, which no one is
+    if (t->user[i].nname && t->user[i].nname == name.len && memcmp(t->user[i].name, name.ptr, name.len) == 0)
+      return i;
   return t->none;
 }
 

@@ -346,6 +346,7 @@ static int64_t p9c_readdir_as_stat(p9_client *c, int slot, uint64_t offset, uint
   p9_rcall rc = {};
   vx_status e = p9c_rpc(c, &t, &rc, VX_HANDLE_NONE);
   uint32_t used = 0;
+  bool overflow = false; // an entry did not fit
   if (e == VX_OK) {
     p9_in in = {.buf = rc.r.data.ptr, .len = rc.r.data.len};
     while (in.pos < in.len && !in.failed) {
@@ -356,10 +357,13 @@ static int64_t p9c_readdir_as_stat(p9_client *c, int slot, uint64_t offset, uint
       if (in.failed) break;
       p9_stat st = {.qid = q, .mode = p9c_mode_of_dirent(type), .name = name};
       size_t n = p9_stat_encode(&st, buf + used, count - used);
-      if (!n) break;
+      if (!n) {
+        overflow = true;
+        break;
+      }
       used += (uint32_t)n, cookie = next;
     }
-    if (used == 0 && in.pos < in.len) e = VX_ERR_TOO_SMALL; // not one entry fits
+    if (used == 0 && overflow) e = VX_ERR_TOO_SMALL; // not one entry fits, the last one too
   }
   p9c_done(c, &rc);
   if (e != VX_OK) return e;

@@ -779,7 +779,8 @@ static void tty_note(ofd *o, bool device, uint32_t pty); // below, with the term
 // tty_note from the fid's stat: for a file opened again or joined.
 static void tty_check(ofd *o) {
   p9_stat s;
-  if (p9c_stat(o->f.c, o->f.fid, &s, nullptr) != VX_OK || !(s.mode & P9_DMDEVICE)) return;
+  p9_stat_text keep; // the name: the pty's number
+  if (p9c_stat(o->f.c, o->f.fid, &s, &keep) != VX_OK || !(s.mode & P9_DMDEVICE)) return;
   uint32_t pty = 0;
   for (size_t i = 0; i < s.name.len && s.name.ptr[i] >= '0' && s.name.ptr[i] <= '9'; i++)
     pty = pty * 10 + (uint32_t)(s.name.ptr[i] - '0');

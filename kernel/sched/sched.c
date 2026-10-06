@@ -84,10 +84,9 @@ static _Atomic uint32_t cpus_online; // CPUs that reached their idle loop
 static struct {
   spinlock lock;
   thread *run_head[BANDS], *run_tail[BANDS];
-  uint64_t idle_mask;     // bit i: CPU i is running its idle thread
-  uint64_t admitted_ppm;  // the realtime budgets admitted, in millionths of a CPU
-  uint64_t reserved_mask; // the reserved CPUs
-  sched_ctx *throttled;   // contexts waiting for their next period
+  uint64_t idle_mask;    // bit i: CPU i is running its idle thread
+  uint64_t admitted_ppm; // the realtime budgets admitted, in millionths of a CPU
+  sched_ctx *throttled;  // contexts waiting for their next period
 } sched;
 
 static cpu *this_cpu(void) { return &cpus[arch_cpu_index()]; }
@@ -194,21 +193,33 @@ static bool ready_for(const cpu *c, uint32_t b) {
 
 // --- Budgets ---
 
+// A spent context's threads may run again: off the throttled list.
+static void unthrottle_locked(sched_ctx *x) {
+  if (!x->throttled) return;
+  x->throttled = false;
+  for (sched_ctx **link = &sched.throttled; *link; link = &(*link)->th_next)
+    if (*link == x) {
+      *link = x->th_next;
+      break;
+    }
+  x->th_next = nullptr;
+}
+
+// Gets this CPU and every idle one to look at the ready queue again: threads
+// that could not run may now.
+static void kick_idle(void) {
+  this_cpu()->resched = true;
+  for (uint32_t i = 0; i < cpu_total; i++)
+    if (&cpus[i] != this_cpu() && (sched.idle_mask & (1ull << i))) arch_send_resched(&cpus[i]);
+}
+
 // A realtime context whose period has ended is filled again.
 static void ctx_refill(sched_ctx *x, vx_instant now) {
   if (x->intent != VX_INTENT_REALTIME || now < x->period_end) return;
   x->left = x->budget;
   vx_instant next = x->period_end + x->period;
   x->period_end = next > now ? next : now + x->period; // far behind: from now
-  if (x->throttled) {
-    x->throttled = false;
-    for (sched_ctx **link = &sched.throttled; *link; link = &(*link)->th_next)
-      if (*link == x) {
-        *link = x->th_next;
-        break;
-      }
-    x->th_next = nullptr;
-  }
+  unthrottle_locked(x);
 }
 
 // Charges c's running thread's context for the time since it last was; true
@@ -239,10 +250,7 @@ static void refill_due(vx_instant now) {
     next = x->th_next;
     if (now >= x->period_end) ctx_refill(x, now), any = true;
   }
-  if (!any) return;
-  this_cpu()->resched = true;
-  for (uint32_t i = 0; i < cpu_total; i++)
-    if (&cpus[i] != this_cpu() && (sched.idle_mask & (1ull << i))) arch_send_resched(&cpus[i]);
+  if (any) kick_idle();
 }
 
 static void sleep_remove(thread *t) {
@@ -374,7 +382,6 @@ static void unreserve_locked(sched_ctx *x) {
       cpus[i].reserved = nullptr;
       if (&cpus[i] != this_cpu()) arch_send_resched(&cpus[i]);
     }
-  sched.reserved_mask &= ~x->reserved;
   x->reserved = 0;
 }
 
@@ -400,8 +407,11 @@ static vx_status sched_ctx_set(sched_ctx *x, const vx_sched_params *p) {
   if (fits) {
     sched.admitted_ppm = sched.admitted_ppm - x->ppm + ppm;
     bool was = x->throttled;
-    ctx_apply(x, p, ppm, clock_now());
-    if (was) x->period_end = clock_now(); // filled at once, off the throttled list by the next refill
+    ctx_apply(x, p, ppm, clock_now()); // filled, whatever its intent now
+    // Spent, it is let go at once: a refill would fill only a realtime one,
+    // and one reconfigured to another intent stayed throttled for ever (the
+    // Odin port's finding).
+    if (was) unthrottle_locked(x), kick_idle();
   }
   spin_unlock(&sched.lock);
   return fits ? VX_OK : VX_ERR_REFUSED;
@@ -467,7 +477,6 @@ static vx_status sched_reserve_cpus(sched_ctx *x, uint32_t count, vx_core_set *o
     return VX_ERR_REFUSED;
   }
   x->reserved = got;
-  sched.reserved_mask |= got;
   for (uint32_t i = 0; i < cpu_total; i++)
     if (got >> i & 1) {
       cpus[i].reserved = x;
@@ -531,6 +540,15 @@ static void lend_locked(thread *from, thread *to) {
     to->donor->donee = nullptr;
   }
   to->donor = from, from->donee = to, to->lend_tail = false;
+}
+
+// A thread's intent, as a channel message carries it: its loan chain read
+// under the lock, as a donor ending its loan or dying changes it.
+static uint32_t sched_thread_intent(const thread *t) {
+  spin_lock(&sched.lock);
+  uint32_t i = thread_intent(t);
+  spin_unlock(&sched.lock);
+  return i;
 }
 
 static void sched_lend(thread *from, thread *to) {

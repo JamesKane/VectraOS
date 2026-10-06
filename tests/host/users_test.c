@@ -43,6 +43,8 @@ int main(void) {
   CHECK(live.user[glenda].id == VX_USERS_GONE_ID && !live.user[glenda].nname); // gone, its place kept
   CHECK(vx_users_named(&live, VX_STR("alice")) == 4 && live.n == 5);
   CHECK(vx_users_named(&live, VX_STR("glenda")) == live.none);
+  CHECK(vx_users_named(&live, VX_STR("")) ==
+        live.none); // not the gone place, whose name is empty (Odin's finding)
   static char many[8192];
   size_t at = 0;
   for (uint32_t i = 0; i < 126; i++) { // 126 new ones, with the 5 places taken: more than 128

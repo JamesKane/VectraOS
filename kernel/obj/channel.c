@@ -156,7 +156,7 @@ static vx_status channel_deliver(channel *to, channel_msg *m) {
 // Sends a message the caller has filled in, handles included, to c's peer.
 // On success the message belongs to the channel; on failure to the caller.
 static vx_status channel_write(channel *c, channel_msg *m) {
-  ((vx_msg_header *)msg_body(m))->sender_intent = thread_intent(this_cpu()->current);
+  ((vx_msg_header *)msg_body(m))->sender_intent = sched_thread_intent(this_cpu()->current);
   spin_lock(&c->pair->lock);
   channel *peer = channel_peer(c);
   vx_status st = peer ? channel_deliver(peer, m) : VX_ERR_PEER_CLOSED;
@@ -211,7 +211,7 @@ static vx_status channel_call(channel *c, channel_msg *request, vx_instant deadl
   w.txid = c->next_txid;
   c->next_txid = CALL_TXID | (c->next_txid & SIDE_TXID) | ((c->next_txid + 1) & ~(CALL_TXID | SIDE_TXID));
   ((vx_msg_header *)msg_body(request))->txid = w.txid;
-  ((vx_msg_header *)msg_body(request))->sender_intent = thread_intent(this_cpu()->current);
+  ((vx_msg_header *)msg_body(request))->sender_intent = sched_thread_intent(this_cpu()->current);
   request->call = &w;
   sched_lending(t); // the server's port waiter it wakes runs on t's scheduling
   vx_status st = channel_deliver(peer, request);

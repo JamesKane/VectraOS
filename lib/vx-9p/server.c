@@ -1002,6 +1002,8 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
         vx_handle h = VX_HANDLE_NONE; // srv: the reply carries it (a connector)
         e = s->fs.open_handle(s->fs.ctx, f->node, t.mode, &h);
         if (e != VX_OK) {
+          if (f->file)
+            s->shared->files[f->file - 1] = (p9_open_file){}, f->file = 0; // its open file, given back
           if (s->fs.clunk) s->fs.clunk(s->fs.ctx, f->node, true);
           break;
         }

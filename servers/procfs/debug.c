@@ -98,11 +98,13 @@ typedef struct debugger {
   bool bound; // procfs's port takes the task's exceptions first
   breakpoint bp[DBG_BREAKS];
   vx_watches watches; // the task's watchpoints, as procfs set them
-  // The threads followed, and the faults passed on: cap entries each, in
-  // memory of their own (dbg_grow), freed when the debugger is forgotten.
+  // The threads followed (cap entries), and the faults passed on (pcap), in
+  // memory of their own, each table grown alone (dbg_grow, passed_grow), so
+  // growing one never moves a held entry a caller has: freed when the
+  // debugger is forgotten.
   held *threads;
   passed *passed;
-  uint32_t cap;
+  uint32_t cap, pcap;
   // All-stop: the threads procfs suspended for an event or a step over, and
   // whether the debugger has let the task go on since its last event.
   uint32_t *paused;
@@ -273,17 +275,22 @@ static void dbg_free(void *p, size_t n) {
 static bool dbg_grow(debugger *d) {
   uint32_t cap = d->cap ? d->cap * 2 : DBG_FIRST_THREADS;
   held *t = dbg_alloc(cap * sizeof *t);
+  if (!t) return false;
+  memset(t, 0, cap * sizeof *t);
+  if (d->cap) memcpy(t, d->threads, d->cap * sizeof *t), dbg_free(d->threads, d->cap * sizeof *t);
+  d->threads = t, d->cap = cap;
+  return true;
+}
+
+// The faults' table grown: never the threads', whose entries a caller of
+// passed_of may hold (release's h; the Odin port's finding).
+static bool passed_grow(debugger *d) {
+  uint32_t cap = d->pcap ? d->pcap * 2 : DBG_FIRST_THREADS;
   passed *q = dbg_alloc(cap * sizeof *q);
-  if (!t || !q) {
-    dbg_free(t, cap * sizeof *t), dbg_free(q, cap * sizeof *q);
-    return false;
-  }
-  memset(t, 0, cap * sizeof *t), memset(q, 0, cap * sizeof *q);
-  if (d->cap) {
-    memcpy(t, d->threads, d->cap * sizeof *t), memcpy(q, d->passed, d->cap * sizeof *q);
-    dbg_free(d->threads, d->cap * sizeof *t), dbg_free(d->passed, d->cap * sizeof *q);
-  }
-  d->threads = t, d->passed = q, d->cap = cap;
+  if (!q) return false;
+  memset(q, 0, cap * sizeof *q);
+  if (d->pcap) memcpy(q, d->passed, d->pcap * sizeof *q), dbg_free(d->passed, d->pcap * sizeof *q);
+  d->passed = q, d->pcap = cap;
   return true;
 }
 
@@ -309,13 +316,13 @@ static held *held_of(proc *p, uint32_t tid, bool make) {
 static passed *passed_of(proc *p, uint32_t tid) {
   debugger *d = dbg_of(p);
   passed *free_slot = nullptr;
-  for (uint32_t i = 0; i < d->cap; i++) {
+  for (uint32_t i = 0; i < d->pcap; i++) {
     if (d->passed[i].tid == tid) return &d->passed[i];
     if (!d->passed[i].tid && !free_slot) free_slot = &d->passed[i];
   }
   if (!free_slot) { // the new half is free
-    uint32_t at = d->cap;
-    if (dbg_grow(d)) free_slot = &d->passed[at];
+    uint32_t at = d->pcap;
+    if (passed_grow(d)) free_slot = &d->passed[at];
   }
   return free_slot;
 }
@@ -525,13 +532,15 @@ static void dbg_exception(proc *p, uint32_t tid) {
   if (e.kind == VX_EXCEPTION_STEP) {
     // The trap, back, once no other thread is stepping over it still: put back
     // under one that has not run the instruction yet, it would stop again.
+    // So with the watchpoints (the Odin port's finding): back once no other
+    // thread is past them.
     bool others = false;
-    for (uint32_t i = 0; h->why == WHY_OVER && i < d->cap && !others; i++)
-      others = d->threads[i].tid && d->threads[i].tid != tid && d->threads[i].why == WHY_OVER &&
-               d->threads[i].bp == h->bp;
+    for (uint32_t i = 0; (h->why == WHY_OVER || h->why == WHY_WOVER) && i < d->cap && !others; i++)
+      others = d->threads[i].tid && d->threads[i].tid != tid && d->threads[i].why == h->why &&
+               (h->why == WHY_WOVER || d->threads[i].bp == h->bp);
     if (h->why == WHY_OVER && h->bp >= 0 && d->bp[h->bp].used && !others)
       mem_rw(p, d->bp[h->bp].addr, (void *)TRAP, sizeof TRAP, true);
-    if (h->why == WHY_WOVER) set_watches(p, false);                     // the watchpoints, back
+    if (h->why == WHY_WOVER && !others) set_watches(p, false);          // the watchpoints, back
     if ((h->why == WHY_OVER || h->why == WHY_WOVER) && !h->user_step) { // past it, on the way on
       *h = (held){};
       vx_exception_resume(p->task, tid, VX_RESUME_CONTINUE, nullptr);
@@ -929,7 +938,7 @@ static vx_status regs_ndb_write(const proc *p, uint32_t tid, vx_str s) {
 // A process ended, or its slot is reused: nothing of its debugging is left.
 static void dbg_forget(const proc *p) {
   debugger *d = dbg_of(p);
-  dbg_free(d->threads, d->cap * sizeof *d->threads), dbg_free(d->passed, d->cap * sizeof *d->passed);
+  dbg_free(d->threads, d->cap * sizeof *d->threads), dbg_free(d->passed, d->pcap * sizeof *d->passed);
   dbg_free(d->paused, d->cappaused * sizeof *d->paused);
   *d = (debugger){};
 }

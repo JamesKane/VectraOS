@@ -23,7 +23,10 @@ uintptr_t __stack_chk_guard = 0x2e0f5b3c9d81a647; // to come from the kernel's e
 // exits does. What it printed goes out first, and its pipes close, so a
 // reader sees the end of its input before the exit is seen.
 [[noreturn]] static void vx_exit_str(vx_str msg) {
-  vx_mutex_lock(&vx_stdio_lock); // held: no other thread prints over the last lines
+  // Held: no other thread prints over the last lines. Not for ever: a note's
+  // default ends the program here, and a note can come while this thread is
+  // printing, holding the lock already (the Odin port's finding).
+  vx_mutex_lock_until(&vx_stdio_lock, vx_clock_read() + 100'000'000);
   if (vx_print_hook == vx_stdout_print)
     vx_stdout_flush();
   else if (vx_print_hook)

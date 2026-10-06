@@ -546,6 +546,18 @@ typedef struct vx_mutex {
   }
 }
 
+// vx_mutex_lock, giving up at the deadline: false if it did not get the lock.
+[[maybe_unused]] static bool vx_mutex_lock_until(vx_mutex *m, vx_instant deadline) {
+  uint32_t c = 0;
+  if (atomic_compare_exchange_strong(&m->state, &c, 1)) return true;
+  if (c != 2) c = atomic_exchange(&m->state, 2);
+  while (c != 0) {
+    if (vx_futex_wait(&m->state, 2, deadline) == VX_ERR_TIMED_OUT) return false;
+    c = atomic_exchange(&m->state, 2);
+  }
+  return true;
+}
+
 [[maybe_unused]] static void vx_mutex_unlock(vx_mutex *m) {
   if (atomic_fetch_sub(&m->state, 1) != 1) {
     atomic_store(&m->state, 0);

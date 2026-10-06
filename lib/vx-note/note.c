@@ -66,7 +66,10 @@ typedef struct vx_note_buf {
   case VX_EXCEPTION_FP_DISABLED: vx_note_put(&b, VX_STR("sys: trap: fp disabled")); break;
   case VX_EXCEPTION_STEP: vx_note_put(&b, VX_STR("sys: trap: step")); break;
   case VX_EXCEPTION_PROTECTION_KEY: // the thread's rights to the page's key deny it (ADR-0035)
-    vx_note_put(&b, VX_STR(code == 1 ? "sys: trap: protection key write" : "sys: trap: protection key read"));
+    vx_note_put(
+        &b, code == 1
+                ? VX_STR("sys: trap: protection key write")
+                : VX_STR("sys: trap: protection key read")); // VX_STR of a literal: sizeof a pointer cut it
     has_address = true;
     break;
   case VX_EXCEPTION_PAGER_TIMEOUT: // its pager did not supply the page in time
