@@ -121,7 +121,9 @@ static void setup_device(void) {
   if (!has_mac) mac[0] = 2, mac[5] = 1; // a locally administered address
   rx_buf = make_buffers(rx_pages);
   tx_buf = make_buffers(tx_pages);
-  for (uint16_t i = 0; i < QSIZE; i++) vx_virtq_offer(&rxq, i, buf_addr(rx_pages, i), BUF, true);
+  // As many as each queue has: the device may offer fewer than QSIZE, which
+  // vx_virtq_init takes (the Rust port's finding).
+  for (uint16_t i = 0; i < rxq.size; i++) vx_virtq_offer(&rxq, i, buf_addr(rx_pages, i), BUF, true);
   vx_virtio_ready(&dev);
   vx_virtq_kick(&rxq);
 }
@@ -152,8 +154,8 @@ static bool transmit(const vx_sqe *e, int64_t *result) {
     return true;
   }
   uint16_t d = 0;
-  while (d < QSIZE && tx_busy[d]) d++;
-  if (d == QSIZE) return false;
+  while (d < txq.size && tx_busy[d]) d++;
+  if (d == txq.size) return false;
   uint8_t *b = tx_buf + (size_t)d * BUF;
   memset(b, 0, NET_HDR);              // no offloads
   memcpy(b + NET_HDR, frame, e->len); // copied once, then the device reads our copy
@@ -233,6 +235,14 @@ static void accept_client(void) {
     vx_msg_header req;
     vx_msg_size size;
     vx_status st = vx_channel_read(listen, &req, sizeof req, nullptr, 0, &size);
+    if (st == VX_ERR_TOO_SMALL) { // no request: taken off whole (its handles closed), or it is read for ever
+      static uint8_t junk[VX_CHANNEL_MAX_BYTES];
+      vx_handle hs[VX_CHANNEL_MAX_HANDLES];
+      vx_msg_size got;
+      if (vx_channel_read(listen, junk, sizeof junk, hs, VX_CHANNEL_MAX_HANDLES, &got) == VX_OK)
+        for (uint32_t i = 0; i < got.handles; i++) vx_handle_close(hs[i]);
+      continue;
+    }
     if (st == VX_ERR_SHOULD_WAIT) return;
     if (st == VX_ERR_PEER_CLOSED) fail("the listen channel is gone");
     if (st != VX_OK || size.bytes != sizeof req || req.ordinal != VX_NET_CONNECT) continue;

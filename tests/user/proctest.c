@@ -499,8 +499,22 @@ const char *vx_main(void) {
   CHECK(n > 0 && has((vx_str){buf, (size_t)n}, "name=proctest") && has((vx_str){buf, (size_t)n}, "pid="));
   n = read_file(me, "ppid", buf, sizeof buf);
   CHECK(n > 0 && number(buf, n) == 1);
-  CHECK(wait_record(buf, sizeof buf) == VX_ERR_NO_CHILD);  // no children yet
-  CHECK(write_file(1, "note", "hangup") == VX_ERR_ACCESS); // svcd takes no notes: one would end it
+  CHECK(wait_record(buf, sizeof buf) == VX_ERR_NO_CHILD);     // no children yet
+  CHECK(write_file(1, "note", "hangup") == VX_ERR_ACCESS);    // svcd takes no notes: one would end it
+  CHECK(write_file(1, "ctl", "childnotes") == VX_ERR_ACCESS); // nor a child's SIGCHLD, by childnotes
+  // procfs itself is as untouchable (the Rust port's finding): stopped, every
+  // /proc call after would hang.
+  uint64_t procfs = 0;
+  for (uint64_t pid = 2; pid < 64 && !procfs; pid++) {
+    int64_t k = read_file(pid, "status", buf, sizeof buf);
+    if (k > 0 && has((vx_str){buf, (size_t)k}, "name=procfs ")) procfs = pid;
+  }
+  CHECK(procfs != 0);
+  CHECK(write_file(procfs, "ctl", "stop") == VX_ERR_ACCESS &&
+        write_file(procfs, "ctl", "kill") == VX_ERR_ACCESS &&
+        write_file(procfs, "note", "hangup") == VX_ERR_ACCESS &&
+        write_file(procfs, "ctl", "childnotes") == VX_ERR_ACCESS);
+  CHECK(read_file(me, "status", buf, sizeof buf) > 0); // and /proc still answers
 
   // A child's end leaves a record with its exit string.
   uint64_t c = spawn("exit");

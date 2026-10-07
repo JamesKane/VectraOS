@@ -246,7 +246,8 @@ typedef enum child_code {
   READ_LOOP,
   FAULT_LOAD,
   BREAK_STEP,
-  ROBUST_HOLD // registers a robust list at CHILD_DATA (owner 0x1234), then as BLOCK
+  BREAK_SYSCALL, // a breakpoint, then a syscall (clock_read), then exit 7: a stepped syscall
+  ROBUST_HOLD    // registers a robust list at CHILD_DATA (owner 0x1234), then as BLOCK
 } child_code;
 
 static constexpr uint64_t CHILD_DATA = 0x30'0000; // FAULT_LOAD's page, which nothing maps at first
@@ -264,6 +265,12 @@ static uint32_t write_child(uint8_t *code, child_code what) {
   }
   if (what == BREAK_STEP) {
     EMIT(0xcc); // int3: a breakpoint, then exit 7
+    what = EXIT_7;
+  }
+  if (what == BREAK_SYSCALL) {
+    EMIT(0xb8), EMIT32(VX_SYS_clock_read); // mov $clock_read, %eax
+    EMIT(0xcc);                            // int3
+    EMIT(0x0f), EMIT(0x05);                // syscall, then exit 7
     what = EXIT_7;
   }
   if (what == ROBUST_HOLD) {
@@ -326,6 +333,12 @@ static uint32_t write_child(uint8_t *code, child_code what) {
   }
   if (what == BREAK_STEP) {
     EMIT(0xd4200020u); // brk #1: a breakpoint, then exit 7
+    what = EXIT_7;
+  }
+  if (what == BREAK_SYSCALL) {
+    EMIT(0xd2800008u | (uint32_t)VX_SYS_clock_read << 5); // movz x8, #clock_read
+    EMIT(0xd4200020u);                                    // brk #1
+    EMIT(0xd4000001u);                                    // svc #0, then exit 7
     what = EXIT_7;
   }
   if (what == ROBUST_HOLD) {
@@ -1750,6 +1763,29 @@ static void test_debugger(void) {
   CHECK(e.regs.rdi == 7 && e.regs.rip == CHILD_CODE + 1 + 5); // int3, then mov $7, %edi
 #else
   CHECK(e.regs.x[0] == 7 && e.regs.pc == CHILD_CODE + 8); // brk, then movz x0, #7
+#endif
+  CHECK(vx_exception_resume(child, 1, VX_RESUME_CONTINUE, nullptr) == VX_OK);
+  CHECK(is(wait_exit(port, child), ""));
+  vx_handle_close(child);
+
+  // A stepped syscall stops right after it, not an instruction later (on
+  // x86_64, FMASK clears TF as it enters: the Rust port's finding).
+  CHECK(start_child_bound(BREAK_SYSCALL, port, VX_EXCEPTION_FIRST_CHANCE, &child));
+  CHECK(child_stopped(port));
+  CHECK(vx_thread_state(child, 1, VX_STATE_GET_EXCEPTION, &e, sizeof e) == VX_OK &&
+        e.kind == VX_EXCEPTION_BREAKPOINT);
+#ifdef __aarch64__
+  e.regs.pc += 4; // past the brk
+  CHECK(vx_thread_state(child, 1, VX_STATE_SET_REGS, &e.regs, sizeof e.regs) == VX_OK);
+#endif
+  CHECK(vx_exception_resume(child, 1, VX_RESUME_STEP, nullptr) == VX_OK);
+  CHECK(child_stopped(port));
+  CHECK(vx_thread_state(child, 1, VX_STATE_GET_EXCEPTION, &e, sizeof e) == VX_OK &&
+        e.kind == VX_EXCEPTION_STEP);
+#ifdef __x86_64__
+  CHECK(e.regs.rip == CHILD_CODE + 5 + 1 + 2 && e.regs.rdi != 7); // mov, int3, syscall: not the mov after
+#else
+  CHECK(e.regs.pc == CHILD_CODE + 12 && e.regs.x[0] != 7); // movz, brk, svc: not the movz after
 #endif
   CHECK(vx_exception_resume(child, 1, VX_RESUME_CONTINUE, nullptr) == VX_OK);
   CHECK(is(wait_exit(port, child), ""));

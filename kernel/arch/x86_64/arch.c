@@ -687,8 +687,13 @@ static void arch_tls_write(uint64_t value) { wrmsr(MSR_FS_BASE, value); }
 
 static constexpr uint64_t RFLAGS_TF = 0x100; // trap after the next instruction
 
+// The thread's stepping is what holds, not the frame's TF (as aarch64's,
+// 002a9a8): FMASK clears TF as a syscall enters, and a frame replaced (an
+// in-task handler leaving with its registers) has none. user_return's way
+// out sets it again, and reports a stepped syscall as the call returns.
 static void arch_frame_step(trap_frame *f, bool on) {
   f->rflags = on ? f->rflags | RFLAGS_TF : f->rflags & ~RFLAGS_TF;
+  this_cpu()->current->stepping = on;
 }
 
 static void arch_sync_icache(void *p, size_t len) { (void)p, (void)len; } // x86 keeps it coherent itself
@@ -786,6 +791,14 @@ void x86_trap(trap_frame *f) {
     kput_hex(f->rip);
     panic_end(f->rip, f->rbp);
   }
+  if (from_user && f->vector == VECTOR_SYSCALL && this_cpu()->current->stepping) {
+    // A stepped syscall: the step is the instruction, done (the Rust port's
+    // finding, as aarch64's svc): reported now, not after the next one.
+    uint32_t kind = VX_EXCEPTION_STEP;
+    uint64_t address = 0;
+    exception_raise(f, &kind, 0, &address);
+  }
+  if (from_user && this_cpu()->current->stepping) f->rflags |= RFLAGS_TF; // a frame replaced keeps its step
   if (from_user) user_return();
 }
 

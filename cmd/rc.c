@@ -506,6 +506,13 @@ static void export_var(void *arg, const char *name, const rc_word *val) {
     return;
   }
   memcpy(env, name, len), n = len, env[n++] = '=';
+  uint32_t words = 0;
+  for (const rc_word *w = val; w; w = w->next)
+    if (++words >
+        VX_SPAWN_MAX_ARGS) { // more than a child takes: refused, never cut (the Rust port's finding)
+      rec->failed = true;
+      return;
+    }
   for (const rc_word *w = val; w; w = w->next) {
     if (n + w->len + 1 > sizeof env) {
       rec->failed = true;
@@ -564,6 +571,11 @@ static void import_env(void) {
     while (eq < e.len && e.ptr[eq] != '=') eq++;
     if (eq == e.len || eq == 0 || eq >= sizeof name) continue;
     if (eq > 3 && memcmp(e.ptr, "fn#", 3) == 0) continue; // a function: import_fns's
+    // More words than a list here holds: not set at all, rather than cut
+    // (an rc parent refuses to export one: export_var).
+    uint32_t words_in = 1;
+    for (size_t k = eq + 1; k < e.len; k++) words_in += e.ptr[k] == '\x01';
+    if (words_in > VX_SPAWN_MAX_ARGS) continue;
     memcpy(name, e.ptr, eq);
     name[eq] = 0;
     uint32_t n = 0;
@@ -846,7 +858,6 @@ static vx_status stage_io(const rc_fd *fd, bool reads, vx_handle pipe_in, vx_han
 // then, unless async, the relays served until they and the programs are done.
 static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool async, uint64_t *pid) {
   (void)ctx, (void)r;
-  reap();
   spawn_noteg = async && !in_pipefd;
   if (n > MAX_STAGES) {
     say("rc: too many commands in a pipe", (vx_str){}, "\n");
@@ -919,7 +930,12 @@ static bool run(void *ctx, rc *r, const rc_command *stages, uint32_t n, bool asy
       if (!tasks[s]) continue;
       vx_task_summary info;
       if (s + 1 == n && vx_task_info(tasks[s], &info) == VX_OK) *pid = info.id;
+      // An ended one is kept until wait takes its status (the Rust port's
+      // finding: let go before every command, wait found nothing); only a
+      // new one needing its place lets one go.
       uint32_t slot = 0;
+      while (slot < MAX_BACKGROUND && background[slot]) slot++;
+      if (slot == MAX_BACKGROUND) reap(), slot = 0;
       while (slot < MAX_BACKGROUND && background[slot]) slot++;
       if (slot < MAX_BACKGROUND)
         background[slot] = tasks[s];

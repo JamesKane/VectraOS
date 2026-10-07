@@ -601,21 +601,22 @@ static int64_t sys_thread_interrupt(vx_handle th, uint64_t id, uint64_t note_ptr
   return VX_OK;
 }
 
-// Up to cap of task t's threads, each with a reference, after the first
-// `skip`: the one with this id, or with id 0, every one (a process stops as a
-// whole: procfs's ctl stop), a batch at a time.
-static uint32_t task_threads(task *t, uint64_t id, uint32_t skip, thread **out, uint32_t cap) {
+// Up to cap of task t's threads, each with a reference: the one with this id,
+// or with id 0, every one (a process stops as a whole: procfs's ctl stop), a
+// batch at a time, the cap lowest ids above `after` in each. By id, not by
+// place in the list, which threads join and leave between batches: one would
+// be missed, or taken twice (the Rust port's finding).
+static uint32_t task_threads(task *t, uint64_t id, uint32_t after, thread **out, uint32_t cap) {
   uint32_t n = 0;
   spin_lock(&t->lock);
-  for (thread *th = t->threads; th && n < cap; th = th->task_next) {
-    if (id && th->id != id) continue;
-    if (skip) {
-      skip--;
-      continue;
-    }
-    object_ref(&th->obj);
-    out[n++] = th;
+  for (thread *th = t->threads; th; th = th->task_next) {
+    if ((id && th->id != id) || th->id <= after) continue;
+    if (n == cap && th->id >= out[n - 1]->id) continue;
+    uint32_t at = n < cap ? n++ : n - 1; // in order of id: the highest falls off when full
+    while (at > 0 && out[at - 1]->id > th->id) out[at] = out[at - 1], at--;
+    out[at] = th;
   }
+  for (uint32_t i = 0; i < n; i++) object_ref(&out[i]->obj);
   spin_unlock(&t->lock);
   return n;
 }
@@ -664,13 +665,14 @@ static int64_t sys_thread_suspend(vx_handle th, uint64_t id) {
   st = VX_ERR_NOT_FOUND;
   do { // a batch at a time: every thread, however many
     n = task_threads(t, id, done, targets, SUSPEND_MAX);
+    uint32_t last = n ? targets[n - 1]->id : done; // before they are let go
     if (n && st == VX_ERR_NOT_FOUND) st = VX_OK;
     for (uint32_t i = 0; i < n; i++) {
       vx_status one = thread_suspend_one(targets[i]);
       if (st == VX_OK) st = one;
       object_release(&targets[i]->obj);
     }
-    done += n;
+    done = last; // the batch's highest: the next starts above it
   } while (n == SUSPEND_MAX);
   object_release(&t->obj);
   return st;
@@ -685,13 +687,14 @@ static int64_t sys_thread_resume(vx_handle th, uint64_t id) {
   st = VX_ERR_NOT_FOUND;
   do {
     n = task_threads(t, id, done, targets, SUSPEND_MAX);
+    uint32_t last = n ? targets[n - 1]->id : done; // before they are let go
     if (n && st == VX_ERR_NOT_FOUND) st = VX_OK;
     for (uint32_t i = 0; i < n; i++) {
       vx_status one = thread_resume_one(targets[i]);
       if (st == VX_OK) st = one;
       object_release(&targets[i]->obj);
     }
-    done += n;
+    done = last; // the batch's highest: the next starts above it
   } while (n == SUSPEND_MAX);
   object_release(&t->obj);
   return st;

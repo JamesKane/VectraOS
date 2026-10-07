@@ -49,6 +49,17 @@ static void *read_all(const char *path, size_t *size) {
 
 int main(void) {
   CHECK(fixture_add(2, 3) == 10);
+  { // A function whose line sequence starts where the one before ends: the END row the sort
+    // puts first is the other's, and its body is past its first statement (the Rust port's finding).
+    vxdi_line lines[] = {{.addr = 0x1000, .flags = VXDI_END},
+                         {.addr = 0x1000, .flags = VXDI_STMT},
+                         {.addr = 0x1008, .flags = VXDI_STMT},
+                         {.addr = 0x1010, .flags = VXDI_END}};
+    vxdi_func fn = {.low = 0x1000, .high = 0x1010};
+    vxd_builder b = {.nfuncs = 1, .funcs = &fn, .nlines = 4, .lines = lines};
+    func_bodies(&b);
+    CHECK(fn.body == 0x1008);
+  }
   size_t size = 0;
   void *image = read_all("/proc/self/exe", &size);
   CHECK(image != nullptr);

@@ -112,7 +112,8 @@ struct thread {
   uint64_t robust_head;                 // its robust list (thread_set_robust, ADR-0037); 0: none
   uint32_t robust_owner;                // the owner value its robust lock words hold
   bool user_held; // stopped at an exception: fp and tls are its own, saved, for a debugger (exception_stop)
-  bool stepping;  // a debugger asked for one instruction (arch_frame_step): aarch64 keeps MDSCR_EL1.SS on
+  bool
+      stepping; // a debugger asked for one instruction (arch_frame_step): aarch64's MDSCR_EL1.SS, x86_64's TF
   uint64_t user_entry, user_sp, user_arg, user_arg2;
   bool started;          // thread_start has taken it (under its task's lock)
   uint32_t intent;       // enum vx_intent: its own (sched_ctx_configure with no context)

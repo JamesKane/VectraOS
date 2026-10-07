@@ -424,8 +424,9 @@ static long fd_resolve(int dirfd, const char *path, bool follow, char *out) {
 static long console_write(const char *p, size_t n) {
   if (vx_console.len) vx_console_flush(); // what vx_print buffered goes first
   if (vx_console.connector) {
-    if ((vx_console.open || vx_console_open() == VX_OK) && vx_console_put(p, n)) return (long)n;
-    if (vx_console_open() == VX_OK && vx_console_put(p, n)) return (long)n; // the driver restarted
+    if ((vx_console.open || vx_console_open(5'000'000'000) == VX_OK) && vx_console_put(p, n)) return (long)n;
+    if (vx_console_open(VX_CONSOLE_AGAIN) == VX_OK && vx_console_put(p, n))
+      return (long)n; // the driver restarted
   }
   vx_debug_write((vx_str){p, n});
   return (long)n;

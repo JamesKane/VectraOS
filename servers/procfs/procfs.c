@@ -103,6 +103,11 @@ static bool has_children(const proc *p) {
 
 static uint64_t self_id; // procfs's own pid
 
+// svcd and procfs itself: no note, stop, kill or debugger reaches either,
+// since the system needs them, and procfs stopped would stop every /proc
+// call after (a POSIX kill(-1, SIGSTOP) reached it: the Rust port's finding).
+static bool untouchable(const proc *p) { return p->root || p->pid == self_id; }
+
 // A new process for task (which it takes, if it succeeds), its parent's pid, and flags.
 static vx_status admit(vx_handle task, uint64_t ppid, uint32_t flags, uint64_t group, bool root, proc **out) {
   vx_task_summary info;
@@ -199,6 +204,7 @@ static void queue_record(proc *parent, const proc *c, uint8_t kind, uint8_t sig)
 // Delivers a note: the kernel interrupts p with it, and a wait read p is
 // blocked in ends, after the note.
 static vx_status deliver(proc *p, vx_str note) {
+  if (untouchable(p)) return VX_ERR_ACCESS; // a SIGCHLD too, which post never sees
   vx_status st = vx_thread_interrupt(p->task, 0, note);
   if (st == VX_OK && p->wait_held) p->interrupted = server.again = true; // the held read ends
   return st;
@@ -276,7 +282,7 @@ static void event(void *ctx, const vx_packet *pk) {
 // act on itself, procfs carries out. svcd takes none: it has no handler, and
 // any note would end it, and the system with it.
 static vx_status post(proc *p, vx_str note) {
-  if (p->root) return VX_ERR_ACCESS;
+  if (untouchable(p)) return VX_ERR_ACCESS;
   int64_t sender;
   int64_t sig = posix_note_signal(note, &sender);
   if (sig == POSIX_SIGKILL) return vx_task_kill(p->task, VX_STR("killed"));
@@ -496,8 +502,9 @@ static vx_status fs_open(void *ctx, uint64_t node, uint8_t mode) {
   bool reads = (mode & 3) == P9_OREAD || (mode & 3) == P9_ORDWR;
   bool writes = (mode & 3) == P9_OWRITE || (mode & 3) == P9_ORDWR;
   if ((reads && !(perm & 0444)) || (writes && !(perm & 0222))) return VX_ERR_ACCESS;
-  if (!thread_of(node) && f == EVENTS && !p->root) return dbg_bind(p); // a reader of events is a debugger
-  return VX_OK; // OTRUNC means nothing to a file made as it is read
+  if (!thread_of(node) && f == EVENTS && !untouchable(p))
+    return dbg_bind(p); // a reader of events is a debugger
+  return VX_OK;         // OTRUNC means nothing to a file made as it is read
 }
 
 // A process's status record, as it is now.
@@ -677,14 +684,14 @@ static vx_str written(const uint8_t *buf, uint32_t count) {
 
 static vx_status ctl(proc *p, vx_str cmd) {
   if (word_is(cmd, "kill")) {
-    if (p->root) return VX_ERR_ACCESS; // svcd: the system needs it
+    if (untouchable(p)) return VX_ERR_ACCESS; // svcd, procfs: the system needs them
     return vx_task_kill(p->task, VX_STR("killed"));
   }
   if (cmd.len >= 4 && memcmp(cmd.ptr, "stop", 4) == 0 && (cmd.len == 4 || cmd.ptr[4] == ' ')) {
     uint64_t sig = POSIX_SIGSTOP; // stop SIG: which signal stopped it, for its parent's wait
     if (cmd.len > 5 && (!parse_u64((vx_str){cmd.ptr + 5, cmd.len - 5}, &sig) || !sig || sig > POSIX_NSIG))
       return VX_ERR_INVALID;
-    return p->root ? VX_ERR_ACCESS : stop(p, (uint8_t)sig);
+    return untouchable(p) ? VX_ERR_ACCESS : stop(p, (uint8_t)sig);
   }
   if (word_is(cmd, "start")) {
     if (dbg_pending(p)) return VX_OK; // a stop not yet read: it is the next to be (as gdb reports one first)
@@ -701,6 +708,7 @@ static vx_status ctl(proc *p, vx_str cmd) {
     return VX_OK;
   }
   if (word_is(cmd, "childnotes")) {
+    if (untouchable(p)) return VX_ERR_ACCESS; // a SIGCHLD would end it
     p->childnotes = true;
     return VX_OK;
   }
@@ -742,7 +750,7 @@ static vx_status fs_write(void *ctx, uint64_t node, uint64_t offset, const uint8
     return vx_thread_state(p->task, tid, f == T_REGS ? VX_STATE_SET_REGS : VX_STATE_SET_FPREGS, &whole, size);
   }
   if (!tid && f == MEM) {
-    if (p->root) return VX_ERR_ACCESS;
+    if (untouchable(p)) return VX_ERR_ACCESS;
     static uint8_t copy[P9_RING_MSIZE]; // task_mem_rw's buffer is the caller's to read and write
     if (*count > sizeof copy) return VX_ERR_INVALID;
     memcpy(copy, buf, *count);

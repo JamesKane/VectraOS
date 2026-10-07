@@ -1035,6 +1035,10 @@ static void func_bodies(vxd_builder *b) {
     uint32_t stmts = 0;
     for (uint64_t k = lo; k < b->nlines && b->lines[k].addr < f->high; k++) {
       const vxdi_line *l = &b->lines[k];
+      // An END at the function's first address ends the sequence before it,
+      // which the sort puts first: not this one's (the Rust port's finding,
+      // its DWARF 5 on aarch64).
+      if ((l->flags & VXDI_END) && l->addr == f->low) continue;
       if (l->flags & VXDI_END) break;
       if (l->flags & VXDI_PROLOGUE_END) {
         f->body = l->addr;

@@ -140,14 +140,20 @@ static vx_str field(vx_str rec, const char *key) {
   return (vx_str){};
 }
 
+// A number, the whole of s: decimal, or 0x and up to 16 hex digits; 0 for
+// anything else, which callers take as none (`break 0x40102g` set a
+// breakpoint at a wrong address, and said so: the Rust port's finding).
 static uint64_t parse_num(vx_str s) {
+  bool hex = s.len > 2 && s.ptr[0] == '0' && s.ptr[1] == 'x';
+  if (!s.len || (hex && s.len > 18)) return 0;
   uint64_t v = 0;
-  if (s.len > 2 && s.ptr[0] == '0' && s.ptr[1] == 'x') {
-    for (size_t i = 2; i < s.len; i++) v = v << 4 | hex_digit_value(s.ptr[i]);
-    return v;
+  for (size_t i = hex ? 2 : 0; i < s.len; i++) {
+    uint64_t d = 16;
+    if (hex) d = hex_digit_value(s.ptr[i]);
+    if (!hex && s.ptr[i] >= '0' && s.ptr[i] <= '9') d = (uint64_t)(s.ptr[i] - '0');
+    if (d >= (hex ? 16u : 10u) || (!hex && v > (UINT64_MAX - d) / 10)) return 0;
+    v = hex ? v << 4 | d : v * 10 + d;
   }
-  for (size_t i = 0; i < s.len && s.ptr[i] >= '0' && s.ptr[i] <= '9'; i++)
-    v = v * 10 + (uint64_t)(s.ptr[i] - '0');
   return v;
 }
 
@@ -294,6 +300,8 @@ static uint64_t regs_pc(void) {
 }
 
 // The thread's registers and the call stack, as it stopped.
+static void fault_thread(void); // below, with the threads
+
 static void refresh(void) {
   nframes = frame = 0;
   have_regs = read_file(target_path(thread_file("regs")), &regs, sizeof regs) == (int64_t)sizeof regs;
@@ -345,6 +353,7 @@ static void ended(void) {
   say("dbg: crash directory ");
   say(crash_dir);
   say("\n");
+  fault_thread();
   refresh();
 }
 
@@ -432,7 +441,10 @@ static void run(void) {
                          vx_ns_connector(&ns, VX_STR("/proc")), // dbg is its parent: it gets the wait record
                      .registered = set_breaks};
   vx_handle task;
-  if (vx_spawn_elf(&a, &task) != VX_OK) return say("dbg: cannot start the program\n");
+  if (vx_spawn_elf(&a, &task) != VX_OK) { // set_breaks may have named it: not a program, then
+    pid = 0;
+    return say("dbg: cannot start the program\n");
+  }
   vx_handle_close(task); // procfs watches it
   live = launched = true;
   // Opening events makes procfs its debugger: faults stop it with an event.
@@ -483,6 +495,24 @@ static size_t thread_status(uint64_t n, char *buf, uint32_t cap) {
   path[len] = 0;
   int64_t got = read_file(target_path(path), buf, cap);
   return got > 0 ? (size_t)got : 0;
+}
+
+// The thread that faulted, in a crash directory (its status's reason=fault),
+// for the commands to act on, not thread 1 (the Rust port's finding).
+static void fault_thread(void) {
+  vx_ns_file d;
+  if (vx_ns_open(&ns, target_path("threads"), P9_OREAD, &d) != VX_OK) return;
+  static uint8_t dir[8192];
+  for (int64_t n; (n = vx_ns_read(&d, dir, sizeof dir)) > 0;) {
+    p9_stat st;
+    for (size_t at = 0; p9_dir_next(dir, (size_t)n, &at, &st);) {
+      uint64_t tid = parse_num(st.name);
+      char rec[256];
+      vx_str reason = field((vx_str){rec, thread_status(tid, rec, sizeof rec)}, "reason");
+      if (tid && reason.len == 5 && !memcmp(reason.ptr, "fault", 5)) thread = (uint32_t)tid;
+    }
+  }
+  vx_ns_close(&d);
 }
 
 static void threads(void) {
@@ -738,7 +768,7 @@ const char *vx_main(void) {
     if (target_arg.len >= sizeof crash_dir) return "path too long";
     memcpy(crash_dir, target_arg.ptr, target_arg.len);
     ok = load_named();
-    if (ok) refresh();
+    if (ok) fault_thread(), refresh();
   } else { // a program to launch
     if (target_arg.len >= sizeof program) return "path too long";
     memcpy(program, target_arg.ptr, target_arg.len), program_len = target_arg.len;

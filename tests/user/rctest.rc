@@ -171,6 +171,15 @@ echo written | tee >{cat > $dir/teed} > /dev/null
 wait
 check pipefd-write written `{cat $dir/teed}
 
+# A command run with & that has ended keeps its status until wait takes it,
+# however many commands came between (the Rust port's finding).
+{exit 3} &
+bg=$apid
+/boot/bin/true
+/boot/bin/true
+wait $bg
+check bg-wait ok `{if(~ $status *': 3') echo ok; if not echo $status}
+
 # rfork (6d7b3), as 9front's: in children, so this shell keeps its own.
 check rfork-usage 'rfork usage' `{rfork x >[2] /dev/null; echo $status}
 mkdir $dir/nsa $dir/nsb

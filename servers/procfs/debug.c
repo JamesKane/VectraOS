@@ -752,9 +752,9 @@ static void detach(proc *p) {
 static vx_status dbg_ctl(proc *p, vx_str cmd) {
   vx_str args = cmd, verb = next_word(&args);
   uint64_t n;
-  if (word_is(verb, "break")) return p->root ? VX_ERR_ACCESS : set_break(p, args);
+  if (word_is(verb, "break")) return untouchable(p) ? VX_ERR_ACCESS : set_break(p, args);
   if (word_is(verb, "unbreak")) return parse_num(next_word(&args), &n) ? clear_break(p, n) : VX_ERR_INVALID;
-  if (word_is(verb, "watch")) return p->root ? VX_ERR_ACCESS : set_watch(p, args);
+  if (word_is(verb, "watch")) return untouchable(p) ? VX_ERR_ACCESS : set_watch(p, args);
   if (word_is(verb, "unwatch")) return parse_num(next_word(&args), &n) ? clear_watch(p, n) : VX_ERR_INVALID;
   if (word_is(verb, "detach")) {
     detach(p);
@@ -763,14 +763,14 @@ static vx_status dbg_ctl(proc *p, vx_str cmd) {
   bool step = word_is(verb, "step"), freeze = word_is(verb, "freeze"), thaw = word_is(verb, "thaw");
   if (!step && !freeze && !thaw) return VX_ERR_NOT_FOUND;
   if (!parse_u64(next_word(&args), &n) || !n || n > UINT32_MAX) return VX_ERR_INVALID;
-  if (p->root) return VX_ERR_ACCESS;
+  if (untouchable(p)) return VX_ERR_ACCESS;
   if (step) return step_thread(p, (uint32_t)n);
   return freeze ? vx_thread_suspend(p->task, n) : vx_thread_resume(p->task, n);
 }
 
 // A thread's ctl: step · resume · freeze · thaw.
 static vx_status thread_ctl(proc *p, uint32_t tid, vx_str cmd) {
-  if (p->root) return VX_ERR_ACCESS;
+  if (untouchable(p)) return VX_ERR_ACCESS;
   if (word_is(cmd, "step")) return step_thread(p, tid);
   if (word_is(cmd, "freeze")) return vx_thread_suspend(p->task, tid);
   if (word_is(cmd, "thaw")) return vx_thread_resume(p->task, tid);

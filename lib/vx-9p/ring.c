@@ -565,7 +565,16 @@ static void p9_conn_clear(p9_conn *k, bool dead) {
 
 // Opens a connection through a connector (a listen channel's client end, which
 // stays the caller's) and negotiates 9Px. The connection is ready to attach.
+static vx_status p9_ring_connect_within(vx_handle connector, p9_conn *k, vx_duration wait);
+
 [[maybe_unused]] static vx_status p9_ring_connect(vx_handle connector, p9_conn *k) {
+  return p9_ring_connect_within(connector, k, 5'000'000'000);
+}
+
+// p9_ring_connect, waiting at most `wait` for the server to take it and
+// answer its version (a console reconnecting while its driver restarts waits
+// less: the Rust port's finding).
+static vx_status p9_ring_connect_within(vx_handle connector, p9_conn *k, vx_duration wait) {
   p9_conn_clear(k, false);
   vx_msg_header req = {.ordinal = P9_CONNECT}, rep;
   vx_handle got[2] = {};
@@ -575,7 +584,7 @@ static void p9_conn_clear(p9_conn *k, bool dead) {
                   .rd_cap = sizeof rep,
                   .rd_handles = got,
                   .rd_count_cap = 2};
-  vx_status st = vx_channel_call(connector, &call, vx_clock_read() + 5'000'000'000);
+  vx_status st = vx_channel_call(connector, &call, vx_clock_read() + wait);
   if (st == VX_OK && call.actual.handles != 2) st = VX_ERR_INVALID;
   if (st == VX_OK) st = p9_ring_map(got[1], true, &k->ring);
   if (got[1]) vx_handle_close(got[1]); // the mapping keeps the memory
@@ -587,9 +596,15 @@ static void p9_conn_clear(p9_conn *k, bool dead) {
     vx_ring_arena(&k->ring, &arena_size);
     k->arena = (p9_chunks){.size = arena_size};
     k->c = (p9_client){.pipe = &P9_RING_PIPE, .ctx = k, .bufsize = P9_RING_MSIZE};
+    // The version as the connect, within 5 s: a server that answers nothing
+    // (one waiting on its caller, as tmpfs on procfs's crash) does not hold
+    // the caller for ever (the Rust port's finding); the caller's own limit,
+    // if any, after.
+    k->timeout = wait;
     st = p9c_version(&k->c, P9_RING_MSIZE,
                      P9_EXT_POSIX | P9_EXT_XATTR | P9_EXT_MAP | P9_EXT_DREF |
                          P9_EXT_SRV); // what the server has
+    k->timeout = 0;
   }
   if (st != VX_OK) {
     p9_ring_slots_unmap(k);

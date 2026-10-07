@@ -24,14 +24,17 @@ static struct {
   vx_instant retry_at; // no reconnecting before this, after a failure
 } vx_console;
 
-// Connects (again). After a failure it does not try for a second, so a
-// console that is gone for good costs each line nothing, not a connect's wait.
-static vx_status vx_console_open(void) {
+// Connects (again), waiting at most `wait`. After a failure it does not try
+// for a second, so a console that is gone for good costs each line nothing,
+// not a connect's wait.
+static constexpr vx_duration VX_CONSOLE_AGAIN = 100'000'000; // a reconnect's wait
+
+static vx_status vx_console_open(vx_duration wait) {
   if (vx_console.conn.end) p9_ring_disconnect(&vx_console.conn);
   vx_console.open = false;
   if (vx_clock_read() < vx_console.retry_at) return VX_ERR_PEER_CLOSED;
   uint32_t root = 0;
-  vx_status st = p9_ring_connect(vx_console.connector, &vx_console.conn);
+  vx_status st = p9_ring_connect_within(vx_console.connector, &vx_console.conn, wait);
   if (st == VX_OK) st = p9c_attach(&vx_console.conn.c, VX_STR(""), &root);
   if (st == VX_OK) {
     st = p9c_walk(&vx_console.conn.c, root, VX_STR("cons"), &vx_console.fid);
@@ -57,7 +60,11 @@ static void vx_console_flush(void) {
   size_t n = vx_console.len;
   vx_console.len = 0;
   if (!n || vx_console_put(vx_console.line, n)) return;
-  if (vx_console_open() == VX_OK && vx_console_put(vx_console.line, n)) return; // the driver restarted
+  // Again, after a failure, waiting a tenth of a second, not a connect's 5:
+  // while the console's driver restarts each line would wait that long
+  // (svcd's, the system's: the Rust port's finding); it goes to the
+  // kernel's log instead.
+  if (vx_console_open(VX_CONSOLE_AGAIN) == VX_OK && vx_console_put(vx_console.line, n)) return;
   vx_debug_write((vx_str){vx_console.line, n});
 }
 
@@ -73,7 +80,7 @@ static void vx_console_print(vx_str s) {
 // svcd calls this itself once it has started the console driver.
 [[maybe_unused]] static vx_status vx_console_attach(vx_handle connector) {
   vx_console.connector = connector;
-  vx_status st = vx_console_open();
+  vx_status st = vx_console_open(5'000'000'000); // the first: a console server starting may take a while
   if (st == VX_OK) vx_print_hook = vx_console_print;
   return st;
 }
@@ -87,7 +94,7 @@ static void vx_console_print(vx_str s) {
   for (;;) {
     int64_t n = vx_console.open ? p9c_read(&vx_console.conn.c, vx_console.fid, 0, buf, count) : -1;
     if (n >= 0) return n;
-    if (vx_console_open() == VX_OK) continue;
+    if (vx_console_open(VX_CONSOLE_AGAIN) == VX_OK) continue;
     static _Atomic uint32_t never;
     vx_futex_wait(&never, 0, vx_console.retry_at); // a second, then try again
   }
