@@ -1284,6 +1284,7 @@ static const program USER_PROGRAMS[] = {
     {"tmpfs", "servers/tmpfs/tmpfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"nullfs", "servers/nullfs/nullfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"srvfs", "servers/srvfs/srvfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
+    {"envd", "servers/envd/envd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"relay", "servers/relay/relay.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"sysfs", "servers/sysfs/sysfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"ptyd", "servers/ptyd/ptyd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},

@@ -133,6 +133,8 @@ static bool burn_cpu(void) {
   }
 }
 
+static bool file_is(const char *path, const char *text); // below
+
 static int child_main(char **argv) {
   // default: the end, as SIGSEGV; before the parent's check, as dbg runs it too (tests/qemu/dbgmusl.ndb)
   if (strcmp(argv[1], "segv") == 0) return *nowhere_at();
@@ -159,6 +161,8 @@ static int child_main(char **argv) {
     return ok ? 10 : 2;
   }
   if (strcmp(argv[1], "signal") == 0) return kill(parent, SIGUSR1) == 0 ? 12 : 2;
+  if (strcmp(argv[1], "envshare") == 0)
+    return file_is("/env/SHARED", "from parent") ? 18 : 2;              // its parent's group
   if (strcmp(argv[1], "burn") == 0) return burn_cpu() ? 17 : 2;         // CPU time for its parent to see
   if (strcmp(argv[1], "umask") == 0) return umask(022) == 027 ? 16 : 2; // the parent's, kept by posix_spawn
   if (strcmp(argv[1], "socket") == 0) { // descriptor 3, a TCP socket the parent connected
@@ -1205,6 +1209,27 @@ static bool faults(volatile char *p, bool write) {
   return signals[SIGSEGV] == before + 1 && fault_address == (void *)p;
 }
 
+// /env (M6 step 6e1c1, ADR-0044): this process's environment group, filled
+// from what it was given, written, and shared with a spawned child and a
+// forked one, as 9front's Egrp.
+static void test_env_group(void) {
+  CHECK(file_is("/env/GREETING", "hello"));
+  FILE *f = fopen("/env/SHARED", "w");
+  CHECK(f && fputs("from parent", f) >= 0 && fclose(f) == 0);
+  pid_t child;
+  int status = 0;
+  CHECK(spawn_child("envshare", nullptr, &child) == 0);
+  CHECK(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 18);
+  child = fork();
+  if (child == 0) _exit(file_is("/env/SHARED", "from parent") ? 19 : 2);
+  CHECK(child > 0 && waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 19);
+  DIR *d = opendir("/env");
+  bool listed = false;
+  for (struct dirent *e; d && (e = readdir(d));) listed = listed || strcmp(e->d_name, "SHARED") == 0;
+  if (d) closedir(d);
+  CHECK(listed && unlink("/env/SHARED") == 0 && access("/env/SHARED", F_OK) == -1);
+}
+
 // mprotect and PROT_NONE, MAP_SHARED anonymous memory across fork, and
 // mremap in place and to a fixed address (M6 step 6e1a2, ADR-0042).
 static void test_mapping_kinds(void) {
@@ -2159,6 +2184,7 @@ int main(int argc, char **argv) {
   test_file_calls();
   test_cpu_time();
   test_mapping_kinds();
+  test_env_group();
   test_mmap();
   test_terminals();
   test_poll();

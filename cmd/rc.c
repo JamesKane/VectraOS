@@ -185,6 +185,11 @@ static void cd_builtin(const rc_word *argv, int n) {
   say("Can't cd ", dir, ": "), err(chdir_why(st)), err(VX_STR("\n"));
 }
 
+// What updenv (below) last wrote to /env, by the hashes of names and values.
+static struct {
+  uint64_t name, value; // FNV-1a hashes; name 0: the slot is free
+} env_seen[1024];
+
 // --- rfork (6d7b3), as 9front's execrfork ---
 
 // A note group of the shell's own (rfork s, RFNOTEG): its own pid written to
@@ -209,9 +214,9 @@ static vx_status own_note_group(void) {
 
 // rfork [fnesFNEm]; without flags, ens. n: a namespace of the shell's own, a
 // copy (it leaves its namespace group); N: a clean one, empty; m: no mounts
-// after; s: a note group of its own; F: its descriptors past 2 closed. e, E
-// and f change nothing: the environment and descriptors are the shell's own
-// already, passed to each child as it is spawned, never shared.
+// after; s: a note group of its own; F: its descriptors past 2 closed; e: an
+// environment group of its own, a copy; E: an empty one (ADR-0044). f
+// changes nothing: the descriptors are the shell's own already.
 static void rfork_builtin(const rc_word *argv, int n) {
   vx_str flags = {};
   if (n == 1) flags = VX_STR("ens");
@@ -233,7 +238,9 @@ static void rfork_builtin(const rc_word *argv, int n) {
   if (has['s']) st = own_note_group(); // first: N takes /proc away
   if (st == VX_OK && (has['n'] || has['N'])) vx_ns_group_leave(&ns);
   if (st == VX_OK && has['N']) vx_ns_reset(&ns);
-  if (st == VX_OK && has['m']) ns.nomount = true;                    // and the children's after (vx-ns)
+  if (st == VX_OK && has['m']) ns.nomount = true; // and the children's after (vx-ns)
+  if (st == VX_OK && (has['e'] || has['E']) && vx_ns_env_fork(&ns, !has['E']) == VX_OK && has['E'])
+    memset(env_seen, 0, sizeof env_seen); // an empty group: every variable written again at the next spawn
   for (uint32_t i = 3; st == VX_OK && has['F'] && i < VX_FDS; i++) { // a clean table: none past 2
     if (vx_fds[i].end) vx_handle_close(vx_fds[i].end);
     vx_fds[i] = (vx_fd_entry){};
@@ -517,6 +524,34 @@ static uint32_t script_words(vx_str w[8]) {
 // could not read.
 static uint32_t exported; // env= records, this spawn's
 
+// 9front's Updenv (plan9.c), at each spawn: a variable or function whose
+// value changed since the last is written to /env, the shell's environment
+// group (ADR-0044), which its children share. A hash of each one's value is
+// kept, so an unchanged one costs nothing; a table too full writes on.
+
+static uint64_t fnv(const char *s, size_t n) {
+  uint64_t h = 0xcbf2'9ce4'8422'2325;
+  for (size_t i = 0; i < n; i++) h = (h ^ (uint8_t)s[i]) * 0x100'0000'01b3;
+  return h | 1;
+}
+
+// env is NAME=VALUE, eq the '=''s place.
+static void updenv(const char *env, size_t eq, size_t n) {
+  uint64_t nh = fnv(env, eq), vh = fnv(env + eq + 1, n - eq - 1);
+  uint32_t at = (uint32_t)(nh % (sizeof env_seen / sizeof env_seen[0]));
+  for (uint32_t probe = 0; probe < 8 && env_seen[at].name && env_seen[at].name != nh; probe++)
+    at = (at + 1) % (sizeof env_seen / sizeof env_seen[0]);
+  if (env_seen[at].name == nh && env_seen[at].value == vh) return;
+  static char path[8 + 256] = "/env/"; // the name goes after it
+  if (eq > 256) return;
+  for (size_t i = 0; i < eq; i++) path[5 + i] = env[i];
+  vx_ns_file f;
+  if (vx_ns_create(&ns, (vx_str){path, 5 + eq}, 0664, P9_OWRITE | P9_OTRUNC, &f) != VX_OK) return; // no group
+  bool ok = vx_ns_write(&f, env + eq + 1, (uint32_t)(n - eq - 1)) == (int64_t)(n - eq - 1);
+  vx_ns_close(&f);
+  if (ok && (!env_seen[at].name || env_seen[at].name == nh)) env_seen[at].name = nh, env_seen[at].value = vh;
+}
+
 static void export_var(void *arg, const char *name, const rc_word *val) {
   vx_ndb_writer *rec = arg;
   bool plain = name[0] != 0 && !(name[0] >= '0' && name[0] <= '9');
@@ -545,6 +580,7 @@ static void export_var(void *arg, const char *name, const rc_word *val) {
     memcpy(env + n, w->s, w->len), n += w->len;
     if (w->next) env[n++] = '\x01';
   }
+  updenv(env, len, n);
   vx_ndb_put(rec, "env", (vx_str){env, n});
   vx_ndb_end(rec);
   exported++;
@@ -565,6 +601,7 @@ static void export_fn(void *arg, const char *name, const char *src) {
   for (size_t k = 0; k < nl; k++) env[n++] = name[k];
   env[n++] = ' ';
   for (size_t k = 0; k < sl; k++) env[n++] = src[k];
+  updenv(env, 3 + nl, n);
   vx_ndb_put(rec, "env", (vx_str){env, n});
   vx_ndb_end(rec);
   exported++;

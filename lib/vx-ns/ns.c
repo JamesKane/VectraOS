@@ -39,6 +39,10 @@ static constexpr uint32_t VX_NS_MAX_ENTRIES = 32;
 static constexpr uint32_t VX_NS_MAX_MEMBERS = 8;
 static constexpr uint32_t VX_NS_MAX_CONNS = 16; // the POSIX template has 7, and fsd's branches come on top
 static constexpr uint32_t VX_NS_MAX_SRC = 64;
+// The process's own connection to its environment group (envd, ADR-0044),
+// past the namespace's: no mount names it, so a group's table never has it,
+// and /env is the process's, not its namespace group's (9front's Egrp).
+static constexpr uint8_t VX_NS_ENV_CONN = VX_NS_MAX_CONNS;
 
 enum : uint8_t {
   VX_NS_REPLACE = 0,
@@ -83,7 +87,7 @@ typedef struct vx_ns_entry {
 typedef struct vx_ns vx_ns;
 struct vx_ns_file;
 struct vx_ns {
-  vx_ns_conn conns[VX_NS_MAX_CONNS];
+  vx_ns_conn conns[VX_NS_MAX_CONNS + 1]; // the last, VX_NS_ENV_CONN, the process's /env
   vx_ns_entry entries[VX_NS_MAX_ENTRIES];
   uint32_t next_seq;
   // Called when unmount leaves a connection with no members, after its fids
@@ -97,6 +101,10 @@ struct vx_ns {
   void (*refresh)(vx_ns *ns);
   vx_status (*publish)(vx_ns *ns, uint8_t new_conn);
   bool quiet; // a refresh is replaying the group's table: no hooks
+  // /env (ADR-0044): its group's root fid on conns[VX_NS_ENV_CONN], attached
+  // by env_attach on first use; false (no envd) leaves /env to the table.
+  uint32_t env_root;
+  bool (*env_attach)(vx_ns *ns);
   // The process's current directory (ADR-0039; vx-rt's vx_getwd), which a
   // relative name is resolved against: its length into buf, or 0. Null: a
   // relative name is refused (host tests).
@@ -287,7 +295,22 @@ static vx_status ns_walk_on(vx_ns *ns, uint8_t conn, uint32_t fid, uint64_t qid,
 }
 
 // Resolves a cleaned path from the root, crossing mount points by identity.
+// /env and below, on the process's own environment group (ADR-0044): true
+// if path is the group's, with the walk's status in *st; false to go on in
+// the table, for a process with no group (no envd).
+static bool ns_resolve_env(vx_ns *ns, vx_str path, vx_ns_at *out, vx_status *st) {
+  bool env = path.len >= 4 && !memcmp(path.ptr, "/env", 4) && (path.len == 4 || path.ptr[4] == '/');
+  if (!env || !ns->env_attach) return false;
+  if (!ns->conns[VX_NS_ENV_CONN].client && !ns->env_attach(ns)) return false;
+  *st = p9c_walk(ns->conns[VX_NS_ENV_CONN].client, ns->env_root, (vx_str){path.ptr + 4, path.len - 4},
+                 &out->fid);
+  if (*st == VX_OK) out->conn = VX_NS_ENV_CONN, out->qid = 0, out->entry = nullptr;
+  return true;
+}
+
 static vx_status ns_resolve(vx_ns *ns, vx_str path, vx_ns_at *out) {
+  vx_status env;
+  if (ns_resolve_env(ns, path, out, &env)) return env;
   vx_str names[VX_NS_MAX_DEPTH];
   int n = ns_split(path, names);
   vx_ns_entry *e = ns_root(ns);

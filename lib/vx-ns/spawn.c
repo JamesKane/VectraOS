@@ -478,10 +478,113 @@ static vx_status vx_fd_open(vx_ns *ns, vx_str path, uint8_t mode, vx_ns_file *f)
   return VX_OK;
 }
 
+// --- /env (ADR-0044) ---
+//
+// The process's environment group, on envd, through a connection of its
+// own: the group its parent named (envgroup=TOKEN), or after a fork the
+// parent's, or else a new one filled from the spawn message's env= records.
+// Attached on first use: a process that never touches /env and starts no
+// child never connects.
+
+static struct {
+  vx_handle connector; // "srv:env", kept for children
+  p9_conn conn;
+  uint64_t token; // its group's (the root's qid path); 0 before the first attach
+  bool failed;    // no envd, or it refused: /env is the namespace table's
+} vx_env;
+
+static void vx_env_hex(uint64_t v, char out[17]) {
+  for (int i = 15; i >= 0; i--) out[15 - i] = "0123456789abcdef"[(v >> (4 * i)) & 15];
+  out[16] = 0;
+}
+
+// Attaches aname on the env connection: the root fid in *fid, the group's token in *token.
+static vx_status vx_env_attach_as(vx_str aname, uint32_t *fid, uint64_t *token) {
+  p9_qid q = {};
+  vx_status st = p9c_attach_qid(&vx_env.conn.c, aname, fid, &q);
+  if (st == VX_OK) *token = q.path;
+  return st;
+}
+
+// A new group's variables: this process's environment as it was given.
+static void vx_env_seed(uint32_t root) {
+  for (uint32_t i = 0; i < vx_spawn.envc; i++) {
+    vx_str e = vx_spawn.envs[i];
+    size_t eq = 0;
+    while (eq < e.len && e.ptr[eq] != '=') eq++;
+    if (!eq || eq == e.len) continue;
+    uint32_t fid;
+    if (p9c_walk(&vx_env.conn.c, root, (vx_str){}, &fid) != VX_OK) return;
+    if (p9c_create(&vx_env.conn.c, fid, (vx_str){e.ptr, eq}, 0664, P9_OWRITE) == VX_OK)
+      p9c_write(&vx_env.conn.c, fid, 0, e.ptr + eq + 1, (uint32_t)(e.len - eq - 1));
+    p9c_clunk(&vx_env.conn.c, fid);
+  }
+}
+
+static bool vx_env_attach(vx_ns *ns) {
+  if (ns->conns[VX_NS_ENV_CONN].client) return true;
+  if (vx_env.failed) return false;
+  if (!vx_env.connector) vx_env.connector = vx_spawn_take("srv:env");
+  if (!vx_env.connector || p9_ring_connect(vx_env.connector, &vx_env.conn) != VX_OK) {
+    vx_env.failed = true;
+    return false;
+  }
+  char hex[17] = {};
+  vx_ndb_record rec;
+  if (vx_env.token) // after a fork: the parent's group, as 9front's fork shares its Egrp
+    vx_env_hex(vx_env.token, hex);
+  else if (vx_spawn_record("envgroup", &rec) && vx_ndb_get(&rec, "envgroup").len == 16)
+    memcpy(hex, vx_ndb_get(&rec, "envgroup").ptr, 16);
+  uint32_t root = 0;
+  vx_status st = hex[0] ? vx_env_attach_as(vx_cstr(hex), &root, &vx_env.token) : VX_ERR_NOT_FOUND;
+  if (st != VX_OK) { // none named, or its last holder is gone: a new one, from what this process was given
+    st = vx_env_attach_as(VX_STR("new"), &root, &vx_env.token);
+    if (st == VX_OK) vx_env_seed(root);
+  }
+  if (st != VX_OK) {
+    p9_ring_disconnect(&vx_env.conn);
+    p9_conn_clear(&vx_env.conn, false);
+    vx_env.failed = true;
+    return false;
+  }
+  ns->conns[VX_NS_ENV_CONN].client = &vx_env.conn.c;
+  ns->env_root = root;
+  return true;
+}
+
+// rfork e (copy) and E (empty) for /env: a new group for this process and the
+// children it starts from now on; the old one goes on for those sharing it.
+[[maybe_unused]] static vx_status vx_ns_env_fork(vx_ns *ns, bool copy) {
+  if (!vx_env_attach(ns)) return VX_ERR_NOT_FOUND;
+  char aname[18] = "+";
+  vx_env_hex(vx_env.token, aname + 1);
+  uint32_t root;
+  uint64_t token;
+  vx_status st = vx_env_attach_as(copy ? vx_cstr(aname) : VX_STR("new"), &root, &token);
+  if (st != VX_OK) return st;
+  p9c_clunk(&vx_env.conn.c, ns->env_root);
+  ns->env_root = root, vx_env.token = token;
+  return VX_OK;
+}
+
+// A child's share of this process's group: its token, and envd's connector.
+static vx_status vx_env_records(vx_ns *ns, vx_ndb_writer *w, vx_handle *handles, vx_str *names,
+                                uint32_t *count, uint32_t cap) {
+  if (*count >= cap || !vx_env_attach(ns)) return VX_OK; // none: the child's env= records are all it has
+  if (vx_handle_dup(vx_env.connector, VX_RIGHTS_SAME, &handles[*count]) != VX_OK) return VX_OK;
+  names[(*count)++] = VX_STR("srv:env");
+  char hex[17];
+  vx_env_hex(vx_env.token, hex);
+  vx_ndb_put(w, "envgroup", vx_cstr(hex));
+  vx_ndb_end(w);
+  return VX_OK;
+}
+
 [[maybe_unused]] static vx_status vx_ns_from_spawn(vx_ns *ns) {
-  p9c_user = vx_spawn.user;  // its attaches name its user (docs/11 §9)
-  ns->getwd = vx_getwd;      // relative names from the current directory (ADR-0039)
-  ns->open_dev = vx_fd_open; // and /fd/N, its descriptors (ADR-0040)
+  p9c_user = vx_spawn.user;       // its attaches name its user (docs/11 §9)
+  ns->getwd = vx_getwd;           // relative names from the current directory (ADR-0039)
+  ns->open_dev = vx_fd_open;      // and /fd/N, its descriptors (ADR-0040)
+  ns->env_attach = vx_env_attach; // and /env, its environment group (ADR-0044)
   vx_ns_group.srv = vx_spawn_take("srv:nsd");
   vx_handle chan = vx_spawn_take("nsgroup");
   vx_status st = chan ? vx_ns_group_join(ns, chan) : vx_ns_replay(ns, vx_spawn.text, nullptr);
@@ -575,6 +678,7 @@ static vx_status vx_ns_copy_records(const vx_ns *ns, vx_ndb_writer *w, vx_handle
   if (st == VX_OK && vx_ns_group.srv &&
       vx_handle_dup(vx_ns_group.srv, VX_RIGHTS_SAME, &handles[*count]) == VX_OK)
     names[(*count)++] = VX_STR("srv:nsd");
+  if (st == VX_OK) vx_env_records(ns, w, handles, names, count, cap); // its environment group (ADR-0044)
   return st;
 }
 
@@ -594,7 +698,20 @@ static vx_status vx_ns_copy_records(const vx_ns *ns, vx_ndb_writer *w, vx_handle
 // own), and the namespace is built again from its own records over new
 // connections, through the connectors it kept. A dialed mount is dialed
 // again; the old TCP connection's state is left behind.
+static vx_status vx_ns_after_fork_table(vx_ns *ns); // below
+
 [[maybe_unused]] static vx_status vx_ns_after_fork(vx_ns *ns) {
+  // The env connection's ring was not copied either: let go here, and
+  // attached again on first use, to the same group (its token is kept).
+  if (vx_env.conn.end) p9_ring_disconnect(&vx_env.conn);
+  p9_conn_clear(&vx_env.conn, false);
+  vx_env.failed = false;
+  vx_status st = vx_ns_after_fork_table(ns);
+  ns->env_attach = vx_env_attach;
+  return st;
+}
+
+static vx_status vx_ns_after_fork_table(vx_ns *ns) {
   if (vx_ns_group.chan) {
     // In a group: the channel to nsd and the mapping of its text were copied
     // from the parent's; this process gets a channel of its own, maps the
