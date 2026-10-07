@@ -64,7 +64,7 @@ Until ADR-0034's first gate puts the toolchain in this tree, the C library comes
 
 ## Swift
 
-Swift programs build with `swift-on-vectra`'s toolchain and the SDK its `toolchain/build_stdlib.sh` makes from this sysroot, `toolchain/out/sdk/<triple>`, statically, with Swift's runtime over the same C library and hooks (M6 step 6e3, ADR-0034). Their platform module is `VectraOSLibc`, the C library's clause 7 headers (no `complex.h`), with `errno` and the type-generic math; `CommandLine.arguments` is vx-rt's argv, through `__swift_vectraos_argv`. Until ADR-0034's first gate brings the toolchain here, a scenario runs a Swift program built in that tree: `./build` takes the programs its `EXTERNAL_PROGRAMS` names from `tests/out/<triple>/` there.
+Swift programs build with `swift-on-vectra`'s toolchain and the SDK its `toolchain/build_stdlib.sh` makes from this sysroot, `toolchain/out/sdk/<triple>`, statically, with Swift's runtime over the same C library and hooks (M6 step 6e3, ADR-0034). Their platform module is `VectraOSLibc`, the C library's clause 7 headers (no `complex.h`), with `errno` and the type-generic math; `CommandLine.arguments` is vx-rt's argv, through `__swift_vectraos_argv`. Swift's Concurrency runs on VectraOS's own executors (Swift patch 0012): a worker thread per CPU the program may use (`__swift_vectraos_cpu_count`), and the main thread for the main actor once an async `main` hands it over; `Synchronization.Mutex` waits on the kernel's futexes. Until ADR-0034's first gate brings the toolchain here, a scenario runs a Swift program built in that tree: `./build` takes the programs its `EXTERNAL_PROGRAMS` names from `tests/out/<triple>/` there.
 
 # EXAMPLES
 

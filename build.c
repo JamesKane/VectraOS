@@ -1355,7 +1355,7 @@ static bool program_for(const program *p, const arch *a) { return !p->arch || st
 // ADR-0034's first gate brings the Swift toolchain here (M6 step 6e3): a
 // scenario that names one in `with=` takes it from that tree's
 // tests/out/TRIPLE/NAME, which its tests/build.sh makes.
-static const char *const EXTERNAL_PROGRAMS[] = {"swifta"};
+static const char *const EXTERNAL_PROGRAMS[] = {"swifta", "swiftb"};
 static constexpr int EXTERNAL_PROGRAM_COUNT = sizeof EXTERNAL_PROGRAMS / sizeof EXTERNAL_PROGRAMS[0];
 
 static bool external_program(const char *name) {

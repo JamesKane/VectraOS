@@ -31,6 +31,7 @@ uint32_t __llvm_libc_thread_id(void);
 int64_t __llvm_libc_clock_monotonic(void);
 void __llvm_libcxx_random_bytes(void *buf, size_t n);
 char **__swift_vectraos_argv(int *argc);
+unsigned __swift_vectraos_cpu_count(void);
 [[gnu::weak]] void __llvm_libc_thread_main(void); // the C library's, if a program uses threads
 int __llvm_libc_remove(const char *path);
 long __llvm_libc_file_open(const char *path, int flags);

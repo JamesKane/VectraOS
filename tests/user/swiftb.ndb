@@ -1,0 +1,4 @@
+# tests/user/swiftb.ndb: swiftb, Swift's stage B program (tests/qemu/swiftb.ndb),
+# built in swift-on-vectra's tree.
+
+service=swiftb program=/boot/bin/swiftb console entropy

@@ -1,0 +1,16 @@
+# tests/qemu/swiftb.ndb: Swift on VectraOS, stage B (M6 step 6e3b, ADR-0034):
+# swiftb, built by swift-on-vectra's tests/build.sh (EXTERNAL_PROGRAMS in
+# build.c), runs async Swift across every core: a task group on the global
+# executor's worker threads (one per usable CPU, over <threads.h>), an actor
+# a hundred tasks update, Task.sleep to a deadline on ContinuousClock, a hop
+# to the main actor, and Synchronization's Mutex on VectraOS's futexes.
+
+scenario=swiftb timeout=60 cmdline=vx.skip=rc with=swiftb
+expect="swiftb: hello from async Swift on VectraOS"
+expect="swiftb: the group ran on "
+expect="swiftb: slept "
+expect=" checks, 0 failed"
+line="svcd: swiftb exited"
+fail="vx: panic"
+fail="swiftb: FAILED"
+fail="svcd: swiftb exited: "

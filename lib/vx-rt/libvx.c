@@ -47,6 +47,10 @@ char **__swift_vectraos_argv(int *argc) {
   return vx_argv();
 }
 
+// Swift's global executor: a worker thread per CPU this program may use
+// (6e3b, Swift patch 0012).
+unsigned __swift_vectraos_cpu_count(void) { return vx_cpu_count(); }
+
 [[noreturn]] void __llvm_libc_exit(int status) { vx_exit(status); }
 
 // --- errno: the C library's numbers (llvm-libc's generic ones) ---
