@@ -5,7 +5,8 @@
 // printf round trips, math, qsort, the heap through malloc and the rest,
 // getenv, remove and rename refused, the clocks, and writes to standard
 // output. Its second (6e2c1): setlocale, and atexit's handlers in order.
-// Its third (6e2c2): FILE streams on files and the standard streams.
+// Its third (6e2c2): FILE streams on files and the standard streams. Its
+// fourth (6e2c3): <threads.h>, and malloc from several threads.
 // Each check prints a line only when it fails; the last line counts them.
 
 #include <errno.h>
@@ -14,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <threads.h>
 #include <time.h>
 
 static int checks, failures;
@@ -185,6 +187,108 @@ static void files(void) {
   CHECK(fputs("vxctest: fputs to stderr\n", stderr) >= 0);
 }
 
+// <threads.h> (6e2c3): four threads sharing a counter under a mutex while
+// they use the heap; a condition variable; call_once; thread-specific
+// storage and its destructors; thrd_exit from below a thread's function; a
+// detached thread; a recursive mutex.
+static mtx_t lock;
+static cnd_t changed;
+static int counter, ready, once_calls, destroyed;
+static once_flag once = ONCE_FLAG_INIT;
+static tss_t key;
+
+static void count_once(void) { once_calls++; }
+static void destroy(void *p) {
+  mtx_lock(&lock);
+  destroyed++;
+  mtx_unlock(&lock);
+  free(p);
+}
+
+static int worker(void *arg) {
+  int id = (int)(size_t)arg;
+  call_once(&once, count_once);
+  tss_set(key, malloc(16));
+  for (int i = 0; i < 2000; i++) {
+    char *p = malloc((size_t)(16 + (i * 37 + id) % 3000)); // the heap from every thread at once
+    if (p) p[0] = (char)id;
+    mtx_lock(&lock);
+    counter++;
+    mtx_unlock(&lock);
+    free(p);
+  }
+  return id * 10;
+}
+
+[[noreturn]] static void leave(int code) { thrd_exit(code); }
+static int leaver(void *arg) {
+  (void)arg;
+  leave(7); // ends the thread from below its function
+}
+
+static int waiter(void *arg) {
+  (void)arg;
+  mtx_lock(&lock);
+  while (!ready) cnd_wait(&changed, &lock);
+  ready = 2;
+  cnd_signal(&changed);
+  mtx_unlock(&lock);
+  return 0;
+}
+
+static int detached(void *arg) {
+  (void)arg;
+  mtx_lock(&lock);
+  ready = 3;
+  cnd_broadcast(&changed);
+  mtx_unlock(&lock);
+  return 0;
+}
+
+static int recurse(void *arg) {
+  mtx_t *r = arg;
+  mtx_lock(r); // waits until main has unlocked it twice
+  mtx_unlock(r);
+  return 1;
+}
+
+static void threads(void) {
+  CHECK(mtx_init(&lock, mtx_plain) == thrd_success && cnd_init(&changed) == thrd_success);
+  CHECK(tss_create(&key, destroy) == thrd_success);
+  thrd_t t[4];
+  for (int i = 0; i < 4; i++) CHECK(thrd_create(&t[i], worker, (void *)(size_t)(i + 1)) == thrd_success);
+  int sum = 0, res = 0;
+  for (int i = 0; i < 4; i++) CHECK(thrd_join(t[i], &res) == thrd_success), sum += res;
+  CHECK(counter == 8000 && sum == 100 && once_calls == 1 && destroyed == 4);
+  thrd_t l;
+  CHECK(thrd_create(&l, leaver, nullptr) == thrd_success && thrd_join(l, &res) == thrd_success && res == 7);
+  thrd_t w;
+  CHECK(thrd_create(&w, waiter, nullptr) == thrd_success);
+  mtx_lock(&lock);
+  ready = 1;
+  cnd_signal(&changed);
+  while (ready != 2) cnd_wait(&changed, &lock);
+  mtx_unlock(&lock);
+  CHECK(thrd_join(w, nullptr) == thrd_success && ready == 2);
+  thrd_t d;
+  CHECK(thrd_create(&d, detached, nullptr) == thrd_success && thrd_detach(d) == thrd_success);
+  mtx_lock(&lock);
+  while (ready != 3) cnd_wait(&changed, &lock);
+  mtx_unlock(&lock);
+  mtx_t r;
+  CHECK(mtx_init(&r, mtx_plain | mtx_recursive) == thrd_success);
+  CHECK(mtx_lock(&r) == thrd_success && mtx_lock(&r) == thrd_success); // held twice by one thread
+  thrd_t o;
+  CHECK(thrd_create(&o, recurse, &r) == thrd_success);
+  CHECK(mtx_unlock(&r) == thrd_success && mtx_unlock(&r) == thrd_success);
+  CHECK(thrd_join(o, &res) == thrd_success && res == 1);
+  CHECK(thrd_equal(thrd_current(), thrd_current()) && !thrd_equal(thrd_current(), o));
+  mtx_destroy(&r);
+  tss_delete(key);
+  cnd_destroy(&changed);
+  mtx_destroy(&lock);
+}
+
 static void clocks(void) {
   struct timespec ts;
   CHECK(timespec_get(&ts, TIME_UTC) == TIME_UTC && ts.tv_nsec >= 0 && ts.tv_nsec < 1000000000);
@@ -204,6 +308,7 @@ int main(int argc, char **argv) {
   clocks();
   locales();
   files();
+  threads();
   handlers();
   puts("vxctest: through puts");
   printf("vxctest: %d checks, %d failed\n", checks, failures);

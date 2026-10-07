@@ -9,9 +9,9 @@
 # is taken by recording it.
 
 triple=x86_64-unknown-vectraos llvm-project=903b9faaae5c43ecc9b7e33f8db9c94c7429374a
-    patches=0001-0007
-    tree.sha256=441d16316b86283a54acbf998ea1a8ff915bf42a1b1f0bd776bff299835b62b3
+    patches=0001-0008
+    tree.sha256=471c69a8fb804822ac58e9e20a96de4154568774fd9137c1f69321cd6e527001
 
 triple=aarch64-unknown-vectraos llvm-project=903b9faaae5c43ecc9b7e33f8db9c94c7429374a
-    patches=0001-0007
-    tree.sha256=4e684bc09b5859158a1630dafb4a6f65c2133ce1c1e4b06ddd266e1147fa003c
+    patches=0001-0008
+    tree.sha256=aeb810ce050416da583438ff0cafed45fd0942c5100c44771f3c6af225f72417

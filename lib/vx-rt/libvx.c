@@ -20,6 +20,8 @@
 //   __llvm_libc_timespec_get_*    UTC, and the process's CPU time (clock)
 //   __llvm_libc_futex_wait/wake   the kernel's futexes, for the C library's
 //                                 mutex (LLVM patch 0006, 6e2c1)
+//   __llvm_libc_thread_*          <threads.h> (LLVM patch 0008, 6e2c3): vx-rt
+//                                 threads, a detached one freed once it ends
 //   __llvm_libc_file_*            FILE streams (LLVM patch 0007, 6e2c2):
 //                                 handles 0-2 the standard streams, the rest
 //                                 files of the namespace (vx-ns)
@@ -32,7 +34,11 @@
 
 // --- The program ---
 
-const char *vx_main(void) { exit(main(vx_argc(), vx_argv())); }
+const char *vx_main(void) {
+  if (__llvm_libc_thread_main)
+    __llvm_libc_thread_main(); // the first thread's attributes, if <threads.h> is used
+  exit(main(vx_argc(), vx_argv()));
+}
 
 [[noreturn]] void __llvm_libc_exit(int status) { vx_exit(status); }
 
@@ -86,6 +92,78 @@ int __llvm_libc_futex_wait(const uint32_t *word, uint32_t expected, int64_t dead
 void __llvm_libc_futex_wake(const uint32_t *word, uint32_t count) {
   vx_futex_wake((const _Atomic uint32_t *)word, count);
 }
+
+// --- Threads: the C library's <threads.h> (LLVM patch 0008) ---
+//
+// A C library thread is a vx-rt thread. Its joiner frees it; a detached one
+// is kept on a list and freed by the next create or join after it has ended,
+// as nothing can unmap a thread's stack while it runs on it.
+
+typedef struct libvx_thread {
+  vx_thread t;
+  struct libvx_thread *next;
+} libvx_thread;
+
+static libvx_thread *libvx_detached;
+static vx_mutex libvx_threads_lock;
+
+// The detached threads that have ended, freed.
+static void libvx_reap(void) {
+  vx_mutex_lock(&libvx_threads_lock);
+  for (libvx_thread **p = &libvx_detached; *p;) {
+    libvx_thread *lt = *p;
+    if (atomic_load(&lt->t.tcb->running)) {
+      p = &lt->next;
+      continue;
+    }
+    *p = lt->next;
+    vx_thread_join(&lt->t);
+    vx_heap_free(vx_heap_process(), lt);
+  }
+  vx_mutex_unlock(&libvx_threads_lock);
+}
+
+int __llvm_libc_thread_create(void (*entry)(void *), void *arg, size_t stacksize, void **handle) {
+  libvx_reap();
+  libvx_thread *lt = vx_heap_alloc(vx_heap_process(), sizeof *lt);
+  if (!lt) return LIBVX_ENOMEM;
+  *lt = (libvx_thread){};
+  static constexpr size_t LEAST = 256ull * 1024;
+  uint64_t stack = stacksize > LEAST ? stacksize : LEAST; // vx-rt's least: C11 asks for 64 KiB
+  vx_status st = vx_thread_spawn(&lt->t, entry, arg, stack);
+  if (st != VX_OK) {
+    vx_heap_free(vx_heap_process(), lt);
+    return st == VX_ERR_NO_MEMORY ? LIBVX_ENOMEM : libvx_errno(st);
+  }
+  *handle = lt;
+  return 0;
+}
+
+int __llvm_libc_thread_join(void *handle) {
+  libvx_thread *lt = handle;
+  vx_thread_join(&lt->t);
+  vx_heap_free(vx_heap_process(), lt);
+  libvx_reap();
+  return 0;
+}
+
+void __llvm_libc_thread_detach(void *handle) {
+  libvx_thread *lt = handle;
+  vx_mutex_lock(&libvx_threads_lock);
+  lt->next = libvx_detached;
+  libvx_detached = lt;
+  vx_mutex_unlock(&libvx_threads_lock);
+}
+
+// The calling thread ends, as if its function had returned; the first
+// thread, which vx-rt did not start, just ends.
+[[noreturn]] void __llvm_libc_thread_exit(void) {
+  vx_tcb *t = vx_tcb_get();
+  if (t && t->id != 1) vx_thread_finish(&t->running);
+  vx_thread_exit();
+}
+
+uint32_t __llvm_libc_thread_id(void) { return vx_thread_self_id(); }
 
 // --- Standard streams ---
 

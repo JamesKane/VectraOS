@@ -1,5 +1,5 @@
 // libvx.h: what the native target's C library calls libvx.a by name (M6
-// step 6e2b): llvm-libc's baremetal hooks (LLVM patches 0004, 0006 and 0007),
+// step 6e2b): llvm-libc's baremetal hooks (LLVM patches 0004 and 0006 to 0008),
 // and the program's main. libvx.c defines them; nothing
 // else includes this file.
 
@@ -23,6 +23,12 @@ void __llvm_libc_heap_free(void *p);
 size_t __llvm_libc_heap_usable_size(void *p);
 int __llvm_libc_futex_wait(const uint32_t *word, uint32_t expected, int64_t deadline);
 void __llvm_libc_futex_wake(const uint32_t *word, uint32_t count);
+int __llvm_libc_thread_create(void (*entry)(void *), void *arg, size_t stacksize, void **handle);
+int __llvm_libc_thread_join(void *handle);
+void __llvm_libc_thread_detach(void *handle);
+[[noreturn]] void __llvm_libc_thread_exit(void);
+uint32_t __llvm_libc_thread_id(void);
+[[gnu::weak]] void __llvm_libc_thread_main(void); // the C library's, if a program uses threads
 int __llvm_libc_remove(const char *path);
 long __llvm_libc_file_open(const char *path, int flags);
 long __llvm_libc_file_read(long handle, void *buf, size_t size);
