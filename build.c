@@ -4450,12 +4450,66 @@ static int os_units(unit *units, bool with_host_tests) {
 // command `before`, the unit's flags, `after`, then the source. A tool that
 // takes its source first, with the compiler flags after a separator (clang-tidy
 // and `--`), passes that separator instead.
+// ./build check [STAGE ...] [UNIT ...]: the stages named (all without one)
+// and, for the analyzer and tidy, the units named (all without one), so a
+// fix to one file is checked in seconds rather than the whole tree's minutes.
+static const char *const CHECK_STAGES[] = {"man",    "host", "fuzz", "vxfs", "vendor",
+                                           "format", "sa",   "tidy", "time", nullptr};
+static const char *check_args[64];
+static int check_arg_count;
+
+static bool check_is_stage(const char *w) {
+  for (int i = 0; CHECK_STAGES[i]; i++)
+    if (strcmp(w, CHECK_STAGES[i]) == 0) return true;
+  return false;
+}
+
+// Whether the words name this stage, or no stage at all.
+static bool check_wants(const char *stage) {
+  bool any = false;
+  for (int i = 0; i < check_arg_count; i++) {
+    if (!check_is_stage(check_args[i])) continue;
+    if (strcmp(check_args[i], stage) == 0) return true;
+    any = true;
+  }
+  return !any;
+}
+
+static bool check_is_arch(const char *w) {
+  for (int a = 0; a < ARCH_COUNT; a++)
+    if (strcmp(w, ARCHES[a].name) == 0) return true;
+  return false;
+}
+
+// Whether the words name this unit ("rc x86_64": its program, and its
+// architecture if one is named), or no program at all.
+static bool check_wants_unit(const char *name) {
+  size_t prog = strcspn(name, " ");
+  bool any_prog = false, prog_ok = false, any_arch = false, arch_ok = false;
+  for (int i = 0; i < check_arg_count; i++) {
+    const char *w = check_args[i];
+    if (check_is_stage(w)) continue;
+    if (check_is_arch(w)) {
+      any_arch = true;
+      arch_ok = arch_ok || strcmp(name + prog + (name[prog] == ' '), w) == 0;
+    } else {
+      any_prog = true;
+      prog_ok = prog_ok || (strlen(w) == prog && memcmp(w, name, prog) == 0);
+    }
+  }
+  return (!any_prog || prog_ok) && (!any_arch || arch_ok);
+}
+
+static int check_units_run; // how many units check_units ran: a filter that matches none fails
+
 static bool check_units(const char *tag, bool with_host_tests, const char *const *before,
                         const char *const *after, const char *separator) {
   static unit units[MAX_UNITS];
   int n = os_units(units, with_host_tests);
   bool ok = true;
   for (int i = 0; i < n; i++) {
+    if (!check_wants_unit(units[i].name)) continue;
+    check_units_run++;
     cmd c = {};
     cmd_addv(&c, before);
     if (separator) {
@@ -4955,15 +5009,19 @@ static bool check_man(void) {
 }
 
 static int cmd_check(void) {
-  bool ok = check_man();
-  ok = check_host_tests() && ok;
-  ok = check_fuzz() && ok;
-  ok = check_vxfs_image() && ok;
-  ok = cmd_vendor_check() == 0 && ok;
-  ok = check_format() && ok;
-  ok = check_analyzer() && ok;
-  ok = check_tidy() && ok;
-  ok = check_build_time() && ok;
+  bool ok = !check_wants("man") || check_man();
+  ok = (!check_wants("host") || check_host_tests()) && ok;
+  ok = (!check_wants("fuzz") || check_fuzz()) && ok;
+  ok = (!check_wants("vxfs") || check_vxfs_image()) && ok;
+  ok = (!check_wants("vendor") || cmd_vendor_check() == 0) && ok;
+  ok = (!check_wants("format") || check_format()) && ok;
+  ok = (!check_wants("sa") || check_analyzer()) && ok;
+  ok = (!check_wants("tidy") || check_tidy()) && ok;
+  ok = (!check_wants("time") || check_build_time()) && ok;
+  if ((check_wants("sa") || check_wants("tidy")) && !check_units_run) {
+    fprintf(stderr, "build: check: no unit is named so: nothing was analysed\n"); // never a silent pass
+    ok = false;
+  }
   fprintf(stderr, "build: check %s\n", ok ? "passed" : "FAILED");
   return ok ? 0 : 1;
 }
@@ -5026,6 +5084,10 @@ static void usage(void) {
       "vendor-check, the format,\n"
       "                                                 the static analyzer and the build-time budget: CI's "
       "first job\n"
+      "  check [STAGE ...] [UNIT ...]                   only those stages (man host fuzz vxfs vendor format "
+      "sa tidy\n"
+      "                                                 time), the analyzer and tidy only on those units: "
+      "rc, ktest, ...\n"
       "\n"
       "A is x86_64 or aarch64. qemu defaults to x86_64.\n"
       "Still to come: bench, and in check, the vx-check models (M2).\n");
@@ -5068,6 +5130,8 @@ int main(int argc, char **argv) {
       for (int a = 0; a < ARCH_COUNT; a++)
         if (strcmp(argv[i], ARCHES[a].name) == 0) only = &ARCHES[a];
       if (!only) die("unknown architecture %s", argv[i]);
+    } else if (argv[i][0] != '-' && strcmp(command, "check") == 0 && check_arg_count < 64) {
+      check_args[check_arg_count++] = argv[i];
     } else if (argv[i][0] != '-' && strcmp(command, "test") == 0 && scenario_count < 64) {
       scenarios[scenario_count++] = argv[i];
     } else if (strcmp(command, "man") == 0) {
