@@ -20,6 +20,9 @@
 //   __llvm_libc_timespec_get_*    UTC, and the process's CPU time (clock)
 //   __llvm_libc_futex_wait/wake   the kernel's futexes, for the C library's
 //                                 mutex (LLVM patch 0006, 6e2c1)
+//   __llvm_libc_file_*            FILE streams (LLVM patch 0007, 6e2c2):
+//                                 handles 0-2 the standard streams, the rest
+//                                 files of the namespace (vx-ns)
 
 #define VX_RT_LIBC // the C library has memcpy and the rest (rt.c)
 #include "rt.c"
@@ -39,12 +42,15 @@ enum : int {
   LIBVX_EPERM = 1,
   LIBVX_ENOENT = 2,
   LIBVX_EIO = 5,
+  LIBVX_EBADF = 9,
   LIBVX_ENOMEM = 12,
   LIBVX_EACCES = 13,
   LIBVX_EEXIST = 17,
   LIBVX_EXDEV = 18,
   LIBVX_EINVAL = 22,
   LIBVX_ENOSPC = 28,
+  LIBVX_ESPIPE = 29,
+  LIBVX_EMFILE = 24,
 };
 
 int *__llvm_libc_errno(void) {
@@ -174,6 +180,110 @@ int __llvm_libc_rename(const char *from, const char *to) {
   if (st2 == VX_OK) p9c_clunk(c2, f2);
   vx_mutex_unlock(&libvx_ns_lock);
   return e;
+}
+
+// --- Files: the C library's FILE streams (LLVM patch 0007) ---
+//
+// A handle is 0, 1 or 2, the standard streams through vx-rt, or a file of
+// the namespace, at 3 and up. Opening and closing take the namespace's lock;
+// a file's reads and writes are its stream's, which the C library locks.
+
+enum : int { FILE_READ = 1, FILE_WRITE = 2, FILE_CREATE = 4, FILE_TRUNCATE = 8, FILE_APPEND = 16 };
+
+static constexpr uint32_t LIBVX_FILES = 64;
+static struct {
+  bool used, append;
+  vx_ns_file f;
+} libvx_files[LIBVX_FILES];
+
+// A namespace file's handle, or nullptr.
+static vx_ns_file *libvx_file(long h) {
+  return h >= 3 && h < 3 + (long)LIBVX_FILES && libvx_files[h - 3].used ? &libvx_files[h - 3].f : nullptr;
+}
+
+// A file's length, from the server: -errno if it cannot say.
+static int64_t libvx_file_length(vx_ns_file *f) {
+  p9_stat s = {};
+  vx_status st = f->c ? p9c_stat(f->c, f->fid, &s, nullptr) : VX_ERR_UNSUPPORTED;
+  return st == VX_OK ? (int64_t)s.length : -LIBVX_ESPIPE;
+}
+
+long __llvm_libc_file_open(const char *path, int flags) {
+  uint8_t mode = P9_OREAD;
+  if ((flags & FILE_READ) && (flags & FILE_WRITE))
+    mode = P9_ORDWR;
+  else if (flags & FILE_WRITE)
+    mode = P9_OWRITE;
+  vx_mutex_lock(&libvx_ns_lock);
+  uint32_t slot = 0;
+  while (slot < LIBVX_FILES && libvx_files[slot].used) slot++;
+  vx_status st = slot < LIBVX_FILES ? VX_OK : VX_ERR_NO_MEMORY;
+  vx_ns_file f = {};
+  vx_str p = vx_cstr(path);
+  if (st == VX_OK) st = vx_ns_open(libvx_namespace(), p, mode | (flags & FILE_TRUNCATE ? P9_OTRUNC : 0), &f);
+  if (st == VX_ERR_NOT_FOUND && (flags & FILE_CREATE))
+    st = vx_ns_create(libvx_namespace(), p, 0666, mode, &f);
+  if (st == VX_OK)
+    libvx_files[slot] = (typeof(libvx_files[0])){.used = true, .append = flags & FILE_APPEND, .f = f};
+  vx_mutex_unlock(&libvx_ns_lock);
+  if (slot == LIBVX_FILES) return -LIBVX_EMFILE;
+  return st == VX_OK ? (long)slot + 3 : -libvx_errno(st);
+}
+
+long __llvm_libc_file_read(long h, void *buf, size_t size) {
+  uint32_t n = size > 65536 ? 65536 : (uint32_t)size;
+  if (h == 0) {
+    int64_t got = vx_read(buf, n);
+    return got < 0 ? -LIBVX_EIO : (long)got;
+  }
+  vx_ns_file *f = libvx_file(h);
+  if (!f) return -LIBVX_EBADF;
+  int64_t got = vx_ns_read(f, buf, n);
+  return got < 0 ? -libvx_errno((vx_status)got) : (long)got;
+}
+
+long __llvm_libc_file_write(long h, const void *buf, size_t size) {
+  if (h == 1 || h == 2) {
+    __llvm_libc_stdio_write(h == 2 ? &__llvm_libc_stderr_cookie : &__llvm_libc_stdout_cookie, buf, size);
+    return (long)size;
+  }
+  vx_ns_file *f = libvx_file(h);
+  if (!f) return -LIBVX_EBADF;
+  if (libvx_files[h - 3].append) { // each write at the end, wherever the end is now
+    int64_t end = libvx_file_length(f);
+    if (end < 0) return (long)end;
+    f->offset = (uint64_t)end;
+  }
+  size_t done = 0;
+  while (done < size) {
+    uint32_t n = size - done > 65536 ? 65536 : (uint32_t)(size - done);
+    int64_t put = vx_ns_write(f, (const uint8_t *)buf + done, n);
+    vx_status st = put < 0 ? (vx_status)put : VX_ERR_IO; // a write of nothing: an I/O error
+    if (put <= 0) return done ? (long)done : -libvx_errno(st);
+    done += (size_t)put;
+  }
+  return (long)done;
+}
+
+long long __llvm_libc_file_seek(long h, long long offset, int whence) {
+  vx_ns_file *f = libvx_file(h);
+  if (!f) return h >= 0 && h <= 2 ? -LIBVX_ESPIPE : -LIBVX_EBADF;
+  int64_t base = 0; // SEEK_SET
+  if (whence == 1) base = (int64_t)f->offset;
+  if (whence == 2) base = libvx_file_length(f);
+  if (base < 0 || whence < 0 || whence > 2) return base < 0 ? base : -LIBVX_EINVAL;
+  if (offset < -base) return -LIBVX_EINVAL;
+  f->offset = (uint64_t)(base + offset);
+  return (long long)f->offset;
+}
+
+int __llvm_libc_file_close(long h) {
+  if (h >= 0 && h <= 2) return 0; // the standard streams stay
+  vx_mutex_lock(&libvx_ns_lock);
+  vx_ns_file *f = libvx_file(h);
+  if (f) vx_ns_close(f), libvx_files[h - 3].used = false;
+  vx_mutex_unlock(&libvx_ns_lock);
+  return f ? 0 : LIBVX_EBADF;
 }
 
 // getenv's values, one a name: a value stays good until the next call for

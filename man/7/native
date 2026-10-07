@@ -37,9 +37,8 @@ Until ADR-0034's first gate puts the toolchain in this tree, the C library comes
 
 ## The hooks
 
-: Standard output and error
-  `printf` and `puts` write through vx-rt's buffered writers, to the program's `stdout` and `stderr` pipes or the console; standard input is read as vx-rt reads it.
-  The streams themselves, `FILE`, `fopen` and `fprintf`, come with 6e2c.
+: `FILE` streams
+  llvm-libc's streams over a back end of the system's (LLVM patch 0007): `stdin` (fully buffered), `stdout` (line buffered) and `stderr` (unbuffered) are handles 0 to 2, which reach the program's standard pipes or the console through vx-rt, and `printf`, `puts` and `fprintf(stdout, ...)` share one stream; `fopen` opens a file of the process's namespace by vx-ns, `"r"` an existing one, `"w"` one made or emptied, `"a"` one written at its end however long it has grown, `"+"` both ways. `fseek` and `ftell` work on files, and refuse the standard streams (`ESPIPE`). At most 64 files are open at once.
 : `exit`
   The value is the exit string, empty for 0 and the number in decimal otherwise, as the POSIX environment's: rc(1) shows `exit 7` as `name pid: 7`. `atexit`'s and `__cxa_atexit`'s handlers run first, last registered first, then `.fini_array`; `quick_exit` runs `at_quick_exit`'s instead.
 : `errno`
@@ -73,4 +72,7 @@ start(2), heap(2), posix(7); ADR-0033 and ADR-0034, and `swift-on-vectra`'s `doc
 
 # BUGS
 
-There are no `FILE` streams (6e2c2) or `<threads.h>` (6e2c3) yet, and no C++ (6e2d).
+There is no `<threads.h>` (6e2c3) yet, and no C++ (6e2d).
+
+`freopen`, `fgetpos`, `fsetpos`, `rewind`, `tmpfile` and `tmpnam` are missing: llvm-libc has none of them for any target.
+`fopen`'s `"x"` (exclusive creation) is not taken.

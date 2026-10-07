@@ -5,6 +5,7 @@
 // printf round trips, math, qsort, the heap through malloc and the rest,
 // getenv, remove and rename refused, the clocks, and writes to standard
 // output. Its second (6e2c1): setlocale, and atexit's handlers in order.
+// Its third (6e2c2): FILE streams on files and the standard streams.
 // Each check prints a line only when it fails; the last line counts them.
 
 #include <errno.h>
@@ -119,6 +120,71 @@ static void handlers(void) {
   CHECK(at_quick_exit(first) == 0); // not run: the program ends by returning
 }
 
+// FILE streams on /tmp (6e2c2): written, read back by line and by block,
+// sought and told, appended to, changed in place, renamed and removed.
+static bool slurp(const char *path, char *buf, size_t cap) {
+  FILE *f = fopen(path, "r");
+  if (!f) return false;
+  size_t n = fread(buf, 1, cap - 1, f);
+  buf[n] = 0;
+  bool ok = feof(f) && !ferror(f);
+  fclose(f);
+  return ok;
+}
+
+// Whether path cannot be opened to read (the stream closed if it could).
+static bool absent(const char *path, const char *mode) {
+  FILE *f = fopen(path, mode);
+  if (f) fclose(f);
+  return f == nullptr;
+}
+
+// A file read from the start: the first line, the length by seeking to the
+// end, a character pushed back, the second line. Each step only after the
+// last succeeded.
+static void reading(FILE *f) {
+  char buf[256];
+  bool ok = fgets(buf, sizeof buf, f) && strcmp(buf, "line 1\n") == 0;
+  CHECK(ok);
+  ok = ok && fseek(f, 0, SEEK_END) == 0 && ftell(f) == 21;
+  CHECK(ok);
+  ok = ok && fseek(f, 7, SEEK_SET) == 0 && getc(f) == 'l' && ungetc('L', f) == 'L' && getc(f) == 'L';
+  CHECK(ok);
+  ok = ok && fgets(buf, sizeof buf, f) && strcmp(buf, "ine 2\n") == 0;
+  CHECK(ok);
+}
+
+static void files(void) {
+  const char *p = "/tmp/vxctest.txt", *q = "/tmp/vxctest-renamed.txt";
+  FILE *f = fopen(p, "w");
+  CHECK(f != nullptr);
+  if (!f) return;
+  for (int i = 1; i <= 3; i++) fprintf(f, "line %d\n", i);
+  CHECK(fclose(f) == 0);
+  char buf[256];
+  f = fopen(p, "r");
+  CHECK(f != nullptr);
+  if (f) {
+    reading(f);
+    fclose(f);
+  }
+  f = fopen(p, "a");
+  CHECK(f != nullptr);
+  if (f) CHECK(fputs("tail\n", f) >= 0), CHECK(fclose(f) == 0);
+  CHECK(slurp(p, buf, sizeof buf) && strcmp(buf, "line 1\nline 2\nline 3\ntail\n") == 0);
+  f = fopen(p, "r+");
+  CHECK(f != nullptr);
+  if (f) CHECK(fputc('L', f) == 'L'), CHECK(fclose(f) == 0); // fputc gives the character back
+  CHECK(slurp(p, buf, sizeof buf) && strncmp(buf, "Line 1\n", 7) == 0);
+  CHECK(rename(p, q) == 0 && absent(p, "r") && slurp(q, buf, sizeof buf));
+  CHECK(remove(q) == 0 && absent(q, "r"));
+  errno = 0;
+  CHECK(absent("/tmp/vxctest-none", "r") && errno == ENOENT);
+  CHECK(absent(p, "bogus"));
+  CHECK(fprintf(stdout, "vxctest: fprintf to stdout\n") > 0 && fflush(stdout) == 0);
+  CHECK(fputs("vxctest: fputs to stderr\n", stderr) >= 0);
+}
+
 static void clocks(void) {
   struct timespec ts;
   CHECK(timespec_get(&ts, TIME_UTC) == TIME_UTC && ts.tv_nsec >= 0 && ts.tv_nsec < 1000000000);
@@ -137,6 +203,7 @@ int main(int argc, char **argv) {
   environment();
   clocks();
   locales();
+  files();
   handlers();
   puts("vxctest: through puts");
   printf("vxctest: %d checks, %d failed\n", checks, failures);

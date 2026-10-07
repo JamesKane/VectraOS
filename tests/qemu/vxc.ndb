@@ -6,6 +6,8 @@
 
 scenario=vxc timeout=60 with=vxctest cmdline=vx.skip=rc
 expect="vxctest: hello from llvm-libc"
+expect="vxctest: fprintf to stdout"
+expect="vxctest: fputs to stderr"
 expect="vxctest: through puts"
 expect=" checks, 0 failed"
 expect="vxctest: atexit second"
