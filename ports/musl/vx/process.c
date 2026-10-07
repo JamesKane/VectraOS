@@ -133,7 +133,12 @@ typedef struct waited {
   long pid, group;
   int status; // as wait4 reports it
   bool stopped, continued;
+  vx_duration user, sys; // its CPU time and its waited children's (procfs's user= and sys=, ms)
 } waited;
+
+// The CPU time of the children waited for, as 9front's TCUser and TCSys:
+// times' cutime and cstime, getrusage's RUSAGE_CHILDREN.
+static vx_duration child_user, child_sys;
 
 static waited wait_kept[128]; // as many as procfs keeps for one parent
 static uint32_t wait_kept_count;
@@ -147,6 +152,9 @@ static bool wait_parse(const char *text, size_t len, waited *w) {
   if (vx_ndb_next(&r, &rec) != VX_NDB_RECORD || !vx_ndb_get_u64(&rec, "pid", &pid) || !pid) return false;
   vx_ndb_get_u64(&rec, "noteid", &group);
   *w = (waited){.pid = (long)pid, .group = (long)group};
+  uint64_t ms = 0;
+  if (vx_ndb_get_u64(&rec, "user", &ms)) w->user = (vx_duration)ms * 1'000'000;
+  if (vx_ndb_get_u64(&rec, "sys", &ms)) w->sys = (vx_duration)ms * 1'000'000;
   if (vx_ndb_get_u64(&rec, "stopped", &sig)) {
     w->stopped = true;
     w->status = (int)(sig << 8 | 0x7f);
@@ -185,7 +193,11 @@ static void wait_keep(const waited *w) {
   wait_kept[wait_kept_count++] = *w;
 }
 
-// wait4: rusage is not kept, and reads as zero.
+static struct timeval tv_of(vx_duration d) {
+  return (struct timeval){d / 1'000'000'000, d % 1'000'000'000 / 1000};
+}
+
+// wait4: rusage has the child's CPU times, nothing else.
 static long posix_wait4(long pid, int *status, int options, struct rusage *ru) {
   if (ru) *ru = (struct rusage){};
   waited w;
@@ -218,7 +230,62 @@ static long posix_wait4(long pid, int *status, int options, struct rusage *ru) {
     if (!found) wait_keep(&w);
   }
   if (status) *status = w.status;
+  if (!w.stopped && !w.continued) child_user += w.user, child_sys += w.sys;
+  if (ru) ru->ru_utime = tv_of(w.user), ru->ru_stime = tv_of(w.sys);
   return w.pid;
+}
+
+// --- CPU time (ADR-0041) ---
+//
+// The kernel samples each thread's user and system time every 10 ms tick of a
+// CPU running it (thread_state's GET_TIMES); with thread 0, the task's.
+
+static vx_cpu_times cpu_times(bool thread) {
+  vx_cpu_times t = {};
+  uint32_t slot = be_me()->slot, id = 0; // the kernel's number for this thread: its slot's
+  if (thread) id = slot ? atomic_load(&be_threads[slot - 1].id) : be_only_thread_id();
+  vx_thread_state(vx_self, id, VX_STATE_GET_TIMES, &t, sizeof t);
+  return t;
+}
+
+// times: in clock ticks, sysconf(_SC_CLK_TCK)'s 100 a second, and the
+// monotonic clock in them, as Linux's.
+static long posix_times(struct tms *out) {
+  constexpr vx_duration tick = 1'000'000'000 / 100;
+  vx_cpu_times me = cpu_times(false);
+  if (out)
+    *out = (struct tms){.tms_utime = (clock_t)(me.user / tick),
+                        .tms_stime = (clock_t)(me.sys / tick),
+                        .tms_cutime = (clock_t)(child_user / tick),
+                        .tms_cstime = (clock_t)(child_sys / tick)};
+  return (long)(vx_clock_read() / tick);
+}
+
+static long posix_getrusage(int who, struct rusage *ru) {
+  vx_cpu_times t = {};
+  if (who == RUSAGE_SELF || who == RUSAGE_THREAD)
+    t = cpu_times(who == RUSAGE_THREAD);
+  else if (who == RUSAGE_CHILDREN)
+    t = (vx_cpu_times){child_user, child_sys};
+  else
+    return -EINVAL;
+  *ru = (struct rusage){.ru_utime = tv_of(t.user), .ru_stime = tv_of(t.sys)};
+  return 0;
+}
+
+// getpriority and setpriority: VectraOS has no nice values (a thread's
+// intent, sched_ctx(2), is its priority), so every process's is 0, as the
+// raw call's 20 says, and any other is refused (6d9b: honestly, not ignored).
+static long posix_getpriority(int which, long who) {
+  if (which != PRIO_PROCESS && which != PRIO_PGRP && which != PRIO_USER) return -EINVAL;
+  (void)who;
+  return 20; // 20 - nice
+}
+
+static long posix_setpriority(int which, long who, int prio) {
+  if (which != PRIO_PROCESS && which != PRIO_PGRP && which != PRIO_USER) return -EINVAL;
+  (void)who;
+  return prio == 0 ? 0 : -EPERM;
 }
 
 // --- posix_spawn and execve ---
@@ -505,7 +572,8 @@ static long fork_child(void) {
   vx_drbg_mix(&proc_entropy, child_tag, sizeof child_tag, false);
   vx_drbg_mix(&proc_entropy, &proc_kernel_task_id, sizeof proc_kernel_task_id, false);
   fd_after_fork();
-  atomic_store(&be_live, 1); // the thread that forked, alone, numbered anew
+  child_user = child_sys = 0; // a new process has waited for no one
+  atomic_store(&be_live, 1);  // the thread that forked, alone, numbered anew
   memset(be_threads, 0, sizeof be_threads);
   be_me()->robust = 0;  // the child's thread is a new one, with no list (musl registers again)
   be_me()->pending = 0; // and none of the thread's signals pending

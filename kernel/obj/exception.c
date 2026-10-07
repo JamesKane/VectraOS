@@ -494,8 +494,30 @@ static int64_t thread_sched_get(vx_handle th, uint64_t id, uint64_t buf) {
   return copy_to_user(buf, &info, sizeof info);
 }
 
+// GET_TIMES (ADR-0041): a thread's ticks, or with id 0 its task's, those of
+// threads reaped and of the rest, as nanoseconds. With INSPECT on the task.
+static int64_t thread_times(vx_handle th, uint64_t id, uint64_t buf) {
+  vx_status st;
+  task *t = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_INSPECT, &st);
+  if (!t) return st;
+  uint64_t ticks[2] = {};
+  bool found = !id;
+  spin_lock(&t->lock);
+  if (!id) ticks[0] = t->gone_ticks[0], ticks[1] = t->gone_ticks[1];
+  for (thread *x = t->threads; x; x = x->task_next) {
+    if (id && x->id != id) continue;
+    found = true;
+    for (int k = 0; k < 2; k++) ticks[k] += atomic_load_explicit(&x->ticks[k], memory_order_relaxed);
+  }
+  spin_unlock(&t->lock);
+  object_release(&t->obj);
+  if (!found) return VX_ERR_NOT_FOUND;
+  vx_cpu_times out = {.user = (vx_duration)(ticks[0] * TICK), .sys = (vx_duration)(ticks[1] * TICK)};
+  return copy_to_user(buf, &out, sizeof out);
+}
+
 static int64_t sys_thread_state(vx_handle th, uint64_t id, uint64_t op, uint64_t buf, uint64_t size) {
-  if (op < VX_STATE_GET_EXCEPTION || op > VX_STATE_GET_SCHED) return VX_ERR_INVALID;
+  if (op < VX_STATE_GET_EXCEPTION || op > VX_STATE_GET_TIMES) return VX_ERR_INVALID;
   bool ns_op = op == VX_STATE_GET_NOTE_STACK || op == VX_STATE_SET_NOTE_STACK;
   bool tls_op = op == VX_STATE_GET_TLS || op == VX_STATE_SET_TLS;
   bool fp_op = op == VX_STATE_GET_FPREGS || op == VX_STATE_SET_FPREGS;
@@ -510,7 +532,9 @@ static int64_t sys_thread_state(vx_handle th, uint64_t id, uint64_t op, uint64_t
   if (op == VX_STATE_GET_WATCH || op == VX_STATE_SET_WATCH) need = sizeof(vx_watches);
   if (ns_op) need = sizeof(vx_note_stack);
   if (op == VX_STATE_GET_SCHED) need = sizeof(vx_sched_info);
+  if (op == VX_STATE_GET_TIMES) need = sizeof(vx_cpu_times);
   if (size < need) return VX_ERR_TOO_SMALL;
+  if (op == VX_STATE_GET_TIMES) return thread_times(th, id, buf);
   if (op == VX_STATE_GET_SCHED) return thread_sched_get(th, id, buf);
   if (op == VX_STATE_NEXT_THREAD) return thread_next(th, id, buf);
   if (op == VX_STATE_GET_CPU) return id ? VX_ERR_INVALID : thread_cpu(buf);

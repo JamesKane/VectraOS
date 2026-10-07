@@ -666,7 +666,16 @@ enum vx_thread_state_op : uint32_t {
   VX_STATE_GET_NOTE_STACK, // ADR-0036
   VX_STATE_SET_NOTE_STACK,
   VX_STATE_GET_SCHED, // ADR-0038: a vx_sched_info, at any time
+  VX_STATE_GET_TIMES, // ADR-0041: a vx_cpu_times, at any time
 };
+
+// thread_state's GET_TIMES (ADR-0041): the CPU time a thread, or with thread
+// 0 its whole task (threads that have ended too), has had, in nanoseconds,
+// sampled as 9front does: each 10 ms tick of a CPU running it is charged to
+// user or system time by where the tick found it.
+typedef struct vx_cpu_times {
+  vx_duration user, sys;
+} vx_cpu_times;
 
 // thread_state's GET_NOTE_STACK and SET_NOTE_STACK (ADR-0036): the stack a
 // thread's in-task handler runs on, [base, base + size); size 0: none.

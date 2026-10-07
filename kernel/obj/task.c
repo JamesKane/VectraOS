@@ -57,8 +57,9 @@ typedef struct task {
   uint64_t mapped;        // bytes
   struct thread *threads; // started and not yet reaped, through task_next
   uint32_t live_threads;
-  vx_task_state state; // EXITED once torn down
-  bool ending;         // its last thread has exited, or it was killed: torn down soon
+  uint64_t gone_ticks[2]; // user and system ticks of its threads reaped (ADR-0041)
+  vx_task_state state;    // EXITED once torn down
+  bool ending;            // its last thread has exited, or it was killed: torn down soon
   bool killed;
   bool
       execing; // in or the scratch of a task_exec: no thread starts until its address spaces have changed places
@@ -127,6 +128,7 @@ struct thread {
   struct thread *donor;      // the channel_call caller lending it its scheduling, or none (sched.c, 6d6c2)
   struct thread *donee;      // the thread this one, in channel_call, lends its scheduling to, or none
   bool lend_tail;            // its call answered: it keeps the loan only until it blocks, or its slice ends
+  _Atomic uint64_t ticks[2]; // user and system ticks charged to it (sched_timer, ADR-0041)
   struct thread *next;       // in the ready queue (under the scheduler's lock)
   struct thread *wait_next;  // in a port's waiters (under the port's lock); never the same link as next
   struct thread *sleep_next; // in its CPU's sleep queue, ordered by wake_at

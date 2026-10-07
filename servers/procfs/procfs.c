@@ -15,7 +15,8 @@
 //   /proc/N/ppid     the parent's pid
 //   /proc/N/ns       its namespace group's text, namespace(6) (ADR-0009), from nsd
 //   /proc/N/wait     a read waits for a child to end, then returns its record:
-//                    pid=9 name=ls noteid=7 status="" real=12 (ms); its length is the count
+//                    pid=9 name=ls noteid=7 status="" user=10 sys=0 real=12 (ms, user and
+//                    sys the kernel's 10 ms samples, ADR-0041); its length is the count
 //
 // As in 9front's pexit, a process that ends leaves a wait record for its
 // parent, at most 128 queued, unless it was registered with PROC_NOWAIT, or
@@ -61,8 +62,9 @@ typedef struct proc {
   uint64_t pid, ppid, noteid, sid;
   vx_handle task;
   vx_instant start;
-  uint32_t nwait;       // records queued for it
-  uint32_t first, last; // its queue, through record.next; 0 is none
+  uint32_t nwait;                    // records queued for it
+  uint32_t first, last;              // its queue, through record.next; 0 is none
+  vx_duration child_user, child_sys; // its children's that have ended, as 9front's TCUser and TCSys
 } proc;
 
 enum record_kind : uint8_t { ENDED, STOPPED, CONTINUED };
@@ -74,6 +76,7 @@ typedef struct record {
   uint8_t sig;     // STOPPED: the signal that stopped it
   uint64_t noteid; // its note group then, for a POSIX wait for a group's children
   uint64_t real_ms;
+  uint64_t user_ms, sys_ms; // ENDED: its CPU time and its children's (ADR-0041)
   char name[24];
   uint8_t len;
   char status[VX_ERRMAX];
@@ -180,6 +183,14 @@ static void registered(void *ctx, const void *msg, uint32_t len, vx_handle handl
 // room: as 9front's pexit leaves one, at most MAX_WAITS.
 static void queue_record(proc *parent, const proc *c, uint8_t kind, uint8_t sig) {
   vx_task_summary info;
+  // An end's CPU time, the kernel's samples of the task (ADR-0041) and its own
+  // children's, goes to its parent's children's, as 9front's pexit adds it.
+  vx_cpu_times t = {};
+  if (kind == ENDED) {
+    vx_thread_state(c->task, 0, VX_STATE_GET_TIMES, &t, sizeof t);
+    t.user += c->child_user, t.sys += c->child_sys;
+    parent->child_user += t.user, parent->child_sys += t.sys;
+  }
   uint32_t r = 1;
   while (r <= MAX_RECORDS && records[r].pid) r++;
   if (r > MAX_RECORDS || parent->nwait >= MAX_WAITS || vx_task_info(c->task, &info) != VX_OK) return;
@@ -189,6 +200,8 @@ static void queue_record(proc *parent, const proc *c, uint8_t kind, uint8_t sig)
                   .kind = kind,
                   .sig = sig,
                   .real_ms = (uint64_t)(vx_clock_read() - c->start) / 1'000'000,
+                  .user_ms = (uint64_t)t.user / 1'000'000,
+                  .sys_ms = (uint64_t)t.sys / 1'000'000,
                   .len = kind == ENDED ? (uint8_t)info.exit_len : 0};
   memcpy(rec->name, info.name, sizeof rec->name);
   if (kind == ENDED) memcpy(rec->status, info.exit, info.exit_len);
@@ -573,6 +586,8 @@ static vx_status take_record(proc *p, char *buf, size_t cap, size_t *len) {
     vx_ndb_flag(&w, "continued");
   } else {
     vx_ndb_put(&w, "status", (vx_str){rec->status, rec->len});
+    vx_ndb_put_u64(&w, "user", rec->user_ms);
+    vx_ndb_put_u64(&w, "sys", rec->sys_ms);
     vx_ndb_put_u64(&w, "real", rec->real_ms);
   }
   vx_ndb_end(&w);

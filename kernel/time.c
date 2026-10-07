@@ -8,7 +8,7 @@
 // before the deadline only re-arms. The kernel is tickless (01 §8): nothing
 // fires unless a deadline is armed.
 
-static void sched_timer(void); // sched/sched.c
+static void sched_timer(bool from_user); // sched/sched.c
 
 static struct {
   uint64_t hz;         // counter frequency, published in /sys/clock/info (02 §5.1)
@@ -52,8 +52,9 @@ static void timer_arm(vx_instant deadline) {
   arch_timer_arm(cpu_timer[arch_cpu_index()].armed);
 }
 
-// Called by the architecture's timer interrupt, with the interrupt acknowledged.
-static void timer_interrupt(void) {
+// Called by the architecture's timer interrupt, with the interrupt
+// acknowledged; from_user: it came while the CPU was in user mode.
+static void timer_interrupt(bool from_user) {
   uint32_t i = arch_cpu_index();
   if (!cpu_timer[i].armed) return;
   if (arch_counter() < cpu_timer[i].armed) { // early: a countdown ran out first
@@ -62,7 +63,7 @@ static void timer_interrupt(void) {
   }
   cpu_timer[i].armed = 0;
   cpu_timer[i].fired++;
-  sched_timer();
+  sched_timer(from_user);
 }
 
 // The log prefix: "[    s.mmm] ", seconds since kernel entry.

@@ -105,6 +105,7 @@ static vx_status thread_start(thread *th, uint64_t entry, uint64_t sp, uint64_t 
 static void thread_reap(thread *th) {
   task *t = th->task;
   spin_lock(&t->lock); // off the task's list first: nothing that walks it finds a freed stack
+  for (int k = 0; k < 2; k++) t->gone_ticks[k] += atomic_load_explicit(&th->ticks[k], memory_order_relaxed);
   for (thread **link = &t->threads; *link; link = &(*link)->task_next) {
     if (*link == th) {
       *link = th->task_next;

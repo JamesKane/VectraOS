@@ -37,6 +37,10 @@
 // registers are saved.
 
 static constexpr vx_duration TIME_SLICE = 10'000'000;
+// CPU time is sampled as 9front's is (ADR-0041): while a CPU runs a thread,
+// not its idle one, a tick every 10 ms charges the thread a tick of user or
+// system time, by where it found it. An idle CPU stays tickless (01 §8).
+static constexpr vx_duration TICK = 10'000'000;
 
 // The bands, highest first: realtime, interactive-frame, interactive,
 // throughput, background (enum vx_intent's order).
@@ -66,6 +70,7 @@ typedef struct cpu {
   thread *sleepers; // blocked here with a deadline, earliest first
   vx_instant slice_end;
   vx_instant run_start; // when current began running, for charging its context
+  vx_instant tick_at;   // the next CPU-time tick, while it runs a thread (ADR-0041)
   sched_ctx *reserved;  // the context that reserved this CPU, or none
   bool resched;         // call schedule before returning to user mode
   thread *lending;      // a channel_call delivering its request: the port waiter it wakes is lent to
@@ -612,6 +617,7 @@ static void schedule_locked(void) {
   } else {
     sched.idle_mask &= ~(1ull << c->index);
     c->slice_end = now + TIME_SLICE;
+    if (c->tick_at <= now) c->tick_at = now + TICK; // leaving idle: ticks start again
     if (ctx_of(next)) ctx_refill(ctx_of(next), now);
   }
   if (next != prev) {
@@ -760,6 +766,7 @@ static void sched_arm_timer(cpu *c) {
   for (thread *t = c->sleepers; t; t = t->sleep_next)
     if (t->wake_late < next) next = t->wake_late;
   if (c->current != &c->idle && c->slice_end < next) next = c->slice_end;
+  if (c->current != &c->idle && c->tick_at < next) next = c->tick_at;
   const sched_ctx *x = c->current ? ctx_of(c->current) : nullptr;
   if (c->current != &c->idle && x && x->intent == VX_INTENT_REALTIME && !x->throttled &&
       c->run_start + x->left < next)
@@ -779,11 +786,16 @@ static void sched_arm_timer(cpu *c) {
 
 // This CPU's timer fired (time.c): wake its sleepers whose deadlines have passed,
 // and end the slice if others are waiting.
-static void sched_timer(void) {
+static void sched_timer(bool from_user) {
   cpu *c = this_cpu();
   if (!c->current) return; // before the scheduler runs on this CPU
   spin_lock(&sched.lock);
   vx_instant now = clock_now();
+  if (c->current != &c->idle && now >= c->tick_at) { // the ticks due, all to where it was found
+    uint64_t n = 1 + (uint64_t)((now - c->tick_at) / TICK);
+    atomic_fetch_add_explicit(&c->current->ticks[from_user ? 0 : 1], n, memory_order_relaxed);
+    c->tick_at += (vx_instant)(n * TICK);
+  }
   while (c->sleepers && c->sleepers->wake_at <= now) {
     thread *t = c->sleepers;
     t->wait_token = nullptr; // a waker that finds it later skips it

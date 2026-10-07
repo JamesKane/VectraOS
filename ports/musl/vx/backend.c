@@ -46,6 +46,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/times.h>
 #include <sys/uio.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
@@ -496,7 +497,11 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
 
   // Time and waiting (start.c)
   case SYS_clock_gettime: return time_get((clockid_t)a1, (struct timespec *)a2);
-  case SYS_clock_getres: return time_res((struct timespec *)a2);
+  case SYS_clock_getres: return time_res((clockid_t)a1, (struct timespec *)a2);
+  case SYS_times: return posix_times((struct tms *)a1);
+  case SYS_getrusage: return posix_getrusage((int)a1, (struct rusage *)a2);
+  case SYS_getpriority: return posix_getpriority((int)a1, a2);
+  case SYS_setpriority: return posix_setpriority((int)a1, a2, (int)a3);
   case SYS_nanosleep:
     return time_sleep(CLOCK_MONOTONIC, 0, (const struct timespec *)a1, (struct timespec *)a2);
   case SYS_clock_nanosleep:

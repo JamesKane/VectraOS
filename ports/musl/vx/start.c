@@ -144,23 +144,31 @@ static long proc_set_tls(uint64_t p) {
 // Every clock is the kernel's monotonic one, in nanoseconds since boot; the
 // realtime clocks add the kernel's UTC offset (ADR-0031), which is 0 until
 // a clock driver has set it (no RTC: 1970, as before). The CPU-time clocks
-// are the monotonic clock too.
+// are the kernel's samples of the process's and the thread's (ADR-0041), to
+// 10 ms; another thread's or process's (a negative id) is refused.
 
 static bool time_is_utc(clockid_t clock) {
   return clock == CLOCK_REALTIME || clock == CLOCK_REALTIME_COARSE || clock == CLOCK_REALTIME_ALARM ||
          clock == CLOCK_TAI;
 }
 
+static vx_cpu_times cpu_times(bool thread); // process.c
+
 static long time_get(clockid_t clock, struct timespec *ts) {
   if (clock < 0 || clock > CLOCK_TAI) return -EINVAL;
   vx_instant now = time_is_utc(clock) ? vx_clock_utc() : vx_clock_read();
+  if (clock == CLOCK_PROCESS_CPUTIME_ID || clock == CLOCK_THREAD_CPUTIME_ID) {
+    vx_cpu_times t = cpu_times(clock == CLOCK_THREAD_CPUTIME_ID);
+    now = t.user + t.sys;
+  }
   if (now < 0) now = 0;
   *ts = (struct timespec){.tv_sec = now / 1'000'000'000, .tv_nsec = now % 1'000'000'000};
   return 0;
 }
 
-static long time_res(struct timespec *ts) {
-  if (ts) *ts = (struct timespec){.tv_sec = 0, .tv_nsec = 1};
+static long time_res(clockid_t clock, struct timespec *ts) {
+  bool cpu = clock == CLOCK_PROCESS_CPUTIME_ID || clock == CLOCK_THREAD_CPUTIME_ID;
+  if (ts) *ts = (struct timespec){.tv_sec = 0, .tv_nsec = cpu ? 10'000'000 : 1}; // the kernel's tick
   return 0;
 }
 
