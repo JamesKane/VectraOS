@@ -2,7 +2,7 @@
 # vxctest, built with only the target (Fedora's clang with the sysroot's
 # configuration file, ld.lld with its response files), against llvm-libc
 # and libvx's hooks: number round trips, math, qsort, malloc, getenv, the
-# clocks and standard output (tests/user/vxctest.c).
+# clocks and standard output (tests/user/vxctest.c). C++ is vxcxx.ndb's.
 
 scenario=vxc timeout=60 with=vxctest cmdline=vx.skip=rc
 expect="vxctest: hello from llvm-libc"

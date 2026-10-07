@@ -6,12 +6,16 @@
 # from this tree), under toolchain/out/libc/TRIPLE, and refuses a build whose
 # tree hash (as tree.sha256 is computed in third_party: find . -type f |
 # sort | sha256sum, hashed) differs from the one recorded here: a new build
-# is taken by recording it.
+# is taken by recording it. cxx.sha256 is the same of build_cxx.sh's
+# runtime sysroot (toolchain/out/sysroot/TRIPLE): libc++ and libc++abi with
+# their headers (6e2d2); a machine without it builds the sysroot for C alone.
 
 triple=x86_64-unknown-vectraos llvm-project=903b9faaae5c43ecc9b7e33f8db9c94c7429374a
-    patches=0001-0009
-    tree.sha256=e1b6c83c4b278326750173ee8edf233dd03a9549ce84210a7077a0a59d2e7b31
+    patches=0001-0011
+    tree.sha256=eb3100ffbd7fb9e27fb6dc5ee308a5ed32270639ab1c9c14022dfad3b96200cf
+    cxx.sha256=7d6029b97495e806ec7055a18d07dc2ad1906b0f432457af27bcec1f4519f774
 
 triple=aarch64-unknown-vectraos llvm-project=903b9faaae5c43ecc9b7e33f8db9c94c7429374a
-    patches=0001-0009
-    tree.sha256=2a4f3df13ea949231b1bf62039faac9bebd6ea3791f11f04fff0658b9e184ae9
+    patches=0001-0011
+    tree.sha256=10fb6b18c3934cab57b37d8a99ba04f50b0f0ad95c5abd2dddc5c32854b46b7f
+    cxx.sha256=1754e13acc8fd6c60d2dfe3c7c02de6207dc21b6679b7bd70aa4641cc7343929

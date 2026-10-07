@@ -33,6 +33,7 @@
 // ADR-0001: the toolchain is pinned to these exact binaries and versions.
 // Each pin is one line of the tool's --version output, compared exactly.
 static const char CLANG[] = "/usr/bin/clang";
+static const char CLANGXX[] = "/usr/bin/clang++"; // the native target's C++ (ADR-0033 §2a)
 static const char LLD[] = "/usr/bin/ld.lld";
 static const char OBJCOPY[] = "/usr/bin/llvm-objcopy";
 static const char NASM[] = "/usr/bin/nasm";
@@ -1295,6 +1296,7 @@ static const program USER_PROGRAMS[] = {
     {"starttest", "tests/user/starttest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
     {"libvxtest", "tests/user/libvxtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
     {"vxctest", "tests/user/vxctest.c", IN_TESTS, nullptr, false, nullptr, nullptr, true},
+    {"vxcxxtest", "tests/user/vxcxxtest.cpp", IN_TESTS, nullptr, false, nullptr, nullptr, true},
     {"procfs", "servers/procfs/procfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
     {"nsd", "servers/nsd/nsd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
     {"tmpfs", "servers/tmpfs/tmpfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
@@ -1525,7 +1527,7 @@ static const char *const *usage_flags(const program *p) {
 
 static void copy_tree(const char *from, const char *to);
 static void copy_file(const char *from, const char *to);
-static void probe_sysroot(const arch *a, const char *s, const char *swift);
+static void probe_sysroot(const arch *a, const char *s, const char *bin, bool cxx);
 static bool tree_sha256(const char *dir, char out[65]);
 
 static const char *sysroot_dir(const arch *a, bool release) {
@@ -1535,11 +1537,34 @@ static const char *sysroot_dir(const arch *a, bool release) {
 static const char *sysroot_triple(const arch *a) { return fmt("%s-unknown-vectraos", a->name); }
 
 // The tree hash recorded for triple, or "" if none is.
-static const char *sysroot_recorded(const char *triple) {
+static const char *sysroot_recorded(const char *triple, const char *key) {
   vx_str rec = read_file("lib/vx-rt/sysroot/llvm-libc.ndb");
   const char *at = strstr(rec.ptr, fmt("triple=%s ", triple));
-  const char *hash = at ? strstr(at, "tree.sha256=") : nullptr;
-  return hash ? fmt("%.64s", hash + 12) : "";
+  const char *next = at ? strstr(at + 7, "triple=") : nullptr; // this triple's record only
+  const char *hash = at ? strstr(at, fmt("%s=", key)) : nullptr;
+  if (hash && next && hash > next) hash = nullptr;
+  return hash ? fmt("%.64s", hash + strlen(key) + 1) : "";
+}
+
+// libc++ and libc++abi from build_cxx.sh's runtime sysroot into s, at the
+// recorded tree (6e2d2): whether there were any.
+static bool sysroot_cxx(const arch *a, const char *s, const char *from) {
+  const char *triple = sysroot_triple(a), *cxx = fmt("%s/toolchain/out/sysroot/%s", from, triple);
+  if (!exists(fmt("%s/usr/lib/libc++.a", cxx))) {
+    fprintf(stderr, "  SYSROOT %s: no C++, no libc++ in %s\n", a->name, cxx);
+    return false;
+  }
+  char tree[65];
+  const char *want = sysroot_recorded(triple, "cxx.sha256");
+  if (!tree_sha256(cxx, tree) || strcmp(tree, want) != 0)
+    die("%s: tree %s, but lib/vx-rt/sysroot/llvm-libc.ndb records cxx.sha256=%s: record the build to take it",
+        cxx, tree, *want ? want : "none");
+  copy_tree(fmt("%s/usr/include/c++", cxx), fmt("%s/usr/include/c++", s));
+  copy_file(fmt("%s/usr/lib/libc++.a", cxx), fmt("%s/usr/lib/libc++.a", s));
+  copy_file(fmt("%s/usr/lib/libc++abi.a", cxx), fmt("%s/usr/lib/libc++abi.a", s));
+  copy_file("lib/vx-rt/sysroot/vectraos-clang++.cfg", fmt("%s/%s-clang++.cfg", s, triple));
+  copy_file("lib/vx-rt/sysroot/link-tail-c++.rsp", fmt("%s/link-tail-c++.rsp", s));
+  return true;
 }
 
 // Whether the sysroot was made: false, with a note, when there is no C
@@ -1554,7 +1579,7 @@ static bool build_sysroot(const arch *a, bool release) {
     return false;
   }
   char tree[65];
-  const char *want = sysroot_recorded(triple);
+  const char *want = sysroot_recorded(triple, "tree.sha256");
   if (!tree_sha256(libc, tree) || strcmp(tree, want) != 0)
     die("%s: tree %s, but lib/vx-rt/sysroot/llvm-libc.ndb records %s: record the build to take it", libc,
         tree, *want ? want : "none");
@@ -1569,7 +1594,8 @@ static bool build_sysroot(const arch *a, bool release) {
   copy_file("lib/vx-rt/sysroot/vectraos.cfg", fmt("%s/%s.cfg", s, triple));
   copy_file("lib/vx-rt/sysroot/link-head.rsp", fmt("%s/link-head.rsp", s));
   copy_file("lib/vx-rt/sysroot/link-tail.rsp", fmt("%s/link-tail.rsp", s));
-  probe_sysroot(a, s, fmt("%s/toolchain/out/bin/clang", from)); // the two compilers agree, or it stops
+  bool cxx = sysroot_cxx(a, s, from);
+  probe_sysroot(a, s, fmt("%s/toolchain/out/bin", from), cxx); // the two compilers agree, or it stops
   // ISO C alone: a program asking for POSIX is refused when it compiles (6e2c1).
   const char *posix = fmt("%s/posix-probe.c", s);
   static const char POSIX_PROBE[] = "#define _POSIX_C_SOURCE 200809L\n#include <stdio.h>\n";
@@ -1624,6 +1650,8 @@ static const char *const PROBE_VERSION_MACROS[] = {"__clang_major__",
                                                    "__MEMORY_SCOPE_CLUSTR",
                                                    "__ARM_PREFETCH_RANGE",
                                                    "__HAVE_FUNCTION_MULTI_VERSIONING",
+                                                   "__cpp_modules",
+                                                   "__cpp_trivial_relocatability",
                                                    nullptr};
 
 // What the driver gives cc1 that the configuration file decides.
@@ -1765,67 +1793,89 @@ static void probe_fail(const arch *a, const char *what, const char *diff) {
 }
 
 // Compares the two compilers on the sysroot s, if the Swift toolchain's clang is there.
-static void probe_sysroot(const arch *a, const char *s, const char *swift) {
-  if (!exists(swift)) {
-    fprintf(stderr, "  PROBE   %s skipped: no %s\n", a->name, swift);
-    return;
-  }
-  const char *abs = fmt("%s/%s", root, s), *triple = sysroot_triple(a), *src = fmt("%s/probe.c", abs);
+// One language's round: Fedora's driver with the configuration file against
+// the patched one, on a probe in that language.
+typedef struct {
+  const char *name, *fedora, *swift, *x, *source, *tail;
+} probe_lang;
+
+static void probe_round(const arch *a, const char *s, const probe_lang *l) {
+  const char *abs = fmt("%s/%s", root, s), *triple = sysroot_triple(a), *src = fmt("%s/%s", abs, l->source);
   const char *cfg = fmt("--config-system-dir=%s", abs), *target = fmt("--target=%s", triple);
   const char *sys = fmt("--sysroot=%s", abs);
   write_file(src, (vx_str){"int main(void) { return 0; }\n", 29});
   probe_list m1 = {}, m2 = {};
-  probe_macros(
-      run_capture((const char *const[]){CLANG, cfg, target, "-dM", "-E", "-x", "c", "/dev/null", nullptr}),
-      &m1);
-  probe_macros(
-      run_capture((const char *const[]){swift, target, sys, "-dM", "-E", "-x", "c", "/dev/null", nullptr}),
-      &m2);
-  probe_fail(a, "predefined macros", probe_diff(&m1, &m2, true));
+  probe_macros(run_capture((const char *const[]){l->fedora, cfg, target, "-dM", "-E", "-x", l->x, "/dev/null",
+                                                 nullptr}),
+               &m1);
+  probe_macros(run_capture((const char *const[]){l->swift, target, sys, "-dM", "-E", "-x", l->x, "/dev/null",
+                                                 nullptr}),
+               &m2);
+  probe_fail(a, fmt("%s's predefined macros", l->name), probe_diff(&m1, &m2, true));
   for (int g = 0; g < 2; g++) {
     const char *debug = g ? "-g" : "-g0";
     probe_list a1 = {}, a2 = {}, f1 = {}, f2 = {};
     probe_args(
-        run_capture_fd((const char *const[]){CLANG, cfg, target, debug, "-###", "-c", src, nullptr}, 2),
+        run_capture_fd((const char *const[]){l->fedora, cfg, target, debug, "-###", "-c", src, nullptr}, 2),
         "-cc1", &a1);
     probe_args(
-        run_capture_fd((const char *const[]){swift, target, sys, debug, "-###", "-c", src, nullptr}, 2),
+        run_capture_fd((const char *const[]){l->swift, target, sys, debug, "-###", "-c", src, nullptr}, 2),
         "-cc1", &a2);
     probe_cc1(&a1, &f1);
     probe_cc1(&a2, &f2);
-    probe_fail(a, g ? "code generation with -g" : "code generation", probe_diff(&f1, &f2, true));
+    probe_fail(a, fmt("%s's code generation%s", l->name, g ? " with -g" : ""), probe_diff(&f1, &f2, true));
   }
   probe_list l1 = {}, l2 = {}, o1 = {}, o2 = {}, i1 = {}, i2 = {};
   probe_add(&l1, sys);
   probe_rsp(fmt("%s/link-head.rsp", s), &l1);
   probe_add(&l1, "probe.o");
-  probe_rsp(fmt("%s/link-tail.rsp", s), &l1);
+  probe_rsp(fmt("%s/%s", s, l->tail), &l1);
   probe_args(
-      run_capture_fd((const char *const[]){swift, target, sys, "-###", src, "-o", "probe", nullptr}, 2),
+      run_capture_fd((const char *const[]){l->swift, target, sys, "-###", src, "-o", "probe", nullptr}, 2),
       "ld.lld", &l2);
   probe_link(&l1, abs, &o1, &i1);
   probe_link(&l2, abs, &o2, &i2);
-  probe_fail(a, "the link's options", probe_diff(&o1, &o2, true));
-  probe_fail(a, "the link's inputs", probe_diff(&i1, &i2, false));
-  fprintf(stderr, "  PROBE   %s: the two compilers agree\n", a->name);
+  probe_fail(a, fmt("%s's link options", l->name), probe_diff(&o1, &o2, true));
+  probe_fail(a, fmt("%s's link inputs", l->name), probe_diff(&i1, &i2, false));
+}
+
+// Compares the two compilers on the sysroot s, for C and, if it has libc++,
+// C++, where the Swift toolchain's patched clang is in bin.
+static void probe_sysroot(const arch *a, const char *s, const char *bin, bool cxx) {
+  const char *swift = fmt("%s/clang", bin);
+  if (!exists(swift)) {
+    fprintf(stderr, "  PROBE   %s skipped: no %s\n", a->name, swift);
+    return;
+  }
+  probe_round(a, s, &(probe_lang){"C", CLANG, swift, "c", "probe.c", "link-tail.rsp"});
+  if (cxx)
+    probe_round(
+        a, s, &(probe_lang){"C++", CLANGXX, fmt("%s/clang++", bin), "c++", "probe.cpp", "link-tail-c++.rsp"});
+  fprintf(stderr, "  PROBE   %s: the two compilers agree%s\n", a->name, cxx ? ", for C and C++" : "");
 }
 
 // A program of ISO C against the sysroot: compiled by Fedora's clang with
 // the configuration file, linked by ld.lld with the response files, as
 // ADR-0033 §3 has a C program built for the target.
+static bool native_cxx(const program *p) {
+  size_t n = strlen(p->source);
+  return n > 4 && strcmp(p->source + n - 4, ".cpp") == 0;
+}
+
 static void native_program(const arch *a, bool release, const program *p, const char *obj, cmd *cc, cmd *ld) {
   const char *s = sysroot_dir(a, release);
+  bool cxx = native_cxx(p); // a test of the C++ runtime (6e2d2): first-party code is C23
   *cc = (cmd){};
-  cmd_addv(cc,
-           (const char *const[]){CLANG, fmt("--config-system-dir=%s", s),
-                                 fmt("--target=%s", sysroot_triple(a)), "-std=c23", // the system's own: C23
-                                 "-Wall", "-Wextra", "-Werror", nullptr});
+  cmd_addv(cc, (const char *const[]){cxx ? CLANGXX : CLANG, fmt("--config-system-dir=%s", s),
+                                     fmt("--target=%s", sysroot_triple(a)), cxx ? "-std=c++23" : "-std=c23",
+                                     "-Wall", "-Wextra", "-Werror", nullptr});
   cmd_addv(cc, release ? RELEASE_FLAGS : DEBUG_FLAGS);
   cmd_addv(cc, (const char *const[]){"-c", p->source, "-o", obj, nullptr});
   *ld = (cmd){};
-  cmd_addv(ld, (const char *const[]){
-                   LLD, fmt("--sysroot=%s", s), fmt("@%s/link-head.rsp", s), obj, fmt("@%s/link-tail.rsp", s),
-                   "-o", fmt("out/%s/%s/%s", a->name, release ? "release" : "debug", p->name), nullptr});
+  cmd_addv(ld, (const char *const[]){LLD, fmt("--sysroot=%s", s), fmt("@%s/link-head.rsp", s), obj,
+                                     fmt("@%s/link-tail%s.rsp", s, cxx ? "-c++" : ""), "-o",
+                                     fmt("out/%s/%s/%s", a->name, release ? "release" : "debug", p->name),
+                                     nullptr});
 }
 
 static bool sysroot_made[2][2]; // [arch][release]: build_sysroot made it this run
@@ -1840,6 +1890,8 @@ static bool build_user_programs(const arch *a, bool release) {
     if (!program_for(p, a)) continue;
     const char *obj = fmt("%s/%s.o", dir, p->name);
     if (p->native && !sysroot_made[a == &ARCHES[0] ? 0 : 1][release]) continue; // no C library here
+    if (p->native && native_cxx(p) && !exists(fmt("%s/usr/lib/libc++.a", sysroot_dir(a, release))))
+      continue; // no C++ runtime here
     fprintf(stderr, "  CC    %-7s %s\n", p->name, a->name);
     if (p->native) {
       native_program(a, release, p, obj, &cc[n], &ld[n]);
@@ -4762,11 +4814,17 @@ static int os_units(unit *units, bool with_host_tests) {
       if (!program_for(p, &ARCHES[i])) continue;
       if (p->native) { // ISO C against the debug sysroot, if this machine has one (6e2b2)
         const char *sys = fmt("%s/%s", root, sysroot_dir(&ARCHES[i], false));
-        if (!exists(fmt("%s/usr/lib/libc.a", sys))) continue;
-        const char **f = alloc(4 * sizeof *f);
+        bool cxx = native_cxx(p);
+        if (!exists(fmt("%s/usr/lib/%s", sys, cxx ? "libc++.a" : "libc.a"))) continue;
+        const char **f = alloc(8 * sizeof *f);
         f[0] = fmt("--config-system-dir=%s", sys), f[1] = fmt("--target=%s", sysroot_triple(&ARCHES[i]));
-        f[2] = "-std=c23", f[3] = nullptr;
-        units[unit_slot(&n)] = (unit){fmt("%s %s", p->name, ARCHES[i].name), p->source, {f, HOUSE_FLAGS}};
+        f[2] = cxx ? "-std=c++23" : "-std=c23", f[3] = nullptr;
+        if (cxx)
+          f[3] = "-stdlib=libc++", f[4] = "-fno-exceptions",
+          f[5] = nullptr; // the C++ file's, which clang does not read
+        static const char *const CXX_HOUSE[] = {"-Wall", "-Wextra", "-Werror", "-Wshadow", "-g", nullptr};
+        units[unit_slot(&n)] =
+            (unit){fmt("%s %s", p->name, ARCHES[i].name), p->source, {f, cxx ? CXX_HOUSE : HOUSE_FLAGS}};
         continue;
       }
       unit *u = &units[unit_slot(&n)];

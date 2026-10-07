@@ -1,0 +1,15 @@
+# tests/qemu/vxcxx.ndb: C++ on the native target (M6 step 6e2d2, ADR-0033
+# section 2a stages 1 and 2): vxcxxtest, built with only the target
+# (Fedora's clang++ with the sysroot's configuration file, ld.lld with its
+# C++ response files), against libc++ and libc++abi with RTTI and threads:
+# virtual calls, dynamic_cast and typeid; std::thread, a mutex, a condition
+# variable, call_once, a guarded function-local static, thread_local and a
+# steady_clock sleep (tests/user/vxcxxtest.cpp).
+
+scenario=vxcxx timeout=60 with=vxcxxtest cmdline=vx.skip=rc
+expect="vxcxxtest: hello from libc++"
+expect=" checks, 0 failed"
+line="svcd: vxcxxtest exited"
+fail="vx: panic"
+fail="vxcxxtest: FAILED"
+fail="svcd: vxcxxtest exited: "

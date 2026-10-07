@@ -1,5 +1,5 @@
-page=native sect=7 summary="the native target: ISO C programs against llvm-libc and libvx, and the sysroot they build with"
-    keys=native,target,sysroot,iso,libc,llvm-libc,crt1,libvx,triple,vectraos,cfg,link,malloc,getenv
+page=native sect=7 summary="the native target: ISO C and C++ programs against llvm-libc, libc++ and libvx, and the sysroot they build with"
+    keys=native,target,sysroot,iso,libc,llvm-libc,crt1,libvx,triple,vectraos,cfg,link,malloc,getenv,c++,libc++,libcxxabi,rtti,threads
 
 # DESCRIPTION
 
@@ -21,6 +21,10 @@ First-party system code does not use it; Swift's runtime, C and C++ programs fro
   llvm-libc's.
 : `usr/lib/libclang_rt.builtins.a`
   compiler-rt's builtins.
+: `usr/include/c++/v1/`, `usr/lib/libc++.a`, `usr/lib/libc++abi.a`
+  libc++ and libc++abi (ADR-0033 §2a), from `swift-on-vectra`'s `build_cxx.sh` at the tree `cxx.sha256` records: RTTI on; threads through libc++'s external threading API, whose header (LLVM patch 0011) sits on the C library's `<threads.h>`, so `std::thread`, the mutexes, condition variables, `call_once`, guarded function-local statics and `thread_local` are vx-rt's threads and futexes; `steady_clock` on `timespec_get`'s `TIME_MONOTONIC` (patch 0010). No exceptions until 6f2a, no filesystem, random device or iostreams until 6e2e. A machine without them builds the sysroot for C alone.
+: `<arch>-unknown-vectraos-clang++.cfg`, `link-tail-c++.rsp`
+  C++'s configuration file, which `clang++` reads in place of the C one (`-stdlib=libc++`, `-fno-exceptions`, the C file's other options, and no `-std`), and the link's tail with `-lc++ -lc++abi` first.
 : `<arch>-unknown-vectraos.cfg`
   The configuration file Fedora's clang compiles with (ADR-0033 §3): `__vectraos__`, the sysroot and nothing of the host's, frame pointers, unwind tables, no PIC, no math `errno`. It names no language: a program chooses, and without `-std` it is the compiler's default, gnu17, as the Swift toolchain's patched clang has it. The system's own native programs are C23 (`-std=c23`); nothing makes a third party's be.
 : `link-head.rsp`, `link-tail.rsp`
@@ -28,7 +32,7 @@ First-party system code does not use it; Swift's runtime, C and C++ programs fro
 : `llvm-libc`
   Which build of the C library it took.
 
-Fedora's clang and the Swift toolchain's patched clang, which knows the target without a configuration file, must agree (ADR-0033 §3): where the Swift toolchain is there too, `./build` compiles a probe with both and stops, naming the difference, if their predefined macros (but for those an LLVM version brings), the code generation the configuration sets (frame pointers, unwind tables, relocation model, DWARF version with `-g`, `-std`) or their link lines differ.
+Fedora's clang and the Swift toolchain's patched clang, which knows the target without a configuration file, must agree (ADR-0033 §3): where the Swift toolchain is there too, `./build` compiles a probe with both, in C and, with libc++ there, in C++, and stops, naming the difference, if their predefined macros (but for those an LLVM version brings), the code generation the configuration sets (frame pointers, unwind tables, relocation model, DWARF version with `-g`, `-std`) or their link lines differ.
 A program defining `_POSIX_C_SOURCE`, `_XOPEN_SOURCE`, `_GNU_SOURCE` or the like is refused when it includes a header of the C library: it is ISO C's clause 7 alone, and a POSIX program is built for the POSIX personality (posix(7)); `./build` checks that it is refused.
 First-party code never sees a hosted header: it is compiled with `-nostdlibinc`, and `./build check` runs clang-tidy and the analyzer over native programs with the sysroot's flags.
 
@@ -63,9 +67,11 @@ Until ADR-0034's first gate puts the toolchain in this tree, the C library comes
 Compiling and linking a program by hand, as `./build` does:
 
 ```text
-S=out/x86_64/debug/vectraos
-clang --config-system-dir=$S --target=x86_64-unknown-vectraos -c hello.c
+S=out/x86_64/debug/vectraos T=x86_64-unknown-vectraos
+clang --config-system-dir=$S --target=$T -c hello.c
 ld.lld --sysroot=$S @$S/link-head.rsp hello.o @$S/link-tail.rsp -o hello
+clang++ --config-system-dir=$S --target=$T -std=c++23 -c app.cpp
+ld.lld --sysroot=$S @$S/link-head.rsp app.o @$S/link-tail-c++.rsp -o app
 ```
 
 # SEE ALSO
@@ -74,7 +80,7 @@ start(2), heap(2), posix(7); ADR-0033 and ADR-0034, and `swift-on-vectra`'s `doc
 
 # BUGS
 
-There is no C++ yet (6e2d).
+C++ has no exceptions (6f2a), and no `std::filesystem`, `std::random_device` or iostreams (6e2e).
 
 `freopen`, `fgetpos`, `fsetpos`, `rewind`, `tmpfile` and `tmpnam` are missing: llvm-libc has none of them for any target.
 `fopen`'s `"x"` (exclusive creation) is not taken.

@@ -1,0 +1,8 @@
+-lc++
+-lc++abi
+--start-group
+-lvx
+-lc
+-lm
+--end-group
+-lclang_rt.builtins
