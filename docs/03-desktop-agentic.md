@@ -75,7 +75,7 @@ _Blueprint v0, 2026-09-30._
 - **One clock:** each output has one frame clock, owned by `winsrv`. A window follows the clock of the output it mostly covers.
 - **Queue depth:** `ctl latency 1|2|3` bounds the number of queued presents. When the bound is reached, `present` fails fast and never blocks (F-102).
 - **Configure sequence:** every present carries the `config_seq` it was rendered for. A buffer rendered for the wrong size is clipped or padded for at most one frame, and never stretched (F-208).
-- **One configure record:** a change of size, scale, visibility or focus arrives as one event carrying the logical size, the pixel size, the scale, the `config_seq`, the visibility state, focus, and an `interactive` flag that is set while the user is dragging or resizing the window. Configure events during an interactive resize are coalesced to one per composited frame (F-202, F-205).
+- **One configure record:** a change of size, scale, visibility or focus arrives as one event carrying the logical size, the pixel size, the scale, the `config_seq`, the visibility state, the form (`full`, or `stashed`: a compact form at a small size, which the app draws, such as a player's transport controls; `vxui` draws the icon and title for an app that has none; 15 §3.3), focus, and an `interactive` flag that is set while the user is dragging or resizing the window. Configure events during an interactive resize are coalesced to one per composited frame (F-202, F-205).
 - **Buffer size apart from window size:** a surface may keep a fixed size, such as a simulation's grid or an emulator's screen, with `ctl viewport W H`; `winsrv` scales it to the window, so a resize needs no rescaling pass in the app (S7 finding 3, as Wayland's `wp_viewporter`).
 - **Variable refresh:** on a VRR output the frame event carries a window, `target_min` and `target_max`, instead of one vblank, and a present may land anywhere in it. `refresh` reports the range. A client that presents late does not wait for the next fixed vblank.
 - **Tearing:** a fullscreen window on a direct-scanout plane may ask for `ctl present async`. Flips then happen at once, without waiting for vblank, and feedback reports `tearing=yes`. Composited windows never tear.
@@ -108,6 +108,8 @@ _Blueprint v0, 2026-09-30._
   - pen input has proximity and tool identity (F-212);
   - `pointer lock|confine|warp` delivers raw deltas, with the accelerated deltas beside them. A lock is honoured only while the window has focus and is dropped during a server-run drag; each grant and release is a `POINTER` event, and motion caused by a warp carries a `warped` flag, so a camera does not jump (F-213);
   - high-rate devices, such as an 8 kHz mouse, deliver every event with its device timestamp, converted to the system's one clock (01 §4.4) so it compares directly with frame times. Events are batched per wake-up but never merged, so a game sees the full history, as `getCoalescedEvents` gives on the web.
+- **The document a window shows:** `ctl doc PATH-OR-URI` names it, changed whenever the window shows something else, as a window's represented file does on macOS. `vxui` sets it for windows that open a file. It is what the app says, used for display and for the user's working memory (15 §3.2), never for authority.
+- **Snarf, the clipboard as a file,** as rio's `/dev/snarf` is (9front `rio/xfid.c:547`): `/wsys/self/snarf`, whose qid version moves with each change. A write replaces the current snarf and a read returns it. A snarf has a type, as a plumb message does (`text`, `image/png`, a file reference), and may carry several representations; a reader names the type it wants. Who may read and write it is §5.7's (15 §3.1).
 - **Capability queries:** `/wsys/info` lists protocol version and feature bits.
 
 ### 5.2 Hybrid WIMP and tiling
@@ -198,6 +200,7 @@ A global `/wsys` tree in every app's namespace would repeat X11's security model
 
 - **Apps get `/wsys/self`:** their own windows, plus a `new` verb that creates one. Nothing about other windows is visible.
 - **The whole tree is a grant,** held by `wm`, the shell, the command palette, and assistive technology the user installs as such. `svcd` gives it through their namespace templates, and `/proc/N/status` shows it.
+- **Snarf follows focus and the user's hand,** as Fuchsia's clipboard follows the focus chain (`fuchsia.ui.focus/focus_chain.fidl:64`). An app reads `/wsys/self/snarf` only while its window has focus and within the input event that asked (a paste key or menu choice), and writes it only while focused, so no app in the background watches the clipboard. `winsrv` keeps the last snarfs as a history in the whole tree, which only the holders above see. A copy from a field marked secret (§5.6) becomes the current snarf but never enters the history, and is cleared after a short time.
 - **Approval prompts use a trusted path.** `winsrv` draws them in a layer no client can create or cover, with a mark only it can draw, and only physical input answers them. A `press` through `a11y`, a `pointer warp`, or any other synthetic input is ignored there, so an agent cannot approve its own request.
 
 ## 6. Application developer framework: hide complexity until it is needed
@@ -434,3 +437,4 @@ Prompts on the trusted path (§5.7) are drawn in a material no client theme can 
 5. **Dock pins.** Do they live in `~/lib/wm/dock.ndb`, beside the key bindings, which the user writes, or in the dock's `#appdata`, as state the shell writes?
 6. **Undoing "always ignore".** Where does the user see and remove these records? Most likely the Bench section of Settings.
 7. **Verb echo.** Should the shell offer a slip that names the verb each key or drag produced, to teach the key paths? Off by default?
+8. **Working memory.** 15 sketches Jenson's spatial, associative and episodic memory on this design: the `focus` layout, collections as folders, and a metadata journal over `fsd`'s dump. Its open questions (dwell's grain, `hv`'s history, the snarf history's lifetime) come here when M7 is scoped.
