@@ -75,6 +75,7 @@ The toolchain is pinned (ADR-0001): clang, lld and llvm-objcopy 22.1.8 from Fedo
 | [docs/13-portable-code.md](docs/13-portable-code.md) | **Design notes, non-binding.** A core-Wasm profile as a portable target, lowered to native on install, for third-party programs and perhaps more of the user land |
 | [docs/15-working-memory.md](docs/15-working-memory.md) | **Design notes, non-binding.** Scott Jenson's working memory (spatial, associative, episodic) on this design: snarf, a window's document, collections as folders, a metadata journal over `fsd`'s dump |
 | [docs/16-swift-sdks.md](docs/16-swift-sdks.md) | **Design notes, non-binding.** The Swift SDKs (`VX`, `VXUI`, `VXEngine`, `VXData`) shaped for the cache: batches, ids, columns of plain data, ARC per subsystem, chunked concurrency |
+| [docs/17-applications.md](docs/17-applications.md) | **Vision, non-binding.** The application suite: Sheet, Page, Stage, Jukebox, Photos, Notes, Reminders, Stickies, a modern Deluxe Paint and Draw, a vector editor, as file servers over directory documents, local-first over the swarm |
 | [docs/adr/](docs/adr/README.md) | Architecture decision records |
 | [docs/study/](docs/study/README.md) | The platform API study's findings: friction register, heritage systems, convergent API shapes, prototypes |
 
