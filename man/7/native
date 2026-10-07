@@ -1,0 +1,70 @@
+page=native sect=7 summary="the native target: ISO C programs against llvm-libc and libvx, and the sysroot they build with"
+    keys=native,target,sysroot,iso,libc,llvm-libc,crt1,libvx,triple,vectraos,cfg,link,malloc,getenv
+
+# DESCRIPTION
+
+A native program is one built for `<arch>-unknown-vectraos`, the target ADR-0033 adds beside the POSIX one (posix(7)): ISO C23 against a C library of clause 7 alone, with no POSIX name in it, under the system's own calls.
+The C library is llvm-libc, built from the toolchain's llvm-project on its baremetal layer (LLVM patch 0004), which makes no system call: it calls the system through hooks, which `libvx` supplies (M6 step 6e2b).
+First-party system code does not use it; Swift's runtime, C and C++ programs from elsewhere, and their libraries do.
+
+## The sysroot
+
+`./build` makes the sysroot `out/<arch>/<mode>/vectraos/` when it finds the C library:
+
+: `usr/include/`
+  llvm-libc's headers, and the ABI's as `<vx/...>`.
+: `usr/lib/crt1.o`
+  vx-rt's entry, `_start` alone (`lib/vx-rt/start.c`).
+: `usr/lib/libvx.a`
+  vx-rt and vx-ns with the C library's hooks (`lib/vx-rt/libvx.c`): the program starts as a first-party one does (start(2)), then `main(argc, argv)` is called and its value given to `exit`.
+: `usr/lib/libc.a`, `usr/lib/libm.a`
+  llvm-libc's.
+: `usr/lib/libclang_rt.builtins.a`
+  compiler-rt's builtins.
+: `<arch>-unknown-vectraos.cfg`
+  The configuration file Fedora's clang compiles with (ADR-0033 §3): `__vectraos__`, the sysroot and nothing of the host's, C23, frame pointers, unwind tables, no PIC, no math `errno`.
+: `link-head.rsp`, `link-tail.rsp`
+  `ld.lld`'s options before and after a program's objects: static, at `_start`, `crt1.o` first; `libvx`, `libc` and `libm` in a group, then the builtins.
+: `llvm-libc`
+  Which build of the C library it took.
+
+Until ADR-0034's first gate puts the toolchain in this tree, the C library comes from `swift-on-vectra`'s build (`toolchain/build_libc.sh`), found in `$VECTRA_SWIFT_ON_VECTRA` or `../../lang/swift-on-vectra`.
+`./build` takes it only if its tree hash is the one `lib/vx-rt/sysroot/llvm-libc.ndb` records, so a new build is taken by recording it; with none there it builds without the sysroot, and an image that wants a native program stops.
+
+## The hooks
+
+: Standard output and error
+  `printf` and `puts` write through vx-rt's buffered writers, to the program's `stdout` and `stderr` pipes or the console; standard input is read as vx-rt reads it.
+  The streams themselves, `FILE`, `fopen` and `fprintf`, come with 6e2c.
+: `exit`
+  The value is the exit string, empty for 0 and the number in decimal otherwise, as the POSIX environment's: rc(1) shows `exit 7` as `name pid: 7`. `.fini_array` runs first; `atexit` comes with 6e2c.
+: `errno`
+  A thread-local word of `libvx`'s.
+: `malloc` and the rest
+  The process heap (heap(2)); `aligned_alloc` takes alignments up to 64 KiB.
+: `getenv`
+  `/env/NAME` (envd(4)), as 9front's APE reads it: a list's words joined by spaces. A process with no `/env` has the spawn message's `env=` records. A value stays good until the next `getenv` of the same name.
+: `remove`, `rename`
+  The namespace's files; `rename` within one server, and within one directory on a server with neither 9P2000.L nor the POSIX extension.
+: `timespec_get`, `clock`
+  `TIME_UTC` is the wall clock; `clock` is the CPU time the whole process has had (ADR-0041).
+
+# EXAMPLES
+
+Compiling and linking a program by hand, as `./build` does:
+
+```text
+S=out/x86_64/debug/vectraos
+clang --config-system-dir=$S --target=x86_64-unknown-vectraos -c hello.c
+ld.lld --sysroot=$S @$S/link-head.rsp hello.o @$S/link-tail.rsp -o hello
+```
+
+# SEE ALSO
+
+start(2), heap(2), posix(7); ADR-0033 and ADR-0034, and `swift-on-vectra`'s `docs/os-requirements.md`, in the repository
+
+# BUGS
+
+There are no `FILE` streams, `atexit`, `<threads.h>` or locales yet (6e2c), and no C++ (6e2d).
+
+Programs built against the sysroot are not yet checked by `./build check`'s analyzer and clang-tidy, and nothing yet compares the configuration file with the Swift toolchain's patched clang (6e2b2).

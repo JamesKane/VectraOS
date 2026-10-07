@@ -1,0 +1,14 @@
+# tests/qemu/vxc.ndb: the native target's C library (M6 step 6e2b, ADR-0033):
+# vxctest, built with only the target (Fedora's clang with the sysroot's
+# configuration file, ld.lld with its response files), against llvm-libc
+# and libvx's hooks: number round trips, math, qsort, malloc, getenv, the
+# clocks and standard output (tests/user/vxctest.c).
+
+scenario=vxc timeout=60 with=vxctest cmdline=vx.skip=rc
+expect="vxctest: hello from llvm-libc"
+expect="vxctest: through puts"
+expect=" checks, 0 failed"
+line="svcd: vxctest exited"
+fail="vx: panic"
+fail="vxctest: FAILED"
+fail="svcd: vxctest exited: "

@@ -1,0 +1,8 @@
+-static
+-e _start
+--build-id=sha1
+-z max-page-size=0x1000
+-z noexecstack
+-z now
+-L=/usr/lib
+-l:crt1.o

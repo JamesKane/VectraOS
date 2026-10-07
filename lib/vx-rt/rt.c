@@ -6,7 +6,11 @@
 #pragma once
 
 #include "rt.h"
+#ifdef VX_RT_LIBC
+#include "../vx-mem/mem.h" // libvx.a (6e2b): the C library linked with it has the four
+#else
 #include "../vx-mem/mem.c"
+#endif
 #include "base.c"
 #include "stdio.c"
 #include "note.c"

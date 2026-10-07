@@ -1243,6 +1243,7 @@ typedef struct program {
   bool posix;                   // against vectra-musl, rather than freestanding against vx-rt
   const port *lib;              // a native port it links (its archive), or nullptr
   const char *const *lib_flags; // what compiling against that port's headers takes
+  bool native;                  // ISO C against the native target's sysroot (ADR-0033, 6e2b)
 } program;
 
 // ACPICA, a native port (ADR-0030), and what bus-acpi needs to include its
@@ -1258,80 +1259,81 @@ static const char *const ACPICA_USE_FLAGS[] = {"-include", "ports/acpica/acvectr
                                                nullptr};
 
 static const program USER_PROGRAMS[] = {
-    {"svcd", "servers/svcd/svcd.c", IN_MODULE, nullptr, false, nullptr, nullptr},
-    {"ktest", "tests/kernel/ktest.c", IN_MODULE, nullptr, false, nullptr,
-     nullptr}, // the root task instead of svcd with vx.root=ktest
-    {"bootfs", "servers/bootfs/bootfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"bus-acpi", "servers/bus-acpi/bus-acpi.c", IN_BOOTFS, nullptr, false, &acpica, ACPICA_USE_FLAGS},
-    {"nstest", "tests/user/nstest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
-    {"dreftest", "tests/user/dreftest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
-    {"threadtest", "tests/user/threadtest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
-    {"p9pipetest", "tests/user/p9pipetest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
-    {"wstattest", "tests/user/wstattest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
-    {"srvtest", "tests/user/srvtest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
-    {"relaytest", "tests/user/relaytest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
-    {"pooltestd", "tests/user/pooltestd.c", IN_TESTS, nullptr, false, nullptr, nullptr},
-    {"pooltest", "tests/user/pooltest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
-    {"fsdconc", "tests/user/fsdconc.c", IN_TESTS, nullptr, false, nullptr, nullptr},
-    {"fsdfix", "tests/user/fsdfix.c", IN_TESTS, nullptr, false, nullptr, nullptr},
-    {"constest", "tests/user/constest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
-    {"nettest", "tests/user/nettest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
-    {"tcptest", "tests/user/tcptest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
-    {"proctest", "tests/user/proctest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
-    {"plugintest", "tests/user/plugintest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
-    {"notifytest", "tests/user/notifytest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
-    {"starttest", "tests/user/starttest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
-    {"libvxtest", "tests/user/libvxtest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
-    {"procfs", "servers/procfs/procfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"nsd", "servers/nsd/nsd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"tmpfs", "servers/tmpfs/tmpfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"nullfs", "servers/nullfs/nullfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"srvfs", "servers/srvfs/srvfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"envd", "servers/envd/envd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"relay", "servers/relay/relay.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"sysfs", "servers/sysfs/sysfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"ptyd", "servers/ptyd/ptyd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"devmgr", "servers/devmgr/devmgr.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"netd", "servers/netd/netd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"rc", "cmd/rc.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"poweroff", "cmd/poweroff.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"install", "cmd/install.c", IN_BOOTFS, nullptr, false, &monocypher, MONOCYPHER_USE_FLAGS},
-    {"ls", "cmd/ls.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"cat", "cmd/cat.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"srv", "cmd/srv.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"echo", "cmd/echo.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"pwd", "cmd/pwd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"ps", "cmd/ps.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"ns", "cmd/ns.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"tail", "cmd/tail.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"ping", "cmd/ping.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"cs", "cmd/cs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"dbg", "cmd/dbg.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"man", "cmd/man.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"lookman", "cmd/lookman.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"sig", "cmd/sig.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"drv-uart-16550", "drivers/drv-uart-16550/uart.c", IN_BOOTFS, "x86_64", false, nullptr, nullptr},
-    {"drv-rtc-cmos", "drivers/drv-rtc-cmos/rtc.c", IN_BOOTFS, "x86_64", false, nullptr, nullptr},
-    {"drv-uart-pl011", "drivers/drv-uart-pl011/uart.c", IN_BOOTFS, "aarch64", false, nullptr, nullptr},
-    {"drv-virtio-net", "drivers/drv-virtio-net/net.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"drv-virtio-blk", "drivers/drv-virtio-blk/blk.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"drv-nvme", "drivers/drv-nvme/nvme.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"blktest", "tests/user/blktest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
-    {"partd", "servers/partd/partd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"fsd", "servers/fsd/fsd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"dosfs", "servers/dosfs/dosfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"isofs", "servers/isofs/isofs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
-    {"distd", "servers/distd/distd.c", IN_BOOTFS, nullptr, false, &monocypher, MONOCYPHER_USE_FLAGS},
-    {"ctest", "tests/posix/ctest.c", IN_TESTS, nullptr, true, nullptr, nullptr},
-    {"ctestfsd", "tests/posix/ctest.c", IN_TESTS, nullptr, true, nullptr,
-     nullptr}, // ctest again, with /tmp on fsd
-    {"sbasetest", "tests/posix/sbasetest.c", IN_TESTS, nullptr, true, nullptr, nullptr},
-    {"maptest", "tests/posix/maptest.c", IN_TESTS, nullptr, true, nullptr, nullptr},
-    {"powercut", "tests/posix/powercut.c", IN_TESTS, nullptr, true, nullptr, nullptr},
-    {"dbgdemo", "tests/user/dbgdemo.c", IN_TESTS, nullptr, false, nullptr, nullptr},
-    {"dbgthreads", "tests/user/dbgthreads.c", IN_TESTS, nullptr, false, nullptr, nullptr},
-    {"schedtest", "tests/user/schedtest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
-    {"cdtest", "tests/user/cdtest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
+    {"svcd", "servers/svcd/svcd.c", IN_MODULE, nullptr, false, nullptr, nullptr, false},
+    {"ktest", "tests/kernel/ktest.c", IN_MODULE, nullptr, false, nullptr, nullptr,
+     false}, // the root task instead of svcd with vx.root=ktest
+    {"bootfs", "servers/bootfs/bootfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"bus-acpi", "servers/bus-acpi/bus-acpi.c", IN_BOOTFS, nullptr, false, &acpica, ACPICA_USE_FLAGS, false},
+    {"nstest", "tests/user/nstest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
+    {"dreftest", "tests/user/dreftest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
+    {"threadtest", "tests/user/threadtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
+    {"p9pipetest", "tests/user/p9pipetest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
+    {"wstattest", "tests/user/wstattest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
+    {"srvtest", "tests/user/srvtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
+    {"relaytest", "tests/user/relaytest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
+    {"pooltestd", "tests/user/pooltestd.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
+    {"pooltest", "tests/user/pooltest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
+    {"fsdconc", "tests/user/fsdconc.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
+    {"fsdfix", "tests/user/fsdfix.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
+    {"constest", "tests/user/constest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
+    {"nettest", "tests/user/nettest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
+    {"tcptest", "tests/user/tcptest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
+    {"proctest", "tests/user/proctest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
+    {"plugintest", "tests/user/plugintest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
+    {"notifytest", "tests/user/notifytest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
+    {"starttest", "tests/user/starttest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
+    {"libvxtest", "tests/user/libvxtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
+    {"vxctest", "tests/user/vxctest.c", IN_TESTS, nullptr, false, nullptr, nullptr, true},
+    {"procfs", "servers/procfs/procfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"nsd", "servers/nsd/nsd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"tmpfs", "servers/tmpfs/tmpfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"nullfs", "servers/nullfs/nullfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"srvfs", "servers/srvfs/srvfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"envd", "servers/envd/envd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"relay", "servers/relay/relay.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"sysfs", "servers/sysfs/sysfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"ptyd", "servers/ptyd/ptyd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"devmgr", "servers/devmgr/devmgr.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"netd", "servers/netd/netd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"rc", "cmd/rc.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"poweroff", "cmd/poweroff.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"install", "cmd/install.c", IN_BOOTFS, nullptr, false, &monocypher, MONOCYPHER_USE_FLAGS, false},
+    {"ls", "cmd/ls.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"cat", "cmd/cat.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"srv", "cmd/srv.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"echo", "cmd/echo.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"pwd", "cmd/pwd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"ps", "cmd/ps.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"ns", "cmd/ns.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"tail", "cmd/tail.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"ping", "cmd/ping.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"cs", "cmd/cs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"dbg", "cmd/dbg.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"man", "cmd/man.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"lookman", "cmd/lookman.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"sig", "cmd/sig.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"drv-uart-16550", "drivers/drv-uart-16550/uart.c", IN_BOOTFS, "x86_64", false, nullptr, nullptr, false},
+    {"drv-rtc-cmos", "drivers/drv-rtc-cmos/rtc.c", IN_BOOTFS, "x86_64", false, nullptr, nullptr, false},
+    {"drv-uart-pl011", "drivers/drv-uart-pl011/uart.c", IN_BOOTFS, "aarch64", false, nullptr, nullptr, false},
+    {"drv-virtio-net", "drivers/drv-virtio-net/net.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"drv-virtio-blk", "drivers/drv-virtio-blk/blk.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"drv-nvme", "drivers/drv-nvme/nvme.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"blktest", "tests/user/blktest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
+    {"partd", "servers/partd/partd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"fsd", "servers/fsd/fsd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"dosfs", "servers/dosfs/dosfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"isofs", "servers/isofs/isofs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
+    {"distd", "servers/distd/distd.c", IN_BOOTFS, nullptr, false, &monocypher, MONOCYPHER_USE_FLAGS, false},
+    {"ctest", "tests/posix/ctest.c", IN_TESTS, nullptr, true, nullptr, nullptr, false},
+    {"ctestfsd", "tests/posix/ctest.c", IN_TESTS, nullptr, true, nullptr, nullptr,
+     false}, // ctest again, with /tmp on fsd
+    {"sbasetest", "tests/posix/sbasetest.c", IN_TESTS, nullptr, true, nullptr, nullptr, false},
+    {"maptest", "tests/posix/maptest.c", IN_TESTS, nullptr, true, nullptr, nullptr, false},
+    {"powercut", "tests/posix/powercut.c", IN_TESTS, nullptr, true, nullptr, nullptr, false},
+    {"dbgdemo", "tests/user/dbgdemo.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
+    {"dbgthreads", "tests/user/dbgthreads.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
+    {"schedtest", "tests/user/schedtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
+    {"cdtest", "tests/user/cdtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
 };
 
 static bool program_for(const program *p, const arch *a) { return !p->arch || strcmp(p->arch, a->name) == 0; }
@@ -1499,6 +1501,107 @@ static const char *const *usage_flags(const program *p) {
   return made[i] = f;
 }
 
+// --- The native target's sysroot (ADR-0033, M6 step 6e2b) ---
+//
+// out/ARCH/MODE/vectraos/: llvm-libc's headers and libc.a and libm.a, taken
+// from swift-on-vectra's build at the tree recorded in
+// lib/vx-rt/sysroot/llvm-libc.ndb; vx-rt's start file crt1.o (start.c alone)
+// and libvx.a (libvx.c: vx-rt, vx-ns and the C library's hooks);
+// compiler-rt's builtins, vectra-musl's; the ABI's headers as <vx/...>; and
+// at its root the configuration file Fedora's clang compiles with and the
+// response files ld.lld links with. A machine without the C library builds
+// without the sysroot, and without the programs that need it.
+
+static void copy_tree(const char *from, const char *to);
+static void copy_file(const char *from, const char *to);
+static bool tree_sha256(const char *dir, char out[65]);
+
+static const char *sysroot_dir(const arch *a, bool release) {
+  return fmt("out/%s/%s/vectraos", a->name, release ? "release" : "debug");
+}
+
+static const char *sysroot_triple(const arch *a) { return fmt("%s-unknown-vectraos", a->name); }
+
+// The tree hash recorded for triple, or "" if none is.
+static const char *sysroot_recorded(const char *triple) {
+  vx_str rec = read_file("lib/vx-rt/sysroot/llvm-libc.ndb");
+  const char *at = strstr(rec.ptr, fmt("triple=%s ", triple));
+  const char *hash = at ? strstr(at, "tree.sha256=") : nullptr;
+  return hash ? fmt("%.64s", hash + 12) : "";
+}
+
+// Whether the sysroot was made: false, with a note, when there is no C
+// library to take; a C library other than the recorded one stops the build.
+static bool build_sysroot(const arch *a, bool release) {
+  const char *s = sysroot_dir(a, release), *triple = sysroot_triple(a);
+  const char *from = getenv("VECTRA_SWIFT_ON_VECTRA");
+  if (!from) from = fmt("%s/../../lang/swift-on-vectra", root);
+  const char *libc = fmt("%s/toolchain/out/libc/%s", from, triple);
+  if (!exists(fmt("%s/lib/%s/libc.a", libc, triple))) {
+    fprintf(stderr, "  SYSROOT %s skipped: no llvm-libc in %s\n", a->name, libc);
+    return false;
+  }
+  char tree[65];
+  const char *want = sysroot_recorded(triple);
+  if (!tree_sha256(libc, tree) || strcmp(tree, want) != 0)
+    die("%s: tree %s, but lib/vx-rt/sysroot/llvm-libc.ndb records %s: record the build to take it", libc,
+        tree, *want ? want : "none");
+  fprintf(stderr, "  SYSROOT %s\n", a->name);
+  mkdirs(fmt("%s/usr/lib", s));
+  copy_tree(fmt("%s/include", libc), fmt("%s/usr/include", s));
+  copy_tree("abi/vx", fmt("%s/usr/include/vx", s));
+  copy_file(fmt("%s/lib/%s/libc.a", libc, triple), fmt("%s/usr/lib/libc.a", s));
+  copy_file(fmt("%s/lib/%s/libm.a", libc, triple), fmt("%s/usr/lib/libm.a", s));
+  copy_file(fmt("%s/libclang_rt.builtins.a", vectra_musl_lib(a, release)),
+            fmt("%s/usr/lib/libclang_rt.builtins.a", s));
+  copy_file("lib/vx-rt/sysroot/vectraos.cfg", fmt("%s/%s.cfg", s, triple));
+  copy_file("lib/vx-rt/sysroot/link-head.rsp", fmt("%s/link-head.rsp", s));
+  copy_file("lib/vx-rt/sysroot/link-tail.rsp", fmt("%s/link-tail.rsp", s));
+  const char *taken = fmt("triple=%s tree.sha256=%s from=%s\n", triple, tree, libc);
+  write_file(fmt("%s/llvm-libc", s), (vx_str){taken, strlen(taken)}); // which build it took (ADR-0033)
+  // crt1.o and libvx.a, as a first-party program is compiled.
+  static const char *const SRC[2] = {"lib/vx-rt/start.c", "lib/vx-rt/libvx.c"};
+  const char *obj[2] = {fmt("%s/usr/lib/crt1.o", s), fmt("%s/libvx.o", s)};
+  cmd cc[2];
+  cmd *ccs[2];
+  for (int i = 0; i < 2; i++) {
+    cc[i] = (cmd){};
+    cmd_add(&cc[i], CLANG);
+    cmd_addv(&cc[i], a->user_flags);
+    cmd_addv(&cc[i], HOUSE_FLAGS);
+    cmd_addv(&cc[i], USER_FLAGS);
+    cmd_addv(&cc[i], release ? RELEASE_FLAGS : DEBUG_FLAGS);
+    cmd_add(&cc[i], fmt("-ffile-prefix-map=%s=/src", root));
+    cmd_addv(&cc[i], (const char *const[]){"-c", SRC[i], "-o", obj[i], nullptr});
+    ccs[i] = &cc[i];
+  }
+  if (!run_parallel(ccs, 2)) die("cannot compile the %s sysroot's crt1.o and libvx.a", a->name);
+  cmd ar = {};
+  cmd_addv(&ar, (const char *const[]){LLVM_AR, "rcsD", fmt("%s/usr/lib/libvx.a", s), obj[1], nullptr});
+  if (exists(fmt("%s/usr/lib/libvx.a", s))) unlink(fmt("%s/usr/lib/libvx.a", s));
+  if (!run(&ar)) die("cannot make the %s sysroot's libvx.a", a->name);
+  return true;
+}
+
+// A program of ISO C against the sysroot: compiled by Fedora's clang with
+// the configuration file, linked by ld.lld with the response files, as
+// ADR-0033 §3 has a C program built for the target.
+static void native_program(const arch *a, bool release, const program *p, const char *obj, cmd *cc, cmd *ld) {
+  const char *s = sysroot_dir(a, release);
+  *cc = (cmd){};
+  cmd_addv(cc, (const char *const[]){CLANG, fmt("--config-system-dir=%s", s),
+                                     fmt("--target=%s", sysroot_triple(a)), "-Wall", "-Wextra", "-Werror",
+                                     nullptr});
+  cmd_addv(cc, release ? RELEASE_FLAGS : DEBUG_FLAGS);
+  cmd_addv(cc, (const char *const[]){"-c", p->source, "-o", obj, nullptr});
+  *ld = (cmd){};
+  cmd_addv(ld, (const char *const[]){
+                   LLD, fmt("--sysroot=%s", s), fmt("@%s/link-head.rsp", s), obj, fmt("@%s/link-tail.rsp", s),
+                   "-o", fmt("out/%s/%s/%s", a->name, release ? "release" : "debug", p->name), nullptr});
+}
+
+static bool sysroot_made[2][2]; // [arch][release]: build_sysroot made it this run
+
 static bool build_user_programs(const arch *a, bool release) {
   const char *dir = fmt("out/%s/%s", a->name, release ? "release" : "debug");
   static cmd cc[USER_PROGRAM_COUNT], ld[USER_PROGRAM_COUNT];
@@ -1508,7 +1611,13 @@ static bool build_user_programs(const arch *a, bool release) {
     const program *p = &USER_PROGRAMS[i];
     if (!program_for(p, a)) continue;
     const char *obj = fmt("%s/%s.o", dir, p->name);
+    if (p->native && !sysroot_made[a == &ARCHES[0] ? 0 : 1][release]) continue; // no C library here
     fprintf(stderr, "  CC    %-7s %s\n", p->name, a->name);
+    if (p->native) {
+      native_program(a, release, p, obj, &cc[n], &ld[n]);
+      ccs[n] = &cc[n], lds[n] = &ld[n], n++;
+      continue;
+    }
     cc[n] = (cmd){};
     cmd_add(&cc[n], CLANG);
     cmd_addv(&cc[n], p->posix ? posix_flags(a) : a->user_flags);
@@ -1697,9 +1806,9 @@ static bool build_port_programs(const arch *a, bool release) {
 }
 
 static bool build_arch(const arch *a, bool release) {
-  if (!build_kernel(a, release) || !build_vectra_musl(a, release) || !build_native_ports(a) ||
-      !build_user_programs(a, release) || !build_port_programs(a, release))
-    return false;
+  if (!build_kernel(a, release) || !build_vectra_musl(a, release) || !build_native_ports(a)) return false;
+  sysroot_made[a == &ARCHES[0] ? 0 : 1][release] = build_sysroot(a, release);
+  if (!build_user_programs(a, release) || !build_port_programs(a, release)) return false;
   const vx_ndb_record *t = port_target_for(&limine, a);
   return !t || build_port_target(&limine, t);
 }
@@ -2528,6 +2637,9 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
     const program *p = &USER_PROGRAMS[i];
     if (p->where == IN_MODULE || (p->where == IN_TESTS && !listed(with, p->name)) || !program_for(p, a))
       continue;
+    if (p->native && !exists(fmt("%s/%s", out_dir(a, release), p->name)))
+      die("%s needs the native target's sysroot, which needs llvm-libc (lib/vx-rt/sysroot/llvm-libc.ndb)",
+          p->name);
     bootfs_room(count);
     files[count] = read_file(fmt("%s/%s", out_dir(a, release), p->name));
     paths[count++] = fmt("boot/bin/%s", p->name);
@@ -4419,7 +4531,7 @@ static int os_units(unit *units, bool with_host_tests) {
         fmt("kernel %s", ARCHES[i].name), "kernel/kernel.c", {ARCHES[i].flags, HOUSE_FLAGS, KERNEL_FLAGS}};
     for (int k = 0; k < USER_PROGRAM_COUNT; k++) {
       const program *p = &USER_PROGRAMS[k];
-      if (!program_for(p, &ARCHES[i])) continue;
+      if (!program_for(p, &ARCHES[i]) || p->native) continue; // ISO C against the sysroot: 6e2b2 checks it
       unit *u = &units[unit_slot(&n)];
       *u = (unit){fmt("%s %s", p->name, ARCHES[i].name), p->source, {}};
       u->flags[0] = p->posix ? posix_flags(&ARCHES[i]) : ARCHES[i].user_flags;
@@ -4431,6 +4543,9 @@ static int os_units(unit *units, bool with_host_tests) {
     units[unit_slot(&n)] = (unit){fmt("libc-vx %s", ARCHES[i].name),
                                   "ports/musl/vx/backend.c",
                                   {posix_flags(&ARCHES[i]), HOUSE_FLAGS, POSIX_BACKEND_FLAGS}};
+    units[unit_slot(&n)] = (unit){fmt("libvx %s", ARCHES[i].name),
+                                  "lib/vx-rt/libvx.c",
+                                  {ARCHES[i].user_flags, HOUSE_FLAGS, USER_FLAGS}};
     units[unit_slot(&n)] = (unit){fmt("crt1 %s", ARCHES[i].name),
                                   "ports/musl/vx/crt1.c",
                                   {posix_flags(&ARCHES[i]), HOUSE_FLAGS, POSIX_BACKEND_FLAGS}};

@@ -182,20 +182,8 @@ static void vx_argv_make(void) {
   vx_exits(vx_main());
 }
 
-#ifdef __x86_64__
-[[gnu::naked, noreturn]] void _start(void) {
-  __asm__("endbr64\n\t"
-          "xorl %ebp, %ebp\n\t"
-          "andq $-16, %rsp\n\t"
-          "call vx_start\n\t" // the argument is already in rdi
-          "ud2");
-}
-#else
-[[gnu::naked, noreturn]] void _start(void) {
-  __asm__("hint #34\n\t" // bti c
-          "mov x29, xzr\n\t"
-          "mov x30, xzr\n\t"
-          "bl vx_start\n\t" // the argument is already in x0
-          "brk #0");
-}
+// The entry: the sysroot's crt1.o is this file alone (6e2b), whose libvx.a
+// has the rest, built without it (VX_RT_LIBC).
+#ifndef VX_RT_LIBC
+#include "start.c"
 #endif

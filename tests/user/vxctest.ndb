@@ -1,0 +1,11 @@
+# tests/user/vxctest.ndb: the native target's C library (tests/qemu/vxc.ndb,
+# M6 step 6e2b): arguments, an environment it reads through /env, and the
+# POSIX template's namespace for /tmp.
+
+service=vxctest program=/boot/bin/vxctest console entropy
+arg=one
+arg="two words"
+env="VXCTEST=hello world"
+ns=posix
+connect=nsd
+connect=env
