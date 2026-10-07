@@ -1,6 +1,6 @@
 # ADR-0042: Reservations, no-access and shared mappings, resizable VMOs
 
-Status: proposed, 2026-10-07. M6 step 6e1a1 (decided the same day: 6e1a split in two, the kernel then musl; random bases for reservations only; sharing across fork as a map flag). It gives `as_reserve` (01 §5), reserved since M1, its arguments, and adds `VX_AS_FIXED`, `VX_AS_RELEASE`, `VX_MAP_NOACCESS`, `VX_MAP_SHARED` and `VX_VMO_RESIZABLE` to the ABI (`abi/vx/abi.h`).
+Status: accepted, 2026-10-07 (proposed 2026-10-07). M6 step 6e1a1 (decided the same day: 6e1a split in two, the kernel then musl; random bases for reservations only; sharing across fork as a map flag). It gives `as_reserve` (01 §5), reserved since M1, its arguments, and adds `VX_AS_FIXED`, `VX_AS_RELEASE`, `VX_MAP_NOACCESS`, `VX_MAP_SHARED` and `VX_VMO_RESIZABLE` to the ABI (`abi/vx/abi.h`).
 
 ## Context
 
