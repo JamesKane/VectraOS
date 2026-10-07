@@ -8,12 +8,16 @@
 // static made once whichever thread asks first (__cxa_guard_*),
 // thread_local, and a sleep on steady_clock. iostreams in the C locale and
 // random_device (6e2e1); with the argument cin, it sums the numbers on its
-// standard input to standard output, for rctest. Each check prints a line
+// standard input to standard output, for rctest; with fs, std::filesystem on
+// a vx-fs volume (6e2e2, scenario vxcxxfs). Each check prints a line
 // only when it fails; the last line counts them.
 
 #include <chrono>
 #include <condition_variable>
+#include <algorithm>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <locale>
 #include <memory>
@@ -127,6 +131,66 @@ void streams() {
   CHECK((a != b || b != c) && rd.entropy() == 32);
 }
 
+// The fs mode (6e2e2), on a vx-fs volume on /tmp (tests/user/vxcxxfs.ndb): a
+// tree with a symbolic link to a directory walked, and the operations on it.
+namespace fs = std::filesystem;
+
+bool write_file(const fs::path &p, const char *text) {
+  std::ofstream out(p);
+  out << text;
+  return bool(out);
+}
+
+std::string read_file(const fs::path &p) {
+  const std::ifstream in(p);
+  std::stringstream s;
+  s << in.rdbuf();
+  return s.str();
+}
+
+int files() {
+  std::error_code ec;
+  const fs::path root = "/tmp/fstest";
+  fs::remove_all(root, ec);
+  CHECK(fs::create_directories(root / "sub" / "deep", ec) && !ec);
+  CHECK(write_file(root / "a.txt", "hello") && write_file(root / "sub" / "b.txt", "world"));
+  fs::create_directory_symlink("sub", root / "link", ec);
+  CHECK(!ec && fs::is_symlink(fs::symlink_status(root / "link")) && fs::read_symlink(root / "link") == "sub");
+  CHECK(fs::is_directory(root / "link") && fs::exists(root / "link" / "b.txt"));
+  // The walk: a symbolic link is an entry, not followed.
+  std::vector<std::string> seen;
+  for (const auto &e : fs::recursive_directory_iterator(root, ec))
+    seen.push_back(e.path().lexically_relative(root));
+  std::ranges::sort(seen);
+  const std::vector<std::string> want = {"a.txt", "link", "sub", "sub/b.txt", "sub/deep"};
+  CHECK(!ec && seen == want);
+  CHECK(fs::file_size(root / "a.txt") == 5 &&
+        fs::canonical(root / "link" / "b.txt") == root / "sub" / "b.txt");
+  CHECK(fs::copy_file(root / "a.txt", root / "c.txt", ec) && read_file(root / "c.txt") == "hello");
+  fs::rename(root / "c.txt", root / "sub" / "d.txt", ec);
+  CHECK(!ec && !fs::exists(root / "c.txt") && read_file(root / "sub" / "d.txt") == "hello");
+  // A fixed date: the clock may not have been set from the RTC yet, this early.
+  const fs::file_time_type when{std::chrono::seconds(1'700'000'000)};
+  fs::last_write_time(root / "a.txt", when, ec);
+  const auto secs = [](fs::file_time_type t) {
+    return std::chrono::duration_cast<std::chrono::seconds>(t.time_since_epoch()).count();
+  };
+  CHECK(!ec && secs(fs::last_write_time(root / "a.txt")) == secs(when));
+  fs::permissions(root / "a.txt", fs::perms::owner_read, ec);
+  CHECK(!ec && (fs::status(root / "a.txt").permissions() & fs::perms::all) == fs::perms::owner_read);
+  fs::current_path(root / "sub", ec);
+  CHECK(!ec && fs::current_path() == root / "sub" && fs::exists("b.txt"));
+  fs::current_path("/", ec);
+  fs::create_hard_link(root / "a.txt", root / "hard", ec);
+  CHECK(ec == std::errc::not_supported); // no hard links on VectraOS
+  fs::space(root, ec);
+  CHECK(bool(ec));
+  CHECK(fs::temp_directory_path() == "/tmp");
+  CHECK(fs::remove_all(root, ec) == 7 && !ec && !fs::exists(root));
+  std::printf("vxcxxtest: fs %d checks, %d failed\n", checks, failures);
+  return failures ? 1 : 0;
+}
+
 // The cin mode, which rctest runs with numbers on standard input: their sum.
 int sum_cin() {
   long sum = 0, n = 0;
@@ -139,6 +203,7 @@ int sum_cin() {
 
 int main(int argc, char **argv) {
   if (argc > 1 && std::string(argv[1]) == "cin") return sum_cin();
+  if (argc > 1 && std::string(argv[1]) == "fs") return files();
   std::printf("vxcxxtest: hello from libc++\n");
   rtti();
   threads();

@@ -251,7 +251,8 @@ static vx_status libvx_rename(p9_client *c, uint32_t f1, vx_str n1, uint32_t f2,
   return st;
 }
 
-int __llvm_libc_rename(const char *from, const char *to) {
+// from renamed to to: a vx_status, UNSUPPORTED across servers (C's EXDEV).
+static vx_status libvx_rename_paths(const char *from, const char *to) {
   p9_client *c1 = nullptr, *c2 = nullptr;
   uint32_t f1 = 0, f2 = 0;
   vx_str n1 = {}, n2 = {};
@@ -259,12 +260,17 @@ int __llvm_libc_rename(const char *from, const char *to) {
   vx_status st = libvx_parent(from, &c1, &f1, &n1);
   vx_status st2 = st == VX_OK ? libvx_parent(to, &c2, &f2, &n2) : st;
   bool same_dir = st2 == VX_OK && n1.ptr - from == n2.ptr - to && !memcmp(from, to, (size_t)(n1.ptr - from));
-  int e = libvx_errno(st2);
-  if (st2 == VX_OK) e = c1 == c2 ? libvx_errno(libvx_rename(c1, f1, n1, f2, n2, same_dir)) : LIBVX_EXDEV;
+  vx_status e = st2;
+  if (st2 == VX_OK) e = c1 == c2 ? libvx_rename(c1, f1, n1, f2, n2, same_dir) : VX_ERR_UNSUPPORTED;
   if (st == VX_OK) p9c_clunk(c1, f1);
   if (st2 == VX_OK) p9c_clunk(c2, f2);
   vx_mutex_unlock(&libvx_ns_lock);
   return e;
+}
+
+int __llvm_libc_rename(const char *from, const char *to) {
+  vx_status e = libvx_rename_paths(from, to);
+  return e == VX_ERR_UNSUPPORTED ? LIBVX_EXDEV : libvx_errno(e);
 }
 
 // --- Files: the C library's FILE streams (LLVM patch 0007) ---
@@ -467,3 +473,7 @@ bool __llvm_libc_timespec_get_active(libvx_timespec *ts) {
   libvx_timespec_of(t.user + t.sys, ts);
   return true;
 }
+
+// --- std::filesystem's, for libc++ (LLVM patch 0013, 6e2e2) ---
+
+#include "libvx-fs.c"

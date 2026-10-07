@@ -1,0 +1,13 @@
+# tests/user/vxcxxfs.ndb: std::filesystem on a vx-fs volume
+# (tests/qemu/vxcxxfs.ndb, M6 step 6e2e2): vxcxxtest fs, with fsd's home
+# branch on /tmp as vectra, whom it belongs to (tests/user/fsdvol.ndb serves
+# the volume).
+
+service=vxcxxfs program=/boot/bin/vxcxxtest console entropy
+user=vectra
+arg=fs
+ns=posix
+mount=/tmp srv=fsd aname=home flags=c
+connect=nsd
+connect=env
+env=TMPDIR=/tmp

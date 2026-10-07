@@ -43,3 +43,34 @@ bool __llvm_libc_timespec_get_utc(libvx_timespec *ts);
 bool __llvm_libc_timespec_get_active(libvx_timespec *ts);
 int main(int argc, char **argv);
 [[noreturn]] void exit(int status); // the C library's: its handlers, then __llvm_libc_exit
+
+// std::filesystem's (libvx-fs.c, LLVM patch 0013).
+// What libc++ reads of a file: its kind, permissions, identity, size, link
+// count and times. libc++'s side declares the same layout.
+typedef struct libvx_fs_stat {
+  uint32_t type; // LIBVX_FS_*
+  uint32_t perms;
+  uint64_t dev, ino, size, nlink;
+  int64_t mtime_sec, mtime_nsec, atime_sec, atime_nsec;
+} libvx_fs_stat;
+
+enum : uint32_t { LIBVX_FS_REGULAR = 1, LIBVX_FS_DIRECTORY = 2, LIBVX_FS_SYMLINK = 3, LIBVX_FS_OTHER = 4 };
+
+int __llvm_libcxx_fs_stat(const char *path, int follow, libvx_fs_stat *st);
+int __llvm_libcxx_fs_fstat(long handle, libvx_fs_stat *st);
+int __llvm_libcxx_fs_mkdir(const char *path, uint32_t perms);
+int __llvm_libcxx_fs_remove(const char *path);
+int __llvm_libcxx_fs_rename(const char *from, const char *to);
+int __llvm_libcxx_fs_symlink(const char *target, const char *path);
+int64_t __llvm_libcxx_fs_readlink(const char *path, char *buf, size_t cap);
+int __llvm_libcxx_fs_truncate(const char *path, uint64_t size);
+int __llvm_libcxx_fs_ftruncate(long handle, uint64_t size);
+int __llvm_libcxx_fs_chmod(const char *path, uint32_t perms, int follow);
+int __llvm_libcxx_fs_fchmod(long handle, uint32_t perms);
+int __llvm_libcxx_fs_set_times(const char *path, int64_t mtime_sec, int64_t mtime_nsec);
+int64_t __llvm_libcxx_fs_getcwd(char *buf, size_t cap);
+int __llvm_libcxx_fs_chdir(const char *path);
+int64_t __llvm_libcxx_fs_realpath(const char *path, char *buf, size_t cap);
+int64_t __llvm_libcxx_fs_opendir(const char *path);
+int __llvm_libcxx_fs_readdir(int64_t dir, char *name, size_t cap, uint32_t *type);
+void __llvm_libcxx_fs_closedir(int64_t dir);

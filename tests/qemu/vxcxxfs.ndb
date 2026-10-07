@@ -1,0 +1,14 @@
+# tests/qemu/vxcxxfs.ndb: C++'s std::filesystem on the native target (M6 step
+# 6e2e2, ADR-0033 section 2a stage 4), on a vx-fs volume: vxcxxtest fs, with
+# fsd's home branch on /tmp (tests/user/vxcxxfs.ndb), builds a tree with a
+# symbolic link to a directory, walks it, and copies, renames, times,
+# changes permissions, follows the link and removes it all, through libc++'s
+# vectraos branch over libvx (tests/user/vxcxxtest.cpp).
+
+scenario=vxcxxfs timeout=90 cmdline=vx.skip=rc with=vxcxxtest,vxcxxfs,fsdvol disk=64 volume=tests/fsd/home
+expect="fsd: serving /srv/fsd"
+expect="vxcxxtest: fs 15 checks, 0 failed"
+line="svcd: vxcxxfs exited"
+fail="vx: panic"
+fail="vxcxxtest: FAILED"
+fail="svcd: vxcxxfs exited: "
