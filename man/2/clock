@@ -1,7 +1,7 @@
 page=clock sect=2 summary="read the clock, or set the wall clock"
-    names=clock_read,clock_set
+    names=clock_read,clock_set,vx_now,vx_clock_resolution,vx_sleep_until
     src=kernel/time.c,kernel/syscall/syscall.c,lib/vx-rt/base.c
-    keys=time,clock,monotonic,utc,realtime,wall,counter,cycles
+    keys=time,clock,monotonic,utc,realtime,wall,counter,cycles,sleep,resolution
 
 # SYNOPSIS
 
@@ -10,6 +10,9 @@ vx_instant vx_clock_read(void);
 vx_status vx_clock_info_read(vx_clock_info *info);
 int64_t vx_clock_utc(void);
 vx_status vx_clock_set(vx_handle resource, int64_t utc);
+vx_instant vx_now(void);
+vx_duration vx_clock_resolution(void);
+vx_status vx_sleep_until(vx_instant at, vx_duration leeway);
 ```
 
 # DESCRIPTION
@@ -40,6 +43,11 @@ Until the wall clock is set the offset is 0, so it counts from the clock's zero,
 The offset changes in one step; the monotonic clock does not change at all.
 <resource> must be the root Resource, with `VX_RIGHT_MANAGE`.
 Only devmgr(8) holds it, and it calls `vx_clock_set` when a clock driver reports the time its hardware keeps, as ADR-0031 decides.
+
+`vx_now`, `vx_clock_resolution` and `vx_sleep_until` are `libvx`'s (09 §5.6, M6 step 6e1e, os-requirements R13), in vx-rt until `libvx` exists.
+`vx_now` is `vx_clock_read`: the system never suspends, so the one clock is both the continuous clock and the one that stops in suspend.
+`vx_clock_resolution` is the clock's resolution in nanoseconds, one tick of the counter rounded up: 1 for a counter at 1 GHz or more, 16 for aarch64's usual 62.5 MHz.
+`vx_sleep_until` returns once the clock has reached <at>, at once if it has; <leeway>, how late the wake may be, is not used yet. It waits on a futex no one wakes, with <at> as the deadline (futex(2)).
 
 The first three make the call `clock_read`, given a pointer to a `vx_clock_info` or none; `vx_clock_set` makes `clock_set`.
 

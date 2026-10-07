@@ -1,6 +1,6 @@
-page=sysfs sect=4 summary="system file system: the clock"
+page=sysfs sect=4 summary="system file system: the clock, the CPUs and the machine's name"
     src=servers/sysfs/sysfs.c
-    keys=sys,clock,time,tsc,cntvct,counter,frequency,realtime,monotonic
+    keys=sys,clock,time,tsc,cntvct,counter,frequency,realtime,monotonic,cpu,topology,nproc
 
 # SYNOPSIS
 
@@ -11,7 +11,7 @@ sysfs
 # DESCRIPTION
 
 `sysfs` serves `/sys`, the files that describe the machine (`docs/02-namespace-swarm.md` §5).
-For now it serves only the clock.
+For now it serves the clock, the CPUs online and the machine's name.
 svcd(8) starts it from `boot/svc/sysfs.ndb`, posts it as `/srv/sys`, and starts it again when it exits; the console shell's manifest and `/lib/ns/posix` mount it on `/sys`.
 
 Every file is read-only and owned by `sys`, and is made afresh by each read from the kernel's `clock_read` (see clock(2)).
@@ -21,6 +21,9 @@ Every file is read-only and owned by `sys`, and is made afresh by each read from
   On x86_64 it is `tsc.hz=` the counter's frequency, the flags `tsc.invariant` if the counter runs at a constant rate and `tsc.user` if user code may read it, and `source=tsc`.
   On aarch64 the keys are `cntfrq.hz`, `cntvct.invariant`, `cntvct.user` and `source=cntvct`.
   A program that times itself with `rdtsc` or `cntvct_el0`, as `vx_cycles` and procfs(4)'s profiling zones do, takes the frequency from here rather than calibrating.
+: `/sys/cpu/topology`
+  One ndb record a CPU online, `cpu=cpu0` and up, with the flag `reserved` while a scheduling context reserves it (sched(2), ADR-0045): `wc -l` counts the CPUs, as 9front's scripts count `/dev/sysstat`.
+  The other keys `docs/02-namespace-swarm.md` §5.1 drafts (cluster, cache, tier, frequency, the context reserving it) wait for what measures them.
 : `/sys/name`
   The machine's name, as 9front's `/dev/sysname`, with no newline: the kernel command line's `vx.host=`, which install(8) writes, else `vectra` (M6 step 6e1c3). `uname`'s node name, and identity(2)'s `vx_hostname`.
 : `/sys/clock/now`
@@ -52,7 +55,7 @@ An open for writing fails with `permission denied`.
 
 # BUGS
 
-Only the clock is served: `cpu/`, `mem/`, `power/` and the rest of `docs/02-namespace-swarm.md` §5.1 wait for what measures them.
+Only the clock, `cpu/topology` and the name are served: `cpu/load`, `mem/`, `power/` and the rest of `docs/02-namespace-swarm.md` §5.1 wait for what measures them.
 
 Each read makes the record again, so a file read in more than one piece may join two different moments.
 If the kernel does not answer, `info` reads as empty.

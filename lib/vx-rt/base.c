@@ -164,6 +164,31 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   return &info;
 }
 
+// The number of CPUs this process may run threads on (ADR-0045, os-requirements
+// R12): every CPU no scheduling context reserves, and its own context's.
+// Asked each time, as reservations come and go; 1 if the kernel does not say.
+[[maybe_unused]] static uint32_t vx_cpu_count(void) {
+  vx_cpu_info info = {};
+  if (vx_thread_state(VX_HANDLE_NONE, 0, VX_STATE_GET_CPU, &info, sizeof info) != VX_OK || !info.cpus_usable)
+    return 1;
+  return info.cpus_usable;
+}
+
+// --- Time (09 §5.6, os-requirements R13) ---
+
+// The monotonic clock, in ns since boot. The system never suspends, so it is
+// both the continuous and the suspending clock.
+[[maybe_unused]] static vx_instant vx_now(void) { return vx_clock_read(); }
+
+// The clock's resolution in ns: one tick of the counter it is made from,
+// rounded up; 1 for a counter at 1 GHz or faster.
+[[maybe_unused]] static vx_duration vx_clock_resolution(void) {
+  vx_clock_info info = {};
+  if (vx_clock_info_read(&info) != VX_OK || !info.counter_hz) return 1;
+  uint64_t ns = (1'000'000'000 + info.counter_hz - 1) / info.counter_hz;
+  return (vx_duration)(ns ? ns : 1);
+}
+
 // The calling thread's protection-key rights (ADR-0035), its own register,
 // set with the unprivileged instruction (x86's WRPKRU): no syscall. A key
 // with VX_KEY_READ may be read, with VX_KEY_WRITE written too (PKU has no
@@ -512,6 +537,19 @@ typedef enum vx_cpu_feature : uint32_t {
 
 [[maybe_unused]] static int64_t vx_futex_wake(const _Atomic uint32_t *word, uint32_t count) {
   return vx_syscall(VX_SYS_futex_wake, (uint64_t)word, count, 0, 0, 0, 0);
+}
+
+// Sleeps until the clock reaches at (or returns at once if it has). leeway, how
+// late the wake may be, is not used yet: the kernel's deadlines are exact.
+[[maybe_unused]] static vx_status vx_sleep_until(vx_instant at, vx_duration leeway) {
+  (void)leeway;
+  static const _Atomic uint32_t never; // no one wakes it: only the deadline does
+  vx_status st = VX_OK;
+  while (vx_clock_read() < at) {
+    st = vx_futex_wait(&never, 0, at);
+    if (st != VX_OK && st != VX_ERR_TIMED_OUT) return st;
+  }
+  return VX_OK;
 }
 
 // --- Tasks and threads ---

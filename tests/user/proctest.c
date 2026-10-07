@@ -358,6 +358,15 @@ static void test_prof(void) {
     vx_ns_close(&f);
   }
   CHECK(n > 0 && has((vx_str){buf, (size_t)n}, "monotonic="));
+  n = -1; // /sys/cpu/topology: a record a CPU online, none reserved (ADR-0045)
+  if (vx_ns_open(&ns, VX_STR("/sys/cpu/topology"), P9_OREAD, &f) == VX_OK) {
+    n = vx_ns_read(&f, buf, sizeof buf);
+    vx_ns_close(&f);
+  }
+  vx_str topo = {buf, n > 0 ? (size_t)n : 0};
+  uint32_t lines = 0;
+  for (size_t i = 0; i < topo.len; i++) lines += topo.ptr[i] == '\n';
+  CHECK(has(topo, "cpu=cpu0\n") && !has(topo, "reserved") && lines == vx_cpu_count());
   vx_clock_info clock = {};
   CHECK(vx_clock_info_read(&clock) == VX_OK && clock.counter_hz > 1'000'000);
   uint64_t c0 = vx_cycles();

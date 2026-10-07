@@ -739,8 +739,11 @@ static constexpr uint32_t VX_FUTEX_OWNER_MASK = 0x3fff'ffff;
 // the kernel read them, with the fields of what it does not save (SVE, SME)
 // zeroed.
 typedef struct vx_cpu_info {
-  uint32_t xstate_size; // GET_XSTATE's bytes
-  uint32_t keys;        // protection keys a task may allocate; 0: none
+  uint32_t xstate_size;   // GET_XSTATE's bytes
+  uint32_t keys;          // protection keys a task may allocate; 0: none
+  uint32_t cpus_online;   // CPUs that reached the scheduler, numbered from 0 (ADR-0045)
+  uint32_t cpus_usable;   // of them, the caller's: unreserved ones and its context's own
+  uint64_t cpus_reserved; // bit i: CPU i reserved by a scheduling context
 #ifdef __x86_64__
   uint64_t xfeatures; // XCR0: the components saved
   uint32_t mxcsr_mask;

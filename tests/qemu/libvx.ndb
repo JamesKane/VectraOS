@@ -1,0 +1,12 @@
+# tests/qemu/libvx.ndb: libvx v0's memory, threads and time (M6 step 6e1e,
+# tests/user/libvxtest.c): the CPUs a process may use (ADR-0045), the clock's
+# resolution and a sleep to a deadline, futexes with deadlines, and random
+# bytes.
+
+scenario=libvx timeout=60 cmdline=vx.skip=rc,netd with=libvxtest
+expect="libvxtest: cpus"
+expect=" checks, 0 failed"
+line="svcd: libvxtest exited"
+fail="vx: panic"
+fail="libvxtest: FAILED"
+fail="svcd: libvxtest exited: "

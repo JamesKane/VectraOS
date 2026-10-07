@@ -495,6 +495,22 @@ static vx_status sched_reserve_cpus(sched_ctx *x, uint32_t count, vx_core_set *o
   return VX_OK;
 }
 
+// GET_CPU's counts (ADR-0045): the CPUs online, those reserved, and of them
+// the ones t's process may run on: the unreserved, and its context's own.
+static void sched_cpus(const thread *t, vx_cpu_info *info) {
+  spin_lock(&sched.lock);
+  uint32_t online = atomic_load_explicit(&cpus_online, memory_order_relaxed);
+  uint64_t reserved = 0;
+  for (uint32_t i = 0; i < online; i++)
+    if (cpus[i].reserved) reserved |= 1ull << i;
+  uint64_t own = t->ctx ? t->ctx->reserved : 0;
+  spin_unlock(&sched.lock);
+  uint64_t all = online >= 64 ? ~0ull : (1ull << online) - 1;
+  info->cpus_online = online;
+  info->cpus_reserved = reserved;
+  info->cpus_usable = (uint32_t)__builtin_popcountll((all & ~reserved) | (own & all));
+}
+
 // What /proc/N/threads/T/sched shows (thread_state GET_SCHED).
 static void sched_info(const thread *t, vx_sched_info *out) {
   spin_lock(&sched.lock);

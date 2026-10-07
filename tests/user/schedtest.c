@@ -267,6 +267,10 @@ const char *vx_main(void) {
   CHECK(vx_sched_ctx_create(&inter, &res) == VX_OK);
   CHECK(vx_sched_reserve(res, 1, VX_CORE_ANY, VX_DOMAIN_ANY, 0, &set) == VX_OK && set.count == 1 &&
         set.mask == 1u << 3);
+  vx_cpu_info cpus = {};
+  CHECK(vx_thread_state(VX_HANDLE_NONE, 0, VX_STATE_GET_CPU, &cpus, sizeof cpus) == VX_OK);
+  CHECK(cpus.cpus_reserved == 1u << 3 && cpus.cpus_online == 4);
+  CHECK(vx_cpu_count() == 3); // this thread's: not the reserved one (ADR-0045)
   uint64_t reserved = share(res, 3, nullptr);
   say("reserved against a hog (percent)", reserved);
   CHECK(reserved >= 800); // about 1070: a CPU of its own, against the 3/32 of one each hog gets
@@ -278,6 +282,7 @@ const char *vx_main(void) {
   CHECK(vx_sched_reserve(other, 0, VX_CORE_ANY, VX_DOMAIN_ANY, 0, &set) == VX_OK && !set.count);
   CHECK(vx_sched_reserve(res, 1, VX_CORE_TIER(1), VX_DOMAIN_ANY, 0, &set) == VX_ERR_REFUSED); // no such tier
   vx_handle_close(other), vx_handle_close(res);
+  CHECK(vx_cpu_count() == 4); // given back
 
   // Donation: the realtime thread calls a background server under the hogs.
   vx_handle ends[2];

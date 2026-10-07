@@ -470,10 +470,12 @@ static int64_t thread_fp(vx_handle th, uint64_t id, uint64_t op, uint64_t buf) {
   return st;
 }
 
-// GET_CPU (ADR-0035): what the kernel saves, and lets user code use.
+// GET_CPU (ADR-0035): what the kernel saves, and lets user code use; and the
+// CPUs the caller may use (ADR-0045).
 static int64_t thread_cpu(uint64_t buf) {
-  vx_cpu_info info;
+  vx_cpu_info info = {};
   arch_cpu_info(&info);
+  sched_cpus(this_cpu()->current, &info); // ADR-0045
   return copy_to_user(buf, &info, sizeof info);
 }
 

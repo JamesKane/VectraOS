@@ -1281,6 +1281,7 @@ static const program USER_PROGRAMS[] = {
     {"plugintest", "tests/user/plugintest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
     {"notifytest", "tests/user/notifytest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
     {"starttest", "tests/user/starttest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
+    {"libvxtest", "tests/user/libvxtest.c", IN_TESTS, nullptr, false, nullptr, nullptr},
     {"procfs", "servers/procfs/procfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"nsd", "servers/nsd/nsd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},
     {"tmpfs", "servers/tmpfs/tmpfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr},

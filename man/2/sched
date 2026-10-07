@@ -1,7 +1,7 @@
 page=sched sect=2 summary="scheduling contexts, intents, admission and core reservations"
-    names=sched_ctx_create,sched_ctx_bind,sched_ctx_configure,sched_reserve,vx_intent_set
+    names=sched_ctx_create,sched_ctx_bind,sched_ctx_configure,sched_reserve,vx_intent_set,vx_cpu_count
     src=kernel/sched/sched.c,kernel/syscall/syscall.c,abi/vx/abi.h,lib/vx-rt/base.c,docs/adr/0038-scheduling-contexts.md
-    keys=schedule,scheduler,intent,realtime,budget,period,reserve,cores,affinity,admission,band
+    keys=schedule,scheduler,intent,realtime,budget,period,reserve,cores,affinity,admission,band,cpus,nproc
 
 # SYNOPSIS
 
@@ -12,6 +12,7 @@ vx_status vx_sched_ctx_configure(vx_handle ctx, const vx_sched_params *p);
 vx_status vx_sched_reserve(vx_handle ctx, uint32_t count, uint32_t cls,
                            uint32_t domain, uint32_t flags, vx_core_set *out);
 vx_status vx_intent_set(uint32_t intent);
+uint32_t vx_cpu_count(void);
 ```
 
 # DESCRIPTION
@@ -40,6 +41,10 @@ A thread in `channel_call` lends its scheduling to the thread serving the call, 
   The first CPU is never reserved, so one always stays shared.
   A reserved CPU runs only the context's threads bound to it; what ran there leaves at its next switch.
   <cls> is `VX_CORE_ANY` or `VX_CORE_TIER(0)`, <domain> `VX_DOMAIN_ANY`, and <flags> may name `VX_RESERVE_NO_SMT_SIBLINGS` and `VX_RESERVE_SAME_LLC`.
+
+`vx_cpu_count` is the number of CPUs the calling thread's process may run threads on (ADR-0045, os-requirements R12): every CPU online that no context reserves, and those its own context reserves.
+It asks the kernel each time, through `thread_state`'s `VX_STATE_GET_CPU`, whose `vx_cpu_info` also carries `cpus_online` and `cpus_reserved`, a mask of the CPUs reserved now; it is 1 if the kernel does not answer.
+sysfs(4)'s `/sys/cpu/topology` has a line a CPU, so `wc -l` counts them for a script.
 
 A thread's scheduling is readable by `thread_state`'s `VX_STATE_GET_SCHED`, a `vx_sched_info`, and as text in procfs(4)'s `/proc/N/threads/T/sched`.
 

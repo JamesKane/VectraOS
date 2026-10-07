@@ -14,15 +14,27 @@
 //                     command line's vx.host= (which install writes), else
 //                     vectra; no newline (M6 step 6e1c3)
 //
-// cpu/, mem/, power/ and the rest of 02 §5.1 come with what measures them.
+//   /sys/cpu/topology one record per CPU online, cpu=cpuN, with the flag
+//                     reserved while a scheduling context reserves it
+//                     (ADR-0045): wc -l is a script's count, as 9front's
+//                     /dev/sysstat. 02 §5.1's other keys come with what
+//                     measures them
+//
+// mem/, power/ and the rest of 02 §5.1 come with what measures them.
 
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-9p/ring_server.c"
 
-enum : uint64_t { ROOT = 1, CLOCK, INFO, NOW, NAME, NODES };
-static const vx_str NAMES[NODES] = {
-    {}, VX_STR("/"), VX_STR("clock"), VX_STR("info"), VX_STR("now"), VX_STR("name")};
-static const uint64_t PARENT[NODES] = {0, ROOT, ROOT, CLOCK, CLOCK, ROOT};
+enum : uint64_t { ROOT = 1, CLOCK, INFO, NOW, NAME, CPU, TOPOLOGY, NODES };
+static const vx_str NAMES[NODES] = {{},
+                                    VX_STR("/"),
+                                    VX_STR("clock"),
+                                    VX_STR("info"),
+                                    VX_STR("now"),
+                                    VX_STR("name"),
+                                    VX_STR("cpu"),
+                                    VX_STR("topology")};
+static const uint64_t PARENT[NODES] = {0, ROOT, ROOT, CLOCK, CLOCK, ROOT, ROOT, CPU};
 
 // The command line's vx.host=, else vectra.
 static vx_str host_name(void) {
@@ -60,7 +72,7 @@ static vx_status fs_parent(void *ctx, uint64_t n, uint64_t *parent) {
   return VX_OK;
 }
 
-static bool is_dir(uint64_t n) { return n == ROOT || n == CLOCK; }
+static bool is_dir(uint64_t n) { return n == ROOT || n == CLOCK || n == CPU; }
 
 static vx_status fs_stat(void *ctx, uint64_t n, p9_stat *out) {
   (void)ctx;
@@ -89,9 +101,24 @@ static void put(vx_ndb_writer *w, const char *prefix, const char *suffix, uint64
     vx_ndb_flag(w, key);
 }
 
+// /sys/cpu/topology: a record a CPU online (ADR-0045).
+static void topology(vx_ndb_writer *w) {
+  vx_cpu_info info = {};
+  if (vx_thread_state(VX_HANDLE_NONE, 0, VX_STATE_GET_CPU, &info, sizeof info) != VX_OK) return;
+  for (uint32_t i = 0; i < info.cpus_online && i < 64; i++) {
+    char name[16] = "cpu";
+    size_t len = 3;
+    if (i >= 10) name[len++] = (char)('0' + i / 10);
+    name[len++] = (char)('0' + i % 10);
+    vx_ndb_put(w, "cpu", (vx_str){name, len});
+    if (info.cpus_reserved >> i & 1) vx_ndb_flag(w, "reserved");
+    vx_ndb_end(w);
+  }
+}
+
 static vx_status fs_read(void *ctx, uint64_t n, uint64_t offset, uint8_t *buf, uint32_t *count) {
   (void)ctx;
-  char text[256];
+  char text[64 * 32];
   vx_ndb_writer w = {.buf = text, .cap = sizeof text};
   vx_clock_info info = {};
   vx_instant now = vx_clock_read();
@@ -106,6 +133,8 @@ static vx_status fs_read(void *ctx, uint64_t n, uint64_t offset, uint8_t *buf, u
     vx_ndb_put_u64(&w, "monotonic", (uint64_t)now);
     vx_ndb_put_u64(&w, "realtime", (uint64_t)vx_clock_utc());
     vx_ndb_end(&w);
+  } else if (n == TOPOLOGY) {
+    topology(&w);
   } else if (n == NAME) {
     vx_str h = host_name();
     if (h.len > sizeof text) h.len = sizeof text;
