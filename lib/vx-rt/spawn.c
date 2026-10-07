@@ -193,6 +193,17 @@ static void vx_close_all(const vx_handle *h, uint32_t n) {
     vx_ndb_put(&w, "user", user);
     vx_ndb_end(&w);
   }
+  // A seed of its own, from this process's generator (6e2a: its stack guard,
+  // its vx_random), unless the records give one (a POSIX parent's).
+  bool seeded = false;
+  for (size_t i = 0; i + 8 <= a->records.len && !seeded; i++)
+    seeded = (i == 0 || a->records.ptr[i - 1] == '\n') && !memcmp(a->records.ptr + i, "entropy=", 8);
+  if (!seeded) {
+    uint8_t seed[32];
+    vx_random_bytes(seed, sizeof seed);
+    vx_ndb_put(&w, "entropy", (vx_str){(const char *)seed, sizeof seed});
+    vx_ndb_end(&w);
+  }
   for (uint32_t i = 0; i < count; i++) {
     vx_ndb_put(&w, "handle", names[i]);
     vx_ndb_put_u64(&w, "index", i);

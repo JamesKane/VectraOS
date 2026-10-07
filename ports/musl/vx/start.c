@@ -47,6 +47,9 @@ static void proc_random(void) {
   vx_drbg_read(&proc_entropy, proc_start.random, sizeof proc_start.random);
 }
 
+// vx-rt spawn.c's seed for a child (a POSIX parent's records carry their own).
+static void vx_random_bytes(void *out, size_t n) { vx_drbg_read(&proc_entropy, out, n); }
+
 static long proc_getrandom(void *buf, size_t n) {
   if (!proc_entropy.seeded) return -EAGAIN;
   if (n > 1u << 20) n = 1u << 20;

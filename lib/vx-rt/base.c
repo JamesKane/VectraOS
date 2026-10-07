@@ -735,6 +735,10 @@ typedef struct vx_spawn_info {
 } vx_spawn_info;
 
 static vx_spawn_info vx_spawn;
+
+// n random bytes from the process's generator: crt1.c's, or musl's back end's
+// (start.c). spawn.c seeds each child from it.
+static void vx_random_bytes(void *out, size_t n);
 static vx_handle vx_self; // the task's handle to itself, or VX_HANDLE_NONE
 
 // --- The current directory (M6 step 6d7a, ADR-0039) ---

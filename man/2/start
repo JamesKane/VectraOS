@@ -1,0 +1,45 @@
+page=start sect=2 summary="how a native program starts and ends: constructors, argv, exit, abort and the stack guard"
+    names=vx_main,vx_exits,vx_exit,vx_abort,vx_argc,vx_argv,vx_random_bytes,__stack_chk_guard
+    src=lib/vx-rt/crt1.c,lib/vx-rt/spawn.c
+    keys=start,crt1,main,exit,abort,argv,constructor,destructor,init_array,fini_array,guard,random
+
+# SYNOPSIS
+
+```c
+const char *vx_main(void);
+[[noreturn]] void vx_exits(const char *msg);
+[[noreturn]] void vx_exit(int n);
+[[noreturn]] void vx_abort(void);
+int vx_argc(void);
+char **vx_argv(void);
+void vx_random_bytes(void *out, size_t n);
+extern uintptr_t __stack_chk_guard;
+```
+
+# DESCRIPTION
+
+These are vx-rt's start file, `lib/vx-rt/crt1.c` (M6 step 6e2a, os-requirements R1–R5), which `rt.c` includes; the native target's toolchain links the same code as its `crt1.o`.
+
+The kernel enters `_start` with the task's bootstrap channel.
+vx-rt reads the spawn message from it, seeds the process's random generator from its `entropy=` record (with its task id and the clock mixed in), draws `__stack_chk_guard` from it, sets up the main thread's TLS and the standard files, then runs `.preinit_array` and `.init_array` in order and calls `vx_main`.
+Its return value is the exit string: `nullptr` or `""` for success, else why it failed, as Plan 9's `exits` takes one.
+
+`vx_exits` ends the program the same way from anywhere: `.fini_array` runs, last to first, then what the program printed is flushed, its pipes are closed and every thread ends.
+`vx_exit` is C's `exit`: the empty exit string for 0, else <n> in decimal, as the POSIX personality ends, so rc(1) shows `exit 7` as `name pid: 7`.
+
+`vx_abort` is C's `abort`: standard error is flushed, then the program traps, which ends it as a fault does, with no destructors; procfs(4) saves a crash directory under `/tmp/crash`.
+A note the program does not handle also ends it without destructors.
+
+`vx_argv` is a C `argv`, made once from the spawn message: `argv[0]` is the `argv0=` record, else the program's name, then its `arg=` records, then a null; `vx_argc` counts them.
+The strings share a 16 KiB buffer; arguments past it are left out, never cut in the middle.
+
+`vx_random_bytes` reads from the process's generator.
+vx-rt's spawn gives each child a seed of its own from it, as an `entropy=` record, unless the spawner's records carry one.
+
+# SEE ALSO
+
+identity(2), thread(2), notes(7), procfs(4), rc(1)
+
+# BUGS
+
+A process whose spawner gave no `entropy=` record seeds its generator from its task id and the clock alone: its guard is then not secret.

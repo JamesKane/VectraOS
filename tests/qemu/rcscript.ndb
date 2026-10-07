@@ -5,7 +5,7 @@
 # checks of the native one from C (6d7a), which it runs. The script counts its checks; its exit status
 # is empty (success) or the failures' count.
 
-scenario=rcscript timeout=180 with=rctest,cdtest cmdline=vx.skip=rc
+scenario=rcscript timeout=180 with=rctest,cdtest,starttest cmdline=vx.skip=rc
 expect="rctest: rc in the POSIX userland, args one two words"
 expect=" checks, 0 failed"
 line="svcd: rctest exited"

@@ -231,6 +231,22 @@ check tmp-user 1 `{/boot/bin/ns | grep -c ' /tmp user$'}
 unmount $dir/shared
 rm /tmp/tmp-own
 
+# vx-rt's start file (6e2a, tests/user/starttest.c): constructors before
+# vx_main and destructors after it, in order; a C argv; exit(n) seen by rc
+# in decimal; abort's crash directory; a stack guard per process.
+check start-order 'init1 init2 main fini2 fini1' `{/boot/bin/starttest order}
+check start-args 'starttest args one two' `{/boot/bin/starttest args one two}
+/boot/bin/starttest exit 7
+check start-exit ok `{if(~ $status *': 7') echo ok; if not echo $status}
+/boot/bin/starttest exit 0
+check start-exit0 '' $status
+/boot/bin/starttest abort >[2] /dev/null
+check start-abort ok `{if(~ $status *'illegal instruction'* *'breakpoint'*) echo ok; if not echo $status}
+check start-crash yes `{if(ls /tmp/crash | grep -q '^starttest\.') echo yes; if not echo no}
+g1=`{/boot/bin/starttest guard}
+g2=`{/boot/bin/starttest guard}
+check start-guard differ `{if(~ $g1 $g2) echo same; if not echo differ}
+
 # rfork (6d7b3), as 9front's: in children, so this shell keeps its own.
 check rfork-usage 'rfork usage' `{rfork x >[2] /dev/null; echo $status}
 mkdir $dir/nsa $dir/nsb
