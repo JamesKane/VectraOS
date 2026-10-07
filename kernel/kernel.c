@@ -156,6 +156,7 @@ static uint32_t arch_watch_count(void);           // the debug registers' watchp
 #include "time.c"
 #include "obj/object.c"
 #include "obj/vmo.c"
+#include "../lib/vx-rand/drbg.c" // the kernel's random bases (as_reserve, ADR-0042)
 #include "obj/task.c"
 #include "sched/sched.c"
 #include "obj/port.c"

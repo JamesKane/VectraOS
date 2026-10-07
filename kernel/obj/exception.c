@@ -735,12 +735,16 @@ static vx_status mapping_privatize(task *t, mapping *m, vmo **old) {
   if (st != VX_OK) return st;
   uint32_t mf =
       MAP_USER | (m->flags & VX_MAP_WRITE ? MAP_WRITE : 0) | (m->flags & VX_MAP_EXEC ? MAP_EXEC : 0);
+  vmo *v = m->vmo;
+  if (v->resizable) spin_lock(&v->lock);
   for (uint64_t off = 0; off < m->size; off += 4096) {
-    arch_page_copy(phys_to_virt(copy->pages[off / 4096]),
-                   phys_to_virt(m->vmo->pages[(m->offset + off) / 4096]), 4096);
+    uint64_t idx = (m->offset + off) / 4096, pa = idx < v->size / 4096 ? vmo_page(v, idx) : 0;
+    if (pa) arch_page_copy(phys_to_virt(copy->pages[off / 4096]), phys_to_virt(pa), 4096);
     unmap_page(t->root, m->va + off);
-    if (!map_range(t->root, m->va + off, copy->pages[off / 4096], 4096, mf)) st = VX_ERR_NO_MEMORY;
+    bool shown = !(m->flags & VX_MAP_NOACCESS) && pa; // a no-access page stays unmapped (ADR-0042)
+    if (shown && !map_range(t->root, m->va + off, copy->pages[off / 4096], 4096, mf)) st = VX_ERR_NO_MEMORY;
   }
+  if (v->resizable) spin_unlock(&v->lock);
   *old = m->vmo;
   m->vmo = copy;
   m->offset = 0;
@@ -772,12 +776,17 @@ static vx_status mem_op(task *t, const vx_mem_op *op, bool *shoot, vmo **release
     } else if (op->write && !(m->flags & VX_MAP_WRITE) && !m->privatized) {
       st = VX_ERR_NO_MEMORY; // too many copies at once: the caller may try again
     }
+    vmo *v = st == VX_OK ? m->vmo : nullptr;
+    if (v && v->resizable) spin_lock(&v->lock); // its pages can go with a shrink
+    uint64_t idx = m ? (m->offset + (at - m->va)) / 4096 : 0;
+    if (v && v->resizable && (idx >= v->size / 4096 || !vmo_page(v, idx)))
+      st = VX_ERR_INVALID; // past its end
     if (st == VX_OK) {
-      uint8_t *page =
-          (uint8_t *)phys_to_virt(vmo_page(m->vmo, (m->offset + (at - m->va)) / 4096)) + (at & 4095);
+      uint8_t *page = (uint8_t *)phys_to_virt(vmo_page(v, idx)) + (at & 4095);
       st = op->write ? copy_from_user(page, op->buffer + done, n) : copy_to_user(op->buffer + done, page, n);
       if (st == VX_OK && op->write && (m->flags & VX_MAP_EXEC)) arch_sync_icache(page, n);
     }
+    if (v && v->resizable) spin_unlock(&v->lock);
     spin_unlock(&t->lock);
     done += n;
   }

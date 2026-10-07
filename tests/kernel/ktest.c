@@ -1160,6 +1160,9 @@ static vx_handle late_pager, late_vmo, late_src; // what the handler supplies a 
 static _Atomic uint32_t pager_timeouts;
 static _Atomic uint32_t key_faults, key_fault_key, key_fault_code; // PROTECTION_KEY's, test_keys
 
+static uint64_t guard_at; // a no-access page the handler opens when touched (test_address_space)
+static _Atomic uint32_t guard_faults;
+
 static void handler(vx_exception *e) {
   if (e->kind <= VX_EXCEPTION_INTERRUPT) atomic_fetch_add(&handled[e->kind], 1);
   if (e->kind == VX_EXCEPTION_PROTECTION_KEY) { // seen, then the key given: the access made again
@@ -1171,6 +1174,9 @@ static void handler(vx_exception *e) {
              VX_EXCEPTION_PAGER_TIMEOUT) { // the page, late: supplied now, and the access made again
     atomic_fetch_add(&pager_timeouts, 1);
     vx_pager_supply(late_pager, late_vmo, 0, 4096, late_src, 0);
+  } else if (e->kind == VX_EXCEPTION_PAGE_FAULT && guard_at && (e->address & ~4095ull) == guard_at) {
+    atomic_fetch_add(&guard_faults, 1); // a no-access page touched: opened, and the access made again
+    vx_as_protect(vx_self, guard_at, 4096, VX_MAP_WRITE);
   } else if (e->kind == VX_EXCEPTION_PAGE_FAULT) {
     uint64_t at = e->address & ~4095ull;
     vx_as_map(vx_self, missing, 0, 4096, 0, &at); // then the load is retried
@@ -1943,7 +1949,8 @@ static void test_debugger(void) {
 // --- fork (01 §9) ---
 
 static uint64_t fork_page[512];
-static uint64_t fork_ring; // where a ring's memory is mapped, in the parent
+static uint64_t fork_shared; // a VX_MAP_SHARED mapping the child writes to (test_address_space)
+static uint64_t fork_ring;   // where a ring's memory is mapped, in the parent
 
 // The forked child's first thread. Its exit string says what it found: "ok"
 // if all is well, or "wrong N", N the bits of what was not.
@@ -1955,6 +1962,7 @@ static uint64_t fork_ring; // where a ring's memory is mapped, in the parent
   vx_task_summary me;
   if (vx_task_info(self, &me) != VX_OK || me.id != my_id) wrong |= 2; // "self" is itself
   if (fork_ring) (void)*(volatile uint64_t *)fork_ring;               // not there: a fault ends it
+  if (fork_shared) *(volatile uint64_t *)fork_shared = 0x7777;        // the same VMO: the parent sees it
   char msg[] = "wrong 0";
   msg[6] = (char)('0' + wrong);
   vx_task_kill(self, wrong ? (vx_str){msg, 7} : VX_STR("ok"));
@@ -2000,6 +2008,110 @@ static void test_fork(void) {
   vx_handle_close(h.server);
   vx_handle none = VX_HANDLE_NONE;
   CHECK(vx_syscall(VX_SYS_task_create, (uint64_t)"x", 1, (uint64_t)&none, 2, 0, 0) == VX_ERR_INVALID);
+  vx_handle_close(port);
+}
+
+// --- Reservations, no-access, resizable and shared VMOs (ADR-0042) ---
+
+static bool inside(uint64_t a, uint64_t base, uint64_t size) { return a >= base && a < base + size; }
+
+static void test_address_space(void) {
+  // Reservations: random, aligned, distinct; nothing placed lands in one.
+  uint64_t r1 = 0, r2 = 0, at = 0, in_way = 0;
+  CHECK(vx_as_reserve(self, 1 << 20, 1 << 16, 0, &r1) == VX_OK && r1 && !(r1 & 0xffff));
+  CHECK(vx_as_reserve(self, 1 << 20, 1 << 16, 0, &r2) == VX_OK && r2 != r1);
+  vx_handle v;
+  CHECK(vx_vmo_create(16ull * 4096, 0, &v) == VX_OK);
+  for (int i = 0; i < 4; i++) {
+    uint64_t placed = 0;
+    CHECK(vx_as_map(self, v, 0, 16ull * 4096, VX_MAP_WRITE, &placed) == VX_OK);
+    CHECK(!inside(placed, r1, 1 << 20) && !inside(placed, r2, 1 << 20));
+    CHECK(vx_as_unmap(self, placed, 16ull * 4096) == VX_OK);
+  }
+  // A mapping at an address inside it; one across its edge refused; an
+  // unmap there leaves it reserved.
+  at = r1 + 4096;
+  CHECK(vx_as_map(self, v, 0, 4096, VX_MAP_WRITE, &at) == VX_OK && at == r1 + 4096);
+  *(volatile uint64_t *)at = 42;
+  uint64_t edge = r1 + (1 << 20) - 4096;
+  CHECK(vx_as_map(self, v, 0, 8192, VX_MAP_WRITE, &edge) == VX_ERR_RANGE);
+  CHECK(vx_as_unmap(self, at, 4096) == VX_OK);
+  in_way = r1;
+  CHECK(vx_as_reserve(self, 4096, 0, VX_AS_FIXED, &in_way) == VX_ERR_EXISTS && in_way == r1); // still there
+  // AS_FIXED where a mapping is: EXISTS, naming where it starts.
+  uint64_t placed = 0;
+  CHECK(vx_as_map(self, v, 0, 4096, 0, &placed) == VX_OK);
+  in_way = placed - 4096;
+  CHECK(vx_as_reserve(self, 8192, 0, VX_AS_FIXED, &in_way) == VX_ERR_EXISTS && in_way == placed);
+  CHECK(vx_as_unmap(self, placed, 4096) == VX_OK);
+  // Released: what is mapped in it goes, and its range is free again.
+  at = r2;
+  CHECK(vx_as_map(self, v, 0, 4096, 0, &at) == VX_OK);
+  uint64_t gone = r2;
+  CHECK(vx_as_reserve(self, 1 << 20, 0, VX_AS_RELEASE, &gone) == VX_OK);
+  vx_map_info mi;
+  CHECK(vx_as_query(self, r2, &mi) != VX_OK || mi.base >= r2 + (1 << 20));
+  CHECK(vx_as_reserve(self, 1 << 20, 0, VX_AS_RELEASE, &gone) == VX_ERR_NOT_FOUND);
+  in_way = r2;
+  CHECK(vx_as_reserve(self, 1 << 20, 1 << 16, VX_AS_FIXED, &in_way) == VX_OK && in_way == r2);
+  CHECK(vx_as_reserve(self, 1 << 20, 0, VX_AS_RELEASE, &in_way) == VX_OK);
+  CHECK(vx_as_reserve(self, 1 << 20, 0, VX_AS_RELEASE, &r1) == VX_OK);
+  CHECK(vx_as_reserve(self, 4096, 3ull * 4096, 0, &in_way) == VX_ERR_RANGE); // not a power of two
+
+  // No access: a guard page between two writable ones. A touch faults; the
+  // handler opens it, and the write is made again.
+  uint64_t g = 0;
+  CHECK(vx_as_map(self, v, 0, 3ull * 4096, VX_MAP_WRITE, &g) == VX_OK);
+  CHECK(vx_as_protect(self, g + 4096, 4096, VX_MAP_NOACCESS) == VX_OK);
+  CHECK(vx_as_query(self, g + 4096, &mi) == VX_OK && (mi.flags & VX_MAP_NOACCESS));
+  CHECK(vx_as_protect(self, g, 4096, VX_MAP_NOACCESS | VX_MAP_WRITE) == VX_ERR_INVALID);
+  *(volatile uint64_t *)g = 1, *(volatile uint64_t *)(g + 8192) = 3;
+  guard_at = g + 4096;
+  CHECK(vx_exception_bind(self, 0, (uint64_t)handler, VX_EXCEPTION_IN_TASK) == VX_OK);
+  *(volatile uint64_t *)(g + 4096) = 2;
+  CHECK(vx_exception_bind(self, 0, 0, VX_EXCEPTION_IN_TASK) == VX_OK);
+  guard_at = 0;
+  CHECK(atomic_load(&guard_faults) == 1 && *(volatile uint64_t *)(g + 4096) == 2);
+  CHECK(vx_as_unmap(self, g, 3ull * 4096) == VX_OK);
+  uint64_t none = 0; // mapped no-access from the start: a reservation's placeholder
+  CHECK(vx_as_map(self, v, 0, 4096, VX_MAP_NOACCESS, &none) == VX_OK &&
+        vx_as_unmap(self, none, 4096) == VX_OK);
+  vx_handle_close(v);
+
+  // A resizable VMO: grown with zero pages, shrunk back; one made without it
+  // is not resized.
+  vx_handle rv, fixed;
+  uint64_t value = 0x77, got = 1;
+  CHECK(vx_vmo_create(4096, VX_VMO_RESIZABLE, &rv) == VX_OK &&
+        vx_vmo_rw(rv, VX_VMO_WRITE, 0, &value, 8) == VX_OK);
+  CHECK(vx_vmo_resize(rv, 3ull * 4096) == VX_OK);
+  uint64_t ra = 0;
+  CHECK(vx_as_map(self, rv, 0, 3ull * 4096, VX_MAP_WRITE, &ra) == VX_OK);
+  CHECK(*(volatile uint64_t *)ra == 0x77 && *(volatile uint64_t *)(ra + 8192) == 0);
+  *(volatile uint64_t *)(ra + 8192) = 9;
+  CHECK(vx_vmo_rw(rv, VX_VMO_READ, 8192, &got, 8) == VX_OK && got == 9);
+  CHECK(vx_as_unmap(self, ra, 3ull * 4096) == VX_OK);
+  CHECK(vx_vmo_resize(rv, 4096) == VX_OK);
+  CHECK(vx_vmo_rw(rv, VX_VMO_READ, 8192, &got, 8) == VX_ERR_RANGE);
+  CHECK(vx_vmo_rw(rv, VX_VMO_READ, 0, &got, 8) == VX_OK && got == 0x77);
+  CHECK(vx_vmo_create(4096, 0, &fixed) == VX_OK && vx_vmo_resize(fixed, 8192) == VX_ERR_UNSUPPORTED);
+  CHECK(vx_vmo_create(4096, VX_VMO_RESIZABLE | VX_VMO_PAGER, &v) == VX_ERR_INVALID);
+  vx_handle_close(fixed);
+  vx_handle_close(rv);
+
+  // VX_MAP_SHARED: a forked child maps the same VMO, and its write is seen.
+  vx_handle sv = 0, port = 0;
+  uint64_t sa = 0, sp = new_stack();
+  CHECK(sp && vx_port_create(0, &port) == VX_OK && vx_vmo_create(4096, 0, &sv) == VX_OK &&
+        vx_as_map(self, sv, 0, 4096, VX_MAP_WRITE | VX_MAP_SHARED, &sa) == VX_OK);
+  fork_shared = sa;
+  fork_page[7] = 0x1234;
+  CHECK(is(run_fork(sp, port), "ok"));
+  fork_shared = 0;
+  CHECK(*(volatile uint64_t *)sa == 0x7777);
+  CHECK(vx_as_protect(self, sa, 4096, VX_MAP_SHARED) == VX_ERR_INVALID); // as_map's alone
+  CHECK(vx_as_unmap(self, sa, 4096) == VX_OK);
+  vx_handle_close(sv);
   vx_handle_close(port);
 }
 
@@ -2330,6 +2442,7 @@ const char *vx_main(void) {
   test_note_stack();
   test_robust();
   test_vmo_clone();
+  test_address_space();
   test_debugger();
   test_tls();
   test_fork();

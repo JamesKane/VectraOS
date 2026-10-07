@@ -40,6 +40,13 @@ typedef struct mapping {
 
 static constexpr uint32_t TASK_MAX_MAPPINGS = 4096 / sizeof(mapping);
 
+// A reservation (as_reserve, ADR-0042): address space no placed mapping
+// lands in, kept for the task's own as_map at addresses inside it.
+typedef struct reservation {
+  uint64_t va, size; // size 0: the slot is free
+} reservation;
+static constexpr uint32_t TASK_MAX_RESERVATIONS = 32;
+
 struct thread;
 struct sched_ctx; // sched.c
 
@@ -49,13 +56,14 @@ typedef struct task {
   object obj;
   spinlock lock;
   uint64_t id;
-  uint64_t root;          // physical address of the address space's top table; 0 once torn down
-  uint64_t map_next;      // the next address as_map places at
-  uint16_t keys;          // its protection keys, bit k for key k (ADR-0035): as_key_alloc's
-  handle_entry *handles;  // HANDLE_SLOTS entries
-  mapping *maps;          // TASK_MAX_MAPPINGS entries; size 0 is a free slot
-  uint64_t mapped;        // bytes
-  struct thread *threads; // started and not yet reaped, through task_next
+  uint64_t root;     // physical address of the address space's top table; 0 once torn down
+  uint64_t map_next; // the next address as_map places at
+  reservation resv[TASK_MAX_RESERVATIONS]; // under the lock; they go with the address space (task_exec)
+  uint16_t keys;                           // its protection keys, bit k for key k (ADR-0035): as_key_alloc's
+  handle_entry *handles;                   // HANDLE_SLOTS entries
+  mapping *maps;                           // TASK_MAX_MAPPINGS entries; size 0 is a free slot
+  uint64_t mapped;                         // bytes
+  struct thread *threads;                  // started and not yet reaped, through task_next
   uint32_t live_threads;
   uint64_t gone_ticks[2]; // user and system ticks of its threads reaped (ADR-0041)
   vx_task_state state;    // EXITED once torn down
@@ -393,8 +401,49 @@ static bool key_ok(const task *t, uint32_t flags) {
   return k == 0 || (t->keys & 1u << k);
 }
 
+// The start of the first mapping or reservation that [va, end) overlaps, or
+// 0 if none does. Under the task's lock.
+static uint64_t task_in_way(const task *t, uint64_t va, uint64_t end) {
+  uint64_t first = 0;
+  for (uint32_t i = 0; t->maps && i < TASK_MAX_MAPPINGS; i++) {
+    const mapping *m = &t->maps[i];
+    if (m->size && m->va < end && va < m->va + m->size && (!first || m->va < first)) first = m->va;
+  }
+  for (uint32_t i = 0; i < TASK_MAX_RESERVATIONS; i++) {
+    const reservation *r = &t->resv[i];
+    if (r->size && r->va < end && va < r->va + r->size && (!first || r->va < first)) first = r->va;
+  }
+  return first;
+}
+
+// Whether [va, end) lies wholly inside one reservation or outside every one.
+static bool task_resv_fits(const task *t, uint64_t va, uint64_t end) {
+  for (uint32_t i = 0; i < TASK_MAX_RESERVATIONS; i++) {
+    const reservation *r = &t->resv[i];
+    bool overlaps = r->size && r->va < end && va < r->va + r->size;
+    if (overlaps) return va >= r->va && end <= r->va + r->size;
+  }
+  return true;
+}
+
+// Where as_map places a mapping of size bytes: from map_next on, past any
+// reservation in the way (a guard page after it).
+static uint64_t task_place(const task *t, uint64_t size) {
+  uint64_t at = t->map_next;
+  for (uint32_t pass = 0; pass <= TASK_MAX_RESERVATIONS; pass++) {
+    bool moved = false;
+    for (uint32_t i = 0; i < TASK_MAX_RESERVATIONS; i++) {
+      const reservation *r = &t->resv[i];
+      if (r->size && r->va < at + size && at < r->va + r->size) at = r->va + r->size + 4096, moved = true;
+    }
+    if (!moved) break;
+  }
+  return at;
+}
+
 // allowed: the rights the VMO's handle gave (VX_MAP_WRITE, VX_MAP_EXEC), which
-// as_protect may later give the mapping and no more.
+// as_protect may later give the mapping and no more. NOACCESS maps no page: a
+// touch faults (ADR-0042).
 static vx_status task_map(task *t, vmo *v, uint64_t offset, uint64_t size, uint32_t flags, uint32_t allowed,
                           uint64_t *va) {
   uint64_t vmo_end;
@@ -405,7 +454,7 @@ static vx_status task_map(task *t, vmo *v, uint64_t offset, uint64_t size, uint3
                 (v->physical ? MAP_DEVICE : 0) | (flags & VX_MAP_KEY_MASK);
   vx_status st = VX_OK;
   spin_lock(&t->lock);
-  uint64_t at = *va ? *va : t->map_next;
+  uint64_t at = *va ? *va : task_place(t, size);
   uint64_t end;
   mapping *slot = nullptr;
   for (uint32_t i = 0; t->maps && i < TASK_MAX_MAPPINGS && !slot; i++) // no tables once torn down
@@ -414,7 +463,7 @@ static vx_status task_map(task *t, vmo *v, uint64_t offset, uint64_t size, uint3
     st = VX_ERR_BAD_STATE;
   else if (!key_ok(t, flags))
     st = VX_ERR_INVALID; // a key it has not allocated
-  else if ((at & 4095) || ckd_add(&end, at, size) || end > USER_TOP)
+  else if ((at & 4095) || ckd_add(&end, at, size) || end > USER_TOP || !task_resv_fits(t, at, end))
     st = VX_ERR_RANGE;
   else if (!slot)
     st = VX_ERR_NO_MEMORY;
@@ -423,23 +472,25 @@ static vx_status task_map(task *t, vmo *v, uint64_t offset, uint64_t size, uint3
   // pages are mapped as far as it has supplied them, the rest as they are
   // touched (pager.c).
   uint64_t done = 0;
-  if (v->pager) spin_lock(&v->lock);
-  if (v->pager && st == VX_OK && vmo_end > v->size) st = VX_ERR_RANGE; // shrunk since the check above
+  bool locked = vmo_locked(v);
+  if (locked) spin_lock(&v->lock);
+  if (locked && st == VX_OK && vmo_end > v->size) st = VX_ERR_RANGE; // shrunk since the check above
   mapping shape = {.vmo = v, .flags = flags};
+  bool none = flags & VX_MAP_NOACCESS;
   while (st == VX_OK && done < size) {
-    uint64_t pa = vmo_page(v, (offset + done) / 4096);
+    uint64_t pa = none ? 0 : vmo_page(v, (offset + done) / 4096);
     uint32_t pf = v->pager ? page_flags(&shape, v->pages[(offset + done) / 4096]) : mf;
     if (pa && !map_range(t->root, at + done, pa, 4096, pf))
       st = VX_ERR_NO_MEMORY;
     else
       done += 4096;
   }
-  if (v->pager) spin_unlock(&v->lock);
+  if (locked) spin_unlock(&v->lock);
   if (st == VX_OK) {
     object_ref(&v->obj);
     *slot = (mapping){.va = at, .size = size, .offset = offset, .vmo = v, .flags = flags, .allowed = allowed};
     t->mapped += size;
-    if (!*va) t->map_next = end + 4096; // leave a guard page between placed mappings
+    if (!*va) t->map_next = end + 4096; // leave a guard page between placed mappings, past any reservation
     *va = at;
   } else {
     for (uint64_t off = 0; off < done; off += 4096) unmap_page(t->root, at + off);
@@ -468,11 +519,12 @@ static vx_status task_fork_copy(task *parent, task *child) {
   vx_status st = VX_OK;
   spin_lock(&parent->lock);
   if (!parent->root || parent->ending) st = VX_ERR_BAD_STATE;
-  child->keys = parent->keys; // first: the mappings below carry their keys
+  child->keys = parent->keys;                            // first: the mappings below carry their keys
+  memcpy(child->resv, parent->resv, sizeof child->resv); // and its reservations, which they may lie in
   for (uint32_t i = 0; st == VX_OK && i < TASK_MAX_MAPPINGS; i++) {
     const mapping *m = &parent->maps[i];
     if (!m->size || m->vmo->physical || m->vmo->ring) continue;
-    if (m->vmo->pager) {
+    if (m->vmo->pager || (m->flags & VX_MAP_SHARED)) { // the same VMO: a file's pages, MAP_SHARED memory
       uint64_t va = m->va;
       st = task_map(child, m->vmo, m->offset, m->size, m->flags, m->allowed, &va);
       continue;
@@ -480,9 +532,13 @@ static vx_status task_fork_copy(task *parent, task *child) {
     vmo *copy;
     st = vmo_create(m->size, &copy);
     if (st != VX_OK) break;
-    for (uint64_t off = 0; off < m->size; off += 4096)
-      arch_page_copy(phys_to_virt(copy->pages[off / 4096]),
-                     phys_to_virt(m->vmo->pages[(m->offset + off) / 4096]), 4096);
+    vmo *v = m->vmo;
+    if (v->resizable) spin_lock(&v->lock); // a page past a shrink's end is absent: the copy's stays zero
+    for (uint64_t off = 0; off < m->size; off += 4096) {
+      uint64_t pa = (m->offset + off) / 4096 < v->size / 4096 ? vmo_page(v, (m->offset + off) / 4096) : 0;
+      if (pa) arch_page_copy(phys_to_virt(copy->pages[off / 4096]), phys_to_virt(pa), 4096);
+    }
+    if (v->resizable) spin_unlock(&v->lock);
     uint64_t va = m->va;
     st = task_map(child, copy, 0, m->size, m->flags, m->allowed, &va);
     object_release(&copy->obj); // the child's mapping holds it, if it was made
@@ -608,21 +664,94 @@ static vx_status task_protect(task *t, uint64_t va, uint64_t size, uint32_t flag
         m->offset += cut - m->va, m->size = m_end - cut, m->va = cut;
       }
     }
-    m->flags = (m->flags & ~(uint32_t)(VX_MAP_WRITE | VX_MAP_EXEC | VX_MAP_KEY_MASK)) |
-               (flags & (VX_MAP_WRITE | VX_MAP_EXEC | VX_MAP_KEY_MASK));
+    uint32_t changed = VX_MAP_WRITE | VX_MAP_EXEC | VX_MAP_KEY_MASK | VX_MAP_NOACCESS; // SHARED stays
+    m->flags = (m->flags & ~changed) | (flags & changed);
     vmo *v = m->vmo;
-    if (v->pager) spin_lock(&v->lock);
+    bool locked = vmo_locked(v);
+    if (locked) spin_lock(&v->lock);
     for (uint64_t off = 0; off < m->size && st == VX_OK; off += 4096) {
-      uint64_t idx = (m->offset + off) / 4096, pa = vmo_page(v, idx);
+      uint64_t idx = (m->offset + off) / 4096;
+      uint64_t pa = (flags & VX_MAP_NOACCESS) || idx >= v->size / 4096 ? 0 : vmo_page(v, idx);
       unmap_page(t->root, m->va + off);
       if (pa && !map_range(t->root, m->va + off, pa, 4096, page_flags(m, v->pages[idx])))
         st = VX_ERR_NO_MEMORY;
     }
-    if (v->pager) spin_unlock(&v->lock);
+    if (locked) spin_unlock(&v->lock);
   }
   uint64_t root = t->root;
   spin_unlock(&t->lock);
   if (root) arch_tlb_shootdown(root, va, size);
+  return st;
+}
+
+// as_reserve (ADR-0042): a reservation of size bytes aligned to align, at a
+// random base or (VX_AS_FIXED) at *va; or (VX_AS_RELEASE) the one at *va
+// given back, after what is mapped in it is unmapped.
+static vx_drbg resv_random; // the kernel's, seeded from the bootloader's entropy
+static spinlock resv_random_lock;
+
+static uint64_t resv_random_u64(void) {
+  uint64_t x;
+  spin_lock(&resv_random_lock);
+  if (!resv_random.seeded) {
+    static const char tag[] = "as_reserve";
+    vx_drbg_mix(&resv_random, boot.seed, sizeof boot.seed, true);
+    vx_drbg_mix(&resv_random, tag, sizeof tag, false);
+    uint64_t now = clock_now(); // without the bootloader's entropy, at least not the same each boot
+    vx_drbg_mix(&resv_random, &now, sizeof now, false);
+  }
+  vx_drbg_read(&resv_random, &x, sizeof x);
+  spin_unlock(&resv_random_lock);
+  return x;
+}
+
+static vx_status task_release(task *t, uint64_t va, uint64_t size) {
+  spin_lock(&t->lock);
+  reservation *r = nullptr;
+  for (uint32_t i = 0; i < TASK_MAX_RESERVATIONS && !r; i++)
+    if (t->resv[i].size && t->resv[i].va == va && t->resv[i].size == size) r = &t->resv[i];
+  if (r) *r = (reservation){};
+  spin_unlock(&t->lock);
+  if (!r) return VX_ERR_NOT_FOUND;
+  vx_status st = task_unmap(t, va, size);
+  return st == VX_ERR_BAD_STATE ? VX_OK : st; // a task torn down has none left to unmap
+}
+
+static vx_status task_reserve(task *t, uint64_t size, uint64_t align, uint32_t flags, uint64_t *va) {
+  if (flags & VX_AS_RELEASE) return task_release(t, *va, size);
+  if (!align) align = 4096;
+  if (!size || size & 4095 || size > USER_TOP - USER_MAP_BASE || align & (align - 1) || align < 4096 ||
+      align > 1ull << 39)
+    return VX_ERR_RANGE;
+  uint64_t fixed = *va, end;
+  if ((flags & VX_AS_FIXED) &&
+      ((fixed & (align - 1)) || !fixed || ckd_add(&end, fixed, size) || end > USER_TOP))
+    return VX_ERR_RANGE;
+  uint64_t r[16]; // the random bases to try, drawn before the lock
+  uint64_t slots = (USER_TOP - USER_MAP_BASE - size) / align + 1;
+  for (int i = 0; i < 16; i++) r[i] = USER_MAP_BASE + resv_random_u64() % slots * align;
+  vx_status st = VX_OK;
+  spin_lock(&t->lock);
+  reservation *slot = nullptr;
+  for (uint32_t i = 0; i < TASK_MAX_RESERVATIONS && !slot; i++)
+    if (!t->resv[i].size) slot = &t->resv[i];
+  uint64_t at = 0;
+  if (!t->root || !t->maps || t->ending) {
+    st = VX_ERR_BAD_STATE;
+  } else if (!slot) {
+    st = VX_ERR_NO_SPACE;
+  } else if (flags & VX_AS_FIXED) {
+    uint64_t in_way = task_in_way(t, fixed, fixed + size);
+    if (in_way) *va = in_way, st = VX_ERR_EXISTS;
+    at = fixed;
+  } else {
+    for (int i = 0; i < 16 && !at; i++)
+      if (!task_in_way(t, r[i], r[i] + size) && !(r[i] <= t->map_next && t->map_next < r[i] + size))
+        at = r[i];
+    if (!at) st = VX_ERR_NO_MEMORY; // a crowded address space: sixteen draws all hit something
+  }
+  if (st == VX_OK) *slot = (reservation){.va = at, .size = size}, *va = at;
+  spin_unlock(&t->lock);
   return st;
 }
 

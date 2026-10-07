@@ -81,7 +81,7 @@ static pager_result pager_fault(uint64_t address, uint32_t access) {
     for (uint32_t i = 0; t->maps && i < TASK_MAX_MAPPINGS && !m; i++)
       if (t->maps[i].size && address >= t->maps[i].va && address < t->maps[i].va + t->maps[i].size)
         m = &t->maps[i];
-    if (!m || !m->vmo->pager || (access == 1 && !(m->flags & VX_MAP_WRITE)) ||
+    if (!m || !m->vmo->pager || (m->flags & VX_MAP_NOACCESS) || (access == 1 && !(m->flags & VX_MAP_WRITE)) ||
         (access == 2 && !(m->flags & VX_MAP_EXEC))) {
       spin_unlock(&t->lock);
       return PAGER_NOT_MINE;
@@ -283,10 +283,11 @@ static void pager_evict(vmo *v, uint64_t first, uint64_t count) {
 
 // --- vmo_op resize ---
 
-// A pager-backed VMO's new size: pages past it out of the mappings and
-// freed; pages added absent. Its page list is made again if it outgrows it.
+// A pager-backed or resizable VMO's new size: pages past it out of the
+// mappings and freed; pages added absent (a pager's) or zero (a resizable
+// one's, ADR-0042). Its page list is made again if it outgrows it.
 static vx_status vmo_resize(vmo *v, uint64_t size) {
-  if (!v->pager) return VX_ERR_UNSUPPORTED; // anonymous memory is read without the lock: not yet
+  if (!vmo_locked(v)) return VX_ERR_UNSUPPORTED; // read without its lock: made VX_VMO_RESIZABLE to resize
   if (!size || size > VMO_MAX_SIZE) return VX_ERR_RANGE;
   size = (size + 4095) & ~4095ull;
   uint64_t count = size / 4096;
@@ -331,7 +332,14 @@ static vx_status vmo_resize(vmo *v, uint64_t size) {
     old_list = (uint64_t)v->pages - boot.hhdm;
     v->pages = pages, v->list_order = order;
   }
-  v->size = size;
+  // A resizable VMO's new pages, zero; if memory runs out, it keeps the size
+  // it reached.
+  vx_status st = VX_OK;
+  for (uint64_t i = old; v->resizable && i < count && st == VX_OK; i++) {
+    v->pages[i] = phys_alloc_zeroed(0);
+    if (!v->pages[i]) size = i * 4096, st = VX_ERR_NO_MEMORY;
+  }
+  if (size > v->size || !v->resizable) v->size = size;
   v->resizing = false;
   // Waiters look again: one whose page is now past the end faults as usual.
   page_waiter *w = v->waiters;
@@ -339,5 +347,5 @@ static vx_status vmo_resize(vmo *v, uint64_t size) {
   for (; w; w = w->next) thread_wake_token(w->thread, w, VX_OK);
   spin_unlock(&v->lock);
   if (old_list) phys_free(old_list, old_order);
-  return VX_OK;
+  return st;
 }

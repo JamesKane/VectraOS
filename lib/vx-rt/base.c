@@ -210,6 +210,12 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   return (vx_status)vx_syscall(VX_SYS_as_protect, task, address, size, flags, 0, 0);
 }
 
+// as_reserve (ADR-0042): *address in and out.
+[[maybe_unused]] static vx_status vx_as_reserve(vx_handle task, uint64_t size, uint64_t align, uint32_t flags,
+                                                uint64_t *address) {
+  return (vx_status)vx_syscall(VX_SYS_as_reserve, task, size, align, flags, (uint64_t)address, 0);
+}
+
 [[maybe_unused]] static vx_status vx_as_key_alloc(vx_handle task, uint32_t *key) {
   return (vx_status)vx_syscall(VX_SYS_as_key_alloc, task, (uint64_t)key, 0, 0, 0, 0);
 }

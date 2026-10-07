@@ -20,8 +20,13 @@ typedef struct vmo {
   uint32_t pager_key;  // what its page requests call it
   spinlock lock;       // a pager-backed one's: its page list, and waiters
   struct page_waiter *waiters;
-  bool resizing; // a resize under way (pager.c), which drops the lock between its steps
+  bool resizing;  // a resize under way (pager.c), which drops the lock between its steps
+  bool resizable; // anonymous, made VX_VMO_RESIZABLE (ADR-0042): its page list under its lock too
 } vmo;
+
+// Whether v's page list may change under a reader (a pager's VMO, a
+// resizable one): read it under v's lock.
+static bool vmo_locked(const vmo *v) { return v->pager || v->resizable; }
 
 static constexpr uint64_t PAGE_ASKED = 1; // a pager-backed page asked for, not yet supplied
 static constexpr uint64_t PAGE_DIRTY = 2; // a pager-backed page written since it was supplied or cleaned

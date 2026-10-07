@@ -178,8 +178,9 @@ static constexpr uint32_t DEVICE_RIGHTS = VX_RIGHT_DUPLICATE | VX_RIGHT_TRANSFER
 // with VX_VMO_PAGER (the fourth argument a Pager, the fifth a key), memory
 // a pager supplies.
 static int64_t sys_vmo_create(uint64_t size, uint64_t options, uint64_t out, vx_handle rh, uint64_t pa) {
-  if ((options & ~(uint64_t)(VX_VMO_PHYSICAL | VX_VMO_PAGER)) || options == (VX_VMO_PHYSICAL | VX_VMO_PAGER))
-    return VX_ERR_INVALID;
+  uint64_t kinds = options & (VX_VMO_PHYSICAL | VX_VMO_PAGER | VX_VMO_RESIZABLE);
+  if ((options & ~(uint64_t)(VX_VMO_PHYSICAL | VX_VMO_PAGER | VX_VMO_RESIZABLE)) || (kinds & (kinds - 1)))
+    return VX_ERR_INVALID; // one kind at most
   vmo *v;
   vx_status st;
   if (options & VX_VMO_PAGER) {
@@ -201,6 +202,7 @@ static int64_t sys_vmo_create(uint64_t size, uint64_t options, uint64_t out, vx_
   }
   st = vmo_create(size, &v);
   if (st != VX_OK) return st;
+  v->resizable = options & VX_VMO_RESIZABLE; // vmo_op RESIZE may change it (ADR-0042)
   // EXEC included: loaders and JITs map their own code. W^X holds per mapping
   // (task_map), never per VMO.
   return return_handle(&v->obj, ALL_RIGHTS & ~(uint32_t)VX_RIGHT_DEBUG, out);
@@ -450,8 +452,15 @@ static int64_t sys_as_unmap(vx_handle th, uint64_t va, uint64_t size) {
   return st;
 }
 
+// NOACCESS is alone (ADR-0042): no write or execute beside it.
+static bool map_flags_ok(uint64_t flags, uint64_t allowed) {
+  if (flags & ~allowed) return false;
+  return !((flags & VX_MAP_NOACCESS) && (flags & (VX_MAP_WRITE | VX_MAP_EXEC)));
+}
+
 static int64_t sys_as_protect(vx_handle th, uint64_t va, uint64_t size, uint64_t flags) {
-  if (flags & ~(uint64_t)(VX_MAP_WRITE | VX_MAP_EXEC | VX_MAP_KEY_MASK)) return VX_ERR_INVALID;
+  if (!map_flags_ok(flags, VX_MAP_WRITE | VX_MAP_EXEC | VX_MAP_KEY_MASK | VX_MAP_NOACCESS))
+    return VX_ERR_INVALID;
   vx_status st;
   task *t = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_MANAGE, &st);
   if (!t) return st;
@@ -489,6 +498,22 @@ static int64_t sys_clock_info(uint64_t info_ptr) {
   return st == VX_OK ? clock_now() : st;
 }
 
+// as_reserve(task, size, align, flags, &address) (ADR-0042).
+static int64_t sys_as_reserve(vx_handle th, uint64_t size, uint64_t align, uint64_t flags,
+                              uint64_t addr_ptr) {
+  if (flags & ~(uint64_t)(VX_AS_FIXED | VX_AS_RELEASE) || flags == (VX_AS_FIXED | VX_AS_RELEASE))
+    return VX_ERR_INVALID;
+  uint64_t va;
+  vx_status st = copy_from_user(&va, addr_ptr, sizeof va);
+  if (st != VX_OK) return st;
+  task *t = (task *)handle_get(current_task(), th, OBJ_TASK, VX_RIGHT_MANAGE, &st);
+  if (!t) return st;
+  st = task_reserve(t, size, align, (uint32_t)flags, &va);
+  object_release(&t->obj);
+  vx_status out = st == VX_OK || st == VX_ERR_EXISTS ? copy_to_user(addr_ptr, &va, sizeof va) : VX_OK;
+  return out != VX_OK ? out : st;
+}
+
 // as_query(task, address, &info): the first mapping ending after address.
 static int64_t sys_as_query(vx_handle th, uint64_t addr, uint64_t info_ptr) {
   vx_status st;
@@ -520,7 +545,8 @@ static int64_t sys_as_map(vx_handle th, vx_handle vh, uint64_t offset, uint64_t 
     object_release(&io->obj);
     return st;
   }
-  if (flags & ~(uint64_t)(VX_MAP_WRITE | VX_MAP_EXEC | VX_MAP_KEY_MASK)) return VX_ERR_INVALID;
+  if (!map_flags_ok(flags, VX_MAP_WRITE | VX_MAP_EXEC | VX_MAP_KEY_MASK | VX_MAP_NOACCESS | VX_MAP_SHARED))
+    return VX_ERR_INVALID;
   uint64_t va;
   st = copy_from_user(&va, addr_ptr, sizeof va);
   if (st != VX_OK) return st;
@@ -1010,6 +1036,10 @@ static int64_t sys_task_exec(vx_handle sh, vx_handle bootstrap, uint64_t entry, 
   mapping *maps = t->maps;
   t->root = s->root, t->map_next = s->map_next, t->mapped = s->mapped, t->maps = s->maps;
   s->root = root, s->map_next = map_next, s->mapped = mapped, s->maps = maps;
+  reservation resv[TASK_MAX_RESERVATIONS]; // they go with the address space too (ADR-0042)
+  memcpy(resv, t->resv, sizeof resv);
+  memcpy(t->resv, s->resv, sizeof resv);
+  memcpy(s->resv, resv, sizeof resv);
   memcpy(t->name, s->name, sizeof t->name);
   t->exc_handler = 0; // the old program's in-task handler is not in the new one
   spin_unlock(&second->lock);
@@ -1067,7 +1097,7 @@ static int64_t sys_vmo_rw(vx_handle h, uint64_t op, uint64_t offset, uint64_t bu
   for (uint64_t done = 0; st == VX_OK && done < size;) {
     uint64_t at = offset + done, in_page = at & 4095, n = 4096 - in_page;
     if (n > size - done) n = size - done;
-    if (v->pager) { // its pages can go (EVICT, a shrink): each touched under its lock, through a bounce
+    if (vmo_locked(v)) { // its pages can go (EVICT, a shrink): each touched under its lock, through a bounce
       uint8_t bounce[256];
       if (n > sizeof bounce) n = sizeof bounce;
       if (op == VX_VMO_WRITE && (st = copy_from_user(bounce, buf + done, n)) != VX_OK) break;
@@ -1076,10 +1106,11 @@ static int64_t sys_vmo_rw(vx_handle h, uint64_t op, uint64_t offset, uint64_t bu
       if (pa && op == VX_VMO_READ) memcpy(bounce, (uint8_t *)phys_to_virt(pa) + in_page, n);
       if (pa && op == VX_VMO_WRITE) {
         memcpy((uint8_t *)phys_to_virt(pa) + in_page, bounce, n);
-        v->pages[at / 4096] |= PAGE_DIRTY; // written, as a store through a mapping would mark it
+        if (v->pager)
+          v->pages[at / 4096] |= PAGE_DIRTY; // written, as a store through a mapping would mark it
       }
       spin_unlock(&v->lock);
-      if (!pa) st = VX_ERR_SHOULD_WAIT; // a pager has not supplied it
+      if (!pa) st = v->pager ? VX_ERR_SHOULD_WAIT : VX_ERR_RANGE; // not supplied yet, or shrunk meanwhile
       if (pa && op == VX_VMO_READ) st = copy_to_user(buf + done, bounce, n);
       done += n;
       continue;
@@ -1170,6 +1201,7 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_vmo_op: return sys_vmo_op((vx_handle)a[0], a[1], a[2]);
   case VX_SYS_iorange_create: return sys_iorange_create((vx_handle)a[0], a[1], a[2], a[3]);
   case VX_SYS_vmo_rw: return sys_vmo_rw((vx_handle)a[0], a[1], a[2], a[3], a[4]);
+  case VX_SYS_as_reserve: return sys_as_reserve((vx_handle)a[0], a[1], a[2], a[3], a[4]);
   case VX_SYS_as_map: return sys_as_map((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4], a[5]);
   case VX_SYS_as_unmap: return sys_as_unmap((vx_handle)a[0], a[1], a[2]);
   case VX_SYS_as_protect: return sys_as_protect((vx_handle)a[0], a[1], a[2], a[3]);

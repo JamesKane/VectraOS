@@ -334,9 +334,11 @@ static_assert(sizeof(vx_cqe) == 32);
 //       pages past it leave every mapping and are freed (a touch there is an
 //       ordinary fault), pages added absent. The pager's alone.
 //   vmo_op(vmo, VX_VMO_RESIZE, size)
-//       an anonymous VMO's new size: not yet (UNSUPPORTED). A pager-backed
-//       one is its pager's to resize (pager_op RESIZE): ACCESS
-enum vx_vmo_options : uint32_t { VX_VMO_PHYSICAL = 1, VX_VMO_PAGER = 2 };
+//       a resizable anonymous VMO's new size (ADR-0042): pages added are
+//       zero, pages past the end leave every mapping and are freed (a touch
+//       there faults). One made without VX_VMO_RESIZABLE: UNSUPPORTED. A
+//       pager-backed one is its pager's to resize (pager_op RESIZE): ACCESS
+enum vx_vmo_options : uint32_t { VX_VMO_PHYSICAL = 1, VX_VMO_PAGER = 2, VX_VMO_RESIZABLE = 4 };
 enum vx_dma_options : uint32_t { VX_DMA_READ = 1, VX_DMA_WRITE = 2 }; // what the device may do: dma_map
 // system_power(resource, op): the whole machine (the root Resource, MANAGE).
 // VX_POWER_OFF: through PSCI where the firmware has it (aarch64); returns,
@@ -420,15 +422,28 @@ enum vx_task_info_flags : uint32_t { VX_TASK_NEXT = 1 };
 // pages of [address, address + size), every one mapped, within the rights
 // each mapping's VMO handle gave when it was mapped (ACCESS past them); a
 // mapping cut by the range becomes two or three (ADR-0035).
+// as_reserve(task, size, align, flags, &address) (ADR-0042, 01 §5): a
+// reservation, address space no mapping the kernel places lands in, for the
+// task's own as_map at addresses inside it; as_unmap there leaves it reserved.
+// align: 0 (a page), or a power of two up to 2^39. Without VX_AS_FIXED, at a
+// random aligned base; with it, at *address, or EXISTS with *address set to
+// the start of the first mapping or reservation in the way. VX_AS_RELEASE:
+// the reservation starting at *address of size bytes given back, what is
+// mapped in it unmapped (NOT_FOUND if there is none). A mapping placed at an
+// address must lie wholly inside one reservation or outside every one (RANGE).
+// At most 32 reservations a task (NO_SPACE).
+enum vx_as_flags : uint32_t { VX_AS_FIXED = 1, VX_AS_RELEASE = 2 };
 // as_key_alloc(task, &key) and as_key_free(task, key): a protection key of
 // the task's, 1 to vx_cpu_info.keys (key 0 is every mapping's default),
 // with the task handle's MANAGE as as_map takes it; NO_SPACE when none is
 // free, UNSUPPORTED where the CPU has none; a key a mapping still uses is not
 // freed (BAD_STATE). A thread's rights to each key are its own (PKRU,
 // POR_EL0), set with the unprivileged instruction (vx-rt's vx_keys_set).
-enum vx_map_flags : uint32_t { // as_map, as_protect; a mapping is always readable
+enum vx_map_flags : uint32_t { // as_map, as_protect; a mapping is readable unless NOACCESS
   VX_MAP_WRITE = 1,
   VX_MAP_EXEC = 2,
+  VX_MAP_NOACCESS = 4,     // ADR-0042: no access at all, a touch faults (PROT_NONE, guard pages); alone
+  VX_MAP_SHARED = 8,       // ADR-0042, as_map only: a forked task maps the same VMO here, not a copy
   VX_MAP_KEY_MASK = 0xf00, // the mapping's protection key: VX_MAP_KEY(k)
 };
 #define VX_MAP_KEY(k) ((uint32_t)(k) << 8)
