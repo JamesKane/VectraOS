@@ -69,7 +69,9 @@ typedef enum pager_result : uint8_t {
 } pager_result;
 
 // A user fault at address (access: read 0, write 1, execute 2) in the
-// current task: resolved here if it is on a pager-backed mapping.
+// current task: resolved here if it is on a pager-backed mapping, or on a
+// lazy one (ADR-0046), whose page is made zero at the touch; with no memory
+// for it the fault stands.
 static pager_result pager_fault(uint64_t address, uint32_t access) {
   thread *th = this_cpu()->current;
   task *t = th->task;
@@ -81,8 +83,8 @@ static pager_result pager_fault(uint64_t address, uint32_t access) {
     for (uint32_t i = 0; t->maps && i < TASK_MAX_MAPPINGS && !m; i++)
       if (t->maps[i].size && address >= t->maps[i].va && address < t->maps[i].va + t->maps[i].size)
         m = &t->maps[i];
-    if (!m || !m->vmo->pager || (m->flags & VX_MAP_NOACCESS) || (access == 1 && !(m->flags & VX_MAP_WRITE)) ||
-        (access == 2 && !(m->flags & VX_MAP_EXEC))) {
+    if (!m || !(m->vmo->pager || m->vmo->lazy) || (m->flags & VX_MAP_NOACCESS) ||
+        (access == 1 && !(m->flags & VX_MAP_WRITE)) || (access == 2 && !(m->flags & VX_MAP_EXEC))) {
       spin_unlock(&t->lock);
       return PAGER_NOT_MINE;
     }
@@ -94,9 +96,14 @@ static pager_result pager_fault(uint64_t address, uint32_t access) {
       spin_unlock(&t->lock);
       return PAGER_NOT_MINE;
     }
-    uint64_t pa = vmo_page(v, index);
+    uint64_t pa = vmo_page_make(v, index); // a lazy one's made now
+    if (!pa && v->lazy) {                  // no memory: the fault stands
+      spin_unlock(&v->lock);
+      spin_unlock(&t->lock);
+      return PAGER_NOT_MINE;
+    }
     if (pa) { // supplied: mapped here now (another thread may have done it first), dirty if written
-      if (access == 1) v->pages[index] |= PAGE_DIRTY;
+      if (access == 1 && v->pager) v->pages[index] |= PAGE_DIRTY;
       int level;
       uint64_t *e = leaf_entry(t->root, page_va, &level);
       bool upgrade = e && access == 1 && !arch_pte_user_ok(*e, true); // read-only until now
@@ -308,6 +315,38 @@ static void pager_evict(vmo *v, uint64_t first, uint64_t count) {
   }
 }
 
+// --- vmo_op decommit ---
+
+// DECOMMIT (ADR-0046): a lazy VMO's pages in [offset, offset + size) freed,
+// absent again (a touch makes them zero). Each made absent under the lock,
+// out of every mapping, and only then freed, as EVICT does.
+static vx_status vmo_decommit(vmo *v, uint64_t offset, uint64_t size) {
+  uint64_t end;
+  if (!v->lazy) return VX_ERR_UNSUPPORTED;
+  if ((offset | size) & 4095) return VX_ERR_INVALID;
+  if (ckd_add(&end, offset, size)) return VX_ERR_RANGE;
+  spin_lock(&v->lock);
+  bool past = end > v->size;
+  spin_unlock(&v->lock);
+  if (past) return VX_ERR_RANGE;
+  for (uint64_t at = offset / 4096; at < end / 4096;) {
+    uint64_t freed[64], from = at;
+    uint32_t n = 0;
+    spin_lock(&v->lock);
+    for (; at < end / 4096 && at < v->size / 4096 && n < 64; at++) {
+      uint64_t pa = vmo_page(v, at);
+      if (pa) freed[n++] = pa;
+      v->pages[at] = 0;
+    }
+    bool shrunk = at < end / 4096 && at >= v->size / 4096; // a resize took the rest meanwhile
+    spin_unlock(&v->lock);
+    if (n) vmo_unmap_everywhere(v, from, at - from);
+    for (uint32_t i = 0; i < n; i++) phys_free(freed[i], 0);
+    if (shrunk) break;
+  }
+  return VX_OK;
+}
+
 // --- vmo_op resize ---
 
 // A pager-backed or resizable VMO's new size: pages past it out of the
@@ -362,7 +401,7 @@ static vx_status vmo_resize(vmo *v, uint64_t size) {
   // A resizable VMO's new pages, zero; if memory runs out, it keeps the size
   // it reached.
   vx_status st = VX_OK;
-  for (uint64_t i = old; v->resizable && i < count && st == VX_OK; i++) {
+  for (uint64_t i = old; v->resizable && !v->lazy && i < count && st == VX_OK; i++) { // a lazy one's: absent
     v->pages[i] = phys_alloc_zeroed(0);
     if (!v->pages[i]) size = i * 4096, st = VX_ERR_NO_MEMORY;
   }

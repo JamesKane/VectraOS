@@ -735,20 +735,23 @@ static int64_t sys_thread_resume(vx_handle th, uint64_t id) {
 static vx_status mapping_privatize(task *t, mapping *m, vmo **old) {
   if (m->vmo->lease_of) return VX_ERR_UNSUPPORTED; // a copy would outlive a revoke (ADR-0043)
   vmo *copy;
-  vx_status st = vmo_create(m->size, &copy);
+  vmo *v = m->vmo;
+  vx_status st = vmo_create_like(v, m->size, &copy); // lazy if v is (ADR-0046)
   if (st != VX_OK) return st;
   uint32_t mf =
       MAP_USER | (m->flags & VX_MAP_WRITE ? MAP_WRITE : 0) | (m->flags & VX_MAP_EXEC ? MAP_EXEC : 0);
-  vmo *v = m->vmo;
-  if (v->resizable) spin_lock(&v->lock);
+  bool locked = vmo_locked(v) && !v->pager;
+  if (locked) spin_lock(&v->lock);
   for (uint64_t off = 0; off < m->size; off += 4096) {
     uint64_t idx = (m->offset + off) / 4096, pa = idx < v->size / 4096 ? vmo_page(v, idx) : 0;
-    if (pa) arch_page_copy(phys_to_virt(copy->pages[off / 4096]), phys_to_virt(pa), 4096);
+    uint64_t to = pa ? vmo_page_make(copy, off / 4096) : vmo_page(copy, off / 4096);
+    if (pa && !to) st = VX_ERR_NO_MEMORY;
+    if (pa && to) arch_page_copy(phys_to_virt(to), phys_to_virt(pa), 4096);
     unmap_page(t->root, m->va + off);
-    bool shown = !(m->flags & VX_MAP_NOACCESS) && pa; // a no-access page stays unmapped (ADR-0042)
-    if (shown && !map_range(t->root, m->va + off, copy->pages[off / 4096], 4096, mf)) st = VX_ERR_NO_MEMORY;
+    bool shown = !(m->flags & VX_MAP_NOACCESS) && pa && to; // a no-access page stays unmapped (ADR-0042)
+    if (shown && !map_range(t->root, m->va + off, to, 4096, mf)) st = VX_ERR_NO_MEMORY;
   }
-  if (v->resizable) spin_unlock(&v->lock);
+  if (locked) spin_unlock(&v->lock);
   *old = m->vmo;
   m->vmo = copy;
   m->offset = 0;
@@ -783,17 +786,24 @@ static vx_status mem_op(task *t, const vx_mem_op *op, bool *shoot, vmo **release
       st = VX_ERR_NO_MEMORY; // too many copies at once: the caller may try again
     }
     vmo *v = st == VX_OK ? m->vmo : nullptr;
-    if (v && v->resizable) spin_lock(&v->lock); // its pages can go with a shrink
+    bool locked = v && (v->resizable || v->lazy); // its pages can go with a shrink or a decommit
+    if (locked) spin_lock(&v->lock);
     uint64_t idx = m ? (m->offset + (at - m->va)) / 4096 : 0;
-    if (v && v->resizable && (idx >= v->size / 4096 || !vmo_page(v, idx)))
-      st = VX_ERR_INVALID; // past its end
+    bool inside = v && idx < v->size / 4096;
+    if (inside && op->write) vmo_page_make(v, idx);     // a lazy one's made by the write (ADR-0046)
+    bool hole = inside && v->lazy && !vmo_page(v, idx); // a lazy one's absent page: zeros
+    if (locked && !hole && (!inside || !vmo_page(v, idx)))
+      st = inside ? VX_ERR_NO_MEMORY : VX_ERR_INVALID; // a write with no memory for it; past its end
     if (v && vmo_revoked(v)) st = VX_ERR_REVOKED;
-    if (st == VX_OK) {
+    if (st == VX_OK && hole && !op->write) {
+      static const uint8_t zeros[4096];
+      st = copy_to_user(op->buffer + done, zeros, n);
+    } else if (st == VX_OK) {
       uint8_t *page = (uint8_t *)phys_to_virt(vmo_page(v, idx)) + (at & 4095);
       st = op->write ? copy_from_user(page, op->buffer + done, n) : copy_to_user(op->buffer + done, page, n);
       if (st == VX_OK && op->write && (m->flags & VX_MAP_EXEC)) arch_sync_icache(page, n);
     }
-    if (v && v->resizable) spin_unlock(&v->lock);
+    if (locked) spin_unlock(&v->lock);
     spin_unlock(&t->lock);
     done += n;
   }

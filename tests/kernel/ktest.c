@@ -1958,6 +1958,7 @@ static void test_debugger(void) {
 static uint64_t fork_page[512];
 static uint64_t fork_shared; // a VX_MAP_SHARED mapping the child writes to (test_address_space)
 static uint64_t fork_ring;   // where a ring's memory is mapped, in the parent
+static uint64_t fork_lazy;   // a private mapping of a lazy VMO, its first page written (test_lazy)
 
 // The forked child's first thread. Its exit string says what it found: "ok"
 // if all is well, or "wrong N", N the bits of what was not.
@@ -1970,6 +1971,9 @@ static uint64_t fork_ring;   // where a ring's memory is mapped, in the parent
   if (vx_task_info(self, &me) != VX_OK || me.id != my_id) wrong |= 2; // "self" is itself
   if (fork_ring) (void)*(volatile uint64_t *)fork_ring;               // not there: a fault ends it
   if (fork_shared) *(volatile uint64_t *)fork_shared = 0x7777;        // the same VMO: the parent sees it
+  volatile uint64_t *lazy = (volatile uint64_t *)fork_lazy;
+  if (lazy && (lazy[0] != 0x1234 || lazy[512] != 0)) wrong |= 4; // copied as it was: one page, one none
+  if (lazy) lazy[512] = 0x8888;                                  // its own: made in the child's copy
   char msg[] = "wrong 0";
   msg[6] = (char)('0' + wrong);
   vx_task_kill(self, wrong ? (vx_str){msg, 7} : VX_STR("ok"));
@@ -2010,12 +2014,80 @@ static void test_fork(void) {
   CHECK(*(volatile uint64_t *)fork_ring != 0x5a5a);      // the parent reads it
   CHECK(starts(run_fork(sp, port), "sys: trap: fault")); // the child is killed by the fault
   CHECK(vx_as_unmap(self, fork_ring, layout.size) == VX_OK);
+  fork_ring = 0; // a later fork's child reads nothing there (test_lazy)
   vx_handle_close(h.memory);
   vx_handle_close(h.client);
   vx_handle_close(h.server);
   vx_handle none = VX_HANDLE_NONE;
   CHECK(vx_syscall(VX_SYS_task_create, (uint64_t)"x", 1, (uint64_t)&none, 2, 0, 0) == VX_ERR_INVALID);
   vx_handle_close(port);
+}
+
+// --- Lazy memory and decommit (ADR-0046) ---
+
+static void test_lazy(void) {
+  // Four of 160 MiB, more than the machine's memory, made at once: no pages yet.
+  static constexpr uint64_t BIG = 160ull << 20, PAGE = 4096, WORDS = PAGE / 8; // a page, in uint64_ts
+  vx_handle big[4] = {};
+  for (int i = 0; i < 4; i++) CHECK(vx_vmo_create(BIG, VX_VMO_LAZY, &big[i]) == VX_OK);
+
+  // A touch makes a page, zero; vmo_rw sees what was written, reads a page
+  // never touched as zeros, and makes the page it writes.
+  uint64_t a = 0, got = 1, val = 0x4321;
+  CHECK(vx_as_map(self, big[0], 0, 1 << 20, VX_MAP_WRITE, &a) == VX_OK);
+  volatile uint64_t *p = (volatile uint64_t *)a;
+  CHECK(p[0] == 0);
+  p[0] = 0x1234;
+  CHECK(vx_vmo_rw(big[0], VX_VMO_READ, 0, &got, 8) == VX_OK && got == 0x1234);
+  CHECK(vx_vmo_rw(big[0], VX_VMO_READ, 2 * PAGE, &got, 8) == VX_OK && got == 0);
+  CHECK(vx_vmo_rw(big[0], VX_VMO_WRITE, 3 * PAGE, &val, 8) == VX_OK && p[3 * WORDS] == 0x4321);
+
+  // A debugger reads a page never touched as zeros, and its write makes one.
+  uint64_t seen = 1, put = 0x5151;
+  vx_mem_op ops[2] = {{.address = a + 5 * PAGE, .buffer = (uint64_t)&seen, .size = 8},
+                      {.address = a + 6 * PAGE, .buffer = (uint64_t)&put, .size = 8, .write = 1}};
+  CHECK(vx_task_mem_rw(self, ops, 2) == VX_OK && ops[0].status == VX_OK && ops[1].status == VX_OK);
+  CHECK(seen == 0 && p[6 * WORDS] == 0x5151);
+
+  // Decommit: the pages go, out of the mapping too, and a touch reads zeros.
+  CHECK(vx_vmo_decommit(big[0], 0, 8 * PAGE) == VX_OK);
+  CHECK(p[0] == 0 && p[3 * WORDS] == 0 && p[6 * WORDS] == 0);
+  CHECK(vx_vmo_decommit(big[0], 1, 4096) == VX_ERR_INVALID);
+  CHECK(vx_vmo_decommit(big[0], 0, BIG + 4096) == VX_ERR_RANGE);
+  CHECK(vx_as_unmap(self, a, 1 << 20) == VX_OK);
+
+  // And the memory comes back: each written all through, then decommitted,
+  // all four kept. Without the decommit's pages, the third runs out.
+  for (int i = 0; i < 4; i++) {
+    vx_status st = VX_OK;
+    for (uint64_t off = 0; off < BIG && st == VX_OK; off += 4096)
+      st = vx_vmo_rw(big[i], VX_VMO_WRITE, off, &val, 8);
+    CHECK(st == VX_OK);
+    CHECK(vx_vmo_decommit(big[i], 0, BIG) == VX_OK);
+  }
+
+  // What a lazy VMO is not: leased, physical or a pager's; and an eager one
+  // has nothing to decommit.
+  vx_handle lease = 0, eager = 0;
+  CHECK(vx_vmo_lease(big[1], &lease) == VX_ERR_UNSUPPORTED);
+  CHECK(vx_vmo_create(4096, VX_VMO_LAZY | VX_VMO_PAGER, &lease) == VX_ERR_INVALID);
+  CHECK(vx_vmo_create(4096, 0, &eager) == VX_OK && vx_vmo_decommit(eager, 0, 4096) == VX_ERR_UNSUPPORTED);
+  vx_handle_close(eager);
+
+  // A fork's copy is lazy too: the page the parent wrote, and a zero one
+  // where it had none, which the child's write makes in its own copy.
+  vx_handle port;
+  CHECK(vx_port_create(0, &port) == VX_OK);
+  uint64_t sp = new_stack();
+  CHECK(vx_as_map(self, big[2], 0, 2 * PAGE, VX_MAP_WRITE, &fork_lazy) == VX_OK);
+  ((volatile uint64_t *)fork_lazy)[0] = 0x1234;
+  fork_page[7] = 0x1234;
+  CHECK(is(run_fork(sp, port), "ok"));
+  CHECK(((volatile uint64_t *)fork_lazy)[WORDS] == 0); // the child's write was its own
+  CHECK(vx_as_unmap(self, fork_lazy, 2 * PAGE) == VX_OK);
+  fork_lazy = 0;
+  vx_handle_close(port);
+  for (int i = 0; i < 4; i++) vx_handle_close(big[i]);
 }
 
 // --- Reservations, no-access, resizable and shared VMOs (ADR-0042) ---
@@ -2669,6 +2741,7 @@ const char *vx_main(void) {
   test_debugger();
   test_tls();
   test_fork();
+  test_lazy();
   test_exec();
   test_fp();
   test_nested_channels();

@@ -1,7 +1,7 @@
 page=vmo sect=2 summary="create, copy, read and write virtual memory objects"
-    names=vmo_create,vmo_clone,vmo_rw,vmo_op,vmo_seal,vmo_lease,vmo_revoke
+    names=vmo_create,vmo_clone,vmo_rw,vmo_op,vmo_seal,vmo_lease,vmo_revoke,vx_vmo_decommit
     src=kernel/obj/vmo.c,kernel/obj/device.c,kernel/obj/pager.c,kernel/obj/exception.c,kernel/syscall/syscall.c,lib/vx-rt/base.c
-    keys=vmo,memory,pages,mmio,clone,copy,resize,seal,lease
+    keys=vmo,memory,pages,mmio,clone,copy,resize,seal,lease,lazy,decommit,overcommit
 
 # SYNOPSIS
 
@@ -19,6 +19,7 @@ vx_status vx_vmo_rw(vx_handle vmo, enum vx_vmo_op op, uint64_t offset,
                     void *buf, uint64_t size);
 
 vx_status vx_vmo_resize(vx_handle vmo, uint64_t size);
+vx_status vx_vmo_decommit(vx_handle vmo, uint64_t offset, uint64_t size);
 
 vx_status vx_vmo_seal(vx_handle vmo);
 vx_status vx_vmo_lease(vx_handle vmo, vx_handle *lease);
@@ -34,11 +35,13 @@ It lives until its last handle and its last mapping are gone.
 
 There are three kinds.
 An anonymous VMO's pages are all allocated and zeroed when it is made: memory is committed, not overcommitted, so a task learns it has run out from a failed call and never from a fault later.
+A lazy one, made with `VX_VMO_LAZY` (ADR-0046), is the exception it asks for: it has no pages until a touch makes each, zero, and `vx_vmo_decommit` gives them back.
 A physical VMO is device memory, a fixed range of physical addresses that is not RAM.
 A pager-backed VMO starts with no pages, and a trusted task supplies them as they are touched; pager(2) describes it.
 
 `vx_vmo_create` makes an anonymous VMO of <size> bytes and puts a handle to it in <out>.
-<options> is 0, or `VX_VMO_RESIZABLE` for one `vx_vmo_resize` may change (below): the other two kinds have calls of their own, below, which make the same system call with `VX_VMO_PHYSICAL` or `VX_VMO_PAGER`.
+<options> is 0, or `VX_VMO_RESIZABLE` for one `vx_vmo_resize` may change (below), and `VX_VMO_LAZY` with either: the other two kinds have calls of their own, below, which make the same system call with `VX_VMO_PHYSICAL` or `VX_VMO_PAGER`.
+A lazy VMO's page is made at its first touch through a mapping, read or write; if no memory is left the touch is an ordinary page fault at that address, which ends a task that does not handle it. `vx_vmo_rw` reads a page it has not made as zeros, without making it, and makes the pages it writes. A lazy VMO is not leased and not given to dma(2), and a fork's copy of a private mapping of one is lazy too, holding only the pages it had.
 The handle has every right but `VX_RIGHT_DEBUG`, `VX_RIGHT_EXEC` among them, since loaders and JITs map their own code; that a mapping is never both writable and executable is decided per mapping by as_map(2), not per VMO.
 
 `vx_vmo_create_physical` makes a VMO over the device memory from <pa> to <pa> + <size>.
@@ -68,7 +71,10 @@ Only an anonymous VMO made with the option `VX_VMO_RESIZABLE` is resized (ADR-00
 Its pages are read under its lock, as a pager's are, so `vx_vmo_rw` on it goes through a small buffer; a VMO that will not be resized is better made without the option.
 Any other anonymous VMO, and a physical one, is not resized.
 A pager-backed one is its pager's to resize, with `pager_op` (see pager(2)), since everyone who maps it shares its size: `vmo_op` on one is refused.
-`VX_VMO_RESIZE` is the only operation `vmo_op` has.
+A resizable lazy VMO's added pages are absent, made at a touch.
+
+`vx_vmo_decommit` makes `vmo_op` with `VX_VMO_DECOMMIT` (ADR-0046): the pages of a lazy <vmo> from <offset> to <offset> + <size>, both page-aligned, are freed, out of every mapping and every CPU's TLB first, and a later touch reads zeros. It needs `VX_RIGHT_WRITE`. A heap gives back the pages of large blocks and empty slabs this way.
+`VX_VMO_RESIZE` and `VX_VMO_DECOMMIT` are the operations `vmo_op` has.
 
 ## Seals and leases
 
@@ -110,7 +116,7 @@ pager(2), as_map(2), dma_map(2), handle_dup(2), intro(2)
 : `VX_OK`
   The VMO is made, and its handle is in <out>.
 : `VX_ERR_INVALID`
-  <options> holds a bit that is not `VX_VMO_PHYSICAL`, `VX_VMO_PAGER` or `VX_VMO_RESIZABLE`, or more than one of them; <key> does not fit 32 bits; or <out> is not writable memory of the caller's.
+  <options> holds a bit that is not `VX_VMO_PHYSICAL`, `VX_VMO_PAGER`, `VX_VMO_RESIZABLE` or `VX_VMO_LAZY`, more than one of the first three, or `VX_VMO_LAZY` with a physical or pager-backed kind; <key> does not fit 32 bits; or <out> is not writable memory of the caller's.
 : `VX_ERR_RANGE`
   <size> is 0 or more than 256 MiB; for a physical VMO, <pa> or <size> is not page-aligned, or the range wraps.
 : `VX_ERR_BAD_HANDLE`
@@ -153,21 +159,25 @@ pager(2), as_map(2), dma_map(2), handle_dup(2), intro(2)
   <vmo> is physical.
 : `VX_ERR_SHOULD_WAIT`
   <vmo> is pager-backed and a page of the range has not been supplied; the bytes before it were copied.
+: `VX_ERR_NO_MEMORY`
+  <vmo> is lazy, and there was no memory to make a page the write reaches; the bytes before it were copied.
 
-`vx_vmo_resize` returns:
+`vx_vmo_resize` and `vx_vmo_decommit` return:
 
 : `VX_ERR_INVALID`
-  The operation is not `VX_VMO_RESIZE`.
+  The operation is not `VX_VMO_RESIZE` or `VX_VMO_DECOMMIT`; or a decommit's <offset> or <size> is not page-aligned.
+: `VX_ERR_RANGE`
+  A decommit's range goes past the VMO's end.
 : `VX_ERR_BAD_HANDLE`
   <vmo> is not a handle to a VMO.
 : `VX_ERR_ACCESS`
   <vmo> lacks `VX_RIGHT_WRITE`, or is pager-backed.
 : `VX_ERR_UNSUPPORTED`
-  <vmo> was not made `VX_VMO_RESIZABLE`, or is physical.
+  <vmo> was not made `VX_VMO_RESIZABLE` (a resize) or `VX_VMO_LAZY` (a decommit), or is physical.
 
 # BUGS
 
-The design's other operations (commit, decommit, cache cleaning and invalidation, lock, hint, purgeable, priority; 01 §3, §5) are not there, and neither are seals, leases or the `NODUMP` mark.
+The design's other operations (commit, cache cleaning and invalidation, lock, hint, purgeable, priority; 01 §3, §5) are not there, and neither is the `NODUMP` mark.
 
 A clone is a full copy made at once, not pages shared until written; the design's copy-on-write is an optimization for later behind the same call.
 

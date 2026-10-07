@@ -563,15 +563,22 @@ static vx_status task_fork_copy(task *parent, task *child) {
       continue;
     }
     vmo *copy;
-    st = vmo_create(m->size, &copy);
-    if (st != VX_OK) break;
     vmo *v = m->vmo;
-    if (v->resizable) spin_lock(&v->lock); // a page past a shrink's end is absent: the copy's stays zero
-    for (uint64_t off = 0; off < m->size; off += 4096) {
+    st = vmo_create_like(v, m->size, &copy); // lazy if v is: only its pages copied (ADR-0046)
+    if (st != VX_OK) break;
+    bool locked = vmo_locked(v);
+    if (locked) spin_lock(&v->lock); // an absent page (past a shrink's end, a lazy one's) stays zero
+    for (uint64_t off = 0; off < m->size && st == VX_OK; off += 4096) {
       uint64_t pa = (m->offset + off) / 4096 < v->size / 4096 ? vmo_page(v, (m->offset + off) / 4096) : 0;
-      if (pa) arch_page_copy(phys_to_virt(copy->pages[off / 4096]), phys_to_virt(pa), 4096);
+      uint64_t to = pa ? vmo_page_make(copy, off / 4096) : 0;
+      if (pa && !to) st = VX_ERR_NO_MEMORY;
+      if (to) arch_page_copy(phys_to_virt(to), phys_to_virt(pa), 4096);
     }
-    if (v->resizable) spin_unlock(&v->lock);
+    if (locked) spin_unlock(&v->lock);
+    if (st != VX_OK) {
+      object_release(&copy->obj);
+      break;
+    }
     uint64_t va = m->va;
     st = task_map(child, copy, 0, m->size, m->flags, m->allowed, &va);
     object_release(&copy->obj); // the child's mapping holds it, if it was made

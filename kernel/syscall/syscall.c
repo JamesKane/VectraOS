@@ -179,8 +179,11 @@ static constexpr uint32_t DEVICE_RIGHTS = VX_RIGHT_DUPLICATE | VX_RIGHT_TRANSFER
 // a pager supplies.
 static int64_t sys_vmo_create(uint64_t size, uint64_t options, uint64_t out, vx_handle rh, uint64_t pa) {
   uint64_t kinds = options & (VX_VMO_PHYSICAL | VX_VMO_PAGER | VX_VMO_RESIZABLE);
-  if ((options & ~(uint64_t)(VX_VMO_PHYSICAL | VX_VMO_PAGER | VX_VMO_RESIZABLE)) || (kinds & (kinds - 1)))
+  if ((options & ~(uint64_t)(VX_VMO_PHYSICAL | VX_VMO_PAGER | VX_VMO_RESIZABLE | VX_VMO_LAZY)) ||
+      (kinds & (kinds - 1)))
     return VX_ERR_INVALID; // one kind at most
+  if ((options & VX_VMO_LAZY) && (options & (VX_VMO_PHYSICAL | VX_VMO_PAGER)))
+    return VX_ERR_INVALID; // lazy: anonymous memory's (ADR-0046)
   vmo *v;
   vx_status st;
   if (options & VX_VMO_PAGER) {
@@ -200,7 +203,7 @@ static int64_t sys_vmo_create(uint64_t size, uint64_t options, uint64_t out, vx_
     if (st != VX_OK) return st;
     return return_handle(&v->obj, VX_RIGHT_READ | VX_RIGHT_WRITE | VX_RIGHT_MAP | DEVICE_RIGHTS, out);
   }
-  st = vmo_create(size, &v);
+  st = options & VX_VMO_LAZY ? vmo_create_lazy(size, &v) : vmo_create(size, &v);
   if (st != VX_OK) return st;
   v->resizable = options & VX_VMO_RESIZABLE; // vmo_op RESIZE may change it (ADR-0042)
   // EXEC included: loaders and JITs map their own code. W^X holds per mapping
@@ -284,11 +287,12 @@ static int64_t sys_pager_op(vx_handle gh, vx_handle vh, uint64_t op, uint64_t of
   return r;
 }
 
-// vmo_op(vmo, op, arg): VX_VMO_RESIZE to arg bytes. A pager-backed VMO is
-// its pager's to resize (pager_op RESIZE): anyone it is shared with may
-// write it, and a writer must not shrink it under the others.
-static int64_t sys_vmo_op(vx_handle h, uint64_t op, uint64_t arg) {
-  if (op != VX_VMO_RESIZE) return VX_ERR_INVALID;
+// vmo_op(vmo, op, arg, size): VX_VMO_RESIZE to arg bytes, or VX_VMO_DECOMMIT
+// the pages of [arg, arg + size) (ADR-0046). A pager-backed VMO is its
+// pager's to resize (pager_op RESIZE): anyone it is shared with may write it,
+// and a writer must not shrink it under the others.
+static int64_t sys_vmo_op(vx_handle h, uint64_t op, uint64_t arg, uint64_t size) {
+  if (op != VX_VMO_RESIZE && op != VX_VMO_DECOMMIT) return VX_ERR_INVALID;
   vx_status st;
   vmo *v = (vmo *)handle_get(current_task(), h, OBJ_VMO, VX_RIGHT_WRITE, &st);
   if (!v) return st;
@@ -296,6 +300,8 @@ static int64_t sys_vmo_op(vx_handle h, uint64_t op, uint64_t arg) {
     st = VX_ERR_ACCESS; // its pager's to resize; sealed: no change at all (ADR-0043)
   else if (v->lease_of)
     st = vmo_revoked(v) ? VX_ERR_REVOKED : VX_ERR_UNSUPPORTED; // a lease's size is its parent's
+  else if (op == VX_VMO_DECOMMIT)
+    st = vmo_decommit(v, arg, size);
   else
     st = vmo_resize(v, arg);
   object_release(&v->obj);
@@ -433,8 +439,9 @@ static int64_t sys_dma_map(vx_handle dh, vx_handle vh, uint64_t offset, uint64_t
   uint32_t need = (options & VX_DMA_READ ? VX_RIGHT_READ : 0) | (options & VX_DMA_WRITE ? VX_RIGHT_WRITE : 0);
   vmo *v = (vmo *)handle_get(current_task(), vh, OBJ_VMO, need, &st);
   uint64_t addresses[MAX_PAGES];
-  if (v && (v->pager || v->resizable || v->lease_of)) { // its pages come and go (a pager's, a shrink, a
-                                                        // revoke): no device may hold them
+  if (v &&
+      (v->pager || v->resizable || v->lazy || v->lease_of)) { // its pages come and go (a pager's, a shrink, a
+                                                              // revoke): no device may hold them
     object_release(&v->obj);
     v = nullptr;
     st = VX_ERR_UNSUPPORTED;
@@ -1188,6 +1195,13 @@ static int64_t sys_task_exec(vx_handle sh, vx_handle bootstrap, uint64_t entry, 
 
 // --- Memory and handles ---
 
+// Why vmo_rw found no page: a pager's not supplied yet; a lazy one's write
+// with no memory for it; past the end of one shrunk meanwhile.
+static vx_status vmo_rw_absent(const vmo *v, bool inside) {
+  if (v->pager) return VX_ERR_SHOULD_WAIT;
+  return inside && v->lazy ? VX_ERR_NO_MEMORY : VX_ERR_RANGE;
+}
+
 // vmo_rw(vmo, op, offset, buffer, size): copies between a VMO and the caller's memory.
 static int64_t sys_vmo_rw(vx_handle h, uint64_t op, uint64_t offset, uint64_t buf, uint64_t size) {
   if (op != VX_VMO_READ && op != VX_VMO_WRITE) return VX_ERR_INVALID;
@@ -1212,7 +1226,11 @@ static int64_t sys_vmo_rw(vx_handle h, uint64_t op, uint64_t offset, uint64_t bu
       if (n > sizeof bounce) n = sizeof bounce;
       if (op == VX_VMO_WRITE && (st = copy_from_user(bounce, buf + done, n)) != VX_OK) break;
       spin_lock(&v->lock);
-      uint64_t pa = at / 4096 < v->size / 4096 ? vmo_page(v, at / 4096) : 0;
+      bool inside = at / 4096 < v->size / 4096;
+      uint64_t pa = 0;
+      if (inside) pa = op == VX_VMO_WRITE ? vmo_page_make(v, at / 4096) : vmo_page(v, at / 4096);
+      bool hole = inside && !pa && v->lazy && op == VX_VMO_READ; // absent: reads as zeros (ADR-0046)
+      if (hole) memset(bounce, 0, n);
       if (pa && op == VX_VMO_READ) memcpy(bounce, (uint8_t *)phys_to_virt(pa) + in_page, n);
       if (pa && op == VX_VMO_WRITE) {
         memcpy((uint8_t *)phys_to_virt(pa) + in_page, bounce, n);
@@ -1220,8 +1238,8 @@ static int64_t sys_vmo_rw(vx_handle h, uint64_t op, uint64_t offset, uint64_t bu
           v->pages[at / 4096] |= PAGE_DIRTY; // written, as a store through a mapping would mark it
       }
       spin_unlock(&v->lock);
-      if (!pa) st = v->pager ? VX_ERR_SHOULD_WAIT : VX_ERR_RANGE; // not supplied yet, or shrunk meanwhile
-      if (pa && op == VX_VMO_READ) st = copy_to_user(buf + done, bounce, n);
+      if (!pa && !hole) st = vmo_rw_absent(v, inside);
+      if ((pa || hole) && op == VX_VMO_READ) st = copy_to_user(buf + done, bounce, n);
       done += n;
       continue;
     }
@@ -1308,7 +1326,7 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_pager_supply:
     return sys_pager_supply((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], (vx_handle)a[4], a[5]);
   case VX_SYS_pager_op: return sys_pager_op((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4], a[5]);
-  case VX_SYS_vmo_op: return sys_vmo_op((vx_handle)a[0], a[1], a[2]);
+  case VX_SYS_vmo_op: return sys_vmo_op((vx_handle)a[0], a[1], a[2], a[3]);
   case VX_SYS_iorange_create: return sys_iorange_create((vx_handle)a[0], a[1], a[2], a[3]);
   case VX_SYS_vmo_rw: return sys_vmo_rw((vx_handle)a[0], a[1], a[2], a[3], a[4]);
   case VX_SYS_vmo_seal: return sys_vmo_seal((vx_handle)a[0]);

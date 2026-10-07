@@ -2,7 +2,8 @@
 //
 // An anonymous VMO's pages are all allocated and zeroed when it is created:
 // commit, not overcommit, so a task learns it is out of memory from a failed
-// call, never from a fault later. The page list is one block of physical
+// call, never from a fault later. A lazy one (VX_VMO_LAZY, ADR-0046) has
+// none until a touch makes one, and gives them back with DECOMMIT. The page list is one block of physical
 // addresses. Physical VMOs (device memory) are made in device.c. A
 // pager-backed VMO (pager.c) starts with none: a page's entry is 0 until its
 // pager is asked for it, PAGE_ASKED until it is supplied, and its address
@@ -22,6 +23,7 @@ typedef struct vmo {
   struct page_waiter *waiters;
   bool resizing;  // a resize under way (pager.c), which drops the lock between its steps
   bool resizable; // anonymous, made VX_VMO_RESIZABLE (ADR-0042): its page list under its lock too
+  bool lazy;      // anonymous, made VX_VMO_LAZY (ADR-0046): pages made at a touch; its list under its lock
   // ADR-0043: a sealed VMO is written by no one again; a lease is a VMO on
   // its parent's pages (pages and list are the parent's), which it holds,
   // until it is revoked.
@@ -36,8 +38,8 @@ static bool vmo_sealed(vmo *v) { return atomic_load(&vmo_root(v)->sealed); }
 static bool vmo_revoked(vmo *v) { return v->lease_of && atomic_load(&v->revoked); }
 
 // Whether v's page list may change under a reader (a pager's VMO, a
-// resizable one): read it under v's lock.
-static bool vmo_locked(const vmo *v) { return v->pager || v->resizable; }
+// resizable or lazy one): read it under v's lock.
+static bool vmo_locked(const vmo *v) { return v->pager || v->resizable || v->lazy; }
 
 static constexpr uint64_t PAGE_ASKED = 1; // a pager-backed page asked for, not yet supplied
 static constexpr uint64_t PAGE_DIRTY = 2; // a pager-backed page written since it was supplied or cleaned
@@ -88,11 +90,36 @@ static vx_status vmo_create_pages(uint64_t size, bool lazy, vmo **out) {
 
 static vx_status vmo_create(uint64_t size, vmo **out) { return vmo_create_pages(size, false, out); }
 
+// A lazy anonymous VMO (ADR-0046): no pages until a touch.
+static vx_status vmo_create_lazy(uint64_t size, vmo **out) {
+  vx_status st = vmo_create_pages(size, true, out);
+  if (st == VX_OK) (*out)->lazy = true;
+  return st;
+}
+
+// A private copy's VMO for a mapping of v (a fork's, a debugger's): lazy if v
+// is, so only the pages v has are paid for.
+static vx_status vmo_create_like(const vmo *v, uint64_t size, vmo **out) {
+  return v->lazy ? vmo_create_lazy(size, out) : vmo_create(size, out);
+}
+
+// Page i of v, made zero if v is lazy and has none; 0 if it has none and is
+// not lazy, or memory ran out. Under v's lock if it is locked (vmo_locked).
+static uint64_t vmo_page_make(vmo *v, uint64_t i) {
+  uint64_t pa = vmo_page(v, i);
+  if (pa || !v->lazy) return pa;
+  pa = phys_alloc_zeroed(0);
+  if (pa) v->pages[i] = pa;
+  return pa;
+}
+
 // vmo_lease (ADR-0043): a VMO on parent's pages, holding it. Only a plain
-// anonymous VMO, whose page list never changes, is leased.
+// anonymous VMO, whose page list never changes, is leased (not a lazy one,
+// ADR-0046).
 static vx_status vmo_lease_create(vmo *parent, vmo **out) {
   if (parent->lease_of) return VX_ERR_INVALID; // one level
-  if (parent->physical || parent->pager || parent->resizable || parent->ring) return VX_ERR_UNSUPPORTED;
+  if (parent->physical || parent->pager || parent->resizable || parent->lazy || parent->ring)
+    return VX_ERR_UNSUPPORTED;
   vmo *v = pool_alloc(&vmo_pool);
   if (!v) return VX_ERR_NO_MEMORY;
   v->obj.type = OBJ_VMO;

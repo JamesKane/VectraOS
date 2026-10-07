@@ -346,7 +346,19 @@ static_assert(sizeof(vx_cqe) == 32);
 //       zero, pages past the end leave every mapping and are freed (a touch
 //       there faults). One made without VX_VMO_RESIZABLE: UNSUPPORTED. A
 //       pager-backed one is its pager's to resize (pager_op RESIZE): ACCESS
-enum vx_vmo_options : uint32_t { VX_VMO_PHYSICAL = 1, VX_VMO_PAGER = 2, VX_VMO_RESIZABLE = 4 };
+//       A lazy one's added pages are absent, made at a touch.
+//   vmo_op(vmo, VX_VMO_DECOMMIT, offset, size) (ADR-0046)
+//       a lazy VMO's pages in the page-aligned range freed, out of every
+//       mapping first; a touch reads zeros again. Not lazy: UNSUPPORTED.
+// VX_VMO_LAZY (ADR-0046): anonymous memory with no pages at first; a touch
+// makes one, zero, and a touch with no memory left is an ordinary page fault.
+// Alone or with VX_VMO_RESIZABLE. Not leased, not given to dma_map.
+enum vx_vmo_options : uint32_t {
+  VX_VMO_PHYSICAL = 1,
+  VX_VMO_PAGER = 2,
+  VX_VMO_RESIZABLE = 4,
+  VX_VMO_LAZY = 8
+};
 // vmo_seal(vmo) (ADR-0043, 01 §6.6), with WRITE: no one writes the VMO again,
 //     through any handle, mapping or lease (vmo_rw, as_map and as_protect
 //     with WRITE, a resize: ACCESS). BAD_STATE while any writable mapping
@@ -378,7 +390,7 @@ enum vx_pager_op : uint32_t {
   VX_PAGER_IDLE = 4,
   VX_PAGER_RESIZE = 5,
 };
-enum vx_vmo_resize_op : uint32_t { VX_VMO_RESIZE = 1 };
+enum vx_vmo_resize_op : uint32_t { VX_VMO_RESIZE = 1, VX_VMO_DECOMMIT = 2 };
 static constexpr uint32_t VX_PAGER_RANGES = 64;
 typedef struct vx_pager_range {
   uint64_t offset, size;
