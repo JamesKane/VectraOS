@@ -22,11 +22,14 @@ First-party system code does not use it; Swift's runtime, C and C++ programs fro
 : `usr/lib/libclang_rt.builtins.a`
   compiler-rt's builtins.
 : `<arch>-unknown-vectraos.cfg`
-  The configuration file Fedora's clang compiles with (ADR-0033 §3): `__vectraos__`, the sysroot and nothing of the host's, C23, frame pointers, unwind tables, no PIC, no math `errno`.
+  The configuration file Fedora's clang compiles with (ADR-0033 §3): `__vectraos__`, the sysroot and nothing of the host's, frame pointers, unwind tables, no PIC, no math `errno`. It names no language: a program chooses, and without `-std` it is the compiler's default, gnu17, as the Swift toolchain's patched clang has it. The system's own native programs are C23 (`-std=c23`); nothing makes a third party's be.
 : `link-head.rsp`, `link-tail.rsp`
   `ld.lld`'s options before and after a program's objects: static, at `_start`, `crt1.o` first; `libvx`, `libc` and `libm` in a group, then the builtins.
 : `llvm-libc`
   Which build of the C library it took.
+
+Fedora's clang and the Swift toolchain's patched clang, which knows the target without a configuration file, must agree (ADR-0033 §3): where the Swift toolchain is there too, `./build` compiles a probe with both and stops, naming the difference, if their predefined macros (but for those an LLVM version brings), the code generation the configuration sets (frame pointers, unwind tables, relocation model, DWARF version with `-g`, `-std`) or their link lines differ.
+First-party code never sees a hosted header: it is compiled with `-nostdlibinc`, and `./build check` runs clang-tidy and the analyzer over native programs with the sysroot's flags.
 
 Until ADR-0034's first gate puts the toolchain in this tree, the C library comes from `swift-on-vectra`'s build (`toolchain/build_libc.sh`), found in `$VECTRA_SWIFT_ON_VECTRA` or `../../lang/swift-on-vectra`.
 `./build` takes it only if its tree hash is the one `lib/vx-rt/sysroot/llvm-libc.ndb` records, so a new build is taken by recording it; with none there it builds without the sysroot, and an image that wants a native program stops.
@@ -65,6 +68,4 @@ start(2), heap(2), posix(7); ADR-0033 and ADR-0034, and `swift-on-vectra`'s `doc
 
 # BUGS
 
-There are no `FILE` streams, `atexit`, `<threads.h>` or locales yet (6e2c), and no C++ (6e2d).
-
-Programs built against the sysroot are not yet checked by `./build check`'s analyzer and clang-tidy, and nothing yet compares the configuration file with the Swift toolchain's patched clang (6e2b2).
+There are no `FILE` streams, `atexit`, `<threads.h>` or locales yet (6e2c), and no C++ (6e2d); a program defining `_POSIX_C_SOURCE` is not yet refused (6e2c's `<features.h>`).

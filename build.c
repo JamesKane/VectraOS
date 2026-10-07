@@ -94,6 +94,7 @@ static const char *const HOUSE_FLAGS[] = {
 
 static const char *const KERNEL_FLAGS[] = {
     "-ffreestanding",
+    "-nostdlibinc", // clang's own headers, never the host's C library's (6e2b2)
     "-fno-pic",
     "-mgeneral-regs-only",
     "-fno-asynchronous-unwind-tables",
@@ -117,9 +118,16 @@ static const char *const DEBUG_FLAGS[] = {
 static const char *const RELEASE_FLAGS[] = {"-O2", nullptr};
 
 // First-party user programs in M1: freestanding, static, non-PIE, against
-// lib/vx-rt. No FP/SIMD until the kernel saves that state (M2).
+// lib/vx-rt. No FP/SIMD until the kernel saves that state (M2). No hosted
+// header (ADR-0033 §4, M6 step 6e2b2): clang's own, freestanding ones only,
+// where x86_64-unknown-none-elf would otherwise find the host's /usr/include.
 static const char *const USER_FLAGS[] = {
-    "-ffreestanding", "-fno-pic", "-fstack-protector-strong", "-mstack-protector-guard=global", nullptr,
+    "-ffreestanding",
+    "-nostdlibinc",
+    "-fno-pic",
+    "-fstack-protector-strong",
+    "-mstack-protector-guard=global",
+    nullptr,
 };
 
 static const char *const X86_64_FLAGS[] = {
@@ -347,16 +355,17 @@ static bool exists(const char *path) {
 }
 
 // Runs a command, without a shell, and returns what it writes to standard
-// output, NUL-terminated (at most 64 KiB). Its standard error is discarded.
-// Returns nullptr if it could not run or did not exit with status 0.
-static char *run_capture(const char *const *argv) {
+// output (fd 1) or error (fd 2), NUL-terminated (at most 64 KiB); the other
+// is discarded. Returns nullptr if it could not run or did not exit with
+// status 0.
+static char *run_capture_fd(const char *const *argv, int fd) {
   int fds[2];
   if (pipe(fds) != 0) die("pipe failed");
   pid_t pid = fork();
   if (pid < 0) die("fork failed");
   if (pid == 0) {
     int null = open("/dev/null", O_WRONLY);
-    if (null < 0 || dup2(fds[1], 1) < 0 || dup2(null, 2) < 0) _exit(127);
+    if (null < 0 || dup2(fds[1], fd) < 0 || dup2(null, 3 - fd) < 0) _exit(127);
     close(fds[0]);
     execv(argv[0], (char *const *)argv);
     _exit(127);
@@ -369,6 +378,8 @@ static char *run_capture(const char *const *argv) {
   out[len] = 0;
   return wait_ok(pid) ? out : nullptr;
 }
+
+static char *run_capture(const char *const *argv) { return run_capture_fd(argv, 1); }
 
 // Runs `prog --version` and looks for a line equal to the pin, ignoring leading blanks.
 static void check_version(const char *prog, const char *want) {
@@ -1514,6 +1525,7 @@ static const char *const *usage_flags(const program *p) {
 
 static void copy_tree(const char *from, const char *to);
 static void copy_file(const char *from, const char *to);
+static void probe_sysroot(const arch *a, const char *s, const char *swift);
 static bool tree_sha256(const char *dir, char out[65]);
 
 static const char *sysroot_dir(const arch *a, bool release) {
@@ -1557,6 +1569,7 @@ static bool build_sysroot(const arch *a, bool release) {
   copy_file("lib/vx-rt/sysroot/vectraos.cfg", fmt("%s/%s.cfg", s, triple));
   copy_file("lib/vx-rt/sysroot/link-head.rsp", fmt("%s/link-head.rsp", s));
   copy_file("lib/vx-rt/sysroot/link-tail.rsp", fmt("%s/link-tail.rsp", s));
+  probe_sysroot(a, s, fmt("%s/toolchain/out/bin/clang", from)); // the two compilers agree, or it stops
   const char *taken = fmt("triple=%s tree.sha256=%s from=%s\n", triple, tree, libc);
   write_file(fmt("%s/llvm-libc", s), (vx_str){taken, strlen(taken)}); // which build it took (ADR-0033)
   // crt1.o and libvx.a, as a first-party program is compiled.
@@ -1583,15 +1596,221 @@ static bool build_sysroot(const arch *a, bool release) {
   return true;
 }
 
+// --- The sysroot checked against the Swift toolchain's clang (6e2b2) ---
+//
+// The patched clang (LLVM patches 0002 and 0003) knows the target; Fedora's
+// clang compiles for it with the configuration file and links with the
+// response files. ADR-0033 §3: the two must agree, or the sysroot is
+// refused. A probe is compiled by both and these compared: the predefined
+// macros, but for those an LLVM version brings; the code generation the
+// configuration sets, with and without -g; and the link line, the response
+// files' against the patched driver's.
+
+// Macros that come from the compilers' LLVM versions, not their configuration.
+static const char *const PROBE_VERSION_MACROS[] = {"__clang_major__",
+                                                   "__clang_minor__",
+                                                   "__clang_patchlevel__",
+                                                   "__clang_version__",
+                                                   "__VERSION__",
+                                                   "__MEMORY_SCOPE_CLUSTR",
+                                                   "__ARM_PREFETCH_RANGE",
+                                                   "__HAVE_FUNCTION_MULTI_VERSIONING",
+                                                   nullptr};
+
+// What the driver gives cc1 that the configuration file decides.
+static const char *const PROBE_CC1_FLAGS[] = {"-mframe-pointer=",
+                                              "-funwind-tables=",
+                                              "-debug-info-kind=",
+                                              "-dwarf-version=",
+                                              "-std=",
+                                              "-fmath-errno",
+                                              "-pic-level",
+                                              "-pic-is-pie",
+                                              nullptr};
+
+typedef struct {
+  const char *item[1024];
+  int count;
+} probe_list;
+
+static int probe_by_string(const void *a, const void *b) {
+  return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+static void probe_add(probe_list *l, const char *s) {
+  if (l->count == 1024) die("the probe's output is too long");
+  l->item[l->count++] = s;
+}
+
+// A list on one line, its items joined by spaces.
+static const char *probe_join(const probe_list *l) {
+  const char *s = "";
+  for (int i = 0; i < l->count; i++) s = fmt("%s%s%s", s, i ? " " : "", l->item[i]);
+  return s;
+}
+
+// The two lists, which must be equal, as sets when sorted, else in order:
+// what differs ("- Fedora's", "+ Swift's"), or nullptr.
+static const char *probe_diff(probe_list *a, probe_list *b, bool sorted) {
+  if (!sorted) {
+    bool same = a->count == b->count;
+    for (int i = 0; same && i < a->count; i++) same = strcmp(a->item[i], b->item[i]) == 0;
+    return same ? nullptr : fmt("\n    - %s\n    + %s", probe_join(a), probe_join(b));
+  }
+  qsort(a->item, (size_t)a->count, sizeof a->item[0], probe_by_string);
+  qsort(b->item, (size_t)b->count, sizeof b->item[0], probe_by_string);
+  const char *diff = nullptr;
+  int i = 0, j = 0;
+  while (i < a->count || j < b->count) {
+    int c = 0;
+    if (i == a->count)
+      c = 1;
+    else if (j == b->count)
+      c = -1;
+    else
+      c = strcmp(a->item[i], b->item[j]);
+    if (c < 0) diff = fmt("%s\n    - %s", diff ? diff : "", a->item[i++]);
+    if (c > 0) diff = fmt("%s\n    + %s", diff ? diff : "", b->item[j++]);
+    if (!c) i++, j++;
+  }
+  return diff;
+}
+
+// out's lines that define macros not in PROBE_VERSION_MACROS.
+static void probe_macros(char *out, probe_list *l) {
+  for (char *line = strtok(out, "\n"); line; line = strtok(nullptr, "\n")) {
+    bool version = false;
+    for (int i = 0; PROBE_VERSION_MACROS[i] && !version; i++) {
+      size_t n = strlen(PROBE_VERSION_MACROS[i]);
+      version = strncmp(line + 8, PROBE_VERSION_MACROS[i], n) == 0 && line[8 + n] == ' ';
+    }
+    if (!version) probe_add(l, line);
+  }
+}
+
+// A -### line's arguments, unquoted, from the first line holding `tool`,
+// the program's own path left out.
+static void probe_args(char *out, const char *tool, probe_list *l) {
+  char *line = out ? strstr(out, tool) : nullptr;
+  if (!line) die("the probe's driver printed no %s line", tool);
+  while (line > out && line[-1] != '\n') line--;
+  char *end = strchr(line, '\n');
+  if (end) *end = 0;
+  bool program = true;
+  while (line && *line) {
+    char *q = strchr(line, '"'), *r = q ? strchr(q + 1, '"') : nullptr;
+    if (!r) break;
+    *r = 0;
+    if (!program) probe_add(l, q + 1);
+    program = false;
+    line = r + 1;
+  }
+}
+
+// The cc1 flags of PROBE_CC1_FLAGS among args, with mrelocation-model's value.
+static void probe_cc1(const probe_list *args, probe_list *l) {
+  for (int i = 0; i < args->count; i++) {
+    if (strcmp(args->item[i], "-mrelocation-model") == 0 && i + 1 < args->count)
+      probe_add(l, fmt("-mrelocation-model=%s", args->item[i + 1]));
+    for (int k = 0; PROBE_CC1_FLAGS[k]; k++)
+      if (strncmp(args->item[i], PROBE_CC1_FLAGS[k], strlen(PROBE_CC1_FLAGS[k])) == 0)
+        probe_add(l, args->item[i]);
+  }
+}
+
+// A link line in a canonical form: its options sorted (an -L as the
+// directory it names), then its inputs in order (crt1.o however named).
+static void probe_link(const probe_list *args, const char *s, probe_list *opts, probe_list *ins) {
+  for (int i = 0; i < args->count; i++) {
+    const char *a = args->item[i];
+    bool pair = !strcmp(a, "-z") || !strcmp(a, "-e") || !strcmp(a, "-o");
+    if (pair && i + 1 < args->count) {
+      if (strcmp(a, "-o") != 0) probe_add(opts, fmt("%s %s", a, args->item[i + 1]));
+      i++;
+    } else if (!strncmp(a, "-L", 2)) {
+      probe_add(opts, a[2] == '=' ? fmt("-L%s%s", s, a + 3) : a);
+    } else if (!strcmp(a, "-l:crt1.o") || (strlen(a) > 7 && !strcmp(a + strlen(a) - 7, "/crt1.o"))) {
+      probe_add(ins, "crt1.o");
+    } else if (strlen(a) > 2 && !strcmp(a + strlen(a) - 2, ".o")) {
+      probe_add(ins, "the program's object"); // a temporary file's name, from the driver
+    } else if (a[0] == '-' && strcmp(a, "--start-group") != 0 && strcmp(a, "--end-group") != 0 &&
+               strncmp(a, "-l", 2) != 0) {
+      probe_add(opts, a);
+    } else {
+      probe_add(ins, a);
+    }
+  }
+}
+
+// The words of a response file, as ld.lld reads them (no quoting in ours).
+static void probe_rsp(const char *path, probe_list *l) {
+  vx_str file = read_file(path);
+  char *text = fmt("%.*s", (int)file.len, file.ptr);
+  for (char *w = strtok(text, " \t\n"); w; w = strtok(nullptr, " \t\n")) probe_add(l, w);
+}
+
+static void probe_fail(const arch *a, const char *what, const char *diff) {
+  if (diff)
+    die("the %s sysroot: Fedora's clang and the Swift toolchain's disagree on %s (ADR-0033 §3):%s", a->name,
+        what, diff);
+}
+
+// Compares the two compilers on the sysroot s, if the Swift toolchain's clang is there.
+static void probe_sysroot(const arch *a, const char *s, const char *swift) {
+  if (!exists(swift)) {
+    fprintf(stderr, "  PROBE   %s skipped: no %s\n", a->name, swift);
+    return;
+  }
+  const char *abs = fmt("%s/%s", root, s), *triple = sysroot_triple(a), *src = fmt("%s/probe.c", abs);
+  const char *cfg = fmt("--config-system-dir=%s", abs), *target = fmt("--target=%s", triple);
+  const char *sys = fmt("--sysroot=%s", abs);
+  write_file(src, (vx_str){"int main(void) { return 0; }\n", 29});
+  probe_list m1 = {}, m2 = {};
+  probe_macros(
+      run_capture((const char *const[]){CLANG, cfg, target, "-dM", "-E", "-x", "c", "/dev/null", nullptr}),
+      &m1);
+  probe_macros(
+      run_capture((const char *const[]){swift, target, sys, "-dM", "-E", "-x", "c", "/dev/null", nullptr}),
+      &m2);
+  probe_fail(a, "predefined macros", probe_diff(&m1, &m2, true));
+  for (int g = 0; g < 2; g++) {
+    const char *debug = g ? "-g" : "-g0";
+    probe_list a1 = {}, a2 = {}, f1 = {}, f2 = {};
+    probe_args(
+        run_capture_fd((const char *const[]){CLANG, cfg, target, debug, "-###", "-c", src, nullptr}, 2),
+        "-cc1", &a1);
+    probe_args(
+        run_capture_fd((const char *const[]){swift, target, sys, debug, "-###", "-c", src, nullptr}, 2),
+        "-cc1", &a2);
+    probe_cc1(&a1, &f1);
+    probe_cc1(&a2, &f2);
+    probe_fail(a, g ? "code generation with -g" : "code generation", probe_diff(&f1, &f2, true));
+  }
+  probe_list l1 = {}, l2 = {}, o1 = {}, o2 = {}, i1 = {}, i2 = {};
+  probe_add(&l1, sys);
+  probe_rsp(fmt("%s/link-head.rsp", s), &l1);
+  probe_add(&l1, "probe.o");
+  probe_rsp(fmt("%s/link-tail.rsp", s), &l1);
+  probe_args(
+      run_capture_fd((const char *const[]){swift, target, sys, "-###", src, "-o", "probe", nullptr}, 2),
+      "ld.lld", &l2);
+  probe_link(&l1, abs, &o1, &i1);
+  probe_link(&l2, abs, &o2, &i2);
+  probe_fail(a, "the link's options", probe_diff(&o1, &o2, true));
+  probe_fail(a, "the link's inputs", probe_diff(&i1, &i2, false));
+  fprintf(stderr, "  PROBE   %s: the two compilers agree\n", a->name);
+}
+
 // A program of ISO C against the sysroot: compiled by Fedora's clang with
 // the configuration file, linked by ld.lld with the response files, as
 // ADR-0033 §3 has a C program built for the target.
 static void native_program(const arch *a, bool release, const program *p, const char *obj, cmd *cc, cmd *ld) {
   const char *s = sysroot_dir(a, release);
   *cc = (cmd){};
-  cmd_addv(cc, (const char *const[]){CLANG, fmt("--config-system-dir=%s", s),
-                                     fmt("--target=%s", sysroot_triple(a)), "-Wall", "-Wextra", "-Werror",
-                                     nullptr});
+  cmd_addv(cc,
+           (const char *const[]){CLANG, fmt("--config-system-dir=%s", s),
+                                 fmt("--target=%s", sysroot_triple(a)), "-std=c23", // the system's own: C23
+                                 "-Wall", "-Wextra", "-Werror", nullptr});
   cmd_addv(cc, release ? RELEASE_FLAGS : DEBUG_FLAGS);
   cmd_addv(cc, (const char *const[]){"-c", p->source, "-o", obj, nullptr});
   *ld = (cmd){};
@@ -4531,7 +4750,16 @@ static int os_units(unit *units, bool with_host_tests) {
         fmt("kernel %s", ARCHES[i].name), "kernel/kernel.c", {ARCHES[i].flags, HOUSE_FLAGS, KERNEL_FLAGS}};
     for (int k = 0; k < USER_PROGRAM_COUNT; k++) {
       const program *p = &USER_PROGRAMS[k];
-      if (!program_for(p, &ARCHES[i]) || p->native) continue; // ISO C against the sysroot: 6e2b2 checks it
+      if (!program_for(p, &ARCHES[i])) continue;
+      if (p->native) { // ISO C against the debug sysroot, if this machine has one (6e2b2)
+        const char *sys = fmt("%s/%s", root, sysroot_dir(&ARCHES[i], false));
+        if (!exists(fmt("%s/usr/lib/libc.a", sys))) continue;
+        const char **f = alloc(4 * sizeof *f);
+        f[0] = fmt("--config-system-dir=%s", sys), f[1] = fmt("--target=%s", sysroot_triple(&ARCHES[i]));
+        f[2] = "-std=c23", f[3] = nullptr;
+        units[unit_slot(&n)] = (unit){fmt("%s %s", p->name, ARCHES[i].name), p->source, {f, HOUSE_FLAGS}};
+        continue;
+      }
       unit *u = &units[unit_slot(&n)];
       *u = (unit){fmt("%s %s", p->name, ARCHES[i].name), p->source, {}};
       u->flags[0] = p->posix ? posix_flags(&ARCHES[i]) : ARCHES[i].user_flags;

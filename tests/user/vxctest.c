@@ -69,9 +69,9 @@ static void heap(void) {
   char *p = malloc(100);
   CHECK(p != nullptr && ((size_t)p & 15) == 0);
   if (p) strcpy(p, "kept");
-  p = realloc(p, 100000);
-  CHECK(p != nullptr && strcmp(p, "kept") == 0);
-  free(p);
+  char *q = realloc(p, 100000);
+  CHECK(q != nullptr && strcmp(q, "kept") == 0);
+  free(q ? q : p);
   int *z = calloc(1000, sizeof(int));
   int zero = z != nullptr;
   for (int i = 0; z && i < 1000; i++) zero = zero && z[i] == 0;
@@ -83,7 +83,9 @@ static void heap(void) {
   char *big = malloc(64u << 20);
   CHECK(big != nullptr);
   if (big) memset(big, 1, 64u << 20), free(big);
-  CHECK(calloc((size_t)-1 / 2, 4) == nullptr); // overflow: refused
+  void *huge = calloc((size_t)-1 / 2, 4);
+  CHECK(huge == nullptr); // overflow: refused
+  free(huge);
 }
 
 // getenv through /env; remove and rename of what is not there refused.
