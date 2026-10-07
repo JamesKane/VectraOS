@@ -611,6 +611,53 @@ static void test_9front_pipefd(void) {
   CHECK(!pipes_fd[0].used && !pipes_fd[1].used);                    // each let go once its command ran
 }
 
+// whatis as 9front's (M6 step 6d7c): the function rebuilt from its tree, as
+// pcmd.c prints it. Each want is a 9front rc's own output for the same text
+// (release 11952, run on its VM, 2026-10-06), byte for byte. And the text
+// read back prints the same.
+static void test_9front_pcmd(void) {
+  expect("fn f1 {echo a b}\nwhatis f1\n", "fn f1 {\n\techo a b\n}\n");
+  expect("fn f2 {echo a; echo b}\nwhatis f2\n", "fn f2 {\n\techo a; echo b\n}\n");
+  expect("fn f3 {echo a\necho b}\nwhatis f3\n", "fn f3 {\n\techo a\n\techo b\n}\n");
+  expect("fn f4 {ls >f; ls >>f; ls <f; ls <>f; ls >[2]f; ls >[2=1]; ls >[2=]}\nwhatis f4\n",
+         "fn f4 {\n\t >f ls;  >>f ls;  <f ls;  <>f ls;  >[2]f ls; >[2=1]ls; >[2=]ls\n}\n");
+  expect("fn f5 {ls a >f b}\nwhatis f5\n", "fn f5 {\n\t >f ls a b\n}\n");
+  expect("fn f6 {x=1 ls; x=(a b) y=2 ls; x=1}\nwhatis f6\n", "fn f6 {\n\tx=1 ls; x=(a b) y=2 ls; x=1\n}\n");
+  expect("fn f7 {a | b; a |[2] b; a |[2=3] b}\nwhatis f7\n", "fn f7 {\n\ta|b; a|[2]b; a|[3=2]b\n}\n");
+  expect("fn f8 {a && b || c; ! a; @ a; @{a}}\nwhatis f8\n",
+         "fn f8 {\n\ta && b || c; ! a; @ a; @ {\n\t\ta\n\t}\n}\n");
+  expect("fn f9 {if(a) b; if not c; if(a; b) {c}}\nwhatis f9\n",
+         "fn f9 {\n\tif(a)b; if not c; if(a; b){\n\t\tc\n\t}\n}\n");
+  expect("fn f10 {for(i in a b) echo $i; for(i) echo $i; for(i in ) echo x}\nwhatis f10\n",
+         "fn f10 {\n\tfor(i in a b)echo $i; for(i)echo $i; for(i in ())echo x\n}\n");
+  expect("fn f11 {while(a) b; while() b}\nwhatis f11\n", "fn f11 {\n\twhile (a)b; while ()b\n}\n");
+  expect("fn f12 {switch($x){case a; echo A; case *; echo other}}\nwhatis f12\n",
+         "fn f12 {\n\tswitch ($x) {\n\t\tcase a; echo A; case *; echo other\n\t}\n}\n");
+  expect("fn f13 {~ $x a* b; ~ $#x 0}\nwhatis f13\n", "fn f13 {\n\t~ $x a* b; ~ $#x 0\n}\n");
+  expect("fn f14 {echo $x $#x $\"x $x(1 2) $x^y a^b `{ls} `:{ls}}\nwhatis f14\n",
+         "fn f14 {\n\techo $x $#x $\"x $x(1 2) $x^y a^b `{\n\t\tls\n\t} `:{\n\t\tls\n\t}\n}\n");
+  expect("fn f15 {echo 'a b' 'it''s' '' 'x' * a?b}\nwhatis f15\n",
+         "fn f15 {\n\techo 'a b' 'it''s' '' 'x' * a?b\n}\n");
+  expect("fn f16 {a &; b & c}\nwhatis f16\n", "fn f16 {\n\ta&; b&; c\n}\n");
+  expect("fn f17 {{a; b} >f; {a} | b}\nwhatis f17\n",
+         "fn f17 {\n\t >f {\n\t\ta; b\n\t}; {\n\t\ta\n\t}|b\n}\n");
+  expect("fn f18 {cmp <{a} >{b}}\nwhatis f18\n", "fn f18 {\n\tcmp  <{\n\t\ta\n\t}  >{\n\t\tb\n\t}\n}\n");
+  expect("fn f19 {fn g {echo x}; fn g}\nwhatis f19\n", "fn f19 {\n\tfn g {\n\t\techo x\n\t}; fn g \n}\n");
+  expect("fn f20 {>f echo x; >[2=1] echo y}\nwhatis f20\n", "fn f20 {\n\t >f echo x; >[2=1]echo y\n}\n");
+  expect("fn f21 {echo (a b) (c)}\nwhatis f21\n", "fn f21 {\n\techo (a b) (c)\n}\n");
+  expect("fn f22 {if(a) {\nb\nc\n}}\nwhatis f22\n", "fn f22 {\n\tif(a){\n\t\tb\n\t\tc\n\t}\n}\n");
+  expect("fn f23 {a\nb; c\nd}\nwhatis f23\n", "fn f23 {\n\ta\n\tb; c\n\td\n}\n");
+  expect("fn f24 {echo `{a; b}}\nwhatis f24\n", "fn f24 {\n\techo `{\n\t\ta; b\n\t}\n}\n");
+  expect("fn f25 {while(a) {b}; switch(x){case y; z}}\nwhatis f25\n",
+         "fn f25 {\n\twhile (a){\n\t\tb\n\t}; switch (x) {\n\t\tcase y; z\n\t}\n}\n");
+  expect("fn f26 {x=$y^z; echo $x(1-)}\nwhatis f26\n", "fn f26 {\n\tx=$y^z; echo $x(1-)\n}\n");
+  static char again[4096];
+  CHECK(script("fn r { x=1 ls >f >[2=1] | wc; if(~ $x 1) { echo y } }; whatis r") == RC_OK);
+  snprintf(again, sizeof again, "%s", out);
+  CHECK(script(again) == RC_OK);
+  expect("whatis r", again);
+}
+
 static void test_9front_builtins(void) {
   CHECK(script("false; exit") == RC_EXIT && strcmp(status_now(), "false") == 0); // $status kept
   CHECK(script("exit a b") == RC_EXIT && strcmp(status_now(), "a") == 0);
@@ -621,14 +668,14 @@ static void test_9front_builtins(void) {
   CHECK(script("builtin") == RC_FAILED && strstr(rc_err(r), "builtin: empty argument list"));
   CHECK(script("exec") == RC_FAILED && strstr(rc_err(r), "exec: empty argument list"));
   expect("x=(a 'b c'); y=1; whatis x y", "x=(a 'b c')\ny=1\n");
-  expect("fn g {echo  G}; whatis g", "fn g {echo  G}\n");
+  expect("fn g {echo  G}; whatis g", "fn g {\n\techo G\n}\n"); // as 9front's pcmd rebuilds it
   expect("whatis shift", "builtin shift\n");
   expect("whatis nosuchthing; echo $status", "not found\n");
   expect("path=(dir); whatis one.c; path=()", "dir/one.c\n");
   CHECK(script("whatis") == RC_FAILED && strstr(rc_err(r), "Usage: whatis name ..."));
   fns[0] = 0;
   rc_each_fn(r, each_fn, nullptr);
-  CHECK(strstr(fns, "g={echo  G};") != nullptr);
+  CHECK(strstr(fns, "g={\n\techo G\n};") != nullptr);
   CHECK(script("fn g") == RC_OK);
   // sigexit, once, at exit.
   CHECK(script("fn sigexit { echo bye }; echo before; exit") == RC_EXIT && strcmp(out, "before\nbye\n") == 0);
@@ -772,5 +819,6 @@ int main(void) {
   test_9front_builtins();
   test_9front_children();
   test_9front_pipefd();
+  test_9front_pcmd();
   return check_result();
 }

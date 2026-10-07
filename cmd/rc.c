@@ -187,8 +187,6 @@ static void cd_builtin(const rc_word *argv, int n) {
 
 // --- rfork (6d7b3), as 9front's execrfork ---
 
-static bool no_mounts; // rfork m: mount refused from here on (RFNOMNT)
-
 // A note group of the shell's own (rfork s, RFNOTEG): its own pid written to
 // its noteid (procfs, as 9front's changenoteid allows).
 static vx_status own_note_group(void) {
@@ -235,7 +233,7 @@ static void rfork_builtin(const rc_word *argv, int n) {
   if (has['s']) st = own_note_group(); // first: N takes /proc away
   if (st == VX_OK && (has['n'] || has['N'])) vx_ns_group_leave(&ns);
   if (st == VX_OK && has['N']) vx_ns_reset(&ns);
-  if (st == VX_OK && has['m']) no_mounts = true;
+  if (st == VX_OK && has['m']) ns.nomount = true;                    // and the children's after (vx-ns)
   for (uint32_t i = 3; st == VX_OK && has['F'] && i < VX_FDS; i++) { // a clean table: none past 2
     if (vx_fds[i].end) vx_handle_close(vx_fds[i].end);
     vx_fds[i] = (vx_fd_entry){};
@@ -272,10 +270,6 @@ static bool builtin_run(const rc_word *argv, uint32_t argc) {
   // so the children share its session (lib/vx-ns/relay.c).
   if (word_is(argv, "rfork")) {
     rfork_builtin(argv, n);
-    return true;
-  }
-  if (word_is(argv, "mount") && no_mounts) { // rfork m
-    report("mount", VX_ERR_ACCESS);
     return true;
   }
   if (word_is(argv, "mount")) {
@@ -453,7 +447,16 @@ static size_t elf_needs(size_t have) {
 // a name that starts / ./ ../ or # as written, any other in each of $path's
 // directories ("" and . meaning as written). Returns its size (what a spawn
 // needs of it), or 0.
+// A #! script load found on the way (6d7c, as 9front's kernel runs one):
+// where it is, and its first line, the interpreter and its arguments.
+static struct {
+  bool found;
+  char path[256], line[256];
+  size_t path_len, line_len;
+} script;
+
 static size_t load(vx_str name) {
+  script.found = false;
   bool here = (name.len && (name.ptr[0] == '/' || name.ptr[0] == '#')) ||
               (name.len > 1 && name.ptr[0] == '.' && name.ptr[1] == '/') ||
               (name.len > 2 && name.ptr[0] == '.' && name.ptr[1] == '.' && name.ptr[2] == '/');
@@ -484,8 +487,29 @@ static size_t load(vx_str name) {
     vx_ns_close(&f);
     size_t want = elf_needs(size);
     if (want && want != SIZE_MAX && size >= want) return size;
+    if (size > 2 && image[0] == '#' && image[1] == '!') { // a script: its interpreter runs it
+      size_t k = 2;
+      while (k < size && k - 2 < sizeof script.line && image[k] != '\n') k++;
+      memcpy(script.line, image + 2, k - 2), script.line_len = k - 2;
+      memcpy(script.path, path, n + name.len), script.path_len = n + name.len;
+      script.found = true;
+      return 0;
+    }
   }
   return 0;
+}
+
+// The words of a #! line: the interpreter, then its arguments, split at
+// blanks (9front's shargs). How many, into w.
+static uint32_t script_words(vx_str w[8]) {
+  uint32_t n = 0;
+  for (size_t i = 0; i < script.line_len && n < 8;) {
+    while (i < script.line_len && (script.line[i] == ' ' || script.line[i] == '\t')) i++;
+    size_t from = i;
+    while (i < script.line_len && script.line[i] != ' ' && script.line[i] != '\t') i++;
+    if (i > from) w[n++] = (vx_str){script.line + from, i - from};
+  }
+  return n;
 }
 
 // The variables, exported as rc does: NAME=WORDS, the words of a list
@@ -652,9 +676,27 @@ static vx_status spawn(const rc_word *argv, bool child, const vx_handle io[RC_FD
   static char records[VX_CHANNEL_MAX_BYTES - 4096]; // room left for spawn's own records
   vx_ndb_writer rec = {.buf = records, .cap = sizeof records};
   size_t size = load(child ? VX_STR(RC_SELF) : word_str(argv));
-  vx_status st = size ? VX_OK : VX_ERR_NOT_FOUND;
   uint32_t args = 0;
   exported = 0;
+  vx_str base =
+      child ? VX_STR("rc") : word_str(argv); // the task's name: the program's, without its directory
+  if (!size && script.found) { // #!interpreter [args]: it, given those, the script's path, then the arguments
+    static char spath[256];
+    size_t sl = script.path_len;
+    memcpy(spath, script.path, sl);
+    vx_str w[8];
+    uint32_t nw = script_words(w);
+    static char interp[256];
+    if (nw && w[0].len < sizeof interp) {
+      memcpy(interp, w[0].ptr, w[0].len);
+      size = load((vx_str){interp, w[0].len});
+      if (script.found) size = 0; // a script's interpreter is a program, not another script
+    }
+    for (uint32_t i = 1; size && i < nw; i++, args++) vx_ndb_put(&rec, "arg", w[i]), vx_ndb_end(&rec);
+    if (size) vx_ndb_put(&rec, "arg", (vx_str){spath, sl}), vx_ndb_end(&rec), args++;
+    if (size) base = (vx_str){interp, w[0].len};
+  }
+  vx_status st = size ? VX_OK : VX_ERR_NOT_FOUND;
   if (child && st == VX_OK) {
     char flags[64];
     size_t nf = 0;
@@ -696,8 +738,6 @@ static vx_status spawn(const rc_word *argv, bool child, const vx_handle io[RC_FD
     for (uint32_t i = 0; i < count; i++) vx_handle_close(handles[i]);
     return st;
   }
-  vx_str base =
-      child ? VX_STR("rc") : word_str(argv); // the task's name: the program's, without its directory
   for (size_t i = base.len; i-- > 0;)
     if (base.ptr[i] == '/') base = (vx_str){base.ptr + i + 1, base.len - i - 1};
   vx_spawn_args a = {.name = {base.ptr, vx_utf_cut(base.ptr, base.len, 23)}, // whole runes (ADR-0013)
@@ -1266,6 +1306,8 @@ const char *vx_main(void) {
       sh->flag[(unsigned char)f] = true;
     }
   }
+  if (vx_spawn.argv0.len && vx_spawn.argv0.ptr[0] == '-')
+    sh->flag['l'] = true; // a login shell's name, as 9front's
   if (sh->flag['I'])
     sh->flag['i'] = false;
   else if (!sh->flag['i'] && i == vx_spawn.argc && !vx_stdio.in) // no file, and the console: interactive

@@ -105,6 +105,9 @@ struct vx_ns {
   // vx-ns's spawn.c). NOT_FOUND for any other, which resolves as usual.
   // Null: none (host tests).
   vx_status (*open_dev)(vx_ns *ns, vx_str path, uint8_t mode, struct vx_ns_file *f);
+  // No mounts from here on, this process's or its children's (rc's rfork m,
+  // as 9front's RFNOMNT: the spawn message's nomount record passes it on).
+  bool nomount;
 };
 
 static void ns_catch_up(vx_ns *ns) {
@@ -578,6 +581,7 @@ static uint8_t ns_conn_of(const vx_ns *ns, const p9_client *c) {
 // came from, for children and for ns output.
 [[maybe_unused]] static vx_status vx_ns_mount(vx_ns *ns, p9_client *c, vx_handle connector, vx_str src,
                                               vx_str aname, vx_str old, uint8_t flags) {
+  if (ns->nomount && !ns->quiet) return VX_ERR_ACCESS; // a group's replay is no new mount
   vx_status st = VX_ERR_BAD_STATE;
   bool again = true;
   // New to this namespace or not, as it was before the first try: a try made

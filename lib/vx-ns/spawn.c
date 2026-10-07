@@ -484,8 +484,11 @@ static vx_status vx_fd_open(vx_ns *ns, vx_str path, uint8_t mode, vx_ns_file *f)
   ns->open_dev = vx_fd_open; // and /fd/N, its descriptors (ADR-0040)
   vx_ns_group.srv = vx_spawn_take("srv:nsd");
   vx_handle chan = vx_spawn_take("nsgroup");
-  if (chan) return vx_ns_group_join(ns, chan);
-  return vx_ns_replay(ns, vx_spawn.text, nullptr);
+  vx_status st = chan ? vx_ns_group_join(ns, chan) : vx_ns_replay(ns, vx_spawn.text, nullptr);
+  ns->nomount =
+      vx_spawn_record("nomount", &(vx_ndb_record){}); // its parent's rfork m (RFNOMNT), after what it
+                                                      // was given is in place
+  return st;
 }
 
 // A copy of the namespace as spawn records for a child, in the order the
@@ -558,6 +561,7 @@ static vx_status vx_ns_copy_records(const vx_ns *ns, vx_ndb_writer *w, vx_handle
   char wd[VX_WD_MAX]; // the child starts where this process is (ADR-0039)
   size_t wn = vx_getwd(wd, sizeof wd);
   if (wn) vx_ndb_put(w, "cwd", (vx_str){wd, wn}), vx_ndb_end(w);
+  if (ns->nomount) vx_ndb_flag(w, "nomount"), vx_ndb_end(w); // RFNOMNT, inherited
   vx_status st = VX_ERR_NOT_FOUND;
   if (!vx_ns_group.chan) vx_ns_group_make(ns); // NOT_FOUND without nsd: a copy, below
   if (vx_ns_group.chan) {

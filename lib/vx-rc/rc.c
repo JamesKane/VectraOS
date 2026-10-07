@@ -1545,6 +1545,272 @@ static void rc_emit_here(rc_compiler *c, const rc_node *rd) {
   rc_emit(c, X_REDIR, rd->fd0, RC_FD_HERE, 0, h->quoted);
 }
 
+// --- 9front's pcmd: a function's text rebuilt from its tree (M6 step 6d7c) ---
+//
+// whatis prints a function, and a child is given it, as 9front's rc rebuilds
+// it (pcmd.c) from the tree its parser made (decided 2026-10-06): a simple
+// command's redirections lifted out to wrap it, the first outermost
+// (simplemung), and each construct's spacing as pcmd's; checked against a
+// 9front rc's own output (rc_test). A sequence breaks where the source had a
+// newline, else with "; ", as 9front's line numbers make it.
+
+enum : uint8_t { RC_PI_NODE, RC_PI_LIT, RC_PI_NL, RC_PI_WORDS, RC_PI_BRACE, RC_PI_SIMPLE };
+
+typedef struct rc_pitem {
+  uint8_t what;
+  uint16_t ntab;
+  int32_t node;  // RC_PI_NODE, _WORDS (a chain), _BRACE (a list), _SIMPLE (and its redirection `n` on)
+  uint32_t n;    // RC_PI_LIT: its length; RC_PI_SIMPLE: which redirection
+  const char *s; // RC_PI_LIT, or into buf
+  char buf[24];  // a literal made here: "[2=1]" and the like
+} rc_pitem;
+
+typedef struct rc_pout {
+  rc *r;
+  char *buf;
+  size_t len, cap;
+  bool failed;
+} rc_pout;
+
+static void rc_pput(rc_pout *o, const char *s, size_t n) {
+  if (o->failed || !n) return;
+  if (o->len + n + 1 > o->cap) {
+    size_t cap = (o->cap ? o->cap * 2 : 256) + n;
+    char *more = rc_alloc(o->r, cap);
+    if (!more) return (void)(o->failed = true);
+    if (o->len) memcpy(more, o->buf, o->len);
+    rc_free(o->r, o->buf);
+    o->buf = more, o->cap = cap;
+  }
+  memcpy(o->buf + o->len, s, n), o->len += n, o->buf[o->len] = 0;
+}
+
+typedef struct rc_pstack {
+  rc_pitem items[2048];
+  uint32_t n;
+  bool full;
+} rc_pstack;
+
+static rc_pitem *rc_ppush(rc_pstack *st, uint8_t what, uint16_t ntab, int32_t node) {
+  if (st->n == sizeof st->items / sizeof st->items[0]) return st->full = true, nullptr;
+  rc_pitem *it = &st->items[st->n++];
+  *it = (rc_pitem){.what = what, .ntab = ntab, .node = node};
+  return it;
+}
+
+static void rc_plit(rc_pstack *st, const char *s) {
+  rc_pitem *it = rc_ppush(st, RC_PI_LIT, 0, RC_NONE);
+  if (it) it->s = s, it->n = rc_strlen(s);
+}
+
+// A literal made of `prefix`, an fd in brackets if it is not `dflt`, as
+// pcmd's "[%d]"; or with `other`, "[a=b]" (other 255: "[a=]").
+static void rc_pfd(rc_pstack *st, const char *prefix, uint32_t fd, uint32_t dflt, int32_t other) {
+  rc_pitem *it = rc_ppush(st, RC_PI_LIT, 0, RC_NONE);
+  if (!it) return;
+  size_t n = 0;
+  for (const char *x = prefix; *x; x++) it->buf[n++] = *x;
+  if (fd != dflt || other >= 0) {
+    it->buf[n++] = '[';
+    if (fd >= 10) it->buf[n++] = (char)('0' + fd / 10);
+    it->buf[n++] = (char)('0' + fd % 10);
+    if (other >= 0) {
+      it->buf[n++] = '=';
+      if (other != 255) it->buf[n++] = (char)('0' + other % 10);
+    }
+    it->buf[n++] = ']';
+  }
+  it->s = it->buf, it->n = (uint32_t)n;
+}
+
+// A redirection's text before what it wraps: " >f", " <[3]f", ">[2=1]".
+static void rc_predir(rc_pstack *st, const rc_node *rd) {
+  static const char *const OPS[] = {[RC_FD_READ] = " <",
+                                    [RC_FD_WRITE] = " >",
+                                    [RC_FD_APPEND] = " >>",
+                                    [RC_FD_RDWR] = " <>",
+                                    [RC_FD_HERE] = " <<"};
+  if (rd->kind == N_DUP) return rc_pfd(st, ">", rd->fd0, 99, rd->fd1);
+  uint32_t dflt = rd->rkind == RC_FD_WRITE || rd->rkind == RC_FD_APPEND ? 1 : 0;
+  rc_ppush(st, RC_PI_NODE, 0, rd->a); // the file (pushed first: it prints after)
+  rc_pfd(st, rd->rkind <= RC_FD_HERE && OPS[rd->rkind] ? OPS[rd->rkind] : " <", rd->fd0, dflt, -1);
+}
+
+// Pushes what node n prints, at ntab tabs, in reverse.
+static void rc_pexpand(const rc_compiler *c, rc_pstack *st, const rc_pitem *it) {
+  const rc_node *t = &c->nodes[it->node];
+  uint16_t tab = it->ntab;
+#define P_NODE(x) rc_ppush(st, RC_PI_NODE, tab, (x))
+#define P_LIT(x)  rc_plit(st, (x))
+  switch (t->kind) {
+  case N_WORD: {
+    rc_pitem *w = rc_ppush(st, RC_PI_LIT, 0, it->node);
+    if (w) w->n = UINT32_MAX; // printed by rc_pword
+    break;
+  }
+  case N_DOL: P_NODE(t->a), P_LIT("$"); break;
+  case N_COUNT: P_NODE(t->a), P_LIT("$#"); break;
+  case N_JOIN: P_NODE(t->a), P_LIT("$\""); break;
+  case N_SUB: P_LIT(")"), rc_ppush(st, RC_PI_WORDS, tab, t->b), P_LIT("("), P_NODE(t->a), P_LIT("$"); break;
+  case N_CONC: P_NODE(t->b), P_LIT("^"), P_NODE(t->a); break;
+  case N_BACKQ:
+    rc_ppush(st, RC_PI_BRACE, tab, t->a);
+    if (t->b != RC_NONE) P_NODE(t->b);
+    P_LIT("`");
+    break;
+  case N_PAREN: P_LIT(")"), rc_ppush(st, RC_PI_WORDS, tab, t->a), P_LIT("("); break;
+  case N_PIPEFD: rc_ppush(st, RC_PI_BRACE, tab, t->a), P_LIT(t->rkind == RC_FD_READ ? " <" : " >"); break;
+  case N_SIMPLE: rc_ppush(st, RC_PI_SIMPLE, tab, it->node); break;
+  case N_SEQ: {
+    P_NODE(t->b);
+    const char *from = t->a >= 0 ? c->nodes[t->a].to : nullptr,
+               *upto = t->b >= 0 ? c->nodes[t->b].from : nullptr;
+    bool nl = false;
+    for (const char *q = from; q && upto && q < upto && !nl; q++) nl = *q == '\n';
+    if (nl)
+      rc_ppush(st, RC_PI_NL, tab, RC_NONE);
+    else if (t->a >= 0 && t->b >= 0)
+      P_LIT("; ");
+    P_NODE(t->a);
+    break;
+  }
+  case N_ASYNC: P_LIT("&"), P_NODE(t->a); break;
+  case N_AND: P_NODE(t->b), P_LIT(" && "), P_NODE(t->a); break;
+  case N_OR: P_NODE(t->b), P_LIT(" || "), P_NODE(t->a); break;
+  case N_PIPE: // pcmd's fields are the other way round: [right=left]
+    P_NODE(t->b);
+    if (t->fd1 != 0)
+      rc_pfd(st, "|", t->fd1, 99, t->fd0);
+    else
+      rc_pfd(st, "|", t->fd0, 1, -1);
+    P_NODE(t->a);
+    break;
+  case N_BANG: P_NODE(t->b), P_LIT("! "); break;
+  case N_SUBSHELL: P_NODE(t->b), P_LIT("@ "); break;
+  case N_BRACE: rc_ppush(st, RC_PI_BRACE, tab, t->a); break;
+  case N_IF: P_NODE(t->b), P_LIT(")"), P_NODE(t->a), P_LIT("if("); break;
+  case N_IFNOT: P_NODE(t->b), P_LIT("if not "); break;
+  case N_WHILE: P_NODE(t->b), P_LIT(")"), P_NODE(t->a), P_LIT("while ("); break;
+  case N_FOR:
+    P_NODE(t->c), P_LIT(")");
+    if (t->b == RC_NONE) P_LIT(" in ()");
+    if (t->b >= 0) rc_ppush(st, RC_PI_WORDS, tab, t->b), P_LIT(" in ");
+    P_NODE(t->a), P_LIT("for(");
+    break;
+  case N_SWITCH: rc_ppush(st, RC_PI_BRACE, tab, t->b), P_LIT(" "), P_NODE(t->a), P_LIT("switch "); break;
+  case N_TWIDDLE: rc_ppush(st, RC_PI_WORDS, tab, t->b), P_LIT(" "), P_NODE(t->a), P_LIT("~ "); break;
+  case N_FN:
+    if (t->b != RC_NONE) rc_ppush(st, RC_PI_BRACE, tab, t->b);
+    P_LIT(" "), rc_ppush(st, RC_PI_WORDS, tab, t->a), P_LIT("fn ");
+    break;
+  case N_ASSIGN:
+    if (t->c != RC_NONE) P_NODE(t->c), P_LIT(" ");
+    P_NODE(t->b), P_LIT("="), P_NODE(t->a);
+    break;
+  case N_REDIR: // a prefix's or an epilog's: what it wraps after
+  case N_DUP:
+    if (t->kind == N_REDIR && t->rkind == RC_FD_HERE) break; // a here document's: not in a function's text
+    if (t->b != RC_NONE) P_NODE(t->b);
+    if (t->kind == N_REDIR && t->b != RC_NONE) P_LIT(" ");
+    rc_predir(st, t);
+    break;
+  default: P_LIT("?"); break;
+  }
+#undef P_NODE
+#undef P_LIT
+}
+
+// A simple command: its redirection `k` on wrapping the rest (the first
+// outermost, as simplemung lifts them), then its words.
+static void rc_psimple(const rc_compiler *c, rc_pstack *st, const rc_pitem *it) {
+  const rc_node *t = &c->nodes[it->node];
+  int32_t rd = t->b;
+  for (uint32_t k = 0; rd >= 0 && k < it->n; k++) rd = c->nodes[rd].next;
+  if (rd < 0) {
+    rc_ppush(st, RC_PI_WORDS, it->ntab, t->a);
+    return;
+  }
+  rc_pitem *rest = rc_ppush(st, RC_PI_SIMPLE, it->ntab, it->node);
+  if (rest) rest->n = it->n + 1;
+  if (c->nodes[rd].kind == N_REDIR) rc_plit(st, " ");
+  rc_predir(st, &c->nodes[rd]);
+}
+
+// A word as pcmd prints one: a quoted one quoted, '' for each ', else as it
+// is, its glob marks dropped.
+static void rc_pword(rc_pout *o, const rc_node *w) {
+  if (w->fd0) rc_pput(o, "'", 1);
+  for (size_t i = 0; i < w->len; i++) {
+    if (!w->fd0 && w->s[i] == RC_GLOB) continue;
+    rc_pput(o, &w->s[i], 1);
+    if (w->fd0 && w->s[i] == '\'') rc_pput(o, "'", 1);
+  }
+  if (w->fd0) rc_pput(o, "'", 1);
+}
+
+// list as a function's body is printed, "{", a tab in, "}", into *out (the
+// interpreter's heap; the caller frees it). False if it does not fit.
+static bool rc_pcmd(const rc_compiler *c, int32_t list, char **out, size_t *len) {
+  static rc_pstack st;
+  st.n = 0, st.full = false;
+  rc_pout o = {.r = c->r};
+  rc_ppush(&st, RC_PI_BRACE, 0, list);
+  while (st.n && !st.full && !o.failed) {
+    rc_pitem it = st.items[--st.n];
+    switch (it.what) {
+    case RC_PI_LIT:
+      if (it.n == UINT32_MAX)
+        rc_pword(&o, &c->nodes[it.node]);
+      else
+        rc_pput(&o, it.s, it.n); // a made one's buf: its slot, just popped, not yet reused
+      break;
+    case RC_PI_NL: {
+      rc_pput(&o, "\n", 1);
+      for (uint16_t k = 0; k < it.ntab; k++) rc_pput(&o, "\t", 1);
+      break;
+    }
+    case RC_PI_BRACE:
+      rc_plit(&st, "}");
+      rc_ppush(&st, RC_PI_NL, it.ntab, RC_NONE);
+      if (it.node >= 0) rc_ppush(&st, RC_PI_NODE, (uint16_t)(it.ntab + 1), it.node);
+      rc_ppush(&st, RC_PI_NL, (uint16_t)(it.ntab + 1), RC_NONE);
+      rc_plit(&st, "{");
+      break;
+    case RC_PI_WORDS: { // a chain, a space between
+      int32_t ws[256];
+      uint32_t n = 0;
+      for (int32_t w = it.node; w >= 0 && n < 256; w = c->nodes[w].next) ws[n++] = w;
+      for (uint32_t k = n; k-- > 0;) {
+        rc_ppush(&st, RC_PI_NODE, it.ntab, ws[k]);
+        if (k) rc_plit(&st, " ");
+      }
+      break;
+    }
+    case RC_PI_SIMPLE: rc_psimple(c, &st, &it); break;
+    default:
+      if (it.node >= 0) rc_pexpand(c, &st, &it);
+      break;
+    }
+  }
+  if (st.full || o.failed) return rc_free(c->r, o.buf), false;
+  *out = o.buf, *len = o.len;
+  return true;
+}
+
+// A function's body as 9front's pcmd rebuilds it, into the strings: its
+// place there, plus 1; 0 if it does not fit (whatis then prints {}).
+static uint32_t rc_fn_text(rc_compiler *c, int32_t body) {
+  char *text = nullptr;
+  size_t tl = 0;
+  uint32_t src = 0;
+  if (rc_pcmd(c, body, &text, &tl) && c->strcap - c->nstr >= tl + 1) {
+    memcpy(c->str + c->nstr, text, tl), c->str[c->nstr + tl] = 0;
+    src = (uint32_t)c->nstr + 1, c->nstr += tl + 1;
+  }
+  rc_free(c->r, text);
+  return src;
+}
+
 static void rc_patch(rc_compiler *c, uint32_t at) {
   if (at < c->n) c->inst[at].a = c->n;
 }
@@ -1873,7 +2139,9 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
     case N_PIPE: { // a pipeline of programs: each stage, leftmost first, then X_PIPELINE
       bool async = t->kind == N_ASYNC;
       int32_t chain = async ? t->a : it.node;
-      if (async && chain != RC_NONE && c->nodes[chain].kind == N_SIMPLE) { // program &
+      // A program, &; one with redirections is a child's, below, which serves its files, here
+      // documents and captures while it runs (the shell, going on, does not).
+      if (async && chain != RC_NONE && c->nodes[chain].kind == N_SIMPLE && c->nodes[chain].b == RC_NONE) {
         if (it.phase == 0) {
           RC_AGAIN(1);
           RC_PUSH(chain, 0);
@@ -2078,12 +2346,7 @@ static bool rc_compile_tree(rc_compiler *c, int32_t root) {
         } else if (t->b == RC_NONE) {
           rc_emit(c, X_DELFN, 0, 0, 0, 0);
         } else {
-          uint32_t src = 0; // its text, in the strings, plus 1
-          if (t->len && c->strcap - c->nstr >= t->len + 1) {
-            memcpy(c->str + c->nstr, t->s, t->len), c->str[c->nstr + t->len] = 0;
-            src = (uint32_t)c->nstr + 1, c->nstr += t->len + 1;
-          }
-          it.at = rc_emit(c, X_FN, 0, 0, 0, src);
+          it.at = rc_emit(c, X_FN, 0, 0, 0, rc_fn_text(c, t->b));
           RC_AGAIN(2);
           RC_PUSH(t->b, 0);
         }
@@ -2677,7 +2940,9 @@ static void rc_rdcmds(rc *r, rc_frame *f) {
       if (rd->pos < rd->len) rd->pos++;
     }
     for (size_t k = from; k < rd->pos; k++) rd->line += rd->text[k] == '\n';
-    if (r->flag['v'] || r->flag['V']) rc_errout(r, rd->text + from, rd->pos - from); // -v: input as read
+    // -v: input as read; not a file read with . -q (rcmain's), as 9front's
+    // lex.c has it; -V, everything.
+    if ((r->flag['v'] && !rd->quiet) || r->flag['V']) rc_errout(r, rd->text + from, rd->pos - from);
     char was[sizeof r->src];
     memcpy(was, r->src, sizeof was);
     memcpy(r->src, rd->name, sizeof r->src); // what it compiles names its file
