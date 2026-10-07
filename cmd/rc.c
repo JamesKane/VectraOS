@@ -775,9 +775,11 @@ static vx_status spawn(const rc_word *argv, bool child, const vx_handle io[RC_FD
     for (uint32_t i = 0; i < count; i++) vx_handle_close(handles[i]);
     return st;
   }
+  vx_str path = base; // the program's whole path, its exe= record
   for (size_t i = base.len; i-- > 0;)
     if (base.ptr[i] == '/') base = (vx_str){base.ptr + i + 1, base.len - i - 1};
   vx_spawn_args a = {.name = {base.ptr, vx_utf_cut(base.ptr, base.len, 23)}, // whole runes (ADR-0013)
+                     .path = path,
                      .image = image,
                      .image_size = size,
                      .handles = handles,

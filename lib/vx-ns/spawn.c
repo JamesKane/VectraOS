@@ -685,6 +685,16 @@ static vx_status vx_ns_copy_records(const vx_ns *ns, vx_ndb_writer *w, vx_handle
 // Changes the current directory to path (ADR-0039): resolved, walked and
 // found to be a directory, else refused (INVALID if it is not one) and left
 // as it was. libvx's (6e1), until libvx.
+// The machine's name (M6 step 6e1c3, R17): /sys/name, as 9front's
+// /dev/sysname, into buf; its length, or vectra's where there is no /sys.
+[[maybe_unused]] static size_t vx_hostname(vx_ns *ns, char *buf, size_t cap) {
+  size_t len = 0;
+  if (vx_ns_read_all(ns, VX_STR("/sys/name"), buf, cap, &len) == VX_OK && len) return len;
+  len = cap < 6 ? cap : 6;
+  memcpy(buf, "vectra", len);
+  return len;
+}
+
 [[maybe_unused]] static vx_status vx_chdir(vx_ns *ns, vx_str path) {
   char clean[VX_NS_MAX_PATH];
   size_t len;

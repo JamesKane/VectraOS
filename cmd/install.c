@@ -316,6 +316,9 @@ static vx_status copy_objects(void) {
 // The first user (-u; vectra unless told otherwise): the system's, who owns
 // home and leads adm, and the console shell's (vx.user, 6d8).
 static vx_str first_user = VX_STR("vectra");
+// The machine's name (-n; vectra unless told otherwise): vx.host=, which
+// sysfs serves as /sys/name (6e1c3).
+static vx_str host_name = VX_STR("vectra");
 
 // Whether a name can be a user(6)'s: 1 to 31 bytes, none of its separators,
 // and neither of the users the system has already.
@@ -397,6 +400,9 @@ const char *vx_main(void) {
       yes = true;
     } else if (a.len == 2 && a.ptr[0] == '-' && a.ptr[1] == 'p') {
       off = true;
+    } else if (a.len == 2 && a.ptr[0] == '-' && a.ptr[1] == 'n' && i + 1 < vx_spawn.argc) {
+      host_name = vx_spawn.args[++i];
+      if (!user_name_ok(host_name)) fail("not a name for the machine", VX_ERR_INVALID); // a word, as a user's
     } else if (a.len == 2 && a.ptr[0] == '-' && a.ptr[1] == 'u' && i + 1 < vx_spawn.argc) {
       first_user = vx_spawn.args[++i];
       if (!user_name_ok(first_user)) fail("not a name for a user (users(6))", VX_ERR_INVALID);
@@ -532,7 +538,8 @@ const char *vx_main(void) {
     size_t n = 0;
     while (i + n < c.len && c.ptr[i + n] != ' ') n++;
     bool dropped =
-        (n == 7 && memcmp(c.ptr + i, "vx.live", 7) == 0) || (n > 8 && memcmp(c.ptr + i, "vx.user=", 8) == 0);
+        (n == 7 && memcmp(c.ptr + i, "vx.live", 7) == 0) ||
+        (n > 8 && (memcmp(c.ptr + i, "vx.user=", 8) == 0 || memcmp(c.ptr + i, "vx.host=", 8) == 0));
     if (n && !dropped && cl + n + 2 < sizeof table.cmdline) {
       if (cl) table.cmdline[cl++] = ' ';
       memcpy(table.cmdline + cl, c.ptr + i, n), cl += n;
@@ -543,6 +550,10 @@ const char *vx_main(void) {
   if (cl + 9 + first_user.len + 1 < sizeof table.cmdline) {
     if (cl) table.cmdline[cl++] = ' ';
     append(table.cmdline, &cl, VX_STR("vx.user=")), append(table.cmdline, &cl, first_user);
+  }
+  if (cl + 9 + host_name.len + 1 < sizeof table.cmdline) { // and the machine's name, as /sys/name (6e1c3)
+    table.cmdline[cl++] = ' ';
+    append(table.cmdline, &cl, VX_STR("vx.host=")), append(table.cmdline, &cl, host_name);
   }
   static char text[4096];
   vx_ndb_writer w = {.buf = text, .cap = sizeof text};

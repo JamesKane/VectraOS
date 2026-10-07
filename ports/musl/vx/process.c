@@ -420,6 +420,7 @@ static long spawn_image(const char *path, bool search, char *const argv[], char 
     proc_flags = PROC_NOTEG; // a group of its own
   if (r == 0) {
     vx_spawn_args a = {.name = base,
+                       .path = {path, strlen(path)},
                        .image = (const uint8_t *)image,
                        .image_size = (size_t)st.st_size,
                        .handles = handles,

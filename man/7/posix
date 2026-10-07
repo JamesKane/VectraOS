@@ -175,7 +175,7 @@ Seven calls held on one connection at once, such as seven threads reading termin
 
 There is no `/bin/sh`, and `exec` runs only ELF programs, so `system`, `popen`, `make`'s recipes, Lua's `os.execute` and `io.popen`, `env`, cron, and `ed`'s and `dc`'s `!` fail.
 
-Everyone is root: `getuid` and its kin answer 0, and a file's owner and group read as 0, though fsd keeps owners and checks permissions (M6 step 6e).
+`getuid` and its kin answer the user's id in users(6), read from `/adm/users` where the namespace has it, else `adm` 0, `none` 1 and any other user 1000, the id install(8) gives the first user; each user is its own group, as in Plan 9, so the gid is the same, and `setuid` and its kin succeed only to the ids the process has. A file's owner and group still read as 0, as `Tgetattr` carries no owners yet.
 There is no `/etc/passwd`, `/etc/group`, `/etc/services`, `/dev/log` or `/dev/tty`, and no `LOGNAME`, and `ttyname` needs `/proc/self/fd`, so `chown`, `chgrp`, `whoami`, `logname`, `logger`, `tty` and others fail or misbehave.
 `faccessat` opens the file in the mode asked, as 9front's APE, and makes and removes a probe file `_AcChAcK`<pid> to answer a directory's `W_OK`; there are no effective ids, so `AT_EACCESS` changes nothing.
 `st_dev` is the connection in the process's namespace (a slot an unmount frees may come again for another server).

@@ -113,12 +113,42 @@ static long proc_getrandom(void *buf, size_t n) {
 
 static uint64_t proc_kernel_id(void) { return proc_kernel_task_id; }
 
+// The process's user id (6e1c3): its user's in users(6), from /adm/users
+// where the namespace has it; else adm 0, none 1, and any other 1000, the id
+// install gives the first user. Each user is its own group, as in Plan 9, so
+// the gid is the same. Looked up once.
+static long proc_uid(void) {
+  static long uid = -1;
+  if (uid >= 0) return uid;
+  vx_str name = vx_user_name();
+  uid = 1000;
+  if (name.len == 3 && !memcmp(name.ptr, "adm", 3)) uid = 0;
+  if (name.len == 4 && !memcmp(name.ptr, "none", 4)) uid = 1;
+  static char text[16 * 1024];
+  static vx_users table;
+  size_t len = 0;
+  if (vx_ns_read_all(fd_namespace(), VX_STR("/adm/users"), text, sizeof text, &len) == VX_OK &&
+      vx_users_parse(&table, (vx_str){text, len})) {
+    uint32_t i = vx_users_named(&table, name);
+    if (i != table.none || (name.len == 4 && !memcmp(name.ptr, "none", 4))) uid = table.user[i].id;
+  }
+  return uid;
+}
+
+// setuid and its kin: to the ids the process has, a no-op; to any other, EPERM.
+static long proc_setid(long a, long b, long c) {
+  long me = proc_uid(), ids[3] = {a, b, c};
+  for (int i = 0; i < 3; i++)
+    if (ids[i] != -1 && ids[i] != me) return -EPERM;
+  return 0;
+}
+
 static long proc_uname(struct utsname *u) {
   *u = (struct utsname){};
   memcpy(u->sysname, "VectraOS", 9);
-  memcpy(u->nodename, "vectra", 7);
+  vx_hostname(fd_namespace(), u->nodename, sizeof u->nodename - 1); // /sys/name (6e1c3)
   memcpy(u->release, "0.1.0", 6);
-  memcpy(u->version, "M4", 3);
+  memcpy(u->version, "M6", 3);
 #ifdef __x86_64__
   memcpy(u->machine, "x86_64", 7);
 #else

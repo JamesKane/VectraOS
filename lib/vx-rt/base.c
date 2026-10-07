@@ -726,6 +726,7 @@ typedef struct vx_spawn_info {
   uint32_t argc;
   vx_str argv0;                   // argv0=: the POSIX argv[0], if not spawn=
   vx_str user;                    // user=: who the program runs as, which its attaches name (docs/11 §9)
+  vx_str exe;                     // exe=: the program's path, as its spawner found it (6e1c3)
   vx_str envs[VX_SPAWN_MAX_ARGS]; // env=, each NAME=VALUE
   uint32_t envc;
   vx_str handle_names[VX_CHANNEL_MAX_HANDLES];
@@ -828,6 +829,8 @@ static void vx_read_spawn(vx_handle bootstrap) {
       if (ok) vx_spawn.args[vx_spawn.argc++] = vx_ndb_get(&rec, "arg");
     } else if (vx_ndb_has(&rec, "argv0")) {
       vx_spawn.argv0 = vx_ndb_get(&rec, "argv0");
+    } else if (vx_ndb_has(&rec, "exe")) {
+      vx_spawn.exe = vx_ndb_get(&rec, "exe");
     } else if (vx_ndb_has(&rec, "user")) {
       vx_spawn.user = vx_ndb_get(&rec, "user");
     } else if (vx_ndb_has(&rec, "cwd")) {
@@ -850,4 +853,35 @@ static void vx_read_spawn(vx_handle bootstrap) {
   vx_spawn.handle_count = size.handles;
   for (uint32_t i = 0; i < size.handles; i++) vx_spawn.handles[i] = got[i];
   vx_self = vx_spawn_take("self");
+}
+
+// --- Identity (M6 step 6e1c3, os-requirements R16, R17), libvx's until libvx ---
+
+// The process's id: its task's, which procfs names it by (ADR-0011).
+[[maybe_unused]] static uint64_t vx_pid(void) {
+  static uint64_t pid;
+  vx_task_summary me;
+  if (!pid && vx_task_info(vx_self, &me) == VX_OK) pid = me.id;
+  return pid;
+}
+
+// The program's path, as its spawner found it (exe=); empty if it did not say.
+[[maybe_unused]] static vx_str vx_exe_path(void) { return vx_spawn.exe; }
+
+// Who the process runs as (user=), none without it.
+[[maybe_unused]] static vx_str vx_user_name(void) {
+  return vx_spawn.user.len ? vx_spawn.user : VX_STR("none");
+}
+
+// The value of name in the environment the process was given (env=), as a
+// vx_str; {nullptr, 0} if it has none. The environment is vx_spawn.envs,
+// vx_spawn.envc NAME=VALUE strings; /env is the shared store beside it
+// (ADR-0044).
+[[maybe_unused]] static vx_str vx_getenv(vx_str name) {
+  for (uint32_t i = 0; i < vx_spawn.envc; i++) {
+    vx_str e = vx_spawn.envs[i];
+    if (e.len > name.len && e.ptr[name.len] == '=' && memcmp(e.ptr, name.ptr, name.len) == 0)
+      return (vx_str){e.ptr + name.len + 1, e.len - name.len - 1};
+  }
+  return (vx_str){};
 }

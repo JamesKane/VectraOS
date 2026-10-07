@@ -427,6 +427,9 @@ static vx_status start(service *s) {
     say(VX_STR("no program "), program, VX_STR(" in the boot image\n"));
     return VX_ERR_NOT_FOUND;
   }
+  static char exe[128]; // its path, copied: the reader's values last one record (exe=, 6e1c3)
+  size_t exe_len = program.len < sizeof exe ? program.len : 0;
+  memcpy(exe, program.ptr, exe_len);
   if (vx_ndb_has(&rec, "bootimage")) {
     st = vx_handle_dup(image_vmo, BOOT_IMAGE_RIGHTS, &b.handles[b.count]);
     b.names[b.count++] = VX_STR("bootimage");
@@ -555,6 +558,7 @@ static vx_status start(service *s) {
   }
 
   vx_spawn_args a = {.name = s->name,
+                     .path = {exe, exe_len},
                      .image = elf.data,
                      .image_size = elf.size,
                      .handles = b.handles,

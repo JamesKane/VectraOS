@@ -85,6 +85,7 @@ static vx_status vx_elf_load(vx_handle task, const uint8_t *image, size_t size, 
 
 typedef struct vx_spawn_args {
   vx_str name; // the task's name and the spawn= record
+  vx_str path; // the program's path, the exe= record (vx_exe_path, R16), if known
   const uint8_t *image;
   size_t image_size;
   const vx_handle *handles; // given to the child: they leave the caller, whatever happens
@@ -186,6 +187,7 @@ static void vx_close_all(const vx_handle *h, uint32_t n) {
                      .cap = sizeof vx_spawn_out - sizeof(vx_msg_header)};
   vx_ndb_put(&w, "spawn", a->name);
   vx_ndb_end(&w);
+  if (a->path.len) vx_ndb_put(&w, "exe", a->path), vx_ndb_end(&w);
   vx_str user = a->user.len ? a->user : vx_spawn.user;
   if (user.len) {
     vx_ndb_put(&w, "user", user);

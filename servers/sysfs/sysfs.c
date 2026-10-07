@@ -10,14 +10,32 @@
 //                     1970, once a clock driver has set the kernel's wall
 //                     clock (ADR-0031); from boot until then
 //
+//   /sys/name         the machine's name, as 9front's /dev/sysname: the kernel
+//                     command line's vx.host= (which install writes), else
+//                     vectra; no newline (M6 step 6e1c3)
+//
 // cpu/, mem/, power/ and the rest of 02 §5.1 come with what measures them.
 
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-9p/ring_server.c"
 
-enum : uint64_t { ROOT = 1, CLOCK, INFO, NOW, NODES };
-static const vx_str NAMES[NODES] = {{}, VX_STR("/"), VX_STR("clock"), VX_STR("info"), VX_STR("now")};
-static const uint64_t PARENT[NODES] = {0, ROOT, ROOT, CLOCK, CLOCK};
+enum : uint64_t { ROOT = 1, CLOCK, INFO, NOW, NAME, NODES };
+static const vx_str NAMES[NODES] = {
+    {}, VX_STR("/"), VX_STR("clock"), VX_STR("info"), VX_STR("now"), VX_STR("name")};
+static const uint64_t PARENT[NODES] = {0, ROOT, ROOT, CLOCK, CLOCK, ROOT};
+
+// The command line's vx.host=, else vectra.
+static vx_str host_name(void) {
+  vx_str c = vx_spawn.cmdline;
+  static const char key[] = "vx.host=";
+  for (size_t i = 0; i + sizeof key - 1 < c.len; i++) {
+    if ((i && c.ptr[i - 1] != ' ') || memcmp(c.ptr + i, key, sizeof key - 1) != 0) continue;
+    size_t from = i + sizeof key - 1, to = from;
+    while (to < c.len && c.ptr[to] != ' ') to++;
+    if (to > from) return (vx_str){c.ptr + from, to - from};
+  }
+  return VX_STR("vectra");
+}
 
 static vx_status fs_attach(void *ctx, vx_str aname, uint64_t *root) {
   (void)ctx;
@@ -88,6 +106,10 @@ static vx_status fs_read(void *ctx, uint64_t n, uint64_t offset, uint8_t *buf, u
     vx_ndb_put_u64(&w, "monotonic", (uint64_t)now);
     vx_ndb_put_u64(&w, "realtime", (uint64_t)vx_clock_utc());
     vx_ndb_end(&w);
+  } else if (n == NAME) {
+    vx_str h = host_name();
+    if (h.len > sizeof text) h.len = sizeof text;
+    memcpy(text, h.ptr, h.len), w.len = h.len;
   } else if (is_dir(n)) {
     return VX_ERR_INVALID; // read as a directory, through readdir
   }

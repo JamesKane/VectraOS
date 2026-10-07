@@ -494,6 +494,15 @@ const char *vx_main(void) {
   CHECK(image_size > 0);
   char buf[512] = {};
 
+  // Identity (6e1c3): its pid, the path svcd ran it from, its user, the
+  // machine's name, and its environment.
+  char host[64];
+  CHECK(vx_pid() == me);
+  CHECK(vx_exe_path().len == 18 && !memcmp(vx_exe_path().ptr, "/boot/bin/proctest", 18));
+  CHECK(vx_user_name().len == 4 && !memcmp(vx_user_name().ptr, "none", 4));
+  CHECK(vx_hostname(&ns, host, sizeof host) == 6 && !memcmp(host, "vectra", 6));
+  CHECK(!vx_getenv(VX_STR("NO_SUCH_VARIABLE")).ptr);
+
   // Its own entry: pid = its task id; its parent is svcd.
   int64_t n = read_file(me, "status", buf, sizeof buf);
   CHECK(n > 0 && has((vx_str){buf, (size_t)n}, "name=proctest") && has((vx_str){buf, (size_t)n}, "pid="));
