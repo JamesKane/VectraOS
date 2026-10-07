@@ -4,7 +4,7 @@
 //
 //   rc [-srdiIlxebpvV] [-c command] [-m initial] [file [arg ...]]
 //
-// As 9front's rc, it reads its flags, sets $pid, $rcname and $cflag, and runs
+// As 9front's rc, it reads its flags, sets $pid, $rcname, $cflag and $user, and runs
 // `. -bq /rc/lib/rcmain $*` (-m names another rcmain), which sets $home,
 // $prompt and $path and then runs the command, the file, or standard input,
 // interactively with -i, or when there is no file and standard input is the
@@ -1324,6 +1324,12 @@ const char *vx_main(void) {
   rc_set(sh, "pid", one, len1, 1);
   one[0] = "rc", len1[0] = 2;
   rc_set(sh, "rcname", one, len1, 1);
+  if (!rc_getvar(sh,
+                 "user")) { // who it runs as, as 9front's /env/user: the spawn message's user, or none (6d8)
+    one[0] = vx_spawn.user.len ? vx_spawn.user.ptr : "none",
+    len1[0] = vx_spawn.user.len ? vx_spawn.user.len : 4;
+    rc_set(sh, "user", one, len1, 1);
+  }
   if (cflag.len) one[0] = cflag.ptr, len1[0] = cflag.len, rc_set(sh, "cflag", one, len1, 1);
   static const char *words[VX_SPAWN_MAX_ARGS];
   static size_t lens[VX_SPAWN_MAX_ARGS];

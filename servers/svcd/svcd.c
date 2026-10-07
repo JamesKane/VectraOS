@@ -24,7 +24,11 @@
 //   ns=NAME                                    the namespace template /lib/ns/NAME, a
 //                                              namespace(6) file (ADR-0009), here
 //   user=NAME                                  who it runs as (docs/11 §9), which
-//                                              its attaches name; else none
+//                                              its attaches name; else none;
+//                                              user=$WORD: the command line's WORD=
+//
+// A namespace record (mount=, bind=, connect=, ns=) with when=WORD is used
+// only when WORD is on the command line, as a service's own when=.
 //
 // post=SRV: svcd makes a listen channel, gives the service its server end
 // ("listen") and keeps the client end as /srv/SRV, for mounts. It keeps a
@@ -351,6 +355,9 @@ static void put_bind(child_build *b, vx_str new, vx_str old, vx_str flags) {
 // The namespace template /lib/ns/NAME in the boot image, a namespace(6) file
 // (ADR-0009), as the child's mount and bind records: a mount's service is a
 // post, /srv/NAME.
+static bool cmdline_has(vx_str word);                  // below, with the services wanted
+static vx_str cmdline_value(vx_str word, vx_str dflt); // below
+
 static vx_status put_template(const service *s, child_build *b, vx_str name) {
   char path[64];
   const vx_str dir = VX_STR("lib/ns/");
@@ -487,6 +494,7 @@ static vx_status start(service *s) {
   size_t user_len = 0;
   while (st == VX_OK) {
     if (vx_ndb_next(&r, &rec) != VX_NDB_RECORD || vx_ndb_has(&rec, "service")) break;
+    if (vx_ndb_has(&rec, "when") && !cmdline_has(vx_ndb_get(&rec, "when"))) continue; // not on this boot
     if (vx_ndb_has(&rec, "ns")) {
       st = put_template(s, &b, vx_ndb_get(&rec, "ns"));
     } else if (vx_ndb_has(&rec, "arg")) {
@@ -528,6 +536,9 @@ static vx_status start(service *s) {
       put_bind(&b, vx_ndb_get(&rec, "new"), vx_ndb_get(&rec, "bind"), vx_ndb_get(&rec, "flags"));
     } else if (vx_ndb_has(&rec, "user")) {
       vx_str u = vx_ndb_get(&rec, "user");
+      // $WORD: the command line's WORD=VALUE (vx.user, which install puts in an
+      // installed system's, as plan9.ini's user=), else none (6d8).
+      if (u.len > 1 && u.ptr[0] == '$') u = cmdline_value((vx_str){u.ptr + 1, u.len - 1}, VX_STR("none"));
       if (!u.len || u.len > sizeof user) {
         st = VX_ERR_INVALID;
         break;
@@ -620,6 +631,20 @@ static void exited(service *s) {
 }
 
 // Whether the kernel command line has word, alone (space-separated).
+// The value of WORD=VALUE on the kernel command line, or dflt without one.
+static vx_str cmdline_value(vx_str word, vx_str dflt) {
+  vx_str c = vx_spawn.cmdline;
+  for (size_t i = 0; i + word.len + 1 <= c.len; i++) {
+    if ((i && c.ptr[i - 1] != ' ') || memcmp(c.ptr + i, word.ptr, word.len) != 0 ||
+        c.ptr[i + word.len] != '=')
+      continue;
+    size_t from = i + word.len + 1, to = from;
+    while (to < c.len && c.ptr[to] != ' ') to++;
+    return (vx_str){c.ptr + from, to - from};
+  }
+  return dflt;
+}
+
 static bool cmdline_has(vx_str word) {
   vx_str c = vx_spawn.cmdline;
   for (size_t i = 0; i + word.len <= c.len; i++)

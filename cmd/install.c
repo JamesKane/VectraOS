@@ -313,15 +313,42 @@ static vx_status copy_objects(void) {
   return st == VX_ERR_NOT_FOUND ? VX_OK : st; // the archive's end
 }
 
-// users(6), as vxfs mkfs makes it: adm (vectra in its group), none, vectra.
+// The first user (-u; vectra unless told otherwise): the system's, who owns
+// home and leads adm, and the console shell's (vx.user, 6d8).
+static vx_str first_user = VX_STR("vectra");
+
+// Whether a name can be a user(6)'s: 1 to 31 bytes, none of its separators,
+// and neither of the users the system has already.
+static bool user_name_ok(vx_str u) {
+  if (!u.len || u.len > 31 || (u.len == 3 && !memcmp(u.ptr, "adm", 3)) ||
+      (u.len == 4 && !memcmp(u.ptr, "none", 4)))
+    return false;
+  for (size_t i = 0; i < u.len; i++)
+    if (u.ptr[i] == ':' || u.ptr[i] == ',' || u.ptr[i] == ' ' || u.ptr[i] == '\n' || u.ptr[i] == '=')
+      return false;
+  return true;
+}
+
+// Puts s at buf's n, which the caller has made room for.
+static void append(char *buf, size_t *n, vx_str s) {
+  for (size_t i = 0; i < s.len; i++) buf[(*n)++] = s.ptr[i];
+}
+
+// users(6), as vxfs mkfs makes it: adm (the first user in its group), none,
+// the first user.
 static vx_status make_users(void) {
   vxfs_branch *br;
   vxfs_file root, f;
-  static const char text[] = "0:adm:adm:vectra\n1:none::\n1000:vectra:vectra:\n";
+  static char text[160];
+  vx_str u = first_user;
+  size_t n = 0;
+  append(text, &n, VX_STR("0:adm:adm:")), append(text, &n, u);
+  append(text, &n, VX_STR("\n1:none::\n1000:")), append(text, &n, u);
+  append(text, &n, VX_STR(":")), append(text, &n, u), append(text, &n, VX_STR(":\n"));
   vx_status st = vxfs_branch_open(&vol, "adm", &br);
   if (st == VX_OK) st = vxfs_root(&vol, &br->t, &root);
   if (st == VX_OK) st = vxfs_create(&vol, &br->t, &root, "users", 0664, 0, 0, now, &f);
-  if (st == VX_OK) st = vxfs_write(&vol, &br->t, &f, 0, text, sizeof text - 1, now, 0);
+  if (st == VX_OK) st = vxfs_write(&vol, &br->t, &f, 0, text, n, now, 0);
   if (st == VX_OK) st = vxfs_branch_open(&vol, "home", &br);
   vxfs_attr a = {.valid = VXFS_WUID | VXFS_WGID, .uid = 1000, .gid = 1000};
   if (st == VX_OK && (st = vxfs_root(&vol, &br->t, &root)) == VX_OK)
@@ -368,6 +395,9 @@ const char *vx_main(void) {
       yes = true;
     } else if (a.len == 2 && a.ptr[0] == '-' && a.ptr[1] == 'p') {
       off = true;
+    } else if (a.len == 2 && a.ptr[0] == '-' && a.ptr[1] == 'u' && i + 1 < vx_spawn.argc) {
+      first_user = vx_spawn.args[++i];
+      if (!user_name_ok(first_user)) fail("not a name for a user (users(6))", VX_ERR_INVALID);
     } else if (a.len == 2 && a.ptr[0] == '-' && a.ptr[1] == 'e' && i + 1 < vx_spawn.argc) {
       vx_str v = vx_spawn.args[++i];
       esp_mib = 0;
@@ -499,11 +529,18 @@ const char *vx_main(void) {
   for (size_t i = 0; i < c.len;) {
     size_t n = 0;
     while (i + n < c.len && c.ptr[i + n] != ' ') n++;
-    if (n && !(n == 7 && memcmp(c.ptr + i, "vx.live", 7) == 0) && cl + n + 2 < sizeof table.cmdline) {
+    bool dropped =
+        (n == 7 && memcmp(c.ptr + i, "vx.live", 7) == 0) || (n > 8 && memcmp(c.ptr + i, "vx.user=", 8) == 0);
+    if (n && !dropped && cl + n + 2 < sizeof table.cmdline) {
       if (cl) table.cmdline[cl++] = ' ';
       memcpy(table.cmdline + cl, c.ptr + i, n), cl += n;
     }
     i += n + 1;
+  }
+  // The first user, as plan9.ini's user=: the console shell runs as it (6d8).
+  if (cl + 9 + first_user.len + 1 < sizeof table.cmdline) {
+    if (cl) table.cmdline[cl++] = ' ';
+    append(table.cmdline, &cl, VX_STR("vx.user=")), append(table.cmdline, &cl, first_user);
   }
   static char text[4096];
   vx_ndb_writer w = {.buf = text, .cap = sizeof text};
