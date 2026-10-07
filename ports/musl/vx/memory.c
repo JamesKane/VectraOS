@@ -7,13 +7,19 @@
 // and the others, and a read-only MAP_PRIVATE costs no copy. A private
 // mapping that may be written, or one from a server without the extension,
 // is the file's bytes read into a VMO of its own. Shared mappings of other
-// servers' files are refused. Changing permissions waits for as_protect
-// (docs/milestones.md).
+// servers' files are refused. A MAP_SHARED anonymous mapping is mapped
+// VX_MAP_SHARED, so a forked child maps the same VMO; PROT_NONE is
+// VX_MAP_NOACCESS, and mprotect is as_protect (ADR-0042, M6 step 6e1a2).
 
-// A file's pages as its server's VMO (Tmap), mapped. PROT_NONE is mapped
-// read-only: what it reserves stays reserved. Past the file's last page
-// there is no VMO to map: those pages are left unmapped, so a touch there
-// faults (SIGSEGV, where POSIX says SIGBUS).
+// The kernel's flags for prot: PROT_NONE is no access at all; W^X holds.
+static uint32_t mem_vflags(int prot) {
+  if (prot == PROT_NONE) return VX_MAP_NOACCESS;
+  return (prot & PROT_WRITE ? VX_MAP_WRITE : 0) | (prot & PROT_EXEC ? VX_MAP_EXEC : 0);
+}
+
+// A file's pages as its server's VMO (Tmap), mapped. Past the file's last
+// page there is no VMO to map: those pages are left unmapped, so a touch
+// there faults (SIGSEGV, where POSIX says SIGBUS).
 static long mem_map_file(const ofd *o, uint64_t size, int prot, int flags, long offset, long addr) {
   uint32_t p9prot =
       P9_PROT_READ | (prot & PROT_WRITE ? P9_PROT_WRITE : 0) | (prot & PROT_EXEC ? P9_PROT_EXEC : 0);
@@ -21,7 +27,8 @@ static long mem_map_file(const ofd *o, uint64_t size, int prot, int flags, long 
   uint64_t from, avail;
   vx_status st = p9c_map(o->f.c, o->f.fid, (uint64_t)offset, size, p9prot, &vmo, &from, &avail);
   if (st != VX_OK) return vx_errno(st);
-  uint32_t vflags = (prot & PROT_WRITE ? VX_MAP_WRITE : 0) | (prot & PROT_EXEC ? VX_MAP_EXEC : 0);
+  bool shared = (flags & MAP_TYPE) != MAP_PRIVATE; // kept across fork as it is (a pager's VMO is anyway)
+  uint32_t vflags = mem_vflags(prot) | (shared ? VX_MAP_SHARED : 0);
   uint64_t at = (flags & (MAP_FIXED | MAP_FIXED_NOREPLACE)) ? (uint64_t)addr : 0;
   if (flags & MAP_FIXED) vx_as_unmap(vx_self, at, size);
   st = vx_as_map(vx_self, vmo, from, avail < size ? avail : size, vflags, &at);
@@ -38,28 +45,19 @@ static long mem_map(long addr, size_t len, int prot, int flags, int fd, long off
   size &= ~(uint64_t)4095;
   if ((prot & PROT_WRITE) && (prot & PROT_EXEC)) return -EACCES; // W^X (01 §11)
   bool anon = flags & MAP_ANONYMOUS;
-  // Anonymous shared mappings wait for shared VMOs across fork: refused,
-  // rather than made private where a program counts on another process
-  // seeing its writes.
   bool shared = (flags & MAP_TYPE) == MAP_SHARED || (flags & MAP_TYPE) == MAP_SHARED_VALIDATE;
   if ((flags & MAP_TYPE) != MAP_PRIVATE && !shared) return -EINVAL;
-  if (shared && anon) return -EINVAL;
   const ofd *o = anon ? nullptr : fd_get(fd);
   if (!anon && (!o || o->kind != OFD_FILE || o->dir)) return o ? -EACCES : -EBADF;
   bool mappable = !anon && (o->f.c->extensions & P9_EXT_MAP);
-  if (shared && !mappable) return -ENODEV;
+  if (shared && !anon && !mappable) return -ENODEV; // a file on a server that cannot share its pages
   if (mappable && (shared || !(prot & ~(PROT_READ | PROT_EXEC)))) {
     if ((o->flags & O_ACCMODE) == O_WRONLY) return -EACCES;
     if (shared && (prot & PROT_WRITE) && (o->flags & O_ACCMODE) != O_RDWR) return -EACCES;
     return mem_map_file(o, size, prot, flags, offset, addr);
   }
 
-  // Until as_protect, PROT_NONE is mapped read-write: what it reserves stays
-  // reserved, but a guard page does not fault. That is what musl's malloc
-  // expects where mprotect is missing: it reserves with PROT_NONE, and takes
-  // mprotect's ENOSYS to mean the pages are usable as they are.
-  uint32_t vflags =
-      (prot & PROT_WRITE || prot == PROT_NONE ? VX_MAP_WRITE : 0) | (prot & PROT_EXEC ? VX_MAP_EXEC : 0);
+  uint32_t vflags = mem_vflags(prot) | (shared ? VX_MAP_SHARED : 0); // shared: anonymous, kept across fork
   uint64_t at = (flags & (MAP_FIXED | MAP_FIXED_NOREPLACE)) ? (uint64_t)addr : 0;
   if (flags & MAP_FIXED) vx_as_unmap(vx_self, at, size); // Linux's MAP_FIXED replaces what is there
   vx_handle vmo;
@@ -85,22 +83,38 @@ static long mem_map(long addr, size_t len, int prot, int flags, int fd, long off
   return (long)at;
 }
 
-// realloc's large blocks, which are musl's own anonymous mappings: moved to a
-// new mapping and copied. Without MREMAP_MAYMOVE, only shrinking can be done.
-static long mem_remap(long addr, size_t old_len, size_t new_len, int flags) {
-  if ((addr & 4095) || !new_len || (flags & ~MREMAP_MAYMOVE)) return -EINVAL; // MREMAP_FIXED: not yet
+// mremap, of a private mapping (realloc's large blocks, which are musl's own
+// anonymous mappings): shrunk in place; grown in place, with a VMO of its
+// own after it, where the pages after it are free; else, with
+// MREMAP_MAYMOVE, moved to a new mapping (at new_addr with MREMAP_FIXED)
+// and copied. A shared mapping cannot be grown or moved: a copy would not be
+// shared, and the VMO's handle is gone (EINVAL).
+static long mem_remap(long addr, size_t old_len, size_t new_len, int flags, long new_addr) {
+  if ((addr & 4095) || !new_len || (flags & ~(MREMAP_MAYMOVE | MREMAP_FIXED))) return -EINVAL;
+  if ((flags & MREMAP_FIXED) && (!(flags & MREMAP_MAYMOVE) || (new_addr & 4095))) return -EINVAL;
   uint64_t old_size, new_size;
   if (ckd_add(&old_size, (uint64_t)old_len, 4095) || ckd_add(&new_size, (uint64_t)new_len, 4095))
     return -ENOMEM;
   old_size &= ~(uint64_t)4095, new_size &= ~(uint64_t)4095;
-  if (new_size <= old_size) {
+  if (new_size <= old_size && !(flags & MREMAP_FIXED)) {
     if (new_size < old_size) vx_as_unmap(vx_self, (uint64_t)addr + new_size, old_size - new_size);
     return addr;
   }
+  vx_map_info mi;
+  if (vx_as_query(vx_self, (uint64_t)addr, &mi) != VX_OK || mi.base > (uint64_t)addr) return -EFAULT;
+  if (mi.flags & VX_MAP_SHARED) return -EINVAL;
+  int prot = mi.flags & VX_MAP_NOACCESS ? PROT_NONE : PROT_READ | (mi.flags & VX_MAP_WRITE ? PROT_WRITE : 0);
+  if (!(flags & MREMAP_FIXED)) { // the pages after it, if they are free
+    long more = mem_map(addr + (long)old_size, new_size - old_size, prot,
+                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+    if (more >= 0) return addr;
+  }
   if (!(flags & MREMAP_MAYMOVE)) return -ENOMEM;
-  long to = mem_map(0, new_len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  int at_flags = MAP_PRIVATE | MAP_ANONYMOUS | (flags & MREMAP_FIXED ? MAP_FIXED : 0);
+  long to = mem_map(flags & MREMAP_FIXED ? new_addr : 0, new_len, PROT_READ | PROT_WRITE, at_flags, -1, 0);
   if (to < 0) return to;
-  memcpy((void *)to, (const void *)addr, old_len);
+  memcpy((void *)to, (const void *)addr, old_size < new_size ? old_size : new_size);
+  if (prot != (PROT_READ | PROT_WRITE)) vx_as_protect(vx_self, (uint64_t)to, new_size, mem_vflags(prot));
   vx_as_unmap(vx_self, (uint64_t)addr, old_size);
   return to;
 }
@@ -112,10 +126,16 @@ static long mem_unmap(long addr, size_t len) {
   return vx_errno(vx_as_unmap(vx_self, (uint64_t)addr, size & ~(uint64_t)4095));
 }
 
-// Until as_protect: nothing changes, and saying so is the answer musl's malloc
-// expects (see mem_map). Asking for read-write after PROT_NONE gets what it
-// asked for anyway.
-static long mem_protect(int prot) {
-  (void)prot;
-  return -ENOSYS;
+// mprotect: as_protect, each mapping in the range within the rights its VMO's
+// handle gave (a file opened read-only stays so: EACCES); a hole is ENOMEM.
+static long mem_protect(long addr, size_t len, int prot) {
+  if ((addr & 4095) || (prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC))) return -EINVAL;
+  if ((prot & PROT_WRITE) && (prot & PROT_EXEC)) return -EACCES; // W^X (01 §11)
+  uint64_t size;
+  if (ckd_add(&size, (uint64_t)len, 4095)) return -ENOMEM;
+  size &= ~(uint64_t)4095;
+  if (!size) return 0;
+  vx_status st = vx_as_protect(vx_self, (uint64_t)addr, size, mem_vflags(prot));
+  if (st == VX_ERR_NOT_FOUND || st == VX_ERR_RANGE) return -ENOMEM;
+  return vx_errno(st);
 }

@@ -416,6 +416,13 @@ static uint64_t task_in_way(const task *t, uint64_t va, uint64_t end) {
   return first;
 }
 
+// Whether any mapping overlaps [va, end). Under the task's lock.
+static bool task_maps_in(const task *t, uint64_t va, uint64_t end) {
+  for (uint32_t i = 0; t->maps && i < TASK_MAX_MAPPINGS; i++)
+    if (t->maps[i].size && t->maps[i].va < end && va < t->maps[i].va + t->maps[i].size) return true;
+  return false;
+}
+
 // Whether [va, end) lies wholly inside one reservation or outside every one.
 static bool task_resv_fits(const task *t, uint64_t va, uint64_t end) {
   for (uint32_t i = 0; i < TASK_MAX_RESERVATIONS; i++) {
@@ -465,6 +472,8 @@ static vx_status task_map(task *t, vmo *v, uint64_t offset, uint64_t size, uint3
     st = VX_ERR_INVALID; // a key it has not allocated
   else if ((at & 4095) || ckd_add(&end, at, size) || end > USER_TOP || !task_resv_fits(t, at, end))
     st = VX_ERR_RANGE;
+  else if (task_maps_in(t, at, end))
+    st = VX_ERR_EXISTS; // checked against the mappings, not the page tables: a no-access one has no pages
   else if (!slot)
     st = VX_ERR_NO_MEMORY;
   // Page by page; a page that is already mapped (by another mapping) fails
