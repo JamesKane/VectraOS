@@ -445,14 +445,19 @@ static bool task_resv_fits(const task *t, uint64_t va, uint64_t end) {
 }
 
 // Where as_map places a mapping of size bytes: from map_next on, past any
-// reservation in the way (a guard page after it).
+// reservation or mapping in the way (a mapping placed at an address, as
+// mremap's growth in place, may lie there), a guard page after it.
 static uint64_t task_place(const task *t, uint64_t size) {
   uint64_t at = t->map_next;
-  for (uint32_t pass = 0; pass <= TASK_MAX_RESERVATIONS; pass++) {
+  for (uint32_t pass = 0; pass <= TASK_MAX_RESERVATIONS + TASK_MAX_MAPPINGS; pass++) {
     bool moved = false;
     for (uint32_t i = 0; i < TASK_MAX_RESERVATIONS; i++) {
       const reservation *r = &t->resv[i];
       if (r->size && r->va < at + size && at < r->va + r->size) at = r->va + r->size + 4096, moved = true;
+    }
+    for (uint32_t i = 0; t->maps && i < TASK_MAX_MAPPINGS; i++) {
+      const mapping *m = &t->maps[i];
+      if (m->size && m->va < at + size && at < m->va + m->size) at = m->va + m->size + 4096, moved = true;
     }
     if (!moved) break;
   }
@@ -735,15 +740,26 @@ static uint64_t resv_random_u64(void) {
   return x;
 }
 
+// The reservation of [va, va + size) exactly, or none. Under the task's lock.
+static reservation *task_resv_at(task *t, uint64_t va, uint64_t size) {
+  for (uint32_t i = 0; i < TASK_MAX_RESERVATIONS; i++)
+    if (t->resv[i].size && t->resv[i].va == va && t->resv[i].size == size) return &t->resv[i];
+  return nullptr;
+}
+
+// Unmaps what is in it first, while it is still reserved, so nothing as_map
+// places can land there in between and be unmapped with it; then lets it go.
 static vx_status task_release(task *t, uint64_t va, uint64_t size) {
   spin_lock(&t->lock);
-  reservation *r = nullptr;
-  for (uint32_t i = 0; i < TASK_MAX_RESERVATIONS && !r; i++)
-    if (t->resv[i].size && t->resv[i].va == va && t->resv[i].size == size) r = &t->resv[i];
+  bool there = task_resv_at(t, va, size);
+  spin_unlock(&t->lock);
+  if (!there) return VX_ERR_NOT_FOUND;
+  vx_status st = task_unmap(t, va, size);
+  spin_lock(&t->lock);
+  reservation *r = task_resv_at(t, va, size);
   if (r) *r = (reservation){};
   spin_unlock(&t->lock);
-  if (!r) return VX_ERR_NOT_FOUND;
-  vx_status st = task_unmap(t, va, size);
+  if (!r) return VX_ERR_NOT_FOUND;            // another thread's release took it
   return st == VX_ERR_BAD_STATE ? VX_OK : st; // a task torn down has none left to unmap
 }
 

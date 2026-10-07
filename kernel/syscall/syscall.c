@@ -433,7 +433,8 @@ static int64_t sys_dma_map(vx_handle dh, vx_handle vh, uint64_t offset, uint64_t
   uint32_t need = (options & VX_DMA_READ ? VX_RIGHT_READ : 0) | (options & VX_DMA_WRITE ? VX_RIGHT_WRITE : 0);
   vmo *v = (vmo *)handle_get(current_task(), vh, OBJ_VMO, need, &st);
   uint64_t addresses[MAX_PAGES];
-  if (v && v->pager) { // its pages come and go: no device may hold them
+  if (v && (v->pager || v->resizable || v->lease_of)) { // its pages come and go (a pager's, a shrink, a
+                                                        // revoke): no device may hold them
     object_release(&v->obj);
     v = nullptr;
     st = VX_ERR_UNSUPPORTED;

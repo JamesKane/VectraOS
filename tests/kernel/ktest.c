@@ -2178,6 +2178,56 @@ static void test_leases(void) {
   vx_handle_close(v);
 }
 
+// --- The review of 2026-10-07: regressions ---
+
+static _Atomic int64_t lease_wait_result = 1;
+
+static void lease_waiter(uint64_t arg, uint64_t addr) { // waits on a word through the parent's mapping
+  (void)arg;
+  atomic_store(&lease_wait_result, vx_futex_wait((const _Atomic uint32_t *)addr, 0, after_ms(3000)));
+  vx_thread_exit();
+}
+
+static void test_review_fixes(void) {
+  // A debugger's write into a read-only mapping of a lease is refused, not a
+  // privatize that left its release slot unset (a kernel crash).
+  vx_handle w = 0, lease = 0;
+  uint64_t la = 0, pa = 0, one = 1;
+  CHECK(vx_vmo_create(4096, 0, &w) == VX_OK && vx_vmo_lease(w, &lease) == VX_OK);
+  CHECK(vx_as_map(self, lease, 0, 4096, 0, &la) == VX_OK);
+  vx_mem_op op = {.address = la, .buffer = (uint64_t)&one, .size = 8, .write = 1};
+  vx_status rw = vx_task_mem_rw(self, &op, 1);
+  CHECK(rw == VX_OK && op.status == VX_ERR_UNSUPPORTED); // refused: a lease is never privatized
+
+  // A futex in lent memory is one futex through the parent and the lease.
+  CHECK(vx_as_map(self, w, 0, 4096, VX_MAP_WRITE, &pa) == VX_OK);
+  vx_handle th = 0;
+  CHECK(vx_thread_create(self, &th) == VX_OK &&
+        vx_thread_start(th, (uint64_t)lease_waiter, new_stack(), 0, pa) == VX_OK);
+  static _Atomic uint32_t never;
+  vx_futex_wait(&never, 0, after_ms(50));                     // it is waiting
+  CHECK(vx_futex_wake((const _Atomic uint32_t *)la, 1) == 1); // through the lease
+  for (int i = 0; i < 1000 && atomic_load(&lease_wait_result) == 1; i++)
+    vx_futex_wait(&never, 0, after_ms(1));
+  CHECK(atomic_load(&lease_wait_result) == VX_OK);
+  vx_handle_close(th);
+  CHECK(vx_as_unmap(self, la, 4096) == VX_OK && vx_as_unmap(self, pa, 4096) == VX_OK);
+  vx_handle_close(lease);
+  vx_handle_close(w);
+
+  // A placed mapping steps over one mapped at an address where placement was
+  // to go next (mremap's growth in place), rather than failing EXISTS.
+  vx_handle v = 0;
+  uint64_t p = 0, fixed, q = 0;
+  CHECK(vx_vmo_create(4ull * 4096, 0, &v) == VX_OK && vx_as_map(self, v, 0, 4096, 0, &p) == VX_OK);
+  fixed = p + 4096; // the guard page, and where the next placed one would go
+  CHECK(vx_as_map(self, v, 0, 4ull * 4096, 0, &fixed) == VX_OK);
+  CHECK(vx_as_map(self, v, 0, 4096, 0, &q) == VX_OK && (q >= fixed + 4ull * 4096 || q + 4096 <= p));
+  CHECK(vx_as_unmap(self, p, 4096) == VX_OK && vx_as_unmap(self, fixed, 4ull * 4096) == VX_OK &&
+        vx_as_unmap(self, q, 4096) == VX_OK);
+  vx_handle_close(v);
+}
+
 // --- Leases lent for one call (ADR-0043) ---
 
 enum lent_mode { LENT_REPLY, LENT_HANG, LENT_CLOSE };
@@ -2615,6 +2665,7 @@ const char *vx_main(void) {
   test_address_space();
   test_leases();
   test_lent();
+  test_review_fixes();
   test_debugger();
   test_tls();
   test_fork();

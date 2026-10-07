@@ -772,6 +772,8 @@ static vx_status mem_op(task *t, const vx_mem_op *op, bool *shoot, vmo **release
     } else if (m->vmo->pager && (op->write || !vmo_page(m->vmo, (m->offset + (at - m->va)) / 4096))) {
       st =
           op->write ? VX_ERR_UNSUPPORTED : VX_ERR_SHOULD_WAIT; // a pager's pages: read only those it supplied
+    } else if (op->write && !(m->flags & VX_MAP_WRITE) && !m->privatized && m->vmo->lease_of) {
+      st = VX_ERR_UNSUPPORTED; // a lease's copy would outlive a revoke (ADR-0043); no slot taken
     } else if (op->write && !(m->flags & VX_MAP_WRITE) && !m->privatized && *released_count < 16) {
       st = mapping_privatize(t, m, &released[(*released_count)++]);
       *shoot = true;

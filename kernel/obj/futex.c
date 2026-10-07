@@ -41,7 +41,8 @@ static bool futex_key_of(task *t, uint64_t word, futex_key *k, bool *present) {
   for (uint32_t i = 0; t->maps && i < TASK_MAX_MAPPINGS && !found; i++) {
     const mapping *m = &t->maps[i];
     if (!m->size || word < m->va || word - m->va >= m->size || m->vmo->physical) continue;
-    *k = (futex_key){.vmo = m->vmo, .offset = m->offset + (word - m->va)};
+    *k =
+        (futex_key){.vmo = vmo_root(m->vmo), .offset = m->offset + (word - m->va)}; // a lease's: its parent's
     found = true;
   }
   *present = found && t->root && user_page_pa(t->root, word) != 0;

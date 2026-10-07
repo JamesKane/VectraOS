@@ -103,8 +103,15 @@ static long mem_remap(long addr, size_t old_len, size_t new_len, int flags, long
   vx_map_info mi;
   if (vx_as_query(vx_self, (uint64_t)addr, &mi) != VX_OK || mi.base > (uint64_t)addr) return -EFAULT;
   if (mi.flags & VX_MAP_SHARED) return -EINVAL;
+  if ((flags & MREMAP_FIXED) && (uint64_t)new_addr < (uint64_t)addr + old_size &&
+      (uint64_t)addr < (uint64_t)new_addr + new_size)
+    return -EINVAL; // the new place overlaps the old, as Linux refuses
   int prot = mi.flags & VX_MAP_NOACCESS ? PROT_NONE : PROT_READ | (mi.flags & VX_MAP_WRITE ? PROT_WRITE : 0);
-  if (!(flags & MREMAP_FIXED)) { // the pages after it, if they are free
+  // Grown in place only while it is one mapping: a second growth moves it
+  // into one again, so a buffer grown step by step never takes more than
+  // two of the task's mappings (the review of 2026-10-07).
+  bool single = mi.base == (uint64_t)addr && mi.size == old_size;
+  if (!(flags & MREMAP_FIXED) && single) { // the pages after it, if they are free
     long more = mem_map(addr + (long)old_size, new_size - old_size, prot,
                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
     if (more >= 0) return addr;
@@ -113,6 +120,7 @@ static long mem_remap(long addr, size_t old_len, size_t new_len, int flags, long
   int at_flags = MAP_PRIVATE | MAP_ANONYMOUS | (flags & MREMAP_FIXED ? MAP_FIXED : 0);
   long to = mem_map(flags & MREMAP_FIXED ? new_addr : 0, new_len, PROT_READ | PROT_WRITE, at_flags, -1, 0);
   if (to < 0) return to;
+  if (prot == PROT_NONE) vx_as_protect(vx_self, (uint64_t)addr, old_size, 0); // readable, to copy
   memcpy((void *)to, (const void *)addr, old_size < new_size ? old_size : new_size);
   if (prot != (PROT_READ | PROT_WRITE)) vx_as_protect(vx_self, (uint64_t)to, new_size, mem_vflags(prot));
   vx_as_unmap(vx_self, (uint64_t)addr, old_size);

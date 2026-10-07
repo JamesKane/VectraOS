@@ -19,4 +19,5 @@ Hubris (Oxide) lends memory for one message; the server reaches it only by copyi
 
 - A host shares a structure read-only, seals a plugin's result before trusting its checks, and takes a view back whenever it chooses, or at the end of a call, with the reader's mappings emptied in every task.
 - A reader of a lease is prepared for `VX_EXCEPTION_REVOKED` (an in-task handler, or `SIGBUS` with `siglongjmp`), or dies when its lease ends.
+- `dma_map` refuses a lease, as it refuses a pager's or a resizable VMO, whose pages a revoke or a shrink takes away; a futex in leased memory is keyed on the parent, so a wake through the lease reaches a waiter through the parent (the review of 2026-10-07).
 - A lease of a pager-backed, resizable or physical VMO (a mapped file, a driver's DMA buffer) is not there yet: 01 §7's driver restarts revoke DMA domains instead, until a lease follows a page list that changes.

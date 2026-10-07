@@ -185,10 +185,16 @@ static void cd_builtin(const rc_word *argv, int n) {
   say("Can't cd ", dir, ": "), err(chdir_why(st)), err(VX_STR("\n"));
 }
 
-// What updenv (below) last wrote to /env, by the hashes of names and values.
+// What updenv (below) last wrote to /env: each name, with hashes of it and
+// its value, and the spawn that last exported it (env_round), so one gone
+// from the shell since is removed from /env too.
 static struct {
   uint64_t name, value; // FNV-1a hashes; name 0: the slot is free
-} env_seen[1024];
+  uint32_t round;
+  uint16_t len;
+  char str[256];
+} env_seen[512];
+static uint32_t env_round;
 
 // --- rfork (6d7b3), as 9front's execrfork ---
 
@@ -541,15 +547,34 @@ static void updenv(const char *env, size_t eq, size_t n) {
   uint32_t at = (uint32_t)(nh % (sizeof env_seen / sizeof env_seen[0]));
   for (uint32_t probe = 0; probe < 8 && env_seen[at].name && env_seen[at].name != nh; probe++)
     at = (at + 1) % (sizeof env_seen / sizeof env_seen[0]);
+  if (env_seen[at].name == nh) env_seen[at].round = env_round; // exported still
   if (env_seen[at].name == nh && env_seen[at].value == vh) return;
   static char path[8 + 256] = "/env/"; // the name goes after it
-  if (eq > 256) return;
+  if (eq >= 256) return;
   for (size_t i = 0; i < eq; i++) path[5 + i] = env[i];
   vx_ns_file f;
   if (vx_ns_create(&ns, (vx_str){path, 5 + eq}, 0664, P9_OWRITE | P9_OTRUNC, &f) != VX_OK) return; // no group
   bool ok = vx_ns_write(&f, env + eq + 1, (uint32_t)(n - eq - 1)) == (int64_t)(n - eq - 1);
   vx_ns_close(&f);
-  if (ok && (!env_seen[at].name || env_seen[at].name == nh)) env_seen[at].name = nh, env_seen[at].value = vh;
+  if (ok && (!env_seen[at].name || env_seen[at].name == nh)) {
+    env_seen[at].name = nh, env_seen[at].value = vh, env_seen[at].round = env_round;
+    env_seen[at].len = (uint16_t)eq;
+    for (size_t i = 0; i < eq; i++) env_seen[at].str[i] = env[i];
+  }
+}
+
+// After a spawn's exports: what the shell no longer has (x=(), a function
+// deleted) goes from /env too, as 9front's rc empties it there.
+static void env_prune(void) {
+  static char path[8 + 256] = "/env/";
+  for (uint32_t i = 0; i < sizeof env_seen / sizeof env_seen[0]; i++) {
+    if (!env_seen[i].name || env_seen[i].round == env_round) continue;
+    for (uint16_t k = 0; k < env_seen[i].len; k++) path[5 + k] = env_seen[i].str[k];
+    p9_client *c;
+    uint32_t fid;
+    if (vx_ns_walk(&ns, (vx_str){path, 5u + env_seen[i].len}, &c, &fid) == VX_OK) p9c_remove(c, fid);
+    env_seen[i].name = 0;
+  }
 }
 
 static void export_var(void *arg, const char *name, const rc_word *val) {
@@ -758,8 +783,10 @@ static vx_status spawn(const rc_word *argv, bool child, const vx_handle io[RC_FD
     vx_ndb_put(&rec, "end", vx_cstr(IO[i]));
     vx_ndb_end(&rec);
   }
+  env_round++; // updenv marks what this spawn exports; env_prune removes the rest
   if (st == VX_OK) rc_each_var(sh, export_var, &rec);
   if (st == VX_OK) rc_each_fn(sh, export_fn, &rec);
+  if (st == VX_OK) env_prune();
   // More than a spawn message holds, or than the child takes: refused whole,
   // never run with a list cut short.
   if (st == VX_OK && (rec.failed || args > VX_SPAWN_MAX_ARGS || exported > VX_SPAWN_MAX_ARGS))

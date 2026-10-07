@@ -44,15 +44,24 @@ static uint64_t bytes_used;
 
 static p9_ring_server server;
 
-// A node: the group's index plus 1, then its variable's plus 1 (0 for the root).
-static uint64_t node_of(uint32_t g, uint32_t v) { return (uint64_t)(g + 1) << 32 | v; }
+// A node: the group's index plus 1 (bits 40 up), the variable slot's
+// generation (bits 16 to 39) and its index plus 1 (0 for the root), so a fid
+// on a variable removed finds nothing when its slot is used again.
+static uint64_t node_of(uint32_t g, uint32_t v) {
+  uint64_t gen = v ? vars[v - 1].gen & 0xff'ffff : 0;
+  return (uint64_t)(g + 1) << 40 | gen << 16 | v;
+}
+static uint32_t node_group(uint64_t node) { return (uint32_t)(node >> 40); } // plus 1
+static uint32_t node_var(uint64_t node) { return (uint32_t)(node & 0xffff); }
 static group *group_of(uint64_t node) {
-  uint32_t g = (uint32_t)(node >> 32);
+  uint32_t g = node_group(node);
   return g && g <= ENV_GROUPS && groups[g - 1].used ? &groups[g - 1] : nullptr;
 }
 static var *var_of(uint64_t node) {
-  uint32_t v = (uint32_t)node;
-  if (!v || v > ENV_VARS || vars[v - 1].group != (uint32_t)(node >> 32)) return nullptr;
+  uint32_t v = node_var(node);
+  if (!v || v > ENV_VARS || vars[v - 1].group != node_group(node) ||
+      (vars[v - 1].gen & 0xff'ffff) != (uint32_t)(node >> 16 & 0xff'ffff))
+    return nullptr;
   return &vars[v - 1];
 }
 
@@ -188,8 +197,8 @@ static void fs_fid_node(void *ctx, uint64_t node, int delta) {
 
 static vx_status fs_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) {
   (void)ctx;
-  if ((uint32_t)dir || !group_of(dir)) return VX_ERR_NOT_FOUND;
-  uint32_t g = (uint32_t)(dir >> 32) - 1;
+  if (node_var(dir) || !group_of(dir)) return VX_ERR_NOT_FOUND;
+  uint32_t g = node_group(dir) - 1;
   const var *x = var_named(g, name);
   if (!x) return VX_ERR_NOT_FOUND;
   *child = node_of(g, (uint32_t)(x - vars) + 1);
@@ -198,7 +207,7 @@ static vx_status fs_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) 
 
 static vx_status fs_parent(void *ctx, uint64_t node, uint64_t *parent) {
   (void)ctx;
-  *parent = node & ~(uint64_t)UINT32_MAX;
+  *parent = (uint64_t)node_group(node) << 40; // the group's root
   return VX_OK;
 }
 
@@ -206,7 +215,7 @@ static vx_status fs_stat(void *ctx, uint64_t node, p9_stat *out) {
   (void)ctx;
   const group *g = group_of(node);
   if (!g) return VX_ERR_NOT_FOUND;
-  if (!(uint32_t)node) {
+  if (!node_var(node)) {
     *out = (p9_stat){.qid = {P9_QTDIR, 0, g->token}, // the token: how a process learns its group's
                      .mode = P9_DMDIR | 0775,
                      .name = VX_STR("/"),
@@ -229,7 +238,7 @@ static vx_status fs_stat(void *ctx, uint64_t node, p9_stat *out) {
 
 static vx_status fs_open(void *ctx, uint64_t node, uint8_t mode) {
   (void)ctx;
-  if (!(uint32_t)node) return (mode & 3) == P9_OREAD && group_of(node) ? VX_OK : VX_ERR_ACCESS;
+  if (!node_var(node)) return (mode & 3) == P9_OREAD && group_of(node) ? VX_OK : VX_ERR_ACCESS;
   var *x = var_of(node);
   if (!x) return VX_ERR_NOT_FOUND;
   if (mode & P9_OTRUNC) x->size = 0; // a new value, as putenv writes it
@@ -238,12 +247,12 @@ static vx_status fs_open(void *ctx, uint64_t node, uint8_t mode) {
 
 static vx_status fs_create(void *ctx, uint64_t dir, vx_str name, uint32_t perm, uint8_t mode, uint64_t *out) {
   (void)ctx, (void)mode;
-  if ((uint32_t)dir || !group_of(dir)) return VX_ERR_NOT_FOUND;
+  if (node_var(dir) || !group_of(dir)) return VX_ERR_NOT_FOUND;
   if (perm & P9_DMDIR) return VX_ERR_ACCESS; // variables only
   if (!name.len || name.len >= ENV_NAME) return VX_ERR_INVALID;
   for (size_t i = 0; i < name.len; i++)
     if (name.ptr[i] == '/') return VX_ERR_INVALID;
-  uint32_t g = (uint32_t)(dir >> 32) - 1;
+  uint32_t g = node_group(dir) - 1;
   var *x = var_named(g, name);
   if (x) { // as 9front's devenv: creating one that exists empties it
     x->size = 0;
@@ -283,15 +292,15 @@ static vx_status fs_write(void *ctx, uint64_t node, uint64_t offset, const uint8
 static vx_status fs_remove(void *ctx, uint64_t node) {
   (void)ctx;
   var *x = var_of(node);
-  if (!x) return (uint32_t)node ? VX_ERR_NOT_FOUND : VX_ERR_ACCESS; // a group goes with its fids, not by name
+  if (!x) return node_var(node) ? VX_ERR_NOT_FOUND : VX_ERR_ACCESS; // a group goes with its fids, not by name
   var_free(x);
   return VX_OK;
 }
 
 static vx_status fs_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *child) {
   (void)ctx;
-  if ((uint32_t)dir || !group_of(dir)) return VX_ERR_NOT_FOUND;
-  uint32_t g = (uint32_t)(dir >> 32);
+  if (node_var(dir) || !group_of(dir)) return VX_ERR_NOT_FOUND;
+  uint32_t g = node_group(dir);
   for (uint32_t i = 0; i < ENV_VARS; i++)
     if (vars[i].group == g && !index--) {
       *child = node_of(g - 1, i + 1);
@@ -299,6 +308,12 @@ static vx_status fs_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *c
     }
   return VX_ERR_NOT_FOUND;
 }
+
+// Every process that starts a child or touches /env holds a connection for
+// its life: far more than the framework's default 16 (the review of
+// 2026-10-07).
+static constexpr uint32_t ENV_CONNS = 128;
+static p9_ring_conn conns[ENV_CONNS];
 
 static p9_ring_server server = {
     .fs = {.attach = fs_attach,
@@ -318,6 +333,7 @@ static p9_ring_server server = {
 
 const char *vx_main(void) {
   server.listen = vx_spawn_take("listen");
+  server.conns = conns, server.max_conns = ENV_CONNS;
   if (!server.listen) {
     vx_print(VX_STR("envd: no listen channel\n"));
     return "no listen channel";
