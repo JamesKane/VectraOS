@@ -1,0 +1,64 @@
+page=heap sect=2 summary="a general allocator object, and the process heap"
+    names=vx_heap_new,vx_heap_alloc,vx_heap_alloc_aligned,vx_heap_free,vx_heap_usable,vx_heap_process,vx_heap_failed
+    src=lib/vx-rt/heap.c,docs/adr/0046-lazy-memory.md
+    keys=heap,malloc,free,allocator,aligned,usable,slab,memory
+
+# SYNOPSIS
+
+```c
+vx_heap *vx_heap_new(size_t reserve);
+bool vx_heap_failed(const vx_heap *h);
+void *vx_heap_alloc(vx_heap *h, size_t n);
+void *vx_heap_alloc_aligned(vx_heap *h, size_t n, size_t align);
+void vx_heap_free(vx_heap *h, void *p);
+size_t vx_heap_usable(const vx_heap *h, const void *p);
+vx_heap *vx_heap_process(void);
+```
+
+# DESCRIPTION
+
+A heap is `libvx`'s third kind of memory, after arenas and pools, for objects whose lifetimes have nothing to do with each other (09 §4.3, M6 step 6e1e2b, os-requirements R6).
+There is no global `malloc`: a heap is an object, made and passed explicitly.
+`vx_heap_process` is the one a program keeps as its global: the native C library's `malloc` family sits on it (ADR-0033 §1), as does the Swift runtime.
+First-party system code keeps to arenas and pools.
+
+`vx_heap_new` makes a heap of up to <reserve> bytes, rounded up to 256 MiB and at most 16 GiB.
+That is address space, reserved (as(2)); memory comes as the heap is used, from lazy VMOs (vmo(2), ADR-0046) mapped into it 256 MiB at a time.
+If it cannot be made it returns the nil heap, which gives nothing and takes nothing: `vx_heap_failed` says which, and a program checks once, where it matters.
+
+`vx_heap_alloc` returns at least <n> bytes aligned to 16, and `vx_heap_alloc_aligned` at least <n> aligned to <align>, a power of two up to 64 KiB; both return `nullptr` when there is no room, or for a bad alignment.
+The memory is not cleared, though a block of pages the heap has given back reads as zeros.
+
+`vx_heap_free` gives a block back; `nullptr` is nothing.
+A pointer that is not the start of one of the heap's blocks ends the program, as a fault does; freeing a block twice is not always caught.
+
+`vx_heap_usable` is the size of <p>'s block, at least what was asked for: the caller may use all of it and grow into it, as Swift's arrays and strings do.
+It is 0 for anything that is not one of the heap's blocks.
+
+A block of up to 32 KiB comes from a slab of its size class, 64 KiB of blocks of one size, four classes to each doubling; each class has its own lock, so threads asking for different sizes do not wait on each other.
+A larger block is a run of 64 KiB spans.
+Free runs are joined with their neighbours, and once more than 4 MiB of them may still hold pages, their pages go back to the system (`VX_VMO_DECOMMIT`); so do slabs left empty, all but one of each class.
+
+# EXAMPLES
+
+A program's own heap for an editor's buffers:
+
+```c
+static vx_heap *buffers;
+
+buffers = vx_heap_new(1ull << 30);
+if (vx_heap_failed(buffers)) return "no memory";
+char *line = vx_heap_alloc(buffers, 200);
+size_t room = vx_heap_usable(buffers, line); // 224
+vx_heap_free(buffers, line);
+```
+
+# SEE ALSO
+
+vmo(2), as(2), start(2); `docs/09-native-api.md` §4.3 and ADR-0046 in the repository
+
+# BUGS
+
+A heap holds one mapping for each 256 MiB it has grown to, of a task's 85, so it reaches its 16 GiB only in a task with few other mappings; a task's memory budget (09's `vx_mem_budget`) does not size it yet.
+
+A small block's free list is kept in the freed blocks themselves, so a write after a free can corrupt the heap rather than fault.

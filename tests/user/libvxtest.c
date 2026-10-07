@@ -1,7 +1,8 @@
 // libvxtest: libvx v0's memory, threads and time (M6 step 6e1e, 09 §5,
 // swift-on-vectra's os-requirements R6 and R11-R15), the libvx scenario's
 // (tests/qemu/libvx.ndb). A section for each: the CPUs the process may use,
-// the clock and sleeping, futexes with deadlines, and random bytes. Each
+// the clock and sleeping, futexes with deadlines, random bytes, and the
+// heap (6e1e2b). Each
 // check prints a line only when it fails; the last line counts them.
 
 #include "../../lib/vx-rt/rt.c"
@@ -93,11 +94,115 @@ static void randomness(void) {
   CHECK(memcmp(a, b, sizeof a) != 0);
 }
 
+// R6: the heap. Blocks of every class and larger, each with room for what
+// was asked, aligned, and apart from the others; aligned requests up to a
+// span; a freed block taken again; what is not a block refused.
+static void heap_blocks(void) {
+  vx_heap *h = vx_heap_new(1ull << 30);
+  CHECK(!vx_heap_failed(h));
+  static const size_t SIZES[] = {1,     8,     16,    17,     100,     1000,    4096,     5000,
+                                 30000, 32768, 32769, 100000, 1 << 20, 5 << 20, 300 << 20};
+  static constexpr size_t N = sizeof SIZES / sizeof SIZES[0];
+  uint8_t *p[N] = {};
+  for (size_t i = 0; i < N; i++) {
+    p[i] = vx_heap_alloc(h, SIZES[i]);
+    CHECK(p[i] && !((uintptr_t)p[i] & 15) && vx_heap_usable(h, p[i]) >= SIZES[i]);
+    if (p[i]) memset(p[i], (int)i + 1, SIZES[i]);
+  }
+  for (size_t i = 0; i < N; i++) {
+    bool kept = p[i] != nullptr;
+    for (size_t j = 0; kept && j < SIZES[i]; j += 97) kept = p[i][j] == (uint8_t)(i + 1);
+    CHECK(kept && p[i][SIZES[i] - 1] == (uint8_t)(i + 1));
+    vx_heap_free(h, p[i]);
+  }
+  for (size_t align = 16; align <= 65536; align *= 2) {
+    uint8_t *a = vx_heap_alloc_aligned(h, 100, align);
+    CHECK(a && !((uintptr_t)a & (align - 1)) && vx_heap_usable(h, a) >= 100);
+    vx_heap_free(h, a);
+  }
+  CHECK(!vx_heap_alloc_aligned(h, 10, 3) && !vx_heap_alloc_aligned(h, 10, 1 << 17));
+  void *b = vx_heap_alloc(h, 64);
+  vx_heap_free(h, b);
+  CHECK(vx_heap_alloc(h, 64) == b); // a slab's freed block is the next given
+  vx_heap_free(h, b);
+  int local = 0;
+  CHECK(vx_heap_usable(h, &local) == 0);
+  vx_heap_free(h, nullptr);
+  // Many small ones: each its own, aligned.
+  static uint8_t *many[10000];
+  bool ok = true;
+  for (size_t i = 0; i < 10000; i++) {
+    many[i] = vx_heap_alloc(h, 48);
+    ok = ok && many[i] && !((uintptr_t)many[i] & 15);
+    if (many[i]) memset(many[i], (int)(i & 0xff), 48);
+  }
+  for (size_t i = 0; i < 10000; i++) ok = ok && many[i] && many[i][47] == (uint8_t)(i & 0xff);
+  CHECK(ok);
+  for (size_t i = 0; i < 10000; i++) vx_heap_free(h, many[i]);
+}
+
+// The process heap from several threads at once, each freeing what the
+// others made: a slot table of blocks, each holding its size and a pattern.
+static constexpr uint32_t SLOTS = 256;
+static uint8_t *_Atomic slots[SLOTS];
+static _Atomic uint32_t heap_errors;
+
+static void heap_check_free(uint8_t *p) {
+  if (!p) return;
+  size_t n;
+  memcpy(&n, p, sizeof n);
+  bool ok = vx_heap_usable(vx_heap_process(), p) >= n;
+  for (size_t j = sizeof n; ok && j < n && j < 256; j++) ok = p[j] == (uint8_t)n;
+  if (!ok) atomic_fetch_add(&heap_errors, 1);
+  vx_heap_free(vx_heap_process(), p);
+}
+
+static void heap_worker(void *arg) {
+  uint64_t r = (uint64_t)(uintptr_t)arg * 0x9e3779b97f4a7c15ull + 1;
+  for (int i = 0; i < 20000; i++) {
+    r ^= r << 13, r ^= r >> 7, r ^= r << 17;
+    size_t n = sizeof(size_t) + r % 3000;
+    if (r % 64 == 0) n += 60000; // now and then a large one
+    uint8_t *p = vx_heap_alloc(vx_heap_process(), n);
+    if (!p) {
+      atomic_fetch_add(&heap_errors, 1);
+      continue;
+    }
+    memcpy(p, &n, sizeof n);
+    memset(p + sizeof n, (uint8_t)n, (n < 256 ? n : 256) - sizeof n);
+    heap_check_free(atomic_exchange(&slots[(r >> 32) % SLOTS], p));
+  }
+}
+
+static void heap_threads(void) {
+  vx_thread t[4];
+  for (uintptr_t i = 0; i < 4; i++) CHECK(vx_thread_spawn(&t[i], heap_worker, (void *)(i + 1), 0) == VX_OK);
+  for (int i = 0; i < 4; i++) vx_thread_join(&t[i]);
+  for (uint32_t i = 0; i < SLOTS; i++) heap_check_free(atomic_exchange(&slots[i], nullptr));
+  CHECK(atomic_load(&heap_errors) == 0);
+}
+
+// Memory given back: 160 MiB written through and freed, four times, on a
+// machine of 512 MiB; it fits only if each block's pages go back.
+static void heap_returns(void) {
+  bool ok = true;
+  for (int round = 0; round < 4 && ok; round++) {
+    uint8_t *p = vx_heap_alloc(vx_heap_process(), 160ull << 20);
+    ok = p != nullptr;
+    for (size_t at = 0; p && at < 160ull << 20; at += 4096) p[at] = 1;
+    vx_heap_free(vx_heap_process(), p);
+  }
+  CHECK(ok);
+}
+
 const char *vx_main(void) {
   cpus();
   timing();
   futexes();
   randomness();
+  heap_blocks();
+  heap_threads();
+  heap_returns();
   vx_print(VX_STR("libvxtest: "));
   vx_print_u64(checks);
   vx_print(VX_STR(" checks, "));
