@@ -292,7 +292,60 @@ static int64_t sys_vmo_op(vx_handle h, uint64_t op, uint64_t arg) {
   vx_status st;
   vmo *v = (vmo *)handle_get(current_task(), h, OBJ_VMO, VX_RIGHT_WRITE, &st);
   if (!v) return st;
-  st = v->pager ? VX_ERR_ACCESS : vmo_resize(v, arg);
+  if (v->pager || vmo_sealed(v))
+    st = VX_ERR_ACCESS; // its pager's to resize; sealed: no change at all (ADR-0043)
+  else if (v->lease_of)
+    st = vmo_revoked(v) ? VX_ERR_REVOKED : VX_ERR_UNSUPPORTED; // a lease's size is its parent's
+  else
+    st = vmo_resize(v, arg);
+  object_release(&v->obj);
+  return st;
+}
+
+// vmo_seal(vmo), with WRITE (ADR-0043): sealed first, then every task looked
+// at for a writable mapping of it or a lease of it; one found unseals it and
+// fails. A map in between checks the seal under its task's lock, which the
+// look takes, so none slips past.
+static int64_t sys_vmo_seal(vx_handle h) {
+  vx_status st;
+  vmo *v = (vmo *)handle_get(current_task(), h, OBJ_VMO, VX_RIGHT_WRITE, &st);
+  if (!v) return st;
+  if (v->physical || v->pager)
+    st = VX_ERR_UNSUPPORTED;
+  else if (v->lease_of)
+    st = VX_ERR_INVALID; // the parent's holder seals it
+  else if (!atomic_exchange(&v->sealed, true) && vmo_mapped_writable(v))
+    atomic_store(&v->sealed, false), st = VX_ERR_BAD_STATE;
+  object_release(&v->obj);
+  return st;
+}
+
+// vmo_lease(vmo, &lease) (ADR-0043): a lease with the caller's rights and
+// MANAGE, which revokes it.
+static int64_t sys_vmo_lease(vx_handle h, uint64_t out) {
+  if (!user_range_ok(out, sizeof(vx_handle), true)) return VX_ERR_INVALID;
+  vx_status st;
+  uint32_t rights = 0;
+  vmo *v = (vmo *)handle_get_rights(current_task(), h, OBJ_VMO, VX_RIGHT_READ, &rights, &st);
+  if (!v) return st;
+  vmo *lease = nullptr;
+  st = vmo_revoked(v) ? VX_ERR_REVOKED : vmo_lease_create(v, &lease);
+  object_release(&v->obj);
+  if (st != VX_OK) return st;
+  return return_handle(&lease->obj, rights | VX_RIGHT_MANAGE, out);
+}
+
+// vmo_revoke(lease), with MANAGE: its mappings lose their pages everywhere,
+// and every use of it from now on is REVOKED.
+static int64_t sys_vmo_revoke(vx_handle h) {
+  vx_status st;
+  vmo *v = (vmo *)handle_get(current_task(), h, OBJ_VMO, VX_RIGHT_MANAGE, &st);
+  if (!v) return st;
+  if (!v->lease_of) {
+    st = VX_ERR_INVALID;
+  } else if (!atomic_exchange(&v->revoked, true)) {
+    vmo_unmap_everywhere(v, 0, v->size / 4096);
+  }
   object_release(&v->obj);
   return st;
 }
@@ -1095,6 +1148,9 @@ static int64_t sys_vmo_rw(vx_handle h, uint64_t op, uint64_t offset, uint64_t bu
   else if (ckd_add(&end, offset, size) || end > v->size)
     st = VX_ERR_RANGE;
   for (uint64_t done = 0; st == VX_OK && done < size;) {
+    if (vmo_revoked(v)) st = VX_ERR_REVOKED; // page by page: a revoke stops a long copy (ADR-0043)
+    if (op == VX_VMO_WRITE && vmo_sealed(v)) st = VX_ERR_ACCESS;
+    if (st != VX_OK) break;
     uint64_t at = offset + done, in_page = at & 4095, n = 4096 - in_page;
     if (n > size - done) n = size - done;
     if (vmo_locked(v)) { // its pages can go (EVICT, a shrink): each touched under its lock, through a bounce
@@ -1201,6 +1257,9 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_vmo_op: return sys_vmo_op((vx_handle)a[0], a[1], a[2]);
   case VX_SYS_iorange_create: return sys_iorange_create((vx_handle)a[0], a[1], a[2], a[3]);
   case VX_SYS_vmo_rw: return sys_vmo_rw((vx_handle)a[0], a[1], a[2], a[3], a[4]);
+  case VX_SYS_vmo_seal: return sys_vmo_seal((vx_handle)a[0]);
+  case VX_SYS_vmo_lease: return sys_vmo_lease((vx_handle)a[0], a[1]);
+  case VX_SYS_vmo_revoke: return sys_vmo_revoke((vx_handle)a[0]);
   case VX_SYS_as_reserve: return sys_as_reserve((vx_handle)a[0], a[1], a[2], a[3], a[4]);
   case VX_SYS_as_map: return sys_as_map((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4], a[5]);
   case VX_SYS_as_unmap: return sys_as_unmap((vx_handle)a[0], a[1], a[2]);

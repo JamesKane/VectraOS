@@ -339,6 +339,19 @@ static_assert(sizeof(vx_cqe) == 32);
 //       there faults). One made without VX_VMO_RESIZABLE: UNSUPPORTED. A
 //       pager-backed one is its pager's to resize (pager_op RESIZE): ACCESS
 enum vx_vmo_options : uint32_t { VX_VMO_PHYSICAL = 1, VX_VMO_PAGER = 2, VX_VMO_RESIZABLE = 4 };
+// vmo_seal(vmo) (ADR-0043, 01 §6.6), with WRITE: no one writes the VMO again,
+//     through any handle, mapping or lease (vmo_rw, as_map and as_protect
+//     with WRITE, a resize: ACCESS). BAD_STATE while any writable mapping
+//     of it exists, as memfd's F_SEAL_WRITE; UNSUPPORTED for a physical or
+//     pager-backed VMO. Sealing again is VX_OK.
+// vmo_lease(vmo, &lease): a lease, a VMO handle on the same pages with the
+//     caller's rights and MANAGE, to give away (duplicated without MANAGE);
+//     vmo_revoke(lease), with MANAGE: from then on no one reaches the pages
+//     through it. Its mappings, in every task, lose their pages, and a touch
+//     raises VX_EXCEPTION_REVOKED; vmo_rw, as_map and vmo_clone through it
+//     answer REVOKED. A forked task maps a lease's mapping as it is, never a
+//     copy, so a revoke reaches it too. Only a plain anonymous VMO is leased
+//     (UNSUPPORTED otherwise), and a lease is not leased again (INVALID).
 enum vx_dma_options : uint32_t { VX_DMA_READ = 1, VX_DMA_WRITE = 2 }; // what the device may do: dma_map
 // system_power(resource, op): the whole machine (the root Resource, MANAGE).
 // VX_POWER_OFF: through PSCI where the firmware has it (aarch64); returns,
@@ -589,6 +602,8 @@ enum vx_exception_kind : uint32_t {
                                // page, code: read 0, write 1, execute 2 (POSIX's SIGBUS)
   VX_EXCEPTION_PROTECTION_KEY, // a page whose key the thread's rights deny; address: what was touched,
                                // code: read 0, write 1, key: the mapping's (ADR-0035; SIGSEGV, SEGV_PKUERR)
+  VX_EXCEPTION_REVOKED,        // a page of a lease that was revoked (ADR-0043); address: what was touched,
+                               // code: read 0, write 1, execute 2 (POSIX's SIGBUS)
 };
 
 typedef struct vx_exception {

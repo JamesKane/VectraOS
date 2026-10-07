@@ -72,6 +72,10 @@ typedef struct vx_note_buf {
                 : VX_STR("sys: trap: protection key read")); // VX_STR of a literal: sizeof a pointer cut it
     has_address = true;
     break;
+  case VX_EXCEPTION_REVOKED: // a page of a lease taken back (ADR-0043)
+    vx_note_put(&b, VX_STR("sys: trap: lease revoked"));
+    has_address = true;
+    break;
   case VX_EXCEPTION_PAGER_TIMEOUT: // its pager did not supply the page in time
     vx_note_put(&b, VX_STR("sys: trap: page not supplied"));
     has_address = true;

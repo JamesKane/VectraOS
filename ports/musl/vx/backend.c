@@ -83,6 +83,7 @@ static long vx_errno(vx_status st) {
   case VX_ERR_NO_CHILD: return -ECHILD;
   case VX_ERR_IO: return -EIO;
   case VX_ERR_NO_SPACE: return -ENOSPC;
+  case VX_ERR_REVOKED: return -EFAULT; // a lease taken back (ADR-0043)
   case VX_ERR_NOT_FOUND: return -ENOENT;
   case VX_ERR_EXISTS: return -EEXIST;
   default: return -EIO;

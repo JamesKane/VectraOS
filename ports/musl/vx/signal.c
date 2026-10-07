@@ -273,6 +273,7 @@ static vx_noted sig_note(vx_exception *e, vx_str note, void *fp) {
   switch (e->kind) {
   case VX_EXCEPTION_ALIGNMENT: sig = SIGBUS, code = BUS_ADRALN; break;
   case VX_EXCEPTION_PAGER_TIMEOUT:
+  case VX_EXCEPTION_REVOKED: // a lease taken back (ADR-0043)
     sig = SIGBUS, code = BUS_ADRERR;
     break; // a mapped file's page that did not come
   case VX_EXCEPTION_ILLEGAL:

@@ -1153,7 +1153,7 @@ static void test_exception_port(void) {
 }
 
 static vx_handle missing; // what the in-task handler maps where a fault was
-static _Atomic uint32_t handled[VX_EXCEPTION_INTERRUPT + 1], interrupted_thread;
+static _Atomic uint32_t handled[VX_EXCEPTION_REVOKED + 1], interrupted_thread;
 static char interrupt_note[VX_ERRMAX + 1]; // the note the last interrupt carried
 
 static vx_handle late_pager, late_vmo, late_src; // what the handler supplies a late page from
@@ -1162,9 +1162,11 @@ static _Atomic uint32_t key_faults, key_fault_key, key_fault_code; // PROTECTION
 
 static uint64_t guard_at; // a no-access page the handler opens when touched (test_address_space)
 static _Atomic uint32_t guard_faults;
+static vx_handle revoked_spare; // what the handler maps where a revoked lease was (test_leases)
+static _Atomic uint64_t revoked_at;
 
 static void handler(vx_exception *e) {
-  if (e->kind <= VX_EXCEPTION_INTERRUPT) atomic_fetch_add(&handled[e->kind], 1);
+  if (e->kind <= VX_EXCEPTION_REVOKED) atomic_fetch_add(&handled[e->kind], 1);
   if (e->kind == VX_EXCEPTION_PROTECTION_KEY) { // seen, then the key given: the access made again
     atomic_fetch_add(&key_faults, 1);
     atomic_store(&key_fault_key, e->key);
@@ -1174,6 +1176,11 @@ static void handler(vx_exception *e) {
              VX_EXCEPTION_PAGER_TIMEOUT) { // the page, late: supplied now, and the access made again
     atomic_fetch_add(&pager_timeouts, 1);
     vx_pager_supply(late_pager, late_vmo, 0, 4096, late_src, 0);
+  } else if (e->kind == VX_EXCEPTION_REVOKED) { // the lease's page swapped for a spare: the load made again
+    uint64_t at = e->address & ~4095ull;
+    atomic_store(&revoked_at, e->address);
+    vx_as_unmap(vx_self, at, 4096);
+    vx_as_map(vx_self, revoked_spare, 0, 4096, 0, &at);
   } else if (e->kind == VX_EXCEPTION_PAGE_FAULT && guard_at && (e->address & ~4095ull) == guard_at) {
     atomic_fetch_add(&guard_faults, 1); // a no-access page touched: opened, and the access made again
     vx_as_protect(vx_self, guard_at, 4096, VX_MAP_WRITE);
@@ -2115,6 +2122,62 @@ static void test_address_space(void) {
   vx_handle_close(port);
 }
 
+// --- Seals and leases (ADR-0043) ---
+
+static void test_leases(void) {
+  // A seal: refused while mapped writable, then no write by anyone.
+  vx_handle v, rv;
+  uint64_t value = 0x5eed, got = 0, at = 0;
+  CHECK(vx_vmo_create(4096, 0, &v) == VX_OK && vx_vmo_rw(v, VX_VMO_WRITE, 0, &value, 8) == VX_OK);
+  CHECK(vx_as_map(self, v, 0, 4096, VX_MAP_WRITE, &at) == VX_OK);
+  CHECK(vx_vmo_seal(v) == VX_ERR_BAD_STATE); // a writable mapping: as memfd's F_SEAL_WRITE
+  CHECK(vx_as_unmap(self, at, 4096) == VX_OK && vx_vmo_seal(v) == VX_OK && vx_vmo_seal(v) == VX_OK);
+  CHECK(vx_vmo_rw(v, VX_VMO_WRITE, 0, &value, 8) == VX_ERR_ACCESS);
+  at = 0;
+  CHECK(vx_as_map(self, v, 0, 4096, VX_MAP_WRITE, &at) == VX_ERR_ACCESS);
+  CHECK(vx_as_map(self, v, 0, 4096, 0, &at) == VX_OK && *(volatile uint64_t *)at == 0x5eed);
+  CHECK(vx_as_protect(self, at, 4096, VX_MAP_WRITE) == VX_ERR_ACCESS && vx_as_unmap(self, at, 4096) == VX_OK);
+  CHECK(vx_vmo_create(4096, VX_VMO_RESIZABLE, &rv) == VX_OK && vx_vmo_seal(rv) == VX_OK &&
+        vx_vmo_resize(rv, 8192) == VX_ERR_ACCESS);
+  vx_handle_close(rv);
+
+  // A lease: the same pages, read through it; one without MANAGE cannot
+  // revoke; revoked, a touch is REVOKED and every use of it too.
+  vx_handle w, lease, given, again, copy;
+  CHECK(vx_vmo_create(2ull * 4096, 0, &w) == VX_OK && vx_vmo_rw(w, VX_VMO_WRITE, 4096, &value, 8) == VX_OK);
+  CHECK(vx_vmo_lease(w, &lease) == VX_OK);
+  CHECK(vx_handle_dup(lease, VX_RIGHT_READ | VX_RIGHT_MAP, &given) == VX_OK); // what a reader is given
+  uint64_t la = 0;
+  CHECK(vx_as_map(self, given, 0, 2ull * 4096, 0, &la) == VX_OK &&
+        *(volatile uint64_t *)(la + 4096) == 0x5eed);
+  value = 0x1111;
+  CHECK(vx_vmo_rw(w, VX_VMO_WRITE, 4096, &value, 8) == VX_OK && *(volatile uint64_t *)(la + 4096) == 0x1111);
+  CHECK(vx_vmo_revoke(given) == VX_ERR_ACCESS && vx_vmo_lease(given, &again) == VX_ERR_INVALID);
+  CHECK(vx_vmo_revoke(w) == VX_ERR_INVALID); // not a lease
+  CHECK(vx_vmo_revoke(lease) == VX_OK && vx_vmo_revoke(lease) == VX_OK);
+  CHECK(vx_vmo_create(4096, 0, &revoked_spare) == VX_OK);
+  CHECK(vx_exception_bind(self, 0, (uint64_t)handler, VX_EXCEPTION_IN_TASK) == VX_OK);
+  got = *(volatile uint64_t *)(la + 4096ull + 8); // revoked: the handler puts a spare there
+  CHECK(vx_exception_bind(self, 0, 0, VX_EXCEPTION_IN_TASK) == VX_OK);
+  CHECK(atomic_load(&handled[VX_EXCEPTION_REVOKED]) == 1 && atomic_load(&revoked_at) == la + 4096ull + 8 &&
+        got == 0);
+  CHECK(vx_vmo_rw(given, VX_VMO_READ, 0, &got, 8) == VX_ERR_REVOKED);
+  uint64_t la2 = 0;
+  CHECK(vx_as_map(self, given, 0, 4096, 0, &la2) == VX_ERR_REVOKED);
+  CHECK(vx_vmo_clone(given, 0, 4096, &copy) == VX_ERR_REVOKED);
+  CHECK(vx_vmo_rw(w, VX_VMO_READ, 4096, &got, 8) == VX_OK && got == 0x1111); // the parent's are its own
+  CHECK(vx_as_unmap(self, la, 2ull * 4096) == VX_OK);
+  vx_handle_close(given);
+  vx_handle_close(lease);
+  vx_handle_close(revoked_spare);
+  // Only plain anonymous memory is leased.
+  CHECK(vx_vmo_create(4096, VX_VMO_RESIZABLE, &rv) == VX_OK &&
+        vx_vmo_lease(rv, &again) == VX_ERR_UNSUPPORTED);
+  vx_handle_close(rv);
+  vx_handle_close(w);
+  vx_handle_close(v);
+}
+
 // --- task_exec (ADR-0012) ---
 
 // The program a forked child execs: it closes `probe`, a handle the child
@@ -2443,6 +2506,7 @@ const char *vx_main(void) {
   test_robust();
   test_vmo_clone();
   test_address_space();
+  test_leases();
   test_debugger();
   test_tls();
   test_fork();

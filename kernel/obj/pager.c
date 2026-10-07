@@ -227,6 +227,33 @@ static void vmo_unmap_everywhere(vmo *v, uint64_t first, uint64_t count) {
   }
 }
 
+// Whether any task maps v, or a lease of it, writable (vmo_seal, ADR-0043):
+// task by task in id order, as vmo_unmap_everywhere goes, each held while
+// its mappings are looked at.
+static bool vmo_mapped_writable(vmo *v) {
+  uint64_t last_id = 0;
+  bool found = false;
+  while (!found) {
+    task *t = nullptr; // the task with the next id
+    spin_lock(&all_tasks_lock);
+    for (task *c = all_tasks; c; c = c->all_next)
+      if (c->id > last_id && (!t || c->id < t->id)) t = c;
+    bool held = t && object_tryref(&t->obj);
+    if (t) last_id = t->id;
+    spin_unlock(&all_tasks_lock);
+    if (!t) break;
+    if (!held) continue;
+    spin_lock(&t->lock);
+    for (uint32_t i = 0; t->maps && i < TASK_MAX_MAPPINGS && !found; i++) {
+      const mapping *m = &t->maps[i];
+      found = m->size && (m->flags & VX_MAP_WRITE) && vmo_root(m->vmo) == v;
+    }
+    spin_unlock(&t->lock);
+    object_release(&t->obj);
+  }
+  return found;
+}
+
 // --- pager_op ---
 
 // DIRTY: the dirty pages of [offset, offset + size) as ranges, into out

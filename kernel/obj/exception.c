@@ -114,6 +114,7 @@ static bool exception_raise(struct trap_frame *f, uint32_t *kindp, uint32_t code
     pager_result r = pager_fault(*addressp, code);
     if (r == PAGER_MAPPED || r == PAGER_KILLED) return true; // made again; or user_return ends it
     if (r == PAGER_TIMEOUT) *kindp = VX_EXCEPTION_PAGER_TIMEOUT, *addressp &= ~4095ull;
+    if (r == PAGER_NOT_MINE && task_revoked_at(t, *addressp)) *kindp = VX_EXCEPTION_REVOKED; // ADR-0043
   }
   uint32_t kind = *kindp;
   uint64_t address = *addressp;
@@ -730,6 +731,7 @@ static int64_t sys_thread_resume(vx_handle th, uint64_t id) {
 // the task's lock; the old VMO is returned for the caller to release once
 // the old translations are shot down.
 static vx_status mapping_privatize(task *t, mapping *m, vmo **old) {
+  if (m->vmo->lease_of) return VX_ERR_UNSUPPORTED; // a copy would outlive a revoke (ADR-0043)
   vmo *copy;
   vx_status st = vmo_create(m->size, &copy);
   if (st != VX_OK) return st;
@@ -781,6 +783,7 @@ static vx_status mem_op(task *t, const vx_mem_op *op, bool *shoot, vmo **release
     uint64_t idx = m ? (m->offset + (at - m->va)) / 4096 : 0;
     if (v && v->resizable && (idx >= v->size / 4096 || !vmo_page(v, idx)))
       st = VX_ERR_INVALID; // past its end
+    if (v && vmo_revoked(v)) st = VX_ERR_REVOKED;
     if (st == VX_OK) {
       uint8_t *page = (uint8_t *)phys_to_virt(vmo_page(v, idx)) + (at & 4095);
       st = op->write ? copy_from_user(page, op->buffer + done, n) : copy_to_user(op->buffer + done, page, n);
@@ -823,12 +826,19 @@ static int64_t sys_vmo_clone(vx_handle h, uint64_t offset, uint64_t size, uint64
   vmo *copy = nullptr;
   if (src->physical || src->pager) // device memory, or pages a pager has not all supplied
     st = VX_ERR_UNSUPPORTED;
+  else if (vmo_revoked(src))
+    st = VX_ERR_REVOKED;
   else if (!size || (offset | size) & 4095 || ckd_add(&end, offset, size) || end > src->size)
     st = VX_ERR_RANGE;
   else
     st = vmo_create(size, &copy);
+  bool locked = copy && src->resizable; // a shrink frees pages (ADR-0042)
+  if (locked) spin_lock(&src->lock);
+  if (locked && end > src->size) st = VX_ERR_RANGE; // shrunk since the check above
   for (uint64_t p = 0; st == VX_OK && p < size / 4096; p++)
     arch_page_copy(phys_to_virt(copy->pages[p]), phys_to_virt(src->pages[offset / 4096 + p]), 4096);
+  if (locked) spin_unlock(&src->lock);
+  if (st != VX_OK && copy) object_release(&copy->obj), copy = nullptr;
   object_release(&src->obj);
   if (st != VX_OK) return st;
   return return_handle(&copy->obj, ALL_RIGHTS & ~(uint32_t)VX_RIGHT_DEBUG, out); // as vmo_create

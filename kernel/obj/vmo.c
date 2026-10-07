@@ -22,7 +22,18 @@ typedef struct vmo {
   struct page_waiter *waiters;
   bool resizing;  // a resize under way (pager.c), which drops the lock between its steps
   bool resizable; // anonymous, made VX_VMO_RESIZABLE (ADR-0042): its page list under its lock too
+  // ADR-0043: a sealed VMO is written by no one again; a lease is a VMO on
+  // its parent's pages (pages and list are the parent's), which it holds,
+  // until it is revoked.
+  _Atomic bool sealed;
+  struct vmo *lease_of;
+  _Atomic bool revoked;
 } vmo;
+
+// The VMO whose pages v shows: its parent, for a lease.
+static vmo *vmo_root(vmo *v) { return v->lease_of ? v->lease_of : v; }
+static bool vmo_sealed(vmo *v) { return atomic_load(&vmo_root(v)->sealed); }
+static bool vmo_revoked(vmo *v) { return v->lease_of && atomic_load(&v->revoked); }
 
 // Whether v's page list may change under a reader (a pager's VMO, a
 // resizable one): read it under v's lock.
@@ -77,9 +88,30 @@ static vx_status vmo_create_pages(uint64_t size, bool lazy, vmo **out) {
 
 static vx_status vmo_create(uint64_t size, vmo **out) { return vmo_create_pages(size, false, out); }
 
+// vmo_lease (ADR-0043): a VMO on parent's pages, holding it. Only a plain
+// anonymous VMO, whose page list never changes, is leased.
+static vx_status vmo_lease_create(vmo *parent, vmo **out) {
+  if (parent->lease_of) return VX_ERR_INVALID; // one level
+  if (parent->physical || parent->pager || parent->resizable || parent->ring) return VX_ERR_UNSUPPORTED;
+  vmo *v = pool_alloc(&vmo_pool);
+  if (!v) return VX_ERR_NO_MEMORY;
+  v->obj.type = OBJ_VMO;
+  atomic_store_explicit(&v->obj.refs, 1, memory_order_relaxed);
+  object_ref(&parent->obj);
+  v->lease_of = parent, v->size = parent->size, v->pages = parent->pages, v->list_order = parent->list_order;
+  *out = v;
+  return VX_OK;
+}
+
 static void pager_drop_vmo(vmo *v); // pager.c: a pager-backed VMO's last reference
 
 static void vmo_destroy(vmo *v) {
+  if (v->lease_of) { // its pages are its parent's
+    vmo *parent = v->lease_of;
+    pool_free(&vmo_pool, v);
+    object_drop(&parent->obj); // the drain that destroys this destroys it too, if it was the last
+    return;
+  }
   for (uint64_t i = 0; !v->physical && i < v->size / 4096; i++)
     if (vmo_page(v, i)) phys_free(vmo_page(v, i), 0);
   if (v->pager) pager_drop_vmo(v);

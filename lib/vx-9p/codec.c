@@ -697,6 +697,7 @@ static bool p9_str_eq(vx_str a, const char *b) {
   X(VX_ERR_NO_CHILD, "no living children")                                                                   \
   X(VX_ERR_IO, "i/o error")                                                                                  \
   X(VX_ERR_NO_SPACE, "file system full")                                                                     \
+  X(VX_ERR_REVOKED, "lease revoked")                                                                         \
   X(VX_ERR_INVALID, "bad message")
 
 // 9P2000.L's errors are Linux's errno numbers (Rlerror): each status's, and
@@ -718,6 +719,7 @@ static bool p9_str_eq(vx_str a, const char *b) {
   X(VX_ERR_NO_CHILD, 10)                                                                                     \
   X(VX_ERR_IO, 5)                                                                                            \
   X(VX_ERR_NO_SPACE, 28)                                                                                     \
+  X(VX_ERR_REVOKED, 14)                                                                                      \
   X(VX_ERR_SHOULD_WAIT, 11)                                                                                  \
   X(VX_ERR_INVALID, 22)
 

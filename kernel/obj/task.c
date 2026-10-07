@@ -191,9 +191,19 @@ static vx_status handle_add(task *t, object *obj, uint32_t rights, vx_handle *ou
   return st;
 }
 
+// handle_get, and the rights the handle has, into *have.
+static object *handle_get_rights(task *t, vx_handle h, obj_type type, uint32_t rights, uint32_t *have,
+                                 vx_status *status);
+
 // The object behind a handle, with a reference the caller releases, if it is of
 // the given type and the handle has every right asked for.
 static object *handle_get(task *t, vx_handle h, obj_type type, uint32_t rights, vx_status *status) {
+  uint32_t have;
+  return handle_get_rights(t, h, type, rights, &have, status);
+}
+
+static object *handle_get_rights(task *t, vx_handle h, obj_type type, uint32_t rights, uint32_t *have,
+                                 vx_status *status) {
   uint32_t index = h & 0xffff;
   object *obj = nullptr;
   spin_lock(&t->lock);
@@ -205,6 +215,7 @@ static object *handle_get(task *t, vx_handle h, obj_type type, uint32_t rights, 
   } else {
     obj = e->obj;
     object_ref(obj);
+    *have = e->rights;
     *status = VX_OK;
   }
   spin_unlock(&t->lock);
@@ -474,6 +485,10 @@ static vx_status task_map(task *t, vmo *v, uint64_t offset, uint64_t size, uint3
     st = VX_ERR_RANGE;
   else if (task_maps_in(t, at, end))
     st = VX_ERR_EXISTS; // checked against the mappings, not the page tables: a no-access one has no pages
+  else if (vmo_revoked(v))
+    st = VX_ERR_REVOKED; // checked under the lock: a revoke after it finds this mapping (ADR-0043)
+  else if ((flags & VX_MAP_WRITE) && vmo_sealed(v))
+    st = VX_ERR_ACCESS; // under the lock too: vmo_seal looks for writable mappings after it seals
   else if (!slot)
     st = VX_ERR_NO_MEMORY;
   // Page by page; a page that is already mapped (by another mapping) fails
@@ -533,7 +548,9 @@ static vx_status task_fork_copy(task *parent, task *child) {
   for (uint32_t i = 0; st == VX_OK && i < TASK_MAX_MAPPINGS; i++) {
     const mapping *m = &parent->maps[i];
     if (!m->size || m->vmo->physical || m->vmo->ring) continue;
-    if (m->vmo->pager || (m->flags & VX_MAP_SHARED)) { // the same VMO: a file's pages, MAP_SHARED memory
+    if (m->vmo->pager || (m->flags & VX_MAP_SHARED) || m->vmo->lease_of) { // the same VMO: a file's pages,
+                                                                           // MAP_SHARED memory, a lease
+                                                                           // (a revoke reaches the child)
       uint64_t va = m->va;
       st = task_map(child, m->vmo, m->offset, m->size, m->flags, m->allowed, &va);
       continue;
@@ -648,6 +665,7 @@ static vx_status task_protect(task *t, uint64_t va, uint64_t size, uint32_t flag
     uint64_t m_end = m->va + m->size;
     if (!m->size || m_end <= va || m->va >= end) continue;
     if (flags & (VX_MAP_WRITE | VX_MAP_EXEC) & ~m->allowed) st = VX_ERR_ACCESS;
+    if ((flags & VX_MAP_WRITE) && vmo_sealed(m->vmo)) st = VX_ERR_ACCESS; // ADR-0043
     covered += (m_end < end ? m_end : end) - (m->va > va ? m->va : va);
     cuts += (m->va < va) + (m_end > end);
   }
@@ -680,7 +698,8 @@ static vx_status task_protect(task *t, uint64_t va, uint64_t size, uint32_t flag
     if (locked) spin_lock(&v->lock);
     for (uint64_t off = 0; off < m->size && st == VX_OK; off += 4096) {
       uint64_t idx = (m->offset + off) / 4096;
-      uint64_t pa = (flags & VX_MAP_NOACCESS) || idx >= v->size / 4096 ? 0 : vmo_page(v, idx);
+      bool none = (flags & VX_MAP_NOACCESS) || idx >= v->size / 4096 || vmo_revoked(v);
+      uint64_t pa = none ? 0 : vmo_page(v, idx);
       unmap_page(t->root, m->va + off);
       if (pa && !map_range(t->root, m->va + off, pa, 4096, page_flags(m, v->pages[idx])))
         st = VX_ERR_NO_MEMORY;
@@ -762,6 +781,19 @@ static vx_status task_reserve(task *t, uint64_t size, uint64_t align, uint32_t f
   if (st == VX_OK) *slot = (reservation){.va = at, .size = size}, *va = at;
   spin_unlock(&t->lock);
   return st;
+}
+
+// Whether addr lies in a mapping of a revoked lease: its page fault is
+// REVOKED (ADR-0043).
+static bool task_revoked_at(task *t, uint64_t addr) {
+  bool revoked = false;
+  spin_lock(&t->lock);
+  for (uint32_t i = 0; t->maps && i < TASK_MAX_MAPPINGS; i++) {
+    const mapping *m = &t->maps[i];
+    if (m->size && addr >= m->va && addr - m->va < m->size) revoked = vmo_revoked(m->vmo);
+  }
+  spin_unlock(&t->lock);
+  return revoked;
 }
 
 // The protection key of the mapping holding addr (0 if none): a PROTECTION_KEY

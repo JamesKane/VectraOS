@@ -347,6 +347,19 @@ typedef enum vx_cpu_feature : uint32_t {
   return vx_syscall(VX_SYS_pager_op, pager, vmo, op, offset, size, (uint64_t)ranges);
 }
 
+// vmo_seal, vmo_lease and vmo_revoke (ADR-0043).
+[[maybe_unused]] static vx_status vx_vmo_seal(vx_handle vmo) {
+  return (vx_status)vx_syscall(VX_SYS_vmo_seal, vmo, 0, 0, 0, 0, 0);
+}
+
+[[maybe_unused]] static vx_status vx_vmo_lease(vx_handle vmo, vx_handle *lease) {
+  return (vx_status)vx_syscall(VX_SYS_vmo_lease, vmo, (uint64_t)lease, 0, 0, 0, 0);
+}
+
+[[maybe_unused]] static vx_status vx_vmo_revoke(vx_handle lease) {
+  return (vx_status)vx_syscall(VX_SYS_vmo_revoke, lease, 0, 0, 0, 0, 0);
+}
+
 [[maybe_unused]] static vx_status vx_vmo_resize(vx_handle vmo, uint64_t size) {
   return (vx_status)vx_syscall(VX_SYS_vmo_op, vmo, VX_VMO_RESIZE, size, 0, 0, 0);
 }
