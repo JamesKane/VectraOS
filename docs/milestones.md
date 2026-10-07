@@ -13,7 +13,7 @@ Updated 2026-10-07.
 | **M3** Mount the network | Done (2026-10-01) | `tests/qemu/mount.ndb` passes on both (against 10.0.2.100; see below) |
 | **M4** POSIX and debugging | Done (2026-10-02) | `tests/qemu/dbg.ndb` and `tests/qemu/rcscript.ndb` pass on both |
 | **M5** Storage | Done (2026-10-04) | `install`, `powercut`, `fsdadm` and `fsddump`, ctest's `MAP_SHARED` on `fsd`, and `fsdnvmerestart` pass on both (see below) |
-| **M6** Runtime | In progress (started 2026-10-04): 6a, 6b, 6c and 6d done, 6e1 and 6e2a done; 6e2b–6e3d, 6f1a–6f2b and 6g1–6g6 to do | 04 §6's; `install` and `slots` are release gates, not M6's (decided 2026-10-05) |
+| **M6** Runtime | In progress (started 2026-10-04): 6a, 6b, 6c and 6d done, 6e1a–6e1d and 6e2a done; 6e1e and 6e2b–6e3d, 6f1a–6f2b and 6g1–6g6 to do | 04 §6's; `install` and `slots` are release gates, not M6's (decided 2026-10-05) |
 | M7 Pixels | Not started | |
 | M8 GPU | Not started | |
 | M9 Q8B platform | Not started | |
