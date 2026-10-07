@@ -1,4 +1,0 @@
-# tests/user/vxcxxtest.ndb: C++ on the native target (tests/qemu/vxc.ndb, M6
-# step 6e2d2).
-
-service=vxcxxtest program=/boot/bin/vxcxxtest console entropy

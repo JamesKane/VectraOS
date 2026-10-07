@@ -165,6 +165,10 @@ void __llvm_libc_thread_detach(void *handle) {
 
 uint32_t __llvm_libc_thread_id(void) { return vx_thread_self_id(); }
 
+// std::random_device's bytes: the process's generator, seeded from the
+// kernel's entropy (LLVM patch 0012).
+void __llvm_libcxx_random_bytes(void *buf, size_t n) { vx_random_bytes(buf, n); }
+
 // The monotonic clock, for the C library's timed waits (LLVM patch 0009).
 int64_t __llvm_libc_clock_monotonic(void) { return vx_now(); }
 

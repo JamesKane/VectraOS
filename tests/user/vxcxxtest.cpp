@@ -6,14 +6,20 @@
 // libc++'s external threading API over the C library's <threads.h>:
 // std::thread, a mutex, a condition variable, call_once, a function-local
 // static made once whichever thread asks first (__cxa_guard_*),
-// thread_local, and a sleep on steady_clock. Each check prints a line only
-// when it fails; the last line counts them.
+// thread_local, and a sleep on steady_clock. iostreams in the C locale and
+// random_device (6e2e1); with the argument cin, it sums the numbers on its
+// standard input to standard output, for rctest. Each check prints a line
+// only when it fails; the last line counts them.
 
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <iostream>
+#include <locale>
 #include <memory>
 #include <mutex>
+#include <random>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <typeinfo>
@@ -105,12 +111,38 @@ void threads() {
   CHECK(std::chrono::steady_clock::now() - start >= std::chrono::milliseconds(19));
 }
 
+// iostreams in the C locale, and random_device (6e2e1).
+void streams() {
+  std::cout << "vxcxxtest: cout " << 42 << ' ' << 2.5 << '\n' << std::flush;
+  std::stringstream ss;
+  ss << 12 << ' ' << 2.25 << " word";
+  int i = 0;
+  double d = 0;
+  std::string w;
+  ss >> i >> d >> w;
+  CHECK(i == 12 && d == 2.25 && w == "word");
+  CHECK(std::locale().name() == "C" && std::locale("C").name() == "C");
+  std::random_device rd;
+  const unsigned a = rd(), b = rd(), c = rd();
+  CHECK((a != b || b != c) && rd.entropy() == 32);
+}
+
+// The cin mode, which rctest runs with numbers on standard input: their sum.
+int sum_cin() {
+  long sum = 0, n = 0;
+  while (std::cin >> n) sum += n;
+  std::cout << sum << '\n';
+  return 0;
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
+  if (argc > 1 && std::string(argv[1]) == "cin") return sum_cin();
   std::printf("vxcxxtest: hello from libc++\n");
   rtti();
   threads();
+  streams();
   std::printf("vxcxxtest: %d checks, %d failed\n", checks, failures);
   return failures ? 1 : 0;
 }

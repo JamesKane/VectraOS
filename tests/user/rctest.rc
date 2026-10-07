@@ -247,6 +247,10 @@ g1=`{/boot/bin/starttest guard}
 g2=`{/boot/bin/starttest guard}
 check start-guard differ `{if(~ $g1 $g2) echo same; if not echo differ}
 
+# C++'s std::cin on the native target (6e2e1, tests/user/vxcxxtest.cpp):
+# numbers piped in, their sum out through std::cout.
+check cxx-cin 42 `{echo 20 15 7 | /boot/bin/vxcxxtest cin}
+
 # rfork (6d7b3), as 9front's: in children, so this shell keeps its own.
 check rfork-usage 'rfork usage' `{rfork x >[2] /dev/null; echo $status}
 mkdir $dir/nsa $dir/nsb

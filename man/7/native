@@ -22,7 +22,7 @@ First-party system code does not use it; Swift's runtime, C and C++ programs fro
 : `usr/lib/libclang_rt.builtins.a`
   compiler-rt's builtins.
 : `usr/include/c++/v1/`, `usr/lib/libc++.a`, `usr/lib/libc++abi.a`
-  libc++ and libc++abi (ADR-0033 §2a), from `swift-on-vectra`'s `build_cxx.sh` at the tree `cxx.sha256` records: RTTI on; threads through libc++'s external threading API, whose header (LLVM patch 0011) sits on the C library's `<threads.h>`, so `std::thread`, the mutexes, condition variables, `call_once`, guarded function-local statics and `thread_local` are vx-rt's threads and futexes; `steady_clock` on `timespec_get`'s `TIME_MONOTONIC` (patch 0010). No exceptions until 6f2a, no filesystem, random device or iostreams until 6e2e. A machine without them builds the sysroot for C alone.
+  libc++ and libc++abi (ADR-0033 §2a), from `swift-on-vectra`'s `build_cxx.sh` at the tree `cxx.sha256` records: RTTI on; threads through libc++'s external threading API, whose header (LLVM patch 0011) sits on the C library's `<threads.h>`, so `std::thread`, the mutexes, condition variables, `call_once`, guarded function-local statics and `thread_local` are vx-rt's threads and futexes; `steady_clock` on `timespec_get`'s `TIME_MONOTONIC` (patch 0010). iostreams in the C locale (LLVM patch 0005's locale support: `"C"` and `""` and nothing else), and `std::random_device` from the process's generator, seeded from the kernel's entropy (patch 0012). No exceptions until 6f2a, no `std::filesystem` until 6e2e2, no wide characters. A machine without them builds the sysroot for C alone.
 : `<arch>-unknown-vectraos-clang++.cfg`, `link-tail-c++.rsp`
   C++'s configuration file, which `clang++` reads in place of the C one (`-stdlib=libc++`, `-fno-exceptions`, the C file's other options, and no `-std`), and the link's tail with `-lc++ -lc++abi` first.
 : `<arch>-unknown-vectraos.cfg`
@@ -80,7 +80,7 @@ start(2), heap(2), posix(7); ADR-0033 and ADR-0034, and `swift-on-vectra`'s `doc
 
 # BUGS
 
-C++ has no exceptions (6f2a), and no `std::filesystem`, `std::random_device` or iostreams (6e2e).
+C++ has no exceptions (6f2a), no `std::filesystem` (6e2e2), and no wide characters: llvm-libc's wide functions do not yet cover what libc++'s build asks for.
 
 `freopen`, `fgetpos`, `fsetpos`, `rewind`, `tmpfile` and `tmpnam` are missing: llvm-libc has none of them for any target.
 `fopen`'s `"x"` (exclusive creation) is not taken.

@@ -1,0 +1,5 @@
+# tests/user/vxcxx.ndb: C++ on the native target (tests/qemu/vxcxx.ndb, M6
+# step 6e2d2): vxcxxtest, started under this name so that rcscript can take
+# the program alone, for its cin check, without starting it.
+
+service=vxcxxtest program=/boot/bin/vxcxxtest console entropy
