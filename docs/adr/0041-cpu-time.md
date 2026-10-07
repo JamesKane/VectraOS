@@ -1,6 +1,6 @@
 # ADR-0041: CPU time, sampled as 9front's
 
-Status: proposed, 2026-10-07. M6 step 6d9b (decided the same day: tick sampling as 9front, a tick only while a CPU is busy, and children's times in the wait record). It adds `thread_state`'s `VX_STATE_GET_TIMES` and `vx_cpu_times` to the ABI (`abi/vx/abi.h`), a 100 Hz tick on a CPU running a thread, and `user=` and `sys=` to procfs's wait records.
+Status: accepted, 2026-10-07 (proposed 2026-10-07). M6 step 6d9b (decided the same day: tick sampling as 9front, a tick only while a CPU is busy, and children's times in the wait record). It adds `thread_state`'s `VX_STATE_GET_TIMES` and `vx_cpu_times` to the ABI (`abi/vx/abi.h`), a 100 Hz tick on a CPU running a thread, and `user=` and `sys=` to procfs's wait records.
 
 ## Context
 

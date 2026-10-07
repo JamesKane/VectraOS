@@ -1,6 +1,6 @@
 # ADR-0040: Descriptors past 2, and `/fd`
 
-Status: proposed, 2026-10-06. M6 step 6d7b2 (decided the same day: `/fd` as 9front's devdup). It makes the spawn message's `fd=` records, until now musl's back end's own, part of the spawn message's ABI (`abi/vx/abi.h`) for descriptors past 2, for native programs as for POSIX ones, and gives every process a `/fd` naming its descriptors, so rc's `<{...}` and `>{...}` can work as 9front's.
+Status: accepted, 2026-10-07 (proposed 2026-10-06). M6 step 6d7b2 (decided the same day: `/fd` as 9front's devdup). It makes the spawn message's `fd=` records, until now musl's back end's own, part of the spawn message's ABI (`abi/vx/abi.h`) for descriptors past 2, for native programs as for POSIX ones, and gives every process a `/fd` naming its descriptors, so rc's `<{...}` and `>{...}` can work as 9front's.
 
 ## Context
 
