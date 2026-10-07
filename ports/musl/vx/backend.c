@@ -38,6 +38,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
@@ -374,7 +375,11 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
   case SYS_dup3: // a target that cannot be one is EBADF, not dup's lowest free
     if ((int)a2 < 0) return -EBADF;
     return a1 == a2 ? -EINVAL : fd_dup((int)a1, (int)a2, (int)a3);
-  case SYS_faccessat: return fd_faccessat((int)a1, (const char *)a2);
+  case SYS_faccessat:
+  case SYS_faccessat2: return fd_faccessat((int)a1, (const char *)a2, (int)a3); // flags: no effective ids
+  case SYS_flock: return fd_flock((int)a1, (int)a2);
+  case SYS_sync:
+  case SYS_syncfs: vx_ns_sync(fd_namespace()); return 0;
   case SYS_mkdirat: return fd_mkdirat((int)a1, (const char *)a2, (mode_t)a3);
   case SYS_unlinkat: return fd_unlinkat((int)a1, (const char *)a2, (int)a3);
   case SYS_getcwd: return fd_getcwd((char *)a1, (size_t)a2);
@@ -394,12 +399,12 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
   case SYS_utimensat: return fd_utimens((int)a1, (const char *)a2, (const struct timespec *)a3, (int)a4);
   case SYS_fsync:
   case SYS_fdatasync: return fd_fsync((int)a1);
-  case SYS_umask: return 022;
+  case SYS_umask: return fd_set_umask((mode_t)a1);
 #ifdef SYS_open // x86_64's calls that aarch64 has only as their *at forms
   case SYS_open: return fd_openat(AT_FDCWD, (const char *)a1, (int)a2, (mode_t)a3);
   case SYS_stat: return fd_fstatat(AT_FDCWD, (const char *)a1, (struct stat *)a2, 0);
   case SYS_lstat: return fd_fstatat(AT_FDCWD, (const char *)a1, (struct stat *)a2, AT_SYMLINK_NOFOLLOW);
-  case SYS_access: return fd_faccessat(AT_FDCWD, (const char *)a1);
+  case SYS_access: return fd_faccessat(AT_FDCWD, (const char *)a1, (int)a2);
   case SYS_mkdir: return fd_mkdirat(AT_FDCWD, (const char *)a1, (mode_t)a2);
   case SYS_unlink: return fd_unlinkat(AT_FDCWD, (const char *)a1, 0);
   case SYS_rmdir: return fd_unlinkat(AT_FDCWD, (const char *)a1, AT_REMOVEDIR);

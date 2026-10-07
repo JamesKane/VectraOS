@@ -688,6 +688,26 @@ static size_t ns_step_flags(const vx_ns *ns, const vx_ns_step *steps, uint32_t s
   return n;
 }
 
+// Asks each server mounted in the namespace to put its changes on disk
+// (Tfsync on the mount's fid; fsd commits its volume), as POSIX's sync.
+[[maybe_unused]] static void vx_ns_sync(vx_ns *ns) {
+  if (ns->refresh && !ns->quiet) ns->refresh(ns);
+  for (uint32_t i = 0; i < VX_NS_MAX_ENTRIES; i++) {
+    const vx_ns_entry *e = &ns->entries[i];
+    for (uint32_t k = 0; e->path_len && k < e->count; k++)
+      if (e->members[k].mounted) (void)p9c_fsync(ns->conns[e->members[k].conn].client, e->members[k].fid);
+  }
+}
+
+// c's connection's index plus 1, which POSIX's st_dev tells servers apart by,
+// or 0 if c is none of this namespace's. An unmounted connection's number may
+// come again for another.
+[[maybe_unused]] static uint64_t vx_ns_conn_id(const vx_ns *ns, const p9_client *c) {
+  for (uint32_t i = 0; i < VX_NS_MAX_CONNS; i++)
+    if (ns->conns[i].client == c) return i + 1;
+  return 0;
+}
+
 // Writes the namespace as namespace(6): mount and bind lines, in the order
 // they would rebuild it. Returns its length, or 0 if it does not fit.
 [[maybe_unused]] static size_t vx_ns_print(const vx_ns *ns, char *buf, size_t cap) {

@@ -425,12 +425,9 @@ static vx_status p9_serve_lock(p9_server *s, const p9_fid *f, const p9_msg *t, p
     }
     return VX_OK;
   }
-  // A lock as the fid was opened for, as POSIX has it: reading for a read
-  // lock, writing for a write lock.
-  uint8_t mode = f->mode & 3;
-  if ((t->lock_type == P9_LOCK_READ && mode == P9_OWRITE) ||
-      (t->lock_type == P9_LOCK_WRITE && mode != P9_OWRITE && mode != P9_ORDWR))
-    return VX_ERR_ACCESS;
+  // Any open fid may take either lock: fcntl's rule, a read lock on a file
+  // open for reading and a write lock on one open for writing, is the
+  // client's, as Linux's kernel keeps it; flock has none (M6 step 6d9a).
   r->status = P9_LOCK_SUCCESS;
   for (uint32_t i = 0; i < P9_MAX_LOCKS && t->lock_type != P9_LOCK_UNLOCK; i++)
     if (p9_locks_conflict(&sh->locks[i], s, t->proc_id, f->node, t->lock_type, start, end)) {

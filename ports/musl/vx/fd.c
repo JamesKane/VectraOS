@@ -220,7 +220,20 @@ static void fd_from_records(void); // below, with what writes them
 // it does not. Without a pipe for it, standard error
 // goes to the console, so a pipeline's errors reach its terminal; without a
 // console either, to stdout.
+// The file-creation mask, umask's: 022, or what a POSIX parent passed on in
+// its umask= record (fd_records), as exec and posix_spawn keep it.
+static mode_t fd_umask = 022;
+
+static long fd_set_umask(mode_t mask) {
+  mode_t old = fd_umask;
+  fd_umask = mask & 0777;
+  return (long)old;
+}
+
 static void fd_init(void) {
+  vx_ndb_record um;
+  uint64_t mask = 0;
+  if (vx_spawn_record("umask", &um) && vx_ndb_get_u64(&um, "umask", &mask)) fd_umask = (mode_t)mask & 0777;
   vx_handle console = vx_spawn_take("console");
   if (console && vx_console_attach(console) != VX_OK) vx_print(VX_STR("vx-musl: cannot open the console\n"));
   vx_port_create(0, &fd_port);
@@ -323,6 +336,9 @@ static void fd_stat_fill(struct stat *st, const p9_stat *s) {
 // to the nanosecond, links, inode), Tstat's otherwise.
 static vx_status fd_stat_fid(p9_client *c, uint32_t fid, struct stat *st) {
   p9_attr a;
+  // st_dev: the connection, which du and find tell servers apart by (their
+  // qid paths are only each one's own), beside a stat's own dev.
+  dev_t conn = (dev_t)vx_ns_conn_id(fd_namespace(), c) << 32;
   if (p9c_getattr(c, fid, &a) == VX_OK) {
     *st = (struct stat){.st_ino = a.qid.path,
                         .st_mode = a.mode,
@@ -334,12 +350,13 @@ static vx_status fd_stat_fid(p9_client *c, uint32_t fid, struct stat *st) {
                         .st_blocks = (blkcnt_t)a.blocks,
                         .st_atim = {(time_t)a.atime_sec, (long)a.atime_nsec},
                         .st_mtim = {(time_t)a.mtime_sec, (long)a.mtime_nsec},
-                        .st_ctim = {(time_t)a.ctime_sec, (long)a.ctime_nsec}};
+                        .st_ctim = {(time_t)a.ctime_sec, (long)a.ctime_nsec},
+                        .st_dev = conn};
     return VX_OK;
   }
   p9_stat s;
   vx_status e = p9c_stat(c, fid, &s, nullptr);
-  if (e == VX_OK) fd_stat_fill(st, &s);
+  if (e == VX_OK) fd_stat_fill(st, &s), st->st_dev |= conn;
   return e;
 }
 
@@ -818,7 +835,7 @@ static long fd_openat(int dirfd, const char *path, int flags, mode_t mode) {
   // same step as making it, so nothing is opened (or truncated) first.
   vx_status st = excl ? VX_ERR_NOT_FOUND : vx_ns_open(ns, name, open9, &f);
   if (st == VX_ERR_NOT_FOUND && (flags & O_CREAT)) {
-    st = vx_ns_create(ns, name, mode & 0755, mode9, &f); // the umask is 022
+    st = vx_ns_create(ns, name, mode & ~fd_umask & 0777, mode9, &f);
     // Another process made it between the open and the create: open theirs.
     if (st == VX_ERR_EXISTS && !excl) st = vx_ns_open(ns, name, open9, &f);
     if (excl && st != VX_OK && st != VX_ERR_EXISTS && fd_exists(p, (size_t)len)) st = VX_ERR_EXISTS;
@@ -941,6 +958,36 @@ static long fd_lock(ofd *o, int cmd, struct flock *l) {
   }
 }
 
+// flock: a lock on the whole file owned by the open file description, as
+// BSD's and Linux's are: Tlock with an owner no process id can be (the top
+// bit, the description's slot, the process's id), so fcntl's locks and other
+// descriptions' do not count as its own. LOCK_NB answers EWOULDBLOCK; without
+// it, it asks again every 10 ms, as F_SETLKW.
+static long fd_flock(int fd, int op) {
+  ofd *o = fd_get(fd);
+  if (!o) return -EBADF;
+  int how = op & ~LOCK_NB;
+  if (how != LOCK_SH && how != LOCK_EX && how != LOCK_UN) return -EINVAL;
+  if (o->kind != OFD_FILE || !file_shared(o)) return -ENOLCK; // no server to keep it
+  uint8_t type = P9_LOCK_UNLOCK;
+  if (how == LOCK_SH) type = P9_LOCK_READ;
+  if (how == LOCK_EX) type = P9_LOCK_WRITE;
+  uint32_t owner = 1U << 31 | (uint32_t)(o - fd_ofds) << 22 | ((uint32_t)posix_pid() & ((1U << 22) - 1));
+  for (;;) {
+    uint8_t status = P9_LOCK_ERROR;
+    vx_status st = p9c_lock(o->f.c, o->f.fid, type, 0, 0, owner, &status);
+    if (st != VX_OK) return vx_errno(st);
+    if (status == P9_LOCK_SUCCESS) return 0;
+    if (status != P9_LOCK_BLOCKED) return -ENOLCK;
+    if (op & LOCK_NB) return -EWOULDBLOCK;
+    static const _Atomic uint32_t never;
+    uint32_t held = be_wait_begin();
+    vx_status w = vx_futex_wait(&never, 0, vx_clock_read() + 10'000'000);
+    be_wait_end(held);
+    if (w == VX_ERR_INTERRUPTED) return -EINTR;
+  }
+}
+
 static long fd_fcntl(int fd, int cmd, long arg) {
   ofd *o = fd_get(fd);
   if (!o) return -EBADF;
@@ -1011,15 +1058,36 @@ static long fd_fstatat(int dirfd, const char *path, struct stat *st, int flag) {
   return vx_errno(vst);
 }
 
-static long fd_faccessat(int dirfd, const char *path) {
+// access and faccessat, as 9front's APE has them (sys/src/ape/lib/ap/plan9/
+// access.c): the server, which keeps the permissions, is asked by opening
+// the file in the mode asked for; a directory, which opens only for reading,
+// by opening it so for R_OK and X_OK, and for W_OK by making a file in it
+// and removing it at once.
+static long fd_faccessat(int dirfd, const char *path, int amode) {
   p9_client *c = nullptr;
   uint32_t fid = 0;
   char p[VX_NS_MAX_PATH];
   size_t len;
   long r = 0;
+  if (amode & ~(R_OK | W_OK | X_OK)) return -EINVAL;
   if (!fd_walk(dirfd, path, true, &c, &fid, p, &len, &r)) return r;
+  static const uint8_t omode[8] = {0, P9_OEXEC, P9_OWRITE, P9_ORDWR, P9_OREAD, P9_OEXEC, P9_ORDWR, P9_ORDWR};
+  vx_status st = amode == F_OK ? VX_OK : p9c_open(c, fid, omode[amode & 7]);
+  struct stat sb;
+  bool dir = st != VX_OK && fd_stat_fid(c, fid, &sb) == VX_OK && S_ISDIR(sb.st_mode);
+  if (dir && (amode & (R_OK | X_OK)))
+    st = p9c_open(c, fid, P9_OREAD);
+  else if (dir)
+    st = VX_OK;
   p9c_clunk(c, fid);
-  return 0; // it exists; permissions are the server's to refuse when it is opened
+  if (st != VX_OK || !dir || !(amode & W_OK)) return vx_errno(st);
+  char probe[VX_NS_MAX_PATH];
+  int n = snprintf(probe, sizeof probe, "%.*s/_AcChAcK%ld", (int)len, p, posix_pid());
+  if (n < 0 || (size_t)n >= sizeof probe) return -ENAMETOOLONG;
+  vx_ns_file f;
+  st = vx_ns_create(fd_namespace(), (vx_str){probe, (size_t)n}, 0600, P9_OREAD, &f);
+  if (st == VX_OK) p9c_remove(f.c, f.fid); // which clunks it
+  return vx_errno(st);
 }
 
 // Whether path names something: what a create that failed is told apart by,
@@ -1038,8 +1106,8 @@ static long fd_mkdirat(int dirfd, const char *path, mode_t mode) {
   long len = fd_resolve(dirfd, path, false, p);
   if (len < 0) return len;
   vx_ns_file f;
-  vx_status st =
-      vx_ns_create(fd_namespace(), (vx_str){p, (size_t)len}, P9_DMDIR | (mode & 0755), P9_OREAD, &f);
+  vx_status st = vx_ns_create(fd_namespace(), (vx_str){p, (size_t)len}, P9_DMDIR | (mode & ~fd_umask & 0777),
+                              P9_OREAD, &f);
   if (st == VX_OK) vx_ns_close(&f);
   if (st != VX_OK && st != VX_ERR_EXISTS && fd_exists(p, (size_t)len)) st = VX_ERR_EXISTS;
   return vx_errno(st);
@@ -1366,6 +1434,8 @@ static ofd *file_join(const char *path, size_t len, int flags, const uint8_t tok
 static void fd_records(const fd_slot *table, vx_ndb_writer *w, vx_handle *handles, vx_str *names,
                        uint32_t *count, uint32_t cap) {
   static char handle_names[FD_MAX][8]; // the working directory is vx_ns_spawn_records' cwd=
+  vx_ndb_put_u64(w, "umask", fd_umask);
+  vx_ndb_end(w);
   for (int fd = 0; fd < FD_MAX; fd++) {
     const ofd *o = table[fd].o;
     if (!o || table[fd].cloexec || o->lost) continue;
