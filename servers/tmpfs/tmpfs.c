@@ -10,6 +10,14 @@
 // opened it lets go, as POSIX has it; a node id names one node only, so a fid
 // to a removed one finds nothing. What it holds lives only in it, and is
 // limited to TMPFS_MAX_BYTES and TMPFS_MAX_NODES.
+//
+// It serves trees: the shared one (aname "", what procfs's crash
+// directories and the tests share), and one for each user (aname "user":
+// the attaching user's own, made at its first attach, 0700), which is that
+// user's /tmp where it has no home on disk (M6 step 6e1c2, as 9front's
+// /usr/$user/tmp). The trees share the server's limits. aname "crash" is the
+// shared tree's /crash, where procfs saves crash directories (05 §5), which
+// namespaces mount on /tmp/crash inside the user's own /tmp.
 
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-9p/ring_server.c"
@@ -21,6 +29,7 @@ static constexpr uint32_t ROOT = 1;
 
 typedef struct node {
   bool used, dir, removed, link;
+  bool top;     // a tree's root: the shared one (ROOT), or a user's, named after the user
   uint32_t gen; // with the slot, the node's id: a removed node's id names nothing
   char name[TMPFS_MAX_NAME];
   uint8_t name_len;
@@ -101,6 +110,42 @@ static vx_status fs_attach(void *ctx, vx_str aname, uint64_t *root) {
   return VX_OK;
 }
 
+static vx_status fs_create(void *ctx, uint64_t dir, vx_str name, uint32_t perm, uint8_t mode,
+                           uint64_t *out); // below
+
+// aname "user": the attaching user's own tree, made the first time.
+static vx_status fs_attach_as(void *ctx, vx_str aname, vx_str uname, uint64_t *root) {
+  if (aname.len == 5 && !memcmp(aname.ptr, "crash", 5)) { // the shared /crash, made if it is not there
+    uint32_t c = child_named(ROOT, VX_STR("crash"));
+    if (!c) {
+      uint64_t made;
+      vx_status st = fs_create(ctx, id_of(ROOT), VX_STR("crash"), P9_DMDIR | 0777, P9_OREAD, &made);
+      if (st != VX_OK) return st;
+      c = (uint32_t)made;
+    }
+    *root = id_of(c);
+    return VX_OK;
+  }
+  if (!(aname.len == 4 && !memcmp(aname.ptr, "user", 4))) return fs_attach(ctx, aname, root);
+  if (!uname.len) uname = VX_STR("none");
+  if (uname.len >= TMPFS_MAX_NAME) return VX_ERR_RANGE;
+  uint32_t free_slot = 0;
+  for (uint32_t s = ROOT + 1; s < TMPFS_MAX_NODES; s++) {
+    if (nodes[s].used && nodes[s].top && nodes[s].name_len == uname.len &&
+        !memcmp(nodes[s].name, uname.ptr, uname.len)) {
+      *root = id_of(s);
+      return VX_OK;
+    }
+    if (!nodes[s].used && !free_slot) free_slot = s;
+  }
+  if (!free_slot) return VX_ERR_NO_MEMORY;
+  node *n = &nodes[free_slot];
+  *n = (node){.used = true, .dir = true, .top = true, .gen = n->gen, .mode = 0700, .mtime = now_seconds()};
+  memcpy(n->name, uname.ptr, uname.len), n->name_len = (uint8_t)uname.len;
+  *root = id_of(free_slot);
+  return VX_OK;
+}
+
 static vx_status fs_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) {
   (void)ctx;
   uint32_t d;
@@ -117,7 +162,7 @@ static vx_status fs_parent(void *ctx, uint64_t id, uint64_t *parent) {
   // A removed directory has no parent to go back to (its slot may hold
   // another node by now): ENOENT, as Linux answers .. in one.
   if (!n || n->removed) return VX_ERR_NOT_FOUND;
-  *parent = id_of(n->parent ? n->parent : ROOT);
+  *parent = n->parent ? id_of(n->parent) : id; // a tree's root is its own parent
   return VX_OK;
 }
 
@@ -132,7 +177,7 @@ static vx_status fs_stat(void *ctx, uint64_t id, p9_stat *out) {
                    .atime = n->atime,
                    .mtime = n->mtime,
                    .length = n->dir ? 0 : n->size,
-                   .name = s == ROOT ? VX_STR("/") : (vx_str){n->name, n->name_len},
+                   .name = n->top ? VX_STR("/") : (vx_str){n->name, n->name_len},
                    .uid = VX_STR("posix"),
                    .gid = VX_STR("posix"),
                    .muid = VX_STR("posix")};
@@ -256,7 +301,7 @@ static vx_status fs_remove(void *ctx, uint64_t id) {
   uint32_t s;
   node *n = node_at(id, &s);
   if (!n || n->removed) return VX_ERR_NOT_FOUND;
-  if (s == ROOT) return VX_ERR_ACCESS;
+  if (n->top) return VX_ERR_ACCESS;
   if (n->dir && n->first_child) return VX_ERR_EXISTS; // not empty
   unlink_child(s);
   n->removed = true;
@@ -296,7 +341,7 @@ static vx_status fs_rename(void *ctx, uint64_t olddir, vx_str oldname, uint64_t 
   if (newname.len >= TMPFS_MAX_NAME) return VX_ERR_RANGE;
   uint32_t s = child_named(from, oldname);
   if (!s) return VX_ERR_NOT_FOUND;
-  for (uint32_t up = to; up; up = up == ROOT ? 0 : nodes[up].parent)
+  for (uint32_t up = to; up; up = nodes[up].top ? 0 : nodes[up].parent)
     if (up == s) return VX_ERR_INVALID; // into itself
   uint32_t there = child_named(to, newname);
   if (there == s) return VX_OK;
@@ -342,6 +387,7 @@ static vx_status fs_readlink(void *ctx, uint64_t id, vx_str *target) {
 
 static p9_ring_server server = {
     .fs = {.attach = fs_attach,
+           .attach_as = fs_attach_as,
            .walk = fs_walk,
            .parent = fs_parent,
            .stat = fs_stat,
@@ -366,7 +412,7 @@ const char *vx_main(void) {
     vx_print(VX_STR("tmpfs: no listen channel\n"));
     return "no listen channel";
   }
-  nodes[ROOT] = (node){.used = true, .dir = true, .mode = 0777, .mtime = now_seconds()};
+  nodes[ROOT] = (node){.used = true, .dir = true, .top = true, .mode = 0777, .mtime = now_seconds()};
   vx_print(VX_STR("tmpfs: serving /srv/tmpfs\n"));
   return p9_ring_serve(&server) == VX_OK ? nullptr : "cannot serve";
 }

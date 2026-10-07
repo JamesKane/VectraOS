@@ -353,6 +353,8 @@ static vx_status make_users(void) {
   vxfs_attr a = {.valid = VXFS_WUID | VXFS_WGID, .uid = 1000, .gid = 1000};
   if (st == VX_OK && (st = vxfs_root(&vol, &br->t, &root)) == VX_OK)
     st = vxfs_setattr(&vol, &br->t, &root, &a, now);
+  // tmp, the first user's /tmp on disk (M6 step 6e1c2), as 9front's /usr/$user/tmp.
+  if (st == VX_OK) st = vxfs_create(&vol, &br->t, &root, "tmp", VXFS_DMDIR | 0700, 1000, 1000, now, &f);
   return st;
 }
 
