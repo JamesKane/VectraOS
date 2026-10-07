@@ -432,7 +432,24 @@ static int64_t read_whole(void *ctx, const char *path, size_t len, char *buf, si
 
 // --- Running programs ---
 
-static uint8_t image[4 << 20];
+// A program's image, as much as a spawn reads of it, in a lazy VMO: its
+// pages come as a program is read in, and a big program's go back after
+// its spawn (a static Swift program's loadable segments pass 5 MiB, 6e3a).
+static constexpr size_t IMAGE_MAX = 256ul << 20, IMAGE_KEEP = 4ul << 20;
+static uint8_t *image;
+static vx_handle image_vmo;
+
+static bool image_ready(void) {
+  if (image) return true;
+  uint64_t at = 0;
+  if (vx_vmo_create(IMAGE_MAX, VX_VMO_LAZY, &image_vmo) != VX_OK) return false;
+  if (vx_as_map(vx_self, image_vmo, 0, IMAGE_MAX, VX_MAP_WRITE, &at) != VX_OK) {
+    vx_handle_close(image_vmo);
+    return false;
+  }
+  image = (uint8_t *)(uintptr_t)at;
+  return true;
+}
 
 // The bytes of an ELF image a spawn reads: through the end of its last
 // loadable segment (and its program headers), not the symbols and debugging
@@ -446,14 +463,14 @@ static size_t elf_needs(size_t have) {
     return 0;
   memcpy(&eh, image, sizeof eh);
   uint64_t end = eh.phoff + (uint64_t)eh.phnum * sizeof(vx_elf_phdr);
-  if (eh.phentsize != sizeof(vx_elf_phdr) || end > sizeof image) return SIZE_MAX;
+  if (eh.phentsize != sizeof(vx_elf_phdr) || end > IMAGE_MAX) return SIZE_MAX;
   if (end > have) return (size_t)end; // the headers first
   for (uint16_t i = 0; i < eh.phnum; i++) {
     vx_elf_phdr ph;
     memcpy(&ph, image + eh.phoff + (uint64_t)i * sizeof ph, sizeof ph);
     if (ph.type == VX_PT_LOAD && ph.offset + ph.filesz > end) end = ph.offset + ph.filesz;
   }
-  return end > sizeof image ? SIZE_MAX : (size_t)end;
+  return end > IMAGE_MAX ? SIZE_MAX : (size_t)end;
 }
 
 // Loads a program through the namespace, found as rc's searchpath finds it:
@@ -470,6 +487,7 @@ static struct {
 
 static size_t load(vx_str name) {
   script.found = false;
+  if (!image_ready()) return 0;
   bool here = (name.len && (name.ptr[0] == '/' || name.ptr[0] == '#')) ||
               (name.len > 1 && name.ptr[0] == '.' && name.ptr[1] == '/') ||
               (name.len > 2 && name.ptr[0] == '.' && name.ptr[1] == '.' && name.ptr[2] == '/');
@@ -818,7 +836,9 @@ static vx_status spawn(const rc_word *argv, bool child, const vx_handle io[RC_FD
                      .proc = vx_ns_connector(&ns, VX_STR("/proc")),
                      .proc_flags = PROC_NOWAIT | (spawn_noteg ? PROC_NOTEG : 0),
                      .exec = exec}; // exec: the program takes this task's place (task_exec, ADR-0012)
-  return vx_spawn_elf(&a, task);
+  st = vx_spawn_elf(&a, task);
+  if (size > IMAGE_KEEP) vx_vmo_decommit(image_vmo, 0, (size + 4095) & ~(size_t)4095); // its pages back
+  return st;
 }
 
 // A channel the shell copies from (a program's output, into a file or a

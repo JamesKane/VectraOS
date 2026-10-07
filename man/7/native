@@ -1,5 +1,5 @@
 page=native sect=7 summary="the native target: ISO C and C++ programs against llvm-libc, libc++ and libvx, and the sysroot they build with"
-    keys=native,target,sysroot,iso,libc,llvm-libc,crt1,libvx,triple,vectraos,cfg,link,malloc,getenv,c++,libc++,libcxxabi,rtti,threads
+    keys=native,target,sysroot,iso,libc,llvm-libc,crt1,libvx,triple,vectraos,cfg,link,malloc,getenv,c++,libc++,libcxxabi,rtti,threads,swift,vectraoslibc
 
 # DESCRIPTION
 
@@ -61,6 +61,10 @@ Until ADR-0034's first gate puts the toolchain in this tree, the C library comes
   One locale, `"C"`: by that name, or `""`, the environment's; a query gives `"C"`, and any other name fails.
 : `timespec_get`, `clock`
   `TIME_UTC` is the wall clock; `clock` is the CPU time the whole process has had (ADR-0041).
+
+## Swift
+
+Swift programs build with `swift-on-vectra`'s toolchain and the SDK its `toolchain/build_stdlib.sh` makes from this sysroot, `toolchain/out/sdk/<triple>`, statically, with Swift's runtime over the same C library and hooks (M6 step 6e3, ADR-0034). Their platform module is `VectraOSLibc`, the C library's clause 7 headers (no `complex.h`), with `errno` and the type-generic math; `CommandLine.arguments` is vx-rt's argv, through `__swift_vectraos_argv`. Until ADR-0034's first gate brings the toolchain here, a scenario runs a Swift program built in that tree: `./build` takes the programs its `EXTERNAL_PROGRAMS` names from `tests/out/<triple>/` there.
 
 # EXAMPLES
 

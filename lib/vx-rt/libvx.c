@@ -40,6 +40,13 @@ const char *vx_main(void) {
   exit(main(vx_argc(), vx_argv()));
 }
 
+// Swift's CommandLine.arguments (Swift patch 0007): vx-rt's argv, which
+// main has too.
+char **__swift_vectraos_argv(int *argc) {
+  *argc = vx_argc();
+  return vx_argv();
+}
+
 [[noreturn]] void __llvm_libc_exit(int status) { vx_exit(status); }
 
 // --- errno: the C library's numbers (llvm-libc's generic ones) ---

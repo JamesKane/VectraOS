@@ -1350,6 +1350,25 @@ static const program USER_PROGRAMS[] = {
 };
 
 static bool program_for(const program *p, const arch *a) { return !p->arch || strcmp(p->arch, a->name) == 0; }
+
+// Test programs built outside this tree, in swift-on-vectra's, until
+// ADR-0034's first gate brings the Swift toolchain here (M6 step 6e3): a
+// scenario that names one in `with=` takes it from that tree's
+// tests/out/TRIPLE/NAME, which its tests/build.sh makes.
+static const char *const EXTERNAL_PROGRAMS[] = {"swifta"};
+static constexpr int EXTERNAL_PROGRAM_COUNT = sizeof EXTERNAL_PROGRAMS / sizeof EXTERNAL_PROGRAMS[0];
+
+static bool external_program(const char *name) {
+  for (int i = 0; i < EXTERNAL_PROGRAM_COUNT; i++)
+    if (strcmp(EXTERNAL_PROGRAMS[i], name) == 0) return true;
+  return false;
+}
+
+// swift-on-vectra's tree: $VECTRA_SWIFT_ON_VECTRA, or beside this one.
+static const char *swift_on_vectra(void) {
+  const char *from = getenv("VECTRA_SWIFT_ON_VECTRA");
+  return from ? from : fmt("%s/../../lang/swift-on-vectra", root);
+}
 static constexpr int USER_PROGRAM_COUNT = sizeof USER_PROGRAMS / sizeof USER_PROGRAMS[0];
 
 // Every user program for an architecture: compiled in parallel, then linked
@@ -1571,8 +1590,7 @@ static bool sysroot_cxx(const arch *a, const char *s, const char *from) {
 // library to take; a C library other than the recorded one stops the build.
 static bool build_sysroot(const arch *a, bool release) {
   const char *s = sysroot_dir(a, release), *triple = sysroot_triple(a);
-  const char *from = getenv("VECTRA_SWIFT_ON_VECTRA");
-  if (!from) from = fmt("%s/../../lang/swift-on-vectra", root);
+  const char *from = swift_on_vectra();
   const char *libc = fmt("%s/toolchain/out/libc/%s", from, triple);
   if (!exists(fmt("%s/lib/%s/libc.a", libc, triple))) {
     fprintf(stderr, "  SYSROOT %s skipped: no llvm-libc in %s\n", a->name, libc);
@@ -2924,6 +2942,20 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
     files[count] = read_file(fmt("%s/%s", out_dir(a, release), p->name));
     paths[count++] = fmt("boot/bin/%s", p->name);
   }
+  for (int i = 0; i < EXTERNAL_PROGRAM_COUNT; i++) { // built in swift-on-vectra's tree
+    const char *name = EXTERNAL_PROGRAMS[i];
+    if (!listed(with, name)) continue;
+    const char *from = fmt("%s/tests/out/%s/%s", swift_on_vectra(), sysroot_triple(a), name);
+    if (!exists(from)) die("%s: not built; run swift-on-vectra's tests/build.sh", from);
+    bootfs_room(count);
+    files[count] = read_file(from);
+    paths[count++] = fmt("boot/bin/%s", name);
+    if (exists(fmt("tests/user/%s.ndb", name))) {
+      bootfs_room(count);
+      files[count] = read_file(fmt("tests/user/%s.ndb", name));
+      paths[count++] = fmt("boot/svc/%s.ndb", name);
+    }
+  }
   for (int k = 0; k < POSIX_PORT_COUNT; k++) { // vendored POSIX programs: each, or a box and its names
     const port *p = POSIX_PORTS[k];
     const char *sub = port_bin_dir(p), *box = nullptr;
@@ -3005,7 +3037,7 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
     const char *end = strchr(n, ',');
     const char *name = str_dup((vx_str){n, end ? (size_t)(end - n) : strlen(n)});
     n += strlen(name) + (end != nullptr);
-    bool program = false;
+    bool program = external_program(name);
     for (int i = 0; i < USER_PROGRAM_COUNT; i++)
       program = program || strcmp(USER_PROGRAMS[i].name, name) == 0;
     if (program) continue;

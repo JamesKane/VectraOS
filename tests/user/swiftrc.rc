@@ -1,0 +1,22 @@
+# tests/user/swiftrc.rc: Swift on VectraOS, stage A (tests/qemu/swifta.ndb):
+# rc runs swifta, a Swift program built in swift-on-vectra's tree, and sees
+# its exit status, empty for success and the number in decimal otherwise.
+
+failed=()
+
+swifta one two
+if(! ~ $status '') {
+  failed=($failed checks)
+  echo 'swiftrc: FAILED swifta''s checks:' $status
+}
+
+swifta exit 7
+got=$status
+echo 'swiftrc: status' $got
+if(! ~ $got *': 7') {
+  failed=($failed exit)
+  echo 'swiftrc: FAILED exit 7 shows as' $got
+}
+
+if(~ $#failed 0) echo 'swiftrc: passed'
+if not exit $failed

@@ -1,0 +1,9 @@
+# tests/user/swiftrc.ndb: rc on /boot/tests/swiftrc.rc in the POSIX namespace
+# (/boot/bin on /bin, for echo and swifta), which runs swifta,
+# Swift's stage A program (tests/qemu/swifta.ndb).
+
+service=swiftrc program=/boot/bin/rc console entropy
+arg=/boot/tests/swiftrc.rc
+ns=posix
+connect=nsd
+env=PATH=/bin

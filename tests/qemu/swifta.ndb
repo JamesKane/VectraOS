@@ -1,0 +1,18 @@
+# tests/qemu/swifta.ndb: Swift on VectraOS, stage A (M6 step 6e3a, ADR-0034;
+# swift-on-vectra's S3): swifta, built by swift-on-vectra's tests/build.sh
+# with its toolchain against this tree's sysroot (EXTERNAL_PROGRAMS in
+# build.c), runs from rc (tests/user/swiftrc.rc): classes, existentials,
+# dynamic casts, errors, reflection, strings and collections, single
+# threaded; then exits with 7, which rc shows in decimal as its $status.
+
+scenario=swifta timeout=60 cmdline=vx.skip=rc with=swifta,swiftrc
+expect="swifta: hello from Swift on VectraOS, args ["
+expect=" checks, 0 failed"
+expect="swifta: exiting with 7"
+expect="swiftrc: status swifta "
+expect="swiftrc: passed"
+line="svcd: swiftrc exited"
+fail="vx: panic"
+fail="swifta: FAILED"
+fail="swiftrc: FAILED"
+fail="svcd: swiftrc exited: "

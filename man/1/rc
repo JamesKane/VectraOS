@@ -503,7 +503,7 @@ A file given to a child `rc`'s programs as a descriptor past 2 that the child wa
 
 `exec` with a file, here document or capture redirected is refused, since the shell is not there to copy them (M6 step 6e1, a native program's standard input and output from a file).
 
-A program whose loaded part is larger than 4 MiB is not run, and says `file does not exist`.
+A program whose loaded part is larger than 256 MiB is not run, and says `file does not exist`.
 
 There should be a way to match patterns against whole lists rather than single strings.
 Using `~` to test `$status` changes `$status`.
