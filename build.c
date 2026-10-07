@@ -1570,6 +1570,15 @@ static bool build_sysroot(const arch *a, bool release) {
   copy_file("lib/vx-rt/sysroot/link-head.rsp", fmt("%s/link-head.rsp", s));
   copy_file("lib/vx-rt/sysroot/link-tail.rsp", fmt("%s/link-tail.rsp", s));
   probe_sysroot(a, s, fmt("%s/toolchain/out/bin/clang", from)); // the two compilers agree, or it stops
+  // ISO C alone: a program asking for POSIX is refused when it compiles (6e2c1).
+  const char *posix = fmt("%s/posix-probe.c", s);
+  static const char POSIX_PROBE[] = "#define _POSIX_C_SOURCE 200809L\n#include <stdio.h>\n";
+  write_file(posix, (vx_str){POSIX_PROBE, sizeof POSIX_PROBE - 1});
+  if (run_capture_fd((const char *const[]){CLANG, fmt("--config-system-dir=%s/%s", root, s),
+                                           fmt("--target=%s", triple), "-fsyntax-only", posix, nullptr},
+                     2))
+    die("the %s sysroot compiles a program defining _POSIX_C_SOURCE, which its C library must refuse",
+        a->name);
   const char *taken = fmt("triple=%s tree.sha256=%s from=%s\n", triple, tree, libc);
   write_file(fmt("%s/llvm-libc", s), (vx_str){taken, strlen(taken)}); // which build it took (ADR-0033)
   // crt1.o and libvx.a, as a first-party program is compiled.

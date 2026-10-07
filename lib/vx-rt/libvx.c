@@ -18,7 +18,8 @@
 //   __llvm_libc_getenv            /env/NAME (ADR-0044), else the spawn's env=
 //   __llvm_libc_remove, _rename   the namespace's files, 0 or an errno value
 //   __llvm_libc_timespec_get_*    UTC, and the process's CPU time (clock)
-//   __cxa_finalize               nothing yet: atexit comes with 6e2c
+//   __llvm_libc_futex_wait/wake   the kernel's futexes, for the C library's
+//                                 mutex (LLVM patch 0006, 6e2c1)
 
 #define VX_RT_LIBC // the C library has memcpy and the rest (rt.c)
 #include "rt.c"
@@ -29,10 +30,6 @@
 // --- The program ---
 
 const char *vx_main(void) { exit(main(vx_argc(), vx_argv())); }
-
-// The C library's exit calls it to run atexit's and static destructors'
-// handlers; those come with 6e2c's atexit.
-void __cxa_finalize(void *dso) { (void)dso; }
 
 [[noreturn]] void __llvm_libc_exit(int status) { vx_exit(status); }
 
@@ -68,6 +65,20 @@ static int libvx_errno(vx_status st) {
   case VX_ERR_REFUSED: return LIBVX_EPERM;
   default: return LIBVX_EIO;
   }
+}
+
+// --- Futexes, for the C library's locks ---
+
+// Blocks while *word is expected, until a wake or the deadline (ns on the
+// monotonic clock, -1 for none): 0, or -1 at the deadline.
+int __llvm_libc_futex_wait(const uint32_t *word, uint32_t expected, int64_t deadline) {
+  vx_status st =
+      vx_futex_wait((const _Atomic uint32_t *)word, expected, deadline < 0 ? VX_INFINITE : deadline);
+  return st == VX_ERR_TIMED_OUT ? -1 : 0;
+}
+
+void __llvm_libc_futex_wake(const uint32_t *word, uint32_t count) {
+  vx_futex_wake((const _Atomic uint32_t *)word, count);
 }
 
 // --- Standard streams ---

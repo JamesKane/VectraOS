@@ -1,12 +1,14 @@
 // vxctest: the native target's C library (M6 step 6e2b, ADR-0033), the vxc
 // scenario's (tests/qemu/vxc.ndb). Built with only the target: Fedora's
 // clang with the sysroot's configuration file, ld.lld with its response
-// files, and nothing but ISO C's headers. Its first part: strtod and printf
-// round trips, math, qsort, the heap through malloc and the rest, getenv,
-// remove and rename refused, the clocks, and writes to standard output.
+// files, and nothing but ISO C's headers. Its first part (6e2b): strtod and
+// printf round trips, math, qsort, the heap through malloc and the rest,
+// getenv, remove and rename refused, the clocks, and writes to standard
+// output. Its second (6e2c1): setlocale, and atexit's handlers in order.
 // Each check prints a line only when it fails; the last line counts them.
 
 #include <errno.h>
+#include <locale.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -99,6 +101,24 @@ static void environment(void) {
   CHECK(rename("/tmp/vxctest-none", "/tmp/vxctest-other") != 0 && errno == ENOENT);
 }
 
+// One locale, "C": asked for by name or as the environment's, and given to a query.
+static void locales(void) {
+  const char *c = setlocale(LC_ALL, nullptr);
+  CHECK(c != nullptr && strcmp(c, "C") == 0);
+  CHECK(setlocale(LC_ALL, "") != nullptr && setlocale(LC_NUMERIC, "C") != nullptr);
+  CHECK(setlocale(LC_ALL, "fr_FR.UTF-8") == nullptr);
+}
+
+// atexit's handlers run after main returns, last registered first: the
+// scenario expects their lines in that order.
+static void second(void) { printf("vxctest: atexit second\n"); }
+static void first(void) { printf("vxctest: atexit first\n"); }
+
+static void handlers(void) {
+  CHECK(atexit(first) == 0 && atexit(second) == 0);
+  CHECK(at_quick_exit(first) == 0); // not run: the program ends by returning
+}
+
 static void clocks(void) {
   struct timespec ts;
   CHECK(timespec_get(&ts, TIME_UTC) == TIME_UTC && ts.tv_nsec >= 0 && ts.tv_nsec < 1000000000);
@@ -116,6 +136,8 @@ int main(int argc, char **argv) {
   heap();
   environment();
   clocks();
+  locales();
+  handlers();
   puts("vxctest: through puts");
   printf("vxctest: %d checks, %d failed\n", checks, failures);
   return failures ? 1 : 0;

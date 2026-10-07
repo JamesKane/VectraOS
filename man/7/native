@@ -29,6 +29,7 @@ First-party system code does not use it; Swift's runtime, C and C++ programs fro
   Which build of the C library it took.
 
 Fedora's clang and the Swift toolchain's patched clang, which knows the target without a configuration file, must agree (ADR-0033 §3): where the Swift toolchain is there too, `./build` compiles a probe with both and stops, naming the difference, if their predefined macros (but for those an LLVM version brings), the code generation the configuration sets (frame pointers, unwind tables, relocation model, DWARF version with `-g`, `-std`) or their link lines differ.
+A program defining `_POSIX_C_SOURCE`, `_XOPEN_SOURCE`, `_GNU_SOURCE` or the like is refused when it includes a header of the C library: it is ISO C's clause 7 alone, and a POSIX program is built for the POSIX personality (posix(7)); `./build` checks that it is refused.
 First-party code never sees a hosted header: it is compiled with `-nostdlibinc`, and `./build check` runs clang-tidy and the analyzer over native programs with the sysroot's flags.
 
 Until ADR-0034's first gate puts the toolchain in this tree, the C library comes from `swift-on-vectra`'s build (`toolchain/build_libc.sh`), found in `$VECTRA_SWIFT_ON_VECTRA` or `../../lang/swift-on-vectra`.
@@ -40,7 +41,7 @@ Until ADR-0034's first gate puts the toolchain in this tree, the C library comes
   `printf` and `puts` write through vx-rt's buffered writers, to the program's `stdout` and `stderr` pipes or the console; standard input is read as vx-rt reads it.
   The streams themselves, `FILE`, `fopen` and `fprintf`, come with 6e2c.
 : `exit`
-  The value is the exit string, empty for 0 and the number in decimal otherwise, as the POSIX environment's: rc(1) shows `exit 7` as `name pid: 7`. `.fini_array` runs first; `atexit` comes with 6e2c.
+  The value is the exit string, empty for 0 and the number in decimal otherwise, as the POSIX environment's: rc(1) shows `exit 7` as `name pid: 7`. `atexit`'s and `__cxa_atexit`'s handlers run first, last registered first, then `.fini_array`; `quick_exit` runs `at_quick_exit`'s instead.
 : `errno`
   A thread-local word of `libvx`'s.
 : `malloc` and the rest
@@ -49,6 +50,10 @@ Until ADR-0034's first gate puts the toolchain in this tree, the C library comes
   `/env/NAME` (envd(4)), as 9front's APE reads it: a list's words joined by spaces. A process with no `/env` has the spawn message's `env=` records. A value stays good until the next `getenv` of the same name.
 : `remove`, `rename`
   The namespace's files; `rename` within one server, and within one directory on a server with neither 9P2000.L nor the POSIX extension.
+: Futexes
+  The C library's locks (LLVM patch 0006) wait and wake through the kernel's futexes, `libvx`'s `vx_futex_wait` and `vx_futex_wake`.
+: `setlocale`
+  One locale, `"C"`: by that name, or `""`, the environment's; a query gives `"C"`, and any other name fails.
 : `timespec_get`, `clock`
   `TIME_UTC` is the wall clock; `clock` is the CPU time the whole process has had (ADR-0041).
 
@@ -68,4 +73,4 @@ start(2), heap(2), posix(7); ADR-0033 and ADR-0034, and `swift-on-vectra`'s `doc
 
 # BUGS
 
-There are no `FILE` streams, `atexit`, `<threads.h>` or locales yet (6e2c), and no C++ (6e2d); a program defining `_POSIX_C_SOURCE` is not yet refused (6e2c's `<features.h>`).
+There are no `FILE` streams (6e2c2) or `<threads.h>` (6e2c3) yet, and no C++ (6e2d).
