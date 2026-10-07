@@ -892,7 +892,7 @@ static bool mount_repair(vxfs_vol *v, const uint8_t *good_sb, uint64_t other_sb,
 // Mounts the volume on the device: the newer of its two good superblocks,
 // or the older if the newer's arenas will not load; the other copies made
 // its again; and the frees of the commit it describes done again.
-[[maybe_unused]] static vx_status vxfs_mount(vxfs_vol *v, vxfs_dev dev, vxfs_mem mem, uint32_t cache) {
+static vx_status mount_volume(vxfs_vol *v, vxfs_dev dev, vxfs_mem mem, uint32_t cache) {
   *v = (vxfs_vol){};
   vxfs *fs = &v->fs;
   if (dev.size < 10ull * VXFS_BLKSZ) return VX_ERR_INVALID;
@@ -936,4 +936,13 @@ static bool mount_repair(vxfs_vol *v, const uint8_t *good_sb, uint64_t other_sb,
     fs->ndeferred = 0;
   }
   return VX_OK;
+}
+
+// mount_volume, and on a failure everything it took let go (found by M6
+// step 6d10's mount_fuzz: callers, fsd and host/vxfs among them, give up on
+// a volume that will not mount, and leaked what the attempt allocated).
+[[maybe_unused]] static vx_status vxfs_mount(vxfs_vol *v, vxfs_dev dev, vxfs_mem mem, uint32_t cache) {
+  vx_status st = mount_volume(v, dev, mem, cache);
+  if (st != VX_OK) vxfs_unmount(v);
+  return st;
 }

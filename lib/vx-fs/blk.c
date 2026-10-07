@@ -1054,7 +1054,7 @@ static bool block_dealloc(vxfs *fs, uint64_t addr) {
 }
 
 [[maybe_unused]] static void vxfs_close(vxfs *fs) {
-  for (uint32_t i = 0; i < fs->narenas; i++) {
+  for (uint32_t i = 0; fs->arenas && i < fs->narenas; i++) { // none, after a mount that failed early
     vxfs_arena *a = &fs->arenas[i];
     fs_release(fs, a->free, a->capfree * sizeof *a->free);
     fs_release(fs, a->retired, a->nretired * sizeof *a->retired);
