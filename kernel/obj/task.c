@@ -485,7 +485,7 @@ static vx_status task_map(task *t, vmo *v, uint64_t offset, uint64_t size, uint3
     st = VX_ERR_RANGE;
   else if (task_maps_in(t, at, end))
     st = VX_ERR_EXISTS; // checked against the mappings, not the page tables: a no-access one has no pages
-  else if (vmo_revoked(v))
+  else if (vmo_revoked(v) && !(flags & VX_MAP_NOACCESS))
     st = VX_ERR_REVOKED; // checked under the lock: a revoke after it finds this mapping (ADR-0043)
   else if ((flags & VX_MAP_WRITE) && vmo_sealed(v))
     st = VX_ERR_ACCESS; // under the lock too: vmo_seal looks for writable mappings after it seals
@@ -552,7 +552,9 @@ static vx_status task_fork_copy(task *parent, task *child) {
                                                                            // MAP_SHARED memory, a lease
                                                                            // (a revoke reaches the child)
       uint64_t va = m->va;
-      st = task_map(child, m->vmo, m->offset, m->size, m->flags, m->allowed, &va);
+      uint32_t flags =
+          vmo_revoked(m->vmo) ? VX_MAP_NOACCESS : m->flags; // a revoked lease's: its place, no pages
+      st = task_map(child, m->vmo, m->offset, m->size, flags, m->allowed, &va);
       continue;
     }
     vmo *copy;

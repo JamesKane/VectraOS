@@ -652,12 +652,18 @@ static int64_t sys_channel_create(uint64_t options, uint64_t out) {
 // Builds a message from user memory: the body copied in, the handles moved out
 // of the caller's table (gone whatever happens next, as with every write).
 // `through` is the channel end written to: neither it nor its peer may travel in the message.
-static vx_status msg_from_user(uint64_t bytes, uint32_t len, uint64_t handles, uint32_t count,
-                               const channel *through, channel_msg **out) {
+// values: the handles' values, already copied in (a call's, some lent), or
+// null to copy them from handles.
+static vx_status msg_from_user(uint64_t bytes, uint32_t len, uint64_t handles, const vx_handle *values_in,
+                               uint32_t count, const channel *through, channel_msg **out) {
   if (len < sizeof(vx_msg_header) || len > VX_CHANNEL_MAX_BYTES || count > VX_CHANNEL_MAX_HANDLES)
     return VX_ERR_INVALID;
   vx_handle values[VX_CHANNEL_MAX_HANDLES];
-  vx_status st = copy_from_user(values, handles, count * sizeof(vx_handle));
+  vx_status st = VX_OK;
+  if (values_in)
+    memcpy(values, values_in, count * sizeof(vx_handle));
+  else
+    st = copy_from_user(values, handles, count * sizeof(vx_handle));
   if (st != VX_OK) return st;
   channel_msg *m = msg_alloc(len, count);
   if (!m) return VX_ERR_NO_MEMORY;
@@ -693,7 +699,7 @@ static int64_t sys_channel_write(vx_handle h, uint64_t bytes, uint64_t len, uint
   channel_msg *m;
   st = len > UINT32_MAX || count > UINT32_MAX
            ? VX_ERR_INVALID
-           : msg_from_user(bytes, (uint32_t)len, handles, (uint32_t)count, c, &m);
+           : msg_from_user(bytes, (uint32_t)len, handles, nullptr, (uint32_t)count, c, &m);
   if (st == VX_OK) {
     st = channel_write(c, m);
     if (st != VX_OK) msg_free(m);
@@ -720,6 +726,40 @@ static int64_t sys_channel_read(vx_handle h, uint64_t bytes, uint64_t cap, uint6
   return msg_to_user(m, bytes, handles);
 }
 
+// A call's lent handles (ADR-0043): for each, a lease of the caller's VMO in
+// its table, with that handle's rights but MANAGE (and TRANSFER, to go in
+// the request), whose value takes the lent one's place in values; the
+// leases are kept in leases, for the call's end to revoke; *made has a bit
+// for each value replaced.
+static vx_status lend_handles(vx_handle *values, uint32_t count, uint64_t lent, vmo **leases, uint32_t *n,
+                              uint64_t *made) {
+  task *me = current_task();
+  vx_status st = VX_OK;
+  for (uint32_t i = 0; i < count && st == VX_OK; i++) {
+    if (!(lent >> i & 1)) continue;
+    uint32_t rights = 0;
+    vmo *v = (vmo *)handle_get_rights(me, values[i], OBJ_VMO, VX_RIGHT_READ, &rights, &st);
+    if (!v) break;
+    vmo *lease = nullptr;
+    st = vmo_lease_create(v, &lease);
+    object_release(&v->obj);
+    if (st == VX_OK)
+      st = handle_add(me, &lease->obj, (rights & ~VX_RIGHT_MANAGE) | VX_RIGHT_TRANSFER, &values[i]);
+    if (lease && st == VX_OK) leases[(*n)++] = lease, *made |= 1ull << i; // kept until the call ends
+    if (lease && st != VX_OK) object_release(&lease->obj);
+  }
+  return st;
+}
+
+// Each lease ended: its mappings lose their pages, every use is REVOKED.
+static void revoke_leases(vmo **leases, uint32_t n) {
+  for (uint32_t i = 0; i < n; i++) {
+    if (!atomic_exchange(&leases[i]->revoked, true))
+      vmo_unmap_everywhere(leases[i], 0, leases[i]->size / 4096);
+    object_release(&leases[i]->obj);
+  }
+}
+
 static int64_t sys_channel_call(vx_handle h, uint64_t args_ptr, vx_instant deadline) {
   vx_call args;
   vx_status st = copy_from_user(&args, args_ptr, sizeof args);
@@ -728,17 +768,30 @@ static int64_t sys_channel_call(vx_handle h, uint64_t args_ptr, vx_instant deadl
   if (!user_range_ok((uint64_t)args.rd_bytes, args.rd_cap, true) ||
       !user_range_ok((uint64_t)args.rd_handles, args.rd_count_cap * sizeof(vx_handle), true))
     return VX_ERR_INVALID;
+  if (args.wr_count > VX_CHANNEL_MAX_HANDLES || (args.wr_count < 64 && args.lent >> args.wr_count))
+    return VX_ERR_INVALID; // a lent bit past the handles
+  vx_handle values[VX_CHANNEL_MAX_HANDLES];
+  vmo *leases[VX_CHANNEL_MAX_HANDLES];
+  uint32_t nlease = 0;
+  uint64_t made = 0;
+  if ((st = copy_from_user(values, (uint64_t)args.wr_handles, args.wr_count * sizeof(vx_handle))) != VX_OK)
+    return st;
   channel *c = (channel *)handle_get(current_task(), h, OBJ_CHANNEL, VX_RIGHT_READ | VX_RIGHT_WRITE, &st);
   if (!c) return st;
   channel_msg *request, *reply = nullptr;
-  st = msg_from_user((uint64_t)args.wr_bytes, args.wr_len, (uint64_t)args.wr_handles, args.wr_count, c,
-                     &request);
+  st = lend_handles(values, args.wr_count, args.lent, leases, &nlease, &made);
+  if (st == VX_OK)
+    st = msg_from_user((uint64_t)args.wr_bytes, args.wr_len, 0, values, args.wr_count, c, &request);
+  if (st != VX_OK) // the leases put in the table were not sent: closed (the caller's own stay)
+    for (uint32_t i = 0; i < args.wr_count; i++)
+      if (made >> i & 1) handle_close(current_task(), values[i]);
   if (st == VX_OK) {
     bool sent;
     st = channel_call(c, request, deadline, &reply, &sent);
     if (!sent) msg_free(request); // once sent, it is the channel's
   }
   object_release(&c->obj);
+  revoke_leases(leases, nlease); // however the call ended (ADR-0043)
   if (st != VX_OK) return st;
   args.actual = (vx_msg_size){reply->len, reply->count};
   copy_to_user(args_ptr + offsetof(vx_call, actual), &args.actual, sizeof args.actual);

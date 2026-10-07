@@ -2178,6 +2178,113 @@ static void test_leases(void) {
   vx_handle_close(v);
 }
 
+// --- Leases lent for one call (ADR-0043) ---
+
+enum lent_mode { LENT_REPLY, LENT_HANG, LENT_CLOSE };
+
+typedef struct lent_server {
+  vx_handle end;
+  enum lent_mode mode;
+  _Atomic uint64_t value; // what it read through the lent memory
+  _Atomic uint32_t lease; // the lease it was sent
+  _Atomic uint32_t done;
+} lent_server;
+
+// Reads one request, maps its handle and reads it; then replies, or never
+// does, or closes its end without a reply.
+[[noreturn]] static void lent_worker(vx_handle unused, uint64_t arg) {
+  (void)unused;
+  lent_server *s = (lent_server *)arg;
+  vx_handle port, got = 0;
+  vx_packet pk;
+  request rq;
+  vx_msg_size size;
+  vx_port_create(0, &port);
+  vx_port_bind(port, s->end, VX_TRIGGER_READABLE, 1, 0);
+  if (vx_port_wait(port, after_ms(2000), 0, &pk, 1) == 1 &&
+      vx_channel_read(s->end, &rq, sizeof rq, &got, 1, &size) == VX_OK && size.handles == 1) {
+    uint64_t at = 0;
+    if (vx_as_map(self, got, 0, 4096, 0, &at) == VX_OK) atomic_store(&s->value, *(volatile uint64_t *)at);
+    atomic_store(&s->lease, got);
+    if (s->mode == LENT_REPLY) vx_channel_write(s->end, &rq, sizeof rq, nullptr, 0);
+    if (s->mode == LENT_CLOSE) vx_handle_close(s->end);
+  }
+  vx_handle_close(port);
+  atomic_store(&s->done, 1);
+  vx_thread_exit();
+}
+
+// One call lending mem to a server in mode: the call's status, and the
+// server's lease after it.
+static vx_status lend_once(vx_handle mem, enum lent_mode mode, lent_server *s, vx_instant deadline) {
+  vx_handle ch[2], th;
+  *s = (lent_server){.mode = mode};
+  if (vx_channel_create(0, ch) != VX_OK) return VX_ERR_NO_MEMORY;
+  s->end = ch[1];
+  uint64_t sp = new_stack();
+  if (!sp || vx_thread_create(self, &th) != VX_OK ||
+      vx_thread_start(th, (uint64_t)lent_worker, sp, 0, (uint64_t)s) != VX_OK)
+    return VX_ERR_NO_MEMORY;
+  request rq = {.n = 1}, reply = {};
+  vx_call call = {.wr_bytes = &rq,
+                  .wr_len = sizeof rq,
+                  .wr_handles = &mem,
+                  .wr_count = 1,
+                  .rd_bytes = &reply,
+                  .rd_cap = sizeof reply,
+                  .lent = 1};
+  vx_status st = vx_channel_call(ch[0], &call, deadline);
+  while (mode != LENT_HANG && !atomic_load(&s->done)) vx_futex_wait(&s->done, 0, after_ms(10));
+  vx_handle_close(ch[0]);
+  if (mode != LENT_CLOSE) vx_handle_close(ch[1]);
+  vx_handle_close(th);
+  return st;
+}
+
+static void test_lent(void) {
+  vx_handle mem;
+  uint64_t value = 0x1e47, got = 0;
+  CHECK(vx_vmo_create(4096, 0, &mem) == VX_OK && vx_vmo_rw(mem, VX_VMO_WRITE, 0, &value, 8) == VX_OK);
+  static lent_server s;
+  // A reply: the server read it through its lease, which is gone once the call returns.
+  CHECK(lend_once(mem, LENT_REPLY, &s, after_ms(2000)) == VX_OK);
+  CHECK(atomic_load(&s.value) == 0x1e47 && atomic_load(&s.lease));
+  CHECK(vx_vmo_rw(atomic_load(&s.lease), VX_VMO_READ, 0, &got, 8) == VX_ERR_REVOKED);
+  uint64_t at = 0;
+  CHECK(vx_as_map(self, atomic_load(&s.lease), 0, 4096, 0, &at) == VX_ERR_REVOKED);
+  CHECK(vx_vmo_revoke(atomic_load(&s.lease)) == VX_ERR_ACCESS); // the server's has no MANAGE
+  vx_handle_close(atomic_load(&s.lease));
+  CHECK(vx_vmo_rw(mem, VX_VMO_READ, 0, &got, 8) == VX_OK && got == 0x1e47); // the caller's handle stays
+  // The server's end closed with no reply: PEER_CLOSED, and revoked.
+  CHECK(lend_once(mem, LENT_CLOSE, &s, after_ms(2000)) == VX_ERR_PEER_CLOSED);
+  CHECK(atomic_load(&s.value) == 0x1e47 &&
+        vx_vmo_rw(atomic_load(&s.lease), VX_VMO_READ, 0, &got, 8) == VX_ERR_REVOKED);
+  vx_handle_close(atomic_load(&s.lease));
+  // A server that never replies: the deadline ends the call, and the lease.
+  CHECK(lend_once(mem, LENT_HANG, &s, after_ms(300)) == VX_ERR_TIMED_OUT);
+  while (!atomic_load(&s.done)) vx_futex_wait(&s.done, 0, after_ms(10));
+  CHECK(atomic_load(&s.value) == 0x1e47 &&
+        vx_vmo_rw(atomic_load(&s.lease), VX_VMO_READ, 0, &got, 8) == VX_ERR_REVOKED);
+  vx_handle_close(atomic_load(&s.lease));
+  // A lent handle that is not a VMO, or a bit past the handles: refused before
+  // anything is sent, and the caller's handles stay.
+  vx_handle ch[2];
+  CHECK(vx_channel_create(0, ch) == VX_OK);
+  request rq = {.n = 1};
+  vx_handle port;
+  CHECK(vx_port_create(0, &port) == VX_OK);
+  vx_call call = {.wr_bytes = &rq, .wr_len = sizeof rq, .wr_handles = &port, .wr_count = 1, .lent = 1};
+  CHECK(vx_channel_call(ch[0], &call, after_ms(100)) == VX_ERR_BAD_HANDLE);
+  call.wr_handles = &mem, call.lent = 2;
+  CHECK(vx_channel_call(ch[0], &call, after_ms(100)) == VX_ERR_INVALID);
+  vx_msg_size size;
+  CHECK(vx_channel_read(ch[1], &rq, sizeof rq, nullptr, 0, &size) == VX_ERR_SHOULD_WAIT);
+  CHECK(vx_vmo_rw(mem, VX_VMO_READ, 0, &got, 8) == VX_OK && vx_handle_close(port) == VX_OK);
+  vx_handle_close(ch[0]);
+  vx_handle_close(ch[1]);
+  vx_handle_close(mem);
+}
+
 // --- task_exec (ADR-0012) ---
 
 // The program a forked child execs: it closes `probe`, a handle the child
@@ -2507,6 +2614,7 @@ const char *vx_main(void) {
   test_vmo_clone();
   test_address_space();
   test_leases();
+  test_lent();
   test_debugger();
   test_tls();
   test_fork();

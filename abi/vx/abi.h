@@ -168,6 +168,13 @@ static constexpr uint32_t VX_SPAWN = 0x6e77'7073; // "spwn"
 // waits on for the reply, so no answer is lost; the interrupt comes when the
 // call returns. A server that holds calls answers one before interrupting
 // its caller.
+//
+// lent (ADR-0043): bit i lends wr_handles[i], a VMO handle the caller keeps:
+// the server is sent a lease of it, with that handle's rights but MANAGE,
+// which the kernel revokes when the call returns, however it ends (a reply,
+// the deadline, an interrupt, the server's end closed, the caller killed).
+// A lent handle that is not a VMO, or a lease, fails the call before it is
+// sent (BAD_HANDLE, INVALID).
 typedef struct vx_call {
   const void *wr_bytes;
   const vx_handle *wr_handles;
@@ -176,6 +183,7 @@ typedef struct vx_call {
   uint32_t wr_len, wr_count;
   uint32_t rd_cap, rd_count_cap;
   vx_msg_size actual;
+  uint64_t lent;
 } vx_call;
 
 // --- Rings (01 §4.3) ---
