@@ -602,8 +602,8 @@ static vx_status p9_ring_connect_within(vx_handle connector, p9_conn *k, vx_dura
     // if any, after.
     k->timeout = wait;
     st = p9c_version(&k->c, P9_RING_MSIZE,
-                     P9_EXT_POSIX | P9_EXT_XATTR | P9_EXT_MAP | P9_EXT_DREF |
-                         P9_EXT_SRV); // what the server has
+                     P9_EXT_POSIX | P9_EXT_XATTR | P9_EXT_MAP | P9_EXT_DREF | P9_EXT_SRV |
+                         P9_EXT_NOTIFY); // what the server has
     k->timeout = 0;
   }
   if (st != VX_OK) {

@@ -190,6 +190,17 @@ enum : uint8_t { P9_OAPPEND = 0x80 };
 // removed since.
 enum : uint8_t { P9_OJOIN = 0x20 };
 enum : uint8_t { P9_LOCK_READ = 0, P9_LOCK_WRITE = 1, P9_LOCK_UNLOCK = 2 };
+// notify's event kinds (docs/proto/notify.md), Tnotify's mask bits too. LOST
+// is never asked for: it comes when a watch's queue overflowed.
+enum : uint8_t {
+  P9_NOTIFY_CREATE = 1,      // a name made in the directory watched
+  P9_NOTIFY_REMOVE = 2,      // a name removed from it, or the file watched removed
+  P9_NOTIFY_MODIFY = 4,      // data written: to the file, or to a file in the directory
+  P9_NOTIFY_ATTRIB = 8,      // attributes changed (setattr, wstat), likewise
+  P9_NOTIFY_MOVED_FROM = 16, // a name renamed out of (or within) the directory
+  P9_NOTIFY_MOVED_TO = 32,   // and the name it was renamed to
+  P9_NOTIFY_LOST = 128,      // events were lost: what is watched should be read again
+};
 enum : uint8_t { P9_LOCK_SUCCESS = 0, P9_LOCK_BLOCKED = 1, P9_LOCK_ERROR = 2 };
 
 // The fields of each message type, in wire order; nullptr for a type that does not exist.

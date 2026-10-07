@@ -558,6 +558,25 @@ static vx_status p9c_getattr(p9_client *c, uint32_t fid, p9_attr *out);
   return e;
 }
 
+// notify (docs/proto/notify.md): waits for events on what fid names, those
+// in mask, and copies them (kind[1] name[s] each) into buf: their length,
+// or a status. The first call on a fid starts the watch; its clunk ends it.
+[[maybe_unused]] static int64_t p9c_notify(p9_client *c, uint32_t fid, uint64_t mask, void *buf,
+                                           uint32_t cap) {
+  if (!(c->extensions & P9_EXT_NOTIFY)) return VX_ERR_UNSUPPORTED;
+  p9_msg t = {.type = P9_Tnotify, .fid = fid, .mask = mask};
+  p9_rcall rc = {};
+  vx_status e = p9c_rpc(c, &t, &rc, VX_HANDLE_NONE);
+  int64_t n = e;
+  if (e == VX_OK && rc.r.count > cap) n = VX_ERR_TOO_SMALL;
+  if (e == VX_OK && rc.r.count <= cap) {
+    for (uint32_t i = 0; i < rc.r.count; i++) ((uint8_t *)buf)[i] = rc.r.data.ptr[i];
+    n = rc.r.count;
+  }
+  p9c_done(c, &rc);
+  return n;
+}
+
 [[maybe_unused]] static vx_status p9c_fsync(p9_client *c, uint32_t fid) {
   if (!(c->extensions & P9_EXT_POSIX) && !p9c_dotl(c))
     return VX_OK; // a server without it has no later to write at

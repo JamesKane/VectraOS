@@ -134,9 +134,30 @@ typedef struct p9_lock {
   uint32_t proc_id;
 } p9_lock;
 
+// notify's watches (docs/proto/notify.md, M6 step 6e1d): a fid's, with the
+// events queued for it since its last Tnotify was answered.
+static constexpr uint32_t P9_MAX_WATCHES = 64, P9_WATCH_EVENTS = 32, P9_WATCH_NAME = 128;
+
+typedef struct p9_event {
+  uint8_t kind, len;
+  char name[P9_WATCH_NAME];
+} p9_event;
+
+typedef struct p9_watch {
+  bool used, lost;
+  const void *conn; // the p9_server whose fid it is
+  uint32_t fid;
+  uint64_t node, mask;
+  uint32_t head, count; // the queue, a ring in ev
+  p9_event ev[P9_WATCH_EVENTS];
+} p9_watch;
+
 typedef struct p9_shared {
   p9_open_file files[P9_MAX_OPEN_FILES];
   p9_lock locks[P9_MAX_LOCKS];
+  p9_watch watches[P9_MAX_WATCHES];
+  uint32_t nwatches;
+  bool again;           // an event was queued: a held Tnotify may be answered (ring_server)
   vx_drbg random;       // tokens; unseeded: Tshare is refused
   int64_t (*now)(void); // nanoseconds; null: holds never run out
 } p9_shared;
@@ -238,14 +259,139 @@ static void p9_fid_holds(p9_server *s, uint64_t node, int delta) {
   if (s->fs.fid_node) s->fs.fid_node(s->fs.ctx, node, delta);
 }
 
+// --- notify (docs/proto/notify.md) ---
+//
+// Events are made here, where every change the framework serves passes, on
+// every connection: a create, write, remove, rename, setattr or symlink.
+// One queued wakes the held Tnotify that waits for it (p9_shared.again).
+
+// Queues kind (name: the entry's, for a directory's watch) for node's watches.
+static void p9_notify(p9_shared *sh, uint64_t node, uint8_t kind, vx_str name) {
+  if (!sh || !sh->nwatches) return;
+  for (uint32_t i = 0; i < P9_MAX_WATCHES; i++) {
+    p9_watch *w = &sh->watches[i];
+    if (!w->used || w->node != node || !(w->mask & kind)) continue;
+    if (w->count == P9_WATCH_EVENTS) {
+      w->lost = true; // full: the watcher reads again what it watches
+      continue;
+    }
+    p9_event *e = &w->ev[(w->head + w->count++) % P9_WATCH_EVENTS];
+    e->kind = kind, e->len = (uint8_t)(name.len < P9_WATCH_NAME ? name.len : P9_WATCH_NAME - 1);
+    if (e->len) memcpy(e->name, name.ptr, e->len);
+    sh->again = true;
+  }
+}
+
+// node's directory and its name there: a change to a file is its
+// directory's watchers' too. False if it has none (a root), or none is known.
+static bool p9_notify_parent(p9_server *s, uint64_t node, uint64_t *parent, char name[P9_WATCH_NAME],
+                             uint8_t *len) {
+  p9_stat st;
+  if (!s->shared || !s->shared->nwatches || !s->fs.parent || s->fs.parent(s->fs.ctx, node, parent) != VX_OK ||
+      *parent == node || s->fs.stat(s->fs.ctx, node, &st) != VX_OK)
+    return false;
+  *len = (uint8_t)(st.name.len < P9_WATCH_NAME ? st.name.len : P9_WATCH_NAME - 1);
+  memcpy(name, st.name.ptr, *len);
+  return true;
+}
+
+// kind for node, and for its directory under its name.
+static void p9_notify_up(p9_server *s, uint64_t node, uint8_t kind) {
+  if (!s->shared || !s->shared->nwatches) return;
+  p9_notify(s->shared, node, kind, (vx_str){});
+  uint64_t parent;
+  char name[P9_WATCH_NAME];
+  uint8_t len;
+  if (p9_notify_parent(s, node, &parent, name, &len)) p9_notify(s->shared, parent, kind, (vx_str){name, len});
+}
+
+// The file server's changes, each with its events.
+static vx_status p9_fs_create(p9_server *s, uint64_t dir, vx_str name, uint32_t perm, uint8_t mode,
+                              uint64_t *node) {
+  vx_status e = s->fs.create(s->fs.ctx, dir, name, perm, mode, node);
+  if (e == VX_OK) p9_notify(s->shared, dir, P9_NOTIFY_CREATE, name);
+  return e;
+}
+
+static vx_status p9_fs_write(p9_server *s, uint64_t node, uint64_t offset, const uint8_t *buf,
+                             uint32_t *count) {
+  vx_status e = s->fs.write(s->fs.ctx, node, offset, buf, count);
+  if (e == VX_OK) p9_notify_up(s, node, P9_NOTIFY_MODIFY);
+  return e;
+}
+
+static vx_status p9_fs_remove(p9_server *s, uint64_t node) {
+  uint64_t parent;
+  char name[P9_WATCH_NAME];
+  uint8_t len;
+  bool up = p9_notify_parent(s, node, &parent, name, &len); // before: it is gone after
+  vx_status e = s->fs.remove(s->fs.ctx, node);
+  if (e == VX_OK) p9_notify(s->shared, node, P9_NOTIFY_REMOVE, (vx_str){});
+  if (e == VX_OK && up) p9_notify(s->shared, parent, P9_NOTIFY_REMOVE, (vx_str){name, len});
+  return e;
+}
+
+static vx_status p9_fs_rename(p9_server *s, uint64_t from, vx_str oldname, uint64_t to, vx_str newname) {
+  vx_status e = s->fs.rename(s->fs.ctx, from, oldname, to, newname);
+  if (e == VX_OK) p9_notify(s->shared, from, P9_NOTIFY_MOVED_FROM, oldname);
+  if (e == VX_OK) p9_notify(s->shared, to, P9_NOTIFY_MOVED_TO, newname);
+  return e;
+}
+
+static vx_status p9_fs_setattr(p9_server *s, uint64_t node, const p9_setattr *a) {
+  vx_status e = s->fs.setattr(s->fs.ctx, node, a);
+  if (e == VX_OK) p9_notify_up(s, node, P9_NOTIFY_ATTRIB);
+  return e;
+}
+
+static void p9_watch_drop(p9_server *s, uint32_t fid) {
+  p9_shared *sh = s->shared;
+  for (uint32_t i = 0; sh && sh->nwatches && i < P9_MAX_WATCHES; i++)
+    if (sh->watches[i].used && sh->watches[i].conn == s && sh->watches[i].fid == fid) {
+      sh->watches[i].used = false;
+      sh->nwatches--;
+    }
+}
+
+// Tnotify: fid's watch, made at its first, its mask from this one; its
+// events, as many as fit, or SHOULD_WAIT (held: an event wakes it).
+static vx_status p9_serve_notify(p9_server *s, const p9_msg *t, p9_msg *r, uint8_t *out, uint32_t room) {
+  p9_shared *sh = s->shared;
+  if (!(s->extensions & P9_EXT_NOTIFY) || !sh) return VX_ERR_UNSUPPORTED;
+  p9_fid *f = p9_fid_find(s, t->fid);
+  if (!f) return VX_ERR_BAD_HANDLE;
+  p9_watch *w = nullptr, *free_slot = nullptr;
+  for (uint32_t i = 0; i < P9_MAX_WATCHES && !w; i++) {
+    p9_watch *x = &sh->watches[i];
+    if (x->used && x->conn == s && x->fid == t->fid) w = x;
+    if (!x->used && !free_slot) free_slot = x;
+  }
+  if (!w && !free_slot) return VX_ERR_NO_MEMORY;
+  if (!w)
+    *(w = free_slot) = (p9_watch){.used = true, .conn = s, .fid = t->fid, .node = f->node}, sh->nwatches++;
+  w->mask = t->mask;
+  uint32_t n = 0;
+  if (w->lost && room >= 3) out[n++] = P9_NOTIFY_LOST, out[n++] = 0, out[n++] = 0, w->lost = false;
+  while (w->count && n + 3u + w->ev[w->head].len <= room) {
+    const p9_event *e = &w->ev[w->head];
+    out[n++] = e->kind, out[n++] = e->len, out[n++] = 0; // name[s]: len[2], then its bytes
+    memcpy(out + n, e->name, e->len), n += e->len;
+    w->head = (w->head + 1) % P9_WATCH_EVENTS, w->count--;
+  }
+  if (!n) return VX_ERR_SHOULD_WAIT;
+  r->data = (vx_bytes){out, n};
+  return VX_OK;
+}
+
 static void p9_fid_drop(p9_server *s, p9_fid *f) {
+  p9_watch_drop(s, f->fid); // its watch goes with it
   p9_fid_holds(s, f->node, -1);
   bool remove = f->orclose;
   if (f->file && s->shared) {
     p9_open_file *o = &s->shared->files[f->file - 1];
     remove = remove || (o->orclose && o->fids == 1); // its last fid
   }
-  if (remove && s->fs.remove) s->fs.remove(s->fs.ctx, f->node); // ORCLOSE; it may already be gone
+  if (remove && s->fs.remove) p9_fs_remove(s, f->node); // ORCLOSE; it may already be gone
   if (s->fs.clunk) s->fs.clunk(s->fs.ctx, f->node, f->open);
   if (f->file && s->shared) {
     p9_open_file *o = &s->shared->files[f->file - 1];
@@ -385,7 +531,7 @@ static vx_status p9_write_at(p9_server *s, p9_fid *f, p9_msg *t, p9_msg *r) {
       offset = st.length;
     }
   }
-  vx_status e = s->fs.write(s->fs.ctx, f->node, offset, t->data.ptr, &t->count);
+  vx_status e = p9_fs_write(s, f->node, offset, t->data.ptr, &t->count);
   if (e != VX_OK) return e;
   if (o && t->offset == P9_OFFSET_CURRENT) o->offset = offset + t->count;
   r->count = t->count;
@@ -590,20 +736,21 @@ static vx_status p9_serve_posix(p9_server *s, const p9_msg *t, p9_msg *r) {
                         .data_version = st.qid.version};
     return VX_OK;
   }
-  case P9_Tsetattr: return s->fs.setattr ? s->fs.setattr(s->fs.ctx, f->node, &t->setattr) : VX_ERR_ACCESS;
+  case P9_Tsetattr: return s->fs.setattr ? p9_fs_setattr(s, f->node, &t->setattr) : VX_ERR_ACCESS;
   case P9_Trenameat: {
     p9_fid *to = p9_fid_find(s, t->newfid);
     if (!to) return VX_ERR_BAD_HANDLE;
     if (!(f->qid.type & P9_QTDIR) || !(to->qid.type & P9_QTDIR)) return VX_ERR_INVALID;
     if (!p9_new_name_ok(t->name) || !p9_new_name_ok(t->name2)) return VX_ERR_INVALID;
     if (!s->fs.rename) return VX_ERR_ACCESS;
-    return s->fs.rename(s->fs.ctx, f->node, t->name, to->node, t->name2);
+    return p9_fs_rename(s, f->node, t->name, to->node, t->name2);
   }
   case P9_Tsymlink: {
     uint64_t node;
     if (!(f->qid.type & P9_QTDIR) || !p9_new_name_ok(t->name)) return VX_ERR_INVALID;
     if (!s->fs.symlink) return VX_ERR_ACCESS;
     vx_status e = s->fs.symlink(s->fs.ctx, f->node, t->name, t->name2, &node);
+    if (e == VX_OK) p9_notify(s->shared, f->node, P9_NOTIFY_CREATE, t->name);
     if (e != VX_OK) return e;
     e = p9_qid_of(s, node, &r->qid);
     if (s->fs.clunk) s->fs.clunk(s->fs.ctx, node, false); // no fid holds it, whether its qid came or not
@@ -664,6 +811,7 @@ static vx_status p9_serve_dref(p9_server *s, const p9_msg *t, p9_msg *r) {
                                                           t->roffset, &count);
   p9_keep_lock -= t->offset == P9_OFFSET_CURRENT;
   if (e != VX_OK) return e;
+  if (!read) p9_notify_up(s, f->node, P9_NOTIFY_MODIFY);
   if (o && t->offset == P9_OFFSET_CURRENT) o->offset = offset + count;
   r->count = count;
   return VX_OK;
@@ -722,9 +870,9 @@ static vx_status p9_serve_wstat(p9_server *s, const p9_fid *f, const p9_msg *t) 
       if (s->fs.clunk) s->fs.clunk(s->fs.ctx, there, false);
       return VX_ERR_EXISTS;
     }
-    if ((e = s->fs.rename(s->fs.ctx, dir, oldname, dir, w.name)) != VX_OK) return e;
+    if ((e = p9_fs_rename(s, dir, oldname, dir, w.name)) != VX_OK) return e;
   }
-  if (a.valid && (e = s->fs.setattr(s->fs.ctx, f->node, &a)) != VX_OK) {
+  if (a.valid && (e = p9_fs_setattr(s, f->node, &a)) != VX_OK) {
     if (rename) s->fs.rename(s->fs.ctx, dir, w.name, dir, oldname); // none of it, then
     return e;
   }
@@ -793,7 +941,7 @@ static vx_status p9_serve_l(p9_server *s, const p9_msg *t, p9_msg *r, uint8_t *r
     if (!(f->qid.type & P9_QTDIR) || !p9_new_name_ok(t->name)) return VX_ERR_INVALID;
     if (!s->fs.create) return VX_ERR_ACCESS;
     uint64_t node;
-    vx_status e = s->fs.create(s->fs.ctx, f->node, t->name, P9_DMDIR | (t->lmode & 0777), P9_OREAD, &node);
+    vx_status e = p9_fs_create(s, f->node, t->name, P9_DMDIR | (t->lmode & 0777), P9_OREAD, &node);
     if (e != VX_OK) return e;
     e = p9_qid_of(s, node, &r->qid);
     if (s->fs.clunk) s->fs.clunk(s->fs.ctx, node, true); // the create opened it; no fid holds it
@@ -811,7 +959,7 @@ static vx_status p9_serve_l(p9_server *s, const p9_msg *t, p9_msg *r, uint8_t *r
       if (dir != !!(t->lflags & P9_L_AT_REMOVEDIR))
         e = dir ? VX_ERR_ACCESS : VX_ERR_NOT_FOUND; // EISDIR, ENOTDIR as errno has them
       else
-        e = s->fs.remove(s->fs.ctx, child);
+        e = p9_fs_remove(s, child);
     }
     if (s->fs.clunk) s->fs.clunk(s->fs.ctx, child, false);
     return e;
@@ -830,7 +978,7 @@ static vx_status p9_serve_l(p9_server *s, const p9_msg *t, p9_msg *r, uint8_t *r
     if (st.name.len >= sizeof old) return VX_ERR_RANGE;
     memcpy(old, st.name.ptr, st.name.len);
     if ((e = s->fs.parent(s->fs.ctx, f->node, &dir)) != VX_OK) return e;
-    return s->fs.rename(s->fs.ctx, dir, (vx_str){old, st.name.len}, to->node, t->name);
+    return p9_fs_rename(s, dir, (vx_str){old, st.name.len}, to->node, t->name);
   }
   case P9_Treaddir: {
     if (!f->open || !(f->qid.type & P9_QTDIR)) return VX_ERR_ACCESS;
@@ -971,7 +1119,7 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
         else if (!s->fs.create)
           e = VX_ERR_ACCESS;
         else
-          e = s->fs.create(s->fs.ctx, f->node, t.name, t.perm, t.mode & ~(P9_OAPPEND | P9_OJOIN), &node);
+          e = p9_fs_create(s, f->node, t.name, t.perm, t.mode & ~(P9_OAPPEND | P9_OJOIN), &node);
         if (e == VX_OK) {
           if (s->fs.clunk) s->fs.clunk(s->fs.ctx, f->node, false);
           p9_fid_holds(s, f->node, -1);
@@ -1070,7 +1218,7 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
         break;
       }
       if (t.type == P9_Tremove) {
-        e = s->fs.remove ? s->fs.remove(s->fs.ctx, f->node) : VX_ERR_ACCESS;
+        e = s->fs.remove ? p9_fs_remove(s, f->node) : VX_ERR_ACCESS;
         f->orclose = false; // removed already, or not to be
         if (f->file && s->shared) s->shared->files[f->file - 1].orclose = false;
       }
@@ -1107,6 +1255,13 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
     case P9_Tseek:
     case P9_Tdesc: e = p9_serve_posix(s, &t, &r); break;
     case P9_Tmap: e = p9_serve_map(s, &t, &r); break;
+    case P9_Tnotify: { // its events go where Rread's data does
+      uint32_t room = s->msize - P9_IOHDRSZ;
+      if (cap < 11) return 0;
+      if (cap - 11 < room) room = (uint32_t)(cap - 11);
+      e = p9_serve_notify(s, &t, &r, resp + 11, room);
+      break;
+    }
     case P9_Tmkdir:
     case P9_Tunlinkat:
     case P9_Trename:
@@ -1117,8 +1272,9 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
     default: return 0;
     }
   }
-  if (e == VX_ERR_SHOULD_WAIT && (t.type == P9_Tread || t.type == P9_Twrite || t.type == P9_Topen))
-    return P9_DEFER;
+  if (e == VX_ERR_SHOULD_WAIT &&
+      (t.type == P9_Tread || t.type == P9_Twrite || t.type == P9_Topen || t.type == P9_Tnotify))
+    return P9_DEFER; // held, and served again (a Tnotify when an event is queued)
   if (e != VX_OK && s->dialect == P9_2000L)
     r = (p9_msg){.type = P9_Rlerror, .tag = t.tag, .ecode = p9_status_errno(e)};
   else if (e != VX_OK)

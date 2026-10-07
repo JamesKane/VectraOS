@@ -403,7 +403,7 @@ static p9_ring_server server = {
            .symlink = fs_symlink,
            .readlink = fs_readlink},
     .name = VX_STR("tmpfs"),
-    .supported = P9_EXT_POSIX | P9_EXT_XATTR,
+    .supported = P9_EXT_POSIX | P9_EXT_XATTR | P9_EXT_NOTIFY,
 };
 
 const char *vx_main(void) {

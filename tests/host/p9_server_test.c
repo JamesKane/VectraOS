@@ -519,12 +519,121 @@ static void test_dotl(void) {
   CHECK(dotl_raw(xattr, sizeof xattr) == 11 && resp[4] == 7 && resp[5] == 5 && resp[7] == 95); // EOPNOTSUPP
 }
 
+// notify (docs/proto/notify.md, M6 step 6e1d): a watcher and a writer, two
+// connections over one p9_shared. The watcher's Tnotify is held while
+// nothing is queued; the writer's create, write, rename and remove are
+// queued for it in order; a file's own watch; a mask that leaves events out;
+// an overflow's LOST; the watch gone with its fid.
+static p9_server watcher, writer;
+static p9_shared notify_shared;
+static uint8_t nreq[512], nresp[16384];
+static p9_msg nrep;
+
+static size_t on(p9_server *s, p9_msg t) {
+  size_t n = p9_encode(&t, nreq, sizeof nreq);
+  size_t len = n ? p9_serve(s, nreq, n, nresp, sizeof nresp) : 0;
+  if (len && len != P9_DEFER && p9_decode(nresp, len, &nrep) != VX_OK) return 0;
+  return len;
+}
+
+// The events in nrep's data, as "kind:name kind:name ...".
+static const char *events(void) {
+  static char out[2048];
+  size_t o = 0;
+  for (uint32_t i = 0; i + 3 <= nrep.count && o + 160 < sizeof out;) {
+    uint8_t kind = nrep.data.ptr[i];
+    uint16_t len = (uint16_t)(nrep.data.ptr[i + 1] | nrep.data.ptr[i + 2] << 8);
+    o += (size_t)snprintf(out + o, sizeof out - o, "%s%u:%.*s", o ? " " : "", kind, (int)len,
+                          nrep.data.ptr + i + 3);
+    i += 3u + len;
+  }
+  out[o] = 0;
+  return out;
+}
+
+static void test_notify(void) {
+  p9_fs fs = server.fs;
+  fs.rename = ram_rename;
+  watcher = (p9_server){
+      .fs = fs, .max_msize = 8192, .supported = P9_EXT_NOTIFY | P9_EXT_POSIX, .shared = &notify_shared};
+  writer = watcher;
+  for (p9_server *s = &watcher; s; s = s == &watcher ? &writer : nullptr) {
+    CHECK(on(s, (p9_msg){.type = P9_Tversion,
+                         .tag = P9_NOTAG,
+                         .msize = 8192,
+                         .version = VX_STR("9P2000.x/1 +notify +posix")}) > 0 &&
+          (s->extensions & P9_EXT_NOTIFY));
+    CHECK(on(s, (p9_msg){.type = P9_Tattach, .tag = 1, .fid = 1, .afid = P9_NOFID}) > 0 &&
+          nrep.type == P9_Rattach);
+  }
+  uint64_t all = 0x3f;
+  CHECK(on(&watcher, (p9_msg){.type = P9_Tnotify, .tag = 2, .fid = 1, .mask = all}) ==
+        P9_DEFER); // nothing yet: held
+  CHECK(notify_shared.nwatches == 1);
+  // The writer: a create in /, a write to it, a rename, a remove.
+  CHECK(on(&writer, (p9_msg){.type = P9_Twalk, .tag = 1, .fid = 1, .newfid = 2}) > 0);
+  CHECK(on(&writer,
+           (p9_msg){
+               .type = P9_Tcreate, .tag = 1, .fid = 2, .name = VX_STR("n"), .perm = 0644, .mode = P9_ORDWR}) >
+            0 &&
+        nrep.type == P9_Rcreate);
+  CHECK(notify_shared.again);
+  CHECK(on(&writer, (p9_msg){.type = P9_Twrite, .tag = 1, .fid = 2, .data = {(const uint8_t *)"hi", 2}}) > 0);
+  CHECK(on(&writer, (p9_msg){.type = P9_Trenameat,
+                             .tag = 1,
+                             .fid = 1,
+                             .name = VX_STR("n"),
+                             .newfid = 1,
+                             .name2 = VX_STR("m")}) > 0 &&
+        nrep.type == P9_Rrenameat);
+  CHECK(on(&writer, (p9_msg){.type = P9_Tremove, .tag = 1, .fid = 2}) > 0 && nrep.type == P9_Rremove);
+  CHECK(on(&watcher, (p9_msg){.type = P9_Tnotify, .tag = 2, .fid = 1, .mask = all}) > 0 &&
+        nrep.type == P9_Rnotify);
+  CHECK(strcmp(events(), "1:n 4:n 16:n 32:m 2:m") == 0);
+  CHECK(on(&watcher, (p9_msg){.type = P9_Tnotify, .tag = 3, .fid = 1, .mask = all}) == P9_DEFER); // all taken
+  // A file's own watch: its writes, with no name; the directory's names it.
+  CHECK(on(&watcher,
+           (p9_msg){
+               .type = P9_Twalk, .tag = 1, .fid = 1, .newfid = 3, .nwname = 1, .wname = {VX_STR("b.txt")}}) >
+        0);
+  CHECK(on(&watcher, (p9_msg){.type = P9_Tnotify, .tag = 4, .fid = 3, .mask = P9_NOTIFY_MODIFY}) == P9_DEFER);
+  CHECK(on(&writer,
+           (p9_msg){
+               .type = P9_Twalk, .tag = 1, .fid = 1, .newfid = 4, .nwname = 1, .wname = {VX_STR("b.txt")}}) >
+        0);
+  CHECK(on(&writer, (p9_msg){.type = P9_Topen, .tag = 1, .fid = 4, .mode = P9_OWRITE}) > 0);
+  CHECK(on(&writer, (p9_msg){.type = P9_Twrite, .tag = 1, .fid = 4, .data = {(const uint8_t *)"x", 1}}) > 0);
+  CHECK(on(&watcher, (p9_msg){.type = P9_Tnotify, .tag = 4, .fid = 3, .mask = P9_NOTIFY_MODIFY}) > 0 &&
+        strcmp(events(), "4:") == 0);
+  CHECK(on(&watcher, (p9_msg){.type = P9_Tnotify, .tag = 5, .fid = 1, .mask = P9_NOTIFY_CREATE}) > 0 &&
+        strcmp(events(), "4:b.txt") == 0); // queued before the mask changed
+  // The mask leaves writes out now; then an overflow.
+  CHECK(on(&writer, (p9_msg){.type = P9_Twrite, .tag = 1, .fid = 4, .data = {(const uint8_t *)"y", 1}}) > 0);
+  CHECK(on(&watcher, (p9_msg){.type = P9_Tnotify, .tag = 5, .fid = 1, .mask = P9_NOTIFY_MODIFY}) == P9_DEFER);
+  for (int i = 0; i < 40; i++)
+    on(&writer, (p9_msg){.type = P9_Twrite, .tag = 1, .fid = 4, .data = {(const uint8_t *)"z", 1}});
+  CHECK(on(&watcher, (p9_msg){.type = P9_Tnotify, .tag = 6, .fid = 1, .mask = P9_NOTIFY_MODIFY}) > 0 &&
+        strncmp(events(), "128: 4:b.txt", 12) == 0 && nrep.count == 3 + 32 * 8);
+  // A clunk ends the fid's watch.
+  CHECK(on(&watcher, (p9_msg){.type = P9_Tclunk, .tag = 1, .fid = 3}) > 0 && notify_shared.nwatches == 1);
+  CHECK(on(&watcher, (p9_msg){.type = P9_Tnotify, .tag = 7, .fid = 3, .mask = all}) > 0 &&
+        nrep.type == P9_Rerror);
+  // Not negotiated: refused.
+  p9_server plain = {.fs = fs, .max_msize = 8192, .shared = &notify_shared};
+  CHECK(on(&plain,
+           (p9_msg){.type = P9_Tversion, .tag = P9_NOTAG, .msize = 8192, .version = VX_STR("9P2000")}) > 0);
+  CHECK(on(&plain, (p9_msg){.type = P9_Tattach, .tag = 1, .fid = 1, .afid = P9_NOFID}) > 0);
+  CHECK(on(&plain, (p9_msg){.type = P9_Tnotify, .tag = 1, .fid = 1, .mask = all}) > 0 &&
+        nrep.type == P9_Rerror);
+}
+
 int main(void) {
   test_client();
   test_open_moves();
   test_deferral();
   test_hostile_client();
   test_share_tokens();
+  test_notify();
   test_dotl(); // last: it makes and renames files in the tree
   return check_result();
 }

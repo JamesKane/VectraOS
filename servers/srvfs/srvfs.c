@@ -218,7 +218,7 @@ static p9_ring_server server = {
            .open_handle = fs_open_handle,
            .write_handle = fs_write_handle},
     .name = VX_STR("srvfs"),
-    .supported = P9_EXT_XATTR | P9_EXT_SRV,
+    .supported = P9_EXT_XATTR | P9_EXT_SRV | P9_EXT_NOTIFY,
 };
 
 const char *vx_main(void) {

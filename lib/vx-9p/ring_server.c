@@ -514,7 +514,9 @@ static void p9_ring_loop(p9_ring_server *s) {
     // connection holding requests waits for an event or its doorbell: a new
     // request, or a Tflush of a held one. A thread with another running
     // parks instead: one sleeping on the port is enough.
-    if (s->again) more = true, s->again = false; // a held request may go on now: once more round
+    if (s->again ||
+        s->shared.again) // a held request may go on now (an event, for a Tnotify): once more round
+      more = true, s->again = false, s->shared.again = false;
     if (!more && s->running > 1) {
       p9_ring_park(s);
       continue;
