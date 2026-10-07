@@ -190,7 +190,13 @@ file=ctl  verb=range args="sensor:enum(accel|gyro) g:uint" effect=reversible
 file=ctl  verb=calibrate effect=destructive
 ```
 
-The types are `string`, `int`, `uint`, `float`, `bool`, `size`, `duration`, `time`, `path` and `enum(a|b|…)`. The flag `list` marks a comma-separated list.
+The types are `string`, `int`, `uint`, `float`, `bool`, `size`, `duration`, `time`, `path`, `query` and `enum(a|b|…)`. The flag `list` marks a comma-separated list.
+
+Three more kinds of record make `.schema` a dictionary that scripts and agents work from (18 §3, amended 2026-10-07):
+
+- **`returns=`** on a verb says where its result appears: `file:NAME` (read that file afterwards), `path` (the verb's own path argument), or `clone` (a new instance directory, for work that takes time).
+- **`object` records** say which directories are objects and what each contains: `object=table dir=N/tables/N contains=row,column keys=name,rows,cols`.
+- **A standard `select` verb** on any object directory with many children takes a `query`: space-separated `key OP value` terms that must all hold, with `OP` one of `=`, `!=`, `<`, `<=`, `>`, `>=`, or `~` for a regular expression. Keys and their types are the object's, from `.schema`. Matches are written as ndb records to the file `returns=` names. The parser is one, in `lib/vx-ndb`, fuzzed with the others.
 
 ## 5. The canonical tree
 
@@ -354,7 +360,7 @@ An app's namespace holds only `/wsys/self`, its own windows, and a `new` verb. T
             docs/      the items (files, notes, window text) as files, with sensitivity labels
             query      write "how did I configure the RK3588 NPU?" → read ranked hits
             add        write a path or URI to index
-    tools/                                  tool definitions exposed to models (.schema per tool)
+    tools/                                  tools that are not files; every other tool is a verb of a mounted service (03 §8.1)
     policy                                  routing and privacy rules (03 §8.6)
 ```
 

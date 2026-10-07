@@ -322,6 +322,7 @@ Handmade Hero's live code editing is a convention of `vxui`, not a new mechanism
 
   Each runtime runs in its **own sandboxed process** with only its model files and accelerator context in its namespace. A crashing kernel inside a runtime takes down only that session.
 - **Sessions:** the `clone` → `N/` files, streaming output, and the tool-call loop.
+- **Tools are the namespace's verbs** (amended 2026-10-07, 18 §4): a session's tools are generated from the `.schema` of the services its namespace holds, with each verb's description from its `.help`, which comes from the manual page (12 §6.4). The tool's name is its path and verb, and its effect class drives approval (§8.5). `/ai/tools` holds only tools that are not files. A server with a manual page and a `.schema`, which every server has (12 §7), is usable by an agent with no further work.
 - **Placement:** for each request, choose local NPU, local GPU, CPU, a swarm node, or a frontier provider (§8.6).
 
 ### 8.2 Heterogeneous placement
@@ -436,5 +437,5 @@ Prompts on the trusted path (§5.7) are drawn in a material no client theme can 
 4. **"Explain this window" and ADR-0029.** Another window's `a11y` is a broad grant, and agents never hold one. Does the shell read the tree and hand the text to the session, so the agent never holds the grant?
 5. **Dock pins.** Do they live in `~/lib/wm/dock.ndb`, beside the key bindings, which the user writes, or in the dock's `#appdata`, as state the shell writes?
 6. **Undoing "always ignore".** Where does the user see and remove these records? Most likely the Bench section of Settings.
-7. **Verb echo.** Should the shell offer a slip that names the verb each key or drag produced, to teach the key paths? Off by default?
+7. **Verb echo.** Should the shell offer a slip that names the verb each key or drag produced, to teach the key paths? Off by default? **Answered (2026-10-07):** yes, off by default, as a view of the same `verbs` stream that recording keeps (18 §5).
 8. **Working memory.** 15 sketches Jenson's spatial, associative and episodic memory on this design: the `focus` layout, collections as folders, and a metadata journal over `fsd`'s dump. Its open questions (dwell's grain, `hv`'s history, the snarf history's lifetime) come here when M7 is scoped.
