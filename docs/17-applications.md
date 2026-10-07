@@ -78,6 +78,27 @@ An agent filling a budget writes a range through `cells` under `auditfs` (03 §8
 
 Through `aid` and `/ai/policy` only (03 §8.6), local by default, with labels that follow the data: suggesting a formula, summarising a long document, tagging photos, transcribing a voice note. Every feature works without a model installed, and nothing is sent off the machine unless the user's policy allows it, which the egress lamp shows (03 §9.2).
 
+### 2.8 Printing and scanning
+
+Printing has gone driverless, and the industry is dropping drivers: IPP Everywhere (the Printer Working Group's baseline, with AirPrint and Mopria built on it) needs IPP/2.0, DNS-SD discovery, and PWG Raster and JPEG, with PDF and IPP over USB recommended. CUPS 3.0 removes drivers and splits into a per-user local spooler and a sharing server, both on PAPPL; Windows' Protected Print Mode admits only Mopria-certified IPP printers, and Windows Update stops distributing third-party printer software in July 2027. So printing here is a small first-party adapter in 07 §6.1's pattern, not a port of CUPS:
+
+```
+/mnt/print/
+    printers/
+        office-laser/   info (the printer's IPP attributes, as ndb) · ctl · status
+            jobs/       a directory per job: status, ctl (cancel, hold, release)
+    new                 write a document reference, read back a job id
+```
+
+- **Discovery** is DNS-SD over multicast DNS, which `netd` does not have yet; other local discovery wants it too.
+- **The suite's own documents never become PDF to be printed.** The apps lay out their own pages (§4's typesetter, §12's path renderer), so printing renders each page at the printer's resolution straight to PWG Raster or Apple's raster format (URF), or sends PDF when the printer advertises it. Printing a PDF made elsewhere needs a PDF renderer (§18, question 8).
+- **The spooler is per user,** as `cups-local` is: jobs spool on `fsd` in the user's data tree. A swarm node can be the shared print server, as `cups-sharing` is, its `/mnt/print` mounted by every terminal (02 §6).
+- **Apps print by plumbing** to a `print` port; the print dialog is asynchronous like every `vxui` dialog (03 §6), and the user's rules choose the default printer, per place if they like.
+- **USB printers** speak IPP over USB, the protocol `ipp-usb` implements: the adapter talks to them through the USB stack (M6 6g2's `drv-xhci`) as if they were on the network.
+- **Scanning** is the sibling adapter over eSCL (Mopria's scanning protocol, AirScan), serving scanners and their pages as files that Photos and Page take by plumbing.
+- **Printers are untrusted network peers:** the IPP and DNS-SD parsers are fuzzed (04 §7), IPP over TLS goes through `tlsd`, and any printer credential lives in `keyd`.
+- **Printers without IPP are out of scope,** as they are for Windows and CUPS 3. Someone who needs one can run a PAPPL printer application in the POSIX personality as a third-party package.
+
 ## 3. Sheet (after Numbers)
 
 **What it keeps from Numbers:** a sheet is a free canvas holding several tables, charts, text and images, rather than one endless grid. Tables have header rows and columns, categories and summary rows.
@@ -242,6 +263,7 @@ Each app needs the system beneath it, and the order follows that:
 | Jukebox | `audiod` (M13) | M13 |
 | Collaboration in any app | The swarm (M10) | M10 onwards |
 | AI features | `aid` (M11) | M11 |
+| Printing and scanning | mDNS in `netd`; IPP over TLS from M11's `tlsd`; USB printers after M6 6g2 | After M7, network first |
 
 A milestone of its own, after M15, would gather the suite: an exit test of a document made in each app, plumbed into another, edited by a script through its file server, and opened as it was a week earlier from the dump.
 
@@ -270,14 +292,16 @@ A milestone of its own, after M15, would gather the suite: an exit test of a doc
 2. **The archive format for exchange** (§2.1): `.zip` because the world reads it, or `tar` because the system already has a reader (bootfs)?
 3. **How much OOXML.** Full fidelity with Office is a decade's work for any team; which subset is the target, and is it measured against a corpus?
 4. **Codecs and licences.** AAC, HEIF and RAW decoders each carry patent or licence questions against BSD-3-Clause; each needs an ADR before it is vendored.
-5. **Printing.** There is no print system in the design. PDF out covers most needs; an IPP adapter (07's pattern) would cover printers. Is that in scope?
+5. **Printing.** Answered (2026-10-07): in scope, as a first-party IPP Everywhere adapter, `/mnt/print`, with eSCL scanning beside it (§2.8).
 6. **A calendar and contacts.** Reminders' CalDAV adapter makes a calendar cheap, and mail (07) wants contacts. Do they join the suite?
 7. **Names.** These are working names. Do the shipped apps get plain nouns, as here, or names in the desktop's NeXT and Amiga voice?
+8. **A PDF renderer.** Printing a PDF made elsewhere, and viewing one, need a renderer. MuPDF is AGPL, which does not suit a BSD-3-Clause system; PDFium is permissive but large and C++ (an import under 04 §1's C++ rule). A first-party renderer for a stated PDF profile, as `hv` has an HTML profile (07 §4), is the third option. Each needs an ADR.
 
 ## 19. Sources
 
 - Deluxe Paint's source: [Computer History Museum, the release](https://computerhistory.org/press-releases/dpaint-release/) and [the early source](https://computerhistory.org/blog/electronic-arts-deluxepaint-early-source-code/) (non-commercial licence); [Deluxe Paint](https://en.wikipedia.org/wiki/Deluxe_Paint); [Deluxe Paint Animation](https://en.wikipedia.org/wiki/Deluxe_Paint_Animation); [GrafX2](https://en.wikipedia.org/wiki/GrafX2).
 - Modern pixel tools: [Pro Motion NG](https://www.cosmigo.com/promotion/docs/onlinehelp/whatIsProMotion.htm); [Aseprite and Pro Motion compared](https://www.slant.co/versus/5470/5474/~aseprite_vs_cosmigo-pro-motion-ng).
 - Vector editing and rendering: [Figma's vector networks](https://www.figma.com/blog/introducing-vector-networks/) and [their engineering](https://alexharri.com/blog/vector-networks); [Graphite](https://graphite.art/); [Vello](https://github.com/linebender/vello).
+- Printing: [IPP Everywhere](https://www.pwg.org/ipp/everywhere.html); [CUPS 3.0](https://github.com/OpenPrinting/cups/wiki/CUPS-3.0), [cups-local](https://github.com/OpenPrinting/cups-local), [cups-sharing](https://github.com/OpenPrinting/cups-sharing); [Windows Protected Print and IPP](https://4sysops.com/archives/windows-protected-print-and-ipp-internet-printing-protocol-eliminating-third-party-printer-drivers/); [Mopria on Protected Print Mode](https://blog.mopria.org/2025/02/03/windows-protected-print-mode-a-secure-and-future-proof-printing-solution/); [driverless printing on Debian](https://wiki.debian.org/CUPSDriverlessPrinting).
 - Local-first: [Local-first software](https://www.inkandswitch.com/local-first-software/); [Automerge 3](https://www.inkandswitch.com/newsletter/dispatch-012/); [Keyhive](https://www.inkandswitch.com/project/keyhive/); [Patchwork](https://www.inkandswitch.com/patchwork/notebook/tasks-01/).
 - In this tree: 03 §4–§9; 07 §2, §6–§8; 08 §4, §10, §12; 11 §5; 15; 16; ADR-0029; ADR-0034.
