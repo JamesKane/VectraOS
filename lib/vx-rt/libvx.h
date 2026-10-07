@@ -28,6 +28,7 @@ int __llvm_libc_thread_join(void *handle);
 void __llvm_libc_thread_detach(void *handle);
 [[noreturn]] void __llvm_libc_thread_exit(void);
 uint32_t __llvm_libc_thread_id(void);
+int64_t __llvm_libc_clock_monotonic(void);
 [[gnu::weak]] void __llvm_libc_thread_main(void); // the C library's, if a program uses threads
 int __llvm_libc_remove(const char *path);
 long __llvm_libc_file_open(const char *path, int flags);

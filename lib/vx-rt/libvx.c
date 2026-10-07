@@ -165,6 +165,9 @@ void __llvm_libc_thread_detach(void *handle) {
 
 uint32_t __llvm_libc_thread_id(void) { return vx_thread_self_id(); }
 
+// The monotonic clock, for the C library's timed waits (LLVM patch 0009).
+int64_t __llvm_libc_clock_monotonic(void) { return vx_now(); }
+
 // --- Standard streams ---
 
 struct __llvm_libc_stdio_cookie __llvm_libc_stdin_cookie = {0}, __llvm_libc_stdout_cookie = {1},

@@ -6,7 +6,8 @@
 // getenv, remove and rename refused, the clocks, and writes to standard
 // output. Its second (6e2c1): setlocale, and atexit's handlers in order.
 // Its third (6e2c2): FILE streams on files and the standard streams. Its
-// fourth (6e2c3): <threads.h>, and malloc from several threads.
+// fourth (6e2c3, 6e2d1): <threads.h>, malloc from several threads, and
+// timed waits.
 // Each check prints a line only when it fails; the last line counts them.
 
 #include <errno.h>
@@ -252,6 +253,57 @@ static int recurse(void *arg) {
   return 1;
 }
 
+// Waits with deadlines: TIME_UTC's, ms milliseconds from now.
+static struct timespec after_ms(long ms) {
+  struct timespec ts;
+  timespec_get(&ts, TIME_UTC);
+  ts.tv_nsec += ms * 1000000;
+  ts.tv_sec += ts.tv_nsec / 1000000000;
+  ts.tv_nsec %= 1000000000;
+  return ts;
+}
+
+static long since_ms(const struct timespec *start) {
+  struct timespec now;
+  timespec_get(&now, TIME_UTC);
+  return (long)((now.tv_sec - start->tv_sec) * 1000 + (now.tv_nsec - start->tv_nsec) / 1000000);
+}
+
+static mtx_t held;
+
+static int try_held(void *arg) {
+  (void)arg;
+  struct timespec start, until = after_ms(50);
+  timespec_get(&start, TIME_UTC);
+  int busy = mtx_trylock(&held);
+  int timed = mtx_timedlock(&held, &until);
+  return busy == thrd_busy && timed == thrd_timedout && since_ms(&start) >= 49;
+}
+
+// The rest of C11's threads (6e2d1): a lock tried and timed out while
+// another thread holds it, a condition waited on to a deadline, a sleep and
+// a yield.
+static void timed(void) {
+  CHECK(mtx_init(&held, mtx_timed) == thrd_success && mtx_lock(&held) == thrd_success);
+  thrd_t t;
+  int ok = 0;
+  CHECK(thrd_create(&t, try_held, nullptr) == thrd_success && thrd_join(t, &ok) == thrd_success && ok);
+  CHECK(mtx_unlock(&held) == thrd_success && mtx_trylock(&held) == thrd_success &&
+        mtx_unlock(&held) == thrd_success);
+  cnd_t never;
+  CHECK(cnd_init(&never) == thrd_success && mtx_lock(&held) == thrd_success);
+  struct timespec start, until = after_ms(30);
+  timespec_get(&start, TIME_UTC);
+  CHECK(cnd_timedwait(&never, &held, &until) == thrd_timedout && since_ms(&start) >= 29);
+  CHECK(mtx_unlock(&held) == thrd_success); // held again after the timeout
+  struct timespec nap = {.tv_sec = 0, .tv_nsec = 20000000}, left = {.tv_sec = 1, .tv_nsec = 1};
+  timespec_get(&start, TIME_UTC);
+  CHECK(thrd_sleep(&nap, &left) == 0 && since_ms(&start) >= 19 && left.tv_sec == 0 && left.tv_nsec == 0);
+  thrd_yield();
+  cnd_destroy(&never);
+  mtx_destroy(&held);
+}
+
 static void threads(void) {
   CHECK(mtx_init(&lock, mtx_plain) == thrd_success && cnd_init(&changed) == thrd_success);
   CHECK(tss_create(&key, destroy) == thrd_success);
@@ -309,6 +361,7 @@ int main(int argc, char **argv) {
   locales();
   files();
   threads();
+  timed();
   handlers();
   puts("vxctest: through puts");
   printf("vxctest: %d checks, %d failed\n", checks, failures);

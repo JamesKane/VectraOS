@@ -52,7 +52,7 @@ Until ADR-0034's first gate puts the toolchain in this tree, the C library comes
 : Futexes
   The C library's locks (LLVM patch 0006) wait and wake through the kernel's futexes, `libvx`'s `vx_futex_wait` and `vx_futex_wake`.
 : `<threads.h>`
-  C11's threads (LLVM patch 0008) are vx-rt's (thread(2)), each with its own stack, of at least 256 KiB, and its own copy of the program's thread-local storage, the C library's included. `thrd_exit` ends a thread from anywhere below its function, and its value reaches `thrd_join`; a detached thread is freed by the next `thrd_create` or `thrd_join` after it ends. `mtx_recursive` mutexes keep their owner. `tss_create`'s destructors run as each thread ends. The heap under `malloc` is safe between threads.
+  C11's threads (LLVM patch 0008) are vx-rt's (thread(2)), each with its own stack, of at least 256 KiB, and its own copy of the program's thread-local storage, the C library's included. `thrd_exit` ends a thread from anywhere below its function, and its value reaches `thrd_join`; a detached thread is freed by the next `thrd_create` or `thrd_join` after it ends. `mtx_recursive` mutexes keep their owner. `tss_create`'s destructors run as each thread ends. `mtx_timedlock` and `cnd_timedwait` take `TIME_UTC` deadlines, turned into the monotonic clock's (LLVM patch 0009); `thrd_sleep` sleeps the whole duration, and `thrd_yield`, the kernel having no yield, is the shortest sleep. The heap under `malloc` is safe between threads.
 : `setlocale`
   One locale, `"C"`: by that name, or `""`, the environment's; a query gives `"C"`, and any other name fails.
 : `timespec_get`, `clock`
@@ -75,7 +75,6 @@ start(2), heap(2), posix(7); ADR-0033 and ADR-0034, and `swift-on-vectra`'s `doc
 # BUGS
 
 There is no C++ yet (6e2d).
-`mtx_timedlock`, `mtx_trylock`, `cnd_timedwait`, `thrd_sleep` and `thrd_yield` are missing: llvm-libc has none of them for any target.
 
 `freopen`, `fgetpos`, `fsetpos`, `rewind`, `tmpfile` and `tmpnam` are missing: llvm-libc has none of them for any target.
 `fopen`'s `"x"` (exclusive creation) is not taken.
