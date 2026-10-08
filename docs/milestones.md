@@ -13,8 +13,8 @@ Updated 2026-10-08.
 | **M3** Mount the network | Done (2026-10-01) | `tests/qemu/mount.ndb` | [M1–M3](milestones/M1-M3.md#m3--mount-the-network) |
 | **M4** POSIX and debugging | Done (2026-10-02) | `dbg.ndb` and `rcscript.ndb` | [M4](milestones/M4.md) |
 | **M5** Storage | Done (2026-10-04) | `install`, `powercut`, `fsdadm`, `fsddump`, `fsdnvmerestart` | [M5](milestones/M5.md) |
-| **M6** Runtime | In progress (from 2026-10-04): `libvx` v0 (6e4) | Set at its close: `libvx` level 1 frozen | [M6](milestones/M6.md) |
-| M7 Pixels | Not scoped; tracing and profiling (7a) placed first | | [M7](milestones/M7.md) |
+| **M6** Runtime | Done (2026-10-08) | `libvx` level 1 frozen (`abi/levels/1`), its behaviour suite (`vxapi`, `libvx`) green on both | [M6](milestones/M6.md) |
+| **M7** Pixels | Scoped 2026-10-08 ([docs/21](21-pixels.md)): tracing first, then display, input, `winsrv`, `vxui`, the terminal | The minimal and CPU-pixel programs on screen, a terminal running rc, M7's budgets under KVM | [M7](milestones/M7.md) |
 | M8 GPU | Not started | | |
 | M9 Real hardware | Not started: the PC (9a, moved from M6's 6g on 2026-10-08), then the Q8B | | [M9](milestones/M9.md) |
 | M10 Swarm | Not started | | |
@@ -53,14 +53,14 @@ POSIX programs run on musl over a back end that speaks 9Px, with `fork`, signals
 | 6e1 | Address-space calls, seals and leases, `/env`, identity, 9Px `notify`, `vx_heap` | Done |
 | 6e2 | The native target: llvm-libc and libc++ (ADR-0033) | Done |
 | 6e3 | Swift on VectraOS: concurrency and Foundation (ADR-0034) | Done but `dbg` for Swift, tabled |
-| 6e4 | `libvx` v0 (ADR-0004): headers and exports, arenas, strings and formatting, processes and threads, the event loop, the file calls, asynchronous files, the rule-2 review and the behaviour suite done; the freeze comes at M6's close, after 6g | In progress |
+| 6e4 | `libvx` v0 (ADR-0004): headers and exports, arenas, strings and formatting, processes and threads, the event loop, files, the rule-2 review, the behaviour suite, and level 1 frozen | Done |
 | 6f1 | The dynamic loader; `libvx`, `libc` and libc++ shared | Done |
 | 6f2 | C++ exceptions (libunwind); llama.cpp deferred | Done but llama.cpp |
 | 6f3 | The Swift runtime and Foundation shared, with an ABI check (ADR-0048) | Done |
 
 ## M7 — Pixels
 
-Not scoped. Tracing and profiling for the whole system (7a1–7a5, [docs/20](20-tracing.md)) come first, before the compositor.
+Scoped 2026-10-08 in [docs/21](21-pixels.md): tracing first (7a, [docs/20](20-tracing.md)); then seeing pixels (the harness's screenshots, write-combining, `vx-buffer`, `displayd` on simplefb and virtio-gpu 2D, 7b); input (7c); `winsrv` with a CPU compositor, `/wsys` and the frame protocol (7d); fonts and `vxui` v0 with the exit programs (7e); the terminal (7f); `lib/vx-text`, `dbg`'s GUI, hot reload, the plumber and tzdata (7g); budgets and the exit (7h). Decided with the user: the exit is pixels only (sound and gamepad with M13 and M9), M6's formatting library becomes `lib/vx-fmt`, the terminal is an M7 step.
 
 ## M9 — Real hardware
 
