@@ -1,6 +1,6 @@
 # ADR-0048: The Swift runtime as the system's shared libraries
 
-Status: proposed, 2026-10-08. Scoped the same day; decided then: the runtime is shared from M6 step 6f3 on, with its ABI frozen later at a named point; availability is Apple's, a VectraOS platform with an OS version; Foundation ships with the runtime. Built in M6 step 6f3 (6f3a–6f3e). Extends ADR-0034 ("the runtime ships as system code … then as shared libraries in the release") and ADR-0047 (the loader).
+Status: accepted, 2026-10-08 (the user ordered the freeze, item 5: the baselines committed with libvx level 1 at M6's close). Proposed 2026-10-08. Scoped the same day; decided then: the runtime is shared from M6 step 6f3 on, with its ABI frozen later at a named point; availability is Apple's, a VectraOS platform with an OS version; Foundation ships with the runtime. Built in M6 step 6f3 (6f3a–6f3e). Extends ADR-0034 ("the runtime ships as system code … then as shared libraries in the release") and ADR-0047 (the loader).
 
 ## Context
 

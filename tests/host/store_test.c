@@ -196,6 +196,12 @@ static void check_dirs(void) {
   CHECK(vx_ndb_next(&r, &rec) == VX_NDB_RECORD && vx_release_known(&rec));
   r = (vx_ndb_reader){.src = VX_STR("release=3 expires=9"), .scratch = rs, .scratch_cap = sizeof rs};
   CHECK(vx_ndb_next(&r, &rec) == VX_NDB_RECORD && !vx_release_known(&rec));
+  // The first record as ./build release writes it since level 1 (6e4e, 6e4f).
+  r = (vx_ndb_reader){
+      .src = VX_STR("release=439 name=dev-439 channel=dev commit=c vx-abi=1 behaviour=fd1f unsigned"),
+      .scratch = rs,
+      .scratch_cap = sizeof rs};
+  CHECK(vx_ndb_next(&r, &rec) == VX_NDB_RECORD && vx_release_known(&rec));
 
   // Paths and names.
   char path[71], hex[VX_STORE_HEX + 1];

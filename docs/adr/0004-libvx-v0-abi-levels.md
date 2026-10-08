@@ -1,6 +1,6 @@
 # ADR-0004: libvx v0 and the ABI levels
 
-Status: proposed, 2026-10-08. Listed since M2 as "the ring layout; freezes `vx-abi` v0", to be written when the code existed; written at M6 step 6e4a, when `libvx` v0 was unparked. Decided the same day: v0 is the core 09 needs, by header (below); first-party programs stay unity-built through the same public headers; level 1 freezes as a gate at M6's close (6e4f).
+Status: accepted, 2026-10-08 (the user ordered the freeze, item 8: level 1 frozen at M6's close). Proposed 2026-10-08. Listed since M2 as "the ring layout; freezes `vx-abi` v0", to be written when the code existed; written at M6 step 6e4a, when `libvx` v0 was unparked. Decided the same day: v0 is the core 09 needs, by header (below); first-party programs stay unity-built through the same public headers; level 1 freezes as a gate at M6's close (6e4f).
 
 ## Context
 

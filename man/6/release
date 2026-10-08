@@ -41,7 +41,10 @@ A record with a key not defined below is refused: install(8) fails, and distd(8)
   The git commit the release is built from, 40 hex digits, followed by `+dirty` if the working tree had changes.
   Not read.
 : `vx-abi`
-  The ABI levels the release provides, separated by commas: `0` while the ABI is a draft.
+  The ABI levels the release provides, separated by commas: `1` since level 1's freeze at M6's close (ADR-0004), `0` before it, while the ABI was a draft.
+  Not read.
+: `behaviour`
+  The behaviour suite's SHA-256, 64 hex digits (ADR-0004 item 8, M6 step 6e4e): `./build release` refuses a suite that differs from the level's frozen one unless `docs/release-notes.md` names it.
   Not read.
 : `unsigned`
   A flag: the record has no signatures.

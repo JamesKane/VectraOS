@@ -70,7 +70,7 @@ The same requests go through a loop (loop(2)) without a second API (M6 step 6e4d
 `vx_io_submit` takes <n> requests, each a `vx_io`: a file, an operation (`VX_IO_READ`, `VX_IO_WRITE` or `VX_IO_SYNC`), an offset (requests are positioned, as `vx_pread`'s), a buffer that stays the caller's until it completes, and a key.
 It takes all of them or none, `VX_ERR_SHOULD_WAIT` when the loop has no room for them all (256 at once).
 Each completes as a `VX_EV_IO` with its key and its count, bytes or a negative `vx_status`, in the order the server answers.
-In level 0 a loop's requests are made by up to four I/O threads of its own, the pipelined client keeping each in flight; the flags, cache hints for the server, are not yet carried.
+In level 1 a loop's requests are made by up to four I/O threads of its own, the pipelined client keeping each in flight; the flags, cache hints for the server, are not yet carried.
 
 `vx_watch` makes changes to a file, or to a directory's entries, `VX_EV_CHANGED` on <l> with <key>, until the loop is freed: what changed, and in a directory the entry's name (9Px `notify`, `docs/proto/notify.md`; fsd, tmpfs and srvfs serve it).
 On `VX_STDIN` it gives one `VX_EV_READY` once there is input to read; a program reads it and watches again.

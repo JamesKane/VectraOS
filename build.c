@@ -1992,7 +1992,7 @@ static bool build_sysroot(const arch *a, bool release) {
   cmd_addv(&so, (const char *const[]){LLD,
                                       "-shared",
                                       "-soname",
-                                      "libvx.so",
+                                      "libvx.so.1", // level 1's (ADR-0004 item 8): a program needs libvx.so.1
                                       "-nostdlib",
                                       "--build-id=sha1",
                                       "-z",
@@ -3466,12 +3466,13 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
     paths[count++] = NATIVE_LIBS[i][1];
   }
   // libvx.so, which native programs link dynamically (6f1b1, ADR-0047), when
-  // this architecture has the native target's sysroot.
+  // this architecture has the native target's sysroot: by its soname,
+  // libvx.so.1 since level 1's freeze (6e4f), which programs name.
   const char *libvx_so = fmt("%s/usr/lib/libvx.so", sysroot_dir(a, release));
   if (exists(libvx_so)) {
     bootfs_room(count);
     files[count] = read_file(libvx_so);
-    paths[count++] = "lib/libvx.so";
+    paths[count++] = "lib/libvx.so.1";
   }
   for (int k = 0; k < POSIX_PORT_COUNT; k++) { // vendored POSIX programs: each, or a box and its names
     const port *p = POSIX_PORTS[k];
