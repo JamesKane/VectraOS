@@ -48,4 +48,5 @@ Both break the mental model Plan 9 scripts depend on.
 - `/proc/N/ns` is the text of the group process N is in, which `procfs` asks `nsd` for.
 - Shells behave like Plan 9's. A script's `bind` reaches its caller unless the script runs in a copied group (rc's `rfork n`).
 - 02 §8's question 3 is closed. Groups arrive before M4's sockets, not at M10.
+- **Decided 2026-10-08 (the libvx v0 review, `docs/reviews/2026-10-08-libvx-v0-rule2.md`): the text becomes binary records** in the group's page (kind, flags, offsets into a string area), applied without a parser, with text rendered only for `/proc/N/ns`, as soon as the first consumer needs it. Until then each change prints and replays the whole table as text (rule 2's control plane, at up to 16 KiB). Since `libvx.so` carries vx-ns, the change keeps reading the text form alongside until the release that drops it.
 - **Open: `nsd` restarting.** Members keep the last published table and go on resolving with it. Until `nsd` is back, binds fail, and so do spawns that share.
