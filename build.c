@@ -1256,7 +1256,16 @@ typedef struct program {
   const port *lib;              // a native port it links (its archive), or nullptr
   const char *const *lib_flags; // what compiling against that port's headers takes
   bool native;                  // ISO C against the native target's sysroot (ADR-0033, 6e2b)
+  // How it links (ADR-0047): a static program; the dynamic loader, at its
+  // fixed address; a shared library (-fPIC, initial-exec TLS); or a dynamic
+  // program, whose interpreter is /lib/ld-vx. The loader and libraries go in
+  // bootfs's lib/, which a namespace with the boot image as root has at /lib.
+  enum : uint8_t { LINK_STATIC, LINK_LOADER, LINK_SHARED, LINK_DYNAMIC } link;
+  const char *const *needs; // a shared library's or dynamic program's libraries, by their names here
 } program;
+
+static const char *const DLTEST_A_NEEDS[] = {"libdltestb.so", nullptr};
+static const char *const DLTEST_NEEDS[] = {"libdltesta.so", nullptr};
 
 // ACPICA, a native port (ADR-0030), and what bus-acpi needs to include its
 // headers: its environment header first, its include directories as system
@@ -1271,83 +1280,147 @@ static const char *const ACPICA_USE_FLAGS[] = {"-include", "ports/acpica/acvectr
                                                nullptr};
 
 static const program USER_PROGRAMS[] = {
-    {"svcd", "servers/svcd/svcd.c", IN_MODULE, nullptr, false, nullptr, nullptr, false},
-    {"ktest", "tests/kernel/ktest.c", IN_MODULE, nullptr, false, nullptr, nullptr,
-     false}, // the root task instead of svcd with vx.root=ktest
-    {"bootfs", "servers/bootfs/bootfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"bus-acpi", "servers/bus-acpi/bus-acpi.c", IN_BOOTFS, nullptr, false, &acpica, ACPICA_USE_FLAGS, false},
-    {"nstest", "tests/user/nstest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
-    {"dreftest", "tests/user/dreftest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
-    {"threadtest", "tests/user/threadtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
-    {"p9pipetest", "tests/user/p9pipetest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
-    {"wstattest", "tests/user/wstattest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
-    {"srvtest", "tests/user/srvtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
-    {"relaytest", "tests/user/relaytest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
-    {"pooltestd", "tests/user/pooltestd.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
-    {"pooltest", "tests/user/pooltest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
-    {"fsdconc", "tests/user/fsdconc.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
-    {"fsdfix", "tests/user/fsdfix.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
-    {"constest", "tests/user/constest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
-    {"nettest", "tests/user/nettest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
-    {"tcptest", "tests/user/tcptest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
-    {"proctest", "tests/user/proctest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
-    {"plugintest", "tests/user/plugintest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
-    {"notifytest", "tests/user/notifytest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
-    {"starttest", "tests/user/starttest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
-    {"libvxtest", "tests/user/libvxtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
-    {"vxctest", "tests/user/vxctest.c", IN_TESTS, nullptr, false, nullptr, nullptr, true},
-    {"vxcxxtest", "tests/user/vxcxxtest.cpp", IN_TESTS, nullptr, false, nullptr, nullptr, true},
-    {"procfs", "servers/procfs/procfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"nsd", "servers/nsd/nsd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"tmpfs", "servers/tmpfs/tmpfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"nullfs", "servers/nullfs/nullfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"srvfs", "servers/srvfs/srvfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"envd", "servers/envd/envd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"relay", "servers/relay/relay.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"sysfs", "servers/sysfs/sysfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"ptyd", "servers/ptyd/ptyd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"devmgr", "servers/devmgr/devmgr.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"netd", "servers/netd/netd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"rc", "cmd/rc.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"poweroff", "cmd/poweroff.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"install", "cmd/install.c", IN_BOOTFS, nullptr, false, &monocypher, MONOCYPHER_USE_FLAGS, false},
-    {"ls", "cmd/ls.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"cat", "cmd/cat.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"srv", "cmd/srv.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"echo", "cmd/echo.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"pwd", "cmd/pwd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"ps", "cmd/ps.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"ns", "cmd/ns.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"tail", "cmd/tail.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"ping", "cmd/ping.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"cs", "cmd/cs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"dbg", "cmd/dbg.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"man", "cmd/man.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"lookman", "cmd/lookman.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"sig", "cmd/sig.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"drv-uart-16550", "drivers/drv-uart-16550/uart.c", IN_BOOTFS, "x86_64", false, nullptr, nullptr, false},
-    {"drv-rtc-cmos", "drivers/drv-rtc-cmos/rtc.c", IN_BOOTFS, "x86_64", false, nullptr, nullptr, false},
-    {"drv-uart-pl011", "drivers/drv-uart-pl011/uart.c", IN_BOOTFS, "aarch64", false, nullptr, nullptr, false},
-    {"drv-virtio-net", "drivers/drv-virtio-net/net.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"drv-virtio-blk", "drivers/drv-virtio-blk/blk.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"drv-nvme", "drivers/drv-nvme/nvme.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"blktest", "tests/user/blktest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
-    {"partd", "servers/partd/partd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"fsd", "servers/fsd/fsd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"dosfs", "servers/dosfs/dosfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"isofs", "servers/isofs/isofs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false},
-    {"distd", "servers/distd/distd.c", IN_BOOTFS, nullptr, false, &monocypher, MONOCYPHER_USE_FLAGS, false},
-    {"ctest", "tests/posix/ctest.c", IN_TESTS, nullptr, true, nullptr, nullptr, false},
-    {"ctestfsd", "tests/posix/ctest.c", IN_TESTS, nullptr, true, nullptr, nullptr,
-     false}, // ctest again, with /tmp on fsd
-    {"sbasetest", "tests/posix/sbasetest.c", IN_TESTS, nullptr, true, nullptr, nullptr, false},
-    {"maptest", "tests/posix/maptest.c", IN_TESTS, nullptr, true, nullptr, nullptr, false},
-    {"powercut", "tests/posix/powercut.c", IN_TESTS, nullptr, true, nullptr, nullptr, false},
-    {"dbgdemo", "tests/user/dbgdemo.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
-    {"dbgthreads", "tests/user/dbgthreads.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
-    {"schedtest", "tests/user/schedtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
-    {"cdtest", "tests/user/cdtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false},
+    {"svcd", "servers/svcd/svcd.c", IN_MODULE, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"ktest", "tests/kernel/ktest.c", IN_MODULE, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr}, // the root task instead of svcd with vx.root=ktest
+    {"bootfs", "servers/bootfs/bootfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"bus-acpi", "servers/bus-acpi/bus-acpi.c", IN_BOOTFS, nullptr, false, &acpica, ACPICA_USE_FLAGS, false,
+     LINK_STATIC, nullptr},
+    {"nstest", "tests/user/nstest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"dreftest", "tests/user/dreftest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"threadtest", "tests/user/threadtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"p9pipetest", "tests/user/p9pipetest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"wstattest", "tests/user/wstattest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"srvtest", "tests/user/srvtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"relaytest", "tests/user/relaytest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"pooltestd", "tests/user/pooltestd.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"pooltest", "tests/user/pooltest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"fsdconc", "tests/user/fsdconc.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"fsdfix", "tests/user/fsdfix.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"constest", "tests/user/constest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"nettest", "tests/user/nettest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"tcptest", "tests/user/tcptest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"proctest", "tests/user/proctest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"plugintest", "tests/user/plugintest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"notifytest", "tests/user/notifytest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"starttest", "tests/user/starttest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"libvxtest", "tests/user/libvxtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"vxctest", "tests/user/vxctest.c", IN_TESTS, nullptr, false, nullptr, nullptr, true, LINK_STATIC,
+     nullptr},
+    {"vxcxxtest", "tests/user/vxcxxtest.cpp", IN_TESTS, nullptr, false, nullptr, nullptr, true, LINK_STATIC,
+     nullptr},
+    {"procfs", "servers/procfs/procfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"nsd", "servers/nsd/nsd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"tmpfs", "servers/tmpfs/tmpfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"nullfs", "servers/nullfs/nullfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"srvfs", "servers/srvfs/srvfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"envd", "servers/envd/envd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"relay", "servers/relay/relay.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"sysfs", "servers/sysfs/sysfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"ptyd", "servers/ptyd/ptyd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"devmgr", "servers/devmgr/devmgr.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"netd", "servers/netd/netd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"rc", "cmd/rc.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"poweroff", "cmd/poweroff.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"install", "cmd/install.c", IN_BOOTFS, nullptr, false, &monocypher, MONOCYPHER_USE_FLAGS, false,
+     LINK_STATIC, nullptr},
+    {"ls", "cmd/ls.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"cat", "cmd/cat.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"srv", "cmd/srv.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"echo", "cmd/echo.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"pwd", "cmd/pwd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"ps", "cmd/ps.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"ns", "cmd/ns.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"tail", "cmd/tail.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"ping", "cmd/ping.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"cs", "cmd/cs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"dbg", "cmd/dbg.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"man", "cmd/man.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"lookman", "cmd/lookman.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"sig", "cmd/sig.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"drv-uart-16550", "drivers/drv-uart-16550/uart.c", IN_BOOTFS, "x86_64", false, nullptr, nullptr, false,
+     LINK_STATIC, nullptr},
+    {"drv-rtc-cmos", "drivers/drv-rtc-cmos/rtc.c", IN_BOOTFS, "x86_64", false, nullptr, nullptr, false,
+     LINK_STATIC, nullptr},
+    {"drv-uart-pl011", "drivers/drv-uart-pl011/uart.c", IN_BOOTFS, "aarch64", false, nullptr, nullptr, false,
+     LINK_STATIC, nullptr},
+    {"drv-virtio-net", "drivers/drv-virtio-net/net.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false,
+     LINK_STATIC, nullptr},
+    {"drv-virtio-blk", "drivers/drv-virtio-blk/blk.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false,
+     LINK_STATIC, nullptr},
+    {"drv-nvme", "drivers/drv-nvme/nvme.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"blktest", "tests/user/blktest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"partd", "servers/partd/partd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"fsd", "servers/fsd/fsd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"dosfs", "servers/dosfs/dosfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"isofs", "servers/isofs/isofs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"distd", "servers/distd/distd.c", IN_BOOTFS, nullptr, false, &monocypher, MONOCYPHER_USE_FLAGS, false,
+     LINK_STATIC, nullptr},
+    {"ctest", "tests/posix/ctest.c", IN_TESTS, nullptr, true, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"ctestfsd", "tests/posix/ctest.c", IN_TESTS, nullptr, true, nullptr, nullptr, false, LINK_STATIC,
+     nullptr}, // ctest again, with /tmp on fsd
+    {"sbasetest", "tests/posix/sbasetest.c", IN_TESTS, nullptr, true, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"maptest", "tests/posix/maptest.c", IN_TESTS, nullptr, true, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"powercut", "tests/posix/powercut.c", IN_TESTS, nullptr, true, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"dbgdemo", "tests/user/dbgdemo.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"dbgthreads", "tests/user/dbgthreads.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"schedtest", "tests/user/schedtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"cdtest", "tests/user/cdtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr},
+    {"ld-vx", "cmd/ld-vx.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_LOADER, nullptr},
+    // Shared libraries before what links them: build_user_programs links them first.
+    {"libdltestb.so", "tests/user/dltest_b.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_SHARED,
+     nullptr},
+    {"libdltesta.so", "tests/user/dltest_a.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_SHARED,
+     DLTEST_A_NEEDS},
+    {"dltest", "tests/user/dltest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_DYNAMIC,
+     DLTEST_NEEDS},
 };
+
+// Where a program goes in bootfs: boot/bin, or lib/ for the loader and
+// shared libraries (ADR-0047).
+static const char *bootfs_path(const program *p) {
+  return p->link == LINK_LOADER || p->link == LINK_SHARED ? fmt("lib/%s", p->name)
+                                                          : fmt("boot/bin/%s", p->name);
+}
 
 static bool program_for(const program *p, const arch *a) { return !p->arch || strcmp(p->arch, a->name) == 0; }
 
@@ -1902,6 +1975,7 @@ static bool build_user_programs(const arch *a, bool release) {
   const char *dir = fmt("out/%s/%s", a->name, release ? "release" : "debug");
   static cmd cc[USER_PROGRAM_COUNT], ld[USER_PROGRAM_COUNT];
   cmd *ccs[USER_PROGRAM_COUNT], *lds[USER_PROGRAM_COUNT];
+  static bool is_shared[USER_PROGRAM_COUNT];
   int n = 0;
   for (int i = 0; i < USER_PROGRAM_COUNT; i++) {
     const program *p = &USER_PROGRAMS[i];
@@ -1913,7 +1987,7 @@ static bool build_user_programs(const arch *a, bool release) {
     fprintf(stderr, "  CC    %-7s %s\n", p->name, a->name);
     if (p->native) {
       native_program(a, release, p, obj, &cc[n], &ld[n]);
-      ccs[n] = &cc[n], lds[n] = &ld[n], n++;
+      ccs[n] = &cc[n], lds[n] = &ld[n], is_shared[n] = false, n++;
       continue;
     }
     cc[n] = (cmd){};
@@ -1922,16 +1996,28 @@ static bool build_user_programs(const arch *a, bool release) {
     cmd_addv(&cc[n], HOUSE_FLAGS);
     cmd_addv(&cc[n], p->posix ? POSIX_PROGRAM_FLAGS : USER_FLAGS);
     if (p->lib_flags) cmd_addv(&cc[n], p->lib_flags);
+    if (p->link == LINK_SHARED)
+      cmd_addv(&cc[n], (const char *const[]){"-fPIC", "-ftls-model=initial-exec", nullptr});
+    if (p->link == LINK_LOADER) cmd_add(&cc[n], "-fPIE"); // its code PC-relative: linked high, past 2 GiB
     if (usage_flags(p)) cmd_addv(&cc[n], usage_flags(p));
     cmd_addv(&cc[n], release ? RELEASE_FLAGS : DEBUG_FLAGS);
     cmd_add(&cc[n], fmt("-ffile-prefix-map=%s=/src", root));
     cmd_addv(&cc[n], (const char *const[]){"-c", p->source, "-o", obj, nullptr});
     ld[n] = (cmd){};
     cmd_add(&ld[n], LLD);
-    cmd_addv(&ld[n],
-             (const char *const[]){"-static", "-nostdlib", "--build-id=sha1", "-z", "max-page-size=0x1000",
-                                   "-z", "noexecstack", "-e", "_start", "-o", nullptr});
+    if (p->link == LINK_STATIC || p->link == LINK_LOADER)
+      cmd_addv(&ld[n], (const char *const[]){"-static", "-e", "_start", nullptr});
+    if (p->link == LINK_LOADER) cmd_add(&ld[n], "--image-base=0xff000000000"); // below where as_map places
+    if (p->link == LINK_SHARED)
+      cmd_addv(&ld[n], (const char *const[]){"-shared", "-soname", p->name, nullptr});
+    if (p->link == LINK_DYNAMIC)
+      cmd_addv(&ld[n], (const char *const[]){"-e", "_start", "--dynamic-linker=/lib/ld-vx", nullptr});
+    if (p->link == LINK_SHARED || p->link == LINK_DYNAMIC) // bound at load, RELRO, both hash tables
+      cmd_addv(&ld[n], (const char *const[]){"-z", "now", "-z", "relro", "--hash-style=both", nullptr});
+    cmd_addv(&ld[n], (const char *const[]){"-nostdlib", "--build-id=sha1", "-z", "max-page-size=0x1000", "-z",
+                                           "noexecstack", "-o", nullptr});
     cmd_add(&ld[n], fmt("%s/%s", dir, p->name));
+    for (const char *const *need = p->needs; need && *need; need++) cmd_add(&ld[n], fmt("%s/%s", dir, *need));
     const char *lib = vectra_musl_lib(a, release);
     if (p->posix) {
       cmd_add(&ld[n], fmt("%s/crt1.o", lib));
@@ -1946,9 +2032,19 @@ static bool build_user_programs(const arch *a, bool release) {
     }
     ccs[n] = &cc[n];
     lds[n] = &ld[n];
+    is_shared[n] = p->link == LINK_SHARED;
     n++;
   }
-  return run_parallel(ccs, n) && run_parallel(lds, n);
+  // Shared libraries first: what links them reads them.
+  cmd *shared[USER_PROGRAM_COUNT], *rest[USER_PROGRAM_COUNT];
+  int ns = 0, nr = 0;
+  for (int k = 0; k < n; k++) {
+    if (is_shared[k])
+      shared[ns++] = lds[k];
+    else
+      rest[nr++] = lds[k];
+  }
+  return run_parallel(ccs, n) && run_parallel(shared, ns) && run_parallel(rest, nr);
 }
 
 // Vendored POSIX programs (docs/04 §3.1): a port's sources= and each
@@ -2951,7 +3047,7 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
           p->name);
     bootfs_room(count);
     files[count] = read_file(fmt("%s/%s", out_dir(a, release), p->name));
-    paths[count++] = fmt("boot/bin/%s", p->name);
+    paths[count++] = bootfs_path(p);
   }
   for (int i = 0; i < EXTERNAL_PROGRAM_COUNT; i++) { // built in swift-on-vectra's tree
     const char *name = EXTERNAL_PROGRAMS[i];

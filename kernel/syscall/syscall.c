@@ -12,12 +12,19 @@ static task *current_task(void) { return this_cpu()->current->task; }
 // thread may unmap a range between the check and the copy, and a fault there
 // makes the copy fail instead of the kernel. (With SMAP and PAN switched on,
 // these will also open and close user access.)
+// A page not mapped yet that a touch would bring in, a lazy VMO's
+// (ADR-0046) or a pager's, is brought in here as that touch would, waiting
+// for the pager if it must: a buffer a program has not touched yet is as
+// good as one it has (the dynamic loader's first read into its heap, 6f1a).
 static bool user_range_ok(uint64_t addr, uint64_t len, bool write) {
   uint64_t end;
   if (len == 0) return true;
   if (ckd_add(&end, addr, len) || end > USER_TOP) return false;
   for (uint64_t page = addr & ~4095ull; page < end; page += 4096)
-    if (!user_page_ok(current_task()->root, page, write)) return false;
+    if (!user_page_ok(current_task()->root, page, write) &&
+        (pager_fault(page, write ? 1 : 0) != PAGER_MAPPED ||
+         !user_page_ok(current_task()->root, page, write)))
+      return false;
   return true;
 }
 

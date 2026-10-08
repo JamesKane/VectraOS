@@ -38,6 +38,29 @@ static constexpr uint64_t VX_STACK_TOP = 0x0000'7fff'ffff'0000;
 static constexpr uint64_t VX_STACK_SIZE = 256ull * 1024; // as the root task's (kernel/obj/task.c)
 static constexpr uint32_t VX_ALL_RIGHTS = (1u << VX_RIGHT_BIT_COUNT) - 1;
 
+// The interpreter an image names (PT_INTERP: a dynamic program, ADR-0047),
+// without its NUL, in *path; false if it names none, or the image is not
+// one this can read.
+[[maybe_unused]] static bool vx_elf_interp(const uint8_t *image, size_t size, vx_str *path) {
+  vx_elf_header eh;
+  uint64_t table_end;
+  if (size < sizeof eh) return false;
+  memcpy(&eh, image, sizeof eh);
+  if (eh.phentsize != sizeof(vx_elf_phdr) || ckd_mul(&table_end, (uint64_t)eh.phnum, sizeof(vx_elf_phdr)) ||
+      ckd_add(&table_end, table_end, eh.phoff) || table_end > size)
+    return false;
+  for (uint16_t i = 0; i < eh.phnum; i++) {
+    vx_elf_phdr ph;
+    memcpy(&ph, image + eh.phoff + (uint64_t)i * sizeof ph, sizeof ph);
+    uint64_t end;
+    if (ph.type != VX_PT_INTERP) continue;
+    if (ph.filesz < 2 || ckd_add(&end, ph.offset, ph.filesz) || end > size || image[end - 1]) return false;
+    *path = (vx_str){(const char *)image + ph.offset, ph.filesz - 1};
+    return true;
+  }
+  return false;
+}
+
 // Maps each loadable segment of the image into the task. Returns the entry point in *entry.
 static vx_status vx_elf_load(vx_handle task, const uint8_t *image, size_t size, uint64_t *entry) {
   vx_elf_header eh;
@@ -88,6 +111,11 @@ typedef struct vx_spawn_args {
   vx_str path; // the program's path, the exe= record (vx_exe_path, R16), if known
   const uint8_t *image;
   size_t image_size;
+  // A dynamic image's interpreter (its PT_INTERP, ADR-0047), which the caller
+  // read (vx_ns_read_interp): mapped in the image's place, the image given to
+  // the child as the VMO dl.exe. Without it, a dynamic image is UNSUPPORTED.
+  const uint8_t *interp;
+  size_t interp_size;
   const vx_handle *handles; // given to the child: they leave the caller, whatever happens
   const vx_str *handle_names;
   uint32_t handle_count; // at most VX_CHANNEL_MAX_HANDLES - 1; "self" is added
@@ -161,7 +189,9 @@ static void vx_close_all(const vx_handle *h, uint32_t n) {
   vx_handle given[VX_CHANNEL_MAX_HANDLES] = {}; // "self", the caller's, and prepare's
   vx_str names[VX_CHANNEL_MAX_HANDLES] = {VX_STR("self")};
   uint32_t count = 1 + a->handle_count;
-  if (count > VX_CHANNEL_MAX_HANDLES - (a->prepare ? 1 : 0)) {
+  vx_str interp = {};
+  bool dynamic = vx_elf_interp(a->image, a->image_size, &interp);
+  if (count > VX_CHANNEL_MAX_HANDLES - (a->prepare ? 1 : 0) - (dynamic ? 1 : 0)) {
     vx_close_all(a->handles, a->handle_count);
     return VX_ERR_RANGE;
   }
@@ -171,7 +201,16 @@ static void vx_close_all(const vx_handle *h, uint32_t n) {
   vx_handle t = VX_HANDLE_NONE, stack = VX_HANDLE_NONE, thread = VX_HANDLE_NONE, ch[2] = {};
   uint64_t entry = 0, stack_at = VX_STACK_TOP - VX_STACK_SIZE;
   vx_status st = vx_task_create(a->name, &t);
-  if (st == VX_OK) st = vx_elf_load(t, a->image, a->image_size, &entry);
+  if (st == VX_OK && dynamic && !a->interp) st = VX_ERR_UNSUPPORTED;
+  if (st == VX_OK && dynamic) { // the interpreter runs first; the program is its to load
+    st = vx_elf_load(t, a->interp, a->interp_size, &entry);
+    vx_handle exe = VX_HANDLE_NONE;
+    if (st == VX_OK) st = vx_vmo_create((a->image_size + 4095) & ~(size_t)4095, 0, &exe);
+    if (st == VX_OK) st = vx_vmo_rw(exe, VX_VMO_WRITE, 0, (void *)a->image, a->image_size);
+    if (exe) given[count] = exe, names[count] = VX_STR("dl.exe"), count++; // closed with the rest on failure
+  } else if (st == VX_OK) {
+    st = vx_elf_load(t, a->image, a->image_size, &entry);
+  }
   if (st == VX_OK) st = vx_vmo_create(VX_STACK_SIZE, 0, &stack);
   if (st == VX_OK) st = vx_as_map(t, stack, 0, VX_STACK_SIZE, VX_MAP_WRITE, &stack_at);
   if (st == VX_OK)

@@ -1,0 +1,9 @@
+# tests/user/dlrc.ndb: rc on /boot/tests/dlrc.rc in the POSIX namespace, which
+# has the boot image as its root, so /lib/ld-vx and the libraries are there
+# (tests/qemu/dl.ndb).
+
+service=dlrc program=/boot/bin/rc console
+arg=/boot/tests/dlrc.rc
+ns=posix
+connect=nsd
+env=PATH=/bin

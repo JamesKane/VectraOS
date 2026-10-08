@@ -1,0 +1,42 @@
+page=ld-vx sect=8 summary="the dynamic loader: load a program and the shared libraries it needs, bind them, and start it"
+    src=cmd/ld-vx.c,lib/vx-dl/dl.c,lib/vx-rt/spawn.c,lib/vx-rt/crt1.c,abi/vx/dl.h
+    keys=loader,dynamic,shared,library,interp,pt_interp,relocation,relro,tls,needed,lib
+
+# SYNOPSIS
+
+```usage
+/lib/ld-vx
+```
+
+# DESCRIPTION
+
+`ld-vx` starts a dynamic program, one whose ELF image names `/lib/ld-vx` as its interpreter (`PT_INTERP`, ADR-0047).
+It is never run by name: a spawn (svcd(8), rc(1)) that is asked for such a program reads the interpreter from its own namespace, or svcd from the boot image, maps it in the program's place, and gives it the program's image as the handle `dl.exe`.
+
+`ld-vx` builds the namespace from the spawn message, as any program does, then:
+
+- maps the program at the addresses it was linked for;
+- maps each library its `DT_NEEDED` entries name, and theirs, breadth first and each once, from `/lib/NAME` in that namespace, with no search path; each library at a random base inside a reservation of its span, with a page left unmapped on each side;
+- binds every symbol before the program runs, the first definition in that order winning, the program's own first; there is no lazy binding and no interposition;
+- makes each object's RELRO read-only;
+- lays out the objects' thread-local storage one after another, the program's where its linker put it;
+- and jumps to the program's entry with the handover (`abi/vx/dl.h`): the spawn message as it read it, with its handles, and the loaded objects.
+
+The program's vx-rt then lays out each thread's TLS from every object, runs the libraries' constructors before its own, a library's dependencies first, and their destructors after its own, in reverse; it keeps the list of objects for the unwinder and dbg(1).
+
+A library is linked `-shared` with `-fPIC` and the initial-exec TLS model, `-z now` and `-z relro`; a dynamic program with `--dynamic-linker=/lib/ld-vx`.
+`./build` makes both (`LINK_SHARED`, `LINK_DYNAMIC` in its program table), and puts libraries in the boot image's `lib/`, which a namespace with the boot image as its root has at `/lib`.
+
+# SEE ALSO
+
+svcd(8), rc(1), native(7); ADR-0047 in the repository
+
+# DIAGNOSTICS
+
+A program that cannot be loaded ends with the exit string `ld-vx: NAME: why`: a library `/lib` does not have, an undefined symbol, a relocation of a kind it does not take, or an address outside the object that holds it.
+
+# BUGS
+
+Only the libraries a program needs at start are loaded: loading one later, and the dynamic TLS that needs (`__tls_get_addr`, TLS descriptors), are the hot-reload host's, later.
+Its own pages stay mapped for the life of the process.
+Of the spawners, only svcd(8) and rc(1) give a program its interpreter yet; the POSIX personality's `exec`, dbg(1) and relays cannot start a dynamic program.

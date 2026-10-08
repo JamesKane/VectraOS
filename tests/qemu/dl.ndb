@@ -1,0 +1,16 @@
+# tests/qemu/dl.ndb: the dynamic loader (M6 step 6f1a, ADR-0047): svcd starts
+# dltest, a program with PT_INTERP /lib/ld-vx, which loads it and the two
+# libraries it needs (libdltesta.so, which needs libdltestb.so) from /lib,
+# binds them, and hands over to its vx-rt (tests/user/dltest.c); then rc
+# starts it too (tests/user/dlrc.rc), reading the interpreter itself.
+
+scenario=dl timeout=60 cmdline=vx.skip=rc with=dltest,libdltesta.so,libdltestb.so,dlrc
+expect="dltest: hello from a dynamic program"
+expect="dltest: 11 checks, 0 failed"
+expect="dlrc: passed"
+line="svcd: dlrc exited"
+fail="vx: panic"
+fail="dltest: FAILED"
+fail="ld-vx: "
+fail="svcd: dltest exited: "
+fail="dlrc: FAILED"

@@ -1,0 +1,29 @@
+# ADR-0047: The dynamic loader
+
+Status: proposed, 2026-10-07. M6 step 6f1a. Decided the same day: the loader runs in the process, as Fuchsia's does, and a library named by `DT_NEEDED` is `/lib/NAME` in the process's namespace. This ADR adds `PT_INTERP` to what a spawn accepts, the loader `/lib/ld-vx`, and its handover to a program's `vx-rt` (`abi/vx/dl.h`).
+
+## Context
+
+Every program links statically today; 09 §4.8 makes dynamic linking the design, so that `libvx` and `vxui` become the release's shared objects and hot reload can map a fresh code image into a running process (03 §6.1). It asks for one indirection and no more: every symbol bound at load, the binding table then read-only, no lazy binding, no interposition, no search path.
+
+A spawn (`vx_spawn_elf`, `lib/vx-rt/spawn.c`) maps an image's segments into a new task from the spawner's side, and the child's `vx-rt` reads the spawn message (its records and handles) from its bootstrap channel, then builds its namespace from it.
+
+Fuchsia's process builder maps only the program's `PT_INTERP`, the dynamic linker, and sends it the executable in a first bootstrap message; the linker, inside the process, loads the executable and its libraries through a loader service and then starts the program (`src/lib/process_builder/src/process_builder.rs`, `build`, the `PT_INTERP` branch). 9front has no shared libraries.
+
+## Decision
+
+1. **A program with `PT_INTERP` is started by its interpreter.** `vx_spawn_elf` takes the interpreter's image from its caller (`vx_spawn_args.interp`), which reads the file `PT_INTERP` names from its own namespace (vx-ns: `vx_ns_read_interp`). It maps the interpreter's segments as it maps a static program's, starts the task at the interpreter's entry, and gives the executable's image to the child as a VMO, handle `dl.exe`, beside the spawn message's other handles. A caller that gives no interpreter cannot start such a program (`UNSUPPORTED`).
+2. **The interpreter is `/lib/ld-vx`,** a static program linked at a fixed address below where the kernel places mappings (`0x0ff0'0000'0000`), so that it needs no relocation of its own. It reads the spawn message; builds its own copy of the namespace from duplicates of the message's handles, keeping the originals for the program; maps the executable from `dl.exe`, then the executable's `DT_NEEDED` libraries and theirs, breadth first, each once.
+3. **A library is `/lib/NAME`,** NAME being the `DT_NEEDED` string, in the process's namespace (a template that makes the boot image the root has the boot image's `lib/` there). There is no search path; an app's lock may bind its own libraries on `/lib` later (06 §3.4).
+4. **Mapping:** each shared object gets a reservation of its whole span (`as_reserve`, a random base) with a page more on each side left unmapped as guards; its segments are mapped inside it at their offsets, with their permissions. The executable keeps its link address. Writable and executable at once is refused, as for static programs.
+5. **Binding:** every relocation is applied before the program runs (`-z now`; lazy binding is not implemented). A symbol is looked up in the executable, then the libraries in load order: the first definition wins. Then each object's `PT_GNU_RELRO` is made read-only. The relocations taken are each architecture's relative, absolute, `GLOB_DAT`, `JUMP_SLOT`, `COPY` and the static TLS ones (module and offset); any other refuses the program.
+6. **TLS:** the initial set's TLS is static. The executable's block sits where its static linker put it, and each library's follows it in load order (below the thread pointer on x86_64, above it on aarch64), each at its alignment. Libraries reach theirs by the initial-exec model; dynamic TLS (`__tls_get_addr`, TLS descriptors) waits for libraries loaded later.
+7. **The handover (`abi/vx/dl.h`):** the loader jumps to the executable's entry with no bootstrap handle and, in the second argument register, a `vx_dl_handover`: a magic number and version; the spawn message as read and its original handles, which `vx-rt` parses in place of reading its channel; and the loaded objects, the executable first, each with its base, program headers, dynamic section, name, TLS block (image, sizes, alignment, offset from the thread pointer) and initialisation and finalisation arrays. A static program's second argument is 0 (`thread_start`'s), so `vx-rt` tells the two apart.
+8. **`vx-rt`'s part:** it lays out every thread's TLS from all the blocks, runs the libraries' initialisation arrays before the executable's, dependencies first, and their finalisation arrays after the executable's in reverse, and keeps the list of loaded objects, which 6f2a's unwinder and `dbg` read.
+
+## Consequences
+
+- A dynamic program costs a spawn one more file read (the interpreter, by its caller) and its start a namespace of its own and the libraries' mapping and binding; a static program is unchanged.
+- The handover is a binary interface between the release's loader and every dynamic program's `vx-rt`: it changes only with its version number, and a `vx-rt` that does not know the version refuses it.
+- `ld-vx`'s own pages stay mapped for the life of the process (a few hundred KiB); it does not unmap itself.
+- Libraries loaded after start, and their dynamic TLS, are the hot-reload host's, later; the mapping and binding code (`lib/vx-dl`) is written to serve both.

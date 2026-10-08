@@ -3,9 +3,10 @@
 // thread_local), as the ELF ABI lays it out, and its stack's bounds known.
 //
 // The TLS image is the program's PT_TLS segment, found through __ehdr_start:
-// p_filesz bytes copied, the rest of p_memsz zeroed, at p_align. The thread
-// pointer (x86_64's FS base, aarch64's TPIDR_EL0) points at it as each ABI
-// has it:
+// p_filesz bytes copied, the rest of p_memsz zeroed, at p_align; in a
+// dynamic program, each loaded object's, at the offset the loader gave it
+// (ADR-0047). The thread pointer (x86_64's FS base, aarch64's TPIDR_EL0)
+// points at it as each ABI has it:
 //   - x86_64, variant II: the block ends at the thread pointer, rounded to its
 //     alignment, and the word there points to itself (%fs:0, which compilers
 //     read for the thread pointer). vx-rt's record of the thread (vx_tcb)
@@ -24,6 +25,7 @@
 
 #pragma once
 
+#include "../../abi/vx/dl.h"
 #include "base.c"
 #include "elf.h"
 
@@ -43,49 +45,87 @@ typedef struct vx_thread {
   vx_tcb *tcb;
 } vx_thread;
 
+// The TLS blocks every thread copies: the program's, and in a dynamic
+// program each library's, at its offset from the thread pointer. size is
+// what they take on their side of it, align their largest alignment.
+static constexpr uint32_t VX_TLS_MODULES = 32;
 static struct {
-  const uint8_t *init;
-  uint64_t filesz, memsz, align;
-} vx_tls_image;
+  struct {
+    const uint8_t *init;
+    uint64_t filesz, memsz;
+    int64_t offset;
+  } mod[VX_TLS_MODULES];
+  uint32_t count;
+  uint64_t size, align;
+} vx_tls;
 
 extern const vx_elf_header __ehdr_start; // the program's own headers, mapped with its first segment (lld)
 
 static uint64_t vx_round_up(uint64_t v, uint64_t a) { return (v + a - 1) & ~(a - 1); }
 
+// A static program's one block, where its linker put it: on x86_64 ending
+// at the thread pointer, on aarch64 past the two words there.
 static void vx_tls_find(void) {
   const vx_elf_phdr *ph = (const vx_elf_phdr *)((const uint8_t *)&__ehdr_start + __ehdr_start.phoff);
-  vx_tls_image.align = 16;
+  vx_tls.align = 16;
   for (uint16_t i = 0; i < __ehdr_start.phnum; i++) {
     if (ph[i].type != VX_PT_TLS) continue;
-    vx_tls_image.init = (const uint8_t *)ph[i].vaddr;
-    vx_tls_image.filesz = ph[i].filesz, vx_tls_image.memsz = ph[i].memsz;
-    if (ph[i].align > vx_tls_image.align) vx_tls_image.align = ph[i].align;
+    uint64_t a = ph[i].align ? ph[i].align : 1; // the block's offset is rounded by it, as lld does
+    vx_tls.align = a > 16 ? a : 16;             // the thread pointer's, at least 16
+#ifdef __x86_64__
+    int64_t offset = -(int64_t)vx_round_up(ph[i].memsz, a);
+    vx_tls.size = (uint64_t)-offset;
+#else
+    int64_t offset = (int64_t)vx_round_up(16, a);
+    vx_tls.size = (uint64_t)offset + ph[i].memsz;
+#endif
+    vx_tls.mod[0].init = (const uint8_t *)ph[i].vaddr;
+    vx_tls.mod[0].filesz = ph[i].filesz, vx_tls.mod[0].memsz = ph[i].memsz, vx_tls.mod[0].offset = offset;
+    vx_tls.count = 1;
+  }
+}
+
+static bool vx_tls_given; // the loader's layout, not the program's own PT_TLS
+
+// A dynamic program's blocks, as the loader laid them out (ADR-0047).
+[[maybe_unused]] static void vx_tls_from(const vx_dl_handover *dl) {
+  vx_tls_given = true;
+  vx_tls.count = 0;
+  vx_tls.size = dl->tls_size;
+  vx_tls.align = dl->tls_align > 16 ? dl->tls_align : 16;
+  for (uint32_t i = 0; i < dl->object_count && vx_tls.count < VX_TLS_MODULES; i++) {
+    const vx_dl_object *o = &dl->objects[i];
+    if (!o->tls_memsz) continue;
+    vx_tls.mod[vx_tls.count].init = (const uint8_t *)o->tls_init;
+    vx_tls.mod[vx_tls.count].filesz = o->tls_filesz, vx_tls.mod[vx_tls.count].memsz = o->tls_memsz;
+    vx_tls.mod[vx_tls.count].offset = o->tls_offset;
+    vx_tls.count++;
   }
 }
 
 // The bytes a thread's TLS and record need, at most: alignment slack included.
 static uint64_t vx_tls_extent(void) {
-  uint64_t a = vx_tls_image.align;
-  return vx_round_up(vx_tls_image.memsz, a) + a + sizeof(vx_tcb) + 16 + a;
+  uint64_t a = vx_tls.align;
+  return vx_round_up(vx_tls.size, a) + 2 * a + sizeof(vx_tcb) + 16;
 }
 
 // Lays out a thread's TLS and record at address mem, vx_tls_extent() bytes of zeroed
 // memory: the block initialised, the record placed. Returns the thread pointer.
 static uint64_t vx_tls_layout(uint64_t mem, vx_tcb **tcb) {
-  uint64_t a = vx_tls_image.align, p = mem, block, tp;
+  uint64_t a = vx_tls.align, tp;
 #ifdef __x86_64__
-  tp = vx_round_up(p + vx_round_up(vx_tls_image.memsz, a), a);
-  block = tp - vx_round_up(vx_tls_image.memsz, a);
+  tp = vx_round_up(mem + vx_tls.size, a); // the blocks below it
   *tcb = (vx_tcb *)tp;
   (*tcb)->self = *tcb;
 #else
-  tp = vx_round_up(p + sizeof(vx_tcb), a > 16 ? a : 16);
-  block = tp + vx_round_up(16, a);
+  tp = vx_round_up(mem + sizeof(vx_tcb), a); // the record below it, the blocks past its two words
   *tcb = (vx_tcb *)(tp - sizeof(vx_tcb));
   (*tcb)->self = *tcb;
   *(vx_tcb **)tp = *tcb;
 #endif
-  if (vx_tls_image.filesz) memcpy((void *)block, vx_tls_image.init, vx_tls_image.filesz);
+  for (uint32_t i = 0; i < vx_tls.count; i++)
+    if (vx_tls.mod[i].filesz)
+      memcpy((void *)(tp + (uint64_t)vx_tls.mod[i].offset), vx_tls.mod[i].init, vx_tls.mod[i].filesz);
   return tp;
 }
 
@@ -119,7 +159,7 @@ static void vx_tp_set(uint64_t tp) {
 // The first thread's TLS and record, at start-up: a VMO of its own; its stack
 // is the mapping its stack pointer is in.
 static void vx_thread_main_init(void) {
-  vx_tls_find();
+  if (!vx_tls_given) vx_tls_find();
   uint64_t size = vx_round_up(vx_tls_extent(), 4096), at = 0;
   vx_handle v;
   if (vx_vmo_create(size, 0, &v) != VX_OK) return;

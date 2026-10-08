@@ -1,0 +1,5 @@
+# tests/user/dltest.ndb: dltest, a dynamic program (tests/qemu/dl.ndb).
+
+service=dltest program=/boot/bin/dltest console
+ns=posix
+connect=nsd

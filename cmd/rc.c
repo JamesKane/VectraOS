@@ -451,6 +451,22 @@ static bool image_ready(void) {
   return true;
 }
 
+// A dynamic program's interpreter (ADR-0047), read whole from the
+// namespace into a lazy VMO of its own, as the image is.
+static constexpr size_t INTERP_MAX = 16ul << 20;
+static uint8_t *ld_image;
+
+static bool ld_image_ready(void) {
+  if (ld_image) return true;
+  uint64_t at = 0;
+  vx_handle v;
+  if (vx_vmo_create(INTERP_MAX, VX_VMO_LAZY, &v) != VX_OK) return false;
+  vx_status st = vx_as_map(vx_self, v, 0, INTERP_MAX, VX_MAP_WRITE, &at);
+  vx_handle_close(v);
+  if (st == VX_OK) ld_image = (uint8_t *)(uintptr_t)at;
+  return st == VX_OK;
+}
+
 // The bytes of an ELF image a spawn reads: through the end of its last
 // loadable segment (and its program headers), not the symbols and debugging
 // sections after them. 0 if it is not ELF; SIZE_MAX if they do not fit in image.
@@ -820,6 +836,13 @@ static vx_status spawn(const rc_word *argv, bool child, const vx_handle io[RC_FD
     for (uint32_t i = 0; i < count; i++) vx_handle_close(handles[i]);
     return st;
   }
+  vx_str ip = {};
+  size_t ip_len = 0;
+  if (vx_elf_interp(image, size, &ip) &&
+      (!ld_image_ready() || vx_ns_read_all(&ns, ip, ld_image, INTERP_MAX, &ip_len) != VX_OK || !ip_len)) {
+    for (uint32_t i = 0; i < count; i++) vx_handle_close(handles[i]);
+    return VX_ERR_NOT_FOUND; // its interpreter: as if the program were not there
+  }
   vx_str path = base; // the program's whole path, its exe= record
   for (size_t i = base.len; i-- > 0;)
     if (base.ptr[i] == '/') base = (vx_str){base.ptr + i + 1, base.len - i - 1};
@@ -827,6 +850,8 @@ static vx_status spawn(const rc_word *argv, bool child, const vx_handle io[RC_FD
                      .path = path,
                      .image = image,
                      .image_size = size,
+                     .interp = ip_len ? ld_image : nullptr,
+                     .interp_size = ip_len,
                      .handles = handles,
                      .handle_names = names,
                      .handle_count = count,

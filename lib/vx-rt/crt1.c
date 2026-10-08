@@ -3,13 +3,16 @@
 // first-party program's unity build has it; the native target's toolchain
 // (6e2b) links the same code as its crt1.o.
 //
-//   - _start, with the bootstrap channel: vx_start reads the spawn message,
+//   - _start, with the bootstrap channel, or a dynamic program's with the
+//     loader's handover (ADR-0047: the spawn message as read, the loaded
+//     objects): vx_start reads or takes the spawn message,
 //     seeds the process's random generator from its entropy= (vx_random,
 //     which also gives each child a seed), and makes the stack protector's
 //     guard from it, per process;
 //   - .preinit_array and .init_array walked before vx_main, .fini_array
 //     after it, in reverse, by vx-rt itself (first-party programs link no C
-//     library: ADR-0033 §4);
+//     library: ADR-0033 §4); a dynamic program's libraries' before its own,
+//     dependencies first, and after it, in reverse;
 //   - vx_argc and vx_argv, a C argv made once from the spawn message's
 //     slices, NUL-terminated;
 //   - vx_exit(n): the empty exit string for 0, n in decimal otherwise, as the
@@ -60,14 +63,26 @@ static void vx_random_seed(void) {
   vx_drbg_mix(&vx_random, &now, sizeof now, false);
 }
 
+// A dynamic program's loaded objects (ADR-0047), the executable first; null
+// in a static program. 6f2a's unwinder and dbg read the list.
+[[maybe_unused]] static const vx_dl_handover *vx_dl;
+
 static bool vx_fini_done;
 
-// .fini_array, last to first, once.
+// An object's array of functions: count of them at addr.
+static void vx_run_array(uint64_t addr, uint64_t count, bool reverse) {
+  void (*const *fns)(void) = (void (*const *)(void))addr;
+  for (uint64_t i = 0; i < count; i++) fns[reverse ? count - 1 - i : i]();
+}
+
+// .fini_array, last to first, once; then the libraries', in load order.
 static void vx_run_fini(void) {
   if (vx_fini_done) return;
   vx_fini_done = true;
   for (size_t i = (size_t)(__fini_array_end - __fini_array_start); __fini_array_start && i-- > 0;)
     __fini_array_start[i]();
+  for (uint32_t i = 1; vx_dl && i < vx_dl->object_count; i++)
+    vx_run_array(vx_dl->objects[i].fini_array, vx_dl->objects[i].fini_count, true);
 }
 
 // Ends the program with msg as its exit string (empty: success), as Plan 9's
@@ -155,10 +170,21 @@ static void vx_argv_make(void) {
   return vx_argv_list;
 }
 
-// Called by _start with the bootstrap channel. The program ends with vx_main's
-// exit string.
-[[noreturn]] void vx_start(vx_handle bootstrap) {
-  vx_read_spawn(bootstrap);
+// Called by _start with the bootstrap channel, or in a dynamic program none
+// and the loader's handover (ADR-0047; a static program's is 0). The program
+// ends with vx_main's exit string.
+[[noreturn]] void vx_start(vx_handle bootstrap, const vx_dl_handover *dl) {
+  if (dl && (dl->magic != VX_DL_MAGIC || dl->version != VX_DL_VERSION)) {
+    vx_print(VX_STR("vx-rt: the loader's handover is not a version this program knows\n"));
+    vx_exit_now(VX_STR("vx-rt: unknown loader handover"));
+  }
+  if (dl) {
+    vx_dl = dl;
+    vx_spawn_from(dl->spawn, dl->spawn_bytes, dl->handles, dl->handle_count);
+    vx_tls_from(dl);
+  } else {
+    vx_read_spawn(bootstrap);
+  }
   vx_random_seed();
   // Its own guard, before any constructor or vx_main: the frames below this
   // one have returned, and this one never does, so none is checked against
@@ -175,6 +201,8 @@ static void vx_argv_make(void) {
   vx_fds_from_spawn(); // 3 to 9 (ADR-0040)
   if (vx_stdio.out) vx_print_hook = vx_stdout_print;
   vx_note_exit = vx_exit_now; // a note the program's handler does not take ends it at once: no destructors
+  for (uint32_t i = vx_dl ? vx_dl->object_count : 0; i-- > 1;) // libraries, dependencies first
+    vx_run_array(vx_dl->objects[i].init_array, vx_dl->objects[i].init_count, false);
   for (size_t i = 0; __preinit_array_start && i < (size_t)(__preinit_array_end - __preinit_array_start); i++)
     __preinit_array_start[i]();
   for (size_t i = 0; __init_array_start && i < (size_t)(__init_array_end - __init_array_start); i++)

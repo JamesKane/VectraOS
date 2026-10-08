@@ -1,0 +1,7 @@
+# tests/user/dlrc.rc: rc starts a dynamic program (tests/qemu/dl.ndb): it
+# reads dltest's interpreter, /lib/ld-vx, from its own namespace and gives it
+# to the spawn (ADR-0047).
+
+dltest
+if(~ $status '') echo 'dlrc: passed'
+if not echo 'dlrc: FAILED' $status

@@ -10,7 +10,7 @@
   __asm__("endbr64\n\t"
           "xorl %ebp, %ebp\n\t"
           "andq $-16, %rsp\n\t"
-          "call vx_start\n\t" // the argument is already in rdi
+          "call vx_start\n\t" // the arguments are already in rdi and rsi (ADR-0047)
           "ud2");
 }
 #else
@@ -18,7 +18,7 @@
   __asm__("hint #34\n\t" // bti c
           "mov x29, xzr\n\t"
           "mov x30, xzr\n\t"
-          "bl vx_start\n\t" // the argument is already in x0
+          "bl vx_start\n\t" // the arguments are already in x0 and x1 (ADR-0047)
           "brk #0");
 }
 #endif

@@ -427,6 +427,15 @@ static vx_status start(service *s) {
     say(VX_STR("no program "), program, VX_STR(" in the boot image\n"));
     return VX_ERR_NOT_FOUND;
   }
+  // A dynamic program's interpreter (ADR-0047), from the boot image as the program is.
+  vx_str interp = {};
+  vx_tar_entry ld = {};
+  if (vx_elf_interp(elf.data, elf.size, &interp) &&
+      (interp.len < 2 || interp.ptr[0] != '/' ||
+       vx_tar_find(image, image_size, (vx_str){interp.ptr + 1, interp.len - 1}, &ld) != VX_OK || ld.dir)) {
+    say(VX_STR("no interpreter "), interp, VX_STR(" in the boot image\n"));
+    return VX_ERR_NOT_FOUND;
+  }
   static char exe[128]; // its path, copied: the reader's values last one record (exe=, 6e1c3)
   size_t exe_len = program.len < sizeof exe ? program.len : 0;
   memcpy(exe, program.ptr, exe_len);
@@ -561,6 +570,8 @@ static vx_status start(service *s) {
                      .path = {exe, exe_len},
                      .image = elf.data,
                      .image_size = elf.size,
+                     .interp = ld.data,
+                     .interp_size = ld.size,
                      .handles = b.handles,
                      .handle_names = b.names,
                      .handle_count = b.count,

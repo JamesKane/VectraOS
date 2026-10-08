@@ -849,15 +849,21 @@ static char vx_spawn_scratch[VX_CHANNEL_MAX_BYTES];                       // dec
   return false;
 }
 
-// Reads the spawn message. A malformed one is reported and ignored: the
-// program starts with nothing, and its handles are closed.
-static void vx_read_spawn(vx_handle bootstrap) {
-  vx_handle got[VX_CHANNEL_MAX_HANDLES];
-  vx_msg_size size;
-  vx_status st =
-      vx_channel_read(bootstrap, vx_spawn_msg, sizeof vx_spawn_msg, got, VX_CHANNEL_MAX_HANDLES, &size);
-  vx_handle_close(bootstrap);
-  if (st != VX_OK) return;
+// The spawn message as it came, and its handles as they came, whatever the
+// program takes from vx_spawn later: the dynamic loader hands them on
+// (ADR-0047).
+static struct {
+  uint64_t bytes;
+  uint32_t handle_count;
+  vx_handle handles[VX_CHANNEL_MAX_HANDLES];
+} vx_spawn_raw;
+
+// Parses a spawn message in vx_spawn_msg, of size.bytes, with its handles
+// got. A malformed one is reported and ignored: the program starts with
+// nothing, and its handles are closed.
+static void vx_spawn_parse(vx_msg_size size, vx_handle *got) {
+  vx_spawn_raw.bytes = size.bytes, vx_spawn_raw.handle_count = size.handles;
+  for (uint32_t i = 0; i < size.handles; i++) vx_spawn_raw.handles[i] = got[i];
   const vx_msg_header *h = (const vx_msg_header *)vx_spawn_msg;
   vx_ndb_reader r = {.src = {(const char *)vx_spawn_msg + sizeof *h, size.bytes - sizeof *h},
                      .scratch = vx_spawn_scratch,
@@ -901,6 +907,30 @@ static void vx_read_spawn(vx_handle bootstrap) {
   vx_spawn.handle_count = size.handles;
   for (uint32_t i = 0; i < size.handles; i++) vx_spawn.handles[i] = got[i];
   vx_self = vx_spawn_take("self");
+}
+
+// Reads the spawn message from the bootstrap channel, and parses it.
+static void vx_read_spawn(vx_handle bootstrap) {
+  vx_handle got[VX_CHANNEL_MAX_HANDLES];
+  vx_msg_size size;
+  vx_status st =
+      vx_channel_read(bootstrap, vx_spawn_msg, sizeof vx_spawn_msg, got, VX_CHANNEL_MAX_HANDLES, &size);
+  vx_handle_close(bootstrap);
+  if (st == VX_OK) vx_spawn_parse(size, got);
+}
+
+// Parses a spawn message the dynamic loader read (ADR-0047): its bytes and
+// handles, copied, the handles still the process's.
+[[maybe_unused]] static void vx_spawn_from(const uint8_t *msg, uint64_t bytes, const vx_handle *handles,
+                                           uint32_t count) {
+  vx_handle got[VX_CHANNEL_MAX_HANDLES];
+  if (bytes > sizeof vx_spawn_msg || count > VX_CHANNEL_MAX_HANDLES) {
+    vx_print(VX_STR("vx-rt: malformed spawn message\n"));
+    return;
+  }
+  memcpy(vx_spawn_msg, msg, bytes);
+  for (uint32_t i = 0; i < count; i++) got[i] = handles[i];
+  vx_spawn_parse((vx_msg_size){.bytes = (uint32_t)bytes, .handles = count}, got);
 }
 
 // --- Identity (M6 step 6e1c3, os-requirements R16, R17), libvx's until libvx ---
