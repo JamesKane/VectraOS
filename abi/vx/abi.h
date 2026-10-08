@@ -11,6 +11,12 @@ typedef int64_t vx_duration; // nanoseconds
 
 static constexpr vx_handle VX_HANDLE_NONE = 0;
 
+// The vx-abi level this release offers (09 §4.8): each later level only
+// adds. It is also VectraOS's version for availability: a Swift program's
+// @available(VectraOS n, *) is level n (ADR-0048). 0 is the draft, before
+// ADR-0004 freezes level 1.
+static constexpr uint32_t VX_ABI_LEVEL = 0;
+
 typedef struct vx_str { // length-carrying slice; never NUL-terminated
   const char *ptr;
   size_t len;

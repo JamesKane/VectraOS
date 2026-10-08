@@ -33,6 +33,7 @@ void __llvm_libcxx_random_bytes(void *buf, size_t n);
 int __llvm_libunwind_find_eh_frame_hdr(uintptr_t pc, uintptr_t *segment, uintptr_t *hdr, size_t *size);
 char **__swift_vectraos_argv(int *argc);
 unsigned __swift_vectraos_cpu_count(void);
+unsigned long __swift_vectraos_abi_level(void);
 uint64_t __swift_vectraos_pid(void);
 char **__swift_vectraos_environ(void);
 int __swift_vectraos_errno(int status);

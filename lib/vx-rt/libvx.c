@@ -49,6 +49,10 @@ char **__swift_vectraos_argv(int *argc) {
 // (6e3b, Swift patch 0012).
 unsigned __swift_vectraos_cpu_count(void) { return vx_cpu_count(); }
 
+// Swift's #available(VectraOS n, *) (Swift patch 0020, ADR-0048): VectraOS's
+// version is the vx-abi level.
+unsigned long __swift_vectraos_abi_level(void) { return vx_abi_level(); }
+
 // Foundation's ProcessInfo (6e3c): the process's id and user (the host's
 // name is below, with the namespace). The name is cut to fit and terminated,
 // and its whole length returned.

@@ -936,6 +936,10 @@ static void vx_read_spawn(vx_handle bootstrap) {
 // --- Identity (M6 step 6e1c3, os-requirements R16, R17), libvx's until libvx ---
 
 // The process's id: its task's, which procfs names it by (ADR-0011).
+// The vx-abi level the running system offers (09 §4.8): a dynamic program
+// asks libvx.so, which the release ships, so it is the release's.
+[[maybe_unused]] static uint32_t vx_abi_level(void) { return VX_ABI_LEVEL; }
+
 [[maybe_unused]] static uint64_t vx_pid(void) {
   static uint64_t pid;
   vx_task_summary me;
