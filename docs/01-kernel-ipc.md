@@ -505,7 +505,7 @@ This is how LLVM, Python and Git run without touching the kernel.
 
 ## 12. Performance budgets
 
-These are targets, measured in CI under KVM and on T1 hardware from M6 onward (the PC; the Q8B from M9). The end-to-end budgets a user feels are in 00 §8.
+These are targets, measured in CI under KVM and on T1 hardware from M9 onward (the PC, then the Q8B). The end-to-end budgets a user feels are in 00 §8.
 
 | Operation | Target |
 |---|---|

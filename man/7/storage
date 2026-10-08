@@ -208,8 +208,8 @@ Who a client is stays advisory until keyd (M10), and POSIX programs see every fi
 Nothing makes dated snapshots or drops them: the retention policy of `docs/06-install-update.md` §10, with `/home` snapshotted before an update, has no step yet, and `/home` and `/cfg` are snapshotted only by hand and by distd's `apply`.
 No namespace of an installed system has `/home` or `/cfg` but one whose manifest mounts it; the console shell's has neither.
 
-poweroff(8) stops no service first, so fsd is not halted and a power-off is a crash, which loses the last seconds of changes; an orderly shutdown through svcd is M6 step 6g's.
-drv-nvme trusts a device's volatile write cache to survive a reset, until 6g flushes it first on a real disk.
+poweroff(8) stops no service first, so fsd is not halted and a power-off is a crash, which loses the last seconds of changes; an orderly shutdown through svcd is M9 step 9a's.
+drv-nvme trusts a device's volatile write cache to survive a reset, until M9 step 9a flushes it first on a real disk.
 
 A hostile volume image can make fsd free live blocks or spin; only the system volume, which the system made, is mounted, and a fuzz target that mounts crafted images is 6d's.
 

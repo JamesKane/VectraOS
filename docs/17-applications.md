@@ -94,7 +94,7 @@ Printing has gone driverless, and the industry is dropping drivers: IPP Everywhe
 - **The suite's own documents never become PDF to be printed.** The apps lay out their own pages (§4's typesetter, §12's path renderer), so printing renders each page at the printer's resolution straight to PWG Raster or Apple's raster format (URF), or sends PDF when the printer advertises it. Printing a PDF made elsewhere needs a PDF renderer (§18, question 8).
 - **The spooler is per user,** as `cups-local` is: jobs spool on `fsd` in the user's data tree. A swarm node can be the shared print server, as `cups-sharing` is, its `/mnt/print` mounted by every terminal (02 §6).
 - **Apps print by plumbing** to a `print` port; the print dialog is asynchronous like every `vxui` dialog (03 §6), and the user's rules choose the default printer, per place if they like.
-- **USB printers** speak IPP over USB, the protocol `ipp-usb` implements: the adapter talks to them through the USB stack (M6 6g2's `drv-xhci`) as if they were on the network.
+- **USB printers** speak IPP over USB, the protocol `ipp-usb` implements: the adapter talks to them through the USB stack (M9 9a2's `drv-xhci`) as if they were on the network.
 - **Scanning** is the sibling adapter over eSCL (Mopria's scanning protocol, AirScan), serving scanners and their pages as files that Photos and Page take by plumbing.
 - **Printers are untrusted network peers:** the IPP and DNS-SD parsers are fuzzed (04 §7), IPP over TLS goes through `tlsd`, and any printer credential lives in `keyd`.
 - **Printers without IPP are out of scope,** as they are for Windows and CUPS 3. Someone who needs one can run a PAPPL printer application in the POSIX personality as a third-party package.
@@ -263,7 +263,7 @@ Each app needs the system beneath it, and the order follows that:
 | Jukebox | `audiod` (M13) | M13 |
 | Collaboration in any app | The swarm (M10) | M10 onwards |
 | AI features | `aid` (M11) | M11 |
-| Printing and scanning | mDNS in `netd`; IPP over TLS from M11's `tlsd`; USB printers after M6 6g2 | After M7, network first |
+| Printing and scanning | mDNS in `netd`; IPP over TLS from M11's `tlsd`; USB printers after M9 9a2 | After M7, network first |
 
 A milestone of its own, after M15, would gather the suite: an exit test of a document made in each app, plumbed into another, edited by a script through its file server, and opened as it was a week earlier from the dump.
 

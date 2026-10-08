@@ -13,10 +13,10 @@ Updated 2026-10-08.
 | **M3** Mount the network | Done (2026-10-01) | `tests/qemu/mount.ndb` | [M1–M3](milestones/M1-M3.md#m3--mount-the-network) |
 | **M4** POSIX and debugging | Done (2026-10-02) | `dbg.ndb` and `rcscript.ndb` | [M4](milestones/M4.md) |
 | **M5** Storage | Done (2026-10-04) | `install`, `powercut`, `fsdadm`, `fsddump`, `fsdnvmerestart` | [M5](milestones/M5.md) |
-| **M6** Runtime | In progress (from 2026-10-04): `libvx` v0 (6e4), then the real PC (6g) | Set at its close: `libvx` level 1 frozen, T1 boots | [M6](milestones/M6.md) |
+| **M6** Runtime | In progress (from 2026-10-04): `libvx` v0 (6e4) | Set at its close: `libvx` level 1 frozen | [M6](milestones/M6.md) |
 | M7 Pixels | Not scoped; tracing and profiling (7a) placed first | | [M7](milestones/M7.md) |
 | M8 GPU | Not started | | |
-| M9 Q8B platform | Not started | | |
+| M9 Real hardware | Not started: the PC (9a, moved from M6's 6g on 2026-10-08), then the Q8B | | [M9](milestones/M9.md) |
 | M10 Swarm | Not started | | |
 | M11 AI | Not started | | |
 | M12 Self-hosting | Not started | | |
@@ -57,11 +57,14 @@ POSIX programs run on musl over a back end that speaks 9Px, with `fork`, signals
 | 6f1 | The dynamic loader; `libvx`, `libc` and libc++ shared | Done |
 | 6f2 | C++ exceptions (libunwind); llama.cpp deferred | Done but llama.cpp |
 | 6f3 | The Swift runtime and Foundation shared, with an ABI check (ADR-0048) | Done |
-| 6g | The real PC (T1): debug log, xHCI, e1000e, ACPI events | To do |
 
 ## M7 — Pixels
 
 Not scoped. Tracing and profiling for the whole system (7a1–7a5, [docs/20](20-tracing.md)) come first, before the compositor.
+
+## M9 — Real hardware
+
+Not scoped past its first step. The real PC (9a, M6's 6g until 2026-10-08) comes first, then the Radxa Dragon Q8B's platform. Both are T1, both boot with ACPI, and the PC's step builds what the Q8B also needs: a debug log for a machine with no serial port, `drv-xhci` and ACPI's events.
 
 ## Line counts
 

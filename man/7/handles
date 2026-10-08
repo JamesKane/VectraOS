@@ -167,4 +167,4 @@ Some calls check rights by trying a handle as each kind of object in turn, so a 
 `debug_write` is open to every task, not only to a holder of a debug capability (debug(2)).
 
 The wall clock and power off are gated on the root Resource, the coarsest right there is (ADR-0031).
-A function no IOMMU covers gets a pass-through domain, whose device reaches all of memory; VT-d remaps no interrupts, so a device's MSIs are not checked against their source (M6 step 6g).
+A function no IOMMU covers gets a pass-through domain, whose device reaches all of memory; VT-d remaps no interrupts, so a device's MSIs are not checked against their source (M9 step 9a).

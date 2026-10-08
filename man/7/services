@@ -217,8 +217,8 @@ The UART drivers are started at fixed addresses from svcd's manifest, not matche
 A restarted procfs has lost its table: svcd registers its services again, and every other process is gone from `/proc`.
 nsd, tmpfs and ptyd are not restarted, and bus-acpi is not restarted if it exits.
 
-Kernel messages after the console hand-off reach nowhere unless `vx.kconsole` keeps them on the serial port, so a fault in a service shows only as svcd reporting its exit string (6g brings a debug-log object).
-ACPI's events are not delivered: no power button, and no reboot or sleep (6g).
+Kernel messages after the console hand-off reach nowhere unless `vx.kconsole` keeps them on the serial port, so a fault in a service shows only as svcd reporting its exit string (M9 step 9a brings a debug-log object).
+ACPI's events are not delivered: no power button, and no reboot or sleep (M9 step 9a).
 
 Entropy is the bootloader's alone, seeded once, and a service gets it only if its manifest says `entropy`.
 
