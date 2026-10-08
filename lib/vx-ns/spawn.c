@@ -402,7 +402,9 @@ static int64_t vx_fd_read(vx_ns_file *f, void *buf, uint32_t count) {
 static int64_t vx_fd_write(vx_ns_file *f, const void *buf, uint32_t count) {
   vx_fd_opened *x = f->dev_ctx;
   if (!x->out) return VX_ERR_ACCESS;
-  alignas(vx_msg_header) static thread_local uint8_t msg[sizeof(vx_msg_header) + 4096];
+  // On the stack: thread_local would give the POSIX back end, which has this,
+  // a TLS block musl's dynamic linker does not lay out for libc.so (6f1b2).
+  alignas(vx_msg_header) uint8_t msg[sizeof(vx_msg_header) + 4096];
   for (uint32_t done = 0; done < count;) {
     uint32_t n = count - done > 4096 ? 4096 : count - done;
     memcpy(msg + sizeof(vx_msg_header), (const uint8_t *)buf + done, n);

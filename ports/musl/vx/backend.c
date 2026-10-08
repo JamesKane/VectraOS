@@ -100,9 +100,11 @@ static long vx_errno(vx_status st) {
 // can come in. A 9P call holds it through the server's answer: the client is
 // one thread's at a time until 6d4.
 //
-// A thread's own state is thread_local, but musl calls in before its first
-// thread's TLS is set (set_thread_area, set_tid_address): until then it is a
-// static copy, moved to TLS at set_tid_address, musl's last step of it.
+// A thread's own state is its slot's record (be_state), found by its thread
+// pointer, not ELF TLS, which musl's dynamic linker gives libc.so none of
+// (6f1b2). musl calls in before its first thread's pointer is set
+// (set_thread_area, set_tid_address): until then it is a static copy, moved
+// to slot 0's at set_tid_address, musl's last step of it.
 typedef struct be_thread {
   uint32_t depth;           // holds of be_lock
   int sig_depth;            // inside __vx_syscall: delivery waits for its return (signal.c)
@@ -122,11 +124,10 @@ typedef struct be_thread {
 
 static vx_mutex be_lock;
 static be_thread be_early;
-static thread_local be_thread be_tl;
-static bool be_tls;                  // be_tl usable: set_tid_address has come
+static bool be_tls;                  // the slots usable: set_tid_address has come
 static _Atomic uint32_t be_live = 1; // threads alive, the first among them
 
-static be_thread *be_me(void) { return be_tls ? &be_tl : &be_early; }
+static be_thread *be_me(void); // below, with the slots
 
 static void be_enter(void) {
   if (be_me()->depth++ == 0) vx_mutex_lock(&be_lock);
@@ -163,8 +164,8 @@ static constexpr char BE_DIRECTED[] = " thread";
 // kernel thread through it, and be_forward passes a signal from another
 // process, that the thread whose note it came in blocks, to one that does
 // not. A reader counts itself in before it looks at a thread's record, which
-// be_unregister waits out, so the record (in that thread's TLS) is not gone
-// from under it.
+// be_unregister waits out, so the record (the slot's, which the next thread
+// there takes) is not reused from under it.
 static constexpr uint32_t BE_THREADS = 256;
 static constexpr uint32_t BE_TID_SHIFT = 22;
 static constexpr long BE_PID_MASK = (1L << BE_TID_SHIFT) - 1;
@@ -173,7 +174,29 @@ static struct be_slot {
   _Atomic uint32_t id;      // its kernel thread id; 0: free
   _Atomic uint32_t readers; // be_forwards looking at t
   be_thread *_Atomic t;
+  _Atomic uintptr_t tp; // its thread pointer, musl's: how a thread finds its own
 } be_threads[BE_THREADS];
+static be_thread be_state[BE_THREADS]; // each slot's thread's record
+
+// The calling thread's pointer as musl set it: on x86_64 the self pointer
+// at %fs:0, which is the FS base; on aarch64 TPIDR_EL0.
+static uintptr_t be_tp(void) {
+  uintptr_t tp;
+#ifdef __x86_64__
+  __asm__ volatile("movq %%fs:0, %0" : "=r"(tp));
+#else
+  __asm__ volatile("mrs %0, tpidr_el0" : "=r"(tp));
+#endif
+  return tp;
+}
+
+static be_thread *be_me(void) {
+  if (!be_tls) return &be_early;
+  uintptr_t tp = be_tp();
+  for (uint32_t i = 0; i < BE_THREADS; i++)
+    if (atomic_load(&be_threads[i].tp) == tp) return &be_state[i];
+  return &be_early; // not a thread of musl's: none should call in
+}
 
 // A free slot past the first's, reserved; -1 if none.
 static int be_slot_take(void) {
@@ -195,6 +218,7 @@ static void be_unregister(be_thread *t) {
   if (!t->slot) return;
   struct be_slot *s = &be_threads[t->slot - 1];
   atomic_store(&s->t, nullptr);
+  atomic_store(&s->tp, 0);
   while (atomic_load(&s->readers)) {} // a reader with t in hand: done in a few instructions
   atomic_store(&s->id, 0);
   t->slot = 0;
@@ -453,9 +477,14 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
   case SYS_getpid: return posix_pid();
   case SYS_gettid: return gettid_of(be_me());
   case SYS_set_tid_address: // musl's last step setting up the first thread (its TLS is there now), and _Fork's
-    if (!be_tls) be_tl = be_early, be_tls = true, be_slot_set(0, be_only_thread_id(), &be_tl);
-    be_tl.ctid = (volatile int *)a1, be_tl.tid = posix_pid();
-    return be_tl.tid;
+    if (!be_tls) {
+      be_state[0] = be_early;
+      atomic_store(&be_threads[0].tp, be_tp());
+      be_slot_set(0, be_only_thread_id(), &be_state[0]);
+      be_tls = true;
+    }
+    be_me()->ctid = (volatile int *)a1, be_me()->tid = posix_pid();
+    return be_me()->tid;
   case SYS_getppid: return posix_getppid();
   case SYS_getpgid: return posix_getpgid(a1);
   case SYS_getsid: return posix_getsid(a1);
@@ -572,8 +601,9 @@ typedef struct be_clone {
 #else
   __asm__ volatile("msr tpidr_el0, %0" : : "r"(tls));
 #endif
-  be_tl = (be_thread){.tid = c->tid, .ctid = c->ctid, .mask = c->mask, .slot = c->slot + 1};
-  atomic_store(&be_threads[c->slot].t, &be_tl); // __clone gave the slot its kernel id
+  be_state[c->slot] = (be_thread){.tid = c->tid, .ctid = c->ctid, .mask = c->mask, .slot = c->slot + 1};
+  atomic_store(&be_threads[c->slot].tp, be_tp());
+  atomic_store(&be_threads[c->slot].t, &be_state[c->slot]); // __clone gave the slot its kernel id
   int code = c->fn(c->arg);
   __vx_syscall(SYS_exit, code, 0, 0, 0, 0, 0);
   __builtin_unreachable();
