@@ -19,6 +19,8 @@
 
 #pragma once
 
+#include <stdckdint.h>
+
 #include "base.c"
 
 // --- The error text (09 §4.2) ---
@@ -188,3 +190,74 @@ VX_API void vx_pool_put(vx_pool *p, vx_id id) {
 }
 
 VX_API vx_status vx_pool_error(const vx_pool *p) { return p->error; }
+
+// --- Text into arenas, and printed (09 §5.3; the engine is vx-text's) ---
+
+VX_API vx_str vx_vfmt(vx_arena *a, const char *fmt, va_list ap) {
+  va_list again;
+  va_copy(again, ap);
+  size_t n = vx_vfmt_len(fmt, ap);
+  char *p = vx_push(a, n + 1, 1);
+  if (p) vx_vbfmt((vx_bytes){(uint8_t *)p, n}, fmt, again);
+  va_end(again);
+  return p ? (vx_str){p, n} : (vx_str){};
+}
+
+VX_API vx_str vx_fmt(vx_arena *a, const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  vx_str s = vx_vfmt(a, fmt, ap);
+  va_end(ap);
+  return s;
+}
+
+VX_API vx_str vx_str_cat(vx_arena *a, const vx_str *parts, size_t n) {
+  size_t len = 0;
+  for (size_t i = 0; i < n; i++)
+    if (ckd_add(&len, len, parts[i].len)) return (vx_str){};
+  char *p = vx_push(a, len + 1, 1);
+  if (!p) return (vx_str){};
+  for (size_t i = 0, at = 0; i < n; at += parts[i++].len)
+    if (parts[i].len) memcpy(p + at, parts[i].ptr, parts[i].len);
+  return (vx_str){p, len};
+}
+
+// Formats into a buffer on the stack, or scratch when it is longer, and
+// gives it to out in one call.
+static int64_t vx_vprint_to(void (*out)(vx_str), const char *fmt, va_list ap) {
+  char buf[512];
+  va_list again;
+  va_copy(again, ap);
+  size_t n = vx_vbfmt((vx_bytes){(uint8_t *)buf, sizeof buf}, fmt, ap);
+  int64_t ret = (int64_t)n;
+  if (n < sizeof buf - VX_UTFMAX) { // whole: a cut leaves fewer than VX_UTFMAX bytes unused
+    out((vx_str){buf, n});
+  } else {
+    vx_arena *s = vx_scratch(nullptr, 0);
+    vx_mark m = vx_arena_mark(s);
+    vx_str all = vx_vfmt(s, fmt, again);
+    if (all.ptr)
+      out(all), ret = (int64_t)all.len;
+    else
+      out((vx_str){buf, n}), ret = VX_ERR_NO_MEMORY;
+    vx_arena_pop(s, m);
+  }
+  va_end(again);
+  return ret;
+}
+
+VX_API int64_t vx_printf(const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  int64_t n = vx_vprint_to(vx_print, fmt, ap);
+  va_end(ap);
+  return n;
+}
+
+VX_API int64_t vx_eprintf(const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  int64_t n = vx_vprint_to(vx_eprint, fmt, ap);
+  va_end(ap);
+  return n;
+}

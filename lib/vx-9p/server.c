@@ -379,7 +379,7 @@ static vx_status p9_serve_notify(p9_server *s, const p9_msg *t, p9_msg *r, uint8
     w->head = (w->head + 1) % P9_WATCH_EVENTS, w->count--;
   }
   if (!n) return VX_ERR_SHOULD_WAIT;
-  r->data = (vx_bytes){out, n};
+  r->data = (p9_bytes){out, n};
   return VX_OK;
 }
 
@@ -987,7 +987,7 @@ static vx_status p9_serve_l(p9_server *s, const p9_msg *t, p9_msg *r, uint8_t *r
     if (cap - 11 < room) room = (uint32_t)(cap - 11);
     uint32_t count = t->count < room ? t->count : room;
     vx_status e = p9_readdir_l(s, f, t->offset, resp + 11, count, &count);
-    if (e == VX_OK) r->data = (vx_bytes){resp + 11, count};
+    if (e == VX_OK) r->data = (p9_bytes){resp + 11, count};
     return e;
   }
   case P9_Tstatfs: // what Linux's statfs asks for; the file servers keep no such numbers
@@ -1193,7 +1193,7 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
         e = s->fs.read(s->fs.ctx, f->node, offset, resp + 11, &count);
       p9_keep_lock -= keep;
       if (e == VX_OK && keep) o->offset = offset + count;
-      r.data = (vx_bytes){resp + 11, count};
+      r.data = (p9_bytes){resp + 11, count};
       break;
     }
     case P9_Twrite:
@@ -1231,7 +1231,7 @@ static constexpr size_t P9_DEFER = SIZE_MAX; // p9_serve: no reply yet; serve th
       } else if ((e = s->fs.stat(s->fs.ctx, f->node, &st)) == VX_OK) {
         size_t n = p9_stat_encode(&st, s->stat, sizeof s->stat);
         if (!n) e = VX_ERR_TOO_SMALL;
-        r.stat = (vx_bytes){s->stat, n};
+        r.stat = (p9_bytes){s->stat, n};
       }
       break;
     }

@@ -24,6 +24,14 @@ typedef struct vx_str { // length-carrying slice; never NUL-terminated
 
 #define VX_STR(lit) ((vx_str){.ptr = (lit), .len = sizeof(lit) - 1})
 
+typedef struct vx_bytes { // a buffer: data, not text; what a call fills or sends
+  uint8_t *ptr;
+  size_t len;
+} vx_bytes;
+
+// A slice's two arguments for printf's "%.*s".
+#define VX_FMT(s) (int)(s).len, (s).ptr
+
 static constexpr vx_instant VX_INFINITE = INT64_MAX; // a deadline that never comes
 
 // clock_read(): the time on the monotonic clock. clock_read(&info): the same,

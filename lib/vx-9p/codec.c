@@ -13,10 +13,10 @@
 
 #include "../../abi/vx/abi.h"
 
-typedef struct vx_bytes {
+typedef struct p9_bytes {
   const uint8_t *ptr;
   size_t len;
-} vx_bytes;
+} p9_bytes;
 
 enum : uint32_t {
   P9_MAXWELEM = 16,       // names in one walk
@@ -146,8 +146,8 @@ typedef struct p9_msg {
   uint16_t nwname, nwqid;
   vx_str wname[P9_MAXWELEM];
   p9_qid wqid[P9_MAXWELEM];
-  vx_bytes data; // Rread, Twrite; its length is count
-  vx_bytes stat; // Rstat, Twstat: one stat entry, its own size[2] included
+  p9_bytes data; // Rread, Twrite; its length is count
+  p9_bytes stat; // Rstat, Twstat: one stat entry, its own size[2] included
   vx_str name2;
   uint32_t gid, datasync;
   uint64_t mask;
@@ -455,11 +455,11 @@ static p9_qid p9_get_qid(p9_in *in) {
       break;
     case P9F_DATA:
       m->count = (uint32_t)p9_get(&in, 4);
-      m->data = (vx_bytes){p9_get_bytes(&in, m->count), m->count};
+      m->data = (p9_bytes){p9_get_bytes(&in, m->count), m->count};
       break;
     case P9F_STAT: {
       size_t n = (size_t)p9_get(&in, 2);
-      m->stat = (vx_bytes){p9_get_bytes(&in, n), n};
+      m->stat = (p9_bytes){p9_get_bytes(&in, n), n};
       break;
     }
     case P9F_NAME2: m->name2 = p9_get_str(&in); break;

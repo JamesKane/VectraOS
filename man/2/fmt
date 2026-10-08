@@ -1,0 +1,71 @@
+page=fmt sect=2 summary="slices and formatting"
+    names=vx_cstr,vx_str_eq,vx_str_prefix,vx_str_suffix,vx_str_cut,vx_str_find,vx_str_split,vx_str_u64,vx_str_i64,vx_str_cat,vx_fmt,vx_vfmt,vx_bfmt,vx_vbfmt,vx_printf,vx_eprintf
+    src=lib/vx-text/text.c,lib/vx-rt/arena.c
+    keys=string,slice,str,format,printf,sprintf,snprintf,split,find,number,parse,utf-8,vx_str
+
+# SYNOPSIS
+
+```c
+#include <vx/str.h>
+#include <vx/fmt.h>
+
+vx_str vx_cstr(const char *s);
+bool vx_str_eq(vx_str a, vx_str b);
+bool vx_str_prefix(vx_str s, vx_str prefix);
+bool vx_str_suffix(vx_str s, vx_str suffix);
+vx_str vx_str_cut(vx_str s, size_t from, size_t to);
+int64_t vx_str_find(vx_str s, vx_str needle);
+bool vx_str_split(vx_str *s, vx_str sep, vx_str *field);
+bool vx_str_u64(vx_str s, uint64_t *out);
+bool vx_str_i64(vx_str s, int64_t *out);
+vx_str vx_str_cat(vx_arena *a, const vx_str *parts, size_t n);
+VX_STR_CAT(a, ...)
+
+vx_str vx_fmt(vx_arena *a, const char *fmt, ...);
+size_t vx_bfmt(vx_bytes buf, const char *fmt, ...);
+int64_t vx_printf(const char *fmt, ...);
+int64_t vx_eprintf(const char *fmt, ...);
+```
+
+# DESCRIPTION
+
+Text in `libvx` is a slice, `vx_str`: UTF-8 that carries its length and is never NUL-terminated (09 §3, ADR-0013); `VX_STR("lit")` makes one from a literal, and `vx_cstr` from a C string.
+Offsets are in bytes. Every call here but `vx_printf` and `vx_eprintf` is pure: no call to the kernel (M6 step 6e4c2).
+
+`vx_str_cut` is the bytes <from> to <to> of <s>, each clamped to its length.
+`vx_str_find` is where <needle> first starts in <s>, or -1.
+`vx_str_split` takes the next field of <*s> up to <sep> into <*field> and moves <*s> past it, and is false once <*s> is used up: `"a,b,"` gives `a`, `b` and an empty field.
+`vx_str_u64` reads decimal digits, or `0x` and hex digits; `vx_str_i64` also takes a sign; both are false, leaving <*out> alone, for anything else or a number that does not fit.
+`vx_str_cat` joins <n> slices in arena <a>; `VX_STR_CAT(a, x, y, ...)` takes them as a list.
+
+The formatting calls take printf's verbs, so clang checks every format against its arguments.
+A slice prints as `"%.*s", VX_FMT(s)`.
+`vx_fmt` formats into arena <a>; like `vx_str_cat`, the result is followed by a NUL its length does not count, and is the zero slice if the arena is full.
+`vx_bfmt` formats into <buf> as much as fits, cut at a rune's boundary, with no NUL, and returns how many bytes that is.
+`vx_printf` writes to standard output and `vx_eprintf` to standard error, each in one write, so a program's threads do not interleave within one; each returns how many bytes, or a negative `vx_status`.
+`vx_vfmt` and `vx_vbfmt` take a `va_list`.
+
+The verbs are C's: flags `-+ #0`, a width and a precision, either of which may be `*`, the lengths `hh h l ll j z t L`, and `d i u o x X b B c s p f F e E g G a A %`.
+Floating point is exact: a double is expanded to all its decimal digits and rounded half to even, so the output is glibc's, byte for byte (`tests/host/text_test.c` compares a million formats).
+
+# EXAMPLES
+
+```c
+vx_str line = VX_STR("name=disk0 size=1048576"), field;
+while (vx_str_split(&line, VX_STR(" "), &field))
+  if (vx_str_prefix(field, VX_STR("size="))) {
+    uint64_t size;
+    if (vx_str_u64(vx_str_cut(field, 5, field.len), &size))
+      vx_printf("%.1f MiB\n", size / 1048576.0);
+  }
+```
+
+# SEE ALSO
+
+arena(2), utf(6), ndb(6); `docs/09-native-api.md` §5.3 in the repository
+
+# BUGS
+
+`%Lf` and the other long double conversions print the value as a double.
+`%lc` and `%ls` write runes as UTF-8, whatever the locale.
+`%n` writes nothing. `%p` of `nullptr` is `0x0`, not glibc's `(nil)`.

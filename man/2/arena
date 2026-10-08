@@ -1,0 +1,73 @@
+page=arena sect=2 summary="arenas, scratch arenas and pools; the thread's last error"
+    names=vx_arena_new,vx_arena_free,vx_push,vx_arena_mark,vx_arena_pop,vx_arena_error,vx_scratch,vx_pool_new,vx_pool_take,vx_pool_get,vx_pool_put,vx_pool_error,vx_errstr
+    src=lib/vx-rt/arena.c,docs/adr/0004-libvx-v0-abi-levels.md
+    keys=arena,scratch,pool,generation,mark,pop,push,memory,errstr,error
+
+# SYNOPSIS
+
+```c
+#include <vx/mem.h>
+#include <vx/err.h>
+
+vx_arena *vx_arena_new(size_t reserve);
+void vx_arena_free(vx_arena *a);
+void *vx_push(vx_arena *a, size_t size, size_t align);
+vx_mark vx_arena_mark(const vx_arena *a);
+void vx_arena_pop(vx_arena *a, vx_mark m);
+vx_status vx_arena_error(const vx_arena *a);
+vx_arena *vx_scratch(vx_arena *const *conflicts, size_t n);
+
+vx_pool *vx_pool_new(vx_arena *a, size_t slot_size, size_t max);
+vx_id vx_pool_take(vx_pool *p);
+void *vx_pool_get(const vx_pool *p, vx_id id);
+void vx_pool_put(vx_pool *p, vx_id id);
+vx_status vx_pool_error(const vx_pool *p);
+
+vx_str vx_errstr(void);
+```
+
+# DESCRIPTION
+
+An arena is the first of `libvx`'s three kinds of memory (09 §4.3, M6 step 6e4c1): memory given out in order and taken back all at once, for everything that lives as long as one piece of work.
+`vx_arena_new` reserves <reserve> bytes, rounded up to a page, as one lazy VMO (vmo(2), ADR-0046): the address space is the arena's at once, and a page costs nothing until it is touched.
+If it cannot, it returns the nil arena, on which every call does nothing and `vx_push` gives `nullptr`.
+`vx_arena_free` gives the whole arena back.
+
+`vx_push` returns <size> bytes aligned to <align>, a power of two up to 4096 (anything else is 16), and cleared to zeros; it makes no call to the kernel.
+When the arena is full it returns `nullptr`, and the arena remembers it: `vx_arena_error` says `VX_ERR_NO_MEMORY` from then on, so a long piece of work may check once at its end.
+
+`vx_arena_mark` notes how much is pushed, and `vx_arena_pop` takes everything pushed since back.
+
+Each thread has two scratch arenas of 64 MiB, made when first asked for and given back when the thread ends.
+`vx_scratch` returns one that is none of the <n> arenas in <conflicts>: a function passes the arenas its caller gave it, so its scratch never overlaps memory it is returning into.
+It marks the scratch arena, uses it, and pops it before returning.
+
+A pool is slots of <slot_size> bytes, at most <max> of them, pushed onto arena <a> at once.
+`vx_pool_take` gives a cleared slot and its id, or 0 when all are taken.
+An id is the slot's index and a generation: once `vx_pool_put` gives the slot back, `vx_pool_get` returns `nullptr` for the old id, so a stale handle finds nothing rather than someone else's object.
+
+`vx_errstr` is the calling thread's last error, in words: why a call failed, past its `vx_status`.
+A full arena or pool sets it, as the calls of later steps will, a server's error among them.
+
+# EXAMPLES
+
+Scratch space for a function that returns into its caller's arena:
+
+```c
+vx_str label(vx_arena *out, uint64_t id) {
+  vx_arena *tmp = vx_scratch(&out, 1);
+  vx_mark m = vx_arena_mark(tmp);
+  vx_str name = lookup(tmp, id);  // working memory
+  vx_str s = vx_fmt(out, "%.*s #%llu", VX_FMT(name), (unsigned long long)id);
+  vx_arena_pop(tmp, m);
+  return s;
+}
+```
+
+# SEE ALSO
+
+heap(2), fmt(2), vmo(2); `docs/09-native-api.md` §4.2–4.4 and ADR-0004 in the repository
+
+# BUGS
+
+`vx_mem_budget`, a program's share of memory, waits for the kernel to keep memory budgets: a later ABI level.

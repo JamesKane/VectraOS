@@ -1875,12 +1875,29 @@ static bool build_sysroot(const arch *a, bool release) {
   if (exists(fmt("%s/usr/lib/libvx.a", s))) unlink(fmt("%s/usr/lib/libvx.a", s));
   if (!run(&ar)) die("cannot make the %s sysroot's libvx.a", a->name);
   // The C library it calls into (memcpy, exit and the rest) is the program's:
-  // bound when the loader starts it.
+  // bound when the loader starts it. The builtins it calls (aarch64's long
+  // double conversions, for %Lf) are its own, not exported.
   cmd so = {};
-  cmd_addv(&so,
-           (const char *const[]){LLD, "-shared", "-soname", "libvx.so", "-nostdlib", "--build-id=sha1", "-z",
-                                 "max-page-size=0x1000", "-z", "noexecstack", "-z", "now", "-z", "relro",
-                                 "--hash-style=both", "-o", fmt("%s/usr/lib/libvx.so", s), obj[2], nullptr});
+  cmd_addv(&so, (const char *const[]){LLD,
+                                      "-shared",
+                                      "-soname",
+                                      "libvx.so",
+                                      "-nostdlib",
+                                      "--build-id=sha1",
+                                      "-z",
+                                      "max-page-size=0x1000",
+                                      "-z",
+                                      "noexecstack",
+                                      "-z",
+                                      "now",
+                                      "-z",
+                                      "relro",
+                                      "--hash-style=both",
+                                      "-o",
+                                      fmt("%s/usr/lib/libvx.so", s),
+                                      obj[2],
+                                      fmt("%s/usr/lib/libclang_rt.builtins.a", s),
+                                      nullptr});
   if (!run(&so)) die("cannot make the %s sysroot's libvx.so", a->name);
   // libc.so (6f1c1, decided 2026-10-08: the C library shared, ADR-0033 §3):
   // llvm-libc's archives whole, built -fPIC with initial-exec TLS, and the

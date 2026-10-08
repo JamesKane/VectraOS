@@ -87,6 +87,25 @@ int main(void) {
   CHECK(vx_pool_get(pool, i1) == nullptr && i3 != i1 && vx_pool_get(pool, i3) != nullptr);
   vx_arena_free(pa);
 
+  // Slices and formatting, through libvx.so: an arena, a buffer, the output.
+  vx_arena *ta = vx_arena_new(1 << 16);
+  vx_str msg = vx_fmt(ta, "%s %d %.3f %#x %.*s", "fmt", -42, 2.0 / 3, 255, 3, "abcdef");
+  CHECK(vx_str_eq(msg, VX_STR("fmt -42 0.667 0xff abc")) && msg.ptr[msg.len] == 0);
+  vx_str cat = VX_STR_CAT(ta, VX_STR("a"), msg, VX_STR("z"));
+  CHECK(cat.len == msg.len + 2 && vx_str_suffix(cat, VX_STR("abcz")));
+  char small[5];
+  CHECK(vx_bfmt((vx_bytes){(uint8_t *)small, sizeof small}, "ab%s", "\u20ac\u20ac") == 5);
+  vx_str rest = VX_STR("x=1,y=22"), field;
+  int64_t sum = 0;
+  while (vx_str_split(&rest, VX_STR(","), &field)) {
+    int64_t v = 0;
+    vx_str_i64(vx_str_cut(field, 2, field.len), &v);
+    sum += v;
+  }
+  CHECK(sum == 23);
+  CHECK(vx_printf("vxapitest: printed %s\n", "by vx_printf") == 32);
+  vx_arena_free(ta);
+
   // Threads and a lock between them.
   vx_thread a, b;
   CHECK(vx_thread_spawn(&a, adder, nullptr, 0) == VX_OK && vx_thread_spawn(&b, adder, nullptr, 0) == VX_OK);

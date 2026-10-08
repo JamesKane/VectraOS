@@ -21,6 +21,7 @@
 #include "../../abi/vx.h"
 #include "../vx-mem/mem.h"
 #include "../vx-ndb/ndb.c"
+#include "../vx-text/text.c"
 
 #ifdef __clang_analyzer__
 // The static analyzer cannot see a syscall instruction write through the
@@ -698,13 +699,6 @@ static vx_lock_t vx_stdio_lock; // the output buffers, between a program's threa
   else
     vx_debug_write(s);
   vx_unlock(&vx_stdio_lock);
-}
-
-// A NUL-terminated string as a vx_str.
-[[maybe_unused]] static vx_str vx_cstr(const char *s) {
-  size_t n = 0;
-  while (s[n]) n++;
-  return (vx_str){s, n};
 }
 
 [[maybe_unused]] static void vx_print_u64(uint64_t v) {

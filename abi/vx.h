@@ -5,9 +5,11 @@
 
 #include "vx/api.h"
 #include "vx/err.h"
+#include "vx/fmt.h"
 #include "vx/mem.h"
 #include "vx/ndb.h"
 #include "vx/proc.h"
+#include "vx/str.h"
 #include "vx/sys.h"
 #include "vx/thread.h"
 #include "vx/time.h"
