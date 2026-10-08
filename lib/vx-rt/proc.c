@@ -50,6 +50,10 @@ struct vx_thread {
   uint32_t intent;
   size_t exit_len;
   char exit[VX_ERRMAX];
+  // A loop's watch (loop.c): the counter it signals as it ends, under lock.
+  vx_lock_t lock;
+  bool ended;
+  vx_handle watch;
 };
 
 static void vx_thread_body(void *p) {
@@ -61,6 +65,10 @@ static void vx_thread_body(void *p) {
     t->exit_len = vx_utf_cut(s.ptr, s.len, VX_ERRMAX);
     memcpy(t->exit, s.ptr, t->exit_len);
   }
+  vx_lock(&t->lock);
+  t->ended = true;
+  if (t->watch) vx_counter_signal(t->watch, 1), vx_handle_close(t->watch), t->watch = VX_HANDLE_NONE;
+  vx_unlock(&t->lock);
 }
 
 VX_API vx_thread *vx_thread_spawn(const char *(*fn)(void *), void *arg, uint32_t intent, size_t stack) {
@@ -78,6 +86,29 @@ VX_API vx_thread *vx_thread_spawn(const char *(*fn)(void *), void *arg, uint32_t
   return t;
 }
 
+// --- Rendezvous (09 §5.7) ---
+//
+// A sequence word: a sleeper reads it under the lock, lets the lock go and
+// waits while it is unchanged; a wake moves it on first, so one that comes
+// between the unlock and the wait is not lost.
+
+VX_API void vx_rendez_sleep(vx_rendez *r, vx_lock_t *l) {
+  uint32_t seq = atomic_load(&r->seq);
+  vx_unlock(l);
+  vx_futex_wait(&r->seq, seq, VX_INFINITE);
+  vx_lock(l);
+}
+
+VX_API void vx_rendez_wake(vx_rendez *r) {
+  atomic_fetch_add(&r->seq, 1);
+  vx_futex_wake(&r->seq, 1);
+}
+
+VX_API void vx_rendez_wake_all(vx_rendez *r) {
+  atomic_fetch_add(&r->seq, 1);
+  vx_futex_wake(&r->seq, UINT32_MAX);
+}
+
 // Copies an exit string into a for a caller: "" is the zero-length slice.
 [[maybe_unused]] static vx_status vx_exit_copy(vx_arena *a, const char *text, size_t len, vx_str *exit) {
   if (!exit) return VX_OK;
@@ -93,6 +124,7 @@ VX_API vx_thread *vx_thread_spawn(const char *(*fn)(void *), void *arg, uint32_t
 VX_API vx_status vx_thread_join(vx_thread *t, vx_arena *a, vx_str *exit) {
   if (!t) return VX_ERR_INVALID;
   vx_worker_join(&t->w);
+  if (t->watch) vx_handle_close(t->watch); // watched after it ended: never signalled here
   vx_status st = vx_exit_copy(a, t->exit, t->exit_len, exit);
   vx_heap_free(vx_heap_process(), t);
   return st;

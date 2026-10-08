@@ -49,10 +49,23 @@ VX_API void vx_unlock(vx_lock_t *m);
 VX_API vx_status vx_intent_set(uint32_t intent);
 VX_API uint32_t vx_cpu_count(void);
 VX_API bool vx_cpu_has(vx_cpu_feature f);
+// Plan 9's Rendez (09 §5.7), over a futex: vx_rendez_sleep lets go of l,
+// sleeps until a wake, and takes l again before it returns. A wake may come
+// for another reason, so the sleeper tests its condition in a loop:
+//   vx_lock(&l); while (!ready) vx_rendez_sleep(&r, &l); ... vx_unlock(&l);
+typedef struct vx_rendez {
+  _Atomic uint32_t seq;
+} vx_rendez;
+
+VX_API void vx_rendez_sleep(vx_rendez *r, vx_lock_t *l);
+VX_API void vx_rendez_wake(vx_rendez *r);     // one sleeper
+VX_API void vx_rendez_wake_all(vx_rendez *r); // every sleeper
+
 // Starts fn(arg) on a new thread with intent (0: interactive, as the first
 // thread starts) and a stack of stack bytes (0: 256 KiB); nullptr, with
 // vx_errstr, if it cannot.
 VX_API vx_thread *vx_thread_spawn(const char *(*fn)(void *), void *arg, uint32_t intent, size_t stack);
 // Waits for t to end and lets it go; its exit string, "" for success, into
-// *exit, copied into a (exit may be nullptr: not wanted).
+// *exit, copied into a (exit may be nullptr: not wanted). A watched thread
+// (vx_thread_watch) is joined after its VX_EV_EXIT, which reads its record.
 VX_API vx_status vx_thread_join(vx_thread *t, vx_arena *a, vx_str *exit);

@@ -24,6 +24,7 @@
 #include "heap.c"
 #include "arena.c"
 #include "proc.c"
+#include "loop.c"
 
 // --- Start-up and the end: the start file (crt1.c, M6 step 6e2a) ---
 

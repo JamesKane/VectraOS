@@ -42,6 +42,82 @@ static const char *adder(void *arg) {
 
 static const char *refuser(void *arg) { return arg; }
 
+// A rendezvous: the consumer sleeps until each item is there.
+static vx_lock_t rlock;
+static vx_rendez rz;
+static int items, taken;
+
+static const char *consumer(void *arg) {
+  (void)arg;
+  vx_lock(&rlock);
+  while (taken < 10) {
+    while (items == 0) vx_rendez_sleep(&rz, &rlock);
+    items--, taken++;
+  }
+  vx_unlock(&rlock);
+  return nullptr;
+}
+
+static const char *poster(void *arg) {
+  for (uint64_t i = 1; i <= 3; i++) vx_post(arg, 100 + i, i * i);
+  return nullptr;
+}
+
+// The loop: posts from another thread, a timer once and one every 2 ms, a
+// child's end, a thread's end and a note, all through one wait.
+static void loop_checks(vx_arena *ex) {
+  vx_loop *l = vx_loop_new();
+  CHECK(l != nullptr);
+  if (!l) return;
+  vx_event ev[8];
+  CHECK(vx_loop_wait(l, 0, 0, ev, 8) == 0); // a poll: nothing yet
+  vx_instant start = vx_now();
+  vx_timer once = vx_timer_at(l, start + 5'000'000, 0, 0, 1);
+  vx_timer tick = vx_timer_at(l, start + 2'000'000, 0, 2'000'000, 2);
+  CHECK(once && tick && once != tick);
+  vx_thread *p = vx_thread_spawn(poster, l, 0, 0);
+  vx_thread *bye = vx_thread_spawn(refuser, "bye", 0, 0);
+  CHECK(p && bye && vx_thread_watch(l, bye, 3) == VX_OK);
+  vx_str args[] = {VX_STR("kid"), VX_STR("child"), VX_STR("two words")};
+  vx_spawn_req req = {.path = vx_exe_path(), .args = {args, 3}};
+  vx_proc kid = {};
+  CHECK(vx_proc_spawn(&req, &kid) == VX_OK && vx_proc_watch(l, kid, 4) == VX_OK);
+  CHECK(vx_notes_to_loop(l) == VX_OK);
+  CHECK(vx_postnote((vx_proc){.pid = vx_pid()}, VX_STR("hello note")) == VX_OK);
+  uint64_t posts = 0, sum = 0, ticks = 0;
+  bool fired = false, thread_end = false, kid_end = false, noted = false, waits_ok = true;
+  vx_instant until = vx_now() + 10'000'000'000;
+  while ((posts < 3 || !fired || ticks < 3 || !thread_end || !kid_end || !noted) && vx_now() < until) {
+    int64_t n = vx_loop_wait(l, until, 0, ev, 8);
+    waits_ok = waits_ok && n >= 0; // one check below: how many waits it takes varies
+    for (int64_t i = 0; i < n; i++) {
+      switch (ev[i].kind) {
+      case VX_EV_POST: posts++, sum += ev[i].post.a + ev[i].post.b; break;
+      case VX_EV_TIMER:
+        if (ev[i].key == 1) fired = ev[i].timer.id == once && vx_now() >= start + 5'000'000;
+        if (ev[i].key == 2 && ++ticks == 3) vx_timer_stop(l, tick);
+        break;
+      case VX_EV_EXIT:
+        if (ev[i].key == 3) thread_end = vx_str_eq(ev[i].exit.msg, VX_STR("bye"));
+        if (ev[i].key == 4) kid_end = vx_str_eq(ev[i].exit.msg, VX_STR("7")) && ev[i].source == kid.pid;
+        break;
+      case VX_EV_NOTE: noted = vx_str_eq(ev[i].note.text, VX_STR("hello note")); break;
+      default: break;
+      }
+    }
+  }
+  CHECK(waits_ok);
+  CHECK(posts == 3 && sum == 101 + 102 + 103 + 1 + 4 + 9);
+  CHECK(fired && ticks == 3);
+  CHECK(thread_end && kid_end && noted);
+  CHECK(vx_thread_join(p, nullptr, nullptr) == VX_OK && vx_thread_join(bye, nullptr, nullptr) == VX_OK);
+  CHECK(vx_loop_wait(l, vx_now() + 10'000'000, 0, ev, 8) == 0); // the stopped timer does not come back
+  vx_proc_close(kid);
+  vx_notify(nullptr);
+  vx_loop_free(l);
+  (void)ex;
+}
+
 // As the spawned child: "child" checks what it was given and ends with 7;
 // "sleeper" waits for a note.
 static int child(void) {
@@ -160,6 +236,16 @@ int main(void) {
   CHECK(vx_proc_wait(sleeper, VX_INFINITE, ex, &kex) == VX_OK && kex.len > 0);
   printf("vxapitest: the sleeper ended with \"%.*s\"\n", VX_FMT(kex));
   vx_proc_close(sleeper);
+  loop_checks(ex);
+  vx_thread *cons = vx_thread_spawn(consumer, nullptr, 0, 0);
+  for (int i = 0; i < 10; i++) {
+    vx_lock(&rlock);
+    items++;
+    vx_rendez_wake(&rz);
+    vx_unlock(&rlock);
+    if (i % 3 == 0) vx_sleep_until(vx_now() + 1'000'000, 0);
+  }
+  CHECK(cons && vx_thread_join(cons, nullptr, nullptr) == VX_OK && taken == 10 && items == 0);
   vx_spawn_req bad = {.path = VX_STR("/nonexistent/program")};
   CHECK(vx_proc_spawn(&bad, &kid) != VX_OK);
   vx_arena_free(ex);
