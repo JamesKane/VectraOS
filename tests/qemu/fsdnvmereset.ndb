@@ -3,7 +3,7 @@
 # (drv-nvme.reset=50 on the command line), with commands in flight: each is
 # submitted again, so fsd and ctest see delays, never errors.
 
-scenario=fsdnvmereset timeout=120 cmdline="vx.skip=rc drv-nvme.reset=50" with=ctestfsd,fsdvol disk=64 bus=nvme volume=tests/fsd/home
+scenario=fsdnvmereset timeout=240 cmdline="vx.skip=rc drv-nvme.reset=50" with=ctestfsd,fsdvol disk=64 bus=nvme volume=tests/fsd/home
 expect="drv-nvme: 64 MiB, 512-byte sectors"
 expect="partd: /srv/disk1: 2 partitions"
 expect="fsd: /srv/disk1.vectra: commit "

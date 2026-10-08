@@ -22,6 +22,7 @@
 #include "note.c"
 #include "thread.c"
 #include "heap.c"
+#include "arena.c"
 
 // --- Start-up and the end: the start file (crt1.c, M6 step 6e2a) ---
 

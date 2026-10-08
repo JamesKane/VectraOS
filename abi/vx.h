@@ -4,6 +4,7 @@
 #pragma once
 
 #include "vx/api.h"
+#include "vx/err.h"
 #include "vx/mem.h"
 #include "vx/ndb.h"
 #include "vx/proc.h"

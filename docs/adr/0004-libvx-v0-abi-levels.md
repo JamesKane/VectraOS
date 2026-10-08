@@ -20,7 +20,7 @@ Prior art: Fuchsia annotates every SDK declaration with the API level that added
 1. **A level is a promise about four things:** the functions `libvx.so` exports, the declarations its public headers make, the layouts of the records those declarations pass (each with a fixed size checked by `static_assert`, and a version or size field where it may grow, 09 §4.1), and the documented behaviour of each call. Level n is level n−1 with additions; nothing is removed or changed. A call may be deprecated (a warning attribute and a release note) but stays.
 2. **v0 is the core 09 needs**, by header (decided 2026-10-08):
    - `<vx/sys.h>`: the syscall wrappers a program may use (VMOs, address space, ports, channels, counters, futexes, threads, notes), with absolute deadlines;
-   - `<vx/mem.h>`: arenas, scratch, pools and heaps, and `vx_mem_budget`;
+   - `<vx/mem.h>`: arenas, scratch, pools and heaps (`vx_mem_budget` waits for the kernel to keep memory budgets, which it does not yet: a later level; found in 6e4c1);
    - `<vx/str.h>`, `<vx/utf.h>`, `<vx/fmt.h>`, `<vx/ndb.h>`: slices, runes, formatting with clang-checked format strings, ndb records;
    - `<vx/time.h>`: `vx_now`, `vx_sleep_until`, `vx_wallclock`;
    - `<vx/thread.h>`: threads, intents, `vx_lock`, rendezvous;
@@ -28,7 +28,8 @@ Prior art: Fuchsia annotates every SDK declaration with the API level that added
    - `<vx/loop.h>`: the loop, `vx_post`, timers, and the one event record, `vx_event`;
    - `<vx/file.h>`: files in full (open, create, read and write at an offset, stat and wstat, directories, remove, rename, symbolic links, flush, map, watch, ctl, `vx_io_submit`);
    - `<vx/ns.h>`: bind, mount, unmount, a new namespace;
-   - and `<vx.h>`, which includes them all, and `vx_errstr`, `vx_abi_level`.
+   - `<vx/err.h>`: `vx_errstr`, the calling thread's last error in words;
+   - and `<vx.h>`, which includes them all.
 
    `<vx/net.h>`, `<vx/srv.h>` (the 9Px server), `<vx/ring.h>` and the diagnostics headers are later levels. Until then the ring layout stays private between `libvx`, the servers and the drivers, and the 9Px protocol is frozen separately, by 02 §3.3's extension rules.
 3. **09's names win.** Where today's code differs (`vx_mutex_lock` against `vx_lock`, `vx_clock_utc` against `vx_wallclock`, `vx_ns_open` against `vx_open`, `vx_spawn_elf` against `vx_proc_spawn`), the code is renamed, as 09 §9 planned. Signatures follow 09's conventions: slices, never NUL-terminated strings; absolute deadlines; `vx_status` and `vx_errstr`; nil objects, never `NULL`; no allocation the caller did not ask for.

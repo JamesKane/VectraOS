@@ -1865,7 +1865,11 @@ static void test_debugger(void) {
   CHECK((ci.xfeatures & 7) == 7 && ci.mxcsr_mask != 0); // x87, SSE and AVX at least: x86-64-v3
   uint64_t bv;
   memcpy(&bv, xs + 512, sizeof bv);
-  CHECK(bv == ci.xfeatures && xs[160] == 0x5a); // every component written out; XMM0 as SET_FPREGS left it
+  // XSTATE_BV marks the components in use (XINUSE): x87 and SSE, which
+  // SET_FPREGS set, and nothing the kernel does not save. AVX's bit is clear
+  // when its state is back at its initial value (after vzeroupper, say), so
+  // asking for every component was right only by timing.
+  CHECK((bv & 3) == 3 && (bv & ~ci.xfeatures) == 0 && xs[160] == 0x5a); // XMM0 as SET_FPREGS left it
   uint32_t a, b, c, d;
   __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0xd), "c"(2)); // AVX's place
   CHECK(b + 16 <= ci.xstate_size);

@@ -22,6 +22,13 @@ static void check_at(bool ok, const char *what, int line) {
 static vx_lock_t lock;
 static uint64_t total;
 
+static vx_arena *other_scratch;
+
+static void scratcher(void *arg) {
+  (void)arg;
+  other_scratch = vx_scratch(nullptr, 0); // its own thread's
+}
+
 static void adder(void *arg) {
   (void)arg;
   for (int i = 0; i < 10000; i++) {
@@ -47,6 +54,38 @@ int main(void) {
   CHECK(p && vx_heap_usable(h, p) >= 100);
   if (p) memset(p, 'x', 100);
   vx_heap_free(h, p);
+
+  // Arenas: zeroed pushes, marks, a full arena's error in words, the nil arena.
+  vx_arena *ar = vx_arena_new(1 << 16);
+  CHECK(vx_arena_error(ar) == VX_OK);
+  vx_mark m = vx_arena_mark(ar);
+  char *q = vx_push(ar, 64, 16);
+  CHECK(q && ((uintptr_t)q & 15) == 0);
+  if (q) memset(q, 'y', 64);
+  vx_arena_pop(ar, m);
+  char *q2 = vx_push(ar, 64, 16);
+  CHECK(q2 && q2 == q && q2[0] == 0 && q2[63] == 0);
+  CHECK(vx_push(ar, 1 << 20, 16) == nullptr && vx_arena_error(ar) == VX_ERR_NO_MEMORY && vx_errstr().len > 0);
+  vx_arena_free(ar);
+  vx_arena *nil = vx_arena_new(0);
+  CHECK(vx_arena_error(nil) == VX_ERR_NIL && vx_push(nil, 8, 8) == nullptr);
+  // Scratch: one that is not the caller's, and another thread's its own.
+  vx_arena *s1 = vx_scratch(nullptr, 0);
+  vx_arena *s2 = vx_scratch(&s1, 1);
+  CHECK(s1 && s2 && s1 != s2 && vx_arena_error(s1) == VX_OK);
+  vx_thread st;
+  CHECK(vx_thread_spawn(&st, scratcher, nullptr, 0) == VX_OK);
+  vx_thread_join(&st);
+  CHECK(other_scratch && other_scratch != s1 && other_scratch != s2);
+  // Pools: ids with generations, so a put id is stale.
+  vx_arena *pa = vx_arena_new(1 << 16);
+  vx_pool *pool = vx_pool_new(pa, 24, 2);
+  vx_id i1 = vx_pool_take(pool), i2 = vx_pool_take(pool);
+  CHECK(i1 && i2 && i1 != i2 && vx_pool_get(pool, i1) && vx_pool_take(pool) == 0);
+  vx_pool_put(pool, i1);
+  vx_id i3 = vx_pool_take(pool);
+  CHECK(vx_pool_get(pool, i1) == nullptr && i3 != i1 && vx_pool_get(pool, i3) != nullptr);
+  vx_arena_free(pa);
 
   // Threads and a lock between them.
   vx_thread a, b;

@@ -172,11 +172,14 @@ static void vx_thread_main_init(void) {
   vx_tp_set(tp);
 }
 
+static void vx_scratch_release(void); // arena.c: the ending thread's scratch arenas
+
 [[noreturn]] static void vx_thread_entry(vx_handle unused, uint64_t tp) {
   (void)unused;
   vx_tp_set(tp); // first: nothing before it may touch thread_local
   vx_tcb *t = vx_tcb_get();
   t->fn(t->arg);
+  vx_scratch_release();
   vx_thread_finish(&t->running);
 }
 
