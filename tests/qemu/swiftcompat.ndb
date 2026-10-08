@@ -1,0 +1,13 @@
+# tests/qemu/swiftcompat.ndb: a Swift program built against one version of
+# a resilient library runs against the next (M6 step 6f3e, ADR-0048 items 2
+# and 5): swiftcompat, built against Compat v1, with v2's libCompat.so in
+# /lib, whose Point and Counter have new stored properties, whose Shape has
+# a new case, and whose functions are reimplemented.
+
+scenario=swiftcompat timeout=60 cmdline=vx.skip=rc with=swiftcompat,libCompat.so
+expect="swiftcompat: built against Compat v1, running against v2"
+expect="swiftcompat: 6 checks, 0 failed"
+line="svcd: swiftcompat exited"
+fail="vx: panic"
+fail="swiftcompat: FAILED"
+fail="svcd: swiftcompat exited: "

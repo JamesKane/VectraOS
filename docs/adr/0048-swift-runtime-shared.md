@@ -33,6 +33,8 @@ What our build already has (measured 2026-10-08):
 
 *Built 2026-10-08 (6f3d):* `./build release` dumps the nine shipped modules' ABI with `swift-api-digester -dump-sdk -abi` into `out/release/swift-abi/<arch>` and records each architecture's hash in the release record (`swift-abi=`, release(6)); two releases with the same hash have the same Swift ABI. With baselines in `abi/swift/<triple>`, it diagnoses each module against them (`-diagnose-sdk`), counts the changes the report lists and names them; a removal is a break, which fails the release once `VX_ABI_LEVEL` is 1 or more. No baselines are committed before the freeze: the freeze commits the first, as item 4 has one per frozen release. swift-on-vectra's `check_abi_digester.sh` checks the digester on both triples (a removed function reported, an unchanged module not).
 
+*Built 2026-10-08 (6f3e):* the compatibility the freeze will promise, tested on its mechanism: scenario `swiftcompat` runs a program built against version 1 of a resilient library (`Compat`, swift-on-vectra's `tests/compat`) against version 2 in `/lib`, whose struct and class gained stored properties, whose enum gained a case, and whose functions were reimplemented. Built without library evolution, the same program fails at the struct whose layout grew. The freeze adds the same test for the runtime itself: the previous release's Swift programs against the new runtime (item 5).
+
 ## Consequences
 
 - Swift programs shrink to their own code (`swifta` from 8.5 MB to 181 KB with debug information, 6f3a), and the runtime's code is shared between processes. Starting one costs binding the runtime's symbols (`-z now`): about 0.15 s more for `swifta` under x86_64 KVM (6f3a), a known gap to work down.

@@ -1,0 +1,6 @@
+# tests/user/swiftcompat.ndb: swiftcompat, built in swift-on-vectra's tree
+# against Compat version 1, with version 2 in /lib (tests/qemu/swiftcompat.ndb).
+
+service=swiftcompat program=/boot/bin/swiftcompat console entropy
+ns=posix
+connect=nsd

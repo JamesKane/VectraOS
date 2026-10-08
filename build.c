@@ -1542,7 +1542,11 @@ static bool program_for(const program *p, const arch *a) { return !p->arch || st
 // ADR-0034's first gate brings the Swift toolchain here (M6 step 6e3): a
 // scenario that names one in `with=` takes it from that tree's
 // tests/out/TRIPLE/NAME, which its tests/build.sh makes.
-static const char *const EXTERNAL_PROGRAMS[] = {"swifta", "swiftb", "swiftfnd"};
+static const char *const EXTERNAL_PROGRAMS[] = {"swifta", "swiftb", "swiftfnd", "swiftcompat"};
+// And the libraries they are tested against, in lib/ when a scenario names
+// them: Compat's version 2, which swiftcompat, built against version 1,
+// runs against (6f3e, ADR-0048).
+static const char *const EXTERNAL_LIBRARIES[][2] = {{"libCompat.so", "compat-v2/libCompat.so"}};
 static constexpr int EXTERNAL_PROGRAM_COUNT = sizeof EXTERNAL_PROGRAMS / sizeof EXTERNAL_PROGRAMS[0];
 // The Swift runtime's shared libraries, and FoundationEssentials's, which
 // the system ships in /lib (6f3a, ADR-0048).
@@ -1557,9 +1561,11 @@ static const char *const SWIFT_LIBRARIES[] = {"libswiftCore.so",
                                               "libswiftVectraOSLibc.so",
                                               "libFoundationEssentials.so"};
 
-static bool external_program(const char *name) {
+static bool external_program(const char *name) { // or library
   for (int i = 0; i < EXTERNAL_PROGRAM_COUNT; i++)
     if (strcmp(EXTERNAL_PROGRAMS[i], name) == 0) return true;
+  for (size_t i = 0; i < sizeof EXTERNAL_LIBRARIES / sizeof EXTERNAL_LIBRARIES[0]; i++)
+    if (strcmp(EXTERNAL_LIBRARIES[i][0], name) == 0) return true;
   return false;
 }
 
@@ -3266,6 +3272,15 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
     paths[count++] = bootfs_path(p);
   }
   bool swift = !*with; // the whole system ships the Swift runtime; a test's image when it runs Swift
+  for (size_t i = 0; i < sizeof EXTERNAL_LIBRARIES / sizeof EXTERNAL_LIBRARIES[0]; i++) {
+    if (!listed(with, EXTERNAL_LIBRARIES[i][0])) continue;
+    const char *from =
+        fmt("%s/tests/out/%s/%s", swift_on_vectra(), sysroot_triple(a), EXTERNAL_LIBRARIES[i][1]);
+    if (!exists(from)) die("%s: not built; run swift-on-vectra's tests/build.sh", from);
+    bootfs_room(count);
+    files[count] = read_file(from);
+    paths[count++] = fmt("lib/%s", EXTERNAL_LIBRARIES[i][0]);
+  }
   for (int i = 0; i < EXTERNAL_PROGRAM_COUNT; i++) { // built in swift-on-vectra's tree
     const char *name = EXTERNAL_PROGRAMS[i];
     if (!listed(with, name)) continue;
