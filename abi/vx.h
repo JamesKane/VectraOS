@@ -5,6 +5,7 @@
 
 #include "vx/api.h"
 #include "vx/err.h"
+#include "vx/file.h"
 #include "vx/fmt.h"
 #include "vx/loop.h"
 #include "vx/mem.h"

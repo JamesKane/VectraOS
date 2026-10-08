@@ -28,6 +28,7 @@
 
 #define VX_RT_LIBC // the C library has memcpy and the rest (rt.c)
 #include "rt.c"
+#include "../vx-ns/file.c"
 #include "../vx-ns/proc.c"
 #include "../vx-ns/spawn.c"
 
@@ -252,7 +253,7 @@ long __llvm_libc_stdio_write(void *cookie, const char *buf, size_t size) {
 
 long __llvm_libc_stdio_read(void *cookie, char *buf, size_t size) {
   (void)cookie;
-  int64_t n = vx_read(buf, size > UINT32_MAX ? UINT32_MAX : (uint32_t)size);
+  int64_t n = vx_stdin_read(buf, size > UINT32_MAX ? UINT32_MAX : (uint32_t)size);
   return n < 0 ? -1 : (long)n;
 }
 
@@ -304,37 +305,8 @@ int __llvm_libc_remove(const char *path) {
   return libvx_errno(st);
 }
 
-// Within one server: by Trenameat where it has it, else by Twstat within one
-// directory, what is there removed first, as musl's back end does.
-static vx_status libvx_rename(p9_client *c, uint32_t f1, vx_str n1, uint32_t f2, vx_str n2, bool same_dir) {
-  if ((c->extensions & P9_EXT_POSIX) || c->dialect == P9_2000L) return p9c_renameat(c, f1, n1, f2, n2);
-  if (!same_dir) return VX_ERR_UNSUPPORTED;
-  vx_status st = p9c_rename_wstat(c, f1, n1, n2);
-  uint32_t there = 0;
-  if (st == VX_ERR_EXISTS && p9c_walk(c, f1, n2, &there) == VX_OK && p9c_remove(c, there) == VX_OK)
-    st = p9c_rename_wstat(c, f1, n1, n2);
-  return st;
-}
-
-// from renamed to to: a vx_status, UNSUPPORTED across servers (C's EXDEV).
-static vx_status libvx_rename_paths(const char *from, const char *to) {
-  p9_client *c1 = nullptr, *c2 = nullptr;
-  uint32_t f1 = 0, f2 = 0;
-  vx_str n1 = {}, n2 = {};
-  vx_lock(&vx_ns_proc_lock);
-  vx_status st = libvx_parent(from, &c1, &f1, &n1);
-  vx_status st2 = st == VX_OK ? libvx_parent(to, &c2, &f2, &n2) : st;
-  bool same_dir = st2 == VX_OK && n1.ptr - from == n2.ptr - to && !memcmp(from, to, (size_t)(n1.ptr - from));
-  vx_status e = st2;
-  if (st2 == VX_OK) e = c1 == c2 ? libvx_rename(c1, f1, n1, f2, n2, same_dir) : VX_ERR_UNSUPPORTED;
-  if (st == VX_OK) p9c_clunk(c1, f1);
-  if (st2 == VX_OK) p9c_clunk(c2, f2);
-  vx_unlock(&vx_ns_proc_lock);
-  return e;
-}
-
 int __llvm_libc_rename(const char *from, const char *to) {
-  vx_status e = libvx_rename_paths(from, to);
+  vx_status e = vx_rename(vx_cstr(from), vx_cstr(to));
   return e == VX_ERR_UNSUPPORTED ? LIBVX_EXDEV : libvx_errno(e);
 }
 
@@ -355,59 +327,46 @@ enum : int {
   FILE_EXCLUSIVE = 32
 };
 
-static constexpr uint32_t LIBVX_FILES = 64;
-static struct {
-  bool used, append;
-  vx_ns_file f;
-} libvx_files[LIBVX_FILES];
+// A handle is a vx_fd (M6 step 6e4d1): 0, 1 and 2 the standard streams, as
+// the C library has them, and a file of the namespace's table (file.c).
 
-// A namespace file's handle, or nullptr.
+// A namespace file's open file, or nullptr; as the C library's stream
+// locks it, the table's slot lock is not held.
 static vx_ns_file *libvx_file(long h) {
-  return h >= 3 && h < 3 + (long)LIBVX_FILES && libvx_files[h - 3].used ? &libvx_files[h - 3].f : nullptr;
+  if (h < 0 || h > INT32_MAX) return nullptr;
+  vx_file_slot *s = vx_file_get((vx_fd)h);
+  if (!s) return nullptr;
+  vx_unlock(&s->lock);
+  return &s->f;
 }
 
-// A file's length, from the server: -errno if it cannot say.
-static int64_t libvx_file_length(vx_ns_file *f) {
-  p9_stat s = {};
-  vx_status st = f->c ? p9c_stat(f->c, f->fid, &s, nullptr) : VX_ERR_UNSUPPORTED;
-  return st == VX_OK ? (int64_t)s.length : -LIBVX_ESPIPE;
-}
+// errno for a file call's result: the call's status is the negative value.
+static long libvx_file_errno(int64_t r) { return r < 0 ? -libvx_errno((vx_status)r) : (long)r; }
 
 long __llvm_libc_file_open(const char *path, int flags) {
-  uint8_t mode = P9_OREAD;
+  vx_mode mode = VX_OREAD;
   if ((flags & FILE_READ) && (flags & FILE_WRITE))
-    mode = P9_ORDWR;
+    mode = VX_ORDWR;
   else if (flags & FILE_WRITE)
-    mode = P9_OWRITE;
-  vx_lock(&vx_ns_proc_lock);
-  uint32_t slot = 0;
-  while (slot < LIBVX_FILES && libvx_files[slot].used) slot++;
-  vx_status st = slot < LIBVX_FILES ? VX_OK : VX_ERR_NO_MEMORY;
-  vx_ns_file f = {};
+    mode = VX_OWRITE;
+  if (flags & FILE_APPEND) mode |= VX_OAPPEND;
   vx_str p = vx_cstr(path);
-  if (st == VX_OK && (flags & FILE_EXCLUSIVE))
-    st = vx_ns_create(libvx_namespace(), p, 0666, mode, &f);
-  else if (st == VX_OK)
-    st = vx_ns_open(libvx_namespace(), p, mode | (flags & FILE_TRUNCATE ? P9_OTRUNC : 0), &f);
-  if (st == VX_ERR_NOT_FOUND && (flags & FILE_CREATE) && !(flags & FILE_EXCLUSIVE))
-    st = vx_ns_create(libvx_namespace(), p, 0666, mode, &f);
-  if (st == VX_OK)
-    libvx_files[slot] = (typeof(libvx_files[0])){.used = true, .append = flags & FILE_APPEND, .f = f};
-  vx_unlock(&vx_ns_proc_lock);
-  if (slot == LIBVX_FILES) return -LIBVX_EMFILE;
-  return st == VX_OK ? (long)slot + 3 : -libvx_errno(st);
+  vx_fd fd;
+  if (flags & FILE_EXCLUSIVE)
+    fd = vx_create(p, mode | VX_OEXCL, 0666);
+  else
+    fd = vx_open(p, mode | (flags & FILE_TRUNCATE ? VX_OTRUNC : 0));
+  if (fd == VX_ERR_NOT_FOUND && (flags & FILE_CREATE) && !(flags & FILE_EXCLUSIVE))
+    fd = vx_create(p, mode, 0666);
+  if (fd == VX_ERR_NO_MEMORY) return -LIBVX_EMFILE; // the table is full
+  return libvx_file_errno(fd);
 }
 
 long __llvm_libc_file_read(long h, void *buf, size_t size) {
-  uint32_t n = size > 65536 ? 65536 : (uint32_t)size;
-  if (h == 0) {
-    int64_t got = vx_read(buf, n);
-    return got < 0 ? -LIBVX_EIO : (long)got;
-  }
-  vx_ns_file *f = libvx_file(h);
-  if (!f) return -LIBVX_EBADF;
-  int64_t got = vx_ns_read(f, buf, n);
-  return got < 0 ? -libvx_errno((vx_status)got) : (long)got;
+  if (h < 0 || h > INT32_MAX) return -LIBVX_EBADF;
+  int64_t got = vx_read((vx_fd)h, (vx_bytes){buf, size > 65536 ? 65536 : size});
+  if (got < 0 && h == 0) return -LIBVX_EIO;
+  return libvx_file_errno(got);
 }
 
 long __llvm_libc_file_write(long h, const void *buf, size_t size) {
@@ -415,17 +374,11 @@ long __llvm_libc_file_write(long h, const void *buf, size_t size) {
     __llvm_libc_stdio_write(h == 2 ? &__llvm_libc_stderr_cookie : &__llvm_libc_stdout_cookie, buf, size);
     return (long)size;
   }
-  vx_ns_file *f = libvx_file(h);
-  if (!f) return -LIBVX_EBADF;
-  if (libvx_files[h - 3].append) { // each write at the end, wherever the end is now
-    int64_t end = libvx_file_length(f);
-    if (end < 0) return (long)end;
-    f->offset = (uint64_t)end;
-  }
+  if (h < 0 || h > INT32_MAX) return -LIBVX_EBADF;
   size_t done = 0;
   while (done < size) {
-    uint32_t n = size - done > 65536 ? 65536 : (uint32_t)(size - done);
-    int64_t put = vx_ns_write(f, (const uint8_t *)buf + done, n);
+    size_t n = size - done > 65536 ? 65536 : size - done;
+    int64_t put = vx_write((vx_fd)h, (vx_str){(const char *)buf + done, n});
     vx_status st = put < 0 ? (vx_status)put : VX_ERR_IO; // a write of nothing: an I/O error
     if (put <= 0) return done ? (long)done : -libvx_errno(st);
     done += (size_t)put;
@@ -434,24 +387,17 @@ long __llvm_libc_file_write(long h, const void *buf, size_t size) {
 }
 
 long long __llvm_libc_file_seek(long h, long long offset, int whence) {
-  vx_ns_file *f = libvx_file(h);
-  if (!f) return h >= 0 && h <= 2 ? -LIBVX_ESPIPE : -LIBVX_EBADF;
-  int64_t base = 0; // SEEK_SET
-  if (whence == 1) base = (int64_t)f->offset;
-  if (whence == 2) base = libvx_file_length(f);
-  if (base < 0 || whence < 0 || whence > 2) return base < 0 ? base : -LIBVX_EINVAL;
-  if (offset < -base) return -LIBVX_EINVAL;
-  f->offset = (uint64_t)(base + offset);
-  return (long long)f->offset;
+  if (h >= 0 && h <= 2) return -LIBVX_ESPIPE;
+  if (h < 0 || h > INT32_MAX || whence < 0 || whence > 2) return h < 0 ? -LIBVX_EBADF : -LIBVX_EINVAL;
+  int64_t at = vx_seek((vx_fd)h, offset, (uint32_t)whence);
+  if (at == VX_ERR_UNSUPPORTED) return -LIBVX_ESPIPE;
+  return libvx_file_errno(at);
 }
 
 int __llvm_libc_file_close(long h) {
   if (h >= 0 && h <= 2) return 0; // the standard streams stay
-  vx_lock(&vx_ns_proc_lock);
-  vx_ns_file *f = libvx_file(h);
-  if (f) vx_ns_close(f), libvx_files[h - 3].used = false;
-  vx_unlock(&vx_ns_proc_lock);
-  return f ? 0 : LIBVX_EBADF;
+  if (h < 0 || h > INT32_MAX) return LIBVX_EBADF;
+  return vx_close((vx_fd)h) == VX_OK ? 0 : LIBVX_EBADF;
 }
 
 // getenv's values, one a name: a value stays good until the next call for

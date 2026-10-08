@@ -11,7 +11,7 @@ const char *vx_main(void) {
   const char *status = nullptr;
   if (vx_spawn.argc == 0) {
     int64_t n;
-    while ((n = vx_read(buf, sizeof buf)) > 0) vx_print((vx_str){(const char *)buf, (size_t)n});
+    while ((n = vx_stdin_read(buf, sizeof buf)) > 0) vx_print((vx_str){(const char *)buf, (size_t)n});
     return n < 0 ? "read error" : nullptr;
   }
   if (vx_ns_from_spawn(&ns) != VX_OK) return "no namespace";

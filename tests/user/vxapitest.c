@@ -42,6 +42,102 @@ static const char *adder(void *arg) {
 
 static const char *refuser(void *arg) { return arg; }
 
+// Files, in /tmp: everything 09 §5.5 has but vx_io_submit and vx_watch.
+static void file_checks(void) {
+  vx_arena *a = vx_arena_new(1 << 20);
+  vx_remove(VX_STR("/tmp/vxapi/sub/c.txt"));
+  vx_remove(VX_STR("/tmp/vxapi/sub"));
+  vx_remove(VX_STR("/tmp/vxapi/b.txt"));
+  vx_remove(VX_STR("/tmp/vxapi/link"));
+  vx_remove(VX_STR("/tmp/vxapi"));
+  vx_fd dir = vx_create(VX_STR("/tmp/vxapi"), VX_OREAD, VX_DMDIR | 0755);
+  CHECK(dir >= 0);
+  vx_close(dir);
+  vx_fd f = vx_create(VX_STR("/tmp/vxapi/a.txt"), VX_ORDWR, 0644);
+  CHECK(f >= 256 && vx_write(f, VX_STR("hello world")) == 11);
+  char buf[64];
+  vx_bytes b = {(uint8_t *)buf, sizeof buf};
+  CHECK(vx_pread(f, b, 6) == 5 && memcmp(buf, "world", 5) == 0);
+  CHECK(vx_seek(f, 0, VX_SEEK_SET) == 0 && vx_read(f, (vx_bytes){(uint8_t *)buf, 5}) == 5 &&
+        memcmp(buf, "hello", 5) == 0);
+  CHECK(vx_seek(f, -5, VX_SEEK_END) == 6 && vx_seek(f, 2, VX_SEEK_CUR) == 8);
+  CHECK(vx_pwrite(f, VX_STR("W"), 6) == 1);
+  vx_dir d;
+  CHECK(vx_fstat(f, a, &d) == VX_OK && d.length == 11 && !(d.mode & VX_DMDIR) && (d.mode & 0777) == 0644);
+  CHECK(vx_sync(f) == VX_OK);
+  CHECK(vx_close(f) == VX_OK);
+  vx_status again = vx_close(f); // a closed fd finds nothing
+  CHECK(again == VX_ERR_BAD_HANDLE && vx_read(f, b) < 0);
+  CHECK(vx_stat(VX_STR("/tmp/vxapi/a.txt"), a, &d) == VX_OK && vx_str_eq(d.name, VX_STR("a.txt")) &&
+        d.length == 11);
+  vx_fd ex = vx_create(VX_STR("/tmp/vxapi/a.txt"), VX_OWRITE | VX_OEXCL, 0644);
+  CHECK(ex == VX_ERR_EXISTS && vx_errstr().len > 0);
+  f = vx_create(VX_STR("/tmp/vxapi/a.txt"), VX_OWRITE, 0644); // there: emptied
+  CHECK(f >= 0 && vx_fstat(f, a, &d) == VX_OK && d.length == 0);
+  vx_close(f);
+  f = vx_open(VX_STR("/tmp/vxapi/a.txt"), VX_OWRITE | VX_OAPPEND);
+  CHECK(f >= 0 && vx_write(f, VX_STR("one ")) == 4 && vx_seek(f, 0, VX_SEEK_SET) == 0 &&
+        vx_write(f, VX_STR("two")) == 3);
+  vx_close(f);
+  f = vx_open(VX_STR("/tmp/vxapi/a.txt"), VX_OREAD);
+  int64_t n = vx_read(f, b);
+  CHECK(n == 7 && memcmp(buf, "one two", 7) == 0);
+  vx_close(f);
+  vx_dir keep = vx_dir_keep();
+  keep.mtime = 1'234'567'890LL * 1'000'000'000 + 5;
+  CHECK(vx_wstat(VX_STR("/tmp/vxapi/a.txt"), &keep) == VX_OK);
+  CHECK(vx_stat(VX_STR("/tmp/vxapi/a.txt"), a, &d) == VX_OK && d.mtime / 1'000'000'000 == 1'234'567'890);
+  CHECK(vx_rename(VX_STR("/tmp/vxapi/a.txt"), VX_STR("/tmp/vxapi/b.txt")) == VX_OK);
+  CHECK(vx_stat(VX_STR("/tmp/vxapi/a.txt"), a, &d) != VX_OK &&
+        vx_stat(VX_STR("/tmp/vxapi/b.txt"), a, &d) == VX_OK);
+  vx_fd sub = vx_create(VX_STR("/tmp/vxapi/sub"), VX_OREAD, VX_DMDIR | 0755);
+  vx_close(sub);
+  CHECK(vx_rename(VX_STR("/tmp/vxapi/b.txt"), VX_STR("/tmp/vxapi/sub/c.txt")) == VX_OK); // across directories
+  CHECK(vx_stat(VX_STR("/tmp/vxapi/sub/c.txt"), a, &d) == VX_OK);
+  CHECK(vx_rename(VX_STR("/tmp/vxapi/sub/c.txt"), VX_STR("/tmp/vxapi/b.txt")) == VX_OK);
+  vx_str target = {};
+  CHECK(vx_symlink(VX_STR("b.txt"), VX_STR("/tmp/vxapi/link")) == VX_OK);
+  CHECK(vx_readlink(VX_STR("/tmp/vxapi/link"), a, &target) == VX_OK && vx_str_eq(target, VX_STR("b.txt")));
+  CHECK(vx_stat(VX_STR("/tmp/vxapi/link"), a, &d) == VX_OK && vx_str_eq(d.name, VX_STR("b.txt"))); // followed
+  CHECK(vx_lstat(VX_STR("/tmp/vxapi/link"), a, &d) == VX_OK && (d.mode & VX_DMSYMLINK));
+  vx_fd df = vx_open(VX_STR("/tmp/vxapi"), VX_OREAD);
+  vx_dir *ents = nullptr;
+  int64_t ne = vx_dirread(df, a, &ents);
+  bool names = ne == 3;
+  for (int64_t i = 0; names && i < ne; i++)
+    names = vx_str_eq(ents[i].name, VX_STR("sub")) || vx_str_eq(ents[i].name, VX_STR("b.txt")) ||
+            vx_str_eq(ents[i].name, VX_STR("link"));
+  CHECK(names && vx_dirread(df, a, &ents) == 0); // all of it the first time
+  vx_close(df);
+  // Mapped: tmpfs has no Tmap (VX_ERR_UNSUPPORTED); bootfs, where this
+  // program is, does.
+  f = vx_open(VX_STR("/tmp/vxapi/b.txt"), VX_ORDWR);
+  void *m = nullptr;
+  CHECK(vx_map(f, 0, 4096, VX_MAP_WRITE, &m) == VX_ERR_UNSUPPORTED && m == nullptr);
+  vx_close(f);
+  f = vx_open(vx_exe_path(), VX_OREAD);
+  CHECK(vx_map(f, 0, 4096, VX_MAP_WRITE | VX_MAP_EXEC, &m) == VX_ERR_INVALID); // W^X
+  CHECK(vx_map(f, 0, 4096, 0, &m) == VX_OK && m &&
+        memcmp(m,
+               "\x7f"
+               "ELF",
+               4) == 0);
+  if (m) CHECK(vx_unmap(m, 4096) == VX_OK);
+  vx_close(f);
+  CHECK(vx_ctl(VX_STR("/tmp/vxapi/b.txt"), "ctl %d", 42) == VX_OK);
+  f = vx_open(VX_STR("/tmp/vxapi/b.txt"), VX_OREAD);
+  n = vx_read(f, b);
+  CHECK(n == 7 && memcmp(buf, "ctl 42", 6) == 0); // written at offset 0, over "one two"
+  vx_close(f);
+  CHECK(vx_write(VX_STDOUT, VX_STR("vxapitest: written to VX_STDOUT\n")) == 32);
+  vx_remove(VX_STR("/tmp/vxapi/link"));
+  CHECK(vx_remove(VX_STR("/tmp/vxapi/b.txt")) == VX_OK && vx_remove(VX_STR("/tmp/vxapi/b.txt")) != VX_OK);
+  vx_remove(VX_STR("/tmp/vxapi/sub/c.txt"));
+  vx_remove(VX_STR("/tmp/vxapi/sub"));
+  CHECK(vx_remove(VX_STR("/tmp/vxapi")) == VX_OK);
+  vx_arena_free(a);
+}
+
 // A rendezvous: the consumer sleeps until each item is there.
 static vx_lock_t rlock;
 static vx_rendez rz;
@@ -237,6 +333,7 @@ int main(void) {
   printf("vxapitest: the sleeper ended with \"%.*s\"\n", VX_FMT(kex));
   vx_proc_close(sleeper);
   loop_checks(ex);
+  file_checks();
   vx_thread *cons = vx_thread_spawn(consumer, nullptr, 0, 0);
   for (int i = 0; i < 10; i++) {
     vx_lock(&rlock);

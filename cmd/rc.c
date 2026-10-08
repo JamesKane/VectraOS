@@ -953,7 +953,7 @@ static const rc_fd *resolve(const rc_command *c, int i) {
 }
 
 // One of the shell's own descriptors, 0 to 9 (vx-rt's; ADR-0040), and whether it reads.
-static vx_handle own_fd(uint8_t which, bool *reads) { return vx_fd(which, reads); }
+static vx_handle own_fd(uint8_t which, bool *reads) { return vx_fd_channel(which, reads); }
 
 // Whether two descriptors go to the one relayed thing: the same file the
 // shell opened, here document or capture.
@@ -1329,7 +1329,7 @@ static int64_t read_line(void *ctx, char *buf, size_t cap) {
       if (c == '\n') return (int64_t)n;
     }
     if (n == cap) return (int64_t)n;
-    int64_t got = vx_read(pending, sizeof pending);
+    int64_t got = vx_stdin_read(pending, sizeof pending);
     if (got <= 0) return n ? (int64_t)n : got;
     npending = (size_t)got;
   }

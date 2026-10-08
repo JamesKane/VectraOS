@@ -1,0 +1,86 @@
+page=file sect=2 summary="open, read, write, stat, rename, link, map and remove files"
+    names=vx_open,vx_create,vx_close,vx_read,vx_write,vx_pread,vx_pwrite,vx_seek,vx_stat,vx_lstat,vx_fstat,vx_wstat,vx_dir_keep,vx_dirread,vx_remove,vx_rename,vx_symlink,vx_readlink,vx_sync,vx_map,vx_unmap,vx_ctl
+    src=lib/vx-ns/file.c,abi/vx/file.h
+    keys=file,open,create,read,write,stat,directory,rename,symlink,link,map,mmap,sync,fsync,remove,unlink,ctl,append,exclusive
+
+# SYNOPSIS
+
+```c
+#include <vx/file.h>
+
+vx_fd vx_open(vx_str path, vx_mode mode);
+vx_fd vx_create(vx_str path, vx_mode mode, uint32_t perm);
+vx_status vx_close(vx_fd fd);
+int64_t vx_read(vx_fd fd, vx_bytes buf);
+int64_t vx_write(vx_fd fd, vx_str data);
+int64_t vx_pread(vx_fd fd, vx_bytes buf, uint64_t off);
+int64_t vx_pwrite(vx_fd fd, vx_str data, uint64_t off);
+int64_t vx_seek(vx_fd fd, int64_t off, uint32_t whence);
+
+vx_status vx_stat(vx_str path, vx_arena *a, vx_dir *out);
+vx_status vx_lstat(vx_str path, vx_arena *a, vx_dir *out);
+vx_status vx_fstat(vx_fd fd, vx_arena *a, vx_dir *out);
+vx_status vx_wstat(vx_str path, const vx_dir *d);
+vx_dir vx_dir_keep(void);
+int64_t vx_dirread(vx_fd fd, vx_arena *a, vx_dir **out);
+
+vx_status vx_remove(vx_str path);
+vx_status vx_rename(vx_str from, vx_str to);
+vx_status vx_symlink(vx_str target, vx_str path);
+vx_status vx_readlink(vx_str path, vx_arena *a, vx_str *target);
+vx_status vx_sync(vx_fd fd);
+vx_status vx_map(vx_fd fd, uint64_t off, size_t len, uint32_t prot,
+                 void **addr);
+vx_status vx_unmap(void *addr, size_t len);
+vx_status vx_ctl(vx_str path, const char *fmt, ...);
+```
+
+# DESCRIPTION
+
+Plan 9's file calls, on the process's namespace (09 §5.5, M6 step 6e4d1).
+A `vx_fd` is an index and a generation into the process's table of 256 open files, so a closed one's number finds nothing; `VX_STDIN`, `VX_STDOUT` and `VX_STDERR` (0, 1 and 2) are the standard streams.
+A call that cannot returns a negative `vx_status`, and `vx_errstr` (arena(2)) says what and why.
+The table is safe between threads: a file's reads and writes hold its slot, so threads on different files do not wait on each other.
+
+`vx_open` opens <path> with <mode>: `VX_OREAD`, `VX_OWRITE`, `VX_ORDWR` or `VX_OEXEC`, with `VX_OTRUNC` to empty it, `VX_ORCLOSE` to remove it when closed, and `VX_OAPPEND` for every write to go to its end (the server's own append where it has one, 9Px's posix extension).
+`vx_create` makes the file with permissions <perm>, a directory with `VX_DMDIR`; a file already there is emptied and opened, as Plan 9's `create` does, unless <mode> has `VX_OEXCL`, which makes it `VX_ERR_EXISTS`: what an atomic write needs.
+
+`vx_read` and `vx_write` work at the file's offset and move it on; one call is one request, so fewer bytes than asked is no error, and a read of 0 is the end.
+`vx_pread` and `vx_pwrite` work at <off> and leave the offset alone.
+`vx_seek` moves it, from the start, where it is or the end (`VX_SEEK_SET`, `VX_SEEK_CUR`, `VX_SEEK_END`), and returns where it is.
+
+`vx_stat` says what <path> is in a `vx_dir`: its name, owner, group and last writer (in arena <a>), its `qid` and `dev` (two names are one file when their `dev` and `qid.path` agree), its mode, length, and access and change times as nanoseconds of UTC since 1970 (seconds, made nanoseconds, where the server keeps no more).
+Symbolic links are followed, in the client, as the servers walk names only; `vx_lstat` looks at a link itself (`VX_DMSYMLINK` in its mode).
+`vx_wstat` changes what <d> sets: start from `vx_dir_keep`, whose values change nothing. A change of name or owner is a 9P `wstat`; mode, length and times alone go by `setattr` where the server has it, which keeps nanoseconds.
+`vx_dirread` reads a directory's entries, all of them from where its reading is, into an array in <a>.
+
+`vx_rename` moves <from> to <to>, replacing what is there, across directories of one server; across servers it is `VX_ERR_UNSUPPORTED`, and the caller copies.
+`vx_symlink` makes a link at <path> to <target>, and `vx_readlink` reads one; there are no hard links (decided 2026-10-05).
+`vx_sync` returns once what was written to <fd> is on stable storage.
+
+`vx_map` maps <len> bytes of the file from <off>, a page multiple: its server's own pages (`Tmap`, 01 §5), shared, so what is written to them is the file's. <prot> is `VX_MAP_WRITE`, `VX_MAP_EXEC` (never both: W^X) or 0 for read-only. A server without `Tmap` gives `VX_ERR_UNSUPPORTED`.
+`vx_unmap` lets go of a mapping.
+
+`vx_ctl` writes one formatted message to <path> in one write: how a program speaks to a server's `ctl` file.
+
+# EXAMPLES
+
+Writing a file atomically, as Foundation does:
+
+```c
+vx_fd fd = vx_create(VX_STR("/tmp/x.new"), VX_OWRITE | VX_OEXCL, 0644);
+if (fd < 0) return vx_errstr();
+vx_write(fd, data);
+vx_sync(fd);
+vx_close(fd);
+vx_rename(VX_STR("/tmp/x.new"), VX_STR("/tmp/x"));
+```
+
+# SEE ALSO
+
+arena(2), proc(2), loop(2), vmo(2); `docs/09-native-api.md` §5.5 and `docs/proto/posix.md` in the repository
+
+# BUGS
+
+`vx_io_submit` and `vx_watch`, the same requests through a loop, are 6e4d2's.
+`vx_rename` within one directory of a server without the posix extension removes what is at <to> first, so it is not atomic there.

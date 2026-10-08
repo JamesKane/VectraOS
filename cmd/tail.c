@@ -38,7 +38,7 @@ const char *vx_main(void) {
     while ((n = vx_ns_read(&f, buf, sizeof buf)) > 0) take(buf, (size_t)n);
     vx_ns_close(&f);
   } else {
-    while ((n = vx_read(buf, sizeof buf)) > 0) take(buf, (size_t)n);
+    while ((n = vx_stdin_read(buf, sizeof buf)) > 0) take(buf, (size_t)n);
   }
 
   // Back from the end to the start of the last `lines` lines: past that many

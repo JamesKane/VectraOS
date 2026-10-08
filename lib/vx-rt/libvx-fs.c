@@ -111,7 +111,10 @@ int __llvm_libcxx_fs_remove(const char *path) {
   return e;
 }
 
-int __llvm_libcxx_fs_rename(const char *from, const char *to) { return libvx_rename_paths(from, to); }
+int __llvm_libcxx_fs_rename(const char *from, const char *to) {
+  vx_status e = vx_rename(vx_cstr(from), vx_cstr(to));
+  return e == VX_ERR_UNSUPPORTED ? LIBVX_EXDEV : libvx_errno(e);
+}
 
 int __llvm_libcxx_fs_symlink(const char *target, const char *path) {
   p9_client *c = nullptr;

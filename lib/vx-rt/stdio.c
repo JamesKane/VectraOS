@@ -206,7 +206,7 @@ static int64_t vx_pipe_read(vx_pipe_in *p, void *buf, uint32_t count) {
 }
 
 // Reads up to count bytes of standard input: 0 at its end, or a negative vx_status.
-[[maybe_unused]] static int64_t vx_read(void *buf, uint32_t count) {
+[[maybe_unused]] static int64_t vx_stdin_read(void *buf, uint32_t count) {
   if (!vx_stdio.in) return vx_console_read(buf, count);
   if (vx_stdio.len) vx_stdout_flush();
   vx_stdio.reader.end = vx_stdio.in;
@@ -244,7 +244,7 @@ static vx_fd_entry vx_fds[VX_FDS];
 
 // Descriptor fd's channel end, and whether it is a reading end (0 to 2 are
 // stdin, stdout and stderr); VX_HANDLE_NONE if the process has none.
-[[maybe_unused]] static vx_handle vx_fd(uint32_t fd, bool *reader) {
+[[maybe_unused]] static vx_handle vx_fd_channel(uint32_t fd, bool *reader) {
   *reader = fd == 0;
   if (fd == 0) return vx_stdio.in;
   if (fd == 1 || fd == 2) return fd == 1 ? vx_stdio.out : vx_stdio.err;

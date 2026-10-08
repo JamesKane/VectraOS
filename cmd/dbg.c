@@ -819,7 +819,7 @@ const char *vx_main(void) {
   } else {
     for (;;) {
       say("(dbg) ");
-      int64_t n = vx_read(text, sizeof text);
+      int64_t n = vx_stdin_read(text, sizeof text);
       if (n <= 0 || !command((vx_str){text, (size_t)n})) break;
     }
   }

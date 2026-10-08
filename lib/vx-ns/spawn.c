@@ -461,7 +461,7 @@ static vx_status vx_fd_open(vx_ns *ns, vx_str path, uint8_t mode, vx_ns_file *f)
   vx_fd_entry *file = vx_fd_file((uint32_t)(path.ptr[4] - '0'));
   if (file) return vx_fd_open_file(ns, file, mode, f);
   bool reader;
-  vx_handle h = vx_fd((uint32_t)(path.ptr[4] - '0'), &reader);
+  vx_handle h = vx_fd_channel((uint32_t)(path.ptr[4] - '0'), &reader);
   if (!h) return VX_ERR_NOT_FOUND;
   if ((mode & 3) != (reader ? P9_OREAD : P9_OWRITE)) return VX_ERR_ACCESS;
   vx_handle copy;
