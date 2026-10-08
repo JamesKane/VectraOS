@@ -217,6 +217,28 @@ static void file_checks(void) {
   vx_arena_free(a);
 }
 
+// The namespace: a bind seen through its new name, an unmount, and a new
+// namespace from the posix template.
+static void ns_checks(void) {
+  vx_arena *a = vx_arena_new(1 << 16);
+  vx_close(vx_create(VX_STR("/tmp/vxns"), VX_OREAD, VX_DMDIR | 0755));
+  vx_close(vx_create(VX_STR("/tmp/vxns/marker"), VX_OWRITE, 0644));
+  vx_close(vx_create(VX_STR("/tmp/vxns2"), VX_OREAD, VX_DMDIR | 0755));
+  vx_dir d;
+  CHECK(vx_bind(VX_STR("/tmp/vxns"), VX_STR("/tmp/vxns2"), VX_MREPL) == VX_OK);
+  CHECK(vx_stat(VX_STR("/tmp/vxns2/marker"), a, &d) == VX_OK);
+  CHECK(vx_unmount((vx_str){}, VX_STR("/tmp/vxns2")) == VX_OK);
+  CHECK(vx_stat(VX_STR("/tmp/vxns2/marker"), a, &d) != VX_OK);
+  CHECK(vx_bind(VX_STR("/nonexistent"), VX_STR("/tmp/vxns2"), VX_MREPL) != VX_OK && vx_errstr().len > 0);
+  CHECK(vx_mount(VX_STR("/srv/no-such-post"), VX_STR(""), VX_STR("/tmp/vxns2"), VX_MREPL) != VX_OK);
+  vx_remove(VX_STR("/tmp/vxns/marker"));
+  vx_remove(VX_STR("/tmp/vxns"));
+  vx_remove(VX_STR("/tmp/vxns2"));
+  CHECK(vx_newns(VX_STR("posix")) == VX_OK);
+  CHECK(vx_stat(VX_STR("/lib/libvx.so.1"), a, &d) == VX_OK); // the template's /lib
+  vx_arena_free(a);
+}
+
 // A rendezvous: the consumer sleeps until each item is there.
 static vx_lock_t rlock;
 static vx_rendez rz;
@@ -428,6 +450,7 @@ int main(void) {
   loop_checks(ex);
   file_checks();
   async_checks();
+  ns_checks(); // last: vx_newns leaves the namespace the rest used
   vx_thread *cons = vx_thread_spawn(consumer, nullptr, 0, 0);
   for (int i = 0; i < 10; i++) {
     vx_lock(&rlock);

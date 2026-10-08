@@ -6,8 +6,8 @@ _Resynced 2026-10-08 against what M6 built (it was drafted 2026-10-05 against M6
 
 | Ready (M6, 2026-10-08) | Not yet |
 |---|---|
-| `libvx` level 1, frozen (ADR-0004): `<vx.h>` and its headers (`sys`, `mem`, `err`, `random`, `str`, `fmt`, `utf`, `ndb`, `time`, `thread`, `proc`, `loop`, `file`), as the shared library `libvx.so.1`; every later release runs a program built for it | Windows, input and drawing: `vxui` arrives with M7 (03 §6, 21); audio with M13; the GPU with M8 |
-| The native target `<arch>-unknown-vectraos`: llvm-libc's ISO C library and libc++ and libc++abi (RTTI, threads, `std::filesystem`, iostreams in the C locale, exceptions), all shared (ADR-0033) | `<vx/ns.h>` (bind, mount, a new namespace) and `<vx/srv.h>` (serving files): later levels, so a native program cannot yet serve a file tree through `libvx` |
+| `libvx` level 1, frozen (ADR-0004): `<vx.h>` and its headers (`sys`, `mem`, `err`, `random`, `str`, `fmt`, `utf`, `ndb`, `time`, `thread`, `proc`, `loop`, `file`, `ns`), as the shared library `libvx.so.1`; every later release runs a program built for it | Windows, input and drawing: `vxui` arrives with M7 (03 §6, 21); audio with M13; the GPU with M8 |
+| The native target `<arch>-unknown-vectraos`: llvm-libc's ISO C library and libc++ and libc++abi (RTTI, threads, `std::filesystem`, iostreams in the C locale, exceptions), all shared (ADR-0033) | `<vx/srv.h>` (serving files): a later level, so a native program cannot yet serve a file tree through `libvx` |
 | Swift 6.4, full, with its runtime and FoundationEssentials shared in `/lib` (ADR-0034, ADR-0048), `@available(VectraOS 1, *)` | Swift's `VX` module over `libvx`; Embedded Swift on VectraOS (spike S14); `dbg` reading Swift's mangled names (tabled until the Swift toolchain is vendored) |
 | Threads with intents, TLS, futexes and robust futexes; `vx_lock` and rendezvous | Packages, catalogues and `vxpkg` (06 §3.3, §14): M7 onwards. Until then a program is copied into a namespace by hand |
 | 01 §6.6's shared structures: sealed VMOs, leases, lent leases (`<vx/shared.h>` in the tree) | The swarm, the LAN and the public network as sources (06 §6.1): M10 to M12 |

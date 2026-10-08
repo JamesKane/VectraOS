@@ -4,7 +4,6 @@ Deferred deliberately, each with where it is due (moved from [milestones.md](../
 
 | Gap | Effect now | Due |
 |---|---|---|
-| `libvx` level 1 has no `<vx/ns.h>`: ADR-0004 listed it for v0 and no step built it (found after the freeze, 2026-10-08) | A native program cannot bind, mount or make a namespace through `libvx`; only the namespace it was given | Level 2, its first addition |
 | Namespace groups sync their whole table to nsd as text, which each member replays whole on a change (ADR-0009; review 2026-10-08) | A print and a replay of up to 16 KiB per change per member, lazily at its next walk | Binary records in the group's page (decided: option 3), as soon as the first consumer needs it |
 | No per-client connection limit | One client can take all 16 of a server's ring connections | Before M10 (swarm) |
 | POSIX programs see no file owners: `Tgetattr` reports uid and gid 0 (`getuid` and its kin are the user's users(6) id since 6e1c3) | `fsd` keeps owners and checks permissions, but `ls -l` and `stat` show root's | When `Tgetattr` is made from `stat`'s owners and the users table |

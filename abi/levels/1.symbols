@@ -73,6 +73,7 @@ vx_as_query
 vx_as_reserve
 vx_as_unmap
 vx_bfmt
+vx_bind
 vx_channel_call
 vx_channel_create
 vx_channel_read
@@ -122,6 +123,7 @@ vx_loop_new
 vx_loop_wait
 vx_lstat
 vx_map
+vx_mount
 vx_ndb_end
 vx_ndb_flag
 vx_ndb_flag_key
@@ -134,6 +136,7 @@ vx_ndb_put_i64
 vx_ndb_put_key
 vx_ndb_put_u64
 vx_ndb_unknown
+vx_newns
 vx_notes_to_loop
 vx_notify
 vx_now
@@ -211,6 +214,7 @@ vx_timer_at
 vx_timer_stop
 vx_unlock
 vx_unmap
+vx_unmount
 vx_user_name
 vx_vbfmt
 vx_vfmt

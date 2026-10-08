@@ -10,6 +10,7 @@
 #include "vx/loop.h"
 #include "vx/mem.h"
 #include "vx/ndb.h"
+#include "vx/ns.h"
 #include "vx/proc.h"
 #include "vx/random.h"
 #include "vx/str.h"

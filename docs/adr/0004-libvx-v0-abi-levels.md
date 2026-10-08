@@ -27,7 +27,7 @@ Prior art: Fuchsia annotates every SDK declaration with the API level that added
    - `<vx/proc.h>`: spawning, exec, watching, notes;
    - `<vx/loop.h>`: the loop, `vx_post`, timers, and the one event record, `vx_event` (level 0 delivers posts, timers, exits and notes; every kind's number is fixed now, the rest arriving with the calls that make them);
    - `<vx/file.h>`: files in full (open, create, read and write at an offset, stat and wstat, directories, remove, rename, symbolic links, flush, map, watch, ctl, `vx_io_submit`);
-   - `<vx/ns.h>`: bind, mount, unmount, a new namespace (not built before the freeze, found 2026-10-08 in 14's resync: level 2's first addition);
+   - `<vx/ns.h>`: bind, mount, unmount, a new namespace (missed by the first freeze, added to level 1 the same day, 2026-10-08);
    - `<vx/err.h>`: `vx_errstr`, the calling thread's last error in words;
    - `<vx/random.h>`: `vx_random_bytes`, the process's generator (R15; not in 09, added in 6e4e);
    - and `<vx.h>`, which includes them all.
