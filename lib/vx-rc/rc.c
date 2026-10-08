@@ -5,7 +5,7 @@
 #pragma once
 
 #include "rc.h"
-#include "../vx-utf/utf.h"
+#include "../../abi/vx/utf.h"
 #include "../vx-posix/posix.h"
 
 // --- The heap: first fit, coalescing, in the caller's buffer ---

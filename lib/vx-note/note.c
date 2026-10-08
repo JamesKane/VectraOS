@@ -6,7 +6,7 @@
 #pragma once
 
 #include "../../abi/vx/abi.h"
-#include "../vx-utf/utf.h"
+#include "../../abi/vx/utf.h"
 
 // A string under construction in a fixed buffer, cut off at its capacity, at
 // a rune boundary (ADR-0013).

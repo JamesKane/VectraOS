@@ -5,7 +5,7 @@
 #include <string.h>
 
 #include "check.h"
-#include "../../lib/vx-utf/utf.h"
+#include "../../abi/vx/utf.h"
 
 static vx_rune decode(const char *s, size_t n, size_t *len) {
   vx_rune r;

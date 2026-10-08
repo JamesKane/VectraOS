@@ -17,7 +17,7 @@
 #pragma once
 
 #include "../vx-9p/ring_server.c"
-#include "../vx-utf/utf.h"
+#include "../../abi/vx/utf.h"
 
 typedef struct vx_cons {
   void *dev;

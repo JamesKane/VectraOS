@@ -8,7 +8,7 @@ page=clock sect=2 summary="read the clock, or set the wall clock"
 ```c
 vx_instant vx_clock_read(void);
 vx_status vx_clock_info_read(vx_clock_info *info);
-int64_t vx_clock_utc(void);
+int64_t vx_wallclock(void);
 vx_status vx_clock_set(vx_handle resource, int64_t utc);
 vx_instant vx_now(void);
 vx_duration vx_clock_resolution(void);
@@ -36,7 +36,7 @@ It cannot fail.
 
 User code may always read the counter itself, without a call: `vx_cycles`, in the same header, does it with `rdtsc` or `mrs cntvct_el0`, and `counter_hz` converts what it returns to the clock.
 
-`vx_clock_utc` returns UTC, in nanoseconds since 1970: the monotonic time plus `utc_offset`.
+`vx_wallclock` returns UTC, in nanoseconds since 1970: the monotonic time plus `utc_offset`.
 Until the wall clock is set the offset is 0, so it counts from the clock's zero, as do musl's realtime clocks, file times in fsd and tmpfs, and the `realtime` of `/sys/clock/now`, all of which add the same offset.
 
 `vx_clock_set` sets the wall clock to <utc>, nanoseconds since 1970 at the moment of the call: the kernel keeps `utc` less the monotonic time as the offset, and sets `VX_CLOCK_UTC`.
@@ -73,7 +73,7 @@ futex(2), devmgr(8), sysfs(4)
 `vx_clock_read` returns the time.
 
 `vx_clock_info_read` returns `VX_OK`, or `VX_ERR_INVALID` if <info> is not writable memory of the caller's.
-`vx_clock_utc` returns the time; if the call fails it returns the monotonic time.
+`vx_wallclock` returns the time; if the call fails it returns the monotonic time.
 
 `vx_clock_set` returns:
 

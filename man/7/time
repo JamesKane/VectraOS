@@ -20,7 +20,7 @@ It counts from the counter's zero, about when the machine was reset.
 `vx_clock_read` returns it.
 User code may read the counter itself, without entering the kernel, with `vx_cycles`; `/sys/clock/info`, from sysfs(4), and `vx_clock_info_read` give the frequency to convert it, so a program that times itself with `rdtsc` or `cntvct_el0` never calibrates or guesses.
 
-The wall clock is the monotonic clock plus the kernel's `utc_offset`, which `vx_clock_utc` adds for a caller: UTC in nanoseconds since 1970.
+The wall clock is the monotonic clock plus the kernel's `utc_offset`, which `vx_wallclock` adds for a caller: UTC in nanoseconds since 1970.
 The offset is 0 until something sets it, so until then UTC counts from the counter's zero and dates read as 1970.
 
 It is set once, at boot, from the machine's real-time clock (ADR-0031).

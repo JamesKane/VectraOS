@@ -1,0 +1,13 @@
+// vx.h: libvx, the native API (09, ADR-0004), as Plan 9's <libc.h> was:
+// every public header of libvx v0.
+
+#pragma once
+
+#include "vx/api.h"
+#include "vx/mem.h"
+#include "vx/ndb.h"
+#include "vx/proc.h"
+#include "vx/sys.h"
+#include "vx/thread.h"
+#include "vx/time.h"
+#include "vx/utf.h"

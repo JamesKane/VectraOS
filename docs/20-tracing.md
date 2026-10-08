@@ -95,7 +95,7 @@ Fixed records cost some space, and buy a writer that never sizes anything and a 
 | `ipc` | `CALL`/`REPLY` (channel id, flow), `DONATE`/`RETURN` (scheduling context, server tid), `PORT` (packet delivered, key) | Requests across processes; 6d6c2's donation made visible |
 | `irq` | `IRQ_IN`/`IRQ_OUT` (vector), `TIMER` (deadline, leeway) | Driver latency; rule 5's timers |
 | `vm` | `FAULT` (address, kind: lazy zero, pager, copy on write, protection), `PAGER_WAIT`/`PAGER_DONE` (VMO, offset), `COMMIT` (VMO, pages, at decommit as well) | `fsd`'s supply deadlines; lazy memory (ADR-0046) |
-| `futex` | `WAIT`/`WOKEN` (key, wait time) | Lock contention, `vx_mutex` and pthreads alike |
+| `futex` | `WAIT`/`WOKEN` (key, wait time) | Lock contention, `vx_lock_t` and pthreads alike |
 | `syscall` | `SYS_IN`/`SYS_OUT` (number, status) | Heavy; off unless asked for |
 | `sample` | `SAMPLE` (PC, source: tick or counter) and its `STACK` records | §6 |
 | `mark` | `MARK` (from user space, `vx_trace_mark`, as 9front's `event`) | Annotations from scripts and tests |

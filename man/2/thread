@@ -102,8 +102,8 @@ vx_status vx_thread_spawn(vx_thread *t, void (*fn)(void *), void *arg,
                           uint64_t stack_size);
 void vx_thread_join(vx_thread *t);
 bool vx_thread_stack(uint64_t *lo, uint64_t *hi);
-void vx_mutex_lock(vx_mutex *m);
-void vx_mutex_unlock(vx_mutex *m);
+void vx_lock(vx_lock_t *m);
+void vx_unlock(vx_lock_t *m);
 ```
 
 `vx_thread_spawn` runs <fn>(<arg>) on a new thread of the program's own task, with a stack of <stack_size> bytes (0 for 256 KiB) and its own copy of the program's `thread_local` storage: the image's `PT_TLS` segment, its initialised part copied and the rest zeroed, at its alignment, with the thread pointer set as the ELF ABI has it before <fn> runs.
@@ -111,7 +111,7 @@ The stack, the storage and vx-rt's record of the thread are one VMO, below which
 `vx_thread_join` waits for <fn> to return, then lets the thread's memory go.
 `vx_thread_stack` gives the calling thread's stack, [<lo>, <hi>), the first thread's included (the mapping its stack pointer is in); false on a thread made with `vx_thread_create` alone, which has no record.
 The first thread's `thread_local` storage is set up at start-up, before `vx_main`.
-`vx_mutex` is a lock on a futex word, not recursive; vx-rt's printing holds one, so lines from different threads do not mix.
+`vx_lock_t` is a lock on a futex word, not recursive; vx-rt's printing holds one, so lines from different threads do not mix.
 
 ## Rights
 

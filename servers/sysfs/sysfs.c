@@ -131,7 +131,7 @@ static vx_status fs_read(void *ctx, uint64_t n, uint64_t offset, uint8_t *buf, u
     vx_ndb_end(&w);
   } else if (n == NOW) {
     vx_ndb_put_u64(&w, "monotonic", (uint64_t)now);
-    vx_ndb_put_u64(&w, "realtime", (uint64_t)vx_clock_utc());
+    vx_ndb_put_u64(&w, "realtime", (uint64_t)vx_wallclock());
     vx_ndb_end(&w);
   } else if (n == TOPOLOGY) {
     topology(&w);

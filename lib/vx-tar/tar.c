@@ -18,7 +18,7 @@
 #pragma once
 
 #include "../../abi/vx/abi.h"
-#include "../vx-utf/utf.h"
+#include "../../abi/vx/utf.h"
 
 static constexpr size_t VX_TAR_BLOCK = 512;
 static constexpr size_t VX_TAR_MAX_PATH = 256; // prefix (155), '/', name (100)

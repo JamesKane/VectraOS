@@ -144,7 +144,7 @@ static void arch_io_switch(const struct task *t); // this CPU's I/O port permiss
 static uint32_t arch_watch_count(void);           // the debug registers' watchpoints (thread_state SET_WATCH)
 
 #include "../lib/vx-mem/mem.c"
-#include "../lib/vx-utf/utf.h"
+#include "../abi/vx/utf.h"
 #include "../lib/vx-note/note.c"
 #include "sync.c"
 #include "boot.c"

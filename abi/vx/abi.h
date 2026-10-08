@@ -15,7 +15,7 @@ static constexpr vx_handle VX_HANDLE_NONE = 0;
 // adds. It is also VectraOS's version for availability: a Swift program's
 // @available(VectraOS n, *) is level n (ADR-0048). 0 is the draft, before
 // ADR-0004 freezes level 1.
-static constexpr uint32_t VX_ABI_LEVEL = 0;
+#define VX_ABI_LEVEL 0 // a macro: VX_TARGET_ABI compares against it in #if (vx/api.h)
 
 typedef struct vx_str { // length-carrying slice; never NUL-terminated
   const char *ptr;

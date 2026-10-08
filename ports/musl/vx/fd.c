@@ -76,7 +76,7 @@ typedef struct ofd {
   uint32_t pty;
   bool locked;     // a lock was taken through it: let go at exit, before the exit is seen
   bool read_bound; // a READABLE binding is on fd_port for its pipe
-  vx_mutex io;     // a file whose offset is kept here (not file_shared): one read or write at a time
+  vx_lock_t io;    // a file whose offset is kept here (not file_shared): one read or write at a time
   fd_readahead *ra;
   uint8_t sock;          // a socket's type (SOCK_STREAM, SOCK_DGRAM): the file is its /net data (socket.c)
   bool sock_bound;       // its port announced, or a connection's
@@ -545,9 +545,9 @@ static int64_t file_read_unlocked(ofd *o, void *buf, uint32_t count) {
   if (shared) {
     r = p9c_read(o->f.c, o->f.fid, P9_OFFSET_CURRENT, buf, count);
   } else {
-    vx_mutex_lock(&o->io);
+    vx_lock(&o->io);
     r = vx_ns_read(&o->f, buf, count);
-    vx_mutex_unlock(&o->io);
+    vx_unlock(&o->io);
   }
   be_wait_end(held);
   ofd_release(o);
@@ -564,9 +564,9 @@ static int64_t file_write_unlocked(ofd *o, const void *buf, uint32_t count, int6
   if (offset >= 0 || shared) {
     w = p9c_write(o->f.c, o->f.fid, offset >= 0 ? (uint64_t)offset : P9_OFFSET_CURRENT, buf, count);
   } else {
-    vx_mutex_lock(&o->io);
+    vx_lock(&o->io);
     w = vx_ns_write(&o->f, buf, count);
-    vx_mutex_unlock(&o->io);
+    vx_unlock(&o->io);
   }
   be_wait_end(held);
   ofd_release(o);
@@ -608,11 +608,11 @@ static long sock_recv(ofd *o, void *buf, size_t n, int flags, void *sa, socklen_
 
 // The console's read (vx-rt's): one reader at a time, the back end let go.
 static int64_t fd_console_read(void *buf, uint32_t count) {
-  static vx_mutex readers;
+  static vx_lock_t readers;
   uint32_t held = be_wait_begin();
-  vx_mutex_lock(&readers);
+  vx_lock(&readers);
   int64_t r = vx_console_read(buf, count);
-  vx_mutex_unlock(&readers);
+  vx_unlock(&readers);
   be_wait_end(held);
   return r;
 }

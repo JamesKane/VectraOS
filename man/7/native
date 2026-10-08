@@ -13,6 +13,8 @@ First-party system code does not use it; Swift's runtime, C and C++ programs fro
 
 : `usr/include/`
   llvm-libc's headers, and the ABI's as `<vx/...>`.
+: `usr/include/vx.h`, `usr/include/vx/`
+  libvx's public API (ADR-0004, M6 step 6e4b): `<vx.h>` includes `<vx/sys.h>` (the syscall wrappers a program may use), `<vx/mem.h>` (heaps), `<vx/time.h>`, `<vx/thread.h>` (threads, `vx_lock`, intents, the CPU's count and features), `<vx/proc.h>` (exit, notes, `vx_task_self`, `vx_pid`, `vx_abi_level`), `<vx/ndb.h>` and `<vx/utf.h>`. Each call marked `VX_API` is exported by `libvx.so`; the system's own programs compile the same declarations in. `VX_TARGET_ABI`, the SDK's level unless a program sets it, gates the declarations of later levels. Arenas, strings and formatting, the loop and files come in 6e4c and 6e4d.
 : `usr/lib/crt1.o`
   vx-rt's entry, `_start`, and the native `vx_main`, C's `main` then `exit` (`lib/vx-rt/start.c`).
 : `usr/lib/libvx.so`, `usr/lib/libvx.a`

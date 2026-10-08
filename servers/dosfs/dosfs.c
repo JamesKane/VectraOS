@@ -111,7 +111,7 @@ static void changed(void) {
   listing.dir = 0;
 }
 
-static void stamp(void) { vol.now = vx_clock_utc() / 1'000'000'000; }
+static void stamp(void) { vol.now = vx_wallclock() / 1'000'000'000; }
 
 // --- 9Px ---
 

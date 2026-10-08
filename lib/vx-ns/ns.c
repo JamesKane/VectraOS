@@ -32,7 +32,7 @@
 #endif
 
 #include "../vx-9p/client.c"
-#include "../vx-utf/utf.h"
+#include "../../abi/vx/utf.h"
 
 static constexpr uint32_t VX_NS_MAX_PATH = 256;
 static constexpr uint32_t VX_NS_MAX_ENTRIES = 32;

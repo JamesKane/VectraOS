@@ -11,10 +11,10 @@
 #include "../../lib/vx-ns/spawn.c"
 
 static uint32_t checks, failures;
-static vx_mutex count_lock;
+static vx_lock_t count_lock;
 
 static void check_at(bool ok, const char *what, int line) {
-  vx_mutex_lock(&count_lock);
+  vx_lock(&count_lock);
   checks++;
   if (!ok) {
     failures++;
@@ -24,7 +24,7 @@ static void check_at(bool ok, const char *what, int line) {
     vx_print(vx_cstr(what));
     vx_print(VX_STR("\n"));
   }
-  vx_mutex_unlock(&count_lock);
+  vx_unlock(&count_lock);
 }
 
 #define CHECK(cond) check_at((cond), #cond, __LINE__)

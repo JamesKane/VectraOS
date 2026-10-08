@@ -122,7 +122,7 @@ typedef struct p9_ring_server {
   p9_shared shared; // the open files and locks all its connections share (posix)
   // The threads (the server's lock held for these): serving, or waiting for
   // work, rather than let go or parked.
-  vx_mutex lock;
+  vx_lock_t lock;
   uint32_t running, threads, parked, tickets;
   _Atomic uint32_t unpark; // a parked thread's futex: a ticket is there to take
   bool stopping;
@@ -146,9 +146,9 @@ static void p9_ring_loop(p9_ring_server *s);
 
 static void p9_ring_worker_main(void *arg) {
   p9_ring_server *s = arg;
-  vx_mutex_lock(&s->lock); // counted among the running by p9_release, which made it
+  vx_lock(&s->lock); // counted among the running by p9_release, which made it
   p9_ring_loop(s);
-  vx_mutex_unlock(&s->lock);
+  vx_unlock(&s->lock);
 }
 
 // Lets the server go, for an operation of the file server's that is to wait
@@ -172,7 +172,7 @@ static void p9_ring_worker_main(void *arg) {
       s->threads++, s->running++;
     }
   }
-  vx_mutex_unlock(&s->lock);
+  vx_unlock(&s->lock);
   return true;
 }
 
@@ -180,7 +180,7 @@ static void p9_ring_worker_main(void *arg) {
 [[maybe_unused]] static void p9_acquire(void) {
   p9_ring_server *s = p9_ring_current;
   if (!s || !p9_ring_self) return;
-  vx_mutex_lock(&s->lock);
+  vx_lock(&s->lock);
   s->running++;
 }
 
@@ -189,9 +189,9 @@ static void p9_ring_park(p9_ring_server *s) {
   s->running--, s->parked++;
   while (!s->tickets && !s->stopping) {
     uint32_t seen = atomic_load(&s->unpark);
-    vx_mutex_unlock(&s->lock);
+    vx_unlock(&s->lock);
     vx_futex_wait(&s->unpark, seen, VX_INFINITE);
-    vx_mutex_lock(&s->lock);
+    vx_lock(&s->lock);
   }
   if (s->tickets) {
     s->tickets--; // p9_release counted it running again
@@ -540,9 +540,9 @@ static void p9_ring_loop(p9_ring_server *s) {
     vx_instant deadline = s->tick ? s->tick(s->ctx) : VX_INFINITE;
     if (idle) {
       vx_packet pk[16];
-      vx_mutex_unlock(&s->lock); // while it sleeps, a thread let go may take the server back
+      vx_unlock(&s->lock); // while it sleeps, a thread let go may take the server back
       int64_t n = vx_port_wait(s->port, deadline, 0, pk, 16); // TIMED_OUT: the tick is due
-      vx_mutex_lock(&s->lock);
+      vx_lock(&s->lock);
       for (int64_t j = 0; j < n; j++) {
         uint64_t key = pk[j].key, kind = key >> 40;
         uint32_t slot = key & 0xff, gen = (uint32_t)(key >> 8);
@@ -585,10 +585,10 @@ static void p9_ring_loop(p9_ring_server *s) {
   vx_str seed = vx_spawn_record("entropy", &rec) ? vx_ndb_get(&rec, "entropy") : (vx_str){};
   if (seed.len >= 16 && !s->shared.random.seeded) vx_drbg_mix(&s->shared.random, seed.ptr, seed.len, true);
   if (!s->max_threads) s->max_threads = 1;
-  vx_mutex_lock(&s->lock);
+  vx_lock(&s->lock);
   s->threads = s->running = 1;
   p9_ring_loop(s);
   st = s->stopped;
-  vx_mutex_unlock(&s->lock);
+  vx_unlock(&s->lock);
   return st;
 }

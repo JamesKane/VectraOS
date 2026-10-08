@@ -24,7 +24,7 @@ typedef struct vx_ns_dialed {
   vx_ns_file ctl, data;
   char data_path[64]; // /net/tcp/N/data, for a second open (the relay's reader)
   uint8_t data_path_len;
-  vx_mutex lock; // a stream carries one call at a time: threads take turns
+  vx_lock_t lock; // a stream carries one call at a time: threads take turns
   uint8_t tbuf[VX_NS_DIAL_MSIZE], rbuf[VX_NS_DIAL_MSIZE];
 } vx_ns_dialed;
 
@@ -42,9 +42,9 @@ static bool dial_read_all(vx_ns_file *f, uint8_t *buf, size_t len) {
 static void vx_ns_dial_lock(void *ctx, bool take) {
   vx_ns_dialed *d = ctx;
   if (take)
-    vx_mutex_lock(&d->lock);
+    vx_lock(&d->lock);
   else
-    vx_mutex_unlock(&d->lock);
+    vx_unlock(&d->lock);
 }
 
 // One 9P exchange over the stream: the request, then a reply as long as its

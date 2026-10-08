@@ -392,7 +392,7 @@ typedef struct vx_fd_opened { // an open /fd/N's state
 } vx_fd_opened;
 
 static vx_fd_opened vx_fd_opens[8];
-static vx_mutex vx_fd_opens_lock;
+static vx_lock_t vx_fd_opens_lock;
 
 static int64_t vx_fd_read(vx_ns_file *f, void *buf, uint32_t count) {
   vx_fd_opened *x = f->dev_ctx;
@@ -419,9 +419,9 @@ static void vx_fd_close(vx_ns_file *f) {
   if (x->in.end) vx_handle_close(x->in.end);
   if (x->in.port) vx_handle_close(x->in.port);
   if (x->out) vx_handle_close(x->out);
-  vx_mutex_lock(&vx_fd_opens_lock);
+  vx_lock(&vx_fd_opens_lock);
   *x = (vx_fd_opened){};
-  vx_mutex_unlock(&vx_fd_opens_lock);
+  vx_unlock(&vx_fd_opens_lock);
   f->dev = nullptr;
 }
 
@@ -467,14 +467,14 @@ static vx_status vx_fd_open(vx_ns *ns, vx_str path, uint8_t mode, vx_ns_file *f)
   vx_handle copy;
   vx_status st = vx_handle_dup(h, VX_RIGHTS_SAME, &copy);
   if (st != VX_OK) return st;
-  vx_mutex_lock(&vx_fd_opens_lock);
+  vx_lock(&vx_fd_opens_lock);
   vx_fd_opened *x = nullptr;
   for (uint32_t i = 0; i < sizeof vx_fd_opens / sizeof vx_fd_opens[0] && !x; i++)
     if (!vx_fd_opens[i].used) x = &vx_fd_opens[i];
   if (x)
     *x =
         (vx_fd_opened){.used = true, .in = {.end = reader ? copy : VX_HANDLE_NONE}, .out = reader ? 0 : copy};
-  vx_mutex_unlock(&vx_fd_opens_lock);
+  vx_unlock(&vx_fd_opens_lock);
   if (!x) return vx_handle_close(copy), VX_ERR_NO_MEMORY;
   f->dev = &vx_fd_dev, f->dev_ctx = x;
   return VX_OK;

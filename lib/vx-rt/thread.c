@@ -39,11 +39,6 @@ typedef struct vx_tcb {
 } vx_tcb;
 
 // A thread vx_thread_spawn made, for vx_thread_join.
-typedef struct vx_thread {
-  vx_handle handle;
-  uint64_t base, size; // its mapping
-  vx_tcb *tcb;
-} vx_thread;
 
 // The TLS blocks every thread copies: the program's, and in a dynamic
 // program each library's, at its offset from the thread pointer. size is
@@ -187,8 +182,7 @@ static void vx_thread_main_init(void) {
 
 // Starts fn(arg) on a new thread of the program's own task, with a stack of
 // stack_size bytes (0: 256 KiB) and its own TLS; *t is for vx_thread_join.
-[[maybe_unused]] static vx_status vx_thread_spawn(vx_thread *t, void (*fn)(void *), void *arg,
-                                                  uint64_t stack_size) {
+VX_API vx_status vx_thread_spawn(vx_thread *t, void (*fn)(void *), void *arg, uint64_t stack_size) {
   *t = (vx_thread){};
   uint64_t stack = vx_round_up(stack_size ? stack_size : 256ull * 1024, 4096);
   uint64_t size = stack + vx_round_up(vx_tls_extent(), 4096), at = 0;
@@ -214,7 +208,7 @@ static void vx_thread_main_init(void) {
 }
 
 // Waits for t's function to return, then lets go of its stack and TLS.
-[[maybe_unused]] static void vx_thread_join(vx_thread *t) {
+VX_API void vx_thread_join(vx_thread *t) {
   if (!t->tcb) return;
   while (atomic_load(&t->tcb->running)) vx_futex_wait(&t->tcb->running, 1, VX_INFINITE);
   vx_handle_close(t->handle);

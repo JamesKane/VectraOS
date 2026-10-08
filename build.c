@@ -52,7 +52,7 @@ static const char NASM_VERSION[] = "NASM version 3.02 compiled on Jul 14 2026"; 
 // When any of these changes, ./build rebuilds itself, and cached ports rebuild.
 static const char *const BUILD_SOURCES[] = {
     "build.c",
-    "lib/vx-ndb/ndb.h",
+    "abi/vx/ndb.h",
     "lib/vx-ndb/ndb.c",
     "lib/vx-sha256/sha256.c",
     "abi/vx/abi.h",
@@ -62,7 +62,7 @@ static const char *const BUILD_SOURCES[] = {
     "lib/vx-tar/tar.c",
     "lib/vx-guide/guide.h",
     "lib/vx-guide/guide.c",
-    "lib/vx-utf/utf.h",
+    "abi/vx/utf.h",
     nullptr,
 };
 
@@ -1430,6 +1430,8 @@ static const program USER_PROGRAMS[] = {
      nullptr},
     {"libvxtest", "tests/user/libvxtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr},
+    {"vxapitest", "tests/user/vxapitest.c", IN_TESTS, nullptr, false, nullptr, nullptr, true, LINK_DYNAMIC,
+     nullptr}, // libvx v0's public API, <vx.h> (6e4b)
     {"vxctest", "tests/user/vxctest.c", IN_TESTS, nullptr, false, nullptr, nullptr, true, LINK_DYNAMIC,
      nullptr},
     {"vxcxxtest", "tests/user/vxcxxtest.cpp", IN_TESTS, nullptr, false, nullptr, nullptr, true, LINK_DYNAMIC,
@@ -1822,6 +1824,7 @@ static bool build_sysroot(const arch *a, bool release) {
   mkdirs(fmt("%s/usr/lib", s));
   copy_tree(fmt("%s/include", libc), fmt("%s/usr/include", s));
   copy_tree("abi/vx", fmt("%s/usr/include/vx", s));
+  copy_file("abi/vx.h", fmt("%s/usr/include/vx.h", s)); // all of libvx's public headers (ADR-0004)
   copy_file(fmt("%s/lib/%s/libc.a", libc, triple), fmt("%s/usr/lib/libc.a", s));
   copy_file(fmt("%s/lib/%s/libm.a", libc, triple), fmt("%s/usr/lib/libm.a", s));
   copy_file(fmt("%s/libclang_rt.builtins.a", vectra_musl_lib(a, release)),

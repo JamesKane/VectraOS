@@ -97,7 +97,7 @@ static void vx_run_fini(void) {
   // Held: no other thread prints over the last lines. Not for ever: a note's
   // default ends the program here, and a note can come while this thread is
   // printing, holding the lock already (the Odin port's finding).
-  vx_mutex_lock_until(&vx_stdio_lock, vx_clock_read() + 100'000'000);
+  vx_lock_until(&vx_stdio_lock, vx_clock_read() + 100'000'000);
   if (vx_print_hook == vx_stdout_print)
     vx_stdout_flush();
   else if (vx_print_hook)
@@ -118,13 +118,11 @@ static void vx_run_fini(void) {
 }
 
 // The same with a C string; nullptr is success too.
-[[noreturn]] [[maybe_unused]] static void vx_exits(const char *msg) {
-  vx_exit_str(msg ? vx_cstr(msg) : (vx_str){});
-}
+[[noreturn]] VX_API void vx_exits(const char *msg) { vx_exit_str(msg ? vx_cstr(msg) : (vx_str){}); }
 
 // C's exit(n): the empty exit string for 0, else n in decimal, as the POSIX
 // personality ends (decided 2026-10-05).
-[[noreturn]] [[maybe_unused]] static void vx_exit(int n) {
+[[noreturn]] VX_API void vx_exit(int n) {
   char text[12];
   size_t len = 0;
   uint32_t v = n < 0 ? (uint32_t)-(int64_t)n : (uint32_t)n;
@@ -139,7 +137,7 @@ static void vx_run_fini(void) {
 
 // C's abort: standard error flushed, then a trap, which ends the task as a
 // fault does, so procfs saves a crash directory (05 §5). No destructors.
-[[noreturn]] [[maybe_unused]] static void vx_abort(void) {
+[[noreturn]] VX_API void vx_abort(void) {
   vx_stderr_flush();
   __builtin_trap();
 }

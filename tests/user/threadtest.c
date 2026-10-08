@@ -1,7 +1,7 @@
 // threadtest: vx-rt's threads (M6 step 6d1), run in the threads scenario
 // (tests/qemu/threads.ndb). Each thread's thread_local storage starts as the
 // image has it (initialised, zeroed, at its alignment) and stays its own over
-// sleeps and switches; each knows its stack's bounds; a vx_mutex keeps a
+// sleeps and switches; each knows its stack's bounds; a vx_lock_t keeps a
 // shared count whole; threads joined are unmapped, and more can be made.
 // Each check prints a line only when it fails; the last line counts them.
 
@@ -27,7 +27,7 @@ static thread_local uint8_t tl_zero[100];           // .tbss
 static thread_local alignas(64) uint64_t tl_aligned;
 
 static constexpr uint32_t THREADS = 8, ROUNDS = 5000;
-static vx_mutex lock;
+static vx_lock_t lock;
 static uint64_t count; // under lock
 
 static bool tls_fresh(void) {
@@ -45,9 +45,9 @@ static void worker(void *arg) {
   CHECK(vx_thread_stack(&lo, &hi) && (uint64_t)&here >= lo && (uint64_t)&here < hi &&
         hi - lo == 64ull * 1024);
   for (uint32_t i = 0; i < ROUNDS; i++) {
-    vx_mutex_lock(&lock);
+    vx_lock(&lock);
     count++;
-    vx_mutex_unlock(&lock);
+    vx_unlock(&lock);
     if (i % 1000 == 0) {
       static _Atomic uint32_t never;
       vx_futex_wait(&never, 0, vx_clock_read() + 1'000'000); // a sleep: another thread runs, perhaps here

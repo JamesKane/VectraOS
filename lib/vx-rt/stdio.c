@@ -154,7 +154,7 @@ static void vx_stderr_flush(void) {
 
 // Prints an error: to stderr, or without one, to the console.
 [[maybe_unused]] static void vx_eprint(vx_str s) {
-  vx_mutex_lock(&vx_stdio_lock);
+  vx_lock(&vx_stdio_lock);
   if (!vx_stdio.err) {
     if (vx_console.connector)
       vx_console_print(s);
@@ -169,7 +169,7 @@ static void vx_stderr_flush(void) {
         vx_stderr_flush();
     }
   }
-  vx_mutex_unlock(&vx_stdio_lock);
+  vx_unlock(&vx_stdio_lock);
 }
 
 [[maybe_unused]] static void vx_stdout_print(vx_str s) {

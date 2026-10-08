@@ -136,11 +136,11 @@ typedef struct libvx_thread {
 } libvx_thread;
 
 static libvx_thread *libvx_detached;
-static vx_mutex libvx_threads_lock;
+static vx_lock_t libvx_threads_lock;
 
 // The detached threads that have ended, freed.
 static void libvx_reap(void) {
-  vx_mutex_lock(&libvx_threads_lock);
+  vx_lock(&libvx_threads_lock);
   for (libvx_thread **p = &libvx_detached; *p;) {
     libvx_thread *lt = *p;
     if (atomic_load(&lt->t.tcb->running)) {
@@ -151,7 +151,7 @@ static void libvx_reap(void) {
     vx_thread_join(&lt->t);
     vx_heap_free(vx_heap_process(), lt);
   }
-  vx_mutex_unlock(&libvx_threads_lock);
+  vx_unlock(&libvx_threads_lock);
 }
 
 int __llvm_libc_thread_create(void (*entry)(void *), void *arg, size_t stacksize, void **handle) {
@@ -180,10 +180,10 @@ int __llvm_libc_thread_join(void *handle) {
 
 void __llvm_libc_thread_detach(void *handle) {
   libvx_thread *lt = handle;
-  vx_mutex_lock(&libvx_threads_lock);
+  vx_lock(&libvx_threads_lock);
   lt->next = libvx_detached;
   libvx_detached = lt;
-  vx_mutex_unlock(&libvx_threads_lock);
+  vx_unlock(&libvx_threads_lock);
 }
 
 // The calling thread ends, as if its function had returned; the first
@@ -268,7 +268,7 @@ size_t __llvm_libc_heap_usable_size(void *p) { return vx_heap_usable(vx_heap_pro
 // --- Files and the environment, through the process's namespace ---
 
 static vx_ns libvx_ns;
-static vx_mutex libvx_ns_lock; // the namespace's, and getenv's table
+static vx_lock_t libvx_ns_lock; // the namespace's, and getenv's table
 static bool libvx_ns_tried;
 
 // The namespace, made from the spawn message at first use; under the lock.
@@ -283,9 +283,9 @@ static vx_ns *libvx_namespace(void) {
 // Foundation's host name (6e3c): /sys/name, cut to fit and terminated.
 size_t __swift_vectraos_hostname(char *buf, size_t cap) {
   if (!cap) return 0;
-  vx_mutex_lock(&libvx_ns_lock);
+  vx_lock(&libvx_ns_lock);
   size_t n = vx_hostname(libvx_namespace(), buf, cap - 1);
-  vx_mutex_unlock(&libvx_ns_lock);
+  vx_unlock(&libvx_ns_lock);
   buf[n] = 0;
   return n;
 }
@@ -305,10 +305,10 @@ static vx_status libvx_parent(const char *path, p9_client **c, uint32_t *fid, vx
 int __llvm_libc_remove(const char *path) {
   p9_client *c = nullptr;
   uint32_t fid = 0;
-  vx_mutex_lock(&libvx_ns_lock);
+  vx_lock(&libvx_ns_lock);
   vx_status st = vx_ns_walk(libvx_namespace(), vx_cstr(path), &c, &fid);
   if (st == VX_OK) st = p9c_remove(c, fid); // which clunks it
-  vx_mutex_unlock(&libvx_ns_lock);
+  vx_unlock(&libvx_ns_lock);
   return libvx_errno(st);
 }
 
@@ -329,7 +329,7 @@ static vx_status libvx_rename_paths(const char *from, const char *to) {
   p9_client *c1 = nullptr, *c2 = nullptr;
   uint32_t f1 = 0, f2 = 0;
   vx_str n1 = {}, n2 = {};
-  vx_mutex_lock(&libvx_ns_lock);
+  vx_lock(&libvx_ns_lock);
   vx_status st = libvx_parent(from, &c1, &f1, &n1);
   vx_status st2 = st == VX_OK ? libvx_parent(to, &c2, &f2, &n2) : st;
   bool same_dir = st2 == VX_OK && n1.ptr - from == n2.ptr - to && !memcmp(from, to, (size_t)(n1.ptr - from));
@@ -337,7 +337,7 @@ static vx_status libvx_rename_paths(const char *from, const char *to) {
   if (st2 == VX_OK) e = c1 == c2 ? libvx_rename(c1, f1, n1, f2, n2, same_dir) : VX_ERR_UNSUPPORTED;
   if (st == VX_OK) p9c_clunk(c1, f1);
   if (st2 == VX_OK) p9c_clunk(c2, f2);
-  vx_mutex_unlock(&libvx_ns_lock);
+  vx_unlock(&libvx_ns_lock);
   return e;
 }
 
@@ -387,7 +387,7 @@ long __llvm_libc_file_open(const char *path, int flags) {
     mode = P9_ORDWR;
   else if (flags & FILE_WRITE)
     mode = P9_OWRITE;
-  vx_mutex_lock(&libvx_ns_lock);
+  vx_lock(&libvx_ns_lock);
   uint32_t slot = 0;
   while (slot < LIBVX_FILES && libvx_files[slot].used) slot++;
   vx_status st = slot < LIBVX_FILES ? VX_OK : VX_ERR_NO_MEMORY;
@@ -401,7 +401,7 @@ long __llvm_libc_file_open(const char *path, int flags) {
     st = vx_ns_create(libvx_namespace(), p, 0666, mode, &f);
   if (st == VX_OK)
     libvx_files[slot] = (typeof(libvx_files[0])){.used = true, .append = flags & FILE_APPEND, .f = f};
-  vx_mutex_unlock(&libvx_ns_lock);
+  vx_unlock(&libvx_ns_lock);
   if (slot == LIBVX_FILES) return -LIBVX_EMFILE;
   return st == VX_OK ? (long)slot + 3 : -libvx_errno(st);
 }
@@ -455,10 +455,10 @@ long long __llvm_libc_file_seek(long h, long long offset, int whence) {
 
 int __llvm_libc_file_close(long h) {
   if (h >= 0 && h <= 2) return 0; // the standard streams stay
-  vx_mutex_lock(&libvx_ns_lock);
+  vx_lock(&libvx_ns_lock);
   vx_ns_file *f = libvx_file(h);
   if (f) vx_ns_close(f), libvx_files[h - 3].used = false;
-  vx_mutex_unlock(&libvx_ns_lock);
+  vx_unlock(&libvx_ns_lock);
   return f ? 0 : LIBVX_EBADF;
 }
 
@@ -511,7 +511,7 @@ char *__llvm_libc_getenv(const char *cname) {
   bool slash = false;
   for (size_t i = 0; i < name.len; i++) slash = slash || name.ptr[i] == '/';
   if (!name.len || name.len >= sizeof libvx_env[0].name || slash) return nullptr;
-  vx_mutex_lock(&libvx_ns_lock);
+  vx_lock(&libvx_ns_lock);
   int64_t n = libvx_env_read(name, buf, sizeof buf - 1);
   vx_str v = {buf, n > 0 ? (size_t)n : 0};
   if (n == -2) v = vx_getenv(name); // no /env: what the spawn message gave
@@ -529,7 +529,7 @@ char *__llvm_libc_getenv(const char *cname) {
     libvx_env[slot].name[name.len] = 0;
     libvx_env[slot].value = value;
   }
-  vx_mutex_unlock(&libvx_ns_lock);
+  vx_unlock(&libvx_ns_lock);
   return value;
 }
 
@@ -537,7 +537,7 @@ char *__llvm_libc_getenv(const char *cname) {
 // ProcessInfo.environment (6e3c): /env's names, each read as getenv reads
 // it, or without /env the spawn message's env= records. The list stays good
 // until the next call, which frees it.
-static vx_mutex libvx_environ_lock;
+static vx_lock_t libvx_environ_lock;
 static char **libvx_environ;
 
 static void libvx_environ_free(void) {
@@ -558,7 +558,7 @@ static char *libvx_environ_entry(vx_str name, vx_str value) {
 
 char **__swift_vectraos_environ(void) {
   static constexpr uint32_t MAX = 256;
-  vx_mutex_lock(&libvx_environ_lock);
+  vx_lock(&libvx_environ_lock);
   libvx_environ_free();
   libvx_environ = vx_heap_alloc(vx_heap_process(), (MAX + 1) * sizeof(char *));
   uint32_t n = 0;
@@ -588,7 +588,7 @@ char **__swift_vectraos_environ(void) {
     libvx_environ[n] = nullptr;
   }
   char **list = libvx_environ;
-  vx_mutex_unlock(&libvx_environ_lock);
+  vx_unlock(&libvx_environ_lock);
   return list;
 }
 
@@ -606,7 +606,7 @@ static void libvx_timespec_of(int64_t ns, libvx_timespec *ts) {
 
 // TIME_UTC: the wall clock, in UTC.
 bool __llvm_libc_timespec_get_utc(libvx_timespec *ts) {
-  libvx_timespec_of(vx_clock_utc(), ts);
+  libvx_timespec_of(vx_wallclock(), ts);
   return true;
 }
 

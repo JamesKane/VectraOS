@@ -5,7 +5,7 @@
 
 #include "guide.h"
 #include "../vx-ndb/ndb.c"
-#include "../vx-utf/utf.h"
+#include "../../abi/vx/utf.h"
 
 // --- Characters and lines ---
 

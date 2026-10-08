@@ -4,8 +4,15 @@
 
 #include <stdckdint.h>
 
-#include "ndb.h"
-#include "../vx-utf/utf.h"
+// Unity-built (static) everywhere but libvx itself (VX_RT_LIBC), which
+// exports these (ADR-0004).
+#ifndef VX_RT_LIBC
+#ifndef VX_UNITY
+#define VX_UNITY
+#endif
+#endif
+#include "../../abi/vx/ndb.h"
+#include "../../abi/vx/utf.h"
 
 // The reader's line counts lines consumed, so a zeroed reader starts at line 1.
 static size_t ndb_lineno(const vx_ndb_reader *r) { return r->line + 1; }
@@ -174,7 +181,7 @@ static vx_ndb_result ndb_tuples(vx_ndb_reader *r, vx_ndb_record *rec) {
   }
 }
 
-static vx_ndb_result vx_ndb_next(vx_ndb_reader *r, vx_ndb_record *rec) {
+VX_API vx_ndb_result vx_ndb_next(vx_ndb_reader *r, vx_ndb_record *rec) {
   rec->count = 0;
   while (r->pos < r->src.len && ndb_line_is_empty(r)) ndb_skip_line(r);
   if (r->pos >= r->src.len) return VX_NDB_END;
@@ -191,7 +198,7 @@ static vx_ndb_result vx_ndb_next(vx_ndb_reader *r, vx_ndb_record *rec) {
   }
 }
 
-static vx_str vx_ndb_get(const vx_ndb_record *rec, const char *key) {
+VX_API vx_str vx_ndb_get(const vx_ndb_record *rec, const char *key) {
   size_t len = 0;
   while (key[len]) len++;
   for (int i = 0; i < rec->count; i++)
@@ -199,7 +206,7 @@ static vx_str vx_ndb_get(const vx_ndb_record *rec, const char *key) {
   return (vx_str){};
 }
 
-static bool vx_ndb_has(const vx_ndb_record *rec, const char *key) {
+VX_API bool vx_ndb_has(const vx_ndb_record *rec, const char *key) {
   size_t len = 0;
   while (key[len]) len++;
   for (int i = 0; i < rec->count; i++)
@@ -207,7 +214,7 @@ static bool vx_ndb_has(const vx_ndb_record *rec, const char *key) {
   return false;
 }
 
-static vx_str vx_ndb_unknown(const vx_ndb_record *rec, const char *const *keys, size_t n) {
+VX_API vx_str vx_ndb_unknown(const vx_ndb_record *rec, const char *const *keys, size_t n) {
   for (int i = 0; i < rec->count; i++) {
     bool known = false;
     for (size_t k = 0; k < n && !known; k++) {
@@ -220,7 +227,7 @@ static vx_str vx_ndb_unknown(const vx_ndb_record *rec, const char *const *keys, 
   return (vx_str){};
 }
 
-static bool vx_ndb_get_u64(const vx_ndb_record *rec, const char *key, uint64_t *out) {
+VX_API bool vx_ndb_get_u64(const vx_ndb_record *rec, const char *key, uint64_t *out) {
   vx_str v = vx_ndb_get(rec, key);
   bool hex = v.len > 2 && v.ptr[0] == '0' && v.ptr[1] == 'x';
   uint64_t n = 0, base = hex ? 16 : 10;
@@ -269,7 +276,7 @@ static vx_str ndb_cstr(const char *s) {
   return (vx_str){s, n};
 }
 
-static void vx_ndb_put_key(vx_ndb_writer *w, vx_str key, vx_str v) {
+VX_API void vx_ndb_put_key(vx_ndb_writer *w, vx_str key, vx_str v) {
   ndb_key(w, key);
   ndb_out(w, "=", 1);
   bool printable = ndb_valid_utf8((const unsigned char *)v.ptr, v.len);
@@ -296,7 +303,7 @@ static void vx_ndb_put_key(vx_ndb_writer *w, vx_str key, vx_str v) {
   }
 }
 
-static void vx_ndb_put_u64(vx_ndb_writer *w, const char *key, uint64_t value) {
+VX_API void vx_ndb_put_u64(vx_ndb_writer *w, const char *key, uint64_t value) {
   char buf[20];
   size_t i = sizeof buf;
   do {
@@ -306,7 +313,7 @@ static void vx_ndb_put_u64(vx_ndb_writer *w, const char *key, uint64_t value) {
   vx_ndb_put(w, key, (vx_str){buf + i, sizeof buf - i});
 }
 
-static void vx_ndb_put_i64(vx_ndb_writer *w, const char *key, int64_t value) {
+VX_API void vx_ndb_put_i64(vx_ndb_writer *w, const char *key, int64_t value) {
   if (value >= 0) {
     vx_ndb_put_u64(w, key, (uint64_t)value);
     return;
@@ -322,13 +329,13 @@ static void vx_ndb_put_i64(vx_ndb_writer *w, const char *key, int64_t value) {
   vx_ndb_put(w, key, (vx_str){buf + i, sizeof buf - i});
 }
 
-static void vx_ndb_put(vx_ndb_writer *w, const char *key, vx_str v) { vx_ndb_put_key(w, ndb_cstr(key), v); }
+VX_API void vx_ndb_put(vx_ndb_writer *w, const char *key, vx_str v) { vx_ndb_put_key(w, ndb_cstr(key), v); }
 
-static void vx_ndb_flag_key(vx_ndb_writer *w, vx_str key) { ndb_key(w, key); }
+VX_API void vx_ndb_flag_key(vx_ndb_writer *w, vx_str key) { ndb_key(w, key); }
 
-static void vx_ndb_flag(vx_ndb_writer *w, const char *key) { ndb_key(w, ndb_cstr(key)); }
+VX_API void vx_ndb_flag(vx_ndb_writer *w, const char *key) { ndb_key(w, ndb_cstr(key)); }
 
-static bool vx_ndb_end(vx_ndb_writer *w) {
+VX_API bool vx_ndb_end(vx_ndb_writer *w) {
   ndb_out(w, "\n", 1);
   return !w->failed;
 }

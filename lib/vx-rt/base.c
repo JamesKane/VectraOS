@@ -6,9 +6,19 @@
 
 #pragma once
 
-#include <stdatomic.h> // vx_mutex, threads (freestanding: clang's own)
+#include <stdatomic.h> // vx_lock_t, threads (freestanding: clang's own)
 
 #include "../../abi/vx/abi.h"
+// libvx's public declarations (ADR-0004). The system's own code compiles
+// libvx in, so they are static there (VX_UNITY), and every definition here
+// is checked against what a native program sees; libvx.so and libvx.a are
+// built with VX_RT_LIBC, which exports them.
+#ifndef VX_RT_LIBC
+#ifndef VX_UNITY
+#define VX_UNITY
+#endif
+#endif
+#include "../../abi/vx.h"
 #include "../vx-mem/mem.h"
 #include "../vx-ndb/ndb.c"
 
@@ -58,18 +68,16 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   return (vx_status)vx_syscall(VX_SYS_debug_write, (uint64_t)s.ptr, s.len, 0, 0, 0, 0);
 }
 
-[[maybe_unused]] static vx_instant vx_clock_read(void) {
-  return vx_syscall(VX_SYS_clock_read, 0, 0, 0, 0, 0, 0);
-}
+VX_API vx_instant vx_clock_read(void) { return vx_syscall(VX_SYS_clock_read, 0, 0, 0, 0, 0, 0); }
 
 // The cycle counter the clock is made from (/sys/clock/info).
-[[maybe_unused]] static vx_status vx_clock_info_read(vx_clock_info *info) {
+VX_API vx_status vx_clock_info_read(vx_clock_info *info) {
   int64_t r = vx_syscall(VX_SYS_clock_read, (uint64_t)info, 0, 0, 0, 0, 0);
   return r < 0 ? (vx_status)r : VX_OK;
 }
 
 // UTC, in ns since 1970: the monotonic clock until there is a wall clock.
-[[maybe_unused]] static int64_t vx_clock_utc(void) {
+VX_API int64_t vx_wallclock(void) {
   vx_clock_info info = {};
   int64_t now = vx_syscall(VX_SYS_clock_read, (uint64_t)&info, 0, 0, 0, 0, 0);
   return now < 0 ? (int64_t)vx_clock_read() : now + info.utc_offset;
@@ -93,7 +101,7 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
 #endif
 }
 
-[[maybe_unused]] static vx_status vx_task_info(vx_handle task, vx_task_summary *out) {
+VX_API vx_status vx_task_info(vx_handle task, vx_task_summary *out) {
   *out = (vx_task_summary){};
   return (vx_status)vx_syscall(VX_SYS_task_info, task, (uint64_t)out, 0, 0, 0, 0);
 }
@@ -105,36 +113,35 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   return (vx_status)vx_syscall(VX_SYS_task_info, task, (uint64_t)out, id, flags, 0, 0);
 }
 
-[[maybe_unused]] static vx_status vx_port_create(uint32_t options, vx_handle *out) {
+VX_API vx_status vx_port_create(uint32_t options, vx_handle *out) {
   *out = VX_HANDLE_NONE;
   return (vx_status)vx_syscall(VX_SYS_port_create, options, (uint64_t)out, 0, 0, 0, 0);
 }
 
 // Returns how many packets it stored (at least 1), or a negative vx_status:
 // VX_ERR_TIMED_OUT when the deadline passed with none.
-[[maybe_unused]] static int64_t vx_port_wait(vx_handle port, vx_instant deadline, vx_duration leeway,
-                                             vx_packet *out, size_t out_len) {
+VX_API int64_t vx_port_wait(vx_handle port, vx_instant deadline, vx_duration leeway, vx_packet *out,
+                            size_t out_len) {
   return vx_syscall(VX_SYS_port_wait, port, (uint64_t)deadline, (uint64_t)leeway, (uint64_t)out, out_len, 0);
 }
 
-[[maybe_unused]] static vx_status vx_port_post(vx_handle port, const vx_packet *packet) {
+VX_API vx_status vx_port_post(vx_handle port, const vx_packet *packet) {
   return (vx_status)vx_syscall(VX_SYS_port_post, port, (uint64_t)packet, 0, 0, 0, 0);
 }
 
-[[maybe_unused]] static vx_status vx_vmo_create(uint64_t size, uint32_t options, vx_handle *out) {
+VX_API vx_status vx_vmo_create(uint64_t size, uint32_t options, vx_handle *out) {
   *out = VX_HANDLE_NONE;
   return (vx_status)vx_syscall(VX_SYS_vmo_create, size, options, (uint64_t)out, 0, 0, 0);
 }
 
 // Maps [offset, offset + size) of a VMO into a task. *addr == 0 lets the
 // kernel choose; the address used is written back.
-[[maybe_unused]] static vx_status vx_as_map(vx_handle task, vx_handle vmo, uint64_t offset, uint64_t size,
-                                            uint32_t flags, uint64_t *addr) {
+VX_API vx_status vx_as_map(vx_handle task, vx_handle vmo, uint64_t offset, uint64_t size, uint32_t flags,
+                           uint64_t *addr) {
   return (vx_status)vx_syscall(VX_SYS_as_map, task, vmo, offset, size, flags, (uint64_t)addr);
 }
 
-[[maybe_unused]] static vx_status vx_vmo_clone(vx_handle vmo, uint64_t offset, uint64_t size,
-                                               vx_handle *out) {
+VX_API vx_status vx_vmo_clone(vx_handle vmo, uint64_t offset, uint64_t size, vx_handle *out) {
   *out = VX_HANDLE_NONE;
   return (vx_status)vx_syscall(VX_SYS_vmo_clone, vmo, offset, size, 0, (uint64_t)out, 0);
 }
@@ -149,8 +156,7 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
   return (vx_status)vx_syscall(VX_SYS_exception_resume, task, thread, action, (uint64_t)regs, 0, 0);
 }
 
-[[maybe_unused]] static vx_status vx_thread_state(vx_handle task, uint64_t thread, uint32_t op, void *buf,
-                                                  uint64_t size) {
+VX_API vx_status vx_thread_state(vx_handle task, uint64_t thread, uint32_t op, void *buf, uint64_t size) {
   return (vx_status)vx_syscall(VX_SYS_thread_state, task, thread, op, (uint64_t)buf, size, 0);
 }
 
@@ -167,7 +173,7 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
 // The number of CPUs this process may run threads on (ADR-0045, os-requirements
 // R12): every CPU no scheduling context reserves, and its own context's.
 // Asked each time, as reservations come and go; 1 if the kernel does not say.
-[[maybe_unused]] static uint32_t vx_cpu_count(void) {
+VX_API uint32_t vx_cpu_count(void) {
   vx_cpu_info info = {};
   if (vx_thread_state(VX_HANDLE_NONE, 0, VX_STATE_GET_CPU, &info, sizeof info) != VX_OK || !info.cpus_usable)
     return 1;
@@ -178,11 +184,11 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
 
 // The monotonic clock, in ns since boot. The system never suspends, so it is
 // both the continuous and the suspending clock.
-[[maybe_unused]] static vx_instant vx_now(void) { return vx_clock_read(); }
+VX_API vx_instant vx_now(void) { return vx_clock_read(); }
 
 // The clock's resolution in ns: one tick of the counter it is made from,
 // rounded up; 1 for a counter at 1 GHz or faster.
-[[maybe_unused]] static vx_duration vx_clock_resolution(void) {
+VX_API vx_duration vx_clock_resolution(void) {
   vx_clock_info info = {};
   if (vx_clock_info_read(&info) != VX_OK || !info.counter_hz) return 1;
   uint64_t ns = (1'000'000'000 + info.counter_hz - 1) / info.counter_hz;
@@ -193,7 +199,7 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
 // set with the unprivileged instruction (x86's WRPKRU): no syscall. A key
 // with VX_KEY_READ may be read, with VX_KEY_WRITE written too (PKU has no
 // write-only key: WRITE alone is read and write); with neither, not touched.
-[[maybe_unused]] static uint64_t vx_rights_get(void) {
+VX_API uint64_t vx_rights_get(void) {
 #ifdef __x86_64__
   if (!vx_cpu()->keys) return 0;
   uint32_t pkru, edx;
@@ -204,7 +210,7 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
 #endif
 }
 
-[[maybe_unused]] static void vx_rights_set(uint64_t rights) {
+VX_API void vx_rights_set(uint64_t rights) {
 #ifdef __x86_64__
   if (vx_cpu()->keys) __asm__ volatile("wrpkru" : : "a"((uint32_t)rights), "c"(0), "d"(0) : "memory");
 #else
@@ -212,7 +218,7 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
 #endif
 }
 
-[[maybe_unused]] static vx_status vx_keys_set(uint32_t key, uint32_t rights) {
+VX_API vx_status vx_keys_set(uint32_t key, uint32_t rights) {
   if (!vx_cpu()->keys) return VX_ERR_UNSUPPORTED;
   if (key > vx_cpu()->keys || rights & ~(uint32_t)(VX_KEY_READ | VX_KEY_WRITE)) return VX_ERR_INVALID;
   uint64_t r = vx_rights_get() & ~(3ull << (2 * key));
@@ -223,56 +229,32 @@ static inline int64_t vx_syscall(enum vx_syscall nr, uint64_t a0, uint64_t a1, u
 }
 
 // The calling thread's rights to key: VX_KEY_READ and VX_KEY_WRITE as it has them.
-[[maybe_unused]] static uint32_t vx_keys_get(uint32_t key) {
+VX_API uint32_t vx_keys_get(uint32_t key) {
   if (!vx_cpu()->keys || key > vx_cpu()->keys) return VX_KEY_READ | VX_KEY_WRITE;
   uint64_t r = vx_rights_get() >> (2 * key) & 3;
   if (r & 1) return 0;
   return r & 2 ? VX_KEY_READ : VX_KEY_READ | VX_KEY_WRITE;
 }
 
-[[maybe_unused]] static vx_status vx_as_protect(vx_handle task, uint64_t address, uint64_t size,
-                                                uint32_t flags) {
+VX_API vx_status vx_as_protect(vx_handle task, uint64_t address, uint64_t size, uint32_t flags) {
   return (vx_status)vx_syscall(VX_SYS_as_protect, task, address, size, flags, 0, 0);
 }
 
 // as_reserve (ADR-0042): *address in and out.
-[[maybe_unused]] static vx_status vx_as_reserve(vx_handle task, uint64_t size, uint64_t align, uint32_t flags,
-                                                uint64_t *address) {
+VX_API vx_status vx_as_reserve(vx_handle task, uint64_t size, uint64_t align, uint32_t flags,
+                               uint64_t *address) {
   return (vx_status)vx_syscall(VX_SYS_as_reserve, task, size, align, flags, (uint64_t)address, 0);
 }
 
-[[maybe_unused]] static vx_status vx_as_key_alloc(vx_handle task, uint32_t *key) {
+VX_API vx_status vx_as_key_alloc(vx_handle task, uint32_t *key) {
   return (vx_status)vx_syscall(VX_SYS_as_key_alloc, task, (uint64_t)key, 0, 0, 0, 0);
 }
 
-[[maybe_unused]] static vx_status vx_as_key_free(vx_handle task, uint32_t key) {
+VX_API vx_status vx_as_key_free(vx_handle task, uint32_t key) {
   return (vx_status)vx_syscall(VX_SYS_as_key_free, task, key, 0, 0, 0, 0);
 }
 
-// What is above userland's baseline (x86-64-v3, armv8.2-a; M6 step 6c3), to
-// choose a code path at run time: a feature counts only when the CPU has it
-// and the kernel saves what it needs (AVX-512's registers in XCR0; SVE, whose
-// state the kernel does not save yet, never).
-typedef enum vx_cpu_feature : uint32_t {
-#ifdef __x86_64__
-  VX_CPU_AVX512, // F, DQ, BW and VL
-  VX_CPU_VAES,
-  VX_CPU_VPCLMULQDQ,
-  VX_CPU_GFNI,
-  VX_CPU_SHA,
-#else
-  VX_CPU_AES,
-  VX_CPU_PMULL,
-  VX_CPU_SHA2,
-  VX_CPU_SHA512,
-  VX_CPU_SHA3,
-  VX_CPU_CRC32,
-  VX_CPU_DOTPROD,
-  VX_CPU_SVE,
-#endif
-} vx_cpu_feature;
-
-[[maybe_unused]] static bool vx_cpu_has(vx_cpu_feature f) {
+VX_API bool vx_cpu_has(vx_cpu_feature f) {
   const vx_cpu_info *c = vx_cpu();
 #ifdef __x86_64__
   uint32_t a = 7, b, cx = 0, d;
@@ -303,16 +285,16 @@ typedef enum vx_cpu_feature : uint32_t {
   return false;
 }
 
-[[maybe_unused]] static vx_status vx_thread_suspend(vx_handle task, uint64_t thread) {
+VX_API vx_status vx_thread_suspend(vx_handle task, uint64_t thread) {
   return (vx_status)vx_syscall(VX_SYS_thread_suspend, task, thread, 0, 0, 0, 0);
 }
 
-[[maybe_unused]] static vx_status vx_thread_resume(vx_handle task, uint64_t thread) {
+VX_API vx_status vx_thread_resume(vx_handle task, uint64_t thread) {
   return (vx_status)vx_syscall(VX_SYS_thread_resume, task, thread, 0, 0, 0, 0);
 }
 
 // The first of the task's mappings that ends after address (INSPECT).
-[[maybe_unused]] static vx_status vx_as_query(vx_handle task, uint64_t address, vx_map_info *info) {
+VX_API vx_status vx_as_query(vx_handle task, uint64_t address, vx_map_info *info) {
   return (vx_status)vx_syscall(VX_SYS_as_query, task, address, (uint64_t)info, 0, 0, 0);
 }
 
@@ -321,20 +303,19 @@ typedef enum vx_cpu_feature : uint32_t {
 }
 
 // Posts a note to a thread of the task, or with thread 0 to any (ADR-0010).
-[[maybe_unused]] static vx_status vx_thread_interrupt(vx_handle task, uint64_t thread, vx_str note) {
+VX_API vx_status vx_thread_interrupt(vx_handle task, uint64_t thread, vx_str note) {
   return (vx_status)vx_syscall(VX_SYS_thread_interrupt, task, thread, (uint64_t)note.ptr, note.len, 0, 0);
 }
 
-[[maybe_unused]] static vx_status vx_as_unmap(vx_handle task, uint64_t addr, uint64_t size) {
+VX_API vx_status vx_as_unmap(vx_handle task, uint64_t addr, uint64_t size) {
   return (vx_status)vx_syscall(VX_SYS_as_unmap, task, addr, size, 0, 0, 0);
 }
 
-[[maybe_unused]] static vx_status vx_vmo_rw(vx_handle vmo, enum vx_vmo_op op, uint64_t offset, void *buf,
-                                            uint64_t size) {
+VX_API vx_status vx_vmo_rw(vx_handle vmo, enum vx_vmo_op op, uint64_t offset, void *buf, uint64_t size) {
   return (vx_status)vx_syscall(VX_SYS_vmo_rw, vmo, op, offset, (uint64_t)buf, size, 0);
 }
 
-[[maybe_unused]] static vx_status vx_handle_dup(vx_handle h, uint32_t rights, vx_handle *out) {
+VX_API vx_status vx_handle_dup(vx_handle h, uint32_t rights, vx_handle *out) {
   *out = VX_HANDLE_NONE;
   return (vx_status)vx_syscall(VX_SYS_handle_dup, h, rights, (uint64_t)out, 0, 0, 0);
 }
@@ -373,25 +354,25 @@ typedef enum vx_cpu_feature : uint32_t {
 }
 
 // vmo_seal, vmo_lease and vmo_revoke (ADR-0043).
-[[maybe_unused]] static vx_status vx_vmo_seal(vx_handle vmo) {
+VX_API vx_status vx_vmo_seal(vx_handle vmo) {
   return (vx_status)vx_syscall(VX_SYS_vmo_seal, vmo, 0, 0, 0, 0, 0);
 }
 
-[[maybe_unused]] static vx_status vx_vmo_lease(vx_handle vmo, vx_handle *lease) {
+VX_API vx_status vx_vmo_lease(vx_handle vmo, vx_handle *lease) {
   return (vx_status)vx_syscall(VX_SYS_vmo_lease, vmo, (uint64_t)lease, 0, 0, 0, 0);
 }
 
-[[maybe_unused]] static vx_status vx_vmo_revoke(vx_handle lease) {
+VX_API vx_status vx_vmo_revoke(vx_handle lease) {
   return (vx_status)vx_syscall(VX_SYS_vmo_revoke, lease, 0, 0, 0, 0, 0);
 }
 
-[[maybe_unused]] static vx_status vx_vmo_resize(vx_handle vmo, uint64_t size) {
+VX_API vx_status vx_vmo_resize(vx_handle vmo, uint64_t size) {
   return (vx_status)vx_syscall(VX_SYS_vmo_op, vmo, VX_VMO_RESIZE, size, 0, 0, 0);
 }
 
 // A lazy VMO's pages in [offset, offset + size) freed (ADR-0046): a touch
 // reads zeros again.
-[[maybe_unused]] static vx_status vx_vmo_decommit(vx_handle vmo, uint64_t offset, uint64_t size) {
+VX_API vx_status vx_vmo_decommit(vx_handle vmo, uint64_t offset, uint64_t size) {
   return (vx_status)vx_syscall(VX_SYS_vmo_op, vmo, VX_VMO_DECOMMIT, offset, size, 0, 0);
 }
 
@@ -460,28 +441,28 @@ typedef enum vx_cpu_feature : uint32_t {
 
 // --- Channels ---
 
-[[maybe_unused]] static vx_status vx_channel_create(uint32_t options, vx_handle out[2]) {
+VX_API vx_status vx_channel_create(uint32_t options, vx_handle out[2]) {
   out[0] = out[1] = VX_HANDLE_NONE;
   return (vx_status)vx_syscall(VX_SYS_channel_create, options, (uint64_t)out, 0, 0, 0, 0);
 }
 
 // The message starts with a vx_msg_header. The handles leave the caller's
 // table whether or not the write succeeds.
-[[maybe_unused]] static vx_status vx_channel_write(vx_handle ch, const void *bytes, uint32_t len,
-                                                   const vx_handle *handles, uint32_t count) {
+VX_API vx_status vx_channel_write(vx_handle ch, const void *bytes, uint32_t len, const vx_handle *handles,
+                                  uint32_t count) {
   return (vx_status)vx_syscall(VX_SYS_channel_write, ch, (uint64_t)bytes, len, (uint64_t)handles, count, 0);
 }
 
 // SHOULD_WAIT when nothing is queued; TOO_SMALL, with the sizes in *actual, when
 // the next message does not fit.
-[[maybe_unused]] static vx_status vx_channel_read(vx_handle ch, void *bytes, uint32_t cap, vx_handle *handles,
-                                                  uint32_t count_cap, vx_msg_size *actual) {
+VX_API vx_status vx_channel_read(vx_handle ch, void *bytes, uint32_t cap, vx_handle *handles,
+                                 uint32_t count_cap, vx_msg_size *actual) {
   *actual = (vx_msg_size){};
   return (vx_status)vx_syscall(VX_SYS_channel_read, ch, (uint64_t)bytes, cap, (uint64_t)handles, count_cap,
                                (uint64_t)actual);
 }
 
-[[maybe_unused]] static vx_status vx_channel_call(vx_handle ch, vx_call *args, vx_instant deadline) {
+VX_API vx_status vx_channel_call(vx_handle ch, vx_call *args, vx_instant deadline) {
   args->actual = (vx_msg_size){};
   return (vx_status)vx_syscall(VX_SYS_channel_call, ch, (uint64_t)args, (uint64_t)deadline, 0, 0, 0);
 }
@@ -511,43 +492,40 @@ typedef enum vx_cpu_feature : uint32_t {
 
 // --- Counters, bindings, futexes ---
 
-[[maybe_unused]] static vx_status vx_counter_create(uint64_t initial, vx_handle *out) {
+VX_API vx_status vx_counter_create(uint64_t initial, vx_handle *out) {
   *out = VX_HANDLE_NONE;
   return (vx_status)vx_syscall(VX_SYS_counter_create, initial, (uint64_t)out, 0, 0, 0, 0);
 }
 
-[[maybe_unused]] static vx_status vx_counter_signal(vx_handle c, uint64_t value) {
+VX_API vx_status vx_counter_signal(vx_handle c, uint64_t value) {
   return (vx_status)vx_syscall(VX_SYS_counter_signal, c, value, 0, 0, 0, 0);
 }
 
-[[maybe_unused]] static int64_t vx_counter_read(vx_handle c) {
-  return vx_syscall(VX_SYS_counter_read, c, 0, 0, 0, 0, 0);
-}
+VX_API int64_t vx_counter_read(vx_handle c) { return vx_syscall(VX_SYS_counter_read, c, 0, 0, 0, 0, 0); }
 
 // A one-shot binding: the port gets one packet with `key` when the source's
 // trigger holds (at once, if it already does).
-[[maybe_unused]] static vx_status vx_port_bind(vx_handle port, vx_handle source, enum vx_trigger trigger,
-                                               uint64_t key, uint64_t threshold) {
+VX_API vx_status vx_port_bind(vx_handle port, vx_handle source, enum vx_trigger trigger, uint64_t key,
+                              uint64_t threshold) {
   return (vx_status)vx_syscall(VX_SYS_port_bind, port, source, trigger, key, threshold, 0);
 }
 
-[[maybe_unused]] static vx_status vx_futex_wait(const _Atomic uint32_t *word, uint32_t expected,
-                                                vx_instant deadline) {
+VX_API vx_status vx_futex_wait(const _Atomic uint32_t *word, uint32_t expected, vx_instant deadline) {
   return (vx_status)vx_syscall(VX_SYS_futex_wait, (uint64_t)word, expected, (uint64_t)deadline, 0, 0, 0);
 }
 
 // The calling thread's robust list (ADR-0037); head nullptr unregisters it.
-[[maybe_unused]] static vx_status vx_thread_set_robust(const void *head, uint64_t size, uint32_t owner) {
+VX_API vx_status vx_thread_set_robust(const void *head, uint64_t size, uint32_t owner) {
   return (vx_status)vx_syscall(VX_SYS_thread_set_robust, (uint64_t)head, size, owner, 0, 0, 0);
 }
 
-[[maybe_unused]] static int64_t vx_futex_wake(const _Atomic uint32_t *word, uint32_t count) {
+VX_API int64_t vx_futex_wake(const _Atomic uint32_t *word, uint32_t count) {
   return vx_syscall(VX_SYS_futex_wake, (uint64_t)word, count, 0, 0, 0, 0);
 }
 
 // Sleeps until the clock reaches at (or returns at once if it has). leeway, how
 // late the wake may be, is not used yet: the kernel's deadlines are exact.
-[[maybe_unused]] static vx_status vx_sleep_until(vx_instant at, vx_duration leeway) {
+VX_API vx_status vx_sleep_until(vx_instant at, vx_duration leeway) {
   (void)leeway;
   static const _Atomic uint32_t never; // no one wakes it: only the deadline does
   vx_status st = VX_OK;
@@ -592,14 +570,7 @@ typedef enum vx_cpu_feature : uint32_t {
   __builtin_unreachable();
 }
 
-// A lock between a task's threads (6d1): a futex word, 0 free, 1 held, 2
-// held with waiters (Drepper's "Futexes are tricky", mutex 3). Not
-// recursive.
-typedef struct vx_mutex {
-  _Atomic uint32_t state;
-} vx_mutex;
-
-[[maybe_unused]] static void vx_mutex_lock(vx_mutex *m) {
+VX_API void vx_lock(vx_lock_t *m) {
   uint32_t c = 0;
   if (atomic_compare_exchange_strong(&m->state, &c, 1)) return;
   if (c != 2) c = atomic_exchange(&m->state, 2);
@@ -609,8 +580,8 @@ typedef struct vx_mutex {
   }
 }
 
-// vx_mutex_lock, giving up at the deadline: false if it did not get the lock.
-[[maybe_unused]] static bool vx_mutex_lock_until(vx_mutex *m, vx_instant deadline) {
+// vx_lock, giving up at the deadline: false if it did not get the lock.
+VX_API bool vx_lock_until(vx_lock_t *m, vx_instant deadline) {
   uint32_t c = 0;
   if (atomic_compare_exchange_strong(&m->state, &c, 1)) return true;
   if (c != 2) c = atomic_exchange(&m->state, 2);
@@ -621,26 +592,26 @@ typedef struct vx_mutex {
   return true;
 }
 
-[[maybe_unused]] static void vx_mutex_unlock(vx_mutex *m) {
+VX_API void vx_unlock(vx_lock_t *m) {
   if (atomic_fetch_sub(&m->state, 1) != 1) {
     atomic_store(&m->state, 0);
     vx_futex_wake(&m->state, 1);
   }
 }
 
-[[maybe_unused]] static vx_status vx_task_create(vx_str name, vx_handle *out) {
+VX_API vx_status vx_task_create(vx_str name, vx_handle *out) {
   *out = VX_HANDLE_NONE;
   return (vx_status)vx_syscall(VX_SYS_task_create, (uint64_t)name.ptr, name.len, (uint64_t)out, 0, 0, 0);
 }
 
 // A copy of the caller, with no threads yet (VX_TASK_FORK).
-[[maybe_unused]] static vx_status vx_task_fork(vx_str name, vx_handle *out) {
+VX_API vx_status vx_task_fork(vx_str name, vx_handle *out) {
   *out = VX_HANDLE_NONE;
   return (vx_status)vx_syscall(VX_SYS_task_create, (uint64_t)name.ptr, name.len, (uint64_t)out, VX_TASK_FORK,
                                0, 0);
 }
 
-[[maybe_unused]] static vx_status vx_thread_create(vx_handle task, vx_handle *out) {
+VX_API vx_status vx_thread_create(vx_handle task, vx_handle *out) {
   *out = VX_HANDLE_NONE;
   return (vx_status)vx_syscall(VX_SYS_thread_create, task, (uint64_t)out, 0, 0, 0, 0);
 }
@@ -648,42 +619,42 @@ typedef struct vx_mutex {
 // The same, and the thread's id in its task (exceptions and thread_interrupt name it so).
 // --- Scheduling contexts (ADR-0038) ---
 
-[[maybe_unused]] static vx_status vx_sched_ctx_create(const vx_sched_params *p, vx_handle *out) {
+VX_API vx_status vx_sched_ctx_create(const vx_sched_params *p, vx_handle *out) {
   *out = VX_HANDLE_NONE;
   return (vx_status)vx_syscall(VX_SYS_sched_ctx_create, (uint64_t)p, (uint64_t)out, 0, 0, 0, 0);
 }
 
 // Binds thread (VX_HANDLE_NONE: the caller) to ctx (none: unbinds), on core
 // (a CPU of its reservation) or -1.
-[[maybe_unused]] static vx_status vx_sched_ctx_bind(vx_handle ctx, vx_handle thread, int32_t core) {
+VX_API vx_status vx_sched_ctx_bind(vx_handle ctx, vx_handle thread, int32_t core) {
   return (vx_status)vx_syscall(VX_SYS_sched_ctx_bind, ctx, thread, (uint64_t)(int64_t)core, 0, 0, 0);
 }
 
-[[maybe_unused]] static vx_status vx_sched_ctx_configure(vx_handle ctx, const vx_sched_params *p) {
+VX_API vx_status vx_sched_ctx_configure(vx_handle ctx, const vx_sched_params *p) {
   return (vx_status)vx_syscall(VX_SYS_sched_ctx_configure, ctx, (uint64_t)p, 0, 0, 0, 0);
 }
 
-[[maybe_unused]] static vx_status vx_sched_reserve(vx_handle ctx, uint32_t count, uint32_t cls,
-                                                   uint32_t domain, uint32_t flags, vx_core_set *out) {
+VX_API vx_status vx_sched_reserve(vx_handle ctx, uint32_t count, uint32_t cls, uint32_t domain,
+                                  uint32_t flags, vx_core_set *out) {
   return (vx_status)vx_syscall(VX_SYS_sched_reserve, ctx, count, cls, domain, flags, (uint64_t)out);
 }
 
 // The calling thread's intent, anything but realtime, which needs a context
 // (09 §5.7's vx_intent_set, here until libvx).
-[[maybe_unused]] static vx_status vx_intent_set(uint32_t intent) {
+VX_API vx_status vx_intent_set(uint32_t intent) {
   vx_sched_params p = {.intent = intent};
   return vx_sched_ctx_configure(VX_HANDLE_NONE, &p);
 }
 
-[[maybe_unused]] static vx_status vx_thread_create_id(vx_handle task, vx_handle *out, uint32_t *id) {
+VX_API vx_status vx_thread_create_id(vx_handle task, vx_handle *out, uint32_t *id) {
   *out = VX_HANDLE_NONE;
   return (vx_status)vx_syscall(VX_SYS_thread_create, task, (uint64_t)out, (uint64_t)id, 0, 0, 0);
 }
 
 // Starts a thread at entry on stack sp. `handle`, unless 0, moves to the
 // thread's task and arrives as the first argument; arg2 is the second.
-[[maybe_unused]] static vx_status vx_thread_start(vx_handle thread, uint64_t entry, uint64_t sp,
-                                                  vx_handle handle, uint64_t arg2) {
+VX_API vx_status vx_thread_start(vx_handle thread, uint64_t entry, uint64_t sp, vx_handle handle,
+                                 uint64_t arg2) {
   return (vx_status)vx_syscall(VX_SYS_thread_start, thread, entry, sp, handle, arg2, 0);
 }
 
@@ -694,22 +665,21 @@ typedef struct vx_mutex {
 
 // The caller takes scratch's address space and goes on as the program in it
 // (ADR-0012), with bootstrap as its only handle. Returns only on a failure.
-[[maybe_unused]] static vx_status vx_task_exec(vx_handle scratch, vx_handle bootstrap, uint64_t entry,
-                                               uint64_t sp) {
+VX_API vx_status vx_task_exec(vx_handle scratch, vx_handle bootstrap, uint64_t entry, uint64_t sp) {
   return (vx_status)vx_syscall(VX_SYS_task_exec, scratch, bootstrap, entry, sp, 0, 0);
 }
 
 // Ends the task with msg as its exit string: empty for success (ADR-0010).
-[[maybe_unused]] static vx_status vx_task_kill(vx_handle task, vx_str msg) {
+VX_API vx_status vx_task_kill(vx_handle task, vx_str msg) {
   return (vx_status)vx_syscall(VX_SYS_task_kill, task, (uint64_t)msg.ptr, msg.len, 0, 0, 0);
 }
 
 // The same for the task `id` in task's tree (abi.h).
-[[maybe_unused]] static vx_status vx_task_kill_id(vx_handle task, uint64_t id, vx_str msg) {
+VX_API vx_status vx_task_kill_id(vx_handle task, uint64_t id, vx_str msg) {
   return (vx_status)vx_syscall(VX_SYS_task_kill, task, (uint64_t)msg.ptr, msg.len, id, 0, 0);
 }
 
-[[maybe_unused]] static vx_status vx_handle_close(vx_handle h) {
+VX_API vx_status vx_handle_close(vx_handle h) {
   return (vx_status)vx_syscall(VX_SYS_handle_close, h, 0, 0, 0, 0, 0);
 }
 
@@ -719,15 +689,15 @@ typedef struct vx_mutex {
 // message's "console"), and to the kernel log before that or without one.
 
 static void (*vx_print_hook)(vx_str s);
-static vx_mutex vx_stdio_lock; // the output buffers, between a program's threads (6d1)
+static vx_lock_t vx_stdio_lock; // the output buffers, between a program's threads (6d1)
 
 [[maybe_unused]] static void vx_print(vx_str s) {
-  vx_mutex_lock(&vx_stdio_lock);
+  vx_lock(&vx_stdio_lock);
   if (vx_print_hook)
     vx_print_hook(s);
   else
     vx_debug_write(s);
-  vx_mutex_unlock(&vx_stdio_lock);
+  vx_unlock(&vx_stdio_lock);
 }
 
 // A NUL-terminated string as a vx_str.
@@ -785,6 +755,10 @@ static vx_spawn_info vx_spawn;
 static void vx_random_bytes(void *out, size_t n);
 static vx_handle vx_self; // the task's handle to itself, or VX_HANDLE_NONE
 
+// The same, for a program outside libvx (ADR-0004): what the wrappers that
+// take a task are given for the program's own.
+VX_API vx_handle vx_task_self(void) { return vx_self; }
+
 // --- The current directory (M6 step 6d7a, ADR-0039) ---
 //
 // One for the process, an absolute and clean path (as vx-ns's vx_ns_clean
@@ -795,7 +769,7 @@ static vx_handle vx_self; // the task's handle to itself, or VX_HANDLE_NONE
 static constexpr size_t VX_WD_MAX = 256; // as vx-ns's VX_NS_MAX_PATH, its NUL included
 
 static struct {
-  vx_mutex lock;
+  vx_lock_t lock;
   size_t len;
   char path[VX_WD_MAX];
 } vx_wd = {.len = 1, .path = "/"};
@@ -803,10 +777,10 @@ static struct {
 // The current directory into buf, NUL-ended: its length, or 0 if it needs more
 // than cap bytes.
 [[maybe_unused]] static size_t vx_getwd(char *buf, size_t cap) {
-  vx_mutex_lock(&vx_wd.lock);
+  vx_lock(&vx_wd.lock);
   size_t n = vx_wd.len;
   if (n < cap) memcpy(buf, vx_wd.path, n), buf[n] = 0;
-  vx_mutex_unlock(&vx_wd.lock);
+  vx_unlock(&vx_wd.lock);
   return n < cap ? n : 0;
 }
 
@@ -814,10 +788,10 @@ static struct {
 // has found to be a directory (vx_chdir; musl's chdir). False if it is too long.
 [[maybe_unused]] static bool vx_wd_set(vx_str path) {
   if (!path.len || path.ptr[0] != '/' || path.len >= VX_WD_MAX) return false;
-  vx_mutex_lock(&vx_wd.lock);
+  vx_lock(&vx_wd.lock);
   memcpy(vx_wd.path, path.ptr, path.len);
   vx_wd.path[path.len] = 0, vx_wd.len = path.len;
-  vx_mutex_unlock(&vx_wd.lock);
+  vx_unlock(&vx_wd.lock);
   return true;
 }
 
@@ -938,9 +912,9 @@ static void vx_read_spawn(vx_handle bootstrap) {
 // The process's id: its task's, which procfs names it by (ADR-0011).
 // The vx-abi level the running system offers (09 §4.8): a dynamic program
 // asks libvx.so, which the release ships, so it is the release's.
-[[maybe_unused]] static uint32_t vx_abi_level(void) { return VX_ABI_LEVEL; }
+VX_API uint32_t vx_abi_level(void) { return VX_ABI_LEVEL; }
 
-[[maybe_unused]] static uint64_t vx_pid(void) {
+VX_API uint64_t vx_pid(void) {
   static uint64_t pid;
   vx_task_summary me;
   if (!pid && vx_task_info(vx_self, &me) == VX_OK) pid = me.id;
@@ -948,12 +922,10 @@ static void vx_read_spawn(vx_handle bootstrap) {
 }
 
 // The program's path, as its spawner found it (exe=); empty if it did not say.
-[[maybe_unused]] static vx_str vx_exe_path(void) { return vx_spawn.exe; }
+VX_API vx_str vx_exe_path(void) { return vx_spawn.exe; }
 
 // Who the process runs as (user=), none without it.
-[[maybe_unused]] static vx_str vx_user_name(void) {
-  return vx_spawn.user.len ? vx_spawn.user : VX_STR("none");
-}
+VX_API vx_str vx_user_name(void) { return vx_spawn.user.len ? vx_spawn.user : VX_STR("none"); }
 
 // The value of name in the environment the process was given (env=), as a
 // vx_str; {nullptr, 0} if it has none. The environment is vx_spawn.envs,

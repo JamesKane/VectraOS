@@ -29,9 +29,6 @@
 #include "base.c"
 #include "../vx-note/note.c"
 
-typedef enum vx_noted : uint32_t { VX_NCONT = 0, VX_NDFLT = 1 } vx_noted;
-typedef vx_noted vx_note_handler(vx_exception *e, vx_str note, void *fp);
-
 [[gnu::visibility("hidden")]] void vx_note_entry(void);
 
 static vx_note_handler *vx_note_fn;
@@ -146,7 +143,7 @@ __asm__(".text\n"
 
 // Hands every note to handler from now on; nullptr goes back to ending the
 // program at the first one.
-[[maybe_unused]] static vx_status vx_notify(vx_note_handler *handler) {
+VX_API vx_status vx_notify(vx_note_handler *handler) {
 #ifdef __x86_64__
   const vx_cpu_info *cpu = vx_cpu();
   if (cpu && cpu->xstate_size >= 576 && cpu->xstate_size <= 4096)

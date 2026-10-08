@@ -122,7 +122,7 @@ typedef struct be_thread {
   _Atomic uint32_t *ring_word;      // the sleep, as it would not end a wait it came just before
 } be_thread;
 
-static vx_mutex be_lock;
+static vx_lock_t be_lock;
 static be_thread be_early;
 static bool be_tls;                  // the slots usable: set_tid_address has come
 static _Atomic uint32_t be_live = 1; // threads alive, the first among them
@@ -130,22 +130,22 @@ static _Atomic uint32_t be_live = 1; // threads alive, the first among them
 static be_thread *be_me(void); // below, with the slots
 
 static void be_enter(void) {
-  if (be_me()->depth++ == 0) vx_mutex_lock(&be_lock);
+  if (be_me()->depth++ == 0) vx_lock(&be_lock);
 }
 
 static void be_leave(void) {
-  if (--be_me()->depth == 0) vx_mutex_unlock(&be_lock);
+  if (--be_me()->depth == 0) vx_unlock(&be_lock);
 }
 
 // Around a wait: all of this thread's holds let go, then taken back.
 static uint32_t be_wait_begin(void) {
   uint32_t d = be_me()->depth;
-  if (d) be_me()->depth = 0, vx_mutex_unlock(&be_lock);
+  if (d) be_me()->depth = 0, vx_unlock(&be_lock);
   return d;
 }
 
 static void be_wait_end(uint32_t d) {
-  if (d) vx_mutex_lock(&be_lock), be_me()->depth = d;
+  if (d) vx_lock(&be_lock), be_me()->depth = d;
 }
 
 [[noreturn]] static void be_thread_exit(int code); // below, with __clone
@@ -677,7 +677,7 @@ int __clone(int (*fn)(void *), void *stack, int flags, void *arg, ...) {
   be_thread *me = be_me();
   be_unregister(me);
   volatile int *ctid = me->ctid;
-  if (me->depth) me->depth = 0, vx_mutex_unlock(&be_lock);
+  if (me->depth) me->depth = 0, vx_unlock(&be_lock);
   if (ctid) vx_thread_finish((_Atomic uint32_t *)ctid);
   vx_thread_exit();
 }
@@ -745,7 +745,7 @@ void __unmapself(void *base, size_t size) {
   be_thread *me = be_me();
   be_unregister(me);
   volatile int *ctid = me->ctid;
-  if (me->depth) me->depth = 0, vx_mutex_unlock(&be_lock);
+  if (me->depth) me->depth = 0, vx_unlock(&be_lock);
   be_unmap_finish(vx_self, base, (size + 4095) & ~(size_t)4095, ctid);
 }
 

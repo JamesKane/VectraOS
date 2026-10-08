@@ -13,7 +13,7 @@
 // server formats ndb by hand.
 #pragma once
 
-#include "../../abi/vx/abi.h"
+#include "api.h"
 
 static constexpr size_t VX_NDB_MAX_RECORD = (size_t)64 * 1024;
 static constexpr int VX_NDB_MAX_TUPLES = 128;
@@ -50,24 +50,21 @@ typedef enum vx_ndb_result : int32_t {
 
 // Reads the next record into rec. At the end of the input, and on an error,
 // rec is left empty.
-[[maybe_unused]] static vx_ndb_result vx_ndb_next(vx_ndb_reader *r, vx_ndb_record *rec);
-
-// The library is compiled into each component that includes it (unity builds), so
-// its API is marked maybe_unused.
+VX_API vx_ndb_result vx_ndb_next(vx_ndb_reader *r, vx_ndb_record *rec);
 
 // The value of key, or a zero vx_str if the record lacks it. A flag gives a
 // zero-length value with a nullptr pointer, so test vx_ndb_has for flags.
-[[maybe_unused]] static vx_str vx_ndb_get(const vx_ndb_record *rec, const char *key);
-[[maybe_unused]] static bool vx_ndb_has(const vx_ndb_record *rec, const char *key);
+VX_API vx_str vx_ndb_get(const vx_ndb_record *rec, const char *key);
+VX_API bool vx_ndb_has(const vx_ndb_record *rec, const char *key);
 // key's value as a number: decimal digits with no leading zeros, or 0x and
 // lowercase hex digits; no sign, no overflow. False, with *out unchanged,
 // otherwise or if the record lacks it.
-[[maybe_unused]] static bool vx_ndb_get_u64(const vx_ndb_record *rec, const char *key, uint64_t *out);
+VX_API bool vx_ndb_get_u64(const vx_ndb_record *rec, const char *key, uint64_t *out);
 // The first key of rec that is not one of keys (n of them), or a zero vx_str if
 // every key is: how a format refuses a key it does not know (ndb(6)). A format
 // keeps its keys in a .def file of KEY("scope", "key") lines, which its page is
 // checked against.
-[[maybe_unused]] static vx_str vx_ndb_unknown(const vx_ndb_record *rec, const char *const *keys, size_t n);
+VX_API vx_str vx_ndb_unknown(const vx_ndb_record *rec, const char *const *keys, size_t n);
 
 // A record being written into a caller's buffer. Writing past the end, or a
 // key that could not be read back, sets `failed`, and the record must not be
@@ -79,13 +76,13 @@ typedef struct vx_ndb_writer {
 } vx_ndb_writer;
 
 // key=value, in whichever form the value needs.
-[[maybe_unused]] static void vx_ndb_put(vx_ndb_writer *w, const char *key, vx_str value);
-[[maybe_unused]] static void vx_ndb_put_u64(vx_ndb_writer *w, const char *key, uint64_t value);
-[[maybe_unused]] static void vx_ndb_put_i64(vx_ndb_writer *w, const char *key, int64_t value);
+VX_API void vx_ndb_put(vx_ndb_writer *w, const char *key, vx_str value);
+VX_API void vx_ndb_put_u64(vx_ndb_writer *w, const char *key, uint64_t value);
+VX_API void vx_ndb_put_i64(vx_ndb_writer *w, const char *key, int64_t value);
 // A bare key: a flag that is set.
-[[maybe_unused]] static void vx_ndb_flag(vx_ndb_writer *w, const char *key);
+VX_API void vx_ndb_flag(vx_ndb_writer *w, const char *key);
 // The same, with a key that is not a C string (one read from another record, say).
-[[maybe_unused]] static void vx_ndb_put_key(vx_ndb_writer *w, vx_str key, vx_str value);
-[[maybe_unused]] static void vx_ndb_flag_key(vx_ndb_writer *w, vx_str key);
+VX_API void vx_ndb_put_key(vx_ndb_writer *w, vx_str key, vx_str value);
+VX_API void vx_ndb_flag_key(vx_ndb_writer *w, vx_str key);
 // Ends the record with a newline. Returns false if the record failed.
-[[maybe_unused]] static bool vx_ndb_end(vx_ndb_writer *w);
+VX_API bool vx_ndb_end(vx_ndb_writer *w);

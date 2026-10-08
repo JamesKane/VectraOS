@@ -215,8 +215,8 @@ typedef struct p9_conn {
   // flushed, and INTERRUPTED. Without it the call goes on (01 §9).
   bool (*interrupted)(void *ctx);
   void *interrupted_ctx;
-  vx_mutex lock; // the slots, tags and arenas, producing, and who leads
-  bool leading;  // a thread reads completions for everyone
+  vx_lock_t lock; // the slots, tags and arenas, producing, and who leads
+  bool leading;   // a thread reads completions for everyone
   uint16_t next_tag;
   uint64_t budget;          // the server's arena, reserved by calls in flight
   _Atomic uint32_t freed;   // a futex: changes when a slot comes free
@@ -263,9 +263,9 @@ static void p9_ring_kill(p9_conn *k) {
 // slot kept for Tflush may be taken. nullptr once the connection is gone.
 static p9_slot *p9_ring_slot_take(p9_conn *k, bool version, bool flush) {
   for (;;) {
-    vx_mutex_lock(&k->lock);
+    vx_lock(&k->lock);
     if (k->dead) {
-      vx_mutex_unlock(&k->lock);
+      vx_unlock(&k->lock);
       return nullptr;
     }
     uint32_t used = 0;
@@ -302,11 +302,11 @@ static p9_slot *p9_ring_slot_take(p9_conn *k, bool version, bool flush) {
         s->x = (p9_xfer){.req = s->buf, .resp = s->buf, .cap = P9_RING_MSIZE, .tag = tag};
         s->async = false, s->notify = VX_HANDLE_NONE;
       }
-      vx_mutex_unlock(&k->lock);
+      vx_unlock(&k->lock);
       return s->buf ? s : nullptr;
     }
     uint32_t seen = atomic_load(&k->freed);
-    vx_mutex_unlock(&k->lock);
+    vx_unlock(&k->lock);
     vx_futex_wait(&k->freed, seen, VX_INFINITE);
   }
 }
@@ -316,24 +316,24 @@ static void p9_ring_slot_give(p9_conn *k, p9_slot *s) {
   if (s->x.handle) vx_handle_close(s->x.handle); // one no call took
   if (s->x.send_handle) vx_handle_close(s->x.send_handle);
   s->x.handle = s->x.send_handle = VX_HANDLE_NONE;
-  vx_mutex_lock(&k->lock);
+  vx_lock(&k->lock);
   atomic_store(&s->state, P9_SLOT_FREE);
   atomic_fetch_add(&k->freed, 1);
-  vx_mutex_unlock(&k->lock);
+  vx_unlock(&k->lock);
   vx_futex_wake(&k->freed, UINT32_MAX);
 }
 
 // A completion, handed to its slot. False if the server broke the protocol.
 static bool p9_ring_deliver(p9_conn *k, const vx_cqe *c) {
   uint32_t i = (uint32_t)(c->user_data & 0xff), gen = (uint32_t)(c->user_data >> 8);
-  vx_mutex_lock(&k->lock);
+  vx_lock(&k->lock);
   p9_slot *s = i < P9_RING_DEPTH ? &k->slots[i] : nullptr;
   const uint8_t *p = s && atomic_load(&s->state) == P9_SLOT_SENT && s->gen == gen && c->result > 0 &&
                              (uint64_t)c->result <= P9_RING_MSIZE
                          ? vx_ring_peer_bytes(&k->ring, c->aux2, (uint64_t)c->result)
                          : nullptr;
   if (!p) {
-    vx_mutex_unlock(&k->lock);
+    vx_unlock(&k->lock);
     return false;
   }
   memcpy(s->buf, p, (size_t)c->result);
@@ -348,7 +348,7 @@ static bool p9_ring_deliver(p9_conn *k, const vx_cqe *c) {
   atomic_fetch_add(&k->replies, 1);
   vx_handle notify = s->async ? s->notify : VX_HANDLE_NONE;
   uint64_t key = s->notify_key;
-  vx_mutex_unlock(&k->lock);
+  vx_unlock(&k->lock);
   vx_futex_wake(&k->replies, UINT32_MAX);
   if (notify) vx_port_post(notify, &(vx_packet){.key = key}); // p9_ring_send's caller: its reply is here
   return true;
@@ -407,20 +407,20 @@ static vx_status p9_ring_lead(p9_conn *k, p9_slot *s, uint32_t any, vx_instant d
 // if no one does. OK, PEER_CLOSED, TIMED_OUT, or INTERRUPTED (only with hear).
 static vx_status p9_ring_wait(p9_conn *k, p9_slot *s, uint32_t any, vx_instant deadline, bool hear) {
   for (;;) {
-    vx_mutex_lock(&k->lock);
+    vx_lock(&k->lock);
     if (p9_ring_waited(k, s, any)) {
-      vx_mutex_unlock(&k->lock);
+      vx_unlock(&k->lock);
       return VX_OK;
     }
     if (k->dead) {
-      vx_mutex_unlock(&k->lock);
+      vx_unlock(&k->lock);
       return VX_ERR_PEER_CLOSED;
     }
     if (!k->leading) {
       k->leading = true;
-      vx_mutex_unlock(&k->lock);
+      vx_unlock(&k->lock);
       vx_status st = p9_ring_lead(k, s, any, deadline, hear);
-      vx_mutex_lock(&k->lock);
+      vx_lock(&k->lock);
       k->leading = false;
       if (st == VX_ERR_PEER_CLOSED) p9_ring_kill(k);
       atomic_fetch_add(&k->replies, 1); // the next to wait leads: every waiter looks again
@@ -430,14 +430,14 @@ static vx_status p9_ring_wait(p9_conn *k, p9_slot *s, uint32_t any, vx_instant d
         if (a->async && a->notify && atomic_load(&a->state) == P9_SLOT_SENT)
           vx_port_post(a->notify, &(vx_packet){.key = a->notify_key});
       }
-      vx_mutex_unlock(&k->lock);
+      vx_unlock(&k->lock);
       if (st != VX_OK) return st;
       continue;
     }
     // Followers sleep on the count of replies, which also moves when the
     // leader stops: one taken between the look and the sleep ends the sleep.
     uint32_t value = atomic_load(&k->replies);
-    vx_mutex_unlock(&k->lock);
+    vx_unlock(&k->lock);
     if (hear && p9_ring_flush_due()) return VX_ERR_INTERRUPTED; // one that came before the sleep
     p9_ring_will_wait(VX_HANDLE_NONE, &k->replies);
     vx_status w = vx_futex_wait(&k->replies, value, deadline);
@@ -456,9 +456,9 @@ static vx_status p9_ring_put(p9_conn *k, p9_slot *s, size_t len, vx_instant dead
   uint64_t server_size = k->ring.h.server_arena_size;
   uint64_t reserve = p9_reply_max(s->buf, len, k->c.msize ? k->c.msize : P9_RING_MSIZE);
   for (;;) {
-    vx_mutex_lock(&k->lock);
+    vx_lock(&k->lock);
     if (k->dead) {
-      vx_mutex_unlock(&k->lock);
+      vx_unlock(&k->lock);
       return VX_ERR_PEER_CLOSED;
     }
     int64_t at = k->budget + reserve <= server_size - P9_RING_MSIZE ? p9_chunks_take(&k->arena, len) : -1;
@@ -468,7 +468,7 @@ static vx_status p9_ring_put(p9_conn *k, p9_slot *s, size_t len, vx_instant dead
       if (!e) { // the server took none of the depth's submissions: broken
         p9_chunks_give(&k->arena, off, len);
         p9_ring_kill(k);
-        vx_mutex_unlock(&k->lock);
+        vx_unlock(&k->lock);
         return VX_ERR_PEER_CLOSED;
       }
       memcpy(arena + off, s->buf, len);
@@ -487,11 +487,11 @@ static vx_status p9_ring_put(p9_conn *k, p9_slot *s, size_t len, vx_instant dead
       k->budget += reserve;
       atomic_store(&s->state, P9_SLOT_SENT);
       if (vx_ring_produce(&k->ring)) vx_ring_notify(k->end);
-      vx_mutex_unlock(&k->lock);
+      vx_unlock(&k->lock);
       return VX_OK;
     }
     uint32_t any = atomic_load(&k->replies);
-    vx_mutex_unlock(&k->lock);
+    vx_unlock(&k->lock);
     vx_status st = p9_ring_wait(k, nullptr, any, deadline, false); // a reply makes room
     if (st != VX_OK) return st;
   }
@@ -508,20 +508,20 @@ static int64_t p9_ring_flush(p9_conn *k, p9_slot *s, vx_status why) {
   vx_status st = p9_ring_put(k, f, n, deadline);
   if (st == VX_OK) st = p9_ring_wait(k, f, 0, deadline, false);
   if (st == VX_ERR_TIMED_OUT) { // no Rflush: a server that answers nothing more
-    vx_mutex_lock(&k->lock);
+    vx_lock(&k->lock);
     p9_ring_kill(k);
-    vx_mutex_unlock(&k->lock);
+    vx_unlock(&k->lock);
   }
   p9_ring_slot_give(k, f);
   if (atomic_load(&s->state) == P9_SLOT_DONE) return s->result; // answered first, or the connection went
   if (st != VX_OK) return VX_ERR_PEER_CLOSED;
-  vx_mutex_lock(&k->lock); // Rflush: no reply will come, and what it held is free
+  vx_lock(&k->lock); // Rflush: no reply will come, and what it held is free
   p9_chunks_give(&k->arena, s->at, s->len);
   s->len = 0;
   k->budget -= s->reserve;
   s->reserve = 0;
   atomic_store(&s->state, P9_SLOT_TAKEN);
-  vx_mutex_unlock(&k->lock);
+  vx_unlock(&k->lock);
   return why;
 }
 
@@ -663,10 +663,10 @@ static p9_slot *p9_ring_async(p9_conn *k, uint16_t tag) {
 
 // Reads what has come, if no one leads: the caller's look.
 static void p9_ring_take_completions(p9_conn *k) {
-  vx_mutex_lock(&k->lock);
+  vx_lock(&k->lock);
   bool lead = !k->leading && !k->dead;
   if (lead) k->leading = true;
-  vx_mutex_unlock(&k->lock);
+  vx_unlock(&k->lock);
   if (!lead) return;
   bool broken = false;
   for (vx_cqe c; !broken;) {
@@ -674,11 +674,11 @@ static void p9_ring_take_completions(p9_conn *k) {
     if (st == VX_ERR_SHOULD_WAIT) break;
     broken = st != VX_OK || !p9_ring_deliver(k, &c);
   }
-  vx_mutex_lock(&k->lock);
+  vx_lock(&k->lock);
   k->leading = false;
   if (broken) p9_ring_kill(k);
   atomic_fetch_add(&k->replies, 1); // a thread waiting to lead may now
-  vx_mutex_unlock(&k->lock);
+  vx_unlock(&k->lock);
   vx_futex_wake(&k->replies, UINT32_MAX);
 }
 
@@ -701,9 +701,9 @@ static void p9_ring_take_completions(p9_conn *k) {
   if (ok && r->type == P9_Rerror) return p9_error_status(r->ename);
   if (ok && r->type == P9_Rlerror) return p9_errno_status(r->ecode);
   if (!ok || r->type != sent + 1) {
-    vx_mutex_lock(&k->lock);
+    vx_lock(&k->lock);
     p9_ring_kill(k);
-    vx_mutex_unlock(&k->lock);
+    vx_unlock(&k->lock);
     return VX_ERR_PEER_CLOSED;
   }
   return VX_OK;

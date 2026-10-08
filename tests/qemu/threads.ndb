@@ -1,5 +1,5 @@
 # tests/qemu/threads.ndb: a native program's threads (M6 step 6d1): their
-# thread_local storage, stack bounds, a vx_mutex and joins
+# thread_local storage, stack bounds, a vx_lock_t and joins
 # (tests/user/threadtest.c).
 
 scenario=threads timeout=60 cmdline=vx.skip=rc with=threadtest

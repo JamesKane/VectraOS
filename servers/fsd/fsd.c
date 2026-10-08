@@ -93,7 +93,7 @@ static bool halted; // ctl's halt: committed, and no more changes
 
 // The disk's session takes one call at a time (one arena), from whichever
 // thread: readers' with the server let go, changes' with it held.
-static vx_mutex disk_lock;
+static vx_lock_t disk_lock;
 // This thread's read in progress (read_begin), if any: its first wait for
 // the disk lets the server go, until the read ends.
 static thread_local struct reading *in_read;
@@ -101,32 +101,32 @@ static void read_lets_go(void);
 
 static vx_status dev_read(void *ctx, uint64_t addr, void *buf) {
   read_lets_go();
-  vx_mutex_lock(&disk_lock);
+  vx_lock(&disk_lock);
   vx_status st = vx_blk_read(ctx, addr, buf, VXFS_BLKSZ);
-  vx_mutex_unlock(&disk_lock);
+  vx_unlock(&disk_lock);
   return st;
 }
 static vx_status dev_write(void *ctx, uint64_t addr, const void *buf) {
-  vx_mutex_lock(&disk_lock);
+  vx_lock(&disk_lock);
   vx_status st = vx_blk_write(ctx, addr, buf, VXFS_BLKSZ);
-  vx_mutex_unlock(&disk_lock);
+  vx_unlock(&disk_lock);
   return st;
 }
 static vx_status dev_barrier(void *ctx) {
-  vx_mutex_lock(&disk_lock);
+  vx_lock(&disk_lock);
   vx_status st = vx_blk_flush(ctx);
-  vx_mutex_unlock(&disk_lock);
+  vx_unlock(&disk_lock);
   return st;
 }
 
 // vx-fs's block cache, which readers share (lib/vx-fs/blk.c).
-static vx_mutex cache_mutex;
+static vx_lock_t cache_mutex;
 static void fsd_cache_lock(void *ctx, bool take) {
   (void)ctx;
   if (take)
-    vx_mutex_lock(&cache_mutex);
+    vx_lock(&cache_mutex);
   else
-    vx_mutex_unlock(&cache_mutex);
+    vx_unlock(&cache_mutex);
 }
 
 static uint64_t page_round(size_t n) { return (n + 4095) & ~(uint64_t)4095; }
@@ -148,7 +148,7 @@ static void mem_free([[maybe_unused]] void *ctx, void *p, size_t n) {
 
 // Times, in ns: UTC once there is a wall clock (ADR-0031), from boot before,
 // as sysfs's realtime is.
-static int64_t now_ns(void) { return vx_clock_utc(); }
+static int64_t now_ns(void) { return vx_wallclock(); }
 
 static uint64_t node_of(uint32_t slot, uint32_t user, uint64_t qid) {
   return (uint64_t)slot << SLOT_SHIFT | (uint64_t)user << USER_SHIFT | qid;

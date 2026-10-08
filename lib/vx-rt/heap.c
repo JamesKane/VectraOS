@@ -57,7 +57,7 @@ typedef struct vx_heap_span {
 } vx_heap_span;
 
 typedef struct vx_heap_class {
-  vx_mutex lock;
+  vx_lock_t lock;
   uint32_t partial; // slabs with a free block, or none in use: an index + 1
 } vx_heap_class;
 
@@ -66,8 +66,8 @@ typedef struct vx_heap {
   uint64_t size;
   uint32_t spans; // in the reservation
   vx_heap_span *span;
-  vx_mutex lock; // the spans': free runs, top, segments
-  uint32_t top;  // spans past it have never been handed out
+  vx_lock_t lock; // the spans': free runs, top, segments
+  uint32_t top;   // spans past it have never been handed out
   uint32_t segments;
   vx_handle segment[VX_HEAP_SEGMENTS];
   uint32_t bucket[VX_HEAP_BUCKETS];
@@ -186,21 +186,21 @@ static uint32_t heap_take_free(vx_heap *h, uint32_t n) {
 // n spans of the given kind (a slab's, a large block's): from a free run, or
 // from the top, mapping what it needs. UINT32_MAX if there is no room.
 static uint32_t heap_spans(vx_heap *h, uint32_t n, uint8_t kind) {
-  vx_mutex_lock(&h->lock);
+  vx_lock(&h->lock);
   uint32_t s = heap_take_free(h, n);
   if (s == UINT32_MAX && n <= h->spans - h->top && heap_map_through(h, h->top + n)) s = h->top, h->top += n;
   if (s != UINT32_MAX) {
     h->span[s] = (vx_heap_span){.kind = kind, .len = n};
     for (uint32_t i = 1; i < n; i++) h->span[s + i].kind = HEAP_INNER;
   }
-  vx_mutex_unlock(&h->lock);
+  vx_unlock(&h->lock);
   return s;
 }
 
 static void heap_spans_free(vx_heap *h, uint32_t s) {
-  vx_mutex_lock(&h->lock);
+  vx_lock(&h->lock);
   heap_release(h, s, h->span[s].len);
-  vx_mutex_unlock(&h->lock);
+  vx_unlock(&h->lock);
 }
 
 // --- Slabs, under their class's lock ---
@@ -210,10 +210,10 @@ static uint8_t *heap_span_addr(const vx_heap *h, uint32_t s) { return h->base + 
 static void *heap_small(vx_heap *h, uint32_t c) {
   vx_heap_class *k = &h->cls[c];
   uint32_t size = VX_HEAP_CLASS[c], room = (uint32_t)(VX_HEAP_SPAN / size);
-  vx_mutex_lock(&k->lock);
+  vx_lock(&k->lock);
   uint32_t s = k->partial ? k->partial - 1 : heap_spans(h, 1, HEAP_SLAB);
   if (s == UINT32_MAX) {
-    vx_mutex_unlock(&k->lock);
+    vx_unlock(&k->lock);
     return nullptr;
   }
   vx_heap_span *e = &h->span[s];
@@ -224,7 +224,7 @@ static void *heap_small(vx_heap *h, uint32_t c) {
   else
     b = heap_span_addr(h, s) + e->at, e->at += size;     // `at`: how far it has handed out
   if (++e->used == room) heap_unlink(h, &k->partial, s); // full
-  vx_mutex_unlock(&k->lock);
+  vx_unlock(&k->lock);
   return b;
 }
 
@@ -234,13 +234,13 @@ static void heap_small_free(vx_heap *h, uint32_t s, void *p) {
   vx_heap_span *e = &h->span[s];
   vx_heap_class *k = &h->cls[e->cls];
   uint32_t room = (uint32_t)(VX_HEAP_SPAN / VX_HEAP_CLASS[e->cls]);
-  vx_mutex_lock(&k->lock);
+  vx_lock(&k->lock);
   *(void **)p = e->free;
   e->free = p;
   if (e->used-- == room) heap_push(h, &k->partial, s); // it has room again
   bool spare = !e->used && (k->partial != s + 1 || e->next);
   if (spare) heap_unlink(h, &k->partial, s);
-  vx_mutex_unlock(&k->lock);
+  vx_unlock(&k->lock);
   if (spare) heap_spans_free(h, s);
 }
 
@@ -249,7 +249,7 @@ static void heap_small_free(vx_heap *h, uint32_t s, void *p) {
 // A heap of up to reserve bytes of address space (16 GiB at most), none of it
 // memory until used; or, if none can be made, the nil heap, which gives
 // nothing (09 §4.2: an object, never nullptr).
-[[maybe_unused]] static vx_heap *vx_heap_new(size_t reserve) {
+VX_API vx_heap *vx_heap_new(size_t reserve) {
   uint64_t size = (reserve + VX_HEAP_SEGMENT - 1) / VX_HEAP_SEGMENT * VX_HEAP_SEGMENT;
   if (size < VX_HEAP_SEGMENT) size = VX_HEAP_SEGMENT;
   if (size > VX_HEAP_SEGMENTS * VX_HEAP_SEGMENT) size = VX_HEAP_SEGMENTS * VX_HEAP_SEGMENT;
@@ -273,10 +273,10 @@ static void heap_small_free(vx_heap *h, uint32_t s, void *p) {
 }
 
 // Whether h is the nil heap, which vx_heap_new gives when it cannot make one.
-[[maybe_unused]] static bool vx_heap_failed(const vx_heap *h) { return h->nil; }
+VX_API bool vx_heap_failed(const vx_heap *h) { return h->nil; }
 
 // At least n bytes aligned to align (a power of two, up to 64 KiB), or nullptr.
-[[maybe_unused]] static void *vx_heap_alloc_aligned(vx_heap *h, size_t n, size_t align) {
+VX_API void *vx_heap_alloc_aligned(vx_heap *h, size_t n, size_t align) {
   if (h->nil || !align || (align & (align - 1)) || align > VX_HEAP_SPAN || n > h->size) return nullptr;
   if (!n) n = 1;
   for (uint32_t c = 0; c < VX_HEAP_CLASSES; c++)
@@ -286,7 +286,7 @@ static void heap_small_free(vx_heap *h, uint32_t s, void *p) {
 }
 
 // At least n bytes, aligned to 16, or nullptr.
-[[maybe_unused]] static void *vx_heap_alloc(vx_heap *h, size_t n) { return vx_heap_alloc_aligned(h, n, 16); }
+VX_API void *vx_heap_alloc(vx_heap *h, size_t n) { return vx_heap_alloc_aligned(h, n, 16); }
 
 // The span p is in, if it is a block's start: a slab's block or a large
 // block's first byte. UINT32_MAX for anything else.
@@ -302,7 +302,7 @@ static uint32_t heap_block_span(const vx_heap *h, const void *p) {
 
 // p's block back to h; nullptr is nothing. Anything that is not a block of
 // h's ends the program, as a fault would.
-[[maybe_unused]] static void vx_heap_free(vx_heap *h, void *p) {
+VX_API void vx_heap_free(vx_heap *h, void *p) {
   if (!p) return;
   uint32_t s = heap_block_span(h, p);
   if (s == UINT32_MAX) __builtin_trap();
@@ -314,7 +314,7 @@ static uint32_t heap_block_span(const vx_heap *h, const void *p) {
 
 // The bytes p's block holds, at least what was asked for: what its owner may
 // use and grow into. 0 for what is not a block of h's.
-[[maybe_unused]] static size_t vx_heap_usable(const vx_heap *h, const void *p) {
+VX_API size_t vx_heap_usable(const vx_heap *h, const void *p) {
   uint32_t s = heap_block_span(h, p);
   if (s == UINT32_MAX) return 0;
   const vx_heap_span *e = &h->span[s];
@@ -323,15 +323,15 @@ static uint32_t heap_block_span(const vx_heap *h, const void *p) {
 
 // The process heap: one per process, made at first use, for a C library's
 // malloc family and anything else that wants one global heap.
-[[maybe_unused]] static vx_heap *vx_heap_process(void) {
+VX_API vx_heap *vx_heap_process(void) {
   static vx_heap *_Atomic the;
-  static vx_mutex making;
+  static vx_lock_t making;
   vx_heap *h = atomic_load_explicit(&the, memory_order_acquire);
   if (h) return h;
-  vx_mutex_lock(&making);
+  vx_lock(&making);
   h = atomic_load_explicit(&the, memory_order_relaxed);
   if (!h) h = vx_heap_new(VX_HEAP_SEGMENTS * VX_HEAP_SEGMENT);
   atomic_store_explicit(&the, h, memory_order_release);
-  vx_mutex_unlock(&making);
+  vx_unlock(&making);
   return h;
 }

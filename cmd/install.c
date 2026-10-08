@@ -414,7 +414,7 @@ const char *vx_main(void) {
       fail(VX_USAGE, VX_OK);
     }
   }
-  now = vx_clock_utc();
+  now = vx_wallclock();
   // The medium: the record, and the tree it names for this architecture.
   vx_handle vmo = vx_spawn_take("storeimage");
   vx_ndb_record rec;

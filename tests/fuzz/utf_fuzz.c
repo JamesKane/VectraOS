@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../../lib/vx-utf/utf.h"
+#include "../../abi/vx/utf.h"
 
 // libFuzzer calls it by name, so it cannot be static.
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size); // NOLINT(misc-use-internal-linkage)

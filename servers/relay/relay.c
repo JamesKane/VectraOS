@@ -57,7 +57,7 @@ static relay_fid fids[P9_RING_MAX_CONNS][P9_MAX_FIDS];
 static bool remote_used[RELAY_FIDS + 1];
 static uint32_t remote_next = 1;
 static uint32_t doomed[RELAY_FIDS], ndoomed; // the relay's fids to clunk once a call is free
-static vx_mutex relay_lock;                  // the calls' replies, between the reader and the server
+static vx_lock_t relay_lock;                 // the calls' replies, between the reader and the server
 static _Atomic bool hungup;
 
 static p9_ring_server server;
@@ -144,11 +144,11 @@ static int32_t call_take(void) {
 
 static void call_start(int32_t i, relay_call c) {
   c.used = true;
-  vx_mutex_lock(&relay_lock);
+  vx_lock(&relay_lock);
   calls[i].used = c.used, calls[i].orphan = c.orphan, calls[i].replied = false, calls[i].flushing = false;
   calls[i].conn = c.conn, calls[i].type = c.type, calls[i].tag = c.tag, calls[i].nwname = c.nwname;
   calls[i].newfid = c.newfid, calls[i].rnew = c.rnew, calls[i].rgone = c.rgone, calls[i].flushes = c.flushes;
-  vx_mutex_unlock(&relay_lock);
+  vx_unlock(&relay_lock);
 }
 
 // Clunks one of the relay's fids, its reply dropped; later if no call is free.
@@ -204,9 +204,9 @@ static int32_t call_flushed(int32_t p) {
   relay_call *c = &calls[p];
   if (!c->used) return -1;
   c->flushing = false;
-  vx_mutex_lock(&relay_lock);
+  vx_lock(&relay_lock);
   bool answered = c->replied;
-  vx_mutex_unlock(&relay_lock);
+  vx_unlock(&relay_lock);
   if (answered) return retire_one(p);
   if (c->rnew != P9_NOFID) remote_give(c->rnew);
   uint32_t gone = c->rgone;
@@ -224,9 +224,9 @@ static void retire(int32_t i) {
 // that waited for a free call.
 static void sweep(void) {
   for (uint32_t i = 0; i < RELAY_CALLS; i++) {
-    vx_mutex_lock(&relay_lock);
+    vx_lock(&relay_lock);
     bool done = calls[i].used && calls[i].orphan && !calls[i].flushing && calls[i].replied;
-    vx_mutex_unlock(&relay_lock);
+    vx_unlock(&relay_lock);
     if (done) retire((int32_t)i);
   }
   while (ndoomed && call_take() >= 0) clunk_remote(doomed[--ndoomed]);
@@ -251,13 +251,13 @@ static void reader(void *arg) {
       }
       if (have < size) break;
       uint16_t tag = le16(buf + 5);
-      vx_mutex_lock(&relay_lock);
+      vx_lock(&relay_lock);
       if (tag < RELAY_CALLS && calls[tag].used && !calls[tag].replied) {
         memcpy(calls[tag].reply, buf, size);
         calls[tag].len = size, calls[tag].replied = true;
         filed = true;
       }
-      vx_mutex_unlock(&relay_lock);
+      vx_unlock(&relay_lock);
       memmove(buf, buf + size, have - size);
       have -= size;
     }
@@ -322,9 +322,9 @@ static size_t flush(uint32_t conn, const p9_msg *t, uint8_t *resp, size_t cap) {
   p9_msg r = {.type = P9_Rflush, .tag = t->tag};
   if (p < 0) return p9_encode(&r, resp, cap); // never sent, or answered: nothing to flush
   calls[p].orphan = true;
-  vx_mutex_lock(&relay_lock);
+  vx_lock(&relay_lock);
   bool answered = calls[p].replied;
-  vx_mutex_unlock(&relay_lock);
+  vx_unlock(&relay_lock);
   if (answered) { // its reply is here and goes unread
     retire(p);
     return p9_encode(&r, resp, cap);
@@ -418,9 +418,9 @@ static size_t relay_raw(void *ctx, uint32_t conn, const uint8_t *req, size_t len
   for (uint32_t i = 0; i < RELAY_CALLS; i++) { // asked again: one already sent
     relay_call *c = &calls[i];
     if (!c->used || c->orphan || c->conn != conn || c->tag != t.tag || c->type != t.type) continue;
-    vx_mutex_lock(&relay_lock);
+    vx_lock(&relay_lock);
     bool answered = c->replied;
-    vx_mutex_unlock(&relay_lock);
+    vx_unlock(&relay_lock);
     if (!answered) return P9_DEFER;
     size_t n = c->len <= cap ? c->len : 0;
     memcpy(resp, c->reply, n);

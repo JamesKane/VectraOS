@@ -207,7 +207,7 @@ static vx_cpu_times cpu_times(bool thread); // process.c
 
 static long time_get(clockid_t clock, struct timespec *ts) {
   if (clock < 0 || clock > CLOCK_TAI) return -EINVAL;
-  vx_instant now = time_is_utc(clock) ? vx_clock_utc() : vx_clock_read();
+  vx_instant now = time_is_utc(clock) ? vx_wallclock() : vx_clock_read();
   if (clock == CLOCK_PROCESS_CPUTIME_ID || clock == CLOCK_THREAD_CPUTIME_ID) {
     vx_cpu_times t = cpu_times(clock == CLOCK_THREAD_CPUTIME_ID);
     now = t.user + t.sys;
@@ -245,7 +245,7 @@ static long time_sleep(clockid_t clock, int flags, const struct timespec *req, s
   long st = 0;
   if (!sig_restarting) st = time_deadline(req, flags & TIMER_ABSTIME, deadline);
   if (!sig_restarting && st == 0 && (flags & TIMER_ABSTIME) && time_is_utc(clock) && *deadline != VX_INFINITE)
-    *deadline -= vx_clock_utc() - vx_clock_read(); // a time of day: on the monotonic clock
+    *deadline -= vx_wallclock() - vx_clock_read(); // a time of day: on the monotonic clock
   while (st == 0 && vx_clock_read() < *deadline) {
     uint32_t seq = atomic_load(&sig_seq);
     uint32_t held = be_wait_begin();

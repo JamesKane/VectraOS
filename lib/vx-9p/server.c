@@ -35,7 +35,7 @@
 
 #include "codec.c"
 #include "../vx-rand/drbg.c"
-#include "../vx-utf/utf.h"
+#include "../../abi/vx/utf.h"
 
 typedef struct p9_fs {
   void *ctx;
