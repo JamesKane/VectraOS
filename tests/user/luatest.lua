@@ -112,7 +112,7 @@ os.remove("/tmp/luamod.lua")
 -- The environment and time.
 check(os.getenv("GREETING") == "hello" and os.getenv("NO_SUCH_VARIABLE") == nil, "getenv")
 local now = os.time()
--- No wall clock yet (docs/milestones.md's known gaps): time counts from boot.
+-- No wall clock yet (docs/milestones/known-gaps.md): time counts from boot.
 check(now >= 0 and os.date("!%Y", 0) == "1970" and os.time({year = 2000, month = 1, day = 1, hour = 0}) ~= nil,
   "time")
 check(type(os.clock()) == "number" and os.difftime(now + 5, now) == 5.0, "clock")

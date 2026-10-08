@@ -446,7 +446,7 @@ static void iommu_init(void) {
     vtd_ecam_start = mcfg[44 + 10], vtd_ecam_end = mcfg[44 + 11];
   }
   const uint8_t *dmar = acpi_table("DMAR");
-  if (!dmar) return; // no VT-d: pass-through, as before (docs/milestones.md)
+  if (!dmar) return; // no VT-d: pass-through, as before (docs/milestones/known-gaps.md)
   uint32_t len = read32(dmar + 4);
   for (uint32_t off = 48; off + 4 <= len;) {
     uint16_t type, slen;

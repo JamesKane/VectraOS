@@ -468,7 +468,7 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
   case SYS_mprotect: return mem_protect(a1, (size_t)a2, (int)a3);
   // Mapped files' writes reach fsd's page cache at once, and the volume
   // within 10 s or at the file's next fsync: msync has nothing to start, and
-  // MS_SYNC does not yet wait (docs/milestones.md).
+  // MS_SYNC does not yet wait (docs/milestones/known-gaps.md).
   case SYS_msync:
   case SYS_madvise: // advice
   case SYS_brk:     // no break: musl's malloc maps instead
@@ -581,7 +581,7 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
   case SYS_shutdown: return sock_shutdown((int)a1, (int)a2);
   case SYS_setsockopt: return sock_setsockopt((int)a1, (int)a2, (int)a3, (const void *)a4, (socklen_t)a5);
   case SYS_getsockopt: return sock_getsockopt((int)a1, (int)a2, (int)a3, (void *)a4, (socklen_t *)a5);
-  case SYS_socketpair: return -EAFNOSUPPORT; // AF_UNIX: not yet (docs/milestones.md)
+  case SYS_socketpair: return -EAFNOSUPPORT; // AF_UNIX: not yet (docs/milestones/known-gaps.md)
 
   case SYS_sched_yield: return 0;
   case SYS_futex: return time_futex((uint32_t *)a1, (int)a2, (uint32_t)a3, (const struct timespec *)a4);

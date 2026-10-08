@@ -26,7 +26,7 @@ There was a moment when computing could have gone another way. Plan 9 made every
 
 ## Status: booting
 
-VectraOS is young and runs under QEMU on x86_64 and aarch64. **M1–M4 are done; M5 (storage) is under way.** [docs/milestones.md](docs/milestones.md) tracks each step, its commit and the known gaps.
+VectraOS is young and runs under QEMU on x86_64 and aarch64. **M1–M5 are done; M6 (the runtime) is under way.** [docs/milestones.md](docs/milestones.md) gives the synopsis; each step's record, the known gaps and the test scenarios are in [docs/milestones/](docs/milestones/).
 
 What runs today:
 
@@ -58,7 +58,8 @@ The toolchain is pinned (ADR-0001): clang, lld and llvm-objcopy 22.1.8 from Fedo
 
 | Doc | Contents |
 |---|---|
-| [docs/milestones.md](docs/milestones.md) | Progress against the milestones: each step, its commit, the known gaps, and what each test scenario checks |
+| [docs/milestones.md](docs/milestones.md) | Progress against the milestones, in brief |
+| [docs/milestones/](docs/milestones/) | Each milestone's step records and commits, the [known gaps](docs/milestones/known-gaps.md), and what each [test scenario](docs/milestones/scenarios.md) checks |
 | [docs/00-overview.md](docs/00-overview.md) | Vision, the thirteen design rules, system map, key decisions |
 | [docs/01-kernel-ipc.md](docs/01-kernel-ipc.md) | Kernel objects and syscalls, capabilities, ring IPC, memory, user-space drivers, scheduling, the POSIX personality |
 | [docs/02-namespace-swarm.md](docs/02-namespace-swarm.md) | 9Px, namespaces, the canonical file tree, swarm roles, `cpu`, offloading work to other nodes |

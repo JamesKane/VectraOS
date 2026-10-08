@@ -262,7 +262,7 @@ exFAT (large removable media) and ext4 read-only (Linux disks) are Known gaps un
 
 ## 13. Where the pieces land
 
-All in M5 (04 §6). The steps are in `docs/milestones.md`.
+All in M5 (04 §6). The steps are in `docs/milestones/M5.md`.
 
 | Step | Pieces |
 |---|---|

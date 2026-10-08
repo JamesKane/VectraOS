@@ -1,6 +1,6 @@
 # 20 — Tracing and profiling: design notes
 
-_Design notes, 2026-10-07. **Non-binding** as design: each part becomes binding through the ADR its milestone row names. **Binding as schedule:** M7 step 7a (§9) is added to docs/milestones.md. This note moves PMU sampling from M14 to M7, which amends 04 §6 and 05 §12. Prior art (§2) was read in `../fuchsia` and `../9front` on 2026-10-07._
+_Design notes, 2026-10-07. **Non-binding** as design: each part becomes binding through the ADR its milestone row names. **Binding as schedule:** M7 step 7a (§9) is added to the milestones ([M7](milestones/M7.md)). This note moves PMU sampling from M14 to M7, which amends 04 §6 and 05 §12. Prior art (§2) was read in `../fuchsia` and `../9front` on 2026-10-07._
 
 ## 1. The gap
 

@@ -443,7 +443,7 @@ static bool committed_clean(vxfs_vol *v) {
   return vxfs_commit(v) == VX_OK && vxfs_check_volume(v, &c) == VX_OK && v->fs.err == VX_OK;
 }
 
-// The review's cases (docs/milestones.md): a rename over an open file, a
+// The review's cases (docs/milestones/M5.md): a rename over an open file, a
 // file of many blocks removed, a rename deep in a tree, a full volume.
 static void test_limits(void) {
   memdev d = {.size = 4096ull * VXFS_BLKSZ};

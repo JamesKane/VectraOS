@@ -8,7 +8,7 @@
 // when its last member does. It keeps no other state: a member resolves names
 // from its own copy, made from the text.
 //
-// nsd is not restarted: the groups live only in it (docs/milestones.md).
+// nsd is not restarted: the groups live only in it (docs/milestones/known-gaps.md).
 
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-ns/nsd.h"

@@ -4,7 +4,7 @@ Status: accepted, 2026-10-06 (proposed 2026-10-02). The import's code review is 
 
 ## Context
 
-M4 step 5 gives the POSIX userland its commands (04 §6), decided as sbase on 2026-10-01 (`docs/milestones.md`): suckless's POSIX tools, about 100 small C programs with two small libraries and no dependencies but a C library. First-party commands of some of the same names (`ls`, `cat`, `echo`, `tail`) already serve native programs and `gsh`. ADR-0003 asks for pinned, reviewed source with one ADR per import.
+M4 step 5 gives the POSIX userland its commands (04 §6), decided as sbase on 2026-10-01 (`docs/milestones/M4.md`): suckless's POSIX tools, about 100 small C programs with two small libraries and no dependencies but a C library. First-party commands of some of the same names (`ls`, `cat`, `echo`, `tail`) already serve native programs and `gsh`. ADR-0003 asks for pinned, reviewed source with one ADR per import.
 
 ## Decision
 

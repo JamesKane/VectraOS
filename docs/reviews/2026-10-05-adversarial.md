@@ -2,7 +2,7 @@
 
 A read-only review of the first-party code, in eleven areas, each assuming hostile input: userland processes, 9P peers, devices, media, network, mirrors. Vendored trees (`third_party/`) were out of scope; how we use them was in scope. Nothing was changed; fixes wait until M6 is done.
 
-Findings already in `docs/milestones.md` Known gaps, or in earlier review passes, were dropped. **[WIP]** marks a finding in the uncommitted 6d4c diff (Twstat, ORCLOSE, DMEXCL/DMAPPEND, Tversion), which can be fixed before that step is committed.
+Findings already in `docs/milestones/known-gaps.md`, or in earlier review passes, were dropped. **[WIP]** marks a finding in the uncommitted 6d4c diff (Twstat, ORCLOSE, DMEXCL/DMAPPEND, Tversion), which can be fixed before that step is committed.
 
 **Confidence** is either:
 - **confirmed**: traced in code, and in a few cases reproduced in a scratch host build;

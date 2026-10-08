@@ -19,7 +19,7 @@
 // as it waits on procfs. Then the task is killed with the trap's words, as an unhandled fault
 // always ends it. The directories go to tmpfs (connect=tmpfs), reached the
 // first time one is needed; /lib/crash and $home/lib/crash wait for a file
-// system that keeps them (docs/milestones.md).
+// system that keeps them (docs/milestones/known-gaps.md).
 
 static vx_handle tmpfs; // a connector to /srv/tmpfs
 static p9_conn crash_conn;

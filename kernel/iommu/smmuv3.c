@@ -390,7 +390,7 @@ static uint64_t smmu_from_iort(void) {
 
 static void iommu_init(void) {
   uint64_t base = smmu_from_iort();
-  if (!base) return; // no SMMUv3: pass-through, as before (docs/milestones.md)
+  if (!base) return; // no SMMUv3: pass-through, as before (docs/milestones/known-gaps.md)
   if (!map_range(kernel_root, boot.hhdm + base, base, 128ull * 1024, MAP_WRITE | MAP_DEVICE))
     panic(VX_STR("smmu: cannot map its registers"));
   smmu0.regs = (volatile uint8_t *)(boot.hhdm + base);

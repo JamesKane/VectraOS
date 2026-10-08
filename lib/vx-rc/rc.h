@@ -1,6 +1,6 @@
 // vx-rc: the rc shell language (Tom Duff's, as 9front's rc has it), for the
 // shell, cmd/rc.c
-// (docs/milestones.md, M4 step 7). A script is read by a lexer, parsed into a
+// (docs/milestones/M4.md, step 7). A script is read by a lexer, parsed into a
 // tree, compiled into code, and run by a machine, as rc does; none of it
 // recurses (the house rules): the parser and the compiler keep stacks of their
 // own, and functions run on the machine's frames.

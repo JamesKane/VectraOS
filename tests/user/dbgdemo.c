@@ -4,7 +4,7 @@
 // the crash directory procfs leaves (05 §5, §7). Its functions are optnone,
 // so it is the same program in every mode: a release build would inline
 // middle and keep n in registers, which the index does not follow yet
-// (docs/milestones.md, known gaps).
+// (docs/milestones/known-gaps.md).
 
 #include "../../lib/vx-rt/rt.c"
 
