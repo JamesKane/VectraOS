@@ -1,6 +1,20 @@
 # tests/user/vxcxxexcrc.rc: vxcxxexc's checks, and vxcxxexcs's (the
 # same, static), then vxcxxexc's two ends in
 # std::terminate, each a crash (tests/qemu/vxcxxexc.ndb).
+# libunwind's backtrace and dbg's, of the same frames (6f2a2): the return
+# addresses of dbg's frames 1 to 3 (bt_mid, bt_top, main) each one
+# libunwind found; main's caller, crt1's, has no unwind tables.
+/boot/bin/vxcxxexc bt >/tmp/unwind.txt
+cat /tmp/unwind.txt
+crash=`{ls -d /tmp/crash/vxcxxexc.*}
+dbg -c -x /boot/tests/vxcxxexcrc.cmds $crash | tee /tmp/dbg.txt
+agree=0
+for(k in 1 2 3) {
+  pc=`{grep '^[ *]#'$k /tmp/dbg.txt | sed -n '1s/^[ *]#[0-9]* \(0x[0-9a-f]*\) .*/\1/p'}
+  if(~ $#pc 1 && grep -q 'unwind #[0-9]* '$pc'$' /tmp/unwind.txt) agree=`{expr $agree + 1}
+  if not echo 'vxcxxbt: FAILED: dbg''s frame' $k 'is not libunwind''s'
+}
+echo vxcxxbt: $agree frames agree
 /boot/bin/vxcxxexc
 /boot/bin/vxcxxexcs
 /boot/bin/vxcxxexc uncaught

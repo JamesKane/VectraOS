@@ -229,7 +229,7 @@ It stops the process's other threads and saves the process as a directory shaped
 ```
 
 The directory is made on tmpfs, which namespaces mount on `/tmp`, so it is seen as `/tmp/crash/<name>.<pid>`.
-Read-only mappings are not copied, since `images` names them by build id; of the writable ones at most 16 MiB is saved, and a mapping's file ends at its first page that cannot be read.
+Read-only mappings are not copied, since `images` names them by build id; of the writable ones at most 16 MiB is saved, those holding a thread's stack pointer first, then the rest from the lowest address, and a mapping's file ends at its first page that cannot be read.
 Each call to tmpfs has a time limit of 5 seconds, since the process that faulted may be tmpfs or one it waits on.
 procfs then prints a line on the console and kills the process with the fault's note as its exit string, as an unhandled fault always ends it.
 

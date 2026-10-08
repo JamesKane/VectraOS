@@ -13,7 +13,7 @@
 //       mem/0xBASE                  each writable mapping's bytes, from its base
 //
 // Read-only mappings are not copied: the images are named by their build
-// IDs; of the writable ones, at most CRASH_MEM_MAX bytes, so one crash does
+// IDs; of the writable ones, at most CRASH_MEM_MAX bytes, the stacks first, so one crash does
 // not fill /tmp. Each call to tmpfs has a time limit: the process that faulted
 // may be tmpfs, or one tmpfs waits on, and procfs would otherwise wait on it
 // as it waits on procfs. Then the task is killed with the trap's words, as an unhandled fault
@@ -79,27 +79,51 @@ static void crash_file(p9_client *c, uint32_t dir, vx_str name, const void *data
   p9c_clunk(c, fid);
 }
 
-// Each writable mapping, a page at a time: a page that cannot be read (never
-// touched, say) ends that mapping's file there.
-static void crash_mem(p9_client *c, uint32_t dir, const proc *p) {
+// One writable mapping, a page at a time, as mem/0xBASE: a page that cannot
+// be read (never touched, say) ends its file there. *saved counts toward
+// CRASH_MEM_MAX.
+static void crash_mapping(p9_client *c, uint32_t mem, const proc *p, const vx_map_info *m, uint64_t *saved) {
   static uint8_t page[4096];
+  char name[18];
+  uint32_t fid;
+  if (p9c_walk(c, mem, VX_STR(""), &fid) != VX_OK) return;
+  if (p9c_create(c, fid, (vx_str){name, hex_text(m->base, name)}, 0644, P9_OWRITE) == VX_OK)
+    for (uint64_t off = 0; off < m->size && *saved < CRASH_MEM_MAX; off += sizeof page, *saved += sizeof page)
+      if (mem_rw(p, m->base + off, page, sizeof page, false) != VX_OK ||
+          p9c_write(c, fid, off, page, sizeof page) != (int64_t)sizeof page)
+        break;
+  p9c_clunk(c, fid);
+}
+
+// Each writable mapping: first those holding a thread's stack pointer,
+// which a backtrace reads, then the rest from the lowest address, so that a
+// process whose heaps and libraries' data fill the budget keeps its stacks
+// (a dynamic program's lazy heap segments read as zeros, 6f2a2).
+static void crash_mem(p9_client *c, uint32_t dir, const proc *p) {
   uint32_t mem = crash_mkdir(c, dir, VX_STR("mem"));
   if (!mem) return;
+  uint64_t sps[64];
+  uint32_t nsp = 0;
+  vx_thread_info ti = {};
+  while (nsp < 64 && vx_thread_state(p->task, ti.id, VX_STATE_NEXT_THREAD, &ti, sizeof ti) == VX_OK) {
+    vx_regs r;
+    if (vx_thread_state(p->task, ti.id, VX_STATE_GET_REGS, &r, sizeof r) != VX_OK) continue;
+#ifdef __x86_64__
+    sps[nsp++] = r.rsp;
+#else
+    sps[nsp++] = r.sp;
+#endif
+  }
   vx_map_info m;
   uint64_t saved = 0;
-  for (uint64_t at = 0; saved < CRASH_MEM_MAX && vx_as_query(p->task, at, &m) == VX_OK;
-       at = m.base + m.size) {
-    if (!(m.flags & VX_MAP_WRITE)) continue;
-    char name[18];
-    uint32_t fid;
-    if (p9c_walk(c, mem, VX_STR(""), &fid) != VX_OK) continue;
-    if (p9c_create(c, fid, (vx_str){name, hex_text(m.base, name)}, 0644, P9_OWRITE) == VX_OK)
-      for (uint64_t off = 0; off < m.size && saved < CRASH_MEM_MAX; off += sizeof page, saved += sizeof page)
-        if (mem_rw(p, m.base + off, page, sizeof page, false) != VX_OK ||
-            p9c_write(c, fid, off, page, sizeof page) != (int64_t)sizeof page)
-          break;
-    p9c_clunk(c, fid);
-  }
+  for (int pass = 0; pass < 2; pass++)
+    for (uint64_t at = 0; saved < CRASH_MEM_MAX && vx_as_query(p->task, at, &m) == VX_OK;
+         at = m.base + m.size) {
+      if (!(m.flags & VX_MAP_WRITE)) continue;
+      bool stack = false;
+      for (uint32_t i = 0; i < nsp && !stack; i++) stack = sps[i] - m.base < m.size;
+      if (stack == (pass == 0)) crash_mapping(c, mem, p, &m, &saved);
+    }
   p9c_clunk(c, mem);
 }
 

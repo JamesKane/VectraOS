@@ -1775,6 +1775,11 @@ static bool sysroot_cxx(const arch *a, const char *s, const char *from) {
   // LLVM's libunwind, for C++ exceptions (6f2a), likewise.
   copy_file(fmt("%s/usr/lib/libunwind.a", cxx), fmt("%s/usr/lib/libunwind.a", s));
   copy_file(fmt("%s/usr/lib/libunwind.so.1.0", cxx), fmt("%s/usr/lib/libunwind.so", s));
+  static const char *const UNWIND_HEADERS[] = {"unwind.h", "unwind_itanium.h", "unwind_arm_ehabi.h",
+                                               "libunwind.h", "__libunwind_config.h"};
+  for (size_t i = 0; i < sizeof UNWIND_HEADERS / sizeof UNWIND_HEADERS[0]; i++) // <unwind.h> and its parts
+    copy_file(fmt("%s/usr/include/%s", cxx, UNWIND_HEADERS[i]),
+              fmt("%s/usr/include/%s", s, UNWIND_HEADERS[i]));
   copy_file("lib/vx-rt/sysroot/vectraos-clang++.cfg", fmt("%s/%s-clang++.cfg", s, triple));
   copy_file("lib/vx-rt/sysroot/link-tail-c++.rsp", fmt("%s/link-tail-c++.rsp", s));
   return true;

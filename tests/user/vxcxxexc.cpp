@@ -7,7 +7,8 @@
 // exception carried to another thread and thrown again there. With the
 // argument uncaught it throws and catches nothing; with thread, a C11
 // thread's start function throws, which unwinds into libvx's frames: both
-// end in std::terminate. vxcxxexcs is the same, linked statically, the
+// end in std::terminate; with bt, libunwind's backtrace of three calls,
+// then a trap for dbg's. vxcxxexcs is the same, linked statically, the
 // library's code compiled in. Each check prints a line only when it fails;
 // the last line counts them.
 
@@ -19,6 +20,7 @@
 #include <thread>
 #include <threads.h>
 #include <typeinfo>
+#include <unwind.h>
 #include <vector>
 
 #include "vxcxxexc.h"
@@ -61,6 +63,32 @@ int throws_here(int x) {
   return x;
 }
 
+// bt: libunwind's backtrace from three calls down, then a trap in the same
+// function, whose crash directory dbg's backtrace reads (vxcxxexcrc.rc
+// compares them, 6f2a2).
+int traced;
+
+_Unwind_Reason_Code trace(_Unwind_Context *ctx, void * /*arg*/) {
+  std::printf("vxcxxbt: unwind #%d %#lx\n", traced++, static_cast<unsigned long>(_Unwind_GetIP(ctx)));
+  return _URC_NO_REASON;
+}
+
+[[gnu::noinline]] void bt_leaf() {
+  _Unwind_Backtrace(trace, nullptr);
+  std::fflush(stdout);
+  __builtin_trap();
+}
+
+[[gnu::noinline]] void bt_mid() {
+  bt_leaf();
+  __asm__ volatile(""); // not a tail call: a frame of its own
+}
+
+[[gnu::noinline]] void bt_top() {
+  bt_mid();
+  __asm__ volatile("");
+}
+
 int starts_and_throws(void * /*arg*/) { throw std::runtime_error("vxcxxexc: thrown from a thread's start"); }
 
 } // namespace
@@ -72,6 +100,10 @@ int main(int argc, char **argv) { // NOLINT(bugprone-exception-escape)
     std::printf("vxcxxexc: throwing, uncaught\n");
     std::fflush(stdout);
     throw std::runtime_error("vxcxxexc: boom");
+  }
+  if (argc > 1 && std::strcmp(argv[1], "bt") == 0) {
+    bt_top();
+    return 1;
   }
   if (argc > 1 && std::strcmp(argv[1], "thread") == 0) {
     std::printf("vxcxxexc: a thread's start throws\n");
