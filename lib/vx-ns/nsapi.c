@@ -57,7 +57,7 @@ VX_API vx_status vx_newns(vx_str tmpl) {
   }
   vx_arena *a = vx_scratch(nullptr, 0);
   vx_mark m = vx_arena_mark(a);
-  static constexpr size_t CAP = 64 * 1024;
+  static constexpr size_t CAP = 64ull * 1024;
   char *text = vx_push(a, CAP, 1);
   size_t len = 0;
   vx_status st = text ? VX_OK : VX_ERR_NO_MEMORY;
