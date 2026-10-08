@@ -1,5 +1,6 @@
 -lc++
 -lc++abi
+-lunwind
 --start-group
 -lvx
 -lc

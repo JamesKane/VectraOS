@@ -24,11 +24,11 @@ First-party system code does not use it; Swift's runtime, C and C++ programs fro
 : `usr/include/c++/v1/`, `usr/lib/libc++.so`, `usr/lib/libc++abi.so`, `usr/lib/libc++.a`, `usr/lib/libc++abi.a`
   libc++ and libc++abi (ADR-0033 §2a), from `swift-on-vectra`'s `build_cxx.sh` at the tree `cxx.sha256` records: RTTI on; threads through libc++'s external threading API, whose header (LLVM patch 0011) sits on the C library's `<threads.h>`, so `std::thread`, the mutexes, condition variables, `call_once`, guarded function-local statics and `thread_local` are vx-rt's threads and futexes; `steady_clock` on `timespec_get`'s `TIME_MONOTONIC` (patch 0010). iostreams in the C locale (LLVM patch 0005's locale support: `"C"` and `""` and nothing else), and `std::random_device` from the process's generator, seeded from the kernel's entropy (patch 0012). `std::filesystem` through a vectraos branch in libc++'s `src/filesystem` (patch 0013) over `libvx`'s file calls (`lib/vx-rt/libvx-fs.c`), no POSIX in between: paths UTF-8, symbolic links followed in the client, `fstream`s over the C library's streams. No exceptions until 6f2a, no wide characters. A machine without them builds the sysroot for C alone. A C++ program links the shared ones by default (M6 step 6f1c2), which ld-vx(8) loads from `/lib` by their sonames, `libc++.so.1` and `libc++abi.so.1`; each carries the compiler builtins it calls, unexported, and takes libvx's hooks from `libvx.so` at load. Swift's runtime, linked into a Swift program statically, binds to them too.
 : `<arch>-unknown-vectraos-clang++.cfg`, `link-tail-c++.rsp`
-  C++'s configuration file, which `clang++` reads in place of the C one (`-stdlib=libc++`, `-fno-exceptions`, the C file's other options, and no `-std`), and the link's tail with `-lc++ -lc++abi` first.
+  C++'s configuration file, which `clang++` reads in place of the C one (`-stdlib=libc++`, the C file's other options, and no `-std`), and the link's tail with `-lc++ -lc++abi -lunwind` first.
 : `<arch>-unknown-vectraos.cfg`
   The configuration file Fedora's clang compiles with (ADR-0033 §3): `__vectraos__`, the sysroot and nothing of the host's, frame pointers, unwind tables, no PIC, no math `errno`. It names no language: a program chooses, and without `-std` it is the compiler's default, gnu17, as the Swift toolchain's patched clang has it. The system's own native programs are C23 (`-std=c23`); nothing makes a third party's be.
 : `link-head.rsp`, `link-tail.rsp`
-  `ld.lld`'s options before and after a program's objects: at `_start`, interpreter `/lib/ld-vx`, `-z now`, `-z relro`, both hash tables, `crt1.o` first; `libvx`, `libc` and `libm` (the shared ones) in a group, then the builtins. With `-static` before them, a static program.
+  `ld.lld`'s options before and after a program's objects: at `_start`, interpreter `/lib/ld-vx`, `-z now`, `-z relro`, both hash tables, `crt1.o` first; `libvx`, `libc` and `libm` (the shared ones) in a group, then the builtins. With `-static` before them and `--no-dynamic-linker` after `link-head.rsp`, a static program: lld writes the interpreter's name, and so `PT_INTERP`, whenever it is given one.
 : `llvm-libc`
   Which build of the C library it took.
 
@@ -84,7 +84,7 @@ start(2), heap(2), posix(7); ADR-0033 and ADR-0034, and `swift-on-vectra`'s `doc
 
 # BUGS
 
-C++ has no exceptions (6f2a), and no wide characters: llvm-libc's wide functions do not yet cover what libc++'s build asks for.
+C++ has exceptions (M6 step 6f2a, ADR-0033 §2a stage 3): libc++abi over LLVM's libunwind, `/lib/libunwind.so.1` (and `libunwind.a`), which finds an address's unwind tables by asking libvx (`__llvm_libunwind_find_eh_frame_hdr`): the loader's list of loaded objects for a dynamic program, the program's own headers for a static one. Every image is linked with `--eh-frame-hdr`. libvx and `crt1.o` have no unwind tables, so an exception that would unwind through their frames (a thread's start, `main`'s caller) ends in `std::terminate`, whose reason libc++abi writes to standard error. C++ has no wide characters: llvm-libc's wide functions do not yet cover what libc++'s build asks for.
 
 `std::filesystem` has no hard links (`create_hard_link` fails with `errc::not_supported`; VectraOS has symbolic links only), no `space` (no server says how much room it has), and a `hard_link_count` of 1; `last_write_time` sets the modification time alone, and a time before 1970 is refused.
 

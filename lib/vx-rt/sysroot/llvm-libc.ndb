@@ -11,11 +11,11 @@
 # their headers (6e2d2); a machine without it builds the sysroot for C alone.
 
 triple=x86_64-unknown-vectraos llvm-project=903b9faaae5c43ecc9b7e33f8db9c94c7429374a
-    patches=0001-0020
+    patches=0001-0022
     tree.sha256=016cd91512433010656d270b8d43bddcdea4323b743acc9498800ed13f7db3b0
-    cxx.sha256=6c3eb90f4254ebcd5f81d91276b57d42b774d7e4726f339f0ceb66d69cc0392f
+    cxx.sha256=4d30f53975ac2191870e1766c3c630d8fb75fdf1255409933f931343a71baf01
 
 triple=aarch64-unknown-vectraos llvm-project=903b9faaae5c43ecc9b7e33f8db9c94c7429374a
-    patches=0001-0020
+    patches=0001-0022
     tree.sha256=060890455dc9d3a1b2b544d2ce5eceb29909edadbab800437ea4595cfed713aa
-    cxx.sha256=9d5535007e2416c90fb902ed3fdb1952160aace49788f9f5535a6539333defa5
+    cxx.sha256=853c9b31207db43a5dd6516335f7af3c6fe7f7205609351988b7b51548404f58

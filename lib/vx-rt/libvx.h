@@ -30,6 +30,7 @@ void __llvm_libc_thread_detach(void *handle);
 uint32_t __llvm_libc_thread_id(void);
 int64_t __llvm_libc_clock_monotonic(void);
 void __llvm_libcxx_random_bytes(void *buf, size_t n);
+int __llvm_libunwind_find_eh_frame_hdr(uintptr_t pc, uintptr_t *segment, uintptr_t *hdr, size_t *size);
 char **__swift_vectraos_argv(int *argc);
 unsigned __swift_vectraos_cpu_count(void);
 uint64_t __swift_vectraos_pid(void);

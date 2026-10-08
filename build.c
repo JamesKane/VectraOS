@@ -1369,6 +1369,8 @@ typedef struct program {
 
 static const char *const DLTEST_A_NEEDS[] = {"libdltestb.so", nullptr};
 static const char *const DLTEST_NEEDS[] = {"libdltesta.so", nullptr};
+static const char *const VXCXXEXC_NEEDS[] = {"libvxcxxexc.so", nullptr};
+static const char *const VXCXXEXC_STATIC[] = {"-DVXCXXEXC_STATIC", nullptr};
 
 // ACPICA, a native port (ADR-0030), and what bus-acpi needs to include its
 // headers: its environment header first, its include directories as system
@@ -1428,9 +1430,9 @@ static const program USER_PROGRAMS[] = {
      nullptr},
     {"libvxtest", "tests/user/libvxtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr},
-    {"vxctest", "tests/user/vxctest.c", IN_TESTS, nullptr, false, nullptr, nullptr, true, LINK_STATIC,
+    {"vxctest", "tests/user/vxctest.c", IN_TESTS, nullptr, false, nullptr, nullptr, true, LINK_DYNAMIC,
      nullptr},
-    {"vxcxxtest", "tests/user/vxcxxtest.cpp", IN_TESTS, nullptr, false, nullptr, nullptr, true, LINK_STATIC,
+    {"vxcxxtest", "tests/user/vxcxxtest.cpp", IN_TESTS, nullptr, false, nullptr, nullptr, true, LINK_DYNAMIC,
      nullptr},
     {"procfs", "servers/procfs/procfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr},
@@ -1516,6 +1518,15 @@ static const program USER_PROGRAMS[] = {
      DLTEST_A_NEEDS},
     {"dltest", "tests/user/dltest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_DYNAMIC,
      DLTEST_NEEDS},
+    // C++ exceptions (6f2a): a native C++ library, and the program that links it.
+    {"libvxcxxexc.so", "tests/user/vxcxxexc_lib.cpp", IN_TESTS, nullptr, false, nullptr, nullptr, true,
+     LINK_SHARED, nullptr},
+    {"vxcxxexc", "tests/user/vxcxxexc.cpp", IN_TESTS, nullptr, false, nullptr, nullptr, true, LINK_DYNAMIC,
+     VXCXXEXC_NEEDS},
+    // and statically, the library's code its own: the unwind tables found
+    // through the program's headers, not the loader's list.
+    {"vxcxxexcs", "tests/user/vxcxxexc.cpp", IN_TESTS, nullptr, false, nullptr, VXCXXEXC_STATIC, true,
+     LINK_STATIC, nullptr},
 };
 
 // Where a program goes in bootfs: boot/bin, or lib/ for the loader and
@@ -1761,6 +1772,9 @@ static bool sysroot_cxx(const arch *a, const char *s, const char *from) {
   // from /lib under their sonames, libc++.so.1 and libc++abi.so.1.
   copy_file(fmt("%s/usr/lib/libc++.so.1.0", cxx), fmt("%s/usr/lib/libc++.so", s));
   copy_file(fmt("%s/usr/lib/libc++abi.so.1.0", cxx), fmt("%s/usr/lib/libc++abi.so", s));
+  // LLVM's libunwind, for C++ exceptions (6f2a), likewise.
+  copy_file(fmt("%s/usr/lib/libunwind.a", cxx), fmt("%s/usr/lib/libunwind.a", s));
+  copy_file(fmt("%s/usr/lib/libunwind.so.1.0", cxx), fmt("%s/usr/lib/libunwind.so", s));
   copy_file("lib/vx-rt/sysroot/vectraos-clang++.cfg", fmt("%s/%s-clang++.cfg", s, triple));
   copy_file("lib/vx-rt/sysroot/link-tail-c++.rsp", fmt("%s/link-tail-c++.rsp", s));
   return true;
@@ -1820,6 +1834,9 @@ static bool build_sysroot(const arch *a, bool release) {
     cmd_addv(&cc[i], release ? RELEASE_FLAGS : DEBUG_FLAGS);
     cmd_add(&cc[i], fmt("-ffile-prefix-map=%s=/src", root));
     if (i == 0) cmd_add(&cc[i], "-DVX_RT_CRT1"); // with the native vx_main
+    // No unwind tables (6f2a, ADR-0033 §2a): an exception that would unwind
+    // through libvx's frames finds none, and ends in std::terminate.
+    cmd_addv(&cc[i], (const char *const[]){"-fno-unwind-tables", "-fno-asynchronous-unwind-tables", nullptr});
     if (i == 2)
       cmd_addv(&cc[i], (const char *const[]){"-fPIC", "-ftls-model=initial-exec", "-DVX_RT_SHARED", nullptr});
     cmd_addv(&cc[i], (const char *const[]){"-c", SRC[i], "-o", obj[i], nullptr});
@@ -1851,6 +1868,7 @@ static bool build_sysroot(const arch *a, bool release) {
                                       "libc.so",
                                       "-nostdlib",
                                       "--build-id=sha1",
+                                      "--eh-frame-hdr",
                                       "-z",
                                       "max-page-size=0x1000",
                                       "-z",
@@ -2115,12 +2133,29 @@ static void native_program(const arch *a, bool release, const program *p, const 
                                      fmt("--target=%s", sysroot_triple(a)), cxx ? "-std=c++23" : "-std=c23",
                                      "-Wall", "-Wextra", "-Werror", nullptr});
   cmd_addv(cc, release ? RELEASE_FLAGS : DEBUG_FLAGS);
+  if (p->lib_flags) cmd_addv(cc, p->lib_flags);
+  if (p->link == LINK_SHARED)
+    cmd_addv(cc, (const char *const[]){"-fPIC", "-ftls-model=initial-exec", nullptr});
   cmd_addv(cc, (const char *const[]){"-c", p->source, "-o", obj, nullptr});
+  const char *dir = fmt("out/%s/%s", a->name, release ? "release" : "debug");
   *ld = (cmd){};
-  cmd_addv(ld, (const char *const[]){LLD, fmt("--sysroot=%s", s), fmt("@%s/link-head.rsp", s), obj,
-                                     fmt("@%s/link-tail%s.rsp", s, cxx ? "-c++" : ""), "-o",
-                                     fmt("out/%s/%s/%s", a->name, release ? "release" : "debug", p->name),
-                                     nullptr});
+  cmd_addv(ld, (const char *const[]){LLD, fmt("--sysroot=%s", s), nullptr});
+  if (p->link == LINK_SHARED) // a library of the target (6f2a): its own name, needing the C and C++ libraries
+    cmd_addv(ld, (const char *const[]){"-shared", "-soname", p->name, "--build-id=sha1", "--eh-frame-hdr",
+                                       "-z", "max-page-size=0x1000", "-z", "noexecstack", "-z", "now", "-z",
+                                       "relro", "--hash-style=both", "-L=/usr/lib", obj, nullptr});
+  else if (p->link == LINK_STATIC) // a static program: the archives (native(7))
+    cmd_addv(ld, (const char *const[]){"-static", fmt("@%s/link-head.rsp", s), "--no-dynamic-linker", obj,
+                                       nullptr});
+  else
+    cmd_addv(ld, (const char *const[]){fmt("@%s/link-head.rsp", s), obj, nullptr});
+  for (const char *const *need = p->needs; need && *need; need++) cmd_add(ld, fmt("%s/%s", dir, *need));
+  if (p->link == LINK_SHARED)
+    cmd_addv(ld, cxx ? (const char *const[]){"-lc++", "-lc++abi", "-lunwind", "-lc", nullptr}
+                     : (const char *const[]){"-lc", nullptr});
+  else
+    cmd_add(ld, fmt("@%s/link-tail%s.rsp", s, cxx ? "-c++" : ""));
+  cmd_addv(ld, (const char *const[]){"-o", fmt("%s/%s", dir, p->name), nullptr});
 }
 
 static bool sysroot_made[2][2]; // [arch][release]: build_sysroot made it this run
@@ -2141,7 +2176,7 @@ static bool build_user_programs(const arch *a, bool release) {
     fprintf(stderr, "  CC    %-7s %s\n", p->name, a->name);
     if (p->native) {
       native_program(a, release, p, obj, &cc[n], &ld[n]);
-      ccs[n] = &cc[n], lds[n] = &ld[n], is_shared[n] = false, n++;
+      ccs[n] = &cc[n], lds[n] = &ld[n], is_shared[n] = p->link == LINK_SHARED, n++;
       continue;
     }
     cc[n] = (cmd){};
@@ -3231,9 +3266,11 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
     files[count] = read_file(musl_so);
     paths[count++] = fmt("lib/ld-musl-%s.so.1", a->name);
   }
-  // The native C and C++ libraries, shared (6f1c1, 6f1c2), by their sonames.
-  static const char *const NATIVE_LIBS[][2] = {
-      {"libc.so", "lib/libc.so"}, {"libc++.so", "lib/libc++.so.1"}, {"libc++abi.so", "lib/libc++abi.so.1"}};
+  // The native C and C++ libraries, shared (6f1c1, 6f1c2, 6f2a), by their sonames.
+  static const char *const NATIVE_LIBS[][2] = {{"libc.so", "lib/libc.so"},
+                                               {"libc++.so", "lib/libc++.so.1"},
+                                               {"libc++abi.so", "lib/libc++abi.so.1"},
+                                               {"libunwind.so", "lib/libunwind.so.1"}};
   for (size_t i = 0; i < sizeof NATIVE_LIBS / sizeof NATIVE_LIBS[0]; i++) {
     const char *so = fmt("%s/usr/lib/%s", sysroot_dir(a, release), NATIVE_LIBS[i][0]);
     if (!exists(so)) continue;
@@ -5152,10 +5189,11 @@ static int os_units(unit *units, bool with_host_tests) {
         if (!exists(fmt("%s/usr/lib/%s", sys, cxx ? "libc++.a" : "libc.a"))) continue;
         const char **f = alloc(8 * sizeof *f);
         f[0] = fmt("--config-system-dir=%s", sys), f[1] = fmt("--target=%s", sysroot_triple(&ARCHES[i]));
-        f[2] = cxx ? "-std=c++23" : "-std=c23", f[3] = nullptr;
-        if (cxx)
-          f[3] = "-stdlib=libc++", f[4] = "-fno-exceptions",
-          f[5] = nullptr; // the C++ file's, which clang does not read
+        f[2] = cxx ? "-std=c++23" : "-std=c23";
+        int nf = 3;
+        if (cxx) f[nf++] = "-stdlib=libc++"; // the C++ file's, which clang does not read
+        for (const char *const *lf = p->lib_flags; lf && *lf && nf < 7; lf++) f[nf++] = *lf;
+        f[nf] = nullptr;
         static const char *const CXX_HOUSE[] = {"-Wall", "-Wextra", "-Werror", "-Wshadow", "-g", nullptr};
         units[unit_slot(&n)] =
             (unit){fmt("%s %s", p->name, ARCHES[i].name), p->source, {f, cxx ? CXX_HOUSE : HOUSE_FLAGS}};

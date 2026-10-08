@@ -196,6 +196,38 @@ uint32_t __llvm_libc_thread_id(void) { return vx_thread_self_id(); }
 // kernel's entropy (LLVM patch 0012).
 void __llvm_libcxx_random_bytes(void *buf, size_t n) { vx_random_bytes(buf, n); }
 
+// Where C++ exceptions' unwind tables are (6f2a, LLVM patch 0021): the
+// loaded object with a segment holding pc, that segment's start, and the
+// object's .eh_frame_hdr; 0 if one is found. A dynamic program's objects are
+// the loader's (ADR-0047), a static program's its own headers. libvx itself
+// has no unwind tables, so an exception that would unwind through one of its
+// frames, a callback's caller, finds none and ends in std::terminate.
+static bool vx_eh_object(uint64_t base, const vx_elf_phdr *ph, uint32_t n, uintptr_t pc, uintptr_t *segment,
+                         uintptr_t *hdr, size_t *size) {
+  bool holds = false;
+  for (uint32_t i = 0; i < n && !holds; i++)
+    if (ph[i].type == VX_PT_LOAD && pc - (base + ph[i].vaddr) < ph[i].memsz)
+      holds = true, *segment = (uintptr_t)(base + ph[i].vaddr);
+  for (uint32_t i = 0; holds && i < n; i++)
+    if (ph[i].type == VX_PT_GNU_EH_FRAME) {
+      *hdr = (uintptr_t)(base + ph[i].vaddr), *size = (size_t)ph[i].memsz;
+      return true;
+    }
+  return false;
+}
+
+int __llvm_libunwind_find_eh_frame_hdr(uintptr_t pc, uintptr_t *segment, uintptr_t *hdr, size_t *size) {
+  if (vx_dl) {
+    for (uint32_t i = 0; i < vx_dl->object_count; i++) {
+      const vx_dl_object *o = &vx_dl->objects[i];
+      if (vx_eh_object(o->base, (const vx_elf_phdr *)o->phdr, o->phnum, pc, segment, hdr, size)) return 0;
+    }
+    return -1;
+  }
+  const vx_elf_phdr *ph = (const vx_elf_phdr *)((const uint8_t *)&__ehdr_start + __ehdr_start.phoff);
+  return vx_eh_object(0, ph, __ehdr_start.phnum, pc, segment, hdr, size) ? 0 : -1;
+}
+
 // The monotonic clock, for the C library's timed waits (LLVM patch 0009).
 int64_t __llvm_libc_clock_monotonic(void) { return vx_now(); }
 

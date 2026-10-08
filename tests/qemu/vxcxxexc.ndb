@@ -1,0 +1,17 @@
+# tests/qemu/vxcxxexc.ndb: C++ exceptions on the native target (M6 step
+# 6f2a, ADR-0033 section 2a stage 3). vxcxxexc's checks, with a C++ shared
+# library, and again in vxcxxexcs, static; then an uncaught throw and a
+# throw from a C11 thread's start, each ending in std::terminate with
+# libc++abi's reason and a crash directory.
+
+scenario=vxcxxexc timeout=60 cmdline=vx.skip=rc with=vxcxxexc,libvxcxxexc.so,vxcxxexcs,vxcxxexcrc
+expect="vxcxxexc: hello"
+expect="vxcxxexc: 10 checks, 0 failed"
+expect="vxcxxexc: 10 checks, 0 failed"
+expect="libc++abi: terminating due to uncaught exception of type std::runtime_error: vxcxxexc: boom"
+expect="vxcxxexc uncaught: vxcxxexc "
+expect="libc++abi: terminating due to uncaught exception of type std::runtime_error: vxcxxexc: thrown from a thread's start"
+expect="vxcxxexc thread: vxcxxexc "
+line="svcd: vxcxxexcrc exited"
+fail="vx: panic"
+fail="vxcxxexc: FAILED"

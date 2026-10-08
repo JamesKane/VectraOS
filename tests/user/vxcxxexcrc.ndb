@@ -1,0 +1,8 @@
+# tests/user/vxcxxexc.ndb: rc runs tests/user/vxcxxexcrc.rc
+# (tests/qemu/vxcxxexc.ndb).
+
+service=vxcxxexcrc program=/boot/bin/rc console entropy
+arg=/boot/tests/vxcxxexcrc.rc
+ns=posix
+connect=nsd
+env=PATH=/bin

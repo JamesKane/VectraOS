@@ -1,6 +1,7 @@
 -e _start
 --dynamic-linker=/lib/ld-vx
 --build-id=sha1
+--eh-frame-hdr
 -z max-page-size=0x1000
 -z noexecstack
 -z now

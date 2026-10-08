@@ -1,0 +1,9 @@
+# tests/user/vxcxxexcrc.rc: vxcxxexc's checks, and vxcxxexcs's (the
+# same, static), then vxcxxexc's two ends in
+# std::terminate, each a crash (tests/qemu/vxcxxexc.ndb).
+/boot/bin/vxcxxexc
+/boot/bin/vxcxxexcs
+/boot/bin/vxcxxexc uncaught
+echo vxcxxexc uncaught: $status
+/boot/bin/vxcxxexc thread
+echo vxcxxexc thread: $status

@@ -25,6 +25,7 @@ enum : uint32_t {
   VX_PT_DYNAMIC = 2,
   VX_PT_INTERP = 3,
   VX_PT_TLS = 7,
+  VX_PT_GNU_EH_FRAME = 0x6474e550, // .eh_frame_hdr: C++ exceptions' index of unwind tables
   VX_PT_GNU_RELRO = 0x6474e552,
   VX_PF_X = 1,
   VX_PF_W = 2,

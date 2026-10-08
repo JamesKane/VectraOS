@@ -201,7 +201,9 @@ int sum_cin() {
 
 } // namespace
 
-int main(int argc, char **argv) {
+// An exception out of main (libc++'s own throws, now that C++ has them, 6f2a)
+// is a failure, which std::terminate reports.
+int main(int argc, char **argv) { // NOLINT(bugprone-exception-escape)
   if (argc > 1 && std::string(argv[1]) == "cin") return sum_cin();
   if (argc > 1 && std::string(argv[1]) == "fs") return files();
   std::printf("vxcxxtest: hello from libc++\n");
