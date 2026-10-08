@@ -80,7 +80,10 @@ static vx_status futex_wait(uint64_t word, uint32_t expected, vx_instant deadlin
   futex_buckets[i].head = &w;
   spin_unlock(&futex_buckets[i].lock);
 
-  int64_t woke = thread_block(deadline, 0);
+  TRACE(VX_TC_FUTEX, VX_TK_FUTEX_WAIT, word, 0);
+  vx_instant began = clock_now();
+  int64_t woke = thread_block(VX_TB_FUTEX, word, deadline, 0);
+  TRACE(VX_TC_FUTEX, VX_TK_FUTEX_WOKEN, word, clock_now() - began);
   if (woke != VX_OK) { // timed out or killed: leave the bucket if a waker has not already taken us
     spin_lock(&futex_buckets[i].lock);
     for (futex_waiter **link = &futex_buckets[i].head; *link; link = &(*link)->next) {

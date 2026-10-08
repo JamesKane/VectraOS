@@ -142,7 +142,7 @@ static int64_t port_wait_on(port *p, vx_instant deadline, vx_duration leeway, ui
     if (clock_now() >= deadline) return VX_ERR_TIMED_OUT;
     thread *t = this_cpu()->current;
     if (!port_join_waiters(p, t)) continue; // a packet arrived meanwhile
-    int64_t woke = thread_block(deadline, leeway);
+    int64_t woke = thread_block(VX_TB_PORT, 0, deadline, leeway);
     if (woke != VX_OK) { // its deadline, or a kill: still on the list, so off it
       port_remove_waiter(p, t);
       return woke;
@@ -1288,7 +1288,17 @@ static int64_t sys_thread_suspend(vx_handle th, uint64_t id);
 static int64_t sys_thread_resume(vx_handle th, uint64_t id);
 static int64_t sys_task_mem_rw(vx_handle th, uint64_t ops_ptr, uint64_t count);
 
+static int64_t syscall_dispatch_one(uint64_t nr, const uint64_t a[6]);
+
+// Every syscall, traced in and out when `syscall` is on (ADR-0049).
 static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
+  TRACE(VX_TC_SYSCALL, VX_TK_SYS_IN, nr, 0);
+  int64_t r = syscall_dispatch_one(nr, a);
+  TRACE(VX_TC_SYSCALL, VX_TK_SYS_OUT, nr, r);
+  return r;
+}
+
+static int64_t syscall_dispatch_one(uint64_t nr, const uint64_t a[6]) {
   switch (nr) {
   case VX_SYS_debug_write: return sys_debug_write(a[0], a[1]);
   case VX_SYS_clock_read: return a[0] ? sys_clock_info(a[0]) : clock_now();
@@ -1328,6 +1338,7 @@ static int64_t syscall_dispatch(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_dma_unmap: return sys_dma_unmap((vx_handle)a[0]);
   case VX_SYS_dma_domain_op: return sys_dma_domain_op((vx_handle)a[0], a[1], a[2]);
   case VX_SYS_system_power: return sys_system_power((vx_handle)a[0], a[1]);
+  case VX_SYS_trace_configure: return sys_trace_configure((vx_handle)a[0], a[1], a[2], a[3]);
   case VX_SYS_clock_set: return sys_clock_set((vx_handle)a[0], a[1]);
   case VX_SYS_pager_create: return sys_pager_create((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4]);
   case VX_SYS_pager_supply:

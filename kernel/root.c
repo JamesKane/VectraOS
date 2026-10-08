@@ -50,8 +50,8 @@ static void find_root_module(void) {
   if (store) root_module.store = store->address, root_module.store_size = store->size;
 }
 
-static constexpr uint32_t ROOT_RESOURCE_RIGHTS =
-    VX_RIGHT_MANAGE | VX_RIGHT_PAGER | VX_RIGHT_DUPLICATE | VX_RIGHT_TRANSFER | VX_RIGHT_INSPECT;
+static constexpr uint32_t ROOT_RESOURCE_RIGHTS = VX_RIGHT_MANAGE | VX_RIGHT_PAGER | VX_RIGHT_TRACE |
+                                                 VX_RIGHT_DUPLICATE | VX_RIGHT_TRANSFER | VX_RIGHT_INSPECT;
 static constexpr uint32_t READ_ONLY_RIGHTS = // the boot image and the ACPI tables
     VX_RIGHT_READ | VX_RIGHT_MAP | VX_RIGHT_DUPLICATE | VX_RIGHT_TRANSFER | VX_RIGHT_INSPECT;
 

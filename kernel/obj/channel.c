@@ -62,7 +62,10 @@ typedef struct channel {
   observers obs;    // READABLE and PEER_CLOSED bindings on this end
   call_wait *calls; // channel_calls waiting for a reply on this end
   uint32_t next_txid;
+  uint64_t id; // for the trace (ADR-0049): each end's, never reused
 } channel;
+
+static _Atomic uint64_t channel_ids;
 
 typedef struct channel_pair {
   spinlock lock;
@@ -92,6 +95,7 @@ static vx_status channel_create(channel **a, channel **b) {
     ends[i]->pair = pair;
     ends[i]->side = i;
     ends[i]->next_txid = CALL_TXID | i << 30; // each end's calls in a half of their own
+    ends[i]->id = atomic_fetch_add_explicit(&channel_ids, 1, memory_order_relaxed) + 1;
     pair->ends[i] = ends[i];
   }
   *a = e0;
@@ -135,6 +139,7 @@ static vx_status channel_deliver(channel *to, channel_msg *m) {
     call_wait *w = *link;
     if (w->txid != txid) continue;
     *link = w->next;
+    TRACE(VX_TC_IPC, VX_TK_REPLY, to->id, txid);
     w->reply = m;
     thread_wake_reply(w->thread, w, VX_OK); // its loan back, and run in the replier's place
     return VX_OK;
@@ -212,6 +217,7 @@ static vx_status channel_call(channel *c, channel_msg *request, vx_instant deadl
   c->next_txid = CALL_TXID | (c->next_txid & SIDE_TXID) | ((c->next_txid + 1) & ~(CALL_TXID | SIDE_TXID));
   ((vx_msg_header *)msg_body(request))->txid = w.txid;
   ((vx_msg_header *)msg_body(request))->sender_intent = sched_thread_intent(this_cpu()->current);
+  TRACE(VX_TC_IPC, VX_TK_CALL, c->id, w.txid); // b: the txid, until flows (7a2)
   request->call = &w;
   sched_lending(t); // the server's port waiter it wakes runs on t's scheduling
   vx_status st = channel_deliver(peer, request);
@@ -236,7 +242,7 @@ static vx_status channel_call(channel *c, channel_msg *request, vx_instant deadl
   // answers it before it interrupts the caller.)
   int64_t woke;
   for (;;) {
-    woke = thread_block(deadline, 0);
+    woke = thread_block(VX_TB_CHANNEL, c->id, deadline, 0);
     spin_lock(&c->pair->lock);
     channel *server = channel_peer(c);
     bool queued = server && !w.read && !w.reply;

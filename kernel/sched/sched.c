@@ -533,6 +533,7 @@ static void sched_info(const thread *t, vx_sched_info *out) {
 
 // Ends the loan t, a caller, made: its call is over. Under the lock.
 static void unlend_locked(thread *t) {
+  TRACE(VX_TC_IPC, VX_TK_RETURN, trace_tid(t), 0);
   if (!t->donee) return;
   if (t->donee->donor == t) t->donee->donor = nullptr, t->donee->lend_tail = false;
   t->donee = nullptr;
@@ -551,6 +552,7 @@ static void tail_end(thread *t) {
 // moved from where it was, and kept from to's loan if that is higher. Never
 // in a loop: from lending to a thread lending, along its chain, to from.
 static void lend_locked(thread *from, thread *to) {
+  TRACE(VX_TC_IPC, VX_TK_DONATE, trace_tid(to), trace_tid(from));
   if (from == to || from->donee == to) return;
   unlend_locked(from);
   const thread *o = from->donor;
@@ -599,6 +601,7 @@ static bool thread_wake_reply(thread *t, const void *token, int64_t result) {
   bool woke = token && t->wait_token == token;
   if (woke) {
     t->wait_token = nullptr;
+    TRACE(VX_TC_SCHED, VX_TK_WAKE, trace_tid(t), trace_tid(this_cpu()->current));
     if (t->state == THREAD_BLOCKED) {
       t->wait_result = result;
       make_ready_here(t);
@@ -637,6 +640,7 @@ static void schedule_locked(void) {
     if (ctx_of(next)) ctx_refill(ctx_of(next), now);
   }
   if (next != prev) {
+    TRACE(VX_TC_SCHED, VX_TK_SWITCH, trace_tid(prev) | (uint64_t)prev->state << 32, trace_tid(next));
     arch_user_switch(prev, next);
     next->state = THREAD_RUNNING;
     next->cpu = c;
@@ -681,6 +685,7 @@ static bool thread_wake_token(thread *t, const void *token, int64_t result) {
   bool woke = token && t->wait_token == token;
   if (woke) {
     t->wait_token = nullptr;
+    TRACE(VX_TC_SCHED, VX_TK_WAKE, trace_tid(t), trace_tid(this_cpu()->current));
     thread *caller = this_cpu()->lending;
     if (caller) lend_locked(caller, t), this_cpu()->lending = nullptr; // the first woken serves the call
     if (t->state == THREAD_BLOCKED) {
@@ -701,7 +706,7 @@ static bool thread_wake_token(thread *t, const void *token, int64_t result) {
 // Blocks the current thread until it is woken, or until the deadline (plus up
 // to `leeway`, which lets one timer interrupt serve several waits). Returns the
 // wait's result: VX_ERR_TIMED_OUT if the deadline passed.
-static int64_t thread_block(vx_instant deadline, vx_duration leeway) {
+static int64_t thread_block(uint32_t reason, uint64_t obj, vx_instant deadline, vx_duration leeway) {
   cpu *c = this_cpu();
   thread *t = c->current;
   spin_lock(&sched.lock);
@@ -716,6 +721,7 @@ static int64_t thread_block(vx_instant deadline, vx_duration leeway) {
     return t->wait_result;
   }
   tail_end(t); // an answered call's loan ends as its server waits again
+  TRACE(VX_TC_SCHED, VX_TK_BLOCK, reason, obj);
   t->state = THREAD_BLOCKED;
   if (deadline != VX_INFINITE) {
     t->wake_at = deadline;
@@ -807,6 +813,7 @@ static void sched_timer(bool from_user) {
   if (!c->current) return; // before the scheduler runs on this CPU
   spin_lock(&sched.lock);
   vx_instant now = clock_now();
+  TRACE(VX_TC_IRQ, VX_TK_TIMER, now, 0);
   if (c->current != &c->idle && now >= c->tick_at) { // the ticks due, all to where it was found
     uint64_t n = 1 + (uint64_t)((now - c->tick_at) / TICK);
     atomic_fetch_add_explicit(&c->current->ticks[from_user ? 0 : 1], n, memory_order_relaxed);
@@ -816,6 +823,7 @@ static void sched_timer(bool from_user) {
     thread *t = c->sleepers;
     t->wait_token = nullptr; // a waker that finds it later skips it
     t->wait_result = VX_ERR_TIMED_OUT;
+    TRACE(VX_TC_SCHED, VX_TK_WAKE, trace_tid(t), 0); // its deadline: no waker
     make_ready(t);
   }
   refill_due(now);

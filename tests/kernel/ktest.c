@@ -2029,6 +2029,105 @@ static void test_fork(void) {
 
 // --- Lazy memory and decommit (ADR-0046) ---
 
+// The kernel's trace (ADR-0049, M7 step 7a1): rings started, a wake by a
+// known thread, a futex wait that times out, a lazy fault, a mark and
+// syscalls written, nothing after the stop, and the right enforced.
+static _Atomic uint32_t trace_word;
+
+static void trace_waker(void *arg) {
+  (void)arg;
+  vx_sleep_until(vx_now() + 5'000'000, 0);
+  atomic_store(&trace_word, 1);
+  vx_futex_wake(&trace_word, 1);
+}
+
+static void test_trace(void) {
+  vx_handle res = root_resource(), weak = VX_HANDLE_NONE, rings = VX_HANDLE_NONE;
+  vx_trace_start s = {.categories =
+                          VX_TC_SCHED | VX_TC_IPC | VX_TC_VM | VX_TC_FUTEX | VX_TC_SYSCALL | VX_TC_MARK,
+                      .ring_size = 256ull * 1024};
+  // A Resource with neither TRACE nor MANAGE is refused; one with TRACE alone works.
+  CHECK(vx_handle_dup(res, VX_RIGHT_DUPLICATE, &weak) == VX_OK);
+  CHECK(vx_trace_configure(weak, VX_TRACE_START, &s, sizeof s) == VX_ERR_ACCESS);
+  vx_handle_close(weak);
+  CHECK(vx_handle_dup(res, VX_RIGHT_TRACE, &weak) == VX_OK);
+  CHECK(vx_trace_configure(weak, VX_TRACE_START, &s, sizeof s) == VX_OK);
+  CHECK(vx_trace_configure(weak, VX_TRACE_START, &(vx_trace_start){.categories = 1u << 30}, sizeof s) ==
+        VX_ERR_INVALID);
+  CHECK(vx_trace_configure(weak, VX_TRACE_START, &s, sizeof s) == VX_OK); // started again: rewound
+
+  // What it should see: a futex wait that times out, one a known thread ends,
+  // a lazy page made, a mark.
+  vx_task_summary me;
+  CHECK(vx_task_info(self, &me) == VX_OK);
+  atomic_store(&trace_word, 0);
+  CHECK(vx_futex_wait(&trace_word, 0, vx_now() + 1'000'000) == VX_ERR_TIMED_OUT);
+  vx_worker w;
+  CHECK(vx_worker_start(&w, trace_waker, nullptr, 0) == VX_OK);
+  while (!atomic_load(&trace_word)) vx_futex_wait(&trace_word, 0, vx_now() + 1'000'000'000);
+  uint32_t waker = w.tcb ? (uint32_t)(me.id << 12 | (w.tcb->id & 0xfff)) : 0;
+  vx_worker_join(&w);
+  vx_handle lazy;
+  uint64_t at = 0;
+  CHECK(vx_vmo_create(4096, VX_VMO_LAZY, &lazy) == VX_OK &&
+        vx_as_map(self, lazy, 0, 4096, VX_MAP_WRITE, &at) == VX_OK);
+  if (at) *(volatile uint64_t *)at = 1;
+  char mark[16] = "ktest mark";
+  CHECK(vx_trace_configure(weak, VX_TRACE_MARK, mark, sizeof mark) == VX_OK);
+  CHECK(vx_trace_configure(weak, VX_TRACE_STOP, nullptr, 0) == VX_OK);
+
+  // Read the rings.
+  CHECK(vx_trace_configure(weak, VX_TRACE_RINGS, &rings, sizeof rings) == VX_OK);
+  const vx_trace_ring *h0 = nullptr;
+  uint64_t base = 0, total = 0;
+  if (rings) {
+    vx_trace_ring first;
+    CHECK(vx_vmo_rw(rings, VX_VMO_READ, 0, &first, sizeof first) == VX_OK);
+    total = first.stride * first.cpus;
+    CHECK(first.magic == VX_TRACE_MAGIC && first.ring_size == 256ull * 1024 && first.cpus >= 1 &&
+          first.counter_hz);
+    CHECK(vx_as_map(self, rings, 0, total, 0, &base) == VX_OK); // read-only
+    CHECK(vx_as_map(self, rings, 0, total, VX_MAP_WRITE, &(uint64_t){0}) != VX_OK);
+    h0 = (const vx_trace_ring *)base;
+  }
+  bool sw = false, woke_by = false, blocked = false, timed_out = false, fault = false, marked = false;
+  uint64_t sys_in = 0, sys_out = 0, dropped = 0, records = 0;
+  for (uint32_t c = 0; h0 && c < h0->cpus; c++) {
+    const vx_trace_ring *h = (const vx_trace_ring *)(base + c * h0->stride);
+    const vx_trace_record *r = (const vx_trace_record *)((const uint8_t *)h + 4096);
+    uint64_t n = atomic_load(&h->head), cap = h->ring_size / sizeof *r;
+    dropped += h->dropped;
+    for (uint64_t i = 0; i < n && i < cap; i++, records++) {
+      const vx_trace_record *e = &r[i];
+      sw = sw || e->kind == VX_TK_SWITCH;
+      woke_by = woke_by || (e->kind == VX_TK_WAKE && e->b == waker && waker);
+      timed_out =
+          timed_out || (e->kind == VX_TK_WAKE && e->b == 0 && (uint32_t)e->a >> 12 == (uint32_t)me.id);
+      blocked = blocked || (e->kind == VX_TK_BLOCK && e->a == VX_TB_FUTEX && e->b == (uint64_t)&trace_word);
+      fault = fault || (e->kind == VX_TK_FAULT && e->a == at && e->b == VX_TF_LAZY);
+      marked = marked || (e->kind == VX_TK_MARK && memcmp(&e->a, mark, 16) == 0);
+      sys_in += e->kind == VX_TK_SYS_IN, sys_out += e->kind == VX_TK_SYS_OUT;
+    }
+  }
+  CHECK(records > 0 && dropped == 0);
+  CHECK(sw && woke_by && timed_out && blocked);
+  CHECK(fault && marked && sys_in > 0 && sys_out > 0);
+  // Stopped: a syscall now writes nothing.
+  uint64_t heads = 0, again = 0;
+  for (uint32_t c = 0; h0 && c < h0->cpus; c++)
+    heads += atomic_load(&((const vx_trace_ring *)(base + c * h0->stride))->head);
+  vx_task_info(self, &me);
+  for (uint32_t c = 0; h0 && c < h0->cpus; c++)
+    again += atomic_load(&((const vx_trace_ring *)(base + c * h0->stride))->head);
+  CHECK(heads == again);
+  CHECK(vx_trace_configure(weak, VX_TRACE_REWIND, nullptr, 0) == VX_OK && h0 && atomic_load(&h0->head) == 0);
+  if (base) vx_as_unmap(self, base, total);
+  vx_as_unmap(self, at, 4096);
+  vx_handle_close(lazy);
+  vx_handle_close(rings);
+  vx_handle_close(weak);
+}
+
 static void test_lazy(void) {
   // Four of 160 MiB, more than the machine's memory, made at once: no pages yet.
   static constexpr uint64_t BIG = 160ull << 20, PAGE = 4096, WORDS = PAGE / 8; // a page, in uint64_ts
@@ -2746,6 +2845,7 @@ const char *vx_main(void) {
   test_tls();
   test_fork();
   test_lazy();
+  test_trace();
   test_exec();
   test_fp();
   test_nested_channels();

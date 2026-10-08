@@ -76,7 +76,8 @@ static uint32_t exception_stop(port *p, uint64_t key, bool first, const vx_excep
   vx_status st = port_post(p, &pk);
   uint32_t action = 0;
   while (st == VX_OK && !t->killed) {
-    thread_block(VX_INFINITE, 0); // until exception_resume, or a kill; an interrupt waits with it
+    thread_block(VX_TB_EXCEPTION, 0, VX_INFINITE,
+                 0); // until exception_resume, or a kill; an interrupt waits with it
     spin_lock(&t->lock);
     action = th->exc_action;
     if (!action) th->wait_token = th; // woken by an interrupt: wait again
@@ -115,6 +116,7 @@ static bool exception_raise(struct trap_frame *f, uint32_t *kindp, uint32_t code
     if (r == PAGER_MAPPED || r == PAGER_KILLED) return true; // made again; or user_return ends it
     if (r == PAGER_TIMEOUT) *kindp = VX_EXCEPTION_PAGER_TIMEOUT, *addressp &= ~4095ull;
     if (r == PAGER_NOT_MINE && task_revoked_at(t, *addressp)) *kindp = VX_EXCEPTION_REVOKED; // ADR-0043
+    if (r != PAGER_MAPPED) TRACE(VX_TC_VM, VX_TK_FAULT, *addressp, VX_TF_STANDS);
   }
   uint32_t kind = *kindp;
   uint64_t address = *addressp;
@@ -156,7 +158,7 @@ static bool exception_check_suspend(void) {
     th->parked = parked = true;
     th->wait_token = &th->suspend_count;
     spin_unlock(&t->lock);
-    thread_block(VX_INFINITE, 0); // thread_resume wakes it, as does a kill
+    thread_block(VX_TB_EXCEPTION, 0, VX_INFINITE, 0); // thread_resume wakes it, as does a kill
     spin_lock(&t->lock);
   }
   th->parked = false;
@@ -666,7 +668,7 @@ static vx_status thread_suspend_one(thread *target) {
     // thread that was ready, not running, at first (one just started) may be
     // in user mode now, where nothing else would stop it.
     sched_poke(target);
-    thread_block(clock_now() + 100'000, 0); // a tenth of a millisecond
+    thread_block(VX_TB_SLEEP, 0, clock_now() + 100'000, 0); // a tenth of a millisecond
   }
   return VX_OK;
 }

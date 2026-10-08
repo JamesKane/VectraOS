@@ -158,6 +158,7 @@ static uint32_t arch_watch_count(void);           // the debug registers' watchp
 #include "obj/vmo.c"
 #include "../lib/vx-rand/drbg.c" // the kernel's random bases (as_reserve, ADR-0042)
 #include "obj/task.c"
+#include "trace.h"
 #include "sched/sched.c"
 #include "obj/port.c"
 #include "obj/channel.c"
@@ -169,6 +170,7 @@ static uint32_t arch_watch_count(void);           // the debug registers' watchp
 #include "obj/ring.c"
 #include "obj/process.c"
 #include "syscall/syscall.c"
+#include "trace.c"
 #include "obj/exception.c"
 #include "elf.c"
 #include "acpi.c"

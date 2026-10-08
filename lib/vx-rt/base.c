@@ -426,6 +426,12 @@ VX_API vx_status vx_vmo_decommit(vx_handle vmo, uint64_t offset, uint64_t size) 
 }
 
 // The machine off (VX_POWER_OFF), with the root Resource: returns only if it did not happen.
+// The kernel's trace (ADR-0049): procfs's alone, so not in <vx/sys.h>.
+[[maybe_unused]] static vx_status vx_trace_configure(vx_handle resource, uint32_t op, void *data,
+                                                     uint64_t len) {
+  return (vx_status)vx_syscall(VX_SYS_trace_configure, resource, op, (uint64_t)data, len, 0, 0);
+}
+
 [[maybe_unused]] static vx_status vx_system_power(vx_handle resource, uint32_t op) {
   return (vx_status)vx_syscall(VX_SYS_system_power, resource, op, 0, 0, 0, 0);
 }

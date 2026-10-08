@@ -13,3 +13,4 @@ VX_RIGHT(MANAGE)
 VX_RIGHT(INSPECT)
 VX_RIGHT(DEBUG)
 VX_RIGHT(PAGER) // a Resource handle with it (and not MANAGE) makes pagers and nothing else
+VX_RIGHT(TRACE) // a Resource handle with it (and not MANAGE) configures the trace and nothing else (ADR-0049)

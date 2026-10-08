@@ -96,6 +96,7 @@ static pager_result pager_fault(uint64_t address, uint32_t access) {
       spin_unlock(&t->lock);
       return PAGER_NOT_MINE;
     }
+    bool made = v->lazy && !vmo_page(v, index);
     uint64_t pa = vmo_page_make(v, index); // a lazy one's made now
     if (!pa && v->lazy) {                  // no memory: the fault stands
       spin_unlock(&v->lock);
@@ -113,7 +114,9 @@ static pager_result pager_fault(uint64_t address, uint32_t access) {
       spin_unlock(&v->lock);
       spin_unlock(&t->lock);
       if (upgrade) arch_tlb_shootdown(root, page_va, 4096); // no CPU keeps the read-only translation
-      return ok ? PAGER_MAPPED : PAGER_NOT_MINE;            // no memory for a table: the fault stands
+      if (ok)
+        TRACE(VX_TC_VM, VX_TK_FAULT, address, upgrade ? VX_TF_UPGRADE : made ? VX_TF_LAZY : VX_TF_PAGER);
+      return ok ? PAGER_MAPPED : PAGER_NOT_MINE; // no memory for a table: the fault stands
     }
     // Not there: ask for it, if no one has, and wait.
     bool ask = !v->pages[index];
@@ -141,7 +144,9 @@ static pager_result pager_fault(uint64_t address, uint32_t access) {
     }
     vx_instant until = deadline;
     if (asked != VX_OK && clock_now() + 1'000'000 < deadline) until = clock_now() + 1'000'000;
-    int64_t woke = thread_block(until, 0);
+    TRACE(VX_TC_VM, VX_TK_PAGER_WAIT, v->pager_key, index * 4096);
+    int64_t woke = thread_block(VX_TB_PAGER, v->pager_key, until, 0);
+    TRACE(VX_TC_VM, VX_TK_PAGER_DONE, v->pager_key, index * 4096);
     if (woke == VX_ERR_TIMED_OUT && until != deadline) woke = VX_OK; // only the retry's wait
     spin_lock(&v->lock);
     for (page_waiter **link = &v->waiters; *link; link = &(*link)->next)

@@ -784,3 +784,101 @@ typedef struct vx_cpu_info {
   uint64_t isar0, isar1, isar2, pfr0, pfr1, zfr0, smfr0, mmfr3; // ID_AA64*_EL1
 #endif
 } vx_cpu_info;
+
+// --- Tracing (20 §4, ADR-0049, M7 step 7a1) ---
+//
+// trace_configure(resource, op, data, len): the kernel's trace, one ring per
+// CPU of fixed 32-byte records. resource is a Resource handle with
+// VX_RIGHT_TRACE: svcd gives procfs one with that right alone, and no one
+// else.
+enum vx_trace_op : uint32_t {
+  VX_TRACE_START = 1, // data: a vx_trace_start
+  VX_TRACE_STOP,      // writing stops; returns once no CPU is mid-record
+  VX_TRACE_REWIND,    // the rings emptied, their drops cleared (stopped or not)
+  VX_TRACE_RINGS,     // a read-only handle to the rings' VMO, at data (a vx_handle *, len its size)
+  VX_TRACE_MARK,      // data: up to 16 bytes, written as one MARK record by the calling CPU
+};
+
+// Categories: bits of vx_trace_start.categories.
+enum : uint32_t {
+  VX_TC_SCHED = 1u << 0,
+  VX_TC_IPC = 1u << 1,
+  VX_TC_IRQ = 1u << 2,
+  VX_TC_VM = 1u << 3,
+  VX_TC_FUTEX = 1u << 4,
+  VX_TC_SYSCALL = 1u << 5,
+  VX_TC_SAMPLE = 1u << 6,
+  VX_TC_MARK = 1u << 7,
+};
+
+typedef struct vx_trace_start {
+  uint32_t categories;
+  uint32_t circular;  // 0: oneshot (stop writing when full); 1: overwrite the oldest
+  uint64_t ring_size; // bytes per CPU, a multiple of 4096 (0: 1 MiB)
+} vx_trace_start;
+
+// What a record is (its kind), and its a and b.
+enum vx_trace_kind : uint16_t {
+  VX_TK_SWITCH = 1,  // a: the thread out (tid) and its state << 32; b: the thread in
+  VX_TK_WAKE,        // a: the woken thread; b: the waker (0: an interrupt or the kernel)
+  VX_TK_BLOCK,       // a: why (enum vx_trace_block); b: the object waited on (its address, an id)
+  VX_TK_CALL,        // a: the channel; b: the flow (0 until flows, 7a2)
+  VX_TK_REPLY,       // a: the channel; b: the flow
+  VX_TK_DONATE,      // a: the thread lent to; b: 0
+  VX_TK_RETURN,      // a: the thread whose loan ended
+  VX_TK_IRQ_IN,      // a: the line
+  VX_TK_IRQ_OUT,     // a: the line
+  VX_TK_TIMER,       // a: the deadline it was armed for
+  VX_TK_FAULT,       // a: the address; b: enum vx_trace_fault
+  VX_TK_PAGER_WAIT,  // a: the VMO (an id); b: the offset
+  VX_TK_PAGER_DONE,  // a: the VMO; b: the offset
+  VX_TK_FUTEX_WAIT,  // a: the word's key; b: 0
+  VX_TK_FUTEX_WOKEN, // a: the key; b: ns waited
+  VX_TK_SYS_IN,      // a: the syscall's number
+  VX_TK_SYS_OUT,     // a: the number; b: its result
+  VX_TK_MARK,        // a, b: up to 16 bytes of text
+};
+
+enum vx_trace_block : uint32_t {
+  VX_TB_PORT = 1,
+  VX_TB_FUTEX,
+  VX_TB_CHANNEL,
+  VX_TB_PAGER,
+  VX_TB_EXCEPTION,
+  VX_TB_SLEEP,
+};
+
+enum vx_trace_fault : uint32_t {
+  VX_TF_LAZY = 1, // an anonymous lazy page made zero at the touch (ADR-0046)
+  VX_TF_PAGER,    // a page its pager had supplied, mapped
+  VX_TF_UPGRADE,  // a page mapped read-only, written: now writable (dirty)
+  VX_TF_STANDS,   // none of these: the fault is an exception
+};
+
+// A record. tid is a thread: its task's id << 12 | its id in the task
+// (thread_create_id's), 0 for the kernel's own; time is the cycle counter
+// (/sys/clock/info gives its frequency).
+typedef struct vx_trace_record {
+  uint64_t time;
+  uint16_t kind; // enum vx_trace_kind
+  uint16_t cpu;
+  uint32_t tid;
+  uint64_t a, b;
+} vx_trace_record;
+static_assert(sizeof(vx_trace_record) == 32);
+
+// The rings' VMO (VX_TRACE_RINGS): for each CPU, at i * stride, a page of
+// this header, then ring_size bytes of records. head counts records ever
+// written; the newest is at (head - 1) % (ring_size / 32). In oneshot mode a
+// full ring drops what follows; in circular mode a reader takes the newest
+// ring_size / 32. Drops are counted with the time of the first and the last.
+typedef struct vx_trace_ring {
+  uint32_t magic; // VX_TRACE_MAGIC
+  uint32_t cpu;
+  uint64_t ring_size, stride;
+  uint32_t cpus, circular;
+  _Atomic uint64_t head;
+  uint64_t dropped, first_drop, last_drop;
+  uint64_t counter_hz; // the cycle counter's frequency
+} vx_trace_ring;
+static constexpr uint32_t VX_TRACE_MAGIC = 0x6563'7274; // "trce"

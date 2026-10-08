@@ -133,11 +133,13 @@ static vx_status irq_create_msi(uint32_t source, irq **out, vx_msi *msi) {
 
 // The line fired: called by the architecture's interrupt handler.
 static void irq_fire(uint32_t line) {
+  TRACE(VX_TC_IRQ, VX_TK_IRQ_IN, line, 0);
   spin_lock(&irq_lines_lock);
   irq *q = line < MAX_IRQ_LINES ? irq_lines[line] : nullptr;
   if (!q) {
     arch_irq_mask(line, true); // no one owns it: keep it quiet
     spin_unlock(&irq_lines_lock);
+    TRACE(VX_TC_IRQ, VX_TK_IRQ_OUT, line, 0);
     return;
   }
   spin_lock(&q->lock);
@@ -152,6 +154,7 @@ static void irq_fire(uint32_t line) {
     q->pending = true;
   spin_unlock(&q->lock);
   spin_unlock(&irq_lines_lock);
+  TRACE(VX_TC_IRQ, VX_TK_IRQ_OUT, line, 0);
 }
 
 static vx_status irq_bind(irq *q, binding *b) {
