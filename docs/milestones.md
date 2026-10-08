@@ -53,7 +53,7 @@ POSIX programs run on musl over a back end that speaks 9Px, with `fork`, signals
 | 6e1 | Address-space calls, seals and leases, `/env`, identity, 9Px `notify`, `vx_heap` | Done |
 | 6e2 | The native target: llvm-libc and libc++ (ADR-0033) | Done |
 | 6e3 | Swift on VectraOS: concurrency and Foundation (ADR-0034) | Done but `dbg` for Swift, tabled |
-| 6e4 | `libvx` v0 (ADR-0004): headers and exports, arenas, strings and formatting, processes and threads, the event loop, the file calls done; asynchronous files, the behaviour suite, and the freeze at M6's close to come | In progress |
+| 6e4 | `libvx` v0 (ADR-0004): headers and exports, arenas, strings and formatting, processes and threads, the event loop, the file calls and asynchronous files done; the behaviour suite, and the freeze at M6's close to come | In progress |
 | 6f1 | The dynamic loader; `libvx`, `libc` and libc++ shared | Done |
 | 6f2 | C++ exceptions (libunwind); llama.cpp deferred | Done but llama.cpp |
 | 6f3 | The Swift runtime and Foundation shared, with an ABI check (ADR-0048) | Done |
