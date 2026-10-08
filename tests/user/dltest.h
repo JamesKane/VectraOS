@@ -15,6 +15,7 @@ extern thread_local int a_tls;
 extern int a_counter;
 extern int (*a_fn)(int);
 extern int a_inits_seen;
+extern const char *a_greeting; // a pointer the library relocates, which the program copies
 int a_compute(int x);
 int a_tls_bump(void);
 int a_b_tls(void);

@@ -112,7 +112,7 @@ What is turned on, in the order it lands:
   - the frame-pointer and DWARF attributes in the objects.
 
   A change to patch 0002 or 0003 then fails here until the configuration and response files follow.
-- **Shared libraries:** static only, until the loader (6f). Whether the C library then becomes shared beside `libvx` is decided in 6f.
+- **Shared libraries:** static only, until the loader (6f). Whether the C library then becomes shared beside `libvx` is decided in 6f. *Decided 2026-10-08 (M6 step 6f1c):* the C library and the C++ libraries both become shared, `/lib/libc.so` (6f1c1) and libc++'s and libc++abi's (6f1c2). Their exported symbols join the release's binary interface beside `libvx`'s: a fix reaches every program with the release, and a changed behaviour is a release note (09 §4.8). `libc.so` is llvm-libc's archives linked whole by `./build`, compiled `-fPIC` with initial-exec TLS (`build_libc.sh`; LLVM patches 0018–0020: `-fPIC` in place of `-fpie`, and default visibility for the entrypoints, the `__cxa_*` exit functions, `__llvm_libc_thread_main` and the baremetal stdio hooks).
 - **Shipping:** the sysroot ships in the `devel` set (06 §3.2) from M12, and is built by `./build` for every image before then.
 
 ### 4. The containment rule

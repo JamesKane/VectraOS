@@ -6,7 +6,7 @@
 
 scenario=dl timeout=60 cmdline=vx.skip=rc with=dltest,libdltesta.so,libdltestb.so,dlrc
 expect="dltest: hello from a dynamic program"
-expect="dltest: 11 checks, 0 failed"
+expect="dltest: 12 checks, 0 failed"
 expect="dlrc: passed"
 line="svcd: dlrc exited"
 fail="vx: panic"

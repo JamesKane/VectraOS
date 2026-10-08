@@ -1834,6 +1834,41 @@ static bool build_sysroot(const arch *a, bool release) {
                                  "max-page-size=0x1000", "-z", "noexecstack", "-z", "now", "-z", "relro",
                                  "--hash-style=both", "-o", fmt("%s/usr/lib/libvx.so", s), obj[2], nullptr});
   if (!run(&so)) die("cannot make the %s sysroot's libvx.so", a->name);
+  // libc.so (6f1c1, decided 2026-10-08: the C library shared, ADR-0033 §3):
+  // llvm-libc's archives whole, built -fPIC with initial-exec TLS, and the
+  // builtins they call, not exported. The hooks it calls are libvx.so's,
+  // bound when the loader starts a program, which links both. libm.so is a
+  // script naming it, so -lm finds the same library.
+  const char *lib = fmt("%s/usr/lib", s);
+  cmd lc = {};
+  cmd_addv(&lc, (const char *const[]){LLD,
+                                      "-shared",
+                                      "-soname",
+                                      "libc.so",
+                                      "-nostdlib",
+                                      "--build-id=sha1",
+                                      "-z",
+                                      "max-page-size=0x1000",
+                                      "-z",
+                                      "noexecstack",
+                                      "-z",
+                                      "now",
+                                      "-z",
+                                      "relro",
+                                      "--hash-style=both",
+                                      "--exclude-libs",
+                                      "libclang_rt.builtins.a",
+                                      "-o",
+                                      fmt("%s/libc.so", lib),
+                                      "--whole-archive",
+                                      fmt("%s/libc.a", lib),
+                                      fmt("%s/libm.a", lib),
+                                      "--no-whole-archive",
+                                      fmt("%s/libclang_rt.builtins.a", lib),
+                                      nullptr});
+  if (!run(&lc)) die("cannot make the %s sysroot's libc.so", a->name);
+  static const char LIBM[] = "/* llvm-libc's libm is in libc.so (6f1c1) */\nINPUT(-lc)\n";
+  write_file(fmt("%s/libm.so", lib), (vx_str){LIBM, sizeof LIBM - 1});
   return true;
 }
 
@@ -3191,6 +3226,13 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
     bootfs_room(count);
     files[count] = read_file(musl_so);
     paths[count++] = fmt("lib/ld-musl-%s.so.1", a->name);
+  }
+  // libc.so, the native C library, shared (6f1c1).
+  const char *libc_so = fmt("%s/usr/lib/libc.so", sysroot_dir(a, release));
+  if (exists(libc_so)) {
+    bootfs_room(count);
+    files[count] = read_file(libc_so);
+    paths[count++] = "lib/libc.so";
   }
   // libvx.so, which native programs link dynamically (6f1b1, ADR-0047), when
   // this architecture has the native target's sysroot.

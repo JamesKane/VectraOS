@@ -10,6 +10,7 @@ int a_counter = 5;
 int (*a_fn)(int) = b_add;
 static const char *const a_names[] = {"one", "two"};
 int a_inits_seen = -1;
+const char *a_greeting = "hello";
 
 [[gnu::constructor]] static void a_init(void) { a_inits_seen = b_inits; }
 

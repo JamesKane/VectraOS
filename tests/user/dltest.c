@@ -38,6 +38,7 @@ const char *vx_main(void) {
   check(a_counter == 5, "data copied into the program");
   a_counter = 6;
   check(a_counter == 6, "the copy is the program's to change");
+  check(a_greeting && eq(a_greeting, "hello"), "a copied pointer, relocated in its library first");
   check(eq(a_name(1), "two"), "relative relocations");
   check(a_inits_seen == 1, "b's constructor before a's");
   int ok = 0;

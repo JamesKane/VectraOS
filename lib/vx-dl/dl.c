@@ -455,8 +455,10 @@ static bool vxdl_relocate(vxdl *dl, uint32_t k) {
       if (!vxdl_load_lib(dl, vxdl_name(&dl->obj[k], (uint32_t)dl->obj[k].needed[i]))) return false;
   }
   vxdl_tls(dl);
-  for (uint32_t k = 0; k < dl->count; k++)
-    if (!vxdl_relocate(dl, k)) return false;
+  // The libraries first, the executable last: its COPY relocations copy a
+  // library's data (stdout's pointer, say) only once that is relocated.
+  for (uint32_t k = 1; k <= dl->count; k++)
+    if (!vxdl_relocate(dl, k % dl->count)) return false;
   for (uint32_t k = 0; k < dl->count; k++) { // bound: RELRO read-only now
     const vxdl_obj *o = &dl->obj[k];
     uint64_t lo = o->relro & ~4095ull, hi = (o->relro + o->relro_size) & ~4095ull;
