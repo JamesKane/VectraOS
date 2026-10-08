@@ -144,7 +144,7 @@ The records after it, in order:
 
 `release` makes a release of the commit checked out (`docs/06-install-update.md`).
 It builds both architectures with `--release`, and puts each one's base tree, what a boot slot holds and bootfs's files beside it, into the content store `out/release/store` with vxstore(8), and each tree's objects into `out/release/store-<arch>.tar`.
-It then writes the release's record, `out/release/release.ndb` (see release(6)): `release=` the number of commits, `name=dev-`<n>, `channel=dev`, the commit, with `+dirty` if the tree has uncommitted changes, `vx-abi=0`, `unsigned`, and a `set=base` record of each architecture's tree and size.
+It then writes the release's record, `out/release/release.ndb` (see release(6)): `release=` the number of commits, `name=dev-`<n>, `channel=dev`, the commit, with `+dirty` if the tree has uncommitted changes, `vx-abi=0`, `unsigned`, and a `set=base` record of each architecture's tree and size. With swift-on-vectra's toolchain beside the tree, it also dumps the shipped Swift libraries' ABI with `swift-api-digester` into `out/release/swift-abi/`<arch> and records each architecture's hash (`swift-abi=`); with baselines in `abi/swift/`<triple> (from the ABI's freeze on, ADR-0048), it writes each module's changes into `out/release/swift-abi/`<arch>`-changes` and names them, and a removal fails the release once `VX_ABI_LEVEL` is 1 or more.
 It needs git.
 
 : `--verify` <record>

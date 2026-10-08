@@ -7,6 +7,7 @@ page=release sect=6 summary="release records"
 ```ndb
 release=N name=NAME channel=CHANNEL commit=COMMIT vx-abi=LEVELS unsigned
 set=base arch=ARCH tree=b2:HASH size=BYTES
+swift-abi=SHA256 arch=ARCH
 ```
 
 # DESCRIPTION
@@ -60,6 +61,12 @@ A record with a key not defined below is refused: install(8) fails, and distd(8)
 : `size`
   The bytes of the tree's files, decimal, as vxstore(8) counts them.
   Written by `./build release`, not by install media; not read.
+
+## The Swift libraries' ABI
+
+: `swift-abi`
+  With `arch`, a record of its own for each architecture: the SHA-256 of the shipped Swift libraries' ABI, as `swift-api-digester -dump-sdk -abi` writes it for each module (ADR-0048 item 4, M6 step 6f3d), hashed as a tree.
+  Two releases with the same hash have the same Swift ABI. `./build release` writes it when it has the Swift toolchain; not read.
 
 # EXAMPLES
 

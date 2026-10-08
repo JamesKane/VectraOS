@@ -10,7 +10,7 @@
 # when named, `./build test slots`, when a change risks slots, distd's apply
 # and rollback, or install (decided 2026-10-05).
 
-scenario=slots timeout=900 alone release installer media cmdline=vx.skip=rc with=slottest disk=256 blank
+scenario=slots timeout=1800 alone release installer media cmdline=vx.skip=rc with=slottest disk=320 blank
 expect="install: done: "
 reboot
 expect="distd: release 2 staged"

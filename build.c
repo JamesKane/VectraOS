@@ -1824,7 +1824,6 @@ static bool build_sysroot(const arch *a, bool release) {
   copy_file("lib/vx-rt/sysroot/link-head.rsp", fmt("%s/link-head.rsp", s));
   copy_file("lib/vx-rt/sysroot/link-tail.rsp", fmt("%s/link-tail.rsp", s));
   bool cxx = sysroot_cxx(a, s, from);
-  probe_sysroot(a, s, fmt("%s/toolchain/out/bin", from), cxx); // the two compilers agree, or it stops
   // ISO C alone: a program asking for POSIX is refused when it compiles (6e2c1).
   const char *posix = fmt("%s/posix-probe.c", s);
   static const char POSIX_PROBE[] = "#define _POSIX_C_SOURCE 200809L\n#include <stdio.h>\n";
@@ -1908,6 +1907,10 @@ static bool build_sysroot(const arch *a, bool release) {
   if (!run(&lc)) die("cannot make the %s sysroot's libc.so", a->name);
   static const char LIBM[] = "/* llvm-libc's libm is in libc.so (6f1c1) */\nINPUT(-lc)\n";
   write_file(fmt("%s/libm.so", lib), (vx_str){LIBM, sizeof LIBM - 1});
+  // The two compilers agree, or it stops: once the sysroot is whole, since
+  // clang's Vectra toolchain links crt1.o only when it is there (a fresh
+  // sysroot, a first release build, had none at the probe).
+  probe_sysroot(a, s, fmt("%s/toolchain/out/bin", from), cxx);
   return true;
 }
 
@@ -3714,6 +3717,77 @@ static bool release_tree(const arch *a, const char *store, char tree[VX_STORE_HE
   return run(&tar);
 }
 
+// The shipped Swift libraries' modules (ADR-0048), as swift-api-digester
+// names them.
+static const char *const SWIFT_ABI_MODULES[] = {
+    "Swift",        "_Concurrency", "Synchronization", "_StringProcessing",   "_RegexParser",
+    "RegexBuilder", "Observation",  "VectraOSLibc",    "FoundationEssentials"};
+
+// The Swift libraries' ABI for a release (6f3d, ADR-0048 item 4): each
+// module's swift-api-digester dump, in out/release/swift-abi/ARCH, and the
+// dumps' hash in *hash; against the baselines in abi/swift/TRIPLE, if the
+// tree has them (from the freeze on), each module's ABI changes reported, in
+// out/release/swift-abi/ARCH-changes.
+// A break fails the release once the ABI is frozen (VX_ABI_LEVEL >= 1).
+// False with nothing to dump: no Swift toolchain here.
+static bool release_swift_abi(const arch *a, char hash[65], bool *broken) {
+  const char *tc = fmt("%s/toolchain/out", swift_on_vectra()), *triple = sysroot_triple(a);
+  const char *dig = fmt("%s/bin/swift-api-digester", tc), *sdk = fmt("%s/sdk/%s", tc, triple);
+  if (!exists(dig) || !exists(fmt("%s/usr/lib/swift/vectraos/libswiftCore.so", sdk))) return false;
+  const char *dir = fmt("out/release/swift-abi/%s", a->name), *base = fmt("abi/swift/%s", triple);
+  const char *changes_dir = fmt("out/release/swift-abi/%s-changes", a->name);
+  cmd rm = {};
+  cmd_addv(&rm, (const char *const[]){"/usr/bin/rm", "-rf", dir, changes_dir, nullptr});
+  if (!run(&rm)) return false;
+  mkdirs(dir);
+  *broken = false;
+  for (size_t i = 0; i < sizeof SWIFT_ABI_MODULES / sizeof SWIFT_ABI_MODULES[0]; i++) {
+    const char *m = SWIFT_ABI_MODULES[i];
+    const char *const common[] = {dig,
+                                  "-abi",
+                                  "-module",
+                                  m,
+                                  "-target",
+                                  triple,
+                                  "-sdk",
+                                  sdk,
+                                  "-resource-dir",
+                                  fmt("%s/usr/lib/swift", sdk),
+                                  "-I",
+                                  fmt("%s/usr/lib/swift/vectraos", sdk),
+                                  "-module-cache-path",
+                                  fmt("out/release/swift-abi/cache-%s", a->name),
+                                  nullptr};
+    cmd dump = {};
+    cmd_addv(&dump, common);
+    cmd_addv(&dump, (const char *const[]){"-dump-sdk", "-o", fmt("%s/%s.json", dir, m), nullptr});
+    if (!run(&dump)) die("swift-api-digester cannot dump %s for %s", m, triple);
+    const char *baseline = fmt("%s/%s.json", base, m);
+    if (!exists(baseline)) continue;
+    mkdirs(changes_dir);
+    const char *report = fmt("%s/%s.changes", changes_dir, m);
+    cmd diag = {};
+    cmd_addv(&diag, common);
+    cmd_addv(&diag,
+             (const char *const[]){"-diagnose-sdk", "-baseline-path", baseline, "-o", report, nullptr});
+    run(&diag); // it reports through the file
+    // The report has a /* section */ header for each kind of change, even
+    // with none: a change is any other line.
+    vx_str r = exists(report) ? read_file(report) : (vx_str){};
+    uint32_t changes = 0;
+    for (size_t at = 0; at < r.len;) {
+      size_t e = at;
+      while (e < r.len && r.ptr[e] != '\n') e++;
+      bool header = e - at >= 2 && r.ptr[at] == '/' && r.ptr[at + 1] == '*';
+      changes += e > at && !header;
+      if (e > at && !header && memmem(r.ptr + at, e - at, "has been removed", 16)) *broken = true;
+      at = e + 1;
+    }
+    if (changes) fprintf(stderr, "  SWIFT %-8s %s: %u ABI changes, in %s\n", a->name, m, changes, report);
+  }
+  return tree_sha256(dir, hash);
+}
+
 // ./build release: both architectures' base trees in out/release/store,
 // each one's objects as out/release/store-ARCH.tar, and the release record,
 // out/release/release.ndb, unsigned until M10 (06 §5). With --verify RECORD:
@@ -3759,6 +3833,21 @@ static int cmd_release(const char *verify) {
               same ? "the record's tree" : "NOT the record's tree");
       mismatches += !same;
     }
+  }
+  for (int i = 0; i < ARCH_COUNT && !verify; i++) { // the Swift libraries' ABI (6f3d)
+    char hash[65];
+    bool broken = false;
+    if (!release_swift_abi(&ARCHES[i], hash, &broken)) continue;
+    fprintf(stderr, "  SWIFT %-8s ABI %.16s… (out/release/swift-abi/%s)\n", ARCHES[i].name, hash,
+            ARCHES[i].name);
+    vx_ndb_put(&w, "swift-abi", (vx_str){hash, 64});
+    vx_ndb_put(&w, "arch", (vx_str){ARCHES[i].name, strlen(ARCHES[i].name)});
+    vx_ndb_end(&w);
+    if (broken && VX_ABI_LEVEL >= 1)
+      die("the Swift libraries' ABI broke against abi/swift (ADR-0048 item 4)");
+    if (broken)
+      fprintf(stderr, "  SWIFT %-8s ABI broken against abi/swift: allowed while the ABI is a draft\n",
+              ARCHES[i].name);
   }
   if (w.failed) die("the release record does not fit");
   if (verify) return mismatches ? 1 : 0;
