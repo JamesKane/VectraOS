@@ -56,6 +56,7 @@ A service's spawn message holds these, each only when its manifest asks:
 | `pager` | `pager` | the root Resource with only the right to make pagers (fsd(4)) |
 | `acpi` | `acpi` | the ACPI tables, with their size |
 | `tasks` | `tasks` | `svcd`'s own task, and through it every task (procfs) |
+| `trace` | `trace` | a Resource handle with `VX_RIGHT_TRACE` alone: the kernel's trace and nothing else (procfs, ADR-0049) |
 | `cmdline` | | the kernel command line, as a record |
 | `entropy` | | a 32-byte seed of its own, from `svcd`'s generator |
 | `claim=` | `claim:<srv>` | a post's server end |

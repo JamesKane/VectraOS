@@ -1,0 +1,34 @@
+page=trace sect=1 summary="capture the kernel's trace, and print it"
+    names=trace
+    src=cmd/trace.c
+    keys=trace,tracing,profile,ktrace,scheduler,latency,events
+
+# SYNOPSIS
+
+```usage
+trace -c CATEGORIES [-t DURATION] [-o FILE]
+trace -p [FILE]
+```
+
+# DESCRIPTION
+
+`trace` is the kernel's trace (ADR-0049, 20 §7) from the shell, through procfs(4)'s `/proc/trace`, which only an administrator sees.
+
+With `-c` it starts a trace of the comma-separated CATEGORIES (`sched`, `ipc`, `irq`, `vm`, `futex`, `syscall`, `mark`), waits DURATION (digits then `ms`, `s` or `m`; a second by default), stops it, and saves the events, 32-byte records ordered by time, to FILE (`trace.out` by default), saying how many.
+
+With `-p` it prints the events of FILE, or the live `/proc/trace/events` without one, one ndb record a line: `time`, `cpu`, the `task` and `thread` that wrote it, `kind`, and the kind's two words (a mark's text; a switch's, wake's or donation's threads by task and thread).
+
+# EXAMPLES
+
+```
+trace -c sched,ipc -t 2s -o /tmp/boot.trace
+trace -p /tmp/boot.trace | grep kind=wake
+```
+
+# SEE ALSO
+
+procfs(4), trace_configure(2); `docs/20-tracing.md` in the repository
+
+# BUGS
+
+`-s`, a summary of the slowest flows and longest blocks, comes with flows (M7 step 7a2).

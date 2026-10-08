@@ -2,6 +2,6 @@
 # /srv/proc. It sees every task through svcd's own, asks nsd for a
 # process's namespace (/proc/N/ns), and writes crash directories to tmpfs.
 
-service=procfs program=/boot/bin/procfs post=proc tasks console restart
+service=procfs program=/boot/bin/procfs post=proc tasks trace console restart
 connect=nsd
 connect=tmpfs

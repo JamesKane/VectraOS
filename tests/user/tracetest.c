@@ -1,0 +1,144 @@
+// tracetest: the kernel's trace through /proc/trace (M7 step 7a1b, ADR-0049),
+// the trace scenario's (tests/qemu/trace.ndb). As adm it starts a trace,
+// spawns itself as a child that writes to it through a pipe, maps a file on
+// fsd and touches it, stops, and checks the records: its wake by the child,
+// the pager's fault at the address, the spawn's syscalls, and that every
+// wake's waker is a thread the trace saw.
+
+#include "../../lib/vx-rt/rt.c"
+#include "../../lib/vx-ns/nsapi.c"
+
+static uint32_t checks, failures;
+
+static void check_at(bool ok, const char *what, int line) {
+  checks++;
+  if (ok) return;
+  failures++;
+  vx_printf("tracetest: FAILED line %d: %s\n", line, what);
+}
+
+#define CHECK(cond) check_at((cond), #cond, __LINE__)
+
+static vx_status ctl(const char *cmd) { return vx_ctl(VX_STR("/proc/trace/ctl"), "%s", cmd); }
+
+static uint32_t tid_task(uint32_t tid) { return tid >> 12; }
+
+const char *vx_main(void) {
+  if (vx_str_eq(vx_arg(1), VX_STR("child"))) { // the child: a line down its stdout, a pipe
+    vx_sleep_until(vx_now() + 50'000'000, 0);  // after its parent waits: its write is the wake
+    vx_printf("from the child\n");
+    return nullptr;
+  }
+  vx_arena *a = vx_arena_new(64 << 20);
+  vx_dir d;
+  CHECK(vx_stat(VX_STR("/proc/trace/status"), a, &d) == VX_OK); // adm sees it
+  CHECK(ctl("start sched,ipc,vm,syscall,mark size 1M") == VX_OK);
+
+  // A spawn and a pipe: the child writes, this process waits on its end.
+  vx_handle pipe[2];
+  CHECK(vx_channel_create(0, pipe) == VX_OK);
+  vx_str args[] = {VX_STR("tracetest"), VX_STR("child")};
+  vx_str names[] = {VX_STR("stdout")};
+  vx_spawn_req req = {
+      .path = vx_exe_path(), .args = {args, 2}, .handles = &pipe[1], .handle_names = names, .nhandles = 1};
+  vx_proc kid = {};
+  CHECK(vx_proc_spawn(&req, &kid) == VX_OK);
+  vx_handle port;
+  CHECK(vx_port_create(0, &port) == VX_OK && vx_port_bind(port, pipe[0], VX_TRIGGER_READABLE, 1, 0) == VX_OK);
+  vx_packet pk;
+  CHECK(vx_port_wait(port, vx_now() + 10'000'000'000, 0, &pk, 1) == 1);
+  vx_proc_wait(kid, VX_INFINITE, a, nullptr);
+
+  // A page fault on fsd: a file of the volume, mapped read-only and touched.
+  vx_fd f = vx_open(VX_STR("/n/home/hello.txt"), VX_OREAD);
+  void *m = nullptr;
+  CHECK(f >= 0 && vx_map(f, 0, 4096, 0, &m) == VX_OK && m);
+  uint64_t touched = (uint64_t)m;
+  char first = m ? ((volatile char *)m)[0] : 0;
+  CHECK(first != 0);
+  CHECK(ctl("mark tracetest end") == VX_OK);
+  CHECK(ctl("stop") == VX_OK);
+
+  // The records.
+  vx_fd ev = vx_open(VX_STR("/proc/trace/events"), VX_OREAD);
+  vx_trace_record *r = vx_push(a, 32 << 20, 32);
+  size_t n = 0;
+  int64_t got;
+  size_t bytes = 0; // a read need not end on a record: counted in bytes
+  while (ev >= 0 && r && (got = vx_read(ev, (vx_bytes){(uint8_t *)r + bytes, (32 << 20) - bytes})) > 0)
+    bytes += (size_t)got;
+  n = bytes / sizeof *r;
+  vx_close(ev);
+  vx_task_summary me;
+  vx_task_info(vx_task_self(), &me);
+  uint32_t self_task = (uint32_t)me.id, kid_task = (uint32_t)kid.pid;
+  bool sw = false, wake_by_kid = false, blocked = false, fault = false, mark = false, kid_ran = false,
+       spawned = false;
+  for (size_t i = 0; i < n; i++) {
+    sw = sw || r[i].kind == VX_TK_SWITCH;
+    kid_ran = kid_ran || tid_task(r[i].tid) == kid_task;
+    wake_by_kid = wake_by_kid || (r[i].kind == VX_TK_WAKE && tid_task((uint32_t)r[i].a) == self_task &&
+                                  tid_task((uint32_t)r[i].b) == kid_task);
+    blocked =
+        blocked || (r[i].kind == VX_TK_BLOCK && tid_task(r[i].tid) == self_task && r[i].a == VX_TB_PORT);
+    fault = fault || (r[i].kind == VX_TK_FAULT && r[i].a == touched && r[i].b == VX_TF_PAGER);
+    mark = mark || (r[i].kind == VX_TK_MARK && memcmp(&r[i].a, "tracetest end", 13) == 0);
+    spawned = spawned ||
+              (r[i].kind == VX_TK_SYS_IN && r[i].a == VX_SYS_task_create && tid_task(r[i].tid) == self_task);
+  }
+  CHECK(n > 0 && sw && kid_ran && spawned);
+  CHECK(blocked && wake_by_kid);
+  CHECK(fault && mark);
+  // Every wake's waker is 0 (a deadline) or a thread the trace saw run.
+  bool wakers = true;
+  for (size_t i = 0; i < n && wakers; i++) {
+    if (r[i].kind != VX_TK_WAKE || !r[i].b) continue;
+    bool seen = false;
+    for (size_t j = 0; j < n && !seen; j++) seen = r[j].tid == (uint32_t)r[i].b;
+    wakers = seen;
+  }
+  CHECK(wakers);
+  // Ordered by time, and status says what ran.
+  bool ordered = true;
+  for (size_t i = 1; i < n; i++) ordered = ordered && r[i].time >= r[i - 1].time;
+  CHECK(ordered);
+  vx_fd st = vx_open(VX_STR("/proc/trace/status"), VX_OREAD);
+  char text[4096];
+  int64_t sl = st >= 0 ? vx_read(st, (vx_bytes){(uint8_t *)text, sizeof text}) : -1;
+  CHECK(sl > 0 && vx_str_find((vx_str){text, (size_t)sl}, VX_STR("trace=off")) >= 0 &&
+        vx_str_find((vx_str){text, (size_t)sl}, VX_STR("dropped=0")) >= 0);
+  // trace(1) prints the same events as text: the mark among them.
+  vx_handle out[2];
+  CHECK(vx_channel_create(0, out) == VX_OK);
+  vx_str targs[] = {VX_STR("trace"), VX_STR("-p")};
+  vx_spawn_req treq = {.path = VX_STR("/boot/bin/trace"),
+                       .args = {targs, 2},
+                       .handles = &out[1],
+                       .handle_names = names,
+                       .nhandles = 1};
+  vx_proc tp = {};
+  CHECK(vx_proc_spawn(&treq, &tp) == VX_OK);
+  bool printed = false;
+  static uint8_t msg[sizeof(vx_msg_header) + 4096];
+  for (;;) {
+    vx_msg_size size;
+    vx_status rs = vx_channel_read(out[0], msg, sizeof msg, nullptr, 0, &size);
+    if (rs == VX_ERR_SHOULD_WAIT) {
+      vx_handle wait_port;
+      vx_port_create(0, &wait_port);
+      vx_port_bind(wait_port, out[0], VX_TRIGGER_READABLE, 1, 0);
+      vx_port_bind(wait_port, out[0], VX_TRIGGER_PEER_CLOSED, 2, 0);
+      vx_port_wait(wait_port, vx_now() + 10'000'000'000, 0, &pk, 1);
+      vx_handle_close(wait_port);
+      continue;
+    }
+    if (rs != VX_OK) break; // trace has ended
+    vx_str got_text = {(const char *)msg + sizeof(vx_msg_header), size.bytes - sizeof(vx_msg_header)};
+    printed = printed || vx_str_find(got_text, VX_STR("kind=mark text=\"tracetest end\"")) >= 0;
+  }
+  vx_str tex = VX_STR("unset");
+  CHECK(printed && vx_proc_wait(tp, VX_INFINITE, a, &tex) == VX_OK && tex.len == 0);
+  vx_printf("tracetest: %zu records\n", n);
+  vx_printf("tracetest: %u checks, %u failed\n", checks, failures);
+  return failures ? "failed" : nullptr;
+}

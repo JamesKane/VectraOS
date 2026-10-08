@@ -1,0 +1,12 @@
+# tests/qemu/trace.ndb: the kernel's trace (M7 step 7a1b, ADR-0049): a
+# spawn, a pipe and a page fault on fsd, captured through /proc/trace and
+# checked record by record (tests/user/tracetest.c).
+
+scenario=trace timeout=90 cmdline=vx.skip=rc with=tracetest,fsdvol disk=64 volume=tests/fsd/home
+expect="fsd: serving /srv/fsd"
+expect="tracetest: 19 checks, 0 failed"
+line="svcd: tracetest exited"
+fail="vx: panic"
+fail="tracetest: FAILED"
+fail="svcd: tracetest exited: "
+fail="fsd: FAILED"

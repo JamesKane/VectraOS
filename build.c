@@ -1430,6 +1430,8 @@ static const program USER_PROGRAMS[] = {
      nullptr},
     {"starttest", "tests/user/starttest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr},
+    {"tracetest", "tests/user/tracetest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr}, // the kernel's trace, /proc/trace (7a1b)
     {"libvxtest", "tests/user/libvxtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, true, LINK_DYNAMIC,
      nullptr}, // native since 6e4e: the behaviour suite, with vxapitest
     {"vxapitest", "tests/user/vxapitest.c", IN_TESTS, nullptr, false, nullptr, nullptr, true, LINK_DYNAMIC,
@@ -1466,6 +1468,7 @@ static const program USER_PROGRAMS[] = {
     {"echo", "cmd/echo.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
     {"pwd", "cmd/pwd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
     {"ps", "cmd/ps.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"trace", "cmd/trace.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
     {"ns", "cmd/ns.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
     {"tail", "cmd/tail.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
     {"ping", "cmd/ping.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
@@ -2382,6 +2385,8 @@ static bool build_user_programs(const arch *a, bool release) {
       cmd_add(&ld[n], fmt("%s/libc.so", lib));
       cmd_add(&ld[n], fmt("%s/libclang_rt.builtins.a", lib));
       cmd_add(&ld[n], fmt("%s/crtn.o", lib));
+    } else { // what the compiler calls itself: aarch64's long double conversions, for vx-text's %Lf
+      cmd_add(&ld[n], fmt("%s/libclang_rt.builtins.a", lib));
     }
     ccs[n] = &cc[n];
     lds[n] = &ld[n];

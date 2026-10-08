@@ -1,6 +1,6 @@
 page=procfs sect=4 summary="process file system"
-    src=servers/procfs/procfs.c,servers/procfs/debug.c,servers/procfs/crash.c,servers/procfs/prof.c,lib/vx-proc/proc.h
-    keys=proc,process,pid,note,notepg,noteid,wait,ctl,debug,breakpoint,watchpoint,registers,crash,profile,zones
+    src=servers/procfs/procfs.c,servers/procfs/debug.c,servers/procfs/crash.c,servers/procfs/prof.c,servers/procfs/trace.c,lib/vx-proc/proc.h
+    keys=proc,process,pid,note,notepg,noteid,wait,ctl,debug,breakpoint,watchpoint,registers,crash,profile,zones,trace
 
 # SYNOPSIS
 
@@ -215,6 +215,22 @@ The VMO holds a ring for each thread (M6 step 6d6b): the first 32 threads that t
   Its times are in cycles of the counter sysfs(4) describes in `/sys/clock/info`.
 
 `prof` is listed in the process's directory, and its two files in it.
+
+@node=trace title="The kernel's trace"
+
+`/proc/trace` is the kernel's trace (ADR-0049, M7 step 7a1), which procfs reads through the trace-only Resource svcd gives it (svc(6)'s `trace`).
+It shows every process's activity, so it is a broad grant (ADR-0029): the directory is there only for an attach by an administrator, as users(6)'s default has it (procfs has no namespace in which to read `/adm/users`).
+
+: `trace/ctl`
+  `start CATEGORIES [size N[k|m]] [circular]` (the categories comma-separated: `sched`, `ipc`, `irq`, `vm`, `futex`, `syscall`, `mark`), `stop`, `rewind`, `mark TEXT` (16 bytes).
+: `trace/events`
+  Every CPU's ring merged by time, oldest first: 32-byte records, as `.schema` says. A read at offset 0 takes a snapshot, which later reads continue, so a reader sees one stream however it splits its reads (and a read need not end on a record).
+: `trace/status`
+  ndb: `trace=on|off`, the categories, the mode and the ring size; then one record per ring with its `records`, `dropped` and, if any were, `first_drop` and `last_drop`, and `hz`, the cycle counter's frequency.
+: `trace/.schema`
+  The record's fields and each kind's words.
+
+trace(1) captures and prints it.
 
 @node=crash title="Crash directories"
 

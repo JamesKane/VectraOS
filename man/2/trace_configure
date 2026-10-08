@@ -1,0 +1,31 @@
+page=trace_configure sect=2 summary="start, stop and read the kernel's trace"
+    names=trace_configure,vx_trace_configure
+    src=kernel/trace.c,kernel/trace.h,abi/vx/abi.h
+    keys=trace,ring,record,probe,category,ktrace
+
+# SYNOPSIS
+
+```c
+vx_status vx_trace_configure(vx_handle resource, uint32_t op, void *data,
+                             uint64_t len);
+```
+
+# DESCRIPTION
+
+The kernel's trace (ADR-0049, M7 step 7a1): one ring per CPU of fixed 32-byte records, `vx_trace_record` (`time` on the cycle counter, `kind`, `cpu`, `tid` as task id << 12 | thread id in the task, and two words), written by the CPU itself with interrupts off.
+<resource> is a Resource handle with `VX_RIGHT_TRACE`, which svcd gives procfs(4) alone (svc(6)'s `trace`), or the root's MANAGE.
+
+`VX_TRACE_START`, with <data> a `vx_trace_start`: the categories (`VX_TC_SCHED`, `VX_TC_IPC`, `VX_TC_IRQ`, `VX_TC_VM`, `VX_TC_FUTEX`, `VX_TC_SYSCALL`, `VX_TC_MARK`), the ring size per CPU (a multiple of 4096; 0 for 1 MiB) and whether a full ring drops what follows (oneshot, counting it) or overwrites the oldest (circular). The rings start empty.
+`VX_TRACE_STOP` stops writing and returns once no CPU is mid-record. `VX_TRACE_REWIND` empties the rings.
+`VX_TRACE_RINGS` puts at <data> (a `vx_handle`) a read-only handle to the rings' VMO: for each CPU at `i * stride`, a header page (`vx_trace_ring`: `head`, the drops and the times of the first and last, the counter's frequency) and then its records.
+`VX_TRACE_MARK` writes <data>, up to 16 bytes, as one `VX_TK_MARK` record.
+
+What each kind's words mean is in `abi/vx/abi.h` and `/proc/trace/.schema`.
+
+# SEE ALSO
+
+trace(1), procfs(4), `docs/adr/0049-kernel-trace.md` in the repository
+
+# BUGS
+
+Sampling (`VX_TC_SAMPLE`) comes in M7 step 7a3; flows fill a call's and reply's second word in 7a2, the txid until then.

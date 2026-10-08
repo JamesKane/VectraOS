@@ -1,0 +1,8 @@
+# tests/user/tracetest.ndb: tracetest, the kernel's trace through
+# /proc/trace (tests/qemu/trace.ndb): as adm, which alone sees it.
+
+service=tracetest program=/boot/bin/tracetest console
+user=adm
+ns=posix
+mount=/n/home srv=fsd aname=home flags=c
+connect=nsd

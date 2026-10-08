@@ -489,6 +489,11 @@ static vx_status start(service *s) {
     st = vx_handle_dup(vx_self, VX_RIGHT_INSPECT | VX_RIGHT_MANAGE | VX_RIGHT_TRANSFER, &b.handles[b.count]);
     b.names[b.count++] = VX_STR("tasks");
   }
+  if (st == VX_OK &&
+      vx_ndb_has(&rec, "trace")) { // the kernel's trace and nothing else (ADR-0049), for procfs
+    st = vx_handle_dup(resource, VX_RIGHT_TRACE | VX_RIGHT_TRANSFER, &b.handles[b.count]);
+    b.names[b.count++] = VX_STR("trace");
+  }
   if (st == VX_OK && vx_ndb_has(&rec, "entropy") && randomness.seeded) {
     uint8_t seed[32];
     vx_drbg_read(&randomness, seed, sizeof seed);

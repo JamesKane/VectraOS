@@ -8,7 +8,7 @@ page=svc sect=6 summary="service manifests, and the spawn message they become"
 service=name program=/boot/bin/prog [post=srv [srvmode=mode]]
         [arch=arch] [when=word]
     [restart] [console] [bootimage] [storeimage] [resource] [pager]
-    [acpi] [tasks] [cmdline] [entropy]
+    [acpi] [tasks] [trace] [cmdline] [entropy]
 arg=value
 env=name=value
 user=name
@@ -76,6 +76,8 @@ The keys of a `service=` record:
   A flag: the ACPI tables, as the handle `acpi`, with a record `acpi size=<bytes>`.
 : `tasks`
   A flag: svcd's own task, as the handle `tasks`, and through it every task, for procfs(4) and tests.
+: `trace`
+  A flag: the root Resource with `VX_RIGHT_TRACE` alone, as the handle `trace`: the kernel's trace and nothing else (ADR-0049), for procfs(4).
 : `cmdline`
   A flag: the kernel command line, as a record `cmdline=<text>`.
 : `entropy`

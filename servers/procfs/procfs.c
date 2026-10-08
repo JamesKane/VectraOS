@@ -310,7 +310,7 @@ static vx_status post(proc *p, vx_str note) {
 // then a thread's id shifted left 8 (0 for the process's own files), then the
 // file's number below: a process's, or under threads/T, a thread's.
 
-enum : uint64_t { ROOT = 1 };
+enum : uint64_t { ROOT = 1, ROOT_ADM = 2 }; // ROOT_ADM: an administrator's attach, which sees trace/
 enum : uint32_t {
   DIR,
   STATUS,
@@ -380,7 +380,8 @@ static size_t ns_text(uint64_t pid, char *buf, size_t cap) {
   return n;
 }
 
-static proc *proc_of(uint64_t node) { return node == ROOT ? nullptr : by_pid(node >> 32); }
+static bool is_root(uint64_t node) { return node == ROOT || node == ROOT_ADM; }
+static proc *proc_of(uint64_t node) { return is_root(node) ? nullptr : by_pid(node >> 32); }
 static uint32_t file_of(uint64_t node) { return (uint32_t)(node & 0xff); }
 static uint32_t thread_of(uint64_t node) { return (uint32_t)(node >> 8 & 0xff'ffff); }
 static uint64_t node_of(uint64_t pid, uint32_t tid, uint32_t file) {
@@ -401,10 +402,12 @@ static const file_entry *entry_of(uint64_t node) {
   return file_of(node) > FILES ? &PROF_FILES[file_of(node) - PROF_CTL] : &FILE_TABLE[file_of(node)];
 }
 
-static vx_status fs_attach(void *ctx, vx_str aname, uint64_t *root) {
+#include "trace.c"
+
+static vx_status fs_attach_as(void *ctx, vx_str aname, vx_str uname, uint64_t *root) {
   (void)ctx;
   if (aname.len) return VX_ERR_NOT_FOUND;
-  *root = ROOT;
+  *root = trace_allowed(uname) ? ROOT_ADM : ROOT;
   return VX_OK;
 }
 
@@ -429,7 +432,19 @@ static bool word_is(vx_str s, const char *w) {
 static vx_status fs_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) {
   (void)ctx;
   uint64_t n;
-  if (dir == ROOT) {
+  if (dir == ROOT_ADM && vx_str_eq(name, VX_STR("trace"))) {
+    *child = trace_node_of(TR_DIR);
+    return VX_OK;
+  }
+  if (trace_node(dir)) {
+    for (uint32_t k = TR_CTL; k < TR_FILES && (uint32_t)dir == TR_DIR; k++)
+      if (vx_str_eq(name, TRACE_FILES[k].name)) {
+        *child = trace_node_of(k);
+        return VX_OK;
+      }
+    return VX_ERR_NOT_FOUND;
+  }
+  if (is_root(dir)) {
     if (!parse_u64(name, &n) || name.ptr[0] == '0' || !by_pid(n)) return VX_ERR_NOT_FOUND;
     *child = node_of(n, 0, DIR);
     return VX_OK;
@@ -465,7 +480,9 @@ static vx_status fs_parent(void *ctx, uint64_t node, uint64_t *parent) {
   (void)ctx;
   uint64_t pid = node >> 32;
   uint32_t tid = thread_of(node), f = file_of(node);
-  if (node == ROOT || (!tid && f == DIR))
+  if (trace_node(node))
+    *parent = (uint32_t)node == TR_DIR ? ROOT_ADM : trace_node_of(TR_DIR);
+  else if (is_root(node) || (!tid && f == DIR))
     *parent = ROOT;
   else if (tid && f == T_DIR)
     *parent = node_of(pid, 0, THREADS);
@@ -480,8 +497,9 @@ static char name_buf[24];
 
 static vx_status fs_stat(void *ctx, uint64_t node, p9_stat *out) {
   (void)ctx;
-  if (node == ROOT) {
-    *out = (p9_stat){.qid = {P9_QTDIR, 0, ROOT}, .mode = P9_DMDIR | 0555, .name = VX_STR("/")};
+  if (trace_node(node)) return trace_stat(node, out);
+  if (is_root(node)) {
+    *out = (p9_stat){.qid = {P9_QTDIR, 0, node}, .mode = P9_DMDIR | 0555, .name = VX_STR("/")};
   } else {
     const proc *p = proc_of(node);
     if (!p) return VX_ERR_NOT_FOUND;
@@ -508,7 +526,13 @@ static vx_status fs_stat(void *ctx, uint64_t node, p9_stat *out) {
 static vx_status fs_open(void *ctx, uint64_t node, uint8_t mode) {
   (void)ctx;
   if (mode & P9_ORCLOSE) return VX_ERR_ACCESS;
-  if (node == ROOT) return (mode & 3) == P9_OREAD ? VX_OK : VX_ERR_ACCESS;
+  if (is_root(node)) return (mode & 3) == P9_OREAD ? VX_OK : VX_ERR_ACCESS;
+  if (trace_node(node)) {
+    uint32_t perm = TRACE_FILES[(uint32_t)node % TR_FILES].mode;
+    bool rd = (mode & 3) == P9_OREAD || (mode & 3) == P9_ORDWR,
+         wr = (mode & 3) == P9_OWRITE || (mode & 3) == P9_ORDWR;
+    return (rd && !(perm & 0444)) || (wr && !(perm & 0222)) ? VX_ERR_ACCESS : VX_OK;
+  }
   proc *p = proc_of(node);
   if (!p) return VX_ERR_NOT_FOUND;
   uint32_t f = file_of(node), perm = f == DIR ? 0555 : entry_of(node)->mode & 0777;
@@ -647,6 +671,7 @@ static vx_status mem_read(const proc *p, uint64_t offset, uint8_t *buf, uint32_t
 
 static vx_status fs_read(void *ctx, uint64_t node, uint64_t offset, uint8_t *buf, uint32_t *count) {
   (void)ctx;
+  if (trace_node(node)) return trace_read((uint32_t)node, offset, buf, count);
   proc *p = proc_of(node);
   if (!p) return VX_ERR_NOT_FOUND;
   if (thread_of(node)) return thread_read(p, thread_of(node), file_of(node), offset, buf, count);
@@ -749,6 +774,7 @@ static vx_status join_group(proc *p, uint64_t group) {
 // NOLINTNEXTLINE(readability-non-const-parameter): p9_fs's signature
 static vx_status fs_write(void *ctx, uint64_t node, uint64_t offset, const uint8_t *buf, uint32_t *count) {
   (void)ctx, (void)offset;
+  if (trace_node(node)) return trace_write_ctl((uint32_t)node, buf, count);
   proc *p = proc_of(node);
   if (!p) return VX_ERR_NOT_FOUND;
   uint32_t tid = thread_of(node), f = file_of(node);
@@ -812,8 +838,20 @@ static vx_status fs_write(void *ctx, uint64_t node, uint64_t offset, const uint8
 // The root's entries are the processes, in table order; a process's are its files.
 static vx_status fs_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *child) {
   (void)ctx;
+  if (trace_node(dir)) {
+    if ((uint32_t)dir != TR_DIR || TR_CTL + index >= TR_FILES) return VX_ERR_NOT_FOUND;
+    *child = trace_node_of(TR_CTL + index);
+    return VX_OK;
+  }
+  if (dir == ROOT_ADM) { // trace/ first, then the processes
+    if (index == 0) {
+      *child = trace_node_of(TR_DIR);
+      return VX_OK;
+    }
+    index--;
+  }
   const proc *p = proc_of(dir);
-  if (dir != ROOT && !thread_of(dir) && file_of(dir) == THREADS) { // the threads, by id
+  if (!is_root(dir) && !thread_of(dir) && file_of(dir) == THREADS) { // the threads, by id
     vx_thread_info ti = {};
     for (uint32_t i = 0; i <= index; i++)
       if (!p || vx_thread_state(p->task, ti.id, VX_STATE_NEXT_THREAD, &ti, sizeof ti) != VX_OK)
@@ -821,12 +859,12 @@ static vx_status fs_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *c
     *child = node_of(p->pid, ti.id, T_DIR);
     return VX_OK;
   }
-  if (dir != ROOT && !thread_of(dir) && file_of(dir) == PROF) { // ctl, zones
+  if (!is_root(dir) && !thread_of(dir) && file_of(dir) == PROF) { // ctl, zones
     if (!p || index >= 2) return VX_ERR_NOT_FOUND;
     *child = node_of(p->pid, 0, PROF_CTL + index);
     return VX_OK;
   }
-  if (dir != ROOT) {
+  if (!is_root(dir)) {
     if (!p || index + 1 >= (thread_of(dir) ? T_FILES : FILES)) return VX_ERR_NOT_FOUND;
     *child = dir | (index + 1);
     return VX_OK;
@@ -847,7 +885,8 @@ const char *vx_main(void) {
   tmpfs = vx_spawn_take("srv:tmpfs"); // for crash directories
   // Field by field: the server is too big for a compound literal, which would
   // be built on the stack first.
-  server.fs = (p9_fs){.attach = fs_attach,
+  tr.resource = vx_spawn_take("trace");
+  server.fs = (p9_fs){.attach_as = fs_attach_as,
                       .walk = fs_walk,
                       .parent = fs_parent,
                       .stat = fs_stat,
