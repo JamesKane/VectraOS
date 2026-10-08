@@ -1355,7 +1355,7 @@ static bool program_for(const program *p, const arch *a) { return !p->arch || st
 // ADR-0034's first gate brings the Swift toolchain here (M6 step 6e3): a
 // scenario that names one in `with=` takes it from that tree's
 // tests/out/TRIPLE/NAME, which its tests/build.sh makes.
-static const char *const EXTERNAL_PROGRAMS[] = {"swifta", "swiftb"};
+static const char *const EXTERNAL_PROGRAMS[] = {"swifta", "swiftb", "swiftfnd"};
 static constexpr int EXTERNAL_PROGRAM_COUNT = sizeof EXTERNAL_PROGRAMS / sizeof EXTERNAL_PROGRAMS[0];
 
 static bool external_program(const char *name) {
@@ -2163,7 +2163,11 @@ static const char FSCK_FAT[] = "/usr/bin/fsck.fat"; // dosfstools: checks what d
 static const char SEVEN_ZIP[] = "/usr/bin/7z";      // p7zip: reads write_iso's Joliet tree
 
 static constexpr uint64_t SECTOR = 512;
-static constexpr uint64_t ESP_BYTES = 64ull << 20;
+// The EFI system partition: 64 MiB, or more for an image whose files need
+// it (make_image sets it: a test image with Swift's programs and their
+// debugging information, 6e3c), in 32 MiB steps.
+static constexpr uint64_t ESP_MIN_BYTES = 64ull << 20;
+static uint64_t esp_bytes = ESP_MIN_BYTES;
 static constexpr uint64_t ESP_LBA = 2048; // 1 MiB in, as partitioning tools align it
 static constexpr uint32_t GPT_ENTRIES = 128;
 static constexpr size_t GPT_TABLE_BYTES = (size_t)GPT_ENTRIES * 128; // 128 entries of 128 bytes
@@ -2221,12 +2225,19 @@ static void gpt_header(uint8_t *h, uint64_t my_lba, uint64_t alt_lba, uint64_t e
   put32(h + 16, crc32(h, 92));
 }
 
+// A file's size, without reading it into the arena.
+static uint64_t file_bytes(const char *path) {
+  struct stat st;
+  if (stat(path, &st) != 0) die("cannot stat %s", path);
+  return (uint64_t)st.st_size;
+}
+
 static void pwrite_all(int fd, const void *p, size_t n, uint64_t off, const char *path) {
   if (pwrite(fd, p, n, (off_t)off) != (ssize_t)n) die("cannot write %s", path);
 }
 
 static void write_gpt_disk(const char *path, const char *esp_path, uint64_t seed) {
-  uint64_t esp_sectors = ESP_BYTES / SECTOR;
+  uint64_t esp_sectors = esp_bytes / SECTOR;
   uint64_t total = ESP_LBA + esp_sectors + 2048;
   uint64_t last = total - 1;
 
@@ -2275,7 +2286,7 @@ static void write_gpt_disk(const char *path, const char *esp_path, uint64_t seed
   int in = open(esp_path, O_RDONLY);
   if (in < 0) die("cannot read %s", esp_path);
   static char chunk[1 << 20];
-  for (uint64_t off = 0; off < ESP_BYTES;) {
+  for (uint64_t off = 0; off < esp_bytes;) {
     ssize_t n = pread(in, chunk, sizeof chunk, (off_t)off);
     if (n <= 0) die("short read from %s", esp_path);
     pwrite_all(fd, chunk, (size_t)n, ESP_LBA * SECTOR + off, path);
@@ -3180,8 +3191,16 @@ static bool make_image_in(const arch *a, bool release, const char *image, const 
     if (USER_PROGRAMS[i].where == IN_MODULE)
       seed = hash_bytes(seed, read_file(fmt("%s/%s", out_dir(a, release), USER_PROGRAMS[i].name)));
 
+  // Room for the files, a quarter more for FAT32's own and 4 MiB besides.
+  uint64_t content = file_bytes(loader) + file_bytes(kernel) + file_bytes(config) + file_bytes(bootfs);
+  for (int i = 0; i < USER_PROGRAM_COUNT; i++)
+    if (USER_PROGRAMS[i].where == IN_MODULE)
+      content += file_bytes(fmt("%s/%s", out_dir(a, release), USER_PROGRAMS[i].name));
+  uint64_t step = 32ull << 20, need = content + content / 4 + (4ull << 20);
+  esp_bytes = need <= ESP_MIN_BYTES ? ESP_MIN_BYTES : (need + step - 1) / step * step;
+
   int fd = open(esp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-  if (fd < 0 || ftruncate(fd, (off_t)ESP_BYTES) != 0) die("cannot create %s", esp);
+  if (fd < 0 || ftruncate(fd, (off_t)esp_bytes) != 0) die("cannot create %s", esp);
   close(fd);
 
   fprintf(stderr, "  IMG   %s\n", image);

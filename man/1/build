@@ -51,7 +51,7 @@ An option a command does not take, or an unknown command, prints the usage messa
 
 ## image
 
-`image` builds what `all` builds, then writes a disk image, `out/<arch>/<mode>/vectra-<arch>.img`: a GPT disk holding one EFI system partition, FAT32, 64 MiB, labelled `VECTRA`.
+`image` builds what `all` builds, then writes a disk image, `out/<arch>/<mode>/vectra-<arch>.img`: a GPT disk holding one EFI system partition, FAT32, labelled `VECTRA`: 64 MiB, or larger in 32 MiB steps for a test image whose files need more (one with Swift's programs and their debugging information).
 The partition holds Limine at the firmware's fallback path (`\EFI\BOOT`), and under `\boot\vx` the kernel, `bootfs.tar` and the root task's candidate programs; Limine's configuration is `\boot\limine\limine.conf`, from `boot/limine.conf`.
 `bootfs.tar` is a deterministic ustar archive of `boot/bin` with the programs that live in bootfs, the service manifests of `boot/svc`, the driver manifests of `boot/drv`, the namespace templates of `boot/lib/ns`, and the manual, with the index the manual's check writes.
 The disk's GUIDs and the FAT serial number are made from a hash of what the disk holds, so the same inputs give the same image.

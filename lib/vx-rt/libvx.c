@@ -51,6 +51,21 @@ char **__swift_vectraos_argv(int *argc) {
 // (6e3b, Swift patch 0012).
 unsigned __swift_vectraos_cpu_count(void) { return vx_cpu_count(); }
 
+// Foundation's ProcessInfo (6e3c): the process's id and user (the host's
+// name is below, with the namespace). The name is cut to fit and terminated,
+// and its whole length returned.
+uint64_t __swift_vectraos_pid(void) { return vx_pid(); }
+
+size_t __swift_vectraos_user_name(char *buf, size_t cap) {
+  vx_str u = vx_user_name();
+  if (cap) {
+    size_t n = u.len < cap - 1 ? u.len : cap - 1;
+    memcpy(buf, u.ptr, n);
+    buf[n] = 0;
+  }
+  return u.len;
+}
+
 [[noreturn]] void __llvm_libc_exit(int status) { vx_exit(status); }
 
 // --- errno: the C library's numbers (llvm-libc's generic ones) ---
@@ -89,6 +104,9 @@ static int libvx_errno(vx_status st) {
   default: return LIBVX_EIO;
   }
 }
+
+// The same for Foundation's errors (6e3c): the errno a vx_status reads as.
+int __swift_vectraos_errno(int status) { return libvx_errno((vx_status)status); }
 
 // --- Futexes, for the C library's locks ---
 
@@ -228,6 +246,16 @@ static vx_ns *libvx_namespace(void) {
   return &libvx_ns;
 }
 
+// Foundation's host name (6e3c): /sys/name, cut to fit and terminated.
+size_t __swift_vectraos_hostname(char *buf, size_t cap) {
+  if (!cap) return 0;
+  vx_mutex_lock(&libvx_ns_lock);
+  size_t n = vx_hostname(libvx_namespace(), buf, cap - 1);
+  vx_mutex_unlock(&libvx_ns_lock);
+  buf[n] = 0;
+  return n;
+}
+
 // path's parent walked, and its last name: a status.
 static vx_status libvx_parent(const char *path, p9_client **c, uint32_t *fid, vx_str *name) {
   vx_str p = vx_cstr(path);
@@ -290,7 +318,16 @@ int __llvm_libc_rename(const char *from, const char *to) {
 // the namespace, at 3 and up. Opening and closing take the namespace's lock;
 // a file's reads and writes are its stream's, which the C library locks.
 
-enum : int { FILE_READ = 1, FILE_WRITE = 2, FILE_CREATE = 4, FILE_TRUNCATE = 8, FILE_APPEND = 16 };
+// FILE_EXCLUSIVE creates the file or fails, EEXIST if it is there (Swift's
+// Foundation's atomic writes, 6e3c).
+enum : int {
+  FILE_READ = 1,
+  FILE_WRITE = 2,
+  FILE_CREATE = 4,
+  FILE_TRUNCATE = 8,
+  FILE_APPEND = 16,
+  FILE_EXCLUSIVE = 32
+};
 
 static constexpr uint32_t LIBVX_FILES = 64;
 static struct {
@@ -322,8 +359,11 @@ long __llvm_libc_file_open(const char *path, int flags) {
   vx_status st = slot < LIBVX_FILES ? VX_OK : VX_ERR_NO_MEMORY;
   vx_ns_file f = {};
   vx_str p = vx_cstr(path);
-  if (st == VX_OK) st = vx_ns_open(libvx_namespace(), p, mode | (flags & FILE_TRUNCATE ? P9_OTRUNC : 0), &f);
-  if (st == VX_ERR_NOT_FOUND && (flags & FILE_CREATE))
+  if (st == VX_OK && (flags & FILE_EXCLUSIVE))
+    st = vx_ns_create(libvx_namespace(), p, 0666, mode, &f);
+  else if (st == VX_OK)
+    st = vx_ns_open(libvx_namespace(), p, mode | (flags & FILE_TRUNCATE ? P9_OTRUNC : 0), &f);
+  if (st == VX_ERR_NOT_FOUND && (flags & FILE_CREATE) && !(flags & FILE_EXCLUSIVE))
     st = vx_ns_create(libvx_namespace(), p, 0666, mode, &f);
   if (st == VX_OK)
     libvx_files[slot] = (typeof(libvx_files[0])){.used = true, .append = flags & FILE_APPEND, .f = f};
@@ -457,6 +497,65 @@ char *__llvm_libc_getenv(const char *cname) {
   }
   vx_mutex_unlock(&libvx_ns_lock);
   return value;
+}
+
+// The whole environment as NAME=VALUE strings and a null, for Foundation's
+// ProcessInfo.environment (6e3c): /env's names, each read as getenv reads
+// it, or without /env the spawn message's env= records. The list stays good
+// until the next call, which frees it.
+static vx_mutex libvx_environ_lock;
+static char **libvx_environ;
+
+static void libvx_environ_free(void) {
+  for (char **e = libvx_environ; e && *e; e++) vx_heap_free(vx_heap_process(), *e);
+  vx_heap_free(vx_heap_process(), libvx_environ);
+  libvx_environ = nullptr;
+}
+
+static char *libvx_environ_entry(vx_str name, vx_str value) {
+  char *e = vx_heap_alloc(vx_heap_process(), name.len + value.len + 2);
+  if (!e) return nullptr;
+  memcpy(e, name.ptr, name.len);
+  e[name.len] = '=';
+  memcpy(e + name.len + 1, value.ptr, value.len);
+  e[name.len + 1 + value.len] = 0;
+  return e;
+}
+
+char **__swift_vectraos_environ(void) {
+  static constexpr uint32_t MAX = 256;
+  vx_mutex_lock(&libvx_environ_lock);
+  libvx_environ_free();
+  libvx_environ = vx_heap_alloc(vx_heap_process(), (MAX + 1) * sizeof(char *));
+  uint32_t n = 0;
+  if (libvx_environ) {
+    int64_t dir = __llvm_libcxx_fs_opendir("/env");
+    if (dir >= 0) {
+      char name[64];
+      uint32_t type = 0;
+      while (n < MAX && __llvm_libcxx_fs_readdir(dir, name, sizeof name, &type) == 1) {
+        const char *value = __llvm_libc_getenv(name);
+        if (value) {
+          char *e = libvx_environ_entry(vx_cstr(name), vx_cstr(value));
+          if (e) libvx_environ[n++] = e;
+        }
+      }
+      __llvm_libcxx_fs_closedir(dir);
+    } else {
+      for (uint32_t i = 0; i < vx_spawn.envc && n < MAX; i++) {
+        vx_str e = vx_spawn.envs[i];
+        size_t eq = 0;
+        while (eq < e.len && e.ptr[eq] != '=') eq++;
+        if (eq == e.len) continue;
+        char *s = libvx_environ_entry((vx_str){e.ptr, eq}, (vx_str){e.ptr + eq + 1, e.len - eq - 1});
+        if (s) libvx_environ[n++] = s;
+      }
+    }
+    libvx_environ[n] = nullptr;
+  }
+  char **list = libvx_environ;
+  vx_mutex_unlock(&libvx_environ_lock);
+  return list;
 }
 
 // --- Time ---

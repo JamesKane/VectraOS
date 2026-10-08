@@ -1,0 +1,11 @@
+# tests/user/swiftfnd.ndb: swiftfnd, Swift's stage C program
+# (tests/qemu/swiftfnd.ndb), built in swift-on-vectra's tree, with fsd's
+# home branch on /tmp as vectra, whom it belongs to (tests/user/fsdvol.ndb
+# serves the volume).
+
+service=swiftfnd program=/boot/bin/swiftfnd console entropy
+user=vectra
+ns=posix
+mount=/tmp srv=fsd aname=home flags=c
+connect=nsd
+connect=env

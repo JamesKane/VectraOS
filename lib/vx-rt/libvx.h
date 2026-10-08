@@ -32,6 +32,11 @@ int64_t __llvm_libc_clock_monotonic(void);
 void __llvm_libcxx_random_bytes(void *buf, size_t n);
 char **__swift_vectraos_argv(int *argc);
 unsigned __swift_vectraos_cpu_count(void);
+uint64_t __swift_vectraos_pid(void);
+char **__swift_vectraos_environ(void);
+int __swift_vectraos_errno(int status);
+size_t __swift_vectraos_user_name(char *buf, size_t cap);
+size_t __swift_vectraos_hostname(char *buf, size_t cap);
 [[gnu::weak]] void __llvm_libc_thread_main(void); // the C library's, if a program uses threads
 int __llvm_libc_remove(const char *path);
 long __llvm_libc_file_open(const char *path, int flags);

@@ -21,7 +21,7 @@ static int ns_link_at(vx_ns *ns, vx_str path, char *target, size_t cap, size_t *
   p9_client *c = nullptr;
   uint32_t fid = 0;
   vx_status st = vx_ns_walk(ns, path, &c, &fid);
-  if (st != VX_OK) return (int)st;
+  if (st != VX_OK) return st < 0 ? (int)st : (int)VX_ERR_INVALID; // never 1, which says a link
   int r = 0;
   p9_stat s;
   bool links = (c->extensions & P9_EXT_POSIX) || c->dialect == P9_2000L;
