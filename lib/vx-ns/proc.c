@@ -96,6 +96,40 @@ static constexpr size_t VX_PROC_IMAGE_MAX =
     224ull << 20; // a program's image, read whole: with the rest, under a VMO's 256 MiB
 static constexpr size_t VX_PROC_INTERP_MAX = 16ull << 20; // and its interpreter's
 
+// A whole file for a spawn: its server's pages, mapped read-only, where it
+// serves Tmap (00 rule 2: bulk crosses by shared pages), else read into buf
+// (at most cap bytes). *mapped is the mapping's size, 0 if it was read;
+// vx_proc_unload lets it go. Under vx_ns_proc_lock.
+static vx_status vx_proc_load(vx_ns *ns, vx_str path, uint8_t *buf, size_t cap, const uint8_t **out,
+                              size_t *len, size_t *mapped) {
+  *mapped = 0, *len = 0, *out = buf;
+  vx_ns_file f;
+  vx_status st = vx_ns_open(ns, path, P9_OREAD, &f);
+  if (st != VX_OK) return st;
+  p9_stat s;
+  if (f.c && !f.dev && (f.c->extensions & P9_EXT_MAP) && p9c_stat(f.c, f.fid, &s, nullptr) == VX_OK &&
+      s.length && s.length <= cap) {
+    size_t size = ((size_t)s.length + 4095) & ~(size_t)4095;
+    vx_handle vmo = VX_HANDLE_NONE;
+    uint64_t from = 0, avail = 0, at = 0;
+    if (p9c_map(f.c, f.fid, 0, size, P9_PROT_READ, &vmo, &from, &avail) == VX_OK) {
+      vx_status m = avail >= s.length ? vx_as_map(vx_self, vmo, from, size, 0, &at) : VX_ERR_RANGE;
+      vx_handle_close(vmo); // the mapping keeps it
+      if (m == VX_OK) {
+        vx_ns_close(&f);
+        *out = (const uint8_t *)at, *len = (size_t)s.length, *mapped = size;
+        return VX_OK;
+      }
+    }
+  }
+  vx_ns_close(&f);
+  return vx_ns_read_all(ns, path, buf, cap, len);
+}
+
+static void vx_proc_unload(const uint8_t *image, size_t mapped) {
+  if (mapped) vx_as_unmap(vx_self, (uint64_t)image, mapped);
+}
+
 static vx_status vx_proc_registered(void *ctx, uint64_t pid) {
   *(uint64_t *)ctx = pid;
   return VX_OK;
@@ -136,22 +170,24 @@ static vx_status vx_proc_start(const vx_spawn_req *r, bool exec, vx_proc *out) {
   vx_proc_give(r, vx_stdio.err, "stderr", handles, names, &count, max);
   vx_proc_give(r, vx_console.connector, "console", handles, names, &count, max);
 
-  // The image, its interpreter and the records, in an arena of their own:
-  // lazy memory, given back whole when the spawn is done.
+  // The image and its interpreter, mapped from their server or read into an
+  // arena of their own, with the records: lazy memory, which a mapped image
+  // never touches, given back whole when the spawn is done.
   vx_arena *a = vx_arena_new(VX_PROC_IMAGE_MAX + VX_PROC_INTERP_MAX + (1 << 20));
   uint8_t *image = vx_push(a, VX_PROC_IMAGE_MAX, 4096);
   uint8_t *interp = vx_push(a, VX_PROC_INTERP_MAX, 4096);
   char *records = vx_push(a, VX_CHANNEL_MAX_BYTES - 4096, 1); // room left for spawn's own records
-  size_t size = 0, interp_size = 0;
+  size_t size = 0, interp_size = 0, image_mapped = 0, interp_mapped = 0;
+  const uint8_t *image_at = image, *interp_at = interp;
   if (!image || !interp || !records) st = VX_ERR_NO_MEMORY;
   vx_ndb_writer rec = {.buf = records, .cap = VX_CHANNEL_MAX_BYTES - 4096};
   vx_lock(&vx_ns_proc_lock);
   vx_ns *ns = vx_ns_process();
-  if (st == VX_OK) st = vx_ns_read_all(ns, r->path, image, VX_PROC_IMAGE_MAX, &size);
+  if (st == VX_OK) st = vx_proc_load(ns, r->path, image, VX_PROC_IMAGE_MAX, &image_at, &size, &image_mapped);
   if (st == VX_OK && !size) st = VX_ERR_INVALID;
   vx_str ip = {};
-  if (st == VX_OK && vx_elf_interp(image, size, &ip))
-    st = vx_ns_read_all(ns, ip, interp, VX_PROC_INTERP_MAX, &interp_size);
+  if (st == VX_OK && vx_elf_interp(image_at, size, &ip))
+    st = vx_proc_load(ns, ip, interp, VX_PROC_INTERP_MAX, &interp_at, &interp_size, &interp_mapped);
   vx_str base = r->path; // the task's name: the program's, without its directory
   for (size_t i = base.len; i-- > 0;)
     if (base.ptr[i] == '/') base = (vx_str){base.ptr + i + 1, base.len - i - 1};
@@ -174,6 +210,8 @@ static vx_status vx_proc_start(const vx_spawn_req *r, bool exec, vx_proc *out) {
   vx_unlock(&vx_ns_proc_lock);
   if (st != VX_OK) {
     for (uint32_t i = 0; i < count; i++) vx_handle_close(handles[i]);
+    vx_proc_unload(image_at, image_mapped);
+    vx_proc_unload(interp_at, interp_mapped);
     vx_arena_free(a);
     return st;
   }
@@ -181,9 +219,9 @@ static vx_status vx_proc_start(const vx_spawn_req *r, bool exec, vx_proc *out) {
   vx_handle task = VX_HANDLE_NONE;
   vx_spawn_args sa = {.name = {base.ptr, vx_utf_cut(base.ptr, base.len, 23)}, // whole runes (ADR-0013)
                       .path = r->path,
-                      .image = image,
+                      .image = image_at,
                       .image_size = size,
-                      .interp = interp_size ? interp : nullptr,
+                      .interp = interp_size ? interp_at : nullptr,
                       .interp_size = interp_size,
                       .handles = handles,
                       .handle_names = names,
@@ -196,6 +234,8 @@ static vx_status vx_proc_start(const vx_spawn_req *r, bool exec, vx_proc *out) {
                       .ctx = &pid,
                       .exec = exec};
   st = vx_spawn_elf(&sa, &task);
+  vx_proc_unload(image_at, image_mapped);
+  vx_proc_unload(interp_at, interp_mapped);
   vx_arena_free(a);
   if (st != VX_OK) return st;
   if (!pid) { // no procfs: the kernel's id
