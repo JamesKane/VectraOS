@@ -11,5 +11,6 @@ The first frozen level: `libvx` v0, as ADR-0004 describes it, becomes level 1.
 - Its behaviour is the suite's (`vxapitest`, `libvxtest`), frozen as `abi/levels/1.behaviour`.
 - The Swift libraries' ABI baselines are `abi/swift/<triple>`; from this release on, a break fails `./build release`.
 - `VX_ABI_LEVEL` is 1, and `vx_abi_level()` says 1: Swift's `#available(VectraOS 1, *)` holds. A declaration added later sits inside `#if VX_TARGET_ABI >= 2` (C) or carries `@available(VectraOS 2, *)` (Swift).
+- Not in level 1, though ADR-0004 listed it for v0: `<vx/ns.h>` (bind, mount, unmount, a new namespace). It comes at level 2, inside `#if VX_TARGET_ABI >= 2`; until then a native program's namespace is the one it was given.
 - What stays private: the syscall numbers and the spawn message's format (ADR-0004 item 7), the ring layout, and nsd's protocol, whose text form becomes binary records when a consumer first needs it (ADR-0009, `libvx.so` reading both until the release that drops the text).
 - The C library keeps its soname, `libc.so`: its interface is ISO C's, llvm-libc's.

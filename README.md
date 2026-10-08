@@ -26,7 +26,7 @@ There was a moment when computing could have gone another way. Plan 9 made every
 
 ## Status: booting
 
-VectraOS is young and runs under QEMU on x86_64 and aarch64. **M1–M5 are done; M6 (the runtime) is under way.** [docs/milestones.md](docs/milestones.md) gives the synopsis; each step's record, the known gaps and the test scenarios are in [docs/milestones/](docs/milestones/).
+VectraOS is young and runs under QEMU on x86_64 and aarch64. **M1–M6 are done; M7 (pixels) is next.** [docs/milestones.md](docs/milestones.md) gives the synopsis; each step's record, the known gaps and the test scenarios are in [docs/milestones/](docs/milestones/).
 
 What runs today:
 
@@ -35,9 +35,10 @@ What runs today:
 - 9Px over shared-memory rings, per-process namespaces, `/proc`, and a Plan 9-style shell with rc scripting;
 - `netd`, a first-party TCP/IP stack serving `/net` in Plan 9's layout, and 9P mounts across the network;
 - a POSIX personality on musl: fork, exec, signals, ptys and job control, Lua, and a native debugger;
-- the start of `fsd`, a copy-on-write filesystem after 9front's gefs, with snapshots, power-cut safety and memory-mapped files.
+- `fsd`, a copy-on-write filesystem after 9front's gefs, with snapshots, power-cut safety and memory-mapped files, on NVMe behind VT-d or SMMUv3, with FAT and ISO 9660 beside it and an installer with rollback slots;
+- the runtime programs are written against: threads, `libvx` (the native API, its level 1 frozen), a dynamic loader, llvm-libc and libc++ shared, and Swift with its runtime and FoundationEssentials shared ([docs/14](docs/14-app-developers.md) is the guide).
 
-The road ahead: a runtime, pixels on screen, GPU drivers, real hardware, the swarm, local AI, self-hosting, audio, a full debugger and a hypermedia web.
+The road ahead: pixels on screen ([docs/21](docs/21-pixels.md)), GPU drivers, real hardware, the swarm, local AI, self-hosting, audio, a full debugger and a hypermedia web.
 
 ## Build it
 
@@ -74,10 +75,14 @@ The toolchain is pinned (ADR-0001): clang, lld and llvm-objcopy 22.1.8 from Fedo
 | [docs/11-storage.md](docs/11-storage.md) | The copy-on-write system volume after gefs, `fsd` as pager, partitions, `dosfs` and `isofs` |
 | [docs/12-manual.md](docs/12-manual.md) | The manual: Plan 9's sections in guide, a modernised AmigaGuide, read by `man` and `hv` |
 | [docs/13-portable-code.md](docs/13-portable-code.md) | **Design notes, non-binding.** A core-Wasm profile as a portable target, lowered to native on install, for third-party programs and perhaps more of the user land |
+| [docs/14-app-developers.md](docs/14-app-developers.md) | Writing programs for VectraOS: choosing a language, the habits the design rules ask for, building against `libvx` level 1 and the Swift SDK, with worked examples (resynced at M6's close) |
 | [docs/15-working-memory.md](docs/15-working-memory.md) | **Design notes, non-binding.** Scott Jenson's working memory (spatial, associative, episodic) on this design: snarf, a window's document, collections as folders, a metadata journal over `fsd`'s dump |
 | [docs/16-swift-sdks.md](docs/16-swift-sdks.md) | **Design notes, non-binding.** The Swift SDKs (`VX`, `VXUI`, `VXEngine`, `VXData`) shaped for the cache: batches, ids, columns of plain data, ARC per subsystem, chunked concurrency |
 | [docs/17-applications.md](docs/17-applications.md) | **Vision, non-binding.** The application suite: Sheet, Page, Stage, Jukebox, Photos, Notes, Reminders, Stickies, a modern Deluxe Paint and Draw, a vector editor, as file servers over directory documents, local-first over the swarm |
 | [docs/18-verbs.md](docs/18-verbs.md) | **Design notes, partly binding.** Verbs: AppleScript and ARexx for the agentic era. `.schema` as a dictionary with queries, agents' tools generated from it, recording, workflows run by `flowd`, MCP at the edge |
+| [docs/19-drivers-on-demand.md](docs/19-drivers-on-demand.md) | **Sketch, non-binding.** Drivers fetched for the hardware a machine has |
+| [docs/20-tracing.md](docs/20-tracing.md) | Tracing and profiling for the whole system: the kernel's trace rings, flows across processes, sampling, the flight recorder, budgets over traces (M7's first step) |
+| [docs/21-pixels.md](docs/21-pixels.md) | M7's design and scope: displayd, winsrv's CPU compositor, `/wsys` and the frame protocol, input, fonts and `vxui` v0, decided against 9front's and Fuchsia's prior art |
 | [docs/adr/](docs/adr/README.md) | Architecture decision records |
 | [docs/study/](docs/study/README.md) | The platform API study's findings: friction register, heritage systems, convergent API shapes, prototypes |
 
