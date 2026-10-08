@@ -1757,6 +1757,10 @@ static bool sysroot_cxx(const arch *a, const char *s, const char *from) {
   copy_tree(fmt("%s/usr/include/c++", cxx), fmt("%s/usr/include/c++", s));
   copy_file(fmt("%s/usr/lib/libc++.a", cxx), fmt("%s/usr/lib/libc++.a", s));
   copy_file(fmt("%s/usr/lib/libc++abi.a", cxx), fmt("%s/usr/lib/libc++abi.a", s));
+  // Shared (6f1c2, decided 2026-10-08): linked under their plain names, loaded
+  // from /lib under their sonames, libc++.so.1 and libc++abi.so.1.
+  copy_file(fmt("%s/usr/lib/libc++.so.1.0", cxx), fmt("%s/usr/lib/libc++.so", s));
+  copy_file(fmt("%s/usr/lib/libc++abi.so.1.0", cxx), fmt("%s/usr/lib/libc++abi.so", s));
   copy_file("lib/vx-rt/sysroot/vectraos-clang++.cfg", fmt("%s/%s-clang++.cfg", s, triple));
   copy_file("lib/vx-rt/sysroot/link-tail-c++.rsp", fmt("%s/link-tail-c++.rsp", s));
   return true;
@@ -3227,12 +3231,15 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
     files[count] = read_file(musl_so);
     paths[count++] = fmt("lib/ld-musl-%s.so.1", a->name);
   }
-  // libc.so, the native C library, shared (6f1c1).
-  const char *libc_so = fmt("%s/usr/lib/libc.so", sysroot_dir(a, release));
-  if (exists(libc_so)) {
+  // The native C and C++ libraries, shared (6f1c1, 6f1c2), by their sonames.
+  static const char *const NATIVE_LIBS[][2] = {
+      {"libc.so", "lib/libc.so"}, {"libc++.so", "lib/libc++.so.1"}, {"libc++abi.so", "lib/libc++abi.so.1"}};
+  for (size_t i = 0; i < sizeof NATIVE_LIBS / sizeof NATIVE_LIBS[0]; i++) {
+    const char *so = fmt("%s/usr/lib/%s", sysroot_dir(a, release), NATIVE_LIBS[i][0]);
+    if (!exists(so)) continue;
     bootfs_room(count);
-    files[count] = read_file(libc_so);
-    paths[count++] = "lib/libc.so";
+    files[count] = read_file(so);
+    paths[count++] = NATIVE_LIBS[i][1];
   }
   // libvx.so, which native programs link dynamically (6f1b1, ADR-0047), when
   // this architecture has the native target's sysroot.
