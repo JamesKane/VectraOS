@@ -1544,6 +1544,18 @@ static bool program_for(const program *p, const arch *a) { return !p->arch || st
 // tests/out/TRIPLE/NAME, which its tests/build.sh makes.
 static const char *const EXTERNAL_PROGRAMS[] = {"swifta", "swiftb", "swiftfnd"};
 static constexpr int EXTERNAL_PROGRAM_COUNT = sizeof EXTERNAL_PROGRAMS / sizeof EXTERNAL_PROGRAMS[0];
+// The Swift runtime's shared libraries, and FoundationEssentials's, which
+// the system ships in /lib (6f3a, ADR-0048).
+static const char *const SWIFT_LIBRARIES[] = {"libswiftCore.so",
+                                              "libswift_Concurrency.so",
+                                              "libswiftSynchronization.so",
+                                              "libswift_StringProcessing.so",
+                                              "libswift_RegexParser.so",
+                                              "libswiftRegexBuilder.so",
+                                              "libswiftObservation.so",
+                                              "libswiftSwiftOnoneSupport.so",
+                                              "libswiftVectraOSLibc.so",
+                                              "libFoundationEssentials.so"};
 
 static bool external_program(const char *name) {
   for (int i = 0; i < EXTERNAL_PROGRAM_COUNT; i++)
@@ -3250,9 +3262,11 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
     files[count] = read_file(fmt("%s/%s", out_dir(a, release), p->name));
     paths[count++] = bootfs_path(p);
   }
+  bool swift = !*with; // the whole system ships the Swift runtime; a test's image when it runs Swift
   for (int i = 0; i < EXTERNAL_PROGRAM_COUNT; i++) { // built in swift-on-vectra's tree
     const char *name = EXTERNAL_PROGRAMS[i];
     if (!listed(with, name)) continue;
+    swift = true;
     const char *from = fmt("%s/tests/out/%s/%s", swift_on_vectra(), sysroot_triple(a), name);
     if (!exists(from)) die("%s: not built; run swift-on-vectra's tests/build.sh", from);
     bootfs_room(count);
@@ -3263,6 +3277,22 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
       files[count] = read_file(fmt("tests/user/%s.ndb", name));
       paths[count++] = fmt("boot/svc/%s.ndb", name);
     }
+  }
+  // The Swift runtime and FoundationEssentials, the system's shared
+  // libraries (6f3a, ADR-0048): from swift-on-vectra's SDK until ADR-0034's
+  // first gate brings the toolchain here, when it has been built.
+  const char *swift_lib =
+      fmt("%s/toolchain/out/sdk/%s/usr/lib/swift/vectraos", swift_on_vectra(), sysroot_triple(a));
+  for (size_t i = 0; swift && i < sizeof SWIFT_LIBRARIES / sizeof SWIFT_LIBRARIES[0]; i++) {
+    const char *so = fmt("%s/%s", swift_lib, SWIFT_LIBRARIES[i]);
+    if (!exists(so)) {
+      if (*with)
+        die("%s: not built; run swift-on-vectra's toolchain/build_stdlib.sh and build_foundation.sh", so);
+      break; // no Swift toolchain here: a system without it
+    }
+    bootfs_room(count);
+    files[count] = read_file(so);
+    paths[count++] = fmt("lib/%s", SWIFT_LIBRARIES[i]);
   }
   // libc.so, musl's, the interpreter of dynamic POSIX programs (6f1b2).
   const char *musl_so = fmt("%s/libc.so", vectra_musl_lib(a, release));

@@ -15,12 +15,37 @@
 #include "../lib/vx-dl/dl.c"
 
 static vx_ns ns;
+// The files mapped to read them, let go once the loader is done with them.
+static struct {
+  uint64_t at, len;
+} ld_mapped[32];
+static uint32_t ld_mapped_count;
 
-// The whole of a file of the namespace, in the process heap.
-static vx_status ld_read(void *ctx, const char *path, const uint8_t **data, size_t *size) {
+// The whole of a file of the namespace: mapped from its server's VMO when
+// it maps files (Tmap; bootfs's /lib does, 6f3a), the VMO given to the
+// loader in *vmo, so a library's code is shared by every process; else read
+// into the process heap.
+static vx_status ld_read(void *ctx, const char *path, const uint8_t **data, size_t *size, vx_handle *vmo) {
   vx_ns_file f;
+  *vmo = VX_HANDLE_NONE;
   vx_status st = vx_ns_open((vx_ns *)ctx, vx_cstr(path), P9_OREAD, &f);
   if (st != VX_OK) return st;
+  p9_stat sb;
+  p9_stat_text keep;
+  uint64_t off = 0, avail = 0, at = 0;
+  if (p9c_stat(f.c, f.fid, &sb, &keep) == VX_OK && sb.length &&
+      p9c_map(f.c, f.fid, 0, sb.length, P9_PROT_READ | P9_PROT_EXEC, vmo, &off, &avail) == VX_OK) {
+    uint64_t len = (sb.length + 4095) & ~4095ull;
+    if (off == 0 && avail >= sb.length && vx_as_map(vx_self, *vmo, 0, len, 0, &at) == VX_OK) {
+      vx_ns_close(&f);
+      if (ld_mapped_count < sizeof ld_mapped / sizeof ld_mapped[0])
+        ld_mapped[ld_mapped_count].at = at, ld_mapped[ld_mapped_count++].len = len;
+      *data = (const uint8_t *)at, *size = sb.length;
+      return VX_OK;
+    }
+    vx_handle_close(*vmo);
+    *vmo = VX_HANDLE_NONE;
+  }
   size_t cap = 256ul * 1024, len = 0;
   uint8_t *buf = vx_heap_alloc(vx_heap_process(), cap);
   int64_t n = buf ? 1 : VX_ERR_NO_MEMORY;
@@ -90,6 +115,7 @@ const char *vx_main(void) {
     why[n] = 0;
     return why;
   }
+  for (uint32_t i = 0; i < ld_mapped_count; i++) vx_as_unmap(vx_self, ld_mapped[i].at, ld_mapped[i].len);
   // The program reads the spawn message as this read it; dl.exe was this one's.
   vx_handle_close(exe);
   for (uint32_t i = 0; i < vx_spawn_raw.handle_count; i++)

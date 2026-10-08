@@ -55,8 +55,12 @@ typedef struct vxdl {
   vx_dl_object pub[VXDL_OBJECTS]; // the handover's list (vx/dl.h), filled as objects load
   uint32_t count;
   // Reads the whole of a file of the namespace: its bytes, which may be let
-  // go once vxdl_load returns.
-  vx_status (*read)(void *ctx, const char *path, const uint8_t **data, size_t *size);
+  // go once vxdl_load returns. *vmo is the file as a read-only, executable
+  // VMO, the file from its offset 0, when its server maps files (Tmap), or
+  // VX_HANDLE_NONE: a library's segments that are not writable are then
+  // mapped from it, shared with every process that maps it (6f3a). The
+  // loader closes it.
+  vx_status (*read)(void *ctx, const char *path, const uint8_t **data, size_t *size, vx_handle *vmo);
   void *ctx;
   int64_t tls_next; // where the next object's TLS block goes, from the thread pointer
   uint64_t tls_size, tls_align;
@@ -154,7 +158,7 @@ static bool vxdl_load_exe(vxdl *dl, const uint8_t *image, size_t size, uint64_t 
 // A shared object's segments, in a reservation of their span and a guard
 // page on each side.
 static bool vxdl_map_lib(vxdl *dl, vxdl_obj *o, vx_dl_object *p, const uint8_t *image, size_t size,
-                         const vx_elf_header *eh) {
+                         const vx_elf_header *eh, vx_handle file) {
   uint64_t lo = UINT64_MAX, hi = 0;
   for (uint16_t i = 0; i < eh->phnum; i++) {
     vx_elf_phdr ph = vxdl_phdr(image, eh, i);
@@ -176,16 +180,24 @@ static bool vxdl_map_lib(vxdl *dl, vxdl_obj *o, vx_dl_object *p, const uint8_t *
     vx_elf_phdr ph = vxdl_phdr(image, eh, i);
     if (ph.type != VX_PT_LOAD || !ph.memsz) continue;
     uint64_t start = ph.vaddr & ~4095ull, len = vxdl_up(ph.vaddr + ph.memsz, 4096) - start,
-             va = p->base + start;
-    vx_handle vmo = VX_HANDLE_NONE;
-    st = vx_vmo_create(len, 0, &vmo);
-    if (st == VX_OK && ph.filesz)
-      st = vx_vmo_rw(vmo, VX_VMO_WRITE, ph.vaddr - start, (void *)(image + ph.offset), ph.filesz);
-    // Writable while it is bound: RELRO is made read-only after.
-    if (st == VX_OK)
-      st = vx_as_map(vx_self, vmo, 0, len,
-                     (ph.flags & VX_PF_W ? VX_MAP_WRITE : 0) | (ph.flags & VX_PF_X ? VX_MAP_EXEC : 0), &va);
-    if (vmo) vx_handle_close(vmo);
+             va = p->base + start, from = ph.offset & ~4095ull;
+    uint32_t prot = ph.flags & VX_PF_X ? VX_MAP_EXEC : 0;
+    // Not writable, all from the file, at the file's page offset: the
+    // file's own pages, shared (no relocation writes there: text
+    // relocations are refused).
+    if (file && !(ph.flags & VX_PF_W) && ph.filesz == ph.memsz && (ph.offset & 4095) == (ph.vaddr & 4095) &&
+        from + len <= vxdl_up(size, 4096)) {
+      st = vx_as_map(vx_self, file, from, len, prot, &va);
+    } else {
+      vx_handle vmo = VX_HANDLE_NONE;
+      st = vx_vmo_create(len, 0, &vmo);
+      if (st == VX_OK && ph.filesz)
+        st = vx_vmo_rw(vmo, VX_VMO_WRITE, ph.vaddr - start, (void *)(image + ph.offset), ph.filesz);
+      // Writable while it is bound: RELRO is made read-only after.
+      if (st == VX_OK)
+        st = vx_as_map(vx_self, vmo, 0, len, (ph.flags & VX_PF_W ? VX_MAP_WRITE : 0) | prot, &va);
+      if (vmo) vx_handle_close(vmo);
+    }
     if (st == VX_OK && va != p->base + start) st = VX_ERR_INVALID;
   }
   if (st != VX_OK) return vxdl_say(dl, o->name, ": cannot map its segments"), false;
@@ -206,7 +218,8 @@ static bool vxdl_load_lib(vxdl *dl, const char *name) {
   memcpy(path + 5, name, len + 1);
   const uint8_t *image = nullptr;
   size_t size = 0;
-  vx_status st = dl->read(dl->ctx, path, &image, &size);
+  vx_handle file = VX_HANDLE_NONE;
+  vx_status st = dl->read(dl->ctx, path, &image, &size, &file);
   if (st != VX_OK) return vxdl_say(dl, "cannot read ", path), false;
   vxdl_obj *o = &dl->obj[dl->count];
   vx_dl_object *p = &dl->pub[dl->count];
@@ -215,8 +228,11 @@ static bool vxdl_load_lib(vxdl *dl, const char *name) {
   memcpy(o->name, name, len + 1);
   p->name = o->name;
   vx_elf_header eh;
-  if (!vxdl_header(image, size, VX_ET_DYN, &eh)) return vxdl_say(dl, path, " is not a shared library"), false;
-  if (!vxdl_map_lib(dl, o, p, image, size, &eh)) return false;
+  bool ok = vxdl_header(image, size, VX_ET_DYN, &eh);
+  if (!ok) vxdl_say(dl, path, " is not a shared library");
+  ok = ok && vxdl_map_lib(dl, o, p, image, size, &eh, file);
+  if (file) vx_handle_close(file); // its mappings keep it
+  if (!ok) return false;
   vxdl_describe(dl, dl->count, image, &eh);
   dl->count++;
   return true;

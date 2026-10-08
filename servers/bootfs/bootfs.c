@@ -6,6 +6,11 @@
 // the tree over rings. Nothing is copied: a read comes straight from the
 // mapped archive. Every file is read-only, whatever the archive says.
 //
+// Tmap (docs/proto/map.md, M6 step 6f3a) gives a file as a VMO: one per
+// file, made at its first Tmap and kept, so every process that maps a
+// library's code from /lib shares its pages. Its handles are read-only, and
+// executable when asked: the files cannot change.
+//
 // An aname attaches below the root: "boot/bin" serves only that directory.
 
 #include "../../lib/vx-rt/rt.c"
@@ -22,6 +27,7 @@ typedef struct node {
   uint32_t mode;
   const uint8_t *data;
   uint64_t size;
+  vx_handle vmo; // the file as a VMO, from its first Tmap
 } node;
 
 static node nodes[MAX_NODES]; // 0 is unused, so a zero link means none
@@ -139,6 +145,34 @@ static vx_status fs_read(void *ctx, uint64_t n, uint64_t offset, uint8_t *buf, u
   return VX_OK;
 }
 
+// The file as a VMO, the whole of it in whole pages: made once, copied from
+// the archive (whose files are not page-aligned), then shared.
+static vx_status fs_map(void *ctx, uint64_t n, uint64_t offset, uint64_t length, uint32_t prot,
+                        vx_handle *out, uint64_t *vmo_offset, uint64_t *avail) {
+  (void)ctx, (void)length;
+  node *x = &nodes[n];
+  if (x->dir) return VX_ERR_INVALID;
+  if (prot & P9_PROT_WRITE) return VX_ERR_ACCESS;
+  uint64_t pages = (x->size + 4095) & ~4095ull;
+  if (!pages) pages = 4096;
+  if (offset >= pages) return VX_ERR_RANGE;
+  vx_status st = VX_OK;
+  if (!x->vmo) {
+    vx_handle v;
+    if ((st = vx_vmo_create(pages, 0, &v)) != VX_OK) return st;
+    if (x->size && (st = vx_vmo_rw(v, VX_VMO_WRITE, 0, (void *)x->data, x->size)) != VX_OK) {
+      vx_handle_close(v);
+      return st;
+    }
+    x->vmo = v;
+  }
+  uint32_t rights = VX_RIGHT_READ | VX_RIGHT_MAP | VX_RIGHT_TRANSFER | VX_RIGHT_INSPECT;
+  if (prot & P9_PROT_EXEC) rights |= VX_RIGHT_EXEC;
+  if ((st = vx_handle_dup(x->vmo, rights, out)) != VX_OK) return st;
+  *vmo_offset = offset, *avail = pages - offset;
+  return VX_OK;
+}
+
 static vx_status fs_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *child) {
   (void)ctx;
   uint64_t c = nodes[dir].first_child;
@@ -154,9 +188,10 @@ static p9_ring_server server = {
            .stat = fs_stat,
            .open = fs_open,
            .read = fs_read,
-           .readdir = fs_readdir},
+           .readdir = fs_readdir,
+           .map = fs_map},
     .name = VX_STR("bootfs"),
-    .supported = P9_EXT_XATTR, // Tgetattr, for stat; nothing can be changed
+    .supported = P9_EXT_XATTR | P9_EXT_MAP, // Tgetattr, for stat; Tmap, read-only; nothing can be changed
 };
 
 const char *vx_main(void) {

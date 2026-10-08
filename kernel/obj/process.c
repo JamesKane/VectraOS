@@ -49,7 +49,7 @@ static void task_teardown(task *t) {
   for (uint32_t i = 0; i < TASK_MAX_MAPPINGS; i++)
     if (maps[i].size) object_drop(&maps[i].vmo->obj);
   free_user_tables(root);
-  phys_free((uint64_t)maps - boot.hhdm, 0);
+  phys_free((uint64_t)maps - boot.hhdm, TASK_MAP_ORDER);
   phys_free((uint64_t)handles - boot.hhdm, 0);
   spin_lock(&t->lock);
   t->state = VX_TASK_EXITED; // only now: an EXIT binding sees the task fully gone

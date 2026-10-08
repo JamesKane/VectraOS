@@ -16,6 +16,7 @@ It is the root of nearly every namespace: the POSIX template (`/lib/ns/posix`, s
 svcd(8) starts it among the first services, from the manifest `boot/svc/bootfs.ndb`, and gives it the image, a read-only VMO the bootloader loaded as a module, and a listen channel; it restarts it if it exits.
 `bootfs` maps the image and makes a node for each entry, and for each directory the archive only implies.
 Nothing is copied: a read comes straight from the mapped archive.
+It answers 9Px's `map` extension (`Tmap`, docs/proto/map.md) with a VMO of the whole file, made at the file's first `Tmap` and kept: read-only, and executable when asked, since nothing in the image changes. ld-vx(8) maps the code of a library in `/lib` from it, so every process shares those pages (M6 step 6f3a).
 It takes no arguments.
 
 The image is a ustar archive that `./build` makes: regular files, directories, and hard links to a file earlier in the archive, served as that file, as sbase's programs are one program under many names.

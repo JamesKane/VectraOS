@@ -98,7 +98,8 @@ svcd, the root, refuses every verb that would stop, kill or change it with `perm
   It is refused with `permission denied` if any process's note group is already that pid, as POSIX refuses a group leader.
 : `childnotes`
   From now on the process is sent the note `posix: SIGCHLD pid=<pid>` when a child ends, stops or continues, and gets wait records for stops and continues.
-  It cannot be turned off.
+: `nochildnotes`
+  Turns `childnotes` off. The POSIX personality writes it before an `exec`, since the program that asked is being replaced: the new one, until it has its note handler, would be ended by a SIGCHLD, as a native program would be at any time. A POSIX program asks again once it has its handler; a child that ends in between is still waited for, without its note.
 : `break <addr> [if <cond>] [after <n>]`
   Sets a breakpoint at <addr> (see {debugging|#debug}).
   `after` lets <n> hits go by before the first that stops.

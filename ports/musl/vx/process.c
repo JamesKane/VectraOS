@@ -463,7 +463,11 @@ static long spawn_image(const char *path, bool search, char *const argv[], char 
                        .proc = vx_ns_connector(fd_namespace(), VX_STR("/proc")),
                        .proc_flags = proc_flags,
                        .proc_group = ctx->pgid > 0 ? (uint64_t)ctx->pgid : 0};
+    // An exec replaces the image that asked for SIGCHLD notes: none until
+    // the new one asks (procfs(4) nochildnotes); again if the exec fails.
+    if (ctx->exec && proc_mounted) proc_write(posix_pid(), "ctl", "nochildnotes");
     vx_status vst = vx_spawn_elf(&a, &task);
+    if (ctx->exec && proc_mounted) proc_write(posix_pid(), "ctl", "childnotes"); // returned: it failed
     if (vst == VX_ERR_INVALID)
       r = -ENOEXEC; // not an image for this machine
     else if (vst == VX_ERR_ACCESS)

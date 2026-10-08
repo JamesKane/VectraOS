@@ -475,6 +475,10 @@ static void test_signals(void) {
   CHECK(sigprocmask(SIG_BLOCK, &usr1, nullptr) == 0 && spawn_child("late", nullptr, &child) == 0);
   t0 = now_seconds();
   CHECK(nanosleep(&(struct timespec){.tv_nsec = 300'000'000}, nullptr) == 0 && now_seconds() - t0 >= 0.3);
+  // The child's signal may come after the sleep on a loaded machine (a
+  // dynamic child starts more slowly): pending, not delivered, when it does.
+  for (int i = 0; i < 500 && !(sigpending(&pending) == 0 && sigismember(&pending, SIGUSR1)); i++)
+    nanosleep(&(struct timespec){.tv_nsec = 10'000'000}, nullptr);
   CHECK(signals[SIGUSR1] == had && sigpending(&pending) == 0 && sigismember(&pending, SIGUSR1));
 
   // A forked child has none of its parent's pending signals.

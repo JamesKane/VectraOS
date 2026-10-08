@@ -38,14 +38,17 @@ typedef struct mapping {
   bool privatized;  // its VMO is a copy of its own, made for a debugger's write (exception.c)
 } mapping;
 
-static constexpr uint32_t TASK_MAX_MAPPINGS = 4096 / sizeof(mapping);
+// The table is four pages (an order-2 block): a dynamic program maps each
+// library's segments, and a Swift program loads a dozen libraries (6f3a).
+static constexpr uint32_t TASK_MAP_ORDER = 2;
+static constexpr uint32_t TASK_MAX_MAPPINGS = (4096u << TASK_MAP_ORDER) / sizeof(mapping);
 
 // A reservation (as_reserve, ADR-0042): address space no placed mapping
 // lands in, kept for the task's own as_map at addresses inside it.
 typedef struct reservation {
   uint64_t va, size; // size 0: the slot is free
 } reservation;
-static constexpr uint32_t TASK_MAX_RESERVATIONS = 32;
+static constexpr uint32_t TASK_MAX_RESERVATIONS = 128; // one per shared library, with its guard pages
 
 struct thread;
 struct sched_ctx; // sched.c
@@ -292,6 +295,7 @@ static vx_status handles_put(task *t, const moved_handle *in, uint32_t n, vx_han
 }
 
 static pool task_pool = POOL_FOR(task);
+static_assert(sizeof(task) <= 4096, "a pool object fits in a page");
 static pool thread_pool = POOL_FOR(thread);
 static_assert(alignof(thread) <= 16 && sizeof(thread) <= 4096); // pool objects: 16-aligned, within a page
 static _Atomic uint64_t next_task_id = 1;
@@ -349,10 +353,10 @@ static vx_status task_create(const char *name, uint64_t parent_id, task **out) {
   task *t = pool_alloc(&task_pool);
   if (!t) return VX_ERR_NO_MEMORY;
   uint64_t handles = phys_alloc_zeroed(0);
-  uint64_t maps = handles ? phys_alloc_zeroed(0) : 0;
+  uint64_t maps = handles ? phys_alloc_zeroed(TASK_MAP_ORDER) : 0;
   uint64_t root = maps ? arch_new_user_root() : 0;
   if (!root) {
-    if (maps) phys_free(maps, 0);
+    if (maps) phys_free(maps, TASK_MAP_ORDER);
     if (handles) phys_free(handles, 0);
     pool_free(&task_pool, t);
     return VX_ERR_NO_MEMORY;

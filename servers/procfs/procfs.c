@@ -8,7 +8,7 @@
 // before procfs.
 //
 //   /proc/N/status   one ndb record: pid=7 name=rc state=waiting threads=1 mem=412K sid=7
-//   /proc/N/ctl      kill · stop [SIG] · start · setsid · childnotes
+//   /proc/N/ctl      kill · stop [SIG] · start · setsid · childnotes · nochildnotes
 //   /proc/N/note     a write posts a note (ADR-0010)
 //   /proc/N/notepg   a write posts a note to every process in N's note group
 //   /proc/N/noteid   N's note group: read it, or write a group's id to join it
@@ -725,6 +725,10 @@ static vx_status ctl(proc *p, vx_str cmd) {
   if (word_is(cmd, "childnotes")) {
     if (untouchable(p)) return VX_ERR_ACCESS; // a SIGCHLD would end it
     p->childnotes = true;
+    return VX_OK;
+  }
+  if (word_is(cmd, "nochildnotes")) { // an exec's: the image that asked is going (6f3a)
+    p->childnotes = false;
     return VX_OK;
   }
   vx_status st = dbg_ctl(p, cmd);
