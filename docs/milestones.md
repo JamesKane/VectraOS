@@ -14,7 +14,7 @@ Updated 2026-10-07.
 | **M4** POSIX and debugging | Done (2026-10-02) | `tests/qemu/dbg.ndb` and `tests/qemu/rcscript.ndb` pass on both |
 | **M5** Storage | Done (2026-10-04) | `install`, `powercut`, `fsdadm` and `fsddump`, ctest's `MAP_SHARED` on `fsd`, and `fsdnvmerestart` pass on both (see below) |
 | **M6** Runtime | In progress (started 2026-10-04): 6a, 6b, 6c and 6d done, 6e1, 6e2 and 6e3a–6e3c done; 6e3d tabled until the Swift toolchain is vendored; 6f1a–6f2b and 6g1–6g6 to do | 04 §6's; `install` and `slots` are release gates, not M6's (decided 2026-10-05) |
-| M7 Pixels | Not started | |
+| M7 Pixels | Not started; not scoped. Step 7a, tracing and profiling, placed first (2026-10-07, docs/20) | |
 | M8 GPU | Not started | |
 | M9 Q8B platform | Not started | |
 | M10 Swarm | Not started | |
@@ -270,6 +270,18 @@ Scoped 2026-10-04: what the desktop, Mesa, `aid` and the toolchain stand on (04 
 | 6g4. ACPI's events: `bus-acpi`'s SCI and the power button, reboot, and an orderly shutdown (services stopped, `fsd` synced) where poweroff today is a crash. Tested in QEMU, the power button ending in a clean volume | To do | |
 | 6g5. What was due "on the first real machine": VT-d's RMRRs, requester-ID aliasing, other PCI segments, and interrupt remapping if the machine has x2APIC IDs past 255; `drv-nvme` flushing a volatile write cache before a reset. Each written to the machine's tables, and tested in QEMU where QEMU can model it | To do | |
 | 6g6. T1: the real PC boots from NVMe, with xHCI and the wired NIC, installed and run through the scenarios that need no QEMU. M6's last step | To do | |
+
+## M7 — Pixels
+
+Not scoped. One step is placed ahead of scoping (2026-10-07). It is tracing and profiling for the whole system, after M6's runtime and before the compositor, `vxui` and the frame budgets, which are latency problems spread across processes (docs/20 §9). It moves PMU sampling here from M14 (04 §6, 05 §12). The rest of M7's rows come when it is scoped.
+
+| Step | Status | Commit |
+|---|---|---|
+| 7a1. The kernel's trace (20 §4): a ring per CPU written with interrupts off and no lock, drops counted, stop by IPI barrier; `trace_configure` with a `Resource` that `svcd` mints for `procfs` alone; 32-byte records in `.schema`; the categories `sched` (switch, wake with the waker, block with its reason), `ipc` (call, reply, donation), `irq`, `vm` (faults by kind, pager waits, commit), `futex`, `syscall` and `mark`; `/proc/trace/{ctl,events,status}` as a broad grant (adm, ADR-0029); `trace -p` as ndb text. ADR proposed with the step. Tested by a scenario that captures a spawn, a pipe and a page fault on `fsd`, and checks each event and the waker of each wake | To do | |
+| 7a2. Flows (20 §5): channel flow ids computed by both ends from the lower endpoint id and the `txid`; `vx-prof` records version 3 with a flow; spans written by `lib/vx-9p`'s client and server frameworks and by `lib/vx-ring`'s sessions, so every server is traced with no code of its own; `trace -s` (the slowest flows, the longest blocks and what woke them). Tested by one `read` of a file on `fsd` over virtio-blk, seen as one chain from the app to the IRQ | To do | |
+| 7a3. Sampling (20 §6): ADR-0041's busy tick at the sampling rate while tracing, on every machine (QEMU's TCG included); `pmu_configure` (05 §9) with counters and overflow sampling where a PMU exists (KVM, hardware); the interrupted PC, kernel or user, and up to 64 frames; one task's samples only to a holder of `INSPECT`; symbols through `vx-debug` and the loader's object list. ADR for `pmu_configure`. Tested by a busy loop in a known function, found as most of its samples on both architectures | To do | |
+| 7a4. The flight recorder and what reads it (20 §7): `vx.trace=flight` runs `sched`, `ipc` and `irq` in circular mode from boot; crash directories keep the last 2 s as `trace`; `trace -f` and `trace -d`; contention from futex waits by key and site; `/proc/N/heap` (`vx_heap`'s classes) and `COMMIT` events. Tested by a crash directory that holds its process's last switches, and by the recorder's overhead within 20 §8's 1% | To do | |
+| 7a5. `./build bench` over traces (00 §8): every budget measured as the time between two events or a flow's length, under KVM; M2 to M5's budgets enforced from here, and M7's as they become measurable. Tested by a deliberately slowed path failing its budget | To do | |
 
 ## Known gaps
 

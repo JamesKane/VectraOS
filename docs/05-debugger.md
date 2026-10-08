@@ -170,6 +170,7 @@ Measuring comes before optimising, so the profiler is part of `dbg`, not a later
       samples    binary sample records; layout in .schema
       zones      binary zone records; layout in .schema
   ```
+- **The whole system** (20): kernel events in a ring per CPU, flows that follow a request across processes, sampling on the tick where there is no PMU, and a flight recorder, all read through `/proc/trace` and drawn on this timeline. 20 is design notes; its schedule is M7 step 7a.
 - **The timeline:** `dbg` shows samples, zones, frame events from `/wsys` and debug events on one timeline, per thread, with flame graphs over any selected range. A remote node's profile is a mount, as with debugging (§8).
 
 ## 10. Performance budgets
@@ -212,7 +213,8 @@ The mechanisms and the command line come early, because every later milestone is
 
 - **M4:** the `DEBUG` right and the five syscalls, the debug files in `procfs` with its simple conditions, crash directories, `lib/vx-debug` (index, unwinder, evaluator), `dbg -c`, `/sys/clock`, and `vx-prof` zones.
 - **M7:** `dbg` GUI v0, the first real `vxui` app: source, call stacks, locals, breakpoints, threads and the zone timeline.
-- **M14:** full parity with §6: watch pins, view rules, visualisers, the VectraOS views, following requests across processes, `pmu_configure` with sampling and flame graphs, and `gdbfs` for the kernel.
+- **M7 step 7a** (20 §9, moved from M14 on 2026-10-07): `pmu_configure` with sampling, the whole-system trace, and following requests across processes.
+- **M14:** full parity with §6: watch pins, view rules, visualisers, the VectraOS views, and `gdbfs` for the kernel.
 
 ## 13. Open questions
 
