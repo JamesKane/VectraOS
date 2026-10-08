@@ -429,9 +429,9 @@ static void test_prof(void) {
   // has all four, merged by their ends.
   CHECK(vx_prof_init(vx_ns_connector(&ns, VX_STR("/proc"))) == VX_OK);
   CHECK(write_file(me, "prof/ctl", "zones on") == VX_OK);
-  static vx_thread busy[4];
-  for (int i = 0; i < 4; i++) CHECK(vx_thread_spawn(&busy[i], zones_thread, nullptr, 0) == VX_OK);
-  for (int i = 0; i < 4; i++) vx_thread_join(&busy[i]);
+  static vx_worker busy[4];
+  for (int i = 0; i < 4; i++) CHECK(vx_worker_start(&busy[i], zones_thread, nullptr, 0) == VX_OK);
+  for (int i = 0; i < 4; i++) vx_worker_join(&busy[i]);
   uint32_t owners[4] = {}, owned = 0;
   bool own = true;
   for (uint32_t i = 1; vx_prof && i <= VX_PROF_THREADS; i++) {

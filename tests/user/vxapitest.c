@@ -24,21 +24,45 @@ static uint64_t total;
 
 static vx_arena *other_scratch;
 
-static void scratcher(void *arg) {
+static const char *scratcher(void *arg) {
   (void)arg;
   other_scratch = vx_scratch(nullptr, 0); // its own thread's
+  return nullptr;
 }
 
-static void adder(void *arg) {
+static const char *adder(void *arg) {
   (void)arg;
   for (int i = 0; i < 10000; i++) {
     vx_lock(&lock);
     total++;
     vx_unlock(&lock);
   }
+  return "";
+}
+
+static const char *refuser(void *arg) { return arg; }
+
+// As the spawned child: "child" checks what it was given and ends with 7;
+// "sleeper" waits for a note.
+static int child(void) {
+  vx_arena *a = vx_arena_new(1 << 16);
+  if (vx_str_eq(vx_arg(1), VX_STR("sleeper"))) {
+    printf("vxapitest: sleeper waiting\n");
+    for (;;) vx_sleep_until(vx_now() + 1'000'000'000, 0);
+  }
+  bool ok = vx_args().len == 3 && vx_str_eq(vx_arg(0), VX_STR("kid")) &&
+            vx_str_eq(vx_arg(2), VX_STR("two words")) && vx_arg(3).ptr == nullptr &&
+            vx_str_eq(vx_env_get(VX_STR("VXAPI"), a), VX_STR("hello")) &&
+            vx_env_get(VX_STR("VXAPI_NONE"), a).ptr == nullptr;
+  if (!ok)
+    printf("vxapitest: child got %zu args, 0 \"%.*s\", 2 \"%.*s\", VXAPI \"%.*s\"\n", vx_args().len,
+           VX_FMT(vx_arg(0)), VX_FMT(vx_arg(2)), VX_FMT(vx_env_get(VX_STR("VXAPI"), a)));
+  printf("vxapitest: child %s\n", ok ? "ok" : "FAILED its checks");
+  return 7;
 }
 
 int main(void) {
+  if (vx_str_eq(vx_arg(1), VX_STR("child")) || vx_str_eq(vx_arg(1), VX_STR("sleeper"))) return child();
   printf("vxapitest: hello from <vx.h>\n");
   CHECK(vx_abi_level() == VX_ABI_LEVEL && VX_TARGET_ABI == VX_ABI_LEVEL);
 
@@ -73,9 +97,8 @@ int main(void) {
   vx_arena *s1 = vx_scratch(nullptr, 0);
   vx_arena *s2 = vx_scratch(&s1, 1);
   CHECK(s1 && s2 && s1 != s2 && vx_arena_error(s1) == VX_OK);
-  vx_thread st;
-  CHECK(vx_thread_spawn(&st, scratcher, nullptr, 0) == VX_OK);
-  vx_thread_join(&st);
+  vx_thread *st = vx_thread_spawn(scratcher, nullptr, 0, 0);
+  CHECK(st && vx_thread_join(st, nullptr, nullptr) == VX_OK);
   CHECK(other_scratch && other_scratch != s1 && other_scratch != s2);
   // Pools: ids with generations, so a put id is stale.
   vx_arena *pa = vx_arena_new(1 << 16);
@@ -107,10 +130,39 @@ int main(void) {
   vx_arena_free(ta);
 
   // Threads and a lock between them.
-  vx_thread a, b;
-  CHECK(vx_thread_spawn(&a, adder, nullptr, 0) == VX_OK && vx_thread_spawn(&b, adder, nullptr, 0) == VX_OK);
-  vx_thread_join(&a);
-  vx_thread_join(&b);
+  vx_thread *a = vx_thread_spawn(adder, nullptr, VX_INTENT_THROUGHPUT, 0);
+  vx_thread *b = vx_thread_spawn(adder, nullptr, VX_INTENT_BACKGROUND, 64 << 10);
+  vx_arena *ex = vx_arena_new(1 << 16);
+  vx_str ea = VX_STR("unset"), eb = VX_STR("unset"), ec = {};
+  CHECK(a && b && vx_thread_join(a, ex, &ea) == VX_OK && vx_thread_join(b, ex, &eb) == VX_OK);
+  CHECK(ea.len == 0 && eb.len == 0);
+  vx_thread *c = vx_thread_spawn(refuser, "thread said no", 0, 0);
+  CHECK(c && vx_thread_join(c, ex, &ec) == VX_OK && vx_str_eq(ec, VX_STR("thread said no")));
+
+  // Processes: itself as a child, given arguments and the environment, then
+  // one ended by a note.
+  CHECK(vx_env_set(VX_STR("VXAPI"), VX_STR("hello")) == VX_OK);
+  CHECK(vx_str_eq(vx_env_get(VX_STR("VXAPI"), ex), VX_STR("hello")));
+  vx_str args[] = {VX_STR("kid"), VX_STR("child"), VX_STR("two words")};
+  vx_spawn_req req = {.path = vx_exe_path(), .args = {args, 3}, .intent = VX_INTENT_BACKGROUND};
+  vx_proc kid = {};
+  vx_str kex = {};
+  vx_status sst = vx_proc_spawn(&req, &kid);
+  CHECK(sst == VX_OK && kid.pid != 0);
+  CHECK(vx_proc_wait(kid, VX_INFINITE, ex, &kex) == VX_OK && vx_str_eq(kex, VX_STR("7")));
+  vx_proc_close(kid);
+  vx_str sargs[] = {VX_STR("vxapitest"), VX_STR("sleeper")};
+  vx_spawn_req sreq = {.path = vx_exe_path(), .args = {sargs, 2}, .flags = VX_PROC_NEWGROUP};
+  vx_proc sleeper = {};
+  CHECK(vx_proc_spawn(&sreq, &sleeper) == VX_OK);
+  CHECK(vx_proc_wait(sleeper, vx_now() + 300'000'000, ex, &kex) == VX_ERR_TIMED_OUT);
+  CHECK(vx_postnote(sleeper, VX_STR("kill")) == VX_OK);
+  CHECK(vx_proc_wait(sleeper, VX_INFINITE, ex, &kex) == VX_OK && kex.len > 0);
+  printf("vxapitest: the sleeper ended with \"%.*s\"\n", VX_FMT(kex));
+  vx_proc_close(sleeper);
+  vx_spawn_req bad = {.path = VX_STR("/nonexistent/program")};
+  CHECK(vx_proc_spawn(&bad, &kid) != VX_OK);
+  vx_arena_free(ex);
   CHECK(total == 20000);
   CHECK(vx_cpu_count() >= 1);
 

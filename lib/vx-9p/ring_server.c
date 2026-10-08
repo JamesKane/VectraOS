@@ -128,7 +128,7 @@ typedef struct p9_ring_server {
   bool stopping;
   bool deaf;         // the listen channel's peer has gone, and it lingers
   vx_status stopped; // what p9_ring_serve returns
-  vx_thread pool[P9_RING_MAX_THREADS];
+  vx_worker pool[P9_RING_MAX_THREADS];
 } p9_ring_server;
 
 // Each serving thread's own: the request and reply it is serving, and
@@ -168,7 +168,7 @@ static void p9_ring_worker_main(void *arg) {
       atomic_fetch_add(&s->unpark, 1);
       vx_futex_wake(&s->unpark, 1);
     } else if (s->threads < s->max_threads && s->threads < P9_RING_MAX_THREADS &&
-               vx_thread_spawn(&s->pool[s->threads], p9_ring_worker_main, s, 0) == VX_OK) {
+               vx_worker_start(&s->pool[s->threads], p9_ring_worker_main, s, 0) == VX_OK) {
       s->threads++, s->running++;
     }
   }

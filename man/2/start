@@ -1,5 +1,5 @@
 page=start sect=2 summary="how a native program starts and ends: constructors, argv, exit, abort and the stack guard"
-    names=vx_main,vx_exits,vx_exit,vx_abort,vx_argc,vx_argv,vx_random_bytes,__stack_chk_guard
+    names=vx_main,vx_exits,vx_exit,vx_abort,vx_args,vx_arg,vx_argc,vx_argv,vx_random_bytes,__stack_chk_guard
     src=lib/vx-rt/crt1.c,lib/vx-rt/spawn.c
     keys=start,crt1,main,exit,abort,argv,constructor,destructor,init_array,fini_array,guard,random
 
@@ -10,6 +10,8 @@ const char *vx_main(void);
 [[noreturn]] void vx_exits(const char *msg);
 [[noreturn]] void vx_exit(int n);
 [[noreturn]] void vx_abort(void);
+vx_strs vx_args(void);
+vx_str vx_arg(size_t i);
 int vx_argc(void);
 char **vx_argv(void);
 void vx_random_bytes(void *out, size_t n);
@@ -29,6 +31,8 @@ Its return value is the exit string: `nullptr` or `""` for success, else why it 
 
 `vx_abort` is C's `abort`: standard error is flushed, then the program traps, which ends it as a fault does, with no destructors; procfs(4) saves a crash directory under `/tmp/crash`.
 A note the program does not handle also ends it without destructors.
+
+`vx_args` is the arguments as slices, made at start-up (09 §5.1, M6 step 6e4c3): the first is the `argv0=` record, else the program's name, then its `arg=` records. `vx_arg` is one of them, or the zero slice past the last. These are what a native program uses; `vx_argv` is for C's `main`.
 
 `vx_argv` is a C `argv`, made once from the spawn message: `argv[0]` is the `argv0=` record, else the program's name, then its `arg=` records, then a null; `vx_argc` counts them.
 The strings share a 16 KiB buffer; arguments past it are left out, never cut in the middle.

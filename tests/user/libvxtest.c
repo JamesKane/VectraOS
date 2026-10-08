@@ -76,13 +76,13 @@ static void futexes(void) {
   vx_instant at = vx_now() + 10'000'000;
   CHECK(vx_futex_wait(&word, 0, at) == VX_ERR_TIMED_OUT);
   CHECK(vx_now() >= at);
-  vx_thread t;
-  CHECK(vx_thread_spawn(&t, waker, nullptr, 0) == VX_OK);
+  vx_worker t;
+  CHECK(vx_worker_start(&t, waker, nullptr, 0) == VX_OK);
   vx_instant end = vx_now() + 5'000'000'000;
   vx_status st = VX_OK;
   while (!atomic_load(&word) && vx_now() < end) st = vx_futex_wait(&word, 0, end);
   CHECK(atomic_load(&word) == 1 && st != VX_ERR_TIMED_OUT);
-  vx_thread_join(&t);
+  vx_worker_join(&t);
 }
 
 // R15: random bytes from start-up, different each time.
@@ -175,9 +175,9 @@ static void heap_worker(void *arg) {
 }
 
 static void heap_threads(void) {
-  vx_thread t[4];
-  for (uintptr_t i = 0; i < 4; i++) CHECK(vx_thread_spawn(&t[i], heap_worker, (void *)(i + 1), 0) == VX_OK);
-  for (int i = 0; i < 4; i++) vx_thread_join(&t[i]);
+  vx_worker t[4];
+  for (uintptr_t i = 0; i < 4; i++) CHECK(vx_worker_start(&t[i], heap_worker, (void *)(i + 1), 0) == VX_OK);
+  for (int i = 0; i < 4; i++) vx_worker_join(&t[i]);
   for (uint32_t i = 0; i < SLOTS; i++) heap_check_free(atomic_exchange(&slots[i], nullptr));
   CHECK(atomic_load(&heap_errors) == 0);
 }

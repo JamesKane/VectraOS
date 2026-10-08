@@ -32,10 +32,10 @@ static void worker(void *arg) {
 }
 
 const char *vx_main(void) {
-  static vx_thread t[WORKERS];
+  static vx_worker t[WORKERS];
   for (int i = 0; i < WORKERS; i++)
-    if (vx_thread_spawn(&t[i], worker, (void *)(intptr_t)i, 64ull * 1024) != VX_OK) return "no thread";
-  for (int i = 0; i < WORKERS; i++) vx_thread_join(&t[i]);
+    if (vx_worker_start(&t[i], worker, (void *)(intptr_t)i, 64ull * 1024) != VX_OK) return "no thread";
+  for (int i = 0; i < WORKERS; i++) vx_worker_join(&t[i]);
   vx_print(VX_STR("dbgthreads: done\n"));
   return nullptr;
 }

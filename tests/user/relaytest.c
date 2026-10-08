@@ -166,9 +166,9 @@ const char *vx_main(void) {
 
   // Two threads on each connection, all at once.
   worker w[4] = {{&a.c, aroot, 0}, {&a.c, aroot, 0}, {&b.c, broot, 0}, {&b.c, broot, 0}};
-  vx_thread t[4];
-  for (int i = 0; i < 4; i++) CHECK(vx_thread_spawn(&t[i], work, &w[i], 0) == VX_OK);
-  for (int i = 0; i < 4; i++) vx_thread_join(&t[i]);
+  vx_worker t[4];
+  for (int i = 0; i < 4; i++) CHECK(vx_worker_start(&t[i], work, &w[i], 0) == VX_OK);
+  for (int i = 0; i < 4; i++) vx_worker_join(&t[i]);
   CHECK(w[0].good == 50 && w[1].good == 50 && w[2].good == 50 && w[3].good == 50);
 
   // Reads flushed as soon as they are sent: none of the relay's calls is

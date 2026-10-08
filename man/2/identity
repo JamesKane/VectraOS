@@ -1,6 +1,6 @@
 page=identity sect=2 summary="who and where a program is: its pid, path, user, environment and machine"
-    names=vx_pid,vx_exe_path,vx_user_name,vx_getenv,vx_hostname
-    src=lib/vx-rt/base.c,lib/vx-rt/spawn.c,lib/vx-ns/spawn.c,servers/sysfs/sysfs.c
+    names=vx_pid,vx_exe_path,vx_user_name,vx_getenv,vx_env_get,vx_env_set,vx_hostname
+    src=lib/vx-rt/base.c,lib/vx-rt/spawn.c,lib/vx-ns/spawn.c,lib/vx-ns/proc.c,servers/sysfs/sysfs.c
     keys=pid,path,executable,user,environment,getenv,hostname,uname,sysname,identity
 
 # SYNOPSIS
@@ -10,6 +10,8 @@ uint64_t vx_pid(void);
 vx_str vx_exe_path(void);
 vx_str vx_user_name(void);
 vx_str vx_getenv(vx_str name);
+vx_str vx_env_get(vx_str name, vx_arena *a);
+vx_status vx_env_set(vx_str name, vx_str value);
 size_t vx_hostname(vx_ns *ns, char *buf, size_t cap);
 ```
 
@@ -25,6 +27,8 @@ It is empty when the spawner did not say.
 `vx_user_name` is who the process runs as, the spawn message's `user=`, or `none`.
 
 `vx_getenv` is the value of <name> in the environment the process was given, its `env=` records, or `{nullptr, 0}` if it has none.
+
+`vx_env_get` reads the environment as Plan 9's `getenv` does, and as a native program should (09 §5.1, M6 step 6e4c3): the file `/env/`<name> of the process's environment group (ADR-0044), so a script and a program see the same values. An rc list's words come joined by spaces. The value is copied into arena <a>, followed by a NUL its length does not count; it is the zero slice if the variable is not set. Without `/env` (a service not given `connect=env`), it is the `env=` record's value. `vx_env_set` makes or empties `/env/`<name> and writes <value>: every process of the group sees it, a child spawned after included.
 The whole environment is `vx_spawn.envs`, `vx_spawn.envc` strings of the form <name>`=`<value>; `/env`, envd(4)'s, is the store the process shares with its children beside it.
 
 `vx_hostname` writes the machine's name into <buf> and returns its length: `/sys/name`, which sysfs(4) serves from the kernel command line's `vx.host=` (install(8)'s `-n`), as 9front's `/dev/sysname`; `vectra` where the namespace has no `/sys`.

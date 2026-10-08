@@ -1,5 +1,5 @@
 page=thread sect=2 summary="make, start, end, interrupt, stop and examine threads"
-    names=thread_create,thread_start,thread_exit,thread_interrupt,thread_state,thread_suspend,thread_resume
+    names=thread_create,thread_start,thread_exit,thread_interrupt,thread_state,thread_suspend,thread_resume,vx_thread_spawn,vx_thread_join
     src=kernel/syscall/syscall.c,kernel/obj/task.c,kernel/obj/process.c,kernel/obj/exception.c,lib/vx-rt/base.c
     keys=thread,note,interrupt,registers,suspend,stop,tls,watchpoint,debugger
 
@@ -95,21 +95,23 @@ FP/SIMD registers set with `SET_FPREGS` are made safe to load the same way; `SET
 
 ## Threads in vx-rt
 
-A native program makes its threads with vx-rt rather than these calls directly (M6 step 6d1):
+A native program makes its threads with `libvx` rather than these calls directly (M6 steps 6d1 and 6e4c3, 09 §5.7):
 
 ```c
-vx_status vx_thread_spawn(vx_thread *t, void (*fn)(void *), void *arg,
-                          uint64_t stack_size);
-void vx_thread_join(vx_thread *t);
-bool vx_thread_stack(uint64_t *lo, uint64_t *hi);
+vx_thread *vx_thread_spawn(const char *(*fn)(void *), void *arg,
+                           uint32_t intent, size_t stack);
+vx_status vx_thread_join(vx_thread *t, vx_arena *a, vx_str *exit);
 void vx_lock(vx_lock_t *m);
 void vx_unlock(vx_lock_t *m);
 ```
 
-`vx_thread_spawn` runs <fn>(<arg>) on a new thread of the program's own task, with a stack of <stack_size> bytes (0 for 256 KiB) and its own copy of the program's `thread_local` storage: the image's `PT_TLS` segment, its initialised part copied and the rest zeroed, at its alignment, with the thread pointer set as the ELF ABI has it before <fn> runs.
+`vx_thread_spawn` runs <fn>(<arg>) on a new thread of the program's own task, with <intent> (an `enum vx_intent`, ADR-0038; 0 leaves it interactive, as the first thread starts), a stack of <stack> bytes (0 for 256 KiB) and its own copy of the program's `thread_local` storage: the image's `PT_TLS` segment, its initialised part copied and the rest zeroed, at its alignment, with the thread pointer set as the ELF ABI has it before <fn> runs.
 The stack, the storage and vx-rt's record of the thread are one VMO, below which the unmapped page `as_map` leaves is the stack's guard.
-`vx_thread_join` waits for <fn> to return, then lets the thread's memory go.
-`vx_thread_stack` gives the calling thread's stack, [<lo>, <hi>), the first thread's included (the mapping its stack pointer is in); false on a thread made with `vx_thread_create` alone, which has no record.
+It returns `nullptr`, with the reason in `vx_errstr`, if the thread cannot be made.
+
+<fn> returns the thread's exit string, as `vx_main` returns the process's: `nullptr` or `""` for success.
+`vx_thread_join` waits for it, puts the exit string in <*exit>, copied into arena <a> (<exit> may be `nullptr`), and lets the thread's memory go; each thread is joined once.
+The thread's scratch arenas (arena(2)) are given back as it ends.
 The first thread's `thread_local` storage is set up at start-up, before `vx_main`.
 `vx_lock_t` is a lock on a futex word, not recursive; vx-rt's printing holds one, so lines from different threads do not mix.
 

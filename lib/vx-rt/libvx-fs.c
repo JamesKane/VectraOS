@@ -37,7 +37,7 @@ static uint32_t libvx_fs_kind_of_stat(uint32_t mode) {
 // dev is the connection's, as the POSIX personality's st_dev (6d9a): qid
 // paths are each server's own.
 static vx_status libvx_fs_fill(p9_client *c, uint32_t fid, libvx_fs_stat *st) {
-  uint64_t dev = vx_ns_conn_id(&libvx_ns, c);
+  uint64_t dev = vx_ns_conn_id(libvx_namespace(), c);
   p9_attr a;
   if (p9c_getattr(c, fid, &a) == VX_OK) {
     *st = (libvx_fs_stat){.type = libvx_fs_kind_of_mode(a.mode),
@@ -78,10 +78,10 @@ static vx_status libvx_fs_walk(const char *path, bool follow, p9_client **c, uin
 int __llvm_libcxx_fs_stat(const char *path, int follow, libvx_fs_stat *st) {
   p9_client *c = nullptr;
   uint32_t fid = 0;
-  vx_lock(&libvx_ns_lock);
+  vx_lock(&vx_ns_proc_lock);
   vx_status e = libvx_fs_walk(path, follow != 0, &c, &fid);
   if (e == VX_OK) e = libvx_fs_fill(c, fid, st), p9c_clunk(c, fid);
-  vx_unlock(&libvx_ns_lock);
+  vx_unlock(&vx_ns_proc_lock);
   return e;
 }
 
@@ -93,10 +93,10 @@ int __llvm_libcxx_fs_fstat(long handle, libvx_fs_stat *st) {
 
 int __llvm_libcxx_fs_mkdir(const char *path, uint32_t perms) {
   vx_ns_file f;
-  vx_lock(&libvx_ns_lock);
+  vx_lock(&vx_ns_proc_lock);
   vx_status e = vx_ns_create(libvx_namespace(), vx_cstr(path), P9_DMDIR | (perms & 0777), P9_OREAD, &f);
   if (e == VX_OK) vx_ns_close(&f);
-  vx_unlock(&libvx_ns_lock);
+  vx_unlock(&vx_ns_proc_lock);
   return e;
 }
 
@@ -104,10 +104,10 @@ int __llvm_libcxx_fs_mkdir(const char *path, uint32_t perms) {
 int __llvm_libcxx_fs_remove(const char *path) {
   p9_client *c = nullptr;
   uint32_t fid = 0;
-  vx_lock(&libvx_ns_lock);
+  vx_lock(&vx_ns_proc_lock);
   vx_status e = libvx_fs_walk(path, false, &c, &fid);
   if (e == VX_OK) e = p9c_remove(c, fid); // which clunks it
-  vx_unlock(&libvx_ns_lock);
+  vx_unlock(&vx_ns_proc_lock);
   return e;
 }
 
@@ -117,10 +117,10 @@ int __llvm_libcxx_fs_symlink(const char *target, const char *path) {
   p9_client *c = nullptr;
   uint32_t fid = 0;
   vx_str name;
-  vx_lock(&libvx_ns_lock);
+  vx_lock(&vx_ns_proc_lock);
   vx_status e = libvx_parent(path, &c, &fid, &name);
   if (e == VX_OK) e = p9c_symlink(c, fid, name, vx_cstr(target)), p9c_clunk(c, fid);
-  vx_unlock(&libvx_ns_lock);
+  vx_unlock(&vx_ns_proc_lock);
   return e;
 }
 
@@ -128,10 +128,10 @@ int64_t __llvm_libcxx_fs_readlink(const char *path, char *buf, size_t cap) {
   p9_client *c = nullptr;
   uint32_t fid = 0;
   size_t n = 0;
-  vx_lock(&libvx_ns_lock);
+  vx_lock(&vx_ns_proc_lock);
   vx_status e = libvx_fs_walk(path, false, &c, &fid);
   if (e == VX_OK) e = p9c_readlink(c, fid, buf, cap, &n), p9c_clunk(c, fid);
-  vx_unlock(&libvx_ns_lock);
+  vx_unlock(&vx_ns_proc_lock);
   return e == VX_OK ? (int64_t)n : e;
 }
 
@@ -139,10 +139,10 @@ int64_t __llvm_libcxx_fs_readlink(const char *path, char *buf, size_t cap) {
 static vx_status libvx_fs_setattr(const char *path, bool follow, const p9_setattr *a) {
   p9_client *c = nullptr;
   uint32_t fid = 0;
-  vx_lock(&libvx_ns_lock);
+  vx_lock(&vx_ns_proc_lock);
   vx_status e = libvx_fs_walk(path, follow, &c, &fid);
   if (e == VX_OK) e = p9c_setattr(c, fid, a), p9c_clunk(c, fid);
-  vx_unlock(&libvx_ns_lock);
+  vx_unlock(&vx_ns_proc_lock);
   return e;
 }
 
@@ -181,9 +181,9 @@ int64_t __llvm_libcxx_fs_getcwd(char *buf, size_t cap) {
 }
 
 int __llvm_libcxx_fs_chdir(const char *path) {
-  vx_lock(&libvx_ns_lock);
+  vx_lock(&vx_ns_proc_lock);
   vx_status e = vx_chdir(libvx_namespace(), vx_cstr(path));
-  vx_unlock(&libvx_ns_lock);
+  vx_unlock(&vx_ns_proc_lock);
   return e;
 }
 
@@ -192,11 +192,11 @@ int64_t __llvm_libcxx_fs_realpath(const char *path, char *buf, size_t cap) {
   char p[VX_NS_MAX_PATH];
   p9_client *c = nullptr;
   uint32_t fid = 0;
-  vx_lock(&libvx_ns_lock);
+  vx_lock(&vx_ns_proc_lock);
   int64_t n = vx_ns_follow(libvx_namespace(), vx_cstr(path), true, p);
   vx_status e = n < 0 ? (vx_status)n : vx_ns_walk(libvx_namespace(), (vx_str){p, (size_t)n}, &c, &fid);
   if (e == VX_OK) p9c_clunk(c, fid);
-  vx_unlock(&libvx_ns_lock);
+  vx_unlock(&vx_ns_proc_lock);
   if (e != VX_OK) return e;
   if ((size_t)n >= cap) return VX_ERR_RANGE;
   memcpy(buf, p, (size_t)n);
@@ -216,7 +216,7 @@ static struct {
 
 int64_t __llvm_libcxx_fs_opendir(const char *path) {
   char p[VX_NS_MAX_PATH];
-  vx_lock(&libvx_ns_lock);
+  vx_lock(&vx_ns_proc_lock);
   uint32_t d = 0;
   while (d < LIBVX_FS_DIRS && libvx_fs_dirs[d].used) d++;
   int64_t n = d < LIBVX_FS_DIRS ? vx_ns_follow(libvx_namespace(), vx_cstr(path), true, p) : VX_ERR_NO_MEMORY;
@@ -226,7 +226,7 @@ int64_t __llvm_libcxx_fs_opendir(const char *path) {
   vx_ns_file f = {};
   if (e == VX_OK) e = vx_ns_open(libvx_namespace(), (vx_str){p, (size_t)n}, P9_OREAD, &f);
   if (e == VX_OK) libvx_fs_dirs[d] = (typeof(libvx_fs_dirs[0])){.used = true, .f = f, .buf = buf};
-  vx_unlock(&libvx_ns_lock);
+  vx_unlock(&vx_ns_proc_lock);
   if (e != VX_OK) vx_heap_free(vx_heap_process(), buf);
   return e == VX_OK ? (int64_t)d : e;
 }
@@ -253,9 +253,9 @@ int __llvm_libcxx_fs_readdir(int64_t dir, char *name, size_t cap, uint32_t *type
 
 void __llvm_libcxx_fs_closedir(int64_t dir) {
   if (dir < 0 || dir >= LIBVX_FS_DIRS || !libvx_fs_dirs[dir].used) return;
-  vx_lock(&libvx_ns_lock);
+  vx_lock(&vx_ns_proc_lock);
   vx_ns_close(&libvx_fs_dirs[dir].f);
   vx_heap_free(vx_heap_process(), libvx_fs_dirs[dir].buf);
   libvx_fs_dirs[dir] = (typeof(libvx_fs_dirs[0])){};
-  vx_unlock(&libvx_ns_lock);
+  vx_unlock(&vx_ns_proc_lock);
 }

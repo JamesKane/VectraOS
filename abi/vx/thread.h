@@ -12,13 +12,11 @@ typedef struct vx_lock_t {
   _Atomic uint32_t state;
 } vx_lock_t;
 
-// A thread of the program's own task, as vx_thread_spawn made it.
-typedef struct vx_tcb vx_tcb;
-typedef struct vx_thread {
-  vx_handle handle;
-  uint64_t base, size; // its mapping
-  vx_tcb *tcb;
-} vx_thread;
+// A thread of the program's own task (09 §5.7): it runs a function that
+// returns its exit string, as a process's vx_main does ("" or nullptr for
+// success).
+typedef struct vx_thread vx_thread;
+typedef struct vx_arena vx_arena;
 
 // What is above userland's baseline (x86-64-v3, armv8.2-a; M6 step 6c3), to
 // choose a code path at run time: a feature counts only when the CPU has it
@@ -46,8 +44,15 @@ typedef enum vx_cpu_feature : uint32_t {
 VX_API void vx_lock(vx_lock_t *m);
 VX_API bool vx_lock_until(vx_lock_t *m, vx_instant deadline);
 VX_API void vx_unlock(vx_lock_t *m);
+// The calling thread's intent (enum vx_intent, ADR-0038): how it is
+// scheduled, never a priority.
 VX_API vx_status vx_intent_set(uint32_t intent);
 VX_API uint32_t vx_cpu_count(void);
 VX_API bool vx_cpu_has(vx_cpu_feature f);
-VX_API vx_status vx_thread_spawn(vx_thread *t, void (*fn)(void *), void *arg, uint64_t stack_size);
-VX_API void vx_thread_join(vx_thread *t);
+// Starts fn(arg) on a new thread with intent (0: interactive, as the first
+// thread starts) and a stack of stack bytes (0: 256 KiB); nullptr, with
+// vx_errstr, if it cannot.
+VX_API vx_thread *vx_thread_spawn(const char *(*fn)(void *), void *arg, uint32_t intent, size_t stack);
+// Waits for t to end and lets it go; its exit string, "" for success, into
+// *exit, copied into a (exit may be nullptr: not wanted).
+VX_API vx_status vx_thread_join(vx_thread *t, vx_arena *a, vx_str *exit);

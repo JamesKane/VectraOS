@@ -4,3 +4,4 @@
 service=vxapitest program=/boot/bin/vxapitest console entropy
 ns=posix
 connect=nsd
+connect=env

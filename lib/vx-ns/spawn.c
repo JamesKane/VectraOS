@@ -582,11 +582,27 @@ static vx_status vx_env_records(vx_ns *ns, vx_ndb_writer *w, vx_handle *handles,
   return VX_OK;
 }
 
+// The process's namespace: the first one vx_ns_from_spawn made (a program's
+// own, which it keeps for its life), or else one made from the spawn message
+// at first use. libvx's calls that name files use it, under its lock.
+static vx_ns *vx_ns_proc;
+static vx_ns vx_ns_proc_own;
+static vx_lock_t vx_ns_proc_lock;
+
+static vx_status vx_ns_from_spawn(vx_ns *ns);
+
+// The process's namespace; call it under vx_ns_proc_lock.
+[[maybe_unused]] static vx_ns *vx_ns_process(void) {
+  if (!vx_ns_proc) vx_ns_from_spawn(&vx_ns_proc_own);
+  return vx_ns_proc;
+}
+
 [[maybe_unused]] static vx_status vx_ns_from_spawn(vx_ns *ns) {
-  p9c_user = vx_spawn.user;       // its attaches name its user (docs/11 §9)
-  ns->getwd = vx_getwd;           // relative names from the current directory (ADR-0039)
-  ns->open_dev = vx_fd_open;      // and /fd/N, its descriptors (ADR-0040)
-  ns->env_attach = vx_env_attach; // and /env, its environment group (ADR-0044)
+  if (!vx_ns_proc) vx_ns_proc = ns; // the spawn message's handles are taken once: the first is the process's
+  p9c_user = vx_spawn.user;         // its attaches name its user (docs/11 §9)
+  ns->getwd = vx_getwd;             // relative names from the current directory (ADR-0039)
+  ns->open_dev = vx_fd_open;        // and /fd/N, its descriptors (ADR-0040)
+  ns->env_attach = vx_env_attach;   // and /env, its environment group (ADR-0044)
   vx_ns_group.srv = vx_spawn_take("srv:nsd");
   vx_handle chan = vx_spawn_take("nsgroup");
   vx_status st = chan ? vx_ns_group_join(ns, chan) : vx_ns_replay(ns, vx_spawn.text, nullptr);

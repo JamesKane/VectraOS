@@ -1,0 +1,75 @@
+page=proc sect=2 summary="spawn a program, run one in place, wait for it and send it notes"
+    names=vx_proc_spawn,vx_proc_exec,vx_proc_wait,vx_proc_close,vx_postnote
+    src=lib/vx-ns/proc.c,lib/vx-rt/spawn.c
+    keys=spawn,exec,process,child,wait,note,postnote,kill,program,run
+
+# SYNOPSIS
+
+```c
+#include <vx/proc.h>
+
+typedef struct vx_proc {
+  vx_handle task;
+  uint64_t pid;
+} vx_proc;
+
+typedef struct vx_spawn_req {
+  vx_str path;
+  vx_strs args;
+  vx_str ns;
+  const vx_handle *handles;
+  const vx_str *handle_names;
+  size_t nhandles;
+  uint32_t intent;
+  uint32_t flags; // VX_PROC_NEWGROUP
+} vx_spawn_req;
+
+vx_status vx_proc_spawn(const vx_spawn_req *r, vx_proc *out);
+vx_status vx_proc_exec(const vx_spawn_req *r);
+vx_status vx_proc_wait(vx_proc p, vx_instant deadline, vx_arena *a,
+                       vx_str *exit);
+void vx_proc_close(vx_proc p);
+vx_status vx_postnote(vx_proc p, vx_str note);
+```
+
+# DESCRIPTION
+
+`vx_proc_spawn` runs the program at <path> in the process's namespace as a child (09 §5.8, M6 step 6e4c3).
+It reads the image whole, and its interpreter if it is dynamic (ADR-0047), and makes the task with vx-rt's loader; the child is registered with whatever serves `/proc` before it runs, and <*out> is its task handle and its pid, `/proc`'s name for it.
+
+<args> are its arguments, the first the name it sees for itself (vx_args in start(2)); without them it is the last element of <path>.
+<handles> move to the child under <handle_names>, whatever happens.
+It is also given the caller's standard output, standard error and console, unless <handle_names> name `stdout`, `stderr` or `console`; standard input only when named.
+It shares the caller's namespace group (ADR-0009) and environment group (ADR-0044).
+<intent> is its first thread's (ADR-0038; 0 for interactive), and `VX_PROC_NEWGROUP` gives it a note group of its own, as Plan 9's `RFNOTEG`.
+
+`vx_proc_exec` runs the program in the caller's place, its task kept (ADR-0012), and returns only if it cannot.
+
+`vx_proc_wait` waits until <p> ends or <deadline> passes (`VX_ERR_TIMED_OUT`), then puts its exit string in <*exit>, copied into arena <a>: `""` for success, the string it ended with otherwise (ADR-0010). <exit> may be `nullptr`.
+Waiting does not let the child go: `vx_proc_close` does, and the task's handle with it.
+
+`vx_postnote` sends <p> a note by writing it to `/proc/`<pid>`/note`, as Plan 9's `postnote` does; a note the program does not handle ends it, with the note as its exit string.
+
+# EXAMPLES
+
+```c
+vx_str args[] = {VX_STR("ls"), VX_STR("-l"), VX_STR("/bin")};
+vx_spawn_req r = {.path = VX_STR("/bin/ls"), .args = {args, 3}};
+vx_proc p;
+vx_str why;
+if (vx_proc_spawn(&r, &p) == VX_OK) {
+  if (vx_proc_wait(p, VX_INFINITE, a, &why) == VX_OK && why.len)
+    vx_eprintf("ls: %.*s\n", VX_FMT(why));
+  vx_proc_close(p);
+}
+```
+
+# SEE ALSO
+
+start(2), identity(2), thread(2), exception(2), notes(7), procfs(4); `docs/09-native-api.md` §5.8 in the repository
+
+# BUGS
+
+<ns> must be empty: a namespace(6) template for the child is a later level.
+The image is read whole, up to 224 MiB.
+Waiting in a loop, `vx_proc_watch`, comes with the event loop (6e4c4).

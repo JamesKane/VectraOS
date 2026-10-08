@@ -190,15 +190,15 @@ const char *vx_main(void) {
   p9c_clunk(w, fid);
 
   // The readers and the writer, all at once.
-  vx_thread t[READERS + 1];
+  vx_worker t[READERS + 1];
   for (int i = 0; i < READERS; i++) {
     readers[i].id = i;
     CHECK(connect(&readers[i].conn, "home", &readers[i].root) &&
           p9c_walk(&readers[i].conn.c, readers[i].root, VX_STR("conc"), &readers[i].conc) == VX_OK);
   }
-  for (int i = 0; i < READERS; i++) CHECK(vx_thread_spawn(&t[i], read_loop, &readers[i], 0) == VX_OK);
-  CHECK(vx_thread_spawn(&t[READERS], write_loop, nullptr, 0) == VX_OK);
-  for (int i = 0; i <= READERS; i++) vx_thread_join(&t[i]);
+  for (int i = 0; i < READERS; i++) CHECK(vx_worker_start(&t[i], read_loop, &readers[i], 0) == VX_OK);
+  CHECK(vx_worker_start(&t[READERS], write_loop, nullptr, 0) == VX_OK);
+  for (int i = 0; i <= READERS; i++) vx_worker_join(&t[i]);
   for (int i = 0; i < READERS; i++) {
     CHECK(readers[i].good == 2 * ROUNDS + (i < 2 ? 1 : 0));
     CHECK(readers[i].listed == ROUNDS);

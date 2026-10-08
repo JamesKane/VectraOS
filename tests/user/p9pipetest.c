@@ -32,7 +32,7 @@ static void nap(int64_t ms) { vx_futex_wait(&never, 0, vx_clock_read() + ms * 1'
 
 // A slave read, on a thread of its own.
 typedef struct reader {
-  vx_thread t;
+  vx_worker t;
   char buf[64];
   _Atomic int64_t got; // bytes, or a negative status
   _Atomic bool done;
@@ -104,28 +104,28 @@ const char *vx_main(void) {
   // A read the server holds, and a write from another thread that ends it,
   // on the same connection; calls from more threads meanwhile.
   static reader r1;
-  CHECK(vx_thread_spawn(&r1.t, read_slave, &r1, 0) == VX_OK);
+  CHECK(vx_worker_start(&r1.t, read_slave, &r1, 0) == VX_OK);
   nap(30);
   CHECK(!atomic_load(&r1.done)); // held: no input yet
-  vx_thread b[4];
-  for (int i = 0; i < 4; i++) CHECK(vx_thread_spawn(&b[i], busy, nullptr, 0) == VX_OK);
-  for (int i = 0; i < 4; i++) vx_thread_join(&b[i]);
+  vx_worker b[4];
+  for (int i = 0; i < 4; i++) CHECK(vx_worker_start(&b[i], busy, nullptr, 0) == VX_OK);
+  for (int i = 0; i < 4; i++) vx_worker_join(&b[i]);
   CHECK(atomic_load(&busy_ok) == 4 && !atomic_load(&r1.done));
   CHECK(type_at_master("hello\n"));
   CHECK(wait_done(&r1, 2000) && atomic_load(&r1.got) == 6 && memcmp(r1.buf, "hello\n", 6) == 0);
-  vx_thread_join(&r1.t);
+  vx_worker_join(&r1.t);
 
   // A held read flushed by a note: INTERRUPTED; then input reaches the next
   // read, not the flushed one.
   CHECK(vx_notify(on_note) == VX_OK);
   conn.interrupted = flush_wanted;
   static reader r2;
-  CHECK(vx_thread_spawn(&r2.t, read_slave, &r2, 0) == VX_OK);
+  CHECK(vx_worker_start(&r2.t, read_slave, &r2, 0) == VX_OK);
   nap(30);
   CHECK(!atomic_load(&r2.done) && atomic_load(&r2.id));
   CHECK(vx_thread_interrupt(vx_self, atomic_load(&r2.id), VX_STR("flush me")) == VX_OK);
   CHECK(wait_done(&r2, 2000) && atomic_load(&r2.got) == VX_ERR_INTERRUPTED);
-  vx_thread_join(&r2.t);
+  vx_worker_join(&r2.t);
   CHECK(!conn.dead && type_at_master("after\n"));
   char buf[64];
   CHECK(p9c_read(&conn.c, slave, P9_OFFSET_CURRENT, buf, sizeof buf) == 6 && memcmp(buf, "after\n", 6) == 0);

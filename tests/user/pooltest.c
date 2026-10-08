@@ -100,8 +100,8 @@ const char *vx_main(void) {
 
   // A gate read let go: the others are answered meanwhile, on its own connection too.
   job g = {.conn = 0, .file = "gate"};
-  vx_thread t, u[3];
-  CHECK(vx_thread_spawn(&t, run, &g, 0) == VX_OK);
+  vx_worker t, u[3];
+  CHECK(vx_worker_start(&t, run, &g, 0) == VX_OK);
   pause_ms(50);
   bool fast = true;
   for (int i = 0; i < 10; i++) fast = fast && is(buf, read_file(1, "fast", buf, sizeof buf), "fast\n");
@@ -109,14 +109,14 @@ const char *vx_main(void) {
   CHECK(is(buf, read_file(0, "fast", buf, sizeof buf), "fast\n"));
   CHECK(!atomic_load(&g.done));
   open_gate();
-  vx_thread_join(&t);
+  vx_worker_join(&t);
   CHECK(is(g.buf, g.n, "gate\n"));
 
   // Three slow reads at once, each let go: all three wait together.
   job sl[3] = {{.conn = 0, .file = "slow"}, {.conn = 1, .file = "slow"}, {.conn = 2, .file = "slow"}};
   vx_instant start = vx_clock_read();
-  for (int i = 0; i < 3; i++) CHECK(vx_thread_spawn(&u[i], run, &sl[i], 0) == VX_OK);
-  for (int i = 0; i < 3; i++) vx_thread_join(&u[i]);
+  for (int i = 0; i < 3; i++) CHECK(vx_worker_start(&u[i], run, &sl[i], 0) == VX_OK);
+  for (int i = 0; i < 3; i++) vx_worker_join(&u[i]);
   vx_duration took = vx_clock_read() - start;
   CHECK(is(sl[0].buf, sl[0].n, "slow\n") && is(sl[1].buf, sl[1].n, "slow\n") &&
         is(sl[2].buf, sl[2].n, "slow\n"));
@@ -126,11 +126,11 @@ const char *vx_main(void) {
   // A Tflush of a busy read waits for it: the flusher is not done until the
   // gate opens.
   job f = {};
-  CHECK(vx_thread_spawn(&t, cancel_job, &f, 0) == VX_OK);
+  CHECK(vx_worker_start(&t, cancel_job, &f, 0) == VX_OK);
   pause_ms(200);
   CHECK(!atomic_load(&f.done));
   open_gate();
-  vx_thread_join(&t);
+  vx_worker_join(&t);
   CHECK(f.n == 1);
   CHECK(is(buf, read_file(0, "fast", buf, sizeof buf), "fast\n"));
 

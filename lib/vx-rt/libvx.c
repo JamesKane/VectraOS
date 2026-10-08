@@ -28,6 +28,7 @@
 
 #define VX_RT_LIBC // the C library has memcpy and the rest (rt.c)
 #include "rt.c"
+#include "../vx-ns/proc.c"
 #include "../vx-ns/spawn.c"
 
 #include "libvx.h"
@@ -131,7 +132,7 @@ void __llvm_libc_futex_wake(const uint32_t *word, uint32_t count) {
 // as nothing can unmap a thread's stack while it runs on it.
 
 typedef struct libvx_thread {
-  vx_thread t;
+  vx_worker t;
   struct libvx_thread *next;
 } libvx_thread;
 
@@ -148,7 +149,7 @@ static void libvx_reap(void) {
       continue;
     }
     *p = lt->next;
-    vx_thread_join(&lt->t);
+    vx_worker_join(&lt->t);
     vx_heap_free(vx_heap_process(), lt);
   }
   vx_unlock(&libvx_threads_lock);
@@ -161,7 +162,7 @@ int __llvm_libc_thread_create(void (*entry)(void *), void *arg, size_t stacksize
   *lt = (libvx_thread){};
   static constexpr size_t LEAST = 256ull * 1024;
   uint64_t stack = stacksize > LEAST ? stacksize : LEAST; // vx-rt's least: C11 asks for 64 KiB
-  vx_status st = vx_thread_spawn(&lt->t, entry, arg, stack);
+  vx_status st = vx_worker_start(&lt->t, entry, arg, stack);
   if (st != VX_OK) {
     vx_heap_free(vx_heap_process(), lt);
     return st == VX_ERR_NO_MEMORY ? LIBVX_ENOMEM : libvx_errno(st);
@@ -172,7 +173,7 @@ int __llvm_libc_thread_create(void (*entry)(void *), void *arg, size_t stacksize
 
 int __llvm_libc_thread_join(void *handle) {
   libvx_thread *lt = handle;
-  vx_thread_join(&lt->t);
+  vx_worker_join(&lt->t);
   vx_heap_free(vx_heap_process(), lt);
   libvx_reap();
   return 0;
@@ -267,25 +268,16 @@ size_t __llvm_libc_heap_usable_size(void *p) { return vx_heap_usable(vx_heap_pro
 
 // --- Files and the environment, through the process's namespace ---
 
-static vx_ns libvx_ns;
-static vx_lock_t libvx_ns_lock; // the namespace's, and getenv's table
-static bool libvx_ns_tried;
-
-// The namespace, made from the spawn message at first use; under the lock.
-static vx_ns *libvx_namespace(void) {
-  if (!libvx_ns_tried) {
-    libvx_ns_tried = true;
-    vx_ns_from_spawn(&libvx_ns);
-  }
-  return &libvx_ns;
-}
+// The process's namespace (vx-ns's), under its lock, which also keeps
+// getenv's table.
+static vx_ns *libvx_namespace(void) { return vx_ns_process(); }
 
 // Foundation's host name (6e3c): /sys/name, cut to fit and terminated.
 size_t __swift_vectraos_hostname(char *buf, size_t cap) {
   if (!cap) return 0;
-  vx_lock(&libvx_ns_lock);
+  vx_lock(&vx_ns_proc_lock);
   size_t n = vx_hostname(libvx_namespace(), buf, cap - 1);
-  vx_unlock(&libvx_ns_lock);
+  vx_unlock(&vx_ns_proc_lock);
   buf[n] = 0;
   return n;
 }
@@ -305,10 +297,10 @@ static vx_status libvx_parent(const char *path, p9_client **c, uint32_t *fid, vx
 int __llvm_libc_remove(const char *path) {
   p9_client *c = nullptr;
   uint32_t fid = 0;
-  vx_lock(&libvx_ns_lock);
+  vx_lock(&vx_ns_proc_lock);
   vx_status st = vx_ns_walk(libvx_namespace(), vx_cstr(path), &c, &fid);
   if (st == VX_OK) st = p9c_remove(c, fid); // which clunks it
-  vx_unlock(&libvx_ns_lock);
+  vx_unlock(&vx_ns_proc_lock);
   return libvx_errno(st);
 }
 
@@ -329,7 +321,7 @@ static vx_status libvx_rename_paths(const char *from, const char *to) {
   p9_client *c1 = nullptr, *c2 = nullptr;
   uint32_t f1 = 0, f2 = 0;
   vx_str n1 = {}, n2 = {};
-  vx_lock(&libvx_ns_lock);
+  vx_lock(&vx_ns_proc_lock);
   vx_status st = libvx_parent(from, &c1, &f1, &n1);
   vx_status st2 = st == VX_OK ? libvx_parent(to, &c2, &f2, &n2) : st;
   bool same_dir = st2 == VX_OK && n1.ptr - from == n2.ptr - to && !memcmp(from, to, (size_t)(n1.ptr - from));
@@ -337,7 +329,7 @@ static vx_status libvx_rename_paths(const char *from, const char *to) {
   if (st2 == VX_OK) e = c1 == c2 ? libvx_rename(c1, f1, n1, f2, n2, same_dir) : VX_ERR_UNSUPPORTED;
   if (st == VX_OK) p9c_clunk(c1, f1);
   if (st2 == VX_OK) p9c_clunk(c2, f2);
-  vx_unlock(&libvx_ns_lock);
+  vx_unlock(&vx_ns_proc_lock);
   return e;
 }
 
@@ -387,7 +379,7 @@ long __llvm_libc_file_open(const char *path, int flags) {
     mode = P9_ORDWR;
   else if (flags & FILE_WRITE)
     mode = P9_OWRITE;
-  vx_lock(&libvx_ns_lock);
+  vx_lock(&vx_ns_proc_lock);
   uint32_t slot = 0;
   while (slot < LIBVX_FILES && libvx_files[slot].used) slot++;
   vx_status st = slot < LIBVX_FILES ? VX_OK : VX_ERR_NO_MEMORY;
@@ -401,7 +393,7 @@ long __llvm_libc_file_open(const char *path, int flags) {
     st = vx_ns_create(libvx_namespace(), p, 0666, mode, &f);
   if (st == VX_OK)
     libvx_files[slot] = (typeof(libvx_files[0])){.used = true, .append = flags & FILE_APPEND, .f = f};
-  vx_unlock(&libvx_ns_lock);
+  vx_unlock(&vx_ns_proc_lock);
   if (slot == LIBVX_FILES) return -LIBVX_EMFILE;
   return st == VX_OK ? (long)slot + 3 : -libvx_errno(st);
 }
@@ -455,10 +447,10 @@ long long __llvm_libc_file_seek(long h, long long offset, int whence) {
 
 int __llvm_libc_file_close(long h) {
   if (h >= 0 && h <= 2) return 0; // the standard streams stay
-  vx_lock(&libvx_ns_lock);
+  vx_lock(&vx_ns_proc_lock);
   vx_ns_file *f = libvx_file(h);
   if (f) vx_ns_close(f), libvx_files[h - 3].used = false;
-  vx_unlock(&libvx_ns_lock);
+  vx_unlock(&vx_ns_proc_lock);
   return f ? 0 : LIBVX_EBADF;
 }
 
@@ -483,36 +475,14 @@ static uint32_t libvx_env_slot(vx_str name) {
 
 // /env/NAME's value into buf: its length, or -1 if it is not set there, or
 // -2 if the process has no /env.
-static int64_t libvx_env_read(vx_str name, char *buf, uint32_t cap) {
-  char path[80] = "/env/";
-  memcpy(path + 5, name.ptr, name.len);
-  vx_ns_file f;
-  vx_status st = vx_ns_open(libvx_namespace(), (vx_str){path, 5 + name.len}, P9_OREAD, &f);
-  if (st != VX_OK) {
-    p9_client *c = nullptr;
-    uint32_t fid = 0;
-    bool env = vx_ns_walk(libvx_namespace(), VX_STR("/env"), &c, &fid) == VX_OK;
-    if (env) p9c_clunk(c, fid);
-    return env ? -1 : -2;
-  }
-  int64_t n = 0;
-  while (n < cap) {
-    int64_t got = vx_ns_read(&f, buf + n, cap - (uint32_t)n);
-    if (got <= 0) break;
-    n += got;
-  }
-  vx_ns_close(&f);
-  return n;
-}
-
 char *__llvm_libc_getenv(const char *cname) {
   static char buf[16 * 1024];
   vx_str name = vx_cstr(cname);
   bool slash = false;
   for (size_t i = 0; i < name.len; i++) slash = slash || name.ptr[i] == '/';
   if (!name.len || name.len >= sizeof libvx_env[0].name || slash) return nullptr;
-  vx_lock(&libvx_ns_lock);
-  int64_t n = libvx_env_read(name, buf, sizeof buf - 1);
+  vx_lock(&vx_ns_proc_lock);
+  int64_t n = vx_env_read(name, buf, sizeof buf - 1);
   vx_str v = {buf, n > 0 ? (size_t)n : 0};
   if (n == -2) v = vx_getenv(name); // no /env: what the spawn message gave
   char *value = nullptr;
@@ -529,7 +499,7 @@ char *__llvm_libc_getenv(const char *cname) {
     libvx_env[slot].name[name.len] = 0;
     libvx_env[slot].value = value;
   }
-  vx_unlock(&libvx_ns_lock);
+  vx_unlock(&vx_ns_proc_lock);
   return value;
 }
 

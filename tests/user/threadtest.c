@@ -62,12 +62,12 @@ const char *vx_main(void) {
   uint64_t lo = 0, hi = 0;
   int here;
   CHECK(vx_thread_stack(&lo, &hi) && (uint64_t)&here >= lo && (uint64_t)&here < hi); // the first thread's too
-  static vx_thread t[THREADS];
+  static vx_worker t[THREADS];
   for (int round = 0; round < 2; round++) { // joined threads are let go of, and more can be made
     count = 0;
     for (uint32_t i = 0; i < THREADS; i++)
-      CHECK(vx_thread_spawn(&t[i], worker, (void *)(uintptr_t)(i + 1), 64ull * 1024) == VX_OK);
-    for (uint32_t i = 0; i < THREADS; i++) vx_thread_join(&t[i]);
+      CHECK(vx_worker_start(&t[i], worker, (void *)(uintptr_t)(i + 1), 64ull * 1024) == VX_OK);
+    for (uint32_t i = 0; i < THREADS; i++) vx_worker_join(&t[i]);
     CHECK(count == (uint64_t)THREADS * ROUNDS);
   }
   CHECK(tl_init == 0x5555); // the first thread's own, untouched by the others

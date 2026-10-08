@@ -52,9 +52,9 @@ const char *vx_main(void) {
 
   CHECK(vx_chdir(&ns, VX_STR("/boot/bin")) == VX_OK && wd_is("/boot/bin"));
   CHECK(opens("echo") && opens("./echo") && opens("../bin/echo"));
-  vx_thread t;
-  CHECK(vx_thread_spawn(&t, other, nullptr, 0) == VX_OK);
-  vx_thread_join(&t);
+  vx_worker t;
+  CHECK(vx_worker_start(&t, other, nullptr, 0) == VX_OK);
+  vx_worker_join(&t);
   CHECK(atomic_load(&seen)); // one directory for the process
 
   CHECK(vx_chdir(&ns, VX_STR("..")) == VX_OK && wd_is("/boot"));

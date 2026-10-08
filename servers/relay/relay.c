@@ -473,8 +473,8 @@ const char *vx_main(void) {
   if (vx_ns_open(&ns, (vx_str){d->data_path, d->data_path_len}, P9_OREAD, &incoming) != VX_OK)
     return "cannot open the stream again";
   if (vx_port_create(0, &server.port) != VX_OK) return "no port";
-  static vx_thread t;
-  if (vx_thread_spawn(&t, reader, &incoming, 0) != VX_OK) return "no reader thread";
+  static vx_worker t;
+  if (vx_worker_start(&t, reader, &incoming, 0) != VX_OK) return "no reader thread";
   char v[64];
   vx_print(VX_STR("relay: "));
   vx_print(src);

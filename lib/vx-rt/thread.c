@@ -15,7 +15,7 @@
 //     its alignment past them. The first of the two points to vx_tcb, which
 //     sits just below.
 // A thread's stack, TLS and record are one VMO, mapped with the unmapped page
-// as_map leaves below each mapping as its guard. vx_thread_join waits on a
+// as_map leaves below each mapping as its guard. vx_worker_join waits on a
 // word the thread clears as it ends, then unmaps it all; the thread's last
 // steps after that word use registers alone, so the unmapping cannot pull
 // its stack from under it.
@@ -34,11 +34,18 @@ typedef struct vx_tcb {
   void (*fn)(void *);
   void *arg;
   uint64_t stack_lo, stack_hi;
-  _Atomic uint32_t running; // 1 until fn returns: vx_thread_join waits on it
+  _Atomic uint32_t running; // 1 until fn returns: vx_worker_join waits on it
   uint32_t id;              // the kernel's id for the thread (thread_create's; the first thread's 1)
 } vx_tcb;
 
-// A thread vx_thread_spawn made, for vx_thread_join.
+// A thread as vx-rt's own pools start one (vx_worker_start): a function
+// with no exit string, joined by vx_worker_join. The public vx_thread (09
+// §5.7) is one of these in a record of its own.
+typedef struct vx_worker {
+  vx_handle handle;
+  uint64_t base, size; // its mapping
+  vx_tcb *tcb;
+} vx_worker;
 
 // The TLS blocks every thread copies: the program's, and in a dynamic
 // program each library's, at its offset from the thread pointer. size is
@@ -184,9 +191,10 @@ static void vx_scratch_release(void); // arena.c: the ending thread's scratch ar
 }
 
 // Starts fn(arg) on a new thread of the program's own task, with a stack of
-// stack_size bytes (0: 256 KiB) and its own TLS; *t is for vx_thread_join.
-VX_API vx_status vx_thread_spawn(vx_thread *t, void (*fn)(void *), void *arg, uint64_t stack_size) {
-  *t = (vx_thread){};
+// stack_size bytes (0: 256 KiB) and its own TLS; *t is for vx_worker_join.
+[[maybe_unused]] static vx_status vx_worker_start(vx_worker *t, void (*fn)(void *), void *arg,
+                                                  uint64_t stack_size) {
+  *t = (vx_worker){};
   uint64_t stack = vx_round_up(stack_size ? stack_size : 256ull * 1024, 4096);
   uint64_t size = stack + vx_round_up(vx_tls_extent(), 4096), at = 0;
   vx_handle v, th = VX_HANDLE_NONE;
@@ -206,17 +214,17 @@ VX_API vx_status vx_thread_spawn(vx_thread *t, void (*fn)(void *), void *arg, ui
     vx_as_unmap(vx_self, at, size);
     return st;
   }
-  *t = (vx_thread){.handle = th, .base = at, .size = size, .tcb = tcb};
+  *t = (vx_worker){.handle = th, .base = at, .size = size, .tcb = tcb};
   return VX_OK;
 }
 
 // Waits for t's function to return, then lets go of its stack and TLS.
-VX_API void vx_thread_join(vx_thread *t) {
+[[maybe_unused]] static void vx_worker_join(vx_worker *t) {
   if (!t->tcb) return;
   while (atomic_load(&t->tcb->running)) vx_futex_wait(&t->tcb->running, 1, VX_INFINITE);
   vx_handle_close(t->handle);
   vx_as_unmap(vx_self, t->base, t->size);
-  *t = (vx_thread){};
+  *t = (vx_worker){};
 }
 
 // The calling thread's stack: [*lo, *hi). False on a thread vx-rt did not set up.

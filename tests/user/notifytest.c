@@ -84,8 +84,8 @@ const char *vx_main(void) {
   CHECK(p9c_walk(&writer.c, root, VX_STR("notifytest"), &dir) == VX_OK);
   CHECK(p9c_attach(&watcher.c, VX_STR(""), &wroot) == VX_OK &&
         p9c_walk(&watcher.c, wroot, VX_STR("notifytest"), &watched) == VX_OK);
-  vx_thread t;
-  CHECK(vx_thread_spawn(&t, watch, nullptr, 64ull * 1024) == VX_OK);
+  vx_worker t;
+  CHECK(vx_worker_start(&t, watch, nullptr, 64ull * 1024) == VX_OK);
   // Pings, until the watcher's watch exists and has heard one.
   for (int i = 0; i < 500 && !atomic_load(&heard_any); i++) {
     if (p9c_walk(&writer.c, dir, (vx_str){}, &f) == VX_OK &&
@@ -105,7 +105,7 @@ const char *vx_main(void) {
   while (!atomic_load(&done) && vx_clock_read() < end) vx_futex_wait(&done, 0, vx_clock_read() + 100'000'000);
   CHECK(atomic_load(&done));
   CHECK(heard_has(" 1:f 4:f 16:f 32:g 2:g "));
-  if (atomic_load(&done)) vx_thread_join(&t);
+  if (atomic_load(&done)) vx_worker_join(&t);
   vx_print(VX_STR("notifytest: "));
   vx_print_u64(checks);
   vx_print(VX_STR(" checks, "));

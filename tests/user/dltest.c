@@ -45,10 +45,10 @@ const char *vx_main(void) {
   tls_round(&ok);
   check(ok, "TLS in the first thread");
   check(a_tls_bump() == 102 && exe_tls == 3, "TLS kept");
-  vx_thread t;
+  vx_worker t;
   int ok2 = 0;
-  check(vx_thread_spawn(&t, tls_round, &ok2, 0) == VX_OK, "a second thread");
-  vx_thread_join(&t);
+  check(vx_worker_start(&t, tls_round, &ok2, 0) == VX_OK, "a second thread");
+  vx_worker_join(&t);
   check(ok2, "TLS in a second thread: fresh copies");
   vx_print(VX_STR("dltest: "));
   vx_print_u64((uint64_t)checks);

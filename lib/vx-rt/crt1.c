@@ -196,6 +196,8 @@ static void vx_argv_make(void) {
   while (!guard) vx_random_bytes(&guard, sizeof guard);
   __stack_chk_guard = guard;
   vx_thread_main_init(); // its TLS, before anything may use thread_local
+  vx_args_make();
+  vx_intent_from_spawn();
   vx_handle console = vx_spawn_take("console");
   if (console && vx_console_attach(console) != VX_OK) vx_print(VX_STR("vx-rt: cannot open the console\n"));
   vx_stdio.in = vx_spawn_take("stdin");

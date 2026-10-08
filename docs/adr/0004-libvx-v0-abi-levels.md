@@ -8,7 +8,7 @@ Status: proposed, 2026-10-08. Listed since M2 as "the ring layout; freezes `vx-a
 
 Everything else `libvx` has is `static`, compiled into each first-party program by including `lib/vx-rt/rt.c`, with no public header. An inventory against 09 §5 (2026-10-08) found:
 
-- **There today, under 09's names or near them:** the heap (`vx_heap_*`), threads and mutexes (`vx_thread_spawn`, `vx_mutex_*`), time (`vx_now`, `vx_sleep_until`, `vx_clock_utc`), the syscall wrappers (VMOs, address space, ports, channels, counters, futexes), notes (`vx_notify`), runes (`<vx/utf.h>`-to-be), ndb, and files through `vx_ns_*` and `p9c_*`.
+- **There today, under 09's names or near them:** the heap (`vx_heap_*`), threads and mutexes (`vx_thread_spawn`, `vx_mutex_*`; since 6e4b `vx_lock`, and since 6e4c3 `vx_thread_spawn` takes 09's signature, with an intent and an exit string), time (`vx_now`, `vx_sleep_until`, `vx_clock_utc`), the syscall wrappers (VMOs, address space, ports, channels, counters, futexes), notes (`vx_notify`), runes (`<vx/utf.h>`-to-be), ndb, and files through `vx_ns_*` and `p9c_*`.
 - **Missing:** arenas and pools, strings and formatting, the event loop, most of the file API, processes as 09 has them, the network and services.
 
 The Swift runtime, now shared too (ADR-0048), binds to `libvx.so`'s hooks, so its freeze and `libvx`'s are one decision.

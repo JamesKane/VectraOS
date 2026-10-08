@@ -29,6 +29,11 @@ typedef struct vx_bytes { // a buffer: data, not text; what a call fills or send
   size_t len;
 } vx_bytes;
 
+typedef struct vx_strs { // a list of slices, as vx_args gives the arguments
+  const vx_str *ptr;
+  size_t len;
+} vx_strs;
+
 // A slice's two arguments for printf's "%.*s".
 #define VX_FMT(s) (int)(s).len, (s).ptr
 

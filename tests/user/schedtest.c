@@ -165,22 +165,22 @@ static void counter(void *arg) {
 // One counter's count under the hogs, in hundredths of what a hog counted
 // meanwhile, on average.
 static uint64_t share(vx_handle ctx, int32_t core, called *calls) {
-  static vx_thread hogs[HOGS];
+  static vx_worker hogs[HOGS];
   counted c = {.ctx = ctx, .core = core, .calls = calls};
-  vx_thread t;
+  vx_worker t;
   atomic_store(&stop, false), atomic_store(&go, false);
-  CHECK(vx_thread_spawn(&t, counter, &c, 0) == VX_OK);
+  CHECK(vx_worker_start(&t, counter, &c, 0) == VX_OK);
   while (!atomic_load(&c.bound)) {}
   CHECK(c.bind == VX_OK);
   for (int i = 0; i < HOGS; i++) {
     hog_counts[i] = 0;
-    CHECK(vx_thread_spawn(&hogs[i], hog, &hog_counts[i], 16ull * 1024) == VX_OK);
+    CHECK(vx_worker_start(&hogs[i], hog, &hog_counts[i], 16ull * 1024) == VX_OK);
   }
   atomic_store(&go, true);
-  vx_thread_join(&t);
+  vx_worker_join(&t);
   atomic_store(&stop, true);
   uint64_t all = 0;
-  for (int i = 0; i < HOGS; i++) vx_thread_join(&hogs[i]), all += hog_counts[i];
+  for (int i = 0; i < HOGS; i++) vx_worker_join(&hogs[i]), all += hog_counts[i];
   uint64_t mean = all / HOGS;
   return mean ? c.n * 100 / mean : 0;
 }
@@ -213,8 +213,8 @@ static void spent_reconfigured(void) {
   vx_handle x;
   vx_sched_params rt = {.intent = VX_INTENT_REALTIME, .period = 5'000'000'000, .budget = 1'000'000};
   CHECK(vx_sched_ctx_create(&rt, &x) == VX_OK);
-  vx_thread t;
-  CHECK(vx_thread_spawn(&t, spinner, &x, 0) == VX_OK);
+  vx_worker t;
+  CHECK(vx_worker_start(&t, spinner, &x, 0) == VX_OK);
   nap(100'000'000); // its 1 ms spent: throttled for the rest of 5 s
   uint64_t before = atomic_load(&spun);
   nap(100'000'000);
@@ -226,7 +226,7 @@ static void spent_reconfigured(void) {
   uint64_t after = atomic_load(&spun) - before;
   CHECK(throttled * 10 < after && after > 100); // stopped, then running again
   atomic_store(&spin_stop, true);
-  vx_thread_join(&t);
+  vx_worker_join(&t);
   vx_handle_close(x);
 }
 
@@ -286,10 +286,10 @@ const char *vx_main(void) {
 
   // Donation: the realtime thread calls a background server under the hogs.
   vx_handle ends[2];
-  vx_thread srv;
+  vx_worker srv;
   CHECK(vx_channel_create(0, ends) == VX_OK);
   server_end = ends[0], client_end = ends[1];
-  CHECK(vx_thread_spawn(&srv, server, nullptr, 0) == VX_OK);
+  CHECK(vx_worker_start(&srv, server, nullptr, 0) == VX_OK);
   while (!atomic_load(&server_waiting)) {}
   vx_handle nap; // and blocked there, as a server waits for its calls
   vx_packet none_pkt;
@@ -314,7 +314,7 @@ const char *vx_main(void) {
   reply_msg ack;
   vx_call call = {.wr_bytes = &quit, .wr_len = sizeof quit, .rd_bytes = &ack, .rd_cap = sizeof ack};
   CHECK(vx_channel_call(client_end, &call, vx_clock_read() + 5'000'000'000) == VX_OK);
-  vx_thread_join(&srv);
+  vx_worker_join(&srv);
   CHECK(after_reply.intent == VX_INTENT_BACKGROUND && !after_reply.lent_task); // its own again
   vx_handle_close(server_end), vx_handle_close(client_end), vx_handle_close(rt);
   spent_reconfigured();
