@@ -405,12 +405,14 @@ static uint64_t hash_bytes(uint64_t h, vx_str s) {
 // Self-rebuild
 
 static void rebuild_self(char **argv) {
-  struct stat bin;
+  struct stat bin, top;
+  if (stat("build.c", &top) != 0) die("run ./build from the repository root (no build.c here)");
   bool stale = stat("build", &bin) != 0;
+  // A source not there (moved, say) makes it stale too: the rebuild, from
+  // build.c's own list, says what is missing, if anything is.
   for (const char *const *src = BUILD_SOURCES; *src; src++) {
     struct stat st;
-    if (stat(*src, &st) != 0) die("run ./build from the repository root (missing %s)", *src);
-    if (!stale && newer(&st, &bin)) stale = true;
+    if (!stale && (stat(*src, &st) != 0 || newer(&st, &bin))) stale = true;
   }
   if (!stale) return;
 
