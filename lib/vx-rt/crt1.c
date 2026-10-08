@@ -50,7 +50,7 @@ uintptr_t __stack_chk_guard = 0x2e0f5b3c9d81a647;
 static vx_drbg vx_random;
 
 // n random bytes into out, from the process's generator.
-static void vx_random_bytes(void *out, size_t n) { vx_drbg_read(&vx_random, out, n); }
+VX_API void vx_random_bytes(void *out, size_t n) { vx_drbg_read(&vx_random, out, n); }
 
 static void vx_random_seed(void) {
   vx_ndb_record rec;

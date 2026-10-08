@@ -4,8 +4,14 @@
 // the clock and sleeping, futexes with deadlines, random bytes, and the
 // heap (6e1e2b). Each
 // check prints a line only when it fails; the last line counts them.
+//
+// Since M6 step 6e4e, a native program against libvx.so through <vx.h>, as
+// an app is: with vxapitest, the release's behaviour suite (ADR-0004 item 8,
+// abi/levels/README).
 
-#include "../../lib/vx-rt/rt.c"
+#include <stdatomic.h>
+#include <string.h>
+#include <vx.h>
 
 static uint32_t checks, failures;
 
@@ -13,21 +19,13 @@ static void check_at(bool ok, const char *what, int line) {
   checks++;
   if (ok) return;
   failures++;
-  vx_print(VX_STR("libvxtest: FAILED line "));
-  vx_print_u64((uint64_t)line);
-  vx_print(VX_STR(": "));
-  vx_print(vx_cstr(what));
-  vx_print(VX_STR("\n"));
+  vx_printf("libvxtest: FAILED line %d: %s\n", line, what);
 }
 
 #define CHECK(cond) check_at((cond), #cond, __LINE__)
 
 static void say(const char *what, uint64_t n) {
-  vx_print(VX_STR("libvxtest: "));
-  vx_print(vx_cstr(what));
-  vx_print(VX_STR(" "));
-  vx_print_u64(n);
-  vx_print(VX_STR("\n"));
+  vx_printf("libvxtest: %s %llu\n", what, (unsigned long long)n);
 }
 
 // R12: as many as are online, none being reserved here (ADR-0045).
@@ -60,11 +58,12 @@ static void timing(void) {
 
 static _Atomic uint32_t word;
 
-static void waker(void *arg) {
+static const char *waker(void *arg) {
   (void)arg;
   vx_sleep_until(vx_now() + 10'000'000, 0);
   atomic_store(&word, 1);
   vx_futex_wake(&word, 1);
+  return nullptr;
 }
 
 // R11: a wait whose word has changed returns at once, one with a deadline
@@ -76,13 +75,13 @@ static void futexes(void) {
   vx_instant at = vx_now() + 10'000'000;
   CHECK(vx_futex_wait(&word, 0, at) == VX_ERR_TIMED_OUT);
   CHECK(vx_now() >= at);
-  vx_worker t;
-  CHECK(vx_worker_start(&t, waker, nullptr, 0) == VX_OK);
+  vx_thread *t = vx_thread_spawn(waker, nullptr, 0, 0);
+  CHECK(t != nullptr);
   vx_instant end = vx_now() + 5'000'000'000;
   vx_status st = VX_OK;
   while (!atomic_load(&word) && vx_now() < end) st = vx_futex_wait(&word, 0, end);
   CHECK(atomic_load(&word) == 1 && st != VX_ERR_TIMED_OUT);
-  vx_worker_join(&t);
+  vx_thread_join(t, nullptr, nullptr);
 }
 
 // R15: random bytes from start-up, different each time.
@@ -157,7 +156,7 @@ static void heap_check_free(uint8_t *p) {
   vx_heap_free(vx_heap_process(), p);
 }
 
-static void heap_worker(void *arg) {
+static const char *heap_worker(void *arg) {
   uint64_t r = (uint64_t)(uintptr_t)arg * 0x9e3779b97f4a7c15ull + 1;
   for (int i = 0; i < 20000; i++) {
     r ^= r << 13, r ^= r >> 7, r ^= r << 17;
@@ -172,12 +171,15 @@ static void heap_worker(void *arg) {
     memset(p + sizeof n, (uint8_t)n, (n < 256 ? n : 256) - sizeof n);
     heap_check_free(atomic_exchange(&slots[(r >> 32) % SLOTS], p));
   }
+  return nullptr;
 }
 
 static void heap_threads(void) {
-  vx_worker t[4];
-  for (uintptr_t i = 0; i < 4; i++) CHECK(vx_worker_start(&t[i], heap_worker, (void *)(i + 1), 0) == VX_OK);
-  for (int i = 0; i < 4; i++) vx_worker_join(&t[i]);
+  vx_thread *t[4];
+  for (uintptr_t i = 0; i < 4; i++)
+    CHECK((t[i] = vx_thread_spawn(heap_worker, (void *)(i + 1), 0, 0)) != nullptr);
+  for (int i = 0; i < 4; i++)
+    if (t[i]) vx_thread_join(t[i], nullptr, nullptr);
   for (uint32_t i = 0; i < SLOTS; i++) heap_check_free(atomic_exchange(&slots[i], nullptr));
   CHECK(atomic_load(&heap_errors) == 0);
 }
@@ -195,7 +197,7 @@ static void heap_returns(void) {
   CHECK(ok);
 }
 
-const char *vx_main(void) {
+int main(void) {
   cpus();
   timing();
   futexes();
@@ -203,10 +205,6 @@ const char *vx_main(void) {
   heap_blocks();
   heap_threads();
   heap_returns();
-  vx_print(VX_STR("libvxtest: "));
-  vx_print_u64(checks);
-  vx_print(VX_STR(" checks, "));
-  vx_print_u64(failures);
-  vx_print(VX_STR(" failed\n"));
-  return failures ? "FAILED" : nullptr;
+  vx_printf("libvxtest: %u checks, %u failed\n", checks, failures);
+  return failures ? 1 : 0;
 }

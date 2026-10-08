@@ -11,6 +11,7 @@
 #include "vx/mem.h"
 #include "vx/ndb.h"
 #include "vx/proc.h"
+#include "vx/random.h"
 #include "vx/str.h"
 #include "vx/sys.h"
 #include "vx/thread.h"

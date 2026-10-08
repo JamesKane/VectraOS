@@ -1,0 +1,25 @@
+abi/levels: libvx's frozen ABI levels (ADR-0004 items 5 and 8).
+
+Level 0 is the draft: nothing is here until 6e4f freezes level 1 at M6's
+close. A freeze writes, for its level N:
+
+  N.symbols    libvx.so's exports, sorted, one to a line: the build's
+               usr/lib/libvx.symbols copied here. Each build compares the
+               library it makes with the file for VX_ABI_LEVEL, and fails
+               on any difference: a symbol missing breaks every program
+               built for the level; a new one belongs to the next level,
+               declared inside #if VX_TARGET_ABI >= N+1.
+
+  N.behaviour  the behaviour suite's SHA-256, as ./build release prints it
+               ("ABI   vx-abi N, behaviour suite ..."). The suite is
+               build.c's BEHAVIOUR_SUITE: vxapitest and libvxtest, native
+               programs against libvx.so, with their manifests and
+               scenarios. ./build release refuses a suite that differs,
+               unless docs/release-notes.md has a line
+
+                 behaviour-suite: HASH
+
+               beside what changed and what programs may now see.
+
+The Swift libraries' baselines for the same level are abi/swift/<triple>
+(ADR-0048 item 5).

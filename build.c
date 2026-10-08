@@ -1430,8 +1430,8 @@ static const program USER_PROGRAMS[] = {
      nullptr},
     {"starttest", "tests/user/starttest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr},
-    {"libvxtest", "tests/user/libvxtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
-     nullptr},
+    {"libvxtest", "tests/user/libvxtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, true, LINK_DYNAMIC,
+     nullptr}, // native since 6e4e: the behaviour suite, with vxapitest
     {"vxapitest", "tests/user/vxapitest.c", IN_TESTS, nullptr, false, nullptr, nullptr, true, LINK_DYNAMIC,
      nullptr}, // libvx v0's public API, <vx.h> (6e4b)
     {"vxctest", "tests/user/vxctest.c", IN_TESTS, nullptr, false, nullptr, nullptr, true, LINK_DYNAMIC,
@@ -1758,6 +1758,117 @@ static void copy_file(const char *from, const char *to);
 static void probe_sysroot(const arch *a, const char *s, const char *bin, bool cxx);
 static bool tree_sha256(const char *dir, char out[65]);
 
+// --- libvx's ABI levels (ADR-0004 items 5 and 8, M6 step 6e4e) ---
+
+static int strcmp_ptrs(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
+
+// A shared object's exports: its defined global and weak dynamic symbols at
+// default visibility, sorted, one to a line.
+static vx_str elf_exports(const char *path) {
+  vx_str f = read_file(path);
+  const Elf64_Ehdr *eh = (const Elf64_Ehdr *)f.ptr;
+  if (f.len < sizeof *eh || memcmp(eh->e_ident, ELFMAG, SELFMAG) != 0 ||
+      eh->e_ident[EI_CLASS] != ELFCLASS64 || eh->e_shoff > f.len ||
+      eh->e_shnum > (f.len - eh->e_shoff) / sizeof(Elf64_Shdr))
+    die("%s: not an ELF64 shared object", path);
+  const Elf64_Shdr *sh = (const Elf64_Shdr *)(f.ptr + eh->e_shoff);
+  static const char *names[16384];
+  size_t n = 0, bytes = 0;
+  for (int i = 0; i < eh->e_shnum; i++) {
+    if (sh[i].sh_type != SHT_DYNSYM || sh[i].sh_link >= eh->e_shnum) continue;
+    const Elf64_Shdr *str = &sh[sh[i].sh_link];
+    if (sh[i].sh_offset > f.len || sh[i].sh_size > f.len - sh[i].sh_offset || str->sh_offset > f.len ||
+        str->sh_size > f.len - str->sh_offset)
+      die("%s: its symbol table runs past its end", path);
+    const Elf64_Sym *sym = (const Elf64_Sym *)(f.ptr + sh[i].sh_offset);
+    for (size_t k = 1; k < sh[i].sh_size / sizeof *sym; k++) {
+      uint8_t bind = ELF64_ST_BIND(sym[k].st_info);
+      if ((bind != STB_GLOBAL && bind != STB_WEAK) || sym[k].st_shndx == SHN_UNDEF ||
+          ELF64_ST_VISIBILITY(sym[k].st_other) != STV_DEFAULT || sym[k].st_name >= str->sh_size)
+        continue;
+      if (n == sizeof names / sizeof names[0]) die("%s: more exports than build.c holds", path);
+      names[n] = f.ptr + str->sh_offset + sym[k].st_name;
+      bytes += strlen(names[n++]) + 1;
+    }
+  }
+  qsort(names, n, sizeof names[0], strcmp_ptrs);
+  char *out = alloc(bytes + 1), *at = out;
+  for (size_t i = 0; i < n; i++) at += sprintf(at, "%s\n", names[i]);
+  return (vx_str){out, (size_t)(at - out)};
+}
+
+// The level abi.h names (VX_ABI_LEVEL): 0, the draft, until the first freeze.
+static int abi_level(void) {
+  vx_str h = read_file("abi/vx/abi.h");
+  const char *d = strstr(h.ptr, "#define VX_ABI_LEVEL ");
+  if (!d) die("abi/vx/abi.h has no VX_ABI_LEVEL");
+  char *end;
+  long n = strtol(d + strlen("#define VX_ABI_LEVEL "), &end, 10);
+  if (end == d + strlen("#define VX_ABI_LEVEL ") || n < 0 || n > 1000)
+    die("abi/vx/abi.h: VX_ABI_LEVEL is no level");
+  return (int)n;
+}
+
+// libvx.so's exports, written beside it (usr/lib/libvx.symbols) and, once a
+// level is frozen (abi/levels/N.symbols, sorted), held to it: a symbol it
+// lacks breaks every program built for the level, and a new one belongs to
+// the next level, with VX_TARGET_ABI around its declaration.
+static bool check_libvx_exports(const arch *a, const char *lib) {
+  vx_str now = elf_exports(fmt("%s/libvx.so", lib));
+  write_file(fmt("%s/libvx.symbols", lib), now);
+  const char *frozen = fmt("abi/levels/%d.symbols", abi_level());
+  if (!exists(frozen)) return true; // the draft: nothing to hold it to yet
+  vx_str want = read_file(frozen);
+  if (want.len == now.len && memcmp(want.ptr, now.ptr, now.len) == 0) return true;
+  fprintf(stderr, "  ABI   %s: libvx.so's exports are not %s's (%s/libvx.symbols holds them):\n", a->name,
+          frozen, lib);
+  cmd d = {};
+  cmd_addv(&d, (const char *const[]){"/usr/bin/diff", "-u", frozen, fmt("%s/libvx.symbols", lib), nullptr});
+  run(&d);
+  return false;
+}
+
+// The behaviour suite (ADR-0004 item 8): native programs against libvx.so,
+// and the manifests and scenarios that say what they expect. Its hash is
+// over each file's path and bytes, in this order.
+static const char *const BEHAVIOUR_SUITE[] = {
+    "tests/user/vxapitest.c",
+    "tests/user/vxapitest.ndb",
+    "tests/qemu/vxapi.ndb",
+    "tests/user/libvxtest.c",
+    "tests/user/libvxtest.ndb",
+    "tests/qemu/libvx.ndb",
+    nullptr,
+};
+
+static void hex(char *out, const uint8_t *p, size_t n); // below
+
+static void behaviour_hash(char out[65]) {
+  vx_sha256 h = vx_sha256_begin();
+  for (const char *const *f = BEHAVIOUR_SUITE; *f; f++) {
+    vx_str data = read_file(*f);
+    vx_sha256_add(&h, *f, strlen(*f) + 1);
+    vx_sha256_add(&h, data.ptr, data.len);
+  }
+  uint8_t digest[32];
+  vx_sha256_end(&h, digest);
+  hex(out, digest, 32);
+}
+
+// Whether the suite may ship as it is: unchanged from the frozen level's
+// (abi/levels/N.behaviour), or its change named in docs/release-notes.md
+// ("behaviour-suite: HASH" and why), since a changed expectation changes what
+// programs built for the level may rely on.
+static bool behaviour_allowed(const char hash[65]) {
+  const char *frozen = fmt("abi/levels/%d.behaviour", abi_level());
+  if (!exists(frozen)) return true; // the draft
+  vx_str want = read_file(frozen);
+  if (want.len >= 64 && memcmp(want.ptr, hash, 64) == 0) return true;
+  vx_str notes = exists("docs/release-notes.md") ? read_file("docs/release-notes.md") : (vx_str){"", 0};
+  const char *line = fmt("behaviour-suite: %s", hash);
+  return memmem(notes.ptr, notes.len, line, strlen(line)) != nullptr;
+}
+
 static const char *sysroot_dir(const arch *a, bool release) {
   return fmt("out/%s/%s/vectraos", a->name, release ? "release" : "debug");
 }
@@ -1899,6 +2010,7 @@ static bool build_sysroot(const arch *a, bool release) {
                                       fmt("%s/usr/lib/libclang_rt.builtins.a", s),
                                       nullptr});
   if (!run(&so)) die("cannot make the %s sysroot's libvx.so", a->name);
+  if (!check_libvx_exports(a, fmt("%s/usr/lib", s))) die("libvx.so's exports changed from a frozen level");
   // libc.so (6f1c1, decided 2026-10-08: the C library shared, ADR-0033 §3):
   // llvm-libc's archives whole, built -fPIC with initial-exec TLS, and the
   // builtins they call, not exported. The hooks it calls are libvx.so's,
@@ -3848,7 +3960,16 @@ static int cmd_release(const char *verify) {
   vx_ndb_put(&w, "channel", VX_STR("dev"));
   const char *c = clean ? commit : fmt("%s+dirty", commit);
   vx_ndb_put(&w, "commit", (vx_str){c, strlen(c)});
-  vx_ndb_put(&w, "vx-abi", VX_STR("0")); // a draft until ADR-0004 freezes it
+  const char *level = fmt("%d", abi_level()); // 0, a draft, until ADR-0004 freezes level 1
+  vx_ndb_put(&w, "vx-abi", (vx_str){level, strlen(level)});
+  char behaviour[65];
+  behaviour_hash(behaviour); // first: a release it refuses is refused before minutes of building
+  if (!behaviour_allowed(behaviour))
+    die("the behaviour suite changed from abi/levels/%d.behaviour: docs/release-notes.md must name it "
+        "(\"behaviour-suite: %s\") and say what programs may now see (ADR-0004 item 8)",
+        abi_level(), behaviour);
+  fprintf(stderr, "  ABI   vx-abi %d, behaviour suite %.16s…\n", abi_level(), behaviour);
+  vx_ndb_put(&w, "behaviour", (vx_str){behaviour, 64});
   vx_ndb_flag(&w, "unsigned");
   vx_ndb_end(&w);
   vx_str record = verify ? read_file(verify) : (vx_str){};

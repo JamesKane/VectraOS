@@ -1,4 +1,6 @@
 # tests/user/libvxtest.ndb: libvx v0's memory, threads and time
 # (tests/qemu/libvx.ndb, M6 step 6e1e).
 
-service=libvxtest program=/boot/bin/libvxtest console
+service=libvxtest program=/boot/bin/libvxtest console entropy
+ns=posix
+connect=nsd
