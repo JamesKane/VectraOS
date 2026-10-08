@@ -33,12 +33,10 @@
 #include "libvx.h"
 
 // --- The program ---
-
-const char *vx_main(void) {
-  if (__llvm_libc_thread_main)
-    __llvm_libc_thread_main(); // the first thread's attributes, if <threads.h> is used
-  exit(main(vx_argc(), vx_argv()));
-}
+//
+// vx_main, C's main and then exit, is the sysroot's crt1.o's (start.c), in
+// the program with main and the C library's exit, whether libvx is linked
+// statically or is libvx.so (6f1b1).
 
 // Swift's CommandLine.arguments (Swift patch 0007): vx-rt's argv, which
 // main has too.

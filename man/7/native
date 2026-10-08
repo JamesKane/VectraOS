@@ -14,9 +14,9 @@ First-party system code does not use it; Swift's runtime, C and C++ programs fro
 : `usr/include/`
   llvm-libc's headers, and the ABI's as `<vx/...>`.
 : `usr/lib/crt1.o`
-  vx-rt's entry, `_start` alone (`lib/vx-rt/start.c`).
-: `usr/lib/libvx.a`
-  vx-rt and vx-ns with the C library's hooks (`lib/vx-rt/libvx.c`): the program starts as a first-party one does (start(2)), then `main(argc, argv)` is called and its value given to `exit`.
+  vx-rt's entry, `_start`, and the native `vx_main`, C's `main` then `exit` (`lib/vx-rt/start.c`).
+: `usr/lib/libvx.so`, `usr/lib/libvx.a`
+  vx-rt and vx-ns with the C library's hooks (`lib/vx-rt/libvx.c`): the program starts as a first-party one does (start(2)), then `crt1.o`'s `vx_main` calls `main(argc, argv)` and gives its value to `exit`. A program links `libvx.so` by default, and is started by ld-vx(8), which loads it from `/lib/libvx.so` (M6 step 6f1b1, ADR-0047); `-static` links `libvx.a` instead. The C library and libc++ are archives either way, in the program; so `libvx.so` takes nothing from them, and has its own `mem*`, hidden.
 : `usr/lib/libc.a`, `usr/lib/libm.a`
   llvm-libc's.
 : `usr/lib/libclang_rt.builtins.a`
@@ -28,7 +28,7 @@ First-party system code does not use it; Swift's runtime, C and C++ programs fro
 : `<arch>-unknown-vectraos.cfg`
   The configuration file Fedora's clang compiles with (ADR-0033 §3): `__vectraos__`, the sysroot and nothing of the host's, frame pointers, unwind tables, no PIC, no math `errno`. It names no language: a program chooses, and without `-std` it is the compiler's default, gnu17, as the Swift toolchain's patched clang has it. The system's own native programs are C23 (`-std=c23`); nothing makes a third party's be.
 : `link-head.rsp`, `link-tail.rsp`
-  `ld.lld`'s options before and after a program's objects: static, at `_start`, `crt1.o` first; `libvx`, `libc` and `libm` in a group, then the builtins.
+  `ld.lld`'s options before and after a program's objects: at `_start`, interpreter `/lib/ld-vx`, `-z now`, `-z relro`, both hash tables, `crt1.o` first; `libvx` (the shared one), `libc` and `libm` in a group, then the builtins. With `-static` before them, a static program.
 : `llvm-libc`
   Which build of the C library it took.
 

@@ -3,3 +3,5 @@
 # the program alone, for its cin check, without starting it.
 
 service=vxcxxtest program=/boot/bin/vxcxxtest console entropy
+ns=posix
+connect=nsd

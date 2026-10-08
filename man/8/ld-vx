@@ -16,7 +16,7 @@ It is never run by name: a spawn (svcd(8), rc(1)) that is asked for such a progr
 `ld-vx` builds the namespace from the spawn message, as any program does, then:
 
 - maps the program at the addresses it was linked for;
-- maps each library its `DT_NEEDED` entries name, and theirs, breadth first and each once, from `/lib/NAME` in that namespace, with no search path; each library at a random base inside a reservation of its span, with a page left unmapped on each side;
+- maps each library its `DT_NEEDED` entries name, and theirs, breadth first and each once, from `/lib/NAME` in that namespace, with no search path (so a dynamic program needs a namespace with `/lib` in it: a manifest with no `ns=` gives none); each library at a random base inside a reservation of its span, with a page left unmapped on each side;
 - binds every symbol before the program runs, the first definition in that order winning, the program's own first; there is no lazy binding and no interposition;
 - makes each object's RELRO read-only;
 - lays out the objects' thread-local storage one after another, the program's where its linker put it;

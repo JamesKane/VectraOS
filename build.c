@@ -1698,12 +1698,13 @@ static bool build_sysroot(const arch *a, bool release) {
         a->name);
   const char *taken = fmt("triple=%s tree.sha256=%s from=%s\n", triple, tree, libc);
   write_file(fmt("%s/llvm-libc", s), (vx_str){taken, strlen(taken)}); // which build it took (ADR-0033)
-  // crt1.o and libvx.a, as a first-party program is compiled.
-  static const char *const SRC[2] = {"lib/vx-rt/start.c", "lib/vx-rt/libvx.c"};
-  const char *obj[2] = {fmt("%s/usr/lib/crt1.o", s), fmt("%s/libvx.o", s)};
-  cmd cc[2];
-  cmd *ccs[2];
-  for (int i = 0; i < 2; i++) {
+  // crt1.o, libvx.a, and libvx.so (6f1b1, ADR-0047: what a dynamic program
+  // links, -fPIC with initial-exec TLS), as a first-party program is compiled.
+  static const char *const SRC[3] = {"lib/vx-rt/start.c", "lib/vx-rt/libvx.c", "lib/vx-rt/libvx.c"};
+  const char *obj[3] = {fmt("%s/usr/lib/crt1.o", s), fmt("%s/libvx.o", s), fmt("%s/libvx.pic.o", s)};
+  cmd cc[3];
+  cmd *ccs[3];
+  for (int i = 0; i < 3; i++) {
     cc[i] = (cmd){};
     cmd_add(&cc[i], CLANG);
     cmd_addv(&cc[i], a->user_flags);
@@ -1711,14 +1712,25 @@ static bool build_sysroot(const arch *a, bool release) {
     cmd_addv(&cc[i], USER_FLAGS);
     cmd_addv(&cc[i], release ? RELEASE_FLAGS : DEBUG_FLAGS);
     cmd_add(&cc[i], fmt("-ffile-prefix-map=%s=/src", root));
+    if (i == 0) cmd_add(&cc[i], "-DVX_RT_CRT1"); // with the native vx_main
+    if (i == 2)
+      cmd_addv(&cc[i], (const char *const[]){"-fPIC", "-ftls-model=initial-exec", "-DVX_RT_SHARED", nullptr});
     cmd_addv(&cc[i], (const char *const[]){"-c", SRC[i], "-o", obj[i], nullptr});
     ccs[i] = &cc[i];
   }
-  if (!run_parallel(ccs, 2)) die("cannot compile the %s sysroot's crt1.o and libvx.a", a->name);
+  if (!run_parallel(ccs, 3)) die("cannot compile the %s sysroot's crt1.o and libvx", a->name);
   cmd ar = {};
   cmd_addv(&ar, (const char *const[]){LLVM_AR, "rcsD", fmt("%s/usr/lib/libvx.a", s), obj[1], nullptr});
   if (exists(fmt("%s/usr/lib/libvx.a", s))) unlink(fmt("%s/usr/lib/libvx.a", s));
   if (!run(&ar)) die("cannot make the %s sysroot's libvx.a", a->name);
+  // The C library it calls into (memcpy, exit and the rest) is the program's:
+  // bound when the loader starts it.
+  cmd so = {};
+  cmd_addv(&so,
+           (const char *const[]){LLD, "-shared", "-soname", "libvx.so", "-nostdlib", "--build-id=sha1", "-z",
+                                 "max-page-size=0x1000", "-z", "noexecstack", "-z", "now", "-z", "relro",
+                                 "--hash-style=both", "-o", fmt("%s/usr/lib/libvx.so", s), obj[2], nullptr});
+  if (!run(&so)) die("cannot make the %s sysroot's libvx.so", a->name);
   return true;
 }
 
@@ -2044,7 +2056,10 @@ static bool build_user_programs(const arch *a, bool release) {
     else
       rest[nr++] = lds[k];
   }
-  return run_parallel(ccs, n) && run_parallel(shared, ns) && run_parallel(rest, nr);
+  if (!run_parallel(ccs, n)) return false;
+  for (int k = 0; k < ns; k++) // in the table's order: a library after those it needs
+    if (!run(shared[k])) return false;
+  return run_parallel(rest, nr);
 }
 
 // Vendored POSIX programs (docs/04 §3.1): a port's sources= and each
@@ -3062,6 +3077,14 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
       files[count] = read_file(fmt("tests/user/%s.ndb", name));
       paths[count++] = fmt("boot/svc/%s.ndb", name);
     }
+  }
+  // libvx.so, which native programs link dynamically (6f1b1, ADR-0047), when
+  // this architecture has the native target's sysroot.
+  const char *libvx_so = fmt("%s/usr/lib/libvx.so", sysroot_dir(a, release));
+  if (exists(libvx_so)) {
+    bootfs_room(count);
+    files[count] = read_file(libvx_so);
+    paths[count++] = "lib/libvx.so";
   }
   for (int k = 0; k < POSIX_PORT_COUNT; k++) { // vendored POSIX programs: each, or a box and its names
     const port *p = POSIX_PORTS[k];

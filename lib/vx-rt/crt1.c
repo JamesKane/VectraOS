@@ -75,12 +75,17 @@ static void vx_run_array(uint64_t addr, uint64_t count, bool reverse) {
   for (uint64_t i = 0; i < count; i++) fns[reverse ? count - 1 - i : i]();
 }
 
-// .fini_array, last to first, once; then the libraries', in load order.
+// .fini_array, last to first, once; then the libraries', in load order. In
+// a dynamic program the program's own come from the loader's list, since
+// the linker's bounds here would be libvx.so's when vx-rt is in it (6f1b1).
 static void vx_run_fini(void) {
   if (vx_fini_done) return;
   vx_fini_done = true;
-  for (size_t i = (size_t)(__fini_array_end - __fini_array_start); __fini_array_start && i-- > 0;)
-    __fini_array_start[i]();
+  if (vx_dl)
+    vx_run_array(vx_dl->objects[0].fini_array, vx_dl->objects[0].fini_count, true);
+  else
+    for (size_t i = (size_t)(__fini_array_end - __fini_array_start); __fini_array_start && i-- > 0;)
+      __fini_array_start[i]();
   for (uint32_t i = 1; vx_dl && i < vx_dl->object_count; i++)
     vx_run_array(vx_dl->objects[i].fini_array, vx_dl->objects[i].fini_count, true);
 }
@@ -203,10 +208,15 @@ static void vx_argv_make(void) {
   vx_note_exit = vx_exit_now; // a note the program's handler does not take ends it at once: no destructors
   for (uint32_t i = vx_dl ? vx_dl->object_count : 0; i-- > 1;) // libraries, dependencies first
     vx_run_array(vx_dl->objects[i].init_array, vx_dl->objects[i].init_count, false);
-  for (size_t i = 0; __preinit_array_start && i < (size_t)(__preinit_array_end - __preinit_array_start); i++)
-    __preinit_array_start[i]();
-  for (size_t i = 0; __init_array_start && i < (size_t)(__init_array_end - __init_array_start); i++)
-    __init_array_start[i]();
+  if (vx_dl) { // the program's, from the loader's list (see vx_run_fini)
+    vx_run_array(vx_dl->objects[0].init_array, vx_dl->objects[0].init_count, false);
+  } else {
+    for (size_t i = 0; __preinit_array_start && i < (size_t)(__preinit_array_end - __preinit_array_start);
+         i++)
+      __preinit_array_start[i]();
+    for (size_t i = 0; __init_array_start && i < (size_t)(__init_array_end - __init_array_start); i++)
+      __init_array_start[i]();
+  }
   vx_exits(vx_main());
 }
 

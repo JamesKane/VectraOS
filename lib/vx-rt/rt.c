@@ -6,8 +6,14 @@
 #pragma once
 
 #include "rt.h"
-#ifdef VX_RT_LIBC
+#if defined(VX_RT_LIBC) && !defined(VX_RT_SHARED)
 #include "../vx-mem/mem.h" // libvx.a (6e2b): the C library linked with it has the four
+#elifdef VX_RT_SHARED
+// libvx.so (6f1b1): its own four, hidden, as the program's C library keeps
+// its own hidden and cannot give them to a shared library.
+#pragma GCC visibility push(hidden)
+#include "../vx-mem/mem.c"
+#pragma GCC visibility pop
 #else
 #include "../vx-mem/mem.c"
 #endif
