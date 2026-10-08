@@ -86,6 +86,8 @@ VectraOS is run by a BDFL (benevolent dictator for life): James Kane. Every deci
 
 The [code of conduct](CODE_OF_CONDUCT.md) is four rules: have fun, respect each other, build cool software, and leave politics at the door.
 
+The [AI policy](AI_POLICY.md) is one sentence: AI assistance is permitted, and the contributor is responsible for reviewing what they submit and making sure it's correct.
+
 ## License
 
 VectraOS is BSD-3-Clause licensed: see [LICENSE](LICENSE). There is no contributor license agreement and no copyright assignment; contributors keep the copyright on what they write. Vendored code under `third_party/` keeps its own licenses.
