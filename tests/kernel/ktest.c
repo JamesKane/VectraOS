@@ -1892,16 +1892,16 @@ static void test_debugger(void) {
   vx_watches w = {};
   CHECK(vx_thread_state(child, 0, VX_STATE_GET_WATCH, &w, sizeof w) == VX_OK && w.count >= 2 &&
         w.count <= VX_WATCH_MAX && w.slot[0].kind == VX_WATCH_OFF);
-  w.slot[0] = (vx_watch){.address = 0x40'0000, .len = 8, .kind = VX_WATCH_WRITE};
+  w.slot[0] = (vx_watchpoint){.address = 0x40'0000, .len = 8, .kind = VX_WATCH_WRITE};
   CHECK(vx_thread_state(child, 0, VX_STATE_SET_WATCH, &w, sizeof w) == VX_OK);
   CHECK(vx_thread_state(weak, 0, VX_STATE_SET_WATCH, &w, sizeof w) == VX_ERR_ACCESS); // DEBUG needed
   CHECK(vx_thread_state(child, 1, VX_STATE_SET_WATCH, &w, sizeof w) ==
-        VX_ERR_INVALID);                                                       // the task's, thread 0
-  w.slot[1] = (vx_watch){.address = 0x40'0004, .len = 8, .kind = VX_WATCH_RW}; // not aligned
+        VX_ERR_INVALID);                                                            // the task's, thread 0
+  w.slot[1] = (vx_watchpoint){.address = 0x40'0004, .len = 8, .kind = VX_WATCH_RW}; // not aligned
   CHECK(vx_thread_state(child, 0, VX_STATE_SET_WATCH, &w, sizeof w) == VX_ERR_INVALID);
-  w.slot[1] = (vx_watch){.address = 0x40'0004, .len = 3, .kind = VX_WATCH_RW}; // no such length
+  w.slot[1] = (vx_watchpoint){.address = 0x40'0004, .len = 3, .kind = VX_WATCH_RW}; // no such length
   CHECK(vx_thread_state(child, 0, VX_STATE_SET_WATCH, &w, sizeof w) == VX_ERR_INVALID);
-  w.slot[1] = (vx_watch){.address = ~0ull - 7, .len = 8, .kind = VX_WATCH_RW}; // not user space
+  w.slot[1] = (vx_watchpoint){.address = ~0ull - 7, .len = 8, .kind = VX_WATCH_RW}; // not user space
   CHECK(vx_thread_state(child, 0, VX_STATE_SET_WATCH, &w, sizeof w) == VX_ERR_INVALID);
   w = (vx_watches){};
   CHECK(vx_thread_state(child, 0, VX_STATE_GET_WATCH, &w, sizeof w) == VX_OK &&

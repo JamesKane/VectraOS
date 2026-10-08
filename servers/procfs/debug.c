@@ -580,7 +580,7 @@ static void dbg_exception(proc *p, uint32_t tid) {
   }
   if (e.kind == VX_EXCEPTION_WATCHPOINT) {
     *h = (held){.tid = tid, .why = WHY_WATCH, .bp = -1, .pc = pc};
-    const vx_watch *w = &d->watches.slot[e.code < VX_WATCH_MAX ? e.code : 0];
+    const vx_watchpoint *w = &d->watches.slot[e.code < VX_WATCH_MAX ? e.code : 0];
     char extra[64] = " addr=";
     size_t n = 6 + hex_text(e.address, extra + 6);
     const char *access = w->kind == VX_WATCH_WRITE ? " access=write" : " access=rw";
@@ -716,8 +716,8 @@ static vx_status set_watch(proc *p, vx_str args) {
     if (d->watches.slot[i].kind == VX_WATCH_OFF) slot = i;
   if (slot == VX_WATCH_MAX) return VX_ERR_NO_MEMORY;
   if ((st = dbg_bind(p)) != VX_OK) return st;
-  vx_watch was = d->watches.slot[slot];
-  d->watches.slot[slot] = (vx_watch){
+  vx_watchpoint was = d->watches.slot[slot];
+  d->watches.slot[slot] = (vx_watchpoint){
       .address = addr, .len = (uint32_t)len, .kind = word_is(kind, "write") ? VX_WATCH_WRITE : VX_WATCH_RW};
   st = set_watches(p, false);
   if (st != VX_OK) d->watches.slot[slot] = was; // refused (not aligned, say): as it was
@@ -728,7 +728,7 @@ static vx_status clear_watch(proc *p, uint64_t addr) {
   debugger *d = dbg_of(p);
   for (uint32_t i = 0; i < VX_WATCH_MAX; i++)
     if (d->watches.slot[i].kind != VX_WATCH_OFF && d->watches.slot[i].address == addr) {
-      d->watches.slot[i] = (vx_watch){};
+      d->watches.slot[i] = (vx_watchpoint){};
       return set_watches(p, false);
     }
   return VX_ERR_NOT_FOUND;

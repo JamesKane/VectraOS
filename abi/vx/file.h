@@ -104,5 +104,28 @@ VX_API vx_status vx_sync(vx_fd fd);
 VX_API vx_status vx_map(vx_fd fd, uint64_t off, size_t len, uint32_t prot, void **addr);
 VX_API vx_status vx_unmap(void *addr, size_t len);
 
+// The same requests through a loop (F-217): vx_io_submit takes n of them,
+// all or none (VX_ERR_SHOULD_WAIT when the loop has no room for them all),
+// and each completes as a VX_EV_IO with its key and its count, bytes or a
+// negative vx_status. buf is the caller's until then. The flags are cache
+// hints for the server, not yet carried (a later level, 9Px hint).
+typedef struct vx_loop vx_loop;
+typedef enum vx_io_op : uint32_t { VX_IO_READ = 1, VX_IO_WRITE, VX_IO_SYNC } vx_io_op;
+enum : uint32_t { VX_IO_UNCACHED = 1, VX_IO_ONCE = 2, VX_IO_PREFETCH = 4 };
+typedef struct vx_io {
+  vx_fd fd;
+  uint32_t op; // vx_io_op
+  uint32_t flags;
+  uint64_t off; // where: a request is positioned, as vx_pread is
+  vx_bytes buf; // read into, or written from
+  uint64_t key;
+} vx_io;
+
+VX_API vx_status vx_io_submit(vx_loop *l, const vx_io *ops, size_t n);
+// VX_EV_CHANGED with key on l when the file, or a directory's entries,
+// change (9Px notify), until l is freed; for VX_STDIN, one VX_EV_READY when
+// there is input to read (watch again after reading).
+VX_API vx_status vx_watch(vx_loop *l, vx_fd fd, uint64_t key);
+
 // One ctl message to the file at path, formatted, in one write.
 [[gnu::format(printf, 2, 3)]] VX_API vx_status vx_ctl(vx_str path, const char *fmt, ...);

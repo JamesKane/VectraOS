@@ -29,6 +29,7 @@
 #define VX_RT_LIBC // the C library has memcpy and the rest (rt.c)
 #include "rt.c"
 #include "../vx-ns/file.c"
+#include "../vx-ns/io.c"
 #include "../vx-ns/proc.c"
 #include "../vx-ns/spawn.c"
 

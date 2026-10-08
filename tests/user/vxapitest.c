@@ -43,6 +43,85 @@ static const char *adder(void *arg) {
 static const char *refuser(void *arg) { return arg; }
 
 // Files, in /tmp: everything 09 §5.5 has but vx_io_submit and vx_watch.
+// Files through a loop: requests submitted at once, a watched directory, and
+// a child that waits for its standard input to be ready.
+static void async_checks(void) {
+  vx_loop *l = vx_loop_new();
+  vx_arena *a = vx_arena_new(1 << 16);
+  vx_remove(VX_STR("/tmp/vxio/new"));
+  vx_remove(VX_STR("/tmp/vxio/data"));
+  vx_remove(VX_STR("/tmp/vxio"));
+  vx_close(vx_create(VX_STR("/tmp/vxio"), VX_OREAD, VX_DMDIR | 0755));
+  vx_fd f = vx_create(VX_STR("/tmp/vxio/data"), VX_ORDWR, 0644);
+  CHECK(l && f >= 0 && vx_write(f, VX_STR("abcdefgh")) == 8);
+  char b1[4], b2[4];
+  vx_io ops[] = {
+      {.fd = f, .op = VX_IO_READ, .off = 0, .buf = {(uint8_t *)b1, 4}, .key = 1},
+      {.fd = f, .op = VX_IO_READ, .off = 4, .buf = {(uint8_t *)b2, 4}, .key = 2},
+      {.fd = f, .op = VX_IO_WRITE, .off = 8, .buf = {(uint8_t *)"XY", 2}, .key = 3},
+      {.fd = f, .op = VX_IO_SYNC, .key = 4},
+  };
+  CHECK(vx_io_submit(l, ops, 4) == VX_OK);
+  vx_io bad = {.fd = f, .op = 99};
+  CHECK(vx_io_submit(l, &bad, 1) == VX_ERR_INVALID);
+  // A watch on the directory: a file made there is a change, by name.
+  vx_fd d = vx_open(VX_STR("/tmp/vxio"), VX_OREAD);
+  vx_status ws = vx_watch(l, d, 9);
+  CHECK(d >= 0 && ws == VX_OK);
+  uint32_t done = 0;
+  bool reads = true, created = false, made = false;
+  vx_event ev[8];
+  vx_instant until = vx_now() + 10'000'000'000;
+  while ((done != 0xf || !created) && vx_now() < until) {
+    int64_t n = vx_loop_wait(l, vx_now() + 100'000'000, 0, ev, 8);
+    for (int64_t i = 0; i < n; i++) {
+      if (ev[i].kind == VX_EV_IO && ev[i].key >= 1 && ev[i].key <= 4) {
+        done |= 1u << (ev[i].key - 1);
+        if (ev[i].key == 1) reads = reads && ev[i].io.count == 4 && memcmp(b1, "abcd", 4) == 0;
+        if (ev[i].key == 2) reads = reads && ev[i].io.count == 4 && memcmp(b2, "efgh", 4) == 0;
+        if (ev[i].key == 3) reads = reads && ev[i].io.count == 2 && ev[i].io.op == VX_IO_WRITE;
+        if (ev[i].key == 4) reads = reads && ev[i].io.count == VX_OK;
+      }
+      if (ev[i].kind == VX_EV_CHANGED && ev[i].key == 9 && (ev[i].changed.what & VX_CHANGED_CREATE))
+        created = created || vx_str_eq(ev[i].changed.name, VX_STR("new"));
+    }
+    if (!made) { // after the first wait, so the watch's Tnotify is surely there
+      vx_close(vx_create(VX_STR("/tmp/vxio/new"), VX_OWRITE, 0644));
+      made = true;
+    }
+  }
+  CHECK(done == 0xf && reads);
+  CHECK(created);
+  char all[16];
+  CHECK(vx_pread(f, (vx_bytes){(uint8_t *)all, sizeof all}, 0) == 10 && memcmp(all, "abcdefghXY", 10) == 0);
+  vx_close(f);
+  vx_close(d);
+  // Standard input ready, in a child given a channel as its stdin.
+  vx_handle ends[2];
+  CHECK(vx_channel_create(0, ends) == VX_OK);
+  vx_str rargs[] = {VX_STR("vxapitest"), VX_STR("reader")};
+  vx_str names[] = {VX_STR("stdin")};
+  vx_spawn_req rreq = {
+      .path = vx_exe_path(), .args = {rargs, 2}, .handles = &ends[1], .handle_names = names, .nhandles = 1};
+  vx_proc reader = {};
+  CHECK(vx_proc_spawn(&rreq, &reader) == VX_OK);
+  vx_sleep_until(vx_now() + 50'000'000, 0); // let it wait first, so READY comes from the binding
+  struct {
+    vx_msg_header h;
+    char text[4];
+  } msg = {.text = {'p', 'i', 'n', 'g'}};
+  CHECK(vx_channel_write(ends[0], &msg, sizeof msg, nullptr, 0) == VX_OK);
+  vx_str rex = VX_STR("unset");
+  CHECK(vx_proc_wait(reader, VX_INFINITE, a, &rex) == VX_OK && rex.len == 0);
+  vx_proc_close(reader);
+  vx_handle_close(ends[0]);
+  vx_remove(VX_STR("/tmp/vxio/new"));
+  vx_remove(VX_STR("/tmp/vxio/data"));
+  vx_remove(VX_STR("/tmp/vxio"));
+  vx_loop_free(l); // its watch ended, its I/O threads joined
+  vx_arena_free(a);
+}
+
 static void file_checks(void) {
   vx_arena *a = vx_arena_new(1 << 20);
   vx_remove(VX_STR("/tmp/vxapi/sub/c.txt"));
@@ -215,9 +294,21 @@ static void loop_checks(vx_arena *ex) {
 }
 
 // As the spawned child: "child" checks what it was given and ends with 7;
-// "sleeper" waits for a note.
+// "sleeper" waits for a note; "reader" waits in its loop for standard input
+// (VX_EV_READY), reads it and ends with it.
 static int child(void) {
   vx_arena *a = vx_arena_new(1 << 16);
+  if (vx_str_eq(vx_arg(1), VX_STR("reader"))) {
+    vx_loop *l = vx_loop_new();
+    vx_event ev;
+    bool ready = l && vx_watch(l, VX_STDIN, 5) == VX_OK &&
+                 vx_loop_wait(l, vx_now() + 10'000'000'000, 0, &ev, 1) == 1 && ev.kind == VX_EV_READY &&
+                 ev.key == 5;
+    char got[16];
+    int64_t n = ready ? vx_read(VX_STDIN, (vx_bytes){(uint8_t *)got, sizeof got}) : -1;
+    printf("vxapitest: reader %s: %.*s\n", ready ? "ready" : "NOT READY", n > 0 ? (int)n : 0, got);
+    return n == 4 && memcmp(got, "ping", 4) == 0 ? 0 : 1;
+  }
   if (vx_str_eq(vx_arg(1), VX_STR("sleeper"))) {
     printf("vxapitest: sleeper waiting\n");
     for (;;) vx_sleep_until(vx_now() + 1'000'000'000, 0);
@@ -234,7 +325,9 @@ static int child(void) {
 }
 
 int main(void) {
-  if (vx_str_eq(vx_arg(1), VX_STR("child")) || vx_str_eq(vx_arg(1), VX_STR("sleeper"))) return child();
+  if (vx_str_eq(vx_arg(1), VX_STR("child")) || vx_str_eq(vx_arg(1), VX_STR("sleeper")) ||
+      vx_str_eq(vx_arg(1), VX_STR("reader")))
+    return child();
   printf("vxapitest: hello from <vx.h>\n");
   CHECK(vx_abi_level() == VX_ABI_LEVEL && VX_TARGET_ABI == VX_ABI_LEVEL);
 
@@ -334,6 +427,7 @@ int main(void) {
   vx_proc_close(sleeper);
   loop_checks(ex);
   file_checks();
+  async_checks();
   vx_thread *cons = vx_thread_spawn(consumer, nullptr, 0, 0);
   for (int i = 0; i < 10; i++) {
     vx_lock(&rlock);

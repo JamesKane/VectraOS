@@ -1,5 +1,5 @@
 page=file sect=2 summary="open, read, write, stat, rename, link, map and remove files"
-    names=vx_open,vx_create,vx_close,vx_read,vx_write,vx_pread,vx_pwrite,vx_seek,vx_stat,vx_lstat,vx_fstat,vx_wstat,vx_dir_keep,vx_dirread,vx_remove,vx_rename,vx_symlink,vx_readlink,vx_sync,vx_map,vx_unmap,vx_ctl
+    names=vx_io_submit,vx_watch,vx_open,vx_create,vx_close,vx_read,vx_write,vx_pread,vx_pwrite,vx_seek,vx_stat,vx_lstat,vx_fstat,vx_wstat,vx_dir_keep,vx_dirread,vx_remove,vx_rename,vx_symlink,vx_readlink,vx_sync,vx_map,vx_unmap,vx_ctl
     src=lib/vx-ns/file.c,abi/vx/file.h
     keys=file,open,create,read,write,stat,directory,rename,symlink,link,map,mmap,sync,fsync,remove,unlink,ctl,append,exclusive
 
@@ -33,6 +33,9 @@ vx_status vx_map(vx_fd fd, uint64_t off, size_t len, uint32_t prot,
                  void **addr);
 vx_status vx_unmap(void *addr, size_t len);
 vx_status vx_ctl(vx_str path, const char *fmt, ...);
+
+vx_status vx_io_submit(vx_loop *l, const vx_io *ops, size_t n);
+vx_status vx_watch(vx_loop *l, vx_fd fd, uint64_t key);
 ```
 
 # DESCRIPTION
@@ -63,6 +66,15 @@ Symbolic links are followed, in the client, as the servers walk names only; `vx_
 
 `vx_ctl` writes one formatted message to <path> in one write: how a program speaks to a server's `ctl` file.
 
+The same requests go through a loop (loop(2)) without a second API (M6 step 6e4d2, F-217).
+`vx_io_submit` takes <n> requests, each a `vx_io`: a file, an operation (`VX_IO_READ`, `VX_IO_WRITE` or `VX_IO_SYNC`), an offset (requests are positioned, as `vx_pread`'s), a buffer that stays the caller's until it completes, and a key.
+It takes all of them or none, `VX_ERR_SHOULD_WAIT` when the loop has no room for them all (256 at once).
+Each completes as a `VX_EV_IO` with its key and its count, bytes or a negative `vx_status`, in the order the server answers.
+In level 0 a loop's requests are made by up to four I/O threads of its own, the pipelined client keeping each in flight; the flags, cache hints for the server, are not yet carried.
+
+`vx_watch` makes changes to a file, or to a directory's entries, `VX_EV_CHANGED` on <l> with <key>, until the loop is freed: what changed, and in a directory the entry's name (9Px `notify`, `docs/proto/notify.md`; fsd, tmpfs and srvfs serve it).
+On `VX_STDIN` it gives one `VX_EV_READY` once there is input to read; a program reads it and watches again.
+
 # EXAMPLES
 
 Writing a file atomically, as Foundation does:
@@ -82,5 +94,6 @@ arena(2), proc(2), loop(2), vmo(2); `docs/09-native-api.md` §5.5 and `docs/prot
 
 # BUGS
 
-`vx_io_submit` and `vx_watch`, the same requests through a loop, are 6e4d2's.
+A loop freed while one of its I/O threads waits in a held read (the console, a pipe) leaves that thread to finish, its stack mapped.
+`vx_watch` on `VX_STDIN` works when it is a pipe, not the console; on a file of a server dialled over TCP it is `VX_ERR_UNSUPPORTED`.
 `vx_rename` within one directory of a server without the posix extension removes what is at <to> first, so it is not atomic there.

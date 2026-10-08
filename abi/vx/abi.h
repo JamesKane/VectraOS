@@ -675,15 +675,15 @@ typedef struct vx_fpregs {
 // An address aligned to its length (1, 2, 4 or 8 bytes), in user space.
 static constexpr uint32_t VX_WATCH_MAX = 16;
 enum vx_watch_kind : uint32_t { VX_WATCH_OFF, VX_WATCH_WRITE, VX_WATCH_RW };
-typedef struct vx_watch {
+typedef struct vx_watchpoint {
   uint64_t address;
   uint32_t len;
   uint32_t kind; // enum vx_watch_kind
-} vx_watch;
+} vx_watchpoint;
 typedef struct vx_watches {
   uint32_t count; // GET_WATCH: how many the hardware has; slots from there on are OFF
   uint32_t reserved;
-  vx_watch slot[VX_WATCH_MAX];
+  vx_watchpoint slot[VX_WATCH_MAX];
 } vx_watches;
 
 enum vx_thread_run_state : uint32_t {

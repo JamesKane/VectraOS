@@ -805,7 +805,7 @@ static void watch_load(const task *t) {
   uint32_t cpu = arch_cpu_index(), count = arch_watch_count();
   if (!t->watching && !watch_loaded[cpu]) return;
   for (uint32_t i = 0; i < count; i++) {
-    const vx_watch *w = &t->watches[i];
+    const vx_watchpoint *w = &t->watches[i];
     if (!t->watching || w->kind == VX_WATCH_OFF) {
       watch_slot(i, 0, 0);
       continue;
@@ -1000,7 +1000,7 @@ static uint32_t aarch64_exception_kind(const trap_frame *f, uint32_t *code, uint
     const task *t = this_cpu()->current->task;
     *code = 0;
     for (uint32_t i = 0; i < VX_WATCH_MAX; i++) { // the slot whose 8-byte span holds what was touched
-      const vx_watch *w = &t->watches[i];
+      const vx_watchpoint *w = &t->watches[i];
       if (w->kind != VX_WATCH_OFF && (w->address & ~7ull) == (f->far & ~7ull)) *code = i;
     }
     *address = t->watches[*code].address;

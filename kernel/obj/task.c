@@ -90,8 +90,8 @@ typedef struct task {
   struct port *exc_port; // a reference, or null
   uint64_t exc_key;
   struct port *dbg_port; // a debugger's, which sees faults first (FIRST_CHANCE); a reference, or null
-  vx_watch watches[VX_WATCH_MAX]; // its watchpoints (thread_state SET_WATCH), loaded as its threads run
-  bool watching;                  // any of them on
+  vx_watchpoint watches[VX_WATCH_MAX]; // its watchpoints (thread_state SET_WATCH), loaded as its threads run
+  bool watching;                       // any of them on
   uint64_t dbg_key;
   uint32_t io_ranges; // I/O ports it may use (x86_64, device.c): [io_base, io_base + io_count)
   uint16_t io_base[TASK_MAX_IO];

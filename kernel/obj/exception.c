@@ -397,7 +397,7 @@ static int64_t thread_watch(vx_handle th, uint64_t op, uint64_t buf) {
   uint32_t count = arch_watch_count();
   bool any = false;
   for (uint32_t i = 0; op == VX_STATE_SET_WATCH && i < VX_WATCH_MAX; i++) {
-    const vx_watch *s = &w.slot[i];
+    const vx_watchpoint *s = &w.slot[i];
     if (s->kind == VX_WATCH_OFF) continue;
     bool len_ok = s->len == 1 || s->len == 2 || s->len == 4 || s->len == 8;
     if (i >= count || s->kind > VX_WATCH_RW || !len_ok || s->address % s->len || s->address >= USER_TOP)

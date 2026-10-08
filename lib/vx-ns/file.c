@@ -23,6 +23,8 @@ typedef struct vx_file_slot {
   bool server_append; // VX_OAPPEND by the server (9Px's Tdesc): each write at its current offset
   vx_lock_t lock;
   vx_ns_file f;
+  char *path; // the resolved path it was opened by (on the process heap), for vx_watch
+  size_t path_len;
 } vx_file_slot;
 
 static vx_file_slot vx_files[VX_FILES];
@@ -38,20 +40,24 @@ static vx_status vx_file_fail(const char *what, vx_str path, vx_status st) {
   return st;
 }
 
-// A new slot for f: its vx_fd, or a negative status (f closed).
-static vx_fd vx_file_add(vx_ns_file *f, bool append, bool server_append) {
+// A new slot for f, opened by path: its vx_fd, or a negative status (f closed).
+static vx_fd vx_file_add(vx_ns_file *f, vx_str path, bool append, bool server_append) {
+  char *copy = vx_heap_alloc(vx_heap_process(), path.len ? path.len : 1);
+  if (copy) memcpy(copy, path.ptr, path.len);
   vx_lock(&vx_files_lock);
   uint32_t i = 0;
   while (i < VX_FILES && (vx_files[i].gen & 1)) i++;
   if (i == VX_FILES) {
     vx_unlock(&vx_files_lock);
     vx_ns_close(f);
+    vx_heap_free(vx_heap_process(), copy);
     return vx_file_fail("open", VX_STR("a file"), VX_ERR_NO_MEMORY);
   }
   vx_file_slot *s = &vx_files[i];
   s->gen++;
   if (!(s->gen & 1)) s->gen++; // odd: open
   s->f = *f, s->append = append, s->server_append = server_append;
+  s->path = copy, s->path_len = copy ? path.len : 0;
   vx_fd fd = (vx_fd)((s->gen & 0x7f'ffff) << 8 | i);
   vx_unlock(&vx_files_lock);
   return fd;
@@ -93,7 +99,7 @@ VX_API vx_fd vx_open(vx_str path, vx_mode mode) {
   vx_unlock(&vx_ns_proc_lock);
   if (st != VX_OK) return vx_file_fail("open", path, st);
   bool server = (mode & VX_OAPPEND) && vx_file_server_append(&f);
-  return vx_file_add(&f, (mode & VX_OAPPEND) && !server, server);
+  return vx_file_add(&f, p, (mode & VX_OAPPEND) && !server, server);
 }
 
 VX_API vx_fd vx_create(vx_str path, vx_mode mode, uint32_t perm) {
@@ -111,21 +117,24 @@ VX_API vx_fd vx_create(vx_str path, vx_mode mode, uint32_t perm) {
   vx_unlock(&vx_ns_proc_lock);
   if (st != VX_OK) return vx_file_fail("create", path, st);
   bool server = (mode & VX_OAPPEND) && vx_file_server_append(&f);
-  return vx_file_add(&f, (mode & VX_OAPPEND) && !server, server);
+  return vx_file_add(&f, p, (mode & VX_OAPPEND) && !server, server);
 }
 
 VX_API vx_status vx_close(vx_fd fd) {
   vx_file_slot *s = vx_file_get(fd);
   if (!s) return fd >= 0 && fd < 3 ? VX_OK : vx_file_fail("close", VX_STR("a file"), VX_ERR_BAD_HANDLE);
   vx_ns_file f = s->f;
+  char *path = s->path;
   vx_lock(&vx_files_lock);
   s->gen++; // even: free, and fd stale
   s->f = (vx_ns_file){};
+  s->path = nullptr, s->path_len = 0;
   vx_unlock(&vx_files_lock);
   vx_unlock(&s->lock);
   vx_lock(&vx_ns_proc_lock);
   vx_ns_close(&f);
   vx_unlock(&vx_ns_proc_lock);
+  vx_heap_free(vx_heap_process(), path);
   return VX_OK;
 }
 

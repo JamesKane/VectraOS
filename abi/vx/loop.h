@@ -12,15 +12,15 @@
 typedef struct vx_loop vx_loop;
 typedef uint64_t vx_timer; // 0: none
 
-// The kinds of event (09 §5.4). Level 0 delivers POST, TIMER, EXIT and NOTE;
-// the rest come with the calls that make them (files, a later step; memory
-// budgets, a later level), their numbers fixed now.
+// The kinds of event (09 §5.4). Level 0 delivers POST, TIMER, EXIT, NOTE,
+// and IO, CHANGED and READY (<vx/file.h>'s vx_io_submit and vx_watch);
+// PRESSURE and HUNGUP come later, their numbers fixed now.
 typedef enum vx_event_kind : uint32_t {
   VX_EV_POST = 1, // vx_post: post.a and post.b
   VX_EV_TIMER,    // vx_timer_at: timer.id, timer.late
-  VX_EV_IO,       // a file request completed
-  VX_EV_CHANGED,  // a watched file changed
-  VX_EV_READY,    // a file has data to read
+  VX_EV_IO,       // a vx_io request completed: io
+  VX_EV_CHANGED,  // a watched file changed: changed.what, changed.name
+  VX_EV_READY,    // a watched file has data to read: ready.fd
   VX_EV_EXIT,     // a watched process or thread ended: exit.msg, "" for success; source its pid or thread
   VX_EV_NOTE,     // a note, once vx_notes_to_loop: note.text
   VX_EV_PRESSURE, // the memory budget changed
@@ -49,10 +49,34 @@ typedef struct vx_event {
     struct {
       vx_str text;
     } note;
+    struct {
+      int64_t count; // bytes done, or a negative vx_status
+      int32_t fd;    // the request's vx_fd
+      uint32_t op;   // its vx_io_op
+      uint64_t off;
+    } io;
+    struct {
+      uint32_t what; // VX_CHANGED_ bits
+      vx_str name;   // in a watched directory, the entry; "" for the file itself
+    } changed;
+    struct {
+      int32_t fd;
+    } ready;
     uint8_t payload[32];
   };
 } vx_event;
 static_assert(sizeof(vx_event) == 64);
+
+// What changed, in VX_EV_CHANGED (9Px notify's kinds, docs/proto/notify.md).
+enum : uint32_t {
+  VX_CHANGED_CREATE = 1,      // a name made in the directory
+  VX_CHANGED_REMOVE = 2,      // a name removed from it, or the file removed
+  VX_CHANGED_MODIFY = 4,      // data written
+  VX_CHANGED_ATTRIB = 8,      // attributes changed
+  VX_CHANGED_MOVED_FROM = 16, // renamed away from here
+  VX_CHANGED_MOVED_TO = 32,   // renamed to here
+  VX_CHANGED_LOST = 128,      // changes were lost: read it again
+};
 
 // A new loop, or nullptr (vx_errstr says why); vx_loop_free ends it, its
 // watches and timers with it.

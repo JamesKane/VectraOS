@@ -533,7 +533,7 @@ static void watch_load(const task *t) {
   if (!t->watching && !watch_loaded[cpu]) return;
   uint64_t dr7 = 0, addr[4] = {};
   for (uint32_t i = 0; t->watching && i < 4; i++) {
-    const vx_watch *w = &t->watches[i];
+    const vx_watchpoint *w = &t->watches[i];
     if (w->kind == VX_WATCH_OFF) continue;
     uint64_t rw = w->kind == VX_WATCH_WRITE ? 1 : 3; // 01 writes, 11 reads and writes
     uint64_t len = DR7_LEN[w->len];

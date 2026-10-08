@@ -12,6 +12,11 @@
 //     loop's note counter, bound again after each packet.
 //   - timers: no kernel object (port(2)); the wait's deadline is the earliest
 //     timer's, and timers due are fired after it.
+//   - completions from other threads (vx-ns's io.c: file requests and
+//     watches): a queue under a lock, its counter signalled with how many
+//     were ever queued, bound again as notes' is.
+//   - standard input ready: a READABLE binding on its channel, keyed by a
+//     watch slot.
 // A watch's key carries its slot's generation, so a packet for a watch
 // already gone (vx_loop_free's cancel racing it) finds nothing.
 
@@ -26,11 +31,13 @@
 
 static constexpr uint32_t VX_LOOP_WATCHES = 64;
 static constexpr uint32_t VX_LOOP_TIMERS = 64;
-static constexpr uint32_t VX_LOOP_NOTES = 16;       // queued notes not yet taken; more are dropped
-static constexpr uint64_t VX_LOOP_NOTE_KEY = ~0ull; // the note counter's binding
-static constexpr size_t VX_LOOP_ARENA = 1ull << 20; // a wait's exit strings and notes
+static constexpr uint32_t VX_LOOP_NOTES = 16;           // queued notes not yet taken; more are dropped
+static constexpr uint64_t VX_LOOP_NOTE_KEY = ~0ull;     // the note counter's binding
+static constexpr uint64_t VX_LOOP_DONE_KEY = ~0ull - 1; // the completion counter's
+static constexpr uint32_t VX_LOOP_DONE = 128;           // completions queued; a thread with one more waits
+static constexpr size_t VX_LOOP_ARENA = 1ull << 20;     // a wait's exit strings and notes
 
-typedef enum : uint8_t { VX_WATCH_FREE, VX_WATCH_PROC, VX_WATCH_THREAD } vx_loop_watch_kind;
+typedef enum : uint8_t { VX_WATCH_FREE, VX_WATCH_PROC, VX_WATCH_THREAD, VX_WATCH_READY } vx_loop_watch_kind;
 
 typedef struct vx_loop_watch {
   vx_loop_watch_kind kind;
@@ -61,6 +68,20 @@ struct vx_loop {
     uint32_t len;
     char text[VX_ERRMAX];
   } note[VX_LOOP_NOTES];
+  // Completions (vx_loop_done): written under done_lock by any thread.
+  vx_handle done;
+  vx_lock_t done_lock;
+  vx_rendez done_room;
+  bool closing; // being freed: completions are dropped, and none waits
+  uint64_t done_head, done_tail;
+  struct {
+    vx_event ev;
+    uint16_t len;
+    char text[256]; // a slice in the event (a name), copied to the arena when taken
+  } done_q[VX_LOOP_DONE];
+  // vx-ns's file requests and watches on this loop (io.c), stopped when it is freed.
+  void *io;
+  void (*io_stop)(vx_loop *l);
 };
 
 VX_API vx_loop *vx_loop_new(void) {
@@ -84,13 +105,20 @@ static vx_loop *_Atomic vx_note_loop; // the loop notes go to, if any
 
 VX_API void vx_loop_free(vx_loop *l) {
   if (!l) return;
+  vx_lock(&l->done_lock); // a thread waiting to complete gives up
+  l->closing = true;
+  vx_rendez_wake_all(&l->done_room);
+  vx_unlock(&l->done_lock);
+  if (l->io_stop) l->io_stop(l);
   if (atomic_load(&vx_note_loop) == l) {
     vx_notify(nullptr);
     atomic_store(&vx_note_loop, nullptr);
   }
   for (uint32_t i = 0; i < VX_LOOP_WATCHES; i++) // a watched thread keeps its own handle to its counter
-    if (l->watch[i].kind != VX_WATCH_FREE) vx_handle_close(l->watch[i].object);
+    if (l->watch[i].kind == VX_WATCH_PROC || l->watch[i].kind == VX_WATCH_THREAD)
+      vx_handle_close(l->watch[i].object);
   if (l->notes) vx_handle_close(l->notes);
+  if (l->done) vx_handle_close(l->done);
   vx_handle_close(l->port); // its bindings go with it
   vx_arena_free(l->arena);
   vx_heap_free(vx_heap_process(), l);
@@ -233,6 +261,11 @@ VX_API vx_status vx_thread_watch(vx_loop *l, vx_thread *t, uint64_t key) {
 static bool vx_loop_watch_event(vx_loop *l, const vx_packet *pk, vx_instant now, vx_event *ev) {
   vx_loop_watch *w = vx_loop_watch_find(l, pk->key);
   if (!w) return false;
+  if (w->kind == VX_WATCH_READY) { // the other of its two bindings finds the slot gone
+    *ev = (vx_event){.kind = VX_EV_READY, .time = now, .key = w->key, .ready = {.fd = 0}};
+    w->kind = VX_WATCH_FREE;
+    return true;
+  }
   const char *text = "";
   size_t len = 0;
   vx_task_summary s;
@@ -248,6 +281,59 @@ static bool vx_loop_watch_event(vx_loop *l, const vx_packet *pk, vx_instant now,
   vx_handle_close(w->object);
   w->kind = VX_WATCH_FREE;
   return true;
+}
+
+// --- Completions from other threads ---
+
+// Ready for vx_loop_done; called by the loop's own thread first.
+[[maybe_unused]] static vx_status vx_loop_done_open(vx_loop *l) {
+  if (l->done) return VX_OK;
+  vx_status st = vx_counter_create(0, &l->done);
+  if (st == VX_OK) st = vx_port_bind(l->port, l->done, VX_TRIGGER_COUNTER_GE, VX_LOOP_DONE_KEY, 1);
+  if (st != VX_OK && l->done) vx_handle_close(l->done), l->done = VX_HANDLE_NONE;
+  return st;
+}
+
+// Queues ev for l's next wait, text (a name) to be its slice: from any
+// thread, waiting while the queue is full. False if the loop is being freed.
+[[maybe_unused]] static bool vx_loop_done(vx_loop *l, const vx_event *ev, vx_str text) {
+  vx_lock(&l->done_lock);
+  while (!l->closing && l->done_tail - l->done_head == VX_LOOP_DONE)
+    vx_rendez_sleep(&l->done_room, &l->done_lock);
+  bool ok = !l->closing;
+  if (ok) {
+    typeof(l->done_q[0]) *q = &l->done_q[l->done_tail % VX_LOOP_DONE];
+    q->ev = *ev;
+    q->len = (uint16_t)vx_utf_cut(text.ptr, text.len, sizeof q->text);
+    if (q->len) memcpy(q->text, text.ptr, q->len);
+    l->done_tail++;
+    vx_counter_signal(l->done, l->done_tail);
+  }
+  vx_unlock(&l->done_lock);
+  return ok;
+}
+
+// The queued completions as events, up to cap; bound again past them once
+// the binding has fired (rebind), as notes are.
+static size_t vx_done_take(vx_loop *l, vx_instant now, vx_event *evs, size_t cap, bool rebind) {
+  size_t n = 0;
+  vx_lock(&l->done_lock);
+  for (; l->done_head < l->done_tail && n < cap; l->done_head++) {
+    typeof(l->done_q[0]) *q = &l->done_q[l->done_head % VX_LOOP_DONE];
+    vx_event *e = &evs[n++];
+    *e = q->ev;
+    e->time = now;
+    if (e->kind == VX_EV_CHANGED) {
+      char *p = q->len ? vx_push(l->arena, q->len, 1) : nullptr;
+      if (p) memcpy(p, q->text, q->len);
+      e->changed.name = p ? (vx_str){p, q->len} : VX_STR("");
+    }
+  }
+  uint64_t head = l->done_head;
+  vx_rendez_wake_all(&l->done_room);
+  vx_unlock(&l->done_lock);
+  if (rebind) vx_port_bind(l->port, l->done, VX_TRIGGER_COUNTER_GE, VX_LOOP_DONE_KEY, head + 1);
+  return n;
 }
 
 // --- Notes ---
@@ -298,6 +384,27 @@ static size_t vx_notes_take(vx_loop *l, vx_instant now, vx_event *evs, size_t ca
   return n;
 }
 
+// Standard input ready to read (vx_watch's for VX_STDIN): a READABLE
+// binding on its channel, once; at once if vx-rt holds some unread.
+[[maybe_unused]] static vx_status vx_loop_watch_stdin(vx_loop *l, uint64_t key) {
+  if (!vx_stdio.in) return VX_ERR_UNSUPPORTED; // the console: a 9P file, not a channel
+  const vx_pipe_in *r = &vx_stdio.reader;
+  if ((r->end == vx_stdio.in && r->msg_pos < r->msg_len) || r->ended) {
+    vx_status st = vx_loop_done_open(l);
+    vx_event ev = {.kind = VX_EV_READY, .key = key, .ready = {.fd = 0}};
+    if (st == VX_OK && !vx_loop_done(l, &ev, (vx_str){})) st = VX_ERR_BAD_STATE;
+    return st;
+  }
+  uint64_t bind_key;
+  vx_loop_watch *w = vx_loop_watch_new(l, &bind_key);
+  if (!w) return VX_ERR_NO_MEMORY;
+  vx_status st = vx_port_bind(l->port, vx_stdio.in, VX_TRIGGER_READABLE, bind_key, 0);
+  if (st == VX_OK) st = vx_port_bind(l->port, vx_stdio.in, VX_TRIGGER_PEER_CLOSED, bind_key, 0); // its end
+  if (st != VX_OK) return st;
+  *w = (vx_loop_watch){.kind = VX_WATCH_READY, .gen = w->gen, .key = key};
+  return VX_OK;
+}
+
 // --- The wait ---
 
 VX_API int64_t vx_loop_wait(vx_loop *l, vx_instant deadline, vx_duration leeway, vx_event *evs, size_t cap) {
@@ -316,18 +423,21 @@ VX_API int64_t vx_loop_wait(vx_loop *l, vx_instant deadline, vx_duration leeway,
     if (got == VX_ERR_TIMED_OUT) got = 0;
     if (got < 0) return n ? (int64_t)n : got;
     vx_instant now = vx_now();
-    bool notes = false;
+    bool notes = false, done = false;
     for (int64_t i = 0; i < got; i++) {
       if (pk[i].trigger == VX_TRIGGER_USER)
         evs[n++] = (vx_event){
             .kind = VX_EV_POST, .time = now, .key = pk[i].key, .post = {.a = pk[i].key, .b = pk[i].value}};
       else if (pk[i].key == VX_LOOP_NOTE_KEY)
         notes = true;
+      else if (pk[i].key == VX_LOOP_DONE_KEY)
+        done = true;
       else if (vx_loop_watch_event(l, &pk[i], now, &evs[n]))
         n++;
     }
     if (notes || (l->notes && atomic_load(&l->note_head) < atomic_load(&l->note_tail)))
       n += vx_notes_take(l, now, evs + n, cap - n, notes);
+    if (l->done && (done || l->done_head < l->done_tail)) n += vx_done_take(l, now, evs + n, cap - n, done);
     n += vx_timers_fire(l, now, evs + n, cap - n);
     if (n || until == 0 || now >= deadline) return (int64_t)n;
   }

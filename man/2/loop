@@ -38,6 +38,9 @@ A slice in it, an exit string or a note, points into the loop's own memory, good
 | `VX_EV_TIMER` | `vx_timer_at` | `timer.id`, `timer.late` |
 | `VX_EV_EXIT` | `vx_proc_watch`, `vx_thread_watch` | `exit.msg`, `""` for success; `source` is the pid or the thread |
 | `VX_EV_NOTE` | a note, after `vx_notes_to_loop` | `note.text` |
+| `VX_EV_IO` | a request of `vx_io_submit` (file(2)) done | `io.count`, bytes or a status; `io.fd`, `io.op`, `io.off` |
+| `VX_EV_CHANGED` | a file `vx_watch` watches changed | `changed.what` (`VX_CHANGED_*`), `changed.name` |
+| `VX_EV_READY` | standard input, watched, has input | `ready.fd` |
 
 `vx_timer_at` fires at <at>, then every <every> after it (0 for once); a periodic timer that falls behind fires once, `timer.late` saying by how much, and goes on from its next time after now.
 `vx_timer_stop` ends one. A loop holds 64 timers.
@@ -49,7 +52,8 @@ A watched thread is joined (thread(2)) after its event, which reads its record.
 A trap's note (`sys: ...`) still ends the program; a wait a note interrupts goes on waiting.
 Sixteen notes may wait in the loop; more are dropped.
 
-The kinds a file request, a file change, a pipe with data, memory pressure or a lost server would give (`VX_EV_IO`, `VX_EV_CHANGED`, `VX_EV_READY`, `VX_EV_PRESSURE`, `VX_EV_HUNGUP`) have their numbers already; they come with the calls that make them.
+Memory pressure and a lost server (`VX_EV_PRESSURE`, `VX_EV_HUNGUP`) have their numbers already; they come with the calls that make them.
+Freeing a loop ends its watches and its I/O threads.
 
 # EXAMPLES
 
