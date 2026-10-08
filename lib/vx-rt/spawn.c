@@ -38,6 +38,53 @@ static constexpr uint64_t VX_STACK_TOP = 0x0000'7fff'ffff'0000;
 static constexpr uint64_t VX_STACK_SIZE = 256ull * 1024; // as the root task's (kernel/obj/task.c)
 static constexpr uint32_t VX_ALL_RIGHTS = (1u << VX_RIGHT_BIT_COUNT) - 1;
 
+// A position-independent image (ET_DYN: musl's libc.so as an interpreter,
+// 6f1b2) into the task at a base of the kernel's choosing: a reservation of
+// its span with a page left unmapped on each side, its segments inside at
+// their offsets. Returns its entry, relocated, in *entry.
+static vx_status vx_elf_load_dyn(vx_handle task, const uint8_t *image, size_t size, uint64_t *entry) {
+  vx_elf_header eh;
+  uint64_t table_end, lo = UINT64_MAX, hi = 0;
+  memcpy(&eh, image, sizeof eh);
+  if (eh.phentsize != sizeof(vx_elf_phdr) || ckd_mul(&table_end, (uint64_t)eh.phnum, sizeof(vx_elf_phdr)) ||
+      ckd_add(&table_end, table_end, eh.phoff) || table_end > size)
+    return VX_ERR_INVALID;
+  for (uint16_t i = 0; i < eh.phnum; i++) {
+    vx_elf_phdr ph;
+    memcpy(&ph, image + eh.phoff + (uint64_t)i * sizeof ph, sizeof ph);
+    uint64_t file_end, mem_end;
+    if (ph.type != VX_PT_LOAD || ph.memsz == 0) continue;
+    if (ph.filesz > ph.memsz || ckd_add(&file_end, ph.offset, ph.filesz) || file_end > size ||
+        ckd_add(&mem_end, ph.vaddr, ph.memsz) || ((ph.flags & VX_PF_W) && (ph.flags & VX_PF_X)))
+      return VX_ERR_INVALID;
+    if ((ph.vaddr & ~4095ull) < lo) lo = ph.vaddr & ~4095ull;
+    if (((mem_end + 4095) & ~4095ull) > hi) hi = (mem_end + 4095) & ~4095ull;
+  }
+  if (lo >= hi || eh.entry < lo || eh.entry >= hi) return VX_ERR_INVALID;
+  uint64_t at = 0;
+  vx_status st = vx_as_reserve(task, hi - lo + 2 * 4096ull, 0, 0, &at);
+  if (st != VX_OK) return st;
+  uint64_t base = at + 4096 - lo;
+  for (uint16_t i = 0; i < eh.phnum && st == VX_OK; i++) {
+    vx_elf_phdr ph;
+    memcpy(&ph, image + eh.phoff + (uint64_t)i * sizeof ph, sizeof ph);
+    if (ph.type != VX_PT_LOAD || ph.memsz == 0) continue;
+    uint64_t start = ph.vaddr & ~4095ull, len = ((ph.vaddr + ph.memsz + 4095) & ~4095ull) - start;
+    uint64_t va = base + start;
+    vx_handle vmo = VX_HANDLE_NONE;
+    st = vx_vmo_create(len, 0, &vmo);
+    if (st == VX_OK && ph.filesz)
+      st = vx_vmo_rw(vmo, VX_VMO_WRITE, ph.vaddr - start, (void *)(image + ph.offset), ph.filesz);
+    if (st == VX_OK)
+      st = vx_as_map(task, vmo, 0, len,
+                     (ph.flags & VX_PF_W ? VX_MAP_WRITE : 0) | (ph.flags & VX_PF_X ? VX_MAP_EXEC : 0), &va);
+    if (vmo) vx_handle_close(vmo);
+    if (st == VX_OK && va != base + start) st = VX_ERR_INVALID;
+  }
+  if (st == VX_OK) *entry = base + eh.entry;
+  return st;
+}
+
 // The interpreter an image names (PT_INTERP: a dynamic program, ADR-0047),
 // without its NUL, in *path; false if it names none, or the image is not
 // one this can read.
@@ -203,7 +250,10 @@ static void vx_close_all(const vx_handle *h, uint32_t n) {
   vx_status st = vx_task_create(a->name, &t);
   if (st == VX_OK && dynamic && !a->interp) st = VX_ERR_UNSUPPORTED;
   if (st == VX_OK && dynamic) { // the interpreter runs first; the program is its to load
-    st = vx_elf_load(t, a->interp, a->interp_size, &entry);
+    vx_elf_header ih = {};
+    if (a->interp_size >= sizeof ih) memcpy(&ih, a->interp, sizeof ih);
+    st = ih.type == VX_ET_DYN ? vx_elf_load_dyn(t, a->interp, a->interp_size, &entry) // musl's libc.so
+                              : vx_elf_load(t, a->interp, a->interp_size, &entry);    // ld-vx
     vx_handle exe = VX_HANDLE_NONE;
     if (st == VX_OK) st = vx_vmo_create((a->image_size + 4095) & ~(size_t)4095, 0, &exe);
     if (st == VX_OK) st = vx_vmo_rw(exe, VX_VMO_WRITE, 0, (void *)a->image, a->image_size);

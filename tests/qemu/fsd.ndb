@@ -5,7 +5,7 @@
 # (tests/user/ctestfsd.ndb), reading first a file the build put there.
 # fsdperm.ndb checks what fsd refuses.
 
-scenario=fsd timeout=90 cmdline=vx.skip=rc with=ctestfsd,fsdvol disk=64 volume=tests/fsd/home
+scenario=fsd timeout=150 cmdline=vx.skip=rc with=ctestfsd,fsdvol disk=64 volume=tests/fsd/home
 expect="partd: /srv/disk1: 2 partitions"
 expect="fsd: /srv/disk1.vectra: commit "
 expect="fsd: serving /srv/fsd"

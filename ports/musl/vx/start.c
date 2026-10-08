@@ -57,12 +57,17 @@ static long proc_getrandom(void *buf, size_t n) {
   return (long)n;
 }
 
-// Called by crt1's _start with the bootstrap channel and the program's main.
-// argv[0] is the program's name from the spawn message; its arguments follow.
-// No stack protector: musl sets the guard (from AT_RANDOM) while this frame
-// is live, and this function never returns to check it.
-[[gnu::no_stack_protector]] void __vx_start(vx_handle bootstrap, int (*main)(int, char **, char **)) {
-  vx_read_spawn(bootstrap);
+// The process from its spawn message: the back end started, and what Linux
+// puts on a new process's stack built in proc_start.words, argc first, for
+// the program whose program headers are at phdr (phnum of them): its entry
+// and the dynamic linker's base for a dynamic program (6f1b2), 0 for a
+// static one. *auxv gets the auxiliary vector's start. With no bootstrap
+// channel, the spawn message has been read already. No stack protector:
+// musl sets the guard (from AT_RANDOM) while its caller's frame is live.
+[[gnu::no_stack_protector]] static uintptr_t *proc_start_block(vx_handle bootstrap, uintptr_t phdr,
+                                                               size_t phnum, uintptr_t entry, uintptr_t base,
+                                                               uintptr_t **auxv) {
+  if (bootstrap) vx_read_spawn(bootstrap); // none: the dynamic linker's start read it (ldso.c)
   fd_init();
   vx_task_summary me;
   if (vx_self && vx_task_info(vx_self, &me) == VX_OK) proc_kernel_task_id = me.id;
@@ -82,16 +87,29 @@ static long proc_getrandom(void *buf, size_t n) {
   for (uint32_t i = 0; i < vx_spawn.envc; i++) w[n++] = (uintptr_t)proc_string(&used, vx_spawn.envs[i]);
   w[n++] = 0;
   const uintptr_t aux[PROC_AUX * 2] = {
-      AT_PHDR,   (uintptr_t)&__ehdr_start + __ehdr_start.e_phoff,
+      AT_PHDR,   phdr,
       AT_PHENT,  sizeof(Elf64_Phdr),
-      AT_PHNUM,  __ehdr_start.e_phnum,
+      AT_PHNUM,  phnum,
       AT_PAGESZ, 4096,
       AT_RANDOM, (uintptr_t)proc_start.random,
       AT_EXECFN, (uintptr_t)name,
+      AT_ENTRY,  entry,
+      AT_BASE,   base,
       AT_NULL,   0,
   };
   memcpy(w + n, aux, sizeof aux);
-  __libc_start_main(main, (int)argc, (char **)(w + 1), nullptr, nullptr, nullptr);
+  *auxv = w + n;
+  return w;
+}
+
+// Called by crt1's _start with the bootstrap channel and the program's main:
+// a static program. argv[0] is the program's name from the spawn message;
+// its arguments follow.
+[[gnu::no_stack_protector]] void __vx_start(vx_handle bootstrap, int (*main)(int, char **, char **)) {
+  uintptr_t *auxv;
+  uintptr_t *w = proc_start_block(bootstrap, (uintptr_t)&__ehdr_start + __ehdr_start.e_phoff,
+                                  __ehdr_start.e_phnum, 0, 0, &auxv);
+  __libc_start_main(main, (int)w[0], (char **)(w + 1), nullptr, nullptr, nullptr);
   __builtin_trap(); // it ends in exit, never returning
 }
 

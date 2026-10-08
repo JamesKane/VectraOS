@@ -351,6 +351,9 @@ static long be_altstack(const stack_t *ss, stack_t *old) {
 #include "fd.c"
 #include "memory.c"
 #include "start.c"
+#ifdef SHARED
+#include "ldso.c" // libc.so's start as the interpreter (6f1b2)
+#endif
 #include "process.c"
 #include "signal.c"
 #include "poll.c"
@@ -482,6 +485,10 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
       atomic_store(&be_threads[0].tp, be_tp());
       be_slot_set(0, be_only_thread_id(), &be_state[0]);
       be_tls = true;
+    } else if (be_me() == &be_early && atomic_load(&be_live) == 1) {
+      // aarch64's musl moved the first thread's pointer itself: its
+      // dynamic linker, to the TLS its libraries need (6f1b2)
+      atomic_store(&be_threads[0].tp, be_tp());
     }
     be_me()->ctid = (volatile int *)a1, be_me()->tid = posix_pid();
     return be_me()->tid;
@@ -529,7 +536,12 @@ static long vx_dispatch(long n, long a1, long a2, long a3, long a4, long a5, lon
   case SYS_sigaltstack: return be_altstack((const stack_t *)a1, (stack_t *)a2);
   case SYS_prlimit64: return proc_prlimit((struct rlimit *)a4);
 #ifdef SYS_set_thread_area
-  case SYS_set_thread_area: return proc_set_tls((uint64_t)a1); // x86_64's
+  case SYS_set_thread_area: { // x86_64's; again by the dynamic linker, to a larger TLS (6f1b2)
+    be_thread *me = be_me();  // found by the pointer it had, which holds the lock
+    long r = proc_set_tls((uint64_t)a1);
+    if (r == 0 && me->slot) atomic_store(&be_threads[me->slot - 1].tp, be_tp());
+    return r;
+  }
 #endif
 
   // Time and waiting (start.c)

@@ -387,12 +387,9 @@ static long spawn_records(vx_ndb_writer *w, char *const argv[], char *const envp
   return w->failed ? -E2BIG : 0;
 }
 
-// Builds and starts the program at path, with the descriptors in table.
-// Returns 0 or a negated errno.
-static long spawn_image(const char *path, bool search, char *const argv[], char *const envp[],
-                        const fd_slot *table, spawn_ctx *ctx) {
-  fd_quiet_reads(); // the child's terminal input is the child's
-  long fd = spawn_open(path, search);
+// A file of the namespace mapped whole and read-only: a program's image or
+// its interpreter. Returns its address, or a negated errno; *size its size.
+static long spawn_map(long fd, size_t *size) {
   if (fd < 0) return fd;
   struct stat st = {};
   long r = fd_fstat((int)fd, &st);
@@ -401,13 +398,42 @@ static long spawn_image(const char *path, bool search, char *const argv[], char 
     image = mem_map(0, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, (int)fd, 0);
   fd_close((int)fd);
   if (image < 0) return S_ISDIR(st.st_mode) ? -EACCES : image;
+  *size = (size_t)st.st_size;
+  return image;
+}
+
+// Builds and starts the program at path, with the descriptors in table.
+// Returns 0 or a negated errno.
+static long spawn_image(const char *path, bool search, char *const argv[], char *const envp[],
+                        const fd_slot *table, spawn_ctx *ctx) {
+  fd_quiet_reads(); // the child's terminal input is the child's
+  size_t size = 0, interp_size = 0;
+  long image = spawn_map(spawn_open(path, search), &size);
+  if (image < 0) return image;
+  // A dynamic program's interpreter (PT_INTERP: libc.so, 6f1b2, or ld-vx),
+  // from this process's namespace, as a spawn's caller gives it.
+  vx_str ip;
+  long interp = 0;
+  if (vx_elf_interp((const uint8_t *)image, size, &ip)) {
+    char name[256];
+    if (ip.len >= sizeof name) {
+      interp = -ENOEXEC;
+    } else {
+      memcpy(name, ip.ptr, ip.len), name[ip.len] = 0;
+      interp = spawn_map(fd_openat(AT_FDCWD, name, O_RDONLY, 0), &interp_size);
+    }
+    if (interp < 0) {
+      mem_unmap(image, size);
+      return interp; // ENOENT for a missing one, as Linux says
+    }
+  }
 
   static char records[32 * 1024];
   vx_ndb_writer w = {.buf = records, .cap = sizeof records};
   vx_handle handles[VX_CHANNEL_MAX_HANDLES];
   vx_str names[VX_CHANNEL_MAX_HANDLES];
   uint32_t count = 0;
-  r = spawn_records(&w, argv, envp, table, ctx, handles, names, &count);
+  long r = spawn_records(&w, argv, envp, table, ctx, handles, names, &count);
   vx_str base = {path, strlen(path)}; // the task's name: the file's, without its directory
   const char *slash = strrchr(path, '/');
   if (slash) base = (vx_str){slash + 1, strlen(slash + 1)};
@@ -422,7 +448,9 @@ static long spawn_image(const char *path, bool search, char *const argv[], char 
     vx_spawn_args a = {.name = base,
                        .path = {path, strlen(path)},
                        .image = (const uint8_t *)image,
-                       .image_size = (size_t)st.st_size,
+                       .image_size = size,
+                       .interp = interp ? (const uint8_t *)interp : nullptr,
+                       .interp_size = interp_size,
                        .handles = handles,
                        .handle_names = names,
                        .handle_count = count,
@@ -445,7 +473,8 @@ static long spawn_image(const char *path, bool search, char *const argv[], char 
   } else {
     for (uint32_t i = 0; i < count; i++) vx_handle_close(handles[i]);
   }
-  mem_unmap(image, (size_t)st.st_size);
+  mem_unmap(image, size);
+  if (interp) mem_unmap(interp, interp_size);
   if (task) vx_handle_close(task); // procfs has its own, and tells of its end
   return r;
 }
@@ -574,8 +603,11 @@ static long fork_child(void) {
   vx_drbg_mix(&proc_entropy, &proc_kernel_task_id, sizeof proc_kernel_task_id, false);
   fd_after_fork();
   child_user = child_sys = 0; // a new process has waited for no one
-  atomic_store(&be_live, 1);  // the thread that forked, alone, numbered anew
+  atomic_store(&be_live, 1);  // the thread that forked, alone, numbered anew: slot 0, its record kept
+  be_thread self = *be_me();  // its holds of the lock among them
   memset(be_threads, 0, sizeof be_threads);
+  be_state[0] = self;
+  atomic_store(&be_threads[0].tp, be_tp());
   be_me()->robust = 0;  // the child's thread is a new one, with no list (musl registers again)
   be_me()->pending = 0; // and none of the thread's signals pending
   be_slot_set(0, be_only_thread_id(), be_me());

@@ -37,6 +37,7 @@
 static vx_ns ns;
 static uint8_t image[8 << 20]; // the program's ELF
 static size_t image_size;
+static uint8_t interp[8 << 20];     // a dynamic program's interpreter (PT_INTERP, ADR-0047), read at run
 static uint8_t arena_mem[24 << 20]; // its index is built here
 static vxdi ix;
 static vxd_elf elf;
@@ -427,12 +428,21 @@ static void run(void) {
     return say("dbg: cannot give the program a namespace\n");
   if (vx_console.connector && vx_handle_dup(vx_console.connector, VX_RIGHTS_SAME, &handles[count]) == VX_OK)
     names[count++] = VX_STR("console");
+  vx_str ip = {};
+  size_t ip_len = 0;
+  if (vx_elf_interp(image, image_size, &ip) &&
+      (vx_ns_read_all(&ns, ip, interp, sizeof interp, &ip_len) != VX_OK || !ip_len)) {
+    for (uint32_t i = 0; i < count; i++) vx_handle_close(handles[i]);
+    return say("dbg: cannot read the program's interpreter\n");
+  }
   vx_str base = {program, program_len};
   for (size_t i = base.len; i-- > 0;)
     if (base.ptr[i] == '/') base = (vx_str){base.ptr + i + 1, base.len - i - 1};
   vx_spawn_args a = {.name = {base.ptr, vx_utf_cut(base.ptr, base.len, 23)},
                      .image = image,
                      .image_size = image_size,
+                     .interp = ip_len ? interp : nullptr,
+                     .interp_size = ip_len,
                      .handles = handles,
                      .handle_names = names,
                      .handle_count = count,

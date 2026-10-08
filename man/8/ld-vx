@@ -39,4 +39,4 @@ A program that cannot be loaded ends with the exit string `ld-vx: NAME: why`: a 
 
 Only the libraries a program needs at start are loaded: loading one later, and the dynamic TLS that needs (`__tls_get_addr`, TLS descriptors), are the hot-reload host's, later.
 Its own pages stay mapped for the life of the process.
-Of the spawners, only svcd(8) and rc(1) give a program its interpreter yet; the POSIX personality's `exec`, dbg(1) and relays cannot start a dynamic program.
+svcd(8), rc(1), dbg(1) and the POSIX personality's `posix_spawn` and `exec` give a program its interpreter; relays start a static program. A POSIX program's interpreter is musl's `libc.so`, `/lib/ld-musl-`<arch>`.so.1` (posix(7)), which takes the same `dl.exe` but none of this handover. dbg(1) cannot yet set a breakpoint in a dynamic program before it runs: its executable is mapped by its interpreter.

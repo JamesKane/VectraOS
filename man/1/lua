@@ -14,7 +14,7 @@ lua [-EivW] [-e stat] [-l mod] [script [arg ...]]
 It runs <script>, a file of Lua source or precompiled chunks, with the global table `arg` holding the <arg>s at 1 onwards, <script> at 0, and the interpreter and the options before it at negative indices; the <arg>s are passed to the chunk as its arguments too.
 A <script> of `-` is standard input, and `--` ends the options.
 With neither <script> nor `-e`, `-i` or `-v`, `lua` reads standard input: interactively when it is a terminal, as a file otherwise.
-It is `/boot/bin/lua`, one statically linked program, which the POSIX namespace (a manifest's `ns=posix`, made by `/lib/ns/posix`, see namespace(6)) binds on `/bin` with the rest of `/boot/bin`.
+It is `/boot/bin/lua`, one program, linked against the C library's `libc.so`, which the POSIX namespace (a manifest's `ns=posix`, made by `/lib/ns/posix`, see namespace(6)) binds on `/bin` with the rest of `/boot/bin`.
 
 Before anything else it runs the environment variable `LUA_INIT_5_5`, or failing that `LUA_INIT`: as a chunk, or, if it begins with `@`, the file it names.
 Then it handles `-e`, `-l` and `-W` in the order given, then <script>, then, with `-i`, reads statements interactively.
@@ -69,7 +69,7 @@ A bad option prints `lua: unrecognized option '-x'`, or `lua: '-e' needs argumen
 
 There is no `/bin/sh`: `os.execute` with a command fails, and `io.popen` returns `nil` and an error, while `os.execute()` with no command still says that a shell is there.
 
-C modules cannot be loaded: everything is linked statically, without `dlopen`, so `package.loadlib` and `require` of a C module fail with `dynamic libraries not enabled; check your Lua installation`.
+C modules cannot be loaded: Lua is built without `dlopen`, so `package.loadlib` and `require` of a C module fail with `dynamic libraries not enabled; check your Lua installation`.
 The default `package.path` names directories VectraOS does not have.
 
 The interactive mode has no line editing or history, Lua's being built without `readline`.

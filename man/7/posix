@@ -9,7 +9,7 @@ It is the one compatibility layer the system has (rule 13 of `docs/00-overview.m
 A POSIX program is a C program built against musl 1.2.6, vendored unchanged (ADR-0007), and VectraOS's back end, `ports/musl/vx`, which answers musl's system calls.
 musl asks for the kernel by Linux's system-call numbers, with Linux's structures and errors; the back end answers each with VectraOS's own calls and servers: files through the process's namespace, over 9Px; processes and signals through procfs(4) and notes; terminals through ptyd(4); sockets through netd(4); memory through VMOs.
 What it does not do yet answers `ENOSYS`, and is reported once, by number, to the kernel log.
-Programs are linked statically, for the target <arch>`-vectra-unknown-musl`, which defines neither `__linux__` nor `__unix__`.
+Programs are linked dynamically against musl's `libc.so`, for the target <arch>`-vectra-unknown-musl`, which defines neither `__linux__` nor `__unix__`. `libc.so` is also their interpreter, `/lib/ld-musl-`<arch>`.so.1`, musl's own dynamic linker: a spawn maps it in the program's place, and it loads the program and its libraries from `/lib` (ld-vx(8) for the native programs' loader).
 
 A POSIX program and a native one are both ordinary processes: each is spawned the same way, sees a namespace, has a pid in the one process table, and can be piped to the other.
 
