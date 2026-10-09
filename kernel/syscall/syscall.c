@@ -972,11 +972,14 @@ static int64_t sys_ring_create(uint64_t params_ptr, uint64_t out) {
   return st;
 }
 
-static int64_t sys_ring_notify(vx_handle h) {
+static int64_t sys_ring_notify(vx_handle h, uint64_t flags) {
+  if (flags & ~(uint64_t)VX_RING_NOTIFY_HANDOFF) return VX_ERR_INVALID;
   vx_status st;
   ring_end *e = (ring_end *)handle_get(current_task(), h, OBJ_RING, VX_RIGHT_SIGNAL, &st);
   if (!e) return st;
+  this_cpu()->handoff = flags & VX_RING_NOTIFY_HANDOFF; // what the doorbell wakes stays here (sched.c)
   st = ring_notify(e);
+  this_cpu()->handoff = false;
   object_release(&e->obj);
   return st;
 }
@@ -1328,7 +1331,7 @@ static int64_t syscall_dispatch_one(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_channel_read: return sys_channel_read((vx_handle)a[0], a[1], a[2], a[3], a[4], a[5]);
   case VX_SYS_channel_call: return sys_channel_call((vx_handle)a[0], a[1], (vx_instant)a[2]);
   case VX_SYS_ring_create: return sys_ring_create(a[0], a[1]);
-  case VX_SYS_ring_notify: return sys_ring_notify((vx_handle)a[0]);
+  case VX_SYS_ring_notify: return sys_ring_notify((vx_handle)a[0], a[1]);
   case VX_SYS_ring_xfer_handles: return sys_ring_xfer((vx_handle)a[0], a[1], a[2], a[3], a[4]);
   case VX_SYS_vmo_create: return sys_vmo_create(a[0], a[1], a[2], (vx_handle)a[3], a[4]);
   case VX_SYS_irq_create: return sys_irq_create((vx_handle)a[0], a[1], a[2], a[3], a[4]);

@@ -235,6 +235,7 @@ static int ns_split(vx_str path, vx_str *names) {
 typedef struct vx_ns_at {
   uint8_t conn;
   uint8_t type; // the qid type reached (P9_QTDIR, P9_QTSYMLINK, ...): 0 if not known
+  bool opened;  // the fid is open already, in the mode the resolution asked (7a6)
   uint32_t fid;
   uint64_t qid;
   vx_ns_entry *entry;
@@ -245,8 +246,11 @@ typedef struct vx_ns_at {
 // it reaches the last name; VX_OK with *jump set to a mount point and *i moved
 // past what led there; or the error that stopped it. A fid this walk made is
 // clunked unless returned.
+// With open (a 9P mode; -1 for none), the walk that reaches the last name
+// goes with an open of what it reaches (p9c_walk_open: one round trip), used
+// only if that is where the path ends, no mount point crossed.
 static vx_status ns_walk_on(vx_ns *ns, uint8_t conn, uint32_t fid, uint64_t qid, const vx_str *names, int n,
-                            int *i, vx_ns_entry **jump, bool *done, vx_ns_at *out) {
+                            int *i, vx_ns_entry **jump, bool *done, vx_ns_at *out, int open) {
   p9_client *c = ns->conns[conn].client;
   uint32_t cur = fid;
   bool owned = false; // cur is a fid this walk made
@@ -262,9 +266,14 @@ static vx_status ns_walk_on(vx_ns *ns, uint8_t conn, uint32_t fid, uint64_t qid,
     uint16_t count = (uint16_t)(n - *i < (int)P9_MAXWELEM ? n - *i : (int)P9_MAXWELEM), got = 0;
     p9_qid qids[P9_MAXWELEM];
     uint32_t next = P9_NOFID;
-    vx_status st = p9c_walk_names(c, cur, &names[*i], count, &next, qids, &got);
+    bool opened = false;
+    vx_status open_st = VX_OK, st;
+    if (open >= 0 && *i + count == n)
+      st = p9c_walk_open(c, cur, &names[*i], count, (uint8_t)open, &next, qids, &got, &opened, &open_st);
+    else
+      st = p9c_walk_names(c, cur, &names[*i], count, &next, qids, &got);
     if (st != VX_OK || got == 0) {
-      if (owned) p9c_clunk(c, cur);
+      if (owned) p9c_clunk_post(c, cur);
       return st != VX_OK ? st : VX_ERR_NOT_FOUND;
     }
     for (uint16_t j = 0; j < got && !hit; j++) { // a mount point among the names reached, or just past one?
@@ -275,26 +284,26 @@ static vx_status ns_walk_on(vx_ns *ns, uint8_t conn, uint32_t fid, uint64_t qid,
         *i = after + 1;
     }
     if (hit) {
-      if (next != P9_NOFID) p9c_clunk(c, next);
+      if (next != P9_NOFID) p9c_clunk_post(c, next);
       *jump = hit;
       break;
     }
     if (got < count) { // stopped partway, at no mount point
-      if (owned) p9c_clunk(c, cur);
+      if (owned) p9c_clunk_post(c, cur);
       return VX_ERR_NOT_FOUND;
     }
-    if (owned) p9c_clunk(c, cur);
+    if (owned) p9c_clunk_post(c, cur); // a walk's spent fid (7a6)
     cur = next;
     owned = true;
     qid = qids[got - 1].path;
     *i += count;
     if (*i == n) {
-      *out = (vx_ns_at){.conn = conn, .type = qids[got - 1].type, .fid = cur, .qid = qid};
+      *out = (vx_ns_at){.conn = conn, .type = qids[got - 1].type, .opened = opened, .fid = cur, .qid = qid};
       *done = true;
       return VX_OK;
     }
   }
-  if (owned) p9c_clunk(c, cur);
+  if (owned) p9c_clunk_post(c, cur);
   return VX_OK;
 }
 
@@ -308,7 +317,8 @@ static bool ns_resolve_env(vx_ns *ns, vx_str path, vx_ns_at *out, vx_status *st)
   if (!ns->conns[VX_NS_ENV_CONN].client && !ns->env_attach(ns)) return false;
   *st = p9c_walk(ns->conns[VX_NS_ENV_CONN].client, ns->env_root, (vx_str){path.ptr + 4, path.len - 4},
                  &out->fid);
-  if (*st == VX_OK) out->conn = VX_NS_ENV_CONN, out->qid = 0, out->entry = nullptr;
+  if (*st == VX_OK)
+    out->conn = VX_NS_ENV_CONN, out->type = 0, out->opened = false, out->qid = 0, out->entry = nullptr;
   return true;
 }
 
@@ -346,7 +356,7 @@ static vx_ns_entry *ns_shortcut(vx_ns *ns, vx_str path, int *skip) {
   return best;
 }
 
-static vx_status ns_resolve(vx_ns *ns, vx_str path, vx_ns_at *out) {
+static vx_status ns_resolve_open(vx_ns *ns, vx_str path, vx_ns_at *out, int open) {
   vx_status env;
   if (ns_resolve_env(ns, path, out, &env)) return env;
   vx_str names[VX_NS_MAX_DEPTH];
@@ -362,7 +372,7 @@ static vx_status ns_resolve(vx_ns *ns, vx_str path, vx_ns_at *out) {
       const vx_ns_member *m = &e->members[0];
       vx_status st = p9c_walk(ns->conns[m->conn].client, m->fid, (vx_str){}, &out->fid);
       if (st != VX_OK) return st;
-      out->conn = m->conn, out->type = P9_QTDIR, out->qid = m->qid, out->entry = e;
+      out->conn = m->conn, out->type = P9_QTDIR, out->opened = false, out->qid = m->qid, out->entry = e;
       return VX_OK;
     }
     vx_status st = VX_ERR_NOT_FOUND;
@@ -371,7 +381,7 @@ static vx_status ns_resolve(vx_ns *ns, vx_str path, vx_ns_at *out) {
       const vx_ns_member *m = &e->members[k];
       int at = i;
       bool done = false;
-      st = ns_walk_on(ns, m->conn, m->fid, m->qid, names, n, &at, &jump, &done, out);
+      st = ns_walk_on(ns, m->conn, m->fid, m->qid, names, n, &at, &jump, &done, out, k == 0 ? open : -1);
       if (st == VX_OK && done) {
         out->entry = nullptr;
         return VX_OK;
@@ -382,6 +392,10 @@ static vx_status ns_resolve(vx_ns *ns, vx_str path, vx_ns_at *out) {
     e = jump;
   }
   return VX_ERR_RANGE; // mount points in a loop
+}
+
+static vx_status ns_resolve(vx_ns *ns, vx_str path, vx_ns_at *out) {
+  return ns_resolve_open(ns, path, out, -1);
 }
 
 // Resolves a path to a new fid on one of the namespace's connections: the
@@ -818,6 +832,7 @@ typedef struct vx_ns_file {
   vx_ns *ns;
   p9_client *c;
   uint32_t fid;
+  bool rclose; // opened ORCLOSE: its clunk removes it, and is waited for (7a6)
   uint64_t offset;
   const vx_ns_entry *u; // a union directory being read member by member, or nullptr
   uint32_t member;
@@ -838,8 +853,8 @@ static vx_status ns_open(vx_ns *ns, vx_str path, uint8_t mode, vx_ns_file *f, bo
   if (!n) return VX_ERR_INVALID;
   vx_status dev = ns->open_dev ? ns->open_dev(ns, (vx_str){clean, n}, mode, f) : VX_ERR_NOT_FOUND;
   if (dev != VX_ERR_NOT_FOUND) return dev;
-  vx_ns_at at;
-  vx_status st = ns_resolve(ns, (vx_str){clean, n}, &at);
+  vx_ns_at at = {};
+  vx_status st = ns_resolve_open(ns, (vx_str){clean, n}, &at, mode);
   if (st != VX_OK) return st;
   f->c = ns->conns[at.conn].client;
   f->fid = at.fid; // a union's first member, if it is a union
@@ -849,7 +864,8 @@ static vx_status ns_open(vx_ns *ns, vx_str path, uint8_t mode, vx_ns_file *f, bo
     return VX_NS_LINK_REACHED;
   }
   if (at.entry && at.entry->count > 1 && (mode & 3) == P9_OREAD) f->u = at.entry;
-  st = p9c_open(f->c, f->fid, mode);
+  f->rclose = mode & P9_ORCLOSE;
+  st = at.opened ? VX_OK : p9c_open(f->c, f->fid, mode); // opened with its walk, where it could be
   if (st != VX_OK) p9c_clunk(f->c, f->fid);
   if (st != VX_OK) *f = (vx_ns_file){};
   return st;
@@ -888,6 +904,7 @@ static vx_status ns_open(vx_ns *ns, vx_str path, uint8_t mode, vx_ns_file *f, bo
     }
     f->c = ns->conns[m->conn].client;
   }
+  f->rclose = mode & P9_ORCLOSE;
   st = p9c_create(f->c, f->fid, name, perm, mode);
   if (st != VX_OK) {
     p9c_clunk(f->c, f->fid);
@@ -931,7 +948,10 @@ static vx_status ns_open(vx_ns *ns, vx_str path, uint8_t mode, vx_ns_file *f, bo
 
 [[maybe_unused]] static void vx_ns_close(vx_ns_file *f) {
   if (f->dev) f->dev->close(f);
-  if (f->c) p9c_clunk(f->c, f->fid);
+  if (f->c && f->rclose)
+    p9c_clunk(f->c, f->fid);
+  else if (f->c)
+    p9c_clunk_post(f->c, f->fid); // not waited for (7a6)
   *f = (vx_ns_file){};
 }
 

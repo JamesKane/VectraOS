@@ -850,6 +850,12 @@ enum vx_trace_kind : uint16_t {
 // the message's type << 48 | its length in cycles.
 static constexpr uint16_t VX_TK_SPAN = 64;
 
+// ring_notify(end, flags) (M7 step 7a6b): HANDOFF, the caller waits next
+// (for the reply it just asked for), so a thread its doorbell wakes runs on
+// this CPU as soon as the caller blocks, first in its band, and no idle CPU
+// is woken for it: a request's round trip, not a second CPU's.
+enum : uint32_t { VX_RING_NOTIFY_HANDOFF = 1 };
+
 // pmu_configure(task, op, data, len) (ADR-0050, M7 step 7a3b): the hardware
 // counters of a task's threads, in user mode only, each thread's kept across
 // its switches and summed into the task's. The task handle needs INSPECT.

@@ -40,6 +40,13 @@ typedef struct p9_pipe {
   p9_xfer *(*begin)(void *ctx, bool version);
   int64_t (*call)(void *ctx, p9_xfer *x, size_t len);
   void (*end)(void *ctx, p9_xfer *x);
+  // Or sent, and its reply not waited for (7a6): OK, and x is the pipe's to
+  // give back when the reply comes; else an error, and x still the caller's.
+  vx_status (*post)(void *ctx, p9_xfer *x, size_t len); // or null
+  // Or a call in two halves, so requests go together (7a6): sent, then its
+  // reply waited for, as call. Both or neither.
+  vx_status (*send)(void *ctx, p9_xfer *x, size_t len);
+  int64_t (*reply)(void *ctx, p9_xfer *x);
 } p9_pipe;
 
 // Who a client attaches as when it names no one: the program's user (its
@@ -209,6 +216,27 @@ static vx_status p9c_version_as(p9_client *c, uint32_t msize, p9_dialect d, uint
   return p9c_call(c, &t);
 }
 
+// A clunk whose reply is not waited for, where the pipe can send one so
+// (7a6: a round trip off every close and every walk's spent fid): a fid is
+// never used again (p9c_fid counts up), so nothing can be sent on it after.
+// A clunk that removes (ORCLOSE) is not this: its removal must be done when
+// it returns.
+[[maybe_unused]] static void p9c_clunk_post(p9_client *c, uint32_t fid) {
+  if (!c->pipe || !c->pipe->post) {
+    p9c_clunk(c, fid);
+    return;
+  }
+  if (p9c_dotl(c)) p9c_dir_note(c, fid, false);
+  p9_msg t = {.type = P9_Tclunk, .fid = fid};
+  p9_xfer *x = p9c_begin(c, false);
+  if (!x) return;
+  t.tag = x->tag;
+  size_t n = p9_encode(&t, x->req, x->cap);
+  if (n && c->pipe->post(c->ctx, x, n) == VX_OK) return;
+  c->pipe->end(c->ctx, x); // not sent: waited for after all
+  p9c_clunk(c, fid);
+}
+
 // Walks a '/'-separated path from fid to a new fid, in walks of at most 16
 // names. An empty path clones the fid.
 [[maybe_unused]] static vx_status p9c_walk(p9_client *c, uint32_t fid, vx_str path, uint32_t *newfid) {
@@ -254,6 +282,72 @@ static vx_status p9c_version_as(p9_client *c, uint32_t msize, p9_dialect d, uint
     if (*nwqid == count) *newfid = t.newfid;
   }
   p9c_done(c, &rc);
+  return e;
+}
+
+static vx_status p9c_open(p9_client *c, uint32_t fid, uint8_t mode);
+
+// A reply waited for, decoded and checked, as p9c_rpc's.
+static vx_status p9c_reply(p9_client *c, const p9_msg *t, p9_rcall *rc) {
+  int64_t rn = c->pipe->reply(c->ctx, rc->x);
+  if (rn == 0) return VX_ERR_PEER_CLOSED;
+  if (rn < 0) return (vx_status)rn;
+  if (p9_decode(rc->x->resp, (size_t)rn, &rc->r) != VX_OK || rc->r.tag != t->tag) return VX_ERR_INVALID;
+  if (rc->r.type == P9_Rerror) return p9_error_status(rc->r.ename);
+  return rc->r.type == t->type + 1 ? VX_OK : VX_ERR_INVALID;
+}
+
+// A walk and an open of what it reaches, sent together (7a6: one round trip,
+// not two), 9P2000 only: the server opens the new fid once the walk has made
+// it (its ordering, ring_server.c's). As p9c_walk_names; *opened says the
+// new fid is open too, in mode (with *opened false and the walk whole, the
+// open failed: *open_st). The caller that did not want what the walk reached
+// opened clunks it all the same.
+[[maybe_unused]] static vx_status p9c_walk_open(p9_client *c, uint32_t fid, const vx_str *names,
+                                                uint16_t count, uint8_t mode, uint32_t *newfid, p9_qid *qids,
+                                                uint16_t *nwqid, bool *opened, vx_status *open_st) {
+  *nwqid = 0, *opened = false, *open_st = VX_ERR_INVALID;
+  if (!c->pipe || !c->pipe->send || p9c_dotl(c) || count == 0) { // one at a time
+    vx_status e = p9c_walk_names(c, fid, names, count, newfid, qids, nwqid);
+    return e;
+  }
+  if (count > P9_MAXWELEM) return VX_ERR_RANGE;
+  p9_msg w = {.type = P9_Twalk, .fid = fid, .newfid = p9c_fid(c), .nwname = count};
+  for (uint16_t i = 0; i < count; i++) w.wname[i] = names[i];
+  p9_msg o = {.type = P9_Topen, .fid = w.newfid, .mode = mode};
+  p9_rcall rw = {}, ro = {};
+  rw.x = p9c_begin(c, false);
+  if (!rw.x) return VX_ERR_PEER_CLOSED;
+  w.tag = rw.x->tag;
+  size_t n = p9_encode(&w, rw.x->req, rw.x->cap);
+  vx_status e = n ? c->pipe->send(c->ctx, rw.x, n) : VX_ERR_TOO_SMALL;
+  if (e != VX_OK) {
+    p9c_done(c, &rw);
+    return e;
+  }
+  ro.x = p9c_begin(c, false);
+  bool both = false;
+  if (ro.x) {
+    o.tag = ro.x->tag;
+    size_t m = p9_encode(&o, ro.x->req, ro.x->cap);
+    both = m && c->pipe->send(c->ctx, ro.x, m) == VX_OK;
+    if (!both) p9c_done(c, &ro);
+  }
+  e = p9c_reply(c, &w, &rw);
+  if (e == VX_OK) {
+    *nwqid = rw.r.nwqid <= count ? rw.r.nwqid : 0;
+    for (uint16_t i = 0; i < *nwqid; i++) qids[i] = rw.r.wqid[i];
+    if (*nwqid == count) *newfid = w.newfid;
+  }
+  p9c_done(c, &rw);
+  if (both) {
+    *open_st = p9c_reply(c, &o, &ro); // an open of a fid the walk did not make fails: harmless
+    *opened = *open_st == VX_OK && e == VX_OK && *nwqid == count;
+    p9c_done(c, &ro);
+  } else if (e == VX_OK && *nwqid == count) {
+    *open_st = p9c_open(c, w.newfid, mode);
+    *opened = *open_st == VX_OK;
+  }
   return e;
 }
 

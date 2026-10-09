@@ -201,6 +201,7 @@ typedef struct p9_slot {
   // p9_ring_send's call (6d4d1): its reply waits for p9_ring_receive, and its
   // caller's port gets notify_key when it comes.
   bool async;
+  bool discard; // posted (p9_ring_post): its reply is no one's, the slot given back as it comes
   uint8_t sent; // its type, for its reply's
   vx_handle notify;
   uint64_t notify_key;
@@ -261,7 +262,8 @@ static void p9_ring_kill(p9_conn *k) {
     p9_slot *s = &k->slots[i];
     if (atomic_load(&s->state) != P9_SLOT_SENT) continue;
     s->result = VX_ERR_PEER_CLOSED;
-    atomic_store(&s->state, P9_SLOT_DONE);
+    atomic_store(&s->state, s->discard ? P9_SLOT_FREE : P9_SLOT_DONE); // a posted one waits for no one
+    s->discard = false;
   }
   atomic_fetch_add(&k->freed, 1);
   p9_ring_wake(&k->freed, &k->freed_sleepers);
@@ -356,11 +358,14 @@ static bool p9_ring_deliver(p9_conn *k, const vx_cqe *c) {
   k->budget -= s->reserve;
   s->reserve = 0;
   s->result = c->result;
+  bool discard = s->discard;
+  s->discard = false;
   atomic_store(&s->state, P9_SLOT_DONE);
   atomic_fetch_add(&k->replies, 1);
   vx_handle notify = s->async ? s->notify : VX_HANDLE_NONE;
   uint64_t key = s->notify_key;
   vx_unlock(&k->lock);
+  if (discard) p9_ring_slot_give(k, s); // a posted request's reply: no one waits for it
   p9_ring_wake(&k->replies, &k->replies_sleepers);
   if (notify) vx_port_post(notify, &(vx_packet){.key = key}); // p9_ring_send's caller: its reply is here
   return true;
@@ -500,7 +505,8 @@ static vx_status p9_ring_put(p9_conn *k, p9_slot *s, size_t len, vx_instant dead
       s->reserve = reserve;
       k->budget += reserve;
       atomic_store(&s->state, P9_SLOT_SENT);
-      if (vx_ring_produce(&k->ring)) vx_ring_notify(k->end);
+      if (vx_ring_produce(&k->ring)) // a call waits next: the server runs here as it does (7a6b)
+        s->discard ? vx_ring_notify(k->end) : vx_ring_notify_handoff(k->end);
       vx_unlock(&k->lock);
       return VX_OK;
     }
@@ -562,7 +568,44 @@ static int64_t p9_ring_call(void *ctx, p9_xfer *x, size_t len) {
 
 static void p9_ring_end(void *ctx, p9_xfer *x) { p9_ring_slot_give(ctx, (p9_slot *)x); }
 
-static const p9_pipe P9_RING_PIPE = {.begin = p9_ring_begin, .call = p9_ring_call, .end = p9_ring_end};
+// A call in two halves (7a6), so requests that follow one another go
+// together: sent, then its reply waited for, as p9_ring_call does both.
+static vx_status p9_ring_half_send(void *ctx, p9_xfer *x, size_t len) {
+  p9_conn *k = ctx;
+  return p9_ring_put(k, (p9_slot *)x, len, k->timeout ? vx_clock_read() + k->timeout : VX_INFINITE);
+}
+
+static int64_t p9_ring_half_reply(void *ctx, p9_xfer *x) {
+  p9_conn *k = ctx;
+  p9_slot *s = (p9_slot *)x;
+  vx_status st = p9_ring_wait(k, s, 0, k->timeout ? vx_clock_read() + k->timeout : VX_INFINITE, true);
+  if (st == VX_OK) return s->result;
+  if (st == VX_ERR_PEER_CLOSED) return st;
+  return p9_ring_flush(k, s, st);
+}
+
+// Sent, its reply not waited for: the slot goes back as the reply comes, in
+// whatever wait takes it. Only with two slots free besides: replies are
+// taken by a thread waiting for one, so a posted reply holds its slot until
+// the next wait, and posts must not fill the ring with slots nothing frees.
+static vx_status p9_ring_post(void *ctx, p9_xfer *x, size_t len) {
+  p9_conn *k = ctx;
+  p9_slot *s = (p9_slot *)x;
+  uint32_t free = 0;
+  for (uint32_t i = 0; i < P9_RING_DEPTH; i++) free += atomic_load(&k->slots[i].state) == P9_SLOT_FREE;
+  if (free < 2) return VX_ERR_SHOULD_WAIT;
+  s->discard = true;
+  vx_status st = p9_ring_put(k, s, len, k->timeout ? vx_clock_read() + k->timeout : VX_INFINITE);
+  if (st != VX_OK) s->discard = false;
+  return st;
+}
+
+static const p9_pipe P9_RING_PIPE = {.begin = p9_ring_begin,
+                                     .call = p9_ring_call,
+                                     .end = p9_ring_end,
+                                     .post = p9_ring_post,
+                                     .send = p9_ring_half_send,
+                                     .reply = p9_ring_half_reply};
 
 // Lets go of the slots' buffers. The connection is no one else's by now.
 static void p9_ring_slots_unmap(p9_conn *k) {

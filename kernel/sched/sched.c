@@ -73,6 +73,7 @@ typedef struct cpu {
   vx_instant run_start; // when current began running, for charging its context
   vx_instant tick_at;   // the next CPU-time tick, while it runs a thread (ADR-0041)
   vx_instant sample_at; // the next sample, while it runs a thread and the trace samples (20 §6)
+  bool handoff;         // a ring_notify with HANDOFF is waking threads: they run here next (7a6b)
   sched_ctx *reserved;  // the context that reserved this CPU, or none
   bool resched;         // call schedule before returning to user mode
   thread *lending;      // a channel_call delivering its request: the port waiter it wakes is lent to
@@ -278,7 +279,12 @@ static void sleep_remove(thread *t) {
 static void kick_for(thread *t);
 
 static void make_ready(thread *t) {
+  cpu *self = this_cpu();
   sleep_remove(t);
+  if (self->handoff && may_run(t, self)) { // its waker blocks next: here, first, and no CPU woken
+    run_push(t);
+    return;
+  }
   run_enqueue(t);
   kick_for(t);
 }

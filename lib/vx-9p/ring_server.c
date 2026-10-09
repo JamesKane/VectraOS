@@ -60,6 +60,7 @@ typedef struct p9_held {
   uint64_t span; // its span's start (20 §5), from its arrival; 0 with spans off
   bool busy;     // a thread is serving it
   uint32_t fid;  // P9_NOFID: the message has none
+  uint32_t made; // a Twalk's newfid: what is sent on it next waits behind the walk (7a6); else NOFID
 } p9_held;
 
 typedef struct p9_ring_server p9_ring_server;
@@ -313,7 +314,9 @@ static bool p9_ring_reply(p9_ring_conn *c, const vx_sqe *e, const uint8_t *resp,
       vx_handle_close(p9_reply_handle); // the client finds none, and its call fails
     p9_reply_handle = VX_HANDLE_NONE;
   }
-  if (vx_ring_produce(&c->ring)) vx_ring_notify(c->end);
+  // With nothing more held, this server waits next: its client runs here as
+  // it does, no other CPU woken for it (7a6b).
+  if (vx_ring_produce(&c->ring)) c->nheld ? vx_ring_notify(c->end) : vx_ring_notify_handoff(c->end);
   return true;
 }
 
@@ -370,7 +373,7 @@ static p9_tried p9_ring_try(p9_ring_conn *c, uint32_t i) {
 static bool p9_ring_behind(const p9_ring_conn *c, uint32_t i, uint32_t fid) {
   if (fid == P9_NOFID) return false;
   for (uint32_t j = 0; j < i; j++)
-    if (c->held[j].fid == fid) return true;
+    if (c->held[j].fid == fid || c->held[j].made == fid) return true; // on it, or making it
   return false;
 }
 
@@ -430,7 +433,7 @@ static p9_drained p9_ring_drain(p9_ring_conn *c) {
   for (uint32_t served = 0;; served++) {
     if (served == P9_RING_BUDGET) return P9_MORE;
     if (c->nheld == P9_RING_DEPTH) return P9_DRAINED; // a client past the depth waits for its answers
-    p9_held h = {.fid = P9_NOFID};
+    p9_held h = {.fid = P9_NOFID, .made = P9_NOFID};
     vx_status st = vx_ring_consume(&c->ring, &h.e);
     if (st == VX_ERR_SHOULD_WAIT) return P9_DRAINED;
     if (st != VX_OK || h.e.opcode != P9_RING_MSG || h.e.len > sizeof w->req) return P9_BROKEN;
@@ -446,6 +449,7 @@ static p9_drained p9_ring_drain(p9_ring_conn *c) {
     }
     h.tag = t.tag, h.type = (uint8_t)t.type, h.oldtag = t.oldtag;
     h.fid = p9_request_fid(&t);
+    if (t.type == P9_Twalk && t.newfid != t.fid) h.made = t.newfid; // a pipelined Topen on it waits
     h.id = c->next_id++;
     h.span = vx_span_begin_hook ? vx_span_begin_hook() : 0;
     c->held[c->nheld++] = h;

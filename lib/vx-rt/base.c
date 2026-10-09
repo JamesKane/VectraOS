@@ -496,6 +496,12 @@ VX_API vx_status vx_channel_call(vx_handle ch, vx_call *args, vx_instant deadlin
   return (vx_status)vx_syscall(VX_SYS_ring_notify, end, 0, 0, 0, 0, 0);
 }
 
+// The same, by a caller that waits next (VX_RING_NOTIFY_HANDOFF): what the
+// doorbell wakes runs on this CPU once the caller blocks.
+[[maybe_unused]] static vx_status vx_ring_notify_handoff(vx_handle end) {
+  return (vx_status)vx_syscall(VX_SYS_ring_notify, end, VX_RING_NOTIFY_HANDOFF, 0, 0, 0, 0);
+}
+
 // Puts handles in a slot for the peer, returning the slot to name in an entry.
 [[maybe_unused]] static int64_t vx_ring_put_handles(vx_handle end, const vx_handle *handles, uint32_t count) {
   return vx_syscall(VX_SYS_ring_xfer_handles, end, VX_RING_PUT, (uint64_t)handles, count, 0, 0);
