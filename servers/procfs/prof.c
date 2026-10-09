@@ -1,9 +1,18 @@
-// prof.c: /proc/N/prof (docs/05 §9), a process's profiling zones. Part of
-// procfs.c.
+// prof.c: /proc/N/prof (docs/05 §9, 20 §7), a process's profiling zones,
+// samples and counters. Part of procfs.c.
 //
-//   /proc/N/prof/ctl     zones on · zones off
-//   /proc/N/prof/zones   the ring as it is now: a vx_prof_header, then the
-//                        records it holds, oldest first (lib/vx-prof/prof.h)
+//   /proc/N/prof/ctl       zones on|off · sample HZ|off · count EVENTS [period N]|off
+//   /proc/N/prof/zones     the ring as it is now: a vx_prof_header, then the
+//                          records it holds, oldest first (lib/vx-prof/prof.h)
+//   /proc/N/prof/samples   its samples (7a3c1): a vx_pmu_ring, then the
+//                          SAMPLE and FRAMES records it holds, oldest first
+//   /proc/N/prof/counters  its counters' totals, an ndb record each
+//
+// Samples and counters are the kernel's (pmu_configure, ADR-0050) through
+// procfs's handle to the task, for whoever may open these files: the
+// process's owner, as for its memory. EVENTS are comma-separated: cycles,
+// instructions, cache-misses, branch-misses; with a period, the first is
+// sampled each N of it, into samples.
 //
 // A process gives procfs its ring with PROC_PROF (vx_prof_init): procfs maps
 // the VMO too, writes a challenge of its own into it, and takes it only if
@@ -13,6 +22,137 @@
 // name bytes another process happens to hold.)
 
 static vx_prof_header *rings[MAX_PROCS]; // each process's, mapped here; null if none
+
+// Each process's samples: the ring's VMO and where procfs maps it, read-only;
+// and the events procfs counts for it, for counters' names.
+static constexpr uint64_t SAMPLE_RING = 1 << 20; // 32767 records
+static struct {
+  vx_handle vmo;
+  uint64_t at;
+  uint32_t count, events[VX_PMU_MAX];
+} sampling[MAX_PROCS];
+
+static const char *const EVENT_NAMES[] = {
+    [VX_PMU_CYCLES] = "cycles",
+    [VX_PMU_INSTRUCTIONS] = "instructions",
+    [VX_PMU_CACHE_MISSES] = "cache-misses",
+    [VX_PMU_BRANCH_MISSES] = "branch-misses",
+};
+
+static void samples_forget(const proc *p) {
+  uint32_t i = (uint32_t)(p - procs);
+  if (sampling[i].at) vx_as_unmap(vx_self, sampling[i].at, SAMPLE_RING);
+  if (sampling[i].vmo) vx_handle_close(sampling[i].vmo);
+  sampling[i] = (typeof(sampling[0])){};
+}
+
+// sample HZ: a ring for its samples, given to the kernel; sample off.
+static vx_status samples_ctl(const proc *p, vx_str arg) {
+  uint32_t i = (uint32_t)(p - procs);
+  if (word_is(arg, "off")) {
+    vx_pmu_samples none = {.vmo = VX_HANDLE_NONE};
+    vx_status st = vx_pmu_configure(p->task, VX_PMU_SAMPLES, &none, sizeof none);
+    if (st == VX_OK) samples_forget(p);
+    return st;
+  }
+  uint64_t hz;
+  if (!parse_u64(arg, &hz) || !hz || hz > 10'000) return VX_ERR_INVALID;
+  vx_handle v = VX_HANDLE_NONE;
+  uint64_t at = 0;
+  vx_status st = vx_vmo_create(SAMPLE_RING, 0, &v); // committed: the kernel writes it from interrupts
+  if (st == VX_OK) st = vx_as_map(vx_self, v, 0, SAMPLE_RING, 0, &at);
+  vx_handle given = VX_HANDLE_NONE;
+  if (st == VX_OK) st = vx_handle_dup(v, VX_RIGHTS_SAME, &given);
+  vx_pmu_samples s = {.vmo = given, .hz = (uint32_t)hz};
+  if (st == VX_OK) st = vx_pmu_configure(p->task, VX_PMU_SAMPLES, &s, sizeof s);
+  if (given) vx_handle_close(given); // the kernel holds the VMO itself
+  if (st != VX_OK) {
+    if (at) vx_as_unmap(vx_self, at, SAMPLE_RING);
+    if (v) vx_handle_close(v);
+    return st;
+  }
+  uint32_t count = sampling[i].count, events[VX_PMU_MAX];
+  memcpy(events, sampling[i].events, sizeof events);
+  samples_forget(p);
+  sampling[i].vmo = v, sampling[i].at = at, sampling[i].count = count;
+  memcpy(sampling[i].events, events, sizeof events);
+  return VX_OK;
+}
+
+// count EVENTS [period N]: the counters; count off.
+static vx_status counters_ctl(const proc *p, vx_str arg) {
+  vx_pmu_config c = {};
+  if (!word_is(arg, "off")) {
+    vx_str names, rest = arg;
+    if (!vx_str_split(&rest, VX_STR(" "), &names)) return VX_ERR_INVALID;
+    vx_str name;
+    while (names.len && vx_str_split(&names, VX_STR(","), &name)) {
+      uint32_t e = 0;
+      for (uint32_t k = VX_PMU_CYCLES; k <= VX_PMU_BRANCH_MISSES; k++)
+        if (vx_str_eq(name, vx_cstr(EVENT_NAMES[k]))) e = k;
+      if (!e || c.count == VX_PMU_MAX) return VX_ERR_INVALID;
+      c.events[c.count++] = e;
+    }
+    vx_str w;
+    if (rest.ptr && vx_str_split(&rest, VX_STR(" "), &w) && w.len) {
+      if (!vx_str_eq(w, VX_STR("period")) || !vx_str_split(&rest, VX_STR(" "), &w) ||
+          !parse_u64(w, &c.sample_period[0]))
+        return VX_ERR_INVALID;
+    }
+    if (!c.count) return VX_ERR_INVALID;
+  }
+  vx_status st = vx_pmu_configure(p->task, VX_PMU_SET, &c, sizeof c);
+  if (st == VX_OK) {
+    uint32_t i = (uint32_t)(p - procs);
+    sampling[i].count = c.count;
+    memcpy(sampling[i].events, c.events, sizeof c.events);
+  }
+  return st;
+}
+
+// The samples as they are now: the header, then the records it holds,
+// oldest first; a record the kernel may have been writing over while it was
+// copied is left out, as zones' are.
+static size_t samples_snapshot(const proc *p, uint8_t *out, size_t cap) {
+  const vx_pmu_ring *h = (const vx_pmu_ring *)sampling[p - procs].at;
+  if (!h || cap < sizeof *h || h->magic != VX_PMU_RING_MAGIC) return 0;
+  uint64_t ring_cap = (SAMPLE_RING - sizeof *h) / sizeof(vx_trace_record); // the VMO's, not what it says
+  uint64_t head = atomic_load_explicit(&h->head, memory_order_acquire);
+  uint64_t n = head < ring_cap ? head : ring_cap, first = head - n;
+  if (n > (cap - sizeof *h) / sizeof(vx_trace_record)) n = (cap - sizeof *h) / sizeof(vx_trace_record);
+  const vx_trace_record *r = (const vx_trace_record *)(h + 1);
+  vx_trace_record *o = (vx_trace_record *)(out + sizeof *h);
+  for (uint64_t k = 0; k < n; k++) o[k] = r[(first + k) % ring_cap];
+  uint64_t after = atomic_load_explicit(&h->head, memory_order_acquire);
+  uint64_t lost = after - head < n ? after - head : n; // overwritten while copied: the oldest
+  memmove(o, o + lost, (n - lost) * sizeof *o);
+  n -= lost;
+  memcpy(out, h, sizeof *h);
+  vx_pmu_ring *oh = (vx_pmu_ring *)out;
+  atomic_store_explicit(&oh->head, n, memory_order_relaxed);
+  oh->cap = n;
+  return sizeof *h + n * sizeof(vx_trace_record);
+}
+
+// counters: event=NAME count=N, a record each (counter=I for one the
+// process set itself).
+static size_t counters_text(const proc *p, char *text, size_t cap) {
+  uint64_t v[VX_PMU_MAX];
+  if (vx_pmu_configure(p->task, VX_PMU_READ, v, sizeof v) != VX_OK) return 0;
+  uint32_t i = (uint32_t)(p - procs);
+  vx_ndb_writer w = {.buf = text, .cap = cap};
+  for (uint32_t k = 0; k < VX_PMU_MAX; k++) {
+    if (k < sampling[i].count)
+      vx_ndb_put(&w, "event", vx_cstr(EVENT_NAMES[sampling[i].events[k]]));
+    else if (v[k])
+      vx_ndb_put_u64(&w, "counter", k);
+    else
+      continue;
+    vx_ndb_put_u64(&w, "count", v[k]);
+    vx_ndb_end(&w);
+  }
+  return w.failed ? 0 : w.len;
+}
 
 static void prof_forget(const proc *p) {
   vx_prof_header **r = &rings[p - procs];
@@ -50,6 +190,10 @@ static vx_prof_header *prof_ring(uint32_t i, uint64_t *pid) {
 }
 
 static vx_status prof_ctl(const proc *p, vx_str cmd) {
+  vx_str rest = cmd, w = {};
+  if (vx_str_split(&rest, VX_STR(" "), &w) && vx_str_eq(w, VX_STR("sample")) && rest.ptr)
+    return samples_ctl(p, rest);
+  if (vx_str_eq(w, VX_STR("count")) && rest.ptr) return counters_ctl(p, rest);
   vx_prof_header *h = rings[p - procs];
   if (!h) return VX_ERR_NOT_FOUND; // it has no ring (it never called vx_prof_init)
   if (word_is(cmd, "zones on"))

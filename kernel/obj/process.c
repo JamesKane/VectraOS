@@ -44,6 +44,11 @@ static void task_teardown(task *t) {
   spin_unlock(&t->lock);
   if (exc_port) object_drop((object *)exc_port);
   if (dbg_port) object_drop((object *)dbg_port);
+  spin_lock(&t->sample_lock); // its own samples' ring (pmu.c)
+  struct vmo *samples = t->samples;
+  t->samples = nullptr;
+  spin_unlock(&t->sample_lock);
+  if (samples) object_drop((object *)samples);
   for (uint32_t i = 1; i < HANDLE_SLOTS; i++)
     if (handles[i].obj) object_drop(handles[i].obj);
   for (uint32_t i = 0; i < TASK_MAX_MAPPINGS; i++)
@@ -93,6 +98,9 @@ static vx_status thread_start(thread *th, uint64_t entry, uint64_t sp, uint64_t 
   // Its robust locks marked as the owner's dead, while its address space is
   // still there (ADR-0037): a kill comes this way too.
   if (th->robust_head && t->root) futex_robust_walk(th);
+  // Its counters into its task's totals now (pmu.c): a joiner that reads them
+  // once it is seen gone must find all of its counts.
+  if (th->pmu_loaded) pmu_out(th);
   spin_lock(&t->lock);
   th->exited = true;
   th->last_of_task = --t->live_threads == 0;

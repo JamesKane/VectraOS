@@ -46,7 +46,9 @@ static uint64_t pmu_origin(const thread *t, uint32_t i) {
 }
 
 // t's counters stopped, what they counted added to its own and its task's.
-static void pmu_out(thread *t) {
+// Out of line, as pmu_in is: schedule calls pmu_switch deep in the kernel's
+// paths, and their frames are reserved only when a task counts.
+[[gnu::noinline]] static void pmu_out(thread *t) {
   if (!t->pmu_loaded) return;
   uint64_t now[VX_PMU_MAX];
   arch_pmu_read(t->pmu_loaded, now);
@@ -57,7 +59,7 @@ static void pmu_out(thread *t) {
 
 // t's counters started, if its task has them: from its counts, or from 0
 // under a configuration it has not run with.
-static void pmu_in(thread *t) {
+[[gnu::noinline]] static void pmu_in(thread *t) {
   task *k = t->task;
   if (!k || !__atomic_load_n(&k->pmu.count, __ATOMIC_RELAXED)) return;
   uint32_t events[VX_PMU_MAX];
@@ -82,15 +84,15 @@ static void pmu_in(thread *t) {
   t->pmu_loaded = n;
 }
 
-static void pmu_switch(thread *prev, thread *next) {
-  pmu_out(prev);
-  pmu_in(next);
+static inline void pmu_switch(thread *prev, thread *next) {
+  if (prev->pmu_loaded) pmu_out(prev);
+  if (next->task && __atomic_load_n(&next->task->pmu.count, __ATOMIC_RELAXED)) pmu_in(next);
 }
 
 // A counter overflowed (the architecture's interrupt, acknowledged after):
 // the interrupted thread's sampled counters that did each give a sample,
 // interrupted at pc with frame pointer fp, and start a period again.
-static void pmu_overflow(bool from_user, uint64_t pc, uint64_t fp) {
+[[gnu::noinline]] static void pmu_overflow(bool from_user, uint64_t pc, uint64_t fp) {
   thread *t = this_cpu()->current;
   if (t && t->pmu_loaded) {
     uint64_t now[VX_PMU_MAX];
@@ -101,11 +103,84 @@ static void pmu_overflow(bool from_user, uint64_t pc, uint64_t fp) {
       t->pmu_left[i] = t->pmu_period[i];
       t->pmu_start[i] = pmu_origin(t, i);
       arch_pmu_write(i, t->pmu_start[i]);
+      uint64_t tag = 1ull << 62 | (uint64_t)t->task->pmu.events[i] << 48;
       if (atomic_load_explicit(&trace_mask, memory_order_relaxed) & VX_TC_SAMPLE)
-        trace_sample(from_user, pc, fp, 1ull << 62 | (uint64_t)t->task->pmu.events[i] << 48);
+        trace_sample(from_user, pc, fp, tag);
+      if (t->task->samples) pmu_task_sample(t->task, from_user, pc, fp, tag);
     }
   }
   arch_pmu_ack();
+}
+
+// --- A task's own samples (7a3c1) ---
+//
+// The tick's, at the task's own rate on a CPU running one of its threads,
+// and its counters' overflows, into a ring of its own: a VMO procfs gives
+// (/proc/N/prof/samples), its pages committed, written through the direct
+// map under the task's sample lock, so a SAMPLE's FRAMES follow it whatever
+// CPU its other threads run on.
+
+static uint64_t pmu_sample_ns(const task *k) {
+  return k && k->samples ? atomic_load_explicit(&k->sample_ns, memory_order_relaxed) : 0;
+}
+
+static void pmu_ring_write(task *k, vx_pmu_ring *h, uint16_t kind, uint64_t a, uint64_t b) {
+  uint64_t head = atomic_load_explicit(&h->head, memory_order_relaxed), at = 64 + (head % h->cap) * 32;
+  uint64_t pa = vmo_page(k->samples, at / 4096);
+  if (!pa) return; // not committed: refused when it was given, so never
+  thread *t = this_cpu()->current;
+  *(vx_trace_record *)((uint8_t *)phys_to_virt(pa) + at % 4096) =
+      (vx_trace_record){.time = arch_counter(),
+                        .kind = kind,
+                        .cpu = (uint16_t)arch_cpu_index(),
+                        .tid = trace_tid(t),
+                        .a = a,
+                        .b = b};
+  atomic_store_explicit(&h->head, head + 1, memory_order_release);
+}
+
+[[gnu::noinline]] static void pmu_task_sample(task *k, bool from_user, uint64_t pc, uint64_t fp,
+                                              uint64_t tag) {
+  uint64_t ret[64];
+  uint32_t n = trace_walk(from_user, fp, ret); // before the lock: it may fault, and recover
+  spin_lock(&k->sample_lock);
+  if (k->samples) {
+    vx_pmu_ring *h = (vx_pmu_ring *)phys_to_virt(vmo_page(k->samples, 0));
+    pmu_ring_write(k, h, VX_TK_SAMPLE, pc, n | tag | (from_user ? 1ull << 63 : 0));
+    for (uint32_t i = 0; i < n; i += 2)
+      pmu_ring_write(k, h, VX_TK_FRAMES, ret[i], i + 1 < n ? ret[i + 1] : 0);
+  }
+  spin_unlock(&k->sample_lock);
+}
+
+// VX_PMU_SAMPLES: the task's ring, or none.
+static vx_status pmu_samples(task *k, const vx_pmu_samples *s) {
+  vmo *v = nullptr;
+  if (s->vmo != VX_HANDLE_NONE) {
+    vx_status st;
+    if (s->hz > 10'000) return VX_ERR_INVALID;
+    v = (vmo *)handle_get(current_task(), s->vmo, OBJ_VMO, VX_RIGHT_WRITE, &st);
+    if (!v) return st;
+    bool ok =
+        v->size >= 8192 && v->size <= 4ull << 20 && !v->physical && !v->pager && !v->lazy && !v->resizable;
+    for (uint64_t i = 0; ok && i < v->size / 4096; i++) ok = vmo_page(v, i) != 0;
+    if (!ok) {
+      object_release(&v->obj);
+      return VX_ERR_INVALID; // plain memory, all of it there, written through the direct map
+    }
+    vx_pmu_ring *h = (vx_pmu_ring *)phys_to_virt(vmo_page(v, 0));
+    *h = (vx_pmu_ring){.magic = VX_PMU_RING_MAGIC,
+                       .hz = s->hz ? s->hz : 1000,
+                       .cap = (v->size - 64) / 32,
+                       .counter_hz = clock.hz};
+    atomic_store(&k->sample_ns, 1'000'000'000ull / h->hz);
+  }
+  spin_lock(&k->sample_lock);
+  vmo *old = k->samples;
+  k->samples = v; // the handle's reference, kept
+  spin_unlock(&k->sample_lock);
+  if (old) object_release(&old->obj);
+  return VX_OK;
 }
 
 static vx_status pmu_set(task *k, const vx_pmu_config *c) {
@@ -156,6 +231,12 @@ static int64_t sys_pmu_configure(vx_handle th, uint64_t op, uint64_t data, uint6
     for (uint32_t i = 0; i < VX_PMU_MAX; i++)
       v[i] = atomic_load_explicit(&k->pmu_total[i], memory_order_relaxed);
     st = len == sizeof v ? copy_to_user(data, v, sizeof v) : VX_ERR_INVALID;
+    break;
+  }
+  case VX_PMU_SAMPLES: {
+    vx_pmu_samples s;
+    st = len == sizeof s ? copy_from_user(&s, data, sizeof s) : VX_ERR_INVALID;
+    if (st == VX_OK) st = pmu_samples(k, &s);
     break;
   }
   default: st = VX_ERR_INVALID;

@@ -5,7 +5,9 @@
 // thread and on another, reads its own counter as a thread may (rdpmc,
 // PMXEVCNTR), and is refused without INSPECT. Then overflow sampling
 // (7a3b2): cycles sampled each 100,000 through /proc/trace (as adm), the
-// samples the PMU's and nearly all in spin.
+// samples the PMU's and nearly all in spin. With "own" (7a3c1, as an
+// child of pmutest's): its own samples through /proc/N/prof, the tick's and
+// then a counter's, and its counters' file.
 
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-ns/nsapi.c"
@@ -96,7 +98,69 @@ static void sampling(void) {
   vx_arena_free(a);
 }
 
+// The samples in /proc/<me>/prof/samples: how many of them, how many in
+// spin, how many the PMU's and how many of those in spin.
+static void own_samples(vx_str path, uint32_t *all, uint32_t *inside, uint32_t *pmu, uint32_t *pmu_inside) {
+  static uint8_t buf[1 << 20];
+  vx_fd f = vx_open(path, VX_OREAD);
+  size_t bytes = 0;
+  int64_t got;
+  while (f >= 0 && (got = vx_read(f, (vx_bytes){buf + bytes, sizeof buf - bytes})) > 0) bytes += (size_t)got;
+  vx_close(f);
+  *all = *inside = *pmu = *pmu_inside = 0;
+  const vx_pmu_ring *h = (const vx_pmu_ring *)buf;
+  CHECK(bytes >= sizeof *h && h->magic == VX_PMU_RING_MAGIC);
+  uint64_t from = (uint64_t)(uintptr_t)&spin;
+  for (size_t at = sizeof *h; at + sizeof(vx_trace_record) <= bytes; at += sizeof(vx_trace_record)) {
+    vx_trace_record r;
+    memcpy(&r, buf + at, sizeof r);
+    if (r.kind != VX_TK_SAMPLE) continue;
+    bool in = r.a >= from && r.a < from + 512, by_pmu = r.b >> 62 & 1;
+    (*all)++, *inside += in, *pmu += by_pmu, *pmu_inside += in && by_pmu;
+  }
+}
+
+static const char *own_mode(void) {
+  vx_arena *a = vx_arena_new(1 << 20);
+  unsigned long long me = vx_pid();
+  vx_str ctlp = vx_fmt(a, "/proc/%llu/prof/ctl", me), samp = vx_fmt(a, "/proc/%llu/prof/samples", me);
+  vx_str cntp = vx_fmt(a, "/proc/%llu/prof/counters", me);
+  uint32_t all, inside, pmu, pmu_inside;
+
+  // The tick's, at 2 kHz over a spin of some 200 ms.
+  CHECK(vx_ctl(ctlp, "sample 2000") == VX_OK);
+  vx_instant until = vx_now() + 200'000'000;
+  while (vx_now() < until) spin(SPIN / 20);
+  own_samples(samp, &all, &inside, &pmu, &pmu_inside);
+  vx_printf("pmuown: %u tick samples, %u in spin\n", all, inside);
+  CHECK(all >= 100 && inside * 10 >= all * 8 && pmu == 0);
+
+  // A counter's, each 100,000 cycles, into a fresh ring (the tick's at 1 Hz).
+  vx_pmu_info info = {};
+  if (vx_pmu_configure(vx_self, VX_PMU_INFO, &info, sizeof info) == VX_OK && info.counters) {
+    CHECK(vx_ctl(ctlp, "sample 1") == VX_OK);
+    CHECK(vx_ctl(ctlp, "count cycles period 100000") == VX_OK);
+    spin(SPIN);
+    char text[256];
+    vx_fd f = vx_open(cntp, VX_OREAD);
+    int64_t n = f >= 0 ? vx_read(f, (vx_bytes){(uint8_t *)text, sizeof text - 1}) : -1;
+    vx_close(f);
+    CHECK(n > 0 && vx_str_find((vx_str){text, (size_t)n}, VX_STR("event=cycles count=")) == 0);
+    CHECK(vx_ctl(ctlp, "count off") == VX_OK); // before the samples are read: not of the reading
+    own_samples(samp, &all, &inside, &pmu, &pmu_inside);
+    vx_printf("pmuown: %u PMU samples, %u in spin\n", pmu, pmu_inside);
+    // TCG's overflow interrupts may come late on a loaded host, past spin's end.
+    CHECK(pmu >= 20 && pmu_inside * 4 >= pmu * 3);
+  }
+  CHECK(vx_ctl(ctlp, "sample off") == VX_OK);
+  CHECK(vx_ctl(ctlp, "sample 20000") == VX_ERR_INVALID); // past 10 kHz
+  vx_arena_free(a);
+  vx_printf("pmuown: %u checks, %u failed\n", checks, failures);
+  return failures ? "failed" : nullptr;
+}
+
 const char *vx_main(void) {
+  if (vx_str_eq(vx_arg(1), VX_STR("own"))) return own_mode();
   vx_pmu_info info = {};
   CHECK(vx_pmu_configure(vx_self, VX_PMU_INFO, &info, sizeof info) == VX_OK);
   vx_printf("pmutest: %u counters of %u bits, events 0x%x\n", info.counters, info.width, info.events);
@@ -142,6 +206,16 @@ const char *vx_main(void) {
   CHECK(vx_pmu_configure(vx_self, VX_PMU_SET, &off, sizeof off) == VX_OK);
   CHECK(vx_pmu_configure(vx_self, VX_PMU_READ, after, sizeof after) == VX_OK && after[0] == 0);
   sampling();
+
+  // One task's own samples (7a3c1): itself again, as a child, through its /proc/N/prof.
+  vx_str args[] = {VX_STR("pmutest"), VX_STR("own")};
+  vx_spawn_req req = {.path = vx_exe_path(), .args = {args, 2}};
+  vx_proc kid = {};
+  vx_arena *ka = vx_arena_new(1 << 16);
+  vx_str why = VX_STR("unset");
+  CHECK(vx_proc_spawn(&req, &kid) == VX_OK && vx_proc_wait(kid, VX_INFINITE, ka, &why) == VX_OK &&
+        why.len == 0);
+  vx_arena_free(ka);
 
   vx_printf("pmutest: %u checks, %u failed\n", checks, failures);
   return failures ? "failed" : nullptr;

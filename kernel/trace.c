@@ -49,15 +49,12 @@ static void trace_write(uint16_t kind, uint64_t a, uint64_t b) {
   atomic_store_explicit(&trace.writing[i], 0, memory_order_release);
 }
 
-// A sample (20 §6): the interrupted PC and up to 64 return addresses from
-// its frame-pointer chain, a frame holding the caller's frame pointer and
-// then the return address on both architectures. User frames are read with
-// the fault-safe copy, which pages nothing in: the walk stops at the first
-// frame not mapped, or that does not move up the stack. The records follow
-// one another in this CPU's ring, its interrupts off. tag: the PMU's
-// (1 << 62 | its event << 48), 0 for the tick's.
-static void trace_sample(bool from_user, uint64_t pc, uint64_t fp, uint64_t tag) {
-  uint64_t ret[64];
+// A sample's frames (20 §6): up to 64 return addresses from the interrupted
+// frame-pointer chain, a frame holding the caller's frame pointer and then
+// the return address on both architectures, into ret: how many. User
+// frames are read with the fault-safe copy, which pages nothing in: the walk
+// stops at the first frame not mapped, or that does not move up the stack.
+static uint32_t trace_walk(bool from_user, uint64_t fp, uint64_t ret[64]) {
   uint32_t n = 0;
   while (n < 64 && fp && !(fp & 7)) {
     uint64_t frame[2];
@@ -72,6 +69,15 @@ static void trace_sample(bool from_user, uint64_t pc, uint64_t fp, uint64_t tag)
     if (frame[0] <= fp) break;
     fp = frame[0];
   }
+  return n;
+}
+
+// A sample into the trace: the interrupted PC, then its frames, the records
+// following one another in this CPU's ring, its interrupts off. tag: the
+// PMU's (1 << 62 | its event << 48), 0 for the tick's.
+[[gnu::noinline]] static void trace_sample(bool from_user, uint64_t pc, uint64_t fp, uint64_t tag) {
+  uint64_t ret[64];
+  uint32_t n = trace_walk(from_user, fp, ret);
   trace_write(VX_TK_SAMPLE, pc, n | tag | (from_user ? 1ull << 63 : 0));
   for (uint32_t i = 0; i < n; i += 2) trace_write(VX_TK_FRAMES, ret[i], i + 1 < n ? ret[i + 1] : 0);
 }

@@ -20,6 +20,7 @@ static void trace_write(uint16_t kind, uint64_t a, uint64_t b);
 // calls trace_sample on a busy CPU every trace_sample_ns.
 static _Atomic uint64_t trace_sample_ns;
 static void trace_sample(bool from_user, uint64_t pc, uint64_t fp, uint64_t tag);
+static uint32_t trace_walk(bool from_user, uint64_t fp, uint64_t ret[64]);
 
 static int64_t sys_trace_configure(vx_handle rh, uint64_t op, uint64_t data, uint64_t len);
 

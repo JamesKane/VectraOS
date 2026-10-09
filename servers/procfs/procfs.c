@@ -235,13 +235,15 @@ static void tell_parent(const proc *c, uint8_t kind, uint8_t sig) {
 }
 
 // The task has ended: its parent hears, and its own unread records go.
-static void dbg_forget(const proc *p);  // debug.c
-static bool dbg_pending(const proc *p); // debug.c
-static void prof_forget(const proc *p); // prof.c
+static void dbg_forget(const proc *p);     // debug.c
+static bool dbg_pending(const proc *p);    // debug.c
+static void prof_forget(const proc *p);    // prof.c
+static void samples_forget(const proc *p); // prof.c
 
 static void ended(proc *p) {
   dbg_forget(p);
   prof_forget(p);
+  samples_forget(p);
   tell_parent(p, ENDED, 0);
   for (uint32_t i = p->first; i;) {
     uint32_t next = records[i].next;
@@ -330,7 +332,10 @@ enum : uint32_t {
   THREADS,
   FILES,
   PROF_CTL, // in prof/, not listed in the process's directory
-  PROF_ZONES
+  PROF_ZONES,
+  PROF_SAMPLES,
+  PROF_COUNTERS,
+  PROF_END
 };
 enum : uint32_t { T_DIR, T_STATUS, T_REGS, T_REGS_NDB, T_FPREGS, T_XREGS, T_CTL, T_SCHED, T_FILES };
 
@@ -395,7 +400,9 @@ static bool thread_alive(const proc *p, uint32_t tid) {
          ti.id == tid;
 }
 
-static const file_entry PROF_FILES[2] = {{VX_STR("ctl"), 0222}, {VX_STR("zones"), 0444}};
+static constexpr uint32_t PROF_COUNT = PROF_END - PROF_CTL;
+static const file_entry PROF_FILES[PROF_COUNT] = {
+    {VX_STR("ctl"), 0222}, {VX_STR("zones"), 0444}, {VX_STR("samples"), 0444}, {VX_STR("counters"), 0444}};
 
 static const file_entry *entry_of(uint64_t node) {
   if (thread_of(node)) return &THREAD_FILES[file_of(node)];
@@ -459,7 +466,7 @@ static vx_status fs_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) 
     return VX_OK;
   }
   if (!tid && f == PROF) { // prof/'s files
-    for (uint32_t k = 0; k < 2; k++)
+    for (uint32_t k = 0; k < PROF_COUNT; k++)
       if (PROF_FILES[k].name.len == name.len && memcmp(PROF_FILES[k].name.ptr, name.ptr, name.len) == 0) {
         *child = node_of(p->pid, 0, PROF_CTL + k);
         return VX_OK;
@@ -682,6 +689,15 @@ static vx_status fs_read(void *ctx, uint64_t node, uint64_t offset, uint8_t *buf
   case MAPS: len = maps_text(p, text, sizeof text); break;
   case IMAGES: len = images_text(p, text, sizeof text); break;
   case INFO: len = info_text(p, text, sizeof text); break;
+  case PROF_COUNTERS: len = counters_text(p, text, sizeof text); break;
+  case PROF_SAMPLES: { // a whole ring, as zones
+    static uint8_t snap[SAMPLE_RING];
+    size_t n = samples_snapshot(p, snap, sizeof snap);
+    uint64_t left = offset < n ? n - offset : 0;
+    if (*count > left) *count = (uint32_t)left;
+    memcpy(buf, snap + offset * (*count != 0), *count);
+    return VX_OK;
+  }
   case PROF_ZONES: { // a whole ring: bigger than text
     static uint8_t snap[VX_PROF_RING];
     size_t n = prof_snapshot(p, snap, sizeof snap);
@@ -859,8 +875,8 @@ static vx_status fs_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *c
     *child = node_of(p->pid, ti.id, T_DIR);
     return VX_OK;
   }
-  if (!is_root(dir) && !thread_of(dir) && file_of(dir) == PROF) { // ctl, zones
-    if (!p || index >= 2) return VX_ERR_NOT_FOUND;
+  if (!is_root(dir) && !thread_of(dir) && file_of(dir) == PROF) { // ctl, zones, samples, counters
+    if (!p || index >= PROF_COUNT) return VX_ERR_NOT_FOUND;
     *child = node_of(p->pid, 0, PROF_CTL + index);
     return VX_OK;
   }

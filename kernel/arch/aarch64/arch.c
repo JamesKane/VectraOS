@@ -191,8 +191,7 @@ static constexpr uint32_t INTID_VIRTUAL_TIMER = 27, INTID_EL2_VIRTUAL_TIMER = 28
 // Performance Interrupt GSIV, at 48); QEMU virt's, 23, if they give none.
 static uint32_t pmu_ppi_cached;
 
-static uint32_t pmu_ppi(void) {
-  if (pmu_ppi_cached) return pmu_ppi_cached;
+[[gnu::noinline]] static uint32_t pmu_ppi_find(void) {
   uint32_t ppi = 23;
   const uint8_t *madt = acpi_table("APIC");
   for (uint32_t off = 44, len = madt ? read32(madt + 4) : 0; off + 2 <= len && madt[off + 1] >= 2;
@@ -204,6 +203,8 @@ static uint32_t pmu_ppi(void) {
     }
   return pmu_ppi_cached = ppi;
 }
+
+static uint32_t pmu_ppi(void) { return pmu_ppi_cached ? pmu_ppi_cached : pmu_ppi_find(); }
 
 static uint32_t timer_ppi(void) {
   uint64_t el;

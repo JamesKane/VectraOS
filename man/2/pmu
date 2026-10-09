@@ -25,6 +25,8 @@ Each thread's counts are kept across its switches, and what it counted is added 
   It replaces the task's configuration and starts its totals from 0: the caller's thread counts from now, the others from their next switch. A count of 0 turns the counters off.
 : `VX_PMU_READ`
   `data` is `uint64_t[VX_PMU_MAX]` to fill with the task's totals: each thread's counts to its last switch, the caller's own to now.
+: `VX_PMU_SAMPLES`
+  `data` is a `vx_pmu_samples`: `vmo`, a VMO of 8 KiB to 4 MiB, its pages committed (not lazy, resizable or a pager's), and `hz` (0 for 1000, at most 10000). The task's own samples go into it from now: the kernel's tick at `hz` on any CPU running one of its threads, and its sampled counters' overflows, as a `vx_pmu_ring` header (64 bytes) and then 32-byte `vx_trace_record`s, `SAMPLE` and its `FRAMES`, the oldest overwritten. A `vmo` of `VX_HANDLE_NONE` stops them. procfs(4) gives each process's as `/proc/N/prof/samples`.
 
 A sampled counter interrupts as it overflows: while the kernel's trace samples (`sample` in procfs(4)'s `/proc/trace/ctl`), each overflow writes a `sample` record and its `frames`, as the tick does, with bit 62 of its `b` set and the event in bits 48 to 55 (ADR-0049).
 Its counts are kept all the same; its own reading means nothing to the thread.

@@ -41,6 +41,7 @@ static constexpr vx_duration TIME_SLICE = 10'000'000;
 // not its idle one, a tick every 10 ms charges the thread a tick of user or
 // system time, by where it found it. An idle CPU stays tickless (01 §8).
 static constexpr vx_duration TICK = 10'000'000;
+static vx_duration sample_period(const struct thread *t); // how often t is sampled (20 §6)
 
 // The bands, highest first: realtime, interactive-frame, interactive,
 // throughput, background (enum vx_intent's order).
@@ -638,7 +639,9 @@ static void schedule_locked(void) {
     sched.idle_mask &= ~(1ull << c->index);
     c->slice_end = now + TIME_SLICE;
     if (c->tick_at <= now) c->tick_at = now + TICK; // leaving idle: ticks start again
-    if (c->sample_at <= now) c->sample_at = now + (vx_instant)atomic_load(&trace_sample_ns); // samples too
+    vx_duration period = sample_period(next);
+    if (period && (c->sample_at <= now || c->sample_at > now + period))
+      c->sample_at = now + period; // samples too, at its rate
     if (ctx_of(next)) ctx_refill(ctx_of(next), now);
   }
   if (next != prev) {
@@ -784,6 +787,28 @@ static void hang_dump(void) {
   spin_unlock(&all_tasks_lock);
 }
 
+// How often a CPU running t samples it (20 §6): at the trace's rate while
+// the trace samples, its task's own while it takes them, the shorter if
+// both; 0 if neither.
+static vx_duration sample_period(const thread *t) {
+  uint64_t p = atomic_load_explicit(&trace_mask, memory_order_relaxed) & VX_TC_SAMPLE
+                   ? atomic_load_explicit(&trace_sample_ns, memory_order_relaxed)
+                   : 0;
+  uint64_t mine = t ? pmu_sample_ns(t->task) : 0;
+  if (mine && (!p || mine < p)) p = mine;
+  return (vx_duration)p;
+}
+
+// A sample of what c was doing, however late (20 §6): into the trace, its
+// task's ring, or both. Out of line, so the timer's frame, on top of
+// whatever the interrupt found, holds none of the walk's.
+[[gnu::noinline]] static void sample_tick(cpu *c, bool from_user, uint64_t pc, uint64_t fp, vx_instant now) {
+  if (atomic_load_explicit(&trace_mask, memory_order_relaxed) & VX_TC_SAMPLE)
+    trace_sample(from_user, pc, fp, 0);
+  if (pmu_sample_ns(c->current->task)) pmu_task_sample(c->current->task, from_user, pc, fp, 0);
+  c->sample_at = now + sample_period(c->current);
+}
+
 // Arms this CPU's timer for the next thing that needs it: its earliest
 // sleeper's latest acceptable wake-up, or the end of the running thread's slice.
 static void sched_arm_timer(cpu *c) {
@@ -792,9 +817,7 @@ static void sched_arm_timer(cpu *c) {
     if (t->wake_late < next) next = t->wake_late;
   if (c->current != &c->idle && c->slice_end < next) next = c->slice_end;
   if (c->current != &c->idle && c->tick_at < next) next = c->tick_at;
-  if (c->current != &c->idle && (atomic_load_explicit(&trace_mask, memory_order_relaxed) & VX_TC_SAMPLE) &&
-      c->sample_at < next)
-    next = c->sample_at;
+  if (c->current != &c->idle && sample_period(c->current) && c->sample_at < next) next = c->sample_at;
   const sched_ctx *x = c->current ? ctx_of(c->current) : nullptr;
   if (c->current != &c->idle && x && x->intent == VX_INTENT_REALTIME && !x->throttled &&
       c->run_start + x->left < next)
@@ -825,11 +848,8 @@ static void sched_timer(bool from_user, uint64_t pc, uint64_t fp) {
     atomic_fetch_add_explicit(&c->current->ticks[from_user ? 0 : 1], n, memory_order_relaxed);
     c->tick_at += (vx_instant)(n * TICK);
   }
-  if (c->current != &c->idle && now >= c->sample_at &&
-      (atomic_load_explicit(&trace_mask, memory_order_relaxed) & VX_TC_SAMPLE)) {
-    trace_sample(from_user, pc, fp, 0); // what it was doing: one sample, however late
-    c->sample_at = now + (vx_instant)atomic_load_explicit(&trace_sample_ns, memory_order_relaxed);
-  }
+  if (c->current != &c->idle && now >= c->sample_at && sample_period(c->current))
+    sample_tick(c, from_user, pc, fp, now);
   while (c->sleepers && c->sleepers->wake_at <= now) {
     thread *t = c->sleepers;
     t->wait_token = nullptr; // a waker that finds it later skips it

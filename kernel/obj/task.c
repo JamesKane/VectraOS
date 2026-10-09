@@ -104,6 +104,11 @@ typedef struct task {
     uint64_t period[VX_PMU_MAX]; // a sampled counter's (0: counting only)
   } pmu;
   _Atomic uint64_t pmu_total[VX_PMU_MAX]; // its threads' counts, to their last switch
+  // Its own samples (pmu.c, 7a3c1): a reference to the ring's VMO, or null;
+  // its period; the lock its CPUs write under.
+  struct vmo *samples;
+  _Atomic uint64_t sample_ns;
+  spinlock sample_lock;
 } task;
 
 typedef enum thread_state : uint8_t {

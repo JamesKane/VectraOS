@@ -856,6 +856,7 @@ enum vx_pmu_op : uint32_t {
   VX_PMU_INFO = 1, // data: a vx_pmu_info out
   VX_PMU_SET,      // data: a vx_pmu_config; count 0 turns them off. The totals start again from 0
   VX_PMU_READ,     // data: uint64_t[VX_PMU_MAX] out, the task's totals, each thread's to its last switch
+  VX_PMU_SAMPLES,  // data: a vx_pmu_samples: the task's own samples into a ring (M7 step 7a3c1)
 };
 enum vx_pmu_event : uint32_t {
   VX_PMU_CYCLES = 1,
@@ -874,6 +875,25 @@ typedef struct vx_pmu_info {
   uint32_t events;   // 1 << each vx_pmu_event the PMU counts
   uint32_t reserved;
 } vx_pmu_info;
+// VX_PMU_SAMPLES: the task's samples, the tick's at hz on a CPU running
+// it and its counters' overflows, written into vmo (committed, at most
+// 4 MiB) as a vx_pmu_ring and then 32-byte vx_trace_records: SAMPLE and its
+// FRAMES, the oldest overwritten. A vmo of VX_HANDLE_NONE stops them.
+typedef struct vx_pmu_samples {
+  vx_handle vmo;
+  uint32_t hz; // 0: 1000; at most 10000
+} vx_pmu_samples;
+typedef struct vx_pmu_ring {
+  uint32_t magic; // VX_PMU_RING_MAGIC
+  uint32_t hz;
+  uint64_t cap;          // records
+  _Atomic uint64_t head; // records written, ever: the newest is head - 1
+  uint64_t counter_hz;   // the records' time
+  uint8_t reserved[32];  // to 64 bytes, where the records start
+} vx_pmu_ring;
+static constexpr uint32_t VX_PMU_RING_MAGIC = 0x706d'7573; // "smup"
+static_assert(sizeof(vx_pmu_ring) == 64);
+
 typedef struct vx_pmu_config {
   uint32_t count; // events; counter i counts events[i]
   uint32_t flags; // VX_PMU_USER_READ
