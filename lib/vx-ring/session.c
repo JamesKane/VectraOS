@@ -16,9 +16,10 @@
 #include "../vx-prof/ring.h"
 
 // A request's span (20 §5), from its submission to its completion, each side
-// alike: its flow from the ring's session and the request's user_data, as
-// 9Px's are. A request whose slot another took meanwhile goes unrecorded.
-static void vx_session_span(vx_ring *r, const void *entry, bool submission) {
+// alike: its flow from the ring's session and the submission's place in the
+// queue, which both sides count alike (a client may use one user_data again
+// and again). A request whose slot another took meanwhile goes unrecorded.
+static void vx_session_span(vx_ring *r, const void *entry, bool submission, uint32_t place) {
   uint64_t user_data;
   memcpy(&user_data,
          submission ? (const uint8_t *)entry + offsetof(vx_sqe, user_data)
@@ -29,9 +30,12 @@ static void vx_session_span(vx_ring *r, const void *entry, bool submission) {
     uint64_t start = vx_span_begin_hook ? vx_span_begin_hook() : 0;
     uint16_t opcode;
     memcpy(&opcode, entry, sizeof opcode);
-    if (start) r->span_at[i].user_data = user_data, r->span_at[i].start = start, r->span_at[i].what = opcode;
+    if (start)
+      r->span_at[i].user_data = user_data, r->span_at[i].start = start, r->span_at[i].what = opcode,
+      r->span_at[i].place = place;
   } else if (r->span_at[i].start && r->span_at[i].user_data == user_data) {
-    vx_span_end_hook(r->span_at[i].start, r->span_at[i].what, vx_prof_flow(r->h.session, user_data));
+    vx_span_end_hook(r->span_at[i].start, r->span_at[i].what,
+                     vx_prof_flow(r->h.session, r->span_at[i].place));
     r->span_at[i].start = 0;
   }
 }

@@ -68,6 +68,45 @@ static int chains(const vx_trace_record *r, size_t n, uint32_t self, size_t *at,
   return depth;
 }
 
+// Runs trace ARG, its standard output a pipe read here: true if it ended
+// well, having printed both needles (each within one write).
+static bool run_trace(vx_arena *a, vx_str arg, vx_str one, vx_str two) {
+  vx_handle out[2];
+  if (vx_channel_create(0, out) != VX_OK) return false;
+  vx_str targs[] = {VX_STR("trace"), arg};
+  vx_str names[] = {VX_STR("stdout")};
+  vx_spawn_req treq = {.path = VX_STR("/boot/bin/trace"),
+                       .args = {targs, 2},
+                       .handles = &out[1],
+                       .handle_names = names,
+                       .nhandles = 1};
+  vx_proc tp = {};
+  if (vx_proc_spawn(&treq, &tp) != VX_OK) return false;
+  bool got_one = false, got_two = false;
+  static uint8_t msg[sizeof(vx_msg_header) + 4096];
+  for (;;) {
+    vx_msg_size size;
+    vx_status rs = vx_channel_read(out[0], msg, sizeof msg, nullptr, 0, &size);
+    if (rs == VX_ERR_SHOULD_WAIT) {
+      vx_handle wait_port;
+      vx_packet pk;
+      vx_port_create(0, &wait_port);
+      vx_port_bind(wait_port, out[0], VX_TRIGGER_READABLE, 1, 0);
+      vx_port_bind(wait_port, out[0], VX_TRIGGER_PEER_CLOSED, 2, 0);
+      vx_port_wait(wait_port, vx_now() + 10'000'000'000, 0, &pk, 1);
+      vx_handle_close(wait_port);
+      continue;
+    }
+    if (rs != VX_OK) break; // trace has ended
+    vx_str text = {(const char *)msg + sizeof(vx_msg_header), size.bytes - sizeof(vx_msg_header)};
+    got_one = got_one || vx_str_find(text, one) >= 0;
+    got_two = got_two || vx_str_find(text, two) >= 0;
+  }
+  vx_handle_close(out[0]);
+  vx_str exit = VX_STR("unset");
+  return vx_proc_wait(tp, VX_INFINITE, a, &exit) == VX_OK && exit.len == 0 && got_one && got_two;
+}
+
 const char *vx_main(void) {
   if (vx_str_eq(vx_arg(1), VX_STR("child"))) { // the child: a line down its stdout, a pipe
     vx_sleep_until(vx_now() + 50'000'000, 0);  // after its parent waits: its write is the wake
@@ -189,37 +228,10 @@ const char *vx_main(void) {
   int64_t sl = st >= 0 ? vx_read(st, (vx_bytes){(uint8_t *)text, sizeof text}) : -1;
   CHECK(sl > 0 && vx_str_find((vx_str){text, (size_t)sl}, VX_STR("trace=off")) >= 0 &&
         vx_str_find((vx_str){text, (size_t)sl}, VX_STR("dropped=0")) >= 0);
-  // trace(1) prints the same events as text: the mark among them.
-  vx_handle out[2];
-  CHECK(vx_channel_create(0, out) == VX_OK);
-  vx_str targs[] = {VX_STR("trace"), VX_STR("-p")};
-  vx_spawn_req treq = {.path = VX_STR("/boot/bin/trace"),
-                       .args = {targs, 2},
-                       .handles = &out[1],
-                       .handle_names = names,
-                       .nhandles = 1};
-  vx_proc tp = {};
-  CHECK(vx_proc_spawn(&treq, &tp) == VX_OK);
-  bool printed = false;
-  static uint8_t msg[sizeof(vx_msg_header) + 4096];
-  for (;;) {
-    vx_msg_size size;
-    vx_status rs = vx_channel_read(out[0], msg, sizeof msg, nullptr, 0, &size);
-    if (rs == VX_ERR_SHOULD_WAIT) {
-      vx_handle wait_port;
-      vx_port_create(0, &wait_port);
-      vx_port_bind(wait_port, out[0], VX_TRIGGER_READABLE, 1, 0);
-      vx_port_bind(wait_port, out[0], VX_TRIGGER_PEER_CLOSED, 2, 0);
-      vx_port_wait(wait_port, vx_now() + 10'000'000'000, 0, &pk, 1);
-      vx_handle_close(wait_port);
-      continue;
-    }
-    if (rs != VX_OK) break; // trace has ended
-    vx_str got_text = {(const char *)msg + sizeof(vx_msg_header), size.bytes - sizeof(vx_msg_header)};
-    printed = printed || vx_str_find(got_text, VX_STR("kind=mark text=\"tracetest end\"")) >= 0;
-  }
-  vx_str tex = VX_STR("unset");
-  CHECK(printed && vx_proc_wait(tp, VX_INFINITE, a, &tex) == VX_OK && tex.len == 0);
+  // trace(1) prints the same events as text, the mark among them; and
+  // summarizes them (7a2c): the slowest flows and the longest blocks.
+  CHECK(run_trace(a, VX_STR("-p"), VX_STR("kind=mark text=\"tracetest end\""), VX_STR("kind=switch")));
+  CHECK(run_trace(a, VX_STR("-s"), VX_STR("slowest=flow flow=0x"), VX_STR("longest=block task=")));
   vx_printf("tracetest: %zu records\n", n);
   vx_printf("tracetest: %u checks, %u failed\n", checks, failures);
   return failures ? "failed" : nullptr;

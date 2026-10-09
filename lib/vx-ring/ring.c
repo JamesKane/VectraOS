@@ -55,11 +55,12 @@ typedef struct vx_ring {
 
 #if !__STDC_HOSTED__
   // Spans (20 §5): if set, called with each submission and completion as it
-  // passes, produced or consumed; vx-ring's sessions set it (session.c).
-  void (*span)(struct vx_ring *r, const void *entry, bool submission);
+  // passes, produced or consumed, with its place in its queue (a count both
+  // sides keep alike); vx-ring's sessions set it (session.c).
+  void (*span)(struct vx_ring *r, const void *entry, bool submission, uint32_t place);
   struct {
     uint64_t user_data, start;
-    uint32_t what;
+    uint32_t what, place;
   } span_at[32]; // requests outstanding, by user_data's hash
 #endif
 } vx_ring;
@@ -156,7 +157,8 @@ static uint64_t ring_page_up(uint64_t v) { return (v + 4095) & ~4095ull; }
 [[maybe_unused]] static bool vx_ring_produce(vx_ring *r) {
 #if !__STDC_HOSTED__
   if (r->span)
-    r->span(r, r->out_entries + (size_t)(r->out_tail_local & r->out_mask) * r->out_size, r->client);
+    r->span(r, r->out_entries + (size_t)(r->out_tail_local & r->out_mask) * r->out_size, r->client,
+            r->out_tail_local);
 #endif
   r->out_tail_local++;
   __atomic_store_n(r->out_tail, r->out_tail_local, __ATOMIC_RELEASE);
@@ -191,7 +193,7 @@ static uint64_t ring_page_up(uint64_t v) { return (v + 4095) & ~4095ull; }
   r->in_head_local++;
   __atomic_store_n(r->in_head, r->in_head_local, __ATOMIC_RELEASE);
 #if !__STDC_HOSTED__
-  if (r->span) r->span(r, out, !r->client);
+  if (r->span) r->span(r, out, !r->client, r->in_head_local - 1);
 #endif
   return VX_OK;
 }
