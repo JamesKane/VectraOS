@@ -312,29 +312,24 @@ Vulkan applications use the Vulkan loader, which talks to the GPU driver over ri
 /net/ipifc/0/{ctl,status}       add 10.0.0.9/24 · mtu 9000
 ```
 
-### 5.5 Windows (summary; 03 §5 has the full protocol)
+### 5.5 Windows (summary; 03 §5 and docs/proto/wsys.md have the protocol)
+
+Rewritten in M7 step 7d1b to the tree `winsrv` serves, 03 §5's (21 §2 item 8). An app attaches with `new -dx W -dy H` (rio's attach spec) and gets `/wsys/self`, its window's directory; the whole tree is a grant.
 
 ```
 /wsys/
-    ctl                         new toplevel · focus 7 · workspace 3
-    events                      desktop-level: window created/destroyed, output changes, keymap
+    info                        version=1 output=fb0 width=1280 height=800 frames=…
+    outputs/fb0/{info,ctl}      displayd's (stable names from the EDID come with vx-edid)
     windows/7/
-        ctl          move 100 200 · resize 1280 800 · tile left · float · fullscreen · close · raise
-        info         kind=toplevel app=org.vx.hx pid=42 title="main.c — hx" workspace=2 scale=180/120
-        geometry     x=100 y=200 w=1280 h=800 seq=41
-        state        visible focused tiled
-        events       key, pointer, IME, resize, frame events (binary records, ring-backed)
-        surface      present fast path (Buffer + fence + damage), ring-backed
-        ime          enable · rect 10 20 12 38 · surrounding "fn main" 7 7
-        a11y/        accessibility tree as files (03 §5.6)
-        props/       free-form key-value properties apps can set, for scripts and agents
-    outputs/DP-1/{info,ctl,frame}
-    workspaces/3/{ctl,layout,windows}
-    keys                        key bindings (03 §5.3)
-    theme/                      design tokens (03 §5.4)
+        ctl          move 100 200 · resize 1280 800 · title … · raise · close   (tile, float, fullscreen: wm, 7d2)
+        info         id=7 title="main.c — hx" x=100 y=200 width=1280 height=800 config=41 presented= dropped=
+        frame        its last frame event and feedback, as text
+        surface      opened: the window's channel (configure, frame, feedback; attach, present)
+        ime  a11y/  props/            with the IME host (7d2), accessibility (03 §5.6), scripts
+    keys  rules  theme/  workspaces/  with wm (7d2): bindings (03 §5.3), design tokens (03 §5.4)
 ```
 
-An app's namespace holds only `/wsys/self`, its own windows, and a `new` verb. The whole tree, with every window's `events` and `a11y`, is a grant for `wm`, the shell, the palette and assistive technology (03 §5.7).
+An app's namespace holds only `/wsys/self`, its own window. The whole tree, with every window's `events` and `a11y`, is a grant for `wm`, the shell, the palette and assistive technology (03 §5.7).
 
 ### 5.6 AI (summary; 03 §8 has the runtime)
 

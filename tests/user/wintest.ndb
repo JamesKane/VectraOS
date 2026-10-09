@@ -1,0 +1,6 @@
+# tests/user/wintest.ndb: wintest, a window of its own at /wsys
+# (tests/qemu/windows.ndb).
+
+service=wintest program=/boot/bin/wintest console when=vx.desktop
+mount=/ srv=bootfs
+mount=/wsys srv=wsys aname="new -dx 400 -dy 300"

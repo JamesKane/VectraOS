@@ -1,6 +1,6 @@
 page=winsrv sect=8 summary="the window server: windows, the compositor, /wsys"
-    src=servers/winsrv/winsrv.c,boot/svc/display.ndb,lib/vx-driver/displayproto.h,lib/vx-buffer/buffer.h
-    keys=windows,compositor,wsys,desktop,frame,vblank,damage
+    src=servers/winsrv/winsrv.c,boot/svc/display.ndb,lib/vx-wsys/wsysproto.h,lib/vx-driver/displayproto.h,lib/vx-buffer/buffer.h
+    keys=windows,compositor,wsys,desktop,frame,vblank,damage,present,credits,surface
 
 # SYNOPSIS
 
@@ -16,7 +16,12 @@ A buffer it applied is busy until a vblank shows a newer stamp.
 
 The output's frame clock is displayd's VBLANK: each one says which stamp is on screen, and a Counter rises with it.
 
-In M7 step 7d1a it draws the desk alone; windows, the frame protocol and input are 7d1b's and 7d1c's.
+Windows (M7 step 7d1b, docs/proto/wsys.md): an attach with the aname `new -dx W -dy H` makes a window, and its directory is the attach's root, the app's `/wsys/self`; an empty aname is the whole tree.
+Opening a window's `surface` gives its channel, on which the app attaches vx-buffers and presents them: a present costs a credit, each frame event gives back what was composited, and feedback says when it reached the screen.
+At each vblank a present whose acquire point has come is latched: its damage copied into the window's own backing and its release point signalled at once (release at composite).
+The screen is composited from the backings, bottom to top, over the desk.
+A window lives while a fid holds a node of it or its channel is open.
+Input and focus are 7d1c's.
 It starts with `vx.display` and `vx.desktop` on the kernel command line (boot/svc/display.ndb).
 
 # FILES
@@ -25,6 +30,14 @@ It starts with `vx.display` and `vx.desktop` on the kernel command line (boot/sv
   An ndb(6) record: the protocol's `version`, the `output`, its `width` and `height`, and the `frames` its clock has counted.
 : `/wsys/outputs/`
   Where displayd's tree is mounted.
+: `/wsys/windows/N/ctl`
+  `move X Y`, `resize W H`, `title TEXT`, `raise`, `close`.
+: `/wsys/windows/N/info`
+  The window: `id`, `title`, `x`, `y`, `width`, `height`, `config` (its configure sequence), `presented`, `dropped`.
+: `/wsys/windows/N/frame`
+  Its last frame event and feedback, as text.
+: `/wsys/windows/N/surface`
+  Opened with 9Px's srv extension: the window's channel, one app's at a time.
 
 # SEE ALSO
 
@@ -32,4 +45,5 @@ displayd(8), drv-simplefb(3), drv-virtio-gpu(3)
 
 # BUGS
 
-One output.
+One output; 16 windows.
+An app given `/wsys/self` holds a connection to the post, and could attach the whole tree with it (see known gaps).

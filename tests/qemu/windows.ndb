@@ -1,0 +1,20 @@
+# tests/qemu/windows.ndb: windows (M7 step 7d1b, docs/proto/wsys.md):
+# wintest's two windows, attached with `new`, presented with the frame
+# protocol (tests/user/wintest.c); the screen matched: an orange window with
+# a white box, drawn by a present whose damage was the box alone, and a
+# green window over its corner; and the whole tree read from rc.
+
+scenario=windows display=fb timeout=60 cmdline="vx.display vx.desktop" with=wintest
+expect="winsrv: the desktop is on screen"
+expect="wintest: 19 checks, 0 failed"
+screen=windows-$arch tolerance=1
+expect="wintest: holding the windows"
+prompt="% "
+send="ls /wsys/windows; cat /wsys/windows/1/info"
+line="1  2"
+expect="id=1 title=wintest x=48 y=48 width=400 height=300"
+prompt="% "
+fail="vx: panic"
+fail="wintest: FAILED"
+fail="svcd: wintest exited"
+fail="svcd: winsrv exited"
