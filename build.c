@@ -20,7 +20,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -4041,6 +4043,8 @@ typedef struct qemu_opts {
   bool caching;      // the IOMMU in caching mode (VT-d's CAP.CM)
   const char *rtc;   // the real-time clock's starting time (QEMU's -rtc base=), or nullptr: the host's UTC
   bool persist;      // the boot disk's writes kept, even in a test (a boot after reboot: the installed disk)
+  const char *qmp;   // a display (M7 step 7b1b): its screen, virtio's keyboard and tablet, QMP at this socket
+  bool gpu;          // and the screen virtio-gpu's; else a framebuffer the firmware leaves (VGA, ramfb)
 } qemu_opts;
 
 // host/vx9pserve, built for this machine: the 9P server VectraOS mounts over
@@ -4232,6 +4236,19 @@ static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
             nullptr});
   }
   cmd_addv(c, (const char *const[]){"-m", "512M", "-smp", "4", "-display", "none", "-no-reboot", nullptr});
+  if (o.qmp) { // a screen the harness reads (screendump), and input it gives (send-key)
+    bool x86 = strcmp(a->name, "x86_64") == 0;
+    // A framebuffer that outlives the firmware: x86's VGA (q35's own) or
+    // aarch64's ramfb, which QEMU shows as it is written; virtio-gpu shows
+    // nothing once the firmware's driver lets it go, until one of ours drives it.
+    if (o.gpu)
+      cmd_addv(c, (const char *const[]){"-device", "virtio-gpu-pci", nullptr});
+    else if (!x86)
+      cmd_addv(c, (const char *const[]){"-device", "ramfb", nullptr});
+    if (o.gpu && x86) cmd_addv(c, (const char *const[]){"-vga", "none", nullptr});
+    cmd_addv(c, (const char *const[]){"-device", "virtio-keyboard-pci", "-device", "virtio-tablet-pci",
+                                      "-qmp", fmt("unix:%s,server=on,wait=off", o.qmp), nullptr});
+  }
   if (o.rtc) cmd_addv(c, (const char *const[]){"-rtc", fmt("base=%s", o.rtc), nullptr});
   cmd_add(c, "-drive");
   if (o.cdrom) { // on virtio-scsi, which both architectures' firmware boots from
@@ -4417,7 +4434,9 @@ static bool kvm_usable(const arch *a) {
 // when a line contains it. "$arch" in a pattern stands for the architecture's
 // name. send= and type= records between the expect= records are typed into
 // the serial port once every expect= before them has matched; send= then
-// presses return.
+// presses return. With display=fb or display=gpu on the scenario= record,
+// screen= and key= records, placed as send= is, compare the screen with a
+// reference and press keys (see "The screen" below).
 static constexpr int SCENARIO_MAX = 128;
 static const char *scenarios[SCENARIO_MAX];
 static int scenario_count;
@@ -4434,6 +4453,198 @@ static const char *substitute_arch(vx_str pattern, const arch *a) {
   return fmt("%.*s%s%s", (int)(at - p), p, a->name, at + 5);
 }
 
+// --- The screen (M7 step 7b1b) ---
+//
+// A scenario with display=fb (the framebuffer the firmware leaves, which
+// QEMU shows as it is written: x86's VGA, aarch64's ramfb) or display=gpu
+// (virtio-gpu, blank once the firmware lets it go) gets a virtio keyboard
+// and tablet, and QEMU's QMP at a socket in its run directory. screen=REF (with tolerance=PERCENT, 1 if not given) between
+// expects takes a screendump once every expect before it has matched and
+// compares it with tests/qemu/screens/REF.rle (rle_encode's), retrying for a few seconds
+// while the guest draws: a pixel differs if a channel is off by more than
+// 48, and the screen matches if at most PERCENT of its pixels do. With no
+// reference, the screen is kept as REF.rle.new (and REF.ppm.new, to look
+// at), and the test fails, for a person to look at and keep. key=SPEC presses
+// keys, as QMP's send-key names them, joined by '-' for a chord.
+
+typedef struct qmp {
+  int fd;
+  char buf[16384];
+  size_t len;
+} qmp;
+
+static bool qmp_line(qmp *q, char *out, size_t cap, double deadline) {
+  for (;;) {
+    char *nl = memchr(q->buf, '\n', q->len);
+    if (nl) {
+      size_t n = (size_t)(nl - q->buf) + 1;
+      size_t k = n < cap ? n : cap - 1;
+      memcpy(out, q->buf, k), out[k] = 0;
+      memmove(q->buf, q->buf + n, q->len - n), q->len -= n;
+      return true;
+    }
+    double left = deadline - now_seconds();
+    struct pollfd pfd = {.fd = q->fd, .events = POLLIN};
+    if (left <= 0 || poll(&pfd, 1, (int)(left * 1000) + 1) <= 0 || q->len == sizeof q->buf) return false;
+    ssize_t got = read(q->fd, q->buf + q->len, sizeof q->buf - q->len);
+    if (got <= 0) return false;
+    q->len += (size_t)got;
+  }
+}
+
+// A command and its answer: true if it returned (events before it are let go).
+static bool qmp_do(qmp *q, const char *command) {
+  size_t n = strlen(command);
+  if (write(q->fd, command, n) != (ssize_t)n) return false;
+  char line[16384];
+  double deadline = now_seconds() + 10;
+  while (qmp_line(q, line, sizeof line, deadline)) {
+    if (strstr(line, "\"return\"")) return true;
+    if (strstr(line, "\"error\"")) return false;
+  }
+  return false;
+}
+
+static bool qmp_open(qmp *q, const char *path) {
+  struct sockaddr_un sa = {.sun_family = AF_UNIX};
+  if (strlen(path) >= sizeof sa.sun_path) return false;
+  strcpy(sa.sun_path, path);
+  double deadline = now_seconds() + 10;
+  for (;;) { // QEMU makes the socket as it starts
+    q->fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (q->fd >= 0 && connect(q->fd, (struct sockaddr *)&sa, sizeof sa) == 0) break;
+    if (q->fd >= 0) close(q->fd);
+    if (now_seconds() > deadline) return false;
+    usleep(50'000);
+  }
+  q->len = 0;
+  char line[16384];
+  return qmp_line(q, line, sizeof line, deadline) && qmp_do(q, "{\"execute\":\"qmp_capabilities\"}\n");
+}
+
+typedef struct ppm {
+  long w, h;
+  const uint8_t *rgb; // w * h * 3
+} ppm;
+
+static bool ppm_read(vx_str text, ppm *out) {
+  // P6, its numbers separated by whitespace (no comments: QEMU writes none), then 255 and one byte
+  const char *p = text.ptr, *end = text.ptr + text.len;
+  long v[3];
+  if (text.len < 3 || p[0] != 'P' || p[1] != '6') return false;
+  p += 2;
+  for (int i = 0; i < 3; i++) {
+    while (p < end && (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t')) p++;
+    char *e;
+    v[i] = strtol(p, &e, 10);
+    if (e == p || v[i] <= 0) return false;
+    p = e;
+  }
+  if (p >= end || v[2] != 255) return false;
+  p++;
+  if ((size_t)(end - p) < (size_t)(v[0] * v[1] * 3)) return false;
+  *out = (ppm){.w = v[0], .h = v[1], .rgb = (const uint8_t *)p};
+  return true;
+}
+
+// A reference as kept in tests/qemu/screens: REF.rle, "VXRLE1 W H\n" then
+// runs of a pixel, each a count (1 to 65535, little-endian) and its R, G and
+// B. Screens are mostly flat, so a run-length is small enough to keep in the
+// repository and simple enough to need no library.
+static vx_str rle_encode(const ppm *p) {
+  size_t n = (size_t)(p->w * p->h), cap = 32 + n * 5, len = 0;
+  char *out = alloc(cap);
+  len = (size_t)snprintf(out, cap, "VXRLE1 %ld %ld\n", p->w, p->h);
+  for (size_t i = 0; i < n;) {
+    size_t run = 1;
+    while (i + run < n && run < 65535 && !memcmp(p->rgb + (i + run) * 3, p->rgb + i * 3, 3)) run++;
+    out[len++] = (char)(run & 0xff), out[len++] = (char)(run >> 8);
+    memcpy(out + len, p->rgb + i * 3, 3), len += 3;
+    i += run;
+  }
+  return (vx_str){out, len};
+}
+
+static bool rle_decode(vx_str text, ppm *out) {
+  if (text.len < 8 || memcmp(text.ptr, "VXRLE1 ", 7) != 0) return false;
+  char *e;
+  long w = strtol(text.ptr + 7, &e, 10), h = *e == ' ' ? strtol(e + 1, &e, 10) : 0;
+  if (*e != '\n' || w <= 0 || h <= 0) return false;
+  size_t at = (size_t)(e + 1 - text.ptr);
+  uint8_t *rgb = alloc((size_t)(w * h * 3));
+  size_t px = 0, n = (size_t)(w * h);
+  for (size_t i = at; i + 5 <= text.len && px < n; i += 5) {
+    size_t run = (uint8_t)text.ptr[i] | (size_t)(uint8_t)text.ptr[i + 1] << 8;
+    for (size_t k = 0; k < run && px < n; k++, px++) memcpy(rgb + px * 3, text.ptr + i + 2, 3);
+  }
+  if (px != n) return false;
+  *out = (ppm){.w = w, .h = h, .rgb = rgb};
+  return true;
+}
+
+// The share of pixels that differ, in hundredths of a percent; -1 if the sizes do.
+static long ppm_differ(const ppm *a, const ppm *b) {
+  if (a->w != b->w || a->h != b->h) return -1;
+  long n = a->w * a->h, off = 0;
+  for (long i = 0; i < n; i++) {
+    const uint8_t *x = a->rgb + i * 3, *y = b->rgb + i * 3;
+    for (int k = 0; k < 3; k++)
+      if (abs((int)x[k] - (int)y[k]) > 48) {
+        off++;
+        break;
+      }
+  }
+  return off * 10'000 / n;
+}
+
+// screen=REF: matched within tolerance (hundredths of a percent), retried
+// for 5 s; nullptr, or why not.
+static const char *screen_check(qmp *q, const char *dump, const char *ref, long tolerance) {
+  const char *ref_path = fmt("tests/qemu/screens/%s.rle", ref);
+  ppm w = {}, got = {};
+  bool have_ref = access(ref_path, R_OK) == 0;
+  if (have_ref && !rle_decode(read_file(ref_path), &w)) return fmt("%s is no VXRLE1 screen", ref_path);
+  long best = -2;
+  double deadline = now_seconds() + 5;
+  do {
+    unlink(dump);
+    if (!qmp_do(q, fmt("{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"%s\"}}\n", dump)))
+      return "QMP's screendump failed";
+    vx_str shot = read_file(dump);
+    if (!ppm_read(shot, &got)) return "the screendump is no P6 PPM";
+    if (!have_ref) { // kept to look at (the PPM) and to keep (the run-length)
+      mkdirs("tests/qemu/screens");
+      write_file(fmt("tests/qemu/screens/%s.ppm.new", ref), shot);
+      write_file(fmt("%s.new", ref_path), rle_encode(&got));
+      return fmt("no reference %s: the screen kept as %s.new (and .ppm.new to look at), to keep if right",
+                 ref_path, ref_path);
+    }
+    best = ppm_differ(&got, &w);
+    if (best >= 0 && best <= tolerance) return nullptr;
+    usleep(200'000);
+  } while (now_seconds() < deadline);
+  write_file(fmt("%s.got", dump), read_file(dump));
+  if (best == -1) return fmt("the screen is %ldx%ld, %s %ldx%ld", got.w, got.h, ref_path, w.w, w.h);
+  return fmt(
+      "the screen differs from %s in %ld.%02ld%% of its pixels (tolerance %ld.%02ld%%); kept as %s.got",
+      ref_path, best / 100, best % 100, tolerance / 100, tolerance % 100, dump);
+}
+
+// key=SPEC: one press of the chord, its keys QMP's qcodes joined by '-'.
+static bool key_press(qmp *q, const char *spec) {
+  char keys[1024] = "";
+  size_t n = 0;
+  for (const char *k = spec; *k;) {
+    const char *e = strchr(k, '-');
+    size_t len = e ? (size_t)(e - k) : strlen(k);
+    n += (size_t)snprintf(keys + n, sizeof keys - n, "%s{\"type\":\"qcode\",\"data\":\"%.*s\"}", n ? "," : "",
+                          (int)len, k);
+    k += len + (e != nullptr);
+    if (n >= sizeof keys) return false;
+  }
+  return qmp_do(q, fmt("{\"execute\":\"send-key\",\"arguments\":{\"keys\":[%s]}}\n", keys));
+}
+
 static bool run_scenario(const arch *a, bool release, const char *name) {
   const char *path = fmt("tests/qemu/%s.ndb", name);
   vx_ndb_reader r = {.src = read_file(path), .scratch = alloc(16 << 10), .scratch_cap = 16 << 10};
@@ -4441,6 +4652,10 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   bool whole[64] = {};   // expect[k] came from line=: the whole line must be it
   bool prompt[64] = {};  // expect[k] came from prompt=: it has started a line since the last thing typed
   vx_str input[64] = {}; // typed once every expect before it has matched: input[k] goes before expect[k]
+  // screen= and key= (7b1b), as input: done once every expect before them has matched.
+  const char *screen[64] = {}, *keys_at[64] = {};
+  long tolerance[64] = {};
+  bool display = false, gpu = false; // display=fb (the firmware's framebuffer) or display=gpu (virtio-gpu)
   int expect_count = 0, fail_count = 0;
   double timeout = 0;
   const char *cmdline = "", *with = "";
@@ -4491,6 +4706,13 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
       storetree = vx_ndb_has(&rec, "storetree");
       if (vx_ndb_has(&rec, "arch")) only = str_dup(vx_ndb_get(&rec, "arch"));
       must_exit = vx_ndb_has(&rec, "exits");
+      display = vx_ndb_has(&rec, "display");
+      if (display) {
+        const char *d = str_dup(vx_ndb_get(&rec, "display"));
+        if (strcmp(d, "fb") != 0 && strcmp(d, "gpu") != 0)
+          die("%s:%zu: display=%s is fb or gpu", path, rec.line, d);
+        gpu = strcmp(d, "gpu") == 0;
+      }
       if (vx_ndb_has(&rec, "rtc")) rtc = str_dup(vx_ndb_get(&rec, "rtc"));
       if (vx_ndb_has(&rec, "fat")) {
         fat = (int)strtol(str_dup(vx_ndb_get(&rec, "fat")), &end, 10);
@@ -4540,6 +4762,21 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
       expect_count++;
     } else if (vx_ndb_has(&rec, "fail") && fail_count < 64) {
       fail[fail_count++] = substitute_arch(vx_ndb_get(&rec, "fail"), a);
+    } else if (vx_ndb_has(&rec, "screen") && expect_count < 64) {
+      if (!display) die("%s:%zu: screen= needs the scenario's display", path, rec.line);
+      screen[expect_count] = substitute_arch(vx_ndb_get(&rec, "screen"), a); // a reference each: boot-$arch
+      tolerance[expect_count] = 100;                                         // 1%
+      if (vx_ndb_has(&rec, "tolerance")) {
+        char *e;
+        const char *t = str_dup(vx_ndb_get(&rec, "tolerance"));
+        double pct = strtod(t, &e);
+        if (e == t || *e || pct < 0 || pct > 100)
+          die("%s:%zu: tolerance=%s is no percentage", path, rec.line, t);
+        tolerance[expect_count] = (long)(pct * 100);
+      }
+    } else if (vx_ndb_has(&rec, "key") && expect_count < 64) {
+      if (!display) die("%s:%zu: key= needs the scenario's display", path, rec.line);
+      keys_at[expect_count] = str_dup(vx_ndb_get(&rec, "key"));
     } else if ((vx_ndb_has(&rec, "send") || vx_ndb_has(&rec, "type")) && expect_count < 64) {
       bool send = vx_ndb_has(&rec, "send"); // send= presses return after it; type= types exactly
       vx_str text = vx_ndb_get(&rec, send ? "send" : "type"), *in = &input[expect_count];
@@ -4549,8 +4786,8 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
     } else {
       if (expect_count == 64 || fail_count == 64)
         die("%s:%zu: more than 64 expect= or fail= records", path, rec.line);
-      die("%s:%zu: expected scenario=, expect=, line=, prompt=, fail=, send=, type= or host=", path,
-          rec.line);
+      die("%s:%zu: expected scenario=, expect=, line=, prompt=, fail=, send=, type=, screen=, key= or host=",
+          path, rec.line);
     }
   }
   if (timeout <= 0 || expect_count == 0) die("%s: needs scenario= with a timeout, and an expect=", path);
@@ -4630,7 +4867,9 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
                          .persist = second,
                          .nvme = nvme,
                          .caching = caching,
-                         .rtc = rtc});
+                         .rtc = rtc,
+                         .qmp = display ? fmt("%s/qmp.sock", run_dir) : nullptr,
+                         .gpu = gpu});
     if (verbose) cmd_print(&c);
     signal(SIGPIPE, SIG_IGN); // QEMU gone: a write to it fails, rather than ending this process
     int fds[2], keys[2];      // QEMU's serial: its output, and what is typed into it
@@ -4652,7 +4891,10 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
 
     double start = now_seconds();
     int next = phase_first, typed = phase_first - 1; // input[typed] has been typed
+    int shown = phase_first - 1;                     // screen[shown] and keys_at[shown] done
+    qmp q = {.fd = -1};
     verdict = nullptr;
+    if (display && !qmp_open(&q, fmt("%s/qmp.sock", run_dir))) verdict = "cannot reach QEMU's QMP";
     char line[4096];
     size_t len = 0;
     static char since[64 * 1024]; // the output since the last thing typed, for prompt=
@@ -4663,6 +4905,14 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
     ssize_t stale = 0;     // bytes of buf, from pos, that came before the last typing
     bool all_seen = false; // every expect= met; with exits, QEMU's exit is what is waited for now
     while (!verdict) {
+      if (!all_seen && shown < next && (screen[next] || keys_at[next])) {
+        shown = next;
+        if (screen[next])
+          verdict = screen_check(&q, fmt("%s/screen.ppm", run_dir), screen[next], tolerance[next]);
+        if (!verdict && keys_at[next] && !key_press(&q, keys_at[next]))
+          verdict = fmt("QMP's send-key failed for %s", keys_at[next]);
+        if (verdict) break;
+      }
       if (!all_seen && typed < next && input[next].len) {
         if (write(keys[1], input[next].ptr, input[next].len) != (ssize_t)input[next].len) {
           verdict = "cannot type into QEMU (it has exited?)"; // QEMU is still killed, and the log kept
@@ -4735,6 +4985,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
     wait_ok(pid);
     close(fds[0]);
     close(keys[1]);
+    if (q.fd >= 0) close(q.fd);
   }
   fclose(log);
 

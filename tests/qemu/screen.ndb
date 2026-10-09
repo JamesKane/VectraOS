@@ -1,0 +1,11 @@
+# tests/qemu/screen.ndb: the harness's screen (M7 step 7b1b): with a display
+# (virtio-gpu, its keyboard and tablet, QMP), what the firmware and Limine
+# leave on the screen when the system is up, matched against a reference;
+# then a key pressed through QMP, which nothing reads yet.
+
+scenario=screen display=fb timeout=60 cmdline=vx.skip=rc
+expect="svcd: started ptyd"
+screen=boot-$arch tolerance=1
+key=ctrl-alt-f1
+expect="svcd: started tmpfs"
+fail="vx: panic"
