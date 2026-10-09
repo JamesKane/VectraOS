@@ -2,6 +2,7 @@
 // its own: a capture, and records as text.
 //
 //   trace -c CATS [-t DURATION] [-o FILE]   start, wait (ms, s or m; 1s), stop, save the events
+//   trace -f [-o FILE]                      save what the running trace holds now (the flight recorder)
 //   trace -p [FILE]                         the events (live, or a saved FILE) as ndb, one a line
 //   trace -s [-n N] [FILE]                  a summary (20 §5): the N slowest flows (10), each with
 //                                           its parts, the N longest blocks and what woke them, and
@@ -404,10 +405,8 @@ static const char *summary(vx_str path, size_t top) {
   return nullptr;
 }
 
-static const char *capture(vx_str cats, vx_duration wait, vx_str out) {
-  if (vx_ctl(VX_STR("/proc/trace/ctl"), "start %.*s", VX_FMT(cats)) != VX_OK) return fail("start", cats);
-  vx_sleep_until(vx_now() + wait, wait / 100);
-  if (vx_ctl(VX_STR("/proc/trace/ctl"), "stop") != VX_OK) return fail("stop", VX_STR("/proc/trace/ctl"));
+// The events as they are now into out, how many said.
+static const char *save(vx_str out) {
   vx_fd in = vx_open(VX_STR("/proc/trace/events"), VX_OREAD);
   if (in < 0) return fail("open", VX_STR("/proc/trace/events"));
   vx_fd fd = vx_create(out, VX_OWRITE, 0644);
@@ -425,11 +424,18 @@ static const char *capture(vx_str cats, vx_duration wait, vx_str out) {
   return n < 0 ? fail("read", VX_STR("/proc/trace/events")) : nullptr;
 }
 
+static const char *capture(vx_str cats, vx_duration wait, vx_str out) {
+  if (vx_ctl(VX_STR("/proc/trace/ctl"), "start %.*s", VX_FMT(cats)) != VX_OK) return fail("start", cats);
+  vx_sleep_until(vx_now() + wait, wait / 100);
+  if (vx_ctl(VX_STR("/proc/trace/ctl"), "stop") != VX_OK) return fail("stop", VX_STR("/proc/trace/ctl"));
+  return save(out);
+}
+
 const char *vx_main(void) {
   vx_strs args = vx_args();
   vx_str cats = {}, out = VX_STR("trace.out"), file = VX_STR("/proc/trace/events");
   vx_duration wait = 1'000'000'000;
-  bool p = false, s = false;
+  bool p = false, s = false, f = false;
   uint64_t top = 10;
   for (size_t i = 1; i < args.len; i++) {
     vx_str a = args.ptr[i];
@@ -439,6 +445,8 @@ const char *vx_main(void) {
       if (!vx_str_u64(args.ptr[++i], &top) || !top) return "usage";
     } else if ((p || s) && a.len && a.ptr[0] != '-') {
       file = a;
+    } else if (vx_str_eq(a, VX_STR("-f"))) {
+      f = true;
     } else if (vx_str_eq(a, VX_STR("-c")) && i + 1 < args.len) {
       cats = args.ptr[++i];
     } else if (vx_str_eq(a, VX_STR("-t")) && i + 1 < args.len) {
@@ -452,6 +460,7 @@ const char *vx_main(void) {
   }
   if (p) return print(file);
   if (s) return summary(file, top);
+  if (f) return save(out); // the running trace is left running
   if (!cats.len) {
     vx_eprintf("%s\n", VX_USAGE);
     return "usage";

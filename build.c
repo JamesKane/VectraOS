@@ -1432,6 +1432,8 @@ static const program USER_PROGRAMS[] = {
      nullptr},
     {"tracetest", "tests/user/tracetest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // the kernel's trace, /proc/trace (7a1b)
+    {"flighttest", "tests/user/tracetest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr}, // tracetest's flight recorder test, as a program of its own (7a4a)
     {"pmutest", "tests/user/pmutest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // a task's hardware counters (7a3b1)
     {"libvxtest", "tests/user/libvxtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, true, LINK_DYNAMIC,

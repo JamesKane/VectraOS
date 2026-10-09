@@ -168,6 +168,9 @@ static void trace_snapshot(void) {
   for (uint32_t i = 0; i < cpus; i++) {
     uint64_t head = atomic_load(&trace_ring(i)->head);
     end[i] = head, at[i] = head > cap ? head - cap : 0;
+    // A ring still going round (the flight recorder): its oldest records may
+    // be overwritten while they are copied, so they are left out.
+    if (tr.on && tr.circular && head > cap) at[i] += cap / 16;
     total += end[i] - at[i];
   }
   // The processes' spans: counted first, then copied after the kernel's.
@@ -292,6 +295,35 @@ static const char TRACE_SCHEMA[] =
     "counter\"\n"
     "kind=20 name=frames a=\"return address\" b=\"return address, 0 for none\"\n"
     "kind=64 name=span a=flow b=\"message type << 48 | cycles\" cpu=0xffff tid=\"pid << 12 | thread\"\n";
+
+// The last `seconds` of the trace, as events has them, for a crash
+// directory (20 §7): *len bytes from *out, at most 4 MiB, the newest kept.
+// None if no trace runs.
+static void trace_last(uint64_t seconds, const uint8_t **out, size_t *len) {
+  *out = nullptr, *len = 0;
+  const vx_trace_ring *h0 = trace_ring(0);
+  if (!tr.on || !h0) return;
+  trace_snapshot();
+  const vx_trace_record *r = (const vx_trace_record *)tr.snap;
+  size_t n = tr.snap_len / sizeof *r, first = 0;
+  if (!n) return;
+  uint64_t newest = r[n - 1].time, back = seconds * h0->counter_hz;
+  while (first < n && newest - r[first].time > back) first++;
+  if (n - first > (4u << 20) / sizeof *r) first = n - (4u << 20) / sizeof *r;
+  *out = (const uint8_t *)(r + first), *len = (n - first) * sizeof *r;
+}
+
+// vx.trace=flight on the kernel's command line (svcd gives procfs it): the
+// flight recorder, sched, ipc and irq in circular mode from now (20 §7).
+static void trace_flight(void) {
+  vx_str rest = vx_spawn.cmdline, w;
+  bool flight = false;
+  while (!flight && vx_str_split(&rest, VX_STR(" "), &w)) flight = vx_str_eq(w, VX_STR("vx.trace=flight"));
+  if (!flight || !tr.resource) return;
+  vx_status st = trace_ctl(VX_STR("start sched,ipc,irq size 1M circular"));
+  vx_print(st == VX_OK ? VX_STR("procfs: the flight recorder is on\n")
+                       : VX_STR("procfs: the flight recorder could not start\n"));
+}
 
 static vx_status trace_read(uint32_t f, uint64_t offset, uint8_t *buf, uint32_t *count) {
   static char text[8192];

@@ -1,7 +1,8 @@
 # boot/svc/procfs.ndb: /proc, the one process table (ADR-0011), posted as
 # /srv/proc. It sees every task through svcd's own, asks nsd for a
-# process's namespace (/proc/N/ns), and writes crash directories to tmpfs.
+# process's namespace (/proc/N/ns), and writes crash directories to tmpfs;
+# with vx.trace=flight on the command line it runs the flight recorder.
 
-service=procfs program=/boot/bin/procfs post=proc tasks trace console restart
+service=procfs program=/boot/bin/procfs post=proc tasks trace console cmdline restart
 connect=nsd
 connect=tmpfs

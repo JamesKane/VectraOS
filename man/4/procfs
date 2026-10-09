@@ -235,6 +235,8 @@ It shows every process's activity, so it is a broad grant (ADR-0029): the direct
 : `trace/.schema`
   The record's fields and each kind's words.
 
+With `vx.trace=flight` on the kernel's command line (svc(6)'s `cmdline` gives procfs it), procfs starts the flight recorder as it begins to serve, `sched`, `ipc` and `irq` in circular mode with 1 MiB a CPU, and says `procfs: the flight recorder is on` (20 §7). `events` read while a circular trace runs leaves out the oldest sixteenth of each full ring, which the kernel may be writing over as it is copied. A crash directory then holds its last 2 s.
+
 trace(1) captures and prints it.
 
 @node=crash title="Crash directories"
@@ -248,6 +250,7 @@ It stops the process's other threads and saves the process as a directory shaped
     note                       the fault in Plan 9's words
     threads/T/status regs regs.ndb fpregs xregs
     mem/0xBASE                 each writable mapping's bytes
+    trace                      the running trace's last 2 s, at most 4 MiB
 ```
 
 The directory is made on tmpfs, which namespaces mount on `/tmp`, so it is seen as `/tmp/crash/<name>.<pid>`.

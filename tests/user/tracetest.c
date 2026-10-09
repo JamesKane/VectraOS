@@ -69,21 +69,23 @@ static int chains(const vx_trace_record *r, size_t n, uint32_t self, size_t *at,
   return depth;
 }
 
-// Runs trace ARG, its standard output a pipe read here: true if it ended
-// well, having printed both needles (each within one write).
-static bool run_trace(vx_arena *a, vx_str arg, vx_str one, vx_str two) {
+// Runs trace ARG [ARG2 ARG3], its standard output a pipe read here: true if
+// it ended well, having printed both needles (each within one write; an
+// empty needle is found at once).
+static bool run_trace_args(vx_arena *a, vx_strs args, vx_str one, vx_str two) {
   vx_handle out[2];
   if (vx_channel_create(0, out) != VX_OK) return false;
-  vx_str targs[] = {VX_STR("trace"), arg};
+  vx_str targs[4] = {VX_STR("trace")};
+  for (size_t i = 0; i < args.len && i < 3; i++) targs[i + 1] = args.ptr[i];
   vx_str names[] = {VX_STR("stdout")};
   vx_spawn_req treq = {.path = VX_STR("/boot/bin/trace"),
-                       .args = {targs, 2},
+                       .args = {targs, 1 + (args.len < 3 ? args.len : 3)},
                        .handles = &out[1],
                        .handle_names = names,
                        .nhandles = 1};
   vx_proc tp = {};
   if (vx_proc_spawn(&treq, &tp) != VX_OK) return false;
-  bool got_one = false, got_two = false;
+  bool got_one = !one.len, got_two = !two.len;
   static uint8_t msg[sizeof(vx_msg_header) + 4096];
   for (;;) {
     vx_msg_size size;
@@ -106,6 +108,10 @@ static bool run_trace(vx_arena *a, vx_str arg, vx_str one, vx_str two) {
   vx_handle_close(out[0]);
   vx_str exit = VX_STR("unset");
   return vx_proc_wait(tp, VX_INFINITE, a, &exit) == VX_OK && exit.len == 0 && got_one && got_two;
+}
+
+static bool run_trace(vx_arena *a, vx_str arg, vx_str one, vx_str two) {
+  return run_trace_args(a, (vx_strs){&arg, 1}, one, two);
 }
 
 // Spins until `until`, its time read only now and then: what samples find.
@@ -148,7 +154,136 @@ static void sampling(uint32_t self_task) {
   vx_arena_free(a);
 }
 
+// --- The flight recorder (7a4a, the flight scenario) ---
+
+static vx_lock_t pp_lock;
+static vx_rendez pp_turn;
+static uint32_t pp_whose, pp_left;
+
+// The other side of the ping-pong: waits for its turn, gives it back.
+static const char *pong(void *arg) {
+  (void)arg;
+  vx_lock(&pp_lock);
+  while (pp_left) {
+    while (pp_whose != 1 && pp_left) vx_rendez_sleep(&pp_turn, &pp_lock);
+    pp_whose = 0;
+    vx_rendez_wake_all(&pp_turn);
+  }
+  vx_unlock(&pp_lock);
+  return nullptr;
+}
+
+// n hand-offs between two threads, each a futex wait, a wake and a switch:
+// what the recorder's sched and ipc probes cost most on. Its time.
+static vx_duration ping_pong(uint32_t n) {
+  pp_left = n, pp_whose = 0;
+  vx_thread *t = vx_thread_spawn(pong, nullptr, 0, 0);
+  vx_instant start = vx_now();
+  vx_lock(&pp_lock);
+  while (pp_left) {
+    pp_whose = 1;
+    vx_rendez_wake_all(&pp_turn);
+    while (pp_whose != 0) vx_rendez_sleep(&pp_turn, &pp_lock);
+    pp_left--;
+  }
+  vx_rendez_wake_all(&pp_turn);
+  vx_unlock(&pp_lock);
+  vx_duration took = vx_now() - start;
+  if (t) vx_thread_join(t, nullptr, nullptr);
+  return took;
+}
+
+static const char *flight(void) {
+  vx_arena *a = vx_arena_new(64 << 20);
+  char text[512];
+  vx_fd f = vx_open(VX_STR("/proc/trace/status"), VX_OREAD);
+  int64_t n = f >= 0 ? vx_read(f, (vx_bytes){(uint8_t *)text, sizeof text}) : -1;
+  vx_close(f);
+  vx_str st = {text, n > 0 ? (size_t)n : 0};
+  CHECK(vx_str_find(st, VX_STR("trace=on categories=sched,ipc,irq mode=circular")) >= 0); // from boot
+
+  // Its cost (20 §8). A record: a cheap syscall's two (syscall added to the
+  // recorder's categories), the best of three runs each, with and without.
+  vx_task_summary ts;
+  vx_duration with = INT64_MAX, without = INT64_MAX;
+  for (int round = 0; round < 6; round++) {
+    bool on = round & 1;
+    CHECK(ctl(on ? "start sched,ipc,irq,syscall size 1M circular" : "start sched,ipc,irq size 1M circular") ==
+          VX_OK);
+    vx_instant t0 = vx_now();
+    for (int i = 0; i < 200'000; i++) vx_task_info(vx_self, &ts);
+    vx_duration d = vx_now() - t0;
+    if (on && d < with) with = d;
+    if (!on && d < without) without = d;
+  }
+  int64_t record_ns = (with - without) / 400'000;
+  vx_printf("tracetest: a record costs %lld ns\n", (long long)record_ns);
+  // 20 §8: 30 ns, in an optimized kernel; this one's -O0 with UBSan. On
+  // x86_64, KVM; aarch64's is QEMU's TCG, emulated: reported only.
+  bool emulated = false;
+#ifdef __aarch64__
+  emulated = true;
+#endif
+  CHECK(emulated || record_ns < 100);
+  // And on a ping-pong of hand-offs, each a cross-CPU wake: reported, for
+  // 20 §8's 1% is of ./build bench's workloads (7a5), not of switches alone.
+  vx_duration on = INT64_MAX, off = INT64_MAX;
+  for (int round = 0; round < 3; round++) {
+    vx_duration t = ping_pong(20'000);
+    if (t < on) on = t;
+    CHECK(ctl("stop") == VX_OK);
+    t = ping_pong(20'000);
+    if (t < off) off = t;
+    CHECK(ctl("start sched,ipc,irq size 1M circular") == VX_OK);
+  }
+  int64_t permille = (on - off) * 1000 / off;
+  vx_printf("tracetest: a hand-off: %lld ns with the recorder, %lld without (%lld.%lld%%)\n",
+            (long long)on / 20'000, (long long)off / 20'000, (long long)(permille / 10),
+            (long long)(permille < 0 ? -permille % 10 : permille % 10));
+
+  // A crash: its directory holds the trace's last 2 s, its own switches among them.
+  vx_str args[] = {VX_STR("flighttest"), VX_STR("fault")};
+  vx_spawn_req req = {.path = vx_exe_path(), .args = {args, 2}};
+  vx_proc kid = {};
+  vx_str why = {};
+  CHECK(vx_proc_spawn(&req, &kid) == VX_OK && vx_proc_wait(kid, VX_INFINITE, a, &why) == VX_OK && why.len);
+  vx_str dir = vx_fmt(a, "/tmp/crash/flighttest.%llu/trace", (unsigned long long)kid.pid);
+  vx_dir d = {};
+  CHECK(vx_stat(dir, a, &d) == VX_OK && d.length && d.length % sizeof(vx_trace_record) == 0);
+  vx_trace_record *r = d.length ? vx_push(a, d.length, 32) : nullptr;
+  vx_fd t = vx_open(dir, VX_OREAD);
+  size_t got = 0;
+  while (r && t >= 0 && got < d.length &&
+         (n = vx_read(t, (vx_bytes){(uint8_t *)r + got, d.length - got})) > 0)
+    got += (size_t)n;
+  vx_close(t);
+  uint32_t switches = 0;
+  for (size_t i = 0; r && i < got / sizeof *r; i++)
+    switches +=
+        r[i].kind == VX_TK_SWITCH && ((uint32_t)r[i].b >> 12 == kid.pid || (uint32_t)r[i].a >> 12 == kid.pid);
+  vx_printf("tracetest: the crash's trace: %zu records, %u switches of its process\n", got / sizeof *r,
+            switches);
+  CHECK(switches > 0);
+
+  // trace -f saves what the recorder holds, and leaves it running.
+  vx_str fargs[] = {VX_STR("-f"), VX_STR("-o"), VX_STR("/tmp/flight.trace")};
+  CHECK(run_trace_args(a, (vx_strs){fargs, 3}, VX_STR(""), VX_STR("")));
+  CHECK(run_trace_args(a, (vx_strs){(vx_str[]){VX_STR("-p"), VX_STR("/tmp/flight.trace")}, 2},
+                       VX_STR("kind=switch"), VX_STR("")));
+  n = (f = vx_open(VX_STR("/proc/trace/status"), VX_OREAD)) >= 0
+          ? vx_read(f, (vx_bytes){(uint8_t *)text, sizeof text})
+          : -1;
+  vx_close(f);
+  CHECK(n > 0 && vx_str_find((vx_str){text, (size_t)n}, VX_STR("trace=on")) >= 0);
+  vx_arena_free(a);
+  vx_printf("tracetest: %u checks, %u failed\n", checks, failures);
+  return failures ? "failed" : nullptr;
+}
+
 const char *vx_main(void) {
+  if (vx_str_eq(vx_arg(1), VX_STR("fault")))
+    return (const char *)(uintptr_t)*(volatile uint8_t *)0x10; // a crash
+  if (vx_str_eq(vx_arg(1), VX_STR("flight"))) return flight();
   if (vx_str_eq(vx_arg(1), VX_STR("child"))) { // the child: a line down its stdout, a pipe
     vx_sleep_until(vx_now() + 50'000'000, 0);  // after its parent waits: its write is the wake
     vx_printf("from the child\n");

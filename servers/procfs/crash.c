@@ -189,6 +189,10 @@ static void crash(proc *p, uint32_t tid) {
       crash_thread(c, threads, p, ti.id);
     if (threads) p9c_clunk(c, threads);
     crash_mem(c, dir, p);
+    const uint8_t *last;
+    size_t last_len;
+    trace_last(2, &last, &last_len); // the flight recorder's last 2 s (20 §7), if it runs
+    if (last_len) crash_file(c, dir, VX_STR("trace"), last, last_len);
     p9c_clunk(c, dir);
   }
   vx_print(VX_STR("procfs: "));

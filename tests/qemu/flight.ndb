@@ -1,0 +1,12 @@
+# tests/qemu/flight.ndb: the flight recorder (M7 step 7a4a, 20 §7): with
+# vx.trace=flight procfs runs sched, ipc and irq in circular mode from boot;
+# a crash directory keeps the last 2 s; trace -f saves the rings; and the
+# recorder's cost on a ping-pong of switches (tests/user/tracetest.c).
+
+scenario=flight timeout=90 cmdline="vx.skip=rc vx.trace=flight" with=flighttest
+expect="procfs: the flight recorder is on"
+expect="tracetest: 20 checks, 0 failed"
+line="svcd: flighttest exited"
+fail="vx: panic"
+fail="tracetest: FAILED"
+fail="svcd: flighttest exited: "

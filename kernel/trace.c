@@ -14,7 +14,12 @@ static struct {
   uint64_t ring_size, stride;
   uint32_t cpus;
   bool circular;
-  _Atomic uint32_t writing[MAX_CPUS];
+  // Each CPU's flag on a line of its own, apart from the configuration every
+  // record reads: packed, a CPU's two stores a record took the line from
+  // the others, which made a record cost ~300 ns under KVM, not ~40 (7a4a).
+  struct {
+    alignas(64) _Atomic uint32_t on;
+  } writing[MAX_CPUS];
 } trace;
 
 static uint32_t trace_tid(const struct thread *t) {
@@ -29,7 +34,7 @@ static uint8_t *trace_at(uint64_t at) {
 
 static void trace_write(uint16_t kind, uint64_t a, uint64_t b) {
   uint32_t i = arch_cpu_index();
-  atomic_store_explicit(&trace.writing[i], 1, memory_order_seq_cst);
+  atomic_store_explicit(&trace.writing[i].on, 1, memory_order_seq_cst);
   if (atomic_load_explicit(&trace_mask, memory_order_seq_cst) && trace.rings && i < trace.cpus) {
     vx_trace_ring *h = (vx_trace_ring *)trace_at(i * trace.stride);
     uint64_t n = trace.ring_size / sizeof(vx_trace_record);
@@ -46,7 +51,7 @@ static void trace_write(uint16_t kind, uint64_t a, uint64_t b) {
       atomic_store_explicit(&h->head, head + 1, memory_order_release);
     }
   }
-  atomic_store_explicit(&trace.writing[i], 0, memory_order_release);
+  atomic_store_explicit(&trace.writing[i].on, 0, memory_order_release);
 }
 
 // A sample's frames (20 §6): up to 64 return addresses from the interrupted
@@ -86,7 +91,7 @@ static uint32_t trace_walk(bool from_user, uint64_t fp, uint64_t ret[64]) {
 static void trace_quiesce(void) {
   atomic_store_explicit(&trace_mask, 0, memory_order_seq_cst);
   for (uint32_t i = 0; i < MAX_CPUS; i++)
-    while (atomic_load_explicit(&trace.writing[i], memory_order_seq_cst)) arch_pause();
+    while (atomic_load_explicit(&trace.writing[i].on, memory_order_seq_cst)) arch_pause();
 }
 
 // Every ring's header written afresh: empty, no drops.

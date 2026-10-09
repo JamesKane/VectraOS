@@ -1,0 +1,9 @@
+# tests/user/flighttest.ndb: tracetest.c's flight recorder test, built as
+# flighttest (tests/qemu/flight.ndb):
+# as adm, with /tmp/crash where procfs saves its crashed child.
+
+service=flighttest program=/boot/bin/flighttest console
+arg=flight
+user=adm
+ns=posix
+connect=nsd

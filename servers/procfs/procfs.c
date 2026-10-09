@@ -925,5 +925,6 @@ const char *vx_main(void) {
     vx_print(VX_STR("procfs: FAILED: no task tree or listen channel\n"));
     return "no task tree or listen channel";
   }
+  trace_flight(); // vx.trace=flight: the recorder from boot (20 §7)
   return p9_ring_serve(&server) == VX_OK ? nullptr : "cannot serve";
 }
