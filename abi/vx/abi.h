@@ -848,6 +848,38 @@ enum vx_trace_kind : uint16_t {
 // the message's type << 48 | its length in cycles.
 static constexpr uint16_t VX_TK_SPAN = 64;
 
+// pmu_configure(task, op, data, len) (ADR-0050, M7 step 7a3b): the hardware
+// counters of a task's threads, in user mode only, each thread's kept across
+// its switches and summed into the task's. The task handle needs INSPECT.
+enum vx_pmu_op : uint32_t {
+  VX_PMU_INFO = 1, // data: a vx_pmu_info out
+  VX_PMU_SET,      // data: a vx_pmu_config; count 0 turns them off. The totals start again from 0
+  VX_PMU_READ,     // data: uint64_t[VX_PMU_MAX] out, the task's totals, each thread's to its last switch
+};
+enum vx_pmu_event : uint32_t {
+  VX_PMU_CYCLES = 1,
+  VX_PMU_INSTRUCTIONS, // retired
+  VX_PMU_CACHE_MISSES, // the vendor's nearest: AMD's L2 misses from the data cache, Intel's last level, Arm's L1D refills
+  VX_PMU_BRANCH_MISSES, // mispredicted branches retired
+};
+static constexpr uint32_t VX_PMU_MAX = 4;
+enum : uint32_t {
+  VX_PMU_USER_READ =
+      1, // the threads may read their own counters: rdpmc N (x86_64), PMEVCNTR<N>_EL0 (aarch64)
+};
+typedef struct vx_pmu_info {
+  uint32_t counters; // usable at once, at most VX_PMU_MAX; 0: no PMU
+  uint32_t width;    // the counters' bits, as a thread reading its own sees them
+  uint32_t events;   // 1 << each vx_pmu_event the PMU counts
+  uint32_t reserved;
+} vx_pmu_info;
+typedef struct vx_pmu_config {
+  uint32_t count; // events; counter i counts events[i]
+  uint32_t flags; // VX_PMU_USER_READ
+  uint32_t events[VX_PMU_MAX];
+  uint64_t sample_period[VX_PMU_MAX]; // overflow sampling (7a3b2); 0 for now
+} vx_pmu_config;
+
 enum vx_trace_block : uint32_t {
   VX_TB_PORT = 1,
   VX_TB_FUTEX,

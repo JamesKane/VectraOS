@@ -1432,6 +1432,8 @@ static const program USER_PROGRAMS[] = {
      nullptr},
     {"tracetest", "tests/user/tracetest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // the kernel's trace, /proc/trace (7a1b)
+    {"pmutest", "tests/user/pmutest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr}, // a task's hardware counters (7a3b1)
     {"libvxtest", "tests/user/libvxtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, true, LINK_DYNAMIC,
      nullptr}, // native since 6e4e: the behaviour suite, with vxapitest
     {"vxapitest", "tests/user/vxapitest.c", IN_TESTS, nullptr, false, nullptr, nullptr, true, LINK_DYNAMIC,

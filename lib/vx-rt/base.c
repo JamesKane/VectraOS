@@ -437,6 +437,11 @@ static void (*vx_span_end_hook)(uint64_t start, uint32_t what, uint64_t flow);
   return (vx_status)vx_syscall(VX_SYS_trace_configure, resource, op, (uint64_t)data, len, 0, 0);
 }
 
+// The hardware counters (ADR-0050): vx-rt's own until a libvx level has them.
+[[maybe_unused]] static vx_status vx_pmu_configure(vx_handle task, uint32_t op, void *data, uint64_t len) {
+  return (vx_status)vx_syscall(VX_SYS_pmu_configure, task, op, (uint64_t)data, len, 0, 0);
+}
+
 [[maybe_unused]] static vx_status vx_system_power(vx_handle resource, uint32_t op) {
   return (vx_status)vx_syscall(VX_SYS_system_power, resource, op, 0, 0, 0, 0);
 }

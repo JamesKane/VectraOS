@@ -160,7 +160,7 @@ Measuring comes before optimising, so the profiler is part of `dbg`, not a later
 
 - **Cycle counters:** user space can always read `rdtsc` or `cntvct_el0`, and `/sys/clock/info` publishes the frequency (02 §5.1). Timing a block of code needs no syscall and no calibration.
 - **Instrumentation:** `vx-prof` is a header of two inline functions, `vx_prof_begin(&zone)` and `vx_prof_end(&zone)`. Each writes a cycle-count record into a per-thread ring in a VMO the process shares with `procfs`. A disabled zone costs one predictable branch.
-- **Hardware counters:** `pmu_configure(task, events[], count)` programs the performance counters for a task's threads, which the kernel saves and restores on context switch. Programs may read their own counters with `rdpmc` (x86_64) or `PMEVCNTR` (aarch64), as in Casey Muratori's performance-aware programming course. Configuring another task needs `INSPECT` on it.
+- **Hardware counters:** `pmu_configure(task, op, data, len)` (ADR-0050) programs the performance counters for a task's threads, which the kernel saves and restores on context switch. Programs may read their own counters with `rdpmc` (x86_64) or `PMEVCNTR` (aarch64), as in Casey Muratori's performance-aware programming course. Configuring another task needs `INSPECT` on it.
 - **Sampling:** with overflow sampling on, the counter interrupt records the PC and walks the frame-pointer chain, up to 64 frames, into a sample ring. Frame pointers are always on (§4), so this is a pointer walk.
 - **Files:**
   ```

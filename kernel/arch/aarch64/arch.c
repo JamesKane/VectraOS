@@ -757,6 +757,59 @@ static void fp_load(const uint8_t *fp) {
 // how many there are.
 static bool watch_loaded[MAX_CPUS];
 
+// --- The PMU (ADR-0050) ---
+//
+// PMUv3 (Arm ARM D11): PMCR_EL0.N event counters, reached through PMSELR_EL0
+// and PMXEVTYPER/PMXEVCNTR; an event type with P (bit 31) set counts EL0
+// only. PMCEID0_EL0 says which of the common events 0-31 it counts. A thread
+// may read its own with PMUSERENR_EL0.ER (bit 3): PMEVCNTR<N>_EL0, 32 bits.
+
+static constexpr uint16_t PMU_EVENT[] = {[VX_PMU_CYCLES] = 0x11,         // CPU_CYCLES
+                                         [VX_PMU_INSTRUCTIONS] = 0x08,   // INST_RETIRED
+                                         [VX_PMU_CACHE_MISSES] = 0x03,   // L1D_CACHE_REFILL
+                                         [VX_PMU_BRANCH_MISSES] = 0x10}; // BR_MIS_PRED
+
+static void arch_pmu_probe(vx_pmu_info *info) {
+  *info = (vx_pmu_info){};
+  uint64_t dfr0, pmcr, ceid;
+  __asm__ volatile("mrs %0, id_aa64dfr0_el1" : "=r"(dfr0));
+  uint32_t ver = (uint32_t)(dfr0 >> 8 & 15);
+  if (!ver || ver == 15) return; // none, or not PMUv3
+  __asm__ volatile("mrs %0, pmcr_el0\n\tmrs %1, pmceid0_el0" : "=r"(pmcr), "=r"(ceid));
+  uint32_t n = (uint32_t)(pmcr >> 11 & 31);
+  info->counters = n < VX_PMU_MAX ? n : VX_PMU_MAX;
+  info->width = info->counters ? 32 : 0;
+  for (uint32_t e = VX_PMU_CYCLES; e <= VX_PMU_BRANCH_MISSES && info->counters; e++)
+    if (ceid >> PMU_EVENT[e] & 1) info->events |= 1u << e;
+}
+
+static void arch_pmu_start(uint32_t n, const uint32_t *events, const uint64_t *start, bool user_read) {
+  uint64_t pmcr;
+  __asm__ volatile("mrs %0, pmcr_el0" : "=r"(pmcr));
+  __asm__ volatile("msr pmcr_el0, %0" : : "r"(pmcr | 1)); // E: counting on
+  for (uint32_t i = 0; i < n; i++) {
+    uint64_t type = PMU_EVENT[events[i]] | 1ull << 31; // P: not EL1; EL2 is not counted unless NSH
+    __asm__ volatile("msr pmselr_el0, %0\n\tisb\n\tmsr pmxevtyper_el0, %1\n\tmsr pmxevcntr_el0, %2"
+                     :
+                     : "r"((uint64_t)i), "r"(type), "r"(start[i]));
+  }
+  __asm__ volatile("msr pmcntenset_el0, %0\n\tmsr pmuserenr_el0, %1\n\tisb"
+                   :
+                   : "r"((1ull << n) - 1), "r"(user_read ? 8ull : 0ull));
+}
+
+static void arch_pmu_read(uint32_t n, uint64_t *now) {
+  for (uint32_t i = 0; i < n; i++) {
+    uint64_t v;
+    __asm__ volatile("msr pmselr_el0, %1\n\tisb\n\tmrs %0, pmxevcntr_el0" : "=r"(v) : "r"((uint64_t)i));
+    now[i] = v;
+  }
+}
+
+static void arch_pmu_stop(uint32_t n) {
+  __asm__ volatile("msr pmcntenclr_el0, %0\n\tmsr pmuserenr_el0, xzr\n\tisb" : : "r"((1ull << n) - 1));
+}
+
 static uint32_t arch_watch_count(void) {
   uint64_t dfr0;
   __asm__ volatile("mrs %0, id_aa64dfr0_el1" : "=r"(dfr0));

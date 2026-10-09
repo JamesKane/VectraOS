@@ -142,6 +142,13 @@ static bool arch_console_device(bool io, uint64_t base,
 struct task;
 static void arch_io_switch(const struct task *t); // this CPU's I/O port permissions become t's; t may be null
 static uint32_t arch_watch_count(void);           // the debug registers' watchpoints (thread_state SET_WATCH)
+// The PMU (pmu.c, ADR-0050): what it has; this CPU's first n counters
+// started, counting events[i] in user mode from start[i] (as wide as
+// arch_pmu_probe says), readable by the thread if user_read; read; stopped.
+static void arch_pmu_probe(vx_pmu_info *info);
+static void arch_pmu_start(uint32_t n, const uint32_t *events, const uint64_t *start, bool user_read);
+static void arch_pmu_read(uint32_t n, uint64_t *now);
+static void arch_pmu_stop(uint32_t n);
 
 #include "../lib/vx-mem/mem.c"
 #include "../abi/vx/utf.h"
@@ -159,6 +166,7 @@ static uint32_t arch_watch_count(void);           // the debug registers' watchp
 #include "../lib/vx-rand/drbg.c" // the kernel's random bases (as_reserve, ADR-0042)
 #include "obj/task.c"
 #include "trace.h"
+#include "pmu.h"
 #include "sched/sched.c"
 #include "obj/port.c"
 #include "obj/channel.c"
@@ -171,6 +179,7 @@ static uint32_t arch_watch_count(void);           // the debug registers' watchp
 #include "obj/process.c"
 #include "syscall/syscall.c"
 #include "trace.c"
+#include "pmu.c"
 #include "obj/exception.c"
 #include "elf.c"
 #include "acpi.c"

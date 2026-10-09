@@ -526,6 +526,94 @@ static bool watch_loaded[MAX_CPUS];
 
 static uint32_t arch_watch_count(void) { return 4; }
 
+// --- The PMU (ADR-0050) ---
+//
+// AMD's core counters (PERF_CTL/PERF_CTR at 0xc0010200, AMD64 APM vol. 2
+// §13.2; PerfMonV2's global control, CPUID 0x80000022) or Intel's
+// architectural ones (IA32_PERFEVTSELx/IA32_PMCx, CPUID 0xa; SDM vol. 3B
+// §20.2): general-purpose counters only, user mode only (USR, not OS). rdpmc
+// N reads counter N, with CR4.PCE. Intel's legacy PMCs take writes of 32 bits
+// sign-extended, so a counter starts from at most 31 bits there.
+
+static struct {
+  bool amd, global;
+  uint32_t counters, width, events; // as vx_pmu_info
+} x86_pmu;
+
+static void arch_pmu_probe(vx_pmu_info *info) {
+  cpuid4 v = cpuid_sub(0, 0);
+  x86_pmu.amd = v.b == 0x6874'7541; // "Auth"enticAMD
+  if (x86_pmu.amd) {
+    if (cpuid_sub(0x8000'0001, 0).c & 1u << 23) x86_pmu.counters = 6, x86_pmu.width = 48;  // PerfCtrExtCore
+    if (cpuid_sub(0x8000'0000, 0).a >= 0x8000'0022 && (cpuid_sub(0x8000'0022, 0).a & 1)) { // PerfMonV2
+      x86_pmu.global = true;
+      x86_pmu.counters = cpuid_sub(0x8000'0022, 0).b & 0xf;
+    }
+    x86_pmu.events = 0x1e; // cycles, instructions, cache and branch misses
+  } else if (v.a >= 0xa) {
+    cpuid4 p = cpuid_sub(0xa, 0);
+    uint32_t version = p.a & 0xff;
+    if (version) {
+      x86_pmu.counters = (p.a >> 8) & 0xff, x86_pmu.width = 31, x86_pmu.global = version >= 2;
+      // EBX: a set bit is an architectural event not available.
+      uint32_t len = (p.a >> 24) & 0xff;
+      bool cycles = len > 0 && !(p.b & 1), instr = len > 1 && !(p.b & 2);
+      bool llc = len > 4 && !(p.b & 16), branch = len > 6 && !(p.b & 64);
+      x86_pmu.events = (cycles ? 1u << VX_PMU_CYCLES : 0) | (instr ? 1u << VX_PMU_INSTRUCTIONS : 0) |
+                       (llc ? 1u << VX_PMU_CACHE_MISSES : 0) | (branch ? 1u << VX_PMU_BRANCH_MISSES : 0);
+    }
+  }
+  if (x86_pmu.counters > VX_PMU_MAX) x86_pmu.counters = VX_PMU_MAX;
+  if (!x86_pmu.counters) x86_pmu.events = x86_pmu.width = 0;
+  *info = (vx_pmu_info){.counters = x86_pmu.counters, .width = x86_pmu.width, .events = x86_pmu.events};
+}
+
+static uint32_t pmu_ctl(uint32_t i) { return x86_pmu.amd ? 0xc001'0200 + 2 * i : 0x186 + i; }
+static uint32_t pmu_ctr(uint32_t i) { return x86_pmu.amd ? 0xc001'0201 + 2 * i : 0xc1 + i; }
+
+// An event's select: its code and unit mask, user mode (USR, bit 16), enabled (EN, bit 22).
+static uint64_t pmu_select(uint32_t event) {
+  static const uint16_t AMD[] = {[VX_PMU_CYCLES] = 0x0076,
+                                 [VX_PMU_INSTRUCTIONS] = 0x00c0,
+                                 [VX_PMU_CACHE_MISSES] = 0x0964, // L2 cache misses from data cache misses
+                                 [VX_PMU_BRANCH_MISSES] = 0x00c3};
+  static const uint16_t INTEL[] = {[VX_PMU_CYCLES] = 0x003c,
+                                   [VX_PMU_INSTRUCTIONS] = 0x00c0,
+                                   [VX_PMU_CACHE_MISSES] = 0x412e, // last-level misses
+                                   [VX_PMU_BRANCH_MISSES] = 0x00c5};
+  return (x86_pmu.amd ? AMD : INTEL)[event] | 1ull << 16 | 1ull << 22;
+}
+
+static void pmu_global(uint32_t n) {
+  if (x86_pmu.global) wrmsr(x86_pmu.amd ? 0xc000'0301 : 0x38f, (1ull << n) - 1);
+}
+
+static void pmu_pce(bool on) {
+  uint64_t cr4;
+  __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+  uint64_t want = on ? cr4 | 1ull << 8 : cr4 & ~(1ull << 8);
+  if (want != cr4) __asm__ volatile("mov %0, %%cr4" : : "r"(want) : "memory");
+}
+
+static void arch_pmu_start(uint32_t n, const uint32_t *events, const uint64_t *start, bool user_read) {
+  for (uint32_t i = 0; i < n; i++) {
+    wrmsr(pmu_ctl(i), 0);
+    wrmsr(pmu_ctr(i), start[i]);
+    wrmsr(pmu_ctl(i), pmu_select(events[i]));
+  }
+  pmu_global(n);
+  pmu_pce(user_read);
+}
+
+static void arch_pmu_read(uint32_t n, uint64_t *now) {
+  for (uint32_t i = 0; i < n; i++) now[i] = rdmsr(pmu_ctr(i));
+}
+
+static void arch_pmu_stop(uint32_t n) {
+  for (uint32_t i = 0; i < n; i++) wrmsr(pmu_ctl(i), 0);
+  pmu_pce(false);
+}
+
 static const uint8_t DR7_LEN[9] = {[1] = 0, [2] = 1, [4] = 3, [8] = 2}; // LEN's odd encoding, by bytes
 
 static void watch_load(const task *t) {

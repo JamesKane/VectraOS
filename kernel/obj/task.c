@@ -96,6 +96,13 @@ typedef struct task {
   uint32_t io_ranges; // I/O ports it may use (x86_64, device.c): [io_base, io_base + io_count)
   uint16_t io_base[TASK_MAX_IO];
   uint32_t io_count[TASK_MAX_IO]; // up to 0x10000
+  // Its threads' hardware counters (pmu.c, ADR-0050), under pmu_lock: gen
+  // counts its configurations, so a thread sees a new one at its next start.
+  struct {
+    uint32_t gen, count, flags;
+    uint32_t events[VX_PMU_MAX];
+  } pmu;
+  _Atomic uint64_t pmu_total[VX_PMU_MAX]; // its threads' counts, to their last switch
 } task;
 
 typedef enum thread_state : uint8_t {
@@ -140,6 +147,10 @@ struct thread {
   struct thread *donee;      // the thread this one, in channel_call, lends its scheduling to, or none
   bool lend_tail;            // its call answered: it keeps the loan only until it blocks, or its slice ends
   _Atomic uint64_t ticks[2]; // user and system ticks charged to it (sched_timer, ADR-0041)
+  // Its hardware counters (pmu.c): which of its task's configurations, its
+  // counts, what the counters were started at, and how many are running.
+  uint32_t pmu_gen, pmu_loaded;
+  uint64_t pmu_value[VX_PMU_MAX], pmu_start[VX_PMU_MAX];
   struct thread *next;       // in the ready queue (under the scheduler's lock)
   struct thread *wait_next;  // in a port's waiters (under the port's lock); never the same link as next
   struct thread *sleep_next; // in its CPU's sleep queue, ordered by wake_at

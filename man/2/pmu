@@ -1,30 +1,60 @@
-page=pmu sect=2 summary="program a task's performance counters (reserved)"
+page=pmu sect=2 summary="count a task's hardware events"
     names=pmu_configure
-    src=kernel/syscall/syscall.c,abi/vx/syscalls.def
-    keys=performance,counters,profiling,pmu,rdpmc
+    src=kernel/pmu.c,abi/vx/syscalls.def
+    keys=performance,counters,profiling,pmu,rdpmc,cycles,instructions
 
 # SYNOPSIS
 
-There is no `vx-rt` wrapper.
-The call is made raw, as `vx_syscall(VX_SYS_pmu_configure, ...)`.
+```c
+// vx-rt's, not libvx's yet
+vx_status vx_pmu_configure(vx_handle task, uint32_t op,
+                           void *data, uint64_t len);
+```
 
 # DESCRIPTION
 
-`pmu_configure` is reserved.
-Its number is allotted, and the kernel does not implement it: it returns `VX_ERR_UNSUPPORTED`.
+`pmu_configure` programs the hardware performance counters for the threads of `task` (ADR-0050), which must be a task handle with `VX_RIGHT_INSPECT`.
+Counters count in user mode only.
+Each thread's counts are kept across its switches, and what it counted is added to the task's totals at each switch out.
 
-It is meant to program the hardware performance counters for a task's threads, which the kernel would save and restore on each context switch, so a program can read its own counters with `rdpmc` or `PMEVCNTR`; configuring another task would need `VX_RIGHT_INSPECT` on it (05 §9).
+`op` is one of:
+: `VX_PMU_INFO`
+  `data` is a `vx_pmu_info` to fill: `counters`, how many can count at once (at most `VX_PMU_MAX`, 4; 0 if there is no PMU), `width`, their bits, and `events`, a bit `1 << e` for each event the PMU counts.
+: `VX_PMU_SET`
+  `data` is a `vx_pmu_config`: `count` events, counter `i` counting `events[i]`, one of `VX_PMU_CYCLES`, `VX_PMU_INSTRUCTIONS` (retired), `VX_PMU_CACHE_MISSES` (the vendor's nearest: AMD's L2 misses from data-cache misses, Intel's last-level misses, Arm's L1D refills) and `VX_PMU_BRANCH_MISSES`; `flags`, `VX_PMU_USER_READ` or 0; `sample_period`, all 0.
+  It replaces the task's configuration and starts its totals from 0: the caller's thread counts from now, the others from their next switch. A count of 0 turns the counters off.
+: `VX_PMU_READ`
+  `data` is `uint64_t[VX_PMU_MAX]` to fill with the task's totals: each thread's counts to its last switch, the caller's own to now.
 
-The cycle counter is another matter: user code reads it now, without a call, as clock(2) says.
+With `VX_PMU_USER_READ`, a thread reads its own counter `i`, `width` bits of its count, with `rdpmc` and `i` in ECX on x86_64, and on aarch64 by writing `i` to `PMSELR_EL0` and reading `PMXEVCNTR_EL0`.
+
+The cycle counter is another matter: user code reads it without a call, as clock(2) says.
+
+# EXAMPLES
+
+```c
+vx_pmu_config c = {.count = 2,
+                   .flags = VX_PMU_USER_READ,
+                   .events = {VX_PMU_CYCLES, VX_PMU_INSTRUCTIONS}};
+vx_pmu_configure(vx_self, VX_PMU_SET, &c, sizeof c);
+work();
+uint64_t v[VX_PMU_MAX];
+vx_pmu_configure(vx_self, VX_PMU_READ, v, sizeof v);
+// v[0] cycles, v[1] instructions
+```
 
 # SEE ALSO
 
-clock(2), dbg(1)
+clock(2), trace_configure(2), dbg(1)
 
 # DIAGNOSTICS
 
-`pmu_configure` returns `VX_ERR_UNSUPPORTED`.
+`VX_ERR_ACCESS` without `VX_RIGHT_INSPECT` on the task.
+`VX_ERR_UNSUPPORTED` with no PMU, for an event it does not count (QEMU's TCG counts retired instructions on aarch64 only with precise icount), or for a non-zero `sample_period`.
+`VX_ERR_INVALID` for more events than `counters`, an unknown event or flag, or a `len` not the record's size.
 
 # BUGS
 
-There are no performance counters for programs: the kernel neither programs them nor switches them with threads.
+There is no overflow sampling yet (M7 step 7a3b2).
+Intel's counters are untested, and a thread's own reading there is 31 bits wide.
+Only the general-purpose counters are used, not Intel's fixed ones.

@@ -1,0 +1,4 @@
+# tests/user/pmutest.ndb: pmutest, a task's hardware counters
+# (tests/qemu/pmu.ndb).
+
+service=pmutest program=/boot/bin/pmutest console

@@ -644,6 +644,7 @@ static void schedule_locked(void) {
   if (next != prev) {
     TRACE(VX_TC_SCHED, VX_TK_SWITCH, trace_tid(prev) | (uint64_t)prev->state << 32, trace_tid(next));
     arch_user_switch(prev, next);
+    pmu_switch(prev, next);
     next->state = THREAD_RUNNING;
     next->cpu = c;
     c->current = next;

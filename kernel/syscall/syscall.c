@@ -1339,6 +1339,7 @@ static int64_t syscall_dispatch_one(uint64_t nr, const uint64_t a[6]) {
   case VX_SYS_dma_domain_op: return sys_dma_domain_op((vx_handle)a[0], a[1], a[2]);
   case VX_SYS_system_power: return sys_system_power((vx_handle)a[0], a[1]);
   case VX_SYS_trace_configure: return sys_trace_configure((vx_handle)a[0], a[1], a[2], a[3]);
+  case VX_SYS_pmu_configure: return sys_pmu_configure((vx_handle)a[0], a[1], a[2], a[3]);
   case VX_SYS_clock_set: return sys_clock_set((vx_handle)a[0], a[1]);
   case VX_SYS_pager_create: return sys_pager_create((vx_handle)a[0], (vx_handle)a[1], a[2], a[3], a[4]);
   case VX_SYS_pager_supply:
