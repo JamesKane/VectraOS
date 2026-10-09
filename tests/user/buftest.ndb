@@ -1,0 +1,5 @@
+# tests/user/buftest.ndb: buftest, a vx-buffer between processes (tests/qemu/buffer.ndb).
+
+service=buftest program=/boot/bin/buftest console
+ns=posix
+connect=nsd

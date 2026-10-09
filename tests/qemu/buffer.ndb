@@ -1,0 +1,11 @@
+# tests/qemu/buffer.ndb: vx-buffer (M7 step 7b2, 01 §6.1): a buffer handed
+# from one process to another, its timeline ordering them, and a descriptor
+# that lies about its size refused (tests/user/buftest.c).
+
+scenario=buffer timeout=60 cmdline=vx.skip=rc with=buftest
+expect="buftest: child 8 checks, 0 failed"
+expect="buftest: 13 checks, 0 failed"
+line="svcd: buftest exited"
+fail="vx: panic"
+fail="buftest: FAILED"
+fail="svcd: buftest exited: "

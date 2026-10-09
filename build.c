@@ -1438,6 +1438,8 @@ static const program USER_PROGRAMS[] = {
      nullptr}, // ./build bench's measurements (7a5)
     {"flighttest", "tests/user/tracetest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // tracetest's flight recorder test, as a program of its own (7a4a)
+    {"buftest", "tests/user/buftest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr}, // vx-buffer between processes (7b2)
     {"fbtest", "tests/user/fbtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // the boot framebuffer, write-combining (7b1c)
     {"pmutest", "tests/user/pmutest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,

@@ -411,7 +411,14 @@ enum vx_pager_op : uint32_t {
   VX_PAGER_IDLE = 4,
   VX_PAGER_RESIZE = 5,
 };
-enum vx_vmo_resize_op : uint32_t { VX_VMO_RESIZE = 1, VX_VMO_DECOMMIT = 2, VX_VMO_CACHE = 3 };
+enum vx_vmo_resize_op : uint32_t {
+  VX_VMO_RESIZE = 1,
+  VX_VMO_DECOMMIT = 2,
+  VX_VMO_CACHE = 3,
+  VX_VMO_SIZE = 4
+};
+// vmo_op(vmo, VX_VMO_SIZE, 0, 0) (M7 step 7b2): its size in bytes, any
+// handle to it: what a receiver checks a buffer's descriptor against.
 // vmo_op(vmo, VX_VMO_CACHE, policy, 0) (ADR-0051, M7 step 7b1c): how a
 // physical VMO's mappings are cached, set before its first mapping
 // (BAD_STATE after): DEVICE, uncached (a register's, the default), or WC,

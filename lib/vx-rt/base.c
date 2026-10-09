@@ -383,6 +383,13 @@ VX_API vx_status vx_vmo_decommit(vx_handle vmo, uint64_t offset, uint64_t size) 
   return (vx_status)vx_syscall(VX_SYS_vmo_op, vmo, VX_VMO_CACHE, policy, 0, 0, 0);
 }
 
+// A VMO's size in bytes (vmo_op's VX_VMO_SIZE), any handle to it.
+[[maybe_unused]] static vx_status vx_vmo_size(vx_handle vmo, uint64_t *size) {
+  int64_t r = vx_syscall(VX_SYS_vmo_op, vmo, VX_VMO_SIZE, 0, 0, 0, 0);
+  *size = r >= 0 ? (uint64_t)r : 0;
+  return r >= 0 ? VX_OK : (vx_status)r;
+}
+
 // A pager's own VMO's new size (pager_op RESIZE).
 [[maybe_unused]] static vx_status vx_pager_resize(vx_handle pager, vx_handle vmo, uint64_t size) {
   return (vx_status)vx_syscall(VX_SYS_pager_op, pager, vmo, VX_PAGER_RESIZE, 0, size, 0);

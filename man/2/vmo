@@ -75,7 +75,8 @@ A resizable lazy VMO's added pages are absent, made at a touch.
 
 `vx_vmo_decommit` makes `vmo_op` with `VX_VMO_DECOMMIT` (ADR-0046): the pages of a lazy <vmo> from <offset> to <offset> + <size>, both page-aligned, are freed, out of every mapping and every CPU's TLB first, and a later touch reads zeros. It needs `VX_RIGHT_WRITE`. A heap gives back the pages of large blocks and empty slabs this way.
 `vmo_op` with `VX_VMO_CACHE` and a policy as `arg` (ADR-0051, M7 step 7b1c) sets how a physical VMO's mappings are cached: `VX_CACHE_DEVICE`, uncached, the default and a device register's, or `VX_CACHE_WC`, write-combining, a framebuffer's (writes gathered, reads uncached; x86's PAT entry 1, aarch64's Normal Non-cacheable). It is set before the VMO's first mapping, and is `VX_ERR_BAD_STATE` after; `VX_ERR_UNSUPPORTED` for a VMO of RAM, which is cached always. It needs `VX_RIGHT_WRITE`; vx-rt's `vx_vmo_cache` makes it.
-`VX_VMO_RESIZE`, `VX_VMO_DECOMMIT` and `VX_VMO_CACHE` are the operations `vmo_op` has.
+`vmo_op` with `VX_VMO_SIZE` returns the VMO's size in bytes, a whole number of pages, through any handle to it (M7 step 7b2): what a receiver checks a buffer's descriptor against (`lib/vx-buffer`); vx-rt's `vx_vmo_size` makes it.
+`VX_VMO_RESIZE`, `VX_VMO_DECOMMIT`, `VX_VMO_CACHE` and `VX_VMO_SIZE` are the operations `vmo_op` has.
 
 ## Seals and leases
 

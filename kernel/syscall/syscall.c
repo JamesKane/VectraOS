@@ -308,8 +308,15 @@ static vx_status vmo_set_cache(vmo *v, uint64_t policy, uint64_t size) {
 }
 
 static int64_t sys_vmo_op(vx_handle h, uint64_t op, uint64_t arg, uint64_t size) {
-  if (op != VX_VMO_RESIZE && op != VX_VMO_DECOMMIT && op != VX_VMO_CACHE) return VX_ERR_INVALID;
   vx_status st;
+  if (op == VX_VMO_SIZE) { // any handle may ask (7b2)
+    vmo *v = (vmo *)handle_get(current_task(), h, OBJ_VMO, 0, &st);
+    if (!v) return st;
+    int64_t bytes = (int64_t)__atomic_load_n(&v->size, __ATOMIC_RELAXED);
+    object_release(&v->obj);
+    return bytes;
+  }
+  if (op != VX_VMO_RESIZE && op != VX_VMO_DECOMMIT && op != VX_VMO_CACHE) return VX_ERR_INVALID;
   vmo *v = (vmo *)handle_get(current_task(), h, OBJ_VMO, VX_RIGHT_WRITE, &st);
   if (!v) return st;
   if (op == VX_VMO_CACHE)
