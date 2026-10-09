@@ -1,0 +1,43 @@
+page=displayd sect=8 summary="the display coordinator: outputs and the engine protocol's one client"
+    src=servers/displayd/displayd.c,lib/vx-driver/displayproto.h,lib/vx-buffer/buffer.h
+    keys=display,outputs,framebuffer,simplefb,vblank,wsys,engine
+
+# SYNOPSIS
+
+```usage
+displayd
+```
+
+# DESCRIPTION
+
+`displayd` owns the machine's outputs (docs/21 §2 item 4, ADR-0026).
+It holds a session of the display engine protocol (docs/proto/display.md) with one back end, the connector its manifest's `connect=` gives it, and serves the outputs on `/srv/outputs`, which the shell sees at `/wsys/outputs` and winsrv will show there.
+Policy is its own and registers are the back end's: it keeps each output's mode and state and a vblank Counter that rises once a refresh, and it signals a buffer's timeline once a vblank shows a newer stamp than the one that used it.
+
+Its back end now is drv-simplefb(3), the firmware's framebuffer.
+It and drv-simplefb start only with `vx.display` on the kernel command line (boot/svc/display.ndb) until winsrv (M7 step 7c) is `displayd`'s client.
+
+# EXAMPLES
+
+```rc
+% cat /wsys/outputs/fb0/info
+output=fb0 width=1280 height=800 refresh_mhz=60000 format=XRGB8888
+    adopted=firmware power=on stamp=0
+% echo pattern >/wsys/outputs/fb0/ctl
+```
+
+# FILES
+
+: `/wsys/outputs/fb0/info`
+  The output as an ndb(6) record: `output`, `width`, `height`, `refresh_mhz`, `format`, `adopted=firmware` while it shows the firmware's mode, `power` (`on` or `off`) and `stamp`, the newest configuration on screen.
+: `/wsys/outputs/fb0/ctl`
+  A command a write: `pattern`, a test card (colour bars, a grey ramp in 16 steps, a white border on every edge and a crosshair through the centre); `blank`, black; `on` and `off`, the output's power.
+
+# SEE ALSO
+
+drv-simplefb(3), svc(6), svcd(8), vmo(2)
+
+# BUGS
+
+One output and one back end; version 1 of the engine protocol has no more.
+The 60 Hz is assumed, not read: a GOP does not say its refresh.

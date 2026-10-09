@@ -1,0 +1,22 @@
+# tests/qemu/display.ndb: displayd over simplefb (M7 step 7b3): the output
+# adopted from the firmware, its info read from rc at /wsys/outputs (shell.ndb's grant), and the test card a write
+# to its ctl shows, matched by screenshot.
+
+scenario=display display=fb timeout=60 cmdline=vx.display
+expect="displayd: fb0 "
+expect="displayd: serving /srv/outputs"
+prompt="% "
+send="ls /wsys/outputs/fb0"
+line="ctl  info"
+prompt="% "
+send="cat /wsys/outputs/fb0/info"
+expect="adopted=firmware power=on stamp=0"
+prompt="% "
+send="echo pattern >/wsys/outputs/fb0/ctl; sleep 1; cat /wsys/outputs/fb0/info"
+expect="power=on stamp=1"
+screen=card-$arch tolerance=1
+prompt="% "
+fail="vx: panic"
+fail="displayd: ctl"
+fail="svcd: displayd exited"
+fail="svcd: simplefb exited"

@@ -36,7 +36,7 @@ A `vx_display_cfg` is one output's: its mode and up to `VX_DISPLAY_LAYERS` layer
 
 The damage is the rectangles that changed since the stamp before, at most `VX_DISPLAY_DAMAGE` (none: everything). A back end that copies (simplefb, from an image into the framebuffer) or flushes (virtio-gpu's transfer and flush) covers the damage, not the screen (21 §2 item 4).
 
-`VBLANK(output, time, stamp)` comes once a refresh while the output is on, with the newest stamp on screen and the time on `vx_clock`. A back end with no vblank interrupt (simplefb, virtio-gpu) times it at its output's refresh, never at a fixed rate. `displayd` signals the output's vblank Counter from it. An image an `APPLY` replaced is the back end's no more once a vblank shows the newer stamp: its timeline's release point is signalled then.
+`VBLANK(output, time, stamp)` comes once a refresh while the output is on, with the newest stamp on screen and the time on `vx_clock`. A back end with no vblank interrupt (simplefb, virtio-gpu) times it at its output's refresh, never at a fixed rate. `displayd` signals the output's vblank Counter from it. An image an `APPLY` replaced is the back end's no more once a vblank shows the newer stamp; the back end signals nothing, keeping no client state, and `displayd` signals the image's timeline then, with the stamp that last showed it.
 
 ## 5. Events
 

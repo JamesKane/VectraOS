@@ -1438,6 +1438,8 @@ static const program USER_PROGRAMS[] = {
      nullptr}, // ./build bench's measurements (7a5)
     {"flighttest", "tests/user/tracetest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // tracetest's flight recorder test, as a program of its own (7a4a)
+    {"disptest", "tests/user/disptest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr}, // the display engine protocol (7b3)
     {"buftest", "tests/user/buftest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // vx-buffer between processes (7b2)
     {"fbtest", "tests/user/fbtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
@@ -1497,6 +1499,10 @@ static const program USER_PROGRAMS[] = {
      LINK_STATIC, nullptr},
     {"drv-virtio-net", "drivers/drv-virtio-net/net.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false,
      LINK_STATIC, nullptr},
+    {"displayd", "servers/displayd/displayd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false,
+     LINK_STATIC, nullptr}, // the display coordinator (7b3)
+    {"drv-simplefb", "drivers/drv-simplefb/simplefb.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false,
+     LINK_STATIC, nullptr}, // the firmware's framebuffer, a display back end (7b3)
     {"drv-virtio-blk", "drivers/drv-virtio-blk/blk.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false,
      LINK_STATIC, nullptr},
     {"drv-nvme", "drivers/drv-nvme/nvme.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
@@ -3367,7 +3373,9 @@ static const char *const BOOTFS_DIRS[] = {"adm",
                                           "proc",
                                           "srv",
                                           "sys",
-                                          "tmp"};
+                                          "tmp",
+                                          "wsys",
+                                          "wsys/outputs"};
 
 // Whether `name` is in the comma-separated list `with`.
 static bool listed(const char *with, const char *name) {

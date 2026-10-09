@@ -1,0 +1,16 @@
+# tests/qemu/engine.ndb: the display engine protocol (M7 step 7b3,
+# docs/proto/display.md) against simplefb on the firmware's framebuffer
+# (tests/user/disptest.c): bars with a white box flipped in by its damage
+# alone, and no red square, matched by screenshot.
+
+scenario=engine display=fb timeout=60 cmdline=vx.skip=rc with=disptest
+expect="simplefb: "
+expect="disptest: 36 checks, 0 failed"
+screen=engine-$arch tolerance=1
+expect="disptest: holding the screen"
+fail="vx: panic"
+fail="disptest: FAILED"
+fail="simplefb: no"
+fail="simplefb: cannot"
+fail="svcd: disptest exited"
+fail="svcd: simplefb exited"

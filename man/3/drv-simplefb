@@ -1,0 +1,31 @@
+page=drv-simplefb sect=3 summary="the firmware's framebuffer as a display engine back end"
+    src=drivers/drv-simplefb/simplefb.c,boot/svc/display.ndb,lib/vx-driver/displayproto.h
+    keys=display,framebuffer,gop,ramfb,simplefb,vblank,engine
+
+# SYNOPSIS
+
+```ndb
+service=simplefb program=/boot/bin/drv-simplefb
+    post=simplefb console framebuffer when=vx.display
+```
+
+# DESCRIPTION
+
+`drv-simplefb` serves the framebuffer the firmware left (x86's GOP, aarch64's ramfb) as a back end of the display engine protocol (docs/proto/display.md, ADR-0026), to displayd(8).
+svcd(8) hands it the framebuffer as a physical VMO with its `framebuffer` flag; it maps it write-combining (ADR-0051).
+
+It has one output in the firmware's mode and one layer, an image or a colour the screen's size or smaller, unscaled and upright.
+An applied image is copied into the framebuffer at the next vblank, its damage only, converted if the framebuffer's channels are not XRGB8888's.
+A framebuffer has no vblank interrupt: its vblank is a timer at 60 Hz, since a GOP gives no refresh.
+
+It serves one session at a time on `/srv/simplefb`, and refuses a second with `BAD_STATE`.
+It saves the screen when a session opens and puts it back when the session ends, so the boot console shows again if displayd exits (ADR-0026 item 3).
+
+# SEE ALSO
+
+displayd(8), svc(6), vmo(2)
+
+# BUGS
+
+The 60 Hz is assumed, not read.
+Only 32-bit framebuffers.

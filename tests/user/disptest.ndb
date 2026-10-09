@@ -1,0 +1,6 @@
+# tests/user/disptest.ndb: disptest, the display engine protocol against
+# simplefb (tests/qemu/engine.ndb).
+
+service=simplefb program=/boot/bin/drv-simplefb post=simplefb console framebuffer
+service=disptest program=/boot/bin/disptest console
+connect=simplefb
