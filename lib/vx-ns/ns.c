@@ -348,10 +348,11 @@ static vx_ns_entry *ns_shortcut(vx_ns *ns, vx_str path, int *skip) {
     }
     if (still) best = e;
   }
-  if (best) {
-    vx_str names[VX_NS_MAX_DEPTH];
-    *skip = ns_split((vx_str){best->path, best->path_len}, names);
-    if (*skip < 0) best = nullptr;
+  if (best) { // its names, counted (no array: a note's handler walks paths on a small stack, ADR-0036)
+    int n = 0;
+    for (size_t k = 0; k < best->path_len; k++)
+      n += best->path[k] != '/' && (k == 0 || best->path[k - 1] == '/');
+    *skip = n;
   }
   return best;
 }

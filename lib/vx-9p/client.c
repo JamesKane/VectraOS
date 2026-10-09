@@ -288,13 +288,13 @@ static vx_status p9c_version_as(p9_client *c, uint32_t msize, p9_dialect d, uint
 static vx_status p9c_open(p9_client *c, uint32_t fid, uint8_t mode);
 
 // A reply waited for, decoded and checked, as p9c_rpc's.
-static vx_status p9c_reply(p9_client *c, const p9_msg *t, p9_rcall *rc) {
+static vx_status p9c_reply(p9_client *c, uint8_t type, uint16_t tag, p9_rcall *rc) {
   int64_t rn = c->pipe->reply(c->ctx, rc->x);
   if (rn == 0) return VX_ERR_PEER_CLOSED;
   if (rn < 0) return (vx_status)rn;
-  if (p9_decode(rc->x->resp, (size_t)rn, &rc->r) != VX_OK || rc->r.tag != t->tag) return VX_ERR_INVALID;
+  if (p9_decode(rc->x->resp, (size_t)rn, &rc->r) != VX_OK || rc->r.tag != tag) return VX_ERR_INVALID;
   if (rc->r.type == P9_Rerror) return p9_error_status(rc->r.ename);
-  return rc->r.type == t->type + 1 ? VX_OK : VX_ERR_INVALID;
+  return rc->r.type == type + 1 ? VX_OK : VX_ERR_INVALID;
 }
 
 // A walk and an open of what it reaches, sent together (7a6: one round trip,
@@ -307,45 +307,54 @@ static vx_status p9c_reply(p9_client *c, const p9_msg *t, p9_rcall *rc) {
                                                 uint16_t count, uint8_t mode, uint32_t *newfid, p9_qid *qids,
                                                 uint16_t *nwqid, bool *opened, vx_status *open_st) {
   *nwqid = 0, *opened = false, *open_st = VX_ERR_INVALID;
-  if (!c->pipe || !c->pipe->send || p9c_dotl(c) || count == 0) { // one at a time
-    vx_status e = p9c_walk_names(c, fid, names, count, newfid, qids, nwqid);
-    return e;
-  }
+  if (!c->pipe || !c->pipe->send || p9c_dotl(c) || count == 0) // one at a time
+    return p9c_walk_names(c, fid, names, count, newfid, qids, nwqid);
   if (count > P9_MAXWELEM) return VX_ERR_RANGE;
-  p9_msg w = {.type = P9_Twalk, .fid = fid, .newfid = p9c_fid(c), .nwname = count};
-  for (uint16_t i = 0; i < count; i++) w.wname[i] = names[i];
-  p9_msg o = {.type = P9_Topen, .fid = w.newfid, .mode = mode};
-  p9_rcall rw = {}, ro = {};
-  rw.x = p9c_begin(c, false);
-  if (!rw.x) return VX_ERR_PEER_CLOSED;
-  w.tag = rw.x->tag;
-  size_t n = p9_encode(&w, rw.x->req, rw.x->cap);
-  vx_status e = n ? c->pipe->send(c->ctx, rw.x, n) : VX_ERR_TOO_SMALL;
+  // One message at a time, encoded and then decoded in the same place: a
+  // note's handler resolves paths too, on what stack it has (a p9_msg is
+  // large; this was 5 KiB a frame with four).
+  // One request message and one reply, each used in turn (no compound
+  // literals, which an unoptimized build makes copies of).
+  static_assert(sizeof(p9_rcall) > sizeof(p9_msg));
+  p9_rcall rc;
+  p9_msg *t = &rc.r; // the request, encoded before the reply is decoded over it
+  memset(t, 0, sizeof *t);
+  t->type = P9_Twalk, t->fid = fid, t->newfid = p9c_fid(c), t->nwname = count;
+  for (uint16_t i = 0; i < count; i++) t->wname[i] = names[i];
+  uint32_t made = t->newfid;
+  p9_xfer *xw = p9c_begin(c, false), *xo = nullptr;
+  if (!xw) return VX_ERR_PEER_CLOSED;
+  uint16_t wtag = xw->tag, otag = 0;
+  t->tag = wtag;
+  size_t n = p9_encode(t, xw->req, xw->cap);
+  vx_status e = n ? c->pipe->send(c->ctx, xw, n) : VX_ERR_TOO_SMALL;
   if (e != VX_OK) {
-    p9c_done(c, &rw);
+    c->pipe->end(c->ctx, xw);
     return e;
   }
-  ro.x = p9c_begin(c, false);
-  bool both = false;
-  if (ro.x) {
-    o.tag = ro.x->tag;
-    size_t m = p9_encode(&o, ro.x->req, ro.x->cap);
-    both = m && c->pipe->send(c->ctx, ro.x, m) == VX_OK;
-    if (!both) p9c_done(c, &ro);
+  xo = p9c_begin(c, false);
+  if (xo) {
+    memset(t, 0, sizeof *t);
+    t->type = P9_Topen, t->fid = made, t->mode = mode, t->tag = otag = xo->tag;
+    size_t m = p9_encode(t, xo->req, xo->cap);
+    if (!m || c->pipe->send(c->ctx, xo, m) != VX_OK) c->pipe->end(c->ctx, xo), xo = nullptr;
   }
-  e = p9c_reply(c, &w, &rw);
+  // The walk's reply.
+  rc.x = xw;
+  e = p9c_reply(c, P9_Twalk, wtag, &rc);
   if (e == VX_OK) {
-    *nwqid = rw.r.nwqid <= count ? rw.r.nwqid : 0;
-    for (uint16_t i = 0; i < *nwqid; i++) qids[i] = rw.r.wqid[i];
-    if (*nwqid == count) *newfid = w.newfid;
+    *nwqid = rc.r.nwqid <= count ? rc.r.nwqid : 0;
+    for (uint16_t i = 0; i < *nwqid; i++) qids[i] = rc.r.wqid[i];
+    if (*nwqid == count) *newfid = made;
   }
-  p9c_done(c, &rw);
-  if (both) {
-    *open_st = p9c_reply(c, &o, &ro); // an open of a fid the walk did not make fails: harmless
+  p9c_done(c, &rc);
+  if (xo) { // the open's
+    rc.x = xo;
+    *open_st = p9c_reply(c, P9_Topen, otag, &rc); // an open of a fid the walk did not make fails: harmless
     *opened = *open_st == VX_OK && e == VX_OK && *nwqid == count;
-    p9c_done(c, &ro);
+    p9c_done(c, &rc);
   } else if (e == VX_OK && *nwqid == count) {
-    *open_st = p9c_open(c, w.newfid, mode);
+    *open_st = p9c_open(c, made, mode);
     *opened = *open_st == VX_OK;
   }
   return e;

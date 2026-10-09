@@ -585,7 +585,12 @@ static jmp_buf fork_jump;
 static uint64_t fork_tls, fork_rights; // its thread pointer, and its protection-key rights (ADR-0035: kept)
 static uint64_t
     fork_pending; // the parent's pending signals as its memory was copied: the child has none of them (POSIX)
-alignas(16) static uint8_t fork_stack[4096];
+// Big enough for a note's handler as well: a signal sent the moment fork
+// returns in the parent can reach the child before it has left this stack,
+// and its handler then runs here, through the namespace and 9P (a debug
+// build's frames). 4 KiB overflowed (M7 step 7b1c, found once 7a6 made
+// kill quicker); 64 KiB of BSS costs a page or two, as used.
+alignas(16) static uint8_t fork_stack[64 * 1024];
 
 [[noreturn]] static void fork_entry(vx_handle unused, uint64_t unused2) {
   (void)unused, (void)unused2;
