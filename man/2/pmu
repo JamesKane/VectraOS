@@ -21,10 +21,13 @@ Each thread's counts are kept across its switches, and what it counted is added 
 : `VX_PMU_INFO`
   `data` is a `vx_pmu_info` to fill: `counters`, how many can count at once (at most `VX_PMU_MAX`, 4; 0 if there is no PMU), `width`, their bits, and `events`, a bit `1 << e` for each event the PMU counts.
 : `VX_PMU_SET`
-  `data` is a `vx_pmu_config`: `count` events, counter `i` counting `events[i]`, one of `VX_PMU_CYCLES`, `VX_PMU_INSTRUCTIONS` (retired), `VX_PMU_CACHE_MISSES` (the vendor's nearest: AMD's L2 misses from data-cache misses, Intel's last-level misses, Arm's L1D refills) and `VX_PMU_BRANCH_MISSES`; `flags`, `VX_PMU_USER_READ` or 0; `sample_period`, all 0.
+  `data` is a `vx_pmu_config`: `count` events, counter `i` counting `events[i]`, one of `VX_PMU_CYCLES`, `VX_PMU_INSTRUCTIONS` (retired), `VX_PMU_CACHE_MISSES` (the vendor's nearest: AMD's L2 misses from data-cache misses, Intel's last-level misses, Arm's L1D refills) and `VX_PMU_BRANCH_MISSES`; `flags`, `VX_PMU_USER_READ` or 0; and `sample_period[i]`, 0, or a sample every that many events, at least 10000 and at most half the counter's range.
   It replaces the task's configuration and starts its totals from 0: the caller's thread counts from now, the others from their next switch. A count of 0 turns the counters off.
 : `VX_PMU_READ`
   `data` is `uint64_t[VX_PMU_MAX]` to fill with the task's totals: each thread's counts to its last switch, the caller's own to now.
+
+A sampled counter interrupts as it overflows: while the kernel's trace samples (`sample` in procfs(4)'s `/proc/trace/ctl`), each overflow writes a `sample` record and its `frames`, as the tick does, with bit 62 of its `b` set and the event in bits 48 to 55 (ADR-0049).
+Its counts are kept all the same; its own reading means nothing to the thread.
 
 With `VX_PMU_USER_READ`, a thread reads its own counter `i`, `width` bits of its count, with `rdpmc` and `i` in ECX on x86_64, and on aarch64 by writing `i` to `PMSELR_EL0` and reading `PMXEVCNTR_EL0`.
 
@@ -50,11 +53,11 @@ clock(2), trace_configure(2), dbg(1)
 # DIAGNOSTICS
 
 `VX_ERR_ACCESS` without `VX_RIGHT_INSPECT` on the task.
-`VX_ERR_UNSUPPORTED` with no PMU, for an event it does not count (QEMU's TCG counts retired instructions on aarch64 only with precise icount), or for a non-zero `sample_period`.
+`VX_ERR_UNSUPPORTED` with no PMU, or for an event it does not count (QEMU's TCG counts retired instructions on aarch64 only with precise icount).
+`VX_ERR_RANGE` for a `sample_period` too short or too long.
 `VX_ERR_INVALID` for more events than `counters`, an unknown event or flag, or a `len` not the record's size.
 
 # BUGS
 
-There is no overflow sampling yet (M7 step 7a3b2).
-Intel's counters are untested, and a thread's own reading there is 31 bits wide.
+Intel's counters are untested, and a thread's own reading there is 32 bits wide.
 Only the general-purpose counters are used, not Intel's fixed ones.

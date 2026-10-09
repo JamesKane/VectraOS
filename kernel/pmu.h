@@ -4,4 +4,5 @@
 
 struct thread;
 static void pmu_switch(struct thread *prev, struct thread *next);
+static void pmu_overflow(bool from_user, uint64_t pc, uint64_t fp); // the PMU's interrupt
 static int64_t sys_pmu_configure(vx_handle th, uint64_t op, uint64_t data, uint64_t len);

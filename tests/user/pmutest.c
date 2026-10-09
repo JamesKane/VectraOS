@@ -3,9 +3,12 @@
 // and retired instructions where the PMU has them (QEMU's TCG counts them on
 // aarch64 only with precise icount), over a spin of known length on this
 // thread and on another, reads its own counter as a thread may (rdpmc,
-// PMXEVCNTR), and is refused without INSPECT.
+// PMXEVCNTR), and is refused without INSPECT. Then overflow sampling
+// (7a3b2): cycles sampled each 100,000 through /proc/trace (as adm), the
+// samples the PMU's and nearly all in spin.
 
 #include "../../lib/vx-rt/rt.c"
+#include "../../lib/vx-ns/nsapi.c"
 
 static uint32_t checks, failures;
 
@@ -46,6 +49,53 @@ static uint64_t own(uint32_t i) {
 #endif
 }
 
+static vx_status ctl(const char *cmd) { return vx_ctl(VX_STR("/proc/trace/ctl"), "%s", cmd); }
+
+// Cycles sampled each `period` over a spin: how many of this task's
+// samples the PMU wrote, and how many of those were in spin.
+static void sampling(void) {
+  static constexpr uint64_t PERIOD = 100'000;
+  vx_pmu_config c = {.count = 1, .events = {VX_PMU_CYCLES}, .sample_period = {PERIOD}};
+  vx_pmu_config tiny = c;
+  tiny.sample_period[0] = 100;
+  CHECK(vx_pmu_configure(vx_self, VX_PMU_SET, &tiny, sizeof tiny) == VX_ERR_RANGE); // an interrupt storm
+  CHECK(ctl("start sample rate 1 size 4M") == VX_OK); // the tick's samples: next to none
+  CHECK(vx_pmu_configure(vx_self, VX_PMU_SET, &c, sizeof c) == VX_OK);
+  spin(SPIN);
+  uint64_t v[VX_PMU_MAX];
+  CHECK(vx_pmu_configure(vx_self, VX_PMU_READ, v, sizeof v) == VX_OK);
+  CHECK(ctl("stop") == VX_OK);
+  vx_pmu_config off = {};
+  vx_pmu_configure(vx_self, VX_PMU_SET, &off, sizeof off);
+
+  vx_arena *a = vx_arena_new(40 << 20);
+  vx_trace_record *r = vx_push(a, 32 << 20, 32);
+  vx_fd ev = vx_open(VX_STR("/proc/trace/events"), VX_OREAD);
+  size_t bytes = 0;
+  int64_t got;
+  while (ev >= 0 && r && (got = vx_read(ev, (vx_bytes){(uint8_t *)r + bytes, (32 << 20) - bytes})) > 0)
+    bytes += (size_t)got;
+  vx_close(ev);
+  vx_task_summary me;
+  vx_task_info(vx_self, &me);
+  uint64_t from = (uint64_t)(uintptr_t)&spin;
+  uint32_t pmu = 0, inside = 0;
+  for (size_t i = 0; r && i < bytes / sizeof *r; i++) {
+    if (r[i].kind != VX_TK_SAMPLE || r[i].tid >> 12 != me.id || !(r[i].b >> 62 & 1)) continue;
+    pmu++;
+    inside += r[i].a >= from && r[i].a < from + 512 && (r[i].b >> 48 & 0xff) == VX_PMU_CYCLES;
+  }
+  vx_printf("pmutest: %llu cycles sampled, %u PMU samples, %u in spin\n", (unsigned long long)v[0], pmu,
+            inside);
+  CHECK(v[0] >= SPIN);
+  // One a period on hardware and KVM; TCG's cycles run on virtual time and
+  // its overflow interrupts come late on a loaded host, each late one a
+  // period's start lost: a quarter, then.
+  CHECK(pmu >= v[0] / PERIOD / 4);
+  CHECK(inside * 10 >= pmu * 9);
+  vx_arena_free(a);
+}
+
 const char *vx_main(void) {
   vx_pmu_info info = {};
   CHECK(vx_pmu_configure(vx_self, VX_PMU_INFO, &info, sizeof info) == VX_OK);
@@ -84,16 +134,14 @@ const char *vx_main(void) {
   CHECK(after[0] - before[0] >= 2 * SPIN);
   CHECK(!instr || after[1] - before[1] >= 6 * SPIN);
 
-  // No sampling yet (7a3b2); none without INSPECT; off.
-  vx_pmu_config sampled = c;
-  sampled.sample_period[0] = 100'000;
-  CHECK(vx_pmu_configure(vx_self, VX_PMU_SET, &sampled, sizeof sampled) == VX_ERR_UNSUPPORTED);
+  // None without INSPECT; off.
   vx_handle weak = VX_HANDLE_NONE;
   CHECK(vx_handle_dup(vx_self, VX_RIGHT_TRANSFER, &weak) == VX_OK);
   CHECK(vx_pmu_configure(weak, VX_PMU_SET, &c, sizeof c) == VX_ERR_ACCESS);
   vx_pmu_config off = {};
   CHECK(vx_pmu_configure(vx_self, VX_PMU_SET, &off, sizeof off) == VX_OK);
   CHECK(vx_pmu_configure(vx_self, VX_PMU_READ, after, sizeof after) == VX_OK && after[0] == 0);
+  sampling();
 
   vx_printf("pmutest: %u checks, %u failed\n", checks, failures);
   return failures ? "failed" : nullptr;

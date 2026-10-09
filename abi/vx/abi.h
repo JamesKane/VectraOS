@@ -841,6 +841,7 @@ enum vx_trace_kind : uint16_t {
   VX_TK_SYS_OUT,     // a: the number; b: its result
   VX_TK_MARK,        // a, b: up to 16 bytes of text
   VX_TK_SAMPLE,      // a: the interrupted PC; b: frames that follow (in FRAMES) | 1 << 63 if in user mode
+                     //   | 1 << 62 | the vx_pmu_event << 48 if a counter's overflow (ADR-0050), not the tick
   VX_TK_FRAMES,      // a, b: the next two return addresses of the sample before (0: none)
 };
 // Not the kernel's: procfs merges a process's spans (lib/vx-prof) into
@@ -877,7 +878,8 @@ typedef struct vx_pmu_config {
   uint32_t count; // events; counter i counts events[i]
   uint32_t flags; // VX_PMU_USER_READ
   uint32_t events[VX_PMU_MAX];
-  uint64_t sample_period[VX_PMU_MAX]; // overflow sampling (7a3b2); 0 for now
+  uint64_t
+      sample_period[VX_PMU_MAX]; // a sample each this many events (10000 at least), into the trace; 0: none
 } vx_pmu_config;
 
 enum vx_trace_block : uint32_t {

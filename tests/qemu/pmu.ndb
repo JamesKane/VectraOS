@@ -1,8 +1,9 @@
-# tests/qemu/pmu.ndb: a task's hardware counters (M7 step 7a3b1, ADR-0050):
+# tests/qemu/pmu.ndb: a task's hardware counters and their overflow samples
+# (M7 steps 7a3b1 and 7a3b2, ADR-0050):
 # KVM's virtual PMU on x86_64, TCG's PMUv3 on aarch64 (tests/user/pmutest.c).
 
 scenario=pmu timeout=60 cmdline=vx.skip=rc with=pmutest
-expect="pmutest: 15 checks, 0 failed"
+expect="pmutest: 22 checks, 0 failed"
 line="svcd: pmutest exited"
 fail="vx: panic"
 fail="pmutest: FAILED"

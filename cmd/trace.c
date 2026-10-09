@@ -44,8 +44,12 @@ static void print_record(const vx_trace_record *r) {
     memcpy(text, &r->a, 16);
     vx_printf(" text=\"%s\"\n", text);
   } else if (r->kind == VX_TK_SAMPLE) {
-    vx_printf(" pc=0x%llx frames=%u mode=%s\n", (unsigned long long)r->a, (uint32_t)(r->b & 0xff),
+    vx_printf(" pc=0x%llx frames=%u mode=%s", (unsigned long long)r->a, (uint32_t)(r->b & 0xff),
               r->b >> 63 ? "user" : "kernel");
+    if (r->b >> 62 & 1)
+      vx_printf(" source=pmu event=%u\n", (uint32_t)(r->b >> 48 & 0xff));
+    else
+      vx_printf(" source=tick\n");
   } else if (r->kind == VX_TK_SPAN) { // a process's (20 §5): task is its pid
     vx_printf(" kind=span flow=0x%llx type=%u cycles=%llu\n", (unsigned long long)r->a,
               (uint32_t)(r->b >> 48), (unsigned long long)(r->b & 0xffff'ffff'ffff));

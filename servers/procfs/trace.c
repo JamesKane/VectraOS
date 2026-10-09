@@ -288,7 +288,8 @@ static const char TRACE_SCHEMA[] =
     "kind=16 name=sys_in a=number\n"
     "kind=17 name=sys_out a=number b=result\n"
     "kind=18 name=mark a=text b=text\n"
-    "kind=19 name=sample a=pc b=\"frames that follow | 1 << 63 in user mode\"\n"
+    "kind=19 name=sample a=pc b=\"frames that follow | 1 << 63 in user mode | 1 << 62 | event << 48 from a "
+    "counter\"\n"
     "kind=20 name=frames a=\"return address\" b=\"return address, 0 for none\"\n"
     "kind=64 name=span a=flow b=\"message type << 48 | cycles\" cpu=0xffff tid=\"pid << 12 | thread\"\n";
 

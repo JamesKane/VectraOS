@@ -14,10 +14,11 @@ Status: proposed, 2026-10-09 (M7 step 7a3b). Design: docs/05 §9, 20 §6.
 4. **Per thread, summed per task.** A thread's counters start where it left off at each switch in, as wide as the counter is; at each switch out what it counted is added to the task's totals. A `SET` is a new configuration: running threads take it at their next switch, the caller at once, and the totals start from 0. `READ` gives each thread's counts to its last switch, the caller's own to now.
 5. **A thread reads its own** with `VX_PMU_USER_READ`: `rdpmc N` (CR4.PCE) or `PMXEVCNTR_EL0` after `PMSELR_EL0` (PMUSERENR_EL0.ER), counter N counting `events[N]`, `width` bits.
 6. **Back ends:** AMD's core counters with PerfMonV2's global control, Intel's architectural counters (CPUID 0xa), Arm's PMUv3; general-purpose counters only.
-7. **Overflow sampling (7a3b2)** takes `sample_period`: an overflow writes the trace's `SAMPLE` and `FRAMES` records (ADR-0049 item 9) while the trace samples. Until then a non-zero period is `UNSUPPORTED`.
+7. **Overflow sampling (7a3b2)** takes `sample_period`, 10,000 events at least: a sampled counter starts at minus what is left of its period and interrupts as it overflows (VECTOR_PMU through the x2APIC's LVT; the PMU's PPI, from the MADT's GICC structures). The overflow writes the trace's `SAMPLE` and `FRAMES` records (ADR-0049 item 9) while the trace samples, tagged in `b` (bit 62, the event in bits 48-55), and starts a period again. An overflow is judged by the count against what was left, not by status bits, so the vendors are alike.
 
 ## Consequences
 
 - The ABI grows two records and four constants; the syscall's number was allotted. `libvx` does not export it yet: vx-rt's `vx_pmu_configure` is internal, for a later level.
 - A switch costs two MSR or system-register writes a counter for a task that counts, nothing for one that does not.
-- Intel's legacy counters take 32-bit writes, so a thread's own reading there is 31 bits wide; the totals are not. Intel is untested here (the host is AMD).
+- Intel's legacy counters take 32-bit writes, sign-extended, so a counter there is 32 bits wide as the thread reads it; the totals are not. Intel is untested here (the host is AMD).
+- Samples from a task's counters reach only the trace, which is adm's (ADR-0049): a program counts its own events, but sees its samples only through someone who may read the trace. 7a3c gives one task's samples to a holder of `INSPECT`.

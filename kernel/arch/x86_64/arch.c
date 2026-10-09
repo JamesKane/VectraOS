@@ -355,7 +355,9 @@ static constexpr uint32_t X2APIC_ICR = 0x830;
 static constexpr uint8_t VECTOR_TIMER = 0x20;
 static constexpr uint8_t VECTOR_RESCHED = 0x21; // another CPU made a thread ready
 static constexpr uint8_t VECTOR_SHOOTDOWN =
-    0x22; // another CPU unmapped user pages: flush (arch_tlb_shootdown)
+    0x22;                                   // another CPU unmapped user pages: flush (arch_tlb_shootdown)
+static constexpr uint8_t VECTOR_PMU = 0x23; // a performance counter overflowed (pmu.c)
+static constexpr uint32_t X2APIC_LVT_PMU = 0x834;
 static constexpr uint8_t VECTOR_SPURIOUS = 0xff;
 static constexpr uint8_t VECTOR_IRQ_BASE = 0x30; // device interrupts: VECTOR_IRQ_BASE + GSI
 static constexpr uint32_t MAX_GSI = 0x50;        // up to vector 0x7f
@@ -406,6 +408,7 @@ static void arch_timer_init(void) {
   }
   wrmsr(MSR_APIC_BASE, rdmsr(MSR_APIC_BASE) | 1ull << 11 | 1ull << 10); // enabled, x2APIC mode
   wrmsr(X2APIC_SPURIOUS, 0x100 | VECTOR_SPURIOUS);                      // software-enabled
+  wrmsr(X2APIC_LVT_PMU, VECTOR_PMU);                                    // counter overflows (pmu.c)
 
   if (tsc_deadline) {
     wrmsr(X2APIC_LVT_TIMER, VECTOR_TIMER | 2u << 17); // TSC-deadline mode
@@ -533,7 +536,9 @@ static uint32_t arch_watch_count(void) { return 4; }
 // architectural ones (IA32_PERFEVTSELx/IA32_PMCx, CPUID 0xa; SDM vol. 3B
 // §20.2): general-purpose counters only, user mode only (USR, not OS). rdpmc
 // N reads counter N, with CR4.PCE. Intel's legacy PMCs take writes of 32 bits
-// sign-extended, so a counter starts from at most 31 bits there.
+// sign-extended, so there a counter is 32 bits wide as written and read
+// (and minus a period overflows the 48 bits as it should). An overflow
+// interrupts on VECTOR_PMU through the x2APIC's LVT for the counters.
 
 static struct {
   bool amd, global;
@@ -554,7 +559,7 @@ static void arch_pmu_probe(vx_pmu_info *info) {
     cpuid4 p = cpuid_sub(0xa, 0);
     uint32_t version = p.a & 0xff;
     if (version) {
-      x86_pmu.counters = (p.a >> 8) & 0xff, x86_pmu.width = 31, x86_pmu.global = version >= 2;
+      x86_pmu.counters = (p.a >> 8) & 0xff, x86_pmu.width = 32, x86_pmu.global = version >= 2;
       // EBX: a set bit is an architectural event not available.
       uint32_t len = (p.a >> 24) & 0xff;
       bool cycles = len > 0 && !(p.b & 1), instr = len > 1 && !(p.b & 2);
@@ -595,11 +600,14 @@ static void pmu_pce(bool on) {
   if (want != cr4) __asm__ volatile("mov %0, %%cr4" : : "r"(want) : "memory");
 }
 
-static void arch_pmu_start(uint32_t n, const uint32_t *events, const uint64_t *start, bool user_read) {
+static void arch_pmu_write(uint32_t i, uint64_t value) { wrmsr(pmu_ctr(i), value); }
+
+static void arch_pmu_start(uint32_t n, const uint32_t *events, const uint64_t *start, uint32_t sampled,
+                           bool user_read) {
   for (uint32_t i = 0; i < n; i++) {
     wrmsr(pmu_ctl(i), 0);
     wrmsr(pmu_ctr(i), start[i]);
-    wrmsr(pmu_ctl(i), pmu_select(events[i]));
+    wrmsr(pmu_ctl(i), pmu_select(events[i]) | (sampled >> i & 1ull) << 20); // INT: an overflow interrupts
   }
   pmu_global(n);
   pmu_pce(user_read);
@@ -612,6 +620,13 @@ static void arch_pmu_read(uint32_t n, uint64_t *now) {
 static void arch_pmu_stop(uint32_t n) {
   for (uint32_t i = 0; i < n; i++) wrmsr(pmu_ctl(i), 0);
   pmu_pce(false);
+}
+
+// The overflow taken: its status bits cleared (the global ones, where there
+// are), and the LVT unmasked again (Intel masks it as it delivers).
+static void arch_pmu_ack(void) {
+  if (x86_pmu.global) wrmsr(x86_pmu.amd ? 0xc000'0302 : 0x390, (1ull << x86_pmu.counters) - 1);
+  wrmsr(X2APIC_LVT_PMU, VECTOR_PMU);
 }
 
 static const uint8_t DR7_LEN[9] = {[1] = 0, [2] = 1, [4] = 3, [8] = 2}; // LEN's odd encoding, by bytes
@@ -836,6 +851,9 @@ void x86_trap(trap_frame *f) {
   } else if (f->vector == VECTOR_TIMER) {
     wrmsr(X2APIC_EOI, 0);
     timer_interrupt(from_user, f->rip, f->rbp);
+  } else if (f->vector == VECTOR_PMU) {
+    pmu_overflow(from_user, f->rip, f->rbp);
+    wrmsr(X2APIC_EOI, 0);
   } else if (f->vector == VECTOR_RESCHED) {
     wrmsr(X2APIC_EOI, 0);
     this_cpu()->resched = true;

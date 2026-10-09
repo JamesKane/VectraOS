@@ -1,14 +1,25 @@
 // pmu.c: the hardware counters of a task's threads (ADR-0050, M7 step
-// 7a3b1), user mode only, as Linux's per-task perf counters are and not as
+// 7a3b), user mode only, as Linux's per-task perf counters are and not as
 // Fuchsia's perfmon is (system-wide, per CPU: lib/perfmon/perfmon.h). The
 // architecture's code programs them (arch_pmu_*); this keeps each thread's
 // counts across its switches: started where it left off (as far as the
 // counter is wide, which is what the thread reads itself), and at each
 // switch out what it counted is added to its task's totals.
+//
+// A sampled counter (a sample_period) starts instead at minus the events
+// left of its period, and interrupts as it overflows: pmu_overflow adds what
+// it counted, writes a sample into the trace while the trace samples (the
+// tick's records, tagged as the PMU's: ADR-0049 item 9), and starts it at
+// minus a whole period again. Overflow is judged by the count, not by the
+// vendors' status bits, so AMD's, Intel's and Arm's are alike.
 
 static spinlock pmu_lock; // every task's configuration
 static vx_pmu_info pmu_hw;
 static bool pmu_probed;
+
+// The shortest period: an interrupt every 10,000 events at most, so a
+// period cannot turn a thread's time into interrupts.
+static constexpr uint64_t PMU_MIN_PERIOD = 10'000;
 
 static const vx_pmu_info *pmu_info(void) {
   if (!pmu_probed) arch_pmu_probe(&pmu_hw), pmu_probed = true; // the same on every CPU
@@ -17,17 +28,30 @@ static const vx_pmu_info *pmu_info(void) {
 
 static uint64_t pmu_mask(void) { return pmu_hw.width >= 64 ? ~0ull : (1ull << pmu_hw.width) - 1; }
 
+// What counter i of t counted since it started (now: the counter as read),
+// added to t's and its task's; for a sampled counter, what is left of its
+// period (a whole one again past an overflow not yet taken).
+static uint64_t pmu_take(thread *t, uint32_t i, uint64_t now) {
+  uint64_t d = (now - t->pmu_start[i]) & pmu_mask();
+  t->pmu_value[i] += d;
+  atomic_fetch_add_explicit(&t->task->pmu_total[i], d, memory_order_relaxed);
+  t->pmu_start[i] = now & pmu_mask();
+  if (t->pmu_period[i]) t->pmu_left[i] = d < t->pmu_left[i] ? t->pmu_left[i] - d : t->pmu_period[i];
+  return d;
+}
+
+// Where counter i of t starts: its count, or minus what is left of its period.
+static uint64_t pmu_origin(const thread *t, uint32_t i) {
+  return (t->pmu_period[i] ? 0 - t->pmu_left[i] : t->pmu_value[i]) & pmu_mask();
+}
+
 // t's counters stopped, what they counted added to its own and its task's.
 static void pmu_out(thread *t) {
   if (!t->pmu_loaded) return;
   uint64_t now[VX_PMU_MAX];
   arch_pmu_read(t->pmu_loaded, now);
   arch_pmu_stop(t->pmu_loaded);
-  for (uint32_t i = 0; i < t->pmu_loaded; i++) {
-    uint64_t d = (now[i] - t->pmu_start[i]) & pmu_mask();
-    t->pmu_value[i] += d;
-    atomic_fetch_add_explicit(&t->task->pmu_total[i], d, memory_order_relaxed);
-  }
+  for (uint32_t i = 0; i < t->pmu_loaded; i++) pmu_take(t, i, now[i]);
   t->pmu_loaded = 0;
 }
 
@@ -44,11 +68,17 @@ static void pmu_in(thread *t) {
   if (t->pmu_gen != k->pmu.gen) {
     t->pmu_gen = k->pmu.gen;
     memset(t->pmu_value, 0, sizeof t->pmu_value);
+    memcpy(t->pmu_period, k->pmu.period, sizeof t->pmu_period);
+    memcpy(t->pmu_left, k->pmu.period, sizeof t->pmu_left);
   }
   spin_unlock(&pmu_lock);
   if (!n) return;
-  for (uint32_t i = 0; i < n; i++) t->pmu_start[i] = t->pmu_value[i] & pmu_mask();
-  arch_pmu_start(n, events, t->pmu_start, user_read);
+  uint32_t sampled = 0;
+  for (uint32_t i = 0; i < n; i++) {
+    t->pmu_start[i] = pmu_origin(t, i);
+    if (t->pmu_period[i]) sampled |= 1u << i;
+  }
+  arch_pmu_start(n, events, t->pmu_start, sampled, user_read);
   t->pmu_loaded = n;
 }
 
@@ -57,14 +87,36 @@ static void pmu_switch(thread *prev, thread *next) {
   pmu_in(next);
 }
 
+// A counter overflowed (the architecture's interrupt, acknowledged after):
+// the interrupted thread's sampled counters that did each give a sample,
+// interrupted at pc with frame pointer fp, and start a period again.
+static void pmu_overflow(bool from_user, uint64_t pc, uint64_t fp) {
+  thread *t = this_cpu()->current;
+  if (t && t->pmu_loaded) {
+    uint64_t now[VX_PMU_MAX];
+    arch_pmu_read(t->pmu_loaded, now);
+    for (uint32_t i = 0; i < t->pmu_loaded; i++) {
+      if (!t->pmu_period[i] || ((now[i] - t->pmu_start[i]) & pmu_mask()) < t->pmu_left[i]) continue;
+      pmu_take(t, i, now[i]);
+      t->pmu_left[i] = t->pmu_period[i];
+      t->pmu_start[i] = pmu_origin(t, i);
+      arch_pmu_write(i, t->pmu_start[i]);
+      if (atomic_load_explicit(&trace_mask, memory_order_relaxed) & VX_TC_SAMPLE)
+        trace_sample(from_user, pc, fp, 1ull << 62 | (uint64_t)t->task->pmu.events[i] << 48);
+    }
+  }
+  arch_pmu_ack();
+}
+
 static vx_status pmu_set(task *k, const vx_pmu_config *c) {
   const vx_pmu_info *hw = pmu_info();
   if (!hw->counters) return VX_ERR_UNSUPPORTED;
   if (c->count > hw->counters || (c->flags & ~VX_PMU_USER_READ)) return VX_ERR_INVALID;
   for (uint32_t i = 0; i < c->count; i++) {
     if (c->events[i] < VX_PMU_CYCLES || c->events[i] > VX_PMU_BRANCH_MISSES) return VX_ERR_INVALID;
-    if (!(hw->events & 1u << c->events[i]) || c->sample_period[i])
-      return VX_ERR_UNSUPPORTED; // sampling: 7a3b2
+    if (!(hw->events & 1u << c->events[i])) return VX_ERR_UNSUPPORTED;
+    uint64_t p = c->sample_period[i];
+    if (p && (p < PMU_MIN_PERIOD || p > pmu_mask() / 2)) return VX_ERR_RANGE;
   }
   thread *me = this_cpu()->current;
   bool mine = me->task == k;
@@ -73,7 +125,10 @@ static vx_status pmu_set(task *k, const vx_pmu_config *c) {
   k->pmu.gen++;
   k->pmu.count = c->count, k->pmu.flags = c->flags;
   memcpy(k->pmu.events, c->events, sizeof k->pmu.events);
-  for (uint32_t i = 0; i < VX_PMU_MAX; i++) atomic_store(&k->pmu_total[i], 0);
+  for (uint32_t i = 0; i < VX_PMU_MAX; i++) {
+    k->pmu.period[i] = i < c->count ? c->sample_period[i] : 0;
+    atomic_store(&k->pmu_total[i], 0);
+  }
   spin_unlock(&pmu_lock);
   if (mine) pmu_in(me); // from now
   return VX_OK;

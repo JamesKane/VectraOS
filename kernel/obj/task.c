@@ -101,6 +101,7 @@ typedef struct task {
   struct {
     uint32_t gen, count, flags;
     uint32_t events[VX_PMU_MAX];
+    uint64_t period[VX_PMU_MAX]; // a sampled counter's (0: counting only)
   } pmu;
   _Atomic uint64_t pmu_total[VX_PMU_MAX]; // its threads' counts, to their last switch
 } task;
@@ -151,7 +152,8 @@ struct thread {
   // counts, what the counters were started at, and how many are running.
   uint32_t pmu_gen, pmu_loaded;
   uint64_t pmu_value[VX_PMU_MAX], pmu_start[VX_PMU_MAX];
-  struct thread *next;       // in the ready queue (under the scheduler's lock)
+  uint64_t pmu_period[VX_PMU_MAX], pmu_left[VX_PMU_MAX]; // a sampled counter's, and what is left of it
+  struct thread *next;                                   // in the ready queue (under the scheduler's lock)
   struct thread *wait_next;  // in a port's waiters (under the port's lock); never the same link as next
   struct thread *sleep_next; // in its CPU's sleep queue, ordered by wake_at
   struct cpu *sleep_cpu;     // the CPU whose sleep queue holds it

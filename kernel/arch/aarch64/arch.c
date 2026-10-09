@@ -187,6 +187,24 @@ static constexpr uint32_t INTID_RESCHED = 0; // an SGI: another CPU made a threa
 // reach the EL2 virtual timer instead, which raises PPI 28 (timer_ppi()).
 static constexpr uint32_t INTID_VIRTUAL_TIMER = 27, INTID_EL2_VIRTUAL_TIMER = 28;
 
+// The PMU's overflow PPI, as the MADT's GICC structures give it (their
+// Performance Interrupt GSIV, at 48); QEMU virt's, 23, if they give none.
+static uint32_t pmu_ppi_cached;
+
+static uint32_t pmu_ppi(void) {
+  if (pmu_ppi_cached) return pmu_ppi_cached;
+  uint32_t ppi = 23;
+  const uint8_t *madt = acpi_table("APIC");
+  for (uint32_t off = 44, len = madt ? read32(madt + 4) : 0; off + 2 <= len && madt[off + 1] >= 2;
+       off += madt[off + 1])
+    if (madt[off] == 0xb && madt[off + 1] >= 52 && read32(madt + off + 48) >= 16 &&
+        read32(madt + off + 48) < 32) {
+      ppi = read32(madt + off + 48);
+      break;
+    }
+  return pmu_ppi_cached = ppi;
+}
+
 static uint32_t timer_ppi(void) {
   uint64_t el;
   __asm__ volatile("mrs %0, CurrentEL" : "=r"(el));
@@ -238,10 +256,11 @@ static void arch_timer_init(void) {
   while (*waker & (1u << 2)) {} // wait for ChildrenAsleep to clear
 
   volatile uint32_t *sgi = (volatile uint32_t *)(rd + 0x1'0000); // the SGI and PPI frame
-  uint32_t lines = 1u << timer_ppi() | 1u << INTID_RESCHED;
+  uint32_t lines = 1u << timer_ppi() | 1u << INTID_RESCHED | 1u << pmu_ppi();
   sgi[0x080 / 4] |= lines;                               // GICR_IGROUPR0: group 1
   ((volatile uint8_t *)sgi)[0x400 + timer_ppi()] = 0x80; // priorities
   ((volatile uint8_t *)sgi)[0x400 + INTID_RESCHED] = 0x80;
+  ((volatile uint8_t *)sgi)[0x400 + pmu_ppi()] = 0x80;
   sgi[0x100 / 4] = lines; // GICR_ISENABLER0
 
   // The CPU interface, through system registers.
@@ -286,6 +305,8 @@ static void aarch64_irq(bool from_user, uint64_t pc, uint64_t fp) {
     timer_interrupt(from_user, pc, fp);
   } else if (intid == INTID_RESCHED) {
     this_cpu()->resched = true;
+  } else if (intid == pmu_ppi()) {
+    pmu_overflow(from_user, pc, fp); // the overflow flags cleared in it: the line is level-triggered
   } else if (intid >= 32 && intid == smmu0.event_intid) {
     smmu_event_interrupt(); // the IOMMU's own line: its faults
   } else if (intid >= LPI_BASE && intid < LPI_BASE + LPI_COUNT) {
@@ -783,7 +804,19 @@ static void arch_pmu_probe(vx_pmu_info *info) {
     if (ceid >> PMU_EVENT[e] & 1) info->events |= 1u << e;
 }
 
-static void arch_pmu_start(uint32_t n, const uint32_t *events, const uint64_t *start, bool user_read) {
+static void arch_pmu_write(uint32_t i, uint64_t value) {
+  __asm__ volatile("msr pmselr_el0, %0\n\tisb\n\tmsr pmxevcntr_el0, %1" : : "r"((uint64_t)i), "r"(value));
+}
+
+// The overflow taken: its flags cleared, so the level-triggered PPI drops.
+static void arch_pmu_ack(void) {
+  uint64_t ovs;
+  __asm__ volatile("mrs %0, pmovsclr_el0" : "=r"(ovs));
+  __asm__ volatile("msr pmovsclr_el0, %0\n\tisb" : : "r"(ovs));
+}
+
+static void arch_pmu_start(uint32_t n, const uint32_t *events, const uint64_t *start, uint32_t sampled,
+                           bool user_read) {
   uint64_t pmcr;
   __asm__ volatile("mrs %0, pmcr_el0" : "=r"(pmcr));
   __asm__ volatile("msr pmcr_el0, %0" : : "r"(pmcr | 1)); // E: counting on
@@ -793,9 +826,9 @@ static void arch_pmu_start(uint32_t n, const uint32_t *events, const uint64_t *s
                      :
                      : "r"((uint64_t)i), "r"(type), "r"(start[i]));
   }
-  __asm__ volatile("msr pmcntenset_el0, %0\n\tmsr pmuserenr_el0, %1\n\tisb"
+  __asm__ volatile("msr pmintenset_el1, %0\n\tmsr pmcntenset_el0, %1\n\tmsr pmuserenr_el0, %2\n\tisb"
                    :
-                   : "r"((1ull << n) - 1), "r"(user_read ? 8ull : 0ull));
+                   : "r"((uint64_t)sampled), "r"((1ull << n) - 1), "r"(user_read ? 8ull : 0ull));
 }
 
 static void arch_pmu_read(uint32_t n, uint64_t *now) {
@@ -807,7 +840,9 @@ static void arch_pmu_read(uint32_t n, uint64_t *now) {
 }
 
 static void arch_pmu_stop(uint32_t n) {
-  __asm__ volatile("msr pmcntenclr_el0, %0\n\tmsr pmuserenr_el0, xzr\n\tisb" : : "r"((1ull << n) - 1));
+  __asm__ volatile("msr pmcntenclr_el0, %0\n\tmsr pmintenclr_el1, %0\n\tmsr pmuserenr_el0, xzr\n\tisb"
+                   :
+                   : "r"((1ull << n) - 1));
 }
 
 static uint32_t arch_watch_count(void) {

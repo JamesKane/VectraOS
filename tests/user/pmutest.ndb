@@ -1,4 +1,7 @@
 # tests/user/pmutest.ndb: pmutest, a task's hardware counters
-# (tests/qemu/pmu.ndb).
+# (tests/qemu/pmu.ndb): as adm, for its samples in /proc/trace.
 
 service=pmutest program=/boot/bin/pmutest console
+user=adm
+ns=posix
+connect=nsd

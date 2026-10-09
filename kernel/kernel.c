@@ -144,11 +144,16 @@ static void arch_io_switch(const struct task *t); // this CPU's I/O port permiss
 static uint32_t arch_watch_count(void);           // the debug registers' watchpoints (thread_state SET_WATCH)
 // The PMU (pmu.c, ADR-0050): what it has; this CPU's first n counters
 // started, counting events[i] in user mode from start[i] (as wide as
-// arch_pmu_probe says), readable by the thread if user_read; read; stopped.
+// arch_pmu_probe says), those in `sampled` interrupting as they overflow,
+// readable by the thread if user_read; read; stopped; counter i set; an
+// overflow's interrupt acknowledged (after pmu_overflow, which it calls).
 static void arch_pmu_probe(vx_pmu_info *info);
-static void arch_pmu_start(uint32_t n, const uint32_t *events, const uint64_t *start, bool user_read);
+static void arch_pmu_start(uint32_t n, const uint32_t *events, const uint64_t *start, uint32_t sampled,
+                           bool user_read);
 static void arch_pmu_read(uint32_t n, uint64_t *now);
 static void arch_pmu_stop(uint32_t n);
+static void arch_pmu_write(uint32_t i, uint64_t value);
+static void arch_pmu_ack(void);
 
 #include "../lib/vx-mem/mem.c"
 #include "../abi/vx/utf.h"

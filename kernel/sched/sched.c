@@ -827,7 +827,7 @@ static void sched_timer(bool from_user, uint64_t pc, uint64_t fp) {
   }
   if (c->current != &c->idle && now >= c->sample_at &&
       (atomic_load_explicit(&trace_mask, memory_order_relaxed) & VX_TC_SAMPLE)) {
-    trace_sample(from_user, pc, fp); // what it was doing: one sample, however late
+    trace_sample(from_user, pc, fp, 0); // what it was doing: one sample, however late
     c->sample_at = now + (vx_instant)atomic_load_explicit(&trace_sample_ns, memory_order_relaxed);
   }
   while (c->sleepers && c->sleepers->wake_at <= now) {
