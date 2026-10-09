@@ -8,6 +8,7 @@ enum map_flags : uint32_t { // a mapping is always readable
   MAP_EXEC = 2,
   MAP_USER = 4,
   MAP_DEVICE = 8,       // uncached device memory
+  MAP_WC = 16,          // write-combining device memory (ADR-0051): a framebuffer
   MAP_KEY_MASK = 0xf00, // the page's protection key, as VX_MAP_KEY puts it (ADR-0035; x86's PKU)
 };
 

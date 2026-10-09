@@ -4,8 +4,8 @@
 // Limine's direct map covers RAM only (base revision 3 and later), so the
 // console maps the UART's registers itself: one 4 KiB device page at
 // hhdm + its physical address, first in Limine's page tables and then in the
-// kernel's own. Device pages use MAIR attribute 2; Limine guarantees that
-// attributes 2 to 7 are unused. The UART is at QEMU virt's address until the
+// kernel's own. Device pages use MAIR attribute 2, write-combining ones 3
+// (ADR-0051); Limine guarantees that attributes 2 to 7 are unused. The UART is at QEMU virt's address until the
 // kernel reads the device tree.
 
 static constexpr uint64_t PL011_PHYS = 0x0900'0000;
@@ -20,6 +20,7 @@ static volatile uint32_t *pl011;
 static constexpr uint64_t PTE_VALID = 1ull << 0;
 static constexpr uint64_t PTE_TABLE = 1ull << 1;     // a table at levels 0-2, a page at level 3
 static constexpr uint64_t PTE_DEVICE = 2ull << 2;    // MAIR index 2; index 0 is normal write-back memory
+static constexpr uint64_t PTE_WC = 3ull << 2;        // MAIR index 3: Normal Non-cacheable (ADR-0051)
 static constexpr uint64_t PTE_USER = 1ull << 6;      // AP[1]
 static constexpr uint64_t PTE_READ_ONLY = 1ull << 7; // AP[2]
 static constexpr uint64_t PTE_SH_INNER = 3ull << 8;
@@ -36,7 +37,12 @@ static uint64_t arch_pte_table(uint64_t pa) { return pa | PTE_TABLE | PTE_VALID;
 
 static uint64_t arch_pte_leaf(uint64_t pa, uint32_t flags, int level) {
   uint64_t e = pa | PTE_AF | PTE_VALID | (level == 3 ? PTE_TABLE : 0);
-  e |= flags & MAP_DEVICE ? PTE_DEVICE : PTE_SH_INNER;
+  if (flags & MAP_DEVICE)
+    e |= PTE_DEVICE;
+  else if (flags & MAP_WC)
+    e |= PTE_WC | 2ull << 8; // write-combining: Normal Non-cacheable, outer shareable
+  else
+    e |= PTE_SH_INNER;
   if (!(flags & MAP_WRITE)) e |= PTE_READ_ONLY;
   if (flags & MAP_USER) {
     e |= PTE_USER | PTE_NG | PTE_PXN; // the kernel never executes user pages
@@ -161,7 +167,7 @@ static void arch_switch_tables(uint64_t root) {
 
 static void arch_console_init(void) {
   if (!boot.hhdm) return;
-  write_mair(read_mair() & ~(0xffull << 16)); // attribute 2 = 0x00: Device-nGnRnE
+  write_mair((read_mair() & ~(0xffffull << 16)) | 0x44ull << 24); // 2: Device-nGnRnE; 3: Normal NC (WC)
   uint64_t va = boot.hhdm + PL011_PHYS;
   if (map_range(read_ttbr1() & PTE_ADDR, va, PL011_PHYS, 4096, MAP_WRITE | MAP_DEVICE))
     pl011 = (volatile uint32_t *)va;
@@ -608,7 +614,7 @@ static void arch_cpu_init(uint32_t index) {
                    :
                    : "r"(aarch64_vectors), "r"((uint64_t)index)
                    : "memory");
-  write_mair(read_mair() & ~(0xffull << 16));
+  write_mair((read_mair() & ~(0xffffull << 16)) | 0x44ull << 24); // as arch_console_init
   percpu_ready = true;
 }
 

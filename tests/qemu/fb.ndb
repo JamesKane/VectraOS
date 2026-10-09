@@ -1,0 +1,12 @@
+# tests/qemu/fb.ndb: the boot framebuffer as a physical VMO, mapped
+# write-combining (M7 step 7b1c, ADR-0051): fbtest draws eight bars on what
+# the firmware left (x86's VGA, aarch64's ramfb), matched by screenshot.
+
+scenario=fb display=fb timeout=60 cmdline=vx.skip=rc with=fbtest
+expect="fbtest: bars on "
+expect="fbtest: 4 checks, 0 failed"
+screen=bars-$arch tolerance=1
+line="svcd: fbtest exited"
+fail="vx: panic"
+fail="fbtest: FAILED"
+fail="svcd: fbtest exited: "

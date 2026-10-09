@@ -20,6 +20,8 @@ LIMINE_REQUEST struct limine_tsc_frequency_request tsc_request = {.id = LIMINE_T
 LIMINE_REQUEST struct limine_mp_request mp_request = {.id = LIMINE_MP_REQUEST_ID};
 #endif
 LIMINE_REQUEST struct limine_rsdp_request rsdp_request = {.id = LIMINE_RSDP_REQUEST_ID}; // ACPI (acpi.c)
+LIMINE_REQUEST struct limine_framebuffer_request framebuffer_request = {
+    .id = LIMINE_FRAMEBUFFER_REQUEST_ID}; // the boot framebuffer, for user space (root.c, 7b1c)
 // Five values: the stack guard's, and 32 bytes for user space (root.c).
 LIMINE_REQUEST struct limine_entropy_request entropy_request = {.id = LIMINE_ENTROPY_REQUEST_ID,
                                                                 .value_count = 5};
@@ -53,6 +55,13 @@ typedef struct boot_info {
   uint32_t ram_count;
   bool ram_incomplete;
   uint64_t rsdp; // the ACPI RSDP's physical address, or 0 (acpi.c)
+  // The framebuffer the firmware left, which the kernel never draws on: its
+  // physical address (0: none), its geometry, its pixels' channels.
+  struct {
+    uint64_t pa, width, height, pitch;
+    uint16_t bpp;
+    uint8_t red_size, red_shift, green_size, green_shift, blue_size, blue_shift;
+  } fb;
 } boot_info;
 
 static boot_info boot;
@@ -130,6 +139,16 @@ static uint64_t early_alloc(uint64_t pages) {
   // physical only under base revision 3).
   if (rsdp_request.response && rsdp_request.response->address)
     boot.rsdp = (uint64_t)rsdp_request.response->address - boot.hhdm;
+  struct limine_framebuffer_response *fbs = framebuffer_request.response;
+  if (fbs && fbs->framebuffer_count >= 1) { // the first, in the HHDM; RGB only
+    const struct limine_framebuffer *f = fbs->framebuffers[0];
+    if (f->memory_model == LIMINE_FRAMEBUFFER_RGB && f->bpp == 32)
+      boot.fb.pa = (uint64_t)f->address - boot.hhdm, boot.fb.width = f->width, boot.fb.height = f->height,
+      boot.fb.pitch = f->pitch, boot.fb.bpp = f->bpp, boot.fb.red_size = f->red_mask_size,
+      boot.fb.red_shift = f->red_mask_shift, boot.fb.green_size = f->green_mask_size,
+      boot.fb.green_shift = f->green_mask_shift, boot.fb.blue_size = f->blue_mask_size,
+      boot.fb.blue_shift = f->blue_mask_shift;
+  }
 
   struct limine_entropy_response *entropy = entropy_request.response;
   if (entropy && entropy->value_count >= 1) __stack_chk_guard = entropy->values[0];

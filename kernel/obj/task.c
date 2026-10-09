@@ -422,10 +422,17 @@ static vx_status task_query(task *t, uint64_t addr, vx_map_info *out) {
 
 // How a page of a mapping is mapped: writable only if the mapping is and,
 // for a pager's page, only once it is dirty (pager.c).
+// How a VMO's pages are mapped as to caching: RAM normally, a physical
+// VMO's device memory uncached or, by its policy, write-combining (ADR-0051).
+static uint32_t vmo_cache_flags(const vmo *v) {
+  if (!v->physical) return 0;
+  return v->cache == VX_CACHE_WC ? MAP_WC : MAP_DEVICE;
+}
+
 static uint32_t page_flags(const mapping *m, uint64_t entry) {
   bool write = (m->flags & VX_MAP_WRITE) && (!m->vmo->pager || (entry & PAGE_DIRTY));
   return MAP_USER | (write ? MAP_WRITE : 0) | (m->flags & VX_MAP_EXEC ? MAP_EXEC : 0) |
-         (m->flags & VX_MAP_KEY_MASK) | (m->vmo->physical ? MAP_DEVICE : 0);
+         (m->flags & VX_MAP_KEY_MASK) | vmo_cache_flags(m->vmo);
 }
 
 // A key the task may put on a mapping: 0, or one it allocated.
@@ -496,7 +503,7 @@ static vx_status task_map(task *t, vmo *v, uint64_t offset, uint64_t size, uint3
   if (!size || (offset | size) & 4095 || ckd_add(&vmo_end, offset, size) || vmo_end > v->size)
     return VX_ERR_RANGE;
   uint32_t mf = MAP_USER | (flags & VX_MAP_WRITE ? MAP_WRITE : 0) | (flags & VX_MAP_EXEC ? MAP_EXEC : 0) |
-                (v->physical ? MAP_DEVICE : 0) | (flags & VX_MAP_KEY_MASK);
+                vmo_cache_flags(v) | (flags & VX_MAP_KEY_MASK);
   vx_status st = VX_OK;
   spin_lock(&t->lock);
   uint64_t at = *va ? *va : task_place(t, size);
@@ -539,6 +546,7 @@ static vx_status task_map(task *t, vmo *v, uint64_t offset, uint64_t size, uint3
   if (locked) spin_unlock(&v->lock);
   if (st == VX_OK) {
     object_ref(&v->obj);
+    v->ever_mapped = true; // its cache policy fixed from here (ADR-0051)
     *slot = (mapping){.va = at, .size = size, .offset = offset, .vmo = v, .flags = flags, .allowed = allowed};
     t->mapped += size;
     if (!*va) t->map_next = end + 4096; // leave a guard page between placed mappings, past any reservation

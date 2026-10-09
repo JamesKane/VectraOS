@@ -298,12 +298,23 @@ static int64_t sys_pager_op(vx_handle gh, vx_handle vh, uint64_t op, uint64_t of
 // the pages of [arg, arg + size) (ADR-0046). A pager-backed VMO is its
 // pager's to resize (pager_op RESIZE): anyone it is shared with may write it,
 // and a writer must not shrink it under the others.
+// VX_VMO_CACHE (ADR-0051): a physical VMO's policy, before its first mapping.
+static vx_status vmo_set_cache(vmo *v, uint64_t policy, uint64_t size) {
+  if (!v->physical) return VX_ERR_UNSUPPORTED; // RAM is cached, always
+  if (policy > VX_CACHE_WC || size) return VX_ERR_INVALID;
+  if (v->ever_mapped) return VX_ERR_BAD_STATE; // its mappings, and what they cached, would disagree
+  v->cache = (uint8_t)policy;
+  return VX_OK;
+}
+
 static int64_t sys_vmo_op(vx_handle h, uint64_t op, uint64_t arg, uint64_t size) {
-  if (op != VX_VMO_RESIZE && op != VX_VMO_DECOMMIT) return VX_ERR_INVALID;
+  if (op != VX_VMO_RESIZE && op != VX_VMO_DECOMMIT && op != VX_VMO_CACHE) return VX_ERR_INVALID;
   vx_status st;
   vmo *v = (vmo *)handle_get(current_task(), h, OBJ_VMO, VX_RIGHT_WRITE, &st);
   if (!v) return st;
-  if (v->pager || vmo_sealed(v))
+  if (op == VX_VMO_CACHE)
+    st = vmo_set_cache(v, arg, size);
+  else if (v->pager || vmo_sealed(v))
     st = VX_ERR_ACCESS; // its pager's to resize; sealed: no change at all (ADR-0043)
   else if (v->lease_of)
     st = vmo_revoked(v) ? VX_ERR_REVOKED : VX_ERR_UNSUPPORTED; // a lease's size is its parent's

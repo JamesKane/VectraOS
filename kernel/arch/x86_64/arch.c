@@ -255,6 +255,10 @@ static void arch_cpu_init(uint32_t index) {
                    : "r"((cr4 | 1ull << 9 | 1ull << 10 | 1ull << 18 | (have_pku ? 1ull << 22 : 0)) &
                          ~(1ull << 2 | 1ull << 16)));
   xsave_init(index);
+  // IA32_PAT, the same on every CPU: entries 0-3 write-back, write-combining
+  // (ADR-0051, in place of write-through, which nothing maps), uncached-minus
+  // and uncached; 4-7 as the reset value has them. Linux's layout.
+  wrmsr(0x277, 0x0007'0406'0007'0106ull);
 
   uint8_t *ist = index == 0 ? &boot_ist_stacks[0][0] : nullptr;
   if (!ist) {
@@ -1090,7 +1094,8 @@ static uint64_t arch_pte_leaf(uint64_t pa, uint32_t flags, int level) {
   if (flags & MAP_WRITE) e |= X86_WRITE;
   if (flags & MAP_USER) e |= X86_USER;
   if (!(flags & MAP_EXEC)) e |= X86_NX;
-  if (flags & MAP_DEVICE) e |= X86_PCD | X86_PWT; // uncached under the default PAT
+  if (flags & MAP_DEVICE) e |= X86_PCD | X86_PWT; // PAT entry 3: uncached
+  if (flags & MAP_WC) e |= X86_PWT;               // PAT entry 1: write-combining (pat_init)
   e |= (uint64_t)(flags >> 8 & 0xf) << 59;        // the protection key, bits 59-62 (PKU)
   if (level < 3) e |= X86_LARGE;
   return e;

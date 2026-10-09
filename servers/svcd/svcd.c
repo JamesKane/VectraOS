@@ -106,6 +106,9 @@ static const uint8_t *image;
 static uint64_t image_size, store_size;
 static vx_handle image_vmo, store_vmo, port, resource, acpi_vmo;
 static uint64_t acpi_size;
+// The boot framebuffer (7b1c), and its record as the kernel gave it.
+static vx_handle fb_vmo;
+static vx_ndb_record fb_rec;
 static bool console_attached;
 static bool procfs_started; // the service posting /srv/proc: services are registered there (ADR-0011)
 
@@ -483,6 +486,18 @@ static vx_status start(service *s) {
     vx_ndb_put_u64(&b.w, "size", acpi_size);
     vx_ndb_end(&b.w);
   }
+  if (st == VX_OK && vx_ndb_has(&rec, "framebuffer") && fb_vmo) { // the firmware's, for a display
+    st = vx_handle_dup(fb_vmo, VX_RIGHTS_SAME, &b.handles[b.count]);
+    b.names[b.count++] = VX_STR("framebuffer");
+    vx_ndb_flag(&b.w, "framebuffer");
+    static const char *const KEYS[] = {"offset", "width", "height", "pitch", "bpp", "red", "green", "blue"};
+    for (size_t k = 0; k < sizeof KEYS / sizeof KEYS[0]; k++) {
+      uint64_t v = 0;
+      vx_ndb_get_u64(&fb_rec, KEYS[k], &v);
+      vx_ndb_put_u64(&b.w, KEYS[k], v);
+    }
+    vx_ndb_end(&b.w);
+  }
   if (st == VX_OK && vx_ndb_has(&rec, "cmdline") && vx_spawn.cmdline.len) { // the kernel's, for devmgr
     vx_ndb_put(&b.w, "cmdline", vx_spawn.cmdline);
     vx_ndb_end(&b.w);
@@ -730,6 +745,8 @@ const char *vx_main(void) {
   vx_ndb_record rec;
   resource = vx_spawn_take("resource");
   acpi_vmo = vx_spawn_take("acpi");
+  fb_vmo = vx_spawn_take("framebuffer");
+  if (fb_vmo && !vx_spawn_record("framebuffer", &fb_rec)) vx_handle_close(fb_vmo), fb_vmo = VX_HANDLE_NONE;
   if (acpi_vmo && (!vx_spawn_record("acpi", &rec) || !vx_ndb_get_u64(&rec, "size", &acpi_size)))
     acpi_vmo = VX_HANDLE_NONE;
   image_vmo = vx_spawn_take("bootimage");

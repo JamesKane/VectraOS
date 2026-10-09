@@ -63,7 +63,7 @@ static channel *root_spawn_message(task *t) {
   vx_ndb_writer w = {.buf = text, .cap = sizeof text};
   vx_ndb_put(&w, "spawn", (vx_str){root_module.name, root_module.name_len});
   vx_ndb_end(&w);
-  moved_handle given[5];
+  moved_handle given[6];
   uint32_t count = 0;
   object_ref(&t->obj);
   given[count] = (moved_handle){&t->obj, ALL_RIGHTS};
@@ -103,6 +103,29 @@ static channel *root_spawn_message(task *t) {
     vx_ndb_end(&w);
     vx_ndb_flag(&w, "acpi");
     vx_ndb_put_u64(&w, "size", acpi_size);
+    vx_ndb_end(&w);
+  }
+  // The boot framebuffer (7b1c): a physical VMO over it, uncached until its
+  // holder sets write-combining (ADR-0051), with its geometry.
+  vmo *fb = nullptr;
+  if (boot.fb.pa &&
+      vmo_create_physical(boot.fb.pa & ~4095ull,
+                          (boot.fb.pa % 4096 + boot.fb.pitch * boot.fb.height + 4095) & ~4095ull,
+                          &fb) == VX_OK) {
+    given[count] = (moved_handle){&fb->obj, VX_RIGHT_READ | VX_RIGHT_WRITE | VX_RIGHT_MAP |
+                                                VX_RIGHT_DUPLICATE | VX_RIGHT_TRANSFER};
+    vx_ndb_put(&w, "handle", VX_STR("framebuffer"));
+    vx_ndb_put_u64(&w, "index", count++);
+    vx_ndb_end(&w);
+    vx_ndb_flag(&w, "framebuffer");
+    vx_ndb_put_u64(&w, "offset", boot.fb.pa % 4096);
+    vx_ndb_put_u64(&w, "width", boot.fb.width);
+    vx_ndb_put_u64(&w, "height", boot.fb.height);
+    vx_ndb_put_u64(&w, "pitch", boot.fb.pitch);
+    vx_ndb_put_u64(&w, "bpp", boot.fb.bpp);
+    vx_ndb_put_u64(&w, "red", (uint64_t)boot.fb.red_shift << 8 | boot.fb.red_size);
+    vx_ndb_put_u64(&w, "green", (uint64_t)boot.fb.green_shift << 8 | boot.fb.green_size);
+    vx_ndb_put_u64(&w, "blue", (uint64_t)boot.fb.blue_shift << 8 | boot.fb.blue_size);
     vx_ndb_end(&w);
   }
   given[count] = (moved_handle){&root_resource()->obj, ROOT_RESOURCE_RIGHTS};

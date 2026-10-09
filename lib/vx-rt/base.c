@@ -377,6 +377,12 @@ VX_API vx_status vx_vmo_decommit(vx_handle vmo, uint64_t offset, uint64_t size) 
   return (vx_status)vx_syscall(VX_SYS_vmo_op, vmo, VX_VMO_DECOMMIT, offset, size, 0, 0);
 }
 
+// A physical VMO's cache policy (ADR-0051), before its first mapping:
+// VX_CACHE_DEVICE or VX_CACHE_WC. vx-rt's own until a libvx level has it.
+[[maybe_unused]] static vx_status vx_vmo_cache(vx_handle vmo, uint32_t policy) {
+  return (vx_status)vx_syscall(VX_SYS_vmo_op, vmo, VX_VMO_CACHE, policy, 0, 0, 0);
+}
+
 // A pager's own VMO's new size (pager_op RESIZE).
 [[maybe_unused]] static vx_status vx_pager_resize(vx_handle pager, vx_handle vmo, uint64_t size) {
   return (vx_status)vx_syscall(VX_SYS_pager_op, pager, vmo, VX_PAGER_RESIZE, 0, size, 0);

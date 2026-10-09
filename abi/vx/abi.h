@@ -411,7 +411,12 @@ enum vx_pager_op : uint32_t {
   VX_PAGER_IDLE = 4,
   VX_PAGER_RESIZE = 5,
 };
-enum vx_vmo_resize_op : uint32_t { VX_VMO_RESIZE = 1, VX_VMO_DECOMMIT = 2 };
+enum vx_vmo_resize_op : uint32_t { VX_VMO_RESIZE = 1, VX_VMO_DECOMMIT = 2, VX_VMO_CACHE = 3 };
+// vmo_op(vmo, VX_VMO_CACHE, policy, 0) (ADR-0051, M7 step 7b1c): how a
+// physical VMO's mappings are cached, set before its first mapping
+// (BAD_STATE after): DEVICE, uncached (a register's, the default), or WC,
+// write-combining (a framebuffer's: writes gathered, reads uncached).
+enum vx_cache_policy : uint32_t { VX_CACHE_DEVICE = 0, VX_CACHE_WC = 1 };
 static constexpr uint32_t VX_PAGER_RANGES = 64;
 typedef struct vx_pager_range {
   uint64_t offset, size;

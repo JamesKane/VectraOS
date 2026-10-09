@@ -25,6 +25,8 @@ typedef struct vmo {
   bool resizable;    // anonymous, made VX_VMO_RESIZABLE (ADR-0042): its page list under its lock too
   bool lazy;         // anonymous, made VX_VMO_LAZY (ADR-0046): pages made at a touch; its list under its lock
   uint32_t trace_id; // what the trace calls it (COMMIT, 7a4b): kernel addresses never appear in records
+  uint8_t cache;     // a physical one's vx_cache_policy (ADR-0051), set before its first mapping
+  bool ever_mapped;  // it has been mapped: its cache policy is fixed
   // ADR-0043: a sealed VMO is written by no one again; a lease is a VMO on
   // its parent's pages (pages and list are the parent's), which it holds,
   // until it is revoked.

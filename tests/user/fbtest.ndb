@@ -1,0 +1,3 @@
+# tests/user/fbtest.ndb: fbtest, the boot framebuffer (tests/qemu/fb.ndb).
+
+service=fbtest program=/boot/bin/fbtest console framebuffer

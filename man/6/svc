@@ -8,7 +8,7 @@ page=svc sect=6 summary="service manifests, and the spawn message they become"
 service=name program=/boot/bin/prog [post=srv [srvmode=mode]]
         [arch=arch] [when=word]
     [restart] [console] [bootimage] [storeimage] [resource] [pager]
-    [acpi] [tasks] [trace] [cmdline] [entropy]
+    [acpi] [framebuffer] [tasks] [trace] [cmdline] [entropy]
 arg=value
 env=name=value
 user=name
@@ -74,6 +74,8 @@ The keys of a `service=` record:
   A flag: the root Resource with only the right to make pagers, as the handle `pager`, for fsd(4).
 : `acpi`
   A flag: the ACPI tables, as the handle `acpi`, with a record `acpi size=<bytes>`.
+: `framebuffer`
+  A flag: the framebuffer the firmware left (M7 step 7b1c), as the handle `framebuffer`, a physical VMO over it (uncached until its holder sets write-combining before mapping it: vmo_op's `VX_VMO_CACHE`, ADR-0051), with a record `framebuffer offset=<bytes into the VMO> width= height= pitch= bpp= red= green= blue=`, each channel `shift << 8 | size`. Only 32-bit RGB framebuffers are given.
 : `tasks`
   A flag: svcd's own task, as the handle `tasks`, and through it every task, for procfs(4) and tests.
 : `trace`
