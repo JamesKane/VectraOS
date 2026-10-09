@@ -286,7 +286,7 @@ static const char TRACE_SCHEMA[] =
     "kind=11 name=fault a=address b=\"1 lazy 2 pager 3 upgrade 4 stands\"\n"
     "kind=12 name=pager_wait a=vmo b=offset\n"
     "kind=13 name=pager_done a=vmo b=offset\n"
-    "kind=14 name=futex_wait a=word\n"
+    "kind=14 name=futex_wait a=word b=0 next=\"frames: the waiter's return addresses, up to 8\"\n"
     "kind=15 name=futex_woken a=word b=\"ns waited\"\n"
     "kind=16 name=sys_in a=number\n"
     "kind=17 name=sys_out a=number b=result\n"
@@ -294,6 +294,7 @@ static const char TRACE_SCHEMA[] =
     "kind=19 name=sample a=pc b=\"frames that follow | 1 << 63 in user mode | 1 << 62 | event << 48 from a "
     "counter\"\n"
     "kind=20 name=frames a=\"return address\" b=\"return address, 0 for none\"\n"
+    "kind=21 name=commit a=\"the VMO's trace id\" b=\"pages committed, negative given back\"\n"
     "kind=64 name=span a=flow b=\"message type << 48 | cycles\" cpu=0xffff tid=\"pid << 12 | thread\"\n";
 
 // The last `seconds` of the trace, as events has them, for a crash

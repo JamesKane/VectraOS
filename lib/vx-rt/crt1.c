@@ -198,6 +198,7 @@ static void vx_argv_make(void) {
   vx_thread_main_init(); // its TLS, before anything may use thread_local
   vx_args_make();
   vx_span_begin_hook = vx_prof_span_begin, vx_span_end_hook = vx_prof_span_end; // 9Px's spans (20 §5)
+  if (vx_prof_spawned()) vx_prof->heap = (uint64_t)(uintptr_t)&vx_heap_the;     // for /proc/N/heap (7a4b)
   vx_intent_from_spawn();
   vx_handle console = vx_spawn_take("console");
   if (console && vx_console_attach(console) != VX_OK) vx_print(VX_STR("vx-rt: cannot open the console\n"));

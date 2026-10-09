@@ -205,6 +205,59 @@ static vx_status prof_ctl(const proc *p, vx_str cmd) {
   return VX_OK;
 }
 
+// /proc/N/heap (7a4b): its process heap (lib/vx-rt/heap.c), read from its
+// memory through the address its ring names: the heap's extent, then a
+// record for each size class in use (its slabs, blocks in use and their
+// room), its large blocks and its free runs, from its table of spans.
+// Nothing for a process with no ring, or no heap made yet.
+static size_t heap_text(const proc *p, char *text, size_t cap) {
+  const vx_prof_header *r = rings[p - procs];
+  uint64_t where = r ? r->heap : 0, at = 0;
+  vx_heap h;
+  if (!where || mem_rw(p, where, &at, sizeof at, false) != VX_OK || !at ||
+      mem_rw(p, at, &h, sizeof h, false) != VX_OK || h.nil || h.top > h.spans)
+    return 0;
+  static struct {
+    uint32_t slabs, used;
+  } cls[VX_HEAP_CLASSES];
+  memset(cls, 0, sizeof cls);
+  uint64_t large = 0, large_spans = 0, free_spans = 0, dirty = 0, meta = 0;
+  static vx_heap_span chunk[256];
+  for (uint32_t i = 0; i < h.top; i += 256) {
+    uint32_t n = h.top - i < 256 ? h.top - i : 256;
+    if (mem_rw(p, (uint64_t)(uintptr_t)(h.span + i), chunk, n * sizeof *chunk, false) != VX_OK) return 0;
+    for (uint32_t k = 0; k < n; k++) {
+      const vx_heap_span *s = &chunk[k];
+      if (s->kind == HEAP_SLAB && s->cls < VX_HEAP_CLASSES) cls[s->cls].slabs++, cls[s->cls].used += s->used;
+      if (s->kind == HEAP_LARGE) large++, large_spans += s->len;
+      if (s->kind == HEAP_FREE && s->at == i + k)
+        free_spans += s->len, dirty += s->dirty ? s->len : 0; // a run's head
+      if (s->kind == HEAP_META) meta++;
+    }
+  }
+  vx_ndb_writer w = {.buf = text, .cap = cap};
+  vx_ndb_put_u64(&w, "heap", h.size);
+  vx_ndb_put_u64(&w, "top", (uint64_t)h.top * VX_HEAP_SPAN);
+  vx_ndb_put_u64(&w, "segments", h.segments);
+  vx_ndb_put_u64(&w, "meta", meta * VX_HEAP_SPAN);
+  vx_ndb_end(&w);
+  for (uint32_t c = 0; c < VX_HEAP_CLASSES; c++) {
+    if (!cls[c].slabs) continue;
+    vx_ndb_put_u64(&w, "class", VX_HEAP_CLASS[c]);
+    vx_ndb_put_u64(&w, "slabs", cls[c].slabs);
+    vx_ndb_put_u64(&w, "used", cls[c].used);
+    vx_ndb_put_u64(&w, "blocks", cls[c].slabs * (VX_HEAP_SPAN / VX_HEAP_CLASS[c]));
+    vx_ndb_end(&w);
+  }
+  vx_ndb_put_u64(&w, "large", large);
+  vx_ndb_put_u64(&w, "bytes", large_spans * VX_HEAP_SPAN);
+  vx_ndb_end(&w);
+  vx_ndb_put_u64(&w, "free", free_spans * VX_HEAP_SPAN);
+  vx_ndb_put_u64(&w, "dirty", dirty * VX_HEAP_SPAN);
+  vx_ndb_end(&w);
+  return w.failed ? 0 : w.len;
+}
+
 // The rings, as they are now: the header, then every ring's records merged
 // oldest first by their end (each thread's ring is in that order already;
 // ring 0, shared, nearly). The process still writes all of it, so what it

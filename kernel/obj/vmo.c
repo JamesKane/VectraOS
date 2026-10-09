@@ -21,9 +21,10 @@ typedef struct vmo {
   uint32_t pager_key;  // what its page requests call it
   spinlock lock;       // a pager-backed one's: its page list, and waiters
   struct page_waiter *waiters;
-  bool resizing;  // a resize under way (pager.c), which drops the lock between its steps
-  bool resizable; // anonymous, made VX_VMO_RESIZABLE (ADR-0042): its page list under its lock too
-  bool lazy;      // anonymous, made VX_VMO_LAZY (ADR-0046): pages made at a touch; its list under its lock
+  bool resizing;     // a resize under way (pager.c), which drops the lock between its steps
+  bool resizable;    // anonymous, made VX_VMO_RESIZABLE (ADR-0042): its page list under its lock too
+  bool lazy;         // anonymous, made VX_VMO_LAZY (ADR-0046): pages made at a touch; its list under its lock
+  uint32_t trace_id; // what the trace calls it (COMMIT, 7a4b): kernel addresses never appear in records
   // ADR-0043: a sealed VMO is written by no one again; a lease is a VMO on
   // its parent's pages (pages and list are the parent's), which it holds,
   // until it is revoked.
@@ -64,11 +65,14 @@ static vx_status vmo_create_pages(uint64_t size, bool lazy, vmo **out) {
 
   vmo *v = pool_alloc(&vmo_pool);
   if (!v) return VX_ERR_NO_MEMORY;
+  static _Atomic uint32_t trace_ids;
+  uint32_t trace_id = atomic_fetch_add_explicit(&trace_ids, 1, memory_order_relaxed) + 1;
   uint64_t list = phys_alloc(order);
   if (!list) {
     pool_free(&vmo_pool, v);
     return VX_ERR_NO_MEMORY;
   }
+  v->trace_id = trace_id;
   v->obj.type = OBJ_VMO;
   atomic_store_explicit(&v->obj.refs, 1, memory_order_relaxed);
   v->size = size;

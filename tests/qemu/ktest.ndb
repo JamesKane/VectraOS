@@ -3,9 +3,10 @@
 # channel_call, child tasks that exit or are killed, and vmo_rw. Some children
 # are killed by faults on purpose, so a "killed" line is no failure here: ktest
 # checks each child's exit status itself, and if ktest were killed its last
-# line would never come.
+# line would never come. 30 s: aarch64's firmware alone takes some 7 of
+# them under TCG, and a loaded host doubles the rest (2026-10-09).
 
-scenario=ktest timeout=15 cmdline=vx.root=ktest
+scenario=ktest timeout=30 cmdline=vx.root=ktest
 expect=" 0 failed"
 fail="vx: panic"
 fail="FAILED"

@@ -328,6 +328,7 @@ enum : uint32_t {
   MAPS,
   IMAGES,
   INFO,
+  HEAP,
   PROF,
   THREADS,
   FILES,
@@ -358,6 +359,7 @@ static const file_entry FILE_TABLE[FILES] = {
     [MAPS] = {VX_STR("maps"), 0444},
     [IMAGES] = {VX_STR("images"), 0444},
     [INFO] = {VX_STR("info"), 0444},
+    [HEAP] = {VX_STR("heap"), 0444},
     [PROF] = {VX_STR("prof"), P9_DMDIR | 0555},
     [THREADS] = {VX_STR("threads"), P9_DMDIR | 0555},
 };
@@ -689,6 +691,7 @@ static vx_status fs_read(void *ctx, uint64_t node, uint64_t offset, uint8_t *buf
   case MAPS: len = maps_text(p, text, sizeof text); break;
   case IMAGES: len = images_text(p, text, sizeof text); break;
   case INFO: len = info_text(p, text, sizeof text); break;
+  case HEAP: len = heap_text(p, text, sizeof text); break;
   case PROF_COUNTERS: len = counters_text(p, text, sizeof text); break;
   case PROF_SAMPLES: { // a whole ring, as zones
     static uint8_t snap[SAMPLE_RING];

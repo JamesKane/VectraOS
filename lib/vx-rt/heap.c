@@ -323,15 +323,18 @@ VX_API size_t vx_heap_usable(const vx_heap *h, const void *p) {
 
 // The process heap: one per process, made at first use, for a C library's
 // malloc family and anything else that wants one global heap.
+// The process heap, once made; procfs finds it through the profiling ring
+// (/proc/N/heap, 7a4b), which names where this is.
+static vx_heap *_Atomic vx_heap_the;
+
 VX_API vx_heap *vx_heap_process(void) {
-  static vx_heap *_Atomic the;
   static vx_lock_t making;
-  vx_heap *h = atomic_load_explicit(&the, memory_order_acquire);
+  vx_heap *h = atomic_load_explicit(&vx_heap_the, memory_order_acquire);
   if (h) return h;
   vx_lock(&making);
-  h = atomic_load_explicit(&the, memory_order_relaxed);
+  h = atomic_load_explicit(&vx_heap_the, memory_order_relaxed);
   if (!h) h = vx_heap_new(VX_HEAP_SEGMENTS * VX_HEAP_SEGMENT);
-  atomic_store_explicit(&the, h, memory_order_release);
+  atomic_store_explicit(&vx_heap_the, h, memory_order_release);
   vx_unlock(&making);
   return h;
 }

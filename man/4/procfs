@@ -42,6 +42,7 @@ Each process directory holds these files, described in the nodes that follow:
 | `maps` | r | its mappings |
 | `images` | r | its program's ELF image |
 | `info` | r | what the debugger can do on this machine |
+| `heap` | r | its process heap's size classes |
 | `prof/` | | profiling zones, samples and counters |
 | `threads/` | | a directory for each thread |
 
@@ -178,6 +179,8 @@ A fault's `access` is `read`, `write` or `exec`; a watchpoint's is the kind it w
   One record for each mapping, in address order: `base`, `size`, `prot` (such as `r-x`) and `offset` into its VMO, the numbers in hexadecimal.
 : `images`
   One record for each ELF image mapped, the program and the libraries its loader mapped, in address order (each mapping that starts with an ELF header): `name` (a library's DT_SONAME, else the task's name), `type` (`exec`, its addresses as linked; `dyn`, its addresses from `base`), `soname` for a library, `base` and `build-id`, in hexadecimal, if the image has a GNU build-id note.
+: `heap`
+  Its process heap (vx_heap's, `vx_heap_process`), read from its memory through the address its profiling ring names (M7 step 7a4b): a record with the reservation's `heap` bytes, how far its spans have reached (`top`), its `segments` and its table's `meta` bytes; then one for each size class with slabs, `class` (its size), `slabs`, blocks `used` and the `blocks` its slabs hold; then `large` blocks and their `bytes`; then the `free` bytes of its free runs and how many of them may still hold pages (`dirty`). Empty for a process with no ring or no heap yet.
 : `info`
   One record: `arch` (`x86_64` or `aarch64`), `watchpoints` (how many the hardware has) and `breakpoints` (how many procfs keeps for a process, 32).
 : `threads/<tid>/`

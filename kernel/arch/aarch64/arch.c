@@ -707,6 +707,7 @@ static constexpr uint32_t EC_SVC64 = 0x15;
 // --- User-mode registers (obj/exception.c) ---
 
 static trap_frame *arch_user_frame(thread *t) { return (trap_frame *)thread_kstack_top(t) - 1; }
+static uint64_t arch_frame_fp(const trap_frame *f) { return f->x[29]; }
 
 static void arch_frame_regs(const trap_frame *f, vx_regs *r) {
   for (int i = 0; i < 31; i++) r->x[i] = f->x[i];

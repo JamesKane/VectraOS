@@ -50,6 +50,16 @@ static bool futex_key_of(task *t, uint64_t word, futex_key *k, bool *present) {
   return found;
 }
 
+// Where a wait was made (7a4b): the waiter's return addresses, up to 8, as
+// FRAMES records after its FUTEX_WAIT, so trace -s holds a contended lock
+// to its caller's site. Out of line, off the wait's own frame.
+[[gnu::noinline]] static void futex_site(void) {
+  uint64_t ret[64];
+  uint32_t n = trace_walk(true, arch_frame_fp(arch_user_frame(this_cpu()->current)), ret);
+  if (n > 8) n = 8;
+  for (uint32_t i = 0; i < n; i += 2) trace_write(VX_TK_FRAMES, ret[i], i + 1 < n ? ret[i + 1] : 0);
+}
+
 // Blocks while *word (user address, in the current task) holds `expected`, until
 // futex_wake or the deadline. BAD_STATE if the word already differs, or its
 // page is absent (a pager's, evicted): the caller loads it, which brings the
@@ -81,6 +91,7 @@ static vx_status futex_wait(uint64_t word, uint32_t expected, vx_instant deadlin
   spin_unlock(&futex_buckets[i].lock);
 
   TRACE(VX_TC_FUTEX, VX_TK_FUTEX_WAIT, word, 0);
+  if (atomic_load_explicit(&trace_mask, memory_order_relaxed) & VX_TC_FUTEX) futex_site();
   vx_instant began = clock_now();
   int64_t woke = thread_block(VX_TB_FUTEX, word, deadline, 0);
   TRACE(VX_TC_FUTEX, VX_TK_FUTEX_WOKEN, word, clock_now() - began);

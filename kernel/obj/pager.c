@@ -116,6 +116,7 @@ static pager_result pager_fault(uint64_t address, uint32_t access) {
       if (upgrade) arch_tlb_shootdown(root, page_va, 4096); // no CPU keeps the read-only translation
       if (ok)
         TRACE(VX_TC_VM, VX_TK_FAULT, address, upgrade ? VX_TF_UPGRADE : made ? VX_TF_LAZY : VX_TF_PAGER);
+      if (ok && made) TRACE(VX_TC_VM, VX_TK_COMMIT, v->trace_id, 1); // a lazy page made: committed
       return ok ? PAGER_MAPPED : PAGER_NOT_MINE; // no memory for a table: the fault stands
     }
     // Not there: ask for it, if no one has, and wait.
@@ -347,6 +348,7 @@ static vx_status vmo_decommit(vmo *v, uint64_t offset, uint64_t size) {
     spin_unlock(&v->lock);
     if (n) vmo_unmap_everywhere(v, from, at - from);
     for (uint32_t i = 0; i < n; i++) phys_free(freed[i], 0);
+    if (n) TRACE(VX_TC_VM, VX_TK_COMMIT, v->trace_id, -(int64_t)n); // pages given back
     if (shrunk) break;
   }
   return VX_OK;

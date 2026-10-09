@@ -835,14 +835,15 @@ enum vx_trace_kind : uint16_t {
   VX_TK_FAULT,       // a: the address; b: enum vx_trace_fault
   VX_TK_PAGER_WAIT,  // a: the VMO (an id); b: the offset
   VX_TK_PAGER_DONE,  // a: the VMO; b: the offset
-  VX_TK_FUTEX_WAIT,  // a: the word's key; b: 0
+  VX_TK_FUTEX_WAIT,  // a: the word's key; b: 0. Up to 4 FRAMES follow: where the wait was made
   VX_TK_FUTEX_WOKEN, // a: the key; b: ns waited
   VX_TK_SYS_IN,      // a: the syscall's number
   VX_TK_SYS_OUT,     // a: the number; b: its result
   VX_TK_MARK,        // a, b: up to 16 bytes of text
   VX_TK_SAMPLE,      // a: the interrupted PC; b: frames that follow (in FRAMES) | 1 << 63 if in user mode
                      //   | 1 << 62 | the vx_pmu_event << 48 if a counter's overflow (ADR-0050), not the tick
-  VX_TK_FRAMES,      // a, b: the next two return addresses of the sample before (0: none)
+  VX_TK_FRAMES,      // a, b: the next two return addresses of the SAMPLE or FUTEX_WAIT before (0: none)
+  VX_TK_COMMIT,      // a: the VMO (its trace id); b: pages committed, negative for pages given back
 };
 // Not the kernel's: procfs merges a process's spans (lib/vx-prof) into
 // /proc/trace/events as these, cpu 0xffff, at their start. a: the flow; b:

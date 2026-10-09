@@ -482,6 +482,7 @@ static void kput_exception(const trap_frame *f) {
 // --- User-mode registers (obj/exception.c) ---
 
 static trap_frame *arch_user_frame(thread *t) { return (trap_frame *)thread_kstack_top(t) - 1; }
+static uint64_t arch_frame_fp(const trap_frame *f) { return f->rbp; }
 
 static void arch_frame_regs(const trap_frame *f, vx_regs *r) {
   *r = (vx_regs){.rax = f->rax,

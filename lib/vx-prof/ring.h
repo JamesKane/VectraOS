@@ -39,6 +39,9 @@ typedef struct vx_prof_header {
   _Atomic uint64_t head; // in the VMO, rings claimed; in the file, the records that follow
   uint32_t cap, rings;   // records each ring holds; rings (in the file: records, and 0)
   char names[VX_PROF_ZONES][VX_PROF_NAME];
+  // Where its process heap's pointer is (vx_heap_the, lib/vx-rt/heap.c), in
+  // its memory, for /proc/N/heap (7a4b); 0: none said.
+  uint64_t heap;
 } vx_prof_header;
 static_assert(sizeof(vx_prof_header) <= VX_PROF_HEADER_BYTES);
 

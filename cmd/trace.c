@@ -5,17 +5,19 @@
 //   trace -f [-o FILE]                      save what the running trace holds now (the flight recorder)
 //   trace -p [FILE]                         the events (live, or a saved FILE) as ndb, one a line
 //   trace -s [-n N] [FILE]                  a summary (20 §5): the N slowest flows (10), each with
-//                                           its parts, the N longest blocks and what woke them, and
-//                                           the N most sampled processes with their hottest functions
+//                                           its parts, the N longest blocks and what woke them, the
+//                                           N most sampled processes with their hottest functions,
+//                                           and the N most contended locks, held to their sites
+//   trace -d A B                            two saves compared: each kind's records a second
 
 #include "../lib/vx-rt/rt.c"
 #include "../lib/vx-ns/nsapi.c"
 #include "../lib/vx-debug/index.c"
 
 static const char *const KINDS[] = {
-    "",           "switch",      "wake",    "block",   "call",  "reply",      "donate",
-    "return",     "irq_in",      "irq_out", "timer",   "fault", "pager_wait", "pager_done",
-    "futex_wait", "futex_woken", "sys_in",  "sys_out", "mark",  "sample",     "frames"};
+    "",       "switch",  "wake",  "block",  "call",       "reply",      "donate",     "return",
+    "irq_in", "irq_out", "timer", "fault",  "pager_wait", "pager_done", "futex_wait", "futex_woken",
+    "sys_in", "sys_out", "mark",  "sample", "frames",     "commit"};
 
 static const char *fail(const char *what, vx_str path) {
   vx_eprintf("trace: %s %.*s: %.*s\n", what, VX_FMT(path), VX_FMT(vx_errstr()));
@@ -392,6 +394,116 @@ static void hottest(const vx_trace_record *r, size_t n, vx_arena *a, size_t top)
   }
 }
 
+// --- Contention (7a4b) ---
+//
+// A futex wait's FUTEX_WAIT has the waiter's return addresses after it, as
+// FRAMES on its thread; its FUTEX_WOKEN, how long it waited. Waits are
+// counted by their key and their site: the first frame whose function is
+// not the lock's own (libvx's vx_, the C library's __ and pthread_), named
+// through the process's images as hottest names its samples.
+
+typedef struct contended {
+  uint64_t key, ns;
+  uint32_t pid, waits;
+  const char *site;
+} contended;
+
+static bool by_wait(const void *ctx, uint32_t x, uint32_t y) { // longest first
+  const contended *c = ctx;
+  return c[x].ns > c[y].ns;
+}
+
+static bool lock_own(const char *name) {
+  vx_str n = vx_cstr(name);
+  return vx_str_prefix(n, VX_STR("vx_")) || vx_str_prefix(n, VX_STR("__")) ||
+         vx_str_prefix(n, VX_STR("pthread_"));
+}
+
+static void contention(const vx_trace_record *r, size_t n, vx_arena *a, size_t top) {
+  sampled *procs = vx_push(a, 64 * sizeof *procs, alignof(sampled));
+  contended *c = vx_push(a, 512 * sizeof *c, alignof(contended));
+  uint32_t *idx = vx_push(a, sizeof *idx * 2 * 512, alignof(uint32_t));
+  struct { // each thread's wait under way: its key and site
+    uint32_t tid;
+    uint64_t key;
+    const char *site;
+  } open[256];
+  uint32_t nprocs = 0, nc = 0, nopen = 0;
+  if (!procs || !c || !idx) return;
+  for (size_t i = 0; i < n; i++) {
+    if (r[i].kind == VX_TK_FUTEX_WAIT) {
+      uint32_t pid = r[i].tid >> 12, p = 0;
+      while (p < nprocs && procs[p].pid != pid) p++;
+      if (p == nprocs && nprocs < 64) procs[nprocs] = (sampled){.pid = pid}, read_images(&procs[nprocs++], a);
+      const char *site = nullptr;
+      for (size_t j = i + 1; j < n && !site && j < i + 16; j++) { // its frames, on its thread
+        if (r[j].kind != VX_TK_FRAMES || r[j].tid != r[i].tid) continue;
+        for (int k = 0; k < 2 && !site; k++) {
+          uint64_t ret = k ? r[j].b : r[j].a;
+          const char *f = ret && p < nprocs ? function_of(&procs[p], ret - 1, true, a) : nullptr;
+          if (f && !lock_own(f)) site = f;
+        }
+      }
+      uint32_t o = 0;
+      while (o < nopen && open[o].tid != r[i].tid) o++;
+      if (o == nopen && nopen < 256) nopen++;
+      if (o < nopen) open[o].tid = r[i].tid, open[o].key = r[i].a, open[o].site = site ? site : "?";
+    } else if (r[i].kind == VX_TK_FUTEX_WOKEN) {
+      uint32_t o = 0;
+      while (o < nopen && open[o].tid != r[i].tid) o++;
+      if (o == nopen) continue; // its wait began before the trace
+      uint32_t k = 0, pid = r[i].tid >> 12;
+      while (k < nc && !(c[k].key == open[o].key && c[k].pid == pid &&
+                         vx_str_eq(vx_cstr(c[k].site), vx_cstr(open[o].site))))
+        k++;
+      if (k == nc && nc < 512) c[nc++] = (contended){.key = open[o].key, .pid = pid, .site = open[o].site};
+      if (k < nc) c[k].waits++, c[k].ns += r[i].b;
+      open[o] = open[--nopen];
+    }
+  }
+  for (uint32_t i = 0; i < nc; i++) idx[i] = i;
+  sort(idx, idx + nc, nc, by_wait, c);
+  for (size_t k = 0; k < nc && k < top; k++) {
+    const contended *x = &c[idx[k]];
+    vx_printf("contended key=0x%llx process=%u site=%s waits=%u wait.us=%llu\n", (unsigned long long)x->key,
+              x->pid, x->site, x->waits, (unsigned long long)(x->ns / 1000));
+  }
+}
+
+// --- Two saves compared (-d) ---
+
+static const char *compare(vx_str one, vx_str two) {
+  vx_arena *a = vx_arena_new(240ull << 20);
+  if (vx_arena_error(a) != VX_OK) return fail("arena", one);
+  size_t n[2] = {};
+  const vx_trace_record *r[2] = {load(one, a, &n[0]), load(two, a, &n[1])};
+  if (!r[0]) return fail("read", one);
+  if (!r[1]) return fail("read", two);
+  hz = counter_hz();
+  uint64_t count[2][VX_TK_SPAN + 1] = {}, length[2] = {};
+  for (int f = 0; f < 2; f++) {
+    for (size_t i = 0; i < n[f]; i++) count[f][r[f][i].kind <= VX_TK_SPAN ? r[f][i].kind : 0]++;
+    length[f] = n[f] ? r[f][n[f] - 1].time - r[f][0].time : 0;
+  }
+  vx_printf("compared a=%.*s b=%.*s a.records=%zu b.records=%zu", VX_FMT(one), VX_FMT(two), n[0], n[1]);
+  print_length("a.length", length[0]);
+  print_length("b.length", length[1]);
+  vx_printf("\n");
+  for (uint32_t k = 1; k <= VX_TK_SPAN; k++) {
+    if (!count[0][k] && !count[1][k]) continue;
+    const char *name = k < sizeof KINDS / sizeof KINDS[0] ? KINDS[k] : "";
+    if (k == VX_TK_SPAN) name = "span";
+    // A second's worth of each, so saves of different lengths compare.
+    uint64_t per[2];
+    for (int f = 0; f < 2; f++) per[f] = length[f] && hz ? count[f][k] * hz / length[f] : count[f][k];
+    int64_t change = per[0] ? ((int64_t)per[1] - (int64_t)per[0]) * 100 / (int64_t)per[0] : 0;
+    vx_printf("kind=%s a=%llu b=%llu a.second=%llu b.second=%llu change=%lld%%\n", *name ? name : "unknown",
+              (unsigned long long)count[0][k], (unsigned long long)count[1][k], (unsigned long long)per[0],
+              (unsigned long long)per[1], (long long)change);
+  }
+  return nullptr;
+}
+
 static const char *summary(vx_str path, size_t top) {
   vx_arena *a = vx_arena_new(240ull << 20); // a million records and the summary's tables: one VMO's most
   if (vx_arena_error(a) != VX_OK) return fail("arena", path);
@@ -402,6 +514,7 @@ static const char *summary(vx_str path, size_t top) {
   slowest_flows(r, n, a, top);
   longest_blocks(r, n, a, top);
   hottest(r, n, a, top);
+  contention(r, n, a, top);
   return nullptr;
 }
 
@@ -436,6 +549,7 @@ const char *vx_main(void) {
   vx_str cats = {}, out = VX_STR("trace.out"), file = VX_STR("/proc/trace/events");
   vx_duration wait = 1'000'000'000;
   bool p = false, s = false, f = false;
+  vx_str d[2] = {};
   uint64_t top = 10;
   for (size_t i = 1; i < args.len; i++) {
     vx_str a = args.ptr[i];
@@ -445,6 +559,8 @@ const char *vx_main(void) {
       if (!vx_str_u64(args.ptr[++i], &top) || !top) return "usage";
     } else if ((p || s) && a.len && a.ptr[0] != '-') {
       file = a;
+    } else if (vx_str_eq(a, VX_STR("-d")) && i + 2 < args.len) {
+      d[0] = args.ptr[++i], d[1] = args.ptr[++i];
     } else if (vx_str_eq(a, VX_STR("-f"))) {
       f = true;
     } else if (vx_str_eq(a, VX_STR("-c")) && i + 1 < args.len) {
@@ -458,6 +574,7 @@ const char *vx_main(void) {
       return "usage";
     }
   }
+  if (d[0].len) return compare(d[0], d[1]);
   if (p) return print(file);
   if (s) return summary(file, top);
   if (f) return save(out); // the running trace is left running

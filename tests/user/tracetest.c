@@ -154,6 +154,91 @@ static void sampling(uint32_t self_task) {
   vx_arena_free(a);
 }
 
+// --- Contention, the heap, commits and trace -d (7a4b) ---
+
+static vx_lock_t contended_lock;
+static _Atomic uint32_t contend_rounds;
+
+// Takes the lock and holds it a while, again and again: the site trace -s
+// should name.
+[[gnu::noinline]] static void contend_here(void) {
+  for (int i = 0; i < 200; i++) {
+    vx_lock(&contended_lock);
+    volatile uint64_t x = 1;
+    for (int k = 0; k < 20'000; k++) x = x * 3 + 1;
+    vx_unlock(&contended_lock);
+    atomic_fetch_add(&contend_rounds, 1);
+  }
+}
+
+static const char *contender(void *arg) {
+  (void)arg;
+  contend_here();
+  return nullptr;
+}
+
+static void contention_and_heap(vx_arena *a) {
+  CHECK(ctl("start futex,vm size 4M") == VX_OK);
+  vx_thread *t[4];
+  for (int i = 0; i < 4; i++) t[i] = vx_thread_spawn(contender, nullptr, 0, 0);
+  for (int i = 0; i < 4; i++)
+    if (t[i]) vx_thread_join(t[i], nullptr, nullptr);
+  // A lazy page made, then given back: COMMIT +1 and -1.
+  vx_handle lazy;
+  uint64_t at = 0;
+  CHECK(vx_vmo_create(4096, VX_VMO_LAZY, &lazy) == VX_OK &&
+        vx_as_map(vx_self, lazy, 0, 4096, VX_MAP_WRITE, &at) == VX_OK);
+  if (at) *(volatile uint64_t *)at = 1;
+  CHECK(vx_vmo_decommit(lazy, 0, 4096) == VX_OK);
+  CHECK(ctl("stop") == VX_OK);
+  vx_str want = vx_fmt(a, "process=%llu site=contend_here ", (unsigned long long)vx_pid());
+  CHECK(run_trace(a, VX_STR("-s"), VX_STR("contended key=0x"), want));
+
+  // The commits, and a save compared with itself.
+  vx_fd ev = vx_open(VX_STR("/proc/trace/events"), VX_OREAD),
+        out = vx_create(VX_STR("/tmp/vm.trace"), VX_OWRITE, 0644);
+  static uint8_t buf[1 << 20];
+  size_t got = 0;
+  int64_t n;
+  while (ev >= 0 && (n = vx_read(ev, (vx_bytes){buf + got, sizeof buf - got})) > 0) got += (size_t)n;
+  vx_close(ev);
+  size_t put = 0; // a request each: fewer than asked is no error (file(2))
+  for (int64_t w = 1; out >= 0 && put < got && w > 0; put += w > 0 ? (size_t)w : 0)
+    w = vx_write(out, (vx_str){(const char *)buf + put, got - put});
+  CHECK(out >= 0 && put == got);
+  vx_close(out);
+  bool made = false, given = false;
+  for (size_t i = 0; i + sizeof(vx_trace_record) <= got; i += sizeof(vx_trace_record)) {
+    vx_trace_record r;
+    memcpy(&r, buf + i, sizeof r);
+    made = made || (r.kind == VX_TK_COMMIT && (int64_t)r.b == 1);
+    given = given || (r.kind == VX_TK_COMMIT && (int64_t)r.b == -1);
+  }
+  CHECK(made && given);
+  vx_str dargs[] = {VX_STR("-d"), VX_STR("/tmp/vm.trace"), VX_STR("/tmp/vm.trace")};
+  CHECK(run_trace_args(a, (vx_strs){dargs, 3}, VX_STR("kind=futex_wait a="), VX_STR("change=0%")));
+
+  // The heap: 300 blocks of 100 bytes are in its 112-byte class.
+  void *blocks[300];
+  for (int i = 0; i < 300; i++) blocks[i] = vx_heap_alloc(vx_heap_process(), 100);
+  char text[4096];
+  vx_fd hf = vx_open(vx_fmt(a, "/proc/%llu/heap", (unsigned long long)vx_pid()), VX_OREAD);
+  n = hf >= 0 ? vx_read(hf, (vx_bytes){(uint8_t *)text, sizeof text}) : -1;
+  vx_close(hf);
+  vx_str h = {text, n > 0 ? (size_t)n : 0};
+  int64_t c = vx_str_find(h, VX_STR("class=112 slabs="));
+  uint64_t used = 0;
+  if (c >= 0) {
+    vx_str rest = {h.ptr + c, h.len - (size_t)c};
+    int64_t u = vx_str_find(rest, VX_STR("used="));
+    for (size_t k = (size_t)u + 5; u >= 0 && k < rest.len && rest.ptr[k] >= '0' && rest.ptr[k] <= '9'; k++)
+      used = used * 10 + (uint64_t)(rest.ptr[k] - '0');
+  }
+  vx_printf("tracetest: the heap's 112-byte class: %llu blocks in use\n", (unsigned long long)used);
+  CHECK(used >= 300);
+  for (int i = 0; i < 300; i++) vx_heap_free(vx_heap_process(), blocks[i]);
+}
+
 // --- The flight recorder (7a4a, the flight scenario) ---
 
 static vx_lock_t pp_lock;
@@ -409,6 +494,7 @@ const char *vx_main(void) {
   CHECK(run_trace(a, VX_STR("-p"), VX_STR("kind=mark text=\"tracetest end\""), VX_STR("kind=switch")));
   CHECK(run_trace(a, VX_STR("-s"), VX_STR("slowest=flow flow=0x"), VX_STR("longest=block task=")));
   sampling(self_task);
+  contention_and_heap(a);
   vx_printf("tracetest: %zu records\n", n);
   vx_printf("tracetest: %u checks, %u failed\n", checks, failures);
   return failures ? "failed" : nullptr;

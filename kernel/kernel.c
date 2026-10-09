@@ -88,6 +88,7 @@ static uint64_t arch_thread_initial_sp(thread *t);
 // (obj/exception.c). Setting them checks that the state is a user mode one.
 struct trap_frame;
 static struct trap_frame *arch_user_frame(thread *t);
+static uint64_t arch_frame_fp(const struct trap_frame *f); // its frame pointer (rbp, x29)
 static void arch_frame_regs(const struct trap_frame *f, vx_regs *r);
 static vx_status arch_frame_set_regs(struct trap_frame *f, const vx_regs *r);
 static bool arch_frame_divert(struct trap_frame *f, uint64_t pc,
