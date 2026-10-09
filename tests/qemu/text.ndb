@@ -1,0 +1,32 @@
+# tests/qemu/text.ndb: text in winsrv (M7 step 7d2b; tests/user/textest.c):
+# keys alone with the IME off; COMMIT with it on; compose; the us-intl
+# keymap's dead key; winsrv's key repeat; an input method holding /wsys/ime.
+
+scenario=text display=fb timeout=60 cmdline="vx.display vx.desktop" with=textest
+expect="textest: ready"
+prompt="% "
+send="for(i in 0 1 2) while(! ls /dev/input/$i >/tmp/null >[2=1]) /boot/bin/posix/sleep 0.1; echo ready"
+line="ready"
+click=150px,100px
+expect="textest: focused"
+key=a
+expect="textest: a as a key alone; the ime on"
+key=shift-a
+expect="textest: committed A"
+key="compose apostrophe e"
+expect="textest: compose ' e made é"
+prompt="% "
+send="echo us-intl >/wsys/keymap"
+expect="textest: keymap us-intl"
+key="apostrophe a"
+expect="textest: dead ' a made á"
+holdkey=b,1500
+expect="textest: b repeated, flagged REPEAT"
+expect="textest: holding the ime"
+key="x y"
+expect="textest: the ime made ξ and passed y"
+expect="textest: 13 checks, 0 failed"
+fail="vx: panic"
+fail="textest: FAILED"
+fail="svcd: textest exited"
+fail="svcd: winsrv exited"

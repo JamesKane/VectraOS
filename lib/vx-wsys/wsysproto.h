@@ -26,6 +26,17 @@ enum : uint32_t { // winsrv to the app, unasked (txid 0)
   VX_WSYS_FEEDBACK = 3,
   VX_WSYS_KEY = 4,     // 7d1c: to the focused window
   VX_WSYS_POINTER = 5, // to the window under the pointer, or the one a press latched
+  VX_WSYS_PREEDIT = 6, // 7d2b: text being composed, not yet the window's
+  VX_WSYS_COMMIT = 7,  // text, the window's now
+  VX_WSYS_DELETE_SURROUNDING = 8,
+  VX_WSYS_KEYMAP = 9, // the layout changed
+};
+
+// The input method's side (7d2b): /wsys/ime's channel, between winsrv and
+// the one input method that holds it.
+enum : uint32_t {
+  VX_WSYS_IME_KEY = 32,    // winsrv to the IME: a key of the focused window, its IME on
+  VX_WSYS_IME_ANSWER = 33, // the IME to winsrv: what became of it
 };
 enum : uint32_t {       // the app to winsrv
   VX_WSYS_ATTACH = 16,  // a call: the reply's flags 0 or a status
@@ -80,7 +91,10 @@ typedef struct vx_wsys_feedback {
 // its unmodified rune (03 §5; 0 for none). A window gets a key's UP only
 // after its DOWN; one losing focus gets an UP for each key it holds, with
 // the SYNTHETIC flag.
-enum : uint32_t { VX_WSYS_SYNTHETIC = 1 };
+enum : uint32_t {
+  VX_WSYS_SYNTHETIC = 1,
+  VX_WSYS_IMEPASS = 2, // the IME was on and passed it on: its text, if any, came as a COMMIT before it
+};
 typedef struct vx_wsys_key {
   vx_msg_header h;
   vx_input_key key;
@@ -100,6 +114,64 @@ typedef struct vx_wsys_pointer {
   uint32_t buttons;
   uint32_t flags; // LATCHED
 } vx_wsys_pointer;
+
+// Text: UTF-8 (ADR-0013), at most VX_WSYS_TEXT bytes a record.
+static constexpr uint32_t VX_WSYS_TEXT = 116;
+
+// PREEDIT: what is being composed (a dead key's accent, a compose
+// sequence, an IME's candidate), drawn by the app at its text cursor until
+// a COMMIT or an empty PREEDIT replaces it; cursor is a byte offset in it.
+typedef struct vx_wsys_preedit {
+  vx_msg_header h;
+  uint32_t len;
+  int32_t cursor;
+  char text[VX_WSYS_TEXT];
+} vx_wsys_preedit;
+
+typedef struct vx_wsys_commit {
+  vx_msg_header h;
+  uint32_t len;
+  uint32_t reserved;
+  char text[VX_WSYS_TEXT];
+} vx_wsys_commit;
+
+// DELETE_SURROUNDING: bytes to delete before and after the text cursor, as
+// the window's ime file's surrounding text has them, before the next COMMIT.
+typedef struct vx_wsys_delete {
+  vx_msg_header h;
+  uint32_t before, after;
+} vx_wsys_delete;
+
+typedef struct vx_wsys_keymap {
+  vx_msg_header h;
+  char name[16]; // NUL-padded: "us", "us-intl"
+} vx_wsys_keymap;
+
+// IME_KEY: a DOWN or a repeat, the window it is for and what its text field
+// holds (the purpose its ime file was given: text, password, number, url,
+// email, terminal), with a sequence number its answer gives back.
+typedef struct vx_wsys_ime_key {
+  vx_msg_header h;
+  uint64_t seq;
+  uint32_t window;
+  char purpose[12];
+  vx_input_key key;
+} vx_wsys_ime_key;
+
+// IME_ANSWER: PASS (the key goes to the window as a KEY with IMEPASS), or
+// consumed; either way bytes deleted around the cursor, text committed and
+// a new preedit (commit_len bytes of text, then preedit_len), applied in
+// that order.
+enum : uint32_t { VX_WSYS_IME_PASS = 1 };
+typedef struct vx_wsys_ime_answer {
+  vx_msg_header h;
+  uint64_t seq;
+  uint32_t flags;
+  uint32_t delete_before, delete_after;
+  uint32_t commit_len, preedit_len;
+  int32_t cursor;
+  char text[2 * VX_WSYS_TEXT];
+} vx_wsys_ime_answer;
 
 // ATTACH: a vx-buffer, as the app's buffer id; its memory and timeline are
 // the message's two handles.

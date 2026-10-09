@@ -1,0 +1,6 @@
+# tests/user/textest.ndb: textest, text in a window of its own
+# (tests/qemu/text.ndb).
+
+service=textest program=/boot/bin/textest console when=vx.desktop
+mount=/ srv=bootfs
+mount=/wsys srv=wsys aname="new -dx 300 -dy 100"

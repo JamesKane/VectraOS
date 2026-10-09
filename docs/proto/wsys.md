@@ -14,11 +14,15 @@ Status: draft, written for M7 step 7d1b (docs/21 §2 items 1-3 and 8; 03 §4-5).
     info                  version=1 output=fb0 width= height= frames=
     outputs/              displayd's tree, mounted here
     theme/                active · tokens · ctl (load NAME · set TOKEN #rrggbb)   (7d2a)
+    keymap                the layout: us · us-intl; written to change it          (7d2b)
+    ime                   opened (srv extension): an input method's channel, one at a time
     windows/N/            a window, N from 1, never reused while winsrv runs
         ctl               move X Y · resize W H · title TEXT · raise · close
         info              id= title= x= y= width= height= config= presented= dropped=
         frame             its last FRAME and FEEDBACK, as text
         surface           opened (9Px's srv extension): the window's channel
+        keymap            the layout, as /wsys/keymap
+        ime               enable · disable · purpose text|password|number|url|email|terminal · rect · surrounding
 ```
 
 A window lives while a fid holds a node of it or its channel is open; the last to go takes it. New windows are cascaded from the top left, inside the screen, and stacked on top.
@@ -39,6 +43,10 @@ winsrv to the app, unasked (`txid` 0):
 | `FRAME` (2) | `seq` (the frame clock's count), `target` (the vblank a present made now is meant for), `prev_presented` (when the app's last present reached the screen), `refresh` (ns), `credits` (presents given back) |
 | `FEEDBACK` (3) | the present's `seq`, `actual` (the vblank that showed it; 0 if dropped), `dropped`, `zero_copy` (0: composited) |
 | `KEY` (4) | a key as `inputd`'s record has it (the usage, the action, the keyboard's held set and modifiers), its unmodified rune, and `SYNTHETIC` for an `UP` winsrv made (§4a) |
+| `PREEDIT` (6) | text being composed (a dead key's accent, a compose sequence, an input method's candidate) and a byte cursor in it, drawn at the text cursor until a `COMMIT` or an empty `PREEDIT` |
+| `COMMIT` (7) | text, the window's now: UTF-8, at most 116 bytes |
+| `DELETE_SURROUNDING` (8) | bytes to delete before and after the text cursor, before the next `COMMIT` |
+| `KEYMAP` (9) | the layout's name, when it changes |
 | `POINTER` (5) | the pointer in the window's coordinates (outside it while a press latches it), the buttons held after it, relative motion and wheels as the device gave them, and `LATCHED` when a press's latch delivered it |
 
 The app to winsrv:
@@ -69,6 +77,15 @@ winsrv holds `inputd`'s records (docs/proto/input.md §3a), so the console gets 
 - **Keys** go to the focused window. A window gets a key's `UP` or repeat only after its `DOWN`; one losing focus gets an `UP` for each key it still holds, marked `SYNTHETIC`. A key held across a change of focus is the new window's from its next `DOWN`.
 - **Focus** is in `CONFIGURE`'s `FOCUSED` flag: a change sends one to each window it touches.
 
+## 4c. Text
+
+Text is resolved in the server (03 §5, M7 step 7d2b). With a window's IME on (`enable` to its `ime` file; off at first, so a game sees keys alone), the text of its keys comes as `COMMIT`, before each key's `KEY`, which is marked `IMEPASS`: an app takes text from `COMMIT` and commands from `KEY`. A key the composer or an input method takes is not delivered as a `KEY` at all.
+
+- **The built-in composer.** A key's rune with its modifiers is committed if it is text (printable, newline, tab; a control character is a command, the `KEY`'s). In `us-intl` the keys `'` `` ` `` `^` `"` `~` are dead: the accent is a `PREEDIT` until the next key, which takes it (`'` then `e` is é; a space gives the accent alone; anything else gives both). The compose key starts a sequence of two: the first is a `PREEDIT`, and the pair is committed if it makes something (an accent and a letter in either order, or X11's common pairs: `o c` ©, `s s` ß, `- -` —, `< <` «); one that makes nothing is dropped.
+- **Repeat** is winsrv's: a key that is not a modifier, held half a second, repeats 30 times a second as a `KEY` with `REPEAT` (and its text again) until it is let go or focus moves. A device's own repeats are dropped.
+- **The keymap.** `/wsys/keymap` names the layout (`us`, `us-intl`), and a write changes it, with a `KEYMAP` record to every window. A window's `keymap` file reads the same.
+- **An input method.** One holds `/wsys/ime` (opened with the srv extension, a grant of the whole tree) and takes the composer's place. Each `DOWN` and repeat of the focused window, its IME on, goes to it as `IME_KEY` (32: a sequence number, the window, its `purpose`, the key); its `IME_ANSWER` (33) gives bytes to delete around the cursor, text to commit, a new preedit, and `PASS` for a key that goes on to the window. Keys queue behind an unanswered one, `UP`s too, so order holds; an answer later than 300 ms passes the key on, and a closed channel passes all of them.
+
 ## 4b. Decorations and the theme
 
 Decorations are the server's (03 §5.1, M7 step 7d2a). Around each window's client area winsrv draws a frame: an edge and a bevel lit from the top left, a title strip above the client area (the focused window's in `title.active`), a close gadget at the title's left, and notches across the bottom-right corner. Hit-testing stays in the server, and the app sees none of it:
@@ -90,4 +107,4 @@ Title text comes with fonts (7e1); `flags -titlebar` and the app's own `move` an
 
 ## 5. Version 1 leaves out
 
-Rings for the records (a channel carries them: the rate of a window's records is a frame's), scale other than 1, visibility other than `visible`, `latency 2|3`, VRR's `target_min`/`max`, `present async`, viewports; decorations and the theme, keymaps, compose, key repeat and the IME (7d2); pens and touch.
+Rings for the records (a channel carries them: the rate of a window's records is a frame's), scale other than 1, visibility other than `visible`, `latency 2|3`, VRR's `target_min`/`max`, `present async`, viewports; layouts beyond `us` and `us-intl`, and a user's compose table; title text (7e1); pens and touch.

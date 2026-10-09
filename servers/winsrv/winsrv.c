@@ -41,6 +41,18 @@
 // applied when let go), on the gadget closes it when let go there; the app
 // sees none of it. Title text comes with fonts (7e1).
 //
+// Text (7d2b, 03 §5): with a window's IME on (its ime file's `enable`), its
+// keys' text comes as COMMIT, before each key as a KEY marked IMEPASS. What
+// is still being composed comes as PREEDIT: a dead key's accent in the
+// us-intl layout, or the compose key's sequence of two (lib/vx-input/
+// keymap.h). An input method that holds /wsys/ime takes the built-in
+// composer's place: each DOWN and repeat goes to it, and its answer says
+// what to delete, commit and preedit, and whether the key passes on. Key
+// repeat is winsrv's: a key held half a second repeats 30 times a second,
+// flagged REPEAT, until it is let go or focus moves; a device's own repeats
+// are dropped. /wsys/keymap names the layout, and a change is a KEYMAP
+// record to every window.
+//
 // Input (7d1c, 21 §2 items 6-7): winsrv holds inputd's records (a session
 // on /srv/input, docs/proto/input.md §3a), so the console gets no keys
 // while it runs. Pointers move one pointer, drawn as a cursor over
@@ -58,11 +70,12 @@
 #include "../../lib/vx-input/keymap.h"
 
 static constexpr uint64_t KEY_DISPLAY = P9_KEY_USER | 1, KEY_INPUT = P9_KEY_USER | 2,
-                          KEY_WINDOW = P9_KEY_USER | 0x100;
+                          KEY_IME = P9_KEY_USER | 3, KEY_WINDOW = P9_KEY_USER | 0x100;
 static constexpr uint32_t MAX_WINDOWS = 16;
 static constexpr uint32_t BACKGROUND = 0xd8d8d8; // a window before its first present
 
-static vx_handle disp; // the session with displayd
+static vx_handle disp;   // the session with displayd
+static vx_handle ime_ch; // the input method's channel, while it holds /wsys/ime
 static p9_ring_server server;
 
 // --- The screen ---
@@ -199,6 +212,11 @@ typedef struct window {
   vx_wsys_frame last_frame;
   vx_wsys_feedback last_feedback;
   uint32_t keys[VX_INPUT_HELD], nkeys; // keys whose DOWN it was given
+  bool ime_on;                         // its ime file's enable: text as COMMIT
+  char purpose[12];                    // what its text field holds: text, password, ...
+  uint32_t dead;                       // a dead key's accent, waiting for the next key
+  uint8_t compose;                     // 1: the compose key pressed; 2: its first rune taken
+  uint32_t compose_first;
 } window;
 
 static window wins[MAX_WINDOWS];
@@ -664,11 +682,16 @@ static void on_display(void) {
 }
 
 static void on_input(void);
+static void on_ime(void);
 
 static void event(void *ctx, const vx_packet *pk) {
   (void)ctx;
   if (pk->key == KEY_DISPLAY) {
     on_display();
+    return;
+  }
+  if (pk->key == KEY_IME && ime_ch) {
+    on_ime();
     return;
   }
   if (pk->key == KEY_INPUT) {
@@ -754,6 +777,196 @@ static void send_key(window *w, const vx_input_key *k, uint32_t flags) {
   send(w, &m, sizeof m);
 }
 
+// --- Text ---
+
+static enum vx_keymap_layout layout = VX_LAYOUT_US;
+static constexpr uint32_t COMPOSE_KEY = VX_HID_KEYBOARD | 0x65; // the compose (application) key
+static constexpr vx_duration REPEAT_DELAY = 500'000'000, REPEAT_EVERY = 33'333'333;
+
+// The key repeating, while it is held in the focused window.
+typedef struct repeat_state {
+  bool on;
+  vx_input_key key;
+  vx_instant at; // the next repeat
+} repeat_state;
+static repeat_state repeating;
+
+static void send_text(window *w, uint32_t ordinal, const char *text, uint32_t len, int32_t cursor) {
+  if (len > VX_WSYS_TEXT) len = (uint32_t)vx_utf_cut(text, len, VX_WSYS_TEXT);
+  if (ordinal == VX_WSYS_PREEDIT) {
+    vx_wsys_preedit m = {.h = {.ordinal = ordinal}, .len = len, .cursor = cursor};
+    memcpy(m.text, text, len);
+    send(w, &m, sizeof m);
+  } else {
+    vx_wsys_commit m = {.h = {.ordinal = ordinal}, .len = len};
+    memcpy(m.text, text, len);
+    send(w, &m, sizeof m);
+  }
+}
+
+static void send_rune(window *w, uint32_t ordinal, uint32_t r) {
+  char b[4];
+  size_t n = r ? vx_runetochar(b, r) : 0;
+  send_text(w, ordinal, b, (uint32_t)n, (int32_t)n);
+}
+
+// Whether a rune is text to commit: printable, or a newline or a tab;
+// control characters are commands, the KEY's.
+static bool is_text(uint32_t r) { return r == '\n' || r == '\t' || (r >= 0x20 && r != 0x7f); }
+
+// The built-in composer: a key's text as COMMIT and the key passed on, or
+// the key taken into a dead key's or the compose key's sequence.
+static void compose_key(window *w, const vx_input_key *k) {
+  if (k->action == VX_KEY_UP) {
+    send_key(w, k, VX_WSYS_IMEPASS);
+    return;
+  }
+  if (k->usage == COMPOSE_KEY) { // a sequence of two follows
+    w->compose = 1, w->dead = 0;
+    return;
+  }
+  uint32_t r = vx_keymap_rune(k->usage, k->mods);
+  if (!r) { // a modifier, a function key: no text
+    send_key(w, k, VX_WSYS_IMEPASS);
+    return;
+  }
+  if (w->compose == 1) {
+    w->compose = is_text(r) ? 2 : 0, w->compose_first = r;
+    send_rune(w, VX_WSYS_PREEDIT, w->compose ? r : 0);
+    return;
+  }
+  if (w->compose == 2) { // a pair that makes nothing is dropped, as X11's compose drops it
+    uint32_t made = vx_keymap_combine(w->compose_first, r);
+    w->compose = 0;
+    send_rune(w, VX_WSYS_PREEDIT, 0);
+    if (made) send_rune(w, VX_WSYS_COMMIT, made);
+    return;
+  }
+  if (w->dead) { // the accent on this key; with a space, the accent alone; else both
+    uint32_t accent = w->dead, made = r == ' ' ? accent : vx_keymap_combine(accent, r);
+    w->dead = 0;
+    send_rune(w, VX_WSYS_PREEDIT, 0);
+    if (made) {
+      send_rune(w, VX_WSYS_COMMIT, made);
+      return;
+    }
+    send_rune(w, VX_WSYS_COMMIT, accent);
+  }
+  uint32_t accent = vx_keymap_dead(layout, k->usage, k->mods);
+  if (accent && k->action == VX_KEY_DOWN) {
+    w->dead = accent;
+    send_rune(w, VX_WSYS_PREEDIT, accent);
+    return;
+  }
+  if (is_text(r)) send_rune(w, VX_WSYS_COMMIT, r);
+  send_key(w, k, VX_WSYS_IMEPASS);
+}
+
+// --- The input method (/wsys/ime) ---
+
+static constexpr uint32_t IME_QUEUE = 32;
+static constexpr vx_duration IME_WAIT = 300'000'000; // an answer later than this: the key passes on
+
+static struct {
+  int slot; // the window's
+  vx_input_key key;
+  uint64_t seq;
+  vx_instant sent; // 0: an UP, waiting its turn, never sent
+} imeq[IME_QUEUE];
+static uint32_t ime_head, ime_count;
+static uint64_t ime_seq;
+
+// The queue's head, if it can go on: an UP goes to its window at once, a
+// key with an answer or past IME_WAIT as the answer said.
+static void ime_flush(const vx_wsys_ime_answer *a);
+
+static void ime_send(uint32_t at) {
+  window *w = &wins[imeq[at].slot];
+  vx_wsys_ime_key m = {
+      .h = {.ordinal = VX_WSYS_IME_KEY}, .seq = imeq[at].seq, .window = w->id, .key = imeq[at].key};
+  memcpy(m.purpose, w->purpose, sizeof m.purpose);
+  imeq[at].sent = vx_now();
+  if (vx_channel_write(ime_ch, &m, sizeof m, nullptr, 0) != VX_OK)
+    imeq[at].sent = 1; // passes at the next tick
+}
+
+static void ime_key(int slot, const vx_input_key *k) {
+  if (ime_count == IME_QUEUE) { // the IME is far behind: the key passes on
+    send_key(&wins[slot], k, VX_WSYS_IMEPASS);
+    return;
+  }
+  uint32_t at = (ime_head + ime_count++) % IME_QUEUE;
+  imeq[at].slot = slot, imeq[at].key = *k, imeq[at].seq = ++ime_seq, imeq[at].sent = 0;
+  if (k->action != VX_KEY_UP) ime_send(at);
+  ime_flush(nullptr);
+}
+
+static void ime_apply(window *w, const vx_wsys_ime_answer *a, const vx_input_key *k) {
+  uint32_t commit = a->commit_len <= VX_WSYS_TEXT ? a->commit_len : 0;
+  uint32_t preedit = a->preedit_len <= VX_WSYS_TEXT ? a->preedit_len : 0; // an IME's word, bounded
+  if (a->delete_before || a->delete_after) {
+    vx_wsys_delete d = {
+        .h = {.ordinal = VX_WSYS_DELETE_SURROUNDING}, .before = a->delete_before, .after = a->delete_after};
+    send(w, &d, sizeof d);
+  }
+  if (commit && vx_utf_valid(a->text, commit)) send_text(w, VX_WSYS_COMMIT, a->text, commit, 0);
+  if (vx_utf_valid(a->text + commit, preedit))
+    send_text(w, VX_WSYS_PREEDIT, a->text + commit, preedit, a->cursor);
+  if (a->flags & VX_WSYS_IME_PASS) send_key(w, k, VX_WSYS_IMEPASS);
+}
+
+static void ime_flush(const vx_wsys_ime_answer *a) {
+  vx_instant now = vx_now();
+  while (ime_count) {
+    uint32_t at = ime_head;
+    bool answered = a && imeq[at].sent && a->seq == imeq[at].seq;
+    bool late = imeq[at].sent && now - imeq[at].sent > IME_WAIT;
+    if (imeq[at].sent && !answered && !late) return; // waiting for the IME
+    window *w = &wins[imeq[at].slot];
+    if (w->used && answered)
+      ime_apply(w, a, &imeq[at].key), a = nullptr;
+    else if (w->used)
+      send_key(w, &imeq[at].key, VX_WSYS_IMEPASS); // an UP, or the IME too slow: passed on
+    ime_head = (ime_head + 1) % IME_QUEUE, ime_count--;
+  }
+}
+
+static void ime_end(void) {
+  vx_handle_close(ime_ch);
+  ime_ch = VX_HANDLE_NONE;
+  for (uint32_t i = 0; i < ime_count; i++) imeq[(ime_head + i) % IME_QUEUE].sent = 1; // all late now
+  ime_flush(nullptr);
+}
+
+// A key for window w, by its IME: none (the KEY alone), an input method's,
+// or the built-in composer.
+static void deliver_key(window *w, const vx_input_key *k) {
+  if (!w->ime_on)
+    send_key(w, k, 0);
+  else if (ime_ch || ime_count)
+    ime_key((int)(w - wins), k);
+  else
+    compose_key(w, k);
+}
+
+// The input method's answers.
+static void on_ime(void) {
+  for (;;) {
+    static vx_wsys_ime_answer a;
+    vx_msg_size size;
+    vx_handle h[VX_CHANNEL_MAX_HANDLES];
+    vx_status st = vx_channel_read(ime_ch, &a, sizeof a, h, VX_CHANNEL_MAX_HANDLES, &size);
+    if (st == VX_ERR_SHOULD_WAIT) break;
+    if (st != VX_OK) {
+      ime_end();
+      return;
+    }
+    for (uint32_t i = 0; i < size.handles; i++) vx_handle_close(h[i]);
+    if (size.bytes == sizeof a && a.h.ordinal == VX_WSYS_IME_ANSWER) ime_flush(&a);
+  }
+  vx_port_bind(server.port, ime_ch, VX_TRIGGER_READABLE, KEY_IME, 0);
+}
+
 // Focus to slot i (-1: none): the old window's held keys released, both
 // told by CONFIGURE, the new one raised.
 static void focus_window(int i) {
@@ -767,7 +980,8 @@ static void focus_window(int i) {
       vx_input_key up = {.time = (uint64_t)vx_now(), .usage = o->keys[k], .action = VX_KEY_UP};
       send_key(o, &up, VX_WSYS_SYNTHETIC);
     }
-    o->nkeys = 0;
+    o->nkeys = 0, o->dead = 0, o->compose = 0;
+    repeating.on = false;
     configure(o);
   }
   if (i >= 0) {
@@ -777,7 +991,7 @@ static void focus_window(int i) {
 }
 
 static void on_key(const vx_input_key *k) {
-  if (ptr.focus < 0) return;
+  if (ptr.focus < 0 || k->action == VX_KEY_REPEAT) return; // a device's own repeats: winsrv makes its own
   window *w = &wins[ptr.focus];
   uint32_t at = w->nkeys;
   for (uint32_t i = 0; i < w->nkeys; i++)
@@ -788,7 +1002,31 @@ static void on_key(const vx_input_key *k) {
     return; // an UP or a repeat of a key it never saw go down
   else if (k->action == VX_KEY_UP)
     w->keys[at] = w->keys[--w->nkeys];
-  send_key(w, k, 0);
+  // Repeat: the newest key down that is not a modifier, until it is let go.
+  bool modifier =
+      (k->usage & 0xffff) >= 0xe0 || k->usage == (VX_HID_KEYBOARD | 0x39) || k->usage == COMPOSE_KEY;
+  if (k->action == VX_KEY_DOWN && !modifier)
+    repeating = (repeat_state){.on = true, .key = *k, .at = vx_now() + REPEAT_DELAY};
+  if (k->action == VX_KEY_UP && repeating.on && repeating.key.usage == k->usage) repeating.on = false;
+  deliver_key(w, k);
+}
+
+// The server's tick: repeats due, and an input method's late answers.
+static vx_instant tick(void *ctx) {
+  (void)ctx;
+  vx_instant now = vx_now();
+  if (repeating.on && ptr.focus >= 0 && now >= repeating.at) {
+    vx_input_key k = repeating.key;
+    k.action = VX_KEY_REPEAT, k.time = (uint64_t)now;
+    deliver_key(&wins[ptr.focus], &k);
+    repeating.at += REPEAT_EVERY;
+    if (repeating.at < now) repeating.at = now + REPEAT_EVERY; // fallen behind: no burst of repeats
+  }
+  if (ime_count) ime_flush(nullptr);
+  vx_instant next = repeating.on ? repeating.at : VX_INFINITE;
+  if (ime_count && imeq[ime_head].sent && imeq[ime_head].sent + IME_WAIT < next)
+    next = imeq[ime_head].sent + IME_WAIT;
+  return next;
 }
 
 static void on_pointer(in_device *d, const vx_input_pointer *p) {
@@ -964,11 +1202,11 @@ static vx_status take_output(vx_handle srv) {
 
 // Nodes: the root's files, then each window's (by its slot), WIN + slot * 8
 // + one of W_*.
-enum : uint64_t { ROOT = 1, INFO, OUTPUTS, WINDOWS, THEME, T_ACTIVE, T_TOKENS, T_CTL };
+enum : uint64_t { ROOT = 1, INFO, OUTPUTS, WINDOWS, THEME, T_ACTIVE, T_TOKENS, T_CTL, R_KEYMAP, R_IME };
 static constexpr uint64_t WIN = 0x100;
-enum : uint64_t { W_DIR = 0, W_CTL, W_INFO, W_FRAME, W_SURFACE, W_FILES };
+enum : uint64_t { W_DIR = 0, W_CTL, W_INFO, W_FRAME, W_SURFACE, W_KEYMAP, W_IME, W_FILES };
 static const vx_str W_NAMES[W_FILES] = {
-    {}, VX_STR("ctl"), VX_STR("info"), VX_STR("frame"), VX_STR("surface")};
+    {}, VX_STR("ctl"), VX_STR("info"), VX_STR("frame"), VX_STR("surface"), VX_STR("keymap"), VX_STR("ime")};
 
 static window *window_of(uint64_t n) {
   if (n < WIN || n >= WIN + (uint64_t)MAX_WINDOWS * 8) return nullptr;
@@ -1031,6 +1269,10 @@ static vx_status fs_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) 
       *child = WINDOWS;
     else if (vx_str_eq(name, VX_STR("theme")))
       *child = THEME;
+    else if (vx_str_eq(name, VX_STR("keymap")))
+      *child = R_KEYMAP;
+    else if (vx_str_eq(name, VX_STR("ime")))
+      *child = R_IME;
     else
       return VX_ERR_NOT_FOUND;
     return VX_OK;
@@ -1066,7 +1308,7 @@ static vx_status fs_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) 
 
 static vx_status fs_parent(void *ctx, uint64_t n, uint64_t *parent) {
   (void)ctx;
-  if (n == ROOT || n == INFO || n == OUTPUTS || n == WINDOWS || n == THEME)
+  if (n == ROOT || n == INFO || n == OUTPUTS || n == WINDOWS || n == THEME || n == R_KEYMAP || n == R_IME)
     *parent = ROOT;
   else if (n >= T_ACTIVE && n <= T_CTL)
     *parent = THEME;
@@ -1089,11 +1331,13 @@ static vx_str name_of(uint64_t n, bool *dir, uint32_t *mode) {
   if (n == T_ACTIVE) return VX_STR("active");
   if (n == T_TOKENS) return VX_STR("tokens");
   if (n == T_CTL) return *mode = 0220, VX_STR("ctl");
+  if (n == R_KEYMAP) return *mode = 0664, VX_STR("keymap");
+  if (n == R_IME) return *mode = 0660, VX_STR("ime");
   const window *w = window_of(n);
   if (!w) return (vx_str){};
   uint64_t f = (n - WIN) % 8;
   if (f == W_CTL) *mode = 0220;
-  if (f == W_SURFACE) *mode = 0660;
+  if (f == W_SURFACE || f == W_IME) *mode = 0660;
   if (f != W_DIR) return W_NAMES[f];
   *dir = true;
   size_t len = 0;
@@ -1123,7 +1367,9 @@ static vx_status fs_open(void *ctx, uint64_t n, uint8_t mode) {
   window *w = window_of(n);
   uint64_t f = w ? (n - WIN) % 8 : W_DIR;
   if (f == W_CTL || n == T_CTL) return (mode & 3) == P9_OWRITE ? VX_OK : VX_ERR_ACCESS;
-  if (f == W_SURFACE) return (mode & 3) == P9_ORDWR ? VX_OK : VX_ERR_ACCESS;
+  if (f == W_SURFACE || n == R_IME) return (mode & 3) == P9_ORDWR ? VX_OK : VX_ERR_ACCESS;
+  if (f == W_IME || n == R_KEYMAP)
+    return (mode & 3) == P9_OREAD || (mode & 3) == P9_OWRITE ? VX_OK : VX_ERR_ACCESS;
   return (mode & 3) == P9_OREAD ? VX_OK : VX_ERR_ACCESS;
 }
 
@@ -1131,6 +1377,16 @@ static vx_status fs_open(void *ctx, uint64_t n, uint8_t mode) {
 // a FRAME (its first credit) on it at once.
 static vx_status fs_open_handle(void *ctx, uint64_t n, uint8_t mode, vx_handle *out_handle) {
   (void)ctx, (void)mode;
+  if (n == R_IME) { // an input method: its channel, one at a time
+    if (ime_ch) return VX_ERR_BAD_STATE;
+    vx_handle ends[2];
+    vx_status st = vx_channel_create(0, ends);
+    if (st != VX_OK) return st;
+    ime_ch = ends[0], *out_handle = ends[1];
+    vx_port_bind(server.port, ime_ch, VX_TRIGGER_READABLE, KEY_IME, 0);
+    vx_print(VX_STR("winsrv: an input method holds /wsys/ime\n"));
+    return VX_OK;
+  }
   window *w = window_of(n);
   if (!w || (n - WIN) % 8 != W_SURFACE) return VX_OK; // no handle to give
   if (w->ch) return VX_ERR_BAD_STATE;                 // one app's at a time
@@ -1176,6 +1432,13 @@ static vx_status fs_read(void *ctx, uint64_t n, uint64_t offset, uint8_t *buf, u
     vx_ndb_put_u64(&t, "width", out.mode.width);
     vx_ndb_put_u64(&t, "height", out.mode.height);
     vx_ndb_put_u64(&t, "frames", out.frames);
+    vx_ndb_end(&t);
+  } else if (n == R_KEYMAP || (w && (n - WIN) % 8 == W_KEYMAP)) {
+    vx_str a = vx_cstr(VX_KEYMAP_NAMES[layout]);
+    memcpy(text, a.ptr, a.len), text[a.len] = '\n', t.len = a.len + 1;
+  } else if (w && (n - WIN) % 8 == W_IME) {
+    vx_ndb_flag(&t, w->ime_on ? "enabled" : "disabled");
+    vx_ndb_put(&t, "purpose", vx_cstr(w->purpose[0] ? w->purpose : "text"));
     vx_ndb_end(&t);
   } else if (n == T_ACTIVE) {
     vx_str a = vx_cstr(tok.name);
@@ -1254,8 +1517,47 @@ static vx_status theme_ctl(vx_str cmd) {
   return VX_ERR_NOT_FOUND;
 }
 
+// A window's ime file: enable · disable · purpose WORD · rect X Y W H ·
+// surrounding TEXT CURSOR ANCHOR (the last two kept for an input method,
+// 7d2b takes them and goes on).
+static vx_status ime_ctl(window *w, vx_str cmd) {
+  if (take_word(&cmd, "enable")) {
+    w->ime_on = true;
+  } else if (take_word(&cmd, "disable")) {
+    w->ime_on = false, w->dead = 0, w->compose = 0;
+    send_rune(w, VX_WSYS_PREEDIT, 0);
+  } else if (take_word(&cmd, "purpose")) {
+    while (cmd.len && cmd.ptr[0] == ' ') cmd.ptr++, cmd.len--;
+    static const char *const PURPOSES[] = {"text", "password", "number", "url", "email", "terminal"};
+    bool known = false;
+    for (size_t i = 0; i < sizeof PURPOSES / sizeof PURPOSES[0]; i++)
+      known |= vx_str_eq(cmd, vx_cstr(PURPOSES[i]));
+    if (!known) return VX_ERR_INVALID;
+    memset(w->purpose, 0, sizeof w->purpose);
+    memcpy(w->purpose, cmd.ptr, cmd.len);
+  } else if (!take_word(&cmd, "rect") && !take_word(&cmd, "surrounding")) {
+    return VX_ERR_INVALID;
+  }
+  return VX_OK;
+}
+
 static vx_status fs_write(void *ctx, uint64_t n, uint64_t offset, const uint8_t *buf, uint32_t *count) {
   (void)ctx, (void)offset;
+  if (n == R_KEYMAP) { // a layout by name: KEYMAP to every window
+    vx_str cmd = {(const char *)buf, *count};
+    while (cmd.len && (cmd.ptr[cmd.len - 1] == '\n' || cmd.ptr[cmd.len - 1] == ' ')) cmd.len--;
+    for (uint32_t l = 0; l < VX_LAYOUTS; l++)
+      if (vx_str_eq(cmd, vx_cstr(VX_KEYMAP_NAMES[l]))) {
+        layout = (enum vx_keymap_layout)l;
+        vx_wsys_keymap m = {.h = {.ordinal = VX_WSYS_KEYMAP}};
+        memcpy(m.name, cmd.ptr, cmd.len);
+        for (uint32_t i = 0; i < MAX_WINDOWS; i++)
+          if (wins[i].used) wins[i].dead = 0, wins[i].compose = 0, send(&wins[i], &m, sizeof m);
+        return VX_OK;
+      }
+    *count = 0;
+    return VX_ERR_NOT_FOUND;
+  }
   if (n == T_CTL) {
     vx_str cmd = {(const char *)buf, *count};
     while (cmd.len && (cmd.ptr[cmd.len - 1] == '\n' || cmd.ptr[cmd.len - 1] == ' ')) cmd.len--;
@@ -1264,6 +1566,13 @@ static vx_status fs_write(void *ctx, uint64_t n, uint64_t offset, const uint8_t 
     return st;
   }
   window *w = window_of(n);
+  if (w && (n - WIN) % 8 == W_IME) {
+    vx_str cmd = {(const char *)buf, *count};
+    while (cmd.len && (cmd.ptr[cmd.len - 1] == '\n' || cmd.ptr[cmd.len - 1] == ' ')) cmd.len--;
+    vx_status st = ime_ctl(w, cmd);
+    if (st != VX_OK) *count = 0;
+    return st;
+  }
   if (!w || (n - WIN) % 8 != W_CTL) return VX_ERR_ACCESS;
   vx_str cmd = {(const char *)buf, *count};
   while (cmd.len && (cmd.ptr[cmd.len - 1] == '\n' || cmd.ptr[cmd.len - 1] == ' ')) cmd.len--;
@@ -1296,8 +1605,9 @@ static vx_status fs_write(void *ctx, uint64_t n, uint64_t offset, const uint8_t 
 static vx_status fs_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *child) {
   (void)ctx;
   if (dir == ROOT) {
-    if (index > 3) return VX_ERR_NOT_FOUND;
-    *child = INFO + index;
+    static const uint64_t ROOT_FILES[] = {INFO, OUTPUTS, WINDOWS, THEME, R_KEYMAP, R_IME};
+    if (index >= sizeof ROOT_FILES / sizeof ROOT_FILES[0]) return VX_ERR_NOT_FOUND;
+    *child = ROOT_FILES[index];
     return VX_OK;
   }
   if (dir == THEME) {
@@ -1333,6 +1643,7 @@ const char *vx_main(void) {
   server.name = VX_STR("winsrv");
   server.supported = P9_EXT_XATTR | P9_EXT_SRV;
   server.event = event;
+  server.tick = tick;
   server.listen = vx_spawn_take("listen");
   vx_handle srv = vx_spawn_take("srv:outputs");
   if (!server.listen || !srv || vx_port_create(0, &server.port) != VX_OK) {

@@ -1438,6 +1438,8 @@ static const program USER_PROGRAMS[] = {
      nullptr}, // ./build bench's measurements (7a5)
     {"flighttest", "tests/user/tracetest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // tracetest's flight recorder test, as a program of its own (7a4a)
+    {"textest", "tests/user/textest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr}, // text: keymaps, compose, repeat, the IME (7d2b)
     {"decortest", "tests/user/decortest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // winsrv's decorations (7d2a)
     {"routetest", "tests/user/routetest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
