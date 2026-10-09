@@ -39,9 +39,11 @@ static_assert(sizeof(ring_pair) <= 4096); // a pool object fits in a page
 
 // A new ring: its memory, with the header written, and its two ends.
 static vx_status ring_create(const vx_ring_params *p, ring_end **client, ring_end **server, vmo **memory) {
+  static _Atomic uint64_t sessions;
   vx_ring_header h;
   vx_status st = vx_ring_layout(p, &h);
   if (st != VX_OK) return st;
+  h.session = atomic_fetch_add_explicit(&sessions, 1, memory_order_relaxed) + 1;
   vmo *v;
   if ((st = vmo_create(h.size, &v)) != VX_OK) return st;
   v->ring = true;

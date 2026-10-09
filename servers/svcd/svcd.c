@@ -83,6 +83,8 @@ typedef struct service {
   uint32_t devices;
   vx_handle device[MAX_DEVICES]; // svcd's own handles; each instance gets duplicates
   vx_str device_name[MAX_DEVICES];
+  vx_handle prof_vmo; // its profiling ring, made before procfs served, until procfs has it (20 §5)
+  uint64_t prof_at;
   vx_handle task;
   uint32_t restarts;
   vx_instant window_start;
@@ -590,7 +592,9 @@ static vx_status start(service *s) {
                      // below, once procfs serves.
                      .proc =
                          procfs_started && !posts_proc ? find_post(VX_STR("proc"))->client : VX_HANDLE_NONE,
-                     .proc_flags = PROC_NOWAIT | PROC_SETSID};
+                     .proc_flags = PROC_NOWAIT | PROC_SETSID,
+                     .prof_vmo = &s->prof_vmo,
+                     .prof_at = &s->prof_at};
   st = vx_spawn_elf(&a, &s->task);
   if (st == VX_OK) st = vx_port_bind(port, s->task, VX_TRIGGER_EXIT, (uint64_t)(s - services), 0);
   if (st != VX_OK) return st;
@@ -599,9 +603,15 @@ static vx_status start(service *s) {
     for (uint32_t i = 0; i < service_count; i++) {
       service *x = &services[i];
       if (!x->task) continue;
+      uint64_t pid = 0;
       vx_status reg =
-          vx_proc_register(find_post(VX_STR("proc"))->client, x->task, PROC_NOWAIT | PROC_SETSID, nullptr);
+          vx_proc_register(find_post(VX_STR("proc"))->client, x->task, PROC_NOWAIT | PROC_SETSID, &pid);
       if (reg != VX_OK && reg != VX_ERR_EXISTS) cannot("cannot register ", x, reg);
+      if (reg == VX_OK && x->prof_vmo) // its ring, made at its spawn
+        vx_prof_give(find_post(VX_STR("proc"))->client, pid, x->prof_vmo, x->prof_at);
+      else if (x->prof_vmo)
+        vx_handle_close(x->prof_vmo);
+      x->prof_vmo = VX_HANDLE_NONE;
     }
   }
   vx_task_summary info;

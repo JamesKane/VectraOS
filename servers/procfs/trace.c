@@ -30,13 +30,28 @@ static struct {
   vx_handle rings;
   uint64_t base, size; // the rings' VMO, mapped read-only
   bool on, circular;
+  bool spans; // processes write spans (20 §5), merged into events
+  uint64_t span_from[MAX_PROCS][VX_PROF_THREADS +
+                                1]; // each ring's head at the start: earlier records are not this trace's
   uint32_t categories;
   uint64_t ring_size;
   uint8_t *snap; // the merged snapshot (on the process heap)
   uint64_t snap_len;
 } tr;
 
+static vx_prof_header *prof_ring(uint32_t i, uint64_t *pid); // prof.c
+
 static bool trace_node(uint64_t node) { return node >> 32 == TRACE_PID; }
+
+// Every process's ring takes spans, or stops. tr.spans stays as the trace
+// started: whether its snapshot takes them.
+static void trace_spans(bool on) {
+  uint64_t pid;
+  for (uint32_t i = 0; i < MAX_PROCS; i++) {
+    vx_prof_header *h = prof_ring(i, &pid);
+    if (h) atomic_store_explicit(&h->spans, on, memory_order_relaxed);
+  }
+}
 static uint64_t trace_node_of(uint32_t f) { return TRACE_PID << 32 | f; }
 
 // Whether uname may see /proc/trace: an administrator, by users(6)'s default.
@@ -79,6 +94,7 @@ static vx_status trace_ctl(vx_str cmd) {
   if (vx_str_eq(w, VX_STR("stop"))) {
     vx_status st = vx_trace_configure(tr.resource, VX_TRACE_STOP, nullptr, 0);
     if (st == VX_OK) tr.on = false;
+    trace_spans(false);
     return st;
   }
   if (vx_str_eq(w, VX_STR("rewind"))) return vx_trace_configure(tr.resource, VX_TRACE_REWIND, nullptr, 0);
@@ -89,12 +105,17 @@ static vx_status trace_ctl(vx_str cmd) {
   }
   if (!vx_str_eq(w, VX_STR("start"))) return VX_ERR_INVALID;
   vx_trace_start s = {};
+  bool spans = false;
   vx_str cats;
   if (!vx_str_split(&rest, VX_STR(" "), &cats)) return VX_ERR_INVALID;
   for (vx_str c; vx_str_split(&cats, VX_STR(","), &c);) {
     uint32_t bit = 0;
     for (size_t i = 0; i < sizeof TRACE_CATS / sizeof TRACE_CATS[0]; i++)
       if (vx_str_eq(c, vx_cstr(TRACE_CATS[i].name))) bit = TRACE_CATS[i].bit;
+    if (vx_str_eq(c, VX_STR("span"))) { // the processes', not the kernel's
+      spans = true;
+      continue;
+    }
     if (!bit) return VX_ERR_INVALID;
     s.categories |= bit;
   }
@@ -112,8 +133,19 @@ static vx_status trace_ctl(vx_str cmd) {
       return VX_ERR_INVALID;
     }
   }
+  if (!s.categories) s.categories = VX_TC_MARK; // spans alone: the kernel keeps marks
   vx_status st = vx_trace_configure(tr.resource, VX_TRACE_START, &s, sizeof s);
   if (st != VX_OK) return st;
+  tr.spans = spans;
+  trace_spans(spans);
+  if (spans) { // the spans start empty, as the rings do
+    uint64_t pid;
+    for (uint32_t i = 0; i < MAX_PROCS; i++) {
+      vx_prof_header *h = prof_ring(i, &pid);
+      for (uint32_t r = 0; h && r < h->rings; r++)
+        tr.span_from[i][r] = atomic_load(&vx_prof_ring_at(h, r)->head);
+    }
+  }
   tr.on = true, tr.categories = s.categories, tr.circular = s.circular;
   tr.ring_size = s.ring_size ? s.ring_size : 1 << 20;
   trace_map();
@@ -133,8 +165,18 @@ static void trace_snapshot(void) {
     end[i] = head, at[i] = head > cap ? head - cap : 0;
     total += end[i] - at[i];
   }
+  // The processes' spans: counted first, then copied after the kernel's.
+  uint64_t spans = 0, pid;
+  for (uint32_t i = 0; tr.spans && i < MAX_PROCS; i++) {
+    vx_prof_header *h = prof_ring(i, &pid);
+    for (uint32_t r = 0; h && r < h->rings && r <= VX_PROF_THREADS; r++) {
+      uint64_t head = atomic_load(&vx_prof_ring_at(h, r)->head), from = tr.span_from[i][r];
+      if (head > from) spans += head - from < VX_PROF_CAP ? head - from : VX_PROF_CAP;
+    }
+  }
   vx_heap_free(vx_heap_process(), tr.snap);
-  tr.snap = total ? vx_heap_alloc(vx_heap_process(), total * sizeof(vx_trace_record)) : nullptr;
+  tr.snap =
+      total + spans ? vx_heap_alloc(vx_heap_process(), (total + spans) * sizeof(vx_trace_record)) : nullptr;
   if (!tr.snap) return;
   vx_trace_record *out = (vx_trace_record *)tr.snap;
   for (uint64_t k = 0; k < total; k++) {
@@ -149,7 +191,44 @@ static void trace_snapshot(void) {
     out[k] = *pick;
     at[best]++;
   }
-  tr.snap_len = total * sizeof(vx_trace_record);
+  uint64_t n = total;
+  for (uint32_t i = 0; tr.spans && i < MAX_PROCS; i++) {
+    vx_prof_header *h = prof_ring(i, &pid);
+    for (uint32_t r = 0; h && r < h->rings && r <= VX_PROF_THREADS; r++) {
+      vx_prof_ring *ring = vx_prof_ring_at(h, r);
+      uint64_t head = atomic_load(&ring->head), from = tr.span_from[i][r];
+      if (head > from + VX_PROF_CAP) from = head - VX_PROF_CAP;
+      for (uint64_t j = from; j < head && n < total + spans; j++) {
+        vx_prof_record rec = vx_prof_ring_records(ring)[j % VX_PROF_CAP];
+        if (!rec.flow) continue; // a zone
+        out[n++] = (vx_trace_record){.time = rec.start,
+                                     .kind = VX_TK_SPAN,
+                                     .cpu = 0xffff,
+                                     .tid = (uint32_t)(pid << 12 | (rec.thread & 0xfff)),
+                                     .a = rec.flow,
+                                     .b = (uint64_t)(rec.zone & 0xffff) << 48 |
+                                          ((rec.end - rec.start) & 0xffff'ffff'ffff)};
+      }
+    }
+  }
+  // The spans by time among themselves (each ring's in order already), then
+  // merged with the kernel's, which are.
+  for (uint64_t k = total + 1; k < n; k++) {
+    vx_trace_record x = out[k];
+    uint64_t j = k;
+    while (j > total && out[j - 1].time > x.time) out[j] = out[j - 1], j--;
+    out[j] = x;
+  }
+  if (n > total && total) {
+    vx_trace_record *merged = vx_heap_alloc(vx_heap_process(), n * sizeof *merged);
+    if (merged) {
+      for (uint64_t a = 0, b = total, m = 0; m < n; m++)
+        merged[m] = b == n || (a < total && out[a].time <= out[b].time) ? out[a++] : out[b++];
+      vx_heap_free(vx_heap_process(), tr.snap);
+      tr.snap = (uint8_t *)merged;
+    }
+  }
+  tr.snap_len = n * sizeof(vx_trace_record);
 }
 
 static size_t trace_status_text(char *buf, size_t cap) {

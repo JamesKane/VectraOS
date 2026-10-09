@@ -32,7 +32,7 @@ const char *vx_main(void) {
   vx_arena *a = vx_arena_new(64 << 20);
   vx_dir d;
   CHECK(vx_stat(VX_STR("/proc/trace/status"), a, &d) == VX_OK); // adm sees it
-  CHECK(ctl("start sched,ipc,vm,syscall,mark size 1M") == VX_OK);
+  CHECK(ctl("start sched,ipc,vm,syscall,mark,span size 1M") == VX_OK);
 
   // A spawn and a pipe: the child writes, this process waits on its end.
   vx_handle pipe[2];
@@ -56,6 +56,9 @@ const char *vx_main(void) {
   uint64_t touched = (uint64_t)m;
   char first = m ? ((volatile char *)m)[0] : 0;
   CHECK(first != 0);
+  char readback[16];
+  CHECK(vx_pread(f, (vx_bytes){(uint8_t *)readback, sizeof readback}, 0) >
+        0); // a 9Px read: fsd's span and ours
   CHECK(ctl("mark tracetest end") == VX_OK);
   CHECK(ctl("stop") == VX_OK);
 
@@ -98,6 +101,20 @@ const char *vx_main(void) {
     wakers = seen;
   }
   CHECK(wakers);
+  // Flows (7a2): a 9Px request's span here and fsd's for it, by one flow;
+  // a channel call's CALL and REPLY, by one flow.
+  bool span_pair = false, call_pair = false;
+  for (size_t i = 0; i < n && !span_pair; i++) {
+    if (r[i].kind != VX_TK_SPAN || tid_task(r[i].tid) != self_task) continue;
+    for (size_t j = 0; j < n && !span_pair; j++)
+      span_pair = r[j].kind == VX_TK_SPAN && r[j].a == r[i].a && tid_task(r[j].tid) != self_task;
+  }
+  for (size_t i = 0; i < n && !call_pair; i++) {
+    if (r[i].kind != VX_TK_CALL || !r[i].b) continue;
+    for (size_t j = i + 1; j < n && !call_pair; j++) call_pair = r[j].kind == VX_TK_REPLY && r[j].b == r[i].b;
+  }
+  CHECK(span_pair);
+  CHECK(call_pair);
   // Ordered by time, and status says what ran.
   bool ordered = true;
   for (size_t i = 1; i < n; i++) ordered = ordered && r[i].time >= r[i - 1].time;

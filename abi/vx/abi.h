@@ -226,7 +226,8 @@ typedef struct vx_ring_header {
   uint64_t sq_offset, cq_offset; // the entries
   uint64_t client_arena_offset, client_arena_size;
   uint64_t server_arena_offset, server_arena_size;
-  uint64_t size; // of the whole VMO
+  uint64_t size;    // of the whole VMO
+  uint64_t session; // the kernel's id for this ring, which both ends share (the trace's flows, ADR-0049)
 } vx_ring_header;
 
 // The four index lines start at 4096, 64 bytes apart, so no two sides write
@@ -822,7 +823,7 @@ enum vx_trace_kind : uint16_t {
   VX_TK_SWITCH = 1,  // a: the thread out (tid) and its state << 32; b: the thread in
   VX_TK_WAKE,        // a: the woken thread; b: the waker (0: an interrupt or the kernel)
   VX_TK_BLOCK,       // a: why (enum vx_trace_block); b: the object waited on (its address, an id)
-  VX_TK_CALL,        // a: the channel; b: the flow (0 until flows, 7a2)
+  VX_TK_CALL,        // a: the channel; b: the flow, which its REPLY names too
   VX_TK_REPLY,       // a: the channel; b: the flow
   VX_TK_DONATE,      // a: the thread lent to; b: 0
   VX_TK_RETURN,      // a: the thread whose loan ended
@@ -838,6 +839,10 @@ enum vx_trace_kind : uint16_t {
   VX_TK_SYS_OUT,     // a: the number; b: its result
   VX_TK_MARK,        // a, b: up to 16 bytes of text
 };
+// Not the kernel's: procfs merges a process's spans (lib/vx-prof) into
+// /proc/trace/events as these, cpu 0xffff, at their start. a: the flow; b:
+// the message's type << 48 | its length in cycles.
+static constexpr uint16_t VX_TK_SPAN = 64;
 
 enum vx_trace_block : uint32_t {
   VX_TB_PORT = 1,

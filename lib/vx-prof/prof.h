@@ -31,56 +31,13 @@
 #include "../vx-rt/base.c"
 #include "../vx-rt/thread.c"
 #include "../vx-proc/proc.h"
-
-static constexpr uint32_t VX_PROF_MAGIC = 0x666f'7270; // "prof"
-static constexpr uint32_t VX_PROF_ZONES = 64, VX_PROF_NAME = 32;
-// The VMO: the header's page, then rings: ring 0, shared, then one each for
-// the first VX_PROF_THREADS threads that record.
-static constexpr uint32_t VX_PROF_THREADS = 32;
-static constexpr uint64_t VX_PROF_RING_BYTES = 32ull * 1024, VX_PROF_HEADER_BYTES = 4096;
-static constexpr uint64_t VX_PROF_RING = VX_PROF_HEADER_BYTES + (VX_PROF_THREADS + 1) * VX_PROF_RING_BYTES;
-
-typedef struct vx_prof_record {
-  uint64_t start, end; // on the cycle counter
-  uint32_t zone;       // from 1: names[zone - 1]
-  uint32_t thread;     // the kernel's id for it (/proc/N/threads)
-} vx_prof_record;
-
-// The start of the shared VMO, and of what /proc/N/prof/zones reads, where
-// head and cap say how many records follow.
-typedef struct vx_prof_header {
-  uint32_t magic, version;
-  uint64_t counter_hz;      // /sys/clock/info's
-  uint64_t nonce;           // procfs's challenge, read back through the task's memory
-  _Atomic uint32_t enabled; // set by procfs: ctl's "zones on"
-  _Atomic uint32_t nzones;
-  _Atomic uint64_t head; // in the VMO, rings claimed; in the file, the records that follow
-  uint32_t cap, rings;   // records each ring holds; rings (in the file: records, and 0)
-  char names[VX_PROF_ZONES][VX_PROF_NAME];
-} vx_prof_header;
-static_assert(sizeof(vx_prof_header) <= VX_PROF_HEADER_BYTES);
-
-// A ring, then its records: written by its thread alone (head stored after
-// each record; a reader takes what head says, less any it may have been
-// overwriting meanwhile), or, ring 0, by any (head counted atomically).
-typedef struct vx_prof_ring {
-  _Atomic uint32_t thread; // its owner's id; 0 for ring 0
-  uint32_t reserved;
-  _Atomic uint64_t head; // records written, ever: it holds the last cap of them
-} vx_prof_ring;
+#include "ring.h"
 
 typedef struct vx_prof_zone {
   const char *name;
   uint32_t id; // from 1, once it has a name in the ring
 } vx_prof_zone;
-
 static vx_prof_header *vx_prof;
-
-static vx_prof_ring *vx_prof_ring_at(vx_prof_header *h, uint32_t i) {
-  return (vx_prof_ring *)((uint8_t *)h + VX_PROF_HEADER_BYTES + i * VX_PROF_RING_BYTES);
-}
-static vx_prof_record *vx_prof_ring_records(vx_prof_ring *r) { return (vx_prof_record *)(r + 1); }
-static constexpr uint32_t VX_PROF_CAP = (VX_PROF_RING_BYTES - sizeof(vx_prof_ring)) / sizeof(vx_prof_record);
 
 static thread_local vx_prof_ring *vx_prof_mine; // this thread's ring, once it has one
 static thread_local uint32_t vx_prof_tid;
@@ -100,7 +57,7 @@ static thread_local uint32_t vx_prof_tid;
   vx_clock_info clock = {};
   vx_clock_info_read(&clock);
   h->magic = VX_PROF_MAGIC;
-  h->version = 2;
+  h->version = 3;
   h->counter_hz = clock.counter_hz;
   h->cap = VX_PROF_CAP, h->rings = VX_PROF_THREADS + 1;
   vx_task_summary me;
@@ -145,14 +102,10 @@ static vx_prof_ring *vx_prof_ring_of_thread(void) {
   return vx_prof_mine = r;
 }
 
-// A zone ends: its record, if it started with zones on.
-[[maybe_unused]] static inline void vx_prof_end(vx_prof_zone *z, uint64_t start) {
-  if (__builtin_expect(!start, 1)) return;
-  uint64_t end = vx_cycles();
-  uint32_t id = vx_prof_id(z);
-  if (!id) return;
+// A record into this thread's ring.
+static void vx_prof_write(vx_prof_record rec) {
   vx_prof_ring *r = vx_prof_ring_of_thread();
-  vx_prof_record rec = {.start = start, .end = end, .zone = id, .thread = vx_prof_tid};
+  rec.thread = vx_prof_tid;
   if (r == vx_prof_ring_at(vx_prof, 0)) { // shared: a slot of its own, counted
     uint64_t slot = atomic_fetch_add_explicit(&r->head, 1, memory_order_acq_rel);
     vx_prof_ring_records(r)[slot % VX_PROF_CAP] = rec;
@@ -161,4 +114,46 @@ static vx_prof_ring *vx_prof_ring_of_thread(void) {
   uint64_t head = atomic_load_explicit(&r->head, memory_order_relaxed); // its own: no one else writes it
   vx_prof_ring_records(r)[head % VX_PROF_CAP] = rec;
   atomic_store_explicit(&r->head, head + 1, memory_order_release);
+}
+
+// A zone ends: its record, if it started with zones on.
+[[maybe_unused]] static inline void vx_prof_end(vx_prof_zone *z, uint64_t start) {
+  if (__builtin_expect(!start, 1)) return;
+  uint64_t end = vx_cycles();
+  uint32_t id = vx_prof_id(z);
+  if (id) vx_prof_write((vx_prof_record){.start = start, .end = end, .zone = id});
+}
+
+// --- Spans (20 §5, M7 step 7a2) ---
+//
+// A process spawned with procfs's registration has a ring its spawner made
+// (vx_prof_give), at the address its spawn message's prof= record names; it
+// is taken at the first span. Spans are off until /proc/trace starts with
+// them.
+
+static bool vx_prof_spawned_tried;
+
+static vx_prof_header *vx_prof_spawned(void) {
+  if (vx_prof || vx_prof_spawned_tried) return vx_prof;
+  vx_prof_spawned_tried = true;
+  vx_ndb_record rec;
+  uint64_t at;
+  if (vx_spawn_record("prof", &rec) && vx_ndb_get_u64(&rec, "prof", &at) && at) {
+    vx_prof_header *h = (vx_prof_header *)at;
+    if (h->magic == VX_PROF_MAGIC && h->version == 3) vx_prof = h;
+  }
+  return vx_prof;
+}
+
+// A span starts: the cycle counter, or 0 if spans are off.
+[[maybe_unused]] static inline uint64_t vx_prof_span_begin(void) {
+  vx_prof_header *h = vx_prof ? vx_prof : vx_prof_spawned();
+  if (__builtin_expect(!h || !atomic_load_explicit(&h->spans, memory_order_relaxed), 1)) return 0;
+  return vx_cycles();
+}
+
+// A span ends: what it was (a message type) and its flow.
+[[maybe_unused]] static inline void vx_prof_span_end(uint64_t start, uint32_t what, uint64_t flow) {
+  if (__builtin_expect(!start, 1)) return;
+  vx_prof_write((vx_prof_record){.start = start, .end = vx_cycles(), .zone = what, .flow = flow | 1});
 }

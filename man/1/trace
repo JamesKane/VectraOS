@@ -14,9 +14,9 @@ trace -p [FILE]
 
 `trace` is the kernel's trace (ADR-0049, 20 §7) from the shell, through procfs(4)'s `/proc/trace`, which only an administrator sees.
 
-With `-c` it starts a trace of the comma-separated CATEGORIES (`sched`, `ipc`, `irq`, `vm`, `futex`, `syscall`, `mark`), waits DURATION (digits then `ms`, `s` or `m`; a second by default), stops it, and saves the events, 32-byte records ordered by time, to FILE (`trace.out` by default), saying how many.
+With `-c` it starts a trace of the comma-separated CATEGORIES (`sched`, `ipc`, `irq`, `vm`, `futex`, `syscall`, `mark`, and `span`: the processes' 9Px requests), waits DURATION (digits then `ms`, `s` or `m`; a second by default), stops it, and saves the events, 32-byte records ordered by time, to FILE (`trace.out` by default), saying how many.
 
-With `-p` it prints the events of FILE, or the live `/proc/trace/events` without one, one ndb record a line: `time`, `cpu`, the `task` and `thread` that wrote it, `kind`, and the kind's two words (a mark's text; a switch's, wake's or donation's threads by task and thread).
+With `-p` it prints the events of FILE, or the live `/proc/trace/events` without one, one ndb record a line: `time`, `cpu`, the `task` and `thread` that wrote it, `kind`, and the kind's two words (a mark's text; a switch's, wake's or donation's threads by task and thread). A span has no `kind`; its `task` is the process's pid, and it gives `kind=span`, the `flow` that client and server spans of one request share, the message `type`, and its length in `cycles`.
 
 # EXAMPLES
 

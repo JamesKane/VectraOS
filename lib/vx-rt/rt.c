@@ -21,6 +21,7 @@
 #include "stdio.c"
 #include "note.c"
 #include "thread.c"
+#include "../vx-prof/prof.h"
 #include "heap.c"
 #include "arena.c"
 #include "proc.c"

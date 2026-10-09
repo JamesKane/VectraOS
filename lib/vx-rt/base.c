@@ -426,6 +426,11 @@ VX_API vx_status vx_vmo_decommit(vx_handle vmo, uint64_t offset, uint64_t size) 
 }
 
 // The machine off (VX_POWER_OFF), with the root Resource: returns only if it did not happen.
+// Spans (20 §5, lib/vx-prof): vx-rt's start sets them from prof.h; a program
+// started otherwise (the POSIX personality's) has none, and writes no spans.
+static uint64_t (*vx_span_begin_hook)(void);
+static void (*vx_span_end_hook)(uint64_t start, uint32_t what, uint64_t flow);
+
 // The kernel's trace (ADR-0049): procfs's alone, so not in <vx/sys.h>.
 [[maybe_unused]] static vx_status vx_trace_configure(vx_handle resource, uint32_t op, void *data,
                                                      uint64_t len) {

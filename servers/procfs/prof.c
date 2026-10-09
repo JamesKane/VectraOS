@@ -37,7 +37,16 @@ static vx_status prof_register(const proc_msg *m, vx_handle vmo) {
   }
   prof_forget(p);
   rings[p - procs] = h;
+  atomic_store_explicit(&h->spans, tr.spans && tr.on,
+                        memory_order_relaxed); // a trace with spans takes its too
   return VX_OK;
+}
+
+// Process i's ring, if it has one, and its pid: for trace.c's merge.
+static vx_prof_header *prof_ring(uint32_t i, uint64_t *pid) {
+  if (i >= MAX_PROCS || !procs[i].used || !rings[i]) return nullptr;
+  *pid = procs[i].pid;
+  return rings[i];
 }
 
 static vx_status prof_ctl(const proc *p, vx_str cmd) {

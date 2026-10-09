@@ -57,8 +57,9 @@ typedef struct p9_held {
   uint16_t tag;
   uint16_t oldtag; // a Tflush's
   uint8_t type;
-  bool busy;    // a thread is serving it
-  uint32_t fid; // P9_NOFID: the message has none
+  uint64_t span; // its span's start (20 §5), from its arrival; 0 with spans off
+  bool busy;     // a thread is serving it
+  uint32_t fid;  // P9_NOFID: the message has none
 } p9_held;
 
 typedef struct p9_ring_server p9_ring_server;
@@ -360,7 +361,9 @@ static p9_tried p9_ring_try(p9_ring_conn *c, uint32_t i) {
     p9_reply_handle = VX_HANDLE_NONE;
     return P9_TRY_BROKEN;
   }
-  return p9_ring_reply(c, &h.e, w->resp, n) ? P9_ANSWERED : P9_TRY_BROKEN;
+  bool sent = p9_ring_reply(c, &h.e, w->resp, n);
+  if (h.span) vx_span_end_hook(h.span, h.type, vx_prof_flow(c->ring.h.session, h.e.user_data));
+  return sent ? P9_ANSWERED : P9_TRY_BROKEN;
 }
 
 // Whether an older held request than held[i] is on fid: if so, it waits behind that one.
@@ -444,6 +447,7 @@ static p9_drained p9_ring_drain(p9_ring_conn *c) {
     h.tag = t.tag, h.type = (uint8_t)t.type, h.oldtag = t.oldtag;
     h.fid = p9_request_fid(&t);
     h.id = c->next_id++;
+    h.span = vx_span_begin_hook ? vx_span_begin_hook() : 0;
     c->held[c->nheld++] = h;
     uint32_t i = c->nheld - 1;
     if (p9_ring_waits(c, i)) continue;

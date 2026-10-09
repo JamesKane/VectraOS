@@ -34,12 +34,16 @@ static bool duration(vx_str s, vx_duration *out) {
 
 static void print_record(const vx_trace_record *r) {
   const char *kind = r->kind < sizeof KINDS / sizeof KINDS[0] ? KINDS[r->kind] : "";
-  vx_printf("time=%llu cpu=%u task=%u thread=%u kind=%s", (unsigned long long)r->time, r->cpu, r->tid >> 12,
-            r->tid & 0xfff, *kind ? kind : "unknown");
+  vx_printf("time=%llu cpu=%u task=%u thread=%u", (unsigned long long)r->time, r->cpu, r->tid >> 12,
+            r->tid & 0xfff);
+  if (r->kind != VX_TK_SPAN) vx_printf(" kind=%s", *kind ? kind : "unknown");
   if (r->kind == VX_TK_MARK) {
     char text[17] = {};
     memcpy(text, &r->a, 16);
     vx_printf(" text=\"%s\"\n", text);
+  } else if (r->kind == VX_TK_SPAN) { // a process's (20 §5): task is its pid
+    vx_printf(" kind=span flow=0x%llx type=%u cycles=%llu\n", (unsigned long long)r->a,
+              (uint32_t)(r->b >> 48), (unsigned long long)(r->b & 0xffff'ffff'ffff));
   } else if (r->kind == VX_TK_SWITCH || r->kind == VX_TK_WAKE || r->kind == VX_TK_DONATE) {
     vx_printf(" a.task=%u a.thread=%u", (uint32_t)r->a >> 12, (uint32_t)r->a & 0xfff);
     if (r->kind == VX_TK_SWITCH) vx_printf(" state=%u", (uint32_t)(r->a >> 32));

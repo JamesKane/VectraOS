@@ -21,6 +21,7 @@
 
 #include "base.c"
 #include "../vx-proc/proc.h"
+#include "../vx-prof/ring.h"
 
 #include "elf.h"
 
@@ -191,6 +192,12 @@ typedef struct vx_spawn_args {
   // program stops at them from its first instruction (05 §7). A failure
   // ends the spawn.
   vx_status (*registered)(void *ctx, uint64_t pid);
+  // If set (and proc is not): a profiling ring is made for the child all the
+  // same, and its VMO and the address it is mapped at in the child are left
+  // here, for the caller to give procfs when it registers the child later
+  // (vx_prof_give): svcd's services that start before procfs (20 §5).
+  vx_handle *prof_vmo;
+  uint64_t *prof_at;
 } vx_spawn_args;
 
 // Registers a task as a child of the caller with procfs, through a connector
@@ -271,11 +278,20 @@ static void vx_close_all(const vx_handle *h, uint32_t n) {
     if (given[count]) count++; // counted, failure or not, so it is closed with the rest
   }
 
+  // A profiling ring for a child procfs registers (20 §5): its spans with
+  // no code of its own, off until /proc/trace takes them. Given to procfs
+  // once the child is registered.
+  vx_handle prof = VX_HANDLE_NONE;
+  uint64_t prof_at = 0;
+  if (st == VX_OK && (a->proc || a->prof_vmo) && !a->exec && vx_prof_make_for(t, &prof, &prof_at) != VX_OK)
+    prof_at = 0;
+
   // The spawn message: the header, then its records.
   vx_ndb_writer w = {.buf = (char *)vx_spawn_out + sizeof(vx_msg_header),
                      .cap = sizeof vx_spawn_out - sizeof(vx_msg_header)};
   vx_ndb_put(&w, "spawn", a->name);
   vx_ndb_end(&w);
+  if (prof_at) vx_ndb_put_u64(&w, "prof", prof_at), vx_ndb_end(&w);
   if (a->path.len) vx_ndb_put(&w, "exe", a->path), vx_ndb_end(&w);
   vx_str user = a->user.len ? a->user : vx_spawn.user;
   if (user.len) {
@@ -320,12 +336,16 @@ static void vx_close_all(const vx_handle *h, uint32_t n) {
     uint64_t pid = 0;
     vx_status reg = vx_proc_register_in(a->proc, t, a->proc_flags, a->proc_group, &pid);
     if (!(a->proc_flags & PROC_NOWAIT)) st = reg;
+    if (reg == VX_OK && prof) vx_prof_give(a->proc, pid, prof, prof_at), prof = VX_HANDLE_NONE; // moved
     if (st == VX_OK && reg == VX_OK && a->registered) st = a->registered(a->ctx, pid);
   }
   if (st == VX_OK) st = vx_thread_create(t, &thread);
   if (st == VX_OK) st = vx_thread_start(thread, entry, VX_STACK_TOP, ch[1], 0);
   if (st == VX_OK) ch[1] = VX_HANDLE_NONE; // moved into the child
 
+  if (prof && a->prof_vmo && !a->proc && st == VX_OK) // the caller's, to give procfs later
+    *a->prof_vmo = prof, *a->prof_at = prof_at, prof = VX_HANDLE_NONE;
+  if (prof) vx_handle_close(prof);   // not given: the child's mapping keeps it
   if (stack) vx_handle_close(stack); // the mapping keeps it
   if (thread) vx_handle_close(thread);
   vx_close_all(ch, 2); // the child reads its message after our end is gone

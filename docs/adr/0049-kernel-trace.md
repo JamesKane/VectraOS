@@ -15,9 +15,10 @@ M7's budgets are latencies spread across processes (20 §1, §9): a frame late b
 5. **A thread is named `task id << 12 | its id in the task`** in 32 bits, so a reader needs no table; the kernel's own threads are 0.
 6. **Probes are a macro:** one relaxed load of the mask and a branch, arguments evaluated past it, compiled into every kernel. Categories `sched`, `ipc`, `irq`, `vm`, `futex`, `syscall`, `mark` (and `sample`, 7a3); kinds in `abi/vx/abi.h`.
 7. **Kernel addresses never appear in records:** channels get trace ids at creation, a futex is named by its user address, a pager's VMO by its pager key.
+8. **Flows (7a2) are computed, not carried:** a CALL and its REPLY name the same flow, a hash of the pair's lower endpoint id and the `txid`; a ring's header carries the kernel's `session` id, so a ring's client and server derive a request's flow from it and the submission's `user_data`. Spans are the processes' (lib/vx-prof), merged by procfs as `VX_TK_SPAN` (64), never written by the kernel.
 
 ## Consequences
 
 - procfs is the one reader (`/proc/trace`, 7a1b), a broad grant (ADR-0029).
-- Flows (7a2) fill CALL and REPLY's second word, which is the txid until then.
+- Flows (7a2) fill CALL and REPLY's second word, the txid in 7a1.
 - The ABI grows a right, a syscall and two records; `libvx`'s exports do not change (the wrapper is vx-rt's, procfs's alone).

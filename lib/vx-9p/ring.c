@@ -34,6 +34,7 @@
 #include "../vx-rt/base.c"
 #include "../vx-ring/ring.c"
 #include "client.c"
+#include "../vx-prof/ring.h"
 
 enum : uint32_t { P9_CONNECT = 0x3970'6e63 }; // the listen channel's one ordinal: "cnp9"
 enum : uint16_t { P9_RING_MSG = 1 };          // the one submission opcode
@@ -534,9 +535,13 @@ static int64_t p9_ring_call(void *ctx, p9_xfer *x, size_t len) {
   p9_conn *k = ctx;
   p9_slot *s = (p9_slot *)x;
   vx_instant deadline = k->timeout ? vx_clock_read() + k->timeout : VX_INFINITE;
+  uint64_t span = vx_span_begin_hook ? vx_span_begin_hook() : 0; // the request's, to its reply (20 §5)
+  uint8_t type = len > 4 ? s->buf[4] : 0;
+  uint64_t user_data = (uint64_t)(s - k->slots) | (uint64_t)s->gen << 8; // as p9_ring_put names it
   vx_status st = p9_ring_put(k, s, len, deadline);
   if (st != VX_OK) return st;
   st = p9_ring_wait(k, s, 0, deadline, true);
+  if (span) vx_span_end_hook(span, type, vx_prof_flow(k->ring.h.session, user_data));
   if (st == VX_OK) return s->result;
   if (st == VX_ERR_PEER_CLOSED) return st;
   return p9_ring_flush(k, s, st);

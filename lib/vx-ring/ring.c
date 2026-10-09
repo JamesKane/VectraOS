@@ -97,8 +97,9 @@ static uint64_t ring_page_up(uint64_t v) { return (v + 4095) & ~4095ull; }
   *r = (vx_ring){.broken = true}; // after a failed attach, every operation fails
   vx_ring_header h, want;
   memcpy(&h, base, sizeof h);
-  if (vx_ring_layout(expect, &want) != VX_OK || memcmp(&h, &want, sizeof h) != 0 || h.size > mapped_size)
-    return VX_ERR_INVALID;
+  if (vx_ring_layout(expect, &want) != VX_OK) return VX_ERR_INVALID;
+  want.session = h.session; // the kernel's, whatever it is
+  if (memcmp(&h, &want, sizeof h) != 0 || h.size > mapped_size) return VX_ERR_INVALID;
 
   uint8_t *b = base;
   vx_ring_index *lines = (vx_ring_index *)(b + VX_RING_INDEX_OFFSET);

@@ -105,6 +105,17 @@ static vx_status channel_create(channel **a, channel **b) {
 
 static channel *channel_peer(channel *c) { return c->pair->ends[1 - c->side]; }
 
+// A call's flow (20 §5, ADR-0049): from what both ends share, the lower of
+// the pair's ids and the txid, so the caller's CALL and the server's REPLY
+// name the same flow with nothing sent.
+static uint64_t channel_flow(channel *c, uint32_t txid) {
+  const channel *peer = channel_peer(c);
+  uint64_t low = peer && peer->id < c->id ? peer->id : c->id;
+  uint64_t x = low * 0x9e37'79b9'7f4a'7c15ull ^ txid;
+  x ^= x >> 31, x *= 0xbf58'476d'1ce4'e5b9ull, x ^= x >> 27;
+  return x | 1; // never 0, which is "no flow"
+}
+
 static void msg_free(channel_msg *m) {
   for (uint32_t i = 0; i < m->count; i++) object_drop(m->handles[i].obj);
   phys_free((uint64_t)m - boot.hhdm, m->order);
@@ -139,7 +150,7 @@ static vx_status channel_deliver(channel *to, channel_msg *m) {
     call_wait *w = *link;
     if (w->txid != txid) continue;
     *link = w->next;
-    TRACE(VX_TC_IPC, VX_TK_REPLY, to->id, txid);
+    TRACE(VX_TC_IPC, VX_TK_REPLY, to->id, channel_flow(to, txid));
     w->reply = m;
     thread_wake_reply(w->thread, w, VX_OK); // its loan back, and run in the replier's place
     return VX_OK;
@@ -217,7 +228,7 @@ static vx_status channel_call(channel *c, channel_msg *request, vx_instant deadl
   c->next_txid = CALL_TXID | (c->next_txid & SIDE_TXID) | ((c->next_txid + 1) & ~(CALL_TXID | SIDE_TXID));
   ((vx_msg_header *)msg_body(request))->txid = w.txid;
   ((vx_msg_header *)msg_body(request))->sender_intent = sched_thread_intent(this_cpu()->current);
-  TRACE(VX_TC_IPC, VX_TK_CALL, c->id, w.txid); // b: the txid, until flows (7a2)
+  TRACE(VX_TC_IPC, VX_TK_CALL, c->id, channel_flow(c, w.txid));
   request->call = &w;
   sched_lending(t); // the server's port waiter it wakes runs on t's scheduling
   vx_status st = channel_deliver(peer, request);
