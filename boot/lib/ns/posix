@@ -4,7 +4,8 @@
 # ones of the same names, as APE binds /bin/ape; /tmp the user's own tree on
 # tmpfs (M6 step 6e1c2: a manifest that mounts $home/tmp over it after gives
 # the user's home on disk, as 9front binds /usr/$user/tmp); /dev
-# null, zero, random and urandom, and the terminals (ptmx, pts/); /proc the
+# null, zero, random and urandom, the terminals (ptmx, pts/) and the input
+# devices (input/, inputd's); /proc the
 # processes; /net the network, which the C library's sockets use (01 §9);
 # /sys the system's clock (02 §5.1).
 
@@ -15,6 +16,7 @@ mount -c /srv/tmpfs /tmp user
 mount -c /srv/tmpfs /tmp/crash crash
 mount /srv/null /dev
 mount -a /srv/ptyd /dev
+mount -a /srv/input /dev
 mount /srv/proc /proc
 mount /srv/net /net
 mount /srv/sys /sys

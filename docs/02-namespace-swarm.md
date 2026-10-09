@@ -274,9 +274,10 @@ In `topology`, `llc=` groups cores that share a last-level cache and `numa=` gro
     temp/cpu0/{info,value}          value → "61.5 C"
     light0/{info,value,ctl}
     gnss0/{info,fix,nmea}
-/dev/input/
+/dev/input/                          inputd's (M7 step 7c1, docs/proto/input.md)
+    N/{info,events}                  the device on post N: HID usages with the held set, pointer reports
+    keyboard  pointer                every keyboard's records, every pointer's: one stream each, read by winsrv
     gamepads/0/{info,ctl,events}    normalised layout (F-214); ctl: rumble 0.4 0.8 120ms · led 2 · gyro on
-    keyboards/ mice/ pens/           raw HID-usage streams; normally consumed only by winsrv
 ```
 
 `cat /dev/sensors/imu0/accel` works from a shell. A robotics program mounts `/n/robot/dev/sensors` from the robot and reads the same files.

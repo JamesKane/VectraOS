@@ -4,15 +4,18 @@
 // more; it feeds cons the bytes that arrive, and pumps output from its
 // interrupt handler.
 //
-// The tree is one file, /cons. Reads are cooked, as Plan 9's cons is: typed
-// bytes are echoed and gathered into a line, with backspace (BS or DEL) and
-// kill-line (^U), each taking back whole runes, as UTF-8 is all text is
-// (ADR-0013), and a read returns at most one line, once it is ended (by
-// return) or sent (^D), never part of the next. ^D on an empty line makes one
-// read return 0, the end of the file, in its place among the lines. Writes go out with each newline as CR LF. A read with nothing
-// typed, or a write with no room, waits (p9_serve's P9_DEFER) until the
-// driver's next interrupt makes progress. (Raw mode, through consctl, comes
-// with the line editor that needs it.)
+// The tree is /cons and /kbdin. A write to kbdin is typed: its bytes go
+// through the line discipline as the device's do, as 9front's /dev/kbdin
+// (inputd types a keyboard's keys there, M7 step 7c1). Reads of cons are
+// cooked, as Plan 9's cons is: typed bytes are echoed and gathered into a
+// line, with backspace (BS or DEL) and kill-line (^U), each taking back
+// whole runes, as UTF-8 is all text is (ADR-0013), and a read returns at
+// most one line, once it is ended (by return) or sent (^D), never part of
+// the next. ^D on an empty line makes one read return 0, the end of the
+// file, in its place among the lines. Writes go out with each newline as CR
+// LF. A read with nothing typed, or a write with no room, waits (p9_serve's
+// P9_DEFER) until the driver's next interrupt makes progress. (Raw mode,
+// through consctl, comes with the line editor that needs it.)
 
 #pragma once
 
@@ -37,7 +40,7 @@ typedef struct vx_cons {
   uint32_t line_len;
 } vx_cons;
 
-enum : uint64_t { CONS_ROOT = 1, CONS_FILE = 2 };
+enum : uint64_t { CONS_ROOT = 1, CONS_FILE = 2, CONS_KBDIN = 3 };
 
 static uint32_t cons_out_room(const vx_cons *c) {
   return (uint32_t)sizeof c->out - (c->out_tail - c->out_head);
@@ -122,8 +125,13 @@ static vx_status cons_attach(void *ctx, vx_str aname, uint64_t *root) {
 
 static vx_status cons_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) {
   (void)ctx;
-  if (dir != CONS_ROOT || name.len != 4 || memcmp(name.ptr, "cons", 4) != 0) return VX_ERR_NOT_FOUND;
-  *child = CONS_FILE;
+  if (dir != CONS_ROOT) return VX_ERR_NOT_FOUND;
+  if (vx_str_eq(name, VX_STR("cons")))
+    *child = CONS_FILE;
+  else if (vx_str_eq(name, VX_STR("kbdin")))
+    *child = CONS_KBDIN;
+  else
+    return VX_ERR_NOT_FOUND;
   return VX_OK;
 }
 
@@ -136,9 +144,11 @@ static vx_status cons_parent(void *ctx, uint64_t node, uint64_t *parent) {
 static vx_status cons_stat(void *ctx, uint64_t node, p9_stat *out) {
   (void)ctx;
   bool dir = node == CONS_ROOT;
+  uint32_t mode = node == CONS_KBDIN ? 0220 : 0666;
+  vx_str name = node == CONS_KBDIN ? VX_STR("kbdin") : VX_STR("cons");
   *out = (p9_stat){.qid = {dir ? P9_QTDIR : P9_QTFILE, 0, node},
-                   .mode = dir ? P9_DMDIR | 0555 : 0666,
-                   .name = dir ? VX_STR("/") : VX_STR("cons"),
+                   .mode = dir ? P9_DMDIR | 0555 : mode,
+                   .name = dir ? VX_STR("/") : name,
                    .uid = VX_STR("cons"),
                    .gid = VX_STR("cons"),
                    .muid = VX_STR("cons")};
@@ -146,13 +156,15 @@ static vx_status cons_stat(void *ctx, uint64_t node, p9_stat *out) {
 }
 
 static vx_status cons_open(void *ctx, uint64_t node, uint8_t mode) {
-  (void)ctx, (void)node;
+  (void)ctx;
+  if (node == CONS_KBDIN && (mode & 3) != P9_OWRITE) return VX_ERR_ACCESS;
   return mode & P9_ORCLOSE ? VX_ERR_ACCESS : VX_OK; // OTRUNC means nothing to a console
 }
 
 static vx_status cons_read(void *ctx, uint64_t node, uint64_t offset, uint8_t *buf, uint32_t *count) {
   vx_cons *c = ctx;
-  (void)node, (void)offset;                                    // a stream: offsets mean nothing
+  (void)offset; // a stream: offsets mean nothing
+  if (node == CONS_KBDIN) return VX_ERR_ACCESS;
   if (c->ends_head == c->ends_tail) return VX_ERR_SHOULD_WAIT; // nothing finished yet
   uint32_t end = c->ends[c->ends_head % (sizeof c->ends / sizeof c->ends[0])];
   uint32_t n = 0;
@@ -164,7 +176,12 @@ static vx_status cons_read(void *ctx, uint64_t node, uint64_t offset, uint8_t *b
 
 static vx_status cons_write(void *ctx, uint64_t node, uint64_t offset, const uint8_t *buf, uint32_t *count) {
   vx_cons *c = ctx;
-  (void)node, (void)offset;
+  (void)offset;
+  if (node == CONS_KBDIN) { // typed: echoed, and gathered into lines
+    for (uint32_t i = 0; i < *count; i++) vx_cons_input(c, buf[i]);
+    vx_cons_pump(c);
+    return VX_OK;
+  }
   uint32_t n = 0;
   while (n < *count && cons_out_room(c) >= 2) { // room for a newline's CR LF
     cons_echo(c, buf[n]);
@@ -178,8 +195,8 @@ static vx_status cons_write(void *ctx, uint64_t node, uint64_t offset, const uin
 
 static vx_status cons_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *child) {
   (void)ctx, (void)dir;
-  if (index) return VX_ERR_NOT_FOUND;
-  *child = CONS_FILE;
+  if (index > 1) return VX_ERR_NOT_FOUND;
+  *child = index ? CONS_KBDIN : CONS_FILE;
   return VX_OK;
 }
 

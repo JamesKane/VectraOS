@@ -120,7 +120,7 @@ claim=acpi
 
 # SEE ALSO
 
-devmgr(8), svc(6), ndb(6), bus-acpi(8), drv-nvme(3), drv-virtio-blk(3), drv-virtio-gpu(3), drv-virtio-net(3), drv-rtc-cmos(3), intro(3)
+devmgr(8), svc(6), ndb(6), bus-acpi(8), drv-nvme(3), drv-virtio-blk(3), drv-virtio-gpu(3), drv-virtio-input(3), drv-virtio-net(3), drv-rtc-cmos(3), intro(3)
 
 # BUGS
 

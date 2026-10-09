@@ -22,6 +22,7 @@ bind=/bin new=/boot/bin flags=a
 mount=/proc srv=proc
 mount=/net srv=net
 mount=/sys srv=sys
+mount=/dev srv=input flags=a
 mount=/tmp srv=tmpfs aname=user
 mount=/srv srv=srv flags=c
 mount=/home srv=fsd aname=home flags=c when=vx.system

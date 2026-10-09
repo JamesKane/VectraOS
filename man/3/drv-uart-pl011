@@ -33,7 +33,8 @@ It asks for the transmit interrupt only while output is waiting, and sends 16 by
 
 ## The console
 
-The tree is one file, `cons`, mode 0666, owned by `cons`.
+The tree is two files owned by `cons`: `cons`, mode 0666, and `kbdin`, mode 0220.
+A write to `kbdin` is typed: its bytes go through the line discipline below as the port's do, as 9front's `/dev/kbdin`; inputd(8) types a keyboard's keys there (M7 step 7c1).
 Offsets mean nothing: it is a stream.
 Up to 128 connections are served at once, one for each program with console output.
 

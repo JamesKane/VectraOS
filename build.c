@@ -1501,6 +1501,10 @@ static const program USER_PROGRAMS[] = {
      LINK_STATIC, nullptr},
     {"displayd", "servers/displayd/displayd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false,
      LINK_STATIC, nullptr}, // the display coordinator (7b3)
+    {"drv-virtio-input", "drivers/drv-virtio-input/input.c", IN_BOOTFS, nullptr, false, nullptr, nullptr,
+     false, LINK_STATIC, nullptr}, // keyboards, tablets, mice (7c1)
+    {"inputd", "servers/inputd/inputd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr}, // the input devices, gathered (7c1)
     {"drv-virtio-gpu", "drivers/drv-virtio-gpu/gpu.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false,
      LINK_STATIC, nullptr}, // virtio-gpu 2D, a display back end (7b4)
     {"drv-simplefb", "drivers/drv-simplefb/simplefb.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false,
@@ -4261,7 +4265,12 @@ static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
     else if (!x86)
       cmd_addv(c, (const char *const[]){"-device", "ramfb", nullptr});
     if (o.gpu && x86) cmd_addv(c, (const char *const[]){"-vga", "none", nullptr});
-    cmd_addv(c, (const char *const[]){"-device", "virtio-keyboard-pci", "-device", "virtio-tablet-pci",
+    // The input devices, behind the IOMMU as every virtio device is: a
+    // keyboard, a tablet (absolute) and a mouse (relative), in that order of
+    // PCI slots, so input0, input1 and input2.
+    cmd_addv(c, (const char *const[]){"-device", "virtio-keyboard-pci,disable-legacy=on,iommu_platform=on",
+                                      "-device", "virtio-tablet-pci,disable-legacy=on,iommu_platform=on",
+                                      "-device", "virtio-mouse-pci,disable-legacy=on,iommu_platform=on",
                                       "-qmp", fmt("unix:%s,server=on,wait=off", o.qmp), nullptr});
   }
   if (o.rtc) cmd_addv(c, (const char *const[]){"-rtc", fmt("base=%s", o.rtc), nullptr});
@@ -4481,6 +4490,8 @@ static const char *substitute_arch(vx_str pattern, const arch *a) {
 // reference, the screen is kept as REF.rle.new (and REF.ppm.new, to look
 // at), and the test fails, for a person to look at and keep. key=SPEC presses
 // keys, as QMP's send-key names them, joined by '-' for a chord.
+// typekeys=TEXT types the text on the virtio keyboard, then return;
+// click=X,Y taps the virtio tablet there, in its range 0 to 32767 (7c1).
 
 typedef struct qmp {
   int fd;
@@ -4646,7 +4657,78 @@ static const char *screen_check(qmp *q, const char *dump, const char *ref, long 
 }
 
 // key=SPEC: one press of the chord, its keys QMP's qcodes joined by '-'.
+// Several chords, separated by spaces, are pressed in turn (typekeys=).
+static bool key_chord(qmp *q, const char *spec);
 static bool key_press(qmp *q, const char *spec) {
+  for (const char *k = spec; *k;) {
+    const char *e = strchr(k, ' ');
+    size_t len = e ? (size_t)(e - k) : strlen(k);
+    if (!key_chord(q, str_dup((vx_str){k, len}))) return false;
+    k += len + (e != nullptr);
+  }
+  return true;
+}
+
+// typekeys=TEXT as chords: each character's key, shifted as the US layout
+// has it, then return. The characters a shell line needs.
+static const char *typed_keys(vx_str text) {
+  static const char *const PUNCT[][2] = {{" ", "spc"},
+                                         {"-", "minus"},
+                                         {"=", "equal"},
+                                         {"/", "slash"},
+                                         {".", "dot"},
+                                         {",", "comma"},
+                                         {";", "semicolon"},
+                                         {"'", "apostrophe"},
+                                         {"|", "shift-backslash"},
+                                         {">", "shift-dot"},
+                                         {"<", "shift-comma"},
+                                         {"\"", "shift-apostrophe"},
+                                         {"_", "shift-minus"},
+                                         {"$", "shift-4"},
+                                         {"*", "shift-8"},
+                                         {"&", "shift-7"},
+                                         {":", "shift-semicolon"}};
+  char *out = alloc(text.len * 24 + 8);
+  size_t n = 0;
+  for (size_t i = 0; i < text.len; i++) {
+    char ch = text.ptr[i];
+    const char *k = nullptr;
+    if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')) {
+      n += (size_t)sprintf(out + n, "%c ", ch);
+      continue;
+    }
+    if (ch >= 'A' && ch <= 'Z') {
+      n += (size_t)sprintf(out + n, "shift-%c ", ch - 'A' + 'a');
+      continue;
+    }
+    for (size_t p = 0; p < sizeof PUNCT / sizeof PUNCT[0]; p++)
+      if (PUNCT[p][0][0] == ch) k = PUNCT[p][1];
+    if (!k) die("typekeys=: no key for '%c'", ch);
+    n += (size_t)sprintf(out + n, "%s ", k);
+  }
+  sprintf(out + n, "ret");
+  return out;
+}
+
+// click=X,Y: the tablet to (X, Y), in its range 0 to 32767, and the left
+// button pressed and let go there.
+static bool click(qmp *q, const char *at) {
+  char *end = nullptr;
+  long x = strtol(at, &end, 10), y = 0;
+  if (*end != ',') return false;
+  y = strtol(end + 1, &end, 10);
+  if (*end) return false;
+  return qmp_do(q, fmt("{\"execute\":\"input-send-event\",\"arguments\":{\"events\":["
+                       "{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":%ld}},"
+                       "{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":%ld}},"
+                       "{\"type\":\"btn\",\"data\":{\"down\":true,\"button\":\"left\"}}]}}\n",
+                       x, y)) &&
+         qmp_do(q, "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":["
+                   "{\"type\":\"btn\",\"data\":{\"down\":false,\"button\":\"left\"}}]}}\n");
+}
+
+static bool key_chord(qmp *q, const char *spec) {
   char keys[1024] = "";
   size_t n = 0;
   for (const char *k = spec; *k;) {
@@ -4668,7 +4750,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   bool prompt[64] = {};  // expect[k] came from prompt=: it has started a line since the last thing typed
   vx_str input[64] = {}; // typed once every expect before it has matched: input[k] goes before expect[k]
   // screen= and key= (7b1b), as input: done once every expect before them has matched.
-  const char *screen[64] = {}, *keys_at[64] = {};
+  const char *screen[64] = {}, *keys_at[64] = {}, *clicks_at[64] = {}; // click= and typekeys= (7c1) too
   long tolerance[64] = {};
   bool display = false, gpu = false; // display=fb (the firmware's framebuffer) or display=gpu (virtio-gpu)
   int expect_count = 0, fail_count = 0;
@@ -4789,9 +4871,13 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
           die("%s:%zu: tolerance=%s is no percentage", path, rec.line, t);
         tolerance[expect_count] = (long)(pct * 100);
       }
-    } else if (vx_ndb_has(&rec, "key") && expect_count < 64) {
-      if (!display) die("%s:%zu: key= needs the scenario's display", path, rec.line);
-      keys_at[expect_count] = str_dup(vx_ndb_get(&rec, "key"));
+    } else if ((vx_ndb_has(&rec, "key") || vx_ndb_has(&rec, "typekeys")) && expect_count < 64) {
+      if (!display) die("%s:%zu: key= and typekeys= need the scenario's display", path, rec.line);
+      keys_at[expect_count] = vx_ndb_has(&rec, "key") ? str_dup(vx_ndb_get(&rec, "key"))
+                                                      : typed_keys(vx_ndb_get(&rec, "typekeys"));
+    } else if (vx_ndb_has(&rec, "click") && expect_count < 64) {
+      if (!display) die("%s:%zu: click= needs the scenario's display", path, rec.line);
+      clicks_at[expect_count] = str_dup(vx_ndb_get(&rec, "click"));
     } else if ((vx_ndb_has(&rec, "send") || vx_ndb_has(&rec, "type")) && expect_count < 64) {
       bool send = vx_ndb_has(&rec, "send"); // send= presses return after it; type= types exactly
       vx_str text = vx_ndb_get(&rec, send ? "send" : "type"), *in = &input[expect_count];
@@ -4801,7 +4887,9 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
     } else {
       if (expect_count == 64 || fail_count == 64)
         die("%s:%zu: more than 64 expect= or fail= records", path, rec.line);
-      die("%s:%zu: expected scenario=, expect=, line=, prompt=, fail=, send=, type=, screen=, key= or host=",
+      die("%s:%zu: expected scenario=, expect=, line=, prompt=, fail=, send=, type=, screen=, key=, "
+          "typekeys=, "
+          "click= or host=",
           path, rec.line);
     }
   }
@@ -4920,12 +5008,14 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
     ssize_t stale = 0;     // bytes of buf, from pos, that came before the last typing
     bool all_seen = false; // every expect= met; with exits, QEMU's exit is what is waited for now
     while (!verdict) {
-      if (!all_seen && shown < next && (screen[next] || keys_at[next])) {
+      if (!all_seen && shown < next && (screen[next] || keys_at[next] || clicks_at[next])) {
         shown = next;
         if (screen[next])
           verdict = screen_check(&q, fmt("%s/screen.ppm", run_dir), screen[next], tolerance[next]);
         if (!verdict && keys_at[next] && !key_press(&q, keys_at[next]))
           verdict = fmt("QMP's send-key failed for %s", keys_at[next]);
+        if (!verdict && clicks_at[next] && !click(&q, clicks_at[next]))
+          verdict = fmt("QMP's input-send-event failed for click=%s", clicks_at[next]);
         if (verdict) break;
       }
       if (!all_seen && typed < next && input[next].len) {

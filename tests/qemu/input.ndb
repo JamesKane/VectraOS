@@ -1,0 +1,32 @@
+# tests/qemu/input.ndb: input (M7 step 7c1, docs/proto/input.md): the virtio
+# keyboard, tablet and mouse found (in whatever order devmgr starts them), a command typed on the keyboard into rc
+# through inputd and the console's kbdin, the devices' info, the keys'
+# records with their held sets and runes, and a tap of the tablet: its
+# position a record of the tablet's, its button one of the mouse's (QEMU
+# routes buttons to the relative device).
+
+scenario=input display=fb timeout=60
+prompt="% "
+send="for(i in 0 1 2) while(! ls /dev/input/$i >/tmp/null >[2=1]) /boot/bin/posix/sleep 0.1; echo ready"
+line="ready"
+prompt="% "
+typekeys="echo Typed | /boot/bin/posix/tr a-z A-Z"
+line="TYPED"
+prompt="% "
+send="cat /dev/input/0/info /dev/input/1/info"
+line="name=""QEMU Virtio Keyboard"" kind=keyboard"
+line="name=""QEMU Virtio Tablet"" kind=pointer absolute wheel x_max=32767 y_max=32767"
+prompt="% "
+send="/boot/bin/posix/sed -n '/usage=7:17 down/{p;q;}' /dev/input/keyboard"
+expect="rune=t mods=shift held=7:e1,7:17"
+prompt="% "
+click=16384,8192
+send="/boot/bin/posix/sed -n '/x=16384 y=8192/{p;q;}' /dev/input/1/events"
+expect="x=16384 y=8192 dx=0 dy=0 wheel=0 hwheel=0 buttons=0"
+prompt="% "
+send="/boot/bin/posix/sed -n '/buttons=1/{p;q;}' /dev/input/2/events"
+expect="x=0 y=0 dx=0 dy=0 wheel=0 hwheel=0 buttons=1"
+prompt="% "
+fail="vx: panic"
+fail="drv-virtio-input: FAILED"
+fail="svcd: inputd exited"

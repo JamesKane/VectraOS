@@ -1,0 +1,30 @@
+page=drv-virtio-input sect=3 summary="virtio input driver: keyboards, tablets and mice"
+    src=drivers/drv-virtio-input/input.c,boot/drv/virtio-input.ndb,lib/vx-driver/virtio.c,lib/vx-driver/inputproto.h
+    keys=virtio,input,keyboard,mouse,tablet,pointer,hid,evdev,qemu,pci
+
+# SYNOPSIS
+
+```ndb
+match=pci vendor=0x1af4 device=0x1052 program=/boot/bin/drv-virtio-input
+    post=input# msi=1
+```
+
+# DESCRIPTION
+
+`drv-virtio-input` drives a virtio input device and serves it on the input class protocol (docs/proto/input.md) to inputd(8), on `/srv/input0`, `/srv/input1`, … in the order devmgr(8) finds them.
+
+What it is comes from the device's configuration: absolute axes make a tablet, relative ones a mouse, and anything else with keys a keyboard; a pointer with a wheel says so.
+The device speaks Linux's evdev; the driver turns a keyboard's key codes into HID usages, each key record carrying the held set after it, and a pointer's report, ended by `SYN_REPORT`, into one pointer record.
+Records go to inputd a batch per interrupt, never merged.
+virtio-input gives no timestamps: a record's time is when the driver saw it.
+
+It serves one session at a time; with none, what the device reports is dropped.
+
+# SEE ALSO
+
+inputd(8), driver(6), devmgr(8)
+
+# BUGS
+
+No LEDs: the status queue is not used.
+QEMU sends a tablet's buttons to its mouse, when there is one.

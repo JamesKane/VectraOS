@@ -1,0 +1,12 @@
+# boot/svc/input.ndb: inputd (M7 step 7c1, docs/proto/input.md): every input
+# driver's records, gathered and served as text on /srv/input, which the
+# namespaces union into /dev (/dev/input); and typed into the console's
+# kbdin (the console is its namespace's root) until winsrv takes the keyboard. A connector to each post an
+# input driver may serve: a post with no driver never answers.
+
+service=inputd program=/boot/bin/inputd post=input console restart
+mount=/ srv=cons
+connect=input0
+connect=input1
+connect=input2
+connect=input3

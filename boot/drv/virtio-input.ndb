@@ -1,0 +1,5 @@
+# boot/drv/virtio-input.ndb: the virtio input device (modern, 1af4:1052),
+# keyboard, tablet or mouse, whose driver serves the input class
+# (docs/proto/input.md) on /srv/input0, /srv/input1, ... to inputd (M7 step 7c1).
+
+match=pci vendor=0x1af4 device=0x1052 program=/boot/bin/drv-virtio-input post=input# msi=1

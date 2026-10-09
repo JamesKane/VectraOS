@@ -1,0 +1,49 @@
+page=inputd sect=8 summary="the input devices, gathered: /dev/input, and the console's keyboard"
+    src=servers/inputd/inputd.c,boot/svc/input.ndb,lib/vx-driver/inputproto.h,lib/vx-input/keymap.h
+    keys=input,keyboard,mouse,pointer,tablet,hid,keymap,console,kbdin,events
+
+# SYNOPSIS
+
+```usage
+inputd
+```
+
+# DESCRIPTION
+
+`inputd` holds a session of the input class protocol (docs/proto/input.md) with each input driver, and serves their records as text on `/srv/input`, which the shell's and POSIX namespaces union into `/dev`.
+svcd(8) gives it a connector to each post an input driver may serve (`input0` to `input3`); it asks each for a session at once, and a post with no driver never answers.
+
+It keeps the last 1024 records of every device.
+Opening an events file starts at the oldest it keeps; a read returns whole lines, and waits for the next record once it has read them all.
+
+Until winsrv takes the keyboard (M7 step 7d), it also types the keyboards' keys into the console through its `kbdin` (drv-uart-16550(3)): the rune each key makes with the modifiers held, in the US layout, so a machine with no serial line can type into rc.
+
+# FILES
+
+: `/dev/input/N/info`
+  The device on post N as an ndb(6) record: `name`, `kind` (`keyboard` or `pointer`), and a pointer's `absolute`, `relative` and `wheel` and an absolute one's `x_max` and `y_max`.
+: `/dev/input/N/events`
+  Its records, a line each.
+: `/dev/input/keyboard`, `/dev/input/pointer`
+  Every keyboard's records, and every pointer's, in one stream each.
+
+A key's line has the device, the time, the HID usage (page:id, in hex), the action (`up`, `down` or `repeat`), the unmodified rune (`rune=`, if it has one), the modifiers and the held set:
+
+```text
+key dev=0 t=1328060669 usage=7:17 down rune=t mods=shift held=7:e1,7:17
+```
+
+A pointer's has the absolute position, the relative motion, the wheels and the buttons held (bit n-1 for button n):
+
+```text
+pointer dev=1 t=2128722722 x=16384 y=8192 dx=0 dy=0 wheel=0 hwheel=0 buttons=0
+```
+
+# SEE ALSO
+
+drv-virtio-input(3), drv-uart-16550(3), svc(6)
+
+# BUGS
+
+The US layout only, and no key repeat for the console: both are winsrv's (7d2).
+A reader that falls more than 1024 records behind loses the oldest.
