@@ -1,12 +1,13 @@
-// disptest: the display engine protocol against a back end (M7 step 7b3, the
-// engine scenario; docs/proto/display.md): a session and a second one
-// refused, ADDED with the firmware's mode, INFO, IMPORT and its refusals,
-// CHECK's verdicts, APPLY and the VBLANKs that report it, and RELEASE. It
-// leaves colour bars on screen with a white box drawn by a second APPLY
-// whose damage is the box alone: the second image also has a red square
-// outside the damage, which a back end that copies the damage only never
-// shows. The scenario matches that by screenshot. Written for simplefb; the
-// same test runs on virtio-gpu (7b4).
+// disptest: the display engine protocol against a back end (M7 steps 7b3
+// and 7b4; docs/proto/display.md): a session and a second one refused,
+// ADDED (the firmware's mode, or the device's with its EDID), INFO, IMPORT
+// and its refusals, CHECK's verdicts, APPLY (a colour, then images) and the
+// VBLANKs that report it, and RELEASE. It leaves colour bars on screen with
+// a white box drawn by a last APPLY whose damage is the box alone: that
+// image also has a red square outside the damage, which a back end that
+// copies the damage only never shows. The scenario matches that by
+// screenshot. It is given one back end: simplefb (the engine scenario) or
+// virtio-gpu (enginegpu).
 
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-driver/displayproto.h"
@@ -24,6 +25,19 @@ static void check_at(bool ok, const char *what, int line) {
 
 static vx_handle session;
 
+// The back end: the first connector it was given (simplefb's, display0's).
+static vx_handle back_end(void) {
+  for (uint32_t i = 0; i < vx_spawn.handle_count; i++) {
+    vx_str n = vx_spawn.handle_names[i];
+    vx_handle h = vx_spawn.handles[i];
+    if (n.len > 4 && memcmp(n.ptr, "srv:", 4) == 0 && h) {
+      vx_spawn.handles[i] = VX_HANDLE_NONE;
+      return h;
+    }
+  }
+  return VX_HANDLE_NONE;
+}
+
 static vx_status call(void *req, uint32_t len, const vx_handle *h, uint32_t nh, void *rep, uint32_t cap) {
   vx_call c = {
       .wr_bytes = req, .wr_handles = h, .wr_len = len, .wr_count = nh, .rd_bytes = rep, .rd_cap = cap};
@@ -31,15 +45,23 @@ static vx_status call(void *req, uint32_t len, const vx_handle *h, uint32_t nh, 
   return st == VX_OK ? (vx_status)(int32_t)((vx_msg_header *)rep)->flags : st;
 }
 
-// The next event with this ordinal, the others before it dropped; false at the deadline.
+alignas(vx_msg_header) static uint8_t last[1100]; // the last event, whole: ADDED's EDID follows its record
+static uint32_t last_len;
+
+static bool edid_header(const uint8_t *h) {
+  return last_len >= sizeof(vx_display_added) + 8 && memcmp(last + sizeof(vx_display_added), h, 8) == 0;
+}
+
+// The next event with this ordinal (len bytes at least), the others before
+// it dropped; false at the deadline.
 static bool event(uint32_t ordinal, void *out, uint32_t len) {
   vx_instant deadline = vx_now() + 5'000'000'000;
   for (;;) {
-    uint8_t m[256];
     vx_msg_size size;
-    vx_status st = vx_channel_read(session, m, sizeof m, nullptr, 0, &size);
-    if (st == VX_OK && ((vx_msg_header *)m)->ordinal == ordinal && size.bytes == len) {
-      memcpy(out, m, len);
+    vx_status st = vx_channel_read(session, last, sizeof last, nullptr, 0, &size);
+    if (st == VX_OK && ((vx_msg_header *)last)->ordinal == ordinal && size.bytes >= len) {
+      memcpy(out, last, len);
+      last_len = size.bytes;
       return true;
     }
     if (st == VX_OK) continue;
@@ -106,7 +128,7 @@ static vx_status check_cfg(const vx_display_cfg *c, int64_t *bad) {
 }
 
 const char *vx_main(void) {
-  vx_handle srv = vx_spawn_take("srv:simplefb");
+  vx_handle srv = back_end();
   CHECK(srv != VX_HANDLE_NONE);
   // A session; a second while it is open, refused.
   vx_msg_header req = {.ordinal = VX_DISPLAY_CONNECT}, rep = {};
@@ -127,8 +149,12 @@ const char *vx_main(void) {
   vx_display_added added = {};
   CHECK(event(VX_DISPLAY_ADDED, &added, sizeof added));
   vx_display_mode mode = added.current;
-  CHECK(mode.width && mode.height && mode.flags & VX_DISPLAY_FIRMWARE && mode.refresh_mhz);
-  CHECK(added.edid_len == 0); // a framebuffer has none
+  CHECK(mode.width && mode.height && mode.refresh_mhz);
+  // A firmware's framebuffer has no EDID and its mode is the firmware's; a
+  // device with an EDID reports its own mode, and the EDID's header.
+  static const uint8_t HEADER[8] = {0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0};
+  CHECK(added.edid_len ? !(mode.flags & VX_DISPLAY_FIRMWARE) && added.edid_len >= 128 && edid_header(HEADER)
+                       : (mode.flags & VX_DISPLAY_FIRMWARE) != 0);
 
   vx_display_info info = {};
   vx_msg_header ask = {.ordinal = VX_DISPLAY_INFO};
@@ -175,19 +201,31 @@ const char *vx_main(void) {
   cfg = config(mode, (uint64_t)ia);
   CHECK(check_cfg(&cfg, &bad) == VX_OK);
 
-  // APPLY the bars; the vblanks that follow report stamp 1, a refresh apart.
-  vx_display_apply ap = {.h = {.ordinal = VX_DISPLAY_APPLY}, .stamp = 1, .cfg = cfg};
+  // A colour layer first: grey, the whole screen.
+  vx_display_rect all = {0, 0, mode.width, mode.height};
+  vx_display_apply ap = {
+      .h = {.ordinal = VX_DISPLAY_APPLY},
+      .stamp = 1,
+      .cfg = {.nlayers = 1,
+              .mode = mode,
+              .layer = {{.kind = VX_DISPLAY_LAYER_COLOR, .color = 0x808080, .dst = all, .alpha = 255}}}};
+  CHECK(check_cfg(&ap.cfg, &bad) == VX_OK);
   CHECK(vx_channel_write(session, &ap, sizeof ap, nullptr, 0) == VX_OK);
   vx_display_vblank v = {};
   CHECK(until(&v, 1));
+  // APPLY the bars, all of them over the grey; the vblanks that follow report
+  // stamp 2, a refresh apart.
+  ap.stamp = 2, ap.cfg = cfg;
+  CHECK(vx_channel_write(session, &ap, sizeof ap, nullptr, 0) == VX_OK);
+  CHECK(until(&v, 2));
   uint64_t first = v.time;
-  for (int i = 0; i < 10; i++) CHECK(event(VX_DISPLAY_VBLANK, &v, sizeof v) && v.stamp == 1);
+  for (int i = 0; i < 10; i++) CHECK(event(VX_DISPLAY_VBLANK, &v, sizeof v) && v.stamp == 2);
   uint64_t period = (v.time - first) / 10, want = 1'000'000'000'000ull / mode.refresh_mhz;
   CHECK(period > want / 2 && period < want * 3); // loose: an emulator's timers lag
   // A flip to the second image, its damage the box: no new CHECK.
-  ap.stamp = 2, ap.cfg = config(mode, (uint64_t)ib), ap.ndamage = 1, ap.damage[0] = box;
+  ap.stamp = 3, ap.cfg = config(mode, (uint64_t)ib), ap.ndamage = 1, ap.damage[0] = box;
   CHECK(vx_channel_write(session, &ap, sizeof ap, nullptr, 0) == VX_OK);
-  CHECK(until(&v, 2));
+  CHECK(until(&v, 3));
 
   // RELEASE: the first image; twice is not found.
   vx_display_msg rel = {.h = {.ordinal = VX_DISPLAY_RELEASE}, .arg = {ia}}, r = {};

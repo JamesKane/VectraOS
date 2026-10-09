@@ -3,9 +3,9 @@
 # (tests/user/disptest.c): bars with a white box flipped in by its damage
 # alone, and no red square, matched by screenshot.
 
-scenario=engine display=fb timeout=60 cmdline=vx.skip=rc with=disptest
+scenario=engine display=fb timeout=60 cmdline="vx.skip=rc disptest.fb" with=disptest
 expect="simplefb: "
-expect="disptest: 36 checks, 0 failed"
+expect="disptest: 39 checks, 0 failed"
 screen=engine-$arch tolerance=1
 expect="disptest: holding the screen"
 fail="vx: panic"

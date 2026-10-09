@@ -11,5 +11,6 @@ claim=disk0
 claim=disk1
 claim=disk2
 claim=disk3
+claim=display0
 claim=acpi
 connect=proc

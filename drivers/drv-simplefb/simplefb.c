@@ -10,18 +10,12 @@
 // when a session opens and put back when it ends, so a displayd that dies
 // leaves the boot console showing, as it found it.
 //
-// One thread, one port: the listen channel, the session, and the vblank
-// timer as the port's deadline.
+// The session and the vblank are lib/vx-driver/engine.c's.
 
 #include "../../lib/vx-rt/rt.c"
-#include "../../lib/vx-driver/displayproto.h"
+#include "../../lib/vx-driver/engine.c"
 
-enum : uint64_t { KEY_LISTEN = 1, KEY_SESSION = 2 };
 static constexpr uint32_t MAX_IMAGES = 8;
-static constexpr vx_duration REFRESH_NS = 16'666'667; // 60 Hz
-static constexpr uint32_t REFRESH_MHZ = 60'000;
-
-static vx_handle port, listen, session;
 
 // The framebuffer: its pixels at fb + offset, rows pitch bytes apart, and
 // each channel's field (shift << 8 | size) from the firmware's record.
@@ -36,20 +30,9 @@ typedef struct image {
 } image;
 static image images[MAX_IMAGES];
 
-// The configuration applied, and the one waiting for the next vblank.
-static vx_display_apply shown, pending;
-static bool have_pending, on = true;
-static uint64_t stamp_shown;
-
 [[noreturn]] static void fail(const char *why) {
   vx_printf("simplefb: %s\n", why);
   vx_exits(why);
-}
-
-// A CONNECT refused: its reply with the status and no handle.
-static void refuse(const vx_msg_header *req, vx_status why) {
-  vx_msg_header rep = {.txid = req->txid, .ordinal = req->ordinal, .flags = (uint32_t)(int32_t)why};
-  vx_channel_write(listen, &rep, sizeof rep, nullptr, 0);
 }
 
 static uint32_t channel(uint64_t field, uint32_t v) {
@@ -94,227 +77,96 @@ static void copy_rect(const vx_display_layer *l, vx_display_rect r) {
   }
 }
 
-// a ∩ b; its width 0 if they do not meet.
-static vx_display_rect intersect(vx_display_rect a, vx_display_rect b) {
-  int64_t x0 = a.x > b.x ? a.x : b.x, y0 = a.y > b.y ? a.y : b.y;
-  int64_t x1 = (int64_t)a.x + a.width, y1 = (int64_t)a.y + a.height;
-  int64_t bx1 = (int64_t)b.x + b.width, by1 = (int64_t)b.y + b.height;
-  if (bx1 < x1) x1 = bx1;
-  if (by1 < y1) y1 = by1;
-  if (x1 <= x0 || y1 <= y0) return (vx_display_rect){};
-  return (vx_display_rect){(int32_t)x0, (int32_t)y0, (uint32_t)(x1 - x0), (uint32_t)(y1 - y0)};
+// --- The engine's operations ---
+
+static void fb_info(vx_display_info *i) {
+  i->nformats = 2;
+  i->formats[0] = VX_FORMAT_XRGB8888, i->formats[1] = VX_FORMAT_ARGB8888;
+  i->align = 4;
 }
 
-// The pending configuration onto the screen, its damage only (all of it if none).
-static void show(void) {
-  const vx_display_apply *a = &pending;
-  vx_display_rect screen = {0, 0, (uint32_t)width, (uint32_t)height};
-  uint32_t n = a->ndamage ? a->ndamage : 1;
-  for (uint32_t d = 0; d < n; d++) {
-    vx_display_rect area = a->ndamage ? intersect(a->damage[d], screen) : screen;
-    for (uint32_t i = 0; area.width && i < a->cfg.nlayers; i++) {
-      vx_display_rect r = intersect(area, a->cfg.layer[i].dst);
-      if (r.width) copy_rect(&a->cfg.layer[i], r);
-    }
-  }
-  shown = pending, stamp_shown = pending.stamp, have_pending = false;
+static int64_t fb_import(vx_buffer *b) {
+  if (b->desc.format != VX_FORMAT_XRGB8888 && b->desc.format != VX_FORMAT_ARGB8888) return VX_ERR_INVALID;
+  uint32_t i = 0;
+  while (i < MAX_IMAGES && images[i].used) i++;
+  if (i == MAX_IMAGES) return VX_ERR_NO_MEMORY;
+  uint8_t *at = nullptr;
+  vx_status st = vx_buffer_map(b, false, &at);
+  if (st != VX_OK) return st;
+  images[i] = (image){.used = true, .buf = *b, .at = at};
+  return i + 1;
 }
 
-// CHECK's rules: the firmware's mode, one layer, an image (an imported one,
-// the source inside it, no scaling) or a colour, the destination on screen,
-// opaque and upright. The layer that fails, or -1 for the mode; -2 for none.
-static int64_t check(const vx_display_cfg *c, vx_status *why) {
+// One on screen stays there: it was copied, so its bytes are not needed.
+static vx_status fb_release(uint64_t id) {
+  image *im = image_of(id);
+  if (!im) return VX_ERR_NOT_FOUND;
+  vx_buffer_unmap(&im->buf, im->at);
+  vx_buffer_close(&im->buf);
+  *im = (image){};
+  return VX_OK;
+}
+
+// The firmware's mode, one layer, an image (an imported one, the source
+// inside it, no scaling) or a colour, the destination on screen, opaque and
+// upright.
+static int64_t fb_check(const vx_display_cfg *c, vx_status *why) {
   *why = VX_ERR_UNSUPPORTED;
   if (c->output != 0 || c->mode.width != width || c->mode.height != height ||
-      (c->mode.refresh_mhz && c->mode.refresh_mhz != REFRESH_MHZ))
+      (c->mode.refresh_mhz && c->mode.refresh_mhz != 60'000))
     return -1;
   if (c->nlayers > 1) return 1;
   for (uint32_t i = 0; i < c->nlayers; i++) {
     const vx_display_layer *l = &c->layer[i];
-    const vx_display_rect *d = &l->dst;
     *why = VX_ERR_INVALID;
-    if (l->alpha != 255 || l->rotation || d->x < 0 || d->y < 0 || (uint64_t)d->x + d->width > width ||
-        (uint64_t)d->y + d->height > height)
-      return i;
+    if (l->alpha != 255 || l->rotation || !vx_display_inside(l->dst, width, height)) return i;
     if (l->kind == VX_DISPLAY_LAYER_COLOR) continue;
     image *im = l->kind == VX_DISPLAY_LAYER_IMAGE ? image_of(l->image) : nullptr;
     *why = VX_ERR_NOT_FOUND;
     if (!im) return i;
     *why = VX_ERR_INVALID;
-    if (l->src.width != d->width || l->src.height != d->height || l->src.x < 0 || l->src.y < 0 ||
-        (uint64_t)l->src.x + l->src.width > im->buf.desc.width ||
-        (uint64_t)l->src.y + l->src.height > im->buf.desc.height)
+    if (l->src.width != l->dst.width || l->src.height != l->dst.height ||
+        !vx_display_inside(l->src, im->buf.desc.width, im->buf.desc.height))
       return i;
   }
   *why = VX_OK;
   return -2;
 }
 
-static void reply(const vx_msg_header *req, vx_status st, int64_t a0) {
-  vx_display_msg r = {.h = {.txid = req->txid, .ordinal = req->ordinal, .flags = (uint32_t)(int32_t)st},
-                      .arg = {a0}};
-  vx_channel_write(session, &r, sizeof r, nullptr, 0);
+// Its damage only (all of it if none).
+static void fb_show(const vx_display_apply *a) {
+  vx_display_rect screen = {0, 0, (uint32_t)width, (uint32_t)height};
+  uint32_t n = a->ndamage ? a->ndamage : 1;
+  for (uint32_t d = 0; d < n; d++) {
+    vx_display_rect area = a->ndamage ? vx_display_intersect(a->damage[d], screen) : screen;
+    for (uint32_t i = 0; area.width && i < a->cfg.nlayers; i++) {
+      vx_display_rect r = vx_display_intersect(area, a->cfg.layer[i].dst);
+      if (r.width) copy_rect(&a->cfg.layer[i], r);
+    }
+  }
 }
 
-static void end_session(void) {
+static vx_status fb_power(bool on) {
+  if (!on) memset(fb + offset, 0, pitch * height);
+  return VX_OK;
+}
+
+static void fb_opened(void) { memcpy(saved, fb, fb_size); } // the firmware's picture, to put back
+
+static void fb_closed(void) {
   for (uint32_t i = 0; i < MAX_IMAGES; i++)
-    if (images[i].used) vx_buffer_unmap(&images[i].buf, images[i].at), vx_buffer_close(&images[i].buf);
-  memset(images, 0, sizeof images);
-  vx_handle_close(session);
-  session = VX_HANDLE_NONE, have_pending = false, on = true;
+    if (images[i].used) fb_release(i + 1);
   memcpy(fb, saved, fb_size); // the firmware's picture, back
 }
 
-static void import(const vx_display_import *m, uint32_t len, vx_handle h[2], uint32_t nh) {
-  if (nh != 2) {
-    for (uint32_t i = 0; i < nh; i++) vx_handle_close(h[i]);
-    reply(&m->h, VX_ERR_INVALID, 0);
-    return;
-  }
-  uint32_t i = 0;
-  while (i < MAX_IMAGES && images[i].used) i++;
-  vx_buffer b;
-  vx_status st = vx_buffer_take(&b, &m->desc, len - (uint32_t)sizeof m->h, h);
-  if (st == VX_OK && b.desc.format != VX_FORMAT_XRGB8888 && b.desc.format != VX_FORMAT_ARGB8888)
-    st = VX_ERR_INVALID, vx_buffer_close(&b);
-  if (st == VX_OK && i == MAX_IMAGES) st = VX_ERR_NO_MEMORY, vx_buffer_close(&b);
-  uint8_t *at = nullptr;
-  if (st == VX_OK && (st = vx_buffer_map(&b, false, &at)) != VX_OK) vx_buffer_close(&b);
-  if (st == VX_OK) images[i] = (image){.used = true, .buf = b, .at = at};
-  reply(&m->h, st, st == VX_OK ? i + 1 : 0);
-}
-
-static void release(const vx_display_msg *m) {
-  image *im = image_of((uint64_t)m->arg[0]);
-  if (!im) {
-    reply(&m->h, VX_ERR_NOT_FOUND, 0);
-    return;
-  }
-  // One on screen stays there: it was copied, so its bytes are not needed.
-  vx_buffer_unmap(&im->buf, im->at);
-  vx_buffer_close(&im->buf);
-  *im = (image){};
-  reply(&m->h, VX_OK, 0);
-}
-
-static void added(void) {
-  vx_display_mode mode = {(uint32_t)width, (uint32_t)height, REFRESH_MHZ, VX_DISPLAY_FIRMWARE};
-  vx_display_added a = {.h = {.ordinal = VX_DISPLAY_ADDED}, .output = 0, .preferred = mode, .current = mode};
-  vx_channel_write(session, &a, sizeof a, nullptr, 0);
-}
-
-// Every message waiting on the session; false once it has gone.
-static bool serve(void) {
-  static union {
-    vx_msg_header h;
-    vx_display_msg msg;
-    vx_display_import import;
-    vx_display_check check;
-    vx_display_apply apply;
-    vx_display_power power;
-    uint8_t bytes[1024];
-  } m;
-  for (;;) {
-    vx_handle h[VX_CHANNEL_MAX_HANDLES];
-    vx_msg_size size;
-    vx_status st = vx_channel_read(session, &m, sizeof m, h, VX_CHANNEL_MAX_HANDLES, &size);
-    if (st == VX_ERR_SHOULD_WAIT) return true;
-    if (st != VX_OK) return false; // gone, or a message too large: a protocol error
-    uint32_t want = 0;
-    switch (m.h.ordinal) {
-    case VX_DISPLAY_INFO: want = sizeof m.h; break;
-    case VX_DISPLAY_IMPORT: want = sizeof m.import; break;
-    case VX_DISPLAY_RELEASE: want = sizeof m.msg; break;
-    case VX_DISPLAY_CHECK: want = sizeof m.check; break;
-    case VX_DISPLAY_APPLY: want = sizeof m.apply; break;
-    case VX_DISPLAY_POWER: want = sizeof m.power; break;
-    default: break;
-    }
-    if (m.h.ordinal != VX_DISPLAY_IMPORT)
-      for (uint32_t i = 0; i < size.handles; i++) vx_handle_close(h[i]);
-    if (!want || size.bytes != want) {
-      if (m.h.ordinal == VX_DISPLAY_IMPORT)
-        for (uint32_t i = 0; i < size.handles; i++) vx_handle_close(h[i]);
-      if (m.h.ordinal == VX_DISPLAY_APPLY || size.bytes < sizeof m.h) return false;
-      reply(&m.h, VX_ERR_INVALID, 0);
-      continue;
-    }
-    vx_status why;
-    int64_t bad;
-    switch (m.h.ordinal) {
-    case VX_DISPLAY_INFO: {
-      vx_display_info i = {.h = {.txid = m.h.txid, .ordinal = m.h.ordinal},
-                           .version = VX_DISPLAY_VERSION,
-                           .outputs = 1,
-                           .layers = 1,
-                           .nformats = 2,
-                           .formats = {VX_FORMAT_XRGB8888, VX_FORMAT_ARGB8888},
-                           .align = 4};
-      vx_channel_write(session, &i, sizeof i, nullptr, 0);
-      break;
-    }
-    case VX_DISPLAY_IMPORT: import(&m.import, size.bytes, h, size.handles); break;
-    case VX_DISPLAY_RELEASE: release(&m.msg); break;
-    case VX_DISPLAY_CHECK:
-      bad = check(&m.check.cfg, &why);
-      reply(&m.h, why, bad == -2 ? 0 : bad);
-      break;
-    case VX_DISPLAY_APPLY:
-      // Stamps rise, and only what CHECK passes is applied: else the session ends.
-      if (m.apply.stamp <= (have_pending ? pending.stamp : stamp_shown) ||
-          m.apply.ndamage > VX_DISPLAY_DAMAGE || check(&m.apply.cfg, &why) != -2)
-        return false;
-      pending = m.apply, have_pending = true;
-      break;
-    case VX_DISPLAY_POWER:
-      if (m.power.output != 0) {
-        reply(&m.h, VX_ERR_NOT_FOUND, 0);
-        break;
-      }
-      on = m.power.on != 0;
-      if (!on) memset(fb + offset, 0, pitch * height);
-      reply(&m.h, VX_OK, 0);
-      break;
-    default: break;
-    }
-  }
-}
-
-static void accept(void) {
-  for (;;) {
-    vx_msg_header req;
-    vx_msg_size size;
-    vx_handle junk[VX_CHANNEL_MAX_HANDLES];
-    vx_status st = vx_channel_read(listen, &req, sizeof req, junk, VX_CHANNEL_MAX_HANDLES, &size);
-    if (st == VX_ERR_SHOULD_WAIT) return;
-    if (st == VX_ERR_PEER_CLOSED) fail("the listen channel is gone");
-    if (st != VX_OK) continue; // too large: not this protocol's
-    for (uint32_t i = 0; i < size.handles; i++) vx_handle_close(junk[i]);
-    if (size.bytes != sizeof req || req.ordinal != VX_DISPLAY_CONNECT) {
-      refuse(&req, VX_ERR_INVALID);
-      continue;
-    }
-    if (session) {
-      refuse(&req, VX_ERR_BAD_STATE);
-      continue;
-    }
-    vx_handle ends[2];
-    if (vx_channel_create(0, ends) != VX_OK) {
-      refuse(&req, VX_ERR_NO_MEMORY);
-      continue;
-    }
-    vx_msg_header rep = {.txid = req.txid, .ordinal = req.ordinal};
-    if (vx_channel_write(listen, &rep, sizeof rep, &ends[1], 1) != VX_OK) {
-      vx_handle_close(ends[0]), vx_handle_close(ends[1]);
-      continue;
-    }
-    session = ends[0];
-    memcpy(saved, fb, fb_size); // the firmware's picture, to put back
-    stamp_shown = 0;
-    added();
-    vx_port_bind(port, session, VX_TRIGGER_READABLE, KEY_SESSION, 0);
-  }
-}
+static const vx_engine_ops OPS = {.info = fb_info,
+                                  .import = fb_import,
+                                  .release = fb_release,
+                                  .check = fb_check,
+                                  .show = fb_show,
+                                  .power = fb_power,
+                                  .opened = fb_opened,
+                                  .closed = fb_closed};
 
 const char *vx_main(void) {
   vx_handle vmo = vx_spawn_take("framebuffer");
@@ -339,39 +191,12 @@ const char *vx_main(void) {
       vx_as_map(vx_self, copy, 0, map, VX_MAP_WRITE, &sat) != VX_OK)
     fail("no memory for the saved screen");
   saved = (uint8_t *)sat;
-  listen = vx_spawn_take("listen");
-  if (!listen || vx_port_create(0, &port) != VX_OK) fail("no listen channel");
-  vx_port_bind(port, listen, VX_TRIGGER_READABLE, KEY_LISTEN, 0);
+  static vx_engine e = {.ops = &OPS, .name = "simplefb"};
+  e.listen = vx_spawn_take("listen");
+  if (!e.listen) fail("no listen channel");
+  // A firmware's framebuffer gives no refresh: 60 Hz.
+  e.mode = (vx_display_mode){(uint32_t)width, (uint32_t)height, 60'000, VX_DISPLAY_FIRMWARE};
   vx_printf("simplefb: %llux%llu at 60 Hz, %s\n", (unsigned long long)width, (unsigned long long)height,
             native ? "XRGB8888" : "converted");
-  vx_instant next = vx_now() + REFRESH_NS;
-  for (;;) {
-    vx_packet pk[4];
-    int64_t n = vx_port_wait(port, session ? next : VX_INFINITE, REFRESH_NS / 16, pk, 4);
-    for (int64_t i = 0; i < n; i++) {
-      if (pk[i].key == KEY_LISTEN) {
-        accept();
-        vx_port_bind(port, listen, VX_TRIGGER_READABLE, KEY_LISTEN, 0);
-      } else if (pk[i].key == KEY_SESSION && session) {
-        if (serve())
-          vx_port_bind(port, session, VX_TRIGGER_READABLE, KEY_SESSION, 0);
-        else
-          end_session();
-      }
-    }
-    vx_instant now = vx_now();
-    if (!session) {
-      next = now + REFRESH_NS;
-      continue;
-    }
-    if (now < next) continue;
-    // A vblank: what is pending goes on screen, and displayd is told.
-    if (have_pending && on) show();
-    while (next <= now) next += REFRESH_NS;
-    if (on) {
-      vx_display_vblank v = {
-          .h = {.ordinal = VX_DISPLAY_VBLANK}, .output = 0, .time = (uint64_t)now, .stamp = stamp_shown};
-      vx_channel_write(session, &v, sizeof v, nullptr, 0);
-    }
-  }
+  vx_engine_serve(&e);
 }

@@ -137,13 +137,14 @@ typedef struct vx_buffer {
 
 // --- Buffers in a process ---
 
-// A new buffer: a VMO of its layout's size (lazy: a page is made as it is
-// drawn), and a timeline at 0.
+// A new buffer: a VMO of its layout's size, and a timeline at 0. Its pages
+// are made at once, not as they are drawn: a buffer may be scanned out, and
+// no device may hold a lazy VMO's pages (dma_map refuses them).
 [[maybe_unused]] static vx_status vx_buffer_alloc(vx_buffer *b, uint32_t width, uint32_t height,
                                                   uint32_t format) {
   *b = (vx_buffer){.desc = vx_buffer_layout(width, height, format)};
   if (vx_buffer_check(&b->desc, b->desc.size) != VX_OK) return VX_ERR_INVALID;
-  vx_status st = vx_vmo_create((b->desc.size + 4095) & ~4095ull, VX_VMO_LAZY, &b->memory);
+  vx_status st = vx_vmo_create((b->desc.size + 4095) & ~4095ull, 0, &b->memory);
   if (st == VX_OK) st = vx_counter_create(0, &b->timeline);
   if (st != VX_OK) {
     if (b->memory) vx_handle_close(b->memory);

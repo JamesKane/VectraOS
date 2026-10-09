@@ -1501,6 +1501,8 @@ static const program USER_PROGRAMS[] = {
      LINK_STATIC, nullptr},
     {"displayd", "servers/displayd/displayd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false,
      LINK_STATIC, nullptr}, // the display coordinator (7b3)
+    {"drv-virtio-gpu", "drivers/drv-virtio-gpu/gpu.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false,
+     LINK_STATIC, nullptr}, // virtio-gpu 2D, a display back end (7b4)
     {"drv-simplefb", "drivers/drv-simplefb/simplefb.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false,
      LINK_STATIC, nullptr}, // the firmware's framebuffer, a display back end (7b3)
     {"drv-virtio-blk", "drivers/drv-virtio-blk/blk.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false,
@@ -4254,7 +4256,8 @@ static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
     // aarch64's ramfb, which QEMU shows as it is written; virtio-gpu shows
     // nothing once the firmware's driver lets it go, until one of ours drives it.
     if (o.gpu)
-      cmd_addv(c, (const char *const[]){"-device", "virtio-gpu-pci", nullptr});
+      cmd_addv(
+          c, (const char *const[]){"-device", "virtio-gpu-pci,disable-legacy=on,iommu_platform=on", nullptr});
     else if (!x86)
       cmd_addv(c, (const char *const[]){"-device", "ramfb", nullptr});
     if (o.gpu && x86) cmd_addv(c, (const char *const[]){"-vga", "none", nullptr});

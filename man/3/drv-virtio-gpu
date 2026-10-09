@@ -1,0 +1,34 @@
+page=drv-virtio-gpu sect=3 summary="virtio GPU driver: 2D, as a display engine back end"
+    src=drivers/drv-virtio-gpu/gpu.c,boot/drv/virtio-gpu.ndb,lib/vx-driver/virtio.c,lib/vx-driver/engine.c
+    keys=virtio,gpu,display,scanout,edid,qemu,pci,engine
+
+# SYNOPSIS
+
+```ndb
+match=pci vendor=0x1af4 device=0x1050 program=/boot/bin/drv-virtio-gpu
+    post=display0 msi=1
+```
+
+# DESCRIPTION
+
+`drv-virtio-gpu` drives a virtio GPU's 2D commands as a back end of the display engine protocol (docs/proto/display.md, ADR-0026) on `/srv/display0`, for displayd(8).
+devmgr(8) starts it for a modern virtio GPU, with its configuration space, BARs, a DMA domain and one MSI-X interrupt.
+
+The screen is one host resource the size of scanout 0's mode, which GET_DISPLAY_INFO gives.
+An imported image stays in guest memory, given to the device through the DMA domain; applying it attaches it as the screen resource's backing, and the next vblank transfers the damage into the resource and flushes the damage to the display.
+So it copies only what an APPLY says changed, as drv-simplefb(3) does.
+A colour layer is an image of its own, filled with the colour.
+An image's rows must be the screen resource's: those vx-buffer's layout gives the mode's width.
+
+The output is reported in the device's mode, with its EDID (GET_EDID) unparsed, which displayd parses.
+Its vblank is a timer at 60 Hz: virtio-gpu has neither a vblank nor a refresh rate.
+Nothing the firmware showed survives the firmware's exit, so there is no picture to adopt or put back; a session that ends leaves the last picture showing.
+
+# SEE ALSO
+
+displayd(8), drv-simplefb(3), driver(6), devmgr(8)
+
+# BUGS
+
+One scanout, and no hot plug: the device's display events are not read.
+3D (Venus) is M8's.

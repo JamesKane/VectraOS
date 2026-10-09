@@ -1,0 +1,14 @@
+# tests/qemu/enginegpu.ndb: the display engine protocol (M7 step 7b4) against
+# virtio-gpu's 2D back end (tests/user/disptest.c): the same checks and
+# picture as engine.ndb's, the device's mode and EDID, and the damage
+# honoured: the red square outside it never reaches the screen.
+
+scenario=enginegpu display=gpu timeout=60 cmdline="vx.skip=rc disptest.gpu" with=disptest
+expect="drv-virtio-gpu: "
+expect="disptest: 39 checks, 0 failed"
+screen=enginegpu-$arch tolerance=1
+expect="disptest: holding the screen"
+fail="vx: panic"
+fail="disptest: FAILED"
+fail="drv-virtio-gpu: FAILED"
+fail="svcd: disptest-gpu exited"

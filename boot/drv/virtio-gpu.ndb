@@ -1,0 +1,5 @@
+# boot/drv/virtio-gpu.ndb: the virtio GPU (modern, 1af4:1050), whose driver
+# serves the display engine protocol (docs/proto/display.md) on
+# /srv/display0 with its 2D commands (M7 step 7b4).
+
+match=pci vendor=0x1af4 device=0x1050 program=/boot/bin/drv-virtio-gpu post=display0 msi=1

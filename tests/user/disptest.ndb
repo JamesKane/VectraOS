@@ -1,6 +1,10 @@
-# tests/user/disptest.ndb: disptest, the display engine protocol against
-# simplefb (tests/qemu/engine.ndb).
+# tests/user/disptest.ndb: disptest, the display engine protocol against one
+# back end: simplefb with disptest.fb on the command line (tests/qemu/engine.ndb),
+# virtio-gpu's display0 with disptest.gpu (tests/qemu/enginegpu.ndb).
 
-service=simplefb program=/boot/bin/drv-simplefb post=simplefb console framebuffer
-service=disptest program=/boot/bin/disptest console
+service=simplefb program=/boot/bin/drv-simplefb post=simplefb console framebuffer when=disptest.fb
+service=disptest program=/boot/bin/disptest console when=disptest.fb
 connect=simplefb
+
+service=disptest-gpu program=/boot/bin/disptest console when=disptest.gpu
+connect=display0

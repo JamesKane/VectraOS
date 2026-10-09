@@ -1,6 +1,6 @@
 # The display engine protocol
 
-Status: draft, written for M7 step 7b2 (ADR-0026 item 2; docs/21 §2 item 4). `simplefb` (7b3) is its first back end and `displayd` its one client; frozen with virtio-gpu's (7b4). `lib/vx-driver/displayproto.h` is its C definition, and `lib/vx-buffer/buffer.h` the buffers it carries.
+Status: draft, written for M7 step 7b2 (ADR-0026 item 2; docs/21 §2 item 4). `simplefb` (7b3) and virtio-gpu (7b4) are its back ends and `displayd` its one client; `lib/vx-driver/engine.c` is the back ends' shared half (the session, the vblank timer). `lib/vx-driver/displayproto.h` is its C definition, and `lib/vx-buffer/buffer.h` the buffers it carries.
 
 A back end knows its hardware and nothing else (ADR-0026 item 1): it scans out images, tells `displayd` what it has and when a frame is on screen, and keeps no client state. Policy, EDID parsing, modes and the vblank Counters are `displayd`'s. Its shape is Fuchsia's display engine's: there are no CRTC, encoder or connector objects in it.
 
