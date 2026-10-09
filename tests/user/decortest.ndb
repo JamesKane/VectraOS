@@ -1,0 +1,6 @@
+# tests/user/decortest.ndb: decortest, two windows with winsrv's
+# decorations (tests/qemu/decor.ndb).
+
+service=decortest program=/boot/bin/decortest console when=vx.desktop
+mount=/ srv=bootfs
+mount=/wsys srv=wsys aname="new -dx 300 -dy 200"

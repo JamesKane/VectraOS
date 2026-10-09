@@ -1,0 +1,31 @@
+# tests/qemu/decor.ndb: winsrv's decorations (M7 step 7d2a): A focused by a
+# click, moved by its title, resized by its frame's corner, the theme
+# switched from vx-magic to vx-next, and B closed by its gadget
+# (tests/user/decortest.c); both themes matched by screenshot.
+
+scenario=decor display=fb timeout=60 cmdline="vx.display vx.desktop" with=decortest
+expect="decortest: ready"
+prompt="% "
+send="for(i in 0 1 2) while(! ls /dev/input/$i >/tmp/null >[2=1]) /boot/bin/posix/sleep 0.1; echo ready"
+line="ready"
+click=200px,160px
+expect="decortest: A focused"
+drag=250px,50px,300px,100px
+expect="decortest: A moved by its title to 110,110"
+drag=412px,312px,452px,342px
+expect="decortest: A resized by its corner to 340x230"
+screen=decor-magic-$arch tolerance=1
+prompt="% "
+send="cat /wsys/theme/active; echo load vx-next >/wsys/theme/ctl; cat /wsys/theme/active"
+line="vx-magic"
+line="vx-next"
+screen=decor-next-$arch tolerance=1
+prompt="% "
+click=470px,50px
+expect="decortest: B closed by its gadget"
+expect="winsrv: window 2 closed"
+expect="decortest: 10 checks, 0 failed"
+fail="vx: panic"
+fail="decortest: FAILED"
+fail="svcd: decortest exited"
+fail="svcd: winsrv exited"

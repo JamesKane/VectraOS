@@ -1,6 +1,6 @@
 page=winsrv sect=8 summary="the window server: windows, the compositor, /wsys"
     src=servers/winsrv/winsrv.c,boot/svc/display.ndb,lib/vx-wsys/wsysproto.h,lib/vx-input/keymap.h,lib/vx-driver/displayproto.h,lib/vx-buffer/buffer.h
-    keys=windows,compositor,wsys,desktop,frame,vblank,damage,present,credits,surface,focus,cursor,pointer,keyboard
+    keys=windows,compositor,wsys,desktop,frame,vblank,damage,present,credits,surface,focus,cursor,pointer,keyboard,decorations,theme,title
 
 # SYNOPSIS
 
@@ -25,6 +25,9 @@ It holds inputd(8)'s records, so the console gets no keys while it runs (M7 step
 Every pointer moves one pointer, drawn as a cursor over everything.
 A press focuses and raises the window under it, and latches the pointer stream to it until every button is up; without one, pointer records go to the window under the pointer.
 Keys go to the focused window, which gets a key's up only after its down; a window losing focus gets an up for each key it still holds.
+
+Decorations are its own (M7 step 7d2a, docs/proto/wsys.md §4b): a bevelled frame, a title strip, a close gadget and a resizing corner, coloured by the theme's tokens.
+A press on the title moves the window, on the corner resizes it (an outline while held), on the gadget closes it; the app sees none of these.
 It starts with `vx.display` and `vx.desktop` on the kernel command line (boot/svc/display.ndb).
 
 # FILES
@@ -33,6 +36,8 @@ It starts with `vx.display` and `vx.desktop` on the kernel command line (boot/sv
   An ndb(6) record: the protocol's `version`, the `output`, its `width` and `height`, and the `frames` its clock has counted.
 : `/wsys/outputs/`
   Where displayd's tree is mounted.
+: `/wsys/theme/active`, `/wsys/theme/tokens`, `/wsys/theme/ctl`
+  The theme's name, its tokens as an ndb(6) record, and its commands: `load vx-magic`, `load vx-next`, `set TOKEN #rrggbb`.
 : `/wsys/windows/N/ctl`
   `move X Y`, `resize W H`, `title TEXT`, `raise`, `close`.
 : `/wsys/windows/N/info`
@@ -49,4 +54,5 @@ displayd(8), inputd(8), drv-simplefb(3), drv-virtio-gpu(3)
 # BUGS
 
 One output; 16 windows.
+Titles have no text until fonts (7e1).
 An app given `/wsys/self` holds a connection to the post, and could attach the whole tree with it (see known gaps).

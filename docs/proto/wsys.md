@@ -13,6 +13,7 @@ Status: draft, written for M7 step 7d1b (docs/21 §2 items 1-3 and 8; 03 §4-5).
 /wsys/
     info                  version=1 output=fb0 width= height= frames=
     outputs/              displayd's tree, mounted here
+    theme/                active · tokens · ctl (load NAME · set TOKEN #rrggbb)   (7d2a)
     windows/N/            a window, N from 1, never reused while winsrv runs
         ctl               move X Y · resize W H · title TEXT · raise · close
         info              id= title= x= y= width= height= config= presented= dropped=
@@ -67,6 +68,25 @@ winsrv holds `inputd`'s records (docs/proto/input.md §3a), so the console gets 
 - **Click to focus.** A press, the first button down with none held, focuses and raises the window under the pointer, and **latches** the pointer stream to it until every button is up (Fuchsia's mouse_system, mouse_system.cc:80-121; rio's, rio.c:560-639). Without a press, pointer records go to the window under the pointer.
 - **Keys** go to the focused window. A window gets a key's `UP` or repeat only after its `DOWN`; one losing focus gets an `UP` for each key it still holds, marked `SYNTHETIC`. A key held across a change of focus is the new window's from its next `DOWN`.
 - **Focus** is in `CONFIGURE`'s `FOCUSED` flag: a change sends one to each window it touches.
+
+## 4b. Decorations and the theme
+
+Decorations are the server's (03 §5.1, M7 step 7d2a). Around each window's client area winsrv draws a frame: an edge and a bevel lit from the top left, a title strip above the client area (the focused window's in `title.active`), a close gadget at the title's left, and notches across the bottom-right corner. Hit-testing stays in the server, and the app sees none of it:
+
+- a press on the **title** moves the window, as the pointer moves;
+- a press on the **corner** resizes it: an outline follows the pointer, and the size is applied when the button is let go, with a `CONFIGURE`;
+- a press on the **gadget** closes the window if the button is let go there: its channel ends, as `ctl`'s `close` does;
+- any press on a window focuses and raises it first.
+
+The frame's colours are the theme's tokens, served in `/wsys/theme` (03 §5.4): `active` names the theme, `tokens` is an ndb record of them, and `ctl` takes `load NAME` (a shipped theme) or `set TOKEN #rrggbb`. A change repaints the screen at the next frame. Two themes ship (03 §9.1): `vx-magic`, Indigo Magic's warm grey with a steel-blue key title, and `vx-next`, NeXT's charcoal with the key window's title black.
+
+| Token | |
+|---|---|
+| `desk.top`, `desk.bottom` | the desk's gradient |
+| `chrome.face`, `chrome.light`, `chrome.shade`, `chrome.edge` | the frame: its face, the lit and shaded sides of a bevel, its outline |
+| `title.active`, `title.inactive` | the title strips |
+
+Title text comes with fonts (7e1); `flags -titlebar` and the app's own `move` and `resize EDGE` (03 §5.1) with `vxui`.
 
 ## 5. Version 1 leaves out
 

@@ -31,6 +31,16 @@
 //
 // A window lives while a fid holds a node of it or its channel is open.
 //
+// Decorations (7d2a, 03 §5.1, §9.1) are the server's: a bevelled frame
+// around each window's client area, a title strip (the focused window's in
+// the active colour), a close gadget at the title's left and notches at the
+// bottom-right corner, all from the theme's tokens (/wsys/theme, 03 §5.4:
+// vx-magic, Indigo Magic's warm grey, and vx-next, NeXT's charcoal with the
+// key window's title black). Hit-testing stays in the server: a press on the
+// title moves the window, on the corner resizes it (an outline while held,
+// applied when let go), on the gadget closes it when let go there; the app
+// sees none of it. Title text comes with fonts (7e1).
+//
 // Input (7d1c, 21 §2 items 6-7): winsrv holds inputd's records (a session
 // on /srv/input, docs/proto/input.md §3a), so the console gets no keys
 // while it runs. Pointers move one pointer, drawn as a cursor over
@@ -113,6 +123,10 @@ static vx_display_rect meet(vx_display_rect a, vx_display_rect b) {
   return (vx_display_rect){(int32_t)x0, (int32_t)y0, (uint32_t)(x1 - x0), (uint32_t)(y1 - y0)};
 }
 
+static bool inside(vx_display_rect r, int32_t x, int32_t y) {
+  return x >= r.x && y >= r.y && x < r.x + (int64_t)r.width && y < r.y + (int64_t)r.height;
+}
+
 static vx_display_rect screen_rect(void) { return (vx_display_rect){0, 0, out.mode.width, out.mode.height}; }
 
 // The screen damaged here, in every buffer that has not drawn it since.
@@ -122,6 +136,39 @@ static void damage(vx_display_rect r) {
   out.dirty = unite(out.dirty, r);
   for (int i = 0; i < 2; i++) out.b[i].damage = unite(out.b[i].damage, r);
 }
+
+// --- The theme ---
+
+// A theme's tokens (03 §9.1's families): the desk's gradient, the chrome's
+// face, light and shade from one light source at the top left, its edge,
+// and the title strips.
+typedef struct theme {
+  char name[16];
+  uint32_t desk_top, desk_bottom;
+  uint32_t face, light, shade, edge;
+  uint32_t title_active, title_inactive;
+} theme;
+
+static const theme THEMES[] = {
+    {"vx-magic", 0x1c2a4a, 0x465a6e, 0xbdb8ae, 0xece8df, 0x7d786f, 0x2b2926, 0x7f93ad, 0xbdb8ae},
+    {"vx-next", 0x1e1e1e, 0x4a4a4a, 0x555555, 0x8c8c8c, 0x2a2a2a, 0x000000, 0x000000, 0xa8a8a8},
+};
+static theme tok = THEMES[0];
+
+typedef struct token {
+  const char *name;
+  uint32_t *at;
+} token;
+static const token TOKENS[] = {
+    {"desk.top", &tok.desk_top},         {"desk.bottom", &tok.desk_bottom},
+    {"chrome.face", &tok.face},          {"chrome.light", &tok.light},
+    {"chrome.shade", &tok.shade},        {"chrome.edge", &tok.edge},
+    {"title.active", &tok.title_active}, {"title.inactive", &tok.title_inactive},
+};
+
+// A frame's parts: the border all round, the title strip above the client
+// area, the close gadget in it, the corner that resizes.
+static constexpr int32_t BORDER = 4, TITLE = 20, GADGET = 14, CORNER = 20;
 
 // --- Windows ---
 
@@ -156,6 +203,12 @@ typedef struct window {
 
 static window wins[MAX_WINDOWS];
 static uint32_t stack[MAX_WINDOWS], nstack; // indices, bottom first
+
+// A window's frame: its client area with the border and the title strip.
+static vx_display_rect frame_rect(const window *w) {
+  return (vx_display_rect){w->r.x - BORDER, w->r.y - BORDER - TITLE, w->r.width + 2 * BORDER,
+                           w->r.height + 2 * BORDER + TITLE};
+}
 static uint32_t next_id = 1;
 
 // --- Input's state ---
@@ -174,7 +227,13 @@ static struct {
   int32_t x, y;     // the pointer, on the screen
   uint32_t buttons; // held on any pointer
   int latch, focus; // windows' slots; -1: none
-} ptr = {.latch = -1, .focus = -1};
+  // A drag the server runs (7d2a): from a press on a window's decoration.
+  enum { DRAG_NONE, DRAG_MOVE, DRAG_RESIZE, DRAG_CLOSE } drag;
+  int dragged;
+  int32_t from_x, from_y;  // where the press was
+  vx_display_rect start;   // the window's client area then
+  vx_display_rect outline; // a resize's, while held; empty if none
+} ptr = {.latch = -1, .focus = -1, .dragged = -1};
 
 static void send(window *w, const void *m, uint32_t len) {
   if (w->ch) vx_channel_write(w->ch, m, len, nullptr, 0); // a full channel drops it: the next says more
@@ -236,8 +295,10 @@ static window *window_new(uint32_t width, uint32_t height) {
   if (width > sw) width = sw;
   if (height > sh) height = sh;
   int32_t x = (int32_t)(48 + 40 * n), y = (int32_t)(48 + 40 * n);
-  if ((uint64_t)x + width > sw) x = (int32_t)(sw - width);
-  if ((uint64_t)y + height > sh) y = (int32_t)(sh - height);
+  if ((uint64_t)x + width + BORDER > sw) x = (int32_t)sw - (int32_t)width - BORDER;
+  if ((uint64_t)y + height + BORDER > sh) y = (int32_t)sh - (int32_t)height - BORDER;
+  if (x < BORDER) x = BORDER;
+  if (y < BORDER + TITLE) y = BORDER + TITLE;
   *w = (window){.used = true, .id = next_id, .r = {x, y, 0, 0}, .config_seq = 1, .credits = 1};
   if (make_backing(w, width, height) != VX_OK) {
     *w = (window){};
@@ -246,7 +307,7 @@ static window *window_new(uint32_t width, uint32_t height) {
   next_id++;
   w->r.width = width, w->r.height = height;
   stack[nstack++] = i;
-  damage(w->r);
+  damage(frame_rect(w));
   vx_printf("winsrv: window %u, %ux%u at %d,%d\n", w->id, width, height, x, y);
   return w;
 }
@@ -272,8 +333,9 @@ static void window_free(window *w) {
   int slot = (int)(w - wins);
   if (ptr.focus == slot) ptr.focus = -1;
   if (ptr.latch == slot) ptr.latch = -1;
+  if (ptr.dragged == slot) ptr.drag = DRAG_NONE, ptr.dragged = -1, ptr.outline = (vx_display_rect){};
   channel_end(w);
-  damage(w->r);
+  damage(frame_rect(w));
   uint32_t i = (uint32_t)(w - wins), j = 0;
   for (uint32_t k = 0; k < nstack; k++)
     if (stack[k] != i) stack[j++] = stack[k];
@@ -299,16 +361,16 @@ static void raise_window(window *w) {
   for (uint32_t k = 0; k < nstack; k++)
     if (stack[k] != i) stack[j++] = stack[k];
   stack[j] = i;
-  damage(w->r);
+  damage(frame_rect(w));
 }
 
 static vx_status resize(window *w, uint32_t width, uint32_t height) {
   if (width < 16 || height < 16 || width > out.mode.width || height > out.mode.height) return VX_ERR_RANGE;
-  damage(w->r);
+  damage(frame_rect(w));
   vx_status st = make_backing(w, width, height);
   if (st != VX_OK) return st;
   w->r.width = width, w->r.height = height, w->config_seq++;
-  damage(w->r);
+  damage(frame_rect(w));
   configure(w);
   return VX_OK;
 }
@@ -405,12 +467,50 @@ static const char *const ARROW[17] = {
 
 static vx_display_rect cursor_rect(void) { return (vx_display_rect){ptr.x, ptr.y, 11, 17}; }
 
-// The desk: a vertical gradient, deep blue to slate, under every window.
+// The desk: a vertical gradient, the theme's desk.top to desk.bottom, under every window.
+static uint32_t mix(uint32_t a, uint32_t b, uint32_t t) { // t of 255 from a to b
+  uint32_t m = 0;
+  for (int s = 0; s < 24; s += 8) {
+    int32_t ca = (int32_t)(a >> s & 0xff), cb = (int32_t)(b >> s & 0xff);
+    m |= (uint32_t)(ca + (cb - ca) * (int32_t)t / 255) << s;
+  }
+  return m;
+}
+
 static uint32_t desk(uint32_t y) {
-  uint32_t t = out.mode.height > 1 ? y * 255 / (out.mode.height - 1) : 0;
-  uint32_t r = 0x1c + (0x46 - 0x1c) * t / 255, g = 0x2a + (0x5a - 0x2a) * t / 255,
-           b = 0x4a + (0x6e - 0x4a) * t / 255;
-  return r << 16 | g << 8 | b;
+  return mix(tok.desk_top, tok.desk_bottom, out.mode.height > 1 ? y * 255 / (out.mode.height - 1) : 0);
+}
+
+// A frame's pixel at (fx, fy) in a frame fw by fh, not in the client area:
+// an edge, a bevel lit from the top left, the title strip with its own
+// bevel and the close gadget, and the corner's notches.
+static uint32_t frame_pixel(int32_t fx, int32_t fy, int32_t fw, int32_t fh, bool active) {
+  if (fx == 0 || fy == 0 || fx == fw - 1 || fy == fh - 1) return tok.edge;
+  if (fx == 1 || fy == 1) return tok.light;
+  if (fx == fw - 2 || fy == fh - 2) return tok.shade;
+  if (fy >= BORDER && fy < BORDER + TITLE && fx >= BORDER && fx < fw - BORDER) {
+    int32_t gx = fx - BORDER - 3, gy = fy - BORDER - 3;
+    if (gx >= 0 && gy >= 0 && gx < GADGET && gy < GADGET) { // the close gadget: raised, a sunken well in it
+      if (gx == 0 || gy == 0 || gx == GADGET - 1 || gy == GADGET - 1) return tok.edge;
+      if (gx == 1 || gy == 1) return tok.light;
+      if (gx == GADGET - 2 || gy == GADGET - 2) return tok.shade;
+      if (gx >= 4 && gy >= 4 && gx < GADGET - 4 && gy < GADGET - 4) {
+        if (gx == 4 || gy == 4) return tok.shade;
+        if (gx == GADGET - 5 || gy == GADGET - 5) return tok.light;
+      }
+      return tok.face;
+    }
+    if (fy == BORDER || fx == BORDER) return tok.light;
+    if (fy == BORDER + TITLE - 1 || fx == fw - BORDER - 1) return tok.shade;
+    return active ? tok.title_active : tok.title_inactive;
+  }
+  // The corner's notches, across the bottom and right borders.
+  bool bottom = fy >= fh - BORDER, right = fx >= fw - BORDER;
+  if (bottom && fx == fw - CORNER) return tok.shade;
+  if (bottom && fx == fw - CORNER + 1) return tok.light;
+  if (right && fy == fh - CORNER) return tok.shade;
+  if (right && fy == fh - CORNER + 1) return tok.light;
+  return tok.face;
 }
 
 static void composite(screen_buffer *s, vx_display_rect area) {
@@ -422,11 +522,33 @@ static void composite(screen_buffer *s, vx_display_rect area) {
   }
   for (uint32_t k = 0; k < nstack; k++) {
     const window *w = &wins[stack[k]];
+    vx_display_rect f = frame_rect(w), fa = meet(area, f);
+    bool active = ptr.focus == (int)stack[k];
+    for (uint32_t y = 0; y < fa.height; y++) {
+      uint32_t *row = (uint32_t *)(s->px + (size_t)(fa.y + y) * stride);
+      int32_t sy = fa.y + (int32_t)y;
+      bool in_rows = sy >= w->r.y && sy < w->r.y + (int32_t)w->r.height;
+      for (uint32_t x = 0; x < fa.width; x++) {
+        int32_t sx = fa.x + (int32_t)x;
+        if (in_rows && sx >= w->r.x && sx < w->r.x + (int32_t)w->r.width) continue; // the client's
+        row[sx] = frame_pixel(sx - f.x, sy - f.y, (int32_t)f.width, (int32_t)f.height, active);
+      }
+    }
     vx_display_rect r = meet(area, w->r);
     for (uint32_t y = 0; y < r.height; y++) {
       const uint32_t *from = w->backing + (size_t)(r.y - w->r.y + y) * w->r.width + (r.x - w->r.x);
       memcpy((uint32_t *)(s->px + (size_t)(r.y + y) * stride) + r.x, from, (size_t)r.width * 4);
     }
+  }
+  // A resize's outline, two pixels of the edge colour, then the cursor over everything.
+  if (!empty(ptr.outline)) {
+    vx_display_rect o = ptr.outline;
+    for (uint32_t y = 0; y < o.height; y++)
+      for (uint32_t x = 0; x < o.width; x++) {
+        if (x >= 2 && y >= 2 && x + 2 < o.width && y + 2 < o.height) continue;
+        int32_t sx = o.x + (int32_t)x, sy = o.y + (int32_t)y;
+        if (inside(area, sx, sy)) ((uint32_t *)(s->px + (size_t)sy * stride))[sx] = tok.edge;
+      }
   }
   // The cursor, over everything: X black, . white, the rest clear.
   vx_display_rect c = meet(area, cursor_rect());
@@ -566,14 +688,64 @@ static void event(void *ctx, const vx_packet *pk) {
 
 // --- Input ---
 
-// The top window at (x, y), or -1.
-static int window_at(int32_t x, int32_t y) {
+// What a press at (x, y) would hit: the top window's frame there (-1: the
+// desk), and which part of it.
+enum part { PART_CLIENT, PART_TITLE, PART_GADGET, PART_CORNER, PART_BORDER };
+static int window_at(int32_t x, int32_t y, enum part *part) {
   for (uint32_t k = nstack; k-- > 0;) {
     const window *w = &wins[stack[k]];
-    if (x >= w->r.x && y >= w->r.y && x < w->r.x + (int64_t)w->r.width && y < w->r.y + (int64_t)w->r.height)
-      return (int)stack[k];
+    vx_display_rect f = frame_rect(w);
+    if (!inside(f, x, y)) continue;
+    int32_t fx = x - f.x, fy = y - f.y;
+    vx_display_rect gadget = {w->r.x + 3, w->r.y - TITLE + 3, GADGET, GADGET};
+    vx_display_rect title = {w->r.x, w->r.y - TITLE, w->r.width, TITLE};
+    if (inside(w->r, x, y))
+      *part = PART_CLIENT;
+    else if (inside(gadget, x, y))
+      *part = PART_GADGET;
+    else if (fx >= (int32_t)f.width - CORNER && fy >= (int32_t)f.height - CORNER)
+      *part = PART_CORNER;
+    else if (inside(title, x, y))
+      *part = PART_TITLE;
+    else
+      *part = PART_BORDER;
+    return (int)stack[k];
   }
+  *part = PART_BORDER;
   return -1;
+}
+
+// A drag the server runs, as the pointer moves with the button held.
+static void drag_to(void) {
+  window *w = &wins[ptr.dragged];
+  int32_t dx = ptr.x - ptr.from_x, dy = ptr.y - ptr.from_y;
+  if (ptr.drag == DRAG_MOVE) {
+    damage(frame_rect(w));
+    w->r.x = ptr.start.x + dx, w->r.y = ptr.start.y + dy;
+    damage(frame_rect(w));
+  } else if (ptr.drag == DRAG_RESIZE) {
+    damage(ptr.outline);
+    int64_t width = (int64_t)ptr.start.width + dx, height = (int64_t)ptr.start.height + dy;
+    if (width < 64) width = 64;
+    if (height < 32) height = 32;
+    window grown = *w;
+    grown.r.width = (uint32_t)width, grown.r.height = (uint32_t)height;
+    ptr.outline = frame_rect(&grown);
+    damage(ptr.outline);
+  }
+}
+
+// The button let go: a resize applied, a close done if it is still on the gadget.
+static void drag_end(void) {
+  window *w = &wins[ptr.dragged];
+  if (ptr.drag == DRAG_RESIZE && !empty(ptr.outline)) {
+    damage(ptr.outline);
+    resize(w, ptr.outline.width - 2 * BORDER, ptr.outline.height - 2 * BORDER - TITLE);
+  } else if (ptr.drag == DRAG_CLOSE) {
+    enum part part;
+    if (window_at(ptr.x, ptr.y, &part) == ptr.dragged && part == PART_GADGET) channel_end(w);
+  }
+  ptr.drag = DRAG_NONE, ptr.dragged = -1, ptr.outline = (vx_display_rect){};
 }
 
 static void send_key(window *w, const vx_input_key *k, uint32_t flags) {
@@ -590,6 +762,7 @@ static void focus_window(int i) {
   ptr.focus = i;
   if (old >= 0) {
     window *o = &wins[old];
+    damage(frame_rect(o)); // its title, inactive
     for (uint32_t k = 0; k < o->nkeys; k++) {
       vx_input_key up = {.time = (uint64_t)vx_now(), .usage = o->keys[k], .action = VX_KEY_UP};
       send_key(o, &up, VX_WSYS_SYNTHETIC);
@@ -635,12 +808,31 @@ static void on_pointer(in_device *d, const vx_input_pointer *p) {
   d->buttons = p->buttons;
   ptr.buttons = 0;
   for (uint32_t i = 0; i < IN_DEVICES; i++) ptr.buttons |= indev[i].buttons;
-  if (!before && ptr.buttons) { // a press: focus, raise and latch the window under it
-    int under = window_at(ptr.x, ptr.y);
+  enum part part = PART_CLIENT;
+  if (!before && ptr.buttons) { // a press: focus and raise the window under it; then latch it, or drag it
+    int under = window_at(ptr.x, ptr.y, &part);
     focus_window(under);
-    ptr.latch = under;
+    if (under >= 0 && part != PART_CLIENT && part != PART_BORDER) {
+      if (part == PART_TITLE)
+        ptr.drag = DRAG_MOVE;
+      else if (part == PART_CORNER)
+        ptr.drag = DRAG_RESIZE;
+      else
+        ptr.drag = DRAG_CLOSE;
+      ptr.dragged = under, ptr.from_x = ptr.x, ptr.from_y = ptr.y, ptr.start = wins[under].r;
+    }
+    if (part == PART_CLIENT) ptr.latch = under;
   }
-  int to = ptr.latch >= 0 ? ptr.latch : window_at(ptr.x, ptr.y);
+  if (ptr.dragged >= 0) { // the server's drag: the app sees none of it
+    drag_to();
+    if (!ptr.buttons) drag_end();
+    return;
+  }
+  int to = ptr.latch;
+  if (to < 0) {
+    to = window_at(ptr.x, ptr.y, &part);
+    if (part != PART_CLIENT) to = -1; // over a decoration or the desk: no app's
+  }
   if (to >= 0) {
     window *w = &wins[to];
     vx_wsys_pointer m = {.h = {.ordinal = VX_WSYS_POINTER},
@@ -772,7 +964,7 @@ static vx_status take_output(vx_handle srv) {
 
 // Nodes: the root's files, then each window's (by its slot), WIN + slot * 8
 // + one of W_*.
-enum : uint64_t { ROOT = 1, INFO, OUTPUTS, WINDOWS };
+enum : uint64_t { ROOT = 1, INFO, OUTPUTS, WINDOWS, THEME, T_ACTIVE, T_TOKENS, T_CTL };
 static constexpr uint64_t WIN = 0x100;
 enum : uint64_t { W_DIR = 0, W_CTL, W_INFO, W_FRAME, W_SURFACE, W_FILES };
 static const vx_str W_NAMES[W_FILES] = {
@@ -837,6 +1029,19 @@ static vx_status fs_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) 
       *child = OUTPUTS;
     else if (vx_str_eq(name, VX_STR("windows")))
       *child = WINDOWS;
+    else if (vx_str_eq(name, VX_STR("theme")))
+      *child = THEME;
+    else
+      return VX_ERR_NOT_FOUND;
+    return VX_OK;
+  }
+  if (dir == THEME) {
+    if (vx_str_eq(name, VX_STR("active")))
+      *child = T_ACTIVE;
+    else if (vx_str_eq(name, VX_STR("tokens")))
+      *child = T_TOKENS;
+    else if (vx_str_eq(name, VX_STR("ctl")))
+      *child = T_CTL;
     else
       return VX_ERR_NOT_FOUND;
     return VX_OK;
@@ -861,8 +1066,10 @@ static vx_status fs_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) 
 
 static vx_status fs_parent(void *ctx, uint64_t n, uint64_t *parent) {
   (void)ctx;
-  if (n == ROOT || n == INFO || n == OUTPUTS || n == WINDOWS)
+  if (n == ROOT || n == INFO || n == OUTPUTS || n == WINDOWS || n == THEME)
     *parent = ROOT;
+  else if (n >= T_ACTIVE && n <= T_CTL)
+    *parent = THEME;
   else if ((n - WIN) % 8 == W_DIR)
     *parent = WINDOWS;
   else
@@ -873,11 +1080,15 @@ static vx_status fs_parent(void *ctx, uint64_t n, uint64_t *parent) {
 // A node's name, whether it is a directory, and its mode; empty if no such node.
 static vx_str name_of(uint64_t n, bool *dir, uint32_t *mode) {
   static char name[12];
-  *dir = n == ROOT || n == OUTPUTS || n == WINDOWS, *mode = 0444;
+  *dir = n == ROOT || n == OUTPUTS || n == WINDOWS || n == THEME, *mode = 0444;
   if (n == ROOT) return VX_STR("/");
   if (n == INFO) return VX_STR("info");
   if (n == OUTPUTS) return VX_STR("outputs");
   if (n == WINDOWS) return VX_STR("windows");
+  if (n == THEME) return VX_STR("theme");
+  if (n == T_ACTIVE) return VX_STR("active");
+  if (n == T_TOKENS) return VX_STR("tokens");
+  if (n == T_CTL) return *mode = 0220, VX_STR("ctl");
   const window *w = window_of(n);
   if (!w) return (vx_str){};
   uint64_t f = (n - WIN) % 8;
@@ -911,7 +1122,7 @@ static vx_status fs_open(void *ctx, uint64_t n, uint8_t mode) {
   (void)ctx;
   window *w = window_of(n);
   uint64_t f = w ? (n - WIN) % 8 : W_DIR;
-  if (f == W_CTL) return (mode & 3) == P9_OWRITE ? VX_OK : VX_ERR_ACCESS;
+  if (f == W_CTL || n == T_CTL) return (mode & 3) == P9_OWRITE ? VX_OK : VX_ERR_ACCESS;
   if (f == W_SURFACE) return (mode & 3) == P9_ORDWR ? VX_OK : VX_ERR_ACCESS;
   return (mode & 3) == P9_OREAD ? VX_OK : VX_ERR_ACCESS;
 }
@@ -966,6 +1177,18 @@ static vx_status fs_read(void *ctx, uint64_t n, uint64_t offset, uint8_t *buf, u
     vx_ndb_put_u64(&t, "height", out.mode.height);
     vx_ndb_put_u64(&t, "frames", out.frames);
     vx_ndb_end(&t);
+  } else if (n == T_ACTIVE) {
+    vx_str a = vx_cstr(tok.name);
+    memcpy(text, a.ptr, a.len), text[a.len] = '\n', t.len = a.len + 1;
+  } else if (n == T_TOKENS) {
+    for (size_t i = 0; i < sizeof TOKENS / sizeof TOKENS[0]; i++) {
+      char hex[8];
+      static const char DIGITS[] = "0123456789abcdef";
+      hex[0] = '#';
+      for (int k = 0; k < 6; k++) hex[1 + k] = DIGITS[*TOKENS[i].at >> (20 - 4 * k) & 15];
+      vx_ndb_put(&t, TOKENS[i].name, (vx_str){hex, 7});
+    }
+    vx_ndb_end(&t);
   } else if (w && (n - WIN) % 8 == W_INFO) {
     vx_ndb_put_u64(&t, "id", w->id);
     vx_ndb_put(&t, "title", vx_cstr(w->title));
@@ -994,8 +1217,52 @@ static vx_status fs_read(void *ctx, uint64_t n, uint64_t offset, uint8_t *buf, u
   return reply_text(text, t.failed ? 0 : t.len, offset, buf, count);
 }
 
+// The theme's ctl: `load NAME`, a shipped theme's tokens; `set TOKEN #rrggbb`.
+static vx_status theme_ctl(vx_str cmd) {
+  if (take_word(&cmd, "load")) {
+    while (cmd.len && cmd.ptr[0] == ' ') cmd.ptr++, cmd.len--;
+    for (size_t i = 0; i < sizeof THEMES / sizeof THEMES[0]; i++)
+      if (vx_str_eq(cmd, vx_cstr(THEMES[i].name))) {
+        tok = THEMES[i];
+        damage(screen_rect()); // the whole screen repainted at the next frame
+        return VX_OK;
+      }
+    return VX_ERR_NOT_FOUND;
+  }
+  if (!take_word(&cmd, "set")) return VX_ERR_INVALID;
+  while (cmd.len && cmd.ptr[0] == ' ') cmd.ptr++, cmd.len--;
+  size_t name_len = 0;
+  while (name_len < cmd.len && cmd.ptr[name_len] != ' ') name_len++;
+  vx_str name = {cmd.ptr, name_len}, value = {cmd.ptr + name_len, cmd.len - name_len};
+  while (value.len && value.ptr[0] == ' ') value.ptr++, value.len--;
+  if (value.len != 7 || value.ptr[0] != '#') return VX_ERR_INVALID;
+  uint32_t v = 0;
+  for (size_t k = 1; k < 7; k++) {
+    char c = value.ptr[k];
+    uint32_t d = 16;
+    if (c >= '0' && c <= '9') d = (uint32_t)(c - '0');
+    if (c >= 'a' && c <= 'f') d = (uint32_t)(c - 'a' + 10);
+    if (d == 16) return VX_ERR_INVALID;
+    v = v << 4 | d;
+  }
+  for (size_t i = 0; i < sizeof TOKENS / sizeof TOKENS[0]; i++)
+    if (vx_str_eq(name, vx_cstr(TOKENS[i].name))) {
+      *TOKENS[i].at = v;
+      damage(screen_rect());
+      return VX_OK;
+    }
+  return VX_ERR_NOT_FOUND;
+}
+
 static vx_status fs_write(void *ctx, uint64_t n, uint64_t offset, const uint8_t *buf, uint32_t *count) {
   (void)ctx, (void)offset;
+  if (n == T_CTL) {
+    vx_str cmd = {(const char *)buf, *count};
+    while (cmd.len && (cmd.ptr[cmd.len - 1] == '\n' || cmd.ptr[cmd.len - 1] == ' ')) cmd.len--;
+    vx_status st = theme_ctl(cmd);
+    if (st != VX_OK) *count = 0;
+    return st;
+  }
   window *w = window_of(n);
   if (!w || (n - WIN) % 8 != W_CTL) return VX_ERR_ACCESS;
   vx_str cmd = {(const char *)buf, *count};
@@ -1003,9 +1270,9 @@ static vx_status fs_write(void *ctx, uint64_t n, uint64_t offset, const uint8_t 
   vx_status st = VX_OK;
   if (take_word(&cmd, "move")) {
     int32_t x = (int32_t)parse_u32(&cmd), y = (int32_t)parse_u32(&cmd);
-    damage(w->r);
+    damage(frame_rect(w));
     w->r.x = x, w->r.y = y;
-    damage(w->r);
+    damage(frame_rect(w));
   } else if (take_word(&cmd, "resize")) {
     uint32_t width = parse_u32(&cmd), height = parse_u32(&cmd);
     st = resize(w, width, height);
@@ -1029,8 +1296,13 @@ static vx_status fs_write(void *ctx, uint64_t n, uint64_t offset, const uint8_t 
 static vx_status fs_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *child) {
   (void)ctx;
   if (dir == ROOT) {
-    if (index > 2) return VX_ERR_NOT_FOUND;
+    if (index > 3) return VX_ERR_NOT_FOUND;
     *child = INFO + index;
+    return VX_OK;
+  }
+  if (dir == THEME) {
+    if (index > 2) return VX_ERR_NOT_FOUND;
+    *child = T_ACTIVE + index;
     return VX_OK;
   }
   if (dir == WINDOWS) {

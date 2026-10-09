@@ -1438,6 +1438,8 @@ static const program USER_PROGRAMS[] = {
      nullptr}, // ./build bench's measurements (7a5)
     {"flighttest", "tests/user/tracetest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // tracetest's flight recorder test, as a program of its own (7a4a)
+    {"decortest", "tests/user/decortest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr}, // winsrv's decorations (7d2a)
     {"routetest", "tests/user/routetest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // input routed to windows (7d1c)
     {"wintest", "tests/user/wintest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
@@ -4494,12 +4496,13 @@ static const char *substitute_arch(vx_str pattern, const arch *a) {
 // while the guest draws: a pixel differs if a channel is off by more than
 // 48, and the screen matches if at most PERCENT of its pixels do. With no
 // reference, the screen is kept as REF.rle.new (and REF.ppm.new, to look
-// at), and the test fails, for a person to look at and keep. key=SPEC presses
+// at) a second after its expects, the scenario goes on, and it fails at its
+// end, for a person to look at and keep. key=SPEC presses
 // keys, as QMP's send-key names them, joined by '-' for a chord.
 // typekeys=TEXT types the text on the virtio keyboard, then return;
 // click=X,Y taps the virtio tablet there (7c1), drag=X1,Y1,X2,Y2 drags with
-// the left button, a coordinate a percentage of the screen ("20%") or the
-// tablet's own 0 to 32767; holdkey=SPEC,MS holds a chord while what follows
+// the left button, a coordinate a percentage of the screen ("20%"), a pixel
+// ("430px", the screen measured by a screendump) or the tablet's own 0 to 32767; holdkey=SPEC,MS holds a chord while what follows
 // it at the same place (a click=) is done (7d1c).
 
 typedef struct qmp {
@@ -4634,6 +4637,10 @@ static long ppm_differ(const ppm *a, const ppm *b) {
 
 // screen=REF: matched within tolerance (hundredths of a percent), retried
 // for 5 s; nullptr, or why not.
+// A screen with no reference, kept for a person to look at: the scenario
+// goes on, and fails at its end with this.
+static const char *screen_missing;
+
 static const char *screen_check(qmp *q, const char *dump, const char *ref, long tolerance) {
   const char *ref_path = fmt("tests/qemu/screens/%s.rle", ref);
   ppm w = {}, got = {};
@@ -4641,6 +4648,7 @@ static const char *screen_check(qmp *q, const char *dump, const char *ref, long 
   if (have_ref && !rle_decode(read_file(ref_path), &w)) return fmt("%s is no VXRLE1 screen", ref_path);
   long best = -2;
   double deadline = now_seconds() + 5;
+  if (!have_ref) usleep(1'000'000); // with nothing to wait for, a second for the guest to finish drawing
   do {
     unlink(dump);
     if (!qmp_do(q, fmt("{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"%s\"}}\n", dump)))
@@ -4651,8 +4659,10 @@ static const char *screen_check(qmp *q, const char *dump, const char *ref, long 
       mkdirs("tests/qemu/screens");
       write_file(fmt("tests/qemu/screens/%s.ppm.new", ref), shot);
       write_file(fmt("%s.new", ref_path), rle_encode(&got));
-      return fmt("no reference %s: the screen kept as %s.new (and .ppm.new to look at), to keep if right",
-                 ref_path, ref_path);
+      screen_missing =
+          fmt("no reference %s: the screen kept as %s.new (and .ppm.new to look at), to keep if right",
+              ref_path, ref_path);
+      return nullptr;
     }
     best = ppm_differ(&got, &w);
     if (best >= 0 && best <= tolerance) return nullptr;
@@ -4722,11 +4732,36 @@ static const char *typed_keys(vx_str text) {
 
 // A coordinate of click= or drag=: a percentage of the screen ("20%") or
 // the tablet's own value, 0 to 32767; then *at past it and a comma.
-static bool tablet_value(const char **at, long *v) {
+// The guest's screen size, for coordinates in pixels: from a screendump, once
+// a scenario first needs it (qmp_dump is where the dumps go).
+static const char *qmp_dump;
+static long screen_size[2];
+
+static bool screen_measure(qmp *q) {
+  if (screen_size[0]) return true;
+  if (!qmp_do(q, fmt("{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"%s\"}}\n", qmp_dump)))
+    return false;
+  ppm shot;
+  if (!ppm_read(read_file(qmp_dump), &shot)) return false;
+  screen_size[0] = shot.w, screen_size[1] = shot.h;
+  return true;
+}
+
+// A coordinate of click= or drag= on axis 0 (x) or 1 (y): a percentage of
+// the screen ("20%"), a pixel ("430px"), or the tablet's own value, 0 to
+// 32767; then *at past it and a comma.
+static bool tablet_value(qmp *q, const char **at, long *v, int axis) {
   char *end = nullptr;
   *v = strtol(*at, &end, 10);
   if (end == *at) return false;
-  if (*end == '%') *v = *v * 32767 / 100, end++;
+  if (*end == '%') {
+    *v = *v * 32767 / 100, end++;
+  } else if (end[0] == 'p' && end[1] == 'x') {
+    if (!screen_measure(q) || screen_size[axis] < 2) return false;
+    long n = screen_size[axis] - 1;
+    *v = (*v * 32767 + n - 1) / n; // rounded up: winsrv's scaling back, which truncates, gives the pixel
+    end += 2;
+  }
   if (*end == ',') end++;
   *at = end;
   return *v >= 0 && *v <= 32767;
@@ -4757,7 +4792,7 @@ static void input_pause(void) { usleep(80'000); }
 static bool click(qmp *q, const char *at, bool drag) {
   long v[4];
   for (int i = 0; i < (drag ? 4 : 2); i++)
-    if (!tablet_value(&at, &v[i])) return false;
+    if (!tablet_value(q, &at, &v[i], i & 1)) return false;
   if (*at) return false;
   bool ok = tablet_move(q, v[0], v[1]);
   input_pause();
@@ -4988,6 +5023,8 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   cmd c = {};
   // What the run's servers serve, fresh: run-NAME/share for vx9pserve, run-NAME/u9fs for u9fs.
   const char *run_dir = fmt("%s/run-%s", out_dir(a, release), name);
+  qmp_dump = fmt("%s/measure.ppm", run_dir), screen_size[0] = screen_size[1] = 0;
+  screen_missing = nullptr;
   const char *share = fresh_share(fmt("%s/share", run_dir)), *u9fs = fresh_u9fs_root(fmt("%s/u9fs", run_dir));
   if (volume && !disk_mib) die("%s: volume= needs disk=", path);
   if ((fat || fsck) && (!disk_mib || volume)) die("%s: fat= and fsck need disk= and no volume=", path);
@@ -5078,19 +5115,19 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
     ssize_t stale = 0;     // bytes of buf, from pos, that came before the last typing
     bool all_seen = false; // every expect= met; with exits, QEMU's exit is what is waited for now
     while (!verdict) {
-      if (!all_seen && shown < next && (screen[next] || keys_at[next] || holds_at[next] || clicks_at[next])) {
-        shown = next;
-        if (screen[next])
-          verdict = screen_check(&q, fmt("%s/screen.ppm", run_dir), screen[next], tolerance[next]);
-        if (!verdict && keys_at[next] && !key_press(&q, keys_at[next]))
-          verdict = fmt("QMP's send-key failed for %s", keys_at[next]);
-        if (!verdict && holds_at[next] && !key_hold(&q, holds_at[next]))
-          verdict = fmt("QMP's send-key failed for holdkey=%s", holds_at[next]);
-        if (!verdict && clicks_at[next] && !click(&q, clicks_at[next], drags[next]))
-          verdict =
-              fmt("QMP's input-send-event failed for %s=%s", drags[next] ? "drag" : "click", clicks_at[next]);
-        if (verdict) break;
+      // The screens and the input due by now, in order: every index up to
+      // next, since a burst of output can match several expects at once.
+      for (; !all_seen && shown < next && !verdict;) {
+        int k = ++shown;
+        if (screen[k]) verdict = screen_check(&q, fmt("%s/screen.ppm", run_dir), screen[k], tolerance[k]);
+        if (!verdict && keys_at[k] && !key_press(&q, keys_at[k]))
+          verdict = fmt("QMP's send-key failed for %s", keys_at[k]);
+        if (!verdict && holds_at[k] && !key_hold(&q, holds_at[k]))
+          verdict = fmt("QMP's send-key failed for holdkey=%s", holds_at[k]);
+        if (!verdict && clicks_at[k] && !click(&q, clicks_at[k], drags[k]))
+          verdict = fmt("QMP's input-send-event failed for %s=%s", drags[k] ? "drag" : "click", clicks_at[k]);
       }
+      if (verdict) break;
       if (!all_seen && typed < next && input[next].len) {
         if (write(keys[1], input[next].ptr, input[next].len) != (ssize_t)input[next].len) {
           verdict = "cannot type into QEMU (it has exited?)"; // QEMU is still killed, and the log kept
@@ -5186,6 +5223,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
     if (!run(&check)) verdict = fmt("fsck.fat -n found the FAT disk unsound (%s/fsck.log)", run_dir);
   }
 
+  if (strcmp(verdict, "ok") == 0 && screen_missing) verdict = screen_missing;
   bool ok = strcmp(verdict, "ok") == 0;
   fprintf(stderr, "  TEST  %-11s %-8s %s (%.1f s)%s\n", name, a->name, ok ? "ok" : "FAIL",
           now_seconds() - run_start, ok ? "" : fmt(": %s; serial log in %s", verdict, log_path));
@@ -5891,7 +5929,7 @@ typedef struct unit {
 
 static const char *const HOST_C23[] = {"-std=c23", nullptr};
 
-static constexpr int MAX_UNITS = 256;
+static constexpr int MAX_UNITS = 512;
 
 // The next free slot in a units array of MAX_UNITS.
 static int unit_slot(int *n) {
