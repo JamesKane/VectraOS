@@ -65,6 +65,8 @@ A driver's spawn message holds its device as handles and records, each record sa
 
 and the records `start=<n>`, which start this is, 1 and then 2 after a restart, and `cmdline=`, the kernel command line, whose `<program>.<key>=<value>` words are the driver's options (`drv-nvme.reset=N`).
 
+Each driver, and bus-acpi, is registered with procfs(4) as `devmgr`'s child, through the connector its manifest's `connect=proc` gives: it is in `/proc`, procfs writes a crash directory when it faults, and its profiling ring, made at its spawn, takes the spans its ring sessions write when `/proc/trace` asks for them. One thread of `devmgr`'s does the registrations, in order, waiting for procfs to serve: a driver's start never waits for it.
+
 @node=restarts title="Restarts"
 
 When a PCI driver exits, `devmgr` revokes its DMA domain's mappings, turns off the function's bus mastering, resets the function with PCIe's function-level reset where it has one (its configuration header saved and put back, mastering left off), and only then lets the domain release the pages the device could still have reached.
@@ -98,6 +100,7 @@ claim=disk1
 claim=disk2
 claim=disk3
 claim=acpi
+connect=proc
 ```
 
 Two driver manifests, from `boot/drv`:

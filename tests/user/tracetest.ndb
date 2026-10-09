@@ -5,4 +5,5 @@ service=tracetest program=/boot/bin/tracetest console
 user=adm
 ns=posix
 mount=/n/home srv=fsd aname=home flags=c
+mount=/n/adm srv=fsd aname=adm flags=c
 connect=nsd

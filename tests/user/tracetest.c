@@ -3,7 +3,9 @@
 // spawns itself as a child that writes to it through a pipe, maps a file on
 // fsd and touches it, stops, and checks the records: its wake by the child,
 // the pager's fault at the address, the spawn's syscalls, and that every
-// wake's waker is a thread the trace saw.
+// wake's waker is a thread the trace saw. And flows (7a2): a write and its
+// sync, followed span by span from this process through fsd to the disk
+// driver, and the disk's interrupt within the driver's span.
 
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-ns/nsapi.c"
@@ -23,6 +25,49 @@ static vx_status ctl(const char *cmd) { return vx_ctl(VX_STR("/proc/trace/ctl"),
 
 static uint32_t tid_task(uint32_t tid) { return tid >> 12; }
 
+static uint64_t span_end(const vx_trace_record *s) { return s->time + (s->b & 0xffff'ffff'ffff); }
+
+// Whether an interrupt came during span s.
+static bool irq_within(const vx_trace_record *r, size_t n, const vx_trace_record *s) {
+  for (size_t k = 0; k < n; k++)
+    if (r[k].kind == VX_TK_IRQ_IN && r[k].time >= s->time && r[k].time <= span_end(s)) return true;
+  return false;
+}
+
+// How deep the chains from this task's spans go, level by level: a span's
+// server side, then the spans its task made meanwhile (its own requests,
+// another flow each), and theirs. *irq: an interrupt came during a span of
+// the deepest level. at holds 2n indices: this level's and the next's.
+static int chains(const vx_trace_record *r, size_t n, uint32_t self, size_t *at, bool *irq) {
+  size_t *cur = at, *nxt = at + n;
+  size_t level = 0; // the requests of this level: indices of their client spans, cur[0..level)
+  for (size_t i = 0; i < n; i++)
+    if (r[i].kind == VX_TK_SPAN && tid_task(r[i].tid) == self) cur[level++] = i;
+  int depth = 0;
+  for (int d = 1; d < 8 && level; d++) {
+    size_t next = 0;
+    bool any = false, with_irq = false;
+    for (size_t l = 0; l < level; l++) {
+      const vx_trace_record *c = &r[cur[l]];
+      for (size_t i = 0; i < n; i++) { // the server side: the flow's span in another task
+        if (r[i].kind != VX_TK_SPAN || r[i].a != c->a || r[i].tid == c->tid) continue;
+        any = true;
+        with_irq = with_irq || irq_within(r, n, &r[i]);
+        for (size_t j = 0; j < n && next < n; j++) // its task's own requests meanwhile
+          if (r[j].kind == VX_TK_SPAN && tid_task(r[j].tid) == tid_task(r[i].tid) && r[j].a != r[i].a &&
+              r[j].time >= r[i].time && span_end(&r[j]) <= span_end(&r[i]))
+            nxt[next++] = j;
+      }
+    }
+    if (!any) break;
+    depth = d, *irq = with_irq;
+    level = next;
+    size_t *t = cur;
+    cur = nxt, nxt = t;
+  }
+  return depth;
+}
+
 const char *vx_main(void) {
   if (vx_str_eq(vx_arg(1), VX_STR("child"))) { // the child: a line down its stdout, a pipe
     vx_sleep_until(vx_now() + 50'000'000, 0);  // after its parent waits: its write is the wake
@@ -32,7 +77,7 @@ const char *vx_main(void) {
   vx_arena *a = vx_arena_new(64 << 20);
   vx_dir d;
   CHECK(vx_stat(VX_STR("/proc/trace/status"), a, &d) == VX_OK); // adm sees it
-  CHECK(ctl("start sched,ipc,vm,syscall,mark,span size 1M") == VX_OK);
+  CHECK(ctl("start sched,ipc,irq,vm,syscall,mark,span size 1M") == VX_OK);
 
   // A spawn and a pipe: the child writes, this process waits on its end.
   vx_handle pipe[2];
@@ -59,6 +104,18 @@ const char *vx_main(void) {
   char readback[16];
   CHECK(vx_pread(f, (vx_bytes){(uint8_t *)readback, sizeof readback}, 0) >
         0); // a 9Px read: fsd's span and ours
+  // A write committed to the disk (a read may not reach it: fsd holds
+  // the whole of this small volume), in the branch adm owns: through fsd
+  // to the driver.
+  vx_fd made = vx_create(VX_STR("/n/adm/traced"), VX_OWRITE, 0644);
+  static char block[64 * 1024];
+  memset(block, 'x', sizeof block);
+  size_t wrote = 0; // one request each: fewer than asked is no error (file(2))
+  for (int64_t w = 1; made >= 0 && wrote < sizeof block && w > 0; wrote += w > 0 ? (size_t)w : 0)
+    w = vx_write(made, (vx_str){block + wrote, sizeof block - wrote});
+  CHECK(wrote == sizeof block);
+  CHECK(vx_sync(made) == VX_OK);
+  vx_close(made);
   CHECK(ctl("mark tracetest end") == VX_OK);
   CHECK(ctl("stop") == VX_OK);
 
@@ -115,6 +172,14 @@ const char *vx_main(void) {
   }
   CHECK(span_pair);
   CHECK(call_pair);
+  // The chain: this process, fsd (1), the driver (2: partd hands fsd the
+  // driver's session, and is not on the way), and the disk's interrupt
+  // within the driver's span.
+  bool irq = false;
+  size_t *at = vx_push(a, 2 * n * sizeof(size_t), alignof(size_t));
+  int deepest = at ? chains(r, n, self_task, at, &irq) : 0;
+  CHECK(deepest >= 2);
+  CHECK(irq);
   // Ordered by time, and status says what ran.
   bool ordered = true;
   for (size_t i = 1; i < n; i++) ordered = ordered && r[i].time >= r[i - 1].time;

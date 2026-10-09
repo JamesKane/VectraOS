@@ -37,6 +37,65 @@
 #include "../../lib/vx-pci/pci.c"
 #include "../../lib/vx-ns/spawn.c"
 
+// --- Drivers in /proc (20 §5) ---
+//
+// Each driver is registered with procfs as devmgr's child, with the
+// profiling ring its spawn made, so its spans (vx-ring's sessions) reach
+// /proc/trace. devmgr starts before procfs serves, and a registration waits
+// for it: so one thread of its own does them, in order, and a driver's start
+// never waits.
+
+typedef struct registration {
+  vx_handle task, prof;
+  uint64_t prof_at;
+} registration;
+
+static struct {
+  vx_handle proc; // the connector to /srv/proc; none: drivers are not registered
+  vx_lock_t lock;
+  vx_rendez more;
+  registration queue[32];
+  uint32_t head, tail;
+} reg;
+
+static const char *registrar(void *arg) {
+  (void)arg;
+  for (;;) {
+    vx_lock(&reg.lock);
+    while (reg.head == reg.tail) vx_rendez_sleep(&reg.more, &reg.lock);
+    registration r = reg.queue[reg.head++ % 32];
+    vx_unlock(&reg.lock);
+    uint64_t pid = 0;
+    vx_status st = vx_proc_register_until(reg.proc, r.task, PROC_NOWAIT, 0, &pid,
+                                          VX_INFINITE); // procfs may not serve yet
+    if (st == VX_OK && r.prof)
+      vx_prof_give(reg.proc, pid, r.prof, r.prof_at);
+    else if (r.prof)
+      vx_handle_close(r.prof);
+    vx_handle_close(r.task);
+  }
+  return nullptr;
+}
+
+// Queues task (a duplicate is taken) and its ring (moved) for registration.
+static void register_driver(vx_handle task, vx_handle prof, uint64_t prof_at) {
+  vx_handle dup = VX_HANDLE_NONE;
+  if (!reg.proc || vx_handle_dup(task, VX_RIGHTS_SAME, &dup) != VX_OK) {
+    if (prof) vx_handle_close(prof);
+    return;
+  }
+  vx_lock(&reg.lock);
+  bool room = reg.tail - reg.head < 32;
+  if (room) reg.queue[reg.tail++ % 32] = (registration){dup, prof, prof_at};
+  vx_unlock(&reg.lock);
+  if (room) {
+    vx_rendez_wake(&reg.more);
+  } else {
+    vx_handle_close(dup);
+    if (prof) vx_handle_close(prof);
+  }
+}
+
 static vx_handle resource, port;
 static vx_ns ns;
 static uint8_t century_reg; // the FADT's CMOS century register, for clock drivers; 0 if none
@@ -305,14 +364,19 @@ static vx_status start_driver(driver *d) {
   vx_str base = vx_cstr(d->program);
   for (size_t i = base.len; i-- > 0;)
     if (base.ptr[i] == '/') base = (vx_str){base.ptr + i + 1, base.len - i - 1};
+  vx_handle prof = VX_HANDLE_NONE;
+  uint64_t prof_at = 0;
   vx_spawn_args a = {.name = base.len < 24 ? base : (vx_str){base.ptr, 23},
                      .image = image,
                      .image_size = size,
                      .handles = handles,
                      .handle_names = names,
                      .handle_count = count,
-                     .records = {records, w.len}};
+                     .records = {records, w.len},
+                     .prof_vmo = &prof,
+                     .prof_at = &prof_at};
   st = vx_spawn_elf(&a, &d->task);
+  if (st == VX_OK) register_driver(d->task, prof, prof_at);
   if (st == VX_OK) st = vx_port_bind(port, d->task, VX_TRIGGER_EXIT, (uint64_t)(d - drivers), 0);
   if (st == VX_OK) {
     d->starts++;
@@ -371,6 +435,7 @@ static void driver_exited(driver *d) {
 static const char *const DRIVER_KEYS[] = {
 #define KEY(scope, key) key,
 #include "driver.def"
+
 #undef KEY
 };
 
@@ -765,20 +830,24 @@ static void start_bus_acpi(vx_handle acpi, uint64_t size) {
       vx_handle_dup(vx_console.connector, VX_RIGHTS_SAME, &handles[count]) == VX_OK)
     names[count++] = VX_STR("console");
   size_t len = st == VX_OK ? read_whole(VX_STR("/boot/bin/bus-acpi"), image, sizeof image) : 0;
-  vx_handle task;
+  vx_handle task, prof = VX_HANDLE_NONE;
+  uint64_t prof_at = 0;
   vx_spawn_args a = {.name = VX_STR("bus-acpi"),
                      .image = image,
                      .image_size = len,
                      .handles = handles,
                      .handle_names = names,
                      .handle_count = count,
-                     .records = {records, w.len}};
+                     .records = {records, w.len},
+                     .prof_vmo = &prof,
+                     .prof_at = &prof_at};
   if (st != VX_OK || !len || w.failed || vx_spawn_elf(&a, &task) != VX_OK) {
     for (uint32_t i = 0; i < count; i++)
       if (handles[i]) vx_handle_close(handles[i]);
     say(VX_STR("cannot start "), VX_STR("bus-acpi"), VX_STR("\n"));
     return;
   }
+  register_driver(task, prof, prof_at);
   vx_handle_close(task);
   say(VX_STR("started "), VX_STR("bus-acpi"), VX_STR("\n"));
 }
@@ -786,6 +855,8 @@ static void start_bus_acpi(vx_handle acpi, uint64_t size) {
 const char *vx_main(void) {
   resource = vx_spawn_take("resource");
   vx_handle acpi = vx_spawn_take("acpi");
+  reg.proc = vx_spawn_take("srv:proc");
+  if (reg.proc && !vx_thread_spawn(registrar, nullptr, 0, 0)) reg.proc = VX_HANDLE_NONE;
   vx_ndb_record rec;
   uint64_t size = 0, at = 0;
   if (!resource || !acpi || !vx_spawn_record("acpi", &rec) || !vx_ndb_get_u64(&rec, "size", &size) ||

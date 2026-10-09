@@ -13,6 +13,28 @@
 
 #include "../vx-rt/base.c"
 #include "ring.c"
+#include "../vx-prof/ring.h"
+
+// A request's span (20 §5), from its submission to its completion, each side
+// alike: its flow from the ring's session and the request's user_data, as
+// 9Px's are. A request whose slot another took meanwhile goes unrecorded.
+static void vx_session_span(vx_ring *r, const void *entry, bool submission) {
+  uint64_t user_data;
+  memcpy(&user_data,
+         submission ? (const uint8_t *)entry + offsetof(vx_sqe, user_data)
+                    : (const uint8_t *)entry + offsetof(vx_cqe, user_data),
+         sizeof user_data);
+  uint32_t i = (uint32_t)(vx_prof_flow(0, user_data) & 31);
+  if (submission) {
+    uint64_t start = vx_span_begin_hook ? vx_span_begin_hook() : 0;
+    uint16_t opcode;
+    memcpy(&opcode, entry, sizeof opcode);
+    if (start) r->span_at[i].user_data = user_data, r->span_at[i].start = start, r->span_at[i].what = opcode;
+  } else if (r->span_at[i].start && r->span_at[i].user_data == user_data) {
+    vx_span_end_hook(r->span_at[i].start, r->span_at[i].what, vx_prof_flow(r->h.session, user_data));
+    r->span_at[i].start = 0;
+  }
+}
 
 // Maps a ring's memory into this task and attaches to it as one side.
 static vx_status vx_session_map(vx_handle memory, bool client, const vx_ring_params *params, vx_ring *r) {
@@ -22,6 +44,8 @@ static vx_status vx_session_map(vx_handle memory, bool client, const vx_ring_par
   if (st == VX_OK) st = vx_as_map(vx_self, memory, 0, layout.size, VX_MAP_WRITE, &base);
   if (st == VX_OK && (st = vx_ring_attach(r, (void *)base, layout.size, client, params)) != VX_OK)
     vx_as_unmap(vx_self, base, layout.size); // a ring it would not attach to
+  else if (st == VX_OK && params->sqe_size == sizeof(vx_sqe) && params->cqe_size == sizeof(vx_cqe))
+    r->span = vx_session_span; // the generic entries: spans need no code of the protocol's
   return st;
 }
 

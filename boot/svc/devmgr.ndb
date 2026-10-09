@@ -1,7 +1,8 @@
 # boot/svc/devmgr.ndb: the device manager (docs/01 §7.2): it finds the PCI
 # functions through the ACPI tables, with the root Resource, and starts their
 # drivers from the boot image (/boot/drv/*.ndb), giving each the post it
-# serves; and bus-acpi, which serves /srv/acpi.
+# serves; and bus-acpi, which serves /srv/acpi. Each is registered with
+# procfs as its child (connect=proc).
 
 service=devmgr program=/boot/bin/devmgr resource acpi console cmdline restart
 mount=/ srv=bootfs
@@ -11,3 +12,4 @@ claim=disk1
 claim=disk2
 claim=disk3
 claim=acpi
+connect=proc

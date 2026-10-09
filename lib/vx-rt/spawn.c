@@ -202,9 +202,9 @@ typedef struct vx_spawn_args {
 
 // Registers a task as a child of the caller with procfs, through a connector
 // to its listen channel (lib/vx-proc/proc.h), in note group `group` if not 0.
-// *pid, if not null, gets its pid.
-[[maybe_unused]] static vx_status vx_proc_register_in(vx_handle connector, vx_handle task, uint32_t flags,
-                                                      uint64_t group, uint64_t *pid) {
+// *pid, if not null, gets its pid. Waits for procfs until deadline.
+[[maybe_unused]] static vx_status vx_proc_register_until(vx_handle connector, vx_handle task, uint32_t flags,
+                                                         uint64_t group, uint64_t *pid, vx_instant deadline) {
   vx_task_summary me;
   int64_t parent = vx_self && vx_task_info(vx_self, &me) == VX_OK ? (int64_t)me.id : 0;
   vx_handle dup;
@@ -217,11 +217,16 @@ typedef struct vx_spawn_args {
                .wr_count = 1,
                .rd_bytes = &rep,
                .rd_cap = sizeof rep};
-  st = vx_channel_call(connector, &c, vx_clock_read() + 2'000'000'000);
+  st = vx_channel_call(connector, &c, deadline);
   if (st == VX_OK && c.actual.bytes < sizeof rep) st = VX_ERR_INVALID;
   if (st == VX_OK && rep.h.flags) st = (vx_status)(int32_t)rep.h.flags;
   if (st == VX_OK && pid) *pid = (uint64_t)rep.arg[0];
   return st;
+}
+
+[[maybe_unused]] static vx_status vx_proc_register_in(vx_handle connector, vx_handle task, uint32_t flags,
+                                                      uint64_t group, uint64_t *pid) {
+  return vx_proc_register_until(connector, task, flags, group, pid, vx_clock_read() + 2'000'000'000);
 }
 
 [[maybe_unused]] static vx_status vx_proc_register(vx_handle connector, vx_handle task, uint32_t flags,

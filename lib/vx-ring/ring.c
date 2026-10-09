@@ -52,6 +52,16 @@ typedef struct vx_ring {
   const uint8_t *in_entries;
   uint32_t in_mask, in_size;
   uint32_t in_head_local;
+
+#if !__STDC_HOSTED__
+  // Spans (20 §5): if set, called with each submission and completion as it
+  // passes, produced or consumed; vx-ring's sessions set it (session.c).
+  void (*span)(struct vx_ring *r, const void *entry, bool submission);
+  struct {
+    uint64_t user_data, start;
+    uint32_t what;
+  } span_at[32]; // requests outstanding, by user_data's hash
+#endif
 } vx_ring;
 
 static bool ring_pow2(uint32_t n) { return n && !(n & (n - 1)); }
@@ -144,6 +154,10 @@ static uint64_t ring_page_up(uint64_t v) { return (v + 4095) & ~4095ull; }
 // Publishes the entry vx_ring_produce_slot gave. Returns true if the peer is
 // asleep, and its doorbell must be rung (ring_notify).
 [[maybe_unused]] static bool vx_ring_produce(vx_ring *r) {
+#if !__STDC_HOSTED__
+  if (r->span)
+    r->span(r, r->out_entries + (size_t)(r->out_tail_local & r->out_mask) * r->out_size, r->client);
+#endif
   r->out_tail_local++;
   __atomic_store_n(r->out_tail, r->out_tail_local, __ATOMIC_RELEASE);
   __atomic_thread_fence(__ATOMIC_SEQ_CST);
@@ -176,6 +190,9 @@ static uint64_t ring_page_up(uint64_t v) { return (v + 4095) & ~4095ull; }
   memcpy(out, r->in_entries + (size_t)(r->in_head_local & r->in_mask) * r->in_size, r->in_size);
   r->in_head_local++;
   __atomic_store_n(r->in_head, r->in_head_local, __ATOMIC_RELEASE);
+#if !__STDC_HOSTED__
+  if (r->span) r->span(r, out, !r->client);
+#endif
   return VX_OK;
 }
 
