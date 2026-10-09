@@ -82,6 +82,9 @@ typedef struct vx_ns_entry {
   uint64_t id_qid;           // OBJECT: the directory's qid path; NAME: the directory the name is in
   uint32_t count;
   vx_ns_member members[VX_NS_MAX_MEMBERS];
+  // When it was made and last changed (its members), on the namespace's
+  // sequence: whether a path under it may jump to it by name (ns_shortcut).
+  uint32_t made, changed;
 } vx_ns_entry;
 
 typedef struct vx_ns vx_ns;
@@ -231,6 +234,7 @@ static int ns_split(vx_str path, vx_str *names) {
 // one (the walk ended exactly on it).
 typedef struct vx_ns_at {
   uint8_t conn;
+  uint8_t type; // the qid type reached (P9_QTDIR, P9_QTSYMLINK, ...): 0 if not known
   uint32_t fid;
   uint64_t qid;
   vx_ns_entry *entry;
@@ -285,7 +289,7 @@ static vx_status ns_walk_on(vx_ns *ns, uint8_t conn, uint32_t fid, uint64_t qid,
     qid = qids[got - 1].path;
     *i += count;
     if (*i == n) {
-      *out = (vx_ns_at){.conn = conn, .fid = cur, .qid = qid};
+      *out = (vx_ns_at){.conn = conn, .type = qids[got - 1].type, .fid = cur, .qid = qid};
       *done = true;
       return VX_OK;
     }
@@ -308,6 +312,40 @@ static bool ns_resolve_env(vx_ns *ns, vx_str path, vx_ns_at *out, vx_status *st)
   return true;
 }
 
+// The deepest mount point a cleaned path is under by name, if a walk by
+// identity would reach it too (7a6): one whose recorded path is a prefix of
+// path at a component's end, and none on a prefix of its own path has
+// changed since it was made. *skip: the names its path has. This saves the
+// walk of every directory above a mount point (/n of /n/adm), which on a
+// server is a round trip each: Plan 9's own walk crosses /n in the kernel.
+// A directory renamed while something is mounted on it keeps its old name
+// here, as in Linux's table of mounts by path.
+static vx_ns_entry *ns_shortcut(vx_ns *ns, vx_str path, int *skip) {
+  vx_ns_entry *best = nullptr;
+  for (uint32_t k = 0; k < VX_NS_MAX_ENTRIES; k++) {
+    vx_ns_entry *e = &ns->entries[k];
+    size_t len = e->path_len;
+    if (len <= 1 || len > path.len || memcmp(e->path, path.ptr, len) != 0 ||
+        (len < path.len && path.ptr[len] != '/'))
+      continue;
+    if (best && best->path_len >= len) continue;
+    bool still = true; // nothing above it changed since
+    for (uint32_t j = 0; j < VX_NS_MAX_ENTRIES && still; j++) {
+      const vx_ns_entry *f = &ns->entries[j];
+      bool above = f->path_len && f->path_len < len && memcmp(f->path, e->path, f->path_len) == 0 &&
+                   (f->path_len == 1 || e->path[f->path_len] == '/');
+      still = !above || f->changed < e->made;
+    }
+    if (still) best = e;
+  }
+  if (best) {
+    vx_str names[VX_NS_MAX_DEPTH];
+    *skip = ns_split((vx_str){best->path, best->path_len}, names);
+    if (*skip < 0) best = nullptr;
+  }
+  return best;
+}
+
 static vx_status ns_resolve(vx_ns *ns, vx_str path, vx_ns_at *out) {
   vx_status env;
   if (ns_resolve_env(ns, path, out, &env)) return env;
@@ -316,13 +354,15 @@ static vx_status ns_resolve(vx_ns *ns, vx_str path, vx_ns_at *out) {
   vx_ns_entry *e = ns_root(ns);
   if (n < 0) return VX_ERR_RANGE;
   if (!e) return VX_ERR_NOT_FOUND;
-  int i = 0;
+  int i = 0, skip = 0;
+  vx_ns_entry *near = ns_shortcut(ns, path, &skip);
+  if (near) e = near, i = skip;
   for (uint32_t hops = 0; hops <= VX_NS_MAX_DEPTH; hops++) {
     if (i == n) { // exactly at a mount point: its first member
       const vx_ns_member *m = &e->members[0];
       vx_status st = p9c_walk(ns->conns[m->conn].client, m->fid, (vx_str){}, &out->fid);
       if (st != VX_OK) return st;
-      out->conn = m->conn, out->qid = m->qid, out->entry = e;
+      out->conn = m->conn, out->type = P9_QTDIR, out->qid = m->qid, out->entry = e;
       return VX_OK;
     }
     vx_status st = VX_ERR_NOT_FOUND;
@@ -397,6 +437,7 @@ static vx_status ns_insert(vx_ns *ns, vx_ns_entry *e, vx_ns_member m, uint8_t fl
   memmove(&e->members[at + 1], &e->members[at], (e->count - at) * sizeof e->members[0]);
   e->members[at] = m;
   e->count++;
+  e->changed = ns->next_seq++;
   return VX_OK;
 }
 
@@ -448,6 +489,7 @@ static vx_status ns_point(vx_ns *ns, vx_str old, uint8_t flags, vx_ns_entry **ou
     if (e.count) p9c_clunk(ns->conns[e.members[0].conn].client, e.members[0].fid);
     return VX_ERR_NO_MEMORY;
   }
+  e.made = e.changed = ns->next_seq++;
   *fresh = e;
   *out = fresh;
   return VX_OK;
@@ -557,6 +599,7 @@ static vx_status ns_unmount_raw(vx_ns *ns, vx_str new, vx_str old) {
     }
   }
   e->count = kept;
+  e->changed = ns->next_seq++;
   if (!kept) e->path_len = 0;
   // A connection no member uses any more is let go: no member, mounted or
   // bound (a bind of something under a mount walks on its connection too, and
@@ -783,7 +826,11 @@ typedef struct vx_ns_file {
 } vx_ns_file;
 
 // Opens a path. A directory that is a union reads as each member in turn.
-[[maybe_unused]] static vx_status vx_ns_open(vx_ns *ns, vx_str path, uint8_t mode, vx_ns_file *f) {
+// As vx_ns_open; but if the walk reaches a symbolic link (its qid says so),
+// LINK_REACHED, opening nothing, for the caller to follow it (7a6: libvx's
+// vx_open walks once for a path with no link).
+static constexpr vx_status VX_NS_LINK_REACHED = (vx_status)1;
+static vx_status ns_open(vx_ns *ns, vx_str path, uint8_t mode, vx_ns_file *f, bool links) {
   ns_catch_up(ns);
   *f = (vx_ns_file){.ns = ns};
   char clean[VX_NS_MAX_PATH];
@@ -796,11 +843,20 @@ typedef struct vx_ns_file {
   if (st != VX_OK) return st;
   f->c = ns->conns[at.conn].client;
   f->fid = at.fid; // a union's first member, if it is a union
+  if (links && (at.type & P9_QTSYMLINK)) {
+    p9c_clunk(f->c, f->fid);
+    *f = (vx_ns_file){};
+    return VX_NS_LINK_REACHED;
+  }
   if (at.entry && at.entry->count > 1 && (mode & 3) == P9_OREAD) f->u = at.entry;
   st = p9c_open(f->c, f->fid, mode);
   if (st != VX_OK) p9c_clunk(f->c, f->fid);
   if (st != VX_OK) *f = (vx_ns_file){};
   return st;
+}
+
+[[maybe_unused]] static vx_status vx_ns_open(vx_ns *ns, vx_str path, uint8_t mode, vx_ns_file *f) {
+  return ns_open(ns, path, mode, f, false);
 }
 
 // Creates the file at path (in the directory its last '/' names), open in

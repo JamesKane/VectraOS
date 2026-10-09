@@ -32,6 +32,7 @@ enum : uint8_t { // qid.type and the top byte of a stat's mode
   P9_QTAPPEND = 0x40,
   P9_QTEXCL = 0x20,
   P9_QTAUTH = 0x08,
+  P9_QTSYMLINK = 0x02, // 9P2000.u's and .L's: a server that holds links marks them so (vx-fs, tmpfs)
   P9_QTFILE = 0x00,
 };
 

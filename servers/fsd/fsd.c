@@ -759,24 +759,28 @@ static vx_str root_name(uint64_t node) {
 
 static vxfs_file stat_file; // the name in a stat lives until the next call
 
+// f's stat, as node: its strings in f and in names, which must outlive it.
+static p9_stat stat_of(uint64_t node, const vxfs_file *f, char names[3][12]) {
+  const vxfs_dir *d = &f->d;
+  bool dir = d->mode & VXFS_DMDIR, root = f->nkey == 9 && !vxfs_is_orphan(f);
+  uint8_t qtype = (uint8_t)((dir ? P9_QTDIR : P9_QTFILE) | ((d->mode >> 24) & (P9_QTAPPEND | P9_QTEXCL)));
+  return (p9_stat){.qid = {qtype, d->qid_vers, node},
+                   .mode = d->mode,
+                   .atime = (uint32_t)(d->atime / 1'000'000'000),
+                   .mtime = (uint32_t)(d->mtime / 1'000'000'000),
+                   .length = dir ? 0 : d->length,
+                   .name = root ? root_name(node) : (vx_str){(const char *)f->key + 9, f->nkey - 9u},
+                   .uid = user_name(names[0], d->uid),
+                   .gid = user_name(names[1], d->gid),
+                   .muid = user_name(names[2], d->muid)};
+}
+
 static vx_status fs_stat([[maybe_unused]] void *ctx, uint64_t node, p9_stat *out) {
   vxfs_file f;
   vx_status st = file_read(node, &f);
   if (st != VX_OK) return st;
   stat_file = f; // the lock held again: the stat's strings are kept here until the reply
-  const vxfs_dir *d = &stat_file.d;
-  bool dir = d->mode & VXFS_DMDIR, root = stat_file.nkey == 9 && !vxfs_is_orphan(&stat_file);
-  uint8_t qtype = (uint8_t)((dir ? P9_QTDIR : P9_QTFILE) | ((d->mode >> 24) & (P9_QTAPPEND | P9_QTEXCL)));
-  *out = (p9_stat){.qid = {qtype, d->qid_vers, node},
-                   .mode = d->mode,
-                   .atime = (uint32_t)(d->atime / 1'000'000'000),
-                   .mtime = (uint32_t)(d->mtime / 1'000'000'000),
-                   .length = dir ? 0 : d->length,
-                   .name = root ? root_name(node)
-                                : (vx_str){(const char *)stat_file.key + 9, stat_file.nkey - 9u},
-                   .uid = user_name(uidbuf[0], d->uid),
-                   .gid = user_name(uidbuf[1], d->gid),
-                   .muid = user_name(uidbuf[2], d->muid)};
+  *out = stat_of(node, &stat_file, uidbuf);
   return VX_OK;
 }
 
@@ -1386,6 +1390,64 @@ static vx_status fs_readdir([[maybe_unused]] void *ctx, uint64_t dir, uint32_t i
   return vol.fs.err != VX_OK ? vol.fs.err : st;
 }
 
+// Many entries at once (the framework's readdir_stat, 7a6): one read epoch,
+// one lookup of the directory and one scan for a whole reply, each child's
+// stat made from the entry the scan holds (its key and record are the
+// file) and emitted until the reply is full. The cursor is left on the last one emitted, so the next read goes
+// on from there. adm's root, with its two made-up files first, and the
+// dump's directories are left to readdir and stat in turn.
+static vx_status fs_readdir_stat([[maybe_unused]] void *ctx, uint64_t dir, uint32_t index,
+                                 bool (*emit)(void *arg, const p9_stat *st), void *arg) {
+  if (is_dump(dir)) return VX_ERR_UNSUPPORTED;
+  listing at = cursor, next = at;
+  reading r;
+  vx_status st = read_begin(dir, &r);
+  if (st != VX_OK) return st;
+  vxfs_file d;
+  st = file_in(dir, &r, &d);
+  if (st == VX_OK && !(d.d.mode & VXFS_DMDIR)) st = VX_ERR_INVALID;
+  if (st == VX_OK && is_branch(dir, "adm") && d.nkey == 9) st = VX_ERR_UNSUPPORTED;
+  if (st != VX_OK) {
+    read_end(&r);
+    return st;
+  }
+  uint8_t pfx[9] = {VXFS_KENT};
+  vxfs_kput64(pfx + 1, d.d.qid_path);
+  bool resume = index && at.dir == dir && at.next == index;
+  vxfs_scan s;
+  if (resume)
+    vxfs_scan_from(&s, &r.t, pfx, 9, at.key, at.nkey);
+  else
+    vxfs_scan_start(&s, &r.t, pfx, 9);
+  vxfs_kvp kv;
+  uint32_t skip = resume ? 0 : index, i = index;
+  static char names[3][12];
+  while (st == VX_OK && vxfs_scan_next(&vol.fs, &s, &kv)) {
+    if (resume && kv.nk == at.nkey && memcmp(kv.k, at.key, kv.nk) == 0) continue; // the last one given
+    if (skip) {
+      skip--;
+      continue;
+    }
+    if (kv.nv != VXFS_DIRSZ) {
+      st = VX_ERR_INVALID;
+      break;
+    }
+    // The entry is the file: its key and its packed record, as vx-fs's
+    // file_at reads them, so no lookup by qid.
+    vxfs_file f = {.d = vxfs_unpackdir(kv.v), .nkey = kv.nk};
+    memcpy(f.key, kv.k, kv.nk);
+    uint64_t child = node_of(slot_of(dir), user_of(dir), f.d.qid_path) | (dir & PERMISSIVE);
+    p9_stat ps = stat_of(child, &f, names);
+    if (!emit(arg, &ps)) break; // the reply is full: this one is the next read's
+    next = (listing){.dir = dir, .next = ++i, .nkey = kv.nk};
+    memcpy(next.key, kv.k, kv.nk);
+  }
+  vxfs_scan_end(&vol.fs, &s);
+  read_end(&r);
+  cursor = next;
+  return vol.fs.err != VX_OK ? vol.fs.err : st;
+}
+
 static vx_status name_of(vx_str s, char *out) {
   if (!s.len || s.len > VXFS_NAMEMAX) return VX_ERR_RANGE;
   memcpy(out, s.ptr, s.len);
@@ -1579,6 +1641,7 @@ static p9_ring_server server = {
            .open = fs_open,
            .read = fs_read,
            .readdir = fs_readdir,
+           .readdir_stat = fs_readdir_stat,
            .write = fs_write,
            .create = fs_create,
            .remove = fs_remove,

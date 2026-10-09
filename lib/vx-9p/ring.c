@@ -222,9 +222,18 @@ typedef struct p9_conn {
   uint64_t budget;          // the server's arena, reserved by calls in flight
   _Atomic uint32_t freed;   // a futex: changes when a slot comes free
   _Atomic uint32_t replies; // a futex: changes with each reply taken, and as a leader stops
-  p9_chunks arena;          // the client's
+  // Threads asleep on each (7a6): a wake is a syscall, and most have no one
+  // to wake. A sleeper counts itself before it sleeps, a waker changes the
+  // word before it looks, so one of them always sees the other.
+  _Atomic uint32_t freed_sleepers, replies_sleepers;
+  p9_chunks arena; // the client's
   p9_slot slots[P9_RING_DEPTH];
 } p9_conn;
+
+// Wakes word's sleepers, if it has any: its change already made.
+static void p9_ring_wake(_Atomic uint32_t *word, _Atomic uint32_t *sleepers) {
+  if (atomic_load(sleepers)) vx_futex_wake(word, UINT32_MAX);
+}
 
 // The most of the server's arena a reply to this request can take.
 static uint64_t p9_reply_max(const uint8_t *req, size_t len, uint32_t msize) {
@@ -255,9 +264,9 @@ static void p9_ring_kill(p9_conn *k) {
     atomic_store(&s->state, P9_SLOT_DONE);
   }
   atomic_fetch_add(&k->freed, 1);
-  vx_futex_wake(&k->freed, UINT32_MAX);
+  p9_ring_wake(&k->freed, &k->freed_sleepers);
   atomic_fetch_add(&k->replies, 1);
-  vx_futex_wake(&k->replies, UINT32_MAX);
+  p9_ring_wake(&k->replies, &k->replies_sleepers);
 }
 
 // A free slot, its tag chosen, its buffer mapped; waits for one. flush: the
@@ -308,7 +317,9 @@ static p9_slot *p9_ring_slot_take(p9_conn *k, bool version, bool flush) {
     }
     uint32_t seen = atomic_load(&k->freed);
     vx_unlock(&k->lock);
+    atomic_fetch_add(&k->freed_sleepers, 1);
     vx_futex_wait(&k->freed, seen, VX_INFINITE);
+    atomic_fetch_sub(&k->freed_sleepers, 1);
   }
 }
 
@@ -321,7 +332,7 @@ static void p9_ring_slot_give(p9_conn *k, p9_slot *s) {
   atomic_store(&s->state, P9_SLOT_FREE);
   atomic_fetch_add(&k->freed, 1);
   vx_unlock(&k->lock);
-  vx_futex_wake(&k->freed, UINT32_MAX);
+  p9_ring_wake(&k->freed, &k->freed_sleepers);
 }
 
 // A completion, handed to its slot. False if the server broke the protocol.
@@ -350,7 +361,7 @@ static bool p9_ring_deliver(p9_conn *k, const vx_cqe *c) {
   vx_handle notify = s->async ? s->notify : VX_HANDLE_NONE;
   uint64_t key = s->notify_key;
   vx_unlock(&k->lock);
-  vx_futex_wake(&k->replies, UINT32_MAX);
+  p9_ring_wake(&k->replies, &k->replies_sleepers);
   if (notify) vx_port_post(notify, &(vx_packet){.key = key}); // p9_ring_send's caller: its reply is here
   return true;
 }
@@ -425,7 +436,7 @@ static vx_status p9_ring_wait(p9_conn *k, p9_slot *s, uint32_t any, vx_instant d
       k->leading = false;
       if (st == VX_ERR_PEER_CLOSED) p9_ring_kill(k);
       atomic_fetch_add(&k->replies, 1); // the next to wait leads: every waiter looks again
-      vx_futex_wake(&k->replies, UINT32_MAX);
+      p9_ring_wake(&k->replies, &k->replies_sleepers);
       for (uint32_t i = 0; i < P9_RING_DEPTH; i++) { // and p9_ring_send's callers, to arm their own ports
         const p9_slot *a = &k->slots[i];
         if (a->async && a->notify && atomic_load(&a->state) == P9_SLOT_SENT)
@@ -441,7 +452,9 @@ static vx_status p9_ring_wait(p9_conn *k, p9_slot *s, uint32_t any, vx_instant d
     vx_unlock(&k->lock);
     if (hear && p9_ring_flush_due()) return VX_ERR_INTERRUPTED; // one that came before the sleep
     p9_ring_will_wait(VX_HANDLE_NONE, &k->replies);
+    atomic_fetch_add(&k->replies_sleepers, 1);
     vx_status w = vx_futex_wait(&k->replies, value, deadline);
+    atomic_fetch_sub(&k->replies_sleepers, 1);
     p9_ring_will_wait(VX_HANDLE_NONE, nullptr);
     if (w == VX_ERR_TIMED_OUT) return VX_ERR_TIMED_OUT;
     if (w == VX_ERR_INTERRUPTED && hear && p9_ring_wants_flush(k)) return VX_ERR_INTERRUPTED;
@@ -684,7 +697,7 @@ static void p9_ring_take_completions(p9_conn *k) {
   if (broken) p9_ring_kill(k);
   atomic_fetch_add(&k->replies, 1); // a thread waiting to lead may now
   vx_unlock(&k->lock);
-  vx_futex_wake(&k->replies, UINT32_MAX);
+  p9_ring_wake(&k->replies, &k->replies_sleepers);
 }
 
 // The reply to the call p9_ring_send sent with tag: OK, with *r decoded (its

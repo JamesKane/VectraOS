@@ -8,6 +8,6 @@ scenario=bench bench timeout=180 cmdline=vx.skip=rc with=benchtest,fsdvol disk=6
 expect="bench: all within budget"
 line="svcd: benchtest exited"
 fail="vx: panic"
-fail="OVER BUDGET"
+fail=" over budget"
 fail="bench: FAILED"
 fail="svcd: benchtest exited: "

@@ -56,6 +56,12 @@ typedef struct p9_fs {
   vx_status (*read)(void *ctx, uint64_t node, uint64_t offset, uint8_t *buf,
                     uint32_t *count);                                             // files; or SHOULD_WAIT
   vx_status (*readdir)(void *ctx, uint64_t dir, uint32_t index, uint64_t *child); // NOT_FOUND past the end
+  // Or many entries at once, from index on, each with its stat, for emit
+  // until it says no (the reply is full) or the directory ends: so a server
+  // looks the directory up once a read, not once an entry (7a6). OK, or an
+  // error; UNSUPPORTED here, the framework asks readdir and stat in turn.
+  vx_status (*readdir_stat)(void *ctx, uint64_t dir, uint32_t index,
+                            bool (*emit)(void *arg, const p9_stat *st), void *arg); // or null
   vx_status (*write)(void *ctx, uint64_t node, uint64_t offset, const uint8_t *buf,
                      uint32_t *count); // or null
   vx_status (*create)(void *ctx, uint64_t dir, vx_str name, uint32_t perm, uint8_t mode,
@@ -468,6 +474,34 @@ static vx_status p9_step(p9_server *s, uint64_t root, uint64_t node, vx_str name
   return s->fs.walk(s->fs.ctx, node, name, next);
 }
 
+// readdir_stat's emit, for a read: each stat encoded while it fits.
+typedef struct p9_dir_fill {
+  uint8_t *out;
+  uint32_t cap, used, taken;
+  bool l; // 9P2000.L's Rreaddir: qid, cookie, type and name
+  uint64_t cookie;
+} p9_dir_fill;
+
+static uint8_t p9_dirent_type(uint32_t mode);
+
+static bool p9_dir_emit(void *arg, const p9_stat *st) {
+  p9_dir_fill *d = arg;
+  size_t n;
+  if (d->l) {
+    p9_out o = {.buf = d->out + d->used, .cap = d->cap - d->used};
+    p9_put_qid(&o, st->qid);
+    p9_put(&o, d->cookie + d->taken + 1, 8);
+    p9_put(&o, p9_dirent_type(st->mode), 1);
+    p9_put_str(&o, st->name);
+    n = o.failed ? 0 : o.len;
+  } else {
+    n = p9_stat_encode(st, d->out + d->used, d->cap - d->used);
+  }
+  if (!n) return false;
+  d->used += (uint32_t)n, d->taken++;
+  return true;
+}
+
 // Fills `out` (cap bytes) with whole stat entries from a directory fid.
 static vx_status p9_read_dir(p9_server *s, p9_fid *f, uint64_t offset, uint8_t *out, uint32_t cap,
                              uint32_t *count) {
@@ -475,6 +509,23 @@ static vx_status p9_read_dir(p9_server *s, p9_fid *f, uint64_t offset, uint8_t *
     f->dir_index = 0, f->dir_offset = 0;
   else if (offset != f->dir_offset)
     return VX_ERR_RANGE;
+  if (s->fs.readdir_stat) {
+    p9_dir_fill d = {.out = out, .cap = cap};
+    vx_status e = s->fs.readdir_stat(s->fs.ctx, f->node, f->dir_index, p9_dir_emit, &d);
+    if (e != VX_ERR_UNSUPPORTED) {
+      if (e != VX_OK) return e;
+      if (!d.taken && d.used == 0 && cap && e == VX_OK) {
+        // none taken: the end, or the first did not fit (TOO_SMALL), which a probe tells apart
+        p9_dir_fill probe = {.out = (uint8_t[512]){}, .cap = 512};
+        s->fs.readdir_stat(s->fs.ctx, f->node, f->dir_index, p9_dir_emit, &probe);
+        if (probe.taken) return VX_ERR_TOO_SMALL;
+      }
+      f->dir_index += d.taken;
+      f->dir_offset += d.used;
+      *count = d.used;
+      return VX_OK;
+    }
+  }
   uint32_t used = 0;
   for (;;) {
     uint64_t child;
@@ -908,6 +959,15 @@ static uint8_t p9_dirent_type(uint32_t mode) {
 // offset[8] type[1] name[s], each entry's offset the next one's cookie.
 static vx_status p9_readdir_l(p9_server *s, const p9_fid *f, uint64_t cookie, uint8_t *out, uint32_t cap,
                               uint32_t *count) {
+  if (s->fs.readdir_stat && cookie < UINT32_MAX) {
+    p9_dir_fill d = {.out = out, .cap = cap, .l = true, .cookie = cookie};
+    vx_status e = s->fs.readdir_stat(s->fs.ctx, f->node, (uint32_t)cookie, p9_dir_emit, &d);
+    if (e != VX_ERR_UNSUPPORTED) {
+      if (e != VX_OK) return e;
+      *count = d.used;
+      return VX_OK;
+    }
+  }
   uint32_t used = 0;
   for (uint64_t i = cookie; i < UINT32_MAX; i++) {
     uint64_t child;

@@ -89,13 +89,23 @@ static uint8_t vx_file_p9mode(vx_mode mode) { return (uint8_t)(mode & (3 | VX_OT
 // Writes at the end, by the server (9Px's append) where it can.
 static bool vx_file_server_append(vx_ns_file *f) { return f->c && p9c_append(f->c, f->fid, true) == VX_OK; }
 
+// Opened with one walk where the path holds no link (7a6): a walk through a
+// link fails (it is no directory), and one that ends on a link says so in
+// its qid; either way the links are followed first (vx_ns_follow, a walk and
+// a stat of each prefix), and it is opened again.
 VX_API vx_fd vx_open(vx_str path, vx_mode mode) {
   char buf[VX_NS_MAX_PATH];
   vx_str p;
   vx_ns_file f;
   vx_lock(&vx_ns_proc_lock);
-  vx_status st = vx_file_resolve(path, true, buf, &p);
-  if (st == VX_OK) st = vx_ns_open(vx_ns_process(), p, vx_file_p9mode(mode), &f);
+  vx_ns *ns = vx_ns_process();
+  size_t n = ns_clean(ns, path, buf, VX_NS_MAX_PATH);
+  vx_status st = n ? ns_open(ns, (vx_str){buf, n}, vx_file_p9mode(mode), &f, true) : VX_ERR_INVALID;
+  p = (vx_str){buf, n};
+  if (st == VX_NS_LINK_REACHED || st == VX_ERR_NOT_FOUND) {
+    st = vx_file_resolve(path, true, buf, &p);
+    if (st == VX_OK) st = vx_ns_open(ns, p, vx_file_p9mode(mode), &f);
+  }
   vx_unlock(&vx_ns_proc_lock);
   if (st != VX_OK) return vx_file_fail("open", path, st);
   bool server = (mode & VX_OAPPEND) && vx_file_server_append(&f);

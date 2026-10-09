@@ -171,7 +171,8 @@ static vx_status fs_stat(void *ctx, uint64_t id, p9_stat *out) {
   uint32_t s;
   const node *n = node_at(id, &s);
   if (!n) return VX_ERR_NOT_FOUND;
-  uint8_t qtype = (uint8_t)((n->dir ? P9_QTDIR : P9_QTFILE) | ((n->mode >> 24) & (P9_QTAPPEND | P9_QTEXCL)));
+  uint8_t qtype = (uint8_t)((n->dir ? P9_QTDIR : P9_QTFILE) | ((n->mode >> 24) & (P9_QTAPPEND | P9_QTEXCL)) |
+                            (n->link ? P9_QTSYMLINK : 0)); // a walk says it is a link (7a6)
   *out = (p9_stat){.qid = {qtype, n->version, id},
                    .mode = (n->dir ? P9_DMDIR : 0) | (n->link ? P9_DMSYMLINK : 0) | n->mode,
                    .atime = n->atime,
