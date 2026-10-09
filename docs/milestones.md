@@ -14,7 +14,7 @@ Updated 2026-10-08.
 | **M4** POSIX and debugging | Done (2026-10-02) | `dbg.ndb` and `rcscript.ndb` | [M4](milestones/M4.md) |
 | **M5** Storage | Done (2026-10-04) | `install`, `powercut`, `fsdadm`, `fsddump`, `fsdnvmerestart` | [M5](milestones/M5.md) |
 | **M6** Runtime | Done (2026-10-08) | `libvx` level 1 frozen (`abi/levels/1`), its behaviour suite (`vxapi`, `libvx`) green on both | [M6](milestones/M6.md) |
-| **M7** Pixels | Scoped 2026-10-08 ([docs/21](21-pixels.md)): tracing first, then display, input, `winsrv`, `vxui`, the terminal | The minimal and CPU-pixel programs on screen, a terminal running rc, M7's budgets under KVM | [M7](milestones/M7.md) |
+| **M7** Pixels | In progress: 7a tracing done 2026-10-09 (`./build bench` finds spawn, cached reads and `ls` over their budgets); next 7b, display, then input, `winsrv`, `vxui`, the terminal ([docs/21](21-pixels.md)) | The minimal and CPU-pixel programs on screen, a terminal running rc, M7's budgets under KVM | [M7](milestones/M7.md) |
 | M8 GPU | Not started | | |
 | M9 Real hardware | Not started: the PC (9a, moved from M6's 6g on 2026-10-08), then the Q8B | | [M9](milestones/M9.md) |
 | M10 Swarm | Not started | | |
