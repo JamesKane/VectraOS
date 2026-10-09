@@ -1,6 +1,7 @@
 # tests/qemu/display.ndb: displayd over simplefb (M7 step 7b3): the output
-# adopted from the firmware, its info read from rc at /wsys/outputs (shell.ndb's grant), and the test card a write
-# to its ctl shows, matched by screenshot.
+# adopted from the firmware, its info read from rc at /wsys/outputs
+# (shell.ndb's grant), and the test card a write to its ctl shows, matched
+# by screenshot. No vx.desktop: winsrv would hold the output.
 
 scenario=display display=fb timeout=60 cmdline=vx.display
 expect="displayd: fb0 "

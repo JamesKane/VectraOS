@@ -13,6 +13,16 @@ On the session:
 - **`APPLY`** is one `channel_write` with no reply: a flip is one message;
 - **events** come unasked, with `txid` 0.
 
+## 1a. `displayd`'s client
+
+`displayd` serves its one client, winsrv, the same protocol (M7 step 7d1a), as Fuchsia's coordinator gives its client the engine's shape (`fuchsia.hardware.display/coordinator.fidl`: `ImportImage`, `CheckConfig`, `CommitConfig` with a stamp, `OnVsync` with the stamp shown). The client sends `CONNECT` on `/srv/outputs`, the post `displayd`'s files are served on, and is answered with a session and `ADDED`. `displayd` passes its requests through with its own guards:
+- its stamps are mapped to `displayd`'s own, and `VBLANK` comes back in the client's numbering: every vblank, with stamp 0 before it has applied anything, so its frame clock ticks from the start;
+- an `APPLY` that differs from its last checked configuration in more than its images is checked first, and a failure ends the client's session, never `displayd`'s with the back end; an `APPLY` naming an image it did not import ends it too;
+- its images are released when it goes, and the picture it left stays on screen;
+- while it holds the output, `displayd`'s own `ctl` `pattern` and `blank` are refused (`BAD_STATE`).
+
+A second client is refused (`BAD_STATE`).
+
 ## 2. Requests
 
 | Ordinal | Request | Reply |

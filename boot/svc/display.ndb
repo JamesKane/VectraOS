@@ -1,9 +1,13 @@
 # boot/svc/display.ndb: the display (M7 step 7b3, docs/21 §2 item 4):
 # simplefb serves the framebuffer the firmware left as a display engine
-# back end on /srv/simplefb, and displayd, its one client, serves the outputs
-# on /srv/outputs. Started only with vx.display on the command line until
-# winsrv (7c) is their client.
+# back end on /srv/simplefb; displayd, its one client, serves the outputs on
+# /srv/outputs: with vx.display on the command line. winsrv (7d1),
+# displayd's one client, serves the windows on /srv/wsys with vx.desktop as
+# well. Neither is the system's until 7h.
 
 service=simplefb program=/boot/bin/drv-simplefb post=simplefb console framebuffer when=vx.display
 service=displayd program=/boot/bin/displayd post=outputs console when=vx.display
 connect=simplefb
+
+service=winsrv program=/boot/bin/winsrv post=wsys console when=vx.desktop
+connect=outputs

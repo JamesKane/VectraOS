@@ -1,0 +1,24 @@
+# tests/qemu/desktop.ndb: winsrv's footing (M7 step 7d1a): it takes the
+# output from displayd as its one client and composites the desk on its own
+# buffers, flipped in at displayd's vblanks; its /wsys/info and displayd's
+# info read from rc; displayd refusing its own pattern while winsrv holds
+# the output. The desk matched by screenshot.
+
+scenario=desktop display=fb timeout=60 cmdline="vx.display vx.desktop"
+expect="displayd: a client holds fb0"
+expect="winsrv: the desktop is on screen"
+screen=desk-$arch tolerance=1
+prompt="% "
+send="cat /wsys/info"
+expect="version=1 output=fb0"
+prompt="% "
+send="cat /wsys/outputs/fb0/info"
+expect=" client"
+prompt="% "
+send="echo pattern >/wsys/outputs/fb0/ctl"
+expect="displayd: ctl: -12"
+prompt="% "
+fail="vx: panic"
+fail="svcd: winsrv exited"
+fail="svcd: displayd exited"
+fail="displayd: the client has gone"

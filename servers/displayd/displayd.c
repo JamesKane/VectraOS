@@ -13,13 +13,26 @@
 // Policy is displayd's and registers are the back end's: displayd keeps the
 // output's state and its vblank Counter, which rises once a vblank, and
 // releases a buffer's timeline once a vblank shows a newer stamp than the
-// one that used it. Its one client from 7c is winsrv.
+// one that used it.
+//
+// Its one client is winsrv (M7 step 7d1a), which sends VX_DISPLAY_CONNECT
+// on the post and is given a session of the same engine protocol, as
+// Fuchsia's coordinator gives its client the engine's shape
+// (fuchsia.hardware.display/coordinator.fidl: ImportImage, CheckConfig,
+// CommitConfig with a stamp, OnVsync with the stamp shown). displayd passes
+// it through with its own guards: the client's stamps are mapped to its
+// own, so its ctl's and the client's never meet; an APPLY that differs from
+// the client's last checked configuration in more than its images is
+// checked first, and ends the client's session if it fails, never
+// displayd's; and the client's images are released when it goes. While a
+// client holds the output, ctl's pattern and blank are refused.
 
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-9p/ring_server.c"
 #include "../../lib/vx-driver/displayproto.h"
 
-static constexpr uint64_t KEY_SESSION = P9_KEY_USER | 1;
+static constexpr uint64_t KEY_SESSION = P9_KEY_USER | 1, KEY_CLIENT = P9_KEY_USER | 2;
+static constexpr uint32_t CLIENT_IMAGES = 16, STAMPS = 16;
 
 enum : uint64_t { ROOT = 1, OUT, INFO, CTL, NODES };
 
@@ -35,9 +48,30 @@ static struct {
   vx_buffer card;        // the test card, made on first use
   int64_t card_id;       // its id at the back end
   uint64_t card_stamp;   // the stamp that showed it last; released past it
+  uint8_t edid[1024];
+  uint32_t edid_len;
 } out = {.on = true};
 
+// The client (winsrv): its session, the images it imported, its last checked
+// configuration, and which of displayd's stamps carried which of its own.
+typedef struct stamp_pair {
+  uint64_t mine, its;
+} stamp_pair;
+typedef struct client_state {
+  vx_handle ch;
+  uint64_t images[CLIENT_IMAGES];
+  bool checked;
+  vx_display_cfg cfg;
+  uint64_t stamp; // its newest
+  stamp_pair map[STAMPS];
+  uint32_t nmap; // pairs made: the last STAMPS of them kept
+} client_state;
+static client_state client;
+
+static vx_status power(bool on);
+
 static vx_handle server_port(void);
+static vx_handle server_listen(void);
 
 static void log_status(const char *what, vx_status st) { vx_printf("displayd: %s: %d\n", what, (int)st); }
 
@@ -56,6 +90,8 @@ static void on_event(const uint8_t *m, uint32_t len) {
     const vx_display_added *a = (const vx_display_added *)m;
     if (a->output != 0) return;
     out.added = true, out.mode = a->current;
+    out.edid_len = a->edid_len <= sizeof out.edid && len >= sizeof *a + a->edid_len ? a->edid_len : 0;
+    memcpy(out.edid, m + sizeof *a, out.edid_len);
     vx_printf("displayd: fb0 %ux%u at %u.%03u Hz%s\n", a->current.width, a->current.height,
               a->current.refresh_mhz / 1000, a->current.refresh_mhz % 1000,
               a->current.flags & VX_DISPLAY_FIRMWARE ? ", adopted from the firmware" : "");
@@ -64,6 +100,15 @@ static void on_event(const uint8_t *m, uint32_t len) {
   } else if (h->ordinal == VX_DISPLAY_VBLANK && len == sizeof(vx_display_vblank)) {
     const vx_display_vblank *v = (const vx_display_vblank *)m;
     out.shown = v->stamp;
+    // The client's newest stamp on screen, by its own numbering.
+    uint64_t its = 0;
+    for (uint32_t i = 0; i < client.nmap && i < STAMPS; i++)
+      if (client.map[i].mine <= v->stamp && client.map[i].its > its) its = client.map[i].its;
+    if (client.ch) { // every vblank, its stamp 0 before it has applied any: the frame clock ticks regardless
+      vx_display_vblank cv = *v;
+      cv.stamp = its;
+      vx_channel_write(client.ch, &cv, sizeof cv, nullptr, 0); // a full channel drops it: the next says more
+    }
     vx_counter_signal(out.vblank, (uint64_t)vx_counter_read(out.vblank) + 1);
     // The card is the back end's no more once a newer stamp is on screen.
     if (out.card_stamp && v->stamp > out.card_stamp && out.card.timeline) {
@@ -75,7 +120,7 @@ static void on_event(const uint8_t *m, uint32_t len) {
 
 static void drain(void) {
   for (;;) {
-    uint8_t m[1024];
+    alignas(vx_display_added) uint8_t m[1024];
     vx_handle h[VX_CHANNEL_MAX_HANDLES];
     vx_msg_size size;
     vx_status st = vx_channel_read(session, m, sizeof m, h, VX_CHANNEL_MAX_HANDLES, &size);
@@ -89,11 +134,20 @@ static void drain(void) {
   }
 }
 
+static bool client_serve(void);
+static void client_end(void);
+
 static void event(void *ctx, const vx_packet *pk) {
   (void)ctx;
-  if (pk->key != KEY_SESSION) return;
-  drain();
-  vx_port_bind(server_port(), session, VX_TRIGGER_READABLE, KEY_SESSION, 0);
+  if (pk->key == KEY_SESSION) {
+    drain();
+    vx_port_bind(server_port(), session, VX_TRIGGER_READABLE, KEY_SESSION, 0);
+  } else if (pk->key == KEY_CLIENT && client.ch) {
+    if (client_serve())
+      vx_port_bind(server_port(), client.ch, VX_TRIGGER_READABLE, KEY_CLIENT, 0);
+    else
+      client_end();
+  }
 }
 
 // --- Configurations ---
@@ -118,6 +172,171 @@ static vx_status apply(bool card, uint32_t color) {
   if (st != VX_OK) return st;
   if (card) out.card_stamp = a.stamp;
   return vx_channel_write(session, &a, sizeof a, nullptr, 0);
+}
+
+// --- The client ---
+
+static void client_reply(const vx_msg_header *req, vx_status st, int64_t a0) {
+  vx_display_msg r = {.h = {.txid = req->txid, .ordinal = req->ordinal, .flags = (uint32_t)(int32_t)st},
+                      .arg = {a0}};
+  vx_channel_write(client.ch, &r, sizeof r, nullptr, 0);
+}
+
+static bool client_image(uint64_t id) {
+  for (uint32_t i = 0; i < CLIENT_IMAGES; i++)
+    if (id && client.images[i] == id) return true;
+  return false;
+}
+
+static void client_end(void) {
+  for (uint32_t i = 0; i < CLIENT_IMAGES; i++)
+    if (client.images[i]) {
+      vx_display_msg m = {.h = {.ordinal = VX_DISPLAY_RELEASE}, .arg = {(int64_t)client.images[i]}}, r = {};
+      call(&m, sizeof m, nullptr, 0, &r, sizeof r);
+    }
+  vx_handle_close(client.ch);
+  client = (client_state){};
+  vx_print(VX_STR("displayd: the client has gone\n"));
+}
+
+// Whether a and b differ in nothing but their layers' images.
+static bool same_but_images(const vx_display_cfg *a, const vx_display_cfg *b) {
+  vx_display_cfg x = *a, y = *b;
+  for (uint32_t i = 0; i < VX_DISPLAY_LAYERS; i++) x.layer[i].image = y.layer[i].image = 0;
+  return memcmp(&x, &y, sizeof x) == 0;
+}
+
+// The client's APPLY: displayd's stamp for it, checked first unless only
+// its images changed. False: a protocol error, which ends its session.
+static bool client_apply(vx_display_apply *a) {
+  if (a->stamp <= client.stamp || a->ndamage > VX_DISPLAY_DAMAGE) return false;
+  for (uint32_t i = 0; i < a->cfg.nlayers && i < VX_DISPLAY_LAYERS; i++)
+    if (a->cfg.layer[i].kind == VX_DISPLAY_LAYER_IMAGE && !client_image(a->cfg.layer[i].image)) return false;
+  if (!client.checked || !same_but_images(&a->cfg, &client.cfg)) {
+    vx_display_check c = {.h = {.ordinal = VX_DISPLAY_CHECK}, .cfg = a->cfg};
+    vx_display_msg r = {};
+    if (call(&c, sizeof c, nullptr, 0, &r, sizeof r) != VX_OK) return false;
+    client.cfg = a->cfg, client.checked = true;
+  }
+  client.stamp = a->stamp;
+  client.map[client.nmap++ % STAMPS] = (stamp_pair){++out.stamp, a->stamp}; // the oldest overwritten
+  a->stamp = out.stamp;
+  return vx_channel_write(session, a, sizeof *a, nullptr, 0) == VX_OK;
+}
+
+// Every message waiting from the client; false once it has gone or broken the protocol.
+static bool client_serve(void) {
+  static union {
+    vx_msg_header h;
+    vx_display_msg msg;
+    vx_display_import import;
+    vx_display_check check;
+    vx_display_apply apply;
+    vx_display_power power;
+    uint8_t bytes[1024];
+  } m;
+  for (;;) {
+    vx_handle h[VX_CHANNEL_MAX_HANDLES];
+    vx_msg_size size;
+    vx_status st = vx_channel_read(client.ch, &m, sizeof m, h, VX_CHANNEL_MAX_HANDLES, &size);
+    if (st == VX_ERR_SHOULD_WAIT) return true;
+    if (st != VX_OK || size.bytes < sizeof m.h) return false;
+    bool import = m.h.ordinal == VX_DISPLAY_IMPORT && size.bytes == sizeof m.import && size.handles == 2;
+    if (!import)
+      for (uint32_t i = 0; i < size.handles; i++) vx_handle_close(h[i]);
+    vx_display_msg r = {};
+    switch (m.h.ordinal) {
+    case VX_DISPLAY_INFO: {
+      vx_display_info i = engine;
+      i.h = (vx_msg_header){.txid = m.h.txid, .ordinal = m.h.ordinal};
+      vx_channel_write(client.ch, &i, sizeof i, nullptr, 0);
+      break;
+    }
+    case VX_DISPLAY_IMPORT: {
+      uint32_t slot = 0;
+      while (slot < CLIENT_IMAGES && client.images[slot]) slot++;
+      if (!import || slot == CLIENT_IMAGES) {
+        if (import) vx_handle_close(h[0]), vx_handle_close(h[1]);
+        client_reply(&m.h, import ? VX_ERR_NO_MEMORY : VX_ERR_INVALID, 0);
+        break;
+      }
+      vx_display_import fwd = m.import;
+      fwd.h = (vx_msg_header){.ordinal = VX_DISPLAY_IMPORT};
+      st = call(&fwd, sizeof fwd, h, 2, &r, sizeof r);
+      if (st == VX_OK) client.images[slot] = (uint64_t)r.arg[0];
+      client_reply(&m.h, st, st == VX_OK ? r.arg[0] : 0);
+      break;
+    }
+    case VX_DISPLAY_RELEASE: {
+      uint64_t id = (uint64_t)m.msg.arg[0];
+      if (size.bytes != sizeof m.msg || !client_image(id)) {
+        client_reply(&m.h, VX_ERR_NOT_FOUND, 0);
+        break;
+      }
+      for (uint32_t i = 0; i < CLIENT_IMAGES; i++)
+        if (client.images[i] == id) client.images[i] = 0;
+      vx_display_msg fwd = {.h = {.ordinal = VX_DISPLAY_RELEASE}, .arg = {(int64_t)id}};
+      client_reply(&m.h, call(&fwd, sizeof fwd, nullptr, 0, &r, sizeof r), 0);
+      break;
+    }
+    case VX_DISPLAY_CHECK: {
+      if (size.bytes != sizeof m.check) {
+        client_reply(&m.h, VX_ERR_INVALID, 0);
+        break;
+      }
+      vx_display_check fwd = m.check;
+      fwd.h = (vx_msg_header){.ordinal = VX_DISPLAY_CHECK};
+      st = call(&fwd, sizeof fwd, nullptr, 0, &r, sizeof r);
+      if (st == VX_OK) client.cfg = m.check.cfg, client.checked = true;
+      client_reply(&m.h, st, r.arg[0]);
+      break;
+    }
+    case VX_DISPLAY_APPLY:
+      if (size.bytes != sizeof m.apply || !client_apply(&m.apply)) return false;
+      break;
+    case VX_DISPLAY_POWER:
+      client_reply(&m.h, size.bytes == sizeof m.power ? power(m.power.on != 0) : VX_ERR_INVALID, 0);
+      break;
+    default: client_reply(&m.h, VX_ERR_UNSUPPORTED, 0); break;
+    }
+  }
+}
+
+// VX_DISPLAY_CONNECT on the post: the client's session, and ADDED on it.
+static void listen_msg(void *ctx, const void *msg, uint32_t len, vx_handle handle) {
+  (void)ctx;
+  if (handle) vx_handle_close(handle);
+  const vx_msg_header *req = msg;
+  vx_msg_header rep = {.txid = req->txid, .ordinal = req->ordinal};
+  vx_handle ends[2] = {};
+  if (len != sizeof *req || req->ordinal != VX_DISPLAY_CONNECT)
+    rep.flags = (uint32_t)VX_ERR_INVALID;
+  else if (client.ch || !out.added)
+    rep.flags = (uint32_t)VX_ERR_BAD_STATE;
+  else if (vx_channel_create(0, ends) != VX_OK)
+    rep.flags = (uint32_t)VX_ERR_NO_MEMORY;
+  if (rep.flags) {
+    vx_channel_write(server_listen(), &rep, sizeof rep, nullptr, 0);
+    return;
+  }
+  if (vx_channel_write(server_listen(), &rep, sizeof rep, &ends[1], 1) != VX_OK) {
+    vx_handle_close(ends[0]), vx_handle_close(ends[1]);
+    return;
+  }
+  client = (client_state){.ch = ends[0]};
+  static struct {
+    vx_display_added a;
+    uint8_t edid[1024];
+  } added;
+  added.a = (vx_display_added){.h = {.ordinal = VX_DISPLAY_ADDED},
+                               .output = 0,
+                               .edid_len = out.edid_len,
+                               .preferred = out.mode,
+                               .current = out.mode};
+  memcpy(added.edid, out.edid, out.edid_len);
+  vx_channel_write(client.ch, &added, (uint32_t)sizeof added.a + out.edid_len, nullptr, 0);
+  vx_port_bind(server_port(), client.ch, VX_TRIGGER_READABLE, KEY_CLIENT, 0);
+  vx_print(VX_STR("displayd: a client holds fb0\n"));
 }
 
 static uint32_t grey(uint32_t v) { return v << 16 | v << 8 | v; }
@@ -234,6 +453,7 @@ static vx_status fs_read(void *ctx, uint64_t n, uint64_t offset, uint8_t *buf, u
   if (out.mode.flags & VX_DISPLAY_FIRMWARE) vx_ndb_put(&w, "adopted", VX_STR("firmware"));
   vx_ndb_put(&w, "power", out.on ? VX_STR("on") : VX_STR("off"));
   vx_ndb_put_u64(&w, "stamp", out.shown);
+  if (client.ch) vx_ndb_flag(&w, "client");
   vx_ndb_end(&w);
   size_t have = w.failed ? 0 : w.len;
   uint64_t left = offset < have ? have - offset : 0;
@@ -248,7 +468,10 @@ static vx_status fs_write(void *ctx, uint64_t n, uint64_t offset, const uint8_t 
   vx_str cmd = {(const char *)buf, *count};
   while (cmd.len && (cmd.ptr[cmd.len - 1] == '\n' || cmd.ptr[cmd.len - 1] == ' ')) cmd.len--;
   vx_status st;
-  if (vx_str_eq(cmd, VX_STR("pattern")))
+  bool held = client.ch && (vx_str_eq(cmd, VX_STR("pattern")) || vx_str_eq(cmd, VX_STR("blank")));
+  if (held)
+    st = VX_ERR_BAD_STATE; // the client's picture is on screen
+  else if (vx_str_eq(cmd, VX_STR("pattern")))
     st = show_card();
   else if (vx_str_eq(cmd, VX_STR("blank")))
     st = apply(false, 0);
@@ -282,9 +505,11 @@ static p9_ring_server server = {
     .name = VX_STR("displayd"),
     .supported = P9_EXT_XATTR,
     .event = event,
+    .listen_msg = listen_msg,
 };
 
 static vx_handle server_port(void) { return server.port; }
+static vx_handle server_listen(void) { return server.listen; }
 
 // The back end: the first connector it was given.
 static vx_handle back_end(void) {

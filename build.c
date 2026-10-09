@@ -1499,6 +1499,8 @@ static const program USER_PROGRAMS[] = {
      LINK_STATIC, nullptr},
     {"drv-virtio-net", "drivers/drv-virtio-net/net.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false,
      LINK_STATIC, nullptr},
+    {"winsrv", "servers/winsrv/winsrv.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr}, // the window server (7d1)
     {"displayd", "servers/displayd/displayd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false,
      LINK_STATIC, nullptr}, // the display coordinator (7b3)
     {"drv-virtio-input", "drivers/drv-virtio-input/input.c", IN_BOOTFS, nullptr, false, nullptr, nullptr,

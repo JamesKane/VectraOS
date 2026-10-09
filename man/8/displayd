@@ -14,6 +14,9 @@ displayd
 It holds a session of the display engine protocol (docs/proto/display.md) with one back end, the connector its manifest's `connect=` gives it, and serves the outputs on `/srv/outputs`, which the shell sees at `/wsys/outputs` and winsrv will show there.
 Policy is its own and registers are the back end's: it keeps each output's mode and state and a vblank Counter that rises once a refresh, and it signals a buffer's timeline once a vblank shows a newer stamp than the one that used it.
 
+Its one client is winsrv(8), which asks for the output on `/srv/outputs` and is given a session of the same protocol (docs/proto/display.md §1a): its stamps are mapped to displayd's own, a configuration that changes more than its images is checked before it is applied, and its images are released when it goes.
+While it holds the output, `info` says `client`, and ctl's `pattern` and `blank` are refused.
+
 Its back end is the one its manifest names: drv-simplefb(3), the firmware's framebuffer, in boot/svc/display.ndb; drv-virtio-gpu(3) serves the same protocol on `/srv/display0`.
 It and drv-simplefb start only with `vx.display` on the kernel command line (boot/svc/display.ndb) until winsrv (M7 step 7c) is `displayd`'s client.
 
@@ -35,7 +38,7 @@ output=fb0 width=1280 height=800 refresh_mhz=60000 format=XRGB8888
 
 # SEE ALSO
 
-drv-simplefb(3), drv-virtio-gpu(3), svc(6), svcd(8), vmo(2)
+drv-simplefb(3), drv-virtio-gpu(3), winsrv(8), svc(6), svcd(8), vmo(2)
 
 # BUGS
 
