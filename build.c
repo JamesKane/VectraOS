@@ -1432,6 +1432,8 @@ static const program USER_PROGRAMS[] = {
      nullptr},
     {"tracetest", "tests/user/tracetest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // the kernel's trace, /proc/trace (7a1b)
+    {"benchtest", "tests/user/benchtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr}, // ./build bench's measurements (7a5)
     {"flighttest", "tests/user/tracetest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // tracetest's flight recorder test, as a program of its own (7a4a)
     {"pmutest", "tests/user/pmutest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
@@ -4825,7 +4827,8 @@ static int cmd_test(const arch *only, bool release) {
     for (int i = 0; i < found.count; i++) {
       const char *base = strrchr(found.paths[i], '/') + 1;
       const char *name = fmt("%.*s", (int)(strlen(base) - 4), base);
-      if (!scenario_flag(name, "release")) scenarios[scenario_count++] = name;
+      if (!scenario_flag(name, "release") && !scenario_flag(name, "bench"))
+        scenarios[scenario_count++] = name;
     }
   }
   if (!build_vx9pserve() || !build_u9fs() || !build_vxfs())
@@ -6148,6 +6151,9 @@ static void usage(void) {
       "  test          [--arch A] [--release] [--tcg] [scenario...]   boot headless and check "
       "tests/qemu/*.ndb;\n"
       "                                                 x86_64 uses KVM when it can, unless --tcg\n"
+      "  bench                                          00 §8's budgets under KVM in a release build, each\n"
+      "                                                 between two trace marks (bench), and its own test "
+      "(benchslow)\n"
       "  release       [--verify RECORD]               both base trees in out/release/store, store-A.tar, "
       "and\n"
       "                                                 release.ndb (unsigned); --verify rebuilds and "
@@ -6167,7 +6173,7 @@ static void usage(void) {
       "rc, ktest, ...\n"
       "\n"
       "A is x86_64 or aarch64. qemu defaults to x86_64.\n"
-      "Still to come: bench, and in check, the vx-check models (M2).\n");
+      "Still to come: in check, the vx-check models (M2).\n");
   exit(2);
 }
 
@@ -6219,6 +6225,13 @@ int main(int argc, char **argv) {
   }
 
   if (strcmp(command, "release") == 0) return cmd_release(verify);
+  if (strcmp(command, "bench") == 0) { // 00 §8's budgets, under KVM, in a release build (7a5)
+    check_toolchain();
+    const arch *x86 = &ARCHES[0];
+    if (!kvm_usable(x86)) die("bench needs KVM: x86_64 and access to /dev/kvm");
+    scenarios[0] = "bench", scenarios[1] = "benchslow", scenario_count = 2;
+    return cmd_test(x86, true);
+  }
   if (strcmp(command, "loc") == 0) return cmd_loc();
   if (strcmp(command, "vendor-check") == 0) return cmd_vendor_check();
   if (strcmp(command, "check") == 0) {

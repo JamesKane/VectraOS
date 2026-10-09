@@ -1,0 +1,9 @@
+# tests/user/benchtest.ndb: ./build bench's measurements (tests/user/benchtest.c,
+# the bench and benchslow scenarios): as adm, for /proc/trace and fsd's adm
+# branch; the trace's Resource for its marks; the command line for bench.slow=.
+
+service=benchtest program=/boot/bin/benchtest console trace cmdline
+user=adm
+ns=posix
+mount=/n/adm srv=fsd aname=adm flags=c
+connect=nsd

@@ -1,0 +1,12 @@
+# tests/qemu/benchslow.ndb: ./build bench's own test (M7 step 7a5): with
+# bench.slow=flight every spawn under the flight recorder is slowed by
+# 100 µs, and the bench must say the recorder's cost is over its budget.
+# (The flight recorder's is the one budget the bench meets today, so the
+# one a slowed path can be seen to fail.)
+
+scenario=benchslow bench timeout=180 cmdline="vx.skip=rc bench.slow=flight" with=benchtest,fsdvol disk=64 volume=tests/fsd/home
+expect="budget=1% OVER BUDGET"
+fail="vx: panic"
+fail="bench: all within budget"
+fail="budget=1% ok"
+fail="bench: FAILED"

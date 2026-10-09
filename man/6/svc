@@ -77,7 +77,7 @@ The keys of a `service=` record:
 : `tasks`
   A flag: svcd's own task, as the handle `tasks`, and through it every task, for procfs(4) and tests.
 : `trace`
-  A flag: the root Resource with `VX_RIGHT_TRACE` alone, as the handle `trace`: the kernel's trace and nothing else (ADR-0049), for procfs(4).
+  A flag: the root Resource with `VX_RIGHT_TRACE` alone (and `TRANSFER` and `DUPLICATE`, so it can be passed on), as the handle `trace`: the kernel's trace and nothing else (ADR-0049), for procfs(4), and for a program that marks the trace itself (the bench's).
 : `cmdline`
   A flag: the kernel command line, as a record `cmdline=<text>`.
 : `entropy`

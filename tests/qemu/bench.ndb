@@ -1,0 +1,13 @@
+# tests/qemu/bench.ndb: ./build bench (00 §8, M7 step 7a5): the budgets users
+# feel that a test machine can measure, each the time between two of the
+# kernel trace's marks (tests/user/benchtest.c), and the flight recorder's
+# cost on them. Under KVM, in a release build: ./build bench runs it, not
+# ./build test.
+
+scenario=bench bench timeout=180 cmdline=vx.skip=rc with=benchtest,fsdvol disk=64 volume=tests/fsd/home
+expect="bench: all within budget"
+line="svcd: benchtest exited"
+fail="vx: panic"
+fail="OVER BUDGET"
+fail="bench: FAILED"
+fail="svcd: benchtest exited: "
