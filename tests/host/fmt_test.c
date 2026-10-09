@@ -1,4 +1,4 @@
-// text_test.c: lib/vx-text's slices and formatting (M6 step 6e4c2). Every
+// fmt_test.c: lib/vx-fmt's slices and formatting (M6 step 6e4c2). Every
 // format is checked against the host C library's snprintf, byte for byte,
 // floating point among them: random doubles through each conversion.
 
@@ -9,7 +9,7 @@
 #include <wchar.h>
 
 #include "check.h"
-#include "../../lib/vx-text/text.c"
+#include "../../lib/vx-fmt/fmt.c"
 
 static int compared;
 
@@ -236,6 +236,6 @@ int main(void) {
     double x = (double)(int64_t)next() / (double)(1ull << (next() % 64));
     floats(x);
   }
-  printf("text_test: %d formats compared\n", compared);
+  printf("fmt_test: %d formats compared\n", compared);
   return check_result();
 }

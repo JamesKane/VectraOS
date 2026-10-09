@@ -191,7 +191,7 @@ VX_API void vx_pool_put(vx_pool *p, vx_id id) {
 
 VX_API vx_status vx_pool_error(const vx_pool *p) { return p->error; }
 
-// --- Text into arenas, and printed (09 §5.3; the engine is vx-text's) ---
+// --- Text into arenas, and printed (09 §5.3; the engine is vx-fmt's) ---
 
 VX_API vx_str vx_vfmt(vx_arena *a, const char *fmt, va_list ap) {
   va_list again;

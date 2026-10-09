@@ -1,6 +1,6 @@
 page=fmt sect=2 summary="slices and formatting"
     names=vx_cstr,vx_str_eq,vx_str_prefix,vx_str_suffix,vx_str_cut,vx_str_find,vx_str_split,vx_str_u64,vx_str_i64,vx_str_cat,vx_fmt,vx_vfmt,vx_bfmt,vx_vbfmt,vx_printf,vx_eprintf
-    src=lib/vx-text/text.c,lib/vx-rt/arena.c
+    src=lib/vx-fmt/fmt.c,lib/vx-rt/arena.c
     keys=string,slice,str,format,printf,sprintf,snprintf,split,find,number,parse,utf-8,vx_str
 
 # SYNOPSIS
@@ -46,7 +46,7 @@ A slice prints as `"%.*s", VX_FMT(s)`.
 `vx_vfmt` and `vx_vbfmt` take a `va_list`.
 
 The verbs are C's: flags `-+ #0`, a width and a precision, either of which may be `*`, the lengths `hh h l ll j z t L`, and `d i u o x X b B c s p f F e E g G a A %`.
-Floating point is exact: a double is expanded to all its decimal digits and rounded half to even, so the output is glibc's, byte for byte (`tests/host/text_test.c` compares a million formats).
+Floating point is exact: a double is expanded to all its decimal digits and rounded half to even, so the output is glibc's, byte for byte (`tests/host/fmt_test.c` compares a million formats).
 
 # EXAMPLES
 

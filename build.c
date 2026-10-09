@@ -2391,7 +2391,7 @@ static bool build_user_programs(const arch *a, bool release) {
       cmd_add(&ld[n], fmt("%s/libc.so", lib));
       cmd_add(&ld[n], fmt("%s/libclang_rt.builtins.a", lib));
       cmd_add(&ld[n], fmt("%s/crtn.o", lib));
-    } else { // what the compiler calls itself: aarch64's long double conversions, for vx-text's %Lf
+    } else { // what the compiler calls itself: aarch64's long double conversions, for vx-fmt's %Lf
       cmd_add(&ld[n], fmt("%s/libclang_rt.builtins.a", lib));
     }
     ccs[n] = &cc[n];

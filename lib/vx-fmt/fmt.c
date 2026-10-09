@@ -1,7 +1,7 @@
-// vx-text: slices and formatting (09 §5.3, ADR-0004 libvx v0, M6 step
+// vx-fmt: slices and formatting (09 §5.3, ADR-0004 libvx v0, M6 step
 // 6e4c2). Pure: no kernel entry and no memory of its own, so it is
 // unity-built through base.c, exported by libvx, and host-tested against the
-// C library's printf (tests/host/text_test.c). What needs an arena or an
+// C library's printf (tests/host/fmt_test.c). What needs an arena or an
 // output, vx_fmt, vx_str_cat and vx_printf, is vx-rt's (lib/vx-rt/arena.c).
 //
 // Formatting takes printf's verbs, so clang checks each format string:

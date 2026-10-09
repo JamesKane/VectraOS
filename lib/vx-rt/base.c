@@ -21,7 +21,7 @@
 #include "../../abi/vx.h"
 #include "../vx-mem/mem.h"
 #include "../vx-ndb/ndb.c"
-#include "../vx-text/text.c"
+#include "../vx-fmt/fmt.c"
 
 #ifdef __clang_analyzer__
 // The static analyzer cannot see a syscall instruction write through the
