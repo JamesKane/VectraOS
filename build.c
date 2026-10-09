@@ -1438,6 +1438,8 @@ static const program USER_PROGRAMS[] = {
      nullptr}, // ./build bench's measurements (7a5)
     {"flighttest", "tests/user/tracetest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // tracetest's flight recorder test, as a program of its own (7a4a)
+    {"routetest", "tests/user/routetest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr}, // input routed to windows (7d1c)
     {"wintest", "tests/user/wintest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // windows and the frame protocol (7d1b)
     {"disptest", "tests/user/disptest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
@@ -4495,7 +4497,10 @@ static const char *substitute_arch(vx_str pattern, const arch *a) {
 // at), and the test fails, for a person to look at and keep. key=SPEC presses
 // keys, as QMP's send-key names them, joined by '-' for a chord.
 // typekeys=TEXT types the text on the virtio keyboard, then return;
-// click=X,Y taps the virtio tablet there, in its range 0 to 32767 (7c1).
+// click=X,Y taps the virtio tablet there (7c1), drag=X1,Y1,X2,Y2 drags with
+// the left button, a coordinate a percentage of the screen ("20%") or the
+// tablet's own 0 to 32767; holdkey=SPEC,MS holds a chord while what follows
+// it at the same place (a click=) is done (7d1c).
 
 typedef struct qmp {
   int fd;
@@ -4715,21 +4720,54 @@ static const char *typed_keys(vx_str text) {
   return out;
 }
 
-// click=X,Y: the tablet to (X, Y), in its range 0 to 32767, and the left
-// button pressed and let go there.
-static bool click(qmp *q, const char *at) {
+// A coordinate of click= or drag=: a percentage of the screen ("20%") or
+// the tablet's own value, 0 to 32767; then *at past it and a comma.
+static bool tablet_value(const char **at, long *v) {
   char *end = nullptr;
-  long x = strtol(at, &end, 10), y = 0;
-  if (*end != ',') return false;
-  y = strtol(end + 1, &end, 10);
-  if (*end) return false;
+  *v = strtol(*at, &end, 10);
+  if (end == *at) return false;
+  if (*end == '%') *v = *v * 32767 / 100, end++;
+  if (*end == ',') end++;
+  *at = end;
+  return *v >= 0 && *v <= 32767;
+}
+
+static bool tablet_move(qmp *q, long x, long y) {
   return qmp_do(q, fmt("{\"execute\":\"input-send-event\",\"arguments\":{\"events\":["
                        "{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":%ld}},"
-                       "{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":%ld}},"
-                       "{\"type\":\"btn\",\"data\":{\"down\":true,\"button\":\"left\"}}]}}\n",
-                       x, y)) &&
-         qmp_do(q, "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":["
-                   "{\"type\":\"btn\",\"data\":{\"down\":false,\"button\":\"left\"}}]}}\n");
+                       "{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":%ld}}]}}\n",
+                       x, y));
+}
+
+static bool tablet_button(qmp *q, bool down) {
+  return qmp_do(q, fmt("{\"execute\":\"input-send-event\",\"arguments\":{\"events\":["
+                       "{\"type\":\"btn\",\"data\":{\"down\":%s,\"button\":\"left\"}}]}}\n",
+                       down ? "true" : "false"));
+}
+
+// Each step a while after the last: QEMU sends a tablet's motion and its
+// buttons through different devices (the buttons to the mouse, when there is
+// one), whose drivers may report them in either order.
+static void input_pause(void) { usleep(80'000); }
+
+// click=X,Y: the tablet to (X, Y), then the left button pressed and let go
+// there. drag=X1,Y1,X2,Y2: pressed at the first, moved to the second with it
+// held, and let go there. A coordinate is a percentage of the screen ("20%")
+// or the tablet's own value, 0 to 32767.
+static bool click(qmp *q, const char *at, bool drag) {
+  long v[4];
+  for (int i = 0; i < (drag ? 4 : 2); i++)
+    if (!tablet_value(&at, &v[i])) return false;
+  if (*at) return false;
+  bool ok = tablet_move(q, v[0], v[1]);
+  input_pause();
+  ok = ok && tablet_button(q, true);
+  input_pause();
+  if (drag) {
+    ok = ok && tablet_move(q, v[2], v[3]);
+    input_pause();
+  }
+  return ok && tablet_button(q, false);
 }
 
 static bool key_chord(qmp *q, const char *spec) {
@@ -4746,6 +4784,28 @@ static bool key_chord(qmp *q, const char *spec) {
   return qmp_do(q, fmt("{\"execute\":\"send-key\",\"arguments\":{\"keys\":[%s]}}\n", keys));
 }
 
+// holdkey=SPEC,MS: the chord pressed and held MS milliseconds, while what
+// follows it (a click=) is done: send-key returns at once.
+static bool key_hold(qmp *q, const char *spec) {
+  const char *comma = strrchr(spec, ',');
+  if (!comma) return false;
+  long ms = strtol(comma + 1, nullptr, 10);
+  char keys[256] = "";
+  size_t n = 0;
+  for (const char *k = spec; k < comma;) {
+    const char *e = memchr(k, '-', (size_t)(comma - k));
+    size_t len = e ? (size_t)(e - k) : (size_t)(comma - k);
+    n += (size_t)snprintf(keys + n, sizeof keys - n, "%s{\"type\":\"qcode\",\"data\":\"%.*s\"}", n ? "," : "",
+                          (int)len, k);
+    k += len + (e != nullptr);
+    if (n >= sizeof keys) return false;
+  }
+  bool ok = qmp_do(
+      q, fmt("{\"execute\":\"send-key\",\"arguments\":{\"keys\":[%s],\"hold-time\":%ld}}\n", keys, ms));
+  input_pause();
+  return ok;
+}
+
 static bool run_scenario(const arch *a, bool release, const char *name) {
   const char *path = fmt("tests/qemu/%s.ndb", name);
   vx_ndb_reader r = {.src = read_file(path), .scratch = alloc(16 << 10), .scratch_cap = 16 << 10};
@@ -4755,6 +4815,8 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
   vx_str input[64] = {}; // typed once every expect before it has matched: input[k] goes before expect[k]
   // screen= and key= (7b1b), as input: done once every expect before them has matched.
   const char *screen[64] = {}, *keys_at[64] = {}, *clicks_at[64] = {}; // click= and typekeys= (7c1) too
+  const char *holds_at[64] = {};                                       // holdkey= (7d1c)
+  bool drags[64] = {};                                                 // clicks_at[k] is a drag=
   long tolerance[64] = {};
   bool display = false, gpu = false; // display=fb (the firmware's framebuffer) or display=gpu (virtio-gpu)
   int expect_count = 0, fail_count = 0;
@@ -4879,9 +4941,13 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
       if (!display) die("%s:%zu: key= and typekeys= need the scenario's display", path, rec.line);
       keys_at[expect_count] = vx_ndb_has(&rec, "key") ? str_dup(vx_ndb_get(&rec, "key"))
                                                       : typed_keys(vx_ndb_get(&rec, "typekeys"));
-    } else if (vx_ndb_has(&rec, "click") && expect_count < 64) {
-      if (!display) die("%s:%zu: click= needs the scenario's display", path, rec.line);
-      clicks_at[expect_count] = str_dup(vx_ndb_get(&rec, "click"));
+    } else if ((vx_ndb_has(&rec, "click") || vx_ndb_has(&rec, "drag")) && expect_count < 64) {
+      if (!display) die("%s:%zu: click= and drag= need the scenario's display", path, rec.line);
+      drags[expect_count] = vx_ndb_has(&rec, "drag");
+      clicks_at[expect_count] = str_dup(vx_ndb_get(&rec, drags[expect_count] ? "drag" : "click"));
+    } else if (vx_ndb_has(&rec, "holdkey") && expect_count < 64) {
+      if (!display) die("%s:%zu: holdkey= needs the scenario's display", path, rec.line);
+      holds_at[expect_count] = str_dup(vx_ndb_get(&rec, "holdkey"));
     } else if ((vx_ndb_has(&rec, "send") || vx_ndb_has(&rec, "type")) && expect_count < 64) {
       bool send = vx_ndb_has(&rec, "send"); // send= presses return after it; type= types exactly
       vx_str text = vx_ndb_get(&rec, send ? "send" : "type"), *in = &input[expect_count];
@@ -4893,7 +4959,7 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
         die("%s:%zu: more than 64 expect= or fail= records", path, rec.line);
       die("%s:%zu: expected scenario=, expect=, line=, prompt=, fail=, send=, type=, screen=, key=, "
           "typekeys=, "
-          "click= or host=",
+          "holdkey=, click=, drag= or host=",
           path, rec.line);
     }
   }
@@ -5012,14 +5078,17 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
     ssize_t stale = 0;     // bytes of buf, from pos, that came before the last typing
     bool all_seen = false; // every expect= met; with exits, QEMU's exit is what is waited for now
     while (!verdict) {
-      if (!all_seen && shown < next && (screen[next] || keys_at[next] || clicks_at[next])) {
+      if (!all_seen && shown < next && (screen[next] || keys_at[next] || holds_at[next] || clicks_at[next])) {
         shown = next;
         if (screen[next])
           verdict = screen_check(&q, fmt("%s/screen.ppm", run_dir), screen[next], tolerance[next]);
         if (!verdict && keys_at[next] && !key_press(&q, keys_at[next]))
           verdict = fmt("QMP's send-key failed for %s", keys_at[next]);
-        if (!verdict && clicks_at[next] && !click(&q, clicks_at[next]))
-          verdict = fmt("QMP's input-send-event failed for click=%s", clicks_at[next]);
+        if (!verdict && holds_at[next] && !key_hold(&q, holds_at[next]))
+          verdict = fmt("QMP's send-key failed for holdkey=%s", holds_at[next]);
+        if (!verdict && clicks_at[next] && !click(&q, clicks_at[next], drags[next]))
+          verdict =
+              fmt("QMP's input-send-event failed for %s=%s", drags[next] ? "drag" : "click", clicks_at[next]);
         if (verdict) break;
       }
       if (!all_seen && typed < next && input[next].len) {

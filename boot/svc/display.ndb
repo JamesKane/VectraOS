@@ -11,3 +11,4 @@ connect=simplefb
 
 service=winsrv program=/boot/bin/winsrv post=wsys console when=vx.desktop
 connect=outputs
+connect=input

@@ -18,8 +18,13 @@
 //   pointer dev=1 t=4130022113 x=16384 y=8192 dx=0 dy=0 wheel=0 hwheel=0 buttons=1
 //
 // rune is the key's unmodified rune (03 §5): what it types with no
-// modifier, in the US layout until 7d2's keymaps. Until winsrv takes the
-// keyboard (7d), inputd also types the keyboards' keys into the console,
+// modifier, in the US layout until 7d2's keymaps.
+//
+// Its one client, winsrv (7d1c), sends VX_INPUT_CONNECT on the post and is
+// given a session with every device's records in binary, as the drivers
+// sent them, each tagged with its post number (docs/proto/input.md §3a).
+// While a client holds the input, the console gets no keys; until one does
+// (and when it goes), inputd types the keyboards' keys into the console,
 // through its kbdin (its namespace is the console alone), with the modifiers applied: a machine with no
 // serial line can type into rc.
 
@@ -52,7 +57,8 @@ typedef struct entry {
 static entry log_[LOG];
 static uint64_t next_seq; // the next record's; the oldest held is next_seq - LOG, at least 0
 
-static vx_fd kbdin = -1; // the console's, to type into
+static vx_fd kbdin = -1;    // the console's, to type into
+static vx_handle client_ch; // winsrv's session, while it holds the input
 static p9_ring_server server;
 
 // --- The tree ---
@@ -321,11 +327,27 @@ static vx_status fs_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *c
 
 // A key typed into the console: its rune with the modifiers, as UTF-8.
 static void type_key(const vx_input_key *k) {
-  if (kbdin < 0 || k->action == VX_KEY_UP) return;
+  if (kbdin < 0 || client_ch || k->action == VX_KEY_UP) return;
   uint32_t r = vx_keymap_rune(k->usage, k->mods);
   if (!r) return;
   char b = (char)r; // the US layout's runes are all ASCII
   vx_write(kbdin, (vx_str){&b, 1});
+}
+
+// A message to the client, tagged with the device's post number.
+static void to_client(const device *d, const void *m, uint32_t len) {
+  if (!client_ch) return;
+  static union {
+    vx_msg_header h;
+    vx_input_events events;
+    vx_input_device device;
+  } out;
+  memcpy(&out, m, len);
+  out.h.flags = d->number, out.h.txid = 0;
+  if (vx_channel_write(client_ch, &out, len, nullptr, 0) == VX_ERR_PEER_CLOSED) {
+    vx_handle_close(client_ch);
+    client_ch = VX_HANDLE_NONE;
+  }
 }
 
 static void record(uint32_t dev, const vx_input_events *m, uint32_t len) {
@@ -333,6 +355,7 @@ static void record(uint32_t dev, const vx_input_events *m, uint32_t len) {
   if (len < offsetof(vx_input_events, key) || m->count > VX_INPUT_BATCH ||
       len != vx_input_events_len(kind, m->count))
     return; // a driver's word, checked
+  to_client(&devices[dev], m, len);
   for (uint32_t i = 0; i < m->count; i++) {
     entry *e = &log_[next_seq++ % LOG];
     e->dev = dev, e->kind = kind;
@@ -357,6 +380,8 @@ static void session_drain(uint32_t i) {
     if (st == VX_ERR_PEER_CLOSED) { // the driver has gone; its records stay in the log
       vx_handle_close(d->session);
       d->session = VX_HANDLE_NONE, d->known = false;
+      vx_msg_header gone = {.ordinal = VX_INPUT_GONE};
+      to_client(d, &gone, sizeof gone);
       return;
     }
     if (st != VX_OK) break;
@@ -366,9 +391,11 @@ static void session_drain(uint32_t i) {
       d->info.name[sizeof d->info.name - 1] = 0;
       d->known = d->info.version == VX_INPUT_VERSION &&
                  (d->info.kind == VX_INPUT_KEYBOARD || d->info.kind == VX_INPUT_POINTER);
-      if (d->known)
+      if (d->known) {
         vx_printf("inputd: input%u, %s, a %s\n", d->number, d->info.name,
                   d->info.kind == VX_INPUT_KEYBOARD ? "keyboard" : "pointer");
+        to_client(d, &d->info, sizeof d->info);
+      }
     } else if (m.h.ordinal == VX_INPUT_EVENTS && d->known) {
       record(i, &m, size.bytes);
     }
@@ -391,8 +418,43 @@ static void connected(uint32_t i) {
   session_drain(i);
 }
 
+static constexpr uint64_t KEY_CLIENT = P9_KEY_USER | 0x300;
+
+// VX_INPUT_CONNECT on the post: the client's session, and every known device's DEVICE on it.
+static void listen_msg(void *ctx, const void *msg, uint32_t len, vx_handle handle) {
+  (void)ctx;
+  if (handle) vx_handle_close(handle);
+  const vx_msg_header *req = msg;
+  vx_msg_header rep = {.txid = req->txid, .ordinal = req->ordinal};
+  vx_handle ends[2] = {};
+  if (len != sizeof *req || req->ordinal != VX_INPUT_CONNECT)
+    rep.flags = (uint32_t)VX_ERR_INVALID;
+  else if (client_ch)
+    rep.flags = (uint32_t)VX_ERR_BAD_STATE;
+  else if (vx_channel_create(0, ends) != VX_OK)
+    rep.flags = (uint32_t)VX_ERR_NO_MEMORY;
+  if (rep.flags) {
+    vx_channel_write(server.listen, &rep, sizeof rep, nullptr, 0);
+    return;
+  }
+  if (vx_channel_write(server.listen, &rep, sizeof rep, &ends[1], 1) != VX_OK) {
+    vx_handle_close(ends[0]), vx_handle_close(ends[1]);
+    return;
+  }
+  client_ch = ends[0];
+  for (uint32_t i = 0; i < ndevices; i++)
+    if (devices[i].known) to_client(&devices[i], &devices[i].info, sizeof devices[i].info);
+  vx_port_bind(server.port, client_ch, VX_TRIGGER_PEER_CLOSED, KEY_CLIENT, 0);
+  vx_print(VX_STR("inputd: a client holds the input\n"));
+}
+
 static void event(void *ctx, const vx_packet *pk) {
   (void)ctx;
+  if (pk->key == KEY_CLIENT && client_ch) { // the client has gone: the console types again
+    vx_handle_close(client_ch);
+    client_ch = VX_HANDLE_NONE;
+    return;
+  }
   uint32_t i = (uint32_t)(pk->key & 0xff);
   if (i >= ndevices) return;
   if ((pk->key & ~0xffull) == KEY_CONNECT) connected(i);
@@ -429,6 +491,7 @@ const char *vx_main(void) {
   server.name = VX_STR("inputd");
   server.supported = P9_EXT_XATTR;
   server.event = event;
+  server.listen_msg = listen_msg;
   server.listen = vx_spawn_take("listen");
   if (!server.listen || vx_port_create(0, &server.port) != VX_OK) {
     vx_print(VX_STR("inputd: no listen channel\n"));

@@ -1,0 +1,34 @@
+# tests/qemu/focus.ndb: input routed to windows (M7 step 7d1c,
+# docs/proto/wsys.md; tests/user/routetest.c): click to focus, keys to the
+# focused window, a window losing focus has its held keys released, a key's
+# UP only where its DOWN went, and a press latching the pointer to its window
+# while held; a resize's configure, and a frame drawn for the old size
+# padded, never stretched. The screen matched last: A at its new size, its
+# old frame and the window's grey beside it; B; and the cursor where the
+# drag let go, over B's edge and the desk.
+
+scenario=focus display=fb timeout=60 cmdline="vx.display vx.desktop" with=routetest
+expect="inputd: a client holds the input"
+expect="routetest: ready"
+prompt="% "
+send="for(i in 0 1 2) while(! ls /dev/input/$i >/tmp/null >[2=1]) /boot/bin/posix/sleep 0.1; echo ready"
+line="ready"
+click=15%,15%
+expect="routetest: A focused"
+key="a b"
+expect="routetest: A typed ab"
+holdkey=shift,1500
+click=70%,15%
+expect="routetest: focus moved to B; A's shift released"
+key=c
+expect="routetest: B typed c"
+drag=15%,15%,70%,30%
+expect="routetest: A held the drag to x="
+expect="routetest: A resized, its old frame padded"
+expect="routetest: 14 checks, 0 failed"
+screen=focus-$arch tolerance=1
+expect="routetest: holding"
+fail="vx: panic"
+fail="routetest: FAILED"
+fail="svcd: routetest exited"
+fail="svcd: winsrv exited"

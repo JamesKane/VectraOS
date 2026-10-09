@@ -14,6 +14,7 @@
 
 #include "../../abi/vx/abi.h"
 #include "../vx-buffer/buffer.h"
+#include "../vx-driver/inputproto.h"
 
 static constexpr uint32_t VX_WSYS_VERSION = 1;
 static constexpr uint32_t VX_WSYS_BUFFERS = 4; // attached to a window at once, at most
@@ -23,6 +24,8 @@ enum : uint32_t { // winsrv to the app, unasked (txid 0)
   VX_WSYS_CONFIGURE = 1,
   VX_WSYS_FRAME = 2,
   VX_WSYS_FEEDBACK = 3,
+  VX_WSYS_KEY = 4,     // 7d1c: to the focused window
+  VX_WSYS_POINTER = 5, // to the window under the pointer, or the one a press latched
 };
 enum : uint32_t {       // the app to winsrv
   VX_WSYS_ATTACH = 16,  // a call: the reply's flags 0 or a status
@@ -72,6 +75,31 @@ typedef struct vx_wsys_feedback {
   uint32_t dropped;   // 1: never shown (no credit, a detached buffer, its acquire point never came)
   uint32_t zero_copy; // 1: scanned out as it is; 0: composited (M7 always composites)
 } vx_wsys_feedback;
+
+// KEY: a key, as inputd's record has it (its held set the keyboard's), and
+// its unmodified rune (03 §5; 0 for none). A window gets a key's UP only
+// after its DOWN; one losing focus gets an UP for each key it holds, with
+// the SYNTHETIC flag.
+enum : uint32_t { VX_WSYS_SYNTHETIC = 1 };
+typedef struct vx_wsys_key {
+  vx_msg_header h;
+  vx_input_key key;
+  uint32_t rune;
+  uint32_t flags; // SYNTHETIC
+} vx_wsys_key;
+
+// POINTER: the pointer, in the window's coordinates (outside it while a
+// press latches it there), the buttons held after it (bit n-1 for button
+// n), relative motion and the wheels as the device gave them.
+enum : uint32_t { VX_WSYS_LATCHED = 1 }; // delivered by a press's latch, not by where it is
+typedef struct vx_wsys_pointer {
+  vx_msg_header h;
+  uint64_t time;
+  int32_t x, y;
+  int32_t dx, dy, wheel, hwheel;
+  uint32_t buttons;
+  uint32_t flags; // LATCHED
+} vx_wsys_pointer;
 
 // ATTACH: a vx-buffer, as the app's buffer id; its memory and timeline are
 // the message's two handles.

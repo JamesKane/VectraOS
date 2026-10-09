@@ -14,6 +14,11 @@ enum : uint32_t {
 static constexpr uint32_t VX_INPUT_VERSION = 1;
 
 enum : uint32_t { VX_INPUT_DEVICE = 1, VX_INPUT_EVENTS = 2 }; // the session's messages, driver to inputd
+// inputd's client (winsrv, 7d1c) sends CONNECT on /srv/input and is given a
+// session on which every device's DEVICE and EVENTS come as the drivers sent
+// them, each message's header flags the device's post number, and GONE
+// (a header alone) when a device's driver has gone.
+enum : uint32_t { VX_INPUT_GONE = 3 };
 
 enum : uint8_t { VX_INPUT_KEYBOARD = 1, VX_INPUT_POINTER = 2 };
 enum : uint8_t { VX_INPUT_ABSOLUTE = 1, VX_INPUT_RELATIVE = 2, VX_INPUT_WHEEL = 4 }; // a pointer's axes

@@ -30,13 +30,25 @@
 //   /windows/N/surface  opened (srv extension): its channel, one at a time
 //
 // A window lives while a fid holds a node of it or its channel is open.
+//
+// Input (7d1c, 21 §2 items 6-7): winsrv holds inputd's records (a session
+// on /srv/input, docs/proto/input.md §3a), so the console gets no keys
+// while it runs. Pointers move one pointer, drawn as a cursor over
+// everything. A press focuses and raises the window under it and latches
+// the pointer stream there until every button is up (Fuchsia's
+// mouse_system, mouse_system.cc:80-121; rio's, rio.c:560-639); without a
+// press, pointer records go to the window under the pointer. Keys go to the
+// focused window, which gets a key's UP only after its DOWN; a window
+// losing focus gets an UP for each key it still holds.
 
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-9p/ring_server.c"
 #include "../../lib/vx-driver/displayproto.h"
 #include "../../lib/vx-wsys/wsysproto.h"
+#include "../../lib/vx-input/keymap.h"
 
-static constexpr uint64_t KEY_DISPLAY = P9_KEY_USER | 1, KEY_WINDOW = P9_KEY_USER | 0x100;
+static constexpr uint64_t KEY_DISPLAY = P9_KEY_USER | 1, KEY_INPUT = P9_KEY_USER | 2,
+                          KEY_WINDOW = P9_KEY_USER | 0x100;
 static constexpr uint32_t MAX_WINDOWS = 16;
 static constexpr uint32_t BACKGROUND = 0xd8d8d8; // a window before its first present
 
@@ -139,18 +151,39 @@ typedef struct window {
   uint64_t last_actual, presented, dropped;
   vx_wsys_frame last_frame;
   vx_wsys_feedback last_feedback;
+  uint32_t keys[VX_INPUT_HELD], nkeys; // keys whose DOWN it was given
 } window;
 
 static window wins[MAX_WINDOWS];
 static uint32_t stack[MAX_WINDOWS], nstack; // indices, bottom first
 static uint32_t next_id = 1;
 
+// --- Input's state ---
+
+typedef struct in_device {
+  bool known;
+  uint8_t kind, axes;
+  uint32_t x_max, y_max;
+  uint32_t buttons; // held on it
+} in_device;
+
+static constexpr uint32_t IN_DEVICES = 16;
+static vx_handle inp; // the session with inputd
+static in_device indev[IN_DEVICES];
+static struct {
+  int32_t x, y;     // the pointer, on the screen
+  uint32_t buttons; // held on any pointer
+  int latch, focus; // windows' slots; -1: none
+} ptr = {.latch = -1, .focus = -1};
+
 static void send(window *w, const void *m, uint32_t len) {
   if (w->ch) vx_channel_write(w->ch, m, len, nullptr, 0); // a full channel drops it: the next says more
 }
 
 static void configure(window *w) {
+  bool focused = ptr.focus == (int)(w - wins);
   vx_wsys_configure c = {.h = {.ordinal = VX_WSYS_CONFIGURE},
+                         .flags = focused ? VX_WSYS_FOCUSED : 0,
                          .seq = w->config_seq,
                          .width = w->r.width,
                          .height = w->r.height,
@@ -236,6 +269,9 @@ static void channel_end(window *w) {
 }
 
 static void window_free(window *w) {
+  int slot = (int)(w - wins);
+  if (ptr.focus == slot) ptr.focus = -1;
+  if (ptr.latch == slot) ptr.latch = -1;
   channel_end(w);
   damage(w->r);
   uint32_t i = (uint32_t)(w - wins), j = 0;
@@ -361,6 +397,14 @@ static bool serve_window(window *w) {
 
 // --- Composition ---
 
+static const char *const ARROW[17] = {
+    "X          ", "XX         ", "X.X        ", "X..X       ", "X...X      ", "X....X     ",
+    "X.....X    ", "X......X   ", "X.......X  ", "X........X ", "X.....XXXXX", "X..X..X    ",
+    "X.X X..X   ", "XX  X..X   ", "X    X..X  ", "     X..X  ", "      XX   ",
+};
+
+static vx_display_rect cursor_rect(void) { return (vx_display_rect){ptr.x, ptr.y, 11, 17}; }
+
 // The desk: a vertical gradient, deep blue to slate, under every window.
 static uint32_t desk(uint32_t y) {
   uint32_t t = out.mode.height > 1 ? y * 255 / (out.mode.height - 1) : 0;
@@ -384,6 +428,13 @@ static void composite(screen_buffer *s, vx_display_rect area) {
       memcpy((uint32_t *)(s->px + (size_t)(r.y + y) * stride) + r.x, from, (size_t)r.width * 4);
     }
   }
+  // The cursor, over everything: X black, . white, the rest clear.
+  vx_display_rect c = meet(area, cursor_rect());
+  for (uint32_t y = 0; y < c.height; y++)
+    for (uint32_t x = 0; x < c.width; x++) {
+      char p = ARROW[c.y - ptr.y + y][c.x - ptr.x + x];
+      if (p != ' ') ((uint32_t *)(s->px + (size_t)(c.y + y) * stride))[c.x + x] = p == 'X' ? 0 : 0xffffff;
+    }
 }
 
 // A present whose acquire point has come: its damage into the backing (what
@@ -490,10 +541,16 @@ static void on_display(void) {
   vx_port_bind(server.port, disp, VX_TRIGGER_READABLE, KEY_DISPLAY, 0);
 }
 
+static void on_input(void);
+
 static void event(void *ctx, const vx_packet *pk) {
   (void)ctx;
   if (pk->key == KEY_DISPLAY) {
     on_display();
+    return;
+  }
+  if (pk->key == KEY_INPUT) {
+    if (inp) on_input(); // what it damaged is drawn at the next vblank
     return;
   }
   uint32_t i = (uint32_t)(pk->key - KEY_WINDOW);
@@ -505,6 +562,157 @@ static void event(void *ctx, const vx_packet *pk) {
   }
   channel_end(w);
   window_check_gone(w);
+}
+
+// --- Input ---
+
+// The top window at (x, y), or -1.
+static int window_at(int32_t x, int32_t y) {
+  for (uint32_t k = nstack; k-- > 0;) {
+    const window *w = &wins[stack[k]];
+    if (x >= w->r.x && y >= w->r.y && x < w->r.x + (int64_t)w->r.width && y < w->r.y + (int64_t)w->r.height)
+      return (int)stack[k];
+  }
+  return -1;
+}
+
+static void send_key(window *w, const vx_input_key *k, uint32_t flags) {
+  vx_wsys_key m = {
+      .h = {.ordinal = VX_WSYS_KEY}, .key = *k, .rune = vx_keymap_rune(k->usage, 0), .flags = flags};
+  send(w, &m, sizeof m);
+}
+
+// Focus to slot i (-1: none): the old window's held keys released, both
+// told by CONFIGURE, the new one raised.
+static void focus_window(int i) {
+  if (ptr.focus == i) return;
+  int old = ptr.focus;
+  ptr.focus = i;
+  if (old >= 0) {
+    window *o = &wins[old];
+    for (uint32_t k = 0; k < o->nkeys; k++) {
+      vx_input_key up = {.time = (uint64_t)vx_now(), .usage = o->keys[k], .action = VX_KEY_UP};
+      send_key(o, &up, VX_WSYS_SYNTHETIC);
+    }
+    o->nkeys = 0;
+    configure(o);
+  }
+  if (i >= 0) {
+    raise_window(&wins[i]);
+    configure(&wins[i]);
+  }
+}
+
+static void on_key(const vx_input_key *k) {
+  if (ptr.focus < 0) return;
+  window *w = &wins[ptr.focus];
+  uint32_t at = w->nkeys;
+  for (uint32_t i = 0; i < w->nkeys; i++)
+    if (w->keys[i] == k->usage) at = i;
+  if (k->action == VX_KEY_DOWN && at == w->nkeys && w->nkeys < VX_INPUT_HELD)
+    w->keys[w->nkeys++] = k->usage;
+  else if (k->action != VX_KEY_DOWN && at == w->nkeys)
+    return; // an UP or a repeat of a key it never saw go down
+  else if (k->action == VX_KEY_UP)
+    w->keys[at] = w->keys[--w->nkeys];
+  send_key(w, k, 0);
+}
+
+static void on_pointer(in_device *d, const vx_input_pointer *p) {
+  damage(cursor_rect());
+  if (d->axes & VX_INPUT_ABSOLUTE) {
+    ptr.x = (int32_t)((int64_t)p->x * (out.mode.width - 1) / (d->x_max ? d->x_max : 1));
+    ptr.y = (int32_t)((int64_t)p->y * (out.mode.height - 1) / (d->y_max ? d->y_max : 1));
+  } else {
+    ptr.x += p->dx, ptr.y += p->dy;
+  }
+  if (ptr.x < 0) ptr.x = 0;
+  if (ptr.y < 0) ptr.y = 0;
+  if (ptr.x >= (int32_t)out.mode.width) ptr.x = (int32_t)out.mode.width - 1;
+  if (ptr.y >= (int32_t)out.mode.height) ptr.y = (int32_t)out.mode.height - 1;
+  damage(cursor_rect());
+  uint32_t before = ptr.buttons;
+  d->buttons = p->buttons;
+  ptr.buttons = 0;
+  for (uint32_t i = 0; i < IN_DEVICES; i++) ptr.buttons |= indev[i].buttons;
+  if (!before && ptr.buttons) { // a press: focus, raise and latch the window under it
+    int under = window_at(ptr.x, ptr.y);
+    focus_window(under);
+    ptr.latch = under;
+  }
+  int to = ptr.latch >= 0 ? ptr.latch : window_at(ptr.x, ptr.y);
+  if (to >= 0) {
+    window *w = &wins[to];
+    vx_wsys_pointer m = {.h = {.ordinal = VX_WSYS_POINTER},
+                         .time = p->time,
+                         .x = ptr.x - w->r.x,
+                         .y = ptr.y - w->r.y,
+                         .dx = p->dx,
+                         .dy = p->dy,
+                         .wheel = p->wheel,
+                         .hwheel = p->hwheel,
+                         .buttons = ptr.buttons,
+                         .flags = ptr.latch >= 0 ? VX_WSYS_LATCHED : 0};
+    send(w, &m, sizeof m);
+  }
+  if (!ptr.buttons) ptr.latch = -1;
+}
+
+static void on_input(void) {
+  for (;;) {
+    static union {
+      vx_msg_header h;
+      vx_input_device device;
+      vx_input_events events;
+    } m;
+    vx_handle h[VX_CHANNEL_MAX_HANDLES];
+    vx_msg_size size;
+    vx_status st = vx_channel_read(inp, &m, sizeof m, h, VX_CHANNEL_MAX_HANDLES, &size);
+    if (st == VX_ERR_PEER_CLOSED) { // inputd has gone: no more input until it is back
+      vx_handle_close(inp);
+      inp = VX_HANDLE_NONE;
+      return;
+    }
+    if (st != VX_OK) break;
+    for (uint32_t i = 0; i < size.handles; i++) vx_handle_close(h[i]);
+    if (size.bytes < sizeof m.h || m.h.flags >= IN_DEVICES) continue;
+    in_device *d = &indev[m.h.flags];
+    if (m.h.ordinal == VX_INPUT_DEVICE && size.bytes == sizeof m.device) {
+      *d = (in_device){.known = true,
+                       .kind = m.device.kind,
+                       .axes = m.device.axes,
+                       .x_max = m.device.x_max,
+                       .y_max = m.device.y_max};
+    } else if (m.h.ordinal == VX_INPUT_GONE) {
+      *d = (in_device){};
+    } else if (m.h.ordinal == VX_INPUT_EVENTS && d->known && m.events.count <= VX_INPUT_BATCH &&
+               size.bytes == vx_input_events_len(d->kind, m.events.count)) {
+      for (uint32_t i = 0; i < m.events.count; i++)
+        if (d->kind == VX_INPUT_KEYBOARD)
+          on_key(&m.events.key[i]);
+        else
+          on_pointer(d, &m.events.pointer[i]);
+    }
+  }
+  vx_port_bind(server.port, inp, VX_TRIGGER_READABLE, KEY_INPUT, 0);
+}
+
+static void take_input(vx_handle srv) {
+  vx_msg_header req = {.ordinal = VX_INPUT_CONNECT}, rep = {};
+  vx_call c = {.wr_bytes = &req,
+               .wr_len = sizeof req,
+               .rd_bytes = &rep,
+               .rd_cap = sizeof rep,
+               .rd_handles = &inp,
+               .rd_count_cap = 1};
+  vx_status st = vx_channel_call(srv, &c, vx_now() + 5'000'000'000);
+  if (st == VX_OK) st = (vx_status)(int32_t)rep.flags;
+  if (st != VX_OK || !inp) {
+    vx_printf("winsrv: no input: %d\n", (int)st);
+    inp = VX_HANDLE_NONE;
+    return;
+  }
+  vx_port_bind(server.port, inp, VX_TRIGGER_READABLE, KEY_INPUT, 0);
 }
 
 // --- The output ---
@@ -864,6 +1072,9 @@ const char *vx_main(void) {
     vx_printf("winsrv: cannot take the output: %d\n", (int)st);
     return "no output";
   }
+  ptr.x = (int32_t)out.mode.width / 2, ptr.y = (int32_t)out.mode.height / 2;
+  vx_handle input = vx_spawn_take("srv:input");
+  if (input) take_input(input);
   frame(); // the first, at once: the desk
   vx_port_bind(server.port, disp, VX_TRIGGER_READABLE, KEY_DISPLAY, 0);
   vx_print(VX_STR("winsrv: serving /srv/wsys\n"));

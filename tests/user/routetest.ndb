@@ -1,0 +1,6 @@
+# tests/user/routetest.ndb: routetest, two windows that take input
+# (tests/qemu/focus.ndb).
+
+service=routetest program=/boot/bin/routetest console when=vx.desktop
+mount=/ srv=bootfs
+mount=/wsys srv=wsys aname="new -dx 300 -dy 200"

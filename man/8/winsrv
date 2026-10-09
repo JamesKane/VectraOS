@@ -1,6 +1,6 @@
 page=winsrv sect=8 summary="the window server: windows, the compositor, /wsys"
-    src=servers/winsrv/winsrv.c,boot/svc/display.ndb,lib/vx-wsys/wsysproto.h,lib/vx-driver/displayproto.h,lib/vx-buffer/buffer.h
-    keys=windows,compositor,wsys,desktop,frame,vblank,damage,present,credits,surface
+    src=servers/winsrv/winsrv.c,boot/svc/display.ndb,lib/vx-wsys/wsysproto.h,lib/vx-input/keymap.h,lib/vx-driver/displayproto.h,lib/vx-buffer/buffer.h
+    keys=windows,compositor,wsys,desktop,frame,vblank,damage,present,credits,surface,focus,cursor,pointer,keyboard
 
 # SYNOPSIS
 
@@ -21,7 +21,10 @@ Opening a window's `surface` gives its channel, on which the app attaches vx-buf
 At each vblank a present whose acquire point has come is latched: its damage copied into the window's own backing and its release point signalled at once (release at composite).
 The screen is composited from the backings, bottom to top, over the desk.
 A window lives while a fid holds a node of it or its channel is open.
-Input and focus are 7d1c's.
+It holds inputd(8)'s records, so the console gets no keys while it runs (M7 step 7d1c).
+Every pointer moves one pointer, drawn as a cursor over everything.
+A press focuses and raises the window under it, and latches the pointer stream to it until every button is up; without one, pointer records go to the window under the pointer.
+Keys go to the focused window, which gets a key's up only after its down; a window losing focus gets an up for each key it still holds.
 It starts with `vx.display` and `vx.desktop` on the kernel command line (boot/svc/display.ndb).
 
 # FILES
@@ -41,7 +44,7 @@ It starts with `vx.display` and `vx.desktop` on the kernel command line (boot/sv
 
 # SEE ALSO
 
-displayd(8), drv-simplefb(3), drv-virtio-gpu(3)
+displayd(8), inputd(8), drv-simplefb(3), drv-virtio-gpu(3)
 
 # BUGS
 

@@ -16,7 +16,8 @@ svcd(8) gives it a connector to each post an input driver may serve (`input0` to
 It keeps the last 1024 records of every device.
 Opening an events file starts at the oldest it keeps; a read returns whole lines, and waits for the next record once it has read them all.
 
-Until winsrv takes the keyboard (M7 step 7d), it also types the keyboards' keys into the console through its `kbdin` (drv-uart-16550(3)): the rune each key makes with the modifiers held, in the US layout, so a machine with no serial line can type into rc.
+Its one client, winsrv(8), asks on `/srv/input` for a session with every device's records in binary, each tagged with its post number (docs/proto/input.md §3a); while it holds the input, the console gets no keys.
+Without a client, it types the keyboards' keys into the console through its `kbdin` (drv-uart-16550(3)): the rune each key makes with the modifiers held, in the US layout, so a machine with no serial line can type into rc.
 
 # FILES
 
@@ -41,7 +42,7 @@ pointer dev=1 t=2128722722 x=16384 y=8192 dx=0 dy=0 wheel=0 hwheel=0 buttons=0
 
 # SEE ALSO
 
-drv-virtio-input(3), drv-uart-16550(3), svc(6)
+drv-virtio-input(3), drv-uart-16550(3), winsrv(8), svc(6)
 
 # BUGS
 

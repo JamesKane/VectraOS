@@ -22,7 +22,7 @@ Status: draft, written for M7 step 7d1b (docs/21 §2 items 1-3 and 8; 03 §4-5).
 
 A window lives while a fid holds a node of it or its channel is open; the last to go takes it. New windows are cascaded from the top left, inside the screen, and stacked on top.
 
-`ctl`'s geometry is synchronous (03 §5.1): a write returns once it is applied. `resize` makes a new configure (§3); `close` ends the window's channel, and the window goes with its last fid.
+`ctl`'s geometry is synchronous (03 §5.1): a write returns once it is applied. `resize` makes a new configure (§3), keeping the window's pixels where they still fit and the window's grey beyond; `close` ends the window's channel, and the window goes with its last fid.
 
 ## 2. The surface
 
@@ -37,6 +37,8 @@ winsrv to the app, unasked (`txid` 0):
 | `CONFIGURE` (1) | `seq` (the config_seq), the logical size, the size in pixels to draw, the scale over 120, the visibility (`visible`, `partial`, `occluded`, `hidden`), flags (`FOCUSED`, `INTERACTIVE`) |
 | `FRAME` (2) | `seq` (the frame clock's count), `target` (the vblank a present made now is meant for), `prev_presented` (when the app's last present reached the screen), `refresh` (ns), `credits` (presents given back) |
 | `FEEDBACK` (3) | the present's `seq`, `actual` (the vblank that showed it; 0 if dropped), `dropped`, `zero_copy` (0: composited) |
+| `KEY` (4) | a key as `inputd`'s record has it (the usage, the action, the keyboard's held set and modifiers), its unmodified rune, and `SYNTHETIC` for an `UP` winsrv made (§4a) |
+| `POINTER` (5) | the pointer in the window's coordinates (outside it while a press latches it), the buttons held after it, relative motion and wheels as the device gave them, and `LATCHED` when a press's latch delivered it |
 
 The app to winsrv:
 
@@ -57,6 +59,15 @@ Its model is Flatland's (21 §2 item 2; flatland.fidl:494-528):
 - **Configure.** A present drawn for an older `config_seq`, at another size, is clipped to the window, and what it does not cover keeps its old pixels, for at most a frame; it is never stretched (03 §4, F-208).
 - **Idle.** A window that does not present gets no `FRAME`, and with no damage winsrv applies nothing.
 
+## 4a. Input and focus
+
+winsrv holds `inputd`'s records (docs/proto/input.md §3a), so the console gets no keys while it runs (21 §2 items 6-7):
+
+- **One pointer.** Every pointer moves it: an absolute one scaled from its range to the screen, a relative one by its motion, clamped to the screen. winsrv draws it as a cursor over everything.
+- **Click to focus.** A press, the first button down with none held, focuses and raises the window under the pointer, and **latches** the pointer stream to it until every button is up (Fuchsia's mouse_system, mouse_system.cc:80-121; rio's, rio.c:560-639). Without a press, pointer records go to the window under the pointer.
+- **Keys** go to the focused window. A window gets a key's `UP` or repeat only after its `DOWN`; one losing focus gets an `UP` for each key it still holds, marked `SYNTHETIC`. A key held across a change of focus is the new window's from its next `DOWN`.
+- **Focus** is in `CONFIGURE`'s `FOCUSED` flag: a change sends one to each window it touches.
+
 ## 5. Version 1 leaves out
 
-Rings for the records (a channel carries them: the rate of a window's records is a frame's), scale other than 1, visibility other than `visible`, `latency 2|3`, VRR's `target_min`/`max`, `present async`, viewports, input (7d1c), decorations and the theme (7d2).
+Rings for the records (a channel carries them: the rate of a window's records is a frame's), scale other than 1, visibility other than `visible`, `latency 2|3`, VRR's `target_min`/`max`, `present async`, viewports; decorations and the theme, keymaps, compose, key repeat and the IME (7d2); pens and touch.

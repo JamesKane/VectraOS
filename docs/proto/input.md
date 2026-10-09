@@ -22,6 +22,10 @@ Every record has `time`, on the one clock (`vx_clock`'s nanoseconds, 01 §4.4): 
 
 **A pointer**, `vx_input_pointer` (40 bytes): one report: the absolute position (in the device's range; 0 for a relative device), the relative motion, the wheels' turn, and the buttons held after it, bit n-1 for button n.
 
+## 3a. `inputd`'s client
+
+`inputd`'s one client, winsrv (M7 step 7d1c), sends `CONNECT` on `/srv/input`, the post `inputd`'s files are served on, and is given a session, as `displayd` gives winsrv one (docs/proto/display.md §1a). On it every device's `DEVICE` (each known one at once, and each new one as it comes) and `EVENTS` arrive as the drivers sent them, each message's header `flags` the device's post number, and `GONE` (3, a header alone) when a device's driver has gone. While a client holds the input, `inputd` types nothing into the console. A second client is refused (`BAD_STATE`).
+
 ## 3. `/dev/input`
 
 `inputd` serves the devices as text on `/srv/input`, unioned into `/dev` (inputd(8)): `input/N/info` and `input/N/events` for the device on post N, and `input/keyboard` and `input/pointer`, every keyboard's and every pointer's records in one stream. A record is a line; a key's carries its unmodified rune too (03 §5), from the US layout until 7d2's keymaps.
