@@ -797,11 +797,17 @@ static size_t maps_text(const proc *p, char *buf, size_t cap) {
 
 // The program's ELF image: where its header is mapped (the lowest mapping
 // that starts with one), and its build ID, from its PT_NOTE.
+// Images: each mapping that starts with an ELF header (M7 step 7a3c2), the
+// program and the libraries its loader mapped. `type` says what its
+// addresses are: `exec`, as linked; `dyn`, from `base`. A library's
+// `soname` is its DT_SONAME (its path is /lib/SONAME, ADR-0047); the
+// program's `name` is the task's.
 static size_t images_text(const proc *p, char *buf, size_t cap) {
   vx_task_summary info;
   if (vx_task_info(p->task, &info) != VX_OK) return 0;
   size_t name_len = 0;
   while (name_len < sizeof info.name && info.name[name_len]) name_len++;
+  vx_ndb_writer w = {.buf = buf, .cap = cap};
   vx_map_info m;
   for (uint64_t at = 0; vx_as_query(p->task, at, &m) == VX_OK; at = m.base + m.size) {
     uint8_t eh[64];
@@ -810,37 +816,53 @@ static size_t images_text(const proc *p, char *buf, size_t cap) {
                                                                    "ELF",
                                                                    4) != 0)
       continue;
-    uint64_t phoff, id_at = 0;
-    uint16_t phentsize, phnum;
+    uint64_t phoff, id_at = 0, dyn_at = 0, dyn_size = 0;
+    uint16_t phentsize, phnum, type;
     memcpy(&phoff, eh + 32, 8), memcpy(&phentsize, eh + 54, 2), memcpy(&phnum, eh + 56, 2);
+    memcpy(&type, eh + 16, 2);
+    uint64_t rel = type == 3 ? m.base : 0; // ET_DYN: its addresses from its base
     uint32_t id_len = 0;
-    for (uint16_t i = 0; i < phnum && i < 32 && phentsize >= 56 && !id_len; i++) {
+    for (uint16_t i = 0; i < phnum && i < 32 && phentsize >= 56; i++) {
       uint8_t ph[56];
       if (mem_rw(p, m.base + phoff + (uint64_t)i * phentsize, ph, sizeof ph, false) != VX_OK) break;
-      uint32_t type;
+      uint32_t ptype;
       uint64_t vaddr, filesz;
-      memcpy(&type, ph, 4), memcpy(&vaddr, ph + 16, 8), memcpy(&filesz, ph + 32, 8);
-      for (uint64_t off = 0; type == 4 && off + 12 <= filesz && !id_len;) { // PT_NOTE: its notes
+      memcpy(&ptype, ph, 4), memcpy(&vaddr, ph + 16, 8), memcpy(&filesz, ph + 32, 8);
+      if (ptype == 2) dyn_at = rel + vaddr, dyn_size = filesz;               // PT_DYNAMIC
+      for (uint64_t off = 0; ptype == 4 && off + 12 <= filesz && !id_len;) { // PT_NOTE: its notes
         uint32_t nh[3];
-        if (mem_rw(p, vaddr + off, nh, sizeof nh, false) != VX_OK) break;
-        uint64_t desc = vaddr + off + 12 + ((nh[0] + 3) & ~3u);
+        if (mem_rw(p, rel + vaddr + off, nh, sizeof nh, false) != VX_OK) break;
+        uint64_t desc = rel + vaddr + off + 12 + ((nh[0] + 3) & ~3u);
         if (nh[2] == 3 && nh[0] == 4 && nh[1] <= 32) id_at = desc, id_len = nh[1]; // NT_GNU_BUILD_ID, "GNU"
         off += 12 + ((nh[0] + 3) & ~3u) + ((nh[1] + 3) & ~3u);
       }
     }
+    // DT_SONAME, through DT_STRTAB (a link-time address: from the base too).
+    uint64_t strtab = 0, soname = UINT64_MAX;
+    for (uint64_t off = 0; dyn_at && off + 16 <= dyn_size && off < 64ull * 16; off += 16) {
+      uint64_t d[2];
+      if (mem_rw(p, dyn_at + off, d, sizeof d, false) != VX_OK || !d[0]) break;
+      if (d[0] == 5) strtab = rel + d[1];
+      if (d[0] == 14) soname = d[1];
+    }
+    char so[64];
+    size_t so_len = 0;
+    if (strtab && soname != UINT64_MAX && mem_rw(p, strtab + soname, so, sizeof so, false) == VX_OK)
+      while (so_len < sizeof so && so[so_len]) so_len++;
+    if (so_len == sizeof so) so_len = 0;
     uint8_t id[32];
     char hex[64];
     if (id_len && mem_rw(p, id_at, id, id_len, false) != VX_OK) id_len = 0;
     for (size_t i = 0; i < id_len; i++)
       hex[2 * i] = "0123456789abcdef"[id[i] >> 4], hex[2 * i + 1] = "0123456789abcdef"[id[i] & 15];
-    vx_ndb_writer w = {.buf = buf, .cap = cap};
-    vx_ndb_put(&w, "name", (vx_str){info.name, name_len});
+    vx_ndb_put(&w, "name", so_len ? (vx_str){so, so_len} : (vx_str){info.name, name_len});
+    vx_ndb_put(&w, "type", type == 3 ? VX_STR("dyn") : VX_STR("exec"));
+    if (so_len) vx_ndb_put(&w, "soname", (vx_str){so, so_len});
     put_hex(&w, "base", m.base);
     if (id_len) vx_ndb_put(&w, "build-id", (vx_str){hex, 2 * (size_t)id_len});
     vx_ndb_end(&w);
-    return w.failed ? 0 : w.len;
   }
-  return 0;
+  return w.failed ? 0 : w.len;
 }
 
 static const char *const RUN_STATES[] = {"", "running", "blocked", "stopped", "frozen"};

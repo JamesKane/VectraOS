@@ -22,6 +22,8 @@ With `-p` it prints the events of FILE, or the live `/proc/trace/events` without
 With `-s` it summarizes the events of FILE, or the live ones, in two parts, one ndb record a line.
 First the N slowest flows (10 by default): a flow's records are its spans, and its call and reply, matched by their flow. Each is one `slowest=flow` record with its `flow`, how many `parts` and its `length`, then one `part` record per part: the `task` and `thread`, `kind` (`span`, `call` or `reply`), a span's message `type`, `at`, from the flow's first part, and a span's `length`.
 Then the N longest blocks: from a thread's block to the wake that ended it, each a `longest=block` record with the `task` and `thread`, `why` it blocked (`port`, `futex`, `channel`, `pager`, `exception`, `sleep`), the `object` it waited on, its `length`, and its waker's `waker.task` and `waker.thread`, or `waker=kernel` for an interrupt or a timeout.
+Last, the N processes with the most samples (`sample`), each a `process=PID` record with its `samples` and its `share` of them, then a `hot` record for each of its N hottest functions: `process`, `function` and `samples`.
+A user PC is named through the image it falls in, as the process's `/proc/PID/images` lists them while it lives: the program from `/boot/bin/NAME`, a library from `/lib/SONAME`, indexed by vx-debug. A PC of a process gone by now, or in no image it can read, stays a hexadecimal address; a kernel PC is `kernel`.
 Lengths are in microseconds (`.us`), from the cycle counter's frequency in `/proc/trace/status`; in cycles (`.cycles`) if that cannot be read.
 
 # EXAMPLES

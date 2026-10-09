@@ -142,6 +142,9 @@ static void sampling(uint32_t self_task) {
   CHECK(mine >= 100);          // 2 kHz for 200 ms: 400, less what QEMU's timers lose
   CHECK(inside * 2 >= mine);   // most of them in busy
   CHECK(walked * 2 >= inside); // with its caller's frame
+  // trace -s names it (7a3c2): busy, the hottest function of this process.
+  vx_str want = vx_fmt(a, "hot process=%u function=busy ", self_task);
+  CHECK(run_trace(a, VX_STR("-s"), want, VX_STR("process=")));
   vx_arena_free(a);
 }
 

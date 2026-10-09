@@ -4,10 +4,12 @@
 //   trace -c CATS [-t DURATION] [-o FILE]   start, wait (ms, s or m; 1s), stop, save the events
 //   trace -p [FILE]                         the events (live, or a saved FILE) as ndb, one a line
 //   trace -s [-n N] [FILE]                  a summary (20 §5): the N slowest flows (10), each with
-//                                           its parts, and the N longest blocks and what woke them
+//                                           its parts, the N longest blocks and what woke them, and
+//                                           the N most sampled processes with their hottest functions
 
 #include "../lib/vx-rt/rt.c"
 #include "../lib/vx-ns/nsapi.c"
+#include "../lib/vx-debug/index.c"
 
 static const char *const KINDS[] = {
     "",           "switch",      "wake",    "block",   "call",  "reply",      "donate",
@@ -260,6 +262,135 @@ static void longest_blocks(const vx_trace_record *r, size_t n, vx_arena *a, size
   }
 }
 
+// --- Samples, by process and function (20 §6, 7a3c2) ---
+//
+// A user PC is named through the image it is in, as /proc/N/images lists
+// them while the process lives: the program from /boot/bin/NAME, a library
+// from /lib/SONAME, each indexed once by vx-debug if it was sampled. A
+// process gone by now, or a PC in no image, keeps its address; a kernel PC
+// is "kernel".
+
+typedef struct image {
+  uint64_t base;
+  bool dyn, tried, ok;
+  char name[64];
+  vxdi ix;
+} image;
+
+typedef struct sampled {
+  uint32_t pid, samples;
+  uint32_t nimages;
+  image images[16];
+} sampled;
+
+static bool by_samples(const void *ctx, uint32_t x, uint32_t y) { // most first
+  const sampled *s = ctx;
+  return s[x].samples > s[y].samples;
+}
+
+// The process's images, from /proc/PID/images; none if it has gone.
+static void read_images(sampled *s, vx_arena *a) {
+  static char text[8192], scratch[1024];
+  vx_fd fd = vx_open(vx_fmt(a, "/proc/%u/images", s->pid), VX_OREAD);
+  int64_t n = fd >= 0 ? vx_read(fd, (vx_bytes){(uint8_t *)text, sizeof text}) : -1;
+  if (fd >= 0) vx_close(fd);
+  vx_ndb_reader rd = {
+      .src = {text, n > 0 ? (size_t)n : 0}, .scratch = scratch, .scratch_cap = sizeof scratch};
+  vx_ndb_record rec;
+  while (s->nimages < 16 && vx_ndb_next(&rd, &rec) == VX_NDB_RECORD) {
+    vx_str name = vx_ndb_get(&rec, "name");
+    uint64_t b;
+    if (!name.len || name.len >= 48 || !vx_str_u64(vx_ndb_get(&rec, "base"), &b)) continue;
+    image *im = &s->images[s->nimages++];
+    *im = (image){.base = b, .dyn = vx_str_eq(vx_ndb_get(&rec, "type"), VX_STR("dyn"))};
+    vx_str dir = vx_ndb_has(&rec, "soname") ? VX_STR("/lib/") : VX_STR("/boot/bin/");
+    memcpy(im->name, dir.ptr, dir.len);
+    memcpy(im->name + dir.len, name.ptr, name.len);
+  }
+}
+
+// im's index, built the first time it is wanted.
+static const vxdi *image_index(image *im, vx_arena *a) {
+  if (im->tried) return im->ok ? &im->ix : nullptr;
+  im->tried = true;
+  vx_dir d;
+  vx_str path = vx_cstr(im->name);
+  if (vx_stat(path, a, &d) != VX_OK || !d.length || d.length > 64 << 20) return nullptr;
+  uint8_t *file = vx_push(a, d.length, 64);
+  vx_fd fd = vx_open(path, VX_OREAD);
+  size_t got = 0;
+  int64_t n;
+  while (file && fd >= 0 && got < d.length && (n = vx_read(fd, (vx_bytes){file + got, d.length - got})) > 0)
+    got += (size_t)n;
+  if (fd >= 0) vx_close(fd);
+  if (!file || got != d.length) return nullptr;
+  static vxd_elf elf;
+  vxd_arena arena = {.cap = 4 * d.length + (1 << 20)};
+  arena.buf = vx_push(a, arena.cap, 64);
+  const vxdi_header *h = arena.buf && vxd_elf_open(&elf, file, got) ? vxd_index(&elf, &arena) : nullptr;
+  im->ok = h && vxdi_open(&im->ix, h, h->size);
+  return im->ok ? &im->ix : nullptr;
+}
+
+// A PC's function, for a process: "kernel", a name, or its address as text.
+static const char *function_of(sampled *s, uint64_t pc, bool user, vx_arena *a) {
+  if (!user) return "kernel";
+  image *best = nullptr;
+  for (uint32_t i = 0; i < s->nimages; i++)
+    if (s->images[i].base <= pc && (!best || s->images[i].base > best->base)) best = &s->images[i];
+  const vxdi *ix = best ? image_index(best, a) : nullptr;
+  uint64_t at = best && best->dyn ? pc - best->base : pc;
+  const vxdi_func *f = ix ? vxdi_func_at(ix, at) : nullptr;
+  if (f) return vxdi_str(ix, f->name);
+  const vxdi_sym *sy = ix ? vxdi_sym_at(ix, at) : nullptr;
+  if (sy) return vxdi_str(ix, sy->name);
+  return vx_fmt(a, "0x%llx", (unsigned long long)pc).ptr;
+}
+
+static void hottest(const vx_trace_record *r, size_t n, vx_arena *a, size_t top) {
+  sampled *s = vx_push(a, 256 * sizeof *s, alignof(sampled));
+  uint32_t *idx = vx_push(a, sizeof *idx * 2 * 256, alignof(uint32_t));
+  if (!s || !idx) return;
+  uint32_t ns = 0, total = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (r[i].kind != VX_TK_SAMPLE) continue;
+    uint32_t pid = r[i].tid >> 12, k = 0;
+    while (k < ns && s[k].pid != pid) k++;
+    if (k == ns && ns < 256) s[ns++] = (sampled){.pid = pid};
+    if (k < ns) s[k].samples++, total++;
+  }
+  for (uint32_t i = 0; i < ns; i++) idx[i] = i;
+  sort(idx, idx + ns, ns, by_samples, s);
+  for (size_t k = 0; k < ns && k < top; k++) {
+    sampled *p = &s[idx[k]];
+    vx_printf("process=%u samples=%u share=%u%%\n", p->pid, p->samples,
+              (uint32_t)(100ull * p->samples / total));
+    if (p->pid) read_images(p, a);
+    // Its functions, counted: few enough to count by a list.
+    static struct {
+      const char *name;
+      uint32_t count;
+    } fn[128];
+    uint32_t nf = 0;
+    for (size_t i = 0; i < n; i++) {
+      if (r[i].kind != VX_TK_SAMPLE || r[i].tid >> 12 != p->pid) continue;
+      const char *name = function_of(p, r[i].a, r[i].b >> 63, a);
+      uint32_t j = 0;
+      while (j < nf && !vx_str_eq(vx_cstr(fn[j].name), vx_cstr(name))) j++;
+      if (j == nf && nf < 128) fn[nf++] = (typeof(fn[0])){name, 0};
+      if (j < nf) fn[j].count++;
+    }
+    for (size_t shown = 0; shown < top && shown < nf; shown++) { // the most, each time
+      uint32_t best = 0;
+      for (uint32_t j = 1; j < nf; j++)
+        if (fn[j].count > fn[best].count) best = j;
+      if (!fn[best].count) break;
+      vx_printf("hot process=%u function=%s samples=%u\n", p->pid, fn[best].name, fn[best].count);
+      fn[best].count = 0;
+    }
+  }
+}
+
 static const char *summary(vx_str path, size_t top) {
   vx_arena *a = vx_arena_new(240ull << 20); // a million records and the summary's tables: one VMO's most
   if (vx_arena_error(a) != VX_OK) return fail("arena", path);
@@ -269,6 +400,7 @@ static const char *summary(vx_str path, size_t top) {
   hz = counter_hz();
   slowest_flows(r, n, a, top);
   longest_blocks(r, n, a, top);
+  hottest(r, n, a, top);
   return nullptr;
 }
 

@@ -177,7 +177,7 @@ A fault's `access` is `read`, `write` or `exec`; a watchpoint's is the kind it w
 : `maps`
   One record for each mapping, in address order: `base`, `size`, `prot` (such as `r-x`) and `offset` into its VMO, the numbers in hexadecimal.
 : `images`
-  One record for the program's ELF image: `name` (the task's name), `base` (the lowest mapping that starts with an ELF header) and `build-id`, in hexadecimal, if the image has a GNU build-id note.
+  One record for each ELF image mapped, the program and the libraries its loader mapped, in address order (each mapping that starts with an ELF header): `name` (a library's DT_SONAME, else the task's name), `type` (`exec`, its addresses as linked; `dyn`, its addresses from `base`), `soname` for a library, `base` and `build-id`, in hexadecimal, if the image has a GNU build-id note.
 : `info`
   One record: `arch` (`x86_64` or `aarch64`), `watchpoints` (how many the hardware has) and `breakpoints` (how many procfs keeps for a process, 32).
 : `threads/<tid>/`
@@ -320,7 +320,7 @@ The table holds 128 processes.
 
 The debugger follows 16 held threads of a process, and steps a thread over a breakpoint without stopping the others, so in a busy multithreaded process another thread may run past the breakpoint meanwhile.
 
-`docs/05-debugger.md` §3 asks for more than there is: no `image`, `thread` or `exit` events, no `image=` in `maps`, `images` shows only the program's own image and not its path, and there are no `fpregs.ndb`, `sched` or `intent=`.
+`docs/05-debugger.md` §3 asks for more than there is: no `image`, `thread` or `exit` events, no `image=` in `maps`, `images` names the program by its task's name, not its path, and there are no `fpregs.ndb`, `sched` or `intent=`.
 Events lost to a full queue are counted but the count is never shown.
 
 `regs.ndb` of a thread that is running reads as empty, where `regs` fails.
