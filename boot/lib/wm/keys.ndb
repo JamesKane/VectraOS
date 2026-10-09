@@ -1,0 +1,10 @@
+# /lib/wm/keys.ndb: the key bindings wm gives winsrv (03 §5.3). Each
+# action is a ctl verb: a window's (close, raise, move, resize) and the
+# focus's winsrv does itself; the rest are wm's.
+
+bind key=super+t do="layout tile"
+bind key=super+f do="layout float"
+bind key=super+j do="focus next"
+bind key=super+k do="focus prev"
+bind key=super+q do="close"
+bind key=super+enter do="spawn term"

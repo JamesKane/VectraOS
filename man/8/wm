@@ -1,0 +1,32 @@
+page=wm sect=8 summary="the window manager: key bindings and window placement, in Lua"
+    src=boot/lib/wm/wm.lua,boot/lib/wm/keys.ndb,boot/svc/wm.ndb
+    keys=window,manager,tile,tiling,float,layout,bindings,keys,lua,master-stack
+
+# SYNOPSIS
+
+```usage
+lua /lib/wm/wm.lua
+```
+
+# DESCRIPTION
+
+`wm` is the desktop's policy (03 §5.2-5.3), a Lua program with the whole `/wsys` tree, its grant (boot/svc/wm.ndb).
+It gives winsrv(8) the key bindings in `/lib/wm/keys.ndb`, which winsrv matches in its own input path, so they work while `wm` is busy.
+It follows `/wsys/events` and places windows: where winsrv puts them while the layout is `float`, and master-stack while it is `tile` (dwm's: the oldest window on the left half, the rest down the right half, 8 pixels apart).
+
+A binding's verb winsrv cannot do itself comes to `wm`: `layout tile` and `layout float` change the layout; `spawn NAME` starts a program, once there is one to start (the terminal is M7 step 7f).
+
+It starts with `vx.desktop` on the kernel command line, and is restarted if it exits.
+
+# FILES
+
+: `/lib/wm/keys.ndb`
+  The bindings it gives winsrv: super+t tiles, super+f floats, super+j and super+k move the focus, super+q closes the focused window, super+enter spawns a terminal.
+
+# SEE ALSO
+
+winsrv(8), lua(1), ndb(6)
+
+# BUGS
+
+Two layouts; no workspaces, modal bindings or window rules yet.

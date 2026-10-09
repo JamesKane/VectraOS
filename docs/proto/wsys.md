@@ -16,6 +16,9 @@ Status: draft, written for M7 step 7d1b (docs/21 §2 items 1-3 and 8; 03 §4-5).
     theme/                active · tokens · ctl (load NAME · set TOKEN #rrggbb)   (7d2a)
     keymap                the layout: us · us-intl; written to change it          (7d2b)
     ime                   opened (srv extension): an input method's channel, one at a time
+    keys                  the key bindings, ndb: bind key=super+t do="layout tile"   (7d2c)
+    events                the desktop's events, a line each: new N · gone N · focus N · do N VERB
+    ctl                   focus N · focus next · focus prev
     windows/N/            a window, N from 1, never reused while winsrv runs
         ctl               move X Y · resize W H · title TEXT · raise · close
         info              id= title= x= y= width= height= config= presented= dropped=
@@ -85,6 +88,18 @@ Text is resolved in the server (03 §5, M7 step 7d2b). With a window's IME on (`
 - **Repeat** is winsrv's: a key that is not a modifier, held half a second, repeats 30 times a second as a `KEY` with `REPEAT` (and its text again) until it is let go or focus moves. A device's own repeats are dropped.
 - **The keymap.** `/wsys/keymap` names the layout (`us`, `us-intl`), and a write changes it, with a `KEYMAP` record to every window. A window's `keymap` file reads the same.
 - **An input method.** One holds `/wsys/ime` (opened with the srv extension, a grant of the whole tree) and takes the composer's place. Each `DOWN` and repeat of the focused window, its IME on, goes to it as `IME_KEY` (32: a sequence number, the window, its `purpose`, the key); its `IME_ANSWER` (33) gives bytes to delete around the cursor, text to commit, a new preedit, and `PASS` for a key that goes on to the window. Keys queue behind an unanswered one, `UP`s too, so order holds; an answer later than 300 ms passes the key on, and a closed channel passes all of them.
+
+## 4d. Bindings and wm
+
+Policy is `wm`'s (03 §5.2), a Lua program over the whole tree (M7 step 7d2c). `winsrv` keeps the bindings in `/wsys/keys` and matches them in its input path, without a round trip to `wm`, so a shortcut works while `wm` is busy (03 §5.3):
+
+- **`/wsys/keys`** is ndb: `bind key=MODS+KEY do="VERB"`, the modifiers `super` (or `meta`), `shift`, `ctrl`, `alt`, and a key named by its letter or digit, `enter`, `escape`, `backspace`, `tab`, `space`, `minus`, `equal`, the arrows or `f1` to `f4`. One write is the whole table, and replaces it; a read gives the verbs.
+- **A match** is a key's `DOWN` with exactly those modifiers. It never reaches a window: neither its `DOWN` nor its `UP`.
+- **The verb.** A window's (`close`, `raise`, `move X Y`, `resize W H`) is done to the focused window, and the focus's (`focus next`, `focus prev`) by `winsrv` itself. Any other goes to `wm` on `/wsys/events` as `do N VERB`, N the focused window (0 for none).
+- **`/wsys/events`** is the desktop's events, a line each: `new N`, `gone N`, `focus N`, `do N VERB`. An open starts at the oldest it keeps (the last 128), so `wm` learns the windows that were there before it, and a read waits for the next.
+- **`/wsys/ctl`** takes `focus N`, `focus next` and `focus prev` (in the windows' order).
+
+`wm` (wm(8)) writes `/lib/wm/keys.ndb` to `/wsys/keys`, follows `/wsys/events`, and places windows: as `winsrv` does while the layout is `float`, master-stack while it is `tile`. Modal bindings (`mode=`) and window rules (`/wsys/rules`) come with what needs them.
 
 ## 4b. Decorations and the theme
 

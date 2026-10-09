@@ -1438,6 +1438,8 @@ static const program USER_PROGRAMS[] = {
      nullptr}, // ./build bench's measurements (7a5)
     {"flighttest", "tests/user/tracetest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // tracetest's flight recorder test, as a program of its own (7a4a)
+    {"wmtest", "tests/user/wmtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr}, // windows under wm (7d2c)
     {"textest", "tests/user/textest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // text: keymaps, compose, repeat, the IME (7d2b)
     {"decortest", "tests/user/decortest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
@@ -3384,6 +3386,7 @@ static const char *const BOOTFS_DIRS[] = {"adm",
                                           "home",
                                           "lib",
                                           "lib/ns",
+                                          "lib/wm",
                                           "n",
                                           "net",
                                           "proc",
@@ -3408,8 +3411,9 @@ static bool listed(const char *with, const char *name) {
 // mkbootfs (04 §3.4): packs the boot image's tree into a ustar archive, the
 // bootfs.tar module. The directories, boot/bin with each program that lives
 // in bootfs, boot/svc with the service manifests from boot/svc/*.ndb,
-// boot/drv with the driver manifests from boot/drv/*.ndb, and lib/ns with the
-// namespace templates, namespace(6) files, from boot/lib/ns/ (ADR-0009).
+// boot/drv with the driver manifests from boot/drv/*.ndb, lib/ns with the
+// namespace templates, namespace(6) files, from boot/lib/ns/ (ADR-0009), and
+// lib/wm with the window manager's Lua and keys from boot/lib/wm/.
 // `with` adds test programs and their manifests (tests/user/NAME.ndb), and
 // script tests (a manifest, and tests/user/NAME.lua in boot/tests). The
 // archive is deterministic: fixed order, no times or owners.
@@ -3426,6 +3430,8 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
   collect(&manifests, &tree, (vx_str){"boot/svc", 8}, ".ndb");
   collect(&manifests, &tree, (vx_str){"boot/drv", 8}, ".ndb");
   collect(&manifests, &tree, (vx_str){"boot/lib/ns", 11}, "");
+  collect(&manifests, &tree, (vx_str){"boot/lib/wm", 11},
+          ""); // the window manager, wm.lua and its keys (7d2c)
 
   // Programs, then the system's manifests, then the tests': svcd starts
   // services in this order, so a test's run after what it tests.
@@ -4976,6 +4982,8 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
       }
     } else if ((vx_ndb_has(&rec, "key") || vx_ndb_has(&rec, "typekeys")) && expect_count < 64) {
       if (!display) die("%s:%zu: key= and typekeys= need the scenario's display", path, rec.line);
+      if (keys_at[expect_count])
+        die("%s:%zu: two key= or typekeys= before one expect: join them in one", path, rec.line);
       keys_at[expect_count] = vx_ndb_has(&rec, "key") ? str_dup(vx_ndb_get(&rec, "key"))
                                                       : typed_keys(vx_ndb_get(&rec, "typekeys"));
     } else if ((vx_ndb_has(&rec, "click") || vx_ndb_has(&rec, "drag")) && expect_count < 64) {
@@ -5119,7 +5127,8 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
     while (!verdict) {
       // The screens and the input due by now, in order: every index up to
       // next, since a burst of output can match several expects at once.
-      for (; !all_seen && shown < next && !verdict;) {
+      for (; shown < next &&
+             !verdict;) { // even once all are seen: a burst can match the last with ones before it
         int k = ++shown;
         if (screen[k]) verdict = screen_check(&q, fmt("%s/screen.ppm", run_dir), screen[k], tolerance[k]);
         if (!verdict && keys_at[k] && !key_press(&q, keys_at[k]))

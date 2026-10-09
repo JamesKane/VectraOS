@@ -1,0 +1,30 @@
+# tests/qemu/wm.ndb: wm (M7 step 7d2c, /lib/wm/wm.lua): its bindings given
+# to winsrv and matched in winsrv's input path; super+t, which wm does
+# (master-stack), super+j and super+q, which winsrv does (focus next, close),
+# and super+enter, which goes to wm; no bound key reaching a window
+# (tests/user/wmtest.c). The tiles matched by screenshot, three then two.
+
+scenario=wm display=fb timeout=60 cmdline="vx.display vx.desktop" with=wmtest
+expect="wmtest: 3 windows"
+prompt="% "
+send="for(i in 0 1 2) while(! ls /dev/input/$i >/tmp/null >[2=1]) /boot/bin/posix/sleep 0.1; while(! /boot/bin/posix/grep -q tile /wsys/keys >[2]/tmp/null) /boot/bin/posix/sleep 0.1; echo ready"
+line="ready"
+key=meta_l-t
+expect="wm: layout tile"
+expect="wm: tiled 3 windows"
+expect="wmtest: tiled, the master "
+screen=wm-three-$arch tolerance=1
+key="meta_l-j meta_l-ret"
+expect="wm: spawn term: no terminal yet (7f)"
+key=meta_l-q
+expect="wmtest: window "
+expect="wmtest: 8 checks, 0 failed"
+expect="wm: tiled 2 windows"
+screen=wm-two-$arch tolerance=1
+send="echo done"
+line="done"
+fail="vx: panic"
+fail="wmtest: FAILED"
+fail="svcd: wmtest exited"
+fail="svcd: winsrv exited"
+fail="svcd: wm exited"

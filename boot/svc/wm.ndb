@@ -1,0 +1,8 @@
+# boot/svc/wm.ndb: the window manager (M7 step 7d2c, /lib/wm/wm.lua): Lua in
+# the POSIX namespace, with the whole /wsys tree, which is its grant (03 §5.7).
+
+service=wm program=/boot/bin/lua console restart when=vx.desktop
+arg=/lib/wm/wm.lua
+ns=posix
+connect=nsd
+mount=/wsys srv=wsys

@@ -1,0 +1,5 @@
+# tests/user/wmtest.ndb: wmtest, three windows under wm (tests/qemu/wm.ndb).
+
+service=wmtest program=/boot/bin/wmtest console when=vx.desktop
+mount=/ srv=bootfs
+mount=/wsys srv=wsys aname="new -dx 300 -dy 200"

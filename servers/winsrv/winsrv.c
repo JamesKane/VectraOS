@@ -53,6 +53,15 @@
 // are dropped. /wsys/keymap names the layout, and a change is a KEYMAP
 // record to every window.
 //
+// Policy is wm's (7d2c, 03 §5.2-5.3), a Lua program over the whole tree.
+// winsrv keeps the key bindings it is given in /wsys/keys and matches them
+// in the input path, so shortcuts work while wm is busy: a bound key never
+// reaches a window. A binding's verb for a window (close, raise, move,
+// resize) or the focus (focus next, focus prev) winsrv does itself; any
+// other (layout tile, spawn term) goes to wm on /wsys/events, the desktop's
+// events as lines: `new N`, `gone N`, `focus N`, `do N VERB...` (N the
+// focused window, 0 for none).
+//
 // Input (7d1c, 21 §2 items 6-7): winsrv holds inputd's records (a session
 // on /srv/input, docs/proto/input.md §3a), so the console gets no keys
 // while it runs. Pointers move one pointer, drawn as a cursor over
@@ -77,6 +86,7 @@ static constexpr uint32_t BACKGROUND = 0xd8d8d8; // a window before its first pr
 static vx_handle disp;   // the session with displayd
 static vx_handle ime_ch; // the input method's channel, while it holds /wsys/ime
 static p9_ring_server server;
+static void event_line(const char *word, uint32_t id, vx_str rest);
 
 // --- The screen ---
 
@@ -327,6 +337,7 @@ static window *window_new(uint32_t width, uint32_t height) {
   stack[nstack++] = i;
   damage(frame_rect(w));
   vx_printf("winsrv: window %u, %ux%u at %d,%d\n", w->id, width, height, x, y);
+  event_line("new", w->id, (vx_str){});
   return w;
 }
 
@@ -361,6 +372,7 @@ static void window_free(window *w) {
   vx_as_unmap(vx_self, (uint64_t)w->backing, ((uint64_t)w->r.width * w->r.height * 4 + 4095) & ~4095ull);
   vx_handle_close(w->backing_vmo);
   vx_printf("winsrv: window %u closed\n", w->id);
+  event_line("gone", w->id, (vx_str){});
   *w = (window){};
 }
 
@@ -777,6 +789,104 @@ static void send_key(window *w, const vx_input_key *k, uint32_t flags) {
   send(w, &m, sizeof m);
 }
 
+// --- Events and bindings (7d2c) ---
+
+static constexpr uint32_t EVENTS = 128, EVENT_OPENS = 16, BINDINGS = 64;
+
+static char events[EVENTS][96];
+static uint64_t events_next; // the next event's number; the oldest kept is events_next - EVENTS, at least 0
+
+typedef struct event_open {
+  bool used;
+  uint64_t at; // the next event it reads
+} event_open;
+static event_open event_opens[EVENT_OPENS];
+
+static void event_line(const char *word, uint32_t id, vx_str rest) {
+  char *e = events[events_next++ % EVENTS];
+  size_t n = 0;
+  vx_str w = vx_cstr(word);
+  memcpy(e, w.ptr, w.len), n = w.len;
+  e[n++] = ' ';
+  char digits[10];
+  size_t d = 0;
+  do digits[d++] = (char)('0' + id % 10), id /= 10;
+  while (id);
+  while (d) e[n++] = digits[--d];
+  if (rest.len && rest.len < sizeof events[0] - n - 2)
+    e[n++] = ' ', memcpy(e + n, rest.ptr, rest.len), n += rest.len;
+  e[n++] = '\n', e[n] = 0;
+  server.again = true; // held reads of /wsys/events may go on
+}
+
+typedef struct binding {
+  uint32_t mods, usage;
+  char verb[48];
+} binding;
+static binding bindings[BINDINGS];
+static uint32_t nbindings;
+
+// A key's name in a binding (super+shift+h): its modifiers and its usage; false if it is none.
+static bool parse_key(vx_str s, uint32_t *mods, uint32_t *usage) {
+  *mods = 0, *usage = 0;
+  while (s.len) {
+    size_t n = 0;
+    while (n < s.len && s.ptr[n] != '+') n++;
+    vx_str part = {s.ptr, n};
+    s.ptr += n, s.len -= n;
+    if (s.len) s.ptr++, s.len--; // the '+'
+    if (vx_str_eq(part, VX_STR("super")) || vx_str_eq(part, VX_STR("meta"))) {
+      *mods |= VX_MOD_META;
+    } else if (vx_str_eq(part, VX_STR("shift"))) {
+      *mods |= VX_MOD_SHIFT;
+    } else if (vx_str_eq(part, VX_STR("ctrl"))) {
+      *mods |= VX_MOD_CTRL;
+    } else if (vx_str_eq(part, VX_STR("alt"))) {
+      *mods |= VX_MOD_ALT;
+    } else if (s.len) {
+      return false; // a key before the last part
+    } else if (part.len == 1 && part.ptr[0] >= 'a' && part.ptr[0] <= 'z') {
+      *usage = VX_HID_KEYBOARD | (uint32_t)(0x04 + part.ptr[0] - 'a');
+    } else if (part.len == 1 && part.ptr[0] >= '1' && part.ptr[0] <= '9') {
+      *usage = VX_HID_KEYBOARD | (uint32_t)(0x1e + part.ptr[0] - '1');
+    } else if (part.len == 1 && part.ptr[0] == '0') {
+      *usage = VX_HID_KEYBOARD | 0x27;
+    } else {
+      static const struct {
+        const char *name;
+        uint32_t id;
+      } NAMES[] = {{"enter", 0x28}, {"escape", 0x29}, {"backspace", 0x2a}, {"tab", 0x2b},  {"space", 0x2c},
+                   {"minus", 0x2d}, {"equal", 0x2e},  {"right", 0x4f},     {"left", 0x50}, {"down", 0x51},
+                   {"up", 0x52},    {"f1", 0x3a},     {"f2", 0x3b},        {"f3", 0x3c},   {"f4", 0x3d}};
+      for (size_t i = 0; i < sizeof NAMES / sizeof NAMES[0]; i++)
+        if (vx_str_eq(part, vx_cstr(NAMES[i].name))) *usage = VX_HID_KEYBOARD | NAMES[i].id;
+    }
+  }
+  return *usage != 0;
+}
+
+// /wsys/keys written: its `bind key=… do=…` records replace the bindings.
+static vx_status set_bindings(const uint8_t *buf, uint32_t len) {
+  static char scratch[4096];
+  vx_ndb_reader r = {.src = {(const char *)buf, len}, .scratch = scratch, .scratch_cap = sizeof scratch};
+  vx_ndb_record rec;
+  uint32_t n = 0;
+  static binding next[BINDINGS];
+  int got;
+  while ((got = vx_ndb_next(&r, &rec)) == VX_NDB_RECORD) {
+    if (!vx_ndb_has(&rec, "bind")) continue;
+    vx_str key = vx_ndb_get(&rec, "key"), verb = vx_ndb_get(&rec, "do");
+    if (n == BINDINGS || !verb.len || verb.len >= sizeof next[0].verb) return VX_ERR_RANGE;
+    next[n] = (binding){};
+    if (!parse_key(key, &next[n].mods, &next[n].usage)) return VX_ERR_INVALID;
+    memcpy(next[n].verb, verb.ptr, verb.len);
+    n++;
+  }
+  if (got != VX_NDB_END) return VX_ERR_INVALID;
+  memcpy(bindings, next, sizeof next), nbindings = n;
+  return VX_OK;
+}
+
 // --- Text ---
 
 static enum vx_keymap_layout layout = VX_LAYOUT_US;
@@ -987,11 +1097,54 @@ static void focus_window(int i) {
   if (i >= 0) {
     raise_window(&wins[i]);
     configure(&wins[i]);
+    event_line("focus", wins[i].id, (vx_str){});
   }
 }
 
+static vx_status window_ctl(window *w, vx_str cmd);
+static vx_status root_ctl(vx_str cmd);
+static bool take_word(vx_str *s, const char *word);
+
+// A binding's verb: the focused window's, the focus's, or wm's.
+static void bound(const binding *b) {
+  vx_str verb = vx_cstr(b->verb), cmd = verb;
+  window *w = ptr.focus >= 0 ? &wins[ptr.focus] : nullptr;
+  static const char *const WINDOW_VERBS[] = {"close", "raise", "move", "resize"};
+  for (size_t i = 0; i < sizeof WINDOW_VERBS / sizeof WINDOW_VERBS[0]; i++)
+    if (take_word(&cmd, WINDOW_VERBS[i])) {
+      if (w) window_ctl(w, verb);
+      return;
+    }
+  if (take_word(&cmd, "focus")) {
+    root_ctl(verb);
+    return;
+  }
+  event_line("do", w ? w->id : 0, verb); // wm's
+}
+
+// Keys bound (their DOWNs; their UPs and repeats dropped too).
+static uint32_t bound_keys[VX_INPUT_HELD], nbound_keys;
+
+static bool binding_takes(const vx_input_key *k) {
+  for (uint32_t i = 0; i < nbound_keys; i++)
+    if (bound_keys[i] == k->usage) {
+      if (k->action == VX_KEY_UP) bound_keys[i] = bound_keys[--nbound_keys];
+      return true;
+    }
+  if (k->action != VX_KEY_DOWN) return false;
+  uint32_t mods = k->mods & (VX_MOD_SHIFT | VX_MOD_CTRL | VX_MOD_ALT | VX_MOD_META);
+  for (uint32_t i = 0; i < nbindings; i++)
+    if (bindings[i].usage == k->usage && bindings[i].mods == mods) {
+      if (nbound_keys < VX_INPUT_HELD) bound_keys[nbound_keys++] = k->usage;
+      bound(&bindings[i]);
+      return true;
+    }
+  return false;
+}
+
 static void on_key(const vx_input_key *k) {
-  if (ptr.focus < 0 || k->action == VX_KEY_REPEAT) return; // a device's own repeats: winsrv makes its own
+  if (k->action == VX_KEY_REPEAT || binding_takes(k)) return; // a device's own repeats: winsrv makes its own
+  if (ptr.focus < 0) return;
   window *w = &wins[ptr.focus];
   uint32_t at = w->nkeys;
   for (uint32_t i = 0; i < w->nkeys; i++)
@@ -1202,7 +1355,22 @@ static vx_status take_output(vx_handle srv) {
 
 // Nodes: the root's files, then each window's (by its slot), WIN + slot * 8
 // + one of W_*.
-enum : uint64_t { ROOT = 1, INFO, OUTPUTS, WINDOWS, THEME, T_ACTIVE, T_TOKENS, T_CTL, R_KEYMAP, R_IME };
+enum : uint64_t {
+  ROOT = 1,
+  INFO,
+  OUTPUTS,
+  WINDOWS,
+  THEME,
+  T_ACTIVE,
+  T_TOKENS,
+  T_CTL,
+  R_KEYMAP,
+  R_IME,
+  R_KEYS,
+  R_EVENTS,
+  R_CTL,
+  R_OPENED, // and up: /wsys/events opened, one node each
+};
 static constexpr uint64_t WIN = 0x100;
 enum : uint64_t { W_DIR = 0, W_CTL, W_INFO, W_FRAME, W_SURFACE, W_KEYMAP, W_IME, W_FILES };
 static const vx_str W_NAMES[W_FILES] = {
@@ -1273,6 +1441,12 @@ static vx_status fs_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) 
       *child = R_KEYMAP;
     else if (vx_str_eq(name, VX_STR("ime")))
       *child = R_IME;
+    else if (vx_str_eq(name, VX_STR("keys")))
+      *child = R_KEYS;
+    else if (vx_str_eq(name, VX_STR("events")))
+      *child = R_EVENTS;
+    else if (vx_str_eq(name, VX_STR("ctl")))
+      *child = R_CTL;
     else
       return VX_ERR_NOT_FOUND;
     return VX_OK;
@@ -1308,7 +1482,7 @@ static vx_status fs_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) 
 
 static vx_status fs_parent(void *ctx, uint64_t n, uint64_t *parent) {
   (void)ctx;
-  if (n == ROOT || n == INFO || n == OUTPUTS || n == WINDOWS || n == THEME || n == R_KEYMAP || n == R_IME)
+  if (n == ROOT || n == INFO || n == OUTPUTS || n == WINDOWS || n == THEME || (n >= R_KEYMAP && n < WIN))
     *parent = ROOT;
   else if (n >= T_ACTIVE && n <= T_CTL)
     *parent = THEME;
@@ -1333,6 +1507,9 @@ static vx_str name_of(uint64_t n, bool *dir, uint32_t *mode) {
   if (n == T_CTL) return *mode = 0220, VX_STR("ctl");
   if (n == R_KEYMAP) return *mode = 0664, VX_STR("keymap");
   if (n == R_IME) return *mode = 0660, VX_STR("ime");
+  if (n == R_KEYS) return *mode = 0664, VX_STR("keys");
+  if (n == R_EVENTS || (n >= R_OPENED && n < R_OPENED + EVENT_OPENS)) return VX_STR("events");
+  if (n == R_CTL) return *mode = 0220, VX_STR("ctl");
   const window *w = window_of(n);
   if (!w) return (vx_str){};
   uint64_t f = (n - WIN) % 8;
@@ -1366,7 +1543,8 @@ static vx_status fs_open(void *ctx, uint64_t n, uint8_t mode) {
   (void)ctx;
   window *w = window_of(n);
   uint64_t f = w ? (n - WIN) % 8 : W_DIR;
-  if (f == W_CTL || n == T_CTL) return (mode & 3) == P9_OWRITE ? VX_OK : VX_ERR_ACCESS;
+  if (f == W_CTL || n == T_CTL || n == R_CTL) return (mode & 3) == P9_OWRITE ? VX_OK : VX_ERR_ACCESS;
+  if (n == R_KEYS) return (mode & 3) == P9_OREAD || (mode & 3) == P9_OWRITE ? VX_OK : VX_ERR_ACCESS;
   if (f == W_SURFACE || n == R_IME) return (mode & 3) == P9_ORDWR ? VX_OK : VX_ERR_ACCESS;
   if (f == W_IME || n == R_KEYMAP)
     return (mode & 3) == P9_OREAD || (mode & 3) == P9_OWRITE ? VX_OK : VX_ERR_ACCESS;
@@ -1406,6 +1584,24 @@ static vx_status fs_open_handle(void *ctx, uint64_t n, uint8_t mode, vx_handle *
   return VX_OK;
 }
 
+// /wsys/events opened: a node of its own, reading from the oldest event kept.
+static vx_status fs_clone(void *ctx, uint64_t n, uint8_t mode, uint64_t *opened) {
+  (void)ctx, (void)mode;
+  if (n != R_EVENTS) return VX_ERR_NOT_FOUND;
+  for (uint32_t i = 0; i < EVENT_OPENS; i++)
+    if (!event_opens[i].used) {
+      event_opens[i] = (event_open){.used = true, .at = events_next > EVENTS ? events_next - EVENTS : 0};
+      *opened = R_OPENED + i;
+      return VX_OK;
+    }
+  return VX_ERR_NO_MEMORY;
+}
+
+static void fs_clunk(void *ctx, uint64_t n, bool opened) {
+  (void)ctx, (void)opened;
+  if (n >= R_OPENED && n < R_OPENED + EVENT_OPENS) event_opens[n - R_OPENED] = (event_open){};
+}
+
 static void fs_fid_node(void *ctx, uint64_t n, int delta) {
   (void)ctx;
   window *w = window_of(n);
@@ -1433,6 +1629,25 @@ static vx_status fs_read(void *ctx, uint64_t n, uint64_t offset, uint8_t *buf, u
     vx_ndb_put_u64(&t, "height", out.mode.height);
     vx_ndb_put_u64(&t, "frames", out.frames);
     vx_ndb_end(&t);
+  } else if (n == R_KEYS) {
+    for (uint32_t i = 0; i < nbindings; i++) {
+      vx_ndb_flag(&t, "bind");
+      vx_ndb_put(&t, "do", vx_cstr(bindings[i].verb));
+      vx_ndb_end(&t);
+    }
+  } else if (n >= R_OPENED && n < R_OPENED + EVENT_OPENS) { // whole lines from where it is; held if none
+    event_open *o = &event_opens[n - R_OPENED];
+    uint64_t oldest = events_next > EVENTS ? events_next - EVENTS : 0;
+    if (o->at < oldest) o->at = oldest;
+    uint32_t got = 0;
+    for (; o->at < events_next; o->at++) {
+      vx_str e = vx_cstr(events[o->at % EVENTS]);
+      if (got + e.len > *count) break;
+      memcpy(buf + got, e.ptr, e.len), got += (uint32_t)e.len;
+    }
+    if (!got) return VX_ERR_SHOULD_WAIT;
+    *count = got;
+    return VX_OK;
   } else if (n == R_KEYMAP || (w && (n - WIN) % 8 == W_KEYMAP)) {
     vx_str a = vx_cstr(VX_KEYMAP_NAMES[layout]);
     memcpy(text, a.ptr, a.len), text[a.len] = '\n', t.len = a.len + 1;
@@ -1478,6 +1693,55 @@ static vx_status fs_read(void *ctx, uint64_t n, uint64_t offset, uint8_t *buf, u
     return VX_ERR_INVALID;
   }
   return reply_text(text, t.failed ? 0 : t.len, offset, buf, count);
+}
+
+// A window's ctl: move X Y · resize W H · title TEXT · raise · close.
+static vx_status window_ctl(window *w, vx_str cmd) {
+  vx_status st = VX_OK;
+  if (take_word(&cmd, "move")) {
+    int32_t x = (int32_t)parse_u32(&cmd), y = (int32_t)parse_u32(&cmd);
+    damage(frame_rect(w));
+    w->r.x = x, w->r.y = y;
+    damage(frame_rect(w));
+  } else if (take_word(&cmd, "resize")) {
+    uint32_t width = parse_u32(&cmd), height = parse_u32(&cmd);
+    st = resize(w, width, height);
+  } else if (take_word(&cmd, "title")) {
+    while (cmd.len && cmd.ptr[0] == ' ') cmd.ptr++, cmd.len--;
+    size_t len = cmd.len < sizeof w->title - 1 ? cmd.len : sizeof w->title - 1;
+    memcpy(w->title, cmd.ptr, len), w->title[len] = 0;
+    cmd.len = 0;
+  } else if (take_word(&cmd, "raise")) {
+    raise_window(w);
+  } else if (take_word(&cmd, "close")) {
+    channel_end(w); // the app sees its channel close; the window goes with its last fid
+  } else {
+    st = VX_ERR_INVALID;
+  }
+  if (st == VX_OK && cmd.len) st = VX_ERR_INVALID;
+  return st;
+}
+
+// The root's ctl: focus N · focus next · focus prev (by stacking, from the focused window).
+static vx_status root_ctl(vx_str cmd) {
+  if (!take_word(&cmd, "focus")) return VX_ERR_INVALID;
+  while (cmd.len && cmd.ptr[0] == ' ') cmd.ptr++, cmd.len--;
+  if (!nstack) return VX_OK;
+  bool next = vx_str_eq(cmd, VX_STR("next")), prev = vx_str_eq(cmd, VX_STR("prev"));
+  if (next || prev) { // round the windows in the order they were made, by their slots
+    int at = ptr.focus;
+    for (uint32_t k = 0; k < MAX_WINDOWS; k++) {
+      at = (int)(((uint32_t)(at + (int)MAX_WINDOWS) + (next ? 1u : MAX_WINDOWS - 1)) % MAX_WINDOWS);
+      if (wins[at].used) break;
+    }
+    focus_window(at);
+    return VX_OK;
+  }
+  uint32_t id = parse_u32(&cmd);
+  window *w = cmd.len ? nullptr : window_of_id(id);
+  if (!w) return VX_ERR_NOT_FOUND;
+  focus_window((int)(w - wins));
+  return VX_OK;
 }
 
 // The theme's ctl: `load NAME`, a shipped theme's tokens; `set TOKEN #rrggbb`.
@@ -1543,6 +1807,18 @@ static vx_status ime_ctl(window *w, vx_str cmd) {
 
 static vx_status fs_write(void *ctx, uint64_t n, uint64_t offset, const uint8_t *buf, uint32_t *count) {
   (void)ctx, (void)offset;
+  if (n == R_KEYS) { // one write, the whole table: it replaces the bindings
+    vx_status st = set_bindings(buf, *count);
+    if (st != VX_OK) *count = 0;
+    return st;
+  }
+  if (n == R_CTL) {
+    vx_str cmd = {(const char *)buf, *count};
+    while (cmd.len && (cmd.ptr[cmd.len - 1] == '\n' || cmd.ptr[cmd.len - 1] == ' ')) cmd.len--;
+    vx_status st = root_ctl(cmd);
+    if (st != VX_OK) *count = 0;
+    return st;
+  }
   if (n == R_KEYMAP) { // a layout by name: KEYMAP to every window
     vx_str cmd = {(const char *)buf, *count};
     while (cmd.len && (cmd.ptr[cmd.len - 1] == '\n' || cmd.ptr[cmd.len - 1] == ' ')) cmd.len--;
@@ -1576,28 +1852,7 @@ static vx_status fs_write(void *ctx, uint64_t n, uint64_t offset, const uint8_t 
   if (!w || (n - WIN) % 8 != W_CTL) return VX_ERR_ACCESS;
   vx_str cmd = {(const char *)buf, *count};
   while (cmd.len && (cmd.ptr[cmd.len - 1] == '\n' || cmd.ptr[cmd.len - 1] == ' ')) cmd.len--;
-  vx_status st = VX_OK;
-  if (take_word(&cmd, "move")) {
-    int32_t x = (int32_t)parse_u32(&cmd), y = (int32_t)parse_u32(&cmd);
-    damage(frame_rect(w));
-    w->r.x = x, w->r.y = y;
-    damage(frame_rect(w));
-  } else if (take_word(&cmd, "resize")) {
-    uint32_t width = parse_u32(&cmd), height = parse_u32(&cmd);
-    st = resize(w, width, height);
-  } else if (take_word(&cmd, "title")) {
-    while (cmd.len && cmd.ptr[0] == ' ') cmd.ptr++, cmd.len--;
-    size_t len = cmd.len < sizeof w->title - 1 ? cmd.len : sizeof w->title - 1;
-    memcpy(w->title, cmd.ptr, len), w->title[len] = 0;
-    cmd.len = 0;
-  } else if (take_word(&cmd, "raise")) {
-    raise_window(w);
-  } else if (take_word(&cmd, "close")) {
-    channel_end(w); // the app sees its channel close; the window goes with its last fid
-  } else {
-    st = VX_ERR_INVALID;
-  }
-  if (st == VX_OK && cmd.len) st = VX_ERR_INVALID;
+  vx_status st = window_ctl(w, cmd);
   if (st != VX_OK) *count = 0;
   return st;
 }
@@ -1605,7 +1860,8 @@ static vx_status fs_write(void *ctx, uint64_t n, uint64_t offset, const uint8_t 
 static vx_status fs_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *child) {
   (void)ctx;
   if (dir == ROOT) {
-    static const uint64_t ROOT_FILES[] = {INFO, OUTPUTS, WINDOWS, THEME, R_KEYMAP, R_IME};
+    static const uint64_t ROOT_FILES[] = {INFO,  OUTPUTS, WINDOWS,  THEME, R_KEYMAP,
+                                          R_IME, R_KEYS,  R_EVENTS, R_CTL};
     if (index >= sizeof ROOT_FILES / sizeof ROOT_FILES[0]) return VX_ERR_NOT_FOUND;
     *child = ROOT_FILES[index];
     return VX_OK;
@@ -1637,6 +1893,8 @@ const char *vx_main(void) {
                       .open = fs_open,
                       .open_handle = fs_open_handle,
                       .fid_node = fs_fid_node,
+                      .clone = fs_clone,
+                      .clunk = fs_clunk,
                       .read = fs_read,
                       .write = fs_write,
                       .readdir = fs_readdir};
