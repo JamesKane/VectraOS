@@ -16,6 +16,11 @@ static void trace_write(uint16_t kind, uint64_t a, uint64_t b);
       trace_write((kind), (uint64_t)(a), (uint64_t)(b));                                                     \
   } while (0)
 
+// Sampling (20 §6, M7 step 7a3a): with VX_TC_SAMPLE, the scheduler's timer
+// calls trace_sample on a busy CPU every trace_sample_ns.
+static _Atomic uint64_t trace_sample_ns;
+static void trace_sample(bool from_user, uint64_t pc, uint64_t fp);
+
 static int64_t sys_trace_configure(vx_handle rh, uint64_t op, uint64_t data, uint64_t len);
 
 // A thread as a record names it: its task's id << 12 | its id in the task.

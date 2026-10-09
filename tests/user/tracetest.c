@@ -5,7 +5,8 @@
 // the pager's fault at the address, the spawn's syscalls, and that every
 // wake's waker is a thread the trace saw. And flows (7a2): a write and its
 // sync, followed span by span from this process through fsd to the disk
-// driver, and the disk's interrupt within the driver's span.
+// driver, and the disk's interrupt within the driver's span. Then sampling
+// (7a3a): a busy loop in one small function, found in most of the samples.
 
 #include "../../lib/vx-rt/rt.c"
 #include "../../lib/vx-ns/nsapi.c"
@@ -105,6 +106,43 @@ static bool run_trace(vx_arena *a, vx_str arg, vx_str one, vx_str two) {
   vx_handle_close(out[0]);
   vx_str exit = VX_STR("unset");
   return vx_proc_wait(tp, VX_INFINITE, a, &exit) == VX_OK && exit.len == 0 && got_one && got_two;
+}
+
+// Spins until `until`, its time read only now and then: what samples find.
+[[gnu::noinline]] static uint64_t busy(vx_instant until) {
+  volatile uint64_t x = 1;
+  while (vx_now() < until)
+    for (uint32_t i = 0; i < 100'000; i++) x = x * 6'364'136'223'846'793'005ull + 1;
+  return x;
+}
+
+// The sampling test (7a3a): of this task's user-mode samples during a busy
+// loop, how many land in busy (its code, a few hundred bytes from its
+// start), and whether those walked a frame back to their caller.
+static void sampling(uint32_t self_task) {
+  vx_arena *a = vx_arena_new(40 << 20); // its own: the first capture's buffer fills the other
+  CHECK(ctl("start sample rate 2000 size 4M") == VX_OK);
+  busy(vx_now() + 200'000'000);
+  CHECK(ctl("stop") == VX_OK);
+  vx_fd ev = vx_open(VX_STR("/proc/trace/events"), VX_OREAD);
+  vx_trace_record *r = vx_push(a, 32 << 20, 32);
+  size_t bytes = 0;
+  int64_t got;
+  while (ev >= 0 && r && (got = vx_read(ev, (vx_bytes){(uint8_t *)r + bytes, (32 << 20) - bytes})) > 0)
+    bytes += (size_t)got;
+  vx_close(ev);
+  uint64_t from = (uint64_t)(uintptr_t)&busy;
+  uint32_t mine = 0, inside = 0, walked = 0;
+  for (size_t i = 0; i < bytes / sizeof *r; i++) {
+    if (r[i].kind != VX_TK_SAMPLE || tid_task(r[i].tid) != self_task || !(r[i].b >> 63)) continue;
+    mine++;
+    if (r[i].a >= from && r[i].a < from + 512) inside++, walked += (r[i].b & 0xff) > 0;
+  }
+  vx_printf("tracetest: %u samples, %u in busy\n", mine, inside);
+  CHECK(mine >= 100);          // 2 kHz for 200 ms: 400, less what QEMU's timers lose
+  CHECK(inside * 2 >= mine);   // most of them in busy
+  CHECK(walked * 2 >= inside); // with its caller's frame
+  vx_arena_free(a);
 }
 
 const char *vx_main(void) {
@@ -232,6 +270,7 @@ const char *vx_main(void) {
   // summarizes them (7a2c): the slowest flows and the longest blocks.
   CHECK(run_trace(a, VX_STR("-p"), VX_STR("kind=mark text=\"tracetest end\""), VX_STR("kind=switch")));
   CHECK(run_trace(a, VX_STR("-s"), VX_STR("slowest=flow flow=0x"), VX_STR("longest=block task=")));
+  sampling(self_task);
   vx_printf("tracetest: %zu records\n", n);
   vx_printf("tracetest: %u checks, %u failed\n", checks, failures);
   return failures ? "failed" : nullptr;

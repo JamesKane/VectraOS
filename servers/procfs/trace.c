@@ -65,8 +65,9 @@ static bool trace_allowed(vx_str uname) {
 static const struct {
   const char *name;
   uint32_t bit;
-} TRACE_CATS[] = {{"sched", VX_TC_SCHED}, {"ipc", VX_TC_IPC},         {"irq", VX_TC_IRQ},  {"vm", VX_TC_VM},
-                  {"futex", VX_TC_FUTEX}, {"syscall", VX_TC_SYSCALL}, {"mark", VX_TC_MARK}};
+} TRACE_CATS[] = {{"sched", VX_TC_SCHED},   {"ipc", VX_TC_IPC},     {"irq", VX_TC_IRQ},
+                  {"vm", VX_TC_VM},         {"futex", VX_TC_FUTEX}, {"syscall", VX_TC_SYSCALL},
+                  {"sample", VX_TC_SAMPLE}, {"mark", VX_TC_MARK}};
 
 // The rings, mapped afresh: a start may have made new ones.
 static void trace_map(void) {
@@ -129,6 +130,10 @@ static vx_status trace_ctl(vx_str cmd) {
       uint64_t n;
       if (!vx_str_u64(w, &n)) return VX_ERR_INVALID;
       s.ring_size = n * mult;
+    } else if (vx_str_eq(w, VX_STR("rate")) && vx_str_split(&rest, VX_STR(" "), &w)) { // samples a second
+      uint64_t hz;
+      if (!vx_str_u64(w, &hz) || !hz || hz > 10'000) return VX_ERR_INVALID;
+      s.sample_hz = (uint32_t)hz;
     } else if (w.len) {
       return VX_ERR_INVALID;
     }
@@ -282,7 +287,10 @@ static const char TRACE_SCHEMA[] =
     "kind=15 name=futex_woken a=word b=\"ns waited\"\n"
     "kind=16 name=sys_in a=number\n"
     "kind=17 name=sys_out a=number b=result\n"
-    "kind=18 name=mark a=text b=text\n";
+    "kind=18 name=mark a=text b=text\n"
+    "kind=19 name=sample a=pc b=\"frames that follow | 1 << 63 in user mode\"\n"
+    "kind=20 name=frames a=\"return address\" b=\"return address, 0 for none\"\n"
+    "kind=64 name=span a=flow b=\"message type << 48 | cycles\" cpu=0xffff tid=\"pid << 12 | thread\"\n";
 
 static vx_status trace_read(uint32_t f, uint64_t offset, uint8_t *buf, uint32_t *count) {
   static char text[8192];

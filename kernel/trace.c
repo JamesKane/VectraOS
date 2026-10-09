@@ -49,6 +49,32 @@ static void trace_write(uint16_t kind, uint64_t a, uint64_t b) {
   atomic_store_explicit(&trace.writing[i], 0, memory_order_release);
 }
 
+// A sample (20 §6): the interrupted PC and up to 64 return addresses from
+// its frame-pointer chain, a frame holding the caller's frame pointer and
+// then the return address on both architectures. User frames are read with
+// the fault-safe copy, which pages nothing in: the walk stops at the first
+// frame not mapped, or that does not move up the stack. The records follow
+// one another in this CPU's ring, its interrupts off.
+static void trace_sample(bool from_user, uint64_t pc, uint64_t fp) {
+  uint64_t ret[64];
+  uint32_t n = 0;
+  while (n < 64 && fp && !(fp & 7)) {
+    uint64_t frame[2];
+    if (from_user) {
+      if (fp >= USER_TOP - 16 || arch_user_copy_in(frame, (const void *)fp, sizeof frame)) break;
+    } else {
+      if ((int64_t)fp >= 0) break; // the kernel's own frames only
+      memcpy(frame, (const void *)fp, sizeof frame);
+    }
+    if (!frame[1]) break;
+    ret[n++] = frame[1];
+    if (frame[0] <= fp) break;
+    fp = frame[0];
+  }
+  trace_write(VX_TK_SAMPLE, pc, n | (from_user ? 1ull << 63 : 0));
+  for (uint32_t i = 0; i < n; i += 2) trace_write(VX_TK_FRAMES, ret[i], i + 1 < n ? ret[i + 1] : 0);
+}
+
 // Writing stops, and returns once no CPU is mid-record.
 static void trace_quiesce(void) {
   atomic_store_explicit(&trace_mask, 0, memory_order_seq_cst);
@@ -75,7 +101,8 @@ static vx_status trace_start(const vx_trace_start *s) {
   uint32_t online = atomic_load(&cpus_online);
   if ((size & 4095) || size < 4096 || s->circular > 1 || !s->categories ||
       (s->categories & ~(uint32_t)(VX_TC_SCHED | VX_TC_IPC | VX_TC_IRQ | VX_TC_VM | VX_TC_FUTEX |
-                                   VX_TC_SYSCALL | VX_TC_MARK)))
+                                   VX_TC_SYSCALL | VX_TC_SAMPLE | VX_TC_MARK)) ||
+      s->sample_hz > 10'000 || s->reserved)
     return VX_ERR_INVALID;
   if (!online || (size + 4096) * online > VMO_MAX_SIZE) return VX_ERR_RANGE;
   trace_quiesce();
@@ -87,6 +114,7 @@ static vx_status trace_start(const vx_trace_start *s) {
     trace.rings = v, trace.ring_size = size, trace.stride = size + 4096, trace.cpus = online;
   }
   trace.circular = s->circular;
+  atomic_store(&trace_sample_ns, 1'000'000'000ull / (s->sample_hz ? s->sample_hz : 1000));
   trace_rewind();
   atomic_store_explicit(&trace_mask, s->categories, memory_order_seq_cst);
   return VX_OK;

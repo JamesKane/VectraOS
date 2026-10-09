@@ -816,6 +816,8 @@ typedef struct vx_trace_start {
   uint32_t categories;
   uint32_t circular;  // 0: oneshot (stop writing when full); 1: overwrite the oldest
   uint64_t ring_size; // bytes per CPU, a multiple of 4096 (0: 1 MiB)
+  uint32_t sample_hz; // with VX_TC_SAMPLE: samples a second on a busy CPU (0: 1000; at most 10000)
+  uint32_t reserved;  // 0
 } vx_trace_start;
 
 // What a record is (its kind), and its a and b.
@@ -838,6 +840,8 @@ enum vx_trace_kind : uint16_t {
   VX_TK_SYS_IN,      // a: the syscall's number
   VX_TK_SYS_OUT,     // a: the number; b: its result
   VX_TK_MARK,        // a, b: up to 16 bytes of text
+  VX_TK_SAMPLE,      // a: the interrupted PC; b: frames that follow (in FRAMES) | 1 << 63 if in user mode
+  VX_TK_FRAMES,      // a, b: the next two return addresses of the sample before (0: none)
 };
 // Not the kernel's: procfs merges a process's spans (lib/vx-prof) into
 // /proc/trace/events as these, cpu 0xffff, at their start. a: the flow; b:

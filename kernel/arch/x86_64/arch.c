@@ -747,7 +747,7 @@ void x86_trap(trap_frame *f) {
     f->rax = (uint64_t)syscall_dispatch(f->rax, args);
   } else if (f->vector == VECTOR_TIMER) {
     wrmsr(X2APIC_EOI, 0);
-    timer_interrupt(from_user);
+    timer_interrupt(from_user, f->rip, f->rbp);
   } else if (f->vector == VECTOR_RESCHED) {
     wrmsr(X2APIC_EOI, 0);
     this_cpu()->resched = true;

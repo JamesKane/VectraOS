@@ -71,6 +71,7 @@ typedef struct cpu {
   vx_instant slice_end;
   vx_instant run_start; // when current began running, for charging its context
   vx_instant tick_at;   // the next CPU-time tick, while it runs a thread (ADR-0041)
+  vx_instant sample_at; // the next sample, while it runs a thread and the trace samples (20 §6)
   sched_ctx *reserved;  // the context that reserved this CPU, or none
   bool resched;         // call schedule before returning to user mode
   thread *lending;      // a channel_call delivering its request: the port waiter it wakes is lent to
@@ -637,6 +638,7 @@ static void schedule_locked(void) {
     sched.idle_mask &= ~(1ull << c->index);
     c->slice_end = now + TIME_SLICE;
     if (c->tick_at <= now) c->tick_at = now + TICK; // leaving idle: ticks start again
+    if (c->sample_at <= now) c->sample_at = now + (vx_instant)atomic_load(&trace_sample_ns); // samples too
     if (ctx_of(next)) ctx_refill(ctx_of(next), now);
   }
   if (next != prev) {
@@ -789,6 +791,9 @@ static void sched_arm_timer(cpu *c) {
     if (t->wake_late < next) next = t->wake_late;
   if (c->current != &c->idle && c->slice_end < next) next = c->slice_end;
   if (c->current != &c->idle && c->tick_at < next) next = c->tick_at;
+  if (c->current != &c->idle && (atomic_load_explicit(&trace_mask, memory_order_relaxed) & VX_TC_SAMPLE) &&
+      c->sample_at < next)
+    next = c->sample_at;
   const sched_ctx *x = c->current ? ctx_of(c->current) : nullptr;
   if (c->current != &c->idle && x && x->intent == VX_INTENT_REALTIME && !x->throttled &&
       c->run_start + x->left < next)
@@ -808,7 +813,7 @@ static void sched_arm_timer(cpu *c) {
 
 // This CPU's timer fired (time.c): wake its sleepers whose deadlines have passed,
 // and end the slice if others are waiting.
-static void sched_timer(bool from_user) {
+static void sched_timer(bool from_user, uint64_t pc, uint64_t fp) {
   cpu *c = this_cpu();
   if (!c->current) return; // before the scheduler runs on this CPU
   spin_lock(&sched.lock);
@@ -818,6 +823,11 @@ static void sched_timer(bool from_user) {
     uint64_t n = 1 + (uint64_t)((now - c->tick_at) / TICK);
     atomic_fetch_add_explicit(&c->current->ticks[from_user ? 0 : 1], n, memory_order_relaxed);
     c->tick_at += (vx_instant)(n * TICK);
+  }
+  if (c->current != &c->idle && now >= c->sample_at &&
+      (atomic_load_explicit(&trace_mask, memory_order_relaxed) & VX_TC_SAMPLE)) {
+    trace_sample(from_user, pc, fp); // what it was doing: one sample, however late
+    c->sample_at = now + (vx_instant)atomic_load_explicit(&trace_sample_ns, memory_order_relaxed);
   }
   while (c->sleepers && c->sleepers->wake_at <= now) {
     thread *t = c->sleepers;

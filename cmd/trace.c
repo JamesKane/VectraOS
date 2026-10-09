@@ -12,7 +12,7 @@
 static const char *const KINDS[] = {
     "",           "switch",      "wake",    "block",   "call",  "reply",      "donate",
     "return",     "irq_in",      "irq_out", "timer",   "fault", "pager_wait", "pager_done",
-    "futex_wait", "futex_woken", "sys_in",  "sys_out", "mark"};
+    "futex_wait", "futex_woken", "sys_in",  "sys_out", "mark",  "sample",     "frames"};
 
 static const char *fail(const char *what, vx_str path) {
   vx_eprintf("trace: %s %.*s: %.*s\n", what, VX_FMT(path), VX_FMT(vx_errstr()));
@@ -43,6 +43,9 @@ static void print_record(const vx_trace_record *r) {
     char text[17] = {};
     memcpy(text, &r->a, 16);
     vx_printf(" text=\"%s\"\n", text);
+  } else if (r->kind == VX_TK_SAMPLE) {
+    vx_printf(" pc=0x%llx frames=%u mode=%s\n", (unsigned long long)r->a, (uint32_t)(r->b & 0xff),
+              r->b >> 63 ? "user" : "kernel");
   } else if (r->kind == VX_TK_SPAN) { // a process's (20 §5): task is its pid
     vx_printf(" kind=span flow=0x%llx type=%u cycles=%llu\n", (unsigned long long)r->a,
               (uint32_t)(r->b >> 48), (unsigned long long)(r->b & 0xffff'ffff'ffff));

@@ -276,14 +276,14 @@ static void arch_wait(void) {
                    : "memory");
 }
 
-static void aarch64_irq(bool from_user) {
+static void aarch64_irq(bool from_user, uint64_t pc, uint64_t fp) {
   uint64_t iar;
   __asm__ volatile("mrs %0, icc_iar1_el1" : "=r"(iar));
   uint32_t intid = (uint32_t)iar & 0xffffff;
   if (intid >= 1020 && intid <= 1023) return; // spurious; LPIs (MSIs) are 8192 and up
   if (intid == INTID_VIRTUAL_TIMER || intid == INTID_EL2_VIRTUAL_TIMER) {
     __asm__ volatile("msr cntv_ctl_el0, xzr\n\tisb"); // disarm before EOI: the line is level-triggered
-    timer_interrupt(from_user);
+    timer_interrupt(from_user, pc, fp);
   } else if (intid == INTID_RESCHED) {
     this_cpu()->resched = true;
   } else if (intid >= 32 && intid == smmu0.event_intid) {
@@ -1014,7 +1014,7 @@ void aarch64_trap(trap_frame *f, uint64_t index) {
   bool from_user = index >= 8;
   uint32_t ec = (uint32_t)(f->esr >> 26) & 0x3f;
   if ((index & 3) == 1) { // IRQ
-    aarch64_irq(from_user);
+    aarch64_irq(from_user, f->elr, f->x[29]);
   } else if (from_user && (index & 3) == 0 && ec == EC_SVC64) {
     f->x[0] = (uint64_t)syscall_dispatch(f->x[8], f->x);
   } else if (!from_user && (index & 3) == 0 && ec == 0x25 && f->far < USER_TOP && uaccess_fixup(f->elr)) {
