@@ -1375,6 +1375,18 @@ static const char *const DLTEST_A_NEEDS[] = {"libdltestb.so", nullptr};
 static const char *const DLTEST_NEEDS[] = {"libdltesta.so", nullptr};
 static const char *const VXCXXEXC_NEEDS[] = {"libvxcxxexc.so", nullptr};
 static const char *const VXCXXEXC_STATIC[] = {"-DVXCXXEXC_STATIC", nullptr};
+static const char *const PIXELSDYN_NEEDS[] = {"libvxui.so", nullptr};
+// imagetest's images (ADR-0056): one source, plain, with TLS, and needing an image.
+static const char *const IMAGE_TLS[] = {"-DIMAGE_TLS", nullptr};
+static const char *const IMAGE_NEEDS_FLAGS[] = {"-DIMAGE_NEEDS", nullptr};
+static const char *const IMAGE_NEEDS[] = {"libimage.so", nullptr};
+// An SDK app's flags for vxui.h (ADR-0056): its header alone, libvxui.so answering it.
+static const char *const VXUI_APP_FLAGS[] = {"-Ilib/vxui", nullptr};
+// libvxui.so's: vxui with the font port's headers as system ones.
+// Hidden but for what VXUI_API exports.
+static const char *const VXUI_LIB_FLAGS[] = {
+    "-Ilib/vxui",          "-isystem", "third_party/stb_truetype", "-isystem", "third_party/kb_text_shape",
+    "-fvisibility=hidden", nullptr};
 
 // ACPICA, a native port (ADR-0030), and what bus-acpi needs to include its
 // headers: its environment header first, its include directories as system
@@ -1460,6 +1472,18 @@ static const program USER_PROGRAMS[] = {
      nullptr}, // a trace for dbg's timeline (7g1b2)
     {"dbguidemo", "tests/user/dbgdemo.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // dbgdemo, as dbg's window debugs it (7g1b3)
+    {"libvxui.so", "lib/vxui/libvxui.c", IN_BOOTFS, nullptr, false, &font, VXUI_LIB_FLAGS, true, LINK_SHARED,
+     nullptr}, // vxui as the SDK's shared object (ADR-0056, 7g2a)
+    {"libimage.so", "tests/user/imagetest_lib.c", IN_TESTS, nullptr, false, nullptr, nullptr, true,
+     LINK_SHARED, nullptr}, // imagetest's code image (7g2a)
+    {"libimagetls.so", "tests/user/imagetest_lib.c", IN_TESTS, nullptr, false, nullptr, IMAGE_TLS, true,
+     LINK_SHARED, nullptr}, // one with TLS, refused
+    {"libimageneeds.so", "tests/user/imagetest_lib.c", IN_TESTS, nullptr, false, nullptr, IMAGE_NEEDS_FLAGS,
+     true, LINK_SHARED, IMAGE_NEEDS}, // one needing an image, refused
+    {"imagetest", "tests/user/imagetest.c", IN_TESTS, nullptr, false, nullptr, nullptr, true, LINK_DYNAMIC,
+     nullptr}, // libvx level 2's calls (7g2a)
+    {"pixelsdyn", "tests/user/pixelsdyn.c", IN_TESTS, nullptr, false, nullptr, VXUI_APP_FLAGS, true,
+     LINK_DYNAMIC, PIXELSDYN_NEEDS}, // 03's pixels as an SDK app on libvxui.so (7g2a)
     {"prompttest", "tests/user/prompttest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // the trusted prompt (7d2d)
     {"wmtest", "tests/user/wmtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
@@ -1653,6 +1677,11 @@ static const char *native_port_archive(const port *p, const arch *a) {
   return fmt("%s/out/%s/%s/lib%s.a", root, p->name, a->name, p->name);
 }
 
+// The same, position-independent, for a shared library to link.
+static const char *native_port_pic_archive(const port *p, const arch *a) {
+  return fmt("%s/out/%s/%s-pic/lib%s.a", root, p->name, a->name, p->name);
+}
+
 // Native ports (ACPICA, Monocypher): compiled once per architecture and
 // cached, as musl is, into an archive the programs that use them link.
 static bool build_native_ports(const arch *a) {
@@ -1666,7 +1695,14 @@ static bool build_native_ports(const arch *a) {
     const char *lib = native_port_archive(ports[i], a);
     if (!archive(lib, fmt("%s/out/%s/%s", root, ports[i]->name, a->name), objs, files.count)) return false;
   }
-  return true;
+  // The font port again, position-independent, for libvxui.so (ADR-0056).
+  static file_list files;
+  files = (file_list){};
+  add_words(&files, vx_ndb_get(&font.head, "sources"));
+  const char **objs = alloc((size_t)files.count * sizeof *objs);
+  return build_cached_as(&font, a, &files, objs, pic_flag, "pic") &&
+         archive(native_port_pic_archive(&font, a), fmt("%s/out/%s/%s-pic", root, font.name, a->name), objs,
+                 files.count);
 }
 
 // Usage from pages (12 §7, M6 step 6a3): a program whose page has a usage
@@ -1875,15 +1911,43 @@ static int abi_level(void) {
   return (int)n;
 }
 
+// Whether every line of want is a line of have (both sorted lists).
+static bool lines_within(vx_str want, vx_str have, const char **missing) {
+  for (size_t at = 0; at < want.len;) {
+    size_t e = at;
+    while (e < want.len && want.ptr[e] != '\n') e++;
+    vx_str line = {want.ptr + at, e - at};
+    bool found = false;
+    for (size_t h = 0; h < have.len && !found;) {
+      size_t f = h;
+      while (f < have.len && have.ptr[f] != '\n') f++;
+      found = f - h == line.len && memcmp(have.ptr + h, line.ptr, line.len) == 0;
+      h = f + 1;
+    }
+    if (!found && line.len) {
+      *missing = str_dup(line);
+      return false;
+    }
+    at = e + 1;
+  }
+  return true;
+}
+
 // libvx.so's exports, written beside it (usr/lib/libvx.symbols) and, once a
 // level is frozen (abi/levels/N.symbols, sorted), held to it: a symbol it
 // lacks breaks every program built for the level, and a new one belongs to
-// the next level, with VX_TARGET_ABI around its declaration.
+// the next level, with VX_TARGET_ABI around its declaration. A draft level
+// (no list of its own yet, ADR-0056) holds every symbol of the level below.
 static bool check_libvx_exports(const arch *a, const char *lib) {
   vx_str now = elf_exports(fmt("%s/libvx.so", lib));
   write_file(fmt("%s/libvx.symbols", lib), now);
   const char *frozen = fmt("abi/levels/%d.symbols", abi_level());
-  if (!exists(frozen)) return true; // the draft: nothing to hold it to yet
+  if (!exists(frozen)) { // the draft: a superset of the level below
+    const char *below = fmt("abi/levels/%d.symbols", abi_level() - 1), *missing = "";
+    if (!exists(below) || lines_within(read_file(below), now, &missing)) return true;
+    fprintf(stderr, "  ABI   %s: libvx.so lacks %s, which %s has\n", a->name, missing, below);
+    return false;
+  }
   vx_str want = read_file(frozen);
   if (want.len == now.len && memcmp(want.ptr, now.ptr, now.len) == 0) return true;
   fprintf(stderr, "  ABI   %s: libvx.so's exports are not %s's (%s/libvx.symbols holds them):\n", a->name,
@@ -1895,25 +1959,36 @@ static bool check_libvx_exports(const arch *a, const char *lib) {
 }
 
 // The behaviour suite (ADR-0004 item 8): native programs against libvx.so,
-// and the manifests and scenarios that say what they expect. Its hash is
-// over each file's path and bytes, in this order.
-static const char *const BEHAVIOUR_SUITE[] = {
-    "tests/user/vxapitest.c",
-    "tests/user/vxapitest.ndb",
-    "tests/qemu/vxapi.ndb",
-    "tests/user/libvxtest.c",
-    "tests/user/libvxtest.ndb",
-    "tests/qemu/libvx.ndb",
-    nullptr,
+// and the manifests and scenarios that say what they expect, each from the
+// level that added it. A level's hash is over the path and bytes of each file
+// of it and the levels below, in this order.
+static const struct {
+  int level;
+  const char *path;
+} BEHAVIOUR_SUITE[] = {
+    {1, "tests/user/vxapitest.c"},
+    {1, "tests/user/vxapitest.ndb"},
+    {1, "tests/qemu/vxapi.ndb"},
+    {1, "tests/user/libvxtest.c"},
+    {1, "tests/user/libvxtest.ndb"},
+    {1, "tests/qemu/libvx.ndb"},
+    {2, "tests/user/imagetest.c"}, // code images (ADR-0056)
+    {2, "tests/user/imagetest.h"},
+    {2, "tests/user/imagetest_lib.c"},
+    {2, "tests/user/imagetest.ndb"},
+    {2, "tests/qemu/image.ndb"},
+    {},
 };
 
 static void hex(char *out, const uint8_t *p, size_t n); // below
 
-static void behaviour_hash(char out[65]) {
+static void behaviour_hash(int level, char out[65]) {
   vx_sha256 h = vx_sha256_begin();
-  for (const char *const *f = BEHAVIOUR_SUITE; *f; f++) {
-    vx_str data = read_file(*f);
-    vx_sha256_add(&h, *f, strlen(*f) + 1);
+  for (size_t i = 0; BEHAVIOUR_SUITE[i].path; i++) {
+    if (BEHAVIOUR_SUITE[i].level > level) continue;
+    const char *f = BEHAVIOUR_SUITE[i].path;
+    vx_str data = read_file(f);
+    vx_sha256_add(&h, f, strlen(f) + 1);
     vx_sha256_add(&h, data.ptr, data.len);
   }
   uint8_t digest[32];
@@ -1924,10 +1999,15 @@ static void behaviour_hash(char out[65]) {
 // Whether the suite may ship as it is: unchanged from the frozen level's
 // (abi/levels/N.behaviour), or its change named in docs/release-notes.md
 // ("behaviour-suite: HASH" and why), since a changed expectation changes what
-// programs built for the level may rely on.
-static bool behaviour_allowed(const char hash[65]) {
-  const char *frozen = fmt("abi/levels/%d.behaviour", abi_level());
-  if (!exists(frozen)) return true; // the draft
+// programs built for the level may rely on. A draft level (ADR-0056) holds
+// the level below's part of the suite to that level's hash; *level and hash
+// say which was compared.
+static bool behaviour_allowed(int *level, char hash[65]) {
+  *level = abi_level();
+  const char *frozen = fmt("abi/levels/%d.behaviour", *level);
+  if (!exists(frozen)) frozen = fmt("abi/levels/%d.behaviour", --*level);
+  if (!exists(frozen)) return true; // nothing frozen
+  behaviour_hash(*level, hash);
   vx_str want = read_file(frozen);
   if (want.len >= 64 && memcmp(want.ptr, hash, 64) == 0) return true;
   vx_str notes = exists("docs/release-notes.md") ? read_file("docs/release-notes.md") : (vx_str){"", 0};
@@ -2376,6 +2456,10 @@ static void native_program(const arch *a, bool release, const program *p, const 
   else
     cmd_addv(ld, (const char *const[]){fmt("@%s/link-head.rsp", s), obj, nullptr});
   for (const char *const *need = p->needs; need && *need; need++) cmd_add(ld, fmt("%s/%s", dir, *need));
+  if (p->link == LINK_SHARED && p->lib) // libvxui.so's fonts: its own, not exported
+    cmd_addv(ld, (const char *const[]){native_port_pic_archive(p->lib, a), "--exclude-libs=ALL", nullptr});
+  if (p->link == LINK_SHARED && p->lib)
+    cmd_addv(ld, (const char *const[]){"-lvx", "-lm", nullptr}); // needing libvx.so: calls it, holds no copy
   if (p->link == LINK_SHARED)
     cmd_addv(ld, cxx ? (const char *const[]){"-lc++", "-lc++abi", "-lunwind", "-lc", nullptr}
                      : (const char *const[]){"-lc", nullptr});
@@ -2627,6 +2711,10 @@ static bool build_arch(const arch *a, bool release) {
   if (!build_kernel(a, release) || !build_vectra_musl(a, release) || !build_native_ports(a)) return false;
   sysroot_made[a == &ARCHES[0] ? 0 : 1][release] = build_sysroot(a, release);
   if (!build_user_programs(a, release) || !build_port_programs(a, release)) return false;
+  // libvxui.so's exports, written beside it as libvx's are (ADR-0056): held
+  // to a list once frozen, with libvx's level 2.
+  const char *vxui = fmt("out/%s/%s/libvxui.so", a->name, release ? "release" : "debug");
+  if (exists(vxui)) write_file(fmt("%s.symbols", vxui), elf_exports(vxui));
   const vx_ndb_record *t = port_target_for(&limine, a);
   return !t || build_port_target(&limine, t);
 }
@@ -4061,11 +4149,14 @@ static int cmd_release(const char *verify) {
   const char *level = fmt("%d", abi_level()); // 0, a draft, until ADR-0004 freezes level 1
   vx_ndb_put(&w, "vx-abi", (vx_str){level, strlen(level)});
   char behaviour[65];
-  behaviour_hash(behaviour); // first: a release it refuses is refused before minutes of building
-  if (!behaviour_allowed(behaviour))
+  char held[65];
+  int held_level = 0;
+  // first: a release it refuses is refused before minutes of building
+  if (!behaviour_allowed(&held_level, held))
     die("the behaviour suite changed from abi/levels/%d.behaviour: docs/release-notes.md must name it "
         "(\"behaviour-suite: %s\") and say what programs may now see (ADR-0004 item 8)",
-        abi_level(), behaviour);
+        held_level, held);
+  behaviour_hash(abi_level(), behaviour);
   fprintf(stderr, "  ABI   vx-abi %d, behaviour suite %.16s…\n", abi_level(), behaviour);
   vx_ndb_put(&w, "behaviour", (vx_str){behaviour, 64});
   vx_ndb_flag(&w, "unsigned");
@@ -4319,7 +4410,9 @@ static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
             "if=pflash,format=raw,unit=1,snapshot=on,file=/usr/share/edk2/aarch64/vars-template-pflash.raw",
             nullptr});
   }
-  cmd_addv(c, (const char *const[]){"-m", "512M", "-smp", "4", "-display", "none", "-no-reboot", nullptr});
+  // 640 MiB: level 1's libvx scenario holds 306 MiB of heap at once, which
+  // 512 left under 280 KiB of room for (7g2a, decided 2026-10-10).
+  cmd_addv(c, (const char *const[]){"-m", "640M", "-smp", "4", "-display", "none", "-no-reboot", nullptr});
   if (o.qmp) { // a screen the harness reads (screendump), and input it gives (send-key)
     bool x86 = strcmp(a->name, "x86_64") == 0;
     // A framebuffer that outlives the firmware: x86's VGA (q35's own) or
@@ -6051,12 +6144,14 @@ static int os_units(unit *units, bool with_host_tests) {
         const char *sys = fmt("%s/%s", root, sysroot_dir(&ARCHES[i], false));
         bool cxx = native_cxx(p);
         if (!exists(fmt("%s/usr/lib/%s", sys, cxx ? "libc++.a" : "libc.a"))) continue;
-        const char **f = alloc(8 * sizeof *f);
+        size_t nlf = 0;
+        while (p->lib_flags && p->lib_flags[nlf]) nlf++;
+        const char **f = alloc((5 + nlf) * sizeof *f);
         f[0] = fmt("--config-system-dir=%s", sys), f[1] = fmt("--target=%s", sysroot_triple(&ARCHES[i]));
         f[2] = cxx ? "-std=c++23" : "-std=c23";
         int nf = 3;
         if (cxx) f[nf++] = "-stdlib=libc++"; // the C++ file's, which clang does not read
-        for (const char *const *lf = p->lib_flags; lf && *lf && nf < 7; lf++) f[nf++] = *lf;
+        for (size_t l = 0; l < nlf; l++) f[nf++] = p->lib_flags[l];
         f[nf] = nullptr;
         static const char *const CXX_HOUSE[] = {"-Wall", "-Wextra", "-Werror", "-Wshadow", "-g", nullptr};
         units[unit_slot(&n)] =
@@ -6338,6 +6433,8 @@ static void man_inventory(void) {
       man_need("server", p->name, MAN_SECT_4 | MAN_SECT_8);
     else if (strncmp(p->source, "drivers/", 8) == 0)
       man_need("driver", p->name, MAN_SECT_3);
+    else if (p->link == LINK_SHARED) // a library: its interface's page names it (libvxui.so in vxui(2))
+      man_need("library", p->name, MAN_SECT_2);
     else
       man_need("program", p->name, MAN_SECT_1 | MAN_SECT_8);
   }

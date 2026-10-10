@@ -64,7 +64,7 @@ The disk's GUIDs and the FAT serial number are made from a hash of what the disk
 `qemu` builds the image and `vx9pserve`, then replaces itself with QEMU booting the image, its serial console and QEMU's monitor on the terminal: `Ctrl-A X` quits.
 
 On x86_64 the machine is QEMU's `q35` with an Intel IOMMU (VT-d, without interrupt remapping) and OVMF; on aarch64 it is `virt` with GICv3 and an SMMUv3, and QEMU's UEFI firmware.
-Either has 512 MiB of memory, 4 CPUs, no display, and does not reboot.
+Either has 640 MiB of memory, 4 CPUs, no display, and does not reboot.
 The image is the boot disk, on virtio-blk, and what the system writes to it stays.
 The network is QEMU's user networking on virtio-net, where the guest is 10.0.2.15 and the host 10.0.2.2; each connection to 10.0.2.100 port 7 gets a `cat` on the host, an echo server, and each to port 5640 a `vx9pserve` serving `out/share`, made from `tests/fixtures/share` the first time.
 

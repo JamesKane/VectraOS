@@ -11,19 +11,30 @@
 // vx_wait return false, and vx_app_error says why; the minimal program
 // needs no error checks.
 //
-// v0 is a header library: a program includes this and has vxui compiled
-// in, against vx-rt, as 03's programs are written (vx_main). It becomes
-// libvxui.so, its ABI this header, when libvx exports what it uses (the
-// srv extension's open, the process's task). Voices are numbered now and
-// sound with audiod (M13).
+// Three ways in (ADR-0056), as libvx's own (vx/api.h): an app of the SDK
+// (__vectraos__, the native target) includes this as libvxui.so's ABI, each
+// call VXUI_API a plain declaration the library answers; libvxui.so itself
+// (libvxui.c, VXUI_LIB) is built from it, its calls exported; and the
+// system's own programs compile vxui in, as they compile vx-rt in (static,
+// written as 03's programs are, vx_main). Voices are numbered now and sound
+// with audiod (M13).
 
 #pragma once
 
+#ifdef __vectraos__ // the SDK's: libvx's public calls
+#include <vx.h>
+#else
 #include "../vx-rt/rt.c"
 #include "../vx-ns/nsapi.c"
-#include "../vx-wsys/wsysproto.h"
-#include "../vx-input/keymap.h"
-#include "../vx-font/font.c"
+#endif
+
+#ifdef VXUI_LIB
+#define VXUI_API [[gnu::visibility("default")]]
+#elifdef __vectraos__
+#define VXUI_API
+#else
+#define VXUI_API [[maybe_unused]] static
+#endif
 
 typedef struct vx_app vx_app;
 typedef struct vx_window vx_window;
@@ -41,8 +52,9 @@ enum : vx_color {
   VX_THEME_FACE,             // the chrome's face
 };
 
-static constexpr uint32_t VX_KEY_SPACE = VX_HID_KEYBOARD | 0x2c, VX_KEY_ESCAPE = VX_HID_KEYBOARD | 0x29,
-                          VX_KEY_ENTER = VX_HID_KEYBOARD | 0x28;
+// Keys by HID usage (the keyboard's page, 7).
+static constexpr uint32_t VX_KEY_SPACE = 0x07u << 16 | 0x2c, VX_KEY_ESCAPE = 0x07u << 16 | 0x29,
+                          VX_KEY_ENTER = 0x07u << 16 | 0x28;
 
 // A sound a voice plays: v0 has tones.
 typedef struct vx_sound {
@@ -62,33 +74,32 @@ typedef struct vx_pixels {
   uint32_t buffer; // vxui's
 } vx_pixels;
 
-[[maybe_unused]] static vx_app *vx_app_open(const char *id);
-[[maybe_unused]] static const char *vx_app_error(const vx_app *app);
-[[maybe_unused]] static bool vx_wait(vx_app *app, vx_event *ev, vx_instant deadline);
+VXUI_API vx_app *vx_app_open(const char *id);
+VXUI_API const char *vx_app_error(const vx_app *app);
+VXUI_API bool vx_wait(vx_app *app, vx_event *ev, vx_instant deadline);
 // From any thread: the app's vx_wait returns a VX_WAKE (one for any number
 // of wakes since the last), so a thread of the app's own (a reader) can hand
 // it work.
-[[maybe_unused]] static void vx_app_wake(vx_app *app);
+VXUI_API void vx_app_wake(vx_app *app);
 
-[[maybe_unused]] static vx_window *vx_window_open(vx_app *app, const char *title, uint32_t width,
-                                                  uint32_t height);
-[[maybe_unused]] static void vx_window_redraw(vx_window *win);
-[[maybe_unused]] static void vx_window_animate(vx_window *win, bool on);
-[[maybe_unused]] static void vx_window_title(vx_window *win, const char *title);
+VXUI_API vx_window *vx_window_open(vx_app *app, const char *title, uint32_t width, uint32_t height);
+VXUI_API void vx_window_redraw(vx_window *win);
+VXUI_API void vx_window_animate(vx_window *win, bool on);
+VXUI_API void vx_window_title(vx_window *win, const char *title);
 // Text input (docs/proto/wsys.md, the window's ime file): on, its text
 // resolved by the server (dead keys, compose, an input method) and given as
 // VX_TEXT, commands still VX_KEY; purpose is text, password, number, url,
 // email or terminal. Off (nullptr), as a window starts: keys alone.
-[[maybe_unused]] static void vx_window_text_input(vx_window *win, const char *purpose);
+VXUI_API void vx_window_text_input(vx_window *win, const char *purpose);
 
-[[maybe_unused]] static vx_canvas *vx_canvas_begin(vx_window *win, const vx_frame_event *frame);
-[[maybe_unused]] static void vx_clear(vx_canvas *c, vx_color colour);
-[[maybe_unused]] static void vx_fill_rect(vx_canvas *c, float x, float y, float w, float h, vx_color colour);
-[[maybe_unused]] static void vx_circle(vx_canvas *c, float x, float y, float r, vx_color colour);
-[[maybe_unused]] static void vx_canvas_present(vx_canvas *c);
+VXUI_API vx_canvas *vx_canvas_begin(vx_window *win, const vx_frame_event *frame);
+VXUI_API void vx_clear(vx_canvas *c, vx_color colour);
+VXUI_API void vx_fill_rect(vx_canvas *c, float x, float y, float w, float h, vx_color colour);
+VXUI_API void vx_circle(vx_canvas *c, float x, float y, float r, vx_color colour);
+VXUI_API void vx_canvas_present(vx_canvas *c);
 
-[[maybe_unused]] static vx_pixels vx_pixels_begin(vx_window *win, const vx_frame_event *frame);
-[[maybe_unused]] static void vx_pixels_present(vx_window *win, vx_pixels *px);
+VXUI_API vx_pixels vx_pixels_begin(vx_window *win, const vx_frame_event *frame);
+VXUI_API void vx_pixels_present(vx_window *win, vx_pixels *px);
 
 // Immediate-mode UI (03 §6 item 2; M7 step 7e2b): the app describes its UI
 // each frame it draws, between vx_ui_begin and vx_ui_end, and holds no
@@ -98,14 +109,16 @@ typedef struct vx_pixels {
 // (rows built in a loop). Input uses the previous frame's rectangles:
 // vx_button is true on the frame after a press and a release both on the
 // button where it was drawn.
-[[maybe_unused]] static vx_ui *vx_ui_begin(vx_window *win, const vx_frame_event *frame);
-[[maybe_unused]] static void vx_ui_end(vx_ui *ui);
-[[maybe_unused]] static void vx_label(vx_ui *ui, const char *text);
-[[maybe_unused]] static bool vx_button(vx_ui *ui, const char *label);
-[[maybe_unused]] static void vx_push_id(vx_ui *ui, uint64_t key);
-[[maybe_unused]] static void vx_pop_id(vx_ui *ui);
+VXUI_API vx_ui *vx_ui_begin(vx_window *win, const vx_frame_event *frame);
+VXUI_API void vx_ui_end(vx_ui *ui);
+VXUI_API void vx_label(vx_ui *ui, const char *text);
+VXUI_API bool vx_button(vx_ui *ui, const char *label);
+VXUI_API void vx_push_id(vx_ui *ui, uint64_t key);
+VXUI_API void vx_pop_id(vx_ui *ui);
 
-[[maybe_unused]] static vx_voice *vx_voice_open(vx_app *app, vx_sound sound);
-[[maybe_unused]] static void vx_voice_play(vx_voice *voice);
+VXUI_API vx_voice *vx_voice_open(vx_app *app, vx_sound sound);
+VXUI_API void vx_voice_play(vx_voice *voice);
 
+#if !defined(__vectraos__) || defined(VXUI_LIB) // compiled in, or the library itself
 #include "vxui.c"
+#endif

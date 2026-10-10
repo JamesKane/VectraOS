@@ -1,5 +1,5 @@
 page=file sect=2 summary="open, read, write, stat, rename, link, map and remove files"
-    names=vx_io_submit,vx_watch,vx_open,vx_create,vx_close,vx_read,vx_write,vx_pread,vx_pwrite,vx_seek,vx_stat,vx_lstat,vx_fstat,vx_wstat,vx_dir_keep,vx_dirread,vx_remove,vx_rename,vx_symlink,vx_readlink,vx_sync,vx_map,vx_unmap,vx_ctl
+    names=vx_io_submit,vx_watch,vx_open,vx_create,vx_close,vx_read,vx_write,vx_pread,vx_pwrite,vx_seek,vx_stat,vx_lstat,vx_fstat,vx_wstat,vx_dir_keep,vx_dirread,vx_remove,vx_rename,vx_symlink,vx_readlink,vx_sync,vx_map,vx_unmap,vx_ctl,vx_open_post
     src=lib/vx-ns/file.c,abi/vx/file.h
     keys=file,open,create,read,write,stat,directory,rename,symlink,link,map,mmap,sync,fsync,remove,unlink,ctl,append,exclusive
 
@@ -33,6 +33,7 @@ vx_status vx_map(vx_fd fd, uint64_t off, size_t len, uint32_t prot,
                  void **addr);
 vx_status vx_unmap(void *addr, size_t len);
 vx_status vx_ctl(vx_str path, const char *fmt, ...);
+vx_status vx_open_post(vx_str path, vx_handle *channel); // level 2
 
 vx_status vx_io_submit(vx_loop *l, const vx_io *ops, size_t n);
 vx_status vx_watch(vx_loop *l, vx_fd fd, uint64_t key);
@@ -65,6 +66,8 @@ Symbolic links are followed, in the client, as the servers walk names only; `vx_
 `vx_unmap` lets go of a mapping.
 
 `vx_ctl` writes one formatted message to <path> in one write: how a program speaks to a server's `ctl` file.
+
+`vx_open_post` (libvx level 2, ADR-0056) opens a file whose server answers the open with a channel, 9Px's srv extension (02 §3.3): a window from `/wsys/new` (winsrv(8)), a posted service. The channel is in <channel>, and the file is closed once it is had; a file whose server gives none is `VX_ERR_INVALID`.
 
 The same requests go through a loop (loop(2)) without a second API (M6 step 6e4d2, F-217).
 `vx_io_submit` takes <n> requests, each a `vx_io`: a file, an operation (`VX_IO_READ`, `VX_IO_WRITE` or `VX_IO_SYNC`), an offset (requests are positioned, as `vx_pread`'s), a buffer that stays the caller's until it completes, and a key.

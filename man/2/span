@@ -1,0 +1,25 @@
+page=span sect=2 summary="write a span of the calling thread's time into the system's trace"
+    names=vx_span_begin,vx_span_end
+    src=lib/vx-rt/base.c,lib/vx-prof/prof.h,abi/vx/trace.h
+    keys=span,trace,profile,flow,frame,timeline
+
+# SYNOPSIS
+
+```c
+#include <vx/trace.h>
+
+uint64_t vx_span_begin(void);
+void vx_span_end(uint64_t start, uint32_t what, uint64_t flow);
+```
+
+# DESCRIPTION
+
+libvx level 2 (ADR-0056). A span is a stretch of the calling thread's time, from `vx_span_begin` to `vx_span_end`, written into the process's profiling ring, as the 9Px client and server write theirs (20 §5); `/proc/trace` merges them with the kernel's records (procfs(4)), and trace(1) and `dbg -t` (dbg(1)) show them.
+
+<what> is a message type: 9Px's, or one of the frames' (`VX_SPAN_FRAME_DRAW`, `VX_SPAN_FRAME_LATCH`, `VX_SPAN_FRAME_COMPOSE`, `abi/vx/abi.h`). <flow> is shared by the spans of one request or frame in every process that has a part in it; `vx_frame_flow` makes a frame's.
+
+While the trace has spans off, `vx_span_begin` is one predictable branch and returns 0, and `vx_span_end` of 0 does nothing.
+
+# SEE ALSO
+
+trace(1), dbg(1), procfs(4), vxui(2)

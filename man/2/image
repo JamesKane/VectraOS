@@ -1,0 +1,39 @@
+page=image sect=2 summary="map a code image, a shared library, into the running process and find its symbols"
+    names=vx_image_open,vx_image_symbol
+    src=lib/vx-dl/image.c,lib/vx-dl/dl.c,abi/vx/image.h,tests/user/imagetest.c
+    keys=image,shared,library,dlopen,dlsym,load,symbol,hot,reload,plugin
+
+# SYNOPSIS
+
+```c
+#include <vx/image.h>
+
+vx_status vx_image_open(vx_str path, vx_image **image);
+void *vx_image_symbol(const vx_image *image, const char *name);
+```
+
+# DESCRIPTION
+
+libvx level 2 (ADR-0056), for hot reload (03 §6.1), as `dlopen` and `dlsym` are a C program's.
+
+`vx_image_open` reads the shared library at <path>, maps it into the process as ld-vx(8) maps a library, at a random base with a page left unmapped on each side, and binds it: each symbol it refers to is the first definition in the executable, then the libraries ld-vx loaded, in their order, then the image itself. It never binds against an image opened before it. Its RELRO is made read-only and its constructors run before the call returns.
+
+Each open is a fresh copy at a new address, even of a path already open, with its own data: the image is copied, never mapped from the file, so a new build renamed over <path> leaves an open image as it was. An image is never unmapped and its destructors never run, so a pointer into an old one (a string, a function, a table) stays good for the life of the process.
+
+`vx_image_symbol` gives the address of a function or object the image defines and exports, or null: a static function, a section's symbol or a TLS variable is not found.
+
+# EXAMPLES
+
+tests/user/imagetest.c opens one image twice and checks each copy's state is its own.
+
+# SEE ALSO
+
+ld-vx(8), native(7), vxui(2); ADR-0047 and ADR-0056 in the repository
+
+# DIAGNOSTICS
+
+A failed open returns a negative status, leaves *<image> null, and `vx_errstr` (arena(2)) says why: the file cannot be read, is not a shared library, has TLS, needs a library that is not loaded already (an image's `DT_NEEDED` libraries must be among ld-vx's), refers to a symbol nothing defines, or holds an address outside itself.
+
+# BUGS
+
+An image with thread-local storage is refused: dynamic TLS is not implemented (ADR-0047 item 6). A failed open leaves what it mapped reserved. A static program's images can bind only against themselves, as it has no list of loaded objects.

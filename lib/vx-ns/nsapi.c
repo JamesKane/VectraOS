@@ -13,6 +13,11 @@ static vx_status vx_ns_api_fail(const char *what, vx_str path, vx_status st) {
   return st == VX_OK ? VX_OK : vx_file_fail(what, path, st);
 }
 
+// A file whose server answers an open with a channel (vx/file.h, level 2).
+VX_API vx_status vx_open_post(vx_str path, vx_handle *channel) {
+  return vx_ns_api_fail("open", path, vx_ns_open_post(vx_ns_process(), path, channel));
+}
+
 VX_API vx_status vx_bind(vx_str new_path, vx_str old, uint32_t flags) {
   vx_lock(&vx_ns_proc_lock);
   vx_status st = vx_ns_bind(vx_ns_process(), new_path, old, (uint8_t)flags);

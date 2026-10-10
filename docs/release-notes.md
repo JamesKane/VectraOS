@@ -2,7 +2,15 @@
 
 What a release changes that programs built for an earlier one may see, newest first (ADR-0004 item 8, ADR-0048 item 4). `./build release` refuses a release whose behaviour suite differs from its level's frozen one (`abi/levels/<n>.behaviour`) unless a note here names the suite's new hash, as a line `behaviour-suite: HASH`, beside what changed. A Swift ABI change is a note here too.
 
-## vx-abi level 1 (2026-10-08, M6's close)
+## vx-abi level 2 (a draft, since 2026-10-10, M7 step 7g2a; ADR-0056)
+
+Not frozen: a program built for it may break until a milestone's close the user names freezes it. The sections below describe the levels that are.
+
+- `VX_ABI_LEVEL` is 2 and `vx_abi_level()` says 2, so Swift's `#available(VectraOS 2, *)` holds on a running system already.
+- New calls, declared inside `#if VX_TARGET_ABI >= 2`: `vx_open_post` (`<vx/file.h>`), `vx_vmo_size` (`<vx/sys.h>`), `vx_span_begin` and `vx_span_end` (`<vx/trace.h>`), `vx_image_open` and `vx_image_symbol` (`<vx/image.h>`).
+- Each build holds `libvx.so` to every symbol of `abi/levels/1.symbols`, and `./build release` holds level 1's files of the behaviour suite to `abi/levels/1.behaviour`; level 2's suite starts with `imagetest` (scenario `image`).
+- `libvxui.so` at `/lib`, vxui(2) for SDK apps; its exports are written beside it, held to a list from level 2's freeze.
+
 
 The first frozen level: `libvx` v0, as ADR-0004 describes it, becomes level 1.
 

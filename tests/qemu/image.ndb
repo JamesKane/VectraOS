@@ -1,0 +1,10 @@
+# tests/qemu/image.ndb: libvx level 2's calls (M7 step 7g2a, ADR-0056;
+# tests/user/imagetest.c): code images opened into a running program, twice,
+# and refused; a VMO's size; a span with spans off.
+
+scenario=image timeout=60 cmdline=vx.skip=rc with=imagetest,libimage.so,libimagetls.so,libimageneeds.so
+expect=" checks, 0 failed"
+line="svcd: imagetest exited"
+fail="vx: panic"
+fail="imagetest: FAILED"
+fail="svcd: imagetest exited: "

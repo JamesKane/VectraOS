@@ -1,0 +1,6 @@
+# tests/user/imagetest.ndb: imagetest, libvx level 2's calls from a native
+# program (tests/qemu/image.ndb).
+
+service=imagetest program=/boot/bin/imagetest console entropy
+ns=posix
+connect=nsd

@@ -6,6 +6,13 @@
 
 #pragma once
 
+#include "../vx-wsys/wsysproto.h"
+#include "../vx-input/keymap.h"
+#include "../vx-font/font.c"
+#ifdef __vectraos__
+#include <string.h> // memcpy and the rest: the C library's, where vx-rt's are not compiled in
+#endif
+
 static constexpr uint32_t VXUI_WINDOWS = 8, VXUI_QUEUE = 32, VXUI_NODES = 128, VXUI_WAKE_KEY = 1000;
 
 // A widget as one frame has it: what is compared with the last frame's to
@@ -88,7 +95,7 @@ static void vxui_push(vx_app *app, const vx_event *ev) {
 
 // --- The app ---
 
-static vx_app *vx_app_open(const char *id) {
+VXUI_API vx_app *vx_app_open(const char *id) {
   vx_app *app = &vxui_the_app;
   *app = (vx_app){};
   vx_str s = vx_cstr(id);
@@ -98,9 +105,9 @@ static vx_app *vx_app_open(const char *id) {
   return app;
 }
 
-static const char *vx_app_error(const vx_app *app) { return app->error; }
+VXUI_API const char *vx_app_error(const vx_app *app) { return app->error; }
 
-static void vx_app_wake(vx_app *app) { vx_counter_signal(app->wake, ++app->wakes); }
+VXUI_API void vx_app_wake(vx_app *app) { vx_counter_signal(app->wake, ++app->wakes); }
 
 // --- Windows ---
 
@@ -175,7 +182,7 @@ static bool vxui_drain(vx_window *win) {
   }
 }
 
-static vx_window *vx_window_open(vx_app *app, const char *title, uint32_t width, uint32_t height) {
+VXUI_API vx_window *vx_window_open(vx_app *app, const char *title, uint32_t width, uint32_t height) {
   if (app->error) return nullptr;
   vx_window *win = nullptr;
   for (uint32_t i = 0; i < VXUI_WINDOWS && !win; i++)
@@ -185,7 +192,7 @@ static vx_window *vx_window_open(vx_app *app, const char *title, uint32_t width,
     return nullptr;
   }
   *win = (vx_window){.used = true, .app = app, .redraw = true};
-  if (vx_ns_open_post(vx_ns_process(), VX_STR("/wsys/new"), &win->ch) != VX_OK) {
+  if (vx_open_post(VX_STR("/wsys/new"), &win->ch) != VX_OK) {
     *win = (vx_window){};
     vxui_fail(app, "no window server: /wsys/new"); // a manifest gives it: mount=/wsys srv=wsys aname=self
     return nullptr;
@@ -223,7 +230,7 @@ static vx_window *vx_window_open(vx_app *app, const char *title, uint32_t width,
   return win;
 }
 
-static void vx_window_title(vx_window *win, const char *title) {
+VXUI_API void vx_window_title(vx_window *win, const char *title) {
   if (!win) return;
   char cmd[96] = "title ";
   vx_str t = vx_cstr(title);
@@ -232,7 +239,7 @@ static void vx_window_title(vx_window *win, const char *title) {
   vxui_ctl(win, cmd);
 }
 
-static void vx_window_text_input(vx_window *win, const char *purpose) {
+VXUI_API void vx_window_text_input(vx_window *win, const char *purpose) {
   if (!win) return;
   if (!purpose) {
     vxui_file(win, "ime", "disable");
@@ -246,17 +253,17 @@ static void vx_window_text_input(vx_window *win, const char *purpose) {
   vxui_file(win, "ime", "enable");
 }
 
-static void vx_window_redraw(vx_window *win) {
+VXUI_API void vx_window_redraw(vx_window *win) {
   if (win) win->redraw = true;
 }
 
-static void vx_window_animate(vx_window *win, bool on) {
+VXUI_API void vx_window_animate(vx_window *win, bool on) {
   if (win) win->animate = on, win->redraw |= on;
 }
 
 // --- The wait ---
 
-static bool vx_wait(vx_app *app, vx_event *ev, vx_instant deadline) {
+VXUI_API bool vx_wait(vx_app *app, vx_event *ev, vx_instant deadline) {
   for (;;) {
     if (app->error) return false;
     for (uint32_t i = 0; i < VXUI_WINDOWS; i++) { // a frame handed out and never presented is let go
@@ -278,7 +285,7 @@ static bool vx_wait(vx_app *app, vx_event *ev, vx_instant deadline) {
                                    .prev_presented = w->prev_presented,
                                    .dt = w->last_frame ? now - w->last_frame : 0};
       w->last_frame = now, w->redraw = false, w->owed = true;
-      w->span = vx_span_begin_hook ? vx_span_begin_hook() : 0;
+      w->span = vx_span_begin();
       return true;
     }
     uint64_t wakes = app->wakes;
@@ -332,7 +339,7 @@ static vx_color vxui_colour(vx_color c) {
 }
 
 // The next buffer, the configure's size, free (its release point come), attached.
-static vx_pixels vx_pixels_begin(vx_window *win, const vx_frame_event *frame) {
+VXUI_API vx_pixels vx_pixels_begin(vx_window *win, const vx_frame_event *frame) {
   (void)frame;
   vx_pixels px = {};
   if (!win || win->closed) return px;
@@ -382,7 +389,7 @@ static vx_pixels vx_pixels_begin(vx_window *win, const vx_frame_event *frame) {
 
 static void vxui_present(vx_window *win, vx_pixels *px, const vx_wsys_rect *damage, uint32_t ndamage);
 
-static void vx_pixels_present(vx_window *win, vx_pixels *px) { vxui_present(win, px, nullptr, 0); }
+VXUI_API void vx_pixels_present(vx_window *win, vx_pixels *px) { vxui_present(win, px, nullptr, 0); }
 
 // A present, its damage given (none: all of it).
 static void vxui_present(vx_window *win, vx_pixels *px, const vx_wsys_rect *damage, uint32_t ndamage) {
@@ -399,19 +406,19 @@ static void vxui_present(vx_window *win, vx_pixels *px, const vx_wsys_rect *dama
                        .ndamage = ndamage <= VX_WSYS_DAMAGE ? ndamage : 0};
   for (uint32_t i = 0; i < p.ndamage; i++) p.damage[i] = damage[i];
   if (vx_channel_write(win->ch, &p, sizeof p, nullptr, 0) == VX_OK && win->credits) win->credits--;
-  if (win->span) vx_span_end_hook(win->span, VX_SPAN_FRAME_DRAW, vx_frame_flow(win->id, win->presents));
+  vx_span_end(win->span, VX_SPAN_FRAME_DRAW, vx_frame_flow(win->id, win->presents));
   b->presented = win->presents, win->owed = false, win->next ^= 1, win->span = 0;
 }
 
-static vx_canvas *vx_canvas_begin(vx_window *win, const vx_frame_event *frame) {
+VXUI_API vx_canvas *vx_canvas_begin(vx_window *win, const vx_frame_event *frame) {
   vx_canvas *c = &win->app->canvas;
   *c = (vx_canvas){.win = win, .px = vx_pixels_begin(win, frame)};
   return c;
 }
 
-static void vx_canvas_present(vx_canvas *c) { vx_pixels_present(c->win, &c->px); }
+VXUI_API void vx_canvas_present(vx_canvas *c) { vx_pixels_present(c->win, &c->px); }
 
-static void vx_fill_rect(vx_canvas *c, float x, float y, float w, float h, vx_color colour) {
+VXUI_API void vx_fill_rect(vx_canvas *c, float x, float y, float w, float h, vx_color colour) {
   if (!c->px.data) return;
   uint32_t col = vxui_colour(colour);
   int32_t x0 = (int32_t)x, y0 = (int32_t)y, x1 = (int32_t)(x + w), y1 = (int32_t)(y + h);
@@ -423,12 +430,12 @@ static void vx_fill_rect(vx_canvas *c, float x, float y, float w, float h, vx_co
     for (int32_t xx = x0; xx < x1; xx++) ((uint32_t *)(c->px.data + (size_t)yy * c->px.stride))[xx] = col;
 }
 
-static void vx_clear(vx_canvas *c, vx_color colour) {
+VXUI_API void vx_clear(vx_canvas *c, vx_color colour) {
   vx_fill_rect(c, 0, 0, (float)c->px.w, (float)c->px.h, colour);
 }
 
 // A disc, its edge antialiased: coverage by the distance of each pixel's centre from the rim.
-static void vx_circle(vx_canvas *c, float x, float y, float r, vx_color colour) {
+VXUI_API void vx_circle(vx_canvas *c, float x, float y, float r, vx_color colour) {
   if (!c->px.data || r <= 0) return;
   uint32_t col = vxui_colour(colour);
   int32_t x0 = (int32_t)(x - r - 1), y0 = (int32_t)(y - r - 1), x1 = (int32_t)(x + r + 2),
@@ -497,7 +504,7 @@ static int32_t vxui_text_width(const char *text, size_t len) {
   return vx_font_to64(&vxui_font, adv, UI_PX) / 64;
 }
 
-static vx_ui *vx_ui_begin(vx_window *win, const vx_frame_event *frame) {
+VXUI_API vx_ui *vx_ui_begin(vx_window *win, const vx_frame_event *frame) {
   vx_ui *ui = &vxui_the_ui;
   vx_arena *arena = ui->arena;
   *ui = (vx_ui){.win = win, .frame = frame, .arena = arena};
@@ -533,9 +540,9 @@ static bool vxui_in(const vxui_node *n, int32_t x, int32_t y) {
   return x >= n->x && y >= n->y && x < n->x + n->w && y < n->y + n->h;
 }
 
-static void vx_label(vx_ui *ui, const char *text) { vxui_add(ui, 1, text); }
+VXUI_API void vx_label(vx_ui *ui, const char *text) { vxui_add(ui, 1, text); }
 
-static bool vx_button(vx_ui *ui, const char *label) {
+VXUI_API bool vx_button(vx_ui *ui, const char *label) {
   vxui_node *n = vxui_add(ui, 2, label);
   const vxui_node *was = n ? vxui_cached(ui->win, n->id) : nullptr;
   if (!was) return false; // new this frame: it has never been seen, so never clicked
@@ -544,7 +551,7 @@ static bool vx_button(vx_ui *ui, const char *label) {
   return w->down_seen && w->up_seen && vxui_in(was, w->down_x, w->down_y) && vxui_in(was, w->up_x, w->up_y);
 }
 
-static void vx_push_id(vx_ui *ui, uint64_t key) {
+VXUI_API void vx_push_id(vx_ui *ui, uint64_t key) {
   if (ui->depth == 8) return;
   char k[8];
   memcpy(k, &key, 8);
@@ -552,7 +559,7 @@ static void vx_push_id(vx_ui *ui, uint64_t key) {
   ui->depth++;
 }
 
-static void vx_pop_id(vx_ui *ui) {
+VXUI_API void vx_pop_id(vx_ui *ui) {
   if (ui->depth) ui->depth--;
 }
 
@@ -586,7 +593,7 @@ static void vxui_draw_node(vx_canvas *c, const vxui_node *n, vx_font_target *t) 
 
 // Layout (a pass of its own: a column from the top left), then the damage
 // (this frame's nodes against the last's), then drawing what it reaches.
-static void vx_ui_end(vx_ui *ui) {
+VXUI_API void vx_ui_end(vx_ui *ui) {
   vx_window *w = ui->win;
   int32_t y = UI_PAD, line = 20;
   for (uint32_t i = 0; i < ui->n; i++) {
@@ -657,9 +664,9 @@ static void vx_ui_end(vx_ui *ui) {
 
 // --- Voices (sound with audiod, M13) ---
 
-static vx_voice *vx_voice_open(vx_app *app, vx_sound sound) {
+VXUI_API vx_voice *vx_voice_open(vx_app *app, vx_sound sound) {
   app->voice = (vx_voice){.sound = sound};
   return &app->voice;
 }
 
-static void vx_voice_play(vx_voice *voice) { (void)voice; } // silent until audiod (M13)
+VXUI_API void vx_voice_play(vx_voice *voice) { (void)voice; } // silent until audiod (M13)

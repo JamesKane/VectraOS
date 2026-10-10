@@ -384,7 +384,7 @@ VX_API vx_status vx_vmo_decommit(vx_handle vmo, uint64_t offset, uint64_t size) 
 }
 
 // A VMO's size in bytes (vmo_op's VX_VMO_SIZE), any handle to it.
-[[maybe_unused]] static vx_status vx_vmo_size(vx_handle vmo, uint64_t *size) {
+VX_API vx_status vx_vmo_size(vx_handle vmo, uint64_t *size) {
   int64_t r = vx_syscall(VX_SYS_vmo_op, vmo, VX_VMO_SIZE, 0, 0, 0, 0);
   *size = r >= 0 ? (uint64_t)r : 0;
   return r >= 0 ? VX_OK : (vx_status)r;
@@ -443,6 +443,12 @@ VX_API vx_status vx_vmo_decommit(vx_handle vmo, uint64_t offset, uint64_t size) 
 // started otherwise (the POSIX personality's) has none, and writes no spans.
 static uint64_t (*vx_span_begin_hook)(void);
 static void (*vx_span_end_hook)(uint64_t start, uint32_t what, uint64_t flow);
+
+// Spans (vx/trace.h, level 2): the hooks crt1 sets, to vx-prof's.
+VX_API uint64_t vx_span_begin(void) { return vx_span_begin_hook ? vx_span_begin_hook() : 0; }
+VX_API void vx_span_end(uint64_t start, uint32_t what, uint64_t flow) {
+  if (start && vx_span_end_hook) vx_span_end_hook(start, what, flow);
+}
 
 // The kernel's trace (ADR-0049): procfs's alone, so not in <vx/sys.h>.
 [[maybe_unused]] static vx_status vx_trace_configure(vx_handle resource, uint32_t op, void *data,

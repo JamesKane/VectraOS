@@ -1,7 +1,7 @@
 page=vxui sect=2 summary="the app tier's API: an app, its windows, one wait, a canvas, CPU pixels, voices"
-    names=vx_app_open,vx_app_error,vx_wait,vx_app_wake,vx_window_text_input,vx_window_open,vx_window_redraw,vx_window_animate,vx_window_title,vx_canvas_begin,vx_clear,vx_fill_rect,vx_circle,vx_canvas_present,vx_pixels_begin,vx_pixels_present,vx_ui_begin,vx_ui_end,vx_label,vx_button,vx_push_id,vx_pop_id,vx_voice_open,vx_voice_play
-    src=lib/vxui/vxui.h,lib/vxui/vxui.c,abi/vx/loop.h
-    keys=vxui,app,window,frame,event,canvas,pixels,voice,gui,toolkit,immediate,widget,button,label
+    names=vx_app_open,vx_app_error,vx_wait,vx_app_wake,vx_window_text_input,vx_window_open,vx_window_redraw,vx_window_animate,vx_window_title,vx_canvas_begin,vx_clear,vx_fill_rect,vx_circle,vx_canvas_present,vx_pixels_begin,vx_pixels_present,vx_ui_begin,vx_ui_end,vx_label,vx_button,vx_push_id,vx_pop_id,vx_voice_open,vx_voice_play,libvxui.so
+    src=lib/vxui/vxui.h,lib/vxui/vxui.c,lib/vxui/libvxui.c,abi/vx/loop.h
+    keys=vxui,libvxui,app,window,frame,event,canvas,pixels,voice,gui,toolkit,immediate,widget,button,label
 
 # SYNOPSIS
 
@@ -44,6 +44,7 @@ void vx_voice_play(vx_voice *voice);
 # DESCRIPTION
 
 vxui is the app tier (03 §6), v0 (M7 step 7e2).
+An app of the SDK (native(7)) includes `<vxui.h>` and links `/lib/libvxui.so` and libvx.so (ADR-0056); the system's own programs compile vxui in, as they compile libvx in.
 An app has one loop and one wait, its own: `vx_wait` returns the next event of any of its windows in libvx's `vx_event` (loop(2)), with vxui's kinds, the window as `source`: `VX_FRAME` (`frame`: its sequence, `target`, `prev_presented` and `dt`), `VX_KEY` (`keyboard`: the HID usage, its unmodified rune, the modifiers, down and repeat), `VX_POINTER` (`pointer`: x and y in the window, the buttons, the wheel), `VX_TEXT` (`text`, good until the queue has gone round, 32 events later), `VX_CONFIGURE` (`configure`: the size, focus), `VX_CLOSE` and `VX_WAKE`.
 A window's first event is a `VX_CONFIGURE`, its size and focus as it opens.
 `vx_app_wake`, from any thread, makes the app's `vx_wait` return a `VX_WAKE` (one for any number of wakes since the last), so a thread of the app's own, a reader, can hand it work.
@@ -72,7 +73,7 @@ Voices are numbered now and sound with audiod (M13): `vx_voice_open` gives one, 
 
 # EXAMPLES
 
-03 §6's minimal program, in ten calls, is tests/user/minimal.c; its CPU pixel program is tests/user/pixels.c; tests/user/uitest.c uses the UI.
+03 §6's minimal program, in ten calls, is tests/user/minimal.c; its CPU pixel program is tests/user/pixels.c, and tests/user/pixelsdyn.c the same as an SDK app on libvxui.so; tests/user/uitest.c uses the UI.
 
 # SEE ALSO
 
@@ -80,5 +81,5 @@ loop(2), winsrv(8)
 
 # BUGS
 
-v0 is a header library compiled into each program; it becomes `libvxui.so` when libvx exports what it uses.
+`libvxui.so`'s exports are written beside it, but held to no list until libvx's level 2 is frozen (ADR-0056).
 The UI has labels and buttons in one column, no other widgets or layouts, and no keyboard focus; the theme's colours are vx-magic's, whatever theme the window is drawn in.

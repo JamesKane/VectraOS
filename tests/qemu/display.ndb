@@ -13,7 +13,7 @@ prompt="% "
 send="cat /wsys/outputs/fb0/info"
 expect="adopted=firmware power=on stamp=0"
 prompt="% "
-send="echo pattern >/wsys/outputs/fb0/ctl; sleep 1; cat /wsys/outputs/fb0/info"
+send="echo pattern >/wsys/outputs/fb0/ctl; /boot/bin/posix/sleep 1; cat /wsys/outputs/fb0/info"
 expect="power=on stamp=1"
 screen=card-$arch tolerance=1
 prompt="% "

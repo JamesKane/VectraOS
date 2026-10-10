@@ -59,3 +59,4 @@ One file per decision, `NNNN-title.md`, numbered in order. An ADR records a deci
 | [0053](0053-kb-text-shape.md) | M7 step 7e1: kb_text_shape v2.28e vendored unchanged, in the font port, to segment and shape text with no C library | Accepted |
 | [0054](0054-inter.md) | M7 step 7e1: Inter 4.1, Regular and Bold, vendored unchanged as the system's font at `/lib/font` | Accepted |
 | [0055](0055-jetbrains-mono.md) | M7 step 7f1: JetBrains Mono 2.304, Regular and Bold, vendored unchanged as the terminal's font at `/lib/font` | Accepted |
+| [0056](0056-libvx-level-2-libvxui.md) | M7 step 7g2a: libvx level 2 opens as a draft (`vx_open_post`, spans, code images, `vx_vmo_size`); vxui becomes `libvxui.so` for SDK apps | Proposed |

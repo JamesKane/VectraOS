@@ -29,7 +29,7 @@ A library is linked `-shared` with `-fPIC` and the initial-exec TLS model, `-z n
 
 # SEE ALSO
 
-svcd(8), rc(1), native(7); ADR-0047 in the repository
+svcd(8), rc(1), native(7), image(2); ADR-0047 in the repository
 
 # DIAGNOSTICS
 
@@ -37,6 +37,6 @@ A program that cannot be loaded ends with the exit string `ld-vx: NAME: why`: a 
 
 # BUGS
 
-Only the libraries a program needs at start are loaded: loading one later, and the dynamic TLS that needs (`__tls_get_addr`, TLS descriptors), are the hot-reload host's, later.
+Only the libraries a program needs at start are loaded; a program maps one later with `vx_image_open` (image(2)), which refuses one with TLS: dynamic TLS (`__tls_get_addr`, TLS descriptors) is not implemented.
 Its own pages stay mapped for the life of the process.
 svcd(8), rc(1), dbg(1) and the POSIX personality's `posix_spawn` and `exec` give a program its interpreter; relays start a static program. A POSIX program's interpreter is musl's `libc.so`, `/lib/ld-musl-`<arch>`.so.1` (posix(7)), which takes the same `dl.exe` but none of this handover. dbg(1) cannot yet set a breakpoint in a dynamic program before it runs: its executable is mapped by its interpreter.

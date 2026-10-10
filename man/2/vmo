@@ -1,5 +1,5 @@
 page=vmo sect=2 summary="create, copy, read and write virtual memory objects"
-    names=vmo_create,vmo_clone,vmo_rw,vmo_op,vmo_seal,vmo_lease,vmo_revoke,vx_vmo_decommit
+    names=vmo_create,vmo_clone,vmo_rw,vmo_op,vmo_seal,vmo_lease,vmo_revoke,vx_vmo_decommit,vx_vmo_size
     src=kernel/obj/vmo.c,kernel/obj/device.c,kernel/obj/pager.c,kernel/obj/exception.c,kernel/syscall/syscall.c,lib/vx-rt/base.c
     keys=vmo,memory,pages,mmio,clone,copy,resize,seal,lease,lazy,decommit,overcommit
 
@@ -20,6 +20,7 @@ vx_status vx_vmo_rw(vx_handle vmo, enum vx_vmo_op op, uint64_t offset,
 
 vx_status vx_vmo_resize(vx_handle vmo, uint64_t size);
 vx_status vx_vmo_decommit(vx_handle vmo, uint64_t offset, uint64_t size);
+vx_status vx_vmo_size(vx_handle vmo, uint64_t *size); // level 2
 
 vx_status vx_vmo_seal(vx_handle vmo);
 vx_status vx_vmo_lease(vx_handle vmo, vx_handle *lease);
@@ -75,7 +76,7 @@ A resizable lazy VMO's added pages are absent, made at a touch.
 
 `vx_vmo_decommit` makes `vmo_op` with `VX_VMO_DECOMMIT` (ADR-0046): the pages of a lazy <vmo> from <offset> to <offset> + <size>, both page-aligned, are freed, out of every mapping and every CPU's TLB first, and a later touch reads zeros. It needs `VX_RIGHT_WRITE`. A heap gives back the pages of large blocks and empty slabs this way.
 `vmo_op` with `VX_VMO_CACHE` and a policy as `arg` (ADR-0051, M7 step 7b1c) sets how a physical VMO's mappings are cached: `VX_CACHE_DEVICE`, uncached, the default and a device register's, or `VX_CACHE_WC`, write-combining, a framebuffer's (writes gathered, reads uncached; x86's PAT entry 1, aarch64's Normal Non-cacheable). It is set before the VMO's first mapping, and is `VX_ERR_BAD_STATE` after; `VX_ERR_UNSUPPORTED` for a VMO of RAM, which is cached always. It needs `VX_RIGHT_WRITE`; vx-rt's `vx_vmo_cache` makes it.
-`vmo_op` with `VX_VMO_SIZE` returns the VMO's size in bytes, a whole number of pages, through any handle to it (M7 step 7b2): what a receiver checks a buffer's descriptor against (`lib/vx-buffer`); vx-rt's `vx_vmo_size` makes it.
+`vmo_op` with `VX_VMO_SIZE` returns the VMO's size in bytes, a whole number of pages, through any handle to it (M7 step 7b2): what a receiver checks a buffer's descriptor against (`lib/vx-buffer`); `vx_vmo_size` makes it, libvx's since level 2 (ADR-0056): the size in <size>, 0 on failure.
 `VX_VMO_RESIZE`, `VX_VMO_DECOMMIT`, `VX_VMO_CACHE` and `VX_VMO_SIZE` are the operations `vmo_op` has.
 
 ## Seals and leases

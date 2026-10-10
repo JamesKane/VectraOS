@@ -1,6 +1,11 @@
 // vx/abi.h: types shared by the kernel and user space (docs/04 §2).
 // Every list here expands from a .def table, so nothing is kept in sync by hand.
+// A guard as well as pragma once: libvxui.so (ADR-0056) sees it twice, as
+// the sysroot's <vx/abi.h> and as the tree's, which pragma once, by file,
+// cannot tell are one.
 #pragma once
+#ifndef VX_ABI_H
+#define VX_ABI_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -16,7 +21,7 @@ static constexpr vx_handle VX_HANDLE_NONE = 0;
 // @available(VectraOS n, *) is level n (ADR-0048). Level 1 was frozen at M6's
 // close (2026-10-08, ADR-0004): abi/levels/1.symbols and 1.behaviour hold
 // libvx.so.1 to it. A declaration added later sits in #if VX_TARGET_ABI >= 2.
-#define VX_ABI_LEVEL 1 // a macro: VX_TARGET_ABI compares against it in #if (vx/api.h)
+#define VX_ABI_LEVEL 2 // a macro: VX_TARGET_ABI compares against it in #if (vx/api.h); 2 a draft (ADR-0056)
 
 typedef struct vx_str { // length-carrying slice; never NUL-terminated
   const char *ptr;
@@ -975,3 +980,5 @@ typedef struct vx_trace_ring {
   uint64_t counter_hz; // the cycle counter's frequency
 } vx_trace_ring;
 static constexpr uint32_t VX_TRACE_MAGIC = 0x6563'7274; // "trce"
+
+#endif // VX_ABI_H

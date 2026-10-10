@@ -1,0 +1,6 @@
+# tests/user/pixels.ndb: pixelsdyn, pixels as an SDK app on libvxui.so
+# (tests/qemu/pixelsdyn.ndb).
+
+service=pixelsdyn program=/boot/bin/pixelsdyn console when=vx.desktop
+mount=/ srv=bootfs
+mount=/wsys srv=wsys aname=self

@@ -12,14 +12,15 @@
 // oldest-used slot taken when it is full. Text is drawn from it by alpha
 // blending its coverage over the destination in one colour.
 //
-// Hosted (tests, host tools) it uses the C library's malloc and math.
+// Hosted (tests, host tools) it uses the C library's malloc and math; in
+// libvxui.so, as in a first-party program, libvx's heap and its own math.
 
 #pragma once
 
 #include <stddef.h>
 #include <stdint.h>
 
-#if __STDC_HOSTED__
+#if __STDC_HOSTED__ && !defined(__vectraos__) // the host's: an SDK library (libvxui.so) takes the heap's way
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,7 +32,7 @@
 
 // --- The hooks the port calls (ports/font/hooks.h) ---
 
-#if __STDC_HOSTED__
+#if __STDC_HOSTED__ && !defined(__vectraos__)
 void *vx_font_alloc(size_t n) { return malloc(n); }
 void vx_font_free(void *p) { free(p); }
 double vx_font_floor(double x) { return floor(x); }

@@ -21,7 +21,10 @@
 #pragma once
 
 #include "../../abi/vx/abi.h"
-#if !__STDC_HOSTED__
+#ifdef __vectraos__ // in an SDK library (libvxui.so): libvx's public calls, the C library's memcpy
+#include <string.h>
+#include <vx.h>
+#elif !__STDC_HOSTED__
 #include "../vx-rt/base.c"
 #endif
 
@@ -133,7 +136,7 @@ typedef struct vx_buffer {
                           .alpha = alpha ? VX_ALPHA_PREMULTIPLIED : VX_ALPHA_OPAQUE};
 }
 
-#if !__STDC_HOSTED__
+#if !__STDC_HOSTED__ || defined(__vectraos__) // the calls: not on the host's tests
 
 // --- Buffers in a process ---
 
@@ -156,14 +159,14 @@ typedef struct vx_buffer {
 // Its bytes mapped here, writable if write: *at their first byte.
 [[maybe_unused]] static vx_status vx_buffer_map(const vx_buffer *b, bool write, uint8_t **at) {
   uint64_t va = 0;
-  vx_status st =
-      vx_as_map(vx_self, b->memory, 0, (b->desc.size + 4095) & ~4095ull, write ? VX_MAP_WRITE : 0, &va);
+  vx_status st = vx_as_map(vx_task_self(), b->memory, 0, (b->desc.size + 4095) & ~4095ull,
+                           write ? VX_MAP_WRITE : 0, &va);
   *at = st == VX_OK ? (uint8_t *)va : nullptr;
   return st;
 }
 
 [[maybe_unused]] static void vx_buffer_unmap(const vx_buffer *b, uint8_t *at) {
-  if (at) vx_as_unmap(vx_self, (uint64_t)at, (b->desc.size + 4095) & ~4095ull);
+  if (at) vx_as_unmap(vx_task_self(), (uint64_t)at, (b->desc.size + 4095) & ~4095ull);
 }
 
 [[maybe_unused]] static void vx_buffer_close(vx_buffer *b) {

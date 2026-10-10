@@ -129,3 +129,10 @@ VX_API vx_status vx_watch(vx_loop *l, vx_fd fd, uint64_t key);
 
 // One ctl message to the file at path, formatted, in one write.
 [[gnu::format(printf, 2, 3)]] VX_API vx_status vx_ctl(vx_str path, const char *fmt, ...);
+
+#if VX_TARGET_ABI >= 2
+// Level 2 (ADR-0056). A file whose server answers an open with a channel
+// (9Px's srv extension, 02 §3.3: a window from /wsys/new, a posted service):
+// its channel in *channel. The file is closed once the channel is had.
+VX_API vx_status vx_open_post(vx_str path, vx_handle *channel);
+#endif

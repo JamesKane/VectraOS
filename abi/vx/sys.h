@@ -22,6 +22,10 @@ VX_API vx_status vx_vmo_clone(vx_handle vmo, uint64_t offset, uint64_t size, vx_
 VX_API vx_status vx_vmo_seal(vx_handle vmo);
 VX_API vx_status vx_vmo_lease(vx_handle vmo, vx_handle *lease);
 VX_API vx_status vx_vmo_revoke(vx_handle lease);
+#if VX_TARGET_ABI >= 2
+VX_API vx_status vx_vmo_size(vx_handle vmo,
+                             uint64_t *size); // level 2 (ADR-0056): its size in bytes, any handle
+#endif
 VX_API vx_status vx_as_map(vx_handle task, vx_handle vmo, uint64_t offset, uint64_t size, uint32_t flags,
                            uint64_t *addr);
 VX_API vx_status vx_as_unmap(vx_handle task, uint64_t addr, uint64_t size);

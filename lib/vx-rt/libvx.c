@@ -31,6 +31,7 @@
 #include "../vx-ns/file.c"
 #include "../vx-ns/io.c"
 #include "../vx-ns/nsapi.c"
+#include "../vx-dl/image.c"
 #include "../vx-ns/proc.c"
 #include "../vx-ns/spawn.c"
 
