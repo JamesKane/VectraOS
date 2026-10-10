@@ -236,7 +236,7 @@ Added to 00 §8 when the milestone that makes each measurable lands:
 
 ## 18. Open questions
 
-1. **Piece tree or rope.** A piece tree over the mapped file opens large files instantly; a rope (Zed's) is simpler to make persistent for snapshots taken by background threads. Benchmark both inside `lib/vx-text` on the §15 budgets before M8.
+1. **Piece tree or rope.** A piece tree over the mapped file opens large files instantly; a rope (Zed's) is simpler to make persistent for snapshots taken by background threads. Benchmark both inside `lib/vx-text` on the §15 budgets before M8. M7 step 7g1a built the piece tree, a treap of fragments of at most 8 KiB; the rope is still to be measured against it.
 2. **Generated parsers in-process.** Grammar packages are native code inside `hx`. The alternative is a parse server process per language, which confines a bad grammar but puts a round trip on every edit. Measure the round trip over a local ring before deciding. A third option, now that the kernel gains protection keys (01 §5, M6 step 6c): parse in-process with the buffer write-protected from the parsing thread.
 3. **Git as a library or a file server.** 9front's `git/fs` serves a repository as files, which fits the system better than parsing `git` command output; but it is a second implementation beside the Git port. Start with the port's commands.
 4. **Splits inside `hx` or windows under `wm`.** If each view were a toplevel, `wm` would tile them and nothing would be duplicated, but views would lose the shared command line and selections. Revisit once `wm` has tab groups.
