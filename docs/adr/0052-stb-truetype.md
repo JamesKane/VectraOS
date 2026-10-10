@@ -1,6 +1,6 @@
 # ADR-0052: stb_truetype v1.26, vendored unchanged, to rasterize glyphs
 
-Status: proposed, 2026-10-09. The import's code review is still to be recorded (`VENDOR.ndb`, `reviewed.by=pending`).
+Status: accepted, 2026-10-10, after review by James Kane (proposed 2026-10-09).
 
 ## Context
 

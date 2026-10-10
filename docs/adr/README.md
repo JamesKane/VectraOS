@@ -55,7 +55,7 @@ One file per decision, `NNNN-title.md`, numbered in order. An ADR records a deci
 | [0049](0049-kernel-trace.md) | M7 step 7a1: the kernel's trace, `trace_configure` with `VX_RIGHT_TRACE`, per-CPU rings of 32-byte records, flows computed by both ends, tick sampling | Proposed |
 | [0050](0050-pmu-configure.md) | M7 step 7a3b: `pmu_configure`, a task's hardware counters in user mode, per thread across switches, readable by the thread; overflow sampling into the trace | Proposed |
 | [0051](0051-vmo-cache-policy.md) | M7 step 7b1c: a physical VMO's cache policy, `vmo_op`'s `VX_VMO_CACHE` (device or write-combining) before its first mapping; x86's PAT entry 1 and aarch64's MAIR attribute 3; the boot framebuffer handed to user space as one | Proposed |
-| [0052](0052-stb-truetype.md) | M7 step 7e1: stb_truetype v1.26 vendored unchanged, in the font port, to rasterize glyphs; the system's fonts only; the 1x check against FreeType | Proposed |
-| [0053](0053-kb-text-shape.md) | M7 step 7e1: kb_text_shape v2.28e vendored unchanged, in the font port, to segment and shape text with no C library | Proposed |
-| [0054](0054-inter.md) | M7 step 7e1: Inter 4.1, Regular and Bold, vendored unchanged as the system's font at `/lib/font` | Proposed |
-| [0055](0055-jetbrains-mono.md) | M7 step 7f1: JetBrains Mono 2.304, Regular and Bold, vendored unchanged as the terminal's font at `/lib/font` | Proposed |
+| [0052](0052-stb-truetype.md) | M7 step 7e1: stb_truetype v1.26 vendored unchanged, in the font port, to rasterize glyphs; the system's fonts only; the 1x check against FreeType | Accepted |
+| [0053](0053-kb-text-shape.md) | M7 step 7e1: kb_text_shape v2.28e vendored unchanged, in the font port, to segment and shape text with no C library | Accepted |
+| [0054](0054-inter.md) | M7 step 7e1: Inter 4.1, Regular and Bold, vendored unchanged as the system's font at `/lib/font` | Accepted |
+| [0055](0055-jetbrains-mono.md) | M7 step 7f1: JetBrains Mono 2.304, Regular and Bold, vendored unchanged as the terminal's font at `/lib/font` | Accepted |

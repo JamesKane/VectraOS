@@ -1,6 +1,6 @@
 # ADR-0055: JetBrains Mono 2.304, the terminal's font, vendored unchanged
 
-Status: proposed, 2026-10-10. The import's review is still to be recorded (`VENDOR.ndb`, `reviewed.by=pending`).
+Status: accepted, 2026-10-10, after review by James Kane (proposed 2026-10-10).
 
 ## Context
 

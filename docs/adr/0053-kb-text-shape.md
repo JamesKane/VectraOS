@@ -1,6 +1,6 @@
 # ADR-0053: kb_text_shape v2.28e, vendored unchanged, to segment and shape text
 
-Status: proposed, 2026-10-09. The import's code review is still to be recorded (`VENDOR.ndb`, `reviewed.by=pending`).
+Status: accepted, 2026-10-10, after review by James Kane (proposed 2026-10-09).
 
 ## Context
 
