@@ -1,7 +1,7 @@
 page=vxui sect=2 summary="the app tier's API: an app, its windows, one wait, a canvas, CPU pixels, voices"
     names=vx_app_open,vx_app_error,vx_wait,vx_app_wake,vx_window_text_input,vx_window_open,vx_window_redraw,vx_window_animate,vx_window_title,vx_canvas_begin,vx_clear,vx_fill_rect,vx_circle,vx_canvas_present,vx_pixels_begin,vx_pixels_present,vx_ui_begin,vx_ui_end,vx_label,vx_button,vx_push_id,vx_pop_id,vx_voice_open,vx_voice_play,libvxui.so
     src=lib/vxui/vxui.h,lib/vxui/vxui.c,lib/vxui/libvxui.c,abi/vx/loop.h
-    keys=vxui,libvxui,app,window,frame,event,canvas,pixels,voice,gui,toolkit,immediate,widget,button,label
+    keys=vxui,libvxui,reload,hot,app,window,frame,event,canvas,pixels,voice,gui,toolkit,immediate,widget,button,label
 
 # SYNOPSIS
 
@@ -69,17 +69,19 @@ Text is Inter, 13 pixels.
 
 Errors are sticky: a failed open makes the next `vx_wait` return `false`, and `vx_app_error` says why, so a program need not check each call.
 
+Hot reload (03 §6.1, M7 step 7g2b) is a convention, not a mechanism: during development an app is a small host and a code image, `app.so`, that exports `vx_app_update(vx_app_memory *mem, vx_event *ev)`. The host maps `mem` at the same address every run (`vx_as_reserve` with `VX_AS_FIXED`, a lazy VMO), opens the window, and calls the image's `vx_app_update` with each event. All of the app's state is in `mem->storage`; `mem->app` and `mem->window` are the host's. A thread watches the image's directory (`vx_watch`) and calls `vx_app_wake` when a new `app.so` is renamed into place; on the `VX_WAKE` the host maps it with `vx_image_open` (image(2)) and calls it from the next event, counting `mem->reloads`. Old images stay mapped, so a pointer in storage into one stays good; each image's own static data starts afresh. A build writes `app.so.new` and renames it, so the host never reads half a file.
+
 Voices are numbered now and sound with audiod (M13): `vx_voice_open` gives one, `vx_voice_play` is silent until then.
 
 # EXAMPLES
 
-03 §6's minimal program, in ten calls, is tests/user/minimal.c; its CPU pixel program is tests/user/pixels.c, and tests/user/pixelsdyn.c the same as an SDK app on libvxui.so; tests/user/uitest.c uses the UI.
+03 §6's minimal program, in ten calls, is tests/user/minimal.c; its CPU pixel program is tests/user/pixels.c, and tests/user/pixelsdyn.c the same as an SDK app on libvxui.so; tests/user/uitest.c uses the UI. The hot-reload host's template is tests/user/reloadhost.c, an app the host runs tests/user/reload_app.c.
 
 # SEE ALSO
 
-loop(2), winsrv(8)
+loop(2), image(2), winsrv(8)
 
 # BUGS
 
-`libvxui.so`'s exports are written beside it, but held to no list until libvx's level 2 is frozen (ADR-0056).
+The hot-reload host is a template, not a call; a release build links the image into it, by hand for now. `libvxui.so`'s exports are written beside it, but held to no list until libvx's level 2 is frozen (ADR-0056).
 The UI has labels and buttons in one column, no other widgets or layouts, and no keyboard focus; the theme's colours are vx-magic's, whatever theme the window is drawn in.

@@ -116,6 +116,24 @@ VXUI_API bool vx_button(vx_ui *ui, const char *label);
 VXUI_API void vx_push_id(vx_ui *ui, uint64_t key);
 VXUI_API void vx_pop_id(vx_ui *ui);
 
+// Hot reload (03 §6.1; M7 step 7g2b): during development an app is a host,
+// a short template the app owns (vxui(2)'s EXAMPLES), and a code image,
+// app.so, exporting one function, vx_app_update. The host maps the memory
+// at the same address every run and calls the image's vx_app_update with
+// each event; a new image renamed over app.so is loaded at a new address
+// between two events, the old ones left mapped, so pointers in storage into
+// an old image (a string, a function, a table) stay good. All of the app's
+// state is in storage; app and window are the host's.
+typedef struct vx_app_memory {
+  vx_app *app;
+  vx_window *window;
+  uint32_t reloads; // images loaded before the one running: 0 for the first
+  uint64_t size;    // storage's bytes, zero until written
+  uint8_t *storage;
+} vx_app_memory;
+typedef void vx_app_update_fn(vx_app_memory *mem, vx_event *ev);
+vx_app_update_fn vx_app_update; // what app.so exports, the host finds by name
+
 VXUI_API vx_voice *vx_voice_open(vx_app *app, vx_sound sound);
 VXUI_API void vx_voice_play(vx_voice *voice);
 

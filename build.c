@@ -1380,6 +1380,9 @@ static const char *const PIXELSDYN_NEEDS[] = {"libvxui.so", nullptr};
 static const char *const IMAGE_TLS[] = {"-DIMAGE_TLS", nullptr};
 static const char *const IMAGE_NEEDS_FLAGS[] = {"-DIMAGE_NEEDS", nullptr};
 static const char *const IMAGE_NEEDS[] = {"libimage.so", nullptr};
+// The hot-reload test's (7g2b): its host and its two images, on libvxui.so.
+static const char *const RELOAD_NEEDS[] = {"libvxui.so", nullptr};
+static const char *const RELOAD_B[] = {"-Ilib/vxui", "-DRELOAD_B", nullptr};
 // An SDK app's flags for vxui.h (ADR-0056): its header alone, libvxui.so answering it.
 static const char *const VXUI_APP_FLAGS[] = {"-Ilib/vxui", nullptr};
 // libvxui.so's: vxui with the font port's headers as system ones.
@@ -1482,6 +1485,12 @@ static const program USER_PROGRAMS[] = {
      true, LINK_SHARED, IMAGE_NEEDS}, // one needing an image, refused
     {"imagetest", "tests/user/imagetest.c", IN_TESTS, nullptr, false, nullptr, nullptr, true, LINK_DYNAMIC,
      nullptr}, // libvx level 2's calls (7g2a)
+    {"libreloada.so", "tests/user/reload_app.c", IN_TESTS, nullptr, false, nullptr, VXUI_APP_FLAGS, true,
+     LINK_SHARED, RELOAD_NEEDS}, // hot reload's image A (7g2b)
+    {"libreloadb.so", "tests/user/reload_app.c", IN_TESTS, nullptr, false, nullptr, RELOAD_B, true,
+     LINK_SHARED, RELOAD_NEEDS}, // and B
+    {"reloadhost", "tests/user/reloadhost.c", IN_TESTS, nullptr, false, nullptr, VXUI_APP_FLAGS, true,
+     LINK_DYNAMIC, RELOAD_NEEDS}, // the host
     {"pixelsdyn", "tests/user/pixelsdyn.c", IN_TESTS, nullptr, false, nullptr, VXUI_APP_FLAGS, true,
      LINK_DYNAMIC, PIXELSDYN_NEEDS}, // 03's pixels as an SDK app on libvxui.so (7g2a)
     {"prompttest", "tests/user/prompttest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,

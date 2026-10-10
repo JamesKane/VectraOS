@@ -1,0 +1,22 @@
+# tests/qemu/reload.ndb: hot reload (M7 step 7g2b, 03 §6.1;
+# tests/user/reloadhost.c, reload_app.c): the host waits for its code; rc
+# "builds" it as a build does, copying an image to /tmp/app.so.new and
+# renaming it over /tmp/app.so. Image A runs; B renamed over it runs from the
+# next frame with A's state (its frames counted on, A's string still good)
+# at the same memory, and its screen is B's; A again is a third image.
+
+scenario=reload display=fb timeout=90 cmdline="vx.display vx.desktop" with=reloadhost,libreloada.so,libreloadb.so
+expect="reloadhost: waiting for /tmp/app.so"
+prompt="% "
+send="/boot/bin/posix/cp /lib/libreloada.so /tmp/app.so.new; /boot/bin/posix/mv /tmp/app.so.new /tmp/app.so"
+expect="reload: image A at frame 1, reloads 0, greeting 'a string of image A', memory at 0x200000000000"
+prompt="% "
+send="/boot/bin/posix/cp /lib/libreloadb.so /tmp/app.so.new; /boot/bin/posix/mv /tmp/app.so.new /tmp/app.so"
+expect="reload: image B at frame 2, reloads 1, greeting 'a string of image A', memory at 0x200000000000"
+screen=reload-b-$arch tolerance=1
+prompt="% "
+send="/boot/bin/posix/cp /lib/libreloada.so /tmp/app.so.new; /boot/bin/posix/mv /tmp/app.so.new /tmp/app.so"
+expect="reload: image A at frame 3, reloads 2, greeting 'a string of image A'"
+fail="vx: panic"
+fail="svcd: reloadhost exited"
+fail="svcd: winsrv exited"

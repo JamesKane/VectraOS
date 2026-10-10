@@ -1,0 +1,8 @@
+# tests/user/reloadhost.ndb: the hot-reload host (tests/qemu/reload.ndb):
+# its code from /tmp, which rc shares.
+
+service=reloadhost program=/boot/bin/reloadhost console when=vx.desktop
+mount=/ srv=bootfs
+mount=/tmp srv=tmpfs aname=user # the shell's, as boot/svc/shell.ndb attaches it
+mount=/wsys srv=wsys aname=self
+connect=nsd
