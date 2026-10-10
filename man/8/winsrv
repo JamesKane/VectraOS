@@ -1,6 +1,6 @@
 page=winsrv sect=8 summary="the window server: windows, the compositor, /wsys"
     src=servers/winsrv/winsrv.c,boot/svc/display.ndb,lib/vx-wsys/wsysproto.h,lib/vx-input/keymap.h,lib/vx-driver/displayproto.h,lib/vx-buffer/buffer.h
-    keys=windows,compositor,wsys,desktop,frame,vblank,damage,present,credits,surface,focus,cursor,pointer,keyboard,decorations,theme,title,ime,keymap,compose,repeat,text,bindings,keys,events
+    keys=windows,compositor,wsys,desktop,frame,vblank,damage,present,credits,surface,focus,cursor,pointer,keyboard,decorations,theme,title,ime,keymap,compose,repeat,text,bindings,keys,events,prompt,trusted
 
 # SYNOPSIS
 
@@ -30,6 +30,8 @@ Text is its own (M7 step 7d2b, docs/proto/wsys.md §4c): with a window's IME on,
 
 Key bindings, which wm(8) gives it in `/wsys/keys`, are matched in its input path (M7 step 7d2c, docs/proto/wsys.md §4d): a bound key never reaches a window, a window's or the focus's verb is done at once, and any other goes to wm on `/wsys/events`.
 
+A trusted prompt (M7 step 7d2d, docs/proto/wsys.md §4e), asked on `/wsys/prompt`, is a panel it draws over every window, with a black strip and its seal, answered only by a person: a click on Allow or Deny at least half a second after it shows, or escape.
+
 Decorations are its own (M7 step 7d2a, docs/proto/wsys.md §4b): a bevelled frame, a title strip, a close gadget and a resizing corner, coloured by the theme's tokens.
 A press on the title moves the window, on the corner resizes it (an outline while held), on the gadget closes it; the app sees none of these.
 It starts with `vx.display` and `vx.desktop` on the kernel command line (boot/svc/display.ndb).
@@ -54,6 +56,8 @@ It starts with `vx.display` and `vx.desktop` on the kernel command line (boot/sv
   The desktop's events, a line each: `new N`, `gone N`, `focus N`, `do N VERB`; an open starts at the oldest of the last 128.
 : `/wsys/ctl`
   `focus N`, `focus next`, `focus prev`.
+: `/wsys/prompt`
+  One question an open: write `ask TEXT`, read `allow` or `deny`.
 : `/wsys/windows/N/ctl`
   `move X Y`, `resize W H`, `title TEXT`, `raise`, `close`.
 : `/wsys/windows/N/info`

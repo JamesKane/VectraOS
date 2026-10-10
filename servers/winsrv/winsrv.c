@@ -62,6 +62,17 @@
 // events as lines: `new N`, `gone N`, `focus N`, `do N VERB...` (N the
 // focused window, 0 for none).
 //
+// The trusted prompt (7d2d, 03 §5.7, §9.5): a question asked on
+// /wsys/prompt (a grant of the whole tree) is a panel winsrv draws over
+// every window, in a layer no client can make or cover: a black title strip
+// (03 §9.1 reserves it for system panels), the seal only winsrv draws, and
+// Allow and Deny. Only physical input answers it: a click on a button, half
+// a second at least after the panel shows (a click meant for what was
+// there before does not land on it), or escape for Deny; while it shows,
+// every other key and click is swallowed, bindings too, and nothing written
+// to a file can answer it. Questions wait in turn. Its text comes with
+// fonts (7e1).
+//
 // Input (7d1c, 21 §2 items 6-7): winsrv holds inputd's records (a session
 // on /srv/input, docs/proto/input.md §3a), so the console gets no keys
 // while it runs. Pointers move one pointer, drawn as a cursor over
@@ -487,6 +498,58 @@ static bool serve_window(window *w) {
   }
 }
 
+// --- The trusted prompt (7d2d) ---
+
+static constexpr uint32_t PROMPTS = 8;
+static constexpr vx_duration PROMPT_ARMING = 500'000'000;
+static constexpr int32_t PROMPT_W = 360, PROMPT_H = 160, BUTTON_W = 100, BUTTON_H = 32;
+
+typedef struct prompt_req {
+  bool used, asked, answered;
+  bool allow;
+  uint64_t seq; // asked in this order
+  char question[128];
+} prompt_req;
+static prompt_req prompts[PROMPTS];
+static uint64_t prompt_seq;
+static struct {
+  int showing; // the request on screen, -1: none
+  vx_instant since;
+  int pressed; // 0: none, 1: Allow, 2: Deny, pressed and not yet let go
+} prompt = {.showing = -1};
+
+static vx_display_rect prompt_rect(void) {
+  return (vx_display_rect){((int32_t)out.mode.width - PROMPT_W) / 2,
+                           ((int32_t)out.mode.height - PROMPT_H) / 2, PROMPT_W, PROMPT_H};
+}
+
+// Its buttons: 1 Allow (the right), 2 Deny.
+static vx_display_rect prompt_button(int which) {
+  vx_display_rect p = prompt_rect();
+  int32_t x = p.x + PROMPT_W - 16 - BUTTON_W - (which == 2 ? BUTTON_W + 12 : 0);
+  return (vx_display_rect){x, p.y + PROMPT_H - 16 - BUTTON_H, BUTTON_W, BUTTON_H};
+}
+
+// The oldest question asked and not answered, on screen.
+static void prompt_next(void) {
+  int best = -1;
+  for (int i = 0; i < (int)PROMPTS; i++)
+    if (prompts[i].used && prompts[i].asked && !prompts[i].answered &&
+        (best < 0 || prompts[i].seq < prompts[best].seq))
+      best = i;
+  if (best != prompt.showing) damage(prompt_rect());
+  prompt.showing = best, prompt.since = vx_now(), prompt.pressed = 0;
+  if (best >= 0) vx_print(VX_STR("winsrv: a prompt is up\n"));
+}
+
+static void prompt_answer(bool allow) {
+  prompt_req *r = &prompts[prompt.showing];
+  r->answered = true, r->allow = allow;
+  vx_printf("winsrv: the prompt was answered: %s\n", allow ? "allow" : "deny");
+  server.again = true; // its read may go on
+  prompt_next();
+}
+
 // --- Composition ---
 
 static const char *const ARROW[17] = {
@@ -543,6 +606,82 @@ static uint32_t frame_pixel(int32_t fx, int32_t fy, int32_t fw, int32_t fh, bool
   return tok.face;
 }
 
+// The seal at (cx, cy): a gunmetal disc lit from the top left, in a dark
+// ring with twelve teeth; only winsrv draws it, in the prompt's layer.
+static bool seal_pixel(int32_t dx, int32_t dy, uint32_t *c) {
+  int32_t r2 = dx * dx + dy * dy;
+  if (r2 > 30 * 30) return false;
+  // The teeth: the ring's outer edge stands out where |dx|, |dy| or the diagonals line up.
+  bool tooth =
+      dx * dy == 0 || dx == dy || dx == -dy || 2 * dx == dy || dx == 2 * dy || 2 * dx == -dy || dx == -2 * dy;
+  if (r2 > 27 * 27) {
+    if (!tooth && r2 > 28 * 28) return false;
+    *c = 0x2a2e33;
+    return true;
+  }
+  if (r2 > 24 * 24) {
+    *c = 0x3a3f44; // the ring
+    return true;
+  }
+  int32_t lit = 0x68 - (dx + dy) * 2; // brighter to the top left
+  if (lit < 0x40) lit = 0x40;
+  if (lit > 0x90) lit = 0x90;
+  if (r2 < 9 * 9) lit -= 0x14; // a sunken centre
+  *c = (uint32_t)lit << 16 | (uint32_t)(lit + 6) << 8 | (uint32_t)(lit + 12);
+  return true;
+}
+
+// Whether (x, y) is within a pixel and a half of the segment from (x0, y0) to (x1, y1).
+static bool near_segment(int32_t x, int32_t y, int32_t x0, int32_t y0, int32_t x1, int32_t y1) {
+  int64_t dx = x1 - x0, dy = y1 - y0, len2 = dx * dx + dy * dy;
+  int64_t t = (x - x0) * dx + (y - y0) * dy; // the projection, times len2
+  if (t < 0 || t > len2) return false;
+  int64_t cross = (x - x0) * dy - (y - y0) * dx; // the distance, times its length
+  return cross * cross * 4 <= len2 * 9;          // within 1.5
+}
+
+static void draw_prompt(screen_buffer *s, vx_display_rect area) {
+  uint32_t stride = s->buf.desc.plane[0].stride;
+  vx_display_rect p = prompt_rect(), a = meet(area, p);
+  vx_display_rect allow = prompt_button(1), deny = prompt_button(2);
+  for (uint32_t y = 0; y < a.height; y++) {
+    uint32_t *row = (uint32_t *)(s->px + (size_t)(a.y + y) * stride);
+    for (uint32_t x = 0; x < a.width; x++) {
+      int32_t sx = a.x + (int32_t)x, sy = a.y + (int32_t)y, fx = sx - p.x, fy = sy - p.y;
+      uint32_t c = tok.face;
+      if (fx == 0 || fy == 0 || fx == PROMPT_W - 1 || fy == PROMPT_H - 1)
+        c = 0;
+      else if (fy < 24)
+        c = fy == 1 ? 0x3c3c3c : 0x000000; // the black strip of a system panel
+      else if (fx == 1 || fy == 24)
+        c = tok.light;
+      else if (fx == PROMPT_W - 2 || fy == PROMPT_H - 2)
+        c = tok.shade;
+      uint32_t seal;
+      if (seal_pixel(fx - 50, fy - 72, &seal)) c = seal;
+      for (int b = 1; b <= 2; b++) { // the buttons: raised, a glyph in each
+        vx_display_rect r = b == 1 ? allow : deny;
+        if (!inside(r, sx, sy)) continue;
+        int32_t bx = sx - r.x, by = sy - r.y;
+        bool down = prompt.pressed == b;
+        c = tok.face;
+        if (bx == 0 || by == 0 || bx == BUTTON_W - 1 || by == BUTTON_H - 1)
+          c = tok.edge;
+        else if (bx == 1 || by == 1)
+          c = down ? tok.shade : tok.light;
+        else if (bx == BUTTON_W - 2 || by == BUTTON_H - 2)
+          c = down ? tok.light : tok.shade;
+        int32_t gx = bx - BUTTON_W / 2, gy = by - BUTTON_H / 2;
+        if (b == 1 && (near_segment(gx, gy, -7, 0, -2, 5) || near_segment(gx, gy, -2, 5, 7, -6)))
+          c = 0x2e8b3a; // a check, green
+        if (b == 2 && (near_segment(gx, gy, -6, -6, 6, 6) || near_segment(gx, gy, -6, 6, 6, -6)))
+          c = 0xa83232; // a cross, red
+      }
+      row[sx] = c;
+    }
+  }
+}
+
 static void composite(screen_buffer *s, vx_display_rect area) {
   uint32_t stride = s->buf.desc.plane[0].stride;
   for (uint32_t y = 0; y < area.height; y++) {
@@ -570,6 +709,8 @@ static void composite(screen_buffer *s, vx_display_rect area) {
       memcpy((uint32_t *)(s->px + (size_t)(r.y + y) * stride) + r.x, from, (size_t)r.width * 4);
     }
   }
+  // The prompt, over every window: then only the cursor is above it.
+  if (prompt.showing >= 0) draw_prompt(s, area);
   // A resize's outline, two pixels of the edge colour, then the cursor over everything.
   if (!empty(ptr.outline)) {
     vx_display_rect o = ptr.outline;
@@ -1143,6 +1284,12 @@ static bool binding_takes(const vx_input_key *k) {
 }
 
 static void on_key(const vx_input_key *k) {
+  if (prompt.showing >= 0) { // the prompt takes every key: escape denies
+    if (k->action == VX_KEY_DOWN && k->usage == (VX_HID_KEYBOARD | 0x29) &&
+        vx_now() - prompt.since >= PROMPT_ARMING)
+      prompt_answer(false);
+    return;
+  }
   if (k->action == VX_KEY_REPEAT || binding_takes(k)) return; // a device's own repeats: winsrv makes its own
   if (ptr.focus < 0) return;
   window *w = &wins[ptr.focus];
@@ -1196,6 +1343,26 @@ static void on_pointer(in_device *d, const vx_input_pointer *p) {
   if (ptr.y >= (int32_t)out.mode.height) ptr.y = (int32_t)out.mode.height - 1;
   damage(cursor_rect());
   uint32_t before = ptr.buttons;
+  if (prompt.showing >= 0) { // the prompt takes every click: a press and its release on one button answers
+    d->buttons = p->buttons;
+    uint32_t now_buttons = 0;
+    for (uint32_t i = 0; i < IN_DEVICES; i++) now_buttons |= indev[i].buttons;
+    int over = 0; // the button under the pointer
+    if (inside(prompt_button(1), ptr.x, ptr.y)) over = 1;
+    if (inside(prompt_button(2), ptr.x, ptr.y)) over = 2;
+    if (!before && now_buttons) {
+      prompt.pressed = vx_now() - prompt.since >= PROMPT_ARMING ? over : 0; // too soon: ignored
+      if (!prompt.pressed) vx_print(VX_STR("winsrv: a click the prompt ignored\n"));
+      damage(prompt_rect());
+    } else if (before && !now_buttons) {
+      int pressed = prompt.pressed;
+      prompt.pressed = 0;
+      damage(prompt_rect());
+      if (pressed && pressed == over) prompt_answer(pressed == 1);
+    }
+    ptr.buttons = now_buttons;
+    return;
+  }
   d->buttons = p->buttons;
   ptr.buttons = 0;
   for (uint32_t i = 0; i < IN_DEVICES; i++) ptr.buttons |= indev[i].buttons;
@@ -1369,8 +1536,10 @@ enum : uint64_t {
   R_KEYS,
   R_EVENTS,
   R_CTL,
+  R_PROMPT,
   R_OPENED, // and up: /wsys/events opened, one node each
 };
+static constexpr uint64_t P_OPENED = R_OPENED + 16; // and up: /wsys/prompt opened, one node each
 static constexpr uint64_t WIN = 0x100;
 enum : uint64_t { W_DIR = 0, W_CTL, W_INFO, W_FRAME, W_SURFACE, W_KEYMAP, W_IME, W_FILES };
 static const vx_str W_NAMES[W_FILES] = {
@@ -1447,6 +1616,8 @@ static vx_status fs_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) 
       *child = R_EVENTS;
     else if (vx_str_eq(name, VX_STR("ctl")))
       *child = R_CTL;
+    else if (vx_str_eq(name, VX_STR("prompt")))
+      *child = R_PROMPT;
     else
       return VX_ERR_NOT_FOUND;
     return VX_OK;
@@ -1510,6 +1681,7 @@ static vx_str name_of(uint64_t n, bool *dir, uint32_t *mode) {
   if (n == R_KEYS) return *mode = 0664, VX_STR("keys");
   if (n == R_EVENTS || (n >= R_OPENED && n < R_OPENED + EVENT_OPENS)) return VX_STR("events");
   if (n == R_CTL) return *mode = 0220, VX_STR("ctl");
+  if (n == R_PROMPT || (n >= P_OPENED && n < P_OPENED + PROMPTS)) return *mode = 0660, VX_STR("prompt");
   const window *w = window_of(n);
   if (!w) return (vx_str){};
   uint64_t f = (n - WIN) % 8;
@@ -1545,6 +1717,7 @@ static vx_status fs_open(void *ctx, uint64_t n, uint8_t mode) {
   uint64_t f = w ? (n - WIN) % 8 : W_DIR;
   if (f == W_CTL || n == T_CTL || n == R_CTL) return (mode & 3) == P9_OWRITE ? VX_OK : VX_ERR_ACCESS;
   if (n == R_KEYS) return (mode & 3) == P9_OREAD || (mode & 3) == P9_OWRITE ? VX_OK : VX_ERR_ACCESS;
+  if (n == R_PROMPT) return (mode & 3) == P9_ORDWR ? VX_OK : VX_ERR_ACCESS;
   if (f == W_SURFACE || n == R_IME) return (mode & 3) == P9_ORDWR ? VX_OK : VX_ERR_ACCESS;
   if (f == W_IME || n == R_KEYMAP)
     return (mode & 3) == P9_OREAD || (mode & 3) == P9_OWRITE ? VX_OK : VX_ERR_ACCESS;
@@ -1587,6 +1760,15 @@ static vx_status fs_open_handle(void *ctx, uint64_t n, uint8_t mode, vx_handle *
 // /wsys/events opened: a node of its own, reading from the oldest event kept.
 static vx_status fs_clone(void *ctx, uint64_t n, uint8_t mode, uint64_t *opened) {
   (void)ctx, (void)mode;
+  if (n == R_PROMPT) { // a question of its own
+    for (uint32_t i = 0; i < PROMPTS; i++)
+      if (!prompts[i].used) {
+        prompts[i] = (prompt_req){.used = true};
+        *opened = P_OPENED + i;
+        return VX_OK;
+      }
+    return VX_ERR_NO_MEMORY;
+  }
   if (n != R_EVENTS) return VX_ERR_NOT_FOUND;
   for (uint32_t i = 0; i < EVENT_OPENS; i++)
     if (!event_opens[i].used) {
@@ -1600,6 +1782,10 @@ static vx_status fs_clone(void *ctx, uint64_t n, uint8_t mode, uint64_t *opened)
 static void fs_clunk(void *ctx, uint64_t n, bool opened) {
   (void)ctx, (void)opened;
   if (n >= R_OPENED && n < R_OPENED + EVENT_OPENS) event_opens[n - R_OPENED] = (event_open){};
+  if (n >= P_OPENED && n < P_OPENED + PROMPTS) { // a question let go: off the screen, if it was on it
+    prompts[n - P_OPENED] = (prompt_req){};
+    if (prompt.showing == (int)(n - P_OPENED)) prompt_next();
+  }
 }
 
 static void fs_fid_node(void *ctx, uint64_t n, int delta) {
@@ -1629,6 +1815,14 @@ static vx_status fs_read(void *ctx, uint64_t n, uint64_t offset, uint8_t *buf, u
     vx_ndb_put_u64(&t, "height", out.mode.height);
     vx_ndb_put_u64(&t, "frames", out.frames);
     vx_ndb_end(&t);
+  } else if (n >= P_OPENED && n < P_OPENED + PROMPTS) { // the answer, once there is one
+    prompt_req *r = &prompts[n - P_OPENED];
+    if (!r->asked) return VX_ERR_BAD_STATE;
+    if (!r->answered) return VX_ERR_SHOULD_WAIT;
+    vx_str a = r->allow ? VX_STR("allow\n") : VX_STR("deny\n");
+    *count = *count < a.len ? *count : (uint32_t)a.len; // whatever the offset: its write moved it
+    memcpy(buf, a.ptr, *count);
+    return VX_OK;
   } else if (n == R_KEYS) {
     for (uint32_t i = 0; i < nbindings; i++) {
       vx_ndb_flag(&t, "bind");
@@ -1807,6 +2001,25 @@ static vx_status ime_ctl(window *w, vx_str cmd) {
 
 static vx_status fs_write(void *ctx, uint64_t n, uint64_t offset, const uint8_t *buf, uint32_t *count) {
   (void)ctx, (void)offset;
+  if (n >= P_OPENED && n < P_OPENED + PROMPTS) { // `ask TEXT`, once; nothing written answers it
+    prompt_req *r = &prompts[n - P_OPENED];
+    vx_str cmd = {(const char *)buf, *count};
+    while (cmd.len && (cmd.ptr[cmd.len - 1] == '\n' || cmd.ptr[cmd.len - 1] == ' ')) cmd.len--;
+    if (!take_word(&cmd, "ask")) {
+      *count = 0;
+      return VX_ERR_ACCESS; // only a person answers, with the keyboard or the pointer
+    }
+    if (r->asked) {
+      *count = 0;
+      return VX_ERR_BAD_STATE;
+    }
+    while (cmd.len && cmd.ptr[0] == ' ') cmd.ptr++, cmd.len--;
+    size_t len = cmd.len < sizeof r->question - 1 ? cmd.len : sizeof r->question - 1;
+    memcpy(r->question, cmd.ptr, len), r->question[len] = 0;
+    r->asked = true, r->seq = ++prompt_seq;
+    if (prompt.showing < 0) prompt_next();
+    return VX_OK;
+  }
   if (n == R_KEYS) { // one write, the whole table: it replaces the bindings
     vx_status st = set_bindings(buf, *count);
     if (st != VX_OK) *count = 0;
@@ -1861,7 +2074,7 @@ static vx_status fs_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *c
   (void)ctx;
   if (dir == ROOT) {
     static const uint64_t ROOT_FILES[] = {INFO,  OUTPUTS, WINDOWS,  THEME, R_KEYMAP,
-                                          R_IME, R_KEYS,  R_EVENTS, R_CTL};
+                                          R_IME, R_KEYS,  R_EVENTS, R_CTL, R_PROMPT};
     if (index >= sizeof ROOT_FILES / sizeof ROOT_FILES[0]) return VX_ERR_NOT_FOUND;
     *child = ROOT_FILES[index];
     return VX_OK;

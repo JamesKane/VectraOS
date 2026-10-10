@@ -1,0 +1,34 @@
+# tests/qemu/prompt.ndb: the trusted prompt (M7 step 7d2d; tests/user/
+# prompttest.c): drawn over every window, its window raised under it; a key
+# and escape swallowed, escape denying; once armed (half a second up), a
+# click off its buttons doing nothing, a click on Allow answering. The panel matched by screenshot.
+
+scenario=prompt display=fb timeout=60 cmdline="vx.display vx.desktop" with=prompttest
+expect="prompttest: ready"
+prompt="% "
+send="for(i in 0 1 2) while(! ls /dev/input/$i >/tmp/null >[2=1]) /boot/bin/posix/sleep 0.1; echo ready"
+line="ready"
+click=50%,50%
+expect="prompttest: focused"
+expect="winsrv: a prompt is up"
+expect="prompttest: asked"
+screen=prompt-$arch tolerance=1
+send="/boot/bin/posix/sleep 1; echo armed"
+line="armed"
+key="a esc"
+expect="winsrv: the prompt was answered: deny"
+expect="prompttest: the first denied"
+expect="winsrv: a prompt is up"
+expect="prompttest: asked"
+send="/boot/bin/posix/sleep 1; echo armed"
+line="armed"
+click=50%-100px,50%-60px
+expect="winsrv: a click the prompt ignored"
+click=50%+114px,50%+48px
+expect="winsrv: the prompt was answered: allow"
+expect="prompttest: the second allowed"
+expect="prompttest: 15 checks, 0 failed"
+fail="vx: panic"
+fail="prompttest: FAILED"
+fail="svcd: prompttest exited"
+fail="svcd: winsrv exited"

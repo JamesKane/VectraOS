@@ -1,0 +1,6 @@
+# tests/user/prompttest.ndb: prompttest, with the whole tree at /wsys (the
+# prompt's grant) and a window of its own (tests/qemu/prompt.ndb).
+
+service=prompttest program=/boot/bin/prompttest console when=vx.desktop
+mount=/ srv=bootfs
+mount=/wsys srv=wsys

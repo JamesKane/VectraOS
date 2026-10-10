@@ -1438,6 +1438,8 @@ static const program USER_PROGRAMS[] = {
      nullptr}, // ./build bench's measurements (7a5)
     {"flighttest", "tests/user/tracetest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // tracetest's flight recorder test, as a program of its own (7a4a)
+    {"prompttest", "tests/user/prompttest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr}, // the trusted prompt (7d2d)
     {"wmtest", "tests/user/wmtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // windows under wm (7d2c)
     {"textest", "tests/user/textest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
@@ -4509,8 +4511,9 @@ static const char *substitute_arch(vx_str pattern, const arch *a) {
 // keys, as QMP's send-key names them, joined by '-' for a chord.
 // typekeys=TEXT types the text on the virtio keyboard, then return;
 // click=X,Y taps the virtio tablet there (7c1), drag=X1,Y1,X2,Y2 drags with
-// the left button, a coordinate a percentage of the screen ("20%"), a pixel
-// ("430px", the screen measured by a screendump) or the tablet's own 0 to 32767; holdkey=SPEC,MS holds a chord while what follows
+// the left button, a coordinate a percentage of the screen ("20%"), one with
+// an offset in pixels ("50%+114px"), a pixel ("430px": the screen measured by
+// a screendump) or the tablet's own 0 to 32767; holdkey=SPEC,MS holds a chord while what follows
 // it at the same place (a click=) is done (7d1c).
 
 typedef struct qmp {
@@ -4764,6 +4767,12 @@ static bool tablet_value(qmp *q, const char **at, long *v, int axis) {
   if (end == *at) return false;
   if (*end == '%') {
     *v = *v * 32767 / 100, end++;
+    if ((*end == '+' || *end == '-') && strchr(end, 'p')) { // 50%+114px: an offset in pixels from it
+      char *e2 = nullptr;
+      long px = strtol(end, &e2, 10);
+      if (e2[0] != 'p' || e2[1] != 'x' || !screen_measure(q) || screen_size[axis] < 2) return false;
+      *v += px * 32767 / (screen_size[axis] - 1), end = e2 + 2;
+    }
   } else if (end[0] == 'p' && end[1] == 'x') {
     if (!screen_measure(q) || screen_size[axis] < 2) return false;
     long n = screen_size[axis] - 1;

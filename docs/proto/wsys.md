@@ -19,6 +19,7 @@ Status: draft, written for M7 step 7d1b (docs/21 §2 items 1-3 and 8; 03 §4-5).
     keys                  the key bindings, ndb: bind key=super+t do="layout tile"   (7d2c)
     events                the desktop's events, a line each: new N · gone N · focus N · do N VERB
     ctl                   focus N · focus next · focus prev
+    prompt                opened: ask TEXT, then read the answer, allow or deny  (7d2d)
     windows/N/            a window, N from 1, never reused while winsrv runs
         ctl               move X Y · resize W H · title TEXT · raise · close
         info              id= title= x= y= width= height= config= presented= dropped=
@@ -100,6 +101,16 @@ Policy is `wm`'s (03 §5.2), a Lua program over the whole tree (M7 step 7d2c). `
 - **`/wsys/ctl`** takes `focus N`, `focus next` and `focus prev` (in the windows' order).
 
 `wm` (wm(8)) writes `/lib/wm/keys.ndb` to `/wsys/keys`, follows `/wsys/events`, and places windows: as `winsrv` does while the layout is `float`, master-stack while it is `tile`. Modal bindings (`mode=`) and window rules (`/wsys/rules`) come with what needs them.
+
+## 4e. The trusted prompt
+
+An approval is asked on `/wsys/prompt`, part of the whole tree's grant (03 §5.7, §9.5; M7 step 7d2d). Each open is one question: write `ask TEXT`, then read the answer, `allow` or `deny`, which waits until a person gives it. Questions wait in turn, the oldest on screen. Closing the file withdraws the question.
+
+- **The layer.** `winsrv` draws the question as a panel in the middle of the screen, over every window: no client can make that layer, raise a window above it or draw into it. Only the cursor is above it.
+- **The mark.** The panel has a black title strip, which only system panels have (03 §9.1), and a gunmetal seal that only `winsrv` draws; the seal may later be an image the user picks.
+- **Physical input only.** It is answered by a click on Allow or Deny, a press and its release on the same button, or escape for Deny; a click in the first half second after the panel shows is ignored, so a click meant for what was there does not land on it. While it shows, every other key and click is swallowed, bindings too, and nothing written to a file answers it (`answer …` is refused). Synthetic input, when it comes (`a11y` presses, pointer warps), never reaches it.
+
+The question's text is drawn with fonts (7e1).
 
 ## 4b. Decorations and the theme
 
