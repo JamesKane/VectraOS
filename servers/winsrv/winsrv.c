@@ -31,6 +31,11 @@
 //
 // A window lives while a fid holds a node of it or its channel is open.
 //
+// An app's attach (7e2, 03 §5.7) is the aname `self`: a directory of the
+// windows it has made, and `new`, which opened (the srv extension) makes a
+// window and gives its channel at once, as a surface's open does. vxui's
+// windows are made so; the whole tree and `new -dx -dy` stay as they were.
+//
 // Decorations (7d2a, 03 §5.1, §9.1) are the server's: a bevelled frame
 // around each window's client area, a title strip (the focused window's in
 // the active colour), a close gadget at the title's left and notches at the
@@ -245,6 +250,7 @@ typedef struct window {
   vx_wsys_frame last_frame;
   vx_wsys_feedback last_feedback;
   uint32_t keys[VX_INPUT_HELD], nkeys; // keys whose DOWN it was given
+  uint32_t owner;                      // the app attach (`self`) that made it, its slot plus 1; 0 for none
   bool ime_on;                         // its ime file's enable: text as COMMIT
   char purpose[12];                    // what its text field holds: text, password, ...
   uint32_t dead;                       // a dead key's accent, waiting for the next key
@@ -300,7 +306,8 @@ static void configure(window *w) {
                          .pwidth = w->r.width,
                          .pheight = w->r.height,
                          .scale = 120,
-                         .visibility = VX_WSYS_VISIBLE};
+                         .visibility = VX_WSYS_VISIBLE,
+                         .window = w->id};
   send(w, &c, sizeof c);
 }
 
@@ -1607,6 +1614,18 @@ enum : uint64_t {
   R_OPENED, // and up: /wsys/events opened, one node each
 };
 static constexpr uint64_t P_OPENED = R_OPENED + 16; // and up: /wsys/prompt opened, one node each
+static constexpr uint64_t SELF_ROOT = 0x60,
+                          SELF_NEW = 0x70; // and up: an app attach's root and its `new`, by slot
+static constexpr uint32_t OWNERS = 16;
+
+typedef struct owner_state {
+  bool used;
+  uint32_t holds; // fids on its nodes
+} owner_state;
+static owner_state owners[OWNERS];
+
+static bool is_self_root(uint64_t n) { return n >= SELF_ROOT && n < SELF_ROOT + OWNERS; }
+static bool is_self_new(uint64_t n) { return n >= SELF_NEW && n < SELF_NEW + OWNERS; }
 static constexpr uint64_t WIN = 0x100;
 enum : uint64_t { W_DIR = 0, W_CTL, W_INFO, W_FRAME, W_SURFACE, W_KEYMAP, W_IME, W_FILES };
 static const vx_str W_NAMES[W_FILES] = {
@@ -1643,6 +1662,15 @@ static vx_status fs_attach(void *ctx, vx_str aname, uint64_t *root) {
   if (!aname.len) {
     *root = ROOT;
     return VX_OK;
+  }
+  if (take_word(&aname, "self") && !aname.len) { // an app's: its windows, and `new`
+    for (uint32_t i = 0; i < OWNERS; i++)
+      if (!owners[i].used) {
+        owners[i] = (owner_state){.used = true};
+        *root = SELF_ROOT + i;
+        return VX_OK;
+      }
+    return VX_ERR_NO_MEMORY;
   }
   if (!take_word(&aname, "new")) return VX_ERR_NOT_FOUND;
   uint32_t width = 640, height = 480;
@@ -1700,6 +1728,18 @@ static vx_status fs_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) 
       return VX_ERR_NOT_FOUND;
     return VX_OK;
   }
+  if (is_self_root(dir)) { // `new`, or one of its own windows by number
+    if (vx_str_eq(name, VX_STR("new"))) {
+      *child = SELF_NEW + (dir - SELF_ROOT);
+      return VX_OK;
+    }
+    vx_str s = name;
+    uint32_t id = parse_u32(&s);
+    window *w = s.len ? nullptr : window_of_id(id);
+    if (!w || w->owner != dir - SELF_ROOT + 1) return VX_ERR_NOT_FOUND;
+    *child = node_of(w, W_DIR);
+    return VX_OK;
+  }
   if (dir == WINDOWS) {
     vx_str s = name;
     uint32_t id = parse_u32(&s);
@@ -1720,7 +1760,12 @@ static vx_status fs_walk(void *ctx, uint64_t dir, vx_str name, uint64_t *child) 
 
 static vx_status fs_parent(void *ctx, uint64_t n, uint64_t *parent) {
   (void)ctx;
-  if (n == ROOT || n == INFO || n == OUTPUTS || n == WINDOWS || n == THEME || (n >= R_KEYMAP && n < WIN))
+  if (is_self_new(n))
+    *parent = SELF_ROOT + (n - SELF_NEW);
+  else if (is_self_root(n))
+    *parent = n;
+  else if (n == ROOT || n == INFO || n == OUTPUTS || n == WINDOWS || n == THEME ||
+           (n >= R_KEYMAP && n < SELF_ROOT))
     *parent = ROOT;
   else if (n >= T_ACTIVE && n <= T_CTL)
     *parent = THEME;
@@ -1736,6 +1781,8 @@ static vx_str name_of(uint64_t n, bool *dir, uint32_t *mode) {
   static char name[12];
   *dir = n == ROOT || n == OUTPUTS || n == WINDOWS || n == THEME, *mode = 0444;
   if (n == ROOT) return VX_STR("/");
+  if (is_self_root(n)) return *dir = true, VX_STR("/");
+  if (is_self_new(n)) return *mode = 0660, VX_STR("new");
   if (n == INFO) return VX_STR("info");
   if (n == OUTPUTS) return VX_STR("outputs");
   if (n == WINDOWS) return VX_STR("windows");
@@ -1785,7 +1832,7 @@ static vx_status fs_open(void *ctx, uint64_t n, uint8_t mode) {
   if (f == W_CTL || n == T_CTL || n == R_CTL) return (mode & 3) == P9_OWRITE ? VX_OK : VX_ERR_ACCESS;
   if (n == R_KEYS) return (mode & 3) == P9_OREAD || (mode & 3) == P9_OWRITE ? VX_OK : VX_ERR_ACCESS;
   if (n == R_PROMPT) return (mode & 3) == P9_ORDWR ? VX_OK : VX_ERR_ACCESS;
-  if (f == W_SURFACE || n == R_IME) return (mode & 3) == P9_ORDWR ? VX_OK : VX_ERR_ACCESS;
+  if (f == W_SURFACE || n == R_IME || is_self_new(n)) return (mode & 3) == P9_ORDWR ? VX_OK : VX_ERR_ACCESS;
   if (f == W_IME || n == R_KEYMAP)
     return (mode & 3) == P9_OREAD || (mode & 3) == P9_OWRITE ? VX_OK : VX_ERR_ACCESS;
   return (mode & 3) == P9_OREAD ? VX_OK : VX_ERR_ACCESS;
@@ -1793,6 +1840,8 @@ static vx_status fs_open(void *ctx, uint64_t n, uint8_t mode) {
 
 // The surface opened: the window's channel, beside the Ropen; CONFIGURE and
 // a FRAME (its first credit) on it at once.
+static vx_status window_channel(window *w, vx_handle *out_handle);
+
 static vx_status fs_open_handle(void *ctx, uint64_t n, uint8_t mode, vx_handle *out_handle) {
   (void)ctx, (void)mode;
   if (n == R_IME) { // an input method: its channel, one at a time
@@ -1806,8 +1855,22 @@ static vx_status fs_open_handle(void *ctx, uint64_t n, uint8_t mode, vx_handle *
     return VX_OK;
   }
   window *w = window_of(n);
+  if (is_self_new(n)) { // a window of this app's, made now: its channel
+    w = window_new(640, 480);
+    if (!w) return VX_ERR_NO_MEMORY;
+    w->owner = (uint32_t)(n - SELF_NEW) + 1;
+    vx_status st = window_channel(w, out_handle);
+    if (st != VX_OK) window_free(w);
+    return st;
+  }
   if (!w || (n - WIN) % 8 != W_SURFACE) return VX_OK; // no handle to give
-  if (w->ch) return VX_ERR_BAD_STATE;                 // one app's at a time
+  return window_channel(w, out_handle);
+}
+
+// A window's channel, its other end given: CONFIGURE and a FRAME (its
+// first credit) on it at once.
+static vx_status window_channel(window *w, vx_handle *out_handle) {
+  if (w->ch) return VX_ERR_BAD_STATE; // one app's at a time
   vx_handle ends[2];
   vx_status st = vx_channel_create(0, ends);
   if (st != VX_OK) return st;
@@ -1857,6 +1920,17 @@ static void fs_clunk(void *ctx, uint64_t n, bool opened) {
 
 static void fs_fid_node(void *ctx, uint64_t n, int delta) {
   (void)ctx;
+  if (is_self_root(n) || is_self_new(n)) { // an app attach, let go with its last fid; its windows unowned
+    owner_state *o = &owners[(n - SELF_ROOT) % 16];
+    o->holds = (uint32_t)((int64_t)o->holds + delta);
+    if (!o->holds && o->used) {
+      uint32_t slot = (uint32_t)((n - SELF_ROOT) % 16);
+      for (uint32_t i = 0; i < MAX_WINDOWS; i++)
+        if (wins[i].used && wins[i].owner == slot + 1) wins[i].owner = 0;
+      *o = (owner_state){};
+    }
+    return;
+  }
   window *w = window_of(n);
   if (!w) return;
   w->holds = (uint32_t)((int64_t)w->holds + delta);
@@ -2146,6 +2220,18 @@ static vx_status fs_readdir(void *ctx, uint64_t dir, uint32_t index, uint64_t *c
     if (index >= sizeof ROOT_FILES / sizeof ROOT_FILES[0]) return VX_ERR_NOT_FOUND;
     *child = ROOT_FILES[index];
     return VX_OK;
+  }
+  if (is_self_root(dir)) { // `new`, then its windows
+    if (index == 0) {
+      *child = SELF_NEW + (dir - SELF_ROOT);
+      return VX_OK;
+    }
+    for (uint32_t i = 0, seen = 1; i < MAX_WINDOWS; i++)
+      if (wins[i].used && wins[i].owner == dir - SELF_ROOT + 1 && seen++ == index) {
+        *child = node_of(&wins[i], W_DIR);
+        return VX_OK;
+      }
+    return VX_ERR_NOT_FOUND;
   }
   if (dir == THEME) {
     if (index > 2) return VX_ERR_NOT_FOUND;

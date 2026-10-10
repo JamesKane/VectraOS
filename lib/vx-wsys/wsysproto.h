@@ -62,8 +62,8 @@ typedef struct vx_wsys_configure {
   uint32_t scale;           // over 120: 120 is 1x
   uint8_t visibility;
   uint8_t reserved[3];
-  uint32_t flags; // FOCUSED, INTERACTIVE
-  uint32_t reserved2;
+  uint32_t flags;  // FOCUSED, INTERACTIVE
+  uint32_t window; // its number in /wsys (7e2): where its files are
 } vx_wsys_configure;
 
 // FRAME: draw now for target. credits: presents the app may make more

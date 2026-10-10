@@ -1,0 +1,21 @@
+# tests/qemu/minimal.ndb: M7's exit, the minimal program (03 §6, 10 calls;
+# tests/user/minimal.c, step 7e2): its window, the circle where it starts,
+# a click in it (the pointer's x is the circle's), space (its voice, silent
+# until M13), and its close gadget ending it cleanly. Both screens matched.
+
+scenario=minimal display=fb timeout=60 cmdline="vx.display vx.desktop" with=minimal
+expect="winsrv: window 1"
+prompt="% "
+send="for(i in 0 1) while(! ls /dev/input/$i >/tmp/null >[2=1]) /boot/bin/posix/sleep 0.1; /boot/bin/posix/sleep 1; echo ready"
+line="ready"
+screen=minimal-$arch tolerance=1
+click=148px,228px
+key=spc
+send="/boot/bin/posix/sleep 1; echo clicked"
+line="clicked"
+screen=minimal-moved-$arch tolerance=1
+click=58px,38px
+expect="svcd: minimal exited"
+fail="vx: panic"
+fail="svcd: minimal exited: "
+fail="svcd: winsrv exited"

@@ -254,7 +254,7 @@ const char *vx_main(void) {
             vx_circle(c, x, 180.0f, 20.0f, VX_THEME_ACCENT);            // 7
             vx_canvas_present(c);                                       // 8
         } break;
-        case VX_KEY:     if (ev.key.down && ev.key.usage == VX_KEY_SPACE) vx_voice_play(beep); break; // 9
+        case VX_KEY:     if (ev.keyboard.down && ev.keyboard.usage == VX_KEY_SPACE) vx_voice_play(beep); break; // 9
         case VX_POINTER: x = ev.pointer.x; vx_window_redraw(win); break; // 10
         case VX_CLOSE:   return nullptr;
         default:         break;

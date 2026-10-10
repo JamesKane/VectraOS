@@ -27,6 +27,26 @@ typedef enum vx_event_kind : uint32_t {
   VX_EV_HUNGUP,   // a connection to a server dropped for good
 } vx_event_kind;
 
+// vxui's kinds (M7 step 7e2, 03 §6), from vx_wait: source is the vx_window.
+enum : uint32_t {
+  VX_NONE = 0,       // vx_wait's deadline came first
+  VX_FRAME = 64,     // draw now: frame
+  VX_KEY = 65,       // keyboard
+  VX_POINTER = 66,   // pointer
+  VX_TEXT = 67,      // text, committed: text.text
+  VX_CONFIGURE = 68, // the window's size or focus changed: configure
+  VX_CLOSE = 69,     // the window was closed
+};
+
+// A frame event (03 §4, §6 item 4): when a frame drawn now is meant to be
+// seen, when the window's last one was, and the time since the last frame
+// event, so a game's interpolation needs no clock arithmetic.
+typedef struct vx_frame_event {
+  uint64_t seq;
+  vx_instant target, prev_presented;
+  vx_duration dt;
+} vx_frame_event;
+
 // One record for every event, 64 bytes. A slice in it (an exit string, a
 // note) points into the loop's own memory and holds until its next wait.
 typedef struct vx_event {
@@ -62,6 +82,25 @@ typedef struct vx_event {
     struct {
       int32_t fd;
     } ready;
+    vx_frame_event frame; // vxui's, below
+    struct {
+      uint32_t usage; // a HID usage (VX_KEY_SPACE, ...)
+      uint32_t rune;  // what it types unmodified, 0 for none
+      uint32_t mods;  // VX_MOD_*
+      bool down, repeat;
+    } keyboard; // ("key" is the event's own: the program's)
+    struct {
+      float x, y; // in the window
+      uint32_t buttons;
+      int32_t wheel;
+    } pointer;
+    struct {
+      vx_str text; // UTF-8, until the next vx_wait
+    } text;
+    struct {
+      uint32_t width, height;
+      bool focused;
+    } configure;
     uint8_t payload[32];
   };
 } vx_event;

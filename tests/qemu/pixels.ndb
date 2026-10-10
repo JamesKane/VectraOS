@@ -1,0 +1,14 @@
+# tests/qemu/pixels.ndb: M7's exit, the CPU pixel program (03 §6;
+# tests/user/pixels.c, step 7e2): a window drawn by the CPU straight into
+# its buffer, animated for 30 frames with the buffers' ages right, then
+# still; its last frame matched by screenshot.
+
+scenario=pixels display=fb timeout=60 cmdline="vx.display vx.desktop" with=pixels
+expect="pixels: 30 frames, 0 wrong ages"
+screen=pixels-$arch tolerance=1
+prompt="% "
+send="echo done"
+line="done"
+fail="vx: panic"
+fail="svcd: pixels exited"
+fail="svcd: winsrv exited"

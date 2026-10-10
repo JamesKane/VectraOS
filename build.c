@@ -1380,6 +1380,8 @@ static const char *const VXCXXEXC_STATIC[] = {"-DVXCXXEXC_STATIC", nullptr};
 // headers: its environment header first, its include directories as system
 // ones, so the house warnings stay the house's.
 static port acpica, monocypher, font;
+// vxui (lib/vxui, 7e2): a program writes #include <vxui.h>.
+static const char *const VXUI_FLAGS[] = {"-Ilib/vxui", nullptr};
 // The font port (ports/font: stb_truetype and kb_text_shape, ADR-0052 and
 // 0053), for winsrv and what draws text: their headers as system ones.
 static const char *const FONT_USE_FLAGS[] = {"-isystem", "third_party/stb_truetype", "-isystem",
@@ -1442,6 +1444,10 @@ static const program USER_PROGRAMS[] = {
      nullptr}, // ./build bench's measurements (7a5)
     {"flighttest", "tests/user/tracetest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // tracetest's flight recorder test, as a program of its own (7a4a)
+    {"minimal", "tests/user/minimal.c", IN_TESTS, nullptr, false, nullptr, VXUI_FLAGS, false, LINK_STATIC,
+     nullptr}, // 03's minimal program, M7's exit (7e2)
+    {"pixels", "tests/user/pixels.c", IN_TESTS, nullptr, false, nullptr, VXUI_FLAGS, false, LINK_STATIC,
+     nullptr}, // 03's CPU pixel program, M7's exit (7e2)
     {"prompttest", "tests/user/prompttest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // the trusted prompt (7d2d)
     {"wmtest", "tests/user/wmtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,

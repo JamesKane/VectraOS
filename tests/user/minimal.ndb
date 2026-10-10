@@ -1,0 +1,6 @@
+# tests/user/minimal.ndb: minimal, an app with the window server's app attach
+# (tests/qemu/minimal.ndb).
+
+service=minimal program=/boot/bin/minimal console when=vx.desktop
+mount=/ srv=bootfs
+mount=/wsys srv=wsys aname=self

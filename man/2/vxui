@@ -1,0 +1,63 @@
+page=vxui sect=2 summary="the app tier's API: an app, its windows, one wait, a canvas, CPU pixels, voices"
+    names=vx_app_open,vx_app_error,vx_wait,vx_window_open,vx_window_redraw,vx_window_animate,vx_window_title,vx_canvas_begin,vx_clear,vx_fill_rect,vx_circle,vx_canvas_present,vx_pixels_begin,vx_pixels_present,vx_voice_open,vx_voice_play
+    src=lib/vxui/vxui.h,lib/vxui/vxui.c,abi/vx/loop.h
+    keys=vxui,app,window,frame,event,canvas,pixels,voice,gui,toolkit
+
+# SYNOPSIS
+
+```c
+#include <vxui.h>
+
+vx_app *vx_app_open(const char *id);
+const char *vx_app_error(const vx_app *app);
+bool vx_wait(vx_app *app, vx_event *ev, vx_instant deadline);
+
+vx_window *vx_window_open(vx_app *app, const char *title,
+                          uint32_t width, uint32_t height);
+void vx_window_redraw(vx_window *win);
+void vx_window_animate(vx_window *win, bool on);
+void vx_window_title(vx_window *win, const char *title);
+
+vx_canvas *vx_canvas_begin(vx_window *win, const vx_frame_event *frame);
+void vx_clear(vx_canvas *c, vx_color colour);
+void vx_fill_rect(vx_canvas *c, float x, float y, float w, float h,
+                  vx_color colour);
+void vx_circle(vx_canvas *c, float x, float y, float r, vx_color colour);
+void vx_canvas_present(vx_canvas *c);
+
+vx_pixels vx_pixels_begin(vx_window *win, const vx_frame_event *frame);
+void vx_pixels_present(vx_window *win, vx_pixels *px);
+
+vx_voice *vx_voice_open(vx_app *app, vx_sound sound);
+void vx_voice_play(vx_voice *voice);
+```
+
+# DESCRIPTION
+
+vxui is the app tier (03 §6), v0 (M7 step 7e2).
+An app has one loop and one wait, its own: `vx_wait` returns the next event of any of its windows in libvx's `vx_event` (loop(2)), with vxui's kinds, the window as `source`: `VX_FRAME` (`frame`: its sequence, `target`, `prev_presented` and `dt`), `VX_KEY` (`keyboard`: the HID usage, its unmodified rune, the modifiers, down and repeat), `VX_POINTER` (`pointer`: x and y in the window, the buttons, the wheel), `VX_TEXT` (`text`), `VX_CONFIGURE` (`configure`: the size, focus) and `VX_CLOSE`.
+With a deadline that comes first, it returns `true` and `VX_NONE`.
+The toolkit never calls back.
+
+A window is made by opening `/wsys/new`, the window server's app attach (winsrv(8); a manifest gives it with `mount=/wsys srv=wsys aname=self`), titled and sized with its `ctl`, and drawn into two buffers in turn.
+It draws only when asked: `vx_window_redraw` asks for one `VX_FRAME`, `vx_window_animate` for one every frame the output shows; either comes only with a credit of the frame protocol in hand, so an idle window costs nothing.
+
+`vx_canvas_begin` and `vx_canvas_present` bracket drawing with `vx_clear`, `vx_fill_rect` and `vx_circle` (antialiased); colours are XRGB or the theme's (`VX_THEME_BG`, `VX_THEME_FG`, `VX_THEME_ACCENT`, `VX_THEME_FACE`).
+`vx_pixels_begin` gives the buffer itself (`data`, `w`, `h`, `stride`) and its `age`, the presents since its contents were last shown (0 for a new one); `vx_pixels_present` presents it.
+
+Errors are sticky: a failed open makes the next `vx_wait` return `false`, and `vx_app_error` says why, so a program need not check each call.
+
+Voices are numbered now and sound with audiod (M13): `vx_voice_open` gives one, `vx_voice_play` is silent until then.
+
+# EXAMPLES
+
+03 §6's minimal program, in ten calls, is tests/user/minimal.c; its CPU pixel program is tests/user/pixels.c.
+
+# SEE ALSO
+
+loop(2), winsrv(8)
+
+# BUGS
+
+v0 is a header library compiled into each program; it becomes `libvxui.so` when libvx exports what it uses.
+No widgets yet (M7 step 7e2b); the theme's colours are vx-magic's, whatever theme the window is drawn in.

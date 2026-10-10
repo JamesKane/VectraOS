@@ -1,0 +1,6 @@
+# tests/user/pixels.ndb: pixels, an app with the window server's app attach
+# (tests/qemu/pixels.ndb).
+
+service=pixels program=/boot/bin/pixels console when=vx.desktop
+mount=/ srv=bootfs
+mount=/wsys srv=wsys aname=self

@@ -8,6 +8,7 @@ Status: draft, written for M7 step 7d1b (docs/21 §2 items 1-3 and 8; 03 §4-5).
 
 - **`new [-dx W] [-dy H]`**, rio's wctl words: a new window, W by H (640 by 480 if not given), and the attach's root is its directory. That is the app's `/wsys/self`: its own window and nothing of anyone else's (03 §5.7).
 - **empty**: the whole tree, every window, which is a grant (03 §5.7: `wm`, the shell, the palette, assistive technology).
+- **`self`** (M7 step 7e2): an app's own directory, its windows by number and `new`. Opening `new` (`ORDWR`, the srv extension) makes a window, 640 by 480 until its `ctl` resizes it, and gives its channel at once, as a surface's open does; the window is the app's, listed here, while its channel is open. vxui makes its windows so. An app given only `self` is still a connection to the post (see known gaps).
 
 ```
 /wsys/
@@ -43,7 +44,7 @@ winsrv to the app, unasked (`txid` 0):
 
 | Record | Fields |
 |---|---|
-| `CONFIGURE` (1) | `seq` (the config_seq), the logical size, the size in pixels to draw, the scale over 120, the visibility (`visible`, `partial`, `occluded`, `hidden`), flags (`FOCUSED`, `INTERACTIVE`) |
+| `CONFIGURE` (1) | `seq` (the config_seq), the logical size, the size in pixels to draw, the scale over 120, the visibility (`visible`, `partial`, `occluded`, `hidden`), flags (`FOCUSED`, `INTERACTIVE`), and the window's number in `/wsys` |
 | `FRAME` (2) | `seq` (the frame clock's count), `target` (the vblank a present made now is meant for), `prev_presented` (when the app's last present reached the screen), `refresh` (ns), `credits` (presents given back) |
 | `FEEDBACK` (3) | the present's `seq`, `actual` (the vblank that showed it; 0 if dropped), `dropped`, `zero_copy` (0: composited) |
 | `KEY` (4) | a key as `inputd`'s record has it (the usage, the action, the keyboard's held set and modifiers), its unmodified rune, and `SYNTHETIC` for an `UP` winsrv made (§4a) |
