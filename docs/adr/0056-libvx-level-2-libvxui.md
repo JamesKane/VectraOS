@@ -1,6 +1,6 @@
 # ADR-0056: libvx level 2's first calls, and libvxui.so
 
-Status: proposed, 2026-10-10. M7 step 7g2a, for hot reload (03 §6.1, steps 7g2b and 7g2c).
+Status: accepted, 2026-10-10, after review by James Kane (proposed 2026-10-10). M7 step 7g2a, for hot reload (03 §6.1, steps 7g2b and 7g2c).
 
 ## Context
 
