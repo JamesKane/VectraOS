@@ -1454,6 +1454,8 @@ static const program USER_PROGRAMS[] = {
      nullptr}, // 03's minimal program, M7's exit (7e2)
     {"pixels", "tests/user/pixels.c", IN_TESTS, nullptr, false, &font, VXUI_FLAGS, false, LINK_STATIC,
      nullptr}, // 03's CPU pixel program, M7's exit (7e2)
+    {"frametest", "tests/user/frametest.c", IN_TESTS, nullptr, false, &font, VXUI_FLAGS, false, LINK_STATIC,
+     nullptr}, // frames in the trace (7g1b1)
     {"prompttest", "tests/user/prompttest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // the trusted prompt (7d2d)
     {"wmtest", "tests/user/wmtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,

@@ -1,0 +1,9 @@
+# tests/qemu/frames.ndb: frames in the trace (M7 step 7g1b1): an app's
+# DRAW spans, winsrv's LATCH of each on the same flow, and its COMPOSE
+# spans, read from /proc/trace (tests/user/frametest.c).
+
+scenario=frames display=fb timeout=90 cmdline="vx.display vx.desktop" with=frametest
+expect="frametest: 7 checks, 0 failed"
+fail="vx: panic"
+fail="frametest: FAILED"
+fail="svcd: winsrv exited"

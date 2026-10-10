@@ -230,7 +230,7 @@ The VMO holds a ring for each thread (M6 step 6d6b): the first 32 threads that t
 It shows every process's activity, so it is a broad grant (ADR-0029): the directory is there only for an attach by an administrator, as users(6)'s default has it (procfs has no namespace in which to read `/adm/users`).
 
 : `trace/ctl`
-  `start CATEGORIES [size N[k|m]] [rate HZ] [circular]` (the categories comma-separated: `sched`, `ipc`, `irq`, `vm`, `futex`, `syscall`, `mark`; `sample` samples every busy CPU HZ times a second, 1000 by default and at most 10000, a `sample` record with the interrupted PC followed by `frames` records of up to 64 return addresses; `span` adds every registered process's spans, lib/vx-prof records that the 9Px ring client and server write for each request, merged into `events` by time as kind 64 on cpu 0xffff), `stop`, `rewind`, `mark TEXT` (16 bytes).
+  `start CATEGORIES [size N[k|m]] [rate HZ] [circular]` (the categories comma-separated: `sched`, `ipc`, `irq`, `vm`, `futex`, `syscall`, `mark`; `sample` samples every busy CPU HZ times a second, 1000 by default and at most 10000, a `sample` record with the interrupted PC followed by `frames` records of up to 64 return addresses; `span` adds every registered process's spans, lib/vx-prof records that the 9Px ring client and server write for each request, and vxui and winsrv for each frame, merged into `events` by time as kind 64 on cpu 0xffff), `stop`, `rewind`, `mark TEXT` (16 bytes).
 : `trace/events`
   Every CPU's ring merged by time, oldest first: 32-byte records, as `.schema` says. A read at offset 0 takes a snapshot, which later reads continue, so a reader sees one stream however it splits its reads (and a read need not end on a record).
 : `trace/status`

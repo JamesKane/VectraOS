@@ -35,6 +35,7 @@ struct vx_window {
   uint32_t credits;
   bool redraw, animate, owed; // owed: a VX_FRAME handed out and not yet presented
   uint64_t presents;
+  uint64_t span; // the frame's DRAW span (7g1b1), from its handing out; 0: none
   vx_instant prev_presented, last_frame;
   vxui_buffer b[2];
   uint32_t next; // the buffer to draw next
@@ -260,7 +261,7 @@ static bool vx_wait(vx_app *app, vx_event *ev, vx_instant deadline) {
     if (app->error) return false;
     for (uint32_t i = 0; i < VXUI_WINDOWS; i++) { // a frame handed out and never presented is let go
       vx_window *w = &app->win[i];
-      if (w->used && w->owed) w->owed = false;
+      if (w->used && w->owed) w->owed = false, w->span = 0;
     }
     if (app->count) {
       *ev = app->queue[app->head];
@@ -277,6 +278,7 @@ static bool vx_wait(vx_app *app, vx_event *ev, vx_instant deadline) {
                                    .prev_presented = w->prev_presented,
                                    .dt = w->last_frame ? now - w->last_frame : 0};
       w->last_frame = now, w->redraw = false, w->owed = true;
+      w->span = vx_span_begin_hook ? vx_span_begin_hook() : 0;
       return true;
     }
     uint64_t wakes = app->wakes;
@@ -397,7 +399,8 @@ static void vxui_present(vx_window *win, vx_pixels *px, const vx_wsys_rect *dama
                        .ndamage = ndamage <= VX_WSYS_DAMAGE ? ndamage : 0};
   for (uint32_t i = 0; i < p.ndamage; i++) p.damage[i] = damage[i];
   if (vx_channel_write(win->ch, &p, sizeof p, nullptr, 0) == VX_OK && win->credits) win->credits--;
-  b->presented = win->presents, win->owed = false, win->next ^= 1;
+  if (win->span) vx_span_end_hook(win->span, VX_SPAN_FRAME_DRAW, vx_frame_flow(win->id, win->presents));
+  b->presented = win->presents, win->owed = false, win->next ^= 1, win->span = 0;
 }
 
 static vx_canvas *vx_canvas_begin(vx_window *win, const vx_frame_event *frame) {

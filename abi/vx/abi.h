@@ -862,6 +862,17 @@ enum vx_trace_kind : uint16_t {
 // the message's type << 48 | its length in cycles.
 static constexpr uint16_t VX_TK_SPAN = 64;
 
+// Frames' spans (M7 step 7g1b1), their types above 9Px's messages': DRAW,
+// an app's frame, from vxui handing it out to its PRESENT; LATCH, winsrv
+// copying that present into the window's backing, on the same flow, made by
+// vx_frame_flow from the window's number and the present's seq; COMPOSE,
+// winsrv compositing the screen and applying it, its flow the APPLY's stamp's
+// (vx_frame_flow of window 0).
+enum : uint16_t { VX_SPAN_FRAME_DRAW = 0x100, VX_SPAN_FRAME_LATCH, VX_SPAN_FRAME_COMPOSE };
+[[maybe_unused]] static inline uint64_t vx_frame_flow(uint32_t window, uint64_t seq) {
+  return 0xf7ull << 56 | (uint64_t)(window & 0xf'ffff) << 36 | (seq & 0x7'ffff'ffff) << 1;
+}
+
 // ring_notify(end, flags) (M7 step 7a6b): HANDOFF, the caller waits next
 // (for the reply it just asked for), so a thread its doorbell wakes runs on
 // this CPU as soon as the caller blocks, first in its band, and no idle CPU

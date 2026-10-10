@@ -1,0 +1,8 @@
+# tests/user/frametest.ndb: frametest, frames in the trace
+# (tests/qemu/frames.ndb): as adm, for /proc/trace, with a window of its own.
+
+service=frametest program=/boot/bin/frametest console when=vx.desktop
+user=adm
+ns=posix
+mount=/wsys srv=wsys aname=self
+connect=nsd

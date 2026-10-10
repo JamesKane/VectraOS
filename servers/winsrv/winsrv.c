@@ -810,7 +810,8 @@ static void composite(screen_buffer *s, vx_display_rect area) {
 static void latch(window *w) {
   app_buffer *b = &w->bufs[w->present.id - 1];
   int64_t now = vx_counter_read(b->buf.timeline);
-  if (now < 0 || (uint64_t)now < w->present.acquire) return; // not drawn yet: next vblank
+  if (now < 0 || (uint64_t)now < w->present.acquire) return;     // not drawn yet: next vblank
+  uint64_t span = vx_span_begin_hook ? vx_span_begin_hook() : 0; // the app's DRAW's flow (7g1b1)
   const vx_wsys_present *p = &w->present;
   vx_display_rect bounds = meet((vx_display_rect){0, 0, w->r.width, w->r.height},
                                 (vx_display_rect){0, 0, b->buf.desc.width, b->buf.desc.height});
@@ -828,6 +829,7 @@ static void latch(window *w) {
     damage((vx_display_rect){w->r.x + r.x, w->r.y + r.y, r.width, r.height});
   }
   vx_buffer_signal(&b->buf, p->release); // copied: the app's again (release at composite)
+  if (span) vx_span_end_hook(span, VX_SPAN_FRAME_LATCH, vx_frame_flow(w->id, p->seq));
   w->pending = false;
   w->presented++;
   w->returned++;
@@ -844,6 +846,7 @@ static void frame(void) {
   for (uint32_t i = 0; i < MAX_WINDOWS; i++)
     if (wins[i].used && wins[i].pending) latch(&wins[i]);
   if (!empty(out.dirty)) {
+    uint64_t span = vx_span_begin_hook ? vx_span_begin_hook() : 0;
     composite(s, s->damage);
     vx_display_rect screen = screen_rect();
     vx_display_apply a = {.h = {.ordinal = VX_DISPLAY_APPLY},
@@ -860,6 +863,7 @@ static void frame(void) {
                           .damage = {out.dirty}};
     if (vx_channel_write(disp, &a, sizeof a, nullptr, 0) == VX_OK)
       s->stamp = a.stamp, s->damage = (vx_display_rect){}, out.front = back, out.dirty = (vx_display_rect){};
+    if (span) vx_span_end_hook(span, VX_SPAN_FRAME_COMPOSE, vx_frame_flow(0, a.stamp));
   }
   for (uint32_t i = 0; i < MAX_WINDOWS; i++) {
     window *w = &wins[i];
