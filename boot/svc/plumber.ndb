@@ -1,0 +1,24 @@
+# boot/svc/plumber.ndb: the plumber (plumber(4), M7 step 7g3b), posted as
+# /srv/plumb, which the shell and the terminal mount at /mnt/plumb. It runs
+# as the shell's user, in the shell's tree, so a file a message names is
+# the file the user sees and a program a rule starts runs where the user's
+# would. Its own tree is mounted at /mnt/plumb there once it serves, by the
+# plumber itself through a connector to its post (connect=plumb), for a
+# client a rule starts to read its port: a mount here would have it attach
+# to itself before it serves. Its rules are
+# $home/lib/plumbing on an installed system, else /lib/plumb/basic.
+
+service=plumber program=/boot/bin/plumber post=plumb console restart
+user=$vx.user
+mount=/ srv=bootfs
+bind=/bin new=/boot/bin flags=a
+mount=/proc srv=proc
+mount=/tmp srv=tmpfs aname=user
+mount=/srv srv=srv flags=c
+mount=/home srv=fsd aname=home flags=c when=vx.system
+bind=/tmp new=/home/tmp flags=c when=vx.system
+mount=/cfg srv=fsd aname=cfg flags=c when=vx.system
+mount=/wsys srv=wsys aname=self when=vx.desktop
+connect=plumb
+connect=nsd
+connect=env

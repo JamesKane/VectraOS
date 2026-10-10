@@ -1541,6 +1541,8 @@ static const program USER_PROGRAMS[] = {
     {"sysfs", "servers/sysfs/sysfs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr},
     {"ptyd", "servers/ptyd/ptyd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"plumber", "servers/plumber/plumber.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr}, // 7g3b
     {"devmgr", "servers/devmgr/devmgr.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr},
     {"netd", "servers/netd/netd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
@@ -1559,6 +1561,8 @@ static const program USER_PROGRAMS[] = {
     {"trace", "cmd/trace.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
     {"ns", "cmd/ns.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
     {"tail", "cmd/tail.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"plumb", "cmd/plumb.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr}, // 7g3b
     {"ping", "cmd/ping.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
     {"cs", "cmd/cs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
     {"dbg", "cmd/dbg.c", IN_BOOTFS, nullptr, false, &font, VXUI_FLAGS, false, LINK_STATIC,
@@ -3519,6 +3523,9 @@ static const char *const BOOTFS_DIRS[] = {"adm",
                                           "lib/ns",
                                           "lib/font",
                                           "lib/wm",
+                                          "lib/plumb",
+                                          "mnt",
+                                          "mnt/plumb",
                                           "n",
                                           "net",
                                           "proc",
@@ -3546,7 +3553,8 @@ static bool listed(const char *with, const char *name) {
 // in bootfs, boot/svc with the service manifests from boot/svc/*.ndb,
 // boot/drv with the driver manifests from boot/drv/*.ndb, lib/ns with the
 // namespace templates, namespace(6) files, from boot/lib/ns/ (ADR-0009),
-// lib/wm with the window manager's Lua and keys from boot/lib/wm/, and
+// lib/wm with the window manager's Lua and keys from boot/lib/wm/, lib/plumb
+// with the plumber's rules from boot/lib/plumb/ (7g3b), and
 // lib/font with the system's fonts, Inter's (ADR-0054).
 // `with` adds test programs and their manifests (tests/user/NAME.ndb), and
 // script tests (a manifest, and tests/user/NAME.lua in boot/tests). The
@@ -3566,6 +3574,7 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
   collect(&manifests, &tree, (vx_str){"boot/lib/ns", 11}, "");
   collect(&manifests, &tree, (vx_str){"boot/lib/wm", 11},
           ""); // the window manager, wm.lua and its keys (7d2c)
+  collect(&manifests, &tree, (vx_str){"boot/lib/plumb", 14}, ""); // the plumber's rules (7g3b)
 
   // Programs, then the system's manifests, then the tests': svcd starts
   // services in this order, so a test's run after what it tests.

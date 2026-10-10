@@ -1,0 +1,5 @@
+# /lib/plumb/fileaddr: a file's address, as sam and acme write one after a
+# file name (file.c:12, file.c:/main/), for rules to match after it as
+# $addr; the two lines are 9front's sys/lib/plumb/fileaddr.
+addrelem='((#?[0-9]+)|(/[A-Za-z0-9_\^]+/?)|[.$])'
+addr=:($addrelem([,;+\-]$addrelem)*):?

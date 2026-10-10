@@ -1,0 +1,27 @@
+# /lib/plumb/basic: the system's plumbing rules (plumb(6), plumber(4)),
+# after 9front's sys/lib/plumb/basic. The plumber tries them in order and
+# the first that applies wins, so the most particular come first. A user's
+# own rules, $home/lib/plumbing, are read instead, and may include basic.
+#
+# Not here, unlike 9front's: rules that run a command from the message
+# itself ("Local ..."), which would let any program run anything through
+# the plumber; and rules for programs the system does not have yet.
+
+include fileaddr
+
+# Ports with no rules yet: the image viewer's and mail's.
+plumb to image
+plumb to sendmail
+
+# URLs: the hypermedia viewer's (hv, docs/07 §5).
+type is text
+data matches '(https?|gemini|gopher)://[^ ]+'
+plumb to web
+
+# A file that is there, perhaps with an address: the editor's (hx, docs/08).
+type is text
+data matches '([.a-zA-Z¡-􏿿0-9_/+\-]*[a-zA-Z¡-􏿿0-9_/+\-])('$addr')?'
+arg isfile	$1
+data set	$file
+attr add	addr=$3
+plumb to edit

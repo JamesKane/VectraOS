@@ -14,7 +14,8 @@
 # window server's tree at /wsys (winsrv, M7 step 7d1); with vx.display, the
 # display's outputs at /wsys/outputs (displayd, 7b3). /tmp is the user's own
 # (M6 step 6e1c2, as 9front's /usr/$user/tmp): its tree on tmpfs, or on an
-# installed system $home/tmp on disk, which install makes.
+# installed system $home/tmp on disk, which install makes. The plumber's
+# tree is at /mnt/plumb (plumber(4), M7 step 7g3b).
 
 service=rc program=/boot/bin/rc console restart
 user=$vx.user
@@ -26,6 +27,7 @@ mount=/sys srv=sys
 mount=/dev srv=input flags=a
 mount=/tmp srv=tmpfs aname=user
 mount=/srv srv=srv flags=c
+mount=/mnt/plumb srv=plumb
 mount=/home srv=fsd aname=home flags=c when=vx.system
 bind=/tmp new=/home/tmp flags=c when=vx.system
 mount=/tmp/crash srv=tmpfs aname=crash flags=c

@@ -1,0 +1,37 @@
+# tests/qemu/plumb.ndb: the plumber (M7 step 7g3b, plumber(4), plumb(1)):
+# its tree at the shell's /mnt/plumb, with the system's rules' ports; a
+# file and address plumbed from a directory to a reader of edit, made
+# absolute; a message nothing takes refused; a rule written to rules that
+# starts a program; and a client rule's message held until the program it
+# starts opens the port. Readers are dd's, which read one message and end:
+# a message's data has no newline after it, which cat would hold. Typed
+# words are split with '' where the output they are expected in would
+# match their echo.
+
+scenario=plumb timeout=60
+expect="plumber: serving /srv/plumb, rules from /lib/plumb/basic, 4 ports"
+prompt="% "
+send="ls /mnt/plumb"
+expect="sendmail"
+prompt="% "
+send="echo note > /tmp/notes.txt; /boot/bin/posix/dd 'bs=8192' 'count=1' < /mnt/plumb/edit >[2]/tmp/dd.err & /boot/bin/posix/sleep 1"
+prompt="% "
+send="plumb -w /tmp 'notes.txt:3'; /boot/bin/posix/sleep 1; echo"
+line="addr=3"
+line="/tmp/notes.txt"
+prompt="% "
+send="plumb -w /tmp no''where.here"
+expect="plumb: can't send message: "
+prompt="% "
+send="echo 'type is text' > /tmp/r; echo 'data matches ''hello''' >> /tmp/r; echo 'plumb start /bin/echo plumbed $0' >> /tmp/r; echo >> /tmp/r; cat /tmp/r >> /mnt/plumb/rules"
+prompt="% "
+send="plumb hel''lo"
+line="plumbed hello"
+prompt="% "
+send="echo 'type is text' > /tmp/r; echo 'data matches ''greet.*''' >> /tmp/r; echo 'plumb to greet' >> /tmp/r; echo 'plumb client /boot/bin/posix/dd bs=8192 count=1 if=/mnt/plumb/greet' >> /tmp/r; cat /tmp/r >> /mnt/plumb/rules; ls /mnt/plumb | /boot/bin/posix/grep -c gre''et"
+line="1"
+prompt="% "
+send="plumb greet''ing"
+expect="greeting"
+fail="vx: panic"
+fail="svcd: plumber exited"

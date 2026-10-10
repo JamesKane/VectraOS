@@ -20,9 +20,30 @@ static constexpr uint32_t VP_INCLUDES = 10, VP_EXPAND = 4096;
 void *vx_plumb_alloc(size_t n) { return vt_alloc(n); }
 void vx_plumb_dealloc(void *p) { vt_free(p); }
 
-static size_t vp_len(const char *s) { return s ? __builtin_strlen(s) : 0; }
+// The C library's string calls, which vx-rt has not (vx_str is its kind).
+static size_t vp_len(const char *s) {
+  size_t n = 0;
+  while (s && s[n]) n++;
+  return n;
+}
 
-static bool vp_eq(const char *a, const char *b) { return __builtin_strcmp(a ? a : "", b ? b : "") == 0; }
+static bool vp_eq(const char *a, const char *b) {
+  a = a ? a : "", b = b ? b : "";
+  while (*a && *a == *b) a++, b++;
+  return *a == *b;
+}
+
+// Whether s starts with prefix.
+static bool vp_prefix(const char *s, const char *prefix) {
+  while (*prefix && *s == *prefix) s++, prefix++;
+  return !*prefix;
+}
+
+[[maybe_unused]] static bool vp_has(const char *s, char c) { // the plumber's and plumb's
+  for (; *s; s++)
+    if (*s == c) return true;
+  return false;
+}
 
 static char *vp_dup_n(const char *s, size_t n) {
   char *p = vt_alloc(n + 1);
@@ -582,7 +603,7 @@ static bool vp_assignment(vx_plumb_rules *r, const char *p) {
 // "include FILE [#...]": FILE pushed, from /lib/plumb when it is not there
 // and its name is neither rooted nor ./ or ../.
 static bool vp_include(vx_plumb_rules *r, const char *s) {
-  if (__builtin_strncmp(s, "include", 7) != 0) return false;
+  if (!vp_prefix(s, "include")) return false;
   const char *p = s + 7;
   if (*p && !vp_blank(*p)) return vp_fail(r, "malformed include statement", nullptr), true;
   while (vp_blank(*p)) p++;
@@ -596,8 +617,7 @@ static bool vp_include(vx_plumb_rules *r, const char *s) {
   __builtin_memcpy(path, name, n), path[n] = 0;
   size_t len = 0;
   char *text = r->fs.read ? r->fs.read(r->fs.ctx, path, &len) : nullptr;
-  if (!text && path[0] != '/' && __builtin_strncmp(path, "./", 2) != 0 &&
-      __builtin_strncmp(path, "../", 3) != 0) {
+  if (!text && path[0] != '/' && !vp_prefix(path, "./") && !vp_prefix(path, "../")) {
     char lib[256 + 10] = "/lib/plumb/";
     __builtin_memcpy(lib + 11, path, n + 1);
     __builtin_memcpy(path, lib, n + 12 <= sizeof path ? n + 12 : sizeof path);
@@ -821,7 +841,7 @@ typedef struct vp_out {
 
 static void vp_out_put(vp_out *o, const char *s) {
   size_t n = vp_len(s);
-  if (o->failed || !vt_grow((void **)&o->p, &o->cap, o->n + n + 1, 1)) {
+  if (o->failed || !vt_grow((void **)&o->p, &o->cap, o->n + n + 1, 1) || !o->p) {
     o->failed = true;
     return;
   }

@@ -1,0 +1,89 @@
+page=plumber sect=4 summary="the plumber: plumb messages routed between programs by rules"
+    src=servers/plumber/plumber.c,boot/svc/plumber.ndb,boot/lib/plumb/basic,boot/lib/plumb/fileaddr
+    keys=plumb,plumber,plumbing,rules,port,send,client,start,route,message,9front
+
+# SYNOPSIS
+
+```usage
+plumber
+```
+
+# DESCRIPTION
+
+The plumber routes plumb messages (plumb(6)) between programs by the rules the user writes (07 §7): a program writes a message, and the plumber decides, by the rules, which program it is for.
+It is 9front's plumber on `lib/vx-plumb`, its files, ports and rule language kept as 9front has them.
+svcd(8) starts it from `boot/svc/plumber.ndb`, as the shell's user and in the shell's tree, and posts it as `/srv/plumb`; the shell and the terminal have it at `/mnt/plumb`, and so does the plumber itself, for the programs its rules start: it mounts its own post there once it serves, and until then holds writes to `send` and `rules`.
+
+Its tree:
+
+: `send`
+  A message written here is matched against the rules (plumb(6)) and sent from the port of the first ruleset that applies, or, with no port, its `start` command run.
+  A message may come in several writes.
+  One no ruleset applies to goes to the port its `dst` names, unchanged; with none, the write fails.
+: `rules`
+  Read, the rules as they stand: the variables, the ports, then each ruleset, as 9front lists them.
+  Written, rulesets are added, each as its blank line comes and the rest at the close; an open with `OTRUNC` clears the rules first.
+  A write with an error in it fails, and the plumber says the error on its console.
+  One program may have it open for writing at a time.
+: <port>
+  A file for each port the rules have named with `plumb to`, read only.
+  Each open of a port reads its own copy of every message sent from it after it was opened, one message a read, in parts if a read is too small; a read with no message to give waits for one.
+  A port stays when the rules no longer name it.
+
+A message for a port no program has open runs the ruleset's `start` or `client` command, if it has one: a `start` throws the message away, and a `client` holds it for the next open of the port, which the command is expected to make.
+A message for such a port whose ruleset has neither fails.
+A command is run in the plumber's namespace, its first word a path when it holds a `/`, else a name in `/bin`; it has no standard input and the plumber's standard output and error.
+
+The rules are read when the plumber starts, from `$home/lib/plumbing` on an installed system (`/home/lib/plumbing` in its tree), else from `/lib/plumb/basic`.
+A name under `/mnt/plumb` is never looked up, by `isfile`, `isdir` or `include`: the plumber would be asking itself while it serves.
+
+# EXAMPLES
+
+A program that reads the editor's port, and a click sent to it:
+
+```rc
+% cat /mnt/plumb/edit &
+% plumb -w /tmp 'notes.txt:3'
+plumb
+edit
+/tmp
+text
+addr=3
+14
+/tmp/notes.txt
+```
+
+A rule added for a while:
+
+```rc
+% echo 'type is text
+data matches ''hello''
+plumb start /bin/echo plumbed $0
+' >> /mnt/plumb/rules
+% plumb hello
+plumbed hello
+```
+
+# FILES
+
+: `/lib/plumb/basic`
+  The system's rules.
+: `/lib/plumb/fileaddr`
+  `$addr`, a file's address, which `basic` includes.
+: `$home/lib/plumbing`
+  The user's rules, read instead.
+
+# SEE ALSO
+
+plumb(1), plumb(6), svcd(8)
+
+# DIAGNOSTICS
+
+At its start the plumber says `plumber: serving /srv/plumb, rules from` the file and how many ports it has, and the first error in the rules, if any, by file and line.
+`plumber: rules:` and the error, at a write to `rules` that has one; `plumber: cannot start` and the command, when a rule's command does not start.
+
+# BUGS
+
+Replies carry a status, not 9front's error string: a message nothing takes is `not found`, a malformed one `invalid`, a second writer of `rules` `bad state`.
+Attaching is not checked against the plumber's user, as 9front's is.
+A port's file is read only by programs that opened it before a message came; 9front's is the same.

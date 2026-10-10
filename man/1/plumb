@@ -1,0 +1,51 @@
+page=plumb sect=1 summary="send a plumb message"
+    src=cmd/plumb.c
+    keys=plumb,plumber,message,send,port,attribute,click
+
+# SYNOPSIS
+
+```usage
+plumb [-p plumbfile] [-a 'attr=value ...'] [-s src] [-d dst] [-t type]
+      [-w wdir] -i | data ...
+```
+
+# DESCRIPTION
+
+`plumb` sends a plumb message (plumb(6)) to the plumber (plumber(4)) for each <data> argument, the argument the message's data, as 9front's `plumb` does.
+With `-i` it sends one message instead, of all of its standard input, with the attribute `action=showdata` unless `-a` gave an `action`.
+
+The message is from `plumb`, for no port, in the current directory, of type `text`, unless an option says otherwise:
+
+: `-a` <'attr=value ...'>
+  Attributes to add, as plumb(6) writes them; it may be given more than once.
+: `-s` <src>
+  Its source.
+: `-d` <dst>
+  Its port: only the rules for that port are tried, and, if none applies, the message goes to the port as it is.
+: `-t` <type>
+  Its type; `-k` is its old name.
+: `-w` <wdir>
+  Its working directory, which a file name in the data is relative to.
+: `-p` <plumbfile>
+  The file to write it to, `/mnt/plumb/send` if not given.
+
+# EXAMPLES
+
+A file and line, for the editor's port, `edit`, as a click on them would send them:
+
+```rc
+% plumb -a 'click=3' 'src/main.c:12'
+```
+
+# SEE ALSO
+
+plumber(4), plumb(6)
+
+# DIAGNOSTICS
+
+`plumb` says `plumb: can't open plumb file:` and why, and exits `open`, when it cannot open the plumb file; `plumb: can't send message:` and why, and exits `error`, when the plumber refuses a message, as it does one no rule applies to and that names no port, or one for a port no program has open whose rules start nothing.
+It exits `usage` after the usage message when an option lacks its value, or when there is no <data> without `-i`, or some with it.
+
+# BUGS
+
+Why the plumber refused a message is a status (`not found` for no rule and no port), not 9front's words, which the plumber says on its console.
