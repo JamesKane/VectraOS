@@ -91,3 +91,35 @@ name=monocypher
     adr=docs/adr/0032-monocypher.md
     port=ports/monocypher/port.ndb
     reviewed.by="James Kane" reviewed.date=2026-10-04
+
+name=stb_truetype
+    version="v1.26, stb 2c980bb"
+    upstream=https://github.com/nothings/stb/tree/2c980bb59875b0d32144a71867fbdebb2f77cd20
+    git.tree=fe92c50562f105d790eecf67128c3ae86a06202f
+    subset="LICENSE stb_truetype.h"
+    tree.sha256=9fc2affab12e072627d9e2afe4d7194b37729374cdc358b13279f6bd8aff101c
+    license="MIT or public domain (the Unlicense), the user's choice (LICENSE)"
+    adr=docs/adr/0052-stb-truetype.md
+    port=ports/font/port.ndb
+    reviewed.by=pending
+
+name=kb_text_shape
+    version="v2.28e, kb cc63806"
+    upstream=https://github.com/JimmyLefevre/kb/tree/cc63806775f615908ec9562653af4726d8b895d5
+    git.tree=8818afc492b78a9115c608e43aaa9d55b150ead3
+    subset="LICENSE kb_text_shape.h"
+    tree.sha256=7641652a10f73e5ff7f08706e063d102c9523b6a4c393c20665713ac17f7251c
+    license=Zlib
+    adr=docs/adr/0053-kb-text-shape.md
+    port=ports/font/port.ndb
+    reviewed.by=pending
+
+name=inter
+    version=4.1
+    upstream=https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip
+    sha256=9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e
+    subset="LICENSE.txt extras/ttf/Inter-Regular.ttf extras/ttf/Inter-Bold.ttf"
+    tree.sha256=619c6bcd509b91aa78b34db56cedcea1fb03bdbfc714e85436b4eab99728099a
+    license=OFL-1.1
+    adr=docs/adr/0054-inter.md
+    reviewed.by=pending

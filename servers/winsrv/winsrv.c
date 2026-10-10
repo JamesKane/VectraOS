@@ -39,7 +39,8 @@
 // key window's title black). Hit-testing stays in the server: a press on the
 // title moves the window, on the corner resizes it (an outline while held,
 // applied when let go), on the gadget closes it when let go there; the app
-// sees none of it. Title text comes with fonts (7e1).
+// sees none of it. Titles are drawn in Inter (/lib/font, 7e1) through
+// vx-font's atlas, centred in the strip.
 //
 // Text (7d2b, 03 §5): with a window's IME on (its ime file's `enable`), its
 // keys' text comes as COMMIT, before each key as a KEY marked IMEPASS. What
@@ -70,8 +71,8 @@
 // a second at least after the panel shows (a click meant for what was
 // there before does not land on it), or escape for Deny; while it shows,
 // every other key and click is swallowed, bindings too, and nothing written
-// to a file can answer it. Questions wait in turn. Its text comes with
-// fonts (7e1).
+// to a file can answer it. Questions wait in turn; its heading and the
+// question are drawn in Inter (7e1).
 //
 // Input (7d1c, 21 §2 items 6-7): winsrv holds inputd's records (a session
 // on /srv/input, docs/proto/input.md §3a), so the console gets no keys
@@ -88,6 +89,8 @@
 #include "../../lib/vx-driver/displayproto.h"
 #include "../../lib/vx-wsys/wsysproto.h"
 #include "../../lib/vx-input/keymap.h"
+#include "../../lib/vx-ns/nsapi.c"
+#include "../../lib/vx-font/font.c"
 
 static constexpr uint64_t KEY_DISPLAY = P9_KEY_USER | 1, KEY_INPUT = P9_KEY_USER | 2,
                           KEY_IME = P9_KEY_USER | 3, KEY_WINDOW = P9_KEY_USER | 0x100;
@@ -181,11 +184,14 @@ typedef struct theme {
   uint32_t desk_top, desk_bottom;
   uint32_t face, light, shade, edge;
   uint32_t title_active, title_inactive;
+  uint32_t text_active, text_inactive; // the titles' text
 } theme;
 
 static const theme THEMES[] = {
-    {"vx-magic", 0x1c2a4a, 0x465a6e, 0xbdb8ae, 0xece8df, 0x7d786f, 0x2b2926, 0x7f93ad, 0xbdb8ae},
-    {"vx-next", 0x1e1e1e, 0x4a4a4a, 0x555555, 0x8c8c8c, 0x2a2a2a, 0x000000, 0x000000, 0xa8a8a8},
+    {"vx-magic", 0x1c2a4a, 0x465a6e, 0xbdb8ae, 0xece8df, 0x7d786f, 0x2b2926, 0x7f93ad, 0xbdb8ae, 0xffffff,
+     0x3a3833},
+    {"vx-next", 0x1e1e1e, 0x4a4a4a, 0x555555, 0x8c8c8c, 0x2a2a2a, 0x000000, 0x000000, 0xa8a8a8, 0xffffff,
+     0x202020},
 };
 static theme tok = THEMES[0];
 
@@ -194,10 +200,16 @@ typedef struct token {
   uint32_t *at;
 } token;
 static const token TOKENS[] = {
-    {"desk.top", &tok.desk_top},         {"desk.bottom", &tok.desk_bottom},
-    {"chrome.face", &tok.face},          {"chrome.light", &tok.light},
-    {"chrome.shade", &tok.shade},        {"chrome.edge", &tok.edge},
-    {"title.active", &tok.title_active}, {"title.inactive", &tok.title_inactive},
+    {"desk.top", &tok.desk_top},
+    {"desk.bottom", &tok.desk_bottom},
+    {"chrome.face", &tok.face},
+    {"chrome.light", &tok.light},
+    {"chrome.shade", &tok.shade},
+    {"chrome.edge", &tok.edge},
+    {"title.active", &tok.title_active},
+    {"title.inactive", &tok.title_inactive},
+    {"title.text.active", &tok.text_active},
+    {"title.text.inactive", &tok.text_inactive},
 };
 
 // A frame's parts: the border all round, the title strip above the client
@@ -498,6 +510,49 @@ static bool serve_window(window *w) {
   }
 }
 
+// --- Text (7e1) ---
+
+static constexpr uint32_t TITLE_PX = 13; // pixels to the em
+static vx_font ui_font, ui_bold;
+static bool have_fonts;
+static vx_atlas atlas;
+
+// A font file of the system's, read whole into the heap (which the font
+// keeps); false if it is not there or not a font.
+static bool load_font(vx_font *f, const char *path, uint32_t id) {
+  vx_fd fd = vx_open(vx_cstr(path), VX_OREAD);
+  if (fd < 0) return false;
+  static constexpr size_t MAX = 4u << 20;
+  uint8_t *buf = vx_font_alloc(MAX);
+  size_t n = 0;
+  for (int64_t r; buf && n < MAX && (r = vx_read(fd, (vx_bytes){buf + n, MAX - n})) > 0;) n += (size_t)r;
+  vx_close(fd);
+  return buf && n && vx_font_init(f, buf, n, id);
+}
+
+// UTF-8 text in a strip from x0 to x1 whose top is top and height h:
+// centred (or from x0 if left), its baseline set so ascent and descent sit
+// evenly; drawn only within clip.
+static void strip_text(screen_buffer *s, vx_display_rect clip, vx_font *f, int32_t x0, int32_t x1,
+                       int32_t top, int32_t h, bool centre, uint32_t colour, const char *text) {
+  size_t len = vx_cstr(text).len;
+  if (!have_fonts || !len || empty(clip)) return;
+  vx_glyph_at g[128];
+  int32_t adv = 0;
+  vx_font_shape(f, text, len, g, 128, &adv);
+  int32_t w = vx_font_to64(f, adv, TITLE_PX) / 64, asc = vx_font_to64(f, f->ascent, TITLE_PX) / 64,
+          desc = -vx_font_to64(f, f->descent, TITLE_PX) / 64;
+  int32_t x = centre && w < x1 - x0 ? x0 + (x1 - x0 - w) / 2 : x0, base = top + (h - asc - desc) / 2 + asc;
+  vx_canvas cv = {.px = (uint32_t *)s->px,
+                  .stride = s->buf.desc.plane[0].stride / 4,
+                  .clip_x0 = clip.x,
+                  .clip_y0 = clip.y,
+                  .clip_x1 = clip.x + (int32_t)clip.width,
+                  .clip_y1 = clip.y + (int32_t)clip.height};
+  if (cv.clip_x1 > x1) cv.clip_x1 = x1; // never past the strip's end
+  vx_text_draw(&cv, &atlas, f, TITLE_PX, x, base, colour, text, len);
+}
+
 // --- The trusted prompt (7d2d) ---
 
 static constexpr uint32_t PROMPTS = 8;
@@ -680,6 +735,12 @@ static void draw_prompt(screen_buffer *s, vx_display_rect area) {
       row[sx] = c;
     }
   }
+  // Its heading in the strip, and the question beside the seal.
+  vx_display_rect heading = meet(a, (vx_display_rect){p.x + 1, p.y + 1, PROMPT_W - 2, 23});
+  strip_text(s, heading, &ui_bold, p.x + 12, p.x + PROMPT_W - 12, p.y, 24, false, 0xffffff, "Approval");
+  vx_display_rect body = meet(a, (vx_display_rect){p.x + 92, p.y + 40, PROMPT_W - 104, 50});
+  strip_text(s, body, &ui_font, p.x + 92, p.x + PROMPT_W - 12, p.y + 46, 24, false, 0x1c1c1c,
+             prompts[prompt.showing].question);
 }
 
 static void composite(screen_buffer *s, vx_display_rect area) {
@@ -703,6 +764,12 @@ static void composite(screen_buffer *s, vx_display_rect area) {
         row[sx] = frame_pixel(sx - f.x, sy - f.y, (int32_t)f.width, (int32_t)f.height, active);
       }
     }
+    // Its title, between the gadget and the strip's end.
+    vx_display_rect strip = {w->r.x + 3 + GADGET + 4, w->r.y - TITLE, 0, TITLE};
+    int32_t strip_end = w->r.x + (int32_t)w->r.width - 4;
+    if (strip_end > strip.x) strip.width = (uint32_t)(strip_end - strip.x);
+    strip_text(s, meet(area, strip), &ui_font, strip.x, strip_end, strip.y, TITLE, true,
+               active ? tok.text_active : tok.text_inactive, w->title);
     vx_display_rect r = meet(area, w->r);
     for (uint32_t y = 0; y < r.height; y++) {
       const uint32_t *from = w->backing + (size_t)(r.y - w->r.y + y) * w->r.width + (r.x - w->r.x);
@@ -1905,6 +1972,7 @@ static vx_status window_ctl(window *w, vx_str cmd) {
     size_t len = cmd.len < sizeof w->title - 1 ? cmd.len : sizeof w->title - 1;
     memcpy(w->title, cmd.ptr, len), w->title[len] = 0;
     cmd.len = 0;
+    damage(frame_rect(w)); // its strip, redrawn
   } else if (take_word(&cmd, "raise")) {
     raise_window(w);
   } else if (take_word(&cmd, "close")) {
@@ -2127,6 +2195,9 @@ const char *vx_main(void) {
     return "no output";
   }
   ptr.x = (int32_t)out.mode.width / 2, ptr.y = (int32_t)out.mode.height / 2;
+  have_fonts = vx_atlas_init(&atlas, 512) && load_font(&ui_font, "/lib/font/Inter-Regular.ttf", 1) &&
+               load_font(&ui_bold, "/lib/font/Inter-Bold.ttf", 2);
+  if (!have_fonts) vx_print(VX_STR("winsrv: no fonts in /lib/font: titles are blank\n"));
   vx_handle input = vx_spawn_take("srv:input");
   if (input) take_input(input);
   frame(); // the first, at once: the desk

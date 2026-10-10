@@ -7,7 +7,7 @@
 scenario=wm display=fb timeout=60 cmdline="vx.display vx.desktop" with=wmtest
 expect="wmtest: 3 windows"
 prompt="% "
-send="for(i in 0 1 2) while(! ls /dev/input/$i >/tmp/null >[2=1]) /boot/bin/posix/sleep 0.1; while(! /boot/bin/posix/grep -q tile /wsys/keys >[2]/tmp/null) /boot/bin/posix/sleep 0.1; echo ready"
+send="for(i in 0 1) while(! ls /dev/input/$i >/tmp/null >[2=1]) /boot/bin/posix/sleep 0.1; while(! /boot/bin/posix/grep -q tile /wsys/keys >[2]/tmp/null) /boot/bin/posix/sleep 0.1; echo ready"
 line="ready"
 key=meta_l-t
 expect="wm: layout tile"

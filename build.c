@@ -1379,7 +1379,11 @@ static const char *const VXCXXEXC_STATIC[] = {"-DVXCXXEXC_STATIC", nullptr};
 // ACPICA, a native port (ADR-0030), and what bus-acpi needs to include its
 // headers: its environment header first, its include directories as system
 // ones, so the house warnings stay the house's.
-static port acpica, monocypher;
+static port acpica, monocypher, font;
+// The font port (ports/font: stb_truetype and kb_text_shape, ADR-0052 and
+// 0053), for winsrv and what draws text: their headers as system ones.
+static const char *const FONT_USE_FLAGS[] = {"-isystem", "third_party/stb_truetype", "-isystem",
+                                             "third_party/kb_text_shape", nullptr};
 // Monocypher (ADR-0032), for distd and install: its headers as system ones.
 static const char *const MONOCYPHER_USE_FLAGS[] = {"-isystem", "third_party/monocypher/src", "-isystem",
                                                    "third_party/monocypher/src/optional", nullptr};
@@ -1511,8 +1515,8 @@ static const program USER_PROGRAMS[] = {
      LINK_STATIC, nullptr},
     {"drv-virtio-net", "drivers/drv-virtio-net/net.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false,
      LINK_STATIC, nullptr},
-    {"winsrv", "servers/winsrv/winsrv.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
-     nullptr}, // the window server (7d1)
+    {"winsrv", "servers/winsrv/winsrv.c", IN_BOOTFS, nullptr, false, &font, FONT_USE_FLAGS, false,
+     LINK_STATIC, nullptr}, // the window server (7d1), drawing text (7e1)
     {"displayd", "servers/displayd/displayd.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false,
      LINK_STATIC, nullptr}, // the display coordinator (7b3)
     {"drv-virtio-input", "drivers/drv-virtio-input/input.c", IN_BOOTFS, nullptr, false, nullptr, nullptr,
@@ -1631,7 +1635,7 @@ static const char *native_port_archive(const port *p, const arch *a) {
 // Native ports (ACPICA, Monocypher): compiled once per architecture and
 // cached, as musl is, into an archive the programs that use them link.
 static bool build_native_ports(const arch *a) {
-  port *const ports[] = {&acpica, &monocypher};
+  port *const ports[] = {&acpica, &monocypher, &font};
   for (size_t i = 0; i < sizeof ports / sizeof *ports; i++) {
     static file_list files;
     files = (file_list){};
@@ -2620,6 +2624,7 @@ static void check_toolchain(void) {
   port_load(&sbase, "sbase");
   port_load(&acpica, "acpica");
   port_load(&monocypher, "monocypher");
+  port_load(&font, "font");
   sbase.input_hash = hash_tree(sbase.input_hash, fmt("%s/ports/sbase/generated", root));
   // musl's build also reads the back end's syscall_arch.h and the generated headers.
   musl.input_hash = hash_tree(musl.input_hash, fmt("%s/ports/musl/vx/arch", root));
@@ -3388,6 +3393,7 @@ static const char *const BOOTFS_DIRS[] = {"adm",
                                           "home",
                                           "lib",
                                           "lib/ns",
+                                          "lib/font",
                                           "lib/wm",
                                           "n",
                                           "net",
@@ -3414,8 +3420,9 @@ static bool listed(const char *with, const char *name) {
 // bootfs.tar module. The directories, boot/bin with each program that lives
 // in bootfs, boot/svc with the service manifests from boot/svc/*.ndb,
 // boot/drv with the driver manifests from boot/drv/*.ndb, lib/ns with the
-// namespace templates, namespace(6) files, from boot/lib/ns/ (ADR-0009), and
-// lib/wm with the window manager's Lua and keys from boot/lib/wm/.
+// namespace templates, namespace(6) files, from boot/lib/ns/ (ADR-0009),
+// lib/wm with the window manager's Lua and keys from boot/lib/wm/, and
+// lib/font with the system's fonts, Inter's (ADR-0054).
 // `with` adds test programs and their manifests (tests/user/NAME.ndb), and
 // script tests (a manifest, and tests/user/NAME.lua in boot/tests). The
 // archive is deterministic: fixed order, no times or owners.
@@ -3583,6 +3590,13 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
     files[count] = read_file(manifests.paths[i]);
     const char *path = manifests.paths[i]; // boot/lib/ns/NAME is /lib/ns/NAME in the image
     paths[count++] = strncmp(path, "boot/lib/", 9) == 0 ? path + 5 : path;
+  }
+  // The system's fonts, from the vendored Inter (ADR-0054), at /lib/font.
+  static const char *const FONTS[] = {"Inter-Regular.ttf", "Inter-Bold.ttf"};
+  for (size_t i = 0; i < sizeof FONTS / sizeof FONTS[0]; i++) {
+    bootfs_room(count);
+    files[count] = read_file(fmt("third_party/inter/extras/ttf/%s", FONTS[i]));
+    paths[count++] = fmt("lib/font/%s", FONTS[i]);
   }
   for (int i = 0; i < USER_PROGRAM_COUNT; i++) {
     if (USER_PROGRAMS[i].where != IN_TESTS || !listed(with, USER_PROGRAMS[i].name)) continue;
@@ -4284,11 +4298,12 @@ static void qemu_cmd(cmd *c, const arch *a, const char *image, qemu_opts o) {
       cmd_addv(c, (const char *const[]){"-device", "ramfb", nullptr});
     if (o.gpu && x86) cmd_addv(c, (const char *const[]){"-vga", "none", nullptr});
     // The input devices, behind the IOMMU as every virtio device is: a
-    // keyboard, a tablet (absolute) and a mouse (relative), in that order of
-    // PCI slots, so input0, input1 and input2.
+    // keyboard and a tablet, input0 and input1. No mouse: with one, QEMU
+    // sends the buttons to it and the motion to the tablet, through two
+    // drivers that may report them in either order.
     cmd_addv(c, (const char *const[]){"-device", "virtio-keyboard-pci,disable-legacy=on,iommu_platform=on",
                                       "-device", "virtio-tablet-pci,disable-legacy=on,iommu_platform=on",
-                                      "-device", "virtio-mouse-pci,disable-legacy=on,iommu_platform=on",
+
                                       "-qmp", fmt("unix:%s,server=on,wait=off", o.qmp), nullptr});
   }
   if (o.rtc) cmd_addv(c, (const char *const[]){"-rtc", fmt("base=%s", o.rtc), nullptr});
@@ -4542,6 +4557,8 @@ static bool qmp_line(qmp *q, char *out, size_t cap, double deadline) {
 }
 
 // A command and its answer: true if it returned (events before it are let go).
+static char qmp_error[512]; // QMP's last error, as it said it
+
 static bool qmp_do(qmp *q, const char *command) {
   size_t n = strlen(command);
   if (write(q->fd, command, n) != (ssize_t)n) return false;
@@ -4549,7 +4566,10 @@ static bool qmp_do(qmp *q, const char *command) {
   double deadline = now_seconds() + 10;
   while (qmp_line(q, line, sizeof line, deadline)) {
     if (strstr(line, "\"return\"")) return true;
-    if (strstr(line, "\"error\"")) return false;
+    if (strstr(line, "\"error\"")) {
+      snprintf(qmp_error, sizeof qmp_error, "%.*s", (int)strcspn(line, "\r\n"), line); // for the verdict
+      return false;
+    }
   }
   return false;
 }
@@ -4797,9 +4817,7 @@ static bool tablet_button(qmp *q, bool down) {
                        down ? "true" : "false"));
 }
 
-// Each step a while after the last: QEMU sends a tablet's motion and its
-// buttons through different devices (the buttons to the mouse, when there is
-// one), whose drivers may report them in either order.
+// Each step a while after the last, for the guest to take them in turn.
 static void input_pause(void) { usleep(80'000); }
 
 // click=X,Y: the tablet to (X, Y), then the left button pressed and let go
@@ -5145,7 +5163,8 @@ static bool run_scenario(const arch *a, bool release, const char *name) {
         if (!verdict && holds_at[k] && !key_hold(&q, holds_at[k]))
           verdict = fmt("QMP's send-key failed for holdkey=%s", holds_at[k]);
         if (!verdict && clicks_at[k] && !click(&q, clicks_at[k], drags[k]))
-          verdict = fmt("QMP's input-send-event failed for %s=%s", drags[k] ? "drag" : "click", clicks_at[k]);
+          verdict = fmt("QMP's input-send-event failed for %s=%s: %s", drags[k] ? "drag" : "click",
+                        clicks_at[k], qmp_error);
       }
       if (verdict) break;
       if (!all_seen && typed < next && input[next].len) {
@@ -5816,6 +5835,28 @@ static bool make_fat_fixtures(void) {
 static const char *const HOST_MONOCYPHER[] = {"out/host/monocypher.o", "out/host/monocypher-ed25519.o",
                                               nullptr};
 
+// The font port (ports/font: stb_truetype and kb_text_shape), built for
+// the host's tests and tools with its own flags, under the sanitizers.
+static const char *const HOST_FONT[] = {"out/host/font-stbtt.o", "out/host/font-kbts.o", nullptr};
+static const char *const HOST_FONT_INCLUDES[] = {
+    "-isystem", "third_party/stb_truetype", "-isystem", "third_party/kb_text_shape", "-Iports/font", nullptr};
+
+static bool host_font(void) {
+  static const char *const SRCS[] = {"ports/font/stbtt.c", "ports/font/kbts.c"};
+  mkdirs("out/host");
+  for (int i = 0; i < 2; i++) {
+    struct stat out, src;
+    if (stat(HOST_FONT[i], &out) == 0 && stat(SRCS[i], &src) == 0 && !newer(&src, &out)) continue;
+    cmd cc = {};
+    cmd_addv(&cc, (const char *const[]){CLANG, "-std=c11", "-O2", "-g", "-w", "-fsanitize=address,undefined",
+                                        "-fno-omit-frame-pointer", "-fno-pie", nullptr});
+    cmd_addv(&cc, HOST_FONT_INCLUDES);
+    cmd_addv(&cc, (const char *const[]){"-c", "-o", HOST_FONT[i], SRCS[i], nullptr});
+    if (!run(&cc)) return false;
+  }
+  return true;
+}
+
 static bool host_monocypher(void) {
   static const char *const SRCS[] = {"third_party/monocypher/src/monocypher.c",
                                      "third_party/monocypher/src/optional/monocypher-ed25519.c"};
@@ -5853,8 +5894,15 @@ static bool check_host_tests(void) {
     cmd_add(&cc, exe);
     cmd_add(&cc, fmt("tests/%s", tests.paths[i]));
     // A test that says "// host-links: monocypher" links Monocypher, built for
-    // the host with its own flags (ADR-0032), not the house's.
+    // the host with its own flags (ADR-0032), not the house's; "// host-links:
+    // font", the font port (stb_truetype and kb_text_shape) and -lm.
     vx_str text = read_file(fmt("tests/%s", tests.paths[i]));
+    if (memmem(text.ptr, text.len, "// host-links: font", 19)) {
+      if (!host_font()) ok = false;
+      cmd_addv(&cc, HOST_FONT_INCLUDES);
+      cmd_addv(&cc, HOST_FONT);
+      cmd_add(&cc, "-lm");
+    }
     if (memmem(text.ptr, text.len, "// host-links: monocypher", 25)) {
       if (!host_monocypher()) ok = false;
       cmd_addv(&cc, (const char *const[]){"-isystem", "third_party/monocypher/src", "-isystem",
@@ -6007,8 +6055,9 @@ static int os_units(unit *units, bool with_host_tests) {
     collect(&tests, &dir, (vx_str){"host", 4}, "_test.c");
     collect(&tests, &dir, (vx_str){"fuzz", 4}, "_fuzz.c");
     for (int i = 0; i < tests.count; i++)
-      units[unit_slot(&n)] =
-          (unit){tests.paths[i] + 5, fmt("tests/%s", tests.paths[i]), {HOST_C23, MONOCYPHER_USE_FLAGS}};
+      units[unit_slot(&n)] = (unit){tests.paths[i] + 5,
+                                    fmt("tests/%s", tests.paths[i]),
+                                    {HOST_C23, MONOCYPHER_USE_FLAGS, HOST_FONT_INCLUDES}};
   }
   return n;
 }

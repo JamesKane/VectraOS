@@ -1,0 +1,15 @@
+# ports/font/port.ndb: how build builds the text stack's vendored libraries
+# into libfont.a (M7 step 7e1): stb_truetype (ADR-0052) rasterizes glyphs,
+# kb_text_shape (ADR-0053) segments and shapes text. Both are single headers;
+# stbtt.c and kbts.c here are each library's one implementation file, which
+# define its hooks (allocation, the few math functions stb_truetype calls,
+# no C library) to lib/vx-font's and include the header unchanged.
+#
+# A native port: compiled with the native programs' freestanding flags, once
+# per architecture, cached. Warnings are their own: not linted, as ACPICA
+# and Monocypher are not. Programs that draw text (winsrv, vxui) link it
+# with lib/vx-font, and see the headers as system headers.
+
+port=font src=ports/font native=yes archive=yes
+    cflags="-std=c11 -O2 -fno-strict-aliasing -fno-omit-frame-pointer -Ithird_party/stb_truetype -Ithird_party/kb_text_shape -w"
+    sources="stbtt.c kbts.c"

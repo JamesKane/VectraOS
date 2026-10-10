@@ -110,7 +110,7 @@ An approval is asked on `/wsys/prompt`, part of the whole tree's grant (03 §5.7
 - **The mark.** The panel has a black title strip, which only system panels have (03 §9.1), and a gunmetal seal that only `winsrv` draws; the seal may later be an image the user picks.
 - **Physical input only.** It is answered by a click on Allow or Deny, a press and its release on the same button, or escape for Deny; a click in the first half second after the panel shows is ignored, so a click meant for what was there does not land on it. While it shows, every other key and click is swallowed, bindings too, and nothing written to a file answers it (`answer …` is refused). Synthetic input, when it comes (`a11y` presses, pointer warps), never reaches it.
 
-The question's text is drawn with fonts (7e1).
+Its heading and the question are drawn in Inter (7e1).
 
 ## 4b. Decorations and the theme
 
@@ -129,8 +129,8 @@ The frame's colours are the theme's tokens, served in `/wsys/theme` (03 §5.4): 
 | `chrome.face`, `chrome.light`, `chrome.shade`, `chrome.edge` | the frame: its face, the lit and shaded sides of a bevel, its outline |
 | `title.active`, `title.inactive` | the title strips |
 
-Title text comes with fonts (7e1); `flags -titlebar` and the app's own `move` and `resize EDGE` (03 §5.1) with `vxui`.
+Titles are drawn in Inter, centred in the strip (7e1); `flags -titlebar` and the app's own `move` and `resize EDGE` (03 §5.1) with `vxui`.
 
 ## 5. Version 1 leaves out
 
-Rings for the records (a channel carries them: the rate of a window's records is a frame's), scale other than 1, visibility other than `visible`, `latency 2|3`, VRR's `target_min`/`max`, `present async`, viewports; layouts beyond `us` and `us-intl`, and a user's compose table; title text (7e1); pens and touch.
+Rings for the records (a channel carries them: the rate of a window's records is a frame's), scale other than 1, visibility other than `visible`, `latency 2|3`, VRR's `target_min`/`max`, `present async`, viewports; layouts beyond `us` and `us-intl`, and a user's compose table; pens and touch.

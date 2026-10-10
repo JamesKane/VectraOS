@@ -1,0 +1,24 @@
+page=font1x sect=8 summary="the 1x check: vx-font's small text against FreeType's"
+    src=host/font1x/font1x.c,lib/vx-font/font.c
+    keys=font,text,rasterizer,stb_truetype,freetype,hinting,1x,host
+
+# SYNOPSIS
+
+```usage
+font1x FONT.ttf OUT.ppm
+```
+
+# DESCRIPTION
+
+`font1x` is a host tool for 03's 1x check (M7 step 7e1, docs/21 §2 item 10): small text at terminal sizes as vx-font draws it, through stb_truetype's rasterizer (ADR-0052), against FreeType's, the host's, unhinted and with light hinting.
+Each glyph of a sample line is rasterized by both at the same pen position and quarter-pixel offset; for each size (11, 12, 13, 14 and 16 pixels to the em) it prints the mean difference in coverage, as a percentage of full coverage, and writes the lines, each three ways (vx-font, FreeType unhinted, FreeType light-hinted), to OUT.ppm.
+
+It is built by hand against the host's FreeType, which is never vendored: the command is in its source.
+
+# EXAMPLES
+
+Inter 4.1 (ADR-0054), 2026-10-09: within 2.0% to 2.9% of unhinted FreeType at every size, and 4% to 12% of light-hinted FreeType, whose hinting snaps the x-height and stems to whole pixels.
+
+# SEE ALSO
+
+winsrv(8)

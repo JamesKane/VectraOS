@@ -10,5 +10,6 @@ service=displayd program=/boot/bin/displayd post=outputs console when=vx.display
 connect=simplefb
 
 service=winsrv program=/boot/bin/winsrv post=wsys console when=vx.desktop
+mount=/ srv=bootfs
 connect=outputs
 connect=input

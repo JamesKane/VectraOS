@@ -27,4 +27,4 @@ inputd(8), driver(6), devmgr(8)
 # BUGS
 
 No LEDs: the status queue is not used.
-QEMU sends a tablet's buttons to its mouse, when there is one.
+QEMU sends a tablet's buttons to its mouse, when there is one; the test harness makes no mouse.

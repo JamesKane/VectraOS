@@ -29,7 +29,8 @@ typedef struct win {
   bool focused, closed;
   uint32_t pointers; // records with a button held, since the count was last reset
   uint32_t buttons;  // held, as its last pointer record said
-  bool released;     // the last record had none held
+  bool pressed;      // a record with a button held has come
+  bool released;     // and one with none after it
 } win;
 
 static win a, b;
@@ -46,8 +47,10 @@ static void on_record(win *w, const uint8_t *m, uint32_t len) {
     memcpy(&w->cfg, m, sizeof w->cfg);
     w->focused = w->cfg.flags & VX_WSYS_FOCUSED;
   } else if (h->ordinal == VX_WSYS_POINTER && len == sizeof(vx_wsys_pointer)) {
-    w->buttons = ((const vx_wsys_pointer *)m)->buttons, w->released = !w->buttons;
-    if (w->buttons) w->pointers++; // a drag's would hold the button
+    w->buttons = ((const vx_wsys_pointer *)m)->buttons;
+    if (w->buttons) w->pressed = true;
+    if (!w->buttons && w->pressed) w->released = true; // a click: its press, then its release
+    if (w->buttons) w->pointers++;                     // a drag's would hold the button
   }
 }
 
@@ -135,7 +138,7 @@ const char *vx_main(void) {
     vx_handle_close(port);
     drain(&a);
     if (!b.closed) drain(&b);
-    if (stage == 0 && a.focused && a.released) { // the click let go: QEMU's tablet and mouse are two drivers
+    if (stage == 0 && a.focused && a.released) { // the click let go
       vx_print(VX_STR("decortest: A focused\n"));
       a.pointers = 0, stage = 1; // the drags next: the app sees none of them
     } else if (stage == 1 && info_has("x=110 y=110")) {
