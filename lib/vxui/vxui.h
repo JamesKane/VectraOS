@@ -23,11 +23,13 @@
 #include "../vx-ns/nsapi.c"
 #include "../vx-wsys/wsysproto.h"
 #include "../vx-input/keymap.h"
+#include "../vx-font/font.c"
 
 typedef struct vx_app vx_app;
 typedef struct vx_window vx_window;
 typedef struct vx_canvas vx_canvas;
 typedef struct vx_voice vx_voice;
+typedef struct vx_ui vx_ui;
 
 // A colour: XRGB, or one of the theme's (resolved by vxui from the theme
 // the window is drawn in).
@@ -78,6 +80,21 @@ typedef struct vx_pixels {
 
 [[maybe_unused]] static vx_pixels vx_pixels_begin(vx_window *win, const vx_frame_event *frame);
 [[maybe_unused]] static void vx_pixels_present(vx_window *win, vx_pixels *px);
+
+// Immediate-mode UI (03 §6 item 2; M7 step 7e2b): the app describes its UI
+// each frame it draws, between vx_ui_begin and vx_ui_end, and holds no
+// widget objects. A widget's id is its key's hash seeded with its parent's:
+// the key is its label, or the whole string when the label has "##" in it
+// ("Delete##row17" shows "Delete"); vx_push_id seeds the widgets inside it
+// (rows built in a loop). Input uses the previous frame's rectangles:
+// vx_button is true on the frame after a press and a release both on the
+// button where it was drawn.
+[[maybe_unused]] static vx_ui *vx_ui_begin(vx_window *win, const vx_frame_event *frame);
+[[maybe_unused]] static void vx_ui_end(vx_ui *ui);
+[[maybe_unused]] static void vx_label(vx_ui *ui, const char *text);
+[[maybe_unused]] static bool vx_button(vx_ui *ui, const char *label);
+[[maybe_unused]] static void vx_push_id(vx_ui *ui, uint64_t key);
+[[maybe_unused]] static void vx_pop_id(vx_ui *ui);
 
 [[maybe_unused]] static vx_voice *vx_voice_open(vx_app *app, vx_sound sound);
 [[maybe_unused]] static void vx_voice_play(vx_voice *voice);

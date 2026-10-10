@@ -244,11 +244,11 @@ typedef struct vx_atlas {
 
 // --- Drawing ---
 
-typedef struct vx_canvas {
+typedef struct vx_font_target {
   uint32_t *px;                               // XRGB8888
   uint32_t stride;                            // in pixels
   int32_t clip_x0, clip_y0, clip_x1, clip_y1; // what may be drawn, x1 and y1 exclusive
-} vx_canvas;
+} vx_font_target;
 
 // c over d at coverage a of 255.
 static uint32_t vx_font_blend(uint32_t d, uint32_t c, uint32_t a) {
@@ -262,8 +262,9 @@ static uint32_t vx_font_blend(uint32_t d, uint32_t c, uint32_t a) {
 
 // UTF-8 text drawn with its pen starting at x and its baseline at y, in
 // colour, px pixels to the em; the pen's end (its x).
-[[maybe_unused]] static int32_t vx_text_draw(vx_canvas *cv, vx_atlas *a, vx_font *f, uint32_t px, int32_t x,
-                                             int32_t y, uint32_t colour, const char *text, size_t len) {
+[[maybe_unused]] static int32_t vx_text_draw(vx_font_target *cv, vx_atlas *a, vx_font *f, uint32_t px,
+                                             int32_t x, int32_t y, uint32_t colour, const char *text,
+                                             size_t len) {
   vx_glyph_at glyphs[256];
   int32_t advance = 0;
   uint32_t n = vx_font_shape(f, text, len, glyphs, 256, &advance);

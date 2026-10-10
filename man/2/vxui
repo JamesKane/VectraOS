@@ -1,7 +1,7 @@
 page=vxui sect=2 summary="the app tier's API: an app, its windows, one wait, a canvas, CPU pixels, voices"
-    names=vx_app_open,vx_app_error,vx_wait,vx_window_open,vx_window_redraw,vx_window_animate,vx_window_title,vx_canvas_begin,vx_clear,vx_fill_rect,vx_circle,vx_canvas_present,vx_pixels_begin,vx_pixels_present,vx_voice_open,vx_voice_play
+    names=vx_app_open,vx_app_error,vx_wait,vx_window_open,vx_window_redraw,vx_window_animate,vx_window_title,vx_canvas_begin,vx_clear,vx_fill_rect,vx_circle,vx_canvas_present,vx_pixels_begin,vx_pixels_present,vx_ui_begin,vx_ui_end,vx_label,vx_button,vx_push_id,vx_pop_id,vx_voice_open,vx_voice_play
     src=lib/vxui/vxui.h,lib/vxui/vxui.c,abi/vx/loop.h
-    keys=vxui,app,window,frame,event,canvas,pixels,voice,gui,toolkit
+    keys=vxui,app,window,frame,event,canvas,pixels,voice,gui,toolkit,immediate,widget,button,label
 
 # SYNOPSIS
 
@@ -28,6 +28,13 @@ void vx_canvas_present(vx_canvas *c);
 vx_pixels vx_pixels_begin(vx_window *win, const vx_frame_event *frame);
 void vx_pixels_present(vx_window *win, vx_pixels *px);
 
+vx_ui *vx_ui_begin(vx_window *win, const vx_frame_event *frame);
+void vx_ui_end(vx_ui *ui);
+void vx_label(vx_ui *ui, const char *text);
+bool vx_button(vx_ui *ui, const char *label);
+void vx_push_id(vx_ui *ui, uint64_t key);
+void vx_pop_id(vx_ui *ui);
+
 vx_voice *vx_voice_open(vx_app *app, vx_sound sound);
 void vx_voice_play(vx_voice *voice);
 ```
@@ -45,13 +52,21 @@ It draws only when asked: `vx_window_redraw` asks for one `VX_FRAME`, `vx_window
 `vx_canvas_begin` and `vx_canvas_present` bracket drawing with `vx_clear`, `vx_fill_rect` and `vx_circle` (antialiased); colours are XRGB or the theme's (`VX_THEME_BG`, `VX_THEME_FG`, `VX_THEME_ACCENT`, `VX_THEME_FACE`).
 `vx_pixels_begin` gives the buffer itself (`data`, `w`, `h`, `stride`) and its `age`, the presents since its contents were last shown (0 for a new one); `vx_pixels_present` presents it.
 
+The UI is immediate-mode (M7 step 7e2b): each frame it draws, the app describes it between `vx_ui_begin` and `vx_ui_end`, and holds no widget objects.
+`vx_label` and `vx_button` add a widget; `vx_ui_end` lays them out (a column), finds the damage by comparing the frame's widgets with the last frame's, and draws only that, or presents nothing when nothing changed.
+A widget's id is its key's hash seeded with its parent's: the key is the label, or the whole string when it holds `##` (`"Delete##row17"` shows "Delete"); `vx_push_id` and `vx_pop_id` seed the widgets between them, for rows made in a loop.
+The ids key the cache kept between frames (each widget's rectangle and state); a widget not described in a frame is dropped from it.
+Input is matched against the rectangles of the frame the user saw: `vx_button` is `true` once, on the frame after a press and its release both landed on it.
+A window with a UI is asked to draw when its pointer moves or its buttons change.
+Text is Inter, 13 pixels.
+
 Errors are sticky: a failed open makes the next `vx_wait` return `false`, and `vx_app_error` says why, so a program need not check each call.
 
 Voices are numbered now and sound with audiod (M13): `vx_voice_open` gives one, `vx_voice_play` is silent until then.
 
 # EXAMPLES
 
-03 §6's minimal program, in ten calls, is tests/user/minimal.c; its CPU pixel program is tests/user/pixels.c.
+03 §6's minimal program, in ten calls, is tests/user/minimal.c; its CPU pixel program is tests/user/pixels.c; tests/user/uitest.c uses the UI.
 
 # SEE ALSO
 
@@ -60,4 +75,4 @@ loop(2), winsrv(8)
 # BUGS
 
 v0 is a header library compiled into each program; it becomes `libvxui.so` when libvx exports what it uses.
-No widgets yet (M7 step 7e2b); the theme's colours are vx-magic's, whatever theme the window is drawn in.
+The UI has labels and buttons in one column, no other widgets or layouts, and no keyboard focus; the theme's colours are vx-magic's, whatever theme the window is drawn in.

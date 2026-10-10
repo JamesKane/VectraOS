@@ -1,0 +1,5 @@
+# tests/user/uitest.ndb: uitest, vxui's immediate-mode UI (tests/qemu/ui.ndb).
+
+service=uitest program=/boot/bin/uitest console when=vx.desktop
+mount=/ srv=bootfs
+mount=/wsys srv=wsys aname=self

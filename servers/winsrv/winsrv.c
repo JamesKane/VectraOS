@@ -550,12 +550,12 @@ static void strip_text(screen_buffer *s, vx_display_rect clip, vx_font *f, int32
   int32_t w = vx_font_to64(f, adv, TITLE_PX) / 64, asc = vx_font_to64(f, f->ascent, TITLE_PX) / 64,
           desc = -vx_font_to64(f, f->descent, TITLE_PX) / 64;
   int32_t x = centre && w < x1 - x0 ? x0 + (x1 - x0 - w) / 2 : x0, base = top + (h - asc - desc) / 2 + asc;
-  vx_canvas cv = {.px = (uint32_t *)s->px,
-                  .stride = s->buf.desc.plane[0].stride / 4,
-                  .clip_x0 = clip.x,
-                  .clip_y0 = clip.y,
-                  .clip_x1 = clip.x + (int32_t)clip.width,
-                  .clip_y1 = clip.y + (int32_t)clip.height};
+  vx_font_target cv = {.px = (uint32_t *)s->px,
+                       .stride = s->buf.desc.plane[0].stride / 4,
+                       .clip_x0 = clip.x,
+                       .clip_y0 = clip.y,
+                       .clip_x1 = clip.x + (int32_t)clip.width,
+                       .clip_y1 = clip.y + (int32_t)clip.height};
   if (cv.clip_x1 > x1) cv.clip_x1 = x1; // never past the strip's end
   vx_text_draw(&cv, &atlas, f, TITLE_PX, x, base, colour, text, len);
 }

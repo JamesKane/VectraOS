@@ -52,7 +52,7 @@ int main(void) {
   // Drawing at 13 pixels to the em: ink inside the line, none outside it.
   static uint32_t px[200 * 32];
   for (size_t i = 0; i < sizeof px / sizeof px[0]; i++) px[i] = 0xffffff;
-  vx_canvas cv = {.px = px, .stride = 200, .clip_x0 = 0, .clip_y0 = 0, .clip_x1 = 200, .clip_y1 = 32};
+  vx_font_target cv = {.px = px, .stride = 200, .clip_x0 = 0, .clip_y0 = 0, .clip_x1 = 200, .clip_y1 = 32};
   vx_atlas a;
   CHECK(vx_atlas_init(&a, 64));
   int32_t end = vx_text_draw(&cv, &a, &f, 13, 4, 20, 0x000000, "Hamburgefonstiv", 15);

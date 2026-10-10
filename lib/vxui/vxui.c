@@ -6,7 +6,17 @@
 
 #pragma once
 
-static constexpr uint32_t VXUI_WINDOWS = 8, VXUI_QUEUE = 32;
+static constexpr uint32_t VXUI_WINDOWS = 8, VXUI_QUEUE = 32, VXUI_NODES = 128;
+
+// A widget as one frame has it: what is compared with the last frame's to
+// find the damage, and kept, by id, as the cache.
+typedef struct vxui_node {
+  uint64_t id;
+  uint8_t kind; // 1 label, 2 button
+  uint8_t pressed;
+  char text[48];
+  int32_t x, y, w, h;
+} vxui_node;
 
 typedef struct vxui_buffer {
   vx_buffer buf;
@@ -28,6 +38,16 @@ struct vx_window {
   vx_instant prev_presented, last_frame;
   vxui_buffer b[2];
   uint32_t next; // the buffer to draw next
+  // The UI's (7e2b): the pointer as the window last saw it, a click's ends,
+  // and the last frame's nodes (the cache: rectangles, pressed states).
+  bool has_ui;
+  int32_t px, py;
+  uint32_t buttons;
+  bool down_seen, up_seen; // since the last UI frame
+  int32_t down_x, down_y, up_x, up_y;
+  vxui_node last[VXUI_NODES];
+  uint32_t nlast;
+  int32_t last_damage[4]; // x0 y0 x1 y1, the last frame's
 };
 
 struct vx_canvas {
@@ -128,6 +148,10 @@ static bool vxui_drain(vx_window *win) {
       ev.pointer.x = (float)p->x, ev.pointer.y = (float)p->y, ev.pointer.buttons = p->buttons;
       ev.pointer.wheel = p->wheel;
       vxui_push(app, &ev);
+      if (p->buttons && !win->buttons) win->down_seen = true, win->down_x = p->x, win->down_y = p->y;
+      if (!p->buttons && win->buttons) win->up_seen = true, win->up_x = p->x, win->up_y = p->y;
+      win->px = p->x, win->py = p->y, win->buttons = p->buttons;
+      if (win->has_ui) win->redraw = true; // its buttons may look or answer otherwise
     } else if (h->ordinal == VX_WSYS_COMMIT && size.bytes == sizeof(vx_wsys_commit)) {
       const vx_wsys_commit *c = (const vx_wsys_commit *)m;
       uint32_t len = c->len <= VX_WSYS_TEXT ? c->len : 0;
@@ -316,7 +340,12 @@ static vx_pixels vx_pixels_begin(vx_window *win, const vx_frame_event *frame) {
   return px;
 }
 
-static void vx_pixels_present(vx_window *win, vx_pixels *px) {
+static void vxui_present(vx_window *win, vx_pixels *px, const vx_wsys_rect *damage, uint32_t ndamage);
+
+static void vx_pixels_present(vx_window *win, vx_pixels *px) { vxui_present(win, px, nullptr, 0); }
+
+// A present, its damage given (none: all of it).
+static void vxui_present(vx_window *win, vx_pixels *px, const vx_wsys_rect *damage, uint32_t ndamage) {
   if (!win || win->closed || !px->data) return;
   vxui_buffer *b = &win->b[px->buffer];
   uint64_t acquire = ++b->point, release = ++b->point;
@@ -326,7 +355,9 @@ static void vx_pixels_present(vx_window *win, vx_pixels *px) {
                        .id = px->buffer + 1,
                        .acquire = acquire,
                        .release = release,
-                       .config_seq = win->cfg.seq};
+                       .config_seq = win->cfg.seq,
+                       .ndamage = ndamage <= VX_WSYS_DAMAGE ? ndamage : 0};
+  for (uint32_t i = 0; i < p.ndamage; i++) p.damage[i] = damage[i];
   if (vx_channel_write(win->ch, &p, sizeof p, nullptr, 0) == VX_OK && win->credits) win->credits--;
   b->presented = win->presents, win->owed = false, win->next ^= 1;
 }
@@ -376,6 +407,211 @@ static void vx_circle(vx_canvas *c, float x, float y, float r, vx_color colour) 
         out |= (((col >> s & 0xff) * a + (*d >> s & 0xff) * (255 - a) + 127) / 255) << s;
       *d = out;
     }
+}
+
+// --- Immediate-mode UI (7e2b) ---
+
+static constexpr uint32_t UI_PX = 13, UI_PAD = 16, UI_GAP = 8, UI_BUTTON_H = 28;
+
+struct vx_ui {
+  vx_window *win;
+  const vx_frame_event *frame;
+  vxui_node nodes[VXUI_NODES];
+  uint32_t n;
+  uint64_t seed[8]; // the id stack
+  uint32_t depth;
+  vx_arena *arena; // the frame's: reset each frame
+};
+
+static vx_ui vxui_the_ui;
+static vx_font vxui_font;
+static vx_atlas vxui_atlas;
+static int vxui_fonts; // 0 unknown, 1 loaded, -1 none
+
+static void vxui_load_font(void) {
+  if (vxui_fonts) return;
+  vxui_fonts = -1;
+  vx_fd fd = vx_open(VX_STR("/lib/font/Inter-Regular.ttf"), VX_OREAD);
+  if (fd < 0) return;
+  static constexpr size_t MAX = 4u << 20;
+  uint8_t *buf = vx_font_alloc(MAX);
+  size_t n = 0;
+  for (int64_t r; buf && n < MAX && (r = vx_read(fd, (vx_bytes){buf + n, MAX - n})) > 0;) n += (size_t)r;
+  vx_close(fd);
+  if (buf && n && vx_atlas_init(&vxui_atlas, 256) && vx_font_init(&vxui_font, buf, n, 1)) vxui_fonts = 1;
+}
+
+// FNV-1a over a key, seeded.
+static uint64_t vxui_hash(uint64_t seed, const char *s, size_t n) {
+  uint64_t h = seed ^ 0xcbf2'9ce4'8422'2325ull;
+  for (size_t i = 0; i < n; i++) h = (h ^ (uint8_t)s[i]) * 0x100'0000'01b3ull;
+  return h ? h : 1;
+}
+
+static int32_t vxui_text_width(const char *text, size_t len) {
+  if (vxui_fonts != 1 || !len) return (int32_t)len * 7;
+  vx_glyph_at g[64];
+  int32_t adv = 0;
+  vx_font_shape(&vxui_font, text, len, g, 64, &adv);
+  return vx_font_to64(&vxui_font, adv, UI_PX) / 64;
+}
+
+static vx_ui *vx_ui_begin(vx_window *win, const vx_frame_event *frame) {
+  vx_ui *ui = &vxui_the_ui;
+  vx_arena *arena = ui->arena;
+  *ui = (vx_ui){.win = win, .frame = frame, .arena = arena};
+  if (!ui->arena) ui->arena = vx_arena_new(1 << 20);
+  vx_arena_pop(ui->arena, (vx_mark){0}); // the frame's arena, empty again
+  win->has_ui = true;
+  vxui_load_font();
+  return ui;
+}
+
+static vxui_node *vxui_add(vx_ui *ui, uint8_t kind, const char *label) {
+  if (ui->n == VXUI_NODES) return nullptr;
+  vx_str s = vx_cstr(label);
+  size_t shown = s.len;
+  for (size_t i = 0; i + 1 < s.len; i++)
+    if (s.ptr[i] == '#' && s.ptr[i + 1] == '#') {
+      shown = i;
+      break;
+    }
+  vxui_node *n = &ui->nodes[ui->n++];
+  *n = (vxui_node){.id = vxui_hash(ui->depth ? ui->seed[ui->depth - 1] : 0, s.ptr, s.len), .kind = kind};
+  memcpy(n->text, s.ptr, shown < sizeof n->text - 1 ? shown : sizeof n->text - 1);
+  return n;
+}
+
+static const vxui_node *vxui_cached(const vx_window *win, uint64_t id) {
+  for (uint32_t i = 0; i < win->nlast; i++)
+    if (win->last[i].id == id) return &win->last[i];
+  return nullptr;
+}
+
+static bool vxui_in(const vxui_node *n, int32_t x, int32_t y) {
+  return x >= n->x && y >= n->y && x < n->x + n->w && y < n->y + n->h;
+}
+
+static void vx_label(vx_ui *ui, const char *text) { vxui_add(ui, 1, text); }
+
+static bool vx_button(vx_ui *ui, const char *label) {
+  vxui_node *n = vxui_add(ui, 2, label);
+  const vxui_node *was = n ? vxui_cached(ui->win, n->id) : nullptr;
+  if (!was) return false; // new this frame: it has never been seen, so never clicked
+  vx_window *w = ui->win;
+  n->pressed = w->buttons && vxui_in(was, w->px, w->py) && vxui_in(was, w->down_x, w->down_y);
+  return w->down_seen && w->up_seen && vxui_in(was, w->down_x, w->down_y) && vxui_in(was, w->up_x, w->up_y);
+}
+
+static void vx_push_id(vx_ui *ui, uint64_t key) {
+  if (ui->depth == 8) return;
+  char k[8];
+  memcpy(k, &key, 8);
+  ui->seed[ui->depth] = vxui_hash(ui->depth ? ui->seed[ui->depth - 1] : 0, k, 8);
+  ui->depth++;
+}
+
+static void vx_pop_id(vx_ui *ui) {
+  if (ui->depth) ui->depth--;
+}
+
+static bool vxui_same(const vxui_node *a, const vxui_node *b) {
+  return a->id == b->id && a->kind == b->kind && a->pressed == b->pressed && a->x == b->x && a->y == b->y &&
+         a->w == b->w && a->h == b->h && memcmp(a->text, b->text, sizeof a->text) == 0;
+}
+
+static void vxui_grow(int32_t d[4], const vxui_node *n) {
+  if (n->x < d[0]) d[0] = n->x;
+  if (n->y < d[1]) d[1] = n->y;
+  if (n->x + n->w > d[2]) d[2] = n->x + n->w;
+  if (n->y + n->h > d[3]) d[3] = n->y + n->h;
+}
+
+static void vxui_draw_node(vx_canvas *c, const vxui_node *n, vx_font_target *t) {
+  int32_t baseline = n->y + (n->h + 13 * 3 / 4) / 2;
+  if (n->kind == 2) { // a raised button, sunken while pressed: the frame's face, lit from the top left
+    uint32_t light = n->pressed ? 0x7d786f : 0xece8df, shade = n->pressed ? 0xece8df : 0x7d786f;
+    vx_fill_rect(c, (float)n->x, (float)n->y, (float)n->w, (float)n->h, 0x2b2926);
+    vx_fill_rect(c, (float)n->x + 1, (float)n->y + 1, (float)n->w - 2, (float)n->h - 2, shade);
+    vx_fill_rect(c, (float)n->x + 1, (float)n->y + 1, (float)n->w - 3, (float)n->h - 3, light);
+    vx_fill_rect(c, (float)n->x + 2, (float)n->y + 2, (float)n->w - 4, (float)n->h - 4, VX_THEME_FACE);
+  }
+  if (vxui_fonts != 1) return;
+  int32_t tw = vxui_text_width(n->text, vx_cstr(n->text).len);
+  int32_t x = n->kind == 2 ? n->x + (n->w - tw) / 2 + (n->pressed ? 1 : 0) : n->x;
+  vx_text_draw(t, &vxui_atlas, &vxui_font, UI_PX, x, baseline + (n->pressed ? 1 : 0), 0x1c1c1c, n->text,
+               vx_cstr(n->text).len);
+}
+
+// Layout (a pass of its own: a column from the top left), then the damage
+// (this frame's nodes against the last's), then drawing what it reaches.
+static void vx_ui_end(vx_ui *ui) {
+  vx_window *w = ui->win;
+  int32_t y = UI_PAD, line = 20;
+  for (uint32_t i = 0; i < ui->n; i++) {
+    vxui_node *n = &ui->nodes[i];
+    int32_t tw = vxui_text_width(n->text, vx_cstr(n->text).len);
+    n->x = UI_PAD, n->y = y;
+    n->w = n->kind == 2 ? tw + 24 : tw, n->h = n->kind == 2 ? (int32_t)UI_BUTTON_H : line;
+    y += n->h + (int32_t)UI_GAP;
+  }
+  int32_t d[4] = {INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN};
+  bool all = w->nlast == 0;
+  for (uint32_t i = 0; i < ui->n && !all; i++) { // changed or new
+    const vxui_node *was = vxui_cached(w, ui->nodes[i].id);
+    if (!was || !vxui_same(was, &ui->nodes[i])) {
+      vxui_grow(d, &ui->nodes[i]);
+      if (was) vxui_grow(d, was);
+    }
+  }
+  for (uint32_t i = 0; i < w->nlast && !all; i++) { // gone
+    bool kept = false;
+    for (uint32_t k = 0; k < ui->n && !kept; k++) kept = ui->nodes[k].id == w->last[i].id;
+    if (!kept) vxui_grow(d, &w->last[i]);
+  }
+  memcpy(w->last, ui->nodes, ui->n * sizeof ui->nodes[0]); // the cache, for the next frame: gone ones dropped
+  w->nlast = ui->n;
+  if (w->up_seen)
+    w->down_seen = w->up_seen = false; // a click is answered once; a press waits for its release
+  if (!all && d[0] > d[2]) {           // nothing changed: nothing presented
+    w->owed = false;
+    return;
+  }
+  vx_canvas *c = vx_canvas_begin(w, ui->frame);
+  if (!c->px.data) return;
+  int32_t paint[4] = {d[0], d[1], d[2], d[3]}; // this frame's, and the last's: the buffer is two frames old
+  if (all || c->px.age != 2)
+    paint[0] = 0, paint[1] = 0, paint[2] = (int32_t)c->px.w, paint[3] = (int32_t)c->px.h;
+  for (int k = 0; k < 2 && !all; k++) {
+    if (w->last_damage[k] < paint[k]) paint[k] = w->last_damage[k];
+    if (w->last_damage[k + 2] > paint[k + 2]) paint[k + 2] = w->last_damage[k + 2];
+  }
+  if (paint[0] < 0) paint[0] = 0;
+  if (paint[1] < 0) paint[1] = 0;
+  if (paint[2] > (int32_t)c->px.w) paint[2] = (int32_t)c->px.w;
+  if (paint[3] > (int32_t)c->px.h) paint[3] = (int32_t)c->px.h;
+  vx_fill_rect(c, (float)paint[0], (float)paint[1], (float)(paint[2] - paint[0]),
+               (float)(paint[3] - paint[1]), VX_THEME_BG);
+  vx_font_target t = {.px = (uint32_t *)c->px.data,
+                      .stride = c->px.stride / 4,
+                      .clip_x0 = paint[0],
+                      .clip_y0 = paint[1],
+                      .clip_x1 = paint[2],
+                      .clip_y1 = paint[3]};
+  for (uint32_t i = 0; i < ui->n; i++) {
+    const vxui_node *n = &ui->nodes[i];
+    if (n->x < paint[2] && n->y < paint[3] && n->x + n->w > paint[0] && n->y + n->h > paint[1])
+      vxui_draw_node(c, n, &t);
+  }
+  if (all) {
+    vxui_present(w, &c->px, nullptr, 0);
+    w->last_damage[0] = 0, w->last_damage[1] = 0, w->last_damage[2] = (int32_t)c->px.w,
+    w->last_damage[3] = (int32_t)c->px.h;
+  } else {
+    vx_wsys_rect r = {d[0], d[1], (uint32_t)(d[2] - d[0]), (uint32_t)(d[3] - d[1])};
+    vxui_present(w, &c->px, &r, 1);
+    memcpy(w->last_damage, d, sizeof d);
+  }
 }
 
 // --- Voices (sound with audiod, M13) ---

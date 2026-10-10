@@ -1,0 +1,27 @@
+# tests/qemu/ui.ndb: vxui's immediate-mode UI (M7 step 7e2b; tests/user/
+# uitest.c): buttons answering clicks where they were drawn, also after the
+# layout moved them; two buttons of one label told apart by their ids; a
+# label coming and going, the damage repainted right. Two screens matched.
+
+scenario=ui display=fb timeout=60 cmdline="vx.display vx.desktop" with=uitest
+expect="winsrv: window 1"
+prompt="% "
+send="for(i in 0 1) while(! ls /dev/input/$i >/tmp/null >[2=1]) /boot/bin/posix/sleep 0.1; /boot/bin/posix/sleep 1; echo ready"
+line="ready"
+click=74px,106px
+expect="uitest: count 1"
+click=74px,134px
+expect="uitest: count 2"
+screen=ui-two-$arch tolerance=1
+click=74px,242px
+expect="uitest: delete 1"
+click=74px,170px
+expect="uitest: count 0"
+send="/boot/bin/posix/sleep 1; echo reset"
+line="reset"
+screen=ui-reset-$arch tolerance=1
+send="echo done"
+line="done"
+fail="vx: panic"
+fail="svcd: uitest exited"
+fail="svcd: winsrv exited"
