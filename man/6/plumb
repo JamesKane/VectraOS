@@ -1,0 +1,136 @@
+page=plumb sect=6 summary="the plumb message and the plumber's rules"
+    src=lib/vx-plumb/plumb.h,lib/vx-plumb/plumb.c
+    keys=plumb,plumbing,plumber,rules,message,port,click,attr,regexp,include,9front
+
+# SYNOPSIS
+
+```
+src
+dst
+wdir
+type
+name=value name='a value'
+ndata
+data
+```
+
+```
+# a rules file
+addr=':(#?[0-9]+):?'
+
+type is text
+data matches '([.a-zA-Z0-9_/\-]*[a-zA-Z0-9_/\-])('$addr')?'
+arg isfile $1
+data set $file
+attr add addr=$3
+plumb to edit
+plumb client window $editor
+```
+
+# DESCRIPTION
+
+The plumber routes data between programs by rules the user writes (07 §7).
+Its messages and its rule language are 9front's, kept as 9front has them; `lib/vx-plumb` packs, parses and matches them, and the plumber and its clients use it.
+
+## The message
+
+A plumb message is seven fields, each ended by a newline but the last: the program that sent it (`src`), the port it is for (`dst`), the directory a file name in it is relative to (`wdir`), the kind of data (`type`, almost always `text`), its attributes (`attr`), the number of bytes of data in decimal (`ndata`), and the data itself, which alone may hold newlines.
+A field left out is an empty line, and `ndata` must count the data exactly, 0 for none.
+
+Attributes are `name=value` pairs separated by blanks.
+A value that holds a blank, a quote or an `=` is written in quotes, `'`, with a quote inside written twice, as in rc(1); one cannot hold a newline.
+A malformed attribute ends the list.
+`click=N` says the data is text around a click, N runes into it; the rules choose what the user meant from it (below).
+
+## Rules
+
+A rules file is a sequence of rulesets, each ended by a blank line; a line starting with `#` is a comment and counts as blank.
+Each ruleset is patterns, then actions, each a line of an object, a verb and an argument separated by blanks.
+A ruleset needs at least one of each, but one made only of `plumb to` lines declares those ports and does nothing else.
+
+The plumber tries the rulesets in order on each message written to it.
+The first whose patterns all match is applied and the rest are not tried.
+If none matches, the message is refused unless its `dst` names a port, from which it is sent unchanged.
+
+The objects of patterns are the message's fields, `src`, `dst`, `wdir`, `type`, `data` and `attr`, and `arg`, the rule's own argument.
+Their verbs:
+
+: `is`
+  The object's text is the argument, exactly.
+: `matches`
+  The object's whole text matches the argument, a regular expression.
+  The expression is sam's (leftmost-longest, as 9front's libregexp is): literal runes, `.` (not a newline), `[]` and `[^]` classes with ranges, `*`, `+`, `?`, `|`, parentheses, `^`, `$` and `\` escapes.
+  `$0` is the match, `$1` to `$9` the text of its parenthesised parts.
+  `data matches` on a message with a `click` attribute takes the leftmost-longest match that holds the click instead of the whole data; each `data matches` of the ruleset must then select the same text, and when the ruleset applies, the data becomes that text and the `click` attribute goes.
+: `isfile`, `isdir`
+  The object, `data`, `wdir` or `arg`, made absolute by `wdir` and cleaned, names a file that is not a directory, or a directory: `$file` or `$dir` is that name.
+: `set`
+  The object becomes the argument. It always matches.
+: `add`
+  For `attr`: the argument's attributes are added to the message's. It always matches.
+: `delete`
+  For `attr`: the attribute the argument names is deleted; the pattern fails if the message has none. (9front's page says it matches anyway; its code, kept here, does not.)
+
+Patterns run in order, and what one rewrites stays rewritten, so rewriting comes after matching.
+The object of actions is `plumb`, and their verbs:
+
+: `to`
+  The port to send the message from: its `dst`. A message with a `dst` already skips a ruleset for another port.
+: `start`
+  When no program has the port open, the argument is a command to run; the message is thrown away.
+: `client`
+  As `start`, but the message is held until the command opens the port.
+
+A ruleset has at most one `start` or `client`.
+
+An argument is read as rc reads a word: `'...'` quotes, with `''` a quote inside, and `$name` substitutes a variable.
+A line `name=value` between rulesets sets a variable, whose value's quotes and variables are taken in at once.
+Besides those, `$0` to `$9` (above), `$src`, `$dst`, `$wdir`, `$type`, `$data`, `$attr` (the attributes as one line), `$file` and `$dir` (an `isfile`'s and `isdir`'s, or the data made absolute by `wdir`) are the message's, while a message is matched.
+A `$` naming nothing stays as it is.
+A `start` or `client` argument is split into the command's words at its unquoted blanks before substitution, so `$1` is one word, whatever it holds.
+
+`include FILE` reads FILE in its place, from `/lib/plumb` when FILE is not there and is neither rooted nor `./` or `../`; includes nest 10 deep.
+
+The ports are every `plumb to` the rules have named; once made, a port stays though the rules change.
+The ports `.`, `..`, `send` and `rules` cannot be named.
+
+# EXAMPLES
+
+9front's rule for a file name and an address, which `/lib/plumb/fileaddr` defines as `$addr`: a click on `src/main.c:12` in text from `/usr/glenda` sends the message on as
+
+```
+plumb
+edit
+/usr/glenda
+text
+addr=12
+22
+/usr/glenda/src/main.c
+```
+
+A manual page named in text, `vxui(2)`, as 9front's `basic` names it:
+
+```
+type is text
+data matches '([a-zA-Z0-9_\-./]+)\(([1-9])\)'
+plumb start rc -c 'man -b '$2' '$1
+```
+
+# FILES
+
+: `/lib/plumb`
+  Where an include is looked for.
+
+# SEE ALSO
+
+rc(1), ndb(6)
+
+# DIAGNOSTICS
+
+A rules file is parsed up to its first error, the rulesets before it kept.
+The errors are 9front's words, after the file and line of each file of the include stack: `unknown object kind`, `unknown verb is`, `malformed rule`, `VERB not valid verb for object OBJECT`, `too many ports`, `illegal port name send`, `ruleset has more than one client or start action`, `ruleset must have patterns and actions`, `malformed include statement`, `can't open FILE for inclusion`, `include stack too deep; max 10`, and `regexp RE: ` with why the expression is wrong.
+
+# BUGS
+
+`^` holds only at the start of the data and after a newline, also when a click's match is tried from further in, where 9front's holds at the place it is tried from.
+A port declared in quotes with a blank in it is listed without them, as 9front does, so the listing does not read back the same.
