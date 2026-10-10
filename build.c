@@ -1458,6 +1458,8 @@ static const program USER_PROGRAMS[] = {
      nullptr}, // frames in the trace (7g1b1)
     {"tlgen", "tests/user/tlgen.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // a trace for dbg's timeline (7g1b2)
+    {"dbguidemo", "tests/user/dbgdemo.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr}, // dbgdemo, as dbg's window debugs it (7g1b3)
     {"prompttest", "tests/user/prompttest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // the trusted prompt (7d2d)
     {"wmtest", "tests/user/wmtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
@@ -3392,7 +3394,8 @@ static bool mtools(const char *tool, const char *esp, const char *const *args) {
   return run(&c);
 }
 
-// The directories every boot image has: mount points for the namespace (02 §5)
+// The directories every boot image has: mount points for the namespace (02 §5;
+// /src, where dbg finds sources, 05 §4, a test image binding its own there)
 // and bootfs's own. In order, parents first.
 static constexpr int BOOTFS_MAX_FILES = 512;
 static const char *const BOOTFS_DIRS[] = {"adm",
@@ -3417,6 +3420,7 @@ static const char *const BOOTFS_DIRS[] = {"adm",
                                           "n",
                                           "net",
                                           "proc",
+                                          "src",
                                           "srv",
                                           "sys",
                                           "tmp",
@@ -3635,6 +3639,11 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
       files[count] = read_file(fmt("tests/user/%s.cmds", USER_PROGRAMS[i].name));
       paths[count++] = fmt("boot/tests/%s.cmds", USER_PROGRAMS[i].name);
     }
+    // Its source, at the path its debug information names under /src (the
+    // file prefix map's), for dbg's window to show (7g1b3).
+    bootfs_room(count);
+    files[count] = read_file(USER_PROGRAMS[i].source);
+    paths[count++] = fmt("boot/src/%s", USER_PROGRAMS[i].source);
   }
   // A `with` name that is no program is a script test: its manifest runs a
   // program the image has (lua, rc, dbg), on tests/user/NAME.lua, NAME.rc or

@@ -14,7 +14,8 @@ dbg -t [tracefile]
 # DESCRIPTION
 
 `dbg` is a source-level debugger for C programs.
-It has two faces yet: the command line, which `-c` names, and the timeline, which `-t` names.
+It has three faces: a window, the command line, which `-c` names, and the timeline, which `-t` names.
+Without `-c` it opens its window where there is a window system (`/wsys/new`), and falls back to the command line where there is none.
 The command line reads commands, one to a line, and writes what they show.
 Without `-x` the commands come from standard input, each after the prompt `(dbg) `; with `-x` they come from <file>, each echoed after the prompt, and `dbg` ends at the file's end.
 
@@ -38,6 +39,16 @@ There are three kinds of target:
 
 A launched program that crashes leaves a crash directory, and `dbg` turns to it: after the program has gone, `bt` and `print` show it as it died.
 
+@node=window title="The window"
+
+The window runs the same commands, and says on standard output what each said, as the command line would.
+Along its top are Run (Continue once the program runs), Step and Kill, and what the last command said; F5 runs or continues and F11 steps.
+On the left is the source of the selected frame, from the path its debug information names under `/src` (the build's sources, 05 §4): line numbers, a red dot at each breakpoint, and the frame's line marked.
+A click in the margin sets a breakpoint on that line, or clears the one there; the wheel, the arrows and page up and down scroll it.
+On the right are the threads, the call stack and the selected frame's locals, each as `print` gives it; a click on a frame selects it, and on a thread makes it the one commands act on.
+With `-x` the file's commands run first, breakpoints among them.
+A command that waits for the program runs while the window says `running`, and takes no other command until it returns.
+
 @node=timeline title="The timeline"
 
 `dbg -t` opens a window over a trace (see trace(1)): <tracefile>, a save made by `trace -c -o` or `trace -f`, or without one the events `/proc/trace` holds now.
@@ -59,7 +70,9 @@ A blank line, or one starting `#`, does nothing; an unknown word prints the list
 
 : `break` <func>, `break` <file>`:`<line>, `break` <addr>
   Set a breakpoint at the body of function <func>, past its prologue; at the lowest address of a statement on <line> of the source file whose path ends with <file>; or at the address <addr>, decimal or `0x` hex.
-  Before `run`, up to 32 are kept and set when the program starts; after, each is set at once.
+  Up to 32 at once: before `run` each is kept and set when the program starts; after, it is set at once.
+: `unbreak` <func>, `unbreak` <file>`:`<line>, `unbreak` <addr>
+  Clear the breakpoint there.
 : `run`
   Start the program, and wait for it to stop.
 : `cont`, `continue`

@@ -1,0 +1,14 @@
+# tests/user/dbguidemo.ndb: dbg's window (tests/qemu/dbgui.ndb) on
+# dbgdemo's program, built again as dbguidemo: its source bound at /src, as
+# its debug information names it, and a window of its own.
+
+service=dbguidemo program=/boot/bin/dbg console when=vx.desktop
+arg=-x
+arg=/boot/tests/dbguidemo.cmds
+arg=/boot/bin/dbguidemo
+mount=/ srv=bootfs
+bind=/src new=/boot/src
+mount=/proc srv=proc
+mount=/tmp srv=tmpfs
+mount=/wsys srv=wsys aname=self
+connect=nsd

@@ -231,12 +231,12 @@ static uint32_t vt_getregexp(vt_run *r, int32_t delim) {
   int32_t c = 0;
   for (;;) {
     c = vt_getc(r);
-    if (c == '\\') {
+    if (c == '\\') { // the escaped rune is kept, read raw below
       if (vt_peek(r) == delim) {
-        c = vt_getc(r);
+        vt_getc(r);
       } else if (vt_peek(r) == '\\') {
         vt_sbuf_byte(&s, '\\');
-        c = vt_getc(r);
+        vt_getc(r);
       }
     } else if (c == delim || c == '\n' || c < 0) {
       break;
@@ -517,8 +517,8 @@ static int vt_byte(const vx_text *t, uint64_t off) {
 
 // Just after the k-th (k >= 1) newline at or after pos, or UINT64_MAX.
 static uint64_t vt_nl_after(const vx_text *t, uint64_t pos, uint64_t k) {
-  uint64_t target = vx_text_line_of(t, pos) + k;
-  return target > vx_text_lines(t) ? UINT64_MAX : vx_text_line_start(t, target);
+  uint64_t nl = vx_text_line_of(t, pos) + k;
+  return nl > vx_text_lines(t) ? UINT64_MAX : vx_text_line_start(t, nl);
 }
 
 static uint64_t vt_line_end(const vx_text *t, uint64_t pos) {

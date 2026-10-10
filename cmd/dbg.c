@@ -1,15 +1,20 @@
-// dbg: the debugger's command line, `dbg -c` (docs/05 §7), for serial
-// consoles and bring-up before the desktop exists. It does everything through
+// dbg: the debugger. Its window (dbg-gui.c, M7 step 7g1b3) where there is a
+// window system, and its command line, `dbg -c` (docs/05 §7), for serial
+// consoles and bring-up before the desktop exists; its timeline, dbg -t
+// (dbg-timeline.c, 7g1b2). It does everything through
 // /proc's debug files (05 §3), as acid did, and lib/vx-debug's index and
 // evaluator (ADR-0017): the program's ELF is read and indexed when dbg starts.
 //
-//   dbg -c [-x FILE] PROGRAM [ARG ...]   launch PROGRAM at `run`
-//   dbg -c [-x FILE] -p PID              attach to a running process
-//   dbg -c [-x FILE] /tmp/crash/NAME.PID open a crash directory (05 §5)
+//   dbg [-c] [-x FILE] PROGRAM [ARG ...]   launch PROGRAM at `run`
+//   dbg [-c] [-x FILE] -p PID              attach to a running process
+//   dbg [-c] [-x FILE] /tmp/crash/NAME.PID open a crash directory (05 §5)
+//   dbg -t [TRACE]                         the timeline over a trace
 //
-// Commands come from the console, or (-x) from FILE, each echoed:
+// Commands come from the console, or (-x) from FILE, each echoed (the
+// window runs FILE's first, then takes its own from its buttons and clicks):
 //
 //   break FUNC | FILE:LINE | 0xADDR    a breakpoint (before `run`, kept until then)
+//   unbreak FUNC | FILE:LINE | 0xADDR  one cleared
 //   run                                start the program, and wait for an event
 //   cont, step                         resume, or step one instruction, and wait
 //   bt                                 the call stack, by frame pointers (05 §4)
@@ -64,12 +69,33 @@ static uint32_t nbreaks;
 
 // --- Output ---
 
-static void say(const char *s) { vx_print(vx_cstr(s)); }
-static void say_str(vx_str s) { vx_print(s); }
+// What dbg says goes to standard output, or, while the window has asked for
+// it (7g1b3), into its buffer, so the window shows the commands' own words.
+static struct {
+  char *buf;
+  size_t len, cap;
+} said;
+
+static void say_str(vx_str s) {
+  if (!said.buf) {
+    vx_print(s);
+    return;
+  }
+  for (size_t i = 0; i < s.len && said.len + 1 < said.cap; i++) said.buf[said.len++] = s.ptr[i];
+  said.buf[said.len] = 0;
+}
+static void say(const char *s) { say_str(vx_cstr(s)); }
+static void say_u64(uint64_t v) {
+  char d[20];
+  size_t k = sizeof d;
+  do d[--k] = (char)('0' + v % 10);
+  while (v /= 10);
+  say_str((vx_str){d + k, sizeof d - k});
+}
 static size_t hex_text_dbg(uint64_t v, char *out);
 static void say_hex(uint64_t v) {
   char buf[18];
-  vx_print((vx_str){buf, hex_text_dbg(v, buf)});
+  say_str((vx_str){buf, hex_text_dbg(v, buf)});
 }
 
 // --- Files ---
@@ -278,7 +304,7 @@ static void say_where(uint64_t pc) {
   say(" (");
   say(file);
   say(":");
-  vx_print_u64(l->line);
+  say_u64(l->line);
   say(")");
 }
 
@@ -467,7 +493,7 @@ static void bt(void) {
   if (!nframes) return say("dbg: no stack\n");
   for (uint32_t i = 0; i < nframes; i++) {
     say(i == frame ? "*#" : " #");
-    vx_print_u64(i);
+    say_u64(i);
     say(" ");
     say_hex(frames[i].pc);
     say(" in ");
@@ -544,7 +570,7 @@ static void threads(void) {
                    (state.len == 6 && !memcmp(state.ptr, "frozen", 6));
       stopped += still;
       say(tid == thread ? " *" : "  ");
-      vx_print_u64(tid);
+      say_u64(tid);
       say(" ");
       say_str(state);
       if (reason.len) say(" "), say_str(reason);
@@ -555,9 +581,9 @@ static void threads(void) {
   }
   vx_ns_close(&d);
   say("dbg: ");
-  vx_print_u64(all);
+  say_u64(all);
   say(" threads, ");
-  vx_print_u64(stopped);
+  say_u64(stopped);
   say(" stopped\n");
 }
 
@@ -571,7 +597,7 @@ static void say_bytes(const uint8_t *p, size_t n) { // as one number, the last b
 
 static void say_reg(const char *name, uint32_t i, const uint8_t *p, size_t n) {
   say(name);
-  if (i != UINT32_MAX) vx_print_u64(i);
+  if (i != UINT32_MAX) say_u64(i);
   say("=");
   say_bytes(p, n);
   say("\n");
@@ -650,14 +676,28 @@ static bool command(vx_str line) {
   if (word_is(verb, "break")) {
     uint64_t addr = resolve(rest);
     if (!addr) return say("dbg: no such function or line\n"), true;
+    if (nbreaks == sizeof breaks / sizeof breaks[0]) return say("dbg: too many breakpoints\n"), true;
     if (live && set_break(addr) != VX_OK) return say("dbg: cannot set it\n"), true;
-    if (!live && nbreaks == sizeof breaks / sizeof breaks[0])
-      return say("dbg: too many breakpoints before run\n"), true;
-    if (!live) breaks[nbreaks++] = addr;
+    breaks[nbreaks++] = addr; // set at run if it is not running yet
     say("dbg: breakpoint at ");
     say_hex(addr);
     say(" in ");
     say_where(addr);
+    say("\n");
+  } else if (word_is(verb, "unbreak")) {
+    uint64_t addr = resolve(rest);
+    uint32_t k = 0;
+    while (k < nbreaks && breaks[k] != addr) k++;
+    if (!addr || k == nbreaks) return say("dbg: no breakpoint there\n"), true;
+    if (live) {
+      char cmd[32] = "unbreak ";
+      size_t n = 8 + hex_text_dbg(addr, cmd + 8);
+      cmd[n] = 0;
+      if (ctl(cmd) != VX_OK) return say("dbg: cannot clear it\n"), true;
+    }
+    breaks[k] = breaks[--nbreaks];
+    say("dbg: breakpoint cleared at ");
+    say_hex(addr);
     say("\n");
   } else if (word_is(verb, "run")) {
     if (crash_dir[0] || pid)
@@ -688,7 +728,7 @@ static bool command(vx_str line) {
     if (n >= nframes) return say("dbg: no such frame\n"), true;
     frame = n;
     say(" #");
-    vx_print_u64(n);
+    say_u64(n);
     say(" in ");
     say_where(vxd_frame_lookup_pc(&frames[n]));
     say("\n");
@@ -707,7 +747,7 @@ static bool command(vx_str line) {
     thread = (uint32_t)n;
     refresh();
     say("dbg: thread ");
-    vx_print_u64(n);
+    say_u64(n);
     if (have_regs) say(" at "), say_where(regs_pc());
     say("\n");
   } else if (word_is(verb, "info")) {
@@ -716,10 +756,13 @@ static bool command(vx_str line) {
   } else if (word_is(verb, "kill")) {
     if (live) ctl("kill"), wait_event();
   } else {
-    say("dbg: break, run, cont, step, bt, frame, print, regs, xregs, threads, thread, info, kill, quit\n");
+    say("dbg: break, unbreak, run, cont, step, bt, frame, print, regs, xregs, threads, thread, info, kill, "
+        "quit\n");
   }
   return true;
 }
+
+#include "dbg-gui.c"
 
 // The program's ELF, read whole, and its index.
 static bool load(vx_str path) {
@@ -765,8 +808,8 @@ const char *vx_main(void) {
   vx_str script = {};
   if (a < vx_spawn.argc && word_is(vx_spawn.args[a], "-t")) // the timeline (7g1b2)
     return timeline(a + 1 < vx_spawn.argc ? vx_spawn.args[a + 1] : VX_STR("/proc/trace/events"));
-  if (a < vx_spawn.argc && word_is(vx_spawn.args[a], "-c"))
-    a++; // the command line: the only face dbg has yet
+  bool cli = a < vx_spawn.argc && word_is(vx_spawn.args[a], "-c"); // the command line, not the window
+  if (cli) a++;
   if (a + 1 < vx_spawn.argc && word_is(vx_spawn.args[a], "-x")) script = vx_spawn.args[a + 1], a += 2;
   if (a >= vx_spawn.argc) {
     say(VX_USAGE), say("\n");
@@ -796,10 +839,17 @@ const char *vx_main(void) {
   say("dbg: ");
   say_str((vx_str){program, program_len});
   say(": ");
-  vx_print_u64(ix.h->funcs.count);
+  say_u64(ix.h->funcs.count);
   say(" functions, ");
-  vx_print_u64(ix.h->lines.count);
+  say_u64(ix.h->lines.count);
   say(" lines\n");
+  if (!cli && gui_run(script)) { // the window (7g1b3), if there is a window system
+    if (live && launched)
+      ctl("kill");
+    else if (live)
+      ctl("detach");
+    return nullptr;
+  }
   // Commands: from the script, or the console.
   static char text[16 * 1024];
   size_t len = 0;

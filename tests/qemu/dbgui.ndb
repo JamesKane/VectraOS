@@ -1,0 +1,32 @@
+# tests/qemu/dbgui.ndb: dbg's window (M7 step 7g1b3) on dbgdemo's program
+# (tests/user/dbguidemo.ndb): its source at its entry with leaf's
+# breakpoint marked; Run clicked, and it stops at leaf, its stack, locals
+# and line shown; a click on the stack's second frame selects middle.
+# (The window's inside is at 48,48: Run at 8+42,5+11; the stack's second
+# row below the threads' header, one thread and its own header, 18 a line.)
+
+scenario=dbgui display=fb timeout=90 cmdline="vx.display vx.desktop" with=dbguidemo
+expect="dbg: /boot/bin/dbguidemo: "
+expect="winsrv: window 1"
+expect="dbg: breakpoint at 0x"
+screen=dbgui-$arch tolerance=2
+prompt="% "
+send="echo who''le"
+expect="whole"
+click=98px,64px
+expect="dbg: stopped: break at leaf (tests/user/dbgdemo.c:"
+send="/boot/bin/posix/sleep 1; echo sto''pped"
+expect="stopped"
+screen=dbgui-stopped-$arch tolerance=2
+send="echo n''ext"
+expect="next"
+click=538px,171px
+expect=" #1 in middle (tests/user/dbgdemo.c:"
+send="/boot/bin/posix/sleep 1; echo fra''me"
+expect="frame"
+screen=dbgui-frame-$arch tolerance=2
+send="echo do''ne"
+expect="done"
+fail="vx: panic"
+fail="svcd: winsrv exited"
+fail="dbg: cannot"
