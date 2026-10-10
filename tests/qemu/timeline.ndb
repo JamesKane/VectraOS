@@ -1,0 +1,28 @@
+# tests/qemu/timeline.ndb: dbg's timeline (M7 step 7g1b2): a trace of
+# tlgen's making (tests/user/tlgen.c) in dbg -t's window, matched by
+# screenshot whole; then a click on the request's client span (the window's
+# inside at 48,48: 9M cycles over 542 pixels from x 168, its track the third,
+# 22 + 16 + 16 down) chooses it, and = zooms in about the middle.
+
+scenario=timeline display=fb timeout=90 cmdline="vx.display vx.desktop" with=tlgen
+expect="dbg: timeline: 45 records, 2 cpus, 4 threads, 5 spans, 3 flows"
+expect="winsrv: window 1"
+screen=timeline-$arch tolerance=2
+prompt="% "
+send="echo wh''ole"
+expect="whole"
+click=418px,117px
+send="/boot/bin/posix/sleep 1; echo cli''cked"
+expect="clicked"
+screen=timeline-chosen-$arch tolerance=2
+send="echo cho''sen"
+expect="chosen"
+key=equal
+send="/boot/bin/posix/sleep 1; echo zoo''med"
+expect="zoomed"
+screen=timeline-zoomed-$arch tolerance=2
+send="echo do''ne"
+expect="done"
+fail="vx: panic"
+fail="tlgen: dbg exited"
+fail="svcd: winsrv exited"

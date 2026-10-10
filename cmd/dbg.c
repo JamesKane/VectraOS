@@ -29,10 +29,12 @@
 // 05 §5); dbg then turns to it, so bt and print go on working on the dead
 // program, with the same code a live one uses.
 
+#include <vxui.h>
 #include "../lib/vx-rt/rt.c"
 #include "../lib/vx-rt/spawn.c"
 #include "../lib/vx-ns/spawn.c"
 #include "../lib/vx-debug/eval.c"
+#include "dbg-timeline.c"
 
 static vx_ns ns;
 static uint8_t image[8 << 20]; // the program's ELF
@@ -761,6 +763,8 @@ const char *vx_main(void) {
   if (vx_task_info(vx_self, &info) == VX_OK) me = info.id;
   uint32_t a = 0;
   vx_str script = {};
+  if (a < vx_spawn.argc && word_is(vx_spawn.args[a], "-t")) // the timeline (7g1b2)
+    return timeline(a + 1 < vx_spawn.argc ? vx_spawn.args[a + 1] : VX_STR("/proc/trace/events"));
   if (a < vx_spawn.argc && word_is(vx_spawn.args[a], "-c"))
     a++; // the command line: the only face dbg has yet
   if (a + 1 < vx_spawn.argc && word_is(vx_spawn.args[a], "-x")) script = vx_spawn.args[a + 1], a += 2;

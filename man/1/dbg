@@ -8,12 +8,14 @@ page=dbg sect=1 summary="debugger"
 dbg [-c] [-x file] program [arg ...]
 dbg [-c] [-x file] -p pid
 dbg [-c] [-x file] crashdir
+dbg -t [tracefile]
 ```
 
 # DESCRIPTION
 
 `dbg` is a source-level debugger for C programs.
-It has one face yet, the command line, which `-c` names: it reads commands, one to a line, and writes what they show.
+It has two faces yet: the command line, which `-c` names, and the timeline, which `-t` names.
+The command line reads commands, one to a line, and writes what they show.
 Without `-x` the commands come from standard input, each after the prompt `(dbg) `; with `-x` they come from <file>, each echoed after the prompt, and `dbg` ends at the file's end.
 
 `dbg` does everything through the debug files of `/proc` (see procfs(4)), as `acid` did on Plan 9, so what it does a script can do with `echo` and `cat`.
@@ -35,6 +37,20 @@ There are three kinds of target:
   Its program is found as for `-p`.
 
 A launched program that crashes leaves a crash directory, and `dbg` turns to it: after the program has gone, `bt` and `print` show it as it died.
+
+@node=timeline title="The timeline"
+
+`dbg -t` opens a window over a trace (see trace(1)): <tracefile>, a save made by `trace -c -o` or `trace -f`, or without one the events `/proc/trace` holds now.
+It first says how many records, CPUs, threads, spans and flows it found.
+
+The first tracks are the CPUs: what ran on each, a colour for each process, and its interrupts as red marks along the top.
+Then a track for each thread, named by its process's name and its task and thread numbers: when it ran, along the top; its process's spans, below (9Px requests in blue; frames, M7 step 7g1b1: an app's drawing in green, winsrv's latching of it in purple and its composing of the screen in teal); its page faults as orange ticks, and its samples as dark ones.
+Parts of one flow, a request's client and server spans, a call and its reply, a frame's drawing and its latching, are joined by lines.
+
+The wheel zooms about the pointer, and a drag pans, across and down.
+The arrows pan (left and right) and scroll the tracks (up and down), as do page up and page down; `+` and `-` zoom about the middle, and `0` shows the whole trace again.
+A click on a span chooses it: the status line names it, its type, flow and length, and its flow is drawn in red; escape lets it go.
+Otherwise the status line counts what the trace holds.
 
 @node=commands title="Commands"
 

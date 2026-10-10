@@ -1456,6 +1456,8 @@ static const program USER_PROGRAMS[] = {
      nullptr}, // 03's CPU pixel program, M7's exit (7e2)
     {"frametest", "tests/user/frametest.c", IN_TESTS, nullptr, false, &font, VXUI_FLAGS, false, LINK_STATIC,
      nullptr}, // frames in the trace (7g1b1)
+    {"tlgen", "tests/user/tlgen.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr}, // a trace for dbg's timeline (7g1b2)
     {"prompttest", "tests/user/prompttest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // the trusted prompt (7d2d)
     {"wmtest", "tests/user/wmtest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
@@ -1519,7 +1521,8 @@ static const program USER_PROGRAMS[] = {
     {"tail", "cmd/tail.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
     {"ping", "cmd/ping.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
     {"cs", "cmd/cs.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
-    {"dbg", "cmd/dbg.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"dbg", "cmd/dbg.c", IN_BOOTFS, nullptr, false, &font, VXUI_FLAGS, false, LINK_STATIC,
+     nullptr}, // its timeline a vxui window (7g1b2)
     {"man", "cmd/man.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
     {"lookman", "cmd/lookman.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
     {"sig", "cmd/sig.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},

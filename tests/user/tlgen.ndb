@@ -1,0 +1,9 @@
+# tests/user/tlgen.ndb: tlgen, a trace of its own making shown by dbg's
+# timeline (tests/qemu/timeline.ndb), in a window of its own.
+
+service=tlgen program=/boot/bin/tlgen console when=vx.desktop
+mount=/ srv=bootfs
+mount=/proc srv=proc
+mount=/tmp srv=tmpfs aname=user
+mount=/wsys srv=wsys aname=self
+connect=nsd

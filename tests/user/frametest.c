@@ -2,7 +2,8 @@
 // As adm it starts a trace with spans, draws 20 frames in a window of its
 // own, stops, and checks the records: a DRAW span for each frame, from this
 // task; for each, winsrv's LATCH of that present on the same flow, starting
-// after the DRAW did; and winsrv's COMPOSE spans, the screens it made.
+// after the DRAW did; and winsrv's COMPOSE spans, the screens it made. Then
+// it leaves dbg's timeline (dbg -t) showing the trace.
 
 #include <vxui.h>
 
@@ -74,5 +75,10 @@ const char *vx_main(void) {
   CHECK(server != 0 && server != me);
   CHECK(composed >= FRAMES / 2);
   vx_printf("frametest: %u checks, %u failed\n", checks, failures);
+  // dbg's timeline over this trace (7g1b2): it reads the live events, and stays.
+  vx_str args[] = {VX_STR("dbg"), VX_STR("-t")};
+  vx_spawn_req req = {.path = VX_STR("/boot/bin/dbg"), .args = {args, 2}};
+  vx_proc kid = {};
+  if (vx_proc_spawn(&req, &kid) != VX_OK) vx_printf("frametest: cannot run dbg\n");
   return failures ? "failed" : nullptr;
 }
