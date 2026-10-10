@@ -130,6 +130,24 @@ VX_API vx_fd vx_create(vx_str path, vx_mode mode, uint32_t perm) {
   return vx_file_add(&f, p, (mode & VX_OAPPEND) && !server, server);
 }
 
+// Another descriptor for fd's open file, on a fid of its own (Tshare and
+// Tjoin, the posix extension): the ring server takes a fid's requests in
+// order, so a read held on one, waiting for a terminal's output, would hold
+// up a write on it. term(1) writes its master on the other (M7 step 7f1), as
+// the POSIX poll does. Not libvx's ABI.
+[[maybe_unused]] static vx_fd vx_file_join(vx_fd fd) {
+  vx_file_slot *s = vx_file_get(fd);
+  if (!s) return vx_file_fail("join", VX_STR("a file"), VX_ERR_BAD_HANDLE);
+  vx_ns_file f = {.ns = s->f.ns, .c = s->f.c};
+  uint8_t token[16];
+  vx_status st = s->f.c && !s->f.dev ? p9c_share(s->f.c, s->f.fid, 1, token) : VX_ERR_UNSUPPORTED;
+  if (st == VX_OK) st = p9c_join(f.c, token, &f.fid);
+  vx_str path = {s->path, s->path_len};
+  vx_unlock(&s->lock);
+  if (st != VX_OK) return vx_file_fail("join", path, st);
+  return vx_file_add(&f, path, false, false);
+}
+
 VX_API vx_status vx_close(vx_fd fd) {
   vx_file_slot *s = vx_file_get(fd);
   if (!s) return fd >= 0 && fd < 3 ? VX_OK : vx_file_fail("close", VX_STR("a file"), VX_ERR_BAD_HANDLE);
@@ -150,12 +168,37 @@ VX_API vx_status vx_close(vx_fd fd) {
 
 static uint32_t vx_file_count(size_t n) { return n > UINT32_MAX ? UINT32_MAX : (uint32_t)n; }
 
+// A read or write of a plain 9P file, s locked on entry and unlocked on
+// return. The call itself is made without the lock, as Plan 9 serializes
+// only a channel's offset, not its I/O: a read waiting on a terminal, a pipe
+// or a connection never holds up a write or a close of the same descriptor
+// (M7 step 7f1). The offset moves on afterwards, if the descriptor is still
+// the one it was. A device the process serves, a union directory, and
+// appends keep the lock throughout.
+static int64_t vx_file_io(vx_file_slot *s, bool write, void *buf, uint32_t count) {
+  if (s->f.dev || s->f.u || !s->f.c) {
+    int64_t n = write ? vx_ns_write(&s->f, buf, count) : vx_ns_read(&s->f, buf, count);
+    vx_unlock(&s->lock);
+    return n;
+  }
+  p9_client *c = s->f.c;
+  uint32_t fid = s->f.fid, gen = s->gen;
+  uint64_t off = s->f.offset;
+  vx_unlock(&s->lock);
+  int64_t n = write ? p9c_write(c, fid, off, buf, count) : p9c_read(c, fid, off, buf, count);
+  if (n > 0) {
+    vx_lock(&s->lock);
+    if (s->gen == gen) s->f.offset += (uint64_t)n;
+    vx_unlock(&s->lock);
+  }
+  return n;
+}
+
 VX_API int64_t vx_read(vx_fd fd, vx_bytes buf) {
   if (fd == VX_STDIN) return vx_stdin_read(buf.ptr, vx_file_count(buf.len));
   vx_file_slot *s = vx_file_get(fd);
   if (!s) return vx_file_fail("read", VX_STR("a file"), VX_ERR_BAD_HANDLE);
-  int64_t n = vx_ns_read(&s->f, buf.ptr, vx_file_count(buf.len));
-  vx_unlock(&s->lock);
+  int64_t n = vx_file_io(s, false, buf.ptr, vx_file_count(buf.len));
   return n < 0 ? vx_file_fail("read", VX_STR("a file"), (vx_status)n) : n;
 }
 
@@ -175,6 +218,10 @@ VX_API int64_t vx_write(vx_fd fd, vx_str data) {
   vx_file_slot *s = vx_file_get(fd);
   if (!s) return vx_file_fail("write", VX_STR("a file"), VX_ERR_BAD_HANDLE);
   int64_t n = 0;
+  if (!s->append && !s->server_append)
+    return (n = vx_file_io(s, true, (void *)data.ptr, vx_file_count(data.len))) < 0
+               ? vx_file_fail("write", VX_STR("a file"), (vx_status)n)
+               : n;
   if (s->append && (n = vx_file_length(&s->f)) >= 0) s->f.offset = (uint64_t)n;
   if (n >= 0 && s->server_append) // at the server's offset, which it moves to the end first (posix.md)
     n = p9c_write(s->f.c, s->f.fid, P9_OFFSET_CURRENT, data.ptr, vx_file_count(data.len));

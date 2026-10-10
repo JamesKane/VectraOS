@@ -58,3 +58,4 @@ One file per decision, `NNNN-title.md`, numbered in order. An ADR records a deci
 | [0052](0052-stb-truetype.md) | M7 step 7e1: stb_truetype v1.26 vendored unchanged, in the font port, to rasterize glyphs; the system's fonts only; the 1x check against FreeType | Proposed |
 | [0053](0053-kb-text-shape.md) | M7 step 7e1: kb_text_shape v2.28e vendored unchanged, in the font port, to segment and shape text with no C library | Proposed |
 | [0054](0054-inter.md) | M7 step 7e1: Inter 4.1, Regular and Bold, vendored unchanged as the system's font at `/lib/font` | Proposed |
+| [0055](0055-jetbrains-mono.md) | M7 step 7f1: JetBrains Mono 2.304, Regular and Bold, vendored unchanged as the terminal's font at `/lib/font` | Proposed |

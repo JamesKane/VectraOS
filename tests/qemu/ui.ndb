@@ -21,7 +21,7 @@ send="/boot/bin/posix/sleep 1; echo reset"
 line="reset"
 screen=ui-reset-$arch tolerance=1
 send="echo done"
-line="done"
+expect="done"
 fail="vx: panic"
 fail="svcd: uitest exited"
 fail="svcd: winsrv exited"

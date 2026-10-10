@@ -1,0 +1,40 @@
+page=term sect=1 summary="the terminal: rc on a pseudo-terminal, in a window"
+    src=cmd/term.c,boot/svc/term.ndb
+    keys=terminal,console,shell,rc,pty,vt100,ansi,escape,scrollback,window
+
+# SYNOPSIS
+
+```usage
+term [-m]
+```
+
+# DESCRIPTION
+
+`term` opens a window (vxui(2)) and runs `rc -i` on a new pseudo-terminal of ptyd(4), in a note group of its own, which is the terminal's foreground group: `^C` interrupts what rc runs, and `^D` on an empty line ends it.
+svcd(8) starts it from `boot/svc/term.ndb` when the kernel command line has `vx.term`, in the console shell's namespace with the window server's app attach at `/wsys` and ptyd's terminals in `/dev`; closing its window, or rc ending, ends it.
+
+What is typed reaches the terminal's master: text as the window server resolved it (its text input on, purpose `terminal`), and Return as a carriage return; `^` and a letter as its control character, Backspace as DEL, Escape, and the arrows, Home, End and Delete as a VT100 sends them.
+Output is drawn in JetBrains Mono at 14 pixels, one glyph a cell, in a grid as wide and tall as the window, which the terminal's `rows` and `cols` follow.
+It takes UTF-8; carriage return, newline, backspace and tab; and the CSI sequences that move the cursor (`A` to `D`, `G`, `H`, `f`), erase (`J`, `K`) and set colours and bold or inverse (`m`, the 8 colours and their bright forms).
+Lines scrolled off the screen are kept, 2048 lines in all: the wheel, or Shift with Page Up or Page Down, shows them, and a key goes back to the bottom.
+
+The terminal's output is read on a thread of its own, which takes it into the grid as it comes; the window draws the rows that changed, once a frame, however much came between.
+Native programs' standard streams are pipes, so `term` relays between the pseudo-terminal's slave and rc's.
+
+: `-m`
+  Measured (00 §8): each key's time to the frame showing its echo, on standard error.
+
+# FILES
+
+: `/lib/font/JetBrainsMono-Regular.ttf`
+  Its font (ADR-0055).
+
+# SEE ALSO
+
+rc(1), ptyd(4), vxui(2), winsrv(8)
+
+# BUGS
+
+No program on it sees a terminal, since its standard streams are pipes: no termios, no window size.
+Scrolling regions, the alternate screen, wide characters, selection and copy are not there yet.
+Its throughput is a third of 00 §8's budget (docs/milestones/known-gaps.md).

@@ -13,7 +13,7 @@ cat [file ...]
 `cat` reads each <file> in order and writes it on standard output.
 With no <file> it reads standard input to its end.
 Data is copied as bytes, never checked or changed.
-Output goes out a line at a time, and in pieces when a line is long.
+Output goes out in whole lines, as many as fit in 4096 bytes at a time, and in pieces when a line is longer.
 
 Each <file> is opened in the namespace `cat` was started with, and must be an absolute path.
 A <file> that cannot be opened or read is reported and the next is read.

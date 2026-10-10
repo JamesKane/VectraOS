@@ -1,0 +1,23 @@
+# tests/qemu/term.ndb: the terminal (M7 step 7f1, tests/user/termtest.ndb):
+# rc on a pseudo-terminal in a window; typing into it runs an rc command,
+# whose output is matched by screenshot (M7's exit), and each key's time to
+# the frame showing its echo is logged (00 §8).
+
+scenario=term display=fb timeout=90 cmdline="vx.display vx.desktop" with=termtest
+expect="winsrv: window 1"
+prompt="% "
+send="for(i in 0 1) while(! ls /dev/input/$i >/tmp/null >[2=1]) /boot/bin/posix/sleep 0.1; /boot/bin/posix/sleep 1; echo ready"
+line="ready"
+click=50%,50%
+send="/boot/bin/posix/sleep 1; echo focused"
+line="focused"
+typekeys="echo hello, terminal | /boot/bin/posix/tr a-z A-Z"
+expect="term: key to frame"
+send="/boot/bin/posix/sleep 1; echo typed"
+line="typed"
+screen=term-$arch tolerance=1
+send="echo done"
+expect="done"
+fail="vx: panic"
+fail="svcd: term exited"
+fail="svcd: winsrv exited"

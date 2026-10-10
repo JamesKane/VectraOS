@@ -1,0 +1,15 @@
+# tests/user/termtest.ndb: the terminal, measured (-m), as boot/svc/term.ndb
+# starts it (tests/qemu/term.ndb).
+
+service=term program=/boot/bin/term console
+arg=-m
+user=$vx.user
+mount=/ srv=bootfs
+bind=/bin new=/boot/bin flags=a
+mount=/proc srv=proc
+mount=/dev srv=ptyd flags=a
+mount=/tmp srv=tmpfs aname=user
+mount=/srv srv=srv flags=c
+mount=/wsys srv=wsys aname=self
+connect=nsd
+connect=env

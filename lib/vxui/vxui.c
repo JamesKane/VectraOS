@@ -6,7 +6,7 @@
 
 #pragma once
 
-static constexpr uint32_t VXUI_WINDOWS = 8, VXUI_QUEUE = 32, VXUI_NODES = 128;
+static constexpr uint32_t VXUI_WINDOWS = 8, VXUI_QUEUE = 32, VXUI_NODES = 128, VXUI_WAKE_KEY = 1000;
 
 // A widget as one frame has it: what is compared with the last frame's to
 // find the damage, and kept, by id, as the cache.
@@ -68,7 +68,10 @@ struct vx_app {
   uint32_t head, count;
   vx_canvas canvas;
   vx_voice voice;
-  char text[VX_WSYS_TEXT + 1]; // the last VX_TEXT's
+  char text[VXUI_QUEUE][VX_WSYS_TEXT + 1]; // each queued VX_TEXT's, by its slot in the queue
+  vx_handle wake;                          // a counter: vx_app_wake signals it past wakes_seen
+  _Atomic uint64_t wakes;
+  uint64_t wakes_seen;
 };
 
 static vx_app vxui_the_app;
@@ -89,15 +92,19 @@ static vx_app *vx_app_open(const char *id) {
   *app = (vx_app){};
   vx_str s = vx_cstr(id);
   memcpy(app->id, s.ptr, s.len < sizeof app->id - 1 ? s.len : sizeof app->id - 1);
-  if (vx_port_create(0, &app->port) != VX_OK) vxui_fail(app, "no port");
+  if (vx_port_create(0, &app->port) != VX_OK || vx_counter_create(0, &app->wake) != VX_OK)
+    vxui_fail(app, "no port");
   return app;
 }
 
 static const char *vx_app_error(const vx_app *app) { return app->error; }
 
+static void vx_app_wake(vx_app *app) { vx_counter_signal(app->wake, ++app->wakes); }
+
 // --- Windows ---
 
-static void vxui_ctl(vx_window *win, const char *cmd) {
+// A command to one of the window's files in /wsys.
+static void vxui_file(vx_window *win, const char *file, const char *cmd) {
   char path[48] = "/wsys/";
   size_t n = 6, d = 0;
   char digits[10];
@@ -105,12 +112,16 @@ static void vxui_ctl(vx_window *win, const char *cmd) {
   do digits[d++] = (char)('0' + v % 10), v /= 10;
   while (v);
   while (d) path[n++] = digits[--d];
-  memcpy(path + n, "/ctl", 5);
+  path[n++] = '/';
+  vx_str f = vx_cstr(file);
+  memcpy(path + n, f.ptr, f.len), path[n + f.len] = 0;
   vx_fd fd = vx_open(vx_cstr(path), VX_OWRITE);
   if (fd < 0) return;
   vx_write(fd, vx_cstr(cmd));
   vx_close(fd);
 }
+
+static void vxui_ctl(vx_window *win, const char *cmd) { vxui_file(win, "ctl", cmd); }
 
 // The window's records, as events; false once its channel has gone.
 static bool vxui_drain(vx_window *win) {
@@ -155,8 +166,9 @@ static bool vxui_drain(vx_window *win) {
     } else if (h->ordinal == VX_WSYS_COMMIT && size.bytes == sizeof(vx_wsys_commit)) {
       const vx_wsys_commit *c = (const vx_wsys_commit *)m;
       uint32_t len = c->len <= VX_WSYS_TEXT ? c->len : 0;
-      memcpy(app->text, c->text, len), app->text[len] = 0;
-      ev.kind = VX_TEXT, ev.text.text = (vx_str){app->text, len};
+      char *t = app->text[(app->head + app->count) % VXUI_QUEUE]; // the slot vxui_push puts it in
+      memcpy(t, c->text, len), t[len] = 0;
+      ev.kind = VX_TEXT, ev.text.text = (vx_str){t, len};
       vxui_push(app, &ev);
     }
   }
@@ -202,7 +214,11 @@ static vx_window *vx_window_open(vx_app *app, const char *title, uint32_t width,
   cmd[n] = 0;
   vxui_ctl(win, cmd);
   vxui_drain(win); // its CONFIGURE, sent before the write returned (03 §5.1): the first frame its size
-  app->count = 0;
+  app->count = 0;  // the open's CONFIGUREs, as one: the window's size and focus as it starts
+  vx_event ev = {.kind = VX_CONFIGURE, .source = (uint64_t)(uintptr_t)win, .time = vx_now()};
+  ev.configure.width = win->cfg.width, ev.configure.height = win->cfg.height;
+  ev.configure.focused = win->cfg.flags & VX_WSYS_FOCUSED;
+  vxui_push(app, &ev);
   return win;
 }
 
@@ -213,6 +229,20 @@ static void vx_window_title(vx_window *win, const char *title) {
   size_t n = t.len < sizeof cmd - 7 ? t.len : sizeof cmd - 7;
   memcpy(cmd + 6, t.ptr, n), cmd[6 + n] = 0;
   vxui_ctl(win, cmd);
+}
+
+static void vx_window_text_input(vx_window *win, const char *purpose) {
+  if (!win) return;
+  if (!purpose) {
+    vxui_file(win, "ime", "disable");
+    return;
+  }
+  char cmd[32] = "purpose ";
+  vx_str p = vx_cstr(purpose);
+  size_t n = p.len < sizeof cmd - 9 ? p.len : sizeof cmd - 9;
+  memcpy(cmd + 8, p.ptr, n), cmd[8 + n] = 0;
+  vxui_file(win, "ime", cmd);
+  vxui_file(win, "ime", "enable");
 }
 
 static void vx_window_redraw(vx_window *win) {
@@ -249,6 +279,13 @@ static bool vx_wait(vx_app *app, vx_event *ev, vx_instant deadline) {
       w->last_frame = now, w->redraw = false, w->owed = true;
       return true;
     }
+    uint64_t wakes = app->wakes;
+    if (wakes != app->wakes_seen) { // woken by another thread
+      app->wakes_seen = wakes;
+      *ev = (vx_event){.kind = VX_WAKE, .source = (uint64_t)(uintptr_t)app, .time = vx_now()};
+      return true;
+    }
+    vx_port_bind(app->port, app->wake, VX_TRIGGER_COUNTER_GE, VXUI_WAKE_KEY, wakes + 1);
     bool any = false;
     for (uint32_t i = 0; i < VXUI_WINDOWS; i++) {
       vx_window *w = &app->win[i];
@@ -268,6 +305,7 @@ static bool vx_wait(vx_app *app, vx_event *ev, vx_instant deadline) {
       return true;
     }
     for (int64_t k = 0; k < n; k++) {
+      if (pk[k].key == VXUI_WAKE_KEY) continue; // seen by the loop's next turn
       vx_window *w = &app->win[pk[k].key % VXUI_WINDOWS];
       if (w->used && !w->closed && !vxui_drain(w)) {
         w->closed = true;

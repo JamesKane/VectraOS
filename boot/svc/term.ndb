@@ -1,0 +1,16 @@
+# boot/svc/term.ndb: the terminal (M7 step 7f1, term(1)), with vx.term on the
+# kernel command line: rc on a pseudo-terminal, in a window. Its rc shares
+# its namespace, the console shell's (shell.ndb) with the window server's
+# app attach at /wsys and ptyd's terminals in /dev.
+
+service=term program=/boot/bin/term console when=vx.term
+user=$vx.user
+mount=/ srv=bootfs
+bind=/bin new=/boot/bin flags=a
+mount=/proc srv=proc
+mount=/dev srv=ptyd flags=a
+mount=/tmp srv=tmpfs aname=user
+mount=/srv srv=srv flags=c
+mount=/wsys srv=wsys aname=self
+connect=nsd
+connect=env

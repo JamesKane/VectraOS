@@ -123,7 +123,7 @@ static struct {
   vx_handle in, out, err;
   vx_pipe_in reader; // stdin's
   size_t len;
-  alignas(vx_msg_header) uint8_t line[sizeof(vx_msg_header) + 512]; // stdout's line, after a header
+  alignas(vx_msg_header) uint8_t line[sizeof(vx_msg_header) + 4096]; // stdout's lines, after a header
   size_t err_len;
   alignas(vx_msg_header) uint8_t err_line[sizeof(vx_msg_header) + 512]; // stderr's
 } vx_stdio;
@@ -172,11 +172,25 @@ static void vx_stderr_flush(void) {
   vx_unlock(&vx_stdio_lock);
 }
 
+// Whole lines go out at once, as many as a message holds (4096 bytes, what
+// every pipe reader takes); a line not yet ended waits for its end, or for
+// a read of stdin (M7 step 7f1: a message a line was the terminal's
+// bottleneck).
 [[maybe_unused]] static void vx_stdout_print(vx_str s) {
-  for (size_t i = 0; i < s.len; i++) {
-    vx_stdio.line[sizeof(vx_msg_header) + vx_stdio.len++] = (uint8_t)s.ptr[i];
-    if (s.ptr[i] == '\n' || vx_stdio.len == sizeof vx_stdio.line - sizeof(vx_msg_header)) vx_stdout_flush();
+  uint8_t *buf = vx_stdio.line + sizeof(vx_msg_header);
+  size_t cap = sizeof vx_stdio.line - sizeof(vx_msg_header);
+  for (size_t i = 0; i < s.len;) {
+    size_t take = s.len - i < cap - vx_stdio.len ? s.len - i : cap - vx_stdio.len;
+    memcpy(buf + vx_stdio.len, s.ptr + i, take);
+    vx_stdio.len += take, i += take;
+    if (vx_stdio.len == cap) vx_stdout_flush();
   }
+  size_t end = vx_stdio.len;
+  while (end && buf[end - 1] != '\n') end--;
+  if (!end || !vx_stdio.out) return;
+  vx_pipe_write(vx_stdio.out, vx_stdio.line, end);
+  memmove(buf, buf + end, vx_stdio.len - end);
+  vx_stdio.len -= end;
 }
 
 // Reads up to count bytes from a pipe: 0 at its end, or a negative vx_status.
@@ -209,6 +223,7 @@ static int64_t vx_pipe_read(vx_pipe_in *p, void *buf, uint32_t count) {
 [[maybe_unused]] static int64_t vx_stdin_read(void *buf, uint32_t count) {
   if (!vx_stdio.in) return vx_console_read(buf, count);
   if (vx_stdio.len) vx_stdout_flush();
+  if (vx_stdio.err_len) vx_stderr_flush(); // a prompt (rc's, on stderr) before the wait for its answer
   vx_stdio.reader.end = vx_stdio.in;
   return vx_pipe_read(&vx_stdio.reader, buf, count);
 }

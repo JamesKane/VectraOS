@@ -65,12 +65,21 @@ typedef struct vx_pixels {
 [[maybe_unused]] static vx_app *vx_app_open(const char *id);
 [[maybe_unused]] static const char *vx_app_error(const vx_app *app);
 [[maybe_unused]] static bool vx_wait(vx_app *app, vx_event *ev, vx_instant deadline);
+// From any thread: the app's vx_wait returns a VX_WAKE (one for any number
+// of wakes since the last), so a thread of the app's own (a reader) can hand
+// it work.
+[[maybe_unused]] static void vx_app_wake(vx_app *app);
 
 [[maybe_unused]] static vx_window *vx_window_open(vx_app *app, const char *title, uint32_t width,
                                                   uint32_t height);
 [[maybe_unused]] static void vx_window_redraw(vx_window *win);
 [[maybe_unused]] static void vx_window_animate(vx_window *win, bool on);
 [[maybe_unused]] static void vx_window_title(vx_window *win, const char *title);
+// Text input (docs/proto/wsys.md, the window's ime file): on, its text
+// resolved by the server (dead keys, compose, an input method) and given as
+// VX_TEXT, commands still VX_KEY; purpose is text, password, number, url,
+// email or terminal. Off (nullptr), as a window starts: keys alone.
+[[maybe_unused]] static void vx_window_text_input(vx_window *win, const char *purpose);
 
 [[maybe_unused]] static vx_canvas *vx_canvas_begin(vx_window *win, const vx_frame_event *frame);
 [[maybe_unused]] static void vx_clear(vx_canvas *c, vx_color colour);

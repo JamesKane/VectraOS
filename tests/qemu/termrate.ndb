@@ -1,0 +1,19 @@
+# tests/qemu/termrate.ndb: the terminal's throughput (M7 step 7f1, 00 §8: cat
+# of 1 GiB in under a second, over the whole path): textgen's 1 GiB of text
+# through cat onto the terminal, its time logged. Run by ./build bench, under
+# KVM in a release build; 7h holds the budget. 2026-10-10: 2.95 s (see
+# docs/milestones/M7-gaps.md).
+
+scenario=termrate bench timeout=120 cmdline="vx.display vx.desktop" with=termtest,textgen
+expect="winsrv: window 1"
+prompt="% "
+send="for(i in 0 1) while(! ls /dev/input/$i >/tmp/null >[2=1]) /boot/bin/posix/sleep 0.1; /boot/bin/posix/sleep 1; echo ready"
+line="ready"
+click=50%,50%
+send="/boot/bin/posix/sleep 1; echo focused"
+line="focused"
+typekeys="/boot/bin/textgen 1024 | cat"
+expect="textgen: 1024 MiB in"
+fail="vx: panic"
+fail="svcd: term exited"
+fail="svcd: winsrv exited"

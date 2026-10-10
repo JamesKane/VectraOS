@@ -21,7 +21,10 @@
 #include "../../lib/vx-ns/spawn.c"
 #include "../../lib/vx-posix/posix.h"
 
-static constexpr uint32_t PTYS = 16, BUF = 4096, NCCS = 32;
+// BUF: input and a line being typed, as Linux's; OUT: output, the master's
+// to read, big enough that a terminal reads it in few calls (M7 step 7f1:
+// the terminal's throughput).
+static constexpr uint32_t PTYS = 16, BUF = 4096, OUT = 65536, NCCS = 32;
 enum : uint64_t {
   ROOT = 1,
   PTMX = 2,
@@ -46,8 +49,8 @@ enum : uint32_t { V_INTR = 0, V_QUIT = 1, V_ERASE = 2, V_KILL = 3, V_EOF = 4, V_
 static constexpr int64_t SIGINT = 2, SIGQUIT = 3, SIGTSTP = 20, SIGWINCH = 28;
 
 typedef struct ring {
-  uint8_t b[BUF];
-  uint32_t head, len;
+  uint8_t *b;
+  uint32_t cap, head, len;
 } ring;
 
 typedef struct pty {
@@ -66,7 +69,8 @@ typedef struct pty {
   uint32_t nbreaks;
   uint8_t line[BUF]; // the line being typed (canonical)
   uint32_t line_len;
-  ring out;         // for the master to read: the slave's output and echo
+  ring out; // for the master to read: the slave's output and echo
+  uint8_t in_b[BUF], out_b[OUT];
   bool reading;     // a slave read is held, waiting for input
   bool interrupted; // a signal was sent while one was: it ends
 } pty;
@@ -76,14 +80,24 @@ static vx_ns ns;          // /proc, to signal process groups
 static bool proc_mounted; // it is there
 
 static void ring_put(ring *r, uint8_t c) {
-  if (r->len == BUF) return; // full: dropped, as a terminal does
-  r->b[(r->head + r->len++) % BUF] = c;
+  if (r->len == r->cap) return; // full: dropped, as a terminal does
+  r->b[(r->head + r->len++) % r->cap] = c;
+}
+
+// n bytes in, which the caller has room for: in at most two copies.
+static void ring_put_run(ring *r, const uint8_t *s, uint32_t n) {
+  uint32_t at = (r->head + r->len) % r->cap, first = n < r->cap - at ? n : r->cap - at;
+  memcpy(r->b + at, s, first);
+  memcpy(r->b, s + first, n - first);
+  r->len += n;
 }
 
 static uint32_t ring_take(ring *r, uint8_t *out, uint32_t n) {
   if (n > r->len) n = r->len;
-  for (uint32_t i = 0; i < n; i++) out[i] = r->b[(r->head + i) % BUF];
-  r->head = (r->head + n) % BUF;
+  uint32_t first = n < r->cap - r->head ? n : r->cap - r->head;
+  memcpy(out, r->b + r->head, first);
+  memcpy(out + first, r->b, n - first);
+  r->head = (r->head + n) % r->cap;
   r->len -= n;
   return n;
 }
@@ -92,7 +106,7 @@ static struct p9_ring_server server; // below
 
 // Input, counted, for the breaks' positions.
 static void in_put(pty *p, uint8_t c) {
-  if (p->in.len == BUF) return; // full: dropped, as a terminal does
+  if (p->in.len == p->in.cap) return; // full: dropped, as a terminal does
   ring_put(&p->in, c);
   p->in_put++;
 }
@@ -318,6 +332,7 @@ static vx_status fs_clone(void *ctx, uint64_t node, uint8_t mode, uint64_t *open
                .lflag = T_ISIG | T_ICANON | T_ECHO | T_ECHOE | T_ECHOK,
                .rows = 24,
                .cols = 80};
+    p->in = (ring){.b = p->in_b, .cap = BUF}, p->out = (ring){.b = p->out_b, .cap = OUT};
     p->cc[V_INTR] = 3, p->cc[V_QUIT] = 0x1c, p->cc[V_ERASE] = 0x7f, p->cc[V_KILL] = 0x15;
     p->cc[V_EOF] = 4, p->cc[V_MIN] = 1, p->cc[V_SUSP] = 0x1a;
     *opened = MASTER + i;
@@ -452,12 +467,16 @@ static vx_status fs_write(void *ctx, uint64_t node, uint64_t offset, const uint8
   // The program's output, to the master: as much as there is room for (a
   // newline may take two), the rest written again; none, and the write
   // waits for the master to read (held, as a read is).
+  // Copied in runs, up to each newline that becomes two bytes.
+  bool onlcr = (p->oflag & T_OPOST) && (p->oflag & T_ONLCR);
   uint32_t taken = 0;
-  for (; taken < *count; taken++) {
-    bool crnl = buf[taken] == '\n' && (p->oflag & T_OPOST) && (p->oflag & T_ONLCR);
-    if (BUF - p->out.len < (crnl ? 2u : 1u)) break;
-    if (crnl) ring_put(&p->out, '\r');
-    ring_put(&p->out, buf[taken]);
+  while (taken < *count) {
+    uint32_t run = 0, room = p->out.cap - p->out.len;
+    while (taken + run < *count && run < room && !(onlcr && buf[taken + run] == '\n')) run++;
+    ring_put_run(&p->out, buf + taken, run);
+    taken += run, room -= run;
+    if (taken == *count || room < 2 || !onlcr || buf[taken] != '\n') break;
+    ring_put_run(&p->out, (const uint8_t *)"\r\n", 2), taken++;
   }
   if (!taken && *count) return VX_ERR_SHOULD_WAIT;
   *count = taken;

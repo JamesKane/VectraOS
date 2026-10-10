@@ -36,6 +36,7 @@ enum : uint32_t {
   VX_TEXT = 67,      // text, committed: text.text
   VX_CONFIGURE = 68, // the window's size or focus changed: configure
   VX_CLOSE = 69,     // the window was closed
+  VX_WAKE = 70,      // vx_app_wake, from another thread: source is the vx_app
 };
 
 // A frame event (03 §4, §6 item 4): when a frame drawn now is meant to be

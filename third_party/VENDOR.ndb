@@ -101,7 +101,7 @@ name=stb_truetype
     license="MIT or public domain (the Unlicense), the user's choice (LICENSE)"
     adr=docs/adr/0052-stb-truetype.md
     port=ports/font/port.ndb
-    reviewed.by=pending
+    reviewed.by="James Kane" reviewed.date=2026-10-10
 
 name=kb_text_shape
     version="v2.28e, kb cc63806"
@@ -112,7 +112,7 @@ name=kb_text_shape
     license=Zlib
     adr=docs/adr/0053-kb-text-shape.md
     port=ports/font/port.ndb
-    reviewed.by=pending
+    reviewed.by="James Kane" reviewed.date=2026-10-10
 
 name=inter
     version=4.1
@@ -122,4 +122,14 @@ name=inter
     tree.sha256=619c6bcd509b91aa78b34db56cedcea1fb03bdbfc714e85436b4eab99728099a
     license=OFL-1.1
     adr=docs/adr/0054-inter.md
-    reviewed.by=pending
+    reviewed.by="James Kane" reviewed.date=2026-10-10
+
+name=jetbrains_mono
+    version=2.304
+    upstream=https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip
+    sha256=6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf
+    subset="OFL.txt fonts/ttf/JetBrainsMono-Regular.ttf fonts/ttf/JetBrainsMono-Bold.ttf"
+    tree.sha256=69f06f7aa93626eb29498c49b21bc894aadc9d26c93fada3f7bdebb02da66e18
+    license=OFL-1.1
+    adr=docs/adr/0055-jetbrains-mono.md
+    reviewed.by="James Kane" reviewed.date=2026-10-10

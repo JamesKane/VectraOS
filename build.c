@@ -1446,6 +1446,8 @@ static const program USER_PROGRAMS[] = {
      nullptr}, // ./build bench's measurements (7a5)
     {"flighttest", "tests/user/tracetest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
      nullptr}, // tracetest's flight recorder test, as a program of its own (7a4a)
+    {"textgen", "tests/user/textgen.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,
+     nullptr}, // the terminal's throughput (7f1)
     {"uitest", "tests/user/uitest.c", IN_TESTS, nullptr, false, &font, VXUI_FLAGS, false, LINK_STATIC,
      nullptr}, // vxui's immediate-mode UI (7e2b)
     {"minimal", "tests/user/minimal.c", IN_TESTS, nullptr, false, &font, VXUI_FLAGS, false, LINK_STATIC,
@@ -1503,6 +1505,8 @@ static const program USER_PROGRAMS[] = {
     {"install", "cmd/install.c", IN_BOOTFS, nullptr, false, &monocypher, MONOCYPHER_USE_FLAGS, false,
      LINK_STATIC, nullptr},
     {"ls", "cmd/ls.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
+    {"term", "cmd/term.c", IN_BOOTFS, nullptr, false, &font, VXUI_FLAGS, false, LINK_STATIC,
+     nullptr}, // the terminal (7f1)
     {"cat", "cmd/cat.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
     {"srv", "cmd/srv.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
     {"echo", "cmd/echo.c", IN_BOOTFS, nullptr, false, nullptr, nullptr, false, LINK_STATIC, nullptr},
@@ -3607,6 +3611,12 @@ static bool make_bootfs(const arch *a, bool release, const char *with, const cha
     bootfs_room(count);
     files[count] = read_file(fmt("third_party/inter/extras/ttf/%s", FONTS[i]));
     paths[count++] = fmt("lib/font/%s", FONTS[i]);
+  }
+  static const char *const MONO[] = {"JetBrainsMono-Regular.ttf", "JetBrainsMono-Bold.ttf"}; // the terminal's
+  for (size_t i = 0; i < sizeof MONO / sizeof MONO[0]; i++) {
+    bootfs_room(count);
+    files[count] = read_file(fmt("third_party/jetbrains_mono/fonts/ttf/%s", MONO[i]));
+    paths[count++] = fmt("lib/font/%s", MONO[i]);
   }
   for (int i = 0; i < USER_PROGRAM_COUNT; i++) {
     if (USER_PROGRAMS[i].where != IN_TESTS || !listed(with, USER_PROGRAMS[i].name)) continue;
@@ -6775,7 +6785,7 @@ int main(int argc, char **argv) {
     check_toolchain();
     const arch *x86 = &ARCHES[0];
     if (!kvm_usable(x86)) die("bench needs KVM: x86_64 and access to /dev/kvm");
-    scenarios[0] = "bench", scenarios[1] = "benchslow", scenario_count = 2;
+    scenarios[0] = "bench", scenarios[1] = "benchslow", scenarios[2] = "termrate", scenario_count = 3;
     return cmd_test(x86, true);
   }
   if (strcmp(command, "loc") == 0) return cmd_loc();

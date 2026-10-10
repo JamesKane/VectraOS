@@ -1,5 +1,5 @@
 page=vxui sect=2 summary="the app tier's API: an app, its windows, one wait, a canvas, CPU pixels, voices"
-    names=vx_app_open,vx_app_error,vx_wait,vx_window_open,vx_window_redraw,vx_window_animate,vx_window_title,vx_canvas_begin,vx_clear,vx_fill_rect,vx_circle,vx_canvas_present,vx_pixels_begin,vx_pixels_present,vx_ui_begin,vx_ui_end,vx_label,vx_button,vx_push_id,vx_pop_id,vx_voice_open,vx_voice_play
+    names=vx_app_open,vx_app_error,vx_wait,vx_app_wake,vx_window_text_input,vx_window_open,vx_window_redraw,vx_window_animate,vx_window_title,vx_canvas_begin,vx_clear,vx_fill_rect,vx_circle,vx_canvas_present,vx_pixels_begin,vx_pixels_present,vx_ui_begin,vx_ui_end,vx_label,vx_button,vx_push_id,vx_pop_id,vx_voice_open,vx_voice_play
     src=lib/vxui/vxui.h,lib/vxui/vxui.c,abi/vx/loop.h
     keys=vxui,app,window,frame,event,canvas,pixels,voice,gui,toolkit,immediate,widget,button,label
 
@@ -11,12 +11,14 @@ page=vxui sect=2 summary="the app tier's API: an app, its windows, one wait, a c
 vx_app *vx_app_open(const char *id);
 const char *vx_app_error(const vx_app *app);
 bool vx_wait(vx_app *app, vx_event *ev, vx_instant deadline);
+void vx_app_wake(vx_app *app);
 
 vx_window *vx_window_open(vx_app *app, const char *title,
                           uint32_t width, uint32_t height);
 void vx_window_redraw(vx_window *win);
 void vx_window_animate(vx_window *win, bool on);
 void vx_window_title(vx_window *win, const char *title);
+void vx_window_text_input(vx_window *win, const char *purpose);
 
 vx_canvas *vx_canvas_begin(vx_window *win, const vx_frame_event *frame);
 void vx_clear(vx_canvas *c, vx_color colour);
@@ -42,11 +44,15 @@ void vx_voice_play(vx_voice *voice);
 # DESCRIPTION
 
 vxui is the app tier (03 §6), v0 (M7 step 7e2).
-An app has one loop and one wait, its own: `vx_wait` returns the next event of any of its windows in libvx's `vx_event` (loop(2)), with vxui's kinds, the window as `source`: `VX_FRAME` (`frame`: its sequence, `target`, `prev_presented` and `dt`), `VX_KEY` (`keyboard`: the HID usage, its unmodified rune, the modifiers, down and repeat), `VX_POINTER` (`pointer`: x and y in the window, the buttons, the wheel), `VX_TEXT` (`text`), `VX_CONFIGURE` (`configure`: the size, focus) and `VX_CLOSE`.
+An app has one loop and one wait, its own: `vx_wait` returns the next event of any of its windows in libvx's `vx_event` (loop(2)), with vxui's kinds, the window as `source`: `VX_FRAME` (`frame`: its sequence, `target`, `prev_presented` and `dt`), `VX_KEY` (`keyboard`: the HID usage, its unmodified rune, the modifiers, down and repeat), `VX_POINTER` (`pointer`: x and y in the window, the buttons, the wheel), `VX_TEXT` (`text`, good until the queue has gone round, 32 events later), `VX_CONFIGURE` (`configure`: the size, focus), `VX_CLOSE` and `VX_WAKE`.
+A window's first event is a `VX_CONFIGURE`, its size and focus as it opens.
+`vx_app_wake`, from any thread, makes the app's `vx_wait` return a `VX_WAKE` (one for any number of wakes since the last), so a thread of the app's own, a reader, can hand it work.
 With a deadline that comes first, it returns `true` and `VX_NONE`.
 The toolkit never calls back.
 
 A window is made by opening `/wsys/new`, the window server's app attach (winsrv(8); a manifest gives it with `mount=/wsys srv=wsys aname=self`), titled and sized with its `ctl`, and drawn into two buffers in turn.
+`vx_window_text_input` turns on the window's text input (winsrv(8)'s `ime` file): text the server resolved, through dead keys, compose or an input method, comes as `VX_TEXT`, and keys still come as `VX_KEY` for commands; the purpose is `text`, `password`, `number`, `url`, `email` or `terminal`, and a null one turns it off, as a window starts.
+
 It draws only when asked: `vx_window_redraw` asks for one `VX_FRAME`, `vx_window_animate` for one every frame the output shows; either comes only with a credit of the frame protocol in hand, so an idle window costs nothing.
 
 `vx_canvas_begin` and `vx_canvas_present` bracket drawing with `vx_clear`, `vx_fill_rect` and `vx_circle` (antialiased); colours are XRGB or the theme's (`VX_THEME_BG`, `VX_THEME_FG`, `VX_THEME_ACCENT`, `VX_THEME_FACE`).

@@ -260,6 +260,33 @@ static uint32_t vx_font_blend(uint32_t d, uint32_t c, uint32_t a) {
   return out;
 }
 
+// A rune's glyph in f, unshaped (a terminal's cells); 0, the missing glyph,
+// for one it lacks.
+[[maybe_unused]] static uint32_t vx_font_glyph(vx_font *f, uint32_t rune) {
+  return (uint32_t)stbtt_FindGlyphIndex(&f->tt, (int)rune);
+}
+
+// One glyph drawn with its origin at x64 (1/64 pixels) and its baseline at y.
+static void vx_glyph_draw(vx_font_target *cv, vx_atlas *a, vx_font *f, uint32_t px, uint32_t glyph,
+                          int64_t x64, int32_t y, uint32_t colour) {
+  int64_t whole = x64 >= 0 ? x64 / 64 : -((-x64 + 63) / 64);
+  uint32_t sub = (uint32_t)((x64 - whole * 64) / 16); // the quarter pixel
+  const uint8_t *bm;
+  const vx_atlas_slot *s = vx_atlas_get(a, f, glyph, px, sub, &bm);
+  int32_t ox = (int32_t)whole + s->x0, oy = y + s->y0;
+  for (int32_t r = 0; r < s->h; r++) {
+    int32_t yy = oy + r;
+    if (yy < cv->clip_y0 || yy >= cv->clip_y1) continue;
+    uint32_t *row = &cv->px[(size_t)yy * cv->stride];
+    for (int32_t c = 0; c < s->w; c++) {
+      int32_t xx = ox + c;
+      uint32_t cover = bm[(size_t)r * VX_ATLAS_CELL + (size_t)c];
+      if (!cover || xx < cv->clip_x0 || xx >= cv->clip_x1) continue;
+      row[xx] = cover == 255 ? colour : vx_font_blend(row[xx], colour, cover);
+    }
+  }
+}
+
 // UTF-8 text drawn with its pen starting at x and its baseline at y, in
 // colour, px pixels to the em; the pen's end (its x).
 [[maybe_unused]] static int32_t vx_text_draw(vx_font_target *cv, vx_atlas *a, vx_font *f, uint32_t px,
@@ -269,24 +296,8 @@ static uint32_t vx_font_blend(uint32_t d, uint32_t c, uint32_t a) {
   int32_t advance = 0;
   uint32_t n = vx_font_shape(f, text, len, glyphs, 256, &advance);
   int64_t pen64 = (int64_t)x * 64;
-  for (uint32_t i = 0; i < n; i++) {
-    int64_t gx64 = pen64 + vx_font_to64(f, glyphs[i].x, px);
-    int64_t whole = gx64 >= 0 ? gx64 / 64 : -((-gx64 + 63) / 64);
-    uint32_t sub = (uint32_t)((gx64 - whole * 64) / 16); // the quarter pixel
-    const uint8_t *bm;
-    const vx_atlas_slot *s = vx_atlas_get(a, f, glyphs[i].glyph, px, sub, &bm);
-    int32_t ox = (int32_t)whole + s->x0, oy = y - vx_font_to64(f, glyphs[i].y, px) / 64 + s->y0;
-    for (int32_t r = 0; r < s->h; r++) {
-      int32_t yy = oy + r;
-      if (yy < cv->clip_y0 || yy >= cv->clip_y1) continue;
-      for (int32_t c = 0; c < s->w; c++) {
-        int32_t xx = ox + c;
-        uint32_t cover = bm[(size_t)r * VX_ATLAS_CELL + (size_t)c];
-        if (!cover || xx < cv->clip_x0 || xx >= cv->clip_x1) continue;
-        uint32_t *d = &cv->px[(size_t)yy * cv->stride + (size_t)xx];
-        *d = vx_font_blend(*d, colour, cover);
-      }
-    }
-  }
+  for (uint32_t i = 0; i < n; i++)
+    vx_glyph_draw(cv, a, f, px, glyphs[i].glyph, pen64 + vx_font_to64(f, glyphs[i].x, px),
+                  y - vx_font_to64(f, glyphs[i].y, px) / 64, colour);
   return x + (int32_t)(vx_font_to64(f, advance, px) / 64);
 }
