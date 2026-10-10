@@ -1,0 +1,41 @@
+# tests/qemu/replay.ndb: looped playback (M7 step 7g2c, 03 §6.1;
+# tests/user/reloadhost.c, replay_app.c): image A runs in the hot-reload
+# host; F9 records two spaces pressed, F9 again plays them in a loop, the
+# storage restored each time (frames 2 and 3 again, presses 1 and 2), a live
+# key not given to the image; B renamed over A while it plays draws the next
+# loop; F9 a third time is live again, a space given to B.
+
+scenario=replay display=fb timeout=120 cmdline="vx.display vx.desktop" with=reloadhost,libreplaya.so,libreplayb.so
+expect="reloadhost: waiting for /tmp/app.so"
+prompt="% "
+send="for(i in 0 1) while(! ls /dev/input/$i >/tmp/null >[2=1]) /boot/bin/posix/sleep 0.1; /boot/bin/posix/cp /lib/libreplaya.so /tmp/app.so.new; /boot/bin/posix/mv /tmp/app.so.new /tmp/app.so"
+expect="replay: image A drew frame 1, presses 0, live"
+click=200px,160px
+prompt="% "
+send="/boot/bin/posix/sleep 1; echo cli''cked"
+expect="clicked"
+key=f9
+expect="reloadhost: recording"
+key=spc
+expect="replay: image A drew frame 2, presses 1, live"
+key=spc
+expect="replay: image A drew frame 3, presses 2, live"
+key=f9
+expect="reloadhost: playing"
+expect="replay: image A drew frame 2, presses 1, replayed"
+expect="replay: image A drew frame 3, presses 2, replayed"
+key=a
+expect="replay: image A drew frame 2, presses 1, replayed"
+prompt="% "
+send="/boot/bin/posix/cp /lib/libreplayb.so /tmp/app.so.new; /boot/bin/posix/mv /tmp/app.so.new /tmp/app.so"
+expect="replay: image B drew frame 2, presses 1, replayed"
+expect="replay: image B drew frame 3, presses 2, replayed"
+key=f9
+expect="reloadhost: live"
+key=spc
+expect="replay: image B was given a space, live"
+fail="was given a live key"
+fail="stale"
+fail="vx: panic"
+fail="svcd: reloadhost exited"
+fail="svcd: winsrv exited"

@@ -1383,6 +1383,7 @@ static const char *const IMAGE_NEEDS[] = {"libimage.so", nullptr};
 // The hot-reload test's (7g2b): its host and its two images, on libvxui.so.
 static const char *const RELOAD_NEEDS[] = {"libvxui.so", nullptr};
 static const char *const RELOAD_B[] = {"-Ilib/vxui", "-DRELOAD_B", nullptr};
+static const char *const REPLAY_B[] = {"-Ilib/vxui", "-DREPLAY_B", nullptr}; // looped playback's (7g2c)
 // An SDK app's flags for vxui.h (ADR-0056): its header alone, libvxui.so answering it.
 static const char *const VXUI_APP_FLAGS[] = {"-Ilib/vxui", nullptr};
 // libvxui.so's: vxui with the font port's headers as system ones.
@@ -1491,6 +1492,10 @@ static const program USER_PROGRAMS[] = {
      LINK_SHARED, RELOAD_NEEDS}, // and B
     {"reloadhost", "tests/user/reloadhost.c", IN_TESTS, nullptr, false, nullptr, VXUI_APP_FLAGS, true,
      LINK_DYNAMIC, RELOAD_NEEDS}, // the host
+    {"libreplaya.so", "tests/user/replay_app.c", IN_TESTS, nullptr, false, nullptr, VXUI_APP_FLAGS, true,
+     LINK_SHARED, RELOAD_NEEDS}, // looped playback's image A (7g2c)
+    {"libreplayb.so", "tests/user/replay_app.c", IN_TESTS, nullptr, false, nullptr, REPLAY_B, true,
+     LINK_SHARED, RELOAD_NEEDS}, // and B
     {"pixelsdyn", "tests/user/pixelsdyn.c", IN_TESTS, nullptr, false, nullptr, VXUI_APP_FLAGS, true,
      LINK_DYNAMIC, PIXELSDYN_NEEDS}, // 03's pixels as an SDK app on libvxui.so (7g2a)
     {"prompttest", "tests/user/prompttest.c", IN_TESTS, nullptr, false, nullptr, nullptr, false, LINK_STATIC,

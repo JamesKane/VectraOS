@@ -14,6 +14,7 @@
 #endif
 
 static constexpr uint32_t VXUI_WINDOWS = 8, VXUI_QUEUE = 32, VXUI_NODES = 128, VXUI_WAKE_KEY = 1000;
+static constexpr uint32_t VXUI_REPLAY_EVENTS = 1u << 16, VXUI_REPLAY_TEXT = 4u << 20, VXUI_SCAN = 64u << 10;
 
 // A widget as one frame has it: what is compared with the last frame's to
 // find the damage, and kept, by id, as the cache.
@@ -67,6 +68,25 @@ struct vx_voice {
   vx_sound sound;
 };
 
+// Looped playback's (7g2c): the storage as it was at the start, and the
+// events vx_wait returned since, each at its time.
+typedef struct vxui_replay {
+  uint8_t state; // VXUI_OFF, VXUI_RECORDING, VXUI_PLAYING
+  vx_app_memory *mem;
+  vx_handle snap;        // a lazy VMO: the storage's pages that were not zero, each at its offset
+  uint64_t *made;        // which those were, a bit a page
+  uint64_t pages;        // the storage's
+  uint8_t *buf;          // VXUI_SCAN bytes for copying between the two
+  vx_event *events;      // the recording, in a lazy mapping made once
+  char *text;            // its VX_TEXTs' bytes, after the events
+  uint32_t count, next;  // events recorded; the next to play
+  uint32_t frames, used; // VX_FRAMEs among them; text bytes
+  vx_instant t0, from;   // the recording's start; this playing's
+  vx_duration length;    // how long it recorded
+} vxui_replay;
+
+enum : uint8_t { VXUI_OFF, VXUI_RECORDING, VXUI_PLAYING };
+
 struct vx_app {
   char id[64];
   const char *error; // sticky
@@ -80,6 +100,7 @@ struct vx_app {
   vx_handle wake;                          // a counter: vx_app_wake signals it past wakes_seen
   _Atomic uint64_t wakes;
   uint64_t wakes_seen;
+  vxui_replay replay;
 };
 
 static vx_app vxui_the_app;
@@ -166,11 +187,7 @@ static bool vxui_drain(vx_window *win) {
       ev.kind = VX_POINTER;
       ev.pointer.x = (float)p->x, ev.pointer.y = (float)p->y, ev.pointer.buttons = p->buttons;
       ev.pointer.wheel = p->wheel;
-      vxui_push(app, &ev);
-      if (p->buttons && !win->buttons) win->down_seen = true, win->down_x = p->x, win->down_y = p->y;
-      if (!p->buttons && win->buttons) win->up_seen = true, win->up_x = p->x, win->up_y = p->y;
-      win->px = p->x, win->py = p->y, win->buttons = p->buttons;
-      if (win->has_ui) win->redraw = true; // its buttons may look or answer otherwise
+      vxui_push(app, &ev); // the UI sees it when vx_wait returns it (vxui_seen)
     } else if (h->ordinal == VX_WSYS_COMMIT && size.bytes == sizeof(vx_wsys_commit)) {
       const vx_wsys_commit *c = (const vx_wsys_commit *)m;
       uint32_t len = c->len <= VX_WSYS_TEXT ? c->len : 0;
@@ -263,9 +280,14 @@ VXUI_API void vx_window_animate(vx_window *win, bool on) {
 
 // --- The wait ---
 
-VXUI_API bool vx_wait(vx_app *app, vx_event *ev, vx_instant deadline) {
+typedef enum vxui_got { VXUI_ERROR, VXUI_EVENT, VXUI_NOTHING } vxui_got;
+
+// The next live event, frames among them only when frames; VXUI_NOTHING at
+// the deadline, or as soon as want holds a credit or is closed.
+static vxui_got vxui_live(vx_app *app, vx_event *ev, vx_instant deadline, bool frames,
+                          const vx_window *want) {
   for (;;) {
-    if (app->error) return false;
+    if (app->error) return VXUI_ERROR;
     for (uint32_t i = 0; i < VXUI_WINDOWS; i++) { // a frame handed out and never presented is let go
       vx_window *w = &app->win[i];
       if (w->used && w->owed) w->owed = false, w->span = 0;
@@ -273,9 +295,10 @@ VXUI_API bool vx_wait(vx_app *app, vx_event *ev, vx_instant deadline) {
     if (app->count) {
       *ev = app->queue[app->head];
       app->head = (app->head + 1) % VXUI_QUEUE, app->count--;
-      return true;
+      return VXUI_EVENT;
     }
-    for (uint32_t i = 0; i < VXUI_WINDOWS; i++) { // a frame, to a window that asked and holds a credit
+    for (uint32_t i = 0; frames && i < VXUI_WINDOWS;
+         i++) { // a frame, to a window that asked and holds a credit
       vx_window *w = &app->win[i];
       if (!w->used || w->closed || !(w->redraw || w->animate) || !w->credits) continue;
       vx_instant now = vx_now();
@@ -286,14 +309,15 @@ VXUI_API bool vx_wait(vx_app *app, vx_event *ev, vx_instant deadline) {
                                    .dt = w->last_frame ? now - w->last_frame : 0};
       w->last_frame = now, w->redraw = false, w->owed = true;
       w->span = vx_span_begin();
-      return true;
+      return VXUI_EVENT;
     }
     uint64_t wakes = app->wakes;
     if (wakes != app->wakes_seen) { // woken by another thread
       app->wakes_seen = wakes;
       *ev = (vx_event){.kind = VX_WAKE, .source = (uint64_t)(uintptr_t)app, .time = vx_now()};
-      return true;
+      return VXUI_EVENT;
     }
+    if (want && (want->credits || want->closed)) return VXUI_NOTHING;
     vx_port_bind(app->port, app->wake, VX_TRIGGER_COUNTER_GE, VXUI_WAKE_KEY, wakes + 1);
     bool any = false;
     for (uint32_t i = 0; i < VXUI_WINDOWS; i++) {
@@ -309,10 +333,7 @@ VXUI_API bool vx_wait(vx_app *app, vx_event *ev, vx_instant deadline) {
       vxui_fail(app, "no windows to wait on");
       continue;
     }
-    if (n <= 0) { // the deadline: nothing
-      *ev = (vx_event){.kind = VX_NONE, .time = vx_now()};
-      return true;
-    }
+    if (n <= 0) return VXUI_NOTHING; // the deadline
     for (int64_t k = 0; k < n; k++) {
       if (pk[k].key == VXUI_WAKE_KEY) continue; // seen by the loop's next turn
       vx_window *w = &app->win[pk[k].key % VXUI_WINDOWS];
@@ -324,6 +345,175 @@ VXUI_API bool vx_wait(vx_app *app, vx_event *ev, vx_instant deadline) {
       }
     }
   }
+}
+
+// What the UI keeps of a pointer event the app is given: where it is, and a
+// click's ends.
+static void vxui_seen(const vx_event *ev) {
+  if (ev->kind != VX_POINTER) return;
+  vx_window *win = (vx_window *)(uintptr_t)ev->source;
+  int32_t x = (int32_t)ev->pointer.x, y = (int32_t)ev->pointer.y;
+  uint32_t buttons = ev->pointer.buttons;
+  if (buttons && !win->buttons) win->down_seen = true, win->down_x = x, win->down_y = y;
+  if (!buttons && win->buttons) win->up_seen = true, win->up_x = x, win->up_y = y;
+  win->px = x, win->py = y, win->buttons = buttons;
+  if (win->has_ui) win->redraw = true; // its buttons may look or answer otherwise
+}
+
+static void vxui_record(vxui_replay *r, const vx_event *ev) {
+  if (ev->kind == VX_WAKE || ev->kind == VX_CLOSE || r->count == VXUI_REPLAY_EVENTS) return;
+  vx_event *e = &r->events[r->count++];
+  *e = *ev;
+  if (ev->kind == VX_FRAME) r->frames++;
+  if (ev->kind != VX_TEXT) return;
+  size_t n = r->used + ev->text.text.len <= VXUI_REPLAY_TEXT ? ev->text.text.len : 0; // full: kept empty
+  memcpy(r->text + r->used, ev->text.text.ptr, n);
+  e->text.text = (vx_str){r->text + r->used, n};
+  r->used += (uint32_t)n;
+}
+
+static bool vxui_made(const vxui_replay *r, uint64_t page) { return r->made[page / 64] >> (page % 64) & 1; }
+
+// The storage as the snapshot has it: its pages that were zero given back,
+// the others copied in.
+static void vxui_restore(vxui_replay *r) {
+  vx_app_memory *m = r->mem;
+  for (uint64_t p = 0, q = 0; p < r->pages; p = q) {
+    bool made = vxui_made(r, p);
+    for (q = p + 1; q < r->pages && vxui_made(r, q) == made; q++) {}
+    if (!made) {
+      vx_vmo_decommit(m->vmo, m->offset + p * 4096, (q - p) * 4096);
+      continue;
+    }
+    for (uint64_t off = p * 4096; off < q * 4096; off += VXUI_SCAN) {
+      uint64_t n = q * 4096 - off < VXUI_SCAN ? q * 4096 - off : VXUI_SCAN;
+      if (vx_vmo_rw(r->snap, VX_VMO_READ, off, r->buf, n) == VX_OK)
+        vx_vmo_rw(m->vmo, VX_VMO_WRITE, m->offset + off, r->buf, n);
+    }
+  }
+}
+
+// The recording's next event when its time comes (a frame when its window
+// also holds a credit), or a live one first: the host's; VXUI_NOTHING when
+// the window it draws in has closed, live again.
+static vxui_got vxui_play(vx_app *app, vx_event *ev, vx_instant deadline) {
+  vxui_replay *r = &app->replay;
+  for (;;) {
+    vx_instant now = vx_now(), until = deadline;
+    vx_window *want = nullptr;
+    if (r->next == r->count) { // its end: from the snapshot again, as long after the start as it recorded
+      if (now >= r->from + r->length) {
+        vxui_restore(r);
+        r->next = 0, r->from = now;
+        continue;
+      }
+      if (r->from + r->length < until) until = r->from + r->length;
+    } else {
+      const vx_event *e = &r->events[r->next];
+      vx_instant due = r->from + (e->time - r->t0);
+      vx_window *w = e->kind == VX_FRAME ? (vx_window *)(uintptr_t)e->source : nullptr;
+      if (w && w->closed) { // nothing more to see
+        r->state = VXUI_OFF;
+        return VXUI_NOTHING;
+      }
+      if (now >= due && (!w || w->credits)) {
+        *ev = *e;
+        ev->flags |= VX_REPLAYED;
+        r->next++;
+        if (w) {
+          ev->frame.seq = ++w->presents; // the present's: the rest is the recording's
+          w->last_frame = now, w->owed = true;
+          w->span = vx_span_begin();
+        }
+        vxui_seen(ev);
+        return VXUI_EVENT;
+      }
+      if (now < due && due < until) until = due;
+      if (now >= due) want = w;
+    }
+    vxui_got got = vxui_live(app, ev, until, false, want);
+    if (got != VXUI_NOTHING) return got; // an event is live, not recorded and not the app's: the host's
+    if (vx_now() >= deadline) {
+      *ev = (vx_event){.kind = VX_NONE, .time = vx_now()};
+      return VXUI_EVENT;
+    }
+  }
+}
+
+VXUI_API bool vx_wait(vx_app *app, vx_event *ev, vx_instant deadline) {
+  vxui_got played = app->replay.state == VXUI_PLAYING ? vxui_play(app, ev, deadline) : VXUI_NOTHING;
+  if (played != VXUI_NOTHING) return played == VXUI_EVENT;
+  vxui_got got = vxui_live(app, ev, deadline, true, nullptr);
+  if (got == VXUI_ERROR) return false;
+  if (got == VXUI_NOTHING) *ev = (vx_event){.kind = VX_NONE, .time = vx_now()};
+  vxui_seen(ev);
+  if (app->replay.state == VXUI_RECORDING) vxui_record(&app->replay, ev);
+  return true;
+}
+
+// --- Looped playback (03 §6.1; 7g2c) ---
+
+static bool vxui_zero(const uint8_t *page) {
+  const uint64_t *w = (const uint64_t *)page;
+  for (uint32_t i = 0; i < 4096 / 8; i++)
+    if (w[i]) return false;
+  return true;
+}
+
+VXUI_API void vx_replay_stop(vx_app *app) {
+  vxui_replay *r = &app->replay;
+  if (r->state == VXUI_RECORDING) r->length = vx_now() - r->t0;
+  if (r->state == VXUI_PLAYING)
+    for (uint32_t i = 0; i < VXUI_WINDOWS; i++) app->win[i].redraw = true; // live again: drawn as it is now
+  r->state = VXUI_OFF;
+}
+
+VXUI_API bool vx_replay_start(vx_app *app, vx_app_memory *mem) {
+  vxui_replay *r = &app->replay;
+  vx_replay_stop(app);
+  r->count = r->next = r->frames = r->used = 0, r->length = 0;
+  if (r->snap != VX_HANDLE_NONE) vx_handle_close(r->snap), r->snap = VX_HANDLE_NONE;
+  if (r->made) vx_heap_free(vx_heap_process(), r->made), r->made = nullptr;
+  if (!mem || !mem->size || mem->size % 4096 || mem->offset % 4096) return false;
+  if (!r->events) { // the recording's mapping, once: lazy, its pages made as it fills
+    uint64_t at = 0, size = VXUI_REPLAY_EVENTS * sizeof(vx_event) + VXUI_REPLAY_TEXT;
+    vx_handle vmo = VX_HANDLE_NONE;
+    if (vx_vmo_create(size, VX_VMO_LAZY, &vmo) != VX_OK) return false;
+    vx_status st = vx_as_map(vx_task_self(), vmo, 0, size, VX_MAP_WRITE, &at);
+    vx_handle_close(vmo);
+    if (st != VX_OK) return false;
+    r->events = (vx_event *)(uintptr_t)at, r->text = (char *)(r->events + VXUI_REPLAY_EVENTS);
+  }
+  if (!r->buf && !(r->buf = vx_heap_alloc(vx_heap_process(), VXUI_SCAN))) return false;
+  memset(r->buf, 0, VXUI_SCAN); // its pages made: what vx_vmo_rw copies into
+  r->pages = mem->size / 4096;
+  size_t words = (r->pages + 63) / 64;
+  r->made = vx_heap_alloc(vx_heap_process(), words * 8);
+  if (!r->made || vx_vmo_create(mem->size, VX_VMO_LAZY, &r->snap) != VX_OK) return false;
+  memset(r->made, 0, words * 8);
+  // Read through the VMO, not the mapping: a page never touched reads as
+  // zeros without being made, and is not copied.
+  for (uint64_t off = 0; off < mem->size; off += VXUI_SCAN) {
+    uint64_t n = mem->size - off < VXUI_SCAN ? mem->size - off : VXUI_SCAN;
+    if (vx_vmo_rw(mem->vmo, VX_VMO_READ, mem->offset + off, r->buf, n) != VX_OK) return false;
+    for (uint64_t p = 0; p < n; p += 4096) {
+      if (vxui_zero(r->buf + p)) continue;
+      uint64_t page = (off + p) / 4096;
+      r->made[page / 64] |= 1ull << (page % 64);
+      if (vx_vmo_rw(r->snap, VX_VMO_WRITE, off + p, r->buf + p, 4096) != VX_OK) return false;
+    }
+  }
+  r->mem = mem, r->t0 = vx_now(), r->state = VXUI_RECORDING;
+  return true;
+}
+
+VXUI_API bool vx_replay_play(vx_app *app) {
+  vxui_replay *r = &app->replay;
+  vx_replay_stop(app);
+  if (!r->frames) return false; // nothing recorded to pace it, or nothing recorded at all
+  vxui_restore(r);
+  r->next = 0, r->from = vx_now(), r->state = VXUI_PLAYING;
+  return true;
 }
 
 // --- Drawing ---

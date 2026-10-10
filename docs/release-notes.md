@@ -10,6 +10,7 @@ Not frozen: a program built for it may break until a milestone's close the user 
 - New calls, declared inside `#if VX_TARGET_ABI >= 2`: `vx_open_post` (`<vx/file.h>`), `vx_vmo_size` (`<vx/sys.h>`), `vx_span_begin` and `vx_span_end` (`<vx/trace.h>`), `vx_image_open` and `vx_image_symbol` (`<vx/image.h>`).
 - Each build holds `libvx.so` to every symbol of `abi/levels/1.symbols`, and `./build release` holds level 1's files of the behaviour suite to `abi/levels/1.behaviour`; level 2's suite starts with `imagetest` (scenario `image`).
 - `libvxui.so` at `/lib`, vxui(2) for SDK apps; its exports are written beside it, held to a list from level 2's freeze.
+- vxui's hot reload (7g2b) and looped playback (7g2c): `vx_app_memory` and `vx_app_update` in `<vxui.h>`, `vx_app_memory` with `vmo` and `offset` since 7g2c; `vx_replay_start`, `vx_replay_play`, `vx_replay_stop` and `VX_REPLAYED`.
 
 
 The first frozen level: `libvx` v0, as ADR-0004 describes it, becomes level 1.

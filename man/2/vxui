@@ -1,7 +1,7 @@
 page=vxui sect=2 summary="the app tier's API: an app, its windows, one wait, a canvas, CPU pixels, voices"
-    names=vx_app_open,vx_app_error,vx_wait,vx_app_wake,vx_window_text_input,vx_window_open,vx_window_redraw,vx_window_animate,vx_window_title,vx_canvas_begin,vx_clear,vx_fill_rect,vx_circle,vx_canvas_present,vx_pixels_begin,vx_pixels_present,vx_ui_begin,vx_ui_end,vx_label,vx_button,vx_push_id,vx_pop_id,vx_voice_open,vx_voice_play,libvxui.so
+    names=vx_app_open,vx_app_error,vx_wait,vx_app_wake,vx_window_text_input,vx_window_open,vx_window_redraw,vx_window_animate,vx_window_title,vx_canvas_begin,vx_clear,vx_fill_rect,vx_circle,vx_canvas_present,vx_pixels_begin,vx_pixels_present,vx_ui_begin,vx_ui_end,vx_label,vx_button,vx_push_id,vx_pop_id,vx_replay_start,vx_replay_play,vx_replay_stop,vx_voice_open,vx_voice_play,libvxui.so
     src=lib/vxui/vxui.h,lib/vxui/vxui.c,lib/vxui/libvxui.c,abi/vx/loop.h
-    keys=vxui,libvxui,reload,hot,app,window,frame,event,canvas,pixels,voice,gui,toolkit,immediate,widget,button,label
+    keys=vxui,libvxui,reload,hot,replay,playback,loop,app,window,frame,event,canvas,pixels,voice,gui,toolkit,immediate,widget,button,label
 
 # SYNOPSIS
 
@@ -37,6 +37,10 @@ bool vx_button(vx_ui *ui, const char *label);
 void vx_push_id(vx_ui *ui, uint64_t key);
 void vx_pop_id(vx_ui *ui);
 
+bool vx_replay_start(vx_app *app, vx_app_memory *mem);
+bool vx_replay_play(vx_app *app);
+void vx_replay_stop(vx_app *app);
+
 vx_voice *vx_voice_open(vx_app *app, vx_sound sound);
 void vx_voice_play(vx_voice *voice);
 ```
@@ -71,11 +75,13 @@ Errors are sticky: a failed open makes the next `vx_wait` return `false`, and `v
 
 Hot reload (03 §6.1, M7 step 7g2b) is a convention, not a mechanism: during development an app is a small host and a code image, `app.so`, that exports `vx_app_update(vx_app_memory *mem, vx_event *ev)`. The host maps `mem` at the same address every run (`vx_as_reserve` with `VX_AS_FIXED`, a lazy VMO), opens the window, and calls the image's `vx_app_update` with each event. All of the app's state is in `mem->storage`; `mem->app` and `mem->window` are the host's. A thread watches the image's directory (`vx_watch`) and calls `vx_app_wake` when a new `app.so` is renamed into place; on the `VX_WAKE` the host maps it with `vx_image_open` (image(2)) and calls it from the next event, counting `mem->reloads`. Old images stay mapped, so a pointer in storage into one stays good; each image's own static data starts afresh. A build writes `app.so.new` and renames it, so the host never reads half a file.
 
+Looped playback (M7 step 7g2c) is the host's to start and stop. `vx_replay_start` snapshots storage, `mem->size` bytes of `mem->vmo` from `mem->offset`, both whole pages, and from then on records each event `vx_wait` returns but `VX_WAKE` and `VX_CLOSE`, with the bytes of each `VX_TEXT`. Storage is read through its VMO, so a page never touched is not made, and only the pages that are not zero are kept. `vx_replay_play` ends the recording, restores the snapshot (the pages that were zero given back with `vx_vmo_decommit`, the rest copied in) and has `vx_wait` return the recording at the pace it was recorded, each event as long after the start as it came, and from the snapshot again each time it ends. A recorded `VX_FRAME` is returned when its time has come and its window also holds a credit; its `seq` is the present's and the rest of `ev.frame` is the recording's, and while playing `vx_wait` makes no other frames. A replayed event has `VX_REPLAYED` in `ev.flags`. An event without it while playing (input, a `VX_WAKE`, a `VX_CLOSE`, a `VX_NONE` at the deadline) is live: it is not recorded, and it is the host's to act on or drop. The template drops live input, so a new image renamed over `app.so` during playback runs the same events from the next loop. `vx_replay_stop` ends either, leaving storage as it is, and redraws the windows. Playback is exact only for an app whose state is all in storage and whose time is `ev.frame`'s (03 §6.1). The recording holds 65,536 events and 4 MiB of text, in a lazy mapping made at the first start; past that it records no more. `vx_replay_start` is false when storage is not whole pages of its VMO, or there is no memory for the snapshot; `vx_replay_play` is false when no frame was recorded.
+
 Voices are numbered now and sound with audiod (M13): `vx_voice_open` gives one, `vx_voice_play` is silent until then.
 
 # EXAMPLES
 
-03 §6's minimal program, in ten calls, is tests/user/minimal.c; its CPU pixel program is tests/user/pixels.c, and tests/user/pixelsdyn.c the same as an SDK app on libvxui.so; tests/user/uitest.c uses the UI. The hot-reload host's template is tests/user/reloadhost.c, an app the host runs tests/user/reload_app.c.
+03 §6's minimal program, in ten calls, is tests/user/minimal.c; its CPU pixel program is tests/user/pixels.c, and tests/user/pixelsdyn.c the same as an SDK app on libvxui.so; tests/user/uitest.c uses the UI. The hot-reload host's template is tests/user/reloadhost.c, an app the host runs tests/user/reload_app.c; its F9 records, plays and goes live again in turn, and tests/user/replay_app.c is an app to replay.
 
 # SEE ALSO
 
@@ -83,5 +89,5 @@ loop(2), image(2), winsrv(8)
 
 # BUGS
 
-The hot-reload host is a template, not a call; a release build links the image into it, by hand for now. `libvxui.so`'s exports are written beside it, but held to no list until libvx's level 2 is frozen (ADR-0056).
+The hot-reload host is a template, not a call; a release build links the image into it, by hand for now. Replay does not record what the host itself reads, writes or times; a window's size during playback is the live one. `libvxui.so`'s exports are written beside it, but held to no list until libvx's level 2 is frozen (ADR-0056).
 The UI has labels and buttons in one column, no other widgets or layouts, and no keyboard focus; the theme's colours are vx-magic's, whatever theme the window is drawn in.

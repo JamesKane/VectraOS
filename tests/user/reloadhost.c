@@ -5,10 +5,13 @@
 // notify) and wakes the app when a new app.so is renamed into place, so a
 // build that writes app.so.new and renames it is seen whole; the host loads
 // it between two events and calls the new vx_app_update from the next.
+// F9 is looped playback's (7g2c): it records, plays the recording in a loop,
+// then goes live again. While playing, the app is given the recording alone.
 
 #include <vxui.h>
 
 static constexpr uint64_t MEMORY_AT = 0x2000'0000'0000, MEMORY_SIZE = 64ull << 20;
+static constexpr uint32_t KEY_REPLAY = 0x07u << 16 | 0x42; // F9
 static const char *const DIR = "/tmp", *const NAME = "app.so", *const PATH = "/tmp/app.so";
 
 // One wake for each app.so renamed or made in DIR.
@@ -53,16 +56,31 @@ int main(void) {
   }
   vx_app_memory *mem = (vx_app_memory *)at;
   *mem = (vx_app_memory){.app = vx_app_open("org.example.reload"),
-                         .size = MEMORY_SIZE - sizeof *mem,
-                         .storage = (uint8_t *)(mem + 1)};
+                         .size = MEMORY_SIZE - 4096,
+                         .storage = (uint8_t *)at + 4096, // the page after this one: whole pages, for replay
+                         .vmo = vmo,
+                         .offset = 4096};
   mem->window = vx_window_open(mem->app, "Reload", 320, 240);
   if (!vx_thread_spawn(watcher, mem->app, 0, 0)) return 1;
   vx_app_update_fn *update = nullptr;
   vx_fd there = vx_open(vx_cstr(PATH), VX_OREAD); // built already: else the first rename loads it
   if (there >= 0) vx_close(there), update = load();
   if (!update) vx_printf("reloadhost: waiting for %s\n", PATH);
+  enum { LIVE, RECORDING, PLAYING } replay = LIVE;
+  static const char *const SAID[] = {"live", "recording", "playing"};
   vx_event ev;
   while (vx_wait(mem->app, &ev, VX_INFINITE)) {
+    if (ev.kind == VX_KEY && ev.keyboard.usage == KEY_REPLAY) { // the host's, never the app's
+      if (!ev.keyboard.down || ev.keyboard.repeat || ev.flags & VX_REPLAYED) continue;
+      if (replay == LIVE)
+        replay = vx_replay_start(mem->app, mem) ? RECORDING : LIVE;
+      else if (replay == RECORDING)
+        replay = vx_replay_play(mem->app) ? PLAYING : LIVE;
+      else
+        vx_replay_stop(mem->app), replay = LIVE;
+      vx_printf("reloadhost: %s\n", SAID[replay]);
+      continue;
+    }
     if (ev.kind == VX_WAKE) { // a new image: from the next event on
       vx_app_update_fn *next = load();
       if (next && update) mem->reloads++;
@@ -70,6 +88,7 @@ int main(void) {
       vx_window_redraw(mem->window);
       continue;
     }
+    if (replay == PLAYING && !(ev.flags & VX_REPLAYED) && ev.kind != VX_CLOSE) continue; // live input
     if (update) update(mem, &ev);
     if (ev.kind == VX_CLOSE) return 0;
   }

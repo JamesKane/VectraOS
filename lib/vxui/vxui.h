@@ -128,11 +128,30 @@ typedef struct vx_app_memory {
   vx_app *app;
   vx_window *window;
   uint32_t reloads; // images loaded before the one running: 0 for the first
-  uint64_t size;    // storage's bytes, zero until written
+  uint64_t size;    // storage's bytes, zero until written: whole pages
   uint8_t *storage;
+  vx_handle vmo;   // storage's VMO, for replay: storage is its bytes from offset on
+  uint64_t offset; // a page boundary
 } vx_app_memory;
 typedef void vx_app_update_fn(vx_app_memory *mem, vx_event *ev);
 vx_app_update_fn vx_app_update; // what app.so exports, the host finds by name
+
+// Looped playback (03 §6.1; M7 step 7g2c), the host's to start and stop
+// (vxui(2)'s EXAMPLES binds keys to them). vx_replay_start snapshots storage
+// and records each event vx_wait returns from then on but VX_WAKE and
+// VX_CLOSE; vx_replay_play restores the snapshot and has vx_wait return the
+// recording at its own pace, from the snapshot again each time it ends, a
+// VX_FRAME when its window also holds a credit (its seq the present's, the
+// rest the recording's), until vx_replay_stop. A replayed event has
+// VX_REPLAYED in its flags; one without it while playing (input, a wake, a
+// close) is live: the host's, which the template does not pass on. Exact
+// only for an app whose state is all in storage and whose time is ev.frame's.
+// Each is false when it cannot: storage not whole pages of its VMO, no
+// memory for the snapshot, or no frame recorded to play.
+static constexpr uint32_t VX_REPLAYED = 1;
+VXUI_API bool vx_replay_start(vx_app *app, vx_app_memory *mem);
+VXUI_API bool vx_replay_play(vx_app *app);
+VXUI_API void vx_replay_stop(vx_app *app);
 
 VXUI_API vx_voice *vx_voice_open(vx_app *app, vx_sound sound);
 VXUI_API void vx_voice_play(vx_voice *voice);
