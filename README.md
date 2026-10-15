@@ -1,10 +1,12 @@
 # VectraOS
 
-> *Every board on your desk has a different SDK, a different kernel and a different idea of what a file is. We'd like them to be one machine.*
+> *The future we were promised took a wrong turn somewhere around 1992. We went back for it.*
 
-The edge got powerful and stayed fragmented. A Raspberry Pi, an SC8280XP board and a desktop PC each carry silicon that would have filled a machine room. Each comes with its own vendor toolchain for its NPU and its own pile of kernel layers between your code and the hardware. Frames, packets and tensors get copied across boundaries they never needed to cross. The people who pay for it are the indie game developers, makers and systems hackers who just want the hardware to do what it says on the box.
+There was a moment when computing could have gone another way. Plan 9 made every resource a file and every machine part of one namespace. BeOS gave files typed attributes and answered live queries over them. The Amiga ran a whole multitasking desktop out of a few hundred kilobytes. Microkernels promised systems small enough to understand and too modular to bring down. Then the industry chose the other road: bigger kernels, deeper stacks, layers wrapped round layers, and machines their owners can no longer read.
 
-**VectraOS puts the machine back in reach.** It is a capability microkernel OS for edge hardware: maker SBCs, desktop PCs and the GPUs and NPUs attached to them. It brings back the clarity of Plan 9 and BeOS, and it is written in Embedded Swift with strict memory safety, so the language catches what a proof would otherwise have to. Small enough to hold in your head, fast enough to keep a frame deadline.
+The edge is where it shows. A Raspberry Pi, an SC8280XP board and a desktop PC each carry silicon that would have filled a machine room, and each comes with its own vendor SDK, its own kernel and its own idea of what a file is. Frames, packets and tensors get copied across boundaries they never needed to cross. The people who pay for it are the indie game developers, makers and systems hackers who just want the hardware to do what it says on the box.
+
+**VectraOS takes the road not taken.** It is a retro-future operating system: the clarity of those lost systems, rebuilt from the ground up for the hardware of now. Maker SBCs, desktop PCs, the GPUs and NPUs attached to them, and a swarm of your own machines on the desk. A capability microkernel written in Embedded Swift with strict memory safety, so the language catches what a proof would otherwise have to. Neon on chrome. Small enough to hold in your head, fast enough to keep a frame deadline.
 
 ## Jack in
 
@@ -40,7 +42,7 @@ This repository joins three earlier projects, and when two of them solved the sa
 
 ## Status: setting up
 
-**V0 is done (2026-10-15): the croi kernel boots and passes its self-tests on amd64, arm64 and rv64 in QEMU.** V1, the setup-engine kernel, is under way: `object_bind` has landed and the syscall cuts are next (154 calls down to 91, [docs/syscall-audit.md](docs/syscall-audit.md)).
+**V0 is done (2026-10-15): the croi kernel boots and passes its self-tests on amd64, arm64 and rv64 in QEMU.** V1, the setup-engine kernel, is under way: `object_bind` has landed and the syscall cuts are under way: 154 calls down to 96 so far, on the way to 91 ([docs/syscall-audit.md](docs/syscall-audit.md)).
 
 What runs today:
 
