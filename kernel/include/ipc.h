@@ -70,7 +70,48 @@ typedef struct {
 // are narrowed with handle_duplicate before sending).
 enum : uint32_t {
   CROI_CHANNEL_READ_MAY_DISCARD = 1,
+  // channel_read and channel_write take up to this many items at once (D41).
+  CROI_CHANNEL_MAX_ITEMS = 64,
 };
+
+// channel_write(croi_channel_write_item_t *items, count) (D41) writes one
+// message to each item's channel (WRITE), and channel_read(
+// croi_channel_read_item_t *items, count) reads one from each (READ): a
+// server replies to every request it read, or reads every channel its port
+// reported, in one call. Both go on past an item that fails (a client gone,
+// a channel with nothing to read), write each item's status back, and
+// return how many succeeded. A write item's handles are consumed whether it
+// succeeds or not, as Zircon's are. A bad pointer or count fails the whole
+// call (a negative status) before any item, and consumes nothing.
+// croi_channel_write and croi_channel_read in syscall.h are the
+// one-message forms.
+typedef struct {
+  uint32_t channel;
+  uint32_t options;      // 0
+  uint64_t bytes;        // const void *
+  uint64_t handles;      // const uint32_t *: consumed
+  uint32_t num_bytes;
+  uint32_t num_handles;
+  int32_t status;        // out: 0, or why this item failed
+  uint32_t reserved;     // 0
+} croi_channel_write_item_t;
+
+static_assert(sizeof(croi_channel_write_item_t) == 40);
+
+typedef struct {
+  uint32_t channel;
+  uint32_t options;         // 0 or CROI_CHANNEL_READ_MAY_DISCARD
+  uint64_t bytes;           // void *
+  uint64_t handles;         // uint32_t *
+  uint32_t num_bytes;       // the capacities
+  uint32_t num_handles;
+  uint32_t actual_bytes;    // out: the message's size, read or (BUFFER_TOO_SMALL) not
+  uint32_t actual_handles;
+  int32_t status;           // out: 0, or why this item failed
+  uint32_t reserved;        // 0
+} croi_channel_read_item_t;
+
+static_assert(sizeof(croi_channel_read_item_t) == 48);
 
 // zx_info_handle_basic_t.
 typedef struct {

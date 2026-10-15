@@ -101,19 +101,20 @@ struct M2 {
         // The VMO crosses the channel, then the fence is reached: its
         // packet comes second.
         var message: UInt64 = 0x4D32  // "M2"
-        try Sys.check("sending the VMO", Sys.call(CROI_SYS_CHANNEL_WRITE, UInt64(near), 0, Sys.address(&message), 8,
-                                                  Sys.address(&vmo), 1))
+        try Sys.check("sending the VMO", unsafe croi_channel_write(near, 0, &message, 8, &vmo, 1))
         Sys.signal(fence)
         var packet = croi_port_packet_t()
         try Sys.check("waiting on the port", unsafe croi_port_wait(port, Sys.now() + 1_000_000_000, &packet, 0))
         guard packet.key == 1 else { throw Failure(what: "the channel's packet coming first", status: Int64(packet.key)) }
         var received: UInt64 = 0
         var handle: UInt32 = 0
-        var actual: UInt64 = 0
-        try Sys.check("receiving the VMO", Sys.call(CROI_SYS_CHANNEL_READ, UInt64(far), 0, Sys.address(&received),
-                                                    Sys.address(&handle), 8 | 1 << 32, Sys.address(&actual)))
-        guard received == 0x4D32, actual == 8 | 1 << 32, handle != 0 else {
-            throw Failure(what: "receiving one message with one handle", status: Int64(bitPattern: actual))
+        var actualBytes: UInt32 = 0
+        var actualHandles: UInt32 = 0
+        try Sys.check("receiving the VMO", unsafe croi_channel_read(far, 0, &received, &handle, 8, 1, &actualBytes,
+                                                                    &actualHandles))
+        guard received == 0x4D32, actualBytes == 8, actualHandles == 1, handle != 0 else {
+            throw Failure(what: "receiving one message with one handle",
+                          status: Int64(actualBytes) | Int64(actualHandles) << 32)
         }
         var base: UInt64 = 0
         try Sys.check("mapping the VMO", Sys.call(CROI_SYS_VMAR_MAP, UInt64(croi_vmar_root_self())

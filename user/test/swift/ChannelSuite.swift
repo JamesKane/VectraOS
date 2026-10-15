@@ -12,6 +12,7 @@ enum ChannelSuite {
         peerClosed()
         narrowedRights()
         mayDiscard()
+        batches()
         print("swift: channel passed")
     }
 
@@ -33,15 +34,15 @@ enum ChannelSuite {
 
         mutating func read(_ channel: borrowing Handle, bytes capacity: UInt64 = 64, handles slots: UInt64 = 4)
             -> Int64 {
-            Sys.call(CROI_SYS_CHANNEL_READ, channel.arg, 0, Sys.address(&bytes), Sys.address(&handles),
-                     capacity | slots << 32, Sys.address(&actual))
+            Sys.readChannel(channel.arg, 0, bytes: Sys.address(&bytes), handles: Sys.address(&handles),
+                            capacity: capacity | slots << 32, &actual)
         }
     }
 
     /// Writes `text` with `count` handles from `handles`: the call's status.
     static func write(_ channel: UInt64, _ text: StaticString, _ handles: UInt64 = 0, count: UInt64 = 0) -> Int64 {
-        unsafe Sys.call(CROI_SYS_CHANNEL_WRITE, channel, 0, UInt64(UInt(bitPattern: text.utf8Start)),
-                        UInt64(text.utf8CodeUnitCount), handles, count)
+        unsafe Sys.writeChannel(channel, bytes: UInt64(UInt(bitPattern: text.utf8Start)),
+                               count: UInt64(text.utf8CodeUnitCount), handles: handles, handleCount: count)
     }
 
     static func duplicate(_ handle: borrowing Handle, _ rights: UInt32) -> UInt32 {
@@ -151,11 +152,12 @@ enum ChannelSuite {
         var narrowed: UInt32 = 0
         check(Sys.duplicate(vmo.arg, UInt64(read | transferRight), &narrowed) == 0,
               "a duplicate with fewer rights")
-        check(Sys.call(CROI_SYS_CHANNEL_WRITE, channel.a.arg, 0, 0, 0, Sys.address(&narrowed), 1) == 0, "sent")
+        check(Sys.writeChannel(channel.a.arg, bytes: 0, count: 0, handles: Sys.address(&narrowed), handleCount: 1) == 0,
+              "sent")
         var received: UInt32 = 0
         var actual: UInt64 = 0
-        check(Sys.call(CROI_SYS_CHANNEL_READ, channel.b.arg, 0, 0, Sys.address(&received), 1 << 32,
-                       Sys.address(&actual)) == 0 && actual == 1 << 32, "received")
+        check(Sys.readChannel(channel.b.arg, 0, bytes: 0, handles: Sys.address(&received), capacity: 1 << 32,
+                              &actual) == 0 && actual == 1 << 32, "received")
         let arrived = Handle(adopting: received)
         var info = croi_info_handle_basic_t()
         check(Sys.call(CROI_SYS_OBJECT_GET_INFO, arrived.arg, UInt64(CROI_INFO_HANDLE_BASIC), Sys.address(&info),
@@ -164,7 +166,8 @@ enum ChannelSuite {
         var stuck: UInt32 = 0
         check(Sys.duplicate(vmo.arg, UInt64(read), &stuck) == 0, "one without TRANSFER")
         let handle = stuck
-        check(Sys.call(CROI_SYS_CHANNEL_WRITE, channel.a.arg, 0, 0, 0, Sys.address(&stuck), 1) == Status.accessDenied,
+        check(Sys.writeChannel(channel.a.arg, bytes: 0, count: 0, handles: Sys.address(&stuck), handleCount: 1)
+                  == Status.accessDenied,
               "can't be sent")
         check(croi_handle_close(handle) == Status.badHandle, "and is consumed")
     }
@@ -179,16 +182,65 @@ enum ChannelSuite {
         var buffer = InlineArray<16, UInt8>(repeating: 0)
         var actual: UInt64 = 0
         func receive(_ options: UInt64, capacity: UInt64) -> Int64 {
-            Sys.call(CROI_SYS_CHANNEL_READ, channel.b.arg, options, Sys.address(&buffer), 0, capacity,
-                     Sys.address(&actual))
+            Sys.readChannel(channel.b.arg, options, bytes: Sys.address(&buffer), handles: 0, capacity: capacity, &actual)
         }
-        check(Sys.call(CROI_SYS_CHANNEL_WRITE, channel.a.arg, 0, bytes, length, 0, 0) == 0, "written")
+        check(Sys.writeChannel(channel.a.arg, bytes: bytes, count: length, handles: 0, handleCount: 0) == 0, "written")
         check(receive(2, capacity: 16) == Status.notSupported, "an unknown option")
         check(receive(0, capacity: 4) == Status.bufferTooSmall && actual == length, "too small: the size it needs")
         check(receive(0, capacity: 16) == 0 && actual == length && buffer[0] == UInt8(ascii: "l"), "and it stays")
-        check(Sys.call(CROI_SYS_CHANNEL_WRITE, channel.a.arg, 0, bytes, length, 0, 0) == 0, "written again")
+        check(Sys.writeChannel(channel.a.arg, bytes: bytes, count: length, handles: 0, handleCount: 0) == 0, "written again")
         check(receive(UInt64(CROI_CHANNEL_READ_MAY_DISCARD), capacity: 4) == Status.bufferTooSmall && actual == length,
               "MAY_DISCARD: too small, the size it needed")
         check(receive(0, capacity: 16) == Status.shouldWait, "and it is gone")
+    }
+
+    /// channel_write and channel_read take arrays (D41): each goes on past
+    /// an item that fails, with every item's status written back; a write
+    /// item's handles are consumed even when it fails.
+    static func batches() {
+        let first = Pair()
+        let second = Pair()
+        var x: UInt32 = 0, y: UInt32 = 0
+        check(Sys.call(CROI_SYS_CHANNEL_CREATE, 0, Sys.address(&x), Sys.address(&y)) == 0
+                  && croi_handle_close(y) == 0, "a channel whose peer is gone")
+        let lonely = Handle(adopting: x)
+        let one: StaticString = "one", three: StaticString = "three"
+        var sent = duplicate(Handle(vmo: pageSize), read | transferRight)
+        let consumed = sent
+        let empty = croi_channel_write_item_t()
+        var writes = InlineArray<3, croi_channel_write_item_t>(repeating: empty)
+        writes[0] = unsafe croi_channel_write_item_t(channel: first.a.raw, options: 0,
+                                                     bytes: UInt64(UInt(bitPattern: one.utf8Start)), handles: 0,
+                                                     num_bytes: 3, num_handles: 0, status: 1, reserved: 0)
+        writes[1] = croi_channel_write_item_t(channel: lonely.raw, options: 0, bytes: 0, handles: Sys.address(&sent),
+                                              num_bytes: 0, num_handles: 1, status: 1, reserved: 0)
+        writes[2] = unsafe croi_channel_write_item_t(channel: second.a.raw, options: 0,
+                                                     bytes: UInt64(UInt(bitPattern: three.utf8Start)), handles: 0,
+                                                     num_bytes: 5, num_handles: 0, status: 1, reserved: 0)
+        check(Sys.call(CROI_SYS_CHANNEL_WRITE, Sys.address(&writes), 3) == 2, "two of three written")
+        check(writes[0].status == 0 && Int64(writes[1].status) == Status.peerClosed && writes[2].status == 0,
+              "each write's status")
+        check(croi_handle_close(consumed) == Status.badHandle, "the failed write's handle is consumed")
+
+        let third = Pair()
+        var bytes = InlineArray<2, UInt64>(repeating: 0)
+        var reads = InlineArray<3, croi_channel_read_item_t>(repeating: croi_channel_read_item_t())
+        reads[0] = croi_channel_read_item_t(channel: first.b.raw, options: 0, bytes: Sys.address(&bytes), handles: 0,
+                                            num_bytes: 16, num_handles: 0, actual_bytes: 0, actual_handles: 0,
+                                            status: 1, reserved: 0)
+        reads[1] = reads[0]
+        reads[1].channel = second.b.raw
+        reads[1].num_bytes = 4  // "three" needs 5
+        reads[2] = reads[0]
+        reads[2].channel = third.b.raw
+        check(Sys.call(CROI_SYS_CHANNEL_READ, Sys.address(&reads), 3) == 1, "one of three read")
+        check(reads[0].status == 0 && reads[0].actual_bytes == 3 && bytes[0] & 0xff_ffff == 0x656e6f,
+              "the first message")
+        check(Int64(reads[1].status) == Status.bufferTooSmall && reads[1].actual_bytes == 5,
+              "too small: the size it needs")
+        check(Int64(reads[2].status) == Status.shouldWait && reads[2].actual_bytes == 0, "nothing to read")
+        check(Sys.call(CROI_SYS_CHANNEL_READ, Sys.address(&reads), 0) == Status.invalidArgs
+                  && Sys.call(CROI_SYS_CHANNEL_WRITE, Sys.address(&writes), 65) == Status.invalidArgs,
+              "a count of 0 or over 64 is refused")
     }
 }

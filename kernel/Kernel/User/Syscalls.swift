@@ -302,6 +302,10 @@ enum Syscalls {
             return try addCounters(table, items: a[0], count: a[1])
         case 142:  // interrupt_ack(items, count): returns how many succeeded (D40)
             return try ackInterrupts(table, items: a[0], count: a[1])
+        case 81:  // channel_write(items, count): returns how many succeeded (D41)
+            return try writeChannels(table, items: a[0], count: a[1])
+        case 82:  // channel_read(items, count): returns how many succeeded (D41)
+            return try readChannels(table, items: a[0], count: a[1])
         case 34:  // port_cancel(port, source or 0, key); 0 cancels the key from every source (D32)
             let source = UInt32(truncatingIfNeeded: a[1])
             if source == 0 {

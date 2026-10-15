@@ -2,10 +2,8 @@ import Synchronization
 import CKernel
 
 /// Channels and object info from user space (K7b; numbers in
-/// user/include/croi/syscall.h, layouts in include/ipc.h). Zircon's calls;
-/// channel_read packs its two capacities into one argument
-/// (bytes | handles << 32) and writes both actual counts through one
-/// pointer (two uint32_t).
+/// user/include/croi/syscall.h, layouts in include/ipc.h). Zircon's calls,
+/// except that channel_read and channel_write take arrays of items (D41).
 extension Syscalls {
     static func ipcCall(_ number: UInt64, _ a: InlineArray<6, UInt64>, _ table: borrowing HandleTable) throws(Status) {
         let handle = UInt32(truncatingIfNeeded: a[0])
@@ -26,43 +24,6 @@ extension Syscalls {
             let h1 = try table.add(second, rights: ChannelObject.defaultRights)
             try put(h0, a[1])
             try put(h1, a[2])
-        case 81:  // channel_write(channel, options, bytes, num_bytes, handles, num_handles)
-            let channel: ObjectRef
-            do throws(Status) {
-                guard a[1] == 0 else { throw .invalidArgs }
-                channel = try table.get(handle, type: .channel, rights: .write)
-            } catch {
-                discard(table, handles: a[4], count: a[5])
-                throw error
-            }
-            let message = try build(table, channel: channel.object, bytes: a[2], count: a[3], handles: a[4],
-                                    handleCount: a[5])
-            message.pointee.txid = message.pointee.bytes >= 4
-                ? unsafe UnsafePointer<UInt32>(bitPattern: UInt(message.data))!.pointee : 0
-            if try Channels.write(channel.object, message) {
-                Policy.limitException(UInt32(CROI_EXCP_POLICY_CODE_CHANNEL_FULL_WRITE))
-            }
-        case 82:  // channel_read(channel, options, bytes, handles, num_bytes | num_handles << 32, actuals)
-            // Zircon's order: the handle, then the options (MAY_DISCARD).
-            let channel = try table.get(handle, type: .channel, rights: .read)
-            guard a[1] & ~UInt64(CROI_CHANNEL_READ_MAY_DISCARD) == 0 else { throw .notSupported }
-            try check(a[5], 8)
-            let capacity = (bytes: UInt32(truncatingIfNeeded: a[4]), handles: UInt32(truncatingIfNeeded: a[4] >> 32))
-            // The message read is the one whose size was checked (another
-            // reader may take it meanwhile: then peek again).
-            var taken: MessagePointer? = nil
-            while taken == nil {
-                let size = try Channels.peek(channel.object)
-                try put(UInt64(size.bytes) | UInt64(size.handles) << 32, a[5])
-                guard size.bytes <= capacity.bytes, size.handles <= capacity.handles else {
-                    if a[1] != 0, let dropped = Channels.discard(channel.object, ifLargerThan: capacity) { dropped.free() }
-                    throw .bufferTooSmall
-                }
-                if size.bytes > 0 { try check(a[2], Int(size.bytes)) }
-                if size.handles > 0 { try check(a[3], Int(size.handles) * 4) }
-                taken = try Channels.read(channel.object, ifFits: size)
-            }
-            try deliver(taken!, to: table, bytes: a[2], handles: a[3])
         case 83:  // channel_call(channel, options, deadline, args, actual_bytes, actual_handles)
             // Unreadable args: the handles to send are unknown, so none
             // are consumed (Zircon's too).
@@ -305,6 +266,119 @@ extension Syscalls {
             for i in 0..<Int(chunk) { try? table.close(values[i]) }
             done += chunk
         }
+    }
+
+    /// channel_write(items, count) (D41): one message to each item's
+    /// channel (croi_channel_write_item_t, ipc.h), going on past an item
+    /// that fails; each item's handles consumed either way, its status
+    /// written back. Returns how many succeeded; a bad pointer or count
+    /// fails the call before any item, consuming nothing.
+    static func writeChannels(_ table: borrowing HandleTable, items: UInt64, count: UInt64) throws(Status) -> Int64 {
+        let itemSize: UInt64 = 40
+        guard count > 0, count <= UInt64(CROI_CHANNEL_MAX_ITEMS) else { throw .invalidArgs }
+        try check(items, Int(count * itemSize))
+        var done: Int64 = 0
+        for i in 0..<count {
+            let address = items + i * itemSize
+            // channel | options << 32, bytes, handles, num_bytes | num_handles << 32, status | reserved << 32
+            var raw = InlineArray<5, UInt64>(repeating: 0)
+            var span = raw.mutableSpan
+            let copied = span.withUnsafeMutableBytes { unsafe UserCopy.from($0.baseAddress!, address, itemSize) }
+            guard copied == 0 else { throw .invalidArgs }
+            var status: Int32 = 0
+            do throws(Status) {
+                try writeMessage(table, channel: UInt32(truncatingIfNeeded: raw[0]),
+                                 valid: raw[0] >> 32 == 0 && raw[4] >> 32 == 0, bytes: raw[1],
+                                 count: raw[3] & 0xffff_ffff, handles: raw[2], handleCount: raw[3] >> 32)
+            } catch {
+                status = error.rawValue
+            }
+            try put(status, address + 32)
+            if status == 0 { done += 1 }
+        }
+        return done
+    }
+
+    /// One channel_write item: Zircon's channel_write. `valid`: its
+    /// options and reserved field are 0.
+    private static func writeMessage(_ table: borrowing HandleTable, channel handle: UInt32, valid: Bool,
+                                     bytes: UInt64, count: UInt64, handles: UInt64,
+                                     handleCount: UInt64) throws(Status) {
+        let channel: ObjectRef
+        do throws(Status) {
+            guard valid else { throw .invalidArgs }
+            channel = try table.get(handle, type: .channel, rights: .write)
+        } catch {
+            discard(table, handles: handles, count: handleCount)
+            throw error
+        }
+        let message = try build(table, channel: channel.object, bytes: bytes, count: count, handles: handles,
+                                handleCount: handleCount)
+        message.pointee.txid = message.pointee.bytes >= 4
+            ? unsafe UnsafePointer<UInt32>(bitPattern: UInt(message.data))!.pointee : 0
+        if try Channels.write(channel.object, message) {
+            Policy.limitException(UInt32(CROI_EXCP_POLICY_CODE_CHANNEL_FULL_WRITE))
+        }
+    }
+
+    /// channel_read(items, count) (D41): one message from each item's
+    /// channel (croi_channel_read_item_t, ipc.h), going on past an item
+    /// that fails; each item's actual sizes (on success and
+    /// BUFFER_TOO_SMALL) and status written back. Returns how many
+    /// succeeded; a bad pointer or count fails the call before any item.
+    static func readChannels(_ table: borrowing HandleTable, items: UInt64, count: UInt64) throws(Status) -> Int64 {
+        let itemSize: UInt64 = 48
+        guard count > 0, count <= UInt64(CROI_CHANNEL_MAX_ITEMS) else { throw .invalidArgs }
+        try check(items, Int(count * itemSize))
+        var done: Int64 = 0
+        for i in 0..<count {
+            let address = items + i * itemSize
+            // channel | options << 32, bytes, handles, capacities, actuals, status | reserved << 32
+            var raw = InlineArray<6, UInt64>(repeating: 0)
+            var span = raw.mutableSpan
+            let copied = span.withUnsafeMutableBytes { unsafe UserCopy.from($0.baseAddress!, address, itemSize) }
+            guard copied == 0 else { throw .invalidArgs }
+            var actual: UInt64 = 0
+            var status: Int32 = 0
+            do throws(Status) {
+                guard raw[5] >> 32 == 0 else { throw .invalidArgs }
+                try readMessage(table, channel: UInt32(truncatingIfNeeded: raw[0]), options: raw[0] >> 32,
+                                bytes: raw[1], handles: raw[2], capacity: raw[3], actual: &actual)
+            } catch {
+                status = error.rawValue
+            }
+            try put(actual, address + 32)
+            try put(status, address + 40)
+            if status == 0 { done += 1 }
+        }
+        return done
+    }
+
+    /// One channel_read item: Zircon's channel_read, the capacities packed
+    /// (bytes | handles << 32) and the message's size set in `actual`
+    /// (the same way) once known.
+    private static func readMessage(_ table: borrowing HandleTable, channel handle: UInt32, options: UInt64,
+                                    bytes: UInt64, handles: UInt64, capacity packed: UInt64,
+                                    actual: inout UInt64) throws(Status) {
+        // Zircon's order: the handle, then the options (MAY_DISCARD).
+        let channel = try table.get(handle, type: .channel, rights: .read)
+        guard options & ~UInt64(CROI_CHANNEL_READ_MAY_DISCARD) == 0 else { throw .notSupported }
+        let capacity = (bytes: UInt32(truncatingIfNeeded: packed), handles: UInt32(truncatingIfNeeded: packed >> 32))
+        // The message read is the one whose size was checked (another
+        // reader may take it meanwhile: then peek again).
+        var taken: MessagePointer? = nil
+        while taken == nil {
+            let size = try Channels.peek(channel.object)
+            actual = UInt64(size.bytes) | UInt64(size.handles) << 32
+            guard size.bytes <= capacity.bytes, size.handles <= capacity.handles else {
+                if options != 0, let dropped = Channels.discard(channel.object, ifLargerThan: capacity) { dropped.free() }
+                throw .bufferTooSmall
+            }
+            if size.bytes > 0 { try check(bytes, Int(size.bytes)) }
+            if size.handles > 0 { try check(handles, Int(size.handles) * 4) }
+            taken = try Channels.read(channel.object, ifFits: size)
+        }
+        try deliver(taken!, to: table, bytes: bytes, handles: handles)
     }
 
     /// handle_close (handle_close_many until D33, K13e): 64 at a time; 0 (ZX_HANDLE_INVALID) skipped;

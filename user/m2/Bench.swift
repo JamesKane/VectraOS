@@ -110,7 +110,6 @@ enum Bench {
     /// its port; each packet, it reads until the channel would block.
     static let server: Sys.ThreadEntry = { _, _ in
         var message: UInt64 = 0
-        var actual: UInt64 = 0
         var port: UInt32 = 0
         var packet = croi_port_packet_t()
         guard Sys.call(CROI_SYS_PORT_CREATE, 0, Sys.address(&port)) == 0,
@@ -122,12 +121,11 @@ enum Bench {
         serving: while true {
             _ = unsafe croi_port_wait(port, .max, &packet, 0)
             while true {
-                let read = Sys.call(CROI_SYS_CHANNEL_READ, UInt64(serverChannel), 0, Sys.address(&message), 0, 8,
-                                    Sys.address(&actual))
+                let read = unsafe croi_channel_read(serverChannel, 0, &message, nil, 8, 0, nil, nil)
                 if read == -22 { break }           // SHOULD_WAIT: drained
                 if read != 0 { break serving }     // PEER_CLOSED: the client is done
                 // The reply carries the call's txid (its first four bytes).
-                _ = Sys.call(CROI_SYS_CHANNEL_WRITE, UInt64(serverChannel), 0, Sys.address(&message), 8, 0, 0)
+                _ = unsafe croi_channel_write(serverChannel, 0, &message, 8, nil, 0)
             }
         }
         Sys.close(serverChannel)

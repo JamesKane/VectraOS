@@ -114,8 +114,8 @@ in User/IpcSyscalls.swift):
   becomes the owner of the caller's call-record queue
   (`Scheduler.setOwner`, refused if it would close a cycle), so K3b
   inheritance lends it the caller's profile until the reply; an exiting
-  thread drops what it owns (`dropOwnership`). `channel_read` packs its
-  capacities (bytes | handles << 32) and actuals.
+  thread drops what it owns (`dropOwnership`). channel_read and
+  channel_write take arrays of items since D41.
 - `ipc` trace: CHANNEL_WRITE/READ and DONATE records carry
   `croi_flow_id(channel id, txid)` (ipc.h, splitmix64 finalizer), which
   user space computes from `object_get_info(HANDLE_BASIC)` koids and the
@@ -543,3 +543,17 @@ successes returned (`Syscalls.eachItem`).
   overflow and a missing WRITE in the middle: two done, each status
   right); the `interrupts` suite's state machine acks a bad handle and
   a bound interrupt in one batch.
+
+## channel_read and channel_write take arrays (V1, D41)
+
+The third batched family (audit §3). `Syscalls.writeChannels` and
+`readChannels` (User/IpcSyscalls.swift) read each item and run
+`writeMessage` or `readMessage`, which are K7b's channel_write and
+channel_read for one channel; both go on past a failed item, write its
+status back (and a read's actual sizes), and return how many succeeded.
+A write item's handles are consumed either way; a bad pointer or count
+consumes nothing.
+- syscall.h's `croi_channel_read` and `croi_channel_write` are the
+  one-message forms; the suites use `Sys.readChannel` and
+  `Sys.writeChannel`.
+- Tests: the `channel` suite's `batches`.

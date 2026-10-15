@@ -48,8 +48,8 @@ enum : uint64_t {
   // capacities (bytes | handles << 32) and writes both actuals (two
   // uint32_t) through one pointer.
   CROI_SYS_CHANNEL_CREATE = 80,    // (options, out0, out1)
-  CROI_SYS_CHANNEL_WRITE = 81,     // (channel, options, bytes, num_bytes, handles, num_handles)
-  CROI_SYS_CHANNEL_READ = 82,      // (channel, options, bytes, handles, capacities, actuals)
+  CROI_SYS_CHANNEL_WRITE = 81,     // (croi_channel_write_item_t *items, count): ipc.h (D41)
+  CROI_SYS_CHANNEL_READ = 82,      // (croi_channel_read_item_t *items, count): ipc.h (D41)
   CROI_SYS_CHANNEL_CALL = 83,      // (channel, options, deadline, croi_channel_call_args_t *, actual_bytes, actual_handles)
   CROI_SYS_OBJECT_GET_INFO = 86,   // (handle, topic, buffer, buffer_size)
   CROI_SYS_TEST = 6,               // (op, ...) test boots only; CROI_TEST_REPORT (D35)
@@ -260,6 +260,30 @@ static inline int64_t croi_handle_duplicate(uint32_t handle, uint32_t rights, ui
   if (done == 0) return item.status;
   *out = item.out;
   return 0;
+}
+
+// Writes one message: channel_write takes an array (D41). The handles are
+// consumed either way. 0, the item's status, or the call's.
+static inline int64_t croi_channel_write(uint32_t channel, uint32_t options, const void *bytes, uint32_t num_bytes,
+                                         const uint32_t *handles, uint32_t num_handles) {
+  croi_channel_write_item_t item = {channel, options, (uint64_t)bytes, (uint64_t)handles, num_bytes, num_handles, 1, 0};
+  int64_t done = croi_syscall(CROI_SYS_CHANNEL_WRITE, (uint64_t)&item, 1, 0, 0, 0);
+  return done < 0 ? done : item.status;
+}
+
+// Reads one message: channel_read takes an array (D41). The actual sizes
+// (either pointer may be null) are set on success and BUFFER_TOO_SMALL.
+// 0, the item's status, or the call's.
+static inline int64_t croi_channel_read(uint32_t channel, uint32_t options, void *bytes, uint32_t *handles,
+                                        uint32_t num_bytes, uint32_t num_handles, uint32_t *actual_bytes,
+                                        uint32_t *actual_handles) {
+  croi_channel_read_item_t item = {channel, options, (uint64_t)bytes, (uint64_t)handles, num_bytes, num_handles,
+                                   0, 0, 1, 0};
+  int64_t done = croi_syscall(CROI_SYS_CHANNEL_READ, (uint64_t)&item, 1, 0, 0, 0);
+  if (done < 0) return done;
+  if (actual_bytes) *actual_bytes = item.actual_bytes;
+  if (actual_handles) *actual_handles = item.actual_handles;
+  return item.status;
 }
 
 // Queues one packet: port_queue takes an array (D40). 0 or the status.

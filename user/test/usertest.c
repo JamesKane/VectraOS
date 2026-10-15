@@ -591,13 +591,12 @@ static int64_t processes(const startup_t *s) {
 // it in the ipc trace records.
 static int64_t chan_read(uint32_t channel, void *bytes, uint32_t *handles, uint32_t num_bytes, uint32_t num_handles,
                          uint32_t actual[2]) {
-  return sys6(CROI_SYS_CHANNEL_READ, channel, 0, (uint64_t)bytes, (uint64_t)handles,
-              num_bytes | (uint64_t)num_handles << 32, (uint64_t)actual);
+  return croi_channel_read(channel, 0, bytes, handles, num_bytes, num_handles, &actual[0], &actual[1]);
 }
 
 static int64_t chan_write(uint32_t channel, const void *bytes, uint32_t num_bytes, const uint32_t *handles,
                           uint32_t num_handles) {
-  return sys6(CROI_SYS_CHANNEL_WRITE, channel, 0, (uint64_t)bytes, num_bytes, (uint64_t)handles, num_handles);
+  return croi_channel_write(channel, 0, bytes, num_bytes, handles, num_handles);
 }
 
 // Answers calls: reply = txid, request + 1, whether it is running on a
@@ -2543,9 +2542,8 @@ static int64_t postmortem_checks(const startup_t *s, uint32_t *channel_out) {
                  marker == 0xC0FFEE);
   // Handed to another holder: still frozen in its exception.
   CHECK(592, sys(CROI_SYS_CHANNEL_CREATE, 0, (uint64_t)&a, (uint64_t)&b, 0, 0) == 0 &&
-                 sys6(CROI_SYS_CHANNEL_WRITE, a, 0, (uint64_t)"pm", 2, (uint64_t)&exception, 1) == 0 &&
-                 sys6(CROI_SYS_CHANNEL_READ, b, 0, (uint64_t)&marker, (uint64_t)&moved, 8 | (uint64_t)1 << 32,
-                      (uint64_t)actual) == 0 && actual[1] == 1);
+                 croi_channel_write(a, 0, "pm", 2, &exception, 1) == 0 &&
+                 croi_channel_read(b, 0, &marker, &moved, 8, 1, &actual[0], &actual[1]) == 0 && actual[1] == 1);
   sleep_until(now_ns() + 20000000ull);
   uint32_t exit_state = CROI_EXCEPTION_STATE_THREAD_EXIT;
   CHECK(593, sys6(CROI_SYS_OBJECT_GET_INFO, thread, CROI_INFO_THREAD, (uint64_t)&state, sizeof state, (uint64_t)&counts[0],

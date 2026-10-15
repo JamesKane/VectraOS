@@ -298,10 +298,10 @@ enum ObjectSuite {
             return nil
         }
         var handle: UInt32 = 0
-        var actual: (UInt32, UInt32) = (0, 0)
-        guard Sys.call(CROI_SYS_CHANNEL_READ, channel.arg, 0, Sys.address(&info), Sys.address(&handle),
-                       UInt64(MemoryLayout<croi_exception_info_t>.size) | 1 << 32, Sys.address(&actual)) == 0,
-              actual.1 == 1 else { return nil }
+        var actual: UInt64 = 0
+        guard Sys.readChannel(channel.arg, 0, bytes: Sys.address(&info), handles: Sys.address(&handle),
+                              capacity: UInt64(MemoryLayout<croi_exception_info_t>.size) | 1 << 32, &actual) == 0,
+              actual >> 32 == 1 else { return nil }
         return Handle(adopting: handle)
     }
 }

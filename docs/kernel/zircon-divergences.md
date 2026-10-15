@@ -30,8 +30,6 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   addrs_count << 32`, eight arguments in six registers),
   pager_query_dirty_ranges (`pager | vmo << 32`, actual and avail through
   one `size_t out[2]`). Kind: deliberate. Impact: library wrappers.
-- **channel_read capacities and actuals** — `bytes | handles << 32` packed
-  into one argument each. Kind: deliberate. Impact: library wrappers.
 - **vmar_unmap_handle_close_thread_exit is a syscall** (75) — Zircon's is
   vDSO code; a failed close raises an undefined-instruction exception (as
   Zircon's vDSO traps). Kind: deliberate. Impact: none for callers.
@@ -121,6 +119,13 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   Kind: deliberate (batch first, principle 12). Impact: callers of
   zx_port_queue, zx_port_wait, zx_counter_add and zx_interrupt_ack,
   through the C wrappers.
+- **channel_read and channel_write take arrays** (V1, D41) — each item
+  is one message to or from one channel, with its own options, sizes
+  and status; the call goes on past a failed item and returns how many
+  succeeded. A write item's handles are consumed either way. Kind:
+  deliberate (batch first, principle 12). Impact: callers of
+  zx_channel_read and zx_channel_write, through the C wrappers
+  croi_channel_read and croi_channel_write.
 - **No handle_replace** (V1, D34) — an item with
   CROI_HANDLE_DUPLICATE_CONSUME is zx_handle_replace: the handle
   goes even on failure, and DUPLICATE isn't needed. Kind: deliberate

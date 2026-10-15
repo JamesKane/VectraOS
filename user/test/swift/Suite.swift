@@ -110,6 +110,32 @@ enum Sys {
                                      UInt32(truncatingIfNeeded: options))
     }
 
+    /// One channel_read item (D41): 0, or the item's or call's status. The
+    /// capacities and the message's size in `actual` are packed (bytes |
+    /// handles << 32).
+    static func readChannel(_ channel: UInt64, _ options: UInt64, bytes: UInt64, handles: UInt64, capacity: UInt64,
+                            _ actual: inout UInt64) -> Int64 {
+        var item = croi_channel_read_item_t(channel: UInt32(truncatingIfNeeded: channel),
+                                            options: UInt32(truncatingIfNeeded: options), bytes: bytes,
+                                            handles: handles, num_bytes: UInt32(truncatingIfNeeded: capacity),
+                                            num_handles: UInt32(truncatingIfNeeded: capacity >> 32),
+                                            actual_bytes: 0, actual_handles: 0, status: 1, reserved: 0)
+        let done = call(CROI_SYS_CHANNEL_READ, address(&item), 1)
+        actual = UInt64(item.actual_bytes) | UInt64(item.actual_handles) << 32
+        return done < 0 ? done : Int64(item.status)
+    }
+
+    /// One channel_write item (D41): 0, or the item's or call's status.
+    static func writeChannel(_ channel: UInt64, bytes: UInt64, count: UInt64, handles: UInt64,
+                             handleCount: UInt64) -> Int64 {
+        var item = croi_channel_write_item_t(channel: UInt32(truncatingIfNeeded: channel), options: 0, bytes: bytes,
+                                             handles: handles, num_bytes: UInt32(truncatingIfNeeded: count),
+                                             num_handles: UInt32(truncatingIfNeeded: handleCount), status: 1,
+                                             reserved: 0)
+        let done = call(CROI_SYS_CHANNEL_WRITE, address(&item), 1)
+        return done < 0 ? done : Int64(item.status)
+    }
+
     static func now() -> UInt64 { croi_clock_monotonic() }
 
     /// Sleeps `nanoseconds`: a port_wait on an empty port (principle 10).

@@ -76,13 +76,11 @@ static int strings(uint32_t offset, uint32_t count, uint32_t size, char **out) {
 }
 
 static void read_bootstrap(uint32_t channel) {
-  uint64_t actual = 0;
-  int64_t status = croi_syscall6(CROI_SYS_CHANNEL_READ, channel, 0, (uint64_t)bootstrap, (uint64_t)handles,
-                                 BOOTSTRAP_BYTES | (uint64_t)BOOTSTRAP_HANDLES << 32, (uint64_t)&actual);
+  uint32_t size = 0, count = 0;
+  int64_t status = croi_channel_read(channel, 0, bootstrap, handles, BOOTSTRAP_BYTES, BOOTSTRAP_HANDLES, &size, &count);
   croi_handle_close(channel);
   if (status != 0) return;
-  uint32_t size = (uint32_t)actual;
-  handle_count = (uint32_t)(actual >> 32);
+  handle_count = count;
   const croi_proc_args_t *header = (const croi_proc_args_t *)bootstrap;
   if (size < sizeof *header || header->protocol != CROI_PROCARGS_PROTOCOL ||
       header->version != CROI_PROCARGS_VERSION || header->handle_info_off > size ||

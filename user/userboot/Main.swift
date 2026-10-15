@@ -166,8 +166,8 @@ struct Userboot {
         try call("creating its bootstrap channel", sys(CROI_SYS_CHANNEL_CREATE, 0, address(&ours), address(&theirs)))
         try call("writing its bootstrap message", message.span.withUnsafeBytes { bytes in
             handles.span.withUnsafeBytes { values in
-                sys(CROI_SYS_CHANNEL_WRITE, UInt64(ours), 0, UInt64(UInt(bitPattern: bytes.baseAddress)),
-                    UInt64(bytes.count), UInt64(UInt(bitPattern: values.baseAddress)), UInt64(handles.count))
+                unsafe croi_channel_write(ours, 0, bytes.baseAddress, UInt32(bytes.count),
+                                          values.baseAddress?.assumingMemoryBound(to: UInt32.self), UInt32(handles.count))
             }
         })
         _ = croi_handle_close(ours)
