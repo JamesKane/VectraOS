@@ -148,7 +148,7 @@ enum ProgramSelfTest {
     /// stdout is a debuglog). New syscall tests are written as suites, not
     /// in usertest.c.
     static func runSuites(_ console: Uart) {
-        let suites: InlineArray<1, StaticString> = ["swift.suite=bind\0"]
+        let suites: InlineArray<2, StaticString> = ["swift.suite=bind\0", "swift.suite=vmo\0"]
         let before = ProcessSelfTest.Counts()
         let image = unsafe RawSpan(_unsafeStart: UnsafeRawPointer(bitPattern: UInt(croi_swift_test_address()))!,
                                    byteCount: Int(croi_swift_test_size()))

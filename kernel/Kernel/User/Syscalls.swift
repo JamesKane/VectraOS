@@ -407,10 +407,6 @@ enum Syscalls {
             try dmaCall(number, a, table)
         case 160...179:
             try counterCall(number, a, table)
-        case 190...193:
-            try socketCall(number, a, table)
-        case 194...201:
-            try streamCall(number, a, table)
         case 234:  // smc_call(resource, const croi_smc_parameters_t *, croi_smc_result_t *), K13i
             try smcCall(a, table)
         case 235:  // system_get_event(root job, kind, out), K14a

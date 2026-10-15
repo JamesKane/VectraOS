@@ -71,23 +71,7 @@ extension Syscalls {
                 let ref = try table.get(handle, type: .vmo, rights: .getProperty)
                 let vmo = VmoPointer(address: UnsafeVmoObject(ref.object).vmo)
                 guard case .anonymous = vmo.pointee.kind else { throw .notSupported }
-                try put(Streams.streamSize(vmo), a[2])
-                return
-            }
-            if a[1] == UInt64(CROI_PROP_STREAM_MODE_APPEND) {
-                guard a[3] >= 1 else { throw .bufferTooSmall }
-                try check(a[2], 1)
-                let stream = try table.get(handle, type: .stream, rights: .getProperty)
-                let on: UInt8 = StreamPointer(object: stream.object).pointee.mode & Streams.modeAppend != 0 ? 1 : 0
-                try put(on, a[2])
-                return
-            }
-            if a[1] == UInt64(CROI_PROP_SOCKET_RX_THRESHOLD) || a[1] == UInt64(CROI_PROP_SOCKET_TX_THRESHOLD) {
-                guard a[3] >= 8 else { throw .bufferTooSmall }
-                guard a[2] != 0 else { throw .invalidArgs }
-                try check(a[2], 8)
-                let socket = try table.get(handle, type: .socket, rights: .getProperty)
-                try put(try Sockets.threshold(socket.object, transmit: a[1] == UInt64(CROI_PROP_SOCKET_TX_THRESHOLD)), a[2])
+                try put(ContentSize.of(vmo), a[2])
                 return
             }
             if a[1] == UInt64(CROI_PROP_EXCEPTION_STRATEGY) {  // K13g
@@ -128,26 +112,7 @@ extension Syscalls {
                 let copied = withUnsafeMutableBytes(of: &value) { unsafe UserCopy.from($0.baseAddress!, a[2], 8) }
                 guard copied == 0 else { throw .invalidArgs }
                 let ref = try table.get(handle, type: .vmo, rights: .setProperty | .write)
-                try Streams.setStreamSize(VmoPointer(address: UnsafeVmoObject(ref.object).vmo), value)
-                return
-            }
-            if a[1] == UInt64(CROI_PROP_STREAM_MODE_APPEND) {
-                guard a[3] >= 1 else { throw .bufferTooSmall }
-                var value: UInt8 = 0
-                let copied = withUnsafeMutableBytes(of: &value) { unsafe UserCopy.from($0.baseAddress!, a[2], 1) }
-                guard copied == 0 else { throw .invalidArgs }
-                let stream = try table.get(handle, type: .stream, rights: .setProperty)
-                Streams.setAppend(stream.object, value != 0)
-                return
-            }
-            if a[1] == UInt64(CROI_PROP_SOCKET_RX_THRESHOLD) || a[1] == UInt64(CROI_PROP_SOCKET_TX_THRESHOLD) {
-                guard a[3] >= 8 else { throw .bufferTooSmall }
-                guard a[2] != 0 else { throw .invalidArgs }
-                var value: UInt64 = 0
-                let copied = withUnsafeMutableBytes(of: &value) { unsafe UserCopy.from($0.baseAddress!, a[2], 8) }
-                guard copied == 0 else { throw .invalidArgs }
-                let socket = try table.get(handle, type: .socket, rights: .setProperty)
-                try Sockets.setThreshold(socket.object, transmit: a[1] == UInt64(CROI_PROP_SOCKET_TX_THRESHOLD), value)
+                try ContentSize.set(VmoPointer(address: UnsafeVmoObject(ref.object).vmo), value)
                 return
             }
             if a[1] == UInt64(CROI_PROP_EXCEPTION_STRATEGY) {  // K13g: the process debugger's only

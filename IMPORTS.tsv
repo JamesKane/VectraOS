@@ -63,7 +63,6 @@ kernel/Kernel/Object/Debug.swift	croi	dc4cf67	kernel/Kernel/Object/Debug.swift
 kernel/Kernel/Object/DebugLog.swift	croi	dc4cf67	kernel/Kernel/Object/DebugLog.swift
 kernel/Kernel/Object/Dma.swift	croi	dc4cf67	kernel/Kernel/Object/Dma.swift
 kernel/Kernel/Object/Exception.swift	croi	dc4cf67	kernel/Kernel/Object/Exception.swift
-kernel/Kernel/Object/Fifo.swift	croi	dc4cf67	kernel/Kernel/Object/Fifo.swift
 kernel/Kernel/Object/Futex.swift	croi	dc4cf67	kernel/Kernel/Object/Futex.swift
 kernel/Kernel/Object/HandleTable.swift	croi	dc4cf67	kernel/Kernel/Object/HandleTable.swift
 kernel/Kernel/Object/HardwareDebug.swift	croi	dc4cf67	kernel/Kernel/Object/HardwareDebug.swift
@@ -81,9 +80,7 @@ kernel/Kernel/Object/ProcessSelfTest.swift	croi	dc4cf67	kernel/Kernel/Object/Pro
 kernel/Kernel/Object/ProfileObject.swift	croi	dc4cf67	kernel/Kernel/Object/ProfileObject.swift
 kernel/Kernel/Object/Resource.swift	croi	dc4cf67	kernel/Kernel/Object/Resource.swift
 kernel/Kernel/Object/ResourceSelfTest.swift	croi	dc4cf67	kernel/Kernel/Object/ResourceSelfTest.swift
-kernel/Kernel/Object/Socket.swift	croi	dc4cf67	kernel/Kernel/Object/Socket.swift
 kernel/Kernel/Object/Status.swift	croi	dc4cf67	kernel/Kernel/Object/Status.swift
-kernel/Kernel/Object/Stream.swift	croi	dc4cf67	kernel/Kernel/Object/Stream.swift
 kernel/Kernel/Object/Timeline.swift	croi	dc4cf67	kernel/Kernel/Object/Timeline.swift
 kernel/Kernel/Object/TimerObject.swift	croi	dc4cf67	kernel/Kernel/Object/TimerObject.swift
 kernel/Kernel/Object/VmoObject.swift	croi	dc4cf67	kernel/Kernel/Object/VmoObject.swift
@@ -130,8 +127,6 @@ kernel/Kernel/User/PagerSyscalls.swift	croi	dc4cf67	kernel/Kernel/User/PagerSysc
 kernel/Kernel/User/ProgramLoader.swift	croi	dc4cf67	kernel/Kernel/User/ProgramLoader.swift
 kernel/Kernel/User/ProgramSelfTest.swift	croi	dc4cf67	kernel/Kernel/User/ProgramSelfTest.swift
 kernel/Kernel/User/SmcSyscalls.swift	croi	dc4cf67	kernel/Kernel/User/SmcSyscalls.swift
-kernel/Kernel/User/SocketSyscalls.swift	croi	dc4cf67	kernel/Kernel/User/SocketSyscalls.swift
-kernel/Kernel/User/StreamSyscalls.swift	croi	dc4cf67	kernel/Kernel/User/StreamSyscalls.swift
 kernel/Kernel/User/SyncSyscalls.swift	croi	dc4cf67	kernel/Kernel/User/SyncSyscalls.swift
 kernel/Kernel/User/SyscallSelfTest.swift	croi	dc4cf67	kernel/Kernel/User/SyscallSelfTest.swift
 kernel/Kernel/User/Syscalls.swift	croi	dc4cf67	kernel/Kernel/User/Syscalls.swift

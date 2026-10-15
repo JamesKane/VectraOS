@@ -231,12 +231,12 @@ The other child kinds, K14g (Vmo.swift `Vmo.snapshot`, `init(sliceOf:)`,
   of a slice or contiguous VMO; RESIZABLE only of a resizable VMO and with
   RESIZE on the parent handle). No pages of their own: `parent` is the
   root, `target` gives (root, offset). Syscalls resolve them (vmo_read/
-  write, op_range, bti_pin, streams), and `Mapping` keeps the root and
+  write, op_range, bti_pin), and `Mapping` keeps the root and
   root offset in `vmo`/`offset` with the mapped VMO in `holder` (the
   mapping's reference; koid and name in the info topics), so faults,
   `unmapEverywhere` and reclaim work on the root unchanged. A reference's
-  size and stream size are its root's (`sizeOwner`): vmo_set_size through
-  one resizes the root; a slice has its own stream size over the root's
+  size and content size are its root's (`sizeOwner`): vmo_set_size through
+  one resizes the root; a slice has its own content size over the root's
   pages. Aliases have nothing attributed (Zircon's rule). The root's
   `aliases` count freezes its cache policy.
 - `VmoRecord.owner`: the VMO a child was created from when that isn't its
@@ -307,9 +307,28 @@ PageList `grow`, syscall 233; vmo.h, task.h):
   `ZeroInterval`): zeros owed to nobody, reported with IS_ZERO, handed
   back to the pager by WRITEBACK_BEGIN then END.
 - Differences: a snapshot child of a parent that shrinks reads zeros past
-  the cut only while the parent is that small (Zircon clamps it for good);
-  streams still never grow their VMO (the pinned tree's either).
+  the cut only while the parent is that small (Zircon clamps it for good).
 - Mode 17's `resizing`.
+
+## Content size (K13c, V1)
+
+A VMO's content size (Kernel/Object/ContentSize.swift; Zircon's
+ZX_PROP_VMO_CONTENT_SIZE, property 17) is byte-granular and at most its
+size, which it reads as until set (`VmoRecord.contentSize`, nil until
+then). An unaligned vmo_create or pager_create_vmo size, or an UNBOUNDED
+one, sets it. Reading needs GET_PROPERTY; setting needs SET_PROPERTY and
+WRITE, is OUT_OF_RANGE past the VMO, and zeroes from min(old, new) to the
+VMO's end (see UNBOUNDED for the cost). vmo_set_size sets it to the size
+given. A reference shares its root's; a slice has its own over its
+root's pages. Taisce's mapped files keep their length here.
+- Size changes hold their VMO's size lock (`ContentSize.withSizeLock`,
+  Zircon's per-VMO StreamSizeManager: a wait queue on the VmoRecord,
+  `sizeQueue`, made on first use). A cut waiting for a pager holds only
+  its own VMO's lock (review 2 replaced one global lock).
+- Streams kept it before V1 cut them (D21); vmo_get/set_stream_size went
+  with them, leaving the property as the one way.
+- The Swift `vmo` suite (`VmoSuite`: contentSize, referencesAndSlices,
+  unbounded, sizeLock).
 
 ## UNBOUNDED VMOs (K14i)
 
@@ -324,7 +343,7 @@ subtrees, used by decommit (`takePresent`), `zero` (a plain VMO's middle
 decommitted, the ends zeroed in place) and `zeroOwn`, cache ops and
 instruction sync (`forEachPage`), resize, pager detach, writeback
 (`forEachStateLocked`), dirty ranges, and ALWAYS_NEED's swaps back.
-vmo_set_stream_size zeroes up to the new size's page end and, past it,
+A content size cut zeroes up to the new size's page end and, past it,
 only what is committed (Zircon's untracked zeroing, without zero
 markers; K14k: a pager VMO's become an untracked zero interval). Still
 per page: COMMIT, PREFETCH, ALWAYS_NEED's paging in, ZERO under
@@ -333,7 +352,7 @@ TRAP_DIRTY. Mode 17's `unbounded` (checks 663-668).
 ## Copies between user memory and VMO pages (K14h)
 
 Copies between user memory and VMO pages, K14h (Vm/Vmo.swift
-`VmoUserCopy`; vmo_read/write, streams, process_read/write_memory): a
+`VmoUserCopy`; vmo_read/write, process_read/write_memory): a
 page is read or written only under the lock of the VMO that has it
 (`withContent`, `ownLocked`), so a decommit, eviction, swap or shrink
 can't free it mid-copy (they used to look it up, drop the lock and copy:
@@ -353,7 +372,7 @@ syscalls 202-208; vmo.h; Todhchai's page cache and mmap for Taisce):
 - Zircon's pager (type 28; INSPECT, TRANSFER, ATTACH_VMO 1 << 23,
   MANAGE_VMO; NEW_PAGER policy 14, pager_create_vmo checks NEW_VMO):
   pager_create, pager_create_vmo(pager, options, port, key, size), with
-  the size rounded to pages and an unaligned one as the stream size;
+  the size rounded to pages and an unaligned one as the content size;
   RESIZABLE / UNBOUNDED NOT_SUPPORTED (no resizable VMOs).
   pager_detach_vmo, pager_supply_pages (pages moved from an anonymous aux
   VMO with no parent, `Vmo.take`; aux gaps supplied as zeros; pages the
@@ -370,7 +389,7 @@ syscalls 202-208; vmo.h; Todhchai's page cache and mmap for Taisce):
   and waits (interruptible; 300 s, Zircon's overtime: TIMED_OUT). Callers:
   the fault handler (retains the mapping's VMO and waits outside the
   aspace lock, then retries; a fault taken with interrupts masked doesn't
-  wait), vmo_read/write (the rest of the copy as read-ahead), streams,
+  wait), vmo_read/write (the rest of the copy as read-ahead),
   vmo_op_range COMMIT/PREFETCH/ZERO, bti_pin. ZERO on a pager VMO makes
   a zero interval of its whole pages (K14k; TRAP_DIRTY VMOs zero in
   place); DECOMMIT is NOT_SUPPORTED.
@@ -388,7 +407,7 @@ syscalls 202-208; vmo.h; Todhchai's page cache and mmap for Taisce):
   `Pagers.prepareWrite`: the page becomes dirty, after a DIRTY request
   (type 9, command 2) the pager answers with op DIRTY if the VMO has
   TRAP_DIRTY; the fault then makes the entry writable. Kernel writes
-  (vmo_write, streams, ZERO) go through `ensureWritable`. op DIRTY
+  (vmo_write, ZERO) go through `ensureWritable`. op DIRTY
   (TRAP_DIRTY only, else NOT_SUPPORTED; a page not supplied NOT_FOUND),
   WRITEBACK_BEGIN (dirty -> awaiting clean, unmapped everywhere:
   `VmoPointer.unmapEverywhere`, so a write meanwhile dirties again; dirty
@@ -417,7 +436,7 @@ untracked (`zeroStateLocked` binary-searches; `carveZerosLocked`,
 `addZerosLocked` merging neighbours, `changeZerosLocked`). Made by ZERO
 (`Pagers.zeroPages`: whole pages dropped, pinned ones zeroed in place and
 dirty instead, waiting readers let go; `ensureWritableForZero` makes only
-the partial ends present), a grow (dirty) and a stream size cut past its
+the partial ends present), a grow (dirty) and a content size cut past its
 page end (untracked). Reads copy zeros and commit nothing
 (`readsAsZero`, `VmoUserCopy.zeros`); a write, fault or `prepareWrite`
 commits a zeroed, dirty page and splits the interval; supply skips them;

@@ -60,23 +60,9 @@ matches the pinned tree where upstream docs or expectations say otherwise).
 
 ## Sockets, streams and FIFOs
 
-- **Socket buffer size** — receive buffers are rings of up to 64 pages,
-  256 KiB; Zircon's hold 264160 bytes of mbufs. Kind: deliberate. Impact:
-  low; capacity visible in ZX_INFO_SOCKET.
-- **Datagram header accounting** — each datagram's 4-byte length lives in
-  the ring and counts against capacity. Kind: deliberate. Impact: slightly
-  fewer small datagrams fit.
-- **Socket semantics** — the pinned tree's Rust dispatcher, error orders
-  and signal rules with its quirks. Kind: quirk parity. Impact: none vs
-  the pin.
-- **Stream size lock** — one global Mutex serializes stream-size changes;
-  Zircon has a per-VMO StreamSizeManager. Kind: deliberate. Impact:
-  contention only under many concurrent appenders.
-- **Streams never grow their VMO** — a write at or past the VMO's end is
-  OUT_OF_RANGE, one reaching it is cut short. This matches the pinned tree
-  (it records the RESIZE right / can_resize and never reads it), although
-  upstream docs say streams grow resizable VMOs. Kind: quirk parity.
-  Impact: none vs the pin; filesystems resize the VMO first.
+- **Cut** (V1, D21) — croi has none of them; the one ring format and
+  mappings replace them. The VMO content size property stays. Kind:
+  deliberate. Impact: Fuchsia code using them.
 
 ## VM and VMOs
 
@@ -85,13 +71,13 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   the child's parent limit permanently. Kind: deliberate (simplification).
   Impact: low; within at-least-on-write semantics. Fix: a per-child parent
   limit clamped at shrink.
-- **Untracked zeroing past a stream size of a child** (K14i) —
-  vmo_set_stream_size zeroes up to the new size's page end as Zircon
+- **Untracked zeroing past a content size of a child** (K14i) —
+  a content size cut zeroes up to the new size's page end as Zircon
   does; past it a plain VMO's pages are decommitted and a pager VMO's
   become an untracked zero interval (K14k), but a snapshot child's (or a
   slice's) committed pages are zeroed in place, so its absent pages there
   still read as its parent's (Zircon inserts zero markers). Kind:
-  deliberate (no markers in children). Impact: vmo_read past the stream
+  deliberate (no markers in children). Impact: vmo_read past the content
   size of a child.
 - **Per-page range operations** (K14i) — decommit, ZERO, cache ops, page
   states and dirty ranges are sparse; COMMIT, PREFETCH, ALWAYS_NEED, a

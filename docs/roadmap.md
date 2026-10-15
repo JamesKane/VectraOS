@@ -34,10 +34,10 @@ The work, in order:
 1. **Done (D20):** `object_bind` (batched, ONCE or PERSISTENT) and
    `port_wait` with a leeway, so that every cut has its replacement in
    place. 154 → 150 calls; `vx todhchai-check` retired.
-2. The cuts, one commit per family (sockets, streams, timers, …). Each
-   updates the family's design note, its tests, `zircon-divergences.md`
-   and the ceiling, and adds a decision entry. `vx todhchai-check`
-   retires at the first one.
+2. The cuts, one commit per family. Each updates the family's design
+   note, its tests, `zircon-divergences.md` and the ceiling, and adds a
+   decision entry. A `usertest.c` test the cut touches moves to a Swift
+   suite. Done: FIFOs, sockets and streams (D21, 135 calls).
 3. The batched forms of the hot calls (audit §3).
 4. The one ring (architecture §3) in Swift and as `ring.h`, with a model
    checker. Doorbells are counters.

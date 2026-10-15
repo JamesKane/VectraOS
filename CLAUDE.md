@@ -22,7 +22,8 @@ anything that a decision covers.
   comment.
 - **New tests are Embedded Swift** (D20): a suite file in `user/test/swift/`
   with named checks, run by `ProgramSelfTest.runSuites`. Don't add to
-  `user/test/usertest.c`; edit it only to keep its tests compiling.
+  `user/test/usertest.c`. When a change touches one of its tests, move
+  that test to a suite (D21).
 
 ## Toolchain
 
@@ -69,8 +70,9 @@ CMake/Ninja builds the images, with one tree per arch under `build/<arch>/`.
 
 ## Status
 
-V0 is done (2026-10-15). V1 is under way: `object_bind` landed (D20, 150
-syscalls); the cuts are next (`docs/syscall-audit.md`).
+V0 is done (2026-10-15). V1 is under way: `object_bind` landed (D20),
+and the cuts have begun with FIFOs, sockets and streams (D21, 135
+syscalls; `docs/syscall-audit.md`).
 - **Done:** croi imported, passing on amd64, arm64 and rv64; todhchai's
   Judge, History, trace format and reader lifted; `vx` with build, test,
   boot, bench, trace, loc and ci.

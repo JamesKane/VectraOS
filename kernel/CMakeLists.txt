@@ -27,8 +27,6 @@ add_library(kernel-swift OBJECT
   Kernel/User/Syscalls.swift
   Kernel/User/TaskSyscalls.swift
   Kernel/User/IpcSyscalls.swift
-  Kernel/User/SocketSyscalls.swift
-  Kernel/User/StreamSyscalls.swift
   Kernel/User/PagerSyscalls.swift
   Kernel/User/InfoTopics.swift
   Kernel/User/ClockSyscalls.swift
@@ -57,9 +55,7 @@ add_library(kernel-swift OBJECT
   Kernel/Object/Port.swift
   Kernel/Object/Process.swift
   Kernel/Object/Channel.swift
-  Kernel/Object/Fifo.swift
-  Kernel/Object/Socket.swift
-  Kernel/Object/Stream.swift
+  Kernel/Object/ContentSize.swift
   Kernel/Object/Pager.swift
   Kernel/Object/Names.swift
   Kernel/Object/ClockObject.swift
@@ -194,7 +190,7 @@ croi_user_binary(${_vdso_bin} PIC
 croi_user_runtime()
 # Its suites (Suite.swift): one file each, run with swift.suite=<name>.
 set(_swift_test_sources ${_user_dir}/test/swift/Main.swift ${_user_dir}/test/swift/Suite.swift
-    ${_user_dir}/test/swift/BindSuite.swift)
+    ${_user_dir}/test/swift/BindSuite.swift ${_user_dir}/test/swift/VmoSuite.swift)
 set(_swift_test ${CMAKE_CURRENT_BINARY_DIR}/swifttest.elf)
 croi_user_program(${_swift_test} PIE SWIFT ${_swift_test_sources})
 # The same as a fixed-address program with a dynamic section and no

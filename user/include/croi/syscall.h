@@ -68,9 +68,6 @@ enum : uint64_t {
   CROI_SYS_EVENTPAIR_CREATE = 84,  // (options, out0, out1)
   CROI_SYS_OBJECT_SIGNAL_PEER = 85,  // (handle, clear, set)
   CROI_SYS_OBJECT_GET_INFO = 86,   // (handle, topic, buffer, buffer_size)
-  CROI_SYS_FIFO_CREATE = 87,       // (elem_count, elem_size, options, out0, out1), K13b
-  CROI_SYS_FIFO_WRITE = 88,        // (fifo, elem_size, const void *data, count, size_t *actual)
-  CROI_SYS_FIFO_READ = 89,         // (fifo, elem_size, void *data, count, size_t *actual)
   CROI_SYS_TEST_PROFILE = 6,       // (op) boot self-test only
   // Futexes and timers (K7c): Zircon's.
   CROI_SYS_FUTEX_WAIT = 90,        // (uint32_t *value, current, new_owner thread handle, deadline)
@@ -136,19 +133,7 @@ enum : uint64_t {
   CROI_SYS_TIMELINE_SET_PERIOD = 172,   // (timeline, period_ns)
   CROI_SYS_TIMELINE_GET_PAGE = 173,     // (timeline, uint32_t *vmo)
 
-  // Power control (K10e; Zircon's, power.h).
-  CROI_SYS_SOCKET_CREATE = 190,         // (options, out0, out1), K13c
-  CROI_SYS_SOCKET_WRITE = 191,          // (socket, options, const void *buffer, size, size_t *actual)
-  CROI_SYS_SOCKET_READ = 192,           // (socket, options, void *buffer, size, size_t *actual)
-  CROI_SYS_SOCKET_SET_DISPOSITION = 193,  // (socket, disposition, disposition_peer)
-  CROI_SYS_STREAM_CREATE = 194,         // (options, vmo, seek, out), K13c
-  CROI_SYS_STREAM_WRITEV = 195,         // (stream, options, const croi_iovec_t *vector, count, size_t *actual)
-  CROI_SYS_STREAM_WRITEV_AT = 196,      // (stream, options, offset, vector, count, size_t *actual)
-  CROI_SYS_STREAM_READV = 197,          // (stream, options, croi_iovec_t *vector, count, size_t *actual)
-  CROI_SYS_STREAM_READV_AT = 198,       // (stream, options, offset, vector, count, size_t *actual)
-  CROI_SYS_STREAM_SEEK = 199,           // (stream, whence, int64_t offset, uint64_t *out)
-  CROI_SYS_VMO_GET_STREAM_SIZE = 200,   // (vmo, uint64_t *out)
-  CROI_SYS_VMO_SET_STREAM_SIZE = 201,   // (vmo, size)
+  // The user pager (K13d; Zircon's), and the small calls that followed it.
   CROI_SYS_PAGER_CREATE = 202,          // (options, out), K13d
   CROI_SYS_PAGER_CREATE_VMO = 203,      // (pager, options, port, key, size, out)
   CROI_SYS_PAGER_DETACH_VMO = 204,      // (pager, vmo)

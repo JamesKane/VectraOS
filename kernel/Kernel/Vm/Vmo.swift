@@ -91,11 +91,11 @@ struct VmoRecord: ~Copyable {
     /// (0 once it is gone; cleared under this lock by its destroy).
     var children = 0
     var object: UInt64 = 0
-    /// K13c: the stream ("content") size, byte-granular, shared by every
-    /// stream over this VMO; nil until set, reading as the VMO's size.
-    var streamSize: UInt64? = nil
-    /// The wait queue of this VMO's size lock (`Streams.withSizeLock`: a
-    /// blocking mutex serializing stream size changes and vmo_set_size,
+    /// The content size (ContentSize.swift), byte-granular; nil until set,
+    /// reading as the VMO's size.
+    var contentSize: UInt64? = nil
+    /// The wait queue of this VMO's size lock (`ContentSize.withSizeLock`: a
+    /// blocking mutex serializing content size changes and vmo_set_size,
     /// Zircon's per-VMO StreamSizeManager), made on first use; 0 until then.
     var sizeQueue: UInt64 = 0
     /// K13d: a pager VMO's source (pages come from user space: Pagers),
@@ -160,7 +160,7 @@ enum DiscardState: UInt8 {
         pointee.isAlias ? (pointee.parent!, pointee.parentOffset) : (self, 0)
     }
 
-    /// Whose size and stream size it has: a reference's root's, else its own.
+    /// Whose size and content size it has: a reference's root's, else its own.
     var sizeOwner: VmoPointer { pointee.reference ? pointee.parent! : self }
 
     /// Another owner (a mapping).

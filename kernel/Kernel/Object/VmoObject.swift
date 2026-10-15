@@ -59,7 +59,7 @@ struct VmoObject: ~Copyable {
             throw error == .invalidArgument ? .invalidArgs : .noMemory
         }
         vmo.record.pointee.resizable = options & resizable != 0
-        if size != vmoSize { vmo.record.pointee.streamSize = size }
+        if size != vmoSize { vmo.record.pointee.contentSize = size }
         if options & discardable != 0 {
             vmo.record.pointee.discardable = true
             Reclaim.register(vmo.record)
@@ -84,15 +84,15 @@ struct VmoObject: ~Copyable {
         guard size <= Vmos.maxSize else { throw .outOfRange }
         guard vmo.pointee.resizable else { throw .unavailable }
         let rounded = (size + pageMask) & ~pageMask
-        // Under the VMO's size lock, so a stream write or set_stream_size
-        // never sees the end move under it (Zircon's StreamSizeManager).
-        try Streams.withSizeLock(vmo) { () throws(Status) in
+        // Under the VMO's size lock, so a content size change never sees
+        // the end move under it (Zircon's StreamSizeManager).
+        try ContentSize.withSizeLock(vmo) { () throws(Status) in
             do throws(VmError) {
                 try Vmo.withBorrowed(vmo) { (v: borrowing Vmo) throws(VmError) in try v.resize(rounded) }
             } catch {
                 throw error == .pinned ? .badState : error.status
             }
-            vmo.pointee.lock.withLock { vmo.pointee.streamSize = size }
+            vmo.pointee.lock.withLock { vmo.pointee.contentSize = size }
             if size < rounded {
                 try? Pagers.ensureWritableRange(vmo, rounded - KernelLayout.pageSize, KernelLayout.pageSize)
                 try? Vmo.withBorrowed(vmo) { (v: borrowing Vmo) throws(VmError) in try v.zero(offset: size, size: rounded - size) }
@@ -185,7 +185,7 @@ struct VmoObject: ~Copyable {
         }
         // A slice's or snapshot's content size is its own; a reference's is
         // its root's.
-        if options & reference == 0, size & pageMask != 0 { child.record.pointee.streamSize = size }
+        if options & reference == 0, size & pageMask != 0 { child.record.pointee.contentSize = size }
         rights.remove(.resize)
         if options & resizableChild != 0 { rights.insert(.resize) }
         rights.insert(.getProperty)

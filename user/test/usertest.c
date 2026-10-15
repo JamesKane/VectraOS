@@ -2742,149 +2742,6 @@ static void spinner(uint64_t arg) {
 #ifndef ERR_ACCESS_DENIED_
 #define ERR_ACCESS_DENIED_ (-30)
 #endif
-// K13c: sockets (Zircon's): stream and datagram, peek, a full buffer,
-// dispositions, read threshold, ZX_INFO_SOCKET, user signals, peer close.
-static int64_t sockets(const startup_t *s) {
-  uint32_t a = 0, b = 0, observed = 0;
-  uint64_t actual = 0;
-  char buf[16];
-  CHECK(450, sys(CROI_SYS_SOCKET_CREATE, 2, (uint64_t)&a, (uint64_t)&b, 0, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_SOCKET_CREATE, CROI_SOCKET_STREAM, (uint64_t)&a, (uint64_t)&b, 0, 0) == 0 &&
-                 sys(CROI_SYS_OBJECT_WAIT_ONE, a, CROI_SIGNAL_WRITABLE, 0, (uint64_t)&observed, 0) == 0 &&
-                 sys(CROI_SYS_SOCKET_READ, b, 0, (uint64_t)buf, 4, (uint64_t)&actual) == ERR_SHOULD_WAIT);
-  // Stream: bytes, a peek, the rest.
-  CHECK(451, sys(CROI_SYS_SOCKET_WRITE, a, 0, (uint64_t)"abcdefghij", 10, (uint64_t)&actual) == 0 && actual == 10 &&
-                 sys(CROI_SYS_OBJECT_WAIT_ONE, b, CROI_SIGNAL_READABLE, 0, (uint64_t)&observed, 0) == 0 &&
-                 sys(CROI_SYS_SOCKET_READ, b, 0, (uint64_t)buf, 4, (uint64_t)&actual) == 0 && actual == 4 &&
-                 buf[0] == 'a' && buf[3] == 'd' &&
-                 sys(CROI_SYS_SOCKET_READ, b, CROI_SOCKET_PEEK, (uint64_t)buf, 3, (uint64_t)&actual) == 0 &&
-                 actual == 3 && buf[0] == 'e' &&
-                 sys(CROI_SYS_SOCKET_READ, b, 0, (uint64_t)buf, 16, (uint64_t)&actual) == 0 && actual == 6 &&
-                 buf[0] == 'e' && buf[5] == 'j' &&
-                 sys(CROI_SYS_OBJECT_WAIT_ONE, b, CROI_SIGNAL_READABLE, 0, (uint64_t)&observed, 0) == ERR_TIMED_OUT);
-  // Full: 4 KiB writes until SHOULD_WAIT (256 KiB), WRITABLE gone; a read
-  // brings it back.
-  uint32_t vmo = 0;
-  uint64_t chunk = 0, total = 0;
-  CHECK(452, sys(CROI_SYS_VMO_CREATE, PAGE, 0, (uint64_t)&vmo, 0, 0) == 0 &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, vmo, 0,
-                      PAGE, (uint64_t)&chunk) == 0);
-  int64_t status = 0;
-  while ((status = sys(CROI_SYS_SOCKET_WRITE, a, 0, chunk, PAGE, (uint64_t)&actual)) == 0) total += actual;
-  CHECK(453, status == ERR_SHOULD_WAIT && total == 64 * PAGE &&
-                 sys(CROI_SYS_OBJECT_WAIT_ONE, a, CROI_SIGNAL_WRITABLE, 0, (uint64_t)&observed, 0) == ERR_TIMED_OUT &&
-                 sys(CROI_SYS_SOCKET_READ, b, 0, chunk, PAGE, (uint64_t)&actual) == 0 && actual == PAGE &&
-                 sys(CROI_SYS_OBJECT_WAIT_ONE, a, CROI_SIGNAL_WRITABLE, 0, (uint64_t)&observed, 0) == 0);
-  croi_info_socket_t info = {0};
-  CHECK(454, sys(CROI_SYS_OBJECT_GET_INFO, b, CROI_INFO_SOCKET, (uint64_t)&info, sizeof info, 0) == 0 &&
-                 info.rx_buf_size == 63 * PAGE && info.rx_buf_max == 64 * PAGE && info.tx_buf_size == 0);
-  while (sys(CROI_SYS_SOCKET_READ, b, 0, chunk, PAGE, (uint64_t)&actual) == 0) {}
-  // Dispositions: a's writing off (BAD_STATE writing; b's empty reads are
-  // BAD_STATE), then back on.
-  CHECK(455, sys(CROI_SYS_SOCKET_SET_DISPOSITION, a, 3, 0, 0, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_SOCKET_SET_DISPOSITION, a, CROI_SOCKET_DISPOSITION_WRITE_DISABLED, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_SOCKET_WRITE, a, 0, (uint64_t)"x", 1, 0) == ERR_BAD_STATE &&
-                 sys(CROI_SYS_OBJECT_WAIT_ONE, b, CROI_SOCKET_PEER_WRITE_DISABLED, 0, (uint64_t)&observed, 0) == 0 &&
-                 sys(CROI_SYS_SOCKET_READ, b, 0, (uint64_t)buf, 1, 0) == ERR_BAD_STATE &&
-                 sys(CROI_SYS_SOCKET_SET_DISPOSITION, b, 0, CROI_SOCKET_DISPOSITION_WRITE_ENABLED, 0, 0) == 0 &&
-                 sys(CROI_SYS_SOCKET_WRITE, a, 0, (uint64_t)"x", 1, 0) == 0);
-  // Read threshold: READ_THRESHOLD once 3 bytes wait.
-  uint64_t threshold = 3, got = 0;
-  CHECK(456, sys(CROI_SYS_OBJECT_SET_PROPERTY, b, CROI_PROP_SOCKET_RX_THRESHOLD, (uint64_t)&threshold, 8, 0) == 0 &&
-                 sys(CROI_SYS_OBJECT_WAIT_ONE, b, CROI_SOCKET_READ_THRESHOLD, 0, (uint64_t)&observed, 0) == ERR_TIMED_OUT &&
-                 sys(CROI_SYS_SOCKET_WRITE, a, 0, (uint64_t)"yz", 2, 0) == 0 &&
-                 sys(CROI_SYS_OBJECT_WAIT_ONE, b, CROI_SOCKET_READ_THRESHOLD, 0, (uint64_t)&observed, 0) == 0 &&
-                 sys(CROI_SYS_OBJECT_GET_PROPERTY, b, CROI_PROP_SOCKET_RX_THRESHOLD, (uint64_t)&got, 8, 0) == 0 &&
-                 got == 3);
-  // A user signal to the peer; then a gone: b drains, then PEER_CLOSED.
-  CHECK(457, sys(CROI_SYS_OBJECT_SIGNAL_PEER, a, 0, 1u << 24, 0, 0) == 0 &&
-                 sys(CROI_SYS_OBJECT_WAIT_ONE, b, 1u << 24, 0, (uint64_t)&observed, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, a, 0, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_OBJECT_WAIT_ONE, b, CROI_SIGNAL_PEER_CLOSED, 0, (uint64_t)&observed, 0) == 0 &&
-                 sys(CROI_SYS_SOCKET_WRITE, b, 0, (uint64_t)"x", 1, 0) == ERR_PEER_CLOSED &&
-                 sys(CROI_SYS_SOCKET_READ, b, 0, (uint64_t)buf, 16, (uint64_t)&actual) == 0 && actual == 3 &&
-                 sys(CROI_SYS_SOCKET_READ, b, 0, (uint64_t)buf, 16, (uint64_t)&actual) == ERR_PEER_CLOSED);
-  sys(CROI_SYS_HANDLE_CLOSE, b, 0, 0, 0, 0);
-  // Datagrams: whole messages; a short read drops the rest; a 0-byte read
-  // consumes nothing; too big is OUT_OF_RANGE.
-  CHECK(458, sys(CROI_SYS_SOCKET_CREATE, CROI_SOCKET_DATAGRAM, (uint64_t)&a, (uint64_t)&b, 0, 0) == 0 &&
-                 sys(CROI_SYS_SOCKET_WRITE, a, 0, (uint64_t)"hello", 5, (uint64_t)&actual) == 0 && actual == 5 &&
-                 sys(CROI_SYS_SOCKET_WRITE, a, 0, (uint64_t)"abc", 3, 0) == 0 &&
-                 sys(CROI_SYS_SOCKET_READ, b, 0, 0, 0, (uint64_t)&actual) == 0 && actual == 0 &&
-                 sys(CROI_SYS_OBJECT_GET_INFO, b, CROI_INFO_SOCKET, (uint64_t)&info, sizeof info, 0) == 0 &&
-                 info.rx_buf_size == 8 && info.rx_buf_available == 5 &&
-                 sys(CROI_SYS_SOCKET_READ, b, 0, (uint64_t)buf, 2, (uint64_t)&actual) == 0 && actual == 2 &&
-                 buf[0] == 'h' && buf[1] == 'e' &&
-                 sys(CROI_SYS_SOCKET_READ, b, 0, (uint64_t)buf, 16, (uint64_t)&actual) == 0 && actual == 3 &&
-                 buf[0] == 'a' &&
-                 sys(CROI_SYS_SOCKET_WRITE, a, 0, chunk, 300000, 0) == ERR_OUT_OF_RANGE);
-  sys(CROI_SYS_HANDLE_CLOSE, a, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, b, 0, 0, 0, 0);
-  sys(CROI_SYS_VMAR_UNMAP, s->vmar, chunk, PAGE, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0);
-  return 0;
-}
-
-// K13c: streams (Zircon's) over a two-page VMO with stream size 0: writes
-// at the seek extend the stream size, reads stop there, seeks, append,
-// a gap zero-filled, a write cut at the VMO's end, info and properties.
-static int64_t streams(void) {
-  uint32_t vmo = 0, st = 0, ro = 0;
-  uint64_t actual = 0, at = 0, size = 0;
-  char buf[32];
-  croi_iovec_t two[2] = {{(void *)"hello ", 6}, {(void *)"world", 5}};
-  croi_iovec_t in = {buf, sizeof buf};
-  CHECK(460, sys(CROI_SYS_VMO_CREATE, 2 * PAGE, 0, (uint64_t)&vmo, 0, 0) == 0 &&
-                 sys(CROI_SYS_VMO_GET_STREAM_SIZE, vmo, (uint64_t)&size, 0, 0, 0) == 0 && size == 2 * PAGE &&
-                 sys(CROI_SYS_VMO_SET_STREAM_SIZE, vmo, 0, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_STREAM_CREATE, 8, vmo, 0, (uint64_t)&st, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_STREAM_CREATE, CROI_STREAM_MODE_READ | CROI_STREAM_MODE_WRITE, vmo, 0, (uint64_t)&st, 0) == 0 &&
-                 sys(CROI_SYS_STREAM_CREATE, CROI_STREAM_MODE_READ, vmo, 0, (uint64_t)&ro, 0) == 0);
-  // Write at the seek; the read stops at the stream size.
-  CHECK(461, sys(CROI_SYS_STREAM_WRITEV, st, 0, (uint64_t)two, 2, (uint64_t)&actual) == 0 && actual == 11 &&
-                 sys(CROI_SYS_VMO_GET_STREAM_SIZE, vmo, (uint64_t)&size, 0, 0, 0) == 0 && size == 11 &&
-                 sys(CROI_SYS_STREAM_READV, ro, 0, (uint64_t)&in, 1, (uint64_t)&actual) == 0 && actual == 11 &&
-                 buf[0] == 'h' && buf[6] == 'w' && buf[10] == 'd' &&
-                 sys(CROI_SYS_STREAM_READV, ro, 0, (uint64_t)&in, 1, (uint64_t)&actual) == 0 && actual == 0 &&
-                 sys(CROI_SYS_STREAM_WRITEV, ro, 0, (uint64_t)two, 1, 0) == ERR_ACCESS_DENIED);
-  // Seeks: END - 5 reads "world"; START negative is INVALID_ARGS.
-  CHECK(462, sys(CROI_SYS_STREAM_SEEK, ro, CROI_STREAM_SEEK_ORIGIN_END, (uint64_t)-5, (uint64_t)&at, 0) == 0 && at == 6 &&
-                 sys(CROI_SYS_STREAM_READV, ro, 0, (uint64_t)&in, 1, (uint64_t)&actual) == 0 && actual == 5 &&
-                 buf[0] == 'w' &&
-                 sys(CROI_SYS_STREAM_SEEK, ro, CROI_STREAM_SEEK_ORIGIN_START, (uint64_t)-1, 0, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_STREAM_SEEK, ro, CROI_STREAM_SEEK_ORIGIN_CURRENT, (uint64_t)-100, 0, 0) == ERR_INVALID_ARGS);
-  // Append ignores the seek; a write past the end zero-fills the gap.
-  CHECK(463, sys(CROI_SYS_STREAM_SEEK, st, CROI_STREAM_SEEK_ORIGIN_START, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_STREAM_WRITEV, st, CROI_STREAM_APPEND, (uint64_t)&two[1], 1, (uint64_t)&actual) == 0 &&
-                 actual == 5 &&
-                 sys(CROI_SYS_STREAM_SEEK, st, CROI_STREAM_SEEK_ORIGIN_CURRENT, 0, (uint64_t)&at, 0) == 0 && at == 16 &&
-                 sys6(CROI_SYS_STREAM_WRITEV_AT, st, 0, 20, (uint64_t)&two[1], 1, (uint64_t)&actual) == 0 && actual == 5 &&
-                 sys6(CROI_SYS_STREAM_READV_AT, ro, 0, 11, (uint64_t)&in, 1, (uint64_t)&actual) == 0 && actual == 14 &&
-                 buf[0] == 'w' && buf[5] == 0 && buf[8] == 0 && buf[9] == 'w');
-  // At the VMO's end: cut short; at or past it OUT_OF_RANGE.
-  CHECK(464, sys6(CROI_SYS_STREAM_WRITEV_AT, st, 0, 2 * PAGE - 3, (uint64_t)two, 1, (uint64_t)&actual) == 0 && actual == 3 &&
-                 sys6(CROI_SYS_STREAM_WRITEV_AT, st, 0, 2 * PAGE, (uint64_t)two, 1, 0) == ERR_OUT_OF_RANGE &&
-                 sys(CROI_SYS_VMO_GET_STREAM_SIZE, vmo, (uint64_t)&size, 0, 0, 0) == 0 && size == 2 * PAGE);
-  // Info, append mode as a property, content size as a property (shrinking
-  // zeroes what was past it).
-  croi_info_stream_t info = {0};
-  uint8_t append = 1;
-  uint64_t content = 4;
-  CHECK(465, sys(CROI_SYS_OBJECT_SET_PROPERTY, st, CROI_PROP_STREAM_MODE_APPEND, (uint64_t)&append, 1, 0) == 0 &&
-                 sys(CROI_SYS_OBJECT_GET_INFO, st, CROI_INFO_STREAM, (uint64_t)&info, sizeof info, 0) == 0 &&
-                 info.options == (CROI_STREAM_MODE_READ | CROI_STREAM_MODE_WRITE | CROI_STREAM_MODE_APPEND) &&
-                 info.seek == 16 && info.content_size == 2 * PAGE &&
-                 sys(CROI_SYS_OBJECT_SET_PROPERTY, vmo, CROI_PROP_VMO_CONTENT_SIZE, (uint64_t)&content, 8, 0) == 0 &&
-                 sys(CROI_SYS_STREAM_WRITEV, st, 0, (uint64_t)&two[1], 1, (uint64_t)&actual) == 0 && actual == 5 &&
-                 sys6(CROI_SYS_STREAM_READV_AT, ro, 0, 0, (uint64_t)&in, 1, (uint64_t)&actual) == 0 && actual == 9 &&
-                 buf[3] == 'l' && buf[4] == 'w' &&
-                 sys(CROI_SYS_VMO_READ, vmo, (uint64_t)buf, 20, 1, 0) == 0 && buf[0] == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, st, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, ro, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0);
-  return 0;
-}
-
 // K13d: the user pager. A pager thread serves READ requests from a port:
 // each page filled with 'A' + its index, except page 3, which it fails
 // with IO; DIRTY requests it grants; it records requests and the
@@ -2938,7 +2795,7 @@ static int64_t pager(const startup_t *s) {
                       (uint64_t)&vmo) == ERR_INVALID_ARGS &&
                  sys6(CROI_SYS_PAGER_CREATE_VMO, pg, 0, port, 77, 4 * PAGE + 100, (uint64_t)&vmo) == 0 &&
                  sys(CROI_SYS_VMO_GET_SIZE, vmo, (uint64_t)&size, 0, 0, 0) == 0 && size == 5 * PAGE &&
-                 sys(CROI_SYS_VMO_GET_STREAM_SIZE, vmo, (uint64_t)&size, 0, 0, 0) == 0 && size == 4 * PAGE + 100 &&
+                 sys(CROI_SYS_OBJECT_GET_PROPERTY, vmo, CROI_PROP_VMO_CONTENT_SIZE, (uint64_t)&size, 8, 0) == 0 && size == 4 * PAGE + 100 &&
                  sys(CROI_SYS_VMO_CREATE, PAGE, 0, (uint64_t)&other, 0, 0) == 0);
   // Refusals: misaligned, a status FAIL won't take, a VMO not the pager's.
   CHECK(471, sys6(CROI_SYS_PAGER_SUPPLY_PAGES, pg, vmo, 1, PAGE, other, 0) == ERR_INVALID_ARGS &&
@@ -3060,9 +2917,10 @@ static void etc_server(uint64_t channel) {
 }
 
 static int64_t small_calls(const startup_t *s) {
-  // Names: set and read back (truncated to 31), WRONG_TYPE, thread names
-  // from thread_create, a short buffer.
-  uint32_t vmo = 0, ev = 0, ev2 = 0, thread = 0, sock[2] = {0, 0};
+  // Names: set and read back (truncated to 31), thread names from
+  // thread_create, a short buffer. (A type without names refused one with
+  // WRONG_TYPE; sockets were the last such type with SET_PROPERTY.)
+  uint32_t vmo = 0, ev = 0, ev2 = 0, thread = 0;
   char name[32];
   CHECK(490, sys(CROI_SYS_VMO_CREATE, PAGE, 0, (uint64_t)&vmo, 0, 0) == 0 &&
                  sys(CROI_SYS_EVENT_CREATE, 0, (uint64_t)&ev, 0, 0, 0) == 0 &&
@@ -3074,10 +2932,7 @@ static int64_t small_calls(const startup_t *s) {
                      (uint64_t)"0123456789abcdefghijklmnopqrstuvwxyz", 36, 0) == 0 &&
                  sys(CROI_SYS_OBJECT_GET_PROPERTY, vmo, CROI_PROP_NAME, (uint64_t)name, 32, 0) == 0 &&
                  name[30] == 'u' && name[31] == 0 &&
-                 sys(CROI_SYS_SOCKET_CREATE, 0, (uint64_t)&sock[0], (uint64_t)&sock[1], 0, 0) == 0 &&
-                 sys(CROI_SYS_OBJECT_SET_PROPERTY, sock[0], CROI_PROP_NAME, (uint64_t)"x", 1, 0) == ERR_WRONG_TYPE &&
                  sys(CROI_SYS_OBJECT_SET_PROPERTY, ev, CROI_PROP_NAME, (uint64_t)"x", 1, 0) == ERR_ACCESS_DENIED &&
-                 sys(CROI_SYS_HANDLE_CLOSE_MANY, (uint64_t)sock, 2, 0, 0, 0) == 0 &&
                  sys6(CROI_SYS_THREAD_CREATE, s->process, (uint64_t)"worker", 6, 0, (uint64_t)&thread, 0) == 0 &&
                  sys(CROI_SYS_OBJECT_GET_PROPERTY, thread, CROI_PROP_NAME, (uint64_t)name, 32, 0) == 0 &&
                  name[0] == 'w' && name[5] == 'r' && name[6] == 0);
@@ -3735,7 +3590,7 @@ static int64_t resizing(const startup_t *s) {
                  (basic.rights & CROI_RIGHT_RESIZE) &&
                  sys6(CROI_SYS_OBJECT_GET_INFO, vmo, CROI_INFO_VMO, (uint64_t)&info, sizeof info, (uint64_t)&counts[0],
                       (uint64_t)&counts[1]) == 0 && (info.flags & CROI_INFO_VMO_RESIZABLE) && info.size_bytes == 3 * PAGE &&
-                 sys(CROI_SYS_VMO_GET_STREAM_SIZE, vmo, (uint64_t)&size, 0, 0, 0) == 0 && size == 2 * PAGE + 100 &&
+                 sys(CROI_SYS_OBJECT_GET_PROPERTY, vmo, CROI_PROP_VMO_CONTENT_SIZE, (uint64_t)&size, 8, 0) == 0 && size == 2 * PAGE + 100 &&
                  sys(CROI_SYS_VMO_CREATE, PAGE, 0, (uint64_t)&plain, 0, 0) == 0 &&
                  sys(CROI_SYS_VMO_SET_SIZE, plain, 2 * PAGE, 0, 0, 0) == ERR_UNAVAILABLE &&
                  sys(CROI_SYS_HANDLE_DUPLICATE, vmo, RIGHT_READ | (1u << 3) | RIGHT_DUPLICATE, (uint64_t)&weak, 0, 0) == 0 &&
@@ -3750,7 +3605,7 @@ static int64_t resizing(const startup_t *s) {
   ((volatile char *)at)[PAGE] = 'y';
   CHECK(572, sys(CROI_SYS_VMO_SET_SIZE, vmo, 10, 0, 0, 0) == 0 &&
                  sys(CROI_SYS_VMO_GET_SIZE, vmo, (uint64_t)&size, 0, 0, 0) == 0 && size == PAGE &&
-                 sys(CROI_SYS_VMO_GET_STREAM_SIZE, vmo, (uint64_t)&size, 0, 0, 0) == 0 && size == 10 &&
+                 sys(CROI_SYS_OBJECT_GET_PROPERTY, vmo, CROI_PROP_VMO_CONTENT_SIZE, (uint64_t)&size, 8, 0) == 0 && size == 10 &&
                  ((volatile char *)at)[20] == 0 &&
                  sys(CROI_SYS_VMO_READ, vmo, (uint64_t)&byte, PAGE, 1, 0) == ERR_OUT_OF_RANGE &&
                  sys(CROI_SYS_VMO_SET_SIZE, vmo, 3 * PAGE, 0, 0, 0) == 0 &&
@@ -4331,64 +4186,6 @@ static int64_t reclaim(const startup_t *s) {
   return 0;
 }
 
-// K13b: FIFOs (Zircon's: records into the peer's ring, READABLE /
-// WRITABLE / PEER_CLOSED, user signals to the peer) and
-// vmo_replace_as_executable (a VMEX resource; the handle consumed).
-static int64_t fifos_and_exec(const startup_t *s) {
-  uint32_t a = 0, b = 0, observed = 0;
-  uint64_t actual = 0;
-  uint32_t rec[8] = {0}, got[8] = {0};
-  CHECK(440, sys(CROI_SYS_FIFO_CREATE, 0, 4, 0, (uint64_t)&a, (uint64_t)&b) == ERR_OUT_OF_RANGE &&
-                 sys(CROI_SYS_FIFO_CREATE, 1024, 8, 0, (uint64_t)&a, (uint64_t)&b) == ERR_OUT_OF_RANGE &&
-                 sys(CROI_SYS_FIFO_CREATE, 4, 4, 1, (uint64_t)&a, (uint64_t)&b) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_FIFO_CREATE, 4, 4, 0, (uint64_t)&a, (uint64_t)&b) == 0 &&
-                 sys(CROI_SYS_OBJECT_WAIT_ONE, a, CROI_SIGNAL_WRITABLE, 0, (uint64_t)&observed, 0) == 0);
-  for (int i = 0; i < 8; i++) rec[i] = 100 + i;
-  // Six offered, four fit; then full: SHOULD_WAIT, a not WRITABLE, b READABLE.
-  CHECK(441, sys(CROI_SYS_FIFO_WRITE, a, 8, (uint64_t)rec, 1, (uint64_t)&actual) == ERR_OUT_OF_RANGE &&
-                 sys(CROI_SYS_FIFO_WRITE, a, 4, (uint64_t)rec, 6, (uint64_t)&actual) == 0 && actual == 4 &&
-                 sys(CROI_SYS_FIFO_WRITE, a, 4, (uint64_t)rec, 1, (uint64_t)&actual) == ERR_SHOULD_WAIT &&
-                 sys(CROI_SYS_OBJECT_WAIT_ONE, a, CROI_SIGNAL_WRITABLE, 0, (uint64_t)&observed, 0) == ERR_TIMED_OUT &&
-                 sys(CROI_SYS_OBJECT_WAIT_ONE, b, CROI_SIGNAL_READABLE, 0, (uint64_t)&observed, 0) == 0);
-  // Read three, then the rest: order kept, a WRITABLE again, b empty.
-  CHECK(442, sys(CROI_SYS_FIFO_READ, b, 4, (uint64_t)got, 3, (uint64_t)&actual) == 0 && actual == 3 &&
-                 got[0] == 100 && got[2] == 102 &&
-                 sys(CROI_SYS_OBJECT_WAIT_ONE, a, CROI_SIGNAL_WRITABLE, 0, (uint64_t)&observed, 0) == 0 &&
-                 sys(CROI_SYS_FIFO_READ, b, 4, (uint64_t)got, 8, (uint64_t)&actual) == 0 && actual == 1 &&
-                 got[0] == 103 &&
-                 sys(CROI_SYS_FIFO_READ, b, 4, (uint64_t)got, 1, 0) == ERR_SHOULD_WAIT &&
-                 sys(CROI_SYS_OBJECT_WAIT_ONE, b, CROI_SIGNAL_READABLE, 0, (uint64_t)&observed, 0) == ERR_TIMED_OUT);
-  // A user signal to the peer; then a closed peer.
-  CHECK(443, sys(CROI_SYS_OBJECT_SIGNAL_PEER, a, 0, 1u << 24, 0, 0) == 0 &&
-                 sys(CROI_SYS_OBJECT_WAIT_ONE, b, 1u << 24, 0, (uint64_t)&observed, 0) == 0 &&
-                 sys(CROI_SYS_FIFO_WRITE, b, 4, (uint64_t)rec, 1, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, b, 0, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_OBJECT_WAIT_ONE, a, CROI_SIGNAL_PEER_CLOSED, 0, (uint64_t)&observed, 0) == 0 &&
-                 !(observed & CROI_SIGNAL_WRITABLE) &&
-                 sys(CROI_SYS_FIFO_WRITE, a, 4, (uint64_t)rec, 1, 0) == ERR_PEER_CLOSED &&
-                 sys(CROI_SYS_FIFO_READ, a, 4, (uint64_t)got, 1, 0) == 0 && got[0] == 100 &&
-                 sys(CROI_SYS_FIFO_READ, a, 4, (uint64_t)got, 1, 0) == ERR_PEER_CLOSED);
-  sys(CROI_SYS_HANDLE_CLOSE, a, 0, 0, 0, 0);
-
-  // An anonymous VMO isn't executable until replaced with a VMEX resource;
-  // a bad resource still takes the handle.
-  uint32_t vmo = 0, exec = 0, other = 0;
-  uint64_t at = 0;
-  CHECK(444, sys(CROI_SYS_VMO_CREATE, PAGE, 0, (uint64_t)&vmo, 0, 0) == 0 &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_EXECUTE) << 32, 0, vmo,
-                      0, PAGE, (uint64_t)&at) == ERR_ACCESS_DENIED_ &&
-                 sys(CROI_SYS_HANDLE_DUPLICATE, vmo, 1u << 31, (uint64_t)&other, 0, 0) == 0 &&
-                 sys(CROI_SYS_VMO_REPLACE_AS_EXECUTABLE, other, vmo, (uint64_t)&exec, 0, 0) == ERR_WRONG_TYPE &&
-                 sys(CROI_SYS_HANDLE_CLOSE, other, 0, 0, 0, 0) == ERR_BAD_HANDLE &&
-                 sys(CROI_SYS_VMO_REPLACE_AS_EXECUTABLE, vmo, s->resource, (uint64_t)&exec, 0, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0) == ERR_BAD_HANDLE &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_EXECUTE) << 32, 0, exec,
-                      0, PAGE, (uint64_t)&at) == 0);
-  sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, PAGE, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, exec, 0, 0, 0, 0);
-  return 0;
-}
-
 static int64_t vmo_child(uint32_t vmo, uint32_t options, uint64_t offset, uint64_t size, uint32_t *out) {
   return sys(CROI_SYS_VMO_CREATE_CHILD, vmo, options, offset, size, (uint64_t)out);
 }
@@ -4678,33 +4475,16 @@ static int64_t child_kinds(const startup_t *s) {
                  sys(CROI_SYS_VMO_GET_SIZE, grow, (uint64_t)&size, 0, 0, 0) == 0 && size == 3 * PAGE &&
                  sys(CROI_SYS_VMO_GET_SIZE, ref, (uint64_t)&size, 0, 0, 0) == 0 && size == 3 * PAGE &&
                  vmo_put(ref, 2 * PAGE, 'G') && vmo_byte(grow, 2 * PAGE) == 'G');
-  // The stream size is shared; a snapshot through a reference is of the
-  // parent, counted as the reference's child; info names the parent.
-  uint64_t content = 100;
-  CHECK(659, sys(CROI_SYS_VMO_SET_STREAM_SIZE, grow, 100, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_VMO_GET_STREAM_SIZE, ref, (uint64_t)&content, 0, 0, 0) == 0 && content == 100 &&
-                 sys(CROI_SYS_VMO_SET_STREAM_SIZE, rref, 50, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_VMO_GET_STREAM_SIZE, grow, (uint64_t)&content, 0, 0, 0) == 0 && content == 50 &&
-                 vmo_child(ref, CROI_VMO_CHILD_SNAPSHOT, 0, PAGE, &rsnap) == 0 && vmo_byte(rsnap, 7) == 'R' &&
+  // A snapshot through a reference is of the parent, counted as the
+  // reference's child; info names the parent. (The shared content size is
+  // VmoSuite's.)
+  CHECK(659, vmo_child(ref, CROI_VMO_CHILD_SNAPSHOT, 0, PAGE, &rsnap) == 0 && vmo_byte(rsnap, 7) == 'R' &&
                  sys(CROI_SYS_OBJECT_WAIT_ONE, ref, zero, 0, (uint64_t)&observed, 0) == ERR_TIMED_OUT &&
                  get_info(rsnap, CROI_INFO_VMO, &v, sizeof v, counts) == 0 && v.parent_koid == koid_of(ref) &&
                  get_info(ref, CROI_INFO_VMO, &v, sizeof v, counts) == 0 && v.parent_koid == koid_of(grow) &&
                  v.committed_bytes == 0 && (v.flags & CROI_INFO_VMO_RESIZABLE) && v.size_bytes == 3 * PAGE);
-  // A stream over a slice: its own stream size, its parent's pages.
-  uint32_t window = 0, st = 0;
-  uint64_t actual = 0;
-  croi_iovec_t hello = {(void *)"hello", 5};
-  CHECK(660, vmo_child(grow, CROI_VMO_CHILD_SLICE, PAGE, PAGE, &window) == ERR_NOT_SUPPORTED &&
-                 sys(CROI_SYS_VMO_CREATE, 2 * PAGE, 0, (uint64_t)&big, 0, 0) == 0 &&
-                 vmo_child(big, CROI_VMO_CHILD_SLICE, PAGE, PAGE, &window) == 0 &&
-                 sys(CROI_SYS_VMO_SET_STREAM_SIZE, window, 0, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_STREAM_CREATE, CROI_STREAM_MODE_WRITE, window, 0, (uint64_t)&st, 0) == 0 &&
-                 sys(CROI_SYS_STREAM_WRITEV, st, 0, (uint64_t)&hello, 1, (uint64_t)&actual) == 0 && actual == 5 &&
-                 vmo_byte(big, PAGE + 4) == 'o' &&
-                 sys(CROI_SYS_VMO_GET_STREAM_SIZE, window, (uint64_t)&content, 0, 0, 0) == 0 && content == 5 &&
-                 sys(CROI_SYS_VMO_GET_STREAM_SIZE, big, (uint64_t)&content, 0, 0, 0) == 0 && content == 2 * PAGE);
-  uint32_t last[] = {st, window, big, rsnap, ref, rref, weak, grow, snap, parent};
-  for (int i = 0; i < 10; i++) sys(CROI_SYS_HANDLE_CLOSE, last[i], 0, 0, 0, 0);
+  uint32_t last[] = {rsnap, ref, rref, weak, grow, snap, parent};
+  for (int i = 0; i < 7; i++) sys(CROI_SYS_HANDLE_CLOSE, last[i], 0, 0, 0, 0);
   return 0;
 }
 
@@ -4775,7 +4555,7 @@ static int64_t unbounded(const startup_t *s) {
                      ERR_OUT_OF_RANGE &&
                  sys(CROI_SYS_VMO_CREATE, 4 * PAGE + 100, CROI_VMO_CREATE_UNBOUNDED, (uint64_t)&vmo, 0, 0) == 0 &&
                  sys(CROI_SYS_VMO_GET_SIZE, vmo, (uint64_t)&size, 0, 0, 0) == 0 && size == max &&
-                 sys(CROI_SYS_VMO_GET_STREAM_SIZE, vmo, (uint64_t)&size, 0, 0, 0) == 0 && size == 4 * PAGE + 100 &&
+                 sys(CROI_SYS_OBJECT_GET_PROPERTY, vmo, CROI_PROP_VMO_CONTENT_SIZE, (uint64_t)&size, 8, 0) == 0 && size == 4 * PAGE + 100 &&
                  get_info(vmo, CROI_INFO_VMO, &v, sizeof v, counts) == 0 && v.size_bytes == max &&
                  v.committed_bytes == 0 && sys(CROI_SYS_VMO_SET_SIZE, vmo, PAGE, 0, 0, 0) == ERR_UNAVAILABLE);
   // A page far out: written, read, mapped, a child's and a slice's.
@@ -4796,15 +4576,6 @@ static int64_t unbounded(const startup_t *s) {
                  vmo_byte(vmo, far) == 0 && vmo_byte(vmo, max - 1) == 'Z' && committed_of(vmo, 0) == 2 * PAGE &&
                  sys6(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_DECOMMIT, 0, max, 0, 0) == 0 &&
                  committed_of(vmo, 0) == 0);
-  // A stream writes far out (the gap from the content size zeroed), and
-  // the content size cut back zeroes everything past it.
-  croi_iovec_t hello = {(void *)"hello", 5};
-  CHECK(666, sys(CROI_SYS_STREAM_CREATE, CROI_STREAM_MODE_READ | CROI_STREAM_MODE_WRITE, vmo, 0, (uint64_t)&st, 0) == 0 &&
-                 sys6(CROI_SYS_STREAM_WRITEV_AT, st, 0, far, (uint64_t)&hello, 1, (uint64_t)&actual) == 0 &&
-                 actual == 5 && sys(CROI_SYS_VMO_GET_STREAM_SIZE, vmo, (uint64_t)&size, 0, 0, 0) == 0 &&
-                 size == far + 5 && vmo_byte(vmo, far + 4) == 'o' &&
-                 sys(CROI_SYS_VMO_SET_STREAM_SIZE, vmo, 10, 0, 0, 0) == 0 && vmo_byte(vmo, far + 4) == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, st, 0, 0, 0, 0);
   sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0);
   // A pager VMO: refusals, sizes, a page supplied far out, dirty ranges
   // and writeback over the whole VMO, detach.
@@ -4816,7 +4587,7 @@ static int64_t unbounded(const startup_t *s) {
                      ERR_OUT_OF_RANGE &&
                  sys6(CROI_SYS_PAGER_CREATE_VMO, pg, CROI_VMO_UNBOUNDED, port, 94, 100, (uint64_t)&vmo) == 0 &&
                  sys(CROI_SYS_VMO_GET_SIZE, vmo, (uint64_t)&size, 0, 0, 0) == 0 && size == max &&
-                 sys(CROI_SYS_VMO_GET_STREAM_SIZE, vmo, (uint64_t)&size, 0, 0, 0) == 0 && size == 100 &&
+                 sys(CROI_SYS_OBJECT_GET_PROPERTY, vmo, CROI_PROP_VMO_CONTENT_SIZE, (uint64_t)&size, 8, 0) == 0 && size == 100 &&
                  sys(CROI_SYS_VMO_CREATE, PAGE, 0, (uint64_t)&aux, 0, 0) == 0 && vmo_put(aux, 0, 'P') &&
                  sys6(CROI_SYS_PAGER_SUPPLY_PAGES, pg, vmo, far, PAGE, aux, 0) == 0 && vmo_byte(vmo, far) == 'P' &&
                  sys6(CROI_SYS_PAGER_QUERY_DIRTY_RANGES, pg | (uint64_t)vmo << 32, 0, max, (uint64_t)ranges,
@@ -4888,9 +4659,10 @@ static int64_t zero_intervals(const startup_t *s) {
                  sys6(CROI_SYS_PAGER_SUPPLY_PAGES, pg, vmo, 2 * PAGE, PAGE, aux, 2 * PAGE) == 0 &&
                  sys6(CROI_SYS_PAGER_SUPPLY_PAGES, pg, vmo, 5 * PAGE, PAGE, aux, 5 * PAGE) == 0 &&
                  vmo_byte(vmo, 2 * PAGE) == 'C' && vmo_byte(vmo, 5 * PAGE) == 'F');
-  // A stream size cut: zeroed up to its page end (dirty), past it an
+  // A content size cut: zeroed up to its page end (dirty), past it an
   // untracked interval (page 7 dropped, reading zero, never reported).
-  CHECK(673, sys(CROI_SYS_VMO_SET_STREAM_SIZE, vmo, 6 * PAGE + 10, 0, 0, 0) == 0 &&
+  uint64_t content = 6 * PAGE + 10;
+  CHECK(673, sys(CROI_SYS_OBJECT_SET_PROPERTY, vmo, CROI_PROP_VMO_CONTENT_SIZE, (uint64_t)&content, 8, 0) == 0 &&
                  vmo_byte(vmo, 6 * PAGE) == 'g' && vmo_byte(vmo, 6 * PAGE + 99) == 0 && vmo_byte(vmo, 7 * PAGE) == 0 &&
                  dirty_ranges(pg, vmo, 8 * PAGE, r, &n) && n == 3 && range_is(&r[2], 6 * PAGE, PAGE, 0));
   // A pinned page in a ZERO is zeroed in place, stays, and is dirty.
@@ -5243,82 +5015,19 @@ static int64_t review_entry(const startup_t *s) {
   return 0;
 }
 
-// Negative tests from the second review (sockets, FIFOs, streams).
+// Negative tests from the second review: buffers near 2^64 are a status,
+// not a trap in the kernel's page-in.
 static int64_t review_queues(const startup_t *s) {
-  // A full stream socket read one byte, then page by page: the ring's trim
-  // freed every other page (unread data) when both ends fell in one page.
-  uint32_t a = 0, b = 0, vmo = 0;
-  uint64_t chunk = 0, actual = 0, written = 0;
-  CHECK(703, sys(CROI_SYS_SOCKET_CREATE, CROI_SOCKET_STREAM, (uint64_t)&a, (uint64_t)&b, 0, 0) == 0 &&
-                 sys(CROI_SYS_VMO_CREATE, PAGE, 0, (uint64_t)&vmo, 0, 0) == 0 &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, vmo,
-                      0, PAGE, (uint64_t)&chunk) == 0);
-  volatile uint8_t *bytes = (volatile uint8_t *)chunk;
-  for (;;) {
-    for (uint64_t i = 0; i < PAGE; i++) bytes[i] = (uint8_t)((written / PAGE) + i);
-    if (sys(CROI_SYS_SOCKET_WRITE, a, 0, chunk, PAGE, (uint64_t)&actual) != 0) break;
-    written += actual;
-  }
-  uint64_t got = 0;
-  int intact = sys(CROI_SYS_SOCKET_READ, b, 0, chunk, 1, (uint64_t)&actual) == 0 && actual == 1 && bytes[0] == 0;
-  got = 1;
-  while (intact && got < written) {
-    uint64_t want = written - got < PAGE ? written - got : PAGE;
-    if (sys(CROI_SYS_SOCKET_READ, b, 0, chunk, want, (uint64_t)&actual) != 0 || actual != want) {
-      intact = 0;
-      break;
-    }
-    for (uint64_t i = 0; i < actual; i++) {
-      uint64_t at = got + i;
-      if (bytes[i] != (uint8_t)((at / PAGE) + at % PAGE)) intact = 0;
-    }
-    got += actual;
-  }
-  CHECK(703, written >= 64 * PAGE && intact && got == written);
-  sys(CROI_SYS_HANDLE_CLOSE, a, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, b, 0, 0, 0, 0);
-  sys(CROI_SYS_VMAR_UNMAP, s->vmar, chunk, PAGE, 0, 0);
-  // Buffers near 2^64: a status, not a trap in the kernel's page-in.
-  uint32_t st = 0;
-  croi_iovec_t far = {(void *)0xFFFFFFFFFFFFF800ull, 0x1000};
-  CHECK(704, sys(CROI_SYS_STREAM_CREATE, CROI_STREAM_MODE_READ | CROI_STREAM_MODE_WRITE, vmo, 0, (uint64_t)&st, 0) == 0 &&
-                 sys6(CROI_SYS_STREAM_WRITEV_AT, st, 0, 0, (uint64_t)&far, 1, (uint64_t)&actual) < 0);
-  CHECK(705, sys(CROI_SYS_VMO_WRITE, vmo, 0xFFFFFFFFFFFFF800ull, 0, 0x1000, 0) < 0 &&
+  (void)s;
+  uint32_t vmo = 0;
+  CHECK(705, sys(CROI_SYS_VMO_CREATE, PAGE, 0, (uint64_t)&vmo, 0, 0) == 0 &&
+                 sys(CROI_SYS_VMO_WRITE, vmo, 0xFFFFFFFFFFFFF800ull, 0, 0x1000, 0) < 0 &&
                  sys(CROI_SYS_VMO_READ, vmo, 0xFFFFFFFFFFFFF800ull, 0, 0x1000, 0) < 0);
-  sys(CROI_SYS_HANDLE_CLOSE, st, 0, 0, 0, 0);
   sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0);
-  // FIFOs check in Zircon's order: empty or full before the buffer, the
-  // peer before the record size.
-  uint32_t fa = 0, fb = 0, rec[4] = {1, 2, 3, 4};
-  CHECK(706, sys(CROI_SYS_FIFO_CREATE, 4, 4, 0, (uint64_t)&fa, (uint64_t)&fb) == 0 &&
-                 sys(CROI_SYS_FIFO_READ, fb, 4, 0, 1, (uint64_t)&actual) == ERR_SHOULD_WAIT &&
-                 sys(CROI_SYS_FIFO_WRITE, fa, 4, (uint64_t)rec, 4, (uint64_t)&actual) == 0 && actual == 4 &&
-                 sys(CROI_SYS_FIFO_WRITE, fa, 4, 0, 1, (uint64_t)&actual) == ERR_SHOULD_WAIT &&
-                 sys(CROI_SYS_HANDLE_CLOSE, fb, 0, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_FIFO_WRITE, fa, 8, (uint64_t)rec, 1, (uint64_t)&actual) == ERR_PEER_CLOSED);
-  sys(CROI_SYS_HANDLE_CLOSE, fa, 0, 0, 0, 0);
   return 0;
 }
 
 // Negative tests from the second review (pager, VMO ops).
-// Review 2's open items (checks 737-): threads for the size lock tests.
-// w[0] the stream or VMO, w[1] the result, w[2] done.
-static void size_lock_writer(uint64_t arg) {
-  volatile int64_t *w = (volatile int64_t *)arg;
-  croi_iovec_t one = {(void *)"x", 1};
-  uint64_t actual = 0;
-  w[1] = sys6(CROI_SYS_STREAM_WRITEV_AT, (uint32_t)w[0], 0, (uint64_t)w[3], (uint64_t)&one, 1, (uint64_t)&actual);
-  w[2] = 1;
-  sys(CROI_SYS_THREAD_EXIT, 0, 0, 0, 0, 0);
-}
-
-static void size_lock_resizer(uint64_t arg) {
-  volatile int64_t *w = (volatile int64_t *)arg;
-  w[1] = sys(CROI_SYS_VMO_SET_SIZE, (uint32_t)w[0], (uint64_t)w[3], 0, 0, 0);
-  w[2] = 1;
-  sys(CROI_SYS_THREAD_EXIT, 0, 0, 0, 0, 0);
-}
-
 // 740: a pager answering every READ with 'P' pages until told to stop.
 // r[0] port, [1] pager, [2] vmo, [3] stop, [4] supplies.
 static void race_pager(uint64_t arg) {
@@ -5411,44 +5120,7 @@ static int64_t get_child(const startup_t *s) {
 }
 
 static int64_t review_open(const startup_t *s) {
-  // A stream write waiting for its VMO's pager holds that VMO's size lock
-  // only: a write growing another VMO's stream goes ahead (737; one global
-  // lock stalled it until the pager answered), while vmo_set_size of the
-  // same VMO waits for it (738: the size can't move under the write).
-  uint32_t pg = 0, port = 0, paged = 0, ps = 0, anon = 0, as = 0;
-  CHECK(737, sys(CROI_SYS_PAGER_CREATE, 0, (uint64_t)&pg, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) == 0 &&
-                 sys6(CROI_SYS_PAGER_CREATE_VMO, pg, CROI_VMO_RESIZABLE, port, 5, 4 * PAGE, (uint64_t)&paged) == 0 &&
-                 sys(CROI_SYS_STREAM_CREATE, CROI_STREAM_MODE_WRITE, paged, 0, (uint64_t)&ps, 0) == 0 &&
-                 sys(CROI_SYS_VMO_CREATE, 4 * PAGE, 0, (uint64_t)&anon, 0, 0) == 0 &&
-                 sys(CROI_SYS_VMO_SET_STREAM_SIZE, anon, 0, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_STREAM_CREATE, CROI_STREAM_MODE_WRITE, anon, 0, (uint64_t)&as, 0) == 0);
-  volatile int64_t blocked[4] = {ps, 1, 0, 0}, other[4] = {as, 1, 0, 100}, resize[4] = {paged, 1, 0, 2 * PAGE};
-  uint32_t t1 = start_thread(s, size_lock_writer, (uint64_t)blocked);
-  croi_port_packet_t packet;
-  CHECK(737, sys(CROI_SYS_PORT_WAIT, port, now_ns() + 5000000000ull, (uint64_t)&packet, 0, 0) == 0 &&
-                 packet.type == CROI_PKT_TYPE_PAGE_REQUEST);
-  sleep_ns(20000000);
-  uint32_t t2 = start_thread(s, size_lock_writer, (uint64_t)other);
-  uint32_t t3 = start_thread(s, size_lock_resizer, (uint64_t)resize);
-  for (int i = 0; i < 100 && !other[2]; i++) sleep_ns(10000000);
-  sleep_ns(50000000);
-  int64_t other_done = other[2], other_result = other[1], resize_early = resize[2];
-  // The pager answers: the write lands, then the resize.
-  uint32_t aux = 0;
-  sys(CROI_SYS_VMO_CREATE, 4 * PAGE, 0, (uint64_t)&aux, 0, 0);
-  sys6(CROI_SYS_PAGER_SUPPLY_PAGES, pg, paged, 0, 4 * PAGE, aux, 0);
-  join(t1);
-  join(t2);
-  join(t3);
-  uint64_t size = 0;
-  CHECK(737, other_done && other_result == 0);
-  CHECK(745, blocked[1] == 0);  // the blocked write landed once supplied
-  CHECK(738, !resize_early && resize[1] == 0 &&
-                 sys(CROI_SYS_VMO_GET_SIZE, paged, (uint64_t)&size, 0, 0, 0) == 0 && size == 2 * PAGE);
-  uint32_t handles[] = {pg, port, paged, ps, anon, as, aux};
-  for (int i = 0; i < 7; i++) sys(CROI_SYS_HANDLE_CLOSE, handles[i], 0, 0, 0, 0);
-
+  // 737, 738 and 745 (a VMO's size lock) are VmoSuite's.
   // 739: op DIRTY over a dirty zero interval (a TRAP_DIRTY VMO's grown
   // space) commits zero pages there, dirty (Zircon's; it was NOT_FOUND).
   uint32_t tp = 0, tport = 0, tv = 0;
@@ -6098,12 +5770,6 @@ static int64_t extensions(const startup_t *s, uint64_t vdso_base) {
   if (signedPointers != 0) return signedPointers;
   int64_t guardedCode = guarded_pages(s);
   if (guardedCode != 0) return guardedCode;
-  int64_t fifos = fifos_and_exec(s);
-  if (fifos != 0) return fifos;
-  int64_t socks = sockets(s);
-  if (socks != 0) return socks;
-  int64_t strs = streams();
-  if (strs != 0) return strs;
   int64_t pg = pager(s);
   if (pg != 0) return pg;
   int64_t small = small_calls(s);

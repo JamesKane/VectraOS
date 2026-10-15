@@ -230,77 +230,20 @@ syscalls 170-173 in User/CounterSyscalls.swift; Todhchai ext 1):
   page's vblank time; limit 100 µs): KVM median ~10 µs, p99 17-35 µs.
 - Boot test mode 15 (`ProcessSelfTest.runTimelines`).
 
-## FIFOs and executable VMOs (K13b)
+## Executable VMOs (K13b)
 
-FIFOs and executable VMOs, K13b (Kernel/Object/Fifo.swift; syscalls 87-89
-in IpcSyscalls, 49 in Syscalls; Todhchai's block, input and GPU rings):
-- Zircon's FIFO (type 19, ZX_DEFAULT_FIFO_RIGHTS): `fifo_create(count,
-  size, options, out0, out1)` (count and size non-zero, count x size at
-  most 4096, else OUT_OF_RANGE; NEW_FIFO policy, condition 10), each
-  endpoint a heap ring of records its holder reads; a write fills the
-  peer's ring. `fifo_write/read(fifo, elem_size, data, count, actual)`
-  move as many whole records as fit or are there (size mismatch or count
-  0 OUT_OF_RANGE; none: SHOULD_WAIT, or PEER_CLOSED with no peer and,
-  for reads, nothing left). READABLE / WRITABLE (room in the peer's
-  ring) / PEER_CLOSED (the peer's last close, which also clears
-  WRITABLE) kept under the pair's `PeerShared` lock. User bytes go
-  through a heap bounce buffer outside the lock (reads check the
-  destination writable first). signal_peer and related koids cover
-  FIFOs.
 - `vmo_replace_as_executable(vmo, vmex, out)` (49): the vmex must be the
   VMEX system resource (base 1) or root; the new handle has the old
   rights plus EXECUTE; the old handle is gone either way (Zircon's).
-- Mode 17's `fifos_and_exec`.
+- The Swift `vmo` suite (`VmoSuite.executable`).
 
-## Sockets (K13c)
+## FIFOs, sockets and streams: cut in V1 (D21)
 
-Sockets, K13c (Kernel/Object/Socket.swift, User/SocketSyscalls.swift,
-syscalls 190-193; ipc.h):
-- Zircon's socket (type 14, ZX_DEFAULT_SOCKET_RIGHTS incl. MANAGE_SOCKET
-  1 << 20), STREAM or DATAGRAM, the pinned tree's error orders and signal
-  rules (its spec, quirks included, is in the K13c roadmap notes): writes
-  fill the peer's buffer (stream: short writes; datagram: all or nothing,
-  OUT_OF_RANGE above capacity); reads (PEEK; a datagram read shorter than
-  the message drops the rest; size 0 consumes nothing); empty: SHOULD_WAIT,
-  BAD_STATE once the peer disabled writing, PEER_CLOSED with no peer;
-  set_disposition (WRITE_DISABLED / WRITE_ENABLED per side, BAD_STATE
-  re-enabling before the old data is read, MANAGE_SOCKET); thresholds
-  (properties 12/13, READ_THRESHOLD / WRITE_THRESHOLD); ZX_INFO_SOCKET
-  (22); user signals to the peer; NEW_SOCKET policy (9).
-- Receive buffers are rings of up to 64 PMM pages (256 KiB; Zircon's is
-  264160), a page allocated when written and freed when drained; a
-  datagram has a 4-byte length in the ring (counted against capacity).
-  The pair shares a `SocketShared` with a blocking `Mutex`, so user copies
-  go straight into and out of the ring (they may fault and page in);
-  lock order mutex -> object.
-- Mode 17's `sockets`.
-
-## Streams (K13c)
-
-Streams, K13c (Kernel/Object/Stream.swift, User/StreamSyscalls.swift,
-syscalls 194-201; vmo.h):
-- Zircon's stream (type 31; ZX_DEFAULT_STREAM_RIGHTS, READ / WRITE by
-  mode, APPEND adds none; no policy) over an anonymous VMO (else
-  WRONG_TYPE): create, writev/readv (at the seek, which moves under the
-  stream's Mutex), writev_at/readv_at, seek (START/CURRENT/END, checked
-  arithmetic), ZX_INFO_STREAM (26), ZX_PROP_STREAM_MODE_APPEND (19).
-  `croi_iovec_t` (capacity uint64_t: the ABI headers have no size_t).
-- The stream size (`VmoRecord.streamSize`, nil = the VMO's size):
-  vmo_get_stream_size (200, no rights; 0 for non-anonymous),
-  vmo_set_stream_size (201, WRITE; OUT_OF_RANGE past the VMO; zeroes from
-  min(old, new) to the VMO's end), ZX_PROP_VMO_CONTENT_SIZE (17). Reads
-  stop at it; writes zero-fill a gap past it and grow it by what lands;
-  a write at or past the VMO's end is OUT_OF_RANGE, one reaching it cut
-  short (streams never grow their VMO, as the pinned tree's don't:
-  vmo_set_size does, K13h); append writes at
-  the stream size. Size changes (stream writes, vmo_set_stream_size,
-  vmo_set_size) hold their VMO's size lock (`Streams.withSizeLock`, as
-  Zircon's per-VMO StreamSizeManager: a wait queue on the VmoRecord,
-  `sizeQueue`, made on first use; review 2 replaced one global Mutex,
-  which a pager wait held for every stream). A user buffer that faults ends
-  a transfer short, NOT_FOUND if nothing moved. vmo_write doesn't move
-  the stream size (as Zircon).
-- Mode 17's `streams`.
+croi had Zircon's FIFOs (K13b), sockets and streams (K13c), with their
+info topics, properties, policy conditions and the MANAGE_SOCKET right.
+V1 cut all fifteen calls: the one ring format replaces FIFOs and
+sockets, and a mapping replaces a stream. What streams kept on the VMO
+stays, as the VMO's content size (memory.md, "Content size").
 
 ## The small calls (K13e part 1)
 

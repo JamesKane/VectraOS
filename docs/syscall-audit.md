@@ -163,7 +163,8 @@ Legend: **keep**, **merge** (the call survives under a combined form),
 | Cut | 53 |
 | **After V1** | **91** |
 
-**Progress:** `object_bind` landed (D20): 150 calls.
+**Progress:** `object_bind` landed (D20): 150 calls. FIFOs, sockets and
+streams were cut (D21): 135 calls.
 
 The ceiling in `tools/vx/LocCommand.swift` is lowered with each cut, so it
 never rises.

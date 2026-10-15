@@ -331,7 +331,7 @@ enum Pagers {
         vmo.record.pointee.pager = source
         vmo.record.pointee.resizable = resizable
         vmo.record.pointee.states = PageList(pages: vmo.record.pointee.pageCount)
-        if size != vmoSize { vmo.record.pointee.streamSize = size }  // unaligned, or UNBOUNDED (K14i)
+        if size != vmoSize { vmo.record.pointee.contentSize = size }  // unaligned, or UNBOUNDED (K14i)
         Reclaim.register(vmo.record)  // K14a: its clean pages may be evicted
         return try VmoObject.wrap(vmo.record)
     }
