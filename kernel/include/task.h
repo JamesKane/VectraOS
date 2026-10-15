@@ -33,6 +33,41 @@ enum : uint32_t {  // vmar options (Zircon's ZX_VM_*)
   CROI_VM_CAN_MAP_EXECUTE = 1u << 9,
 };
 
+// vmar_map(vmar, croi_vmar_map_item_t *items, count) (D42) maps each item's
+// VMO range into the VMAR, in order, and stops at the first item that
+// fails: a program's segments are all or nothing, and its loader tears the
+// rest down. It returns how many it mapped; each item it processed has its
+// status (and on success its address) written back. vmar_unmap and
+// vmar_protect(vmar, croi_vmar_range_t *ranges, count) go on past a range
+// that fails instead (each stands alone: teardown, the loader's RELRO
+// pass), writing each status back and returning how many succeeded;
+// unmap's ranges have options 0, protect's the new permissions. A bad
+// pointer or count fails any of them before an item. croi_vmar_map,
+// croi_vmar_unmap and croi_vmar_protect in syscall.h are the one-item forms.
+enum : uint32_t { CROI_VMAR_MAX_ITEMS = 64 };
+
+typedef struct {
+  uint32_t vmo;
+  uint32_t options;      // CROI_VM_PERM_* and placement (SPECIFIC: at vmar_offset)
+  uint64_t vmar_offset;
+  uint64_t vmo_offset;
+  uint64_t len;
+  uint64_t addr;         // out: where it was mapped
+  int32_t status;        // out: 0, or why this item failed
+  uint32_t reserved;     // 0
+} croi_vmar_map_item_t;
+
+static_assert(sizeof(croi_vmar_map_item_t) == 48);
+
+typedef struct {
+  uint64_t addr;
+  uint64_t len;
+  uint32_t options;      // protect: CROI_VM_PERM_*; unmap: 0
+  int32_t status;        // out: 0, or why this range failed
+} croi_vmar_range_t;
+
+static_assert(sizeof(croi_vmar_range_t) == 24);
+
 enum : int64_t {  // return codes of processes the kernel ended (Zircon's)
   CROI_TASK_RETCODE_SYSCALL_KILL = -1024,
   CROI_TASK_RETCODE_POLICY_KILL = -1026,

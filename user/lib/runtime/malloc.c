@@ -46,9 +46,7 @@ static char *map(size_t size) {
   uint32_t vmo = 0;
   if (croi_syscall(CROI_SYS_VMO_CREATE, size, 0, (uint64_t)&vmo, 0, 0) != 0) return 0;
   uint64_t address = 0;
-  int64_t status = croi_syscall6(CROI_SYS_VMAR_MAP,
-                                 vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, vmo, 0, size,
-                                 (uint64_t)&address);
+  int64_t status = croi_vmar_map(vmar, CROI_VM_PERM_READ | CROI_VM_PERM_WRITE, 0, vmo, 0, size, &address);
   croi_handle_close(vmo);  // the mapping keeps it
   return status == 0 ? (char *)address : 0;
 }
@@ -115,7 +113,7 @@ void free(void *pointer) {
   memcpy(&header, (char *)pointer - HEADER, sizeof header);
   char *block = (char *)pointer - HEADER - header.back;
   if (header.class_index == LARGE) {
-    croi_syscall(CROI_SYS_VMAR_UNMAP, croi_vmar_root_self(), (uint64_t)block, header.mapped, 0, 0);
+    croi_vmar_unmap(croi_vmar_root_self(), (uint64_t)block, header.mapped);
     return;
   }
   if (header.class_index >= CLASSES) __builtin_trap();  // not ours

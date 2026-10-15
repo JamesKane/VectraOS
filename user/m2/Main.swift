@@ -72,14 +72,13 @@ struct M2 {
         var vmo: UInt32 = 0
         try Sys.check("creating a VMO", Sys.call(CROI_SYS_VMO_CREATE, 4096, 0, Sys.address(&vmo)))
         // Written through a mapping of its own (V1 cut vmo_write, D37).
-        let own = UInt64(croi_vmar_root_self())
+        let own = croi_vmar_root_self()
         var written: UInt64 = 0
-        try Sys.check("mapping the VMO to write it", Sys.call(CROI_SYS_VMAR_MAP,
-                                                              own | UInt64(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32,
-                                                              0, UInt64(vmo), 0, 4096, Sys.address(&written)))
+        let rw = UInt32(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE)
+        try Sys.check("mapping the VMO to write it", unsafe croi_vmar_map(own, rw, 0, vmo, 0, 4096, &written))
         unsafe UnsafeMutableRawPointer(bitPattern: UInt(written))!.copyMemory(from: text.utf8Start,
                                                                              byteCount: text.utf8CodeUnitCount)
-        _ = Sys.call(CROI_SYS_VMAR_UNMAP, own, written, 4096)
+        _ = croi_vmar_unmap(own, written, 4096)
 
         // A channel pair, and a port watching the far end and a counter
         // (the doorbell a fence rings).
@@ -117,9 +116,8 @@ struct M2 {
                           status: Int64(actualBytes) | Int64(actualHandles) << 32)
         }
         var base: UInt64 = 0
-        try Sys.check("mapping the VMO", Sys.call(CROI_SYS_VMAR_MAP, UInt64(croi_vmar_root_self())
-                                                      | UInt64(CROI_VM_PERM_READ) << 32,
-                                                  0, UInt64(handle), 0, 4096, Sys.address(&base)))
+        try Sys.check("mapping the VMO", unsafe croi_vmar_map(croi_vmar_root_self(), UInt32(CROI_VM_PERM_READ),
+                                                  0, handle, 0, 4096, &base))
         for i in 0..<text.utf8CodeUnitCount where unsafe UnsafePointer<UInt8>(bitPattern: UInt(base))![i]
             != text.utf8Start[i] {
             throw Failure(what: "reading the VMO's contents", status: Int64(i))
@@ -137,7 +135,7 @@ struct M2 {
         let woke = Sys.now()
         guard timedOut == -21, woke >= deadline else { throw Failure(what: "a port wait timing out", status: timedOut) }
         print("m2: port wait saw the fence, then timed out \((woke - deadline) / 1000) us after its deadline")
-        _ = Sys.call(CROI_SYS_VMAR_UNMAP, UInt64(croi_vmar_root_self()), base, 4096)
+        _ = croi_vmar_unmap(croi_vmar_root_self(), base, 4096)
         for h in [handle, near, far, port, fence] { Sys.close(h) }
         print("m2: exit test passed")
     }

@@ -210,7 +210,7 @@ Already arrays today: `bti_pin` (addresses out), `futex_wake` (a count),
 
 Done: `object_bind` (D20), `handle_close` (D33), `handle_duplicate` (D39);
 `port_queue`, `port_wait`, `counter_add` and `interrupt_ack` (D40); `channel_read` and
-`channel_write` (D41).
+`channel_write` (D41); `vmar_map`, `vmar_unmap` and `vmar_protect` (D42).
 
 Each failure is reported per item: the call returns how many items it
 processed, and each item carries its own status. A call never undoes the

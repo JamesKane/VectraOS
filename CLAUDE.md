@@ -80,9 +80,9 @@ port_cancel_key into port_cancel (D32), handle_close_many into
 handle_close (D33), handle_replace into handle_duplicate (D34),
 test_report into the test call (D35), vmo_get_size and
 process_info into info topics (D36), vmo_read and vmo_write (D37), 92
-syscalls (`docs/syscall-audit.md`). The batched forms have begun:
-handle_duplicate takes an array (D39), and so do the wakes (D40) and the channel reads and writes (D41). debuglog_read waits for the one
-ring (D38).
+syscalls (`docs/syscall-audit.md`). The hot calls take arrays:
+handle_duplicate (D39), the wakes (D40), channel reads and writes (D41)
+and the VMAR calls (D42). debuglog_read waits for the one ring (D38).
 - **Done:** croi imported, passing on amd64, arm64 and rv64; todhchai's
   Judge, History, trace format and reader lifted; `vx` with build, test,
   boot, bench, trace, loc and ci.

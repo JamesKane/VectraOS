@@ -53,9 +53,8 @@ struct Userboot {
         var size: UInt64 = 0
         try call("sizing bootfs", unsafe croi_vmo_size(bootfs, &size))
         var bootfsBase: UInt64 = 0
-        try call("mapping bootfs", sys(CROI_SYS_VMAR_MAP,
-                                       UInt64(croi_vmar_root_self()) | UInt64(CROI_VM_PERM_READ) << 32, 0,
-                                       UInt64(bootfs), 0, size, address(&bootfsBase)))
+        try call("mapping bootfs", unsafe croi_vmar_map(croi_vmar_root_self(), UInt32(CROI_VM_PERM_READ), 0,
+                                       bootfs, 0, size, &bootfsBase))
         let image = unsafe RawSpan(_unsafeStart: UnsafeRawPointer(bitPattern: UInt(bootfsBase))!, byteCount: Int(size))
         let file: Bootfs.File
         do throws(Bootfs.Error) {
@@ -99,13 +98,22 @@ struct Userboot {
             delta = target.base &- elf.base
         }
         let fileBytes = image.extracting(Int(file.offset)..<Int(file.offset + file.length))
-        for i in 0..<elf.segmentCount {
-            try load(elf.segments[i], of: elf, file: file, fileBytes: fileBytes, bootfs: bootfs,
-                     bootfsBase: bootfsBase, vmar: target.vmar, vmarBase: target.base, delta: delta)
+        do {
+            // Every segment in one vmar_map (D42), all or nothing; the
+            // segments' own VMOs are closed once mapped (the mappings keep them).
+            var items: [croi_vmar_map_item_t] = []
+            var made: [UInt32] = []
+            defer { for vmo in made { _ = croi_handle_close(vmo) } }
+            for i in 0..<elf.segmentCount {
+                if let item = try load(elf.segments[i], of: elf, file: file, fileBytes: fileBytes, bootfs: bootfs,
+                                       bootfsBase: bootfsBase, vmarBase: target.base, delta: delta, made: &made) {
+                    items.append(item)
+                }
+            }
+            try mapSegments(&items, into: target.vmar)
         }
         if let relro = elf.relro {  // relocated: read only from here on
-            try call("protecting its RELRO", sys(CROI_SYS_VMAR_PROTECT,
-                                                 UInt64(target.vmar) | UInt64(CROI_VM_PERM_READ) << 32,
+            try call("protecting its RELRO", croi_vmar_protect(target.vmar, UInt32(CROI_VM_PERM_READ),
                                                  relro.start &+ delta, relro.end - relro.start))
         }
         if target.vmar != vmar { _ = croi_handle_close(target.vmar) }  // the region stays
@@ -113,9 +121,8 @@ struct Userboot {
         var stack: UInt32 = 0
         var stackBase: UInt64 = 0
         try call("making its stack", sys(CROI_SYS_VMO_CREATE, stackSize, 0, address(&stack)))
-        try call("mapping its stack", sys(CROI_SYS_VMAR_MAP,
-                                          UInt64(vmar) | UInt64(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0,
-                                          UInt64(stack), 0, stackSize, address(&stackBase)))
+        try call("mapping its stack", unsafe croi_vmar_map(vmar, UInt32(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE), 0,
+                                          stack, 0, stackSize, &stackBase))
         _ = croi_handle_close(stack)
 
         var thread: UInt32 = 0
@@ -225,11 +232,27 @@ struct Userboot {
     /// straight from the bootfs VMO's pages; anything else as a K11a child
     /// of the file's range (pages copied at first touch, the part past the
     /// file's bytes zeroed), with the static PIE's relocations written in.
+    /// Maps `items` into `vmar` in one call: all of them, or the first
+    /// failure's status.
+    static func mapSegments(_ items: inout [croi_vmar_map_item_t], into vmar: UInt32) throws(Failure) {
+        guard !items.isEmpty else { return }
+        guard items.count <= Int(CROI_VMAR_MAX_ITEMS) else { throw Failure(what: "counting its segments", status: -10) }
+        let mapped = unsafe items.withUnsafeMutableBufferPointer { buffer in
+            unsafe sys(CROI_SYS_VMAR_MAP, UInt64(vmar), UInt64(UInt(bitPattern: buffer.baseAddress)),
+                       UInt64(buffer.count))
+        }
+        try call("mapping its segments",
+                 mapped < 0 ? mapped : mapped == items.count ? 0 : Int64(items[Int(mapped)].status))
+    }
+
+    /// A segment's vmar_map item: the bootfs VMO itself for a read-only
+    /// segment it holds as is; otherwise a VMO of its own, filled and
+    /// relocated, added to `made`. Nil for an empty segment.
     static func load(_ segment: ElfImage.Segment, of elf: ElfImage, file: Bootfs.File, fileBytes: RawSpan,
-                     bootfs: UInt32, bootfsBase: UInt64, vmar: UInt32, vmarBase: UInt64,
-                     delta: UInt64) throws(Failure) {
+                     bootfs: UInt32, bootfsBase: UInt64, vmarBase: UInt64, delta: UInt64,
+                     made: inout [UInt32]) throws(Failure) -> croi_vmar_map_item_t? {
         let size = (segment.memsz + pageSize - 1) & ~(pageSize - 1)
-        guard size > 0 else { return }
+        guard size > 0 else { return nil }
         let runAddress = segment.vaddr &+ delta
         guard runAddress >= vmarBase else { throw Failure(what: "placing a segment", status: -10) }
         var options = UInt32(CROI_VM_SPECIFIC)
@@ -246,13 +269,12 @@ struct Userboot {
         } catch {
             throw Failure(what: "reading its relocations", status: -10)
         }
-        var mapped: UInt64 = 0
         let fileOffset = file.offset + segment.offset
-        if !segment.writable, segment.filesz == segment.memsz, relocations == 0 {
-            try call("mapping a segment", sys(CROI_SYS_VMAR_MAP, UInt64(vmar) | UInt64(options) << 32,
-                                              runAddress - vmarBase, UInt64(bootfs), fileOffset, size, address(&mapped)))
-            return
+        func item(_ vmo: UInt32, _ offset: UInt64) -> croi_vmar_map_item_t {
+            croi_vmar_map_item_t(vmo: vmo, options: options, vmar_offset: runAddress - vmarBase, vmo_offset: offset,
+                                 len: size, addr: 0, status: 1, reserved: 0)
         }
+        if !segment.writable, segment.filesz == segment.memsz, relocations == 0 { return item(bootfs, fileOffset) }
         var vmo: UInt32 = 0
         if fileOffset % pageSize == 0 {
             try call("making a segment", sys(UInt64(CROI_SYS_VMO_CREATE_CHILD), UInt64(bootfs),
@@ -266,17 +288,16 @@ struct Userboot {
         } else {
             try call("making a segment", sys(CROI_SYS_VMO_CREATE, size, 0, address(&vmo)))
         }
-        defer { _ = croi_handle_close(vmo) }  // the mapping keeps it
+        made.append(vmo)
         // A misaligned segment's bytes and the relocations are written
         // through a mapping of our own (V1 cut vmo_write, D37).
         let copied = fileOffset % pageSize != 0
         if copied || relocations > 0 {
-            let own = UInt64(croi_vmar_root_self())
+            let own = croi_vmar_root_self()
             var scratch: UInt64 = 0
-            try call("mapping a segment to fill", sys(CROI_SYS_VMAR_MAP,
-                                                      own | UInt64(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0,
-                                                      UInt64(vmo), 0, size, address(&scratch)))
-            defer { _ = sys(CROI_SYS_VMAR_UNMAP, own, scratch, size) }
+            let rw = UInt32(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE)
+            try call("mapping a segment to fill", unsafe croi_vmar_map(own, rw, 0, vmo, 0, size, &scratch))
+            defer { _ = croi_vmar_unmap(own, scratch, size) }
             let bytes = unsafe UnsafeMutableRawPointer(bitPattern: UInt(scratch))!
             if copied {
                 unsafe bytes.copyMemory(from: UnsafeRawPointer(bitPattern: UInt(bootfsBase + fileOffset))!,
@@ -291,8 +312,7 @@ struct Userboot {
                 throw Failure(what: "reading its relocations", status: -10)
             }
         }
-        try call("mapping a segment", sys(CROI_SYS_VMAR_MAP, UInt64(vmar) | UInt64(options) << 32,
-                                          runAddress - vmarBase, UInt64(vmo), 0, size, address(&mapped)))
+        return item(vmo, 0)
     }
 
     /// The processargs message (processargs.h): header, handle infos,

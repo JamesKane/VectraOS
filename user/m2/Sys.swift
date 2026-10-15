@@ -127,9 +127,8 @@ enum Sys {
         var stack: UInt32 = 0
         var base: UInt64 = 0
         try check("making a stack", call(CROI_SYS_VMO_CREATE, size, 0, address(&stack)))
-        try check("mapping a stack", call(CROI_SYS_VMAR_MAP, UInt64(croi_vmar_root_self())
-                                              | UInt64(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32,
-                                          0, UInt64(stack), 0, size, address(&base)))
+        let rw = UInt32(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE)
+        try check("mapping a stack", unsafe croi_vmar_map(croi_vmar_root_self(), rw, 0, stack, 0, size, &base))
         close(stack)
         #if arch(x86_64)
         let sp = base + size - 8  // as if called: a C entry expects it

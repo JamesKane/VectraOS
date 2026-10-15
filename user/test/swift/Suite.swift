@@ -255,8 +255,8 @@ struct Mapping: ~Copyable {
     init(_ vmo: borrowing Handle, offset: UInt64 = 0, length: UInt64,
          permissions: UInt32 = UInt32(CROI_VM_PERM_READ) | UInt32(CROI_VM_PERM_WRITE)) {
         var at: UInt64 = 0
-        let status = Sys.call(CROI_SYS_VMAR_MAP, UInt64(croi_vmar_root_self()) | UInt64(permissions) << 32, 0,
-                              vmo.arg, offset, length, Sys.address(&at))
+        let status = unsafe croi_vmar_map(croi_vmar_root_self(), UInt32(permissions), 0,
+                              vmo.raw, offset, length, &at)
         check(status == 0, "mapping a VMO")
         address = at
         self.length = length
@@ -273,7 +273,7 @@ struct Mapping: ~Copyable {
         }
     }
 
-    deinit { _ = Sys.call(CROI_SYS_VMAR_UNMAP, UInt64(croi_vmar_root_self()), address, length) }
+    deinit { _ = croi_vmar_unmap(croi_vmar_root_self(), address, length) }
 }
 
 /// A thread of this process running `entry(argument)` on a stack of its

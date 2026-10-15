@@ -25,7 +25,8 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   cache_flush, and the shared pages). Kind: deliberate. Impact: binaries built for Zircon
   don't run unmodified.
 - **Six argument registers: packed handles** — calls with more arguments
-  pack `handle | options << 32`: vmar_map and friends, resource_create
+  pack `handle | options << 32`: vmar_allocate and vmar_map_view (vmar_map,
+  vmar_unmap and vmar_protect take items since D42), resource_create
   (`parent | options << 32`), bti_pin (`bti | options << 32`, `vmo |
   addrs_count << 32`, eight arguments in six registers),
   pager_query_dirty_ranges (`pager | vmo << 32`, actual and avail through
@@ -126,6 +127,12 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   deliberate (batch first, principle 12). Impact: callers of
   zx_channel_read and zx_channel_write, through the C wrappers
   croi_channel_read and croi_channel_write.
+- **vmar_map, vmar_unmap and vmar_protect take arrays** (V1, D42) — a
+  map item is one VMO range with its own options; a range is an address
+  and length (and for protect the permissions). vmar_map stops at the
+  first failure; unmap and protect go on past one. Kind: deliberate
+  (batch first, principle 12). Impact: callers of zx_vmar_map,
+  zx_vmar_unmap and zx_vmar_protect, through the C wrappers.
 - **No handle_replace** (V1, D34) — an item with
   CROI_HANDLE_DUPLICATE_CONSUME is zx_handle_replace: the handle
   goes even on failure, and DUPLICATE isn't needed. Kind: deliberate

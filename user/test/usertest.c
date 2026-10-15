@@ -366,13 +366,13 @@ static uint32_t make_child(const startup_t *s, uint32_t job, uint32_t *thread_ou
   uint32_t process = 0, vmar = 0, thread = 0, stack = 0;
   uint64_t at = 0;
   CHECK(80, sys6(CROI_SYS_PROCESS_CREATE, job, (uint64_t)"child", 5, 0, (uint64_t)&process, (uint64_t)&vmar) == 0);
-  uint64_t code = vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_EXECUTE | CROI_VM_SPECIFIC) << 32;
-  CHECK(81, sys6(CROI_SYS_VMAR_MAP, code, CHILD_CODE - ROOT_VMAR_BASE, s->code_vmo, 0, s->code_size, (uint64_t)&at)
+  uint32_t code = CROI_VM_PERM_READ | CROI_VM_PERM_EXECUTE | CROI_VM_SPECIFIC;
+  CHECK(81, croi_vmar_map(vmar, code, CHILD_CODE - ROOT_VMAR_BASE, s->code_vmo, 0, s->code_size, &at)
                     == 0 && at == CHILD_CODE);
   CHECK(82, sys(CROI_SYS_VMO_CREATE, CHILD_STACKS * STACK_SIZE, 0, (uint64_t)&stack, 0, 0) == 0);
-  uint64_t data = vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE | CROI_VM_SPECIFIC) << 32;
-  CHECK(83, sys6(CROI_SYS_VMAR_MAP, data, CHILD_STACK - ROOT_VMAR_BASE, stack, 0, CHILD_STACKS * STACK_SIZE,
-                 (uint64_t)&at) == 0);
+  uint32_t data = CROI_VM_PERM_READ | CROI_VM_PERM_WRITE | CROI_VM_SPECIFIC;
+  CHECK(83, croi_vmar_map(vmar, data, CHILD_STACK - ROOT_VMAR_BASE, stack, 0, CHILD_STACKS * STACK_SIZE,
+                 &at) == 0);
   croi_handle_close(stack);
   croi_handle_close(vmar);
   CHECK(84, sys6(CROI_SYS_THREAD_CREATE, process, (uint64_t)"main", 4, 0, (uint64_t)&thread, 0) == 0);
@@ -567,18 +567,18 @@ static int64_t processes(const startup_t *s) {
   uint64_t parent = s->vmar | (uint64_t)(CROI_VM_CAN_MAP_READ | CROI_VM_CAN_MAP_WRITE) << 32;
   CHECK(98, sys6(CROI_SYS_VMAR_ALLOCATE, parent, 0, 65536, (uint64_t)&sub, (uint64_t)&base, 0) == 0);
   CHECK(99, sys(CROI_SYS_VMO_CREATE, 8192, 0, (uint64_t)&vmo, 0, 0) == 0);
-  uint64_t rw = sub | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32;
-  CHECK(100, sys6(CROI_SYS_VMAR_MAP, rw, 0, vmo, 0, 8192, (uint64_t)&at) == 0 && at >= base && at < base + 65536);
+  uint32_t rw = CROI_VM_PERM_READ | CROI_VM_PERM_WRITE;
+  CHECK(100, croi_vmar_map(sub, rw, 0, vmo, 0, 8192, &at) == 0 && at >= base && at < base + 65536);
   *(volatile uint64_t *)at = 0x1234;
   CHECK(101, *(volatile uint64_t *)at == 0x1234);
-  uint64_t rx = sub | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_EXECUTE) << 32;
-  CHECK(102, sys6(CROI_SYS_VMAR_MAP, rx, 0, vmo, 0, 8192, (uint64_t)&at) == ERR_ACCESS_DENIED);
-  CHECK(103, sys(CROI_SYS_VMAR_PROTECT, sub | (uint64_t)CROI_VM_PERM_READ << 32, at, 8192, 0, 0) == 0);
+  uint32_t rx = CROI_VM_PERM_READ | CROI_VM_PERM_EXECUTE;
+  CHECK(102, croi_vmar_map(sub, rx, 0, vmo, 0, 8192, &at) == ERR_ACCESS_DENIED);
+  CHECK(103, croi_vmar_protect(sub, CROI_VM_PERM_READ, at, 8192) == 0);
   CHECK(104, *(volatile uint64_t *)at == 0x1234);
-  CHECK(105, sys(CROI_SYS_VMAR_UNMAP, sub, at, 8192, 0, 0) == 0);
+  CHECK(105, croi_vmar_unmap(sub, at, 8192) == 0);
   CHECK(106, sys(CROI_SYS_VMAR_DESTROY, sub, 0, 0, 0, 0) == 0);
-  CHECK(107, sys6(CROI_SYS_VMAR_MAP, rw, 0, vmo, 0, 8192, (uint64_t)&at) == ERR_BAD_STATE ||
-                 sys6(CROI_SYS_VMAR_MAP, rw, 0, vmo, 0, 8192, (uint64_t)&at) < 0);
+  CHECK(107, croi_vmar_map(sub, rw, 0, vmo, 0, 8192, &at) == ERR_BAD_STATE ||
+                 croi_vmar_map(sub, rw, 0, vmo, 0, 8192, &at) < 0);
   croi_handle_close(sub);
   croi_handle_close(vmo);
   return 0x600D;
@@ -642,8 +642,8 @@ static int64_t map_stack(const startup_t *s, uint64_t *at) {
   uint32_t stack = 0;
   int64_t status = sys(CROI_SYS_VMO_CREATE, STACK_SIZE, 0, (uint64_t)&stack, 0, 0);
   if (status != 0) return status;
-  status = sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, stack, 0,
-                STACK_SIZE, (uint64_t)at);
+  status = croi_vmar_map(s->vmar, CROI_VM_PERM_READ | CROI_VM_PERM_WRITE, 0, stack, 0,
+                STACK_SIZE, at);
   croi_handle_close(stack);
   return status;
 }
@@ -879,7 +879,7 @@ static void unmap_exit(const startup_t *s) {
                     (uint64_t)&u, 0) == 0);
   CHECK(39, (wait_for(watch, CROI_SIGNAL_TASK_TERMINATED, 5000000000ull) & CROI_SIGNAL_TASK_TERMINATED) &&
                 croi_handle_close(u.self) == ERR_BAD_HANDLE &&
-                sys(CROI_SYS_VMAR_PROTECT, s->vmar | (uint64_t)CROI_VM_PERM_READ << 32, u.stack, STACK_SIZE, 0, 0) != 0);
+                croi_vmar_protect(s->vmar, CROI_VM_PERM_READ, u.stack, STACK_SIZE) != 0);
   croi_handle_close(watch);
 }
 
@@ -1008,7 +1008,7 @@ static int64_t vmo_copy(uint32_t vmo, void *buffer, uint64_t offset, uint64_t le
   uint32_t vmar = ((const startup_t *)STARTUP_AT)->vmar;
   uint64_t first = offset & ~(PAGE - 1), size = ((offset + length + PAGE - 1) & ~(PAGE - 1)) - first, at = 0;
   uint64_t permissions = CROI_VM_PERM_READ | (write ? CROI_VM_PERM_WRITE : 0);
-  int64_t status = sys6(CROI_SYS_VMAR_MAP, vmar | permissions << 32, 0, vmo, first, size, (uint64_t)&at);
+  int64_t status = croi_vmar_map(vmar, permissions, 0, vmo, first, size, &at);
   if (status != 0) return status;
   volatile uint8_t *mapped = (volatile uint8_t *)(at + offset - first);
   uint8_t *bytes = buffer;
@@ -1018,7 +1018,7 @@ static int64_t vmo_copy(uint32_t vmo, void *buffer, uint64_t offset, uint64_t le
     else
       bytes[i] = mapped[i];
   }
-  sys(CROI_SYS_VMAR_UNMAP, vmar, at, size, 0, 0);
+  croi_vmar_unmap(vmar, at, size);
   return 0;
 }
 
@@ -1051,7 +1051,7 @@ static uint64_t map_physical(const startup_t *s, uint32_t resource, uint64_t bas
   uint32_t vmo = 0;
   CHECK(240, sys(CROI_SYS_VMO_CREATE_PHYSICAL, resource, first, length, (uint64_t)&vmo, 0) == 0 &&
                  sys(CROI_SYS_VMO_SET_CACHE_POLICY, vmo, policy, 0, 0, 0) == 0 &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)perms << 32, 0, vmo, 0, length, (uint64_t)&at) == 0);
+                 croi_vmar_map(s->vmar, perms, 0, vmo, 0, length, &at) == 0);
   croi_handle_close(vmo);
   return at + (base - first);
 }
@@ -1076,10 +1076,10 @@ static uint32_t mem_type(const croi_zbi_mem_range_t *ranges, uint64_t count, uin
 static int64_t firmware(const startup_t *s) {
   uint64_t size = 0, at = 0, word = 0;
   CHECK(231, croi_vmo_size(s->bootdata, &size) == 0 && size >= PAGE &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0,
-                      s->bootdata, 0, size, (uint64_t)&at) == ERR_ACCESS_DENIED &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)CROI_VM_PERM_READ << 32, 0, s->bootdata, 0, size,
-                      (uint64_t)&at) == 0);
+                 croi_vmar_map(s->vmar, CROI_VM_PERM_READ | CROI_VM_PERM_WRITE, 0,
+                      s->bootdata, 0, size, &at) == ERR_ACCESS_DENIED &&
+                 croi_vmar_map(s->vmar, CROI_VM_PERM_READ, 0, s->bootdata, 0, size,
+                      &at) == 0);
   const croi_zbi_header_t *container = (const croi_zbi_header_t *)at;
   CHECK(232, container->type == CROI_ZBI_TYPE_CONTAINER && container->extra == CROI_ZBI_CONTAINER_MAGIC &&
                  (container->flags & CROI_ZBI_FLAGS_VERSION) && container->magic == CROI_ZBI_ITEM_MAGIC &&
@@ -1194,13 +1194,13 @@ static int64_t drivers(const startup_t *s) {
                  sys(CROI_SYS_VMO_CREATE_PHYSICAL, mmio, DRV_DEVICE + 1, PAGE, (uint64_t)&vmo, 0) == ERR_INVALID_ARGS);
   CHECK(215, sys(CROI_SYS_VMO_CREATE_PHYSICAL, mmio, DRV_DEVICE, PAGE, (uint64_t)&vmo, 0) == 0);
   uint64_t at = 0, word = 0;
-  CHECK(216, sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)CROI_VM_PERM_READ << 32, 0, vmo, 0, PAGE, (uint64_t)&at) == 0);
+  CHECK(216, croi_vmar_map(s->vmar, CROI_VM_PERM_READ, 0, vmo, 0, PAGE, &at) == 0);
   word = *(volatile uint32_t *)(at + DRV_DEVICE_OFFSET);
   CHECK(217, DRV_DEVICE_VALUE(word));
   // Device memory: no policy change while mapped.
   CHECK(218, sys(CROI_SYS_VMO_SET_CACHE_POLICY, vmo, CROI_CACHE_POLICY_UNCACHED, 0, 0, 0) == ERR_BAD_STATE &&
                  sys(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_CACHE_CLEAN, 0, PAGE, 0) == 0);
-  sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, PAGE, 0, 0);
+  croi_vmar_unmap(s->vmar, at, PAGE);
   croi_handle_close(vmo);
   // Closed, the range is free for anyone again.
   CHECK(219, croi_handle_close(mmio) == 0 &&
@@ -1301,8 +1301,8 @@ static uint32_t physical_vmo(const startup_t *s, uint64_t base, uint64_t size, v
   uint32_t vmo = 0;
   uint64_t address = 0;
   CHECK(280, sys(CROI_SYS_VMO_CREATE_PHYSICAL, s->resource, base, size, (uint64_t)&vmo, 0) == 0 &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, vmo,
-                      0, size, (uint64_t)&address) == 0);
+                 croi_vmar_map(s->vmar, CROI_VM_PERM_READ | CROI_VM_PERM_WRITE, 0, vmo,
+                      0, size, &address) == 0);
   *at = (volatile uint8_t *)address;
   return vmo;
 }
@@ -1681,8 +1681,8 @@ static int64_t memory_stats(const startup_t *s) {
   uint32_t vmo = 0;
   uint64_t at = 0, there = 0;
   CHECK(322, sys(CROI_SYS_VMO_CREATE, 4 * PAGE, 0, (uint64_t)&vmo, 0, 0) == 0 &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, vmo,
-                      0, 4 * PAGE, (uint64_t)&at) == 0);
+                 croi_vmar_map(s->vmar, CROI_VM_PERM_READ | CROI_VM_PERM_WRITE, 0, vmo,
+                      0, 4 * PAGE, &at) == 0);
   *(volatile uint64_t *)at = 1;
   *(volatile uint64_t *)(at + 2 * PAGE) = 1;
   CHECK(323, info(s->process, CROI_INFO_TASK_STATS, &b, sizeof b) == 0 &&
@@ -1690,8 +1690,8 @@ static int64_t memory_stats(const startup_t *s) {
                  b.mem_private_bytes >= a.mem_private_bytes + 2 * PAGE &&
                  b.mem_private_bytes <= a.mem_private_bytes + 6 * PAGE && b.mem_shared_bytes == a.mem_shared_bytes);
   // Mapped into a child too: shared, half of it each.
-  CHECK(324, sys6(CROI_SYS_VMAR_MAP, child_vmar | (uint64_t)CROI_VM_PERM_READ << 32, 0, vmo, 0, 4 * PAGE,
-                  (uint64_t)&there) == 0 &&
+  CHECK(324, croi_vmar_map(child_vmar, CROI_VM_PERM_READ, 0, vmo, 0, 4 * PAGE,
+                  &there) == 0 &&
                  info(s->process, CROI_INFO_TASK_STATS, &mine, sizeof mine) == 0 &&
                  info(child, CROI_INFO_TASK_STATS, &theirs, sizeof theirs) == 0);
   CHECK(325, mine.mem_shared_bytes == a.mem_shared_bytes + 2 * PAGE &&
@@ -1701,8 +1701,8 @@ static int64_t memory_stats(const startup_t *s) {
                  scaled(&theirs) == scaled(&theirs0) + ((unsigned __int128)PAGE << 63) &&
                  theirs.mem_mapped_bytes == theirs0.mem_mapped_bytes + 4 * PAGE);
   // A third: 8192 / 3 = 2730 and two thirds of a byte, carried as a fraction.
-  CHECK(327, sys6(CROI_SYS_VMAR_MAP, other_vmar | (uint64_t)CROI_VM_PERM_READ << 32, 0, vmo, 0, 4 * PAGE,
-                  (uint64_t)&there) == 0 &&
+  CHECK(327, croi_vmar_map(other_vmar, CROI_VM_PERM_READ, 0, vmo, 0, 4 * PAGE,
+                  &there) == 0 &&
                  info(other, CROI_INFO_TASK_STATS, &c, sizeof c) == 0 &&
                  c.mem_shared_bytes == other0.mem_shared_bytes + 2 * PAGE &&
                  scaled(&c) == scaled(&other0) + ((unsigned __int128)2730 << 63) + 0x5555555555555555ull);
@@ -1723,7 +1723,7 @@ static int64_t memory_stats(const startup_t *s) {
   croi_handle_close(child_vmar);
   croi_handle_close(other);
   croi_handle_close(other_vmar);
-  sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, 4 * PAGE, 0, 0);
+  croi_vmar_unmap(s->vmar, at, 4 * PAGE);
   croi_handle_close(vmo);
 
   // Kernel memory: needs the INFO resource; the parts add up.
@@ -1854,8 +1854,8 @@ static int64_t pager(const startup_t *s) {
   uint32_t server = start_thread(s, pager_server, (uint64_t)slot);
   // A fault: one request, one page.
   uint64_t at = 0;
-  CHECK(472, sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)CROI_VM_PERM_READ << 32, 0, vmo, 0, 5 * PAGE,
-                  (uint64_t)&at) == 0 &&
+  CHECK(472, croi_vmar_map(s->vmar, CROI_VM_PERM_READ, 0, vmo, 0, 5 * PAGE,
+                  &at) == 0 &&
                  *(volatile char *)at == 'A' && *(volatile char *)(at + PAGE - 1) == 'A' && slot[3] == 1 &&
                  slot[4] == PAGE);
   // A read across pages 1-2: a fault and a request for each (one for
@@ -1881,8 +1881,8 @@ static int64_t pager(const startup_t *s) {
                   sizeof ranges, (uint64_t)counts) == 0 && counts[0] == 0 && counts[1] == 0 &&
                  sys(CROI_SYS_PAGER_QUERY_VMO_STATS, pg, vmo, 0, (uint64_t)&stats, sizeof stats) == 0 &&
                  stats.modified == 0 &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, vmo, 0,
-                      2 * PAGE, (uint64_t)&rw) == 0 &&
+                 croi_vmar_map(s->vmar, CROI_VM_PERM_READ | CROI_VM_PERM_WRITE, 0, vmo, 0,
+                      2 * PAGE, &rw) == 0 &&
                  *(volatile char *)rw == 'A' &&
                  sys6(CROI_SYS_PAGER_QUERY_DIRTY_RANGES, pg | (uint64_t)vmo << 32, 0, 5 * PAGE, (uint64_t)ranges,
                       sizeof ranges, (uint64_t)counts) == 0 && counts[1] == 0);  // a read dirties nothing
@@ -1913,8 +1913,8 @@ static int64_t pager(const startup_t *s) {
                  vmo_get(vmo, buf, 0, 4) == 0 && buf[0] == 'x' &&
                  sys6(CROI_SYS_PAGER_SUPPLY_PAGES, pg, vmo, 0, PAGE, other, 0) == ERR_BAD_STATE);
   croi_handle_close(server);
-  sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, 5 * PAGE, 0, 0);
-  sys(CROI_SYS_VMAR_UNMAP, s->vmar, rw, 2 * PAGE, 0, 0);
+  croi_vmar_unmap(s->vmar, at, 5 * PAGE);
+  croi_vmar_unmap(s->vmar, rw, 2 * PAGE);
   // TRAP_DIRTY: writes wait for the pager's DIRTY (one mapping's, then
   // another's); DIRTY of a page not supplied is NOT_FOUND; closing the
   // VMO sends COMPLETE.
@@ -1924,14 +1924,14 @@ static int64_t pager(const startup_t *s) {
   server = start_thread(s, pager_server, (uint64_t)tslot);
   CHECK(482, vmo_set(trap, "q", 0, 1) == 0 && tslot[3] == 1 && tslot[6] == 1 &&
                  sys6(CROI_SYS_PAGER_OP_RANGE, pg, CROI_PAGER_OP_DIRTY, trap, PAGE, PAGE, 0) == ERR_NOT_FOUND &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, trap, 0,
-                      2 * PAGE, (uint64_t)&rw) == 0 &&
+                 croi_vmar_map(s->vmar, CROI_VM_PERM_READ | CROI_VM_PERM_WRITE, 0, trap, 0,
+                      2 * PAGE, &rw) == 0 &&
                  *(volatile char *)(rw + PAGE) == 'B' && tslot[3] == 2 && tslot[6] == 1);
   *(volatile char *)(rw + PAGE) = 'r';
   CHECK(483, tslot[6] == 2 &&
                  sys6(CROI_SYS_PAGER_QUERY_DIRTY_RANGES, pg | (uint64_t)trap << 32, 0, 2 * PAGE, (uint64_t)ranges,
                       sizeof ranges, (uint64_t)counts) == 0 && counts[1] == 1 && ranges[0].length == 2 * PAGE &&
-                 sys(CROI_SYS_VMAR_UNMAP, s->vmar, rw, 2 * PAGE, 0, 0) == 0 &&
+                 croi_vmar_unmap(s->vmar, rw, 2 * PAGE) == 0 &&
                  croi_handle_close(trap) == 0 &&
                  wait_for(server, CROI_SIGNAL_TASK_TERMINATED, 3000000000ull) && tslot[5] == 1);
   croi_handle_close(server);
@@ -2029,8 +2029,8 @@ static int64_t info_topics(const startup_t *s) {
                  get_info(vmo, CROI_INFO_VMO_V1, &v, 104, counts) == 0);
   // Mapped: vmar_op_range commits and decommits through the mapping; the
   // maps list it under the root VMAR; PROCESS_VMOS lists it twice.
-  CHECK(518, sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, vmo, 0,
-                  2 * PAGE, (uint64_t)&at) == 0 &&
+  CHECK(518, croi_vmar_map(s->vmar, CROI_VM_PERM_READ | CROI_VM_PERM_WRITE, 0, vmo, 0,
+                  2 * PAGE, &at) == 0 &&
                  sys6(CROI_SYS_VMAR_OP_RANGE, s->vmar, 99, at, PAGE, 0, 0) == ERR_INVALID_ARGS &&
                  sys6(CROI_SYS_VMAR_OP_RANGE, s->vmar, CROI_VMAR_OP_COMMIT, at + 1, PAGE, 0, 0) == ERR_INVALID_ARGS &&
                  sys6(CROI_SYS_VMAR_OP_RANGE, s->vmar, CROI_VMAR_OP_COMMIT, at, PAGE, 1, 0) == ERR_INVALID_ARGS &&
@@ -2047,8 +2047,8 @@ static int64_t info_topics(const startup_t *s) {
   uint32_t scratch_vmo = 0;
   uint64_t scratch = 0;
   CHECK(523, sys(CROI_SYS_VMO_CREATE, 16 * PAGE, 0, (uint64_t)&scratch_vmo, 0, 0) == 0 &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0,
-                      scratch_vmo, 0, 16 * PAGE, (uint64_t)&scratch) == 0);
+                 croi_vmar_map(s->vmar, CROI_VM_PERM_READ | CROI_VM_PERM_WRITE, 0,
+                      scratch_vmo, 0, 16 * PAGE, &scratch) == 0);
   croi_info_maps_t *maps = (croi_info_maps_t *)scratch;
   int found = 0;
   CHECK(519, get_info(s->process, CROI_INFO_PROCESS_MAPS, maps, 16 * PAGE, counts) == 0 && counts[0] >= 3 &&
@@ -2078,8 +2078,8 @@ static int64_t info_topics(const startup_t *s) {
     found |= handles[i].handle_value == vmo && handles[i].koid == koid_of(vmo) && handles[i].type == 3;
   }
   CHECK(522, found);
-  sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, 2 * PAGE, 0, 0);
-  sys(CROI_SYS_VMAR_UNMAP, s->vmar, scratch, 16 * PAGE, 0, 0);
+  croi_vmar_unmap(s->vmar, at, 2 * PAGE);
+  croi_vmar_unmap(s->vmar, scratch, 16 * PAGE);
   croi_handle_close(vmo);
   croi_handle_close(scratch_vmo);
   return 0;
@@ -2158,11 +2158,11 @@ static int64_t debugging(const startup_t *s) {
                  sys(CROI_SYS_PROCESS_READ_MEMORY, s->process, (uint64_t)&secret, (uint64_t)&got, 0, 0) == ERR_INVALID_ARGS &&
                  sys(CROI_SYS_VMO_CREATE, PAGE, 0, (uint64_t)&vmo, 0, 0) == 0 &&
                  vmo_set(vmo, "A", 0, 1) == 0 &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)CROI_VM_PERM_READ << 32, 0, vmo, 0, PAGE, (uint64_t)&at) == 0 &&
+                 croi_vmar_map(s->vmar, CROI_VM_PERM_READ, 0, vmo, 0, PAGE, &at) == 0 &&
                  sys(CROI_SYS_PROCESS_WRITE_MEMORY, s->process, at, (uint64_t)"B", 1, (uint64_t)&actual) == 0 &&
                  actual == 1 && *(volatile char *)at == 'B' &&
                  vmo_get(vmo, &byte, 0, 1) == 0 && byte == 'A');
-  sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, PAGE, 0, 0);
+  croi_vmar_unmap(s->vmar, at, PAGE);
   croi_handle_close(vmo);
   return 0;
 }
@@ -2419,10 +2419,10 @@ static int64_t resizing(const startup_t *s) {
   // Mapped past its end; shrunk to 10 bytes (the tail zeroed; a fault
   // past the end is OUT_OF_RANGE, the vmo suite's faultStatuses), then
   // grown and written through the mapping.
-  CHECK(571, sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, vmo, 0,
-                  4 * PAGE, (uint64_t)&at) == 0 &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_REQUIRE_NON_RESIZABLE) << 32, 0,
-                      vmo, 0, PAGE, (uint64_t)&size) == ERR_NOT_SUPPORTED);
+  CHECK(571, croi_vmar_map(s->vmar, CROI_VM_PERM_READ | CROI_VM_PERM_WRITE, 0, vmo, 0,
+                  4 * PAGE, &at) == 0 &&
+                 croi_vmar_map(s->vmar, CROI_VM_PERM_READ | CROI_VM_REQUIRE_NON_RESIZABLE, 0,
+                      vmo, 0, PAGE, &size) == ERR_NOT_SUPPORTED);
   ((volatile char *)at)[20] = 'x';
   ((volatile char *)at)[PAGE] = 'y';
   CHECK(572, sys(CROI_SYS_VMO_SET_SIZE, vmo, 10, 0, 0, 0) == 0 &&
@@ -2463,7 +2463,7 @@ static int64_t resizing(const startup_t *s) {
                  sys6(CROI_SYS_PAGER_OP_RANGE, pg, CROI_PAGER_OP_WRITEBACK_END, paged, PAGE, 2 * PAGE, 0) == 0 &&
                  sys6(CROI_SYS_PAGER_QUERY_DIRTY_RANGES, pg | (uint64_t)paged << 32, 0, 3 * PAGE, (uint64_t)ranges,
                       sizeof ranges, (uint64_t)counts) == 0 && counts[1] == 0);
-  sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, 4 * PAGE, 0, 0);
+  croi_vmar_unmap(s->vmar, at, 4 * PAGE);
   uint32_t rest[8] = {vmo, plain, weak, child, fixed, pg, port, paged};
   sys(CROI_SYS_HANDLE_CLOSE, (uint64_t)rest, 8, 0, 0, 0);
   return 0;
@@ -2653,8 +2653,8 @@ static int64_t page_loaning(const startup_t *s) {
   // Mapped: the pages kept read as written; touching a lent one takes it
   // back, zeroed.
   uint64_t at = 0;
-  CHECK(639, sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, vmo, 0,
-                  4 * PAGE, (uint64_t)&at) == 0);
+  CHECK(639, croi_vmar_map(s->vmar, CROI_VM_PERM_READ | CROI_VM_PERM_WRITE, 0, vmo, 0,
+                  4 * PAGE, &at) == 0);
   volatile const char *m = (volatile const char *)at;
   CHECK(640, m[0] == 'A' && m[3 * PAGE + 7] == 'D' && m[PAGE + 9] == 0 && committed_of(vmo, 0) == 3 * PAGE &&
                  kmem_loaned(s, &now) && now == created + PAGE);
@@ -2667,7 +2667,7 @@ static int64_t page_loaning(const startup_t *s) {
   CHECK(642, sys6(CROI_SYS_VMO_CREATE_CHILD, vmo, CROI_VMO_CHILD_SLICE, 0, PAGE, (uint64_t)&slice, 0) == 0 &&
                  sys6(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_DECOMMIT, 0, PAGE, 0, 0) == ERR_BAD_STATE &&
                  croi_handle_close(slice) == 0);
-  sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, 4 * PAGE, 0, 0);
+  croi_vmar_unmap(s->vmar, at, 4 * PAGE);
   CHECK(643, sys6(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_DECOMMIT, 0, 4 * PAGE, 0, 0) == 0 &&
                  committed_of(vmo, 0) == 0 && croi_handle_close(vmo) == 0 &&
                  kmem_loaned(s, &now) && now == before);
@@ -2770,8 +2770,8 @@ static int64_t reclaim(const startup_t *s) {
   volatile uint64_t slot[8] = {port, pg, vmo, 0, 0, 0, 0, 90};
   uint64_t at = 0, events = 0;
   CHECK(601, sys6(CROI_SYS_PAGER_SUPPLY_PAGES, pg, vmo, 0, 8 * PAGE, aux, 0) == 0 &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)CROI_VM_PERM_READ << 32, 0, vmo, 0, 8 * PAGE,
-                      (uint64_t)&at) == 0);
+                 croi_vmar_map(s->vmar, CROI_VM_PERM_READ, 0, vmo, 0, 8 * PAGE,
+                      &at) == 0);
   uint32_t server = start_thread(s, pager_server, (uint64_t)slot);
   int touched = 1;
   for (uint64_t i = 0; i < 8; i++) touched &= *(volatile char *)(at + i * PAGE) == (char)('a' + i);
@@ -2801,7 +2801,7 @@ static int64_t reclaim(const startup_t *s) {
   // two passes first); the dirty page stays.
   CHECK(606, reclaim_hook(6, 2, 0, 0, 0, 0) == 0 && reclaim_hook(7, 100, 2, 1, 0, 0) == 1 && committed_of(vmo, 0) == PAGE &&
                  *(volatile char *)(at + 3 * PAGE) == 'D' && *(volatile char *)at == 'A' && slot[3] == 2);
-  sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, 8 * PAGE, 0, 0);
+  croi_vmar_unmap(s->vmar, at, 8 * PAGE);
   CHECK(607, sys(CROI_SYS_PAGER_DETACH_VMO, pg, vmo, 0, 0, 0) == 0 &&
                  wait_for(server, CROI_SIGNAL_TASK_TERMINATED, 3000000000ull));
   croi_handle_close(server);
@@ -2874,16 +2874,16 @@ static int64_t vmo_slices(const startup_t *s) {
   uint64_t at = 0, deep_at = 0;
   CHECK(432, vmo_child(parent, slice_option, 0x8000, PAGE, &slice) == 0 &&
                  !(wait_for(parent, zero, 0) & zero) &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)CROI_VM_PERM_READ << 32, 0, slice, 0, PAGE,
-                      (uint64_t)&at) == 0 &&
+                 croi_vmar_map(s->vmar, CROI_VM_PERM_READ, 0, slice, 0, PAGE,
+                      &at) == 0 &&
                  *(volatile uint32_t *)at == *(volatile uint32_t *)(whole + 0x8000));
   // A slice of the slice is one of the parent (counted as the slice's
   // child, K14g); neither side's cache policy can change now.
   CHECK(433, vmo_child(slice, slice_option, 0, PAGE, &deeper) == 0 &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)CROI_VM_PERM_READ << 32, 0, deeper, 0, PAGE,
-                      (uint64_t)&deep_at) == 0 &&
+                 croi_vmar_map(s->vmar, CROI_VM_PERM_READ, 0, deeper, 0, PAGE,
+                      &deep_at) == 0 &&
                  *(volatile uint32_t *)deep_at == *(volatile uint32_t *)at &&
-                 sys(CROI_SYS_VMAR_UNMAP, s->vmar, deep_at, PAGE, 0, 0) == 0 &&
+                 croi_vmar_unmap(s->vmar, deep_at, PAGE) == 0 &&
                  sys(CROI_SYS_VMO_SET_CACHE_POLICY, deeper, CROI_CACHE_POLICY_UNCACHED_DEVICE, 0, 0, 0) == ERR_BAD_STATE);
   croi_handle_close(deeper);
   // Rights: a slice of a handle without WRITE has none; NO_WRITE takes it.
@@ -2892,10 +2892,10 @@ static int64_t vmo_slices(const startup_t *s) {
   CHECK(434, croi_handle_duplicate(parent, ro_rights, &ro, 0) == 0 &&
                  vmo_child(ro, slice_option, 0, PAGE, &ro_slice) == 0 &&
                  vmo_child(parent, slice_option | CROI_VMO_CHILD_NO_WRITE, 0, PAGE, &nw_slice) == 0 &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, ro_slice,
-                      0, PAGE, (uint64_t)&w) == ERR_ACCESS_DENIED_ &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, nw_slice,
-                      0, PAGE, (uint64_t)&w) == ERR_ACCESS_DENIED_);
+                 croi_vmar_map(s->vmar, CROI_VM_PERM_READ | CROI_VM_PERM_WRITE, 0, ro_slice,
+                      0, PAGE, &w) == ERR_ACCESS_DENIED_ &&
+                 croi_vmar_map(s->vmar, CROI_VM_PERM_READ | CROI_VM_PERM_WRITE, 0, nw_slice,
+                      0, PAGE, &w) == ERR_ACCESS_DENIED_);
   croi_handle_close(ro_slice);
   croi_handle_close(nw_slice);
   // HANDLE_COUNT: two handles; one in flight still counts; back, then closed.
@@ -2916,11 +2916,11 @@ static int64_t vmo_slices(const startup_t *s) {
   // unmap ends it, and ZERO_CHILDREN comes back.
   CHECK(436, croi_handle_close(slice) == 0 &&
                  !(wait_for(parent, zero, 0) & zero) &&
-                 sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, PAGE, 0, 0) == 0 &&
+                 croi_vmar_unmap(s->vmar, at, PAGE) == 0 &&
                  (wait_for(parent, zero, 1000000000ull) & zero) &&
                  sys(CROI_SYS_VMO_SET_CACHE_POLICY, parent, CROI_CACHE_POLICY_UNCACHED_DEVICE, 0, 0, 0) ==
                      ERR_BAD_STATE);
-  sys(CROI_SYS_VMAR_UNMAP, s->vmar, (uint64_t)whole, 0x10000, 0, 0);
+  croi_vmar_unmap(s->vmar, (uint64_t)whole, 0x10000);
   croi_handle_close(parent);
   return 0;
 }
@@ -2985,12 +2985,12 @@ static int64_t vmo_children(const startup_t *s) {
     return 421;
   // Mapped, a child faults its pages in from the parent.
   uint64_t at = 0;
-  if (sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, child, 2 * P, P,
-           (uint64_t)&at) != 0 ||
+  if (croi_vmar_map(s->vmar, CROI_VM_PERM_READ | CROI_VM_PERM_WRITE, 0, child, 2 * P, P,
+           &at) != 0 ||
       *(volatile uint8_t *)at != 'C')
     return 422;
   *(volatile uint8_t *)at = 'Z';
-  sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, P, 0, 0);
+  croi_vmar_unmap(s->vmar, at, P);
   vmo_get(parent, &byte, 2 * P, 1);
   if (byte != 'C') return 422;
   uint32_t handles[] = {parent, child, grand, ro};
@@ -3031,11 +3031,11 @@ static int64_t child_kinds(const startup_t *s) {
   CHECK(651, vmo_child(parent, CROI_VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE, 0, 3 * PAGE, &aow) == 0 &&
                  vmo_child(aow, CROI_VMO_CHILD_SNAPSHOT, 0, 3 * PAGE, &chain) == 0 && vmo_put(parent, 0, 'D') &&
                  vmo_byte(aow, 0) == 'D' && vmo_byte(chain, 0) == 'B' &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, chain, 0,
-                      3 * PAGE, (uint64_t)&at) == 0 &&
+                 croi_vmar_map(s->vmar, CROI_VM_PERM_READ | CROI_VM_PERM_WRITE, 0, chain, 0,
+                      3 * PAGE, &at) == 0 &&
                  *(volatile uint8_t *)(at + 2 * PAGE) == 'C' && (*(volatile uint8_t *)at = 'Y') == 'Y' &&
                  vmo_byte(aow, 0) == 'D' && vmo_byte(parent, 0) == 'D' &&
-                 sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, 3 * PAGE, 0, 0) == 0 && vmo_byte(chain, 0) == 'Y');
+                 croi_vmar_unmap(s->vmar, at, 3 * PAGE) == 0 && vmo_byte(chain, 0) == 'Y');
   // Refused: pinned pages (BAD_STATE, every kind of an anonymous VMO, as
   // Zircon's), a contiguous VMO (INVALID_ARGS), a pager VMO (full only);
   // SNAPSHOT_MODIFIED of an anonymous VMO is a full snapshot.
@@ -3082,13 +3082,13 @@ static int64_t child_kinds(const startup_t *s) {
                  vmo_put(slice, PAGE + 5, 'T') && vmo_byte(big, 2 * PAGE + 5) == 'T' &&
                  croi_vmo_size(slice, &size) == 0 && size == 2 * PAGE &&
                  vmo_byte(slice, 2 * PAGE) == -1 &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, slice, 0,
-                      2 * PAGE, (uint64_t)&mapped) == 0 &&
+                 croi_vmar_map(s->vmar, CROI_VM_PERM_READ | CROI_VM_PERM_WRITE, 0, slice, 0,
+                      2 * PAGE, &mapped) == 0 &&
                  *(volatile uint8_t *)mapped == 'S' && (*(volatile uint8_t *)(mapped + PAGE) = 'U') == 'U' &&
                  vmo_byte(big, 2 * PAGE) == 'U' && vmo_put(big, PAGE + 1, 'V') &&
                  *(volatile uint8_t *)(mapped + 1) == 'V' &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)CROI_VM_PERM_READ << 32, 0, slice, 0, 3 * PAGE,
-                      (uint64_t)&at) != 0 &&
+                 croi_vmar_map(s->vmar, CROI_VM_PERM_READ, 0, slice, 0, 3 * PAGE,
+                      &at) != 0 &&
                  get_info(slice, CROI_INFO_VMO, &v, sizeof v, counts) == 0 && v.committed_bytes == 0 &&
                  !(v.flags & CROI_INFO_VMO_IS_COW_CLONE) && v.parent_koid == koid_of(big) && v.size_bytes == 2 * PAGE &&
                  !(wait_for(big, zero, 0) & zero));
@@ -3122,7 +3122,7 @@ static int64_t child_kinds(const startup_t *s) {
   // The parent's handle goes; the slice (and its mapping) keep the pages.
   CHECK(657, croi_handle_close(big) == 0 && vmo_byte(slice, PAGE + 5) == 'T' &&
                  (*(volatile uint8_t *)mapped = 'W') == 'W' && vmo_byte(slice, 0) == 'W' &&
-                 sys(CROI_SYS_VMAR_UNMAP, s->vmar, mapped, 2 * PAGE, 0, 0) == 0 &&
+                 croi_vmar_unmap(s->vmar, mapped, 2 * PAGE) == 0 &&
                  croi_handle_close(slice) == 0);
 
   // REFERENCE: the whole VMO, its pages and sizes, under its own koid.
@@ -3176,10 +3176,10 @@ static int64_t unbounded(const startup_t *s) {
                  v.committed_bytes == 0 && sys(CROI_SYS_VMO_SET_SIZE, vmo, PAGE, 0, 0, 0) == ERR_UNAVAILABLE);
   // A page far out: written, read, mapped, a child's and a slice's.
   CHECK(664, vmo_put(vmo, far, 'U') && vmo_byte(vmo, far) == 'U' && committed_of(vmo, 0) == PAGE &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)CROI_VM_PERM_READ << 32, 0, vmo, far - PAGE, 2 * PAGE,
-                      (uint64_t)&mapped) == 0 &&
+                 croi_vmar_map(s->vmar, CROI_VM_PERM_READ, 0, vmo, far - PAGE, 2 * PAGE,
+                      &mapped) == 0 &&
                  *(volatile uint8_t *)(mapped + PAGE) == 'U' &&
-                 sys(CROI_SYS_VMAR_UNMAP, s->vmar, mapped, 2 * PAGE, 0, 0) == 0 &&
+                 croi_vmar_unmap(s->vmar, mapped, 2 * PAGE) == 0 &&
                  vmo_child(vmo, CROI_VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE, far, PAGE, &child) == 0 &&
                  vmo_byte(child, 0) == 'U' && vmo_child(vmo, CROI_VMO_CHILD_SLICE, far - PAGE, 2 * PAGE, &slice) == 0 &&
                  vmo_byte(slice, PAGE) == 'U');
@@ -3261,9 +3261,9 @@ static int64_t zero_intervals(const startup_t *s) {
                  range_is(&r[1], 2 * PAGE, 4 * PAGE, Z));
   // A write and a read fault inside it commit dirty zero pages, splitting it.
   CHECK(671, vmo_put(vmo, 4 * PAGE, 'W') && vmo_byte(vmo, 4 * PAGE) == 'W' &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)CROI_VM_PERM_READ << 32, 0, vmo, 3 * PAGE, PAGE,
-                      (uint64_t)&mapped) == 0 &&
-                 *(volatile uint8_t *)mapped == 0 && sys(CROI_SYS_VMAR_UNMAP, s->vmar, mapped, PAGE, 0, 0) == 0 &&
+                 croi_vmar_map(s->vmar, CROI_VM_PERM_READ, 0, vmo, 3 * PAGE, PAGE,
+                      &mapped) == 0 &&
+                 *(volatile uint8_t *)mapped == 0 && croi_vmar_unmap(s->vmar, mapped, PAGE) == 0 &&
                  dirty_ranges(pg, vmo, 8 * PAGE, r, &n) && n == 4 && range_is(&r[0], PAGE, PAGE, 0) &&
                  range_is(&r[1], 2 * PAGE, PAGE, Z) && range_is(&r[2], 3 * PAGE, 2 * PAGE, 0) &&
                  range_is(&r[3], 5 * PAGE, PAGE, Z));
@@ -3317,17 +3317,17 @@ static int64_t mapping_ceilings(const startup_t *s, uint64_t vdso_base) {
   uint64_t at = 0;
   CHECK(686, sys(CROI_SYS_VMO_CREATE, PAGE, 0, (uint64_t)&vmo, 0, 0) == 0 &&
                  croi_handle_duplicate(vmo, RIGHT_READ | RIGHT_MAP, &readOnly, 0) == 0 &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)CROI_VM_PERM_READ << 32, 0, readOnly, 0, PAGE,
-                      (uint64_t)&at) == 0 &&
-                 sys(CROI_SYS_VMAR_PROTECT, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, at,
-                     PAGE, 0, 0) == ERR_ACCESS_DENIED &&
-                 sys(CROI_SYS_VMAR_PROTECT, s->vmar | (uint64_t)CROI_VM_PERM_READ << 32, at, PAGE, 0, 0) == 0);
-  CHECK(687, sys(CROI_SYS_VMAR_PROTECT, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32,
-                 vdso_base, PAGE, 0, 0) == ERR_ACCESS_DENIED &&
-                 sys(CROI_SYS_VMAR_PROTECT, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_EXECUTE) << 32,
-                     vdso_base, PAGE, 0, 0) == 0);
+                 croi_vmar_map(s->vmar, CROI_VM_PERM_READ, 0, readOnly, 0, PAGE,
+                      &at) == 0 &&
+                 croi_vmar_protect(s->vmar, CROI_VM_PERM_READ | CROI_VM_PERM_WRITE, at,
+                     PAGE) == ERR_ACCESS_DENIED &&
+                 croi_vmar_protect(s->vmar, CROI_VM_PERM_READ, at, PAGE) == 0);
+  CHECK(687, croi_vmar_protect(s->vmar, CROI_VM_PERM_READ | CROI_VM_PERM_WRITE,
+                 vdso_base, PAGE) == ERR_ACCESS_DENIED &&
+                 croi_vmar_protect(s->vmar, CROI_VM_PERM_READ | CROI_VM_PERM_EXECUTE,
+                     vdso_base, PAGE) == 0);
   CHECK(688, sys(CROI_SYS_VMO_CREATE_PHYSICAL, s->resource, PAGE, 0ull - PAGE, (uint64_t)&physical, 0) != 0);
-  sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, PAGE, 0, 0);
+  croi_vmar_unmap(s->vmar, at, PAGE);
   croi_handle_close(readOnly);
   croi_handle_close(vmo);
   return 0;
@@ -3953,7 +3953,7 @@ static int64_t jit_views(const startup_t *s) {
                  vmar_jit_info(s->vmar).mechanism == CROI_JIT_MECHANISM_NONE &&
                  sys(CROI_SYS_VMO_CREATE, 2 * PAGE, 0, (uint64_t)&a, 0, 0) == 0 &&
                  sys(CROI_SYS_VMO_CREATE, 2 * PAGE, 0, (uint64_t)&b, 0, 0) == 0 &&
-                 sys6(CROI_SYS_VMAR_MAP, reservation | (uint64_t)rw << 32, 0, a, 0, PAGE, (uint64_t)&at) ==
+                 croi_vmar_map(reservation, rw, 0, a, 0, PAGE, &at) ==
                      ERR_INVALID_ARGS);
   // A view replaced by another VMO's pages.
   uint32_t one = 1, two = 2;
@@ -3973,7 +3973,7 @@ static int64_t jit_views(const startup_t *s) {
                  sys(CROI_SYS_VMAR_MAP_VIEW, reservation | (uint64_t)rx << 32, 4 * PAGE, exec, 0, PAGE) == 0);
   croi_handle_close(exec);
   CHECK(727, sys6(CROI_SYS_VMAR_OP_RANGE, reservation, CROI_VMO_OP_COMMIT, base, 2 * PAGE, 0, 0) == 0 &&
-                 sys(CROI_SYS_VMAR_PROTECT, reservation | (uint64_t)CROI_VM_PERM_READ << 32, base, 2 * PAGE, 0, 0) == 0 &&
+                 croi_vmar_protect(reservation, CROI_VM_PERM_READ, base, 2 * PAGE) == 0 &&
                  *word == 2);
   sys(CROI_SYS_VMAR_DESTROY, reservation, 0, 0, 0, 0);
   croi_handle_close(reservation);
@@ -4098,9 +4098,9 @@ static int64_t guarded_pages(const startup_t *s) {
                  vmo_set(raw, code, 0, sizeof code) == 0 &&
                  sys6(CROI_SYS_VMO_OP_RANGE, raw, CROI_VMO_OP_CACHE_SYNC, 0, sizeof code, 0, 0) == 0 &&
                  sys(CROI_SYS_VMO_REPLACE_AS_EXECUTABLE, raw, s->resource, (uint64_t)&vmo, 0, 0) == 0 &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(rx | CROI_VM_PERM_GUARDED) << 32, 0, vmo, 0, PAGE,
-                      (uint64_t)&guarded) == 0 &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)rx << 32, 0, vmo, 0, PAGE, (uint64_t)&plain) == 0 &&
+                 croi_vmar_map(s->vmar, rx | CROI_VM_PERM_GUARDED, 0, vmo, 0, PAGE,
+                      &guarded) == 0 &&
+                 croi_vmar_map(s->vmar, rx, 0, vmo, 0, PAGE, &plain) == 0 &&
                  bti_call(guarded + 16) == 2 && bti_call(plain) == 1 && bti_call(plain + 16) == 2);
   // The stray call into the guarded copy: the thread's exception, ended.
   uint32_t channel = exception_channel(s->process), exception = 0;
@@ -4113,8 +4113,8 @@ static int64_t guarded_pages(const startup_t *s) {
                  (wait_for(thread, CROI_SIGNAL_TASK_TERMINATED, 3000000000ull) & CROI_SIGNAL_TASK_TERMINATED));
   uint32_t handles[] = {thread, channel, vmo};
   for (int i = 0; i < 3; i++) croi_handle_close(handles[i]);
-  sys(CROI_SYS_VMAR_UNMAP, s->vmar, guarded, PAGE, 0, 0);
-  sys(CROI_SYS_VMAR_UNMAP, s->vmar, plain, PAGE, 0, 0);
+  croi_vmar_unmap(s->vmar, guarded, PAGE);
+  croi_vmar_unmap(s->vmar, plain, PAGE);
 #endif
   return 0;
 }

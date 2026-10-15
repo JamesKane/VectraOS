@@ -68,9 +68,10 @@ Processes (K7a, Kernel/Object/Process.swift, include/task.h, syscalls
   (Todhchai's shutdown, ~3 boots in 20 one afternoon) locked a thread
   object freed meanwhile: its poisoned lock word spun forever. SpinLock
   now panics on a holder that isn't a CPU.
-- VMARs wrap K4 regions (`UserAspace.withView`); `vmar_map` and friends
-  pack handle | options << 32 into one register (six argument
-  registers). A dead address space refuses operations under its lock
+- VMARs wrap K4 regions (`UserAspace.withView`); vmar_allocate and
+  vmar_map_view pack handle | options << 32 into one register (six
+  argument registers); vmar_map, vmar_unmap and vmar_protect take items
+  since D42. A dead address space refuses operations under its lock
   (`VmError.dead`). User code has `croi_syscall6`.
   `vmar_unmap_handle_close_thread_exit` (75) is a syscall (Zircon's is
   vDSO code): `Syscalls.run` exits the thread after the handle-table
@@ -557,3 +558,16 @@ consumes nothing.
   one-message forms; the suites use `Sys.readChannel` and
   `Sys.writeChannel`.
 - Tests: the `channel` suite's `batches`.
+
+## vmar_map, vmar_unmap and vmar_protect take arrays (V1, D42)
+
+The last batched family (audit §3). `Syscalls.vmarMap`
+(User/TaskSyscalls.swift) reads each `croi_vmar_map_item_t` and runs
+`mapOne` (K7a's vmar_map for one range), stopping at the first failure;
+`vmarRanges` runs `unmapOne` or `protectOne` over `croi_vmar_range_t`s,
+going on past one that fails. Each writes its items' statuses back and
+returns how many succeeded.
+- syscall.h's `croi_vmar_map`, `croi_vmar_unmap` and `croi_vmar_protect`
+  are the one-item forms. Userboot maps a program's segments in one call
+  (`mapSegments`).
+- Tests: the `vmo` suite's `vmarBatches`.

@@ -74,21 +74,8 @@ extension Syscalls {
             try put(try table.add(child, rights: rights), a[3])
         case 70: try vmarAllocate(table, a)
         case 244: try vmarMapView(table, a)  // K15b
-        case 71: try vmarMap(table, a)
-        case 72:  // vmar_unmap(vmar, addr, len)
-            try vmarUnmap(table, a)
         case 76:  // vmar_op_range(vmar, op, addr, len, buffer, buffer_size), K13e
             try vmarOpRange(table, a)
-        case 73:  // vmar_protect(vmar | options << 32, addr, len)
-            let rights = try vmRights(UInt32(truncatingIfNeeded: a[0] >> 32))
-            let vmar = try table.get(handle, type: .vmar, rights: handleRights(rights))
-            let v = VmarPointer(object: vmar.object).info
-            guard inside(a[1], a[2], v.base, v.size) else { throw .invalidArgs }
-            try vm { () throws(VmError) in
-                try UserAspace.withView(v.aspace) { (aspace: borrowing UserAspace) throws(VmError) in
-                    try aspace.protect(a[1], size: a[2], rights: rights)
-                }
-            }
         case 74:  // vmar_destroy(vmar)
             let vmar = try table.get(handle, type: .vmar, rights: .destroy)
             let v = VmarPointer(object: vmar.object).info
@@ -172,41 +159,72 @@ extension Syscalls {
         }
     }
 
-    /// vmar_map(vmar | options << 32, vmar_offset, vmo, vmo_offset, len, out_addr).
-    private static func vmarMap(_ table: borrowing HandleTable, _ a: InlineArray<6, UInt64>) throws(Status) {
-        let options = UInt32(truncatingIfNeeded: a[0] >> 32)
+    /// vmar_map(vmar, items, count) (D42): each croi_vmar_map_item_t
+    /// (task.h) in order, stopping at the first that fails; each processed
+    /// item's status (and address) written back. Returns how many were
+    /// mapped; a bad pointer or count fails the call before any item.
+    static func vmarMap(_ table: borrowing HandleTable, vmar: UInt32, items: UInt64,
+                        count: UInt64) throws(Status) -> Int64 {
+        let itemSize: UInt64 = 48
+        guard count > 0, count <= UInt64(CROI_VMAR_MAX_ITEMS) else { throw .invalidArgs }
+        try check(items, Int(count * itemSize))
+        for i in 0..<count {
+            let address = items + i * itemSize
+            // vmo | options << 32, vmar_offset, vmo_offset, len, addr, status | reserved << 32
+            var raw = InlineArray<6, UInt64>(repeating: 0)
+            var span = raw.mutableSpan
+            let copied = span.withUnsafeMutableBytes { unsafe UserCopy.from($0.baseAddress!, address, itemSize) }
+            guard copied == 0 else { throw .invalidArgs }
+            var status: Int32 = 0
+            do throws(Status) {
+                guard raw[5] >> 32 == 0 else { throw .invalidArgs }
+                let mapped = try mapOne(table, vmar: vmar, options: UInt32(truncatingIfNeeded: raw[0] >> 32),
+                                        vmarOffset: raw[1], vmo: UInt32(truncatingIfNeeded: raw[0]),
+                                        vmoOffset: raw[2], size: raw[3])
+                try put(mapped, address + 32)
+            } catch {
+                status = error.rawValue
+            }
+            try put(status, address + 40)
+            if status != 0 { return Int64(i) }
+        }
+        return Int64(count)
+    }
+
+    /// One vmar_map item: Zircon's vmar_map; returns the address.
+    private static func mapOne(_ table: borrowing HandleTable, vmar handle: UInt32, options: UInt32,
+                               vmarOffset: UInt64, vmo vmoHandle: UInt32, vmoOffset: UInt64,
+                               size: UInt64) throws(Status) -> UInt64 {
         let perms = UInt32(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE | CROI_VM_PERM_EXECUTE) | UInt32(CROI_VM_PERM_GUARDED)
         let accepted = UInt32(CROI_VM_SPECIFIC) | UInt32(CROI_VM_REQUIRE_NON_RESIZABLE) | UInt32(CROI_VM_ALLOW_FAULTS)
         guard options & ~(perms | accepted) == 0 else { throw .invalidArgs }
         let rights = try vmRights(options & perms)
-        try check(a[5], 8)
-        let vmar = try table.get(UInt32(truncatingIfNeeded: a[0]), type: .vmar, rights: handleRights(rights))
+        let vmar = try table.get(handle, type: .vmar, rights: handleRights(rights))
         let v = VmarPointer(object: vmar.object).info
         var at: UInt64? = nil
         if options & UInt32(CROI_VM_SPECIFIC) != 0 {
-            guard a[1] <= v.size, a[4] <= v.size - a[1] else { throw .invalidArgs }
-            at = v.base + a[1]
+            guard vmarOffset <= v.size, size <= v.size - vmarOffset else { throw .invalidArgs }
+            at = v.base + vmarOffset
         } else {
-            guard a[1] == 0 else { throw .invalidArgs }
+            guard vmarOffset == 0 else { throw .invalidArgs }
         }
         // What a later vmar_protect may grant: the VMO handle's rights.
         var vmoRights = Rights()
-        let vmo = try VmoObject.forMapping(table, UInt32(truncatingIfNeeded: a[2]), rights, have: &vmoRights)
+        let vmo = try VmoObject.forMapping(table, vmoHandle, rights, have: &vmoRights)
         defer { vmo.release() }
         var ceiling = VmRights()
         if vmoRights.contains(.read) { ceiling.insert(.read) }
         if vmoRights.contains(.write) { ceiling.insert(.write) }
         if vmoRights.contains(.execute) { ceiling.insert(.execute) }
         if options & UInt32(CROI_VM_REQUIRE_NON_RESIZABLE) != 0, vmo.pointee.resizable { throw .notSupported }  // K13h
-        let mapped = try vm { () throws(VmError) -> UInt64 in
+        return try vm { () throws(VmError) -> UInt64 in
             try Vmo.withBorrowed(vmo) { (borrowed: borrowing Vmo) throws(VmError) -> UInt64 in
                 try UserAspace.withView(v.aspace) { (aspace: borrowing UserAspace) throws(VmError) -> UInt64 in
-                    try aspace.map(borrowed, offset: a[3], size: a[4], at: at, in: v.region, rights: rights,
+                    try aspace.map(borrowed, offset: vmoOffset, size: size, at: at, in: v.region, rights: rights,
                                    ceiling: ceiling)
                 }
             }
         }
-        try put(mapped, a[5])
     }
 
     /// Hands handle `value` (needs TRANSFER) from `table` to `process`'s
@@ -351,13 +369,61 @@ extension Syscalls {
         }
     }
 
-    private static func vmarUnmap(_ table: borrowing HandleTable, _ a: InlineArray<6, UInt64>) throws(Status) {
-        let vmar = try table.get(UInt32(truncatingIfNeeded: a[0]), type: .vmar)
+    /// vmar_unmap and vmar_protect(vmar, ranges, count) (D42): each
+    /// croi_vmar_range_t (task.h), going on past one that fails, its status
+    /// written back. Returns how many succeeded; a bad pointer or count
+    /// fails the call before any range.
+    static func vmarRanges(_ table: borrowing HandleTable, protect: Bool, vmar: UInt32, ranges: UInt64,
+                           count: UInt64) throws(Status) -> Int64 {
+        let rangeSize: UInt64 = 24
+        guard count > 0, count <= UInt64(CROI_VMAR_MAX_ITEMS) else { throw .invalidArgs }
+        try check(ranges, Int(count * rangeSize))
+        var done: Int64 = 0
+        for i in 0..<count {
+            let address = ranges + i * rangeSize
+            var raw = InlineArray<3, UInt64>(repeating: 0)  // addr, len, options | status << 32
+            var span = raw.mutableSpan
+            let copied = span.withUnsafeMutableBytes { unsafe UserCopy.from($0.baseAddress!, address, rangeSize) }
+            guard copied == 0 else { throw .invalidArgs }
+            let options = UInt32(truncatingIfNeeded: raw[2])
+            var status: Int32 = 0
+            do throws(Status) {
+                if protect {
+                    try protectOne(table, vmar: vmar, options: options, raw[0], raw[1])
+                } else {
+                    guard options == 0 else { throw .invalidArgs }
+                    try unmapOne(table, vmar: vmar, raw[0], raw[1])
+                }
+            } catch {
+                status = error.rawValue
+            }
+            try put(status, address + 20)
+            if status == 0 { done += 1 }
+        }
+        return done
+    }
+
+    private static func unmapOne(_ table: borrowing HandleTable, vmar handle: UInt32, _ addr: UInt64,
+                                 _ size: UInt64) throws(Status) {
+        let vmar = try table.get(handle, type: .vmar)
         let v = VmarPointer(object: vmar.object).info
-        guard inside(a[1], a[2], v.base, v.size) else { throw .invalidArgs }
+        guard inside(addr, size, v.base, v.size) else { throw .invalidArgs }
         try vm { () throws(VmError) in
             try UserAspace.withView(v.aspace) { (aspace: borrowing UserAspace) throws(VmError) in
-                try aspace.unmap(a[1], size: a[2])
+                try aspace.unmap(addr, size: size)
+            }
+        }
+    }
+
+    private static func protectOne(_ table: borrowing HandleTable, vmar handle: UInt32, options: UInt32,
+                                   _ addr: UInt64, _ size: UInt64) throws(Status) {
+        let rights = try vmRights(options)
+        let vmar = try table.get(handle, type: .vmar, rights: handleRights(rights))
+        let v = VmarPointer(object: vmar.object).info
+        guard inside(addr, size, v.base, v.size) else { throw .invalidArgs }
+        try vm { () throws(VmError) in
+            try UserAspace.withView(v.aspace) { (aspace: borrowing UserAspace) throws(VmError) in
+                try aspace.protect(addr, size: size, rights: rights)
             }
         }
     }
@@ -368,7 +434,7 @@ extension Syscalls {
     /// close. The unmap may take the caller's own stack: it never runs
     /// user code again unless an exception handler resumes it.
     static func unmapAndClose(_ a: InlineArray<6, UInt64>, _ table: borrowing HandleTable) throws(Status) -> Int64 {
-        try vmarUnmap(table, a)
+        try unmapOne(table, vmar: UInt32(truncatingIfNeeded: a[0]), a[1], a[2])
         do throws(Status) {
             try table.close(UInt32(truncatingIfNeeded: a[3]))
         } catch {

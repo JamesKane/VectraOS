@@ -27,8 +27,9 @@ enum : uint64_t {
   CROI_SYS_VMO_CREATE_CHILD = 48,      // (vmo, options, offset, size, uint32_t *out), K11a
   CROI_SYS_TRACE_CONFIGURE = 50,   // (resource, op, a, b, c, sample_hz)
   CROI_SYS_PMU_CONFIGURE = 51,     // (resource, op, a, b)
-  // Jobs, processes, threads (K7a). Zircon's calls; vmar_* pack the VMAR
-  // handle and options into the first argument (handle | options << 32).
+  // Jobs, processes, threads (K7a). Zircon's calls; vmar_allocate and
+  // vmar_map_view pack the VMAR handle and options into the first argument
+  // (handle | options << 32).
   CROI_SYS_JOB_CREATE = 60,        // (parent, options, out)
   CROI_SYS_PROCESS_CREATE = 61,    // (job, name, name_len, options, out_process, out_vmar)
   CROI_SYS_PROCESS_START = 62,     // (process, thread, entry, stack, arg1 handle, arg2)
@@ -37,9 +38,9 @@ enum : uint64_t {
   CROI_SYS_THREAD_START = 65,      // (thread, entry, stack, arg1, arg2)
   CROI_SYS_TASK_KILL = 67,         // (task)
   CROI_SYS_VMAR_ALLOCATE = 70,     // (parent | options << 32, offset, size, out_child, out_addr)
-  CROI_SYS_VMAR_MAP = 71,          // (vmar | options << 32, vmar_offset, vmo, vmo_offset, len, out_addr)
-  CROI_SYS_VMAR_UNMAP = 72,        // (vmar, addr, len)
-  CROI_SYS_VMAR_PROTECT = 73,      // (vmar | options << 32, addr, len)
+  CROI_SYS_VMAR_MAP = 71,          // (vmar, croi_vmar_map_item_t *items, count): task.h (D42)
+  CROI_SYS_VMAR_UNMAP = 72,        // (vmar, croi_vmar_range_t *ranges, count): task.h (D42)
+  CROI_SYS_VMAR_PROTECT = 73,      // (vmar, croi_vmar_range_t *ranges, count): task.h (D42)
   CROI_SYS_VMAR_DESTROY = 74,      // (vmar)
   CROI_SYS_VMAR_UNMAP_HANDLE_CLOSE_THREAD_EXIT = 75,  // (vmar, addr, len, close_handle): no return on success
   CROI_SYS_VMAR_OP_RANGE = 76,     // (vmar, op, addr, len, buffer 0, buffer_size 0), K13e
@@ -260,6 +261,33 @@ static inline int64_t croi_handle_duplicate(uint32_t handle, uint32_t rights, ui
   if (done == 0) return item.status;
   *out = item.out;
   return 0;
+}
+
+// Maps one VMO range: vmar_map takes an array (D42). 0, the item's status,
+// or the call's; the address in *addr (if not null) on success.
+static inline int64_t croi_vmar_map(uint32_t vmar, uint32_t options, uint64_t vmar_offset, uint32_t vmo,
+                                    uint64_t vmo_offset, uint64_t len, uint64_t *addr) {
+  croi_vmar_map_item_t item = {vmo, options, vmar_offset, vmo_offset, len, 0, 1, 0};
+  int64_t done = croi_syscall(CROI_SYS_VMAR_MAP, vmar, (uint64_t)&item, 1, 0, 0);
+  if (done < 0) return done;
+  if (item.status == 0 && addr) *addr = item.addr;
+  return item.status;
+}
+
+// Unmaps one range: vmar_unmap takes an array (D42). 0, the range's
+// status, or the call's.
+static inline int64_t croi_vmar_unmap(uint32_t vmar, uint64_t addr, uint64_t len) {
+  croi_vmar_range_t range = {addr, len, 0, 1};
+  int64_t done = croi_syscall(CROI_SYS_VMAR_UNMAP, vmar, (uint64_t)&range, 1, 0, 0);
+  return done < 0 ? done : range.status;
+}
+
+// Protects one range: vmar_protect takes an array (D42). 0, the range's
+// status, or the call's.
+static inline int64_t croi_vmar_protect(uint32_t vmar, uint32_t options, uint64_t addr, uint64_t len) {
+  croi_vmar_range_t range = {addr, len, options, 1};
+  int64_t done = croi_syscall(CROI_SYS_VMAR_PROTECT, vmar, (uint64_t)&range, 1, 0, 0);
+  return done < 0 ? done : range.status;
 }
 
 // Writes one message: channel_write takes an array (D41). The handles are

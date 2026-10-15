@@ -34,14 +34,13 @@ enum Tracing {
             var size: UInt64 = 0
             var base: UInt64 = 0
             try Sys.check("sizing a ring", unsafe croi_vmo_size(handles[i], &size))
-            try Sys.check("mapping a ring", Sys.call(CROI_SYS_VMAR_MAP, UInt64(croi_vmar_root_self())
-                                                         | UInt64(CROI_VM_PERM_READ) << 32,
-                                                     0, UInt64(handles[i]), 0, size, Sys.address(&base)))
+            try Sys.check("mapping a ring", unsafe croi_vmar_map(croi_vmar_root_self(), UInt32(CROI_VM_PERM_READ),
+                                                     0, handles[i], 0, size, &base))
             let ring = unsafe UnsafePointer<croi_trace_ring_t>(bitPattern: UInt(base))!.pointee
             frequency = ring.frequency
             let first = unsafe UnsafePointer<croi_trace_record_t>(bitPattern: UInt(base) + 4096)!
             for j in 0..<Int(min(ring.head, ring.capacity)) { records.append(unsafe first[j]) }
-            _ = Sys.call(CROI_SYS_VMAR_UNMAP, UInt64(croi_vmar_root_self()), base, size)
+            _ = croi_vmar_unmap(croi_vmar_root_self(), base, size)
         }
         return (records, frequency)
     }

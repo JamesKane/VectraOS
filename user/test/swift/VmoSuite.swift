@@ -16,6 +16,7 @@ enum VmoSuite {
         sizeLock()
         faultStatuses()
         copyRace()
+        vmarBatches()
         print("swift: vmo passed")
     }
 
@@ -50,12 +51,12 @@ enum VmoSuite {
     /// even when it refuses.
     static func executable() {
         let resource = Handle(adopting: croi_take_startup_handle(croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0)))
-        let rx = UInt64(UInt32(CROI_VM_PERM_READ) | UInt32(CROI_VM_PERM_EXECUTE)) << 32
+        let rx = UInt32(CROI_VM_PERM_READ) | UInt32(CROI_VM_PERM_EXECUTE)
         var vmo: UInt32 = 0, other: UInt32 = 0, exec: UInt32 = 0
         var at: UInt64 = 0
         check(Sys.call(CROI_SYS_VMO_CREATE, pageSize, 0, Sys.address(&vmo)) == 0, "a VMO")
-        check(Sys.call(CROI_SYS_VMAR_MAP, UInt64(croi_vmar_root_self()) | rx, 0, UInt64(vmo), 0, pageSize,
-                       Sys.address(&at)) == Status.accessDenied, "an anonymous VMO isn't executable")
+        check(unsafe croi_vmar_map(croi_vmar_root_self(), rx, 0, vmo, 0, pageSize, &at) == Status.accessDenied,
+              "an anonymous VMO isn't executable")
         check(Sys.duplicate(UInt64(vmo), 1 << 31, &other) == 0, "a duplicate")
         check(Sys.call(CROI_SYS_VMO_REPLACE_AS_EXECUTABLE, UInt64(other), UInt64(vmo), Sys.address(&exec))
                   == Status.wrongType, "the resource must be a resource")
@@ -316,16 +317,56 @@ enum VmoSuite {
         let race = unsafe UnsafeMutablePointer<Race>(bitPattern: UInt(argument))!
         let vmo = unsafe UInt64(race.pointee.vmo)
         let byte = unsafe race.pointee.byte
-        let own = UInt64(croi_vmar_root_self())
+        let own = croi_vmar_root_self()
         var at: UInt64 = 0
-        check(Sys.call(CROI_SYS_VMAR_MAP, own | UInt64(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, vmo, 0,
-                       pageSize, Sys.address(&at)) == 0, "a filler's mapping")
+        check(unsafe croi_vmar_map(own, UInt32(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE), 0,
+                                   UInt32(truncatingIfNeeded: vmo), 0, pageSize, &at) == 0, "a filler's mapping")
         let page = unsafe UnsafeMutablePointer<UInt8>(bitPattern: UInt(at))!
         while unsafe race.pointee.stop == 0 {
             for i in 0..<Int(pageSize) { unsafe page[i] = byte }
             _ = Sys.call(CROI_SYS_VMO_OP_RANGE, vmo, UInt64(CROI_VMO_OP_DECOMMIT), 0, pageSize)
         }
-        _ = Sys.call(CROI_SYS_VMAR_UNMAP, own, at, pageSize)
+        _ = croi_vmar_unmap(own, at, pageSize)
         Thread.exit()
+    }
+
+    /// vmar_map, vmar_unmap and vmar_protect take arrays (D42): a map
+    /// stops at its first failure, leaving what it mapped; an unmap or a
+    /// protect goes on past a range that fails.
+    static func vmarBatches() {
+        let vmo = Handle(vmo: 4 * pageSize)
+        let own = croi_vmar_root_self()
+        let rw = UInt32(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE)
+        var maps = InlineArray<4, croi_vmar_map_item_t>(
+            repeating: croi_vmar_map_item_t(vmo: vmo.raw, options: rw, vmar_offset: 0, vmo_offset: 0, len: pageSize,
+                                            addr: 0, status: 1, reserved: 0))
+        maps[1].vmo_offset = pageSize
+        maps[2].vmo = 0  // no handle
+        maps[3].vmo_offset = 3 * pageSize
+        check(Sys.call(CROI_SYS_VMAR_MAP, UInt64(own), Sys.address(&maps), 4) == 2, "two of four mapped")
+        check(maps[0].status == 0 && maps[1].status == 0 && Int64(maps[2].status) == Status.badHandle
+                  && maps[3].status == 1 && maps[3].addr == 0, "the third failed, and the fourth was never tried")
+        let first = unsafe UnsafeMutablePointer<UInt8>(bitPattern: UInt(maps[0].addr))!
+        let second = unsafe UnsafeMutablePointer<UInt8>(bitPattern: UInt(maps[1].addr))!
+        unsafe first.pointee = 0x5A
+        unsafe second.pointee = 0xA5
+        check(unsafe first.pointee == 0x5A && maps[0].addr != maps[1].addr, "each its own page")
+
+        let range = croi_vmar_range_t(addr: maps[0].addr, len: pageSize, options: UInt32(CROI_VM_PERM_READ), status: 1)
+        var ranges = InlineArray<3, croi_vmar_range_t>(repeating: range)
+        ranges[1].addr = 0  // outside the VMAR
+        ranges[2].addr = maps[1].addr
+        check(Sys.call(CROI_SYS_VMAR_PROTECT, UInt64(own), Sys.address(&ranges), 3) == 2
+                  && ranges[0].status == 0 && Int64(ranges[1].status) == Status.invalidArgs && ranges[2].status == 0,
+              "a protect goes on past a range that fails")
+        check(unsafe first.pointee == 0x5A && second.pointee == 0xA5, "still readable")
+        for i in 0..<3 { ranges[i].options = 0 }
+        ranges[1].options = 1  // unmap takes none
+        check(Sys.call(CROI_SYS_VMAR_UNMAP, UInt64(own), Sys.address(&ranges), 3) == 2
+                  && ranges[0].status == 0 && Int64(ranges[1].status) == Status.invalidArgs && ranges[2].status == 0,
+              "an unmap too")
+        check(Sys.call(CROI_SYS_VMAR_MAP, UInt64(own), Sys.address(&maps), 0) == Status.invalidArgs
+                  && Sys.call(CROI_SYS_VMAR_UNMAP, UInt64(own), Sys.address(&ranges), 65) == Status.invalidArgs,
+              "a count of 0 or over 64 is refused")
     }
 }
