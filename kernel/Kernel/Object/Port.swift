@@ -337,6 +337,10 @@ enum Ports {
         let source = try table.get(handle, rights: .wait)
         let port = PortPointer(object: portRef.object)
         if source.type == .interrupt { InterruptObjects.cancel(source.object, port: port.object, key: key) }
+        if source.type == .memoryAccount {  // D31: the root account outlives every binder
+            MemoryAccountObjectPointer(object: source.object).pointee.account
+                .cancelPressure(port: port.object.address, key: key)
+        }
         source.object.header.lock.withLock {
             var previous: ObserverPointer? = nil
             var cursor = source.object.header.observers

@@ -89,10 +89,16 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   no user signals, no SIGNAL_PEER right, no NEW_EVENT or NEW_EVENTPAIR
   policy conditions, no HANDLE_CLOSED signal and no BLOCKED_WAIT_MANY
   thread state. A port is the one wait (object_bind, then port_wait); a
-  counter is the event a user drives. Events remain only as the kernel's
-  system_get_event objects, until that call is cut too. Kind:
+  counter is the event a user drives. No event objects remain (D31).
+  Kind:
   deliberate. Impact: every Fuchsia program (zx_object_wait_one is
   everywhere, libasync and fdio included).
+- **No system_get_event** (V1, D31) — the memory levels are the root
+  account's: a PRESSURE binding on it (userboot's CROI_PA_ROOT_ACCOUNT)
+  reports level changes as packets, the level at once when bound, one
+  binding at a time. Kind: deliberate (one mechanism for pressure).
+  Impact: Fuchsia's memory monitor and anything waiting on the five
+  events.
 - **A ONCE binding holds its port** — closing a port's last handle doesn't
   cancel the bindings to it, as Zircon's on_zero_handles does; a pending
   one keeps the port until it fires or its source handle closes. A

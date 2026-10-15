@@ -191,6 +191,17 @@ its F-109; agreed with Todhchai 2026-10-12; croi's, Zircon has none):
   fault.
 - Mode 17's `memory_accounts` (checks 713-721; child submode 12; 717
   and 721 fail without the before-start rule and snapshot charging).
+- The root account (D31, `Accounts.root`): made with the memory watchdog
+  (`Reclaim.initialize`), never freed, handed to userboot and the Swift
+  suites as CROI_PA_ROOT_ACCOUNT with INSPECT and WRITE, no CHARGE, so
+  nothing charges it. `MemoryAccountRecord.system` marks it: its level is
+  the watchdog's (`reportSystem`: 0 normal, 1 warning, 2 critical, 3
+  imminent OOM, 4 OOM), its limit the RAM, its charge the RAM in use
+  (read live), and account_set_limit is NOT_SUPPORTED. It replaced
+  system_get_event's five events. Any PRESSURE binding reports the level
+  at once unless normal (`reportCurrent`), and port_cancel removes one
+  (`cancelPressure`), since a binding left on the root account would keep
+  its port forever. One binding per account: a second replaces the first.
 
 ## VMO children (K11a)
 
@@ -494,21 +505,21 @@ PageQueues + Evictor + MemoryWatchdog without the page queues):
   trigger_on_alloc_failure, enable=0; out of order: off). The PMM wakes
   it when the free count leaves the current level's band
   (`Pmm.setFreeMemorySignal`; also a failed single-page allocation) via a
-  zero-delay timer, since it may be under any lock. One event object per
-  level, exactly one SIGNALED; system_get_event(root job, kind): handles
-  WAIT | DUPLICATE | TRANSFER, OUT_OF_MEMORY needs MANAGE_PROCESS, other
-  jobs ACCESS_DENIED. Worse levels signal at once, better ones after the
-  hysteresis; a worse level at or below critical evicts (after the
+  zero-delay timer, since it may be under any lock. The level is the
+  root account's (D31, below): `Accounts.reportSystem` fires its
+  PRESSURE binding. Worse levels are reported at once, better ones after
+  the hysteresis; a worse level at or below critical evicts (after the
   delay) to the critical watermark + debounce; OOM evicts at once (ages
-  2+, hints ignored), then signals, logs and reboots after the timeout
+  2+, hints ignored), then reports, logs and reboots after the timeout
   (`Power.reboot`). Log lines go to the debuglog (`KernelLog.write`, which
   DMA's warnings use too).
 - KMEM_STATS: vmo_reclaim_total/newest/oldest bytes, discardable
   locked/unlocked bytes. Test hooks (syscall 6): 6 aging passes, 7 evict,
   8 watermarks/hysteresis/delay (0: the command line's), 9 free bytes.
-- Tests: mode 17's `reclaim` (checks 600-619: eviction order, refault from
-  the pager, hints, dirty pages kept, discardable states, the events moved
-  by test watermarks); `boot-oom` (watermarks above RAM: OOM at boot,
+- Tests: mode 17's `reclaim` (checks 600-612: eviction order, refault from
+  the pager, hints, dirty pages kept, discardable states); the Swift
+  `memory` suite (the root account's levels moved by test watermarks);
+  `boot-oom` (watermarks above RAM: OOM at boot,
   reboot). Lock order: aspace -> vmo (harvest); the registry lock is a
   leaf (heap below it).
 

@@ -125,7 +125,6 @@ enum Objects {
 
     static func destroy(_ object: ObjectPointer) {
         switch object.header.type {
-        case .event: free(object, as: EventObject.self)
         case .port: Ports.destroy(object)
         case .vmo:
             let vmo = VmoPointer(address: UnsafeVmoObject(object).vmo)
@@ -161,21 +160,3 @@ enum Objects {
         unsafe heap.free(UnsafeMutableRawPointer(raw))
     }
 }
-
-// MARK: Events
-
-/// An event (Zircon's EventDispatcher): signals only. Since V1 cut
-/// event_create and object_signal (D23), only the kernel makes and signals
-/// them: system_get_event's memory pressure events, and self-tests. They go
-/// when system_get_event does.
-struct EventObject: ~Copyable {
-    var header = ObjectHeader(type: .event)
-
-    static var defaultRights: Rights { .basic | .signal }
-
-    static func create() throws(Status) -> ObjectPointer {
-        guard let object = Objects.allocate(EventObject()) else { throw .noMemory }
-        return object
-    }
-}
-

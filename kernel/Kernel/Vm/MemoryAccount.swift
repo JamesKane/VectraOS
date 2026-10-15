@@ -25,6 +25,10 @@ struct MemoryAccountRecord: ~Copyable {
     /// Ext 6: a port reporting pressure (a PacketSource), or 0.
     var pressureSource: UInt64 = 0
     let references = Atomic<Int>(1)
+    /// D31: the root account. Nothing charges it; its level is the memory
+    /// watchdog's (0 normal to 4 out of memory) and its charge the RAM in
+    /// use.
+    var system = false
 }
 
 @safe struct MemoryAccountPointer: Equatable {
@@ -120,6 +124,7 @@ struct MemoryAccountRecord: ~Copyable {
     /// shrinks only after its holder has seen the pressure that frees the
     /// memory); the levels follow at once.
     func setLimit(_ newLimit: UInt64) throws(Status) {
+        guard !pointee.system else { throw .notSupported }
         var old: UInt32 = 0, new: UInt32 = 0, now: UInt64 = 0
         var hook: Timers.Callback? = nil, argument: UInt64 = 0, source: UInt64 = 0
         try pointee.lock.withLock { () throws(Status) in
@@ -139,8 +144,52 @@ struct MemoryAccountRecord: ~Copyable {
     /// The account's state, for CROI_INFO_MEMORY_ACCOUNT.
     func snapshot() -> (limit: UInt64, charged: UInt64, warning: UInt64, critical: UInt64, level: UInt32, events: Int) {
         pointee.lock.withLock {
-            (pointee.limit, pointee.charged, threshold(1), threshold(2), pointee.level, pointee.pressureEvents)
+            (pointee.limit, chargedLocked(), threshold(1), threshold(2), pointee.level, pointee.pressureEvents)
         }
+    }
+
+    /// What a pressure packet reports as charged: the root account's is
+    /// the RAM in use now.
+    private func chargedLocked() -> UInt64 {
+        guard pointee.system else { return pointee.charged }
+        let free = pmm.freePages * KernelLayout.pageSize
+        return pointee.limit > free ? pointee.limit - free : 0
+    }
+
+    /// D31: a new PRESSURE binding hears the level now, unless normal, so
+    /// a binder never waits for a change to learn it.
+    func reportCurrent() {
+        var level: UInt32 = 0, charged: UInt64 = 0, limit: UInt64 = 0, source: UInt64 = 0
+        pointee.lock.withLock {
+            (level, charged, limit, source) = (pointee.level, chargedLocked(), pointee.limit, pointee.pressureSource)
+        }
+        report(from: 0, to: level, charged: charged, limit: limit, hook: nil, argument: 0, source: source)
+    }
+
+    /// port_cancel (D31): drops the PRESSURE binding if it reports to
+    /// `port` with `key`.
+    func cancelPressure(port: UInt64, key: UInt64) {
+        let old = pointee.lock.withLock { () -> UInt64 in
+            let source = PacketSourcePointer(address: pointee.pressureSource)
+            guard source.address != 0, source.pointee.port == port, source.pointee.record.pointee.packet.key == key else {
+                return 0
+            }
+            pointee.pressureSource = 0
+            return source.address
+        }
+        if old != 0 { PacketSourcePointer(address: old).retire() }
+    }
+
+    /// D31: the memory watchdog's level changed (the root account only).
+    func reportSystem(level: UInt32) {
+        var old: UInt32 = 0, charged: UInt64 = 0, limit: UInt64 = 0, source: UInt64 = 0
+        pointee.lock.withLock {
+            old = pointee.level
+            pointee.level = level
+            if old == 0, level != 0 { pointee.pressureEvents += 1 }
+            (charged, limit, source) = (chargedLocked(), pointee.limit, pointee.pressureSource)
+        }
+        report(from: old, to: level, charged: charged, limit: limit, hook: nil, argument: 0, source: source)
     }
 }
 

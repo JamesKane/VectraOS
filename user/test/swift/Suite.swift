@@ -49,6 +49,8 @@ enum Suite {
             CounterSuite.run()
         } else if requested("time") {
             TimeSuite.run()
+        } else if requested("memory") {
+            MemorySuite.run()
         } else if requested("interrupts") {
             InterruptSuite.run()  // run on its own (ProcessSelfTest.runInterrupts)
         } else {

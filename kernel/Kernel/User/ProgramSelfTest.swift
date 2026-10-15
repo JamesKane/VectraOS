@@ -153,9 +153,10 @@ enum ProgramSelfTest {
     /// deadline context lent for the run (the futex suite's inheritance,
     /// the bind suite's leeway).
     static func runSuites(_ console: Uart) {
-        let suites: InlineArray<7, StaticString> = ["swift.suite=bind\0", "swift.suite=vmo\0", "swift.suite=futex\0",
+        let suites: InlineArray<8, StaticString> = ["swift.suite=bind\0", "swift.suite=vmo\0", "swift.suite=futex\0",
                                                     "swift.suite=channel\0", "swift.suite=objects\0",
-                                                    "swift.suite=counters\0", "swift.suite=time\0"]
+                                                    "swift.suite=counters\0", "swift.suite=time\0",
+                                                    "swift.suite=memory\0"]
         let before = ProcessSelfTest.Counts()
         let context: SchedContext
         do throws(AdmissionRefusal) {
@@ -190,18 +191,20 @@ enum ProgramSelfTest {
     }
 
     /// Runs the Swift program with `environment` (NUL-terminated strings,
-    /// `swift.suite=<name>` among them), the root resource, the root job
-    /// and a debuglog as stdout, until it exits: its exit code.
+    /// `swift.suite=<name>` among them), the root resource, the root job,
+    /// the root account and a debuglog as stdout, until it exits: its exit code.
     static func runSuite(_ environment: Span<UInt8>) -> Int64 {
         let image = unsafe RawSpan(_unsafeStart: UnsafeRawPointer(bitPattern: UInt(croi_swift_test_address()))!,
                                    byteCount: Int(croi_swift_test_size()))
         let (stdout, stdoutRights) = created { () throws(Status) in try DebugLogs.create(readable: false) }
-        var handles = InlineArray<3, ProgramLoader.StartupHandle>(repeating: ProgramLoader.StartupHandle(
+        var handles = InlineArray<4, ProgramLoader.StartupHandle>(repeating: ProgramLoader.StartupHandle(
             object: stdout, rights: stdoutRights, info: croi_pa_hnd(UInt32(CROI_PA_FD), 1)))
         handles[1] = ProgramLoader.StartupHandle(object: Resources.root, rights: ResourceObject.defaultRights,
                                                  info: croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0))
         handles[2] = ProgramLoader.StartupHandle(object: Processes.rootJob, rights: JobObject.defaultRights,
                                                  info: croi_pa_hnd(UInt32(CROI_PA_JOB_DEFAULT), 0))
+        handles[3] = ProgramLoader.StartupHandle(object: Accounts.root, rights: AccountObject.rootRights,
+                                                 info: croi_pa_hnd(UInt32(CROI_PA_ROOT_ACCOUNT), 0))
         let process: ObjectPointer
         do throws(Status) {
             process = try ProgramLoader.start(image, name: "swiftsuite", job: Processes.rootJob, handles: handles.span,

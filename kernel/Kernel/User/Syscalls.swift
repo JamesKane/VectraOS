@@ -374,8 +374,6 @@ enum Syscalls {
             try counterCall(number, a, table)
         case 234:  // smc_call(resource, const croi_smc_parameters_t *, croi_smc_result_t *), K13i
             try smcCall(a, table)
-        case 235:  // system_get_event(root job, kind, out), K14a
-            try put(try Reclaim.systemEvent(table, handle, kind: a[1]), a[2])
         case 233:  // vmo_set_size(vmo, size), K13h
             try VmoObject.setSize(table, handle, a[1])
         case 230...232:

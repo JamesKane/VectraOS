@@ -40,8 +40,9 @@ enum PortSelfTest {
             }
 
             // Async waits: level (fires at once), one-shot, edge, timestamp.
-            // The kernel signals an event directly (object_signal is cut).
-            let event = try table.add(try EventObject.create(), rights: EventObject.defaultRights)
+            // The kernel signals a counter directly (object_signal is cut),
+            // with bits its value doesn't drive.
+            let event = try table.add(try Counters.create(), rights: CounterObject.defaultRights)
             let signal = try table.get(event, rights: .signal)
             signal.object.updateSignals(clear: 0, set: Signals.signaled)
             try Observers.waitAsync(table, event, port: try table.get(port), key: 7, signals: Signals.signaled, options: 0)

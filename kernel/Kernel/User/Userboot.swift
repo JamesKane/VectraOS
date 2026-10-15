@@ -46,7 +46,7 @@ enum Userboot {
             defer { bootfsObject.release() }
             let (stdout, stdoutRights) = try DebugLogs.create(readable: false)
             defer { stdout.release() }
-            var handles = InlineArray<10, ProgramLoader.StartupHandle>(repeating: ProgramLoader.StartupHandle(
+            var handles = InlineArray<11, ProgramLoader.StartupHandle>(repeating: ProgramLoader.StartupHandle(
                 object: Processes.rootJob, rights: JobObject.defaultRights,
                 info: croi_pa_hnd(UInt32(CROI_PA_JOB_DEFAULT), 0)))
             handles[1] = ProgramLoader.StartupHandle(object: Resources.root, rights: ResourceObject.defaultRights,
@@ -58,8 +58,10 @@ enum Userboot {
                                                      info: croi_pa_hnd(UInt32(CROI_PA_FD), 1))
             handles[4] = ProgramLoader.StartupHandle(object: BootData.object, rights: BootData.rights,
                                                      info: croi_pa_hnd(UInt32(CROI_PA_VMO_BOOTDATA), 0))
+            handles[5] = ProgramLoader.StartupHandle(object: Accounts.root, rights: AccountObject.rootRights,
+                                                     info: croi_pa_hnd(UInt32(CROI_PA_ROOT_ACCOUNT), 0))
             // Each kind's ranged root, as Zircon's userboot gets them.
-            var count = 5
+            var count = 6
             let kinds: InlineArray<5, (UInt32, UInt32)> = [
                 (UInt32(CROI_RSRC_KIND_MMIO), UInt32(CROI_PA_MMIO_RESOURCE)),
                 (UInt32(CROI_RSRC_KIND_IRQ), UInt32(CROI_PA_IRQ_RESOURCE)),

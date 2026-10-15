@@ -19,7 +19,7 @@ enum ResourceSelfTest {
             let root = try table.add(Resources.root, rights: ResourceObject.defaultRights)
             let tracing = try Resources.create(table, parent: root, system: UInt64(CROI_RSRC_SYSTEM_TRACING_BASE))
             let other = try Resources.create(table, parent: root, system: 1)
-            let event = try table.add(try EventObject.create(), rights: EventObject.defaultRights)
+            let event = try table.add(try Counters.create(), rights: CounterObject.defaultRights)
             guard status({ () throws(Status) in _ = try Resources.create(table, parent: tracing, system: 1) }) == .accessDenied,
                   status({ () throws(Status) in try TraceControl.stop(table, event) }) == .wrongType,
                   status({ () throws(Status) in try TraceControl.stop(table, other) }) == .outOfRange else {

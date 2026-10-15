@@ -157,8 +157,8 @@ enum : uint32_t {
 // size if it had been discarded, else 0; a discarded VMO's pages are gone
 // and every access fails NOT_FOUND until the next LOCK), the eviction
 // hints DONT_NEED / ALWAYS_NEED (pager VMOs; no rights needed; ignored
-// elsewhere), and the memory-pressure events of system_get_event (root
-// job; OUT_OF_MEMORY needs MANAGE_PROCESS; one level signaled at a time).
+// elsewhere). The memory-pressure levels are the root account's (D31,
+// account.h).
 enum : uint32_t {
   CROI_VMO_CREATE_DISCARDABLE = 1u << 2,
   CROI_VMO_OP_LOCK = 3,
@@ -166,11 +166,6 @@ enum : uint32_t {
   CROI_VMO_OP_TRY_LOCK = 11,
   CROI_VMO_OP_DONT_NEED = 12,
   CROI_VMO_OP_ALWAYS_NEED = 13,
-  CROI_SYSTEM_EVENT_OUT_OF_MEMORY = 1,
-  CROI_SYSTEM_EVENT_MEMORY_PRESSURE_CRITICAL = 2,
-  CROI_SYSTEM_EVENT_MEMORY_PRESSURE_WARNING = 3,
-  CROI_SYSTEM_EVENT_MEMORY_PRESSURE_NORMAL = 4,
-  CROI_SYSTEM_EVENT_IMMINENT_OUT_OF_MEMORY = 5,
 };
 
 typedef struct {

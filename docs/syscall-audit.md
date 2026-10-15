@@ -94,7 +94,7 @@ Legend: **keep**, **merge** (the call survives under a combined form),
 | 202–208 | pager (7 calls) | keep | reviewed again at V5, when Taisce is the user |
 | 240, 241, 243 | account create, set_limit, process_set_account | keep | RSS budgets |
 | 242 | account_bind_pressure_port | merge | `object_bind` on the account |
-| 235 | system_get_event | cut | `object_bind` on the root account; its event objects go with events |
+| 235 | system_get_event | cut (D31) | `object_bind` on the root account; its event objects go with events |
 
 ### Tasks, exceptions, debugging
 
@@ -171,7 +171,8 @@ were cut (D25): 117 calls. Clock objects, vmar_map_clock and the
 clock_monotonic syscall were cut (D26): 111 calls. Display timelines
 were cut (D27): 107 calls. debug_write and vmo_map were cut (D28): 105
 calls. interrupt_wait, interrupt_destroy and interrupt_trigger were cut
-(D29): 102 calls. thread_raise_exception was cut (D30): 101 calls.
+(D29): 102 calls. thread_raise_exception was cut (D30): 101 calls. system_get_event was
+cut (D31): 100 calls.
 
 The ceiling in `tools/vx/LocCommand.swift` is lowered with each cut, so it
 never rises.

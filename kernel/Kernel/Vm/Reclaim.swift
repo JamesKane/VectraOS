@@ -23,12 +23,12 @@ import Synchronization
 ///   then freed.
 /// - Memory pressure (Zircon's watchdog): levels by free memory against
 ///   watermarks (`croi.oom.*`, Zircon's defaults: OOM 50 MiB, imminent OOM
-///   +10, critical 150, warning 300, debounce 1), one kernel event per
-///   level, exactly one signaled (system_get_event); a worse level is
-///   signaled at once, a better one after the hysteresis (10 s). A worse
+///   +10, critical 150, warning 300, debounce 1), reported as the root
+///   account's level (D31: a PRESSURE binding on it); a worse level is
+///   reported at once, a better one after the hysteresis (10 s). A worse
 ///   level at or below critical asks for eviction after a delay (5 s), to
 ///   the critical watermark + debounce; OOM evicts at once, newest and
-///   hints included, then signals OOM and reboots (no HaltToken: after
+///   hints included, then reports OOM and reboots (no HaltToken: after
 ///   `croi.oom.reboot_timeout_ms`, default 50000).
 ///
 /// One kernel thread ("reclaim") ages, evicts and watches. The PMM tells
@@ -456,30 +456,11 @@ enum Reclaim {
     nonisolated(unsafe) private static var evictTarget: UInt64 = 0
     nonisolated(unsafe) private static var evictMinimum: UInt64 = 0
 
-    /// One event per level (kernel-owned; handles get WAIT, DUPLICATE,
-    /// TRANSFER).
-    nonisolated(unsafe) private static var eventOutOfMemory: UInt64 = 0
-    nonisolated(unsafe) private static var eventImminent: UInt64 = 0
-    nonisolated(unsafe) private static var eventCritical: UInt64 = 0
-    nonisolated(unsafe) private static var eventWarning: UInt64 = 0
-    nonisolated(unsafe) private static var eventNormal: UInt64 = 0
-
-    private static func event(_ level: Level) -> ObjectPointer {
-        let address = switch level {
-        case .outOfMemory: eventOutOfMemory
-        case .imminentOutOfMemory: eventImminent
-        case .critical: eventCritical
-        case .warning: eventWarning
-        case .normal: eventNormal
-        }
-        return ObjectPointer(address: address)
-    }
-
     nonisolated(unsafe) private static var queue = QueuePointer(address: 0)
     private static let pending = Atomic<Bool>(false)
     private static let timerArmed = Atomic<Bool>(false)
 
-    /// Reads the command line, makes the events and starts the thread
+    /// Reads the command line, makes the root account and starts the thread
     /// (after the objects exist).
     static func initialize() {
         var c = Config()
@@ -507,15 +488,7 @@ enum Reclaim {
         watching = !BootOptions.has("croi.oom.enable=0") && ordered
         config = c
         defaults = c
-        guard let a = try? EventObject.create(), let b = try? EventObject.create(), let d = try? EventObject.create(),
-              let e = try? EventObject.create(), let f = try? EventObject.create() else {
-            panic("reclaim: no memory for the pressure events")
-        }
-        eventOutOfMemory = a.address
-        eventImminent = b.address
-        eventCritical = d.address
-        eventWarning = e.address
-        eventNormal = f.address
+        Accounts.createRoot(bytes: pmm.totalPages * KernelLayout.pageSize)
         queue = QueuePointer.allocate()
         do throws(VmError) {
             let thread = try Scheduler.spawn("reclaim", priority: Thread.maxPriority, worker, 0)
@@ -618,8 +591,7 @@ enum Reclaim {
                     evictMinimum = free < evictTarget ? (evictTarget - free) / 2 : 0
                     evictAt = evictAt != .max || c.evictionDelay == 0 ? now : now + c.evictionDelay
                 }
-                if everSignaled { event(signaled).updateSignals(clear: Signals.signaled, set: 0) }
-                event(level).updateSignals(clear: 0, set: Signals.signaled)
+                Accounts.reportSystem(level: UInt32(4 - level.rawValue))
                 signaled = level
                 everSignaled = true
                 lastEvaluation = now
@@ -655,7 +627,7 @@ enum Reclaim {
     }
 
     /// Out of memory even after evicting (Zircon's default behavior,
-    /// reboot): user space has the OOM event and the timeout, then the
+    /// reboot): the root account's binders have the OOM level and the timeout, then the
     /// machine resets.
     private static func outOfMemory(_ c: Config) -> Never {
         log("memory-pressure: out of memory; rebooting in ", c.rebootTimeout / 1_000_000, " ms")
@@ -685,33 +657,6 @@ enum Reclaim {
         KernelLog.write(UInt8(CROI_LOG_INFO)) { line in
             line.write(text)
             line.write(level)
-        }
-    }
-
-    // MARK: system_get_event
-
-    /// system_get_event (235, Zircon's): the root job (OUT_OF_MEMORY needs
-    /// MANAGE_PROCESS; any other job ACCESS_DENIED); the level's event.
-    static func systemEvent(_ table: borrowing HandleTable, _ handle: UInt32, kind: UInt64) throws(Status) -> UInt32 {
-        let needed = kind == UInt64(CROI_SYSTEM_EVENT_OUT_OF_MEMORY) ? Rights.manageProcess : Rights()
-        let job = try table.get(handle, type: .job, rights: needed)
-        guard job.object.address == Processes.rootJob.address else { throw .accessDenied }
-        let level: Level
-        switch kind {
-        case UInt64(CROI_SYSTEM_EVENT_OUT_OF_MEMORY): level = .outOfMemory
-        case UInt64(CROI_SYSTEM_EVENT_MEMORY_PRESSURE_CRITICAL): level = .critical
-        case UInt64(CROI_SYSTEM_EVENT_MEMORY_PRESSURE_WARNING): level = .warning
-        case UInt64(CROI_SYSTEM_EVENT_MEMORY_PRESSURE_NORMAL): level = .normal
-        case UInt64(CROI_SYSTEM_EVENT_IMMINENT_OUT_OF_MEMORY): level = .imminentOutOfMemory
-        default: throw .invalidArgs
-        }
-        let object = event(level)
-        object.retain()
-        do throws(Status) {
-            return try table.add(object, rights: .wait | .duplicate | .transfer)
-        } catch {
-            object.release()
-            throw error
         }
     }
 

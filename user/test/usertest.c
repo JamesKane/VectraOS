@@ -2724,9 +2724,9 @@ static int64_t page_borrowing(const startup_t *s) {
 // K14a: reclamation. A pager VMO's clean pages are evicted oldest first
 // (DONT_NEED first, ALWAYS_NEED and dirty pages kept, ALWAYS_NEED given up
 // at OOM) and come back from the pager; a discardable VMO's lock states and
-// its discard; the memory-pressure events, moved with test watermarks.
-// Test hooks (syscall 6): 6 aging passes, 7 evict(pages, min age, ignore
-// hints), 8 watermarks, 9 free bytes.
+// its discard. (The memory-pressure levels moved to the Swift memory
+// suite when V1 cut system_get_event, D31.) Test hooks (syscall 6): 6
+// aging passes, 7 evict(pages, min age, ignore hints).
 static int64_t reclaim_hook(uint64_t op, uint64_t a, uint64_t b, uint64_t c, uint64_t d, uint64_t e) {
   return sys6(CROI_SYS_TEST_PROFILE, op, a, b, c, d, e);
 }
@@ -2834,55 +2834,6 @@ static int64_t reclaim(const startup_t *s) {
   sys(CROI_SYS_HANDLE_CLOSE, d, 0, 0, 0, 0);
   sys(CROI_SYS_HANDLE_CLOSE, aux, 0, 0, 0, 0);
 
-  // Memory pressure: the root job only (OUT_OF_MEMORY with
-  // MANAGE_PROCESS); one event signaled. (That holders couldn't signal
-  // them went with object_signal, D23.)
-  uint32_t ev[6] = {0}, job = 0, wrong = 0, limited = 0;
-  CHECK(615, sys(CROI_SYS_SYSTEM_GET_EVENT, s->job, 9, (uint64_t)&wrong, 0, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_JOB_CREATE, s->job, 0, (uint64_t)&job, 0, 0) == 0 &&
-                 sys(CROI_SYS_SYSTEM_GET_EVENT, job, CROI_SYSTEM_EVENT_MEMORY_PRESSURE_NORMAL, (uint64_t)&wrong, 0,
-                     0) == ERR_ACCESS_DENIED &&
-                 sys(CROI_SYS_HANDLE_DUPLICATE, s->job, RIGHT_WAIT, (uint64_t)&limited, 0, 0) == 0 &&
-                 sys(CROI_SYS_SYSTEM_GET_EVENT, limited, CROI_SYSTEM_EVENT_OUT_OF_MEMORY, (uint64_t)&wrong, 0, 0) ==
-                     ERR_ACCESS_DENIED &&
-                 sys(CROI_SYS_SYSTEM_GET_EVENT, limited, CROI_SYSTEM_EVENT_MEMORY_PRESSURE_NORMAL, (uint64_t)&ev[0], 0,
-                     0) == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, ev[0], 0, 0, 0, 0);
-  int got = 1;
-  for (uint32_t kind = 1; kind <= 5; kind++)
-    got &= sys(CROI_SYS_SYSTEM_GET_EVENT, s->job, kind, (uint64_t)&ev[kind], 0, 0) == 0;
-  CHECK(616, got && (wait_for(ev[CROI_SYSTEM_EVENT_MEMORY_PRESSURE_NORMAL], CROI_SIGNAL_SIGNALED, 0) &
-                     CROI_SIGNAL_SIGNALED) &&
-                 !(wait_for(ev[CROI_SYSTEM_EVENT_MEMORY_PRESSURE_WARNING], CROI_SIGNAL_SIGNALED, 0) &
-                   CROI_SIGNAL_SIGNALED));
-  // Watermarks just below free memory (no hysteresis, no eviction delay):
-  // 16 MiB committed is Warning, 32 MiB Critical, both freed Normal again.
-  uint64_t free = (uint64_t)reclaim_hook(9, 0, 0, 0, 0, 0);
-  uint64_t mib = 1ull << 20;
-  uint32_t big[2] = {0, 0};
-  CHECK(617, free > 64 * mib && reclaim_hook(8, free / 4, free - 24 * mib, free - 12 * mib, 0, 0) == 0 &&
-                 sys(CROI_SYS_VMO_CREATE, 16 * mib, 0, (uint64_t)&big[0], 0, 0) == 0 &&
-                 sys6(CROI_SYS_VMO_OP_RANGE, big[0], CROI_VMO_OP_COMMIT, 0, 16 * mib, 0, 0) == 0 &&
-                 (wait_for(ev[CROI_SYSTEM_EVENT_MEMORY_PRESSURE_WARNING], CROI_SIGNAL_SIGNALED, 2000000000ull) &
-                  CROI_SIGNAL_SIGNALED) &&
-                 !(wait_for(ev[CROI_SYSTEM_EVENT_MEMORY_PRESSURE_NORMAL], CROI_SIGNAL_SIGNALED, 0) &
-                   CROI_SIGNAL_SIGNALED));
-  CHECK(618, sys(CROI_SYS_VMO_CREATE, 16 * mib, 0, (uint64_t)&big[1], 0, 0) == 0 &&
-                 sys6(CROI_SYS_VMO_OP_RANGE, big[1], CROI_VMO_OP_COMMIT, 0, 16 * mib, 0, 0) == 0 &&
-                 (wait_for(ev[CROI_SYSTEM_EVENT_MEMORY_PRESSURE_CRITICAL], CROI_SIGNAL_SIGNALED, 2000000000ull) &
-                  CROI_SIGNAL_SIGNALED) &&
-                 !(wait_for(ev[CROI_SYSTEM_EVENT_MEMORY_PRESSURE_WARNING], CROI_SIGNAL_SIGNALED, 0) &
-                   CROI_SIGNAL_SIGNALED));
-  sys(CROI_SYS_HANDLE_CLOSE, big[0], 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, big[1], 0, 0, 0, 0);
-  CHECK(619, (wait_for(ev[CROI_SYSTEM_EVENT_MEMORY_PRESSURE_NORMAL], CROI_SIGNAL_SIGNALED, 2000000000ull) &
-              CROI_SIGNAL_SIGNALED) &&
-                 !(wait_for(ev[CROI_SYSTEM_EVENT_MEMORY_PRESSURE_CRITICAL], CROI_SIGNAL_SIGNALED, 0) &
-                   CROI_SIGNAL_SIGNALED) &&
-                 reclaim_hook(8, 0, 0, 0, 0, 0) == 0);
-  for (uint32_t kind = 1; kind <= 5; kind++) sys(CROI_SYS_HANDLE_CLOSE, ev[kind], 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, limited, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, job, 0, 0, 0, 0);
   return 0;
 }
 

@@ -10,6 +10,9 @@ struct AccountObject: ~Copyable {
     let account: MemoryAccountPointer
 
     static var defaultRights: Rights { Rights.basic.union(.write | .charge) }
+    /// The root account's: binding its pressure needs WRITE; nothing may
+    /// charge it.
+    static var rootRights: Rights { Rights.basic.union(.write) }
 }
 
 @safe struct MemoryAccountObjectPointer {
@@ -22,6 +25,24 @@ struct AccountObject: ~Copyable {
 }
 
 enum Accounts {
+    /// D31: the root account (system_get_event's replacement), its level
+    /// the memory watchdog's. Made once, never freed.
+    nonisolated(unsafe) private(set) static var root = ObjectPointer(address: 0)
+
+    static func createRoot(bytes: UInt64) {
+        guard let object = try? create(limit: bytes, warning: 0, critical: 0) else {
+            panic("accounts: no memory for the root account")
+        }
+        MemoryAccountObjectPointer(object: object).pointee.account.pointee.system = true
+        root = object
+    }
+
+    /// The memory watchdog's level (0 normal to 4 out of memory) to the
+    /// root account's binders.
+    static func reportSystem(level: UInt32) {
+        MemoryAccountObjectPointer(object: root).pointee.account.reportSystem(level: level)
+    }
+
     /// account_create: `limit` bytes, warning and critical levels in
     /// percent of it (0: off; each at most 100).
     static func create(limit: UInt64, warning: UInt64, critical: UInt64) throws(Status) -> ObjectPointer {

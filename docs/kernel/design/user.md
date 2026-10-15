@@ -174,7 +174,8 @@ vx mkbootfs):
   (`Vmo(adopting:)`, `Pmm.adopt`: wired -> vmo; freed when the VMO goes).
 - After "boot complete" the kernel starts userboot (an ELF in the kernel
   image, Embedded Swift, compiling lib/elf's source in) with
-  `ProgramLoader`: root job, root resource, bootfs VMO (with EXECUTE),
+  `ProgramLoader`: root job, root resource, the root account (D31),
+  bootfs VMO (with EXECUTE),
   a stdout debuglog, and the command line's words as its environment
   (`BootOptions.withEnvironment`).
 - userboot maps bootfs, finds `userboot.next=` (default bin/launcher;

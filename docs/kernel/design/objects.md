@@ -239,9 +239,9 @@ six calls: a counter is the event a user drives (POSITIVE and
 NON_POSITIVE are its signals, CHANGE its doorbell), a ring's peer death
 is its negotiating channel's PEER_CLOSED, and a port is the one wait
 (object_bind, then port_wait).
-- Event objects stay, made by the kernel only, for system_get_event's
-  memory pressure events and the kernel self-tests; they go when
-  system_get_event does (it needs a root account to bind first).
+- Event objects stayed, made by the kernel only, for system_get_event's
+  memory pressure events and the kernel self-tests, until D31 cut that
+  call; the self-tests now signal counters.
 - Tests: the Swift `objects` suite (signals through a port, handles,
   user packets) and `channel` suite (endpoints, handles in messages,
   refusals, a closed peer), moved from usertest.c's modes 0 and 7.
@@ -366,6 +366,21 @@ reply ignored. Nothing raised one, so V1 cut it with
   `jobDebuggers` keeps a job debugger delivery under test; suites get
   the root job for it (PA_JOB_DEFAULT).
 
+## system_get_event: cut in V1 (D31)
+
+system_get_event (235) handed out one of five kernel event objects, one
+per memory level, exactly one signaled. V1 cut it and the event objects
+with it (`EventObject` and the event type).
+- The root account replaced it (memory.md, "Memory accounts"): a
+  PRESSURE binding on it reports the memory watchdog's level, as an
+  account's binding reports its own. Two levels past CRITICAL exist only
+  there: IMMINENT_OUT_OF_MEMORY and OUT_OF_MEMORY.
+- Userboot and the Swift suites get it as CROI_PA_ROOT_ACCOUNT; nothing
+  else can reach it.
+- Tests: usertest.c's checks 615–619 moved to the Swift `memory` suite.
+  The kernel's object, port and resource self-tests signal counters
+  where they used events.
+
 ## The small calls (K13e part 1)
 
 The small calls, K13e part 1 (syscalls 210-215 in User/IpcSyscalls.swift,
@@ -450,12 +465,13 @@ thread_bind_overrun_port (122) and account_bind_pressure_port (242).
   a strict edge: notify isn't called when signals clear, so an edge
   can't be seen reliably; a reader drains until the object would block,
   and gets at most one spurious packet per drain.
-- Unbinding: `port_cancel(port, source, key)` removes ONCE, PERSISTENT and
-  INTERRUPT bindings (`InterruptObjects.cancel`, which replaced
+- Unbinding: `port_cancel(port, source, key)` removes ONCE, PERSISTENT,
+  INTERRUPT and (D31) PRESSURE bindings (`InterruptObjects.cancel`, which replaced
   interrupt_bind's UNBIND) and takes a queued packet back
   (`PacketSource.retire`); closing the handle a SIGNALS, VALUE or CHANGE
   binding was made through does too. OVERRUN and PRESSURE last until
-  their object goes or is bound again.
+  their object goes or is bound again, or PRESSURE until port_cancel.
+  A new PRESSURE binding reports the level at once unless normal (D31).
 - port_wait gained a leeway (fourth argument): `Scheduler.block`'s
   timeout is armed with that slack (late only; none for a deadline
   thread), principle 10.

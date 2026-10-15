@@ -281,7 +281,7 @@ enum ProcessSelfTest {
             panic("extensions self-test: user side")
         }
         before.expectUnchanged(console)
-        console.write("  extensions: thread trace ids, overruns to a port, debuglog progress, a job's reserved CPU, powerctl refusals, VMO children, physical slices with ZERO_CHILDREN and handle counts, snapshots, anonymous slices and references, vmo_read racing decommit, the pager, the small calls, info topics and vmar_op_range, suspension and process memory, a debugger channel, single-step and hardware breakpoints, resizable VMOs, smc_call, a crashed thread held for post-mortem attach, eviction and discardable VMOs with the memory-pressure events, a user exception to job debuggers, page loaning and borrowing, UNBOUNDED VMOs, zero intervals, cprng\n")
+        console.write("  extensions: thread trace ids, overruns to a port, debuglog progress, a job's reserved CPU, powerctl refusals, VMO children, physical slices with ZERO_CHILDREN and handle counts, snapshots, anonymous slices and references, vmo_read racing decommit, the pager, the small calls, info topics and vmar_op_range, suspension and process memory, a debugger channel, single-step and hardware breakpoints, resizable VMOs, smc_call, a crashed thread held for post-mortem attach, eviction and discardable VMOs, page loaning and borrowing, UNBOUNDED VMOs, zero intervals, cprng\n")
     }
 
     /// Live processes, address spaces and objects, to check nothing leaked.

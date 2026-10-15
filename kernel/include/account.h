@@ -46,10 +46,18 @@ enum : uint32_t {
   CROI_PKT_TYPE_MEMORY_PRESSURE = 0x81,
 };
 
+// The root account (D31; userboot's CROI_PA_ROOT_ACCOUNT, INSPECT and
+// WRITE, no CHARGE) replaced system_get_event. Its level is the memory
+// watchdog's, from free memory against the croi.oom.* watermarks, with
+// two levels past CRITICAL; its limit is the RAM, its charge the RAM in
+// use, and account_set_limit on it is NOT_SUPPORTED. A PRESSURE binding
+// on any account reports the level at once unless it is NORMAL.
 enum : uint32_t {
   CROI_MEMORY_LEVEL_NORMAL = 0,
   CROI_MEMORY_LEVEL_WARNING = 1,
   CROI_MEMORY_LEVEL_CRITICAL = 2,
+  CROI_MEMORY_LEVEL_IMMINENT_OUT_OF_MEMORY = 3,  // the root account's only
+  CROI_MEMORY_LEVEL_OUT_OF_MEMORY = 4,           // the root account's only: a reboot follows
 };
 
 typedef struct {

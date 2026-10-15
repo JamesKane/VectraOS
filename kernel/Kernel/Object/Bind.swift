@@ -15,9 +15,11 @@ import CKernel
 /// - CHANGE: PERSISTENT, every add to a counter (a doorbell).
 /// - INTERRUPT, OVERRUN, PRESSURE: PERSISTENT, the kernel events of an
 ///   interrupt, a thread's or interrupt's budget, a memory account.
-/// port_cancel(port, source, key) undoes any of them, as does closing the
-/// handle a SIGNALS, VALUE or CHANGE binding was made through. OVERRUN and
-/// PRESSURE last until their object goes or is bound again.
+/// port_cancel(port, source, key) undoes any but OVERRUN, as does closing
+/// the handle a SIGNALS, VALUE or CHANGE binding was made through. OVERRUN
+/// and PRESSURE last until their object goes or is bound again (or, for
+/// PRESSURE, port_cancel: the root account outlives every binder, D31). A
+/// new PRESSURE binding reports the level at once unless it is normal.
 enum Bind {
     static var maxItems: UInt64 { UInt64(CROI_BIND_MAX_ITEMS) }
     static var itemSize: UInt64 { 32 }
@@ -100,6 +102,7 @@ enum Bind {
                 return old
             }
             if old != 0 { PacketSourcePointer(address: old).retire() }
+            account.reportCurrent()
         default:
             throw .invalidArgs
         }

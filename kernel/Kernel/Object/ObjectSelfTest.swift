@@ -10,11 +10,11 @@ enum ObjectSelfTest {
         let liveBefore = Objects.live.load(ordering: .relaxed)
         do throws(Status) {
             let table = HandleTable()
-            let event = try table.add(try EventObject.create(), rights: EventObject.defaultRights)
+            let event = try table.add(try Counters.create(), rights: CounterObject.defaultRights)
 
             // Errors in Zircon's order: bad handle, wrong type, access denied.
             guard status({ () throws(Status) in _ = try table.get(event, type: .port) }) == .wrongType,
-                  status({ () throws(Status) in _ = try table.get(event, rights: .write) }) == .accessDenied,
+                  status({ () throws(Status) in _ = try table.get(event, rights: .execute) }) == .accessDenied,
                   status({ () throws(Status) in _ = try table.get(0x7FF) }) == .badHandle,
                   status({ () throws(Status) in _ = try table.get(event &+ 4) }) == .badHandle else {
                 panic("object self-test: handle errors")
@@ -23,13 +23,13 @@ enum ObjectSelfTest {
             let readOnly = try table.duplicate(event, rights: .wait | .inspect | .transfer)
             guard try table.rights(of: readOnly) == .wait | .inspect | .transfer,
                   status({ () throws(Status) in _ = try table.duplicate(readOnly, rights: .sameRights) }) == .accessDenied,
-                  status({ () throws(Status) in _ = try table.duplicate(event, rights: .write) }) == .invalidArgs else {
+                  status({ () throws(Status) in _ = try table.duplicate(event, rights: .execute) }) == .invalidArgs else {
                 panic("object self-test: duplicate")
             }
             let replaced = try table.replace(readOnly, rights: .wait)
             guard status({ () throws(Status) in _ = try table.get(readOnly) }) == .badHandle else { panic("object self-test: replace") }
             try table.close(replaced)
-            let reused = try table.add(try EventObject.create(), rights: EventObject.defaultRights)
+            let reused = try table.add(try Counters.create(), rights: CounterObject.defaultRights)
             guard reused != replaced, status({ () throws(Status) in _ = try table.get(replaced) }) == .badHandle else {
                 panic("object self-test: stale handle accepted")
             }
