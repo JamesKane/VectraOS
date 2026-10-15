@@ -388,8 +388,8 @@ Kernel/Object/Names.swift; ipc.h, task.h; the pinned tree's semantics):
 - object_wait_many (210) was cut in V1 (D23): ports are the one wait.
 - handle_close_many (211): 0 skipped, bad values BAD_HANDLE with the rest
   still closed, 64 per chunk.
-- port_cancel_key (212): every async wait to the port with the key,
-  whatever its source, and every queued packet with it (user ones too;
+- port_cancel_key (212), since D32 port_cancel with source 0: every
+  async wait to the port with the key, whatever its source, and every queued packet with it (user ones too;
   not kernel sources' or interrupts'), NOT_FOUND if none. Each port keeps
   `watched` (an object address per observer to it, under its packets
   lock; Observers.add/remove, notify, handleClosed and port_cancel keep
@@ -406,7 +406,7 @@ Kernel/Object/Names.swift; ipc.h, task.h; the pinned tree's semantics):
   only, others WRONG_TYPE; process_create and thread_create now store
   theirs.
 - Tests: the Swift `objects` suite (names, handle_close_many,
-  port_cancel_key), moved from mode 17's `small_calls` (D23).
+  port_cancel by key), moved from mode 17's `small_calls` (D23).
 
 ## Info topics and vmar_op_range (K13e part 2)
 

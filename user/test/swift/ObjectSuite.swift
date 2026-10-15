@@ -115,8 +115,8 @@ enum ObjectSuite {
         check(Sys.call(CROI_SYS_HANDLE_CLOSE_MANY, Sys.address(&list), 2) == 0, "zeros are skipped")
     }
 
-    /// port_cancel_key: a binding and a queued user packet with key 5 go;
-    /// key 6's stays.
+    /// port_cancel with source 0 (port_cancel_key until D32): a binding
+    /// and a queued user packet with key 5 go; key 6's stays.
     static func cancelKey() {
         let port = Port()
         let counter = Handle(creating: CROI_SYS_COUNTER_CREATE)
@@ -126,9 +126,8 @@ enum ObjectSuite {
         check(Sys.call(CROI_SYS_PORT_QUEUE, port.handle.arg, Sys.address(&packet)) == 0, "a packet with key 5")
         packet.key = 6
         check(Sys.call(CROI_SYS_PORT_QUEUE, port.handle.arg, Sys.address(&packet)) == 0, "and one with key 6")
-        check(Sys.call(CROI_SYS_PORT_CANCEL_KEY, port.handle.arg, 1, 5) == Status.invalidArgs, "an unknown option")
-        check(Sys.call(CROI_SYS_PORT_CANCEL_KEY, port.handle.arg, 0, 5) == 0, "key 5 cancelled")
-        check(Sys.call(CROI_SYS_PORT_CANCEL_KEY, port.handle.arg, 0, 5) == Status.notFound, "nothing left with key 5")
+        check(Sys.call(CROI_SYS_PORT_CANCEL, port.handle.arg, 0, 5) == 0, "key 5 cancelled")
+        check(Sys.call(CROI_SYS_PORT_CANCEL, port.handle.arg, 0, 5) == Status.notFound, "nothing left with key 5")
         check(add(counter, 1) == 0, "the counter signals")
         check(port.next()?.key == 6 && port.empty, "only key 6's packet is left")
     }

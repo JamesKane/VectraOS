@@ -19,7 +19,7 @@ enum : uint64_t {
   CROI_SYS_PORT_CREATE = 31,       // (options, uint32_t *out)
   CROI_SYS_PORT_QUEUE = 32,        // (port, const croi_port_packet_t *packet)
   CROI_SYS_PORT_WAIT = 33,         // (port, deadline, croi_port_packet_t *packet, leeway)
-  CROI_SYS_PORT_CANCEL = 34,       // (port, source handle, key)
+  CROI_SYS_PORT_CANCEL = 34,       // (port, source handle or 0 for every source, key)
   CROI_SYS_VMO_CREATE = 40,        // (size, options, uint32_t *out)
   CROI_SYS_VMO_READ = 41,          // (vmo, void *buffer, offset, length)
   CROI_SYS_VMO_WRITE = 42,         // (vmo, const void *buffer, offset, length)
@@ -116,7 +116,6 @@ enum : uint64_t {
   CROI_SYS_PAGER_QUERY_DIRTY_RANGES = 207,  // (pager | vmo << 32, offset, length, buffer, buffer_size, size_t out[2]: actual, avail)
   CROI_SYS_PAGER_QUERY_VMO_STATS = 208, // (pager, vmo, options, buffer, buffer_size)
   CROI_SYS_HANDLE_CLOSE_MANY = 211,     // (const uint32_t *handles, count)
-  CROI_SYS_PORT_CANCEL_KEY = 212,       // (port, options, key)
   CROI_SYS_PROCESS_READ_MEMORY = 230,   // (process, vaddr, buffer, size, size_t *actual), K13g
   CROI_SYS_PROCESS_WRITE_MEMORY = 231,  // (process, vaddr, buffer, size, size_t *actual): croi.debug_syscalls
   CROI_SYS_TASK_SUSPEND = 232,          // (thread or process, uint32_t *token)

@@ -90,7 +90,7 @@ struct PortObject: ~Copyable {
     var interruptHead: UInt64 = 0
     var interruptTail: UInt64 = 0
     /// K13e: the objects with async waits to this port, once per observer
-    /// (port_cancel_key finds them here). Under `packetsLock`; an entry
+    /// (port_cancel with source 0 finds them here). Under `packetsLock`; an entry
     /// means an observer is registered, so the object is alive (objects
     /// lose their observers before their last reference: handle close).
     var watched = UniqueArray<UInt64>()
@@ -402,12 +402,11 @@ enum Ports {
         }
     }
 
-    /// port_cancel_key (K13e): every async wait to this port with `key`,
-    /// whatever its source, and every queued packet with it (user packets
-    /// too; not kernel sources' or interrupts'). NOT_FOUND if none.
-    static func cancelKey(_ table: borrowing HandleTable, port portHandle: UInt32, options: UInt64,
-                          key: UInt64) throws(Status) {
-        guard options == 0 else { throw .invalidArgs }
+    /// port_cancel with source 0 (port_cancel_key until D32): every async
+    /// wait to this port with `key`, whatever its source, and every queued
+    /// packet with it (user packets too; not kernel sources' or
+    /// interrupts'). NOT_FOUND if none.
+    static func cancelKey(_ table: borrowing HandleTable, port portHandle: UInt32, key: UInt64) throws(Status) {
         let portRef = try table.get(portHandle, type: .port, rights: .write)
         let port = PortPointer(object: portRef.object)
         var objects = UniqueArray<UInt64>()

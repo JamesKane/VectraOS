@@ -65,8 +65,6 @@ extension Syscalls {
             try deliver(taken!, to: table, bytes: a[2], handles: a[3])
         case 211:  // handle_close_many(const uint32_t *handles, count), K13e
             try closeMany(table, handles: a[0], count: a[1])
-        case 212:  // port_cancel_key(port, options, key), K13e
-            try Ports.cancelKey(table, port: handle, options: a[1], key: a[2])
         case 83:  // channel_call(channel, options, deadline, args, actual_bytes, actual_handles)
             // Unreadable args: the handles to send are unknown, so none
             // are consumed (Zircon's too).

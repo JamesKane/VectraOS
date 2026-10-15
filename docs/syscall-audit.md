@@ -77,7 +77,7 @@ Legend: **keep**, **merge** (the call survives under a combined form),
 | 30 | event_create | cut | counter |
 | 84 | eventpair_create | cut | counter; ring peer death is the negotiating channel's PEER_CLOSED |
 | 31–33 | port_create, port_queue, port_wait | keep | |
-| 34, 212 | port_cancel, port_cancel_key | merge | one `port_cancel(port, source or 0, key)` |
+| 34, 212 | port_cancel, port_cancel_key | merge (D32) | one `port_cancel(port, source or 0, key)` |
 
 ### Memory
 
@@ -172,7 +172,8 @@ clock_monotonic syscall were cut (D26): 111 calls. Display timelines
 were cut (D27): 107 calls. debug_write and vmo_map were cut (D28): 105
 calls. interrupt_wait, interrupt_destroy and interrupt_trigger were cut
 (D29): 102 calls. thread_raise_exception was cut (D30): 101 calls. system_get_event was
-cut (D31): 100 calls.
+cut (D31): 100 calls. port_cancel_key merged into port_cancel (D32): 99
+calls.
 
 The ceiling in `tools/vx/LocCommand.swift` is lowered with each cut, so it
 never rises.

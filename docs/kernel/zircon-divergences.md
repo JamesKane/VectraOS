@@ -99,6 +99,10 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   binding at a time. Kind: deliberate (one mechanism for pressure).
   Impact: Fuchsia's memory monitor and anything waiting on the five
   events.
+- **No port_cancel_key** (V1, D32) — port_cancel with source 0 (no
+  handle is 0) cancels the key from every source, as
+  zx_port_cancel_key does; it has no options argument. Kind: deliberate
+  (one call per job). Impact: callers of zx_port_cancel_key.
 - **A ONCE binding holds its port** — closing a port's last handle doesn't
   cancel the bindings to it, as Zircon's on_zero_handles does; a pending
   one keeps the port until it fires or its source handle closes. A

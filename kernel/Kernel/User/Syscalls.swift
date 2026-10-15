@@ -294,8 +294,13 @@ enum Syscalls {
             try check(a[2], MemoryLayout<PortPacket>.size)
             let packet = try Ports.wait(table, handle, deadline: a[1], leeway: a[3])
             try putPacket(packet, a[2])
-        case 34:  // port_cancel
-            try Ports.cancel(table, port: handle, source: UInt32(truncatingIfNeeded: a[1]), key: a[2])
+        case 34:  // port_cancel(port, source or 0, key); 0 cancels the key from every source (D32)
+            let source = UInt32(truncatingIfNeeded: a[1])
+            if source == 0 {
+                try Ports.cancelKey(table, port: handle, key: a[2])
+            } else {
+                try Ports.cancel(table, port: handle, source: source, key: a[2])
+            }
         case 40:  // vmo_create
             try Policy.check(UInt32(CROI_POL_NEW_VMO))
             try check(a[2], MemoryLayout<UInt32>.size)
