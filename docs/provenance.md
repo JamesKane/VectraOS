@@ -44,12 +44,13 @@ The actions in the tables:
 | `system/launch` (manifests), `system/sys`, `system/libc`, `system/fdio` | Port | V2 | Trimmed to the slimmed kernel |
 | drivers: bus/PCI/ACPI, virtio | Lift | V2 | |
 | `services/router` (plumber) | Lift | V2 | |
-| `fs/taisce` | Lift | V3 | The one FS (D8). Replace its use of the `Synchronization` module in tier 0. |
-| `services/radharc`, desktop shell (Tracker, Deskbar) | Port | V5 | Add the tile and space workspace modes (D9) |
-| `ui`, `text`, `graphics` (Vulkan/Venus), `codecs`, `crypto` | Lift | V5 | |
-| `services/net`, `sshd` | Lift | V6 | Base for 9gate's transport |
-| `sdk/` and macros (`@AudioRenderer`) | Lift | V5 | |
-| `services/keyring` | Lift | V6 | Swarm identity |
+| `fs/taisce` and `services/fs` | Lift | V3 (RAM disk), V5 (on disk) | The one FS (D8). V3's file copies land in it. Replace its use of the `Synchronization` module in tier 0. |
+| `services/radharc`, desktop shell (Tracker, Deskbar) | Port | V6 | Add the tile and space workspace modes (D9) |
+| `ui`, `text`, `graphics` (Vulkan/Venus), `codecs` | Lift | V6 | |
+| N1 (`n1` branch): `crypto`, `services/net` (+ NetRing, NetIPC), `drivers/net` (class + virtio-net), `services/sshd` (+ SFTP) | Lift | V3 | The bring-up link (D15). The stack and crypto are also 9gate's and Noise's base in V7. |
+| `rc`, the pty service, the launcher's `/dev/bin` union (N1e) | Lift | V2–V3 | rc is the one shell |
+| `sdk/` and macros (`@AudioRenderer`) | Lift | V6 | |
+| `services/keyring` | Lift | V3 | sshd's host key now; swarm identity in V7. Its native prompt needs Radharc, so a headless boot needs a decision (roadmap, known issues). |
 
 ## NeoVectra (C23 with third-party dependencies)
 
@@ -57,22 +58,24 @@ The actions in the tables:
 |---|---|---|---|
 | Rule 13 and the design rules | Design | V0 | Folded into principles.md |
 | `lib/vx-ring` model test | Rewrite | V1 | The one ring (architecture §3) |
-| `lib/vx-9p` codec and `.def` tables | Rewrite | V6 | 9gate's 9P2000.L codec, in Swift |
-| docs/02 §6 swarm, `docs/proto/accel.md` | Design | V6–V7 | |
-| ADR-0019 (Adreno on the Q8B), ADR-0022 (remote processors), docs/22 (real hardware) | Design | V4–V7 | |
+| `lib/vx-9p` codec and `.def` tables | Rewrite | V7 | 9gate's 9P2000.L codec, in Swift |
+| docs/02 §6 swarm, `docs/proto/accel.md` | Design | V7–V8 | |
+| ADR-0019 (Adreno on the Q8B), ADR-0022 (remote processors), docs/22 (real hardware) | Design | V4–V8 | |
 | `lib/vx-net` (TCP, DHCP, DNS) | Drop | — | todhchai's `services/net` is the one network stack |
 | `lib/vx-fs` (Bε-tree) | Drop | — | Taisce wins (D8) |
 | `lib/vx-text` (sam-style structural regex) | Rewrite | later | For the editor |
 | `vxui`, `winsrv`, `wm.lua` | Drop | — | Radharc and todhchai's UI win. Lua is third-party (D4). |
 | `third_party/*` (Limine, musl, ACPICA, Lua, Monocypher, stb) | Drop | — | D4 |
-| `rc` shell | Open | V2 | Choose one shell: todhchai's `shell` or a Swift `rc`. Decided at V2. |
+| `rc` shell (`lib/vx-rc`) | Drop | — | todhchai's rc is the one shell (D15) |
 
 ## AbyssBSD (FreeBSD fork, hardware reference only)
 
 | Part | Action | Milestone |
 |---|---|---|
-| `docs/boards/radxa-dragon-q8b/*` (ACPI facts, GPU and display, USB, power, NPU, lessons) | Design | V4–V7 |
+| `docs/boards/radxa-dragon-q8b/*` (ACPI facts, GPU and display, USB, power, NPU, lessons) | Design | V4–V8 |
 | `firmware/` blob provenance for the Q8B | Design | V4 |
+| `sys/dev/uart/uart_dev_qcom_geni.c`, `firmware-acpi-boot.md` (console pins, SPCR) | Design | V3–V4 |
+| `sys/dev/tcx/` and `ethernet-tc956x.md` (TC956x Ethernet) | Design | V4 |
 
 Linux-derived code from AbyssBSD's LinuxKPI ports is *not* used. Those notes
 are read only as hardware documentation.

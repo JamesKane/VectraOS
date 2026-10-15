@@ -119,11 +119,30 @@ Between VectraOS peers, 9gate negotiates extension messages:
 - leases and notifications, for `watch`;
 - remote rings. These are bridged by 9gate as a stream: local ring → 9P
   reads and writes on a large msize → remote ring. A dedicated transport is
-  an open question for V6.
+  an open question for V7.
 
 The transport is first-party Noise IK over TCP. The swarm design follows
 NeoVectra's docs/02 §6: node roles (terminal, CPU, accelerator, file, auth),
 `/swarm/pool` leases for accelerators, and remote `/dev/accel`.
+
+### Bring-up access (D15)
+
+During development, the network also carries SSH. Its pieces are lifted
+from todhchai's N1:
+- an SSH server (`exec`, `shell` through rc, SFTP), with keys from the
+  keyring;
+- the network stack's TCP;
+- the shared crypto.
+
+It is a development tool, not a system mechanism:
+- It is off unless the image is built with `--ssh`.
+- It listens only on-link and accepts public keys only.
+- No local service speaks SSH.
+
+9gate is still the only way a namespace crosses the network. SSH gives a
+person a shell and file copies; 9gate gives programs a namespace.
+`warmboot` (a `SYSTEM_POWERCTL` command) lets that shell replace the
+running kernel and bootfs from memory, with no firmware involved.
 
 ## 6. Storage: Taisce
 
@@ -163,7 +182,7 @@ it at any time:
 - **Layout policies** are Swift libraries behind one protocol. Adding a
   layout is a library, not a new mechanism.
 - **From todhchai:** tab stacking, stashing and the focus area with a live
-  periphery. Each one must earn its place against principle 1 in V5.
+  periphery. Each one must earn its place against principle 1 in V6.
 
 ## 8. Compute: accelerators as nodes
 

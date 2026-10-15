@@ -73,7 +73,9 @@ V0 is in progress.
 - **Also done:** croi's Python tools rewritten in Swift and removed.
 - **Still to do:** a trace producer (V2).
 
-See `docs/roadmap.md`.
+The critical path to the board is V0 → V2 → V3 (the bring-up link: SSH,
+warm boot, the GENI console) → V4. V1 runs alongside it. See
+`docs/roadmap.md`.
 
 ## Kernel rules
 
