@@ -2,8 +2,9 @@ import CKernel
 import Synchronization
 
 /// One registered wait on an object (Zircon's SignalObserver): a thread in
-/// `object_wait_one`/`wait_many` (K5b adds port packets). Heap records,
-/// linked from the object's header, guarded by the object's lock.
+/// `counter_wait`, or an object_bind binding (a port packet). Heap records,
+/// linked from the object's header, guarded by the object's lock. V1 cut
+/// object_wait_one and wait_many (D23): ports are the one wait.
 struct Observer {
     enum Kind {
         /// A waiting thread: its WaitState, and its item index.
@@ -319,112 +320,5 @@ extension Observer.Kind {
         case .port(let port, _, _, _), .source(let port, _, _, _): port
         case .wait: nil
         }
-    }
-}
-
-/// `object_wait_one` and `object_wait_many` (Zircon semantics: level
-/// triggered; the observed signals are returned whatever the outcome).
-enum ObjectWait {
-    static var maxItems: Int { 64 }  // ZX_WAIT_MANY_MAX_ITEMS
-
-    /// Waits until `handle`'s object has any of `signals`, or `deadline`.
-    /// Returns the observed signals; throws timedOut (or canceled, if the
-    /// handle is closed meanwhile) with them in `observed`.
-    static func one(_ table: borrowing HandleTable, _ handle: UInt32, signals: UInt32, deadline: UInt64,
-                    observed: inout UInt32) throws(Status) {
-        // Already satisfied (a server's wait with a message queued): no
-        // wait state, no observer, just the signals.
-        let current = try table.get(handle, rights: .wait).object.signals
-        if current & signals != 0 {
-            observed = current
-            return
-        }
-        var items = InlineArray<1, WaitItem>(repeating: WaitItem(handle: handle, waitFor: signals))
-        var span = items.mutableSpan
-        defer { observed = items[0].pending }
-        try many(table, &span, deadline: deadline)
-    }
-
-    struct WaitItem {
-        var handle: UInt32
-        var waitFor: UInt32
-        var pending: UInt32 = 0
-    }
-
-    /// Waits until any item's object has any of its signals, or `deadline`;
-    /// every item's `pending` is filled in either way.
-    static func many(_ table: borrowing HandleTable, _ items: inout MutableSpan<WaitItem>,
-                     deadline: UInt64) throws(Status) {
-        guard items.count > 0, items.count <= maxItems else { throw .invalidArgs }
-        var objects = InlineArray<64, UInt64>(repeating: 0)
-        var observers = InlineArray<64, UInt64>(repeating: 0)
-        defer {
-            for i in 0..<items.count where objects[i] != 0 { ObjectPointer(address: objects[i]).release() }
-        }
-        for i in 0..<items.count {
-            let ref = try table.get(items[i].handle, rights: .wait)
-            ref.object.retain()
-            objects[i] = ref.object.address
-        }
-        let state = try WaitStatePointer.allocate()
-        defer { state.free() }
-
-        // Register on each object, unless one is already satisfied.
-        var satisfied = false
-        for i in 0..<items.count where !satisfied {
-            let object = ObjectPointer(address: objects[i])
-            do throws(Status) {
-                try object.header.lock.withLock { () throws(Status) in
-                    if object.header.signals & items[i].waitFor != 0 {
-                        satisfied = true
-                        return
-                    }
-                    observers[i] = try Observers.add(object, Observer(
-                        kind: .wait(state: state.address, index: i), trigger: items[i].waitFor,
-                        table: table.address, handle: items[i].handle)).address
-                }
-            } catch {
-                // The ones registered so far go before the state is freed
-                // (review fix: a later notify finished a freed WaitState).
-                for j in 0..<i where observers[j] != 0 {
-                    let earlier = ObjectPointer(address: objects[j])
-                    earlier.header.lock.withLock { Observers.remove(earlier, ObserverPointer(address: observers[j])) }
-                }
-                throw error
-            }
-        }
-        var timedOut = false
-        var interrupted = false
-        if !satisfied {
-            Scheduler.locked {
-                while !state.pointee.done {
-                    let result = Scheduler.block(on: state.pointee.queue, deadline: deadline, interruptible: true)
-                    if result == .interrupted {
-                        interrupted = true
-                        return
-                    }
-                    if result == .timedOut, !state.pointee.done {
-                        timedOut = true
-                        return
-                    }
-                }
-            }
-        }
-        // Unregister, and report each object's signals now.
-        for i in 0..<items.count {
-            let object = ObjectPointer(address: objects[i])
-            object.header.lock.withLock {
-                if observers[i] != 0 { Observers.remove(object, ObserverPointer(address: observers[i])) }
-                items[i].pending = object.header.signals
-            }
-        }
-        let (canceled, which) = Scheduler.locked { (state.pointee.canceled, state.pointee.firedIndex) }
-        if canceled {
-            // The item whose handle closed (Zircon's on_cancel).
-            if which >= 0, which < items.count { items[which].pending |= Signals.handleClosed }
-            throw .canceled
-        }
-        if interrupted { throw .canceled }  // killed: it exits on the way out
-        if timedOut { throw .timedOut }
     }
 }

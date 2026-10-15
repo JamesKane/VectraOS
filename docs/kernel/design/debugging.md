@@ -18,9 +18,9 @@ User/DebugSyscalls.swift, syscalls 230-232; task.h):
   meanwhile start suspended.
 - Blocked threads: Zircon wakes interruptible waits with INTR_RETRY and the
   vDSO re-issues the call; croi's programs call the kernel directly, so
-  the kernel restarts: `Syscalls.restartable` (nanosleep, wait_one,
-  port_wait, vmo_read, futex_wait, interrupt_wait, counter_wait, readv,
-  readv_at, wait_many) marks `Thread.restartable`;
+  the kernel restarts: `Syscalls.restartable` (nanosleep, port_wait,
+  vmo_read, futex_wait, interrupt_wait, counter_wait; V1 cut the others,
+  D21 and D23) marks `Thread.restartable`;
   `Scheduler.requestSuspend` ends such a wait (`suspendRetry`), and
   dispatch leaves the result unwritten and rewinds the PC over the syscall
   (`ExceptionFrame.restartSyscall`: amd64 rip - 2, arm64 elr - 4, rv64 sepc

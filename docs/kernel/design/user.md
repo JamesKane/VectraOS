@@ -197,7 +197,11 @@ include/profile.h):
   channel_call ~1.4 µs (target 1 µs, enforced against 1.6 µs for now),
   port wake median ~1.75 µs (p99 noisy, not enforced), wake error p99
   27-46 µs. Measure wake error with `Sys.now()` directly: converting trace
-  counter time from an anchor mark was off by up to 170 µs.
+  counter time from an anchor mark was off by up to 170 µs. Since V1 cut
+  events and the thread waits (D23), the port wake binds ONCE to a
+  counter's POSITIVE signal and the waker adds to it, handshakes are
+  counters, joins wait on ports, and the channel_call server drains a
+  PERSISTENT binding of its channel.
 - Profile objects (25): `profile_create` (120, profile system resource
   base 10 or root; zx_profile_info_t), `object_set_profile` (121: MANAGE_THREAD on
   the thread, APPLY_PROFILE on the profile), refusal reasons (ext 4) in an out-parameter.
@@ -217,8 +221,8 @@ include/profile.h):
   user space by the vDSO clock) split into the timer interrupt arriving
   late and the kernel's interrupt-to-user path, plus a few wakes' records.
 - `m2.portwake_profile=1` (K14o): the port wake bench again, traced,
-  each wake's records from both CPUs merged in time (signal entry to
-  port_wait exit), median gap before each.
+  each wake's records from both CPUs merged in time (counter_add entry
+  to port_wait exit), median gap before each.
 - Timed wakes under KVM (K14n): every VM exit cost ~4-5 us on this host.
   `LocalApic.endOfInterrupt` uses KVM's PV EOI where offered (per-CPU
   words in one page, MSR 0x4B564D04; `croi.pv_eoi=off`), testing and

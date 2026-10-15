@@ -141,7 +141,6 @@ enum Objects {
         case .thread: Processes.destroyThread(object)
         case .vmar: Processes.destroyVmar(object)
         case .channel: Channels.destroy(object)
-        case .eventpair: Channels.destroyEventPair(object)
         case .pager: Pagers.destroy(object)
         case .clock: Clocks.destroy(object)
         case .suspendToken: Debug.destroyToken(object)
@@ -171,8 +170,10 @@ enum Objects {
 
 // MARK: Events
 
-/// An event (Zircon's EventDispatcher): signals only, SIGNALED and the user
-/// bits settable through `object_signal`.
+/// An event (Zircon's EventDispatcher): signals only. Since V1 cut
+/// event_create and object_signal (D23), only the kernel makes and signals
+/// them: system_get_event's memory pressure events, and self-tests. They go
+/// when system_get_event does.
 struct EventObject: ~Copyable {
     var header = ObjectHeader(type: .event)
 
@@ -181,19 +182,6 @@ struct EventObject: ~Copyable {
     static func create() throws(Status) -> ObjectPointer {
         guard let object = Objects.allocate(EventObject()) else { throw .noMemory }
         return object
-    }
-}
-
-/// `object_signal`: which bits an object's holder may change.
-enum ObjectSignal {
-    static func signal(_ object: borrowing ObjectRef, clear: UInt32, set: UInt32) throws(Status) {
-        let allowed: UInt32
-        switch object.type {
-        case .event: allowed = Signals.signaled | Signals.user
-        default: allowed = Signals.user
-        }
-        guard (clear | set) & ~allowed == 0 else { throw .invalidArgs }
-        object.object.updateSignals(clear: clear, set: set)
     }
 }
 

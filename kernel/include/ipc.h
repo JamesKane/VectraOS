@@ -1,4 +1,4 @@
-// Channels, eventpairs and object info: the ABI shared by the kernel and
+// Channels and object info: the ABI shared by the kernel and
 // user space (user/include/croi/syscall.h includes it). Zircon's layouts.
 #pragma once
 #include <stdint.h>
@@ -6,11 +6,11 @@
 enum : uint32_t {
   CROI_CHANNEL_MAX_BYTES = 65536,
   CROI_CHANNEL_MAX_HANDLES = 64,
-  // Signals (Zircon's ZX_CHANNEL_* / ZX_EVENTPAIR_PEER_CLOSED).
+  // Signals (Zircon's ZX_CHANNEL_*).
   CROI_SIGNAL_READABLE = 1u << 0,
   CROI_SIGNAL_WRITABLE = 1u << 1,
   CROI_SIGNAL_PEER_CLOSED = 1u << 2,
-  CROI_SIGNAL_SIGNALED = 1u << 3,  // events, timers (ZX_EVENT_SIGNALED)
+  CROI_SIGNAL_SIGNALED = 1u << 3,  // system_get_event's events, timers (ZX_EVENT_SIGNALED)
   // object_get_info topics.
   CROI_INFO_HANDLE_BASIC = 2,
   CROI_INFO_VMAR = 7,  // croi_info_vmar_t (needs INSPECT)
@@ -44,25 +44,17 @@ typedef struct {
 } croi_channel_call_args_t;
 
 // channel_read's MAY_DISCARD (K13e; V1 cut the *_etc forms, D22: rights
-// are narrowed with handle_duplicate before sending); wait_many's limit.
+// are narrowed with handle_duplicate before sending).
 enum : uint32_t {
   CROI_CHANNEL_READ_MAY_DISCARD = 1,
-  CROI_WAIT_MANY_MAX_ITEMS = 64,
 };
-
-// zx_wait_item_t.
-typedef struct {
-  uint32_t handle;
-  uint32_t waitfor;
-  uint32_t pending;
-} croi_wait_item_t;
 
 // zx_info_handle_basic_t.
 typedef struct {
   uint64_t koid;
   uint32_t rights;
   uint32_t type;
-  uint64_t related_koid;  // the peer's, for channels and eventpairs
+  uint64_t related_koid;  // the peer's, for channels
   uint32_t reserved[2];
 } croi_info_handle_basic_t;
 

@@ -71,7 +71,6 @@ struct Rights: BitFlags {
     static var getPolicy: Rights { Rights(rawValue: 1 << 10) }
     static var setPolicy: Rights { Rights(rawValue: 1 << 11) }
     static var signal: Rights { Rights(rawValue: 1 << 12) }
-    static var signalPeer: Rights { Rights(rawValue: 1 << 13) }
     static var wait: Rights { Rights(rawValue: 1 << 14) }
     static var inspect: Rights { Rights(rawValue: 1 << 15) }
     static var manageJob: Rights { Rights(rawValue: 1 << 16) }
@@ -102,10 +101,6 @@ enum Signals {
     /// Job: no child jobs (signal 4) / no child processes (signal 5).
     static var jobNoJobs: UInt32 { 1 << 4 }
     static var jobNoProcesses: UInt32 { 1 << 5 }
-    /// A wait was canceled because its handle was closed.
-    static var handleClosed: UInt32 { 1 << 23 }
-    /// ZX_USER_SIGNAL_0...7.
-    static var user: UInt32 { 0xFF00_0000 }
 }
 
 /// zx_obj_type_t.
@@ -120,7 +115,6 @@ enum ObjectType: UInt32 {
     case interrupt = 9
     case log = 12
     case resource = 15
-    case eventpair = 16
     case pager = 28
     case clock = 30
     case suspendToken = 27

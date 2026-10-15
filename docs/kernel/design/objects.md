@@ -17,8 +17,10 @@ signals and object types, so the ABI matches):
   duplicate/replace (rights subset or sameRights), close (cancels waits
   through the handle). `HandleTable.withBorrowed` for threads sharing one.
 - Waiting: observers on an object's list; `updateSignals` runs them under
-  the object lock. `ObjectWait.one/many` (deadlines, canceled on close;
-  WaitState on the heap so no trigger outlives it). Ports (`PortObject`):
+  the object lock. Since V1 (D23) a port is the one wait: the observers
+  are object_bind's bindings and counter_wait's thread waits (WaitState
+  on the heap so no trigger outlives it; canceled on close).
+  `ObjectWait.one/many` went with object_wait_one/many. Ports (`PortObject`):
   FIFO of `PortPacket` (zx_port_packet_t layout), `Ports.queue/wait/
   cancel`; `Observers.waitAsync` is one-shot with EDGE and TIMESTAMP,
   its packet allocated at registration. Lock order: object -> scheduler
@@ -94,7 +96,7 @@ Processes (K7a, Kernel/Object/Process.swift, include/task.h, syscalls
 
 Channels (K7b, Kernel/Object/Channel.swift, include/ipc.h, syscalls 80-86
 in User/IpcSyscalls.swift):
-- Channel (4) and eventpair (16) endpoints share a `PeerShared` (lock,
+- Channel (4) endpoints share a `PeerShared` (lock,
   channel id = smaller koid); peers link without references and reach
   each other with `ObjectPointer.tryRetain`. Messages (bytes up to 64
   KiB, up to 64 handles) are one heap block owning a reference per
@@ -104,7 +106,7 @@ in User/IpcSyscalls.swift):
   itself, a repeat finds BAD_HANDLE), unless the list can't be read. Closing an endpoint
   raises PEER_CLOSED on the peer, ends calls waiting on it, and frees
   unread messages outside the lock. READABLE/WRITABLE/PEER_CLOSED are
-  object signals, so waits and ports see them.
+  object signals, so bindings see them. Eventpairs were cut in V1 (D23).
 - `channel_call`: the kernel writes a txid (high bit set) into the first
   four bytes; a write whose txid matches a pending call on the peer goes
   straight to that caller. Ext 2 donation: the thread that reads a call
@@ -249,14 +251,31 @@ V1 cut all fifteen calls: the one ring format replaces FIFOs and
 sockets, and a mapping replaces a stream. What streams kept on the VMO
 stays, as the VMO's content size (memory.md, "Content size").
 
+## Events, signals and waits: cut in V1 (D23)
+
+croi had Zircon's events (30), eventpairs (84), object_signal (20),
+object_signal_peer (85), object_wait_one (21) and object_wait_many
+(210), with the user signals (bits 24-31), the SIGNAL_PEER right, the
+NEW_EVENT and NEW_EVENTPAIR policy conditions, the HANDLE_CLOSED signal
+of a canceled wait and the BLOCKED_WAIT_MANY thread state. V1 cut all
+six calls: a counter is the event a user drives (POSITIVE and
+NON_POSITIVE are its signals, CHANGE its doorbell), a ring's peer death
+is its negotiating channel's PEER_CLOSED, and a port is the one wait
+(object_bind, then port_wait).
+- Event objects stay, made by the kernel only, for system_get_event's
+  memory pressure events and the kernel self-tests; they go when
+  system_get_event does (it needs a root account to bind first).
+- Tests: the Swift `objects` suite (signals through a port, handles,
+  user packets) and `channel` suite (endpoints, handles in messages,
+  refusals, a closed peer), moved from usertest.c's modes 0 and 7.
+  usertest.c's `wait_for` is a ONCE binding on a port of its own,
+  cancelled if it times out (a pending binding holds its port).
+
 ## The small calls (K13e part 1)
 
 The small calls, K13e part 1 (syscalls 210-215 in User/IpcSyscalls.swift,
 Kernel/Object/Names.swift; ipc.h, task.h; the pinned tree's semantics):
-- object_wait_many (210, croi_wait_item_t): count 0 sleeps to the deadline
-  and is TIMED_OUT, over 64 OUT_OF_RANGE, a bad item writes nothing back,
-  otherwise every pending is written back (OK, TIMED_OUT, CANCELED; only
-  the closed handle's item gets HANDLE_CLOSED).
+- object_wait_many (210) was cut in V1 (D23): ports are the one wait.
 - handle_close_many (211): 0 skipped, bad values BAD_HANDLE with the rest
   still closed, 64 per chunk.
 - port_cancel_key (212): every async wait to the port with the key,
@@ -276,7 +295,8 @@ Kernel/Object/Names.swift; ipc.h, task.h; the pinned tree's semantics):
   STATE once dead), jobs, BTIs and VMOs (in the VmoRecord), resources read
   only, others WRONG_TYPE; process_create and thread_create now store
   theirs.
-- Mode 17's `small_calls`.
+- Tests: the Swift `objects` suite (names, handle_close_many,
+  port_cancel_key), moved from mode 17's `small_calls` (D23).
 
 ## Info topics and vmar_op_range (K13e part 2)
 

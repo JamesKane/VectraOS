@@ -18,10 +18,7 @@ enum : uint64_t {
   CROI_SYS_HANDLE_CLOSE = 10,      // (handle)
   CROI_SYS_HANDLE_DUPLICATE = 11,  // (handle, rights, uint32_t *out)
   CROI_SYS_HANDLE_REPLACE = 12,    // (handle, rights, uint32_t *out)
-  CROI_SYS_OBJECT_SIGNAL = 20,     // (handle, clear, set)
-  CROI_SYS_OBJECT_WAIT_ONE = 21,   // (handle, signals, deadline, uint32_t *observed)
   CROI_SYS_OBJECT_BIND = 22,       // (port, croi_bind_item_t *items, count): port.h
-  CROI_SYS_EVENT_CREATE = 30,      // (options, uint32_t *out)
   CROI_SYS_PORT_CREATE = 31,       // (options, uint32_t *out)
   CROI_SYS_PORT_QUEUE = 32,        // (port, const croi_port_packet_t *packet)
   CROI_SYS_PORT_WAIT = 33,         // (port, deadline, croi_port_packet_t *packet, leeway)
@@ -58,15 +55,13 @@ enum : uint64_t {
   CROI_SYS_VMAR_OP_RANGE = 76,     // (vmar, op, addr, len, buffer 0, buffer_size 0), K13e
   CROI_SYS_VMAR_MAP_CLOCK = 77,    // (vmar, options, vmar_offset, clock, len, uint64_t *mapped_addr), K13f
   CROI_SYS_OBJECT_GET_CHILD = 78,  // (job or process, koid, rights, uint32_t *out): Zircon's, K15d
-  // Channels, eventpairs (K7b): Zircon's, except channel_read packs its
+  // Channels (K7b): Zircon's, except channel_read packs its
   // capacities (bytes | handles << 32) and writes both actuals (two
   // uint32_t) through one pointer.
   CROI_SYS_CHANNEL_CREATE = 80,    // (options, out0, out1)
   CROI_SYS_CHANNEL_WRITE = 81,     // (channel, options, bytes, num_bytes, handles, num_handles)
   CROI_SYS_CHANNEL_READ = 82,      // (channel, options, bytes, handles, capacities, actuals)
   CROI_SYS_CHANNEL_CALL = 83,      // (channel, options, deadline, croi_channel_call_args_t *, actual_bytes, actual_handles)
-  CROI_SYS_EVENTPAIR_CREATE = 84,  // (options, out0, out1)
-  CROI_SYS_OBJECT_SIGNAL_PEER = 85,  // (handle, clear, set)
   CROI_SYS_OBJECT_GET_INFO = 86,   // (handle, topic, buffer, buffer_size)
   CROI_SYS_TEST_PROFILE = 6,       // (op) boot self-test only
   // Futexes and timers (K7c): Zircon's.
@@ -138,7 +133,6 @@ enum : uint64_t {
   CROI_SYS_PAGER_OP_RANGE = 206,        // (pager, op, vmo, offset, length, data)
   CROI_SYS_PAGER_QUERY_DIRTY_RANGES = 207,  // (pager | vmo << 32, offset, length, buffer, buffer_size, size_t out[2]: actual, avail)
   CROI_SYS_PAGER_QUERY_VMO_STATS = 208, // (pager, vmo, options, buffer, buffer_size)
-  CROI_SYS_OBJECT_WAIT_MANY = 210,      // (croi_wait_item_t *items, count, deadline), K13e
   CROI_SYS_HANDLE_CLOSE_MANY = 211,     // (const uint32_t *handles, count)
   CROI_SYS_PORT_CANCEL_KEY = 212,       // (port, options, key)
   CROI_SYS_CLOCK_CREATE = 216,          // (options | args version << 58, args, out), K13f: clock.h

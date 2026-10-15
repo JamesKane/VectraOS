@@ -172,9 +172,16 @@ struct Userboot {
         write(next)
         say("\n")
 
-        var observed: UInt32 = 0
-        try call("waiting for it", sys(CROI_SYS_OBJECT_WAIT_ONE, UInt64(process), UInt64(CROI_SIGNAL_TASK_TERMINATED),
-                                       .max, address(&observed)))
+        // Its end, through a port: the one wait (D23).
+        var port: UInt32 = 0
+        try call("creating a port", sys(CROI_SYS_PORT_CREATE, 0, address(&port)))
+        var item = croi_bind_item_t(handle: process, options: UInt32(CROI_BIND_SIGNALS), key: 0,
+                                    trigger: UInt64(CROI_SIGNAL_TASK_TERMINATED), status: 1, reserved: 0)
+        let bound = sys(CROI_SYS_OBJECT_BIND, UInt64(port), address(&item), 1)
+        try call("binding its end", bound < 0 ? bound : bound == 1 ? 0 : Int64(item.status))
+        var packet = croi_port_packet_t()
+        try call("waiting for it", sys(CROI_SYS_PORT_WAIT, UInt64(port), .max, address(&packet)))
+        _ = sys(CROI_SYS_HANDLE_CLOSE, UInt64(port))
         var info = croi_process_info_t()
         try call("reading its exit code", sys(CROI_SYS_PROCESS_INFO, UInt64(process), address(&info)))
         say("userboot: ")

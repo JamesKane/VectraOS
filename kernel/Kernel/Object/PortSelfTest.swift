@@ -40,9 +40,10 @@ enum PortSelfTest {
             }
 
             // Async waits: level (fires at once), one-shot, edge, timestamp.
+            // The kernel signals an event directly (object_signal is cut).
             let event = try table.add(try EventObject.create(), rights: EventObject.defaultRights)
             let signal = try table.get(event, rights: .signal)
-            try ObjectSignal.signal(signal, clear: 0, set: Signals.signaled)
+            signal.object.updateSignals(clear: 0, set: Signals.signaled)
             try Observers.waitAsync(table, event, port: try table.get(port), key: 7, signals: Signals.signaled, options: 0)
             var packet = try Ports.wait(table, port, deadline: Clock.now() + ms)
             guard packet.key == 7, packet.type == PortPacket.signalOne, packet.trigger == Signals.signaled,
@@ -52,34 +53,34 @@ enum PortSelfTest {
             guard status({ () throws(Status) in _ = try Ports.wait(table, port, deadline: Clock.now() + 2 * ms) }) == .timedOut else {
                 panic("port self-test: edge wait fired on a level")
             }
-            try ObjectSignal.signal(signal, clear: Signals.signaled, set: 0)
+            signal.object.updateSignals(clear: Signals.signaled, set: 0)
             let before = Clock.now()
-            try ObjectSignal.signal(signal, clear: 0, set: Signals.signaled)
+            signal.object.updateSignals(clear: 0, set: Signals.signaled)
             packet = try Ports.wait(table, port, deadline: Clock.now() + ms)
             guard packet.key == 8, packet.payload[2] >= before else { panic("port self-test: edge or timestamp") }
-            try ObjectSignal.signal(signal, clear: Signals.signaled, set: 0)
-            try ObjectSignal.signal(signal, clear: 0, set: Signals.signaled)
+            signal.object.updateSignals(clear: Signals.signaled, set: 0)
+            signal.object.updateSignals(clear: 0, set: Signals.signaled)
             guard status({ () throws(Status) in _ = try Ports.wait(table, port, deadline: Clock.now() + 2 * ms) }) == .timedOut else {
                 panic("port self-test: a one-shot wait fired twice")
             }
 
             // port_cancel drops a pending wait and a queued packet; closing
             // the handle drops its waits.
-            try ObjectSignal.signal(signal, clear: Signals.signaled, set: 0)
+            signal.object.updateSignals(clear: Signals.signaled, set: 0)
             try Observers.waitAsync(table, event, port: try table.get(port), key: 9, signals: Signals.signaled, options: 0)
-            try Observers.waitAsync(table, event, port: try table.get(port), key: 10, signals: 1 << 24, options: 0)
-            try ObjectSignal.signal(signal, clear: 0, set: 1 << 24)  // queues key 10
+            try Observers.waitAsync(table, event, port: try table.get(port), key: 10, signals: 1 << 4, options: 0)
+            signal.object.updateSignals(clear: 0, set: 1 << 4)  // queues key 10
             try Ports.cancel(table, port: port, source: event, key: 9)
             try Ports.cancel(table, port: port, source: event, key: 10)
-            try ObjectSignal.signal(signal, clear: 0, set: Signals.signaled)
+            signal.object.updateSignals(clear: 0, set: Signals.signaled)
             guard status({ () throws(Status) in _ = try Ports.wait(table, port, deadline: Clock.now() + 2 * ms) }) == .timedOut else {
                 panic("port self-test: port_cancel left a packet")
             }
             let dup = try table.duplicate(event, rights: .sameRights)
-            try ObjectSignal.signal(signal, clear: Signals.signaled, set: 0)
+            signal.object.updateSignals(clear: Signals.signaled, set: 0)
             try Observers.waitAsync(table, dup, port: try table.get(port), key: 11, signals: Signals.signaled, options: 0)
             try table.close(dup)
-            try ObjectSignal.signal(signal, clear: 0, set: Signals.signaled)
+            signal.object.updateSignals(clear: 0, set: Signals.signaled)
             guard status({ () throws(Status) in _ = try Ports.wait(table, port, deadline: Clock.now() + 2 * ms) }) == .timedOut else {
                 panic("port self-test: closed handle's wait still fired")
             }

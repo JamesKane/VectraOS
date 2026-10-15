@@ -43,21 +43,34 @@ enum Sys {
         unsafe croi_write(UnsafeRawPointer(text.utf8Start).assumingMemoryBound(to: CChar.self), text.utf8CodeUnitCount)
     }
 
-    static func event() throws(Failure) -> UInt32 {
+    /// A counter: the bench's handshakes and wakes (V1 cut events, D23).
+    static func counter() throws(Failure) -> UInt32 {
         var handle: UInt32 = 0
-        try check("creating an event", call(CROI_SYS_EVENT_CREATE, 0, address(&handle)))
+        try check("creating a counter", call(CROI_SYS_COUNTER_CREATE, 0, address(&handle)))
         return handle
     }
 
-    static func signal(_ handle: UInt32, clear: UInt32 = 0, set: UInt32) {
-        _ = call(CROI_SYS_OBJECT_SIGNAL, UInt64(handle), UInt64(clear), UInt64(set))
+    /// Raises a handshake counter to POSITIVE.
+    static func signal(_ counter: UInt32) {
+        _ = call(CROI_SYS_COUNTER_ADD, UInt64(counter), 1)
     }
 
-    /// Waits for `signals` on `handle` and clears them (events only).
-    static func take(_ handle: UInt32, _ signals: UInt32 = UInt32(CROI_SIGNAL_SIGNALED)) {
-        var observed: UInt32 = 0
-        _ = call(CROI_SYS_OBJECT_WAIT_ONE, UInt64(handle), UInt64(signals), .max, address(&observed))
-        signal(handle, clear: signals, set: 0)
+    /// Waits for a handshake counter to be POSITIVE, and takes it back to 0.
+    static func take(_ counter: UInt32) {
+        wait(counter, UInt32(CROI_COUNTER_POSITIVE))
+        _ = call(CROI_SYS_COUNTER_ADD, UInt64(counter), UInt64(bitPattern: -1))
+    }
+
+    /// Waits for any of `signals` on `handle`: a binding on a port of its
+    /// own (ports are the one wait, D23).
+    static func wait(_ handle: UInt32, _ signals: UInt32) {
+        var port: UInt32 = 0
+        guard call(CROI_SYS_PORT_CREATE, 0, address(&port)) == 0 else { return }
+        var packet = croi_port_packet_t()
+        if bind(port, handle, UInt32(CROI_BIND_SIGNALS), key: 0, trigger: UInt64(signals)) == 0 {
+            _ = call(CROI_SYS_PORT_WAIT, UInt64(port), .max, address(&packet))
+        }
+        close(port)
     }
 
     /// A profile (needs the root resource): a priority or deadline

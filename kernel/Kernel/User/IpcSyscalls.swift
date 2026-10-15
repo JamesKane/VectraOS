@@ -1,7 +1,7 @@
 import Synchronization
 import CKernel
 
-/// Channels, eventpairs and object info from user space (K7b; numbers in
+/// Channels and object info from user space (K7b; numbers in
 /// user/include/croi/syscall.h, layouts in include/ipc.h). Zircon's calls;
 /// channel_read packs its two capacities into one argument
 /// (bytes | handles << 32) and writes both actual counts through one
@@ -63,8 +63,6 @@ extension Syscalls {
                 taken = try Channels.read(channel.object, ifFits: size)
             }
             try deliver(taken!, to: table, bytes: a[2], handles: a[3])
-        case 210:  // object_wait_many(croi_wait_item_t *items, count, deadline), K13e
-            try waitMany(table, items: a[0], count: a[1], deadline: a[2])
         case 211:  // handle_close_many(const uint32_t *handles, count), K13e
             try closeMany(table, handles: a[0], count: a[1])
         case 212:  // port_cancel_key(port, options, key), K13e
@@ -99,26 +97,6 @@ extension Syscalls {
                 throw .bufferTooSmall
             }
             try deliver(reply, to: table, bytes: args.rd_bytes, handles: args.rd_handles)
-        case 84:  // eventpair_create(options, out0, out1)
-            try Policy.check(UInt32(CROI_POL_NEW_EVENTPAIR))
-            guard a[0] == 0 else { throw .invalidArgs }
-            try check(a[1], 4)
-            try check(a[2], 4)
-            let (first, second) = try Channels.createEventPair()
-            let h0: UInt32
-            do throws(Status) {
-                h0 = try table.add(first, rights: EventPairObject.defaultRights)
-            } catch {
-                second.release()
-                throw error
-            }
-            let h1 = try table.add(second, rights: EventPairObject.defaultRights)
-            try put(h0, a[1])
-            try put(h1, a[2])
-        case 85:  // object_signal_peer(handle, clear, set)
-            let object = try table.get(handle, rights: .signalPeer)
-            try Channels.signalPeer(object.object, clear: UInt32(truncatingIfNeeded: a[1]),
-                                    set: UInt32(truncatingIfNeeded: a[2]))
         case 86:  // object_get_info(handle, topic, buffer, buffer_size, size_t *actual, size_t *avail)
             if try taskInfo(a, table) { return }  // K13e's topics (InfoTopics.swift)
             if a[1] == UInt64(CROI_INFO_VMAR) {
@@ -331,39 +309,6 @@ extension Syscalls {
             for i in 0..<Int(chunk) { try? table.close(values[i]) }
             done += chunk
         }
-    }
-
-    /// object_wait_many (K13e): count 0 sleeps to the deadline (TIMED_OUT);
-    /// more than 64 OUT_OF_RANGE; every item's pending written back once
-    /// the wait ran (OK, TIMED_OUT or CANCELED), none if a handle was bad.
-    private static func waitMany(_ table: borrowing HandleTable, items: UInt64, count: UInt64,
-                                 deadline: UInt64) throws(Status) {
-        guard count > 0 else {
-            Scheduler.sleepInterruptible(until: deadline)
-            throw .timedOut
-        }
-        guard count <= UInt64(CROI_WAIT_MANY_MAX_ITEMS) else { throw .outOfRange }
-        var raw = InlineArray<64, croi_wait_item_t>(repeating: croi_wait_item_t())
-        let size = count * UInt64(MemoryLayout<croi_wait_item_t>.size)
-        var rawSpan = raw.mutableSpan
-        let copied = rawSpan.withUnsafeMutableBytes { bytes in unsafe UserCopy.from(bytes.baseAddress!, items, size) }
-        guard copied == 0 else { throw .invalidArgs }
-        var waits = InlineArray<64, ObjectWait.WaitItem>(repeating: ObjectWait.WaitItem(handle: 0, waitFor: 0))
-        for i in 0..<Int(count) { waits[i] = ObjectWait.WaitItem(handle: raw[i].handle, waitFor: raw[i].waitfor) }
-        var result: Status? = nil
-        do throws(Status) {
-            var whole = waits.mutableSpan
-            var span = whole.extracting(0..<Int(count))
-            try ObjectWait.many(table, &span, deadline: deadline)
-        } catch {
-            guard error == .timedOut || error == .canceled else { throw error }
-            result = error
-        }
-        for i in 0..<Int(count) { raw[i].pending = waits[i].pending }
-        var back = raw.mutableSpan
-        let failed = back.withUnsafeMutableBytes { bytes in unsafe UserCopy.to(items, UnsafeRawPointer(bytes.baseAddress!), size) }
-        guard failed == 0 else { throw .invalidArgs }
-        if let result { throw result }
     }
 
     /// handle_close_many (K13e): 64 at a time; 0 (ZX_HANDLE_INVALID) skipped;

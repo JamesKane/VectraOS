@@ -191,7 +191,8 @@ croi_user_runtime()
 # Its suites (Suite.swift): one file each, run with swift.suite=<name>.
 set(_swift_test_sources ${_user_dir}/test/swift/Main.swift ${_user_dir}/test/swift/Suite.swift
     ${_user_dir}/test/swift/BindSuite.swift ${_user_dir}/test/swift/VmoSuite.swift
-    ${_user_dir}/test/swift/FutexSuite.swift ${_user_dir}/test/swift/ChannelSuite.swift)
+    ${_user_dir}/test/swift/FutexSuite.swift ${_user_dir}/test/swift/ChannelSuite.swift
+    ${_user_dir}/test/swift/ObjectSuite.swift)
 set(_swift_test ${CMAKE_CURRENT_BINARY_DIR}/swifttest.elf)
 croi_user_program(${_swift_test} PIE SWIFT ${_swift_test_sources})
 # The same as a fixed-address program with a dynamic section and no

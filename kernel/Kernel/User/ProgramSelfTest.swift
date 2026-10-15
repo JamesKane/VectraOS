@@ -1,5 +1,6 @@
 import CKernel
 import Fmt
+import Synchronization
 
 /// Boot self-test (K8a): the Embedded Swift test program (user/test/swift)
 /// started from its ELF by `ProgramLoader`, with a debuglog as stdout and
@@ -149,8 +150,8 @@ enum ProgramSelfTest {
     /// are written as suites, not in usertest.c. test_profile binds to a
     /// deadline context lent for the run (the futex suite's inheritance).
     static func runSuites(_ console: Uart) {
-        let suites: InlineArray<4, StaticString> = ["swift.suite=bind\0", "swift.suite=vmo\0", "swift.suite=futex\0",
-                                                    "swift.suite=channel\0"]
+        let suites: InlineArray<5, StaticString> = ["swift.suite=bind\0", "swift.suite=vmo\0", "swift.suite=futex\0",
+                                                    "swift.suite=channel\0", "swift.suite=objects\0"]
         let before = ProcessSelfTest.Counts()
         let context: SchedContext
         do throws(AdmissionRefusal) {

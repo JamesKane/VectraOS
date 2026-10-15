@@ -74,6 +74,25 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   it. Kind: deliberate. Impact: Fuchsia code using them (libsync's
   condition variables requeue).
 
+## Events, signals and waits
+
+- **Cut** (V1, D23) — no event_create, eventpair_create, object_signal,
+  object_signal_peer, object_wait_one or object_wait_many, and with them
+  no user signals, no SIGNAL_PEER right, no NEW_EVENT or NEW_EVENTPAIR
+  policy conditions, no HANDLE_CLOSED signal and no BLOCKED_WAIT_MANY
+  thread state. A port is the one wait (object_bind, then port_wait); a
+  counter is the event a user drives. Events remain only as the kernel's
+  system_get_event objects, until that call is cut too. Kind:
+  deliberate. Impact: every Fuchsia program (zx_object_wait_one is
+  everywhere, libasync and fdio included).
+- **A ONCE binding holds its port** — closing a port's last handle doesn't
+  cancel the bindings to it, as Zircon's on_zero_handles does; a pending
+  one keeps the port until it fires or its source handle closes. A
+  waiter that gives up cancels it (usertest.c's `wait_for`, the suites'
+  `Port.signals`). Kind: inherited from croi's K5b; now visible, since
+  every timed wait is a binding. Fix: cancel a port's bindings when its
+  last handle closes, before ports become rings (D19).
+
 ## VM and VMOs
 
 - **Snapshot child of a shrinking parent** (K13h) — croi's child reads
@@ -208,9 +227,8 @@ matches the pinned tree where upstream docs or expectations say otherwise).
 - **Syscall restart in the kernel** — for suspension Zircon wakes
   interruptible waits with INTR_RETRY and its vDSO re-issues the call;
   croi's programs call the kernel directly, so the kernel rewinds the PC
-  over the syscall for the restartable waits (nanosleep, wait_one,
-  wait_many, port_wait, vmo_read, futex_wait, interrupt_wait,
-  counter_wait, readv, readv_at). Other waits (channel_call, exceptions)
+  over the syscall for the restartable waits (nanosleep, port_wait,
+  vmo_read, futex_wait, interrupt_wait, counter_wait). Other waits (channel_call, exceptions)
   suspend when they end. Kind: deliberate. Impact: debuggers see the PC at
   the syscall instruction.
 - **Debugging syscalls option** — process_write_memory and debug-register

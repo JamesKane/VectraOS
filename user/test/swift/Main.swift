@@ -56,14 +56,16 @@ struct SwiftTest {
         // at the oldest record, so drain it first.
         guard syscall(CROI_SYS_DEBUGLOG_READ, UInt64(writer), 0, at, 256) == -30 else { return false }  // ACCESS_DENIED
         while syscall(CROI_SYS_DEBUGLOG_READ, UInt64(reader), 0, at, 256) > 0 {}
-        var observed: UInt32 = 0
-        guard syscall(CROI_SYS_OBJECT_WAIT_ONE, UInt64(reader), UInt64(CROI_SIGNAL_READABLE), 0,
-                      address(&observed)) == -21 else { return false }  // TIMED_OUT: nothing to read
+        // READABLE through a port (the one wait, D23): nothing yet, then
+        // the record written.
+        let port = Port()
+        var item = croi_bind_item_t(handle: reader, options: UInt32(CROI_BIND_SIGNALS), key: 1,
+                                    trigger: UInt64(CROI_SIGNAL_READABLE), status: 1, reserved: 0)
+        guard syscall(CROI_SYS_OBJECT_BIND, port.handle.arg, address(&item), 1) == 1, port.empty else { return false }
         let text: StaticString = "swift: round trip"
         let textAddress = unsafe UInt64(UInt(bitPattern: text.utf8Start))
         guard syscall(CROI_SYS_DEBUGLOG_WRITE, UInt64(writer), 0, textAddress, UInt64(text.utf8CodeUnitCount)) == 0,
-              syscall(CROI_SYS_OBJECT_WAIT_ONE, UInt64(reader), UInt64(CROI_SIGNAL_READABLE), .max,
-                      address(&observed)) == 0 else { return false }
+              port.next(deadline: .max) != nil else { return false }
         let size = syscall(CROI_SYS_DEBUGLOG_READ, UInt64(reader), 0, at, 256)
         let headerSize = MemoryLayout<croi_log_record_t>.size
         guard size == Int64(headerSize + text.utf8CodeUnitCount) else { return false }

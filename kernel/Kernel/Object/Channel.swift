@@ -1,8 +1,8 @@
 import CKernel
 import Synchronization
 
-/// Channels and eventpairs (K7b; Zircon's ChannelDispatcher and
-/// EventPairDispatcher).
+/// Channels (K7b; Zircon's ChannelDispatcher). V1 cut eventpairs (D23): a
+/// ring's peer death is its negotiating channel's PEER_CLOSED.
 ///
 /// A channel is two endpoint objects sharing one lock (`PeerShared`),
 /// each with a FIFO of messages its holder reads. A message owns its bytes
@@ -186,7 +186,7 @@ struct ChannelObject: ~Copyable {
     var nextTxid: UInt32 = 0
 
     /// ZX_DEFAULT_CHANNEL_RIGHTS: no DUPLICATE (an endpoint has one reader).
-    static var defaultRights: Rights { Rights.basic.subtracting(.duplicate).union(.read | .write | .signal | .signalPeer) }
+    static var defaultRights: Rights { Rights.basic.subtracting(.duplicate).union(.read | .write | .signal) }
 }
 
 @safe struct ChannelPointer {
@@ -195,24 +195,6 @@ struct ChannelObject: ~Copyable {
     var pointee: ChannelObject {
         unsafeAddress { unsafe UnsafePointer<ChannelObject>(bitPattern: UInt(object.address))! }
         nonmutating unsafeMutableAddress { unsafe UnsafeMutablePointer<ChannelObject>(bitPattern: UInt(object.address))! }
-    }
-}
-
-struct EventPairObject: ~Copyable {
-    var header = ObjectHeader(type: .eventpair)
-    let shared: PeerSharedPointer
-    var peer: UInt64 = 0
-    var peerKoid: UInt64 = 0
-
-    static var defaultRights: Rights { .basic | .signal | .signalPeer }
-}
-
-@safe struct EventPairPointer {
-    let object: ObjectPointer
-
-    var pointee: EventPairObject {
-        unsafeAddress { unsafe UnsafePointer<EventPairObject>(bitPattern: UInt(object.address))! }
-        nonmutating unsafeMutableAddress { unsafe UnsafeMutablePointer<EventPairObject>(bitPattern: UInt(object.address))! }
     }
 }
 
@@ -504,77 +486,8 @@ enum Channels {
         throw .peerClosed
     }
 
-    // MARK: Eventpairs
-
-    static func createEventPair() throws(Status) -> (ObjectPointer, ObjectPointer) {
-        guard let shared = PeerSharedPointer.allocate() else { throw .noMemory }
-        guard let a = Objects.allocate(EventPairObject(shared: shared)) else {
-            shared.release()
-            shared.release()
-            throw .noMemory
-        }
-        guard let b = Objects.allocate(EventPairObject(shared: shared)) else {
-            a.release()
-            shared.release()
-            throw .noMemory
-        }
-        EventPairPointer(object: a).pointee.peer = b.address
-        EventPairPointer(object: b).pointee.peer = a.address
-        EventPairPointer(object: a).pointee.peerKoid = b.header.koid
-        EventPairPointer(object: b).pointee.peerKoid = a.header.koid
-        shared.pointee.id = min(a.header.koid, b.header.koid)
-        return (a, b)
-    }
-
-    static func destroyEventPair(_ object: ObjectPointer) {
-        let me = EventPairPointer(object: object)
-        let shared = me.pointee.shared
-        var peer: ObjectPointer? = nil
-        shared.pointee.lock.withLock {
-            if me.pointee.peer != 0 {
-                let other = ObjectPointer(address: me.pointee.peer)
-                EventPairPointer(object: other).pointee.peer = 0
-                if other.tryRetain() { peer = other }
-            }
-            me.pointee.peer = 0
-        }
-        if let peer {
-            peer.updateSignals(clear: 0, set: CROI_SIGNAL_PEER_CLOSED)
-            peer.release()
-        }
-        shared.release()
-        Objects.free(object, as: EventPairObject.self)
-    }
-
-    /// object_signal_peer: user signals (and SIGNALED on eventpairs) on
-    /// the other end.
-    static func signalPeer(_ object: ObjectPointer, clear: UInt32, set: UInt32) throws(Status) {
-        let allowed = Signals.user | (object.header.type == .eventpair ? Signals.signaled : 0)
-        guard (clear | set) & ~allowed == 0 else { throw .invalidArgs }
-        let shared: PeerSharedPointer
-        switch object.header.type {
-        case .channel: shared = ChannelPointer(object: object).pointee.shared
-        case .eventpair: shared = EventPairPointer(object: object).pointee.shared
-        default: throw .wrongType
-        }
-        let peer = shared.pointee.lock.withLock { () -> ObjectPointer? in
-            let address = object.header.type == .channel ? ChannelPointer(object: object).pointee.peer
-                : EventPairPointer(object: object).pointee.peer
-            guard address != 0 else { return nil }
-            let other = ObjectPointer(address: address)
-            return other.tryRetain() ? other : nil
-        }
-        guard let peer else { throw .peerClosed }
-        peer.updateSignals(clear: clear, set: set)
-        peer.release()
-    }
-
-    /// The koid of the object's peer (channels, eventpairs), else 0.
+    /// The koid of a channel's peer, else 0.
     static func relatedKoid(_ object: ObjectPointer) -> UInt64 {
-        switch object.header.type {
-        case .channel: ChannelPointer(object: object).pointee.peerKoid
-        case .eventpair: EventPairPointer(object: object).pointee.peerKoid
-        default: 0
-        }
+        object.header.type == .channel ? ChannelPointer(object: object).pointee.peerKoid : 0
     }
 }

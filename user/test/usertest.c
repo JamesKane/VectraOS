@@ -20,7 +20,6 @@
 #define ERR_PEER_CLOSED (-24)
 #define RIGHT_SAME (1u << 31)
 #define SIGNALED (1u << 3)
-#define USER_SIGNAL_0 (1u << 24)
 #define RIGHT_READ (1u << 2)
 #define RIGHT_MAP (1u << 5)
 #define RIGHT_DUPLICATE (1u << 0)
@@ -53,36 +52,11 @@ static int64_t bind1(uint32_t port, uint32_t handle, uint32_t options, uint64_t 
     if (!(condition)) exit_with(n); \
   } while (0)
 
+// Mode 0: VMOs and bad pointers. Events, signals, handles and ports moved
+// to the objects suite (user/test/swift/ObjectSuite.swift) when V1 cut
+// events, object_signal and object_wait_one (D23).
 static int64_t objects(void) {
-  uint32_t event = 0, port = 0, dup = 0, vmo = 0, observed = 0;
-  int64_t now = sys(CROI_SYS_CLOCK_MONOTONIC, 0, 0, 0, 0, 0);
-
-  // Events, signals, waits.
-  CHECK(1, sys(CROI_SYS_EVENT_CREATE, 0, (uint64_t)&event, 0, 0, 0) == 0 && event != 0);
-  CHECK(2, sys(CROI_SYS_OBJECT_WAIT_ONE, event, SIGNALED, (uint64_t)now + 1000000, (uint64_t)&observed, 0)
-               == ERR_TIMED_OUT);
-  CHECK(3, sys(CROI_SYS_OBJECT_SIGNAL, event, 0, SIGNALED, 0, 0) == 0);
-  CHECK(4, sys(CROI_SYS_OBJECT_WAIT_ONE, event, SIGNALED, (uint64_t)now + 1000000000, (uint64_t)&observed, 0) == 0
-               && (observed & SIGNALED));
-  CHECK(5, sys(CROI_SYS_OBJECT_SIGNAL, event, 0, 1, 0, 0) == ERR_INVALID_ARGS);
-
-  // Handles: duplicate with fewer rights, then a refused signal.
-  CHECK(6, sys(CROI_SYS_HANDLE_DUPLICATE, event, RIGHT_WAIT | RIGHT_TRANSFER, (uint64_t)&dup, 0, 0) == 0);
-  CHECK(7, sys(CROI_SYS_OBJECT_SIGNAL, dup, SIGNALED, 0, 0, 0) == ERR_ACCESS_DENIED);
-  CHECK(8, sys(CROI_SYS_HANDLE_CLOSE, dup, 0, 0, 0, 0) == 0);
-  CHECK(9, sys(CROI_SYS_HANDLE_CLOSE, dup, 0, 0, 0, 0) == ERR_BAD_HANDLE);
-
-  // Ports: a user packet, then an async wait on the event.
-  croi_port_packet_t packet = {.key = 42, .payload = {1, 2, 3, 4}};
-  CHECK(10, sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) == 0);
-  CHECK(11, sys(CROI_SYS_PORT_QUEUE, port, (uint64_t)&packet, 0, 0, 0) == 0);
-  croi_port_packet_t got = {0};
-  CHECK(12, sys(CROI_SYS_PORT_WAIT, port, (uint64_t)now + 1000000000, (uint64_t)&got, 0, 0) == 0
-                && got.key == 42 && got.payload[3] == 4);
-  CHECK(13, bind1(port, event, CROI_BIND_SIGNALS, 7, USER_SIGNAL_0) == 0);
-  CHECK(14, sys(CROI_SYS_OBJECT_SIGNAL, event, 0, USER_SIGNAL_0, 0, 0) == 0);
-  CHECK(15, sys(CROI_SYS_PORT_WAIT, port, (uint64_t)now + 1000000000, (uint64_t)&got, 0, 0) == 0 && got.key == 7
-                && got.type == 1 && (got.payload[0] >> 32) & USER_SIGNAL_0);
+  uint32_t vmo = 0;
 
   // VMOs: write, read back, map and use directly.
   CHECK(16, sys(CROI_SYS_VMO_CREATE, 8192, 0, (uint64_t)&vmo, 0, 0) == 0);
@@ -106,15 +80,12 @@ static int64_t objects(void) {
   CHECK(22, sys(CROI_SYS_VMO_READ, vmo, (uint64_t)back, 0, 1, 0) == 0 && back[0] == 'Z');
 
   // Bad pointers are errors, not crashes.
-  CHECK(23, sys(CROI_SYS_EVENT_CREATE, 0, 0x10, 0, 0, 0) == ERR_INVALID_ARGS);
   CHECK(24, sys(CROI_SYS_VMO_READ, vmo, 0xFFFF800000000000ull, 0, 16, 0) == ERR_INVALID_ARGS);
   CHECK(25, sys(CROI_SYS_DEBUG_WRITE, 0x10, 4, 0, 0, 0) == ERR_INVALID_ARGS);
   // A kernel address valid on every arch (the kernel image): never copied.
   CHECK(29, sys(CROI_SYS_VMO_WRITE, vmo, 0xFFFFFFFF80000000ull, 0, 16, 0) == ERR_INVALID_ARGS);
   CHECK(30, sys(CROI_SYS_VMO_READ, vmo, 0xFFFFFFFF80000000ull, 0, 16, 0) == ERR_INVALID_ARGS);
 
-  CHECK(26, sys(CROI_SYS_HANDLE_CLOSE, event, 0, 0, 0, 0) == 0);
-  CHECK(27, sys(CROI_SYS_HANDLE_CLOSE, port, 0, 0, 0, 0) == 0);
   CHECK(28, sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0) == 0);
   static const char done[] = "object syscalls from user mode ok";
   sys(CROI_SYS_DEBUG_WRITE, (uint64_t)done, sizeof done - 1, 0, 0, 0);
@@ -333,11 +304,27 @@ typedef struct {
 
 static uint64_t now_ns(void) { return (uint64_t)sys(CROI_SYS_CLOCK_MONOTONIC, 0, 0, 0, 0, 0); }
 
-static uint32_t wait_terminated(uint32_t handle) {
+// The signals `handle` has once one of `signals` is asserted, or 0 if none
+// is within `ns`. V1 cut object_wait_one (D23): a ONCE binding on a port
+// of its own, the one wait. A binding still pending holds its port, so a
+// timed-out one is cancelled before the port's handle closes.
+static uint32_t wait_for(uint32_t handle, uint32_t signals, uint64_t ns) {
+  uint32_t port = 0;
+  croi_port_packet_t packet = {0};
+  if (sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) != 0) return 0;
   uint32_t observed = 0;
-  sys(CROI_SYS_OBJECT_WAIT_ONE, handle, CROI_SIGNAL_TASK_TERMINATED, now_ns() + 5000000000ull, (uint64_t)&observed,
-      0);
+  if (bind1(port, handle, CROI_BIND_SIGNALS, 0, signals) == 0) {
+    if (sys(CROI_SYS_PORT_WAIT, port, now_ns() + ns, (uint64_t)&packet, 0, 0) == 0)
+      observed = (uint32_t)(packet.payload[0] >> 32);
+    else
+      sys(CROI_SYS_PORT_CANCEL, port, handle, 0, 0, 0);
+  }
+  sys(CROI_SYS_HANDLE_CLOSE, port, 0, 0, 0, 0);
   return observed;
+}
+
+static uint32_t wait_terminated(uint32_t handle) {
+  return wait_for(handle, CROI_SIGNAL_TASK_TERMINATED, 5000000000ull);
 }
 
 static int64_t return_code(uint32_t process) {
@@ -382,13 +369,7 @@ static uint32_t spawn_child(const startup_t *s, uint32_t job, uint64_t submode) 
   return process;
 }
 
-static void blocker(uint64_t event) {
-  uint32_t observed = 0;
-  sys(CROI_SYS_OBJECT_WAIT_ONE, event, SIGNALED, ~0ull, (uint64_t)&observed, 0);  // until killed
-  sys(CROI_SYS_THREAD_EXIT, 1, 0, 0, 0, 0);
-}
-
-// Submode 10's threads: each waits in its own way until killed.
+// Submodes 4 and 10's threads: each waits in its own way until killed.
 static void port_blocker(uint64_t port) {
   croi_port_packet_t packet;
   sys(CROI_SYS_PORT_WAIT, port, ~0ull, (uint64_t)&packet, 0, 0);
@@ -433,13 +414,13 @@ static int64_t child(uint32_t self, uint64_t submode, uint64_t vdso) {
     *(volatile uint64_t *)0x10 = 1;
     return 98;
   case 4: {  // a second thread blocked in a wait; process_exit ends it too
-    uint32_t event = 0, thread = 0, stack = 0;
+    uint32_t port = 0, thread = 0, stack = 0;
     uint64_t at = 0;
-    if (sys(CROI_SYS_EVENT_CREATE, 0, (uint64_t)&event, 0, 0, 0) != 0) return 90;
+    if (sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) != 0) return 90;
     if (sys(CROI_SYS_VMO_CREATE, STACK_SIZE, 0, (uint64_t)&stack, 0, 0) != 0) return 91;
     if (sys(CROI_SYS_VMO_MAP, stack, 0, STACK_SIZE, 3, (uint64_t)&at) != 0) return 92;
     if (sys6(CROI_SYS_THREAD_CREATE, self, (uint64_t)"blocker", 7, 0, (uint64_t)&thread, 0) != 0) return 93;
-    if (sys(CROI_SYS_THREAD_START, thread, (uint64_t)blocker, ENTRY_SP(at + STACK_SIZE), event, 0) != 0) return 94;
+    if (sys(CROI_SYS_THREAD_START, thread, (uint64_t)port_blocker, ENTRY_SP(at + STACK_SIZE), port, 0) != 0) return 94;
     sys(CROI_SYS_NANOSLEEP, now_ns() + 3000000, 0, 0, 0, 0);
     return sys(CROI_SYS_PROCESS_EXIT, 7, 0, 0, 0, 0);
   }
@@ -461,25 +442,26 @@ static int64_t child(uint32_t self, uint64_t submode, uint64_t vdso) {
     __asm__ volatile("ebreak");
 #endif
     return 95;
-  case 8: {  // NEW_EVENT is DENY_EXCEPTION: a handler sees it, the call is denied
-    uint32_t event = 0;
-    return sys(CROI_SYS_PROCESS_EXIT, sys(CROI_SYS_EVENT_CREATE, 0, (uint64_t)&event, 0, 0, 0) == ERR_ACCESS_DENIED ? 60 : 61,
+  case 8: {  // NEW_PORT is DENY_EXCEPTION: a handler sees it, the call is denied
+    uint32_t port = 0;
+    return sys(CROI_SYS_PROCESS_EXIT, sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) == ERR_ACCESS_DENIED ? 60 : 61,
                0, 0, 0, 0);
   }
   case 10: {  // Todhchai's compositor, roughly: threads waiting on a port,
-              // a counter and a channel, one spinning; then killed
-    uint32_t port = 0, counter = 0, a = 0, b = 0, event = 0;
+              // a counter and a channel (bound to a port), one spinning;
+              // then killed
+    uint32_t port = 0, counter = 0, a = 0, b = 0, channel_port = 0;
     if (sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) != 0 ||
         sys(CROI_SYS_COUNTER_CREATE, 0, (uint64_t)&counter, 0, 0, 0) != 0 ||
         sys(CROI_SYS_CHANNEL_CREATE, 0, (uint64_t)&a, (uint64_t)&b, 0, 0) != 0 ||
-        sys(CROI_SYS_EVENT_CREATE, 0, (uint64_t)&event, 0, 0, 0) != 0)
+        sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&channel_port, 0, 0, 0) != 0 ||
+        bind1(channel_port, a, CROI_BIND_SIGNALS, 0, CROI_SIGNAL_READABLE) != 0)
       return 90;
     int64_t failed = child_thread(self, port_blocker, port) | child_thread(self, counter_blocker, counter) |
-                     child_thread(self, blocker, event) | child_thread(self, user_spinner, 0) |
-                     child_thread(self, syscall_spinner, 0);
+                     child_thread(self, user_spinner, 0) | child_thread(self, syscall_spinner, 0);
     if (failed) return failed;
-    uint32_t observed = 0;
-    sys(CROI_SYS_OBJECT_WAIT_ONE, a, CROI_SIGNAL_READABLE, ~0ull, (uint64_t)&observed, 0);  // until killed
+    croi_port_packet_t packet;
+    sys(CROI_SYS_PORT_WAIT, channel_port, ~0ull, (uint64_t)&packet, 0, 0);  // until killed
     return 89;
   }
   case 11: {  // K14s: exit with this process's PAC signature of a fixed value
@@ -493,12 +475,13 @@ static int64_t child(uint32_t self, uint64_t submode, uint64_t vdso) {
 #endif
   }
   case 12: {  // K15a: commits a 2-page VMO (charging its account), then waits to be killed
-    uint32_t vmo = 0, event = 0, observed = 0;
+    uint32_t vmo = 0, port = 0;
     if (sys(CROI_SYS_VMO_CREATE, 2 * 4096, 0, (uint64_t)&vmo, 0, 0) != 0 ||
         croi_syscall6(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_COMMIT, 0, 2 * 4096, 0, 0) != 0 ||
-        sys(CROI_SYS_EVENT_CREATE, 0, (uint64_t)&event, 0, 0, 0) != 0)
+        sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) != 0)
       return 90;
-    sys(CROI_SYS_OBJECT_WAIT_ONE, event, SIGNALED, ~0ull, (uint64_t)&observed, 0);
+    croi_port_packet_t packet;
+    sys(CROI_SYS_PORT_WAIT, port, ~0ull, (uint64_t)&packet, 0, 0);
     return 89;
   }
   case 9: {  // in a job with reserved CPUs: exit with the CPUs it ran on
@@ -594,12 +577,6 @@ static int64_t chan_write(uint32_t channel, const void *bytes, uint32_t num_byte
   return sys6(CROI_SYS_CHANNEL_WRITE, channel, 0, (uint64_t)bytes, num_bytes, (uint64_t)handles, num_handles);
 }
 
-static uint32_t wait_for(uint32_t handle, uint32_t signals, uint64_t ns) {
-  uint32_t observed = 0;
-  sys(CROI_SYS_OBJECT_WAIT_ONE, handle, signals, now_ns() + ns, (uint64_t)&observed, 0);
-  return observed;
-}
-
 // Answers calls: reply = txid, request + 1, whether it is running on a
 // deadline profile now. "quit" ends it.
 static void server(uint64_t channel) {
@@ -648,72 +625,13 @@ static uint32_t start_thread(const startup_t *s, void (*entry)(uint64_t), uint64
   return thread;
 }
 
+// Mode 7: calls to a server thread, and the flow user space computes for
+// the kernel's trace check. Channel basics, handle transfer and peer
+// closing moved to the channel suite (user/test/swift/ChannelSuite.swift)
+// when V1 cut events and eventpairs (D23).
 static int64_t ipc(const startup_t *s) {
-  uint32_t a = 0, b = 0;
-  CHECK(110, sys(CROI_SYS_CHANNEL_CREATE, 0, (uint64_t)&a, (uint64_t)&b, 0, 0) == 0);
-  croi_info_handle_basic_t ia = {}, ib = {};
-  CHECK(111, sys(CROI_SYS_OBJECT_GET_INFO, a, CROI_INFO_HANDLE_BASIC, (uint64_t)&ia, sizeof ia, 0) == 0 &&
-                 sys(CROI_SYS_OBJECT_GET_INFO, b, CROI_INFO_HANDLE_BASIC, (uint64_t)&ib, sizeof ib, 0) == 0 &&
-                 ia.related_koid == ib.koid && ib.related_koid == ia.koid && ia.type == 4);
   uint32_t actual[2] = {0, 0}, handles[4];
   char buffer[64];
-  CHECK(112, chan_read(b, buffer, handles, sizeof buffer, 4, actual) == ERR_SHOULD_WAIT);
-
-  // A message with a handle: the handle leaves our table and works there.
-  uint32_t event = 0, dup = 0;
-  CHECK(113, sys(CROI_SYS_EVENT_CREATE, 0, (uint64_t)&event, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_DUPLICATE, event, RIGHT_SAME, (uint64_t)&dup, 0, 0) == 0);
-  CHECK(114, chan_write(a, "hello", 5, &dup, 1) == 0);
-  CHECK(115, sys(CROI_SYS_HANDLE_CLOSE, dup, 0, 0, 0, 0) == ERR_BAD_HANDLE);
-  CHECK(116, wait_for(b, CROI_SIGNAL_READABLE, 1000000000) & CROI_SIGNAL_READABLE);
-  CHECK(117, chan_read(b, buffer, handles, 2, 1, actual) == ERR_BUFFER_TOO_SMALL && actual[0] == 5 && actual[1] == 1);
-  CHECK(118, chan_read(b, buffer, handles, sizeof buffer, 4, actual) == 0 && actual[0] == 5 && actual[1] == 1 &&
-                 buffer[0] == 'h' && buffer[4] == 'o');
-  CHECK(119, sys(CROI_SYS_OBJECT_SIGNAL, handles[0], 0, SIGNALED, 0, 0) == 0 &&
-                 (wait_for(event, SIGNALED, 1000000000) & SIGNALED));
-  CHECK(120, !(wait_for(b, CROI_SIGNAL_READABLE, 0) & CROI_SIGNAL_READABLE));
-  // Refusals consume the handles listed, as Zircon's do (unless the list
-  // can't be read): without TRANSFER (the first error wins, the rest go
-  // too); a repeat (gone by the second look); a bad channel handle.
-  uint32_t two[2] = {0, 0};
-  CHECK(122, sys(CROI_SYS_HANDLE_DUPLICATE, event, RIGHT_WAIT, (uint64_t)&two[0], 0, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_DUPLICATE, event, RIGHT_SAME, (uint64_t)&two[1], 0, 0) == 0 &&
-                 chan_write(a, "x", 1, two, 2) == ERR_ACCESS_DENIED &&
-                 sys(CROI_SYS_HANDLE_CLOSE, two[0], 0, 0, 0, 0) == ERR_BAD_HANDLE &&
-                 sys(CROI_SYS_HANDLE_CLOSE, two[1], 0, 0, 0, 0) == ERR_BAD_HANDLE);
-  CHECK(147, sys(CROI_SYS_HANDLE_DUPLICATE, event, RIGHT_SAME, (uint64_t)&two[0], 0, 0) == 0 && (two[1] = two[0]) &&
-                 chan_write(a, "x", 1, two, 2) == ERR_BAD_HANDLE &&
-                 sys(CROI_SYS_HANDLE_CLOSE, two[0], 0, 0, 0, 0) == ERR_BAD_HANDLE);
-  CHECK(148, sys(CROI_SYS_HANDLE_DUPLICATE, event, RIGHT_SAME, (uint64_t)&two[0], 0, 0) == 0 &&
-                 chan_write(0x7FFFFFF0u, "x", 1, two, 1) == ERR_BAD_HANDLE &&
-                 sys(CROI_SYS_HANDLE_CLOSE, two[0], 0, 0, 0, 0) == ERR_BAD_HANDLE);
-  CHECK(149, sys(CROI_SYS_HANDLE_DUPLICATE, event, RIGHT_SAME, (uint64_t)&two[0], 0, 0) == 0 &&
-                 chan_write(a, "x", 1, (const uint32_t *)0x10, 1) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_HANDLE_CLOSE, two[0], 0, 0, 0, 0) == 0);  // unreadable list: kept
-  // The channel itself: refused, and its handle consumed too, which
-  // closes this end (peer closed below).
-  CHECK(123, chan_write(a, "bye", 3, 0, 0) == 0);
-  CHECK(121, chan_write(a, "x", 1, &a, 1) == ERR_NOT_SUPPORTED &&
-                 sys(CROI_SYS_HANDLE_CLOSE, a, 0, 0, 0, 0) == ERR_BAD_HANDLE);
-  // Peer closed: signal, writes refused (consuming), reads drain then refuse.
-  CHECK(124, wait_for(b, CROI_SIGNAL_PEER_CLOSED, 1000000000) & CROI_SIGNAL_PEER_CLOSED);
-  CHECK(125, sys(CROI_SYS_HANDLE_DUPLICATE, event, RIGHT_SAME, (uint64_t)&two[0], 0, 0) == 0 &&
-                 chan_write(b, "x", 1, two, 1) == ERR_PEER_CLOSED &&
-                 sys(CROI_SYS_HANDLE_CLOSE, two[0], 0, 0, 0, 0) == ERR_BAD_HANDLE);
-  CHECK(126, chan_read(b, buffer, handles, sizeof buffer, 4, actual) == 0 && actual[0] == 3);
-  CHECK(127, chan_read(b, buffer, handles, sizeof buffer, 4, actual) == ERR_PEER_CLOSED);
-  sys(CROI_SYS_HANDLE_CLOSE, b, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, handles[0], 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, event, 0, 0, 0, 0);
-
-  // Eventpairs.
-  uint32_t p = 0, q = 0;
-  CHECK(128, sys(CROI_SYS_EVENTPAIR_CREATE, 0, (uint64_t)&p, (uint64_t)&q, 0, 0) == 0);
-  CHECK(129, sys(CROI_SYS_OBJECT_SIGNAL_PEER, p, 0, SIGNALED, 0, 0) == 0 && (wait_for(q, SIGNALED, 1000000000) & SIGNALED));
-  CHECK(130, sys(CROI_SYS_HANDLE_CLOSE, p, 0, 0, 0, 0) == 0 &&
-                 (wait_for(q, CROI_SIGNAL_PEER_CLOSED, 1000000000) & CROI_SIGNAL_PEER_CLOSED));
-  sys(CROI_SYS_HANDLE_CLOSE, q, 0, 0, 0, 0);
-
   // Calls to a server thread; the client on a deadline profile lends it.
   uint32_t client = 0, served = 0;
   CHECK(131, sys(CROI_SYS_CHANNEL_CREATE, 0, (uint64_t)&client, (uint64_t)&served, 0, 0) == 0);
@@ -1039,8 +957,8 @@ static int64_t exceptions(const startup_t *s) {
   // DENY_EXCEPTION: a POLICY_ERROR exception, then the call is denied.
   uint32_t watched = 0;
   CHECK(204, sys(CROI_SYS_JOB_CREATE, s->job, 0, (uint64_t)&watched, 0, 0) == 0);
-  croi_policy_basic_t events = {CROI_POL_NEW_EVENT, CROI_POL_ACTION_DENY_EXCEPTION};
-  CHECK(205, sys(CROI_SYS_JOB_SET_POLICY, watched, CROI_JOB_POL_ABSOLUTE, 0, (uint64_t)&events, 1) == 0);
+  croi_policy_basic_t ports = {CROI_POL_NEW_PORT, CROI_POL_ACTION_DENY_EXCEPTION};
+  CHECK(205, sys(CROI_SYS_JOB_SET_POLICY, watched, CROI_JOB_POL_ABSOLUTE, 0, (uint64_t)&ports, 1) == 0);
   job_channel = exception_channel(watched);
   process = spawn_child(s, watched, 8);
   uint32_t resume = CROI_EXCEPTION_STATE_HANDLED;
@@ -2818,71 +2736,9 @@ static int64_t pager(const startup_t *s) {
   return 0;
 }
 
-// K13e: the small calls.
-static int64_t small_calls(const startup_t *s) {
-  // Names: set and read back (truncated to 31), thread names from
-  // thread_create, a short buffer. (A type without names refused one with
-  // WRONG_TYPE; sockets were the last such type with SET_PROPERTY.)
-  uint32_t vmo = 0, ev = 0, ev2 = 0, thread = 0;
-  char name[32];
-  CHECK(490, sys(CROI_SYS_VMO_CREATE, PAGE, 0, (uint64_t)&vmo, 0, 0) == 0 &&
-                 sys(CROI_SYS_EVENT_CREATE, 0, (uint64_t)&ev, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_OBJECT_SET_PROPERTY, vmo, CROI_PROP_NAME, (uint64_t)"buffer\0junk", 11, 0) == 0 &&
-                 sys(CROI_SYS_OBJECT_GET_PROPERTY, vmo, CROI_PROP_NAME, (uint64_t)name, 31, 0) == ERR_BUFFER_TOO_SMALL &&
-                 sys(CROI_SYS_OBJECT_GET_PROPERTY, vmo, CROI_PROP_NAME, (uint64_t)name, 32, 0) == 0 &&
-                 name[0] == 'b' && name[5] == 'r' && name[6] == 0 && name[7] == 0 &&
-                 sys(CROI_SYS_OBJECT_SET_PROPERTY, vmo, CROI_PROP_NAME,
-                     (uint64_t)"0123456789abcdefghijklmnopqrstuvwxyz", 36, 0) == 0 &&
-                 sys(CROI_SYS_OBJECT_GET_PROPERTY, vmo, CROI_PROP_NAME, (uint64_t)name, 32, 0) == 0 &&
-                 name[30] == 'u' && name[31] == 0 &&
-                 sys(CROI_SYS_OBJECT_SET_PROPERTY, ev, CROI_PROP_NAME, (uint64_t)"x", 1, 0) == ERR_ACCESS_DENIED &&
-                 sys6(CROI_SYS_THREAD_CREATE, s->process, (uint64_t)"worker", 6, 0, (uint64_t)&thread, 0) == 0 &&
-                 sys(CROI_SYS_OBJECT_GET_PROPERTY, thread, CROI_PROP_NAME, (uint64_t)name, 32, 0) == 0 &&
-                 name[0] == 'w' && name[5] == 'r' && name[6] == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, thread, 0, 0, 0, 0);
-  // object_wait_many: the second item fires; count 0 times out; 65 is too
-  // many; a bad handle writes nothing back.
-  croi_wait_item_t items[2] = {{vmo, 1u << 0, 0xAA}, {ev, SIGNALED, 0xAA}};  // a VMO is never readable
-  CHECK(491, sys(CROI_SYS_OBJECT_SIGNAL, ev, 0, SIGNALED, 0, 0) == 0 &&
-                 sys(CROI_SYS_OBJECT_WAIT_MANY, (uint64_t)items, 2, now_ns() + 1000000000ull, 0, 0) == 0 &&
-                 (items[1].pending & SIGNALED) && !(items[0].pending & 1u) && items[0].pending != 0xAA &&
-                 sys(CROI_SYS_OBJECT_WAIT_MANY, 0, 0, now_ns(), 0, 0) == ERR_TIMED_OUT &&
-                 sys(CROI_SYS_OBJECT_WAIT_MANY, (uint64_t)items, 65, 0, 0, 0) == ERR_OUT_OF_RANGE);
-  items[0].handle = 0x7FFFFFF0u;
-  items[1].pending = 0xAA;
-  CHECK(492, sys(CROI_SYS_OBJECT_WAIT_MANY, (uint64_t)items, 2, 0, 0, 0) == ERR_BAD_HANDLE && items[1].pending == 0xAA);
-  // handle_close_many: 0 skipped, a bad value reported, the rest closed.
-  uint32_t list[4] = {0, 0, 0, 0};
-  CHECK(493, sys(CROI_SYS_EVENT_CREATE, 0, (uint64_t)&list[0], 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_EVENT_CREATE, 0, (uint64_t)&list[3], 0, 0, 0) == 0 && (list[2] = 0x7FFFFFF0u) &&
-                 sys(CROI_SYS_HANDLE_CLOSE_MANY, (uint64_t)list, 4, 0, 0, 0) == ERR_BAD_HANDLE &&
-                 sys(CROI_SYS_HANDLE_CLOSE, list[0], 0, 0, 0, 0) == ERR_BAD_HANDLE &&
-                 sys(CROI_SYS_HANDLE_CLOSE, list[3], 0, 0, 0, 0) == ERR_BAD_HANDLE &&
-                 sys(CROI_SYS_HANDLE_CLOSE_MANY, (uint64_t)list, 2, 0, 0, 0) == ERR_BAD_HANDLE &&  // list[0] went
-                 (list[0] = 0, sys(CROI_SYS_HANDLE_CLOSE_MANY, (uint64_t)list, 2, 0, 0, 0) == 0));  // zeros skipped
-  // port_cancel_key: an async wait and a queued user packet with key 5
-  // go; key 6's stays.
-  uint32_t port = 0;
-  croi_port_packet_t packet = {0};
-  CHECK(494, sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_EVENT_CREATE, 0, (uint64_t)&ev2, 0, 0, 0) == 0 &&
-                 bind1(port, ev2, CROI_BIND_SIGNALS, 5, SIGNALED) == 0 && (packet.key = 5) &&
-                 sys(CROI_SYS_PORT_QUEUE, port, (uint64_t)&packet, 0, 0, 0) == 0 && (packet.key = 6) &&
-                 sys(CROI_SYS_PORT_QUEUE, port, (uint64_t)&packet, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_PORT_CANCEL_KEY, port, 1, 5, 0, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_PORT_CANCEL_KEY, port, 0, 5, 0, 0) == 0 &&
-                 sys(CROI_SYS_PORT_CANCEL_KEY, port, 0, 5, 0, 0) == ERR_NOT_FOUND &&
-                 sys(CROI_SYS_OBJECT_SIGNAL, ev2, 0, SIGNALED, 0, 0) == 0 &&
-                 sys(CROI_SYS_PORT_WAIT, port, 0, (uint64_t)&packet, 0, 0) == 0 && packet.key == 6 &&
-                 sys(CROI_SYS_PORT_WAIT, port, 0, (uint64_t)&packet, 0, 0) == ERR_TIMED_OUT);
-  sys(CROI_SYS_HANDLE_CLOSE, port, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, ev2, 0, 0, 0, 0);
-  // The channel *_etc checks (495-499) went with the calls (D22);
-  // MAY_DISCARD moved to the channel suite.
-  uint32_t rest[2] = {ev, vmo};
-  sys(CROI_SYS_HANDLE_CLOSE_MANY, (uint64_t)rest, 2, 0, 0, 0);
-  return 0;
-}
+// K13e's small calls (names, handle_close_many, port_cancel_key) moved to
+// the objects suite (user/test/swift/ObjectSuite.swift) when V1 cut
+// object_wait_many and events (D23).
 
 // K13e part 2: info topics and vmar_op_range. A thread to inspect while
 // it waits on a port.
@@ -3996,7 +3852,8 @@ static int64_t reclaim(const startup_t *s) {
   sys(CROI_SYS_HANDLE_CLOSE, aux, 0, 0, 0, 0);
 
   // Memory pressure: the root job only (OUT_OF_MEMORY with
-  // MANAGE_PROCESS); one event signaled; holders can't signal them.
+  // MANAGE_PROCESS); one event signaled. (That holders couldn't signal
+  // them went with object_signal, D23.)
   uint32_t ev[6] = {0}, job = 0, wrong = 0, limited = 0;
   CHECK(615, sys(CROI_SYS_SYSTEM_GET_EVENT, s->job, 9, (uint64_t)&wrong, 0, 0) == ERR_INVALID_ARGS &&
                  sys(CROI_SYS_JOB_CREATE, s->job, 0, (uint64_t)&job, 0, 0) == 0 &&
@@ -4014,8 +3871,7 @@ static int64_t reclaim(const startup_t *s) {
   CHECK(616, got && (wait_for(ev[CROI_SYSTEM_EVENT_MEMORY_PRESSURE_NORMAL], CROI_SIGNAL_SIGNALED, 0) &
                      CROI_SIGNAL_SIGNALED) &&
                  !(wait_for(ev[CROI_SYSTEM_EVENT_MEMORY_PRESSURE_WARNING], CROI_SIGNAL_SIGNALED, 0) &
-                   CROI_SIGNAL_SIGNALED) &&
-                 sys(CROI_SYS_OBJECT_SIGNAL, ev[1], 0, CROI_SIGNAL_SIGNALED, 0, 0) == ERR_ACCESS_DENIED);
+                   CROI_SIGNAL_SIGNALED));
   // Watermarks just below free memory (no hysteresis, no eviction delay):
   // 16 MiB committed is Warning, 32 MiB Critical, both freed Normal again.
   uint64_t free = (uint64_t)reclaim_hook(9, 0, 0, 0, 0, 0);
@@ -4055,9 +3911,9 @@ static int64_t vmo_slices(const startup_t *s) {
   if (s->ecam == 0) return 0;
   volatile uint8_t *whole = 0;
   uint32_t parent = physical_vmo(s, s->ecam, 0x10000, &whole);
-  uint32_t observed = 0, slice = 0, deeper = 0, ro = 0, ro_slice = 0, nw_slice = 0, anon = 0, bad = 0;
+  uint32_t slice = 0, deeper = 0, ro = 0, ro_slice = 0, nw_slice = 0, anon = 0, bad = 0;
   uint32_t zero = CROI_VMO_ZERO_CHILDREN, slice_option = CROI_VMO_CHILD_SLICE;
-  CHECK(430, sys(CROI_SYS_OBJECT_WAIT_ONE, parent, zero, 0, (uint64_t)&observed, 0) == 0 && (observed & zero));
+  CHECK(430, (wait_for(parent, zero, 0) & zero));
   CHECK(431, sys(CROI_SYS_VMO_CREATE, PAGE, CROI_VMO_CREATE_RESIZABLE, (uint64_t)&anon, 0, 0) == 0 &&
                  vmo_child(anon, slice_option, 0, PAGE, &bad) == ERR_NOT_SUPPORTED &&  // resizable (K14g)
                  vmo_child(parent, slice_option | CROI_VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE, 0, PAGE, &bad) ==
@@ -4069,7 +3925,7 @@ static int64_t vmo_slices(const startup_t *s) {
   // A slice over device 1's page clears ZERO_CHILDREN and reads as the parent.
   uint64_t at = 0, deep_at = 0;
   CHECK(432, vmo_child(parent, slice_option, 0x8000, PAGE, &slice) == 0 &&
-                 sys(CROI_SYS_OBJECT_WAIT_ONE, parent, zero, 0, (uint64_t)&observed, 0) == ERR_TIMED_OUT &&
+                 !(wait_for(parent, zero, 0) & zero) &&
                  sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)CROI_VM_PERM_READ << 32, 0, slice, 0, PAGE,
                       (uint64_t)&at) == 0 &&
                  *(volatile uint32_t *)at == *(volatile uint32_t *)(whole + 0x8000));
@@ -4111,9 +3967,9 @@ static int64_t vmo_slices(const startup_t *s) {
   // The last slice's handle goes while it is mapped: still a child. The
   // unmap ends it, and ZERO_CHILDREN comes back.
   CHECK(436, sys(CROI_SYS_HANDLE_CLOSE, slice, 0, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_OBJECT_WAIT_ONE, parent, zero, 0, (uint64_t)&observed, 0) == ERR_TIMED_OUT &&
+                 !(wait_for(parent, zero, 0) & zero) &&
                  sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, PAGE, 0, 0) == 0 &&
-                 sys(CROI_SYS_OBJECT_WAIT_ONE, parent, zero, now_ns() + 1000000000ull, (uint64_t)&observed, 0) == 0 &&
+                 (wait_for(parent, zero, 1000000000ull) & zero) &&
                  sys(CROI_SYS_VMO_SET_CACHE_POLICY, parent, CROI_CACHE_POLICY_UNCACHED_DEVICE, 0, 0, 0) ==
                      ERR_BAD_STATE);
   sys(CROI_SYS_VMAR_UNMAP, s->vmar, (uint64_t)whole, 0x10000, 0, 0);
@@ -4266,7 +4122,7 @@ static int64_t child_kinds(const startup_t *s) {
   // A slice of an anonymous VMO: its pages, from the offset, both ways, by
   // syscall and by mapping; its size; nothing attributed to it; the
   // parent's ZERO_CHILDREN cleared while it lives.
-  uint32_t big = 0, slice = 0, deeper = 0, observed = 0, zero = CROI_VMO_ZERO_CHILDREN;
+  uint32_t big = 0, slice = 0, deeper = 0, zero = CROI_VMO_ZERO_CHILDREN;
   uint64_t size = 0, mapped = 0;
   CHECK(654, sys(CROI_SYS_VMO_CREATE, 4 * PAGE, 0, (uint64_t)&big, 0, 0) == 0 && vmo_put(big, PAGE, 'S') &&
                  vmo_child(big, CROI_VMO_CHILD_SLICE, PAGE, 2 * PAGE, &slice) == 0 && vmo_byte(slice, 0) == 'S' &&
@@ -4282,7 +4138,7 @@ static int64_t child_kinds(const startup_t *s) {
                       (uint64_t)&at) != 0 &&
                  get_info(slice, CROI_INFO_VMO, &v, sizeof v, counts) == 0 && v.committed_bytes == 0 &&
                  !(v.flags & CROI_INFO_VMO_IS_COW_CLONE) && v.parent_koid == koid_of(big) && v.size_bytes == 2 * PAGE &&
-                 sys(CROI_SYS_OBJECT_WAIT_ONE, big, zero, 0, (uint64_t)&observed, 0) == ERR_TIMED_OUT);
+                 !(wait_for(big, zero, 0) & zero));
   // Decommit and ZERO through it reach the parent's pages (and the
   // mapping); a slice of it is the parent's at the summed offset, counted
   // as the slice's child.
@@ -4296,9 +4152,9 @@ static int64_t child_kinds(const startup_t *s) {
                  sys6(CROI_SYS_VMO_OP_RANGE, slice, CROI_VMO_OP_ZERO, PAGE, 4, 0, 0) == 0 &&
                  vmo_byte(big, 2 * PAGE) == 0 && vmo_byte(big, 2 * PAGE + 5) == 'T' &&
                  vmo_child(slice, CROI_VMO_CHILD_SLICE, PAGE, PAGE, &deeper) == 0 && vmo_byte(deeper, 5) == 'T' &&
-                 sys(CROI_SYS_OBJECT_WAIT_ONE, slice, zero, 0, (uint64_t)&observed, 0) == ERR_TIMED_OUT &&
+                 !(wait_for(slice, zero, 0) & zero) &&
                  sys(CROI_SYS_HANDLE_CLOSE, deeper, 0, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_OBJECT_WAIT_ONE, slice, zero, now_ns() + 1000000000ull, (uint64_t)&observed, 0) == 0);
+                 (wait_for(slice, zero, 1000000000ull) & zero));
   // Refused through a slice: snapshots of it (an anonymous one, Zircon's),
   // a reference, a window past it; the parent's cache policy is fixed.
   uint32_t grow = 0;
@@ -4340,7 +4196,7 @@ static int64_t child_kinds(const startup_t *s) {
   // reference's child; info names the parent. (The shared content size is
   // VmoSuite's.)
   CHECK(659, vmo_child(ref, CROI_VMO_CHILD_SNAPSHOT, 0, PAGE, &rsnap) == 0 && vmo_byte(rsnap, 7) == 'R' &&
-                 sys(CROI_SYS_OBJECT_WAIT_ONE, ref, zero, 0, (uint64_t)&observed, 0) == ERR_TIMED_OUT &&
+                 !(wait_for(ref, zero, 0) & zero) &&
                  get_info(rsnap, CROI_INFO_VMO, &v, sizeof v, counts) == 0 && v.parent_koid == koid_of(ref) &&
                  get_info(ref, CROI_INFO_VMO, &v, sizeof v, counts) == 0 && v.parent_koid == koid_of(grow) &&
                  v.committed_bytes == 0 && (v.flags & CROI_INFO_VMO_RESIZABLE) && v.size_bytes == 3 * PAGE);
@@ -4940,7 +4796,7 @@ static uint32_t handle_rights(uint32_t handle) {
 
 static int64_t get_child(const startup_t *s) {
   const uint32_t enumerate = 1u << 8, destroy = 1u << 9, inspect = 1u << 15;
-  uint32_t job = 0, thread = 0, process = 0, found = 0, sub = 0, worker = 0, weak = 0, event = 0, none = 0;
+  uint32_t job = 0, thread = 0, process = 0, found = 0, sub = 0, worker = 0, weak = 0, port = 0, none = 0;
   CHECK(746, sys(CROI_SYS_JOB_CREATE, s->job, 0, (uint64_t)&job, 0, 0) == 0);
   process = make_child(s, job, &thread);
   uint64_t jk = koid_of(job), pk = koid_of(process), tk = koid_of(thread);
@@ -4955,10 +4811,10 @@ static int64_t get_child(const startup_t *s) {
   // the parent's, not a child (a grandchild, a thread of a job, nothing).
   CHECK(749, sys(CROI_SYS_HANDLE_DUPLICATE, job, inspect | enumerate, (uint64_t)&weak, 0, 0) == 0 &&
                  sys(CROI_SYS_HANDLE_DUPLICATE, job, inspect, (uint64_t)&none, 0, 0) == 0 &&
-                 sys(CROI_SYS_EVENT_CREATE, 0, (uint64_t)&event, 0, 0, 0) == 0 &&
+                 sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) == 0 &&
                  sys(CROI_SYS_OBJECT_GET_CHILD, 0x12340003, pk, RIGHT_SAME, (uint64_t)&found, 0) == ERR_BAD_HANDLE &&
                  sys(CROI_SYS_OBJECT_GET_CHILD, none, pk, RIGHT_SAME, (uint64_t)&found, 0) == ERR_ACCESS_DENIED &&
-                 sys(CROI_SYS_OBJECT_GET_CHILD, event, pk, RIGHT_SAME, (uint64_t)&found, 0) == ERR_ACCESS_DENIED &&
+                 sys(CROI_SYS_OBJECT_GET_CHILD, port, pk, RIGHT_SAME, (uint64_t)&found, 0) == ERR_ACCESS_DENIED &&
                  sys(CROI_SYS_OBJECT_GET_CHILD, weak, pk, inspect | destroy, (uint64_t)&found, 0) == ERR_ACCESS_DENIED &&
                  sys(CROI_SYS_OBJECT_GET_CHILD, weak, pk, RIGHT_SAME | inspect, (uint64_t)&found, 0) == ERR_ACCESS_DENIED);
   uint32_t got = 0;
@@ -4975,7 +4831,7 @@ static int64_t get_child(const startup_t *s) {
                  sys(CROI_SYS_OBJECT_GET_CHILD, job, pk, RIGHT_SAME, (uint64_t)&found, 0) == ERR_NOT_FOUND &&
                  sys(CROI_SYS_OBJECT_GET_CHILD, process2, tk, RIGHT_SAME, (uint64_t)&found, 0) == ERR_NOT_FOUND);
   // found is still 746's handle: refused calls write nothing.
-  uint32_t handles[] = {job, thread, process, sub, worker, weak, event, none, got, process2, found};
+  uint32_t handles[] = {job, thread, process, sub, worker, weak, port, none, got, process2, found};
   for (int i = 0; i < 11; i++) sys(CROI_SYS_HANDLE_CLOSE, handles[i], 0, 0, 0, 0);
   return 0;
 }
@@ -5585,9 +5441,9 @@ static int64_t extensions(const startup_t *s, uint64_t vdso_base) {
     sys(CROI_SYS_NANOSLEEP, now_ns() + 2000000 + (uint64_t)round * 100000, 0, 0, 0, 0);
     uint64_t killed = now_ns();
     CHECK(404, sys(CROI_SYS_TASK_KILL, victim, 0, 0, 0, 0) == 0);
-    uint32_t observed = 0;
-    sys(CROI_SYS_OBJECT_WAIT_ONE, victim, CROI_SIGNAL_TASK_TERMINATED, killed + 500000000ull, (uint64_t)&observed, 0);
-    CHECK(405, observed & CROI_SIGNAL_TASK_TERMINATED);
+    uint64_t now = now_ns();
+    CHECK(405, wait_for(victim, CROI_SIGNAL_TASK_TERMINATED, killed + 500000000ull > now ? killed + 500000000ull - now : 0) &
+                   CROI_SIGNAL_TASK_TERMINATED);
     sys(CROI_SYS_HANDLE_CLOSE, victim, 0, 0, 0, 0);
   }
 
@@ -5633,8 +5489,6 @@ static int64_t extensions(const startup_t *s, uint64_t vdso_base) {
   if (guardedCode != 0) return guardedCode;
   int64_t pg = pager(s);
   if (pg != 0) return pg;
-  int64_t small = small_calls(s);
-  if (small != 0) return small;
   int64_t topics = info_topics(s);
   if (topics != 0) return topics;
   int64_t clk = clocks(s);

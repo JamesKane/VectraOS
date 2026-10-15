@@ -191,12 +191,11 @@ enum Syscalls {
     }
 
     /// Syscalls a suspension may end and restart (K13g): their waits leave
-    /// nothing behind, and deadlines are absolute. nanosleep, object and
-    /// port waits, futex_wait, interrupt_wait, counter_wait, wait_many;
-    /// vmo_read, streams' reads (pager waits).
+    /// nothing behind, and deadlines are absolute. nanosleep, port_wait,
+    /// futex_wait, interrupt_wait, counter_wait; vmo_read (pager waits).
     static func restartable(_ number: UInt64) -> Bool {
         switch number {
-        case 4, 21, 33, 41, 90, 143, 164, 197, 198, 210: true
+        case 4, 33, 41, 90, 143, 164: true
         default: false
         }
     }
@@ -280,26 +279,8 @@ enum Syscalls {
             try put(try table.duplicate(handle, rights: Rights(rawValue: UInt32(truncatingIfNeeded: a[1]))), a[2])
         case 12:  // handle_replace
             try put(try table.replace(handle, rights: Rights(rawValue: UInt32(truncatingIfNeeded: a[1]))), a[2])
-        case 20:  // object_signal
-            let ref = try table.get(handle, rights: .signal)
-            try ObjectSignal.signal(ref, clear: UInt32(truncatingIfNeeded: a[1]), set: UInt32(truncatingIfNeeded: a[2]))
-        case 21:  // object_wait_one
-            var observed: UInt32 = 0
-            var status: Status? = nil
-            do throws(Status) {
-                try ObjectWait.one(table, handle, signals: UInt32(truncatingIfNeeded: a[1]), deadline: a[2],
-                                   observed: &observed)
-            } catch {
-                status = error
-            }
-            if a[3] != 0 { try put(observed, a[3]) }
-            if let status { throw status }
         case 22:  // object_bind(port, items, count): returns how many were bound
             return try Bind.call(table, port: handle, items: a[1], count: a[2])
-        case 30:  // event_create
-            try Policy.check(UInt32(CROI_POL_NEW_EVENT))
-            try check(a[1], MemoryLayout<UInt32>.size)
-            try put(try table.add(try EventObject.create(), rights: EventObject.defaultRights), a[1])
         case 31:  // port_create
             try Policy.check(UInt32(CROI_POL_NEW_PORT))
             try check(a[1], MemoryLayout<UInt32>.size)

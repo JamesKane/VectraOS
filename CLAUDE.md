@@ -72,8 +72,8 @@ CMake/Ninja builds the images, with one tree per arch under `build/<arch>/`.
 
 V0 is done (2026-10-15). V1 is under way: `object_bind` landed (D20),
 and the cuts have begun: FIFOs, sockets and streams (D21), the channel
-`_etc` forms and the futex extras (D22), 129 syscalls
-(`docs/syscall-audit.md`).
+`_etc` forms and the futex extras (D22), events, signals and the thread
+waits (D23), 123 syscalls (`docs/syscall-audit.md`).
 - **Done:** croi imported, passing on amd64, arm64 and rv64; todhchai's
   Judge, History, trace format and reader lifted; `vx` with build, test,
   boot, bench, trace, loc and ci.

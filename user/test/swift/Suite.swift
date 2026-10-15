@@ -43,6 +43,8 @@ enum Suite {
             FutexSuite.run()
         } else if requested("channel") {
             ChannelSuite.run()
+        } else if requested("objects") {
+            ObjectSuite.run()
         } else {
             print("swift: no such suite")
             croi_exit(2)
@@ -71,6 +73,8 @@ enum Status {
     static var badState: Int64 { -20 }
     static var timedOut: Int64 { -21 }
     static var shouldWait: Int64 { -22 }
+    static var peerClosed: Int64 { -24 }
+    static var notFound: Int64 { -25 }
     static var accessDenied: Int64 { -30 }
 }
 
@@ -179,6 +183,20 @@ struct Port: ~Copyable {
 
     /// Nothing is queued.
     var empty: Bool { next() == nil }
+
+    /// The signals `source` has once any of `signals` is asserted, or 0 if
+    /// none is by `deadline` (0: now). V1 cut object_wait_one (D23): a ONCE
+    /// binding on a port of its own, cancelled if it didn't fire, since a
+    /// pending binding holds its port.
+    static func signals(of source: borrowing Handle, _ signals: UInt32, deadline: UInt64 = 0) -> UInt32 {
+        let port = Port()
+        guard port.bind(source, UInt32(CROI_BIND_SIGNALS), key: 0, trigger: UInt64(signals)) == 0 else { return 0 }
+        guard let packet = port.next(deadline: deadline) else {
+            _ = port.cancel(source, key: 0)
+            return 0
+        }
+        return UInt32(truncatingIfNeeded: packet.payload.0 >> 32)
+    }
 }
 
 /// A VMO mapped into the root VMAR, unmapped when it goes. Suites read and

@@ -10,10 +10,11 @@ import Synchronization
 /// address space and object it made must be gone: a process holding its
 /// own handle included.
 ///
-/// K7b (mode 7): channels, eventpairs and calls between two of its threads,
-/// the client on a deadline context the kernel provides, which must be lent
-/// to the server while it serves (ext 2); the `ipc` trace records of a call
-/// share one flow id, the one user space computes. Panics on failure.
+/// K7b (mode 7): calls between two of its threads, the client on a
+/// deadline context the kernel provides, which must be lent to the server
+/// while it serves (ext 2); the `ipc` trace records of a call share one
+/// flow id, the one user space computes. Channel basics moved to the
+/// channel suite (D23). Panics on failure.
 enum ProcessSelfTest {
     static func run(_ console: Uart) {
         let before = Counts()
@@ -80,8 +81,8 @@ enum ProcessSelfTest {
             panic("ipc self-test: a call's trace records don't share its flow")
         }
         before.expectUnchanged(console)
-        console.write("  ipc:    channels (bytes, handles moved, limits, peer closed), eventpairs, info; calls with ")
-        console.write("txids, timeout, peer closed; a deadline caller's profile lent to the server (ext 2); ")
+        console.write("  ipc:    calls with txids, timeout, peer closed; a deadline caller's profile lent to the ")
+        console.write("server (ext 2); ")
         console.write("call, read, donation and reply share the flow user space computes\n")
     }
 
