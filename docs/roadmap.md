@@ -29,11 +29,19 @@ are in place, which includes the bring-up link (V3, D15).
 
 ## V1. Setup-engine kernel
 
-- Audit every object and syscall, and write a decision entry for each cut.
-- Implement the one ring (architecture §3) in Swift and as `ring.h`, with a
-  model checker.
-- Doorbells are counters, and waits go through ports.
-- Close the `channel_call` < 1 µs open item.
+The audit is done (`docs/syscall-audit.md`: 154 calls to 91; D18, D19).
+The work, in order:
+1. `object_bind` (batched, ONCE or PERSISTENT) and `port_wait` with a
+   leeway, so that every cut has its replacement in place.
+2. The cuts, one commit per family (sockets, streams, timers, …). Each
+   updates the family's design note, its tests, `zircon-divergences.md`
+   and the ceiling, and adds a decision entry. `vx todhchai-check`
+   retires at the first one.
+3. The batched forms of the hot calls (audit §3).
+4. The one ring (architecture §3) in Swift and as `ring.h`, with a model
+   checker. Doorbells are counters.
+5. Ports become rings (D19); the debuglog becomes a read-only ring.
+6. Close the `channel_call` < 1 µs open item.
 
 **Exit:**
 - The kernel and IPC budgets are green.

@@ -52,7 +52,8 @@ target role is principle 4: a setup engine.
 - **Sockets, streams and FIFOs.** Rings replace them.
 - **Eventpairs and events.** Counters and port packets may cover them.
 - **The display timeline.** It becomes a counter.
-- **Any syscall that duplicates a batched form.**
+- **Any syscall that duplicates a batched form.** The audit
+  (`docs/syscall-audit.md`) settles each one.
 
 The syscall count is published and capped. The cap only ever goes down
 (performance.md, "Size").
