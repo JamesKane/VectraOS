@@ -18,6 +18,9 @@ enum : uint32_t {
   // in every handle table and in channel messages in flight. A mapping
   // keeps a VMO alive without a handle: see vmo.h's ZERO_CHILDREN.
   CROI_INFO_HANDLE_COUNT = 19,
+  // handle_duplicate's options (D34): CONSUME closes the handle, even on
+  // failure, and needs no DUPLICATE right (handle_replace until D34).
+  CROI_HANDLE_DUPLICATE_CONSUME = 1u << 0,
 };
 
 // zx_info_handle_count_t.

@@ -14,7 +14,8 @@ signals and object types, so the ABI matches):
 - `HandleTable` (per process from K7): slots of (object, rights); a value
   is slot + 8-bit generation + Zircon's fixed low bits, so stale handles
   fail. get (bad handle, wrong type, access denied, in that order),
-  duplicate/replace (rights subset or sameRights), close (cancels waits
+  duplicate/replace (rights subset or sameRights; replace is
+  handle_duplicate with CONSUME since D34), close (cancels waits
   through the handle). `HandleTable.withBorrowed` for threads sharing one.
 - Waiting: observers on an object's list; `updateSignals` runs them under
   the object lock. Since V1 (D23) a port is the one wait: the observers
@@ -157,7 +158,7 @@ User/SyncSyscalls.swift; timer objects were cut in V1, below):
   waits" below). The hook their last handle's close used stays:
   `Objects.lastHandleClosed`, Zircon's on_zero_handles, run from
   `HandleTable.close`, a freed message's handles and `releaseTaken`;
-  handle_replace adds the new handle before closing the old so the count
+  a CONSUME duplicate (handle_replace until D34) adds the new handle before closing the old so the count
   never passes through 0. Nothing uses it until ports cancel their
   bindings there.
 

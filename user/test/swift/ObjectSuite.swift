@@ -57,6 +57,29 @@ enum ObjectSuite {
         check(croi_handle_close(narrowed) == 0, "closed")
         check(croi_handle_close(narrowed) == Status.badHandle, "and gone")
         check(Sys.call(CROI_SYS_PORT_CREATE, 0, 0x10) == Status.invalidArgs, "a bad out pointer is an error")
+        consume()
+    }
+
+    /// handle_duplicate with CONSUME (handle_replace until D34): the old
+    /// handle goes, even when the rights asked for are refused, and
+    /// DUPLICATE isn't needed.
+    static func consume() {
+        let consumeOption = UInt64(CROI_HANDLE_DUPLICATE_CONSUME)
+        var undupable: UInt32 = 0
+        let counter = Handle(creating: CROI_SYS_COUNTER_CREATE)
+        check(Sys.call(CROI_SYS_HANDLE_DUPLICATE, counter.arg, UInt64(wait | transfer), Sys.address(&undupable)) == 0,
+              "a handle without DUPLICATE")
+        var replaced: UInt32 = 0
+        check(Sys.call(CROI_SYS_HANDLE_DUPLICATE, UInt64(undupable), UInt64(wait), Sys.address(&replaced), consumeOption)
+                  == 0 && replaced != undupable, "replaced with fewer rights")
+        check(croi_handle_close(undupable) == Status.badHandle, "the old handle is gone")
+        var refused: UInt32 = 0
+        check(Sys.call(CROI_SYS_HANDLE_DUPLICATE, UInt64(replaced), UInt64(wait | transfer), Sys.address(&refused),
+                       consumeOption) == Status.invalidArgs && croi_handle_close(replaced) == Status.badHandle,
+              "more rights refused, and consumed all the same")
+        var other: UInt32 = 0
+        check(Sys.call(CROI_SYS_HANDLE_DUPLICATE, counter.arg, UInt64(wait), Sys.address(&other), 2) == Status.invalidArgs,
+              "an unknown option")
     }
 
     /// port_queue's packets come back as queued.

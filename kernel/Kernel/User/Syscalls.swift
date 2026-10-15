@@ -278,10 +278,14 @@ enum Syscalls {
         switch number {
         case 10:  // handle_close(const uint32_t *handles, count), D33
             try closeHandles(table, handles: a[0], count: a[1])
-        case 11:  // handle_duplicate
-            try put(try table.duplicate(handle, rights: Rights(rawValue: UInt32(truncatingIfNeeded: a[1]))), a[2])
-        case 12:  // handle_replace
-            try put(try table.replace(handle, rights: Rights(rawValue: UInt32(truncatingIfNeeded: a[1]))), a[2])
+        case 11:  // handle_duplicate(handle, rights, out, options); CONSUME replaces it (D34)
+            let rights = Rights(rawValue: UInt32(truncatingIfNeeded: a[1]))
+            if a[3] == UInt64(CROI_HANDLE_DUPLICATE_CONSUME) {
+                try put(try table.replace(handle, rights: rights), a[2])
+            } else {
+                guard a[3] == 0 else { throw .invalidArgs }
+                try put(try table.duplicate(handle, rights: rights), a[2])
+            }
         case 22:  // object_bind(port, items, count): returns how many were bound
             return try Bind.call(table, port: handle, items: a[1], count: a[2])
         case 31:  // port_create

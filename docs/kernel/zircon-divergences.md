@@ -104,6 +104,10 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   runtime's croi_handle_close passes an array of one). Kind: deliberate
   (batch first, one call per job). Impact: every caller of
   zx_handle_close, through the C wrapper.
+- **No handle_replace** (V1, D34) — handle_duplicate(handle, rights,
+  out, CROI_HANDLE_DUPLICATE_CONSUME) is zx_handle_replace: the handle
+  goes even on failure, and DUPLICATE isn't needed. Kind: deliberate
+  (one call per job). Impact: callers of zx_handle_replace.
 - **No port_cancel_key** (V1, D32) — port_cancel with source 0 (no
   handle is 0) cancels the key from every source, as
   zx_port_cancel_key does; it has no options argument. Kind: deliberate

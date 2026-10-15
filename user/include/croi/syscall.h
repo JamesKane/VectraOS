@@ -13,8 +13,7 @@ enum : uint64_t {
   CROI_SYS_THREAD_EXIT = 2,        // (int64_t code): the calling thread
   CROI_SYS_TEST_REPORT = 5,        // (value) for the boot self-test
   CROI_SYS_HANDLE_CLOSE = 10,      // (const uint32_t *handles, count): 0 skipped (D33)
-  CROI_SYS_HANDLE_DUPLICATE = 11,  // (handle, rights, uint32_t *out)
-  CROI_SYS_HANDLE_REPLACE = 12,    // (handle, rights, uint32_t *out)
+  CROI_SYS_HANDLE_DUPLICATE = 11,  // (handle, rights, uint32_t *out, options): CONSUME replaces (D34)
   CROI_SYS_OBJECT_BIND = 22,       // (port, croi_bind_item_t *items, count): port.h
   CROI_SYS_PORT_CREATE = 31,       // (options, uint32_t *out)
   CROI_SYS_PORT_QUEUE = 32,        // (port, const croi_port_packet_t *packet)
