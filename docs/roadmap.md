@@ -34,9 +34,9 @@ The work, in order:
 1. **Done (D20):** `object_bind` (batched, ONCE or PERSISTENT) and
    `port_wait` with a leeway, so that every cut has its replacement in
    place. 154 → 150 calls; `vx todhchai-check` retired.
-2. The cuts, one commit per family. Each updates the family's design
-   note, its tests, `zircon-divergences.md` and the ceiling, and adds a
-   decision entry. A `usertest.c` test the cut touches moves to a Swift
+2. **Done (92 calls):** the cuts, one commit per family. Each updates
+   the family's design note, its tests, `zircon-divergences.md` and the
+   ceiling, and adds a decision entry. A `usertest.c` test the cut touches moves to a Swift
    suite. Done: FIFOs, sockets and streams (D21, 135 calls); the channel
    `_etc` forms and the futex extras (D22, 129 calls); events, signals
    and the thread waits (D23, 123 calls); sleeps, timers and the counter
@@ -44,11 +44,15 @@ The work, in order:
    107 calls); debug_write and vmo_map (D28, 105 calls); interrupt_wait,
    interrupt_destroy and interrupt_trigger (D29, 102 calls);
    thread_raise_exception (D30, 101 calls); system_get_event (D31, 100
-   calls).
+   calls); port_cancel_key, handle_close_many, handle_replace and
+   test_report merged (D32–D35, 96 calls); vmo_get_size and process_info
+   as info topics (D36, 94 calls); vmo_read and vmo_write (D37, 92
+   calls). debuglog_read, the last, needs the ring: item 5 (D38).
 3. The batched forms of the hot calls (audit §3).
 4. The one ring (architecture §3) in Swift and as `ring.h`, with a model
    checker. Doorbells are counters.
-5. Ports become rings (D19); the debuglog becomes a read-only ring.
+5. Ports become rings (D19); the debuglog becomes a read-only ring, in
+   the ring's OVERWRITE mode, and debuglog_read is cut (D38, 91 calls).
 6. Close the `channel_call` < 1 µs open item.
 
 **Exit:**
