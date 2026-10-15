@@ -185,6 +185,14 @@ it at any time:
 - **From todhchai:** tab stacking, stashing and the focus area with a live
   periphery. Each one must earn its place against principle 1 in V6.
 
+**Look: Platinum Indigo** (D24). The desktop is skeuomorphic in the manner
+of the 1990s and early 2000s: BeOS structure and yellow tabs, NeXT bevels
+and column browsers, SGI Indigo Magic colour, MUI grooved groups. All
+chrome is vector, so 1080p to 4K and beyond is a scale factor, not a
+second set of bitmaps. The storyboard is the reference:
+[VectraOS Desktop Storyboard](https://claude.ai/artifact/BcQQLDod1qqmgwVzabeTPX)
+(a copy of its sources is in [design/storyboard/](design/storyboard/)).
+
 ## 8. Compute: accelerators as nodes
 
 ```

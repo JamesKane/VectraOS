@@ -76,6 +76,7 @@ You need Swift 6.4.0 through swiftly (pinned by `.swift-version`, with its bundl
 | [docs/roadmap.md](docs/roadmap.md) | The milestones and their exit criteria |
 | [docs/syscall-audit.md](docs/syscall-audit.md) | V1's audit: which calls stay, which go, and what replaces them |
 | [docs/trace-format.md](docs/trace-format.md) | The trace format the budgets are read from |
+| [docs/design/storyboard/](docs/design/storyboard/) | The desktop storyboard ([live canvas](https://claude.ai/artifact/BcQQLDod1qqmgwVzabeTPX)): the Platinum Indigo look, D24 |
 | [docs/kernel/](docs/kernel/) | The kernel's rules, roadmap, design notes per subsystem, and its divergences from Zircon |
 
 ## License

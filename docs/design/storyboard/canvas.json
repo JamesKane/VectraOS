@@ -1,0 +1,23 @@
+{"v":3,"createdOnFiles":{"v":1,"at":"2026-10-15T12:00:00Z"},"title":"VectraOS Desktop Storyboard","launch":{"view":"canvas"},"pages":[],
+"boards":{
+"Main.dc.html":{"x":0,"y":0,"w":1920,"h":1080,"title":"01 · Space workspace: the desktop at rest"},
+"Tile.dc.html":{"x":2000,"y":0,"w":1920,"h":1080,"title":"02 · The same work, projected to tile"},
+"Tracker.dc.html":{"x":4000,"y":0,"w":1920,"h":1080,"title":"03 · Tracker: a live query over typed attributes"},
+"Inspector.dc.html":{"x":0,"y":1700,"w":1920,"h":1080,"title":"04 · Inspector: the system shows what it is doing"},
+"Namespace.dc.html":{"x":2000,"y":1700,"w":1920,"h":1080,"title":"05 · Namespace browser and ring patch bay"},
+"Prefs.dc.html":{"x":4000,"y":1700,"w":1920,"h":1080,"title":"06 · Appearance, and the trusted prompt"},
+"Kit.dc.html":{"x":0,"y":3400,"w":1920,"h":1080,"title":"07 · Component kit at 1× and 2×"}
+},
+"order":["Main.dc.html","Tile.dc.html","Tracker.dc.html","Inspector.dc.html","Namespace.dc.html","Prefs.dc.html","Kit.dc.html"],
+"notes":{
+"act1":{"x":0,"y":-300,"text":"Act I · Sitting down at the machine","kind":"title1","maxW":5920},
+"act2":{"x":0,"y":1400,"text":"Act II · Seeing through it","kind":"title1","maxW":5920},
+"act3":{"x":0,"y":3100,"text":"Kit · Platinum Indigo, vector chrome from 1080p to 4K","kind":"title1","maxW":1920},
+"c1":{"x":0,"y":1120,"w":640,"maxH":220,"size":"m","text":"Beat 1. A Q8B boots to this in under 3 s. Workspace 1 is `space`: Tracker's home folder reopens where it was left (frame stored as a Taisce attribute). The Terminal has the focused yellow tab; it has just mounted the Q8B over 9gate. Deskbar sits top-right with live gauges and a 2×2 workspace grid marked S/T."},
+"c2":{"x":2000,"y":1120,"w":640,"maxH":220,"size":"m","text":"Beat 2. One chord or a click on the workspace's S/T chip projects the same windows into master-stack. The mode bezel confirms it and fades. Tabs fold into strips; nothing is lost: flipping back restores every spatial frame. Budget: done within 2 frames of input."},
+"c3":{"x":4000,"y":1120,"w":640,"maxH":220,"size":"m","text":"Beat 3. A query is a folder. Built in the Find pane's MUI-style group, it stays live: the count ticks as the camera ring on the Q8B lands frames on disk. Columns are attributes. Get Info shows typed attributes and provenance (sys:origin-app)."},
+"c4":{"x":0,"y":2820,"w":640,"maxH":220,"size":"m","text":"Beat 4. The Inspector is principle 19 made visible: jobs and processes, threads with their declared intent (never a priority), what each waits on (always a port), its handles, the rings it shares with their cursors, and the budgets with their limits."},
+"c5":{"x":2000,"y":2820,"w":640,"maxH":220,"size":"m","text":"Beat 5. The NeXT browser walks the namespace across machines: /n/q8b/dev/accel/cdsp0 is a directory with .help, .schema, ctl and ring. The patch bay draws what the control plane negotiated: camera ring → remote CDSP → the game's render ring. The CPU never touches the frames."},
+"c6":{"x":4000,"y":2820,"w":640,"maxH":220,"size":"m","text":"Beat 6. Appearance sets one UI scale from 100% to 300%; chrome is vector, so 4K is a number, not a second set of bitmaps. A recorder asks for `capture`: the keyring's prompt is a trusted surface, dimming everything, deaf to injected input and blacked out in captures."}
+},
+"designSystems":[]}

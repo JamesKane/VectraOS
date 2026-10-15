@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Component kit</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&amp;family=IBM+Plex+Mono:wght@400;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.vx{font-family:'Archivo',sans-serif;font-variation-settings:'wdth' 92;color:#1d1b17;font-size:13px;line-height:1.3}
+.mono{font-family:'IBM Plex Mono',monospace}
+.win{position:absolute;display:flex;flex-direction:column;filter:drop-shadow(0 10px 14px rgba(8,14,22,.38)) drop-shadow(0 2px 2px rgba(8,14,22,.35))}
+.tab{align-self:flex-start;display:flex;align-items:center;gap:10px;height:27px;padding:0 6px;background:linear-gradient(#ffe48a,#f2bb26);border:1px solid #2b2618;border-bottom:0;box-shadow:inset 1px 1px 0 #fff6cf,inset -1px 0 0 #b38710;border-radius:5px 5px 0 0;font-weight:700;font-size:13px;font-variation-settings:'wdth' 100;white-space:nowrap}
+.tab.off{background:linear-gradient(#ecE9e2,#cdc9bf);box-shadow:inset 1px 1px 0 #fff,inset -1px 0 0 #8f8a7f;color:#4a463e}
+.cbox{width:15px;height:15px;box-sizing:border-box;border:1px solid #2b2618;border-radius:2px;background:linear-gradient(135deg,#fffbe6,#e3ae18);box-shadow:inset 1px 1px 0 #fff}
+.tab.off .cbox{background:linear-gradient(135deg,#fff,#bdb8ad)}
+.zbox{position:relative}
+.zbox::after{content:'';position:absolute;left:2px;top:2px;width:6px;height:6px;border:1px solid #2b2618;background:#fff8dc}
+.frame{flex:1;border:1px solid #2b2618;background:#d8d4cb;padding:3px;box-shadow:inset 1px 1px 0 #f9f7f1,inset -1px -1px 0 #8f8a7f;display:flex;flex-direction:column;min-height:0;border-radius:0 3px 3px 3px}
+.menu{display:flex;gap:18px;height:23px;align-items:center;padding:0 10px;background:linear-gradient(#f3f1eb,#dcd8cf);border-bottom:1px solid #8f8a7f;font-size:13px}
+.well{background:#fbfaf6;border:1px solid #6d685e;box-shadow:inset 1px 1px 0 #b9b4a8}
+.lcd{background:#14211d;color:#9cf28f;border:1px solid #57524a;box-shadow:inset 1px 1px 0 #000,inset -1px -1px 0 #3c5048;text-shadow:0 0 6px rgba(140,240,130,.45);font-family:'IBM Plex Mono',monospace}
+.ico{display:flex;flex-direction:column;align-items:center;gap:4px;width:92px;text-align:center;font-size:12.5px}
+.lbl{padding:1px 5px;border-radius:2px}
+.desk .lbl{color:#fff;text-shadow:0 1px 0 #1b2833,0 0 3px #1b2833}
+.sel .lbl{background:#3e6fb0;color:#fff;text-shadow:none}
+.sb{width:15px;background:repeating-linear-gradient(45deg,#c9c5bb 0 2px,#bdb8ad 2px 4px);border-left:1px solid #6d685e;display:flex;flex-direction:column}
+.arr{height:15px;background:linear-gradient(#f3f1eb,#cfcbc1);border-bottom:1px solid #6d685e;box-shadow:inset 1px 1px 0 #fff}
+.thumb{margin:2px 1px;background:linear-gradient(90deg,#f3f1eb,#d0ccc2);border:1px solid #57524a;box-shadow:inset 1px 1px 0 #fff;border-radius:2px}
+.db{position:absolute;top:0;right:0;width:236px;background:#d8d4cb;border-left:1px solid #2b2618;border-bottom:1px solid #2b2618;box-shadow:inset 1px 1px 0 #f9f7f1,-4px 6px 14px rgba(8,14,22,.35);border-bottom-left-radius:4px}
+.dbrow{display:flex;align-items:center;gap:8px;padding:0 10px;height:30px;border-top:1px solid #f9f7f1;border-bottom:1px solid #a7a296;font-size:13px}
+.wsp{height:44px;border:1px solid #2b2618;background:#3f5868;position:relative;box-shadow:inset 1px 1px 0 rgba(0,0,0,.4)}
+.wsp.on{outline:2px solid #f2bb26;outline-offset:1px}
+.mode{position:absolute;right:2px;bottom:2px;font-size:9.5px;font-weight:800;padding:0 3px;background:#f3f1eb;border:1px solid #2b2618;line-height:12px}
+.mini{position:absolute;background:#d8d4cb;border:1px solid #1d1b17}
+.mini.f{border-top:3px solid #f2bb26}
+fieldset{border:2px groove #efebe3;border-radius:4px;margin:0;padding:8px 10px 10px}
+legend{font-weight:700;padding:0 6px;font-size:12.5px}
+.btn{height:26px;padding:0 14px;border:1px solid #2b2618;border-radius:4px;background:linear-gradient(#fbfaf6,#d6d2c8);box-shadow:inset 1px 1px 0 #fff,inset -1px -1px 0 #a39e92;font:inherit;font-weight:600;font-size:12.5px;color:#1d1b17}
+.btn.def{outline:2px solid #2b2618;outline-offset:2px}
+.pop{display:inline-flex;align-items:center;justify-content:space-between;gap:8px;height:24px;padding:0 6px 0 9px;border:1px solid #2b2618;border-radius:3px;background:linear-gradient(#fbfaf6,#d6d2c8);box-shadow:inset 1px 1px 0 #fff;font-size:12.5px;box-sizing:border-box}
+.pop::after{content:'';border:4px solid transparent;border-top:5px solid #2b2618;margin-top:5px}
+.fld{height:24px;box-sizing:border-box;border:1px solid #6d685e;box-shadow:inset 1px 1px 0 #b9b4a8;background:#fff;padding:0 7px;font-size:12.5px}
+.chk{width:14px;height:14px;border:1px solid #2b2618;background:#fff;box-shadow:inset 1px 1px 0 #a7a296;position:relative;display:inline-block}
+.chk.on::after{content:'';position:absolute;left:4px;top:1px;width:4px;height:8px;border:solid #1d1b17;border-width:0 2px 2px 0;transform:rotate(45deg)}
+.rdo{width:14px;height:14px;border:1px solid #2b2618;border-radius:50%;background:#fff;box-shadow:inset 1px 1px 0 #a7a296;position:relative;display:inline-block}
+.rdo.on::after{content:'';position:absolute;left:3px;top:3px;width:8px;height:8px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#7fa8e0,#2f5c96)}
+.rg{display:flex;align-self:flex-start}
+.rg span{padding:4px 10px;border:1px solid #6d685e;border-radius:4px 4px 0 0;background:#cdc9bf;font-size:12px;margin-right:-1px;border-bottom-color:#efece6}
+.rg span.on{background:#efece6;font-weight:700}
+.mi{display:flex;justify-content:space-between;padding:3px 10px}
+.mi span{font-family:'IBM Plex Mono',monospace;font-size:11.5px}
+.swt{display:grid;grid-template-columns:44px 1fr;gap:4px 10px;align-items:center;font-size:12.5px}
+.swt i{width:44px;height:30px;border:1px solid #1d1b17;display:block}
+.h2{font-size:13px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;font-variation-settings:'wdth' 112;color:#3a372f;border-bottom:1px solid #8f8a7f;padding-bottom:6px;box-shadow:0 1px 0 #fff}
+</style>
+</helmet>
+<div class="vx" style="width: 1920px; height: 1080px; position: relative; overflow: hidden; background: #d8d4cb; box-sizing: border-box; padding: 40px 48px; display: flex; flex-direction: column; gap: 26px">
+<div style="display: flex; align-items: center; gap: 18px">
+<svg width="52" height="52" viewBox="0 0 32 32" aria-hidden="true"><path d="M3 5h8l5 15V27z" fill="#f2bb26" stroke="#1d1b17" stroke-width="1.1" stroke-linejoin="round"/><path d="M29 5h-8l-5 15V27z" fill="#3e6fb0" stroke="#1d1b17" stroke-width="1.1" stroke-linejoin="round"/><path d="M11 5l5 15 5-15" fill="none" stroke="#fff" stroke-width=".8"/></svg>
+<div><div style="font-size: 40px; font-weight: 800; font-variation-settings: 'wdth' 118; line-height: 1">Platinum Indigo</div><div style="font-size: 15px; color: #3a372f; margin-top: 6px">BeOS structure, NeXT bevels, SGI Indigo Magic colour, MUI groups. Everything below is vector: one drawing, every scale.</div></div>
+</div>
+<div style="display: flex; gap: 56px; flex: 1; min-height: 0">
+
+<div style="width: 420px; display: flex; flex-direction: column; gap: 14px">
+<div class="h2">Tokens</div>
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px">
+<div class="swt"><i style="background: #3f5868"></i><span><b>desk</b><br><span class="mono">#3f5868</span></span></div>
+<div class="swt"><i style="background: #d8d4cb"></i><span><b>chrome</b><br><span class="mono">#d8d4cb</span></span></div>
+<div class="swt"><i style="background: #f9f7f1"></i><span><b>bevel.light</b><br><span class="mono">#f9f7f1</span></span></div>
+<div class="swt"><i style="background: #8f8a7f"></i><span><b>bevel.dark</b><br><span class="mono">#8f8a7f</span></span></div>
+<div class="swt"><i style="background: #2b2618"></i><span><b>outline</b><br><span class="mono">#2b2618</span></span></div>
+<div class="swt"><i style="background: #f2bb26"></i><span><b>tab.focus</b><br><span class="mono">#f2bb26</span></span></div>
+<div class="swt"><i style="background: #3e6fb0"></i><span><b>select</b><br><span class="mono">#3e6fb0</span></span></div>
+<div class="swt"><i style="background: #14211d"></i><span><b>lcd</b><br><span class="mono">#14211d</span></span></div>
+<div class="swt"><i style="background: #9cf28f"></i><span><b>phosphor</b><br><span class="mono">#9cf28f</span></span></div>
+<div class="swt"><i style="background: #d0473c"></i><span><b>alert · realtime</b><br><span class="mono">#d0473c</span></span></div>
+</div>
+<div class="h2" style="margin-top: 10px">Type</div>
+<div style="font-size: 28px; font-weight: 800; font-variation-settings: 'wdth' 118">Archivo Expanded 800</div>
+<div style="font-size: 15px">Archivo, width 92: window titles, menus, labels</div>
+<div class="mono" style="font-size: 14px">IBM Plex Mono: terminal, readouts, attributes</div>
+<div class="h2" style="margin-top: 10px">Rules</div>
+<div style="font-size: 13px; line-height: 1.5">Light from the top left. Bevels and outlines are one logical pixel, snapped to whole device pixels. Raised means you can press it; inset means it holds your data; grooved means it groups. Yellow means focus, blue means selection, green-on-black means live.</div>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 14px">
+<div class="h2">1× · 1080p</div>
+<div style="width: 400px; display: flex; flex-direction: column; gap: 16px">
+<div style="display: flex; gap: 12px; align-items: flex-end">
+<div class="win" style="position: relative; width: 190px; height: 70px"><div class="tab"><span class="cbox"></span><span>Focused</span><span class="cbox zbox"></span></div><div class="frame"><div class="menu" style="gap: 10px"><span>File</span><span>Edit</span></div></div></div>
+<div class="win" style="position: relative; width: 190px; height: 70px"><div class="tab off"><span class="cbox"></span><span>Behind</span><span class="cbox zbox"></span></div><div class="frame"><div class="menu" style="gap: 10px"><span>File</span><span>Edit</span></div></div></div>
+</div>
+<div style="display: flex; gap: 14px; align-items: center"><button type="button" class="btn">Cancel</button><button type="button" class="btn def">Open</button><button type="button" class="btn" disabled="disabled" style="color: #8f8a7f">Disabled</button></div>
+<div style="display: flex; gap: 18px; align-items: center">
+<span style="display: flex; gap: 6px; align-items: center"><span class="chk on"></span>Checked</span>
+<span style="display: flex; gap: 6px; align-items: center"><span class="chk"></span>Off</span>
+<span style="display: flex; gap: 6px; align-items: center"><span class="rdo on"></span>Radio</span>
+<span style="display: flex; gap: 6px; align-items: center"><span class="rdo"></span>Radio</span>
+</div>
+<div style="display: flex; gap: 10px; align-items: center"><span class="pop" style="width: 120px">Media:Device</span><span class="fld" style="width: 160px; display: inline-flex; align-items: center">q8b/cam0</span></div>
+<div style="position: relative; height: 24px">
+<div style="position: absolute; left: 0; right: 0; top: 9px; height: 6px; border: 1px solid #57524a; background: linear-gradient(#a7a296,#d8d4cb); border-radius: 3px"></div>
+<div style="position: absolute; left: 0; width: 60%; top: 9px; height: 6px; border: 1px solid #1d2b3a; background: linear-gradient(#5d8fd0,#3e6fb0); border-radius: 3px"></div>
+<div style="position: absolute; left: 60%; top: 1px; width: 24px; height: 20px; margin-left: -12px; border: 1px solid #1d1b17; border-radius: 3px; background: linear-gradient(90deg,#fbfaf6,#d0ccc2); box-shadow: inset 1px 1px 0 #fff"></div>
+</div>
+<div style="height: 16px; border: 1px solid #1d1b17; background: #efece6; box-shadow: inset 1px 1px 0 #a7a296; position: relative"><div style="position: absolute; left: 1px; top: 1px; bottom: 1px; width: 62%; background: repeating-linear-gradient(-45deg,#3e6fb0 0 6px,#5d8fd0 6px 12px)"></div></div>
+<div style="display: flex; gap: 12px">
+<fieldset style="flex: 1"><legend>Group</legend><div style="font-size: 12px">MUI groove frame</div></fieldset>
+<div class="lcd" style="width: 150px; padding: 6px 8px; font-size: 12px; display: flex; flex-direction: column; justify-content: center">FRAME 16.6 ms<br>AUDIO 2.7 ms</div>
+</div>
+<div style="display: flex; gap: 14px; align-items: flex-start">
+<div class="rg"><span class="on">Threads</span><span>Rings</span><span>Budgets</span></div>
+<div style="width: 15px; height: 84px; display: flex; flex-direction: column; border: 1px solid #6d685e" class="sb"><div class="arr"></div><div class="thumb" style="height: 30px"></div><div style="flex: 1"></div><div class="arr" style="border-top: 1px solid #6d685e"></div></div>
+<div style="width: 170px; border: 1px solid #1d1b17; background: #efece6; box-shadow: 3px 3px 0 rgba(0,0,0,.25); font-size: 12.5px">
+<div class="mi" style="background: #3e6fb0; color: #fff">Open<span>⌘O</span></div>
+<div class="mi">Get Info<span>⌘I</span></div>
+<div style="height: 1px; background: #a7a296; margin: 3px 0; box-shadow: 0 1px 0 #fff"></div>
+<div class="mi">Plumb<span>⌘↵</span></div>
+</div>
+</div>
+</div>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 14px; flex: 1">
+<div class="h2">2× · 4K, same drawing</div>
+<div style="width: 800px; height: 790px; position: relative">
+<div style="position: absolute; left: 0; top: 0; transform: scale(2); transform-origin: 0 0">
+<div style="width: 400px; display: flex; flex-direction: column; gap: 16px">
+<div style="display: flex; gap: 12px; align-items: flex-end">
+<div class="win" style="position: relative; width: 190px; height: 70px"><div class="tab"><span class="cbox"></span><span>Focused</span><span class="cbox zbox"></span></div><div class="frame"><div class="menu" style="gap: 10px"><span>File</span><span>Edit</span></div></div></div>
+<div class="win" style="position: relative; width: 190px; height: 70px"><div class="tab off"><span class="cbox"></span><span>Behind</span><span class="cbox zbox"></span></div><div class="frame"><div class="menu" style="gap: 10px"><span>File</span><span>Edit</span></div></div></div>
+</div>
+<div style="display: flex; gap: 14px; align-items: center"><button type="button" class="btn">Cancel</button><button type="button" class="btn def">Open</button><button type="button" class="btn" disabled="disabled" style="color: #8f8a7f">Disabled</button></div>
+<div style="display: flex; gap: 18px; align-items: center">
+<span style="display: flex; gap: 6px; align-items: center"><span class="chk on"></span>Checked</span>
+<span style="display: flex; gap: 6px; align-items: center"><span class="chk"></span>Off</span>
+<span style="display: flex; gap: 6px; align-items: center"><span class="rdo on"></span>Radio</span>
+<span style="display: flex; gap: 6px; align-items: center"><span class="rdo"></span>Radio</span>
+</div>
+<div style="display: flex; gap: 10px; align-items: center"><span class="pop" style="width: 120px">Media:Device</span><span class="fld" style="width: 160px; display: inline-flex; align-items: center">q8b/cam0</span></div>
+<div style="position: relative; height: 24px">
+<div style="position: absolute; left: 0; right: 0; top: 9px; height: 6px; border: 1px solid #57524a; background: linear-gradient(#a7a296,#d8d4cb); border-radius: 3px"></div>
+<div style="position: absolute; left: 0; width: 60%; top: 9px; height: 6px; border: 1px solid #1d2b3a; background: linear-gradient(#5d8fd0,#3e6fb0); border-radius: 3px"></div>
+<div style="position: absolute; left: 60%; top: 1px; width: 24px; height: 20px; margin-left: -12px; border: 1px solid #1d1b17; border-radius: 3px; background: linear-gradient(90deg,#fbfaf6,#d0ccc2); box-shadow: inset 1px 1px 0 #fff"></div>
+</div>
+<div style="height: 16px; border: 1px solid #1d1b17; background: #efece6; box-shadow: inset 1px 1px 0 #a7a296; position: relative"><div style="position: absolute; left: 1px; top: 1px; bottom: 1px; width: 62%; background: repeating-linear-gradient(-45deg,#3e6fb0 0 6px,#5d8fd0 6px 12px)"></div></div>
+<div style="display: flex; gap: 12px">
+<fieldset style="flex: 1"><legend>Group</legend><div style="font-size: 12px">MUI groove frame</div></fieldset>
+<div class="lcd" style="width: 150px; padding: 6px 8px; font-size: 12px; display: flex; flex-direction: column; justify-content: center">FRAME 16.6 ms<br>AUDIO 2.7 ms</div>
+</div>
+<div style="display: flex; gap: 14px; align-items: flex-start">
+<div class="rg"><span class="on">Threads</span><span>Rings</span><span>Budgets</span></div>
+<div style="width: 15px; height: 84px; display: flex; flex-direction: column; border: 1px solid #6d685e" class="sb"><div class="arr"></div><div class="thumb" style="height: 30px"></div><div style="flex: 1"></div><div class="arr" style="border-top: 1px solid #6d685e"></div></div>
+<div style="width: 170px; border: 1px solid #1d1b17; background: #efece6; box-shadow: 3px 3px 0 rgba(0,0,0,.25); font-size: 12.5px">
+<div class="mi" style="background: #3e6fb0; color: #fff">Open<span>⌘O</span></div>
+<div class="mi">Get Info<span>⌘I</span></div>
+<div style="height: 1px; background: #a7a296; margin: 3px 0; box-shadow: 0 1px 0 #fff"></div>
+<div class="mi">Plumb<span>⌘↵</span></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1920,"height":1080}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

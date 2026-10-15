@@ -155,6 +155,9 @@ write prefix.
 - Radharc, Tracker and Deskbar, from simplefb or GOP up to virtio-gpu.
 - `tile` and `space` workspace modes, switchable live with both arrangements
   kept. Spatial Tracker.
+- The Platinum Indigo look (D24), after the
+  [desktop storyboard](https://claude.ai/artifact/BcQQLDod1qqmgwVzabeTPX)
+  ([sources](design/storyboard/)).
 - SDK, with a reference app in ≤ 12 calls.
 - Adreno 690 display, after ADR-0019's plan.
 

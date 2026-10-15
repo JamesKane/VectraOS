@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Inspector</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&amp;family=IBM+Plex+Mono:wght@400;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.vx{font-family:'Archivo',sans-serif;font-variation-settings:'wdth' 92;color:#1d1b17;font-size:13px;line-height:1.3}
+.mono{font-family:'IBM Plex Mono',monospace}
+.win{position:absolute;display:flex;flex-direction:column;filter:drop-shadow(0 10px 14px rgba(8,14,22,.38)) drop-shadow(0 2px 2px rgba(8,14,22,.35))}
+.tab{align-self:flex-start;display:flex;align-items:center;gap:10px;height:27px;padding:0 6px;background:linear-gradient(#ffe48a,#f2bb26);border:1px solid #2b2618;border-bottom:0;box-shadow:inset 1px 1px 0 #fff6cf,inset -1px 0 0 #b38710;border-radius:5px 5px 0 0;font-weight:700;font-size:13px;font-variation-settings:'wdth' 100;white-space:nowrap}
+.tab.off{background:linear-gradient(#ecE9e2,#cdc9bf);box-shadow:inset 1px 1px 0 #fff,inset -1px 0 0 #8f8a7f;color:#4a463e}
+.cbox{width:15px;height:15px;box-sizing:border-box;border:1px solid #2b2618;border-radius:2px;background:linear-gradient(135deg,#fffbe6,#e3ae18);box-shadow:inset 1px 1px 0 #fff}
+.tab.off .cbox{background:linear-gradient(135deg,#fff,#bdb8ad)}
+.zbox{position:relative}
+.zbox::after{content:'';position:absolute;left:2px;top:2px;width:6px;height:6px;border:1px solid #2b2618;background:#fff8dc}
+.frame{flex:1;border:1px solid #2b2618;background:#d8d4cb;padding:3px;box-shadow:inset 1px 1px 0 #f9f7f1,inset -1px -1px 0 #8f8a7f;display:flex;flex-direction:column;min-height:0;border-radius:0 3px 3px 3px}
+.menu{display:flex;gap:18px;height:23px;align-items:center;padding:0 10px;background:linear-gradient(#f3f1eb,#dcd8cf);border-bottom:1px solid #8f8a7f;font-size:13px}
+.well{background:#fbfaf6;border:1px solid #6d685e;box-shadow:inset 1px 1px 0 #b9b4a8}
+.lcd{background:#14211d;color:#9cf28f;border:1px solid #57524a;box-shadow:inset 1px 1px 0 #000,inset -1px -1px 0 #3c5048;text-shadow:0 0 6px rgba(140,240,130,.45);font-family:'IBM Plex Mono',monospace}
+.ico{display:flex;flex-direction:column;align-items:center;gap:4px;width:92px;text-align:center;font-size:12.5px}
+.lbl{padding:1px 5px;border-radius:2px}
+.desk .lbl{color:#fff;text-shadow:0 1px 0 #1b2833,0 0 3px #1b2833}
+.sel .lbl{background:#3e6fb0;color:#fff;text-shadow:none}
+.sb{width:15px;background:repeating-linear-gradient(45deg,#c9c5bb 0 2px,#bdb8ad 2px 4px);border-left:1px solid #6d685e;display:flex;flex-direction:column}
+.arr{height:15px;background:linear-gradient(#f3f1eb,#cfcbc1);border-bottom:1px solid #6d685e;box-shadow:inset 1px 1px 0 #fff}
+.thumb{margin:2px 1px;background:linear-gradient(90deg,#f3f1eb,#d0ccc2);border:1px solid #57524a;box-shadow:inset 1px 1px 0 #fff;border-radius:2px}
+.db{position:absolute;top:0;right:0;width:236px;background:#d8d4cb;border-left:1px solid #2b2618;border-bottom:1px solid #2b2618;box-shadow:inset 1px 1px 0 #f9f7f1,-4px 6px 14px rgba(8,14,22,.35);border-bottom-left-radius:4px}
+.dbrow{display:flex;align-items:center;gap:8px;padding:0 10px;height:30px;border-top:1px solid #f9f7f1;border-bottom:1px solid #a7a296;font-size:13px}
+.wsp{height:44px;border:1px solid #2b2618;background:#3f5868;position:relative;box-shadow:inset 1px 1px 0 rgba(0,0,0,.4)}
+.wsp.on{outline:2px solid #f2bb26;outline-offset:1px}
+.mode{position:absolute;right:2px;bottom:2px;font-size:9.5px;font-weight:800;padding:0 3px;background:#f3f1eb;border:1px solid #2b2618;line-height:12px}
+.mini{position:absolute;background:#d8d4cb;border:1px solid #1d1b17}
+.mini.f{border-top:3px solid #f2bb26}
+fieldset{border:2px groove #efebe3;border-radius:4px;margin:0;padding:8px 10px 10px}
+legend{font-weight:700;padding:0 6px;font-size:12.5px}
+.btn{height:26px;padding:0 12px;border:1px solid #2b2618;border-radius:4px;background:linear-gradient(#fbfaf6,#d6d2c8);box-shadow:inset 1px 1px 0 #fff,inset -1px -1px 0 #a39e92;font:inherit;font-weight:600;font-size:12.5px;color:#1d1b17;display:inline-flex;align-items:center;gap:6px}
+.fld{height:26px;box-sizing:border-box;border:1px solid #6d685e;box-shadow:inset 1px 1px 0 #b9b4a8;background:#fff;padding:0 7px;font:inherit;font-size:12.5px}
+.rg{display:flex;margin-bottom:-1px;padding-left:6px}
+.rg span{padding:5px 14px;border:1px solid #6d685e;border-bottom:0;border-radius:4px 4px 0 0;background:#cdc9bf;font-size:12.5px;margin-right:-1px}
+.rg span.on{background:#efece6;font-weight:700;position:relative;z-index:1}
+.tr{display:flex;align-items:center;gap:6px;height:24px;font-size:12.5px;white-space:nowrap}
+.tri{width:0;height:0;border:4px solid transparent;border-top:6px solid #2b2618;margin-top:4px}
+.tri.c{border:4px solid transparent;border-left:6px solid #2b2618;margin-top:0}
+.hd,.r{display:grid;grid-template-columns:56px 120px 220px 1fr 80px 150px;align-items:center}
+.hd{height:24px;font-weight:700;font-size:12px;background:linear-gradient(#f3f1eb,#dcd8cf);border-bottom:1px solid #6d685e}
+.hd span{padding:0 8px;border-right:1px solid #a7a296;height:100%;display:flex;align-items:center;box-shadow:inset 1px 0 0 #fff}
+.r{min-height:30px;font-size:12.5px;border-bottom:1px solid #ebe7de}
+.r span{padding:0 8px;white-space:nowrap;overflow:hidden}
+.r.s{background:#3e6fb0;color:#fff}
+.it{display:inline-block;font-size:11px;font-weight:700;padding:1px 7px;border:1px solid #1d1b17;border-radius:9px;font-family:'IBM Plex Mono',monospace}
+.ring{display:flex;flex-direction:column;align-items:center;gap:6px;flex:1;padding:8px 4px}
+.kv{display:grid;grid-template-columns:auto 1fr;column-gap:10px;row-gap:2px;font-size:11.5px}
+.kv span:nth-child(odd){color:#a9d7a2}
+.h{display:grid;grid-template-columns:52px 80px 1fr;font-size:12px;padding:4px 8px;border-bottom:1px solid #ebe7de;align-items:center}
+</style>
+</helmet>
+<div class="vx desk" style="width: 1920px; height: 1080px; position: relative; overflow: hidden; background-color: #3f5868; background-image: repeating-linear-gradient(45deg, rgba(0,0,0,.07) 0 1px, transparent 1px 5px), repeating-linear-gradient(-45deg, rgba(255,255,255,.035) 0 1px, transparent 1px 5px)">
+
+<div class="win" style="left: 40px; top: 36px; width: 1620px; height: 1010px">
+<div class="tab"><span class="cbox"></span><span>Inspector</span><span class="cbox zbox"></span></div>
+<div class="frame">
+<div class="menu"><span>Process</span><span>Thread</span><span>View</span><span>Trace</span><span style="margin-left: auto; color: #5d584f">this machine · 8 CPUs · uptime 3 h 12 m</span></div>
+<div style="display: flex; gap: 8px; align-items: center; padding: 8px 6px">
+<button type="button" class="btn"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="5" fill="#d0473c" stroke="#1d1b17"/></svg>Trace 2 s</button>
+<button type="button" class="btn">Suspend</button>
+<button type="button" class="btn">Kill</button>
+<span style="width: 12px"></span>
+<input class="fld" style="width: 260px" value="job:game" aria-label="Filter">
+<span style="margin-left: auto; display: flex; gap: 14px; font-size: 12.5px"><span>processes <b>31</b></span><span>threads <b>112</b></span><span>handles <b>2,904</b></span><span>committed <b>412 MiB</b></span></span>
+</div>
+<div style="flex: 1; display: flex; gap: 6px; min-height: 0; padding: 0 6px 6px">
+
+<div class="well" style="width: 280px; padding: 6px 8px; display: flex; flex-direction: column">
+<div class="tr" style="font-weight: 700"><span class="tri"></span>root job</div>
+<div class="tr" style="padding-left: 16px"><span class="tri"></span>system</div>
+<div class="tr" style="padding-left: 36px">launch</div>
+<div class="tr" style="padding-left: 36px">namespace</div>
+<div class="tr" style="padding-left: 36px">taisce</div>
+<div class="tr" style="padding-left: 36px">9gate</div>
+<div class="tr" style="padding-left: 36px">router</div>
+<div class="tr" style="padding-left: 16px"><span class="tri c"></span>drivers <span style="color: #6d685e">(7)</span></div>
+<div class="tr" style="padding-left: 16px"><span class="tri"></span>desktop</div>
+<div class="tr" style="padding-left: 36px">radharc</div>
+<div class="tr" style="padding-left: 36px">tracker</div>
+<div class="tr" style="padding-left: 36px">deskbar</div>
+<div class="tr" style="padding-left: 36px">terminal</div>
+<div class="tr" style="padding-left: 36px">inspector</div>
+<div class="tr" style="padding-left: 16px"><span class="tri"></span>game</div>
+<div class="tr" style="padding-left: 30px; background: #3e6fb0; color: #fff; margin-left: -8px; padding-right: 8px">game <span style="opacity: .8; margin-left: auto">pid 0x4e</span></div>
+<div class="tr" style="padding-left: 36px">wasmd · mod.wasm</div>
+<div style="flex: 1"></div>
+<fieldset>
+<legend>game · memory</legend>
+<div style="font-size: 12px; display: flex; justify-content: space-between"><span>committed 84 MiB</span><span>reserved 512 MiB</span></div>
+<div style="height: 12px; margin-top: 6px; border: 1px solid #1d1b17; background: repeating-linear-gradient(45deg,#e4e0d6 0 3px,#d4cfc4 3px 6px); position: relative"><div style="position: absolute; inset: 0 84% 0 0; background: linear-gradient(#5d8fd0,#3e6fb0)"></div></div>
+</fieldset>
+</div>
+
+<div style="flex: 1; display: flex; flex-direction: column; gap: 8px; min-width: 0">
+<div class="rg"><span class="on">Threads</span><span>Handles</span><span>Memory</span><span>Rings</span><span>IPC graph</span><span>Budgets</span></div>
+<div class="well" style="height: 290px; background: #fbfaf6">
+<div class="hd"><span>TID</span><span>Name</span><span>Intent</span><span>Waiting on</span><span>CPU</span><span>Next deadline</span></div>
+<div class="r s"><span class="mono">0x51</span><span>main</span><span><span class="it" style="background: #f2bb26; color: #1d1b17">frame</span></span><span>port 0x1c · render.present credit</span><span class="mono">31%</span><span class="mono">+4.1 ms ±0.5</span></div>
+<div class="r"><span class="mono">0x52</span><span>audio</span><span><span class="it" style="background: #d0473c; color: #fff">realtime 2.67 / 0.4 ms</span></span><span>running · cpu 3 (reserved)</span><span class="mono">15%</span><span class="mono">+1.9 ms ±0</span></div>
+<div class="r"><span class="mono">0x53</span><span>vision</span><span><span class="it" style="background: #6aa7e0; color: #1d1b17">interactive</span></span><span>port 0x1c · cam0→cdsp0 doorbell</span><span class="mono">2%</span><span class="mono">—</span></div>
+<div class="r"><span class="mono">0x54</span><span>input</span><span><span class="it" style="background: #6aa7e0; color: #1d1b17">interactive</span></span><span>port 0x1c · input ring doorbell</span><span class="mono">0%</span><span class="mono">—</span></div>
+<div class="r"><span class="mono">0x55</span><span>assets</span><span><span class="it" style="background: #c9c5bb; color: #1d1b17">throughput</span></span><span>port 0x22 · taisce read CQ</span><span class="mono">7%</span><span class="mono">—</span></div>
+<div class="r"><span class="mono">0x56</span><span>autosave</span><span><span class="it" style="background: #8f8a7f; color: #fff">background</span></span><span>port 0x22 · timer 14:35:00 ±5 s</span><span class="mono">0%</span><span class="mono">—</span></div>
+<div class="r" style="border-bottom: 0"><span class="mono">0x57</span><span>net</span><span><span class="it" style="background: #6aa7e0; color: #1d1b17">interactive</span></span><span>port 0x1c · /svc/net channel</span><span class="mono">0%</span><span class="mono">—</span></div>
+</div>
+
+<fieldset style="flex: 1; display: flex; flex-direction: column">
+<legend>Rings held by game</legend>
+<div class="lcd" style="flex: 1; display: flex; gap: 6px; padding: 8px">
+
+<div class="ring">
+<svg width="150" height="150" viewBox="0 0 100 100" role="img" aria-label="render.present ring, 1 of 4 slots used"><g transform="rotate(-90 50 50)"><circle cx="50" cy="50" r="38" fill="none" stroke="#24392f" stroke-width="12" stroke-dasharray="57.7 2"/><circle cx="50" cy="50" r="38" fill="none" stroke="#f2bb26" stroke-width="12" stroke-dasharray="57.7 181"/></g><text x="50" y="47" text-anchor="middle" fill="#9cf28f" font-family="IBM Plex Mono" font-size="11">1 / 4</text><text x="50" y="60" text-anchor="middle" fill="#6fae68" font-family="IBM Plex Mono" font-size="7">slots</text></svg>
+<b style="font-size: 13px; color: #e6ffe0">render.present</b>
+<div class="kv"><span>prod</span><span>18,442</span><span>cons</span><span>18,441</span><span>kicks</span><span>0</span><span>peer</span><span>radharc</span></div>
+</div>
+
+<div class="ring">
+<svg width="150" height="150" viewBox="0 0 100 100" role="img" aria-label="cam0 to cdsp0 ring, 3 of 16 slots used"><g transform="rotate(-90 50 50)"><circle cx="50" cy="50" r="38" fill="none" stroke="#24392f" stroke-width="12" stroke-dasharray="12.9 2"/><circle cx="50" cy="50" r="38" fill="none" stroke="#9cf28f" stroke-width="12" stroke-dasharray="12.9 2 12.9 2 12.9 196"/></g><text x="50" y="47" text-anchor="middle" fill="#9cf28f" font-family="IBM Plex Mono" font-size="11">3 / 16</text><text x="50" y="60" text-anchor="middle" fill="#6fae68" font-family="IBM Plex Mono" font-size="7">via 9gate</text></svg>
+<b style="font-size: 13px; color: #e6ffe0">cam0 → q8b/cdsp0</b>
+<div class="kv"><span>prod</span><span>91,207</span><span>cons</span><span>91,204</span><span>kicks</span><span>12</span><span>peer</span><span>/n/q8b</span></div>
+</div>
+
+<div class="ring">
+<svg width="150" height="150" viewBox="0 0 100 100" role="img" aria-label="masks ring, 1 of 16 slots used"><g transform="rotate(-90 50 50)"><circle cx="50" cy="50" r="38" fill="none" stroke="#24392f" stroke-width="12" stroke-dasharray="12.9 2"/><circle cx="50" cy="50" r="38" fill="none" stroke="#6aa7e0" stroke-width="12" stroke-dasharray="12.9 226"/></g><text x="50" y="47" text-anchor="middle" fill="#9cf28f" font-family="IBM Plex Mono" font-size="11">1 / 16</text><text x="50" y="60" text-anchor="middle" fill="#6fae68" font-family="IBM Plex Mono" font-size="7">tensors</text></svg>
+<b style="font-size: 13px; color: #e6ffe0">q8b/cdsp0 → masks</b>
+<div class="kv"><span>prod</span><span>91,198</span><span>cons</span><span>91,197</span><span>kicks</span><span>0</span><span>peer</span><span>/n/q8b</span></div>
+</div>
+
+<div class="ring">
+<svg width="150" height="150" viewBox="0 0 100 100" role="img" aria-label="audio.out ring, 2 of 8 slots used"><g transform="rotate(-90 50 50)"><circle cx="50" cy="50" r="38" fill="none" stroke="#24392f" stroke-width="12" stroke-dasharray="27.8 2"/><circle cx="50" cy="50" r="38" fill="none" stroke="#ff8a7a" stroke-width="12" stroke-dasharray="27.8 2 27.8 182"/></g><text x="50" y="47" text-anchor="middle" fill="#9cf28f" font-family="IBM Plex Mono" font-size="11">2 / 8</text><text x="50" y="60" text-anchor="middle" fill="#6fae68" font-family="IBM Plex Mono" font-size="7">128 frames</text></svg>
+<b style="font-size: 13px; color: #e6ffe0">audio.out</b>
+<div class="kv"><span>prod</span><span>402,113</span><span>cons</span><span>402,111</span><span>xruns</span><span>0</span><span>peer</span><span>audiod</span></div>
+</div>
+
+</div>
+</fieldset>
+</div>
+
+<div style="width: 330px; display: flex; flex-direction: column; gap: 8px">
+<fieldset>
+<legend>main · 0x51</legend>
+<div style="font-size: 12.5px; display: grid; grid-template-columns: 96px 1fr; row-gap: 5px">
+<span style="color: #5d584f">intent</span><span><span class="it" style="background: #f2bb26">frame</span></span>
+<span style="color: #5d584f">waits on</span><span>port 0x1c (the only wait)</span>
+<span style="color: #5d584f">deadline</span><span class="mono">t+4.1 ms, leeway 0.5 ms</span>
+<span style="color: #5d584f">last wake</span><span>present credit · 16.67 ms ago</span>
+</div>
+</fieldset>
+<fieldset style="flex: 1; display: flex; flex-direction: column">
+<legend>Handles · 14</legend>
+<div class="well" style="flex: 1">
+<div class="h" style="font-weight: 700; background: linear-gradient(#f3f1eb,#dcd8cf)"><span>Kind</span><span>Rights</span><span>Names</span></div>
+<div class="h"><span>port</span><span class="mono">rw w</span><span>0x1c · main wait</span></div>
+<div class="h"><span>chan</span><span class="mono">rw x</span><span>/svc/windows</span></div>
+<div class="h"><span>chan</span><span class="mono">rw x</span><span>/n/q8b/dev/accel/cdsp0/ctl</span></div>
+<div class="h"><span>vmo</span><span class="mono">rw m</span><span>render.present ring</span></div>
+<div class="h"><span>ctr</span><span class="mono">s w</span><span>render.present doorbell</span></div>
+<div class="h"><span>vmo</span><span class="mono">r m</span><span>cam0→cdsp0 ring</span></div>
+<div class="h"><span>ctr</span><span class="mono">s w</span><span>cam0→cdsp0 doorbell</span></div>
+<div class="h"><span>vmo</span><span class="mono">rw m</span><span>swapchain · 3 images</span></div>
+<div class="h"><span>ctr</span><span class="mono">w</span><span>swapchain timeline</span></div>
+<div class="h"><span>chan</span><span class="mono">rw</span><span>/svc/audio</span></div>
+<div class="h" style="color: #6d685e"><span>…</span><span></span><span>4 more</span></div>
+</div>
+</fieldset>
+<fieldset>
+<legend>Budgets touching game</legend>
+<div style="font-size: 12.5px; display: grid; grid-template-columns: 14px 1fr auto; gap: 6px; align-items: center">
+<span class="led" style="width: 9px; height: 9px; border-radius: 50%; background: #46d35a; box-shadow: 0 0 0 1px #1d1b17"></span><span>frame error p99</span><span class="mono">0.41 / 1 ms</span>
+<span style="width: 9px; height: 9px; border-radius: 50%; background: #46d35a; box-shadow: 0 0 0 1px #1d1b17"></span><span>ring kicks, render</span><span class="mono">0 / 0</span>
+<span style="width: 9px; height: 9px; border-radius: 50%; background: #f2bb26; box-shadow: 0 0 0 1px #1d1b17"></span><span>cold start → first frame</span><span class="mono">44 / 50 ms</span>
+</div>
+</fieldset>
+</div>
+
+</div>
+</div>
+</div>
+
+<div class="db">
+<button type="button" style="all: unset; display: flex; align-items: center; gap: 10px; height: 48px; padding: 0 12px; width: 100%; box-sizing: border-box; border-bottom: 1px solid #2b2618; background: linear-gradient(#f3f1eb,#d0ccc2); cursor: default" aria-label="VectraOS menu">
+<svg width="30" height="30" viewBox="0 0 32 32" aria-hidden="true"><path d="M3 5h8l5 15V27z" fill="#f2bb26" stroke="#1d1b17" stroke-width="1.3" stroke-linejoin="round"/><path d="M29 5h-8l-5 15V27z" fill="#3e6fb0" stroke="#1d1b17" stroke-width="1.3" stroke-linejoin="round"/><path d="M11 5l5 15 5-15" fill="none" stroke="#fff" stroke-width="1"/></svg>
+<span style="font-weight: 800; font-size: 16px; font-variation-settings: 'wdth' 112; letter-spacing: .02em">VectraOS</span>
+</button>
+<div class="dbrow" style="justify-content: space-between">
+<span style="display: flex; gap: 8px; align-items: center">
+<svg width="16" height="16" viewBox="0 0 16 16" role="img" aria-label="9gate link up"><path d="M2 12h3v2H2zM6.5 9h3v5h-3zM11 5h3v9h-3z" fill="#3e6fb0" stroke="#1d1b17"/></svg>
+<svg width="16" height="16" viewBox="0 0 16 16" role="img" aria-label="Audio"><path d="M2 6h3l4-3v10l-4-3H2z" fill="#e6e3dc" stroke="#1d1b17"/><path d="M11 5c1.5 1.5 1.5 4.5 0 6" stroke="#1d1b17" fill="none"/></svg>
+<svg width="16" height="16" viewBox="0 0 16 16" role="img" aria-label="Keyring unlocked"><rect x="3" y="7" width="10" height="7" fill="#f2bb26" stroke="#1d1b17"/><path d="M5 7V5a3 3 0 016 0" stroke="#1d1b17" fill="none"/></svg>
+</span>
+<span class="mono" style="font-weight: 600">14:32</span>
+</div>
+<div style="padding: 8px 10px; border-bottom: 1px solid #a7a296">
+<div class="lcd" style="padding: 8px; font-size: 11.5px; display: grid; grid-template-columns: 44px 1fr; row-gap: 6px; align-items: center">
+<span>CPU</span>
+<svg width="100%" height="16" viewBox="0 0 144 16" preserveAspectRatio="none" aria-hidden="true"><rect x="0" y="9" width="14" height="7" fill="#9cf28f"/><rect x="18" y="4" width="14" height="12" fill="#9cf28f"/><rect x="36" y="12" width="14" height="4" fill="#9cf28f"/><rect x="54" y="13" width="14" height="3" fill="#9cf28f"/><rect x="72" y="2" width="14" height="14" fill="#ffcf5a"/><rect x="90" y="11" width="14" height="5" fill="#9cf28f"/><rect x="108" y="14" width="14" height="2" fill="#9cf28f"/><rect x="126" y="14" width="14" height="2" fill="#9cf28f"/></svg>
+<span>GPU</span><span style="display: block; height: 8px; background: linear-gradient(90deg,#9cf28f 34%,#24392f 34%)"></span>
+<span>FRAME</span><span>16.6 ms · 0 drop</span>
+<span>AUDIO</span><span>2.7 ms · 0 xrun</span>
+</div>
+</div>
+<div style="padding: 8px 10px; border-bottom: 1px solid #a7a296">
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px">
+<div class="wsp on"><div class="mini" style="left: 6px; top: 5px; width: 36px; height: 22px"></div><div class="mini f" style="left: 30px; top: 18px; width: 44px; height: 20px"></div><span class="mode">S</span></div>
+<div class="wsp"><div class="mini" style="left: 3px; top: 3px; width: 50px; height: 36px"></div><div class="mini" style="left: 55px; top: 3px; width: 47px; height: 17px"></div><div class="mini" style="left: 55px; top: 22px; width: 47px; height: 17px"></div><span class="mode">T</span></div>
+<div class="wsp"><div class="mini" style="left: 20px; top: 8px; width: 50px; height: 26px"></div><span class="mode">S</span></div>
+<div class="wsp"><div class="mini" style="left: 3px; top: 3px; width: 49px; height: 36px"></div><div class="mini" style="left: 54px; top: 3px; width: 48px; height: 36px"></div><span class="mode">T</span></div>
+</div>
+</div>
+<div class="dbrow"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><rect x="1.5" y="2.5" width="15" height="12" fill="#14211d" stroke="#fff"/><path d="M4 6l3 2-3 2M8 11h4" stroke="#9cf28f" fill="none"/></svg>Terminal</div>
+<div class="dbrow"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M1.5 4.5h6l2 2h7v9h-15z" fill="#e9c35a" stroke="#1d1b17"/></svg>Tracker</div>
+<div class="dbrow" style="background: linear-gradient(#3f6eaf,#335c95); color: #fff; font-weight: 700"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><circle cx="8" cy="8" r="5" fill="#d8ecff" stroke="#1d1b17" stroke-width="1.3"/><path d="M11.5 11.5l5 5" stroke="#1d1b17" stroke-width="2.2"/></svg>Inspector</div>
+<div class="dbrow" style="border-bottom: 0"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><rect x="2" y="3" width="14" height="12" fill="#2f7a55" stroke="#14301f"/><rect x="6" y="6" width="6" height="6" fill="#26262a"/></svg>Game · frame</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1920,"height":1080}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

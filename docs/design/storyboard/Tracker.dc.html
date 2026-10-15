@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tracker query</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&amp;family=IBM+Plex+Mono:wght@400;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.vx{font-family:'Archivo',sans-serif;font-variation-settings:'wdth' 92;color:#1d1b17;font-size:13px;line-height:1.3}
+.mono{font-family:'IBM Plex Mono',monospace}
+.win{position:absolute;display:flex;flex-direction:column;filter:drop-shadow(0 10px 14px rgba(8,14,22,.38)) drop-shadow(0 2px 2px rgba(8,14,22,.35))}
+.tab{align-self:flex-start;display:flex;align-items:center;gap:10px;height:27px;padding:0 6px;background:linear-gradient(#ffe48a,#f2bb26);border:1px solid #2b2618;border-bottom:0;box-shadow:inset 1px 1px 0 #fff6cf,inset -1px 0 0 #b38710;border-radius:5px 5px 0 0;font-weight:700;font-size:13px;font-variation-settings:'wdth' 100;white-space:nowrap}
+.tab.off{background:linear-gradient(#ecE9e2,#cdc9bf);box-shadow:inset 1px 1px 0 #fff,inset -1px 0 0 #8f8a7f;color:#4a463e}
+.cbox{width:15px;height:15px;box-sizing:border-box;border:1px solid #2b2618;border-radius:2px;background:linear-gradient(135deg,#fffbe6,#e3ae18);box-shadow:inset 1px 1px 0 #fff}
+.tab.off .cbox{background:linear-gradient(135deg,#fff,#bdb8ad)}
+.zbox{position:relative}
+.zbox::after{content:'';position:absolute;left:2px;top:2px;width:6px;height:6px;border:1px solid #2b2618;background:#fff8dc}
+.frame{flex:1;border:1px solid #2b2618;background:#d8d4cb;padding:3px;box-shadow:inset 1px 1px 0 #f9f7f1,inset -1px -1px 0 #8f8a7f;display:flex;flex-direction:column;min-height:0;border-radius:0 3px 3px 3px}
+.menu{display:flex;gap:18px;height:23px;align-items:center;padding:0 10px;background:linear-gradient(#f3f1eb,#dcd8cf);border-bottom:1px solid #8f8a7f;font-size:13px}
+.well{background:#fbfaf6;border:1px solid #6d685e;box-shadow:inset 1px 1px 0 #b9b4a8}
+.lcd{background:#14211d;color:#9cf28f;border:1px solid #57524a;box-shadow:inset 1px 1px 0 #000,inset -1px -1px 0 #3c5048;text-shadow:0 0 6px rgba(140,240,130,.45);font-family:'IBM Plex Mono',monospace}
+.ico{display:flex;flex-direction:column;align-items:center;gap:4px;width:92px;text-align:center;font-size:12.5px}
+.lbl{padding:1px 5px;border-radius:2px}
+.desk .lbl{color:#fff;text-shadow:0 1px 0 #1b2833,0 0 3px #1b2833}
+.sel .lbl{background:#3e6fb0;color:#fff;text-shadow:none}
+.sb{width:15px;background:repeating-linear-gradient(45deg,#c9c5bb 0 2px,#bdb8ad 2px 4px);border-left:1px solid #6d685e;display:flex;flex-direction:column}
+.arr{height:15px;background:linear-gradient(#f3f1eb,#cfcbc1);border-bottom:1px solid #6d685e;box-shadow:inset 1px 1px 0 #fff}
+.thumb{margin:2px 1px;background:linear-gradient(90deg,#f3f1eb,#d0ccc2);border:1px solid #57524a;box-shadow:inset 1px 1px 0 #fff;border-radius:2px}
+.db{position:absolute;top:0;right:0;width:236px;background:#d8d4cb;border-left:1px solid #2b2618;border-bottom:1px solid #2b2618;box-shadow:inset 1px 1px 0 #f9f7f1,-4px 6px 14px rgba(8,14,22,.35);border-bottom-left-radius:4px}
+.dbrow{display:flex;align-items:center;gap:8px;padding:0 10px;height:30px;border-top:1px solid #f9f7f1;border-bottom:1px solid #a7a296;font-size:13px}
+.wsp{height:44px;border:1px solid #2b2618;background:#3f5868;position:relative;box-shadow:inset 1px 1px 0 rgba(0,0,0,.4)}
+.wsp.on{outline:2px solid #f2bb26;outline-offset:1px}
+.mode{position:absolute;right:2px;bottom:2px;font-size:9.5px;font-weight:800;padding:0 3px;background:#f3f1eb;border:1px solid #2b2618;line-height:12px}
+.mini{position:absolute;background:#d8d4cb;border:1px solid #1d1b17}
+.mini.f{border-top:3px solid #f2bb26}
+fieldset{border:2px groove #efebe3;border-radius:4px;margin:0;padding:10px 12px 12px}
+legend{font-weight:700;padding:0 6px;font-size:12.5px}
+.pop{display:inline-flex;align-items:center;justify-content:space-between;gap:8px;height:24px;padding:0 6px 0 9px;border:1px solid #2b2618;border-radius:3px;background:linear-gradient(#fbfaf6,#d6d2c8);box-shadow:inset 1px 1px 0 #fff;font:inherit;font-size:12.5px;color:#1d1b17}
+.pop::after{content:'';border:4px solid transparent;border-top:5px solid #2b2618;margin-top:5px}
+.fld{height:24px;box-sizing:border-box;border:1px solid #6d685e;box-shadow:inset 1px 1px 0 #b9b4a8;background:#fff;padding:0 7px;font:inherit;font-size:12.5px}
+.btn{height:26px;padding:0 14px;border:1px solid #2b2618;border-radius:4px;background:linear-gradient(#fbfaf6,#d6d2c8);box-shadow:inset 1px 1px 0 #fff,inset -1px -1px 0 #a39e92;font:inherit;font-weight:600;font-size:12.5px;color:#1d1b17}
+.btn.def{outline:2px solid #2b2618;outline-offset:2px}
+.rg{display:flex;gap:0;margin-bottom:-1px}
+.rg span{padding:4px 12px;border:1px solid #6d685e;border-bottom:0;border-radius:4px 4px 0 0;background:#cdc9bf;font-size:12px;margin-right:-1px}
+.rg span.on{background:#efece6;font-weight:700;position:relative;z-index:1}
+.hd{display:grid;grid-template-columns:34px 1.6fr 90px 150px 110px 160px 1fr;align-items:center;height:24px;font-weight:700;font-size:12px;background:linear-gradient(#f3f1eb,#dcd8cf);border-bottom:1px solid #6d685e}
+.hd span{padding:0 8px;border-right:1px solid #a7a296;height:100%;display:flex;align-items:center;box-shadow:inset 1px 0 0 #fff}
+.r{display:grid;grid-template-columns:34px 1.6fr 90px 150px 110px 160px 1fr;align-items:center;height:26px;font-size:12.5px;border-bottom:1px solid #ebe7de}
+.r span{padding:0 8px;white-space:nowrap;overflow:hidden}
+.r:nth-child(even){background:#f4f2ec}
+.r.s{background:#3e6fb0 !important;color:#fff}
+.th{width:22px;height:16px;margin-left:6px;border:1px solid #1d1b17}
+.chip{display:inline-block;font-size:10.5px;font-weight:700;padding:0 5px;border:1px solid #57524a;border-radius:8px;background:#efece6;line-height:15px;font-family:'IBM Plex Mono',monospace}
+.ai{display:grid;grid-template-columns:150px 64px 1fr;align-items:center;min-height:25px;font-size:12.5px;border-bottom:1px solid #ebe7de;padding:0 8px;gap:6px}
+.led{width:9px;height:9px;border-radius:50%;background:#46d35a;box-shadow:0 0 0 1px #1d1b17,0 0 6px #46d35a}
+</style>
+</helmet>
+<div class="vx desk" style="width: 1920px; height: 1080px; position: relative; overflow: hidden; background-color: #3f5868; background-image: repeating-linear-gradient(45deg, rgba(0,0,0,.07) 0 1px, transparent 1px 5px), repeating-linear-gradient(-45deg, rgba(255,255,255,.035) 0 1px, transparent 1px 5px)">
+
+<div class="win" style="left: 50px; top: 40px; width: 1190px; height: 960px">
+<div class="tab off"><span class="cbox"></span><span>Query: This week's captures</span><span class="cbox zbox"></span></div>
+<div class="frame">
+<div class="menu"><span>File</span><span>Edit</span><span>Window</span><span>Attributes</span></div>
+<div style="padding: 10px 8px 8px; display: flex; gap: 12px">
+<fieldset style="flex: 1">
+<legend>Find</legend>
+<div class="rg"><span class="on">By attribute</span><span>By formula</span><span>By name</span></div>
+<div style="border: 1px solid #6d685e; background: #efece6; padding: 10px; display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; gap: 8px; align-items: center"><button type="button" class="pop" style="width: 110px">All files</button><span>whose</span></div>
+<div style="display: flex; gap: 8px; align-items: center"><span style="width: 52px"></span><button type="button" class="pop" style="width: 170px">Media:Device</button><button type="button" class="pop" style="width: 96px">is</button><input class="fld" style="width: 220px" value="q8b/cam0" aria-label="Device value"></div>
+<div style="display: flex; gap: 8px; align-items: center"><button type="button" class="pop" style="width: 52px">and</button><button type="button" class="pop" style="width: 170px">sys:created</button><button type="button" class="pop" style="width: 96px">within</button><input class="fld" style="width: 220px" value="7 days" aria-label="Created within"></div>
+<div style="display: flex; gap: 8px; align-items: center"><button type="button" class="pop" style="width: 52px">and</button><button type="button" class="pop" style="width: 170px">derived:labels</button><button type="button" class="pop" style="width: 96px">contains</button><input class="fld" style="width: 220px" value="person" aria-label="Label"></div>
+<div class="mono" style="font-size: 11.5px; color: #4a463e; padding-top: 4px; border-top: 1px solid #c9c5bb">(Media:Device == "q8b/cam0") &amp;&amp; (sys:created &gt; %7 days ago%) &amp;&amp; (derived:labels == "*person*") order by sys:created desc</div>
+</div>
+</fieldset>
+<fieldset style="width: 250px; display: flex; flex-direction: column; gap: 10px">
+<legend>Volumes</legend>
+<label style="display: flex; gap: 8px; align-items: center"><input type="checkbox" checked="checked"> Taisce (this machine)</label>
+<label style="display: flex; gap: 8px; align-items: center"><input type="checkbox" checked="checked"> /n/q8b · via 9gate</label>
+<label style="display: flex; gap: 8px; align-items: center"><input type="checkbox"> /n/pi5 · via 9gate</label>
+<div style="flex: 1"></div>
+<div style="display: flex; gap: 10px; justify-content: flex-end"><button type="button" class="btn">Save as folder</button><button type="button" class="btn def">Search</button></div>
+</fieldset>
+</div>
+<div class="well" style="flex: 1; margin: 0 8px; display: flex; flex-direction: column; min-height: 0; overflow: hidden">
+<div class="hd"><span></span><span>Name</span><span>Size</span><span>Created ▾</span><span>Media:Device</span><span>derived:labels</span><span>sys:origin-app</span></div>
+<div style="flex: 1">
+<div class="r"><span><div class="th" style="background: linear-gradient(135deg,#2a4a6b,#f2bb26)"></div></span><span>cam0-20261015-142904.png</span><span>2.3 MiB</span><span>today 14:29:04</span><span>q8b/cam0</span><span>person, desk</span><span>vx.app.capture</span></div>
+<div class="r"><span><div class="th" style="background: linear-gradient(135deg,#1e3a2a,#9cf28f)"></div></span><span>cam0-20261015-142851.png</span><span>2.3 MiB</span><span>today 14:28:51</span><span>q8b/cam0</span><span>person</span><span>vx.app.capture</span></div>
+<div class="r s"><span><div class="th" style="background: linear-gradient(135deg,#3b2a55,#ff8a3d)"></div></span><span>cam0-20261015-141210.png</span><span>2.2 MiB</span><span>today 14:12:10</span><span>q8b/cam0</span><span>person, bench</span><span>vx.app.capture</span></div>
+<div class="r"><span><div class="th" style="background: linear-gradient(135deg,#2a4a6b,#d8ecff)"></div></span><span>cam0-20261015-093317.png</span><span>2.4 MiB</span><span>today 09:33:17</span><span>q8b/cam0</span><span>person, door</span><span>vx.app.capture</span></div>
+<div class="r"><span><div class="th" style="background: linear-gradient(135deg,#40281e,#e9c35a)"></div></span><span>cam0-20261014-221045.png</span><span>2.1 MiB</span><span>yesterday 22:10</span><span>q8b/cam0</span><span>person</span><span>vx.app.capture</span></div>
+<div class="r"><span><div class="th" style="background: linear-gradient(135deg,#1d2b3a,#3e6fb0)"></div></span><span>cam0-20261014-180502.png</span><span>2.3 MiB</span><span>yesterday 18:05</span><span>q8b/cam0</span><span>person, desk</span><span>vx.app.capture</span></div>
+<div class="r"><span><div class="th" style="background: linear-gradient(135deg,#2a4a6b,#f2bb26)"></div></span><span>cam0-20261014-131944.png</span><span>2.2 MiB</span><span>yesterday 13:19</span><span>q8b/cam0</span><span>person, bench</span><span>vx.app.capture</span></div>
+<div class="r"><span><div class="th" style="background: linear-gradient(135deg,#1e3a2a,#d8ecff)"></div></span><span>cam0-20261013-200611.png</span><span>2.3 MiB</span><span>Tue 20:06</span><span>q8b/cam0</span><span>person</span><span>vx.app.capture</span></div>
+<div class="r"><span><div class="th" style="background: linear-gradient(135deg,#3b2a55,#9cf28f)"></div></span><span>cam0-20261013-111502.png</span><span>2.4 MiB</span><span>Tue 11:15</span><span>q8b/cam0</span><span>person, door</span><span>vx.app.capture</span></div>
+<div class="r"><span><div class="th" style="background: linear-gradient(135deg,#40281e,#ff8a3d)"></div></span><span>cam0-20261012-170233.png</span><span>2.2 MiB</span><span>Mon 17:02</span><span>q8b/cam0</span><span>person, desk</span><span>vx.app.capture</span></div>
+<div class="r"><span><div class="th" style="background: linear-gradient(135deg,#1d2b3a,#e9c35a)"></div></span><span>cam0-20261012-084951.png</span><span>2.3 MiB</span><span>Mon 08:49</span><span>q8b/cam0</span><span>person</span><span>vx.app.capture</span></div>
+<div class="r"><span><div class="th" style="background: linear-gradient(135deg,#2a4a6b,#9cf28f)"></div></span><span>cam0-20261011-193020.png</span><span>2.1 MiB</span><span>Sun 19:30</span><span>q8b/cam0</span><span>person, bench</span><span>vx.app.capture</span></div>
+<div class="r"><span><div class="th" style="background: linear-gradient(135deg,#3b2a55,#d8ecff)"></div></span><span>cam0-20261011-102244.png</span><span>2.4 MiB</span><span>Sun 10:22</span><span>q8b/cam0</span><span>person</span><span>vx.app.capture</span></div>
+<div class="r"><span><div class="th" style="background: linear-gradient(135deg,#1e3a2a,#f2bb26)"></div></span><span>cam0-20261010-154711.png</span><span>2.2 MiB</span><span>Sat 15:47</span><span>q8b/cam0</span><span>person, door</span><span>vx.app.capture</span></div>
+</div>
+</div>
+<div style="display: flex; align-items: center; gap: 10px; height: 26px; padding: 0 10px; font-size: 12.5px"><span class="led"></span><b>Live</b><span>214 items · 3 added in the last minute · journal seq 884,120</span><span style="margin-left: auto; color: #5d584f">2 volumes</span></div>
+</div>
+</div>
+
+<div class="win" style="left: 1180px; top: 300px; width: 470px; height: 640px">
+<div class="tab"><span class="cbox"></span><span>Get Info — cam0-20261015-141210.png</span></div>
+<div class="frame">
+<div style="display: flex; gap: 14px; padding: 12px 10px; align-items: center">
+<div style="width: 96px; height: 64px; border: 1px solid #1d1b17; background: linear-gradient(135deg,#3b2a55,#ff8a3d); box-shadow: 2px 2px 0 #8f8a7f"></div>
+<div style="display: flex; flex-direction: column; gap: 4px"><b style="font-size: 14px">cam0-20261015-141210.png</b><span>image/png · 1920 × 1080 · 2.2 MiB</span><span style="color: #4a463e">on Taisce · /home/Captures</span></div>
+</div>
+<fieldset style="margin: 0 8px; padding: 6px 0 0">
+<legend>Attributes</legend>
+<div class="ai" style="font-weight: 700; font-size: 12px; background: linear-gradient(#f3f1eb,#dcd8cf); border-bottom: 1px solid #8f8a7f"><span>Name</span><span>Type</span><span>Value</span></div>
+<div class="ai"><span class="mono">sys:created</span><span><span class="chip">time</span></span><span>2026-10-15 14:12:10</span></div>
+<div class="ai"><span class="mono">sys:size</span><span><span class="chip">u64</span></span><span>2,301,952</span></div>
+<div class="ai"><span class="mono">sys:origin</span><span><span class="chip">ref</span></span><span style="color: #2f5c96; text-decoration: underline">/n/q8b/dev/cam0</span></div>
+<div class="ai"><span class="mono">sys:origin-app</span><span><span class="chip">str</span></span><span>vx.app.capture</span></div>
+<div class="ai"><span class="mono">Media:Device</span><span><span class="chip">str</span></span><span>q8b/cam0</span></div>
+<div class="ai"><span class="mono">Media:Width</span><span><span class="chip">i64</span></span><span>1920</span></div>
+<div class="ai"><span class="mono">Media:Height</span><span><span class="chip">i64</span></span><span>1080</span></div>
+<div class="ai"><span class="mono">derived:labels</span><span><span class="chip">str</span></span><span>person, bench <i style="color: #6d685e">· derived</i></span></div>
+<div class="ai"><span class="mono">derived:by</span><span><span class="chip">str</span></span><span>cdsp0 · seg.vxm v3</span></div>
+<div class="ai"><span class="mono">user:rating</span><span><span class="chip">i64</span></span><span>4</span></div>
+<div class="ai" style="border-bottom: 0"><span class="mono">user:note</span><span><span class="chip">str</span></span><input class="fld" value="soldering, second board" aria-label="Note"></div>
+</fieldset>
+<div style="flex: 1"></div>
+<div style="display: flex; gap: 10px; justify-content: flex-end; padding: 10px"><button type="button" class="btn">Show origin</button><button type="button" class="btn">Add attribute…</button><button type="button" class="btn def">Open</button></div>
+</div>
+</div>
+
+<div class="db">
+<button type="button" style="all: unset; display: flex; align-items: center; gap: 10px; height: 48px; padding: 0 12px; width: 100%; box-sizing: border-box; border-bottom: 1px solid #2b2618; background: linear-gradient(#f3f1eb,#d0ccc2); cursor: default" aria-label="VectraOS menu">
+<svg width="30" height="30" viewBox="0 0 32 32" aria-hidden="true"><path d="M3 5h8l5 15V27z" fill="#f2bb26" stroke="#1d1b17" stroke-width="1.3" stroke-linejoin="round"/><path d="M29 5h-8l-5 15V27z" fill="#3e6fb0" stroke="#1d1b17" stroke-width="1.3" stroke-linejoin="round"/><path d="M11 5l5 15 5-15" fill="none" stroke="#fff" stroke-width="1"/></svg>
+<span style="font-weight: 800; font-size: 16px; font-variation-settings: 'wdth' 112; letter-spacing: .02em">VectraOS</span>
+</button>
+<div class="dbrow" style="justify-content: space-between">
+<span style="display: flex; gap: 8px; align-items: center">
+<svg width="16" height="16" viewBox="0 0 16 16" role="img" aria-label="9gate link up"><path d="M2 12h3v2H2zM6.5 9h3v5h-3zM11 5h3v9h-3z" fill="#3e6fb0" stroke="#1d1b17"/></svg>
+<svg width="16" height="16" viewBox="0 0 16 16" role="img" aria-label="Audio"><path d="M2 6h3l4-3v10l-4-3H2z" fill="#e6e3dc" stroke="#1d1b17"/><path d="M11 5c1.5 1.5 1.5 4.5 0 6" stroke="#1d1b17" fill="none"/></svg>
+<svg width="16" height="16" viewBox="0 0 16 16" role="img" aria-label="Keyring unlocked"><rect x="3" y="7" width="10" height="7" fill="#f2bb26" stroke="#1d1b17"/><path d="M5 7V5a3 3 0 016 0" stroke="#1d1b17" fill="none"/></svg>
+</span>
+<span class="mono" style="font-weight: 600">14:32</span>
+</div>
+<div style="padding: 8px 10px; border-bottom: 1px solid #a7a296">
+<div class="lcd" style="padding: 8px; font-size: 11.5px; display: grid; grid-template-columns: 44px 1fr; row-gap: 6px; align-items: center">
+<span>CPU</span>
+<svg width="100%" height="16" viewBox="0 0 144 16" preserveAspectRatio="none" aria-hidden="true"><rect x="0" y="9" width="14" height="7" fill="#9cf28f"/><rect x="18" y="4" width="14" height="12" fill="#9cf28f"/><rect x="36" y="12" width="14" height="4" fill="#9cf28f"/><rect x="54" y="13" width="14" height="3" fill="#9cf28f"/><rect x="72" y="2" width="14" height="14" fill="#ffcf5a"/><rect x="90" y="11" width="14" height="5" fill="#9cf28f"/><rect x="108" y="14" width="14" height="2" fill="#9cf28f"/><rect x="126" y="14" width="14" height="2" fill="#9cf28f"/></svg>
+<span>GPU</span><span style="display: block; height: 8px; background: linear-gradient(90deg,#9cf28f 34%,#24392f 34%)"></span>
+<span>FRAME</span><span>16.6 ms · 0 drop</span>
+<span>AUDIO</span><span>2.7 ms · 0 xrun</span>
+</div>
+</div>
+<div style="padding: 8px 10px; border-bottom: 1px solid #a7a296">
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px">
+<div class="wsp on"><div class="mini" style="left: 6px; top: 5px; width: 36px; height: 22px"></div><div class="mini f" style="left: 30px; top: 18px; width: 44px; height: 20px"></div><span class="mode">S</span></div>
+<div class="wsp"><div class="mini" style="left: 3px; top: 3px; width: 50px; height: 36px"></div><div class="mini" style="left: 55px; top: 3px; width: 47px; height: 17px"></div><div class="mini" style="left: 55px; top: 22px; width: 47px; height: 17px"></div><span class="mode">T</span></div>
+<div class="wsp"><div class="mini" style="left: 20px; top: 8px; width: 50px; height: 26px"></div><span class="mode">S</span></div>
+<div class="wsp"><div class="mini" style="left: 3px; top: 3px; width: 49px; height: 36px"></div><div class="mini" style="left: 54px; top: 3px; width: 48px; height: 36px"></div><span class="mode">T</span></div>
+</div>
+</div>
+<div class="dbrow" style="background: linear-gradient(#3f6eaf,#335c95); color: #fff; font-weight: 700"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><rect x="1.5" y="2.5" width="15" height="12" fill="#14211d" stroke="#fff"/><path d="M4 6l3 2-3 2M8 11h4" stroke="#9cf28f" fill="none"/></svg>Terminal</div>
+<div class="dbrow"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M1.5 4.5h6l2 2h7v9h-15z" fill="#e9c35a" stroke="#1d1b17"/></svg>Tracker</div>
+<div class="dbrow"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><circle cx="8" cy="8" r="5" fill="#d8ecff" stroke="#1d1b17" stroke-width="1.3"/><path d="M11.5 11.5l5 5" stroke="#1d1b17" stroke-width="2.2"/></svg>Inspector</div>
+<div class="dbrow" style="border-bottom: 0"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><rect x="2" y="3" width="14" height="12" fill="#2f7a55" stroke="#14301f"/><rect x="6" y="6" width="6" height="6" fill="#26262a"/></svg>Game · frame</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1920,"height":1080}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

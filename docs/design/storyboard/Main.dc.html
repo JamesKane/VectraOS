@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Space workspace</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&amp;family=IBM+Plex+Mono:wght@400;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.vx{font-family:'Archivo',sans-serif;font-variation-settings:'wdth' 92;color:#1d1b17;font-size:13px;line-height:1.3}
+.mono{font-family:'IBM Plex Mono',monospace}
+.win{position:absolute;display:flex;flex-direction:column;filter:drop-shadow(0 10px 14px rgba(8,14,22,.38)) drop-shadow(0 2px 2px rgba(8,14,22,.35))}
+.tab{align-self:flex-start;display:flex;align-items:center;gap:10px;height:27px;padding:0 6px;background:linear-gradient(#ffe48a,#f2bb26);border:1px solid #2b2618;border-bottom:0;box-shadow:inset 1px 1px 0 #fff6cf,inset -1px 0 0 #b38710;border-radius:5px 5px 0 0;font-weight:700;font-size:13px;font-variation-settings:'wdth' 100;white-space:nowrap}
+.tab.off{background:linear-gradient(#ecE9e2,#cdc9bf);box-shadow:inset 1px 1px 0 #fff,inset -1px 0 0 #8f8a7f;color:#4a463e}
+.cbox{width:15px;height:15px;box-sizing:border-box;border:1px solid #2b2618;border-radius:2px;background:linear-gradient(135deg,#fffbe6,#e3ae18);box-shadow:inset 1px 1px 0 #fff}
+.tab.off .cbox{background:linear-gradient(135deg,#fff,#bdb8ad)}
+.zbox{position:relative}
+.zbox::after{content:'';position:absolute;left:2px;top:2px;width:6px;height:6px;border:1px solid #2b2618;background:#fff8dc}
+.frame{flex:1;border:1px solid #2b2618;background:#d8d4cb;padding:3px;box-shadow:inset 1px 1px 0 #f9f7f1,inset -1px -1px 0 #8f8a7f;display:flex;flex-direction:column;min-height:0;border-radius:0 3px 3px 3px}
+.menu{display:flex;gap:18px;height:23px;align-items:center;padding:0 10px;background:linear-gradient(#f3f1eb,#dcd8cf);border-bottom:1px solid #8f8a7f;font-size:13px}
+.well{background:#fbfaf6;border:1px solid #6d685e;box-shadow:inset 1px 1px 0 #b9b4a8}
+.lcd{background:#14211d;color:#9cf28f;border:1px solid #57524a;box-shadow:inset 1px 1px 0 #000,inset -1px -1px 0 #3c5048;text-shadow:0 0 6px rgba(140,240,130,.45);font-family:'IBM Plex Mono',monospace}
+.ico{display:flex;flex-direction:column;align-items:center;gap:4px;width:92px;text-align:center;font-size:12.5px}
+.lbl{padding:1px 5px;border-radius:2px}
+.desk .lbl{color:#fff;text-shadow:0 1px 0 #1b2833,0 0 3px #1b2833}
+.sel .lbl{background:#3e6fb0;color:#fff;text-shadow:none}
+.sb{width:15px;background:repeating-linear-gradient(45deg,#c9c5bb 0 2px,#bdb8ad 2px 4px);border-left:1px solid #6d685e;display:flex;flex-direction:column}
+.arr{height:15px;background:linear-gradient(#f3f1eb,#cfcbc1);border-bottom:1px solid #6d685e;box-shadow:inset 1px 1px 0 #fff}
+.thumb{margin:2px 1px;background:linear-gradient(90deg,#f3f1eb,#d0ccc2);border:1px solid #57524a;box-shadow:inset 1px 1px 0 #fff;border-radius:2px}
+.db{position:absolute;top:0;right:0;width:236px;background:#d8d4cb;border-left:1px solid #2b2618;border-bottom:1px solid #2b2618;box-shadow:inset 1px 1px 0 #f9f7f1,-4px 6px 14px rgba(8,14,22,.35);border-bottom-left-radius:4px}
+.dbrow{display:flex;align-items:center;gap:8px;padding:0 10px;height:30px;border-top:1px solid #f9f7f1;border-bottom:1px solid #a7a296;font-size:13px}
+.wsp{height:44px;border:1px solid #2b2618;background:#3f5868;position:relative;box-shadow:inset 1px 1px 0 rgba(0,0,0,.4)}
+.wsp.on{outline:2px solid #f2bb26;outline-offset:1px}
+.mode{position:absolute;right:2px;bottom:2px;font-size:9.5px;font-weight:800;padding:0 3px;background:#f3f1eb;border:1px solid #2b2618;line-height:12px}
+.mini{position:absolute;background:#d8d4cb;border:1px solid #1d1b17}
+.mini.f{border-top:3px solid #f2bb26}
+</style>
+</helmet>
+<div class="vx desk" style="width: 1920px; height: 1080px; position: relative; overflow: hidden; background-color: {{desktop}}; background-image: repeating-linear-gradient(45deg, rgba(0,0,0,.07) 0 1px, transparent 1px 5px), repeating-linear-gradient(-45deg, rgba(255,255,255,.035) 0 1px, transparent 1px 5px)">
+
+<div style="position: absolute; left: 24px; top: 22px; display: flex; flex-direction: column; gap: 22px">
+<div class="ico"><svg width="52" height="52" viewBox="0 0 48 48" aria-hidden="true"><path d="M8 16l6-6h26v20l-6 6H8z" fill="#9e998d" stroke="#1d1b17" stroke-width="1.4" stroke-linejoin="round"/><path d="M8 16h26v20H8z" fill="#d6d2c8" stroke="#1d1b17" stroke-width="1.4"/><path d="M34 16l6-6M34 36l6-6" stroke="#1d1b17" stroke-width="1.4"/><path d="M8 29h26" stroke="#1d1b17" stroke-width="1.2"/><circle cx="29" cy="32.5" r="1.8" fill="#5fd36a" stroke="#1d1b17" stroke-width=".8"/><path d="M11 19h18" stroke="#fff" stroke-width="1.2"/></svg><span class="lbl">Taisce</span></div>
+<div class="ico"><svg width="52" height="52" viewBox="0 0 48 48" aria-hidden="true"><path d="M6 14l5-4h32l-5 4z" fill="#4c9a72" stroke="#14301f" stroke-width="1.3" stroke-linejoin="round"/><path d="M38 14l5-4v22l-5 4z" fill="#1f5a3d" stroke="#14301f" stroke-width="1.3" stroke-linejoin="round"/><rect x="6" y="14" width="32" height="22" fill="#2f7a55" stroke="#14301f" stroke-width="1.3"/><rect x="16" y="19" width="12" height="12" fill="#26262a" stroke="#000"/><rect x="18" y="21" width="8" height="8" fill="#5b7fb8"/><path d="M13 21h3M13 25h3M13 29h3M28 21h3M28 25h3M28 29h3" stroke="#e0c66a" stroke-width="1.3"/></svg><span class="lbl">q8b</span></div>
+<div class="ico"><svg width="52" height="52" viewBox="0 0 48 48" aria-hidden="true"><path d="M6 14l5-4h32l-5 4z" fill="#d06a63" stroke="#40140f" stroke-width="1.3" stroke-linejoin="round"/><path d="M38 14l5-4v22l-5 4z" fill="#7d2b25" stroke="#40140f" stroke-width="1.3" stroke-linejoin="round"/><rect x="6" y="14" width="32" height="22" fill="#b04a42" stroke="#40140f" stroke-width="1.3"/><rect x="18" y="20" width="10" height="10" fill="#26262a" stroke="#000"/><path d="M9 17h26" stroke="#e0c66a" stroke-width="2" stroke-dasharray="1.5 1.5"/></svg><span class="lbl">pi5</span></div>
+<div class="ico"><svg width="52" height="52" viewBox="0 0 48 48" aria-hidden="true"><path d="M4 13h14l4 4h22v23H4z" fill="#e9c35a" stroke="#2b2618" stroke-width="1.4" stroke-linejoin="round"/><path d="M5 19h38" stroke="#fff3c0" stroke-width="1.4"/><circle cx="22" cy="28" r="6" fill="#d8ecff" stroke="#1d1b17" stroke-width="1.6"/><path d="M26.5 32.5l6 6" stroke="#1d1b17" stroke-width="3" stroke-linecap="round"/></svg><span class="lbl">Queries</span></div>
+</div>
+
+<div style="position: absolute; right: 30px; bottom: 26px" class="ico"><svg width="52" height="52" viewBox="0 0 48 48" aria-hidden="true"><path d="M12 14h24l-3 28H15z" fill="#c8c4ba" stroke="#1d1b17" stroke-width="1.4" stroke-linejoin="round"/><path d="M9 10h30v4H9z" fill="#e6e3dc" stroke="#1d1b17" stroke-width="1.4"/><path d="M19 18l1 20M24 18v20M29 18l-1 20" stroke="#8f8a7f" stroke-width="1.4"/></svg><span class="lbl">Trash</span></div>
+
+<div class="win" style="left: 150px; top: 70px; width: 660px; height: 450px">
+<div class="tab off"><span class="cbox"></span><span>home</span><span class="cbox zbox"></span></div>
+<div class="frame">
+<div class="menu"><span>File</span><span>Window</span><span>Attributes</span><span style="margin-left: auto; color: #5d584f">6 items · 31.4 GiB free</span></div>
+<div style="flex: 1; display: flex; min-height: 0; margin-top: 3px">
+<div class="well" style="flex: 1; position: relative; background: #f4f2ec">
+<div class="ico" style="position: absolute; left: 28px; top: 22px"><svg width="48" height="48" viewBox="0 0 48 48" aria-hidden="true"><path d="M4 13h14l4 4h22v23H4z" fill="#e9c35a" stroke="#2b2618" stroke-width="1.4" stroke-linejoin="round"/><path d="M5 19h38" stroke="#fff3c0" stroke-width="1.4"/><path d="M5 39h38" stroke="#9a7417" stroke-width="2"/></svg><span class="lbl">Documents</span></div>
+<div class="ico sel" style="position: absolute; left: 150px; top: 22px"><svg width="48" height="48" viewBox="0 0 48 48" aria-hidden="true"><path d="M4 13h14l4 4h22v23H4z" fill="#e9c35a" stroke="#2b2618" stroke-width="1.4" stroke-linejoin="round"/><path d="M5 19h38" stroke="#fff3c0" stroke-width="1.4"/><path d="M15 26l-4 4 4 4M33 26l4 4-4 4M26 24l-4 12" stroke="#2b2618" stroke-width="1.8" fill="none"/></svg><span class="lbl">VectraOS-swift</span></div>
+<div class="ico" style="position: absolute; left: 272px; top: 22px"><svg width="48" height="48" viewBox="0 0 48 48" aria-hidden="true"><path d="M4 13h14l4 4h22v23H4z" fill="#e9c35a" stroke="#2b2618" stroke-width="1.4" stroke-linejoin="round"/><path d="M5 19h38" stroke="#fff3c0" stroke-width="1.4"/><circle cx="20" cy="33" r="3" fill="#2b2618"/><path d="M23 33V23l8-2v9" stroke="#2b2618" stroke-width="1.8" fill="none"/><circle cx="28" cy="31" r="3" fill="#2b2618"/></svg><span class="lbl">Music</span></div>
+<div class="ico" style="position: absolute; left: 60px; top: 150px"><svg width="48" height="48" viewBox="0 0 48 48" aria-hidden="true"><path d="M4 13h14l4 4h22v23H4z" fill="#e9c35a" stroke="#2b2618" stroke-width="1.4" stroke-linejoin="round"/><path d="M5 19h38" stroke="#fff3c0" stroke-width="1.4"/><rect x="14" y="23" width="20" height="13" fill="#bfe0ff" stroke="#2b2618" stroke-width="1.4"/><path d="M14 36l7-7 4 4 3-3 6 6" fill="#4c9a72" stroke="#2b2618" stroke-width="1.2"/></svg><span class="lbl">Captures</span></div>
+<div class="ico" style="position: absolute; left: 196px; top: 160px"><svg width="48" height="48" viewBox="0 0 48 48" aria-hidden="true"><path d="M4 13h14l4 4h22v23H4z" fill="#e9c35a" stroke="#2b2618" stroke-width="1.4" stroke-linejoin="round"/><path d="M5 19h38" stroke="#fff3c0" stroke-width="1.4"/><path d="M13 24h22v12H13z" fill="#fff" stroke="#2b2618" stroke-width="1.4"/><path d="M13 24l11 7 11-7" stroke="#2b2618" stroke-width="1.4" fill="none"/></svg><span class="lbl">Mail</span></div>
+<div class="ico" style="position: absolute; left: 380px; top: 130px"><svg width="48" height="48" viewBox="0 0 48 48" aria-hidden="true"><path d="M4 13h14l4 4h22v23H4z" fill="#a9c7e8" stroke="#1d2b3a" stroke-width="1.4" stroke-linejoin="round"/><path d="M5 19h38" stroke="#e8f2ff" stroke-width="1.4"/><circle cx="22" cy="28" r="6" fill="#fff" stroke="#1d1b17" stroke-width="1.6"/><path d="M26.5 32.5l6 6" stroke="#1d1b17" stroke-width="3" stroke-linecap="round"/></svg><span class="lbl">This week's captures</span></div>
+</div>
+<div class="sb"><div class="arr"></div><div class="thumb" style="height: 120px"></div><div style="flex: 1"></div><div class="arr" style="border-top: 1px solid #6d685e"></div></div>
+</div>
+</div>
+</div>
+
+<div class="win" style="left: 560px; top: 395px; width: 840px; height: 480px">
+<div class="tab"><span class="cbox"></span><span>Terminal — ~</span><span class="cbox zbox"></span></div>
+<div class="frame">
+<div class="menu"><span>Terminal</span><span>Edit</span><span>Settings</span><span style="margin-left: auto; color: #5d584f">80 × 22 · rc</span></div>
+<div style="flex: 1; display: flex; min-height: 0; margin-top: 3px">
+<div class="lcd mono" style="flex: 1; padding: 12px 14px; font-size: 14px; line-height: 1.5; color: #c8f5bf; white-space: pre">; mount tcp!q8b!564 /n/q8b
+; ls /n/q8b/dev/accel
+adreno0  cdsp0  cpu
+; cat /n/q8b/dev/accel/cdsp0/.help
+cdsp0: Hexagon CDSP (SC8280XP)
+  ctl     load a .vxm, bind rings, query caps
+  ring    negotiate an SPSC ring (VMO + counter)
+  stats   live counters
+; cat /n/pi5/dev/gpio/17/value
+1
+; hey Tracker get Frame of Window home
+(150, 70, 810, 520)
+; <span style="background: #c8f5bf; color: #14211d">▍</span></div>
+<div class="sb"><div class="arr"></div><div style="flex: 1"></div><div class="thumb" style="height: 160px"></div><div class="arr" style="border-top: 1px solid #6d685e"></div></div>
+</div>
+</div>
+</div>
+
+<div class="win" style="left: 1470px; top: 640px; width: 380px; height: 200px">
+<div class="frame" style="border-radius: 4px; padding: 6px; gap: 6px">
+<div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: 700; padding: 0 2px"><span>Frame pacing · game</span><span style="color: #5d584f; font-weight: 500">replicant</span></div>
+<div class="lcd" style="flex: 1; position: relative; padding: 8px">
+<svg width="100%" height="100" viewBox="0 0 340 100" preserveAspectRatio="none" aria-hidden="true"><path d="M0 50H340" stroke="#3c6a46" stroke-dasharray="3 3"/><path d="M0 50 L10 48 L20 52 L30 49 L40 51 L50 47 L60 53 L70 50 L80 49 L90 51 L100 50 L110 46 L120 52 L130 50 L140 49 L150 50 L160 51 L170 48 L180 52 L190 50 L200 30 L210 50 L220 49 L230 51 L240 50 L250 48 L260 51 L270 50 L280 49 L290 52 L300 50 L310 49 L320 51 L330 50 L340 50" stroke="#9cf28f" stroke-width="1.6" fill="none"/></svg>
+<div style="display: flex; justify-content: space-between; font-size: 12px; margin-top: 4px"><span>target 16.67 ms</span><span>p99 err 0.41 ms</span><span style="color: #ffcf5a">1 late</span></div>
+</div>
+</div>
+</div>
+
+<div class="db">
+<button type="button" style="all: unset; display: flex; align-items: center; gap: 10px; height: 48px; padding: 0 12px; width: 100%; box-sizing: border-box; border-bottom: 1px solid #2b2618; background: linear-gradient(#f3f1eb,#d0ccc2); cursor: default" aria-label="VectraOS menu">
+<svg width="30" height="30" viewBox="0 0 32 32" aria-hidden="true"><path d="M3 5h8l5 15V27z" fill="#f2bb26" stroke="#1d1b17" stroke-width="1.3" stroke-linejoin="round"/><path d="M29 5h-8l-5 15V27z" fill="#3e6fb0" stroke="#1d1b17" stroke-width="1.3" stroke-linejoin="round"/><path d="M11 5l5 15 5-15" fill="none" stroke="#fff" stroke-width="1"/></svg>
+<span style="font-weight: 800; font-size: 16px; font-variation-settings: 'wdth' 112; letter-spacing: .02em">VectraOS</span>
+</button>
+<div class="dbrow" style="justify-content: space-between">
+<span style="display: flex; gap: 8px; align-items: center">
+<svg width="16" height="16" viewBox="0 0 16 16" role="img" aria-label="9gate link up"><path d="M2 12h3v2H2zM6.5 9h3v5h-3zM11 5h3v9h-3z" fill="#3e6fb0" stroke="#1d1b17"/></svg>
+<svg width="16" height="16" viewBox="0 0 16 16" role="img" aria-label="Audio"><path d="M2 6h3l4-3v10l-4-3H2z" fill="#e6e3dc" stroke="#1d1b17"/><path d="M11 5c1.5 1.5 1.5 4.5 0 6" stroke="#1d1b17" fill="none"/></svg>
+<svg width="16" height="16" viewBox="0 0 16 16" role="img" aria-label="Keyring unlocked"><rect x="3" y="7" width="10" height="7" fill="#f2bb26" stroke="#1d1b17"/><path d="M5 7V5a3 3 0 016 0" stroke="#1d1b17" fill="none"/></svg>
+</span>
+<span class="mono" style="font-weight: 600">14:32</span>
+</div>
+<div style="padding: 8px 10px; border-bottom: 1px solid #a7a296">
+<div class="lcd" style="padding: 8px; font-size: 11.5px; display: grid; grid-template-columns: 44px 1fr; row-gap: 6px; align-items: center">
+<span>CPU</span>
+<svg width="100%" height="16" viewBox="0 0 144 16" preserveAspectRatio="none" aria-hidden="true"><rect x="0" y="9" width="14" height="7" fill="#9cf28f"/><rect x="18" y="4" width="14" height="12" fill="#9cf28f"/><rect x="36" y="12" width="14" height="4" fill="#9cf28f"/><rect x="54" y="13" width="14" height="3" fill="#9cf28f"/><rect x="72" y="2" width="14" height="14" fill="#ffcf5a"/><rect x="90" y="11" width="14" height="5" fill="#9cf28f"/><rect x="108" y="14" width="14" height="2" fill="#9cf28f"/><rect x="126" y="14" width="14" height="2" fill="#9cf28f"/></svg>
+<span>GPU</span><span style="display: block; height: 8px; background: linear-gradient(90deg,#9cf28f 34%,#24392f 34%)"></span>
+<span>FRAME</span><span>16.6 ms · 0 drop</span>
+<span>AUDIO</span><span>2.7 ms · 0 xrun</span>
+</div>
+</div>
+<div style="padding: 8px 10px; border-bottom: 1px solid #a7a296">
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px">
+<div class="wsp on"><div class="mini" style="left: 6px; top: 5px; width: 36px; height: 22px"></div><div class="mini f" style="left: 30px; top: 18px; width: 44px; height: 20px"></div><span class="mode">S</span></div>
+<div class="wsp"><div class="mini" style="left: 3px; top: 3px; width: 50px; height: 36px"></div><div class="mini" style="left: 55px; top: 3px; width: 47px; height: 17px"></div><div class="mini" style="left: 55px; top: 22px; width: 47px; height: 17px"></div><span class="mode">T</span></div>
+<div class="wsp"><div class="mini" style="left: 20px; top: 8px; width: 50px; height: 26px"></div><span class="mode">S</span></div>
+<div class="wsp"><div class="mini" style="left: 3px; top: 3px; width: 49px; height: 36px"></div><div class="mini" style="left: 54px; top: 3px; width: 48px; height: 36px"></div><span class="mode">T</span></div>
+</div>
+</div>
+<div class="dbrow" style="background: linear-gradient(#3f6eaf,#335c95); color: #fff; font-weight: 700"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><rect x="1.5" y="2.5" width="15" height="12" fill="#14211d" stroke="#fff"/><path d="M4 6l3 2-3 2M8 11h4" stroke="#9cf28f" fill="none"/></svg>Terminal</div>
+<div class="dbrow"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M1.5 4.5h6l2 2h7v9h-15z" fill="#e9c35a" stroke="#1d1b17"/></svg>Tracker</div>
+<div class="dbrow"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><circle cx="8" cy="8" r="5" fill="#d8ecff" stroke="#1d1b17" stroke-width="1.3"/><path d="M11.5 11.5l5 5" stroke="#1d1b17" stroke-width="2.2"/></svg>Inspector</div>
+<div class="dbrow" style="border-bottom: 0"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><rect x="2" y="3" width="14" height="12" fill="#2f7a55" stroke="#14301f"/><rect x="6" y="6" width="6" height="6" fill="#26262a"/></svg>Game · frame</div>
+</div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"desktop":{"editor":"color","default":"#3f5868"},"$preview":{"width":1920,"height":1080}}'>
+class Component extends DCLogic {
+renderVals() {
+return { desktop: this.props.desktop ?? '#3f5868' };
+}
+}
+</script>
+</body>
+</html>
