@@ -21,18 +21,11 @@ first commit.
 - croi's self-tests and usertest pass.
 - Boot budgets are recorded, and the size budgets run.
 
-## The critical path to the board
+Milestones run in order. Each one puts in place what the next one
+depends on. Board bring-up (V4) is attempted only once its dependencies
+are in place, which includes the bring-up link (V3, D15).
 
-V0 → V2 → V3 → V4. Bring-up is fastest with a shell, file copies and a
-warm reboot already working when the board first boots (D15), so the
-bring-up link (V3) comes before the board (V4).
-
-V1 is not on this path. todhchai's userland already runs on croi as it
-is, so V2 and V3 don't wait for the kernel to be slimmed. V1 runs
-alongside them, and each cut it makes adapts the lifted code in the same
-change.
-
-## V1. Setup-engine kernel (alongside V2–V4)
+## V1. Setup-engine kernel
 
 - Audit every object and syscall, and write a decision entry for each cut.
 - Implement the one ring (architecture §3) in Swift and as `ring.h`, with a
@@ -42,7 +35,7 @@ change.
 
 **Exit:**
 - The kernel and IPC budgets are green.
-- The syscall ceiling is lowered and published.
+- The syscall ceiling is published.
 - `ring_kicks` = 0 under load.
 
 ## V2. Userland base
@@ -106,8 +99,9 @@ three arches, so the board meets a tested path.
 
 ## V4. Radxa Dragon Q8B
 
-The board work starts with V3's link, so every later step is a rebuild
-and `vx remote boot`, not a stick and a walk.
+Attempted only once V0 to V3 are done. The board work then starts with
+V3's link, so every later step is a rebuild and `vx remote boot`, not a
+stick and a walk.
 
 1. **Console first:** the loader and kernel print through the GENI UART
    from the first boot. This needs a 1.8 V USB-serial adapter on the
