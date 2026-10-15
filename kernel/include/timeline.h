@@ -13,7 +13,7 @@
 // one). timeline_set_period changes the rate, keeping the count. Both
 // need WRITE.
 //
-// Waiting is a counter's: counter_wait / counter_wait_async / counter_read
+// Waiting is a counter's: counter_wait / object_bind VALUE / counter_read
 // take a timeline handle (WAIT and READ), so "the next vblank" is a wait
 // for the current value + 1. timeline_get_page returns a read-only VMO of
 // one croi_timeline_page_t, which clients map to know the vblank times

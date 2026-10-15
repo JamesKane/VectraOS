@@ -9,7 +9,7 @@ project(vectraos LANGUAGES C ASM Swift)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # vx (Package.swift, SwiftPM) runs the build steps: elf2efi, mkbootfs,
-# check-pixels, todhchai-check. Every build asks SwiftPM for it, which is a
+# check-pixels. Every build asks SwiftPM for it, which is a
 # no-op when it is current; steps that use it rerun only when it changed.
 find_program(CROI_SWIFT swift REQUIRED)
 set(VX ${CMAKE_SOURCE_DIR}/.build/debug/vx)
@@ -152,16 +152,6 @@ if(CROI_ARCH STREQUAL arm64 OR CROI_ARCH STREQUAL rv64)
             -icount shift=auto,sleep=off -rtc clock=vm)
   set_tests_properties(boot-lean-icount PROPERTIES TIMEOUT 120)
 endif()
-
-# Todhchai's --next test programs (sys-test, pthread-test, tls-test,
-# services-test) from its newest bootfs, on this tree's loader and kernel,
-# booted as td boot boots them (vx todhchai-check): its td ci builds
-# croi only from commits, and a root-filter change broke sys-test once with
-# every test here passing. Skipped (77) where no Todhchai tree has a bootfs.
-add_test(NAME todhchai-check
-  COMMAND ${VX} todhchai-check ${CROI_ARCH}
-          --build ${CMAKE_BINARY_DIR})
-set_tests_properties(todhchai-check PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 LABELS todhchai)
 
 # Reboot (K10e): the machine resets; -no-reboot makes QEMU exit on it.
 set(_esp_reboot ${CMAKE_BINARY_DIR}/esp-reboot)

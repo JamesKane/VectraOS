@@ -451,7 +451,10 @@ enum Scheduler {
 
     /// Blocks the running thread on `queue` (nil: no queue, only the
     /// deadline wakes it) until woken or until `deadline`. Lock held.
-    static func block(on queue: QueuePointer?, deadline: UInt64, interruptible: Bool = false) -> Thread.WaitResult {
+    /// `leeway`: the wait may time out up to this long after `deadline`
+    /// (never before), so that timers coalesce; none for a deadline thread.
+    static func block(on queue: QueuePointer?, deadline: UInt64, leeway: UInt64 = 0,
+                      interruptible: Bool = false) -> Thread.WaitResult {
         let me = Int(Cpu.current)
         let thread = cpus[me].current!
         guard !thread.pointee.isIdle else { panic("sched: the idle thread blocked") }
@@ -488,7 +491,8 @@ enum Scheduler {
             dropTimeout(thread)
             thread.pointee.waitGeneration &+= 1
             if !never {
-                Timers.arm(thread.timeoutNode, deadline: deadline, timeoutFired, thread.address,
+                let slack = leeway == 0 || thread.pointee.effective.discipline == .deadline ? 0 : leeway
+                Timers.arm(thread.timeoutNode, deadline: deadline, slack: slack, timeoutFired, thread.address,
                            context: thread.pointee.waitGeneration)
                 thread.pointee.timeoutArmed = true
                 thread.pointee.timeoutCpu = me

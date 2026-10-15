@@ -290,7 +290,7 @@ Deadline-carrying wakeups, K10c (Todhchai ext 5 and 10; profile.h):
   an overrun on the context, then its own profile, not throttling), at
   exit, when its own profile changes, or when the context is replaced or
   the object destroyed (`Scheduler.withdraw`, then destroyed). One
-  borrower at a time (`borrower`). thread_bind_overrun_port takes the
+  borrower at a time (`borrower`). object_bind OVERRUN takes the
   interrupt (WRITE) for its context's overruns. A lend replaces a handoff
   and vice versa. Test hook 10 is the borrowed context's CPU or -1
   (syscall 6 sends only ops 6-9 to the reclaim hooks now).
@@ -299,7 +299,8 @@ Deadline-carrying wakeups, K10c (Todhchai ext 5 and 10; profile.h):
 
 Kernel-only extensions reaching user space, K10d (task.h, profile.h,
 log.h; Todhchai ext 3 and 8, its trace export):
-- `thread_bind_overrun_port` (122; MANAGE_THREAD, port WRITE): the
+- object_bind OVERRUN (was `thread_bind_overrun_port`, 122, until V1;
+  MANAGE_THREAD, port WRITE): the
   thread's own deadline context (`profileContext`, from
   object_set_profile; else BAD_STATE) gets a PacketSource of type 0x80
   (payload[1] total overruns, [2] since last read), swapped under the

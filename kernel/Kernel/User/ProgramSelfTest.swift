@@ -142,6 +142,64 @@ enum ProgramSelfTest {
         console.write(" and no relocations; RELRO read only; all torn down\n")
     }
 
+    /// The Swift program's test suites (user/test/swift/Suite.swift), one
+    /// run each with `swift.suite=<name>`: each must exit 0x600D and leave
+    /// nothing behind. A failing check names itself on the console (its
+    /// stdout is a debuglog). New syscall tests are written as suites, not
+    /// in usertest.c.
+    static func runSuites(_ console: Uart) {
+        let suites: InlineArray<1, StaticString> = ["swift.suite=bind\0"]
+        let before = ProcessSelfTest.Counts()
+        let image = unsafe RawSpan(_unsafeStart: UnsafeRawPointer(bitPattern: UInt(croi_swift_test_address()))!,
+                                   byteCount: Int(croi_swift_test_size()))
+        for i in suites.indices {
+            let environment = suites[i]
+            let (stdout, stdoutRights) = created { () throws(Status) in try DebugLogs.create(readable: false) }
+            var handles = InlineArray<2, ProgramLoader.StartupHandle>(repeating: ProgramLoader.StartupHandle(
+                object: stdout, rights: stdoutRights, info: croi_pa_hnd(UInt32(CROI_PA_FD), 1)))
+            handles[1] = ProgramLoader.StartupHandle(object: Resources.root, rights: ResourceObject.defaultRights,
+                                                     info: croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0))
+            let process: ObjectPointer
+            do throws(Status) {
+                process = try ProgramLoader.start(
+                    image, name: "swiftsuite", job: Processes.rootJob, handles: handles.span,
+                    environment: unsafe Span(_unsafeStart: environment.utf8Start,
+                                             count: environment.utf8CodeUnitCount))
+            } catch {
+                panic("suites: loading the Swift program")
+            }
+            stdout.release()
+            let giveUp = Clock.now() + 60_000_000_000
+            while !Processes.info(process: process).exited {
+                guard Clock.now() < giveUp else { panic("suites: a suite never ended") }
+                Scheduler.sleep(until: Clock.now() + 2_000_000)
+            }
+            let code = Processes.info(process: process).returnCode
+            process.release()
+            guard code == 0x600D else {
+                console.write("  suites: ")
+                writeName(console, environment)
+                console.write(": exit code ")
+                console.write(hex: UInt64(bitPattern: code))
+                console.write("\n")
+                panic("suites: a suite failed (its FAILED line is above)")
+            }
+        }
+        before.expectUnchanged(console)
+        console.write("  suites:")
+        for i in suites.indices {
+            console.write(" ")
+            writeName(console, suites[i])
+        }
+        console.write(": passed, nothing left behind\n")
+    }
+
+    /// A suite's name: "swift.suite=" (12 bytes) up to the NUL.
+    private static func writeName(_ console: Uart, _ environment: StaticString) {
+        console.write(utf8: unsafe Span(_unsafeStart: environment.utf8Start + 12,
+                                        count: environment.utf8CodeUnitCount - 13))
+    }
+
     private static func created(_ body: () throws(Status) -> (ObjectPointer, Rights)) -> (ObjectPointer, Rights) {
         do throws(Status) {
             return try body()

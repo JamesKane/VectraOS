@@ -34,8 +34,9 @@ struct PortPacket: Equatable {
     var count: UInt64 { payload[2] }
 }
 
-/// A queued packet. Owned by the queue (from wait_async or port_queue: freed
-/// when dequeued), by a kernel packet source, or by an interrupt object
+/// A queued packet. Owned by the queue (from object_bind ONCE or
+/// port_queue: freed when dequeued), by a packet source (a kernel event or
+/// a PERSISTENT binding), or by an interrupt object
 /// (both reused: never freed here).
 struct QueuedPacket {
     var next: UInt64 = 0
@@ -284,14 +285,16 @@ enum Ports {
         enqueue(port, record)
     }
 
-    /// A wait_async to `port` would be its `maxObservers`th or more.
+    /// A binding to `port` would be its `maxObservers`th or more.
     static func overObserverLimit(_ port: ObjectPointer) -> Bool {
         let p = PortPointer(object: port)
         return p.pointee.packetsLock.withLock { p.pointee.watched.count >= maxObservers }
     }
 
-    /// port_wait: the next packet, waiting until `deadline` (timedOut).
-    static func wait(_ table: borrowing HandleTable, _ handle: UInt32, deadline: UInt64) throws(Status) -> PortPacket {
+    /// port_wait: the next packet, waiting until `deadline` (timedOut), or
+    /// up to `leeway` after it (principle 10).
+    static func wait(_ table: borrowing HandleTable, _ handle: UInt32, deadline: UInt64,
+                     leeway: UInt64 = 0) throws(Status) -> PortPacket {
         let ref = try table.get(handle, type: .port, rights: .read)
         let port = PortPointer(object: ref.object)
         var popped: (PortPacket, QueuedPacketPointer?)? = nil
@@ -301,7 +304,8 @@ enum Ports {
                     popped = next
                     return
                 }
-                let result = Scheduler.block(on: port.pointee.waiters, deadline: deadline, interruptible: true)
+                let result = Scheduler.block(on: port.pointee.waiters, deadline: deadline, leeway: leeway,
+                                             interruptible: true)
                 if result == .interrupted || (result == .timedOut && port.pointee.queued == 0) { return }
             }
         }
@@ -310,13 +314,15 @@ enum Ports {
         return packet
     }
 
-    /// port_cancel: drops the waits `handle` registered with this port under
-    /// `key`, and their packets still queued.
+    /// port_cancel: drops the bindings `handle` made to this port under
+    /// `key` (ONCE, PERSISTENT, an interrupt's), and their packets still
+    /// queued.
     static func cancel(_ table: borrowing HandleTable, port portHandle: UInt32, source handle: UInt32,
                        key: UInt64) throws(Status) {
         let portRef = try table.get(portHandle, type: .port, rights: .write)
         let source = try table.get(handle, rights: .wait)
         let port = PortPointer(object: portRef.object)
+        if source.type == .interrupt { InterruptObjects.cancel(source.object, port: port.object, key: key) }
         source.object.header.lock.withLock {
             var previous: ObserverPointer? = nil
             var cursor = source.object.header.observers
@@ -328,6 +334,12 @@ enum Ports {
                     untrack(p, source.object)
                     QueuedPacketPointer(address: packet).free()
                     port.object.release()  // the observer's reference
+                    unsafe heap.free(UnsafeMutableRawPointer(bitPattern: UInt(observer.address))!)
+                } else if case .source(let p, let k, let packets, _) = observer.pointee.kind, p == port.object.address,
+                          k == key, observer.pointee.table == table.address, observer.pointee.handle == handle {
+                    if let previous { previous.pointee.next = observer.pointee.next } else { source.object.header.observers = observer.pointee.next }
+                    untrack(p, source.object)
+                    PacketSourcePointer(address: packets).retire()
                     unsafe heap.free(UnsafeMutableRawPointer(bitPattern: UInt(observer.address))!)
                 } else {
                     previous = observer
@@ -404,6 +416,13 @@ enum Ports {
                         port.object.release()  // the observer's reference
                         unsafe heap.free(UnsafeMutableRawPointer(bitPattern: UInt(observer.address))!)
                         found = true
+                    } else if case .source(let p, let k, let packets, _) = observer.pointee.kind,
+                              p == port.object.address, k == key {
+                        if let previous { previous.pointee.next = observer.pointee.next } else { source.header.observers = observer.pointee.next }
+                        untrack(p, source)
+                        PacketSourcePointer(address: packets).retire()
+                        unsafe heap.free(UnsafeMutableRawPointer(bitPattern: UInt(observer.address))!)
+                        found = true
                     } else {
                         previous = observer
                     }
@@ -448,6 +467,10 @@ enum Ports {
 struct PacketSource: ~Copyable {
     let port: UInt64
     let record: QueuedPacketPointer
+    /// The payload word that counts events since the packet was last read:
+    /// 2 for kernel events, 1 for a persistent signal binding (a signal
+    /// packet's layout).
+    let countIndex: Int
     var queued = false
     /// Its owner is gone; it goes when its queued packet is read.
     var retired = false
@@ -464,14 +487,17 @@ struct PacketSource: ~Copyable {
 
     /// A source reporting to `port` with `key` and packet `type`; holds a
     /// reference to the port.
-    static func make(port: borrowing ObjectRef, key: UInt64, type: UInt32) throws(Status) -> PacketSourcePointer {
+    /// `table` and `handle`: what it was bound through (port_cancel's match).
+    static func make(port: borrowing ObjectRef, key: UInt64, type: UInt32, countIndex: Int = 2,
+                     table: UInt64 = 0, handle: UInt32 = 0) throws(Status) -> PacketSourcePointer {
         guard port.type == .port else { throw .wrongType }
         guard let raw = unsafe heap.allocate(size: MemoryLayout<PacketSource>.size) else { throw .noMemory }
         let address = UInt64(UInt(bitPattern: raw))
-        let record = try QueuedPacketPointer.allocate(PortPacket(key: key, type: type), source: address)
+        let record = try QueuedPacketPointer.allocate(PortPacket(key: key, type: type), source: address,
+                                                      table: table, handle: handle)
         port.object.retain()
         unsafe raw.bindMemory(to: PacketSource.self, capacity: 1)
-            .initialize(to: PacketSource(port: port.object.address, record: record))
+            .initialize(to: PacketSource(port: port.object.address, record: record, countIndex: countIndex))
         return PacketSourcePointer(address: address)
     }
 
@@ -482,15 +508,34 @@ struct PacketSource: ~Copyable {
             if let word0 { pointee.record.pointee.packet.payload[0] = word0 }
             if let word3 { pointee.record.pointee.packet.payload[3] = word3 }
             pointee.record.pointee.packet.payload[1] = value
-            pointee.record.pointee.packet.payload[2] += 1
-            if pointee.queued { return false }
-            pointee.queued = true
-            return true
+            return countAndQueueLocked()
         }
-        if queue {
-            Ports.enqueue(PortPointer(object: ObjectPointer(address: pointee.port)), pointee.record,
-                          schedulerLocked: schedulerLocked)
+        if queue { enqueue(schedulerLocked: schedulerLocked) }
+    }
+
+    /// Reports a persistent signal binding's event, in a signal packet's
+    /// layout: trigger | observed << 32, the count, and the time (0 unless
+    /// asked for). Any context.
+    func fireSignal(trigger: UInt32, observed: UInt32, timestamp: UInt64) {
+        let queue = pointee.lock.withLock { () -> Bool in
+            pointee.record.pointee.packet.payload[0] = UInt64(observed) << 32 | UInt64(trigger)
+            pointee.record.pointee.packet.payload[2] = timestamp
+            return countAndQueueLocked()
         }
+        if queue { enqueue(schedulerLocked: false) }
+    }
+
+    /// Counts the event; true if the packet must be queued (it wasn't).
+    private func countAndQueueLocked() -> Bool {
+        pointee.record.pointee.packet.payload[pointee.countIndex] += 1
+        if pointee.queued { return false }
+        pointee.queued = true
+        return true
+    }
+
+    private func enqueue(schedulerLocked: Bool) {
+        Ports.enqueue(PortPointer(object: ObjectPointer(address: pointee.port)), pointee.record,
+                      schedulerLocked: schedulerLocked)
     }
 
     /// Its packet was read: the next event queues it again, from count 0
@@ -498,7 +543,7 @@ struct PacketSource: ~Copyable {
     func dequeued() {
         let gone = pointee.lock.withLock { () -> Bool in
             pointee.queued = false
-            pointee.record.pointee.packet.payload[2] = 0
+            pointee.record.pointee.packet.payload[pointee.countIndex] = 0
             return pointee.retired
         }
         if gone { free() }

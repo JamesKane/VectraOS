@@ -35,6 +35,13 @@ static inline int64_t sys6(uint64_t n, uint64_t a, uint64_t b, uint64_t c, uint6
   return croi_syscall6(n, a, b, c, d, e, f);
 }
 
+// object_bind of one item (port.h): the item's status, or the call's.
+static int64_t bind1(uint32_t port, uint32_t handle, uint32_t options, uint64_t key, uint64_t trigger) {
+  croi_bind_item_t item = {.handle = handle, .options = options, .key = key, .trigger = trigger, .status = 1};
+  int64_t bound = sys(CROI_SYS_OBJECT_BIND, port, (uint64_t)&item, 1, 0, 0);
+  return bound < 0 ? bound : bound == 1 ? 0 : item.status;
+}
+
 [[noreturn]] static void exit_with(int64_t code) {
   sys(CROI_SYS_PROCESS_EXIT, (uint64_t)code, 0, 0, 0, 0);
   for (;;) {
@@ -72,7 +79,7 @@ static int64_t objects(void) {
   croi_port_packet_t got = {0};
   CHECK(12, sys(CROI_SYS_PORT_WAIT, port, (uint64_t)now + 1000000000, (uint64_t)&got, 0, 0) == 0
                 && got.key == 42 && got.payload[3] == 4);
-  CHECK(13, sys(CROI_SYS_OBJECT_WAIT_ASYNC, event, port, 7, USER_SIGNAL_0, 0) == 0);
+  CHECK(13, bind1(port, event, CROI_BIND_SIGNALS, 7, USER_SIGNAL_0) == 0);
   CHECK(14, sys(CROI_SYS_OBJECT_SIGNAL, event, 0, USER_SIGNAL_0, 0, 0) == 0);
   CHECK(15, sys(CROI_SYS_PORT_WAIT, port, (uint64_t)now + 1000000000, (uint64_t)&got, 0, 0) == 0 && got.key == 7
                 && got.type == 1 && (got.payload[0] >> 32) & USER_SIGNAL_0);
@@ -1541,10 +1548,10 @@ static int64_t virtual_interrupts(const startup_t *s, uint32_t port) {
                  sys(CROI_SYS_INTERRUPT_ACK, v, 0, 0, 0, 0) == ERR_BAD_STATE);
   // Bound: a packet per trigger, the next only after an ack.
   CHECK(253, sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&plain, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_INTERRUPT_BIND, v, plain, 9, CROI_INTERRUPT_BIND, 0) == ERR_WRONG_TYPE &&
-                 sys(CROI_SYS_INTERRUPT_BIND, v, port, 9, 2, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_INTERRUPT_BIND, v, port, 9, CROI_INTERRUPT_BIND, 0) == 0 &&
-                 sys(CROI_SYS_INTERRUPT_BIND, v, port, 9, CROI_INTERRUPT_BIND, 0) == ERR_ALREADY_BOUND &&
+                 bind1(plain, v, CROI_BIND_INTERRUPT | CROI_BIND_PERSISTENT, 9, 0) == ERR_WRONG_TYPE &&
+                 bind1(port, v, CROI_BIND_INTERRUPT, 9, 0) == ERR_INVALID_ARGS &&
+                 bind1(port, v, CROI_BIND_INTERRUPT | CROI_BIND_PERSISTENT, 9, 0) == 0 &&
+                 bind1(port, v, CROI_BIND_INTERRUPT | CROI_BIND_PERSISTENT, 9, 0) == ERR_ALREADY_BOUND &&
                  sys(CROI_SYS_INTERRUPT_WAIT, v, 0, 0, 0, 0) == ERR_BAD_STATE);
   sys(CROI_SYS_HANDLE_CLOSE, plain, 0, 0, 0, 0);
   CHECK(254, sys(CROI_SYS_INTERRUPT_TRIGGER, v, 0, 1111, 0, 0) == 0 &&
@@ -1559,8 +1566,8 @@ static int64_t virtual_interrupts(const startup_t *s, uint32_t port) {
                  (wait_for(v, CROI_VIRTUAL_INTERRUPT_UNTRIGGERED, 0) & CROI_VIRTUAL_INTERRUPT_UNTRIGGERED));
   // Unbound with a packet queued: it counts as triggered again.
   CHECK(256, sys(CROI_SYS_INTERRUPT_TRIGGER, v, 0, 3333, 0, 0) == 0 &&
-                 sys(CROI_SYS_INTERRUPT_BIND, v, port, 0, CROI_INTERRUPT_UNBIND, 0) == 0 &&
-                 sys(CROI_SYS_INTERRUPT_BIND, v, port, 0, CROI_INTERRUPT_UNBIND, 0) == ERR_NOT_FOUND &&
+                 sys(CROI_SYS_PORT_CANCEL, port, v, 9, 0, 0) == 0 &&
+                 sys(CROI_SYS_PORT_CANCEL, port, v, 9, 0, 0) == 0 &&
                  port_next(port, 0, &p) == ERR_TIMED_OUT &&
                  sys(CROI_SYS_INTERRUPT_WAIT, v, (uint64_t)&time, 0, 0, 0) == 0 && time == 3333);
   // A thread waiting: woken by a trigger; canceled by closing its handle.
@@ -1739,7 +1746,7 @@ static int64_t msi_test(const startup_t *s, uint32_t port) {
   CHECK(286, edu_regs[1] == ~0x12345678u);
   croi_port_packet_t p;
   uint64_t before = now_ns();
-  CHECK(287, sys(CROI_SYS_INTERRUPT_BIND, intr, port, 77, CROI_INTERRUPT_BIND, 0) == 0);
+  CHECK(287, bind1(port, intr, CROI_BIND_INTERRUPT | CROI_BIND_PERSISTENT, 77, 0) == 0);
   edu_regs[0x60 / 4] = 1;
   CHECK(288, port_next(port, 1000000000, &p) == 0 && p.type == CROI_PKT_TYPE_INTERRUPT && p.key == 77 &&
                  p.payload[0] >= before && edu_regs[0x24 / 4] == 1);
@@ -1747,7 +1754,7 @@ static int64_t msi_test(const startup_t *s, uint32_t port) {
   // ...and, unbound, a waiting thread.
   uint64_t time = 0;
   CHECK(289, sys(CROI_SYS_INTERRUPT_ACK, intr, 0, 0, 0, 0) == 0 && port_next(port, 20000000, &p) == ERR_TIMED_OUT &&
-                 sys(CROI_SYS_INTERRUPT_BIND, intr, port, 0, CROI_INTERRUPT_UNBIND, 0) == 0);
+                 sys(CROI_SYS_PORT_CANCEL, port, intr, 77, 0, 0) == 0);
   before = now_ns();
   edu_regs[0x60 / 4] = 2;
   CHECK(290, sys(CROI_SYS_INTERRUPT_WAIT, intr, (uint64_t)&time, 0, 0, 0) == 0 && time >= before);
@@ -1764,12 +1771,12 @@ static int64_t msi_test(const startup_t *s, uint32_t port) {
         (uint16_t)(its ? info.target_data + 64 : info.base_irq_id);
     // Bound and acknowledged (an MSI stays masked until then, after the
     // wait above), so a delivery would arrive.
-    CHECK(297, sys(CROI_SYS_INTERRUPT_BIND, intr, port, 78, CROI_INTERRUPT_BIND, 0) == 0 &&
+    CHECK(297, bind1(port, intr, CROI_BIND_INTERRUPT | CROI_BIND_PERSISTENT, 78, 0) == 0 &&
                    sys(CROI_SYS_INTERRUPT_ACK, intr, 0, 0, 0, 0) == 0);
     edu_regs[0x60 / 4] = 4;
     CHECK(297, port_next(port, 20000000, &p) == ERR_TIMED_OUT);
     edu_regs[0x64 / 4] = 4;
-    sys(CROI_SYS_INTERRUPT_BIND, intr, port, 0, CROI_INTERRUPT_UNBIND, 0);
+    sys(CROI_SYS_PORT_CANCEL, port, intr, 78, 0, 0);
   }
   *(volatile uint16_t *)(edu + cap + 2) = control;  // MSI as it was
   cfg32_write(edu, 4, command);                     // and the command register
@@ -1865,7 +1872,7 @@ static int64_t interrupts(const startup_t *s) {
                  sys(CROI_SYS_INTERRUPT_SET_AFFINITY, intr, 1u << 1, 0, 0, 0) == 0);
 
   // Bound to a port.
-  CHECK(268, sys(CROI_SYS_INTERRUPT_BIND, intr, port, 42, CROI_INTERRUPT_BIND, 0) == 0);
+  CHECK(268, bind1(port, intr, CROI_BIND_INTERRUPT | CROI_BIND_PERSISTENT, 42, 0) == 0);
   uint64_t before = now_ns();
   irq_device_start(regs);
   CHECK(269, port_next(port, 3000000000ull, &p) == 0 && p.type == CROI_PKT_TYPE_INTERRUPT && p.key == 42 &&
@@ -1893,7 +1900,7 @@ static int64_t interrupts(const startup_t *s) {
   sys(CROI_SYS_INTERRUPT_ACK, intr, 0, 0, 0, 0);
   for (int i = 0; i < 3 && port_next(port, 20000000, &p) == 0; i++) sys(CROI_SYS_INTERRUPT_ACK, intr, 0, 0, 0, 0);
   CHECK(271, port_next(port, 50000000, &p) == ERR_TIMED_OUT &&
-                 sys(CROI_SYS_INTERRUPT_BIND, intr, port, 0, CROI_INTERRUPT_UNBIND, 0) == 0);
+                 sys(CROI_SYS_PORT_CANCEL, port, intr, 42, 0, 0) == 0);
 
   // interrupt_wait: the woken thread's latency from the fire's timestamp.
   uint64_t latencies[IRQ_WAITS];
@@ -2203,7 +2210,7 @@ static int64_t iommu_test(const startup_t *s) {
     CHECK(409, sys(CROI_SYS_OBJECT_GET_INFO, msi, CROI_INFO_MSI, (uint64_t)&info, sizeof info, 0) == 0 &&
                    sys6(CROI_SYS_MSI_CREATE, msi, 0, 0, bus_vmo, edu_at + cap, (uint64_t)&intr) == 0 &&
                    sys(CROI_SYS_PORT_CREATE, CROI_PORT_BIND_TO_INTERRUPT, (uint64_t)&mport, 0, 0, 0) == 0 &&
-                   sys(CROI_SYS_INTERRUPT_BIND, intr, mport, 79, CROI_INTERRUPT_BIND, 0) == 0);
+                   bind1(mport, intr, CROI_BIND_INTERRUPT | CROI_BIND_PERSISTENT, 79, 0) == 0);
     cfg32_write(edu, cap + 4, (uint32_t)info.target_addr);
     if (control & (1u << 7)) {
       cfg32_write(edu, cap + 8, (uint32_t)(info.target_addr >> 32));
@@ -2397,12 +2404,12 @@ static int64_t counters(const startup_t *s) {
   croi_port_packet_t p;
   uint64_t before = now_ns();
   CHECK(350, sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_COUNTER_WAIT_ASYNC, c, port, 7, 20, 0) == 0 && port_next(port, 0, &p) == ERR_TIMED_OUT &&
+                 bind1(port, c, CROI_BIND_VALUE, 7, 20) == 0 && port_next(port, 0, &p) == ERR_TIMED_OUT &&
                  sys(CROI_SYS_COUNTER_WRITE, c, 25, 0, 0, 0) == 0 && port_next(port, 0, &p) == 0 &&
                  p.type == CROI_PKT_TYPE_COUNTER && p.key == 7 && p.payload[0] == 20 && p.payload[1] == 25 &&
                  p.payload[2] >= before && port_next(port, 0, &p) == ERR_TIMED_OUT);
-  CHECK(351, sys(CROI_SYS_COUNTER_WAIT_ASYNC, c, port, 8, 25, 0) == 0 && port_next(port, 0, &p) == 0 && p.key == 8 &&
-                 p.payload[1] == 25 && sys(CROI_SYS_COUNTER_WAIT_ASYNC, c, port, 9, 100, 0) == 0 &&
+  CHECK(351, bind1(port, c, CROI_BIND_VALUE, 8, 25) == 0 && port_next(port, 0, &p) == 0 && p.key == 8 &&
+                 p.payload[1] == 25 && bind1(port, c, CROI_BIND_VALUE, 9, 100) == 0 &&
                  sys(CROI_SYS_PORT_CANCEL, port, c, 9, 0, 0) == 0 && sys(CROI_SYS_COUNTER_WRITE, c, 200, 0, 0, 0) == 0 &&
                  port_next(port, 0, &p) == ERR_TIMED_OUT);
   sys(CROI_SYS_HANDLE_CLOSE, port, 0, 0, 0, 0);
@@ -2455,7 +2462,7 @@ static int64_t timelines(const startup_t *s) {
   croi_port_packet_t p;
   CHECK(366, sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) == 0 &&
                  sys(CROI_SYS_COUNTER_READ, t, (uint64_t)&value, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_COUNTER_WAIT_ASYNC, t, port, 5, (uint64_t)(value + 2), 0) == 0 &&
+                 bind1(port, t, CROI_BIND_VALUE, 5, (uint64_t)(value + 2)) == 0 &&
                  port_next(port, 100000000, &p) == 0 && p.type == CROI_PKT_TYPE_COUNTER && p.key == 5 &&
                  (int64_t)p.payload[1] >= value + 2);
   // A new period: the count carries on.
@@ -2616,12 +2623,12 @@ static int64_t interrupt_handoff(const startup_t *s, uint32_t counter, uint32_t 
   // reason); its overruns go to a port.
   CHECK(629, sys(CROI_SYS_OBJECT_SET_PROFILE, counter, handoff, CROI_PROFILE_HANDOFF, 0, 0) == ERR_INVALID_ARGS &&
                  sys(CROI_SYS_OBJECT_SET_PROFILE, v, fair, CROI_PROFILE_HANDOFF, 0, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_THREAD_BIND_OVERRUN_PORT, v, port, 7, 0, 0) == ERR_BAD_STATE &&
+                 bind1(port, v, CROI_BIND_OVERRUN | CROI_BIND_PERSISTENT, 7, 0) == ERR_BAD_STATE &&
                  sys(CROI_SYS_OBJECT_SET_PROFILE, v, huge, CROI_PROFILE_HANDOFF, (uint64_t)&refusal, 0) == -3 &&
                  (refusal & 0xFF) == CROI_ADMISSION_CPU_OVERLOADED &&
                  sys(CROI_SYS_OBJECT_SET_PROFILE, v, handoff, CROI_PROFILE_HANDOFF, (uint64_t)&refusal, 0) == 0 &&
                  refusal == CROI_ADMISSION_ACCEPTED &&
-                 sys(CROI_SYS_THREAD_BIND_OVERRUN_PORT, v, port, 7, 0, 0) == 0);
+                 bind1(port, v, CROI_BIND_OVERRUN | CROI_BIND_PERSISTENT, 7, 0) == 0);
   handoff_waiter_t h;
   zero_bytes(&h, sizeof h);
   h.interrupt = v;
@@ -3101,7 +3108,7 @@ static int64_t small_calls(const startup_t *s) {
   croi_port_packet_t packet = {0};
   CHECK(494, sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) == 0 &&
                  sys(CROI_SYS_EVENT_CREATE, 0, (uint64_t)&ev2, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_OBJECT_WAIT_ASYNC, ev2, port, 5, SIGNALED, 0) == 0 && (packet.key = 5) &&
+                 bind1(port, ev2, CROI_BIND_SIGNALS, 5, SIGNALED) == 0 && (packet.key = 5) &&
                  sys(CROI_SYS_PORT_QUEUE, port, (uint64_t)&packet, 0, 0, 0) == 0 && (packet.key = 6) &&
                  sys(CROI_SYS_PORT_QUEUE, port, (uint64_t)&packet, 0, 0, 0) == 0 &&
                  sys(CROI_SYS_PORT_CANCEL_KEY, port, 1, 5, 0, 0) == ERR_INVALID_ARGS &&
@@ -3331,7 +3338,7 @@ static int64_t clocks(const startup_t *s) {
   CHECK(531, sys(CROI_SYS_CLOCK_UPDATE, clock, CROI_CLOCK_ARGS_VERSION(1) | CROI_CLOCK_UPDATE_OPTION_RATE_ADJUST_VALID,
                  (uint64_t)&up, 0, 0) == ERR_BAD_STATE &&
                  sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_OBJECT_WAIT_ASYNC, clock, port, 9, CROI_CLOCK_UPDATED, 0) == 0);
+                 bind1(port, clock, CROI_BIND_SIGNALS, 9, CROI_CLOCK_UPDATED) == 0);
   up.value = 5000000000ll;
   croi_port_packet_t packet;
   CHECK(532, sys(CROI_SYS_CLOCK_UPDATE, clock, CROI_CLOCK_ARGS_VERSION(1) | CROI_CLOCK_UPDATE_OPTION_VALUE_VALID,
@@ -5569,7 +5576,7 @@ static int64_t memory_accounts(const startup_t *s) {
                  account_info(account).critical_bytes == 6 * PAGE && account_info(account).charged == 0);
   // Charged as pages commit, to the account CHARGE_TO names; NO_MEMORY past it.
   CHECK(714, sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_ACCOUNT_BIND_PRESSURE_PORT, account, port, 0xACC, 0, 0) == 0 &&
+                 bind1(port, account, CROI_BIND_PRESSURE | CROI_BIND_PERSISTENT, 0xACC, 0) == 0 &&
                  sys(CROI_SYS_VMO_CREATE, 16 * PAGE, CROI_VMO_CHARGE_TO, (uint64_t)&vmo, account, 0) == 0 &&
                  sys6(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_COMMIT, 0, 3 * PAGE, 0, 0) == 0 &&
                  account_info(account).charged == 3 * PAGE && account_info(account).level == 0 &&
@@ -5986,10 +5993,10 @@ static int64_t extensions(const startup_t *s, uint64_t vdso_base) {
   profile.deadline_params.relative_deadline = 5000000;
   profile.deadline_params.period = 5000000;
   CHECK(391, sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_THREAD_BIND_OVERRUN_PORT, a, port, 7, 0, 0) == ERR_BAD_STATE &&  // no profile yet
+                 bind1(port, a, CROI_BIND_OVERRUN | CROI_BIND_PERSISTENT, 7, 0) == ERR_BAD_STATE &&  // no profile yet
                  sys(CROI_SYS_PROFILE_CREATE, s->resource, 0, (uint64_t)&profile, (uint64_t)&deadline, 0) == 0 &&
                  sys(CROI_SYS_OBJECT_SET_PROFILE, a, deadline, 0, (uint64_t)&refusal, 0) == 0 &&
-                 sys(CROI_SYS_THREAD_BIND_OVERRUN_PORT, a, port, 7, 0, 0) == 0);
+                 bind1(port, a, CROI_BIND_OVERRUN | CROI_BIND_PERSISTENT, 7, 0) == 0);
   croi_port_packet_t p;
   CHECK(392, port_next(port, 100000000, &p) == 0 && p.type == CROI_PKT_TYPE_BUDGET_OVERRUN && p.key == 7 &&
                  p.payload[1] >= 1 && p.payload[2] >= 1);

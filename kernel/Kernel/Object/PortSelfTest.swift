@@ -3,7 +3,7 @@ import Fmt
 import Synchronization
 
 /// Boot self-test for K5b: ports (user packets, waiting, many CPUs),
-/// object_wait_async (level, edge, one-shot, timestamp), port_cancel,
+/// object_bind SIGNALS (level, edge, one-shot, timestamp), port_cancel,
 /// cancel on close, and the kernel packet sources (ext 3 overruns, ext 6
 /// pressure). Panics on failure.
 enum PortSelfTest {
@@ -43,11 +43,11 @@ enum PortSelfTest {
             let event = try table.add(try EventObject.create(), rights: EventObject.defaultRights)
             let signal = try table.get(event, rights: .signal)
             try ObjectSignal.signal(signal, clear: 0, set: Signals.signaled)
-            try Observers.waitAsync(table, event, port: port, key: 7, signals: Signals.signaled, options: 0)
+            try Observers.waitAsync(table, event, port: try table.get(port), key: 7, signals: Signals.signaled, options: 0)
             var packet = try Ports.wait(table, port, deadline: Clock.now() + ms)
             guard packet.key == 7, packet.type == PortPacket.signalOne, packet.trigger == Signals.signaled,
                   packet.observed & Signals.signaled != 0 else { panic("port self-test: level async wait") }
-            try Observers.waitAsync(table, event, port: port, key: 8, signals: Signals.signaled,
+            try Observers.waitAsync(table, event, port: try table.get(port), key: 8, signals: Signals.signaled,
                                     options: Observers.edge | Observers.timestamp)
             guard status({ () throws(Status) in _ = try Ports.wait(table, port, deadline: Clock.now() + 2 * ms) }) == .timedOut else {
                 panic("port self-test: edge wait fired on a level")
@@ -66,8 +66,8 @@ enum PortSelfTest {
             // port_cancel drops a pending wait and a queued packet; closing
             // the handle drops its waits.
             try ObjectSignal.signal(signal, clear: Signals.signaled, set: 0)
-            try Observers.waitAsync(table, event, port: port, key: 9, signals: Signals.signaled, options: 0)
-            try Observers.waitAsync(table, event, port: port, key: 10, signals: 1 << 24, options: 0)
+            try Observers.waitAsync(table, event, port: try table.get(port), key: 9, signals: Signals.signaled, options: 0)
+            try Observers.waitAsync(table, event, port: try table.get(port), key: 10, signals: 1 << 24, options: 0)
             try ObjectSignal.signal(signal, clear: 0, set: 1 << 24)  // queues key 10
             try Ports.cancel(table, port: port, source: event, key: 9)
             try Ports.cancel(table, port: port, source: event, key: 10)
@@ -77,7 +77,7 @@ enum PortSelfTest {
             }
             let dup = try table.duplicate(event, rights: .sameRights)
             try ObjectSignal.signal(signal, clear: Signals.signaled, set: 0)
-            try Observers.waitAsync(table, dup, port: port, key: 11, signals: Signals.signaled, options: 0)
+            try Observers.waitAsync(table, dup, port: try table.get(port), key: 11, signals: Signals.signaled, options: 0)
             try table.close(dup)
             try ObjectSignal.signal(signal, clear: 0, set: Signals.signaled)
             guard status({ () throws(Status) in _ = try Ports.wait(table, port, deadline: Clock.now() + 2 * ms) }) == .timedOut else {

@@ -355,8 +355,7 @@ enum Bench {
         var packet = croi_port_packet_t()
         Sys.take(goEvent)  // pinned to its CPU first
         for i in 0..<wakes {
-            _ = Sys.call(CROI_SYS_OBJECT_WAIT_ASYNC, UInt64(wakeEvent), UInt64(wakePort), i,
-                         UInt64(CROI_SIGNAL_SIGNALED), 0)
+            _ = Sys.bind(wakePort, wakeEvent, UInt32(CROI_BIND_SIGNALS), key: i, trigger: UInt64(CROI_SIGNAL_SIGNALED))
             Sys.signal(readyEvent, set: UInt32(CROI_SIGNAL_SIGNALED))
             _ = Sys.call(CROI_SYS_PORT_WAIT, UInt64(wakePort), .max, Sys.address(&packet))
             Sys.signal(wakeEvent, clear: UInt32(CROI_SIGNAL_SIGNALED), set: 0)

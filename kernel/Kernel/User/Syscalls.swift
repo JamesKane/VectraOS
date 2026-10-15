@@ -294,9 +294,8 @@ enum Syscalls {
             }
             if a[3] != 0 { try put(observed, a[3]) }
             if let status { throw status }
-        case 22:  // object_wait_async
-            try Observers.waitAsync(table, handle, port: UInt32(truncatingIfNeeded: a[1]), key: a[2],
-                                    signals: UInt32(truncatingIfNeeded: a[3]), options: UInt32(truncatingIfNeeded: a[4]))
+        case 22:  // object_bind(port, items, count): returns how many were bound
+            return try Bind.call(table, port: handle, items: a[1], count: a[2])
         case 30:  // event_create
             try Policy.check(UInt32(CROI_POL_NEW_EVENT))
             try check(a[1], MemoryLayout<UInt32>.size)
@@ -307,9 +306,9 @@ enum Syscalls {
             try put(try table.add(try Ports.create(options: a[0]), rights: PortObject.defaultRights), a[1])
         case 32:  // port_queue
             try Ports.queue(table, handle, try getPacket(a[1]))
-        case 33:  // port_wait
+        case 33:  // port_wait(port, deadline, packet, leeway)
             try check(a[2], MemoryLayout<PortPacket>.size)
-            let packet = try Ports.wait(table, handle, deadline: a[1])
+            let packet = try Ports.wait(table, handle, deadline: a[1], leeway: a[3])
             try putPacket(packet, a[2])
         case 34:  // port_cancel
             try Ports.cancel(table, port: handle, source: UInt32(truncatingIfNeeded: a[1]), key: a[2])

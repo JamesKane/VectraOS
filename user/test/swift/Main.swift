@@ -4,10 +4,12 @@ import CroiRuntime
 /// runtime from an ELF the kernel loads, prints over the debuglog it was
 /// handed as stdout, and grows a heap through its root VMAR. The kernel
 /// reads its records back and checks the exit code (its RELRO must be
-/// read only).
+/// read only). With `swift.suite=<name>` in its environment it runs that
+/// test suite instead (Suite.swift).
 @main
 struct SwiftTest {
     static func main() {
+        if Suite.requested() { Suite.run() }
         print("swift: hello from user mode")
 
         // The heap: small blocks (size classes), then one too big for them.

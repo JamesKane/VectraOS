@@ -20,6 +20,9 @@ anything that a decision covers.
   compilers only to produce our artifact formats.
 - **C23 only where Swift can't reach.** Each C file says why in its header
   comment.
+- **New tests are Embedded Swift** (D20): a suite file in `user/test/swift/`
+  with named checks, run by `ProgramSelfTest.runSuites`. Don't add to
+  `user/test/usertest.c`; edit it only to keep its tests compiling.
 
 ## Toolchain
 
@@ -29,7 +32,7 @@ anything that a decision covers.
   this machine). That toolchain crashes compiling Embedded atomics, so call
   6.4.0's `swiftc` by its path in scratch experiments.
 - You also need QEMU with edk2 from `/usr/share/edk2`. CMake runs `vx`
-  for its build steps (elf2efi, mkbootfs, check-pixels, todhchai-check)
+  for its build steps (elf2efi, mkbootfs, check-pixels)
   and builds it with SwiftPM first, so nothing outside the Swift toolchain,
   CMake, Ninja, QEMU and bash is needed. There is no Python.
 
@@ -66,7 +69,8 @@ CMake/Ninja builds the images, with one tree per arch under `build/<arch>/`.
 
 ## Status
 
-V0 is done (2026-10-15). V1 is next.
+V0 is done (2026-10-15). V1 is under way: `object_bind` landed (D20, 150
+syscalls); the cuts are next (`docs/syscall-audit.md`).
 - **Done:** croi imported, passing on amd64, arm64 and rv64; todhchai's
   Judge, History, trace format and reader lifted; `vx` with build, test,
   boot, bench, trace, loc and ci.

@@ -42,11 +42,8 @@ enum : uint32_t {
   CROI_INTERRUPT_VIRTUAL = 0x10,
   CROI_INTERRUPT_TIMESTAMP_MONO = 1u << 6,  // accepted: croi's boot time is monotonic time
 
-  // interrupt_bind options.
-  CROI_INTERRUPT_BIND = 0,
-  CROI_INTERRUPT_UNBIND = 1,
-
-  // port_create option: the port may be bound to interrupts.
+  // port_create option: the port may be bound to interrupts (object_bind
+  // INTERRUPT, port.h; port_cancel unbinds).
   CROI_PORT_BIND_TO_INTERRUPT = 1,
 
   // Port packet type: payload[0] is the timestamp (ns).

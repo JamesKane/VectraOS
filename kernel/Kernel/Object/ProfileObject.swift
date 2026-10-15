@@ -76,28 +76,6 @@ enum Profiles {
                 let timeline = try table.get(UInt32(truncatingIfNeeded: a[4]), type: .timeline, rights: .read)
                 try align(thread.object, to: timeline.object)
             }
-        case 122:  // thread_bind_overrun_port(thread or interrupt, port, key), K10d; interrupts K14e
-            if try table.get(UInt32(truncatingIfNeeded: a[0])).type == .interrupt {
-                let interrupt = try table.get(UInt32(truncatingIfNeeded: a[0]), rights: .write)
-                let port = try table.get(UInt32(truncatingIfNeeded: a[1]), type: .port, rights: .write)
-                let source = try PacketSourcePointer.make(port: port, key: a[2], type: PortPacket.budgetOverrun)
-                guard let old = InterruptObjects.bindOverrunSource(interrupt.object, source.address) else {
-                    source.retire()
-                    throw .badState
-                }
-                if old != 0 { PacketSourcePointer(address: old).retire() }
-                return
-            }
-            let thread = try table.get(UInt32(truncatingIfNeeded: a[0]), type: .thread, rights: .manageThread)
-            let port = try table.get(UInt32(truncatingIfNeeded: a[1]), type: .port, rights: .write)
-            guard let target = Processes.pinnedThread(thread.object) else { throw .badState }
-            defer { Scheduler.unpin(target) }
-            let source = try PacketSourcePointer.make(port: port, key: a[2], type: PortPacket.budgetOverrun)
-            guard let old = Scheduler.bindOverrunSource(target, source.address) else {
-                source.retire()
-                throw .badState
-            }
-            if old != 0 { PacketSourcePointer(address: old).retire() }
         default:
             throw .notSupported
         }

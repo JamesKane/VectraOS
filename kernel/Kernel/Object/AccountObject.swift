@@ -92,17 +92,6 @@ extension Syscalls {
         case 241:  // account_set_limit(account, limit)
             let ref = try table.get(handle, type: .memoryAccount, rights: .write)
             try MemoryAccountObjectPointer(object: ref.object).pointee.account.setLimit(a[1])
-        case 242:  // account_bind_pressure_port(account, port, key)
-            let ref = try table.get(handle, type: .memoryAccount, rights: .write)
-            let port = try table.get(UInt32(truncatingIfNeeded: a[1]), type: .port, rights: .write)
-            let account = MemoryAccountObjectPointer(object: ref.object).pointee.account
-            let source = try PacketSourcePointer.make(port: port, key: a[2], type: PortPacket.memoryPressure)
-            let old = account.pointee.lock.withLock { () -> UInt64 in
-                let old = account.pointee.pressureSource
-                account.pointee.pressureSource = source.address
-                return old
-            }
-            if old != 0 { PacketSourcePointer(address: old).retire() }
         case 243:  // process_set_account(process, account): before it starts
             let process = try table.get(handle, type: .process, rights: .write)
             let account = try Accounts.account(table, UInt32(truncatingIfNeeded: a[1]), rights: .charge)

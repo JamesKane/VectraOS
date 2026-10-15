@@ -427,6 +427,7 @@ private func runSelfTests(_ console: Uart) {
     ProcessSelfTest.runDeadlineWakeups(console)
     ProcessSelfTest.runExtensions(console)
     ProgramSelfTest.run(console)
+    ProgramSelfTest.runSuites(console)
     SelfTestDeadman.disarm()
 }
 

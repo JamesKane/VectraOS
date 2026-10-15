@@ -39,19 +39,6 @@ One CMake/Ninja tree per arch, `build/<arch>/`. Toolchain is pinned by
 QEMU uses the edk2 firmware in `/usr/share/edk2` (`-DCROI_EDK2_DIR=` to
 override); `build/<arch>/esp/` is served to it as a FAT drive.
 
-## Todhchai's programs (todhchai-check)
-
-`vx todhchai-check <arch>` (ctest `todhchai-check`, label
-`todhchai`) boots Todhchai's `td boot --next` test programs (sys-test,
-pthread-test, tls-test, services-test) from its newest bootfs
-(../todhchai or ../todhchai-c0, read only, copied) on this tree's loader
-and kernel, with td boot's QEMU command (KVM on amd64). td ci builds croi
-only from commits, so this is the pre-commit check of what croi changes
-under Todhchai: review round 1's port 0xCF9 refusal passed every croi test
-and failed sys-test (the check catches it). Launcher-manifest boots aren't
-covered (their bootfs is assembled per test). Skipped (77) with no bootfs;
-consoles in build/<arch>/todhchai/.
-
 ## Timing discipline (after Todhchai's docs/performance.md)
 
 Tests judge correctness; timings are judged by the bench, against this
@@ -123,7 +110,7 @@ change (new milestones add a section to the file they belong in).
 | `cpu.md` | Locking, SMP, interrupts and TLB shootdowns, time and timers, exceptions, kernel stacks, threads, scheduling policy, inheritance, thread pins, xstate, deadline wakeups, CPU reservations, idle, power control, trace |
 | `hardening.md` | CPRNG, static PIEs and ASLR, KASLR, PAC, BTI, guarded user pages |
 | `user.md` | User mode per arch, user protection (SMAP/PAN/SUM), vDSO and shared pages, user FP/SIMD, sampling and PMU, debuglog, ProgramLoader, bootfs and userboot, m2 and its profiling modes |
-| `objects.md` | Objects, handles, waits, ports, processes/jobs/VMARs, channels, futexes, timer objects, exceptions and job policy, counters, timelines, FIFOs, sockets, streams, small calls, info topics, clocks |
+| `objects.md` | Objects, handles, waits, ports, object_bind (V1), processes/jobs/VMARs, channels, futexes, timer objects, exceptions and job policy, counters, timelines, FIFOs, sockets, streams, small calls, info topics, clocks |
 | `debugging.md` | Suspension, process memory access, debugger channels, single-step and hardware breakpoints |
 | `drivers.md` | Resources, firmware boot data, interrupt objects, MSI (x86, ITS, AIA), DMA/BTIs without an IOMMU, SMC calls |
 | `iommu.md` | VT-d (and interrupt remapping), AMD-Vi, SMMUv3, SMMUv1/v2, RISC-V IOMMU, claimed devices' MSIs |

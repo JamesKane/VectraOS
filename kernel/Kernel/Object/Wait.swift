@@ -8,9 +8,12 @@ struct Observer {
     enum Kind {
         /// A waiting thread: its WaitState, and its item index.
         case wait(state: UInt64, index: Int)
-        /// object_wait_async: queue `packet` (allocated up front) to `port`
+        /// object_bind ONCE: queue `packet` (allocated up front) to `port`
         /// with `key`, once. Holds a reference to the port.
         case port(port: UInt64, key: UInt64, packet: UInt64, options: UInt32)
+        /// object_bind PERSISTENT: `source`'s packet (it holds the port),
+        /// queued at every event and coalesced while it waits to be read.
+        case source(port: UInt64, key: UInt64, source: UInt64, options: UInt32)
     }
 
     var next: ObserverPointer?
@@ -24,6 +27,9 @@ struct Observer {
     /// is at least `atValue`, whatever the signals.
     var byValue = false
     var atValue: Int64 = 0
+    /// A counter's CHANGE binding: fires at every add or write, whatever
+    /// the signals (the ring doorbell).
+    var onChange = false
 }
 
 @safe struct ObserverPointer: Equatable {
@@ -98,8 +104,9 @@ enum Observers {
     static var timestamp: UInt32 { 1 << 0 }  // ZX_WAIT_ASYNC_TIMESTAMP
 
     /// Runs every observer `object`'s current signals satisfy; port
-    /// observers fire once and go. Object lock held.
-    static func notify(_ object: ObjectPointer) {
+    /// observers fire once and go, persistent ones fire and stay. `changed`:
+    /// a counter's value was set (CHANGE bindings fire). Object lock held.
+    static func notify(_ object: ObjectPointer, changed: Bool = false) {
         let signals = object.header.signals
         let type = object.header.type
         let value = type == .counter || type == .timeline ? Counters.valueLocked(object) : 0
@@ -109,6 +116,17 @@ enum Observers {
             cursor = observer.pointee.next
             let satisfied = observer.pointee.byValue ? value >= observer.pointee.atValue
                                                      : observer.pointee.trigger & signals != 0
+            if case .source(_, _, let source, let options) = observer.pointee.kind {
+                previous = observer
+                let packets = PacketSourcePointer(address: source)
+                if observer.pointee.onChange {
+                    if changed { packets.fire(value: UInt64(bitPattern: value), word3: Clock.now()) }
+                } else if satisfied {
+                    packets.fireSignal(trigger: observer.pointee.trigger, observed: signals,
+                                       timestamp: options & timestamp != 0 ? Clock.now() : 0)
+                }
+                continue
+            }
             guard satisfied else {
                 previous = observer
                 continue
@@ -126,6 +144,8 @@ enum Observers {
                     firePort(port, QueuedPacketPointer(address: packet), observer.pointee.trigger, signals, options)
                 }
                 unsafe heap.free(UnsafeMutableRawPointer(bitPattern: UInt(observer.address))!)
+            case .source:
+                break  // handled above
             }
         }
     }
@@ -161,13 +181,12 @@ enum Observers {
         pointer.release()  // the observer's reference; the queue keeps the port alive
     }
 
-    /// object_wait_async: a one-shot packet to `port` with `key` when
-    /// `handle`'s object has any of `signals` (now, unless `edge`).
-    static func waitAsync(_ table: borrowing HandleTable, _ handle: UInt32, port portHandle: UInt32, key: UInt64,
+    /// object_bind SIGNALS ONCE: a one-shot packet to `port` with `key`
+    /// when `handle`'s object has any of `signals` (now, unless `edge`).
+    static func waitAsync(_ table: borrowing HandleTable, _ handle: UInt32, port: borrowing ObjectRef, key: UInt64,
                           signals: UInt32, options: UInt32) throws(Status) {
         guard options & ~(edge | timestamp) == 0 else { throw .invalidArgs }
         let object = try table.get(handle, rights: .wait)
-        let port = try table.get(portHandle, type: .port, rights: .write)
         // Zircon raises at its observer limit and still registers (review fix).
         if Ports.overObserverLimit(port.object) {
             Policy.limitException(UInt32(CROI_EXCP_POLICY_CODE_PORT_TOO_MANY_OBSERVERS))
@@ -200,7 +219,7 @@ enum Observers {
         unsafe raw.bindMemory(to: Observer.self, capacity: 1).initialize(to: record)
         let pointer = ObserverPointer(address: UInt64(UInt(bitPattern: raw)))
         object.header.observers = pointer
-        if case .port(let port, _, _, _) = observer.kind { Ports.track(port, object) }
+        if let port = observer.kind.port { Ports.track(port, object) }
         return pointer
     }
 
@@ -211,7 +230,8 @@ enum Observers {
         while let current = cursor {
             if current == observer {
                 if let previous { previous.pointee.next = current.pointee.next } else { object.header.observers = current.pointee.next }
-                if case .port(let port, _, _, _) = current.pointee.kind { Ports.untrack(port, object) }
+                if let port = current.pointee.kind.port { Ports.untrack(port, object) }
+                if case .source(_, _, let source, _) = current.pointee.kind { PacketSourcePointer(address: source).retire() }
                 unsafe heap.free(UnsafeMutableRawPointer(bitPattern: UInt(current.address))!)
                 return
             }
@@ -247,8 +267,57 @@ enum Observers {
                     QueuedPacketPointer(address: packet).free()
                     ObjectPointer(address: port).release()
                     unsafe heap.free(UnsafeMutableRawPointer(bitPattern: UInt(observer.address))!)
+                case .source(let port, _, let source, _):
+                    if let previous { previous.pointee.next = observer.pointee.next } else { object.header.observers = observer.pointee.next }
+                    Ports.untrack(port, object)
+                    PacketSourcePointer(address: source).retire()
+                    unsafe heap.free(UnsafeMutableRawPointer(bitPattern: UInt(observer.address))!)
                 }
             }
+        }
+    }
+
+    /// object_bind SIGNALS PERSISTENT, or a counter's CHANGE: `source`'s
+    /// packet to `port` at every event that has any of `signals` (CHANGE:
+    /// every add or write), coalesced while queued. SIGNALS also fires now
+    /// if the object already has one, unless `edge`.
+    static func bindPersistent(_ table: borrowing HandleTable, _ handle: UInt32, port: borrowing ObjectRef,
+                               key: UInt64, signals: UInt32, onChange: Bool, options: UInt32) throws(Status) {
+        guard options & ~(edge | timestamp) == 0 else { throw .invalidArgs }
+        let object = onChange ? try table.get(handle, type: .counter, rights: .wait | .read)
+                              : try table.get(handle, rights: .wait)
+        if Ports.overObserverLimit(port.object) {
+            Policy.limitException(UInt32(CROI_EXCP_POLICY_CODE_PORT_TOO_MANY_OBSERVERS))
+        }
+        let type = onChange ? UInt32(CROI_PKT_TYPE_COUNTER_CHANGE) : PortPacket.signalOne
+        let source = try PacketSourcePointer.make(port: port, key: key, type: type, countIndex: onChange ? 2 : 1,
+                                                  table: table.address, handle: handle)
+        do throws(Status) {
+            try object.object.header.lock.withLock { () throws(Status) in
+                var observer = Observer(kind: .source(port: port.object.address, key: key, source: source.address,
+                                                      options: options),
+                                        trigger: signals, table: table.address, handle: handle)
+                observer.onChange = onChange
+                _ = try add(object.object, observer)
+                let now = object.object.header.signals
+                if !onChange, options & edge == 0, now & signals != 0 {
+                    source.fireSignal(trigger: signals, observed: now,
+                                      timestamp: options & timestamp != 0 ? Clock.now() : 0)
+                }
+            }
+        } catch {
+            source.retire()
+            throw error
+        }
+    }
+}
+
+extension Observer.Kind {
+    /// The port a port or persistent observer reports to.
+    var port: UInt64? {
+        switch self {
+        case .port(let port, _, _, _), .source(let port, _, _, _): port
+        case .wait: nil
         }
     }
 }

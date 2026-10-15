@@ -21,6 +21,7 @@ module CroiAbi {
   header "power.h"
   header "clock.h"
   header "account.h"
+  header "port.h"
   export *
 }
 

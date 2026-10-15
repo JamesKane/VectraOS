@@ -187,7 +187,8 @@ include/counter.h, syscalls 160-165):
 - Zircon's counter (type 34; create, add, read, write; POSITIVE /
   NON_POSITIVE; add needs READ and WRITE, OUT_OF_RANGE on overflow) plus
   croi's waits at a value: `counter_wait(counter, value, deadline)` and
-  `counter_wait_async(counter, port, key, value)` (one packet of type
+  object_bind VALUE (was `counter_wait_async(counter, port, key,
+  value)` until V1; one packet of type
   0x82: target, value reached, time), needing WAIT and READ.
 - A value wait is an observer with a threshold (`Observer.byValue`,
   `atValue`): `Observers.notify` fires it when the counter's value
@@ -388,3 +389,43 @@ syscalls 216-219 and 77; clock.h):
   Values: b_off + floor((r - a_off) * num / den), saturating (128-bit).
   PA_CLOCK_UTC (0x40) is defined; nothing creates a UTC clock yet.
 - Mode 17's `clocks`.
+
+## object_bind (V1)
+
+object_bind (V1, D20; Kernel/Object/Bind.swift, include/port.h, syscall
+22): the one way an event source reports to a port. It replaced
+object_wait_async (22), interrupt_bind (141), counter_wait_async (165),
+thread_bind_overrun_port (122) and account_bind_pressure_port (242).
+- `object_bind(port, croi_bind_item_t *items, count)`: up to 64 items
+  (handle, options, key, trigger, status out), bound in order to one port
+  (WRITE, looked up once). It stops at the first failure and returns how
+  many succeeded; every processed item gets its status. A bad port,
+  pointer or count fails the call before anything is bound.
+- Kinds: SIGNALS (ONCE: the old wait_async; PERSISTENT: below), VALUE
+  (ONCE: a counter's fence), CHANGE (a counter's doorbell), INTERRUPT,
+  OVERRUN, PRESSURE. The last four are persistent by nature and refuse a
+  trigger; VALUE refuses PERSISTENT; EDGE and TIMESTAMP are SIGNALS'.
+- PERSISTENT SIGNALS and CHANGE are observers of kind `.source`, each
+  owning a `PacketSource` (the reused, coalescing packet that overruns and
+  pressure already had): it stays on the object, fires at every
+  `Observers.notify` that satisfies it (CHANGE: every `Counters.setLocked`,
+  `notify(changed: true)`), and while its packet is queued further events
+  only raise the count (payload[1] for signals, [2] for CHANGE).
+  Persistent SIGNALS is "every event that leaves a trigger asserted", not
+  a strict edge: notify isn't called when signals clear, so an edge
+  can't be seen reliably; a reader drains until the object would block,
+  and gets at most one spurious packet per drain.
+- Unbinding: `port_cancel(port, source, key)` removes ONCE, PERSISTENT and
+  INTERRUPT bindings (`InterruptObjects.cancel`, which replaced
+  interrupt_bind's UNBIND) and takes a queued packet back
+  (`PacketSource.retire`); closing the handle a SIGNALS, VALUE or CHANGE
+  binding was made through does too. OVERRUN and PRESSURE last until
+  their object goes or is bound again.
+- port_wait gained a leeway (fourth argument): `Scheduler.block`'s
+  timeout is armed with that slack (late only; none for a deadline
+  thread), principle 10.
+- Tests: the Embedded Swift suite `bind` (user/test/swift/BindSuite.swift,
+  run by `ProgramSelfTest.runSuites`): batches and refusals, the doorbell's
+  coalescing, unbinding by cancel and by close, persistent and EDGE
+  signals, the leeway. A mutant whose CHANGE never fires fails it with
+  "a doorbell rings". The older kinds keep their usertest.c coverage.

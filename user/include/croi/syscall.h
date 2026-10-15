@@ -20,11 +20,11 @@ enum : uint64_t {
   CROI_SYS_HANDLE_REPLACE = 12,    // (handle, rights, uint32_t *out)
   CROI_SYS_OBJECT_SIGNAL = 20,     // (handle, clear, set)
   CROI_SYS_OBJECT_WAIT_ONE = 21,   // (handle, signals, deadline, uint32_t *observed)
-  CROI_SYS_OBJECT_WAIT_ASYNC = 22, // (handle, port, key, signals, options)
+  CROI_SYS_OBJECT_BIND = 22,       // (port, croi_bind_item_t *items, count): port.h
   CROI_SYS_EVENT_CREATE = 30,      // (options, uint32_t *out)
   CROI_SYS_PORT_CREATE = 31,       // (options, uint32_t *out)
   CROI_SYS_PORT_QUEUE = 32,        // (port, const croi_port_packet_t *packet)
-  CROI_SYS_PORT_WAIT = 33,         // (port, deadline, croi_port_packet_t *packet)
+  CROI_SYS_PORT_WAIT = 33,         // (port, deadline, croi_port_packet_t *packet, leeway)
   CROI_SYS_PORT_CANCEL = 34,       // (port, source handle, key)
   CROI_SYS_VMO_CREATE = 40,        // (size, options, uint32_t *out)
   CROI_SYS_VMO_READ = 41,          // (vmo, void *buffer, offset, length)
@@ -98,7 +98,6 @@ enum : uint64_t {
   CROI_SYS_PROFILE_CREATE = 120,     // (resource, options 0, const croi_profile_info_t *, out)
   CROI_SYS_OBJECT_SET_PROFILE = 121, // (thread | interrupt | counter | timeline, profile, options,
                                      //  uint32_t *refusal or 0, timeline with ALIGN_TIMELINE)
-  CROI_SYS_THREAD_BIND_OVERRUN_PORT = 122, // (thread, port, key): profile.h
   // Resources and IO ports (K9a): Zircon's calls, values in resource.h.
   CROI_SYS_RESOURCE_CREATE = 130,  // (parent | options << 32, base, size, name, name_size, uint32_t *out)
   CROI_SYS_IOPORTS_REQUEST = 131,  // (IOPORT resource, io_addr, len): amd64
@@ -106,7 +105,6 @@ enum : uint64_t {
 
   // Interrupts (K9c): Zircon's calls, values in interrupt.h.
   CROI_SYS_INTERRUPT_CREATE = 140,   // (IRQ resource, number, options, uint32_t *out)
-  CROI_SYS_INTERRUPT_BIND = 141,     // (interrupt, port, key, options)
   CROI_SYS_INTERRUPT_ACK = 142,      // (interrupt)
   CROI_SYS_INTERRUPT_WAIT = 143,     // (interrupt, uint64_t *timestamp or 0)
   CROI_SYS_INTERRUPT_DESTROY = 144,  // (interrupt)
@@ -131,7 +129,6 @@ enum : uint64_t {
   CROI_SYS_COUNTER_READ = 162,          // (counter, int64_t *value)
   CROI_SYS_COUNTER_WRITE = 163,         // (counter, int64_t value)
   CROI_SYS_COUNTER_WAIT = 164,          // (counter, int64_t value, deadline): croi's
-  CROI_SYS_COUNTER_WAIT_ASYNC = 165,    // (counter, port, key, int64_t value): croi's
 
   // Display timelines (K10b, croi's; timeline.h). Waits: the counter calls.
   CROI_SYS_TIMELINE_CREATE = 170,       // (display resource, options, period_ns, uint32_t *out)
@@ -178,7 +175,6 @@ enum : uint64_t {
   CROI_SYS_THREAD_RAISE_EXCEPTION = 236,  // (options, type, const croi_exception_context_t *): K14d
   CROI_SYS_ACCOUNT_CREATE = 240,        // (resource, limit, warning | critical << 32, out): account.h
   CROI_SYS_ACCOUNT_SET_LIMIT = 241,     // (account, limit)
-  CROI_SYS_ACCOUNT_BIND_PRESSURE_PORT = 242,  // (account, port, key)
   CROI_SYS_PROCESS_SET_ACCOUNT = 243,   // (process, account)
   CROI_SYS_CPU_SET_IDLE_STATES = 245,   // (resource, cpu, const croi_idle_state_t *, count): power.h, K15c
   CROI_SYS_VMAR_MAP_VIEW = 244,         // (vmar | perms << 32, vmar_offset, vmo, vmo_offset, len): task.h, K15b
@@ -214,6 +210,7 @@ enum : uint32_t {  // timer_create options (Zircon's ZX_TIMER_SLACK_*)
 #include "power.h"    // system_powerctl commands, croi_system_powerctl_arg_t
 #include "clock.h"    // clock objects (K13f)
 #include "account.h"  // memory accounts (K15a)
+#include "port.h"     // object_bind, packet types, port_wait's leeway
 
 enum : uint64_t {  // CROI_SYS_TRACE_CONFIGURE ops
   CROI_TRACE_OP_START = 0,   // a: categories, b: pages per CPU, c: mode;

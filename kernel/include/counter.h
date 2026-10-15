@@ -6,10 +6,11 @@
 //
 // counter_wait(counter, value, deadline) blocks until the counter's value
 // is at least `value` (signed), the deadline passes (TIMED_OUT), or the
-// handle it waits through is closed (CANCELED). counter_wait_async(counter,
-// port, key, value) queues one CROI_PKT_TYPE_COUNTER packet when it is (at
-// once if it already is); port_cancel(port, counter, key) drops it. Both
-// need WAIT and READ (the result reveals the value, as add's does). These
+// handle it waits through is closed (CANCELED). object_bind VALUE (port.h)
+// queues one CROI_PKT_TYPE_COUNTER packet when it is (at once if it already
+// is); port_cancel(port, counter, key) drops it. object_bind CHANGE is the
+// doorbell: a CROI_PKT_TYPE_COUNTER_CHANGE packet at every add or write.
+// All need WAIT and READ (the result reveals the value, as add's does). These
 // are the desktop's acquire fences and release values, and Vulkan's
 // timeline semaphores later: counters used that way only grow.
 #pragma once

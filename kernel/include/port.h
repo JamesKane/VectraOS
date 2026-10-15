@@ -1,0 +1,58 @@
+// Ports and object_bind: the ABI shared by the kernel and user space
+// (user/include/croi/syscall.h includes it). VectraOS's, not Zircon's:
+// object_bind replaced object_wait_async, interrupt_bind,
+// counter_wait_async, thread_bind_overrun_port and
+// account_bind_pressure_port (docs/syscall-audit.md, D20).
+//
+// object_bind(port, croi_bind_item_t *items, count) binds up to
+// CROI_BIND_MAX_ITEMS event sources to a port with WRITE, in order. It stops
+// at the first item that fails, and returns how many succeeded; each item
+// it processed has its status written back. A bad port, pointer or count
+// fails the whole call (a negative status) before anything is bound.
+//
+// port_cancel(port, source, key) undoes a binding of any kind. Closing the
+// handle a SIGNALS, VALUE or CHANGE binding was made through also does.
+//
+// port_wait(port, deadline, croi_port_packet_t *packet, leeway): the next
+// packet, or TIMED_OUT at the deadline. The wait may end up to `leeway` ns
+// after the deadline, never before it (principle 10), so that timers
+// coalesce; a thread with a deadline profile always gets zero leeway.
+#pragma once
+#include <stdint.h>
+
+enum : uint32_t {
+  // croi_bind_item_t.options: one kind...
+  CROI_BIND_SIGNALS = 0,    // trigger: signals. ONCE: one packet when any is asserted (Zircon's
+                            // wait_async). PERSISTENT: a packet at every event that leaves one
+                            // asserted, coalesced while it waits to be read (payload[1] counts);
+                            // the reader drains until the object would block.
+  CROI_BIND_VALUE = 1,      // a counter, ONCE: trigger is the value (int64) to reach (a fence)
+  CROI_BIND_CHANGE = 2,     // a counter, PERSISTENT: every add or write (a ring's doorbell)
+  CROI_BIND_INTERRUPT = 3,  // an interrupt, PERSISTENT; the port made with CROI_PORT_BIND_TO_INTERRUPT
+  CROI_BIND_OVERRUN = 4,    // a thread or interrupt with a deadline profile, PERSISTENT
+  CROI_BIND_PRESSURE = 5,   // a memory account, PERSISTENT
+  CROI_BIND_KIND_MASK = 0xff,
+  // ...and flags. CHANGE, INTERRUPT, OVERRUN and PRESSURE need PERSISTENT
+  // and a trigger of 0; VALUE refuses it.
+  CROI_BIND_PERSISTENT = 1u << 8,
+  CROI_BIND_EDGE = 1u << 9,       // SIGNALS: not at once if one is already asserted
+  CROI_BIND_TIMESTAMP = 1u << 10, // SIGNALS: payload[2] is the time of the event
+
+  CROI_BIND_MAX_ITEMS = 64,
+
+  // Port packet types (croi_port_packet_t.type). The kernel events' are in
+  // their headers: CROI_PKT_TYPE_INTERRUPT, _COUNTER, _BUDGET_OVERRUN,
+  // _MEMORY_PRESSURE, _PAGE_REQUEST.
+  CROI_PKT_TYPE_USER = 0,    // port_queue's
+  CROI_PKT_TYPE_SIGNAL = 1,  // SIGNALS: payload[0] trigger | observed << 32, [1] count, [2] time
+  CROI_PKT_TYPE_COUNTER_CHANGE = 0x83,  // CHANGE: [1] the value, [2] count, [3] time
+};
+
+typedef struct {
+  uint32_t handle;    // the event source
+  uint32_t options;   // a kind | flags
+  uint64_t key;       // the packets' key
+  uint64_t trigger;   // SIGNALS: the signals; VALUE: the value; else 0
+  int32_t status;     // out: 0, or why this item failed
+  uint32_t reserved;  // 0
+} croi_bind_item_t;

@@ -4,8 +4,8 @@
 // Host build: vx and the libraries and tests that run on the developer's
 // machine. The images (loader, kernel, user space) are CMake's
 // (CMakeLists.txt, one tree per arch); vx drives both (D11, D13), and
-// CMake runs vx's build steps (elf2efi, mkbootfs, check-pixels,
-// todhchai-check), building it here first.
+// CMake runs vx's build steps (elf2efi, mkbootfs, check-pixels),
+// building it here first.
 
 import PackageDescription
 

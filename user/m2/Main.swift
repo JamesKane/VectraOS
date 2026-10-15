@@ -84,10 +84,15 @@ struct M2 {
         try Sys.check("creating a port", Sys.call(CROI_SYS_PORT_CREATE, 0, Sys.address(&port)))
         try Sys.check("creating a timer", Sys.call(CROI_SYS_TIMER_CREATE, UInt64(CROI_TIMER_SLACK_CENTER), 0,
                                                    Sys.address(&timer)))
-        try Sys.check("watching the channel", Sys.call(CROI_SYS_OBJECT_WAIT_ASYNC, UInt64(far), UInt64(port), 1,
-                                                       UInt64(CROI_SIGNAL_READABLE), 0))
-        try Sys.check("watching the timer", Sys.call(CROI_SYS_OBJECT_WAIT_ASYNC, UInt64(timer), UInt64(port), 2,
-                                                     UInt64(CROI_SIGNAL_SIGNALED), 0))
+        // Both watches in one call (principle 12).
+        var watches = InlineArray<2, croi_bind_item_t>(repeating: croi_bind_item_t())
+        watches[0] = croi_bind_item_t(handle: far, options: UInt32(CROI_BIND_SIGNALS), key: 1,
+                                      trigger: UInt64(CROI_SIGNAL_READABLE), status: 1, reserved: 0)
+        watches[1] = croi_bind_item_t(handle: timer, options: UInt32(CROI_BIND_SIGNALS), key: 2,
+                                      trigger: UInt64(CROI_SIGNAL_SIGNALED), status: 1, reserved: 0)
+        let bound = Sys.call(CROI_SYS_OBJECT_BIND, UInt64(port), Sys.address(&watches), 2)
+        try Sys.check("watching the channel and the timer",
+                      bound == 2 && watches[0].status == 0 && watches[1].status == 0 ? 0 : bound < 0 ? bound : -1)
         // The VMO crosses the channel, then the timer is set: its packet
         // comes second however slowly the emulator runs (it raced the write).
         var message: UInt64 = 0x4D32  // "M2"

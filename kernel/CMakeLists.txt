@@ -52,6 +52,7 @@ add_library(kernel-swift OBJECT
   Kernel/Object/Status.swift
   Kernel/Object/KernelObject.swift
   Kernel/Object/Wait.swift
+  Kernel/Object/Bind.swift
   Kernel/Object/HandleTable.swift
   Kernel/Object/Port.swift
   Kernel/Object/Process.swift
@@ -191,12 +192,15 @@ croi_user_binary(${_vdso_bin} PIC
   LINKER_SCRIPT ${_user_dir}/vdso/vdso.ld
   INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/include)
 croi_user_runtime()
+# Its suites (Suite.swift): one file each, run with swift.suite=<name>.
+set(_swift_test_sources ${_user_dir}/test/swift/Main.swift ${_user_dir}/test/swift/Suite.swift
+    ${_user_dir}/test/swift/BindSuite.swift)
 set(_swift_test ${CMAKE_CURRENT_BINARY_DIR}/swifttest.elf)
-croi_user_program(${_swift_test} PIE SWIFT ${_user_dir}/test/swift/Main.swift)
+croi_user_program(${_swift_test} PIE SWIFT ${_swift_test_sources})
 # The same as a fixed-address program with a dynamic section and no
 # relocations (Todhchai's dlopen hosts, linked --export-dynamic).
 set(_swift_test_exec ${CMAKE_CURRENT_BINARY_DIR}/swifttestexec.elf)
-croi_user_program(${_swift_test_exec} EXPORT_DYNAMIC SWIFT ${_user_dir}/test/swift/Main.swift)
+croi_user_program(${_swift_test_exec} EXPORT_DYNAMIC SWIFT ${_swift_test_sources})
 # userboot (K8b), carried in the kernel image like Zircon's; it shares
 # lib/elf's sources with the kernel and loader.
 set(_userboot ${CMAKE_CURRENT_BINARY_DIR}/userboot.elf)

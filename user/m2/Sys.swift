@@ -23,6 +23,14 @@ enum Sys {
         withUnsafeMutablePointer(to: &value) { UInt64(UInt(bitPattern: $0)) }
     }
 
+    /// object_bind of one item: the item's status, or the call's.
+    static func bind(_ port: UInt32, _ handle: UInt32, _ options: UInt32, key: UInt64, trigger: UInt64) -> Int64 {
+        var item = croi_bind_item_t(handle: handle, options: options, key: key, trigger: trigger, status: 1,
+                                    reserved: 0)
+        let bound = call(CROI_SYS_OBJECT_BIND, UInt64(port), address(&item), 1)
+        return bound < 0 ? bound : bound == 1 ? 0 : Int64(item.status)
+    }
+
     static func now() -> UInt64 {
         UInt64(bitPattern: call(CROI_SYS_CLOCK_MONOTONIC))
     }

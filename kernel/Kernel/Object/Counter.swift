@@ -72,7 +72,7 @@ enum Counters {
         CounterPointer(object: object).pointee.value = value
         let signals = object.header.signals & ~(positive | nonPositive)
         object.header.signals = signals | (value > 0 ? positive : nonPositive)
-        Observers.notify(object)
+        Observers.notify(object, changed: true)
     }
 
     /// counter_wait: until the value is at least `target`, or `deadline`
@@ -111,12 +111,11 @@ enum Counters {
         }
     }
 
-    /// counter_wait_async: one CROI_PKT_TYPE_COUNTER packet to `port` with
+    /// object_bind VALUE: one CROI_PKT_TYPE_COUNTER packet to `port` with
     /// `key` once the value is at least `target` (now, if it is).
-    static func waitAsync(_ table: borrowing HandleTable, _ handle: UInt32, port portHandle: UInt32, key: UInt64,
+    static func waitAsync(_ table: borrowing HandleTable, _ handle: UInt32, port: borrowing ObjectRef, key: UInt64,
                           target: Int64) throws(Status) {
         let object = try waitable(table, handle, rights: .wait | .read)
-        let port = try table.get(portHandle, type: .port, rights: .write)
         // Zircon raises at its observer limit and still registers (review fix).
         if Ports.overObserverLimit(port.object) {
             Policy.limitException(UInt32(CROI_EXCP_POLICY_CODE_PORT_TOO_MANY_OBSERVERS))

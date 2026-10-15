@@ -317,8 +317,8 @@ enum InterruptObjects {
 
     // MARK: Ports
 
-    /// interrupt_bind: packets to `port` with `key` from now on (one already
-    /// pending is sent at once).
+    /// object_bind INTERRUPT: packets to `port` with `key` from now on (one
+    /// already pending is sent at once).
     static func bind(_ object: ObjectPointer, port: ObjectPointer, key: UInt64) throws(Status) {
         let interrupt = InterruptPointer(object: object)
         try object.header.lock.withLock { () throws(Status) in
@@ -338,8 +338,18 @@ enum InterruptObjects {
         }
     }
 
-    /// interrupt_bind with UNBIND: a packet still queued is taken back and
-    /// the interrupt counts as triggered again, so it isn't lost.
+    /// port_cancel(port, interrupt, key): unbinds it if it is bound there
+    /// with `key`.
+    static func cancel(_ object: ObjectPointer, port: ObjectPointer, key: UInt64) {
+        let bound = object.header.lock.withLock {
+            let interrupt = InterruptPointer(object: object)
+            return interrupt.pointee.port == port.address && interrupt.pointee.packet.pointee.packet.key == key
+        }
+        if bound { try? unbind(object, port: port) }
+    }
+
+    /// Unbinding: a packet still queued is taken back and the interrupt
+    /// counts as triggered again, so it isn't lost.
     static func unbind(_ object: ObjectPointer, port: ObjectPointer) throws(Status) {
         let interrupt = InterruptPointer(object: object)
         try object.header.lock.withLock { () throws(Status) in

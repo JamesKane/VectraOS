@@ -31,8 +31,9 @@ are in place, which includes the bring-up link (V3, D15).
 
 The audit is done (`docs/syscall-audit.md`: 154 calls to 91; D18, D19).
 The work, in order:
-1. `object_bind` (batched, ONCE or PERSISTENT) and `port_wait` with a
-   leeway, so that every cut has its replacement in place.
+1. **Done (D20):** `object_bind` (batched, ONCE or PERSISTENT) and
+   `port_wait` with a leeway, so that every cut has its replacement in
+   place. 154 → 150 calls; `vx todhchai-check` retired.
 2. The cuts, one commit per family (sockets, streams, timers, …). Each
    updates the family's design note, its tests, `zircon-divergences.md`
    and the ceiling, and adds a decision entry. `vx todhchai-check`

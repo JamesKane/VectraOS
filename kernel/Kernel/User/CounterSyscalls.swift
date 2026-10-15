@@ -2,7 +2,7 @@ import CKernel
 
 /// Counter syscalls (K10a; numbers in user/include/croi/syscall.h, values
 /// in counter.h): Zircon's counter_create, add, read and write with its
-/// rights, plus croi's counter_wait and counter_wait_async.
+/// rights, plus croi's counter_wait (object_bind VALUE and CHANGE: Bind.swift).
 extension Syscalls {
     static func counterCall(_ number: UInt64, _ a: InlineArray<6, UInt64>,
                             _ table: borrowing HandleTable) throws(Status) {
@@ -23,9 +23,6 @@ extension Syscalls {
             Counters.write(try table.get(handle, type: .counter, rights: .write).object, Int64(bitPattern: a[1]))
         case 164:  // counter_wait(counter, value, deadline)
             try Counters.wait(table, handle, target: Int64(bitPattern: a[1]), deadline: a[2])
-        case 165:  // counter_wait_async(counter, port, key, value)
-            try Counters.waitAsync(table, handle, port: UInt32(truncatingIfNeeded: a[1]), key: a[2],
-                                   target: Int64(bitPattern: a[3]))
         case 170:  // timeline_create(display resource, options, period_ns, out)
             try check(a[3], MemoryLayout<UInt32>.size)
             try Resources.check(table, handle, system: UInt64(CROI_RSRC_SYSTEM_DISPLAY_BASE))

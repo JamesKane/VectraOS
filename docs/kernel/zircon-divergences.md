@@ -286,8 +286,14 @@ matches the pinned tree where upstream docs or expectations say otherwise).
 
 ## croi additions (not in Zircon)
 
-- `counter_wait` / `counter_wait_async` — wait for a counter to reach a
+- `counter_wait` and object_bind VALUE — wait for a counter to reach a
   value (packet type 0x82).
+- `object_bind` (22, V1) — replaces object_wait_async, interrupt_bind,
+  counter_wait_async, thread_bind_overrun_port and
+  account_bind_pressure_port: a batch of bindings, ONCE or PERSISTENT
+  (a coalescing packet with a count), plus a counter's CHANGE doorbell
+  (packet type 0x83). port_cancel unbinds interrupts; port_wait takes a
+  leeway. Kind: deliberate (VectraOS D20).
 - Display timelines (type 48, syscalls 170-173) — vblank counters with a
   read-only page; synthetic on the GOP framebuffer.
 - Deadline-carrying wakeups — object_set_profile on interrupts, counters
@@ -296,7 +302,7 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   why a deadline profile was refused (Zircon has no admission).
 - channel_call donation — the reader of a call inherits the caller's
   profile until the reply.
-- `thread_bind_overrun_port` (122) — budget-overrun packets (type 0x80).
+- Budget-overrun packets (type 0x80), through object_bind OVERRUN.
 - `job_set_cpu_reservation` (108) — CPUs reserved for a job.
 - `interrupt_set_affinity` (146) — route an interrupt to a CPU mask.
 - `bti_set_properties` (156) and CROI_INFO_BTI_PROPERTIES — narrow a BTI's

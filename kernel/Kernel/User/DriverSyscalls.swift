@@ -115,18 +115,6 @@ extension Syscalls {
                 object = try InterruptObjects.create(number: UInt32(a[1]), options: options)
             }
             try addAndPut(object, rights: InterruptObject.defaultRights, a[3], table)
-        case 141:  // interrupt_bind(interrupt, port, key, options)
-            guard a[3] == UInt64(CROI_INTERRUPT_BIND) || a[3] == UInt64(CROI_INTERRUPT_UNBIND) else {
-                throw .invalidArgs
-            }
-            let interrupt = try table.get(handle, type: .interrupt, rights: .read)
-            let port = try table.get(UInt32(truncatingIfNeeded: a[1]), type: .port, rights: .write)
-            guard PortPointer(object: port.object).pointee.bindToInterrupt else { throw .wrongType }
-            if a[3] == UInt64(CROI_INTERRUPT_BIND) {
-                try InterruptObjects.bind(interrupt.object, port: port.object, key: a[2])
-            } else {
-                try InterruptObjects.unbind(interrupt.object, port: port.object)
-            }
         case 142:  // interrupt_ack(interrupt)
             try InterruptObjects.ack(try table.get(handle, type: .interrupt, rights: .write).object)
         case 143:  // interrupt_wait(interrupt, timestamp out or 0)
