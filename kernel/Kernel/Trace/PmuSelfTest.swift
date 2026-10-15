@@ -5,12 +5,14 @@ import Synchronization
 /// Boot self-test for PMU counters (K6e): per-thread counts follow their
 /// thread (two threads share a CPU, one doing ten times the other's
 /// spinning, and each counts only its own cycles), and overflow sampling
-/// writes PMU-sourced samples for a busy thread and none on idle CPUs.
+/// writes PMU-sourced samples for every busy thread (the spinner, and a
+/// bystander on a third CPU) with the counter stopped on idle CPUs.
 /// Without a PMU (QEMU TCG on amd64) it says so; the tick sampler covers
 /// those machines. Panics on failure.
 enum PmuSelfTest {
     nonisolated(unsafe) static var results = InlineArray<2, UInt64>(repeating: 0)
     nonisolated(unsafe) static var spinnerId: UInt32 = 0
+    nonisolated(unsafe) static var bystanderId: UInt32 = 0
 
     static func run(_ console: Uart) {
         let userCycles = runUser()
@@ -59,52 +61,65 @@ enum PmuSelfTest {
             panic("pmu self-test: trace start")
         }
         let before = Pmu.overflows.load(ordering: .relaxed)
-        let idleBefore = idleOverflows(except: cpu)
         do throws(Status) {
             try Pmu.startSampling(event: UInt32(CROI_PMU_CYCLES), period: 1_000_000)
         } catch {
             panic("pmu self-test: sampling refused")
         }
         spinnerId = 0
+        bystanderId = 0
         let spinner = spawn(cpu, spin, 0)
+        // A busy thread on a third CPU meanwhile, as a background thread
+        // (dlog-dumper, reclaim) may be at any time: it is sampled too.
+        // Counting any sample off the spinner's CPU as "on an idle CPU"
+        // made this test fail whenever such a thread ran long enough to
+        // overflow (rv64 under TCG, whose cycle counter follows host time:
+        // about 1 boot in 6, 2026-10-15).
+        let bystanderCpu = (0..<Smp.count).first { $0 != cpu && $0 != Int(Cpu.current) }
+        let bystander = bystanderCpu.map { spawn($0, bystand, 0) }
         _ = spinner.join()
+        _ = bystander?.join()
+        // Idle CPUs must have the counter stopped: asked of each CPU while
+        // sampling is still on, so a CPU that went idle and kept it armed
+        // is caught whichever CPU this thread now runs on.
+        armedWhileIdle.store(0, ordering: .relaxed)
+        Ipi.callOthers(checkIdleStopped, 0)
+        let armedIdle = armedWhileIdle.load(ordering: .relaxed)
         Pmu.stopSampling()
         Trace.stop()
         let overflows = Pmu.overflows.load(ordering: .relaxed) - before
-        let idleTaken = idleOverflows(except: cpu) - idleBefore
-        var mine = 0, withFrames = 0, elsewhere = 0
+        var mine = 0, withFrames = 0, bystanderSamples = 0
         for other in 0..<Smp.count {
-            var expectFrames = 0
             Trace.forEachRecord(other) { record in
                 if record.kind == UInt16(CROI_TK_SAMPLE), record.b & 0xFF == 1 + UInt64(CROI_PMU_CYCLES) {
                     if other == cpu, record.thread == spinnerId {
                         mine += 1
-                        expectFrames = Int(record.b >> 8)
-                        if record.a & CROI_SAMPLE_KERNEL != 0, expectFrames >= 2 { withFrames += 1 }
-                    } else if other != Int(Cpu.current) {
-                        elsewhere += 1
+                        if record.a & CROI_SAMPLE_KERNEL != 0, record.b >> 8 >= 2 { withFrames += 1 }
+                    } else if bystanderCpu == other, record.thread == bystanderId {
+                        bystanderSamples += 1
                     }
                 }
             }
         }
-        guard mine >= 5, withFrames * 10 >= mine * 9, elsewhere == 0, idleTaken == 0 else {
+        guard mine >= 5, withFrames * 10 >= mine * 9, bystanderCpu == nil || bystanderSamples >= 1, armedIdle == 0 else {
             console.write("\n  pmu:    overflows ")
             console.write(decimal: overflows)
             console.write(", samples ")
             console.write(decimal: UInt64(mine))
             console.write(", with frames ")
             console.write(decimal: UInt64(withFrames))
-            console.write(", on idle CPUs ")
-            console.write(decimal: UInt64(elsewhere))
-            console.write(" (overflows ")
-            console.write(decimal: idleTaken)
-            console.write(")")
+            console.write(", bystander's ")
+            console.write(decimal: UInt64(bystanderSamples))
+            console.write(", idle CPUs with the counter running ")
+            console.write(decimal: armedIdle)
             console.write("\n")
             panic("pmu self-test: overflow sampling")
         }
         console.write("; overflow sampling: ")
         console.write(decimal: UInt64(mine))
-        console.write(" cycle samples with stacks, no overflows on idle CPUs; from user mode: ")
+        console.write(" cycle samples with stacks, ")
+        console.write(decimal: UInt64(bystanderSamples))
+        console.write(" from a busy third CPU, counter stopped on idle CPUs; from user mode: ")
         console.write(decimal: userCycles)
         console.write(" cycles counted\n")
     }
@@ -146,14 +161,11 @@ enum PmuSelfTest {
                         arg1: 0)
     }
 
-    /// Overflow interrupts taken by CPUs other than `cpu` and this one.
-    private static func idleOverflows(except cpu: Int) -> UInt64 {
-        var total: UInt64 = 0
-        let me = Int(Cpu.current)
-        for other in 0..<Smp.count where other != cpu && other != me {
-            total += unsafe UnsafePointer<PerCpu>(bitPattern: UInt(Smp.records[other]))!.pointee.pmuOverflows
-        }
-        return total
+    /// CPUs that were idle with the sampling counter running.
+    static let armedWhileIdle = Atomic<UInt64>(0)
+
+    private static let checkIdleStopped: Ipi.Function = { _ in
+        if Scheduler.current.pointee.isIdle, Pmu.samplingArmedHere { armedWhileIdle.add(1, ordering: .relaxed) }
     }
 
     private static let counted: Thread.Entry = { which in
@@ -178,6 +190,13 @@ enum PmuSelfTest {
     private static let spin: Thread.Entry = { _ in
         spinnerId = Scheduler.current.pointee.traceId
         let end = Clock.now() + 60_000_000
+        while Clock.now() < end {}
+        return 0
+    }
+
+    private static let bystand: Thread.Entry = { _ in
+        bystanderId = Scheduler.current.pointee.traceId
+        let end = Clock.now() + 20_000_000
         while Clock.now() < end {}
         return 0
     }

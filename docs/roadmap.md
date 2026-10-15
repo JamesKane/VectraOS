@@ -193,8 +193,10 @@ write prefix.
 
 ## Known issues
 
-1. **The rv64 PMU self-test fails intermittently** (found 2026-10-15, in V0's
-   first `vx ci`). `boot-smoke` panicked with `pmu self-test: overflow
+1. ~~**The rv64 PMU self-test fails intermittently**~~ **Fixed 2026-10-15.**
+   The test's definition of idle was wrong; the PMU code was fine. See
+   `docs/kernel/design/user.md`, K6e. The original report follows. (Found
+   2026-10-15, in V0's first `vx ci`.) `boot-smoke` panicked with `pmu self-test: overflow
    sampling`: overflows 57, samples 55, with frames 55, on idle CPUs 1
    (overflows 1). The next 4 runs passed, so it failed 1 time in about 6
    rv64 boots. `PmuSelfTest` counts any cycle sample on another CPU as

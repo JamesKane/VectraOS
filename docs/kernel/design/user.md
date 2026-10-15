@@ -100,6 +100,23 @@ thread's stack top.
   has no PMU; KVM on this AMD host covers the AMD backend; the Intel
   backend is unverified until it runs on an Intel machine. QEMU arm64
   counts instructions only with icount, so its tests use cycles.
+- The self-test's overflow check (fixed 2026-10-15, VectraOS V0) asks
+  every other CPU, through an IPI and while sampling is still on, whether
+  it is idle with the counter running (`Pmu.samplingArmedHere`). That is
+  the property: the counter stops when a CPU idles. A busy bystander thread
+  on a third CPU must be sampled too.
+
+  The old check counted any sample off the spinner's CPU as "on an idle
+  CPU", and summed overflows over CPUs picked by `Cpu.current`, which
+  moves because the bootstrap thread isn't pinned. So a background thread
+  (`dlog-dumper`, `reclaim`) that ran past one period failed it. That
+  happened about 1 boot in 6 on rv64 under TCG, whose cycle counter
+  follows host time.
+
+  Verified three ways:
+  - the bystander made the old check fail every time;
+  - a mutant that leaves the counter armed on idle is caught;
+  - the new check passed 6 of 6 rv64 boots.
 - User threads killed by a fault or exception are logged (cause and PC)
   until K7's exception channels report them.
 - The boot test runs `usertest.S` (per arch) from a VMO: registers kept

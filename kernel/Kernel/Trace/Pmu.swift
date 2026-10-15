@@ -342,6 +342,18 @@ enum Pmu {
         #endif
     }
 
+    /// Whether this CPU's sampling counter is running (the self-test's
+    /// check that idle CPUs have it stopped).
+    static var samplingArmedHere: Bool {
+        #if arch(riscv64)
+        unsafe UnsafeMutablePointer<PerCpu>(bitPattern: UInt(arch_percpu()))!.pointee.pmuSamplingCounter != ~0
+        #elseif arch(arm64)
+        arch_pmu_sysreg_read(UInt32(CROI_PMU_PMCNTENSET)) & (1 << UInt64(samplingCounter)) != 0
+        #else
+        arch_rdmsr(selectMsr(samplingCounter)) & (1 << 22) != 0  // EN
+        #endif
+    }
+
     /// The counter value that overflows after one period.
     private static var reload: UInt64 {
         let mask: UInt64 = width >= 64 ? ~0 : (1 << width) - 1
