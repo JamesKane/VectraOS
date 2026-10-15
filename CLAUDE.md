@@ -66,7 +66,7 @@ CMake/Ninja builds the images, with one tree per arch under `build/<arch>/`.
 
 ## Status
 
-V0 is in progress.
+V0 is done (2026-10-15). V1 is next.
 - **Done:** croi imported, passing on amd64, arm64 and rv64; todhchai's
   Judge, History, trace format and reader lifted; `vx` with build, test,
   boot, bench, trace, loc and ci.

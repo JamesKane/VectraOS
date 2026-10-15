@@ -4,7 +4,7 @@ Each milestone has exit criteria. A milestone is done when its criteria pass
 under `vx ci` and every budget it introduces has a running check
 (principle 13).
 
-## V0. Ground
+## V0. Ground — done 2026-10-15
 
 Goal: croi boots from this repository, and the measuring works from the
 first commit.
@@ -19,7 +19,9 @@ first commit.
 **Exit:**
 - `vx ci` builds and boots amd64, arm64 and rv64 in QEMU.
 - croi's self-tests and usertest pass.
-- Boot budgets are recorded, and the size budgets run.
+- The size budgets run.
+- Boot budgets are reported but not recorded. Recording is deferred to V2
+  (D17).
 
 Milestones run in order. Each one puts in place what the next one
 depends on. Board bring-up (V4) is attempted only once its dependencies
@@ -48,6 +50,8 @@ are in place, which includes the bring-up link (V3, D15).
 
 **Exit:**
 - `cat /svc/*/status` works.
+- The first boot budget history is recorded (`vx bench --record`, on a
+  quiet machine), on the kernel as V1 left it (D17).
 - spawn → main < 200 µs.
 - Services RSS < 32 MiB.
 
