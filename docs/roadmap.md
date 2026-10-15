@@ -37,7 +37,8 @@ The work, in order:
 2. The cuts, one commit per family. Each updates the family's design
    note, its tests, `zircon-divergences.md` and the ceiling, and adds a
    decision entry. A `usertest.c` test the cut touches moves to a Swift
-   suite. Done: FIFOs, sockets and streams (D21, 135 calls).
+   suite. Done: FIFOs, sockets and streams (D21, 135 calls); the channel
+   `_etc` forms and the futex extras (D22, 129 calls).
 3. The batched forms of the hot calls (audit §3).
 4. The one ring (architecture §3) in Swift and as `ring.h`, with a model
    checker. Doorbells are counters.

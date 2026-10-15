@@ -765,35 +765,9 @@ static int64_t ipc(const startup_t *s) {
   return 0x600D;
 }
 
-// Mode 8: futexes and timers (K7c), as a process. Waiter threads report
-// through slots on our stack: [0] the futex word's address, [1] the
-// result, [2] done.
-static void futex_waiter(uint64_t arg) {
-  volatile uint64_t *slot = (volatile uint64_t *)arg;
-  slot[3] = 1;  // about to wait
-  slot[1] = (uint64_t)sys(CROI_SYS_FUTEX_WAIT, slot[0], 0, 0, now_ns() + 3000000000ull, 0);
-  slot[2] = 1;
-  sys(CROI_SYS_THREAD_EXIT, 0, 0, 0, 0, 0);
-}
-
-// The owner in the inheritance check: once it sees itself on a deadline
-// profile (lent by the waiter), it records that and its koid as the
-// futex's owner reports it, and wakes the waiter. slot: [0] word address,
-// [1] seen deadline, [2] owner koid, [3] done.
-static void futex_owner(uint64_t arg) {
-  volatile uint64_t *slot = (volatile uint64_t *)arg;
-  uint64_t give_up = now_ns() + 2000000000ull;
-  while (now_ns() < give_up && sys(CROI_SYS_TEST_PROFILE, 0, 0, 0, 0, 0) != 1) {
-  }
-  slot[1] = (uint64_t)sys(CROI_SYS_TEST_PROFILE, 0, 0, 0, 0, 0);
-  uint64_t koid = 0;
-  sys(CROI_SYS_FUTEX_GET_OWNER, slot[0], (uint64_t)&koid, 0, 0, 0);
-  slot[2] = koid;
-  sys(CROI_SYS_FUTEX_WAKE, slot[0], 1, 0, 0, 0);
-  slot[3] = 1;
-  sys(CROI_SYS_THREAD_EXIT, 0, 0, 0, 0, 0);
-}
-
+// Mode 8: timers (K7c), as a process. Futexes moved to the futex suite
+// (user/test/swift/FutexSuite.swift) when V1 cut requeue,
+// wake_single_owner and get_owner (D22).
 static uint64_t koid_of(uint32_t handle) {
   croi_info_handle_basic_t info = {};
   sys(CROI_SYS_OBJECT_GET_INFO, handle, CROI_INFO_HANDLE_BASIC, (uint64_t)&info, sizeof info, 0);
@@ -806,63 +780,7 @@ static void join(uint32_t thread) {
 }
 
 static int64_t sync_objects(const startup_t *s) {
-  volatile uint32_t words[4] = {0, 0, 0, 0};
-  uint64_t a = (uint64_t)&words[0], b = (uint64_t)&words[1], c = (uint64_t)&words[2];
-  CHECK(150, sys(CROI_SYS_FUTEX_WAIT, a, 1, 0, now_ns() + 1000000000ull, 0) == ERR_BAD_STATE);
-  CHECK(151, sys(CROI_SYS_FUTEX_WAIT, a, 0, 0, now_ns(), 0) == ERR_TIMED_OUT);
-  CHECK(152, sys(CROI_SYS_FUTEX_WAIT, a + 1, 0, 0, now_ns(), 0) == ERR_INVALID_ARGS);
-  CHECK(153, sys(CROI_SYS_FUTEX_WAKE, a, 10, 0, 0, 0) == 0);  // nobody waiting
-
-  // Inheritance: we wait on a deadline profile with a fair thread as the
-  // futex's owner; it must run on our deadline until it wakes us.
-  volatile uint64_t owner_slot[4] = {a, 0, 0, 0};
-  uint32_t owner = start_thread(s, futex_owner, (uint64_t)owner_slot);
-  CHECK(154, sys(CROI_SYS_TEST_PROFILE, 1, 0, 0, 0, 0) == 0);
-  CHECK(155, sys(CROI_SYS_FUTEX_WAIT, a, 0, owner, now_ns() + 3000000000ull, 0) == 0);
-  CHECK(156, sys(CROI_SYS_TEST_PROFILE, 2, 0, 0, 0, 0) == 0);
-  wait_for(owner, CROI_SIGNAL_TASK_TERMINATED, 3000000000ull);
-  CHECK(157, owner_slot[3] == 1 && owner_slot[1] == 1);  // it ran on our deadline
-  CHECK(158, owner_slot[2] == koid_of(owner));          // and was the futex's owner
-  sys(CROI_SYS_HANDLE_CLOSE, owner, 0, 0, 0, 0);
-  uint64_t koid = 1;
-  CHECK(159, sys(CROI_SYS_FUTEX_GET_OWNER, a, (uint64_t)&koid, 0, 0, 0) == 0 && koid == 0);  // wake cleared it
-
-  // Requeue: two waiters on a, moved to b, woken there.
-  volatile uint64_t w1[4] = {a, 99, 0, 0}, w2[4] = {a, 99, 0, 0};
-  uint32_t t1 = start_thread(s, futex_waiter, (uint64_t)w1), t2 = start_thread(s, futex_waiter, (uint64_t)w2);
-  // Both about to wait, then time to block (a fixed 5 ms wasn't, for a
-  // thread a loaded host started late).
-  for (uint64_t until = now_ns() + 2000000000ull; !(w1[3] && w2[3]) && now_ns() < until;)
-    sys(CROI_SYS_NANOSLEEP, now_ns() + 1000000, 0, 0, 0, 0);
-  sys(CROI_SYS_NANOSLEEP, now_ns() + 20000000, 0, 0, 0, 0);
-  CHECK(160, sys6(CROI_SYS_FUTEX_REQUEUE, a, 0, 0, b, 2, 0) == 0);
-  CHECK(161, sys(CROI_SYS_FUTEX_WAKE, a, 10, 0, 0, 0) == 0 && w1[2] == 0 && w2[2] == 0);  // nobody left on a
-  CHECK(162, sys(CROI_SYS_FUTEX_WAKE, b, 2, 0, 0, 0) == 0);
-  join(t1);
-  join(t2);
-  CHECK(163, w1[2] == 1 && w2[2] == 1 && w1[1] == 0 && w2[1] == 0);
-
-  // wake_single_owner: one waiter wakes and owns the futex.
-  volatile uint64_t w3[4] = {c, 99, 0, 0}, w4[4] = {c, 99, 0, 0};
-  uint32_t t3 = start_thread(s, futex_waiter, (uint64_t)w3), t4 = start_thread(s, futex_waiter, (uint64_t)w4);
-  for (uint64_t until = now_ns() + 2000000000ull; !(w3[3] && w4[3]) && now_ns() < until;)
-    sys(CROI_SYS_NANOSLEEP, now_ns() + 1000000, 0, 0, 0, 0);
-  sys(CROI_SYS_NANOSLEEP, now_ns() + 20000000, 0, 0, 0, 0);
-  CHECK(164, sys(CROI_SYS_FUTEX_WAKE_SINGLE_OWNER, c, 0, 0, 0, 0) == 0);
-  // The woken one runs when it runs; then a moment for a wrong second.
-  for (uint64_t until = now_ns() + 2000000000ull; !(w3[2] || w4[2]) && now_ns() < until;)
-    sys(CROI_SYS_NANOSLEEP, now_ns() + 1000000, 0, 0, 0, 0);
-  sys(CROI_SYS_NANOSLEEP, now_ns() + 2000000, 0, 0, 0, 0);
-  CHECK(165, (w3[2] == 1) != (w4[2] == 1));
-  uint32_t woke = w3[2] == 1 ? t3 : t4;
-  koid = 0;
-  CHECK(166, sys(CROI_SYS_FUTEX_GET_OWNER, c, (uint64_t)&koid, 0, 0, 0) == 0 &&
-                 (koid == koid_of(woke) || koid == 0));  // 0 once the woken thread has exited
-  CHECK(167, sys(CROI_SYS_FUTEX_WAKE, c, 1, 0, 0, 0) == 0);
-  join(t3);
-  join(t4);
-  CHECK(168, w3[1] == 0 && w4[1] == 0);
-
+  (void)s;
   // Timers.
   uint32_t timer = 0;
   CHECK(170, sys(CROI_SYS_TIMER_CREATE, CROI_TIMER_SLACK_LATE, 0, (uint64_t)&timer, 0, 0) == 0);
@@ -2900,22 +2818,7 @@ static int64_t pager(const startup_t *s) {
   return 0;
 }
 
-// K13e: the small calls. A server for channel_call_etc: reads a request
-// with read_etc and sends back its first word + 1 and the handle it got.
-static void etc_server(uint64_t channel) {
-  uint32_t request[2], actual[2];
-  croi_handle_info_t info[1];
-  if (wait_for((uint32_t)channel, CROI_SIGNAL_READABLE, 3000000000ull) & CROI_SIGNAL_READABLE &&
-      sys6(CROI_SYS_CHANNEL_READ_ETC, (uint32_t)channel, 0, (uint64_t)request, (uint64_t)info,
-           sizeof request | (uint64_t)1 << 32, (uint64_t)actual) == 0) {
-    request[1] += 1;
-    croi_handle_disposition_t back = {CROI_HANDLE_OP_MOVE, info[0].handle, 0, RIGHT_SAME, 0};
-    sys6(CROI_SYS_CHANNEL_WRITE_ETC, (uint32_t)channel, 0, (uint64_t)request, sizeof request, (uint64_t)&back,
-         actual[1]);
-  }
-  sys(CROI_SYS_THREAD_EXIT, 0, 0, 0, 0, 0);
-}
-
+// K13e: the small calls.
 static int64_t small_calls(const startup_t *s) {
   // Names: set and read back (truncated to 31), thread names from
   // thread_create, a short buffer. (A type without names refused one with
@@ -2974,52 +2877,10 @@ static int64_t small_calls(const startup_t *s) {
                  sys(CROI_SYS_PORT_WAIT, port, 0, (uint64_t)&packet, 0, 0) == ERR_TIMED_OUT);
   sys(CROI_SYS_HANDLE_CLOSE, port, 0, 0, 0, 0);
   sys(CROI_SYS_HANDLE_CLOSE, ev2, 0, 0, 0, 0);
-  // Channel *_etc: a duplicate with fewer rights and its type checked
-  // arrives as such; a wrong type is WRONG_TYPE in the entry's result and
-  // consumes a MOVE; rights beyond the handle's INVALID_ARGS, the source
-  // kept for a DUPLICATE.
-  uint32_t a = 0, b = 0, actual[2] = {0, 0};
-  croi_handle_info_t infos[2];
-  char bytes[8];
-  croi_handle_disposition_t dup = {CROI_HANDLE_OP_DUPLICATE, ev, 5, RIGHT_TRANSFER | RIGHT_WAIT, 0};
-  CHECK(495, sys(CROI_SYS_CHANNEL_CREATE, 0, (uint64_t)&a, (uint64_t)&b, 0, 0) == 0 &&
-                 sys6(CROI_SYS_CHANNEL_WRITE_ETC, a, 0, (uint64_t)"hi", 2, (uint64_t)&dup, 1) == 0 &&
-                 sys6(CROI_SYS_CHANNEL_READ_ETC, b, 0, (uint64_t)bytes, (uint64_t)infos,
-                      sizeof bytes | (uint64_t)2 << 32, (uint64_t)actual) == 0 &&
-                 actual[0] == 2 && actual[1] == 1 && infos[0].type == 5 &&
-                 infos[0].rights == (RIGHT_TRANSFER | RIGHT_WAIT) && infos[0].unused == 0 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, infos[0].handle, 0, 0, 0, 0) == 0);
-  uint32_t moved = 0;
-  CHECK(496, sys(CROI_SYS_HANDLE_DUPLICATE, ev, RIGHT_SAME, (uint64_t)&moved, 0, 0) == 0);
-  croi_handle_disposition_t two[2] = {{CROI_HANDLE_OP_MOVE, moved, 4, RIGHT_SAME, 0},
-                                      {CROI_HANDLE_OP_DUPLICATE, ev, 0, 0xFFFFFFFu, 0}};
-  CHECK(497, sys6(CROI_SYS_CHANNEL_WRITE_ETC, a, 0, (uint64_t)"x", 1, (uint64_t)two, 2) == ERR_WRONG_TYPE &&
-                 two[0].result == ERR_WRONG_TYPE && two[1].result == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_HANDLE_CLOSE, moved, 0, 0, 0, 0) == ERR_BAD_HANDLE &&
-                 (wait_for(ev, SIGNALED, 0) & SIGNALED) &&  // the duplicated one still works
-                 sys6(CROI_SYS_CHANNEL_READ_ETC, b, 1, (uint64_t)bytes, (uint64_t)infos, 0, (uint64_t)actual) ==
-                     ERR_SHOULD_WAIT);
-  // MAY_DISCARD drops a message that doesn't fit; call_etc round trip.
-  uint32_t server = start_thread(s, etc_server, b);
-  uint32_t request[2] = {0, 41}, reply[2] = {0, 0};
-  croi_handle_disposition_t give = {CROI_HANDLE_OP_DUPLICATE, ev, 0, RIGHT_SAME, 0};
-  croi_channel_call_etc_args_t args = {(uint64_t)request, (uint64_t)&give, (uint64_t)reply, (uint64_t)infos,
-                                       sizeof request, 1, sizeof reply, 2};
-  uint32_t got_bytes = 0, got_handles = 0;
-  CHECK(498, sys6(CROI_SYS_CHANNEL_CALL_ETC, a, 0, now_ns() + 3000000000ull, (uint64_t)&args, (uint64_t)&got_bytes,
-                  (uint64_t)&got_handles) == 0 &&
-                 got_bytes == 8 && got_handles == 1 && reply[1] == 42 && infos[0].type == 5 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, infos[0].handle, 0, 0, 0, 0) == 0);
-  join(server);
-  uint32_t c = 0, d = 0;
-  CHECK(499, sys(CROI_SYS_CHANNEL_CREATE, 0, (uint64_t)&c, (uint64_t)&d, 0, 0) == 0 &&
-                 sys6(CROI_SYS_CHANNEL_WRITE, c, 0, (uint64_t)"long message", 12, 0, 0) == 0 &&
-                 sys6(CROI_SYS_CHANNEL_READ_ETC, d, 2, (uint64_t)bytes, 0, 4, (uint64_t)actual) == ERR_NOT_SUPPORTED &&
-                 sys6(CROI_SYS_CHANNEL_READ_ETC, d, CROI_CHANNEL_READ_MAY_DISCARD, (uint64_t)bytes, 0, 4,
-                      (uint64_t)actual) == ERR_BUFFER_TOO_SMALL && actual[0] == 12 &&
-                 sys6(CROI_SYS_CHANNEL_READ_ETC, d, 0, (uint64_t)bytes, 0, 4, (uint64_t)actual) == ERR_SHOULD_WAIT);
-  uint32_t rest[6] = {a, b, c, d, ev, vmo};
-  sys(CROI_SYS_HANDLE_CLOSE_MANY, (uint64_t)rest, 6, 0, 0, 0);
+  // The channel *_etc checks (495-499) went with the calls (D22);
+  // MAY_DISCARD moved to the channel suite.
+  uint32_t rest[2] = {ev, vmo};
+  sys(CROI_SYS_HANDLE_CLOSE_MANY, (uint64_t)rest, 2, 0, 0, 0);
   return 0;
 }
 

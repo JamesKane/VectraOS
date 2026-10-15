@@ -72,9 +72,6 @@ enum : uint64_t {
   // Futexes and timers (K7c): Zircon's.
   CROI_SYS_FUTEX_WAIT = 90,        // (uint32_t *value, current, new_owner thread handle, deadline)
   CROI_SYS_FUTEX_WAKE = 91,        // (uint32_t *value, count)
-  CROI_SYS_FUTEX_REQUEUE = 92,     // (uint32_t *value, wake_count, current, uint32_t *target, requeue_count, owner)
-  CROI_SYS_FUTEX_WAKE_SINGLE_OWNER = 93,  // (uint32_t *value)
-  CROI_SYS_FUTEX_GET_OWNER = 94,   // (uint32_t *value, uint64_t *koid)
   CROI_SYS_TIMER_CREATE = 95,      // (options: CROI_TIMER_SLACK_*, clock_id 0, out)
   CROI_SYS_TIMER_SET = 96,         // (timer, deadline, slack)
   CROI_SYS_TIMER_CANCEL = 97,      // (timer)
@@ -144,9 +141,6 @@ enum : uint64_t {
   CROI_SYS_OBJECT_WAIT_MANY = 210,      // (croi_wait_item_t *items, count, deadline), K13e
   CROI_SYS_HANDLE_CLOSE_MANY = 211,     // (const uint32_t *handles, count)
   CROI_SYS_PORT_CANCEL_KEY = 212,       // (port, options, key)
-  CROI_SYS_CHANNEL_WRITE_ETC = 213,     // (channel, options, bytes, num_bytes, croi_handle_disposition_t *, num_handles)
-  CROI_SYS_CHANNEL_READ_ETC = 214,      // (channel, options, bytes, croi_handle_info_t *, num_bytes | num_handles << 32, actuals)
-  CROI_SYS_CHANNEL_CALL_ETC = 215,      // (channel, options, deadline, croi_channel_call_etc_args_t *, actual_bytes, actual_handles)
   CROI_SYS_CLOCK_CREATE = 216,          // (options | args version << 58, args, out), K13f: clock.h
   CROI_SYS_CLOCK_READ = 217,            // (clock, int64_t *now)
   CROI_SYS_CLOCK_GET_DETAILS = 218,     // (clock, CROI_CLOCK_ARGS_VERSION(1), croi_clock_details_v1_t *)

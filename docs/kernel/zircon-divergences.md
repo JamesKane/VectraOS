@@ -64,6 +64,16 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   mappings replace them. The VMO content size property stays. Kind:
   deliberate. Impact: Fuchsia code using them.
 
+## Channel _etc forms and futex extras
+
+- **Cut** (V1, D22) — no channel_write_etc, channel_read_etc or
+  channel_call_etc: rights are narrowed with handle_duplicate before
+  sending, and a reader learns a handle's type and rights from
+  object_get_info. No futex_requeue, futex_wake_single_owner or
+  futex_get_owner: futex_wait still names an owner, and futex_wake clears
+  it. Kind: deliberate. Impact: Fuchsia code using them (libsync's
+  condition variables requeue).
+
 ## VM and VMOs
 
 - **Snapshot child of a shrinking parent** (K13h) — croi's child reads

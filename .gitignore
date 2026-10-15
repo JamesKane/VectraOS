@@ -5,3 +5,4 @@ __pycache__/
 bench/out/
 .build/
 bench/history/*.local.tsv
+.claude/

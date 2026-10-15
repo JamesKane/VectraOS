@@ -12,8 +12,9 @@ import Synchronization
 /// Owners: `futex_wait` names the futex's owner (a thread handle, or none),
 /// and the waiters lend it their profiles (K3b inheritance through an
 /// owned queue). A cycle refuses the owner: the futex is left unowned,
-/// where a kernel mutex would panic. `wake` clears the owner,
-/// `wake_single_owner` hands it to the thread it wakes.
+/// where a kernel mutex would panic. `wake` clears the owner. V1 cut
+/// requeue, wake_single_owner and get_owner (D22): todhchai's Lock and
+/// pthreads use wait and wake only.
 struct FutexRecord {
     var next: UInt64 = 0
     let aspace: UInt64
@@ -135,18 +136,14 @@ enum Futexes {
                 Trace.event(CROI_TRACE_FUTEX, UInt16(CROI_TK_FUTEX_WAIT), address,
                             UInt64(owner?.pointee.traceId ?? 0))
                 record.pointee.users += 1
-                me.pointee.futex = record.address
                 let result = Scheduler.block(on: record.queue, deadline: deadline, interruptible: true)
-                // A requeue may have moved us to another futex.
-                let current = FutexPointer(address: me.pointee.futex)
-                me.pointee.futex = 0
-                current.pointee.users -= 1
+                record.pointee.users -= 1
                 // The last waiter gone (a timeout, a kill): no owner either,
                 // as in Zircon (review fix: owned records never retired).
-                if current.pointee.users == 0, current.pointee.queue.pointee.isEmpty {
-                    Scheduler.setOwner(current.queue, nil)
+                if record.pointee.users == 0, record.queue.pointee.isEmpty {
+                    Scheduler.setOwner(record.queue, nil)
                 }
-                retired = retire(current)
+                retired = retire(record)
                 return .done(result)
             }
             retired?.free()
@@ -190,84 +187,5 @@ enum Futexes {
         retired?.free()
         Trace.event(CROI_TRACE_FUTEX, UInt16(CROI_TK_FUTEX_WAKE), address, UInt64(woken))
         return woken
-    }
-
-    /// futex_wake_single_owner: wakes one waiter, which becomes the owner.
-    static func wakeSingleOwner(_ address: UInt64) throws(Status) {
-        let aspace = try key(address)
-        var retired: FutexPointer? = nil
-        Scheduler.locked {
-            guard let record = find(aspace, address) else { return }
-            Scheduler.setOwner(record.queue, nil)
-            if let woken = Scheduler.wakeFirst(record.queue), !record.queue.pointee.isEmpty {
-                Scheduler.setOwner(record.queue, woken)
-            }
-            retired = retire(record)
-        }
-        retired?.free()
-        Trace.event(CROI_TRACE_FUTEX, UInt16(CROI_TK_FUTEX_WAKE), address, 1)
-    }
-
-    /// futex_requeue: if the word at `address` is `expected`, wakes up to
-    /// `wakeCount` waiters and moves up to `requeueCount` others to the
-    /// futex at `target`, whose owner becomes `owner`.
-    static func requeue(_ address: UInt64, wakeCount: UInt32, expected: UInt32, target: UInt64,
-                        requeueCount: UInt32, owner: ThreadPointer?) throws(Status) {
-        let aspace = try key(address)
-        _ = try key(target)
-        guard target != address else { throw .invalidArgs }
-        var spare = FutexPointer.allocate(aspace: aspace, address: target)
-        defer { spare?.free() }
-        while true {
-            enum Outcome { case fault, changed, done }
-            var retired = InlineArray<2, UInt64>(repeating: 0)
-            let outcome = Scheduler.locked { () -> Outcome in
-                guard let value = UserCopy.wordNoPageIn(address) else { return .fault }
-                guard value == expected else { return .changed }
-                guard let source = find(aspace, address) else { return .done }
-                Scheduler.setOwner(source.queue, nil)
-                var woken = 0
-                while woken < Int(wakeCount), Scheduler.wakeOne(source.queue) { woken += 1 }
-                if requeueCount > 0, !source.queue.pointee.isEmpty {
-                    let destination: FutexPointer
-                    if let existing = find(aspace, target) {
-                        destination = existing
-                    } else {
-                        guard let fresh = spare else { return .fault }
-                        spare = nil
-                        insert(fresh)
-                        destination = fresh
-                    }
-                    let moved = Scheduler.moveWaiters(from: source.queue, to: destination.queue,
-                                                      count: Int(requeueCount))
-                    var cursor = destination.queue.pointee.head
-                    while let thread = cursor {
-                        if thread.pointee.futex == source.address { thread.pointee.futex = destination.address }
-                        cursor = thread.pointee.next
-                    }
-                    source.pointee.users -= moved
-                    destination.pointee.users += moved
-                    if !Scheduler.setOwner(destination.queue, owner) { Scheduler.setOwner(destination.queue, nil) }
-                    retired[1] = retire(destination)?.address ?? 0
-                }
-                retired[0] = retire(source)?.address ?? 0
-                return .done
-            }
-            for i in 0..<2 where retired[i] != 0 { FutexPointer(address: retired[i]).free() }
-            switch outcome {
-            case .fault: try pageIn(address)
-            case .changed: throw .badState
-            case .done: return
-            }
-        }
-    }
-
-    /// futex_get_owner: the owner's thread koid, or 0.
-    static func owner(_ address: UInt64) throws(Status) -> UInt64 {
-        let aspace = try key(address)
-        return Scheduler.locked { () -> UInt64 in
-            guard let owner = find(aspace, address)?.queue.pointee.owner, owner.pointee.object != 0 else { return 0 }
-            return ObjectPointer(address: owner.pointee.object).header.koid
-        }
     }
 }

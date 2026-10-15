@@ -222,9 +222,9 @@ extension Syscalls {
         guard unsafe ExceptionFrame.isSyscall(user.pointee) else { return UInt32(CROI_THREAD_STATE_BLOCKED_PAGER) }
         switch unsafe ExceptionFrame.syscallNumber(user.pointee) {
         case 4: return UInt32(CROI_THREAD_STATE_BLOCKED_SLEEPING)
-        case 90...94: return UInt32(CROI_THREAD_STATE_BLOCKED_FUTEX)
+        case 90: return UInt32(CROI_THREAD_STATE_BLOCKED_FUTEX)
         case 33: return UInt32(CROI_THREAD_STATE_BLOCKED_PORT)
-        case 83, 215: return UInt32(CROI_THREAD_STATE_BLOCKED_CHANNEL)
+        case 83: return UInt32(CROI_THREAD_STATE_BLOCKED_CHANNEL)
         case 210: return UInt32(CROI_THREAD_STATE_BLOCKED_WAIT_MANY)
         case 143: return UInt32(CROI_THREAD_STATE_BLOCKED_INTERRUPT)
         case 41, 42, 45, 195...198: return UInt32(CROI_THREAD_STATE_BLOCKED_PAGER)

@@ -11,17 +11,6 @@ extension Syscalls {
             try Futexes.wait(a[0], expected: UInt32(truncatingIfNeeded: a[1]), owner: owner, deadline: a[3])
         case 91:  // futex_wake(value_ptr, count)
             try Futexes.wake(a[0], count: UInt32(truncatingIfNeeded: a[1]))
-        case 92:  // futex_requeue(value_ptr, wake_count, current_value, requeue_ptr, requeue_count, owner)
-            let owner = try futexOwner(table, UInt32(truncatingIfNeeded: a[5]))
-            defer { if let owner { Scheduler.unpin(owner) } }
-            try Futexes.requeue(a[0], wakeCount: UInt32(truncatingIfNeeded: a[1]),
-                                expected: UInt32(truncatingIfNeeded: a[2]), target: a[3],
-                                requeueCount: UInt32(truncatingIfNeeded: a[4]), owner: owner)
-        case 93:  // futex_wake_single_owner(value_ptr)
-            try Futexes.wakeSingleOwner(a[0])
-        case 94:  // futex_get_owner(value_ptr, uint64_t *koid)
-            try check(a[1], 8)
-            try put(try Futexes.owner(a[0]), a[1])
         case 95:  // timer_create(options, clock_id, out)
             try Policy.check(UInt32(CROI_POL_NEW_TIMER))
             guard a[1] <= 1 else { throw .invalidArgs }  // ZX_CLOCK_MONOTONIC, or BOOT (the same: no suspend)

@@ -39,6 +39,10 @@ enum Suite {
             BindSuite.run()
         } else if requested("vmo") {
             VmoSuite.run()
+        } else if requested("futex") {
+            FutexSuite.run()
+        } else if requested("channel") {
+            ChannelSuite.run()
         } else {
             print("swift: no such suite")
             croi_exit(2)
@@ -63,7 +67,10 @@ enum Status {
     static var badHandle: Int64 { -11 }
     static var wrongType: Int64 { -12 }
     static var outOfRange: Int64 { -14 }
+    static var bufferTooSmall: Int64 { -15 }
+    static var badState: Int64 { -20 }
     static var timedOut: Int64 { -21 }
+    static var shouldWait: Int64 { -22 }
     static var accessDenied: Int64 { -30 }
 }
 

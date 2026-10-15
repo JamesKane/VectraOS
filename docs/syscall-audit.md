@@ -164,7 +164,8 @@ Legend: **keep**, **merge** (the call survives under a combined form),
 | **After V1** | **91** |
 
 **Progress:** `object_bind` landed (D20): 150 calls. FIFOs, sockets and
-streams were cut (D21): 135 calls.
+streams were cut (D21): 135 calls. The channel `_etc` forms and the
+futex extras were cut (D22): 129 calls.
 
 The ceiling in `tools/vx/LocCommand.swift` is lowered with each cut, so it
 never rises.

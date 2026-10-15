@@ -85,9 +85,9 @@ enum ProcessSelfTest {
         console.write("call, read, donation and reply share the flow user space computes\n")
     }
 
-    /// K7c (mode 8): futexes (inheritance through an owner, requeue,
-    /// wake_single_owner) and timers (fire, cancel, zero slack on a deadline
+    /// K7c (mode 8): timers (fire, cancel, zero slack on a deadline
     /// profile), from a process with a deadline context to bind to.
+    /// Futexes moved to the futex suite (D22).
     static func runSync(_ console: Uart) {
         let before = Counts()
         let context: SchedContext
@@ -109,14 +109,13 @@ enum ProcessSelfTest {
         }
         before.expectUnchanged(console)
         guard Futexes.live.load(ordering: .relaxed) == 0 else { panic("sync self-test: futex records left") }
-        console.write("  sync:   futexes (wait/wake, an owner inheriting a deadline waiter's profile, requeue, ")
-        console.write("wake_single_owner), timers (fire, cancel, already due, zero slack on a deadline profile)\n")
+        console.write("  sync:   timers (fire, cancel, already due, zero slack on a deadline profile)\n")
     }
 
     /// A user thread that failed a check may exit still bound, and its
     /// process is marked exited just before the thread unbinds on its way
     /// out: drop the context once nothing uses it.
-    private static func releaseWhenUnbound(_ context: consuming SchedContext) {
+    static func releaseWhenUnbound(_ context: consuming SchedContext) {
         let record = context.record
         let giveUp = Clock.now() + 2_000_000_000
         while Scheduler.locked({ record.pointee.boundThreads }) != 0, Clock.now() < giveUp {

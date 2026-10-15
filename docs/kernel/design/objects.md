@@ -132,10 +132,14 @@ syscalls 90-97 in User/SyncSyscalls.swift):
   recovery; the wait drops the lock, pages it in and retries), compares
   and blocks under it. Records are allocated outside the lock and retire
   when no waiter refers to them (`users`: a woken waiter hasn't run yet
-  when its waker returns), the queue is empty and nobody owns them;
-  `Thread.futex` follows a waiter through requeue. Owners use K7b's
-  `setOwner` (a cycle leaves the futex unowned); wake clears the owner,
-  wake_single_owner hands it to the woken thread. `futex` trace records.
+  when its waker returns), the queue is empty and nobody owns them.
+  Owners use K7b's `setOwner` (a cycle leaves the futex unowned); wake
+  clears the owner. `futex` trace records. V1 cut futex_requeue,
+  wake_single_owner and get_owner (D22): todhchai's Lock and pthreads use
+  wait and wake only, and with no requeue a waiter's record is the one
+  it blocked on (`Thread.futex` went). Tests: the Swift `futex` suite
+  (wait's refusals, a wake's count, an owner on a deadline waiter's
+  profile); runSuites checks no record is left.
 - Out-pointer checks (`Syscalls.check`) ask the address space whether
   writable mappings cover the range (`UserAspace.covers`): nothing is
   read or written, so any size works and a concurrent user write isn't
@@ -262,14 +266,12 @@ Kernel/Object/Names.swift; ipc.h, task.h; the pinned tree's semantics):
   lock; Observers.add/remove, notify, handleClosed and port_cancel keep
   it), safe because an object loses its observers before its last
   reference.
-- channel_write_etc / read_etc / call_etc (213-215): croi_handle_
-  disposition_t (MOVE or DUPLICATE, type 0 = any, rights reduced or
-  SAME_RIGHTS, result per entry) and croi_handle_info_t, Zircon's order of
-  checks (TRANSFER, not the channel itself, type, rights subset; DUPLICATE
-  needs DUPLICATE); every entry processed, MOVE consumes whatever happens,
-  the array copied back if any failed. channel_read(_etc) now check the
-  handle first and refuse unknown options with NOT_SUPPORTED;
-  CROI_CHANNEL_READ_MAY_DISCARD drops a message that doesn't fit.
+- channel_write_etc / read_etc / call_etc (213-215) were cut in V1
+  (D22): a handle's rights are narrowed with handle_duplicate before it
+  is sent. What K13e added to channel_read stays: it checks the handle
+  first, refuses unknown options with NOT_SUPPORTED, and
+  CROI_CHANNEL_READ_MAY_DISCARD drops a message that doesn't fit. Tests:
+  the Swift `channel` suite.
 - ZX_PROP_NAME (3): 32-byte names (31 + NUL) on processes, threads (BAD_
   STATE once dead), jobs, BTIs and VMOs (in the VmoRecord), resources read
   only, others WRONG_TYPE; process_create and thread_create now store

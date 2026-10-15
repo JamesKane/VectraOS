@@ -137,8 +137,6 @@ struct Thread: ~Copyable {
     var coverGeneration: UInt64 = 0
     var suspendRetry = false
     var interruptible = false
-    /// The futex record it waits on (moved by requeue), or 0.
-    var futex: UInt64 = 0
     /// Review fix: code holding this record's address past its thread
     /// object's lock (a futex owner, a profile target) pins it
     /// (`Scheduler.pin`); the reaper leaves a pinned zombie to the last

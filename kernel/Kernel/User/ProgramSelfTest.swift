@@ -144,12 +144,22 @@ enum ProgramSelfTest {
 
     /// The Swift program's test suites (user/test/swift/Suite.swift), one
     /// run each with `swift.suite=<name>`: each must exit 0x600D and leave
-    /// nothing behind. A failing check names itself on the console (its
-    /// stdout is a debuglog). New syscall tests are written as suites, not
-    /// in usertest.c.
+    /// nothing behind, futex records included. A failing check names
+    /// itself on the console (its stdout is a debuglog). New syscall tests
+    /// are written as suites, not in usertest.c. test_profile binds to a
+    /// deadline context lent for the run (the futex suite's inheritance).
     static func runSuites(_ console: Uart) {
-        let suites: InlineArray<2, StaticString> = ["swift.suite=bind\0", "swift.suite=vmo\0"]
+        let suites: InlineArray<4, StaticString> = ["swift.suite=bind\0", "swift.suite=vmo\0", "swift.suite=futex\0",
+                                                    "swift.suite=channel\0"]
         let before = ProcessSelfTest.Counts()
+        let context: SchedContext
+        do throws(AdmissionRefusal) {
+            context = try SchedContext(deadline: DeadlineParams(capacity: 3_000_000, deadline: 10_000_000,
+                                                               period: 10_000_000))
+        } catch {
+            panic("suites: no deadline context")
+        }
+        TestHooks.deadlineContext = context.record
         let image = unsafe RawSpan(_unsafeStart: UnsafeRawPointer(bitPattern: UInt(croi_swift_test_address()))!,
                                    byteCount: Int(croi_swift_test_size()))
         for i in suites.indices {
@@ -185,7 +195,10 @@ enum ProgramSelfTest {
                 panic("suites: a suite failed (its FAILED line is above)")
             }
         }
+        TestHooks.deadlineContext = nil
+        ProcessSelfTest.releaseWhenUnbound(context)
         before.expectUnchanged(console)
+        guard Futexes.live.load(ordering: .relaxed) == 0 else { panic("suites: futex records left") }
         console.write("  suites:")
         for i in suites.indices {
             console.write(" ")

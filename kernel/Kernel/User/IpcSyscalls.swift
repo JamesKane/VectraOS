@@ -42,13 +42,11 @@ extension Syscalls {
             if try Channels.write(channel.object, message) {
                 Policy.limitException(UInt32(CROI_EXCP_POLICY_CODE_CHANNEL_FULL_WRITE))
             }
-        case 82, 214:  // channel_read(_etc)(channel, options, bytes, handles, num_bytes | num_handles << 32, actuals)
+        case 82:  // channel_read(channel, options, bytes, handles, num_bytes | num_handles << 32, actuals)
             // Zircon's order: the handle, then the options (MAY_DISCARD).
             let channel = try table.get(handle, type: .channel, rights: .read)
             guard a[1] & ~UInt64(CROI_CHANNEL_READ_MAY_DISCARD) == 0 else { throw .notSupported }
             try check(a[5], 8)
-            let infos = number == 214
-            let entry = infos ? MemoryLayout<croi_handle_info_t>.size : 4
             let capacity = (bytes: UInt32(truncatingIfNeeded: a[4]), handles: UInt32(truncatingIfNeeded: a[4] >> 32))
             // The message read is the one whose size was checked (another
             // reader may take it meanwhile: then peek again).
@@ -61,56 +59,10 @@ extension Syscalls {
                     throw .bufferTooSmall
                 }
                 if size.bytes > 0 { try check(a[2], Int(size.bytes)) }
-                if size.handles > 0 { try check(a[3], Int(size.handles) * entry) }
+                if size.handles > 0 { try check(a[3], Int(size.handles) * 4) }
                 taken = try Channels.read(channel.object, ifFits: size)
             }
-            try deliver(taken!, to: table, bytes: a[2], handles: a[3], infos: infos)
-        case 213:  // channel_write_etc(channel, options, bytes, num_bytes, dispositions, num_handles), K13e
-            let channel: ObjectRef
-            do throws(Status) {
-                guard a[1] == 0 else { throw .invalidArgs }
-                channel = try table.get(handle, type: .channel, rights: .write)
-            } catch {
-                discardDispositions(table, a[4], count: a[5])
-                throw error
-            }
-            let message = try build(table, channel: channel.object, bytes: a[2], count: a[3], handles: a[4],
-                                    handleCount: a[5], dispositions: true)
-            message.pointee.txid = message.pointee.bytes >= 4
-                ? unsafe UnsafePointer<UInt32>(bitPattern: UInt(message.data))!.pointee : 0
-            if try Channels.write(channel.object, message) {
-                Policy.limitException(UInt32(CROI_EXCP_POLICY_CODE_CHANNEL_FULL_WRITE))
-            }
-        case 215:  // channel_call_etc(channel, options, deadline, croi_channel_call_etc_args_t *, actual_bytes, actual_handles)
-            var args = croi_channel_call_etc_args_t()
-            let copied = withUnsafeMutableBytes(of: &args) { raw in
-                unsafe UserCopy.from(raw.baseAddress!, a[3], UInt64(raw.count))
-            }
-            guard copied == 0 else { throw .invalidArgs }
-            let channel: ObjectRef
-            do throws(Status) {
-                guard a[1] == 0 else { throw .invalidArgs }
-                try check(a[4], 4)
-                try check(a[5], 4)
-                if args.rd_num_bytes > 0 { try check(args.rd_bytes, Int(args.rd_num_bytes)) }
-                if args.rd_num_handles > 0 {
-                    try check(args.rd_handles, Int(args.rd_num_handles) * MemoryLayout<croi_handle_info_t>.size)
-                }
-                channel = try table.get(handle, type: .channel, rights: .read | .write)
-            } catch {
-                discardDispositions(table, args.wr_handles, count: UInt64(args.wr_num_handles))
-                throw error
-            }
-            let message = try build(table, channel: channel.object, bytes: args.wr_bytes, count: UInt64(args.wr_num_bytes),
-                                    handles: args.wr_handles, handleCount: UInt64(args.wr_num_handles), dispositions: true)
-            let reply = try Channels.call(channel.object, message, deadline: a[2])
-            guard reply.pointee.bytes <= args.rd_num_bytes, reply.pointee.handles <= args.rd_num_handles else {
-                reply.free()
-                throw .bufferTooSmall  // Zircon writes no actual counts here
-            }
-            try put(reply.pointee.bytes, a[4])
-            try put(reply.pointee.handles, a[5])
-            try deliver(reply, to: table, bytes: args.rd_bytes, handles: args.rd_handles, infos: true)
+            try deliver(taken!, to: table, bytes: a[2], handles: a[3])
         case 210:  // object_wait_many(croi_wait_item_t *items, count, deadline), K13e
             try waitMany(table, items: a[0], count: a[1], deadline: a[2])
         case 211:  // handle_close_many(const uint32_t *handles, count), K13e
@@ -308,10 +260,8 @@ extension Syscalls {
     /// not be the channel written to; a repeat finds its handle gone (BAD_
     /// HANDLE). The first error is returned.
     private static func build(_ table: borrowing HandleTable, channel: ObjectPointer, bytes: UInt64, count: UInt64,
-                              handles: UInt64, handleCount: UInt64, dispositions: Bool = false) throws(Status) -> MessagePointer {
-        func consume(_ table: borrowing HandleTable) {
-            if dispositions { discardDispositions(table, handles, count: handleCount) } else { discard(table, handles: handles, count: handleCount) }
-        }
+                              handles: UInt64, handleCount: UInt64) throws(Status) -> MessagePointer {
+        func consume(_ table: borrowing HandleTable) { discard(table, handles: handles, count: handleCount) }
         guard count <= UInt64(CROI_CHANNEL_MAX_BYTES), handleCount <= UInt64(CROI_CHANNEL_MAX_HANDLES) else {
             consume(table)
             throw .outOfRange
@@ -327,15 +277,6 @@ extension Syscalls {
                 consume(table)
                 throw .invalidArgs
             }
-        }
-        if dispositions {
-            do throws(Status) {
-                try place(table, channel: channel, message: message, dispositions: handles, count: Int(handleCount))
-            } catch {
-                message.free()
-                throw error
-            }
-            return message
         }
         if handleCount == 0 { return message }  // no 256-byte buffer to clear
         var values = InlineArray<64, UInt32>(repeating: 0)
@@ -389,81 +330,6 @@ extension Syscalls {
             guard copied == 0 else { return }
             for i in 0..<Int(chunk) { try? table.close(values[i]) }
             done += chunk
-        }
-    }
-
-    /// The *_etc calls' dispositions into `message` (Zircon's
-    /// get_handle_disposition_for_message: every entry processed, MOVE takes
-    /// the handle out whatever happens, DUPLICATE leaves it; each failure's
-    /// status in its `result`, the whole array copied back if any failed,
-    /// the first failure returned). An unreadable array consumes nothing.
-    private static func place(_ table: borrowing HandleTable, channel: ObjectPointer, message: MessagePointer,
-                              dispositions: UInt64, count: Int) throws(Status) {
-        guard count > 0 else { return }
-        var entries = InlineArray<64, croi_handle_disposition_t>(repeating: croi_handle_disposition_t())
-        let size = UInt64(count * MemoryLayout<croi_handle_disposition_t>.size)
-        var span = entries.mutableSpan
-        let copied = span.withUnsafeMutableBytes { raw in unsafe UserCopy.from(raw.baseAddress!, dispositions, size) }
-        guard copied == 0 else { throw .invalidArgs }
-        var failure: Status? = nil
-        for i in 0..<count {
-            let entry = entries[i]
-            do throws(Status) {
-                let object: ObjectPointer, rights: Rights
-                switch entry.operation {
-                case UInt32(CROI_HANDLE_OP_MOVE):
-                    (object, rights) = try table.take(entry.handle)
-                case UInt32(CROI_HANDLE_OP_DUPLICATE):
-                    var have = Rights()
-                    let ref = try table.get(entry.handle, have: &have)
-                    rights = have
-                    ref.object.retain()  // the message's own
-                    object = ref.object
-                default:
-                    let (taken, _) = try table.take(entry.handle)
-                    taken.releaseTaken()
-                    throw .invalidArgs
-                }
-                var wanted = Rights(rawValue: entry.rights)
-                do throws(Status) {
-                    guard rights.contains(.transfer) else { throw .accessDenied }
-                    guard object.address != channel.address else { throw .notSupported }
-                    guard entry.type == 0 || entry.type == object.header.type.rawValue else { throw .wrongType }
-                    if wanted == .sameRights { wanted = rights }
-                    guard rights.isSuperset(of: wanted) else { throw .invalidArgs }
-                    if entry.operation == UInt32(CROI_HANDLE_OP_DUPLICATE), !rights.contains(.duplicate) {
-                        throw .accessDenied
-                    }
-                } catch {
-                    object.releaseTaken()  // a DUPLICATE's handle is still there: no hook
-                    throw error
-                }
-                message.setHandle(i, object: object.address, rights: wanted)
-            } catch {
-                entries[i].result = error.rawValue
-                if failure == nil { failure = error }
-            }
-        }
-        if let failure {
-            var back = entries.mutableSpan
-            _ = back.withUnsafeMutableBytes { raw in unsafe UserCopy.to(dispositions, UnsafeRawPointer(raw.baseAddress!), size) }
-            throw failure
-        }
-    }
-
-    /// The handles a refused *_etc write consumes: every entry but the
-    /// DUPLICATEs (errors ignored); nothing if the array can't be read.
-    private static func discardDispositions(_ table: borrowing HandleTable, _ dispositions: UInt64, count: UInt64) {
-        let count = min(count & 0xFFFF_FFFF, UInt64(CROI_CHANNEL_MAX_HANDLES))
-        guard count > 0 else { return }
-        var entries = InlineArray<64, croi_handle_disposition_t>(repeating: croi_handle_disposition_t())
-        var span = entries.mutableSpan
-        let copied = span.withUnsafeMutableBytes { raw in
-            unsafe UserCopy.from(raw.baseAddress!, dispositions, count * UInt64(MemoryLayout<croi_handle_disposition_t>.size))
-        }
-        guard copied == 0 else { return }
-        for i in 0..<Int(count) where entries[i].operation != UInt32(CROI_HANDLE_OP_DUPLICATE) {
-            try? table.close(entries[i].handle)
         }
     }
 
@@ -523,10 +389,9 @@ extension Syscalls {
     }
 
     /// Copies a message out: bytes to `bytes`, its objects into `table`
-    /// with their values at `handles` (or, `infos`, croi_handle_info_t
-    /// entries: value, type, rights). Frees it.
+    /// with their values at `handles`. Frees it.
     private static func deliver(_ message: MessagePointer, to table: borrowing HandleTable, bytes: UInt64,
-                                handles: UInt64, infos: Bool = false) throws(Status) {
+                                handles: UInt64) throws(Status) {
         defer { message.free() }
         if message.pointee.bytes > 0 {
             let copied = unsafe UserCopy.to(bytes, UnsafeRawPointer(bitPattern: UInt(message.data))!,
@@ -538,13 +403,7 @@ extension Syscalls {
             let value = try table.add(ObjectPointer(address: entry.object), rights: entry.rights)
             ObjectPointer(address: entry.object).header.handleCount.subtract(1, ordering: .relaxed)  // landed
             message.setHandle(i, object: 0, rights: Rights(rawValue: 0))  // the table's now
-            if infos {
-                let info = croi_handle_info_t(handle: value, type: ObjectPointer(address: entry.object).header.type.rawValue,
-                                              rights: entry.rights.rawValue, unused: 0)
-                try put(info, handles + UInt64(i) * UInt64(MemoryLayout<croi_handle_info_t>.size))
-            } else {
-                try put(value, handles + UInt64(i) * 4)
-            }
+            try put(value, handles + UInt64(i) * 4)
         }
     }
 }
