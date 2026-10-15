@@ -71,9 +71,15 @@ struct M2 {
         let text: StaticString = "dia duit from a VMO"
         var vmo: UInt32 = 0
         try Sys.check("creating a VMO", Sys.call(CROI_SYS_VMO_CREATE, 4096, 0, Sys.address(&vmo)))
-        try Sys.check("writing the VMO", Sys.call(CROI_SYS_VMO_WRITE, UInt64(vmo),
-                                                  unsafe UInt64(UInt(bitPattern: text.utf8Start)), 0,
-                                                  UInt64(text.utf8CodeUnitCount)))
+        // Written through a mapping of its own (V1 cut vmo_write, D37).
+        let own = UInt64(croi_vmar_root_self())
+        var written: UInt64 = 0
+        try Sys.check("mapping the VMO to write it", Sys.call(CROI_SYS_VMAR_MAP,
+                                                              own | UInt64(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32,
+                                                              0, UInt64(vmo), 0, 4096, Sys.address(&written)))
+        unsafe UnsafeMutableRawPointer(bitPattern: UInt(written))!.copyMemory(from: text.utf8Start,
+                                                                             byteCount: text.utf8CodeUnitCount)
+        _ = Sys.call(CROI_SYS_VMAR_UNMAP, own, written, 4096)
 
         // A channel pair, and a port watching the far end and a counter
         // (the doorbell a fence rings).

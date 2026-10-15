@@ -4,7 +4,8 @@ import CroiRuntime
 /// moved here from usertest.c when V1 cut FIFOs, sockets and streams
 /// (D21). Streams were the content size's main user; it stays as a VMO
 /// property, the length Taisce's mapped files keep. Sizes and mappings
-/// came from usertest.c's mode 0 when V1 cut vmo_map (D28).
+/// came from usertest.c's mode 0 when V1 cut vmo_map (D28); what a fault
+/// reports and the copy race when it cut vmo_read and vmo_write (D37).
 enum VmoSuite {
     static func run() {
         sizesAndMappings()
@@ -13,6 +14,8 @@ enum VmoSuite {
         referencesAndSlices()
         unbounded()
         sizeLock()
+        faultStatuses()
+        copyRace()
         print("swift: vmo passed")
     }
 
@@ -181,5 +184,148 @@ enum VmoSuite {
         check(unsafe croi_vmo_size(paged.raw, &size) == 0 && size == 2 * pageSize
                   && paged.contentSize == 2 * pageSize, "the resize came second")
         unsafe work.deallocate()
+    }
+
+    /// What a fault reports (D37): with vmo_read cut, a reader learns why
+    /// a page couldn't be had from its fault's exception, whose synth_code
+    /// is the status, as in Zircon: the pager's FAIL status, BAD_STATE
+    /// once the pager detached, OUT_OF_RANGE past a shrunk end, NOT_FOUND
+    /// for a discarded VMO, ACCESS_DENIED for a write the mapping doesn't
+    /// allow. The faults come to this process's exception channel.
+    static func faultStatuses() {
+        var raw: UInt32 = 0
+        check(Sys.call(CROI_SYS_TASK_CREATE_EXCEPTION_CHANNEL, UInt64(croi_process_self()), 0, Sys.address(&raw)) == 0,
+              "this process's exception channel")
+        let channel = Handle(adopting: raw)
+        let pager = Handle(creating: CROI_SYS_PAGER_CREATE)
+        let port = Port()
+        check(Sys.call(CROI_SYS_PAGER_CREATE_VMO, pager.arg, 0, port.handle.arg, 7, 2 * pageSize, Sys.address(&raw)) == 0,
+              "a pager VMO")
+        let paged = Handle(adopting: raw)
+        let map = Mapping(paged, length: 2 * pageSize, permissions: UInt32(CROI_VM_PERM_READ))
+        let reader = Thread(touch, map.address)
+        let request = port.next(deadline: Sys.now() + 5_000_000_000)
+        check(request?.type == UInt32(CROI_PKT_TYPE_PAGE_REQUEST), "a fault asks the pager")
+        check(Sys.call(CROI_SYS_PAGER_OP_RANGE, pager.arg, UInt64(CROI_PAGER_OP_FAIL), paged.arg, 0, pageSize,
+                       UInt64(bitPattern: -40)) == 0, "the pager fails it")
+        check(faultStatus(channel, reader) == -40, "the fault carries the pager's status (IO)")
+        check(Sys.call(CROI_SYS_PAGER_DETACH_VMO, pager.arg, paged.arg) == 0, "the pager detached")
+        check(faultStatus(channel, Thread(touch, map.address + pageSize)) == Status.badState, "then BAD_STATE")
+
+        let resizable = Handle(vmo: 2 * pageSize, options: UInt64(CROI_VMO_CREATE_RESIZABLE))
+        let whole = Mapping(resizable, length: 2 * pageSize)
+        check(Sys.call(CROI_SYS_VMO_SET_SIZE, resizable.arg, pageSize) == 0, "a VMO shrunk under its mapping")
+        check(faultStatus(channel, Thread(touch, whole.address + pageSize)) == Status.outOfRange, "OUT_OF_RANGE past its end")
+
+        let discardable = Handle(vmo: pageSize, options: UInt64(CROI_VMO_CREATE_DISCARDABLE))
+        var state = croi_vmo_lock_state_t()
+        check(Sys.call(CROI_SYS_VMO_OP_RANGE, discardable.arg, UInt64(CROI_VMO_OP_LOCK), 0, pageSize, Sys.address(&state),
+                       UInt64(MemoryLayout<croi_vmo_lock_state_t>.size)) == 0, "a discardable VMO locked")
+        let kept = Mapping(discardable, length: pageSize)
+        kept[0] = 1
+        check(Sys.call(CROI_SYS_VMO_OP_RANGE, discardable.arg, UInt64(CROI_VMO_OP_UNLOCK), 0, pageSize) == 0
+                  && MemorySuite.hook(6, 6) == 0 && MemorySuite.hook(7, 100, 6) >= 1, "unlocked, aged and discarded")
+        check(faultStatus(channel, Thread(touch, kept.address)) == Status.notFound, "NOT_FOUND once discarded")
+
+        let readOnly = Mapping(Handle(vmo: pageSize), length: pageSize, permissions: UInt32(CROI_VM_PERM_READ))
+        check(faultStatus(channel, Thread(touch, readOnly.address | 1)) == Status.accessDenied,
+              "ACCESS_DENIED for a write the mapping doesn't allow")
+    }
+
+    /// Reads the byte at `argument`, or writes it if bit 0 is set, then exits.
+    static let touch: @convention(c) (UInt64) -> Void = { argument in
+        let byte = unsafe UnsafeMutablePointer<UInt8>(bitPattern: UInt(argument & ~1))!
+        if argument & 1 != 0 {
+            unsafe byte.pointee = 1
+        } else {
+            _ = Sys.call(CROI_SYS_NULL, UInt64(unsafe byte.pointee))  // used, so it is read
+        }
+        Thread.exit()
+    }
+
+    /// The status `thread`'s page fault reported on `channel`; the thread
+    /// is ended. nil if no page fault came.
+    static func faultStatus(_ channel: borrowing Handle, _ thread: consuming Thread) -> Int64? {
+        var info = croi_exception_info_t()
+        guard let exception = ObjectSuite.exception(on: channel, &info) else {
+            thread.join()
+            return nil
+        }
+        var report = croi_exception_report_t()
+        let reported = Sys.call(CROI_SYS_OBJECT_GET_INFO, thread.handle.arg, UInt64(CROI_INFO_THREAD_EXCEPTION_REPORT),
+                                Sys.address(&report), UInt64(MemoryLayout<croi_exception_report_t>.size), 0, 0)
+        var ending = UInt32(CROI_EXCEPTION_STATE_THREAD_EXIT)
+        check(Sys.call(CROI_SYS_OBJECT_SET_PROPERTY, exception.arg, UInt64(CROI_PROP_EXCEPTION_STATE),
+                       Sys.address(&ending), 4) == 0, "the faulting thread ended")
+        _ = consume exception
+        thread.join()
+        guard reported == 0, info.type == UInt32(CROI_EXCP_FATAL_PAGE_FAULT) else { return nil }
+        return Int64(Int32(bitPattern: report.context.synth_code))
+    }
+
+    /// K14h, from usertest.c's copy_race when V1 cut vmo_read (D37): the
+    /// kernel copies a VMO's page under its VMO's lock, which
+    /// process_read_memory still does. A writer fills a page with 'V' and
+    /// decommits it, over and over; a polluter does the same with 'J' in a
+    /// VMO of its own, so a freed page soon holds 'J'. A reader copying a
+    /// page after it was freed would see a 'J'.
+    struct Race {
+        var vmo: UInt32
+        var byte: UInt8
+        var stop: UInt32 = 0
+    }
+
+    static func copyRace() {
+        let shared = Handle(vmo: pageSize)
+        let polluted = Handle(vmo: pageSize)
+        let work = UnsafeMutablePointer<Race>.allocate(capacity: 2)
+        unsafe work.initialize(to: Race(vmo: shared.raw, byte: UInt8(ascii: "V")))
+        unsafe (work + 1).initialize(to: Race(vmo: polluted.raw, byte: UInt8(ascii: "J")))
+        let address = UInt64(UInt(bitPattern: work))
+        let writer = Thread(filler, address)
+        let polluter = Thread(filler, address + UInt64(MemoryLayout<Race>.stride))
+        let view = Mapping(shared, length: pageSize, permissions: UInt32(CROI_VM_PERM_READ))
+        let viewed = view.address
+        var page = InlineArray<4096, UInt8>(repeating: 0)
+        let end = Sys.now() + 300_000_000
+        var clean = true
+        var reads = 0
+        while Sys.now() < end && clean {
+            var actual: UInt64 = 0
+            var span = page.mutableSpan
+            let status = span.withUnsafeMutableBytes { bytes in
+                unsafe Sys.call(CROI_SYS_PROCESS_READ_MEMORY, UInt64(croi_process_self()), viewed,
+                                UInt64(UInt(bitPattern: bytes.baseAddress)), pageSize, Sys.address(&actual))
+            }
+            guard status == 0 else { break }
+            reads += 1
+            for i in 0..<4096 where page[i] == UInt8(ascii: "J") { clean = false }
+        }
+        unsafe work.pointee.stop = 1
+        unsafe (work + 1).pointee.stop = 1
+        writer.join()
+        polluter.join()
+        check(clean, "no read sees a freed page's new contents")
+        check(reads > 0, "process_read_memory reads the page")
+        unsafe work.deallocate()
+    }
+
+    /// Fills its VMO's page with its byte through a mapping and decommits
+    /// it, over and over until told to stop.
+    static let filler: @convention(c) (UInt64) -> Void = { argument in
+        let race = unsafe UnsafeMutablePointer<Race>(bitPattern: UInt(argument))!
+        let vmo = unsafe UInt64(race.pointee.vmo)
+        let byte = unsafe race.pointee.byte
+        let own = UInt64(croi_vmar_root_self())
+        var at: UInt64 = 0
+        check(Sys.call(CROI_SYS_VMAR_MAP, own | UInt64(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, vmo, 0,
+                       pageSize, Sys.address(&at)) == 0, "a filler's mapping")
+        let page = unsafe UnsafeMutablePointer<UInt8>(bitPattern: UInt(at))!
+        while unsafe race.pointee.stop == 0 {
+            for i in 0..<Int(pageSize) { unsafe page[i] = byte }
+            _ = Sys.call(CROI_SYS_VMO_OP_RANGE, vmo, UInt64(CROI_VMO_OP_DECOMMIT), 0, pageSize)
+        }
+        _ = Sys.call(CROI_SYS_VMAR_UNMAP, own, at, pageSize)
+        Thread.exit()
     }
 }

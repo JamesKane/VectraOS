@@ -19,8 +19,6 @@ enum : uint64_t {
   CROI_SYS_PORT_WAIT = 33,         // (port, deadline, croi_port_packet_t *packet, leeway)
   CROI_SYS_PORT_CANCEL = 34,       // (port, source handle or 0 for every source, key)
   CROI_SYS_VMO_CREATE = 40,        // (size, options, uint32_t *out)
-  CROI_SYS_VMO_READ = 41,          // (vmo, void *buffer, offset, length)
-  CROI_SYS_VMO_WRITE = 42,         // (vmo, const void *buffer, offset, length)
   // VMOs for drivers (K9a): Zircon's calls, values in vmo.h.
   CROI_SYS_VMO_OP_RANGE = 45,      // (vmo, op, offset, size, buffer, buffer_size)
   CROI_SYS_VMO_SET_CACHE_POLICY = 46,  // (vmo, policy)

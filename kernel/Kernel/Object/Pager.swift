@@ -3,7 +3,7 @@ import Synchronization
 
 /// The user pager (K13d; Zircon's PagerDispatcher, PagerProxy and
 /// PageSource, type 28): a pager VMO's pages come from user space. Reading
-/// a page the VMO doesn't have (a fault, vmo_read, a stream, a commit, a
+/// a page the VMO doesn't have (a fault, a stream, a commit, a
 /// pin, a snapshot child reading through) queues a READ request on the
 /// VMO's port and waits until the pager supplies the page
 /// (pager_supply_pages, which moves pages in from an anonymous VMO) or
@@ -15,7 +15,7 @@ import Synchronization
 /// Dirty tracking (part 2): each present page is clean, dirty or awaiting
 /// clean (`VmoRecord.states`). A clean page is mapped read only even
 /// where the mapping may write, so the first write faults; the write (and
-/// every kernel write: vmo_write, streams, ZERO) goes through
+/// every kernel write: streams, ZERO) goes through
 /// `prepareWrite`, which makes the page dirty, first asking the pager with
 /// a DIRTY request if the VMO was created with TRAP_DIRTY (the pager's
 /// op DIRTY answers it). WRITEBACK_BEGIN turns dirty pages awaiting clean

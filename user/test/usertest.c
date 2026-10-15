@@ -59,25 +59,15 @@ static int64_t bind1(uint32_t port, uint32_t handle, uint32_t options, uint64_t 
     if (!(condition)) exit_with(n); \
   } while (0)
 
-// Mode 0: vmo_read and vmo_write, with bad pointers. Events, signals,
-// handles and ports moved to the objects suite (user/test/swift/ObjectSuite.swift)
-// when V1 cut events, object_signal and object_wait_one (D23); VMO sizes
-// and mappings to the vmo suite when it cut vmo_map and debug_write (D28).
+// Mode 0: a handle made and closed from the kernel's bare program.
+// Events, signals, handles and ports moved to the objects suite
+// (user/test/swift/ObjectSuite.swift) when V1 cut events, object_signal
+// and object_wait_one (D23); VMO sizes and mappings to the vmo suite when
+// it cut vmo_map and debug_write (D28). vmo_read and vmo_write, with
+// their bad pointers, went with the calls (D37).
 static int64_t objects(void) {
   uint32_t vmo = 0;
   CHECK(16, sys(CROI_SYS_VMO_CREATE, 8192, 0, (uint64_t)&vmo, 0, 0) == 0);
-  static const char text[] = "written through vmo_write";
-  CHECK(17, sys(CROI_SYS_VMO_WRITE, vmo, (uint64_t)text, 4090, sizeof text, 0) == 0);  // spans two pages
-  char back[sizeof text];
-  CHECK(18, sys(CROI_SYS_VMO_READ, vmo, (uint64_t)back, 4090, sizeof back, 0) == 0);
-  for (unsigned i = 0; i < sizeof text; i++) CHECK(19, back[i] == text[i]);
-
-  // Bad pointers are errors, not crashes.
-  CHECK(24, sys(CROI_SYS_VMO_READ, vmo, 0xFFFF800000000000ull, 0, 16, 0) == ERR_INVALID_ARGS);
-  // A kernel address valid on every arch (the kernel image): never copied.
-  CHECK(29, sys(CROI_SYS_VMO_WRITE, vmo, 0xFFFFFFFF80000000ull, 0, 16, 0) == ERR_INVALID_ARGS);
-  CHECK(30, sys(CROI_SYS_VMO_READ, vmo, 0xFFFFFFFF80000000ull, 0, 16, 0) == ERR_INVALID_ARGS);
-
   CHECK(28, croi_handle_close(vmo) == 0);
   return 0x600D;
 }
@@ -1012,6 +1002,35 @@ static int64_t exceptions(const startup_t *s) {
 #define ERR_WRONG_TYPE (-12)
 #define PAGE 4096ull
 
+// V1 cut vmo_read and vmo_write (D37): bytes go in and out through a
+// mapping of the pages they span. 0, or the mapping's status; a fault
+// (a pager's failure) is the process's exception, as in any reader.
+static int64_t vmo_copy(uint32_t vmo, void *buffer, uint64_t offset, uint64_t length, int write) {
+  uint32_t vmar = ((const startup_t *)STARTUP_AT)->vmar;
+  uint64_t first = offset & ~(PAGE - 1), size = ((offset + length + PAGE - 1) & ~(PAGE - 1)) - first, at = 0;
+  uint64_t permissions = CROI_VM_PERM_READ | (write ? CROI_VM_PERM_WRITE : 0);
+  int64_t status = sys6(CROI_SYS_VMAR_MAP, vmar | permissions << 32, 0, vmo, first, size, (uint64_t)&at);
+  if (status != 0) return status;
+  volatile uint8_t *mapped = (volatile uint8_t *)(at + offset - first);
+  uint8_t *bytes = buffer;
+  for (uint64_t i = 0; i < length; i++) {
+    if (write)
+      mapped[i] = bytes[i];
+    else
+      bytes[i] = mapped[i];
+  }
+  sys(CROI_SYS_VMAR_UNMAP, vmar, at, size, 0, 0);
+  return 0;
+}
+
+static int64_t vmo_get(uint32_t vmo, void *buffer, uint64_t offset, uint64_t length) {
+  return vmo_copy(vmo, buffer, offset, length, 0);
+}
+
+static int64_t vmo_set(uint32_t vmo, const void *buffer, uint64_t offset, uint64_t length) {
+  return vmo_copy(vmo, (void *)buffer, offset, length, 1);
+}
+
 static int64_t resource_create(uint32_t parent, uint32_t options, uint64_t base, uint64_t size, uint32_t *out) {
   return sys6(CROI_SYS_RESOURCE_CREATE, parent | (uint64_t)options << 32, base, size, (uint64_t)"drv", 3,
               (uint64_t)out);
@@ -1058,7 +1077,6 @@ static uint32_t mem_type(const croi_zbi_mem_range_t *ranges, uint64_t count, uin
 static int64_t firmware(const startup_t *s) {
   uint64_t size = 0, at = 0, word = 0;
   CHECK(231, croi_vmo_size(s->bootdata, &size) == 0 && size >= PAGE &&
-                 sys(CROI_SYS_VMO_WRITE, s->bootdata, (uint64_t)&word, 0, 8, 0) == ERR_ACCESS_DENIED &&
                  sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0,
                       s->bootdata, 0, size, (uint64_t)&at) == ERR_ACCESS_DENIED &&
                  sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)CROI_VM_PERM_READ << 32, 0, s->bootdata, 0, size,
@@ -1180,9 +1198,8 @@ static int64_t drivers(const startup_t *s) {
   CHECK(216, sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)CROI_VM_PERM_READ << 32, 0, vmo, 0, PAGE, (uint64_t)&at) == 0);
   word = *(volatile uint32_t *)(at + DRV_DEVICE_OFFSET);
   CHECK(217, DRV_DEVICE_VALUE(word));
-  // Device memory: no vmo_read, no policy change while mapped.
-  CHECK(218, sys(CROI_SYS_VMO_READ, vmo, (uint64_t)&word, 0, 8, 0) == ERR_NOT_SUPPORTED &&
-                 sys(CROI_SYS_VMO_SET_CACHE_POLICY, vmo, CROI_CACHE_POLICY_UNCACHED, 0, 0, 0) == ERR_BAD_STATE &&
+  // Device memory: no policy change while mapped.
+  CHECK(218, sys(CROI_SYS_VMO_SET_CACHE_POLICY, vmo, CROI_CACHE_POLICY_UNCACHED, 0, 0, 0) == ERR_BAD_STATE &&
                  sys(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_CACHE_CLEAN, 0, PAGE, 0) == 0);
   sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, PAGE, 0, 0);
   croi_handle_close(vmo);
@@ -1200,27 +1217,26 @@ static int64_t drivers(const startup_t *s) {
   croi_handle_close(other);
   croi_handle_close(irq);
 
-  // Cache policy on an anonymous VMO: only unmapped; read/write refused
-  // once uncached; MAP needed; bad values refused.
+  // Cache policy on an anonymous VMO: only unmapped; MAP needed; bad
+  // values refused.
   uint32_t anon = 0, readonly = 0;
   CHECK(221, sys(CROI_SYS_VMO_CREATE, 3 * PAGE, 0, (uint64_t)&anon, 0, 0) == 0 &&
                  sys(CROI_SYS_VMO_SET_CACHE_POLICY, anon, 7, 0, 0, 0) == ERR_INVALID_ARGS &&
                  sys(CROI_SYS_HANDLE_DUPLICATE, anon, 1u << 2 | 1u << 15, (uint64_t)&readonly, 0, 0) == 0 &&
                  sys(CROI_SYS_VMO_SET_CACHE_POLICY, readonly, CROI_CACHE_POLICY_CACHED, 0, 0, 0) == ERR_ACCESS_DENIED);
   CHECK(222, sys(CROI_SYS_VMO_SET_CACHE_POLICY, anon, CROI_CACHE_POLICY_WRITE_COMBINING, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_VMO_READ, anon, (uint64_t)&word, 0, 8, 0) == ERR_BAD_STATE &&
                  sys(CROI_SYS_VMO_SET_CACHE_POLICY, anon, CROI_CACHE_POLICY_CACHED, 0, 0, 0) == 0);
 
   // Range ops: commit, write, zero part of it, read it back.
   uint8_t bytes[64];
   for (int i = 0; i < 64; i++) bytes[i] = 0xAB;
   CHECK(223, sys(CROI_SYS_VMO_OP_RANGE, anon, CROI_VMO_OP_COMMIT, 100, 2 * PAGE, 0) == 0 &&
-                 sys(CROI_SYS_VMO_WRITE, anon, (uint64_t)bytes, PAGE - 32, 64, 0) == 0 &&
+                 vmo_set(anon, bytes, PAGE - 32, 64) == 0 &&
                  sys(CROI_SYS_VMO_OP_RANGE, anon, CROI_VMO_OP_ZERO, PAGE - 16, 32, 0) == 0 &&
-                 sys(CROI_SYS_VMO_READ, anon, (uint64_t)bytes, PAGE - 32, 64, 0) == 0 &&
+                 vmo_get(anon, bytes, PAGE - 32, 64) == 0 &&
                  bytes[0] == 0xAB && bytes[15] == 0xAB && bytes[16] == 0 && bytes[47] == 0 && bytes[48] == 0xAB);
   CHECK(224, sys(CROI_SYS_VMO_OP_RANGE, anon, CROI_VMO_OP_ZERO, 0, 3 * PAGE, 0) == 0 &&
-                 sys(CROI_SYS_VMO_READ, anon, (uint64_t)bytes, PAGE - 32, 64, 0) == 0 && bytes[0] == 0 &&
+                 vmo_get(anon, bytes, PAGE - 32, 64) == 0 && bytes[0] == 0 &&
                  bytes[63] == 0);
   // Cache ops, decommit, and the refusals.
   CHECK(225, sys(CROI_SYS_VMO_OP_RANGE, anon, CROI_VMO_OP_CACHE_CLEAN, 8, 100, 0) == 0 &&
@@ -1408,9 +1424,9 @@ static int64_t dma(const startup_t *s) {
                  addrs[3] % PAGE == 0 && bti_info(bti).pmo_count == 1 &&
                  sys(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_DECOMMIT, 0, PAGE, 0) == ERR_BAD_STATE &&
                  sys(CROI_SYS_VMO_SET_CACHE_POLICY, vmo, CROI_CACHE_POLICY_UNCACHED, 0, 0, 0) == ERR_BAD_STATE &&
-                 sys(CROI_SYS_VMO_WRITE, vmo, (uint64_t)bytes, PAGE, 16, 0) == 0 &&
+                 vmo_set(vmo, bytes, PAGE, 16) == 0 &&
                  sys(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_ZERO, 0, 4 * PAGE, 0) == 0 &&
-                 sys(CROI_SYS_VMO_READ, vmo, (uint64_t)bytes, PAGE, 16, 0) == 0 && bytes[0] == 0 && bytes[15] == 0);
+                 vmo_get(vmo, bytes, PAGE, 16) == 0 && bytes[0] == 0 && bytes[15] == 0);
   // The PMT can't be duplicated; unpin consumes its handle and frees the pages.
   CHECK(308, sys(CROI_SYS_HANDLE_DUPLICATE, pmt, 1u << 31, (uint64_t)&dup, 0, 0) == ERR_ACCESS_DENIED_ &&
                  sys(CROI_SYS_PMT_UNPIN, pmt, 0, 0, 0, 0) == 0 &&
@@ -1465,14 +1481,17 @@ static int64_t dma(const startup_t *s) {
                  bti_pin(bti, rw | CROI_BTI_CONTIGUOUS, inside, 1, 0, 2 * PAGE, addrs, &pmt) == 0 && addrs[0] >= base &&
                  addrs[0] + 2 * PAGE <= base + 3 * PAGE);
   // Memory type: fixed while something is pinned; non-coherent memory is
-  // uncached (vmo_read refuses it).
+  // uncached.
   croi_bti_properties_t noncoherent = narrow;
+  croi_info_vmo_t inside_info;
   noncoherent.memory_type = CROI_BTI_MEMORY_NONCOHERENT;
   CHECK(317, sys(CROI_SYS_BTI_SET_PROPERTIES, bti, (uint64_t)&noncoherent, 0, 0, 0) == ERR_BAD_STATE &&
                  sys(CROI_SYS_PMT_UNPIN, pmt, 0, 0, 0, 0) == 0 && croi_handle_close(inside) == 0 &&
                  sys(CROI_SYS_BTI_SET_PROPERTIES, bti, (uint64_t)&noncoherent, 0, 0, 0) == 0 &&
                  sys(CROI_SYS_VMO_CREATE_CONTIGUOUS, bti, PAGE, 0, (uint64_t)&inside, 0) == 0 &&
-                 sys(CROI_SYS_VMO_READ, inside, (uint64_t)bytes, 0, 8, 0) == ERR_BAD_STATE);
+                 sys6(CROI_SYS_OBJECT_GET_INFO, inside, CROI_INFO_VMO, (uint64_t)&inside_info, sizeof inside_info, 0, 0) ==
+                     0 &&
+                 inside_info.cache_policy == CROI_CACHE_POLICY_UNCACHED);
   croi_handle_close(inside);
   croi_handle_close(other);
   // Width: 12 bits reach no RAM, so nothing pins and nothing allocates.
@@ -1572,17 +1591,17 @@ static int64_t iommu_test(const startup_t *s) {
   uint32_t regs_vmo = physical_vmo(s, bar(edu, 0), PAGE, &regs);
   uint32_t command = cfg32(edu, 4) & 0xFFFF;
   cfg32_write(edu, 4, command | 1u << 1 | 1u << 2);  // memory, bus master
-  CHECK(405, sys(CROI_SYS_VMO_WRITE, vmo, (uint64_t)pattern, 0, 64, 0) == 0 &&
+  CHECK(405, vmo_set(vmo, pattern, 0, 64) == 0 &&
                  edu_dma(regs, addrs[0], 0x40000, 0) && edu_dma(regs, 0x40000, addrs[1], 1) &&
-                 sys(CROI_SYS_VMO_READ, vmo, (uint64_t)back, PAGE, 64, 0) == 0 && back[0] == 0xA0 && back[63] == 0xDF);
+                 vmo_get(vmo, back, PAGE, 64) == 0 && back[0] == 0xA0 && back[63] == 0xDF);
   // Refused: a write to the read-only page, and to the unpinned pages.
-  CHECK(406, edu_dma(regs, 0x40000, ro, 1) && sys(CROI_SYS_VMO_READ, vmo, (uint64_t)back, 2 * PAGE, 64, 0) == 0 &&
+  CHECK(406, edu_dma(regs, 0x40000, ro, 1) && vmo_get(vmo, back, 2 * PAGE, 64) == 0 &&
                  back[0] == 0 && back[63] == 0);
   uint64_t zero[8] = {0};
   CHECK(407, sys(CROI_SYS_PMT_UNPIN, pmt, 0, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_VMO_WRITE, vmo, (uint64_t)zero, PAGE, 64, 0) == 0 &&
+                 vmo_set(vmo, zero, PAGE, 64) == 0 &&
                  edu_dma(regs, 0x40000, addrs[1], 1) &&
-                 sys(CROI_SYS_VMO_READ, vmo, (uint64_t)back, PAGE, 64, 0) == 0 && back[0] == 0 && back[63] == 0);
+                 vmo_get(vmo, back, PAGE, 64) == 0 && back[0] == 0 && back[63] == 0);
   // K12j: the claimed device's MSIs still arrive. VT-d and AMD-Vi don't
   // translate interrupt requests; an SMMUv3 domain maps the ITS doorbell;
   // a RISC-V IOMMU context routes MSIs through its MSI page table (or maps
@@ -1803,7 +1822,7 @@ static void pager_server(uint64_t arg) {
     sys(CROI_SYS_VMO_CREATE, length, 0, (uint64_t)&aux, 0, 0);
     for (uint64_t at = 0; at < length; at += PAGE) {
       for (int i = 0; i < PAGE; i++) page[i] = (char)('A' + (offset + at) / PAGE);
-      sys(CROI_SYS_VMO_WRITE, aux, (uint64_t)page, at, PAGE, 0);
+      vmo_set(aux, page, at, PAGE);
     }
     sys6(CROI_SYS_PAGER_SUPPLY_PAGES, (uint32_t)slot[1], (uint32_t)slot[2], offset, length, aux, 0);
     croi_handle_close(aux);
@@ -1840,21 +1859,22 @@ static int64_t pager(const startup_t *s) {
                   (uint64_t)&at) == 0 &&
                  *(volatile char *)at == 'A' && *(volatile char *)(at + PAGE - 1) == 'A' && slot[3] == 1 &&
                  slot[4] == PAGE);
-  // vmo_read across pages 1-2: one request for both.
+  // A read across pages 1-2: a fault and a request for each (one for
+  // both was vmo_read's read-ahead, cut in V1, D37).
   char buf[16];
-  CHECK(473, sys(CROI_SYS_VMO_READ, vmo, (uint64_t)buf, PAGE + PAGE - 4, 8, 0) == 0 && buf[0] == 'B' &&
-                 buf[4] == 'C' && slot[3] == 2 && slot[4] == 2 * PAGE &&
-                 *(volatile char *)(at + 2 * PAGE) == 'C' && slot[3] == 2);
-  // Page 3 fails: vmo_read gets the pager's status.
-  CHECK(474, sys(CROI_SYS_VMO_READ, vmo, (uint64_t)buf, 3 * PAGE, 4, 0) == -40);
+  CHECK(473, vmo_get(vmo, buf, PAGE + PAGE - 4, 8) == 0 && buf[0] == 'B' &&
+                 buf[4] == 'C' && slot[3] == 3 && slot[4] == PAGE &&
+                 *(volatile char *)(at + 2 * PAGE) == 'C' && slot[3] == 3);
+  // Page 3 fails: a fault's exception carries the pager's status (the
+  // vmo suite's faultStatuses, since V1 cut vmo_read, D37).
   // A snapshot child reads page 4 through to the pager.
   CHECK(475, sys6(CROI_SYS_VMO_CREATE_CHILD, vmo, CROI_VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE, 4 * PAGE, PAGE,
                   (uint64_t)&child, 0) == 0 &&
-                 sys(CROI_SYS_VMO_READ, child, (uint64_t)buf, 0, 4, 0) == 0 && buf[0] == 'E');
-  // Dirty tracking (part 2) without TRAP_DIRTY: nothing written yet; a
-  // write through a writable mapping (the clean page is mapped read only
-  // until then) and a vmo_write dirty pages 0 and 1, one range; the stats
-  // say modified once.
+                 vmo_get(child, buf, 0, 4) == 0 && buf[0] == 'E');
+  // Dirty tracking (part 2) without TRAP_DIRTY: nothing written yet;
+  // writes through two writable mappings (a clean page is mapped read
+  // only until then) dirty pages 0 and 1, one range; the stats say
+  // modified once.
   uint64_t rw = 0, counts[2] = {0, 0};
   croi_pager_vmo_stats_t stats = {0};
   croi_vmo_dirty_range_t ranges[4];
@@ -1868,7 +1888,7 @@ static int64_t pager(const startup_t *s) {
                  sys6(CROI_SYS_PAGER_QUERY_DIRTY_RANGES, pg | (uint64_t)vmo << 32, 0, 5 * PAGE, (uint64_t)ranges,
                       sizeof ranges, (uint64_t)counts) == 0 && counts[1] == 0);  // a read dirties nothing
   *(volatile char *)rw = 'a';
-  CHECK(478, sys(CROI_SYS_VMO_WRITE, vmo, (uint64_t)"b", PAGE, 1, 0) == 0 &&
+  CHECK(478, vmo_set(vmo, "b", PAGE, 1) == 0 &&
                  sys6(CROI_SYS_PAGER_QUERY_DIRTY_RANGES, pg | (uint64_t)vmo << 32, 0, 5 * PAGE, (uint64_t)ranges,
                       sizeof ranges, (uint64_t)counts) == 0 && counts[0] == 1 && counts[1] == 1 &&
                  ranges[0].offset == 0 && ranges[0].length == 2 * PAGE &&
@@ -1887,25 +1907,23 @@ static int64_t pager(const startup_t *s) {
                  ranges[0].length == PAGE &&
                  sys6(CROI_SYS_PAGER_OP_RANGE, pg, CROI_PAGER_OP_DIRTY, vmo, 0, PAGE, 0) == ERR_NOT_SUPPORTED &&
                  sys6(CROI_SYS_PAGER_OP_RANGE, pg, CROI_PAGER_OP_WRITEBACK_BEGIN, vmo, 0, PAGE, 2) == ERR_INVALID_ARGS);
-  // Detach: COMPLETE; dirty pages stay, clean ones (page 1, page 2) go;
-  // missing ones are BAD_STATE.
+  // Detach: COMPLETE; dirty pages stay (a fault on a missing one is
+  // BAD_STATE: the vmo suite's faultStatuses).
   CHECK(476, sys(CROI_SYS_PAGER_DETACH_VMO, pg, vmo, 0, 0, 0) == 0 &&
                  wait_for(server, CROI_SIGNAL_TASK_TERMINATED, 3000000000ull) && slot[5] == 1 &&
-                 sys(CROI_SYS_VMO_READ, vmo, (uint64_t)buf, 3 * PAGE, 4, 0) == ERR_BAD_STATE &&
-                 sys(CROI_SYS_VMO_READ, vmo, (uint64_t)buf, 2 * PAGE, 4, 0) == ERR_BAD_STATE &&
-                 sys(CROI_SYS_VMO_READ, vmo, (uint64_t)buf, 0, 4, 0) == 0 && buf[0] == 'x' &&
+                 vmo_get(vmo, buf, 0, 4) == 0 && buf[0] == 'x' &&
                  sys6(CROI_SYS_PAGER_SUPPLY_PAGES, pg, vmo, 0, PAGE, other, 0) == ERR_BAD_STATE);
   croi_handle_close(server);
   sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, 5 * PAGE, 0, 0);
   sys(CROI_SYS_VMAR_UNMAP, s->vmar, rw, 2 * PAGE, 0, 0);
-  // TRAP_DIRTY: writes wait for the pager's DIRTY (vmo_write, then a
-  // write fault); DIRTY of a page not supplied is NOT_FOUND; closing the
+  // TRAP_DIRTY: writes wait for the pager's DIRTY (one mapping's, then
+  // another's); DIRTY of a page not supplied is NOT_FOUND; closing the
   // VMO sends COMPLETE.
   uint32_t trap = 0;
   CHECK(481, sys6(CROI_SYS_PAGER_CREATE_VMO, pg, CROI_VMO_TRAP_DIRTY, port, 78, 2 * PAGE, (uint64_t)&trap) == 0);
   volatile uint64_t tslot[8] = {port, pg, trap, 0, 0, 0, 0, 78};
   server = start_thread(s, pager_server, (uint64_t)tslot);
-  CHECK(482, sys(CROI_SYS_VMO_WRITE, trap, (uint64_t)"q", 0, 1, 0) == 0 && tslot[3] == 1 && tslot[6] == 1 &&
+  CHECK(482, vmo_set(trap, "q", 0, 1) == 0 && tslot[3] == 1 && tslot[6] == 1 &&
                  sys6(CROI_SYS_PAGER_OP_RANGE, pg, CROI_PAGER_OP_DIRTY, trap, PAGE, PAGE, 0) == ERR_NOT_FOUND &&
                  sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, trap, 0,
                       2 * PAGE, (uint64_t)&rw) == 0 &&
@@ -2004,7 +2022,7 @@ static int64_t info_topics(const startup_t *s) {
   croi_info_vmo_t v;
   CHECK(517, sys(CROI_SYS_VMO_CREATE, 2 * PAGE, 0, (uint64_t)&vmo, 0, 0) == 0 &&
                  sys(CROI_SYS_OBJECT_SET_PROPERTY, vmo, CROI_PROP_NAME, (uint64_t)"inspected", 9, 0) == 0 &&
-                 sys(CROI_SYS_VMO_WRITE, vmo, (uint64_t)"x", 0, 1, 0) == 0 &&
+                 vmo_set(vmo, "x", 0, 1) == 0 &&
                  get_info(vmo, CROI_INFO_VMO, &v, sizeof v, counts) == 0 && v.koid == koid_of(vmo) &&
                  v.name[0] == 'i' && v.name[8] == 'd' && v.size_bytes == 2 * PAGE && v.committed_bytes == PAGE &&
                  v.flags == (CROI_INFO_VMO_TYPE_PAGED | CROI_INFO_VMO_VIA_HANDLE) && v.handle_rights != 0 &&
@@ -2140,11 +2158,11 @@ static int64_t debugging(const startup_t *s) {
                  sys(CROI_SYS_PROCESS_READ_MEMORY, s->process, 0x10, (uint64_t)&got, 8, 0) == ERR_NOT_FOUND &&
                  sys(CROI_SYS_PROCESS_READ_MEMORY, s->process, (uint64_t)&secret, (uint64_t)&got, 0, 0) == ERR_INVALID_ARGS &&
                  sys(CROI_SYS_VMO_CREATE, PAGE, 0, (uint64_t)&vmo, 0, 0) == 0 &&
-                 sys(CROI_SYS_VMO_WRITE, vmo, (uint64_t)"A", 0, 1, 0) == 0 &&
+                 vmo_set(vmo, "A", 0, 1) == 0 &&
                  sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)CROI_VM_PERM_READ << 32, 0, vmo, 0, PAGE, (uint64_t)&at) == 0 &&
                  sys(CROI_SYS_PROCESS_WRITE_MEMORY, s->process, at, (uint64_t)"B", 1, (uint64_t)&actual) == 0 &&
                  actual == 1 && *(volatile char *)at == 'B' &&
-                 sys(CROI_SYS_VMO_READ, vmo, (uint64_t)&byte, 0, 1, 0) == 0 && byte == 'A');
+                 vmo_get(vmo, &byte, 0, 1) == 0 && byte == 'A');
   sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, PAGE, 0, 0);
   croi_handle_close(vmo);
   return 0;
@@ -2399,8 +2417,9 @@ static int64_t resizing(const startup_t *s) {
                  sys(CROI_SYS_VMO_SET_SIZE, plain, 2 * PAGE, 0, 0, 0) == ERR_UNAVAILABLE &&
                  sys(CROI_SYS_HANDLE_DUPLICATE, vmo, RIGHT_READ | (1u << 3) | RIGHT_DUPLICATE, (uint64_t)&weak, 0, 0) == 0 &&
                  sys(CROI_SYS_VMO_SET_SIZE, weak, PAGE, 0, 0, 0) == ERR_ACCESS_DENIED);
-  // Mapped past its end; shrunk to 10 bytes (the tail zeroed, reads past
-  // the end OUT_OF_RANGE), then grown and written through the mapping.
+  // Mapped past its end; shrunk to 10 bytes (the tail zeroed; a fault
+  // past the end is OUT_OF_RANGE, the vmo suite's faultStatuses), then
+  // grown and written through the mapping.
   CHECK(571, sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, vmo, 0,
                   4 * PAGE, (uint64_t)&at) == 0 &&
                  sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_REQUIRE_NON_RESIZABLE) << 32, 0,
@@ -2411,11 +2430,10 @@ static int64_t resizing(const startup_t *s) {
                  croi_vmo_size(vmo, &size) == 0 && size == PAGE &&
                  sys(CROI_SYS_OBJECT_GET_PROPERTY, vmo, CROI_PROP_VMO_CONTENT_SIZE, (uint64_t)&size, 8, 0) == 0 && size == 10 &&
                  ((volatile char *)at)[20] == 0 &&
-                 sys(CROI_SYS_VMO_READ, vmo, (uint64_t)&byte, PAGE, 1, 0) == ERR_OUT_OF_RANGE &&
                  sys(CROI_SYS_VMO_SET_SIZE, vmo, 3 * PAGE, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_VMO_READ, vmo, (uint64_t)&byte, PAGE, 1, 0) == 0 && byte == 0);
+                 vmo_get(vmo, &byte, PAGE, 1) == 0 && byte == 0);
   ((volatile char *)at)[2 * PAGE] = 'z';
-  CHECK(573, sys(CROI_SYS_VMO_READ, vmo, (uint64_t)&byte, 2 * PAGE, 1, 0) == 0 && byte == 'z');
+  CHECK(573, vmo_get(vmo, &byte, 2 * PAGE, 1) == 0 && byte == 'z');
   // Children: resizable only when asked for.
   CHECK(574, sys6(CROI_SYS_VMO_CREATE_CHILD, vmo, CROI_VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE | CROI_VMO_CHILD_RESIZABLE, 0,
                   PAGE, (uint64_t)&child, 0) == 0 &&
@@ -2437,12 +2455,11 @@ static int64_t resizing(const startup_t *s) {
                  sys6(CROI_SYS_PAGER_QUERY_DIRTY_RANGES, pg | (uint64_t)paged << 32, 0, 3 * PAGE, (uint64_t)ranges,
                       sizeof ranges, (uint64_t)counts) == 0 && counts[1] == 1 && ranges[0].offset == PAGE &&
                  ranges[0].length == 2 * PAGE && ranges[0].options == CROI_VMO_DIRTY_RANGE_IS_ZERO &&
-                 sys(CROI_SYS_VMO_READ, paged, (uint64_t)&byte, 2 * PAGE, 1, 0) == 0 && byte == 0 &&
                  sys6(CROI_SYS_PAGER_OP_RANGE, pg, CROI_PAGER_OP_WRITEBACK_END, paged, PAGE, 2 * PAGE, 0) == 0 &&
                  sys6(CROI_SYS_PAGER_QUERY_DIRTY_RANGES, pg | (uint64_t)paged << 32, 0, 3 * PAGE, (uint64_t)ranges,
                       sizeof ranges, (uint64_t)counts) == 0 && counts[1] == 1 && ranges[0].length == 2 * PAGE &&
-                 // (K14k: the read committed nothing; END without BEGIN
-                 // cleans nothing; BEGIN then END hands the zeros back.)
+                 // (K14k: END without BEGIN cleans nothing; BEGIN then
+                 // END hands the zeros back.)
                  sys6(CROI_SYS_PAGER_OP_RANGE, pg, CROI_PAGER_OP_WRITEBACK_BEGIN, paged, PAGE, 2 * PAGE, 0) == 0 &&
                  sys6(CROI_SYS_PAGER_OP_RANGE, pg, CROI_PAGER_OP_WRITEBACK_END, paged, PAGE, 2 * PAGE, 0) == 0 &&
                  sys6(CROI_SYS_PAGER_QUERY_DIRTY_RANGES, pg | (uint64_t)paged << 32, 0, 3 * PAGE, (uint64_t)ranges,
@@ -2628,7 +2645,7 @@ static int64_t page_loaning(const startup_t *s) {
   char page[PAGE];
   for (int i = 0; i < 4; i++) {
     for (int j = 0; j < PAGE; j++) page[j] = (char)('A' + i);
-    sys(CROI_SYS_VMO_WRITE, vmo, (uint64_t)page, (uint64_t)i * PAGE, PAGE, 0);
+    vmo_set(vmo, page, (uint64_t)i * PAGE, PAGE);
   }
   // Decommit lends pages 1 and 2; a slice can't be made over them, nor a
   // decommit done while one exists.
@@ -2645,7 +2662,7 @@ static int64_t page_loaning(const startup_t *s) {
                  kmem_loaned(s, &now) && now == created + PAGE);
   // COMMIT takes the other back, zeroed; then all four are its own again.
   CHECK(641, sys6(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_COMMIT, 2 * PAGE, PAGE, 0, 0) == 0 &&
-                 sys(CROI_SYS_VMO_READ, vmo, (uint64_t)page, 2 * PAGE, PAGE, 0) == 0 && page[0] == 0 &&
+                 vmo_get(vmo, page, 2 * PAGE, PAGE) == 0 && page[0] == 0 &&
                  page[PAGE - 1] == 0 && committed_of(vmo, 0) == 4 * PAGE && kmem_loaned(s, &now) && now == created);
   // With a slice, no decommit; without, lent again and closed while lent:
   // the pages come back to the VMO's end and to wherever it came from.
@@ -2680,7 +2697,7 @@ static int64_t page_borrowing(const startup_t *s) {
                  sys(CROI_SYS_VMO_CREATE_CONTIGUOUS, bti, 2 * PAGE, 0, (uint64_t)&contig, 0) == 0);
   for (uint64_t i = 0; i < 4; i++) {
     for (int j = 0; j < PAGE; j++) page[j] = (char)('p' + i);
-    sys(CROI_SYS_VMO_WRITE, aux, (uint64_t)page, i * PAGE, PAGE, 0);
+    vmo_set(aux, page, i * PAGE, PAGE);
   }
   volatile uint64_t slot[8] = {port, pg, vmo, 0, 0, 0, 0, 92};
   uint64_t lent0 = 0, lent1 = 0, lent2 = 0, lent3 = 0;
@@ -2691,29 +2708,29 @@ static int64_t page_borrowing(const startup_t *s) {
   uint32_t server = start_thread(s, pager_server, (uint64_t)slot);
   int intact = 1;
   for (uint64_t i = 0; i < 4; i++) {
-    intact &= sys(CROI_SYS_VMO_READ, vmo, (uint64_t)page, i * PAGE, PAGE, 0) == 0 && page[0] == (char)('p' + i) &&
+    intact &= vmo_get(vmo, page, i * PAGE, PAGE) == 0 && page[0] == (char)('p' + i) &&
               page[PAGE - 1] == (char)('p' + i);
   }
   // Borrowed, the pages read as supplied; a write swaps page 2 back to an
   // ordinary page (its lent one free again).
-  CHECK(646, intact && slot[3] == 0 && sys(CROI_SYS_VMO_WRITE, vmo, (uint64_t)"X", 2 * PAGE, 1, 0) == 0 &&
+  CHECK(646, intact && slot[3] == 0 && vmo_set(vmo, "X", 2 * PAGE, 1) == 0 &&
                  kmem_loaned(s, &lent2) && lent2 == lent1 + PAGE &&
-                 sys(CROI_SYS_VMO_READ, vmo, (uint64_t)page, 2 * PAGE, PAGE, 0) == 0 && page[0] == 'X' &&
+                 vmo_get(vmo, page, 2 * PAGE, PAGE) == 0 && page[0] == 'X' &&
                  page[1] == 'r');
   // The contiguous VMO takes its pages back: pages 0 and 1 are evicted
   // from the pager VMO, then asked of the pager again; page 3 stays.
   CHECK(647, sys6(CROI_SYS_VMO_OP_RANGE, contig, CROI_VMO_OP_COMMIT, 0, 2 * PAGE, 0, 0) == 0 &&
                  committed_of(contig, 0) == 2 * PAGE && committed_of(vmo, 0) == 2 * PAGE &&
                  kmem_loaned(s, &lent3) && lent3 == lent2 &&
-                 sys(CROI_SYS_VMO_READ, contig, (uint64_t)page, PAGE, PAGE, 0) == 0 && page[0] == 0);
-  CHECK(648, sys(CROI_SYS_VMO_READ, vmo, (uint64_t)page, 0, PAGE, 0) == 0 && page[0] == 'A' &&
-                 sys(CROI_SYS_VMO_READ, vmo, (uint64_t)page, PAGE, PAGE, 0) == 0 && page[0] == 'B' &&
-                 slot[3] == 2 && sys(CROI_SYS_VMO_READ, vmo, (uint64_t)page, 3 * PAGE, PAGE, 0) == 0 && page[0] == 's');
+                 vmo_get(contig, page, PAGE, PAGE) == 0 && page[0] == 0);
+  CHECK(648, vmo_get(vmo, page, 0, PAGE) == 0 && page[0] == 'A' &&
+                 vmo_get(vmo, page, PAGE, PAGE) == 0 && page[0] == 'B' &&
+                 slot[3] == 2 && vmo_get(vmo, page, 3 * PAGE, PAGE) == 0 && page[0] == 's');
   // A pin swaps the borrowed page 3 back first.
   uint64_t addr = 0;
   CHECK(649, bti_pin(bti, CROI_BTI_PERM_READ, vmo, 1, 3 * PAGE, PAGE, &addr, &pmt) == 0 && kmem_loaned(s, &lent0) &&
                  lent0 == lent3 + PAGE && sys(CROI_SYS_PMT_UNPIN, pmt, 0, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_VMO_READ, vmo, (uint64_t)page, 3 * PAGE, PAGE, 0) == 0 && page[0] == 's');
+                 vmo_get(vmo, page, 3 * PAGE, PAGE) == 0 && page[0] == 's');
   sys(CROI_SYS_PAGER_DETACH_VMO, pg, vmo, 0, 0, 0);
   wait_for(server, CROI_SIGNAL_TASK_TERMINATED, 3000000000ull);
   uint32_t handles[] = {server, vmo, aux, port, pg, contig, bti, iommu};
@@ -2750,7 +2767,7 @@ static int64_t reclaim(const startup_t *s) {
   char page[PAGE];
   for (uint64_t i = 0; i < 8; i++) {
     for (int j = 0; j < PAGE; j++) page[j] = (char)('a' + i);
-    sys(CROI_SYS_VMO_WRITE, aux, (uint64_t)page, i * PAGE, PAGE, 0);
+    vmo_set(aux, page, i * PAGE, PAGE);
   }
   volatile uint64_t slot[8] = {port, pg, vmo, 0, 0, 0, 0, 90};
   uint64_t at = 0, events = 0;
@@ -2769,7 +2786,7 @@ static int64_t reclaim(const startup_t *s) {
                  sys6(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_DONT_NEED, 2 * PAGE, PAGE, 0, 0) == 0 &&
                  sys6(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_DONT_NEED, 0, 9 * PAGE, 0, 0) == ERR_OUT_OF_RANGE &&
                  sys6(CROI_SYS_VMO_OP_RANGE, aux, CROI_VMO_OP_DONT_NEED, 0, PAGE, 0, 0) == 0 &&  // ignored
-                 sys(CROI_SYS_VMO_WRITE, vmo, (uint64_t)"D", 3 * PAGE, 1, 0) == 0);
+                 vmo_set(vmo, "D", 3 * PAGE, 1) == 0);
   CHECK(603, reclaim_hook(7, 100, 6, 0, 0, 0) == 1 && committed_of(vmo, &events) == 7 * PAGE && events == 1 &&
                  slot[3] == 0);
   // Read again: the pager is asked (one READ) and supplies 'C'.
@@ -2816,7 +2833,7 @@ static int64_t reclaim(const startup_t *s) {
   CHECK(611, sys6(CROI_SYS_VMO_OP_RANGE, d, CROI_VMO_OP_LOCK, 0, 4 * PAGE, (uint64_t)&st, sizeof st) == 0 &&
                  st.offset == 0 && st.size == 4 * PAGE && st.discarded_size == 0 &&
                  sys6(CROI_SYS_VMO_OP_RANGE, d, CROI_VMO_OP_TRY_LOCK, 0, 4 * PAGE, 0, 0) == 0 &&
-                 sys(CROI_SYS_VMO_WRITE, d, (uint64_t)"xyz", PAGE, 3, 0) == 0 &&
+                 vmo_set(d, "xyz", PAGE, 3) == 0 &&
                  sys6(CROI_SYS_VMO_OP_RANGE, d, CROI_VMO_OP_UNLOCK, 0, 4 * PAGE, 0, 0) == 0 &&
                  reclaim_hook(6, 6, 0, 0, 0, 0) == 0 &&
                  reclaim_hook(7, 100, 6, 0, 0, 0) == 0 &&  // still locked once
@@ -2826,11 +2843,10 @@ static int64_t reclaim(const startup_t *s) {
                  k.vmo_discardable_unlocked_bytes >= PAGE);
   CHECK(612, reclaim_hook(6, 6, 0, 0, 0, 0) == 0 && reclaim_hook(7, 100, 6, 0, 0, 0) == 1 &&
                  committed_of(d, &events) == 0 && events == 1 &&
-                 sys(CROI_SYS_VMO_READ, d, (uint64_t)buf, PAGE, 3, 0) == ERR_NOT_FOUND &&
                  sys6(CROI_SYS_VMO_OP_RANGE, d, CROI_VMO_OP_TRY_LOCK, 0, 4 * PAGE, 0, 0) == ERR_UNAVAILABLE &&
                  sys6(CROI_SYS_VMO_OP_RANGE, d, CROI_VMO_OP_LOCK, 0, 4 * PAGE, (uint64_t)&st, sizeof st) == 0 &&
                  st.discarded_size == 4 * PAGE &&
-                 sys(CROI_SYS_VMO_READ, d, (uint64_t)buf, PAGE, 3, 0) == 0 && buf[0] == 0 && buf[2] == 0);
+                 vmo_get(d, buf, PAGE, 3) == 0 && buf[0] == 0 && buf[2] == 0);
   croi_handle_close(d);
   croi_handle_close(aux);
 
@@ -2918,9 +2934,9 @@ static int64_t vmo_children(const startup_t *s) {
   uint8_t byte = 0, page[64];
   if (sys(CROI_SYS_VMO_CREATE, 3 * P, 0, (uint64_t)&parent, 0, 0) != 0) return 410;
   byte = 'A';
-  if (sys(CROI_SYS_VMO_WRITE, parent, (uint64_t)&byte, 0, 1, 0) != 0) return 410;
+  if (vmo_set(parent, &byte, 0, 1) != 0) return 410;
   byte = 'C';
-  if (sys(CROI_SYS_VMO_WRITE, parent, (uint64_t)&byte, 2 * P, 1, 0) != 0) return 410;
+  if (vmo_set(parent, &byte, 2 * P, 1) != 0) return 410;
   // Refusals: no type, unknown bits, an unaligned offset (the other kinds:
   // K14g's child_kinds).
   if (sys(CROI_SYS_VMO_CREATE_CHILD, parent, 0, 0, P, (uint64_t)&other) != ERR_INVALID_ARGS ||
@@ -2932,31 +2948,32 @@ static int64_t vmo_children(const startup_t *s) {
   if (sys(CROI_SYS_VMO_CREATE_CHILD, parent, CROI_VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE, 0, 4 * P,
           (uint64_t)&child) != 0)
     return 412;
-  // Untouched, it reads the parent, including the parent's later writes.
-  if (sys(CROI_SYS_VMO_READ, child, (uint64_t)&byte, 0, 1, 0) != 0 || byte != 'A') return 413;
+  // Untouched, it reads the parent, including the parent's writes after
+  // the child was made (until its first touch copies the page in; a read
+  // through a mapping is one, since V1 cut vmo_read, D37).
   byte = 'B';
-  sys(CROI_SYS_VMO_WRITE, parent, (uint64_t)&byte, 0, 1, 0);
-  if (sys(CROI_SYS_VMO_READ, child, (uint64_t)&byte, 0, 1, 0) != 0 || byte != 'B') return 414;
+  if (vmo_set(parent, &byte, 0, 1) != 0) return 413;
+  if (vmo_get(child, &byte, 0, 1) != 0 || byte != 'B') return 414;
   // Written, it has its own page; the parent is untouched.
   byte = 'X';
-  if (sys(CROI_SYS_VMO_WRITE, child, (uint64_t)&byte, 0, 1, 0) != 0) return 415;
-  sys(CROI_SYS_VMO_READ, parent, (uint64_t)&byte, 0, 1, 0);
+  if (vmo_set(child, &byte, 0, 1) != 0) return 415;
+  vmo_get(parent, &byte, 0, 1);
   if (byte != 'B') return 416;
-  sys(CROI_SYS_VMO_READ, child, (uint64_t)&byte, 0, 1, 0);
+  vmo_get(child, &byte, 0, 1);
   if (byte != 'X') return 416;
   // Beyond the parent: zero; the parent's never-written page: zero; its third: 'C'.
   for (int i = 0; i < 64; i++) page[i] = 0xEE;
-  if (sys(CROI_SYS_VMO_READ, child, (uint64_t)page, 3 * P, 64, 0) != 0) return 417;
+  if (vmo_get(child, page, 3 * P, 64) != 0) return 417;
   for (int i = 0; i < 64; i++)
     if (page[i] != 0) return 417;
-  sys(CROI_SYS_VMO_READ, child, (uint64_t)&byte, P, 1, 0);
+  vmo_get(child, &byte, P, 1);
   if (byte != 0) return 417;
-  sys(CROI_SYS_VMO_READ, child, (uint64_t)&byte, 2 * P, 1, 0);
+  vmo_get(child, &byte, 2 * P, 1);
   if (byte != 'C') return 417;
   // A grandchild sees its parent's copy; a decommit of a child is refused.
   if (sys(CROI_SYS_VMO_CREATE_CHILD, child, CROI_VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE, 0, P, (uint64_t)&grand) != 0)
     return 418;
-  sys(CROI_SYS_VMO_READ, grand, (uint64_t)&byte, 0, 1, 0);
+  vmo_get(grand, &byte, 0, 1);
   if (byte != 'X') return 418;
   if (sys6(CROI_SYS_VMO_OP_RANGE, child, CROI_VMO_OP_DECOMMIT, 0, P, 0, 0) != ERR_NOT_SUPPORTED) return 419;
   // Rights: a snapshot can be written and not executed; NO_WRITE can't be written.
@@ -2966,7 +2983,7 @@ static int64_t vmo_children(const startup_t *s) {
     return 420;
   if (sys(CROI_SYS_VMO_CREATE_CHILD, parent, CROI_VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE | CROI_VMO_CHILD_NO_WRITE, 0,
           P, (uint64_t)&ro) != 0 ||
-      sys(CROI_SYS_VMO_WRITE, ro, (uint64_t)&byte, 0, 1, 0) != ERR_ACCESS_DENIED)
+      vmo_set(ro, &byte, 0, 1) != ERR_ACCESS_DENIED)
     return 421;
   // Mapped, a child faults its pages in from the parent.
   uint64_t at = 0;
@@ -2976,22 +2993,22 @@ static int64_t vmo_children(const startup_t *s) {
     return 422;
   *(volatile uint8_t *)at = 'Z';
   sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, P, 0, 0);
-  sys(CROI_SYS_VMO_READ, parent, (uint64_t)&byte, 2 * P, 1, 0);
+  vmo_get(parent, &byte, 2 * P, 1);
   if (byte != 'C') return 422;
   uint32_t handles[] = {parent, child, grand, ro};
   for (int i = 0; i < 4; i++) croi_handle_close(handles[i]);
   return 0;
 }
 
-// K14g: the other child kinds. Bytes read and written through vmo_read /
-// vmo_write (-1 on failure).
+// K14g: the other child kinds. Bytes read and written through a mapping
+// (-1 on failure: nothing to map there).
 static int vmo_byte(uint32_t vmo, uint64_t offset) {
   uint8_t byte = 0;
-  return sys(CROI_SYS_VMO_READ, vmo, (uint64_t)&byte, offset, 1, 0) == 0 ? byte : -1;
+  return vmo_get(vmo, &byte, offset, 1) == 0 ? byte : -1;
 }
 
 static int vmo_put(uint32_t vmo, uint64_t offset, uint8_t byte) {
-  return sys(CROI_SYS_VMO_WRITE, vmo, (uint64_t)&byte, offset, 1, 0) == 0;
+  return vmo_set(vmo, &byte, offset, 1) == 0;
 }
 
 static int64_t child_kinds(const startup_t *s) {
@@ -3143,60 +3160,6 @@ static int64_t child_kinds(const startup_t *s) {
   return 0;
 }
 
-// K14h: vmo_read copies a page under its VMO's lock. A writer fills a
-// page with 'V' and decommits it, over and over; a polluter does the same
-// with 'J' in a VMO of its own, so a freed page soon holds 'J'. A reader
-// copying a page after it was freed would see a 'J'.
-typedef struct {
-  uint32_t vmo;
-  volatile int stop;
-} copy_race_t;
-
-static void race_fill(uint32_t vmo, char c, volatile int *stop) {
-  char page[PAGE];
-  for (int i = 0; i < PAGE; i++) page[i] = c;
-  while (!*stop) {
-    sys(CROI_SYS_VMO_WRITE, vmo, (uint64_t)page, 0, PAGE, 0);
-    sys6(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_DECOMMIT, 0, PAGE, 0, 0);
-  }
-}
-
-static void race_writer(uint64_t arg) {
-  copy_race_t *r = (copy_race_t *)arg;
-  race_fill(r->vmo, 'V', &r->stop);
-  sys(CROI_SYS_THREAD_EXIT, 0, 0, 0, 0, 0);
-}
-
-static void race_polluter(uint64_t arg) {
-  copy_race_t *r = (copy_race_t *)arg;
-  uint32_t own = 0;
-  if (sys(CROI_SYS_VMO_CREATE, PAGE, 0, (uint64_t)&own, 0, 0) == 0) race_fill(own, 'J', &r->stop);
-  croi_handle_close(own);
-  sys(CROI_SYS_THREAD_EXIT, 0, 0, 0, 0, 0);
-}
-
-static int64_t copy_race(const startup_t *s) {
-  copy_race_t r = {0, 0};
-  char page[PAGE];
-  CHECK(661, sys(CROI_SYS_VMO_CREATE, PAGE, 0, (uint64_t)&r.vmo, 0, 0) == 0);
-  uint32_t writer = start_thread(s, race_writer, (uint64_t)&r);
-  uint32_t polluter = start_thread(s, race_polluter, (uint64_t)&r);
-  uint64_t end = now_ns() + 300000000ull;
-  int polluted = 0, reads = 0;
-  while (now_ns() < end && !polluted) {
-    if (sys(CROI_SYS_VMO_READ, r.vmo, (uint64_t)page, 0, PAGE, 0) != 0) break;
-    reads++;
-    for (int i = 0; i < PAGE; i++) polluted |= page[i] == 'J';
-  }
-  r.stop = 1;
-  wait_for(writer, CROI_SIGNAL_TASK_TERMINATED, 3000000000ull);
-  wait_for(polluter, CROI_SIGNAL_TASK_TERMINATED, 3000000000ull);
-  uint32_t handles[] = {writer, polluter, r.vmo};
-  for (int i = 0; i < 3; i++) croi_handle_close(handles[i]);
-  CHECK(662, !polluted && reads > 0);
-  return 0;
-}
-
 // K14i: UNBOUNDED VMOs, Zircon's MAX_SIZE long with the requested size as
 // their content size. Range operations over all of one cost what is
 // present: each of these would take hours page by page.
@@ -3288,12 +3251,13 @@ static int64_t zero_intervals(const startup_t *s) {
                  sys(CROI_SYS_VMO_CREATE, 8 * PAGE, 0, (uint64_t)&aux, 0, 0) == 0);
   for (int i = 0; i < 8; i++) vmo_put(aux, (uint64_t)i * PAGE, (uint8_t)('a' + i)), vmo_put(aux, (uint64_t)i * PAGE + 99, 'q');
   // ZERO from inside page 1 to page 6: page 1's tail zeroed in place (dirty),
-  // pages 2-5 a dirty zero interval, dropped; reading it commits nothing.
+  // pages 2-5 a dirty zero interval, dropped (a read there is a fault,
+  // which commits a page: 671; V1 cut vmo_read, D37).
   CHECK(670, sys6(CROI_SYS_PAGER_SUPPLY_PAGES, pg, vmo, 0, 8 * PAGE, aux, 0) == 0 &&
                  croi_handle_close(aux) == 0 &&  // emptied: a fresh one for later supplies
                  sys(CROI_SYS_VMO_CREATE, 8 * PAGE, 0, (uint64_t)&aux, 0, 0) == 0 &&
                  sys6(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_ZERO, PAGE + 100, 5 * PAGE - 100, 0, 0) == 0 &&
-                 vmo_byte(vmo, PAGE + 99) == 'q' && vmo_byte(vmo, PAGE + 100) == 0 && vmo_byte(vmo, 3 * PAGE) == 0 &&
+                 vmo_byte(vmo, PAGE + 99) == 'q' && vmo_byte(vmo, PAGE + 100) == 0 &&
                  vmo_byte(vmo, 6 * PAGE) == 'g' && committed_of(vmo, 0) == 4 * PAGE &&
                  dirty_ranges(pg, vmo, 8 * PAGE, r, &n) && n == 2 && range_is(&r[0], PAGE, PAGE, 0) &&
                  range_is(&r[1], 2 * PAGE, 4 * PAGE, Z));
@@ -3315,10 +3279,10 @@ static int64_t zero_intervals(const startup_t *s) {
                  sys6(CROI_SYS_PAGER_SUPPLY_PAGES, pg, vmo, 5 * PAGE, PAGE, aux, 5 * PAGE) == 0 &&
                  vmo_byte(vmo, 2 * PAGE) == 'C' && vmo_byte(vmo, 5 * PAGE) == 'F');
   // A content size cut: zeroed up to its page end (dirty), past it an
-  // untracked interval (page 7 dropped, reading zero, never reported).
+  // untracked interval (page 7 dropped, never reported).
   uint64_t content = 6 * PAGE + 10;
   CHECK(673, sys(CROI_SYS_OBJECT_SET_PROPERTY, vmo, CROI_PROP_VMO_CONTENT_SIZE, (uint64_t)&content, 8, 0) == 0 &&
-                 vmo_byte(vmo, 6 * PAGE) == 'g' && vmo_byte(vmo, 6 * PAGE + 99) == 0 && vmo_byte(vmo, 7 * PAGE) == 0 &&
+                 vmo_byte(vmo, 6 * PAGE) == 'g' && vmo_byte(vmo, 6 * PAGE + 99) == 0 &&
                  dirty_ranges(pg, vmo, 8 * PAGE, r, &n) && n == 3 && range_is(&r[2], 6 * PAGE, PAGE, 0));
   // A pinned page in a ZERO is zeroed in place, stays, and is dirty.
   CHECK(674, sys(CROI_SYS_IOMMU_CREATE, s->resource, CROI_IOMMU_TYPE_STUB, (uint64_t)&desc, 1, (uint64_t)&iommu) == 0 &&
@@ -3334,8 +3298,7 @@ static int64_t zero_intervals(const startup_t *s) {
   CHECK(675, sys6(CROI_SYS_PAGER_CREATE_VMO, pg, CROI_VMO_UNBOUNDED, port, 96, 0, (uint64_t)&vmo) == 0 &&
                  sys6(CROI_SYS_PAGER_SUPPLY_PAGES, pg, vmo, 1ull << 50, PAGE, aux, 0) == 0 &&
                  sys6(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_ZERO, 0, max, 0, 0) == 0 && committed_of(vmo, 0) == 0 &&
-                 vmo_byte(vmo, 1ull << 50) == 0 && dirty_ranges(pg, vmo, max, r, &n) && n == 1 &&
-                 range_is(&r[0], 0, max, Z) &&
+                 dirty_ranges(pg, vmo, max, r, &n) && n == 1 && range_is(&r[0], 0, max, Z) &&
                  sys6(CROI_SYS_PAGER_OP_RANGE, pg, CROI_PAGER_OP_WRITEBACK_BEGIN, vmo, 0, max, 0) == 0 &&
                  sys6(CROI_SYS_PAGER_OP_RANGE, pg, CROI_PAGER_OP_WRITEBACK_END, vmo, 0, max, 0) == 0 &&
                  dirty_ranges(pg, vmo, max, r, &n) && n == 0);
@@ -3657,18 +3620,6 @@ static int64_t review_entry(const startup_t *s) {
   return 0;
 }
 
-// Negative tests from the second review: buffers near 2^64 are a status,
-// not a trap in the kernel's page-in.
-static int64_t review_queues(const startup_t *s) {
-  (void)s;
-  uint32_t vmo = 0;
-  CHECK(705, sys(CROI_SYS_VMO_CREATE, PAGE, 0, (uint64_t)&vmo, 0, 0) == 0 &&
-                 sys(CROI_SYS_VMO_WRITE, vmo, 0xFFFFFFFFFFFFF800ull, 0, 0x1000, 0) < 0 &&
-                 sys(CROI_SYS_VMO_READ, vmo, 0xFFFFFFFFFFFFF800ull, 0, 0x1000, 0) < 0);
-  croi_handle_close(vmo);
-  return 0;
-}
-
 // Negative tests from the second review (pager, VMO ops).
 // 740: a pager answering every READ with 'P' pages until told to stop.
 // r[0] port, [1] pager, [2] vmo, [3] stop, [4] supplies.
@@ -3683,7 +3634,7 @@ static void race_pager(uint64_t arg) {
     if (packet.type != CROI_PKT_TYPE_PAGE_REQUEST || (uint16_t)req[0] != CROI_PAGER_VMO_READ) continue;
     uint32_t aux = 0;
     sys(CROI_SYS_VMO_CREATE, req[2], 0, (uint64_t)&aux, 0, 0);
-    for (uint64_t at = 0; at < req[2]; at += PAGE) sys(CROI_SYS_VMO_WRITE, aux, (uint64_t)page, at, PAGE, 0);
+    for (uint64_t at = 0; at < req[2]; at += PAGE) vmo_set(aux, page, at, PAGE);
     sys6(CROI_SYS_PAGER_SUPPLY_PAGES, (uint32_t)r[1], (uint32_t)r[2], req[1], req[2], aux, 0);
     croi_handle_close(aux);
     r[4]++;
@@ -3700,7 +3651,7 @@ static void race_reader(uint64_t arg) {
   while (!q[1]) {
     uint64_t start = now_ns();
     q[5] = start;
-    int64_t result = sys(CROI_SYS_VMO_READ, (uint32_t)q[0], (uint64_t)&c, 0, 1, 0);
+    int64_t result = vmo_get((uint32_t)q[0], &c, 0, 1);
     q[5] = 0;
     uint64_t took = now_ns() - start;
     if (took > q[3]) q[3] = took;
@@ -3782,7 +3733,7 @@ static int64_t review_open(const startup_t *s) {
                  counts[0] == 1 && ranges[0].offset == PAGE && ranges[0].length == 2 * PAGE && ranges[0].options == 0 &&
                  sys6(CROI_SYS_OBJECT_GET_INFO, tv, CROI_INFO_VMO, (uint64_t)&info, sizeof info, 0, 0) == 0 &&
                  info.committed_bytes == 2 * PAGE &&
-                 sys(CROI_SYS_VMO_READ, tv, (uint64_t)&byte, 2 * PAGE + 7, 1, 0) == 0 && byte == 0);
+                 vmo_get(tv, &byte, 2 * PAGE + 7, 1) == 0 && byte == 0);
   croi_handle_close(tv);
   croi_handle_close(tport);
   croi_handle_close(tp);
@@ -4009,8 +3960,8 @@ static int64_t jit_views(const startup_t *s) {
   // A view replaced by another VMO's pages.
   uint32_t one = 1, two = 2;
   volatile uint32_t *word = (volatile uint32_t *)base;
-  CHECK(723, sys(CROI_SYS_VMO_WRITE, a, (uint64_t)&one, 0, 4, 0) == 0 &&
-                 sys(CROI_SYS_VMO_WRITE, b, (uint64_t)&two, 0, 4, 0) == 0 &&
+  CHECK(723, vmo_set(a, &one, 0, 4) == 0 &&
+                 vmo_set(b, &two, 0, 4) == 0 &&
                  sys(CROI_SYS_VMAR_MAP_VIEW, reservation | (uint64_t)rw << 32, 0, a, 0, 2 * PAGE) == 0 &&
                  *word == 1 &&
                  sys(CROI_SYS_VMAR_MAP_VIEW, reservation | (uint64_t)rw << 32, 0, b, 0, 2 * PAGE) == 0 && *word == 2);
@@ -4146,7 +4097,7 @@ static int64_t guarded_pages(const startup_t *s) {
   const uint32_t rx = CROI_VM_PERM_READ | CROI_VM_PERM_EXECUTE;
   uint32_t raw = 0;
   CHECK(677, sys(CROI_SYS_VMO_CREATE, PAGE, 0, (uint64_t)&raw, 0, 0) == 0 &&
-                 sys(CROI_SYS_VMO_WRITE, raw, (uint64_t)code, 0, sizeof code, 0) == 0 &&
+                 vmo_set(raw, code, 0, sizeof code) == 0 &&
                  sys6(CROI_SYS_VMO_OP_RANGE, raw, CROI_VMO_OP_CACHE_SYNC, 0, sizeof code, 0, 0) == 0 &&
                  sys(CROI_SYS_VMO_REPLACE_AS_EXECUTABLE, raw, s->resource, (uint64_t)&vmo, 0, 0) == 0 &&
                  sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(rx | CROI_VM_PERM_GUARDED) << 32, 0, vmo, 0, PAGE,
@@ -4282,8 +4233,6 @@ static int64_t extensions(const startup_t *s, uint64_t vdso_base) {
   if (slices != 0) return slices;
   int64_t kinds = child_kinds(s);
   if (kinds != 0) return kinds;
-  int64_t raced = copy_race(s);
-  if (raced != 0) return raced;
   int64_t unbound = unbounded(s);
   if (unbound != 0) return unbound;
   int64_t zeroed = zero_intervals(s);
@@ -4298,8 +4247,6 @@ static int64_t extensions(const startup_t *s, uint64_t vdso_base) {
   if (entry != 0) return entry;
   int64_t low = review_low(s);
   if (low != 0) return low;
-  int64_t queues = review_queues(s);
-  if (queues != 0) return queues;
   int64_t pagerReview = review_pager(s);
   if (pagerReview != 0) return pagerReview;
   int64_t open = review_open(s);

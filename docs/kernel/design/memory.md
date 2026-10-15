@@ -241,8 +241,8 @@ The other child kinds, K14g (Vmo.swift `Vmo.snapshot`, `init(sliceOf:)`,
   inside; not of a resizable one) or a REFERENCE (offset and size 0; not
   of a slice or contiguous VMO; RESIZABLE only of a resizable VMO and with
   RESIZE on the parent handle). No pages of their own: `parent` is the
-  root, `target` gives (root, offset). Syscalls resolve them (vmo_read/
-  write, op_range, bti_pin), and `Mapping` keeps the root and
+  root, `target` gives (root, offset). Syscalls resolve them (op_range,
+  bti_pin, process memory), and `Mapping` keeps the root and
   root offset in `vmo`/`offset` with the mapped VMO in `holder` (the
   mapping's reference; koid and name in the info topics), so faults,
   `unmapEverywhere` and reclaim work on the root unchanged. A reference's
@@ -310,8 +310,8 @@ PageList `grow`, syscall 233; vmo.h, task.h):
   root over the old). The content size becomes the exact size and the last
   page's tail past it reads zero.
 - Past the end: `commit`/`lookup` refuse it under the lock, so faults fail
-  (fatal page fault), vmo_read/write are OUT_OF_RANGE (also when shrunk
-  meanwhile). An anonymous VMO may be mapped past its end (Zircon's: it
+  (fatal page fault, OUT_OF_RANGE in its synth_code, D37; also when
+  shrunk meanwhile). An anonymous VMO may be mapped past its end (Zircon's: it
   may grow); vmar_map takes REQUIRE_NON_RESIZABLE (NOT_SUPPORTED on a
   resizable VMO) and ALLOW_FAULTS (accepted).
 - A pager VMO's grown space is a dirty zero interval (K14k's
@@ -363,7 +363,8 @@ TRAP_DIRTY. Mode 17's `unbounded` (checks 663-668).
 ## Copies between user memory and VMO pages (K14h)
 
 Copies between user memory and VMO pages, K14h (Vm/Vmo.swift
-`VmoUserCopy`; vmo_read/write, process_read/write_memory): a
+`VmoUserCopy`; process_read/write_memory, and vmo_read/write until V1
+cut them, D37): a
 page is read or written only under the lock of the VMO that has it
 (`withContent`, `ownLocked`), so a decommit, eviction, swap or shrink
 can't free it mid-copy (they used to look it up, drop the lock and copy:
@@ -374,7 +375,8 @@ no lock held (`pageIn`: `UserAspaces.handleFault` per page) and retried,
 up to `attempts` times. `.absent` commits (`VmoUserCopy.commit`) or
 waits for the next `Pagers.ensure*`. Mode 17's `copy_race` (661-662:
 writer, polluter and reader threads) failed 3 of 3 KVM boots with the
-copy outside the lock.
+copy outside the lock; it is the vmo suite's `copyRace` now, reading
+through process_read_memory (V1 cut vmo_read, D37).
 
 ## The user pager (K13d)
 
@@ -400,12 +402,11 @@ syscalls 202-208; vmo.h; Todhchai's page cache and mmap for Taisce):
   and waits (interruptible; 300 s, Zircon's overtime: TIMED_OUT). Callers:
   the fault handler (retains the mapping's VMO and waits outside the
   aspace lock, then retries; a fault taken with interrupts masked doesn't
-  wait), vmo_read/write (the rest of the copy as read-ahead),
-  vmo_op_range COMMIT/PREFETCH/ZERO, bti_pin. ZERO on a pager VMO makes
+  wait), vmo_op_range COMMIT/PREFETCH/ZERO, bti_pin. ZERO on a pager VMO makes
   a zero interval of its whole pages (K14k; TRAP_DIRTY VMOs zero in
   place); DECOMMIT is NOT_SUPPORTED.
-- FAIL: waiters whose page is in the range get the status (vmo_read
-  returns it; a fault is refused: exception); others on an overlapping
+- FAIL: waiters whose page is in the range get the status (a fault is
+  refused: its exception's synth_code carries it, D37); others on an overlapping
   request ask again. Detach (pager_detach_vmo, or the VMO's last
   reference): waiters wake to BAD_STATE, clean pages are dropped (dirty,
   awaiting-clean and pinned ones stay for writeback), one COMPLETE
@@ -418,7 +419,7 @@ syscalls 202-208; vmo.h; Todhchai's page cache and mmap for Taisce):
   `Pagers.prepareWrite`: the page becomes dirty, after a DIRTY request
   (type 9, command 2) the pager answers with op DIRTY if the VMO has
   TRAP_DIRTY; the fault then makes the entry writable. Kernel writes
-  (vmo_write, ZERO) go through `ensureWritable`. op DIRTY
+  (ZERO, process_write_memory) go through `ensureWritable`. op DIRTY
   (TRAP_DIRTY only, else NOT_SUPPORTED; a page not supplied NOT_FOUND),
   WRITEBACK_BEGIN (dirty -> awaiting clean, unmapped everywhere:
   `VmoPointer.unmapEverywhere`, so a write meanwhile dirties again; dirty
@@ -432,11 +433,12 @@ syscalls 202-208; vmo.h; Todhchai's page cache and mmap for Taisce):
   source holds its port.
 - (Eviction of clean pages and the hints came in K14a, resizable pager
   VMOs in K13h, unbounded ones in K14i, zero intervals in K14k.)
-- Mode 17's `pager`: a pager thread serving a fault, a two-page vmo_read
-  (one request), a FAIL, a snapshot child reading through; writes through
-  a mapping and vmo_write, dirty ranges, stats, a writeback with a write
-  during it, detach dropping clean pages; a TRAP_DIRTY VMO's DIRTY
-  requests from vmo_write and a write fault.
+- Mode 17's `pager`: a pager thread serving a fault, a two-page read (a
+  request each), a snapshot child reading through; writes through two
+  mappings, dirty ranges, stats, a writeback with a write during it,
+  detach dropping clean pages; a TRAP_DIRTY VMO's DIRTY requests from
+  two mappings' writes. The vmo suite's `faultStatuses`: a FAIL's status
+  and a detached VMO's BAD_STATE in faults' exceptions (D37).
 
 ## Zero intervals (K14k)
 
@@ -493,7 +495,7 @@ PageQueues + Evictor + MemoryWatchdog without the page queues):
   BAD_STATE; TRY_LOCK of a discarded VMO UNAVAILABLE). States unset /
   locked / reclaimable / discarded (`DiscardState`): reclaimable only
   after a lock and unlock; discarded, commit and lookups fail (faults
-  kill, vmo_read/write NOT_FOUND) until LOCK, which reports
+  report NOT_FOUND) until LOCK, which reports
   discarded_size = size.
 - Hints (vmo_op_range and vmar_op_range 12/13, no rights): pager VMOs
   (a snapshot child's go to its pager ancestor), others ignore them.

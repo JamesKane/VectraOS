@@ -79,7 +79,8 @@ waits (D29), thread_raise_exception (D30), system_get_event (D31),
 port_cancel_key into port_cancel (D32), handle_close_many into
 handle_close (D33), handle_replace into handle_duplicate (D34),
 test_report into the test call (D35), vmo_get_size and
-process_info into info topics (D36), 94 syscalls (`docs/syscall-audit.md`).
+process_info into info topics (D36), vmo_read and vmo_write (D37), 92
+syscalls (`docs/syscall-audit.md`).
 - **Done:** croi imported, passing on amd64, arm64 and rv64; todhchai's
   Judge, History, trace format and reader lifted; `vx` with build, test,
   boot, bench, trace, loc and ci.

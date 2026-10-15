@@ -10,7 +10,7 @@ import Synchronization
 ///   them again on the next access), and a DISCARDABLE VMO, whole, while
 ///   it is unlocked.
 /// - Ages (`Page.reclaimAge`): an access makes a page newest (0): a fault,
-///   a lookup by the kernel (vmo_read, a child's copy, a pin), or the
+///   a lookup by the kernel (a child's copy, a pin), or the
 ///   accessed bit of a mapping, harvested before each aging pass and each
 ///   eviction. An aging pass (every `croi.reclaim.aging_ms`, default
 ///   15000, while any reclaimable VMO exists) adds one, up to 7. Ages 0

@@ -30,8 +30,15 @@ enum UserTraps {
             arch_interrupts_enable()
             let me = Scheduler.current
             me.pointee.restartable = true  // a pager wait here may end for a suspension (K13g)
-            let resolved = UserAspaces.handleFault(at: fault.address, write: fault.write, execute: fault.execute,
-                                                   protectionKey: fault.protectionKey)
+            // Why not, for the exception's synth_code (D37).
+            var status: Int32 = 0
+            do throws(Status) {
+                try UserAspaces.handleFault(at: fault.address, write: fault.write, execute: fault.execute,
+                                            protectionKey: fault.protectionKey)
+            } catch {
+                status = error.rawValue
+            }
+            let resolved = status == 0
             me.pointee.restartable = false
             let retry = Scheduler.locked { () -> Bool in
                 defer { me.pointee.suspendRetry = false }
@@ -42,7 +49,7 @@ enum UserTraps {
                 leaving()
                 return
             }
-            if unsafe offer(frame) { return }
+            if unsafe offer(frame, synthCode: UInt32(bitPattern: status)) { return }
             unsafe killed("page fault", frame.pointee)
             die(killedByFault)
         }
@@ -54,11 +61,11 @@ enum UserTraps {
     /// Offers a fault or exception to the thread's exception handlers (K7d):
     /// true if one handled it and the thread goes back to user mode
     /// (perhaps where the handler moved it).
-    private static func offer(_ frame: UnsafeMutablePointer<arch_exception_frame_t>) -> Bool {
+    private static func offer(_ frame: UnsafeMutablePointer<arch_exception_frame_t>, synthCode: UInt32 = 0) -> Bool {
         let type = unsafe ExceptionFrame.exceptionType(frame.pointee)
         unsafe HardwareDebug.trapped(frame)  // DR6 / a watchpoint's FAR, before interrupts (K13g)
         arch_interrupts_enable()
-        let disposition = unsafe Exceptions.raise(type, frame: frame)
+        let disposition = unsafe Exceptions.raise(type, frame: frame, synthCode: synthCode)
         _ = arch_interrupts_save()
         switch disposition {
         case .resume:
@@ -191,11 +198,11 @@ enum Syscalls {
     }
 
     /// Syscalls a suspension may end and restart (K13g): their waits leave
-    /// nothing behind, and deadlines are absolute. port_wait, futex_wait;
-    /// vmo_read (pager waits).
+    /// nothing behind, and deadlines are absolute: port_wait, futex_wait.
+    /// (A user fault's pager wait restarts too, by taking the fault again.)
     static func restartable(_ number: UInt64) -> Bool {
         switch number {
-        case 33, 41, 90: true
+        case 33, 90: true
         default: false
         }
     }
@@ -339,10 +346,6 @@ enum Syscalls {
                 object.release()
                 throw error
             }
-        case 41:  // vmo_read
-            try vmoCopy(table, handle, user: a[1], offset: a[2], length: a[3], toUser: true)
-        case 42:  // vmo_write
-            try vmoCopy(table, handle, user: a[1], offset: a[2], length: a[3], toUser: false)
         case 50:  // trace_configure
             switch a[1] {
             case 0: try TraceControl.start(table, handle, categories: UInt32(truncatingIfNeeded: a[2]),
@@ -513,52 +516,6 @@ enum Syscalls {
         for i in 0..<4 { raw[2 + i] = packet.payload[i] }
         let copied = raw.span.withUnsafeBufferPointer { unsafe UserCopy.to(address, $0.baseAddress!, 48) }
         guard copied == 0 else { throw .invalidArgs }
-    }
-
-    /// vmo_read / vmo_write: page by page between the user buffer and the
-    /// VMO's pages through the physmap (needs read / write rights).
-    private static func vmoCopy(_ table: borrowing HandleTable, _ handle: UInt32, user: UInt64, offset: UInt64,
-                                length: UInt64, toUser: Bool) throws(Status) {
-        let ref = try table.get(handle, type: .vmo, rights: toUser ? .read : .write)
-        let holder = VmoPointer(address: UnsafeVmoObject(ref.object).vmo)
-        // K14g: an alias's pages are its root's, from its offset there.
-        let (vmo, shift) = holder.target
-        // Device memory isn't in the physmap; an uncached VMO's pages
-        // would be read through a cached alias (Zircon: BAD_STATE).
-        guard vmo.inPhysmap else { throw .notSupported }
-        guard vmo.pointee.cache == .cached else { throw .badState }
-        let size = holder.sizeOwner.pointee.size
-        guard offset <= size, length <= size - offset else { throw .outOfRange }
-        var done: UInt64 = 0, faults = 0
-        while done < length {
-            let at = shift + offset + done
-            // A pager's page (K13d): requested and waited for, with the
-            // rest of the copy as read-ahead.
-            if toUser {
-                try Pagers.ensure(vmo, at, readAhead: length - done)
-            } else {
-                try Pagers.ensureWritable(vmo, at, ahead: length - done)  // dirtied (K13d, part 2)
-            }
-            // Reading a child's untouched page reads its parent's (no copy).
-            // The page is copied under its owner's lock (K14h).
-            let chunk = min(length - done, KernelLayout.pageSize - at % KernelLayout.pageSize)
-            switch toUser ? VmoUserCopy.read(vmo, at, to: user + done, chunk)
-                          : VmoUserCopy.write(vmo, at, from: user + done, chunk) {
-            case .copied:
-                done += chunk
-                faults = 0
-            case .absent where toUser && vmo.readsAsZero(at):  // a zero interval (K14k): nothing committed
-                guard VmoUserCopy.zeros(to: user + done, chunk) == .copied else { throw .invalidArgs }
-                done += chunk
-            case .absent:
-                try VmoUserCopy.commit(vmo, at)
-            case .faulted:
-                faults += 1
-                guard faults < VmoUserCopy.attempts, VmoUserCopy.pageIn(user + done, chunk, write: toUser) else {
-                    throw .invalidArgs
-                }
-            }
-        }
     }
 }
 

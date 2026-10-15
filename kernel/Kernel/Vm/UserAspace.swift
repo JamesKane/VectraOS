@@ -736,23 +736,32 @@ enum UserAspaces {
 
     /// A page fault at a user address in the running thread's address
     /// space: maps the page if a mapping allows the access (committing an
-    /// anonymous page on first touch). False if it doesn't. A page a
-    /// pager must supply (K13d) is waited for outside the aspace lock, then
-    /// the fault is retried; unless `mayBlock` is false (the faulting code
-    /// had interrupts masked), which refuses it.
+    /// anonymous page on first touch). Throws why it doesn't, Zircon's
+    /// statuses: NOT_FOUND with no mapping there, ACCESS_DENIED for one
+    /// that doesn't allow the access, a pager's FAIL status or BAD_STATE
+    /// once detached (K13d), NOT_FOUND for a discarded VMO, OUT_OF_RANGE
+    /// past a shrunk end, NO_MEMORY. A user fault's exception carries it
+    /// as its synth_code (D37: with vmo_read cut, the only way a reader
+    /// learns why). A page a pager must supply is waited for outside the
+    /// aspace lock, then the fault is retried; unless `mayBlock` is false
+    /// (the faulting code had interrupts masked), which refuses it
+    /// (SHOULD_WAIT).
     static func handleFault(at virt: UInt64, write: Bool, execute: Bool, protectionKey: Bool = false,
-                            mayBlock: Bool = true) -> Bool {
+                            mayBlock: Bool = true) throws(Status) {
         // A protection-key fault is this thread's PKRU saying no: final.
         guard !protectionKey else {
             Trace.event(CROI_TRACE_VM, UInt16(CROI_TK_FAULT), virt, write ? CROI_VM_FAULT_WRITE : 0)
-            return false
+            throw .accessDenied
         }
         guard UserLayout.contains(virt & ~(KernelLayout.pageSize - 1), KernelLayout.pageSize),
-              let aspace = Scheduler.current.pointee.aspace else { return false }
+              let aspace = Scheduler.current.pointee.aspace else { throw .notFound }
         let page = virt & ~(KernelLayout.pageSize - 1)
         let flags = (write ? CROI_VM_FAULT_WRITE : 0) | (execute ? CROI_VM_FAULT_EXECUTE : 0)
         var resolved = false
+        var failure = Status.notFound
+        var raced = 0  // commit lost a pager page's race, tried again
         while true {
+            failure = .notFound
             // A pager's page to wait for (K13d), or one to make dirty.
             var paged: (vmo: VmoPointer, offset: UInt64, write: Bool)? = nil
             var stale = false  // K14f: an entry left on a swapped page, removed: again
@@ -761,8 +770,10 @@ enum UserAspaces {
                 for i in 0..<aspace.pointee.mappings.count where aspace.pointee.mappings[i].contains(page) {
                     found = aspace.pointee.mappings[i]
                 }
-                guard let mapping = found, mapping.rights.contains(.read),
-                      !write || mapping.rights.contains(.write), !execute || mapping.rights.contains(.execute) else {
+                guard let mapping = found else { return false }
+                guard mapping.rights.contains(.read), !write || mapping.rights.contains(.write),
+                      !execute || mapping.rights.contains(.execute) else {
+                    failure = .accessDenied
                     return false
                 }
                 let offset = mapping.offset + (page - mapping.base)
@@ -785,7 +796,10 @@ enum UserAspaces {
                         }
                         return true
                     }
-                    guard tracked else { return false }
+                    guard tracked else {
+                        failure = .accessDenied
+                        return false
+                    }
                     // K14f: an entry still on a page swapped for another (a
                     // borrowed one and its ordinary copy) is only ever read;
                     // made writable it would take writes the VMO loses.
@@ -803,6 +817,7 @@ enum UserAspaces {
                         try aspace.pointee.arch.protect(virt: page, size: KernelLayout.pageSize,
                                                         attributes(mapping.rights, mapping.vmo.pointee.cache, key: mapping.key))
                     } catch {
+                        failure = .noMemory
                         return false
                     }
                     return true
@@ -826,12 +841,32 @@ enum UserAspaces {
                     paged = (mapping.vmo, offset, true)
                     return false
                 }
-                guard let phys = mapping.vmo.commit(at: offset) else { return false }
+                guard let phys = mapping.vmo.commit(at: offset) else {
+                    // A pager VMO's page can change hands between the looks
+                    // above and commit (a supply, ZERO, writeback: check
+                    // 740's stress, D37): the pager's now is waited for,
+                    // anything else tried again, as VmoUserCopy.commit does.
+                    // Only a zero interval's page, which commit allocates,
+                    // fails for good.
+                    if mapping.vmo.pointee.pager != nil || mapping.vmo.pointee.readsFromPager, raced < 4 {
+                        raced += 1
+                        if mapping.vmo.pagerGap(at: offset) != nil {
+                            mapping.vmo.retain()
+                            paged = (mapping.vmo, offset, false)
+                        } else {
+                            stale = true
+                        }
+                        return false
+                    }
+                    failure = mapping.vmo.commitFailure(at: offset)
+                    return false
+                }
                 let rights = tracked && !dirty ? mapping.rights.subtracting(.write) : mapping.rights
                 do throws(VmError) {
                     try aspace.pointee.arch.map(virt: page, phys: phys, size: KernelLayout.pageSize,
                                                 attributes(rights, mapping.vmo.pointee.cache, key: mapping.key))
                 } catch {
+                    failure = .noMemory
                     return false
                 }
                 return true
@@ -839,16 +874,20 @@ enum UserAspaces {
             if stale { continue }
             guard let (vmo, offset, dirtying) = paged else { break }
             defer { vmo.release() }
-            guard mayBlock else { break }
+            guard mayBlock else {
+                failure = .shouldWait
+                break
+            }
             do throws(Status) {
                 if dirtying { try Pagers.prepareWrite(vmo, offset) } else { try Pagers.ensure(vmo, offset) }
             } catch {
+                failure = error
                 break
             }
         }
         Trace.event(CROI_TRACE_VM, UInt16(CROI_TK_FAULT), virt, flags | (resolved ? CROI_VM_FAULT_RESOLVED : 0))
-        if resolved { faultsResolved.add(1, ordering: .relaxed) }
-        return resolved
+        guard resolved else { throw failure }
+        faultsResolved.add(1, ordering: .relaxed)
     }
 
     /// Once, before the first user address space.

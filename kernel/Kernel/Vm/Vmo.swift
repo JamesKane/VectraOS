@@ -255,6 +255,17 @@ enum DiscardState: UInt8 {
         object.release()
     }
 
+    /// Why `commit(at:)` gave no page, for a fault to report (D37):
+    /// NOT_FOUND for a discarded VMO (K14a), OUT_OF_RANGE past a shrunk
+    /// end (K13h), NO_MEMORY otherwise. A look without the lock: a status,
+    /// not a decision.
+    func commitFailure(at offset: UInt64) -> Status {
+        let (vmo, shift) = target
+        if vmo.pointee.discard == .discarded { return .notFound }
+        if offset + shift >= vmo.pointee.size { return .outOfRange }
+        return .noMemory
+    }
+
     /// The physical page holding byte `offset`, committing it (zeroed) if
     /// this is an anonymous VMO and it isn't yet. nil if out of memory.
     func commit(at offset: UInt64) -> UInt64? {
@@ -1333,7 +1344,7 @@ extension VmoPointer {
     }
 }
 
-/// Copies between user memory and a VMO's pages (vmo_read/write, streams,
+/// Copies between user memory and a VMO's pages (streams,
 /// process_read/write_memory; K14h). A page is only read or written while
 /// the lock of the VMO that has it is held, so a decommit, eviction, swap
 /// or resize can't free it (and hand it to someone else) mid-copy, which
@@ -1380,12 +1391,12 @@ enum VmoUserCopy {
     static func pageIn(_ user: UInt64, _ length: UInt64, write: Bool) -> Bool {
         guard length > 0 else { return true }
         // User addresses only (review fix: `user + length` trapped for a
-        // buffer near 2^64, from streams and vmo_read/write).
+        // buffer near 2^64, from streams and the cut vmo_read/write).
         guard user < UserLayout.top, length <= UserLayout.top - user else { return false }
         let page = KernelLayout.pageSize
         var at = user & ~(page - 1)
         while at < user + length {
-            guard UserAspaces.handleFault(at: at, write: write, execute: false) else { return false }
+            guard (try? UserAspaces.handleFault(at: at, write: write, execute: false)) != nil else { return false }
             at += page
         }
         return true
@@ -1407,7 +1418,7 @@ enum VmoUserCopy {
     }
 
     /// After `.absent`: commits the page so the next try finds it (a read
-    /// of an untouched page commits it, as vmo_read always has), or returns
+    /// of an untouched page commits it, as a fault does), or returns
     /// to try again when the next `Pagers.ensure*` makes it present (a
     /// pager's page, a lent one, gone again meanwhile). Throws NOT_FOUND
     /// for a discarded VMO (K14a), OUT_OF_RANGE past a shrunk end (K13h),

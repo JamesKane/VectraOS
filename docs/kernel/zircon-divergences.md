@@ -140,6 +140,13 @@ matches the pinned tree where upstream docs or expectations say otherwise).
 
 ## VM and VMOs
 
+- **No vmo_read or vmo_write** (V1, D37) — a VMO's bytes are read and
+  written through a mapping. Why a page couldn't be had is the page
+  fault exception's synth_code, as in Zircon (a pager's FAIL status,
+  BAD_STATE once detached, NOT_FOUND, OUT_OF_RANGE, ACCESS_DENIED).
+  Kind: deliberate (one way to a VMO's pages). Impact: callers of
+  zx_vmo_read and zx_vmo_write; a read across a pager's pages asks for
+  each page, not once with read-ahead.
 - **Snapshot child of a shrinking parent** (K13h) — croi's child reads
   zeros past the cut only while the parent stays that small; Zircon clamps
   the child's parent limit permanently. Kind: deliberate (simplification).
@@ -151,8 +158,8 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   become an untracked zero interval (K14k), but a snapshot child's (or a
   slice's) committed pages are zeroed in place, so its absent pages there
   still read as its parent's (Zircon inserts zero markers). Kind:
-  deliberate (no markers in children). Impact: vmo_read past the content
-  size of a child.
+  deliberate (no markers in children). Impact: reads through a mapping
+  past the content size of a child.
 - **Per-page range operations** (K14i) — decommit, ZERO, cache ops, page
   states and dirty ranges are sparse; COMMIT, PREFETCH, ALWAYS_NEED, a
   child's ZERO and a TRAP_DIRTY pager VMO's ZERO still touch every page of
@@ -276,7 +283,7 @@ matches the pinned tree where upstream docs or expectations say otherwise).
 - **Syscall restart in the kernel** — for suspension Zircon wakes
   interruptible waits with INTR_RETRY and its vDSO re-issues the call;
   croi's programs call the kernel directly, so the kernel rewinds the PC
-  over the syscall for the restartable waits (port_wait, vmo_read,
+  over the syscall for the restartable waits (port_wait and
   futex_wait). Other waits (channel_call, exceptions)
   suspend when they end. Kind: deliberate. Impact: debuggers see the PC at
   the syscall instruction.

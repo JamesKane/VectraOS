@@ -260,23 +260,31 @@ struct Userboot {
             }
         } else {
             try call("making a segment", sys(CROI_SYS_VMO_CREATE, size, 0, address(&vmo)))
-            try call("copying a segment", sys(CROI_SYS_VMO_WRITE, UInt64(vmo), bootfsBase + fileOffset, 0,
-                                              segment.filesz))
         }
         defer { _ = croi_handle_close(vmo) }  // the mapping keeps it
-        if relocations > 0 {
-            var failed: Int64 = 0
+        // A misaligned segment's bytes and the relocations are written
+        // through a mapping of our own (V1 cut vmo_write, D37).
+        let copied = fileOffset % pageSize != 0
+        if copied || relocations > 0 {
+            let own = UInt64(croi_vmar_root_self())
+            var scratch: UInt64 = 0
+            try call("mapping a segment to fill", sys(CROI_SYS_VMAR_MAP,
+                                                      own | UInt64(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0,
+                                                      UInt64(vmo), 0, size, address(&scratch)))
+            defer { _ = sys(CROI_SYS_VMAR_UNMAP, own, scratch, size) }
+            let bytes = unsafe UnsafeMutableRawPointer(bitPattern: UInt(scratch))!
+            if copied {
+                unsafe bytes.copyMemory(from: UnsafeRawPointer(bitPattern: UInt(bootfsBase + fileOffset))!,
+                                        byteCount: Int(segment.filesz))
+            }
             do throws(ElfImage.Error) {
                 try elf.forEachRelocation(in: fileBytes) { (target, addend) throws(ElfImage.Error) in
                     guard target >= segment.vaddr, target - segment.vaddr < size else { return }
-                    var value = delta &+ addend
-                    let status = sys(CROI_SYS_VMO_WRITE, UInt64(vmo), address(&value), target - segment.vaddr, 8)
-                    if status != 0 { failed = status }
+                    unsafe bytes.storeBytes(of: delta &+ addend, toByteOffset: Int(target - segment.vaddr), as: UInt64.self)
                 }
             } catch {
                 throw Failure(what: "reading its relocations", status: -10)
             }
-            try call("relocating a segment", failed)
         }
         try call("mapping a segment", sys(CROI_SYS_VMAR_MAP, UInt64(vmar) | UInt64(options) << 32,
                                           runAddress - vmarBase, UInt64(vmo), 0, size, address(&mapped)))

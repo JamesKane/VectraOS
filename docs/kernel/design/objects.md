@@ -385,6 +385,23 @@ with it (`EventObject` and the event type).
   The kernel's object, port and resource self-tests signal counters
   where they used events.
 
+## vmo_read and vmo_write: cut in V1 (D37)
+
+vmo_read (41) and vmo_write (42) copied between a user buffer and a
+VMO's pages through the physmap. A mapping already reaches those pages,
+so V1 cut both:
+- Userboot fills a misaligned segment and writes the relocations
+  through a mapping of its own; m2 writes its VMO the same way.
+- vmo_read's return was the only way to learn why a page couldn't be
+  had. `UserAspaces.handleFault` now throws a status, and a user page
+  fault's exception carries it in `synth_code` (memory.md).
+- process_read_memory and process_write_memory keep the page-locked
+  copy (`VmoUserCopy`, K14h).
+- Tests: usertest.c's copies go through `vmo_get`/`vmo_set` (a mapping
+  per copy). The checks of vmo_read's statuses, and K14h's copy race,
+  moved to the vmo suite (`faultStatuses`, `copyRace`); mode 0's copies
+  and the bad-pointer checks went.
+
 ## The small calls (K13e part 1)
 
 The small calls, K13e part 1 (syscalls 210-215 in User/IpcSyscalls.swift,

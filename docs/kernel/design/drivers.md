@@ -31,8 +31,9 @@ User/IoPorts.swift, include/resource.h, include/vmo.h; Todhchai M3):
   gets Device-nGnRE where Zircon uses nGnRnE for UNCACHED),
   `vmo_op_range` (45: COMMIT/PREFETCH round out, DECOMMIT aligned, ZERO
   by bytes, cache CLEAN/CLEAN_INVALIDATE by bytes, CACHE_SYNC syncs the
-  I-cache, CACHE_INVALIDATE NOT_SUPPORTED). vmo_read/write refuse device
-  VMOs (NOT_SUPPORTED) and uncached ones (BAD_STATE). Zero-size
+  I-cache, CACHE_INVALIDATE NOT_SUPPORTED). Device and uncached VMOs are
+  read through mappings with their cache policy (V1 cut vmo_read/write,
+  which refused them, D37). Zero-size
   anonymous VMOs exist. `Vmo.syncInstructions` (arm64 dc cvau + ic ivau,
   rv64 fence.i plus SBI remote fence.i) runs after ProgramLoader copies
   code; user loaders (userboot, Todhchai's) must do the same through

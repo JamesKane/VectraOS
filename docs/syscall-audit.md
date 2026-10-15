@@ -84,7 +84,7 @@ Legend: **keep**, **merge** (the call survives under a combined form),
 | # | Call | Verdict | Replacement or reason |
 |---|---|---|---|
 | 40, 45–49, 155 | vmo create, op_range, set_cache_policy, create_physical, create_child, replace_as_executable, create_contiguous | keep | |
-| 41, 42 | vmo_read, vmo_write | cut | map; every caller is a setup path (bootfs, ELF, BootData) |
+| 41, 42 | vmo_read, vmo_write | cut (D37) | map; every caller is a setup path (bootfs, ELF, BootData) |
 | 43 | vmo_map | cut | legacy, "until VMARs (K7)"; `vmar_map` |
 | 44 | vmo_get_size | merge (D36) | a `get_info` topic |
 | 233 | vmo_set_size | keep | resizable VMOs for Taisce's mapped files |
@@ -177,6 +177,7 @@ calls. handle_close_many merged into handle_close (D33): 98 calls.
 handle_replace merged into handle_duplicate (D34): 97 calls.
 test_report merged into the test call (D35): 96 calls.
 vmo_get_size and process_info became info topics (D36): 94 calls.
+vmo_read and vmo_write were cut (D37): 92 calls.
 
 The ceiling in `tools/vx/LocCommand.swift` is lowered with each cut, so it
 never rises.
