@@ -5,7 +5,7 @@ import CroiRuntime
 /// a VMO across it, waits on a port with a deadline timer, and prints over
 /// debuglog. Then it measures the kernel and IPC budgets (Todhchai
 /// performance.md §2) from croi's trace and prints each as a `budget`
-/// line (kernel/Kernel/Trace/Budgets.swift's format) for tools/bench.py.
+/// line (kernel/Kernel/Trace/Budgets.swift's format) for vx bench.
 /// Limits fail it only where timing is real (KVM or hardware) and the
 /// command line says croi.enforce_budgets=1 (a quiet machine).
 @main
@@ -178,7 +178,7 @@ struct M2 {
         guard wakeups == 0 else { throw Failure(what: "staying idle", status: Int64(wakeups)) }
         guard croi_timing_is_real(), environmentHas("croi.enforce_budgets=1") else {
             print(missed == 0 ? "m2: budgets met (reported, not enforced)"
-                              : "m2: \(missed) budget(s) over (reported, not enforced: see tools/bench.py)")
+                              : "m2: \(missed) budget(s) over (reported, not enforced: see vx bench)")
             return
         }
         guard missed == 0 else { throw Failure(what: "meeting the budgets", status: Int64(missed)) }

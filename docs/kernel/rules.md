@@ -57,9 +57,9 @@ consoles in build/<arch>/todhchai/.
 Tests judge correctness; timings are judged by the bench, against this
 machine's history:
 
-    tools/bench.py                      # 5 KVM boots x (full, lean): report
-    tools/bench.py --record             # on a committed tree, quiet machine
-    tools/bench.py --compare <commit>   # this tree vs a commit, interleaved
+    vx bench                            # 5 KVM boots x (full, lean): report
+    vx bench --record                   # on a committed tree, quiet machine
+    vx bench --compare <commit>         # this tree vs a commit, interleaved
 
 - Every budget is a `budget name=... value=... unit=... [limit=...]
   [target=...]` line (kernel `Budgets.report`, m2). Limits fail a boot
@@ -67,7 +67,7 @@ machine's history:
   (`-DCROI_CMDLINE=`, on a quiet machine); otherwise they are reported.
 - The bench takes medians, judges each against the median of the last 5
   recorded runs in `bench/history/<host>.tsv` (a rise past both the
-  rule's fraction and its floor regresses; RULES in tools/bench.py), and
+  rule's fraction and its floor regresses; tools/bench/lib/Rules.swift), and
   writes `bench/out/report.md` with every boot's console in
   `bench/out/logs/`. Advisory here (this is a shared machine: other
   agents, QEMU sessions, Todhchai's builds); `--enforce` only on a quiet,

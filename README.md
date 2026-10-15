@@ -39,7 +39,10 @@ This repository starts a new direction. It builds on three earlier projects:
 
 ## Status
 
-V0 (ground) has not started. The tree holds design documents only.
+V0 (ground) is in progress. The croi kernel is imported and boots on amd64,
+arm64 and rv64 in QEMU. Start with:
+
+    swift build --product vx && .build/debug/vx ci
 
 ## License
 

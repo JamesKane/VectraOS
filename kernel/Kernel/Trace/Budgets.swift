@@ -6,7 +6,7 @@ import Fmt
 ///
 ///     budget name=<name> value=<n> unit=<ns|count> [limit=<n>] [target=<n>]
 ///
-/// which tools/bench.py collects, takes medians of over several boots and
+/// which vx bench collects, takes medians of over several boots and
 /// judges against this machine's history. A `limit` fails the boot only
 /// where timing is real (KVM or hardware, not TCG) and the command line
 /// says `croi.enforce_budgets=1`, i.e. on a quiet machine: on a shared

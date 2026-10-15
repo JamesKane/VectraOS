@@ -187,8 +187,8 @@ discipline: every budget is printed as a `budget name=... value=...`
 line, and
 
 ```sh
-tools/bench.py                       # KVM boots: medians against this machine's history
-tools/bench.py --compare <commit>    # this tree against a commit, boots interleaved
+vx bench                             # KVM boots: medians against this machine's history
+vx bench --compare <commit>          # this tree against a commit, boots interleaved
 tools/zircon-bench/compare.py        # the same budgets measured on Zircon, interleaved
 ```
 
@@ -205,8 +205,8 @@ target is attainable, if neither does it is a design decision
 | `kernel/arch/` | Per-arch assembly: entry, exceptions, context switch, SMP trampolines, user copies |
 | `lib/` | Shared by loader and kernel: handoff ABI, page tables, text formatting, C runtime |
 | `user/` | User-space headers (`croi/syscall.h`), the C user runtime, the vDSO, userboot, `m2` and test programs |
-| `tools/` | `mkbootfs.py`, `elf2efi.py`, the QEMU runner, `bench.py`, and `zircon-bench/` (croi's budgets on Zircon) |
-| `bench/history/` | Recorded budget runs per machine (`tools/bench.py --record`) |
+| `tools/` | `mkbootfs.py`, `elf2efi.py`, the QEMU runner, and `zircon-bench/` (croi's budgets on Zircon) |
+| `bench/history/` | Recorded budget runs per machine (`vx bench --record`) |
 | `docs/` | Roadmap, Zircon divergences, design notes (`docs/kernel/design/`) |
 
 `docs/kernel/design/` is the detailed design notebook for each subsystem (indexed

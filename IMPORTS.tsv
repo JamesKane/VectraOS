@@ -227,7 +227,6 @@ lib/rt/CMakeLists.txt	croi	dc4cf67	lib/rt/CMakeLists.txt
 lib/rt/int128.c	croi	dc4cf67	lib/rt/int128.c
 lib/rt/stack_protector.c	croi	dc4cf67	lib/rt/stack_protector.c
 lib/rt/string.c	croi	dc4cf67	lib/rt/string.c
-tools/bench.py	croi	dc4cf67	tools/bench.py
 tools/check-pixels.py	croi	dc4cf67	tools/check-pixels.py
 tools/elf2efi.py	croi	dc4cf67	tools/elf2efi.py
 tools/mkbootfs.py	croi	dc4cf67	tools/mkbootfs.py
@@ -272,3 +271,11 @@ docs/kernel/roadmap.md	croi	dc4cf67	docs/roadmap.md
 docs/kernel/zircon-divergences.md	croi	dc4cf67	docs/zircon-divergences.md
 docs/kernel/README.md	croi	dc4cf67	README.md
 docs/kernel/rules.md	croi	dc4cf67	CLAUDE.md
+system/trace/format/Format.swift	todhchai	925f80e	system/trace/format/Format.swift
+system/trace/reader/TraceReader.swift	todhchai	925f80e	system/trace/reader/TraceReader.swift
+tools/bench/lib/Judge.swift	todhchai	925f80e	tools/bench/lib/Judge.swift
+tools/bench/lib/History.swift	todhchai	925f80e	tools/bench/lib/History.swift
+tools/bench/tests/JudgeTests.swift	todhchai	925f80e	tools/bench/tests/JudgeTests.swift
+docs/trace-format.md	todhchai	925f80e	docs/trace-format.md
+tools/vx/Run.swift	todhchai	925f80e	tools/td/Run.swift
+tools/vx/TraceCommand.swift	todhchai	925f80e	tools/td/TraceCommand.swift

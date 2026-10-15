@@ -125,6 +125,19 @@ write prefix.
   nodes.
 - RK3588 (DT-only, so it needs an ADR) and the Hailo-8 over M.2.
 
+## Known issues
+
+1. **The rv64 PMU self-test fails intermittently** (found 2026-10-15, in V0's
+   first `vx ci`). `boot-smoke` panicked with `pmu self-test: overflow
+   sampling`: overflows 57, samples 55, with frames 55, on idle CPUs 1
+   (overflows 1). The next 4 runs passed, so it failed 1 time in about 6
+   rv64 boots. `PmuSelfTest` counts any cycle sample on another CPU as
+   "on an idle CPU". A background thread (`dlog-dumper`, `reclaim`) that
+   runs during the sampling window may be enough to trip it. Not yet
+   diagnosed. Fix before V0 exits, either in the kernel or in the test's
+   definition of idle, with the reason written in
+   `docs/kernel/design/cpu.md`.
+
 ## Open questions
 
 1. Host tests: SwiftPM plus CTest, as todhchai does, or CTest only (D11).
