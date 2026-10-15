@@ -109,7 +109,7 @@ struct Userboot {
                                                  UInt64(target.vmar) | UInt64(CROI_VM_PERM_READ) << 32,
                                                  relro.start &+ delta, relro.end - relro.start))
         }
-        if target.vmar != vmar { _ = sys(CROI_SYS_HANDLE_CLOSE, UInt64(target.vmar)) }  // the region stays
+        if target.vmar != vmar { _ = croi_handle_close(target.vmar) }  // the region stays
         let stackSize = ((elf.stackSize ?? defaultStackSize) + pageSize - 1) & ~(pageSize - 1)
         var stack: UInt32 = 0
         var stackBase: UInt64 = 0
@@ -117,7 +117,7 @@ struct Userboot {
         try call("mapping its stack", sys(CROI_SYS_VMAR_MAP,
                                           UInt64(vmar) | UInt64(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0,
                                           UInt64(stack), 0, stackSize, address(&stackBase)))
-        _ = sys(CROI_SYS_HANDLE_CLOSE, UInt64(stack))
+        _ = croi_handle_close(stack)
 
         var thread: UInt32 = 0
         try call("creating its thread", next.span.withUnsafeBytes { name in
@@ -165,7 +165,7 @@ struct Userboot {
                     UInt64(bytes.count), UInt64(UInt(bitPattern: values.baseAddress)), UInt64(handles.count))
             }
         })
-        _ = sys(CROI_SYS_HANDLE_CLOSE, UInt64(ours))
+        _ = croi_handle_close(ours)
         try call("starting it", sys(CROI_SYS_PROCESS_START, UInt64(process), UInt64(thread), elf.entry &+ delta,
                                     stackBase + stackSize, UInt64(theirs), 0))
         say("userboot: started ")
@@ -181,7 +181,7 @@ struct Userboot {
         try call("binding its end", bound < 0 ? bound : bound == 1 ? 0 : Int64(item.status))
         var packet = croi_port_packet_t()
         try call("waiting for it", sys(CROI_SYS_PORT_WAIT, UInt64(port), .max, address(&packet)))
-        _ = sys(CROI_SYS_HANDLE_CLOSE, UInt64(port))
+        _ = croi_handle_close(port)
         var info = croi_process_info_t()
         try call("reading its exit code", sys(CROI_SYS_PROCESS_INFO, UInt64(process), address(&info)))
         say("userboot: ")
@@ -262,7 +262,7 @@ struct Userboot {
             try call("copying a segment", sys(CROI_SYS_VMO_WRITE, UInt64(vmo), bootfsBase + fileOffset, 0,
                                               segment.filesz))
         }
-        defer { _ = sys(CROI_SYS_HANDLE_CLOSE, UInt64(vmo)) }  // the mapping keeps it
+        defer { _ = croi_handle_close(vmo) }  // the mapping keeps it
         if relocations > 0 {
             var failed: Int64 = 0
             do throws(ElfImage.Error) {

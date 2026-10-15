@@ -12,7 +12,7 @@ import Glibc
 
 /// The syscall ceiling. It only ever goes down (D2): lowering it is part
 /// of the change that removes the calls; raising it is a decision entry.
-let syscallCeiling = 99
+let syscallCeiling = 98
 
 private let languages: [(suffix: String, name: String)] = [
   (".swift", "Swift"), (".c", "C"), (".h", "C"), (".S", "asm"), (".py", "Python"), (".sh", "shell"),

@@ -276,8 +276,8 @@ enum Syscalls {
                                    _ table: borrowing HandleTable) throws(Status) -> Int64 {
         let handle = UInt32(truncatingIfNeeded: a[0])
         switch number {
-        case 10:  // handle_close
-            try table.close(handle)
+        case 10:  // handle_close(const uint32_t *handles, count), D33
+            try closeHandles(table, handles: a[0], count: a[1])
         case 11:  // handle_duplicate
             try put(try table.duplicate(handle, rights: Rights(rawValue: UInt32(truncatingIfNeeded: a[1]))), a[2])
         case 12:  // handle_replace

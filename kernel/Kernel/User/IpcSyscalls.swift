@@ -63,8 +63,6 @@ extension Syscalls {
                 taken = try Channels.read(channel.object, ifFits: size)
             }
             try deliver(taken!, to: table, bytes: a[2], handles: a[3])
-        case 211:  // handle_close_many(const uint32_t *handles, count), K13e
-            try closeMany(table, handles: a[0], count: a[1])
         case 83:  // channel_call(channel, options, deadline, args, actual_bytes, actual_handles)
             // Unreadable args: the handles to send are unknown, so none
             // are consumed (Zircon's too).
@@ -309,10 +307,10 @@ extension Syscalls {
         }
     }
 
-    /// handle_close_many (K13e): 64 at a time; 0 (ZX_HANDLE_INVALID) skipped;
+    /// handle_close (handle_close_many until D33, K13e): 64 at a time; 0 (ZX_HANDLE_INVALID) skipped;
     /// a bad value BAD_HANDLE but the rest still closed; an unreadable
     /// chunk stops there.
-    private static func closeMany(_ table: borrowing HandleTable, handles: UInt64, count: UInt64) throws(Status) {
+    static func closeHandles(_ table: borrowing HandleTable, handles: UInt64, count: UInt64) throws(Status) {
         var values = InlineArray<64, UInt32>(repeating: 0)
         var done: UInt64 = 0
         var bad = false

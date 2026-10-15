@@ -74,7 +74,7 @@ struct SwiftTest {
             return false
         }
         let caughtUp = syscall(CROI_SYS_DEBUGLOG_READ, UInt64(reader), 0, at, 256) == -22  // SHOULD_WAIT
-        for handle in [writer, reader, resource] { _ = syscall(CROI_SYS_HANDLE_CLOSE, UInt64(handle)) }
+        for handle in [writer, reader, resource] { _ = croi_handle_close(handle) }
         return header.datalen == UInt16(text.utf8CodeUnitCount) && header.severity == UInt8(CROI_LOG_INFO)
             && header.pid != 0 && header.tid != 0 && caughtUp
     }

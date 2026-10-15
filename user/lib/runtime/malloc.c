@@ -49,7 +49,7 @@ static char *map(size_t size) {
   int64_t status = croi_syscall6(CROI_SYS_VMAR_MAP,
                                  vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, vmo, 0, size,
                                  (uint64_t)&address);
-  croi_syscall(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0);  // the mapping keeps it
+  croi_handle_close(vmo);  // the mapping keeps it
   return status == 0 ? (char *)address : 0;
 }
 

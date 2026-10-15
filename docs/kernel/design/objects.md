@@ -386,7 +386,7 @@ with it (`EventObject` and the event type).
 The small calls, K13e part 1 (syscalls 210-215 in User/IpcSyscalls.swift,
 Kernel/Object/Names.swift; ipc.h, task.h; the pinned tree's semantics):
 - object_wait_many (210) was cut in V1 (D23): ports are the one wait.
-- handle_close_many (211): 0 skipped, bad values BAD_HANDLE with the rest
+- handle_close_many (211), since D33 handle_close itself (10): 0 skipped, bad values BAD_HANDLE with the rest
   still closed, 64 per chunk.
 - port_cancel_key (212), since D32 port_cancel with source 0: every
   async wait to the port with the key, whatever its source, and every queued packet with it (user ones too;
@@ -405,8 +405,8 @@ Kernel/Object/Names.swift; ipc.h, task.h; the pinned tree's semantics):
   STATE once dead), jobs, BTIs and VMOs (in the VmoRecord), resources read
   only, others WRONG_TYPE; process_create and thread_create now store
   theirs.
-- Tests: the Swift `objects` suite (names, handle_close_many,
-  port_cancel by key), moved from mode 17's `small_calls` (D23).
+- Tests: the Swift `objects` suite (names, handle_close of
+  several, port_cancel by key), moved from mode 17's `small_calls` (D23).
 
 ## Info topics and vmar_op_range (K13e part 2)
 

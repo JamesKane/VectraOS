@@ -45,7 +45,7 @@ enum Sys {
     }
 
     static func close(_ handle: UInt32) {
-        if handle != 0 { _ = call(CROI_SYS_HANDLE_CLOSE, UInt64(handle)) }
+        if handle != 0 { _ = croi_handle_close(handle) }
     }
 
     static func say(_ text: StaticString) {

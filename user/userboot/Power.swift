@@ -126,7 +126,7 @@ enum Power {
         var at: UInt64 = 0
         try Userboot.call("mapping ACPI tables", Userboot.sys(CROI_SYS_VMO_CREATE_PHYSICAL, UInt64(resource), first, length,
                                                               Userboot.address(&vmo)))
-        defer { _ = Userboot.sys(CROI_SYS_HANDLE_CLOSE, UInt64(vmo)) }
+        defer { _ = croi_handle_close(vmo) }
         try Userboot.call("mapping ACPI tables", Userboot.sys(CROI_SYS_VMO_SET_CACHE_POLICY, UInt64(vmo),
                                                               UInt64(CROI_CACHE_POLICY_CACHED)))
         try Userboot.call("mapping ACPI tables", Userboot.sys(CROI_SYS_VMAR_MAP,

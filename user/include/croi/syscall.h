@@ -12,7 +12,7 @@ enum : uint64_t {
   CROI_SYS_NULL = 0,
   CROI_SYS_THREAD_EXIT = 2,        // (int64_t code): the calling thread
   CROI_SYS_TEST_REPORT = 5,        // (value) for the boot self-test
-  CROI_SYS_HANDLE_CLOSE = 10,      // (handle)
+  CROI_SYS_HANDLE_CLOSE = 10,      // (const uint32_t *handles, count): 0 skipped (D33)
   CROI_SYS_HANDLE_DUPLICATE = 11,  // (handle, rights, uint32_t *out)
   CROI_SYS_HANDLE_REPLACE = 12,    // (handle, rights, uint32_t *out)
   CROI_SYS_OBJECT_BIND = 22,       // (port, croi_bind_item_t *items, count): port.h
@@ -115,7 +115,6 @@ enum : uint64_t {
   CROI_SYS_PAGER_OP_RANGE = 206,        // (pager, op, vmo, offset, length, data)
   CROI_SYS_PAGER_QUERY_DIRTY_RANGES = 207,  // (pager | vmo << 32, offset, length, buffer, buffer_size, size_t out[2]: actual, avail)
   CROI_SYS_PAGER_QUERY_VMO_STATS = 208, // (pager, vmo, options, buffer, buffer_size)
-  CROI_SYS_HANDLE_CLOSE_MANY = 211,     // (const uint32_t *handles, count)
   CROI_SYS_PROCESS_READ_MEMORY = 230,   // (process, vaddr, buffer, size, size_t *actual), K13g
   CROI_SYS_PROCESS_WRITE_MEMORY = 231,  // (process, vaddr, buffer, size, size_t *actual): croi.debug_syscalls
   CROI_SYS_TASK_SUSPEND = 232,          // (thread or process, uint32_t *token)
@@ -245,4 +244,9 @@ static inline int64_t croi_syscall6(uint64_t number, uint64_t a0, uint64_t a1, u
   __asm__ volatile("ecall" : "+r"(r0) : "r"(a7), "r"(r1), "r"(r2), "r"(r3), "r"(r4), "r"(r5) : "memory");
   return (int64_t)r0;
 #endif
+}
+
+// Closes one handle: handle_close takes an array (D33).
+static inline int64_t croi_handle_close(uint32_t handle) {
+  return croi_syscall(CROI_SYS_HANDLE_CLOSE, (uint64_t)&handle, 1, 0, 0, 0);
 }

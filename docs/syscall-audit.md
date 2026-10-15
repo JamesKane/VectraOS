@@ -63,7 +63,7 @@ Legend: **keep**, **merge** (the call survives under a combined form),
 | 3 | clock_monotonic | cut | vDSO `croi_vdso_clock_monotonic` already reads the counter |
 | 4 | nanosleep | cut | `port_wait(own port, deadline)` |
 | 5, 6 | test_report, test_profile | merge | one `test(op, …)` call, self-test builds only |
-| 10, 211 | handle_close, handle_close_many | merge | `handle_close(handles, count)` |
+| 10, 211 | handle_close, handle_close_many | merge (D33) | `handle_close(handles, count)` |
 | 11, 12 | handle_duplicate, handle_replace | merge | `handle_duplicate(h, rights, options)`; `CONSUME` replaces |
 
 ### Signals, waits and ports
@@ -173,7 +173,7 @@ were cut (D27): 107 calls. debug_write and vmo_map were cut (D28): 105
 calls. interrupt_wait, interrupt_destroy and interrupt_trigger were cut
 (D29): 102 calls. thread_raise_exception was cut (D30): 101 calls. system_get_event was
 cut (D31): 100 calls. port_cancel_key merged into port_cancel (D32): 99
-calls.
+calls. handle_close_many merged into handle_close (D33): 98 calls.
 
 The ceiling in `tools/vx/LocCommand.swift` is lowered with each cut, so it
 never rises.

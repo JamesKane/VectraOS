@@ -78,7 +78,7 @@ static int64_t objects(void) {
   CHECK(29, sys(CROI_SYS_VMO_WRITE, vmo, 0xFFFFFFFF80000000ull, 0, 16, 0) == ERR_INVALID_ARGS);
   CHECK(30, sys(CROI_SYS_VMO_READ, vmo, 0xFFFFFFFF80000000ull, 0, 16, 0) == ERR_INVALID_ARGS);
 
-  CHECK(28, sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0) == 0);
+  CHECK(28, croi_handle_close(vmo) == 0);
   return 0x600D;
 }
 
@@ -326,7 +326,7 @@ static uint32_t wait_for(uint32_t handle, uint32_t signals, uint64_t ns) {
     else
       sys(CROI_SYS_PORT_CANCEL, port, handle, 0, 0, 0);
   }
-  sys(CROI_SYS_HANDLE_CLOSE, port, 0, 0, 0, 0);
+  croi_handle_close(port);
   return observed;
 }
 
@@ -338,7 +338,7 @@ static void sleep_until(uint64_t deadline) {
   croi_port_packet_t packet;
   if (sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) != 0) return;
   sys(CROI_SYS_PORT_WAIT, port, deadline, (uint64_t)&packet, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, port, 0, 0, 0, 0);
+  croi_handle_close(port);
 }
 
 static void sleep_ns(uint64_t ns) { sleep_until(now_ns() + ns); }
@@ -355,7 +355,7 @@ static int64_t wait_value(uint32_t handle, int64_t target, uint64_t deadline) {
     status = sys(CROI_SYS_PORT_WAIT, port, deadline, (uint64_t)&packet, 0, 0);
     if (status != 0) sys(CROI_SYS_PORT_CANCEL, port, handle, 0, 0, 0);
   }
-  sys(CROI_SYS_HANDLE_CLOSE, port, 0, 0, 0, 0);
+  croi_handle_close(port);
   return status;
 }
 
@@ -383,8 +383,8 @@ static uint32_t make_child(const startup_t *s, uint32_t job, uint32_t *thread_ou
   uint64_t data = vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE | CROI_VM_SPECIFIC) << 32;
   CHECK(83, sys6(CROI_SYS_VMAR_MAP, data, CHILD_STACK - ROOT_VMAR_BASE, stack, 0, CHILD_STACKS * STACK_SIZE,
                  (uint64_t)&at) == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, stack, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, vmar, 0, 0, 0, 0);
+  croi_handle_close(stack);
+  croi_handle_close(vmar);
   CHECK(84, sys6(CROI_SYS_THREAD_CREATE, process, (uint64_t)"main", 4, 0, (uint64_t)&thread, 0) == 0);
   *thread_out = thread;
   return process;
@@ -396,7 +396,7 @@ static void start_child(uint32_t process, uint32_t thread, uint64_t submode) {
   CHECK(86, sys6(CROI_SYS_PROCESS_START, process, thread, CHILD_CODE, CHILD_STACK + STACK_SIZE, self, submode) == 0);
   CHECK(79, sys6(CROI_SYS_PROCESS_START, process, thread, CHILD_CODE, CHILD_STACK + STACK_SIZE, 0, submode) ==
                 ERR_BAD_STATE);  // only once
-  sys(CROI_SYS_HANDLE_CLOSE, thread, 0, 0, 0, 0);
+  croi_handle_close(thread);
 }
 
 static uint32_t spawn_child(const startup_t *s, uint32_t job, uint64_t submode) {
@@ -425,7 +425,7 @@ static void user_spinner(uint64_t arg) {
 // to user mode must notice the kill (amd64's SYSCALL path once didn't).
 static void syscall_spinner(uint64_t arg) {
   (void)arg;
-  for (;;) sys(CROI_SYS_HANDLE_CLOSE, 0x12340003, 0, 0, 0, 0);
+  for (;;) croi_handle_close(0x12340003);
 }
 
 // A thread of a child, on stack `n` (1 to CHILD_STACKS - 1; 0 is main's).
@@ -463,7 +463,7 @@ static int64_t child(uint32_t self, uint64_t submode, uint64_t vdso) {
   case 6: {  // under a job policy: channels denied, bad handles kill
     uint32_t a = 0, b = 0;
     if (sys(CROI_SYS_CHANNEL_CREATE, 0, (uint64_t)&a, (uint64_t)&b, 0, 0) != ERR_ACCESS_DENIED) return 55;
-    sys(CROI_SYS_HANDLE_CLOSE, 0x12340003, 0, 0, 0, 0);
+    croi_handle_close(0x12340003);
     return 56;  // survived the kill
   }
   case 7:  // a breakpoint
@@ -542,23 +542,23 @@ static int64_t processes(const startup_t *s) {
   CHECK(88, return_code(process) == 42);
   uint32_t thread = 0;
   CHECK(89, sys6(CROI_SYS_THREAD_CREATE, process, 0, 0, 0, (uint64_t)&thread, 0) == ERR_BAD_STATE);
-  sys(CROI_SYS_HANDLE_CLOSE, process, 0, 0, 0, 0);
+  croi_handle_close(process);
 
   process = spawn_child(s, s->job, 2);
   sleep_until(now_ns() + 2000000);
   CHECK(90, sys(CROI_SYS_TASK_KILL, process, 0, 0, 0, 0) == 0);
   CHECK(91, (wait_terminated(process) & CROI_SIGNAL_TASK_TERMINATED) &&
                 return_code(process) == CROI_TASK_RETCODE_SYSCALL_KILL);
-  sys(CROI_SYS_HANDLE_CLOSE, process, 0, 0, 0, 0);
+  croi_handle_close(process);
 
   process = spawn_child(s, s->job, 3);
   CHECK(92, (wait_terminated(process) & CROI_SIGNAL_TASK_TERMINATED) &&
                 return_code(process) == CROI_TASK_RETCODE_EXCEPTION_KILL);
-  sys(CROI_SYS_HANDLE_CLOSE, process, 0, 0, 0, 0);
+  croi_handle_close(process);
 
   process = spawn_child(s, s->job, 4);
   CHECK(93, (wait_terminated(process) & CROI_SIGNAL_TASK_TERMINATED) && return_code(process) == 7);
-  sys(CROI_SYS_HANDLE_CLOSE, process, 0, 0, 0, 0);
+  croi_handle_close(process);
 
   uint32_t job = 0, vmar = 0;
   CHECK(94, sys(CROI_SYS_JOB_CREATE, s->job, 0, (uint64_t)&job, 0, 0) == 0);
@@ -567,9 +567,9 @@ static int64_t processes(const startup_t *s) {
   CHECK(95, sys(CROI_SYS_TASK_KILL, job, 0, 0, 0, 0) == 0);
   CHECK(96, wait_terminated(process) & CROI_SIGNAL_TASK_TERMINATED);
   CHECK(296, return_code(process) == CROI_TASK_RETCODE_SYSCALL_KILL);
-  sys(CROI_SYS_HANDLE_CLOSE, process, 0, 0, 0, 0);
+  croi_handle_close(process);
   CHECK(97, sys6(CROI_SYS_PROCESS_CREATE, job, 0, 0, 0, (uint64_t)&process, (uint64_t)&vmar) == ERR_BAD_STATE);
-  sys(CROI_SYS_HANDLE_CLOSE, job, 0, 0, 0, 0);
+  croi_handle_close(job);
 
   // VMARs: a sub-region that may map read/write, not execute.
   uint32_t sub = 0, vmo = 0;
@@ -589,8 +589,8 @@ static int64_t processes(const startup_t *s) {
   CHECK(106, sys(CROI_SYS_VMAR_DESTROY, sub, 0, 0, 0, 0) == 0);
   CHECK(107, sys6(CROI_SYS_VMAR_MAP, rw, 0, vmo, 0, 8192, (uint64_t)&at) == ERR_BAD_STATE ||
                  sys6(CROI_SYS_VMAR_MAP, rw, 0, vmo, 0, 8192, (uint64_t)&at) < 0);
-  sys(CROI_SYS_HANDLE_CLOSE, sub, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0);
+  croi_handle_close(sub);
+  croi_handle_close(vmo);
   return 0x600D;
 }
 
@@ -655,7 +655,7 @@ static int64_t map_stack(const startup_t *s, uint64_t *at) {
   if (status != 0) return status;
   status = sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, stack, 0,
                 STACK_SIZE, (uint64_t)at);
-  sys(CROI_SYS_HANDLE_CLOSE, stack, 0, 0, 0, 0);
+  croi_handle_close(stack);
   return status;
 }
 
@@ -706,9 +706,9 @@ static int64_t ipc(const startup_t *s) {
   croi_info_handle_basic_t ic = {};
   sys(CROI_SYS_OBJECT_GET_INFO, client, CROI_INFO_HANDLE_BASIC, (uint64_t)&ic, sizeof ic, 0);
   uint64_t channel_id = ic.koid < ic.related_koid ? ic.koid : ic.related_koid;
-  sys(CROI_SYS_HANDLE_CLOSE, client, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, served, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, server_thread, 0, 0, 0, 0);
+  croi_handle_close(client);
+  croi_handle_close(served);
+  croi_handle_close(server_thread);
 
   // A call whose peer closes while it waits.
   uint32_t x = 0, y = 0;
@@ -716,11 +716,11 @@ static int64_t ipc(const startup_t *s) {
   uint64_t slot[2] = {x, 1};
   uint32_t caller = start_thread(s, lonely_caller, (uint64_t)slot);
   sleep_until(now_ns() + 3000000);
-  sys(CROI_SYS_HANDLE_CLOSE, y, 0, 0, 0, 0);
+  croi_handle_close(y);
   CHECK(146, (wait_for(caller, CROI_SIGNAL_TASK_TERMINATED, 2000000000) & CROI_SIGNAL_TASK_TERMINATED) &&
                  (int64_t)slot[1] == ERR_PEER_CLOSED);
-  sys(CROI_SYS_HANDLE_CLOSE, caller, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, x, 0, 0, 0, 0);
+  croi_handle_close(caller);
+  croi_handle_close(x);
 
   sys(CROI_SYS_TEST_REPORT, croi_flow_id(channel_id, last_txid), 0, 0, 0, 0);
   return 0x600D;
@@ -737,7 +737,7 @@ static uint64_t koid_of(uint32_t handle) {
 
 static void join(uint32_t thread) {
   wait_for(thread, CROI_SIGNAL_TASK_TERMINATED, 3000000000ull);
-  sys(CROI_SYS_HANDLE_CLOSE, thread, 0, 0, 0, 0);
+  croi_handle_close(thread);
 }
 
 // Mode 9: exceptions and job policy (K7d), as a process.
@@ -756,7 +756,7 @@ static void handle_exception(uint32_t channel, uint32_t process, uint32_t type, 
                  actual[1] == 1);
   CHECK(187, info.type == type && info.pid == koid_of(process));
   if (state < 0) {
-    sys(CROI_SYS_HANDLE_CLOSE, exception, 0, 0, 0, 0);
+    croi_handle_close(exception);
     return;
   }
   if (state == CROI_EXCEPTION_STATE_HANDLED) {
@@ -778,11 +778,11 @@ static void handle_exception(uint32_t channel, uint32_t process, uint32_t type, 
     regs.x[1] &= ~15ull;  // sp
 #endif
     CHECK(189, sys(CROI_SYS_THREAD_WRITE_STATE, thread, CROI_THREAD_STATE_GENERAL_REGS, (uint64_t)&regs, sizeof regs, 0) == 0);
-    sys(CROI_SYS_HANDLE_CLOSE, thread, 0, 0, 0, 0);
+    croi_handle_close(thread);
   }
   uint32_t value32 = (uint32_t)state;
   CHECK(184, sys(CROI_SYS_OBJECT_SET_PROPERTY, exception, CROI_PROP_EXCEPTION_STATE, (uint64_t)&value32, 4, 0) == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, exception, 0, 0, 0, 0);
+  croi_handle_close(exception);
 }
 
 static uint32_t exception_channel(uint32_t task) {
@@ -794,7 +794,7 @@ static uint32_t exception_channel(uint32_t task) {
 static int64_t finished(uint32_t process) {
   CHECK(182, wait_for(process, CROI_SIGNAL_TASK_TERMINATED, 5000000000ull) & CROI_SIGNAL_TASK_TERMINATED);
   int64_t code = return_code(process);
-  sys(CROI_SYS_HANDLE_CLOSE, process, 0, 0, 0, 0);
+  croi_handle_close(process);
   return code;
 }
 
@@ -861,7 +861,7 @@ static void tls(const startup_t *s) {
   for (int i = 0; i < 2; i++) {
     CHECK(34, wait_for(workers[i].self, CROI_SIGNAL_TASK_TERMINATED, 5000000000ull) & CROI_SIGNAL_TASK_TERMINATED);
     CHECK(35, workers[i].ok == 1);
-    sys(CROI_SYS_HANDLE_CLOSE, workers[i].self, 0, 0, 0, 0);
+    croi_handle_close(workers[i].self);
   }
 }
 
@@ -889,9 +889,9 @@ static void unmap_exit(const startup_t *s) {
                 sys(CROI_SYS_THREAD_START, u.self, (uint64_t)unmap_exit_worker, ENTRY_SP(u.stack + STACK_SIZE),
                     (uint64_t)&u, 0) == 0);
   CHECK(39, (wait_for(watch, CROI_SIGNAL_TASK_TERMINATED, 5000000000ull) & CROI_SIGNAL_TASK_TERMINATED) &&
-                sys(CROI_SYS_HANDLE_CLOSE, u.self, 0, 0, 0, 0) == ERR_BAD_HANDLE &&
+                croi_handle_close(u.self) == ERR_BAD_HANDLE &&
                 sys(CROI_SYS_VMAR_PROTECT, s->vmar | (uint64_t)CROI_VM_PERM_READ << 32, u.stack, STACK_SIZE, 0, 0) != 0);
-  sys(CROI_SYS_HANDLE_CLOSE, watch, 0, 0, 0, 0);
+  croi_handle_close(watch);
 }
 
 static int64_t exceptions(const startup_t *s) {
@@ -906,7 +906,7 @@ static int64_t exceptions(const startup_t *s) {
   start_child(process, thread, 5);
   handle_exception(channel, process, CROI_EXCP_FATAL_PAGE_FAULT, CROI_EXCEPTION_STATE_HANDLED, 77);
   CHECK(191, finished(process) == 78);
-  sys(CROI_SYS_HANDLE_CLOSE, channel, 0, 0, 0, 0);
+  croi_handle_close(channel);
 
   // Order: the process's channel passes it on, the job's takes it.
   uint32_t job = 0;
@@ -918,7 +918,7 @@ static int64_t exceptions(const startup_t *s) {
   handle_exception(channel, process, CROI_EXCP_FATAL_PAGE_FAULT, -1, 0);
   handle_exception(job_channel, process, CROI_EXCP_FATAL_PAGE_FAULT, CROI_EXCEPTION_STATE_HANDLED, 80);
   CHECK(193, finished(process) == 81);
-  sys(CROI_SYS_HANDLE_CLOSE, channel, 0, 0, 0, 0);
+  croi_handle_close(channel);
 
   // A breakpoint; then THREAD_EXIT (its only thread: the process ends, 0).
   process = make_child(s, job, &thread);
@@ -926,23 +926,23 @@ static int64_t exceptions(const startup_t *s) {
   start_child(process, thread, 7);
   handle_exception(channel, process, CROI_EXCP_SW_BREAKPOINT, CROI_EXCEPTION_STATE_HANDLED, 90);
   CHECK(194, finished(process) == 91);
-  sys(CROI_SYS_HANDLE_CLOSE, channel, 0, 0, 0, 0);
+  croi_handle_close(channel);
   process = make_child(s, job, &thread);
   channel = exception_channel(process);
   start_child(process, thread, 5);
   handle_exception(channel, process, CROI_EXCP_FATAL_PAGE_FAULT, -1, 0);  // process: next
   handle_exception(job_channel, process, CROI_EXCP_FATAL_PAGE_FAULT, CROI_EXCEPTION_STATE_THREAD_EXIT, 0);
   CHECK(195, finished(process) == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, channel, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, job_channel, 0, 0, 0, 0);
+  croi_handle_close(channel);
+  croi_handle_close(job_channel);
 
   // No handler listening (its channel closed): the exception kills.
   process = make_child(s, job, &thread);
   channel = exception_channel(process);
-  sys(CROI_SYS_HANDLE_CLOSE, channel, 0, 0, 0, 0);
+  croi_handle_close(channel);
   start_child(process, thread, 5);
   CHECK(196, finished(process) == CROI_TASK_RETCODE_EXCEPTION_KILL);
-  sys(CROI_SYS_HANDLE_CLOSE, job, 0, 0, 0, 0);
+  croi_handle_close(job);
 
   // Job policy: channels denied, a bad handle kills; inherited by a child
   // job; fixed once the job has children; ABSOLUTE conflicts refused.
@@ -960,8 +960,8 @@ static int64_t exceptions(const startup_t *s) {
   CHECK(202, finished(process) == CROI_TASK_RETCODE_POLICY_KILL);
   process = spawn_child(s, inner, 6);
   CHECK(203, finished(process) == CROI_TASK_RETCODE_POLICY_KILL);
-  sys(CROI_SYS_HANDLE_CLOSE, inner, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, strict, 0, 0, 0, 0);
+  croi_handle_close(inner);
+  croi_handle_close(strict);
 
   // DENY_EXCEPTION: a POLICY_ERROR exception, then the call is denied.
   uint32_t watched = 0;
@@ -978,11 +978,11 @@ static int64_t exceptions(const startup_t *s) {
                    chan_read(job_channel, &info, &exception, sizeof info, 1, actual) == 0 &&
                    info.type == CROI_EXCP_POLICY_ERROR);
     sys(CROI_SYS_OBJECT_SET_PROPERTY, exception, CROI_PROP_EXCEPTION_STATE, (uint64_t)&resume, 4, 0);
-    sys(CROI_SYS_HANDLE_CLOSE, exception, 0, 0, 0, 0);
+    croi_handle_close(exception);
   }
   CHECK(207, finished(process) == 60);
-  sys(CROI_SYS_HANDLE_CLOSE, job_channel, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, watched, 0, 0, 0, 0);
+  croi_handle_close(job_channel);
+  croi_handle_close(watched);
   return 0x600D;
 }
 
@@ -1034,7 +1034,7 @@ static uint64_t map_physical(const startup_t *s, uint32_t resource, uint64_t bas
   CHECK(240, sys(CROI_SYS_VMO_CREATE_PHYSICAL, resource, first, length, (uint64_t)&vmo, 0) == 0 &&
                  sys(CROI_SYS_VMO_SET_CACHE_POLICY, vmo, policy, 0, 0, 0) == 0 &&
                  sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)perms << 32, 0, vmo, 0, length, (uint64_t)&at) == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0);
+  croi_handle_close(vmo);
   return at + (base - first);
 }
 
@@ -1101,13 +1101,13 @@ static int64_t firmware(const startup_t *s) {
                  sys(CROI_SYS_VMO_SET_CACHE_POLICY, vmo, CROI_CACHE_POLICY_UNCACHED, 0, 0, 0) == ERR_ACCESS_DENIED &&
                  sys(CROI_SYS_VMO_SET_CACHE_POLICY, vmo, CROI_CACHE_POLICY_WRITE_COMBINING, 0, 0, 0) ==
                      ERR_ACCESS_DENIED &&
-                 sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0) == 0);
+                 croi_handle_close(vmo) == 0);
   const volatile uint8_t *table = (const volatile uint8_t *)map_physical(s, mmio, rsdp, 36, CROI_CACHE_POLICY_CACHED,
                                                                           CROI_VM_PERM_READ);
   CHECK(237, table[0] == 'R' && table[1] == 'S' && table[2] == 'D' && table[7] == ' ' && table[15] >= 2 &&
                  checksum(table, 36) == 0);
   uint64_t xsdt = *(const volatile uint64_t *)(table + 24);
-  sys(CROI_SYS_HANDLE_CLOSE, mmio, 0, 0, 0, 0);
+  croi_handle_close(mmio);
   // The XSDT, through the root resource: whole and summing to zero.
   table = (const volatile uint8_t *)map_physical(s, s->resource, xsdt, 36, CROI_CACHE_POLICY_CACHED, CROI_VM_PERM_READ);
   uint32_t length = *(const volatile uint32_t *)(table + 4);
@@ -1185,20 +1185,20 @@ static int64_t drivers(const startup_t *s) {
                  sys(CROI_SYS_VMO_SET_CACHE_POLICY, vmo, CROI_CACHE_POLICY_UNCACHED, 0, 0, 0) == ERR_BAD_STATE &&
                  sys(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_CACHE_CLEAN, 0, PAGE, 0) == 0);
   sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, PAGE, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0);
+  croi_handle_close(vmo);
   // Closed, the range is free for anyone again.
-  CHECK(219, sys(CROI_SYS_HANDLE_CLOSE, mmio, 0, 0, 0, 0) == 0 &&
+  CHECK(219, croi_handle_close(mmio) == 0 &&
                  resource_create(root, CROI_RSRC_KIND_MMIO, DRV_DEVICE, PAGE, &mmio) == 0 &&
                  resource_create(mmio, CROI_RSRC_KIND_MMIO, DRV_DEVICE + 0x100, 0x100, &other) == 0 &&
                  resource_create(other, CROI_RSRC_KIND_MMIO, DRV_DEVICE, 0x200, &irq) == ERR_ACCESS_DENIED);
-  sys(CROI_SYS_HANDLE_CLOSE, other, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, mmio, 0, 0, 0, 0);
+  croi_handle_close(other);
+  croi_handle_close(mmio);
   // System resources: size 1 inside the system space.
   CHECK(220, resource_create(root, CROI_RSRC_KIND_SYSTEM, CROI_RSRC_SYSTEM_TRACING_BASE, 1, &other) == 0 &&
                  resource_create(root, CROI_RSRC_KIND_SYSTEM, CROI_RSRC_SYSTEM_COUNT, 1, &mmio) == ERR_NOT_FOUND &&
                  resource_create(root, 3, 0, 1, &mmio) == ERR_INVALID_ARGS);  // ROOT can't be minted
-  sys(CROI_SYS_HANDLE_CLOSE, other, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, irq, 0, 0, 0, 0);
+  croi_handle_close(other);
+  croi_handle_close(irq);
 
   // Cache policy on an anonymous VMO: only unmapped; read/write refused
   // once uncached; MAP needed; bad values refused.
@@ -1234,8 +1234,8 @@ static int64_t drivers(const startup_t *s) {
                  sys(CROI_SYS_VMO_OP_RANGE, anon, 99, 0, PAGE, 0) == ERR_INVALID_ARGS &&
                  sys(CROI_SYS_VMO_OP_RANGE, readonly, CROI_VMO_OP_COMMIT, 0, PAGE, 0) == ERR_ACCESS_DENIED &&
                  sys(CROI_SYS_VMO_OP_RANGE, readonly, CROI_VMO_OP_CACHE_CLEAN, 0, PAGE, 0) == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, readonly, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, anon, 0, 0, 0, 0);
+  croi_handle_close(readonly);
+  croi_handle_close(anon);
 
   // amd64 IO ports: allowed after a request, refused again after the
   // release (a thread's outb then raises a general exception).
@@ -1251,9 +1251,9 @@ static int64_t drivers(const startup_t *s) {
   uint32_t worker = start_thread(s, port_worker, 0);
   handle_exception(channel, s->process, CROI_EXCP_GENERAL, CROI_EXCEPTION_STATE_THREAD_EXIT, 0);
   CHECK(230, wait_for(worker, CROI_SIGNAL_TASK_TERMINATED, 5000000000ull) & CROI_SIGNAL_TASK_TERMINATED);
-  sys(CROI_SYS_HANDLE_CLOSE, worker, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, channel, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, ports, 0, 0, 0, 0);
+  croi_handle_close(worker);
+  croi_handle_close(channel);
+  croi_handle_close(ports);
 #else
   CHECK(228, sys(CROI_SYS_IOPORTS_REQUEST, root, 0x80, 1, 0, 0) == ERR_NOT_SUPPORTED);
 #endif
@@ -1262,7 +1262,7 @@ static int64_t drivers(const startup_t *s) {
   uint64_t size = 1;
   CHECK(227, sys(CROI_SYS_VMO_CREATE, 0, 0, (uint64_t)&anon, 0, 0) == 0 &&
                  sys(CROI_SYS_VMO_GET_SIZE, anon, (uint64_t)&size, 0, 0, 0) == 0 && size == 0 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, anon, 0, 0, 0, 0) == 0);
+                 croi_handle_close(anon) == 0);
   return firmware(s);
 }
 
@@ -1274,7 +1274,7 @@ static int64_t port_next(uint32_t port, uint64_t ns, croi_port_packet_t *packet)
 
 static void join_checked(uint32_t thread) {
   CHECK(251, wait_for(thread, CROI_SIGNAL_TASK_TERMINATED, 5000000000ull) & CROI_SIGNAL_TASK_TERMINATED);
-  sys(CROI_SYS_HANDLE_CLOSE, thread, 0, 0, 0, 0);
+  croi_handle_close(thread);
 }
 
 // PCI config space for the IOMMU test (mode 18): bus 0's function-0
@@ -1358,7 +1358,7 @@ static int log_has(const startup_t *s, const char *text) {
       found = text[j] == 0;
     }
   }
-  sys(CROI_SYS_HANDLE_CLOSE, log, 0, 0, 0, 0);
+  croi_handle_close(log);
   return found;
 }
 
@@ -1379,7 +1379,7 @@ static int64_t dma(const startup_t *s) {
                      ERR_INVALID_ARGS &&
                  sys(CROI_SYS_IOMMU_CREATE, s->resource, CROI_IOMMU_TYPE_STUB, (uint64_t)&desc, 1, (uint64_t)&iommu) ==
                      0);
-  sys(CROI_SYS_HANDLE_CLOSE, tracing, 0, 0, 0, 0);
+  croi_handle_close(tracing);
   CHECK(303, sys(CROI_SYS_BTI_CREATE, iommu, 1, 0x1234, (uint64_t)&bti, 0) == ERR_INVALID_ARGS &&
                  sys(CROI_SYS_BTI_CREATE, iommu, 0, 0x1234, (uint64_t)&bti, 0) == 0 &&
                  log_has(s, "no-IOMMU BTI 0x1234"));
@@ -1401,7 +1401,7 @@ static int64_t dma(const startup_t *s) {
                  bti_pin(bti, rw, readonly, 4, 0, 4 * PAGE, addrs, &pmt) == ERR_ACCESS_DENIED_ &&
                  bti_pin(bti, CROI_BTI_PERM_READ, readonly, 4, 0, 4 * PAGE, addrs, &pmt) == 0 &&
                  sys(CROI_SYS_PMT_UNPIN, pmt, 0, 0, 0, 0) == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, readonly, 0, 0, 0, 0);
+  croi_handle_close(readonly);
   uint8_t bytes[16];
   for (int i = 0; i < 16; i++) bytes[i] = 0x5A;
   CHECK(307, bti_pin(bti, rw, vmo, 4, 0, 4 * PAGE, addrs, &pmt) == 0 && addrs[0] != 0 && addrs[0] % PAGE == 0 &&
@@ -1414,11 +1414,11 @@ static int64_t dma(const startup_t *s) {
   // The PMT can't be duplicated; unpin consumes its handle and frees the pages.
   CHECK(308, sys(CROI_SYS_HANDLE_DUPLICATE, pmt, 1u << 31, (uint64_t)&dup, 0, 0) == ERR_ACCESS_DENIED_ &&
                  sys(CROI_SYS_PMT_UNPIN, pmt, 0, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, pmt, 0, 0, 0, 0) == ERR_BAD_HANDLE && bti_info(bti).pmo_count == 0 &&
+                 croi_handle_close(pmt) == ERR_BAD_HANDLE && bti_info(bti).pmo_count == 0 &&
                  sys(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_DECOMMIT, 0, PAGE, 0) == 0);
   // Closed without unpinning: quarantined until released.
   CHECK(309, bti_pin(bti, rw, vmo, 1, PAGE, PAGE, addrs, &pmt) == 0 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, pmt, 0, 0, 0, 0) == 0 && bti_info(bti).quarantine_count == 1 &&
+                 croi_handle_close(pmt) == 0 && bti_info(bti).quarantine_count == 1 &&
                  bti_info(bti).pmo_count == 0 &&
                  sys(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_DECOMMIT, PAGE, PAGE, 0) == ERR_BAD_STATE &&
                  sys(CROI_SYS_BTI_RELEASE_QUARANTINE, bti, 0, 0, 0, 0) == 0 && bti_info(bti).quarantine_count == 0 &&
@@ -1460,7 +1460,7 @@ static int64_t dma(const startup_t *s) {
                  bti_pin(bti, rw, vmo, 1, 0, PAGE, addrs, &pmt) == ERR_OUT_OF_RANGE && bti_info(bti).pmo_count == 0);
   // Contiguous allocations land inside: the window's pages, freed, are
   // the only place left.
-  CHECK(316, sys(CROI_SYS_HANDLE_CLOSE, contig, 0, 0, 0, 0) == 0 &&
+  CHECK(316, croi_handle_close(contig) == 0 &&
                  sys(CROI_SYS_VMO_CREATE_CONTIGUOUS, bti, 2 * PAGE, 0, (uint64_t)&inside, 0) == 0 &&
                  bti_pin(bti, rw | CROI_BTI_CONTIGUOUS, inside, 1, 0, 2 * PAGE, addrs, &pmt) == 0 && addrs[0] >= base &&
                  addrs[0] + 2 * PAGE <= base + 3 * PAGE);
@@ -1469,12 +1469,12 @@ static int64_t dma(const startup_t *s) {
   croi_bti_properties_t noncoherent = narrow;
   noncoherent.memory_type = CROI_BTI_MEMORY_NONCOHERENT;
   CHECK(317, sys(CROI_SYS_BTI_SET_PROPERTIES, bti, (uint64_t)&noncoherent, 0, 0, 0) == ERR_BAD_STATE &&
-                 sys(CROI_SYS_PMT_UNPIN, pmt, 0, 0, 0, 0) == 0 && sys(CROI_SYS_HANDLE_CLOSE, inside, 0, 0, 0, 0) == 0 &&
+                 sys(CROI_SYS_PMT_UNPIN, pmt, 0, 0, 0, 0) == 0 && croi_handle_close(inside) == 0 &&
                  sys(CROI_SYS_BTI_SET_PROPERTIES, bti, (uint64_t)&noncoherent, 0, 0, 0) == 0 &&
                  sys(CROI_SYS_VMO_CREATE_CONTIGUOUS, bti, PAGE, 0, (uint64_t)&inside, 0) == 0 &&
                  sys(CROI_SYS_VMO_READ, inside, (uint64_t)bytes, 0, 8, 0) == ERR_BAD_STATE);
-  sys(CROI_SYS_HANDLE_CLOSE, inside, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, other, 0, 0, 0, 0);
+  croi_handle_close(inside);
+  croi_handle_close(other);
   // Width: 12 bits reach no RAM, so nothing pins and nothing allocates.
   uint32_t narrow_bti = 0;
   croi_bti_properties_t tiny = {.address_bits = 12, .memory_type = CROI_BTI_MEMORY_COHERENT};
@@ -1482,10 +1482,10 @@ static int64_t dma(const startup_t *s) {
                  sys(CROI_SYS_BTI_SET_PROPERTIES, narrow_bti, (uint64_t)&tiny, 0, 0, 0) == 0 &&
                  bti_pin(narrow_bti, rw, vmo, 1, 0, PAGE, addrs, &pmt) == ERR_OUT_OF_RANGE &&
                  sys(CROI_SYS_VMO_CREATE_CONTIGUOUS, narrow_bti, PAGE, 0, (uint64_t)&inside, 0) == ERR_NO_MEMORY &&
-                 sys(CROI_SYS_HANDLE_CLOSE, narrow_bti, 0, 0, 0, 0) == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, bti, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, iommu, 0, 0, 0, 0);
+                 croi_handle_close(narrow_bti) == 0);
+  croi_handle_close(vmo);
+  croi_handle_close(bti);
+  croi_handle_close(iommu);
   return 0x600D;
 }
 
@@ -1519,7 +1519,7 @@ static int64_t iommu_test(const startup_t *s) {
   uint32_t cap = 0;
   uint32_t edu_at = find_device(bus, ~0u, 0x11e81234, 0x05, &cap);
   if (edu_at == 0) {
-    sys(CROI_SYS_HANDLE_CLOSE, bus_vmo, 0, 0, 0, 0);
+    croi_handle_close(bus_vmo);
     return 0x600E;
   }
   uint64_t bdf = edu_at >> 15 << 3;  // bus 0, function 0
@@ -1610,25 +1610,25 @@ static int64_t iommu_test(const startup_t *s) {
     CHECK(410, port_next(mport, 1000000000, &p) == 0 && p.type == CROI_PKT_TYPE_INTERRUPT && p.key == 79);
     *(volatile uint32_t *)(regs + 0x64) = 8;
     *(volatile uint16_t *)(edu + cap + 2) = control;
-    sys(CROI_SYS_HANDLE_CLOSE, intr, 0, 0, 0, 0);
-    sys(CROI_SYS_HANDLE_CLOSE, mport, 0, 0, 0, 0);
-    sys(CROI_SYS_HANDLE_CLOSE, msi, 0, 0, 0, 0);
+    croi_handle_close(intr);
+    croi_handle_close(mport);
+    croi_handle_close(msi);
   }
   cfg32_write(edu, 4, command);
-  sys(CROI_SYS_HANDLE_CLOSE, regs_vmo, 0, 0, 0, 0);
+  croi_handle_close(regs_vmo);
 
   // Quarantined, then the BTI goes: the device is blocked, so the pages
   // come back; the device can be claimed again, and the unit bound again.
-  CHECK(408, sys(CROI_SYS_HANDLE_CLOSE, pmt_ro, 0, 0, 0, 0) == 0 && bti_info(bti).quarantine_count == 1 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, bti, 0, 0, 0, 0) == 0 &&
+  CHECK(408, croi_handle_close(pmt_ro) == 0 && bti_info(bti).quarantine_count == 1 &&
+                 croi_handle_close(bti) == 0 &&
                  sys(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_DECOMMIT, 0, 3 * PAGE, 0) == 0 &&
                  sys(CROI_SYS_BTI_CREATE, iommu, 0, bdf, (uint64_t)&bti, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, bti, 0, 0, 0, 0) == 0 && sys(CROI_SYS_HANDLE_CLOSE, iommu, 0, 0, 0, 0) == 0 &&
+                 croi_handle_close(bti) == 0 && croi_handle_close(iommu) == 0 &&
                  sys(CROI_SYS_IOMMU_CREATE, s->resource, type, (uint64_t)&desc, desc_size,
                      (uint64_t)&iommu) == 0 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, iommu, 0, 0, 0, 0) == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, bus_vmo, 0, 0, 0, 0);
+                 croi_handle_close(iommu) == 0);
+  croi_handle_close(vmo);
+  croi_handle_close(bus_vmo);
   return 0x600D;
 }
 #endif
@@ -1699,14 +1699,14 @@ static int64_t memory_stats(const startup_t *s) {
                  v1.mem_fractional_scaled_shared_bytes == 77 &&
                  sys6(CROI_SYS_THREAD_CREATE, child, (uint64_t)"t", 1, 0, (uint64_t)&thread, 0) == 0 &&
                  info(thread, CROI_INFO_TASK_STATS, &c, sizeof c) == ERR_WRONG_TYPE);
-  sys(CROI_SYS_HANDLE_CLOSE, weak, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, thread, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, child, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, child_vmar, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, other, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, other_vmar, 0, 0, 0, 0);
+  croi_handle_close(weak);
+  croi_handle_close(thread);
+  croi_handle_close(child);
+  croi_handle_close(child_vmar);
+  croi_handle_close(other);
+  croi_handle_close(other_vmar);
   sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, 4 * PAGE, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0);
+  croi_handle_close(vmo);
 
   // Kernel memory: needs the INFO resource; the parts add up.
   croi_info_kmem_stats_t k;
@@ -1721,7 +1721,7 @@ static int64_t memory_stats(const startup_t *s) {
                  resource_create(s->resource, CROI_RSRC_KIND_SYSTEM, CROI_RSRC_SYSTEM_TRACING_BASE, 1, &tracing) == 0 &&
                  info(tracing, CROI_INFO_KMEM_STATS, &k, sizeof k) != 0 &&
                  info(s->process, CROI_INFO_KMEM_STATS, &k, sizeof k) == ERR_WRONG_TYPE);
-  sys(CROI_SYS_HANDLE_CLOSE, tracing, 0, 0, 0, 0);
+  croi_handle_close(tracing);
   return 0x600D;
 }
 
@@ -1806,7 +1806,7 @@ static void pager_server(uint64_t arg) {
       sys(CROI_SYS_VMO_WRITE, aux, (uint64_t)page, at, PAGE, 0);
     }
     sys6(CROI_SYS_PAGER_SUPPLY_PAGES, (uint32_t)slot[1], (uint32_t)slot[2], offset, length, aux, 0);
-    sys(CROI_SYS_HANDLE_CLOSE, aux, 0, 0, 0, 0);
+    croi_handle_close(aux);
   }
   sys(CROI_SYS_THREAD_EXIT, 0, 0, 0, 0, 0);
 }
@@ -1895,7 +1895,7 @@ static int64_t pager(const startup_t *s) {
                  sys(CROI_SYS_VMO_READ, vmo, (uint64_t)buf, 2 * PAGE, 4, 0) == ERR_BAD_STATE &&
                  sys(CROI_SYS_VMO_READ, vmo, (uint64_t)buf, 0, 4, 0) == 0 && buf[0] == 'x' &&
                  sys6(CROI_SYS_PAGER_SUPPLY_PAGES, pg, vmo, 0, PAGE, other, 0) == ERR_BAD_STATE);
-  sys(CROI_SYS_HANDLE_CLOSE, server, 0, 0, 0, 0);
+  croi_handle_close(server);
   sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, 5 * PAGE, 0, 0);
   sys(CROI_SYS_VMAR_UNMAP, s->vmar, rw, 2 * PAGE, 0, 0);
   // TRAP_DIRTY: writes wait for the pager's DIRTY (vmo_write, then a
@@ -1915,14 +1915,14 @@ static int64_t pager(const startup_t *s) {
                  sys6(CROI_SYS_PAGER_QUERY_DIRTY_RANGES, pg | (uint64_t)trap << 32, 0, 2 * PAGE, (uint64_t)ranges,
                       sizeof ranges, (uint64_t)counts) == 0 && counts[1] == 1 && ranges[0].length == 2 * PAGE &&
                  sys(CROI_SYS_VMAR_UNMAP, s->vmar, rw, 2 * PAGE, 0, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, trap, 0, 0, 0, 0) == 0 &&
+                 croi_handle_close(trap) == 0 &&
                  wait_for(server, CROI_SIGNAL_TASK_TERMINATED, 3000000000ull) && tslot[5] == 1);
-  sys(CROI_SYS_HANDLE_CLOSE, server, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, child, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, other, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, port, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, pg, 0, 0, 0, 0);
+  croi_handle_close(server);
+  croi_handle_close(child);
+  croi_handle_close(vmo);
+  croi_handle_close(other);
+  croi_handle_close(port);
+  croi_handle_close(pg);
   return 0;
 }
 
@@ -1977,8 +1977,8 @@ static int64_t info_topics(const startup_t *s) {
                  get_info(sleeper, CROI_INFO_THREAD, &thread, sizeof thread, counts) == 0 &&
                  thread.state == CROI_THREAD_STATE_DEAD &&
                  get_info(sleeper, CROI_INFO_THREAD_STATS, &stats, sizeof stats, counts) == ERR_BAD_STATE);
-  sys(CROI_SYS_HANDLE_CLOSE, sleeper, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, port, 0, 0, 0, 0);
+  croi_handle_close(sleeper);
+  croi_handle_close(port);
   // Runtime: ours, and the job's at least as much; V1 is the first half.
   croi_info_task_runtime_t mine, jobs;
   CHECK(514, get_info(s->process, CROI_INFO_TASK_RUNTIME, &mine, sizeof mine, counts) == 0 && mine.cpu_time > 0 &&
@@ -1997,7 +1997,7 @@ static int64_t info_topics(const startup_t *s) {
   CHECK(516, listed && sys(CROI_SYS_TASK_KILL, child, 0, 0, 0, 0) == 0 &&
                  get_info(child, CROI_INFO_JOB, &job, sizeof job, counts) == 0 && job.exited == 1 &&
                  job.return_code == -1024);
-  sys(CROI_SYS_HANDLE_CLOSE, child, 0, 0, 0, 0);
+  croi_handle_close(child);
   // A VMO: koid, name, size, committed bytes, flags, rights.
   uint32_t vmo = 0;
   uint64_t at = 0;
@@ -2063,8 +2063,8 @@ static int64_t info_topics(const startup_t *s) {
   CHECK(522, found);
   sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, 2 * PAGE, 0, 0);
   sys(CROI_SYS_VMAR_UNMAP, s->vmar, scratch, 16 * PAGE, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, scratch_vmo, 0, 0, 0, 0);
+  croi_handle_close(vmo);
+  croi_handle_close(scratch_vmo);
   return 0;
 }
 
@@ -2098,7 +2098,7 @@ static int64_t debugging(const startup_t *s) {
                  sys6(CROI_SYS_OBJECT_GET_INFO, worker, CROI_INFO_THREAD, (uint64_t)&thread, sizeof thread,
                       (uint64_t)&counts[0], (uint64_t)&counts[1]) == 0 &&
                  thread.state == CROI_THREAD_STATE_SUSPENDED &&
-                 sys(CROI_SYS_HANDLE_CLOSE, token, 0, 0, 0, 0) == 0 &&
+                 croi_handle_close(token) == 0 &&
                  (wait_for(worker, CROI_THREAD_RUNNING, 2000000000ull) & CROI_THREAD_RUNNING));
   give_up = now_ns() + 2000000000ull;
   while (count == frozen && now_ns() < give_up) {
@@ -2118,7 +2118,7 @@ static int64_t debugging(const startup_t *s) {
   CHECK(544, thread.state == CROI_THREAD_STATE_BLOCKED_PORT &&
                  sys(CROI_SYS_TASK_SUSPEND, sleeper, (uint64_t)&token, 0, 0, 0) == 0 &&
                  (wait_for(sleeper, CROI_THREAD_SUSPENDED, 2000000000ull) & CROI_THREAD_SUSPENDED) &&
-                 sys(CROI_SYS_HANDLE_CLOSE, token, 0, 0, 0, 0) == 0);
+                 croi_handle_close(token) == 0);
   give_up = now_ns() + 2000000000ull;
   do {
     sys6(CROI_SYS_OBJECT_GET_INFO, sleeper, CROI_INFO_THREAD, (uint64_t)&thread, sizeof thread, (uint64_t)&counts[0],
@@ -2128,8 +2128,8 @@ static int64_t debugging(const startup_t *s) {
   CHECK(545, thread.state == CROI_THREAD_STATE_BLOCKED_PORT &&
                  sys(CROI_SYS_PORT_QUEUE, port, (uint64_t)&wake, 0, 0, 0) == 0 &&
                  (wait_for(sleeper, CROI_SIGNAL_TASK_TERMINATED, 3000000000ull) & CROI_SIGNAL_TASK_TERMINATED));
-  sys(CROI_SYS_HANDLE_CLOSE, sleeper, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, port, 0, 0, 0, 0);
+  croi_handle_close(sleeper);
+  croi_handle_close(port);
   // Memory: read our own; an unmapped address NOT_FOUND; a write into a
   // read-only mapping lands in a private copy (the VMO keeps its bytes).
   uint64_t secret = 0x5EC12E7, got = 0, actual = 0, at = 0;
@@ -2146,7 +2146,7 @@ static int64_t debugging(const startup_t *s) {
                  actual == 1 && *(volatile char *)at == 'B' &&
                  sys(CROI_SYS_VMO_READ, vmo, (uint64_t)&byte, 0, 1, 0) == 0 && byte == 'A');
   sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, PAGE, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0);
+  croi_handle_close(vmo);
   return 0;
 }
 
@@ -2184,7 +2184,7 @@ static int64_t debugger_checks(const startup_t *s, uint32_t *channel_out);
 static int64_t debugger(const startup_t *s) {
   uint32_t channel = 0;
   int64_t result = debugger_checks(s, &channel);
-  if (channel != 0) sys(CROI_SYS_HANDLE_CLOSE, channel, 0, 0, 0, 0);
+  if (channel != 0) croi_handle_close(channel);
   return result;
 }
 
@@ -2226,11 +2226,11 @@ static int64_t debugger_checks(const startup_t *s, uint32_t *channel_out) {
                  state.state == CROI_THREAD_STATE_BLOCKED_EXCEPTION &&
                  state.wait_exception_channel_type == CROI_EXCEPTION_CHANNEL_TYPE_DEBUGGER &&
                  sys(CROI_SYS_OBJECT_SET_PROPERTY, exception, CROI_PROP_EXCEPTION_STATE, (uint64_t)&handled, 4, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, exception, 0, 0, 0, 0) == 0);
+                 croi_handle_close(exception) == 0);
   CHECK(552, next_exception(channel, &info, &exception) && info.type == CROI_EXCP_THREAD_EXITING &&
                  sys(CROI_SYS_THREAD_READ_STATE, thread, CROI_THREAD_STATE_GENERAL_REGS, (uint64_t)&regs, sizeof regs, 0) ==
                      ERR_NOT_SUPPORTED &&
-                 sys(CROI_SYS_HANDLE_CLOSE, exception, 0, 0, 0, 0) == 0);
+                 croi_handle_close(exception) == 0);
   join(thread);
   // A breakpoint: the debugger first (the report's arch part); it asks
   // for a second chance and gets it back after the thread's and process's
@@ -2239,7 +2239,7 @@ static int64_t debugger_checks(const startup_t *s, uint32_t *channel_out) {
   thread = start_thread(s, breaker, 0);
   CHECK(553, next_exception(channel, &info, &exception) && info.type == CROI_EXCP_THREAD_STARTING &&
                  sys(CROI_SYS_OBJECT_SET_PROPERTY, exception, CROI_PROP_EXCEPTION_STATE, (uint64_t)&handled, 4, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, exception, 0, 0, 0, 0) == 0 &&
+                 croi_handle_close(exception) == 0 &&
                  next_exception(channel, &info, &exception) && info.type == CROI_EXCP_SW_BREAKPOINT &&
                  sys6(CROI_SYS_OBJECT_GET_INFO, thread, CROI_INFO_THREAD_EXCEPTION_REPORT, (uint64_t)&report, sizeof report,
                       (uint64_t)&counts[0], (uint64_t)&counts[1]) == 0 &&
@@ -2251,12 +2251,12 @@ static int64_t debugger_checks(const startup_t *s, uint32_t *channel_out) {
                  report.context.arch.cause == 3 &&
 #endif
                  sys(CROI_SYS_OBJECT_SET_PROPERTY, exception, CROI_PROP_EXCEPTION_STRATEGY, (uint64_t)&second_chance, 4, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, exception, 0, 0, 0, 0) == 0 &&
+                 croi_handle_close(exception) == 0 &&
                  next_exception(channel, &info, &exception) && info.type == CROI_EXCP_SW_BREAKPOINT &&
                  sys(CROI_SYS_OBJECT_SET_PROPERTY, exception, CROI_PROP_EXCEPTION_STATE, (uint64_t)&exit_state, 4, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, exception, 0, 0, 0, 0) == 0 &&
+                 croi_handle_close(exception) == 0 &&
                  next_exception(channel, &info, &exception) && info.type == CROI_EXCP_THREAD_EXITING &&
-                 sys(CROI_SYS_HANDLE_CLOSE, exception, 0, 0, 0, 0) == 0);
+                 croi_handle_close(exception) == 0);
   join(thread);
   // Refusals: a thread can't have a debugger channel; jobs take several.
   CHECK(554, sys(CROI_SYS_TASK_CREATE_EXCEPTION_CHANNEL, s->vmar, 0, (uint64_t)&second, 0, 0) == ERR_ACCESS_DENIED &&
@@ -2266,12 +2266,12 @@ static int64_t debugger_checks(const startup_t *s, uint32_t *channel_out) {
   croi_info_job_t jinfo;
   CHECK(555, sys6(CROI_SYS_OBJECT_GET_INFO, job, CROI_INFO_JOB, (uint64_t)&jinfo, sizeof jinfo, (uint64_t)&counts[0],
                   (uint64_t)&counts[1]) == 0 && jinfo.debugger_attached == 1 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, channel, 0, 0, 0, 0) == 0 && (*channel_out = 0, 1) &&
+                 croi_handle_close(channel) == 0 && (*channel_out = 0, 1) &&
                  sys6(CROI_SYS_OBJECT_GET_INFO, s->process, CROI_INFO_PROCESS, (uint64_t)&process, sizeof process,
                       (uint64_t)&counts[0], (uint64_t)&counts[1]) == 0 &&
                  !(process.flags & CROI_INFO_PROCESS_FLAG_DEBUGGER_ATTACHED));
   uint32_t rest[3] = {jobchannel, second, job};
-  sys(CROI_SYS_HANDLE_CLOSE_MANY, (uint64_t)rest, 3, 0, 0, 0);
+  sys(CROI_SYS_HANDLE_CLOSE, (uint64_t)rest, 3, 0, 0, 0);
   return 0;
 }
 
@@ -2299,14 +2299,14 @@ static int64_t stepping_checks(const startup_t *s, uint32_t *channel_out);
 static int64_t stepping(const startup_t *s) {
   uint32_t channel = 0;
   int64_t result = stepping_checks(s, &channel);
-  if (channel != 0) sys(CROI_SYS_HANDLE_CLOSE, channel, 0, 0, 0, 0);
+  if (channel != 0) croi_handle_close(channel);
   return result;
 }
 
 static int resume(uint32_t exception) {
   uint32_t handled = CROI_EXCEPTION_STATE_HANDLED;
   return sys(CROI_SYS_OBJECT_SET_PROPERTY, exception, CROI_PROP_EXCEPTION_STATE, (uint64_t)&handled, 4, 0) == 0 &&
-         sys(CROI_SYS_HANDLE_CLOSE, exception, 0, 0, 0, 0) == 0;
+         croi_handle_close(exception) == 0;
 }
 
 static int64_t stepping_checks(const startup_t *s, uint32_t *channel_out) {
@@ -2373,7 +2373,7 @@ static int64_t stepping_checks(const startup_t *s, uint32_t *channel_out) {
   (void)off;
 #endif
   CHECK(568, next_exception(channel, &info, &exception) && info.type == CROI_EXCP_THREAD_EXITING &&
-                 sys(CROI_SYS_HANDLE_CLOSE, exception, 0, 0, 0, 0) == 0);
+                 croi_handle_close(exception) == 0);
   join(thread);
   return 0;
 }
@@ -2420,7 +2420,7 @@ static int64_t resizing(const startup_t *s) {
   CHECK(574, sys6(CROI_SYS_VMO_CREATE_CHILD, vmo, CROI_VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE | CROI_VMO_CHILD_RESIZABLE, 0,
                   PAGE, (uint64_t)&child, 0) == 0 &&
                  sys(CROI_SYS_VMO_SET_SIZE, child, 4 * PAGE, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, child, 0, 0, 0, 0) == 0 &&
+                 croi_handle_close(child) == 0 &&
                  sys6(CROI_SYS_VMO_CREATE_CHILD, vmo, CROI_VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE, 0, PAGE, (uint64_t)&child,
                       0) == 0 &&
                  sys(CROI_SYS_OBJECT_GET_INFO, child, CROI_INFO_HANDLE_BASIC, (uint64_t)&basic, sizeof basic, 0) == 0 &&
@@ -2449,7 +2449,7 @@ static int64_t resizing(const startup_t *s) {
                       sizeof ranges, (uint64_t)counts) == 0 && counts[1] == 0);
   sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, 4 * PAGE, 0, 0);
   uint32_t rest[8] = {vmo, plain, weak, child, fixed, pg, port, paged};
-  sys(CROI_SYS_HANDLE_CLOSE_MANY, (uint64_t)rest, 8, 0, 0, 0);
+  sys(CROI_SYS_HANDLE_CLOSE, (uint64_t)rest, 8, 0, 0, 0);
   return 0;
 }
 
@@ -2473,7 +2473,7 @@ static int64_t smc(const startup_t *s) {
                  resource_create(s->resource, CROI_RSRC_KIND_SMC, 0x84000002u, 1, &cpu_off) == ERR_ACCESS_DENIED);
   params.func_id = 0x84000008u;  // SYSTEM_OFF: the kernel's
   CHECK(583, sys(CROI_SYS_SMC_CALL, s->resource, (uint64_t)&params, (uint64_t)&result, 0, 0) == ERR_ACCESS_DENIED);
-  sys(CROI_SYS_HANDLE_CLOSE, one, 0, 0, 0, 0);
+  croi_handle_close(one);
 #else
   CHECK(581, sys(CROI_SYS_SMC_CALL, s->resource, (uint64_t)&params, (uint64_t)&result, 0, 0) == ERR_NOT_SUPPORTED);
 #endif
@@ -2496,7 +2496,7 @@ static int64_t postmortem_checks(const startup_t *s, uint32_t *channel_out);
 static int64_t postmortem(const startup_t *s) {
   uint32_t channel = 0;
   int64_t result = postmortem_checks(s, &channel);
-  if (channel != 0) sys(CROI_SYS_HANDLE_CLOSE, channel, 0, 0, 0, 0);
+  if (channel != 0) croi_handle_close(channel);
   return result;
 }
 
@@ -2535,11 +2535,11 @@ static int64_t postmortem_checks(const startup_t *s, uint32_t *channel_out) {
                   (uint64_t)&counts[1]) == 0 &&
                  state.state == CROI_THREAD_STATE_BLOCKED_EXCEPTION &&
                  sys(CROI_SYS_OBJECT_SET_PROPERTY, moved, CROI_PROP_EXCEPTION_STATE, (uint64_t)&exit_state, 4, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, moved, 0, 0, 0, 0) == 0 &&
+                 croi_handle_close(moved) == 0 &&
                  (wait_for(thread, CROI_SIGNAL_TASK_TERMINATED, 3000000000ull) & CROI_SIGNAL_TASK_TERMINATED));
-  sys(CROI_SYS_HANDLE_CLOSE, thread, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, a, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, b, 0, 0, 0, 0);
+  croi_handle_close(thread);
+  croi_handle_close(a);
+  croi_handle_close(b);
   return 0;
 }
 
@@ -2587,7 +2587,7 @@ static uint64_t contended_futex(const startup_t *s, uint64_t deadline) {
   for (int i = 0; i < 4; i++) threads[i] = start_thread(s, futex_locker, (uint64_t)&l);
   for (int i = 0; i < 4; i++) {
     wait_for(threads[i], CROI_SIGNAL_TASK_TERMINATED, 60000000000ull);
-    sys(CROI_SYS_HANDLE_CLOSE, threads[i], 0, 0, 0, 0);
+    croi_handle_close(threads[i]);
   }
   return l.counter == 4 * 2000 ? now_ns() - start : ~0ull;
 }
@@ -2651,13 +2651,13 @@ static int64_t page_loaning(const startup_t *s) {
   // the pages come back to the VMO's end and to wherever it came from.
   CHECK(642, sys6(CROI_SYS_VMO_CREATE_CHILD, vmo, CROI_VMO_CHILD_SLICE, 0, PAGE, (uint64_t)&slice, 0) == 0 &&
                  sys6(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_DECOMMIT, 0, PAGE, 0, 0) == ERR_BAD_STATE &&
-                 sys(CROI_SYS_HANDLE_CLOSE, slice, 0, 0, 0, 0) == 0);
+                 croi_handle_close(slice) == 0);
   sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, 4 * PAGE, 0, 0);
   CHECK(643, sys6(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_DECOMMIT, 0, 4 * PAGE, 0, 0) == 0 &&
-                 committed_of(vmo, 0) == 0 && sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0) == 0 &&
+                 committed_of(vmo, 0) == 0 && croi_handle_close(vmo) == 0 &&
                  kmem_loaned(s, &now) && now == before);
   uint32_t handles[2] = {bti, iommu};
-  sys(CROI_SYS_HANDLE_CLOSE_MANY, (uint64_t)handles, 2, 0, 0, 0);
+  sys(CROI_SYS_HANDLE_CLOSE, (uint64_t)handles, 2, 0, 0, 0);
   return 0;
 }
 
@@ -2717,7 +2717,7 @@ static int64_t page_borrowing(const startup_t *s) {
   sys(CROI_SYS_PAGER_DETACH_VMO, pg, vmo, 0, 0, 0);
   wait_for(server, CROI_SIGNAL_TASK_TERMINATED, 3000000000ull);
   uint32_t handles[] = {server, vmo, aux, port, pg, contig, bti, iommu};
-  for (int i = 0; i < 8; i++) sys(CROI_SYS_HANDLE_CLOSE, handles[i], 0, 0, 0, 0);
+  for (int i = 0; i < 8; i++) croi_handle_close(handles[i]);
   return 0;
 }
 
@@ -2789,10 +2789,10 @@ static int64_t reclaim(const startup_t *s) {
   sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, 8 * PAGE, 0, 0);
   CHECK(607, sys(CROI_SYS_PAGER_DETACH_VMO, pg, vmo, 0, 0, 0) == 0 &&
                  wait_for(server, CROI_SIGNAL_TASK_TERMINATED, 3000000000ull));
-  sys(CROI_SYS_HANDLE_CLOSE, server, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, port, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, pg, 0, 0, 0, 0);
+  croi_handle_close(server);
+  croi_handle_close(vmo);
+  croi_handle_close(port);
+  croi_handle_close(pg);
 
   // Discardable: the whole range only, nested locks, the state LOCK
   // reports; unlocked and old, discarded whole; NOT_FOUND until locked.
@@ -2831,8 +2831,8 @@ static int64_t reclaim(const startup_t *s) {
                  sys6(CROI_SYS_VMO_OP_RANGE, d, CROI_VMO_OP_LOCK, 0, 4 * PAGE, (uint64_t)&st, sizeof st) == 0 &&
                  st.discarded_size == 4 * PAGE &&
                  sys(CROI_SYS_VMO_READ, d, (uint64_t)buf, PAGE, 3, 0) == 0 && buf[0] == 0 && buf[2] == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, d, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, aux, 0, 0, 0, 0);
+  croi_handle_close(d);
+  croi_handle_close(aux);
 
   return 0;
 }
@@ -2855,7 +2855,7 @@ static int64_t vmo_slices(const startup_t *s) {
                  vmo_child(parent, slice_option, 8, PAGE, &bad) == ERR_INVALID_ARGS &&
                  vmo_child(parent, slice_option, 0x10000, PAGE, &bad) == ERR_INVALID_ARGS &&
                  vmo_child(parent, slice_option, 0xF000, 2 * PAGE, &bad) == ERR_INVALID_ARGS);
-  sys(CROI_SYS_HANDLE_CLOSE, anon, 0, 0, 0, 0);
+  croi_handle_close(anon);
   // A slice over device 1's page clears ZERO_CHILDREN and reads as the parent.
   uint64_t at = 0, deep_at = 0;
   CHECK(432, vmo_child(parent, slice_option, 0x8000, PAGE, &slice) == 0 &&
@@ -2871,7 +2871,7 @@ static int64_t vmo_slices(const startup_t *s) {
                  *(volatile uint32_t *)deep_at == *(volatile uint32_t *)at &&
                  sys(CROI_SYS_VMAR_UNMAP, s->vmar, deep_at, PAGE, 0, 0) == 0 &&
                  sys(CROI_SYS_VMO_SET_CACHE_POLICY, deeper, CROI_CACHE_POLICY_UNCACHED_DEVICE, 0, 0, 0) == ERR_BAD_STATE);
-  sys(CROI_SYS_HANDLE_CLOSE, deeper, 0, 0, 0, 0);
+  croi_handle_close(deeper);
   // Rights: a slice of a handle without WRITE has none; NO_WRITE takes it.
   uint64_t w = 0;
   uint32_t ro_rights = 1u << 0 | 1u << 1 | 1u << 2 | 1u << 5 | 1u << 14 | 1u << 15;  // dup, transfer, read, map, wait, inspect
@@ -2882,8 +2882,8 @@ static int64_t vmo_slices(const startup_t *s) {
                       0, PAGE, (uint64_t)&w) == ERR_ACCESS_DENIED_ &&
                  sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, nw_slice,
                       0, PAGE, (uint64_t)&w) == ERR_ACCESS_DENIED_);
-  sys(CROI_SYS_HANDLE_CLOSE, ro_slice, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, nw_slice, 0, 0, 0, 0);
+  croi_handle_close(ro_slice);
+  croi_handle_close(nw_slice);
   // HANDLE_COUNT: two handles; one in flight still counts; back, then closed.
   croi_info_handle_count_t count = {0};
   uint32_t a = 0, b = 0, got = 0, actual[2] = {0, 0};
@@ -2893,21 +2893,21 @@ static int64_t vmo_slices(const startup_t *s) {
                  sys(CROI_SYS_OBJECT_GET_INFO, parent, CROI_INFO_HANDLE_COUNT, (uint64_t)&count, sizeof count, 0) == 0 &&
                  count.handle_count == 2 && chan_read(b, 0, &got, 0, 1, actual) == 0 &&
                  sys(CROI_SYS_OBJECT_GET_INFO, parent, CROI_INFO_HANDLE_COUNT, (uint64_t)&count, sizeof count, 0) == 0 &&
-                 count.handle_count == 2 && sys(CROI_SYS_HANDLE_CLOSE, got, 0, 0, 0, 0) == 0 &&
+                 count.handle_count == 2 && croi_handle_close(got) == 0 &&
                  sys(CROI_SYS_OBJECT_GET_INFO, parent, CROI_INFO_HANDLE_COUNT, (uint64_t)&count, sizeof count, 0) == 0 &&
                  count.handle_count == 1);
-  sys(CROI_SYS_HANDLE_CLOSE, a, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, b, 0, 0, 0, 0);
+  croi_handle_close(a);
+  croi_handle_close(b);
   // The last slice's handle goes while it is mapped: still a child. The
   // unmap ends it, and ZERO_CHILDREN comes back.
-  CHECK(436, sys(CROI_SYS_HANDLE_CLOSE, slice, 0, 0, 0, 0) == 0 &&
+  CHECK(436, croi_handle_close(slice) == 0 &&
                  !(wait_for(parent, zero, 0) & zero) &&
                  sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, PAGE, 0, 0) == 0 &&
                  (wait_for(parent, zero, 1000000000ull) & zero) &&
                  sys(CROI_SYS_VMO_SET_CACHE_POLICY, parent, CROI_CACHE_POLICY_UNCACHED_DEVICE, 0, 0, 0) ==
                      ERR_BAD_STATE);
   sys(CROI_SYS_VMAR_UNMAP, s->vmar, (uint64_t)whole, 0x10000, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, parent, 0, 0, 0, 0);
+  croi_handle_close(parent);
   return 0;
 }
 
@@ -2979,7 +2979,7 @@ static int64_t vmo_children(const startup_t *s) {
   sys(CROI_SYS_VMO_READ, parent, (uint64_t)&byte, 2 * P, 1, 0);
   if (byte != 'C') return 422;
   uint32_t handles[] = {parent, child, grand, ro};
-  for (int i = 0; i < 4; i++) sys(CROI_SYS_HANDLE_CLOSE, handles[i], 0, 0, 0, 0);
+  for (int i = 0; i < 4; i++) croi_handle_close(handles[i]);
   return 0;
 }
 
@@ -3053,9 +3053,9 @@ static int64_t child_kinds(const startup_t *s) {
                  vmo_put(cow, 0, 'N') && vmo_byte(bad, 0) == 'M' && vmo_byte(bad, PAGE) == 'q' &&
                  get_info(bad, CROI_INFO_VMO, &v, sizeof v, counts) == 0 && v.parent_koid == koid_of(cow) &&
                  vmo_child(cow, CROI_VMO_CHILD_SNAPSHOT, 0, PAGE, &snap) == ERR_NOT_SUPPORTED);
-  sys(CROI_SYS_HANDLE_CLOSE, bad, 0, 0, 0, 0);
+  croi_handle_close(bad);
   uint32_t closing[] = {chain, aow, mod, pmod, cow, paged, aux, port, pg, contig, bti, iommu};
-  for (int i = 0; i < 12; i++) sys(CROI_SYS_HANDLE_CLOSE, closing[i], 0, 0, 0, 0);
+  for (int i = 0; i < 12; i++) croi_handle_close(closing[i]);
 
   // A slice of an anonymous VMO: its pages, from the offset, both ways, by
   // syscall and by mapping; its size; nothing attributed to it; the
@@ -3086,12 +3086,12 @@ static int64_t child_kinds(const startup_t *s) {
   CHECK(655, sys6(CROI_SYS_VMO_OP_RANGE, slice, CROI_VMO_OP_DECOMMIT, 0, PAGE, 0, 0) == 0 &&
                  sys(CROI_SYS_VMO_CREATE, PAGE, 0, (uint64_t)&spare, 0, 0) == 0 && vmo_put(spare, 0, 'J') &&
                  *(volatile uint8_t *)mapped == 0 && vmo_byte(big, PAGE) == 0 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, spare, 0, 0, 0, 0) == 0 &&
+                 croi_handle_close(spare) == 0 &&
                  sys6(CROI_SYS_VMO_OP_RANGE, slice, CROI_VMO_OP_ZERO, PAGE, 4, 0, 0) == 0 &&
                  vmo_byte(big, 2 * PAGE) == 0 && vmo_byte(big, 2 * PAGE + 5) == 'T' &&
                  vmo_child(slice, CROI_VMO_CHILD_SLICE, PAGE, PAGE, &deeper) == 0 && vmo_byte(deeper, 5) == 'T' &&
                  !(wait_for(slice, zero, 0) & zero) &&
-                 sys(CROI_SYS_HANDLE_CLOSE, deeper, 0, 0, 0, 0) == 0 &&
+                 croi_handle_close(deeper) == 0 &&
                  (wait_for(slice, zero, 1000000000ull) & zero));
   // Refused through a slice: snapshots of it (an anonymous one, Zircon's),
   // a reference, a window past it; the parent's cache policy is fixed.
@@ -3105,10 +3105,10 @@ static int64_t child_kinds(const startup_t *s) {
                  sys(CROI_SYS_VMO_CREATE, PAGE, CROI_VMO_CREATE_RESIZABLE, (uint64_t)&grow, 0, 0) == 0 &&
                  vmo_child(grow, CROI_VMO_CHILD_SLICE, 0, PAGE, &bad) == ERR_NOT_SUPPORTED);
   // The parent's handle goes; the slice (and its mapping) keep the pages.
-  CHECK(657, sys(CROI_SYS_HANDLE_CLOSE, big, 0, 0, 0, 0) == 0 && vmo_byte(slice, PAGE + 5) == 'T' &&
+  CHECK(657, croi_handle_close(big) == 0 && vmo_byte(slice, PAGE + 5) == 'T' &&
                  (*(volatile uint8_t *)mapped = 'W') == 'W' && vmo_byte(slice, 0) == 'W' &&
                  sys(CROI_SYS_VMAR_UNMAP, s->vmar, mapped, 2 * PAGE, 0, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, slice, 0, 0, 0, 0) == 0);
+                 croi_handle_close(slice) == 0);
 
   // REFERENCE: the whole VMO, its pages and sizes, under its own koid.
   // Refusals in Zircon's order; RESIZABLE needs the parent resizable and
@@ -3139,7 +3139,7 @@ static int64_t child_kinds(const startup_t *s) {
                  get_info(ref, CROI_INFO_VMO, &v, sizeof v, counts) == 0 && v.parent_koid == koid_of(grow) &&
                  v.committed_bytes == 0 && (v.flags & CROI_INFO_VMO_RESIZABLE) && v.size_bytes == 3 * PAGE);
   uint32_t last[] = {rsnap, ref, rref, weak, grow, snap, parent};
-  for (int i = 0; i < 7; i++) sys(CROI_SYS_HANDLE_CLOSE, last[i], 0, 0, 0, 0);
+  for (int i = 0; i < 7; i++) croi_handle_close(last[i]);
   return 0;
 }
 
@@ -3171,7 +3171,7 @@ static void race_polluter(uint64_t arg) {
   copy_race_t *r = (copy_race_t *)arg;
   uint32_t own = 0;
   if (sys(CROI_SYS_VMO_CREATE, PAGE, 0, (uint64_t)&own, 0, 0) == 0) race_fill(own, 'J', &r->stop);
-  sys(CROI_SYS_HANDLE_CLOSE, own, 0, 0, 0, 0);
+  croi_handle_close(own);
   sys(CROI_SYS_THREAD_EXIT, 0, 0, 0, 0, 0);
 }
 
@@ -3192,7 +3192,7 @@ static int64_t copy_race(const startup_t *s) {
   wait_for(writer, CROI_SIGNAL_TASK_TERMINATED, 3000000000ull);
   wait_for(polluter, CROI_SIGNAL_TASK_TERMINATED, 3000000000ull);
   uint32_t handles[] = {writer, polluter, r.vmo};
-  for (int i = 0; i < 3; i++) sys(CROI_SYS_HANDLE_CLOSE, handles[i], 0, 0, 0, 0);
+  for (int i = 0; i < 3; i++) croi_handle_close(handles[i]);
   CHECK(662, !polluted && reads > 0);
   return 0;
 }
@@ -3222,8 +3222,8 @@ static int64_t unbounded(const startup_t *s) {
                  vmo_child(vmo, CROI_VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE, far, PAGE, &child) == 0 &&
                  vmo_byte(child, 0) == 'U' && vmo_child(vmo, CROI_VMO_CHILD_SLICE, far - PAGE, 2 * PAGE, &slice) == 0 &&
                  vmo_byte(slice, PAGE) == 'U');
-  sys(CROI_SYS_HANDLE_CLOSE, child, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, slice, 0, 0, 0, 0);
+  croi_handle_close(child);
+  croi_handle_close(slice);
   // The whole VMO at once: cache clean, ZERO, DECOMMIT.
   CHECK(665, vmo_put(vmo, max - 1, 'Z') &&
                  sys6(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_CACHE_CLEAN, 0, max, 0, 0) == 0 &&
@@ -3231,7 +3231,7 @@ static int64_t unbounded(const startup_t *s) {
                  vmo_byte(vmo, far) == 0 && vmo_byte(vmo, max - 1) == 'Z' && committed_of(vmo, 0) == 2 * PAGE &&
                  sys6(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_DECOMMIT, 0, max, 0, 0) == 0 &&
                  committed_of(vmo, 0) == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0);
+  croi_handle_close(vmo);
   // A pager VMO: refusals, sizes, a page supplied far out, dirty ranges
   // and writeback over the whole VMO, detach.
   uint32_t pg = 0, port = 0, aux = 0;
@@ -3257,7 +3257,7 @@ static int64_t unbounded(const startup_t *s) {
                       sizeof ranges, (uint64_t)counts) == 0 && counts[0] == 0 &&
                  sys(CROI_SYS_PAGER_DETACH_VMO, pg, vmo, 0, 0, 0) == 0 && committed_of(vmo, 0) == 0);
   uint32_t handles[] = {vmo, aux, port, pg};
-  for (int i = 0; i < 4; i++) sys(CROI_SYS_HANDLE_CLOSE, handles[i], 0, 0, 0, 0);
+  for (int i = 0; i < 4; i++) croi_handle_close(handles[i]);
   return 0;
 }
 
@@ -3290,7 +3290,7 @@ static int64_t zero_intervals(const startup_t *s) {
   // ZERO from inside page 1 to page 6: page 1's tail zeroed in place (dirty),
   // pages 2-5 a dirty zero interval, dropped; reading it commits nothing.
   CHECK(670, sys6(CROI_SYS_PAGER_SUPPLY_PAGES, pg, vmo, 0, 8 * PAGE, aux, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, aux, 0, 0, 0, 0) == 0 &&  // emptied: a fresh one for later supplies
+                 croi_handle_close(aux) == 0 &&  // emptied: a fresh one for later supplies
                  sys(CROI_SYS_VMO_CREATE, 8 * PAGE, 0, (uint64_t)&aux, 0, 0) == 0 &&
                  sys6(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_ZERO, PAGE + 100, 5 * PAGE - 100, 0, 0) == 0 &&
                  vmo_byte(vmo, PAGE + 99) == 'q' && vmo_byte(vmo, PAGE + 100) == 0 && vmo_byte(vmo, 3 * PAGE) == 0 &&
@@ -3328,7 +3328,7 @@ static int64_t zero_intervals(const startup_t *s) {
                  dirty_ranges(pg, vmo, 8 * PAGE, r, &n) && n == 3 && range_is(&r[0], 0, 2 * PAGE, 0) &&
                  sys(CROI_SYS_PMT_UNPIN, pmt, 0, 0, 0, 0) == 0);
   sys(CROI_SYS_PAGER_DETACH_VMO, pg, vmo, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0);
+  croi_handle_close(vmo);
   // All of an UNBOUNDED pager VMO zeroed at once: one interval.
   const uint64_t max = 0xFFFFFFFFFFFF0000ull;
   CHECK(675, sys6(CROI_SYS_PAGER_CREATE_VMO, pg, CROI_VMO_UNBOUNDED, port, 96, 0, (uint64_t)&vmo) == 0 &&
@@ -3341,7 +3341,7 @@ static int64_t zero_intervals(const startup_t *s) {
                  dirty_ranges(pg, vmo, max, r, &n) && n == 0);
   sys(CROI_SYS_PAGER_DETACH_VMO, pg, vmo, 0, 0, 0);
   uint32_t handles[] = {vmo, aux, port, pg, bti, iommu};
-  for (int i = 0; i < 6; i++) sys(CROI_SYS_HANDLE_CLOSE, handles[i], 0, 0, 0, 0);
+  for (int i = 0; i < 6; i++) croi_handle_close(handles[i]);
   return 0;
 }
 
@@ -3367,8 +3367,8 @@ static int64_t mapping_ceilings(const startup_t *s, uint64_t vdso_base) {
                      vdso_base, PAGE, 0, 0) == 0);
   CHECK(688, sys(CROI_SYS_VMO_CREATE_PHYSICAL, s->resource, PAGE, 0ull - PAGE, (uint64_t)&physical, 0) != 0);
   sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, PAGE, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, readOnly, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0);
+  croi_handle_close(readOnly);
+  croi_handle_close(vmo);
   return 0;
 }
 
@@ -3401,7 +3401,7 @@ static void nap_then_exit(uint64_t ns) {
 
 static int ended(uint32_t thread) {
   int done = (wait_for(thread, CROI_SIGNAL_TASK_TERMINATED, 3000000000ull) & CROI_SIGNAL_TASK_TERMINATED) != 0;
-  sys(CROI_SYS_HANDLE_CLOSE, thread, 0, 0, 0, 0);
+  croi_handle_close(thread);
   return done;
 }
 
@@ -3428,15 +3428,15 @@ static int64_t review_fixes(const startup_t *s) {
                      0) == ERR_BAD_STATE &&
                  sys(CROI_SYS_THREAD_WRITE_STATE, parked, CROI_THREAD_STATE_GENERAL_REGS, (uint64_t)&regs,
                      sizeof regs, 0) == ERR_BAD_STATE);
-  sys(CROI_SYS_HANDLE_CLOSE, token, 0, 0, 0, 0);
+  croi_handle_close(token);
   CHECK(690, ended(parked));
   // Offsets that wrap past 2^64: out of range, not a trap.
   uint32_t vmo = 0, slice = 0;
   CHECK(691, sys(CROI_SYS_VMO_CREATE, 2 * PAGE, 0, (uint64_t)&vmo, 0, 0) == 0 &&
                  sys(CROI_SYS_VMO_CREATE_CHILD, vmo, CROI_VMO_CHILD_SLICE, PAGE, PAGE, (uint64_t)&slice) == 0 &&
                  sys6(CROI_SYS_VMO_OP_RANGE, slice, CROI_VMO_OP_COMMIT, 0ull - PAGE, 0, 0, 0) == ERR_OUT_OF_RANGE);
-  sys(CROI_SYS_HANDLE_CLOSE, slice, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0);
+  croi_handle_close(slice);
+  croi_handle_close(vmo);
   CHECK(692, sys6(CROI_SYS_TRACE_CONFIGURE, s->resource, CROI_TRACE_OP_START, 0, 1ull << 63, 0, 0) == ERR_INVALID_ARGS);
   // A 2 s budget every 10 s, waking with budget left (its CBS products
   // passed 2^64).
@@ -3444,7 +3444,7 @@ static int64_t review_fixes(const startup_t *s) {
   CHECK(693, deadline_profile(s->resource, 2000000000ll, 10000000000ll, 10000000000ll, &profile) == 0 &&
                  (napper = start_thread(s, nap_then_exit, 20000000)) != 0 &&
                  sys(CROI_SYS_OBJECT_SET_PROFILE, napper, profile, 0, (uint64_t)&refusal, 0) == 0 && ended(napper));
-  sys(CROI_SYS_HANDLE_CLOSE, profile, 0, 0, 0, 0);
+  croi_handle_close(profile);
   return 0;
 }
 
@@ -3506,8 +3506,8 @@ static int policy_exception(uint32_t channel, uint32_t code) {
                 (uint64_t)&counts[0], (uint64_t)&counts[1]) == 0 &&
            report.context.synth_code == code &&
            sys(CROI_SYS_OBJECT_SET_PROPERTY, exception, CROI_PROP_EXCEPTION_STATE, (uint64_t)&handled, 4, 0) == 0;
-  sys(CROI_SYS_HANDLE_CLOSE, thread, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, exception, 0, 0, 0, 0);
+  croi_handle_close(thread);
+  croi_handle_close(exception);
   return ok;
 }
 
@@ -3523,8 +3523,8 @@ static int64_t review_medium(const startup_t *s) {
   sleep_ns(20000000);
   CHECK(695, answer(b) && answer(a) && ended(tx) && ended(ty) && x.result == 0 && x.reply[1] == 101 &&
                  y.result == 0 && y.reply[1] == 102);
-  sys(CROI_SYS_HANDLE_CLOSE, a, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, b, 0, 0, 0, 0);
+  croi_handle_close(a);
+  croi_handle_close(b);
   // Zircon's limits: a channel's 3501st queued message and a port's user
   // packets past 4096 raise policy exceptions (here handled and resumed).
   flood_t f = {0, 0, -1};
@@ -3538,7 +3538,7 @@ static int64_t review_medium(const startup_t *s) {
   CHECK(697, policy_exception(channel, CROI_EXCP_POLICY_CODE_PORT_TOO_MANY_PACKETS) && ended(flooder) &&
                  f.refusedAt == 4097);
   uint32_t handles[] = {channel, f.channel, reader, f.port};
-  for (int i = 0; i < 4; i++) sys(CROI_SYS_HANDLE_CLOSE, handles[i], 0, 0, 0, 0);
+  for (int i = 0; i < 4; i++) croi_handle_close(handles[i]);
   return 0;
 }
 
@@ -3613,7 +3613,7 @@ static int64_t review_entry(const startup_t *s) {
   uint64_t sp = 0;
   uint32_t bad = unstarted_thread(s, &sp);
   CHECK(698, sys(CROI_SYS_THREAD_START, bad, 0x0000800000000000ull, sp, 0, 0) == ERR_INVALID_ARGS);
-  sys(CROI_SYS_HANDLE_CLOSE, bad, 0, 0, 0, 0);
+  croi_handle_close(bad);
 #if defined(__x86_64__)
   // The 32-bit user code segment isn't present: a far return to it faults
   // on the segment (it reached 32-bit mode, whose SYSCALL went to an unset
@@ -3630,10 +3630,10 @@ static int64_t review_entry(const startup_t *s) {
                       sizeof report, (uint64_t)&counts[0], (uint64_t)&counts[1]) == 0 &&
                  report.context.arch.vector == 11 &&  // #NP
                  sys(CROI_SYS_OBJECT_SET_PROPERTY, exception, CROI_PROP_EXCEPTION_STATE, (uint64_t)&exit, 4, 0) == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, thread, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, exception, 0, 0, 0, 0);
+  croi_handle_close(thread);
+  croi_handle_close(exception);
   CHECK(699, ended(far));
-  sys(CROI_SYS_HANDLE_CLOSE, channel, 0, 0, 0, 0);
+  croi_handle_close(channel);
 #endif
 #if defined(__aarch64__)
   // A new thread starts with its own TLS register (0), not the one the
@@ -3665,7 +3665,7 @@ static int64_t review_queues(const startup_t *s) {
   CHECK(705, sys(CROI_SYS_VMO_CREATE, PAGE, 0, (uint64_t)&vmo, 0, 0) == 0 &&
                  sys(CROI_SYS_VMO_WRITE, vmo, 0xFFFFFFFFFFFFF800ull, 0, 0x1000, 0) < 0 &&
                  sys(CROI_SYS_VMO_READ, vmo, 0xFFFFFFFFFFFFF800ull, 0, 0x1000, 0) < 0);
-  sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0);
+  croi_handle_close(vmo);
   return 0;
 }
 
@@ -3685,7 +3685,7 @@ static void race_pager(uint64_t arg) {
     sys(CROI_SYS_VMO_CREATE, req[2], 0, (uint64_t)&aux, 0, 0);
     for (uint64_t at = 0; at < req[2]; at += PAGE) sys(CROI_SYS_VMO_WRITE, aux, (uint64_t)page, at, PAGE, 0);
     sys6(CROI_SYS_PAGER_SUPPLY_PAGES, (uint32_t)r[1], (uint32_t)r[2], req[1], req[2], aux, 0);
-    sys(CROI_SYS_HANDLE_CLOSE, aux, 0, 0, 0, 0);
+    croi_handle_close(aux);
     r[4]++;
   }
   sys(CROI_SYS_THREAD_EXIT, 0, 0, 0, 0, 0);
@@ -3757,7 +3757,7 @@ static int64_t get_child(const startup_t *s) {
                  sys(CROI_SYS_OBJECT_GET_CHILD, process2, tk, RIGHT_SAME, (uint64_t)&found, 0) == ERR_NOT_FOUND);
   // found is still 746's handle: refused calls write nothing.
   uint32_t handles[] = {job, thread, process, sub, worker, weak, port, none, got, process2, found};
-  for (int i = 0; i < 11; i++) sys(CROI_SYS_HANDLE_CLOSE, handles[i], 0, 0, 0, 0);
+  for (int i = 0; i < 11; i++) croi_handle_close(handles[i]);
   return 0;
 }
 
@@ -3783,9 +3783,9 @@ static int64_t review_open(const startup_t *s) {
                  sys6(CROI_SYS_OBJECT_GET_INFO, tv, CROI_INFO_VMO, (uint64_t)&info, sizeof info, 0, 0) == 0 &&
                  info.committed_bytes == 2 * PAGE &&
                  sys(CROI_SYS_VMO_READ, tv, (uint64_t)&byte, 2 * PAGE + 7, 1, 0) == 0 && byte == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, tv, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, tport, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, tp, 0, 0, 0, 0);
+  croi_handle_close(tv);
+  croi_handle_close(tport);
+  croi_handle_close(tp);
 
   // 740: a reader racing ZEROs: each round ZERO makes page 0 a zero
   // interval and a writeback hands it back to the pager. A read that saw
@@ -3821,9 +3821,9 @@ static int64_t review_open(const startup_t *s) {
   CHECK(742, reads > 100);
   CHECK(743, slowest < 1000000000ull);
   CHECK(744, error == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, rv, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, rport, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, rp, 0, 0, 0, 0);
+  croi_handle_close(rv);
+  croi_handle_close(rport);
+  croi_handle_close(rp);
   return 0;
 }
 
@@ -3859,7 +3859,7 @@ static int64_t review_pager(const startup_t *s) {
   CHECK(712, sys6(CROI_SYS_PAGER_OP_RANGE, pg, CROI_PAGER_OP_DIRTY, paged, 8 * PAGE, PAGE, 0) == ERR_OUT_OF_RANGE &&
                  sys6(CROI_SYS_PAGER_OP_RANGE, pg, CROI_PAGER_OP_DIRTY, paged, 0, PAGE, 0) == ERR_NOT_SUPPORTED);
   uint32_t handles[] = {big, anon, ro, pg, port, paged, aux};
-  for (int i = 0; i < 7; i++) sys(CROI_SYS_HANDLE_CLOSE, handles[i], 0, 0, 0, 0);
+  for (int i = 0; i < 7; i++) croi_handle_close(handles[i]);
   return 0;
 }
 
@@ -3913,7 +3913,7 @@ static int64_t memory_accounts(const startup_t *s) {
   // The limit never drops below what is charged.
   CHECK(716, sys(CROI_SYS_ACCOUNT_SET_LIMIT, account, PAGE, 0, 0, 0) == ERR_BAD_STATE &&
                  sys(CROI_SYS_ACCOUNT_SET_LIMIT, account, 8 * PAGE, 0, 0, 0) == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0);
+  croi_handle_close(vmo);
   CHECK(716, account_info(account).charged == 0);
   // A snapshot charges the pages it copies in, and gives them back.
   uint32_t source = 0, copy = 0;
@@ -3922,8 +3922,8 @@ static int64_t memory_accounts(const startup_t *s) {
                  sys6(CROI_SYS_VMO_CREATE_CHILD, source, CROI_VMO_CHILD_SNAPSHOT | CROI_VMO_CHARGE_TO, 0, 2 * PAGE,
                       (uint64_t)&copy, account) == 0 &&
                  account_info(account).charged == 2 * PAGE &&
-                 sys(CROI_SYS_HANDLE_CLOSE, copy, 0, 0, 0, 0) == 0 && account_info(account).charged == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, source, 0, 0, 0, 0);
+                 croi_handle_close(copy) == 0 && account_info(account).charged == 0);
+  croi_handle_close(source);
   // A process charges the account it was given (before it starts).
   uint32_t thread = 0, child = make_child(s, s->job, &thread);
   CHECK(717, sys(CROI_SYS_PROCESS_SET_ACCOUNT, child, account, 0, 0, 0) == 0);
@@ -3934,8 +3934,8 @@ static int64_t memory_accounts(const startup_t *s) {
                  sys(CROI_SYS_PROCESS_SET_ACCOUNT, child, account, 0, 0, 0) == ERR_BAD_STATE &&
                  sys(CROI_SYS_TASK_KILL, child, 0, 0, 0, 0) == 0 &&
                  (wait_terminated(child) & CROI_SIGNAL_TASK_TERMINATED));
-  sys(CROI_SYS_HANDLE_CLOSE, child, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, thread, 0, 0, 0, 0);
+  croi_handle_close(child);
+  croi_handle_close(thread);
   until = now_ns() + 3000000000ull;
   while (account_info(account).charged != 0 && now_ns() < until) sleep_ns(1000000);
   CHECK(717, account_info(account).charged == 0);
@@ -3947,15 +3947,15 @@ static int64_t memory_accounts(const startup_t *s) {
                    sys6(CROI_SYS_VMO_CREATE_CHILD, physical, CROI_VMO_CHILD_SLICE | CROI_VMO_CHARGE_TO, 0, 2 * PAGE,
                         (uint64_t)&slice, account) == 0 &&
                    account_info(account).charged == 2 * PAGE &&
-                   sys(CROI_SYS_HANDLE_CLOSE, slice, 0, 0, 0, 0) == 0 && account_info(account).charged == 0 &&
+                   croi_handle_close(slice) == 0 && account_info(account).charged == 0 &&
                    sys(CROI_SYS_VMO_CREATE, PAGE, 0, (uint64_t)&anon, 0, 0) == 0 &&
                    sys6(CROI_SYS_VMO_CREATE_CHILD, anon, CROI_VMO_CHILD_REFERENCE | CROI_VMO_CHARGE_TO, 0, 0,
                         (uint64_t)&reference, account) == ERR_INVALID_ARGS);
-    sys(CROI_SYS_HANDLE_CLOSE, physical, 0, 0, 0, 0);
-    sys(CROI_SYS_HANDLE_CLOSE, anon, 0, 0, 0, 0);
+    croi_handle_close(physical);
+    croi_handle_close(anon);
   }
-  sys(CROI_SYS_HANDLE_CLOSE, port, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, account, 0, 0, 0, 0);
+  croi_handle_close(port);
+  croi_handle_close(account);
   return 0;
 }
 
@@ -4022,12 +4022,12 @@ static int64_t jit_views(const startup_t *s) {
                  sys(CROI_SYS_VMAR_MAP_VIEW, reservation | (uint64_t)(rw | CROI_VM_PERM_EXECUTE) << 32, 4 * PAGE, exec,
                      0, PAGE) == ERR_INVALID_ARGS &&
                  sys(CROI_SYS_VMAR_MAP_VIEW, reservation | (uint64_t)rx << 32, 4 * PAGE, exec, 0, PAGE) == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, exec, 0, 0, 0, 0);
+  croi_handle_close(exec);
   CHECK(727, sys6(CROI_SYS_VMAR_OP_RANGE, reservation, CROI_VMO_OP_COMMIT, base, 2 * PAGE, 0, 0) == 0 &&
                  sys(CROI_SYS_VMAR_PROTECT, reservation | (uint64_t)CROI_VM_PERM_READ << 32, base, 2 * PAGE, 0, 0) == 0 &&
                  *word == 2);
   sys(CROI_SYS_VMAR_DESTROY, reservation, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, reservation, 0, 0, 0, 0);
+  croi_handle_close(reservation);
   // A reservation at a chosen place.
   uint32_t fixed = 0;
   uint64_t fixed_base = 0, offset = 0x40000000ull;
@@ -4039,7 +4039,7 @@ static int64_t jit_views(const startup_t *s) {
                   (uint64_t)&counts[1]) == 0 &&
                  fixed_base == root.base + offset);
   sys(CROI_SYS_VMAR_DESTROY, fixed, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, fixed, 0, 0, 0, 0);
+  croi_handle_close(fixed);
   // A JIT by dual views: written through RW, called through RX, one
   // executable VMO (VMEX).
   uint32_t jit = 0, raw = 0, code = 0;
@@ -4076,7 +4076,7 @@ static int64_t jit_views(const startup_t *s) {
 #endif
   sys(CROI_SYS_VMAR_DESTROY, jit, 0, 0, 0, 0);
   uint32_t handles[] = {jit, code, a, b};
-  for (int i = 0; i < 4; i++) sys(CROI_SYS_HANDLE_CLOSE, handles[i], 0, 0, 0, 0);
+  for (int i = 0; i < 4; i++) croi_handle_close(handles[i]);
   return 0;
 }
 
@@ -4101,7 +4101,7 @@ static int64_t idle_states(const startup_t *s) {
   CHECK(729, sys(CROI_SYS_VMO_CREATE, 2 * PAGE, 0, (uint64_t)&buffer_vmo, 0, 0) == 0 &&
                  sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, buffer_vmo,
                       0, 2 * PAGE, (uint64_t)&buffer) == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, buffer_vmo, 0, 0, 0, 0);
+  croi_handle_close(buffer_vmo);
 #define idle_stats(s, cpu, state) idle_stats_in((croi_idle_state_stats_t *)buffer, s, cpu, state)
   croi_idle_state_t table[9];
   zero_bytes(table, sizeof table);
@@ -4156,11 +4156,11 @@ static int64_t idle_states(const startup_t *s) {
   CHECK(731, sys(CROI_SYS_OBJECT_SET_PROFILE, v, profile, 0, 0, 0) == 0);
   sleep_ns(50000000);
   croi_idle_state_stats_t during = idle_stats(s, 0, 1);
-  sys(CROI_SYS_HANDLE_CLOSE, v, 0, 0, 0, 0);
+  croi_handle_close(v);
   sleep_ns(50000000);
   croi_idle_state_stats_t after = idle_stats(s, 0, 1);
   CHECK(731, during.entries == before.entries && during.demoted > before.demoted && after.entries > during.entries);
-  sys(CROI_SYS_HANDLE_CLOSE, profile, 0, 0, 0, 0);
+  croi_handle_close(profile);
   CHECK(731, sys(CROI_SYS_CPU_SET_IDLE_STATES, s->resource, 0, 0, 0, 0) == 0);
   // The hardware's own: MWAIT (amd64, where the CPU has MONITOR) and PSCI
   // standby (arm64), on CPU 0.
@@ -4221,8 +4221,8 @@ static int64_t pointer_auth(const startup_t *s) {
   CHECK(683, (wait_terminated(child) & CROI_SIGNAL_TASK_TERMINATED) &&
                  (uint64_t)return_code(child) != mine && (uint64_t)return_code(child) != value &&
                  (uint64_t)return_code(child) != kernel);
-  sys(CROI_SYS_HANDLE_CLOSE, thread, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, child, 0, 0, 0, 0);
+  croi_handle_close(thread);
+  croi_handle_close(child);
 #else
   (void)s;
 #endif
@@ -4265,10 +4265,10 @@ static int64_t guarded_pages(const startup_t *s) {
   uint32_t exit = CROI_EXCEPTION_STATE_THREAD_EXIT;
   CHECK(678, next_exception(channel, &info, &exception) && info.type == CROI_EXCP_GENERAL &&
                  sys(CROI_SYS_OBJECT_SET_PROPERTY, exception, CROI_PROP_EXCEPTION_STATE, (uint64_t)&exit, 4, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, exception, 0, 0, 0, 0) == 0 &&
+                 croi_handle_close(exception) == 0 &&
                  (wait_for(thread, CROI_SIGNAL_TASK_TERMINATED, 3000000000ull) & CROI_SIGNAL_TASK_TERMINATED));
   uint32_t handles[] = {thread, channel, vmo};
-  for (int i = 0; i < 3; i++) sys(CROI_SYS_HANDLE_CLOSE, handles[i], 0, 0, 0, 0);
+  for (int i = 0; i < 3; i++) croi_handle_close(handles[i]);
   sys(CROI_SYS_VMAR_UNMAP, s->vmar, guarded, PAGE, 0, 0);
   sys(CROI_SYS_VMAR_UNMAP, s->vmar, plain, PAGE, 0, 0);
 #endif
@@ -4360,8 +4360,8 @@ static int64_t extensions(const startup_t *s, uint64_t vdso_base) {
   }
   // A job with children can't change it; its end releases the CPU.
   CHECK(398, sys(CROI_SYS_JOB_SET_CPU_RESERVATION, job, s->resource, 0, 0, 0) == ERR_BAD_STATE);
-  sys(CROI_SYS_HANDLE_CLOSE, process, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, job, 0, 0, 0, 0);
+  croi_handle_close(process);
+  croi_handle_close(job);
   int64_t taken = -1;
   for (uint64_t until = now_ns() + 2000000000; now_ns() < until; sleep_ns(1000000)) {
     taken = sys(CROI_SYS_JOB_SET_CPU_RESERVATION, other, s->resource, 1u << 3, 0, 0);
@@ -4378,7 +4378,7 @@ static int64_t extensions(const startup_t *s, uint64_t vdso_base) {
     uint64_t now = now_ns();
     CHECK(405, wait_for(victim, CROI_SIGNAL_TASK_TERMINATED, killed + 500000000ull > now ? killed + 500000000ull - now : 0) &
                    CROI_SIGNAL_TASK_TERMINATED);
-    sys(CROI_SYS_HANDLE_CLOSE, victim, 0, 0, 0, 0);
+    croi_handle_close(victim);
   }
 
   int64_t children = vmo_children(s);
@@ -4481,7 +4481,7 @@ static int64_t extensions(const startup_t *s, uint64_t vdso_base) {
                  (uint64_t)&s_state, 0, 0) == ERR_NOT_SUPPORTED);
 #endif
   uint32_t handles[] = {port, deadline, log, other, tracing, power};
-  for (int i = 0; i < 6; i++) sys(CROI_SYS_HANDLE_CLOSE, handles[i], 0, 0, 0, 0);
+  for (int i = 0; i < 6; i++) croi_handle_close(handles[i]);
   return 0x600D;
 }
 

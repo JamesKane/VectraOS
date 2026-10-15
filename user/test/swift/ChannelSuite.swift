@@ -50,7 +50,7 @@ enum ChannelSuite {
         return out
     }
 
-    static func closed(_ raw: UInt32) -> Bool { Sys.call(CROI_SYS_HANDLE_CLOSE, UInt64(raw)) == Status.badHandle }
+    static func closed(_ raw: UInt32) -> Bool { croi_handle_close(raw) == Status.badHandle }
 
     /// Two endpoints, each the other's related koid; nothing to read yet.
     static func endpoints() {
@@ -106,7 +106,7 @@ enum ChannelSuite {
               "a bad channel: consumed")
         two[0] = duplicate(counter, sameRights)
         check(write(channel.a.arg, "x", 0x10, count: 1) == Status.invalidArgs, "an unreadable list")
-        check(Sys.call(CROI_SYS_HANDLE_CLOSE, UInt64(two[0])) == 0, "keeps its handles")
+        check(croi_handle_close(two[0]) == 0, "keeps its handles")
     }
 
     /// An endpoint can't travel in its own channel, and is consumed, which
@@ -166,7 +166,7 @@ enum ChannelSuite {
         let handle = stuck
         check(Sys.call(CROI_SYS_CHANNEL_WRITE, channel.a.arg, 0, 0, 0, Sys.address(&stuck), 1) == Status.accessDenied,
               "can't be sent")
-        check(Sys.call(CROI_SYS_HANDLE_CLOSE, UInt64(handle)) == Status.badHandle, "and is consumed")
+        check(croi_handle_close(handle) == Status.badHandle, "and is consumed")
     }
 
     /// channel_read: a message that doesn't fit stays, unless MAY_DISCARD

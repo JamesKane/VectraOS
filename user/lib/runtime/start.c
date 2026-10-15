@@ -79,7 +79,7 @@ static void read_bootstrap(uint32_t channel) {
   uint64_t actual = 0;
   int64_t status = croi_syscall6(CROI_SYS_CHANNEL_READ, channel, 0, (uint64_t)bootstrap, (uint64_t)handles,
                                  BOOTSTRAP_BYTES | (uint64_t)BOOTSTRAP_HANDLES << 32, (uint64_t)&actual);
-  croi_syscall(CROI_SYS_HANDLE_CLOSE, channel, 0, 0, 0, 0);
+  croi_handle_close(channel);
   if (status != 0) return;
   uint32_t size = (uint32_t)actual;
   handle_count = (uint32_t)(actual >> 32);
@@ -87,7 +87,7 @@ static void read_bootstrap(uint32_t channel) {
   if (size < sizeof *header || header->protocol != CROI_PROCARGS_PROTOCOL ||
       header->version != CROI_PROCARGS_VERSION || header->handle_info_off > size ||
       (size - header->handle_info_off) / 4 < handle_count) {
-    for (uint32_t i = 0; i < handle_count; i++) croi_syscall(CROI_SYS_HANDLE_CLOSE, handles[i], 0, 0, 0, 0);
+    for (uint32_t i = 0; i < handle_count; i++) croi_handle_close(handles[i]);
     handle_count = 0;
     return;
   }

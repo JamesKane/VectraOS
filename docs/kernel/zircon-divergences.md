@@ -99,6 +99,11 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   binding at a time. Kind: deliberate (one mechanism for pressure).
   Impact: Fuchsia's memory monitor and anything waiting on the five
   events.
+- **handle_close takes an array** (V1, D33) — handle_close(handles,
+  count) is zx_handle_close_many; there is no single-handle form (the C
+  runtime's croi_handle_close passes an array of one). Kind: deliberate
+  (batch first, one call per job). Impact: every caller of
+  zx_handle_close, through the C wrapper.
 - **No port_cancel_key** (V1, D32) — port_cancel with source 0 (no
   handle is 0) cancels the key from every source, as
   zx_port_cancel_key does; it has no options argument. Kind: deliberate

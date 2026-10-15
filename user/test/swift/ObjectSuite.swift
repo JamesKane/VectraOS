@@ -54,8 +54,8 @@ enum ObjectSuite {
         check(Sys.call(CROI_SYS_HANDLE_DUPLICATE, counter.arg, UInt64(wait | transfer), Sys.address(&narrowed)) == 0,
               "a duplicate with WAIT and TRANSFER")
         check(Sys.call(CROI_SYS_COUNTER_ADD, UInt64(narrowed), 1) == Status.accessDenied, "can't add (no WRITE)")
-        check(Sys.call(CROI_SYS_HANDLE_CLOSE, UInt64(narrowed)) == 0, "closed")
-        check(Sys.call(CROI_SYS_HANDLE_CLOSE, UInt64(narrowed)) == Status.badHandle, "and gone")
+        check(croi_handle_close(narrowed) == 0, "closed")
+        check(croi_handle_close(narrowed) == Status.badHandle, "and gone")
         check(Sys.call(CROI_SYS_PORT_CREATE, 0, 0x10) == Status.invalidArgs, "a bad out pointer is an error")
     }
 
@@ -100,19 +100,20 @@ enum ObjectSuite {
               "named by thread_create")
     }
 
-    /// handle_close_many: 0 skipped, a bad value reported, the rest closed.
+    /// handle_close takes an array (handle_close_many until D33): 0
+    /// skipped, a bad value reported, the rest closed.
     static func closeMany() {
         var list = InlineArray<4, UInt32>(repeating: 0)
         check(Sys.call(CROI_SYS_COUNTER_CREATE, 0, Sys.address(&list[0])) == 0
                   && Sys.call(CROI_SYS_COUNTER_CREATE, 0, Sys.address(&list[3])) == 0, "two counters")
         list[2] = 0x7FFF_FFF0
         let (first, last) = (list[0], list[3])
-        check(Sys.call(CROI_SYS_HANDLE_CLOSE_MANY, Sys.address(&list), 4) == Status.badHandle, "a bad value reported")
-        check(Sys.call(CROI_SYS_HANDLE_CLOSE, UInt64(first)) == Status.badHandle
-                  && Sys.call(CROI_SYS_HANDLE_CLOSE, UInt64(last)) == Status.badHandle, "the rest closed")
-        check(Sys.call(CROI_SYS_HANDLE_CLOSE_MANY, Sys.address(&list), 2) == Status.badHandle, "a closed one is bad")
+        check(Sys.call(CROI_SYS_HANDLE_CLOSE, Sys.address(&list), 4) == Status.badHandle, "a bad value reported")
+        check(croi_handle_close(first) == Status.badHandle
+                  && croi_handle_close(last) == Status.badHandle, "the rest closed")
+        check(Sys.call(CROI_SYS_HANDLE_CLOSE, Sys.address(&list), 2) == Status.badHandle, "a closed one is bad")
         list[0] = 0
-        check(Sys.call(CROI_SYS_HANDLE_CLOSE_MANY, Sys.address(&list), 2) == 0, "zeros are skipped")
+        check(Sys.call(CROI_SYS_HANDLE_CLOSE, Sys.address(&list), 2) == 0, "zeros are skipped")
     }
 
     /// port_cancel with source 0 (port_cancel_key until D32): a binding

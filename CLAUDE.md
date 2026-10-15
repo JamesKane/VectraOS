@@ -76,7 +76,8 @@ and the cuts have begun: FIFOs, sockets and streams (D21), the channel
 waits (D23), sleeps, timers and the counter waits (D25), clocks (D26),
 display timelines (D27), debug_write and vmo_map (D28), the interrupt
 waits (D29), thread_raise_exception (D30), system_get_event (D31),
-port_cancel_key into port_cancel (D32), 99 syscalls (`docs/syscall-audit.md`).
+port_cancel_key into port_cancel (D32), handle_close_many into
+handle_close (D33), 98 syscalls (`docs/syscall-audit.md`).
 - **Done:** croi imported, passing on amd64, arm64 and rv64; todhchai's
   Judge, History, trace format and reader lifted; `vx` with build, test,
   boot, bench, trace, loc and ci.

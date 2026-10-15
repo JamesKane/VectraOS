@@ -56,11 +56,11 @@ enum VmoSuite {
         check(Sys.call(CROI_SYS_HANDLE_DUPLICATE, UInt64(vmo), 1 << 31, Sys.address(&other)) == 0, "a duplicate")
         check(Sys.call(CROI_SYS_VMO_REPLACE_AS_EXECUTABLE, UInt64(other), UInt64(vmo), Sys.address(&exec))
                   == Status.wrongType, "the resource must be a resource")
-        check(Sys.call(CROI_SYS_HANDLE_CLOSE, UInt64(other)) == Status.badHandle, "a refusal still consumes the VMO")
+        check(croi_handle_close(other) == Status.badHandle, "a refusal still consumes the VMO")
         check(Sys.call(CROI_SYS_VMO_REPLACE_AS_EXECUTABLE, UInt64(vmo), resource.arg, Sys.address(&exec)) == 0,
               "replaced as executable")
         let executable = Handle(adopting: exec)
-        check(Sys.call(CROI_SYS_HANDLE_CLOSE, UInt64(vmo)) == Status.badHandle, "the old handle is gone")
+        check(croi_handle_close(vmo) == Status.badHandle, "the old handle is gone")
         _ = Mapping(executable, length: pageSize,
                     permissions: UInt32(CROI_VM_PERM_READ) | UInt32(CROI_VM_PERM_EXECUTE))
     }

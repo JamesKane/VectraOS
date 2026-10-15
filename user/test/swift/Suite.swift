@@ -155,7 +155,7 @@ struct Handle: ~Copyable {
         return Sys.call(CROI_SYS_OBJECT_SET_PROPERTY, arg, UInt64(CROI_PROP_VMO_CONTENT_SIZE), Sys.address(&value), 8)
     }
 
-    deinit { _ = Sys.call(CROI_SYS_HANDLE_CLOSE, UInt64(raw)) }
+    deinit { _ = croi_handle_close(raw) }
 }
 
 /// A port, with object_bind and port_wait.
