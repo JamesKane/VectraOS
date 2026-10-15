@@ -86,33 +86,6 @@ enum ProcessSelfTest {
         console.write("call, read, donation and reply share the flow user space computes\n")
     }
 
-    /// K7c (mode 8): timers (fire, cancel, zero slack on a deadline
-    /// profile), from a process with a deadline context to bind to.
-    /// Futexes moved to the futex suite (D22).
-    static func runSync(_ console: Uart) {
-        let before = Counts()
-        let context: SchedContext
-        do throws(AdmissionRefusal) {
-            context = try SchedContext(deadline: DeadlineParams(capacity: 3_000_000, deadline: 10_000_000,
-                                                               period: 10_000_000))
-        } catch {
-            panic("sync self-test: no deadline context")
-        }
-        TestHooks.deadlineContext = context.record
-        let exitCode = runInProcess(mode: 8)
-        TestHooks.deadlineContext = nil
-        releaseWhenUnbound(context)
-        guard exitCode == 0x600D else {
-            console.write("  sync:   user program failed check ")
-            console.write(decimal: UInt64(bitPattern: exitCode))
-            console.write("\n")
-            panic("sync self-test: user side")
-        }
-        before.expectUnchanged(console)
-        guard Futexes.live.load(ordering: .relaxed) == 0 else { panic("sync self-test: futex records left") }
-        console.write("  sync:   timers (fire, cancel, already due, zero slack on a deadline profile)\n")
-    }
-
     /// A user thread that failed a check may exit still bound, and its
     /// process is marked exited just before the thread unbinds on its way
     /// out: drop the context once nothing uses it.
@@ -281,21 +254,6 @@ enum ProcessSelfTest {
         console.write("  mem:    task stats (mapped, private, shared, scaled with its fraction), kmem stats\n")
     }
 
-    /// K10a: counters from user mode (mode 14).
-    static func runCounters(_ console: Uart) {
-        let before = Counts()
-        let exitCode = runInProcess(mode: 14)
-        guard exitCode == 0x600D else {
-            console.write("  counter: user program failed check ")
-            console.write(decimal: UInt64(bitPattern: exitCode))
-            console.write("\n")
-            panic("counter self-test: user side")
-        }
-        before.expectUnchanged(console)
-        console.write("  counter: Zircon's (signals, overflow, rights); waits at a value: blocking, cancelled by ")
-        console.write("a close, port packets (at once, later, cancelled)\n")
-    }
-
     /// K10b: display timelines from user mode (mode 15).
     static func runTimelines(_ console: Uart) {
         let before = Counts()
@@ -321,8 +279,8 @@ enum ProcessSelfTest {
             panic("deadline wakeup self-test: user side")
         }
         before.expectUnchanged(console)
-        console.write("  deadline wakeups: a counter lends its deadline until the woken thread blocks; ")
-        console.write("periods aligned to vblanks; an interrupt hands its waiter an admitted context (shared budget, overrun, withdrawn)\n")
+        console.write("  deadline wakeups: periods aligned to vblanks; ")
+        console.write("an interrupt hands its waiter an admitted context (shared budget, overrun, withdrawn)\n")
     }
 
     static func runExtensions(_ console: Uart) {
@@ -335,7 +293,7 @@ enum ProcessSelfTest {
             panic("extensions self-test: user side")
         }
         before.expectUnchanged(console)
-        console.write("  extensions: thread trace ids, overruns to a port, debuglog progress, a job's reserved CPU, powerctl refusals, VMO children, physical slices with ZERO_CHILDREN and handle counts, snapshots, anonymous slices and references, vmo_read racing decommit, the pager, the small calls, info topics and vmar_op_range, clocks, suspension and process memory, a debugger channel, single-step and hardware breakpoints, resizable VMOs, smc_call, a crashed thread held for post-mortem attach, eviction and discardable VMOs with the memory-pressure events, timers past the old 32 per CPU, a user exception to job debuggers, page loaning and borrowing, UNBOUNDED VMOs, zero intervals, cprng\n")
+        console.write("  extensions: thread trace ids, overruns to a port, debuglog progress, a job's reserved CPU, powerctl refusals, VMO children, physical slices with ZERO_CHILDREN and handle counts, snapshots, anonymous slices and references, vmo_read racing decommit, the pager, the small calls, info topics and vmar_op_range, clocks, suspension and process memory, a debugger channel, single-step and hardware breakpoints, resizable VMOs, smc_call, a crashed thread held for post-mortem attach, eviction and discardable VMOs with the memory-pressure events, a user exception to job debuggers, page loaning and borrowing, UNBOUNDED VMOs, zero intervals, cprng\n")
     }
 
     /// Live processes, address spaces and objects, to check nothing leaked.

@@ -136,7 +136,10 @@ enum Ports {
 
     /// Queues `record` and wakes one waiter. Any context; the caller may
     /// hold an object lock, or (kernel sources) the scheduler lock.
-    static func enqueue(_ port: PortPointer, _ record: QueuedPacketPointer, schedulerLocked: Bool = false) {
+    /// `lending`: the profile the packet's source lends the thread it wakes
+    /// (K10c, ext 5: a counter's or a timeline's).
+    static func enqueue(_ port: PortPointer, _ record: QueuedPacketPointer, schedulerLocked: Bool = false,
+                        lending: Profile? = nil) {
         port.pointee.packetsLock.withLock {
             record.pointee.next = 0
             if port.pointee.tail != 0 {
@@ -148,9 +151,9 @@ enum Ports {
             port.pointee.queued += 1
         }
         if schedulerLocked {
-            Scheduler.wakeOne(port.pointee.waiters)
+            Scheduler.wakeOne(port.pointee.waiters, lending: lending)
         } else {
-            Scheduler.locked { _ = Scheduler.wakeOne(port.pointee.waiters) }
+            Scheduler.locked { _ = Scheduler.wakeOne(port.pointee.waiters, lending: lending) }
         }
     }
 
@@ -503,26 +506,27 @@ struct PacketSource: ~Copyable {
 
     /// Reports an event (value in payload[1]; `word0` and `word3`, if
     /// given, in payload[0] and [3]). Any context.
-    func fire(value: UInt64, word0: UInt64? = nil, word3: UInt64? = nil, schedulerLocked: Bool = false) {
+    func fire(value: UInt64, word0: UInt64? = nil, word3: UInt64? = nil, schedulerLocked: Bool = false,
+              lending: Profile? = nil) {
         let queue = pointee.lock.withLock { () -> Bool in
             if let word0 { pointee.record.pointee.packet.payload[0] = word0 }
             if let word3 { pointee.record.pointee.packet.payload[3] = word3 }
             pointee.record.pointee.packet.payload[1] = value
             return countAndQueueLocked()
         }
-        if queue { enqueue(schedulerLocked: schedulerLocked) }
+        if queue { enqueue(schedulerLocked: schedulerLocked, lending: lending) }
     }
 
     /// Reports a persistent signal binding's event, in a signal packet's
     /// layout: trigger | observed << 32, the count, and the time (0 unless
     /// asked for). Any context.
-    func fireSignal(trigger: UInt32, observed: UInt32, timestamp: UInt64) {
+    func fireSignal(trigger: UInt32, observed: UInt32, timestamp: UInt64, lending: Profile? = nil) {
         let queue = pointee.lock.withLock { () -> Bool in
             pointee.record.pointee.packet.payload[0] = UInt64(observed) << 32 | UInt64(trigger)
             pointee.record.pointee.packet.payload[2] = timestamp
             return countAndQueueLocked()
         }
-        if queue { enqueue(schedulerLocked: false) }
+        if queue { enqueue(schedulerLocked: false, lending: lending) }
     }
 
     /// Counts the event; true if the packet must be queued (it wasn't).
@@ -533,9 +537,9 @@ struct PacketSource: ~Copyable {
         return true
     }
 
-    private func enqueue(schedulerLocked: Bool) {
+    private func enqueue(schedulerLocked: Bool, lending: Profile?) {
         Ports.enqueue(PortPointer(object: ObjectPointer(address: pointee.port)), pointee.record,
-                      schedulerLocked: schedulerLocked)
+                      schedulerLocked: schedulerLocked, lending: lending)
     }
 
     /// Its packet was read: the next event queues it again, from count 0

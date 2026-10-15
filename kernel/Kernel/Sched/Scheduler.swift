@@ -546,15 +546,6 @@ enum Scheduler {
         }
     }
 
-    /// Sleeps until `deadline` unless the thread is killed (nanosleep).
-    static func sleepInterruptible(until deadline: UInt64) {
-        locked {
-            while Clock.now() < deadline {
-                if block(on: nil, deadline: deadline, interruptible: true) == .interrupted { return }
-            }
-        }
-    }
-
     /// Wakes the first thread on `queue`. Lock held.
     @discardableResult
     static func wakeOne(_ queue: QueuePointer) -> Bool {
@@ -573,22 +564,27 @@ enum Scheduler {
         return woken
     }
 
-    /// Wakes every thread on `queue`, lending each `lending` (K10c, ext 5):
-    /// it runs on that deadline from now until it next blocks, as a
+    /// Wakes the first thread on `queue`, lending it `lending` (K10c, ext
+    /// 5): it runs on that deadline from now until it next blocks, as a
     /// channel_call server runs on its caller's. Lock held.
     @discardableResult
+    static func wakeOne(_ queue: QueuePointer, lending: Profile?) -> Bool {
+        guard let lending else { return wakeOne(queue) }
+        guard let thread = queue.pointee.pop() else { return false }
+        thread.pointee.waitQueue = nil
+        thread.pointee.lent = lending
+        let profile = computeEffective(thread)
+        if profile != thread.pointee.effective { setProfile(thread, profile, Clock.now()) }  // a period from now
+        makeReady(thread)
+        if let owner = queue.pointee.owner { updateEffectiveProfile(owner) }
+        return true
+    }
+
+    /// Wakes every thread on `queue`, lending each `lending`. Lock held.
+    @discardableResult
     static func wakeAll(_ queue: QueuePointer, lending: Profile?) -> Int {
-        guard let lending else { return wakeAll(queue) }
         var woken = 0
-        while let thread = queue.pointee.pop() {
-            thread.pointee.waitQueue = nil
-            thread.pointee.lent = lending
-            let profile = computeEffective(thread)
-            if profile != thread.pointee.effective { setProfile(thread, profile, Clock.now()) }  // a period from now
-            makeReady(thread)
-            if let owner = queue.pointee.owner { updateEffectiveProfile(owner) }
-            woken += 1
-        }
+        while wakeOne(queue, lending: lending) { woken += 1 }
         return woken
     }
 
@@ -2001,7 +1997,6 @@ enum Scheduler {
         }
         ExtendedState.free(thread.pointee.extendedState)
         HardwareDebug.free(thread)
-        if thread.pointee.waitState != 0 { WaitStatePointer(address: thread.pointee.waitState).free() }
         Pmu.release(thread)
         let raw = unsafe UnsafeMutablePointer<Thread>(bitPattern: UInt(thread.address))!
         unsafe raw.deinitialize(count: 1)

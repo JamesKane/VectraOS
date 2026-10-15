@@ -188,7 +188,8 @@ vx mkbootfs):
 The M2 exit test and budgets (K8c, user/m2, Kernel/Object/ProfileObject.swift,
 include/profile.h):
 - `bin/m2` is userboot.next (CROI_USERBOOT_NEXT): channel pair, a VMO
-  passed across, a port wait with a deadline timer, debuglog output; then
+  passed across, a port wait for a counter's value then to a deadline
+  (V1 cut timer objects, D25), debuglog output; then
   it measures the budgets from the trace (user marks via TRACE_OP_RINGS, 4:
   each CPU's ring as a read/map-only VMO) and reports them as `budget`
   lines (K9f: enforced only with `croi.enforce_budgets=1` where

@@ -45,6 +45,8 @@ enum Suite {
             ChannelSuite.run()
         } else if requested("objects") {
             ObjectSuite.run()
+        } else if requested("counters") {
+            CounterSuite.run()
         } else {
             print("swift: no such suite")
             croi_exit(2)

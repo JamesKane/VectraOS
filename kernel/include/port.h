@@ -16,7 +16,9 @@
 // port_wait(port, deadline, croi_port_packet_t *packet, leeway): the next
 // packet, or TIMED_OUT at the deadline. The wait may end up to `leeway` ns
 // after the deadline, never before it (principle 10), so that timers
-// coalesce; a thread with a deadline profile always gets zero leeway.
+// coalesce; a thread with a deadline profile always gets zero leeway. A
+// wait on a port nothing is bound to is the one sleep (V1 cut nanosleep
+// and timer objects, D25).
 #pragma once
 #include <stdint.h>
 
@@ -27,7 +29,7 @@ enum : uint32_t {
                             // asserted, coalesced while it waits to be read (payload[1] counts);
                             // the reader drains until the object would block.
   CROI_BIND_VALUE = 1,      // a counter, ONCE: trigger is the value (int64) to reach (a fence)
-  CROI_BIND_CHANGE = 2,     // a counter, PERSISTENT: every add or write (a ring's doorbell)
+  CROI_BIND_CHANGE = 2,     // a counter, PERSISTENT: every add (a ring's doorbell)
   CROI_BIND_INTERRUPT = 3,  // an interrupt, PERSISTENT; the port made with CROI_PORT_BIND_TO_INTERRUPT
   CROI_BIND_OVERRUN = 4,    // a thread or interrupt with a deadline profile, PERSISTENT
   CROI_BIND_PRESSURE = 5,   // a memory account, PERSISTENT

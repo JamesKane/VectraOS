@@ -18,9 +18,9 @@ signals and object types, so the ABI matches):
   through the handle). `HandleTable.withBorrowed` for threads sharing one.
 - Waiting: observers on an object's list; `updateSignals` runs them under
   the object lock. Since V1 (D23) a port is the one wait: the observers
-  are object_bind's bindings and counter_wait's thread waits (WaitState
-  on the heap so no trigger outlives it; canceled on close).
-  `ObjectWait.one/many` went with object_wait_one/many. Ports (`PortObject`):
+  are object_bind's bindings, dropped when the handle they were bound
+  through closes. `ObjectWait.one/many` went with object_wait_one/many,
+  and the thread waits (`WaitState`) with counter_wait (D25). Ports (`PortObject`):
   FIFO of `PortPacket` (zx_port_packet_t layout), `Ports.queue/wait/
   cancel`; `Observers.waitAsync` is one-shot with EDGE and TIMESTAMP,
   its packet allocated at registration. Lock order: object -> scheduler
@@ -55,7 +55,7 @@ Processes (K7a, Kernel/Object/Process.swift, include/task.h, syscalls
   process whose threads never ran is torn down by its last reference.
 - Kill (`task_kill`, process_exit, a fault until K7d's exceptions):
   `Scheduler.interrupt` marks the thread; interruptible waits (syscall
-  waits: object/port waits, nanosleep: `block(interruptible: true)`) end
+  waits: port, futex and interrupt waits: `block(interruptible: true)`) end
   with `.interrupted`, a running thread is preempted, and every return to
   user mode (`UserTraps.leaving`) exits a marked thread. Return codes
   -1024 (killed), -1026 (policy) and -1028 (exception), Zircon's. Kernel-only waits stay
@@ -126,8 +126,8 @@ in User/IpcSyscalls.swift):
 
 ## Futexes and timers (K7c)
 
-Futexes and timers (K7c, Kernel/Object/Futex.swift, TimerObject.swift,
-syscalls 90-97 in User/SyncSyscalls.swift):
+Futexes and timers (K7c, Kernel/Object/Futex.swift, syscalls 90-91 in
+User/SyncSyscalls.swift; timer objects were cut in V1, below):
 - Futexes keyed by (address space, user address) in a 256-bucket table
   under the scheduler lock, which is the futex lock: a wait reads the
   word with `UserCopy.wordNoPageIn` (PerCpu.noPageIn: a fault goes to
@@ -150,16 +150,13 @@ syscalls 90-97 in User/SyncSyscalls.swift):
   the address space's `mapGeneration` (bumped under its lock at every
   change to `mappings`), and a check inside it with the generation
   unchanged skips the lock.
-- Timer objects (22): set arms the object's own timer node on the calling
-  CPU, holding a reference (generation numbers ignore stale callbacks;
-  cancel takes the node out of the arming CPU's queue from anywhere);
-  slack windows as Zircon's center/early/late; zero slack for a
-  thread on a deadline profile. Set and cancel clear SIGNALED (cancel
-  too for a timer that already fired, as Zircon's). The last handle's
-  close cancels (K14b: `Objects.lastHandleClosed`, Zircon's
-  on_zero_handles, run from `HandleTable.close`, a freed message's
-  handles and `releaseTaken`; handle_replace adds the new handle before
-  closing the old so the count never passes through 0).
+- Timer objects (22) were cut in V1 (D25; "Sleeps, timers and counter
+  waits" below). The hook their last handle's close used stays:
+  `Objects.lastHandleClosed`, Zircon's on_zero_handles, run from
+  `HandleTable.close`, a freed message's handles and `releaseTaken`;
+  handle_replace adds the new handle before closing the old so the count
+  never passes through 0. Nothing uses it until ports cancel their
+  bindings there.
 
 ## Exceptions and job policy (K7d)
 
@@ -189,25 +186,29 @@ syscalls 100-107 in User/ExceptionSyscalls.swift):
 ## Counters (K10a)
 
 Counters, K10a (Kernel/Object/Counter.swift, User/CounterSyscalls.swift,
-include/counter.h, syscalls 160-165):
-- Zircon's counter (type 34; create, add, read, write; POSITIVE /
-  NON_POSITIVE; add needs READ and WRITE, OUT_OF_RANGE on overflow) plus
-  croi's waits at a value: `counter_wait(counter, value, deadline)` and
-  object_bind VALUE (was `counter_wait_async(counter, port, key,
-  value)` until V1; one packet of type
-  0x82: target, value reached, time), needing WAIT and READ.
-- A value wait is an observer with a threshold (`Observer.byValue`,
+include/counter.h, syscalls 160-162):
+- Zircon's counter (type 34; create, add, read; POSITIVE / NON_POSITIVE;
+  add needs READ and WRITE, OUT_OF_RANGE on overflow) plus croi's waits
+  at a value, object_bind VALUE (was `counter_wait_async(counter, port,
+  key, value)` until V1; one packet of type 0x82: target, value reached,
+  time), needing WAIT and READ. counter_write and counter_wait were cut
+  in V1 (D25): an add of the difference, and a port.
+- A value binding is an observer with a threshold (`Observer.byValue`,
   `atValue`): `Observers.notify` fires it when the counter's value
   reaches it, so registration, cancellation on handle close, port_cancel
-  and port delivery are the signal waits'.
-- Each thread keeps its WaitState (`Thread.waitState`, freed with the
-  thread; `WaitStatePointer.forCurrentThread`), so a counter wait
-  allocates only its observer; the wait reads how it ended in the same
-  scheduler-lock pass that blocks. That took counter wake from ~2.5 to
-  ~1.6 µs. ObjectWait still allocates a WaitState per wait.
-- Budget `counter.wake_median` (m2, as port wake: counter_add's entry on
-  CPU 1 to counter_wait's exit on CPU 2; limit 2 µs): KVM ~1.6 µs.
-- Boot test mode 14 (`ProcessSelfTest.runCounters`).
+  and port delivery are the signal bindings'.
+- A counter or timeline with a deadline profile (K10c, ext 5) lends it to
+  the thread each of its packets wakes: `notify` passes `lend(of:)` to
+  `Ports.enqueue`, which wakes the port's first waiter with
+  `Scheduler.wakeOne(lending:)`. A packet queued with no thread waiting
+  lends nothing, as a counter_wait whose value was already reached did.
+- Budget `counter.wake_median` (m2, as port wake): counter_add's entry on
+  CPU 1 to port_wait's exit on CPU 2, through a CHANGE binding (the
+  doorbell; limit 2 µs). Until D25 it was counter_wait's exit, KVM ~1.6
+  µs.
+- Tests: the Swift `counters` suite (Zircon's semantics, rights, VALUE
+  bindings, the lent deadline), moved from boot test mode 14 and mode
+  16's lending check.
 
 ## Display timelines (K10b)
 
@@ -270,6 +271,27 @@ is its negotiating channel's PEER_CLOSED, and a port is the one wait
   refusals, a closed peer), moved from usertest.c's modes 0 and 7.
   usertest.c's `wait_for` is a ONCE binding on a port of its own,
   cancelled if it times out (a pending binding holds its port).
+
+## Sleeps, timers and counter waits: cut in V1 (D25)
+
+croi had Zircon's nanosleep (4), timer objects (95-97; type 22, with
+the center/early/late slack policies and the NEW_TIMER policy
+condition), counter_write (163) and croi's counter_wait (164), with the
+thread waits behind it (`WaitState`, `Observer.Kind.wait`,
+`Thread.waitState`). V1 cut all six calls:
+- A sleep is a `port_wait` with a deadline on a port nothing is bound
+  to. A timer is the deadline an event loop passes to its `port_wait`,
+  the earliest it has (principle 10: a leeway lets the wait run late,
+  never early, and a deadline thread gets none).
+- A value is set by adding the difference; a wait at a value is a VALUE
+  binding; a counter's lent deadline reaches the thread its packet wakes
+  (Counters, above).
+- Tests: the `counters` suite; the bind suite's leeway check took the
+  zero-slack check of mode 8, which went with its timers. usertest.c's
+  sleeps go through `sleep_until` (a port of its own each time: the
+  program has no writable data) and its value waits through
+  `wait_value` (a VALUE binding on a port of its own, cancelled if it
+  times out).
 
 ## The small calls (K13e part 1)
 
@@ -347,7 +369,7 @@ syscalls 216-219 and 77; clock.h):
 - croi's reference "ticks" are monotonic ns (the counter's 32.32 scale has
   no u32/u32 ratio): reference_ticks_to_synthetic = reference_to_
   synthetic and the details' tick fields are ns. BOOT is monotonic (no
-  suspend); timer_create takes clock id BOOT (1) too.
+  suspend).
 - State is croi_clock_page_t (Zircon's mapped layout) in the object under
   its lock; a MAPPABLE clock publishes it to a one-page read-only
   contiguous VMO under `seq_lock` (generation = seq / 2, 1 when created).

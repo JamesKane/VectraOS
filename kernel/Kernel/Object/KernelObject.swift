@@ -118,13 +118,10 @@ enum Objects {
     }
 
     /// Zircon's on_zero_handles: the last handle is gone, though kernel
-    /// references may remain.
-    static func lastHandleClosed(_ object: ObjectPointer) {
-        switch object.header.type {
-        case .timer: TimerObjects.lastHandleClosed(object)
-        default: break
-        }
-    }
+    /// references may remain. Its one user, the timer object, went in V1
+    /// (D25); a port's bindings are cancelled here before ports become
+    /// rings (zircon-divergences.md, "A ONCE binding holds its port").
+    static func lastHandleClosed(_ object: ObjectPointer) {}
 
     static func destroy(_ object: ObjectPointer) {
         switch object.header.type {
@@ -144,7 +141,6 @@ enum Objects {
         case .pager: Pagers.destroy(object)
         case .clock: Clocks.destroy(object)
         case .suspendToken: Debug.destroyToken(object)
-        case .timer: free(object, as: TimerObject.self)
         case .log: DebugLogs.destroy(object)
         case .profile: free(object, as: ProfileObject.self)
         case .exception: Exceptions.destroy(object)

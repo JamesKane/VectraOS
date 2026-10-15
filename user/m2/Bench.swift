@@ -392,7 +392,7 @@ enum Bench {
         Sys.signal(go)
         for _ in 0..<wakes {
             Sys.take(ready)
-            _ = Sys.call(CROI_SYS_NANOSLEEP, Sys.now() + 100_000)  // the waiter is blocked by now
+            Sys.sleep(until: Sys.now() + 100_000)  // the waiter is blocked by now
             Sys.signal(wakeSignal)
         }
         Sys.wait(worker, UInt32(CROI_SIGNAL_TASK_TERMINATED))
@@ -441,7 +441,7 @@ enum Bench {
         Sys.signal(go)
         for _ in 0..<wakes {
             Sys.take(ready)
-            _ = Sys.call(CROI_SYS_NANOSLEEP, Sys.now() + 100_000)
+            Sys.sleep(until: Sys.now() + 100_000)
             Sys.signal(wakeSignal)
         }
         Sys.wait(worker, UInt32(CROI_SIGNAL_TASK_TERMINATED))
@@ -488,26 +488,33 @@ enum Bench {
         print("m2: port wake profile: counter_add entry to port_wait exit, median \(totals[totals.count / 2]) ns")
     }
 
-    // MARK: Counter wake from another core (K10a)
+    // MARK: Counter wake from another core (K10a): the doorbell
 
     nonisolated(unsafe) static var wakeCounter: UInt32 = 0
+    nonisolated(unsafe) static var doorbellPort: UInt32 = 0
 
     static let counterWaiter: Sys.ThreadEntry = { _, _ in
         Sys.take(go)  // pinned to its CPU first
-        for i in 0..<wakes {
+        var packet = croi_port_packet_t()
+        for _ in 0..<wakes {
             Sys.signal(ready)
-            _ = Sys.call(CROI_SYS_COUNTER_WAIT, UInt64(wakeCounter), i + 1, .max)
+            _ = Sys.call(CROI_SYS_PORT_WAIT, UInt64(doorbellPort), .max, Sys.address(&packet))
         }
         Sys.exitThread()
     }
 
-    /// From counter_add's entry on one CPU to counter_wait's exit on
-    /// another, the waiter waiting for the value the add reaches: median
-    /// and p99, ns (as port wake).
+    /// From counter_add's entry on one CPU to port_wait's exit on another,
+    /// the port's CHANGE binding (a ring's doorbell) rung by each add.
+    /// V1 cut counter_wait (D25): before, the waiter waited for the value
+    /// the add reached. Median and p99, ns (as port wake).
     static func counterWake(resource: UInt32, thread: UInt32) throws(Failure) -> (UInt64, UInt64) {
         ready = try Sys.counter()
         go = try Sys.counter()
         try Sys.check("creating a counter", Sys.call(CROI_SYS_COUNTER_CREATE, 0, Sys.address(&wakeCounter)))
+        try Sys.check("creating a port", Sys.call(CROI_SYS_PORT_CREATE, 0, Sys.address(&doorbellPort)))
+        try Sys.check("binding the doorbell", Sys.bind(doorbellPort, wakeCounter,
+                                                       UInt32(CROI_BIND_CHANGE | CROI_BIND_PERSISTENT), key: 0,
+                                                       trigger: 0))
         try Tracing.start(UInt32(CROI_TRACE_SYSCALL))
         let worker = try Sys.spawn(counterWaiter, 0)
         let waiterProfile = try Sys.profile(resource, priority: Int32(CROI_PRIORITY_DEFAULT), mask: cpus.waiter)
@@ -516,20 +523,22 @@ enum Bench {
         Sys.signal(go)
         for _ in 0..<wakes {
             Sys.take(ready)
-            _ = Sys.call(CROI_SYS_NANOSLEEP, Sys.now() + 100_000)  // the waiter is blocked by now
+            Sys.sleep(until: Sys.now() + 100_000)  // the waiter is blocked by now
             _ = Sys.call(CROI_SYS_COUNTER_ADD, UInt64(wakeCounter), 1)
         }
         Sys.wait(worker, UInt32(CROI_SIGNAL_TASK_TERMINATED))
         Tracing.stop()
-        for handle in [worker, wakeCounter, ready, go] { Sys.close(handle) }
+        for handle in [worker, wakeCounter, ready, go, doorbellPort] { Sys.close(handle) }
         let (records, frequency) = try Tracing.records()
         let adds = records.filter {
             $0.kind == UInt16(CROI_TK_SYSCALL_ENTER) && $0.a == CROI_SYS_COUNTER_ADD && $0.b == UInt64(wakeCounter)
                 && (1 << UInt64($0.cpu)) == cpus.client
         }
+        // After the first add: the waiter's handshake waits on a port too.
+        let first = adds.first?.time ?? .max
         let returns = records.filter {
-            $0.kind == UInt16(CROI_TK_SYSCALL_EXIT) && $0.a == CROI_SYS_COUNTER_WAIT
-                && (1 << UInt64($0.cpu)) == cpus.waiter
+            $0.kind == UInt16(CROI_TK_SYSCALL_EXIT) && $0.a == CROI_SYS_PORT_WAIT && (1 << UInt64($0.cpu)) == cpus.waiter
+                && $0.time >= first
         }
         guard adds.count == Int(wakes), returns.count == Int(wakes) else {
             throw Failure(what: "pairing counter wakes", status: Int64(adds.count) << 16 | Int64(returns.count))
@@ -557,7 +566,7 @@ enum Bench {
         try Tracing.start(UInt32(CROI_TRACE_MARK))
         for _ in 0..<n {
             let deadline = Sys.now() + 500_000
-            _ = Sys.call(CROI_SYS_NANOSLEEP, deadline)
+            Sys.sleep(until: deadline)
             Tracing.mark(21, Sys.now() - deadline)
         }
         Tracing.stop()
@@ -574,11 +583,15 @@ enum Bench {
     /// A synthetic 1 ms timeline: the deadline thread (wake error's, on its
     /// own CPU, as a compositor's latch thread) waits for each next vblank;
     /// how late it runs after the vblank's time, from the timeline's page.
-    /// Median and p99, ns.
+    /// Each wait is a VALUE binding and a port_wait (V1 cut counter_wait,
+    /// D25). Median and p99, ns.
     static func timelineWake(resource: UInt32) throws(Failure) -> (UInt64, UInt64) {
         var timeline: UInt32 = 0
         var pageVmo: UInt32 = 0
         var at: UInt64 = 0
+        var port: UInt32 = 0
+        var packet = croi_port_packet_t()
+        try Sys.check("creating a port", Sys.call(CROI_SYS_PORT_CREATE, 0, Sys.address(&port)))
         try Sys.check("creating a timeline", Sys.call(CROI_SYS_TIMELINE_CREATE, UInt64(resource),
                                                       UInt64(CROI_TIMELINE_SYNTHETIC), 1_000_000,
                                                       Sys.address(&timeline)))
@@ -592,7 +605,8 @@ enum Bench {
             var value: Int64 = 0
             _ = Sys.call(CROI_SYS_COUNTER_READ, UInt64(timeline), Sys.address(&value))
             let target = value + 1
-            _ = Sys.call(CROI_SYS_COUNTER_WAIT, UInt64(timeline), UInt64(bitPattern: target), .max)
+            _ = Sys.bind(port, timeline, UInt32(CROI_BIND_VALUE), key: 0, trigger: UInt64(bitPattern: target))
+            _ = Sys.call(CROI_SYS_PORT_WAIT, UInt64(port), .max, Sys.address(&packet))
             let woke = Sys.now()
             let due = unsafe page.pointee.base_time_ns + UInt64(target - page.pointee.base_count) * page.pointee.period_ns
             latencies.append(woke >= due ? woke - due : 0)
@@ -600,6 +614,7 @@ enum Bench {
         _ = Sys.call(CROI_SYS_VMAR_UNMAP, UInt64(croi_vmar_root_self()), at, 4096)
         Sys.close(pageVmo)
         Sys.close(timeline)
+        Sys.close(port)
         latencies.sort()
         return (latencies[latencies.count / 2], latencies[latencies.count * 99 / 100])
     }

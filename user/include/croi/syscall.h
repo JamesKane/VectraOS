@@ -13,7 +13,6 @@ enum : uint64_t {
   CROI_SYS_DEBUG_WRITE = 1,        // (const char *text, size_t length)
   CROI_SYS_THREAD_EXIT = 2,        // (int64_t code): the calling thread
   CROI_SYS_CLOCK_MONOTONIC = 3,    // () -> ns
-  CROI_SYS_NANOSLEEP = 4,          // (deadline ns)
   CROI_SYS_TEST_REPORT = 5,        // (value) for the boot self-test
   CROI_SYS_HANDLE_CLOSE = 10,      // (handle)
   CROI_SYS_HANDLE_DUPLICATE = 11,  // (handle, rights, uint32_t *out)
@@ -64,12 +63,9 @@ enum : uint64_t {
   CROI_SYS_CHANNEL_CALL = 83,      // (channel, options, deadline, croi_channel_call_args_t *, actual_bytes, actual_handles)
   CROI_SYS_OBJECT_GET_INFO = 86,   // (handle, topic, buffer, buffer_size)
   CROI_SYS_TEST_PROFILE = 6,       // (op) boot self-test only
-  // Futexes and timers (K7c): Zircon's.
+  // Futexes (K7c): Zircon's.
   CROI_SYS_FUTEX_WAIT = 90,        // (uint32_t *value, current, new_owner thread handle, deadline)
   CROI_SYS_FUTEX_WAKE = 91,        // (uint32_t *value, count)
-  CROI_SYS_TIMER_CREATE = 95,      // (options: CROI_TIMER_SLACK_*, clock_id 0, out)
-  CROI_SYS_TIMER_SET = 96,         // (timer, deadline, slack)
-  CROI_SYS_TIMER_CANCEL = 97,      // (timer)
   // Exceptions and job policy (K7d): Zircon's.
   CROI_SYS_TASK_CREATE_EXCEPTION_CHANNEL = 100,  // (task, options, out)
   CROI_SYS_EXCEPTION_GET_THREAD = 101,   // (exception, out)
@@ -112,14 +108,13 @@ enum : uint64_t {
   CROI_SYS_VMO_CREATE_CONTIGUOUS = 155, // (bti, size, alignment_log2, uint32_t *out)
   CROI_SYS_BTI_SET_PROPERTIES = 156,    // (bti, const croi_bti_properties_t *): croi's, narrowing only
 
-  // Counters (K10a): Zircon's calls, plus waiting at a value (counter.h).
+  // Counters (K10a): Zircon's calls; waits at a value are object_bind
+  // VALUE bindings (counter.h, port.h).
   CROI_SYS_COUNTER_CREATE = 160,        // (options 0, uint32_t *out)
   CROI_SYS_COUNTER_ADD = 161,           // (counter, int64_t amount)
   CROI_SYS_COUNTER_READ = 162,          // (counter, int64_t *value)
-  CROI_SYS_COUNTER_WRITE = 163,         // (counter, int64_t value)
-  CROI_SYS_COUNTER_WAIT = 164,          // (counter, int64_t value, deadline): croi's
 
-  // Display timelines (K10b, croi's; timeline.h). Waits: the counter calls.
+  // Display timelines (K10b, croi's; timeline.h). Waits: VALUE bindings.
   CROI_SYS_TIMELINE_CREATE = 170,       // (display resource, options, period_ns, uint32_t *out)
   CROI_SYS_TIMELINE_ADVANCE = 171,      // (timeline, timestamp)
   CROI_SYS_TIMELINE_SET_PERIOD = 172,   // (timeline, period_ns)
@@ -157,12 +152,6 @@ enum : uint64_t {
   CROI_SYS_CPRNG_DRAW = 181,            // (void *buffer, length)
   CROI_SYS_CPRNG_ADD_ENTROPY = 182,     // (const void *buffer, length)
   CROI_CPRNG_MAX_LEN = 256,
-};
-
-enum : uint32_t {  // timer_create options (Zircon's ZX_TIMER_SLACK_*)
-  CROI_TIMER_SLACK_CENTER = 0,
-  CROI_TIMER_SLACK_EARLY = 1,
-  CROI_TIMER_SLACK_LATE = 2,
 };
 
 // A new process's first thread starts with arg1 (a handle in the process)

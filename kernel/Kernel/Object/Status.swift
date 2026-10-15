@@ -120,7 +120,6 @@ enum ObjectType: UInt32 {
     case suspendToken = 27
     case job = 17
     case vmar = 18
-    case timer = 22
     case iommu = 23
     case bti = 24
     case pmt = 26

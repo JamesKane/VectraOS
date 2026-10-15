@@ -2,7 +2,7 @@ import CroiRuntime
 
 /// bin/m2 (K8c): Todhchai's M2 exit test, started from bootfs by userboot.
 /// It checks what userboot handed on, then: creates a channel pair, passes
-/// a VMO across it, waits on a port with a deadline timer, and prints over
+/// a VMO across it, waits on a port with a deadline, and prints over
 /// debuglog. Then it measures the kernel and IPC budgets (Todhchai
 /// performance.md §2) from croi's trace and prints each as a `budget`
 /// line (kernel/Kernel/Trace/Budgets.swift's format) for vx bench.
@@ -75,31 +75,29 @@ struct M2 {
                                                   unsafe UInt64(UInt(bitPattern: text.utf8Start)), 0,
                                                   UInt64(text.utf8CodeUnitCount)))
 
-        // A channel pair, a port watching the far end, and a deadline timer.
+        // A channel pair, and a port watching the far end and a counter
+        // (the doorbell a fence rings).
         var near: UInt32 = 0
         var far: UInt32 = 0
         var port: UInt32 = 0
-        var timer: UInt32 = 0
+        let fence = try Sys.counter()
         try Sys.check("creating a channel", Sys.call(CROI_SYS_CHANNEL_CREATE, 0, Sys.address(&near), Sys.address(&far)))
         try Sys.check("creating a port", Sys.call(CROI_SYS_PORT_CREATE, 0, Sys.address(&port)))
-        try Sys.check("creating a timer", Sys.call(CROI_SYS_TIMER_CREATE, UInt64(CROI_TIMER_SLACK_CENTER), 0,
-                                                   Sys.address(&timer)))
         // Both watches in one call (principle 12).
         var watches = InlineArray<2, croi_bind_item_t>(repeating: croi_bind_item_t())
         watches[0] = croi_bind_item_t(handle: far, options: UInt32(CROI_BIND_SIGNALS), key: 1,
                                       trigger: UInt64(CROI_SIGNAL_READABLE), status: 1, reserved: 0)
-        watches[1] = croi_bind_item_t(handle: timer, options: UInt32(CROI_BIND_SIGNALS), key: 2,
-                                      trigger: UInt64(CROI_SIGNAL_SIGNALED), status: 1, reserved: 0)
+        watches[1] = croi_bind_item_t(handle: fence, options: UInt32(CROI_BIND_VALUE), key: 2, trigger: 1,
+                                      status: 1, reserved: 0)
         let bound = Sys.call(CROI_SYS_OBJECT_BIND, UInt64(port), Sys.address(&watches), 2)
-        try Sys.check("watching the channel and the timer",
+        try Sys.check("watching the channel and the fence",
                       bound == 2 && watches[0].status == 0 && watches[1].status == 0 ? 0 : bound < 0 ? bound : -1)
-        // The VMO crosses the channel, then the timer is set: its packet
-        // comes second however slowly the emulator runs (it raced the write).
+        // The VMO crosses the channel, then the fence is reached: its
+        // packet comes second.
         var message: UInt64 = 0x4D32  // "M2"
         try Sys.check("sending the VMO", Sys.call(CROI_SYS_CHANNEL_WRITE, UInt64(near), 0, Sys.address(&message), 8,
                                                   Sys.address(&vmo), 1))
-        let deadline = Sys.now() + 5_000_000
-        try Sys.check("setting the timer", Sys.call(CROI_SYS_TIMER_SET, UInt64(timer), deadline, 0))
+        Sys.signal(fence)
         var packet = croi_port_packet_t()
         try Sys.check("waiting on the port", Sys.call(CROI_SYS_PORT_WAIT, UInt64(port), Sys.now() + 1_000_000_000,
                                                       Sys.address(&packet)))
@@ -122,19 +120,20 @@ struct M2 {
         }
         print("m2: a VMO crossed a channel and reads back through its own mapping")
 
-        // The deadline timer's packet, not before its deadline.
-        try Sys.check("waiting for the timer", Sys.call(CROI_SYS_PORT_WAIT, UInt64(port), Sys.now() + 1_000_000_000,
+        // The fence's packet, then nothing more: the wait ends at its
+        // deadline, not before (V1 cut timer objects, D25).
+        try Sys.check("waiting for the fence", Sys.call(CROI_SYS_PORT_WAIT, UInt64(port), Sys.now() + 1_000_000_000,
                                                         Sys.address(&packet)))
-        let fired = Sys.now()
-        guard packet.key == 2, fired >= deadline else {
-            throw Failure(what: "the timer firing at its deadline", status: Int64(packet.key))
+        guard packet.key == 2, packet.type == UInt32(CROI_PKT_TYPE_COUNTER), packet.payload.1 == 1 else {
+            throw Failure(what: "the fence's packet", status: Int64(packet.key))
         }
-        // Nothing more: a port wait with a deadline times out.
-        let timedOut = Sys.call(CROI_SYS_PORT_WAIT, UInt64(port), Sys.now() + 2_000_000, Sys.address(&packet))
-        guard timedOut == -21 else { throw Failure(what: "a port wait timing out", status: timedOut) }
-        print("m2: port wait saw the deadline timer \((fired - deadline) / 1000) us after its deadline, then timed out")
+        let deadline = Sys.now() + 5_000_000
+        let timedOut = Sys.call(CROI_SYS_PORT_WAIT, UInt64(port), deadline, Sys.address(&packet))
+        let woke = Sys.now()
+        guard timedOut == -21, woke >= deadline else { throw Failure(what: "a port wait timing out", status: timedOut) }
+        print("m2: port wait saw the fence, then timed out \((woke - deadline) / 1000) us after its deadline")
         _ = Sys.call(CROI_SYS_VMAR_UNMAP, UInt64(croi_vmar_root_self()), base, 4096)
-        for h in [handle, near, far, port, timer] { Sys.close(h) }
+        for h in [handle, near, far, port, fence] { Sys.close(h) }
         print("m2: exit test passed")
     }
 
@@ -204,7 +203,7 @@ struct M2 {
         let giveUp = Sys.now() + 2_000_000_000
         var progress = croi_info_debuglog_t()
         repeat {
-            _ = Sys.call(CROI_SYS_NANOSLEEP, Sys.now() + 10_000_000)
+            Sys.sleep(until: Sys.now() + 10_000_000)
             try Sys.check("reading debuglog progress",
                           Sys.call(CROI_SYS_OBJECT_GET_INFO, UInt64(log), UInt64(CROI_INFO_DEBUGLOG), Sys.address(&progress),
                                    UInt64(MemoryLayout<croi_info_debuglog_t>.size)))
@@ -220,7 +219,7 @@ struct M2 {
         var best: (UInt64, String) = (.max, "")
         for _ in 0..<3 {
             try cpuStats(resource, into: &before)
-            _ = Sys.call(CROI_SYS_NANOSLEEP, Sys.now() + idleWindow)
+            Sys.sleep(until: Sys.now() + idleWindow)
             try cpuStats(resource, into: &after)
             let window = count(before, after)
             if window.0 < best.0 { best = window }

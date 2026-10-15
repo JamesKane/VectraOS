@@ -12,7 +12,7 @@ import CKernel
 ///   event that leaves a trigger signal asserted, coalesced while queued;
 ///   the reader drains until the object would block, as with EPOLLET).
 /// - VALUE: ONCE, a counter reaching a value (a fence).
-/// - CHANGE: PERSISTENT, every add or write of a counter (a doorbell).
+/// - CHANGE: PERSISTENT, every add to a counter (a doorbell).
 /// - INTERRUPT, OVERRUN, PRESSURE: PERSISTENT, the kernel events of an
 ///   interrupt, a thread's or interrupt's budget, a memory account.
 /// port_cancel(port, source, key) undoes any of them, as does closing the

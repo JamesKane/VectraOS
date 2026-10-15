@@ -82,7 +82,6 @@ kernel/Kernel/Object/Resource.swift	croi	dc4cf67	kernel/Kernel/Object/Resource.s
 kernel/Kernel/Object/ResourceSelfTest.swift	croi	dc4cf67	kernel/Kernel/Object/ResourceSelfTest.swift
 kernel/Kernel/Object/Status.swift	croi	dc4cf67	kernel/Kernel/Object/Status.swift
 kernel/Kernel/Object/Timeline.swift	croi	dc4cf67	kernel/Kernel/Object/Timeline.swift
-kernel/Kernel/Object/TimerObject.swift	croi	dc4cf67	kernel/Kernel/Object/TimerObject.swift
 kernel/Kernel/Object/VmoObject.swift	croi	dc4cf67	kernel/Kernel/Object/VmoObject.swift
 kernel/Kernel/Object/Wait.swift	croi	dc4cf67	kernel/Kernel/Object/Wait.swift
 kernel/Kernel/Panic.swift	croi	dc4cf67	kernel/Kernel/Panic.swift

@@ -93,6 +93,20 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   every timed wait is a binding. Fix: cancel a port's bindings when its
   last handle closes, before ports become rings (D19).
 
+## Sleeps, timers and counter waits
+
+- **Cut** (V1, D25) — no nanosleep, no timer objects (timer_create, set
+  and cancel, the slack policies, the NEW_TIMER policy condition), no
+  counter_write. A sleep or a timer is a port_wait's deadline (with a
+  leeway that only ever runs late, none for a deadline thread); a value
+  is set by adding the difference. Kind: deliberate. Impact: every
+  Fuchsia program that sleeps (zx_nanosleep) or uses async::Task's
+  timers.
+- **Lending through a port** — croi's counters and timelines lend their
+  deadline profile (ext 5) to the thread their packet wakes in
+  port_wait, where they lent it to counter_wait's threads. Zircon has
+  neither. Kind: deliberate. Impact: none.
+
 ## VM and VMOs
 
 - **Snapshot child of a shrinking parent** (K13h) — croi's child reads
@@ -216,8 +230,7 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   reference_to_synthetic and clock_get_details' tick fields are ns. Kind:
   deliberate. Impact: code converting raw ticks itself.
 - **BOOT is monotonic** — no suspend, so the boot timeline equals the
-  monotonic one (timer_create takes BOOT too; interrupt timestamps are
-  monotonic). Kind: deliberate (until suspend exists). Impact: none today.
+  monotonic one (interrupt timestamps are monotonic). Kind: deliberate (until suspend exists). Impact: none today.
 - **No UTC clock from the kernel** — PA_CLOCK_UTC is defined but nothing
   creates one; it is the time service's to create. Kind: deliberate.
   Impact: user space must provide UTC.
@@ -227,8 +240,8 @@ matches the pinned tree where upstream docs or expectations say otherwise).
 - **Syscall restart in the kernel** — for suspension Zircon wakes
   interruptible waits with INTR_RETRY and its vDSO re-issues the call;
   croi's programs call the kernel directly, so the kernel rewinds the PC
-  over the syscall for the restartable waits (nanosleep, port_wait,
-  vmo_read, futex_wait, interrupt_wait, counter_wait). Other waits (channel_call, exceptions)
+  over the syscall for the restartable waits (port_wait, vmo_read,
+  futex_wait, interrupt_wait). Other waits (channel_call, exceptions)
   suspend when they end. Kind: deliberate. Impact: debuggers see the PC at
   the syscall instruction.
 - **Debugging syscalls option** — process_write_memory and debug-register
@@ -300,8 +313,9 @@ matches the pinned tree where upstream docs or expectations say otherwise).
 
 ## croi additions (not in Zircon)
 
-- `counter_wait` and object_bind VALUE — wait for a counter to reach a
-  value (packet type 0x82).
+- object_bind VALUE — a packet when a counter reaches a value (packet
+  type 0x82). A counter with a deadline profile lends it to the thread
+  its packet wakes.
 - `object_bind` (22, V1) — replaces object_wait_async, interrupt_bind,
   counter_wait_async, thread_bind_overrun_port and
   account_bind_pressure_port: a batch of bindings, ONCE or PERSISTENT

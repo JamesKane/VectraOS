@@ -110,7 +110,7 @@ change (new milestones add a section to the file they belong in).
 | `cpu.md` | Locking, SMP, interrupts and TLB shootdowns, time and timers, exceptions, kernel stacks, threads, scheduling policy, inheritance, thread pins, xstate, deadline wakeups, CPU reservations, idle, power control, trace |
 | `hardening.md` | CPRNG, static PIEs and ASLR, KASLR, PAC, BTI, guarded user pages |
 | `user.md` | User mode per arch, user protection (SMAP/PAN/SUM), vDSO and shared pages, user FP/SIMD, sampling and PMU, debuglog, ProgramLoader, bootfs and userboot, m2 and its profiling modes |
-| `objects.md` | Objects, handles, waits, ports, object_bind (V1), processes/jobs/VMARs, channels, futexes, timer objects, exceptions and job policy, counters, timelines, executable VMOs, the V1 cuts, small calls, info topics, clocks |
+| `objects.md` | Objects, handles, waits, ports, object_bind (V1), processes/jobs/VMARs, channels, futexes, exceptions and job policy, counters, timelines, executable VMOs, the V1 cuts, small calls, info topics, clocks |
 | `debugging.md` | Suspension, process memory access, debugger channels, single-step and hardware breakpoints |
 | `drivers.md` | Resources, firmware boot data, interrupt objects, MSI (x86, ITS, AIA), DMA/BTIs without an IOMMU, SMC calls |
 | `iommu.md` | VT-d (and interrupt remapping), AMD-Vi, SMMUv3, SMMUv1/v2, RISC-V IOMMU, claimed devices' MSIs |

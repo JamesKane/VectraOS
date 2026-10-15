@@ -195,7 +195,7 @@ struct HandleTable: ~Copyable {
             throw .invalidArgs
         }
         // The new handle first: the count never passes through zero, which
-        // would run the last handle's hook (a timer would be cancelled).
+        // would run the last handle's hook (Objects.lastHandleClosed).
         ref.object.retain()
         let added: UInt32
         do throws(Status) {

@@ -35,6 +35,17 @@ enum Sys {
         UInt64(bitPattern: call(CROI_SYS_CLOCK_MONOTONIC))
     }
 
+    /// A port nothing is bound to: every thread's sleep (V1 cut nanosleep,
+    /// D25).
+    nonisolated(unsafe) static var sleepPort: UInt32 = 0
+
+    /// Sleeps until `deadline`: a port_wait that times out.
+    static func sleep(until deadline: UInt64) {
+        if sleepPort == 0 { _ = call(CROI_SYS_PORT_CREATE, 0, address(&sleepPort)) }
+        var packet = croi_port_packet_t()
+        _ = call(CROI_SYS_PORT_WAIT, UInt64(sleepPort), deadline, address(&packet))
+    }
+
     static func close(_ handle: UInt32) {
         if handle != 0 { _ = call(CROI_SYS_HANDLE_CLOSE, UInt64(handle)) }
     }

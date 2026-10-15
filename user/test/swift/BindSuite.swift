@@ -22,8 +22,11 @@ enum BindSuite {
         check(Sys.call(CROI_SYS_COUNTER_ADD, counter.arg, UInt64(bitPattern: amount)) == 0, "counter_add")
     }
 
-    static func write(_ counter: borrowing Handle, _ value: Int64) {
-        check(Sys.call(CROI_SYS_COUNTER_WRITE, counter.arg, UInt64(bitPattern: value)) == 0, "counter_write")
+    /// Sets the value: an add of the difference (V1 cut counter_write, D25).
+    static func set(_ counter: borrowing Handle, _ value: Int64) {
+        var now: Int64 = 0
+        check(Sys.call(CROI_SYS_COUNTER_READ, counter.arg, Sys.address(&now)) == 0, "counter_read")
+        add(counter, value - now)
     }
 
     /// A batch runs in order and stops at its first failure, leaving the
@@ -58,9 +61,9 @@ enum BindSuite {
         check(rung.payload.1 == 3 && rung.payload.2 == 3 && rung.payload.3 >= before,
               "one packet: the value, three adds, the time")
         check(port.empty, "coalesced while queued")
-        write(counter, 10)
+        set(counter, 10)
         guard let again = port.next() else { return check(false, "rings again once read") }
-        check(again.payload.1 == 10 && again.payload.2 == 1, "a write rings too, the count from zero")
+        check(again.payload.1 == 10 && again.payload.2 == 1, "rings again, the count from zero")
     }
 
     /// port_cancel unbinds, taking a queued packet back; closing the handle
@@ -97,23 +100,33 @@ enum BindSuite {
         add(counter)
         guard let twice = port.next() else { return check(false, "fires at each event") }
         check(twice.payload.1 == 2 && port.empty, "two events, one packet")
-        write(counter, -1)
+        set(counter, -1)
         check(port.empty, "nothing while no trigger signal is asserted")
         check(port.cancel(counter, key: 26) == 0, "unbound")
 
         let edge = UInt32(CROI_BIND_SIGNALS) | UInt32(CROI_BIND_PERSISTENT) | UInt32(CROI_BIND_EDGE)
         check(port.bind(counter, edge, key: 27, trigger: UInt64(CROI_COUNTER_NON_POSITIVE)) == 0 && port.empty,
               "EDGE: not at once")
-        write(counter, -2)
+        set(counter, -2)
         guard let later = port.next() else { return check(false, "EDGE: fires at the next event") }
         check(later.key == 27 && later.payload.1 == 1 && later.payload.2 == 0, "no time unless asked")
         check(port.cancel(counter, key: 27) == 0, "unbound")
     }
 
-    /// port_wait's leeway lets a timeout run late, never early.
+    /// port_wait's leeway lets a timeout run late, never early; a thread
+    /// on a deadline profile gets none (moved from mode 8's timers when V1
+    /// cut timer objects, D25). test_profile binds the deadline context
+    /// runSuites lends.
     static func leeway(_ port: borrowing Port) {
-        let deadline = Sys.now() + 1_000_000
+        var deadline = Sys.now() + 1_000_000
         check(port.next(deadline: deadline, leeway: 1_000_000) == nil && Sys.now() >= deadline,
               "a leeway never ends a wait early")
+        check(Sys.call(CROI_SYS_TEST_PROFILE, 1) == 0, "bound to the deadline context")
+        deadline = Sys.now() + 5_000_000
+        let timedOut = port.next(deadline: deadline, leeway: 500_000_000) == nil
+        let woke = Sys.now()
+        check(Sys.call(CROI_SYS_TEST_PROFILE, 2) == 0, "and back")
+        check(timedOut && woke >= deadline && woke < deadline + 200_000_000,
+              "a deadline thread's half second of leeway is ignored")
     }
 }

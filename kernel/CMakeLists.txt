@@ -62,7 +62,6 @@ add_library(kernel-swift OBJECT
   Kernel/Object/Debug.swift
   Kernel/Object/HardwareDebug.swift
   Kernel/Object/Futex.swift
-  Kernel/Object/TimerObject.swift
   Kernel/Object/Exception.swift
   Kernel/Object/DebugLog.swift
   Kernel/Object/ProfileObject.swift
@@ -192,7 +191,8 @@ croi_user_runtime()
 set(_swift_test_sources ${_user_dir}/test/swift/Main.swift ${_user_dir}/test/swift/Suite.swift
     ${_user_dir}/test/swift/BindSuite.swift ${_user_dir}/test/swift/VmoSuite.swift
     ${_user_dir}/test/swift/FutexSuite.swift ${_user_dir}/test/swift/ChannelSuite.swift
-    ${_user_dir}/test/swift/ObjectSuite.swift)
+    ${_user_dir}/test/swift/ObjectSuite.swift
+    ${_user_dir}/test/swift/CounterSuite.swift)
 set(_swift_test ${CMAKE_CURRENT_BINARY_DIR}/swifttest.elf)
 croi_user_program(${_swift_test} PIE SWIFT ${_swift_test_sources})
 # The same as a fixed-address program with a dynamic section and no

@@ -652,12 +652,12 @@ enum Policy {
             for i in 0..<count {
                 let action = UInt8(entries[i].policy)
                 let condition = Int(entries[i].condition)
-                // NEW_ANY: the conditions left after V1's cuts (D21, D23).
-                let targets: InlineArray<6, Int> = condition == Int(CROI_POL_NEW_ANY)
+                // NEW_ANY: the conditions left after V1's cuts (D21, D23, D25).
+                let targets: InlineArray<5, Int> = condition == Int(CROI_POL_NEW_ANY)
                     ? [Int(CROI_POL_NEW_VMO), Int(CROI_POL_NEW_CHANNEL), Int(CROI_POL_NEW_PORT),
-                       Int(CROI_POL_NEW_TIMER), Int(CROI_POL_NEW_PROCESS), Int(CROI_POL_NEW_PAGER)]
-                    : [condition, condition, condition, condition, condition, condition]
-                for t in 0..<6 {
+                       Int(CROI_POL_NEW_PROCESS), Int(CROI_POL_NEW_PAGER)]
+                    : [condition, condition, condition, condition, condition]
+                for t in 0..<5 {
                     let target = targets[t]
                     if policy[target] != UInt8(CROI_POL_ACTION_ALLOW), policy[target] != action {
                         if options == UInt32(CROI_JOB_POL_ABSOLUTE) { throw .alreadyExists }

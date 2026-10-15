@@ -34,10 +34,11 @@ enum : uint32_t {
 // object_set_profile(target, profile, options, refusal, timeline) also
 // takes an interrupt, counter or display timeline as its target (WRITE
 // right; a deadline profile): the object then lends that deadline to each
-// thread it wakes directly (interrupt_wait, counter_wait): the thread runs
-// on it from its wakeup, with a period starting there, until it next
-// blocks (ext 5, as channel_call donation). No admission: the lent
-// deadline joins the thread's own as inheritance does.
+// thread it wakes (interrupt_wait's; for a counter or timeline, the
+// port_wait its packet ends, D25): the thread runs on it from its wakeup,
+// with a period starting there, until it next blocks (ext 5, as
+// channel_call donation). No admission: the lent deadline joins the
+// thread's own as inheritance does.
 //
 // With CROI_PROFILE_HANDOFF, an interrupt object instead owns an admitted
 // context: the thread interrupt_wait wakes runs on it at once (on its

@@ -191,11 +191,11 @@ enum Syscalls {
     }
 
     /// Syscalls a suspension may end and restart (K13g): their waits leave
-    /// nothing behind, and deadlines are absolute. nanosleep, port_wait,
-    /// futex_wait, interrupt_wait, counter_wait; vmo_read (pager waits).
+    /// nothing behind, and deadlines are absolute. port_wait, futex_wait,
+    /// interrupt_wait; vmo_read (pager waits).
     static func restartable(_ number: UInt64) -> Bool {
         switch number {
-        case 4, 33, 41, 90, 143, 164: true
+        case 33, 41, 90, 143: true
         default: false
         }
     }
@@ -219,9 +219,6 @@ enum Syscalls {
             #endif
             return (6...9).contains(a[0]) ? Reclaim.testHook(a) : TestHooks.profile(a[0])
         case 3: return Int64(bitPattern: Clock.now())
-        case 4:
-            Scheduler.sleepInterruptible(until: a[0])
-            return 0
         case 5:
             reported.store(a[0], ordering: .relaxed)
             return 0
@@ -420,7 +417,7 @@ enum Syscalls {
             try idleCall(a, table)
         case 80...89, 210...215:
             try ipcCall(number, a, table)
-        case 90...99:
+        case 90, 91:
             try syncCall(number, a, table)
         default:
             throw .notSupported

@@ -112,9 +112,6 @@ struct Thread: ~Copyable {
     var homePeriodStart: UInt64 = 0
     var homeDeadline: UInt64 = 0
     var homeRemaining: Int64 = 0
-    /// Its WaitState, kept for its next wait (a thread is in one wait at a
-    /// time), or 0 until it first waits.
-    var waitState: UInt64 = 0
     /// The thread object it runs (K7: a reference it holds), or 0.
     var object: UInt64 = 0
     /// Killed (task_kill): it exits on its way back to user mode, and its

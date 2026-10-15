@@ -39,7 +39,8 @@ The work, in order:
    decision entry. A `usertest.c` test the cut touches moves to a Swift
    suite. Done: FIFOs, sockets and streams (D21, 135 calls); the channel
    `_etc` forms and the futex extras (D22, 129 calls); events, signals
-   and the thread waits (D23, 123 calls).
+   and the thread waits (D23, 123 calls); sleeps, timers and the counter
+   waits (D25, 117 calls).
 3. The batched forms of the hot calls (audit §3).
 4. The one ring (architecture §3) in Swift and as `ring.h`, with a model
    checker. Doorbells are counters.

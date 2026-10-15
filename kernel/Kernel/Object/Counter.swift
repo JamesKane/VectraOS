@@ -1,15 +1,17 @@
 import CKernel
 
 /// A counter (K10a; Zircon's CounterDispatcher, type 34): a signed 64-bit
-/// value with POSITIVE / NON_POSITIVE signals, plus croi's waits at a value
-/// (Todhchai's item 15: the desktop's fences, Vulkan's timeline semaphores
-/// later). Value waits are observers with a threshold (Observer.byValue),
-/// so they share the signal waits' registration, cancellation on handle
-/// close, port_cancel and port delivery. The header lock guards the value.
+/// value with POSITIVE / NON_POSITIVE signals, plus croi's bindings at a
+/// value (Todhchai's item 15: the desktop's fences, Vulkan's timeline
+/// semaphores later). Value bindings are observers with a threshold
+/// (Observer.byValue), so they share the signal bindings' registration,
+/// cancellation on handle close, port_cancel and port delivery. V1 cut
+/// counter_write and counter_wait (D25): an add, and a port. The header
+/// lock guards the value.
 struct CounterObject: ~Copyable {
     var header = ObjectHeader(type: .counter)
     var value: Int64 = 0
-    /// K10c: a deadline profile lent to the threads its value waits wake.
+    /// K10c: a deadline profile lent to the threads its packets wake.
     var lend: Profile? = nil
 
     /// ZX_DEFAULT_COUNTER_RIGHTS.
@@ -61,54 +63,13 @@ enum Counters {
         }
     }
 
-    /// counter_write.
-    static func write(_ object: ObjectPointer, _ value: Int64) {
-        object.header.lock.withLock { setLocked(object, value) }
-    }
-
     /// Sets the value and the signals, and runs the observers either
-    /// satisfies (signal waits and value waits alike). Object lock held.
+    /// satisfies (signal and value bindings alike). Object lock held.
     private static func setLocked(_ object: ObjectPointer, _ value: Int64) {
         CounterPointer(object: object).pointee.value = value
         let signals = object.header.signals & ~(positive | nonPositive)
         object.header.signals = signals | (value > 0 ? positive : nonPositive)
         Observers.notify(object, changed: true)
-    }
-
-    /// counter_wait: until the value is at least `target`, or `deadline`
-    /// (TIMED_OUT), or the handle is closed (CANCELED).
-    static func wait(_ table: borrowing HandleTable, _ handle: UInt32, target: Int64,
-                     deadline: UInt64) throws(Status) {
-        let ref = try waitable(table, handle, rights: .wait | .read)
-        let object = ref.object
-        let state = try WaitStatePointer.forCurrentThread()
-        let observer = try object.header.lock.withLock { () throws(Status) -> ObserverPointer? in
-            if valueLocked(object) >= target { return nil }
-            var waiter = Observer(kind: .wait(state: state.address, index: 0), trigger: 0, table: table.address,
-                                  handle: handle)
-            waiter.byValue = true
-            waiter.atValue = target
-            let added = try Observers.add(object, waiter)
-            if object.header.type == .timeline { Timelines.watchLocked(object) }
-            return added
-        }
-        guard let observer else { return }
-        // One scheduler-lock pass: wait, and read how it ended.
-        enum End { case reached, canceled, timedOut }
-        let end = Scheduler.locked { () -> End in
-            while !state.pointee.done {
-                let result = Scheduler.block(on: state.pointee.queue, deadline: deadline, interruptible: true)
-                if result == .interrupted { return .canceled }  // the thread was killed; it won't see this
-                if result == .timedOut, !state.pointee.done { return .timedOut }
-            }
-            return state.pointee.canceled ? .canceled : .reached
-        }
-        object.header.lock.withLock { Observers.remove(object, observer) }
-        switch end {
-        case .reached: return
-        case .canceled: throw .canceled
-        case .timedOut: throw .timedOut
-        }
     }
 
     /// object_bind VALUE: one CROI_PKT_TYPE_COUNTER packet to `port` with

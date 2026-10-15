@@ -237,7 +237,7 @@ static int64_t registers(uint64_t seed, uint64_t sve) {
   double acc = (double)seed;
   for (int i = 0; i < 200000; i++) {
     acc = acc * 1.0000001 + 0.5;
-    if (i % 20000 == 0) sys(CROI_SYS_NANOSLEEP, 0, 0, 0, 0, 0);
+    if (i % 20000 == 0) sys(CROI_SYS_NULL, 0, 0, 0, 0, 0);  // a kernel entry mid-sum
   }
   uint64_t bits;
   __builtin_memcpy(&bits, &acc, sizeof bits);
@@ -323,6 +323,35 @@ static uint32_t wait_for(uint32_t handle, uint32_t signals, uint64_t ns) {
   return observed;
 }
 
+// Sleeps until `deadline`: a port_wait on a port nothing is bound to.
+// V1 cut nanosleep (D25). The port is made each time: this program has
+// no writable data to keep one in.
+static void sleep_until(uint64_t deadline) {
+  uint32_t port = 0;
+  croi_port_packet_t packet;
+  if (sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) != 0) return;
+  sys(CROI_SYS_PORT_WAIT, port, deadline, (uint64_t)&packet, 0, 0);
+  sys(CROI_SYS_HANDLE_CLOSE, port, 0, 0, 0, 0);
+}
+
+static void sleep_ns(uint64_t ns) { sleep_until(now_ns() + ns); }
+
+// Waits until the counter or timeline `handle` reaches `target`, or
+// `deadline`: 0, TIMED_OUT, or the binding's status. V1 cut counter_wait
+// (D25): a VALUE binding on a port of its own, cancelled if it didn't fire.
+static int64_t wait_value(uint32_t handle, int64_t target, uint64_t deadline) {
+  uint32_t port = 0;
+  croi_port_packet_t packet;
+  if (sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) != 0) return -1;
+  int64_t status = bind1(port, handle, CROI_BIND_VALUE, 0, (uint64_t)target);
+  if (status == 0) {
+    status = sys(CROI_SYS_PORT_WAIT, port, deadline, (uint64_t)&packet, 0, 0);
+    if (status != 0) sys(CROI_SYS_PORT_CANCEL, port, handle, 0, 0, 0);
+  }
+  sys(CROI_SYS_HANDLE_CLOSE, port, 0, 0, 0, 0);
+  return status;
+}
+
 static uint32_t wait_terminated(uint32_t handle) {
   return wait_for(handle, CROI_SIGNAL_TASK_TERMINATED, 5000000000ull);
 }
@@ -376,7 +405,7 @@ static void port_blocker(uint64_t port) {
   sys(CROI_SYS_THREAD_EXIT, 1, 0, 0, 0, 0);
 }
 static void counter_blocker(uint64_t counter) {
-  sys(CROI_SYS_COUNTER_WAIT, counter, 1000, ~0ull, 0, 0);
+  wait_value((uint32_t)counter, 1000, ~0ull);
   sys(CROI_SYS_THREAD_EXIT, 1, 0, 0, 0, 0);
 }
 static void user_spinner(uint64_t arg) {
@@ -421,7 +450,7 @@ static int64_t child(uint32_t self, uint64_t submode, uint64_t vdso) {
     if (sys(CROI_SYS_VMO_MAP, stack, 0, STACK_SIZE, 3, (uint64_t)&at) != 0) return 92;
     if (sys6(CROI_SYS_THREAD_CREATE, self, (uint64_t)"blocker", 7, 0, (uint64_t)&thread, 0) != 0) return 93;
     if (sys(CROI_SYS_THREAD_START, thread, (uint64_t)port_blocker, ENTRY_SP(at + STACK_SIZE), port, 0) != 0) return 94;
-    sys(CROI_SYS_NANOSLEEP, now_ns() + 3000000, 0, 0, 0, 0);
+    sleep_until(now_ns() + 3000000);
     return sys(CROI_SYS_PROCESS_EXIT, 7, 0, 0, 0, 0);
   }
   case 5:  // fault, for a handler to move us (to recovered)
@@ -488,7 +517,7 @@ static int64_t child(uint32_t self, uint64_t submode, uint64_t vdso) {
     uint64_t seen = 0;
     for (int i = 0; i < 300; i++) {
       seen |= 1ull << sys(CROI_SYS_TEST_PROFILE, 5, 0, 0, 0, 0);
-      if (i % 10 == 0) sys(CROI_SYS_NANOSLEEP, now_ns() + 100000, 0, 0, 0, 0);
+      if (i % 10 == 0) sleep_until(now_ns() + 100000);
     }
     return sys(CROI_SYS_PROCESS_EXIT, (int64_t)seen, 0, 0, 0, 0);
   }
@@ -512,7 +541,7 @@ static int64_t processes(const startup_t *s) {
   sys(CROI_SYS_HANDLE_CLOSE, process, 0, 0, 0, 0);
 
   process = spawn_child(s, s->job, 2);
-  sys(CROI_SYS_NANOSLEEP, now_ns() + 2000000, 0, 0, 0, 0);
+  sleep_until(now_ns() + 2000000);
   CHECK(90, sys(CROI_SYS_TASK_KILL, process, 0, 0, 0, 0) == 0);
   CHECK(91, (wait_terminated(process) & CROI_SIGNAL_TASK_TERMINATED) &&
                 return_code(process) == CROI_TASK_RETCODE_SYSCALL_KILL);
@@ -530,7 +559,7 @@ static int64_t processes(const startup_t *s) {
   uint32_t job = 0, vmar = 0;
   CHECK(94, sys(CROI_SYS_JOB_CREATE, s->job, 0, (uint64_t)&job, 0, 0) == 0);
   process = spawn_child(s, job, 2);
-  sys(CROI_SYS_NANOSLEEP, now_ns() + 2000000, 0, 0, 0, 0);
+  sleep_until(now_ns() + 2000000);
   CHECK(95, sys(CROI_SYS_TASK_KILL, job, 0, 0, 0, 0) == 0);
   CHECK(96, wait_terminated(process) & CROI_SIGNAL_TASK_TERMINATED);
   CHECK(296, return_code(process) == CROI_TASK_RETCODE_SYSCALL_KILL);
@@ -672,7 +701,7 @@ static int64_t ipc(const startup_t *s) {
   CHECK(145, sys(CROI_SYS_CHANNEL_CREATE, 0, (uint64_t)&x, (uint64_t)&y, 0, 0) == 0);
   uint64_t slot[2] = {x, 1};
   uint32_t caller = start_thread(s, lonely_caller, (uint64_t)slot);
-  sys(CROI_SYS_NANOSLEEP, now_ns() + 3000000, 0, 0, 0, 0);
+  sleep_until(now_ns() + 3000000);
   sys(CROI_SYS_HANDLE_CLOSE, y, 0, 0, 0, 0);
   CHECK(146, (wait_for(caller, CROI_SIGNAL_TASK_TERMINATED, 2000000000) & CROI_SIGNAL_TASK_TERMINATED) &&
                  (int64_t)slot[1] == ERR_PEER_CLOSED);
@@ -695,35 +724,6 @@ static uint64_t koid_of(uint32_t handle) {
 static void join(uint32_t thread) {
   wait_for(thread, CROI_SIGNAL_TASK_TERMINATED, 3000000000ull);
   sys(CROI_SYS_HANDLE_CLOSE, thread, 0, 0, 0, 0);
-}
-
-static int64_t sync_objects(const startup_t *s) {
-  (void)s;
-  // Timers.
-  uint32_t timer = 0;
-  CHECK(170, sys(CROI_SYS_TIMER_CREATE, CROI_TIMER_SLACK_LATE, 0, (uint64_t)&timer, 0, 0) == 0);
-  uint64_t deadline = now_ns() + 5000000;
-  CHECK(171, sys(CROI_SYS_TIMER_SET, timer, deadline, 0, 0, 0) == 0);
-  CHECK(172, (wait_for(timer, SIGNALED, 2000000000ull) & SIGNALED) && now_ns() >= deadline);
-  CHECK(173, sys(CROI_SYS_TIMER_SET, timer, now_ns() + 50000000, 0, 0, 0) == 0 &&
-                 !(wait_for(timer, SIGNALED, 0) & SIGNALED));  // a set clears SIGNALED
-  CHECK(174, sys(CROI_SYS_TIMER_CANCEL, timer, 0, 0, 0, 0) == 0 &&
-                 !(wait_for(timer, SIGNALED, 100000000) & SIGNALED));
-  CHECK(175, sys(CROI_SYS_TIMER_SET, timer, 1, 0, 0, 0) == 0 &&
-                 (wait_for(timer, SIGNALED, 1000000000) & SIGNALED));  // already due
-  CHECK(208, sys(CROI_SYS_TIMER_CANCEL, timer, 0, 0, 0, 0) == 0 &&
-                 !(wait_for(timer, SIGNALED, 0) & SIGNALED));  // cancel clears a fired timer, as Zircon's
-  // A deadline profile gets zero slack: half a second of late slack ignored.
-  CHECK(176, sys(CROI_SYS_TEST_PROFILE, 1, 0, 0, 0, 0) == 0);
-  deadline = now_ns() + 5000000;
-  CHECK(177, sys(CROI_SYS_TIMER_SET, timer, deadline, 500000000, 0, 0) == 0);
-  CHECK(178, (wait_for(timer, SIGNALED, 2000000000ull) & SIGNALED) && now_ns() < deadline + 200000000);
-  CHECK(179, sys(CROI_SYS_TEST_PROFILE, 2, 0, 0, 0, 0) == 0);
-  // Closing an armed timer: it fires later, harmlessly.
-  CHECK(180, sys(CROI_SYS_TIMER_SET, timer, now_ns() + 20000000, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, timer, 0, 0, 0, 0) == 0);
-  sys(CROI_SYS_NANOSLEEP, now_ns() + 60000000, 0, 0, 0, 0);
-  return 0x600D;
 }
 
 // Mode 9: exceptions and job policy (K7d), as a process.
@@ -819,7 +819,7 @@ static void tls_worker(uint64_t arg) {
   __asm__ volatile("mv tp, %0" ::"r"(w->value));
 #endif
   for (int i = 0; i < 20 && good; i++) {
-    sys(CROI_SYS_NANOSLEEP, now_ns() + 200000, 0, 0, 0, 0);
+    sleep_until(now_ns() + 200000);
     good = tls_read() == w->value;
   }
   w->ok = good ? 1 : 2;
@@ -1348,8 +1348,6 @@ static void irq_device_stop(volatile uint32_t *irq_regs) {
 static int64_t port_next(uint32_t port, uint64_t ns, croi_port_packet_t *packet) {
   return sys(CROI_SYS_PORT_WAIT, port, ns == 0 ? 0 : now_ns() + ns, (uint64_t)packet, 0, 0);
 }
-
-static void sleep_ns(uint64_t ns) { sys(CROI_SYS_NANOSLEEP, now_ns() + ns, 0, 0, 0, 0); }
 
 // A worker: interrupt_wait on `handle`; the status and time land here.
 typedef struct {
@@ -1957,7 +1955,7 @@ static int edu_dma(volatile uint8_t *regs, uint64_t src, uint64_t dst, uint32_t 
   uint64_t give_up = now_ns() + 2000000000ull;            // edu starts it 100 ms later
   while (*(volatile uint64_t *)(regs + 0x98) & 1) {
     if (now_ns() > give_up) return 0;
-    sys(CROI_SYS_NANOSLEEP, now_ns() + 5000000, 0, 0, 0, 0);
+    sleep_until(now_ns() + 5000000);
   }
   return 1;
 }
@@ -2176,9 +2174,9 @@ static int64_t memory_stats(const startup_t *s) {
   return 0x600D;
 }
 
-// Mode 14 (K10a): counters. Zircon's semantics (signals, overflow,
-// rights), then croi's waits at a value: blocking, cancelled by a close,
-// and as port packets (immediate, later, cancelled).
+// A thread waiting for a counter or timeline to reach `target`. Mode 14's
+// counter tests moved to the counters suite (D25); the driven timeline's
+// check still uses it.
 typedef struct {
   uint32_t handle;
   int64_t target;
@@ -2186,71 +2184,8 @@ typedef struct {
 } counter_waiter_t;
 static void counter_waiter(uint64_t arg) {
   counter_waiter_t *w = (counter_waiter_t *)arg;
-  w->status = sys(CROI_SYS_COUNTER_WAIT, w->handle, (uint64_t)w->target, ~0ull, 0, 0);
+  w->status = wait_value(w->handle, w->target, ~0ull);
   sys(CROI_SYS_THREAD_EXIT, 0, 0, 0, 0, 0);
-}
-
-static int64_t counters(const startup_t *s) {
-  uint32_t c = 0, weak = 0, port = 0;
-  int64_t value = -1;
-  CHECK(340, sys(CROI_SYS_COUNTER_CREATE, 1, (uint64_t)&c, 0, 0, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_COUNTER_CREATE, 0, (uint64_t)&c, 0, 0, 0) == 0 &&
-                 (wait_for(c, CROI_COUNTER_NON_POSITIVE, 0) & CROI_COUNTER_NON_POSITIVE) &&
-                 sys(CROI_SYS_COUNTER_READ, c, (uint64_t)&value, 0, 0, 0) == 0 && value == 0);
-  CHECK(341, sys(CROI_SYS_COUNTER_ADD, c, 5, 0, 0, 0) == 0 &&
-                 (wait_for(c, CROI_COUNTER_POSITIVE, 0) & (CROI_COUNTER_POSITIVE | CROI_COUNTER_NON_POSITIVE)) ==
-                     CROI_COUNTER_POSITIVE &&
-                 sys(CROI_SYS_COUNTER_WRITE, c, (uint64_t)-3, 0, 0, 0) == 0 &&
-                 (wait_for(c, CROI_COUNTER_NON_POSITIVE, 0) & CROI_COUNTER_NON_POSITIVE) &&
-                 sys(CROI_SYS_COUNTER_WRITE, c, 0x7FFFFFFFFFFFFFFFull, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_COUNTER_ADD, c, 1, 0, 0, 0) == ERR_OUT_OF_RANGE &&
-                 sys(CROI_SYS_COUNTER_READ, c, (uint64_t)&value, 0, 0, 0) == 0 && value == 0x7FFFFFFFFFFFFFFFll &&
-                 sys(CROI_SYS_COUNTER_READ, c, 0, 0, 0, 0) == ERR_INVALID_ARGS);
-  // Rights: add needs READ and WRITE, a value wait WAIT and READ.
-  CHECK(342, sys(CROI_SYS_HANDLE_DUPLICATE, c, 1u << 2 | 1u << 14, (uint64_t)&weak, 0, 0) == 0 &&  // READ, WAIT
-                 sys(CROI_SYS_COUNTER_ADD, weak, 1, 0, 0, 0) == ERR_ACCESS_DENIED_ &&
-                 sys(CROI_SYS_COUNTER_WRITE, weak, 1, 0, 0, 0) == ERR_ACCESS_DENIED_ &&
-                 sys(CROI_SYS_COUNTER_READ, weak, (uint64_t)&value, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, weak, 0, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_DUPLICATE, c, 1u << 14, (uint64_t)&weak, 0, 0) == 0 &&  // WAIT only
-                 sys(CROI_SYS_COUNTER_WAIT, weak, 0, 0, 0, 0) == ERR_ACCESS_DENIED_ &&
-                 sys(CROI_SYS_HANDLE_CLOSE, weak, 0, 0, 0, 0) == 0);
-  // Waits at a value: met at once, timed out, woken only once reached.
-  CHECK(343, sys(CROI_SYS_COUNTER_WRITE, c, 0, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_COUNTER_WAIT, c, 0, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_COUNTER_WAIT, c, (uint64_t)-5, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_COUNTER_WAIT, c, 3, now_ns() + 1000000, 0, 0) == ERR_TIMED_OUT);
-  counter_waiter_t w = {.handle = c, .target = 10, .status = 1};
-  uint32_t worker = start_thread(s, counter_waiter, (uint64_t)&w);
-  sleep_ns(10000000);
-  CHECK(344, sys(CROI_SYS_COUNTER_ADD, c, 5, 0, 0, 0) == 0);
-  sleep_ns(10000000);
-  CHECK(345, w.status == 1 && sys(CROI_SYS_COUNTER_ADD, c, 5, 0, 0, 0) == 0);
-  join_checked(worker);
-  CHECK(346, w.status == 0);
-  // Closing the handle a thread waits through cancels its wait.
-  CHECK(347, sys(CROI_SYS_HANDLE_DUPLICATE, c, 1u << 31, (uint64_t)&weak, 0, 0) == 0);
-  w.handle = weak, w.target = 1000, w.status = 1;
-  worker = start_thread(s, counter_waiter, (uint64_t)&w);
-  sleep_ns(10000000);
-  CHECK(348, sys(CROI_SYS_HANDLE_CLOSE, weak, 0, 0, 0, 0) == 0);
-  join_checked(worker);
-  CHECK(349, w.status == ERR_CANCELED);
-  // Port packets: later, at once, cancelled.
-  croi_port_packet_t p;
-  uint64_t before = now_ns();
-  CHECK(350, sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) == 0 &&
-                 bind1(port, c, CROI_BIND_VALUE, 7, 20) == 0 && port_next(port, 0, &p) == ERR_TIMED_OUT &&
-                 sys(CROI_SYS_COUNTER_WRITE, c, 25, 0, 0, 0) == 0 && port_next(port, 0, &p) == 0 &&
-                 p.type == CROI_PKT_TYPE_COUNTER && p.key == 7 && p.payload[0] == 20 && p.payload[1] == 25 &&
-                 p.payload[2] >= before && port_next(port, 0, &p) == ERR_TIMED_OUT);
-  CHECK(351, bind1(port, c, CROI_BIND_VALUE, 8, 25) == 0 && port_next(port, 0, &p) == 0 && p.key == 8 &&
-                 p.payload[1] == 25 && bind1(port, c, CROI_BIND_VALUE, 9, 100) == 0 &&
-                 sys(CROI_SYS_PORT_CANCEL, port, c, 9, 0, 0) == 0 && sys(CROI_SYS_COUNTER_WRITE, c, 200, 0, 0, 0) == 0 &&
-                 port_next(port, 0, &p) == ERR_TIMED_OUT);
-  sys(CROI_SYS_HANDLE_CLOSE, port, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, c, 0, 0, 0, 0);
-  return 0x600D;
 }
 
 // Mode 15 (K10b): display timelines. A synthetic one (the kernel's,
@@ -2290,7 +2225,7 @@ static int64_t timelines(const startup_t *s) {
   for (int i = 0; i < 3; i++) {
     CHECK(363, sys(CROI_SYS_COUNTER_READ, t, (uint64_t)&value, 0, 0, 0) == 0);
     uint64_t due = page->base_time_ns + (uint64_t)(value + 1 - page->base_count) * page->period_ns;
-    CHECK(364, sys(CROI_SYS_COUNTER_WAIT, t, (uint64_t)(value + 1), now_ns() + 100000000, 0, 0) == 0);
+    CHECK(364, wait_value(t, value + 1, now_ns() + 100000000) == 0);
     uint64_t woke = now_ns();
     CHECK(365, woke >= due && woke - due < 5000000);
   }
@@ -2306,11 +2241,11 @@ static int64_t timelines(const startup_t *s) {
   CHECK(367, sys(CROI_SYS_COUNTER_READ, t, (uint64_t)&before, 0, 0, 0) == 0 &&
                  sys(CROI_SYS_TIMELINE_SET_PERIOD, t, 4000000, 0, 0, 0) == 0 && page->period_ns == 4000000 &&
                  sys(CROI_SYS_COUNTER_READ, t, (uint64_t)&after, 0, 0, 0) == 0 && after >= before &&
-                 after <= before + 1 && sys(CROI_SYS_COUNTER_WAIT, t, (uint64_t)(after + 1), now_ns() + 100000000, 0, 0) == 0);
+                 after <= before + 1 && wait_value(t, after + 1, now_ns() + 100000000) == 0);
   // Rights: a client's handle (READ, WAIT) can't drive it.
   CHECK(368, sys(CROI_SYS_HANDLE_DUPLICATE, t, 1u << 2 | 1u << 14, (uint64_t)&weak, 0, 0) == 0 &&
                  sys(CROI_SYS_TIMELINE_SET_PERIOD, weak, 3000000, 0, 0, 0) == ERR_ACCESS_DENIED_ &&
-                 sys(CROI_SYS_COUNTER_WAIT, weak, 0, 0, 0, 0) == 0);
+                 wait_value(weak, 0, 0) == 0);
   // Driven: a waiter wakes when the driver counts a vblank.
   CHECK(369, sys(CROI_SYS_TIMELINE_CREATE, s->resource, 0, 16666666, (uint64_t)&driven, 0) == 0 &&
                  sys(CROI_SYS_COUNTER_READ, driven, (uint64_t)&value, 0, 0, 0) == 0 && value == 0);
@@ -2354,23 +2289,6 @@ static int64_t deadline_profile(uint32_t resource, int64_t capacity, int64_t dea
 }
 
 typedef struct {
-  uint32_t handle;
-  volatile int64_t status;
-  volatile int64_t deadline_on_wake, period_start, deadline_after_block;
-} lent_waiter_t;
-
-static void lent_waiter(uint64_t arg) {
-  lent_waiter_t *w = (lent_waiter_t *)arg;
-  w->deadline_on_wake = sys(CROI_SYS_TEST_PROFILE, 0, 0, 0, 0, 0);  // fair before
-  w->status = sys(CROI_SYS_COUNTER_WAIT, w->handle, 1, ~0ull, 0, 0);
-  w->deadline_on_wake += 2 * sys(CROI_SYS_TEST_PROFILE, 0, 0, 0, 0, 0);  // 2: deadline now, fair before
-  w->period_start = sys(CROI_SYS_TEST_PROFILE, 3, 0, 0, 0, 0);
-  sleep_ns(1000000);
-  w->deadline_after_block = sys(CROI_SYS_TEST_PROFILE, 0, 0, 0, 0, 0);
-  sys(CROI_SYS_THREAD_EXIT, 0, 0, 0, 0, 0);
-}
-
-typedef struct {
   volatile uint32_t go;
   volatile uint32_t done;
   volatile int64_t starts[4];
@@ -2378,7 +2296,7 @@ typedef struct {
 
 static void aligned_worker(uint64_t arg) {
   aligned_worker_t *w = (aligned_worker_t *)arg;
-  while (!w->go) sys(CROI_SYS_NANOSLEEP, 0, 0, 0, 0, 0);
+  while (!w->go) sleep_until(0);
   for (int i = 0; i < 4; i++) {
     w->starts[i] = sys(CROI_SYS_TEST_PROFILE, 3, 0, 0, 0, 0);
     sleep_ns(3100000);  // wake into a new period
@@ -2498,32 +2416,15 @@ static int64_t interrupt_handoff(const startup_t *s, uint32_t counter, uint32_t 
 }
 
 static int64_t deadline_wakeups(const startup_t *s) {
-  uint32_t deadline = 0, fair = 0, counter = 0, weak = 0, t = 0, page_vmo = 0;
+  uint32_t deadline = 0, fair = 0, counter = 0, t = 0, page_vmo = 0;
   croi_profile_info_t info;
   zero_bytes(&info, sizeof info);
   info.flags = CROI_PROFILE_INFO_FLAG_PRIORITY;
   info.priority = 20;
   CHECK(380, deadline_profile(s->resource, 1000000, 4000000, 4000000, &deadline) == 0 &&
                  sys(CROI_SYS_PROFILE_CREATE, s->resource, 0, (uint64_t)&info, (uint64_t)&fair, 0) == 0 &&
-                 sys(CROI_SYS_COUNTER_CREATE, 0, (uint64_t)&counter, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_DUPLICATE, counter, 1u << 2 | 1u << 14, (uint64_t)&weak, 0, 0) == 0);
-  // An event lends only a deadline, needs WRITE, and takes no options.
-  CHECK(381, sys(CROI_SYS_OBJECT_SET_PROFILE, counter, fair, 0, 0, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_OBJECT_SET_PROFILE, weak, deadline, 0, 0, 0) == ERR_ACCESS_DENIED_ &&
-                 sys(CROI_SYS_OBJECT_SET_PROFILE, counter, deadline, CROI_PROFILE_ALIGN_TIMELINE, 0, 0) ==
-                     ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_OBJECT_SET_PROFILE, counter, deadline, 0, 0, 0) == 0);
-  // A fair thread woken by the counter runs on its deadline, from the
-  // wakeup, until it blocks again.
-  lent_waiter_t w = {.handle = counter, .status = 1};
-  uint32_t worker = start_thread(s, lent_waiter, (uint64_t)&w);
-  sleep_ns(10000000);
-  uint64_t added = now_ns();
-  CHECK(382, w.status == 1 && sys(CROI_SYS_COUNTER_ADD, counter, 1, 0, 0, 0) == 0);
-  join_checked(worker);
-  CHECK(383, w.status == 0 && w.deadline_on_wake == 2 && (uint64_t)w.period_start >= added &&
-                 (uint64_t)w.period_start < now_ns());
-  CHECK(384, w.deadline_after_block == 0);
+                 sys(CROI_SYS_COUNTER_CREATE, 0, (uint64_t)&counter, 0, 0, 0) == 0);
+  // A counter's lent deadline moved to the counters suite (D25).
   // Frame alignment: a deadline thread's periods start on vblanks.
   CHECK(385, sys(CROI_SYS_TIMELINE_CREATE, s->resource, CROI_TIMELINE_SYNTHETIC, 2000000, (uint64_t)&t, 0) == 0 &&
                  sys(CROI_SYS_TIMELINE_GET_PAGE, t, (uint64_t)&page_vmo, 0, 0, 0) == 0);
@@ -2533,7 +2434,7 @@ static int64_t deadline_wakeups(const startup_t *s) {
   volatile const croi_timeline_page_t *page = (volatile const croi_timeline_page_t *)at;
   aligned_worker_t a;
   zero_bytes(&a, sizeof a);
-  worker = start_thread(s, aligned_worker, (uint64_t)&a);
+  uint32_t worker = start_thread(s, aligned_worker, (uint64_t)&a);
   uint32_t refusal = 99;
   // Without a deadline profile there is nothing to align.
   CHECK(387, sys(CROI_SYS_OBJECT_SET_PROFILE, worker, fair, CROI_PROFILE_ALIGN_TIMELINE, (uint64_t)&refusal, t) ==
@@ -2550,8 +2451,8 @@ static int64_t deadline_wakeups(const startup_t *s) {
   sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, PAGE, 0, 0);
   int64_t handed = interrupt_handoff(s, counter, fair, deadline);
   if (handed != 0) return handed;
-  uint32_t handles[] = {deadline, fair, counter, weak, t, page_vmo};
-  for (int i = 0; i < 6; i++) sys(CROI_SYS_HANDLE_CLOSE, handles[i], 0, 0, 0, 0);
+  uint32_t handles[] = {deadline, fair, counter, t, page_vmo};
+  for (int i = 0; i < 5; i++) sys(CROI_SYS_HANDLE_CLOSE, handles[i], 0, 0, 0, 0);
   return 0x600D;
 }
 
@@ -2887,7 +2788,7 @@ static int64_t clock_at(const croi_clock_transformation_t *t, int64_t r) {
 }
 
 static int64_t clocks(const startup_t *s) {
-  uint32_t clock = 0, other = 0, port = 0, timer = 0;
+  uint32_t clock = 0, other = 0, port = 0;
   int64_t now = 0;
   croi_clock_create_args_v1_t create = {1000};
   croi_clock_details_v1_t d;
@@ -2958,7 +2859,7 @@ static int64_t clocks(const startup_t *s) {
   CHECK(537, sys(CROI_SYS_CLOCK_READ, clock, (uint64_t)&now, 0, 0, 0) == 0 && seq == 6 && page->backstop_time == 1000 &&
                  page->error_bound == 77 && page->cur_ppm_adj == 500 && now >= mapped && now - mapped < 100000000);
   // AUTO_START: running from creation; CONTINUOUS: no jumps once started;
-  // not mappable: INVALID_ARGS for vmar_map_clock; names; BOOT timers.
+  // not mappable: INVALID_ARGS for vmar_map_clock; names.
   create.backstop_time = 0;
   CHECK(538, sys(CROI_SYS_CLOCK_CREATE, CROI_CLOCK_OPT_MONOTONIC | CROI_CLOCK_OPT_CONTINUOUS | CROI_CLOCK_OPT_AUTO_START,
                  0, (uint64_t)&other, 0, 0) == 0 &&
@@ -2969,15 +2870,13 @@ static int64_t clocks(const startup_t *s) {
                      (uint64_t)&up, 0, 0) == ERR_INVALID_ARGS &&
                  sys6(CROI_SYS_VMAR_MAP_CLOCK, s->vmar, CROI_VM_PERM_READ, 0, other, PAGE, (uint64_t)&size) ==
                      ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_OBJECT_SET_PROPERTY, other, CROI_PROP_NAME, (uint64_t)"utc", 3, 0) == 0 &&
-                 sys(CROI_SYS_TIMER_CREATE, 0, 1, (uint64_t)&timer, 0, 0) == 0 &&
-                 sys(CROI_SYS_TIMER_CREATE, 0, 2, (uint64_t)&size, 0, 0) == ERR_INVALID_ARGS);
+                 sys(CROI_SYS_OBJECT_SET_PROPERTY, other, CROI_PROP_NAME, (uint64_t)"utc", 3, 0) == 0);
   create.backstop_time = (int64_t)now_ns() + 1000000000000ll;
   CHECK(539, sys(CROI_SYS_CLOCK_CREATE, CROI_CLOCK_ARGS_VERSION(1) | CROI_CLOCK_OPT_AUTO_START, (uint64_t)&create,
                  (uint64_t)&size, 0, 0) == ERR_INVALID_ARGS);
   sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, PAGE, 0, 0);
-  uint32_t rest[4] = {clock, other, port, timer};
-  sys(CROI_SYS_HANDLE_CLOSE_MANY, (uint64_t)rest, 4, 0, 0, 0);
+  uint32_t rest[3] = {clock, other, port};
+  sys(CROI_SYS_HANDLE_CLOSE_MANY, (uint64_t)rest, 3, 0, 0, 0);
   return 0;
 }
 
@@ -3005,7 +2904,7 @@ static int64_t debugging(const startup_t *s) {
                  sys(CROI_SYS_TASK_SUSPEND, worker, (uint64_t)&token, 0, 0, 0) == 0 &&
                  (wait_for(worker, CROI_THREAD_SUSPENDED, 2000000000ull) & CROI_THREAD_SUSPENDED));
   uint64_t frozen = count;
-  sys(CROI_SYS_NANOSLEEP, now_ns() + 20000000ull, 0, 0, 0, 0);
+  sleep_until(now_ns() + 20000000ull);
   CHECK(541, count == frozen &&
                  sys(CROI_SYS_THREAD_READ_STATE, worker, CROI_THREAD_STATE_GENERAL_REGS, (uint64_t)&regs, sizeof regs, 0) == 0 &&
                  sys6(CROI_SYS_OBJECT_GET_INFO, worker, CROI_INFO_THREAD, (uint64_t)&thread, sizeof thread,
@@ -3442,7 +3341,7 @@ static int64_t postmortem_checks(const startup_t *s, uint32_t *channel_out) {
                  sys6(CROI_SYS_CHANNEL_WRITE, a, 0, (uint64_t)"pm", 2, (uint64_t)&exception, 1) == 0 &&
                  sys6(CROI_SYS_CHANNEL_READ, b, 0, (uint64_t)&marker, (uint64_t)&moved, 8 | (uint64_t)1 << 32,
                       (uint64_t)actual) == 0 && actual[1] == 1);
-  sys(CROI_SYS_NANOSLEEP, now_ns() + 20000000ull, 0, 0, 0, 0);
+  sleep_until(now_ns() + 20000000ull);
   uint32_t exit_state = CROI_EXCEPTION_STATE_THREAD_EXIT;
   CHECK(593, sys6(CROI_SYS_OBJECT_GET_INFO, thread, CROI_INFO_THREAD, (uint64_t)&state, sizeof state, (uint64_t)&counts[0],
                   (uint64_t)&counts[1]) == 0 &&
@@ -3706,35 +3605,6 @@ static int64_t user_exceptions(const startup_t *s) {
                      (uint64_t)&context, 0, 0) == 0 &&
                  sys6(CROI_SYS_OBJECT_GET_INFO, s->job, CROI_INFO_JOB, (uint64_t)&job, sizeof job, (uint64_t)&counts[0],
                       (uint64_t)&counts[1]) == 0 && job.debugger_attached == 0);
-  return 0;
-}
-
-// K14b: a CPU's kernel timers are a list, not 32 slots: timer objects
-// armed from one thread (so on one CPU, mostly) past the old limit all
-// fire, and handle_replace keeps a timer armed (it closed the old handle
-// first, and the last handle's close now cancels).
-static int64_t many_timers(void) {
-  enum { count = 100 };
-  uint32_t timers[count];
-  uint64_t deadline = now_ns() + 20000000;
-  int created = 0, set = 0;
-  for (int i = 0; i < count; i++) {
-    if (sys(CROI_SYS_TIMER_CREATE, 0, 0, (uint64_t)&timers[i], 0, 0) != 0) break;
-    created++;
-    if (sys(CROI_SYS_TIMER_SET, timers[i], deadline + (uint64_t)i * 10000, 0, 0, 0) == 0) set++;
-  }
-  int fired = 0;
-  for (int i = 0; i < created; i++) {
-    if (wait_for(timers[i], SIGNALED, 2000000000) & SIGNALED) fired++;
-    sys(CROI_SYS_HANDLE_CLOSE, timers[i], 0, 0, 0, 0);
-  }
-  CHECK(621, created == count && set == count && fired == count);
-  uint32_t timer = 0, replaced = 0;
-  CHECK(622, sys(CROI_SYS_TIMER_CREATE, 0, 0, (uint64_t)&timer, 0, 0) == 0 &&
-                 sys(CROI_SYS_TIMER_SET, timer, now_ns() + 10000000, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_REPLACE, timer, 0x80000000u, (uint64_t)&replaced, 0, 0) == 0 &&  // SAME_RIGHTS
-                 (wait_for(replaced, SIGNALED, 2000000000) & SIGNALED) &&
-                 sys(CROI_SYS_HANDLE_CLOSE, replaced, 0, 0, 0, 0) == 0);
   return 0;
 }
 
@@ -4458,13 +4328,8 @@ static void futex_cycle_waiter(uint64_t arg) {
 }
 
 static void nap_then_exit(uint64_t ns) {
-  sys(CROI_SYS_NANOSLEEP, now_ns() + ns, 0, 0, 0, 0);
-  sys(CROI_SYS_NANOSLEEP, now_ns() + 1000000, 0, 0, 0, 0);
-  sys(CROI_SYS_THREAD_EXIT, 0, 0, 0, 0, 0);
-}
-
-static void timer_setter(uint64_t timer) {
-  for (int i = 0; i < 3000; i++) sys(CROI_SYS_TIMER_SET, timer, now_ns() + 1000000000ull, 0, 0, 0);
+  sleep_until(now_ns() + ns);
+  sleep_until(now_ns() + 1000000);
   sys(CROI_SYS_THREAD_EXIT, 0, 0, 0, 0, 0);
 }
 
@@ -4514,12 +4379,6 @@ static int64_t review_fixes(const startup_t *s) {
                  (napper = start_thread(s, nap_then_exit, 20000000)) != 0 &&
                  sys(CROI_SYS_OBJECT_SET_PROFILE, napper, profile, 0, (uint64_t)&refusal, 0) == 0 && ended(napper));
   sys(CROI_SYS_HANDLE_CLOSE, profile, 0, 0, 0, 0);
-  // Two threads setting one timer at once (both armed its node: a panic).
-  uint32_t timer = 0;
-  CHECK(694, sys(CROI_SYS_TIMER_CREATE, 0, 0, (uint64_t)&timer, 0, 0) == 0);
-  uint32_t a = start_thread(s, timer_setter, timer), b = start_thread(s, timer_setter, timer);
-  CHECK(694, ended(a) && ended(b));
-  sys(CROI_SYS_HANDLE_CLOSE, timer, 0, 0, 0, 0);
   return 0;
 }
 
@@ -5438,7 +5297,7 @@ static int64_t extensions(const startup_t *s, uint64_t vdso_base) {
   // ends it promptly (Todhchai's compositor kill, M4).
   for (int round = 0; round < 30; round++) {
     uint32_t victim = spawn_child(s, s->job, 10);
-    sys(CROI_SYS_NANOSLEEP, now_ns() + 2000000 + (uint64_t)round * 100000, 0, 0, 0, 0);
+    sleep_until(now_ns() + 2000000 + (uint64_t)round * 100000);
     uint64_t killed = now_ns();
     CHECK(404, sys(CROI_SYS_TASK_KILL, victim, 0, 0, 0, 0) == 0);
     uint64_t now = now_ns();
@@ -5507,8 +5366,6 @@ static int64_t extensions(const startup_t *s, uint64_t vdso_base) {
   if (frozen != 0) return frozen;
   int64_t futexes = futex_deadlines(s);
   if (futexes != 0) return futexes;
-  int64_t timers = many_timers();
-  if (timers != 0) return timers;
   int64_t raised = user_exceptions(s);
   if (raised != 0) return raised;
   int64_t loaning = page_loaning(s);
@@ -5593,13 +5450,11 @@ __attribute__((section(".text.start"))) [[noreturn]] void _start(uint64_t mode, 
             : mode == 5 ? pmu()
             : mode == 6 ? processes((const startup_t *)handle)
             : mode == 7 ? ipc((const startup_t *)handle)
-            : mode == 8 ? sync_objects((const startup_t *)handle)
             : mode == 9 ? exceptions((const startup_t *)handle)
             : mode == 10 ? drivers((const startup_t *)handle)
             : mode == 11 ? interrupts((const startup_t *)handle)
             : mode == 12 ? dma((const startup_t *)handle)
             : mode == 13 ? memory_stats((const startup_t *)handle)
-            : mode == 14 ? counters((const startup_t *)handle)
             : mode == 15 ? timelines((const startup_t *)handle)
             : mode == 16 ? deadline_wakeups((const startup_t *)handle)
             : mode == 17 ? extensions((const startup_t *)handle, vdso_base)

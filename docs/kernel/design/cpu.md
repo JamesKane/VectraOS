@@ -94,8 +94,8 @@ a list by `latest` under a leaf lock (`TimerNode`s; the head arms the
 hardware; `maxSlack` bounds the interrupt's walk for due timers). Kernel
 code with a fixed number of timers uses the CPU's 32 slots (`arm(deadline:
 ...)` -> id, `cancel(id)` on that CPU); anything whose count user space
-decides owns a node in its record (thread timeouts, timer objects,
-timelines: `arm(node, ...)`, never fails; `cancel(node, on: cpu)` from any
+decides owns a node in its record (thread timeouts, timelines; timer
+objects until V1 cut them, D25: `arm(node, ...)`, never fails; `cancel(node, on: cpu)` from any
 CPU, false once it fired, when on another CPU its callback may still be
 running). A thread whose timeout fired elsewhere as it cancelled waits
 that CPU out by IPI (`timeoutStragglers`) before leaving the scheduler.

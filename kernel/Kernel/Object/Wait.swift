@@ -1,14 +1,13 @@
 import CKernel
 import Synchronization
 
-/// One registered wait on an object (Zircon's SignalObserver): a thread in
-/// `counter_wait`, or an object_bind binding (a port packet). Heap records,
-/// linked from the object's header, guarded by the object's lock. V1 cut
-/// object_wait_one and wait_many (D23): ports are the one wait.
+/// One object_bind binding on an object (Zircon's SignalObserver): a port
+/// packet. Heap records, linked from the object's header, guarded by the
+/// object's lock. V1 cut object_wait_one and wait_many (D23), then
+/// counter_wait (D25): ports are the one wait, and no thread waits on an
+/// object itself.
 struct Observer {
     enum Kind {
-        /// A waiting thread: its WaitState, and its item index.
-        case wait(state: UInt64, index: Int)
         /// object_bind ONCE: queue `packet` (allocated up front) to `port`
         /// with `key`, once. Holds a reference to the port.
         case port(port: UInt64, key: UInt64, packet: UInt64, options: UInt32)
@@ -28,7 +27,7 @@ struct Observer {
     /// is at least `atValue`, whatever the signals.
     var byValue = false
     var atValue: Int64 = 0
-    /// A counter's CHANGE binding: fires at every add or write, whatever
+    /// A counter's CHANGE binding: fires at every add, whatever
     /// the signals (the ring doorbell).
     var onChange = false
 }
@@ -42,75 +41,20 @@ struct Observer {
     }
 }
 
-/// A waiting thread's state: where it blocks, and what woke it. Heap, so
-/// that it outlives every observer that may touch it (they are removed,
-/// under their objects' locks, before it is freed). Scheduler lock.
-struct WaitState {
-    var queue: QueuePointer
-    var done = false
-    var canceled = false
-    var firedIndex = -1
-}
-
-@safe struct WaitStatePointer {
-    let address: UInt64
-
-    var pointee: WaitState {
-        unsafeAddress { unsafe UnsafePointer<WaitState>(bitPattern: UInt(address))! }
-        nonmutating unsafeMutableAddress { unsafe UnsafeMutablePointer<WaitState>(bitPattern: UInt(address))! }
-    }
-
-    static func allocate() throws(Status) -> WaitStatePointer {
-        guard let raw = unsafe heap.allocate(size: MemoryLayout<WaitState>.size) else { throw .noMemory }
-        unsafe raw.bindMemory(to: WaitState.self, capacity: 1).initialize(to: WaitState(queue: QueuePointer.allocate()))
-        return WaitStatePointer(address: UInt64(UInt(bitPattern: raw)))
-    }
-
-    /// The running thread's own wait state, reset for a new wait: kept on
-    /// the thread, so waiting allocates nothing after the first time.
-    static func forCurrentThread() throws(Status) -> WaitStatePointer {
-        let thread = Scheduler.current
-        if thread.pointee.waitState == 0 { thread.pointee.waitState = try allocate().address }
-        let state = WaitStatePointer(address: thread.pointee.waitState)
-        Scheduler.locked {
-            state.pointee.done = false
-            state.pointee.canceled = false
-            state.pointee.firedIndex = -1
-        }
-        return state
-    }
-
-    func free() {
-        pointee.queue.deallocate()
-        unsafe heap.free(UnsafeMutableRawPointer(bitPattern: UInt(address))!)
-    }
-
-    /// Marks the wait finished (by `index`, or canceled) and wakes the
-    /// thread. Any context with the object lock held.
-    /// `lending`: the waking object's profile (K10c, ext 5), lent to the
-    /// woken thread until it next blocks.
-    func finish(index: Int, canceled: Bool, lending: Profile? = nil) {
-        Scheduler.locked {
-            guard !pointee.done else { return }
-            pointee.done = true
-            pointee.canceled = canceled
-            pointee.firedIndex = index
-            Scheduler.wakeAll(pointee.queue, lending: lending)
-        }
-    }
-}
-
 enum Observers {
     static var edge: UInt32 { 1 << 1 }       // ZX_WAIT_ASYNC_EDGE
     static var timestamp: UInt32 { 1 << 0 }  // ZX_WAIT_ASYNC_TIMESTAMP
 
     /// Runs every observer `object`'s current signals satisfy; port
     /// observers fire once and go, persistent ones fire and stay. `changed`:
-    /// a counter's value was set (CHANGE bindings fire). Object lock held.
+    /// a counter's value was set (CHANGE bindings fire). A counter or
+    /// timeline with a profile lends it to the thread each packet wakes
+    /// (K10c, ext 5). Object lock held.
     static func notify(_ object: ObjectPointer, changed: Bool = false) {
         let signals = object.header.signals
         let type = object.header.type
         let value = type == .counter || type == .timeline ? Counters.valueLocked(object) : 0
+        let lending = lend(of: object)
         var previous: ObserverPointer? = nil
         var cursor = object.header.observers
         while let observer = cursor {
@@ -121,10 +65,10 @@ enum Observers {
                 previous = observer
                 let packets = PacketSourcePointer(address: source)
                 if observer.pointee.onChange {
-                    if changed { packets.fire(value: UInt64(bitPattern: value), word3: Clock.now()) }
+                    if changed { packets.fire(value: UInt64(bitPattern: value), word3: Clock.now(), lending: lending) }
                 } else if satisfied {
                     packets.fireSignal(trigger: observer.pointee.trigger, observed: signals,
-                                       timestamp: options & timestamp != 0 ? Clock.now() : 0)
+                                       timestamp: options & timestamp != 0 ? Clock.now() : 0, lending: lending)
                 }
                 continue
             }
@@ -133,16 +77,15 @@ enum Observers {
                 continue
             }
             switch observer.pointee.kind {
-            case .wait(let state, let index):
-                WaitStatePointer(address: state).finish(index: index, canceled: false, lending: lend(of: object))
-                previous = observer
             case .port(let port, _, let packet, let options):
                 if let previous { previous.pointee.next = observer.pointee.next } else { object.header.observers = observer.pointee.next }
                 Ports.untrack(port, object)
                 if observer.pointee.byValue {
-                    fireValuePort(port, QueuedPacketPointer(address: packet), observer.pointee.atValue, value)
+                    fireValuePort(port, QueuedPacketPointer(address: packet), observer.pointee.atValue, value,
+                                  lending: lending)
                 } else {
-                    firePort(port, QueuedPacketPointer(address: packet), observer.pointee.trigger, signals, options)
+                    firePort(port, QueuedPacketPointer(address: packet), observer.pointee.trigger, signals, options,
+                             lending: lending)
                 }
                 unsafe heap.free(UnsafeMutableRawPointer(bitPattern: UInt(observer.address))!)
             case .source:
@@ -152,16 +95,16 @@ enum Observers {
     }
 
     private static func firePort(_ port: UInt64, _ record: QueuedPacketPointer, _ trigger: UInt32,
-                                 _ observed: UInt32, _ options: UInt32) {
+                                 _ observed: UInt32, _ options: UInt32, lending: Profile? = nil) {
         record.pointee.packet.payload[0] = UInt64(observed) << 32 | UInt64(trigger)
         record.pointee.packet.payload[1] = 1  // count
         if options & timestamp != 0 { record.pointee.packet.payload[2] = Clock.now() }
         let pointer = ObjectPointer(address: port)
-        Ports.enqueue(PortPointer(object: pointer), record)
+        Ports.enqueue(PortPointer(object: pointer), record, lending: lending)
         pointer.release()  // the observer's reference; the queue keeps the port alive
     }
 
-    /// The profile an object lends the threads it wakes directly (K10c:
+    /// The profile an object lends the threads its packets wake (K10c:
     /// counters and timelines that carry one). Object lock held.
     static func lend(of object: ObjectPointer) -> Profile? {
         switch object.header.type {
@@ -173,12 +116,13 @@ enum Observers {
 
     /// A counter value wait's packet: what was waited for, what the counter
     /// reached, and when.
-    static func fireValuePort(_ port: UInt64, _ record: QueuedPacketPointer, _ target: Int64, _ value: Int64) {
+    static func fireValuePort(_ port: UInt64, _ record: QueuedPacketPointer, _ target: Int64, _ value: Int64,
+                              lending: Profile? = nil) {
         record.pointee.packet.payload[0] = UInt64(bitPattern: target)
         record.pointee.packet.payload[1] = UInt64(bitPattern: value)
         record.pointee.packet.payload[2] = Clock.now()
         let pointer = ObjectPointer(address: port)
-        Ports.enqueue(PortPointer(object: pointer), record)
+        Ports.enqueue(PortPointer(object: pointer), record, lending: lending)
         pointer.release()  // the observer's reference; the queue keeps the port alive
     }
 
@@ -220,7 +164,7 @@ enum Observers {
         unsafe raw.bindMemory(to: Observer.self, capacity: 1).initialize(to: record)
         let pointer = ObserverPointer(address: UInt64(UInt(bitPattern: raw)))
         object.header.observers = pointer
-        if let port = observer.kind.port { Ports.track(port, object) }
+        Ports.track(observer.kind.port, object)
         return pointer
     }
 
@@ -231,7 +175,7 @@ enum Observers {
         while let current = cursor {
             if current == observer {
                 if let previous { previous.pointee.next = current.pointee.next } else { object.header.observers = current.pointee.next }
-                if let port = current.pointee.kind.port { Ports.untrack(port, object) }
+                Ports.untrack(current.pointee.kind.port, object)
                 if case .source(_, _, let source, _) = current.pointee.kind { PacketSourcePointer(address: source).retire() }
                 unsafe heap.free(UnsafeMutableRawPointer(bitPattern: UInt(current.address))!)
                 return
@@ -241,8 +185,7 @@ enum Observers {
         }
     }
 
-    /// The handle `handle` of `table` closed: its waits are canceled (the
-    /// waiting threads remove their own observers; async waits just go).
+    /// The handle `handle` of `table` closed: its bindings go.
     static func handleClosed(_ object: ObjectPointer, table: UInt64, handle: UInt32) {
         if object.header.type == .interrupt {
             InterruptObjects.handleClosed(object, table: table, handle: handle)  // an interrupt_wait through it
@@ -259,9 +202,6 @@ enum Observers {
                     continue
                 }
                 switch observer.pointee.kind {
-                case .wait(let state, let index):
-                    WaitStatePointer(address: state).finish(index: index, canceled: true)
-                    previous = observer
                 case .port(let port, _, let packet, _):
                     if let previous { previous.pointee.next = observer.pointee.next } else { object.header.observers = observer.pointee.next }
                     Ports.untrack(port, object)
@@ -280,7 +220,7 @@ enum Observers {
 
     /// object_bind SIGNALS PERSISTENT, or a counter's CHANGE: `source`'s
     /// packet to `port` at every event that has any of `signals` (CHANGE:
-    /// every add or write), coalesced while queued. SIGNALS also fires now
+    /// every add), coalesced while queued. SIGNALS also fires now
     /// if the object already has one, unless `edge`.
     static func bindPersistent(_ table: borrowing HandleTable, _ handle: UInt32, port: borrowing ObjectRef,
                                key: UInt64, signals: UInt32, onChange: Bool, options: UInt32) throws(Status) {
@@ -314,11 +254,10 @@ enum Observers {
 }
 
 extension Observer.Kind {
-    /// The port a port or persistent observer reports to.
-    var port: UInt64? {
+    /// The port it reports to.
+    var port: UInt64 {
         switch self {
         case .port(let port, _, _, _), .source(let port, _, _, _): port
-        case .wait: nil
         }
     }
 }

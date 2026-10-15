@@ -148,10 +148,12 @@ enum ProgramSelfTest {
     /// nothing behind, futex records included. A failing check names
     /// itself on the console (its stdout is a debuglog). New syscall tests
     /// are written as suites, not in usertest.c. test_profile binds to a
-    /// deadline context lent for the run (the futex suite's inheritance).
+    /// deadline context lent for the run (the futex suite's inheritance,
+    /// the bind suite's leeway).
     static func runSuites(_ console: Uart) {
-        let suites: InlineArray<5, StaticString> = ["swift.suite=bind\0", "swift.suite=vmo\0", "swift.suite=futex\0",
-                                                    "swift.suite=channel\0", "swift.suite=objects\0"]
+        let suites: InlineArray<6, StaticString> = ["swift.suite=bind\0", "swift.suite=vmo\0", "swift.suite=futex\0",
+                                                    "swift.suite=channel\0", "swift.suite=objects\0",
+                                                    "swift.suite=counters\0"]
         let before = ProcessSelfTest.Counts()
         let context: SchedContext
         do throws(AdmissionRefusal) {
