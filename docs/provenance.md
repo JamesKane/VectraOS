@@ -2,8 +2,9 @@
 
 Where each part of VectraOS comes from, and how it gets here. All three
 source repositories are BSD-3-Clause by the same author, so code moves
-between them freely. Every imported file keeps a header line naming its
-origin (`// From croi@<sha>: kernel/...`), so its history can be followed.
+between them freely. `IMPORTS.tsv` at the repository root lists every
+imported file with its source repository, commit and path. Imported files
+start out byte-identical to their source.
 
 The actions in the tables:
 

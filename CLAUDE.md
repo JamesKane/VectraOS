@@ -33,26 +33,35 @@ anything that a decision covers.
 
 ## Imported code
 
-Every file lifted from croi, todhchai or NeoVectra starts with
-`// From <repo>@<sha>: <path>`. Keep that line when editing. Remove it only
-when a file has been rewritten.
+`IMPORTS.tsv` records every file lifted from croi, todhchai or NeoVectra:
+its path here, the source repository, the commit and the source path.
+Imported files stay byte-identical to their source when imported, so
+`git diff --no-index` against the source shows exactly what changed.
+- When you lift a file, add its row in the same commit.
+- When you rewrite a file completely, delete its row.
 
-When lifting a subsystem, also lift its rules:
-- croi's `CLAUDE.md` sections "Rules that cut across subsystems" and
-  "Conventions": lock order, no ARC in the higher half, no floating point
-  in the kernel, `@c @implementation`, and typed C23 enums.
-- todhchai's `CLAUDE.md` "Toolchain pitfalls".
+## Build
 
-These go into this file in V0, under the headings below.
+One CMake/Ninja tree per arch, under `build/<arch>/`:
+
+    cmake --workflow --preset amd64     # configure, build, run the QEMU tests
+    cmake --build --preset arm64        # build only
+    ninja -C build/rv64 run             # boot interactively (Ctrl-A x quits)
+
+The `vx` front door replaces these during V0 (D11).
+- Don't run two arches' test suites at once. Under that load, rv64 TCG
+  tests such as `boot-aia` exceed their timeouts.
 
 ## Status
 
-V0 has not started. See `docs/roadmap.md`.
+V0 is in progress. croi is imported and passes its suites on amd64, arm64
+and rv64. Still to do: todhchai's bench judge and tracer, and `vx`. See
+`docs/roadmap.md`.
 
 ## Kernel rules
 
-(To be lifted from croi in V0.)
+@docs/kernel/rules.md
 
 ## Toolchain pitfalls
 
-(To be lifted from croi and todhchai in V0.)
+(To be lifted from todhchai with its bench and trace code in V0.)

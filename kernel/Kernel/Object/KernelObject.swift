@@ -1,0 +1,202 @@
+import CKernel
+import Synchronization
+
+/// The start of every kernel object (Zircon's Dispatcher): its type, koid,
+/// signal state and observers, and a reference count held by handles and by
+/// kernel code using it. Each object type's record has this as its first
+/// field, so an `ObjectPointer` reaches both.
+///
+/// Objects aren't built on `Ref<T>`: `Ref` lends its value only through a
+/// read borrow, which suits immutable values; objects change under their
+/// own lock, like VMOs and address spaces, which use the same pattern.
+struct ObjectHeader: ~Copyable {
+    let type: ObjectType
+    let koid: UInt64
+    let lock = SpinLock()
+    var signals: UInt32 = 0
+    /// Waits registered on it (intrusive list).
+    var observers: ObserverPointer?
+    let references = Atomic<Int>(1)
+    /// Handles to it, in handle tables and in channel messages in flight
+    /// (ZX_INFO_HANDLE_COUNT, K13a).
+    let handleCount = Atomic<UInt32>(0)
+
+    init(type: ObjectType) {
+        self.type = type
+        self.koid = Objects.nextKoid()
+    }
+}
+
+@safe struct ObjectPointer: Equatable {
+    let address: UInt64
+
+    var header: ObjectHeader {
+        unsafeAddress { unsafe UnsafePointer<ObjectHeader>(bitPattern: UInt(address))! }
+        nonmutating unsafeMutableAddress { unsafe UnsafeMutablePointer<ObjectHeader>(bitPattern: UInt(address))! }
+    }
+
+    func retain() {
+        guard header.references.add(1, ordering: .relaxed).newValue > 1 else { panic("object: retained after release") }
+    }
+
+    /// Drops a reference; the last destroys the object (by type).
+    /// Takes a reference unless the object is already on its way out
+    /// (count 0): for references found through a non-owning link.
+    func tryRetain() -> Bool {
+        var current = header.references.load(ordering: .relaxed)
+        while current > 0 {
+            let (exchanged, original) = header.references.compareExchange(
+                expected: current, desired: current + 1, ordering: .acquiring)
+            if exchanged { return true }
+            current = original
+        }
+        return false
+    }
+
+    func release() {
+        guard header.references.subtract(1, ordering: .acquiringAndReleasing).newValue == 0 else { return }
+        guard header.observers == nil else { panic("object: destroyed with waits registered") }
+        Objects.destroy(self)
+    }
+
+    /// A handle to it is gone for good (closed, or freed with the message
+    /// carrying it): after the last, the type's on_zero_handles (Zircon's).
+    /// The caller still holds the handle's reference.
+    func handleGone() {
+        if header.handleCount.subtract(1, ordering: .acquiringAndReleasing).newValue == 0 {
+            Objects.lastHandleClosed(self)
+        }
+    }
+
+    /// Drops the reference `HandleTable.take` handed over when the handle
+    /// isn't placed anywhere after all (a refused channel write).
+    func releaseTaken() {
+        if header.handleCount.load(ordering: .acquiring) == 0 { Objects.lastHandleClosed(self) }
+        release()
+    }
+
+    /// Clears then sets signal bits and runs the observers the new state
+    /// satisfies. Lock order: object -> scheduler -> port packets.
+    func updateSignals(clear: UInt32, set: UInt32) {
+        header.lock.withLock {
+            header.signals = (header.signals & ~clear) | set
+            Observers.notify(self)
+        }
+    }
+
+    var signals: UInt32 { header.lock.withLock { header.signals } }
+}
+
+/// A reference held by kernel code (from `HandleTable.get`): released when
+/// dropped.
+struct ObjectRef: ~Copyable {
+    let object: ObjectPointer
+
+    var type: ObjectType { object.header.type }
+    var koid: UInt64 { object.header.koid }
+
+    deinit {
+        object.release()
+    }
+}
+
+enum Objects {
+    static let live = Atomic<Int>(0)
+    /// Zircon starts koids above the reserved low values.
+    private static let koids = Atomic<UInt64>(1023)
+
+    static func nextKoid() -> UInt64 { koids.add(1, ordering: .relaxed).newValue }
+
+    /// A new object record holding `value` (whose first field is the
+    /// header), with one reference.
+    static func allocate<T: ~Copyable>(_ value: consuming T) -> ObjectPointer? {
+        guard let raw = unsafe heap.allocate(size: MemoryLayout<T>.size,
+                                             alignment: max(16, MemoryLayout<T>.alignment)) else { return nil }
+        unsafe raw.bindMemory(to: T.self, capacity: 1).initialize(to: value)
+        live.add(1, ordering: .relaxed)
+        return ObjectPointer(address: UInt64(UInt(bitPattern: raw)))
+    }
+
+    /// Zircon's on_zero_handles: the last handle is gone, though kernel
+    /// references may remain.
+    static func lastHandleClosed(_ object: ObjectPointer) {
+        switch object.header.type {
+        case .timer: TimerObjects.lastHandleClosed(object)
+        default: break
+        }
+    }
+
+    static func destroy(_ object: ObjectPointer) {
+        switch object.header.type {
+        case .event: free(object, as: EventObject.self)
+        case .port: Ports.destroy(object)
+        case .vmo:
+            let vmo = VmoPointer(address: UnsafeVmoObject(object).vmo)
+            vmo.pointee.lock.withLock { if vmo.pointee.object == object.address { vmo.pointee.object = 0 } }
+            vmo.release()
+            free(object, as: VmoObject.self)
+        case .resource: Resources.destroy(object)
+        case .job: Processes.destroyJob(object)
+        case .process: Processes.destroyProcess(object)
+        case .thread: Processes.destroyThread(object)
+        case .vmar: Processes.destroyVmar(object)
+        case .channel: Channels.destroy(object)
+        case .eventpair: Channels.destroyEventPair(object)
+        case .fifo: Fifos.destroy(object)
+        case .socket: Sockets.destroy(object)
+        case .stream: Streams.destroy(object)
+        case .pager: Pagers.destroy(object)
+        case .clock: Clocks.destroy(object)
+        case .suspendToken: Debug.destroyToken(object)
+        case .timer: free(object, as: TimerObject.self)
+        case .log: DebugLogs.destroy(object)
+        case .profile: free(object, as: ProfileObject.self)
+        case .exception: Exceptions.destroy(object)
+        case .interrupt: InterruptObjects.destroyObject(object)
+        case .msi: Msis.destroy(object)
+        case .iommu: Dma.destroyIommu(object)
+        case .bti: Dma.destroyBti(object)
+        case .pmt: Dma.destroyPmt(object)
+        case .counter: free(object, as: CounterObject.self)
+        case .timeline: Timelines.destroy(object)
+        case .memoryAccount: Accounts.destroy(object)
+        case .none: panic("object: destroying an untyped object")
+        }
+        live.subtract(1, ordering: .relaxed)
+    }
+
+    static func free<T: ~Copyable>(_ object: ObjectPointer, as type: T.Type) {
+        let raw = unsafe UnsafeMutablePointer<T>(bitPattern: UInt(object.address))!
+        unsafe raw.deinitialize(count: 1)
+        unsafe heap.free(UnsafeMutableRawPointer(raw))
+    }
+}
+
+// MARK: Events
+
+/// An event (Zircon's EventDispatcher): signals only, SIGNALED and the user
+/// bits settable through `object_signal`.
+struct EventObject: ~Copyable {
+    var header = ObjectHeader(type: .event)
+
+    static var defaultRights: Rights { .basic | .signal }
+
+    static func create() throws(Status) -> ObjectPointer {
+        guard let object = Objects.allocate(EventObject()) else { throw .noMemory }
+        return object
+    }
+}
+
+/// `object_signal`: which bits an object's holder may change.
+enum ObjectSignal {
+    static func signal(_ object: borrowing ObjectRef, clear: UInt32, set: UInt32) throws(Status) {
+        let allowed: UInt32
+        switch object.type {
+        case .event: allowed = Signals.signaled | Signals.user
+        default: allowed = Signals.user
+        }
+        guard (clear | set) & ~allowed == 0 else { throw .invalidArgs }
+        object.object.updateSignals(clear: clear, set: set)
+    }
+}
+

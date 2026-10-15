@@ -1,3 +1,7 @@
 build/
+/compile_commands.json
+__pycache__/
+.cache/
+bench/out/
 .build/
 bench/history/*.local.tsv

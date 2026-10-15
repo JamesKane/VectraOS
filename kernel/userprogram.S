@@ -1,0 +1,47 @@
+// The K6b self-test's user program (user/test, built as a flat binary by
+// CMake), included in the kernel image as data. Assembly only to .incbin
+// it.
+
+.section .rodata.user_program, "a"
+.balign 16
+.globl croi_user_program_start
+croi_user_program_start:
+    .incbin CROI_USER_PROGRAM
+.globl croi_user_program_end
+croi_user_program_end:
+
+// The vDSO image (user/vdso), mapped into user address spaces.
+.section .rodata.vdso, "a"
+.balign 4096
+.globl croi_vdso_start
+croi_vdso_start:
+    .incbin CROI_VDSO
+.globl croi_vdso_end
+croi_vdso_end:
+
+// The K8a self-test's Embedded Swift program (user/test/swift), an ELF.
+.section .rodata.swift_test, "a"
+.balign 16
+.globl croi_swift_test_start
+croi_swift_test_start:
+    .incbin CROI_SWIFT_TEST
+.globl croi_swift_test_end
+croi_swift_test_end:
+
+// The same program as an ET_EXEC with a relocation-free dynamic section.
+.section .rodata.swift_test_exec, "a"
+.balign 16
+.globl croi_swift_test_exec_start
+croi_swift_test_exec_start:
+    .incbin CROI_SWIFT_TEST_EXEC
+.globl croi_swift_test_exec_end
+croi_swift_test_exec_end:
+
+// userboot (user/userboot), an ELF: the first user process (K8b).
+.section .rodata.userboot, "a"
+.balign 16
+.globl croi_userboot_start
+croi_userboot_start:
+    .incbin CROI_USERBOOT
+.globl croi_userboot_end
+croi_userboot_end:
