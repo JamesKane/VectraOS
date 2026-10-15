@@ -355,6 +355,17 @@ interrupt_destroy (144), which woke it CANCELED; and interrupt_trigger
   environment. Mode 17's idle-state check carries its deadline profile
   on the RTC's interrupt instead of a virtual one.
 
+## thread_raise_exception: cut in V1 (D30)
+
+thread_raise_exception (236, K14d) offered ZX_EXCP_USER, with a code
+and data of the caller's, to every job debugger from its job up, each
+reply ignored. Nothing raised one, so V1 cut it with
+`Exceptions.raiseUser`. Job debuggers keep PROCESS_STARTING
+(debugging.md).
+- Tests: usertest.c's `user_exceptions` went. The objects suite's
+  `jobDebuggers` keeps a job debugger delivery under test; suites get
+  the root job for it (PA_JOB_DEFAULT).
+
 ## The small calls (K13e part 1)
 
 The small calls, K13e part 1 (syscalls 210-215 in User/IpcSyscalls.swift,

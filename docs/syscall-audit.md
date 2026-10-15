@@ -107,7 +107,7 @@ Legend: **keep**, **merge** (the call survives under a combined form),
 | 100–102, 105, 106 | exception channel, get_thread, get_process, thread read/write state | keep | |
 | 107, 108 | job_set_policy, job_set_cpu_reservation | keep | |
 | 230–232 | process read/write memory, task_suspend | keep | |
-| 236 | thread_raise_exception | cut | nothing raises user exceptions; restored with a debugger that needs it |
+| 236 | thread_raise_exception | cut (D30) | nothing raises user exceptions; restored with a debugger that needs it |
 
 ### IPC copies
 
@@ -171,7 +171,7 @@ were cut (D25): 117 calls. Clock objects, vmar_map_clock and the
 clock_monotonic syscall were cut (D26): 111 calls. Display timelines
 were cut (D27): 107 calls. debug_write and vmo_map were cut (D28): 105
 calls. interrupt_wait, interrupt_destroy and interrupt_trigger were cut
-(D29): 102 calls.
+(D29): 102 calls. thread_raise_exception was cut (D30): 101 calls.
 
 The ceiling in `tools/vx/LocCommand.swift` is lowered with each cut, so it
 never rises.

@@ -264,6 +264,9 @@ matches the pinned tree where upstream docs or expectations say otherwise).
 - **process_exit marks the caller killed** before it exits, so its
   THREAD_EXITING doesn't wait for a debugger. Kind: quirk parity (Zircon
   kills it too). Impact: none.
+- **No thread_raise_exception** (V1, D30) — nothing raises ZX_EXCP_USER;
+  job debuggers see PROCESS_STARTING only. Kind: deliberate (no user
+  yet). Impact: Fuchsia's process name change notices to debuggers.
 - **rv64 debugging** — single-step NOT_SUPPORTED, debug registers a u32
   written and ignored. Kind: quirk parity (Zircon's). Impact: none vs the
   pin.

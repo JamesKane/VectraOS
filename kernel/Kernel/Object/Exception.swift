@@ -133,27 +133,6 @@ enum Exceptions {
         }
     }
 
-    /// thread_raise_exception (K14d, Zircon's OnUserExceptionForJobDebugger):
-    /// ZX_EXCP_USER with the caller's code and data to every job debugger
-    /// from the process's job up, one at a time, each reply ignored
-    /// (single shot). The registers are the syscall's (thread_read_state
-    /// works while it waits).
-    static func raiseUser(code: UInt32, data: UInt32) {
-        let me = Scheduler.current
-        guard me.pointee.object != 0 else { return }
-        let process = ThreadObjectPointer(object: ObjectPointer(address: me.pointee.object)).pointee.process
-        var handlers = Handlers()
-        takeJobDebuggers(from: ProcessPointer(object: process).pointee.job, into: &handlers)
-        guard handlers.count > 0 else { return }
-        let type = UInt32(CROI_EXCP_USER)
-        var report = croi_exception_report_t()
-        report.header = croi_exception_header_t(size: UInt32(MemoryLayout<croi_exception_report_t>.size), type: type)
-        report.context.synth_code = code
-        report.context.synth_data = data
-        let frame = unsafe UInt64(UInt(bitPattern: UserTraps.userFrame(of: me)))
-        for i in 0..<handlers.count { _ = deliver(type, frame: frame, report: report, handlers.one(i)) }
-    }
-
     /// Every job debugger channel from `job` up the tree, in order. Closed
     /// ones are pruned on the way (as an attach prunes them), so a job that
     /// outlives its debuggers doesn't keep their kernel ends.

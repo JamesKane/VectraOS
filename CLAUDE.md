@@ -75,7 +75,7 @@ and the cuts have begun: FIFOs, sockets and streams (D21), the channel
 `_etc` forms and the futex extras (D22), events, signals and the thread
 waits (D23), sleeps, timers and the counter waits (D25), clocks (D26),
 display timelines (D27), debug_write and vmo_map (D28), the interrupt
-waits (D29), 102 syscalls (`docs/syscall-audit.md`).
+waits (D29), thread_raise_exception (D30), 101 syscalls (`docs/syscall-audit.md`).
 - **Done:** croi imported, passing on amd64, arm64 and rv64; todhchai's
   Judge, History, trace format and reader lifted; `vx` with build, test,
   boot, bench, trace, loc and ci.

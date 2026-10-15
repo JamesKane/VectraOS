@@ -1094,7 +1094,7 @@ THREAD, VMO, maps, handle table) and the NAME property.
 - **K14d: thread_raise_exception.** **Done** (2026-10-11): ZX_EXCP_USER
   to every job debugger up the tree, single shot (each reply ignored),
   Zircon's checks; closed job debugger channels are now pruned whenever
-  the list is walked, not only at the next attach.
+  the list is walked, not only at the next attach. Cut in V1 (D30).
 - **K14c: RELRO.** **Done** (2026-10-11): PT_GNU_RELRO's pages read only
   once relocated, in the kernel's loader and userboot's, checked by the
   programs themselves (user/test/swift, bin/m2: their own mappings through
@@ -1169,6 +1169,12 @@ from Zircon, see docs/kernel/zircon-divergences.md.
   run), and passed three reruns. The PMU check's fix applies here:
   ask each CPU, while sampling is on, whether it idled with its sampler
   armed (user.md, sampling).
+- Tests: the interrupts suite's handoff check "woken again within the
+  period" failed once on amd64 `boot-smoke-apic-oneshot` (2026-10-15,
+  D30's run) and passed four reruns. It was one check of three
+  conditions (the context's deadline, the same period, a fall-back once
+  the 2 ms budget is spent); it is now three, so the next failure says
+  which. Mode 16's C check was the same.
 
 ### K13a (agreed with Todhchai, 2026-10-11): VMO slices and ZERO_CHILDREN
 

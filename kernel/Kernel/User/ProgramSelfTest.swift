@@ -14,10 +14,12 @@ enum ProgramSelfTest {
         let (reader, _) = created { () throws(Status) in try DebugLogs.create(readable: true) }
         drain(reader)  // whatever earlier writers left
         let (stdout, stdoutRights) = created { () throws(Status) in try DebugLogs.create(readable: false) }
-        var handles = InlineArray<2, ProgramLoader.StartupHandle>(repeating: ProgramLoader.StartupHandle(
+        var handles = InlineArray<3, ProgramLoader.StartupHandle>(repeating: ProgramLoader.StartupHandle(
             object: stdout, rights: stdoutRights, info: croi_pa_hnd(UInt32(CROI_PA_FD), 1)))
         handles[1] = ProgramLoader.StartupHandle(object: Resources.root, rights: ResourceObject.defaultRights,
                                                  info: croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0))
+        handles[2] = ProgramLoader.StartupHandle(object: Processes.rootJob, rights: JobObject.defaultRights,
+                                                 info: croi_pa_hnd(UInt32(CROI_PA_JOB_DEFAULT), 0))
         let environment: StaticString = "croi.test=1\0swift.greeting=dia duit\0"
         let image = unsafe RawSpan(_unsafeStart: UnsafeRawPointer(bitPattern: UInt(croi_swift_test_address()))!,
                                    byteCount: Int(croi_swift_test_size()))
@@ -188,16 +190,18 @@ enum ProgramSelfTest {
     }
 
     /// Runs the Swift program with `environment` (NUL-terminated strings,
-    /// `swift.suite=<name>` among them), the root resource and a debuglog
-    /// as stdout, until it exits: its exit code.
+    /// `swift.suite=<name>` among them), the root resource, the root job
+    /// and a debuglog as stdout, until it exits: its exit code.
     static func runSuite(_ environment: Span<UInt8>) -> Int64 {
         let image = unsafe RawSpan(_unsafeStart: UnsafeRawPointer(bitPattern: UInt(croi_swift_test_address()))!,
                                    byteCount: Int(croi_swift_test_size()))
         let (stdout, stdoutRights) = created { () throws(Status) in try DebugLogs.create(readable: false) }
-        var handles = InlineArray<2, ProgramLoader.StartupHandle>(repeating: ProgramLoader.StartupHandle(
+        var handles = InlineArray<3, ProgramLoader.StartupHandle>(repeating: ProgramLoader.StartupHandle(
             object: stdout, rights: stdoutRights, info: croi_pa_hnd(UInt32(CROI_PA_FD), 1)))
         handles[1] = ProgramLoader.StartupHandle(object: Resources.root, rights: ResourceObject.defaultRights,
                                                  info: croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0))
+        handles[2] = ProgramLoader.StartupHandle(object: Processes.rootJob, rights: JobObject.defaultRights,
+                                                 info: croi_pa_hnd(UInt32(CROI_PA_JOB_DEFAULT), 0))
         let process: ObjectPointer
         do throws(Status) {
             process = try ProgramLoader.start(image, name: "swiftsuite", job: Processes.rootJob, handles: handles.span,

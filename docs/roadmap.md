@@ -42,7 +42,8 @@ The work, in order:
    and the thread waits (D23, 123 calls); sleeps, timers and the counter
    waits (D25, 117 calls); clocks (D26, 111 calls); display timelines (D27,
    107 calls); debug_write and vmo_map (D28, 105 calls); interrupt_wait,
-   interrupt_destroy and interrupt_trigger (D29, 102 calls).
+   interrupt_destroy and interrupt_trigger (D29, 102 calls);
+   thread_raise_exception (D30, 101 calls).
 3. The batched forms of the hot calls (audit §3).
 4. The one ring (architecture §3) in Swift and as `ring.h`, with a model
    checker. Doorbells are counters.

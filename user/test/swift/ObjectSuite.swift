@@ -4,7 +4,8 @@ import CroiRuntime
 /// calls. Moved here from usertest.c's mode 0 and small_calls when V1 cut
 /// events, object_signal, object_wait_one and object_wait_many (D23): a
 /// counter is the signal source a user can drive, and a port is the one
-/// wait.
+/// wait. Job debuggers came from mode 17's user_exceptions when V1 cut
+/// thread_raise_exception (D30).
 enum ObjectSuite {
     static func run() {
         signals()
@@ -13,6 +14,7 @@ enum ObjectSuite {
         names()
         closeMany()
         cancelKey()
+        jobDebuggers()
         print("swift: objects passed")
     }
 
@@ -129,5 +131,91 @@ enum ObjectSuite {
         check(Sys.call(CROI_SYS_PORT_CANCEL_KEY, port.handle.arg, 0, 5) == Status.notFound, "nothing left with key 5")
         check(add(counter, 1) == 0, "the counter signals")
         check(port.next()?.key == 6 && port.empty, "only key 6's packet is left")
+    }
+
+    /// Job debuggers: each sees a new process's PROCESS_STARTING in turn
+    /// (its initial thread waits in the exception), and a closed one no
+    /// longer counts as attached; the next start prunes it.
+    static func jobDebuggers() {
+        let root = Handle(adopting: croi_take_startup_handle(croi_pa_hnd(UInt32(CROI_PA_JOB_DEFAULT), 0)))
+        var raw: UInt32 = 0
+        check(Sys.call(CROI_SYS_JOB_CREATE, root.arg, 0, Sys.address(&raw)) == 0, "a job")
+        let job = Handle(adopting: raw)
+        var first: UInt32 = 0, second: UInt32 = 0
+        check(Sys.call(CROI_SYS_TASK_CREATE_EXCEPTION_CHANNEL, job.arg, UInt64(CROI_EXCEPTION_CHANNEL_DEBUGGER),
+                       Sys.address(&first)) == 0
+                  && Sys.call(CROI_SYS_TASK_CREATE_EXCEPTION_CHANNEL, job.arg, UInt64(CROI_EXCEPTION_CHANNEL_DEBUGGER),
+                              Sys.address(&second)) == 0, "two job debuggers")
+        let a = Handle(adopting: first)
+        let b = Handle(adopting: second)
+        check(attached(job), "the job has a debugger attached")
+        let debuggee = start(in: job)
+        var info = croi_exception_info_t()
+        let firstSeen = exception(on: a, &info)
+        check(firstSeen != nil && info.type == UInt32(CROI_EXCP_PROCESS_STARTING) && info.tid == koid(debuggee.thread),
+              "the first debugger sees the process start")
+        _ = consume firstSeen
+        let secondSeen = exception(on: b, &info)
+        check(secondSeen != nil && info.type == UInt32(CROI_EXCP_PROCESS_STARTING), "then the second")
+        check(Sys.call(CROI_SYS_TASK_KILL, debuggee.process.arg) == 0, "killed waiting in the exception")
+        _ = consume secondSeen
+        check(Port.signals(of: debuggee.process, UInt32(CROI_SIGNAL_TASK_TERMINATED), deadline: Sys.now() + 3_000_000_000)
+                  & UInt32(CROI_SIGNAL_TASK_TERMINATED) != 0, "and ends")
+        _ = consume a
+        _ = consume b
+        check(!attached(job), "closed, they no longer count")
+        let again = start(in: job)
+        check(Sys.call(CROI_SYS_TASK_KILL, again.process.arg) == 0, "the next start prunes them, and nothing waits")
+    }
+
+    static func attached(_ job: borrowing Handle) -> Bool {
+        var info = croi_info_job_t()
+        var counts: (UInt64, UInt64) = (0, 0)
+        check(Sys.call(CROI_SYS_OBJECT_GET_INFO, job.arg, UInt64(CROI_INFO_JOB), Sys.address(&info),
+                       UInt64(MemoryLayout<croi_info_job_t>.size), Sys.address(&counts.0), Sys.address(&counts.1)) == 0,
+              "job info")
+        return info.debugger_attached != 0
+    }
+
+    static func koid(_ handle: borrowing Handle) -> UInt64 {
+        var info = croi_info_handle_basic_t()
+        var counts: (UInt64, UInt64) = (0, 0)
+        check(Sys.call(CROI_SYS_OBJECT_GET_INFO, handle.arg, UInt64(CROI_INFO_HANDLE_BASIC), Sys.address(&info),
+                       UInt64(MemoryLayout<croi_info_handle_basic_t>.size), Sys.address(&counts.0),
+                       Sys.address(&counts.1)) == 0, "handle info")
+        return info.koid
+    }
+
+    /// A process in `job` with its initial thread started; it never reaches
+    /// user mode while a debugger holds its PROCESS_STARTING.
+    struct Debuggee: ~Copyable {
+        let process: Handle
+        let thread: Handle
+    }
+
+    static func start(in job: borrowing Handle) -> Debuggee {
+        let name: StaticString = "debuggee"
+        var process: UInt32 = 0, vmar: UInt32 = 0, thread: UInt32 = 0
+        check(unsafe Sys.call(CROI_SYS_PROCESS_CREATE, job.arg, UInt64(UInt(bitPattern: name.utf8Start)), 8, 0,
+                              Sys.address(&process), Sys.address(&vmar)) == 0, "a process")
+        _ = Handle(adopting: vmar)
+        check(unsafe Sys.call(CROI_SYS_THREAD_CREATE, UInt64(process), UInt64(UInt(bitPattern: name.utf8Start)), 8, 0,
+                              Sys.address(&thread)) == 0, "its thread")
+        check(Sys.call(CROI_SYS_PROCESS_START, UInt64(process), UInt64(thread), 0x1000, 0) == 0, "started")
+        return Debuggee(process: Handle(adopting: process), thread: Handle(adopting: thread))
+    }
+
+    /// The next exception on a debugger channel, its handle owned.
+    static func exception(on channel: borrowing Handle, _ info: inout croi_exception_info_t) -> Handle? {
+        let readable = UInt32(CROI_SIGNAL_READABLE)
+        guard Port.signals(of: channel, readable, deadline: Sys.now() + 3_000_000_000) & readable != 0 else {
+            return nil
+        }
+        var handle: UInt32 = 0
+        var actual: (UInt32, UInt32) = (0, 0)
+        guard Sys.call(CROI_SYS_CHANNEL_READ, channel.arg, 0, Sys.address(&info), Sys.address(&handle),
+                       UInt64(MemoryLayout<croi_exception_info_t>.size) | 1 << 32, Sys.address(&actual)) == 0,
+              actual.1 == 1 else { return nil }
+        return Handle(adopting: handle)
     }
 }

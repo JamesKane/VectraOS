@@ -66,13 +66,13 @@ Debugger channels, K13g part 2 (Kernel/Object/Exception.swift; task.h):
 - process_exit marks the caller killed before it exits (Zircon kills it
   too), so its THREAD_EXITING doesn't wait for a debugger: a process that
   was its own debugger hung there.
-- thread_raise_exception (236, K14d; Zircon's): options
-  TARGET_JOB_DEBUGGER, type ZX_EXCP_USER (0x8309) and a readable
-  croi_exception_context_t, else INVALID_ARGS; the caller offers it to
-  every job debugger from its process's job up, one at a time, the reply
-  ignored (`Exceptions.raiseUser`), with synth_code/synth_data in the
-  report and the syscall's registers readable. Walking a job's debugger
-  list (this, PROCESS_STARTING, an attach) prunes closed channels.
+- thread_raise_exception (236, K14d) offered ZX_EXCP_USER to every job
+  debugger up the tree; V1 cut it (D30, objects.md). Walking a job's
+  debugger list (PROCESS_STARTING, an attach) prunes closed channels.
+- The objects suite's `jobDebuggers`: two job debuggers see a new
+  process's PROCESS_STARTING in turn (its thread waits in the
+  exception, then is killed there), and closed ones no longer count as
+  attached.
 - Mode 17's `debugger`: our own process's debugger sees a thread start
   (registers) and exit, a breakpoint with a second chance.
 - Post-mortem freeze (Todhchai requirement 19) is user space's, as on
