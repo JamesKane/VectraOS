@@ -200,7 +200,7 @@ include/counter.h, syscalls 160-162):
   `atValue`): `Observers.notify` fires it when the counter's value
   reaches it, so registration, cancellation on handle close, port_cancel
   and port delivery are the signal bindings'.
-- A counter or timeline with a deadline profile (K10c, ext 5) lends it to
+- A counter with a deadline profile (K10c, ext 5) lends it to
   the thread each of its packets wakes: `notify` passes `lend(of:)` to
   `Ports.enqueue`, which wakes the port's first waiter with
   `Scheduler.wakeOne(lending:)`. A packet queued with no thread waiting
@@ -212,33 +212,6 @@ include/counter.h, syscalls 160-162):
 - Tests: the Swift `counters` suite (Zircon's semantics, rights, VALUE
   bindings, the lent deadline), moved from boot test mode 14 and mode
   16's lending check.
-
-## Display timelines (K10b)
-
-Display timelines, K10b (Kernel/Object/Timeline.swift, include/timeline.h,
-syscalls 170-173 in User/CounterSyscalls.swift; Todhchai ext 1):
-- croi's object (type 48), created under the display system resource
-  (base 16, croi's): a vblank count, waited on with the counter calls
-  (`Counters.waitable` takes a counter or a timeline; value observers;
-  `Observers.notify` asks `Counters.valueLocked` for both types).
-- Driven: `timeline_advance(timeline, timestamp)` counts a vblank at the
-  hardware's time. Synthetic (`CROI_TIMELINE_SYNTHETIC`, the GOP
-  framebuffer): the value is base_count + (now - base_time) / period, and
-  `Timelines.watchLocked` (after a value observer is added) arms one
-  kernel timer, zero slack, for the earliest vblank any waiter needs; the
-  firing notifies and re-arms for the next. Nothing waiting, nothing
-  armed: a static screen makes no wakeups. The armed timer holds a
-  reference; a generation makes a superseded one a no-op.
-- `timeline_set_period` re-bases at the current vblank (the count carries
-  on). `timeline_get_page`: a read-only handle to a one-page contiguous
-  VMO (`sharedReadOnly`: mappings read only, cache policy fixed) holding
-  croi_timeline_page_t under a seqlock (period, base count and time,
-  synthesized flag), written only at creation, period changes and
-  advances.
-- Budget `timeline.wake_p99` (m2: the deadline thread on its own CPU
-  waiting for each next vblank of a 1 ms synthetic timeline, from the
-  page's vblank time; limit 100 µs): KVM median ~10 µs, p99 17-35 µs.
-- Boot test mode 15 (`ProcessSelfTest.runTimelines`).
 
 ## Executable VMOs (K13b)
 
@@ -322,6 +295,27 @@ V1 cut all six calls:
   CHANGE packet's kernel timestamp falls between two vDSO readings,
   which is mode 2's old comparison with the syscall). Mode 17's
   `clocks` went with the clock objects.
+
+## Display timelines: cut in V1 (D27)
+
+croi had display timelines (K10b, Todhchai ext 1; type 48, under the
+display system resource, base 16): a vblank count, driven by
+timeline_advance or synthesized from the time on the GOP framebuffer,
+waited on with the counter calls, its vblank times on a read-only
+seqlock page (timeline_get_page), and timeline_set_period. Ext 10's
+ALIGN_TIMELINE option of object_set_profile started a deadline thread's
+periods on its vblanks (`vblankGrid`). V1 cut all four calls (170-173)
+and the option:
+- A driven display's vblank is a counter its IRQ thread adds to. A
+  counter with Radharc's deadline profile lends it to the thread it
+  wakes, whose period starts at that wakeup (Counters, above).
+- A synthetic vblank is Radharc's own: its deadline thread port_waits to
+  the vblank time it computes (no leeway for a deadline thread), and its
+  period starts when it wakes. m2's `timer.wake_error_p99` measures that
+  path, so the `timeline.wake` budgets went with their bench.
+- Tests: mode 15 went, and mode 16's alignment checks (385-388) with
+  it. The counters suite's refusal of options on a counter's profile
+  uses HANDOFF.
 
 ## The small calls (K13e part 1)
 

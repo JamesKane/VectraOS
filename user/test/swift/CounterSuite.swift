@@ -112,7 +112,7 @@ enum CounterSuite {
         }
         check(setProfile(counter, fair) == Status.invalidArgs, "a counter lends only a deadline")
         check(setProfile(weak, deadline) == Status.accessDenied, "lending needs WRITE")
-        check(setProfile(counter, deadline, UInt64(CROI_PROFILE_ALIGN_TIMELINE)) == Status.invalidArgs,
+        check(setProfile(counter, deadline, UInt64(CROI_PROFILE_HANDOFF)) == Status.invalidArgs,
               "and takes no options")
         check(setProfile(counter, deadline) == 0, "a counter lends a deadline")
 

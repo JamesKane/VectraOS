@@ -47,13 +47,13 @@ enum Observers {
 
     /// Runs every observer `object`'s current signals satisfy; port
     /// observers fire once and go, persistent ones fire and stay. `changed`:
-    /// a counter's value was set (CHANGE bindings fire). A counter or
-    /// timeline with a profile lends it to the thread each packet wakes
-    /// (K10c, ext 5). Object lock held.
+    /// a counter's value was set (CHANGE bindings fire). A counter with a
+    /// profile lends it to the thread each packet wakes (K10c, ext 5).
+    /// Object lock held.
     static func notify(_ object: ObjectPointer, changed: Bool = false) {
         let signals = object.header.signals
         let type = object.header.type
-        let value = type == .counter || type == .timeline ? Counters.valueLocked(object) : 0
+        let value = type == .counter ? Counters.valueLocked(object) : 0
         let lending = lend(of: object)
         var previous: ObserverPointer? = nil
         var cursor = object.header.observers
@@ -105,13 +105,9 @@ enum Observers {
     }
 
     /// The profile an object lends the threads its packets wake (K10c:
-    /// counters and timelines that carry one). Object lock held.
+    /// counters that carry one). Object lock held.
     static func lend(of object: ObjectPointer) -> Profile? {
-        switch object.header.type {
-        case .counter: CounterPointer(object: object).pointee.lend
-        case .timeline: TimelinePointer(object: object).pointee.lend
-        default: nil
-        }
+        object.header.type == .counter ? CounterPointer(object: object).pointee.lend : nil
     }
 
     /// A counter value wait's packet: what was waited for, what the counter

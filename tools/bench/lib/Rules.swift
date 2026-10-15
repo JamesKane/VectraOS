@@ -19,8 +19,6 @@ extension Rule {
     "counter.wake_median": (0.25, 300e-9),
     "counter.wake_p99": (0.50, 5e-6),
     "timer.wake_error_p99": (0.50, 20e-6),
-    "timeline.wake_median": (0.50, 5e-6),
-    "timeline.wake_p99": (0.50, 20e-6),
     "process.spawn_to_main": (0.50, 30e-6),
     "trace.probe_enabled": (0.25, 5e-9),
     "irq.wait_wake_median": (0.25, 3e-6),

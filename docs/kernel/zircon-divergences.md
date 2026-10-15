@@ -102,7 +102,7 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   is set by adding the difference. Kind: deliberate. Impact: every
   Fuchsia program that sleeps (zx_nanosleep) or uses async::Task's
   timers.
-- **Lending through a port** — croi's counters and timelines lend their
+- **Lending through a port** — croi's counters lend their
   deadline profile (ext 5) to the thread their packet wakes in
   port_wait, where they lent it to counter_wait's threads. Zircon has
   neither. Kind: deliberate. Impact: none.
@@ -327,10 +327,9 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   (a coalescing packet with a count), plus a counter's CHANGE doorbell
   (packet type 0x83). port_cancel unbinds interrupts; port_wait takes a
   leeway. Kind: deliberate (VectraOS D20).
-- Display timelines (type 48, syscalls 170-173) — vblank counters with a
-  read-only page; synthetic on the GOP framebuffer.
-- Deadline-carrying wakeups — object_set_profile on interrupts, counters
-  and timelines; CROI_PROFILE_ALIGN_TIMELINE.
+- Deadline-carrying wakeups — object_set_profile on interrupts and
+  counters. (Display timelines, type 48, and ALIGN_TIMELINE were cut in
+  V1, D27: a vblank is a counter.)
 - Admission refusal reasons — profile_create / object_set_profile report
   why a deadline profile was refused (Zircon has no admission).
 - channel_call donation — the reader of a call inherits the caller's

@@ -100,7 +100,7 @@ struct Thread: ~Copyable {
     /// Per-thread PMU counters (Pmu.ThreadCounters on the heap), or 0.
     var pmu: UInt64 = 0
     /// A deadline profile lent by the event that woke it (K10c, ext 5: an
-    /// interrupt, counter or timeline carrying a profile), until it next
+    /// interrupt or counter carrying a profile), until it next
     /// blocks.
     var lent: Profile? = nil
     /// Ext 5 (K14e): running on an event's scheduling context, which is

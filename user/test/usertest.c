@@ -357,7 +357,7 @@ static void sleep_until(uint64_t deadline) {
 
 static void sleep_ns(uint64_t ns) { sleep_until(now_ns() + ns); }
 
-// Waits until the counter or timeline `handle` reaches `target`, or
+// Waits until the counter `handle` reaches `target`, or
 // `deadline`: 0, TIMED_OUT, or the binding's status. V1 cut counter_wait
 // (D25): a VALUE binding on a port of its own, cancelled if it didn't fire.
 static int64_t wait_value(uint32_t handle, int64_t target, uint64_t deadline) {
@@ -2195,109 +2195,14 @@ static int64_t memory_stats(const startup_t *s) {
   return 0x600D;
 }
 
-// A thread waiting for a counter or timeline to reach `target`. Mode 14's
-// counter tests moved to the counters suite (D25); the driven timeline's
-// check still uses it.
-typedef struct {
-  uint32_t handle;
-  int64_t target;
-  volatile int64_t status;
-} counter_waiter_t;
-static void counter_waiter(uint64_t arg) {
-  counter_waiter_t *w = (counter_waiter_t *)arg;
-  w->status = wait_value(w->handle, w->target, ~0ull);
-  sys(CROI_SYS_THREAD_EXIT, 0, 0, 0, 0, 0);
-}
-
-// Mode 15 (K10b): display timelines. A synthetic one (the kernel's,
-// from the time): its page, waits for the next vblank (blocking and by
-// port), a period change; a driven one, advanced at a timestamp; rights.
-static int64_t page_count(volatile const croi_timeline_page_t *page, uint64_t t) {
-  return page->base_count + (int64_t)((t - page->base_time_ns) / page->period_ns);
-}
-
-static int64_t timelines(const startup_t *s) {
-  uint32_t t = 0, tracing = 0, page_vmo = 0, port = 0, weak = 0, driven = 0;
-  uint64_t at = 0;
-  CHECK(360, resource_create(s->resource, CROI_RSRC_KIND_SYSTEM, CROI_RSRC_SYSTEM_TRACING_BASE, 1, &tracing) == 0 &&
-                 sys(CROI_SYS_TIMELINE_CREATE, tracing, CROI_TIMELINE_SYNTHETIC, 2000000, (uint64_t)&t, 0) ==
-                     ERR_OUT_OF_RANGE &&
-                 sys(CROI_SYS_TIMELINE_CREATE, s->resource, 1u << 5, 2000000, (uint64_t)&t, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_TIMELINE_CREATE, s->resource, CROI_TIMELINE_SYNTHETIC, 1000, (uint64_t)&t, 0) ==
-                     ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_TIMELINE_CREATE, s->resource, CROI_TIMELINE_SYNTHETIC, 2000000, (uint64_t)&t, 0) == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, tracing, 0, 0, 0, 0);
-  // The page: read only, cached only, and what it says.
-  CHECK(361, sys(CROI_SYS_TIMELINE_GET_PAGE, t, (uint64_t)&page_vmo, 0, 0, 0) == 0 &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0,
-                      page_vmo, 0, PAGE, (uint64_t)&at) != 0 &&
-                 sys(CROI_SYS_VMO_SET_CACHE_POLICY, page_vmo, CROI_CACHE_POLICY_UNCACHED, 0, 0, 0) == ERR_ACCESS_DENIED_ &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)CROI_VM_PERM_READ << 32, 0, page_vmo, 0, PAGE,
-                      (uint64_t)&at) == 0);
-  volatile const croi_timeline_page_t *page = (volatile const croi_timeline_page_t *)at;
-  int64_t value = -1;
-  CHECK(362, page->version == CROI_TIMELINE_PAGE_VERSION && (page->flags & CROI_TIMELINE_PAGE_SYNTHESIZED) &&
-                 page->period_ns == 2000000 && (page->sequence & 1) == 0 &&
-                 sys(CROI_SYS_COUNTER_READ, t, (uint64_t)&value, 0, 0, 0) == 0 &&
-                 value >= page_count(page, now_ns()) - 1 && value <= page_count(page, now_ns()) &&
-                 sys(CROI_SYS_COUNTER_ADD, t, 1, 0, 0, 0) == ERR_WRONG_TYPE &&
-                 sys(CROI_SYS_TIMELINE_ADVANCE, t, 5, 0, 0, 0) == ERR_BAD_STATE);
-  // The next vblank: not before its time, not much after.
-  for (int i = 0; i < 3; i++) {
-    CHECK(363, sys(CROI_SYS_COUNTER_READ, t, (uint64_t)&value, 0, 0, 0) == 0);
-    uint64_t due = page->base_time_ns + (uint64_t)(value + 1 - page->base_count) * page->period_ns;
-    CHECK(364, wait_value(t, value + 1, now_ns() + 100000000) == 0);
-    uint64_t woke = now_ns();
-    CHECK(365, woke >= due && woke - due < 5000000);
-  }
-  // By port, two vblanks ahead.
-  croi_port_packet_t p;
-  CHECK(366, sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_COUNTER_READ, t, (uint64_t)&value, 0, 0, 0) == 0 &&
-                 bind1(port, t, CROI_BIND_VALUE, 5, (uint64_t)(value + 2)) == 0 &&
-                 port_next(port, 100000000, &p) == 0 && p.type == CROI_PKT_TYPE_COUNTER && p.key == 5 &&
-                 (int64_t)p.payload[1] >= value + 2);
-  // A new period: the count carries on.
-  int64_t before = 0, after = 0;
-  CHECK(367, sys(CROI_SYS_COUNTER_READ, t, (uint64_t)&before, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_TIMELINE_SET_PERIOD, t, 4000000, 0, 0, 0) == 0 && page->period_ns == 4000000 &&
-                 sys(CROI_SYS_COUNTER_READ, t, (uint64_t)&after, 0, 0, 0) == 0 && after >= before &&
-                 after <= before + 1 && wait_value(t, after + 1, now_ns() + 100000000) == 0);
-  // Rights: a client's handle (READ, WAIT) can't drive it.
-  CHECK(368, sys(CROI_SYS_HANDLE_DUPLICATE, t, 1u << 2 | 1u << 14, (uint64_t)&weak, 0, 0) == 0 &&
-                 sys(CROI_SYS_TIMELINE_SET_PERIOD, weak, 3000000, 0, 0, 0) == ERR_ACCESS_DENIED_ &&
-                 wait_value(weak, 0, 0) == 0);
-  // Driven: a waiter wakes when the driver counts a vblank.
-  CHECK(369, sys(CROI_SYS_TIMELINE_CREATE, s->resource, 0, 16666666, (uint64_t)&driven, 0) == 0 &&
-                 sys(CROI_SYS_COUNTER_READ, driven, (uint64_t)&value, 0, 0, 0) == 0 && value == 0);
-  counter_waiter_t w = {.handle = driven, .target = 1, .status = 1};
-  uint32_t worker = start_thread(s, counter_waiter, (uint64_t)&w);
-  sleep_ns(10000000);
-  CHECK(370, w.status == 1 && sys(CROI_SYS_TIMELINE_ADVANCE, driven, 12345678, 0, 0, 0) == 0);
-  join_checked(worker);
-  uint32_t driven_page = 0;
-  uint64_t driven_at = 0;
-  CHECK(371, w.status == 0 && sys(CROI_SYS_TIMELINE_GET_PAGE, driven, (uint64_t)&driven_page, 0, 0, 0) == 0 &&
-                 sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)CROI_VM_PERM_READ << 32, 0, driven_page, 0, PAGE,
-                      (uint64_t)&driven_at) == 0 &&
-                 ((volatile const croi_timeline_page_t *)driven_at)->base_count == 1 &&
-                 ((volatile const croi_timeline_page_t *)driven_at)->base_time_ns == 12345678 &&
-                 ((volatile const croi_timeline_page_t *)driven_at)->flags == 0);
-  sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, PAGE, 0, 0);
-  sys(CROI_SYS_VMAR_UNMAP, s->vmar, driven_at, PAGE, 0, 0);
-  uint32_t handles[] = {t, page_vmo, port, weak, driven, driven_page};
-  for (int i = 0; i < 6; i++) sys(CROI_SYS_HANDLE_CLOSE, handles[i], 0, 0, 0, 0);
-  return 0x600D;
-}
-
 // Byte by byte, through volatile: a plain loop or `= {0}` becomes a memset
 // call, which this program doesn't link.
 static void zero_bytes(void *p, uint64_t n) {
   for (volatile uint8_t *b = p; n--; b++) *b = 0;
 }
 
-// Mode 16 (K10c): deadline-carrying wakeups (ext 5) and frame-aligned
-// periods (ext 10).
+// Mode 16 (K10c): deadline-carrying wakeups (ext 5). Frame-aligned
+// periods (ext 10) went with display timelines (D27).
 static int64_t deadline_profile(uint32_t resource, int64_t capacity, int64_t deadline, int64_t period,
                                 uint32_t *out) {
   croi_profile_info_t info;
@@ -2307,23 +2212,6 @@ static int64_t deadline_profile(uint32_t resource, int64_t capacity, int64_t dea
   info.deadline_params.relative_deadline = deadline;
   info.deadline_params.period = period;
   return sys(CROI_SYS_PROFILE_CREATE, resource, 0, (uint64_t)&info, (uint64_t)out, 0);
-}
-
-typedef struct {
-  volatile uint32_t go;
-  volatile uint32_t done;
-  volatile int64_t starts[4];
-} aligned_worker_t;
-
-static void aligned_worker(uint64_t arg) {
-  aligned_worker_t *w = (aligned_worker_t *)arg;
-  while (!w->go) sleep_until(0);
-  for (int i = 0; i < 4; i++) {
-    w->starts[i] = sys(CROI_SYS_TEST_PROFILE, 3, 0, 0, 0, 0);
-    sleep_ns(3100000);  // wake into a new period
-  }
-  w->done = 1;
-  sys(CROI_SYS_THREAD_EXIT, 0, 0, 0, 0, 0);
 }
 
 // K14e (ext 5): an interrupt that hands its waiter an admitted context.
@@ -2437,7 +2325,7 @@ static int64_t interrupt_handoff(const startup_t *s, uint32_t counter, uint32_t 
 }
 
 static int64_t deadline_wakeups(const startup_t *s) {
-  uint32_t deadline = 0, fair = 0, counter = 0, t = 0, page_vmo = 0;
+  uint32_t deadline = 0, fair = 0, counter = 0;
   croi_profile_info_t info;
   zero_bytes(&info, sizeof info);
   info.flags = CROI_PROFILE_INFO_FLAG_PRIORITY;
@@ -2446,34 +2334,10 @@ static int64_t deadline_wakeups(const startup_t *s) {
                  sys(CROI_SYS_PROFILE_CREATE, s->resource, 0, (uint64_t)&info, (uint64_t)&fair, 0) == 0 &&
                  sys(CROI_SYS_COUNTER_CREATE, 0, (uint64_t)&counter, 0, 0, 0) == 0);
   // A counter's lent deadline moved to the counters suite (D25).
-  // Frame alignment: a deadline thread's periods start on vblanks.
-  CHECK(385, sys(CROI_SYS_TIMELINE_CREATE, s->resource, CROI_TIMELINE_SYNTHETIC, 2000000, (uint64_t)&t, 0) == 0 &&
-                 sys(CROI_SYS_TIMELINE_GET_PAGE, t, (uint64_t)&page_vmo, 0, 0, 0) == 0);
-  uint64_t at = 0;
-  CHECK(386, sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)CROI_VM_PERM_READ << 32, 0, page_vmo, 0, PAGE,
-                  (uint64_t)&at) == 0);
-  volatile const croi_timeline_page_t *page = (volatile const croi_timeline_page_t *)at;
-  aligned_worker_t a;
-  zero_bytes(&a, sizeof a);
-  uint32_t worker = start_thread(s, aligned_worker, (uint64_t)&a);
-  uint32_t refusal = 99;
-  // Without a deadline profile there is nothing to align.
-  CHECK(387, sys(CROI_SYS_OBJECT_SET_PROFILE, worker, fair, CROI_PROFILE_ALIGN_TIMELINE, (uint64_t)&refusal, t) ==
-                 ERR_BAD_STATE &&
-                 sys(CROI_SYS_OBJECT_SET_PROFILE, worker, deadline, CROI_PROFILE_ALIGN_TIMELINE, (uint64_t)&refusal,
-                     t) == 0 &&
-                 refusal == CROI_ADMISSION_ACCEPTED);
-  a.go = 1;
-  join_checked(worker);
-  for (int i = 0; i < 4; i++) {
-    uint64_t start = (uint64_t)a.starts[i];
-    CHECK(388, a.done && start >= page->base_time_ns && (start - page->base_time_ns) % page->period_ns == 0);
-  }
-  sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, PAGE, 0, 0);
   int64_t handed = interrupt_handoff(s, counter, fair, deadline);
   if (handed != 0) return handed;
-  uint32_t handles[] = {deadline, fair, counter, t, page_vmo};
-  for (int i = 0; i < 5; i++) sys(CROI_SYS_HANDLE_CLOSE, handles[i], 0, 0, 0, 0);
+  uint32_t handles[] = {deadline, fair, counter};
+  for (int i = 0; i < 3; i++) sys(CROI_SYS_HANDLE_CLOSE, handles[i], 0, 0, 0, 0);
   return 0x600D;
 }
 
@@ -5376,7 +5240,6 @@ __attribute__((section(".text.start"))) [[noreturn]] void _start(uint64_t mode, 
             : mode == 11 ? interrupts((const startup_t *)handle)
             : mode == 12 ? dma((const startup_t *)handle)
             : mode == 13 ? memory_stats((const startup_t *)handle)
-            : mode == 15 ? timelines((const startup_t *)handle)
             : mode == 16 ? deadline_wakeups((const startup_t *)handle)
             : mode == 17 ? extensions((const startup_t *)handle, vdso_base)
 #if defined(__x86_64__) || defined(__aarch64__) || defined(__riscv)

@@ -79,8 +79,8 @@ enum : uint64_t {
   CROI_SYS_DEBUGLOG_WRITE = 111,   // (log, options: CROI_LOG_LOCAL, text, length <= 216)
   CROI_SYS_DEBUGLOG_READ = 112,    // (log, options 0, croi_log_record_t *buffer, length) -> record size
   CROI_SYS_PROFILE_CREATE = 120,     // (resource, options 0, const croi_profile_info_t *, out)
-  CROI_SYS_OBJECT_SET_PROFILE = 121, // (thread | interrupt | counter | timeline, profile, options,
-                                     //  uint32_t *refusal or 0, timeline with ALIGN_TIMELINE)
+  CROI_SYS_OBJECT_SET_PROFILE = 121, // (thread | interrupt | counter, profile, options,
+                                     //  uint32_t *refusal or 0)
   // Resources and IO ports (K9a): Zircon's calls, values in resource.h.
   CROI_SYS_RESOURCE_CREATE = 130,  // (parent | options << 32, base, size, name, name_size, uint32_t *out)
   CROI_SYS_IOPORTS_REQUEST = 131,  // (IOPORT resource, io_addr, len): amd64
@@ -111,12 +111,6 @@ enum : uint64_t {
   CROI_SYS_COUNTER_CREATE = 160,        // (options 0, uint32_t *out)
   CROI_SYS_COUNTER_ADD = 161,           // (counter, int64_t amount)
   CROI_SYS_COUNTER_READ = 162,          // (counter, int64_t *value)
-
-  // Display timelines (K10b, croi's; timeline.h). Waits: VALUE bindings.
-  CROI_SYS_TIMELINE_CREATE = 170,       // (display resource, options, period_ns, uint32_t *out)
-  CROI_SYS_TIMELINE_ADVANCE = 171,      // (timeline, timestamp)
-  CROI_SYS_TIMELINE_SET_PERIOD = 172,   // (timeline, period_ns)
-  CROI_SYS_TIMELINE_GET_PAGE = 173,     // (timeline, uint32_t *vmo)
 
   // The user pager (K13d; Zircon's), and the small calls that followed it.
   CROI_SYS_PAGER_CREATE = 202,          // (options, out), K13d
@@ -162,7 +156,6 @@ enum : uint64_t {
 #include "interrupt.h" // interrupt options, port binding, packet type
 #include "dma.h"      // IOMMU types, bti_pin options, BTI info and properties
 #include "counter.h"  // counter signals, value waits
-#include "timeline.h" // display timelines, their page
 #include "power.h"    // system_powerctl commands, croi_system_powerctl_arg_t
 #include "account.h"  // memory accounts (K15a)
 #include "port.h"     // object_bind, packet types, port_wait's leeway

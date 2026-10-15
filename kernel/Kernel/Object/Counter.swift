@@ -37,21 +37,13 @@ enum Counters {
         return object
     }
 
-    /// The value (object lock held: Observers.notify's view). A display
-    /// timeline's is its vblank count (K10b), waited on the same way.
+    /// The value (object lock held: Observers.notify's view).
     static func valueLocked(_ object: ObjectPointer) -> Int64 {
-        object.header.type == .timeline ? Timelines.valueLocked(object) : CounterPointer(object: object).pointee.value
+        CounterPointer(object: object).pointee.value
     }
 
     static func read(_ object: ObjectPointer) -> Int64 {
         object.header.lock.withLock { valueLocked(object) }
-    }
-
-    /// A handle that can be waited on at a value: a counter or a timeline.
-    static func waitable(_ table: borrowing HandleTable, _ handle: UInt32, rights: Rights) throws(Status) -> ObjectRef {
-        let ref = try table.get(handle, rights: rights)
-        guard ref.type == .counter || ref.type == .timeline else { throw .wrongType }
-        return ref
     }
 
     /// counter_add: OUT_OF_RANGE (and no change) on overflow.
@@ -76,7 +68,7 @@ enum Counters {
     /// `key` once the value is at least `target` (now, if it is).
     static func waitAsync(_ table: borrowing HandleTable, _ handle: UInt32, port: borrowing ObjectRef, key: UInt64,
                           target: Int64) throws(Status) {
-        let object = try waitable(table, handle, rights: .wait | .read)
+        let object = try table.get(handle, type: .counter, rights: .wait | .read)
         // Zircon raises at its observer limit and still registers (review fix).
         if Ports.overObserverLimit(port.object) {
             Policy.limitException(UInt32(CROI_EXCP_POLICY_CODE_PORT_TOO_MANY_OBSERVERS))
@@ -97,7 +89,6 @@ enum Counters {
                 observer.byValue = true
                 observer.atValue = target
                 _ = try Observers.add(object.object, observer)
-                if object.object.header.type == .timeline { Timelines.watchLocked(object.object) }
             }
         } catch {
             record.free()

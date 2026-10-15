@@ -137,7 +137,7 @@ enum Ports {
     /// Queues `record` and wakes one waiter. Any context; the caller may
     /// hold an object lock, or (kernel sources) the scheduler lock.
     /// `lending`: the profile the packet's source lends the thread it wakes
-    /// (K10c, ext 5: a counter's or a timeline's).
+    /// (K10c, ext 5: a counter's).
     static func enqueue(_ port: PortPointer, _ record: QueuedPacketPointer, schedulerLocked: Bool = false,
                         lending: Profile? = nil) {
         port.pointee.packetsLock.withLock {

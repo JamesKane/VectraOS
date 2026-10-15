@@ -46,13 +46,13 @@ enum Profiles {
             try Syscalls.check(a[3], MemoryLayout<UInt32>.size)
             let object = try create(info)
             try Syscalls.put(try table.add(object, rights: ProfileObject.defaultRights), a[3])
-        case 121:  // object_set_profile(target, profile, options, refusal, timeline)
-            guard a[2] & ~UInt64(CROI_PROFILE_ALIGN_TIMELINE | CROI_PROFILE_HANDOFF) == 0 else { throw .invalidArgs }
+        case 121:  // object_set_profile(target, profile, options, refusal)
+            guard a[2] & ~UInt64(CROI_PROFILE_HANDOFF) == 0 else { throw .invalidArgs }
             if a[3] != 0 { try Syscalls.check(a[3], MemoryLayout<UInt32>.size) }
             let profile = try table.get(UInt32(truncatingIfNeeded: a[1]), type: .profile, rights: .applyProfile)
             let target = UInt32(truncatingIfNeeded: a[0])
             let type = try table.get(target).type
-            if type == .interrupt || type == .counter || type == .timeline {
+            if type == .interrupt || type == .counter {
                 // K10c, ext 5: the event lends this deadline to the threads
                 // it wakes directly; K14e: an interrupt hands them an
                 // admitted context instead.
@@ -71,11 +71,8 @@ enum Profiles {
             let thread = try table.get(target, type: .thread, rights: .manageThread)
             var refusal: UInt32 = UInt32(CROI_ADMISSION_ACCEPTED)
             defer { if a[3] != 0 { try? Syscalls.put(refusal, a[3]) } }
+            guard a[2] == 0 else { throw .invalidArgs }  // HANDOFF is an interrupt's
             try apply(ProfileObjectPointer(object: profile.object), to: thread.object, refusal: &refusal)
-            if a[2] & UInt64(CROI_PROFILE_ALIGN_TIMELINE) != 0 {
-                let timeline = try table.get(UInt32(truncatingIfNeeded: a[4]), type: .timeline, rights: .read)
-                try align(thread.object, to: timeline.object)
-            }
         default:
             throw .notSupported
         }
@@ -113,7 +110,7 @@ enum Profiles {
         return object
     }
 
-    /// Ext 5: `event` (an interrupt, counter or timeline) lends `profile`,
+    /// Ext 5: `event` (an interrupt or a counter) lends `profile`,
     /// which must be a deadline one, to the threads it wakes.
     static func lend(_ profile: ProfileObjectPointer, from event: ObjectPointer) throws(Status) {
         guard profile.pointee.flags & UInt32(CROI_PROFILE_INFO_FLAG_DEADLINE) != 0 else { throw .invalidArgs }
@@ -125,25 +122,8 @@ enum Profiles {
         event.header.lock.withLock {
             switch event.header.type {
             case .interrupt: InterruptPointer(object: event).pointee.lend = lent
-            case .counter: CounterPointer(object: event).pointee.lend = lent
-            default: TimelinePointer(object: event).pointee.lend = lent
+            default: CounterPointer(object: event).pointee.lend = lent
             }
-        }
-    }
-
-    /// Ext 10: the thread's deadline periods start on `timeline`'s vblanks.
-    /// BAD_STATE if the profile just applied gave it no deadline context.
-    static func align(_ thread: ObjectPointer, to timeline: ObjectPointer) throws(Status) {
-        guard let target = Processes.pinnedThread(thread) else { throw .badState }
-        defer { Scheduler.unpin(target) }
-        timeline.retain()  // the context's
-        let (aligned, old) = Scheduler.align(target,
-                                             page: TimelinePointer(object: timeline).pointee.pageAddress,
-                                             timeline: timeline.address)
-        if old != 0 { ObjectPointer(address: old).release() }
-        guard aligned else {
-            timeline.release()
-            throw .badState
         }
     }
 

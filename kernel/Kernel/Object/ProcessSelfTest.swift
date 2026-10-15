@@ -254,21 +254,6 @@ enum ProcessSelfTest {
         console.write("  mem:    task stats (mapped, private, shared, scaled with its fraction), kmem stats\n")
     }
 
-    /// K10b: display timelines from user mode (mode 15).
-    static func runTimelines(_ console: Uart) {
-        let before = Counts()
-        let exitCode = runInProcess(mode: 15)
-        guard exitCode == 0x600D else {
-            console.write("  timeline: user program failed check ")
-            console.write(decimal: UInt64(bitPattern: exitCode))
-            console.write("\n")
-            panic("timeline self-test: user side")
-        }
-        before.expectUnchanged(console)
-        console.write("  timeline: synthetic (page, next-vblank waits by thread and port, period change), driven ")
-        console.write("(advance wakes a waiter), rights\n")
-    }
-
     static func runDeadlineWakeups(_ console: Uart) {
         let before = Counts()
         let exitCode = runInProcess(mode: 16)
@@ -279,8 +264,8 @@ enum ProcessSelfTest {
             panic("deadline wakeup self-test: user side")
         }
         before.expectUnchanged(console)
-        console.write("  deadline wakeups: periods aligned to vblanks; ")
-        console.write("an interrupt hands its waiter an admitted context (shared budget, overrun, withdrawn)\n")
+        console.write("  deadline wakeups: an interrupt hands its waiter an admitted context ")
+        console.write("(shared budget, overrun, withdrawn)\n")
     }
 
     static func runExtensions(_ console: Uart) {
@@ -293,7 +278,7 @@ enum ProcessSelfTest {
             panic("extensions self-test: user side")
         }
         before.expectUnchanged(console)
-        console.write("  extensions: thread trace ids, overruns to a port, debuglog progress, a job's reserved CPU, powerctl refusals, VMO children, physical slices with ZERO_CHILDREN and handle counts, snapshots, anonymous slices and references, vmo_read racing decommit, the pager, the small calls, info topics and vmar_op_range, clocks, suspension and process memory, a debugger channel, single-step and hardware breakpoints, resizable VMOs, smc_call, a crashed thread held for post-mortem attach, eviction and discardable VMOs with the memory-pressure events, a user exception to job debuggers, page loaning and borrowing, UNBOUNDED VMOs, zero intervals, cprng\n")
+        console.write("  extensions: thread trace ids, overruns to a port, debuglog progress, a job's reserved CPU, powerctl refusals, VMO children, physical slices with ZERO_CHILDREN and handle counts, snapshots, anonymous slices and references, vmo_read racing decommit, the pager, the small calls, info topics and vmar_op_range, suspension and process memory, a debugger channel, single-step and hardware breakpoints, resizable VMOs, smc_call, a crashed thread held for post-mortem attach, eviction and discardable VMOs with the memory-pressure events, a user exception to job debuggers, page loaning and borrowing, UNBOUNDED VMOs, zero intervals, cprng\n")
     }
 
     /// Live processes, address spaces and objects, to check nothing leaked.

@@ -80,7 +80,6 @@ kernel/Kernel/Object/ProfileObject.swift	croi	dc4cf67	kernel/Kernel/Object/Profi
 kernel/Kernel/Object/Resource.swift	croi	dc4cf67	kernel/Kernel/Object/Resource.swift
 kernel/Kernel/Object/ResourceSelfTest.swift	croi	dc4cf67	kernel/Kernel/Object/ResourceSelfTest.swift
 kernel/Kernel/Object/Status.swift	croi	dc4cf67	kernel/Kernel/Object/Status.swift
-kernel/Kernel/Object/Timeline.swift	croi	dc4cf67	kernel/Kernel/Object/Timeline.swift
 kernel/Kernel/Object/VmoObject.swift	croi	dc4cf67	kernel/Kernel/Object/VmoObject.swift
 kernel/Kernel/Object/Wait.swift	croi	dc4cf67	kernel/Kernel/Object/Wait.swift
 kernel/Kernel/Panic.swift	croi	dc4cf67	kernel/Kernel/Panic.swift
@@ -194,7 +193,6 @@ kernel/include/stack.h	croi	dc4cf67	kernel/include/stack.h
 kernel/include/task.h	croi	dc4cf67	kernel/include/task.h
 kernel/include/thread.h	croi	dc4cf67	kernel/include/thread.h
 kernel/include/time.h	croi	dc4cf67	kernel/include/time.h
-kernel/include/timeline.h	croi	dc4cf67	kernel/include/timeline.h
 kernel/include/trace.h	croi	dc4cf67	kernel/include/trace.h
 kernel/include/user.h	croi	dc4cf67	kernel/include/user.h
 kernel/include/usercopy.h	croi	dc4cf67	kernel/include/usercopy.h

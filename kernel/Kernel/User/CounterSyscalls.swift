@@ -3,7 +3,8 @@ import CKernel
 /// Counter syscalls (K10a; numbers in user/include/croi/syscall.h, values
 /// in counter.h): Zircon's counter_create, add and read with its rights.
 /// counter_write and counter_wait went in V1 (D25): an add of the
-/// difference, and object_bind VALUE or CHANGE (Bind.swift).
+/// difference, and object_bind VALUE or CHANGE (Bind.swift). Display
+/// timelines (170-173) went in V1 too (D27): a counter.
 extension Syscalls {
     static func counterCall(_ number: UInt64, _ a: InlineArray<6, UInt64>,
                             _ table: borrowing HandleTable) throws(Status) {
@@ -16,23 +17,10 @@ extension Syscalls {
         case 161:  // counter_add(counter, amount): READ and WRITE (the result reveals the value)
             try Counters.add(try table.get(handle, type: .counter, rights: .read | .write).object,
                              Int64(bitPattern: a[1]))
-        case 162:  // counter_read(counter or timeline, value out)
+        case 162:  // counter_read(counter, value out)
             guard a[1] != 0 else { throw .invalidArgs }
             try check(a[1], MemoryLayout<Int64>.size)
-            try put(Counters.read(try Counters.waitable(table, handle, rights: .read).object), a[1])
-        case 170:  // timeline_create(display resource, options, period_ns, out)
-            try check(a[3], MemoryLayout<UInt32>.size)
-            try Resources.check(table, handle, system: UInt64(CROI_RSRC_SYSTEM_DISPLAY_BASE))
-            try addAndPut(try Timelines.create(options: UInt32(truncatingIfNeeded: a[1]), period: a[2]),
-                          rights: TimelineObject.defaultRights, a[3], table)
-        case 171:  // timeline_advance(timeline, timestamp)
-            try Timelines.advance(try table.get(handle, type: .timeline, rights: .write).object, timestamp: a[1])
-        case 172:  // timeline_set_period(timeline, period_ns)
-            try Timelines.setPeriod(try table.get(handle, type: .timeline, rights: .write).object, a[1])
-        case 173:  // timeline_get_page(timeline, vmo out)
-            try check(a[1], MemoryLayout<UInt32>.size)
-            let timeline = try table.get(handle, type: .timeline, rights: .read)
-            try addAndPut(try Timelines.pageVmo(timeline.object), rights: Timelines.pageRights, a[1], table)
+            try put(Counters.read(try table.get(handle, type: .counter, rights: .read).object), a[1])
         default:
             throw .notSupported
         }

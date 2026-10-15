@@ -1380,89 +1380,24 @@ enum Scheduler {
         }
     }
 
-    /// A fresh period starting now: on a frame-aligned context (ext 10),
-    /// at the vblank just passed, if its deadline is still ahead.
+    /// A fresh period starting now. (V1 cut ext 10's alignment to a display
+    /// timeline, D27: a thread that sleeps until its vblank starts its
+    /// period there.)
     private static func startPeriod(_ thread: ThreadPointer, _ now: UInt64) {
         let params = thread.pointee.effective.params
-        var start = now
-        if let grid = vblankGrid(thread) {
-            let vblank = grid.vblank(atOrBefore: now)
-            if vblank + params.deadline > now { start = vblank }
-        }
-        thread.pointee.periodStart = start
-        thread.pointee.absoluteDeadline = start + params.deadline
+        thread.pointee.periodStart = now
+        thread.pointee.absoluteDeadline = now + params.deadline
         thread.pointee.remaining = Int64(params.capacity)
     }
 
-    /// The period after the current one (or now, if that has passed too);
-    /// on a frame-aligned context, at the vblank nearest that.
+    /// The period after the current one (or now, if that has passed too).
     private static func nextPeriod(_ thread: ThreadPointer, _ now: UInt64) {
         let params = thread.pointee.effective.params
         var start = thread.pointee.periodStart + params.period
-        if let grid = vblankGrid(thread) {
-            start = grid.vblank(atOrBefore: start + grid.period / 2)
-            if start + params.deadline <= now { start = grid.vblank(atOrBefore: now) }
-        }
         if start + params.deadline <= now { start = now }
         thread.pointee.periodStart = start
         thread.pointee.absoluteDeadline = start + params.deadline
         thread.pointee.remaining = Int64(params.capacity)
-    }
-
-    /// A display timeline's vblank times: base + k * period.
-    struct VblankGrid {
-        let period: UInt64
-        let base: UInt64
-
-        func vblank(atOrBefore t: UInt64) -> UInt64 {
-            t <= base ? base : base + (t - base) / period * period
-        }
-    }
-
-    /// The grid a deadline thread's periods align to (ext 10): its own
-    /// context's timeline, when it runs on that context (not on a lent or
-    /// inherited profile). Read from the timeline's page, lock-free.
-    private static func vblankGrid(_ thread: ThreadPointer) -> VblankGrid? {
-        guard let context = thread.pointee.context, context.pointee.alignPage != 0,
-              thread.pointee.effective.discipline == .deadline,
-              thread.pointee.effective.params == context.pointee.profile.params else { return nil }
-        let page = unsafe UnsafePointer<croi_timeline_page_t>(bitPattern: UInt(context.pointee.alignPage))!
-        for _ in 0..<8 {
-            let before = unsafe page.pointee.sequence
-            atomicMemoryFence(ordering: .acquiring)
-            let period = unsafe page.pointee.period_ns, base = unsafe page.pointee.base_time_ns
-            atomicMemoryFence(ordering: .acquiring)
-            if before & 1 == 0, unsafe page.pointee.sequence == before, period > 0 {
-                return VblankGrid(period: period, base: base)
-            }
-        }
-        return nil
-    }
-
-    /// Aligns the periods of `thread`'s deadline context to a display
-    /// timeline (ext 10); the timeline is retained by the caller and handed
-    /// to the context, which releases it when it goes. Returns a timeline
-    /// it replaced, for the caller to release; false if the thread has no
-    /// deadline context of its own.
-    static func align(_ thread: ThreadPointer, page: UInt64, timeline: UInt64) -> (aligned: Bool, replaced: UInt64) {
-        locked { () -> (Bool, UInt64) in
-            guard thread.pointee.state != .dead, let context = thread.pointee.context,
-                  context.pointee.profile.discipline == .deadline else {
-                return (false, 0)
-            }
-            let old = context.pointee.alignTimeline
-            context.pointee.alignPage = page
-            context.pointee.alignTimeline = timeline
-            // The current period moves onto the grid now, not at the next.
-            if thread.pointee.effective.discipline == .deadline,
-               thread.pointee.effective.params == context.pointee.profile.params {
-                let now = Clock.now()
-                if thread.pointee.state == .running, !thread.pointee.isIdle { charge(thread, thread.pointee.cpu, now) }
-                startPeriod(thread, now)
-                reposition(thread)
-            }
-            return (true, old)
-        }
     }
 
     /// The CBS wakeup rule: keep the current period's budget only if using

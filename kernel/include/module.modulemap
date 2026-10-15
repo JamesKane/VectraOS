@@ -17,7 +17,6 @@ module CroiAbi {
   header "interrupt.h"
   header "dma.h"
   header "counter.h"
-  header "timeline.h"
   header "power.h"
   header "account.h"
   header "port.h"

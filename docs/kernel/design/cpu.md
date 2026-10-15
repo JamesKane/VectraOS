@@ -94,8 +94,8 @@ a list by `latest` under a leaf lock (`TimerNode`s; the head arms the
 hardware; `maxSlack` bounds the interrupt's walk for due timers). Kernel
 code with a fixed number of timers uses the CPU's 32 slots (`arm(deadline:
 ...)` -> id, `cancel(id)` on that CPU); anything whose count user space
-decides owns a node in its record (thread timeouts, timelines; timer
-objects until V1 cut them, D25: `arm(node, ...)`, never fails; `cancel(node, on: cpu)` from any
+decides owns a node in its record (thread timeouts; timer objects and
+display timelines until V1 cut them, D25 and D27: `arm(node, ...)`, never fails; `cancel(node, on: cpu)` from any
 CPU, false once it fired, when on another CPU its callback may still be
 running). A thread whose timeout fired elsewhere as it cancelled waits
 that CPU out by IPI (`timeoutStragglers`) before leaving the scheduler.
@@ -231,7 +231,7 @@ the boot self-tests arm a 20 s deadman that calls it.
 
 Thread pins (review round 1): code that reads a thread object's `thread`
 under its lock and uses it after (futex owners, object_set_profile,
-overrun ports, timeline alignment) takes `Processes.pinnedThread`, which
+overrun ports) takes `Processes.pinnedThread`, which
 pins the record (`Scheduler.pin`, under the object lock: exit clears
 `thread` under it first); the reaper leaves a pinned zombie to the last
 `unpin`. `dropOwnership` marks the thread `exiting`, and `setOwner`
@@ -258,21 +258,20 @@ exist, RES1 otherwise: 0x33ff trapped both) and opens ZCR_EL2/SMCR_EL2.
 
 ## Deadline-carrying wakeups (K10c)
 
-Deadline-carrying wakeups, K10c (Todhchai ext 5 and 10; profile.h):
-- `object_set_profile(target, profile, options, refusal, timeline)`: on an
-  interrupt, counter or timeline (WRITE; deadline profiles only, no
+Deadline-carrying wakeups, K10c (Todhchai ext 5; profile.h):
+- `object_set_profile(target, profile, options, refusal)`: on an
+  interrupt or a counter (WRITE; deadline profiles only, no
   options) the object stores the profile (`lend`), and `Observers.notify`
   / `InterruptObjects` wake through `Scheduler.wakeAll(queue, lending:)`:
   the woken thread's `Thread.lent` joins its effective profile as an
   inherited one (computeEffective), with a period starting at the
   wakeup, and `block` drops it. Not admitted, as channel_call donation
   isn't. A thread that sees the event before it blocks borrows nothing.
-- `CROI_PROFILE_ALIGN_TIMELINE` on a thread with a deadline profile
-  (BAD_STATE without one): its context keeps the timeline (a reference)
-  and its page address; `startPeriod`/`nextPeriod` read the page under
-  its seqlock (`vblankGrid`) and start periods on vblanks, only while
-  the thread runs on its own context's parameters. The current period is
-  re-aligned at once. `SchedContextRecord.intent` is still stored only.
+- Ext 10's `CROI_PROFILE_ALIGN_TIMELINE` (periods started on a display
+  timeline's vblanks) was cut in V1 with timelines (D27): a deadline
+  thread that sleeps to its vblank starts its period there. A thread's
+  profile now takes no options. `SchedContextRecord.intent` is still
+  stored only.
 - Test hooks 3/4 (syscall 6) return the running thread's period start
   and deadline. Boot test mode 16 (`ProcessSelfTest.runDeadlineWakeups`).
 - Ext 5 proper, K14e (profile.h `CROI_PROFILE_HANDOFF`): object_set_profile

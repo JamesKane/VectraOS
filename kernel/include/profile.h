@@ -21,20 +21,18 @@ enum : uint32_t {
   CROI_ADMISSION_CPU_OVERLOADED = 2,   // every eligible CPU is full (reason word: cpu << 8 | 2)
   CROI_ADMISSION_ACCOUNT_EXHAUSTED = 3,
 
-  // object_set_profile options (croi's, K10c): with a deadline profile on
-  // a thread, its periods start on a display timeline's vblanks (ext 10);
-  // the timeline's handle (READ) is the fifth argument.
-  CROI_PROFILE_ALIGN_TIMELINE = 1u << 0,
+  // object_set_profile options (croi's). Bit 0 was ALIGN_TIMELINE (ext
+  // 10, K10c), cut in V1 with display timelines (D27).
   // With a deadline profile on an interrupt object (ext 5, K14e): admit
   // it as a scheduling context the object owns (refused with a reason as
   // for threads) and hand that to the interrupt_wait thread it wakes.
   CROI_PROFILE_HANDOFF = 1u << 1,
 };
 
-// object_set_profile(target, profile, options, refusal, timeline) also
-// takes an interrupt, counter or display timeline as its target (WRITE
-// right; a deadline profile): the object then lends that deadline to each
-// thread it wakes (interrupt_wait's; for a counter or timeline, the
+// object_set_profile(target, profile, options, refusal) also takes an
+// interrupt or a counter as its target (WRITE right; a deadline profile):
+// the object then lends that deadline to each thread it wakes
+// (interrupt_wait's; for a counter, the
 // port_wait its packet ends, D25): the thread runs on it from its wakeup,
 // with a period starting there, until it next blocks (ext 5, as
 // channel_call donation). No admission: the lent deadline joins the

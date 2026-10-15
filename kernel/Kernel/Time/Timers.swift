@@ -7,7 +7,7 @@ import Synchronization
 ///
 /// Kernel code that keeps a fixed number of timers takes one of its CPU's
 /// slots (`Timers.arm(deadline:...)`, an id back). Anything whose count
-/// user space decides (thread timeouts, timer objects, timelines) owns its
+/// user space decides (thread timeouts) owns its
 /// node, embedded in its record as Zircon's Timer is, and arms that
 /// (`Timers.arm(_:deadline:...)`), which never fails. An owned node must
 /// stay put, and alive, while armed.

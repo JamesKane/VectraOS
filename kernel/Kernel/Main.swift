@@ -421,7 +421,6 @@ private func runSelfTests(_ console: Uart) {
     ProcessSelfTest.runDma(console)
     ProcessSelfTest.runIommu(console)
     ProcessSelfTest.runMemoryStats(console)
-    ProcessSelfTest.runTimelines(console)
     ProcessSelfTest.runDeadlineWakeups(console)
     ProcessSelfTest.runExtensions(console)
     ProgramSelfTest.run(console)

@@ -63,8 +63,6 @@ enum Bench {
         var counterWakeMedian: UInt64 = 0  // ns (K10a)
         var counterWakeP99: UInt64 = 0
         var wakeErrorP99: UInt64 = 0     // ns
-        var timelineWakeMedian: UInt64 = 0  // ns (K10b)
-        var timelineWakeP99: UInt64 = 0
     }
 
     static var cpus: (client: UInt64, waiter: UInt64, sleeper: UInt64) { (1 << 1, 1 << 2, 1 << 3) }
@@ -84,7 +82,6 @@ enum Bench {
         if profilePortWake { try portWakeProfile() }
         (results.counterWakeMedian, results.counterWakeP99) = try counterWake(resource: resource, thread: thread)
         results.wakeErrorP99 = try wakeError(resource: resource, thread: thread)
-        (results.timelineWakeMedian, results.timelineWakeP99) = try timelineWake(resource: resource)
         return results
     }
 
@@ -576,46 +573,5 @@ enum Bench {
         guard errors.count == Int(n) else { throw Failure(what: "finding wake marks", status: Int64(errors.count)) }
         errors.sort()
         return errors[errors.count * 99 / 100]
-    }
-
-    // MARK: Display timeline wake (K10b)
-
-    /// A synthetic 1 ms timeline: the deadline thread (wake error's, on its
-    /// own CPU, as a compositor's latch thread) waits for each next vblank;
-    /// how late it runs after the vblank's time, from the timeline's page.
-    /// Each wait is a VALUE binding and a port_wait (V1 cut counter_wait,
-    /// D25). Median and p99, ns.
-    static func timelineWake(resource: UInt32) throws(Failure) -> (UInt64, UInt64) {
-        var timeline: UInt32 = 0
-        var pageVmo: UInt32 = 0
-        var at: UInt64 = 0
-        var port: UInt32 = 0
-        var packet = croi_port_packet_t()
-        try Sys.check("creating a port", Sys.call(CROI_SYS_PORT_CREATE, 0, Sys.address(&port)))
-        try Sys.check("creating a timeline", Sys.call(CROI_SYS_TIMELINE_CREATE, UInt64(resource),
-                                                      UInt64(CROI_TIMELINE_SYNTHETIC), 1_000_000,
-                                                      Sys.address(&timeline)))
-        try Sys.check("getting its page", Sys.call(CROI_SYS_TIMELINE_GET_PAGE, UInt64(timeline), Sys.address(&pageVmo)))
-        try Sys.check("mapping its page", Sys.call(CROI_SYS_VMAR_MAP,
-                                                   UInt64(croi_vmar_root_self()) | UInt64(CROI_VM_PERM_READ) << 32,
-                                                   0, UInt64(pageVmo), 0, 4096, Sys.address(&at)))
-        let page = unsafe UnsafePointer<croi_timeline_page_t>(bitPattern: UInt(at))!
-        var latencies: [UInt64] = []
-        for _ in 0..<200 {
-            var value: Int64 = 0
-            _ = Sys.call(CROI_SYS_COUNTER_READ, UInt64(timeline), Sys.address(&value))
-            let target = value + 1
-            _ = Sys.bind(port, timeline, UInt32(CROI_BIND_VALUE), key: 0, trigger: UInt64(bitPattern: target))
-            _ = Sys.call(CROI_SYS_PORT_WAIT, UInt64(port), .max, Sys.address(&packet))
-            let woke = Sys.now()
-            let due = unsafe page.pointee.base_time_ns + UInt64(target - page.pointee.base_count) * page.pointee.period_ns
-            latencies.append(woke >= due ? woke - due : 0)
-        }
-        _ = Sys.call(CROI_SYS_VMAR_UNMAP, UInt64(croi_vmar_root_self()), at, 4096)
-        Sys.close(pageVmo)
-        Sys.close(timeline)
-        Sys.close(port)
-        latencies.sort()
-        return (latencies[latencies.count / 2], latencies[latencies.count * 99 / 100])
     }
 }
