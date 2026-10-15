@@ -8,7 +8,8 @@ import Synchronization
 /// samples must carry their PCs and return addresses (kernel ones as image
 /// offsets; user ones within the program, also from samples taken in a
 /// syscall), each SAMPLE followed by its FRAMES records, and idle CPUs must
-/// take none. Panics on failure.
+/// have no sampling timer armed (a tick on one would only lapse). Panics on
+/// failure.
 enum SamplerSelfTest {
     static var codeAt: UInt64 { 0x100_0000 }
     static var stackAt: UInt64 { 0x200_0000 }
@@ -33,12 +34,24 @@ enum SamplerSelfTest {
         let kernelSpinner = spawn(cpu, spinKernel, 0)
         while spinnerId == 0 { Scheduler.sleep(until: Clock.now() + 1_000_000) }
         Scheduler.sleep(until: Clock.now() + 20_000_000)
-        let armedIdle = idleArmed(except: cpu)  // tickless: no sampling timer
+        // A thread runs 3 ms on a third CPU and exits: that CPU was
+        // sampled, then idled. Idle CPUs must have no sampling timer
+        // (tickless), asked of each CPU while sampling is on, as the PMU
+        // test does. Counting every sample and armed timer off the
+        // spinner's CPU failed whenever a background thread (dlog-dumper,
+        // reclaim) ran in the window: rv64 under TCG, three boots on
+        // 2026-10-15. And with nothing run on them, idle CPUs were never
+        // armed, so the check proved nothing.
+        let bystanderCpu = (0..<Smp.count).first { $0 != cpu && $0 != Int(Cpu.current) }
+        if let bystanderCpu { _ = spawn(bystanderCpu, bystand, 0).join() }
+        Scheduler.sleep(until: Clock.now() + 5_000_000)
+        armedWhileIdle.store(0, ordering: .relaxed)
+        _ = Ipi.callOthers(checkIdleDisarmed, 0)
+        let armedIdle = armedWhileIdle.load(ordering: .relaxed)
         _ = kernelSpinner.join()
         Trace.stop()
         let kernelId = spinnerId
         let kernel = scan(cpu, thread: kernelId, user: false)
-        let idle = idleSamples(except: cpu)
         guard kernel.samples >= 20, kernel.withFrames * 10 >= kernel.samples * 9, kernel.malformed == 0,
               kernel.foreign == 0 else {
             report(console, "kernel", kernel)
@@ -48,7 +61,12 @@ enum SamplerSelfTest {
             Scheduler.dump(to: console)
             panic("sampler self-test: kernel samples")
         }
-        guard idle == 0, armedIdle == 0 else { panic("sampler self-test: an idle CPU was sampled or ticking") }
+        guard armedIdle == 0 else {
+            console.write("  sample: idle CPUs with a sampling timer armed ")
+            console.write(decimal: armedIdle)
+            console.write("\n")
+            panic("sampler self-test: an idle CPU was ticking")
+        }
 
         // User.
         var user = Counts()
@@ -191,28 +209,14 @@ enum SamplerSelfTest {
         return counts
     }
 
-    /// CPUs other than `cpu` and this one with a sampling timer armed.
-    private static func idleArmed(except cpu: Int) -> Int {
-        var count = 0
-        let me = Int(Cpu.current)
-        for other in 0..<Smp.count where other != cpu && other != me {
-            let percpu = unsafe UnsafePointer<PerCpu>(bitPattern: UInt(Smp.records[other]))!
-            if unsafe percpu.pointee.samplerArmed != 0 { count += 1 }
-        }
-        return count
-    }
+    /// CPUs that were idle with a sampling timer armed.
+    static let armedWhileIdle = Atomic<UInt64>(0)
 
-    /// Samples on CPUs other than `cpu` and the one running this test,
-    /// which idled throughout.
-    private static func idleSamples(except cpu: Int) -> Int {
-        var count = 0
-        let me = Int(Cpu.current)
-        for other in 0..<Smp.count where other != cpu && other != me {
-            Trace.forEachRecord(other) { record in
-                if record.kind == UInt16(CROI_TK_SAMPLE) { count += 1 }
-            }
+    private static let checkIdleDisarmed: Ipi.Function = { _ in
+        let percpu = unsafe UnsafePointer<PerCpu>(bitPattern: UInt(arch_percpu()))!
+        if Scheduler.current.pointee.isIdle, unsafe percpu.pointee.samplerArmed != 0 {
+            armedWhileIdle.add(1, ordering: .relaxed)
         }
-        return count
     }
 
     private static func report(_ console: Uart, _ what: StaticString, _ c: Counts) {
@@ -248,6 +252,12 @@ enum SamplerSelfTest {
         var n: UInt64 = 0
         while Clock.now() < end { n &+= 1 }
         return n
+    }
+
+    private static let bystand: Thread.Entry = { _ in
+        let end = Clock.now() + 3_000_000
+        while Clock.now() < end {}
+        return 0
     }
 
     private static let spinUser: Thread.Entry = { _ in

@@ -87,7 +87,16 @@ thread's stack top.
   straight to recovery (`PerCpu.interruptFrame`, set by
   `Interrupts.handle`), so nothing pages in from an interrupt. The
   sampling timer is armed at a switch to a thread and lapses on a tick
-  that finds the CPU idle, so idle CPUs stay tickless. Kernel and user
+  that finds the CPU idle, so idle CPUs stay tickless. The self-test
+  runs a 3 ms thread on a third CPU, waits 5 ms, then asks each other
+  CPU through an IPI, while the spinner runs, whether it is idle with
+  its sampling timer armed, as the PMU test does (fixed 2026-10-15 after
+  D34's run). It used to count every sample and armed timer off the
+  spinner's CPU, so a background thread running in the window failed
+  it: three rv64 boots that day. And no idle CPU had run anything while
+  sampling was on, so none was ever armed: re-arming on a lapse without
+  disarming at idle passed it. With the bystander, that mutation fails
+  every amd64 boot. Kernel and user
   code keep frame pointers; amd64 user `_start` is a crt-style stub that
   calls C (a C entry with a 16-aligned stack misaligns rbp).
 - K6e, PMU (Kernel/Trace/Pmu.swift, include/pmu.h, syscall 51

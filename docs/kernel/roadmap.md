@@ -1161,15 +1161,6 @@ from Zircon, see docs/kernel/zircon-divergences.md.
   watchdog and SError paths unverified on hardware; SError delivery to
   the faulting process.
 - Budgets: channel_call's 1 µs target (~1.4 µs under KVM).
-- Tests: the tick sampler's idle check (SamplerSelfTest) counts every
-  sample on a CPU other than the spinner's and the test thread's, read
-  once at the end. The test thread isn't pinned, and a background thread
-  may run in the 20 ms window, so a loaded host can fail it. It did
-  once, on rv64 `boot-aia` in `vx ci` at load 5 (2026-10-15, D26's
-  run), and passed three reruns; again in D33's run (rv64 `boot-aia`,
-  load ~1.3), passing the rerun. The PMU check's fix applies here:
-  ask each CPU, while sampling is on, whether it idled with its sampler
-  armed (user.md, sampling).
 - Tests: the interrupts suite's handoff check "woken again within the
   period" failed once on amd64 `boot-smoke-apic-oneshot` (2026-10-15,
   D30's run) and passed four reruns. It was one check of three
