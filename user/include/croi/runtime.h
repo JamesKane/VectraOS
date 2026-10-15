@@ -3,7 +3,7 @@
 // tier 0 services. `_start` reads the bootstrap message (processargs.h),
 // keeps its handles, and calls `main(argc, argv)`; returning from main
 // exits the process. stdout (putchar, croi_write) goes to the debuglog
-// handed over as fd 1, else to debug_write.
+// handed over as fd 1, if there is one.
 
 #pragma once
 

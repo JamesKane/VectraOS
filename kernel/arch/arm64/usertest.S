@@ -18,24 +18,12 @@ croi_user_test_start:
     mov     x21, #0x333
     mov     x22, #0x444
     mov     x23, #0x555
-    mov     x16, #3                 // clock
-    svc     #0
-    mov     x24, x0
     mov     x25, #1000
 .Lloop:
     mov     x16, #0                 // null
     svc     #0
     subs    x25, x25, #1
     b.ne    .Lloop
-    mov     x16, #3
-    svc     #0
-    sub     x0, x0, x24
-    mov     x16, #5                 // report
-    svc     #0
-    adr     x0, .Lmessage
-    mov     x1, #(.Lmessage_end - .Lmessage)
-    mov     x16, #1                 // debug_write
-    svc     #0
     cmp     x19, #0x111
     b.ne    .Lclobbered
     cmp     x20, #0x222
@@ -72,9 +60,6 @@ croi_user_test_start:
     mrs     x0, ttbr0_el1           // undefined at EL0
     udf     #0
 
-.Lmessage:
-    .ascii  "hello from user mode"
-.Lmessage_end:
 .balign 4
 .globl croi_user_test_end
 croi_user_test_end:

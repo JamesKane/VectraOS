@@ -1,6 +1,7 @@
-// stdout for croi user programs (K8a): line-buffered into debuglog records,
-// or debug_write when no debuglog was handed over. C because putchar is
-// the C symbol the Embedded Swift runtime prints through.
+// stdout for croi user programs (K8a): line-buffered into debuglog records
+// (dropped when no debuglog was handed over: V1 cut debug_write, D28). C
+// because putchar is the C symbol the Embedded Swift runtime prints
+// through.
 
 #include <croi/runtime.h>
 
@@ -19,11 +20,7 @@ static void unlock(void) { __atomic_store_n(&busy, 0, __ATOMIC_RELEASE); }
 
 static void flush_locked(void) {
   if (used == 0) return;
-  if (log_handle != 0) {
-    croi_syscall(CROI_SYS_DEBUGLOG_WRITE, log_handle, 0, (uint64_t)line, used, 0);
-  } else {
-    croi_syscall(CROI_SYS_DEBUG_WRITE, (uint64_t)line, used, 0, 0, 0);
-  }
+  if (log_handle != 0) croi_syscall(CROI_SYS_DEBUGLOG_WRITE, log_handle, 0, (uint64_t)line, used, 0);
   used = 0;
 }
 

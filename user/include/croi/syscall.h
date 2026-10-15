@@ -10,7 +10,6 @@
 
 enum : uint64_t {
   CROI_SYS_NULL = 0,
-  CROI_SYS_DEBUG_WRITE = 1,        // (const char *text, size_t length)
   CROI_SYS_THREAD_EXIT = 2,        // (int64_t code): the calling thread
   CROI_SYS_TEST_REPORT = 5,        // (value) for the boot self-test
   CROI_SYS_HANDLE_CLOSE = 10,      // (handle)
@@ -24,7 +23,6 @@ enum : uint64_t {
   CROI_SYS_VMO_CREATE = 40,        // (size, options, uint32_t *out)
   CROI_SYS_VMO_READ = 41,          // (vmo, void *buffer, offset, length)
   CROI_SYS_VMO_WRITE = 42,         // (vmo, const void *buffer, offset, length)
-  CROI_SYS_VMO_MAP = 43,           // (vmo, offset, length, rights bits, uint64_t *address); until VMARs (K7)
   CROI_SYS_VMO_GET_SIZE = 44,      // (vmo, uint64_t *size)
   // VMOs for drivers (K9a): Zircon's calls, values in vmo.h.
   CROI_SYS_VMO_OP_RANGE = 45,      // (vmo, op, offset, size, buffer, buffer_size)
@@ -178,12 +176,6 @@ enum : uint64_t {  // CROI_SYS_PMU_CONFIGURE ops (events: pmu.h)
                                  // the calling thread, from zero
   CROI_PMU_OP_THREAD_READ = 4,   // a: uint64_t[4] out
   CROI_PMU_OP_THREAD_STOP = 5,
-};
-
-enum : uint64_t {  // CROI_SYS_VMO_MAP rights
-  CROI_VM_READ = 1,
-  CROI_VM_WRITE = 2,
-  CROI_VM_EXECUTE = 4,
 };
 
 typedef struct {

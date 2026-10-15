@@ -317,6 +317,23 @@ and the option:
   it. The counters suite's refusal of options on a counter's profile
   uses HANDOFF.
 
+## Bring-up calls: cut in V1 (D28)
+
+croi had two calls from before the mechanisms that replaced them:
+debug_write (1, K6), a user string on the kernel console, and vmo_map
+(43), a VMO mapped into the calling thread's address space "until VMARs
+(K7)". V1 cut both:
+- Logging is `debuglog_write`. The kernel and userboot hand every
+  program a debuglog as fd 1; the runtime's stdout drops output without
+  one.
+- Mapping is `vmar_map`. usertest.c's process modes map thread stacks
+  in their root VMAR (`map_stack`); its children, which have no VMAR
+  handle, get five stacks from `make_child` and take one by index.
+- The boot's assembly user test checks only that registers survive
+  null syscalls (it had also printed with debug_write and timed itself
+  with the clock syscall D26 cut). m2's `syscall.null` times them.
+- Tests: mode 0's size and mapping checks moved to the vmo suite.
+
 ## The small calls (K13e part 1)
 
 The small calls, K13e part 1 (syscalls 210-215 in User/IpcSyscalls.swift,

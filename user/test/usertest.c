@@ -59,43 +59,26 @@ static int64_t bind1(uint32_t port, uint32_t handle, uint32_t options, uint64_t 
     if (!(condition)) exit_with(n); \
   } while (0)
 
-// Mode 0: VMOs and bad pointers. Events, signals, handles and ports moved
-// to the objects suite (user/test/swift/ObjectSuite.swift) when V1 cut
-// events, object_signal and object_wait_one (D23).
+// Mode 0: vmo_read and vmo_write, with bad pointers. Events, signals,
+// handles and ports moved to the objects suite (user/test/swift/ObjectSuite.swift)
+// when V1 cut events, object_signal and object_wait_one (D23); VMO sizes
+// and mappings to the vmo suite when it cut vmo_map and debug_write (D28).
 static int64_t objects(void) {
   uint32_t vmo = 0;
-
-  // VMOs: write, read back, map and use directly.
   CHECK(16, sys(CROI_SYS_VMO_CREATE, 8192, 0, (uint64_t)&vmo, 0, 0) == 0);
-  // Sizes round up to a page, as Zircon's do.
-  uint32_t odd = 0;
-  uint64_t odd_size = 0;
-  CHECK(169, sys(CROI_SYS_VMO_CREATE, 3584, 0, (uint64_t)&odd, 0, 0) == 0 &&
-                 sys(CROI_SYS_VMO_GET_SIZE, odd, (uint64_t)&odd_size, 0, 0, 0) == 0 && odd_size == 4096 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, odd, 0, 0, 0, 0) == 0);
-  CHECK(181, sys(CROI_SYS_VMO_CREATE, ~0ull, 0, (uint64_t)&odd, 0, 0) == ERR_OUT_OF_RANGE);
   static const char text[] = "written through vmo_write";
   CHECK(17, sys(CROI_SYS_VMO_WRITE, vmo, (uint64_t)text, 4090, sizeof text, 0) == 0);  // spans two pages
   char back[sizeof text];
   CHECK(18, sys(CROI_SYS_VMO_READ, vmo, (uint64_t)back, 4090, sizeof back, 0) == 0);
   for (unsigned i = 0; i < sizeof text; i++) CHECK(19, back[i] == text[i]);
-  uint64_t address = 0;
-  CHECK(20, sys(CROI_SYS_VMO_MAP, vmo, 0, 8192, CROI_VM_READ | CROI_VM_WRITE, (uint64_t)&address) == 0);
-  volatile char *mapped = (volatile char *)address;
-  CHECK(21, mapped[4090] == 'w');
-  mapped[0] = 'Z';
-  CHECK(22, sys(CROI_SYS_VMO_READ, vmo, (uint64_t)back, 0, 1, 0) == 0 && back[0] == 'Z');
 
   // Bad pointers are errors, not crashes.
   CHECK(24, sys(CROI_SYS_VMO_READ, vmo, 0xFFFF800000000000ull, 0, 16, 0) == ERR_INVALID_ARGS);
-  CHECK(25, sys(CROI_SYS_DEBUG_WRITE, 0x10, 4, 0, 0, 0) == ERR_INVALID_ARGS);
   // A kernel address valid on every arch (the kernel image): never copied.
   CHECK(29, sys(CROI_SYS_VMO_WRITE, vmo, 0xFFFFFFFF80000000ull, 0, 16, 0) == ERR_INVALID_ARGS);
   CHECK(30, sys(CROI_SYS_VMO_READ, vmo, 0xFFFFFFFF80000000ull, 0, 16, 0) == ERR_INVALID_ARGS);
 
   CHECK(28, sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0) == 0);
-  static const char done[] = "object syscalls from user mode ok";
-  sys(CROI_SYS_DEBUG_WRITE, (uint64_t)done, sizeof done - 1, 0, 0, 0);
   return 0x600D;
 }
 
@@ -311,6 +294,9 @@ typedef struct {
 #define CHILD_CODE 0x1000000ull
 #define CHILD_STACK 0x2000000ull
 #define STACK_SIZE 16384ull
+// A child's stacks: its main thread's, then its other threads' (children
+// have no VMAR handle: V1 cut vmo_map, D28).
+#define CHILD_STACKS 5
 #define ROOT_VMAR_BASE 0x200000ull
 // A thread entered at a C function: on amd64 it expects to have been called.
 #if defined(__x86_64__)
@@ -393,9 +379,10 @@ static uint32_t make_child(const startup_t *s, uint32_t job, uint32_t *thread_ou
   uint64_t code = vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_EXECUTE | CROI_VM_SPECIFIC) << 32;
   CHECK(81, sys6(CROI_SYS_VMAR_MAP, code, CHILD_CODE - ROOT_VMAR_BASE, s->code_vmo, 0, s->code_size, (uint64_t)&at)
                     == 0 && at == CHILD_CODE);
-  CHECK(82, sys(CROI_SYS_VMO_CREATE, STACK_SIZE, 0, (uint64_t)&stack, 0, 0) == 0);
+  CHECK(82, sys(CROI_SYS_VMO_CREATE, CHILD_STACKS * STACK_SIZE, 0, (uint64_t)&stack, 0, 0) == 0);
   uint64_t data = vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE | CROI_VM_SPECIFIC) << 32;
-  CHECK(83, sys6(CROI_SYS_VMAR_MAP, data, CHILD_STACK - ROOT_VMAR_BASE, stack, 0, STACK_SIZE, (uint64_t)&at) == 0);
+  CHECK(83, sys6(CROI_SYS_VMAR_MAP, data, CHILD_STACK - ROOT_VMAR_BASE, stack, 0, CHILD_STACKS * STACK_SIZE,
+                 (uint64_t)&at) == 0);
   sys(CROI_SYS_HANDLE_CLOSE, stack, 0, 0, 0, 0);
   sys(CROI_SYS_HANDLE_CLOSE, vmar, 0, 0, 0, 0);
   CHECK(84, sys6(CROI_SYS_THREAD_CREATE, process, (uint64_t)"main", 4, 0, (uint64_t)&thread, 0) == 0);
@@ -441,13 +428,12 @@ static void syscall_spinner(uint64_t arg) {
   for (;;) sys(CROI_SYS_HANDLE_CLOSE, 0x12340003, 0, 0, 0, 0);
 }
 
-static int64_t child_thread(uint32_t self, void (*entry)(uint64_t), uint64_t arg) {
-  uint32_t thread = 0, stack = 0;
-  uint64_t at = 0;
-  if (sys(CROI_SYS_VMO_CREATE, STACK_SIZE, 0, (uint64_t)&stack, 0, 0) != 0) return 91;
-  if (sys(CROI_SYS_VMO_MAP, stack, 0, STACK_SIZE, 3, (uint64_t)&at) != 0) return 92;
+// A thread of a child, on stack `n` (1 to CHILD_STACKS - 1; 0 is main's).
+static int64_t child_thread(uint32_t self, int n, void (*entry)(uint64_t), uint64_t arg) {
+  uint32_t thread = 0;
+  uint64_t top = CHILD_STACK + (uint64_t)(n + 1) * STACK_SIZE;
   if (sys6(CROI_SYS_THREAD_CREATE, self, (uint64_t)"w", 1, 0, (uint64_t)&thread, 0) != 0) return 93;
-  if (sys(CROI_SYS_THREAD_START, thread, (uint64_t)entry, ENTRY_SP(at + STACK_SIZE), arg, 0) != 0) return 94;
+  if (sys(CROI_SYS_THREAD_START, thread, (uint64_t)entry, ENTRY_SP(top), arg, 0) != 0) return 94;
   return 0;
 }
 
@@ -464,13 +450,10 @@ static int64_t child(uint32_t self, uint64_t submode, uint64_t vdso) {
     *(volatile uint64_t *)0x10 = 1;
     return 98;
   case 4: {  // a second thread blocked in a wait; process_exit ends it too
-    uint32_t port = 0, thread = 0, stack = 0;
-    uint64_t at = 0;
+    uint32_t port = 0;
     if (sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) != 0) return 90;
-    if (sys(CROI_SYS_VMO_CREATE, STACK_SIZE, 0, (uint64_t)&stack, 0, 0) != 0) return 91;
-    if (sys(CROI_SYS_VMO_MAP, stack, 0, STACK_SIZE, 3, (uint64_t)&at) != 0) return 92;
-    if (sys6(CROI_SYS_THREAD_CREATE, self, (uint64_t)"blocker", 7, 0, (uint64_t)&thread, 0) != 0) return 93;
-    if (sys(CROI_SYS_THREAD_START, thread, (uint64_t)port_blocker, ENTRY_SP(at + STACK_SIZE), port, 0) != 0) return 94;
+    int64_t failed = child_thread(self, 1, port_blocker, port);
+    if (failed) return failed;
     sleep_until(vdso_now(vdso) + 3000000);
     return sys(CROI_SYS_PROCESS_EXIT, 7, 0, 0, 0, 0);
   }
@@ -507,8 +490,8 @@ static int64_t child(uint32_t self, uint64_t submode, uint64_t vdso) {
         sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&channel_port, 0, 0, 0) != 0 ||
         bind1(channel_port, a, CROI_BIND_SIGNALS, 0, CROI_SIGNAL_READABLE) != 0)
       return 90;
-    int64_t failed = child_thread(self, port_blocker, port) | child_thread(self, counter_blocker, counter) |
-                     child_thread(self, user_spinner, 0) | child_thread(self, syscall_spinner, 0);
+    int64_t failed = child_thread(self, 1, port_blocker, port) | child_thread(self, 2, counter_blocker, counter) |
+                     child_thread(self, 3, user_spinner, 0) | child_thread(self, 4, syscall_spinner, 0);
     if (failed) return failed;
     croi_port_packet_t packet;
     sys(CROI_SYS_PORT_WAIT, channel_port, ~0ull, (uint64_t)&packet, 0, 0);  // until killed
@@ -664,12 +647,22 @@ static void lonely_caller(uint64_t slot) {
   sys(CROI_SYS_THREAD_EXIT, 0, 0, 0, 0, 0);
 }
 
-static uint32_t start_thread(const startup_t *s, void (*entry)(uint64_t), uint64_t arg) {
-  uint32_t thread = 0, stack = 0;
-  uint64_t at = 0;
-  CHECK(140, sys(CROI_SYS_VMO_CREATE, STACK_SIZE, 0, (uint64_t)&stack, 0, 0) == 0);
-  CHECK(141, sys(CROI_SYS_VMO_MAP, stack, 0, STACK_SIZE, 3, (uint64_t)&at) == 0);
+// A thread stack in a process mode, mapped in its root VMAR: 0 or a
+// status (from the VMO's creation, or the mapping's).
+static int64_t map_stack(const startup_t *s, uint64_t *at) {
+  uint32_t stack = 0;
+  int64_t status = sys(CROI_SYS_VMO_CREATE, STACK_SIZE, 0, (uint64_t)&stack, 0, 0);
+  if (status != 0) return status;
+  status = sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, stack, 0,
+                STACK_SIZE, (uint64_t)at);
   sys(CROI_SYS_HANDLE_CLOSE, stack, 0, 0, 0, 0);
+  return status;
+}
+
+static uint32_t start_thread(const startup_t *s, void (*entry)(uint64_t), uint64_t arg) {
+  uint32_t thread = 0;
+  uint64_t at = 0;
+  CHECK(141, map_stack(s, &at) == 0);
   CHECK(142, sys6(CROI_SYS_THREAD_CREATE, s->process, (uint64_t)"t", 1, 0, (uint64_t)&thread, 0) == 0);
   CHECK(143, sys(CROI_SYS_THREAD_START, thread, (uint64_t)entry, ENTRY_SP(at + STACK_SIZE), arg, 0) == 0);
   return thread;
@@ -850,11 +843,8 @@ static void tls_worker(uint64_t arg) {
 static void tls(const startup_t *s) {
   tls_worker_t workers[2] = {{0, 0, 0x1111222233334444ull}, {0, 0, 0x5555666677778888ull}};
   for (int i = 0; i < 2; i++) {
-    uint32_t stack = 0;
     uint64_t at = 0;
-    CHECK(31, sys(CROI_SYS_VMO_CREATE, STACK_SIZE, 0, (uint64_t)&stack, 0, 0) == 0 &&
-                  sys(CROI_SYS_VMO_MAP, stack, 0, STACK_SIZE, 3, (uint64_t)&at) == 0);
-    sys(CROI_SYS_HANDLE_CLOSE, stack, 0, 0, 0, 0);
+    CHECK(31, map_stack(s, &at) == 0);
     CHECK(32, sys6(CROI_SYS_THREAD_CREATE, s->process, (uint64_t)"tls", 3, 0, (uint64_t)&workers[i].self, 0) == 0 &&
                   sys(CROI_SYS_THREAD_START, workers[i].self, (uint64_t)tls_worker, ENTRY_SP(at + STACK_SIZE),
                       (uint64_t)&workers[i], 0) == 0);
@@ -892,10 +882,8 @@ static void unmap_exit(const startup_t *s) {
   // Errors are vmar_unmap's, and the caller carries on.
   CHECK(36, sys(CROI_SYS_VMAR_UNMAP_HANDLE_CLOSE_THREAD_EXIT, 0x7FFFFFF0u, 0, 0, 0, 0) == ERR_BAD_HANDLE);
   unmap_exit_t u = {s->vmar, 0, 0};
-  uint32_t stack = 0, watch = 0;
-  CHECK(37, sys(CROI_SYS_VMO_CREATE, STACK_SIZE, 0, (uint64_t)&stack, 0, 0) == 0 &&
-                sys(CROI_SYS_VMO_MAP, stack, 0, STACK_SIZE, 3, (uint64_t)&u.stack) == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, stack, 0, 0, 0, 0);
+  uint32_t watch = 0;
+  CHECK(37, map_stack(s, &u.stack) == 0);
   CHECK(38, sys6(CROI_SYS_THREAD_CREATE, s->process, (uint64_t)"ux", 2, 0, (uint64_t)&u.self, 0) == 0 &&
                 sys(CROI_SYS_HANDLE_DUPLICATE, u.self, RIGHT_SAME, (uint64_t)&watch, 0, 0) == 0 &&
                 sys(CROI_SYS_THREAD_START, u.self, (uint64_t)unmap_exit_worker, ENTRY_SP(u.stack + STACK_SIZE),
@@ -3632,7 +3620,7 @@ static int64_t vmo_slices(const startup_t *s) {
 }
 
 // K11a: copy-on-first-touch VMO children. Returns 0 or the failed check.
-static int64_t vmo_children(void) {
+static int64_t vmo_children(const startup_t *s) {
   enum { P = 4096 };
   uint32_t parent = 0, child = 0, grand = 0, ro = 0, other = 0;
   uint8_t byte = 0, page[64];
@@ -3690,8 +3678,12 @@ static int64_t vmo_children(void) {
     return 421;
   // Mapped, a child faults its pages in from the parent.
   uint64_t at = 0;
-  if (sys(CROI_SYS_VMO_MAP, child, 2 * P, P, 3, (uint64_t)&at) != 0 || *(volatile uint8_t *)at != 'C') return 422;
+  if (sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, child, 2 * P, P,
+           (uint64_t)&at) != 0 ||
+      *(volatile uint8_t *)at != 'C')
+    return 422;
   *(volatile uint8_t *)at = 'Z';
+  sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, P, 0, 0);
   sys(CROI_SYS_VMO_READ, parent, (uint64_t)&byte, 2 * P, 1, 0);
   if (byte != 'C') return 422;
   uint32_t handles[] = {parent, child, grand, ro};
@@ -4091,11 +4083,9 @@ static int64_t mapping_ceilings(const startup_t *s, uint64_t vdso_base) {
 // Review round 1, part 2: what used to panic the kernel or reach freed or
 // live kernel memory now fails cleanly.
 static uint32_t unstarted_thread(const startup_t *s, uint64_t *sp) {
-  uint32_t thread = 0, stack = 0;
+  uint32_t thread = 0;
   uint64_t at = 0;
-  CHECK(140, sys(CROI_SYS_VMO_CREATE, STACK_SIZE, 0, (uint64_t)&stack, 0, 0) == 0);
-  CHECK(141, sys(CROI_SYS_VMO_MAP, stack, 0, STACK_SIZE, 3, (uint64_t)&at) == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, stack, 0, 0, 0, 0);
+  CHECK(141, map_stack(s, &at) == 0);
   CHECK(142, sys6(CROI_SYS_THREAD_CREATE, s->process, (uint64_t)"t", 1, 0, (uint64_t)&thread, 0) == 0);
   *sp = ENTRY_SP(at + STACK_SIZE);
   return thread;
@@ -5090,7 +5080,7 @@ static int64_t extensions(const startup_t *s, uint64_t vdso_base) {
     sys(CROI_SYS_HANDLE_CLOSE, victim, 0, 0, 0, 0);
   }
 
-  int64_t children = vmo_children();
+  int64_t children = vmo_children(s);
   if (children != 0) return children;
   int64_t slices = vmo_slices(s);
   if (slices != 0) return slices;

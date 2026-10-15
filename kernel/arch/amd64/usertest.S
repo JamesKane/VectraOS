@@ -1,14 +1,13 @@
 // The boot self-test's user program (user.h), amd64. Assembly: it runs in
 // user mode before there is a user-space toolchain or loader (K8). Copied
 // into a VMO, so it must be position independent. rdi selects what it does:
-//   0: checks registers survive syscalls, times 1000 null syscalls
-//      (reported), writes a message, exits 0x600D;
+//   0: checks registers survive 1000 null syscalls, exits 0x600D (m2's
+//      syscall.null times them: V1 cut the clock syscall, D26);
 //   1: loads from an unmapped address (the kernel kills it);
 //   2: spins without syscalls for a while, then exits 0x5917 (preemption
 //      from user mode);
 //   3: executes a privileged instruction (killed).
-// Syscalls: 0 null, 1 debug_write(ptr, len), 2 exit(code), 3 clock,
-// 5 test_report(value).
+// Syscalls: 0 null, 2 exit(code).
 
 .section .rodata.user_test, "a", @progbits
 .balign 16
@@ -26,9 +25,6 @@ croi_user_test_start:
     mov     $0x3333, %r12
     mov     $0x4444, %r13
     mov     $0x5555, %r14
-    mov     $3, %eax                // clock
-    syscall
-    mov     %rax, %r15
     mov     $1000, %ecx
 .Lloop:
     push    %rcx
@@ -37,16 +33,6 @@ croi_user_test_start:
     pop     %rcx
     dec     %ecx
     jnz     .Lloop
-    mov     $3, %eax
-    syscall
-    sub     %r15, %rax
-    mov     %rax, %rdi
-    mov     $5, %eax                // report the elapsed ns
-    syscall
-    lea     .Lmessage(%rip), %rdi
-    mov     $(.Lmessage_end - .Lmessage), %esi
-    mov     $1, %eax                // debug_write
-    syscall
     cmp     $0x1111, %rbx
     jne     .Lclobbered
     cmp     $0x2222, %rbp
@@ -81,8 +67,5 @@ croi_user_test_start:
     hlt
     ud2
 
-.Lmessage:
-    .ascii  "hello from user mode"
-.Lmessage_end:
 .globl croi_user_test_end
 croi_user_test_end:

@@ -3,9 +3,11 @@ import CroiRuntime
 /// VMOs: executable replacement and the content size (ContentSize.swift),
 /// moved here from usertest.c when V1 cut FIFOs, sockets and streams
 /// (D21). Streams were the content size's main user; it stays as a VMO
-/// property, the length Taisce's mapped files keep.
+/// property, the length Taisce's mapped files keep. Sizes and mappings
+/// came from usertest.c's mode 0 when V1 cut vmo_map (D28).
 enum VmoSuite {
     static func run() {
+        sizesAndMappings()
         executable()
         contentSize()
         referencesAndSlices()
@@ -17,6 +19,28 @@ enum VmoSuite {
     static var read: UInt32 { 1 << 2 }
     static var getProperty: UInt32 { 1 << 6 }
     static var setProperty: UInt32 { 1 << 7 }
+
+    /// Sizes round up to a page, as Zircon's do, and no further than the
+    /// address space allows. Two mappings of one VMO share its pages,
+    /// across a page boundary too.
+    static func sizesAndMappings() {
+        let odd = Handle(vmo: 3584)
+        var size: UInt64 = 0
+        check(Sys.call(CROI_SYS_VMO_GET_SIZE, odd.arg, Sys.address(&size)) == 0 && size == pageSize,
+              "a VMO's size rounds up to a page")
+        var out: UInt32 = 0
+        check(Sys.call(CROI_SYS_VMO_CREATE, ~0, 0, Sys.address(&out)) == Status.outOfRange,
+              "a size that can't round up is out of range")
+        let vmo = Handle(vmo: 2 * pageSize)
+        let writer = Mapping(vmo, length: 2 * pageSize)
+        let reader = Mapping(vmo, length: 2 * pageSize, permissions: UInt32(CROI_VM_PERM_READ))
+        check(writer.address != reader.address, "two mappings")
+        let start = pageSize - 32
+        for i in UInt64(0)..<64 { writer[start + i] = UInt8(truncatingIfNeeded: i) &+ 0x41 }
+        var same = true
+        for i in UInt64(0)..<64 where reader[start + i] != UInt8(truncatingIfNeeded: i) &+ 0x41 { same = false }
+        check(same, "one mapping reads what another wrote, across a page boundary")
+    }
 
     /// An anonymous VMO isn't executable until replaced with a VMEX
     /// resource (the root resource here); the call consumes the handle,

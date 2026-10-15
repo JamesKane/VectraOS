@@ -200,7 +200,7 @@ struct UserAspace: ~Copyable {
     }
 
     /// A non-owning view of a running thread's address space (the owner
-    /// keeps it alive); `mapKeeping` is all it is for.
+    /// keeps it alive), for a syscall's coverage checks.
     static func borrowing(_ record: UserAspacePointer) -> BorrowedAspace {
         BorrowedAspace(record: record)
     }
@@ -962,20 +962,6 @@ struct BorrowedAspace {
         let result = view.covers(base, size: size, rights: rights)
         view.forget()
         return result
-    }
-
-    /// `UserAspace.map` in the root region (vmo_map, until VMARs).
-    func mapKeeping(_ vmo: borrowing Vmo, offset: UInt64, size: UInt64, rights: VmRights) throws(VmError) -> UInt64 {
-        let view = UserAspace.view(record)
-        let base: UInt64
-        do throws(VmError) {
-            base = try view.map(vmo, offset: offset, size: size, rights: rights)
-        } catch {
-            view.forget()
-            throw error
-        }
-        view.forget()
-        return base
     }
 }
 

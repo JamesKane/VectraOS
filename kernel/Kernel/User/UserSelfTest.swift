@@ -4,9 +4,9 @@ import Synchronization
 
 /// Boot self-test for K6a: user mode. A small built-in program (user.h)
 /// runs in a user address space: syscalls with registers preserved, a
-/// message written from user mode, null-syscall timing, a fault and a
-/// privileged instruction that kill it, and preemption of user code that
-/// never enters the kernel. Panics on failure.
+/// fault and a privileged instruction that kill it, and preemption of user
+/// code that never enters the kernel. Panics on failure. m2 times null
+/// syscalls (syscall.null).
 enum UserSelfTest {
     static var codeAt: UInt64 { 0x100_0000 }
     static var stackAt: UInt64 { 0x200_0000 }
@@ -17,7 +17,6 @@ enum UserSelfTest {
 
     static func run(_ console: Uart) {
         let liveBefore = UserAspaces.live.load(ordering: .relaxed)
-        var nullNs: UInt64 = 0
         var progress = 0
         do throws(VmError) {
             let space = try UserAspace()
@@ -29,9 +28,8 @@ enum UserSelfTest {
             let stack = try Vmo(anonymous: stackSize)
             _ = try space.map(stack, size: stackSize, at: stackAt, rights: .read | .write)
 
-            // Mode 0: syscalls, registers, a message, timing.
+            // Mode 0: syscalls, registers.
             guard run(mode: 0) == 0x600D else { panic("user self-test: syscalls or registers") }
-            nullNs = Syscalls.reported.load(ordering: .relaxed) / 1000
             // Modes 1 and 3: killed.
             guard run(mode: 1) == UserTraps.killedByFault else { panic("user self-test: user fault not fatal") }
             guard run(mode: 3) == UserTraps.killedByException else { panic("user self-test: privileged instruction") }
@@ -58,9 +56,7 @@ enum UserSelfTest {
         }
         guard UserAspaces.live.load(ordering: .relaxed) == liveBefore else { panic("user self-test: address space leaked") }
         console.write("  user:   syscalls (registers kept), a fault and a privileged instruction killed, ")
-        console.write("user code preempted; null syscall ")
-        console.write(decimal: nullNs)
-        console.write(" ns\n")
+        console.write("user code preempted\n")
     }
 
     private static let user: Thread.Entry = { mode in

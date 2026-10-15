@@ -44,6 +44,11 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   stats tools.
 - **Test-only syscall 6** (`TestHooks`) — croi's self-test hook. Kind:
   deliberate. Impact: none outside tests.
+- **No debug_write** (V1, D28) — Zircon's zx_debug_write prints to the
+  kernel console; croi logs only through a debuglog
+  (`debuglog_write`), which every program gets as fd 1. Kind:
+  deliberate (one way to log). Impact: a program without a debuglog
+  can't print.
 
 ## Handles, objects and IPC
 

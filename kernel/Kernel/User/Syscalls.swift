@@ -203,7 +203,6 @@ enum Syscalls {
     private static func run(_ number: UInt64, _ a: InlineArray<6, UInt64>) -> Int64 {
         switch number {
         case 0: return 0  // null
-        case 1: return write(a[0], a[1])
         case 2: Processes.exitThread(Int(Int64(bitPattern: a[0])))
         case 63: Processes.exitProcess(Int64(bitPattern: a[0]))  // process_exit: no handles needed
         case 90 where a[2] == 0, 91:  // futexes are keyed by address space: only an owner needs a handle
@@ -337,25 +336,6 @@ enum Syscalls {
             try check(a[1], MemoryLayout<UInt64>.size)
             let ref = try table.get(handle, type: .vmo)
             try put(VmoPointer(address: UnsafeVmoObject(ref.object).vmo).sizeOwner.pointee.size, a[1])  // K14g: a reference's is its root's
-        case 43:  // vmo_map (into the thread's address space, until VMARs)
-            var rights = VmRights()
-            if a[3] & 1 != 0 { rights.insert(.read) }
-            if a[3] & 2 != 0 { rights.insert(.write) }
-            if a[3] & 4 != 0 { rights.insert(.execute) }
-            try check(a[4], MemoryLayout<UInt64>.size)
-            let vmo = try VmoObject.forMapping(table, handle, rights)
-            defer { vmo.release() }
-            guard let aspace = Scheduler.current.pointee.aspace else { throw .badState }
-            let borrowed = Vmo.borrowing(vmo)
-            let mapped: UInt64
-            do throws(VmError) {
-                mapped = try UserAspace.borrowing(aspace).mapKeeping(borrowed, offset: a[1], size: a[2], rights: rights)
-            } catch {
-                _ = borrowed.keep()
-                throw error == .noSpace || error == .outOfMemory ? .noMemory : .invalidArgs
-            }
-            _ = borrowed.keep()
-            try put(mapped, a[4])
         case 50:  // trace_configure
             switch a[1] {
             case 0: try TraceControl.start(table, handle, categories: UInt32(truncatingIfNeeded: a[2]),
@@ -576,19 +556,6 @@ enum Syscalls {
                 }
             }
         }
-    }
-
-    private static func write(_ address: UInt64, _ requested: UInt64) -> Int64 {
-        let length = min(requested, 256)
-        var buffer = InlineArray<256, UInt8>(repeating: 0)
-        var span = buffer.mutableSpan
-        let copied = span.withUnsafeMutableBufferPointer { unsafe UserCopy.from($0.baseAddress!, address, length) }
-        guard copied == 0 else { return Int64(Status.invalidArgs.rawValue) }
-        guard let console = panicConsole else { return 0 }
-        console.write("  user:   ")
-        console.write(utf8: buffer.span.extracting(0..<Int(length)))
-        console.write("\n")
-        return 0
     }
 }
 

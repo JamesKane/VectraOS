@@ -42,7 +42,7 @@ thread's stack top.
   user range first: the arch copies don't, and on amd64/rv64 would write
   kernel pages through a pointer user space chose (a test caught it).
   The object syscalls (user/include/croi/syscall.h: handles, signals,
-  waits, events, ports, VMOs, vmo_map until VMARs, trace_configure) use
+  waits, events, ports, VMOs, trace_configure) use
   the thread's `handleTable` (K7: the process's). `syscall` trace
   category (enter/exit). User programs: `user/` is built with user flags
   (CMake custom command, static at the address the kernel maps it) and
@@ -124,8 +124,10 @@ thread's stack top.
 - User threads killed by a fault or exception are logged (cause and PC)
   until K7's exception channels report them.
 - The boot test runs `usertest.S` (per arch) from a VMO: registers kept
-  across syscalls, a message, a fault and a privileged instruction killed,
-  preemption of user code; it reports the null syscall time (KVM: ~40 ns).
+  across 1000 null syscalls, a fault and a privileged instruction killed,
+  preemption of user code. It timed the null syscalls and wrote a message
+  with debug_write until V1 cut that and the clock syscall (D26, D28):
+  m2's `syscall.null` times them (KVM: ~40 ns).
 
 ## Debuglog and user programs (K8a)
 
