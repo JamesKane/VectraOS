@@ -21,7 +21,27 @@ enum : uint32_t {
   // handle_duplicate's options (D34): CONSUME closes the handle, even on
   // failure, and needs no DUPLICATE right (handle_replace until D34).
   CROI_HANDLE_DUPLICATE_CONSUME = 1u << 0,
+  // handle_duplicate takes up to this many items at once (D39).
+  CROI_HANDLE_DUPLICATE_MAX_ITEMS = 64,
 };
+
+// handle_duplicate(croi_handle_duplicate_item_t *items, count) (D39):
+// duplicates (or, with CONSUME, replaces) each item's handle with the
+// rights asked for, in order. It stops at the first item that fails and
+// returns how many succeeded; each item it processed has its status
+// written back. A bad pointer or count fails the whole call (a negative
+// status) before any item is done. croi_handle_duplicate in syscall.h is
+// the one-handle form.
+typedef struct {
+  uint32_t handle;    // the handle to duplicate
+  uint32_t rights;    // a subset of its rights, or 1u << 31: the same
+  uint32_t options;   // 0 or CROI_HANDLE_DUPLICATE_CONSUME
+  uint32_t out;       // out: the new handle
+  int32_t status;     // out: 0, or why this item failed
+  uint32_t reserved;  // 0
+} croi_handle_duplicate_item_t;
+
+static_assert(sizeof(croi_handle_duplicate_item_t) == 24);
 
 // zx_info_handle_count_t.
 typedef struct {

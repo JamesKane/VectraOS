@@ -329,6 +329,50 @@ extension Syscalls {
         if bad { throw .badHandle }
     }
 
+    /// handle_duplicate(items, count) (D39): duplicates, or with CONSUME
+    /// replaces (D34), each item's handle (croi_handle_duplicate_item_t,
+    /// ipc.h), in order, stopping at the first failure. Each processed
+    /// item's status is written back, and its new handle if it has one;
+    /// returns how many succeeded. A bad pointer or count fails the whole
+    /// call before any item is done, as object_bind's does.
+    static func duplicateHandles(_ table: borrowing HandleTable, items: UInt64, count: UInt64) throws(Status) -> Int64 {
+        let itemSize: UInt64 = 24
+        guard count > 0, count <= UInt64(CROI_HANDLE_DUPLICATE_MAX_ITEMS) else { throw .invalidArgs }
+        try Syscalls.check(items, Int(count * itemSize))
+        for i in 0..<count {
+            let address = items + i * itemSize
+            var raw = InlineArray<3, UInt64>(repeating: 0)  // handle | rights << 32, options | out << 32, status
+            var span = raw.mutableSpan
+            let copied = span.withUnsafeMutableBufferPointer { unsafe UserCopy.from($0.baseAddress!, address, itemSize) }
+            guard copied == 0 else { throw .invalidArgs }
+            let handle = UInt32(truncatingIfNeeded: raw[0])
+            let rights = Rights(rawValue: UInt32(truncatingIfNeeded: raw[0] >> 32))
+            let options = UInt32(truncatingIfNeeded: raw[1])
+            var status: Int32 = 0
+            var added: UInt32 = 0
+            do throws(Status) {
+                guard raw[2] >> 32 == 0 else { throw .invalidArgs }  // reserved
+                if options == UInt32(CROI_HANDLE_DUPLICATE_CONSUME) {
+                    added = try table.replace(handle, rights: rights)
+                } else {
+                    guard options == 0 else { throw .invalidArgs }
+                    added = try table.duplicate(handle, rights: rights)
+                }
+            } catch {
+                status = error.rawValue
+            }
+            do throws(Status) {
+                if added != 0 { try Syscalls.put(added, address + 12) }
+                try Syscalls.put(status, address + 16)
+            } catch {
+                if added != 0 { try? table.close(added) }  // nobody could learn its value
+                throw error
+            }
+            if status != 0 { return Int64(i) }
+        }
+        return Int64(count)
+    }
+
     /// Copies a message out: bytes to `bytes`, its objects into `table`
     /// with their values at `handles`. Frees it.
     private static func deliver(_ message: MessagePointer, to table: borrowing HandleTable, bytes: UInt64,

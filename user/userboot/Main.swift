@@ -45,10 +45,9 @@ struct Userboot {
         let shutdown = option("userboot.shutdown=")
         var keptResource: UInt32 = 0
         var keptBootData: UInt32 = 0
-        let sameRights: UInt64 = 1 << 31
+        let sameRights: UInt32 = 1 << 31
         if shutdown != nil {
-            try call("keeping the root resource", sys(CROI_SYS_HANDLE_DUPLICATE, UInt64(resource), sameRights,
-                                                      address(&keptResource)))
+            try call("keeping the root resource", unsafe croi_handle_duplicate(resource, sameRights, &keptResource, 0))
         }
 
         var size: UInt64 = 0
@@ -127,11 +126,18 @@ struct Userboot {
 
         // Everything userboot was given goes on, plus the new process's own
         // handles and a debuglog for its stdout.
-        var processCopy: UInt32 = 0
-        var threadCopy: UInt32 = 0
         var log: UInt32 = 0
-        try call("duplicating handles", sys(CROI_SYS_HANDLE_DUPLICATE, UInt64(process), sameRights, address(&processCopy)))
-        try call("duplicating handles", sys(CROI_SYS_HANDLE_DUPLICATE, UInt64(thread), sameRights, address(&threadCopy)))
+        // Both copies in one call (D39).
+        let copy = { (handle: UInt32) in
+            croi_handle_duplicate_item_t(handle: handle, rights: sameRights, options: 0, out: 0, status: 0, reserved: 0)
+        }
+        var copies = [copy(process), copy(thread)]
+        let copied = copies.withUnsafeMutableBufferPointer { items in
+            unsafe sys(CROI_SYS_HANDLE_DUPLICATE, UInt64(UInt(bitPattern: items.baseAddress)), 2)
+        }
+        try call("duplicating handles", copied < 0 ? copied : copied < 2 ? Int64(copies[Int(copied)].status) : 0)
+        let processCopy = copies[0].out
+        let threadCopy = copies[1].out
         try call("creating its stdout", sys(CROI_SYS_DEBUGLOG_CREATE, 0, 0, address(&log)))
         var handles: [UInt32] = [processCopy, threadCopy, vmar, job, resource, bootfs, log]
         var infos: [UInt32] = [
@@ -148,8 +154,7 @@ struct Userboot {
             let ranged = croi_take_startup_handle(info)
             if ranged != 0 {
                 if type == CROI_PA_VMO_BOOTDATA, shutdown != nil {
-                    try call("keeping the boot data", sys(CROI_SYS_HANDLE_DUPLICATE, UInt64(ranged), sameRights,
-                                                          address(&keptBootData)))
+                    try call("keeping the boot data", unsafe croi_handle_duplicate(ranged, sameRights, &keptBootData, 0))
                 }
                 handles.append(ranged)
                 infos.append(info)

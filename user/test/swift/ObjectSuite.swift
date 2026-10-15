@@ -51,7 +51,7 @@ enum ObjectSuite {
     static func handles() {
         let counter = Handle(creating: CROI_SYS_COUNTER_CREATE)
         var narrowed: UInt32 = 0
-        check(Sys.call(CROI_SYS_HANDLE_DUPLICATE, counter.arg, UInt64(wait | transfer), Sys.address(&narrowed)) == 0,
+        check(Sys.duplicate(counter.arg, UInt64(wait | transfer), &narrowed) == 0,
               "a duplicate with WAIT and TRANSFER")
         check(Sys.call(CROI_SYS_COUNTER_ADD, UInt64(narrowed), 1) == Status.accessDenied, "can't add (no WRITE)")
         check(croi_handle_close(narrowed) == 0, "closed")
@@ -67,19 +67,61 @@ enum ObjectSuite {
         let consumeOption = UInt64(CROI_HANDLE_DUPLICATE_CONSUME)
         var undupable: UInt32 = 0
         let counter = Handle(creating: CROI_SYS_COUNTER_CREATE)
-        check(Sys.call(CROI_SYS_HANDLE_DUPLICATE, counter.arg, UInt64(wait | transfer), Sys.address(&undupable)) == 0,
+        check(Sys.duplicate(counter.arg, UInt64(wait | transfer), &undupable) == 0,
               "a handle without DUPLICATE")
         var replaced: UInt32 = 0
-        check(Sys.call(CROI_SYS_HANDLE_DUPLICATE, UInt64(undupable), UInt64(wait), Sys.address(&replaced), consumeOption)
+        check(Sys.duplicate(UInt64(undupable), UInt64(wait), &replaced, consumeOption)
                   == 0 && replaced != undupable, "replaced with fewer rights")
         check(croi_handle_close(undupable) == Status.badHandle, "the old handle is gone")
         var refused: UInt32 = 0
-        check(Sys.call(CROI_SYS_HANDLE_DUPLICATE, UInt64(replaced), UInt64(wait | transfer), Sys.address(&refused),
-                       consumeOption) == Status.invalidArgs && croi_handle_close(replaced) == Status.badHandle,
+        check(Sys.duplicate(UInt64(replaced), UInt64(wait | transfer), &refused,
+                            consumeOption) == Status.invalidArgs && croi_handle_close(replaced) == Status.badHandle,
               "more rights refused, and consumed all the same")
         var other: UInt32 = 0
-        check(Sys.call(CROI_SYS_HANDLE_DUPLICATE, counter.arg, UInt64(wait), Sys.address(&other), 2) == Status.invalidArgs,
+        check(Sys.duplicate(counter.arg, UInt64(wait), &other, 2) == Status.invalidArgs,
               "an unknown option")
+        duplicateMany()
+    }
+
+    /// handle_duplicate takes an array (D39), as object_bind does: in order,
+    /// stopping at the first failure, each processed item's status written
+    /// back, the count of successes returned; a bad count fails the call.
+    static func duplicateMany() {
+        let counter = Handle(creating: CROI_SYS_COUNTER_CREATE)
+        let item = { (handle: UInt32, rights: UInt32, options: UInt32) in
+            croi_handle_duplicate_item_t(handle: handle, rights: rights, options: options, out: 0, status: 7,
+                                         reserved: 0)
+        }
+        var items = [item(counter.raw, wait, 0), item(counter.raw, wait | transfer, 0),
+                     item(counter.raw, wait, 0), item(0x12340003, wait, 0), item(counter.raw, wait, 0)]
+        let done = items.withUnsafeMutableBufferPointer { buffer in
+            unsafe Sys.call(CROI_SYS_HANDLE_DUPLICATE, UInt64(UInt(bitPattern: buffer.baseAddress)), 5)
+        }
+        check(done == 3 && items[0].status == 0 && items[1].status == 0 && items[2].status == 0,
+              "three duplicated")
+        check(items[0].out != 0 && items[1].out != 0 && items[2].out != 0 && items[0].out != items[1].out,
+              "each with a new handle")
+        check(Int64(items[3].status) == Status.badHandle && items[3].out == 0, "the fourth refused, with its status")
+        check(items[4].status == 7, "the fifth not processed")
+        var info = croi_info_handle_basic_t()
+        check(Sys.call(CROI_SYS_OBJECT_GET_INFO, UInt64(items[1].out), UInt64(CROI_INFO_HANDLE_BASIC), Sys.address(&info),
+                       UInt64(MemoryLayout<croi_info_handle_basic_t>.size)) == 0 && info.rights == wait | transfer,
+              "each copy has the rights asked for")
+        var closing = [items[0].out, items[1].out, items[2].out]
+        let closed = closing.withUnsafeMutableBufferPointer { buffer in
+            unsafe Sys.call(CROI_SYS_HANDLE_CLOSE, UInt64(UInt(bitPattern: buffer.baseAddress)), 3)
+        }
+        check(closed == 0, "and each a handle of its own")
+        var reserved = [croi_handle_duplicate_item_t(handle: counter.raw, rights: wait, options: 0, out: 0, status: 0,
+                                                     reserved: 1)]
+        let refusedReserved = reserved.withUnsafeMutableBufferPointer { buffer in
+            unsafe Sys.call(CROI_SYS_HANDLE_DUPLICATE, UInt64(UInt(bitPattern: buffer.baseAddress)), 1)
+        }
+        check(refusedReserved == 0 && Int64(reserved[0].status) == Status.invalidArgs, "a reserved field set")
+        check(Sys.call(CROI_SYS_HANDLE_DUPLICATE, 0, 0) == Status.invalidArgs
+                  && Sys.call(CROI_SYS_HANDLE_DUPLICATE, UInt64(UInt(bitPattern: 0x1000)),
+                              UInt64(CROI_HANDLE_DUPLICATE_MAX_ITEMS) + 1) == Status.invalidArgs,
+              "no items, or too many")
     }
 
     /// port_queue's packets come back as queued.

@@ -104,6 +104,12 @@ enum Sys {
         unsafe withUnsafeMutablePointer(to: &value) { unsafe UInt64(UInt(bitPattern: $0)) }
     }
 
+    /// One handle_duplicate item (D39): 0, or the item's or call's status.
+    static func duplicate(_ handle: UInt64, _ rights: UInt64, _ out: inout UInt32, _ options: UInt64 = 0) -> Int64 {
+        unsafe croi_handle_duplicate(UInt32(truncatingIfNeeded: handle), UInt32(truncatingIfNeeded: rights), &out,
+                                     UInt32(truncatingIfNeeded: options))
+    }
+
     static func now() -> UInt64 { croi_clock_monotonic() }
 
     /// Sleeps `nanoseconds`: a port_wait on an empty port (principle 10).
@@ -136,7 +142,7 @@ struct Handle: ~Copyable {
 
     init(duplicating other: borrowing Handle, rights: UInt32 = 1 << 31) {
         var out: UInt32 = 0
-        check(Sys.call(CROI_SYS_HANDLE_DUPLICATE, UInt64(other.raw), UInt64(rights), Sys.address(&out)) == 0,
+        check(Sys.duplicate(UInt64(other.raw), UInt64(rights), &out) == 0,
               "duplicating a handle")
         raw = out
     }

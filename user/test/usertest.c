@@ -382,7 +382,7 @@ static uint32_t make_child(const startup_t *s, uint32_t job, uint32_t *thread_ou
 
 static void start_child(uint32_t process, uint32_t thread, uint64_t submode) {
   uint32_t self = 0;
-  CHECK(85, sys(CROI_SYS_HANDLE_DUPLICATE, process, RIGHT_SAME, (uint64_t)&self, 0, 0) == 0);
+  CHECK(85, croi_handle_duplicate(process, RIGHT_SAME, &self, 0) == 0);
   CHECK(86, sys6(CROI_SYS_PROCESS_START, process, thread, CHILD_CODE, CHILD_STACK + STACK_SIZE, self, submode) == 0);
   CHECK(79, sys6(CROI_SYS_PROCESS_START, process, thread, CHILD_CODE, CHILD_STACK + STACK_SIZE, 0, submode) ==
                 ERR_BAD_STATE);  // only once
@@ -875,7 +875,7 @@ static void unmap_exit(const startup_t *s) {
   uint32_t watch = 0;
   CHECK(37, map_stack(s, &u.stack) == 0);
   CHECK(38, sys6(CROI_SYS_THREAD_CREATE, s->process, (uint64_t)"ux", 2, 0, (uint64_t)&u.self, 0) == 0 &&
-                sys(CROI_SYS_HANDLE_DUPLICATE, u.self, RIGHT_SAME, (uint64_t)&watch, 0, 0) == 0 &&
+                croi_handle_duplicate(u.self, RIGHT_SAME, &watch, 0) == 0 &&
                 sys(CROI_SYS_THREAD_START, u.self, (uint64_t)unmap_exit_worker, ENTRY_SP(u.stack + STACK_SIZE),
                     (uint64_t)&u, 0) == 0);
   CHECK(39, (wait_for(watch, CROI_SIGNAL_TASK_TERMINATED, 5000000000ull) & CROI_SIGNAL_TASK_TERMINATED) &&
@@ -1222,7 +1222,7 @@ static int64_t drivers(const startup_t *s) {
   uint32_t anon = 0, readonly = 0;
   CHECK(221, sys(CROI_SYS_VMO_CREATE, 3 * PAGE, 0, (uint64_t)&anon, 0, 0) == 0 &&
                  sys(CROI_SYS_VMO_SET_CACHE_POLICY, anon, 7, 0, 0, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_HANDLE_DUPLICATE, anon, 1u << 2 | 1u << 15, (uint64_t)&readonly, 0, 0) == 0 &&
+                 croi_handle_duplicate(anon, 1u << 2 | 1u << 15, &readonly, 0) == 0 &&
                  sys(CROI_SYS_VMO_SET_CACHE_POLICY, readonly, CROI_CACHE_POLICY_CACHED, 0, 0, 0) == ERR_ACCESS_DENIED);
   CHECK(222, sys(CROI_SYS_VMO_SET_CACHE_POLICY, anon, CROI_CACHE_POLICY_WRITE_COMBINING, 0, 0, 0) == 0 &&
                  sys(CROI_SYS_VMO_SET_CACHE_POLICY, anon, CROI_CACHE_POLICY_CACHED, 0, 0, 0) == 0);
@@ -1413,7 +1413,7 @@ static int64_t dma(const startup_t *s) {
                  bti_pin(bti, rw | CROI_BTI_CONTIGUOUS | CROI_BTI_COMPRESS, vmo, 4, 0, 4 * PAGE, addrs, &pmt) ==
                      ERR_INVALID_ARGS &&
                  bti_pin(bti, 1u << 7, vmo, 4, 0, 4 * PAGE, addrs, &pmt) == ERR_INVALID_ARGS);
-  CHECK(306, sys(CROI_SYS_HANDLE_DUPLICATE, vmo, 1u << 2 | 1u << 5 | 1u << 1, (uint64_t)&readonly, 0, 0) == 0 &&
+  CHECK(306, croi_handle_duplicate(vmo, 1u << 2 | 1u << 5 | 1u << 1, &readonly, 0) == 0 &&
                  bti_pin(bti, rw, readonly, 4, 0, 4 * PAGE, addrs, &pmt) == ERR_ACCESS_DENIED_ &&
                  bti_pin(bti, CROI_BTI_PERM_READ, readonly, 4, 0, 4 * PAGE, addrs, &pmt) == 0 &&
                  sys(CROI_SYS_PMT_UNPIN, pmt, 0, 0, 0, 0) == 0);
@@ -1428,7 +1428,7 @@ static int64_t dma(const startup_t *s) {
                  sys(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_ZERO, 0, 4 * PAGE, 0) == 0 &&
                  vmo_get(vmo, bytes, PAGE, 16) == 0 && bytes[0] == 0 && bytes[15] == 0);
   // The PMT can't be duplicated; unpin consumes its handle and frees the pages.
-  CHECK(308, sys(CROI_SYS_HANDLE_DUPLICATE, pmt, 1u << 31, (uint64_t)&dup, 0, 0) == ERR_ACCESS_DENIED_ &&
+  CHECK(308, croi_handle_duplicate(pmt, 1u << 31, &dup, 0) == ERR_ACCESS_DENIED_ &&
                  sys(CROI_SYS_PMT_UNPIN, pmt, 0, 0, 0, 0) == 0 &&
                  croi_handle_close(pmt) == ERR_BAD_HANDLE && bti_info(bti).pmo_count == 0 &&
                  sys(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_DECOMMIT, 0, PAGE, 0) == 0);
@@ -1711,7 +1711,7 @@ static int64_t memory_stats(const startup_t *s) {
   uint32_t weak = 0, thread = 0;
   croi_info_task_stats_t v1;
   v1.mem_fractional_scaled_shared_bytes = 77;
-  CHECK(328, sys(CROI_SYS_HANDLE_DUPLICATE, child, 1u << 1, (uint64_t)&weak, 0, 0) == 0 &&
+  CHECK(328, croi_handle_duplicate(child, 1u << 1, &weak, 0) == 0 &&
                  info(weak, CROI_INFO_TASK_STATS, &c, sizeof c) == ERR_ACCESS_DENIED_ &&
                  info(child, CROI_INFO_TASK_STATS, &c, 32) == ERR_BUFFER_TOO_SMALL &&
                  info(child, CROI_INFO_TASK_STATS_V1, &v1, 32) == 0 && v1.mem_shared_bytes == theirs.mem_shared_bytes &&
@@ -2415,7 +2415,7 @@ static int64_t resizing(const startup_t *s) {
                  sys(CROI_SYS_OBJECT_GET_PROPERTY, vmo, CROI_PROP_VMO_CONTENT_SIZE, (uint64_t)&size, 8, 0) == 0 && size == 2 * PAGE + 100 &&
                  sys(CROI_SYS_VMO_CREATE, PAGE, 0, (uint64_t)&plain, 0, 0) == 0 &&
                  sys(CROI_SYS_VMO_SET_SIZE, plain, 2 * PAGE, 0, 0, 0) == ERR_UNAVAILABLE &&
-                 sys(CROI_SYS_HANDLE_DUPLICATE, vmo, RIGHT_READ | (1u << 3) | RIGHT_DUPLICATE, (uint64_t)&weak, 0, 0) == 0 &&
+                 croi_handle_duplicate(vmo, RIGHT_READ | (1u << 3) | RIGHT_DUPLICATE, &weak, 0) == 0 &&
                  sys(CROI_SYS_VMO_SET_SIZE, weak, PAGE, 0, 0, 0) == ERR_ACCESS_DENIED);
   // Mapped past its end; shrunk to 10 bytes (the tail zeroed; a fault
   // past the end is OUT_OF_RANGE, the vmo suite's faultStatuses), then
@@ -2891,7 +2891,7 @@ static int64_t vmo_slices(const startup_t *s) {
   // Rights: a slice of a handle without WRITE has none; NO_WRITE takes it.
   uint64_t w = 0;
   uint32_t ro_rights = 1u << 0 | 1u << 1 | 1u << 2 | 1u << 5 | 1u << 14 | 1u << 15;  // dup, transfer, read, map, wait, inspect
-  CHECK(434, sys(CROI_SYS_HANDLE_DUPLICATE, parent, ro_rights, (uint64_t)&ro, 0, 0) == 0 &&
+  CHECK(434, croi_handle_duplicate(parent, ro_rights, &ro, 0) == 0 &&
                  vmo_child(ro, slice_option, 0, PAGE, &ro_slice) == 0 &&
                  vmo_child(parent, slice_option | CROI_VMO_CHILD_NO_WRITE, 0, PAGE, &nw_slice) == 0 &&
                  sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, ro_slice,
@@ -3136,7 +3136,7 @@ static int64_t child_kinds(const startup_t *s) {
                  vmo_child(grow, CROI_VMO_CHILD_REFERENCE, 0, PAGE, &bad) == ERR_INVALID_ARGS &&
                  vmo_child(grow, CROI_VMO_CHILD_REFERENCE | CROI_VMO_CHILD_NO_WRITE | CROI_VMO_CHILD_RESIZABLE, 0, 0,
                            &bad) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_HANDLE_DUPLICATE, grow, no_resize, (uint64_t)&weak, 0, 0) == 0 &&
+                 croi_handle_duplicate(grow, no_resize, &weak, 0) == 0 &&
                  vmo_child(weak, CROI_VMO_CHILD_REFERENCE | CROI_VMO_CHILD_RESIZABLE, 0, 0, &bad) == ERR_ACCESS_DENIED_ &&
                  vmo_child(weak, CROI_VMO_CHILD_REFERENCE, 0, 0, &ref) == 0 &&
                  vmo_child(grow, CROI_VMO_CHILD_REFERENCE | CROI_VMO_CHILD_RESIZABLE, 0, 0, &rref) == 0 &&
@@ -3318,7 +3318,7 @@ static int64_t mapping_ceilings(const startup_t *s, uint64_t vdso_base) {
   uint32_t vmo = 0, readOnly = 0, physical = 0;
   uint64_t at = 0;
   CHECK(686, sys(CROI_SYS_VMO_CREATE, PAGE, 0, (uint64_t)&vmo, 0, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_DUPLICATE, vmo, RIGHT_READ | RIGHT_MAP, (uint64_t)&readOnly, 0, 0) == 0 &&
+                 croi_handle_duplicate(vmo, RIGHT_READ | RIGHT_MAP, &readOnly, 0) == 0 &&
                  sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)CROI_VM_PERM_READ << 32, 0, readOnly, 0, PAGE,
                       (uint64_t)&at) == 0 &&
                  sys(CROI_SYS_VMAR_PROTECT, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, at,
@@ -3685,8 +3685,8 @@ static int64_t get_child(const startup_t *s) {
                  koid_of(worker) == tk && handle_rights(worker) == (RIGHT_READ | inspect));
   // Refusals, in Zircon's order: a bad handle, no ENUMERATE, rights beyond
   // the parent's, not a child (a grandchild, a thread of a job, nothing).
-  CHECK(749, sys(CROI_SYS_HANDLE_DUPLICATE, job, inspect | enumerate, (uint64_t)&weak, 0, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_DUPLICATE, job, inspect, (uint64_t)&none, 0, 0) == 0 &&
+  CHECK(749, croi_handle_duplicate(job, inspect | enumerate, &weak, 0) == 0 &&
+                 croi_handle_duplicate(job, inspect, &none, 0) == 0 &&
                  sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) == 0 &&
                  sys(CROI_SYS_OBJECT_GET_CHILD, 0x12340003, pk, RIGHT_SAME, (uint64_t)&found, 0) == ERR_BAD_HANDLE &&
                  sys(CROI_SYS_OBJECT_GET_CHILD, none, pk, RIGHT_SAME, (uint64_t)&found, 0) == ERR_ACCESS_DENIED &&
@@ -3789,7 +3789,7 @@ static int64_t review_pager(const startup_t *s) {
                  sys(CROI_SYS_VMO_SET_SIZE, big, 0xFFFFFFFFFFFF0001ull, 0, 0, 0) == ERR_OUT_OF_RANGE);
   // PREFETCH of an anonymous VMO commits nothing (through a READ handle).
   CHECK(708, sys(CROI_SYS_VMO_CREATE, 4 * PAGE, 0, (uint64_t)&anon, 0, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_DUPLICATE, anon, RIGHT_READ, (uint64_t)&ro, 0, 0) == 0 &&
+                 croi_handle_duplicate(anon, RIGHT_READ, &ro, 0) == 0 &&
                  sys6(CROI_SYS_VMO_OP_RANGE, ro, CROI_VMO_OP_PREFETCH, 0, 4 * PAGE, 0, 0) == 0 &&
                  sys6(CROI_SYS_OBJECT_GET_INFO, anon, CROI_INFO_VMO, (uint64_t)&info, sizeof info, (uint64_t)&counts[0],
                       (uint64_t)&counts[1]) == 0 &&

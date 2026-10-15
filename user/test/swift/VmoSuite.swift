@@ -56,7 +56,7 @@ enum VmoSuite {
         check(Sys.call(CROI_SYS_VMO_CREATE, pageSize, 0, Sys.address(&vmo)) == 0, "a VMO")
         check(Sys.call(CROI_SYS_VMAR_MAP, UInt64(croi_vmar_root_self()) | rx, 0, UInt64(vmo), 0, pageSize,
                        Sys.address(&at)) == Status.accessDenied, "an anonymous VMO isn't executable")
-        check(Sys.call(CROI_SYS_HANDLE_DUPLICATE, UInt64(vmo), 1 << 31, Sys.address(&other)) == 0, "a duplicate")
+        check(Sys.duplicate(UInt64(vmo), 1 << 31, &other) == 0, "a duplicate")
         check(Sys.call(CROI_SYS_VMO_REPLACE_AS_EXECUTABLE, UInt64(other), UInt64(vmo), Sys.address(&exec))
                   == Status.wrongType, "the resource must be a resource")
         check(croi_handle_close(other) == Status.badHandle, "a refusal still consumes the VMO")

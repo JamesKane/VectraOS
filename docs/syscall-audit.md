@@ -208,6 +208,8 @@ does not change.
 Already arrays today: `bti_pin` (addresses out), `futex_wake` (a count),
 `get_info` topics that list koids.
 
+Done: `object_bind` (D20), `handle_close` (D33), `handle_duplicate` (D39).
+
 Each failure is reported per item: the call returns how many items it
 processed, and each item carries its own status. A call never undoes the
 items before a failure.

@@ -108,8 +108,14 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   info topic's `size_bytes` (the C runtime's `croi_vmo_size`), and a
   process's exit code and state its CROI_INFO_PROCESS record. Kind:
   deliberate (one call per job). Impact: callers of zx_vmo_get_size.
-- **No handle_replace** (V1, D34) — handle_duplicate(handle, rights,
-  out, CROI_HANDLE_DUPLICATE_CONSUME) is zx_handle_replace: the handle
+- **handle_duplicate takes an array** (V1, D39) — handle_duplicate(items,
+  count) duplicates each croi_handle_duplicate_item_t, stopping at the
+  first failure and returning how many succeeded, as object_bind does;
+  zx_handle_duplicate takes one handle. Kind: deliberate (batch first,
+  principle 12). Impact: every caller of zx_handle_duplicate, through
+  the C wrapper croi_handle_duplicate.
+- **No handle_replace** (V1, D34) — an item with
+  CROI_HANDLE_DUPLICATE_CONSUME is zx_handle_replace: the handle
   goes even on failure, and DUPLICATE isn't needed. Kind: deliberate
   (one call per job). Impact: callers of zx_handle_replace.
 - **No port_cancel_key** (V1, D32) — port_cancel with source 0 (no

@@ -46,7 +46,7 @@ enum ChannelSuite {
 
     static func duplicate(_ handle: borrowing Handle, _ rights: UInt32) -> UInt32 {
         var out: UInt32 = 0
-        check(Sys.call(CROI_SYS_HANDLE_DUPLICATE, handle.arg, UInt64(rights), Sys.address(&out)) == 0, "a duplicate")
+        check(Sys.duplicate(handle.arg, UInt64(rights), &out) == 0, "a duplicate")
         return out
     }
 
@@ -149,7 +149,7 @@ enum ChannelSuite {
         let channel = Pair()
         let vmo = Handle(vmo: pageSize)
         var narrowed: UInt32 = 0
-        check(Sys.call(CROI_SYS_HANDLE_DUPLICATE, vmo.arg, UInt64(read | transferRight), Sys.address(&narrowed)) == 0,
+        check(Sys.duplicate(vmo.arg, UInt64(read | transferRight), &narrowed) == 0,
               "a duplicate with fewer rights")
         check(Sys.call(CROI_SYS_CHANNEL_WRITE, channel.a.arg, 0, 0, 0, Sys.address(&narrowed), 1) == 0, "sent")
         var received: UInt32 = 0
@@ -162,7 +162,7 @@ enum ChannelSuite {
                        UInt64(MemoryLayout<croi_info_handle_basic_t>.size)) == 0, "its info")
         check(info.rights == read | transferRight && info.type == 3, "it arrives with only those rights")
         var stuck: UInt32 = 0
-        check(Sys.call(CROI_SYS_HANDLE_DUPLICATE, vmo.arg, UInt64(read), Sys.address(&stuck)) == 0, "one without TRANSFER")
+        check(Sys.duplicate(vmo.arg, UInt64(read), &stuck) == 0, "one without TRANSFER")
         let handle = stuck
         check(Sys.call(CROI_SYS_CHANNEL_WRITE, channel.a.arg, 0, 0, 0, Sys.address(&stuck), 1) == Status.accessDenied,
               "can't be sent")

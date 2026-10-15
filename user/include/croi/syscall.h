@@ -12,7 +12,7 @@ enum : uint64_t {
   CROI_SYS_NULL = 0,
   CROI_SYS_THREAD_EXIT = 2,        // (int64_t code): the calling thread
   CROI_SYS_HANDLE_CLOSE = 10,      // (const uint32_t *handles, count): 0 skipped (D33)
-  CROI_SYS_HANDLE_DUPLICATE = 11,  // (handle, rights, uint32_t *out, options): CONSUME replaces (D34)
+  CROI_SYS_HANDLE_DUPLICATE = 11,  // (croi_handle_duplicate_item_t *items, count): ipc.h (D39)
   CROI_SYS_OBJECT_BIND = 22,       // (port, croi_bind_item_t *items, count): port.h
   CROI_SYS_PORT_CREATE = 31,       // (options, uint32_t *out)
   CROI_SYS_PORT_QUEUE = 32,        // (port, const croi_port_packet_t *packet)
@@ -249,6 +249,17 @@ static inline int64_t croi_syscall6(uint64_t number, uint64_t a0, uint64_t a1, u
 // Closes one handle: handle_close takes an array (D33).
 static inline int64_t croi_handle_close(uint32_t handle) {
   return croi_syscall(CROI_SYS_HANDLE_CLOSE, (uint64_t)&handle, 1, 0, 0, 0);
+}
+
+// Duplicates one handle, or replaces it with CONSUME: handle_duplicate
+// takes an array (D39). 0, the item's status, or the call's.
+static inline int64_t croi_handle_duplicate(uint32_t handle, uint32_t rights, uint32_t *out, uint32_t options) {
+  croi_handle_duplicate_item_t item = {handle, rights, options, 0, 0, 0};
+  int64_t done = croi_syscall(CROI_SYS_HANDLE_DUPLICATE, (uint64_t)&item, 1, 0, 0, 0);
+  if (done < 0) return done;
+  if (done == 0) return item.status;
+  *out = item.out;
+  return 0;
 }
 
 // A VMO's size, from its info topic (vmo_get_size until D36).

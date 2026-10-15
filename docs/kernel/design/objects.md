@@ -15,8 +15,8 @@ signals and object types, so the ABI matches):
   is slot + 8-bit generation + Zircon's fixed low bits, so stale handles
   fail. get (bad handle, wrong type, access denied, in that order),
   duplicate/replace (rights subset or sameRights; replace is
-  handle_duplicate with CONSUME since D34), close (cancels waits
-  through the handle). `HandleTable.withBorrowed` for threads sharing one.
+  handle_duplicate with CONSUME since D34, and handle_duplicate takes an
+  array since D39), close (cancels waits through the handle). `HandleTable.withBorrowed` for threads sharing one.
 - Waiting: observers on an object's list; `updateSignals` runs them under
   the object lock. Since V1 (D23) a port is the one wait: the observers
   are object_bind's bindings, dropped when the handle they were bound
@@ -501,3 +501,22 @@ thread_bind_overrun_port (122) and account_bind_pressure_port (242).
   coalescing, unbinding by cancel and by close, persistent and EDGE
   signals, the leeway. A mutant whose CHANGE never fires fails it with
   "a doorbell rings". The older kinds keep their usertest.c coverage.
+
+## handle_duplicate takes an array (V1, D39)
+
+The first of V1's batched forms (audit §3, roadmap V1 item 3).
+handle_duplicate(items, count) (11) takes croi_handle_duplicate_item_t
+(ipc.h): handle, rights and options in, the new handle and a status
+out. `Syscalls.duplicateHandles` (User/IpcSyscalls.swift) follows
+`Bind.call`: up to 64 items, in order, stopping at the first failure,
+each processed item's status written back, the count of successes
+returned; a bad pointer or count fails the call before any item. CONSUME
+stays per item. A new handle whose value can't be written back is closed
+again, since nobody could learn it.
+- `croi_handle_duplicate(handle, rights, &out, options)` in syscall.h is
+  the one-item form (the suites' `Sys.duplicate`). Userboot duplicates
+  the new process's process and thread handles in one call.
+- Tests: the `objects` suite's `duplicateMany`: a batch of five whose
+  fourth names no handle (three done, the fourth's BAD_HANDLE, the fifth
+  untouched), the copies' rights, a reserved field, no items and too
+  many.
