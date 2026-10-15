@@ -1,22 +1,36 @@
 # VectraOS
 
-VectraOS is a capability microkernel OS for edge hardware: maker SBCs, desktop
-PCs and the NPUs and GPUs attached to them. Several machines running it can be
-joined into one namespace. It is written in Embedded Swift, with C23 where
-Swift cannot reach.
+> *Every board on your desk has a different SDK, a different kernel and a different idea of what a file is. We'd like them to be one machine.*
 
-On a single machine:
-- the kernel sets up shared memory, and lock-free rings move the bulk data;
-- every service is a browsable node in a per-process namespace;
-- files carry typed attributes and the file system answers live queries, as
-  in BeOS;
-- each desktop workspace is either tiled or spatial, and you can switch it
-  either way at any time.
+The edge got powerful and stayed fragmented. A Raspberry Pi, an SC8280XP board and a desktop PC each carry silicon that would have filled a machine room. Each comes with its own vendor toolchain for its NPU and its own pile of kernel layers between your code and the hardware. Frames, packets and tensors get copied across boundaries they never needed to cross. The people who pay for it are the indie game developers, makers and systems hackers who just want the hardware to do what it says on the box.
 
-Across machines, the namespace is exported over 9P2000.L. A Raspberry Pi's
-GPIO, a Q8B's NPU or a PC's GPU becomes a directory you can mount.
+**VectraOS puts the machine back in reach.** It is a capability microkernel OS for edge hardware: maker SBCs, desktop PCs and the GPUs and NPUs attached to them. It brings back the clarity of Plan 9 and BeOS, and it is written in Embedded Swift with strict memory safety, so the language catches what a proof would otherwise have to. Small enough to hold in your head, fast enough to keep a frame deadline.
 
-This repository starts a new direction. It builds on three earlier projects:
+## Jack in
+
+**A kernel that sets up and steps aside.** The kernel creates address spaces, threads, capabilities and shared memory, then gets out of the way. Bulk data never passes through it. Drivers are ordinary user processes that receive their DMA memory as capabilities.
+
+**Nodes for control, rings for bulk.** Every service is a node you can browse, script and reach over the network. When a path gets hot, the node hands you a lock-free shared-memory ring. There is one ring format for input, audio, frames, packets, blocks and tensors, and one wire format for everything structured.
+
+**Your machines are one machine.** The namespace is exported over 9P2000.L. `mount tcp!pi5!564 /n/pi5` and a board's GPIO is a directory on your PC; a Q8B's NPU appears under `/dev/accel` beside your own GPU. Linux mounts it with stock `v9fs`.
+
+**Write the model once.** Models are lowered on the host to one artifact and run on the CPU, GPU or NPU of whichever node they land on. A camera ring feeds the accelerator, the accelerator feeds the renderer, and the CPU never touches the frames.
+
+**Files that know things.** Taisce, the file system, carries typed attributes and answers live queries, as BeOS did. Window positions and folder layouts are attributes, not preference files.
+
+**A desktop both ways.** Every workspace is either tiled or spatial, and you can flip it at any time. Both arrangements persist, so switching is a projection, not a loss.
+
+**One wait, one deadline, one intent.** A thread waits on one port for everything: doorbells, IRQs, timers, child exits, window events. Time is an absolute deadline with a leeway. Threads declare what they are for (`frame`, `interactive`, `realtime`), never a priority.
+
+**Every promise is a budget.** Boot time, IPC latency, syscall count and line count are numbers with checks running against them. A budget is never loosened in the change that would fail it.
+
+**Your namespace is your perimeter.** No ambient authority. A process can name only what it was handed. Nothing leaves your machine, or your own swarm, unless you say so.
+
+**Only our code on the device.** First-party Swift and C23, with C only where Swift can't reach. Heavy compilers stay on the developer's host and produce our formats; vendor firmware blobs are the only exception, each listed with its provenance.
+
+## Where it comes from
+
+This repository joins three earlier projects, and when two of them solved the same problem, one solution wins and the other goes ([docs/provenance.md](docs/provenance.md)):
 
 | Source | What it gives VectraOS |
 |---|---|
@@ -24,26 +38,46 @@ This repository starts a new direction. It builds on three earlier projects:
 | [todhchai](../todhchai) | performance contracts, the Node protocol and typed IPC, the Taisce file system, the Radharc compositor and the SDK |
 | [NeoVectra](../NeoVectra) | the "one mechanism per job" rule, the ring and doorbell data plane, the swarm design and the Q8B hardware notes |
 
-## Start here
+## Status: setting up
 
-1. [docs/vision.md](docs/vision.md): what we are building, and what we take
-   from the Scalable Edge Architecture paper.
-2. [docs/principles.md](docs/principles.md): the rules every change follows.
-3. [docs/architecture.md](docs/architecture.md): how the layers fit together.
-4. [docs/performance.md](docs/performance.md): the budgets and how they are
-   enforced.
-5. [docs/provenance.md](docs/provenance.md): which code comes from which
-   repository, and why.
-6. [docs/decisions.md](docs/decisions.md): the dated decision log.
-7. [docs/roadmap.md](docs/roadmap.md): the milestones and their exit criteria.
+**V0 is done (2026-10-15): the croi kernel boots and passes its self-tests on amd64, arm64 and rv64 in QEMU.** V1, the setup-engine kernel, is under way: `object_bind` has landed and the syscall cuts are next (154 calls down to 91, [docs/syscall-audit.md](docs/syscall-audit.md)).
 
-## Status
+What runs today:
 
-V0 (ground) is in progress. The croi kernel is imported and boots on amd64,
-arm64 and rv64 in QEMU. Start with:
+- a capability microkernel after Zircon, on three architectures, with KASLR, W^X, PAC and BTI, SMP, scheduling contexts, VMOs and the pager, channels, ports and futexes, user-space driver objects (IRQs, MSIs, DMA) and IOMMU support (VT-d, AMD-Vi, SMMUv3, the RISC-V IOMMU);
+- a UEFI loader that boots it through UEFI and ACPI alone;
+- `vx`, the one front door: build, test, boot, bench, trace, loc and CI;
+- boot and size budgets reported on every run, judged against this machine's history.
 
-    swift build --product vx && .build/debug/vx ci
+The road ahead ([docs/roadmap.md](docs/roadmap.md)): the one ring and the cut-down kernel (V1), the userland base (V2), the bring-up link (V3), the Radxa Dragon Q8B (V4), Taisce on disk (V5), the desktop (V6), the swarm (V7), compute (V8), and Wasm and games (V9).
+
+## Build it
+
+```sh
+swift build --product vx && .build/debug/vx ci   # everything vx ci checks
+.build/debug/vx test arm64                       # one arch: build + QEMU tests
+.build/debug/vx boot rv64                        # boot interactively (Ctrl-A x quits)
+.build/debug/vx bench                            # boot budgets under KVM (advisory)
+.build/debug/vx loc                              # size budgets
+```
+
+You need Swift 6.4.0 through swiftly (pinned by `.swift-version`, with its bundled clang, lld and llvm-objcopy), CMake, Ninja, bash, and QEMU with edk2 from `/usr/share/edk2`. Nothing else.
+
+## The blueprint
+
+| Doc | Contents |
+|---|---|
+| [docs/vision.md](docs/vision.md) | What we are building, and what we take from the Scalable Edge Architecture paper |
+| [docs/principles.md](docs/principles.md) | The twenty-nine rules every change follows |
+| [docs/architecture.md](docs/architecture.md) | How the layers fit: kernel, the ring, the Node protocol, the swarm, Taisce, the desktop, compute, Wasm |
+| [docs/performance.md](docs/performance.md) | The budgets and how they are enforced |
+| [docs/provenance.md](docs/provenance.md) | Which code comes from which repository, and why |
+| [docs/decisions.md](docs/decisions.md) | The dated decision log |
+| [docs/roadmap.md](docs/roadmap.md) | The milestones and their exit criteria |
+| [docs/syscall-audit.md](docs/syscall-audit.md) | V1's audit: which calls stay, which go, and what replaces them |
+| [docs/trace-format.md](docs/trace-format.md) | The trace format the budgets are read from |
+| [docs/kernel/](docs/kernel/) | The kernel's rules, roadmap, design notes per subsystem, and its divergences from Zircon |
 
 ## License
 
-BSD-3-Clause, as for croi.
+VectraOS is BSD-3-Clause licensed: see [LICENSE](LICENSE).
