@@ -25,21 +25,22 @@ enum : uint32_t {
   // 10, K10c), cut in V1 with display timelines (D27).
   // With a deadline profile on an interrupt object (ext 5, K14e): admit
   // it as a scheduling context the object owns (refused with a reason as
-  // for threads) and hand that to the interrupt_wait thread it wakes.
+  // for threads) and hand that to the thread its packet wakes from its
+  // port.
   CROI_PROFILE_HANDOFF = 1u << 1,
 };
 
 // object_set_profile(target, profile, options, refusal) also takes an
 // interrupt or a counter as its target (WRITE right; a deadline profile):
 // the object then lends that deadline to each thread it wakes
-// (interrupt_wait's; for a counter, the
-// port_wait its packet ends, D25): the thread runs on it from its wakeup,
+// (the port_wait its packet ends: interrupt_wait went in V1, D29, and a
+// counter's waits in D25): the thread runs on it from its wakeup,
 // with a period starting there, until it next blocks (ext 5, as
 // channel_call donation). No admission: the lent deadline joins the
 // thread's own as inheritance does.
 //
 // With CROI_PROFILE_HANDOFF, an interrupt object instead owns an admitted
-// context: the thread interrupt_wait wakes runs on it at once (on its
+// context: the thread its packet wakes runs on it at once (on its
 // CPU, with its deadline) until it blocks again, and every wakeup shares
 // the context's budget for its period (the CBS rule at each). A thread
 // that spends it has an overrun counted on the context

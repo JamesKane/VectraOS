@@ -261,8 +261,9 @@ exist, RES1 otherwise: 0x33ff trapped both) and opens ZCR_EL2/SMCR_EL2.
 Deadline-carrying wakeups, K10c (Todhchai ext 5; profile.h):
 - `object_set_profile(target, profile, options, refusal)`: on an
   interrupt or a counter (WRITE; deadline profiles only, no
-  options) the object stores the profile (`lend`), and `Observers.notify`
-  / `InterruptObjects` wake through `Scheduler.wakeAll(queue, lending:)`:
+  options) the object stores the profile (`lend`), and a counter's
+  packet (`Observers.notify`) or an interrupt's (`Ports.queueInterrupt`)
+  wakes through `Scheduler.wakeOne(queue, lending:)`:
   the woken thread's `Thread.lent` joins its effective profile as an
   inherited one (computeEffective), with a period starting at the
   wakeup, and `block` drops it. Not admitted, as channel_call donation
@@ -273,12 +274,14 @@ Deadline-carrying wakeups, K10c (Todhchai ext 5; profile.h):
   profile now takes no options. `SchedContextRecord.intent` is still
   stored only.
 - Test hooks 3/4 (syscall 6) return the running thread's period start
-  and deadline. Boot test mode 16 (`ProcessSelfTest.runDeadlineWakeups`).
+  and deadline. Tested by the counters suite and, for an interrupt's
+  handoff, the interrupts suite (usertest.c's mode 16 until D29).
 - Ext 5 proper, K14e (profile.h `CROI_PROFILE_HANDOFF`): object_set_profile
   on an interrupt with that option admits the deadline profile as a
   context the object owns (`InterruptObject.context`; refusals as for
-  threads, `Profiles.admit`). `signal` wakes through
-  `Scheduler.wakeAll(queue, handingOff:)`: `borrow` makes it the woken
+  threads, `Profiles.admit`). Its packet wakes a thread from the port
+  through `Scheduler.wakeOne(queue, handingOff:)` (the interrupt_wait
+  thread until V1 cut that, D29): `borrow` makes it the woken
   thread's `context` (its own kept in `homeContext`, its own period and
   budget in `home*`), so placement (the context's CPU), stealing (admitted
   threads stay) and overrun counting follow it. The context keeps the

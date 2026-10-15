@@ -221,7 +221,6 @@ extension Syscalls {
         case 90: return UInt32(CROI_THREAD_STATE_BLOCKED_FUTEX)
         case 33: return UInt32(CROI_THREAD_STATE_BLOCKED_PORT)
         case 83: return UInt32(CROI_THREAD_STATE_BLOCKED_CHANNEL)
-        case 143: return UInt32(CROI_THREAD_STATE_BLOCKED_INTERRUPT)
         case 41, 42, 45, 195...198: return UInt32(CROI_THREAD_STATE_BLOCKED_PAGER)
         default: return UInt32(CROI_THREAD_STATE_BLOCKED_WAIT_ONE)  // counter and other waits
         }

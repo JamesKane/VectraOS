@@ -334,6 +334,27 @@ debug_write (1, K6), a user string on the kernel console, and vmo_map
   with the clock syscall D26 cut). m2's `syscall.null` times them.
 - Tests: mode 0's size and mapping checks moved to the vmo suite.
 
+## Interrupt waits: cut in V1 (D29)
+
+croi had Zircon's three ways past a port for interrupt objects:
+interrupt_wait (143), one thread blocked on the object;
+interrupt_destroy (144), which woke it CANCELED; and interrupt_trigger
+(145), which fired a VIRTUAL interrupt. V1 cut all three:
+- A bound port is the one way to wait. Ext 5's lent profile and
+  handed-off context (K14e) now go with the packet: `sendPacket` passes
+  them to `Ports.queueInterrupt`, which wakes a thread from the port
+  through `Scheduler.wakeOne(lending:)` or `wakeOne(handingOff:)`. As
+  before, a thread that finds the packet already queued borrows nothing.
+- Closing the last handle destroys the object (it always was destroyed
+  with its last reference). A port binding doesn't hold it.
+- A counter is a virtual interrupt. Tests fire an object as its device
+  would through test hook 13 (`TestHooks.fire`).
+- Tests: usertest.c's modes 11 and 16 moved to the Swift program's
+  interrupts suite, which the kernel runs on its own in their place
+  (`ProgramSelfTest.runSuite`), with PCI segment 0's ECAM in its
+  environment. Mode 17's idle-state check carries its deadline profile
+  on the RTC's interrupt instead of a virtual one.
+
 ## The small calls (K13e part 1)
 
 The small calls, K13e part 1 (syscalls 210-215 in User/IpcSyscalls.swift,

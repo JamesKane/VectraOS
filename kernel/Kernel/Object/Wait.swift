@@ -183,9 +183,7 @@ enum Observers {
 
     /// The handle `handle` of `table` closed: its bindings go.
     static func handleClosed(_ object: ObjectPointer, table: UInt64, handle: UInt32) {
-        if object.header.type == .interrupt {
-            InterruptObjects.handleClosed(object, table: table, handle: handle)  // an interrupt_wait through it
-        } else if object.header.type == .pmt {
+        if object.header.type == .pmt {
             Dma.handleClosed(object)  // its only handle: quarantined if still pinned
         }
         object.header.lock.withLock {

@@ -52,10 +52,13 @@ matches the pinned tree where upstream docs or expectations say otherwise).
 
 ## Handles, objects and IPC
 
-- **interrupt_wait cancelled by its handle** — closing the handle a thread
-  waits through cancels its interrupt_wait (as object waits do); Zircon
-  cancels on the last handle. Kind: deliberate. Impact: drivers closing
-  duplicates.
+- **No interrupt_wait, interrupt_destroy or virtual interrupts** (V1,
+  D29) — a bound port is the one way to wait for an interrupt, and
+  closing its last handle destroys it; a counter is a virtual interrupt
+  (no interrupt_trigger). Ext 5's lent profile and handed-off context
+  go to the thread the packet wakes from its port. Kind: deliberate (one
+  way to wait). Impact: ports of Fuchsia drivers that wait on the
+  interrupt directly.
 - **Interrupt object lifetime** — destroyed with its last reference
   (listed under "Differences from Zircon", K9c). Kind: deliberate. Impact:
   low.
@@ -251,7 +254,7 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   interruptible waits with INTR_RETRY and its vDSO re-issues the call;
   croi's programs call the kernel directly, so the kernel rewinds the PC
   over the syscall for the restartable waits (port_wait, vmo_read,
-  futex_wait, interrupt_wait). Other waits (channel_call, exceptions)
+  futex_wait). Other waits (channel_call, exceptions)
   suspend when they end. Kind: deliberate. Impact: debuggers see the PC at
   the syscall instruction.
 - **Debugging syscalls option** — process_write_memory and debug-register

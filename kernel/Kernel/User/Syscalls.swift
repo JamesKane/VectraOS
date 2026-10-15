@@ -191,11 +191,11 @@ enum Syscalls {
     }
 
     /// Syscalls a suspension may end and restart (K13g): their waits leave
-    /// nothing behind, and deadlines are absolute. port_wait, futex_wait,
-    /// interrupt_wait; vmo_read (pager waits).
+    /// nothing behind, and deadlines are absolute. port_wait, futex_wait;
+    /// vmo_read (pager waits).
     static func restartable(_ number: UInt64) -> Bool {
         switch number {
-        case 33, 41, 90, 143: true
+        case 33, 41, 90: true
         default: false
         }
     }
@@ -223,6 +223,7 @@ enum Syscalls {
             if a[0] == 11 { return Int64(bitPattern: arch_pac_sign(a[1], a[2])) }
             if a[0] == 12 { return BranchTargets.enabled ? 1 : 0 }  // K14r: guarded pages in use
             #endif
+            if a[0] == 13 { return TestHooks.fire(a[1], at: a[2]) }
             return (6...9).contains(a[0]) ? Reclaim.testHook(a) : TestHooks.profile(a[0])
         case 5:
             reported.store(a[0], ordering: .relaxed)
@@ -643,6 +644,24 @@ enum TestHooks {
         case 5: return Int64(Cpu.current)  // K10d tests
         case 10: return Int64(Scheduler.borrowedCpu())  // K14e: the borrowed context's CPU, or -1
         default: return Int64(Status.invalidArgs.rawValue)
+        }
+    }
+
+    /// Fires the interrupt object `handle` names as its device would, at
+    /// `time`: V1 cut virtual interrupts (D29), and a test can't make a
+    /// real device fire on demand everywhere (arm64's PL031 counts whole
+    /// seconds).
+    static func fire(_ handle: UInt64, at time: UInt64) -> Int64 {
+        let table = Scheduler.current.pointee.handleTable
+        guard table != 0, time != 0 else { return Int64(Status.badState.rawValue) }
+        do throws(Status) {
+            try HandleTable.withBorrowed(table) { (handles: borrowing HandleTable) throws(Status) in
+                InterruptObjects.fire(try handles.get(UInt32(truncatingIfNeeded: handle), type: .interrupt).object,
+                                      at: time)
+            }
+            return 0
+        } catch {
+            return Int64(error.rawValue)
         }
     }
 }

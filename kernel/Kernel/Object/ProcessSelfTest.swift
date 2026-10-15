@@ -134,9 +134,12 @@ enum ProcessSelfTest {
         console.write("through physical VMOs, cached only; the kernel's framebuffer pattern read write-combining\n")
     }
 
-    /// K9c: interrupt objects from user mode (usertest.c mode 11): virtual
-    /// ones, then each machine's RTC (amd64 GSI 8, arm64 INTID 34, rv64
-    /// GSI 11), routed to CPU 1 by interrupt_set_affinity.
+    /// K9c: interrupt objects from user mode, the Swift program's
+    /// interrupts suite (InterruptSuite.swift; usertest.c's mode 11 until
+    /// V1, D29): the state machine fired by a test hook, each machine's RTC
+    /// (amd64 GSI 8, arm64 INTID 34, rv64 GSI 11) routed to CPU 1 by
+    /// interrupt_set_affinity, MSIs, and a handed-off context. The suite
+    /// finds PCI segment 0's ECAM in its environment (`swift.ecam=`).
     static func runInterrupts(_ console: Uart) {
         #if arch(x86_64)
         let number: UInt32 = 8
@@ -146,7 +149,21 @@ enum ProcessSelfTest {
         let number: UInt32 = 11
         #endif
         let before = Counts()
-        let exitCode = runInProcess(mode: 11)
+        let suite: StaticString = "swift.suite=interrupts\0swift.ecam=0x"
+        var environment = InlineArray<64, UInt8>(repeating: 0)
+        var length = 0
+        for i in 0..<suite.utf8CodeUnitCount {
+            environment[length] = unsafe suite.utf8Start[i]
+            length += 1
+        }
+        let ecam = Mcfg.count > 0 ? Mcfg.windows[0].base : 0
+        for shift in stride(from: 60, through: 0, by: -4) {
+            let digit = UInt8(truncatingIfNeeded: ecam >> UInt64(shift) & 0xF)
+            environment[length] = digit < 10 ? 0x30 + digit : 0x57 + digit
+            length += 1
+        }
+        length += 1  // its NUL
+        let exitCode = ProgramSelfTest.runSuite(environment.span.extracting(0..<length))
         guard exitCode == 0x600D else {
             console.write("  irq:    user program failed check ")
             console.write(decimal: UInt64(bitPattern: exitCode))
@@ -160,28 +177,28 @@ enum ProcessSelfTest {
             console.write(", affinity said 1\n")
             panic("interrupt self-test: affinity not honored")
         }
-        console.write("  irq:    interrupt objects (virtual; RTC ")
+        console.write("  irq:    interrupt objects (fired by a test hook; RTC ")
         console.write(decimal: UInt64(number))
-        console.write(" by port and by wait, on CPU 1), wait wake ")
+        console.write(" by port, on CPU 1; a handed-off context), port wake ")
         console.write(decimal: Syscalls.reported.load(ordering: .relaxed) / 1000)
         console.write(" us median\n")
         // Todhchai's budget is for hardware: under KVM the wakeup IPI exits.
         Budgets.report(console, "irq.wait_wake_median", Syscalls.reported.load(ordering: .relaxed), target: 5_000)
         #if arch(x86_64)
-        console.write("  msi:    allocations and info; where present, edu's MSI by port and by wait and a virtio ")
+        console.write("  msi:    allocations and info; where present, edu's MSI by port and a virtio ")
         console.write("MSI-X table's entries programmed, masked, moved to CPU 1, cleared\n")
         #elseif arch(arm64)
         if Its.ready {
-            console.write("  msi:    through the GICv3 ITS: allocations and info; where present, edu's MSI by port and by ")
-            console.write("wait, an event not mapped for it refused, a virtio MSI-X table's entries programmed, moved to ")
+            console.write("  msi:    through the GICv3 ITS: allocations and info; where present, edu's MSI by port, ")
+            console.write("an event not mapped for it refused, a virtio MSI-X table's entries programmed, moved to ")
             console.write("CPU 1 (MOVI), cleared\n")
         } else {
             console.write("  msi:    not supported (no ITS)\n")
         }
         #else
         if Aia.active {
-            console.write("  msi:    through AIA's IMSICs: allocations and info; where present, edu's MSI by port and ")
-            console.write("by wait, a virtio MSI-X table's entries programmed, moved to CPU 1's file, cleared\n")
+            console.write("  msi:    through AIA's IMSICs: allocations and info; where present, edu's MSI by port, ")
+            console.write("a virtio MSI-X table's entries programmed, moved to CPU 1's file, cleared\n")
         } else {
             console.write("  msi:    not supported (no IMSIC: the PLIC has no MSIs)\n")
         }
@@ -252,20 +269,6 @@ enum ProcessSelfTest {
         }
         before.expectUnchanged(console)
         console.write("  mem:    task stats (mapped, private, shared, scaled with its fraction), kmem stats\n")
-    }
-
-    static func runDeadlineWakeups(_ console: Uart) {
-        let before = Counts()
-        let exitCode = runInProcess(mode: 16)
-        guard exitCode == 0x600D else {
-            console.write("  deadline wakeups: user program failed check ")
-            console.write(decimal: UInt64(bitPattern: exitCode))
-            console.write("\n")
-            panic("deadline wakeup self-test: user side")
-        }
-        before.expectUnchanged(console)
-        console.write("  deadline wakeups: an interrupt hands its waiter an admitted context ")
-        console.write("(shared budget, overrun, withdrawn)\n")
     }
 
     static func runExtensions(_ console: Uart) {

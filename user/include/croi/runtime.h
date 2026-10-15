@@ -50,6 +50,23 @@ bool croi_relro(uint64_t *start, uint64_t *end);
 // (or not mapped), -1 if there are none or the maps can't be read.
 int croi_relro_read_only(void);
 
+// Device registers, for drivers and the interrupts suite: volatile
+// accesses, which Swift can't express, and amd64's port I/O (inline
+// assembly).
+static inline uint8_t croi_mmio_read8(uint64_t address) { return *(volatile uint8_t *)address; }
+static inline uint16_t croi_mmio_read16(uint64_t address) { return *(volatile uint16_t *)address; }
+static inline uint32_t croi_mmio_read32(uint64_t address) { return *(volatile uint32_t *)address; }
+static inline void croi_mmio_write16(uint64_t address, uint16_t value) { *(volatile uint16_t *)address = value; }
+static inline void croi_mmio_write32(uint64_t address, uint32_t value) { *(volatile uint32_t *)address = value; }
+#if defined(__x86_64__)
+static inline void croi_outb(uint16_t port, uint8_t value) { __asm__ volatile("outb %0, %1" ::"a"(value), "Nd"(port)); }
+static inline uint8_t croi_inb(uint16_t port) {
+  uint8_t value;
+  __asm__ volatile("inb %1, %0" : "=a"(value) : "Nd"(port));
+  return value;
+}
+#endif
+
 // Ends the process (flushing stdout).
 [[noreturn]] void croi_exit(int64_t code);
 

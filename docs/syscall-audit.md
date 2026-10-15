@@ -170,7 +170,8 @@ waits were cut (D23): 123 calls. Sleeps, timers and the counter waits
 were cut (D25): 117 calls. Clock objects, vmar_map_clock and the
 clock_monotonic syscall were cut (D26): 111 calls. Display timelines
 were cut (D27): 107 calls. debug_write and vmo_map were cut (D28): 105
-calls.
+calls. interrupt_wait, interrupt_destroy and interrupt_trigger were cut
+(D29): 102 calls.
 
 The ceiling in `tools/vx/LocCommand.swift` is lowered with each cut, so it
 never rises.

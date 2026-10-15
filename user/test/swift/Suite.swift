@@ -49,6 +49,8 @@ enum Suite {
             CounterSuite.run()
         } else if requested("time") {
             TimeSuite.run()
+        } else if requested("interrupts") {
+            InterruptSuite.run()  // run on its own (ProcessSelfTest.runInterrupts)
         } else {
             print("swift: no such suite")
             croi_exit(2)
@@ -69,6 +71,7 @@ func check(_ condition: Bool, _ name: StaticString) {
 /// Status codes the suites expect (Zircon's values, kernel Status.swift).
 enum Status {
     static var notSupported: Int64 { -2 }
+    static var noResources: Int64 { -3 }
     static var invalidArgs: Int64 { -10 }
     static var badHandle: Int64 { -11 }
     static var wrongType: Int64 { -12 }
@@ -79,6 +82,7 @@ enum Status {
     static var shouldWait: Int64 { -22 }
     static var peerClosed: Int64 { -24 }
     static var notFound: Int64 { -25 }
+    static var alreadyBound: Int64 { -27 }
     static var accessDenied: Int64 { -30 }
 }
 
@@ -154,7 +158,10 @@ struct Handle: ~Copyable {
 
 /// A port, with object_bind and port_wait.
 struct Port: ~Copyable {
-    let handle = Handle(creating: CROI_SYS_PORT_CREATE)
+    let handle: Handle
+
+    /// `options`: CROI_PORT_BIND_TO_INTERRUPT for interrupts' packets.
+    init(options: UInt64 = 0) { handle = Handle(creating: CROI_SYS_PORT_CREATE, options: options) }
 
     /// object_bind of one item: its status, or the call's.
     func bind(_ source: borrowing Handle, _ options: UInt32, key: UInt64, trigger: UInt64 = 0) -> Int64 {

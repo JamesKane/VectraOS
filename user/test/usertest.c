@@ -1266,111 +1266,10 @@ static int64_t drivers(const startup_t *s) {
   return firmware(s);
 }
 
-// Mode 11 (K9c): interrupt objects. Virtual ones through their whole
-// state machine, then a real device per arch with a fixed interrupt:
-// amd64 the CMOS RTC's periodic interrupt (GSI 8, edge), arm64 the PL031
-// alarm (INTID 34, level), rv64 the goldfish RTC alarm (GSI 11, level).
-#define ERR_ALREADY_BOUND (-27)
-#define ERR_CANCELED (-23)
-#if defined(__x86_64__)
-#define IRQ_NUMBER 8
-#define IRQ_LEVEL 0
-#define IRQ_WAITS 16
-static void outb(uint16_t port, uint8_t value) { __asm__ volatile("outb %0, %1" ::"a"(value), "Nd"(port)); }
-static uint8_t inb(uint16_t port) {
-  uint8_t value;
-  __asm__ volatile("inb %1, %0" : "=a"(value) : "Nd"(port));
-  return value;
-}
-static uint8_t cmos_read(uint8_t reg) {
-  outb(0x70, 0x80 | reg);  // NMIs stay off while we poke
-  return inb(0x71);
-}
-static void cmos_write(uint8_t reg, uint8_t value) {
-  outb(0x70, 0x80 | reg);
-  outb(0x71, value);
-}
-static volatile uint32_t *irq_device_setup(const startup_t *s) {
-  uint32_t ports = 0;
-  CHECK(250, resource_create(s->resource, CROI_RSRC_KIND_IOPORT, 0x70, 2, &ports) == 0 &&
-                 sys(CROI_SYS_IOPORTS_REQUEST, ports, 0x70, 2, 0, 0) == 0);
-  return 0;
-}
-static void irq_device_start(volatile uint32_t *regs) {  // 1024 Hz periodic
-  (void)regs;
-  cmos_write(0xA, (cmos_read(0xA) & 0xF0) | 6);
-  cmos_write(0xB, cmos_read(0xB) | 0x40);
-  cmos_read(0xC);
-}
-static void irq_device_clear(volatile uint32_t *regs) {
-  (void)regs;
-  cmos_read(0xC);
-}
-static void irq_device_stop(volatile uint32_t *regs) {
-  (void)regs;
-  cmos_write(0xB, cmos_read(0xB) & ~0x40);
-  cmos_read(0xC);
-}
-#else
-#if defined(__aarch64__)
-#define IRQ_NUMBER 34
-#define IRQ_DEVICE 0x09010000ull
-#define IRQ_WAITS 1  // the PL031 matches whole seconds
-#else
-#define IRQ_NUMBER 11
-#define IRQ_DEVICE 0x101000ull
-#define IRQ_WAITS 8
-#endif
-#define IRQ_LEVEL 1
-static volatile uint32_t *irq_device_setup(const startup_t *s) {
-  return (volatile uint32_t *)map_physical(s, s->resource, IRQ_DEVICE, PAGE, CROI_CACHE_POLICY_UNCACHED_DEVICE,
-                                           CROI_VM_PERM_READ | CROI_VM_PERM_WRITE);
-}
-#if defined(__aarch64__)
-static void irq_device_start(volatile uint32_t *irq_regs) {  // the next second
-  irq_regs[1] = irq_regs[0] + 1;      // RTCMR = RTCDR + 1
-  irq_regs[4] = 1;                    // RTCIMSC
-}
-static void irq_device_clear(volatile uint32_t *irq_regs) { irq_regs[7] = 1; }  // RTCICR
-static void irq_device_stop(volatile uint32_t *irq_regs) {
-  irq_regs[4] = 0;
-  irq_regs[7] = 1;
-}
-#else
-static void irq_device_start(volatile uint32_t *irq_regs) {  // 1 ms from now
-  uint64_t now = irq_regs[0];         // TIME_LOW latches TIME_HIGH
-  now |= (uint64_t)irq_regs[1] << 32;
-  now += 1000000;
-  irq_regs[4] = 1;  // IRQ_ENABLED
-  irq_regs[3] = (uint32_t)(now >> 32);
-  irq_regs[2] = (uint32_t)now;  // ALARM_LOW arms it
-}
-static void irq_device_clear(volatile uint32_t *irq_regs) { irq_regs[7] = 1; }  // CLEAR_INTERRUPT
-static void irq_device_stop(volatile uint32_t *irq_regs) {
-  irq_regs[4] = 0;
-  irq_regs[5] = 1;  // CLEAR_ALARM
-  irq_regs[7] = 1;
-}
-#endif
-#endif
-
+// Mode 11 (K9c) moved to the interrupts suite (user/test/swift/InterruptSuite.swift)
+// when V1 cut interrupt_wait, interrupt_destroy and virtual interrupts (D29).
 static int64_t port_next(uint32_t port, uint64_t ns, croi_port_packet_t *packet) {
   return sys(CROI_SYS_PORT_WAIT, port, ns == 0 ? 0 : now_ns() + ns, (uint64_t)packet, 0, 0);
-}
-
-// A worker: interrupt_wait on `handle`; the status and time land here.
-typedef struct {
-  uint32_t handle;
-  volatile int64_t status;
-  volatile uint64_t time;
-} irq_waiter_t;
-static void irq_waiter(uint64_t arg) {
-  irq_waiter_t *w = (irq_waiter_t *)arg;
-  uint64_t time = 0;
-  int64_t status = sys(CROI_SYS_INTERRUPT_WAIT, w->handle, (uint64_t)&time, 0, 0, 0);
-  w->time = time;
-  w->status = status;
-  sys(CROI_SYS_THREAD_EXIT, 0, 0, 0, 0, 0);
 }
 
 static void join_checked(uint32_t thread) {
@@ -1378,75 +1277,9 @@ static void join_checked(uint32_t thread) {
   sys(CROI_SYS_HANDLE_CLOSE, thread, 0, 0, 0, 0);
 }
 
-static int64_t virtual_interrupts(const startup_t *s, uint32_t port) {
-  uint32_t v = 0, v2 = 0, plain = 0;
-  croi_port_packet_t p;
-  uint64_t time = 0;
-  CHECK(252, sys(CROI_SYS_INTERRUPT_CREATE, 0, 0, CROI_INTERRUPT_VIRTUAL | CROI_INTERRUPT_REMAP_IRQ, (uint64_t)&v,
-                 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_INTERRUPT_CREATE, 0, 0, CROI_INTERRUPT_VIRTUAL, (uint64_t)&v, 0) == 0 &&
-                 (wait_for(v, CROI_VIRTUAL_INTERRUPT_UNTRIGGERED, 0) & CROI_VIRTUAL_INTERRUPT_UNTRIGGERED) &&
-                 sys(CROI_SYS_INTERRUPT_TRIGGER, v, 1, 5, 0, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_INTERRUPT_SET_AFFINITY, v, 1, 0, 0, 0) == ERR_NOT_SUPPORTED &&
-                 sys(CROI_SYS_INTERRUPT_ACK, v, 0, 0, 0, 0) == ERR_BAD_STATE);
-  // Bound: a packet per trigger, the next only after an ack.
-  CHECK(253, sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&plain, 0, 0, 0) == 0 &&
-                 bind1(plain, v, CROI_BIND_INTERRUPT | CROI_BIND_PERSISTENT, 9, 0) == ERR_WRONG_TYPE &&
-                 bind1(port, v, CROI_BIND_INTERRUPT, 9, 0) == ERR_INVALID_ARGS &&
-                 bind1(port, v, CROI_BIND_INTERRUPT | CROI_BIND_PERSISTENT, 9, 0) == 0 &&
-                 bind1(port, v, CROI_BIND_INTERRUPT | CROI_BIND_PERSISTENT, 9, 0) == ERR_ALREADY_BOUND &&
-                 sys(CROI_SYS_INTERRUPT_WAIT, v, 0, 0, 0, 0) == ERR_BAD_STATE);
-  sys(CROI_SYS_HANDLE_CLOSE, plain, 0, 0, 0, 0);
-  CHECK(254, sys(CROI_SYS_INTERRUPT_TRIGGER, v, 0, 1111, 0, 0) == 0 &&
-                 !(wait_for(v, CROI_VIRTUAL_INTERRUPT_UNTRIGGERED, 0) & CROI_VIRTUAL_INTERRUPT_UNTRIGGERED) &&
-                 port_next(port, 1000000000, &p) == 0 && p.type == CROI_PKT_TYPE_INTERRUPT && p.key == 9 &&
-                 p.payload[0] == 1111);
-  CHECK(255, sys(CROI_SYS_INTERRUPT_TRIGGER, v, 0, 2222, 0, 0) == 0 && port_next(port, 0, &p) == ERR_TIMED_OUT &&
-                 sys(CROI_SYS_INTERRUPT_ACK, v, 0, 0, 0, 0) == 0 && port_next(port, 0, &p) == 0 &&
-                 p.payload[0] == 2222 &&
-                 !(wait_for(v, CROI_VIRTUAL_INTERRUPT_UNTRIGGERED, 0) & CROI_VIRTUAL_INTERRUPT_UNTRIGGERED) &&
-                 sys(CROI_SYS_INTERRUPT_ACK, v, 0, 0, 0, 0) == 0 &&
-                 (wait_for(v, CROI_VIRTUAL_INTERRUPT_UNTRIGGERED, 0) & CROI_VIRTUAL_INTERRUPT_UNTRIGGERED));
-  // Unbound with a packet queued: it counts as triggered again.
-  CHECK(256, sys(CROI_SYS_INTERRUPT_TRIGGER, v, 0, 3333, 0, 0) == 0 &&
-                 sys(CROI_SYS_PORT_CANCEL, port, v, 9, 0, 0) == 0 &&
-                 sys(CROI_SYS_PORT_CANCEL, port, v, 9, 0, 0) == 0 &&
-                 port_next(port, 0, &p) == ERR_TIMED_OUT &&
-                 sys(CROI_SYS_INTERRUPT_WAIT, v, (uint64_t)&time, 0, 0, 0) == 0 && time == 3333);
-  // A thread waiting: woken by a trigger; canceled by closing its handle.
-  irq_waiter_t w = {.handle = v, .status = 1};
-  uint32_t worker = start_thread(s, irq_waiter, (uint64_t)&w);
-  sleep_ns(10000000);
-  CHECK(257, sys(CROI_SYS_INTERRUPT_TRIGGER, v, 0, 4444, 0, 0) == 0);
-  join_checked(worker);
-  CHECK(258, w.status == 0 && w.time == 4444);
-  CHECK(259, sys(CROI_SYS_HANDLE_DUPLICATE, v, 1u << 31, (uint64_t)&v2, 0, 0) == 0);
-  w.handle = v2, w.status = 1;
-  worker = start_thread(s, irq_waiter, (uint64_t)&w);
-  sleep_ns(10000000);
-  CHECK(260, sys(CROI_SYS_INTERRUPT_WAIT, v, 0, 0, 0, 0) == ERR_BAD_STATE &&  // one waiter at a time
-                 sys(CROI_SYS_HANDLE_CLOSE, v2, 0, 0, 0, 0) == 0);
-  join_checked(worker);
-  CHECK(261, w.status == ERR_CANCELED);
-  // Destroyed: a waiter wakes CANCELED, and so does everything after.
-  w.handle = v, w.status = 1;
-  worker = start_thread(s, irq_waiter, (uint64_t)&w);
-  sleep_ns(10000000);
-  CHECK(262, sys(CROI_SYS_INTERRUPT_DESTROY, v, 0, 0, 0, 0) == 0);
-  join_checked(worker);
-  CHECK(263, w.status == ERR_CANCELED && sys(CROI_SYS_INTERRUPT_TRIGGER, v, 0, 1, 0, 0) == ERR_CANCELED &&
-                 sys(CROI_SYS_INTERRUPT_WAIT, v, 0, 0, 0, 0) == ERR_CANCELED &&
-                 sys(CROI_SYS_HANDLE_CLOSE, v, 0, 0, 0, 0) == 0);
-  return 0x600D;
-}
-
-// K9d: MSI. amd64: edu delivers a real MSI (port and wait); virtio-blk's
-// MSI-X table (not enabled, so it never fires) shows the kernel
-// programming, masking and moving its entries. Both are found by scanning
-// bus 0 and skipped if absent (other machines boot this kernel too), and
-// every config register touched is put back. Elsewhere msi_allocate is
-// NOT_SUPPORTED until the ITS / IMSIC.
-#define ECAM 0xE0000000ull  // q35's (amd64's MSI test)
+// PCI config space for the IOMMU test (mode 18): bus 0's function-0
+// devices through segment 0's ECAM.
+#define ECAM 0xE0000000ull  // q35's
 // A physical VMO over [base, base + size) under the root resource, and a
 // read/write uncached mapping of it.
 static uint32_t physical_vmo(const startup_t *s, uint64_t base, uint64_t size, volatile uint8_t **at) {
@@ -1488,296 +1321,6 @@ static uint32_t find_device(volatile uint8_t *bus, uint32_t vendor_mask, uint32_
     if ((cfg32(cfg, 0) & vendor_mask) == id && (*at = capability(cfg, cap)) != 0) return device << 15;
   }
   return 0;
-}
-
-#if defined(__x86_64__) || defined(__aarch64__) || defined(__riscv)
-// K12f: with interrupt remapping (VT-d) a message is in the remappable
-// format (bit 4, SHV bit 3, data 0) and names an entry (the handle, in
-// address bits 19:5 and 2) the kernel wrote; old-style messages are
-// blocked.
-static int remapped(uint64_t address) { return (address & 0x10) != 0; }
-// K12g: with AMD-Vi remapping the address is the plain one and the data an
-// index the kernel allocated (0x100 up; vectors are 0xB0-0xEF).
-static int amd_remapped(uint32_t data) { return data >= 0x100; }
-static uint32_t handle_of(uint32_t address) { return ((address >> 5) & 0x7FFF) | ((address >> 2) & 1) << 15; }
-
-// K12h: on arm64 the message is the GICv3 ITS's doorbell and an EventID
-// (the LPI less 8192); a move keeps it (MOVI); an event not mapped for a
-// device goes nowhere.
-#if defined(__aarch64__)
-static const int its = 1;
-#else
-static const int its = 0;
-#endif
-// K12i: on rv64 the message is a hart's IMSIC file and an identity; a move
-// changes the address (another hart's file), the data stays. No remapping
-// without the RISC-V IOMMU's MSI page tables, so nothing to refuse (297).
-#if defined(__riscv)
-static const int imsic = 1;
-#else
-static const int imsic = 0;
-#endif
-
-static int64_t msi_test(const startup_t *s, uint32_t port) {
-  if (imsic) {
-    // rv64 without AIA (the PLIC): no MSIs at all.
-    uint32_t probe = 0;
-    int64_t status = sys(CROI_SYS_MSI_ALLOCATE, s->resource, 1, (uint64_t)&probe, 0, 0);
-    if (status == ERR_NOT_SUPPORTED) return 0x600D;
-    CHECK(281, status == 0);
-    sys(CROI_SYS_HANDLE_CLOSE, probe, 0, 0, 0, 0);
-  }
-  volatile uint8_t *bus = 0;
-  uint32_t bus_vmo = physical_vmo(s, s->ecam ? s->ecam : ECAM, 32 * 0x8000, &bus);  // bus 0, devices 0-31, function 0
-
-  // Allocations: the MSI resource; a power of two up to 32.
-  uint32_t msi = 0, tracing = 0, intr = 0, other = 0, anon = 0;
-  CHECK(283, resource_create(s->resource, CROI_RSRC_KIND_SYSTEM, CROI_RSRC_SYSTEM_TRACING_BASE, 1, &tracing) == 0 &&
-                 sys(CROI_SYS_MSI_ALLOCATE, tracing, 1, (uint64_t)&msi, 0, 0) == ERR_OUT_OF_RANGE &&
-                 sys(CROI_SYS_MSI_ALLOCATE, s->resource, 3, (uint64_t)&msi, 0, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_MSI_ALLOCATE, s->resource, 64, (uint64_t)&msi, 0, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_MSI_ALLOCATE, s->resource, 1, (uint64_t)&msi, 0, 0) == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, tracing, 0, 0, 0, 0);
-  croi_info_msi_t info = {};
-  CHECK(284, sys(CROI_SYS_OBJECT_GET_INFO, msi, CROI_INFO_MSI, (uint64_t)&info, sizeof info, 0) == 0 &&
-                 (imsic ? info.target_addr != 0 && info.target_data == info.base_irq_id
-                  : its ? info.target_addr != 0 && info.base_irq_id >= 8192 && info.target_data == info.base_irq_id - 8192
-                  : remapped(info.target_addr)
-                      ? (info.target_addr & ~0xFFFFFull) == 0xFEE00000 && (info.target_addr & 8) && info.target_data == 0
-                  : amd_remapped(info.target_data)
-                      ? info.target_addr == 0xFEE00000 && info.target_data < 0x800
-                      : (info.target_addr & ~0xFF000ull) == 0xFEE00000 && info.target_data == info.base_irq_id) &&
-                 (its || imsic || (info.base_irq_id >= 0xB0 && info.base_irq_id < 0xF0)) && info.num_irq == 1 &&
-                 info.interrupt_count == 0);
-  uint32_t cap = 0;
-  uint32_t edu_at = find_device(bus, ~0u, 0x11e81234, 0x05, &cap);
-  if (edu_at != 0) {
-  volatile uint8_t *edu = bus + edu_at;
-  uint32_t command = cfg32(edu, 4) & 0xFFFF;
-  cfg32_write(edu, 4, command | 1u << 1 | 1u << 2 | 1u << 10);  // memory, bus master, no INTx
-  // Interrupt objects: the capability must be MSI's; ids once each.
-  CHECK(285, sys(CROI_SYS_VMO_CREATE, PAGE, 0, (uint64_t)&anon, 0, 0) == 0 &&
-                 sys6(CROI_SYS_MSI_CREATE, msi, 0, 0, anon, 0, (uint64_t)&intr) == ERR_INVALID_ARGS &&
-                 sys6(CROI_SYS_MSI_CREATE, msi, 0, 0, bus_vmo, edu_at, (uint64_t)&intr) == ERR_INVALID_ARGS &&
-                 sys6(CROI_SYS_MSI_CREATE, msi, 0, 1, bus_vmo, edu_at + cap, (uint64_t)&intr) ==
-                     ERR_INVALID_ARGS &&
-                 sys6(CROI_SYS_MSI_CREATE, msi, 2, 0, bus_vmo, edu_at + cap, (uint64_t)&intr) ==
-                     ERR_INVALID_ARGS &&
-                 sys6(CROI_SYS_MSI_CREATE, msi, 0, 0, bus_vmo, edu_at + cap, (uint64_t)&intr) == 0 &&
-                 sys6(CROI_SYS_MSI_CREATE, msi, 0, 0, bus_vmo, edu_at + cap, (uint64_t)&other) ==
-                     ERR_ALREADY_BOUND &&
-                 sys(CROI_SYS_OBJECT_GET_INFO, msi, CROI_INFO_MSI, (uint64_t)&info, sizeof info, 0) == 0 &&
-                 info.interrupt_count == 1 &&
-                 sys(CROI_SYS_INTERRUPT_SET_AFFINITY, intr, 2, 0, 0, 0) == ERR_NOT_SUPPORTED);
-  sys(CROI_SYS_HANDLE_CLOSE, anon, 0, 0, 0, 0);
-  // The driver programs the capability from the info and enables MSI.
-  uint16_t control = *(volatile uint16_t *)(edu + cap + 2);
-  cfg32_write(edu, cap + 4, (uint32_t)info.target_addr);
-  if (control & (1u << 7)) {
-    cfg32_write(edu, cap + 8, (uint32_t)(info.target_addr >> 32));
-    *(volatile uint16_t *)(edu + cap + 0xC) = (uint16_t)info.target_data;
-  } else {
-    *(volatile uint16_t *)(edu + cap + 8) = (uint16_t)info.target_data;
-  }
-  *(volatile uint16_t *)(edu + cap + 2) = (uint16_t)((control & ~(7u << 4)) | 1);  // one message, enabled
-
-  // edu raises an interrupt when 0x60 is written; it reaches the port...
-  volatile uint8_t *regs = 0;
-  uint32_t regs_vmo = physical_vmo(s, bar(edu, 0), PAGE, &regs);
-  volatile uint32_t *edu_regs = (volatile uint32_t *)regs;
-  edu_regs[1] = 0x12345678;  // liveness: reads back inverted
-  CHECK(286, edu_regs[1] == ~0x12345678u);
-  croi_port_packet_t p;
-  uint64_t before = now_ns();
-  CHECK(287, bind1(port, intr, CROI_BIND_INTERRUPT | CROI_BIND_PERSISTENT, 77, 0) == 0);
-  edu_regs[0x60 / 4] = 1;
-  CHECK(288, port_next(port, 1000000000, &p) == 0 && p.type == CROI_PKT_TYPE_INTERRUPT && p.key == 77 &&
-                 p.payload[0] >= before && edu_regs[0x24 / 4] == 1);
-  edu_regs[0x64 / 4] = 1;
-  // ...and, unbound, a waiting thread.
-  uint64_t time = 0;
-  CHECK(289, sys(CROI_SYS_INTERRUPT_ACK, intr, 0, 0, 0, 0) == 0 && port_next(port, 20000000, &p) == ERR_TIMED_OUT &&
-                 sys(CROI_SYS_PORT_CANCEL, port, intr, 77, 0, 0) == 0);
-  before = now_ns();
-  edu_regs[0x60 / 4] = 2;
-  CHECK(290, sys(CROI_SYS_INTERRUPT_WAIT, intr, (uint64_t)&time, 0, 0, 0) == 0 && time >= before);
-  edu_regs[0x64 / 4] = 2;
-  // VT-d isn't checked: QEMU's model passes compatibility-format MSIs
-  // through whatever CFI says (hardware with CFIS clear, as croi leaves
-  // it, blocks them).
-  if (its || amd_remapped(info.target_data)) {
-    // An old-style message for the same vector is blocked: nothing arrives
-    // (AMD-Vi: index 0xB0 up to 0xFF is no entry). arm64: an event not
-    // mapped for edu, at the ITS's doorbell.
-    cfg32_write(edu, cap + 4, its ? (uint32_t)info.target_addr : 0xFEE00000);
-    *(volatile uint16_t *)(edu + cap + ((control & (1u << 7)) ? 0xC : 8)) =
-        (uint16_t)(its ? info.target_data + 64 : info.base_irq_id);
-    // Bound and acknowledged (an MSI stays masked until then, after the
-    // wait above), so a delivery would arrive.
-    CHECK(297, bind1(port, intr, CROI_BIND_INTERRUPT | CROI_BIND_PERSISTENT, 78, 0) == 0 &&
-                   sys(CROI_SYS_INTERRUPT_ACK, intr, 0, 0, 0, 0) == 0);
-    edu_regs[0x60 / 4] = 4;
-    CHECK(297, port_next(port, 20000000, &p) == ERR_TIMED_OUT);
-    edu_regs[0x64 / 4] = 4;
-    sys(CROI_SYS_PORT_CANCEL, port, intr, 78, 0, 0);
-  }
-  *(volatile uint16_t *)(edu + cap + 2) = control;  // MSI as it was
-  cfg32_write(edu, 4, command);                     // and the command register
-  CHECK(291, sys(CROI_SYS_INTERRUPT_DESTROY, intr, 0, 0, 0, 0) == 0 && sys(CROI_SYS_HANDLE_CLOSE, intr, 0, 0, 0, 0) == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, regs_vmo, 0, 0, 0, 0);
-  }
-  sys(CROI_SYS_HANDLE_CLOSE, msi, 0, 0, 0, 0);
-
-  // MSI-X: virtio-blk's table. Entries programmed from the allocation,
-  // unmasked; entry 1 moved to CPU 1 (QEMU's APIC IDs are CPU numbers);
-  // cleared and masked when the objects go.
-  uint32_t msix = 0;
-  uint32_t virtio_at = find_device(bus, 0xFFFF, 0x1af4, 0x11, &msix);
-  if (virtio_at == 0) {
-    sys(CROI_SYS_HANDLE_CLOSE, bus_vmo, 0, 0, 0, 0);
-    return 0x600D;
-  }
-  volatile uint8_t *virtio = bus + virtio_at;
-  CHECK(292, (*(volatile uint16_t *)(virtio + msix + 2) & 0x7FF) >= 1 &&
-                 !(*(volatile uint16_t *)(virtio + msix + 2) & 0x8000));  // MSI-X not enabled
-  uint32_t virtio_command = cfg32(virtio, 4) & 0xFFFF;
-  cfg32_write(virtio, 4, virtio_command | 1u << 1);
-  uint32_t table = cfg32(virtio, msix + 4);
-  if (bar(virtio, table & 7) == 0) {  // no address assigned: nothing to look at
-    cfg32_write(virtio, 4, virtio_command);
-    sys(CROI_SYS_HANDLE_CLOSE, bus_vmo, 0, 0, 0, 0);
-    return 0x600D;
-  }
-  uint64_t table_base = bar(virtio, table & 7) + (table & ~7u);
-  volatile uint8_t *entries = 0;
-  uint32_t table_vmo = physical_vmo(s, table_base & ~(PAGE - 1), PAGE, &entries);
-  volatile uint32_t *e = (volatile uint32_t *)(entries + (table_base & (PAGE - 1)));
-  uint32_t x0 = 0, x1 = 0;
-  CHECK(293, sys(CROI_SYS_MSI_ALLOCATE, s->resource, 2, (uint64_t)&msi, 0, 0) == 0 &&
-                 sys(CROI_SYS_OBJECT_GET_INFO, msi, CROI_INFO_MSI, (uint64_t)&info, sizeof info, 0) == 0 &&
-                 info.base_irq_id % 2 == 0 &&
-                 sys6(CROI_SYS_MSI_CREATE, msi, CROI_MSI_MODE_MSI_X, 0, table_vmo, table_base & (PAGE - 1),
-                      (uint64_t)&x0) == 0 &&
-                 sys6(CROI_SYS_MSI_CREATE, msi, CROI_MSI_MODE_MSI_X, 1, table_vmo, table_base & (PAGE - 1),
-                      (uint64_t)&x1) == 0);
-  // Remapped: one entry per vector (consecutive handles, data 0), the
-  // move to CPU 1 a handle in its range (entries 128 + cpu * 64 + vector).
-  int r = !its && !imsic && remapped(info.target_addr), amd = !its && !imsic && amd_remapped(info.target_data);
-  CHECK(294, e[0] == (uint32_t)info.target_addr && e[1] == 0 && e[2] == info.target_data && (e[3] & 1) == 0 &&
-                 (r ? handle_of(e[4]) == handle_of(e[0]) + 1 && e[6] == 0
-                    : e[4] == (uint32_t)info.target_addr && e[6] == info.target_data + 1) && (e[7] & 1) == 0);
-  CHECK(295, sys(CROI_SYS_INTERRUPT_SET_AFFINITY, x1, 1u << 1, 0, 0, 0) == 0 &&
-                 (imsic ? e[4] != (uint32_t)info.target_addr && e[4] != 0 && e[6] == info.target_data + 1
-                  : its   ? e[4] == (uint32_t)info.target_addr && e[6] == info.target_data + 1
-                  : r     ? (handle_of(e[4]) - 128) / 64 == 1 && e[6] == 0
-                  : amd ? e[4] == 0xFEE00000 && e[6] >= 0x100 && e[6] < 0x800 && e[6] != info.target_data + 1
-                        : ((e[4] >> 12) & 0xFF) == 1 && e[6] >= 0xB0 && e[6] < 0xF0) &&
-                 (e[7] & 1) == 0 && e[0] == (uint32_t)info.target_addr);
-  CHECK(296, sys(CROI_SYS_HANDLE_CLOSE, x1, 0, 0, 0, 0) == 0 && e[4] == 0 && e[6] == 0 && (e[7] & 1) == 1 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, x0, 0, 0, 0, 0) == 0 && e[0] == 0 && (e[3] & 1) == 1);
-  cfg32_write(virtio, 4, virtio_command);
-  sys(CROI_SYS_HANDLE_CLOSE, table_vmo, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, msi, 0, 0, 0, 0);
-  sys(CROI_SYS_HANDLE_CLOSE, bus_vmo, 0, 0, 0, 0);
-  return 0x600D;
-}
-#else
-static int64_t msi_test(const startup_t *s, uint32_t port) {
-  (void)port;
-  uint32_t msi = 0;
-  CHECK(281, sys(CROI_SYS_MSI_ALLOCATE, s->resource, 1, (uint64_t)&msi, 0, 0) == ERR_NOT_SUPPORTED);
-  return 0x600D;
-}
-#endif
-
-static int64_t interrupts(const startup_t *s) {
-  uint32_t port = 0, irq = 0, intr = 0, other = 0;
-  croi_port_packet_t p;
-  CHECK(264, sys(CROI_SYS_PORT_CREATE, 2, (uint64_t)&port, 0, 0, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_PORT_CREATE, CROI_PORT_BIND_TO_INTERRUPT, (uint64_t)&port, 0, 0, 0) == 0);
-  int64_t result = virtual_interrupts(s, port);
-  if (result != 0x600D) return result;
-
-  // Creation: the IRQ resource must cover the number; one object per number.
-  volatile uint32_t *regs = irq_device_setup(s);
-  CHECK(265, resource_create(s->resource, CROI_RSRC_KIND_IRQ, IRQ_NUMBER, 1, &irq) == 0 &&
-                 sys(CROI_SYS_INTERRUPT_CREATE, irq, IRQ_NUMBER + 1, 0, (uint64_t)&intr, 0) == ERR_OUT_OF_RANGE &&
-                 sys(CROI_SYS_INTERRUPT_CREATE, s->resource, 5000, 0, (uint64_t)&intr, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_INTERRUPT_CREATE, irq, IRQ_NUMBER, 1u << 8, (uint64_t)&intr, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_INTERRUPT_CREATE, irq, IRQ_NUMBER, CROI_INTERRUPT_MODE_EDGE_BOTH, (uint64_t)&intr, 0) ==
-                     ERR_NOT_SUPPORTED);
-  CHECK(266, sys(CROI_SYS_INTERRUPT_CREATE, irq, IRQ_NUMBER, 0, (uint64_t)&intr, 0) == 0 &&
-                 sys(CROI_SYS_INTERRUPT_CREATE, irq, IRQ_NUMBER, 0, (uint64_t)&other, 0) == ERR_ALREADY_BOUND &&
-                 sys(CROI_SYS_INTERRUPT_TRIGGER, intr, 0, 1, 0, 0) == ERR_BAD_STATE);
-  // Affinity: to CPU 1 (the kernel checks where it was taken).
-  CHECK(267, sys(CROI_SYS_INTERRUPT_SET_AFFINITY, intr, 0, 0, 0, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_INTERRUPT_SET_AFFINITY, intr, 1ull << 63, 0, 0, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_INTERRUPT_SET_AFFINITY, intr, 1u << 1, 0, 0, 0) == 0);
-
-  // Bound to a port.
-  CHECK(268, bind1(port, intr, CROI_BIND_INTERRUPT | CROI_BIND_PERSISTENT, 42, 0) == 0);
-  uint64_t before = now_ns();
-  irq_device_start(regs);
-  CHECK(269, port_next(port, 3000000000ull, &p) == 0 && p.type == CROI_PKT_TYPE_INTERRUPT && p.key == 42 &&
-                 p.payload[0] >= before && p.payload[0] <= now_ns());
-#if IRQ_LEVEL && !defined(__riscv)
-  // Level: still asserted, so an ack without clearing it fires again.
-  // (Not on rv64: QEMU's PLIC sets pending only on a rising line, so a
-  // source completed while still high never comes back; real gateways
-  // forward it again.)
-  CHECK(270, sys(CROI_SYS_INTERRUPT_ACK, intr, 0, 0, 0, 0) == 0 && port_next(port, 500000000, &p) == 0 &&
-                 p.key == 42);
-  irq_device_stop(regs);
-#elif IRQ_LEVEL
-  irq_device_stop(regs);
-#else
-  // Edge: further edges while unacked are only remembered, then sent on ack.
-  irq_device_clear(regs);
-  sleep_ns(20000000);
-  CHECK(270, port_next(port, 0, &p) == ERR_TIMED_OUT && sys(CROI_SYS_INTERRUPT_ACK, intr, 0, 0, 0, 0) == 0 &&
-                 port_next(port, 500000000, &p) == 0 && p.key == 42);
-  irq_device_stop(regs);
-  for (int i = 0; i < 3 && port_next(port, 0, &p) != ERR_TIMED_OUT;) i++;
-#endif
-  // Quiet once the device is: ack, then nothing more.
-  sys(CROI_SYS_INTERRUPT_ACK, intr, 0, 0, 0, 0);
-  for (int i = 0; i < 3 && port_next(port, 20000000, &p) == 0; i++) sys(CROI_SYS_INTERRUPT_ACK, intr, 0, 0, 0, 0);
-  CHECK(271, port_next(port, 50000000, &p) == ERR_TIMED_OUT &&
-                 sys(CROI_SYS_PORT_CANCEL, port, intr, 42, 0, 0) == 0);
-
-  // interrupt_wait: the woken thread's latency from the fire's timestamp.
-  uint64_t latencies[IRQ_WAITS];
-  irq_device_start(regs);
-  for (int i = 0; i < IRQ_WAITS; i++) {
-    uint64_t time = 0;
-    CHECK(272, sys(CROI_SYS_INTERRUPT_WAIT, intr, (uint64_t)&time, 0, 0, 0) == 0 && time != 0);
-    latencies[i] = now_ns() - time;
-    irq_device_clear(regs);
-#if IRQ_LEVEL
-    if (i + 1 < IRQ_WAITS) irq_device_start(regs);
-#endif
-  }
-  irq_device_stop(regs);
-  for (int i = 1; i < IRQ_WAITS; i++) {  // insertion sort for the median
-    uint64_t v = latencies[i];
-    int j = i;
-    for (; j > 0 && latencies[j - 1] > v; j--) latencies[j] = latencies[j - 1];
-    latencies[j] = v;
-  }
-  sys(CROI_SYS_TEST_REPORT, latencies[IRQ_WAITS / 2], 0, 0, 0, 0);
-
-  // Destroyed: everything is CANCELED; the number is free again.
-  CHECK(273, sys(CROI_SYS_INTERRUPT_DESTROY, intr, 0, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_INTERRUPT_ACK, intr, 0, 0, 0, 0) == ERR_BAD_STATE &&
-                 sys(CROI_SYS_INTERRUPT_WAIT, intr, 0, 0, 0, 0) == ERR_CANCELED &&
-                 sys(CROI_SYS_INTERRUPT_SET_AFFINITY, intr, 1, 0, 0, 0) == ERR_CANCELED &&
-                 sys(CROI_SYS_HANDLE_CLOSE, intr, 0, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_INTERRUPT_CREATE, irq, IRQ_NUMBER, 0, (uint64_t)&intr, 0) == 0 &&
-                 sys(CROI_SYS_HANDLE_CLOSE, intr, 0, 0, 0, 0) == 0);
-  sys(CROI_SYS_HANDLE_CLOSE, irq, 0, 0, 0, 0);
-  result = msi_test(s, port);
-  sys(CROI_SYS_HANDLE_CLOSE, port, 0, 0, 0, 0);
-  return result;
 }
 
 // Mode 12 (K9e): DMA through the stub IOMMU. BTIs, pinning (addresses,
@@ -2067,7 +1610,6 @@ static int64_t iommu_test(const startup_t *s) {
     CHECK(410, port_next(mport, 1000000000, &p) == 0 && p.type == CROI_PKT_TYPE_INTERRUPT && p.key == 79);
     *(volatile uint32_t *)(regs + 0x64) = 8;
     *(volatile uint16_t *)(edu + cap + 2) = control;
-    sys(CROI_SYS_INTERRUPT_DESTROY, intr, 0, 0, 0, 0);
     sys(CROI_SYS_HANDLE_CLOSE, intr, 0, 0, 0, 0);
     sys(CROI_SYS_HANDLE_CLOSE, mport, 0, 0, 0, 0);
     sys(CROI_SYS_HANDLE_CLOSE, msi, 0, 0, 0, 0);
@@ -2189,8 +1731,9 @@ static void zero_bytes(void *p, uint64_t n) {
   for (volatile uint8_t *b = p; n--; b++) *b = 0;
 }
 
-// Mode 16 (K10c): deadline-carrying wakeups (ext 5). Frame-aligned
-// periods (ext 10) went with display timelines (D27).
+// A deadline profile under `resource`. Mode 16 (K10c, deadline-carrying
+// wakeups) moved to the interrupts suite when V1 cut interrupt_wait and
+// virtual interrupts (D29).
 static int64_t deadline_profile(uint32_t resource, int64_t capacity, int64_t deadline, int64_t period,
                                 uint32_t *out) {
   croi_profile_info_t info;
@@ -2200,133 +1743,6 @@ static int64_t deadline_profile(uint32_t resource, int64_t capacity, int64_t dea
   info.deadline_params.relative_deadline = deadline;
   info.deadline_params.period = period;
   return sys(CROI_SYS_PROFILE_CREATE, resource, 0, (uint64_t)&info, (uint64_t)out, 0);
-}
-
-// K14e (ext 5): an interrupt that hands its waiter an admitted context.
-typedef struct {
-  uint32_t interrupt;
-  volatile uint32_t round;     // rounds done
-  volatile uint32_t spinning;  // in round 3, waiting to be withdrawn
-  volatile uint32_t release;
-  volatile int64_t deadline[4], borrowed[4], cpu[4], start[4];
-  volatile int64_t fell_back;  // round 1: ns until the spent budget sent it back to its own, or -1
-  volatile int64_t withdrawn;  // round 3: back on its own while running, once the context was replaced
-} handoff_waiter_t;
-
-static void handoff_waiter(uint64_t arg) {
-  handoff_waiter_t *w = (handoff_waiter_t *)arg;
-  for (uint32_t i = 0; i < 4; i++) {
-    sys(CROI_SYS_INTERRUPT_WAIT, w->interrupt, 0, 0, 0, 0);
-    w->deadline[i] = sys(CROI_SYS_TEST_PROFILE, 0, 0, 0, 0, 0);
-    w->borrowed[i] = sys(CROI_SYS_TEST_PROFILE, 10, 0, 0, 0, 0);
-    w->cpu[i] = sys(CROI_SYS_TEST_PROFILE, 5, 0, 0, 0, 0);
-    w->start[i] = sys(CROI_SYS_TEST_PROFILE, 3, 0, 0, 0, 0);
-    uint64_t t0 = now_ns();
-    if (i == 0) {
-      while (now_ns() - t0 < 500000) {}  // some of the budget
-    } else if (i == 1) {
-      w->fell_back = -1;  // the rest, and past it
-      while (now_ns() - t0 < 2000000000ull) {
-        if (sys(CROI_SYS_TEST_PROFILE, 10, 0, 0, 0, 0) == -1) {
-          w->fell_back = (int64_t)(now_ns() - t0);
-          break;
-        }
-      }
-    } else if (i == 3) {
-      w->spinning = 1;
-      while (!w->release && now_ns() - t0 < 5000000000ull) {}
-      w->withdrawn = sys(CROI_SYS_TEST_PROFILE, 10, 0, 0, 0, 0) == -1 && sys(CROI_SYS_TEST_PROFILE, 0, 0, 0, 0, 0) == 0;
-    }
-    w->round = i + 1;
-  }
-  sys(CROI_SYS_THREAD_EXIT, 0, 0, 0, 0, 0);
-}
-
-// Waits until `thread` is blocked in interrupt_wait (a trigger before
-// that is consumed by the wait without a wakeup to hand anything on).
-static int blocked_on_interrupt(uint32_t thread) {
-  uint64_t give_up = now_ns() + 2000000000ull, counts[2];
-  croi_info_thread_t info;
-  while (now_ns() < give_up) {
-    if (sys6(CROI_SYS_OBJECT_GET_INFO, thread, CROI_INFO_THREAD, (uint64_t)&info, sizeof info, (uint64_t)&counts[0],
-             (uint64_t)&counts[1]) == 0 && info.state == CROI_THREAD_STATE_BLOCKED_INTERRUPT)
-      return 1;
-    sleep_ns(200000);
-  }
-  return 0;
-}
-
-static int round_done(volatile uint32_t *round, uint32_t want) {
-  uint64_t give_up = now_ns() + 5000000000ull;
-  while (*round < want && now_ns() < give_up) sleep_ns(200000);
-  return *round >= want;
-}
-
-static int64_t interrupt_handoff(const startup_t *s, uint32_t counter, uint32_t fair, uint32_t lend) {
-  uint32_t v = 0, handoff = 0, huge = 0, port = 0, refusal = 99;
-  // 2 ms of budget every 2 s: the CBS rule keeps one period across
-  // wakeups that come within half a second.
-  CHECK(628, deadline_profile(s->resource, 2000000, 2000000000, 2000000000, &handoff) == 0 &&
-                 deadline_profile(s->resource, 10000000, 10000000, 10000000, &huge) == 0 &&
-                 sys(CROI_SYS_INTERRUPT_CREATE, 0, 0, CROI_INTERRUPT_VIRTUAL, (uint64_t)&v, 0) == 0 &&
-                 sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) == 0);
-  // Interrupts only, deadline profiles only, admitted (refused with a
-  // reason); its overruns go to a port.
-  CHECK(629, sys(CROI_SYS_OBJECT_SET_PROFILE, counter, handoff, CROI_PROFILE_HANDOFF, 0, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_OBJECT_SET_PROFILE, v, fair, CROI_PROFILE_HANDOFF, 0, 0) == ERR_INVALID_ARGS &&
-                 bind1(port, v, CROI_BIND_OVERRUN | CROI_BIND_PERSISTENT, 7, 0) == ERR_BAD_STATE &&
-                 sys(CROI_SYS_OBJECT_SET_PROFILE, v, huge, CROI_PROFILE_HANDOFF, (uint64_t)&refusal, 0) == -3 &&
-                 (refusal & 0xFF) == CROI_ADMISSION_CPU_OVERLOADED &&
-                 sys(CROI_SYS_OBJECT_SET_PROFILE, v, handoff, CROI_PROFILE_HANDOFF, (uint64_t)&refusal, 0) == 0 &&
-                 refusal == CROI_ADMISSION_ACCEPTED &&
-                 bind1(port, v, CROI_BIND_OVERRUN | CROI_BIND_PERSISTENT, 7, 0) == 0);
-  handoff_waiter_t h;
-  zero_bytes(&h, sizeof h);
-  h.interrupt = v;
-  uint32_t worker = start_thread(s, handoff_waiter, (uint64_t)&h);
-  for (uint32_t i = 0; i < 3; i++) {
-    CHECK(630, blocked_on_interrupt(worker) && sys(CROI_SYS_INTERRUPT_TRIGGER, v, 0, now_ns(), 0, 0) == 0 &&
-                   round_done(&h.round, i + 1));
-  }
-  // A fair thread woken runs on the context's deadline, on its CPU.
-  CHECK(631, h.deadline[0] == 1 && h.borrowed[0] >= 0 && h.borrowed[0] == h.cpu[0]);
-  // Woken again within the period: the same period (one budget); when
-  // that runs out it carries on on its own profile, an overrun reported.
-  croi_port_packet_t p;
-  CHECK(632, h.deadline[1] == 1 && h.start[1] == h.start[0] && h.fell_back >= 0 &&
-                 port_next(port, 1000000000, &p) == 0 && p.type == CROI_PKT_TYPE_BUDGET_OVERRUN && p.key == 7 &&
-                 p.payload[1] >= 1);
-  // Woken while the budget is spent: on its own.
-  CHECK(633, h.deadline[2] == 0 && h.borrowed[2] == -1);
-  // A new context (fresh budget); replaced by a lend while the woken
-  // thread runs on it, it is withdrawn at once.
-  CHECK(634, sys(CROI_SYS_OBJECT_SET_PROFILE, v, handoff, CROI_PROFILE_HANDOFF, (uint64_t)&refusal, 0) == 0 &&
-                 blocked_on_interrupt(worker) && sys(CROI_SYS_INTERRUPT_TRIGGER, v, 0, now_ns(), 0, 0) == 0 &&
-                 round_done(&h.spinning, 1) && h.deadline[3] == 1 && h.borrowed[3] >= 0 &&
-                 sys(CROI_SYS_OBJECT_SET_PROFILE, v, lend, 0, 0, 0) == 0);
-  h.release = 1;
-  join_checked(worker);
-  CHECK(635, h.withdrawn == 1);
-  uint32_t handles[] = {v, handoff, huge, port};
-  for (int i = 0; i < 4; i++) sys(CROI_SYS_HANDLE_CLOSE, handles[i], 0, 0, 0, 0);
-  return 0;
-}
-
-static int64_t deadline_wakeups(const startup_t *s) {
-  uint32_t deadline = 0, fair = 0, counter = 0;
-  croi_profile_info_t info;
-  zero_bytes(&info, sizeof info);
-  info.flags = CROI_PROFILE_INFO_FLAG_PRIORITY;
-  info.priority = 20;
-  CHECK(380, deadline_profile(s->resource, 1000000, 4000000, 4000000, &deadline) == 0 &&
-                 sys(CROI_SYS_PROFILE_CREATE, s->resource, 0, (uint64_t)&info, (uint64_t)&fair, 0) == 0 &&
-                 sys(CROI_SYS_COUNTER_CREATE, 0, (uint64_t)&counter, 0, 0, 0) == 0);
-  // A counter's lent deadline moved to the counters suite (D25).
-  int64_t handed = interrupt_handoff(s, counter, fair, deadline);
-  if (handed != 0) return handed;
-  uint32_t handles[] = {deadline, fair, counter};
-  for (int i = 0; i < 3; i++) sys(CROI_SYS_HANDLE_CLOSE, handles[i], 0, 0, 0, 0);
-  return 0x600D;
 }
 
 // Mode 17 (K10d): kernel-only extensions reaching user space.
@@ -4847,10 +4263,19 @@ static int64_t idle_states(const startup_t *s) {
   CHECK(730, deep.entries > 0 && stops.entries == 0);
   // An interrupt on CPU 0 with a deadline profile (100 us every 1 ms: a
   // bound of ~0.9 ms) keeps CPU 0 out of the 10 ms state until it goes.
+  // The RTC's (amd64 GSI 8, arm64 INTID 34, rv64 GSI 11), which stays
+  // quiet: V1 cut virtual interrupts (D29).
+#if defined(__x86_64__)
+  const uint64_t rtc = 8;
+#elif defined(__aarch64__)
+  const uint64_t rtc = 34;
+#else
+  const uint64_t rtc = 11;
+#endif
   uint32_t v = 0, profile = 0;
   // (The profile makes CPU 0 choose again at once: counted from before it.)
   CHECK(731, deadline_profile(s->resource, 100000, 1000000, 1000000, &profile) == 0 &&
-                 sys(CROI_SYS_INTERRUPT_CREATE, 0, 0, CROI_INTERRUPT_VIRTUAL, (uint64_t)&v, 0) == 0);
+                 sys(CROI_SYS_INTERRUPT_CREATE, s->resource, rtc, 0, (uint64_t)&v, 0) == 0);
   croi_idle_state_stats_t before = idle_stats(s, 0, 1);
   CHECK(731, sys(CROI_SYS_OBJECT_SET_PROFILE, v, profile, 0, 0, 0) == 0);
   sleep_ns(50000000);
@@ -5227,10 +4652,8 @@ __attribute__((section(".text.start"))) [[noreturn]] void _start(uint64_t mode, 
             : mode == 7 ? ipc((const startup_t *)handle)
             : mode == 9 ? exceptions((const startup_t *)handle)
             : mode == 10 ? drivers((const startup_t *)handle)
-            : mode == 11 ? interrupts((const startup_t *)handle)
             : mode == 12 ? dma((const startup_t *)handle)
             : mode == 13 ? memory_stats((const startup_t *)handle)
-            : mode == 16 ? deadline_wakeups((const startup_t *)handle)
             : mode == 17 ? extensions((const startup_t *)handle, vdso_base)
 #if defined(__x86_64__) || defined(__aarch64__) || defined(__riscv)
             : mode == 18 ? iommu_test((const startup_t *)handle)

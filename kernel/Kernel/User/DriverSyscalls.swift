@@ -105,28 +105,12 @@ extension Syscalls {
         switch number {
         case 140:  // interrupt_create(resource, number, options, out)
             try check(a[3], MemoryLayout<UInt32>.size)
-            let options = UInt32(truncatingIfNeeded: a[2])
-            let object: ObjectPointer
-            if options & UInt32(CROI_INTERRUPT_VIRTUAL) != 0 {
-                object = try InterruptObjects.createVirtual(options: options)
-            } else {
-                guard a[1] <= UInt64(UInt32.max) else { throw .invalidArgs }
-                try Resources.validate(table, handle, kind: UInt32(CROI_RSRC_KIND_IRQ), base: a[1], size: 1)
-                object = try InterruptObjects.create(number: UInt32(a[1]), options: options)
-            }
+            guard a[1] <= UInt64(UInt32.max) else { throw .invalidArgs }
+            try Resources.validate(table, handle, kind: UInt32(CROI_RSRC_KIND_IRQ), base: a[1], size: 1)
+            let object = try InterruptObjects.create(number: UInt32(a[1]), options: UInt32(truncatingIfNeeded: a[2]))
             try addAndPut(object, rights: InterruptObject.defaultRights, a[3], table)
         case 142:  // interrupt_ack(interrupt)
             try InterruptObjects.ack(try table.get(handle, type: .interrupt, rights: .write).object)
-        case 143:  // interrupt_wait(interrupt, timestamp out or 0)
-            if a[1] != 0 { try check(a[1], MemoryLayout<UInt64>.size) }
-            let interrupt = try table.get(handle, type: .interrupt, rights: .wait)
-            let timestamp = try InterruptObjects.wait(interrupt.object, table: table.address, handle: handle)
-            if a[1] != 0 { try put(timestamp, a[1]) }
-        case 144:  // interrupt_destroy(interrupt)
-            if let status = InterruptObjects.destroy(try table.get(handle, type: .interrupt).object) { throw status }
-        case 145:  // interrupt_trigger(interrupt, options, timestamp)
-            guard a[1] == 0 else { throw .invalidArgs }
-            try InterruptObjects.trigger(try table.get(handle, type: .interrupt, rights: .signal).object, timestamp: a[2])
         case 146:  // interrupt_set_affinity(interrupt, cpu mask)
             try InterruptObjects.setAffinity(try table.get(handle, type: .interrupt, rights: .write).object, mask: a[1])
         case 147:  // msi_allocate(MSI resource, count, out)

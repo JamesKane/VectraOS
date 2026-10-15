@@ -78,17 +78,22 @@ include/zbi.h; Todhchai item 20):
 ## Interrupt objects (K9c)
 
 Interrupt objects, K9c (Kernel/Object/InterruptObject.swift,
-Kernel/Irq/DeviceIrqs.swift, include/interrupt.h, syscalls 140-146 in
-User/DriverSyscalls.swift; Todhchai item 13):
+Kernel/Irq/DeviceIrqs.swift, include/interrupt.h, syscalls 140, 142
+and 146 in User/DriverSyscalls.swift; Todhchai item 13):
 - Zircon's InterruptDispatcher: states IDLE / TRIGGERED / NEEDACK /
-  WAITING / DESTROYED, delivered as a port packet (type 7, payload[0] the
+  DESTROYED, delivered as a port packet (type 7, payload[0] the
   timestamp; the port needs BIND_TO_INTERRUPT, and its interrupt packets
   are a list of their own read first, owned by the object so firing never
-  allocates) or to one thread in interrupt_wait. Level interrupts are
-  masked when they fire and unmasked on ack / the next wait. Virtual
-  interrupts (interrupt_trigger) carry UNTRIGGERED (signal 4). Rights are
-  Zircon's (bind READ + port WRITE, ack WRITE, wait WAIT, trigger SIGNAL).
-  Timestamps are monotonic (no suspend, so boot time is the same).
+  allocates). A fire while unbound is kept until bound. Level interrupts
+  are masked when they fire and unmasked on ack. Rights are Zircon's
+  (bind READ + port WRITE, ack WRITE). Timestamps are monotonic (no
+  suspend, so boot time is the same).
+- V1 cut interrupt_wait, interrupt_destroy and interrupt_trigger with
+  virtual interrupts (D29): a bound port is the one way to wait, closing
+  the last handle destroys, and a counter is a virtual interrupt. Tests
+  fire an object as its device would through test hook 13 (syscall 6,
+  `TestHooks.fire`), since a real device can't fire on demand
+  everywhere.
 - Numbers: amd64 GSI (IOAPIC pins, vector 0x30 + GSI below 0x80; MADT
   overrides for MODE_DEFAULT and REMAP_IRQ; else ISA edge-high, PCI
   level-low), arm64 INTID (GICv3 SPIs; active high only), rv64 GSI (PLIC
@@ -96,24 +101,26 @@ User/DriverSyscalls.swift; Todhchai item 13):
   EDGE_BOTH is NOT_SUPPORTED. One object per number (ALREADY_BOUND).
 - `interrupt_set_affinity` (146, croi's): routes to the lowest CPU of the
   mask with `interruptsReady` (IOAPIC physical destination, IROUTER, PLIC
-  enable bits); INVALID_ARGS when none, NOT_SUPPORTED for virtual ones.
+  enable bits); INVALID_ARGS when none.
   Until set, the boot CPU. CPUs another job reserved are skipped (K10d).
 - `DeviceIrqs`: handler table (heap, by number) under `tableLock`, held
   while a handler runs, so `unregister` means no handler is running; lock
   order table -> object -> controller (and object -> scheduler -> port
   packets). A number with no handler is masked when it fires.
-- Differences from Zircon: closing the handle a thread waits through
-  cancels its interrupt_wait (as object waits; Zircon cancels on the last
-  handle). The object is destroyed with its last reference. Ext 5's
-  scheduling-context handoff (K14e) wakes through `signal`.
-- Boot test mode 11 (`ProcessSelfTest.runInterrupts`): virtual interrupts
-  through every state, then each machine's RTC (amd64 CMOS periodic, GSI
-  8, edge; arm64 PL031, INTID 34, level; rv64 goldfish, GSI 11, level)
-  by port and by wait, routed to CPU 1 (the kernel checks where it was
-  taken). It reports the median wait wake (fire timestamp to the woken
-  thread reading the clock): KVM 11-18 us, the interrupt on CPU 1 waking
-  a thread elsewhere. QEMU's PLIC pends only on a rising line, so rv64
-  skips the "acked while still asserted fires again" check.
+- Differences from Zircon: the object is destroyed with its last
+  reference. Ext 5's lent profile and scheduling-context handoff (K14e)
+  go with the packet: `Ports.queueInterrupt` wakes a thread from the
+  port on them.
+- Boot test: the Swift program's interrupts suite
+  (user/test/swift/InterruptSuite.swift, run on its own by
+  `ProcessSelfTest.runInterrupts`; usertest.c's mode 11 until D29): the
+  state machine through test hook 13, then each machine's RTC (amd64
+  CMOS periodic, GSI 8, edge; arm64 PL031, INTID 34, level; rv64
+  goldfish, GSI 11, level) by port, routed to CPU 1 (the kernel checks
+  where it was taken). It reports the median wake (fire timestamp to
+  the port_wait's return) as `irq.wait_wake_median`: KVM ~4.5 us. QEMU's
+  PLIC pends only on a rising line, so rv64 skips the "acked while still
+  asserted fires again" check.
 
 ## MSI (K9d)
 
@@ -141,8 +148,8 @@ include/interrupt.h; syscalls 147 msi_allocate, 148 msi_create):
 - The kernel's mappings of MSI-X tables and capabilities are `shared`
   (`mapPhysical(shared:)`): they don't enter the root filter's list of
   kernel MMIO, so the driver keeps its resource over them.
-- Boot test (mode 11, amd64; croi's QEMU gets `-device edu,addr=0x10`):
-  edu's MSI by port and by wait, with the driver programming the
+- Boot test (the interrupts suite, amd64; croi's QEMU gets `-device
+  edu,addr=0x10`): edu's MSI by port, with the driver programming the
   capability from the info; a virtio device's MSI-X table (MSI-X not
   enabled, so it never fires) read back after create, a move to CPU 1,
   and close. Both are found by scanning bus 0 and skipped when absent,

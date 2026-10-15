@@ -588,22 +588,18 @@ enum Scheduler {
         return woken
     }
 
-    /// Wakes every thread on `queue` (an interrupt object's one waiter),
-    /// the first running on `context` at once (ext 5, K14e) if it has
-    /// budget left this period and nobody holds it; otherwise, and the
-    /// rest, on their own profiles. Lock held.
+    /// Wakes the first thread on `queue` (a port's, for an interrupt
+    /// packet), running on `context` at once (ext 5, K14e) if it has
+    /// budget left this period and nobody holds it; otherwise on its own
+    /// profile. Lock held.
     @discardableResult
-    static func wakeAll(_ queue: QueuePointer, handingOff context: SchedContextPointer?) -> Int {
-        guard let context else { return wakeAll(queue) }
-        var woken = 0
-        while let thread = queue.pointee.pop() {
-            thread.pointee.waitQueue = nil
-            if context.pointee.borrower == nil, !thread.pointee.borrowing { borrow(context, for: thread, Clock.now()) }
-            makeReady(thread)
-            if let owner = queue.pointee.owner { updateEffectiveProfile(owner) }
-            woken += 1
-        }
-        return woken
+    static func wakeOne(_ queue: QueuePointer, handingOff context: SchedContextPointer) -> Bool {
+        guard let thread = queue.pointee.pop() else { return false }
+        thread.pointee.waitQueue = nil
+        if context.pointee.borrower == nil, !thread.pointee.borrowing { borrow(context, for: thread, Clock.now()) }
+        makeReady(thread)
+        if let owner = queue.pointee.owner { updateEffectiveProfile(owner) }
+        return true
     }
 
     /// `thread` (waking) runs on `context` from now, with the context's

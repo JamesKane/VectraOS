@@ -206,7 +206,10 @@ enum Ports {
 
     /// Queues an interrupt object's packet with `timestamp` and wakes a
     /// waiter; false if it is still queued. Any context (interrupts too).
-    static func queueInterrupt(_ port: PortPointer, _ record: QueuedPacketPointer, timestamp: UInt64) -> Bool {
+    /// `handingOff` / `lending`: the interrupt's context or lent profile
+    /// for the thread it wakes (ext 5, K10c).
+    static func queueInterrupt(_ port: PortPointer, _ record: QueuedPacketPointer, timestamp: UInt64,
+                               handingOff context: SchedContextPointer?, lending: Profile?) -> Bool {
         let queued = port.pointee.packetsLock.withLock { () -> Bool in
             guard !record.pointee.interruptQueued else { return false }
             record.pointee.interruptQueued = true
@@ -223,7 +226,15 @@ enum Ports {
             port.pointee.queued += 1
             return true
         }
-        if queued { Scheduler.locked { _ = Scheduler.wakeOne(port.pointee.waiters) } }
+        if queued {
+            Scheduler.locked {
+                if let context {
+                    _ = Scheduler.wakeOne(port.pointee.waiters, handingOff: context)
+                } else {
+                    _ = Scheduler.wakeOne(port.pointee.waiters, lending: lending)
+                }
+            }
+        }
         return queued
     }
 

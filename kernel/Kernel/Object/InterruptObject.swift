@@ -1,28 +1,28 @@
 import CKernel
 import Synchronization
 
-/// An interrupt object (K9c; Zircon's InterruptDispatcher with its event
-/// and virtual subclasses): a device interrupt (`DeviceIrqs`) or a virtual
-/// one, delivered as a port packet (bound) or to one thread blocked in
-/// interrupt_wait, and re-armed by ack (bound) or the next wait.
+/// An interrupt object (K9c; Zircon's InterruptDispatcher): a device
+/// interrupt (`DeviceIrqs`) or an MSI, delivered as a packet to the port
+/// it is bound to and re-armed by ack. V1 cut interrupt_wait, virtual
+/// interrupts (interrupt_trigger) and interrupt_destroy (D29): a port is
+/// the one way to wait, a counter is a virtual interrupt, and closing the
+/// last handle destroys it.
 ///
-/// States as Zircon's: IDLE, TRIGGERED (fired, nobody took it yet), NEEDACK
-/// (delivered; a further fire only records its timestamp), WAITING (a
-/// thread is blocked in interrupt_wait), DESTROYED. A level interrupt is
-/// masked when it fires and unmasked on ack or the next wait, so it can't
-/// storm while its driver works.
+/// States as Zircon's: IDLE, TRIGGERED (fired, not bound yet), NEEDACK
+/// (delivered; a further fire only records its timestamp), DESTROYED. A
+/// level interrupt is masked when it fires and unmasked on ack, so it
+/// can't storm while its driver works.
 ///
 /// Locks: the header lock guards the state, taken in interrupt context
-/// too; `signaled` (Zircon's auto-unsignal event) is the scheduler lock's.
-/// Lock order: irq table -> object -> controller, scheduler, port packets.
+/// too. Lock order: irq table -> object -> controller, port packets,
+/// scheduler.
 struct InterruptObject: ~Copyable {
-    enum State { case idle, waiting, triggered, needAck, destroyed }
+    enum State { case idle, triggered, needAck, destroyed }
 
     var header = ObjectHeader(type: .interrupt)
     var state = State.idle
     /// The first unconsumed fire's time (0: none pending).
     var timestamp: UInt64 = 0
-    let isVirtual: Bool
     /// Level-triggered: masked when it fires, unmasked when re-armed.
     let level: Bool
     let activeLow: Bool
@@ -36,22 +36,15 @@ struct InterruptObject: ~Copyable {
     var port: UInt64 = 0
     /// The packet it queues to that port (never allocated when firing).
     let packet: QueuedPacketPointer
-    /// The interrupt_wait thread blocks here.
-    let waiters = QueuePointer.allocate()
-    var signaled = false
-    /// The waiting thread, and its handle: closing that cancels the wait.
-    var waiter: UInt64 = 0
-    var waiterTable: UInt64 = 0
-    var waiterHandle: UInt32 = 0
-    var waiterCanceled = false
     /// The CPUs it may go to and the one it does (device interrupts).
     var affinity: UInt64 = 1
     var cpu = 0
     /// Ext 5 (K14e): an admitted scheduling context it owns (a
-    /// SchedContextRecord's address, 0 for none); the interrupt_wait thread
-    /// it wakes runs on it at once, sharing its budget across wakeups.
+    /// SchedContextRecord's address, 0 for none); the thread its packet
+    /// wakes from its port runs on it at once, sharing its budget across
+    /// wakeups.
     var context: UInt64 = 0
-    /// Ext 5 (K10c): a deadline profile the interrupt_wait thread runs on
+    /// Ext 5 (K10c): a deadline profile the thread its packet wakes runs on
     /// from its wakeup until it next blocks (object_set_profile).
     var lend: Profile? = nil
 
@@ -90,7 +83,7 @@ enum InterruptObjects {
         case UInt32(CROI_INTERRUPT_MODE_EDGE_BOTH): throw .notSupported
         default: throw .invalidArgs
         }
-        let object = try make(virtual: false, level: level, activeLow: activeLow, number: vector)
+        let object = try make(level: level, activeLow: activeLow, number: vector)
         do throws(Status) {
             try DeviceIrqs.register(vector, object)
             InterruptPointer(object: object).pointee.registered = true
@@ -108,28 +101,17 @@ enum InterruptObjects {
         return object
     }
 
-    /// interrupt_create with VIRTUAL: triggered by interrupt_trigger only.
-    static func createVirtual(options: UInt32) throws(Status) -> ObjectPointer {
-        guard options & ~UInt32(CROI_INTERRUPT_VIRTUAL | CROI_INTERRUPT_TIMESTAMP_MONO) == 0 else {
-            throw .invalidArgs
-        }
-        let object = try make(virtual: true, level: false, activeLow: false, number: 0)
-        object.header.signals = UInt32(CROI_VIRTUAL_INTERRUPT_UNTRIGGERED)
-        return object
-    }
-
     /// An interrupt object for an MSI (MsiInterrupts.create attaches it).
     /// MSIs are masked while delivered, as level interrupts are (Zircon's
     /// UNMASK_PREWAIT | MASK_POSTWAIT).
     static func makeForMsi() throws(Status) -> ObjectPointer {
-        try make(virtual: false, level: true, activeLow: false, number: 0)
+        try make(level: true, activeLow: false, number: 0)
     }
 
-    private static func make(virtual: Bool, level: Bool, activeLow: Bool,
-                             number: UInt32) throws(Status) -> ObjectPointer {
+    private static func make(level: Bool, activeLow: Bool, number: UInt32) throws(Status) -> ObjectPointer {
         let packet = try QueuedPacketPointer.allocate(PortPacket(type: PortPacket.interrupt), source: Ports.interruptOwned)
-        guard let object = Objects.allocate(InterruptObject(isVirtual: virtual, level: level, activeLow: activeLow,
-                                                            number: number, packet: packet)) else {
+        guard let object = Objects.allocate(InterruptObject(level: level, activeLow: activeLow, number: number,
+                                                            packet: packet)) else {
             packet.free()
             throw .noMemory
         }
@@ -138,7 +120,7 @@ enum InterruptObjects {
 
     /// The last reference went (Objects.destroy).
     static func destroyObject(_ object: ObjectPointer) {
-        _ = destroy(object)
+        destroy(object)
         latencyChanged(object, gone: true)
         let interrupt = InterruptPointer(object: object)
         let port = interrupt.pointee.port
@@ -154,67 +136,43 @@ enum InterruptObjects {
         dropContext(interrupt.pointee.context)
         if interrupt.pointee.msi != 0 { MsiInterrupts.free(MsiStatePointer(address: interrupt.pointee.msi)) }
         interrupt.pointee.packet.free()
-        interrupt.pointee.waiters.deallocate()
         Objects.free(object, as: InterruptObject.self)
     }
 
-    /// interrupt_destroy (and the last reference): no more fires; a bound
-    /// packet still queued is taken back, a waiter is woken (CANCELED).
-    /// NOT_FOUND if a delivered packet was already read and not acked.
-    static func destroy(_ object: ObjectPointer) -> Status? {
+    /// The last reference went (interrupt_destroy until V1, D29): no more
+    /// fires, and a bound packet still queued is taken back.
+    private static func destroy(_ object: ObjectPointer) {
         let interrupt = InterruptPointer(object: object)
-        let old = object.header.lock.withLock { () -> InterruptObject.State in
-            let old = interrupt.pointee.state
-            interrupt.pointee.state = .destroyed
-            return old
-        }
-        guard old != .destroyed else { return nil }
+        object.header.lock.withLock { interrupt.pointee.state = .destroyed }
         if interrupt.pointee.msi != 0 {
             MsiInterrupts.detach(MsiStatePointer(address: interrupt.pointee.msi))
         } else if interrupt.pointee.registered {
             DeviceIrqs.mask(interrupt.pointee.number)
             DeviceIrqs.unregister(interrupt.pointee.number)  // no handler running once it returns
         }
-        return object.header.lock.withLock { () -> Status? in
-            var result: Status? = nil
+        object.header.lock.withLock {
             if interrupt.pointee.port != 0 {
-                let removed = Ports.removeInterrupt(PortPointer(object: ObjectPointer(address: interrupt.pointee.port)),
-                                                    interrupt.pointee.packet)
-                if old == .needAck && !removed { result = .notFound }
-            } else {
-                signal(interrupt)
+                _ = Ports.removeInterrupt(PortPointer(object: ObjectPointer(address: interrupt.pointee.port)),
+                                          interrupt.pointee.packet)
             }
-            if interrupt.pointee.isVirtual { setUntriggered(object, true) }
-            return result
         }
     }
 
     // MARK: Firing
 
-    /// A device interrupt fired (interrupt context, irq table lock held).
-    static func fire(_ object: ObjectPointer) {
+    /// The interrupt fired: from its device (interrupt context, irq table
+    /// lock held), or from a test (TestHooks, at `time`).
+    static func fire(_ object: ObjectPointer, at time: UInt64 = 0) {
         let interrupt = InterruptPointer(object: object)
         object.header.lock.withLock {
             guard interrupt.pointee.state != .destroyed else { return }
-            if interrupt.pointee.timestamp == 0 { interrupt.pointee.timestamp = Clock.now() }
+            if interrupt.pointee.timestamp == 0 { interrupt.pointee.timestamp = time != 0 ? time : Clock.now() }
             deliver(interrupt)
         }
     }
 
-    /// interrupt_trigger: a virtual interrupt fires with `timestamp`.
-    static func trigger(_ object: ObjectPointer, timestamp: UInt64) throws(Status) {
-        let interrupt = InterruptPointer(object: object)
-        guard interrupt.pointee.isVirtual else { throw .badState }
-        try object.header.lock.withLock { () throws(Status) in
-            guard interrupt.pointee.state != .destroyed else { throw .canceled }
-            if interrupt.pointee.timestamp == 0 { interrupt.pointee.timestamp = timestamp }
-            deliver(interrupt)
-            setUntriggered(object, false)
-        }
-    }
-
-    /// Delivers a pending fire: a packet unless one awaits its ack, else
-    /// the waiter's event. Object lock held.
+    /// Delivers a pending fire: a packet unless one awaits its ack; kept
+    /// until bound if unbound. Object lock held.
     private static func deliver(_ interrupt: InterruptPointer) {
         if interrupt.pointee.port != 0 {
             guard interrupt.pointee.state != .needAck else { return }  // sent once acked
@@ -222,37 +180,27 @@ enum InterruptObjects {
             interrupt.pointee.state = .needAck
         } else {
             if interrupt.pointee.level { maskSource(interrupt) }
-            signal(interrupt)
             if interrupt.pointee.state != .needAck { interrupt.pointee.state = .triggered }
         }
     }
 
-    /// Queues the bound packet with the pending timestamp. Object lock held.
+    /// Queues the bound packet with the pending timestamp, waking a thread
+    /// from the port on the context (ext 5) or the lent profile (K10c).
+    /// Object lock held.
     @discardableResult
     private static func sendPacket(_ interrupt: InterruptPointer) -> Bool {
+        let context = interrupt.pointee.context
         let sent = Ports.queueInterrupt(PortPointer(object: ObjectPointer(address: interrupt.pointee.port)),
-                                        interrupt.pointee.packet, timestamp: interrupt.pointee.timestamp)
+                                        interrupt.pointee.packet, timestamp: interrupt.pointee.timestamp,
+                                        handingOff: context != 0 ? SchedContextPointer(address: context) : nil,
+                                        lending: interrupt.pointee.lend)
         if interrupt.pointee.level { maskSource(interrupt) }
         interrupt.pointee.timestamp = 0
         return sent
     }
 
-    /// Signals the event and wakes the waiter, handing it the context
-    /// (ext 5) or lending it the profile (K10c). Object lock held.
-    private static func signal(_ interrupt: InterruptPointer) {
-        Scheduler.locked {
-            interrupt.pointee.signaled = true
-            if interrupt.pointee.context != 0 {
-                Scheduler.wakeAll(interrupt.pointee.waiters,
-                                  handingOff: SchedContextPointer(address: interrupt.pointee.context))
-            } else {
-                Scheduler.wakeAll(interrupt.pointee.waiters, lending: interrupt.pointee.lend)
-            }
-        }
-    }
-
     /// Ext 5: hands `context` (admitted, now the object's) to the threads
-    /// it wakes from now on, or nil for none; a profile lent before is
+    /// its packets wake from now on, or nil for none; a profile lent before is
     /// dropped. A context it had is withdrawn from whoever runs on it,
     /// then destroyed.
     static func setContext(_ object: ObjectPointer, _ context: consuming SchedContext?, lend: Profile?) {
@@ -309,12 +257,6 @@ enum InterruptObjects {
         }
     }
 
-    private static func setUntriggered(_ object: ObjectPointer, _ on: Bool) {
-        let bit = UInt32(CROI_VIRTUAL_INTERRUPT_UNTRIGGERED)
-        object.header.signals = on ? object.header.signals | bit : object.header.signals & ~bit
-        Observers.notify(object)
-    }
-
     // MARK: Ports
 
     /// object_bind INTERRUPT: packets to `port` with `key` from now on (one
@@ -322,11 +264,7 @@ enum InterruptObjects {
     static func bind(_ object: ObjectPointer, port: ObjectPointer, key: UInt64) throws(Status) {
         let interrupt = InterruptPointer(object: object)
         try object.header.lock.withLock { () throws(Status) in
-            switch interrupt.pointee.state {
-            case .destroyed: throw .canceled
-            case .waiting: throw .badState
-            default: ()
-            }
+            guard interrupt.pointee.state != .destroyed else { throw .canceled }
             guard interrupt.pointee.port == 0 else { throw .alreadyBound }
             port.retain()
             interrupt.pointee.port = port.address
@@ -373,91 +311,14 @@ enum InterruptObjects {
         try object.header.lock.withLock { () throws(Status) in
             guard interrupt.pointee.port != 0 else { throw .badState }
             guard interrupt.pointee.state != .destroyed else { throw .canceled }
-            var retriggered = false
             if interrupt.pointee.state == .needAck {
                 if interrupt.pointee.level { unmaskSource(interrupt) }
                 if interrupt.pointee.timestamp != 0 {
                     guard sendPacket(interrupt) else { throw .badState }  // the last one is still queued
-                    retriggered = true
                 } else {
                     interrupt.pointee.state = .idle
                 }
             }
-            if interrupt.pointee.isVirtual { setUntriggered(object, !retriggered) }
-        }
-    }
-
-    // MARK: Waiting
-
-    /// interrupt_wait: blocks until the interrupt fires; returns its time.
-    /// One waiter at a time; CANCELED when destroyed or when the handle it
-    /// waits through is closed.
-    static func wait(_ object: ObjectPointer, table: UInt64, handle: UInt32) throws(Status) -> UInt64 {
-        let interrupt = InterruptPointer(object: object)
-        let me = Scheduler.current.address
-        while true {
-            let taken = try object.header.lock.withLock { () throws(Status) -> UInt64? in
-                guard interrupt.pointee.port == 0 else { throw .badState }
-                if interrupt.pointee.waiterCanceled {
-                    interrupt.pointee.waiterCanceled = false
-                    if interrupt.pointee.state == .waiting { interrupt.pointee.state = .idle }
-                    throw .canceled
-                }
-                switch interrupt.pointee.state {
-                case .destroyed:
-                    throw .canceled
-                case .triggered:
-                    return take(interrupt)
-                case .needAck:
-                    if interrupt.pointee.timestamp != 0 { return take(interrupt) }
-                    if interrupt.pointee.level { unmaskSource(interrupt) }
-                case .idle:
-                    ()
-                case .waiting:
-                    guard interrupt.pointee.waiter == me else { throw .badState }  // someone else is waiting
-                }
-                interrupt.pointee.state = .waiting
-                interrupt.pointee.waiter = me
-                interrupt.pointee.waiterTable = table
-                interrupt.pointee.waiterHandle = handle
-                if interrupt.pointee.isVirtual { setUntriggered(object, true) }
-                return nil
-            }
-            if let taken { return taken }
-            let woken = Scheduler.locked { () -> Bool in
-                while !interrupt.pointee.signaled {
-                    let result = Scheduler.block(on: interrupt.pointee.waiters, deadline: .max, interruptible: true)
-                    if result == .interrupted { return false }
-                }
-                interrupt.pointee.signaled = false  // auto-unsignal
-                return true
-            }
-            if !woken {
-                object.header.lock.withLock {
-                    if interrupt.pointee.state == .waiting { interrupt.pointee.state = .idle }
-                }
-                throw .canceled  // the thread was killed; it won't see this
-            }
-        }
-    }
-
-    /// Takes the pending fire for a waiter. Object lock held.
-    private static func take(_ interrupt: InterruptPointer) -> UInt64 {
-        interrupt.pointee.state = .needAck
-        let timestamp = interrupt.pointee.timestamp
-        interrupt.pointee.timestamp = 0
-        Scheduler.locked { interrupt.pointee.signaled = false }
-        return timestamp
-    }
-
-    /// A handle to `object` was closed: a wait through it ends (CANCELED).
-    static func handleClosed(_ object: ObjectPointer, table: UInt64, handle: UInt32) {
-        let interrupt = InterruptPointer(object: object)
-        object.header.lock.withLock {
-            guard interrupt.pointee.state == .waiting, interrupt.pointee.waiterTable == table,
-                  interrupt.pointee.waiterHandle == handle else { return }
-            interrupt.pointee.waiterCanceled = true
-            signal(interrupt)
         }
     }
 
@@ -467,7 +328,6 @@ enum InterruptObjects {
     /// `mask` that takes interrupts.
     static func setAffinity(_ object: ObjectPointer, mask: UInt64) throws(Status) {
         let interrupt = InterruptPointer(object: object)
-        guard !interrupt.pointee.isVirtual else { throw .notSupported }
         var cpu = -1
         let tag = Scheduler.currentReservation  // K10d: never onto another job's reserved CPU
         for i in 0..<Smp.count where mask & (1 << UInt64(i)) != 0 && Scheduler.mayRoute(cpu: i, tag: tag) {

@@ -77,11 +77,12 @@ InterruptRemapping.swift, IntelIommu.swift):
   change every interrupt timing on record. QEMU's VT-d passes
   compatibility-format MSIs through whatever CFI says (and never sets
   GSTS.CFIS), so croi's blocking of them (CFIS clear) is per the
-  specification, unverified under QEMU. Mode 11's checks read either
-  format; check 297 (an old-style or unmapped MSI from edu is not
-  delivered) runs for AMD-Vi and the ITS only, after acknowledging the
-  interrupt (an MSI stays masked after interrupt_wait until then: the
-  first version of 297 passed whatever happened). Test
+  specification, unverified under QEMU. The interrupts suite's checks
+  (mode 11's until D29) read either format; "a message not the kernel's
+  is blocked" (an old-style or unmapped MSI from edu is not delivered)
+  runs for AMD-Vi and the ITS only, after acknowledging the interrupt
+  (an MSI stays masked until then: the first version of the check
+  passed whatever happened). Test
   `boot-intremap-off` keeps the compatibility path covered.
 
 ## AMD-Vi (K12b)
