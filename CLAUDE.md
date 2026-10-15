@@ -28,8 +28,10 @@ anything that a decision covers.
 - Outside the repository, swiftly picks its default toolchain (6.3.1 on
   this machine). That toolchain crashes compiling Embedded atomics, so call
   6.4.0's `swiftc` by its path in scratch experiments.
-- You also need QEMU with edk2 from `/usr/share/edk2`, and Python 3 for
-  the `tools/*.py` scripts that CMake runs.
+- You also need QEMU with edk2 from `/usr/share/edk2`. CMake runs `vx`
+  for its build steps (elf2efi, mkbootfs, check-pixels, todhchai-check)
+  and builds it with SwiftPM first, so nothing outside the Swift toolchain,
+  CMake, Ninja, QEMU and bash is needed. There is no Python.
 
 ## Imported code
 
@@ -68,8 +70,8 @@ V0 is in progress.
 - **Done:** croi imported, passing on amd64, arm64 and rv64; todhchai's
   Judge, History, trace format and reader lifted; `vx` with build, test,
   boot, bench, trace, loc and ci.
-- **Still to do:** a trace producer (V2), and the open question of
-  folding `tools/*.py` into Swift.
+- **Also done:** croi's Python tools rewritten in Swift and removed.
+- **Still to do:** a trace producer (V2).
 
 See `docs/roadmap.md`.
 

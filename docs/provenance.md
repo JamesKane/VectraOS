@@ -20,14 +20,15 @@ The actions in the tables:
 
 | Part | Action | Milestone | Notes |
 |---|---|---|---|
-| `boot/` UEFI loader, `tools/elf2efi.py` | Lift | V0 | Swift loader; PE32+ conversion. LLVM has no RISC-V COFF backend. |
+| `boot/` UEFI loader | Lift | V0 | Swift loader |
 | `kernel/` (about 38k lines) and `kernel/arch/*` | Lift | V0 | The whole object model comes first. Slimmed in V1 (D2). |
 | `kernel/include/` ABI headers | Lift | V0 | Become VectraOS's C23 ABI |
 | `lib/{handoff,elf,pagetables,fmt,rt}` | Lift | V0 | |
 | `cmake/` toolchain, `CheckNoArc`, `CheckNoOptionSet`, `ld/image.ld` | Lift | V0 | One build graph (D11) |
 | `user/userboot`, `user/vdso`, `user/test/usertest.c` | Lift | V0 | usertest is the kernel's regression suite |
 | `tools/bench.py` | Port | V0 | Became `vx bench`, judged by todhchai's Judge; removed |
-| `tools/qemu.sh`, `mkbootfs.py`, `elf2efi.py`, `check-pixels.py` | Lift | V0 | Still Python and shell, driven by CMake; folding them into Swift is open |
+| `tools/{elf2efi,mkbootfs,check-pixels,qemu-monitor,todhchai-check}.py`, `zircon-bench/compare.py` | Rewrite | V0 | `vx` subcommands over `tools/image/lib` (ImageFormats); outputs checked byte-identical before the Python was removed |
+| `tools/qemu.sh`, `tools/zircon-bench/run.sh` | Lift | V0 | Still bash |
 | `docs/design/*`, `zircon-divergences.md`, the `CLAUDE.md` pitfalls | Lift | V0 | Under `docs/kernel/` |
 | sockets, streams, FIFOs, eventpairs | Drop (candidates) | V1 | Rings replace them; each drop gets a decision entry |
 

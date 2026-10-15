@@ -36,7 +36,7 @@ device), else the PMAs decide. QEMU runs rv64 with `-cpu max` (Svpbmt);
 (CROI_MEM_FRAMEBUFFER) is in no PMM arena and not in the cached physmap;
 `Framebuffer` maps it WC for the boot self-test, which draws a pattern
 and unmaps it (user space owns it from then on, K9b), checked with a QEMU
-screendump (`qemu.sh --screendump`, `tools/check-pixels.py`); arm64/rv64
+screendump (`qemu.sh --screendump`, `vx check-pixels`); arm64/rv64
 get a framebuffer from `-device ramfb`.
 
 ## Kernel entry and address space
@@ -99,7 +99,7 @@ Bring-up aids (K2 follow-ups from the board review in docs/kernel/roadmap.md):
 ## Boot budgets (K9f)
 
 Boot budgets, K9f (Kernel/Trace/Budgets.swift, BootOptions.swift's
-`SelfTests`, tools/bench.py):
+`SelfTests`, vx bench):
 - `boot-lean-icount` (arm64, rv64): the lean boot under QEMU
   `-icount shift=auto,sleep=off -rtc clock=vm`, guest time from
   instruction counts, so host load can't stretch it. Not amd64 (QEMU

@@ -189,7 +189,7 @@ line, and
 ```sh
 vx bench                             # KVM boots: medians against this machine's history
 vx bench --compare <commit>          # this tree against a commit, boots interleaved
-tools/zircon-bench/compare.py        # the same budgets measured on Zircon, interleaved
+vx bench --zircon        # the same budgets measured on Zircon, interleaved
 ```
 
 A missed budget is checked against Zircon first: if Zircon meets it the
@@ -200,12 +200,12 @@ target is attainable, if neither does it is a design decision
 
 | Path | Contents |
 |---|---|
-| `boot/` | UEFI loader (ELF static PIE converted to PE32+ by `tools/elf2efi.py`) |
+| `boot/` | UEFI loader (ELF static PIE converted to PE32+ by `vx elf2efi`) |
 | `kernel/Kernel/` | The kernel in Swift: `Vm/`, `Sched/`, `Object/`, `User/`, `Irq/`, `Time/`, `Acpi/`, `Trace/` |
 | `kernel/arch/` | Per-arch assembly: entry, exceptions, context switch, SMP trampolines, user copies |
 | `lib/` | Shared by loader and kernel: handoff ABI, page tables, text formatting, C runtime |
 | `user/` | User-space headers (`croi/syscall.h`), the C user runtime, the vDSO, userboot, `m2` and test programs |
-| `tools/` | `mkbootfs.py`, `elf2efi.py`, the QEMU runner, and `zircon-bench/` (croi's budgets on Zircon) |
+| `tools/` | `vx` (build steps, bench, CI), the QEMU runner, and `zircon-bench/` (croi's budgets on Zircon) |
 | `bench/history/` | Recorded budget runs per machine (`vx bench --record`) |
 | `docs/` | Roadmap, Zircon divergences, design notes (`docs/kernel/design/`) |
 

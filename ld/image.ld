@@ -7,7 +7,7 @@
  * __data_start, __image_end) let an image map itself.
  *
  * The loader uses IMAGE_BASE=0x1000: ELF addresses are then PE RVAs and the
- * first page is left for the headers tools/elf2efi.py writes.
+ * first page is left for the headers vx elf2efi writes.
  */
 
 PHDRS {

@@ -109,7 +109,7 @@ timer 68.7 s late; the time self-test arms 200 already-due timers).
 armed for, interrupt counts, and on amd64 the dumping CPU's ISR/IRR/LVTT.
 For lockups, `qemu.sh --registers-on 'ipi mailbox|PANIC'` prints every
 CPU's PC and frame-pointer backtrace when the deadman dump (or a panic)
-appears (`qemu-monitor.py backtrace`; symbolize with llvm-symbolizer).
+appears (`vx qemu-monitor backtrace`; symbolize with llvm-symbolizer).
 Anything that frees or unmaps kernel memory may wait for TLB-shootdown
 acknowledgements while holding vmLock, so it must run with interrupts on:
 the idle loop reaps dead threads (freeing their stacks) with interrupts
@@ -466,7 +466,7 @@ Todhchai M4's shutdown):
   `boot-reboot` (lean) expects the reset; test runs use -no-reboot.
   With --screendump, qemu.sh adds `-action shutdown=pause` so the screen
   can still be read after the guest powers off.
-  bench.py passes --exits to trees that support it and records the budget.
+  vx bench passes --exits to trees that support it and records the budget.
 - Boot test mode 17 checks the refusals (and, since K10f, kills a
   process with threads in port, counter and event waits plus a spinner
   30 times, each TERMINATED within 500 ms).

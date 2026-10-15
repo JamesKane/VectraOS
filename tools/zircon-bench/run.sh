@@ -8,7 +8,7 @@
 # as croi's boot-smoke-kvm. FUCHSIA_DIR defaults to ../fuchsia-jiri next to
 # croi; FUCHSIA_OUT to its out/bringup.x64-release.
 #
-# Unpinned by default, as croi's tools/bench.py boots. With PIN=1, vCPU n is
+# Unpinned by default, as vx bench boots. With PIN=1, vCPU n is
 # pinned to host CPU VCPU_BASE+n (default 2) and QEMU's other threads to
 # HOST_CPU (default 6). Zircon can't power off this machine, so QEMU is
 # stopped once the test reports.

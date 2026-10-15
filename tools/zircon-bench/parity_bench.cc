@@ -92,7 +92,7 @@ void Take(zx_handle_t event) {
 void Report(const char* name, int64_t ns) { printf("croi-parity: %s %ld ns\n", name, ns); }
 
 // A budget line as m2 prints it (user/m2/Main.swift), under m2's names, so
-// tools/zircon-bench/compare.py reads both kernels' boots the same way.
+// vx bench --zircon reads both kernels' boots the same way.
 void Budget(const char* name, int64_t ns) {
   printf("croi-parity: budget name=%s value=%ld unit=ns\n", name, ns);
 }

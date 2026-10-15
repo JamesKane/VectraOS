@@ -12,13 +12,16 @@
 # fails if it doesn't within the timeout. With
 # --screendump (test mode only) the display is saved as a PPM at that point.
 # With --registers-on (test mode only), the first line containing that text
-# prints every CPU's PC and frame-pointer backtrace (qemu-monitor.py): where
+# prints every CPU's PC and frame-pointer backtrace (vx qemu-monitor): where
 # each CPU is when a lockup is reported. Alternatives are separated by '|'.
 # --iommu picks amd64's IOMMU (default intel; QEMU takes one at a time),
 # or on rv64 `base` for an IOMMU without MSI_FLAT. --aia (rv64): the APLIC and
 # IMSICs instead of the PLIC (K12i).
 
 set -euo pipefail
+
+# vx runs the monitor commands; CMake builds it (.build/debug/vx).
+vx="${VX:-$(cd "$(dirname "$0")/.." && pwd)/.build/debug/vx}"
 
 expect=
 exits=
@@ -145,7 +148,7 @@ if [[ -n $expect ]]; then
       IFS='|' read -ra triggers <<< "$registers_on"
       for trigger in "${triggers[@]}"; do
         if [[ $line == *"$trigger"* ]]; then
-          python3 -I "$(dirname "$0")/qemu-monitor.py" "$socket" backtrace "${kaslr_image[@]}" || true
+          "$vx" qemu-monitor "$socket" backtrace "${kaslr_image[@]}" || true
           registers_on=
           break
         fi
@@ -160,7 +163,7 @@ if [[ -n $expect ]]; then
       status=0
       if [[ -n $screendump ]]; then
         rm -f "$screendump"
-        python3 -I "$(dirname "$0")/qemu-monitor.py" "$socket" screendump "$screendump" || status=1
+        "$vx" qemu-monitor "$socket" screendump "$screendump" || status=1
       fi
       break
     fi

@@ -144,9 +144,9 @@ syscalls 110-112):
 ## bootfs and userboot (K8b)
 
 bootfs and userboot (K8b, Kernel/User/Userboot.swift, user/userboot,
-tools/mkbootfs.py):
+vx mkbootfs):
 - bootfs.img is Zircon's bootfs format (no ZBI around it), built by
-  `tools/mkbootfs.py` from the `bootfs` target (today `bin/m2`). The
+  `vx mkbootfs` from the `bootfs` target (today `bin/m2`). The
   kernel adopts the loader's CROI_MEM_BOOTFS pages into an anonymous VMO
   (`Vmo(adopting:)`, `Pmm.adopt`: wired -> vmo; freed when the VMO goes).
 - After "boot complete" the kernel starts userboot (an ELF in the kernel

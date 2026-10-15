@@ -76,7 +76,7 @@ kernel panics on an image outside the window (or, with self-tests, at the
 link address without croi.kaslr=off). It prints `kaslr: image
 <start>-<end>, link <link>` at boot and after every PANIC line: kernel
 addresses in a log map to the ELF's as address - start + link.
-qemu.sh's `--registers-on` backtraces do that (qemu-monitor.py `backtrace
+qemu.sh's `--registers-on` backtraces do that (vx qemu-monitor `backtrace
 <start> <end> <link>`). Physical placement isn't randomized (the physmap
 shows it anyway).
 
@@ -102,7 +102,7 @@ frame (`arch_pac_enable` in `arch_continue_on_stack` and before
 `kernel_ap_main`): a function entered before it would fail its own check.
 Both EL2 drops set HCR_EL2.API|APK (else the instructions trap to an EL2
 with no handler). Kernel stack walks strip the signatures
-(`arch_pac_strip`, XPACLRI; qemu-monitor.py does the same by bit 55); a
+(`arch_pac_strip`, XPACLRI; vx qemu-monitor does the same by bit 55); a
 failure with FEAT_FPAC is EC 0x1C, "pointer authentication failure".
 `croi.pac=off`, or no address authentication (ID_AA64ISAR1/2): unsigned.
 The boot self-test checks signing and that another key signs differently;

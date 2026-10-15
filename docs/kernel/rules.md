@@ -41,7 +41,7 @@ override); `build/<arch>/esp/` is served to it as a FAT drive.
 
 ## Todhchai's programs (todhchai-check)
 
-`tools/todhchai-check.py <arch>` (ctest `todhchai-check`, label
+`vx todhchai-check <arch>` (ctest `todhchai-check`, label
 `todhchai`) boots Todhchai's `td boot --next` test programs (sys-test,
 pthread-test, tls-test, services-test) from its newest bootfs
 (../todhchai or ../todhchai-c0, read only, copied) on this tree's loader
@@ -85,18 +85,18 @@ machine's history:
   machine (K9d: channel_call read 1.4-2.2 us for unchanged code, even
   at low load average).
 - A missed budget is first checked against Zircon:
-  `tools/zircon-bench/compare.py` boots m2's bench ported to Zircon (at
+  `vx bench --zircon` boots m2's bench ported to Zircon (at
   the reference pin, from a jiri tree in ../fuchsia-jiri) interleaved
   with croi, lean and without idle polling. Zircon meets it: attainable,
   diff the paths; neither does: a roadmap decision; croi only in one
   configuration: record the dependency (docs/kernel/roadmap.md, "Budgets
   against Zircon"). A new m2 budget that croi misses is mirrored in
-  `parity_bench.cc` and compare.py's BUDGETS, both sides together.
+  `parity_bench.cc` and ZirconCommand.swift's budgetNames, both sides together.
 
 ## Layout
 
 - `boot/`     UEFI loader. Linked as an ELF static PIE, converted to PE32+
-              by `tools/elf2efi.py` (LLVM has no RISC-V COFF backend).
+              by `vx elf2efi` (LLVM has no RISC-V COFF backend).
 - `kernel/`   Kernel image (static PIE linked at CROI_KERNEL_BASE, run at a
               random base: KASLR).
 - `lib/handoff/` Loader -> kernel handoff ABI (`croi_handoff_t`, C header).

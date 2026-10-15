@@ -209,13 +209,13 @@ set_source_files_properties(userprogram.S PROPERTIES
   COMPILE_DEFINITIONS "CROI_USER_PROGRAM=\"${_user_bin}\";CROI_VDSO=\"${_vdso_bin}\";CROI_SWIFT_TEST=\"${_swift_test}\";CROI_SWIFT_TEST_EXEC=\"${_swift_test_exec}\";CROI_USERBOOT=\"${_userboot}\"")
 
 # bootfs (K8b): the programs userboot can start, in Zircon's bootfs format
-# (tools/mkbootfs.py), served on the ESP as \croi\bootfs.img.
+# (vx mkbootfs), served on the ESP as \croi\bootfs.img.
 set(_m2 ${CMAKE_CURRENT_BINARY_DIR}/m2.elf)
 croi_user_program(${_m2} PIE SWIFT ${_user_dir}/m2/Main.swift ${_user_dir}/m2/Sys.swift ${_user_dir}/m2/Bench.swift)
 set(CROI_BOOTFS_IMAGE ${CMAKE_BINARY_DIR}/bootfs.img PARENT_SCOPE)
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
-  COMMAND ${Python3_EXECUTABLE} -I ${PROJECT_SOURCE_DIR}/tools/mkbootfs.py ${CMAKE_BINARY_DIR}/bootfs.img
+  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs.img
           bin/m2=${_m2}
-  DEPENDS ${_m2} ${PROJECT_SOURCE_DIR}/tools/mkbootfs.py
+  DEPENDS ${_m2} vx ${VX}
   COMMENT "Building bootfs")
 add_custom_target(bootfs DEPENDS ${CMAKE_BINARY_DIR}/bootfs.img)

@@ -1,4 +1,4 @@
-/// A bootfs image (Zircon's format, tools/mkbootfs.py): a header (magic,
+/// A bootfs image (Zircon's format, vx mkbootfs): a header (magic,
 /// directory size), directory entries (name length with its NUL, data
 /// length, page-aligned data offset, name; each padded to 4 bytes), then
 /// the files. Lookups read only through bounds-checked loads.

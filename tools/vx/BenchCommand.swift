@@ -112,6 +112,7 @@ private func utcNow() -> String {
 }
 
 func benchCommand(_ args: [String]) -> Bool {
+  if args.first == "--zircon" { return zirconCompare(Array(args.dropFirst())) }
   var runs = 5
   var record = false, accept = false, enforce = false
   var compareRef: String?

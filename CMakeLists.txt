@@ -8,7 +8,16 @@ project(vectraos LANGUAGES C ASM Swift)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
+# vx (Package.swift, SwiftPM) runs the build steps: elf2efi, mkbootfs,
+# check-pixels, todhchai-check. Every build asks SwiftPM for it, which is a
+# no-op when it is current; steps that use it rerun only when it changed.
+find_program(CROI_SWIFT swift REQUIRED)
+set(VX ${CMAKE_SOURCE_DIR}/.build/debug/vx)
+add_custom_target(vx
+  COMMAND ${CROI_SWIFT} build --product vx
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  BYPRODUCTS ${VX}
+  COMMENT "Building vx (SwiftPM)")
 
 set(CROI_EDK2_DIR /usr/share/edk2 CACHE PATH "edk2 firmware images for QEMU")
 set(CROI_CMDLINE "croi.test=1" CACHE STRING "Kernel command line written to the ESP (\\croi\\cmdline)")
@@ -18,7 +27,6 @@ set(CROI_USERBOOT_SHUTDOWN "poweroff" CACHE STRING
 if(CROI_USERBOOT_SHUTDOWN)
   set(_shutdown " userboot.shutdown=${CROI_USERBOOT_SHUTDOWN}")
 endif()
-set(CROI_ELF2EFI ${Python3_EXECUTABLE} -I ${CMAKE_SOURCE_DIR}/tools/elf2efi.py)
 set(CROI_QEMU ${CMAKE_SOURCE_DIR}/tools/qemu.sh)
 
 # Common ld.lld flags: static PIE, nothing implicit, unused sections dropped.
@@ -73,7 +81,7 @@ add_test(NAME boot-smoke
           ${CROI_ARCH} ${CROI_ESP_DIR} ${CMAKE_BINARY_DIR}/qemu ${CROI_EDK2_DIR})
 set_tests_properties(boot-smoke PROPERTIES TIMEOUT 120 FIXTURES_SETUP framebuffer)
 add_test(NAME framebuffer-pixels
-  COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_SOURCE_DIR}/tools/check-pixels.py ${_fb_dump}
+  COMMAND ${VX} check-pixels ${_fb_dump}
           0,0,16,48,96 40,30,240,192,32 100,100,16,48,96)
 set_tests_properties(framebuffer-pixels PROPERTIES FIXTURES_REQUIRED framebuffer)
 
@@ -147,11 +155,11 @@ endif()
 
 # Todhchai's --next test programs (sys-test, pthread-test, tls-test,
 # services-test) from its newest bootfs, on this tree's loader and kernel,
-# booted as td boot boots them (tools/todhchai-check.py): its td ci builds
+# booted as td boot boots them (vx todhchai-check): its td ci builds
 # croi only from commits, and a root-filter change broke sys-test once with
 # every test here passing. Skipped (77) where no Todhchai tree has a bootfs.
 add_test(NAME todhchai-check
-  COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_SOURCE_DIR}/tools/todhchai-check.py ${CROI_ARCH}
+  COMMAND ${VX} todhchai-check ${CROI_ARCH}
           --build ${CMAKE_BINARY_DIR})
 set_tests_properties(todhchai-check PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 LABELS todhchai)
 

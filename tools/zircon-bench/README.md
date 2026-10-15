@@ -12,7 +12,7 @@ same workload:
   under m2's names. It runs as a kernel ZBI test: userboot starts it
   directly, with no component framework, as croi's userboot starts `m2`.
 - `run.sh` boots it once under QEMU/KVM and prints its results.
-- `compare.py` boots croi and Zircon alternately and tabulates both.
+- `vx bench --zircon` boots croi and Zircon alternately and tabulates both.
 - `BUILD.gn` builds it in a Fuchsia tree as `//local/croi-parity`.
 
 | Budget (m2's name) | Workload |
@@ -36,10 +36,10 @@ p10, median, p90, p99 and max for port wake and wake error.
 - **Idle polling.** Under a hypervisor croi's idle loop polls for 200 µs
   before halting (`croi.idle_poll_us`), and the port wake test sleeps only
   100 µs, so a croi wake never needs an IPI or a HLT exit. Zircon has no
-  such option. `compare.py` therefore also boots croi with
+  such option. `vx bench --zircon` therefore also boots croi with
   `croi.idle_poll_us=0`.
 - **Mitigations.** croi has no speculative-execution mitigations, Zircon
-  has them on by default. `compare.py` boots Zircon both ways.
+  has them on by default. `vx bench --zircon` boots Zircon both ways.
 - **Donation.** Zircon has no scheduling-context donation.
   `zx_channel_call` blocks on an owned wait queue, so the server inherits
   the caller's deadline profile: the nearest equivalent.
@@ -98,7 +98,7 @@ the test reports, since Zircon can't power off q35. A boot takes about 5 s.
 
 - `PIN=1` pins vCPU n to host CPU `VCPU_BASE`+n (default 2) and QEMU's
   other threads to `HOST_CPU` (default 6). Off by default, as croi's
-  `tools/bench.py` boots.
+  `vx bench` boots.
 - `CPU=` overrides the CPU model (default `host,migratable=no,+invtsc`).
 - `FUCHSIA_DIR`, `FUCHSIA_OUT` point at another tree or build directory.
 - Kernel options pass through, e.g. `kernel.x86.disable_spec_mitigations=true`,
@@ -107,15 +107,15 @@ the test reports, since Zircon can't power off q35. A boot takes about 5 s.
 
 ## Comparing croi with Zircon
 
-    tools/zircon-bench/compare.py [--rounds N] [--only CONFIG,...] [--logs DIR]
+    vx bench --zircon [--rounds N] [--only CONFIG,...] [--logs DIR]
 
 Needs croi's amd64 build (`cmake --build --preset amd64`) and the Zircon
 build above. Each round boots every configuration once, in a rotating
-order, so all of them see the same machine (bench.py `--compare`'s rule):
+order, so all of them see the same machine (vx bench `--compare`'s rule):
 
 | Configuration | What boots |
 |---|---|
-| `croi` | `build/amd64/esp` with `croi.selftest=off` (bench.py's lean profile) |
+| `croi` | `build/amd64/esp` with `croi.selftest=off` (vx bench's lean profile) |
 | `croi-nopoll` | ... plus `croi.idle_poll_us=0` |
 | `zircon` | the parity bench, Zircon's defaults |
 | `zircon-nomitig` | ... plus `kernel.x86.disable_spec_mitigations=true` |
@@ -123,7 +123,7 @@ order, so all of them see the same machine (bench.py `--compare`'s rule):
 The croi ESP is copied once at the start, so a rebuild during the run
 changes nothing. The table gives each budget's median over the rounds and
 its range. Rounds taken with a load average above a quarter of the CPUs
-are flagged, as bench.py does: such figures are a shared machine's and
+are flagged, as vx bench does: such figures are a shared machine's and
 only show a pattern. Run on a quiet machine with six rounds or more before
 drawing conclusions.
 
@@ -144,7 +144,7 @@ drawing conclusions.
 When m2 gains a budget, mirror it here: a function in `parity_bench.cc`
 with the same workload, called from `TEST(CroiParity, Bench)` in m2's
 order, printing `Budget("<m2's name>", ns)`. Add the name to `BUDGETS` in
-`compare.py`. The two must stay comparable: change both sides together.
+`vx bench --zircon`. The two must stay comparable: change both sides together.
 
 ## Results so far (2026-10-10, AMD Ryzen 7 9700X, KVM, busy machine)
 

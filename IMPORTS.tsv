@@ -227,15 +227,9 @@ lib/rt/CMakeLists.txt	croi	dc4cf67	lib/rt/CMakeLists.txt
 lib/rt/int128.c	croi	dc4cf67	lib/rt/int128.c
 lib/rt/stack_protector.c	croi	dc4cf67	lib/rt/stack_protector.c
 lib/rt/string.c	croi	dc4cf67	lib/rt/string.c
-tools/check-pixels.py	croi	dc4cf67	tools/check-pixels.py
-tools/elf2efi.py	croi	dc4cf67	tools/elf2efi.py
-tools/mkbootfs.py	croi	dc4cf67	tools/mkbootfs.py
-tools/qemu-monitor.py	croi	dc4cf67	tools/qemu-monitor.py
 tools/qemu.sh	croi	dc4cf67	tools/qemu.sh
-tools/todhchai-check.py	croi	dc4cf67	tools/todhchai-check.py
 tools/zircon-bench/BUILD.gn	croi	dc4cf67	tools/zircon-bench/BUILD.gn
 tools/zircon-bench/README.md	croi	dc4cf67	tools/zircon-bench/README.md
-tools/zircon-bench/compare.py	croi	dc4cf67	tools/zircon-bench/compare.py
 tools/zircon-bench/parity_bench.cc	croi	dc4cf67	tools/zircon-bench/parity_bench.cc
 tools/zircon-bench/run.sh	croi	dc4cf67	tools/zircon-bench/run.sh
 user/include/croi/runtime.h	croi	dc4cf67	user/include/croi/runtime.h
