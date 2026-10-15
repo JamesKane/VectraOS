@@ -80,7 +80,7 @@ enum ChannelSuite {
         check(message.read(channel.b) == 0 && message.byteCount == 5 && message.handleCount == 1
                   && message.bytes[0] == UInt8(ascii: "h") && message.bytes[4] == UInt8(ascii: "o"), "received")
         let arrived = Handle(adopting: message.handles[0])
-        check(Sys.call(CROI_SYS_COUNTER_ADD, arrived.arg, 1) == 0, "an add through the handle that arrived")
+        check(croi_counter_add(arrived.raw, 1) == 0, "an add through the handle that arrived")
         check(Port.signals(of: counter, UInt32(CROI_COUNTER_POSITIVE), deadline: Sys.now() + 1_000_000_000)
                   & UInt32(CROI_COUNTER_POSITIVE) != 0, "is seen through the original")
         check(Port.signals(of: channel.b, readable) & readable == 0, "nothing more to read")

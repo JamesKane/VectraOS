@@ -19,7 +19,7 @@ enum BindSuite {
     static var change: UInt32 { UInt32(CROI_BIND_CHANGE) | UInt32(CROI_BIND_PERSISTENT) }
 
     static func add(_ counter: borrowing Handle, _ amount: Int64 = 1) {
-        check(Sys.call(CROI_SYS_COUNTER_ADD, counter.arg, UInt64(bitPattern: amount)) == 0, "counter_add")
+        check(croi_counter_add(counter.raw, amount) == 0, "counter_add")
     }
 
     /// Sets the value: an add of the difference (V1 cut counter_write, D25).

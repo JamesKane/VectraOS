@@ -41,7 +41,7 @@ enum Sys {
     static func sleep(until deadline: UInt64) {
         if sleepPort == 0 { _ = call(CROI_SYS_PORT_CREATE, 0, address(&sleepPort)) }
         var packet = croi_port_packet_t()
-        _ = call(CROI_SYS_PORT_WAIT, UInt64(sleepPort), deadline, address(&packet))
+        _ = unsafe croi_port_wait(sleepPort, deadline, &packet, 0)
     }
 
     static func close(_ handle: UInt32) {
@@ -61,13 +61,13 @@ enum Sys {
 
     /// Raises a handshake counter to POSITIVE.
     static func signal(_ counter: UInt32) {
-        _ = call(CROI_SYS_COUNTER_ADD, UInt64(counter), 1)
+        _ = croi_counter_add(counter, 1)
     }
 
     /// Waits for a handshake counter to be POSITIVE, and takes it back to 0.
     static func take(_ counter: UInt32) {
         wait(counter, UInt32(CROI_COUNTER_POSITIVE))
-        _ = call(CROI_SYS_COUNTER_ADD, UInt64(counter), UInt64(bitPattern: -1))
+        _ = croi_counter_add(counter, -1)
     }
 
     /// Waits for any of `signals` on `handle`: a binding on a port of its
@@ -77,7 +77,7 @@ enum Sys {
         guard call(CROI_SYS_PORT_CREATE, 0, address(&port)) == 0 else { return }
         var packet = croi_port_packet_t()
         if bind(port, handle, UInt32(CROI_BIND_SIGNALS), key: 0, trigger: UInt64(signals)) == 0 {
-            _ = call(CROI_SYS_PORT_WAIT, UInt64(port), .max, address(&packet))
+            _ = unsafe croi_port_wait(port, .max, &packet, 0)
         }
         close(port)
     }

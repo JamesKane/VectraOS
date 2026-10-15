@@ -10,6 +10,7 @@ enum CounterSuite {
         basics()
         rights()
         values()
+        batch()
         lending()
         print("swift: counters passed")
     }
@@ -19,7 +20,7 @@ enum CounterSuite {
     static var value: UInt32 { UInt32(CROI_BIND_VALUE) }
 
     static func add(_ counter: borrowing Handle, _ amount: Int64) -> Int64 {
-        Sys.call(CROI_SYS_COUNTER_ADD, counter.arg, UInt64(bitPattern: amount))
+        croi_counter_add(counter.raw, amount)
     }
 
     static func read(_ counter: borrowing Handle) -> Int64? {
@@ -49,6 +50,28 @@ enum CounterSuite {
         set(counter, .max)  // from 0: the difference itself fits
         check(add(counter, 1) == Status.outOfRange && read(counter) == .max, "an overflow is refused, nothing changed")
         check(Sys.call(CROI_SYS_COUNTER_READ, counter.arg, 0) == Status.invalidArgs, "a null value pointer")
+    }
+
+    /// counter_add takes an array (D40): it goes on past an item that
+    /// fails, writing each item's status back.
+    static func batch() {
+        let a = Handle(creating: CROI_SYS_COUNTER_CREATE)
+        let b = Handle(creating: CROI_SYS_COUNTER_CREATE)
+        set(b, .max)
+        let reader = Handle(duplicating: a, rights: 1 << 2 | 1 << 14)  // READ, WAIT
+        var items = InlineArray<4, croi_counter_add_item_t>(
+            repeating: croi_counter_add_item_t(counter: a.raw, status: 1, amount: 2))
+        items[1] = croi_counter_add_item_t(counter: b.raw, status: 1, amount: 1)  // would overflow
+        items[2] = croi_counter_add_item_t(counter: reader.raw, status: 1, amount: 1)  // no WRITE
+        items[3].amount = 3
+        check(Sys.call(CROI_SYS_COUNTER_ADD, Sys.address(&items), 4) == 2, "two of four added")
+        check(items[0].status == 0 && Int64(items[1].status) == Status.outOfRange
+                  && Int64(items[2].status) == Status.accessDenied && items[3].status == 0, "each item's status")
+        check(read(a) == 5 && read(b) == .max, "past the failures")
+        check(Sys.call(CROI_SYS_COUNTER_ADD, Sys.address(&items), 0) == Status.invalidArgs
+                  && Sys.call(CROI_SYS_COUNTER_ADD, Sys.address(&items), 65) == Status.invalidArgs,
+              "a count of 0 or over 64 is refused")
+        check(Sys.call(CROI_SYS_COUNTER_ADD, 8, 1) == Status.invalidArgs && read(a) == 5, "and a bad pointer, first")
     }
 
     /// add needs READ and WRITE; a VALUE binding WAIT and READ.
@@ -124,7 +147,7 @@ enum CounterSuite {
             let lent = unsafe UnsafeMutablePointer<Lent>(bitPattern: UInt(argument))!
             unsafe lent.pointee.before = Sys.call(CROI_SYS_TEST, 0)
             var packet = croi_port_packet_t()
-            _ = unsafe Sys.call(CROI_SYS_PORT_WAIT, UInt64(lent.pointee.port), .max, Sys.address(&packet))
+            _ = unsafe croi_port_wait(lent.pointee.port, .max, &packet, 0)
             unsafe lent.pointee.after = Sys.call(CROI_SYS_TEST, 0)
             unsafe lent.pointee.periodStart = Sys.call(CROI_SYS_TEST, 3)
             Sys.sleep(1_000_000)

@@ -120,7 +120,7 @@ enum Bench {
             Sys.exitThread()
         }
         serving: while true {
-            _ = Sys.call(CROI_SYS_PORT_WAIT, UInt64(port), .max, Sys.address(&packet))
+            _ = unsafe croi_port_wait(port, .max, &packet, 0)
             while true {
                 let read = Sys.call(CROI_SYS_CHANNEL_READ, UInt64(serverChannel), 0, Sys.address(&message), 0, 8,
                                     Sys.address(&actual))
@@ -271,7 +271,7 @@ enum Bench {
         var packet = croi_port_packet_t()
         for round in 0..<sleepRounds {
             let deadline = sleepBase + (round + 1) * sleepGap
-            _ = Sys.call(CROI_SYS_PORT_WAIT, UInt64(sleepPort), deadline, Sys.address(&packet))
+            _ = unsafe croi_port_wait(sleepPort, deadline, &packet, 0)
             let late = Sys.now() &- deadline
             Tracing.mark(30 + index, round << 32 | min(late, 0xFFFF_FFFF))
         }
@@ -353,6 +353,16 @@ enum Bench {
     nonisolated(unsafe) static var ready: UInt32 = 0
     nonisolated(unsafe) static var go: UInt32 = 0
     nonisolated(unsafe) static var wakePort: UInt32 = 0
+
+    /// The measured adds' one item: a syscall entry record holds
+    /// counter_add's first argument, the item's address (D40), so the
+    /// bench tells them from its handshakes' adds by it.
+    nonisolated(unsafe) static var measuredAdd = croi_counter_add_item_t()
+
+    static func ring(_ counter: UInt32) {
+        measuredAdd = croi_counter_add_item_t(counter: counter, status: 1, amount: 1)
+        _ = Sys.call(CROI_SYS_COUNTER_ADD, Sys.address(&measuredAdd), 1)
+    }
     static var wakes: UInt64 { 200 }
 
     /// Each round binds ONCE to the wake counter's POSITIVE signal (an
@@ -365,8 +375,8 @@ enum Bench {
             _ = Sys.bind(wakePort, wakeSignal, UInt32(CROI_BIND_SIGNALS), key: i,
                          trigger: UInt64(CROI_COUNTER_POSITIVE))
             Sys.signal(ready)
-            _ = Sys.call(CROI_SYS_PORT_WAIT, UInt64(wakePort), .max, Sys.address(&packet))
-            _ = Sys.call(CROI_SYS_COUNTER_ADD, UInt64(wakeSignal), UInt64(bitPattern: -1))
+            _ = unsafe croi_port_wait(wakePort, .max, &packet, 0)
+            _ = croi_counter_add(wakeSignal, -1)
         }
         Sys.exitThread()
     }
@@ -390,14 +400,15 @@ enum Bench {
         for _ in 0..<wakes {
             Sys.take(ready)
             Sys.sleep(until: Sys.now() + 100_000)  // the waiter is blocked by now
-            Sys.signal(wakeSignal)
+            ring(wakeSignal)
         }
         Sys.wait(worker, UInt32(CROI_SIGNAL_TASK_TERMINATED))
         Tracing.stop()
         for handle in [worker, wakeSignal, ready, go, wakePort] { Sys.close(handle) }
         let (records, frequency) = try Tracing.records()
+        let item = Sys.address(&measuredAdd)
         let signals = records.filter {
-            $0.kind == UInt16(CROI_TK_SYSCALL_ENTER) && $0.a == CROI_SYS_COUNTER_ADD && $0.b == UInt64(wakeSignal)
+            $0.kind == UInt16(CROI_TK_SYSCALL_ENTER) && $0.a == CROI_SYS_COUNTER_ADD && $0.b == item
                 && (1 << UInt64($0.cpu)) == cpus.client
         }
         // After the first wake: the waiter's handshake waits on a port too.
@@ -439,17 +450,18 @@ enum Bench {
         for _ in 0..<wakes {
             Sys.take(ready)
             Sys.sleep(until: Sys.now() + 100_000)
-            Sys.signal(wakeSignal)
+            ring(wakeSignal)
         }
         Sys.wait(worker, UInt32(CROI_SIGNAL_TASK_TERMINATED))
         Tracing.stop()
         for handle in [worker, wakeSignal, ready, go, wakePort] { Sys.close(handle) }
         var (records, frequency) = try Tracing.records()
+        let item = Sys.address(&measuredAdd)
         records.sort { $0.time < $1.time }
         var sequences: [[croi_trace_record_t]] = []
         var current: [croi_trace_record_t]? = nil
         for r in records where (1 << UInt64(r.cpu)) & (cpus.client | cpus.waiter) != 0 {
-            if r.kind == UInt16(CROI_TK_SYSCALL_ENTER), r.a == CROI_SYS_COUNTER_ADD, r.b == UInt64(wakeSignal),
+            if r.kind == UInt16(CROI_TK_SYSCALL_ENTER), r.a == CROI_SYS_COUNTER_ADD, r.b == item,
                (1 << UInt64(r.cpu)) == cpus.client {
                 current = [r]
             } else if current != nil {
@@ -495,7 +507,7 @@ enum Bench {
         var packet = croi_port_packet_t()
         for _ in 0..<wakes {
             Sys.signal(ready)
-            _ = Sys.call(CROI_SYS_PORT_WAIT, UInt64(doorbellPort), .max, Sys.address(&packet))
+            _ = unsafe croi_port_wait(doorbellPort, .max, &packet, 0)
         }
         Sys.exitThread()
     }
@@ -521,14 +533,15 @@ enum Bench {
         for _ in 0..<wakes {
             Sys.take(ready)
             Sys.sleep(until: Sys.now() + 100_000)  // the waiter is blocked by now
-            _ = Sys.call(CROI_SYS_COUNTER_ADD, UInt64(wakeCounter), 1)
+            ring(wakeCounter)
         }
         Sys.wait(worker, UInt32(CROI_SIGNAL_TASK_TERMINATED))
         Tracing.stop()
         for handle in [worker, wakeCounter, ready, go, doorbellPort] { Sys.close(handle) }
         let (records, frequency) = try Tracing.records()
+        let item = Sys.address(&measuredAdd)
         let adds = records.filter {
-            $0.kind == UInt16(CROI_TK_SYSCALL_ENTER) && $0.a == CROI_SYS_COUNTER_ADD && $0.b == UInt64(wakeCounter)
+            $0.kind == UInt16(CROI_TK_SYSCALL_ENTER) && $0.a == CROI_SYS_COUNTER_ADD && $0.b == item
                 && (1 << UInt64($0.cpu)) == cpus.client
         }
         // After the first add: the waiter's handshake waits on a port too.

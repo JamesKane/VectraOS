@@ -72,3 +72,18 @@ typedef struct {
 } croi_info_msi_t;
 
 static_assert(sizeof(croi_info_msi_t) == 24);
+
+// interrupt_ack(croi_interrupt_ack_item_t *items, count) (D40) re-arms
+// each item's bound interrupt (WRITE): an IRQ thread serving several
+// vectors acks the ones it has handled at once. As counter_add, it goes
+// on past an item that fails, writes each item's status back, and returns
+// how many succeeded; a bad pointer or count fails the whole call first.
+// croi_interrupt_ack in syscall.h is the one-interrupt form.
+enum : uint32_t { CROI_INTERRUPT_ACK_MAX_ITEMS = 64 };
+
+typedef struct {
+  uint32_t interrupt;  // the interrupt's handle
+  int32_t status;      // out: 0, or why this item failed
+} croi_interrupt_ack_item_t;
+
+static_assert(sizeof(croi_interrupt_ack_item_t) == 8);

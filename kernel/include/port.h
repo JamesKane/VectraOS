@@ -13,12 +13,20 @@
 // port_cancel(port, source, key) undoes a binding of any kind. Closing the
 // handle a SIGNALS, VALUE or CHANGE binding was made through also does.
 //
-// port_wait(port, deadline, croi_port_packet_t *packet, leeway): the next
-// packet, or TIMED_OUT at the deadline. The wait may end up to `leeway` ns
+// port_queue(port, const croi_port_packet_t *packets, count) (D40) queues
+// up to CROI_PORT_MAX_PACKETS user packets, in order, stopping at the
+// first that can't be (SHOULD_WAIT: the port holds too many). It returns
+// how many it queued, or the first packet's status if that one failed.
+//
+// port_wait(port, deadline, croi_port_packet_t *packets, count, leeway)
+// (D40): up to `count` packets (at most CROI_PORT_MAX_PACKETS), returning
+// how many; it waits only while the port is empty, and returns TIMED_OUT
+// if it still is at the deadline. The wait may end up to `leeway` ns
 // after the deadline, never before it (principle 10), so that timers
 // coalesce; a thread with a deadline profile always gets zero leeway. A
 // wait on a port nothing is bound to is the one sleep (V1 cut nanosleep
-// and timer objects, D25).
+// and timer objects, D25). Both are interim forms: ports become rings
+// (D19). croi_port_queue and croi_port_wait in syscall.h take one packet.
 #pragma once
 #include <stdint.h>
 
@@ -41,6 +49,7 @@ enum : uint32_t {
   CROI_BIND_TIMESTAMP = 1u << 10, // SIGNALS: payload[2] is the time of the event
 
   CROI_BIND_MAX_ITEMS = 64,
+  CROI_PORT_MAX_PACKETS = 64,  // port_queue and port_wait at once (D40)
 
   // Port packet types (croi_port_packet_t.type). The kernel events' are in
   // their headers: CROI_PKT_TYPE_INTERRUPT, _COUNTER, _BUDGET_OVERRUN,

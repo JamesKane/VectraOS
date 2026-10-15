@@ -32,7 +32,7 @@ enum TimeSuite {
         check(port.bind(counter, UInt32(CROI_BIND_CHANGE) | UInt32(CROI_BIND_PERSISTENT), key: 1) == 0,
               "a doorbell to stamp the time")
         let before = Sys.now()
-        check(Sys.call(CROI_SYS_COUNTER_ADD, counter.arg, 1) == 0, "counter_add")
+        check(croi_counter_add(counter.raw, 1) == 0, "counter_add")
         let after = Sys.now()
         guard let rung = port.next() else { return check(false, "the doorbell rings") }
         check(rung.payload.3 >= before && rung.payload.3 <= after, "the kernel's time is between the vDSO's readings")

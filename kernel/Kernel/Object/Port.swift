@@ -328,6 +328,15 @@ enum Ports {
         return packet
     }
 
+    /// port_wait's packets after its first (D40): the next one, without
+    /// waiting; nil if the port is empty.
+    static func poll(_ table: borrowing HandleTable, _ handle: UInt32) throws(Status) -> PortPacket? {
+        let ref = try table.get(handle, type: .port, rights: .read)
+        guard let (packet, record) = pop(PortPointer(object: ref.object)) else { return nil }
+        if let record { release(record) }
+        return packet
+    }
+
     /// port_cancel: drops the bindings `handle` made to this port under
     /// `key` (ONCE, PERSISTENT, an interrupt's), and their packets still
     /// queued.

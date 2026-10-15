@@ -311,7 +311,7 @@ static uint32_t wait_for(uint32_t handle, uint32_t signals, uint64_t ns) {
   if (sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) != 0) return 0;
   uint32_t observed = 0;
   if (bind1(port, handle, CROI_BIND_SIGNALS, 0, signals) == 0) {
-    if (sys(CROI_SYS_PORT_WAIT, port, now_ns() + ns, (uint64_t)&packet, 0, 0) == 0)
+    if (croi_port_wait(port, now_ns() + ns, &packet, 0) == 0)
       observed = (uint32_t)(packet.payload[0] >> 32);
     else
       sys(CROI_SYS_PORT_CANCEL, port, handle, 0, 0, 0);
@@ -327,7 +327,7 @@ static void sleep_until(uint64_t deadline) {
   uint32_t port = 0;
   croi_port_packet_t packet;
   if (sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) != 0) return;
-  sys(CROI_SYS_PORT_WAIT, port, deadline, (uint64_t)&packet, 0, 0);
+  croi_port_wait(port, deadline, &packet, 0);
   croi_handle_close(port);
 }
 
@@ -342,7 +342,7 @@ static int64_t wait_value(uint32_t handle, int64_t target, uint64_t deadline) {
   if (sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) != 0) return -1;
   int64_t status = bind1(port, handle, CROI_BIND_VALUE, 0, (uint64_t)target);
   if (status == 0) {
-    status = sys(CROI_SYS_PORT_WAIT, port, deadline, (uint64_t)&packet, 0, 0);
+    status = croi_port_wait(port, deadline, &packet, 0);
     if (status != 0) sys(CROI_SYS_PORT_CANCEL, port, handle, 0, 0, 0);
   }
   croi_handle_close(port);
@@ -399,7 +399,7 @@ static uint32_t spawn_child(const startup_t *s, uint32_t job, uint64_t submode) 
 // Submodes 4 and 10's threads: each waits in its own way until killed.
 static void port_blocker(uint64_t port) {
   croi_port_packet_t packet;
-  sys(CROI_SYS_PORT_WAIT, port, ~0ull, (uint64_t)&packet, 0, 0);
+  croi_port_wait(port, ~0ull, &packet, 0);
   sys(CROI_SYS_THREAD_EXIT, 1, 0, 0, 0, 0);
 }
 static void counter_blocker(uint64_t counter) {
@@ -484,7 +484,7 @@ static int64_t child(uint32_t self, uint64_t submode, uint64_t vdso) {
                      child_thread(self, 3, user_spinner, 0) | child_thread(self, 4, syscall_spinner, 0);
     if (failed) return failed;
     croi_port_packet_t packet;
-    sys(CROI_SYS_PORT_WAIT, channel_port, ~0ull, (uint64_t)&packet, 0, 0);  // until killed
+    croi_port_wait(channel_port, ~0ull, &packet, 0);  // until killed
     return 89;
   }
   case 11: {  // K14s: exit with this process's PAC signature of a fixed value
@@ -504,7 +504,7 @@ static int64_t child(uint32_t self, uint64_t submode, uint64_t vdso) {
         sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) != 0)
       return 90;
     croi_port_packet_t packet;
-    sys(CROI_SYS_PORT_WAIT, port, ~0ull, (uint64_t)&packet, 0, 0);
+    croi_port_wait(port, ~0ull, &packet, 0);
     return 89;
   }
   case 9: {  // in a job with reserved CPUs: exit with the CPUs it ran on
@@ -1285,7 +1285,7 @@ static int64_t drivers(const startup_t *s) {
 // Mode 11 (K9c) moved to the interrupts suite (user/test/swift/InterruptSuite.swift)
 // when V1 cut interrupt_wait, interrupt_destroy and virtual interrupts (D29).
 static int64_t port_next(uint32_t port, uint64_t ns, croi_port_packet_t *packet) {
-  return sys(CROI_SYS_PORT_WAIT, port, ns == 0 ? 0 : now_ns() + ns, (uint64_t)packet, 0, 0);
+  return croi_port_wait(port, ns == 0 ? 0 : now_ns() + ns, packet, 0);
 }
 
 static void join_checked(uint32_t thread) {
@@ -1796,7 +1796,7 @@ static void pager_server(uint64_t arg) {
   volatile uint64_t *slot = (volatile uint64_t *)arg;
   croi_port_packet_t packet;
   char page[PAGE];
-  while (sys(CROI_SYS_PORT_WAIT, (uint32_t)slot[0], now_ns() + 5000000000ull, (uint64_t)&packet, 0, 0) == 0) {
+  while (croi_port_wait((uint32_t)slot[0], now_ns() + 5000000000ull, &packet, 0) == 0) {
     uint64_t *req = (uint64_t *)&packet.payload;
     if (packet.type != CROI_PKT_TYPE_PAGE_REQUEST || packet.key != slot[7]) break;
     uint16_t command = (uint16_t)req[0];
@@ -1952,7 +1952,7 @@ static int64_t pager(const startup_t *s) {
 // it waits on a port.
 static void port_sleeper(uint64_t port) {
   croi_port_packet_t packet;
-  sys(CROI_SYS_PORT_WAIT, (uint32_t)port, now_ns() + 5000000000ull, (uint64_t)&packet, 0, 0);
+  croi_port_wait((uint32_t)port, now_ns() + 5000000000ull, &packet, 0);
   sys(CROI_SYS_THREAD_EXIT, 0, 0, 0, 0, 0);
 }
 
@@ -1990,7 +1990,7 @@ static int64_t info_topics(const startup_t *s) {
   croi_port_packet_t wake = {0};
   CHECK(513, listed && get_info(sleeper, CROI_INFO_THREAD_STATS, &stats, sizeof stats, counts) == 0 &&
                  stats.last_scheduled_cpu != CROI_INFO_INVALID_CPU &&
-                 sys(CROI_SYS_PORT_QUEUE, port, (uint64_t)&wake, 0, 0, 0) == 0 &&
+                 croi_port_queue(port, &wake) == 0 &&
                  (wait_for(sleeper, CROI_SIGNAL_TASK_TERMINATED, 3000000000ull) & CROI_SIGNAL_TASK_TERMINATED) &&
                  get_info(sleeper, CROI_INFO_THREAD, &thread, sizeof thread, counts) == 0 &&
                  thread.state == CROI_THREAD_STATE_DEAD &&
@@ -2144,7 +2144,7 @@ static int64_t debugging(const startup_t *s) {
   } while (thread.state != CROI_THREAD_STATE_BLOCKED_PORT && now_ns() < give_up);
   croi_port_packet_t wake = {0};
   CHECK(545, thread.state == CROI_THREAD_STATE_BLOCKED_PORT &&
-                 sys(CROI_SYS_PORT_QUEUE, port, (uint64_t)&wake, 0, 0, 0) == 0 &&
+                 croi_port_queue(port, &wake) == 0 &&
                  (wait_for(sleeper, CROI_SIGNAL_TASK_TERMINATED, 3000000000ull) & CROI_SIGNAL_TASK_TERMINATED));
   croi_handle_close(sleeper);
   croi_handle_close(port);
@@ -3449,7 +3449,7 @@ static void flood(uint64_t arg) {
   for (int i = 0; i < 3501; i++) chan_write(f->channel, &message, sizeof message, 0, 0);
   croi_port_packet_t packet = {};
   for (int i = 0; i < 5000; i++) {
-    if (sys(CROI_SYS_PORT_QUEUE, f->port, (uint64_t)&packet, 0, 0, 0) == ERR_SHOULD_WAIT) {
+    if (croi_port_queue(f->port, &packet) == ERR_SHOULD_WAIT) {
       f->refusedAt = i;
       break;
     }
@@ -3629,7 +3629,7 @@ static void race_pager(uint64_t arg) {
   char page[PAGE];
   for (int i = 0; i < PAGE; i++) page[i] = 'P';
   while (!r[3]) {
-    if (sys(CROI_SYS_PORT_WAIT, (uint32_t)r[0], now_ns() + 50000000ull, (uint64_t)&packet, 0, 0) != 0) continue;
+    if (croi_port_wait((uint32_t)r[0], now_ns() + 50000000ull, &packet, 0) != 0) continue;
     uint64_t *req = (uint64_t *)&packet.payload;
     if (packet.type != CROI_PKT_TYPE_PAGE_REQUEST || (uint16_t)req[0] != CROI_PAGER_VMO_READ) continue;
     uint32_t aux = 0;
@@ -3827,7 +3827,7 @@ static croi_info_memory_account_t account_info(uint32_t account) {
 static int pressure_packet(uint32_t port, uint64_t level, uint64_t charged) {
   croi_port_packet_t packet;
   zero_bytes(&packet, sizeof packet);
-  return sys(CROI_SYS_PORT_WAIT, port, now_ns() + 1000000000ull, (uint64_t)&packet, 0, 0) == 0 &&
+  return croi_port_wait(port, now_ns() + 1000000000ull, &packet, 0) == 0 &&
          packet.type == CROI_PKT_TYPE_MEMORY_PRESSURE && packet.key == 0xACC && packet.payload[3] == level &&
          packet.payload[1] == charged && packet.payload[0] == 8 * PAGE;
 }
@@ -3852,7 +3852,7 @@ static int64_t memory_accounts(const startup_t *s) {
   // The failed commit crossed both levels on its way to the limit: drain
   // that packet first.
   croi_port_packet_t stale;
-  while (sys(CROI_SYS_PORT_WAIT, port, 0, (uint64_t)&stale, 0, 0) == 0) {}
+  while (croi_port_wait(port, 0, &stale, 0) == 0) {}
   CHECK(715, sys6(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_COMMIT, 0, 4 * PAGE, 0, 0) == 0 &&
                  pressure_packet(port, CROI_MEMORY_LEVEL_WARNING, 4 * PAGE));
   CHECK(719, sys6(CROI_SYS_VMO_OP_RANGE, vmo, CROI_VMO_OP_COMMIT, 0, 6 * PAGE, 0, 0) == 0 &&

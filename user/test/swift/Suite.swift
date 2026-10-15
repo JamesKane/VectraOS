@@ -197,7 +197,7 @@ struct Port: ~Copyable {
     /// take `leeway`; nil if none came.
     func next(deadline: UInt64 = 0, leeway: UInt64 = 0) -> croi_port_packet_t? {
         var packet = croi_port_packet_t()
-        let status = Sys.call(CROI_SYS_PORT_WAIT, handle.arg, deadline, Sys.address(&packet), leeway)
+        let status = unsafe croi_port_wait(handle.raw, deadline, &packet, leeway)
         check(status == 0 || status == Status.timedOut, "port_wait's status")
         return status == 0 ? packet : nil
     }

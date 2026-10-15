@@ -105,8 +105,7 @@ struct M2 {
                                                   Sys.address(&vmo), 1))
         Sys.signal(fence)
         var packet = croi_port_packet_t()
-        try Sys.check("waiting on the port", Sys.call(CROI_SYS_PORT_WAIT, UInt64(port), Sys.now() + 1_000_000_000,
-                                                      Sys.address(&packet)))
+        try Sys.check("waiting on the port", unsafe croi_port_wait(port, Sys.now() + 1_000_000_000, &packet, 0))
         guard packet.key == 1 else { throw Failure(what: "the channel's packet coming first", status: Int64(packet.key)) }
         var received: UInt64 = 0
         var handle: UInt32 = 0
@@ -128,13 +127,12 @@ struct M2 {
 
         // The fence's packet, then nothing more: the wait ends at its
         // deadline, not before (V1 cut timer objects, D25).
-        try Sys.check("waiting for the fence", Sys.call(CROI_SYS_PORT_WAIT, UInt64(port), Sys.now() + 1_000_000_000,
-                                                        Sys.address(&packet)))
+        try Sys.check("waiting for the fence", unsafe croi_port_wait(port, Sys.now() + 1_000_000_000, &packet, 0))
         guard packet.key == 2, packet.type == UInt32(CROI_PKT_TYPE_COUNTER), packet.payload.1 == 1 else {
             throw Failure(what: "the fence's packet", status: Int64(packet.key))
         }
         let deadline = Sys.now() + 5_000_000
-        let timedOut = Sys.call(CROI_SYS_PORT_WAIT, UInt64(port), deadline, Sys.address(&packet))
+        let timedOut = unsafe croi_port_wait(port, deadline, &packet, 0)
         let woke = Sys.now()
         guard timedOut == -21, woke >= deadline else { throw Failure(what: "a port wait timing out", status: timedOut) }
         print("m2: port wait saw the fence, then timed out \((woke - deadline) / 1000) us after its deadline")

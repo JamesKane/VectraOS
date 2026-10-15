@@ -73,6 +73,17 @@ enum InterruptSuite {
               "bound again: the packet taken back goes out")
         check(ack(interrupt) == 0 && port.empty, "one pending fire at a time, the first one's time")
 
+        // interrupt_ack takes an array (D40), and goes on past an item that
+        // fails.
+        check(fire(interrupt, 4500) == 0 && port.next()?.payload.0 == 4500, "fired again")
+        check(fire(interrupt, 4600) == 0 && port.empty, "and kept until an ack")
+        var items = InlineArray<2, croi_interrupt_ack_item_t>(repeating: croi_interrupt_ack_item_t(interrupt: 0, status: 1))
+        items[1].interrupt = interrupt.raw
+        check(Sys.call(CROI_SYS_INTERRUPT_ACK, Sys.address(&items), 2) == 1 && Int64(items[0].status) == Status.badHandle
+                  && items[1].status == 0, "a batch acks past a bad handle")
+        check(port.next()?.payload.0 == 4600 && ack(interrupt) == 0 && port.empty, "and sends the fire it kept")
+        check(Sys.call(CROI_SYS_INTERRUPT_ACK, Sys.address(&items), 0) == Status.invalidArgs, "an empty batch is refused")
+
         // A duplicate keeps it; the last handle's close destroys it, so
         // its number is free again.
         let other = Handle(duplicating: interrupt)
@@ -564,8 +575,8 @@ enum InterruptSuite {
             let h = unsafe UnsafeMutablePointer<Handoff>(bitPattern: UInt(argument))!
             for i in 0..<4 {
                 var packet = croi_port_packet_t()
-                _ = unsafe Sys.call(CROI_SYS_PORT_WAIT, UInt64(h.pointee.port), .max, Sys.address(&packet))
-                _ = unsafe Sys.call(CROI_SYS_INTERRUPT_ACK, UInt64(h.pointee.interrupt))
+                _ = unsafe croi_port_wait(h.pointee.port, .max, &packet, 0)
+                _ = unsafe croi_interrupt_ack(h.pointee.interrupt)
                 unsafe h.pointee.deadline[i] = Sys.call(CROI_SYS_TEST, 0)
                 unsafe h.pointee.borrowed[i] = Sys.call(CROI_SYS_TEST, 10)
                 unsafe h.pointee.cpu[i] = Sys.call(CROI_SYS_TEST, 5)
@@ -679,7 +690,7 @@ enum InterruptSuite {
         Sys.call(CROI_SYS_INTERRUPT_CREATE, resource.arg, number, UInt64(options), Sys.address(&out))
     }
 
-    static func ack(_ interrupt: borrowing Handle) -> Int64 { Sys.call(CROI_SYS_INTERRUPT_ACK, interrupt.arg) }
+    static func ack(_ interrupt: borrowing Handle) -> Int64 { croi_interrupt_ack(interrupt.raw) }
 
     static func affinity(_ interrupt: borrowing Handle, _ mask: UInt64) -> Int64 {
         Sys.call(CROI_SYS_INTERRUPT_SET_AFFINITY, interrupt.arg, mask)

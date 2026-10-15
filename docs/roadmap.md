@@ -49,7 +49,7 @@ The work, in order:
    as info topics (D36, 94 calls); vmo_read and vmo_write (D37, 92
    calls). debuglog_read, the last, needs the ring: item 5 (D38).
 3. The batched forms of the hot calls (audit §3). Done: handle_duplicate
-   (D39).
+   (D39); port_queue, port_wait, counter_add and interrupt_ack (D40).
 4. The one ring (architecture §3) in Swift and as `ring.h`, with a model
    checker. Doorbells are counters.
 5. Ports become rings (D19); the debuglog becomes a read-only ring, in

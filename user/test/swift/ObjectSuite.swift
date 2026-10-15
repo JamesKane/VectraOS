@@ -11,6 +11,7 @@ enum ObjectSuite {
         signals()
         handles()
         packets()
+        packetBatches()
         names()
         closeMany()
         cancelKey()
@@ -24,7 +25,7 @@ enum ObjectSuite {
     static var wait: UInt32 { 1 << 14 }
 
     static func add(_ counter: borrowing Handle, _ amount: Int64) -> Int64 {
-        Sys.call(CROI_SYS_COUNTER_ADD, counter.arg, UInt64(bitPattern: amount))
+        croi_counter_add(counter.raw, amount)
     }
 
     /// A counter's signals reach a port: not before they are asserted, then
@@ -53,7 +54,7 @@ enum ObjectSuite {
         var narrowed: UInt32 = 0
         check(Sys.duplicate(counter.arg, UInt64(wait | transfer), &narrowed) == 0,
               "a duplicate with WAIT and TRANSFER")
-        check(Sys.call(CROI_SYS_COUNTER_ADD, UInt64(narrowed), 1) == Status.accessDenied, "can't add (no WRITE)")
+        check(croi_counter_add(narrowed, 1) == Status.accessDenied, "can't add (no WRITE)")
         check(croi_handle_close(narrowed) == 0, "closed")
         check(croi_handle_close(narrowed) == Status.badHandle, "and gone")
         check(Sys.call(CROI_SYS_PORT_CREATE, 0, 0x10) == Status.invalidArgs, "a bad out pointer is an error")
@@ -130,13 +131,33 @@ enum ObjectSuite {
         var packet = croi_port_packet_t()
         packet.key = 42
         packet.payload = (1, 2, 3, 4)
-        check(Sys.call(CROI_SYS_PORT_QUEUE, port.handle.arg, Sys.address(&packet)) == 0, "a user packet queued")
+        check(unsafe croi_port_queue(port.handle.raw, &packet) == 0, "a user packet queued")
         guard let got = port.next(deadline: Sys.now() + 1_000_000_000) else { return check(false, "and read") }
         check(got.key == 42 && got.type == UInt32(CROI_PKT_TYPE_USER) && got.payload.3 == 4, "as it was queued")
     }
 
     /// Names: set and read back (truncated to 31), a short buffer, a handle
     /// without SET_PROPERTY, a thread's name from thread_create.
+    /// port_queue and port_wait take arrays (D40): a wait takes what is
+    /// queued, in order, up to its count, and waits only while none is.
+    static func packetBatches() {
+        let port = Port()
+        var packets = InlineArray<3, croi_port_packet_t>(repeating: croi_port_packet_t())
+        for i in 0..<3 { packets[i].key = UInt64(i + 1) }
+        check(Sys.call(CROI_SYS_PORT_QUEUE, port.handle.arg, Sys.address(&packets), 3) == 3, "three packets in one call")
+        var out = InlineArray<4, croi_port_packet_t>(repeating: croi_port_packet_t())
+        check(Sys.call(CROI_SYS_PORT_WAIT, port.handle.arg, 0, Sys.address(&out), 2) == 2
+                  && out[0].key == 1 && out[1].key == 2, "a wait takes two, in order")
+        check(Sys.call(CROI_SYS_PORT_WAIT, port.handle.arg, Sys.now() + 1_000_000_000, Sys.address(&out), 4) == 1
+                  && out[0].key == 3, "then the one left, without waiting for more")
+        check(Sys.call(CROI_SYS_PORT_WAIT, port.handle.arg, 0, Sys.address(&out), 4) == Status.timedOut, "then none")
+        check(Sys.call(CROI_SYS_PORT_QUEUE, port.handle.arg, Sys.address(&packets), 0) == Status.invalidArgs
+                  && Sys.call(CROI_SYS_PORT_WAIT, port.handle.arg, 0, Sys.address(&out), 65) == Status.invalidArgs,
+              "a count of 0 or over 64 is refused")
+        check(Sys.call(CROI_SYS_PORT_QUEUE, port.handle.arg, 8, 1) == Status.invalidArgs && port.empty,
+              "an unreadable packet is not queued")
+    }
+
     static func names() {
         let vmo = Handle(vmo: pageSize)
         var name = InlineArray<32, UInt8>(repeating: 0xFF)
@@ -189,9 +210,9 @@ enum ObjectSuite {
         check(port.bind(counter, UInt32(CROI_BIND_SIGNALS), key: 5, trigger: UInt64(positive)) == 0, "bound to key 5")
         var packet = croi_port_packet_t()
         packet.key = 5
-        check(Sys.call(CROI_SYS_PORT_QUEUE, port.handle.arg, Sys.address(&packet)) == 0, "a packet with key 5")
+        check(unsafe croi_port_queue(port.handle.raw, &packet) == 0, "a packet with key 5")
         packet.key = 6
-        check(Sys.call(CROI_SYS_PORT_QUEUE, port.handle.arg, Sys.address(&packet)) == 0, "and one with key 6")
+        check(unsafe croi_port_queue(port.handle.raw, &packet) == 0, "and one with key 6")
         check(Sys.call(CROI_SYS_PORT_CANCEL, port.handle.arg, 0, 5) == 0, "key 5 cancelled")
         check(Sys.call(CROI_SYS_PORT_CANCEL, port.handle.arg, 0, 5) == Status.notFound, "nothing left with key 5")
         check(add(counter, 1) == 0, "the counter signals")

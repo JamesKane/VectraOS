@@ -294,12 +294,14 @@ enum Syscalls {
             try Policy.check(UInt32(CROI_POL_NEW_PORT))
             try check(a[1], MemoryLayout<UInt32>.size)
             try put(try table.add(try Ports.create(options: a[0]), rights: PortObject.defaultRights), a[1])
-        case 32:  // port_queue
-            try Ports.queue(table, handle, try getPacket(a[1]))
-        case 33:  // port_wait(port, deadline, packet, leeway)
-            try check(a[2], MemoryLayout<PortPacket>.size)
-            let packet = try Ports.wait(table, handle, deadline: a[1], leeway: a[3])
-            try putPacket(packet, a[2])
+        case 32:  // port_queue(port, packets, count): returns how many were queued (D40)
+            return try queuePackets(table, handle, packets: a[1], count: a[2])
+        case 33:  // port_wait(port, deadline, packets, count, leeway): returns how many it took (D40)
+            return try waitPackets(table, handle, deadline: a[1], packets: a[2], count: a[3], leeway: a[4])
+        case 161:  // counter_add(items, count): returns how many succeeded (D40)
+            return try addCounters(table, items: a[0], count: a[1])
+        case 142:  // interrupt_ack(items, count): returns how many succeeded (D40)
+            return try ackInterrupts(table, items: a[0], count: a[1])
         case 34:  // port_cancel(port, source or 0, key); 0 cancels the key from every source (D32)
             let source = UInt32(truncatingIfNeeded: a[1])
             if source == 0 {
@@ -490,6 +492,64 @@ enum Syscalls {
             me.pointee.coverEnd = found.end
             me.pointee.coverGeneration = found.generation
         }
+    }
+
+    /// port_queue (D40): `count` user packets in order, stopping at the
+    /// first that fails (one it can't read too: the packets are only
+    /// read, so read-only memory will do); how many were queued, or the
+    /// first one's status.
+    private static func queuePackets(_ table: borrowing HandleTable, _ port: UInt32, packets: UInt64,
+                                     count: UInt64) throws(Status) -> Int64 {
+        let size = UInt64(MemoryLayout<PortPacket>.size)
+        guard count > 0, count <= UInt64(CROI_PORT_MAX_PACKETS) else { throw .invalidArgs }
+        for i in 0..<count {
+            do throws(Status) {
+                try Ports.queue(table, port, try getPacket(packets + i * size))
+            } catch {
+                if i == 0 { throw error }
+                return Int64(i)
+            }
+        }
+        return Int64(count)
+    }
+
+    /// port_wait (D40): waits for the first packet, then takes up to
+    /// `count` in all without waiting again; how many it took.
+    private static func waitPackets(_ table: borrowing HandleTable, _ port: UInt32, deadline: UInt64,
+                                    packets: UInt64, count: UInt64, leeway: UInt64) throws(Status) -> Int64 {
+        let size = UInt64(MemoryLayout<PortPacket>.size)
+        guard count > 0, count <= UInt64(CROI_PORT_MAX_PACKETS) else { throw .invalidArgs }
+        try check(packets, Int(count * size))
+        try putPacket(try Ports.wait(table, port, deadline: deadline, leeway: leeway), packets)
+        var taken: UInt64 = 1
+        while taken < count, let packet = try Ports.poll(table, port) {
+            do throws(Status) { try putPacket(packet, packets + taken * size) } catch { break }
+            taken += 1
+        }
+        return Int64(taken)
+    }
+
+    /// The batched calls that go on past a failed item (counter_add and
+    /// interrupt_ack, D40): `count` items of `size` bytes, each a handle,
+    /// an int32 status written back, and for counter_add an int64. Returns
+    /// how many succeeded; a bad pointer or count fails before any item.
+    static func eachItem(_ items: UInt64, count: UInt64, max: UInt32, size: UInt64,
+                         _ body: (UInt32, UInt64) throws(Status) -> Void) throws(Status) -> Int64 {
+        guard count > 0, count <= UInt64(max) else { throw .invalidArgs }
+        try check(items, Int(count * size))
+        var done: Int64 = 0
+        for i in 0..<count {
+            let address = items + i * size
+            var raw = InlineArray<2, UInt64>(repeating: 0)  // handle | status << 32, then the int64
+            var span = raw.mutableSpan
+            let copied = span.withUnsafeMutableBytes { unsafe UserCopy.from($0.baseAddress!, address, size) }
+            guard copied == 0 else { throw .invalidArgs }
+            var status: Int32 = 0
+            do throws(Status) { try body(UInt32(truncatingIfNeeded: raw[0]), raw[1]) } catch { status = error.rawValue }
+            try put(status, address + 4)
+            if status == 0 { done += 1 }
+        }
+        return done
     }
 
     private static func getPacket(_ address: UInt64) throws(Status) -> PortPacket {

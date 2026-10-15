@@ -114,6 +114,13 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   zx_handle_duplicate takes one handle. Kind: deliberate (batch first,
   principle 12). Impact: every caller of zx_handle_duplicate, through
   the C wrapper croi_handle_duplicate.
+- **The wakes take arrays** (V1, D40) — port_queue queues up to 64
+  packets and port_wait takes up to a count (the leeway moves to the
+  fifth argument); counter_add and interrupt_ack take items and go on
+  past a failed one, each status written back. Zircon's take one each.
+  Kind: deliberate (batch first, principle 12). Impact: callers of
+  zx_port_queue, zx_port_wait, zx_counter_add and zx_interrupt_ack,
+  through the C wrappers.
 - **No handle_replace** (V1, D34) — an item with
   CROI_HANDLE_DUPLICATE_CONSUME is zx_handle_replace: the handle
   goes even on failure, and DUPLICATE isn't needed. Kind: deliberate

@@ -15,8 +15,8 @@ enum : uint64_t {
   CROI_SYS_HANDLE_DUPLICATE = 11,  // (croi_handle_duplicate_item_t *items, count): ipc.h (D39)
   CROI_SYS_OBJECT_BIND = 22,       // (port, croi_bind_item_t *items, count): port.h
   CROI_SYS_PORT_CREATE = 31,       // (options, uint32_t *out)
-  CROI_SYS_PORT_QUEUE = 32,        // (port, const croi_port_packet_t *packet)
-  CROI_SYS_PORT_WAIT = 33,         // (port, deadline, croi_port_packet_t *packet, leeway)
+  CROI_SYS_PORT_QUEUE = 32,        // (port, const croi_port_packet_t *packets, count): port.h (D40)
+  CROI_SYS_PORT_WAIT = 33,         // (port, deadline, croi_port_packet_t *packets, count, leeway) (D40)
   CROI_SYS_PORT_CANCEL = 34,       // (port, source handle or 0 for every source, key)
   CROI_SYS_VMO_CREATE = 40,        // (size, options, uint32_t *out)
   // VMOs for drivers (K9a): Zircon's calls, values in vmo.h.
@@ -80,7 +80,7 @@ enum : uint64_t {
 
   // Interrupts (K9c): Zircon's calls, values in interrupt.h.
   CROI_SYS_INTERRUPT_CREATE = 140,   // (IRQ resource, number, options, uint32_t *out)
-  CROI_SYS_INTERRUPT_ACK = 142,      // (interrupt)
+  CROI_SYS_INTERRUPT_ACK = 142,      // (croi_interrupt_ack_item_t *items, count): interrupt.h (D40)
   CROI_SYS_INTERRUPT_SET_AFFINITY = 146,  // (interrupt, uint64_t cpu mask): croi's
   CROI_SYS_MSI_ALLOCATE = 147,       // (MSI resource, count, uint32_t *out)
   CROI_SYS_MSI_CREATE = 148,         // (allocation, options, id, vmo, vmo_offset, uint32_t *out)
@@ -98,7 +98,7 @@ enum : uint64_t {
   // Counters (K10a): Zircon's calls; waits at a value are object_bind
   // VALUE bindings (counter.h, port.h).
   CROI_SYS_COUNTER_CREATE = 160,        // (options 0, uint32_t *out)
-  CROI_SYS_COUNTER_ADD = 161,           // (counter, int64_t amount)
+  CROI_SYS_COUNTER_ADD = 161,           // (croi_counter_add_item_t *items, count): counter.h (D40)
   CROI_SYS_COUNTER_READ = 162,          // (counter, int64_t *value)
 
   // The user pager (K13d; Zircon's), and the small calls that followed it.
@@ -260,6 +260,35 @@ static inline int64_t croi_handle_duplicate(uint32_t handle, uint32_t rights, ui
   if (done == 0) return item.status;
   *out = item.out;
   return 0;
+}
+
+// Queues one packet: port_queue takes an array (D40). 0 or the status.
+static inline int64_t croi_port_queue(uint32_t port, const croi_port_packet_t *packet) {
+  int64_t queued = croi_syscall(CROI_SYS_PORT_QUEUE, port, (uint64_t)packet, 1, 0, 0);
+  return queued < 0 ? queued : 0;
+}
+
+// Waits for one packet: port_wait takes up to a count (D40). 0 or the
+// status (TIMED_OUT).
+static inline int64_t croi_port_wait(uint32_t port, uint64_t deadline, croi_port_packet_t *packet, uint64_t leeway) {
+  int64_t taken = croi_syscall(CROI_SYS_PORT_WAIT, port, deadline, (uint64_t)packet, 1, leeway);
+  return taken < 0 ? taken : 0;
+}
+
+// Adds to one counter: counter_add takes an array (D40). 0, the item's
+// status, or the call's.
+static inline int64_t croi_counter_add(uint32_t counter, int64_t amount) {
+  croi_counter_add_item_t item = {counter, 1, amount};
+  int64_t done = croi_syscall(CROI_SYS_COUNTER_ADD, (uint64_t)&item, 1, 0, 0, 0);
+  return done < 0 ? done : item.status;
+}
+
+// Acks one interrupt: interrupt_ack takes an array (D40). 0, the item's
+// status, or the call's.
+static inline int64_t croi_interrupt_ack(uint32_t interrupt) {
+  croi_interrupt_ack_item_t item = {interrupt, 1};
+  int64_t done = croi_syscall(CROI_SYS_INTERRUPT_ACK, (uint64_t)&item, 1, 0, 0, 0);
+  return done < 0 ? done : item.status;
 }
 
 // A VMO's size, from its info topic (vmo_get_size until D36).

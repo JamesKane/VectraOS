@@ -109,8 +109,6 @@ extension Syscalls {
             try Resources.validate(table, handle, kind: UInt32(CROI_RSRC_KIND_IRQ), base: a[1], size: 1)
             let object = try InterruptObjects.create(number: UInt32(a[1]), options: UInt32(truncatingIfNeeded: a[2]))
             try addAndPut(object, rights: InterruptObject.defaultRights, a[3], table)
-        case 142:  // interrupt_ack(interrupt)
-            try InterruptObjects.ack(try table.get(handle, type: .interrupt, rights: .write).object)
         case 146:  // interrupt_set_affinity(interrupt, cpu mask)
             try InterruptObjects.setAffinity(try table.get(handle, type: .interrupt, rights: .write).object, mask: a[1])
         case 147:  // msi_allocate(MSI resource, count, out)
@@ -256,6 +254,17 @@ extension Syscalls {
             try Vmo.withBorrowed(record) { (vmo: borrowing Vmo) throws(VmError) in
                 try vmo.cacheOp(offset: at, size: size, cacheOp)
             }
+        }
+    }
+}
+
+extension Syscalls {
+    /// interrupt_ack(items, count) (D40): re-arms each bound interrupt
+    /// (WRITE); how many acks succeeded.
+    static func ackInterrupts(_ table: borrowing HandleTable, items: UInt64, count: UInt64) throws(Status) -> Int64 {
+        try eachItem(items, count: count, max: UInt32(CROI_INTERRUPT_ACK_MAX_ITEMS), size: 8) {
+            (interrupt, _) throws(Status) in
+            try InterruptObjects.ack(try table.get(interrupt, type: .interrupt, rights: .write).object)
         }
     }
 }

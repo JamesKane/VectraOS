@@ -493,7 +493,7 @@ thread_bind_overrun_port (122) and account_bind_pressure_port (242).
   binding was made through does too. OVERRUN and PRESSURE last until
   their object goes or is bound again, or PRESSURE until port_cancel.
   A new PRESSURE binding reports the level at once unless normal (D31).
-- port_wait gained a leeway (fourth argument): `Scheduler.block`'s
+- port_wait gained a leeway (fourth argument; fifth since D40): `Scheduler.block`'s
   timeout is armed with that slack (late only; none for a deadline
   thread), principle 10.
 - Tests: the Embedded Swift suite `bind` (user/test/swift/BindSuite.swift,
@@ -520,3 +520,26 @@ again, since nobody could learn it.
   fourth names no handle (three done, the fourth's BAD_HANDLE, the fifth
   untouched), the copies' rights, a reserved field, no items and too
   many.
+
+## The wakes take arrays (V1, D40)
+
+The second batched family (audit §3). port_queue(port, packets, count)
+queues up to 64 user packets in order and stops at the first that fails,
+returning how many it queued (or that first one's status). port_wait
+(port, deadline, packets, count, leeway) waits for the first packet as
+before (`Ports.wait`), then takes the rest without waiting (`Ports.poll`:
+a pop under the packets lock alone) up to its count, and returns how
+many. counter_add and interrupt_ack take items (counter.h, interrupt.h)
+and go on past a failed item, each status written back, the count of
+successes returned (`Syscalls.eachItem`).
+- syscall.h's `croi_port_queue`, `croi_port_wait`, `croi_counter_add` and
+  `croi_interrupt_ack` are the one-item forms.
+- m2's port and counter wake budgets find their adds in the syscall trace
+  by the first argument, which is now the item's address: the measured
+  adds go through `Bench.measuredAdd`.
+- Tests: the `objects` suite's `packetBatches` (three queued at once, a
+  wait of two then of four that takes the one left, counts 0 and 65, an
+  unreadable packet); the `counters` suite's `batch` (four adds, an
+  overflow and a missing WRITE in the middle: two done, each status
+  right); the `interrupts` suite's state machine acks a bad handle and
+  a bound interrupt in one batch.
