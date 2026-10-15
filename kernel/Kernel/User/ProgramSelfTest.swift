@@ -153,11 +153,14 @@ enum ProgramSelfTest {
     /// deadline context lent for the run (the futex suite's inheritance,
     /// the bind suite's leeway).
     static func runSuites(_ console: Uart) {
-        let suites: InlineArray<8, StaticString> = ["swift.suite=bind\0", "swift.suite=vmo\0", "swift.suite=futex\0",
-                                                    "swift.suite=channel\0", "swift.suite=objects\0",
-                                                    "swift.suite=counters\0", "swift.suite=time\0",
-                                                    "swift.suite=memory\0"]
+        // The idle suite first: the others' deadline context bounds every
+        // CPU's wake latency below its deep state's.
+        let suites: InlineArray<9, StaticString> = ["swift.suite=idle\0", "swift.suite=bind\0", "swift.suite=vmo\0",
+                                                    "swift.suite=futex\0", "swift.suite=channel\0",
+                                                    "swift.suite=objects\0", "swift.suite=counters\0",
+                                                    "swift.suite=time\0", "swift.suite=memory\0"]
         let before = ProcessSelfTest.Counts()
+        runOrPanic(console, suites[0])
         let context: SchedContext
         do throws(AdmissionRefusal) {
             context = try SchedContext(deadline: DeadlineParams(capacity: 3_000_000, deadline: 10_000_000,
@@ -166,18 +169,7 @@ enum ProgramSelfTest {
             panic("suites: no deadline context")
         }
         TestHooks.deadlineContext = context.record
-        for i in suites.indices {
-            let environment = suites[i]
-            let code = runSuite(unsafe Span(_unsafeStart: environment.utf8Start, count: environment.utf8CodeUnitCount))
-            guard code == 0x600D else {
-                console.write("  suites: ")
-                writeName(console, environment)
-                console.write(": exit code ")
-                console.write(hex: UInt64(bitPattern: code))
-                console.write("\n")
-                panic("suites: a suite failed (its FAILED line is above)")
-            }
-        }
+        for i in 1..<suites.count { runOrPanic(console, suites[i]) }
         TestHooks.deadlineContext = nil
         ProcessSelfTest.releaseWhenUnbound(context)
         before.expectUnchanged(console)
@@ -188,6 +180,19 @@ enum ProgramSelfTest {
             writeName(console, suites[i])
         }
         console.write(": passed, nothing left behind\n")
+    }
+
+    /// Runs one suite; panics if it fails.
+    private static func runOrPanic(_ console: Uart, _ environment: StaticString) {
+        let code = runSuite(unsafe Span(_unsafeStart: environment.utf8Start, count: environment.utf8CodeUnitCount))
+        guard code == 0x600D else {
+            console.write("  suites: ")
+            writeName(console, environment)
+            console.write(": exit code ")
+            console.write(hex: UInt64(bitPattern: code))
+            console.write("\n")
+            panic("suites: a suite failed (its FAILED line is above)")
+        }
     }
 
     /// Runs the Swift program with `environment` (NUL-terminated strings,

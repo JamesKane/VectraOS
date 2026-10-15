@@ -364,9 +364,16 @@ syscall 245; Todhchai ext 11):
   0x10005): croi_idle_state_stats_t per CPU and state (entries,
   residency, demoted, skipped), then one with state DEFAULT for plain
   halts; actual/avail as list topics.
-- Mode 17's checks 729-736 (refusals; a deep state entered, a
+- Tests: the Swift `idle` suite (refusals; a deep state entered, a
   TIMER_STOPS one skipped; an interrupt's deadline profile demoting CPU 0
   until it closes; MWAIT where the CPU has it, PSCI standby on arm64).
+  It was mode 17's checks 729-736 until check 731 failed twice on rv64
+  (2026-10-15) as one number for four conditions. Each is a named check
+  now, and the waits poll up to 2 s where they judged a fixed 50 ms.
+  It runs first of the suites: their admitted deadline context (3 ms
+  every 10 ms) bounds the wake latency below the 10 ms deep state.
+  Making an interrupt's profile set no bound fails "CPU 0 demoted from
+  the deep state".
 
 ## An idle machine makes no wakeups (K10f)
 

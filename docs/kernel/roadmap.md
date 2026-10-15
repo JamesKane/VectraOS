@@ -1167,14 +1167,6 @@ from Zircon, see docs/kernel/zircon-divergences.md.
   conditions (the context's deadline, the same period, a fall-back once
   the 2 ms budget is spent); it is now three, so the next failure says
   which. Mode 16's C check was the same.
-- Tests: usertest.c's check 731 (an interrupt with a deadline profile
-  keeps CPU 0 out of a 10 ms idle state) failed once on rv64
-  `boot-smoke` (2026-10-15, D33's run, load ~1.3) and passed the rerun.
-  Four CHECKs share the number, so which part failed is unknown; the
-  likeliest is the timing one (no deep entry during the 50 ms window,
-  one after). D29 moved it from a virtual interrupt to the RTC's. It
-  moves to a Swift suite, with a name per condition, when it is next
-  touched.
 
 ### K13a (agreed with Todhchai, 2026-10-11): VMO slices and ZERO_CHILDREN
 
