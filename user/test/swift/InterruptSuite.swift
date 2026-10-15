@@ -166,7 +166,7 @@ enum InterruptSuite {
             }
             latencies[j] = value
         }
-        _ = Sys.call(CROI_SYS_TEST_REPORT, latencies[waits / 2])
+        _ = Sys.call(CROI_SYS_TEST, CROI_TEST_REPORT, latencies[waits / 2])
 
         close(interrupt)
         check(create(irq, number, options: 0, &raw) == 0, "closed: its number free again")
@@ -566,17 +566,17 @@ enum InterruptSuite {
                 var packet = croi_port_packet_t()
                 _ = unsafe Sys.call(CROI_SYS_PORT_WAIT, UInt64(h.pointee.port), .max, Sys.address(&packet))
                 _ = unsafe Sys.call(CROI_SYS_INTERRUPT_ACK, UInt64(h.pointee.interrupt))
-                unsafe h.pointee.deadline[i] = Sys.call(CROI_SYS_TEST_PROFILE, 0)
-                unsafe h.pointee.borrowed[i] = Sys.call(CROI_SYS_TEST_PROFILE, 10)
-                unsafe h.pointee.cpu[i] = Sys.call(CROI_SYS_TEST_PROFILE, 5)
-                unsafe h.pointee.start[i] = Sys.call(CROI_SYS_TEST_PROFILE, 3)
+                unsafe h.pointee.deadline[i] = Sys.call(CROI_SYS_TEST, 0)
+                unsafe h.pointee.borrowed[i] = Sys.call(CROI_SYS_TEST, 10)
+                unsafe h.pointee.cpu[i] = Sys.call(CROI_SYS_TEST, 5)
+                unsafe h.pointee.start[i] = Sys.call(CROI_SYS_TEST, 3)
                 let t0 = Sys.now()
                 if i == 0 {
                     while Sys.now() - t0 < 500_000 {}  // some of the budget
                 } else if i == 1 {
                     unsafe h.pointee.fellBack = -1  // the rest, and past it
                     while Sys.now() - t0 < 2_000_000_000 {
-                        if Sys.call(CROI_SYS_TEST_PROFILE, 10) == -1 {
+                        if Sys.call(CROI_SYS_TEST, 10) == -1 {
                             unsafe h.pointee.fellBack = Int64(Sys.now() - t0)
                             break
                         }
@@ -584,8 +584,8 @@ enum InterruptSuite {
                 } else if i == 3 {
                     unsafe h.pointee.spinning = 1
                     while unsafe h.pointee.release == 0 && Sys.now() - t0 < 5_000_000_000 {}
-                    unsafe h.pointee.withdrawn = Sys.call(CROI_SYS_TEST_PROFILE, 10) == -1
-                        && Sys.call(CROI_SYS_TEST_PROFILE, 0) == 0 ? 1 : 0
+                    unsafe h.pointee.withdrawn = Sys.call(CROI_SYS_TEST, 10) == -1
+                        && Sys.call(CROI_SYS_TEST, 0) == 0 ? 1 : 0
                 }
                 unsafe h.pointee.round = UInt32(i + 1)
             }
@@ -687,7 +687,7 @@ enum InterruptSuite {
 
     /// The test hook that fires an interrupt as its device would, at `time`.
     static func fire(_ interrupt: borrowing Handle, _ time: UInt64) -> Int64 {
-        Sys.call(CROI_SYS_TEST_PROFILE, 13, interrupt.arg, time)
+        Sys.call(CROI_SYS_TEST, 13, interrupt.arg, time)
     }
 
     static func close(_ handle: consuming Handle) {}

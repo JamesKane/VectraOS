@@ -224,10 +224,11 @@ enum Syscalls {
             if a[0] == 12 { return BranchTargets.enabled ? 1 : 0 }  // K14r: guarded pages in use
             #endif
             if a[0] == 13 { return TestHooks.fire(a[1], at: a[2]) }
+            if a[0] == 14 {  // CROI_TEST_REPORT: a value for the self-test (test_report until D35)
+                reported.store(a[1], ordering: .relaxed)
+                return 0
+            }
             return (6...9).contains(a[0]) ? Reclaim.testHook(a) : TestHooks.profile(a[0])
-        case 5:
-            reported.store(a[0], ordering: .relaxed)
-            return 0
         case 181, 182:  // cprng_draw(buffer, length), cprng_add_entropy(buffer, length): K11b
             return Random.call(number, a)
         default:

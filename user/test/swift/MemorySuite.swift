@@ -25,7 +25,7 @@ enum MemorySuite {
     /// hysteresis or eviction delay, all 0 the command line's; 9 reads
     /// the free bytes.
     static func hook(_ op: UInt64, _ a: UInt64 = 0, _ b: UInt64 = 0, _ c: UInt64 = 0) -> Int64 {
-        Sys.call(CROI_SYS_TEST_PROFILE, op, a, b, c, 0, 0)
+        Sys.call(CROI_SYS_TEST, op, a, b, c, 0, 0)
     }
 
     /// The root account: the RAM as its limit, what is in use as its

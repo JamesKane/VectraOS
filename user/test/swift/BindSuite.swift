@@ -121,11 +121,11 @@ enum BindSuite {
         var deadline = Sys.now() + 1_000_000
         check(port.next(deadline: deadline, leeway: 1_000_000) == nil && Sys.now() >= deadline,
               "a leeway never ends a wait early")
-        check(Sys.call(CROI_SYS_TEST_PROFILE, 1) == 0, "bound to the deadline context")
+        check(Sys.call(CROI_SYS_TEST, 1) == 0, "bound to the deadline context")
         deadline = Sys.now() + 5_000_000
         let timedOut = port.next(deadline: deadline, leeway: 500_000_000) == nil
         let woke = Sys.now()
-        check(Sys.call(CROI_SYS_TEST_PROFILE, 2) == 0, "and back")
+        check(Sys.call(CROI_SYS_TEST, 2) == 0, "and back")
         check(timedOut && woke >= deadline && woke < deadline + 200_000_000,
               "a deadline thread's half second of leeway is ignored")
     }

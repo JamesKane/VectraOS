@@ -11,7 +11,6 @@
 enum : uint64_t {
   CROI_SYS_NULL = 0,
   CROI_SYS_THREAD_EXIT = 2,        // (int64_t code): the calling thread
-  CROI_SYS_TEST_REPORT = 5,        // (value) for the boot self-test
   CROI_SYS_HANDLE_CLOSE = 10,      // (const uint32_t *handles, count): 0 skipped (D33)
   CROI_SYS_HANDLE_DUPLICATE = 11,  // (handle, rights, uint32_t *out, options): CONSUME replaces (D34)
   CROI_SYS_OBJECT_BIND = 22,       // (port, croi_bind_item_t *items, count): port.h
@@ -57,7 +56,7 @@ enum : uint64_t {
   CROI_SYS_CHANNEL_READ = 82,      // (channel, options, bytes, handles, capacities, actuals)
   CROI_SYS_CHANNEL_CALL = 83,      // (channel, options, deadline, croi_channel_call_args_t *, actual_bytes, actual_handles)
   CROI_SYS_OBJECT_GET_INFO = 86,   // (handle, topic, buffer, buffer_size)
-  CROI_SYS_TEST_PROFILE = 6,       // (op) boot self-test only
+  CROI_SYS_TEST = 6,               // (op, ...) test boots only; CROI_TEST_REPORT (D35)
   // Futexes (K7c): Zircon's.
   CROI_SYS_FUTEX_WAIT = 90,        // (uint32_t *value, current, new_owner thread handle, deadline)
   CROI_SYS_FUTEX_WAKE = 91,        // (uint32_t *value, count)
@@ -130,6 +129,12 @@ enum : uint64_t {
   CROI_SYS_CPRNG_DRAW = 181,            // (void *buffer, length)
   CROI_SYS_CPRNG_ADD_ENTROPY = 182,     // (const void *buffer, length)
   CROI_CPRNG_MAX_LEN = 256,
+};
+
+// CROI_SYS_TEST's ops are numbers the self-tests share with the kernel's
+// TestHooks; REPORT hands the kernel's side a value (test_report until D35).
+enum : uint64_t {
+  CROI_TEST_REPORT = 14,  // (value)
 };
 
 // A new process's first thread starts with arg1 (a handle in the process)

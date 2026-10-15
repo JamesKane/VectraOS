@@ -143,7 +143,7 @@ static int64_t vdso(uint64_t base) {
   }
   CHECK(53, torn == 0);
   uint64_t vdso_ns = (t1 - t0) / 1000;
-  sys(CROI_SYS_TEST_REPORT, (vdso_ns & 0xFFFF) | distinct << 32, 0, 0, 0, 0);
+  sys(CROI_SYS_TEST, CROI_TEST_REPORT, (vdso_ns & 0xFFFF) | distinct << 32, 0, 0, 0);
   return 0x600D;
 }
 
@@ -252,7 +252,7 @@ static int64_t pmu(void) {
   uint32_t cycles[1] = {CROI_PMU_CYCLES};
   if (info.kind == CROI_PMU_KIND_NONE) {
     CHECK(61, pmu_call(CROI_PMU_OP_THREAD_START, 1, (uint64_t)cycles) != 0);
-    sys(CROI_SYS_TEST_REPORT, 0, 0, 0, 0, 0);
+    sys(CROI_SYS_TEST, CROI_TEST_REPORT, 0, 0, 0, 0);
     return 0x600D;
   }
   CHECK(62, pmu_call(CROI_PMU_OP_THREAD_START, 1, (uint64_t)cycles) == 0);
@@ -268,7 +268,7 @@ static int64_t pmu(void) {
   CHECK(68, pmu_call(CROI_PMU_OP_THREAD_READ, 0x10, 0) != 0);  // bad pointer
   CHECK(69, pmu_call(CROI_PMU_OP_THREAD_STOP, 0, 0) == 0);
   CHECK(70, pmu_call(CROI_PMU_OP_THREAD_READ, (uint64_t)first, 0) != 0);  // stopped
-  sys(CROI_SYS_TEST_REPORT, second[0] - first[0], 0, 0, 0, 0);
+  sys(CROI_SYS_TEST, CROI_TEST_REPORT, second[0] - first[0], 0, 0, 0);
   return 0x600D;
 }
 
@@ -520,7 +520,7 @@ static int64_t child(uint32_t self, uint64_t submode, uint64_t vdso) {
   case 9: {  // in a job with reserved CPUs: exit with the CPUs it ran on
     uint64_t seen = 0;
     for (int i = 0; i < 300; i++) {
-      seen |= 1ull << sys(CROI_SYS_TEST_PROFILE, 5, 0, 0, 0, 0);
+      seen |= 1ull << sys(CROI_SYS_TEST, 5, 0, 0, 0, 0);
       if (i % 10 == 0) sleep_until(vdso_now(vdso) + 100000);
     }
     return sys(CROI_SYS_PROCESS_EXIT, (int64_t)seen, 0, 0, 0, 0);
@@ -628,9 +628,9 @@ static void server(uint64_t channel) {
     uint64_t until = now_ns() + 1000000, give_up = now_ns() + 50000000;
     while (now_ns() < until) {
     }
-    while (sys(CROI_SYS_TEST_PROFILE, 0, 0, 0, 0, 0) != 1 && now_ns() < give_up) {
+    while (sys(CROI_SYS_TEST, 0, 0, 0, 0, 0) != 1 && now_ns() < give_up) {
     }
-    uint32_t reply[3] = {buffer[0], buffer[1] + 1, (uint32_t)sys(CROI_SYS_TEST_PROFILE, 0, 0, 0, 0, 0)};
+    uint32_t reply[3] = {buffer[0], buffer[1] + 1, (uint32_t)sys(CROI_SYS_TEST, 0, 0, 0, 0, 0)};
     chan_write((uint32_t)channel, reply, sizeof reply, 0, 0);
   }
   sys(CROI_SYS_THREAD_EXIT, 0, 0, 0, 0, 0);
@@ -679,8 +679,8 @@ static int64_t ipc(const startup_t *s) {
   uint32_t client = 0, served = 0;
   CHECK(131, sys(CROI_SYS_CHANNEL_CREATE, 0, (uint64_t)&client, (uint64_t)&served, 0, 0) == 0);
   uint32_t server_thread = start_thread(s, server, served);
-  int donating = sys(CROI_SYS_TEST_PROFILE, 1, 0, 0, 0, 0) == 0;
-  CHECK(132, donating && sys(CROI_SYS_TEST_PROFILE, 0, 0, 0, 0, 0) == 1);
+  int donating = sys(CROI_SYS_TEST, 1, 0, 0, 0, 0) == 0;
+  CHECK(132, donating && sys(CROI_SYS_TEST, 0, 0, 0, 0, 0) == 1);
   uint32_t request[2] = {0, 41}, reply[4] = {0, 0, 0, 0};
   croi_channel_call_args_t args = {(uint64_t)request, 0, (uint64_t)reply, 0, sizeof request, 0, sizeof reply, 0};
   uint32_t got_bytes = 0, got_handles = 0;
@@ -692,7 +692,7 @@ static int64_t ipc(const startup_t *s) {
     CHECK(134, reply[2] == 1);  // the server ran on our deadline
   }
   uint32_t last_txid = reply[0];
-  CHECK(135, sys(CROI_SYS_TEST_PROFILE, 2, 0, 0, 0, 0) == 0);
+  CHECK(135, sys(CROI_SYS_TEST, 2, 0, 0, 0, 0) == 0);
   CHECK(136, sys6(CROI_SYS_CHANNEL_CALL, client, 0, now_ns() + 2000000000ull, (uint64_t)&args, (uint64_t)&got_bytes,
                   (uint64_t)&got_handles) == 0 && reply[2] == 0);  // fair caller: nothing lent
   // A call that times out; its reply then arrives as an ordinary message.
@@ -722,7 +722,7 @@ static int64_t ipc(const startup_t *s) {
   croi_handle_close(caller);
   croi_handle_close(x);
 
-  sys(CROI_SYS_TEST_REPORT, croi_flow_id(channel_id, last_txid), 0, 0, 0, 0);
+  sys(CROI_SYS_TEST, CROI_TEST_REPORT, croi_flow_id(channel_id, last_txid), 0, 0, 0);
   return 0x600D;
 }
 
@@ -1756,7 +1756,7 @@ static void spinner(uint64_t arg) {
   spinner_t *p = (spinner_t *)arg;
   // At least one sample: a thread a loaded host starts late still says
   // where it ran.
-  do p->seen |= 1ull << sys(CROI_SYS_TEST_PROFILE, 5, 0, 0, 0, 0);
+  do p->seen |= 1ull << sys(CROI_SYS_TEST, 5, 0, 0, 0, 0);
   while (!p->stop && now_ns() < p->until);
   sys(CROI_SYS_THREAD_EXIT, 0, 0, 0, 0, 0);
 }
@@ -2728,7 +2728,7 @@ static int64_t page_borrowing(const startup_t *s) {
 // suite when V1 cut system_get_event, D31.) Test hooks (syscall 6): 6
 // aging passes, 7 evict(pages, min age, ignore hints).
 static int64_t reclaim_hook(uint64_t op, uint64_t a, uint64_t b, uint64_t c, uint64_t d, uint64_t e) {
-  return sys6(CROI_SYS_TEST_PROFILE, op, a, b, c, d, e);
+  return sys6(CROI_SYS_TEST, op, a, b, c, d, e);
 }
 
 static uint64_t committed_of(uint32_t vmo, uint64_t *events) {
@@ -4208,7 +4208,7 @@ static int64_t pointer_auth(const startup_t *s) {
 #if defined(__aarch64__)
   const uint64_t value = 0x0000000001234560ull, modifier = 7;
   uint64_t mine = pac_sign(value, modifier);
-  uint64_t kernel = (uint64_t)sys6(CROI_SYS_TEST_PROFILE, 11, value, modifier, 0, 0, 0);
+  uint64_t kernel = (uint64_t)sys6(CROI_SYS_TEST, 11, value, modifier, 0, 0, 0);
   if (kernel == value) return 0;  // PAC off (croi.pac=off, or not implemented)
   CHECK(676, mine != value && mine != kernel);
   // K14s: a key per process: another thread of ours signs alike, a child
@@ -4243,7 +4243,7 @@ static void bti_stray(uint64_t routine) {
 
 static int64_t guarded_pages(const startup_t *s) {
 #if defined(__aarch64__)
-  if (sys6(CROI_SYS_TEST_PROFILE, 12, 0, 0, 0, 0, 0) != 1) return 0;  // no BTI (croi.bti=off, or none)
+  if (sys6(CROI_SYS_TEST, 12, 0, 0, 0, 0, 0) != 1) return 0;  // no BTI (croi.bti=off, or none)
   const uint32_t code[8] = {0xd503201f, 0xd2800020, 0xd65f03c0, 0xd503201f,   // nop; mov x0, #1; ret
                             0xd503245f, 0xd2800040, 0xd65f03c0, 0xd503201f};  // bti c; mov x0, #2; ret
   uint32_t vmo = 0;

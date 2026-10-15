@@ -122,13 +122,13 @@ enum CounterSuite {
         unsafe state.initialize(to: Lent(port: port.handle.raw))
         let entry: @convention(c) (UInt64) -> Void = { argument in
             let lent = unsafe UnsafeMutablePointer<Lent>(bitPattern: UInt(argument))!
-            unsafe lent.pointee.before = Sys.call(CROI_SYS_TEST_PROFILE, 0)
+            unsafe lent.pointee.before = Sys.call(CROI_SYS_TEST, 0)
             var packet = croi_port_packet_t()
             _ = unsafe Sys.call(CROI_SYS_PORT_WAIT, UInt64(lent.pointee.port), .max, Sys.address(&packet))
-            unsafe lent.pointee.after = Sys.call(CROI_SYS_TEST_PROFILE, 0)
-            unsafe lent.pointee.periodStart = Sys.call(CROI_SYS_TEST_PROFILE, 3)
+            unsafe lent.pointee.after = Sys.call(CROI_SYS_TEST, 0)
+            unsafe lent.pointee.periodStart = Sys.call(CROI_SYS_TEST, 3)
             Sys.sleep(1_000_000)
-            unsafe lent.pointee.afterBlocking = Sys.call(CROI_SYS_TEST_PROFILE, 0)
+            unsafe lent.pointee.afterBlocking = Sys.call(CROI_SYS_TEST, 0)
             Thread.exit()
         }
         let worker = Thread(entry, UInt64(UInt(bitPattern: state)))

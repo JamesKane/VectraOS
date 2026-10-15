@@ -90,16 +90,16 @@ enum FutexSuite {
         let entry: @convention(c) (UInt64) -> Void = { argument in
             let owner = unsafe UnsafeMutablePointer<Owner>(bitPattern: UInt(argument))!
             let giveUp = Sys.now() + 2_000_000_000
-            while Sys.now() < giveUp, Sys.call(CROI_SYS_TEST_PROFILE, 0) != 1 {}
-            unsafe owner.pointee.profile = Sys.call(CROI_SYS_TEST_PROFILE, 0)
+            while Sys.now() < giveUp, Sys.call(CROI_SYS_TEST, 0) != 1 {}
+            unsafe owner.pointee.profile = Sys.call(CROI_SYS_TEST, 0)
             let word = unsafe owner.pointee.word
             _ = Sys.call(CROI_SYS_FUTEX_WAKE, word, 1)
             Thread.exit()
         }
         let owner = Thread(entry, UInt64(UInt(bitPattern: state)))
-        let bound = Sys.call(CROI_SYS_TEST_PROFILE, 1)
+        let bound = Sys.call(CROI_SYS_TEST, 1)
         let waited = Sys.call(CROI_SYS_FUTEX_WAIT, word, 0, owner.handle.arg, Sys.now() + 3_000_000_000)
-        let unbound = Sys.call(CROI_SYS_TEST_PROFILE, 2)
+        let unbound = Sys.call(CROI_SYS_TEST, 2)
         owner.join()
         check(bound == 0 && unbound == 0, "bound to the deadline context and back")
         check(waited == 0, "woken by the owner")

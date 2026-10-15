@@ -123,7 +123,10 @@ in User/IpcSyscalls.swift):
 - Test-only syscall 6 (`TestHooks.profile`; NOT_SUPPORTED unless
   `croi.test=1` or `croi.debug_syscalls=on`, since review round 1: its
   hooks reboot, evict and sign with the kernel's key): bind to / report a deadline
-  context a self-test provides, until profiles are objects.
+  context a self-test provides, until profiles are objects. Since D35 it
+  is the one test call, CROI_SYS_TEST: op 14 (CROI_TEST_REPORT) hands
+  the kernel's self-test a value, as test_report (5) did, and is gated
+  the same way.
 
 ## Futexes and timers (K7c)
 
