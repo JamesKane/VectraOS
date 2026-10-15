@@ -62,7 +62,7 @@ enum Power {
     static func rsdp(_ bootData: UInt32) -> UInt64? {
         var size: UInt64 = 0
         var base: UInt64 = 0
-        guard Userboot.sys(CROI_SYS_VMO_GET_SIZE, UInt64(bootData), Userboot.address(&size)) == 0,
+        guard unsafe croi_vmo_size(bootData, &size) == 0,
               Userboot.sys(CROI_SYS_VMAR_MAP, UInt64(croi_vmar_root_self()) | UInt64(CROI_VM_PERM_READ) << 32, 0,
                            UInt64(bootData), 0, size, Userboot.address(&base)) == 0 else { return nil }
         let header = UInt64(MemoryLayout<croi_zbi_header_t>.size)

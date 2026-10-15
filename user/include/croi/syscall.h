@@ -21,7 +21,6 @@ enum : uint64_t {
   CROI_SYS_VMO_CREATE = 40,        // (size, options, uint32_t *out)
   CROI_SYS_VMO_READ = 41,          // (vmo, void *buffer, offset, length)
   CROI_SYS_VMO_WRITE = 42,         // (vmo, const void *buffer, offset, length)
-  CROI_SYS_VMO_GET_SIZE = 44,      // (vmo, uint64_t *size)
   // VMOs for drivers (K9a): Zircon's calls, values in vmo.h.
   CROI_SYS_VMO_OP_RANGE = 45,      // (vmo, op, offset, size, buffer, buffer_size)
   CROI_SYS_VMO_SET_CACHE_POLICY = 46,  // (vmo, policy)
@@ -39,7 +38,6 @@ enum : uint64_t {
   CROI_SYS_THREAD_CREATE = 64,     // (process, name, name_len, options, out)
   CROI_SYS_THREAD_START = 65,      // (thread, entry, stack, arg1, arg2)
   CROI_SYS_TASK_KILL = 67,         // (task)
-  CROI_SYS_PROCESS_INFO = 68,      // (process, croi_process_info_t out)
   CROI_SYS_VMAR_ALLOCATE = 70,     // (parent | options << 32, offset, size, out_child, out_addr)
   CROI_SYS_VMAR_MAP = 71,          // (vmar | options << 32, vmar_offset, vmo, vmo_offset, len, out_addr)
   CROI_SYS_VMAR_UNMAP = 72,        // (vmar, addr, len)
@@ -141,7 +139,7 @@ enum : uint64_t {
 // in the first argument register, arg2 in the second and the vDSO's base
 // in the third.
 
-#include "task.h"  // vmar options, task return codes, signals, croi_process_info_t
+#include "task.h"  // vmar options, task return codes, signals, info topics
 #include "ipc.h"   // channel signals and limits, call args, handle info, flow ids
 #include "log.h"   // debuglog records, flags, severities
 #include "profile.h"  // profile info, admission refusals
@@ -253,4 +251,12 @@ static inline int64_t croi_syscall6(uint64_t number, uint64_t a0, uint64_t a1, u
 // Closes one handle: handle_close takes an array (D33).
 static inline int64_t croi_handle_close(uint32_t handle) {
   return croi_syscall(CROI_SYS_HANDLE_CLOSE, (uint64_t)&handle, 1, 0, 0, 0);
+}
+
+// A VMO's size, from its info topic (vmo_get_size until D36).
+static inline int64_t croi_vmo_size(uint32_t vmo, uint64_t *size) {
+  croi_info_vmo_t info;
+  int64_t status = croi_syscall6(CROI_SYS_OBJECT_GET_INFO, vmo, CROI_INFO_VMO, (uint64_t)&info, sizeof info, 0, 0);
+  if (status == 0) *size = info.size_bytes;
+  return status;
 }

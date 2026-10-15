@@ -343,10 +343,6 @@ enum Syscalls {
             try vmoCopy(table, handle, user: a[1], offset: a[2], length: a[3], toUser: true)
         case 42:  // vmo_write
             try vmoCopy(table, handle, user: a[1], offset: a[2], length: a[3], toUser: false)
-        case 44:  // vmo_get_size(vmo, out)
-            try check(a[1], MemoryLayout<UInt64>.size)
-            let ref = try table.get(handle, type: .vmo)
-            try put(VmoPointer(address: UnsafeVmoObject(ref.object).vmo).sizeOwner.pointee.size, a[1])  // K14g: a reference's is its root's
         case 50:  // trace_configure
             switch a[1] {
             case 0: try TraceControl.start(table, handle, categories: UInt32(truncatingIfNeeded: a[2]),

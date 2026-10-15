@@ -26,7 +26,7 @@ enum VmoSuite {
     static func sizesAndMappings() {
         let odd = Handle(vmo: 3584)
         var size: UInt64 = 0
-        check(Sys.call(CROI_SYS_VMO_GET_SIZE, odd.arg, Sys.address(&size)) == 0 && size == pageSize,
+        check(unsafe croi_vmo_size(odd.raw, &size) == 0 && size == pageSize,
               "a VMO's size rounds up to a page")
         var out: UInt32 = 0
         check(Sys.call(CROI_SYS_VMO_CREATE, ~0, 0, Sys.address(&out)) == Status.outOfRange,
@@ -70,7 +70,7 @@ enum VmoSuite {
     static func contentSize() {
         let odd = Handle(vmo: 2 * pageSize + 100)
         var size: UInt64 = 0
-        check(Sys.call(CROI_SYS_VMO_GET_SIZE, odd.arg, Sys.address(&size)) == 0 && size == 3 * pageSize
+        check(unsafe croi_vmo_size(odd.raw, &size) == 0 && size == 3 * pageSize
                   && odd.contentSize == 2 * pageSize + 100, "an unaligned VMO: whole pages, the content size asked for")
         let vmo = Handle(vmo: 2 * pageSize)
         check(vmo.contentSize == 2 * pageSize, "the content size reads as the size until set")
@@ -178,7 +178,7 @@ enum VmoSuite {
         var size: UInt64 = 0
         let results = unsafe (work.pointee.result, (work + 2).pointee.result)
         check(results == (0, 0), "both land once supplied")
-        check(Sys.call(CROI_SYS_VMO_GET_SIZE, paged.arg, Sys.address(&size)) == 0 && size == 2 * pageSize
+        check(unsafe croi_vmo_size(paged.raw, &size) == 0 && size == 2 * pageSize
                   && paged.contentSize == 2 * pageSize, "the resize came second")
         unsafe work.deallocate()
     }

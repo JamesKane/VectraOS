@@ -33,7 +33,7 @@ enum Tracing {
             defer { Sys.close(handles[i]) }
             var size: UInt64 = 0
             var base: UInt64 = 0
-            try Sys.check("sizing a ring", Sys.call(CROI_SYS_VMO_GET_SIZE, UInt64(handles[i]), Sys.address(&size)))
+            try Sys.check("sizing a ring", unsafe croi_vmo_size(handles[i], &size))
             try Sys.check("mapping a ring", Sys.call(CROI_SYS_VMAR_MAP, UInt64(croi_vmar_root_self())
                                                          | UInt64(CROI_VM_PERM_READ) << 32,
                                                      0, UInt64(handles[i]), 0, size, Sys.address(&base)))

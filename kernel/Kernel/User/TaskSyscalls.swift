@@ -72,14 +72,6 @@ extension Syscalls {
             try check(a[3], MemoryLayout<UInt32>.size)
             let (child, rights) = try Processes.child(table, handle, koid: a[1], rights: UInt32(truncatingIfNeeded: a[2]))
             try put(try table.add(child, rights: rights), a[3])
-        case 68:  // process_info(process, out croi_process_info_t)
-            try check(a[1], MemoryLayout<croi_process_info_t>.size)
-            let process = try table.get(handle, type: .process, rights: .inspect)
-            let info = Processes.info(process: process.object)
-            var flags: UInt32 = 0
-            if info.started { flags |= UInt32(CROI_PROCESS_INFO_STARTED) }
-            if info.exited { flags |= UInt32(CROI_PROCESS_INFO_EXITED) }
-            try put(croi_process_info_t(return_code: info.returnCode, flags: flags, reserved: 0), a[1])
         case 70: try vmarAllocate(table, a)
         case 244: try vmarMapView(table, a)  // K15b
         case 71: try vmarMap(table, a)

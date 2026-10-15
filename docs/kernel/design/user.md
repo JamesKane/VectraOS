@@ -195,8 +195,9 @@ vx mkbootfs):
   new stdout in a processargs message, starts it, waits, and prints
   `userboot: <name> exited with <code>`. Boot tests wait for that line
   with code 0 (`CROI_BOOT_DONE`).
-- Syscalls added for it: `vmo_get_size` (44) and object_get_info
-  CROI_INFO_VMAR (base, length). Embedded Swift `String ==` needs the
+- Syscalls added for it: `vmo_get_size` (44; since D36 the VMO info
+  topic, through `croi_vmo_size`) and object_get_info CROI_INFO_VMAR
+  (base, length). Embedded Swift `String ==` needs the
   Unicode tables (not linked): compare bytes.
 
 ## The M2 exit test and budgets (K8c)

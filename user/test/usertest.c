@@ -364,10 +364,10 @@ static uint32_t wait_terminated(uint32_t handle) {
 }
 
 static int64_t return_code(uint32_t process) {
-  croi_process_info_t info = {};
-  if (sys(CROI_SYS_PROCESS_INFO, process, (uint64_t)&info, 0, 0, 0) != 0) return 0x7777;
-  if ((info.flags & (CROI_PROCESS_INFO_STARTED | CROI_PROCESS_INFO_EXITED)) !=
-      (CROI_PROCESS_INFO_STARTED | CROI_PROCESS_INFO_EXITED))
+  croi_info_process_t info = {};
+  if (sys6(CROI_SYS_OBJECT_GET_INFO, process, CROI_INFO_PROCESS, (uint64_t)&info, sizeof info, 0, 0) != 0) return 0x7777;
+  if ((info.flags & (CROI_INFO_PROCESS_FLAG_STARTED | CROI_INFO_PROCESS_FLAG_EXITED)) !=
+      (CROI_INFO_PROCESS_FLAG_STARTED | CROI_INFO_PROCESS_FLAG_EXITED))
     return 0x7778;
   return info.return_code;
 }
@@ -1057,7 +1057,7 @@ static uint32_t mem_type(const croi_zbi_mem_range_t *ranges, uint64_t count, uin
 // SMBIOS, and the framebuffer the kernel drew its pattern on.
 static int64_t firmware(const startup_t *s) {
   uint64_t size = 0, at = 0, word = 0;
-  CHECK(231, sys(CROI_SYS_VMO_GET_SIZE, s->bootdata, (uint64_t)&size, 0, 0, 0) == 0 && size >= PAGE &&
+  CHECK(231, croi_vmo_size(s->bootdata, &size) == 0 && size >= PAGE &&
                  sys(CROI_SYS_VMO_WRITE, s->bootdata, (uint64_t)&word, 0, 8, 0) == ERR_ACCESS_DENIED &&
                  sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0,
                       s->bootdata, 0, size, (uint64_t)&at) == ERR_ACCESS_DENIED &&
@@ -1261,7 +1261,7 @@ static int64_t drivers(const startup_t *s) {
   // Zero-size VMOs exist (Zircon's).
   uint64_t size = 1;
   CHECK(227, sys(CROI_SYS_VMO_CREATE, 0, 0, (uint64_t)&anon, 0, 0) == 0 &&
-                 sys(CROI_SYS_VMO_GET_SIZE, anon, (uint64_t)&size, 0, 0, 0) == 0 && size == 0 &&
+                 croi_vmo_size(anon, &size) == 0 && size == 0 &&
                  croi_handle_close(anon) == 0);
   return firmware(s);
 }
@@ -1820,7 +1820,7 @@ static int64_t pager(const startup_t *s) {
                  sys6(CROI_SYS_PAGER_CREATE_VMO, pg, CROI_VMO_RESIZABLE | CROI_VMO_UNBOUNDED, port, 77, PAGE,
                       (uint64_t)&vmo) == ERR_INVALID_ARGS &&
                  sys6(CROI_SYS_PAGER_CREATE_VMO, pg, 0, port, 77, 4 * PAGE + 100, (uint64_t)&vmo) == 0 &&
-                 sys(CROI_SYS_VMO_GET_SIZE, vmo, (uint64_t)&size, 0, 0, 0) == 0 && size == 5 * PAGE &&
+                 croi_vmo_size(vmo, &size) == 0 && size == 5 * PAGE &&
                  sys(CROI_SYS_OBJECT_GET_PROPERTY, vmo, CROI_PROP_VMO_CONTENT_SIZE, (uint64_t)&size, 8, 0) == 0 && size == 4 * PAGE + 100 &&
                  sys(CROI_SYS_VMO_CREATE, PAGE, 0, (uint64_t)&other, 0, 0) == 0);
   // Refusals: misaligned, a status FAIL won't take, a VMO not the pager's.
@@ -2408,7 +2408,7 @@ static int64_t resizing(const startup_t *s) {
   ((volatile char *)at)[20] = 'x';
   ((volatile char *)at)[PAGE] = 'y';
   CHECK(572, sys(CROI_SYS_VMO_SET_SIZE, vmo, 10, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_VMO_GET_SIZE, vmo, (uint64_t)&size, 0, 0, 0) == 0 && size == PAGE &&
+                 croi_vmo_size(vmo, &size) == 0 && size == PAGE &&
                  sys(CROI_SYS_OBJECT_GET_PROPERTY, vmo, CROI_PROP_VMO_CONTENT_SIZE, (uint64_t)&size, 8, 0) == 0 && size == 10 &&
                  ((volatile char *)at)[20] == 0 &&
                  sys(CROI_SYS_VMO_READ, vmo, (uint64_t)&byte, PAGE, 1, 0) == ERR_OUT_OF_RANGE &&
@@ -3065,7 +3065,7 @@ static int64_t child_kinds(const startup_t *s) {
   CHECK(654, sys(CROI_SYS_VMO_CREATE, 4 * PAGE, 0, (uint64_t)&big, 0, 0) == 0 && vmo_put(big, PAGE, 'S') &&
                  vmo_child(big, CROI_VMO_CHILD_SLICE, PAGE, 2 * PAGE, &slice) == 0 && vmo_byte(slice, 0) == 'S' &&
                  vmo_put(slice, PAGE + 5, 'T') && vmo_byte(big, 2 * PAGE + 5) == 'T' &&
-                 sys(CROI_SYS_VMO_GET_SIZE, slice, (uint64_t)&size, 0, 0, 0) == 0 && size == 2 * PAGE &&
+                 croi_vmo_size(slice, &size) == 0 && size == 2 * PAGE &&
                  vmo_byte(slice, 2 * PAGE) == -1 &&
                  sys6(CROI_SYS_VMAR_MAP, s->vmar | (uint64_t)(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE) << 32, 0, slice, 0,
                       2 * PAGE, (uint64_t)&mapped) == 0 &&
@@ -3127,8 +3127,8 @@ static int64_t child_kinds(const startup_t *s) {
                  koid_of(ref) != koid_of(grow) && sys(CROI_SYS_VMO_SET_SIZE, ref, 3 * PAGE, 0, 0, 0) ==
                      ERR_ACCESS_DENIED_ &&
                  sys(CROI_SYS_VMO_SET_SIZE, rref, 3 * PAGE, 0, 0, 0) == 0 &&
-                 sys(CROI_SYS_VMO_GET_SIZE, grow, (uint64_t)&size, 0, 0, 0) == 0 && size == 3 * PAGE &&
-                 sys(CROI_SYS_VMO_GET_SIZE, ref, (uint64_t)&size, 0, 0, 0) == 0 && size == 3 * PAGE &&
+                 croi_vmo_size(grow, &size) == 0 && size == 3 * PAGE &&
+                 croi_vmo_size(ref, &size) == 0 && size == 3 * PAGE &&
                  vmo_put(ref, 2 * PAGE, 'G') && vmo_byte(grow, 2 * PAGE) == 'G');
   // A snapshot through a reference is of the parent, counted as the
   // reference's child; info names the parent. (The shared content size is
@@ -3209,7 +3209,7 @@ static int64_t unbounded(const startup_t *s) {
                  sys(CROI_SYS_VMO_CREATE, max + 1, CROI_VMO_CREATE_UNBOUNDED, (uint64_t)&bad, 0, 0) ==
                      ERR_OUT_OF_RANGE &&
                  sys(CROI_SYS_VMO_CREATE, 4 * PAGE + 100, CROI_VMO_CREATE_UNBOUNDED, (uint64_t)&vmo, 0, 0) == 0 &&
-                 sys(CROI_SYS_VMO_GET_SIZE, vmo, (uint64_t)&size, 0, 0, 0) == 0 && size == max &&
+                 croi_vmo_size(vmo, &size) == 0 && size == max &&
                  sys(CROI_SYS_OBJECT_GET_PROPERTY, vmo, CROI_PROP_VMO_CONTENT_SIZE, (uint64_t)&size, 8, 0) == 0 && size == 4 * PAGE + 100 &&
                  get_info(vmo, CROI_INFO_VMO, &v, sizeof v, counts) == 0 && v.size_bytes == max &&
                  v.committed_bytes == 0 && sys(CROI_SYS_VMO_SET_SIZE, vmo, PAGE, 0, 0, 0) == ERR_UNAVAILABLE);
@@ -3241,7 +3241,7 @@ static int64_t unbounded(const startup_t *s) {
                  sys6(CROI_SYS_PAGER_CREATE_VMO, pg, CROI_VMO_UNBOUNDED, port, 94, max + 1, (uint64_t)&bad) ==
                      ERR_OUT_OF_RANGE &&
                  sys6(CROI_SYS_PAGER_CREATE_VMO, pg, CROI_VMO_UNBOUNDED, port, 94, 100, (uint64_t)&vmo) == 0 &&
-                 sys(CROI_SYS_VMO_GET_SIZE, vmo, (uint64_t)&size, 0, 0, 0) == 0 && size == max &&
+                 croi_vmo_size(vmo, &size) == 0 && size == max &&
                  sys(CROI_SYS_OBJECT_GET_PROPERTY, vmo, CROI_PROP_VMO_CONTENT_SIZE, (uint64_t)&size, 8, 0) == 0 && size == 100 &&
                  sys(CROI_SYS_VMO_CREATE, PAGE, 0, (uint64_t)&aux, 0, 0) == 0 && vmo_put(aux, 0, 'P') &&
                  sys6(CROI_SYS_PAGER_SUPPLY_PAGES, pg, vmo, far, PAGE, aux, 0) == 0 && vmo_byte(vmo, far) == 'P' &&

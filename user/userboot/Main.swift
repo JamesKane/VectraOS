@@ -52,7 +52,7 @@ struct Userboot {
         }
 
         var size: UInt64 = 0
-        try call("sizing bootfs", sys(CROI_SYS_VMO_GET_SIZE, UInt64(bootfs), address(&size)))
+        try call("sizing bootfs", unsafe croi_vmo_size(bootfs, &size))
         var bootfsBase: UInt64 = 0
         try call("mapping bootfs", sys(CROI_SYS_VMAR_MAP,
                                        UInt64(croi_vmar_root_self()) | UInt64(CROI_VM_PERM_READ) << 32, 0,
@@ -182,8 +182,9 @@ struct Userboot {
         var packet = croi_port_packet_t()
         try call("waiting for it", sys(CROI_SYS_PORT_WAIT, UInt64(port), .max, address(&packet)))
         _ = croi_handle_close(port)
-        var info = croi_process_info_t()
-        try call("reading its exit code", sys(CROI_SYS_PROCESS_INFO, UInt64(process), address(&info)))
+        var info = croi_info_process_t()
+        try call("reading its exit code", sys(CROI_SYS_OBJECT_GET_INFO, UInt64(process), UInt64(CROI_INFO_PROCESS),
+                                              address(&info), UInt64(MemoryLayout<croi_info_process_t>.size)))
         say("userboot: ")
         write(next)
         print(" exited with \(info.return_code)")

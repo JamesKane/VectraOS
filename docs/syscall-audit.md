@@ -86,7 +86,7 @@ Legend: **keep**, **merge** (the call survives under a combined form),
 | 40, 45–49, 155 | vmo create, op_range, set_cache_policy, create_physical, create_child, replace_as_executable, create_contiguous | keep | |
 | 41, 42 | vmo_read, vmo_write | cut | map; every caller is a setup path (bootfs, ELF, BootData) |
 | 43 | vmo_map | cut | legacy, "until VMARs (K7)"; `vmar_map` |
-| 44 | vmo_get_size | merge | a `get_info` topic |
+| 44 | vmo_get_size | merge (D36) | a `get_info` topic |
 | 233 | vmo_set_size | keep | resizable VMOs for Taisce's mapped files |
 | 70–76, 244 | vmar allocate, map, unmap, protect, destroy, unmap_handle_close_thread_exit, op_range, map_view | keep | |
 | 77 | vmar_map_clock | cut | with clock objects |
@@ -101,7 +101,7 @@ Legend: **keep**, **merge** (the call survives under a combined form),
 | # | Call | Verdict | Replacement or reason |
 |---|---|---|---|
 | 60–65, 67 | job/process/thread create, start, exit, task_kill | keep | |
-| 68 | process_info | merge | a `get_info` topic |
+| 68 | process_info | merge (D36) | a `get_info` topic |
 | 78 | object_get_child | keep | ps and the launcher's task tree |
 | 86, 103, 104 | get_info, get/set_property | keep | |
 | 100–102, 105, 106 | exception channel, get_thread, get_process, thread read/write state | keep | |
@@ -176,6 +176,7 @@ cut (D31): 100 calls. port_cancel_key merged into port_cancel (D32): 99
 calls. handle_close_many merged into handle_close (D33): 98 calls.
 handle_replace merged into handle_duplicate (D34): 97 calls.
 test_report merged into the test call (D35): 96 calls.
+vmo_get_size and process_info became info topics (D36): 94 calls.
 
 The ceiling in `tools/vx/LocCommand.swift` is lowered with each cut, so it
 never rises.

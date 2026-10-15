@@ -104,6 +104,10 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   runtime's croi_handle_close passes an array of one). Kind: deliberate
   (batch first, one call per job). Impact: every caller of
   zx_handle_close, through the C wrapper.
+- **No vmo_get_size or process_info** (V1, D36) — a VMO's size is its
+  info topic's `size_bytes` (the C runtime's `croi_vmo_size`), and a
+  process's exit code and state its CROI_INFO_PROCESS record. Kind:
+  deliberate (one call per job). Impact: callers of zx_vmo_get_size.
 - **No handle_replace** (V1, D34) — handle_duplicate(handle, rights,
   out, CROI_HANDLE_DUPLICATE_CONSUME) is zx_handle_replace: the handle
   goes even on failure, and DUPLICATE isn't needed. Kind: deliberate

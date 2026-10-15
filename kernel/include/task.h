@@ -44,17 +44,6 @@ enum : uint32_t {  // signals
   CROI_SIGNAL_THREAD_RUNNING = 1u << 4,
 };
 
-enum : uint32_t {  // croi_process_info_t flags
-  CROI_PROCESS_INFO_STARTED = 1u << 0,
-  CROI_PROCESS_INFO_EXITED = 1u << 1,
-};
-
-typedef struct {
-  int64_t return_code;
-  uint32_t flags;
-  uint32_t reserved;
-} croi_process_info_t;
-
 // Exceptions (K7d; Zircon's). A message on an exception channel is a
 // croi_exception_info_t plus one handle to the exception.
 enum : uint32_t {
