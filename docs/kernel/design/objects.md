@@ -139,7 +139,10 @@ User/SyncSyscalls.swift; timer objects were cut in V1, below):
   clears the owner. `futex` trace records. V1 cut futex_requeue,
   wake_single_owner and get_owner (D22): todhchai's Lock and pthreads use
   wait and wake only, and with no requeue a waiter's record is the one
-  it blocked on (`Thread.futex` went). Tests: the Swift `futex` suite
+  it blocked on (`Thread.futex` went). Futexes are keyed by address
+  space, so futex_wake and an ownerless futex_wait skip the handle table
+  (`Syscalls.run`; V1, D26): a thread with no handles can sleep on one.
+  Tests: the Swift `futex` suite
   (wait's refusals, a wake's count, an owner on a deadline waiter's
   profile); runSuites checks no record is left.
 - Out-pointer checks (`Syscalls.check`) ask the address space whether
@@ -293,6 +296,33 @@ thread waits behind it (`WaitState`, `Observer.Kind.wait`,
   `wait_value` (a VALUE binding on a port of its own, cancelled if it
   times out).
 
+## Clocks: cut in V1 (D26)
+
+croi had Zircon's clock objects (K13f; type 30): clock_create, read,
+get_details and update (216-219), vmar_map_clock (77) with its
+INFO_CLOCK_MAPPED_SIZE topic, and the PA_CLOCK_UTC startup handle,
+which nothing handed out; and Zircon's clock_get_monotonic syscall (3).
+V1 cut all six calls:
+- Monotonic time is the vDSO's `clock_monotonic` (user.md, "vDSO"),
+  which reads the counter through the time page with no syscall. The
+  runtime's `croi_clock_monotonic` calls it; m2, userboot and the
+  suites read the time through it.
+- UTC will be the time service's: it publishes UTC in a read-only
+  seqlock VMO it hands each process at start (syscall-audit.md §4). No
+  UTC source exists yet, so nothing is lost.
+- usertest.c reads the vDSO too. It has no writable data, so a process
+  mode finds the vDSO's base in its startup block (`now_ns`), and a
+  child in its start argument (`vdso_now`). Mode 2 checks the vDSO's
+  clock against a futex_wait deadline, and mode 3 sleeps with
+  futex_wait timeouts. Neither has handles, so a futex_wait with no
+  owner and a futex_wake skip the handle table (Futexes, above). Mode 4
+  spins until the kernel sets a word on its stack, since a sample in
+  the vDSO would count as foreign.
+- Tests: the Swift `time` suite (the vDSO clock never goes back; a
+  CHANGE packet's kernel timestamp falls between two vDSO readings,
+  which is mode 2's old comparison with the syscall). Mode 17's
+  `clocks` went with the clock objects.
+
 ## The small calls (K13e part 1)
 
 The small calls, K13e part 1 (syscalls 210-215 in User/IpcSyscalls.swift,
@@ -351,31 +381,6 @@ TaskSyscalls `vmarOpRange`, syscall 76; task.h, vmo.h):
   under the aspace lock, then done piece by piece without it (pagers may
   be waited for); `UserAspacePointer.mapPresent` maps what the VMO has.
 - Mode 17's `info_topics`.
-
-## Clock objects (K13f)
-
-Clock objects, K13f (Kernel/Object/ClockObject.swift, User/ClockSyscalls.swift,
-syscalls 216-219 and 77; clock.h):
-- Zircon's clock (type 30; rights BASIC | IO | SIGNAL | PROPERTY, MAP for
-  a MAPPABLE one; no policy): clock_create (options MONOTONIC, CONTINUOUS,
-  AUTO_START, BOOT, MAPPABLE; args version in bits 63:58, v1 backstop),
-  clock_read, clock_get_details (v1), clock_update (v1 value / rate ppm
-  +-1000 / error bound, v2 with a reference value), vmar_map_clock (77:
-  read-only, one page), ZX_INFO_CLOCK_MAPPED_SIZE (40), NAME. Zircon's
-  checks and rules: unstarted reads the backstop and only a value starts
-  it (BAD_STATE), MONOTONIC never back, CONTINUOUS no jumps once started,
-  never below the backstop; STARTED set at the start, UPDATED pulsed at
-  every update (set then cleared: waits and async waits see it).
-- croi's reference "ticks" are monotonic ns (the counter's 32.32 scale has
-  no u32/u32 ratio): reference_ticks_to_synthetic = reference_to_
-  synthetic and the details' tick fields are ns. BOOT is monotonic (no
-  suspend).
-- State is croi_clock_page_t (Zircon's mapped layout) in the object under
-  its lock; a MAPPABLE clock publishes it to a one-page read-only
-  contiguous VMO under `seq_lock` (generation = seq / 2, 1 when created).
-  Values: b_off + floor((r - a_off) * num / den), saturating (128-bit).
-  PA_CLOCK_UTC (0x40) is defined; nothing creates a UTC clock yet.
-- Mode 17's `clocks`.
 
 ## object_bind (V1)
 

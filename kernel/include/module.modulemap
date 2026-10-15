@@ -19,7 +19,6 @@ module CroiAbi {
   header "counter.h"
   header "timeline.h"
   header "power.h"
-  header "clock.h"
   header "account.h"
   header "port.h"
   export *

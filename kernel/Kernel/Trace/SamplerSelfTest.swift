@@ -64,6 +64,13 @@ enum SamplerSelfTest {
             start()
             spinnerId = 0
             let userSpinner = spawn(cpu, spinUser, 0)
+            // It spins until its stack's lowest word is set (a clock read
+            // would put samples in the vDSO, outside the program), timed
+            // from when it starts.
+            while spinnerId == 0 { Scheduler.sleep(until: Clock.now() + 1_000_000) }
+            Scheduler.sleep(until: Clock.now() + spinNs)
+            let stop: UInt64 = 1
+            withUnsafeBytes(of: stop) { stack.writeBytes(at: 0, from: UInt64(UInt(bitPattern: $0.baseAddress!)), count: 8) }
             let code0 = userSpinner.join()
             Trace.stop()
             guard code0 == 0x600D else { panic("sampler self-test: user program failed") }
@@ -245,7 +252,7 @@ enum SamplerSelfTest {
 
     private static let spinUser: Thread.Entry = { _ in
         spinnerId = Scheduler.current.pointee.traceId
-        UserTraps.enter(UserAspacePointer(address: aspace), pc: codeAt, sp: stackAt + stackSize, arg0: 4, arg1: spinNs)
+        UserTraps.enter(UserAspacePointer(address: aspace), pc: codeAt, sp: stackAt + stackSize, arg0: 4, arg1: stackAt)
     }
 
     private static func spawn(_ cpu: Int, _ entry: Thread.Entry, _ argument: UInt64) -> ThreadHandle {

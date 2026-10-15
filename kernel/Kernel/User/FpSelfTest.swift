@@ -11,6 +11,7 @@ enum FpSelfTest {
     static var stackAt: UInt64 { 0x200_0000 }
     static var stackSize: UInt64 { 16 * 1024 }
     nonisolated(unsafe) static var aspace: UInt64 = 0
+    nonisolated(unsafe) static var vdsoAt: UInt64 = 0
 
     static func run(_ console: Uart) {
         // The address space lives until both threads are joined (a local
@@ -26,6 +27,7 @@ enum FpSelfTest {
                 let stack = try Vmo(anonymous: stackSize)
                 _ = try space.map(stack, size: stackSize, at: stackAt + i * 2 * stackSize, rights: .read | .write)
             }
+            vdsoAt = try Vdso.map(into: space)  // the clock its sleeps' deadlines come from
             check(console)
         } catch {
             panic("fp self-test: out of memory")
@@ -69,7 +71,7 @@ enum FpSelfTest {
     private static let user: Thread.Entry = { argument in
         let stack = argument >> 32
         UserTraps.enter(UserAspacePointer(address: aspace), pc: codeAt, sp: stackAt + stack * 2 * stackSize + stackSize,
-                        arg0: 3, arg1: argument & 0xFFFF_FFFF)
+                        arg0: 3, arg1: argument & 0xFFFF_FFFF, arg2: vdsoAt)
     }
 
     private static func spawn(_ cpu: Int, _ seed: UInt64, _ stack: UInt64) -> ThreadHandle {

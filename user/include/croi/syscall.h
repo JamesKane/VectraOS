@@ -12,7 +12,6 @@ enum : uint64_t {
   CROI_SYS_NULL = 0,
   CROI_SYS_DEBUG_WRITE = 1,        // (const char *text, size_t length)
   CROI_SYS_THREAD_EXIT = 2,        // (int64_t code): the calling thread
-  CROI_SYS_CLOCK_MONOTONIC = 3,    // () -> ns
   CROI_SYS_TEST_REPORT = 5,        // (value) for the boot self-test
   CROI_SYS_HANDLE_CLOSE = 10,      // (handle)
   CROI_SYS_HANDLE_DUPLICATE = 11,  // (handle, rights, uint32_t *out)
@@ -52,7 +51,6 @@ enum : uint64_t {
   CROI_SYS_VMAR_DESTROY = 74,      // (vmar)
   CROI_SYS_VMAR_UNMAP_HANDLE_CLOSE_THREAD_EXIT = 75,  // (vmar, addr, len, close_handle): no return on success
   CROI_SYS_VMAR_OP_RANGE = 76,     // (vmar, op, addr, len, buffer 0, buffer_size 0), K13e
-  CROI_SYS_VMAR_MAP_CLOCK = 77,    // (vmar, options, vmar_offset, clock, len, uint64_t *mapped_addr), K13f
   CROI_SYS_OBJECT_GET_CHILD = 78,  // (job or process, koid, rights, uint32_t *out): Zircon's, K15d
   // Channels (K7b): Zircon's, except channel_read packs its
   // capacities (bytes | handles << 32) and writes both actuals (two
@@ -130,10 +128,6 @@ enum : uint64_t {
   CROI_SYS_PAGER_QUERY_VMO_STATS = 208, // (pager, vmo, options, buffer, buffer_size)
   CROI_SYS_HANDLE_CLOSE_MANY = 211,     // (const uint32_t *handles, count)
   CROI_SYS_PORT_CANCEL_KEY = 212,       // (port, options, key)
-  CROI_SYS_CLOCK_CREATE = 216,          // (options | args version << 58, args, out), K13f: clock.h
-  CROI_SYS_CLOCK_READ = 217,            // (clock, int64_t *now)
-  CROI_SYS_CLOCK_GET_DETAILS = 218,     // (clock, CROI_CLOCK_ARGS_VERSION(1), croi_clock_details_v1_t *)
-  CROI_SYS_CLOCK_UPDATE = 219,          // (clock, flags | args version << 58, args)
   CROI_SYS_PROCESS_READ_MEMORY = 230,   // (process, vaddr, buffer, size, size_t *actual), K13g
   CROI_SYS_PROCESS_WRITE_MEMORY = 231,  // (process, vaddr, buffer, size, size_t *actual): croi.debug_syscalls
   CROI_SYS_TASK_SUSPEND = 232,          // (thread or process, uint32_t *token)
@@ -170,7 +164,6 @@ enum : uint64_t {
 #include "counter.h"  // counter signals, value waits
 #include "timeline.h" // display timelines, their page
 #include "power.h"    // system_powerctl commands, croi_system_powerctl_arg_t
-#include "clock.h"    // clock objects (K13f)
 #include "account.h"  // memory accounts (K15a)
 #include "port.h"     // object_bind, packet types, port_wait's leeway
 

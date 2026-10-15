@@ -85,8 +85,6 @@ extension Syscalls {
         case 71: try vmarMap(table, a)
         case 72:  // vmar_unmap(vmar, addr, len)
             try vmarUnmap(table, a)
-        case 77:  // vmar_map_clock(vmar, options, vmar_offset, clock, len, mapped_addr), K13f
-            try vmarMapClock(table, a)
         case 76:  // vmar_op_range(vmar, op, addr, len, buffer, buffer_size), K13e
             try vmarOpRange(table, a)
         case 73:  // vmar_protect(vmar | options << 32, addr, len)
@@ -359,42 +357,6 @@ extension Syscalls {
                 Reclaim.hint(p.vmo, offset: p.offset, size: p.size, alwaysNeed: false)  // DONT_NEED
             }
         }
-    }
-
-    /// vmar_map_clock (K13f, Zircon's order): read-only permissions only,
-    /// exactly a page, a MAPPABLE clock; its page as a VMO with the clock
-    /// handle's READ and MAP.
-    private static func vmarMapClock(_ table: borrowing HandleTable, _ a: InlineArray<6, UInt64>) throws(Status) {
-        let options = UInt32(truncatingIfNeeded: a[1])
-        guard UInt64(options) == a[1],
-              options & (UInt32(CROI_VM_PERM_WRITE) | UInt32(CROI_VM_PERM_EXECUTE)) == 0,
-              options & ~(UInt32(CROI_VM_PERM_READ) | UInt32(CROI_VM_SPECIFIC)) == 0 else { throw .invalidArgs }
-        guard a[4] == KernelLayout.pageSize else { throw .invalidArgs }
-        let clockHandle = UInt32(truncatingIfNeeded: a[3])
-        var clockRights = Rights()
-        let clock = try table.get(clockHandle, type: .clock, have: &clockRights)
-        guard let page = ClockPointer(object: clock.object).pointee.page else { throw .invalidArgs }
-        let vmar = try table.get(UInt32(truncatingIfNeeded: a[0]), type: .vmar, rights: .read)
-        guard clockRights.contains(.read | .map) else { throw .accessDenied }
-        try check(a[5], 8)
-        let v = VmarPointer(object: vmar.object).info
-        var at: UInt64? = nil
-        if options & UInt32(CROI_VM_SPECIFIC) != 0 {
-            guard a[2] <= v.size, a[4] <= v.size - a[2] else { throw .invalidArgs }
-            at = v.base + a[2]
-        } else {
-            guard a[2] == 0 else { throw .invalidArgs }
-        }
-        page.retain()
-        defer { page.release() }
-        let mapped = try vm { () throws(VmError) -> UInt64 in
-            try Vmo.withBorrowed(page) { (borrowed: borrowing Vmo) throws(VmError) -> UInt64 in
-                try UserAspace.withView(v.aspace) { (aspace: borrowing UserAspace) throws(VmError) -> UInt64 in
-                    try aspace.map(borrowed, offset: 0, size: a[4], at: at, in: v.region, rights: .read)
-                }
-            }
-        }
-        try put(mapped, a[5])
     }
 
     private static func vmarUnmap(_ table: borrowing HandleTable, _ a: InlineArray<6, UInt64>) throws(Status) {

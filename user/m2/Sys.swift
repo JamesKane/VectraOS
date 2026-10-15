@@ -31,9 +31,7 @@ enum Sys {
         return bound < 0 ? bound : bound == 1 ? 0 : Int64(item.status)
     }
 
-    static func now() -> UInt64 {
-        UInt64(bitPattern: call(CROI_SYS_CLOCK_MONOTONIC))
-    }
+    static func now() -> UInt64 { croi_clock_monotonic() }
 
     /// A port nothing is bound to: every thread's sleep (V1 cut nanosleep,
     /// D25).

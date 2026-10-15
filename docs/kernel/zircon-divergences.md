@@ -225,15 +225,20 @@ matches the pinned tree where upstream docs or expectations say otherwise).
 
 ## Clocks and time
 
-- **Reference ticks are monotonic ns** — the counter's 32.32 scale has no
-  u32/u32 ratio, so reference_ticks_to_synthetic equals
-  reference_to_synthetic and clock_get_details' tick fields are ns. Kind:
-  deliberate. Impact: code converting raw ticks itself.
+- **Cut** (V1, D26) — no clock objects (clock_create, read, get_details,
+  update, vmar_map_clock, INFO_CLOCK_MAPPED_SIZE) and no
+  clock_get_monotonic syscall. Monotonic time is the vDSO's only (Zircon
+  has it there too, and the syscall besides); UTC is the time service's,
+  in a read-only seqlock VMO each process gets at start. Kind:
+  deliberate. Impact: every Fuchsia program reading UTC
+  (zx_utc_reference_get, zx_clock_read) and anything calling the
+  monotonic syscall directly.
 - **BOOT is monotonic** — no suspend, so the boot timeline equals the
   monotonic one (interrupt timestamps are monotonic). Kind: deliberate (until suspend exists). Impact: none today.
-- **No UTC clock from the kernel** — PA_CLOCK_UTC is defined but nothing
-  creates one; it is the time service's to create. Kind: deliberate.
-  Impact: user space must provide UTC.
+- **futex_wait without an owner needs no handle table** — futexes are
+  keyed by address space, so a thread with no handles can sleep on one
+  (croi's kernel-launched self-tests do). Zircon's threads always have a
+  process. Kind: deliberate. Impact: none.
 
 ## Tasks, exceptions and debugging
 

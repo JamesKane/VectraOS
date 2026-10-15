@@ -24,6 +24,9 @@ uint32_t croi_vmar_root_self(void);
 // The vDSO's base address (the third start argument).
 uint64_t croi_vdso_base(void);
 
+// Monotonic nanoseconds, read through the vDSO (V1 cut the syscall, D26).
+uint64_t croi_clock_monotonic(void);
+
 // Zircon's zx_cache_flush through the vDSO (options CROI_CACHE_FLUSH_*,
 // vmo.h): 0, or a negative status.
 int32_t croi_cache_flush(const void *addr, uint64_t len, uint32_t options);

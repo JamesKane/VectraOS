@@ -57,7 +57,6 @@ kernel/Kernel/KernelStack.swift	croi	dc4cf67	kernel/Kernel/KernelStack.swift
 kernel/Kernel/Main.swift	croi	dc4cf67	kernel/Kernel/Main.swift
 kernel/Kernel/Object/AccountObject.swift	croi	dc4cf67	kernel/Kernel/Object/AccountObject.swift
 kernel/Kernel/Object/Channel.swift	croi	dc4cf67	kernel/Kernel/Object/Channel.swift
-kernel/Kernel/Object/ClockObject.swift	croi	dc4cf67	kernel/Kernel/Object/ClockObject.swift
 kernel/Kernel/Object/Counter.swift	croi	dc4cf67	kernel/Kernel/Object/Counter.swift
 kernel/Kernel/Object/Debug.swift	croi	dc4cf67	kernel/Kernel/Object/Debug.swift
 kernel/Kernel/Object/DebugLog.swift	croi	dc4cf67	kernel/Kernel/Object/DebugLog.swift
@@ -112,7 +111,6 @@ kernel/Kernel/Trace/Trace.swift	croi	dc4cf67	kernel/Kernel/Trace/Trace.swift
 kernel/Kernel/Trace/TraceSelfTest.swift	croi	dc4cf67	kernel/Kernel/Trace/TraceSelfTest.swift
 kernel/Kernel/Uart.swift	croi	dc4cf67	kernel/Kernel/Uart.swift
 kernel/Kernel/User/BootData.swift	croi	dc4cf67	kernel/Kernel/User/BootData.swift
-kernel/Kernel/User/ClockSyscalls.swift	croi	dc4cf67	kernel/Kernel/User/ClockSyscalls.swift
 kernel/Kernel/User/CounterSyscalls.swift	croi	dc4cf67	kernel/Kernel/User/CounterSyscalls.swift
 kernel/Kernel/User/DebugSyscalls.swift	croi	dc4cf67	kernel/Kernel/User/DebugSyscalls.swift
 kernel/Kernel/User/DmaSyscalls.swift	croi	dc4cf67	kernel/Kernel/User/DmaSyscalls.swift
@@ -176,7 +174,6 @@ kernel/include/abi.h	croi	dc4cf67	kernel/include/abi.h
 kernel/include/account.h	croi	dc4cf67	kernel/include/account.h
 kernel/include/aspace.h	croi	dc4cf67	kernel/include/aspace.h
 kernel/include/cache.h	croi	dc4cf67	kernel/include/cache.h
-kernel/include/clock.h	croi	dc4cf67	kernel/include/clock.h
 kernel/include/counter.h	croi	dc4cf67	kernel/include/counter.h
 kernel/include/dma.h	croi	dc4cf67	kernel/include/dma.h
 kernel/include/interrupt.h	croi	dc4cf67	kernel/include/interrupt.h

@@ -3,11 +3,17 @@ import CKernel
 /// Futexes from user space (K7c; numbers in user/include/croi/syscall.h).
 /// Zircon's calls. Timer objects went in V1 (D25): port_wait's deadline.
 extension Syscalls {
+    /// futex_wait with an owner; the rest go straight to `futexCall`
+    /// (`run`), with no handle table.
     static func syncCall(_ number: UInt64, _ a: InlineArray<6, UInt64>, _ table: borrowing HandleTable) throws(Status) {
+        let owner = try futexOwner(table, UInt32(truncatingIfNeeded: a[2]))
+        defer { if let owner { Scheduler.unpin(owner) } }
+        try futexCall(number, a, owner: owner)
+    }
+
+    static func futexCall(_ number: UInt64, _ a: InlineArray<6, UInt64>, owner: ThreadPointer?) throws(Status) {
         switch number {
         case 90:  // futex_wait(value_ptr, current_value, new_owner thread handle, deadline)
-            let owner = try futexOwner(table, UInt32(truncatingIfNeeded: a[2]))
-            defer { if let owner { Scheduler.unpin(owner) } }
             try Futexes.wait(a[0], expected: UInt32(truncatingIfNeeded: a[1]), owner: owner, deadline: a[3])
         case 91:  // futex_wake(value_ptr, count)
             try Futexes.wake(a[0], count: UInt32(truncatingIfNeeded: a[1]))

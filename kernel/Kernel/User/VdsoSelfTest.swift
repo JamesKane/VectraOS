@@ -4,9 +4,10 @@ import PageTables
 import Synchronization
 
 /// Boot self-test for K6c: the vDSO and shared pages in a user address
-/// space: page rights, the vDSO clock against the syscall's, the topology
-/// page, and the seqlock under a concurrent kernel writer. Panics on
-/// failure.
+/// space: page rights, the vDSO clock against a kernel timer's deadline,
+/// the topology page, and the seqlock under a concurrent kernel writer.
+/// Panics on failure. (V1 cut the clock syscall, D26; the clock's
+/// agreement with the kernel's, both ways, is the Swift time suite's.)
 enum VdsoSelfTest {
     static var codeAt: UInt64 { 0x100_0000 }
     static var stackAt: UInt64 { 0x200_0000 }
@@ -62,9 +63,7 @@ enum VdsoSelfTest {
         }
         console.write("  vdso:   clock (")
         console.write(decimal: report & 0xFFFF)
-        console.write(" ns vs syscall ")
-        console.write(decimal: (report >> 16) & 0xFFFF)
-        console.write(" ns), topology page (")
+        console.write(" ns, never behind a timer), topology page (")
         console.write(decimal: UInt64(Smp.count))
         console.write(" CPUs), power page seqlock under a writer (")
         console.write(decimal: report >> 32)

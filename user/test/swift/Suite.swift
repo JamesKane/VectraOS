@@ -47,6 +47,8 @@ enum Suite {
             ObjectSuite.run()
         } else if requested("counters") {
             CounterSuite.run()
+        } else if requested("time") {
+            TimeSuite.run()
         } else {
             print("swift: no such suite")
             croi_exit(2)
@@ -94,7 +96,7 @@ enum Sys {
         unsafe withUnsafeMutablePointer(to: &value) { unsafe UInt64(UInt(bitPattern: $0)) }
     }
 
-    static func now() -> UInt64 { UInt64(bitPattern: call(CROI_SYS_CLOCK_MONOTONIC)) }
+    static func now() -> UInt64 { croi_clock_monotonic() }
 
     /// Sleeps `nanoseconds`: a port_wait on an empty port (principle 10).
     static func sleep(_ nanoseconds: UInt64) {

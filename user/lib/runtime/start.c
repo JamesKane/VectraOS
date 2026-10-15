@@ -119,6 +119,12 @@ int32_t croi_cache_flush(const void *addr, uint64_t len, uint32_t options) {
   if (vdso == 0 || header->version < 2) return -2;  // NOT_SUPPORTED
   return ((int32_t (*)(const void *, uint64_t, uint32_t))(vdso + header->cache_flush))(addr, len, options);
 }
+
+uint64_t croi_clock_monotonic(void) {
+  const croi_vdso_header_t *header = (const croi_vdso_header_t *)vdso;
+  return ((uint64_t (*)(void))(vdso + header->clock_monotonic))();
+}
+
 int croi_environ_count(void) { return environ_count; }
 const char *croi_environ(int index) { return index >= 0 && index < environ_count ? environ[index] : 0; }
 

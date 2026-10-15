@@ -29,7 +29,6 @@ add_library(kernel-swift OBJECT
   Kernel/User/IpcSyscalls.swift
   Kernel/User/PagerSyscalls.swift
   Kernel/User/InfoTopics.swift
-  Kernel/User/ClockSyscalls.swift
   Kernel/User/DebugSyscalls.swift
   Kernel/User/SmcSyscalls.swift
   Kernel/User/DriverSyscalls.swift
@@ -58,7 +57,6 @@ add_library(kernel-swift OBJECT
   Kernel/Object/ContentSize.swift
   Kernel/Object/Pager.swift
   Kernel/Object/Names.swift
-  Kernel/Object/ClockObject.swift
   Kernel/Object/Debug.swift
   Kernel/Object/HardwareDebug.swift
   Kernel/Object/Futex.swift
@@ -192,7 +190,7 @@ set(_swift_test_sources ${_user_dir}/test/swift/Main.swift ${_user_dir}/test/swi
     ${_user_dir}/test/swift/BindSuite.swift ${_user_dir}/test/swift/VmoSuite.swift
     ${_user_dir}/test/swift/FutexSuite.swift ${_user_dir}/test/swift/ChannelSuite.swift
     ${_user_dir}/test/swift/ObjectSuite.swift
-    ${_user_dir}/test/swift/CounterSuite.swift)
+    ${_user_dir}/test/swift/CounterSuite.swift ${_user_dir}/test/swift/TimeSuite.swift)
 set(_swift_test ${CMAKE_CURRENT_BINARY_DIR}/swifttest.elf)
 croi_user_program(${_swift_test} PIE SWIFT ${_swift_test_sources})
 # The same as a fixed-address program with a dynamic section and no

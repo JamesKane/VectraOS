@@ -330,7 +330,7 @@ enum ProcessSelfTest {
 
     /// Runs the user test program as a process in `mode`, with a startup
     /// block at 0x3000000 (job, self, root VMAR, code VMO, code size, root
-    /// resource, boot data), and
+    /// resource, boot data, IOMMU, ECAM, the vDSO's base), and
     /// returns its return code once it has exited.
     static func runInProcess(mode: UInt64) -> Int64 {
         let page = KernelLayout.pageSize
@@ -361,7 +361,7 @@ enum ProcessSelfTest {
                                                      to: process)
             let resource = try Processes.addHandle(Resources.root, rights: ResourceObject.defaultRights, to: process)
             let bootData = try Processes.addHandle(BootData.object, rights: BootData.rights, to: process)
-            var block = InlineArray<8, UInt64>(repeating: 0)
+            var block = InlineArray<9, UInt64>(repeating: 0)
             block[0] = UInt64(job) | UInt64(me) << 32
             block[1] = UInt64(root) | UInt64(codeHandle) << 32
             block[2] = codeSize
@@ -372,9 +372,10 @@ enum ProcessSelfTest {
                 block[6] = UInt64(unit.type)
             }
             block[7] = Mcfg.count > 0 ? Mcfg.windows[0].base : 0  // segment 0's ECAM
+            block[8] = ProcessPointer(object: process).pointee.vdsoBase  // now_ns's clock: no writable data to keep it in
             var span = block.mutableSpan
             span.withUnsafeMutableBytes { raw in
-                startup.writeBytes(at: 0, from: UInt64(UInt(bitPattern: raw.baseAddress!)), count: 64)
+                startup.writeBytes(at: 0, from: UInt64(UInt(bitPattern: raw.baseAddress!)), count: 72)
             }
             codeVmo.release()
             startupVmo.release()

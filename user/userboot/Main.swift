@@ -83,7 +83,7 @@ struct Userboot {
         var vmar: UInt32 = 0
         // Spawn to main (Todhchai's 200 µs budget) starts here; the program
         // gets the time as croi.spawn_ns= in its environment.
-        let spawned = UInt64(bitPattern: sys(UInt64(CROI_SYS_CLOCK_MONOTONIC)))
+        let spawned = croi_clock_monotonic()
         try call("creating its process", next.span.withUnsafeBytes { name in
             sys(CROI_SYS_PROCESS_CREATE, UInt64(job), UInt64(UInt(bitPattern: name.baseAddress)), UInt64(name.count), 0,
                 address(&process), address(&vmar))

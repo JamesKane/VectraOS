@@ -167,7 +167,8 @@ Legend: **keep**, **merge** (the call survives under a combined form),
 streams were cut (D21): 135 calls. The channel `_etc` forms and the
 futex extras were cut (D22): 129 calls. Events, signals and the thread
 waits were cut (D23): 123 calls. Sleeps, timers and the counter waits
-were cut (D25): 117 calls.
+were cut (D25): 117 calls. Clock objects, vmar_map_clock and the
+clock_monotonic syscall were cut (D26): 111 calls.
 
 The ceiling in `tools/vx/LocCommand.swift` is lowered with each cut, so it
 never rises.

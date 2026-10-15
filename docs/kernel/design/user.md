@@ -57,7 +57,11 @@ thread's stack top.
   own: code read/execute, pages read only (`Vmo(sharedKernelPage:)`, the
   only RAM a physical VMO may cover, never writable). User counter
   access per CPU (`arch_user_counter_enable`: arm64 CNTKCTL_EL1.EL0VCTEN,
-  rv64 scounteren.TM). User binaries come from `croi_user_binary`
+  rv64 scounteren.TM). The vDSO's clock is user space's only monotonic
+  clock since V1 cut the syscall (D26): the runtime's
+  `croi_clock_monotonic` calls it. VdsoSelfTest (mode 2) checks it never
+  behind a futex_wait deadline; the Swift `time` suite checks a kernel
+  packet timestamp between two readings. User binaries come from `croi_user_binary`
   (cmake/CroiUser.cmake) with `CROI_USER_CFLAGS` (cmake/arch).
 - K6d: user FP/SIMD. Every user thread gets an ExtendedState area at
   `UserTraps.enter`; `Scheduler` saves the outgoing and restores the

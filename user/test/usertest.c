@@ -34,6 +34,13 @@ static inline int64_t sys6(uint64_t n, uint64_t a, uint64_t b, uint64_t c, uint6
   return croi_syscall6(n, a, b, c, d, e, f);
 }
 
+// Monotonic nanoseconds from the vDSO at `base`: V1 cut the clock syscall
+// (D26).
+static uint64_t vdso_now(uint64_t base) {
+  const croi_vdso_header_t *header = (const croi_vdso_header_t *)base;
+  return ((uint64_t (*)(void))(base + header->clock_monotonic))();
+}
+
 // object_bind of one item (port.h): the item's status, or the call's.
 static int64_t bind1(uint32_t port, uint32_t handle, uint32_t options, uint64_t key, uint64_t trigger) {
   croi_bind_item_t item = {.handle = handle, .options = options, .key = key, .trigger = trigger, .status = 1};
@@ -101,9 +108,11 @@ static int64_t marks(uint32_t resource) {
   return 0x600D;
 }
 
-// Mode 2: the vDSO at `base`: its clock against the syscall's, the
+// Mode 2: the vDSO at `base`: its clock never behind a kernel timer, the
 // topology page, timing, and the power page's seqlock under a kernel
-// writer (an equal pair must never read torn).
+// writer (an equal pair must never read torn). Its clock against the
+// kernel's both ways is the Swift time suite's (V1 cut the clock syscall,
+// D26).
 static int64_t vdso(uint64_t base) {
   const croi_vdso_header_t *header = (const croi_vdso_header_t *)base;
   CHECK(50, header->magic == CROI_VDSO_MAGIC);
@@ -111,10 +120,11 @@ static int64_t vdso(uint64_t base) {
   const croi_topology_page_t *(*topology)(void) = (const croi_topology_page_t *(*)(void))(base + header->topology);
   const croi_power_page_t *(*power)(void) = (const croi_power_page_t *(*)(void))(base + header->power);
 
-  uint64_t before = clock();
-  uint64_t middle = (uint64_t)sys(CROI_SYS_CLOCK_MONOTONIC, 0, 0, 0, 0, 0);
-  uint64_t after = clock();
-  CHECK(51, before <= middle && middle <= after);
+  // A futex_wait (no handles here) times out at the kernel's deadline,
+  // never early: by then the vDSO's clock must have reached it too.
+  uint32_t word = 0;
+  uint64_t deadline = clock() + 1000000;
+  CHECK(51, sys(CROI_SYS_FUTEX_WAIT, (uint64_t)&word, 0, 0, deadline, 0) == ERR_TIMED_OUT && clock() >= deadline);
   const croi_topology_page_t *t = topology();
   CHECK(52, t->version == CROI_TOPOLOGY_PAGE_VERSION && t->cpu_count >= 1 && t->cpus[0].capacity >= 1);
   // cache_flush (version 2): user cache maintenance is allowed (arm64
@@ -132,8 +142,6 @@ static int64_t vdso(uint64_t base) {
   uint64_t t0 = clock();
   for (int i = 0; i < 1000; i++) clock();
   uint64_t t1 = clock();
-  for (int i = 0; i < 1000; i++) sys(CROI_SYS_CLOCK_MONOTONIC, 0, 0, 0, 0, 0);
-  uint64_t t2 = clock();
 
   const croi_power_page_t *p = power();
   uint64_t torn = 0, distinct = 0, last = 0;
@@ -151,20 +159,26 @@ static int64_t vdso(uint64_t base) {
     }
   }
   CHECK(53, torn == 0);
-  uint64_t vdso_ns = (t1 - t0) / 1000, syscall_ns = (t2 - t1) / 1000;
-  sys(CROI_SYS_TEST_REPORT, (vdso_ns & 0xFFFF) | (syscall_ns & 0xFFFF) << 16 | distinct << 32, 0, 0, 0, 0);
+  uint64_t vdso_ns = (t1 - t0) / 1000;
+  sys(CROI_SYS_TEST_REPORT, (vdso_ns & 0xFFFF) | distinct << 32, 0, 0, 0, 0);
   return 0x600D;
 }
 
 // Mode 3: FP/SIMD state survives switches. `arg` bits 0-15: a seed;
 // bit 16: the vector extension is present (arm64 SVE, rv64 V). Loads seed-derived values into vector/FP
-// registers, then 16 times spins (preemptible) and sleeps 300 us (so the
-// other thread on this CPU runs in between, whatever the timeslice), and
-// checks them, all in one asm block; then a double-precision
-// computation across sleeps whose result the kernel compares between runs.
+// registers, then 16 times spins (preemptible) and sleeps to the next
+// 300 us step (so the other thread on this CPU runs in between,
+// whatever the timeslice), and checks them, all in one asm block; then a
+// double-precision computation across kernel entries whose result the
+// kernel compares between runs. A sleep is a futex_wait that times out:
+// this thread has no handles for a port, and V1 cut nanosleep (D25). The
+// steps start from the vDSO's clock at `vdso`, read before the asm (V1
+// cut the clock syscall, D26).
 // Exit: 0x10000000 | hash of the result, or 0x200 + register number.
-static int64_t registers(uint64_t seed, uint64_t sve) {
+static int64_t registers(uint64_t seed, uint64_t sve, uint64_t vdso) {
   uint64_t bad = 0;
+  uint32_t word = 0;  // never changes: each futex_wait times out
+  uint64_t deadline = vdso_now(vdso);
 #if defined(__x86_64__)
   __asm__ volatile(
       "mov %[s], %%rax\n"
@@ -172,14 +186,14 @@ static int64_t registers(uint64_t seed, uint64_t sve) {
       "mov $16, %%r12\n"
       "1: mov $50000, %%rcx\n"
       "2: dec %%rcx\n jnz 2b\n"
-      "mov $3, %%eax\n syscall\n"  // clock, then sleep until 300 us on
-      "lea 300000(%%rax), %%rdi\n mov $4, %%eax\n syscall\n"
+      "add $300000, %[d]\n"  // sleep until the next step
+      "mov %[w], %%rdi\n xor %%esi, %%esi\n xor %%edx, %%edx\n mov %[d], %%r10\n mov $90, %%eax\n syscall\n"
       "dec %%r12\n jnz 1b\n"
       "mov %[s], %%rdx\n xor %[bad], %[bad]\n"
       ".irp n, 8, 9, 10, 11, 12, 13, 14, 15\n movq %%xmm\\n, %%rax\n cmp %%rdx, %%rax\n je 3f\n mov $\\n, %[bad]\n 3: add $1, %%rdx\n .endr\n"
-      : [bad] "=&r"(bad)
-      : [s] "r"(seed)
-      : "rax", "rcx", "rdx", "rdi", "r11", "r12", "memory", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14",
+      : [bad] "=&r"(bad), [d] "+r"(deadline)
+      : [s] "r"(seed), [w] "r"(&word)
+      : "rax", "rcx", "rdx", "rsi", "rdi", "r10", "r11", "r12", "memory", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14",
         "xmm15");
   (void)sve;
 #elif defined(__aarch64__)
@@ -193,18 +207,17 @@ static int64_t registers(uint64_t seed, uint64_t sve) {
       "4: mov x10, #16\n"
       "1: movz x11, #50000\n"
       "2: subs x11, x11, #1\n b.ne 2b\n"
-      "mov x16, #3\n svc #0\n"
-      "movz x11, #0x93e0\n movk x11, #0x4, lsl #16\n add x0, x0, x11\n"  // + 300000
-      "mov x16, #4\n svc #0\n"
+      "movz x11, #0x93e0\n movk x11, #0x4, lsl #16\n add %[d], %[d], x11\n"  // the next step: + 300000
+      "mov x0, %[w]\n mov x1, #0\n mov x2, #0\n mov x3, %[d]\n mov x16, #90\n svc #0\n"
       "subs x10, x10, #1\n b.ne 1b\n"
       "mov x9, %[s]\n mov %[bad], #0\n"
       ".irp n, 8, 9, 10, 11, 12, 13, 14, 15\n fmov x12, d\\n\n cmp x12, x9\n b.eq 3f\n mov %[bad], #\\n\n 3: add x9, x9, #1\n .endr\n"
       "cbz %[sve], 5f\n"
       "cntd %[lanes]\n ptrue p1.d\n lastb %[last], p1, z16.d\n"
       "5:\n"
-      : [bad] "=&r"(bad), [lanes] "=&r"(lanes), [last] "=&r"(last)
-      : [s] "r"(seed), [sve] "r"(sve)
-      : "x0", "x9", "x10", "x11", "x12", "x16", "p1", "z16", "memory", "d8", "d9", "d10", "d11", "d12", "d13",
+      : [bad] "=&r"(bad), [lanes] "=&r"(lanes), [last] "=&r"(last), [d] "+r"(deadline)
+      : [s] "r"(seed), [sve] "r"(sve), [w] "r"(&word)
+      : "x0", "x1", "x2", "x3", "x9", "x10", "x11", "x12", "x16", "p1", "z16", "memory", "d8", "d9", "d10", "d11", "d12", "d13",
         "d14", "d15");
   if (sve && last != seed + lanes - 1) bad = 16;  // the top lane of z16 was lost
 #elif defined(__riscv)
@@ -218,8 +231,8 @@ static int64_t registers(uint64_t seed, uint64_t sve) {
       "4: li t3, 16\n"
       "1: li t4, 50000\n"
       "2: addi t4, t4, -1\n bnez t4, 2b\n"
-      "li a7, 3\n ecall\n"
-      "li t4, 300000\n add a0, a0, t4\n li a7, 4\n ecall\n"
+      "li t4, 300000\n add %[d], %[d], t4\n"  // the next step
+      "mv a0, %[w]\n li a1, 0\n li a2, 0\n mv a3, %[d]\n li a7, 90\n ecall\n"
       "addi t3, t3, -1\n bnez t3, 1b\n"
       "mv t1, %[s]\n li %[bad], 0\n"
       ".irp n, 8, 9, 10, 11, 12, 13, 14, 15\n fmv.x.d t5, f\\n\n beq t5, t1, 3f\n li %[bad], \\n\n 3: addi t1, t1, 1\n .endr\n"
@@ -227,9 +240,9 @@ static int64_t registers(uint64_t seed, uint64_t sve) {
       "vsetvli t2, zero, e64, m1, ta, ma\n addi t2, t2, -1\n vslidedown.vx v9, v8, t2\n vmv.x.s %[last], v9\n"
       "add t2, t2, %[s]\n beq %[last], t2, 5f\n li %[bad], 16\n"
       "5:\n .option pop\n"
-      : [bad] "=&r"(bad), [last] "=&r"(last)
-      : [s] "r"(seed), [sve] "r"(sve)
-      : "t1", "t2", "t3", "t4", "t5", "a0", "a7", "v8", "v9", "memory", "f8", "f9", "f10", "f11", "f12", "f13",
+      : [bad] "=&r"(bad), [last] "=&r"(last), [d] "+r"(deadline)
+      : [s] "r"(seed), [sve] "r"(sve), [w] "r"(&word)
+      : "t1", "t2", "t3", "t4", "t5", "a0", "a1", "a2", "a3", "a7", "v8", "v9", "memory", "f8", "f9", "f10", "f11", "f12", "f13",
         "f14", "f15");
 #endif
   if (bad) return 0x200 + (int64_t)bad;
@@ -289,7 +302,11 @@ typedef struct {
   uint64_t iommu_base;          // amd64: the first IOMMU's registers (DMAR or IVRS), or 0
   uint32_t iommu_type, padding3;  // its iommu_create type
   uint64_t ecam;                  // segment 0's ECAM (the MCFG's first window), or 0
+  uint64_t vdso;                  // the vDSO's base, for now_ns
 } startup_t;
+
+// Where the kernel maps the startup block in every process mode.
+#define STARTUP_AT 0x3000000ull
 
 #define CHILD_CODE 0x1000000ull
 #define CHILD_STACK 0x2000000ull
@@ -302,7 +319,11 @@ typedef struct {
 #define ENTRY_SP(top) (top)
 #endif
 
-static uint64_t now_ns(void) { return (uint64_t)sys(CROI_SYS_CLOCK_MONOTONIC, 0, 0, 0, 0, 0); }
+// The time in a process mode. This program has no writable data to keep
+// the vDSO's base in, so it reads it from the startup block. Children
+// (child()) have no startup block: they use vdso_now with the base they
+// start with.
+static uint64_t now_ns(void) { return vdso_now(((const startup_t *)STARTUP_AT)->vdso); }
 
 // The signals `handle` has once one of `signals` is asserted, or 0 if none
 // is within `ns`. V1 cut object_wait_one (D23): a ONCE binding on a port
@@ -450,7 +471,7 @@ static int64_t child(uint32_t self, uint64_t submode, uint64_t vdso) {
     if (sys(CROI_SYS_VMO_MAP, stack, 0, STACK_SIZE, 3, (uint64_t)&at) != 0) return 92;
     if (sys6(CROI_SYS_THREAD_CREATE, self, (uint64_t)"blocker", 7, 0, (uint64_t)&thread, 0) != 0) return 93;
     if (sys(CROI_SYS_THREAD_START, thread, (uint64_t)port_blocker, ENTRY_SP(at + STACK_SIZE), port, 0) != 0) return 94;
-    sleep_until(now_ns() + 3000000);
+    sleep_until(vdso_now(vdso) + 3000000);
     return sys(CROI_SYS_PROCESS_EXIT, 7, 0, 0, 0, 0);
   }
   case 5:  // fault, for a handler to move us (to recovered)
@@ -517,7 +538,7 @@ static int64_t child(uint32_t self, uint64_t submode, uint64_t vdso) {
     uint64_t seen = 0;
     for (int i = 0; i < 300; i++) {
       seen |= 1ull << sys(CROI_SYS_TEST_PROFILE, 5, 0, 0, 0, 0);
-      if (i % 10 == 0) sleep_until(now_ns() + 100000);
+      if (i % 10 == 0) sleep_until(vdso_now(vdso) + 100000);
     }
     return sys(CROI_SYS_PROCESS_EXIT, (int64_t)seen, 0, 0, 0, 0);
   }
@@ -2776,107 +2797,6 @@ static int64_t info_topics(const startup_t *s) {
   sys(CROI_SYS_VMAR_UNMAP, s->vmar, scratch, 16 * PAGE, 0, 0);
   sys(CROI_SYS_HANDLE_CLOSE, vmo, 0, 0, 0, 0);
   sys(CROI_SYS_HANDLE_CLOSE, scratch_vmo, 0, 0, 0, 0);
-  return 0;
-}
-
-// K13f: clock objects. A clock's value at reference time r from its
-// mapped page's transform (small spans only: plain 64-bit math).
-static int64_t clock_at(const croi_clock_transformation_t *t, int64_t r) {
-  if (t->rate.synthetic_ticks == 0) return t->synthetic_offset;
-  int64_t d = r - t->reference_offset;
-  return t->synthetic_offset + d * (int64_t)t->rate.synthetic_ticks / (int64_t)t->rate.reference_ticks;
-}
-
-static int64_t clocks(const startup_t *s) {
-  uint32_t clock = 0, other = 0, port = 0;
-  int64_t now = 0;
-  croi_clock_create_args_v1_t create = {1000};
-  croi_clock_details_v1_t d;
-  croi_clock_update_args_v1_t up = {0, {0}, 0, 0};
-  // Refusals at creation; a fresh clock reads its backstop until started.
-  CHECK(530, sys(CROI_SYS_CLOCK_CREATE, 1u << 5, 0, (uint64_t)&clock, 0, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_CLOCK_CREATE, CROI_CLOCK_OPT_CONTINUOUS, 0, (uint64_t)&clock, 0, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_CLOCK_CREATE, 0, (uint64_t)&create, (uint64_t)&clock, 0, 0) == ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_CLOCK_CREATE, CROI_CLOCK_ARGS_VERSION(1) | CROI_CLOCK_OPT_MONOTONIC | CROI_CLOCK_OPT_MAPPABLE,
-                     (uint64_t)&create, (uint64_t)&clock, 0, 0) == 0 &&
-                 sys(CROI_SYS_CLOCK_READ, clock, (uint64_t)&now, 0, 0, 0) == 0 && now == 1000 &&
-                 !(wait_for(clock, CROI_CLOCK_STARTED, 0) & CROI_CLOCK_STARTED) &&
-                 sys(CROI_SYS_CLOCK_GET_DETAILS, clock, CROI_CLOCK_ARGS_VERSION(1), (uint64_t)&d, 0, 0) == 0 &&
-                 d.generation_counter == 1 && d.backstop_time == 1000 && d.error_bound == CROI_CLOCK_UNKNOWN_ERROR &&
-                 sys(CROI_SYS_CLOCK_GET_DETAILS, clock, 0, (uint64_t)&d, 0, 0) == ERR_INVALID_ARGS);
-  // Starting: a rate alone is BAD_STATE; a value starts it (STARTED, and
-  // an UPDATED pulse an async wait sees); backwards and below the backstop
-  // refused; rates within +-1000 ppm.
-  up.rate_adjust = 10;
-  CHECK(531, sys(CROI_SYS_CLOCK_UPDATE, clock, CROI_CLOCK_ARGS_VERSION(1) | CROI_CLOCK_UPDATE_OPTION_RATE_ADJUST_VALID,
-                 (uint64_t)&up, 0, 0) == ERR_BAD_STATE &&
-                 sys(CROI_SYS_PORT_CREATE, 0, (uint64_t)&port, 0, 0, 0) == 0 &&
-                 bind1(port, clock, CROI_BIND_SIGNALS, 9, CROI_CLOCK_UPDATED) == 0);
-  up.value = 5000000000ll;
-  croi_port_packet_t packet;
-  CHECK(532, sys(CROI_SYS_CLOCK_UPDATE, clock, CROI_CLOCK_ARGS_VERSION(1) | CROI_CLOCK_UPDATE_OPTION_VALUE_VALID,
-                 (uint64_t)&up, 0, 0) == 0 &&
-                 (wait_for(clock, CROI_CLOCK_STARTED, 0) & CROI_CLOCK_STARTED) &&
-                 !(wait_for(clock, CROI_CLOCK_UPDATED, 0) & CROI_CLOCK_UPDATED) &&
-                 sys(CROI_SYS_PORT_WAIT, port, 0, (uint64_t)&packet, 0, 0) == 0 && packet.key == 9 &&
-                 sys(CROI_SYS_CLOCK_READ, clock, (uint64_t)&now, 0, 0, 0) == 0 && now >= 5000000000ll &&
-                 now < 5000000000ll + 1000000000ll);
-  up.value = 4000000000ll;
-  CHECK(533, sys(CROI_SYS_CLOCK_UPDATE, clock, CROI_CLOCK_ARGS_VERSION(1) | CROI_CLOCK_UPDATE_OPTION_VALUE_VALID,
-                 (uint64_t)&up, 0, 0) == ERR_INVALID_ARGS);
-  up.rate_adjust = 2000;
-  CHECK(534, sys(CROI_SYS_CLOCK_UPDATE, clock, CROI_CLOCK_ARGS_VERSION(1) | CROI_CLOCK_UPDATE_OPTION_RATE_ADJUST_VALID,
-                 (uint64_t)&up, 0, 0) == ERR_INVALID_ARGS);
-  up.rate_adjust = 500;
-  up.error_bound = 77;
-  CHECK(535, sys(CROI_SYS_CLOCK_UPDATE, clock,
-                 CROI_CLOCK_ARGS_VERSION(1) | CROI_CLOCK_UPDATE_OPTION_RATE_ADJUST_VALID | CROI_CLOCK_UPDATE_OPTION_ERROR_BOUND_VALID,
-                 (uint64_t)&up, 0, 0) == 0 &&
-                 sys(CROI_SYS_CLOCK_GET_DETAILS, clock, CROI_CLOCK_ARGS_VERSION(1), (uint64_t)&d, 0, 0) == 0 &&
-                 d.generation_counter == 3 && d.error_bound == 77 &&
-                 d.reference_to_synthetic.rate.synthetic_ticks == 1000500 &&
-                 d.reference_to_synthetic.rate.reference_ticks == 1000000);
-  // Mapped: the page agrees with the details and with clock_read.
-  uint64_t at = 0, size = 0, counts[2] = {0, 0};
-  CHECK(536, sys6(CROI_SYS_VMAR_MAP_CLOCK, s->vmar, CROI_VM_PERM_READ | CROI_VM_PERM_WRITE, 0, clock, PAGE,
-                  (uint64_t)&at) == ERR_INVALID_ARGS &&
-                 sys6(CROI_SYS_VMAR_MAP_CLOCK, s->vmar, CROI_VM_PERM_READ, 0, clock, 2 * PAGE, (uint64_t)&at) ==
-                     ERR_INVALID_ARGS &&
-                 sys6(CROI_SYS_VMAR_MAP_CLOCK, s->vmar, CROI_VM_PERM_READ, 0, clock, PAGE, (uint64_t)&at) == 0 &&
-                 sys6(CROI_SYS_OBJECT_GET_INFO, clock, CROI_INFO_CLOCK_MAPPED_SIZE, (uint64_t)&size, 8,
-                      (uint64_t)&counts[0], (uint64_t)&counts[1]) == 0 && size == PAGE);
-  const volatile croi_clock_page_t *page = (const volatile croi_clock_page_t *)at;
-  croi_clock_transformation_t t;
-  uint32_t seq;
-  do {
-    seq = page->seq_lock;
-    t.reference_offset = page->reference_ticks_to_synthetic.reference_offset;
-    t.synthetic_offset = page->reference_ticks_to_synthetic.synthetic_offset;
-    t.rate.synthetic_ticks = page->reference_ticks_to_synthetic.rate.synthetic_ticks;
-    t.rate.reference_ticks = page->reference_ticks_to_synthetic.rate.reference_ticks;
-  } while ((seq & 1) || seq != page->seq_lock);
-  int64_t mapped = clock_at(&t, (int64_t)now_ns());
-  CHECK(537, sys(CROI_SYS_CLOCK_READ, clock, (uint64_t)&now, 0, 0, 0) == 0 && seq == 6 && page->backstop_time == 1000 &&
-                 page->error_bound == 77 && page->cur_ppm_adj == 500 && now >= mapped && now - mapped < 100000000);
-  // AUTO_START: running from creation; CONTINUOUS: no jumps once started;
-  // not mappable: INVALID_ARGS for vmar_map_clock; names.
-  create.backstop_time = 0;
-  CHECK(538, sys(CROI_SYS_CLOCK_CREATE, CROI_CLOCK_OPT_MONOTONIC | CROI_CLOCK_OPT_CONTINUOUS | CROI_CLOCK_OPT_AUTO_START,
-                 0, (uint64_t)&other, 0, 0) == 0 &&
-                 (wait_for(other, CROI_CLOCK_STARTED, 0) & CROI_CLOCK_STARTED) &&
-                 sys(CROI_SYS_CLOCK_READ, other, (uint64_t)&now, 0, 0, 0) == 0 &&
-                 now <= (int64_t)now_ns() && (int64_t)now_ns() - now < 100000000 &&
-                 sys(CROI_SYS_CLOCK_UPDATE, other, CROI_CLOCK_ARGS_VERSION(1) | CROI_CLOCK_UPDATE_OPTION_VALUE_VALID,
-                     (uint64_t)&up, 0, 0) == ERR_INVALID_ARGS &&
-                 sys6(CROI_SYS_VMAR_MAP_CLOCK, s->vmar, CROI_VM_PERM_READ, 0, other, PAGE, (uint64_t)&size) ==
-                     ERR_INVALID_ARGS &&
-                 sys(CROI_SYS_OBJECT_SET_PROPERTY, other, CROI_PROP_NAME, (uint64_t)"utc", 3, 0) == 0);
-  create.backstop_time = (int64_t)now_ns() + 1000000000000ll;
-  CHECK(539, sys(CROI_SYS_CLOCK_CREATE, CROI_CLOCK_ARGS_VERSION(1) | CROI_CLOCK_OPT_AUTO_START, (uint64_t)&create,
-                 (uint64_t)&size, 0, 0) == ERR_INVALID_ARGS);
-  sys(CROI_SYS_VMAR_UNMAP, s->vmar, at, PAGE, 0, 0);
-  uint32_t rest[3] = {clock, other, port};
-  sys(CROI_SYS_HANDLE_CLOSE_MANY, (uint64_t)rest, 3, 0, 0, 0);
   return 0;
 }
 
@@ -5350,8 +5270,6 @@ static int64_t extensions(const startup_t *s, uint64_t vdso_base) {
   if (pg != 0) return pg;
   int64_t topics = info_topics(s);
   if (topics != 0) return topics;
-  int64_t clk = clocks(s);
-  if (clk != 0) return clk;
   int64_t dbg = debugging(s);
   if (dbg != 0) return dbg;
   int64_t attached = debugger(s);
@@ -5414,19 +5332,22 @@ static int64_t extensions(const startup_t *s, uint64_t vdso_base) {
   return 0x600D;
 }
 
-// Mode 4: something to sample. Three frames deep, spin for `ns`, with a
-// clock syscall every 64 iterations (so some samples land in the kernel
-// and must continue into these frames).
-__attribute__((noinline)) static uint64_t spin3(uint64_t ns) {
-  uint64_t end = (uint64_t)sys(CROI_SYS_CLOCK_MONOTONIC, 0, 0, 0, 0, 0) + ns, n = 0;
+// Mode 4: something to sample. Three frames deep, spin until the kernel
+// sets the word at `stop`, with a null syscall every 64 iterations (so
+// some samples land in the kernel and must continue into these frames).
+// Not a clock: the vDSO is outside the program, so a sample in it would
+// count as foreign.
+__attribute__((noinline)) static uint64_t spin3(uint64_t stop) {
+  uint64_t n = 0;
   for (;;) {
     for (int i = 0; i < 64; i++) __asm__ volatile("" ::: "memory");
     n++;
-    if ((uint64_t)sys(CROI_SYS_CLOCK_MONOTONIC, 0, 0, 0, 0, 0) >= end) return n;
+    sys(CROI_SYS_NULL, 0, 0, 0, 0, 0);
+    if (*(volatile const uint64_t *)stop != 0) return n;
   }
 }
-__attribute__((noinline)) static uint64_t spin2(uint64_t ns) { return spin3(ns) + 1; }
-__attribute__((noinline)) static uint64_t spin1(uint64_t ns) { return spin2(ns) + 1; }
+__attribute__((noinline)) static uint64_t spin2(uint64_t stop) { return spin3(stop) + 1; }
+__attribute__((noinline)) static uint64_t spin1(uint64_t stop) { return spin2(stop) + 1; }
 
 // Entered straight from the kernel with a 16-byte aligned stack. On amd64
 // a C function expects to have been called (8 off), so _start is a stub
@@ -5445,7 +5366,7 @@ __attribute__((section(".text.start"))) [[noreturn]] void _start(uint64_t mode, 
 #endif
   exit_with(mode == 1   ? marks((uint32_t)handle)
             : mode == 2 ? vdso(handle)
-            : mode == 3 ? registers(handle & 0xFFFF, handle >> 16 & 1)
+            : mode == 3 ? registers(handle & 0xFFFF, handle >> 16 & 1, vdso_base)
             : mode == 4 ? (spin1(handle) > 2 ? 0x600D : 1)
             : mode == 5 ? pmu()
             : mode == 6 ? processes((const startup_t *)handle)

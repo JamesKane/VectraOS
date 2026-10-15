@@ -206,6 +206,13 @@ enum Syscalls {
         case 1: return write(a[0], a[1])
         case 2: Processes.exitThread(Int(Int64(bitPattern: a[0])))
         case 63: Processes.exitProcess(Int64(bitPattern: a[0]))  // process_exit: no handles needed
+        case 90 where a[2] == 0, 91:  // futexes are keyed by address space: only an owner needs a handle
+            do throws(Status) {
+                try futexCall(number, a, owner: nil)
+                return 0
+            } catch {
+                return Int64(error.rawValue)
+            }
         case 6:
             // Test hooks reboot the machine, evict everyone's pages and
             // (arm64) sign with the kernel's key: test boots only (review
@@ -218,7 +225,6 @@ enum Syscalls {
             if a[0] == 12 { return BranchTargets.enabled ? 1 : 0 }  // K14r: guarded pages in use
             #endif
             return (6...9).contains(a[0]) ? Reclaim.testHook(a) : TestHooks.profile(a[0])
-        case 3: return Int64(bitPattern: Clock.now())
         case 5:
             reported.store(a[0], ordering: .relaxed)
             return 0
@@ -397,8 +403,6 @@ enum Syscalls {
             try debugCall(number, a, table)
         case 240...243:
             try accountCall(number, a, table)  // K15a
-        case 216...219:
-            try clockCall(number, a, table)
         case 202...208:
             try pagerCall(number, a, table)
         case 180:  // system_powerctl
@@ -417,7 +421,7 @@ enum Syscalls {
             try idleCall(a, table)
         case 80...89, 210...215:
             try ipcCall(number, a, table)
-        case 90, 91:
+        case 90:  // with an owner (`run` takes the rest)
             try syncCall(number, a, table)
         default:
             throw .notSupported

@@ -139,7 +139,6 @@ enum Objects {
         case .vmar: Processes.destroyVmar(object)
         case .channel: Channels.destroy(object)
         case .pager: Pagers.destroy(object)
-        case .clock: Clocks.destroy(object)
         case .suspendToken: Debug.destroyToken(object)
         case .log: DebugLogs.destroy(object)
         case .profile: free(object, as: ProfileObject.self)
