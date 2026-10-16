@@ -104,7 +104,7 @@ enum Bench {
         let (records, frequency) = try Tracing.records()
         let marks = records.filter { $0.kind == UInt16(CROI_TK_MARK) }
         guard let start = marks.first(where: { $0.a == 1 }), let end = marks.first(where: { $0.a == 2 }) else {
-            throw Failure(what: "finding null syscall marks", status: -25)
+            throw Failure(what: "finding null syscall marks", status: CROI_ERR_NOT_FOUND)
         }
         return Tracing.ns(end.time - start.time, frequency) / n
     }
@@ -192,7 +192,7 @@ enum Bench {
         for batch in 0..<batches {
             guard let start = records.first(where: { $0.kind == UInt16(CROI_TK_MARK) && $0.a == 10 && $0.b == batch }),
                   let end = records.first(where: { $0.kind == UInt16(CROI_TK_MARK) && $0.a == 11 && $0.b == batch })
-            else { throw Failure(what: "finding channel call marks", status: -25) }
+            else { throw Failure(what: "finding channel call marks", status: CROI_ERR_NOT_FOUND) }
             means.append(Tracing.ns(end.time - start.time, frequency) / perBatch)
         }
         means.sort()
@@ -213,7 +213,7 @@ enum Bench {
                 calls[calls.count - 1].append(record)
             }
         }
-        guard calls.count > 2 else { throw Failure(what: "finding profiled calls", status: -25) }
+        guard calls.count > 2 else { throw Failure(what: "finding profiled calls", status: CROI_ERR_NOT_FOUND) }
         calls.removeLast()  // may be cut short
         func signature(_ call: [croi_trace_record_t]) -> [UInt64] {
             call.map { UInt64($0.kind) << 32 | ($0.kind == UInt16(CROI_TK_SYSCALL_ENTER) || $0.kind == UInt16(CROI_TK_SYSCALL_EXIT) || $0.kind == UInt16(CROI_TK_MARK) ? $0.a : 0) }
@@ -430,7 +430,7 @@ enum Bench {
             latencies.append(Tracing.ns(returns[i].time - signals[i].time, frequency))
         }
         latencies.sort()
-        guard !latencies.isEmpty else { throw Failure(what: "measuring port wakes", status: -1) }
+        guard !latencies.isEmpty else { throw Failure(what: "measuring port wakes", status: CROI_ERR_INTERNAL) }
         return (latencies[latencies.count / 2], latencies[latencies.count * 99 / 100])
     }
 
@@ -488,7 +488,7 @@ enum Bench {
             if count > bestCount { best = shape; bestCount = count }
         }
         let kept = sequences.filter { signature($0) == best }
-        guard !kept.isEmpty else { throw Failure(what: "finding port wakes", status: -25) }
+        guard !kept.isEmpty else { throw Failure(what: "finding port wakes", status: CROI_ERR_NOT_FOUND) }
         print("m2: port wake profile: \(kept.count) of \(sequences.count) wakes share \(best.count) records, median gap before each:")
         for i in 0..<best.count {
             var gaps: [UInt64] = []
@@ -563,7 +563,7 @@ enum Bench {
             latencies.append(Tracing.ns(returns[i].time - adds[i].time, frequency))
         }
         latencies.sort()
-        guard !latencies.isEmpty else { throw Failure(what: "measuring counter wakes", status: -1) }
+        guard !latencies.isEmpty else { throw Failure(what: "measuring counter wakes", status: CROI_ERR_INTERNAL) }
         return (latencies[latencies.count / 2], latencies[latencies.count * 99 / 100])
     }
 

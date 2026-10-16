@@ -10,6 +10,7 @@
 import PackageDescription
 
 let unchecked: [SwiftSetting] = [.unsafeFlags(["-enforce-exclusivity=unchecked"])]
+let c23: [SwiftSetting] = [.unsafeFlags(["-Xcc", "-std=gnu23"])]
 
 let package = Package(
   name: "vectraos",
@@ -38,6 +39,15 @@ let package = Package(
                 swiftSettings: [.unsafeFlags(["-Xcc", "-std=gnu23"])]),
     .testTarget(name: "RingCheckTests", dependencies: ["Ring", "RingCheck", "CRingChecked"],
                 path: "lib/ring/tests/Model", swiftSettings: unchecked + [.unsafeFlags(["-Xcc", "-std=gnu23"])]),
+    // The ABI headers (D45): object.h is the one source of statuses, rights
+    // and object types; the kernel's Swift enums, which need literals, are
+    // checked against it.
+    .systemLibrary(name: "CroiAbi", path: "kernel/include"),
+    // KernelAbi is Status.swift alone, through a link.
+    .target(name: "KernelAbi", dependencies: ["CroiAbi"], path: "kernel/tests/Abi/KernelAbi",
+            swiftSettings: c23),
+    .testTarget(name: "AbiTests", dependencies: ["KernelAbi", "CroiAbi"], path: "kernel/tests/Abi/Tests",
+                swiftSettings: c23),
     .executableTarget(name: "vx", dependencies: ["Bench", "ImageFormats", "TraceFormat", "TraceReader"], path: "tools/vx"),
   ],
   cLanguageStandard: .gnu2x

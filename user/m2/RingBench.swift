@@ -40,7 +40,7 @@ extension Bench {
         Sys.close(vmo)
         guard unsafe NativeRing.create(UnsafeMutableRawPointer(bitPattern: UInt(base))!, size: size,
                                        slotSize: ringSlotSize, count: count, format: ringFormat) else {
-            throw Failure(what: "making a ring", status: -10)
+            throw Failure(what: "making a ring", status: CROI_ERR_INVALID_ARGS)
         }
         return (base, size)
     }
@@ -126,7 +126,7 @@ extension Bench {
         Sys.close(consumerProfile)
         Sys.signal(go)
         Sys.take(ready)
-        guard var ring = attach(base, size, producer: true) else { throw Failure(what: "attaching a ring", status: -10) }
+        guard var ring = attach(base, size, producer: true) else { throw Failure(what: "attaching a ring", status: CROI_ERR_INVALID_ARGS) }
         var entry = InlineArray<8, UInt64>(repeating: 0)
         var kicks: UInt64 = 0
         var n: UInt64 = 0
@@ -206,7 +206,7 @@ extension Bench {
         Sys.take(ready)
         guard var requests = attach(requestBase, size, producer: true),
               var replies = attach(replyBase, size, producer: false) else {
-            throw Failure(what: "attaching a ring", status: -10)
+            throw Failure(what: "attaching a ring", status: CROI_ERR_INVALID_ARGS)
         }
         var entry = InlineArray<8, UInt64>(repeating: 0)
         var kicks: UInt64 = 0, wrong: UInt64 = 0

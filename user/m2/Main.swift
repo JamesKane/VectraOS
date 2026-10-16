@@ -43,7 +43,7 @@ struct M2 {
         let resource = croi_take_startup_handle(croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0))
         let bootfs = croi_take_startup_handle(croi_pa_hnd(UInt32(CROI_PA_VMO_BOOTFS), 0))
         guard thread != 0, job != 0, resource != 0, bootfs != 0, croi_process_self() != 0,
-              croi_vmar_root_self() != 0 else { throw Failure(what: "taking startup handles", status: -11) }
+              croi_vmar_root_self() != 0 else { throw Failure(what: "taking startup handles", status: CROI_ERR_BAD_HANDLE) }
         Sys.close(job)
         Sys.close(bootfs)
         // Bytes, not String ==: that needs Unicode normalization tables.
@@ -57,7 +57,7 @@ struct M2 {
             }
             if same { named = true }
         }
-        guard named else { throw Failure(what: "finding userboot.next in the environment", status: -25) }
+        guard named else { throw Failure(what: "finding userboot.next in the environment", status: CROI_ERR_NOT_FOUND) }
         // userboot's loader made PT_GNU_RELRO read only once relocated.
         let relro = croi_relro_read_only()
         guard relro == 1 else { throw Failure(what: "finding its RELRO read only", status: Int64(relro)) }

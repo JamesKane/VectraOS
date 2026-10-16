@@ -8,7 +8,7 @@ struct Failure: Error {
 }
 
 enum Sys {
-    static var sameRights: UInt64 { 1 << 31 }
+    static var sameRights: UInt64 { UInt64(CROI_RIGHT_SAME_RIGHTS) }
 
     static func call(_ number: UInt64, _ a0: UInt64 = 0, _ a1: UInt64 = 0, _ a2: UInt64 = 0, _ a3: UInt64 = 0,
                      _ a4: UInt64 = 0, _ a5: UInt64 = 0) -> Int64 {

@@ -58,7 +58,7 @@ enum CounterSuite {
         let a = Handle(creating: CROI_SYS_COUNTER_CREATE)
         let b = Handle(creating: CROI_SYS_COUNTER_CREATE)
         set(b, .max)
-        let reader = Handle(duplicating: a, rights: 1 << 2 | 1 << 14)  // READ, WAIT
+        let reader = Handle(duplicating: a, rights: CROI_RIGHT_READ | CROI_RIGHT_WAIT)
         var items = InlineArray<4, croi_counter_add_item_t>(
             repeating: croi_counter_add_item_t(counter: a.raw, status: 1, amount: 2))
         items[1] = croi_counter_add_item_t(counter: b.raw, status: 1, amount: 1)  // would overflow
@@ -77,9 +77,9 @@ enum CounterSuite {
     /// add needs READ and WRITE; a VALUE binding WAIT and READ.
     static func rights() {
         let counter = Handle(creating: CROI_SYS_COUNTER_CREATE)
-        let reader = Handle(duplicating: counter, rights: 1 << 2 | 1 << 14)  // READ, WAIT
+        let reader = Handle(duplicating: counter, rights: CROI_RIGHT_READ | CROI_RIGHT_WAIT)
         check(add(reader, 1) == Status.accessDenied && read(reader) == 0, "READ and WAIT: reads, can't add")
-        let waiter = Handle(duplicating: counter, rights: 1 << 14)  // WAIT
+        let waiter = Handle(duplicating: counter, rights: CROI_RIGHT_WAIT)
         let port = Port()
         check(port.bind(waiter, value, key: 1, trigger: 0) == Status.accessDenied, "a VALUE binding needs READ")
     }
@@ -129,7 +129,7 @@ enum CounterSuite {
         let deadline = profile(resource, deadline: true)
         let fair = profile(resource, deadline: false)
         let counter = Handle(creating: CROI_SYS_COUNTER_CREATE)
-        let weak = Handle(duplicating: counter, rights: 1 << 2 | 1 << 14)  // READ, WAIT
+        let weak = Handle(duplicating: counter, rights: CROI_RIGHT_READ | CROI_RIGHT_WAIT)
         func setProfile(_ target: borrowing Handle, _ profile: borrowing Handle, _ options: UInt64 = 0) -> Int64 {
             Sys.call(CROI_SYS_OBJECT_SET_PROFILE, target.arg, profile.arg, options)
         }

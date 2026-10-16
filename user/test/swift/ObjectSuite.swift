@@ -174,7 +174,7 @@ enum ObjectSuite {
                   && name[7] == 0, "read back to its NUL, zero filled")
         check(setName(vmo.arg, "0123456789abcdefghijklmnopqrstuvwxyz") == 0 && getName(vmo.arg) == 0
                   && name[30] == UInt8(ascii: "u") && name[31] == 0, "truncated to 31")
-        let unnamable = Handle(duplicating: vmo, rights: (1 << 0) | (1 << 2) | (1 << 14) | (1 << 15))
+        let unnamable = Handle(duplicating: vmo, rights: CROI_RIGHT_DUPLICATE | CROI_RIGHT_READ | CROI_RIGHT_WAIT | CROI_RIGHT_INSPECT)
         check(setName(unnamable.arg, "x") == Status.accessDenied, "not without SET_PROPERTY")
         var thread: UInt32 = 0
         let worker: StaticString = "worker"

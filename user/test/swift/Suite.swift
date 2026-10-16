@@ -78,22 +78,22 @@ func check(_ condition: Bool, _ name: StaticString) {
     }
 }
 
-/// Status codes the suites expect (Zircon's values, kernel Status.swift).
+/// Status codes the suites expect (object.h, D45).
 enum Status {
-    static var notSupported: Int64 { -2 }
-    static var noResources: Int64 { -3 }
-    static var invalidArgs: Int64 { -10 }
-    static var badHandle: Int64 { -11 }
-    static var wrongType: Int64 { -12 }
-    static var outOfRange: Int64 { -14 }
-    static var bufferTooSmall: Int64 { -15 }
-    static var badState: Int64 { -20 }
-    static var timedOut: Int64 { -21 }
-    static var shouldWait: Int64 { -22 }
-    static var peerClosed: Int64 { -24 }
-    static var notFound: Int64 { -25 }
-    static var alreadyBound: Int64 { -27 }
-    static var accessDenied: Int64 { -30 }
+    static var notSupported: Int64 { CROI_ERR_NOT_SUPPORTED }
+    static var noResources: Int64 { CROI_ERR_NO_RESOURCES }
+    static var invalidArgs: Int64 { CROI_ERR_INVALID_ARGS }
+    static var badHandle: Int64 { CROI_ERR_BAD_HANDLE }
+    static var wrongType: Int64 { CROI_ERR_WRONG_TYPE }
+    static var outOfRange: Int64 { CROI_ERR_OUT_OF_RANGE }
+    static var bufferTooSmall: Int64 { CROI_ERR_BUFFER_TOO_SMALL }
+    static var badState: Int64 { CROI_ERR_BAD_STATE }
+    static var timedOut: Int64 { CROI_ERR_TIMED_OUT }
+    static var shouldWait: Int64 { CROI_ERR_SHOULD_WAIT }
+    static var peerClosed: Int64 { CROI_ERR_PEER_CLOSED }
+    static var notFound: Int64 { CROI_ERR_NOT_FOUND }
+    static var alreadyBound: Int64 { CROI_ERR_ALREADY_BOUND }
+    static var accessDenied: Int64 { CROI_ERR_ACCESS_DENIED }
 }
 
 /// The page size on every target.
@@ -172,7 +172,7 @@ struct Handle: ~Copyable {
         raw = out
     }
 
-    init(duplicating other: borrowing Handle, rights: UInt32 = 1 << 31) {
+    init(duplicating other: borrowing Handle, rights: UInt32 = CROI_RIGHT_SAME_RIGHTS) {
         var out: UInt32 = 0
         check(Sys.duplicate(UInt64(other.raw), UInt64(rights), &out) == 0,
               "duplicating a handle")

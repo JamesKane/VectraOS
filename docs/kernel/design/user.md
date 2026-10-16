@@ -177,7 +177,11 @@ syscalls 110-111):
   root VMAR, plus lib/rt). Swift user code imports `CroiRuntime`
   (user/include/module.modulemap); the ABI headers it reaches are module
   `CroiAbi` in kernel/include (which CKernel re-exports through abi.h), so
-  user code never builds the kernel's private headers. User Swift isn't
+  user code never builds the kernel's private headers. The headers are the
+  ABI's one source (D45): statuses, rights and object types are object.h's
+  (the kernel's Swift enums need literals, so `swift test`'s AbiTests
+  checks them against it), and `vx loc --check` refuses device code that
+  makes a call by number, or through todhchai's `td_syscall6`. User Swift isn't
   bound by the kernel's no-ARC rule (low-half addresses). The boot test
   runs user/test/swift: stdout (read back through the ring), heap,
   environment; the `debuglog` suite checks the ring (D38).

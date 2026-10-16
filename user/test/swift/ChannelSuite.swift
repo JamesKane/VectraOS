@@ -19,7 +19,7 @@ enum ChannelSuite {
     static var transferRight: UInt32 { 1 << 1 }
     static var read: UInt32 { 1 << 2 }
     static var wait: UInt32 { 1 << 14 }
-    static var sameRights: UInt32 { 1 << 31 }
+    static var sameRights: UInt32 { CROI_RIGHT_SAME_RIGHTS }
     static var readable: UInt32 { UInt32(CROI_SIGNAL_READABLE) }
     static var peerClosedSignal: UInt32 { UInt32(CROI_SIGNAL_PEER_CLOSED) }
 

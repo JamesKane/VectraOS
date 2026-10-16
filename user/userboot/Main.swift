@@ -39,14 +39,14 @@ struct Userboot {
         let job = croi_take_startup_handle(croi_pa_hnd(UInt32(CROI_PA_JOB_DEFAULT), 0))
         let resource = croi_take_startup_handle(croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0))
         let bootfs = croi_take_startup_handle(croi_pa_hnd(UInt32(CROI_PA_VMO_BOOTFS), 0))
-        guard job != 0, resource != 0, bootfs != 0 else { throw Failure(what: "taking startup handles", status: -11) }
+        guard job != 0, resource != 0, bootfs != 0 else { throw Failure(what: "taking startup handles", status: CROI_ERR_BAD_HANDLE) }
         let next = option("userboot.next=") ?? bytes(defaultNext)
         // userboot.shutdown= (Power.swift) needs the root resource and the
         // boot data after they have gone to the program.
         let shutdown = option("userboot.shutdown=")
         var keptResource: UInt32 = 0
         var keptBootData: UInt32 = 0
-        let sameRights: UInt32 = 1 << 31
+        let sameRights = CROI_RIGHT_SAME_RIGHTS
         if shutdown != nil {
             try call("keeping the root resource", unsafe croi_handle_duplicate(resource, sameRights, &keptResource, 0))
         }
@@ -64,7 +64,7 @@ struct Userboot {
             say("userboot: ")
             write(next)
             say(error == .notFound ? " is not in bootfs\n" : ": bootfs is malformed\n")
-            throw Failure(what: "finding the next program", status: -25)  // NOT_FOUND
+            throw Failure(what: "finding the next program", status: CROI_ERR_NOT_FOUND)
         }
         let elf: ElfImage
         do throws(ElfImage.Error) {
@@ -75,7 +75,7 @@ struct Userboot {
             say(": ")
             say(error.reason)
             say("\n")
-            throw Failure(what: "reading its ELF", status: -10)
+            throw Failure(what: "reading its ELF", status: CROI_ERR_INVALID_ARGS)
         }
 
         var process: UInt32 = 0
@@ -211,7 +211,7 @@ struct Userboot {
         // Room for it in the lower half, else the subtraction (review fix:
         // it wrapped) and a modulus by zero pages.
         guard size < region.len / 2, (region.len / 2 - size) / pageSize > 0 else {
-            throw Failure(what: "placing it", status: -14)  // OUT_OF_RANGE
+            throw Failure(what: "placing it", status: CROI_ERR_OUT_OF_RANGE)
         }
         let pages = (region.len / 2 - size) / pageSize
         let canMap = UInt32(CROI_VM_CAN_MAP_READ | CROI_VM_CAN_MAP_WRITE | CROI_VM_CAN_MAP_EXECUTE | CROI_VM_SPECIFIC)
@@ -225,7 +225,7 @@ struct Userboot {
             if status == 0 { return (child, base) }
             guard status == -26 else { throw Failure(what: "placing it", status: status) }  // ALREADY_EXISTS: again
         }
-        throw Failure(what: "placing it", status: -4)
+        throw Failure(what: "placing it", status: CROI_ERR_NO_MEMORY)
     }
 
     /// Maps one PT_LOAD segment of the program at `file` in bootfs, at its
@@ -237,7 +237,7 @@ struct Userboot {
     /// failure's status.
     static func mapSegments(_ items: inout [croi_vmar_map_item_t], into vmar: UInt32) throws(Failure) {
         guard !items.isEmpty else { return }
-        guard items.count <= Int(CROI_VMAR_MAX_ITEMS) else { throw Failure(what: "counting its segments", status: -10) }
+        guard items.count <= Int(CROI_VMAR_MAX_ITEMS) else { throw Failure(what: "counting its segments", status: CROI_ERR_INVALID_ARGS) }
         let mapped = unsafe items.withUnsafeMutableBufferPointer { buffer in
             unsafe sys(CROI_SYS_VMAR_MAP, UInt64(vmar), UInt64(UInt(bitPattern: buffer.baseAddress)),
                        UInt64(buffer.count))
@@ -255,7 +255,7 @@ struct Userboot {
         let size = (segment.memsz + pageSize - 1) & ~(pageSize - 1)
         guard size > 0 else { return nil }
         let runAddress = segment.vaddr &+ delta
-        guard runAddress >= vmarBase else { throw Failure(what: "placing a segment", status: -10) }
+        guard runAddress >= vmarBase else { throw Failure(what: "placing a segment", status: CROI_ERR_INVALID_ARGS) }
         var options = UInt32(CROI_VM_SPECIFIC)
         if segment.readable { options |= UInt32(CROI_VM_PERM_READ) }
         if segment.writable { options |= UInt32(CROI_VM_PERM_WRITE) }
@@ -268,7 +268,7 @@ struct Userboot {
                 if target >= segment.vaddr, target - segment.vaddr < size { relocations += 1 }
             }
         } catch {
-            throw Failure(what: "reading its relocations", status: -10)
+            throw Failure(what: "reading its relocations", status: CROI_ERR_INVALID_ARGS)
         }
         let fileOffset = file.offset + segment.offset
         func item(_ vmo: UInt32, _ offset: UInt64) -> croi_vmar_map_item_t {
@@ -310,7 +310,7 @@ struct Userboot {
                     unsafe bytes.storeBytes(of: delta &+ addend, toByteOffset: Int(target - segment.vaddr), as: UInt64.self)
                 }
             } catch {
-                throw Failure(what: "reading its relocations", status: -10)
+                throw Failure(what: "reading its relocations", status: CROI_ERR_INVALID_ARGS)
             }
         }
         return item(vmo, 0)

@@ -1,5 +1,3 @@
-| `services/console`, `services/time`, `shell/commands` | Port | V2 | The console reads the debuglog ring (D38); UTC is a page (D48) |
-| `tools/toolchain` (the `*-todhchai` series) and tier 1's sysroot | Lift | V2 | Tier 1 for FDIO and rc (D47) |
 # Provenance
 
 Where each part of VectraOS comes from, and how it gets here. All three

@@ -16,7 +16,7 @@ enum Power {
                                                         UInt64(CROI_SYSTEM_POWERCTL_REBOOT), 0))
             return
         }
-        guard how == Userboot.bytes("poweroff") else { throw Userboot.Failure(what: "userboot.shutdown=", status: -10) }
+        guard how == Userboot.bytes("poweroff") else { throw Userboot.Failure(what: "userboot.shutdown=", status: CROI_ERR_INVALID_ARGS) }
         #if arch(x86_64)
         var argument = croi_system_powerctl_arg_t()
         let (a, b) = try sleepTypes(resource: resource, bootData: bootData)
@@ -37,7 +37,7 @@ enum Power {
     #if arch(x86_64)
     /// \_S5's two values: boot data -> RSDP -> XSDT -> FADT -> DSDT.
     static func sleepTypes(resource: UInt32, bootData: UInt32) throws(Userboot.Failure) -> (UInt8, UInt8) {
-        let missing = Userboot.Failure(what: "finding \\_S5", status: -25)
+        let missing = Userboot.Failure(what: "finding \\_S5", status: CROI_ERR_NOT_FOUND)
         guard let rsdpAddress = rsdp(bootData) else { throw missing }
         let rsdp = unsafe try map(resource, rsdpAddress, 36)
         let xsdtAddress = unsafe rsdp.loadUnaligned(fromByteOffset: 24, as: UInt64.self)
@@ -113,7 +113,7 @@ enum Power {
     static func table(_ resource: UInt32, _ address: UInt64) throws(Userboot.Failure) -> (bytes: UnsafeRawPointer, length: UInt32) {
         let header = unsafe try map(resource, address, 36)
         let length = unsafe header.loadUnaligned(fromByteOffset: 4, as: UInt32.self)
-        guard length >= 36, length < 1 << 20 else { throw Userboot.Failure(what: "reading an ACPI table", status: -10) }
+        guard length >= 36, length < 1 << 20 else { throw Userboot.Failure(what: "reading an ACPI table", status: CROI_ERR_INVALID_ARGS) }
         return unsafe (try map(resource, address, UInt64(length)), length)
     }
 

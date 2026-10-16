@@ -2,6 +2,7 @@
 // includes them), a module of their own so user Swift code can import
 // them without the kernel's private ones.
 module CroiAbi {
+  header "object.h"
   header "task.h"
   header "ipc.h"
   header "log.h"

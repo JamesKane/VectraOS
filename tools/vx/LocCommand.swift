@@ -4,8 +4,9 @@
 //
 //   vx loc            lines per component, by language, and how many came
 //                     from croi, todhchai or NeoVectra (IMPORTS.tsv)
-//   vx loc --check    also fails if the syscall count is over its ceiling
-//                     or IMPORTS.tsv names a file that isn't here
+//   vx loc --check    also fails if the syscall count is over its ceiling,
+//                     IMPORTS.tsv names a file that isn't here, or code
+//                     makes a call by number rather than the ABI's name
 
 import FoundationEssentials
 import Glibc
@@ -26,6 +27,32 @@ func syscallCount() -> Int {
     let t = line.drop { $0 == " " }
     return t.hasPrefix("CROI_SYS_") && t.contains("=")
   }
+}
+
+/// Calls made by number, not by the ABI's `CROI_SYS_` names (D45): the
+/// headers are the one source, so a hardcoded number is a second one, and
+/// todhchai's `td_syscall6` is the entry its number tables went through.
+/// Device code only: the kernel's dispatch is the numbers' other side.
+func abiViolations(_ paths: [String]) -> [String] {
+  let entries = ["syscall(", "syscall6(", "sys(", "sys6(", "Sys.call("]
+  var found: [String] = []
+  for path in paths where [".swift", ".c", ".h", ".S"].contains(where: { path.hasSuffix($0) })
+    && ["user/", "lib/", "system/", "services/", "drivers/", "shell/"].contains(where: { path.hasPrefix($0) })
+  {
+    guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
+    for (n, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+      let numbered = entries.contains { entry in
+        var rest = line[...]
+        while let r = rest.firstRange(of: entry) {
+          if rest[r.upperBound...].drop(while: { $0 == " " }).first?.isNumber == true { return true }
+          rest = rest[r.upperBound...]
+        }
+        return false
+      }
+      if numbered || line.contains("td_syscall") { found.append("\(path):\(n + 1)") }
+    }
+  }
+  return found
 }
 
 func locCommand(_ args: [String]) -> Bool {
@@ -76,6 +103,10 @@ func locCommand(_ args: [String]) -> Bool {
   var ok = true
   if syscalls > syscallCeiling {
     complain("\(syscalls) syscalls, over the ceiling of \(syscallCeiling)")
+    ok = false
+  }
+  for place in abiViolations(listing.split(separator: "\n").map(String.init)) {
+    complain("\(place): a call by number; name it from the ABI headers (D45)")
     ok = false
   }
   for path in imported.keys.sorted() where !FileManager.default.fileExists(atPath: path) {

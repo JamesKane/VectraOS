@@ -77,6 +77,8 @@ enum : int64_t {  // return codes of processes the kernel ended (Zircon's)
 enum : uint32_t {  // signals
   CROI_SIGNAL_TASK_TERMINATED = 1u << 3,
   CROI_SIGNAL_THREAD_RUNNING = 1u << 4,
+  CROI_SIGNAL_JOB_NO_JOBS = 1u << 4,
+  CROI_SIGNAL_JOB_NO_PROCESSES = 1u << 5,
 };
 
 // Exceptions (K7d; Zircon's). A message on an exception channel is a

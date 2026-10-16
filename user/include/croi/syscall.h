@@ -137,6 +137,7 @@ enum : uint64_t {
 // in the first argument register, arg2 in the second and the vDSO's base
 // in the third.
 
+#include "object.h"  // statuses, rights, object types
 #include "task.h"  // vmar options, task return codes, signals, info topics
 #include "ipc.h"   // channel signals and limits, call args, handle info, flow ids
 #include "log.h"   // debuglog records, flags, severities

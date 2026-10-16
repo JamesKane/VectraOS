@@ -1,5 +1,9 @@
+import CroiAbi
+
 /// Status codes, rights, signals and object types, with Zircon's values
-/// (zircon/errors.h, rights.h, types.h), since croi keeps its ABI.
+/// (zircon/errors.h, rights.h, types.h), since croi keeps its ABI. The
+/// values are the ABI headers' (object.h, D45): the enums need literals,
+/// so a host test (kernel/tests/Abi) checks them against the header.
 enum Status: Int32, Error, Equatable {
     case internalError = -1
     case notSupported = -2
@@ -58,49 +62,49 @@ extension BitFlags {
 
 struct Rights: BitFlags {
     let rawValue: UInt32
-    static var duplicate: Rights { Rights(rawValue: 1 << 0) }
-    static var transfer: Rights { Rights(rawValue: 1 << 1) }
-    static var read: Rights { Rights(rawValue: 1 << 2) }
-    static var write: Rights { Rights(rawValue: 1 << 3) }
-    static var execute: Rights { Rights(rawValue: 1 << 4) }
-    static var map: Rights { Rights(rawValue: 1 << 5) }
-    static var getProperty: Rights { Rights(rawValue: 1 << 6) }
-    static var setProperty: Rights { Rights(rawValue: 1 << 7) }
-    static var enumerate: Rights { Rights(rawValue: 1 << 8) }
-    static var destroy: Rights { Rights(rawValue: 1 << 9) }
-    static var getPolicy: Rights { Rights(rawValue: 1 << 10) }
-    static var setPolicy: Rights { Rights(rawValue: 1 << 11) }
-    static var signal: Rights { Rights(rawValue: 1 << 12) }
-    static var wait: Rights { Rights(rawValue: 1 << 14) }
-    static var inspect: Rights { Rights(rawValue: 1 << 15) }
-    static var manageJob: Rights { Rights(rawValue: 1 << 16) }
-    static var manageProcess: Rights { Rights(rawValue: 1 << 17) }
-    static var manageThread: Rights { Rights(rawValue: 1 << 18) }
-    static var applyProfile: Rights { Rights(rawValue: 1 << 19) }
-    static var opChildren: Rights { Rights(rawValue: 1 << 21) }
-    static var resize: Rights { Rights(rawValue: 1 << 22) }
-    static var attachVmo: Rights { Rights(rawValue: 1 << 23) }
-    static var manageVmo: Rights { Rights(rawValue: 1 << 24) }
+    static var duplicate: Rights { Rights(rawValue: CROI_RIGHT_DUPLICATE) }
+    static var transfer: Rights { Rights(rawValue: CROI_RIGHT_TRANSFER) }
+    static var read: Rights { Rights(rawValue: CROI_RIGHT_READ) }
+    static var write: Rights { Rights(rawValue: CROI_RIGHT_WRITE) }
+    static var execute: Rights { Rights(rawValue: CROI_RIGHT_EXECUTE) }
+    static var map: Rights { Rights(rawValue: CROI_RIGHT_MAP) }
+    static var getProperty: Rights { Rights(rawValue: CROI_RIGHT_GET_PROPERTY) }
+    static var setProperty: Rights { Rights(rawValue: CROI_RIGHT_SET_PROPERTY) }
+    static var enumerate: Rights { Rights(rawValue: CROI_RIGHT_ENUMERATE) }
+    static var destroy: Rights { Rights(rawValue: CROI_RIGHT_DESTROY) }
+    static var getPolicy: Rights { Rights(rawValue: CROI_RIGHT_GET_POLICY) }
+    static var setPolicy: Rights { Rights(rawValue: CROI_RIGHT_SET_POLICY) }
+    static var signal: Rights { Rights(rawValue: CROI_RIGHT_SIGNAL) }
+    static var wait: Rights { Rights(rawValue: CROI_RIGHT_WAIT) }
+    static var inspect: Rights { Rights(rawValue: CROI_RIGHT_INSPECT) }
+    static var manageJob: Rights { Rights(rawValue: CROI_RIGHT_MANAGE_JOB) }
+    static var manageProcess: Rights { Rights(rawValue: CROI_RIGHT_MANAGE_PROCESS) }
+    static var manageThread: Rights { Rights(rawValue: CROI_RIGHT_MANAGE_THREAD) }
+    static var applyProfile: Rights { Rights(rawValue: CROI_RIGHT_APPLY_PROFILE) }
+    static var opChildren: Rights { Rights(rawValue: CROI_RIGHT_OP_CHILDREN) }
+    static var resize: Rights { Rights(rawValue: CROI_RIGHT_RESIZE) }
+    static var attachVmo: Rights { Rights(rawValue: CROI_RIGHT_ATTACH_VMO) }
+    static var manageVmo: Rights { Rights(rawValue: CROI_RIGHT_MANAGE_VMO) }
     /// croi's (K15a): VMOs may be charged to this memory account.
-    static var charge: Rights { Rights(rawValue: 1 << 25) }
+    static var charge: Rights { Rights(rawValue: CROI_RIGHT_CHARGE) }
     /// duplicate/replace: keep the source handle's rights.
-    static var sameRights: Rights { Rights(rawValue: 1 << 31) }
+    static var sameRights: Rights { Rights(rawValue: CROI_RIGHT_SAME_RIGHTS) }
 
-    static var basic: Rights { .transfer | .duplicate | .wait | .inspect }
+    static var basic: Rights { Rights(rawValue: CROI_RIGHTS_BASIC) }
 }
 
 /// Signal bits (zx_signals_t).
 enum Signals {
     static var none: UInt32 { 0 }
     /// Event: signaled. (Bit 3, __ZX_OBJECT_SIGNALED.)
-    static var signaled: UInt32 { 1 << 3 }
+    static var signaled: UInt32 { CROI_SIGNAL_SIGNALED }
     /// Process/thread/job terminated (ZX_TASK_TERMINATED, signal 3).
-    static var taskTerminated: UInt32 { 1 << 3 }
+    static var taskTerminated: UInt32 { CROI_SIGNAL_TASK_TERMINATED }
     /// Thread running (ZX_THREAD_RUNNING, signal 4).
-    static var threadRunning: UInt32 { 1 << 4 }
+    static var threadRunning: UInt32 { CROI_SIGNAL_THREAD_RUNNING }
     /// Job: no child jobs (signal 4) / no child processes (signal 5).
-    static var jobNoJobs: UInt32 { 1 << 4 }
-    static var jobNoProcesses: UInt32 { 1 << 5 }
+    static var jobNoJobs: UInt32 { CROI_SIGNAL_JOB_NO_JOBS }
+    static var jobNoProcesses: UInt32 { CROI_SIGNAL_JOB_NO_PROCESSES }
 }
 
 /// zx_obj_type_t.

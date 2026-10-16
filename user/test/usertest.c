@@ -19,23 +19,23 @@ void *memcpy(void *to, const void *from, __SIZE_TYPE__ n) {
   return to;
 }
 
-#define ERR_BAD_HANDLE (-11)
-#define ERR_INVALID_ARGS (-10)
-#define ERR_OUT_OF_RANGE (-14)
-#define ERR_TIMED_OUT (-21)
-#define ERR_ACCESS_DENIED (-30)
-#define ERR_BAD_STATE (-20)
-#define ERR_NOT_SUPPORTED (-2)
-#define ERR_BUFFER_TOO_SMALL (-15)
-#define ERR_SHOULD_WAIT (-22)
-#define ERR_PEER_CLOSED (-24)
-#define RIGHT_SAME (1u << 31)
-#define SIGNALED (1u << 3)
-#define RIGHT_READ (1u << 2)
-#define RIGHT_MAP (1u << 5)
-#define RIGHT_DUPLICATE (1u << 0)
-#define RIGHT_TRANSFER (1u << 1)
-#define RIGHT_WAIT (1u << 14)
+#define ERR_BAD_HANDLE CROI_ERR_BAD_HANDLE
+#define ERR_INVALID_ARGS CROI_ERR_INVALID_ARGS
+#define ERR_OUT_OF_RANGE CROI_ERR_OUT_OF_RANGE
+#define ERR_TIMED_OUT CROI_ERR_TIMED_OUT
+#define ERR_ACCESS_DENIED CROI_ERR_ACCESS_DENIED
+#define ERR_BAD_STATE CROI_ERR_BAD_STATE
+#define ERR_NOT_SUPPORTED CROI_ERR_NOT_SUPPORTED
+#define ERR_BUFFER_TOO_SMALL CROI_ERR_BUFFER_TOO_SMALL
+#define ERR_SHOULD_WAIT CROI_ERR_SHOULD_WAIT
+#define ERR_PEER_CLOSED CROI_ERR_PEER_CLOSED
+#define RIGHT_SAME CROI_RIGHT_SAME_RIGHTS
+#define SIGNALED CROI_SIGNAL_SIGNALED
+#define RIGHT_READ CROI_RIGHT_READ
+#define RIGHT_MAP CROI_RIGHT_MAP
+#define RIGHT_DUPLICATE CROI_RIGHT_DUPLICATE
+#define RIGHT_TRANSFER CROI_RIGHT_TRANSFER
+#define RIGHT_WAIT CROI_RIGHT_WAIT
 
 static inline int64_t sys(uint64_t n, uint64_t a, uint64_t b, uint64_t c, uint64_t d, uint64_t e) {
   return croi_syscall(n, a, b, c, d, e);
@@ -742,9 +742,9 @@ static void join(uint32_t thread) {
 }
 
 // Mode 9: exceptions and job policy (K7d), as a process.
-#define ERR_ALREADY_BOUND (-27)
-#define ERR_UNAVAILABLE (-28)
-#define ERR_ALREADY_EXISTS (-26)
+#define ERR_ALREADY_BOUND CROI_ERR_ALREADY_BOUND
+#define ERR_UNAVAILABLE CROI_ERR_UNAVAILABLE
+#define ERR_ALREADY_EXISTS CROI_ERR_ALREADY_EXISTS
 
 // Takes one exception from `channel`: checks its type and process, and
 // either passes it on (state < 0: TRY_NEXT), or sets `state` (moving the
@@ -1009,8 +1009,8 @@ static int64_t exceptions(const startup_t *s) {
 #define DRV_DEVICE_OFFSET 0
 #define DRV_DEVICE_VALUE(v) ((v) != 0)
 #endif
-#define ERR_NOT_FOUND (-25)
-#define ERR_WRONG_TYPE (-12)
+#define ERR_NOT_FOUND CROI_ERR_NOT_FOUND
+#define ERR_WRONG_TYPE CROI_ERR_WRONG_TYPE
 #define PAGE 4096ull
 
 // V1 cut vmo_read and vmo_write (D37): bytes go in and out through a
@@ -1354,9 +1354,9 @@ static uint32_t find_device(volatile uint8_t *bus, uint32_t vendor_mask, uint32_
 // options, refusals), pinned pages held against decommit and cache policy
 // changes, quarantine, contiguous VMOs, croi's BTI properties, and the
 // debuglog record a no-IOMMU BTI leaves.
-#define ERR_BAD_HANDLE (-11)
-#define ERR_ACCESS_DENIED_ (-30)
-#define ERR_NO_MEMORY (-4)
+#define ERR_BAD_HANDLE CROI_ERR_BAD_HANDLE
+#define ERR_ACCESS_DENIED_ CROI_ERR_ACCESS_DENIED
+#define ERR_NO_MEMORY CROI_ERR_NO_MEMORY
 static int64_t bti_pin(uint32_t bti, uint32_t options, uint32_t vmo, uint64_t count, uint64_t offset, uint64_t size,
                        uint64_t *addrs, uint32_t *pmt) {
   return sys6(CROI_SYS_BTI_PIN, bti | (uint64_t)options << 32, vmo | count << 32, offset, size, (uint64_t)addrs,
@@ -1801,7 +1801,7 @@ static void spinner(uint64_t arg) {
 // parent), the rights and refusals, cache policies frozen, HANDLE_COUNT
 // through a channel, and ZERO_CHILDREN following handles and mappings.
 #ifndef ERR_ACCESS_DENIED_
-#define ERR_ACCESS_DENIED_ (-30)
+#define ERR_ACCESS_DENIED_ CROI_ERR_ACCESS_DENIED
 #endif
 // K13d: the user pager. A pager thread serves READ requests from a port:
 // each page filled with 'A' + its index, except page 3, which it fails

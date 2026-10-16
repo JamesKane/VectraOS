@@ -82,7 +82,12 @@ work, in order:
    numbers in V1 but now take arrays (handle_close, the VMAR calls,
    port_queue and port_wait, channel_read and channel_write), so old
    callers would build and fail quietly. Lifted code includes VectraOS's
-   ABI headers instead.
+   ABI headers instead. **Done:** statuses, rights and object types are
+   in `object.h`, which the kernel, the suites, m2, userboot and
+   usertest.c now use. SysABI's `Values.swift` will take them from there.
+   The kernel's literal enums are checked against it by `swift test`
+   (AbiTests), and `vx loc --check` refuses device code that makes a call
+   by number, or through `td_syscall6`.
 2. **The floor and Sys** (`system/sys`, about 4k lines; libc, ld, trace).
    The floor (`_start`, heap, stdio, threads, the C ABI tier 1's runtime
    calls) and the `Sys` wrappers move to V1's calls. Each thread gets a
