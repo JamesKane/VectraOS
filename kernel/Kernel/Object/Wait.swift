@@ -12,7 +12,8 @@ struct Observer {
         /// with `key`, once. Holds a reference to the port.
         case port(port: UInt64, key: UInt64, packet: UInt64, options: UInt32)
         /// object_bind PERSISTENT: `source`'s packet (it holds the port),
-        /// queued at every event and coalesced while it waits to be read.
+        /// queued each time a trigger signal rises and coalesced while it
+        /// waits to be read.
         case source(port: UInt64, key: UInt64, source: UInt64, options: UInt32)
     }
 
@@ -45,13 +46,20 @@ enum Observers {
     static var edge: UInt32 { 1 << 1 }       // ZX_WAIT_ASYNC_EDGE
     static var timestamp: UInt32 { 1 << 0 }  // ZX_WAIT_ASYNC_TIMESTAMP
 
-    /// Runs every observer `object`'s current signals satisfy; port
-    /// observers fire once and go, persistent ones fire and stay. `changed`:
+    /// Runs every observer a trigger signal of which rose (is set now and
+    /// wasn't in `before`), and every value observer the counter's value
+    /// satisfies; port observers fire once and go, persistent ones fire and
+    /// stay. A level ONCE binding was registered with its signals clear
+    /// (or fired at once), so its first satisfying change is a rise; an
+    /// EDGE or PERSISTENT one fires at each rise, not at a write that
+    /// leaves a signal as it was (a second channel message). `changed`:
     /// a counter's value was set (CHANGE bindings fire). A counter with a
     /// profile lends it to the thread each packet wakes (K10c, ext 5).
     /// Object lock held.
-    static func notify(_ object: ObjectPointer, changed: Bool = false) {
+    static func notify(_ object: ObjectPointer, before: UInt32, changed: Bool = false) {
         let signals = object.header.signals
+        let rose = signals & ~before
+        guard rose != 0 || changed else { return }  // a clear, or a signal already set
         let type = object.header.type
         let value = type == .counter ? Counters.valueLocked(object) : 0
         let lending = lend(of: object)
@@ -60,7 +68,7 @@ enum Observers {
         while let observer = cursor {
             cursor = observer.pointee.next
             let satisfied = observer.pointee.byValue ? value >= observer.pointee.atValue
-                                                     : observer.pointee.trigger & signals != 0
+                                                     : observer.pointee.trigger & rose != 0
             if case .source(_, _, let source, let options) = observer.pointee.kind {
                 previous = observer
                 let packets = PacketSourcePointer(address: source)
@@ -213,9 +221,9 @@ enum Observers {
     }
 
     /// object_bind SIGNALS PERSISTENT, or a counter's CHANGE: `source`'s
-    /// packet to `port` at every event that has any of `signals` (CHANGE:
-    /// every add), coalesced while queued. SIGNALS also fires now
-    /// if the object already has one, unless `edge`.
+    /// packet to `port` each time one of `signals` rises (CHANGE: every
+    /// add), coalesced while queued. SIGNALS also fires now if the object
+    /// already has one, unless `edge`.
     static func bindPersistent(_ table: borrowing HandleTable, _ handle: UInt32, port: borrowing ObjectRef,
                                key: UInt64, signals: UInt32, onChange: Bool, options: UInt32) throws(Status) {
         guard options & ~(edge | timestamp) == 0 else { throw .invalidArgs }

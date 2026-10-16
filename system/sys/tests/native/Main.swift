@@ -131,9 +131,12 @@ struct SysTest {
     check(first.key == 7 && first.payload.1 == 1, "a persistent binding's packet")
     check(statusOf { () throws(Status) in try Port.wait(port, deadline: 0) } == .timedOut, "once for the messages")
     for _ in 0..<3 { _ = try Channel.read(ends.b) }
-    while (try? Port.wait(port, deadline: 0)) != nil {}
+    check(statusOf { () throws(Status) in try Port.wait(port, deadline: 0) } == .timedOut, "none at the reads")
     try Channel.write(ends.a, bytes: [4])
     check(try Port.wait(port, deadline: 0).key == 7, "and again once drained")
+    try Port.cancel(port, source: ends.b, key: 7)
+    check(statusOf { () throws(Status) in try Port.cancel(port, source: ends.b, key: 7) } == .notFound,
+          "cancelled by source")
 
     var items = [Binding.signals(c.raw, Signals.nonPositive, key: 1), Binding.value(c.raw, 3, key: 2),
                  Binding.signals(0x7FFF_FFF0, Signals.positive, key: 3), Binding.signals(c.raw, 0, key: 4)]

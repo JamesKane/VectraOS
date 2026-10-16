@@ -59,9 +59,9 @@ enum Counters {
     /// satisfies (signal and value bindings alike). Object lock held.
     private static func setLocked(_ object: ObjectPointer, _ value: Int64) {
         CounterPointer(object: object).pointee.value = value
-        let signals = object.header.signals & ~(positive | nonPositive)
-        object.header.signals = signals | (value > 0 ? positive : nonPositive)
-        Observers.notify(object, changed: true)
+        let before = object.header.signals
+        object.header.signals = (before & ~(positive | nonPositive)) | (value > 0 ? positive : nonPositive)
+        Observers.notify(object, before: before, changed: true)
     }
 
     /// object_bind VALUE: one CROI_PKT_TYPE_COUNTER packet to `port` with

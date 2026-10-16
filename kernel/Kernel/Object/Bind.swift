@@ -8,9 +8,10 @@ import CKernel
 /// call.
 ///
 /// Each item (croi_bind_item_t, port.h) names a source, a kind and a key:
-/// - SIGNALS: ONCE (Zircon's wait_async) or PERSISTENT (a packet at every
-///   event that leaves a trigger signal asserted, coalesced while queued;
-///   the reader drains until the object would block, as with EPOLLET).
+/// - SIGNALS: ONCE (Zircon's wait_async) or PERSISTENT (a packet each time
+///   a trigger signal rises, coalesced while queued; the reader drains
+///   until the object would block, as with EPOLLET). EDGE skips the
+///   packet for a signal already set at binding.
 /// - VALUE: ONCE, a counter reaching a value (a fence).
 /// - CHANGE: PERSISTENT, every add to a counter (a doorbell).
 /// - INTERRUPT, OVERRUN, PRESSURE: PERSISTENT, the kernel events of an

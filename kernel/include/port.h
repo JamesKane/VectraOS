@@ -46,8 +46,8 @@
 enum : uint32_t {
   // croi_bind_item_t.options: one kind...
   CROI_BIND_SIGNALS = 0,    // trigger: signals. ONCE: one packet when any is asserted (Zircon's
-                            // wait_async). PERSISTENT: a packet at every event that leaves one
-                            // asserted, coalesced while it waits to be read (payload[1] counts);
+                            // wait_async). PERSISTENT: a packet each time one rises (EDGE: not
+                            // for one already set at binding), coalesced while it waits to be read (payload[1] counts);
                             // the reader drains until the object would block.
   CROI_BIND_VALUE = 1,      // a counter, ONCE: trigger is the value (int64) to reach (a fence)
   CROI_BIND_CHANGE = 2,     // a counter, PERSISTENT: every add (a ring's doorbell)

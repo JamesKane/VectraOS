@@ -818,7 +818,7 @@ public final class HostKernel: @unchecked Sendable {
   /// port_cancel, as the kernel's: undoes the bindings to the port with
   /// `key` made through handle `source`, and drops their queued packets;
   /// with source 0, every binding and queued packet with `key` (user
-  /// packets too), notFound if there were none.
+  /// packets too). Either way, notFound if there were none.
   public func portCancel(_ port: UInt32, source: UInt32, key: UInt64) throws(Status) {
     try locked { () throws(Status) in
       let p = try lookup(port, .write, as: PortObject.self)
@@ -830,7 +830,7 @@ public final class HostKernel: @unchecked Sendable {
       let before = bindings.count, queued = p.packets.count
       bindings.removeAll(where: matches)
       p.packets.removeAll { q in q.from.map(matches) ?? (source == 0 && q.packet.key == key) }
-      guard source != 0 || bindings.count < before || p.packets.count < queued else { throw .notFound }
+      guard bindings.count < before || p.packets.count < queued else { throw .notFound }
     }
   }
 

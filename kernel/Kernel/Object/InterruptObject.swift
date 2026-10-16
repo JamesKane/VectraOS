@@ -277,13 +277,14 @@ enum InterruptObjects {
     }
 
     /// port_cancel(port, interrupt, key): unbinds it if it is bound there
-    /// with `key`.
-    static func cancel(_ object: ObjectPointer, port: ObjectPointer, key: UInt64) {
+    /// with `key`; whether it was.
+    static func cancel(_ object: ObjectPointer, port: ObjectPointer, key: UInt64) -> Bool {
         let bound = object.header.lock.withLock {
             let interrupt = InterruptPointer(object: object)
             return interrupt.pointee.port == port.address && interrupt.pointee.packet.pointee.packet.key == key
         }
-        if bound { try? unbind(object, port: port) }
+        guard bound else { return false }
+        return (try? unbind(object, port: port)) != nil
     }
 
     /// Unbinding: a packet still queued is taken back and the interrupt

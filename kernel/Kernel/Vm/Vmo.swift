@@ -249,8 +249,9 @@ enum DiscardState: UInt8 {
         object.header.lock.withLock {
             let none = pointee.lock.withLock { pointee.children == 0 }
             let bit = UInt32(CROI_VMO_ZERO_CHILDREN)
-            object.header.signals = none ? object.header.signals | bit : object.header.signals & ~bit
-            Observers.notify(object)
+            let before = object.header.signals
+            object.header.signals = none ? before | bit : before & ~bit
+            Observers.notify(object, before: before)
         }
         object.release()
     }

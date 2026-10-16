@@ -79,8 +79,9 @@ struct ObjectHeader: ~Copyable {
     /// satisfies. Lock order: object -> scheduler -> port packets.
     func updateSignals(clear: UInt32, set: UInt32) {
         header.lock.withLock {
-            header.signals = (header.signals & ~clear) | set
-            Observers.notify(self)
+            let before = header.signals
+            header.signals = (before & ~clear) | set
+            Observers.notify(self, before: before)
         }
     }
 

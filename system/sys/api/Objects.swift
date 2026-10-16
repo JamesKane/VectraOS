@@ -110,7 +110,7 @@ public enum Port {
   }
 
   /// Undoes the bindings to the port with `key` made through `source`, and
-  /// drops their queued packets.
+  /// drops their queued packets; notFound if there were none.
   public static func cancel(_ port: borrowing Handle, source: borrowing Handle, key: UInt64) throws(Status) {
     try Kernel.portCancel(port.raw, source.raw, key)
   }
@@ -658,7 +658,6 @@ public struct ThreadState: Equatable, Sendable {
     case CROI_THREAD_STATE_RUNNING: "running"
     case CROI_THREAD_STATE_SUSPENDED: "suspended"
     case CROI_THREAD_STATE_BLOCKED_EXCEPTION: "blocked: exception"
-    case CROI_THREAD_STATE_BLOCKED_SLEEPING: "blocked: sleeping"
     case CROI_THREAD_STATE_BLOCKED_FUTEX: "blocked: futex"
     case CROI_THREAD_STATE_BLOCKED_PORT: "blocked: port"
     case CROI_THREAD_STATE_BLOCKED_CHANNEL: "blocked: channel"

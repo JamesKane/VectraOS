@@ -211,18 +211,19 @@ extension Syscalls {
     }
 
     /// Why a blocked user thread waits, from the syscall it is in (a page
-    /// fault waits for a pager). Racy: a snapshot.
+    /// fault waits for a pager). Racy: a snapshot. Ports are the one wait
+    /// (D23, D25): a sleep or a counter wait is a port_wait.
     private static func blockedState(_ thread: ThreadPointer) -> UInt32 {
         guard thread.pointee.enteredUser else { return UInt32(CROI_THREAD_STATE_BLOCKED) }  // parked before its first entry
         let user = unsafe UserTraps.userFrame(of: thread)
         guard unsafe ExceptionFrame.isSyscall(user.pointee) else { return UInt32(CROI_THREAD_STATE_BLOCKED_PAGER) }
         switch unsafe ExceptionFrame.syscallNumber(user.pointee) {
-        case 4: return UInt32(CROI_THREAD_STATE_BLOCKED_SLEEPING)
         case 90: return UInt32(CROI_THREAD_STATE_BLOCKED_FUTEX)
         case 33: return UInt32(CROI_THREAD_STATE_BLOCKED_PORT)
         case 83: return UInt32(CROI_THREAD_STATE_BLOCKED_CHANNEL)
-        case 41, 42, 45, 195...198: return UInt32(CROI_THREAD_STATE_BLOCKED_PAGER)
-        default: return UInt32(CROI_THREAD_STATE_BLOCKED_WAIT_ONE)  // counter and other waits
+        // The calls that commit a pager VMO's pages (or copy through them).
+        case 45, 76, 104, 152, 230, 231, 233: return UInt32(CROI_THREAD_STATE_BLOCKED_PAGER)
+        default: return UInt32(CROI_THREAD_STATE_BLOCKED)
         }
     }
 

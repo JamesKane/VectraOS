@@ -12,6 +12,7 @@ enum BindSuite {
         doorbell(port, counter)
         unbinding(port, counter)
         persistentSignals(port, counter)
+        readable(port)
         leeway(port)
         print("swift: bind passed")
     }
@@ -84,8 +85,10 @@ enum BindSuite {
         check(port.empty, "closing the handle unbinds and drops its packet")
     }
 
-    /// SIGNALS PERSISTENT: at once if asserted (not with EDGE), then at
-    /// every event that leaves a trigger signal asserted, coalesced.
+    /// SIGNALS PERSISTENT: at once if asserted (not with EDGE), then each
+    /// time a trigger signal rises, coalesced; an event that leaves it set
+    /// (an add to a positive counter) fires nothing (CHANGE is the
+    /// every-add binding).
     static func persistentSignals(_ port: borrowing Port, _ counter: borrowing Handle) {
         let positive = UInt32(CROI_COUNTER_POSITIVE)
         let before = Sys.now()
@@ -98,19 +101,57 @@ enum BindSuite {
                   && now.payload.2 >= before, "the trigger, what was observed, and the time")
         add(counter)
         add(counter)
-        guard let twice = port.next() else { return check(false, "fires at each event") }
-        check(twice.payload.1 == 2 && port.empty, "two events, one packet")
+        check(port.empty, "nothing while the signal stays set")
         set(counter, -1)
         check(port.empty, "nothing while no trigger signal is asserted")
+        set(counter, 1)
+        set(counter, -1)
+        set(counter, 1)
+        guard let twice = port.next() else { return check(false, "fires when the signal rises") }
+        check(twice.payload.1 == 2 && port.empty, "two rises, one packet")
         check(port.cancel(counter, key: 26) == 0, "unbound")
 
         let edge = UInt32(CROI_BIND_SIGNALS) | UInt32(CROI_BIND_PERSISTENT) | UInt32(CROI_BIND_EDGE)
+        set(counter, -1)
         check(port.bind(counter, edge, key: 27, trigger: UInt64(CROI_COUNTER_NON_POSITIVE)) == 0 && port.empty,
               "EDGE: not at once")
         set(counter, -2)
-        guard let later = port.next() else { return check(false, "EDGE: fires at the next event") }
+        check(port.empty, "EDGE: not while the signal stays set")
+        set(counter, 1)
+        set(counter, -2)
+        guard let later = port.next() else { return check(false, "EDGE: fires when the signal rises") }
         check(later.key == 27 && later.payload.1 == 1 && later.payload.2 == 0, "no time unless asked")
         check(port.cancel(counter, key: 27) == 0, "unbound")
+        check(port.cancel(counter, key: 27) == Status.notFound, "port_cancel by source: NOT_FOUND when nothing is left")
+    }
+
+    /// A persistent READABLE binding on a channel: a packet when the queue
+    /// fills, none at a read that leaves messages queued (until V2, every
+    /// such read queued one), and one again once emptied and written.
+    static func readable(_ port: borrowing Port) {
+        var a: UInt32 = 0, b: UInt32 = 0
+        check(Sys.call(CROI_SYS_CHANNEL_CREATE, 0, Sys.address(&a), Sys.address(&b)) == 0, "a channel")
+        let writer = Handle(adopting: a), reader = Handle(adopting: b)
+        let options = UInt32(CROI_BIND_SIGNALS) | UInt32(CROI_BIND_PERSISTENT)
+        check(port.bind(reader, options, key: 28, trigger: UInt64(CROI_SIGNAL_READABLE)) == 0 && port.empty,
+              "bound while empty")
+        var word: UInt32 = 7
+        for _ in 0..<3 {
+            check(Sys.writeChannel(writer.arg, bytes: Sys.address(&word), count: 4, handles: 0, handleCount: 0) == 0,
+                  "written")
+        }
+        guard let filled = port.next() else { return check(false, "fires when the queue fills") }
+        check(filled.key == 28 && filled.payload.1 == 1 && port.empty, "one packet for three writes")
+        var actual: UInt64 = 0
+        for _ in 0..<3 {
+            check(Sys.readChannel(reader.arg, 0, bytes: Sys.address(&word), handles: 0, capacity: 4, &actual) == 0,
+                  "read")
+            check(port.empty, "a read fires nothing")
+        }
+        check(Sys.writeChannel(writer.arg, bytes: Sys.address(&word), count: 4, handles: 0, handleCount: 0) == 0,
+              "written again")
+        check(port.next()?.key == 28 && port.empty, "fires again once emptied and written")
+        check(port.cancel(reader, key: 28) == 0, "unbound")
     }
 
     /// port_wait's leeway lets a timeout run late, never early; a thread

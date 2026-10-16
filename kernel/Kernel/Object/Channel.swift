@@ -374,18 +374,29 @@ enum Channels {
     private static func take(_ object: ObjectPointer, _ accept: (UInt32, UInt32) -> Bool) throws(Status)
         -> MessagePointer? {
         let me = ChannelPointer(object: object)
+        var emptied = false
         let taken = try me.pointee.shared.pointee.lock.withLock { () throws(Status) -> MessagePointer? in
             guard me.pointee.head != 0 else { throw me.pointee.peer == 0 ? .peerClosed : .shouldWait }
             let first = MessagePointer(address: me.pointee.head)
             guard accept(first.pointee.bytes, first.pointee.handles) else { return nil }
             me.pointee.head = first.pointee.next
-            if me.pointee.head == 0 { me.pointee.tail = 0 }
+            if me.pointee.head == 0 {
+                me.pointee.tail = 0
+                emptied = true
+            }
             me.pointee.queued -= 1
             first.pointee.next = 0
             return first
         }
         guard let message = taken else { return nil }
-        if me.pointee.head == 0 { object.updateSignals(clear: CROI_SIGNAL_READABLE, set: 0) }
+        if emptied {
+            object.updateSignals(clear: CROI_SIGNAL_READABLE, set: 0)
+            // A write may have refilled the queue, and found READABLE still
+            // set, between the unlock and the clear: set it again (a rise,
+            // so its bindings fire).
+            let refilled = me.pointee.shared.pointee.lock.withLock { me.pointee.head != 0 }
+            if refilled { object.updateSignals(clear: 0, set: CROI_SIGNAL_READABLE) }
+        }
         Trace.event(CROI_TRACE_IPC, UInt16(CROI_TK_CHANNEL_READ), message.pointee.flow,
                     UInt64(message.pointee.bytes) | UInt64(message.pointee.handles) << 32)
         if message.pointee.call != 0 {
@@ -404,9 +415,6 @@ enum Channels {
             CallRecordPointer(address: message.pointee.call).release()
             message.pointee.call = 0
         }
-        // The queue may have refilled between the unlock and the signal.
-        let refilled = me.pointee.shared.pointee.lock.withLock { me.pointee.head != 0 }
-        if refilled { object.updateSignals(clear: 0, set: CROI_SIGNAL_READABLE) }
         return message
     }
 

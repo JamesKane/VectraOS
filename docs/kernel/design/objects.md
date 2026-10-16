@@ -502,18 +502,26 @@ thread_bind_overrun_port (122) and account_bind_pressure_port (242).
 - PERSISTENT SIGNALS and CHANGE are observers of kind `.source`, each
   owning a `PacketSource` (the reused, coalescing packet that overruns and
   pressure already had): it stays on the object, fires at every
-  `Observers.notify` that satisfies it (CHANGE: every `Counters.setLocked`,
-  `notify(changed: true)`), and while its packet is queued further events
-  only raise the count (payload[1] for signals, [2] for CHANGE).
-  Persistent SIGNALS is "every event that leaves a trigger asserted", not
-  a strict edge: notify isn't called when signals clear, so an edge
-  can't be seen reliably; a reader drains until the object would block,
-  and gets at most one spurious packet per drain.
+  `Observers.notify` where one of its trigger signals rose (CHANGE: every
+  `Counters.setLocked`, `notify(changed: true)`), and while its packet is
+  queued further events only raise the count (payload[1] for signals, [2]
+  for CHANGE). Each notify gets the signals from before the change
+  (`before:`), so a rise is exact: a write that leaves a signal set (a
+  second message on a channel already readable) fires nothing, and a
+  reader drains until the object would block, as with EPOLLET. Until V2,
+  persistent bindings fired at every notify that left a trigger set, and
+  `Channels.take` set READABLE again after every read that left messages
+  queued (a guard against a write between its unlock and its clear), so
+  a reader got a spurious packet per read; the re-check now runs only
+  after the read that emptied the queue. The rise rule also makes ONCE
+  EDGE exact: before it, a write re-setting a signal already set fired an
+  EDGE binding made while it was set.
 - Unbinding: `port_cancel(port, source, key)` removes ONCE, PERSISTENT,
   INTERRUPT and (D31) PRESSURE bindings (`InterruptObjects.cancel`, which replaced
   interrupt_bind's UNBIND) and takes a queued packet back
-  (`PacketSource.retire`); closing the handle a SIGNALS, VALUE or CHANGE
-  binding was made through does too. OVERRUN and PRESSURE last until
+  (`PacketSource.retire`), NOT_FOUND if it found neither, as Zircon's does (V2: croi had
+  returned OK regardless, while source 0, D32, said NOT_FOUND); closing
+  the handle a SIGNALS, VALUE or CHANGE binding was made through does too. OVERRUN and PRESSURE last until
   their object goes or is bound again, or PRESSURE until port_cancel.
   A new PRESSURE binding reports the level at once unless normal (D31).
 - port_wait gained a leeway (fourth argument; fifth since D40): `Scheduler.block`'s

@@ -67,7 +67,8 @@ enum InterruptSuite {
         check(ack(interrupt) == 0 && port.empty, "quiet once acked with nothing pending")
 
         check(fire(interrupt, 3333) == 0 && port.cancel(interrupt, key: 9) == 0
-                  && port.cancel(interrupt, key: 9) == 0 && port.empty, "unbinding takes the queued packet back")
+                  && port.cancel(interrupt, key: 9) == Status.notFound && port.empty,
+              "unbinding takes the queued packet back; NOT_FOUND once unbound")
         check(fire(interrupt, 4444) == 0 && port.empty, "unbound, a fire is kept")
         check(port.bind(interrupt, persistent, key: 10) == 0 && port.next()?.payload.0 == 3333,
               "bound again: the packet taken back goes out")

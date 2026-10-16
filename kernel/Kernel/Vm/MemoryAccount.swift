@@ -167,8 +167,8 @@ struct MemoryAccountRecord: ~Copyable {
     }
 
     /// port_cancel (D31): drops the PRESSURE binding if it reports to
-    /// `port` with `key`.
-    func cancelPressure(port: UInt64, key: UInt64) {
+    /// `port` with `key`; whether it did.
+    func cancelPressure(port: UInt64, key: UInt64) -> Bool {
         let old = pointee.lock.withLock { () -> UInt64 in
             let source = PacketSourcePointer(address: pointee.pressureSource)
             guard source.address != 0, source.pointee.port == port, source.pointee.record.pointee.packet.key == key else {
@@ -177,7 +177,9 @@ struct MemoryAccountRecord: ~Copyable {
             pointee.pressureSource = 0
             return source.address
         }
-        if old != 0 { PacketSourcePointer(address: old).retire() }
+        guard old != 0 else { return false }
+        PacketSourcePointer(address: old).retire()
+        return true
     }
 
     /// D31: the memory watchdog's level changed (the root account only).

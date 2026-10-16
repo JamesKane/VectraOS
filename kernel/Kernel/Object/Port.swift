@@ -501,15 +501,16 @@ enum Ports {
 
     /// port_cancel: drops the bindings `handle` made to this port under
     /// `key` (ONCE, PERSISTENT, an interrupt's), and their packets still
-    /// queued.
+    /// queued. NOT_FOUND if there were none, as with source 0.
     static func cancel(_ table: borrowing HandleTable, port portHandle: UInt32, source handle: UInt32,
                        key: UInt64) throws(Status) {
         let portRef = try table.get(portHandle, type: .port, rights: .write)
         let source = try table.get(handle, rights: .wait)
         let port = PortPointer(object: portRef.object)
-        if source.type == .interrupt { InterruptObjects.cancel(source.object, port: port.object, key: key) }
+        var found = false
+        if source.type == .interrupt { found = InterruptObjects.cancel(source.object, port: port.object, key: key) }
         if source.type == .memoryAccount {  // D31: the root account outlives every binder
-            MemoryAccountObjectPointer(object: source.object).pointee.account
+            found = MemoryAccountObjectPointer(object: source.object).pointee.account
                 .cancelPressure(port: port.object.address, key: key)
         }
         source.object.header.lock.withLock {
@@ -524,12 +525,14 @@ enum Ports {
                     QueuedPacketPointer(address: packet).free()
                     port.object.release()  // the observer's reference
                     unsafe heap.free(UnsafeMutableRawPointer(bitPattern: UInt(observer.address))!)
+                    found = true
                 } else if case .source(let p, let k, let packets, _) = observer.pointee.kind, p == port.object.address,
                           k == key, observer.pointee.table == table.address, observer.pointee.handle == handle {
                     if let previous { previous.pointee.next = observer.pointee.next } else { source.object.header.observers = observer.pointee.next }
                     untrack(p, source.object)
                     PacketSourcePointer(address: packets).retire()
                     unsafe heap.free(UnsafeMutableRawPointer(bitPattern: UInt(observer.address))!)
+                    found = true
                 } else {
                     previous = observer
                 }
@@ -554,7 +557,9 @@ enum Ports {
                 }
             }
         }
+        if removed.count > 0 { found = true }
         while let record = removed.popLast() { release(record) }
+        guard found else { throw .notFound }
     }
 
     /// An async wait on `object` to `port` was added / went. Object lock held.

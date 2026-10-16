@@ -285,8 +285,8 @@ func positive(_ port: borrowing Handle, key: UInt64, persistent: Bool = false, e
   try Port.cancel(port, source: c, key: 6)
   try Counter.add(c, 1)
   #expect(statusOf { () throws(Status) in try Port.wait(port, deadline: 0) } == .timedOut)
-  // By source, nothing left isn't an error; by key alone, it is.
-  #expect(statusOf { () throws(Status) in try Port.cancel(port, source: c, key: 6) } == .ok)
+  // Nothing left to cancel, by source or by key alone.
+  #expect(statusOf { () throws(Status) in try Port.cancel(port, source: c, key: 6) } == .notFound)
   #expect(statusOf { () throws(Status) in try Port.cancel(port, key: 6) } == .notFound)
   // Every source's, by key: a queued packet goes with its binding.
   let d = try positive(port, key: 8)
