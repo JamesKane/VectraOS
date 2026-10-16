@@ -205,7 +205,7 @@ final class CroiSystem: RcSystem {
     return Owned(thread)
   }
 
-  func start(_ path: String, _ argv: [String], fds: [Int32: RcStream], environment: [(String, [String])]) -> RcJob? {
+  func start(_ path: String, _ argv: [String], fds: [Int32: RcStream], environment: [String]) -> RcJob? {
     if let p = program(path) { return start(p, argv, fds: fds, environment: environment) }
     guard let i = interpreter(path), let p = program(i.path) else { return nil }
     let args = [i.path] + (i.argument.map { [$0] } ?? []) + [path] + argv.dropFirst()
@@ -213,12 +213,12 @@ final class CroiSystem: RcSystem {
   }
 
   func start(_ program: (name: String, entry: ProgramEntry), _ argv: [String], fds: [Int32: RcStream],
-             environment: [(String, [String])]) -> RcJob?
+             environment: [String]) -> RcJob?
   {
     let entry = program.entry
-    // Its directory too, as PWD (M6m: the file commands' paths are rc's).
-    let env = environment.filter { $0.0 != "*" && $0.0 != "status" && $0.0 != "PWD" }
-      .map { $0.0 + "=" + $0.1.joined(separator: " ") } + ["PWD=" + FDIO.currentDirectory]
+    // rc's (Environment.swift), with its directory as PWD (M6m: the file
+    // commands' paths are rc's).
+    let env = environment.filter { !$0.hasPrefix("PWD=") } + ["PWD=" + FDIO.currentDirectory]
     let startup = Startup(args: argv, environment: env)
     // rc's namespace, each mount point's root again.
     if let ns = FDIO.namespace {

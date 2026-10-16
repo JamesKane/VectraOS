@@ -79,7 +79,7 @@ final class Machine: RcSystem {
   /// Its programs are /bin's.
   func executable(_ path: String) -> Bool { path.hasPrefix("/bin/") && Machine.programs.contains(String(path.dropFirst(5))) }
 
-  func start(_ path: String, _ argv: [String], fds: [Int32: RcStream], environment: [(String, [String])]) -> RcJob? {
+  func start(_ path: String, _ argv: [String], fds: [Int32: RcStream], environment: [String]) -> RcJob? {
     guard executable(path) else { return nil }
     let program = String(path.dropFirst(5))
     return Job { [self] in

@@ -39,9 +39,10 @@ public protocol RcSystem: AnyObject {
   func pipe() -> (RcStream, RcStream)
   /// Starts the program at `path` (where rc's $path search found it, or
   /// as written), its arguments `argv` (argv[0] as written), with
-  /// descriptors `fds`; nil if it can't. A script starting `#!` is the
+  /// descriptors `fds` and the environment `environment` (Environment.swift:
+  /// to pass as they are); nil if it can't. A script starting `#!` is the
   /// system's to run, as a kernel's exec does.
-  func start(_ path: String, _ argv: [String], fds: [Int32: RcStream], environment: [(String, [String])]) -> RcJob?
+  func start(_ path: String, _ argv: [String], fds: [Int32: RcStream], environment: [String]) -> RcJob?
   /// Whether `path` names a program the system can start (9front's
   /// Executable).
   func executable(_ path: String) -> Bool
@@ -620,7 +621,7 @@ public final class Rc {
         var opened: [RcStream] = []
         let io = try redirect(redirs, fds, opened: &opened)
         trace(argv, io)
-        if let job = system.start(path, argv, fds: io, environment: environment) {
+        if let job = system.start(path, argv, fds: io, environment: environmentStrings) {
           background.append(Closing(job, opened))
           variables["apid"] = [String(background.count)]
         } else {
@@ -697,7 +698,6 @@ public final class Rc {
     }
   }
 
-  var environment: [(String, [String])] { variables.sorted { $0.key < $1.key }.map { ($0.key, $0.value) } }
 
   /// A command by its name: a function, a builtin, or a program (started;
   /// its job returned to wait for).
@@ -748,7 +748,7 @@ public final class Rc {
       try builtin(self, argv, fds)
       return nil
     }
-    guard let path = resolve(name), let job = system.start(path, argv, fds: fds, environment: environment) else {
+    guard let path = resolve(name), let job = system.start(path, argv, fds: fds, environment: environmentStrings) else {
       fds[2]?.write(Array((name + ": not found\n").utf8))
       setStatus("not found")
       return nil
@@ -778,7 +778,7 @@ public final class Rc {
         var opened: [RcStream] = []
         let io = try redirect(redirs, ios[k], opened: &opened)
         trace(argv, io)
-        jobs[k] = system.start(path, argv, fds: io, environment: environment).map { Closing($0, opened) }
+        jobs[k] = system.start(path, argv, fds: io, environment: environmentStrings).map { Closing($0, opened) }
         if jobs[k] == nil { for s in opened { s.close() } }
         started[k] = true
         if k < pipes.count { pipes[k].1.close() }
@@ -914,7 +914,7 @@ public final class Rc {
       let name = argv[1], args = Array(argv.dropFirst())
       if let builtin = Rc.builtins[name] {
         try builtin(rc, args, fds)
-      } else if let path = rc.resolve(name), let job = rc.system.start(path, args, fds: fds, environment: rc.environment) {
+      } else if let path = rc.resolve(name), let job = rc.system.start(path, args, fds: fds, environment: rc.environmentStrings) {
         rc.setStatus(job.wait())
       } else {
         fds[2]?.write(Array((name + ": not found\n").utf8))

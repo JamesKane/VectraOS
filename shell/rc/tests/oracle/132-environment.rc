@@ -1,0 +1,8 @@
+x=(a 'b c' '')
+fn f { echo f says $* }
+$rcoracle -c 'echo $#x; echo $x(2); f hello'
+$rcoracle -p -c 'whatis f || echo no f with -p'
+y=local $rcoracle -c 'echo y is $y'
+echo y outside: $#y
+env | grep '^x=' | od -c | sed 1q
+path=(/bin /usr/bin) $rcoracle -c 'echo $path'

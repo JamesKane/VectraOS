@@ -67,7 +67,10 @@ final class Standard: RcStream {
     }
     let shell = Rc(system: system, arguments: a.rest)
     shell.take(a, name: argv.first ?? "rc")
-    shell.variables["home"] = ["/"]
+    shell.take(environment: Environment.strings)
+    // Plan 9's rcmain's, where the environment gave none.
+    if (shell.variables["home"] ?? []).isEmpty { shell.variables["home"] = ["/"] }
+    if a.flags.contains("p") { shell.variables["path"] = ["/bin"] }
     // -l: a login rc, Plan 9's profile first.
     if a.flags.contains("l") { shell.run(". -q /lib/profile", fds: fds) }
     if let c = a.command {

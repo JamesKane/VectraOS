@@ -298,16 +298,18 @@ work, in order:
      conditions, on in a function's body; `-x`, `-v`, `-s`, `-i`, `-I`,
      `-l`; the rest taken for `flag`), `flag`, `exec` (run, then exit:
      nothing can take rc's place), `.` along `$path` with `-q`, `$cflag`
-     and `$rcname`, and the prompt only when interactive.
+     and `$rcname`, and the prompt only when interactive; the environment
+     as 9front's unix rc keeps it (lists joined by ^A, functions as
+     `#()fn name {...}`; taken at start, functions not with `-p`), one
+     encoding for every system.
    - **Redirections:** a program's fd 2 is its stdout and fds over 2
      are dropped (the device).
    - **Missing syntax:** `<>`, `<{}`, `>{}`, `$$x`, `` `split{} ``.
    - **Wrong semantics:** a compound command run with `&` shares rc's
      directory (one per process), so a `cd` in it moves rc too.
    - **Missing pieces:** `rfork`; notes (`sigint`, `sigexit`); a real
-     `$apid`; the environment's lists and functions (so `$path` isn't
-     inherited, and `-p` has nothing to keep out); `/bin` in the
-     namespace (the device's rc alone sees bootfs's programs there).
+     `$apid`; `/bin` in the namespace (the device's rc alone sees
+     bootfs's programs there).
    - **Commands:** nothing streams; unknown flags are ignored, not
      refused; statuses are `1`, not Plan 9's strings; `ls` adds `/` and
      has its own `-l` and multi-directory layout; `touch` doesn't update

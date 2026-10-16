@@ -6,7 +6,7 @@
 // rc on Linux, tools/rc-oracle/port), each in a fresh directory with an
 // empty stdin; their stdout, exit status and whether they wrote to stderr
 // must agree. A case whose first line is `#flags: -e -x` runs with those
-// flags in both. known.tsv names the cases that differ today: one that differs
+// flags in both, and `$rcoracle` runs its shell again. known.tsv names the cases that differ today: one that differs
 // and isn't named fails, and so does one named that now agrees, so the
 // list stays exactly what is left. Everything goes to .build/rc-oracle.
 
@@ -58,9 +58,11 @@ struct Outcome: Equatable {
   var wroteErrors: Bool
 }
 
-/// Runs `shell` on `script` in a fresh `directory`, stdin empty, for at
-/// most 20 s: what it wrote and how it ended.
-func runCase(_ shell: [String], _ script: String, in directory: String) -> Outcome {
+/// Runs `shell` with `flags` on `script` in a fresh `directory`, stdin
+/// empty, for at most 20 s: what it wrote and how it ended. Its
+/// environment has `rcoracle`, the shell (a list, ^A between its words, as
+/// rc's environment has them), for a case to run it again.
+func runCase(_ shell: [String], _ flags: [String], _ script: String, in directory: String) -> Outcome {
   removeTree(directory)
   makeDirectory(directory)
   let out = "\(directory).out", err = "\(directory).err"
@@ -70,7 +72,8 @@ func runCase(_ shell: [String], _ script: String, in directory: String) -> Outco
   posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
   posix_spawn_file_actions_addopen(&actions, 1, out, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
   posix_spawn_file_actions_addopen(&actions, 2, err, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
-  let arguments = ["env", "-C", directory, "timeout", "20"] + shell + [script]
+  let arguments = ["env", "-C", directory, "rcoracle=" + shell.joined(separator: "\u{1}"), "timeout", "20"] + shell
+    + flags + [script]
   var argv: [UnsafeMutablePointer<CChar>?] = arguments.map { strdup($0) } + [nil]
   defer { for p in argv { free(p) } }
   var pid = pid_t()
@@ -129,9 +132,9 @@ func rcOracleCommand(_ args: [String]) -> Bool {
   for name in cases {
     let script = "\(cwd)/\(oracleCases)/\(name).rc"
     let flags = caseFlags(script)
-    let theirs = runCase(["\(cwd)/\(oracle)", "-m", "\(cwd)/\(oracleSources)/rcmain.unix"] + flags, script,
+    let theirs = runCase(["\(cwd)/\(oracle)", "-m", "\(cwd)/\(oracleSources)/rcmain.unix"], flags, script,
                          in: "\(cwd)/\(oracleOut)/work/9front/\(name)")
-    let ours = runCase(["\(cwd)/\(rcport)"] + flags, script, in: "\(cwd)/\(oracleOut)/work/port/\(name)")
+    let ours = runCase(["\(cwd)/\(rcport)"], flags, script, in: "\(cwd)/\(oracleOut)/work/port/\(name)")
     let same = theirs == ours
     switch (same, known[name]) {
     case (true, nil): matched += 1

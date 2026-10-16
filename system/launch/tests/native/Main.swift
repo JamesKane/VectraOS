@@ -123,6 +123,8 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
          bootfs: bootfs, "rc runs rc, which runs programs and exits with its status")
   rcRuns(rc, "rc -e -c 'echo a; ~ a b; echo never'; echo $status", Array("a\n1\n".utf8), ns, job: job,
          bootfs: bootfs, "rc -e stops at a command that fails")
+  rcRuns(rc, "x=(a 'b c'); fn f { echo f $* }; rc -c 'echo $#x; f z'", Array("2\nf z\n".utf8), ns, job: job,
+         bootfs: bootfs, "rc passes rc its lists and functions")
   _ = consume bootfs
 }
 

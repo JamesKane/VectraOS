@@ -115,7 +115,7 @@ final class LinuxSystem: RcSystem {
     return (FdStream(p[0]), FdStream(p[1]))
   }
 
-  func start(_ path: String, _ argv: [String], fds: [Int32: RcStream], environment: [(String, [String])]) -> RcJob? {
+  func start(_ path: String, _ argv: [String], fds: [Int32: RcStream], environment: [String]) -> RcJob? {
     var actions = posix_spawn_file_actions_t()
     posix_spawn_file_actions_init(&actions)
     defer { posix_spawn_file_actions_destroy(&actions) }
@@ -161,9 +161,8 @@ final class LinuxSystem: RcSystem {
     posix_spawnattr_setsigdefault(&attr, &sigs)
     posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSIGDEF))
 
-    var env: [String: String] = ProcessInfo.processInfo.environment
-    for (k, v) in environment where k != "*" { env[k] = v.joined(separator: "\u{1}") }
-    let envStrings = env.map { $0.key + "=" + $0.value }
+    // rc's, as 9front's mkenv makes it (rc took the process's at start).
+    let envStrings = environment
     let cArgs = argv.map { strdup($0) } + [nil]
     let cEnv = envStrings.map { strdup($0) } + [nil]
     defer {
@@ -218,8 +217,19 @@ struct Main {
     }
     let rc = Rc(system: LinuxSystem(), arguments: a.rest)
     rc.take(a, name: CommandLine.arguments[0])
-    // rcmain.unix's, as the oracle's rc has it.
-    rc.variables["path"] = [".", "/bin", "/usr/bin", "/usr/local/bin"]
+    var env: [String] = []
+    var e = environ
+    while let p = e.pointee {
+      env.append(String(cString: p))
+      e += 1
+    }
+    rc.variables["path"] = nil
+    rc.take(environment: env)
+    // rcmain.unix's, where the environment gave none.
+    if (rc.variables["home"] ?? []).isEmpty { rc.variables["home"] = rc.variables["HOME"] }
+    if (rc.variables["path"] ?? []).isEmpty || a.flags.contains("p") {
+      rc.variables["path"] = a.flags.contains("p") ? ["/bin"] : [".", "/bin", "/usr/bin", "/usr/local/bin"]
+    }
     let fds: [Int32: RcStream] = [0: FdStream(0, keep: true), 1: FdStream(1, keep: true), 2: FdStream(2, keep: true)]
     // As rcmain.unix: -c's command, else stdin if there's no file, else
     // `. $*` (no -i here: the oracle's stdin is empty).
