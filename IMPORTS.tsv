@@ -272,3 +272,12 @@ system/sys/floor/include/td_floor.h	todhchai	527ff94	system/sys/floor/include/td
 system/sys/floor/include/td_native.h	todhchai	527ff94	system/sys/floor/include/td_native.h
 system/sys/floor/runtime.c	todhchai	527ff94	system/sys/floor/runtime.c
 system/libc/native/errno.c	todhchai	527ff94	system/libc/native/errno.c
+system/sys/abi/Values.swift	todhchai	527ff94	system/sys/abi/Values.swift
+system/sys/api/Handles.swift	todhchai	527ff94	system/sys/api/Handles.swift
+system/sys/api/Lock.swift	todhchai	527ff94	system/sys/api/Lock.swift
+system/sys/api/Objects.swift	todhchai	527ff94	system/sys/api/Objects.swift
+system/sys/backend/host/Kernel.swift	todhchai	527ff94	system/sys/backend/host/Kernel.swift
+system/sys/backend/native/Kernel.swift	todhchai	527ff94	system/sys/backend/native/Kernel.swift
+system/sys/host/Kernel.swift	todhchai	527ff94	system/sys/host/Kernel.swift
+system/sys/native/Start.swift	todhchai	527ff94	system/sys/native/Start.swift
+system/sys/tests/SysTests.swift	todhchai	527ff94	system/sys/tests/SysTests.swift

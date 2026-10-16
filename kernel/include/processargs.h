@@ -35,6 +35,9 @@ enum : uint32_t {
   CROI_PA_VMO_DEBUGLOG = 0x43,     // croi's (D38): the debuglog ring, read only (log.h)
   CROI_PA_DEBUGLOG_COUNTER = 0x44, // croi's (D38): its doorbell, the ring's producer cursor
   CROI_PA_USER0 = 0xF0,
+  // The userland's, above USER0 (the kernel gives none of them):
+  CROI_PA_TRACE_REGION = 0xF1,  // a process's trace region, a VMO (system/trace)
+  CROI_PA_DEVICE = 0xF2,        // a driver host's device resources; the argument says which
 };
 
 // Zircon's PA_HND(type, arg).

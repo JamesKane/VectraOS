@@ -96,6 +96,9 @@ machine's history:
 - `user/`     User space: headers (`user/include`, modules `CroiSyscall`
               and `CroiRuntime`), vDSO, test programs. Their runtime is
               the floor (`system/sys/floor`, D49).
+- `system/`   The userland lifted from todhchai (V2): `sys/` is the floor,
+              Sys (the typed API, its hosted kernel SysHost) and their
+              tests.
 - `ld/image.ld` Shared linker script: one PT_LOAD per permission (W^X).
 - `cmake/`    Toolchain file, per-arch settings, `croi_image()` helper.
 

@@ -172,13 +172,6 @@ enum : uint64_t {  // CROI_SYS_PMU_CONFIGURE ops (events: pmu.h)
   CROI_PMU_OP_THREAD_STOP = 5,
 };
 
-typedef struct {
-  uint64_t key;
-  uint32_t type;
-  int32_t status;
-  uint64_t payload[4];  // signal packets: trigger | observed << 32, count, timestamp
-} croi_port_packet_t;
-
 static inline int64_t croi_syscall(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
                                    uint64_t a4) {
 #if defined(__x86_64__)

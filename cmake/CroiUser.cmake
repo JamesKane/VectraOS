@@ -99,9 +99,10 @@ function(croi_user_floor)
   set(CROI_USER_FLOOR_PIE ${_dir}/libfloor-pie.a PARENT_SCOPE)
 endfunction()
 
-#   croi_user_program(<out.elf> [PIE] [EXPORT_DYNAMIC] [SOURCES <c>...] [SWIFT <swift>...] [STACK <bytes>])
+#   croi_user_program(<out.elf> [PIE] [EXPORT_DYNAMIC] [SYS] [SOURCES <c>...] [SWIFT <swift>...] [STACK <bytes>])
+# SYS: the program imports Sys (croi_user_sys).
 function(croi_user_program output)
-  cmake_parse_arguments(U "PIE;EXPORT_DYNAMIC" "STACK" "SOURCES;SWIFT" ${ARGN})
+  cmake_parse_arguments(U "PIE;EXPORT_DYNAMIC;SYS" "STACK" "SOURCES;SWIFT" ${ARGN})
   # PIE: a static PIE (K11b), linked at 0, loaded at a random base by
   # croi's loaders, which apply its R_*_RELATIVE relocations.
   set(_cpie)
@@ -114,6 +115,12 @@ function(croi_user_program output)
   endif()
   if(NOT U_STACK)
     set(U_STACK 262144)
+  endif()
+  set(_sys_flags)
+  set(_sys_libs)
+  if(U_SYS)
+    set(_sys_flags -I ${CROI_USER_SYS_DIR})
+    set(_sys_libs ${CROI_USER_SYS})
   endif()
   get_filename_component(_name ${output} NAME_WE)
   set(_dir ${CMAKE_CURRENT_BINARY_DIR}/${_name}.dir)
@@ -150,7 +157,7 @@ function(croi_user_program output)
     list(APPEND _commands COMMAND ${CMAKE_Swift_COMPILER} -target ${CROI_SWIFT_TRIPLE}
          -enable-experimental-feature Embedded -enable-experimental-feature Lifetimes
          -parse-as-library -strict-memory-safety -Werror StrictMemorySafety -wmo -Osize
-         -Xfrontend -function-sections -module-name ${_name} ${_xcc}
+         -Xfrontend -function-sections -module-name ${_name} ${_sys_flags} ${_xcc}
          -c ${U_SWIFT} -o ${_dir}/${_name}-swift.o)
     list(APPEND _objects ${_dir}/${_name}-swift.o)
   endif()
@@ -160,7 +167,45 @@ function(croi_user_program output)
     ${_dynamic_commands}
     COMMAND ${CMAKE_LINKER} ${_link} -e _start -zseparate-loadable-segments
             -zmax-page-size=4096 -znoexecstack -zstack-size=${U_STACK} --gc-sections --build-id=sha1
-            ${_objects} ${_runtime} ${_dynamic_inputs} -o ${output}
-    DEPENDS ${U_SOURCES} ${U_SWIFT} ${_runtime} ${PROJECT_SOURCE_DIR}/user/include/module.modulemap
+            ${_objects} ${_sys_libs} ${_runtime} ${_dynamic_inputs} -o ${output}
+    DEPENDS ${U_SOURCES} ${U_SWIFT} ${_sys_libs} ${_runtime} ${PROJECT_SOURCE_DIR}/user/include/module.modulemap
     COMMENT "Building user program ${_name}")
+endfunction()
+
+# croi_user_sys(): builds Sys once per tree (system/sys, V2): its modules
+# SysABI, Sys (the API over the native backend) and LibSys (the start's
+# views), Embedded Swift, into ${CROI_USER_SYS_DIR} (their .swiftmodule
+# files) and ${CROI_USER_SYS} (libsys.a). Programs built with SYS import
+# them. Static-PIE code, which fixed-address programs link too.
+function(croi_user_sys)
+  set(_dir ${CMAKE_BINARY_DIR}/user-sys)
+  set(_sys ${PROJECT_SOURCE_DIR}/system/sys)
+  set(_xcc)
+  foreach(_f ${CROI_USER_CFLAGS} -fPIE -std=c23 -fno-omit-frame-pointer -I${PROJECT_SOURCE_DIR}/user/include
+             -I${PROJECT_SOURCE_DIR}/kernel/include -I${CROI_FLOOR_DIR}/include)
+    list(APPEND _xcc -Xcc ${_f})
+  endforeach()
+  set(_swiftc ${CMAKE_Swift_COMPILER} -target ${CROI_SWIFT_TRIPLE} -enable-experimental-feature Embedded
+      -enable-experimental-feature Lifetimes -parse-as-library -strict-memory-safety -Werror StrictMemorySafety
+      -wmo -Osize -Xfrontend -function-sections -I ${_dir} ${_xcc})
+  set(_abi ${_sys}/abi/Values.swift)
+  set(_api ${_sys}/api/Handles.swift ${_sys}/api/Lock.swift ${_sys}/api/Objects.swift
+      ${_sys}/backend/native/Kernel.swift)
+  set(_lib ${_sys}/native/Start.swift)
+  file(GLOB _headers ${CROI_FLOOR_DIR}/include/* ${PROJECT_SOURCE_DIR}/user/include/croi/*.h
+       ${PROJECT_SOURCE_DIR}/kernel/include/*.h)
+  add_custom_command(OUTPUT ${_dir}/libsys.a
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${_dir}
+    COMMAND ${_swiftc} -module-name SysABI -emit-module -emit-module-path ${_dir}/SysABI.swiftmodule
+            -c ${_abi} -o ${_dir}/sysabi.o
+    COMMAND ${_swiftc} -module-name Sys -emit-module -emit-module-path ${_dir}/Sys.swiftmodule
+            -c ${_api} -o ${_dir}/sys.o
+    COMMAND ${_swiftc} -module-name LibSys -emit-module -emit-module-path ${_dir}/LibSys.swiftmodule
+            -c ${_lib} -o ${_dir}/libsys.o
+    COMMAND ${CMAKE_COMMAND} -E rm -f ${_dir}/libsys.a
+    COMMAND ${CMAKE_AR} rcs ${_dir}/libsys.a ${_dir}/sysabi.o ${_dir}/sys.o ${_dir}/libsys.o
+    DEPENDS ${_abi} ${_api} ${_lib} ${_headers}
+    COMMENT "Building Sys")
+  set(CROI_USER_SYS_DIR ${_dir} PARENT_SCOPE)
+  set(CROI_USER_SYS ${_dir}/libsys.a PARENT_SCOPE)
 endfunction()

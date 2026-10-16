@@ -139,6 +139,20 @@ add_test(NAME boot-lean
           ${CROI_ARCH} ${_esp_lean} ${CMAKE_BINARY_DIR}/qemu-lean ${CROI_EDK2_DIR})
 set_tests_properties(boot-lean PROPERTIES TIMEOUT 120)
 
+# Sys over the kernel (V2): userboot starts bin/sys-test instead of m2,
+# self-tests off.
+set(_esp_sys ${CMAKE_BINARY_DIR}/esp-sys)
+file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/cmdline-sys
+     CONTENT "${CROI_CMDLINE} userboot.next=bin/sys-test${_shutdown} croi.selftest=off\n")
+add_custom_target(esp-sys ALL
+  COMMAND ${CMAKE_COMMAND} -E copy_directory ${CROI_ESP_DIR} ${_esp_sys}
+  COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/cmdline-sys ${_esp_sys}/croi/cmdline
+  DEPENDS esp)
+add_test(NAME boot-sys
+  COMMAND ${CROI_QEMU} --test "userboot: bin/sys-test exited with 0" ${CROI_EXITS}
+          ${CROI_ARCH} ${_esp_sys} ${CMAKE_BINARY_DIR}/qemu-sys ${CROI_EDK2_DIR})
+set_tests_properties(boot-sys PROPERTIES TIMEOUT 120)
+
 if(CROI_ARCH STREQUAL arm64 OR CROI_ARCH STREQUAL rv64)
   # Guest time from instruction counts (QEMU -icount; sleep=off skips idle
   # time), so a loaded host can't stretch it: m2's timed paths run in a

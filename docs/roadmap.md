@@ -84,7 +84,7 @@ work, in order:
    callers would build and fail quietly. Lifted code includes VectraOS's
    ABI headers instead. **Done:** statuses, rights and object types are
    in `object.h`, which the kernel, the suites, m2, userboot and
-   usertest.c now use. SysABI's `Values.swift` will take them from there.
+   usertest.c now use, and SysABI's `Values.swift` takes them from there.
    The kernel's literal enums are checked against it by `swift test`
    (AbiTests), and `vx loc --check` refuses device code that makes a call
    by number, or through `td_syscall6`.
@@ -99,7 +99,13 @@ work, in order:
    the same model, so todhchai's hosted tests keep running. **Begun:**
    the floor is the one user runtime (D49). It is lifted onto V1's
    calls, with a port per thread, and userboot, m2 and the suites run on
-   it; croi's runtime is gone. Sys, SysHost and libc come next.
+   it; croi's runtime is gone. Sys is lifted: SysABI's values are the
+   headers', the native backend makes V1's calls (arrays where they take
+   them), waits and thread starts go through the floor, and SysHost has
+   V1's model (object_bind, counters as the one event), checked hosted
+   by SysTests and natively by `bin/sys-test` (boot-sys). The native
+   loader (`Process.start`) comes with the launcher (item 4). libc, ld
+   and the trace session come next.
 3. **Tier 1 (D47).** todhchai's `*-todhchai` toolchain, built from the
    pinned Swift 6.4.0 and LLVM sources with its patch series, and tier 1's
    sysroot (libc, pthreads, libc++, the Swift runtime, FoundationEssentials).

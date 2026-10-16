@@ -86,3 +86,15 @@ typedef struct {
   int32_t status;     // out: 0, or why this item failed
   uint32_t reserved;  // 0
 } croi_bind_item_t;
+
+// A packet (Zircon's zx_port_packet_t): what port_queue takes and
+// port_wait and a ring port deliver. The kernel events' payloads are in
+// their headers.
+typedef struct {
+  uint64_t key;
+  uint32_t type;
+  int32_t status;
+  uint64_t payload[4];  // signal packets: trigger | observed << 32, count, timestamp
+} croi_port_packet_t;
+
+static_assert(sizeof(croi_port_packet_t) == 48);

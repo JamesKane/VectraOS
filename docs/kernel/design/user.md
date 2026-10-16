@@ -188,6 +188,20 @@ syscalls 110-111):
   bound by the kernel's no-ARC rule (low-half addresses). The boot test
   runs user/test/swift: stdout (read back through the ring), heap,
   environment; the `debuglog` suite checks the ring (D38).
+- Sys (system/sys, todhchai's, V2): the typed API services use
+  (`Handle`, `Channel`, `Port`, `Counter`, `VMO`, `Thread`...), its
+  values SysABI's from the headers. Natively (`croi_user_sys`:
+  modules SysABI, Sys, LibSys, `libsys.a`; a program built with `SYS`
+  imports them) its backend makes V1's calls through syscall.h, the
+  array calls with arrays, and reaches the floor through td_floor.h: a
+  handle's wait and a counter's wait for a value are `td_wait_bind`'s
+  ONCE binding on the thread's port, and `Thread.start` is
+  `td_thread_start` (a floor stack that the thread unmaps as it exits).
+  SwiftPM builds it over the hosted kernel (SysHost), which follows the
+  same model: `swift test`'s SysTests, and natively `bin/sys-test` in
+  bootfs (the boot-sys test, `userboot.next=bin/sys-test`). Not yet
+  natively: `Process.start` (the loader comes with the launcher, V2's
+  item 4).
 
 ## bootfs and userboot (K8b)
 

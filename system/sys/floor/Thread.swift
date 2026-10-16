@@ -22,7 +22,8 @@
 //   16  Sys.ThreadSlot's word (libc's pthread record)
 //   24  a floor thread's own handle (FloorThreads, for its exit)
 //   32  the thread's port (Waits.swift), 0 until its first wait
-//   40  reserved, to 64
+//   40  the stack a floor thread unmaps as it exits (FloorThreads), or 0
+//   48  reserved, to 64
 //
 // The main thread's block is static until the heap is up, then moves to
 // an area with its TLS (if the program has any); another thread's area

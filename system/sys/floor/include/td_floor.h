@@ -48,6 +48,13 @@ char **td_argv(int *argc);
 size_t td_thread_area_size(void);
 void *td_thread_prepare(void *area);
 void td_thread_install(void *block, uint32_t thread);
+// Starts `thread` (thread_create's; the caller's handle, kept) running
+// entry(arg) on a stack of its own with its block and TLS, which it unmaps
+// as it exits: 0, or NO_MEMORY or thread_start's status. And ends the
+// calling thread (closing its port; a thread so started unmapping its
+// stack).
+int32_t td_thread_start(uint32_t thread, void (*entry)(uintptr_t), uintptr_t arg);
+__attribute__((__noreturn__)) void td_thread_exit(void);
 
 // croi's futexes and ports, for the runtimes below Sys (M6f: tier 1's
 // global executor and Synchronization.Mutex). Each returns croi's status:
@@ -74,6 +81,11 @@ int32_t td_port_cancel_key(uint32_t port, uint64_t key);
 // thread_create's thread has no block. Its waits bind
 // ONCE there; nothing else binds to it.
 uint32_t td_thread_port(void);
+// Waits for one event until `deadline`: a ONCE binding of `item` (its key
+// the thread's own) to the thread's port, cancelled if the deadline passes
+// first. 0 (the packet, if `packet` isn't null), TIMED_OUT (-21), or the
+// binding's or the call's status.
+int32_t td_wait_bind(const croi_bind_item_t *item, int64_t deadline, td_port_packet_t *packet);
 // Waits until `handle` asserts any of `signals` or `deadline` passes: 0,
 // TIMED_OUT (-21), or the call's status; the signals seen in *observed (if
 // not null). A ONCE binding to the thread's port, cancelled if the deadline

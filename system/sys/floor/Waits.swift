@@ -63,27 +63,44 @@ import TDNative
 /// The key of a thread's waits: one at a time, so any constant.
 let waitKey: UInt64 = 1
 
-/// Waits for any of `signals` on `handle` until `deadline`: a ONCE binding
-/// to the thread's port, cancelled if the deadline passes first.
-@c public func td_wait_one(_ handle: UInt32, _ signals: UInt32, _ deadline: Int64,
-                           _ observed: UnsafeMutablePointer<UInt32>?) -> Int32 {
+/// Waits for `item`'s event until `deadline`: a ONCE binding of it (its key
+/// the thread's) to the thread's port, cancelled if the deadline passes
+/// first. The packet in `*packet` (if not null).
+@c public func td_wait_bind(_ item: UnsafePointer<croi_bind_item_t>, _ deadline: Int64,
+                            _ packet: UnsafeMutablePointer<croi_port_packet_t>?) -> Int32 {
   let port = td_thread_port()
   guard port != 0 else { return Int32(truncatingIfNeeded: CROI_ERR_NO_RESOURCES) }
-  var item = croi_bind_item_t(handle: handle, options: CROI_BIND_SIGNALS, key: waitKey, trigger: UInt64(signals),
-                              status: 1, reserved: 0)
-  let bound = unsafe withUnsafeMutablePointer(to: &item) { p in
+  var bind = unsafe item.pointee
+  bind.options &= ~CROI_BIND_PERSISTENT
+  bind.key = waitKey
+  bind.status = 1
+  let bound = unsafe withUnsafeMutablePointer(to: &bind) { p in
     unsafe croi_syscall(CROI_SYS_OBJECT_BIND, UInt64(port), UInt64(UInt(bitPattern: p)), 1, 0, 0)
   }
   if bound < 0 { return Int32(truncatingIfNeeded: bound) }
-  if bound != 1 { return item.status }
-  var packet = croi_port_packet_t()
-  let status = unsafe td_port_wait(port, deadline, &packet)
+  if bound != 1 { return bind.status }
+  var got = croi_port_packet_t()
+  let status = unsafe td_port_wait(port, deadline, &got)
   if status != 0 {
     _ = td_port_cancel_key(port, waitKey)
     return status
   }
-  if let observed = unsafe observed { unsafe observed.pointee = UInt32(truncatingIfNeeded: packet.payload.0 >> 32) }
-  return packet.status
+  if let packet = unsafe packet { unsafe packet.pointee = got }
+  return got.status
+}
+
+/// Waits for any of `signals` on `handle` until `deadline` (td_wait_bind's
+/// SIGNALS): the signals seen in `*observed`.
+@c public func td_wait_one(_ handle: UInt32, _ signals: UInt32, _ deadline: Int64,
+                           _ observed: UnsafeMutablePointer<UInt32>?) -> Int32 {
+  var item = croi_bind_item_t(handle: handle, options: CROI_BIND_SIGNALS, key: 0, trigger: UInt64(signals),
+                              status: 0, reserved: 0)
+  var packet = croi_port_packet_t()
+  let status = unsafe td_wait_bind(&item, deadline, &packet)
+  if status == 0, let observed = unsafe observed {
+    unsafe observed.pointee = UInt32(truncatingIfNeeded: packet.payload.0 >> 32)
+  }
+  return status
 }
 
 /// Sleeps until `deadline`: the thread's port's wait, which nothing else

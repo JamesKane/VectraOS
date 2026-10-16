@@ -222,10 +222,15 @@ set(_m2 ${CMAKE_CURRENT_BINARY_DIR}/m2.elf)
 croi_user_program(${_m2} PIE SWIFT ${_user_dir}/m2/Main.swift ${_user_dir}/m2/Sys.swift ${_user_dir}/m2/Bench.swift
                   ${_user_dir}/m2/RingBench.swift ${_user_dir}/lib/image/Image.swift ${PROJECT_SOURCE_DIR}/lib/ring/Ring/Ring.swift
                   ${PROJECT_SOURCE_DIR}/lib/ring/Ring/RingMemory.swift)
+# bin/sys-test (V2): Sys over the kernel, as SysTests checks it hosted; the
+# boot-sys test starts it.
+croi_user_sys()
+set(_sys_test ${CMAKE_CURRENT_BINARY_DIR}/systest.elf)
+croi_user_program(${_sys_test} PIE SYS SWIFT ${PROJECT_SOURCE_DIR}/system/sys/tests/native/Main.swift)
 set(CROI_BOOTFS_IMAGE ${CMAKE_BINARY_DIR}/bootfs.img PARENT_SCOPE)
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs.img
-          bin/m2=${_m2}
-  DEPENDS ${_m2} vx ${VX}
+          bin/m2=${_m2} bin/sys-test=${_sys_test}
+  DEPENDS ${_m2} ${_sys_test} vx ${VX}
   COMMENT "Building bootfs")
 add_custom_target(bootfs DEPENDS ${CMAKE_BINARY_DIR}/bootfs.img)

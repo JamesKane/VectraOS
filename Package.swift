@@ -11,6 +11,12 @@ import PackageDescription
 
 let unchecked: [SwiftSetting] = [.unsafeFlags(["-enforce-exclusivity=unchecked"])]
 let c23: [SwiftSetting] = [.unsafeFlags(["-Xcc", "-std=gnu23"])]
+// The flags device code is held to everywhere (cmake/CroiUser.cmake's).
+let tier0: [SwiftSetting] = [
+  .enableExperimentalFeature("Lifetimes"),
+  .strictMemorySafety(),
+  .unsafeFlags(["-Werror", "StrictMemorySafety"]),
+]
 
 let package = Package(
   name: "vectraos",
@@ -47,6 +53,20 @@ let package = Package(
     .target(name: "KernelAbi", dependencies: ["CroiAbi"], path: "kernel/tests/Abi/KernelAbi",
             swiftSettings: c23),
     .testTarget(name: "AbiTests", dependencies: ["KernelAbi", "CroiAbi"], path: "kernel/tests/Abi/Tests",
+                swiftSettings: c23),
+    // Sys (system/sys, V2): what services use to reach the kernel. SysABI
+    // is the ABI's values as Sys's types (from CroiAbi, D45); SysHost the
+    // hosted kernel (one Linux process, a handle table per hosted process),
+    // on V1's model; Sys the typed API over it, natively over the kernel
+    // (CMake). SysHost has no dynamic exclusivity checks: a thread's end is
+    // accounted in a pthread key destructor, which may run after the Swift
+    // runtime's thread-local access set is gone; its lock serializes it.
+    .target(name: "SysABI", dependencies: ["CroiAbi"], path: "system/sys/abi", swiftSettings: tier0 + c23),
+    .target(name: "SysHost", dependencies: ["SysABI"], path: "system/sys/host", swiftSettings: unchecked + c23),
+    .target(name: "Sys", dependencies: ["SysABI", "SysHost"], path: "system/sys",
+            exclude: ["abi", "host", "tests", "floor", "native", "backend/native"], sources: ["api", "backend/host"],
+            swiftSettings: tier0 + c23),
+    .testTarget(name: "SysTests", dependencies: ["Sys", "SysHost"], path: "system/sys/tests", exclude: ["native"],
                 swiftSettings: c23),
     .executableTarget(name: "vx", dependencies: ["Bench", "ImageFormats", "TraceFormat", "TraceReader"], path: "tools/vx"),
   ],
