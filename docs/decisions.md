@@ -1285,3 +1285,170 @@ type.
   reordering a case breaks it; the macro refuses handles, an empty
   union, raw values and unknown types; `draw` runs hosted (IPCTests) and
   natively from Swift and C (bin/ipc-test).
+
+## D55. The GPU stack lifted from todhchai: Vulkan underneath, Loinnir on top (2026-10-16, proposed)
+
+V6 lifts todhchai's `graphics` (provenance.md): vkgen and the Vulkan
+headers and dispatch from `vk.xml`, our loader, the Venus client driver
+over virtio-gpu, buffer objects and their negotiation, and Loinnir, the
+SDK's GPU library after Aaltonen's "No Graphics API" (todhchai's
+`sdk.md` §5). This entry and D56-D62 settle what changes on the way in,
+weighed against the Metal and Vulkan ergonomics comparison the owner
+supplied: Metal's lead comes from defaults (one-call setup, storage by
+intent, hazard tracking, argument buffers, headers shared by the CPU and
+the GPU), and Vulkan has been converging on them (dynamic rendering,
+descriptor buffers and heaps).
+- **Loinnir is the one GPU library** in the tree. Raw Vulkan stays
+  available for ports (engines, DXVK-class layers, Zink, wgpu); those
+  are tier 1 programs, not part of the tree.
+- **Kept as todhchai has it:** one-call `open`, dynamic rendering only,
+  one pipeline layout (the bindless heap and a root pointer per draw),
+  timeline values for completion, SPIR-V compiled on the host (D4).
+- **The targets have both memory models** (D56): unified memory on the
+  boards (Adreno, Mali, the Ky X1's GPU) and dedicated VRAM on developers'
+  desktops (AMD, Intel, NVIDIA, sometimes more than one GPU in a machine).
+  Nothing in Loinnir may assume either.
+- **Open: is all of Vulkan the drivers' interface?** Venus forces Vulkan
+  under QEMU. For native drivers the alternative is a narrow interface
+  shaped like Loinnir (GPU pointers, heaps, stage-only barriers,
+  timelines), with full Vulkan as a layer over it for ports. That is the
+  MoltenVK arrangement turned around, and the comparison's warning about
+  translation layers applies to the ports, not to Loinnir. V8 needs only
+  Adreno compute, so this waits until the first native driver is
+  designed; nothing lifted in V6 assumes either answer.
+
+## D56. GPU memory is named by intent; Loinnir places it per device (2026-10-16, proposed)
+
+Metal served unified memory (Apple silicon) and discrete VRAM (Intel
+Macs) for a decade through one API, because its storage modes name who
+touches memory, not where it lives. Loinnir's `alloc(.upload / .device /
+.readback)` already has that shape. It keeps it, and it defines each kind
+on each memory model:
+
+| Kind | Unified memory | Discrete, with resizable BAR | Discrete, without it |
+|---|---|---|---|
+| `.upload` (CPU writes, GPU reads) | one VMO: a pointer and a GPU address | device-local, host-visible VRAM | system-RAM staging that Loinnir copies to VRAM |
+| `.device` (only the GPU) | the same VMO, with no CPU pointer | VRAM | VRAM |
+| `.readback` (GPU writes, CPU reads) | the same VMO | host-cached system RAM | host-cached system RAM |
+
+- **A program never branches on the memory model.** Loinnir picks the
+  heap from the device's memory properties, and records any staging copy
+  itself; its hazard tracking (D58) treats that copy like any other write.
+- **`.device` never has a CPU pointer, even on unified memory,** so a
+  program written on a board doesn't break on a desktop GPU.
+- **Loinnir suballocates** from a few large allocations per device heap.
+  v0's one `vkAllocateMemory` per `alloc` meets drivers' allocation-count
+  limits, and costs a blob per call under Venus.
+- **Several GPUs in one machine:** a window renders on the GPU Loinnir
+  picks (the compositor's, unless the program asks), and buffer
+  negotiation (principle 8) gains two constraints, which device's memory
+  and whether a peer GPU can read it. When neither GPU can read the
+  other's memory, negotiation falls back to system RAM and a copy rather
+  than failing.
+- **Tests:** Loinnir's draw tests run on Venus over a discrete host GPU
+  and over its integrated GPU where the host has one, and a test forces
+  the no-BAR path on a device that has BAR.
+
+## D57. VRAM and the process's memory budget (2026-10-16, proposed; open)
+
+todhchai gives each process one budget covering CPU and GPU memory,
+*because GPU buffers are VMOs* that the kernel accounts. That holds on
+unified memory only. VRAM is not RAM the kernel's page allocator owns,
+and a driver evicts it to system RAM under pressure.
+- **Candidates:** (a) VRAM as VMOs backed by device memory (physical
+  VMOs over the BAR or a GPU's local memory, accounted to the owner like
+  any other), so a buffer object stays "a VMO" everywhere; the kernel then
+  needs VMOs whose backing moves between VRAM and RAM. (b) The GPU system
+  driver accounts VRAM and reports it into the process's budget; the
+  kernel stays unaware of device memory, and there are two accountants.
+- **Leaning (a),** for principle 1 and principle 8. It is a kernel design
+  question, so it goes on `docs/kernel/roadmap.md` and is settled before
+  V6 lifts buffer objects. Until then, buffer objects on discrete GPUs
+  are system RAM (`.upload` and `.readback` only) and are reported, not
+  budgeted.
+
+## D58. One synchronization mechanism: Loinnir tracks hazards (2026-10-16, proposed)
+
+todhchai planned three: Loinnir's layout tracking, a separate render-graph
+and barrier library (its F-106), and raw Vulkan barriers. That breaks
+principle 1. v0's tracking also issues every transition as
+`ALL_COMMANDS -> ALL_COMMANDS`, and doesn't track buffer write-then-read
+hazards at all.
+- **Tracked by default,** as Metal's resources are. Every draw and
+  dispatch names what it reads through its root pointer and what it
+  writes through its targets, so Loinnir knows each resource's last
+  writer and inserts the narrowest barrier and layout change itself.
+- **Untracked as the fast path:** a resource made untracked is the
+  program's to order, with `barrier(before:after:)` taking pipeline
+  stages only (no access masks, no layouts), after Aaltonen.
+- **F-106 is not lifted.** Loinnir is the barrier library. Raw Vulkan
+  programs bring their own, as tier 1 code.
+- **Budget, with its check and milestone (V6):** `loinnir.encode_ratio_x10`,
+  tracked encode time per draw over untracked, on a fixed scene of 10,000
+  draws; limit 20 (2x). It is reported by Loinnir's bench program and
+  enforced like the other budgets.
+- **Tests:** a write then a read of the same buffer, and of the same
+  image, with no barrier from the program, read back correct; the
+  barriers recorded for each are the narrow ones, not `ALL_COMMANDS`.
+
+## D59. Shader-visible layouts come from the IDL (2026-10-16, proposed)
+
+Metal's shared headers make a CPU struct and a GPU struct one
+declaration. todhchai matches them by hand: GLSL beside Swift, with
+tests pinning sizes (Radharc's 48-byte `Quad`). The project already has
+one mechanism that defines layouts, the IDL and its wire format (D6,
+principle 7).
+- **idlc also emits shader declarations:** std430 structs in GLSL (Slang
+  if the shader language changes; both are host compilers under D4) for
+  the structs a library marks shader-visible, beside the Swift and C it
+  already writes. Root structs, the compositor's `Quad` and the TOSA
+  tensor descriptors (architecture §8) are each declared once.
+- **Shader-visible structs are plain data:** scalars, SIMD vectors,
+  fixed arrays and GPU addresses (`UInt64`); no vectors, optionals,
+  strings, unions or handles. idlc refuses the rest, and applies std430's
+  alignment, so Swift's layout and the shader's agree by construction.
+- **This replaces** the hand-pinned layout tests. A test checks that the
+  emitted GLSL is current, as idlc's other outputs are.
+
+## D60. GPU debugging is Loinnir's validation and the trace (2026-10-16, proposed)
+
+Vulkan relies on validation layers; our loader has none (todhchai M5f),
+and principle 28 keeps third-party layers off the device. Metal's
+debugging comes from owning the stack, and we own ours.
+- **Loinnir validates itself** in a debug build: heap indices in range,
+  root pointers inside live allocations, untracked resources that a
+  tracked pass would have ordered (D58), use after `free`. A failure is a
+  typed error naming the draw.
+- **GPU time is traced** (principle 14): Loinnir writes GPU timestamps
+  per pass and per submission into the program's trace ring (D50), so
+  `vx trace` shows CPU and GPU on one timeline. There is no separate
+  profiler.
+
+## D61. The Venus ring is an exception to the one ring (2026-10-16, proposed)
+
+The Venus client driver sends through a ring in shared memory whose
+layout (Mesa's, in todhchai's `td_venus_ring.h`) is fixed by the protocol
+the host's renderer speaks. Principle 6 allows one ring format.
+- **It is allowed as an external protocol,** as virtqueues are: it lives
+  only inside the Venus driver, and nothing else in the tree may use it.
+- **Our own GPU system drivers' submit rings are the one ring** (D43),
+  with counters as doorbells (D46).
+
+## D62. GPU hardware floor and driver order (2026-10-16, proposed)
+
+todhchai states Loinnir's floor as "descriptor heaps and buffer device
+address: RDNA2, Xe, Turing or newer", and orders native drivers AMD,
+Intel, NVIDIA, then arm64 GPUs.
+- **The floor is stated as capabilities** (buffer device address,
+  bindless descriptors in GPU memory, timeline semaphores, dynamic
+  rendering), checked for each GPU we name, since we write the drivers and
+  what matters is the hardware, not today's driver releases.
+- **Two device lists:** the boards' (Adreno 690, Mali-G720, the Ky X1's
+  GPU) and the desktop's (AMD, Intel, NVIDIA). The 2013 Mac Pro's
+  FirePro (GCN 1.0) is the oldest on either; whether it meets the floor
+  decides whether descriptor heaps are required or preferred. The Ky X1's
+  GPU is to be verified.
+- **Two driver tracks:** the boards' (Adreno first, for V6's display and
+  V8's compute) and the desktop's (AMD, Intel, NVIDIA, as todhchai has
+  them). Until a desktop driver exists, desktops run Loinnir through
+  Venus in a VM. When the desktop track starts is open.

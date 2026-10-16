@@ -50,7 +50,7 @@ The actions in the tables:
 | `tools/toolchain` (the `*-todhchai` series, renamed `*-vectraos`) and tier 1's sysroot | Lift | V2 | Tier 1 for FDIO and rc (D47) |
 | `fs/taisce` and `services/fs` | Lift | V3 (RAM disk), V5 (on disk) | The one FS (D8). V3's file copies land in it. Replace its use of the `Synchronization` module in tier 0. |
 | `services/radharc`, desktop shell (Tracker, Deskbar) | Port | V6 | Add the tile and space workspace modes (D9). The look is Platinum Indigo (D24), not `desktop.md` §6's neon. |
-| `ui`, `text`, `graphics` (Vulkan/Venus), `codecs` | Lift | V6 | |
+| `ui`, `text`, `graphics` (Vulkan/Venus), `codecs` | Lift | V6 | `graphics` changes on the way in: D55-D62 (memory by intent for both memory models, one sync mechanism, shader layouts from the IDL; F-106 not lifted) |
 | N1 (`n1` branch): `crypto`, `services/net` (+ NetRing, NetIPC), `drivers/net` (class + virtio-net), `services/sshd` (+ SFTP) | Lift | V3 | The bring-up link (D15). The stack and crypto are also 9gate's and Noise's base in V7. |
 | `rc`, the pty service, the launcher's `/dev/bin` union (N1e) | Lift | V2–V3 | rc is the one shell |
 | `sdk/` and macros (`@AudioRenderer`) | Lift | V6 | |

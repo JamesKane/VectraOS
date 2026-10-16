@@ -1175,6 +1175,9 @@ from Zircon, see docs/kernel/zircon-divergences.md.
   watchdog and SError paths unverified on hardware; SError delivery to
   the faulting process.
 - Budgets: channel_call's 1 µs target (~1.4 µs under KVM).
+- VRAM in the memory budget (D57, proposed, before V6): VMOs backed by a
+  discrete GPU's memory, whose backing a driver can evict to RAM, or the
+  GPU system driver as a second accountant.
 - Tests: the interrupts suite's handoff check "woken again within the
   period" failed once on amd64 `boot-smoke-apic-oneshot` (2026-10-15,
   D30's run) and passed four reruns. It was one check of three
