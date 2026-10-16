@@ -1,0 +1,11 @@
+x=1 y=2
+echo [$x] [$y]
+a=old; a=new b=$a echo inner
+fn show { echo a is $a b is $b }
+a=local b=$a show
+show
+a=p b=q show | cat
+echo after $a
+x=3 true && echo [$x]
+c=1 d=$c
+echo $c $d

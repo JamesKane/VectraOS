@@ -400,7 +400,41 @@ public struct Parser {
       at += 1
       return .not(try notCommand())
     }
+    if let assigned = try assignments(then: { (p: inout Parser) throws(RcSyntaxError) in try p.notCommand() }) {
+      return assigned
+    }
     return try pipeline()
+  }
+
+  /// Whether `name=` starts here.
+  var atAssignment: Bool {
+    guard case .word(.literal(_, quoted: false), _) = peek else { return false }
+    return tokens[at + 1] == .equals
+  }
+
+  /// name=value ..., then a command or nothing (9front's `assign cmd`,
+  /// with BANG's precedence: the command is a whole pipeline). With
+  /// nothing after them, each is global, in order; with a command, all are
+  /// local to it, each seeing those before. Nil if none starts here.
+  mutating func assignments(then command: (inout Parser) throws(RcSyntaxError) -> Command)
+    throws(RcSyntaxError) -> Command?
+  {
+    var assigns: [(String, Word)] = []
+    while atAssignment, case .word(.literal(let name, _), _) = peek {
+      at += 2
+      assigns.append((name, try word() ?? .list([])))
+    }
+    guard !assigns.isEmpty else { return nil }
+    let ends: [Token] = [.semicolon, .newline, .end, .ampersand, .rightBrace, .rightParen, .andAnd, .orOr]
+    var isPipe = false
+    if case .pipe = peek { isPipe = true }
+    if ends.contains(peek) || isPipe {
+      let global = assigns.map { Command.assign($0.0, $0.1, body: nil) }
+      return global.count == 1 ? global[0] : .sequence(global)
+    }
+    var body = try command(&self)
+    for (name, value) in assigns.reversed() { body = .assign(name, value, body: body) }
+    return body
   }
 
   mutating func pipeline() throws(RcSyntaxError) -> Command {
@@ -573,17 +607,9 @@ public struct Parser {
       }
       return .function(name, body: nil)
     }
-    // An assignment: name=value [command].
-    if case .word(.literal(let name, quoted: false), _) = peek, tokens[at + 1] == .equals {
-      at += 2
-      let value = try word() ?? .list([])
-      if peek == .semicolon || peek == .newline || peek == .end || peek == .ampersand || peek == .rightBrace
-        || peek == .rightParen || peek == .andAnd || peek == .orOr
-      {
-        return .assign(name, value, body: nil)
-      }
-      if case .pipe = peek { return .assign(name, value, body: nil) }
-      return .assign(name, value, body: try command())
+    // Assignments, where a command is parsed alone (a body).
+    if let assigned = try assignments(then: { (p: inout Parser) throws(RcSyntaxError) in try p.command() }) {
+      return assigned
     }
     var words: [Word] = []
     var redirs: [Redirection] = []
