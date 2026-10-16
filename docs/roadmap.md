@@ -386,6 +386,9 @@ write prefix.
 - RK3588, on the Orange Pi 5 Plus (on hand), and the Hailo-8 over M.2.
   Shipped with DT, but a community EDK2 gives it ACPI, so using that
   firmware needs a decision, not a DT path (`docs/boards/orangepi-5-plus/`).
+- A stretch goal: the Mac mini (M4, base), from Asahi Linux's facts and
+  reverse engineering. No UEFI or ACPI, 16 KiB DART pages, and Asahi is
+  at early bring-up on the M4 (`docs/boards/macmini-m4/`).
 
 ## Known issues
 

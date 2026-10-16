@@ -77,6 +77,7 @@ opi5p-its	component	orangepi-5-plus	arm64	research	yes	-	D5	-	-	-	-	GIC-600 ITS:
 opi5p-rtl8125	component	orangepi-5-plus	arm64	research	yes	-	D15	-	-	-	-	two Realtek 2.5 GbE on PCIe 2.0 x1, the V3 link's NIC here
 hailo-8	component	-	all	research	no	-	D5	-	-	-	-	M.2 accelerator, after the accelerator protocol
 qemu-cheri-rv64	platform	-	rv64	research	-	-	-	deferred	-	-	-	CHERI-RISC-V on QEMU-CHERI, a roadmap research track
+macmini-m4	platform	-	arm64	research	-	-	-	yes	-	-	-	Mac mini (M4, base), a stretch goal: no UEFI or ACPI, 16 KiB DART pages, Asahi at early bring-up (DT, AICv3); docs/boards/macmini-m4/
 gpu-amd	component	-	amd64	planned	no	open	D62	-	-	-	-	RDNA2 or newer, the desktop track's first driver; first device pc-rx6750xt
 gpu-intel	component	-	amd64	planned	no	open	D62	-	-	-	-	Xe or newer
 gpu-nvidia	component	-	amd64	planned	no	open	D62	-	-	-	-	Turing or newer; first device pc9-rtx5070ti
