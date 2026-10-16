@@ -22,7 +22,8 @@ under `vx ci` and every budget it introduces has a running check
     on it, FDIO, and rc with its commands. An audit against 9front
     (2026-10-16) found rc and the commands far from complete (item 6
     lists the gaps; `vx rc-oracle` checks rc against 9front's, D70).
-    The pty is not started.
+    The pty runs on rings, and rc runs on one, sharing the terminal
+    with the programs it runs.
   - Not started: drivers (item 7), and the console and the router
     (item 8).
   - Exit: `cat /svc/*/status` run by rc passes (amd64, arm64). Still
@@ -236,9 +237,10 @@ work, in order:
    (a stream through two slots, about 200,000 states each; a relaxed
    publish caught), ByteStreamTests on the host (each implementation
    feeding the other across threads) and the `ring` suite on each arch.
-   stdio is on it: a parent gives a child its stdin and stdout rings in
-   one VMO, a doorbell each way and a channel for its end
-   (CROI_PA_STDIO, `td_stdio.h`); the floor attaches them at start
+   stdio is on it: a parent gives a child a ring per descriptor, each
+   in a VMO of its own with a doorbell each way and a channel for its
+   end (CROI_PA_STDIO, `td_stdio.h`, D46 as amended); the floor
+   attaches them at start
    (`stdio.c`, over ring.h) and writes its lines, reads stdin and puts
    the end mark at exit through them, and Sys's `ChildStdio` is the
    parent's side. A process given none writes stdout to the debuglog as
@@ -317,15 +319,24 @@ work, in order:
      an existing file; `rm -f`, `cp -x`, `mv`'s fallback and most
      flags are missing; no `test`, `read`, `grep`, `sed`, `wc`, `sort`,
      `tail`, `tr`, `sleep`, `kill`, `ps`, `date`, `ns`, `bind`, `mount`.
-   - The pty (a child given rc's own stdin reads an empty one until it
-     shares a terminal).
+   - **The pty, done (2026-10-16):** `services/pty` on rings (D46): a
+     terminal opens one at /svc/pty/pty and gets its keys and screen
+     as descriptors, the client end is a program's fds 0 to 2 and the
+     pty's Control; todhchai's line discipline lifted, its server and
+     protocol rewritten. rc started with a pty's Control
+     (CROI_PA_PTY_CONTROL) is its controller: one thread reads the
+     terminal and lends it to the foreground program; ^D ends that
+     program's input (rc's own when none has it), ^C kills it.
+     launch-test types to a pty and to rc on one. Left: input typed
+     while a program has the terminal is that program's, read or not.
 7. **Drivers:** PCI, ACPI (the AML interpreter), devmgr, the driver host,
    the virtio library and virtio-input. Each driver binds its interrupt
    with `object_bind` and acks in arrays. The block class's ring (TDBR)
    moves to the one ring when virtio-blk comes with Taisce (V3); the net
    class's (TDFR) with N1 (V3).
 8. **Services and the shell:** the console (it reads the debuglog ring,
-   D38; the Radharc handoff waits for V6), the router (plumber), the pty,
+   D38; the Radharc handoff waits for V6), the router (plumber), the pty
+   (done, with item 6),
    rc and `cat`.
 
 **Exit:**

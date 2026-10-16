@@ -1,0 +1,11 @@
+# API baseline for todhchai.pty.Control, written by idlc. Commit it; idlc checks changes against it.
+protocol todhchai.pty.Control version 1
+enum Event UInt8 (1,2,3)
+struct Mode (Bool,Bool,Bool,Bool)
+struct WindowSize (UInt32,UInt32)
+method event event since 1 params (Event) result - throws -
+method mode call since 1 params () result Mode throws -
+method resized event since 1 params (WindowSize) result - throws -
+method setMode call since 1 params (Mode) result - throws -
+method takeEnds call since 1 params (Bool) result - throws -
+method windowSize call since 1 params () result WindowSize throws -

@@ -1,10 +1,12 @@
 # The client the boot runs to its end (launcher.until=launch-test); CMake
 # adds `use time` where the time service runs (amd64). `programs`: it
-# starts rc (tier 1: amd64 and arm64) to run `cat /svc/*/status`.
+# starts rc (tier 1: amd64 and arm64) to run `cat /svc/*/status`, and runs
+# it on a pty (`use pty`).
 service launch-test
 program launch-test
 use a
 use b
+use pty
 launcher
 programs
 @CROI_LAUNCH_TEST_USES@

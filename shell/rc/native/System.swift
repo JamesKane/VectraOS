@@ -126,6 +126,8 @@ final class Job: RcJob {
   let process: Owned
   let stdio: ChildStdio
   var relays: [Owned]
+  /// Its stdin, while it has the terminal (Terminal.swift).
+  var lent: ChildStream? = nil
   init(process: consuming Handle, stdio: ChildStdio, relays: [Owned]) {
     self.process = Owned(process)
     self.stdio = stdio
@@ -136,6 +138,8 @@ final class Job: RcJob {
       _ = try? p.wait(for: Signals.terminated)
       return (try? Process.info(p).returnCode) ?? 0
     } ?? 0
+    if let lent { Terminal.current?.reclaim(lent) }
+    lent = nil
     for t in relays { t.with { h in try? Thread.join(h) } }
     relays.removeAll()
     return code == 0 ? "" : String(code)
@@ -297,8 +301,14 @@ final class CroiSystem: RcSystem {
         func done() { if own { stream?.close() } }
       }
       var relays: [Owned] = []
+      var lend: ChildStream? = nil
       for (fd, stream) in given {
         guard let ring = stdio.stream(fd) else { continue }
+        // rc's own stdin on a pty: the terminal, lent (no relay).
+        if fd == 0, (stream as? Standard)?.fd == 0, Terminal.current != nil {
+          lend = ring
+          continue
+        }
         if ring.childReads {
           // Into the child: the stream, then the end (none for rc's own
           // stdin).
@@ -321,7 +331,12 @@ final class CroiSystem: RcSystem {
           }) { relays.append(r) }
         }
       }
-      return Job(process: process, stdio: stdio, relays: relays)
+      let job = Job(process: process, stdio: stdio, relays: relays)
+      if let lend {
+        job.lent = lend
+        Terminal.current?.lend(lend, process: job.process)
+      }
+      return job
     } catch {
       return nil
     }

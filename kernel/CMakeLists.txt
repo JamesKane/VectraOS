@@ -264,7 +264,8 @@ set(_launch_service ${CMAKE_CURRENT_BINARY_DIR}/launchservice.elf)
 croi_user_program(${_launch_service} PIE SYS SWIFT ${_launch}/tests/native/Service.swift
                   ${_launch}/tests/TreeService.swift)
 set(_launch_test ${CMAKE_CURRENT_BINARY_DIR}/launchtest.elf)
-croi_user_program(${_launch_test} PIE SYS SWIFT ${_launch}/tests/native/Main.swift)
+croi_user_program(${_launch_test} PIE SYS IPC SWIFT ${_launch}/tests/native/Main.swift
+                  ${PROJECT_SOURCE_DIR}/services/pty/lib/Protocol.swift)
 set(_manifests ${_launch}/tests/native/manifests)
 # bin/time (D48): UTC from the RTC, on amd64, which alone has the CMOS's
 # ports; elsewhere it publishes nothing, so only amd64's bootfs runs it.
@@ -272,6 +273,11 @@ set(_time ${CMAKE_CURRENT_BINARY_DIR}/time.elf)
 croi_user_program(${_time} PIE SYS SWIFT ${PROJECT_SOURCE_DIR}/services/time/Main.swift
                   ${PROJECT_SOURCE_DIR}/services/time/lib/RTC.swift)
 set(_time_bootfs bin/time=${_time})
+# bin/pty (D46): the pty service, on every arch; launch-test runs rc on one.
+set(_pty_src ${PROJECT_SOURCE_DIR}/services/pty)
+set(_pty ${CMAKE_CURRENT_BINARY_DIR}/pty.elf)
+croi_user_program(${_pty} PIE SYS IPC SWIFT ${_pty_src}/Main.swift ${_pty_src}/lib/Protocol.swift ${_pty_src}/lib/Server.swift
+                  ${_pty_src}/lib/LineDiscipline.swift)
 set(CROI_LAUNCH_TEST_USES "")
 if(CROI_ARCH STREQUAL amd64)
   list(APPEND _time_bootfs etc/manifests/time.manifest=${_manifests}/time.manifest)
@@ -291,10 +297,11 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
           bin/launch-test=${_launch_test} etc/manifests/a.manifest=${_manifests}/a.manifest
           etc/manifests/b.manifest=${_manifests}/b.manifest
           etc/manifests/launch-test.manifest=${_launch_test_manifest} ${_time_bootfs}
+          bin/pty=${_pty} etc/manifests/pty.manifest=${_manifests}/pty.manifest
           ${_tier1_bootfs}
   DEPENDS ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_trace_test} ${_ipc_test} ${_node_test}
           ${_launcher} ${_launch_service} ${_launch_test} ${_manifests}/a.manifest ${_manifests}/b.manifest
-          ${_launch_test_manifest} ${_time} ${_manifests}/time.manifest
+          ${_launch_test_manifest} ${_time} ${_manifests}/time.manifest ${_pty} ${_manifests}/pty.manifest
           ${_tier1_files} vx ${VX}
   COMMENT "Building bootfs")
 add_custom_target(bootfs DEPENDS ${CMAKE_BINARY_DIR}/bootfs.img)

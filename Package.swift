@@ -76,6 +76,10 @@ let ipc: [Target] = [
   // The time service's RTC reading (services/time, D48): its registers as UTC.
   .target(name: "RTC", path: "services/time/lib", swiftSettings: tier0),
   .testTarget(name: "RTCTests", dependencies: ["RTC"], path: "services/time/tests"),
+  // The pty service's line discipline (services/pty, D46); the service and
+  // its protocol are native (launch-test runs them).
+  .target(name: "Pty", path: "services/pty/lib", sources: ["LineDiscipline.swift"], swiftSettings: tier0),
+  .testTarget(name: "PtyTests", dependencies: ["Pty"], path: "services/pty/tests"),
   // The fs protocol's client side (services/fs, V2: FDIO's; the service
   // comes with Taisce, V3).
   .target(name: "Fs", dependencies: ["Node", "IPC"], path: "services/fs/lib", swiftSettings: tier0),

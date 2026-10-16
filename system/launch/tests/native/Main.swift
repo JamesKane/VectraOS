@@ -9,6 +9,7 @@
 // instance by the same paths, and reads UTC from the page every process
 // is given (D48), the RTC's on amd64. It exits 0 if every check passed.
 
+import IPC
 import Node
 import Sys
 
@@ -93,6 +94,68 @@ func rcRuns(_ rc: ProgramEntry, _ script: String, _ expected: [UInt8], _ ns: Nam
   }
 }
 
+/// rc on a pty, as a terminal runs it (D46): rc given the pty's client
+/// end as its descriptors 0 to 2 and its Control, typed to here. It
+/// prompts, runs a line, lends the terminal to a program reading it
+/// (cat, ended by ^D), and exits.
+func rcOnPty(_ rc: ProgramEntry, _ ns: Namespace, job: borrowing Handle, bootfs: borrowing Handle) {
+  guard let channel = try? ns.connect("/svc/pty/pty") else { return check(false, "/svc/pty/pty for rc") }
+  var factory = PtyIPC.FactoryClient(channel: channel)
+  do {
+    let opened = try factory.open(size: PtyIPC.WindowSize(columns: 80, rows: 24))
+    try opened.take {
+      (k: consuming PtyIPC.Descriptor, s: consuming PtyIPC.Descriptor, device: consuming Handle) throws in
+      let keys = try AttachedStream(k.parts(childReads: false))
+      let screen = try AttachedStream(s.parts(childReads: true))
+      var dev = PtyIPC.DeviceClient(channel: device)
+      let startup = Startup(args: ["rc"])
+      guard let svc = try? ns.connect("/svc") else { return check(false, "rc on a pty: /svc") }
+      startup.mount(svc, at: "/svc")
+      startup.add(try Job.create(parent: job), info: HandleType.info(HandleType.jobDefault))
+      startup.add(try bootfs.duplicate(), info: HandleType.info(HandleType.vmoBootfs))
+      try dev.client().take {
+        (i: consuming PtyIPC.Descriptor, o: consuming PtyIPC.Descriptor, e: consuming PtyIPC.Descriptor,
+         c: consuming Handle) in
+        startup.add(i.parts(childReads: true), fd: 0)
+        startup.add(o.parts(childReads: false), fd: 1)
+        startup.add(e.parts(childReads: false), fd: 2)
+        startup.add(c, info: HandleType.info(HandleType.ptyControl))
+      }
+      let process = try Process.create(job: job, name: "rc")
+      let thread = try Process.start(process, entry: rc, startup)
+      check(contains(readUntil(screen, Array("% ".utf8)), Array("% ".utf8)), "rc on a pty prompts")
+      try keys.write(Array("echo hi\r".utf8))
+      check(contains(readUntil(screen, Array("hi\r\n% ".utf8)), Array("echo hi\r\nhi\r\n% ".utf8)),
+            "rc on a pty runs a typed line")
+      // A program given rc's stdin has the terminal while it runs.
+      try keys.write(Array("cat\r".utf8))
+      _ = readUntil(screen, Array("cat\r\n".utf8))
+      sleep(until: Clock.monotonic() + 500_000_000)  // cat started
+      try keys.write(Array("typed\r".utf8))
+      let echoed = readUntil(screen, Array("typed\r\n".utf8))
+      // ^D: cat's input ends, and it writes what it read (the commands
+      // write at their end: nothing streams yet), then rc prompts.
+      try keys.write([0x04])
+      let after = readUntil(screen, Array("% ".utf8))
+      check(contains(echoed + after, Array("typed\r\ntyped\r\n% ".utf8)), "rc lends the terminal to the program it runs")
+      check(contains(after, Array("% ".utf8)), "^D ends the program's input, not rc's")
+      // ^C: rc kills the program that has the terminal.
+      try keys.write(Array("cat\r".utf8))
+      _ = readUntil(screen, Array("cat\r\n".utf8))
+      sleep(until: Clock.monotonic() + 500_000_000)  // cat started
+      try keys.write([0x03])
+      check(contains(readUntil(screen, Array("% ".utf8)), Array("% ".utf8)), "^C kills the program, and rc prompts")
+      try keys.write(Array("exit ''\r".utf8))  // $status is the killed cat's
+      _ = try process.wait(for: Signals.terminated, deadline: Clock.monotonic() + 5_000_000_000)
+      check(try Process.info(process).returnCode == 0, "rc on a pty exits")
+      _ = consume thread
+    }
+  } catch {
+    print("launch-test: rc on a pty: \(error)")
+    check(false, "rc on a pty")
+  }
+}
+
 /// rc's `cat /svc/*/status` (V2's exit test), and a pipeline of programs
 /// (each a child of rc's, rc relaying between them), checked against the
 /// statuses read here.
@@ -138,7 +201,75 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
   rcRuns(rc, "cat /dev/fd/3 <[3]/svc/a/status", a, ns, job: job, bootfs: bootfs, "rc gives a program fd 3")
   rcRuns(rc, "cat <{cat /svc/a/status} <{echo two}", a + Array("two\n".utf8), ns, job: job, bootfs: bootfs,
          "rc runs <{} on the device")
+  rcOnPty(rc, ns, job: job, bootfs: bootfs)
   _ = consume bootfs
+}
+
+/// What `s` gives until it has `want` in it, its end, or 5 s.
+func readUntil(_ s: AttachedStream, _ want: [UInt8]) -> [UInt8] {
+  var seen: [UInt8] = []
+  let end = Clock.monotonic() + 5_000_000_000
+  while !contains(seen, want) {
+    guard let more = try? s.read(deadline: end), !more.isEmpty else { break }
+    seen += more
+  }
+  return seen
+}
+
+func contains(_ bytes: [UInt8], _ part: [UInt8]) -> Bool {
+  guard part.count <= bytes.count else { return part.isEmpty }
+  for i in 0...(bytes.count - part.count) where Array(bytes[i..<(i + part.count)]) == part { return true }
+  return false
+}
+
+/// A pty from /svc/pty/pty (D46): this process its terminal and its
+/// program both, each side's rings attached here.
+func runPty(_ ns: Namespace) {
+  guard let channel = try? ns.connect("/svc/pty/pty") else { return check(false, "/svc/pty/pty") }
+  var factory = PtyIPC.FactoryClient(channel: channel)
+  do {
+    let opened = try factory.open(size: PtyIPC.WindowSize(columns: 80, rows: 24))
+    try opened.take {
+      (k: consuming PtyIPC.Descriptor, s: consuming PtyIPC.Descriptor, device: consuming Handle) throws in
+      let keys = try AttachedStream(k.parts(childReads: false))
+      let screen = try AttachedStream(s.parts(childReads: true))
+      var dev = PtyIPC.DeviceClient(channel: device)
+      let client = try dev.client()
+      try client.take {
+        (i: consuming PtyIPC.Descriptor, o: consuming PtyIPC.Descriptor, e: consuming PtyIPC.Descriptor,
+         c: consuming Handle) throws in
+        let input = try AttachedStream(i.parts(childReads: true))
+        let output = try AttachedStream(o.parts(childReads: false))
+        let errors = try AttachedStream(e.parts(childReads: false))
+        var control = PtyIPC.ControlClient(channel: c)
+        check(try control.mode().canonical && control.windowSize() == PtyIPC.WindowSize(columns: 80, rows: 24),
+              "a pty's program sees its mode and the window's size")
+        // Keys: echoed to the screen (CR NL), a line to the program.
+        try keys.write(Array("hello\r".utf8))
+        check(readUntil(input, Array("\n".utf8)) == Array("hello\n".utf8), "a pty gives its program a typed line")
+        check(readUntil(screen, Array("\r\n".utf8)) == Array("hello\r\n".utf8), "and echoes it to the terminal")
+        // Output and errors: CR NL on the screen.
+        try output.write(Array("out\n".utf8))
+        check(readUntil(screen, Array("\r\n".utf8)) == Array("out\r\n".utf8), "a pty shows its program's output")
+        try errors.write(Array("err\n".utf8))
+        check(readUntil(screen, Array("\r\n".utf8)) == Array("err\r\n".utf8), "and its errors")
+        // ^C: the control hears it.
+        try keys.write([0x03])
+        if case .event(.interrupt) = try control.nextEvent(deadline: Clock.monotonic() + 5_000_000_000) {
+          check(true, "a pty's ^C is an interrupt for the control")
+        } else {
+          check(false, "a pty's ^C is an interrupt for the control")
+        }
+        _ = readUntil(screen, Array("^C\r\n".utf8))
+        // ^D on an empty line, no controller taking it: the program's end.
+        try keys.write([0x04])
+        check((try? input.read(deadline: Clock.monotonic() + 5_000_000_000)) == [], "a pty's ^D ends its program's stdin")
+      }
+    }
+  } catch {
+    print("launch-test: a pty: \(error)")
+    check(false, "a pty opened, typed to and shown")
+  }
 }
 
 @main struct LaunchTest {
@@ -156,12 +287,13 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
     // cat /svc/*/status
     let names = ((try? ns.list("/svc")) ?? []).map { $0.name }
     #if arch(x86_64)
-      let expected = 4  // and the time service
+      let expected = 5  // and the time service
     #else
-      let expected = 3
+      let expected = 4
     #endif
     check(names.count == expected && names.contains { same($0, "a") } && names.contains { same($0, "b") }
-            && names.contains { same($0, "launcher") }, "/svc holds what the manifest uses")
+            && names.contains { same($0, "launcher") } && names.contains { same($0, "pty") },
+          "/svc holds what the manifest uses")
     for name in names {
       let status = readText(ns, "/svc/" + name + "/status")
       check(status != nil, "each /svc/*/status reads")
@@ -192,6 +324,7 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
     // this process's /svc, a job and bootfs for its programs, and stdio;
     // what it writes is every status, in the glob's order. Tier 1: not on
     // rv64 yet.
+    runPty(ns)
     runRc(start, ns, names)
 
     // A crash, as the launcher's ctl makes one: a restarts (`restart always`).

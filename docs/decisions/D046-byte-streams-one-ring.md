@@ -36,3 +36,10 @@ descriptor N; rc gives a child every descriptor its table has and relays
 each one. Chosen over passing a file as its own node (Fuchsia's PA_FD):
 that is a second kind of inherited descriptor, and tier 0 programs know
 only rings.
+
+The pty (2026-10-16) is the parent side of five rings: its terminal's
+keys and screen, and its one client's fds 0 to 2, all handed over as
+descriptors (Sys's StreamParts). One client, as a ring has one writer:
+rc on a pty relays the terminal to its foreground program, from one
+reader of its stdin. ^D is an event for a controller that takes it
+(Control.takeEnds), as a ring's end can't be taken back.

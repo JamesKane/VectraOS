@@ -1,0 +1,7 @@
+# API baseline for todhchai.pty.Device, written by idlc. Commit it; idlc checks changes against it.
+protocol todhchai.pty.Device version 1
+struct Client (Descriptor,Descriptor,Descriptor,Handle)
+struct Descriptor (Handle,Handle,Handle,Handle)
+struct WindowSize (UInt32,UInt32)
+method client call since 1 params () result Client throws PtyError
+method setWindowSize call since 1 params (WindowSize) result - throws -

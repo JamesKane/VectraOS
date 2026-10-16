@@ -1,0 +1,6 @@
+# The pty service (D46): ptys for terminals, their line disciplines (termios's
+# cooked and raw modes) in the service. launch-test runs rc on one.
+service pty
+program pty
+export
+restart on-failure

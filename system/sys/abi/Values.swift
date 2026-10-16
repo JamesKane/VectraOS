@@ -214,6 +214,9 @@ public enum HandleType {
   /// The UTC page (D48): argument 0 read only (the floor maps it), 1
   /// writable (the time service's).
   public static var vmoUTC: UInt32 { CROI_PA_VMO_UTC }
+  /// A pty's Control (services/pty): the program started with it is a
+  /// shell controlling the pty its descriptors 0 to 2 are.
+  public static var ptyControl: UInt32 { CROI_PA_PTY_CONTROL }
 
   /// An info word: the type, and the argument in bits 16-31.
   public static func info(_ type: UInt32, _ argument: UInt32 = 0) -> UInt32 { croi_pa_hnd(type, argument) }

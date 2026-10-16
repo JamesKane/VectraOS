@@ -202,12 +202,14 @@ function(croi_tier1 bootfs_var depends_var)
   croi_tier1_library(Rc SOURCES ${_rc_t1})
   croi_tier1_library(Commands SOURCES shell/commands/lib/Commands.swift USES Fs Node INCLUDES system/trace/c/include)
   add_custom_command(OUTPUT ${_out}/rc
-    COMMAND ${_swiftc} -parse-as-library -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -L ${_lib}
+    COMMAND ${_swiftc} -parse-as-library -enable-experimental-feature Lifetimes -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -L ${_lib}
             -lRc ${_t1_link} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros"
             ${PROJECT_SOURCE_DIR}/shell/rc/Main.swift ${PROJECT_SOURCE_DIR}/shell/rc/native/System.swift
+            ${PROJECT_SOURCE_DIR}/shell/rc/native/Terminal.swift ${PROJECT_SOURCE_DIR}/services/pty/lib/Protocol.swift
             -o ${_out}/rc
     DEPENDS ${_lib}/libRc.a ${_t1_archives} ${PROJECT_SOURCE_DIR}/shell/rc/Main.swift
-            ${PROJECT_SOURCE_DIR}/shell/rc/native/System.swift
+            ${PROJECT_SOURCE_DIR}/shell/rc/native/System.swift ${PROJECT_SOURCE_DIR}/shell/rc/native/Terminal.swift
+            ${PROJECT_SOURCE_DIR}/services/pty/lib/Protocol.swift
     COMMENT "rc, for tier 1")
   add_custom_command(OUTPUT ${_out}/commands
     COMMAND ${_swiftc} -parse-as-library -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -L ${_lib}

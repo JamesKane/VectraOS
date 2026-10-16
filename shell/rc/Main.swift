@@ -42,6 +42,9 @@ final class Standard: RcStream {
     }
   }
   func read() -> [UInt8]? {
+    // On a pty, stdin is the terminal's, which rc shares with its
+    // programs (Terminal.swift).
+    if fd == 0, let t = Terminal.current { return t.read() }
     var buffer = [UInt8](repeating: 0, count: 1024)
     let n = buffer.withUnsafeMutableBytes { b in
       fd > 2 ? Int(td_stdio_read_fd(fd, b.baseAddress!, UInt64(b.count))) : td_stdin_read(b.baseAddress!, b.count)
@@ -75,6 +78,10 @@ final class Standard: RcStream {
       fds[2]!.write(Array((RcArguments.usage + "\n").utf8))
       exit(1)
     }
+    // On a pty, its controller (CROI_PA_PTY_CONTROL), sharing it.
+    if let control = Startup.current.take(HandleType.info(HandleType.ptyControl)) {
+      Terminal.current = Terminal(control: control)
+    }
     let shell = Rc(system: system, arguments: a.rest)
     shell.take(a, name: argv.first ?? "rc")
     shell.take(environment: Environment.strings)
@@ -94,7 +101,7 @@ final class Standard: RcStream {
     // Lines from stdin: prompted when interactive (-i, or a terminal's,
     // `TERM` set, without -I), as rcmain has it.
     let terminal = Environment.value("TERM") != nil
-    let interactive = a.flags.contains("i") || (terminal && !a.flags.contains("I"))
+    let interactive = a.flags.contains("i") || ((terminal || Terminal.current != nil) && !a.flags.contains("I"))
     // A starting directory (M6l: Terminal opened here by Tracker's add-on).
     if let d = Environment.value("PWD"), !d.isEmpty { _ = system.changeDirectory(d) }
     shell.variables["prompt"] = ["% ", "\t"]

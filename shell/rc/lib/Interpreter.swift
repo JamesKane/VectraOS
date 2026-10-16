@@ -713,6 +713,10 @@ public final class Rc {
       try conditionally { try execute(a, fds) }
       if !ok() { try execute(b, fds) }
     case .background(let c):
+      // Its stdin empty unless redirected (9front's Xasync: /dev/null), so it
+      // never takes a terminal's input.
+      var quiet = fds
+      quiet[0] = MemoryStream(source: true)
       // A program found runs on; anything else (a program not found says
       // so) is forked, below.
       if case .simple(let words, let redirs) = c, let argv = try? words.flatMap({ try value($0, fds) }),
@@ -720,7 +724,7 @@ public final class Rc {
         let path = resolve(first)
       {
         var opened: [RcStream] = []
-        var io = try redirect(redirs, fds, opened: &opened)
+        var io = try redirect(redirs, quiet, opened: &opened)
         let sides = takePipes(&io, &opened)
         trace(argv, io)
         if let job = system.start(path, argv, fds: io, environment: environmentStrings) {
@@ -736,7 +740,7 @@ public final class Rc {
         // process's: a `cd` in it is everyone's).
         let child = Rc(system: system)
         (child.variables, child.functions, child.ifNotPending, child.flags) = (variables, functions, ifNotPending, flags)
-        let work = Unchecked((child, c, fds))
+        let work = Unchecked((child, c, quiet))
         if let job = system.spawn({
           let (child, c, fds) = work.value
           do { try child.contained(c, fds) } catch {}
