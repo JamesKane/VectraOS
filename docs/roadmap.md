@@ -70,18 +70,61 @@ The work, in order:
 
 ## V2. Userland base
 
-- Lift todhchai's ipc, node, namespaces, launch, sys, libc, router, the
-  bus/PCI/ACPI drivers and virtio.
-- Lift todhchai's rc and the pty service. V3's SSH sessions run rc, which
-  settles open question 2.
-- Console in QEMU.
+Lift todhchai's userland onto V1's kernel: about 30k lines, from n1 pinned
+at `527ff94` (its driver core matches main; V3 lifts from the same pin).
+It was written against croi's old ABI, so most of it is ported, not
+lifted as is (`docs/syscall-audit.md` §4 maps each old mechanism to its
+V1 form). The layout mirrors todhchai's: `system/`, `services/`,
+`drivers/`, `shell/`. Every file lifted gets its IMPORTS.tsv row. The
+work, in order:
+1. **One ABI (D45).** todhchai has no croi headers: ten files hardcode
+   syscall numbers and inline struct layouts, and several calls kept their
+   numbers in V1 but now take arrays (handle_close, the VMAR calls,
+   port_queue and port_wait, channel_read and channel_write), so old
+   callers would build and fail quietly. Lifted code includes VectraOS's
+   ABI headers instead.
+2. **The floor and Sys** (`system/sys`, about 4k lines; libc, ld, trace).
+   The floor (`_start`, heap, stdio, threads, the C ABI tier 1's runtime
+   calls) and the `Sys` wrappers move to V1's calls. Each thread gets a
+   port, kept by the floor: waits bind ONCE there, sleep is its
+   `port_wait` deadline, join waits for TERMINATED. Events and eventpairs
+   become counters; VMO reads and writes become mappings, through one
+   bootfs helper instead of the boilerplate in eight programs; sizes and
+   process info are info topics. The hosted test kernel (SysHost) follows
+   the same model, so todhchai's hosted tests keep running.
+3. **Tier 1 (D47).** todhchai's `*-todhchai` toolchain, built from the
+   pinned Swift 6.4.0 and LLVM sources with its patch series, and tier 1's
+   sysroot (libc, pthreads, libc++, the Swift runtime, FoundationEssentials).
+   FDIO and rc need it.
+4. **The control plane** (`system/ipc`, `node`, `launch`). The dispatcher
+   binds each channel once, PERSISTENT, and reads and replies in arrays.
+   Node messages become batches (D18): a request is an array of
+   operations, a later one may use an earlier one's result, and bulk
+   `read`/`write` opens a ring. Userboot starts the launcher, which builds
+   each process's `/svc`.
+5. **Time (D48).** Clock objects are cut: the time service publishes UTC
+   in a read-only seqlock page that the launcher hands every process at
+   start.
+6. **Byte streams (D46).** stdio, `pipe()` and the pty move from sockets
+   to the one ring in its byte-stream mode: one writer per ring, an end
+   mark for end of input, and peer death from a channel's PEER_CLOSED.
+7. **Drivers:** PCI, ACPI (the AML interpreter), devmgr, the driver host,
+   the virtio library and virtio-input. Each driver binds its interrupt
+   with `object_bind` and acks in arrays. The block class's ring (TDBR)
+   moves to the one ring when virtio-blk comes with Taisce (V3); the net
+   class's (TDFR) with N1 (V3).
+8. **Services and the shell:** the console (it reads the debuglog ring,
+   D38; the Radharc handoff waits for V6), the router (plumber), the pty,
+   rc and `cat`.
 
 **Exit:**
-- `cat /svc/*/status` works.
+- `cat /svc/*/status` works, run by rc in a native test.
 - The first boot budget history is recorded (`vx bench --record`, on a
   quiet machine), on the kernel as V1 left it (D17).
 - spawn → main < 200 µs.
 - Services RSS < 32 MiB.
+- An interactive console (virtio-input into a pty in the console) if it
+  comes cheaply; otherwise V3's SSH session is the first interactive rc.
 
 ## V3. Bring-up link (D15)
 

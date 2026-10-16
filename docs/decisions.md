@@ -1007,3 +1007,84 @@ empty. The owner's choices, of three questions D19 left open:
   port's drain under load (the exit's `ring_kicks = 0`) gets a budget
   with its first user, todhchai's services at V2. Bindings stay a
   syscall each (D20), and channels keep their own queue.
+
+## D45. One ABI: lifted code includes VectraOS's headers (2026-10-15, decided)
+
+todhchai reaches croi through hardcoded syscall numbers: ten files hold
+number tables or bare literals (the floor, Sys's native backend, the
+pthread platform, the dynamic linker, the trace session, a test), with
+packet, call-argument and vDSO layouts inlined in Swift. V1 kept several
+calls' numbers while changing their arguments to arrays (handle_close,
+vmar_map, vmar_unmap, vmar_protect, port_queue, port_wait, channel_read,
+channel_write), so an old caller still builds and fails quietly: an old
+`handle_close(h)` passes the handle as a pointer with a count of 0.
+- **The headers are the one source.** Lifted code takes numbers, items
+  and layouts from `user/include/croi` and `kernel/include` (the
+  `CroiAbi` module for Swift, as user programs here already do). V2 deletes
+  todhchai's number tables rather than updating them.
+- **Each changed call's wrapper is rewritten, not patched.** Wrappers take
+  arrays where the call does (principle 12), with one-item helpers as in
+  syscall.h.
+- **Rejected:** keeping todhchai's tables in step by hand (a second
+  definition of the ABI, and this hazard again at the next change).
+
+## D46. Byte streams on the one ring (2026-10-15, decided)
+
+V1 cut sockets (D21). todhchai uses them for every byte stream: the
+floor's stdio (fds 0–2), rc's `pipe()` and its relays for files and
+backquotes, and the pty (two per pty). A socket has properties the ring
+lacks: several writers (rc and its children share fds 0–2), an end of
+input (`set_disposition` write-disabled), and peer death as a signal.
+- **The ring's byte-stream mode** (audit §4, D43's "not yet"): a header
+  flag, slots carrying a length and bytes, so a writer may put any amount
+  and a reader take any amount. RingCheck covers it like the other modes.
+- **One writer per ring.** A child gets rings of its own; whoever shares
+  a terminal (rc, the pty) relays. stdio is a ring pair the floor maps at
+  start, handed over in processargs instead of socket handles.
+- **End of input is an end mark** in the stream (a flag on the last slot),
+  so EOF is ordered with the data. **Peer death** comes from a channel
+  that travels with the rings: its PEER_CLOSED, bound to the reader's
+  port, as for every other object.
+- **Doorbells are counters** (D43), bound CHANGE to the sleeper's port.
+- **Flow control is ring fullness.** The pty's `set_disposition` and its
+  WRITABLE watches go.
+- **Rejected:** a multi-producer ring (a second protocol to check), and
+  bringing sockets back (D21).
+
+## D47. Tier 1: the *-todhchai toolchain comes with V2 (2026-10-15, decided)
+
+rc and FDIO are tier 1 (full Swift), and so is most of what follows them.
+Tier 1 needs todhchai's toolchain: LLVM and the Swift compiler and driver
+built from the pinned Swift 6.4.0 sources with a patch series that teaches
+them the `*-unknown-todhchai` triple, and a sysroot (libc, pthreads,
+libc++, libc++abi, libunwind, the Swift runtime and FoundationEssentials).
+- **Lift it as todhchai has it** (owner's call: the precedent makes it
+  straightforward): `tools/toolchain` (fetch, patch, build scripts and the
+  series, about 3 GB of sources under `.cache/`, outside the tree), and
+  the sysroot's build under the native CMake build. `vx` drives it, as
+  `td` does today (D11).
+- **The triple is VectraOS's.** The patches carry todhchai's triple name
+  until a rename is worth a rebuild; the decision to rename is separate.
+- **Tier 0 is unchanged:** the kernel, the floor and every tier 0 library
+  build with the stock 6.4.0 from swiftly, as now.
+- **Upstream LLVM and Swift are host toolchain under D4,** producing our
+  artifact formats; nothing third-party runs on the device beyond what the
+  Swift runtime already is.
+- **Rejected:** porting rc to tier 0 (it would be ported again when tier 1
+  arrives for the apps).
+
+## D48. Time: UTC in a page the time service writes (2026-10-15, decided)
+
+V1 cut clock objects and vmar_map_clock (D26). todhchai's launcher makes
+the UTC clock, hands it out as PA_CLOCK_UTC, and the floor maps its page
+(`td_utc_install`).
+- **The time service owns UTC.** It publishes it in a VMO it writes: a
+  seqlock page (sequence, offset from monotonic time, and its error
+  bound) that every other process maps read only.
+- **Delivery is the launcher's:** each process gets the VMO at start
+  (a processargs entry replacing PA_CLOCK_UTC), and the floor maps it
+  where it mapped the clock page, so `clock_gettime(CLOCK_REALTIME)` stays
+  a read with no syscall.
+- **Monotonic time** stays the vDSO's.
+- **Rejected:** a kernel UTC (the kernel knows no wall time, and clocks
+  were cut for that reason).
