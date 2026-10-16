@@ -318,6 +318,13 @@ and the option:
   the vblank time it computes (no leeway for a deadline thread), and its
   period starts when it wakes. m2's `timer.wake_error_p99` measures that
   path, so the `timeline.wake` budgets went with their bench.
+- A counter carries a count, not a time, so the vblank time that
+  present feedback reports comes from the display driver: the display
+  engine's own scanout timestamp where it has one, else the vblank
+  interrupt packet's timestamp (payload[0], taken when the IRQ fires).
+  Never the time a counter wakes a thread, which is late by the wake
+  latency the frame-timing budget is meant to catch. A synthetic vblank
+  is marked as estimated.
 - Tests: mode 15 went, and mode 16's alignment checks (385-388) with
   it. The counters suite's refusal of options on a counter's profile
   uses HANDOFF.

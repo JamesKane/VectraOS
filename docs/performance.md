@@ -93,7 +93,7 @@ against croi.
 | minimal windowed app | ≤ 12 API calls |
 | cold start → first frame | < 50 ms |
 | terminal key → draw | < 1 ms; on the glass in ≤ 2 frames |
-| game-loop frame error, p99 | ≤ 1 ms |
+| game-loop frame error against present feedback, p99 | ≤ 1 ms |
 | synth at 128 frames | 0 underruns |
 | editor steady state | 0 dropped frames, 0 allocations in layout and paint |
 | workspace mode switch, tile ↔ space, 20 windows *(new)* | animated, and done within 2 frames of input |
