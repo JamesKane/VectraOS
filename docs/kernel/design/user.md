@@ -171,11 +171,14 @@ syscalls 110-111):
   Static PIEs load at a random base (K11b).
 - User programs (`croi_user_program` in cmake/CroiUser.cmake): C and/or
   Embedded Swift, linked at 0x1000000 with separate page-aligned
-  segments, against the user runtime (user/lib/runtime, C: `_start` reads
-  the bootstrap message, `croi_take_startup_handle`, stdout line-buffered
-  into debuglog records, a size-class heap over 64 KiB VMO chunks in the
-  root VMAR, plus lib/rt). Swift user code imports `CroiRuntime`
-  (user/include/module.modulemap); the ABI headers it reaches are module
+  segments, against the floor (system/sys/floor, todhchai's, the one user
+  runtime since D49: `_start` reads the bootstrap message,
+  `td_startup_take`, stdout line-buffered into debuglog records, a
+  size-class heap over 1 MiB VMO chunks in the root VMAR, threads' blocks
+  and ELF TLS, a port per thread for its waits and sleeps; plus lib/rt).
+  Swift user code imports `CroiRuntime` (user/include/module.modulemap:
+  syscall.h, and the floor's td_floor.h and td_native.h); the floor
+  imports `CroiSyscall`; the ABI headers it reaches are module
   `CroiAbi` in kernel/include (which CKernel re-exports through abi.h), so
   user code never builds the kernel's private headers. The headers are the
   ABI's one source (D45): statuses, rights and object types are object.h's
@@ -223,8 +226,8 @@ include/profile.h):
   it measures the budgets from the trace (user marks via TRACE_OP_RINGS, 4:
   each CPU's ring as a read/map-only VMO) and reports them as `budget`
   lines (K9f: enforced only with `croi.enforce_budgets=1` where
-  `croi_timing_is_real()`, user/lib/runtime/timing.c; see "Timing
-  discipline"). KVM: null 32-36 ns,
+  `Sys.timingIsReal`, CPUID's hypervisor leaf through the floor's
+  `td_cpuid`; see "Timing discipline"). KVM: null 32-36 ns,
   channel_call ~1.4 µs (target 1 µs, enforced against 1.6 µs for now),
   port wake median ~1.75 µs (p99 noisy, not enforced), wake error p99
   27-46 µs. Measure wake error with `Sys.now()` directly: converting trace

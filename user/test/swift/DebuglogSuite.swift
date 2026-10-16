@@ -6,8 +6,8 @@ import CroiRuntime
 /// when V1 cut debuglog_read; RingCheck covers torn slots on the host.
 enum DebuglogSuite {
     static func run() {
-        let vmo = Handle(adopting: croi_take_startup_handle(croi_pa_hnd(UInt32(CROI_PA_VMO_DEBUGLOG), 0)))
-        let counter = Handle(adopting: croi_take_startup_handle(croi_pa_hnd(UInt32(CROI_PA_DEBUGLOG_COUNTER), 0)))
+        let vmo = Handle(adopting: td_startup_take(croi_pa_hnd(UInt32(CROI_PA_VMO_DEBUGLOG), 0)))
+        let counter = Handle(adopting: td_startup_take(croi_pa_hnd(UInt32(CROI_PA_DEBUGLOG_COUNTER), 0)))
         check(vmo.raw != 0 && counter.raw != 0, "the ring and its counter handed over")
         refusals(vmo, counter)
         let mapping = Mapping(vmo, length: mapped, permissions: UInt32(CROI_VM_PERM_READ))
@@ -36,10 +36,10 @@ enum DebuglogSuite {
     static func refusals(_ vmo: borrowing Handle, _ counter: borrowing Handle) {
         var at: UInt64 = 0
         let rw = UInt32(CROI_VM_PERM_READ) | UInt32(CROI_VM_PERM_WRITE)
-        check(unsafe croi_vmar_map(croi_vmar_root_self(), rw, 0, vmo.raw, 0, mapped, &at) == Status.accessDenied,
+        check(unsafe croi_vmar_map(td_runtime_vmar_root, rw, 0, vmo.raw, 0, mapped, &at) == Status.accessDenied,
               "the ring can't be mapped writable")
         check(croi_counter_add(counter.raw, 1) == Status.accessDenied, "nor its counter added to")
-        let resource = croi_take_startup_handle(croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0))
+        let resource = td_startup_take(croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0))
         var out: UInt32 = 0
         check(Sys.call(CROI_SYS_DEBUGLOG_CREATE, UInt64(resource), 0, Sys.address(&out)) == Status.invalidArgs
                   && Sys.call(CROI_SYS_DEBUGLOG_CREATE, 0, 0x4000_0000, Sys.address(&out)) == Status.invalidArgs,
@@ -78,7 +78,7 @@ enum DebuglogSuite {
         check(read(&ring, &record, &dropped) && dropped == 0, "and read back")
         let header = unsafe record.span.bytes.unsafeLoadUnaligned(as: croi_log_record_t.self)
         var basic = croi_info_handle_basic_t()
-        check(Sys.call(CROI_SYS_OBJECT_GET_INFO, UInt64(croi_process_self()), UInt64(CROI_INFO_HANDLE_BASIC),
+        check(Sys.call(CROI_SYS_OBJECT_GET_INFO, UInt64(td_runtime_process_self), UInt64(CROI_INFO_HANDLE_BASIC),
                        Sys.address(&basic), UInt64(MemoryLayout<croi_info_handle_basic_t>.size), 0, 0) == 0,
               "this process's koid")
         var same = header.sequence == sequence && header.datalen == UInt16(text.utf8CodeUnitCount)

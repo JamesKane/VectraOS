@@ -7,7 +7,7 @@ import CroiRuntime
 /// instead, so a slow vCPU takes longer rather than failing.
 enum IdleSuite {
     static func run() {
-        let root = Handle(adopting: croi_take_startup_handle(croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0)))
+        let root = Handle(adopting: td_startup_take(croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0)))
         refusals(root)
         chosen(root)
         bound(root)

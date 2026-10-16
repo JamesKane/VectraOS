@@ -96,7 +96,10 @@ work, in order:
    become counters; VMO reads and writes become mappings, through one
    bootfs helper instead of the boilerplate in eight programs; sizes and
    process info are info topics. The hosted test kernel (SysHost) follows
-   the same model, so todhchai's hosted tests keep running.
+   the same model, so todhchai's hosted tests keep running. **Begun:**
+   the floor is the one user runtime (D49). It is lifted onto V1's
+   calls, with a port per thread, and userboot, m2 and the suites run on
+   it; croi's runtime is gone. Sys, SysHost and libc come next.
 3. **Tier 1 (D47).** todhchai's `*-todhchai` toolchain, built from the
    pinned Swift 6.4.0 and LLVM sources with its patch series, and tier 1's
    sysroot (libc, pthreads, libc++, the Swift runtime, FoundationEssentials).

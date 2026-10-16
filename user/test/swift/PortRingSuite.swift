@@ -39,7 +39,7 @@ enum PortRingSuite {
                                                    slotSize: PortRingSuite.slotSize,
                                                    format: UInt64(CROI_PORT_RING_FORMAT)) else {
                 check(false, "its ring is the one ring, of port packets")
-                croi_exit(1)
+                td_exit(1)
             }
             ring = attached
         }

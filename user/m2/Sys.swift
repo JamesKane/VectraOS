@@ -31,7 +31,22 @@ enum Sys {
         return bound < 0 ? bound : bound == 1 ? 0 : Int64(item.status)
     }
 
-    static func now() -> UInt64 { croi_clock_monotonic() }
+    static func now() -> UInt64 { UInt64(td_monotonic()) }
+
+    /// Whether timings are real (hardware or KVM), not QEMU TCG's: the
+    /// kernel's rule (TraceSelfTest.enforcesCost). CPUID's hypervisor leaf
+    /// says "TCGTCGTCGTCG" under TCG; arm64 and rv64 run only under TCG.
+    static var timingIsReal: Bool {
+        #if arch(x86_64)
+            var r = InlineArray<4, UInt32>(repeating: 0)
+            unsafe withUnsafeMutablePointer(to: &r) { p in
+                unsafe td_cpuid(0x4000_0000, 0, UnsafeMutableRawPointer(p).assumingMemoryBound(to: UInt32.self))
+            }
+            return !(r[1] == 0x5447_4354 && r[2] == 0x4354_4743 && r[3] == 0x4743_5447)
+        #else
+            return false
+        #endif
+    }
 
     /// A port nothing is bound to: every thread's sleep (V1 cut nanosleep,
     /// D25).
@@ -49,7 +64,7 @@ enum Sys {
     }
 
     static func say(_ text: StaticString) {
-        unsafe croi_write(UnsafeRawPointer(text.utf8Start).assumingMemoryBound(to: CChar.self), text.utf8CodeUnitCount)
+        unsafe td_stdout_write(UnsafeRawPointer(text.utf8Start).assumingMemoryBound(to: CChar.self), text.utf8CodeUnitCount)
     }
 
     /// A counter: the bench's handshakes and wakes (V1 cut events, D23).
@@ -120,7 +135,7 @@ enum Sys {
     static func spawn(_ entry: ThreadEntry, _ argument: UInt64) throws(Failure) -> UInt32 {
         let name: StaticString = "m2-worker"
         var thread: UInt32 = 0
-        try check("creating a thread", call(CROI_SYS_THREAD_CREATE, UInt64(croi_process_self()),
+        try check("creating a thread", call(CROI_SYS_THREAD_CREATE, UInt64(td_runtime_process_self),
                                             unsafe UInt64(UInt(bitPattern: name.utf8Start)),
                                             UInt64(name.utf8CodeUnitCount), 0, address(&thread)))
         let size: UInt64 = 64 * 1024
@@ -128,7 +143,7 @@ enum Sys {
         var base: UInt64 = 0
         try check("making a stack", call(CROI_SYS_VMO_CREATE, size, 0, address(&stack)))
         let rw = UInt32(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE)
-        try check("mapping a stack", unsafe croi_vmar_map(croi_vmar_root_self(), rw, 0, stack, 0, size, &base))
+        try check("mapping a stack", unsafe croi_vmar_map(td_runtime_vmar_root, rw, 0, stack, 0, size, &base))
         close(stack)
         #if arch(x86_64)
         let sp = base + size - 8  // as if called: a C entry expects it

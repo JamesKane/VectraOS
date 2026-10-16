@@ -185,7 +185,7 @@ croi_user_binary(${_vdso_bin} PIC
   SOURCES ${_user_dir}/vdso/header.S ${_user_dir}/vdso/vdso.c
   LINKER_SCRIPT ${_user_dir}/vdso/vdso.ld
   INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/include)
-croi_user_runtime()
+croi_user_floor()
 # Its suites (Suite.swift): one file each, run with swift.suite=<name>.
 set(_swift_test_sources ${_user_dir}/test/swift/Main.swift ${_user_dir}/test/swift/Suite.swift
     ${_user_dir}/test/swift/BindSuite.swift ${_user_dir}/test/swift/VmoSuite.swift
@@ -196,6 +196,8 @@ set(_swift_test_sources ${_user_dir}/test/swift/Main.swift ${_user_dir}/test/swi
     ${_user_dir}/test/swift/MemorySuite.swift
     ${_user_dir}/test/swift/IdleSuite.swift ${_user_dir}/test/swift/RingSuite.swift
     ${_user_dir}/test/swift/DebuglogSuite.swift ${_user_dir}/test/swift/PortRingSuite.swift
+    ${_user_dir}/test/swift/FloorSuite.swift
+    ${_user_dir}/lib/image/Image.swift
     ${PROJECT_SOURCE_DIR}/lib/ring/Ring/Ring.swift ${PROJECT_SOURCE_DIR}/lib/ring/Ring/RingMemory.swift)
 set(_swift_test ${CMAKE_CURRENT_BINARY_DIR}/swifttest.elf)
 croi_user_program(${_swift_test} PIE SWIFT ${_swift_test_sources})
@@ -218,7 +220,7 @@ set_source_files_properties(userprogram.S PROPERTIES
 # (vx mkbootfs), served on the ESP as \croi\bootfs.img.
 set(_m2 ${CMAKE_CURRENT_BINARY_DIR}/m2.elf)
 croi_user_program(${_m2} PIE SWIFT ${_user_dir}/m2/Main.swift ${_user_dir}/m2/Sys.swift ${_user_dir}/m2/Bench.swift
-                  ${_user_dir}/m2/RingBench.swift ${PROJECT_SOURCE_DIR}/lib/ring/Ring/Ring.swift
+                  ${_user_dir}/m2/RingBench.swift ${_user_dir}/lib/image/Image.swift ${PROJECT_SOURCE_DIR}/lib/ring/Ring/Ring.swift
                   ${PROJECT_SOURCE_DIR}/lib/ring/Ring/RingMemory.swift)
 set(CROI_BOOTFS_IMAGE ${CMAKE_BINARY_DIR}/bootfs.img PARENT_SCOPE)
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img

@@ -125,7 +125,7 @@ enum CounterSuite {
     /// A counter with a deadline profile lends it to the fair thread its
     /// packet wakes, from the wakeup until the thread blocks again.
     static func lending() {
-        let resource = Handle(adopting: croi_take_startup_handle(croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0)))
+        let resource = Handle(adopting: td_startup_take(croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0)))
         let deadline = profile(resource, deadline: true)
         let fair = profile(resource, deadline: false)
         let counter = Handle(creating: CROI_SYS_COUNTER_CREATE)

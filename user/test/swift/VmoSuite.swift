@@ -50,12 +50,12 @@ enum VmoSuite {
     /// resource (the root resource here); the call consumes the handle,
     /// even when it refuses.
     static func executable() {
-        let resource = Handle(adopting: croi_take_startup_handle(croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0)))
+        let resource = Handle(adopting: td_startup_take(croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0)))
         let rx = UInt32(CROI_VM_PERM_READ) | UInt32(CROI_VM_PERM_EXECUTE)
         var vmo: UInt32 = 0, other: UInt32 = 0, exec: UInt32 = 0
         var at: UInt64 = 0
         check(Sys.call(CROI_SYS_VMO_CREATE, pageSize, 0, Sys.address(&vmo)) == 0, "a VMO")
-        check(unsafe croi_vmar_map(croi_vmar_root_self(), rx, 0, vmo, 0, pageSize, &at) == Status.accessDenied,
+        check(unsafe croi_vmar_map(td_runtime_vmar_root, rx, 0, vmo, 0, pageSize, &at) == Status.accessDenied,
               "an anonymous VMO isn't executable")
         check(Sys.duplicate(UInt64(vmo), UInt64(CROI_RIGHT_SAME_RIGHTS), &other) == 0, "a duplicate")
         check(Sys.call(CROI_SYS_VMO_REPLACE_AS_EXECUTABLE, UInt64(other), UInt64(vmo), Sys.address(&exec))
@@ -195,7 +195,7 @@ enum VmoSuite {
     /// allow. The faults come to this process's exception channel.
     static func faultStatuses() {
         var raw: UInt32 = 0
-        check(Sys.call(CROI_SYS_TASK_CREATE_EXCEPTION_CHANNEL, UInt64(croi_process_self()), 0, Sys.address(&raw)) == 0,
+        check(Sys.call(CROI_SYS_TASK_CREATE_EXCEPTION_CHANNEL, UInt64(td_runtime_process_self), 0, Sys.address(&raw)) == 0,
               "this process's exception channel")
         let channel = Handle(adopting: raw)
         let pager = Handle(creating: CROI_SYS_PAGER_CREATE)
@@ -295,7 +295,7 @@ enum VmoSuite {
             var actual: UInt64 = 0
             var span = page.mutableSpan
             let status = span.withUnsafeMutableBytes { bytes in
-                unsafe Sys.call(CROI_SYS_PROCESS_READ_MEMORY, UInt64(croi_process_self()), viewed,
+                unsafe Sys.call(CROI_SYS_PROCESS_READ_MEMORY, UInt64(td_runtime_process_self), viewed,
                                 UInt64(UInt(bitPattern: bytes.baseAddress)), pageSize, Sys.address(&actual))
             }
             guard status == 0 else { break }
@@ -317,7 +317,7 @@ enum VmoSuite {
         let race = unsafe UnsafeMutablePointer<Race>(bitPattern: UInt(argument))!
         let vmo = unsafe UInt64(race.pointee.vmo)
         let byte = unsafe race.pointee.byte
-        let own = croi_vmar_root_self()
+        let own = td_runtime_vmar_root
         var at: UInt64 = 0
         check(unsafe croi_vmar_map(own, UInt32(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE), 0,
                                    UInt32(truncatingIfNeeded: vmo), 0, pageSize, &at) == 0, "a filler's mapping")
@@ -335,7 +335,7 @@ enum VmoSuite {
     /// protect goes on past a range that fails.
     static func vmarBatches() {
         let vmo = Handle(vmo: 4 * pageSize)
-        let own = croi_vmar_root_self()
+        let own = td_runtime_vmar_root
         let rw = UInt32(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE)
         var maps = InlineArray<4, croi_vmar_map_item_t>(
             repeating: croi_vmar_map_item_t(vmo: vmo.raw, options: rw, vmar_offset: 0, vmo_offset: 0, len: pageSize,

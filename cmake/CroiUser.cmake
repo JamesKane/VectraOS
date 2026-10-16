@@ -28,29 +28,34 @@ function(croi_user_binary output)
     COMMENT "Building user binary ${_name}")
 endfunction()
 
-# User programs (K8a): ELF executables linked at 0x1000000 with the user
-# runtime (user/lib/runtime: entry and processargs, stdout over debuglog,
-# the heap; lib/rt's mem*, stack guard and 128-bit division), from C
-# and/or Embedded Swift sources. The kernel loads them (ProgramLoader),
-# userboot from bootfs (K8b).
+# User programs (K8a): ELF executables linked at 0x1000000 with the floor
+# (system/sys/floor, D49: entry and processargs, stdout over debuglog, the
+# heap, threads' blocks and TLS; lib/rt's mem*, stack guard and 128-bit
+# division), from C and/or Embedded Swift sources. The kernel loads them
+# (ProgramLoader), userboot from bootfs (K8b).
+set(CROI_FLOOR_DIR ${PROJECT_SOURCE_DIR}/system/sys/floor)
 set(CROI_USER_COMMON_CFLAGS --target=${CROI_CLANG_TRIPLE} ${CROI_USER_CFLAGS} -std=c23 -O2 -ffreestanding
     -fno-omit-frame-pointer -ffunction-sections -fdata-sections -fno-pic -fno-pie
-    -I${PROJECT_SOURCE_DIR}/user/include -I${PROJECT_SOURCE_DIR}/kernel/include)
+    -I${PROJECT_SOURCE_DIR}/user/include -I${PROJECT_SOURCE_DIR}/kernel/include -I${CROI_FLOOR_DIR}/include)
 
-# croi_user_runtime(): builds ${CROI_USER_RUNTIME} once per tree.
-function(croi_user_runtime)
-  set(_dir ${CMAKE_BINARY_DIR}/user-runtime)
-  set(_sources
-    ${PROJECT_SOURCE_DIR}/user/lib/runtime/start.c
-    ${PROJECT_SOURCE_DIR}/user/lib/runtime/stdout.c
-    ${PROJECT_SOURCE_DIR}/user/lib/runtime/malloc.c
-    ${PROJECT_SOURCE_DIR}/user/lib/runtime/timing.c
-    ${PROJECT_SOURCE_DIR}/user/lib/runtime/image.c
+# croi_user_floor(): builds the floor once per tree, ${CROI_USER_FLOOR}.
+function(croi_user_floor)
+  set(_dir ${CMAKE_BINARY_DIR}/user-floor)
+  set(_c_sources
+    ${CROI_FLOOR_DIR}/runtime.c
+    ${PROJECT_SOURCE_DIR}/system/libc/native/errno.c
     ${PROJECT_SOURCE_DIR}/lib/rt/string.c
     ${PROJECT_SOURCE_DIR}/lib/rt/int128.c
     ${PROJECT_SOURCE_DIR}/lib/rt/stack_protector.c)
+  set(_entry ${CROI_FLOOR_DIR}/entry/${CROI_ARCH}.S)
+  set(_swift_sources
+    ${CROI_FLOOR_DIR}/Start.swift ${CROI_FLOOR_DIR}/Stdout.swift ${CROI_FLOOR_DIR}/Heap.swift
+    ${CROI_FLOOR_DIR}/Thread.swift ${CROI_FLOOR_DIR}/Threads.swift ${CROI_FLOOR_DIR}/Posix.swift
+    ${CROI_FLOOR_DIR}/Waits.swift)
+  file(GLOB _headers ${CROI_FLOOR_DIR}/include/* ${PROJECT_SOURCE_DIR}/user/include/croi/*.h
+       ${PROJECT_SOURCE_DIR}/kernel/include/*.h)
   # Two flavors: fixed-address (ET_EXEC programs) and -fPIE (static PIEs,
-  # K11b), libcroi-runtime.a and libcroi-runtime-pie.a.
+  # K11b), libfloor.a and libfloor-pie.a.
   foreach(_flavor "" "-pie")
     set(_objects)
     set(_commands)
@@ -58,7 +63,7 @@ function(croi_user_runtime)
     if(_flavor STREQUAL "-pie")
       set(_code -fPIE)
     endif()
-    foreach(_source ${_sources})
+    foreach(_source ${_c_sources} ${_entry})
       get_filename_component(_name ${_source} NAME_WE)
       set(_object ${_dir}/${_name}${_flavor}.o)
       set(_protect -fstack-protector-strong)
@@ -69,17 +74,29 @@ function(croi_user_runtime)
                                     -c ${_source} -o ${_object})
       list(APPEND _objects ${_object})
     endforeach()
-    add_custom_command(OUTPUT ${_dir}/libcroi-runtime${_flavor}.a
+    # The floor's Swift: one Embedded module, runtime-free (-no-allocations:
+    # it runs beneath tier 1's full Swift too, M6c).
+    set(_xcc)
+    foreach(_f ${CROI_USER_CFLAGS} ${_code} -std=c23 -fno-omit-frame-pointer -I${PROJECT_SOURCE_DIR}/user/include
+               -I${PROJECT_SOURCE_DIR}/kernel/include -I${CROI_FLOOR_DIR}/include)
+      list(APPEND _xcc -Xcc ${_f})
+    endforeach()
+    list(APPEND _commands COMMAND ${CMAKE_Swift_COMPILER} -target ${CROI_SWIFT_TRIPLE}
+         -enable-experimental-feature Embedded -enable-experimental-feature Extern
+         -parse-as-library -strict-memory-safety -wmo -Osize -Xfrontend -no-allocations
+         -Xfrontend -function-sections -module-name Floor ${_xcc}
+         -c ${_swift_sources} -o ${_dir}/floor-swift${_flavor}.o)
+    list(APPEND _objects ${_dir}/floor-swift${_flavor}.o)
+    add_custom_command(OUTPUT ${_dir}/libfloor${_flavor}.a
       COMMAND ${CMAKE_COMMAND} -E make_directory ${_dir}
       ${_commands}
-      COMMAND ${CMAKE_COMMAND} -E rm -f ${_dir}/libcroi-runtime${_flavor}.a
-      COMMAND ${CMAKE_AR} rcs ${_dir}/libcroi-runtime${_flavor}.a ${_objects}
-      DEPENDS ${_sources} ${PROJECT_SOURCE_DIR}/user/include/croi/runtime.h
-              ${PROJECT_SOURCE_DIR}/user/include/croi/syscall.h
-      COMMENT "Building the user runtime${_flavor}")
+      COMMAND ${CMAKE_COMMAND} -E rm -f ${_dir}/libfloor${_flavor}.a
+      COMMAND ${CMAKE_AR} rcs ${_dir}/libfloor${_flavor}.a ${_objects}
+      DEPENDS ${_c_sources} ${_entry} ${_swift_sources} ${_headers}
+      COMMENT "Building the floor${_flavor}")
   endforeach()
-  set(CROI_USER_RUNTIME ${_dir}/libcroi-runtime.a PARENT_SCOPE)
-  set(CROI_USER_RUNTIME_PIE ${_dir}/libcroi-runtime-pie.a PARENT_SCOPE)
+  set(CROI_USER_FLOOR ${_dir}/libfloor.a PARENT_SCOPE)
+  set(CROI_USER_FLOOR_PIE ${_dir}/libfloor-pie.a PARENT_SCOPE)
 endfunction()
 
 #   croi_user_program(<out.elf> [PIE] [EXPORT_DYNAMIC] [SOURCES <c>...] [SWIFT <swift>...] [STACK <bytes>])
@@ -89,11 +106,11 @@ function(croi_user_program output)
   # croi's loaders, which apply its R_*_RELATIVE relocations.
   set(_cpie)
   set(_link -static --image-base=0x1000000)
-  set(_runtime ${CROI_USER_RUNTIME})
+  set(_runtime ${CROI_USER_FLOOR})
   if(U_PIE)
     set(_cpie -fPIE)
     set(_link -static -pie --no-dynamic-linker -ztext)
-    set(_runtime ${CROI_USER_RUNTIME_PIE})
+    set(_runtime ${CROI_USER_FLOOR_PIE})
   endif()
   if(NOT U_STACK)
     set(U_STACK 262144)
@@ -123,10 +140,11 @@ function(croi_user_program output)
   endforeach()
   if(U_SWIFT)
     # The user-mode flags (not the kernel's -mno-sse and friends); C
-    # declarations come from user/include/module.modulemap (CroiRuntime).
+    # declarations come from user/include/module.modulemap (CroiRuntime)
+    # and the floor's (system/sys/floor/include).
     set(_xcc)
     foreach(_f ${CROI_USER_CFLAGS} ${_cpie} -std=c23 -fno-omit-frame-pointer -I${PROJECT_SOURCE_DIR}/user/include
-               -I${PROJECT_SOURCE_DIR}/kernel/include)
+               -I${PROJECT_SOURCE_DIR}/kernel/include -I${CROI_FLOOR_DIR}/include)
       list(APPEND _xcc -Xcc ${_f})
     endforeach()
     list(APPEND _commands COMMAND ${CMAKE_Swift_COMPILER} -target ${CROI_SWIFT_TRIPLE}

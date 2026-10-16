@@ -36,7 +36,7 @@ extension Bench {
         var vmo: UInt32 = 0, base: UInt64 = 0
         try Sys.check("making a ring", Sys.call(CROI_SYS_VMO_CREATE, mapped, 0, Sys.address(&vmo)))
         let rw = UInt32(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE)
-        try Sys.check("mapping a ring", unsafe croi_vmar_map(croi_vmar_root_self(), rw, 0, vmo, 0, mapped, &base))
+        try Sys.check("mapping a ring", unsafe croi_vmar_map(td_runtime_vmar_root, rw, 0, vmo, 0, mapped, &base))
         Sys.close(vmo)
         guard unsafe NativeRing.create(UnsafeMutableRawPointer(bitPattern: UInt(base))!, size: size,
                                        slotSize: ringSlotSize, count: count, format: ringFormat) else {
@@ -105,7 +105,7 @@ extension Bench {
     /// `entries` slots from this core to the consumer's: the time per 1000
     /// slots and the doorbells rung, both sides.
     static func ringThroughput(resource: UInt32, thread: UInt32) throws(Failure) -> (UInt64, UInt64) {
-        let entries: UInt64 = croi_timing_is_real() ? 4_000_000 : 200_000
+        let entries: UInt64 = Sys.timingIsReal ? 4_000_000 : 200_000
         let (base, size) = try makeRing(count: 256)
         ready = try Sys.counter()
         go = try Sys.counter()
@@ -154,7 +154,7 @@ extension Bench {
         Sys.wait(worker, UInt32(CROI_SIGNAL_TASK_TERMINATED))
         let elapsed = ringShared.finished - start
         for handle in [worker, ready, go, dataBell, spaceBell, dataPort, spacePort] { Sys.close(handle) }
-        _ = croi_vmar_unmap(croi_vmar_root_self(), base, (UInt64(size) + 4095) & ~4095)
+        _ = croi_vmar_unmap(td_runtime_vmar_root, base, (UInt64(size) + 4095) & ~4095)
         guard ringShared.wrong == 0, !ring.broken else {
             throw Failure(what: "carrying ring entries", status: Int64(ringShared.wrong))
         }
@@ -192,7 +192,7 @@ extension Bench {
     /// One submission and its completion at a time, both sides spinning:
     /// the mean round trip (ns) and the doorbells either side would ring.
     static func ringRoundTrip(resource: UInt32, thread: UInt32) throws(Failure) -> (UInt64, UInt64) {
-        let trips: UInt64 = croi_timing_is_real() ? 100_000 : 5_000
+        let trips: UInt64 = Sys.timingIsReal ? 100_000 : 5_000
         let (requestBase, size) = try makeRing(count: 64)
         let (replyBase, _) = try makeRing(count: 64)
         ready = try Sys.counter()
@@ -232,8 +232,8 @@ extension Bench {
         Sys.wait(worker, UInt32(CROI_SIGNAL_TASK_TERMINATED))
         for handle in [worker, ready, go] { Sys.close(handle) }
         let mapped = (UInt64(size) + 4095) & ~4095
-        _ = croi_vmar_unmap(croi_vmar_root_self(), requestBase, mapped)
-        _ = croi_vmar_unmap(croi_vmar_root_self(), replyBase, mapped)
+        _ = croi_vmar_unmap(td_runtime_vmar_root, requestBase, mapped)
+        _ = croi_vmar_unmap(td_runtime_vmar_root, replyBase, mapped)
         guard wrong == 0 else { throw Failure(what: "completing ring submissions", status: Int64(wrong)) }
         return (elapsed / trips, kicks + ringShared.kicks)
     }

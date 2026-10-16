@@ -10,7 +10,7 @@ import CroiRuntime
 /// (irq.wait_wake_median).
 enum InterruptSuite {
     static func run() {
-        let root = Handle(adopting: croi_take_startup_handle(croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0)))
+        let root = Handle(adopting: td_startup_take(croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0)))
         stateMachine(root)
         rtc(root)
         msi(root)
@@ -195,13 +195,13 @@ enum InterruptSuite {
         }
 
         func read(_ register: UInt8) -> UInt8 {
-            croi_outb(0x70, 0x80 | register)  // NMIs stay off while we poke
-            return croi_inb(0x71)
+            td_port_out(0x70, 1, UInt32(0x80 | register))  // NMIs stay off while we poke
+            return UInt8(truncatingIfNeeded: td_port_in(0x71, 1))
         }
 
         func write(_ register: UInt8, _ value: UInt8) {
-            croi_outb(0x70, 0x80 | register)
-            croi_outb(0x71, value)
+            td_port_out(0x70, 1, UInt32(0x80 | register))
+            td_port_out(0x71, 1, UInt32(value))
         }
 
         func start() {  // 1024 Hz periodic
@@ -464,8 +464,9 @@ enum InterruptSuite {
     /// suite (`swift.ecam=0x<hex>`), or nil.
     static func ecam() -> UInt64? {
         let prefix: StaticString = "swift.ecam=0x"
-        for i in 0..<croi_environ_count() {
-            guard let entry = unsafe croi_environ(i) else { continue }
+        var index = 0
+        while let entry = unsafe environ[index] {
+            index += 1
             let length = unsafe strlen(entry)
             guard length > prefix.utf8CodeUnitCount else { continue }
             var matches = true

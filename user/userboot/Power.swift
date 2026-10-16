@@ -63,7 +63,7 @@ enum Power {
         var size: UInt64 = 0
         var base: UInt64 = 0
         guard unsafe croi_vmo_size(bootData, &size) == 0,
-              unsafe croi_vmar_map(croi_vmar_root_self(), UInt32(CROI_VM_PERM_READ), 0,
+              unsafe croi_vmar_map(td_runtime_vmar_root, UInt32(CROI_VM_PERM_READ), 0,
                            bootData, 0, size, &base) == 0 else { return nil }
         let header = UInt64(MemoryLayout<croi_zbi_header_t>.size)
         var at = header  // past the container's header
@@ -129,7 +129,7 @@ enum Power {
         defer { _ = croi_handle_close(vmo) }
         try Userboot.call("mapping ACPI tables", Userboot.sys(CROI_SYS_VMO_SET_CACHE_POLICY, UInt64(vmo),
                                                               UInt64(CROI_CACHE_POLICY_CACHED)))
-        try Userboot.call("mapping ACPI tables", unsafe croi_vmar_map(croi_vmar_root_self(), UInt32(CROI_VM_PERM_READ),
+        try Userboot.call("mapping ACPI tables", unsafe croi_vmar_map(td_runtime_vmar_root, UInt32(CROI_VM_PERM_READ),
                                                               0, vmo, 0, length, &at))
         return unsafe UnsafeRawPointer(bitPattern: UInt(at + (address - first)))!
     }

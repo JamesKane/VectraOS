@@ -12,8 +12,9 @@ enum Suite {
     /// Whether an environment entry is `swift.suite=` followed by `name`
     /// (any name if nil).
     static func requested(_ name: StaticString? = nil) -> Bool {
-        for i in 0..<croi_environ_count() {
-            guard let entry = unsafe croi_environ(i) else { continue }
+        var index = 0
+        while let entry = unsafe environ[index] {
+            index += 1
             let length = unsafe strlen(entry)
             guard unsafe starts(entry, length, prefix, at: 0) else { continue }
             guard let name else { return true }
@@ -57,15 +58,17 @@ enum Suite {
             DebuglogSuite.run()
         } else if requested("portring") {
             PortRingSuite.run()
+        } else if requested("floor") {
+            FloorSuite.run()
         } else if requested("idle") {
             IdleSuite.run()
         } else if requested("interrupts") {
             InterruptSuite.run()  // run on its own (ProcessSelfTest.runInterrupts)
         } else {
             print("swift: no such suite")
-            croi_exit(2)
+            td_exit(2)
         }
-        croi_exit(0x600D)
+        td_exit(0x600D)
     }
 }
 
@@ -74,7 +77,7 @@ func check(_ condition: Bool, _ name: StaticString) {
     guard condition else {
         print("swift: FAILED: ", terminator: "")
         print(name)
-        croi_exit(1)
+        td_exit(1)
     }
 }
 
@@ -142,9 +145,11 @@ enum Sys {
         return done < 0 ? done : Int64(item.status)
     }
 
-    static func now() -> UInt64 { croi_clock_monotonic() }
+    static func now() -> UInt64 { UInt64(td_monotonic()) }
 
     /// Sleeps `nanoseconds`: a port_wait on an empty port (principle 10).
+    /// Not the floor's td_sleep: the suites' threads are raw ones, with no
+    /// floor block for a port.
     static func sleep(_ nanoseconds: UInt64) {
         let port = Port()
         _ = port.next(deadline: now() + nanoseconds)
@@ -261,7 +266,7 @@ struct Mapping: ~Copyable {
     init(_ vmo: borrowing Handle, offset: UInt64 = 0, length: UInt64,
          permissions: UInt32 = UInt32(CROI_VM_PERM_READ) | UInt32(CROI_VM_PERM_WRITE)) {
         var at: UInt64 = 0
-        let status = unsafe croi_vmar_map(croi_vmar_root_self(), UInt32(permissions), 0,
+        let status = unsafe croi_vmar_map(td_runtime_vmar_root, UInt32(permissions), 0,
                               vmo.raw, offset, length, &at)
         check(status == 0, "mapping a VMO")
         address = at
@@ -279,12 +284,12 @@ struct Mapping: ~Copyable {
         }
     }
 
-    deinit { _ = croi_vmar_unmap(croi_vmar_root_self(), address, length) }
+    deinit { _ = croi_vmar_unmap(td_runtime_vmar_root, address, length) }
 }
 
 /// A thread of this process running `entry(argument)` on a stack of its
-/// own; `entry` ends with `Thread.exit()`. Joined through a port, never
-/// object_wait_one (cut in V1).
+/// own; `entry` ends with `Thread.exit()`. Joined through the floor's wait
+/// (object_wait_one is cut in V1).
 struct Thread: ~Copyable {
     let handle: Handle
     let stack: Mapping
@@ -294,7 +299,7 @@ struct Thread: ~Copyable {
         stack = Mapping(Handle(vmo: Thread.stackSize), length: Thread.stackSize)
         var out: UInt32 = 0
         let name: StaticString = "t"
-        check(Sys.call(CROI_SYS_THREAD_CREATE, UInt64(croi_process_self()), unsafe UInt64(UInt(bitPattern: name.utf8Start)),
+        check(Sys.call(CROI_SYS_THREAD_CREATE, UInt64(td_runtime_process_self), unsafe UInt64(UInt(bitPattern: name.utf8Start)),
                        1, 0, Sys.address(&out)) == 0, "creating a thread")
         handle = Handle(adopting: out)
         var top = stack.address + Thread.stackSize
@@ -305,12 +310,11 @@ struct Thread: ~Copyable {
         check(Sys.call(CROI_SYS_THREAD_START, handle.arg, pc, top, argument) == 0, "starting a thread")
     }
 
-    /// Whether it ended by `deadline`.
+    /// Whether it ended by `deadline`: the floor's wait.
     func ended(by deadline: UInt64) -> Bool {
-        let port = Port()
-        check(port.bind(handle, UInt32(CROI_BIND_SIGNALS), key: 1, trigger: UInt64(CROI_SIGNAL_TASK_TERMINATED)) == 0,
-              "binding a thread's end")
-        return port.next(deadline: deadline) != nil
+        let status = unsafe td_wait_one(handle.raw, UInt32(CROI_SIGNAL_TASK_TERMINATED), Int64(deadline), nil)
+        check(status == 0 || status == Int32(CROI_ERR_TIMED_OUT), "waiting for a thread's end")
+        return status == 0
     }
 
     /// Waits up to five seconds for it to end; a check fails if it doesn't.

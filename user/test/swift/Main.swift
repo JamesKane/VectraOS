@@ -25,14 +25,15 @@ struct SwiftTest {
         unsafe big.deallocate()
 
         // The environment from the bootstrap message.
-        for i in 0..<croi_environ_count() {
-            guard let entry = unsafe croi_environ(i) else { continue }
+        var index = 0
+        while let entry = unsafe environ[index] {
+            index += 1
             print("swift: env \(unsafe String(cString: entry))")
         }
 
-        let handles = croi_process_self() != 0 && croi_vmar_root_self() != 0 && croi_vdso_base() != 0
+        let handles = td_runtime_process_self != 0 && td_runtime_vmar_root != 0 && td_runtime_vdso_base != 0
         // The kernel's loader made PT_GNU_RELRO read only once relocated.
-        let relro = croi_relro_read_only() == 1
-        croi_exit(sum == 332_833_500 && aligned && last == 0xA5 && handles && relro ? 0x600D : 1)
+        let relro = Image.relroReadOnly() == 1
+        td_exit(sum == 332_833_500 && aligned && last == 0xA5 && handles && relro ? 0x600D : 1)
     }
 }

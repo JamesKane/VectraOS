@@ -5,7 +5,7 @@ import CroiRuntime
 /// PRESSURE binding on the root account replaced its five events.
 enum MemorySuite {
     static func run() {
-        let root = Handle(adopting: croi_take_startup_handle(croi_pa_hnd(UInt32(CROI_PA_ROOT_ACCOUNT), 0)))
+        let root = Handle(adopting: td_startup_take(croi_pa_hnd(UInt32(CROI_PA_ROOT_ACCOUNT), 0)))
         rootAccount(root)
         levels(root)
         print("swift: memory passed")

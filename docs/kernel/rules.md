@@ -93,8 +93,9 @@ machine's history:
 - `lib/elf/`  `ElfImage`: ELF parsing and loading (loader, kernel, userboot).
 - `lib/ring/` The one ring (D43): `ring.h` (format and C), `Ring/` (Swift),
               `check/` (RingCheck, the model checker), `tests/` (host).
-- `user/`     User space: the runtime (`user/lib/runtime`), headers
-              (`user/include`, module `CroiRuntime`), vDSO, test programs.
+- `user/`     User space: headers (`user/include`, modules `CroiSyscall`
+              and `CroiRuntime`), vDSO, test programs. Their runtime is
+              the floor (`system/sys/floor`, D49).
 - `ld/image.ld` Shared linker script: one PT_LOAD per permission (W^X).
 - `cmake/`    Toolchain file, per-arch settings, `croi_image()` helper.
 

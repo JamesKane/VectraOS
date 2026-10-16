@@ -1,9 +1,10 @@
-// The croi user runtime (user/lib/runtime): what every user program, C or
-// Embedded Swift, links against until Todhchai's libsys takes over for its
-// tier 0 services. `_start` reads the bootstrap message (processargs.h),
-// keeps its handles, and calls `main(argc, argv)`; returning from main
-// exits the process. stdout (putchar, croi_write) goes to the debuglog
-// handed over as fd 1, if there is one.
+// What a user program, C or Embedded Swift, reaches in C: the system
+// calls (syscall.h, its own module CroiSyscall), processargs, and the
+// floor's C interface (system/sys/floor/include: td_floor.h, td_native.h),
+// the one user runtime (D49). `_start` reads the bootstrap message, keeps
+// its handles (td_startup_take), and calls `main(argc, argv)`; returning
+// from main exits the process. stdout (putchar, td_stdout_write) goes to
+// the debuglog handed over as fd 1, if there is one.
 
 #pragma once
 
@@ -12,66 +13,20 @@
 
 #include "syscall.h"
 #include "processargs.h"
-
-// Takes the startup handle with this info word (croi_pa_hnd(type, arg)):
-// 0 if there was none or it was already taken.
-uint32_t croi_take_startup_handle(uint32_t info);
-
-// Handles the runtime keeps (0 if not handed over).
-uint32_t croi_process_self(void);
-uint32_t croi_vmar_root_self(void);
-
-// The vDSO's base address (the third start argument).
-uint64_t croi_vdso_base(void);
-
-// Monotonic nanoseconds, read through the vDSO (V1 cut the syscall, D26).
-uint64_t croi_clock_monotonic(void);
-
-// Zircon's zx_cache_flush through the vDSO (options CROI_CACHE_FLUSH_*,
-// vmo.h): 0, or a negative status.
-int32_t croi_cache_flush(const void *addr, uint64_t len, uint32_t options);
-
-// The environment strings from the bootstrap message.
-int croi_environ_count(void);
-const char *croi_environ(int index);
-
-// Writes to stdout (one debuglog record per line).
-void croi_write(const char *text, size_t length);
-void croi_flush(void);
-
-// Whether timings are real (hardware or KVM), not QEMU TCG's.
-bool croi_timing_is_real(void);
-
-// This program's PT_GNU_RELRO pages as loaded (run addresses, page
-// rounded as loaders protect them): false if it has none.
-bool croi_relro(uint64_t *start, uint64_t *end);
-
-// Whether the loader made those pages read only: 1, 0 if any is writable
-// (or not mapped), -1 if there are none or the maps can't be read.
-int croi_relro_read_only(void);
+#include "td_floor.h"
+#include "td_native.h"
 
 // Device registers, for drivers and the interrupts suite: volatile
-// accesses, which Swift can't express, and amd64's port I/O (inline
-// assembly).
+// accesses, which Swift can't express. Port I/O is the floor's
+// (td_port_in, td_port_out: amd64).
 static inline uint8_t croi_mmio_read8(uint64_t address) { return *(volatile uint8_t *)address; }
 static inline uint16_t croi_mmio_read16(uint64_t address) { return *(volatile uint16_t *)address; }
 static inline uint32_t croi_mmio_read32(uint64_t address) { return *(volatile uint32_t *)address; }
 static inline void croi_mmio_write16(uint64_t address, uint16_t value) { *(volatile uint16_t *)address = value; }
 static inline void croi_mmio_write32(uint64_t address, uint32_t value) { *(volatile uint32_t *)address = value; }
-#if defined(__x86_64__)
-static inline void croi_outb(uint16_t port, uint8_t value) { __asm__ volatile("outb %0, %1" ::"a"(value), "Nd"(port)); }
-static inline uint8_t croi_inb(uint16_t port) {
-  uint8_t value;
-  __asm__ volatile("inb %1, %0" : "=a"(value) : "Nd"(port));
-  return value;
-}
-#endif
 
-// Ends the process (flushing stdout).
-[[noreturn]] void croi_exit(int64_t code);
-
-// The C library floor the compilers and the Embedded Swift runtime call.
-int putchar(int c);
+// The C library floor the compilers and the Embedded Swift runtime call:
+// lib/rt's, and the floor's heap.
 int posix_memalign(void **pointer, size_t alignment, size_t size);
 void *malloc(size_t size);
 void free(void *pointer);
@@ -80,3 +35,13 @@ void *memcpy(void *restrict destination, const void *restrict source, size_t cou
 void *memmove(void *destination, const void *source, size_t count);
 int memcmp(const void *a, const void *b, size_t count);
 size_t strlen(const char *text);
+
+// The floor's C library calls (Start.swift, Heap.swift, Posix.swift,
+// libc's errno.c), until libc's headers come with it (V2's item 2).
+char *getenv(const char *name);
+void *calloc(size_t count, size_t size);
+void *realloc(void *pointer, size_t size);
+int *__errno_location(void);
+int getpid(void);
+// struct timespec's two words: seconds, nanoseconds.
+int clock_gettime(int clock, int64_t *ts);

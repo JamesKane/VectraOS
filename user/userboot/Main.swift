@@ -30,15 +30,15 @@ struct Userboot {
             say("userboot: ")
             say(error.what)
             print(" failed: \(error.status)")
-            croi_exit(1)
+            td_exit(1)
         }
-        croi_exit(0)
+        td_exit(0)
     }
 
     static func run() throws(Failure) {
-        let job = croi_take_startup_handle(croi_pa_hnd(UInt32(CROI_PA_JOB_DEFAULT), 0))
-        let resource = croi_take_startup_handle(croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0))
-        let bootfs = croi_take_startup_handle(croi_pa_hnd(UInt32(CROI_PA_VMO_BOOTFS), 0))
+        let job = td_startup_take(croi_pa_hnd(UInt32(CROI_PA_JOB_DEFAULT), 0))
+        let resource = td_startup_take(croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0))
+        let bootfs = td_startup_take(croi_pa_hnd(UInt32(CROI_PA_VMO_BOOTFS), 0))
         guard job != 0, resource != 0, bootfs != 0 else { throw Failure(what: "taking startup handles", status: CROI_ERR_BAD_HANDLE) }
         let next = option("userboot.next=") ?? bytes(defaultNext)
         // userboot.shutdown= (Power.swift) needs the root resource and the
@@ -54,7 +54,7 @@ struct Userboot {
         var size: UInt64 = 0
         try call("sizing bootfs", unsafe croi_vmo_size(bootfs, &size))
         var bootfsBase: UInt64 = 0
-        try call("mapping bootfs", unsafe croi_vmar_map(croi_vmar_root_self(), UInt32(CROI_VM_PERM_READ), 0,
+        try call("mapping bootfs", unsafe croi_vmar_map(td_runtime_vmar_root, UInt32(CROI_VM_PERM_READ), 0,
                                        bootfs, 0, size, &bootfsBase))
         let image = unsafe RawSpan(_unsafeStart: UnsafeRawPointer(bitPattern: UInt(bootfsBase))!, byteCount: Int(size))
         let file: Bootfs.File
@@ -82,7 +82,7 @@ struct Userboot {
         var vmar: UInt32 = 0
         // Spawn to main (Todhchai's 200 µs budget) starts here; the program
         // gets the time as croi.spawn_ns= in its environment.
-        let spawned = croi_clock_monotonic()
+        let spawned = UInt64(td_monotonic())
         try call("creating its process", next.span.withUnsafeBytes { name in
             sys(CROI_SYS_PROCESS_CREATE, UInt64(job), UInt64(UInt(bitPattern: name.baseAddress)), UInt64(name.count), 0,
                 address(&process), address(&vmar))
@@ -159,7 +159,7 @@ struct Userboot {
         for type in [CROI_PA_VMO_BOOTDATA, CROI_PA_VMO_DEBUGLOG, CROI_PA_DEBUGLOG_COUNTER, CROI_PA_MMIO_RESOURCE,
                      CROI_PA_IRQ_RESOURCE, CROI_PA_IOPORT_RESOURCE, CROI_PA_SMC_RESOURCE, CROI_PA_SYSTEM_RESOURCE] {
             let info = croi_pa_hnd(UInt32(type), 0)
-            let ranged = croi_take_startup_handle(info)
+            let ranged = td_startup_take(info)
             if ranged != 0 {
                 if type == CROI_PA_VMO_BOOTDATA, shutdown != nil {
                     try call("keeping the boot data", unsafe croi_handle_duplicate(ranged, sameRights, &keptBootData, 0))
@@ -294,7 +294,7 @@ struct Userboot {
         // through a mapping of our own (V1 cut vmo_write, D37).
         let copied = fileOffset % pageSize != 0
         if copied || relocations > 0 {
-            let own = croi_vmar_root_self()
+            let own = td_runtime_vmar_root
             var scratch: UInt64 = 0
             let rw = UInt32(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE)
             try call("mapping a segment to fill", unsafe croi_vmar_map(own, rw, 0, vmo, 0, size, &scratch))
@@ -321,8 +321,9 @@ struct Userboot {
     static func processArgs(infos: [UInt32], name: [UInt8], spawned: UInt64) -> [UInt8] {
         let header = MemoryLayout<croi_proc_args_t>.size
         var environment: [UInt8] = []
-        for i in 0..<croi_environ_count() {
-            guard let entry = unsafe croi_environ(i) else { continue }
+        var index = 0
+        while let entry = unsafe environ[index] {
+            index += 1
             let length = unsafe strlen(entry)
             for j in 0..<length { environment.append(unsafe UInt8(bitPattern: entry[j])) }
             environment.append(0)
@@ -337,7 +338,7 @@ struct Userboot {
         args.args_off = UInt32(header + 4 * infos.count)
         args.args_num = 1
         args.environ_off = args.args_off + UInt32(name.count + 1)
-        args.environ_num = UInt32(croi_environ_count()) + 1
+        args.environ_num = UInt32(index) + 1
         var message: [UInt8] = []
         withUnsafeBytes(of: &args) { raw in
             for i in 0..<raw.count { message.append(unsafe raw[i]) }
@@ -365,8 +366,9 @@ struct Userboot {
     /// The rest of the environment string that starts with `prefix`.
     static func option(_ prefix: StaticString) -> [UInt8]? {
         let wanted = bytes(prefix)
-        for i in 0..<croi_environ_count() {
-            guard let entry = unsafe croi_environ(i) else { continue }
+        var index = 0
+        while let entry = unsafe environ[index] {
+            index += 1
             let length = unsafe strlen(entry)
             guard length >= wanted.count else { continue }
             var same = true
@@ -386,12 +388,12 @@ struct Userboot {
     }
 
     static func say(_ text: StaticString) {
-        unsafe croi_write(UnsafeRawPointer(text.utf8Start).assumingMemoryBound(to: CChar.self), text.utf8CodeUnitCount)
+        unsafe td_stdout_write(UnsafeRawPointer(text.utf8Start).assumingMemoryBound(to: CChar.self), text.utf8CodeUnitCount)
     }
 
     static func write(_ text: [UInt8]) {
         text.span.withUnsafeBytes { bytes in
-            unsafe croi_write(bytes.baseAddress?.assumingMemoryBound(to: CChar.self), bytes.count)
+            unsafe td_stdout_write(bytes.baseAddress?.assumingMemoryBound(to: CChar.self), bytes.count)
         }
     }
 

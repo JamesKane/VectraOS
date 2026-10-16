@@ -178,7 +178,7 @@ enum ObjectSuite {
         check(setName(unnamable.arg, "x") == Status.accessDenied, "not without SET_PROPERTY")
         var thread: UInt32 = 0
         let worker: StaticString = "worker"
-        check(unsafe Sys.call(CROI_SYS_THREAD_CREATE, UInt64(croi_process_self()),
+        check(unsafe Sys.call(CROI_SYS_THREAD_CREATE, UInt64(td_runtime_process_self),
                               UInt64(UInt(bitPattern: worker.utf8Start)), 6, 0, Sys.address(&thread)) == 0,
               "a thread")
         let named = Handle(adopting: thread)
@@ -223,7 +223,7 @@ enum ObjectSuite {
     /// (its initial thread waits in the exception), and a closed one no
     /// longer counts as attached; the next start prunes it.
     static func jobDebuggers() {
-        let root = Handle(adopting: croi_take_startup_handle(croi_pa_hnd(UInt32(CROI_PA_JOB_DEFAULT), 0)))
+        let root = Handle(adopting: td_startup_take(croi_pa_hnd(UInt32(CROI_PA_JOB_DEFAULT), 0)))
         var raw: UInt32 = 0
         check(Sys.call(CROI_SYS_JOB_CREATE, root.arg, 0, Sys.address(&raw)) == 0, "a job")
         let job = Handle(adopting: raw)

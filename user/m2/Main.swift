@@ -30,27 +30,29 @@ struct M2 {
             Sys.say("m2: ")
             Sys.say(error.what)
             print(" failed: \(error.status)")
-            croi_exit(1)
+            td_exit(1)
         }
-        croi_exit(0)
+        td_exit(0)
     }
 
-    /// What userboot hands on: its own thread, the root job and resource,
+    /// What userboot hands on: the thread (the floor's), the root job and resource,
     /// bootfs, and the command line naming it.
     static func startup() throws(Failure) -> (resource: UInt32, thread: UInt32) {
-        let thread = croi_take_startup_handle(croi_pa_hnd(UInt32(CROI_PA_THREAD_SELF), 0))
-        let job = croi_take_startup_handle(croi_pa_hnd(UInt32(CROI_PA_JOB_DEFAULT), 0))
-        let resource = croi_take_startup_handle(croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0))
-        let bootfs = croi_take_startup_handle(croi_pa_hnd(UInt32(CROI_PA_VMO_BOOTFS), 0))
-        guard thread != 0, job != 0, resource != 0, bootfs != 0, croi_process_self() != 0,
-              croi_vmar_root_self() != 0 else { throw Failure(what: "taking startup handles", status: CROI_ERR_BAD_HANDLE) }
+        let thread = td_runtime_thread_self  // the floor keeps it
+        let job = td_startup_take(croi_pa_hnd(UInt32(CROI_PA_JOB_DEFAULT), 0))
+        let resource = td_startup_take(croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0))
+        let bootfs = td_startup_take(croi_pa_hnd(UInt32(CROI_PA_VMO_BOOTFS), 0))
+        guard thread != 0, job != 0, resource != 0, bootfs != 0, td_runtime_process_self != 0,
+              td_runtime_vmar_root != 0 else { throw Failure(what: "taking startup handles", status: CROI_ERR_BAD_HANDLE) }
         Sys.close(job)
         Sys.close(bootfs)
         // Bytes, not String ==: that needs Unicode normalization tables.
         let next: StaticString = "userboot.next=bin/m2"
         var named = false
-        for i in 0..<croi_environ_count() {
-            guard let entry = unsafe croi_environ(i), unsafe strlen(entry) == next.utf8CodeUnitCount else { continue }
+        var index = 0
+        while let entry = unsafe environ[index] {
+            index += 1
+            guard unsafe strlen(entry) == next.utf8CodeUnitCount else { continue }
             var same = true
             for j in 0..<next.utf8CodeUnitCount where unsafe UInt8(bitPattern: entry[j]) != next.utf8Start[j] {
                 same = false
@@ -59,7 +61,7 @@ struct M2 {
         }
         guard named else { throw Failure(what: "finding userboot.next in the environment", status: CROI_ERR_NOT_FOUND) }
         // userboot's loader made PT_GNU_RELRO read only once relocated.
-        let relro = croi_relro_read_only()
+        let relro = Image.relroReadOnly()
         guard relro == 1 else { throw Failure(what: "finding its RELRO read only", status: Int64(relro)) }
         print("m2: started from bootfs by userboot, with its handles and the command line")
         return (resource, thread)
@@ -72,7 +74,7 @@ struct M2 {
         var vmo: UInt32 = 0
         try Sys.check("creating a VMO", Sys.call(CROI_SYS_VMO_CREATE, 4096, 0, Sys.address(&vmo)))
         // Written through a mapping of its own (V1 cut vmo_write, D37).
-        let own = croi_vmar_root_self()
+        let own = td_runtime_vmar_root
         var written: UInt64 = 0
         let rw = UInt32(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE)
         try Sys.check("mapping the VMO to write it", unsafe croi_vmar_map(own, rw, 0, vmo, 0, 4096, &written))
@@ -116,7 +118,7 @@ struct M2 {
                           status: Int64(actualBytes) | Int64(actualHandles) << 32)
         }
         var base: UInt64 = 0
-        try Sys.check("mapping the VMO", unsafe croi_vmar_map(croi_vmar_root_self(), UInt32(CROI_VM_PERM_READ),
+        try Sys.check("mapping the VMO", unsafe croi_vmar_map(td_runtime_vmar_root, UInt32(CROI_VM_PERM_READ),
                                                   0, handle, 0, 4096, &base))
         for i in 0..<text.utf8CodeUnitCount where unsafe UnsafePointer<UInt8>(bitPattern: UInt(base))![i]
             != text.utf8Start[i] {
@@ -135,7 +137,7 @@ struct M2 {
         let woke = Sys.now()
         guard timedOut == -21, woke >= deadline else { throw Failure(what: "a port wait timing out", status: timedOut) }
         print("m2: port wait saw the fence, then timed out \((woke - deadline) / 1000) us after its deadline")
-        _ = croi_vmar_unmap(croi_vmar_root_self(), base, 4096)
+        _ = croi_vmar_unmap(td_runtime_vmar_root, base, 4096)
         for h in [handle, near, far, port, fence] { Sys.close(h) }
         print("m2: exit test passed")
     }
@@ -187,7 +189,7 @@ struct M2 {
         print("m2: idle for \(idleWindow / 1_000_000) ms: \(wakeups) wakeup(s) besides its own (per CPU: \(perCpu))")
         budget("idle.wakeups", wakeups, unit: "count", limit: 1)
         guard wakeups == 0 else { throw Failure(what: "staying idle", status: Int64(wakeups)) }
-        guard croi_timing_is_real(), environmentHas("croi.enforce_budgets=1") else {
+        guard Sys.timingIsReal, environmentHas("croi.enforce_budgets=1") else {
             print(missed == 0 ? "m2: budgets met (reported, not enforced)"
                               : "m2: \(missed) budget(s) over (reported, not enforced: see vx bench)")
             return
@@ -261,8 +263,10 @@ struct M2 {
 
     /// Whether the environment (the kernel command line) has `word`.
     static func environmentHas(_ word: StaticString) -> Bool {
-        for i in 0..<croi_environ_count() {
-            guard let entry = unsafe croi_environ(i), unsafe strlen(entry) == word.utf8CodeUnitCount else { continue }
+        var index = 0
+        while let entry = unsafe environ[index] {
+            index += 1
+            guard unsafe strlen(entry) == word.utf8CodeUnitCount else { continue }
             var same = true
             for j in 0..<word.utf8CodeUnitCount where unsafe UInt8(bitPattern: entry[j]) != word.utf8Start[j] {
                 same = false
@@ -274,8 +278,9 @@ struct M2 {
 
     /// The decimal number after `prefix` in an environment string.
     static func environmentNumber(_ prefix: StaticString) -> UInt64? {
-        for i in 0..<croi_environ_count() {
-            guard let entry = unsafe croi_environ(i) else { continue }
+        var index = 0
+        while let entry = unsafe environ[index] {
+            index += 1
             let length = unsafe strlen(entry)
             guard length > prefix.utf8CodeUnitCount else { continue }
             var same = true

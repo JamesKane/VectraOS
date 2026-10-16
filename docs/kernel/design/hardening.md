@@ -46,9 +46,9 @@ ProgramLoader `randomBase`, userboot `randomPlace`; cmake `PIE`):
   one writable PT_LOAD; both ends rounded down to a page, glibc's rule;
   lld makes it a page-padded RW segment of its own), and both loaders
   make them read only after relocating (ProgramLoader `protect`,
-  userboot `vmar_protect`). The runtime's `croi_relro_read_only()`
-  (user/lib/runtime/image.c: the program's own headers via
-  `__ehdr_start`, then PROCESS_MAPS) is checked by user/test/swift (the
+  userboot `vmar_protect`). `Image.relroReadOnly()`
+  (user/lib/image/Image.swift: the program's own headers via the floor's
+  `td_image_header`, then PROCESS_MAPS) is checked by user/test/swift (the
   kernel's loader, PIE and ET_EXEC) and bin/m2 (userboot's). Todhchai's
   loader must do the same for its programs.
 - Bases: a random page in the lower half of the user range (kernel:

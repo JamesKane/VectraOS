@@ -1,4 +1,11 @@
-// The C side of the croi user runtime and syscall ABI, for Swift user code.
+// The C side of user code, for Swift: the system calls and the ABI's
+// headers (CroiSyscall, which the floor imports), and with them the
+// floor's C interface (CroiRuntime, which programs import).
+module CroiSyscall {
+  header "croi/syscall.h"
+  export *
+}
+
 module CroiRuntime {
   header "croi/runtime.h"
   export *

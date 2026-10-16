@@ -1,4 +1,4 @@
-// Memory primitives that clang and swiftc emit calls to. These are C because
+// Memory primitives that clang and swiftc emit calls to, and strlen. These are C because
 // they must exist before any Swift runs and must never be lowered back into
 // calls to themselves; LLVM's loop-idiom pass skips functions with these names.
 //
@@ -38,4 +38,10 @@
     if (*x != *y) return *x - *y;
   }
   return 0;
+}
+
+[[gnu::visibility("default")]] size_t strlen(const char *s) {
+  size_t n = 0;
+  while (s[n] != 0) n++;
+  return n;
 }
