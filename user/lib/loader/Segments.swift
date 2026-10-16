@@ -1,9 +1,14 @@
 import CroiRuntime
 
 /// Why loading stopped: what it was doing, and the call's status.
-struct LoadFailure: Error {
-    let what: StaticString
-    let status: Int64
+public struct LoadFailure: Error {
+    public let what: StaticString
+    public let status: Int64
+
+    public init(what: StaticString, status: Int64) {
+        self.what = what
+        self.status = status
+    }
 }
 
 /// An ELF file's PT_LOAD segments mapped from the VMO that holds the file
@@ -16,13 +21,13 @@ struct LoadFailure: Error {
 /// shared object is relocated after mapping, by Ld). Every segment goes
 /// in one vmar_map (D42), all or nothing; the segments' own VMOs are
 /// closed once mapped (the mappings keep them).
-enum Segments {
+public enum Segments {
     static var pageSize: UInt64 { 4096 }
 
     /// Maps `elf`'s segments, the file at `file` in `source` (also mapped
     /// readable at `sourceBase`; `fileBytes` its bytes), into `vmar`, whose
     /// base is `vmarBase`, each at its address plus `delta`.
-    static func map(_ elf: ElfImage, file: Bootfs.File, fileBytes: RawSpan, source: UInt32, sourceBase: UInt64,
+    public static func map(_ elf: ElfImage, file: Bootfs.File, fileBytes: RawSpan, source: UInt32, sourceBase: UInt64,
                     into vmar: UInt32, vmarBase: UInt64, delta: UInt64, relocate: Bool) throws(LoadFailure) {
         var items: [croi_vmar_map_item_t] = []
         var made: [UInt32] = []
@@ -121,7 +126,7 @@ enum Segments {
         return item(vmo, 0)
     }
 
-    static func call(_ what: StaticString, _ status: Int64) throws(LoadFailure) {
+    public static func call(_ what: StaticString, _ status: Int64) throws(LoadFailure) {
         guard status == 0 else { throw LoadFailure(what: what, status: status) }
     }
 

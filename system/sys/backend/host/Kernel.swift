@@ -7,10 +7,10 @@
 import Glibc
 import SysHost
 
-/// A program's entry, hosted: a Swift function given its startup handle.
+/// A program's entry, hosted: a Swift function given its Startup.
 public struct ProgramEntry: Sendable {
-  let body: @Sendable (consuming Handle) -> Void
-  public init(_ body: @escaping @Sendable (consuming Handle) -> Void) { self.body = body }
+  let body: @Sendable (Startup) -> Void
+  public init(_ body: @escaping @Sendable (Startup) -> Void) { self.body = body }
 }
 
 enum Kernel {
@@ -171,11 +171,24 @@ enum Kernel {
   static func jobCreate(_ parent: UInt32) throws(Status) -> UInt32 { try k.jobCreate(parent: parent) }
   static func processCreate(_ job: UInt32, _ name: String) throws(Status) -> UInt32 { try k.processCreate(job: job, name: name) }
   static func threadCreate(_ process: UInt32) throws(Status) -> UInt32 { try k.threadCreate(process: process) }
-  static func processStart(_ process: UInt32, _ thread: UInt32, _ arg: UInt32, _ entry: ProgramEntry,
-                           _ extra: [(info: UInt32, handle: UInt32)], _ environment: [String]) throws(Status) {
-    for e in extra { close(e.handle) }  // hosted, a process's startup is `arg`
-    try k.threadStart(thread, arg: arg) { raw in entry.body(Handle(raw: raw)) }
+  /// The handles move into the process, and its entry gets a Startup of
+  /// their numbers there (hosted processes share the host's environment
+  /// too, but a Startup's is what it was given).
+  static func processStart(_ process: UInt32, _ thread: UInt32, _ entry: ProgramEntry, _ startup: Startup,
+                           _ handles: [(info: UInt32, handle: UInt32)]) throws(Status) {
+    let (args, environment, names) = (startup.args, startup.environment, startup.names)
+    let infos = handles.map { $0.info }
+    try k.threadStart(thread, args: handles.map { $0.handle }) { raws in
+      let given = Startup(args: args, environment: environment, names: names)
+      for (info, raw) in zip(infos, raws) { given.add(raw: raw, info: info) }
+      entry.body(given)
+    }
   }
+
+  /// Hosted, the host process's: nothing.
+  static let currentStartup = Startup()
+  static func startupTake(_ info: UInt32) -> UInt32? { nil }
+  static func startupInfos() -> [UInt32] { [] }
   static func threadStart(_ thread: UInt32, _ body: @escaping @Sendable () -> Void) throws(Status) {
     try k.threadStart(thread) { _ in body() }
   }

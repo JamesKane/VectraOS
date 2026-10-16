@@ -43,6 +43,7 @@ func same(_ string: String, _ text: StaticString) -> Bool {
 @main
 struct SysTest {
   static func main() {
+    if Startup.current.args.count == 2 { childMain() }
     do throws(Status) {
       try handles()
       try channels()
@@ -332,12 +333,50 @@ struct SysTest {
     check(same(try process.name(), "child"), "a process made, named")
     let processes = try Job.processes(job), child = try process.info().koid
     check(processes == [child], "the job's processes")
-    check(statusOf { () throws(Status) in
-      try Process.start(process, entry: ProgramEntry(image: 0, offset: 0, length: 0, name: "none"),
-                        arg: try Counter.create())
-    } == .notSupported, "no loader yet (V2's item 4)")
+    try startChild(job)
     try kill(job)
     check(try job.wait(for: Signals.terminated, deadline: soon()) & Signals.terminated != 0, "a job killed")
+  }
+
+  /// Starts bin/sys-test from bootfs again, as a child given arguments,
+  /// an environment, a name and a channel: what it reports of its Startup,
+  /// and its exit code.
+  static func startChild(_ job: borrowing Handle) throws(Status) {
+    guard let raw = StartupHandles.take(HandleType.info(HandleType.vmoBootfs)) else {
+      return check(false, "bootfs, to start a child from")
+    }
+    let bootfs = Handle(raw: raw)
+    let programs = try ProgramEntry.bootfs(bootfs)
+    guard let me = programs.first(where: { same($0.name, "bin/sys-test") }) else {
+      return check(false, "bin/sys-test in bootfs")
+    }
+    check(programs.contains { same($0.name, "bin/ipc-test") }, "bootfs's files listed")
+    let process = try Process.create(job: job, name: "sys-test-child")
+    let ends = try Channel.create()
+    let startup = Startup(args: ["sys-test", "child"], environment: ["SYS_TEST=child"], names: ["/svc"])
+    startup.add(ends.b, info: HandleType.info(HandleType.user0))
+    let thread = try Process.start(process, entry: me, startup)
+    _ = try process.wait(for: Signals.terminated, deadline: soon(5000))
+    check(try Process.info(process).returnCode == 7, "a child loaded from bootfs ran and exited with its code")
+    let report = try? Channel.read(ends.a)
+    check(report?.bytes == [1, 1, 1, 1], "it was given its arguments, environment, names and handles")
+    check(statusOf { () throws(Status) in try Process.start(process, entry: me, Startup()) } == .badState,
+          "a process starts once")
+    _ = consume thread
+    _ = consume bootfs
+  }
+
+  /// The child's part: reports what its Startup holds, and exits with 7.
+  static func childMain() -> Never {
+    let startup = Startup.current
+    let args = startup.args
+    let argsOK: UInt8 = args.count == 2 && same(args[1], "child") ? 1 : 0
+    let envOK: UInt8 = startup.value("SYS_TEST").map { same($0, "child") } ?? false ? 1 : 0
+    let namesOK: UInt8 = startup.names.count == 1 && same(startup.names[0], "/svc") ? 1 : 0
+    guard let report = startup.take(HandleType.info(HandleType.user0)) else { Process.exit(code: 1) }
+    let handlesOK: UInt8 = startup.infos.isEmpty ? 1 : 0  // the floor took its own
+    try? Channel.write(report, bytes: [argsOK, envOK, namesOK, handlesOK])
+    Process.exit(code: 7)
   }
 
   static func random() throws(Status) {

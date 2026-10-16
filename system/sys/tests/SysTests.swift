@@ -436,11 +436,18 @@ struct Spawned: ~Copyable {
   var report: Handle
 }
 
+/// A hosted program given one channel, as PA_USER0.
+func entry(_ body: @escaping @Sendable (consuming Handle) -> Void) -> ProgramEntry {
+  ProgramEntry { startup in body(startup.take(HandleType.info(HandleType.user0))!) }
+}
+
 func spawn(_ job: borrowing Handle, _ name: String, _ entry: ProgramEntry) throws -> Spawned {
   let process = try Process.create(job: job, name: name)
   let ends = try Channel.create()
   let report = ends.a
-  _ = try Process.start(process, entry: entry, arg: ends.b)
+  let startup = Startup()
+  startup.add(ends.b, info: HandleType.info(HandleType.user0))
+  _ = try Process.start(process, entry: entry, startup)
   return Spawned(process: process, report: report)
 }
 
@@ -449,7 +456,7 @@ func spawn(_ job: borrowing Handle, _ name: String, _ entry: ProgramEntry) throw
   let job = try Job.create(parent: root)
   let mine = try Counter.create()
   let mineRaw = mine.raw
-  let spawned = try spawn(job, "isolated", ProgramEntry { startup in
+  let spawned = try spawn(job, "isolated", entry { startup in
     // The host's handle number means nothing here.
     let foreign = Handle(raw: mineRaw)
     let status = statusOf { () throws(Status) in try foreign.info() }
@@ -474,7 +481,7 @@ func spawn(_ job: borrowing Handle, _ name: String, _ entry: ProgramEntry) throw
 @Test func aProcessEndsWithItsLastThread() throws {
   let root = try Job.root()
   let job = try Job.create(parent: root)
-  let spawned = try spawn(job, "threads", ProgramEntry { startup in
+  let spawned = try spawn(job, "threads", entry { startup in
     let ends = try! Channel.create()
     let raw = ends.a.release()
     var keep: Handle? = ends.b
@@ -495,7 +502,7 @@ func spawn(_ job: borrowing Handle, _ name: String, _ entry: ProgramEntry) throw
 }
 
 /// A process that reports in, then blocks until killed.
-let sleeper = ProgramEntry { startup in
+let sleeper = entry { startup in
   try? Channel.write(startup, bytes: [1])
   let counter = try? Counter.create()
   _ = try? counter?.wait(for: Signals.positive)
@@ -531,7 +538,7 @@ let sleeper = ProgramEntry { startup in
 @Test func aThreadCanBeKilledAlone() throws {
   let root = try Job.root()
   let job = try Job.create(parent: root)
-  let spawned = try spawn(job, "two", ProgramEntry { startup in
+  let spawned = try spawn(job, "two", entry { startup in
     try? Channel.write(startup, bytes: [1])
     // Lives until the host says so.
     _ = try? startup.wait(for: Signals.readable)
@@ -715,4 +722,26 @@ enum DispatchlessParallel {
   let a = try CPRNG.draw(count: 1000), b = try CPRNG.draw(count: 1000)
   #expect(a.count == 1000 && a != b && a.contains { $0 != 0 })
   #expect(try CPRNG.draw(count: 0).isEmpty)
+}
+
+@Test func aProcessIsGivenItsStartup() throws {
+  let root = try Job.root()
+  let job = try Job.create(parent: root)
+  let process = try Process.create(job: job, name: "given")
+  let ends = try Channel.create(), counter = try Counter.create()
+  let startup = Startup(args: ["given", "x"], environment: ["A=1", "B=two"], names: ["/svc"])
+  startup.add(ends.b, info: HandleType.info(HandleType.user0))
+  try Counter.add(counter, 5)
+  startup.add(try counter.duplicate(), info: HandleType.info(0x20, 0))
+  _ = try Process.start(process, entry: ProgramEntry { s in
+    let report = s.take(HandleType.info(HandleType.user0))!
+    var counted: Int64 = -2
+    if let c = s.take(HandleType.info(0x20, 0)) { counted = (try? Counter.read(c)) ?? -1 }
+    let ok = s.args == ["given", "x"] && s.value("B") == "two" && s.value("C") == nil && s.names == ["/svc"]
+      && s.infos.isEmpty
+    try? Channel.write(report, bytes: [ok ? 1 : 0, UInt8(truncatingIfNeeded: counted)])
+  }, startup)
+  #expect(startup.infos.isEmpty)  // moved in
+  _ = try process.wait(for: Signals.terminated, deadline: soon())
+  #expect(try Channel.read(ends.a).bytes == [1, 5])
 }

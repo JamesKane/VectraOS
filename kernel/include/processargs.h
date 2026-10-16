@@ -54,6 +54,7 @@ typedef struct {
   uint32_t args_num;
   uint32_t environ_off;      // environ_num NUL-terminated strings
   uint32_t environ_num;
-  uint32_t names_off;        // names_num NUL-terminated strings (unused)
+  uint32_t names_off;        // names_num NUL-terminated strings: the namespace, a
+                             // PA_NS_DIR handle's argument indexing it (D65)
   uint32_t names_num;
 } croi_proc_args_t;

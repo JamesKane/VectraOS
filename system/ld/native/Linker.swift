@@ -19,6 +19,7 @@
 // read through a mapping (V1 cut vmo_read, D37).
 
 import CroiRuntime
+import Loader
 import LibSys
 import Sys
 
@@ -144,8 +145,14 @@ public enum DynamicLinker {
     var child: UInt32 = 0
     var base: UInt64 = 0
     let options = UInt64(CROI_VM_CAN_MAP_READ | CROI_VM_CAN_MAP_WRITE | CROI_VM_CAN_MAP_EXECUTE)
-    let r = croi_syscall6(CROI_SYS_VMAR_ALLOCATE, UInt64(td_runtime_vmar_root) | options << 32, 0, elf.size,
-                          Segments.address(&child), Segments.address(&base), 0)
+    // The pointers live for the call (an `inout` address returned from a
+    // function may be a temporary's).
+    let r = withUnsafeMutablePointer(to: &child) { c in
+      withUnsafeMutablePointer(to: &base) { b in
+        croi_syscall6(CROI_SYS_VMAR_ALLOCATE, UInt64(td_runtime_vmar_root) | options << 32, 0, elf.size,
+                      UInt64(UInt(bitPattern: c)), UInt64(UInt(bitPattern: b)), 0)
+      }
+    }
     guard r == 0 else { throw LinkFailure(message: "\(path): no room for it (\(r))") }
     defer { _ = croi_handle_close(child) }  // the mappings outlive the handle
     let delta = base &- elf.base

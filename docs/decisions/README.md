@@ -77,3 +77,4 @@ in a new file, and a line in the index below.
 - [D62. GPU hardware floor and driver order](D062-gpu-hardware-floor-driver-order.md) — 2026-10-16, proposed
 - [D63. The Mac Pro's D700s meet D62's floor; descriptor heaps are required; the fan fails safe](D063-macpro-d700-floor.md) — 2026-10-16, proposed
 - [D64. Node's batch: operations on a current node](D064-node-batch-current-node.md) — 2026-10-16, decided
+- [D65. A process's start is its processargs; todhchai's Startup protocol is not lifted](D065-start-is-processargs.md) — 2026-10-16, proposed

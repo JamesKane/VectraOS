@@ -104,7 +104,10 @@ work, in order:
    them), waits and thread starts go through the floor, and SysHost has
    V1's model (object_bind, counters as the one event), checked hosted
    by SysTests and natively by `bin/sys-test` (boot-sys). The native
-   loader (`Process.start`) comes with the launcher (item 4). The libc is
+   loader is userboot's, shared (`user/lib/loader`'s Program, Sys's
+   Loader module): `Process.start` loads a bootfs program and hands it a
+   Startup, its processargs with the names table kept (D65); sys-test
+   starts itself as a child to check it. The libc is
    lifted: every user program links it (libc.a, its pthreads over the
    floor), `runtime.h` takes its headers, `swift test` compares it with
    glibc, and the `libc` suite checks it natively on each arch (which
@@ -120,7 +123,7 @@ work, in order:
    version 2. `bin/trace-test` (boot-trace) records the kernel and
    itself, checks the flow they share, and exports both; `vx trace
    collect` (trace-collect) reassembles them from the console. Item 2
-   is done but for the native loader (item 4).
+   is done.
 3. **Tier 1 (D47).** The `*-vectraos` toolchain (todhchai's, renamed), built from the
    pinned Swift 6.4.0 and LLVM sources with its patch series, and tier 1's
    sysroot (libc, pthreads, libc++, the Swift runtime, FoundationEssentials).
@@ -167,7 +170,7 @@ work, in order:
    Watches are PERSISTENT too, and `unwatch` runs on the dispatcher's
    thread, as `wake` does.
    The wire format gains unions (D54), and Node is lifted (`system/node`)
-   as batches (D55): operations on a current node, the first failure
+   as batches (D64): operations on a current node, the first failure
    ending the batch, at most one handle back, and a mount taking the
    rest of a batch; NodeTree, namespaces and /srv on top, checked hosted
    and natively (`bin/node-test`, boot-node). Next: the launcher, and

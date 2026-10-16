@@ -472,9 +472,8 @@ enum Kernel {
     try out(UInt32(0)) { croi_syscall(CROI_SYS_JOB_CREATE, UInt64(parent), 0, $0, 0, 0) }
   }
 
-  /// process_create gives the process and its root VMAR. The VMAR is the
-  /// loader's, which comes with the launcher (V2's item 4); until then it
-  /// is closed, and the process can't be started from Sys.
+  /// process_create gives the process and its root VMAR, which the loader
+  /// keeps until the process starts (Loader.swift).
   static func processCreate(_ job: UInt32, _ name: String) throws(Status) -> UInt32 {
     var bytes = Array(name.utf8)
     let ends = try out((UInt32(0), UInt32(0))) { p in
@@ -482,7 +481,7 @@ enum Kernel {
         unsafe croi_syscall6(CROI_SYS_PROCESS_CREATE, UInt64(job), address(n.baseAddress), UInt64(n.count), 0, p, p + 4)
       }
     }
-    close(ends.1)
+    keep(ends.0, vmar: ends.1)
     return ends.0
   }
 
@@ -492,15 +491,6 @@ enum Kernel {
       unsafe croi_syscall(CROI_SYS_THREAD_CREATE, UInt64(process), address(name.utf8Start),
                           UInt64(name.utf8CodeUnitCount), 0, p)
     }
-  }
-
-  /// Not yet natively: the loader comes with the launcher (V2's item 4).
-  /// Its handles are consumed, as they would be.
-  static func processStart(_ process: UInt32, _ thread: UInt32, _ arg: UInt32, _ entry: ProgramEntry,
-                           _ extra: [(info: UInt32, handle: UInt32)], _ environment: [String]) throws(Status) {
-    close(arg)
-    for e in extra { close(e.handle) }
-    throw .notSupported
   }
 
   /// A thread's start: its body, kept alive by the thread until it runs.

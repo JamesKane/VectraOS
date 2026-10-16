@@ -85,6 +85,9 @@ public enum ProcessStart {
   nonisolated(unsafe) static var handles: UnsafeMutablePointer<UInt32>? = nil
   nonisolated(unsafe) public internal(set) static var argc: Int32 = 0
   nonisolated(unsafe) public internal(set) static var argv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>? = nil
+  /// The names table: each PA_NS_DIR handle's path, by its argument.
+  nonisolated(unsafe) public internal(set) static var nameCount: Int32 = 0
+  nonisolated(unsafe) public internal(set) static var names: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>? = nil
 
   /// The handle started with `info`, the caller's from then on; nil if
   /// there was none or it was taken.
@@ -216,6 +219,11 @@ func strings(_ m: UnsafeMutablePointer<UInt8>, _ size: Int, _ offset: UInt32, _ 
       if valid { _ = unsafe strings(kept, size, header.environ_off, envCount, into: envp) } else { unsafe envp[0] = nil }
       unsafe ProcessStart.argv = argv
       unsafe environ = envp
+      let nameCount = valid ? header.names_num : 0
+      let names = unsafe malloc(8 * (Int(nameCount) + 1))!.assumingMemoryBound(to: UnsafeMutablePointer<CChar>?.self)
+      ProcessStart.nameCount = Int32(valid ? unsafe strings(kept, size, header.names_off, nameCount, into: names) : 0)
+      if !valid { unsafe names[0] = nil }
+      unsafe ProcessStart.names = names
     }
   }
   // stdout, the root VMAR and the process's own handles stay the runtime's.
@@ -259,3 +267,7 @@ func strings(_ m: UnsafeMutablePointer<UInt8>, _ size: Int, _ offset: UInt32, _ 
 @c public func td_startup_take(_ info: UInt32) -> UInt32 { ProcessStart.take(info) ?? 0 }
 @c public func td_startup_count() -> Int { ProcessStart.handleCount }
 @c public func td_startup_info(_ i: Int) -> UInt32 { ProcessStart.remaining(i) ?? 0 }
+@c public func td_startup_names(_ count: UnsafeMutablePointer<Int32>?) -> UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>? {
+  if let count = unsafe count { unsafe count.pointee = ProcessStart.nameCount }
+  return unsafe ProcessStart.names
+}

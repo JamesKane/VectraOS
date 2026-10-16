@@ -313,10 +313,11 @@ function(croi_user_library output)
 endfunction()
 
 # croi_user_sys(): builds Sys once per tree (system/sys, V2): its modules
-# SysABI, Sys (the API over the native backend), LibSys (the start's
-# views), Ld (system/ld: dlopen, over croi's ELF and bootfs readers and
-# user/lib/loader's segments), the trace (Ring, TraceFormat, Trace,
-# TraceSession), IPC (system/ipc: IPCWire, and IPC, the runtime
+# SysABI, Loader (croi's ELF and bootfs readers and user/lib/loader's
+# segments and programs: userboot's loading, shared), Sys (the API over
+# the native backend, which starts processes through Loader), LibSys (the
+# start's views), Ld (system/ld: dlopen, over Loader), the trace (Ring,
+# TraceFormat, Trace, TraceSession), IPC (system/ipc: IPCWire, and IPC, the runtime
 # @IPCLibrary's code calls; the macro is CROI_IPC_PLUGIN) and Node
 # (system/node: the protocol, NodeTree, namespaces and /srv), Embedded
 # Swift, into ${CROI_USER_SYS_DIR} (their .swiftmodule files) and
@@ -336,12 +337,13 @@ function(croi_user_sys)
       -enable-experimental-feature Lifetimes -parse-as-library -strict-memory-safety -Werror StrictMemorySafety
       -wmo -Osize -Xfrontend -function-sections -I ${_dir} ${_xcc})
   set(_abi ${_sys}/abi/Values.swift)
-  set(_api ${_sys}/api/Handles.swift ${_sys}/api/Lock.swift ${_sys}/api/Objects.swift
-      ${_sys}/backend/native/Kernel.swift)
+  set(_loader ${PROJECT_SOURCE_DIR}/lib/elf/Elf/ElfImage.swift ${PROJECT_SOURCE_DIR}/user/lib/loader/Bootfs.swift
+      ${PROJECT_SOURCE_DIR}/user/lib/loader/Segments.swift ${PROJECT_SOURCE_DIR}/user/lib/loader/Program.swift)
+  set(_api ${_sys}/api/Handles.swift ${_sys}/api/Lock.swift ${_sys}/api/Objects.swift ${_sys}/api/Startup.swift
+      ${_sys}/backend/native/Kernel.swift ${_sys}/backend/native/Loader.swift)
   set(_lib ${_sys}/native/Start.swift)
   set(_ld ${PROJECT_SOURCE_DIR}/system/ld/lib/Dynamic.swift ${PROJECT_SOURCE_DIR}/system/ld/native/Linker.swift
-      ${PROJECT_SOURCE_DIR}/system/ld/native/Exports.swift ${PROJECT_SOURCE_DIR}/lib/elf/Elf/ElfImage.swift
-      ${PROJECT_SOURCE_DIR}/user/lib/loader/Bootfs.swift ${PROJECT_SOURCE_DIR}/user/lib/loader/Segments.swift)
+      ${PROJECT_SOURCE_DIR}/system/ld/native/Exports.swift)
   # The trace (system/trace, D50): the one ring, the format, the writer
   # over the region a process is given (td_trace_cpu.h's inline counter
   # and atomics; a thread's ring pointer is the floor's thread block's,
@@ -360,6 +362,8 @@ function(croi_user_sys)
     COMMAND ${CMAKE_COMMAND} -E make_directory ${_dir}
     COMMAND ${_swiftc} -module-name SysABI -emit-module -emit-module-path ${_dir}/SysABI.swiftmodule
             -c ${_abi} -o ${_dir}/sysabi.o
+    COMMAND ${_swiftc} -module-name Loader -emit-module -emit-module-path ${_dir}/Loader.swiftmodule
+            -c ${_loader} -o ${_dir}/loader.o
     COMMAND ${_swiftc} -module-name Sys -emit-module -emit-module-path ${_dir}/Sys.swiftmodule
             -c ${_api} -o ${_dir}/sys.o
     COMMAND ${_swiftc} -module-name LibSys -emit-module -emit-module-path ${_dir}/LibSys.swiftmodule
@@ -381,10 +385,10 @@ function(croi_user_sys)
     COMMAND ${_swiftc} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros" -module-name Node -emit-module
             -emit-module-path ${_dir}/Node.swiftmodule -c ${_node} -o ${_dir}/node.o
     COMMAND ${CMAKE_COMMAND} -E rm -f ${_dir}/libsys.a
-    COMMAND ${CMAKE_AR} rcs ${_dir}/libsys.a ${_dir}/sysabi.o ${_dir}/sys.o ${_dir}/libsys.o ${_dir}/ld.o
+    COMMAND ${CMAKE_AR} rcs ${_dir}/libsys.a ${_dir}/sysabi.o ${_dir}/loader.o ${_dir}/sys.o ${_dir}/libsys.o ${_dir}/ld.o
             ${_dir}/ring.o ${_dir}/traceformat.o ${_dir}/trace.o ${_dir}/tracesession.o
             ${_dir}/ipcwire.o ${_dir}/ipc.o ${_dir}/node.o
-    DEPENDS ${_abi} ${_api} ${_lib} ${_ld} ${_ring} ${_trace_format} ${_trace_writer} ${_trace_session} ${_ipc_wire}
+    DEPENDS ${_abi} ${_loader} ${_api} ${_lib} ${_ld} ${_ring} ${_trace_format} ${_trace_writer} ${_trace_session} ${_ipc_wire}
             ${_ipc} ${_node}
             ${_headers} vx ${CROI_IPC_PLUGIN}
     COMMENT "Building Sys")

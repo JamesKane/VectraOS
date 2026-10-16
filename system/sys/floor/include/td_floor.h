@@ -41,6 +41,9 @@ ptrdiff_t td_stdin_read(void *buffer, size_t n);
 
 // The program's arguments, kept for the process's life.
 char **td_argv(int *argc);
+// The names table (processargs's names: each PA_NS_DIR handle's path,
+// by its argument), kept for the process's life.
+char **td_startup_names(int *count);
 
 // A thread's block and TLS: the bytes their area takes (from any start),
 // laying them out in an area (the block returned), and making a block the

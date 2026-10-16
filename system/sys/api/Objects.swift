@@ -880,29 +880,25 @@ public enum Process {
     Handle(raw: try Kernel.processCreate(job.raw, name))
   }
 
-  /// Starts the process: its first thread runs `entry` with `arg` (moved
-  /// into the process). The thread's handle. Hosted, `entry` is a Swift
-  /// function given `arg`; natively, an ELF image the process is loaded
-  /// from, which finds `arg` as its PA_USER0 startup handle.
-  ///
-  /// `extra` are more handles moved into the process, each with its
-  /// processargs info word: natively it finds them with
-  /// `StartupHandles.take` (the trace region, M3f); hosted processes take
-  /// their startup from `arg` alone, so they are closed.
-  /// `environment` (`NAME=value` strings) is the process's natively, in
-  /// its processargs; hosted processes share the host's.
-  public static func start(_ process: borrowing Handle, entry: ProgramEntry, arg: consuming Handle,
-                           extra: [(info: UInt32, handle: UInt32)] = [], environment: [String] = []) throws(Status)
+  /// Starts the process: its first thread runs `entry`, given `startup`,
+  /// whose handles move into the process (started or not). The thread's
+  /// handle. Natively, `entry` is an ELF image the process is loaded from
+  /// (Program, user/lib/loader), and `startup` its processargs message,
+  /// with the process's own handles, its root VMAR and a debuglog for its
+  /// stdout added, and its name as argv[0] if `startup` has no arguments;
+  /// hosted, a Swift function given `startup`.
+  public static func start(_ process: borrowing Handle, entry: ProgramEntry, _ startup: Startup) throws(Status)
     -> Handle
   {
+    let handles = startup.takeAll()
     let thread: Handle
     do throws(Status) {
       thread = Handle(raw: try Kernel.threadCreate(process.raw))
     } catch {
-      close(raw: extra.map { $0.handle })
+      close(raw: handles.map { $0.handle })
       throw error
     }
-    try Kernel.processStart(process.raw, thread.raw, arg.release(), entry, extra, environment)
+    try Kernel.processStart(process.raw, thread.raw, entry, startup, handles)
     return thread
   }
 

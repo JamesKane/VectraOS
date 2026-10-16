@@ -973,34 +973,41 @@ public final class HostKernel: @unchecked Sendable {
   final class Start {
     let kernel: HostKernel
     let thread: ThreadObject
-    let body: (UInt32) -> Void
-    let arg: UInt32
-    init(_ kernel: HostKernel, _ thread: ThreadObject, _ body: @escaping (UInt32) -> Void, _ arg: UInt32) {
+    let body: ([UInt32]) -> Void
+    let args: [UInt32]
+    init(_ kernel: HostKernel, _ thread: ThreadObject, _ body: @escaping ([UInt32]) -> Void, _ args: [UInt32]) {
       self.kernel = kernel
       self.thread = thread
       self.body = body
-      self.arg = arg
+      self.args = args
     }
   }
 
-  /// Starts a thread running `body` in its process. With `arg`, a handle
-  /// of the caller's moves into that process first (process_start's
-  /// arg1), and `body` gets its number there.
-  public func threadStart(_ thread: UInt32, arg: UInt32? = nil, _ body: @escaping (UInt32) -> Void) throws(Status) {
+  /// Starts a thread running `body` in its process. `args`, handles of the
+  /// caller's, move into that process first (process_start's bootstrap
+  /// message: all of them, or none if one is bad, the rest closed), and
+  /// `body` gets their numbers there.
+  public func threadStart(_ thread: UInt32, args: [UInt32] = [], _ body: @escaping ([UInt32]) -> Void) throws(Status) {
     try locked { () throws(Status) in
       let t = try lookup(thread, .write, as: ThreadObject.self)
       guard !t.started, !t.process.killed else { throw .badState }
-      var argInProcess: UInt32 = 0
-      if let arg {
-        let (o, r) = try take(arg)
-        argInProcess = try install(o, r, in: t.process)
+      var taken: [(KernelObject, Rights)] = []
+      var bad: Status?
+      for a in args {
+        do throws(Status) { taken.append(try take(a)) } catch { bad = bad ?? error }
       }
+      if let bad {
+        for (o, _) in taken { release(o) }
+        throw bad
+      }
+      var argsInProcess: [UInt32] = []
+      for (o, r) in taken { argsInProcess.append(try install(o, r, in: t.process)) }
       t.started = true
       t.process.started = true
       t.process.running += 1
       t.refs += 1  // the running thread's own reference
       update(t, set: Signals.threadRunning)
-      let start = Unmanaged.passRetained(Start(self, t, body, argInProcess)).toOpaque()
+      let start = Unmanaged.passRetained(Start(self, t, body, argsInProcess)).toOpaque()
       var pt = pthread_t()
       guard pthread_create(&pt, nil, { arg in
         let s = Unmanaged<Start>.fromOpaque(arg!).takeRetainedValue()
@@ -1008,7 +1015,7 @@ public final class HostKernel: @unchecked Sendable {
         // The end key's destructor accounts for the thread's end, whether
         // the body returns or the thread exits in a kernel call.
         pthread_setspecific(s.kernel.endKey, Unmanaged.passRetained(s).toOpaque())
-        s.body(s.arg)
+        s.body(s.args)
         return nil
       }, start) == 0 else { throw .noResources }
       pthread_detach(pt)
