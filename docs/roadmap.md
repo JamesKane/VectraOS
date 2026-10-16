@@ -271,15 +271,15 @@ work, in order:
      subscript ranges (`$x(n-m)`, `$x(n-)`, as 9front's subwords);
      `$status` one string (a pipeline's joined as 9front's concstatus),
      and `while` keeping its condition's; assignment chains (`x=1 y=2`
-     global, `x=1 y=2 cmd` local to the command, a whole pipeline).
+     global, `x=1 y=2 cmd` local to the command, a whole pipeline);
+     `if not` after an inner `if`, and `if`/`for`/`while` bodies taking
+     `|`, `&&` and `||` (9front's precedence).
    - **Redirections:** a program's fd 2 is its stdout and fds over 2
      are dropped; redirection streams are never closed.
    - **Missing syntax:** `@{}`, `[~...]` and a bare `~`, `!` or `@` as
      words, `<>`, `<{}`, `>{}`, `$$x`, `` `split{} ``,
      `\`-newline inside a word.
-   - **Wrong semantics:** `if not` misfires
-     after an inner `if`; `if`/`for`/`while` bodies end at `|`, `&&`
-     and `||`; quoting is lost in `~` and `switch` patterns and `~`
+   - **Wrong semantics:** quoting is lost in `~` and `switch` patterns and `~`
      takes any element of its subject; concatenation errors
      don't stop a script; globs keep paths that don't exist and skip
      dot files; `&` on a compound command runs in the foreground; a `&`

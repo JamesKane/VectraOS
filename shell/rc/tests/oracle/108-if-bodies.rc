@@ -1,0 +1,10 @@
+if(true) { if(false) echo inner }
+if not echo WRONG outer-not
+if(false) echo no
+if not echo yes-not
+if(true) echo a | tr a A
+if(false) echo x || echo y
+if not echo after-or
+for(i in 1 2) echo $i && echo and-$i
+x=(1 2); while(~ $#x 2) x=() && echo looped
+if(true) false || echo or-in-body

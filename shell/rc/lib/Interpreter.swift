@@ -116,8 +116,8 @@ public final class Rc {
   public var functions: [String: Command] = [:]
   /// Programs started in the background (`&`), by $apid.
   var background: [RcJob] = []
-  /// Whether the last `if` ran its body (for `if not`).
-  var lastIf = true
+  /// Whether an `if` has run whose `if not` should (9front's ifnot).
+  var ifNotPending = false
 
   public init(system: RcSystem, arguments: [String] = []) {
     self.system = system
@@ -434,11 +434,16 @@ public final class Rc {
       }
     case .brace(let c, let redirs): try execute(c, try redirect(redirs, fds))
     case .ifThen(let condition, let body):
+      // 9front's ifnot: set by an if, cleared once a true one's body has
+      // run (so an if inside that body can't leave it set).
       try execute(condition, fds)
-      lastIf = ok()
-      if lastIf { try execute(body, fds) }
+      ifNotPending = true
+      if ok() {
+        try execute(body, fds)
+        ifNotPending = false
+      }
     case .ifNot(let body):
-      if !lastIf { try execute(body, fds) }
+      if ifNotPending { try execute(body, fds) }
     case .forIn(let name, let list, let body):
       let items = try list.map { try $0.flatMap { try value($0, fds) } } ?? (variables["*"] ?? [])
       for item in items {

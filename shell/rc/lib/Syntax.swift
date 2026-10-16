@@ -517,7 +517,9 @@ public struct Parser {
   mutating func body() throws(RcSyntaxError) -> Command {
     skipNewlines()
     if peek == .end { throw RcSyntaxError(message: "a body to come", incomplete: true) }
-    return try command()
+    // IF, WHILE and FOR bind loosest (9front's precedence): a body takes
+    // pipes, && and ||, to the end of its line or list.
+    return try andOr()
   }
 
   mutating func command() throws(RcSyntaxError) -> Command {
