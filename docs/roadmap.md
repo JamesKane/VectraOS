@@ -4,6 +4,31 @@ Each milestone has exit criteria. A milestone is done when its criteria pass
 under `vx ci` and every budget it introduces has a running check
 (principle 13).
 
+## Where things stand (2026-10-16)
+
+- **V0** is done (2026-10-15).
+- **V1**'s work is done: the cuts (91 syscalls, the audit's target), the
+  batched hot calls, the one ring and RingCheck, ports as rings. Its
+  budgets are judged by `vx bench`, advisory on this shared machine.
+- **V2** is under way:
+  - Done: the one ABI (item 1), the floor, Sys, libc, ld and the trace
+    (item 2), and the control plane (item 4: IPC, Node with bulk rings,
+    the launcher).
+  - Done but for arm64's and rv64's RTCs: time (item 5).
+  - Tier 1 (item 3) runs on amd64 and arm64, with tier 0's libraries,
+    FDIO, rc and the commands built for it; rv64 waits for Swift's
+    calling conventions in its LLVM.
+  - Byte streams (item 6) are begun: the ring's byte-stream mode, stdio
+    on it, FDIO, and rc with its commands. An audit against 9front
+    (2026-10-16) found rc and the commands far from complete, and
+    program-to-program pipelines broken on the device (item 6 lists
+    the gaps). The pty is not started.
+  - Not started: drivers (item 7), and the console and the router
+    (item 8).
+  - Exit: `cat /svc/*/status` run by rc passes (amd64, arm64). Still
+    open: spawn → main < 200 µs, and the first recorded bench history.
+- **V3 onward** are not started (V4's boards have research passes).
+
 ## V0. Ground — done 2026-10-15
 
 Goal: croi boots from this repository, and the measuring works from the
@@ -96,7 +121,7 @@ work, in order:
    become counters; VMO reads and writes become mappings, through one
    bootfs helper instead of the boilerplate in eight programs; sizes and
    process info are info topics. The hosted test kernel (SysHost) follows
-   the same model, so todhchai's hosted tests keep running. **Begun:**
+   the same model, so todhchai's hosted tests keep running. **Done:**
    the floor is the one user runtime (D49). It is lifted onto V1's
    calls, with a port per thread, and userboot, m2 and the suites run on
    it; croi's runtime is gone. Sys is lifted: SysABI's values are the
@@ -158,7 +183,7 @@ work, in order:
    Node messages become batches (D18): a request is an array of
    operations, a later one may use an earlier one's result, and bulk
    `read`/`write` opens a ring. Userboot starts the launcher, which builds
-   each process's `/svc`. **Begun:** IPC is lifted (`system/ipc`,
+   each process's `/svc`. **Done:** IPC is lifted (`system/ipc`,
    `docs/wire-format.md`, idlc) and passes hosted on V1's Sys: the
    tests pass counters where they passed events, and the C side
    (`td_wire.h`, idlc's headers) is on V1's calls, a call being one
@@ -229,8 +254,45 @@ work, in order:
    and its streams, and its pipes are channel pairs of its own; RcTests
    and CommandsTests (over a NodeTree) hosted, and boot-launch's
    launch-test runs `rc -c 'cat /svc/*/status'` (amd64 and arm64).
-   Left: the pty (a child given rc's own stdin reads an empty one until
-   it shares a terminal), and `>[2]` apart from stdout.
+   **Audit against 9front (2026-10-16):** rc read against rc(1) and its
+   source, and 100 scripts run through both it and 9front's rc (built
+   for Linux): 61 match, 36 differ through the port, 3 through Linux.
+   About half of rc(1) works; the commands cover about 40% of 9front's
+   options, and rc's base set of programs is about a quarter there.
+   Left, the most-hit first:
+   - **Pipelines on the device:** rc closes a pipe's writer end just
+     after starting the program that writes it (`Interpreter.swift`'s
+     pipeline), which is the end its relay writes to, so a program
+     piped into anything loses its output.
+   - **Redirections:** `>[n=m]` after `>f` copies the old descriptor
+     (`redirect` reads `fds[to]`); a program's fd 2 is its stdout and
+     fds over 2 are dropped; redirection streams are never closed.
+   - **Missing syntax:** here documents (a script holding one runs no
+     line, as the whole script is parsed first), `@{}`, ranges
+     `$x(n-m)`, `[~...]` and a bare `~`, `!` or `@` as words, `<>`,
+     `<{}`, `>{}`, `$$x`, `` `split{} ``, `\`-newline inside a word.
+   - **Wrong semantics:** `x=1 y=2` leaves x unset; `if not` misfires
+     after an inner `if`; `if`/`for`/`while` bodies end at `|`, `&&`
+     and `||`; quoting is lost in `~` and `switch` patterns and `~`
+     takes any element of its subject; `$status` is a list, not one
+     `|`-joined string, and `while` clears it; concatenation errors
+     don't stop a script; globs keep paths that don't exist and skip
+     dot files; `&` on a compound command runs in the foreground; a `&`
+     in a switch case hangs the parser.
+   - **Missing pieces:** `rc file`, `#!`, `$path` and absolute paths;
+     the flags but `-c`; `builtin`, `exec`, `flag`, `rfork`; notes
+     (`sigint`, `sigexit`); `$0`, `$pid`, `$path`, `$cflag`, a real
+     `$apid`; the environment's lists and functions; `rc -c` keeping
+     `exit N`; the prompt only when interactive.
+   - **Commands:** `cat` with no arguments doesn't read stdin, and
+     nothing streams; unknown flags are ignored, not refused; statuses
+     are `1`, not Plan 9's strings; `ls` adds `/` and has its own `-l`
+     and multi-directory layout; `touch` doesn't update an existing
+     file; `rm -f`, `cp -x`, `mv`'s fallback and most flags are missing;
+     no `test`, `read`, `grep`, `sed`, `wc`, `sort`, `tail`, `tr`,
+     `sleep`, `kill`, `ps`, `date`, `ns`, `bind`, `mount`.
+   - The pty (a child given rc's own stdin reads an empty one until it
+     shares a terminal).
 7. **Drivers:** PCI, ACPI (the AML interpreter), devmgr, the driver host,
    the virtio library and virtio-input. Each driver binds its interrupt
    with `object_bind` and acks in arrays. The block class's ring (TDBR)

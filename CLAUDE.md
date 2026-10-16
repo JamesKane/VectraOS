@@ -82,29 +82,16 @@ CMake/Ninja builds the images, with one tree per arch under `build/<arch>/`.
 
 ## Status
 
-V0 is done (2026-10-15). V1 is under way: `object_bind` landed (D20),
-and the cuts have begun: FIFOs, sockets and streams (D21), the channel
-`_etc` forms and the futex extras (D22), events, signals and the thread
-waits (D23), sleeps, timers and the counter waits (D25), clocks (D26),
-display timelines (D27), debug_write and vmo_map (D28), the interrupt
-waits (D29), thread_raise_exception (D30), system_get_event (D31),
-port_cancel_key into port_cancel (D32), handle_close_many into
-handle_close (D33), handle_replace into handle_duplicate (D34),
-test_report into the test call (D35), vmo_get_size and
-process_info into info topics (D36), vmo_read and vmo_write (D37), and
-debuglog_read, the debuglog now a read-only ring (D38): 91 syscalls, the
-audit's target (`docs/syscall-audit.md`). The hot calls take arrays:
-handle_duplicate (D39), the wakes (D40), channel reads and writes (D41)
-and the VMAR calls (D42). The one ring is in Swift and `ring.h`, both
-model-checked by RingCheck (D43); the kernel produces it for the
-debuglog (D38) and for ports made with CROI_PORT_RING (D44).
-- **Done:** croi imported, passing on amd64, arm64 and rv64; todhchai's
-  Judge, History, trace format and reader lifted; `vx` with build, test,
-  boot, bench, trace, loc and ci.
-- **Also done:** croi's Python tools rewritten in Swift and removed.
-- **Also done in V2:** the trace producer: the kernel and `Trace` write trace
-  rings on the one ring (D50), recorded by a session and collected by
-  `vx trace collect`.
+V0 is done (2026-10-15). V1's work is done: 91 syscalls, the audit's
+target (`docs/syscall-audit.md`, D20-D38), the hot calls batched
+(D39-D42), the one ring in Swift and `ring.h` with RingCheck (D43), ports
+and the debuglog as rings (D38, D44). V2 is under way. Done: the one ABI,
+the floor, Sys, the libc, ld, the trace, the control plane (IPC, Node
+with bulk rings, the launcher) and time (but for two RTCs). Begun: tier
+1 (amd64 and arm64), and byte streams (the ring's byte-stream mode,
+stdio, FDIO, rc and its commands, which an audit against 9front found
+far from complete). V2's exit test `cat /svc/*/status` passes, run by
+rc. `docs/roadmap.md` opens with where things stand; keep it current.
 
 Milestones run in order, and each puts the next one's dependencies in
 place. Board bring-up (V4) waits for V3, the bring-up link: SSH and warm
