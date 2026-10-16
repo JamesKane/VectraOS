@@ -61,7 +61,9 @@ public indirect enum Command: Equatable, Sendable {
   case subshell(Command)
   case and(Command, Command)
   case or(Command, Command)
-  case sequence([Command])
+  /// Commands in turn; `newlines` says, for each gap between two, whether
+  /// a newline was in it (for printing them, as 9front's pcmd).
+  case sequence([Command], newlines: [Bool])
   /// Run without waiting for it.
   case background(Command)
   case brace(Command, [Redirection])
@@ -70,7 +72,9 @@ public indirect enum Command: Equatable, Sendable {
   case ifNot(Command)
   case forIn(String, list: [Word]?, body: Command)
   case whileDo(condition: Command, body: Command)
-  case switchOn(Word, cases: [(patterns: [Word], body: [Command])])
+  /// Each case's commands, and for each the gap before it (after the case
+  /// line, for the first): whether a newline was in it.
+  case switchOn(Word, cases: [(patterns: [Word], body: [Command], newlines: [Bool])])
   /// ~ subject patterns...
   case match(Word, [Word])
   /// fn name { body }, or fn name (deleting it).
@@ -428,9 +432,13 @@ public struct Parser {
 
   /// Commands separated by ; & and newlines, until one of `stops`.
   mutating func list(until stops: [Token]) throws(RcSyntaxError) -> Command {
-    var commands: [Command] = []
+    var commands: [Command] = [], newlines: [Bool] = []
     while true {
-      while (peek == .newline && !stops.contains(.newline)) || peek == .semicolon { at += 1 }
+      var newline = false
+      while (peek == .newline && !stops.contains(.newline)) || peek == .semicolon {
+        if peek == .newline { newline = true }
+        at += 1
+      }
       if stops.contains(peek) { break }
       if peek == .end { throw RcSyntaxError(message: "unfinished", incomplete: true) }
       var c = try andOr()
@@ -438,12 +446,13 @@ public struct Parser {
         at += 1
         c = .background(c)
       }
+      if !commands.isEmpty { newlines.append(newline) }
       commands.append(c)
       guard peek == .semicolon || peek == .newline || peek == .ampersand || stops.contains(peek) else {
         throw RcSyntaxError(message: "unexpected \(peek)")
       }
     }
-    return commands.count == 1 ? commands[0] : commands.isEmpty ? .empty : .sequence(commands)
+    return commands.count == 1 ? commands[0] : commands.isEmpty ? .empty : .sequence(commands, newlines: newlines)
   }
 
   mutating func andOr() throws(RcSyntaxError) -> Command {
@@ -502,7 +511,7 @@ public struct Parser {
     if case .pipe = peek { isPipe = true }
     if ends.contains(peek) || isPipe {
       let global = assigns.map { Command.assign($0.0, $0.1, body: nil) }
-      return global.count == 1 ? global[0] : .sequence(global)
+      return global.count == 1 ? global[0] : .sequence(global, newlines: Array(repeating: false, count: global.count - 1))
     }
     var body = try command(&self)
     for (name, value) in assigns.reversed() { body = .assign(name, value, body: body) }
@@ -651,7 +660,7 @@ public struct Parser {
       try expect(.rightParen, ")")
       skipNewlines()
       try expect(.leftBrace, "{ after switch")
-      var cases: [(patterns: [Word], body: [Command])] = []
+      var cases: [(patterns: [Word], body: [Command], newlines: [Bool])] = []
       while true {
         while peek == .newline || peek == .semicolon { at += 1 }
         if peek == .rightBrace { break }
@@ -659,12 +668,17 @@ public struct Parser {
         at += 1
         var patterns: [Word] = []
         while let w = try word() { patterns.append(w) }
-        var body: [Command] = []
+        var body: [Command] = [], newlines: [Bool] = []
         while true {
-          while peek == .newline || peek == .semicolon { at += 1 }
+          var newline = false
+          while peek == .newline || peek == .semicolon {
+            if peek == .newline { newline = true }
+            at += 1
+          }
           if peek == .rightBrace || keyword("case") { break }
           if peek == .end { throw RcSyntaxError(message: "unfinished", incomplete: true) }
           let c = try andOr()
+          newlines.append(newline)
           if peek == .ampersand {
             at += 1
             body.append(.background(c))
@@ -674,7 +688,7 @@ public struct Parser {
           guard peek == .semicolon || peek == .newline || peek == .rightBrace || keyword("case")
           else { throw RcSyntaxError(message: "unexpected \(peek)") }
         }
-        cases.append((patterns, body))
+        cases.append((patterns, body, newlines))
       }
       at += 1
       return .switchOn(subject, cases: cases)

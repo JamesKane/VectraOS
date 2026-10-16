@@ -496,7 +496,7 @@ public final class Rc {
   func executeChecked(_ c: Command, _ fds: [Int32: RcStream]) throws {
     switch c {
     case .empty: break
-    case .sequence(let cs): for c in cs { try execute(c, fds) }
+    case .sequence(let cs, _): for c in cs { try execute(c, fds) }
     case .simple(let words, let redirs):
       let io = try redirect(redirs, fds)
       let argv = try words.flatMap { try value($0, fds) }
@@ -752,8 +752,8 @@ public final class Rc {
           let text = v.count == 1 ? Rc.quote(v[0]) : "(" + v.map(Rc.quote).joined(separator: " ") + ")"
           fds[1]?.write(Array((name + "=" + text + "\n").utf8))
         }
-        if rc.functions[name] != nil {
-          fds[1]?.write(Array(("fn " + name + "\n").utf8))
+        if let body = rc.functions[name] {
+          fds[1]?.write(Array((Rc.text(.function(name, body: body), 0) + "\n").utf8))
         } else if builtins[name] != nil {
           fds[1]?.write(Array(("builtin " + name + "\n").utf8))
         } else if rc.system.exists(name) {
@@ -782,12 +782,6 @@ public final class Rc {
       try rc.runLines(String(decoding: text, as: UTF8.self), fds)
     },
   ]
-
-  /// A string as rc would read it back.
-  static func quote(_ s: String) -> String {
-    if !s.isEmpty && s.unicodeScalars.allSatisfy({ Lexer.isWordChar($0) }) { return s }
-    return "'" + s.replacingOccurrences("'", "''") + "'"
-  }
 }
 
 extension String {

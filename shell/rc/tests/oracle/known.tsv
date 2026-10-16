@@ -9,6 +9,5 @@
 30-status-fail	linux	Linux oracle: success status is 0
 31-status-pipeline	linux	Linux oracle: success is 0, so false|true is 1|0 (Plan 9, and we: 1|)
 36-redir-close	port	builtin echo to closed fd succeeds
-52-whatis	port	whatis fn prints no body
 61-background	port	compound & runs in foreground
 69-notfound	linux	not-found status text (Linux oracle: 1)
