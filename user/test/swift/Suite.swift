@@ -53,6 +53,8 @@ enum Suite {
             MemorySuite.run()
         } else if requested("ring") {
             RingSuite.run()
+        } else if requested("debuglog") {
+            DebuglogSuite.run()
         } else if requested("idle") {
             IdleSuite.run()
         } else if requested("interrupts") {

@@ -44,7 +44,7 @@ It replaces `object_wait_async`, `interrupt_bind`, `counter_wait_async`,
 `thread_bind_overrun_port` and `account_bind_pressure_port`.
 
 **The kernel speaks the ring format where it produces data.**
-- `debuglog_read` becomes a read-only ring VMO with a counter. The V3
+- `debuglog_read` becomes a read-only ring VMO with a counter (D38). The V3
   `log -f` reads it with no syscalls.
 - Trace buffers follow, at V2 with the trace producer.
 
@@ -150,7 +150,7 @@ Legend: **keep**, **merge** (the call survives under a combined form),
 | 245 | cpu_set_idle_states | keep | |
 | 50, 51 | trace_configure, pmu_configure | keep | |
 | 110, 111 | debuglog create, write | keep | |
-| 112 | debuglog_read | cut | a read-only ring VMO plus a counter |
+| 112 | debuglog_read | cut (D38) | a read-only ring VMO plus a counter |
 | 120, 121 | profile_create, object_set_profile | keep | |
 | 122 | thread_bind_overrun_port | merge | `object_bind` on the thread |
 
@@ -177,7 +177,8 @@ calls. handle_close_many merged into handle_close (D33): 98 calls.
 handle_replace merged into handle_duplicate (D34): 97 calls.
 test_report merged into the test call (D35): 96 calls.
 vmo_get_size and process_info became info topics (D36): 94 calls.
-vmo_read and vmo_write were cut (D37): 92 calls.
+vmo_read and vmo_write were cut (D37): 92 calls. debuglog_read was cut,
+the debuglog a read-only ring (D38): 91 calls, the audit's target.
 
 The ceiling in `tools/vx/LocCommand.swift` is lowered with each cut, so it
 never rises.

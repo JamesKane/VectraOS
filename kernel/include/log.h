@@ -1,15 +1,12 @@
-// The debuglog (K8a): the ABI shared by the kernel and user space
-// (user/include/croi/syscall.h includes it). Zircon's layouts and values
-// (zircon/syscalls/log.h).
+// The debuglog (K8a; a ring since D38): the ABI shared by the kernel and
+// user space (user/include/croi/syscall.h includes it). Zircon's record
+// layout and values (zircon/syscalls/log.h); the ring is croi's.
 #pragma once
 #include <stdint.h>
-#include "resource.h"  // CROI_RSRC_SYSTEM_DEBUGLOG_BASE gates readable debuglogs
 
 enum : uint32_t {
-  CROI_LOG_RECORD_MAX = 256,      // a whole record, header included
+  CROI_LOG_RECORD_MAX = 256,      // a whole record, header included: one ring slot
   CROI_LOG_RECORD_DATA_MAX = 216, // CROI_LOG_RECORD_MAX less the header
-  // debuglog_create options.
-  CROI_LOG_FLAG_READABLE = 0x40000000,
   // debuglog_write options (stored in the record's flags).
   CROI_LOG_LOCAL = 0x10,
   CROI_LOG_FLAGS_MASK = 0x10,
@@ -20,10 +17,20 @@ enum : uint32_t {
   CROI_LOG_WARNING = 0x40,
   CROI_LOG_ERROR = 0x50,
   CROI_LOG_FATAL = 0x60,
+  // The ring (D38): the one ring (lib/ring/ring.h) in OVERWRITE mode, of
+  // CROI_LOG_RING_SLOTS slots of CROI_LOG_RECORD_MAX bytes, each a record.
+  // Readers map it read only (CROI_PA_VMO_DEBUGLOG) and keep their own
+  // cursors; its counter (CROI_PA_DEBUGLOG_COUNTER) holds the producer
+  // cursor, so a caught-up reader binds VALUE at its cursor plus one.
+  CROI_LOG_RING_SLOTS = 512,
 };
 
-// zx_log_record_t: what debuglog_read copies out (header, then datalen
-// bytes of text, no terminator).
+enum : uint64_t {
+  CROI_LOG_RING_FORMAT = 0x474f4c44,  // "DLOG": the ring's format descriptor
+};
+
+// zx_log_record_t: a ring slot (header, then datalen bytes of text, no
+// terminator; zeros to the slot's end). The sequence is the ring's.
 typedef struct {
   uint64_t sequence;   // one more than the record before it
   uint8_t padding1[4];

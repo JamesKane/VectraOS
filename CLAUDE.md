@@ -79,11 +79,13 @@ waits (D29), thread_raise_exception (D30), system_get_event (D31),
 port_cancel_key into port_cancel (D32), handle_close_many into
 handle_close (D33), handle_replace into handle_duplicate (D34),
 test_report into the test call (D35), vmo_get_size and
-process_info into info topics (D36), vmo_read and vmo_write (D37), 92
-syscalls (`docs/syscall-audit.md`). The hot calls take arrays:
+process_info into info topics (D36), vmo_read and vmo_write (D37), and
+debuglog_read, the debuglog now a read-only ring (D38): 91 syscalls, the
+audit's target (`docs/syscall-audit.md`). The hot calls take arrays:
 handle_duplicate (D39), the wakes (D40), channel reads and writes (D41)
 and the VMAR calls (D42). The one ring is in Swift and `ring.h`, both
-model-checked by RingCheck (D43); debuglog_read waits for item 5 (D38).
+model-checked by RingCheck (D43); the debuglog is its first kernel
+producer (D38).
 - **Done:** croi imported, passing on amd64, arm64 and rv64; todhchai's
   Judge, History, trace format and reader lifted; `vx` with build, test,
   boot, bench, trace, loc and ci.

@@ -32,6 +32,8 @@ enum : uint32_t {
   CROI_PA_SYSTEM_RESOURCE = 0x54,
   CROI_PA_MEMORY_ACCOUNT = 0x41,   // croi's (K15a): the process's own account
   CROI_PA_ROOT_ACCOUNT = 0x42,     // croi's (D31): the system's memory levels
+  CROI_PA_VMO_DEBUGLOG = 0x43,     // croi's (D38): the debuglog ring, read only (log.h)
+  CROI_PA_DEBUGLOG_COUNTER = 0x44, // croi's (D38): its doorbell, the ring's producer cursor
   CROI_PA_USER0 = 0xF0,
 };
 

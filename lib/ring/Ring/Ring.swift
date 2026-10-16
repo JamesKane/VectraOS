@@ -49,6 +49,9 @@ public struct Ring<Memory: RingMemory>: ~Copyable {
     public let producer: Bool
     /// The other side broke the protocol: every call fails from here on.
     public private(set) var broken = false
+    /// This side's cursor (ring.h's `cursor`): for an OVERWRITE reader,
+    /// the sequence of the next record it will read.
+    public var position: UInt64 { cursor }
 
     /// Makes a ring in `size` bytes of zeroed memory at `base`, once,
     /// before either side attaches. False if the parameters aren't valid

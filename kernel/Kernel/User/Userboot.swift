@@ -7,9 +7,9 @@ import Fmt
 /// `ProgramLoader` into a process in the root job, with what it needs to
 /// start everything else: the root job, the root resource, bootfs as a VMO
 /// (the loader's CROI_MEM_BOOTFS pages, adopted), the boot data (firmware
-/// items, `BootData`), a debuglog as stdout, and the kernel command line's
-/// words as its environment. userboot finds
-/// `userboot.next=` in bootfs and starts it.
+/// items, `BootData`), the debuglog ring and its counter (D38), a debuglog
+/// as stdout, and the kernel command line's words as its environment.
+/// userboot finds `userboot.next=` in bootfs and starts it.
 enum Userboot {
     static func start(_ console: Uart) {
         // Kernel entry to user space (monotonic time starts at entry):
@@ -44,9 +44,9 @@ enum Userboot {
         do throws(Status) {
             let bootfsObject = try VmoObject.wrap(bootfs.record)
             defer { bootfsObject.release() }
-            let (stdout, stdoutRights) = try DebugLogs.create(readable: false)
+            let (stdout, stdoutRights) = try DebugLogs.create()
             defer { stdout.release() }
-            var handles = InlineArray<11, ProgramLoader.StartupHandle>(repeating: ProgramLoader.StartupHandle(
+            var handles = InlineArray<13, ProgramLoader.StartupHandle>(repeating: ProgramLoader.StartupHandle(
                 object: Processes.rootJob, rights: JobObject.defaultRights,
                 info: croi_pa_hnd(UInt32(CROI_PA_JOB_DEFAULT), 0)))
             handles[1] = ProgramLoader.StartupHandle(object: Resources.root, rights: ResourceObject.defaultRights,
@@ -60,8 +60,13 @@ enum Userboot {
                                                      info: croi_pa_hnd(UInt32(CROI_PA_VMO_BOOTDATA), 0))
             handles[5] = ProgramLoader.StartupHandle(object: Accounts.root, rights: AccountObject.rootRights,
                                                      info: croi_pa_hnd(UInt32(CROI_PA_ROOT_ACCOUNT), 0))
+            // The debuglog: reading it is holding these (D38).
+            handles[6] = ProgramLoader.StartupHandle(object: DebugLog.vmoObject, rights: DebugLog.vmoRights,
+                                                     info: croi_pa_hnd(UInt32(CROI_PA_VMO_DEBUGLOG), 0))
+            handles[7] = ProgramLoader.StartupHandle(object: DebugLog.counter, rights: DebugLog.counterRights,
+                                                     info: croi_pa_hnd(UInt32(CROI_PA_DEBUGLOG_COUNTER), 0))
             // Each kind's ranged root, as Zircon's userboot gets them.
-            var count = 6
+            var count = 8
             let kinds: InlineArray<5, (UInt32, UInt32)> = [
                 (UInt32(CROI_RSRC_KIND_MMIO), UInt32(CROI_PA_MMIO_RESOURCE)),
                 (UInt32(CROI_RSRC_KIND_IRQ), UInt32(CROI_PA_IRQ_RESOURCE)),

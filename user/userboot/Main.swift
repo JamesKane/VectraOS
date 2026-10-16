@@ -2,8 +2,9 @@ import CroiRuntime
 
 /// userboot (K8b; Zircon's userboot): the first user process. The kernel
 /// starts it in the root job with the root job, the root resource, bootfs
-/// as a VMO, the boot data (firmware items, zbi.h), a debuglog as stdout
-/// and the kernel command line as its environment. It finds the program
+/// as a VMO, the boot data (firmware items, zbi.h), the debuglog ring and
+/// its counter (D38), a debuglog as stdout and the kernel command line as
+/// its environment. It finds the program
 /// `userboot.next=` names in bootfs (default bin/launcher), loads its ELF
 /// into a new process (read-only segments mapped straight from the bootfs
 /// VMO, writable ones copied, PT_GNU_RELRO then read only, a stack from
@@ -153,10 +154,10 @@ struct Userboot {
             croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0), croi_pa_hnd(UInt32(CROI_PA_VMO_BOOTFS), 0),
             croi_pa_hnd(UInt32(CROI_PA_FD), 1),
         ]
-        // The boot data and each kind's ranged root that the kernel gave
-        // (by arch).
-        for type in [CROI_PA_VMO_BOOTDATA, CROI_PA_MMIO_RESOURCE, CROI_PA_IRQ_RESOURCE, CROI_PA_IOPORT_RESOURCE, CROI_PA_SMC_RESOURCE,
-                     CROI_PA_SYSTEM_RESOURCE] {
+        // The boot data, the debuglog ring and its counter (D38), and each
+        // kind's ranged root that the kernel gave (by arch).
+        for type in [CROI_PA_VMO_BOOTDATA, CROI_PA_VMO_DEBUGLOG, CROI_PA_DEBUGLOG_COUNTER, CROI_PA_MMIO_RESOURCE,
+                     CROI_PA_IRQ_RESOURCE, CROI_PA_IOPORT_RESOURCE, CROI_PA_SMC_RESOURCE, CROI_PA_SYSTEM_RESOURCE] {
             let info = croi_pa_hnd(UInt32(type), 0)
             let ranged = croi_take_startup_handle(info)
             if ranged != 0 {

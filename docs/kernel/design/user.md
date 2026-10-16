@@ -142,14 +142,22 @@ thread's stack top.
 
 Debuglog and user programs (K8a, Kernel/Object/DebugLog.swift,
 Kernel/User/ProgramLoader.swift, include/log.h, include/processargs.h,
-syscalls 110-112):
-- `DebugLog`: one ring of 512 fixed 256-byte croi_log_record_t slots
-  (oldest overwritten), Zircon's record layout. Log objects (type 12):
-  write-only ones need no resource, READABLE ones the debuglog system
-  resource (base 12) or root; each reader has its own position (starts at
-  the oldest record) and READABLE while behind. A `dlog-dumper` thread
-  prints every record as `[sssss.mmm] pid:tid> text`. Lock order:
-  debuglog -> object -> scheduler.
+syscalls 110-111):
+- `DebugLog`: since D38, the one ring (lib/ring, architecture §3) in
+  OVERWRITE mode: 512 slots of 256 bytes, each a croi_log_record_t
+  (Zircon's layout; its sequence is the ring's), in a contiguous VMO the
+  kernel maps to write. Writers (`debuglog_write`, `KernelLog`) are
+  serialised by the debuglog lock into the ring's one producer, which
+  then adds one to the ring's counter, so its value is the producer
+  cursor. Readers hold the VMO (READ | MAP, CROI_PA_VMO_DEBUGLOG) and the
+  counter (READ, CROI_PA_DEBUGLOG_COUNTER), from userboot or the kernel's
+  self-tests: each maps the ring read only, keeps its own cursor, and
+  binds VALUE at its cursor plus one when caught up. Log objects (type
+  12) only write and need no resource. A `dlog-dumper` thread is a
+  reader like any other (`DebugLog.reader()`) and prints every record as
+  `[sssss.mmm] pid:tid> text`, and a `[dlog: n records dropped]` line
+  for any it was lapped past. Lock order: debuglog -> object ->
+  scheduler (the counter's observers run under the debuglog lock).
 - Console: `ConsoleLock` serializes `Uart.write` calls between CPUs
   (recursive holders pass, waiters give up after 10^8 spins so a panic
   can't hang); the dumper's `writeLines` waits up to 50 ms for another
@@ -171,7 +179,8 @@ syscalls 110-112):
   `CroiAbi` in kernel/include (which CKernel re-exports through abi.h), so
   user code never builds the kernel's private headers. User Swift isn't
   bound by the kernel's no-ARC rule (low-half addresses). The boot test
-  runs user/test/swift: stdout, heap, environment, debuglog round trip.
+  runs user/test/swift: stdout (read back through the ring), heap,
+  environment; the `debuglog` suite checks the ring (D38).
 
 ## bootfs and userboot (K8b)
 
@@ -184,7 +193,7 @@ vx mkbootfs):
 - After "boot complete" the kernel starts userboot (an ELF in the kernel
   image, Embedded Swift, compiling lib/elf's source in) with
   `ProgramLoader`: root job, root resource, the root account (D31),
-  bootfs VMO (with EXECUTE),
+  bootfs VMO (with EXECUTE), the debuglog ring and its counter (D38),
   a stdout debuglog, and the command line's words as its environment
   (`BootOptions.withEnvironment`).
 - userboot maps bootfs, finds `userboot.next=` (default bin/launcher;

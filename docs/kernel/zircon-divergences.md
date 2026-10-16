@@ -48,6 +48,15 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   (`debuglog_write`), which every program gets as fd 1. Kind:
   deliberate (one way to log). Impact: a program without a debuglog
   can't print.
+- **No debuglog_read; the debuglog is a ring** (V1, D38) — Zircon's
+  readable log objects (zx_debuglog_create with ZX_LOG_FLAG_READABLE
+  and the debuglog resource, zx_debuglog_read, ZX_LOG_READABLE) are gone.
+  The log is the one ring in OVERWRITE mode, records in Zircon's layout,
+  mapped read only by whoever holds its VMO, with a counter whose value
+  is the producer cursor; each reader keeps its own position.
+  debuglog_create takes no resource and no options. Kind: deliberate (one
+  ring format; reading is holding the handles). Impact: readers need the
+  VMO and counter handed to them, and a 132 KiB mapping.
 
 ## Handles, objects and IPC
 

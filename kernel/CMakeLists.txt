@@ -62,6 +62,8 @@ add_library(kernel-swift OBJECT
   Kernel/Object/Futex.swift
   Kernel/Object/Exception.swift
   Kernel/Object/DebugLog.swift
+  ${PROJECT_SOURCE_DIR}/lib/ring/Ring/Ring.swift  # the debuglog's ring (D38)
+  ${PROJECT_SOURCE_DIR}/lib/ring/Ring/RingMemory.swift
   Kernel/Object/ProfileObject.swift
   Kernel/Object/Resource.swift
   Kernel/Object/InterruptObject.swift
@@ -127,7 +129,7 @@ target_link_libraries(kernel-swift PRIVATE croi-fmt croi-handoff croi-pagetables
 
 # Flag types are BitFlags, never OptionSet (cmake/CheckNoOptionSet.cmake).
 get_target_property(_kernel_sources kernel-swift SOURCES)
-list(TRANSFORM _kernel_sources PREPEND ${CMAKE_CURRENT_SOURCE_DIR}/)
+list(TRANSFORM _kernel_sources PREPEND ${CMAKE_CURRENT_SOURCE_DIR}/ REGEX "^[^/]")
 add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/no-optionset.stamp
   COMMAND ${CMAKE_COMMAND} "-DSOURCES=${_kernel_sources}" -DSTAMP=${CMAKE_CURRENT_BINARY_DIR}/no-optionset.stamp
           -P ${PROJECT_SOURCE_DIR}/cmake/CheckNoOptionSet.cmake
@@ -177,7 +179,7 @@ set(_user_bin ${CMAKE_CURRENT_BINARY_DIR}/usertest.bin)
 croi_user_binary(${_user_bin}
   SOURCES ${_user_dir}/test/usertest.c
   LINKER_SCRIPT ${_user_dir}/test/user.ld
-  INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/lib/ring)
 set(_vdso_bin ${CMAKE_CURRENT_BINARY_DIR}/vdso.bin)
 croi_user_binary(${_vdso_bin} PIC
   SOURCES ${_user_dir}/vdso/header.S ${_user_dir}/vdso/vdso.c
@@ -193,6 +195,7 @@ set(_swift_test_sources ${_user_dir}/test/swift/Main.swift ${_user_dir}/test/swi
     ${_user_dir}/test/swift/InterruptSuite.swift
     ${_user_dir}/test/swift/MemorySuite.swift
     ${_user_dir}/test/swift/IdleSuite.swift ${_user_dir}/test/swift/RingSuite.swift
+    ${_user_dir}/test/swift/DebuglogSuite.swift
     ${PROJECT_SOURCE_DIR}/lib/ring/Ring/Ring.swift ${PROJECT_SOURCE_DIR}/lib/ring/Ring/RingMemory.swift)
 set(_swift_test ${CMAKE_CURRENT_BINARY_DIR}/swifttest.elf)
 croi_user_program(${_swift_test} PIE SWIFT ${_swift_test_sources})

@@ -21,9 +21,10 @@ function(croi_user_binary output)
   add_custom_command(OUTPUT ${output}
     COMMAND ${CMAKE_C_COMPILER} --target=${CROI_CLANG_TRIPLE} ${CROI_USER_CFLAGS} -std=c23 -O2 -fno-omit-frame-pointer -ffreestanding
             -fno-stack-protector -fno-builtin -nostdlib -static -fuse-ld=lld ${_code}
-            -Wl,-T,${U_LINKER_SCRIPT} ${_includes} ${U_SOURCES} -o ${_elf}
+            -Wl,-T,${U_LINKER_SCRIPT} ${_includes} ${U_SOURCES} -o ${_elf} -MD -MF ${_elf}.d
     COMMAND ${CMAKE_OBJCOPY} -O binary ${_elf} ${output}
     DEPENDS ${U_SOURCES} ${U_LINKER_SCRIPT}
+    DEPFILE ${_elf}.d  # the headers it includes
     COMMENT "Building user binary ${_name}")
 endfunction()
 

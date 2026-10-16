@@ -68,9 +68,8 @@ enum : uint64_t {
   CROI_SYS_JOB_SET_POLICY = 107,         // (job, options, topic 0, croi_policy_basic_t *, count)
   CROI_SYS_JOB_SET_CPU_RESERVATION = 108, // (job, CPU resource, cpu_mask): task.h
 
-  CROI_SYS_DEBUGLOG_CREATE = 110,  // (resource or 0, options: CROI_LOG_FLAG_READABLE, out)
+  CROI_SYS_DEBUGLOG_CREATE = 110,  // (0, options 0, out): write only (D38)
   CROI_SYS_DEBUGLOG_WRITE = 111,   // (log, options: CROI_LOG_LOCAL, text, length <= 216)
-  CROI_SYS_DEBUGLOG_READ = 112,    // (log, options 0, croi_log_record_t *buffer, length) -> record size
   CROI_SYS_PROFILE_CREATE = 120,     // (resource, options 0, const croi_profile_info_t *, out)
   CROI_SYS_OBJECT_SET_PROFILE = 121, // (thread | interrupt | counter, profile, options,
                                      //  uint32_t *refusal or 0)

@@ -4,21 +4,21 @@ import Synchronization
 
 /// Boot self-test (K8a): the Embedded Swift test program (user/test/swift)
 /// started from its ELF by `ProgramLoader`, with a debuglog as stdout and
-/// an environment in its bootstrap message, and the root resource (it
-/// creates a readable debuglog itself). It must exit 0x600D, and the
-/// records it wrote must read back through a READABLE debuglog, in order,
-/// tagged with its process koid. Afterwards nothing it made is left.
+/// an environment in its bootstrap message. It must exit 0x600D, and the
+/// records it wrote must read back through the debuglog ring (D38), in
+/// order, tagged with its process koid. Afterwards nothing it made is left.
 enum ProgramSelfTest {
     static func run(_ console: Uart) {
         let before = ProcessSelfTest.Counts()
-        let (reader, _) = created { () throws(Status) in try DebugLogs.create(readable: true) }
-        drain(reader)  // whatever earlier writers left
-        let (stdout, stdoutRights) = created { () throws(Status) in try DebugLogs.create(readable: false) }
-        var handles = InlineArray<3, ProgramLoader.StartupHandle>(repeating: ProgramLoader.StartupHandle(
+        var reader = DebugLog.reader()
+        var dropped: UInt64 = 0
+        var record = InlineArray<256, UInt8>(repeating: 0)
+        while read(&reader, into: &record, &dropped) {}  // whatever earlier writers left
+        dropped = 0
+        let (stdout, stdoutRights) = created { () throws(Status) in try DebugLogs.create() }
+        var handles = InlineArray<2, ProgramLoader.StartupHandle>(repeating: ProgramLoader.StartupHandle(
             object: stdout, rights: stdoutRights, info: croi_pa_hnd(UInt32(CROI_PA_FD), 1)))
-        handles[1] = ProgramLoader.StartupHandle(object: Resources.root, rights: ResourceObject.defaultRights,
-                                                 info: croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0))
-        handles[2] = ProgramLoader.StartupHandle(object: Processes.rootJob, rights: JobObject.defaultRights,
+        handles[1] = ProgramLoader.StartupHandle(object: Processes.rootJob, rights: JobObject.defaultRights,
                                                  info: croi_pa_hnd(UInt32(CROI_PA_JOB_DEFAULT), 0))
         let environment: StaticString = "croi.test=1\0swift.greeting=dia duit\0"
         let image = unsafe RawSpan(_unsafeStart: UnsafeRawPointer(bitPattern: UInt(croi_swift_test_address()))!,
@@ -49,23 +49,16 @@ enum ProgramSelfTest {
         }
 
         // Its stdout, as records tagged with its koid.
-        let expected: InlineArray<5, StaticString> = [
+        let expected: InlineArray<4, StaticString> = [
             "swift: hello from user mode",
             "swift: 1000 squares, sum 332833500",
             "swift: env croi.test=1",
             "swift: env swift.greeting=dia duit",
-            "swift: round trip",  // through a log it created and read back itself
         ]
         var matched = 0
-        var record = InlineArray<256, UInt8>(repeating: 0)
-        while true {
-            let size: Int
-            do throws(Status) {
-                size = try DebugLog.read(LogObjectPointer(object: reader), into: &record)
-            } catch {
-                break
-            }
+        while read(&reader, into: &record, &dropped) {
             let header = unsafe record.span.bytes.unsafeLoadUnaligned(as: croi_log_record_t.self)
+            let size = DebugLog.headerSize + Int(header.datalen)
             guard header.pid == koid else { continue }
             guard matched < expected.count,
                   same(record.span.extracting(DebugLog.headerSize..<size), expected[matched]) else {
@@ -76,11 +69,10 @@ enum ProgramSelfTest {
             }
             matched += 1
         }
-        guard matched == expected.count else { panic("program self-test: records missing") }
-        reader.release()
+        guard matched == expected.count, dropped == 0 else { panic("program self-test: records missing") }
 
         // A static PIE (K11b) lands somewhere new each time: a second run.
-        let (stdout2, stdout2Rights) = created { () throws(Status) in try DebugLogs.create(readable: false) }
+        let (stdout2, stdout2Rights) = created { () throws(Status) in try DebugLogs.create() }
         handles[0] = ProgramLoader.StartupHandle(object: stdout2, rights: stdout2Rights,
                                                  info: croi_pa_hnd(UInt32(CROI_PA_FD), 1))
         let second: ObjectPointer
@@ -111,7 +103,7 @@ enum ProgramSelfTest {
         }
         // The same program as an ET_EXEC whose dynamic section has no
         // relocations (linked --export-dynamic): where it was linked.
-        let (stdout3, stdout3Rights) = created { () throws(Status) in try DebugLogs.create(readable: false) }
+        let (stdout3, stdout3Rights) = created { () throws(Status) in try DebugLogs.create() }
         handles[0] = ProgramLoader.StartupHandle(object: stdout3, rights: stdout3Rights,
                                                  info: croi_pa_hnd(UInt32(CROI_PA_FD), 1))
         let executable = unsafe RawSpan(_unsafeStart: UnsafeRawPointer(bitPattern: UInt(croi_swift_test_exec_address()))!,
@@ -141,7 +133,7 @@ enum ProgramSelfTest {
         console.write("): processargs (handles, environment), ")
         console.write("heap over its VMAR, stdout as ")
         console.write(decimal: UInt64(matched))
-        console.write(" debuglog records, debuglog create/read/wait from user mode; an ET_EXEC with a dynamic section")
+        console.write(" debuglog records read back through the ring; an ET_EXEC with a dynamic section")
         console.write(" and no relocations; RELRO read only; all torn down\n")
     }
 
@@ -155,11 +147,11 @@ enum ProgramSelfTest {
     static func runSuites(_ console: Uart) {
         // The idle suite first: the others' deadline context bounds every
         // CPU's wake latency below its deep state's.
-        let suites: InlineArray<10, StaticString> = ["swift.suite=idle\0", "swift.suite=bind\0", "swift.suite=vmo\0",
+        let suites: InlineArray<11, StaticString> = ["swift.suite=idle\0", "swift.suite=bind\0", "swift.suite=vmo\0",
                                                      "swift.suite=futex\0", "swift.suite=channel\0",
                                                      "swift.suite=objects\0", "swift.suite=counters\0",
                                                      "swift.suite=time\0", "swift.suite=memory\0",
-                                                     "swift.suite=ring\0"]
+                                                     "swift.suite=ring\0", "swift.suite=debuglog\0"]
         let before = ProcessSelfTest.Counts()
         runOrPanic(console, suites[0])
         let context: SchedContext
@@ -198,12 +190,13 @@ enum ProgramSelfTest {
 
     /// Runs the Swift program with `environment` (NUL-terminated strings,
     /// `swift.suite=<name>` among them), the root resource, the root job,
-    /// the root account and a debuglog as stdout, until it exits: its exit code.
+    /// the root account, the debuglog ring and its counter (D38) and a
+    /// debuglog as stdout, until it exits: its exit code.
     static func runSuite(_ environment: Span<UInt8>) -> Int64 {
         let image = unsafe RawSpan(_unsafeStart: UnsafeRawPointer(bitPattern: UInt(croi_swift_test_address()))!,
                                    byteCount: Int(croi_swift_test_size()))
-        let (stdout, stdoutRights) = created { () throws(Status) in try DebugLogs.create(readable: false) }
-        var handles = InlineArray<4, ProgramLoader.StartupHandle>(repeating: ProgramLoader.StartupHandle(
+        let (stdout, stdoutRights) = created { () throws(Status) in try DebugLogs.create() }
+        var handles = InlineArray<6, ProgramLoader.StartupHandle>(repeating: ProgramLoader.StartupHandle(
             object: stdout, rights: stdoutRights, info: croi_pa_hnd(UInt32(CROI_PA_FD), 1)))
         handles[1] = ProgramLoader.StartupHandle(object: Resources.root, rights: ResourceObject.defaultRights,
                                                  info: croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0))
@@ -211,6 +204,10 @@ enum ProgramSelfTest {
                                                  info: croi_pa_hnd(UInt32(CROI_PA_JOB_DEFAULT), 0))
         handles[3] = ProgramLoader.StartupHandle(object: Accounts.root, rights: AccountObject.rootRights,
                                                  info: croi_pa_hnd(UInt32(CROI_PA_ROOT_ACCOUNT), 0))
+        handles[4] = ProgramLoader.StartupHandle(object: DebugLog.vmoObject, rights: DebugLog.vmoRights,
+                                                 info: croi_pa_hnd(UInt32(CROI_PA_VMO_DEBUGLOG), 0))
+        handles[5] = ProgramLoader.StartupHandle(object: DebugLog.counter, rights: DebugLog.counterRights,
+                                                 info: croi_pa_hnd(UInt32(CROI_PA_DEBUGLOG_COUNTER), 0))
         let process: ObjectPointer
         do throws(Status) {
             process = try ProgramLoader.start(image, name: "swiftsuite", job: Processes.rootJob, handles: handles.span,
@@ -243,10 +240,11 @@ enum ProgramSelfTest {
         }
     }
 
-    /// Reads everything a reader has.
-    private static func drain(_ reader: ObjectPointer) {
-        var record = InlineArray<256, UInt8>(repeating: 0)
-        while (try? DebugLog.read(LogObjectPointer(object: reader), into: &record)) != nil {}
+    /// The ring's next record, if there is one.
+    private static func read(_ reader: inout NativeRing, into record: inout InlineArray<256, UInt8>,
+                             _ dropped: inout UInt64) -> Bool {
+        var span = record.mutableSpan
+        return span.withUnsafeMutableBytes { unsafe reader.read(to: $0.baseAddress!, dropped: &dropped) }
     }
 
     private static func same(_ bytes: Span<UInt8>, _ text: StaticString) -> Bool {

@@ -318,8 +318,8 @@ enum ProcessSelfTest {
 
     /// Runs the user test program as a process in `mode`, with a startup
     /// block at 0x3000000 (job, self, root VMAR, code VMO, code size, root
-    /// resource, boot data, IOMMU, ECAM, the vDSO's base), and
-    /// returns its return code once it has exited.
+    /// resource, boot data, IOMMU, ECAM, the vDSO's base, the debuglog
+    /// ring), and returns its return code once it has exited.
     static func runInProcess(mode: UInt64) -> Int64 {
         let page = KernelLayout.pageSize
         let codeSize = (croi_user_program_size() + page - 1) & ~(page - 1)
@@ -349,7 +349,8 @@ enum ProcessSelfTest {
                                                      to: process)
             let resource = try Processes.addHandle(Resources.root, rights: ResourceObject.defaultRights, to: process)
             let bootData = try Processes.addHandle(BootData.object, rights: BootData.rights, to: process)
-            var block = InlineArray<9, UInt64>(repeating: 0)
+            let debuglog = try Processes.addHandle(DebugLog.vmoObject, rights: DebugLog.vmoRights, to: process)
+            var block = InlineArray<10, UInt64>(repeating: 0)
             block[0] = UInt64(job) | UInt64(me) << 32
             block[1] = UInt64(root) | UInt64(codeHandle) << 32
             block[2] = codeSize
@@ -361,9 +362,10 @@ enum ProcessSelfTest {
             }
             block[7] = Mcfg.count > 0 ? Mcfg.windows[0].base : 0  // segment 0's ECAM
             block[8] = ProcessPointer(object: process).pointee.vdsoBase  // now_ns's clock: no writable data to keep it in
+            block[9] = UInt64(debuglog)  // log_has reads the ring (D38)
             var span = block.mutableSpan
             span.withUnsafeMutableBytes { raw in
-                startup.writeBytes(at: 0, from: UInt64(UInt(bitPattern: raw.baseAddress!)), count: 72)
+                startup.writeBytes(at: 0, from: UInt64(UInt(bitPattern: raw.baseAddress!)), count: 80)
             }
             codeVmo.release()
             startupVmo.release()

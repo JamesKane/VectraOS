@@ -403,6 +403,28 @@ so V1 cut both:
   moved to the vmo suite (`faultStatuses`, `copyRace`); mode 0's copies
   and the bad-pointer checks went.
 
+## debuglog_read: cut in V1 (D38)
+
+debuglog_read (112) copied a record out of the kernel's log for a log
+object created READABLE with the debuglog resource, which kept the
+reader's position and a READABLE signal. The debuglog is now the one
+ring in OVERWRITE mode (user.md), so V1 cut the call, the READABLE
+option and the readers list:
+- Reading is holding the ring's VMO and counter. The kernel hands them
+  to userboot, which passes them on with the boot data, and to the
+  self-tests; the debuglog system resource (base 12) went with them.
+- debuglog_create takes 0 and no options: every log object only writes.
+- The kernel reads the ring with a `Ring` of its own (`DebugLog.reader`):
+  the dumper, and the boot test's check of the Swift program's stdout.
+- Tests: the `debuglog` suite, moved from the boot program's round trip:
+  a record comes back with its sequence, koids, severity and text; a
+  caught-up reader's VALUE binding at its cursor plus one fires on the
+  next write; a reader lapped by 612 records resynchronises and counts
+  its drops; the VMO can't be mapped writable, nor the counter added to.
+  usertest.c's `log_has` reads the ring through `ring.h` (its checks need
+  the stub IOMMU and VT-d), so the C ring runs on the target too.
+  RingCheck covers torn slots.
+
 ## The small calls (K13e part 1)
 
 The small calls, K13e part 1 (syscalls 210-215 in User/IpcSyscalls.swift,

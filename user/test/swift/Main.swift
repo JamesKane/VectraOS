@@ -3,8 +3,8 @@ import CroiRuntime
 /// The K8a boot self-test's Embedded Swift program: runs on the user
 /// runtime from an ELF the kernel loads, prints over the debuglog it was
 /// handed as stdout, and grows a heap through its root VMAR. The kernel
-/// reads its records back and checks the exit code (its RELRO must be
-/// read only). With `swift.suite=<name>` in its environment it runs that
+/// reads its records back through the debuglog ring and checks the exit
+/// code (its RELRO must be read only). With `swift.suite=<name>` in its environment it runs that
 /// test suite instead (Suite.swift).
 @main
 struct SwiftTest {
@@ -31,60 +31,8 @@ struct SwiftTest {
         }
 
         let handles = croi_process_self() != 0 && croi_vmar_root_self() != 0 && croi_vdso_base() != 0
-        let log = debuglogRoundTrip()
         // The kernel's loader made PT_GNU_RELRO read only once relocated.
         let relro = croi_relro_read_only() == 1
-        croi_exit(sum == 332_833_500 && aligned && last == 0xA5 && handles && log && relro ? 0x600D : 1)
-    }
-
-    /// debuglog_create/write/read from user mode: a write-only log needs no
-    /// resource, a readable one does (the root resource, handed over for
-    /// this test); a record written through one comes back through the
-    /// other, READABLE until it has been read.
-    static func debuglogRoundTrip() -> Bool {
-        let resource = croi_take_startup_handle(croi_pa_hnd(UInt32(CROI_PA_RESOURCE), 0))
-        var writer: UInt32 = 0
-        var reader: UInt32 = 0
-        guard syscall(CROI_SYS_DEBUGLOG_CREATE, 0, 0, address(&writer)) == 0,
-              syscall(CROI_SYS_DEBUGLOG_CREATE, 0, UInt64(CROI_LOG_FLAG_READABLE), address(&reader)) == -11,  // BAD_HANDLE
-              syscall(CROI_SYS_DEBUGLOG_CREATE, UInt64(resource), UInt64(CROI_LOG_FLAG_READABLE),
-                      address(&reader)) == 0 else { return false }
-        var record = InlineArray<256, UInt8>(repeating: 0)
-        var buffer = record.mutableSpan
-        let at = buffer.withUnsafeMutableBytes { UInt64(UInt(bitPattern: $0.baseAddress)) }
-        // A write-only handle can't read (no READ right); the reader starts
-        // at the oldest record, so drain it first.
-        guard syscall(CROI_SYS_DEBUGLOG_READ, UInt64(writer), 0, at, 256) == -30 else { return false }  // ACCESS_DENIED
-        while syscall(CROI_SYS_DEBUGLOG_READ, UInt64(reader), 0, at, 256) > 0 {}
-        // READABLE through a port (the one wait, D23): nothing yet, then
-        // the record written.
-        let port = Port()
-        var item = croi_bind_item_t(handle: reader, options: UInt32(CROI_BIND_SIGNALS), key: 1,
-                                    trigger: UInt64(CROI_SIGNAL_READABLE), status: 1, reserved: 0)
-        guard syscall(CROI_SYS_OBJECT_BIND, port.handle.arg, address(&item), 1) == 1, port.empty else { return false }
-        let text: StaticString = "swift: round trip"
-        let textAddress = unsafe UInt64(UInt(bitPattern: text.utf8Start))
-        guard syscall(CROI_SYS_DEBUGLOG_WRITE, UInt64(writer), 0, textAddress, UInt64(text.utf8CodeUnitCount)) == 0,
-              port.next(deadline: .max) != nil else { return false }
-        let size = syscall(CROI_SYS_DEBUGLOG_READ, UInt64(reader), 0, at, 256)
-        let headerSize = MemoryLayout<croi_log_record_t>.size
-        guard size == Int64(headerSize + text.utf8CodeUnitCount) else { return false }
-        let header = unsafe record.span.bytes.unsafeLoadUnaligned(as: croi_log_record_t.self)
-        for i in 0..<text.utf8CodeUnitCount where unsafe record[headerSize + i] != text.utf8Start[i] {
-            return false
-        }
-        let caughtUp = syscall(CROI_SYS_DEBUGLOG_READ, UInt64(reader), 0, at, 256) == -22  // SHOULD_WAIT
-        for handle in [writer, reader, resource] { _ = croi_handle_close(handle) }
-        return header.datalen == UInt16(text.utf8CodeUnitCount) && header.severity == UInt8(CROI_LOG_INFO)
-            && header.pid != 0 && header.tid != 0 && caughtUp
-    }
-
-    static func syscall(_ number: UInt64, _ a0: UInt64 = 0, _ a1: UInt64 = 0, _ a2: UInt64 = 0,
-                        _ a3: UInt64 = 0) -> Int64 {
-        croi_syscall(number, a0, a1, a2, a3, 0)
-    }
-
-    static func address<T>(_ value: inout T) -> UInt64 {
-        withUnsafeMutablePointer(to: &value) { UInt64(UInt(bitPattern: $0)) }
+        croi_exit(sum == 332_833_500 && aligned && last == 0xA5 && handles && relro ? 0x600D : 1)
     }
 }

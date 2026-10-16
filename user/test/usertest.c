@@ -6,7 +6,18 @@
 #include <croi/syscall.h>
 
 #include "pmu.h"
+#include "ring.h"
 #include "shared.h"
+
+// ring.h copies a slot with __builtin_memcpy, which calls memcpy for 256
+// bytes, and this program links no C library. Through volatile, so the
+// loop doesn't become a call to itself.
+void *memcpy(void *to, const void *from, __SIZE_TYPE__ n) {
+  volatile uint8_t *t = to;
+  const volatile uint8_t *f = from;
+  while (n--) *t++ = *f++;
+  return to;
+}
 
 #define ERR_BAD_HANDLE (-11)
 #define ERR_INVALID_ARGS (-10)
@@ -276,6 +287,7 @@ typedef struct {
   uint32_t iommu_type, padding3;  // its iommu_create type
   uint64_t ecam;                  // segment 0's ECAM (the MCFG's first window), or 0
   uint64_t vdso;                  // the vDSO's base, for now_ns
+  uint32_t debuglog, padding4;    // the debuglog ring's VMO, read only (D38)
 } startup_t;
 
 // Where the kernel maps the startup block in every process mode.
@@ -1357,14 +1369,19 @@ static croi_info_bti_t bti_info(uint32_t bti) {
   return info;
 }
 
-// Whether a debuglog record holds `text`.
+// Whether a debuglog record holds `text`: the ring (D38), read through a
+// read-only mapping from the oldest record still there.
 static int log_has(const startup_t *s, const char *text) {
-  uint32_t log = 0;
-  CHECK(301, sys(CROI_SYS_DEBUGLOG_CREATE, s->resource, CROI_LOG_FLAG_READABLE, (uint64_t)&log, 0, 0) == 0);
+  uint64_t size = croi_ring_size(CROI_LOG_RECORD_MAX, CROI_LOG_RING_SLOTS);
+  uint64_t mapped = (size + 4095) & ~4095ull, base = 0;
+  croi_ring_t ring;
+  CHECK(301, croi_vmar_map(s->vmar, CROI_VM_PERM_READ, 0, s->debuglog, 0, mapped, &base) == 0 &&
+                 croi_ring_attach(&ring, (void *)base, size, false, CROI_LOG_RECORD_MAX, CROI_LOG_RING_FORMAT,
+                                  CROI_RING_OVERWRITE));
   uint8_t record[CROI_LOG_RECORD_MAX];
+  uint64_t dropped = 0;
   int found = 0;
-  int64_t size;
-  while (!found && (size = sys(CROI_SYS_DEBUGLOG_READ, log, 0, (uint64_t)record, sizeof record, 0)) > 0) {
+  while (!found && croi_ring_read(&ring, record, &dropped)) {
     const croi_log_record_t *header = (const croi_log_record_t *)record;
     const char *data = (const char *)(record + sizeof *header);
     for (int i = 0; !found && i + 1 <= header->datalen; i++) {
@@ -1373,7 +1390,7 @@ static int log_has(const startup_t *s, const char *text) {
       found = text[j] == 0;
     }
   }
-  croi_handle_close(log);
+  croi_vmar_unmap(s->vmar, base, mapped);
   return found;
 }
 

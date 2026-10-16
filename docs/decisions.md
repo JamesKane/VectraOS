@@ -697,7 +697,7 @@ VMO through a mapping, the one way to reach its pages.
   `faultStatuses`, which reads them from faults' exceptions; K14h's
   copy race moved there too, over process_read_memory.
 
-## D38. The debuglog becomes a read-only ring; debuglog_read is cut (2026-10-15, proposed)
+## D38. The debuglog becomes a read-only ring; debuglog_read is cut (2026-10-15, decided)
 
 V1's last cut (`docs/syscall-audit.md` §2, roadmap V1 item 5): one call,
 92 → 91, the audit's target. It lands after the one ring (item 4): the
@@ -719,8 +719,9 @@ layout, not one of its own.
   mode is the same idea; they move onto the ring at V2 (audit §4).
 - **The slots** are today's: 512 of 256 bytes, each a `croi_log_record_t`
   and its text. The format descriptor names log records. The ring lives
-  in a contiguous VMO mapped into the kernel, as the trace rings do; the
-  dumper reads it in place and is otherwise unchanged.
+  in a contiguous VMO mapped into the kernel, as the trace rings do. The
+  kernel writes it through Ring.swift, and its dumper is a reader like
+  any other (`DebugLog.reader`). A record's bytes past its text are zero.
 - **The doorbell** is a counter the kernel owns, made at boot. Its value
   is the producer cursor: each record adds one, after the cursor's
   release. A reader that has caught up binds a VALUE trigger at its
@@ -730,8 +731,9 @@ layout, not one of its own.
 - **Delivery, as D31's root account.** Userboot gets the ring as
   CROI_PA_VMO_DEBUGLOG (READ | MAP | GET_PROPERTY, no WRITE) and the
   counter as CROI_PA_DEBUGLOG_COUNTER (READ only: readable and bindable,
-  not addable), and passes them to whoever reads the log: today the
-  self-tests, at V2 todhchai's console service, at V3 `log -f`. Holding
+  not addable), and passes them on with the boot data to whoever reads
+  the log: at V2 todhchai's console service, at V3 `log -f`. The
+  kernel's self-tests get them from the kernel. Holding
   the handles is the right to read; the debuglog system resource
   (base 12) has no other use and goes with it.
 - **debuglog_create loses READABLE.** Every log object only writes, so
@@ -740,8 +742,11 @@ layout, not one of its own.
   CROI_INFO_DEBUGLOG (written, printed) stays: m2 paces its trace export
   by it.
 - **Callers:** the Swift boot test's round trip (`user/test/swift/Main.swift`)
-  and usertest.c's record search (its debuglog_read loop) move to a Swift
-  `debuglog` suite, which reads through the mapping. todhchai's console
+  moves to a Swift `debuglog` suite, which reads through the mapping; the
+  kernel checks the boot program's stdout through a reader of its own.
+  usertest.c's record search (`log_has`) stays a helper: the checks that
+  call it need the stub IOMMU and VT-d, so it reads the ring through
+  `ring.h`, from the VMO its startup block now carries. todhchai's console
   service (`services/console/Main.swift`) and `Debuglog.reader` in its
   `sys` move to the ring when V2 lifts them.
 - **Tests:** the suite checks that a record written comes back with its
