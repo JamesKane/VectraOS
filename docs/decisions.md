@@ -1101,8 +1101,11 @@ does what tier 1 needs: thread blocks and ELF TLS, its threads,
   spawn → main is measured on the floor.
 - **What isn't a runtime stays a helper.** MMIO and port I/O stay inline
   in `croi/runtime.h`. The suites' RELRO check and TCG check use the
-  floor's `td_image_header` and `td_cpuid`. lib/rt keeps `mem*`, the
-  stack guard and 128-bit division, which it shares with the kernel.
+  floor's `td_image_header` and `td_cpuid`. lib/rt keeps the stack
+  guard and 128-bit division, which it shares with the kernel. (Amended
+  2026-10-16: lib/rt kept `mem*` too until the libc landed; user programs
+  now take `mem*` and `strlen` from the libc, and lib/rt's are the
+  kernel's and the loader's.)
 - **Assembly and C only where Swift can't reach:** the entry, the
   thread pointer, `__ehdr_start`, port I/O, and the C ABI's globals
   that a dlopen'd object must share (`runtime.c`).
