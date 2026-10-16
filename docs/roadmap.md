@@ -267,11 +267,12 @@ work, in order:
      now holds the pipe's end with rc; boot-launch runs a pipeline of
      programs), `>[n=m]` after `>f` (left to right, as 9front), and
      `cat` with no files reading stdin; here documents (`<<tag`, quoted
-     or not, several on a line; boot-launch gives a program one).
+     or not, several on a line; boot-launch gives a program one);
+     subscript ranges (`$x(n-m)`, `$x(n-)`, as 9front's subwords).
    - **Redirections:** a program's fd 2 is its stdout and fds over 2
      are dropped; redirection streams are never closed.
-   - **Missing syntax:** `@{}`, ranges `$x(n-m)`, `[~...]` and a bare
-     `~`, `!` or `@` as words, `<>`, `<{}`, `>{}`, `$$x`, `` `split{} ``,
+   - **Missing syntax:** `@{}`, `[~...]` and a bare `~`, `!` or `@` as
+     words, `<>`, `<{}`, `>{}`, `$$x`, `` `split{} ``,
      `\`-newline inside a word.
    - **Wrong semantics:** `x=1 y=2` leaves x unset; `if not` misfires
      after an inner `if`; `if`/`for`/`while` bodies end at `|`, `&&`

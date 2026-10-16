@@ -6,12 +6,10 @@
 # linux, an artefact of running 9front's rc on Linux (numeric statuses,
 # GNU programs), which never matches.
 03-subscript	port	port accepts $#x(9) (9front: syntax error, aborts)
-04-range	port	no subscript ranges $x(2-4) $x(3-)
 07-concat-mismatch	port	concat error not fatal in port
 08-concat-null	port	concat error not fatal in port
 11-continuation	port	backslash-newline inside a word not a space
 15-for-in	port	9front makes for variable local; port leaves it set
-17-while	port	ranges ($x(2-)) missing
 18-while-shift	port	while resets $status to ''
 21b-tilde-noneg	port	~ subject is whole list; quoted pattern still a pattern
 21-tilde	port	[~a-c] lexes ~ as a token: syntax error

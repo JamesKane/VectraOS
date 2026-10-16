@@ -152,6 +152,30 @@ public final class Rc {
 
   // MARK: Words
 
+  /// The elements of `all` one subscript names (9front's subwords): `n`,
+  /// `n-m` or `n-` (to the end), origin 1. Digits are read from the
+  /// start and anything after them ignored; a range past the end stops
+  /// there; a start out of range, or an end before it, names none.
+  static func subscripted(_ all: [String], _ s: String) -> [String] {
+    var digits = s.utf8[...]
+    func number() -> Int {
+      var n = 0
+      while let d = digits.first, d >= 0x30, d <= 0x39 {
+        n = n * 10 + Int(d - 0x30)
+        digits = digits.dropFirst()
+      }
+      return n
+    }
+    let n = number()
+    var m = 0
+    if digits.first == UInt8(ascii: "-") {
+      digits = digits.dropFirst()
+      m = digits.isEmpty ? all.count - n : number() - n
+    }
+    guard n >= 1, n <= all.count, m >= 0 else { return [] }
+    return Array(all[(n - 1)..<min(all.count, n + m)])
+  }
+
   func value(_ w: Word, _ fds: [Int32: RcStream], glob: Bool = true) throws -> [String] {
     switch w {
     case .literal(let s, let quoted):
@@ -164,9 +188,7 @@ public final class Rc {
       let all = lookup(name)
       guard let index else { return all }
       var out: [String] = []
-      for s in try index.flatMap({ try value($0, fds) }) {
-        if let n = Int(s), n >= 1, n <= all.count { out.append(all[n - 1]) }
-      }
+      for s in try index.flatMap({ try value($0, fds) }) { out += Self.subscripted(all, s) }
       return out
     case .count(let name): return [String(lookup(name).count)]
     case .joined(let name): return [lookup(name).joined(separator: " ")]
