@@ -54,7 +54,7 @@ What runs today:
 - `vx`, the one front door: build, test, boot, bench, trace, loc, hardware and CI;
 - boot and size budgets reported on every run, judged against this machine's history.
 
-The road ahead ([docs/roadmap.md](docs/roadmap.md)): the one ring and the cut-down kernel (V1), the userland base (V2), the bring-up link (V3), the first boards: the Orange Pi 6 Plus (V4), the Orange Pi RV2 (V4b) and an AMD desktop (V4c), then Taisce on disk (V5), the desktop (V6), the swarm (V7), compute, starting with the Radxa Dragon Q8B (V8), and Wasm and games (V9). What runs where, and how sure we are of it, is [docs/hardware/](docs/hardware/).
+The road ahead ([docs/roadmap.md](docs/roadmap.md)): the one ring and the cut-down kernel (V1), the userland base (V2), the bring-up link (V3), the first boards: the Orange Pi 6 Plus (V4), the Orange Pi RV2 (V4b) and an AMD desktop (V4c), then Taisce on disk (V5), the desktop (V6), the swarm (V7), compute, starting with the Radxa Dragon Q8B (V8), and Wasm and games (V9). What runs where, and how sure we are of it, is [docs/hardware/](docs/hardware/); support for hardware not on it needs a contribution from someone who has it, or donated test hardware (contact the BDFL, James Kane, first).
 
 ## Build it
 

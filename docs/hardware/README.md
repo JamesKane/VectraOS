@@ -95,6 +95,26 @@ shown beside it:
   bench` as everywhere; making them part of supported would be a later
   decision.
 
+## Hardware not on the list
+
+The list holds the hardware the roadmap has chosen and that we can test.
+A request to support anything else needs one of two things, because no
+level can be reached without someone running its checks on the
+hardware:
+- **A contribution from someone who has the hardware.** They do its
+  bring-up and record its runs; its rows enter at research or planned
+  under a decision, like any other, and rise by the rules above. A board
+  stays supported only while recorded passes keep coming, so the
+  contributor's runs are what keep it there.
+- **A donation of test hardware.** Contact the BDFL, James Kane
+  ([@JamesKane](https://github.com/JamesKane), through an issue at
+  [github.com/JamesKane/VectraOS](https://github.com/JamesKane/VectraOS)),
+  before sending anything: whether a machine is accepted, and where its
+  bring-up falls in the roadmap, is the BDFL's call.
+
+Without one or the other, a request gets no row: a row is a promise
+about evidence, and nobody here could produce it.
+
 ## The tools
 
 `vx hardware` prints the list with health worked out, and `vx hardware
