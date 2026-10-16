@@ -22,6 +22,9 @@ struct RingModelTests {
         func endSleep()
         func write(_ from: UnsafeRawPointer)
         func read(_ to: UnsafeMutableRawPointer, _ dropped: inout UInt64) -> Bool
+        func writeBytes(_ from: UnsafeRawPointer, _ count: Int) -> (Int, Bool)
+        func writeEnd() -> (Bool, Bool)
+        func readBytes(_ to: UnsafeMutableRawPointer, _ max: Int) -> (Int, Bool, Bool)
     }
 
     final class SwiftSide: Side {
@@ -40,6 +43,18 @@ struct RingModelTests {
         func endSleep() { ring.endSleep() }
         func write(_ from: UnsafeRawPointer) { ring.write(from: from) }
         func read(_ to: UnsafeMutableRawPointer, _ dropped: inout UInt64) -> Bool { ring.read(to: to, dropped: &dropped) }
+        func writeBytes(_ from: UnsafeRawPointer, _ count: Int) -> (Int, Bool) {
+            let r = ring.write(bytes: from, count: count)
+            return (r.written, r.wake)
+        }
+        func writeEnd() -> (Bool, Bool) {
+            let r = ring.writeEnd()
+            return (r.done, r.wake)
+        }
+        func readBytes(_ to: UnsafeMutableRawPointer, _ max: Int) -> (Int, Bool, Bool) {
+            let r = ring.read(bytes: to, max: max)
+            return (r.count, r.ended, r.wake)
+        }
     }
 
     final class CSide: Side {
@@ -58,6 +73,21 @@ struct RingModelTests {
         func endSleep() { croi_ring_end_sleep(&ring) }
         func write(_ from: UnsafeRawPointer) { croi_ring_write(&ring, from) }
         func read(_ to: UnsafeMutableRawPointer, _ dropped: inout UInt64) -> Bool { croi_ring_read(&ring, to, &dropped) }
+        func writeBytes(_ from: UnsafeRawPointer, _ count: Int) -> (Int, Bool) {
+            var wake = false
+            let n = croi_ring_write_bytes(&ring, from, UInt64(count), &wake)
+            return (Int(n), wake)
+        }
+        func writeEnd() -> (Bool, Bool) {
+            var wake = false
+            let done = croi_ring_write_end(&ring, &wake)
+            return (done, wake)
+        }
+        func readBytes(_ to: UnsafeMutableRawPointer, _ max: Int) -> (Int, Bool, Bool) {
+            var ended = false, wake = false
+            let n = croi_ring_read_bytes(&ring, to, UInt64(max), &ended, &wake)
+            return (Int(n), ended, wake)
+        }
     }
 
     enum Implementation: CaseIterable { case swift, c }
@@ -252,5 +282,95 @@ struct RingModelTests {
         mutation.relaxReleases = [0]
         let result = Self.overwriteModel(implementation, records: 3, mutation: mutation)
         #expect(!result.ok, "\(implementation): relaxed writer should fail")
+    }
+
+    // MARK: BYTE_STREAM
+
+    /// A writer sends `chunks` (their sizes; byte i is i + 1) and then the
+    /// end mark through two slots of 16 bytes' payload, so that it fills;
+    /// a reader takes `readSize` bytes at a time, so that reads fall inside
+    /// slots. Every byte must arrive in order, once, and the end only after
+    /// the last; both sleep when they must. The checker's memory is words,
+    /// so sizes here are multiples of 8: ByteStreamTests covers any sizes
+    /// on the hardware.
+    static func streamModel(_ implementation: Implementation, chunks: [Int], readSize: Int,
+                            mutation: Checker.Mutation = .init()) -> Checker.Result {
+        let slotSize = 24
+        let size = RingLayout.size(slotSize: slotSize, count: 2)!
+        let region = UnsafeMutableRawBufferPointer.allocate(byteCount: size, alignment: 128)
+        defer { region.deallocate() }
+        let base = region.baseAddress!
+        let total = chunks.reduce(0, +)
+        var writer: Side?, reader: Side?
+        var model = Checker.Model(
+            name: "byte stream, \(implementation), \(chunks) by \(readSize)", regions: [region], counters: 2,
+            reset: {
+                _ = Ring<NativeMemory>.create(base, size: size, slotSize: slotSize, count: 2, format: 7,
+                                              flags: RingLayout.byteStream)
+                writer = attach(implementation, base, size, producer: true, slotSize: slotSize,
+                                flags: RingLayout.byteStream)
+                reader = attach(implementation, base, size, producer: false, slotSize: slotSize,
+                                flags: RingLayout.byteStream)
+            },
+            threads: [
+                {  // the writer
+                    let side = writer!
+                    var sent = 0
+                    for chunk in chunks {
+                        var bytes = (0..<chunk).map { UInt8(sent + $0 + 1) }
+                        var off = 0
+                        while off < chunk {
+                            let (n, wake) = bytes.withUnsafeMutableBytes { side.writeBytes($0.baseAddress! + off, chunk - off) }
+                            if wake { Checker.kernelAdd(data) }
+                            if n == 0 { sleep(side, on: space, recheck: true) }
+                            off += n
+                        }
+                        sent += chunk
+                    }
+                    while true {
+                        let (done, wake) = side.writeEnd()
+                        if wake { Checker.kernelAdd(data) }
+                        if done { break }
+                        sleep(side, on: space, recheck: true)
+                    }
+                },
+                {  // the reader
+                    let side = reader!
+                    var received = 0, ended = false
+                    var buffer = [UInt8](repeating: 0, count: readSize)
+                    while !ended {
+                        let (n, end, wake) = buffer.withUnsafeMutableBytes { side.readBytes($0.baseAddress!, readSize) }
+                        if wake { Checker.kernelAdd(space) }
+                        for i in 0..<n {
+                            Checker.expect(buffer[i] == UInt8(received + i + 1),
+                                           "byte \(received + i) read as \(buffer[i])")
+                        }
+                        received += n
+                        ended = end
+                        if n == 0 && !end { sleep(side, on: data, recheck: true) }
+                    }
+                    Checker.expect(received == total, "the end after \(received) of \(total) bytes")
+                },
+            ],
+            final: { done, _ in done.allSatisfy { $0 } ? nil : "a side sleeps with work waiting (a lost wake)" })
+        model.mutation = mutation
+        return Checker.check(model)
+    }
+
+    @Test(arguments: Implementation.allCases)
+    func byteStream(_ implementation: Implementation) {
+        let result = Self.streamModel(implementation, chunks: [16, 8], readSize: 8)
+        #expect(result.ok, "\(result.failure ?? "")")
+        #expect(result.finals > 0)
+        print("ring check: byte stream, \(implementation): \(result.states) states, \(result.executions) runs")
+    }
+
+    /// Without the writer's release, the reader reads bytes before they land.
+    @Test(arguments: Implementation.allCases)
+    func brokenByteStream(_ implementation: Implementation) {
+        var mutation = Checker.Mutation()
+        mutation.relaxReleases = [0]
+        let result = Self.streamModel(implementation, chunks: [16, 8], readSize: 8, mutation: mutation)
+        #expect(!result.ok, "\(implementation): a relaxed publish should fail")
     }
 }

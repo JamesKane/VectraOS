@@ -198,6 +198,13 @@ work, in order:
 6. **Byte streams (D46).** stdio, `pipe()` and the pty move from sockets
    to the one ring in its byte-stream mode: one writer per ring, an end
    mark for end of input, and peer death from a channel's PEER_CLOSED.
+   **Begun:** the ring's byte-stream mode, in Ring.swift and ring.h
+   alike (any amount each way, the end mark after the last bytes, a
+   hostile header breaking the ring), checked by RingCheck on both
+   (a stream through two slots, about 200,000 states each; a relaxed
+   publish caught), ByteStreamTests on the host (each implementation
+   feeding the other across threads) and the `ring` suite on each arch.
+   Next: stdio on it, then `pipe()` and the pty.
 7. **Drivers:** PCI, ACPI (the AML interpreter), devmgr, the driver host,
    the virtio library and virtio-input. Each driver binds its interrupt
    with `object_bind` and acks in arrays. The block class's ring (TDBR)

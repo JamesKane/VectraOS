@@ -12,7 +12,13 @@ public enum RingLayout {
     public static var slots: Int { 384 }
     public static var waitingOffset: Int { 8 }
     public static var overwrite: UInt16 { 1 }
-    public static var knownFlags: UInt16 { overwrite }
+    /// BYTE_STREAM (D46): each slot a length, flags and that many bytes.
+    public static var byteStream: UInt16 { 2 }
+    public static var knownFlags: UInt16 { overwrite | byteStream }
+    /// A byte-stream slot's header: its length (u32), then its flags (u32).
+    public static var streamHeader: Int { 8 }
+    /// A byte-stream slot's flag: the end of the stream, after its bytes.
+    public static var streamEnd: UInt32 { 1 }
     public static var maxSlotSize: Int { 65536 }
     public static var maxSlots: Int { 1 << 20 }
     /// Header fields' offsets (croi_ring_header_t).
@@ -49,6 +55,13 @@ public struct Ring<Memory: RingMemory>: ~Copyable {
     public let producer: Bool
     /// The other side broke the protocol: every call fails from here on.
     public private(set) var broken = false
+    /// BYTE_STREAM's reader: the head slot's length and flags, copied out
+    /// once (-1: not yet), the bytes taken from it, and whether the end
+    /// mark has been read.
+    private var streamLength = -1
+    private var streamFlags: UInt32 = 0
+    private var streamTaken = 0
+    public private(set) var ended = false
     /// This side's cursor (ring.h's `cursor`): for an OVERWRITE reader,
     /// the sequence of the next record it will read.
     public var position: UInt64 { cursor }
@@ -60,7 +73,9 @@ public struct Ring<Memory: RingMemory>: ~Copyable {
     public static func create(_ base: UnsafeMutableRawPointer, size: Int, slotSize: Int, count: Int,
                               format: UInt64, flags: UInt16 = 0) -> Bool {
         guard let need = RingLayout.size(slotSize: slotSize, count: count), need <= size,
-              flags & ~RingLayout.knownFlags == 0 else { return false }
+              flags & ~RingLayout.knownFlags == 0,
+              flags != RingLayout.overwrite | RingLayout.byteStream,
+              flags & RingLayout.byteStream == 0 || slotSize > RingLayout.streamHeader else { return false }
         var header = InlineArray<16, UInt64>(repeating: 0)
         header[0] = UInt64(RingLayout.magic) | UInt64(RingLayout.version) << 32 | UInt64(flags) << 48
         header[1] = UInt64(slotSize) | UInt64(count) << 32
@@ -91,6 +106,7 @@ public struct Ring<Memory: RingMemory>: ~Copyable {
         let count = Int(UInt32(truncatingIfNeeded: header[1] >> 32))
         guard magic == RingLayout.magic, version == RingLayout.version, theirFlags == flags,
               theirSlotSize == slotSize, header[2] == format,
+              flags & RingLayout.byteStream == 0 || slotSize > RingLayout.streamHeader,
               let need = RingLayout.size(slotSize: slotSize, count: count), need <= size else { return nil }
         unsafe self.base = base
         self.slotSize = slotSize
@@ -248,6 +264,84 @@ public struct Ring<Memory: RingMemory>: ~Copyable {
             dropped &+= 1
             cursor &+= 1
         }
+    }
+}
+
+extension Ring {
+    // MARK: BYTE_STREAM (D46)
+
+    /// The producer's: writes up to `count` bytes from `from`, up to a
+    /// slot's payload (its size less the header) a slot, in as many slots
+    /// as are free. How many bytes went (0: full), and whether the reader
+    /// sleeps and its doorbell must be rung.
+    @unsafe
+    public mutating func write(bytes from: UnsafeRawPointer, count: Int) -> (written: Int, wake: Bool) {
+        let payload = slotSize - RingLayout.streamHeader
+        let free = space()
+        var used: UInt64 = 0, written = 0
+        while used < free && written < count {
+            let take = Swift.min(payload, count - written)
+            let slot = unsafe slot(used)
+            var head = UInt64(UInt32(take)).littleEndian
+            unsafe withUnsafeBytes(of: &head) { unsafe Memory.copy(slot, $0.baseAddress!, RingLayout.streamHeader) }
+            unsafe Memory.copy(slot + RingLayout.streamHeader, from + written, take)
+            written += take
+            used += 1
+        }
+        guard used > 0 else { return (0, false) }
+        return (written, publish(used))
+    }
+
+    /// The producer's: the end mark, a slot of no bytes after all the
+    /// others. False if the ring is full (try again when it has room).
+    public mutating func writeEnd() -> (done: Bool, wake: Bool) {
+        guard space() > 0 else { return (false, false) }
+        var head = (UInt64(RingLayout.streamEnd) << 32).littleEndian
+        unsafe withUnsafeBytes(of: &head) { unsafe Memory.copy(slot(0), $0.baseAddress!, RingLayout.streamHeader) }
+        return (true, publish(1))
+    }
+
+    /// The consumer's: copies up to `max` bytes to `to`, from as many
+    /// slots as are ready, taking a slot's bytes in more than one read if
+    /// `max` falls inside it (each byte, and each slot's header, is copied
+    /// out once). How many bytes came, whether the end mark followed them
+    /// (`ended` from then on), and whether the writer sleeps waiting for
+    /// room and its doorbell must be rung. A slot whose header is nonsense
+    /// breaks the ring.
+    @unsafe
+    public mutating func read(bytes to: UnsafeMutableRawPointer, max: Int) -> (count: Int, ended: Bool, wake: Bool) {
+        guard !ended else { return (0, true, false) }
+        let available = ready()
+        var got = 0, freed: UInt64 = 0
+        while freed < available && !ended {
+            let slot = unsafe slot(at: cursor &+ freed)
+            if streamLength < 0 {
+                var head: UInt64 = 0
+                unsafe withUnsafeMutableBytes(of: &head) {
+                    unsafe Memory.copy($0.baseAddress!, slot, RingLayout.streamHeader)
+                }
+                head = UInt64(littleEndian: head)
+                let length = Int(UInt32(truncatingIfNeeded: head)), flags = UInt32(truncatingIfNeeded: head >> 32)
+                guard length <= slotSize - RingLayout.streamHeader, flags & ~RingLayout.streamEnd == 0 else {
+                    broken = true
+                    break
+                }
+                streamLength = length
+                streamFlags = flags
+            }
+            let take = Swift.min(streamLength - streamTaken, max - got)
+            if take > 0 {
+                unsafe Memory.copy(to + got, slot + RingLayout.streamHeader + streamTaken, take)
+                got += take
+                streamTaken += take
+            }
+            guard streamTaken == streamLength else { break }  // `max` fell inside this slot
+            freed += 1
+            ended = streamFlags & RingLayout.streamEnd != 0
+            streamLength = -1
+            streamTaken = 0
+        }
+        return (got, ended, freed > 0 ? release(freed) : false)
     }
 }
 

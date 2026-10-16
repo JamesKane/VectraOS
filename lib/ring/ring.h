@@ -35,6 +35,13 @@
 // Each slot begins with its u64 sequence: the writer sets it to all ones,
 // writes the rest, sets it to the slot's cursor, then publishes. A reader
 // keeps a copy only if the sequence read its cursor before and after.
+//
+// BYTE_STREAM (D46): a byte stream, one writer and one reader. Each slot
+// is a length (u32), flags (u32) and that many bytes, so the writer puts
+// any amount (as many slots as it fills) and the reader takes any amount
+// (a slot in more than one read, its header kept privately so each byte is
+// copied out once). The end of input is a slot flagged END, after the
+// stream's last bytes. The cursors and the wakes are the ring's.
 #pragma once
 #include <stdint.h>
 
@@ -48,7 +55,11 @@ enum : uint32_t {
   CROI_RING_WAITING_OFFSET = 8,  // in each line: the side sleeps until its doorbell rings
   // croi_ring_header_t.flags.
   CROI_RING_OVERWRITE = 1u << 0,
-  CROI_RING_FLAGS = CROI_RING_OVERWRITE,
+  CROI_RING_BYTE_STREAM = 1u << 1,
+  CROI_RING_FLAGS = CROI_RING_OVERWRITE | CROI_RING_BYTE_STREAM,
+  // A byte-stream slot: its length (u32) and flags (u32), then its bytes.
+  CROI_RING_STREAM_HEADER = 8,
+  CROI_RING_STREAM_END = 1u << 0,
   // Slots: a multiple of 8 bytes, up to 64 KiB; a power of two of them, up to 2^20.
   CROI_RING_MAX_SLOT_SIZE = 65536,
   CROI_RING_MAX_SLOTS = 1u << 20,
@@ -99,6 +110,12 @@ typedef struct {
   uint8_t *other_line;
   bool producer;
   bool broken;         // the other side broke the protocol: every call fails from here on
+  // BYTE_STREAM's reader: the head slot's length (-1: not read yet) and
+  // flags, the bytes taken from it, and whether the end mark has come.
+  int64_t stream_length;
+  uint32_t stream_flags;
+  uint32_t stream_taken;
+  bool ended;
 } croi_ring_t;
 
 // The bytes a ring of `count` slots of `slot_size` takes; 0 if the
@@ -116,6 +133,8 @@ static inline bool croi_ring_create(void *base, uint64_t size, uint32_t slot_siz
                                     uint64_t format, uint16_t flags) {
   uint64_t need = croi_ring_size(slot_size, count);
   if (need == 0 || need > size || (flags & ~CROI_RING_FLAGS)) return false;
+  if (flags == (CROI_RING_OVERWRITE | CROI_RING_BYTE_STREAM)) return false;
+  if ((flags & CROI_RING_BYTE_STREAM) && slot_size <= CROI_RING_STREAM_HEADER) return false;
   croi_ring_header_t header = {.magic = CROI_RING_MAGIC, .version = CROI_RING_VERSION, .flags = flags,
                                .slot_size = slot_size, .slot_count = count, .format = format};
   CROI_RING_COPY((uint8_t *)base + CROI_RING_HEADER, &header, sizeof header);
@@ -137,9 +156,10 @@ static inline bool croi_ring_attach(croi_ring_t *r, void *base, uint64_t size, b
   if (h.magic != CROI_RING_MAGIC || h.version != CROI_RING_VERSION || h.flags != flags ||
       h.slot_size != slot_size || h.format != format || need == 0 || need > size)
     return false;
+  if ((flags & CROI_RING_BYTE_STREAM) && slot_size <= CROI_RING_STREAM_HEADER) return false;
   uint8_t *b = (uint8_t *)base;
   uint8_t *producer_line = b + CROI_RING_PRODUCER_LINE, *consumer_line = b + CROI_RING_CONSUMER_LINE;
-  *r = (croi_ring_t){.base = b, .header = h, .mask = h.slot_count - 1, .producer = producer};
+  *r = (croi_ring_t){.base = b, .header = h, .mask = h.slot_count - 1, .producer = producer, .stream_length = -1};
   if (flags & CROI_RING_OVERWRITE) {
     r->own_line = producer ? producer_line : nullptr;
     r->other_line = producer_line;
@@ -282,4 +302,79 @@ static inline bool croi_ring_read(croi_ring_t *r, void *to, uint64_t *dropped) {
     *dropped += 1;
     r->cursor++;
   }
+}
+
+
+// --- BYTE_STREAM ---
+
+// The producer's: writes up to `count` bytes from `from`, up to a slot's
+// payload a slot, in as many slots as are free. How many bytes went (0:
+// full); *wake says whether the reader sleeps, and its doorbell must ring.
+static inline uint64_t croi_ring_write_bytes(croi_ring_t *r, const void *from, uint64_t count, bool *wake) {
+  uint64_t payload = r->header.slot_size - CROI_RING_STREAM_HEADER;
+  uint64_t free = croi_ring_space(r), used = 0, written = 0;
+  *wake = false;
+  while (used < free && written < count) {
+    uint64_t take = count - written < payload ? count - written : payload;
+    uint8_t *slot = (uint8_t *)croi_ring_slot(r, used);
+    uint64_t head = take;  // little-endian: the length, then no flags
+    CROI_RING_COPY(slot, &head, CROI_RING_STREAM_HEADER);
+    CROI_RING_COPY(slot + CROI_RING_STREAM_HEADER, (const uint8_t *)from + written, take);
+    written += take;
+    used++;
+  }
+  if (used) *wake = croi_ring_publish(r, used);
+  return written;
+}
+
+// The producer's: the end mark, a slot of no bytes after all the others.
+// False if the ring is full (try again when it has room).
+static inline bool croi_ring_write_end(croi_ring_t *r, bool *wake) {
+  *wake = false;
+  if (croi_ring_space(r) == 0) return false;
+  uint64_t head = (uint64_t)CROI_RING_STREAM_END << 32;
+  CROI_RING_COPY(croi_ring_slot(r, 0), &head, CROI_RING_STREAM_HEADER);
+  *wake = croi_ring_publish(r, 1);
+  return true;
+}
+
+// The consumer's: copies up to `max` bytes to `to`, from as many slots as
+// are ready, taking a slot's bytes in more than one read if `max` falls
+// inside it. How many bytes came; *ended says the end mark followed them
+// (and stays set), *wake that the writer sleeps waiting for room. A slot
+// whose header is nonsense breaks the ring.
+static inline uint64_t croi_ring_read_bytes(croi_ring_t *r, void *to, uint64_t max, bool *ended, bool *wake) {
+  *wake = false;
+  *ended = r->ended;
+  if (r->ended) return 0;
+  uint64_t available = croi_ring_ready(r), got = 0, freed = 0;
+  while (freed < available && !r->ended) {
+    uint8_t *slot = croi_ring_slot_at(r, r->cursor + freed);
+    if (r->stream_length < 0) {
+      uint64_t head;
+      CROI_RING_COPY(&head, slot, CROI_RING_STREAM_HEADER);
+      uint32_t length = (uint32_t)head, flags = (uint32_t)(head >> 32);
+      if (length > r->header.slot_size - CROI_RING_STREAM_HEADER || (flags & ~CROI_RING_STREAM_END)) {
+        r->broken = true;
+        break;
+      }
+      r->stream_length = length;
+      r->stream_flags = flags;
+    }
+    uint64_t left = (uint64_t)r->stream_length - r->stream_taken;
+    uint64_t take = left < max - got ? left : max - got;
+    if (take) {
+      CROI_RING_COPY((uint8_t *)to + got, slot + CROI_RING_STREAM_HEADER + r->stream_taken, take);
+      got += take;
+      r->stream_taken += (uint32_t)take;
+    }
+    if (r->stream_taken != (uint64_t)r->stream_length) break;  // `max` fell inside this slot
+    freed++;
+    r->ended = (r->stream_flags & CROI_RING_STREAM_END) != 0;
+    r->stream_length = -1;
+    r->stream_taken = 0;
+  }
+  if (freed) *wake = croi_ring_release(r, freed);
+  *ended = r->ended;
+  return got;
 }
