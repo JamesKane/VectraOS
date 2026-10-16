@@ -294,6 +294,44 @@ public final class Rc {
 
   func setStatus(_ s: String) { variables["status"] = [s] }
 
+  /// A here document's text with its variables substituted (9front's
+  /// psubst): `$name` its strings joined by spaces, `$n` the nth of `$*`,
+  /// `$$` a `$`, and a `^` right after a name deleted.
+  func hereSubstituted(_ text: String) -> String {
+    // 9front's idchr: what a name may hold.
+    func isName(_ c: Unicode.Scalar) -> Bool {
+      c.value > 0x20 && !"!\"#$%&'()+,-./:;<=>?@[\\]^`{|}~".unicodeScalars.contains(c)
+    }
+    let s = Array(text.unicodeScalars)
+    var out = "", i = 0
+    while i < s.count {
+      guard s[i] == "$" else {
+        out.unicodeScalars.append(s[i])
+        i += 1
+        continue
+      }
+      i += 1
+      if i < s.count, s[i] == "$" {
+        out += "$"
+        i += 1
+        continue
+      }
+      var name = ""
+      while i < s.count, isName(s[i]) {
+        name.unicodeScalars.append(s[i])
+        i += 1
+      }
+      if let n = Int(name), n >= 1, name.unicodeScalars.allSatisfy({ $0.properties.numericType != nil }) {
+        let star = lookup("*")
+        if n <= star.count { out += star[n - 1] }
+      } else {
+        out += lookup(name).joined(separator: " ")
+      }
+      if i < s.count, s[i] == "^" { i += 1 }
+    }
+    return out
+  }
+
   func redirect(_ redirs: [Redirection], _ fds: [Int32: RcStream]) throws -> [Int32: RcStream] {
     var out = fds
     for r in redirs {
@@ -305,6 +343,9 @@ public final class Rc {
         if case .read = r.kind { mode = .read } else if case .append = r.kind { mode = .append } else { mode = .write }
         guard let s = system.open(names[0], mode) else { throw RcError(message: "can't open " + names[0]) }
         out[fd] = s
+      case .here(let fd, let quoted):
+        guard case .literal(let body, _)? = r.target else { throw RcError(message: "bad here document") }
+        out[fd] = MemoryStream(Array((quoted ? body : hereSubstituted(body)).utf8))
       case .duplicate(let fd, let to): out[fd] = out[to]  // left to right, as 9front does
       case .close(let fd): out[fd] = nil
       }

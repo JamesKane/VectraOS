@@ -1,0 +1,6 @@
+cat <<one <<two
+first
+one
+second
+two
+echo after

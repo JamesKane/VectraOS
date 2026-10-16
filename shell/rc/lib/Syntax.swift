@@ -8,9 +8,9 @@
 // its count, $"x its strings joined), a backquote substitution (`{cmd}),
 // a parenthesized list, or pieces joined by ^ (written, or free: pieces
 // with no space between them join). Commands are simple ones with their
-// redirections (> >> < and >[n] >[n=m]), assignments (alone, or local to
-// one command), pipelines (|, |[n]), ! && || ; &, braces, if / if not,
-// for, while, switch with its cases, ~ (a match), and fn.
+// redirections (> >> < <<tag and >[n] >[n=m]), assignments (alone, or
+// local to one command), pipelines (|, |[n]), ! && || ; &, braces, if /
+// if not, for, while, switch with its cases, ~ (a match), and fn.
 
 public indirect enum Word: Equatable, Sendable {
   /// A string; `quoted` ones aren't globbed.
@@ -36,6 +36,10 @@ public struct Redirection: Equatable, Sendable {
     case append(fd: Int32)  // >>
     case duplicate(fd: Int32, to: Int32)  // >[fd=to]
     case close(fd: Int32)  // >[fd=]
+    /// <<tag: the lines after the command's, up to one that is only the
+    /// tag (the target, a quoted literal, holds them); `quoted`, a quoted
+    /// tag's, has no $ substituted.
+    case here(fd: Int32, quoted: Bool)
   }
   public var kind: Kind
   /// The file (none for duplicate and close).
@@ -92,6 +96,8 @@ enum Token: Equatable {
   case semicolon, newline, ampersand, pipe([Int32]), andAnd, orOr, bang, caret
   case leftBrace, rightBrace, leftParen, rightParen, equals, tilde, backquote
   case redirect(Redirection.Kind)
+  /// A here document's body, read after its line: `Lexer.bodies`' index.
+  case hereBody(Int)
   case end
 }
 
@@ -99,14 +105,50 @@ struct Lexer {
   let s: [Unicode.Scalar]
   var i = 0
   var spaced = true
+  /// Here documents' bodies, by index; the tags whose bodies follow the
+  /// current line, in order (9front's readhere); and a body's token, given
+  /// after its redirection.
+  var bodies: [String] = []
+  var pending: [(tag: [Unicode.Scalar], index: Int)] = []
+  var queued: [Token] = []
 
   init(_ text: String) { s = Array(text.unicodeScalars) }
+
+  /// The bodies of the line's here documents, from the input after its
+  /// newline: each its lines up to one that is only its tag. One the
+  /// input ends inside stays pending (the text is unfinished).
+  mutating func readBodies() {
+    while let (tag, index) = pending.first {
+      var body = ""
+      while true {
+        guard i < s.count else { return }
+        var line: [Unicode.Scalar] = []
+        while i < s.count, s[i] != "\n" {
+          line.append(s[i])
+          i += 1
+        }
+        guard i < s.count else {
+          // The last line, without its newline: the tag, or more to come.
+          if line == tag { break }
+          i -= line.count
+          return
+        }
+        i += 1  // the newline
+        if line == tag { break }
+        body.unicodeScalars.append(contentsOf: line)
+        body += "\n"
+      }
+      bodies[index] = body
+      pending.removeFirst()
+    }
+  }
 
   static func isWordChar(_ c: Unicode.Scalar) -> Bool {
     !" \t\n;&|^$=`'{}()<>#~".unicodeScalars.contains(c)
   }
 
   mutating func next() throws(RcSyntaxError) -> Token {
+    if !queued.isEmpty { return queued.removeFirst() }
     spaced = false
     while i < s.count, s[i] == " " || s[i] == "\t" || (s[i] == "\\" && i + 1 < s.count && s[i + 1] == "\n") {
       i += s[i] == "\\" ? 2 : 1
@@ -122,7 +164,32 @@ struct Lexer {
       return t
     }
     switch c {
-    case "\n": return one(.newline)
+    case "\n":
+      i += 1
+      if !pending.isEmpty { readBodies() }
+      return .newline
+    case "<" where i + 1 < s.count && s[i + 1] == "<":
+      // <<tag, or <<[n]tag: the tag now, its body after the line.
+      i += 2
+      var fd: Int32 = 0
+      if i < s.count, s[i] == "[" { fd = try bracket().0 ?? 0 }
+      while i < s.count, s[i] == " " || s[i] == "\t" { i += 1 }
+      var tag: [Unicode.Scalar] = [], quoted = false
+      if i < s.count, s[i] == "'" {
+        guard case .word(.literal(let text, _), _) = try next() else { throw RcSyntaxError(message: "bad here tag") }
+        tag = Array(text.unicodeScalars)
+        quoted = true
+      } else {
+        while i < s.count, Lexer.isWordChar(s[i]) {
+          tag.append(s[i])
+          i += 1
+        }
+      }
+      guard !tag.isEmpty else { throw RcSyntaxError(message: "a here document needs a tag") }
+      bodies.append("")
+      pending.append((tag, bodies.count - 1))
+      queued.append(.hereBody(bodies.count - 1))
+      return .redirect(.here(fd: fd, quoted: quoted))
     case ";": return one(.semicolon)
     case "^": return one(.caret)
     case "{": return one(.leftBrace)
@@ -268,6 +335,14 @@ public struct Parser {
       let t = try lexer.next()
       p.tokens.append(t)
       if t == .end { break }
+    }
+    // Here documents: each body in its redirection's place, read by now
+    // (the input ending inside one leaves the text unfinished).
+    guard lexer.pending.isEmpty else { throw RcSyntaxError(message: "unfinished here document", incomplete: true) }
+    for k in p.tokens.indices {
+      if case .hereBody(let index) = p.tokens[k] {
+        p.tokens[k] = .word(.literal(lexer.bodies[index], quoted: true), spaced: true)
+      }
     }
     do throws(RcSyntaxError) {
       return try p.list(until: [.end])

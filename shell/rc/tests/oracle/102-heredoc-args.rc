@@ -1,0 +1,6 @@
+fn f {
+	cat <<EOF
+arg one $1, all $*, dollar $$, joined $1^x
+EOF
+}
+f a b c

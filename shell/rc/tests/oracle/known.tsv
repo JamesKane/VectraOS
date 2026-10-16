@@ -22,8 +22,6 @@
 30-status-fail	linux	Linux oracle: success status is 0
 31-status-pipeline	port	$status is a list, not one |-joined string (+ Linux 0)
 36-redir-close	port	builtin echo to closed fd succeeds
-37-heredoc	port	<< here documents unsupported
-38-heredoc-quoted	port	<< here documents unsupported
 42-glob-star	port	* skips dotfiles
 44-glob-class	port	[~a-c] syntax error
 46-glob-dirs	port	glob yields nonexistent paths (d3/x/f)

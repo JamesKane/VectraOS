@@ -1,0 +1,8 @@
+x=(p q r)
+cat <<EOF | wc -l
+$x
+second
+EOF
+tr a-z A-Z <<'END'
+keep $x literal
+END

@@ -109,6 +109,8 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
   let ab = Array(((readText(ns, "/svc/a/status") ?? "") + (readText(ns, "/svc/b/status") ?? "")).utf8)
   rcRuns(rc, "cat /svc/a/status /svc/b/status | cat | cat", ab, ns, job: job, bootfs: bootfs,
          "rc pipes program to program")
+  rcRuns(rc, "x=b; cat <<EOF\na $x c\nEOF", Array("a b c\n".utf8), ns, job: job, bootfs: bootfs,
+         "rc gives a program a here document")
   _ = consume bootfs
 }
 
