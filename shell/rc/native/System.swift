@@ -130,12 +130,22 @@ final class Job: RcJob {
   }
 }
 
+/// rc's machine. Its programs are bootfs's `bin/NAME`, which rc finds as
+/// `/bin/NAME` ($path is Plan 9's `(. /bin)`; the namespace has no /bin
+/// yet, so only rc sees them there). A file starting `#!` runs as a
+/// kernel's exec runs one: its interpreter, an argument if the line has
+/// one, the file, then the rest. A child that is rc (a script's
+/// interpreter, or rc run by name) is given what a manifest's `programs`
+/// gives: a job under rc's and bootfs, until /bin is a directory of the
+/// namespace's.
 final class CroiSystem: RcSystem {
   let job: Handle
+  let bootfs: Owned
   let programs: [(name: String, entry: ProgramEntry)]
 
-  init(job: consuming Handle, programs: [(name: String, entry: ProgramEntry)]) {
+  init(job: consuming Handle, bootfs: consuming Handle, programs: [(name: String, entry: ProgramEntry)]) {
     self.job = job
+    self.bootfs = Owned(bootfs)
     self.programs = programs
   }
 
@@ -155,7 +165,39 @@ final class CroiSystem: RcSystem {
     return (PipeStream(ends.a), PipeStream(ends.b))
   }
 
-  func exists(_ name: String) -> Bool { programs.contains { $0.name == name } }
+  /// The program at `path`: bootfs's `bin/NAME` at `/bin/NAME`.
+  func program(_ path: String) -> (name: String, entry: ProgramEntry)? {
+    guard path.hasPrefix("/bin/") else { return nil }
+    let name = path.dropFirst(5)
+    return programs.first { $0.name == name }
+  }
+
+  /// A script's `#!` line: its interpreter and the argument after it, if
+  /// any (the line's first 256 bytes, as Linux reads them).
+  func interpreter(_ path: String) -> (path: String, argument: String?)? {
+    guard let s = open(path, .read) else { return nil }
+    defer { s.close() }
+    guard let head = s.read(), head.starts(with: Array("#!".utf8)) else { return nil }
+    let line = head.dropFirst(2).prefix(254).prefix { $0 != 0x0A }
+    let words = line.split { $0 == 0x20 || $0 == 0x09 }.map { String(decoding: $0, as: UTF8.self) }
+    guard let first = words.first else { return nil }
+    return (first, words.count > 1 ? words.dropFirst().joined(separator: " ") : nil)
+  }
+
+  /// Another handle to bootfs, for a child rc.
+  func duplicateBootfs() -> Handle? {
+    let raw = bootfs.with { h -> UInt32 in
+      guard let d = try? h.duplicate() else { return 0 }
+      return d.release()
+    } ?? 0
+    return raw == 0 ? nil : Handle(raw: raw)
+  }
+
+  func executable(_ path: String) -> Bool {
+    if program(path) != nil { return true }
+    guard let i = interpreter(path) else { return false }
+    return program(i.path) != nil
+  }
 
   /// A thread relaying `body`, kept to be joined.
   static func relay(_ body: @escaping @Sendable () -> Void) -> Owned? {
@@ -163,8 +205,17 @@ final class CroiSystem: RcSystem {
     return Owned(thread)
   }
 
-  func start(_ argv: [String], fds: [Int32: RcStream], environment: [(String, [String])]) -> RcJob? {
-    guard let entry = programs.first(where: { $0.name == argv[0] })?.entry else { return nil }
+  func start(_ path: String, _ argv: [String], fds: [Int32: RcStream], environment: [(String, [String])]) -> RcJob? {
+    if let p = program(path) { return start(p, argv, fds: fds, environment: environment) }
+    guard let i = interpreter(path), let p = program(i.path) else { return nil }
+    let args = [i.path] + (i.argument.map { [$0] } ?? []) + [path] + argv.dropFirst()
+    return start(p, args, fds: fds, environment: environment)
+  }
+
+  func start(_ program: (name: String, entry: ProgramEntry), _ argv: [String], fds: [Int32: RcStream],
+             environment: [(String, [String])]) -> RcJob?
+  {
+    let entry = program.entry
     // Its directory too, as PWD (M6m: the file commands' paths are rc's).
     let env = environment.filter { $0.0 != "*" && $0.0 != "status" && $0.0 != "PWD" }
       .map { $0.0 + "=" + $0.1.joined(separator: " ") } + ["PWD=" + FDIO.currentDirectory]
@@ -176,6 +227,10 @@ final class CroiSystem: RcSystem {
       }
     }
     do throws(Status) {
+      if program.name == "rc", let b = duplicateBootfs() {
+        startup.add(try Sys.Job.create(parent: job), info: HandleType.info(HandleType.jobDefault))
+        startup.add(b, info: HandleType.info(HandleType.vmoBootfs))
+      }
       let stdio = try ChildStdio(for: startup)
       let process = try Process.create(job: job, name: argv[0])
       _ = try Process.start(process, entry: entry, startup)

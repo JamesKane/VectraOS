@@ -4,7 +4,9 @@
 // with stdio rings as its descriptors 0-2 (D46: a terminal's pty, or its
 // parent's), or with the debuglog alone: it prompts with $prompt(1) (or
 // $prompt(2) inside an unfinished construct), reads lines until what it
-// has parses, and runs it; `rc -c COMMAND` runs one. Its programs are
+// has parses, and runs it; `rc -c COMMAND` runs one, and `rc FILE ARG...`
+// runs a script ($0 the file, $* the rest: a `#!/bin/rc` script's too).
+// Its exit code is its status: 0 if true, a number as itself, else 1. Its programs are
 // bootfs's `bin/` (its Startup's bootfs and job: a manifest's `programs`),
 // its files fdio's, its namespace its Startup's (D65). On a terminal
 // (`TERM` in its environment) it says its directory before a prompt when
@@ -50,8 +52,8 @@ final class Standard: RcStream {
     }
     var programs: [(name: String, entry: ProgramEntry)] = []
     for f in files where f.name.hasPrefix("bin/") { programs.append((String(f.name.dropFirst(4)), f)) }
-    run(CroiSystem(job: job, programs: programs))
-    _ = consume bootfs  // open all along: programs load from it
+    // bootfs stays open all along: programs load from it.
+    run(CroiSystem(job: job, bootfs: bootfs, programs: programs))
   }
 
   static func run(_ system: CroiSystem) {
@@ -60,7 +62,19 @@ final class Standard: RcStream {
     if args.first == "-c" {
       let shell = Rc(system: system, arguments: Array(args.dropFirst(2)))
       shell.run(args.count > 1 ? args[1] : "", fds: fds)
-      exit(shell.succeeded ? 0 : 1)
+      exit(exitCode(shell))
+    }
+    if let file = args.first {
+      let shell = Rc(system: system, name: file, arguments: Array(args.dropFirst()))
+      guard let s = system.open(file, .read) else {
+        fds[2]!.write(Array(("rc: can't open " + file + "\n").utf8))
+        exit(1)
+      }
+      var text: [UInt8] = []
+      while let b = s.read() { text += b }
+      s.close()
+      shell.run(String(decoding: text, as: UTF8.self), fds: fds)
+      exit(exitCode(shell))
     }
     let shell = Rc(system: system, arguments: args)
     args.removeAll()
@@ -90,7 +104,7 @@ final class Standard: RcStream {
         } else if let more = input.read() {
           pending += more
         } else {
-          exit(shell.succeeded ? 0 : 1)  // the end of input
+          exit(exitCode(shell))  // the end of input
         }
       }
       text += String(decoding: line!, as: UTF8.self)
@@ -101,9 +115,17 @@ final class Standard: RcStream {
       }
       let script = text
       text = ""
-      if !shell.run(script, fds: fds) { exit(shell.succeeded ? 0 : Int32(shell.status) ?? 1) }
+      if !shell.run(script, fds: fds) { exit(exitCode(shell)) }
     }
   }
+}
+
+/// rc's exit code: 0 if its status is true, a status that is a number
+/// as itself (what Job.wait gives a parent rc back), any other 1.
+func exitCode(_ shell: Rc) -> Int32 {
+  if shell.succeeded { return 0 }
+  if let n = Int32(shell.status), n > 0, n < 256 { return n }
+  return 1
 }
 
 /// A path for a URL: what isn't unreserved or `/` as %XX.

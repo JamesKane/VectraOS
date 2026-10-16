@@ -76,10 +76,12 @@ final class Machine: RcSystem {
   }
 
   static let programs = ["cat", "upper", "wc", "false"]
-  func exists(_ name: String) -> Bool { Machine.programs.contains(name) }
+  /// Its programs are /bin's.
+  func executable(_ path: String) -> Bool { path.hasPrefix("/bin/") && Machine.programs.contains(String(path.dropFirst(5))) }
 
-  func start(_ argv: [String], fds: [Int32: RcStream], environment: [(String, [String])]) -> RcJob? {
-    guard exists(argv[0]) else { return nil }
+  func start(_ path: String, _ argv: [String], fds: [Int32: RcStream], environment: [(String, [String])]) -> RcJob? {
+    guard executable(path) else { return nil }
+    let program = String(path.dropFirst(5))
     return Job { [self] in
       func input() -> [UInt8] {
         if argv.count > 1 {
@@ -89,7 +91,7 @@ final class Machine: RcSystem {
         while let b = fds[0]?.read() { all += b }
         return all
       }
-      switch argv[0] {
+      switch program {
       case "cat": fds[1]?.write(input())
       case "upper": fds[1]?.write(input().map { $0 >= 0x61 && $0 <= 0x7A ? $0 - 0x20 : $0 })
       case "wc": fds[1]?.write(Array("\(input().filter { $0 == 0x0A }.count)\n".utf8))

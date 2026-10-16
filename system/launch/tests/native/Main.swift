@@ -113,6 +113,14 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
          "rc gives a program a here document")
   rcRuns(rc, "{ cat /svc/a/status } & wait", Array((readText(ns, "/svc/a/status") ?? "").utf8), ns, job: job,
          bootfs: bootfs, "rc runs a compound command in the background")
+  // Programs by $path: /bin/NAME is bootfs's bin/NAME; an rc started by
+  // rc can start programs too, and its exit code is its status.
+  let a = Array((readText(ns, "/svc/a/status") ?? "").utf8)
+  rcRuns(rc, "/bin/cat /svc/a/status", a, ns, job: job, bootfs: bootfs, "rc runs a program by its path")
+  rcRuns(rc, "path=() whatis cat || echo none", Array("none\n".utf8), ns, job: job, bootfs: bootfs,
+         "rc finds nothing on an empty $path")
+  rcRuns(rc, "rc -c 'cat /svc/a/status'; rc -c 'exit 3'; echo $status", a + Array("3\n".utf8), ns, job: job,
+         bootfs: bootfs, "rc runs rc, which runs programs and exits with its status")
   _ = consume bootfs
 }
 

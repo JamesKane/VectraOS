@@ -1,0 +1,17 @@
+echo '#!/bin/sh' > s
+echo 'echo from s "$@"' >> s
+chmod +x s
+./s a
+path=(.) s b
+path=() s c
+path=/nonexistent s d || echo not found
+whatis s
+mkdir -p d
+cp s d/t
+d/t e
+path=(/nonexistent .) d/t f
+/bin/echo absolute
+path=(/nonexistent /bin) echo builtin first
+path=/nonexistent cat </dev/null || echo cat not found
+fn p { echo $#path }
+p

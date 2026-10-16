@@ -92,19 +92,10 @@ final class LinuxSystem: RcSystem {
     return job
   }
 
-  let searchPath = [".", "/bin", "/usr/bin", "/usr/local/bin"]
-
-  func resolve(_ name: String) -> String? {
-    func ok(_ p: String) -> Bool {
-      var s = stat()
-      return access(p, X_OK) == 0 && stat(p, &s) == 0 && (s.st_mode & S_IFMT) == S_IFREG
-    }
-    if name.contains("/") { return ok(name) ? name : nil }
-    for d in searchPath {
-      let p = d + "/" + name
-      if ok(p) { return p }
-    }
-    return nil
+  /// 9front unix.c's Executable: a file it may run, not a directory.
+  func executable(_ path: String) -> Bool {
+    var s = stat()
+    return access(path, X_OK) == 0 && stat(path, &s) == 0 && (s.st_mode & S_IFMT) != S_IFDIR
   }
 
   func open(_ path: String, _ mode: RcOpen) -> RcStream? {
@@ -124,10 +115,7 @@ final class LinuxSystem: RcSystem {
     return (FdStream(p[0]), FdStream(p[1]))
   }
 
-  func exists(_ name: String) -> Bool { resolve(name) != nil }
-
-  func start(_ argv: [String], fds: [Int32: RcStream], environment: [(String, [String])]) -> RcJob? {
-    guard let path = resolve(argv[0]) else { return nil }
+  func start(_ path: String, _ argv: [String], fds: [Int32: RcStream], environment: [(String, [String])]) -> RcJob? {
     var actions = posix_spawn_file_actions_t()
     posix_spawn_file_actions_init(&actions)
     defer { posix_spawn_file_actions_destroy(&actions) }
@@ -244,6 +232,8 @@ struct Main {
       args.removeFirst()
     }
     let rc = Rc(system: LinuxSystem(), name: name, arguments: args)
+    // rcmain.unix's, as the oracle's rc has it.
+    rc.variables["path"] = [".", "/bin", "/usr/bin", "/usr/local/bin"]
     rc.run(text, fds: [0: FdStream(0, keep: true), 1: FdStream(1, keep: true), 2: FdStream(2, keep: true)])
     exit(rc.status.allSatisfy { $0 == "|" } ? 0 : 1)
   }

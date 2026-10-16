@@ -37,11 +37,14 @@ public protocol RcSystem: AnyObject {
   func open(_ path: String, _ mode: RcOpen) -> RcStream?
   /// A pipe: what's written to the second is read from the first.
   func pipe() -> (RcStream, RcStream)
-  /// Starts a program with descriptors `fds`; nil if there's no such
-  /// program (or it can't start: `why` says).
-  func start(_ argv: [String], fds: [Int32: RcStream], environment: [(String, [String])]) -> RcJob?
-  /// Whether `name` names a program the system can start.
-  func exists(_ name: String) -> Bool
+  /// Starts the program at `path` (where rc's $path search found it, or
+  /// as written), its arguments `argv` (argv[0] as written), with
+  /// descriptors `fds`; nil if it can't. A script starting `#!` is the
+  /// system's to run, as a kernel's exec does.
+  func start(_ path: String, _ argv: [String], fds: [Int32: RcStream], environment: [(String, [String])]) -> RcJob?
+  /// Whether `path` names a program the system can start (9front's
+  /// Executable).
+  func executable(_ path: String) -> Bool
   func changeDirectory(_ path: String) -> Bool
   var directory: String { get }
   /// The names in `directory` (for globbing).
@@ -144,6 +147,8 @@ public final class Rc {
     self.system = system
     variables["*"] = arguments
     variables["0"] = [name]
+    // Plan 9's rcmain's; a main may set its system's.
+    variables["path"] = [".", "/bin"]
     variables["pid"] = [String(system.processID)]
   }
 
@@ -456,8 +461,16 @@ public final class Rc {
     return out
   }
 
-  func redirect(_ redirs: [Redirection], _ fds: [Int32: RcStream]) throws -> [Int32: RcStream] {
+  /// `fds` with `redirs` applied, left to right. The streams it opens are
+  /// added to `opened`, for the caller to close once the command is done
+  /// (a program's, once its job is waited for: a relay may use them till
+  /// then); if one won't open, those before it are closed.
+  func redirect(_ redirs: [Redirection], _ fds: [Int32: RcStream], opened: inout [RcStream]) throws
+    -> [Int32: RcStream]
+  {
     var out = fds
+    var mine: [RcStream] = []
+    defer { opened += mine }
     for r in redirs {
       switch r.kind {
       case .read(let fd), .write(let fd), .append(let fd):
@@ -465,7 +478,12 @@ public final class Rc {
         guard names.count == 1 else { throw RcError(message: "redirection needs one file") }
         let mode: RcOpen
         if case .read = r.kind { mode = .read } else if case .append = r.kind { mode = .append } else { mode = .write }
-        guard let s = system.open(names[0], mode) else { throw RcError(message: "can't open " + names[0]) }
+        guard let s = system.open(names[0], mode) else {
+          for s in mine { s.close() }
+          mine = []
+          throw RcError(message: "can't open " + names[0])
+        }
+        mine.append(s)
         out[fd] = s
       case .here(let fd, let quoted):
         guard case .literal(let body, _)? = r.target else { throw RcError(message: "bad here document") }
@@ -503,7 +521,9 @@ public final class Rc {
     case .empty: break
     case .sequence(let cs, _): for c in cs { try execute(c, fds) }
     case .simple(let words, let redirs):
-      let io = try redirect(redirs, fds)
+      var opened: [RcStream] = []
+      defer { for s in opened { s.close() } }
+      let io = try redirect(redirs, fds, opened: &opened)
       let argv = try words.flatMap { try value($0, fds) }
       guard !argv.isEmpty else {
         setStatus("")
@@ -543,14 +563,19 @@ public final class Rc {
       try execute(a, fds)
       if !ok() { try execute(b, fds) }
     case .background(let c):
-      // A program runs on; anything else runs here first (rc forks it).
+      // A program found runs on; anything else (a program not found says
+      // so) is forked, below.
       if case .simple(let words, let redirs) = c, let argv = try? words.flatMap({ try value($0, fds) }),
-        let first = argv.first, functions[first] == nil, Rc.builtins[first] == nil, first != "builtin"
+        let first = argv.first, functions[first] == nil, Rc.builtins[first] == nil, first != "builtin",
+        let path = resolve(first)
       {
-        let io = try redirect(redirs, fds)
-        if let job = system.start(argv, fds: io, environment: environment) {
-          background.append(job)
+        var opened: [RcStream] = []
+        let io = try redirect(redirs, fds, opened: &opened)
+        if let job = system.start(path, argv, fds: io, environment: environment) {
+          background.append(Closing(job, opened))
           variables["apid"] = [String(background.count)]
+        } else {
+          for s in opened { s.close() }
         }
         setStatus("")
       } else {
@@ -571,7 +596,10 @@ public final class Rc {
           try contained(c, fds)
         }
       }
-    case .brace(let c, let redirs): try execute(c, try redirect(redirs, fds))
+    case .brace(let c, let redirs):
+      var opened: [RcStream] = []
+      defer { for s in opened { s.close() } }
+      try execute(c, try redirect(redirs, fds, opened: &opened))
     case .ifThen(let condition, let body):
       // 9front's ifnot: set by an if, cleared once a true one's body has
       // run (so an if inside that body can't leave it set).
@@ -640,6 +668,23 @@ public final class Rc {
     return try command(argv, fds)
   }
 
+  /// Where a program named `name` is (9front's searchpath and
+  /// makepath): a name starting /, ./ or ../ (or one of . and ..) as
+  /// written, any other along $path (an empty element: as written); the
+  /// first the system can start.
+  func resolve(_ name: String) -> String? {
+    let bare = !(name.isEmpty || name.hasPrefix("/") || name == "." || name == ".." || name.hasPrefix("./")
+      || name.hasPrefix("../"))
+    let dirs = bare ? (variables["path"] ?? [""]) : [""]
+    for dir in dirs.isEmpty ? [""] : dirs {
+      var d = Substring(dir)
+      while d.hasSuffix("/") { d = d.dropLast() }
+      let path = dir.isEmpty ? name : String(d) + "/" + name
+      if system.executable(path) { return path }
+    }
+    return nil
+  }
+
   /// A builtin or a program, by its name.
   func command(_ argv: [String], _ fds: [Int32: RcStream]) throws -> RcJob? {
     let name = argv[0]
@@ -647,7 +692,7 @@ public final class Rc {
       try builtin(self, argv, fds)
       return nil
     }
-    guard let job = system.start(argv, fds: fds, environment: environment) else {
+    guard let path = resolve(name), let job = system.start(path, argv, fds: fds, environment: environment) else {
       fds[2]?.write(Array((name + ": not found\n").utf8))
       setStatus("not found")
       return nil
@@ -672,9 +717,12 @@ public final class Rc {
     var started = Array(repeating: false, count: stages.count)
     for (k, stage) in stages.enumerated() {
       if case .simple(let words, let redirs) = stage, let argv = try? words.flatMap({ try value($0, ios[k]) }),
-        let first = argv.first, functions[first] == nil, Rc.builtins[first] == nil, system.exists(first)
+        let first = argv.first, functions[first] == nil, Rc.builtins[first] == nil, let path = resolve(first)
       {
-        jobs[k] = system.start(argv, fds: try redirect(redirs, ios[k]), environment: environment)
+        var opened: [RcStream] = []
+        let io = try redirect(redirs, ios[k], opened: &opened)
+        jobs[k] = system.start(path, argv, fds: io, environment: environment).map { Closing($0, opened) }
+        if jobs[k] == nil { for s in opened { s.close() } }
         started[k] = true
         if k < pipes.count { pipes[k].1.close() }
       }
@@ -781,8 +829,8 @@ public final class Rc {
           fds[1]?.write(Array((Rc.text(.function(name, body: body), 0) + "\n").utf8))
         } else if builtins[name] != nil {
           fds[1]?.write(Array(("builtin " + name + "\n").utf8))
-        } else if rc.system.exists(name) {
-          fds[1]?.write(Array((name + "\n").utf8))
+        } else if let path = rc.resolve(name) {
+          fds[1]?.write(Array((path + "\n").utf8))
         } else if v == nil {
           rc.setStatus("not found")
         }
@@ -838,4 +886,19 @@ extension Substring {
 struct Unchecked<T>: @unchecked Sendable {
   var value: T
   init(_ value: T) { self.value = value }
+}
+
+/// A job that closes the streams its redirections opened once it ends.
+final class Closing: RcJob {
+  let job: RcJob
+  let streams: [RcStream]
+  init(_ job: RcJob, _ streams: [RcStream]) {
+    self.job = job
+    self.streams = streams
+  }
+  func wait() -> String {
+    let status = job.wait()
+    for s in streams { s.close() }
+    return status
+  }
 }
