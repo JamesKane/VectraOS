@@ -153,3 +153,14 @@ let sample = Shaped(
   let name = Array("todhchai.test.Echo.say".utf8)
   #expect(methodOrdinal(name.span) == 0x1458_fe16_9955_bc11)
 }
+
+@Test func unionsRoundTripInStructsVectorsAndOptionals() async throws {
+  var c = try connect()
+  let drawing = TestIPC.Drawing(
+    name: "d", first: .move(Point(x: 1, y: 2)),
+    rest: [.label(text: "hi", at: Point(x: 3, y: 4), size: 12), .path([Point(x: 5, y: 6)], closed: false),
+           .style(.circle), .shaped(sample), .clear])
+  #expect(try c.client.draw(drawing, last: .clear) == [drawing.first] + drawing.rest + [.clear])
+  #expect(try c.client.draw(TestIPC.Drawing(name: "", first: .clear, rest: []), last: nil) == [.clear])
+  #expect(await finish(c))
+}

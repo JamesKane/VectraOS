@@ -5,7 +5,7 @@
 
 import IPC
 
-@IPCLibrary(id: "todhchai.test", version: 3)
+@IPCLibrary(id: "todhchai.test", version: 4)
 public enum TestIPC {
   public enum EchoError: Int32, IPCErrorCode {
     case tooLong = 1
@@ -41,6 +41,23 @@ public enum TestIPC {
     public var inner: Shaped?
   }
 
+  /// A union: a drawing's step, one case of each kind of value.
+  public enum Step: Equatable, Sendable {
+    case move(Point)
+    case label(text: String, at: Point, size: UInt16?)
+    case path([Point], closed: Bool)
+    case style(Shape)
+    case shaped(Shaped)
+    case clear
+  }
+
+  /// A union inline in a struct, and in a vector.
+  public struct Drawing: Equatable, Sendable {
+    public var name: String
+    public var first: Step
+    public var rest: [Step]
+  }
+
   public protocol Echo {
     func say(_ text: String, times: UInt32) throws(EchoError) -> String
     @oneway func note(_ value: UInt64, loud: Bool)
@@ -51,6 +68,7 @@ public enum TestIPC {
     @since(3) func carry(_ c: consuming Carried) -> Carried
     @since(3) func many(_ shapes: [Shaped], nested: [[UInt32]], maybe: [Point]?) -> [Shaped]
     @since(3) func optionals(_ text: String?, bytes: [UInt8]?, point: Point?, handle: consuming Handle?) -> Handle?
+    @since(4) func draw(_ drawing: Drawing, last: Step?) -> [Step]
   }
 
   /// Echo, composed, and louder.
@@ -112,6 +130,11 @@ public struct EchoImpl: TestIPC.EchoHandler {
     guard text != nil, bytes != nil, point != nil else { return nil }
     return handle
   }
+
+  /// The drawing's steps in order, then `last` if there is one.
+  public mutating func draw(_ drawing: TestIPC.Drawing, last: TestIPC.Step?) -> [TestIPC.Step] {
+    [drawing.first] + drawing.rest + (last.map { [$0] } ?? [])
+  }
 }
 
 /// Echo's methods, and shouting.
@@ -138,5 +161,8 @@ public struct LoudImpl: TestIPC.LoudHandler {
     -> Handle?
   {
     echo.optionals(text, bytes: bytes, point: point, handle: handle)
+  }
+  public mutating func draw(_ drawing: TestIPC.Drawing, last: TestIPC.Step?) -> [TestIPC.Step] {
+    echo.draw(drawing, last: last)
   }
 }

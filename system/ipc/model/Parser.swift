@@ -30,14 +30,17 @@ public struct LibraryModel: Sendable {
     (id, version) = try Self.arguments(attribute)
 
     // Names first, so members can refer to types declared after them.
-    var structNames: [String] = [], enumNames: [String] = []
+    var structNames: [String] = [], enumNames: [String] = [], unionNames: [String] = []
     for member in library.memberBlock.members {
       if let s = member.decl.as(StructDeclSyntax.self) { structNames.append(s.name.text) }
-      if let e = member.decl.as(EnumDeclSyntax.self), !Self.isErrorEnum(e) { enumNames.append(e.name.text) }
+      if let e = member.decl.as(EnumDeclSyntax.self), !Self.isErrorEnum(e) {
+        if Self.isUnion(e) { unionNames.append(e.name.text) } else { enumNames.append(e.name.text) }
+      }
     }
-    let resolver = Resolver(structs: structNames, enums: enumNames)
+    let resolver = Resolver(structs: structNames, enums: enumNames, unions: unionNames)
 
     var structDecls: [StructDeclSyntax] = []
+    var unionDecls: [EnumDeclSyntax] = []
     var protocolDecls: [ProtocolDeclSyntax] = []
     for member in library.memberBlock.members {
       if let s = member.decl.as(StructDeclSyntax.self) {
@@ -45,6 +48,8 @@ public struct LibraryModel: Sendable {
       } else if let e = member.decl.as(EnumDeclSyntax.self) {
         if Self.isErrorEnum(e) {
           errors.append(try Self.errorEnum(e))
+        } else if Self.isUnion(e) {
+          unionDecls.append(e)
         } else {
           types.enums.append(try Self.fieldEnum(e))
         }
@@ -55,7 +60,9 @@ public struct LibraryModel: Sendable {
       }
     }
     for s in structDecls { types.structs.append(try Self.structure(s, resolver)) }
+    for u in unionDecls { types.unions.append(try Self.union(u, resolver)) }
     try layOutStructs()
+    try layOutUnions()
     try checkVectors()
     for s in types.structs {
       for f in s.fields {
@@ -101,6 +108,7 @@ public struct LibraryModel: Sendable {
   struct Resolver {
     var structs: [String]
     var enums: [String]
+    var unions: [String]
 
     func resolve(_ syntax: TypeSyntax, _ context: String) throws(ModelError) -> WireType {
       var t = syntax
@@ -119,12 +127,40 @@ public struct LibraryModel: Sendable {
       if let builtin = WireType.builtin(name) { return builtin }
       if structs.contains(name) { return .structure(name) }
       if enums.contains(name) { return .enumeration(name) }
+      if unions.contains(name) { return .union(name) }
       throw ModelError("\(context): type '\(name)' is not supported (declare it in the library)")
     }
   }
 
   static func isErrorEnum(_ e: EnumDeclSyntax) -> Bool {
     e.inheritanceClause?.inheritedTypes.contains { $0.type.trimmedDescription == "IPCErrorCode" } ?? false
+  }
+
+  /// An enum without an integer raw type: a union, whose cases may carry
+  /// values.
+  static func isUnion(_ e: EnumDeclSyntax) -> Bool {
+    let inherited = e.inheritanceClause?.inheritedTypes.map { $0.type.trimmedDescription } ?? []
+    return !inherited.contains { name in WireType.builtin(name).map { if case .integer = $0 { true } else { false } } ?? false }
+  }
+
+  static func union(_ e: EnumDeclSyntax, _ resolver: Resolver) throws(ModelError) -> UnionModel {
+    let name = e.name.text
+    var cases: [UnionCase] = []
+    for member in e.memberBlock.members {
+      guard let decl = member.decl.as(EnumCaseDeclSyntax.self) else { continue }  // methods, in extensions or not
+      for element in decl.elements {
+        if element.rawValue != nil { throw ModelError("union '\(name)': case '\(element.name.text)' can't have a raw value") }
+        var values: [(String?, String, WireType)] = []
+        for (i, p) in (element.parameterClause?.parameters ?? []).enumerated() {
+          let label = p.firstName.map { $0.text == "_" ? nil : $0.text } ?? nil
+          let context = "'\(name).\(element.name.text)', value \(label ?? String(i))"
+          values.append((label, p.type.trimmedDescription, try resolver.resolve(p.type, context)))
+        }
+        cases.append(UnionCase(name: element.name.text, tag: UInt64(cases.count + 1), values: values))
+      }
+    }
+    guard !cases.isEmpty else { throw ModelError("union '\(name)' has no cases") }
+    return UnionModel(name: name, cases: cases)
   }
 
   /// Case values as written, or the previous one plus 1 (from 0), as Swift
@@ -247,6 +283,21 @@ public struct LibraryModel: Sendable {
     for s in types.structs { try layOut(s.name, []) }
   }
 
+  /// Lays out each union case's values, as a struct's fields rounded up
+  /// to 8 (a box's object). Unions carry no handles.
+  mutating func layOutUnions() throws(ModelError) {
+    for u in types.unions.indices {
+      for c in types.unions[u].cases.indices {
+        let k = types.unions[u].cases[c]
+        for v in k.values where types.hasHandles(v.type) {
+          throw ModelError("union '\(types.unions[u].name)': case '\(k.name)' carries handles, which unions can't")
+        }
+        types.unions[u].cases[c].layout = Layout(k.values.enumerated().map { ("v\($0.offset)", $0.element.type) },
+                                                 types: types)
+      }
+    }
+  }
+
   /// Vectors hold copyable elements: Swift arrays can't hold others.
   func checkVectors() throws(ModelError) {
     func check(_ t: WireType, _ context: String) throws(ModelError) {
@@ -260,6 +311,9 @@ public struct LibraryModel: Sendable {
     }
     for s in types.structs {
       for f in s.fields { try check(f.type, "'\(s.name).\(f.name)'") }
+    }
+    for u in types.unions {
+      for c in u.cases { for v in c.values { try check(v.type, "'\(u.name).\(c.name)'") } }
     }
   }
 

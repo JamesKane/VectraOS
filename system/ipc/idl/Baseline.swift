@@ -56,7 +56,7 @@ public struct BaselineMethod: Equatable {
   }
 }
 
-/// A struct or enum as the baseline records it: what its values look like
+/// A struct, enum or union as the baseline records it: what its values look like
 /// on the wire, not its names.
 ///
 ///     struct Point (Int32,Int32)
@@ -75,9 +75,18 @@ public struct BaselineType: Equatable {
     line = "enum \(e.name) \(e.rawType) (\(e.cases.map { String($0.value) }.joined(separator: ",")))"
   }
 
+  /// A union: each case's values, in tag order.
+  ///
+  ///     union Op (([String]),(UInt32),())
+  init(_ u: UnionModel) {
+    name = u.name
+    let cases = u.cases.map { "(" + $0.values.map { $0.type.swiftName }.joined(separator: ",") + ")" }
+    line = "union \(u.name) (\(cases.joined(separator: ",")))"
+  }
+
   init?(line: String) {
     let f = line.split(separator: " ")
-    guard f.count >= 3, f[0] == "struct" || f[0] == "enum" else { return nil }
+    guard f.count >= 3, f[0] == "struct" || f[0] == "enum" || f[0] == "union" else { return nil }
     name = String(f[1])
     self.line = line
   }
@@ -98,6 +107,7 @@ public struct Baseline: Equatable {
     version = p.version
     let used = p.used(library.types)
     types = used.structs.map(BaselineType.init) + used.enums.map(BaselineType.init)
+      + used.unions.map(BaselineType.init)
     types.sort { $0.name < $1.name }
     composes = composed.map(\.origin.id).reduce(into: []) { if !$0.contains($1) { $0.append($1) } }.sorted()
     methods = (p.methods.map { BaselineMethod($0) } + composed.map { BaselineMethod($0.method, from: $0.origin.id) })

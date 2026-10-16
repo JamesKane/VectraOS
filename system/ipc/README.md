@@ -5,8 +5,9 @@
 ## IPC protocols
 
 A library is a Swift file with an `@IPCLibrary` enum holding structs,
-enums and protocols (architecture §4, `docs/wire-format.md`); the macro
-generates each protocol's client, handler, server and events inside it.
+enums, unions (enums whose cases carry values, D54) and protocols
+(architecture §4, `docs/wire-format.md`); the macro generates each
+protocol's client, handler, server and events inside it.
 After changing one, regenerate its C header (one per library), its
 protocols' pages and baselines, and commit them:
 

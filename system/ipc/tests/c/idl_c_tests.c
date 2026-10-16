@@ -120,6 +120,67 @@ static int is_sample(const test_ipc_shaped_t *got) {
   return 0;
 }
 
+// The Drawing the Swift tests call `drawing`, and its `last`: a union of
+// each case, inline in a struct and in a vector.
+static const test_ipc_point_t corners[] = {{5, 6}, {7, 8}};
+static const uint16_t twelve = 12;
+static const test_ipc_step_t last = {.tag = TEST_IPC_STEP_STYLE, .style = {TEST_IPC_SHAPE_TRIANGLE}};
+
+static test_ipc_drawing_t drawing(test_ipc_step_t rest[6]) {
+  rest[0] = (test_ipc_step_t){.tag = TEST_IPC_STEP_LABEL, .label = {{"hi", 2}, {3, 4}, &twelve}};
+  rest[1] = (test_ipc_step_t){.tag = TEST_IPC_STEP_PATH, .path = {{corners, 2}, true}};
+  rest[2] = (test_ipc_step_t){.tag = TEST_IPC_STEP_STYLE, .style = {TEST_IPC_SHAPE_SQUARE}};
+  rest[3] = (test_ipc_step_t){.tag = TEST_IPC_STEP_SHAPED, .shaped = {sample()}};
+  rest[4] = (test_ipc_step_t){.tag = TEST_IPC_STEP_CLEAR};
+  rest[5] = (test_ipc_step_t){.tag = TEST_IPC_STEP_LABEL, .label = {{"", 0}, {0, 0}, NULL}};
+  return (test_ipc_drawing_t){{"d", 1}, {.tag = TEST_IPC_STEP_MOVE, .move = {{1, 2}}}, {rest, 6}};
+}
+
+uint32_t idl_c_encode_draw(uint8_t *out, uint32_t capacity) {
+  td_wire_msg_t *m = malloc(sizeof *m);
+  uint32_t n = 0;
+  test_ipc_step_t rest[6];
+  test_ipc_drawing_t d = drawing(rest);
+  if (m && echo_draw_encode(m, 1, &d, &last) == CROI_OK && m->byte_count <= capacity) {
+    memcpy(out, m->bytes, m->byte_count);
+    n = m->byte_count;
+  }
+  free(m);
+  return n;
+}
+
+// Whether `got` is draw's reply to `drawing` and `last`: its steps, then `last`.
+static int is_drawn(const test_ipc_vec_step_t *got) {
+  CHECK(got->count == 8);
+  const test_ipc_step_t *s = got->items;
+  CHECK(s[0].tag == TEST_IPC_STEP_MOVE && s[0].move._0.x == 1 && s[0].move._0.y == 2);
+  CHECK(s[1].tag == TEST_IPC_STEP_LABEL && same_str(s[1].label.text, (td_wire_str_t){"hi", 2}));
+  CHECK(s[1].label.at.x == 3 && s[1].label.at.y == 4 && s[1].label.size && *s[1].label.size == 12);
+  CHECK(s[2].tag == TEST_IPC_STEP_PATH && s[2].path._0.count == 2 && s[2].path.closed);
+  CHECK(s[2].path._0.items[1].x == 7 && s[2].path._0.items[1].y == 8);
+  CHECK(s[3].tag == TEST_IPC_STEP_STYLE && s[3].style._0 == TEST_IPC_SHAPE_SQUARE);
+  CHECK(s[4].tag == TEST_IPC_STEP_SHAPED && is_sample(&s[4].shaped._0) == 0);
+  CHECK(s[5].tag == TEST_IPC_STEP_CLEAR);
+  CHECK(s[6].tag == TEST_IPC_STEP_LABEL && s[6].label.text.len == 0 && !s[6].label.size);
+  CHECK(s[7].tag == TEST_IPC_STEP_STYLE && s[7].style._0 == TEST_IPC_SHAPE_TRIANGLE);
+  return 0;
+}
+
+int32_t idl_c_decode_draw_reply(const uint8_t *bytes, uint32_t count, int *drawn) {
+  static td_wire_msg_t m;
+  static uint8_t memory[65536];
+  td_wire_arena_t arena = {memory, sizeof memory, 0};
+  test_ipc_vec_step_t out;
+  if (count > sizeof m.bytes) return CROI_ERR_OUT_OF_RANGE;
+  memcpy(m.bytes, bytes, count);
+  m.byte_count = count;
+  m.handle_count = 0;
+  int32_t s = echo_draw_decode_reply(&m, &arena, &out);
+  *drawn = s == CROI_OK && is_drawn(&out) == 0;
+  return s;
+}
+
+
 static int typed_calls(uint32_t ch, td_wire_msg_t *buf) {
   int32_t code = 0;
   static uint8_t memory[16384];
@@ -168,6 +229,14 @@ static int typed_calls(uint32_t ch, td_wire_msg_t *buf) {
   CHECK(got.name.len == 4 && memcmp(got.name.data, "box!", 4) == 0 && got.inner && is_sample(got.inner) == 0);
   CHECK(counter_value(got.handle) == 25 && counter_value(got.spare) == 24);
   CHECK(croi_handle_close(got.handle) == CROI_OK && croi_handle_close(got.spare) == CROI_OK);
+
+  // draw: unions, inline in a struct, in vectors and optional.
+  test_ipc_step_t rest[6];
+  test_ipc_drawing_t d = drawing(rest);
+  test_ipc_vec_step_t drawn;
+  arena.used = 0;
+  CHECK(echo_draw(ch, buf, &code, &d, &last, &arena, &drawn) == CROI_OK);
+  CHECK(is_drawn(&drawn) == 0);
   return 0;
 }
 

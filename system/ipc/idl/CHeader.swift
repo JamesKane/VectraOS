@@ -28,7 +28,7 @@ struct CHeader {
     case .string: "str"
     case .bytes: "bytes"
     case .handle: "handle"
-    case .enumeration(let n), .structure(let n): snakeCase(n)
+    case .enumeration(let n), .structure(let n), .union(let n): snakeCase(n)
     case .vector(let e): "vec_\(mangle(e))"
     case .optional(let w): "opt_\(mangle(w))"
     }
@@ -42,7 +42,7 @@ struct CHeader {
     case .string: "td_wire_str_t"
     case .bytes: "td_wire_bytes_t"
     case .handle, .optional(.handle): "uint32_t"
-    case .enumeration(let n), .structure(let n): "\(typeName(n))_t"
+    case .enumeration(let n), .structure(let n), .union(let n): "\(typeName(n))_t"
     case .vector(let e): "\(prefix)_vec_\(mangle(e))_t"
     case .optional(let w): "const \(cType(w)) *"
     }
@@ -66,9 +66,10 @@ struct CHeader {
   func needsArena(_ t: WireType) -> Bool {
     switch t {
     case .vector, .optional(.string), .optional(.bytes), .optional(.vector), .optional(.integer),
-      .optional(.bool), .optional(.enumeration), .optional(.structure):
+      .optional(.bool), .optional(.enumeration), .optional(.structure), .optional(.union):
       true
     case .structure(let n): types.structure(n)?.fields.contains { needsArena($0.type) } ?? false
+    case .union(let n): types.union(n)?.cases.contains { $0.values.contains { needsArena($0.type) } } ?? false
     default: false
     }
   }
@@ -85,6 +86,7 @@ struct CHeader {
       return ["if ((s = td_wire_store_bytes(m, \(at), (\(v)).data, (\(v)).len)) != CROI_OK) return s;"]
     case .handle, .optional(.handle): return ["if ((s = td_wire_store_handle(m, \(at), \(v))) != CROI_OK) return s;"]
     case .structure(let n): return ["if ((s = \(typeName(n))_encode(m, \(at), &(\(v)))) != CROI_OK) return s;"]
+    case .union(let n): return ["if ((s = \(typeName(n))_encode(m, \(at), &(\(v)))) != CROI_OK) return s;"]
     case .vector(let e):
       let size = types.size(e)
       return [
@@ -126,6 +128,7 @@ struct CHeader {
     case .handle: return ["if (td_wire_load_handle(r, \(at), &(\(lv))) != CROI_OK) \(protocolError)"]
     case .optional(.handle): return ["if (td_wire_load_handle_opt(r, \(at), &(\(lv))) != CROI_OK) \(protocolError)"]
     case .structure(let n): return ["if ((s = \(typeName(n))_decode(r, \(at), a, &(\(lv)))) != CROI_OK) return s;"]
+    case .union(let n): return ["if ((s = \(typeName(n))_decode(r, \(at), a, &(\(lv)))) != CROI_OK) return s;"]
     case .vector(let e):
       let ce = cType(e), size = types.size(e)
       return [
@@ -181,20 +184,112 @@ struct CHeader {
       }
     }
     for s in types.structs { s.fields.forEach { visit($0.type) } }
+    for u in types.unions { for c in u.cases { c.values.forEach { visit($0.type) } } }
     for p in library.protocols { for m in p.methods { m.types.forEach(visit) } }
     return found
   }
 
-  /// Structs, each after those it holds inline.
-  func structOrder() -> [StructModel] {
-    var out: [StructModel] = []
-    func visit(_ s: StructModel) {
-      guard !out.contains(where: { $0.name == s.name }) else { return }
-      for f in s.fields { if case .structure(let n) = f.type, let inner = types.structure(n) { visit(inner) } }
-      out.append(s)
+  /// The structs' and unions' definitions, each after those it holds
+  /// inline (a union holds its cases' values).
+  func definitionOrder() -> [String] {
+    var done: [String] = []
+    var out: [String] = []
+    func visit(_ name: String) {
+      guard !done.contains(name) else { return }
+      done.append(name)
+      if let s = types.structure(name) {
+        for f in s.fields { inline(f.type) }
+        out.append(structDefinition(s))
+      } else if let u = types.union(name) {
+        for c in u.cases { c.values.forEach { inline($0.type) } }
+        out.append(unionDefinition(u))
+      }
     }
-    types.structs.forEach(visit)
+    func inline(_ t: WireType) {
+      if case .structure(let n) = t { visit(n) }
+      if case .union(let n) = t { visit(n) }
+    }
+    (types.structs.map(\.name) + types.unions.map(\.name)).forEach(visit)
     return out
+  }
+
+  /// A union value's C member for case value `i`.
+  func unionMember(_ c: UnionCase, _ i: Int) -> String {
+    c.values[i].label.map { cParameter(snakeCase($0)) } ?? "_\(i)"
+  }
+
+  func unionDefinition(_ u: UnionModel) -> String {
+    let name = typeName(u.name)
+    let defines = u.cases.map { "#define \(name.uppercased())_\(snakeCase($0.name).uppercased()) UINT64_C(\($0.tag))" }
+    let members = u.cases.filter { !$0.values.isEmpty }.map { c in
+      let values = c.values.indices.map { "\(cType(c.values[$0].type)) \(unionMember(c, $0));" }.joined(separator: " ")
+      return "    struct { \(values) } \(cParameter(snakeCase(c.name)));"
+    }
+    let union = members.isEmpty ? "" : "\n  union {\n\(members.joined(separator: "\n"))\n  };"
+    return """
+
+      // union \(u.name): `tag` says which case, and the case's own member
+      // holds its values. Receivers reject other tags.
+      \(defines.joined(separator: "\n"))
+      struct \(name) {
+        uint64_t tag;\(union)
+      };
+      """
+  }
+
+  func unionCoders(_ u: UnionModel) -> String {
+    let name = typeName(u.name)
+    let encodes = u.cases.map { c in
+      let member = cParameter(snakeCase(c.name))
+      var body = ["td_wire_store(m, o, \(c.tag), 8);"]
+      if !c.values.isEmpty {
+        body += ["uint32_t ub;", "if ((s = td_wire_store_box(m, o + 8, \(c.layout.size), &ub)) != CROI_OK) return s;"]
+        body += c.layout.fields.enumerated().flatMap { i, f in
+          encode(f.type, "in->\(member).\(unionMember(c, i))", at: "ub + \(f.offset)")
+        }
+      }
+      return "case \(c.tag): {\n    " + (body + ["return CROI_OK;"]).joined(separator: "\n    ") + "\n  }"
+    }
+    let decodes = u.cases.map { c in
+      let member = cParameter(snakeCase(c.name))
+      var body = ["uint32_t ub;"]
+      if c.values.isEmpty {
+        body.append("if (td_wire_load_box(r, o + 8, 0, &ub) != 0) return TD_ERR_PROTOCOL;")
+      } else {
+        body.append("if (td_wire_load_box(r, o + 8, \(c.layout.size), &ub) != 1) return TD_ERR_PROTOCOL;")
+        body += c.layout.padding.map {
+          "if (td_wire_check_padding(r, ub + \($0.offset), \($0.count)) != CROI_OK) return TD_ERR_PROTOCOL;"
+        }
+        body += c.layout.fields.enumerated().flatMap { i, f in
+          decode(f.type, into: "out->\(member).\(unionMember(c, i))", at: "ub + \(f.offset)")
+        }
+      }
+      return "case \(c.tag): {\n    " + (body + ["return CROI_OK;"]).joined(separator: "\n    ") + "\n  }"
+    }
+    return """
+
+      static inline int32_t \(name)_encode(td_wire_msg_t *m, uint32_t o, const \(name)_t *in) {
+        int32_t s = CROI_OK;
+        (void)s;
+        switch (in->tag) {
+        \(encodes.joined(separator: "\n  "))
+        default: return CROI_ERR_INVALID_ARGS;
+        }
+      }
+
+      static inline int32_t \(name)_decode(td_wire_reader_t *r, uint32_t o, td_wire_arena_t *a, \(name)_t *out) {
+        int32_t s = CROI_OK;
+        uint64_t v;
+        (void)s;
+        (void)a;
+        if (td_wire_load(r, o, 8, &v) != CROI_OK) return TD_ERR_PROTOCOL;
+        out->tag = v;
+        switch (v) {
+        \(decodes.joined(separator: "\n  "))
+        default: return TD_ERR_PROTOCOL;
+        }
+      }
+      """
   }
 
   func structDefinition(_ s: StructModel) -> String {
@@ -258,7 +353,7 @@ struct CHeader {
     return switch t {
     case .string: (["const char *\(name)", "uint32_t \(name)_len"], "((td_wire_str_t){ \(name), \(name)_len })")
     case .bytes: (["const uint8_t *\(name)", "uint32_t \(name)_len"], "((td_wire_bytes_t){ \(name), \(name)_len })")
-    case .structure: (["const \(cType(t)) *\(name)"], "(*\(name))")
+    case .structure, .union: (["const \(cType(t)) *\(name)"], "(*\(name))")
     default: (["\(cType(t)) \(name)"], name)
     }
   }
@@ -411,9 +506,11 @@ struct CHeader {
     }
 
     for e in types.enums { emit(enumeration(e)) }
-    if !types.structs.isEmpty {
+    // Structs and unions: C structs both.
+    let composites = types.structs.map(\.name) + types.unions.map(\.name)
+    if !composites.isEmpty {
       emit("")
-      for s in types.structs { emit("typedef struct \(typeName(s.name)) \(typeName(s.name))_t;") }
+      for n in composites { emit("typedef struct \(typeName(n)) \(typeName(n))_t;") }
     }
     for v in vectorTypes() {
       guard case .vector(let e) = v else { continue }
@@ -425,16 +522,17 @@ struct CHeader {
         } \(cType(v));
         """)
     }
-    for s in structOrder() { emit(structDefinition(s)) }
-    if !types.structs.isEmpty {
+    definitionOrder().forEach(emit)
+    if !composites.isEmpty {
       emit("")
-      for s in types.structs {
-        let n = typeName(s.name)
+      for c in composites {
+        let n = typeName(c)
         emit("static inline int32_t \(n)_encode(td_wire_msg_t *m, uint32_t o, const \(n)_t *in);")
         emit("static inline int32_t \(n)_decode(td_wire_reader_t *r, uint32_t o, td_wire_arena_t *a, \(n)_t *out);")
       }
     }
     for s in types.structs { emit(structCoders(s)) }
+    for u in types.unions { emit(unionCoders(u)) }
 
     for p in library.protocols {
       for m in p.methods {

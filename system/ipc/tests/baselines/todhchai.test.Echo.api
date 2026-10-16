@@ -1,10 +1,13 @@
 # API baseline for todhchai.test.Echo, written by idlc. Commit it; idlc checks changes against it.
-protocol todhchai.test.Echo version 3
+protocol todhchai.test.Echo version 4
 struct Carried (String,Handle,Handle?,Shaped?)
+struct Drawing (String,Step,[Step])
 struct Point (Int32,Int32)
 enum Shape UInt8 (1,2,7)
 struct Shaped (Shape,Point,String?,[String],[Point],UInt16?,[UInt8],Bool)
+union Step ((Point),(String,Point,UInt16?),([Point],Bool),(Shape),(Shaped),())
 method carry call since 3 params (Carried) result Carried throws -
+method draw call since 4 params (Drawing,Step?) result [Step] throws -
 method many call since 3 params ([Shaped],[[UInt32]],[Point]?) result [Shaped] throws -
 method note oneway since 1 params (UInt64,Bool) result - throws -
 method noted call since 2 params () result UInt64 throws -

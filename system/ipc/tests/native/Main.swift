@@ -222,6 +222,24 @@ struct IPCTest {
       check(false, "structs: carry swaps the handles")
     }
 
+    // Unions: inline in a struct, in a vector, and optional.
+    let drawing = TestIPC.Drawing(
+      name: "d", first: .move(TestIPC.Point(x: 1, y: 2)),
+      rest: [.label(text: "hi", at: TestIPC.Point(x: 3, y: 4), size: 12), .path([TestIPC.Point(x: 5, y: 6)], closed: true),
+             .shaped(sample), .clear])
+    if let steps = try? client.draw(drawing, last: .style(.square)), steps.count == 6 {
+      var ok = true
+      if case .move(let p) = steps[0], p == TestIPC.Point(x: 1, y: 2) {} else { ok = false }
+      if case .label(let text, let at, let size) = steps[1], same(text, "hi"), at.x == 3, size == 12 {} else { ok = false }
+      if case .path(let points, let closed) = steps[2], points == [TestIPC.Point(x: 5, y: 6)], closed {} else { ok = false }
+      if case .shaped(let s) = steps[3], s.weight == 513, same(s.tags[2], "ccc") {} else { ok = false }
+      if case .clear = steps[4] {} else { ok = false }
+      if case .style(.square) = steps[5] {} else { ok = false }
+      check(ok, "structs: unions in a struct, a vector and an optional")
+    } else {
+      check(false, "structs: unions in a struct, a vector and an optional")
+    }
+
     _ = consume client
     check(server.finished(), "structs: the server ends")
   }

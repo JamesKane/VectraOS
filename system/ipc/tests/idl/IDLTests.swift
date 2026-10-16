@@ -94,7 +94,16 @@ func echoProtocol() throws -> ProtocolModel {
     }) != nil
   }
   #expect(swiftAccepts(reply.bytes) && idl_c_decode_reflect_reply(reply.bytes, UInt32(reply.bytes.count)) == 0)
+  // Some mutations are harmless (a label's byte, a coordinate): both see them.
+  #expect(agreeOnMutations(reply.bytes, swift: swiftAccepts) {
+    idl_c_decode_reflect_reply($0, UInt32($0.count)) == 0
+  } > 100)
+}
 
+/// Whether Swift and C accept the same mutations of `bytes`: a byte or
+/// three changed, sometimes the end cut, seeded so a failure repeats. How
+/// many mutations both accepted.
+func agreeOnMutations(_ original: [UInt8], swift: ([UInt8]) -> Bool, c: ([UInt8]) -> Bool) -> Int {
   var state: UInt64 = 0x9E37_79B9_7F4A_7C15
   func next() -> Int {
     state ^= state << 13
@@ -104,20 +113,107 @@ func echoProtocol() throws -> ProtocolModel {
   }
   var accepted = 0
   for round in 0..<20_000 {
-    var bytes = reply.bytes
+    var bytes = original
     for _ in 0...(next() % 3) {
       let i = 16 + next() % (bytes.count - 16)
       bytes[i] = [0, 1, 0xff, 0x80, UInt8(truncatingIfNeeded: next())][next() % 5]
     }
     if next() % 8 == 0 { bytes.removeLast(8 * (1 + next() % 3)) }
-    let swift = swiftAccepts(bytes)
-    let c = idl_c_decode_reflect_reply(bytes, UInt32(bytes.count)) == 0
-    #expect(swift == c, "round \(round): Swift \(swift ? "accepts" : "rejects"), C \(c ? "accepts" : "rejects") \(bytes)")
-    if swift != c { break }
-    if swift { accepted += 1 }
+    let s = swift(bytes), cAccepts = c(bytes)
+    #expect(s == cAccepts, "round \(round): Swift \(s ? "accepts" : "rejects"), C \(cAccepts ? "accepts" : "rejects") \(bytes)")
+    if s != cAccepts { break }
+    if s { accepted += 1 }
   }
-  // Some mutations are harmless (a label's byte, a coordinate): both see them.
-  #expect(accepted > 100)
+  return accepted
+}
+
+// MARK: Unions
+
+/// The Drawing idl_c_tests.c's `drawing` builds, and its last step.
+let drawing = TestIPC.Drawing(
+  name: "d", first: .move(TestIPC.Point(x: 1, y: 2)),
+  rest: [
+    .label(text: "hi", at: TestIPC.Point(x: 3, y: 4), size: 12),
+    .path([TestIPC.Point(x: 5, y: 6), TestIPC.Point(x: 7, y: 8)], closed: true),
+    .style(.square),
+    .shaped(TestIPC.Shaped(
+      shape: .triangle, at: TestIPC.Point(x: -3, y: 4), label: "tri", tags: ["a", "", "ccc"],
+      path: [TestIPC.Point(x: 1, y: 2), TestIPC.Point(x: Int32.min, y: Int32.max)], weight: 513,
+      data: [0, 255, 7], flag: true)),
+    .clear,
+    .label(text: "", at: TestIPC.Point(x: 0, y: 0), size: nil),
+  ])
+let lastStep = TestIPC.Step.style(.triangle)
+
+/// Echo.draw, parsed once: the fuzz decodes thousands of replies.
+let drawModel: Method? = try? echoProtocol().methods.first { $0.name == "draw" }
+func drawMethod() throws -> Method { try #require(drawModel) }
+
+/// draw's reply: the steps as a vector of unions.
+func drawReply(_ steps: [TestIPC.Step]) throws -> [UInt8] {
+  let draw = try drawMethod()
+  return try IPCCodec.encode(
+    MessageHeader(txid: 1, kind: .reply, ordinal: draw.ordinal), inlineSize: draw.reply.size, Never.self
+  ) { (e: inout Encoder) throws(WireError) in
+    let base = try e.storeVector(count: steps.count, elementSize: 16, at: 0)
+    for (i, s) in steps.enumerated() { try TestIPC._encode_Step(s, &e, at: base + i * 16) }
+  }.bytes
+}
+
+/// draw's reply decoded by the generated Swift coder.
+func swiftDrawReply(_ bytes: [UInt8]) -> [TestIPC.Step]? {
+  guard let draw = try? drawMethod() else { return nil }
+  return try? IPCCodec.decode(IPCMessage(bytes: bytes, handles: []), inlineSize: draw.reply.size, Never.self) {
+    (d: inout Decoder) throws(WireError) -> [TestIPC.Step] in
+    guard let vec = try d.loadVector(at: 0, elementSize: 16) else { throw .badPresence }
+    var out: [TestIPC.Step] = []
+    for i in 0..<vec.count { out.append(try TestIPC._decode_Step(&d, at: vec.base + i * 16)) }
+    return out
+  }
+}
+
+func cDrawReply(_ bytes: [UInt8]) -> (status: Int32, drawn: Bool) {
+  var drawn: Int32 = 0
+  let status = idl_c_decode_draw_reply(bytes, UInt32(bytes.count), &drawn)
+  return (status, drawn != 0)
+}
+
+@Test func cEncodesUnionsAsSwiftDoes() throws {
+  var c = [UInt8](repeating: 0, count: 4096)
+  let n = idl_c_encode_draw(&c, UInt32(c.count))
+  let draw = try drawMethod()
+  let swift = try IPCCodec.encode(
+    MessageHeader(txid: 1, kind: .request, ordinal: draw.ordinal), inlineSize: draw.request.size, Never.self
+  ) { (e: inout Encoder) throws(WireError) in
+    try TestIPC._encode_Drawing(drawing, &e, at: draw.request.fields[0].offset)
+    let box = try e.storeBox(size: 16, at: draw.request.fields[1].offset)
+    try TestIPC._encode_Step(lastStep, &e, at: box)
+  }
+  #expect(n > 0 && Array(c[..<Int(n)]) == swift.bytes)
+}
+
+@Test func swiftAndCDecodeUnionsAlike() throws {
+  let steps = [drawing.first] + drawing.rest + [lastStep]
+  let reply = try drawReply(steps)
+  #expect(swiftDrawReply(reply) == steps)
+  #expect(cDrawReply(reply) == (0, true))
+
+  // The first element's tag (at 16 + 16, after the header and the
+  // vector's count and marker), and a case with no values whose marker
+  // says present: both refuse them.
+  let tagAt = 32
+  for tag: UInt8 in [0, 7, 0xff] {
+    var bad = reply
+    bad[tagAt] = tag
+    #expect(swiftDrawReply(bad) == nil && cDrawReply(bad).status != 0, "tag \(tag)")
+  }
+  let clearAt = tagAt + 5 * 16
+  #expect(reply[clearAt] == 6)
+  var marked = reply
+  for i in 0..<8 { marked[clearAt + 8 + i] = 0xff }
+  #expect(swiftDrawReply(marked) == nil && cDrawReply(marked).status != 0)
+
+  #expect(agreeOnMutations(reply, swift: { swiftDrawReply($0) != nil }) { cDrawReply($0).status == 0 } > 100)
 }
 
 @Test func cDecodesWhatSwiftEncodes() throws {
@@ -193,6 +289,20 @@ func baseline(_ body: String, version: Int, types: String = "") throws -> Baseli
   #expect(Baseline(text: old.text) == old)
   let renamed = try baseline("func f(_ s: S) -> K", version: 1, types: types.replacing("var a", with: "var z"))
   #expect(compatibility(old: old, new: renamed).isEmpty)
+  let unions = "enum U { case a(UInt32), b(String, Bool?), c }"
+  let withUnion = try baseline("func f(_ u: U)", version: 1, types: unions)
+  #expect(withUnion.text.contains("union U ((UInt32),(String,Bool?),())"))
+  #expect(Baseline(text: withUnion.text) == withUnion)
+  #expect(compatibility(old: withUnion, new: try baseline("func f(_ u: U)", version: 1,
+                                                          types: unions.replacing("case a", with: "case z"))).isEmpty)
+  for changed in [
+    unions.replacing("c }", with: "c, d }"),  // a case added
+    unions.replacing("a(UInt32), b(String, Bool?)", with: "b(String, Bool?), a(UInt32)"),  // reordered
+    unions.replacing("Bool?", with: "Bool"),
+  ] {
+    let problems = compatibility(old: withUnion, new: try baseline("func f(_ u: U)", version: 1, types: changed))
+    #expect(problems.contains { $0.contains("changed") }, "\(changed): \(problems)")
+  }
   for changed in [
     types.replacing("[String]?", with: "[String]"),
     types.replacing("case x = 1, y", with: "case x = 1, y, w"),

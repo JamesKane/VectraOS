@@ -17,6 +17,7 @@ public indirect enum WireType: Equatable, Sendable {
   case optional(WireType)
   case structure(String)  // a struct of the library
   case enumeration(String)  // an integer-backed enum of the library
+  case union(String)  // an enum of the library whose cases carry values
 
   /// The types every library knows, by name.
   public static func builtin(_ name: String) -> WireType? {
@@ -42,7 +43,7 @@ public indirect enum WireType: Equatable, Sendable {
     case .handle: "Handle"
     case .vector(let e): "[\(e.swiftName)]"
     case .optional(let w): "\(w.swiftName)?"
-    case .structure(let n), .enumeration(let n): n
+    case .structure(let n), .enumeration(let n), .union(let n): n
     }
   }
 
@@ -76,6 +77,24 @@ public struct EnumModel: Sendable {
   public var cases: [(name: String, value: Int64)]
 }
 
+/// A union of the library: an enum whose cases may carry values (strict,
+/// like an enum). Inline, a tag (the case's place, from 1) and a box's
+/// presence marker; out of line, the case's values laid out as a struct's
+/// fields, absent for a case that carries none. No handles: a union is
+/// copyable, so vectors can hold it.
+public struct UnionModel: Sendable {
+  public var name: String
+  public var cases: [UnionCase]
+}
+
+/// A union's case: its tag, and its values (`label` nil for `_`).
+public struct UnionCase: Sendable {
+  public var name: String
+  public var tag: UInt64
+  public var values: [(label: String?, swiftType: String, type: WireType)]
+  public var layout = Layout()
+}
+
 /// An error enum: `Int32`-backed, `IPCErrorCode`, positive codes.
 public struct ErrorEnumModel: Sendable {
   public var name: String
@@ -86,11 +105,13 @@ public struct ErrorEnumModel: Sendable {
 public struct Types: Sendable {
   public var structs: [StructModel] = []
   public var enums: [EnumModel] = []
+  public var unions: [UnionModel] = []
 
   public init() {}
 
   public func structure(_ name: String) -> StructModel? { structs.first { $0.name == name } }
   public func enumeration(_ name: String) -> EnumModel? { enums.first { $0.name == name } }
+  public func union(_ name: String) -> UnionModel? { unions.first { $0.name == name } }
 
   /// Bytes a value of `t` takes inline.
   public func size(_ t: WireType) -> Int {
@@ -102,6 +123,7 @@ public struct Types: Sendable {
     case .optional(let w): w.hasOwnPresence ? size(w) : 8
     case .structure(let n): structure(n)?.layout.size ?? 0
     case .enumeration(let n): enumeration(n)?.size ?? 0
+    case .union: 16
     }
   }
 
@@ -114,6 +136,7 @@ public struct Types: Sendable {
     case .optional(let w): w.hasOwnPresence ? alignment(w) : 8
     case .structure(let n): structure(n)?.alignment ?? 1
     case .enumeration(let n): enumeration(n)?.size ?? 1
+    case .union: 8
     }
   }
 
@@ -139,7 +162,7 @@ public struct Types: Sendable {
 
   /// The named types `roots` use, directly or through others, in the order
   /// the library declares them.
-  public func used(by roots: [WireType]) -> (structs: [StructModel], enums: [EnumModel]) {
+  public func used(by roots: [WireType]) -> (structs: [StructModel], enums: [EnumModel], unions: [UnionModel]) {
     var names: [String] = []
     func visit(_ t: WireType) {
       switch t {
@@ -149,11 +172,16 @@ public struct Types: Sendable {
         guard !names.contains(n) else { return }
         names.append(n)
         for f in structure(n)?.fields ?? [] { visit(f.type) }
+      case .union(let n):
+        guard !names.contains(n) else { return }
+        names.append(n)
+        for c in union(n)?.cases ?? [] { c.values.forEach { visit($0.type) } }
       default: break
       }
     }
     roots.forEach(visit)
-    return (structs.filter { names.contains($0.name) }, enums.filter { names.contains($0.name) })
+    return (structs.filter { names.contains($0.name) }, enums.filter { names.contains($0.name) },
+            unions.filter { names.contains($0.name) })
   }
 }
 
@@ -234,7 +262,7 @@ public struct ProtocolModel: Sendable {
   public var composes: [String] = []
 
   /// The named types its methods use.
-  public func used(_ types: Types) -> (structs: [StructModel], enums: [EnumModel]) {
+  public func used(_ types: Types) -> (structs: [StructModel], enums: [EnumModel], unions: [UnionModel]) {
     types.used(by: methods.flatMap(\.types))
   }
 }

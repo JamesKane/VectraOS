@@ -15,6 +15,7 @@ struct Generator {
   func declarations() -> [DeclSyntax] {
     var out: [String] = []
     for s in types.structs { out += [structEncoder(s), structDecoder(s)] }
+    for u in types.unions { out += [unionEncoder(u), unionDecoder(u)] }
     for p in library.protocols {
       out += p.methods.map { "static let \(traceName(p, $0)) = TraceName(\"\(p.name).\($0.name)\")" }
       out += p.methods.map { argumentsStruct(p, $0) }
@@ -60,6 +61,7 @@ struct Generator {
     case .handle: return ["try e.storeHandle(\(value).release(), at: \(at))"]
     case .enumeration: return ["try e.store(\(value).rawValue, at: \(at))"]
     case .structure(let n): return ["try _encode_\(n)(\(value), &e, at: \(at))"]
+    case .union(let n): return ["try _encode_\(n)(\(value), &e, at: \(at))"]
     case .vector(let element):
       let items = "items\(depth)", base = "base\(depth)", i = "i\(depth)", x = "x\(depth)"
       return [
@@ -99,6 +101,53 @@ struct Generator {
       """
   }
 
+  /// A union: its tag, then its case's values in a box (none: absent).
+  func unionEncoder(_ u: UnionModel) -> String {
+    let cases = u.cases.map { c in
+      let bindings = c.values.indices.map { "let p\($0)" }.joined(separator: ", ")
+      var body = ["try e.store(UInt64(\(c.tag)), at: o)"]
+      if !c.values.isEmpty {
+        body.append("let u = try e.storeBox(size: \(c.layout.size), at: o + 8)")
+        body += c.layout.fields.enumerated().flatMap { i, f in encode(f.type, "p\(i)", at: "u + \(f.offset)", 1) }
+      }
+      return "case .\(c.name)\(c.values.isEmpty ? "" : "(\(bindings))"):\n" + body.joined(separator: "\n")
+    }
+    return """
+      @_lifetime(e: copy e)
+      static func _encode_\(u.name)(_ v: borrowing \(u.name), _ e: inout Encoder, at o: Int) throws(WireError) {
+      switch copy v {
+      \(cases.joined(separator: "\n"))
+      }
+      }
+      """
+  }
+
+  /// A union: its tag (strict), then its case's values in a box, which
+  /// must be absent for a case that carries none.
+  func unionDecoder(_ u: UnionModel) -> String {
+    let cases = u.cases.map { c in
+      guard !c.values.isEmpty else {
+        return "case \(c.tag):\nguard try d.loadBox(at: o + 8, size: 0) == nil else { throw .badPresence }\nreturn .\(c.name)"
+      }
+      let arguments = c.values.enumerated().map { i, v in (v.label.map { "\($0): " } ?? "") + "f\(i)" }
+        .joined(separator: ", ")
+      let body = ["guard let u = try d.loadBox(at: o + 8, size: \(c.layout.size)) else { throw .badPresence }"]
+        + paddingChecks(c.layout, base: "u + ")
+        + c.layout.fields.enumerated().flatMap { i, f in decode(f.type, into: "f\(i)", at: "u + \(f.offset)", 1) }
+        + ["return .\(c.name)(\(arguments))"]
+      return "case \(c.tag):\n" + body.joined(separator: "\n")
+    }
+    return """
+      @_lifetime(d: copy d)
+      static func _decode_\(u.name)(_ d: inout Decoder, at o: Int) throws(WireError) -> \(u.name) {
+      switch try d.load(UInt64.self, at: o) {
+      \(cases.joined(separator: "\n"))
+      default: throw .invalidValue
+      }
+      }
+      """
+  }
+
   // MARK: Decoding
 
   /// Statements that decode a value of type `t` at offset `at` into a new
@@ -114,6 +163,7 @@ struct Generator {
       let raw = types.enumeration(n)!.rawType
       return ["guard let \(name) = \(n)(rawValue: try d.load(\(raw).self, at: \(at))) else { throw .invalidValue }"]
     case .structure(let n): return ["let \(name) = try _decode_\(n)(&d, at: \(at))"]
+    case .union(let n): return ["let \(name) = try _decode_\(n)(&d, at: \(at))"]
     case .vector(let element):
       return ["guard let vec\(depth) = try d.loadVector(at: \(at), elementSize: \(types.size(element))) else { throw .badPresence }"]
         + vectorElements(element, into: name, depth)

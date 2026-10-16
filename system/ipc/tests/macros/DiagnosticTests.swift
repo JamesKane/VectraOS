@@ -66,7 +66,10 @@ func expectMethodRefusal(_ body: String, _ message: String, header: String = #"i
   expectRefusal("struct S {\n  var x: UInt8\n  init() {\n    x = 0\n  }\n}",
                 "struct 'S': decoding uses the memberwise initializer, so declare others in an extension")
   expectRefusal("struct S {\n}", "struct 'S' has no stored properties")
-  expectRefusal("enum K {\n  case a\n}", "enum 'K' needs an integer raw type")
+  expectRefusal("enum U {\n  case a(Handle)\n}", "union 'U': case 'a' carries handles, which unions can't")
+  expectRefusal("enum U {\n}", "union 'U' has no cases")
+  expectRefusal("enum U {\n  case a(Int)\n}", "'U.a', value 0: type 'Int' is not supported (declare it in the library)")
+  expectRefusal("enum U {\n  case a = 1\n}", "union 'U': case 'a' can't have a raw value")
   expectRefusal("enum K: UInt8 {\n  case a = 256\n}", "enum 'K': case 'a' doesn't fit in UInt8")
   expectRefusal("enum K: UInt8 {\n  case a(UInt8)\n}", "enum 'K': case 'a' can't carry values")
   expectRefusal("enum E: Int32, IPCErrorCode {\n  case a = 0\n}", "error enum 'E': case 'a' needs a positive code")

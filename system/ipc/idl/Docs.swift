@@ -59,6 +59,15 @@ public func markdown(_ p: ProtocolModel, _ library: LibraryModel, source: String
     out += "\n## struct \(s.name)\n\n"
       + layoutTable("\(s.isCopyable ? "" : "Moves (carries handles); ")aligned to \(s.alignment)", s.layout, types)
   }
+  for u in used.unions {
+    out += "\n## union \(u.name)\n\n16 bytes inline: the tag (UInt64), then a box's presence marker; the case's "
+      + "values out of line, absent for a case that carries none. Receivers reject other tags.\n\n"
+      + "| Tag | Case |\n|---|---|\n"
+    for c in u.cases { out += "| \(c.tag) | `\(c.name)` |\n" }
+    for c in u.cases where !c.values.isEmpty {
+      out += "\n" + layoutTable("`\(c.name)`'s values", c.layout, types)
+    }
+  }
   for e in used.enums {
     out += "\n## enum \(e.name)\n\n\(e.rawType); receivers reject other values.\n\n| Case | Value |\n|---|---|\n"
     for c in e.cases { out += "| `\(c.name)` | \(c.value) |\n" }
@@ -81,6 +90,7 @@ func storage(_ t: WireType, _ types: Types) -> String {
   case .handle: return " (presence; handle in the side array)"
   case .enumeration(let n): return " (\(types.enumeration(n)?.rawType ?? "?"))"
   case .structure: return " (inline)"
+  case .union: return " (tag, presence; the case's values out of line)"
   case .optional(let w): return w.hasOwnPresence ? storage(w, types) + ", absent: zero" : " (presence; boxed out of line)"
   }
 }

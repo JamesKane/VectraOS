@@ -111,6 +111,7 @@ A body is an **inline part** followed by **out-of-line data**.
 | Vector `[T]` | the count, then the presence marker (16, 8) | the elements, each T's inline size, then each element's own out-of-line data |
 | Handle | 4 bytes: 0 if absent, all ones if present (4, 4) | the handle, next in the side array |
 | Struct | its fields, laid out as a body's are (its size, its largest field's alignment) | its fields' |
+| Union | 16 bytes: the tag (u64), then the presence marker (16, 8) | its case's values, laid out as a struct's fields and padded to 8, then their out-of-line data; none for a case without values |
 | `T?`, T a string, vector or handle | T's, with the marker zero (and the count zero) when absent | T's, when present |
 | `T?`, any other T (a box) | 8 bytes: the presence marker (8, 8) | T's inline part, padded to 8, then its out-of-line data |
 
@@ -126,8 +127,17 @@ A body is an **inline part** followed by **out-of-line data**.
 - **Enums** are strict: a receiver rejects a value its enum doesn't list,
   so adding a case changes the type (the baseline records each enum's
   values).
-- **Limits.** Vectors' elements can't carry handles, and events can't
-  carry handles yet. A vector's count is bounded by what the message holds.
+- **Unions** are enums whose cases may carry values (FIDL's strict
+  unions). A case's tag is its place in the declaration, from 1, and a
+  receiver rejects a tag the union doesn't list. A case with values has
+  the marker present and its values in a box; a case without has it
+  absent, as an absent box's. Values are laid out by position, so their
+  labels are not on the wire, but their order is: adding, removing or
+  reordering a case changes the type (the baseline records each case's
+  values in order).
+- **Limits.** Vectors' elements and unions can't carry handles, and
+  events can't carry handles yet. A vector's count is bounded by what the
+  message holds.
 
 Handles appear in the side array in the order their markers are encoded.
 A receiver rejects a message that leaves bytes or handles unconsumed.
@@ -135,8 +145,9 @@ A receiver rejects a message that leaves bytes or handles unconsumed.
 ## Libraries
 
 Types and protocols are declared together, in an enum marked
-`@IPCLibrary(id:version:)`: its structs, integer-backed enums, error enums
-(`Int32`, `IPCErrorCode`, positive codes) and protocols. The macro sees the
+`@IPCLibrary(id:version:)`: its structs, integer-backed enums, unions (the
+other enums), error enums (`Int32`, `IPCErrorCode`, positive codes) and
+protocols. The macro sees the
 whole library, so every layout is fixed when the code is generated, and
 `idlc` reads the same declarations for C headers, pages and baselines. A
 struct that holds handles is `~Copyable` and moves when sent.
@@ -152,3 +163,8 @@ struct that holds handles is `~Copyable` and moves when sent.
   protocol.
 - **Handles carry no rights or types on the wire.** The transport checks
   them (M0c).
+- **Unions are strict and boxed.** FIDL's unions put each value in an
+  envelope (its byte and handle counts) so that a flexible union's receiver
+  can skip a case it doesn't know. Ours are all strict, like our enums, so
+  a case's values go in an ordinary box, and a library that adds a case
+  adds a method version that uses the new type.

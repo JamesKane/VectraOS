@@ -5,7 +5,8 @@
 @_exported import Trace
 
 /// Declares an IPC library: an enum holding structs, integer-backed enums,
-/// error enums (`Int32`, `IPCErrorCode`) and protocols. For each protocol
+/// unions (enums whose cases carry values; no handles), error enums
+/// (`Int32`, `IPCErrorCode`) and protocols. For each protocol
 /// `P` it generates, as members of the enum:
 /// - `PClient`: calls the methods over a channel;
 /// - `PHandler`: what a server implements (every method but events);
