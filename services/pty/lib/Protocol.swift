@@ -9,8 +9,9 @@
 // of a ring the pty is the other side of (Sys's StreamParts: a starter
 // puts them in a Startup as they are, CROI_PA_STDIO), and `Control`, the
 // pty's termios for the program: its mode, the window's size, and the
-// events a terminal's keys make (an interrupt for the controller: croi has
-// no signals, so a shell kills its foreground job itself).
+// events a terminal's keys make, and its hangup when it goes (notes for
+// the controller: croi has no signals, so a shell kills its foreground
+// job itself).
 //
 // The end of input (^D on an empty line) is the controller's to act on
 // once it says so (`takeEnds`: an event, as a ring's end can't be taken
@@ -22,7 +23,7 @@
 import IPC
 import Sys
 
-@IPCLibrary(id: "todhchai.pty", version: 1)
+@IPCLibrary(id: "todhchai.pty", version: 2)
 public enum PtyIPC {
   public enum PtyError: Int32, IPCErrorCode, Sendable {
     case invalid = 1
@@ -131,6 +132,8 @@ public enum PtyIPC {
     func takeEnds(_ yes: Bool)
     @event func event(_ event: Event)
     @event func resized(_ size: WindowSize)
+    /// The terminal has gone (its keys ended): Plan 9's hangup note.
+    @since(2) @event func hangup()
   }
 }
 

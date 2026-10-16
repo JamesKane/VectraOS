@@ -85,23 +85,27 @@ final class Standard: RcStream {
     let shell = Rc(system: system, arguments: a.rest)
     shell.take(a, name: argv.first ?? "rc")
     shell.take(environment: Environment.strings)
+    shell.functions["sigexit"] = nil  // rcmain's `fn sigexit`: not one inherited
     // Plan 9's rcmain's, where the environment gave none.
     if (shell.variables["home"] ?? []).isEmpty { shell.variables["home"] = ["/"] }
     if a.flags.contains("p") { shell.variables["path"] = ["/bin"] }
     // -l: a login rc, Plan 9's profile first.
     if a.flags.contains("l") { shell.run(". -q /lib/profile", fds: fds) }
+    // Its end, as rcmain's: sigexit unless rc exited already.
+    shell.interactive = a.flags.contains("i")
     if let c = a.command {
-      shell.run(c, fds: fds)
+      if shell.run(c, fds: fds) { shell.end() }
       exit(exitCode(shell))
     }
     if let file = a.rest.first, !a.flags.contains("i") {
-      shell.run(file: file, arguments: Array(a.rest.dropFirst()), fds: fds)
+      if shell.run(file: file, arguments: Array(a.rest.dropFirst()), fds: fds) { shell.end() }
       exit(exitCode(shell))
     }
     // Lines from stdin: prompted when interactive (-i, or a terminal's,
     // `TERM` set, without -I), as rcmain has it.
     let terminal = Environment.value("TERM") != nil
     let interactive = a.flags.contains("i") || ((terminal || Terminal.current != nil) && !a.flags.contains("I"))
+    shell.interactive = interactive
     // A starting directory (M6l: Terminal opened here by Tracker's add-on).
     if let d = Environment.value("PWD"), !d.isEmpty { _ = system.changeDirectory(d) }
     shell.variables["prompt"] = ["% ", "\t"]
@@ -109,7 +113,7 @@ final class Standard: RcStream {
     var text = ""
     let input = fds[0]!
     var told = ""
-    while true {
+    reading: while true {
       if terminal && text.isEmpty && system.directory != told {
         told = system.directory
         fds[1]!.write(Array("\u{1B}]7;file://".utf8) + percentEncoded(told) + Array("\u{1B}\\".utf8))
@@ -123,10 +127,24 @@ final class Standard: RcStream {
         if let nl = pending.firstIndex(of: 0x0A) {
           line = Array(pending[...nl])
           pending.removeSubrange(...nl)
-        } else if let more = input.read() {
-          pending += more
+        } else if let more = Terminal.current?.read(notes: true) ?? input.read() {
+          guard more.isEmpty else {
+            pending += more
+            continue
+          }
+          // Notes came while rc waited (on a pty): an interrupt drops the
+          // line being typed, as 9front's Xrdcmds does (with no newline of
+          // rc's: the pty has echoed ^C and one).
+          switch shell.takeNotes(fds: fds) {
+          case .exit: exit(exitCode(shell))
+          case .interrupted:
+            (pending, text) = ([], "")
+            continue reading
+          case .none: break
+          }
         } else {
-          exit(exitCode(shell))  // the end of input
+          shell.end()  // the end of input
+          exit(exitCode(shell))
         }
       }
       text += String(decoding: line!, as: UTF8.self)

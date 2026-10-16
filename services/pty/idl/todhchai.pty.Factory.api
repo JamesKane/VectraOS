@@ -1,5 +1,5 @@
 # API baseline for todhchai.pty.Factory, written by idlc. Commit it; idlc checks changes against it.
-protocol todhchai.pty.Factory version 1
+protocol todhchai.pty.Factory version 2
 struct Descriptor (Handle,Handle,Handle,Handle)
 struct Opened (Descriptor,Descriptor,Handle)
 struct WindowSize (UInt32,UInt32)

@@ -1,0 +1,13 @@
+fn sigint { echo int }
+fn sighup { echo hup $* }
+fn sigterm { echo term; status=set }
+kill -INT $pid
+kill -HUP $pid
+kill -TERM $pid
+echo $status
+fn f { kill -INT $pid; echo rest of f }
+f
+for (i in 1 2) { kill -INT $pid; echo loop $i }
+fn sigusr1 { echo usr1 sees $x }
+x=global
+x=local { kill -USR1 $pid; echo $x }

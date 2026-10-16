@@ -32,9 +32,9 @@ final class Pty: @unchecked Sendable {
   var input: ChildStream? = nil
   var typed: [UInt8] = []
   var clientMade = false
-  /// The controls' servers and what each has yet to hear; whether one
-  /// takes ^D (Control.takeEnds).
-  var controls: [(id: UInt64, events: [PtyIPC.Event], resized: PtyIPC.WindowSize?)] = []
+  /// The controls' servers and what each has yet to hear (its events, a new
+  /// size, the hangup); whether one takes ^D (Control.takeEnds).
+  var controls: [(id: UInt64, events: [PtyIPC.Event], resized: PtyIPC.WindowSize?, hangup: Bool)] = []
   var endsTaken = false
   var closed = false
 
@@ -152,12 +152,16 @@ final class Pty: @unchecked Sendable {
     return PtyIPC.Mode(canonical: m.canonical, echo: m.echo, signals: m.signals, outputCRLF: m.outputCRLF)
   }
 
-  /// Ends it: the program's stdin goes (its read ends), and the terminal's
-  /// rings with the pty.
+  /// Ends it: each Control hears it hang up, the program's stdin goes (its
+  /// read ends), and the terminal's rings with the pty.
   func close() {
     lock.withLock {
       guard !closed else { return }
       closed = true
+      for i in controls.indices {
+        controls[i].hangup = true
+        dispatcher.wake(controls[i].id)
+      }
       input?.hangUp()
     }
   }
@@ -179,19 +183,21 @@ struct DeviceSession: PtyIPC.DeviceHandler {
       let session = ControlSession(pty: pty)
       let id = try pty.dispatcher.add(PtyIPC.ControlServer(channel: channel.b, impl: session)) {
         (s: inout PtyIPC.ControlServer<ControlSession>) throws(IPCError<Never>) in
-        let (events, resized) = pty.lock.withLock { () -> ([PtyIPC.Event], PtyIPC.WindowSize?) in
-          guard let i = pty.controls.firstIndex(where: { $0.id == session.id }) else { return ([], nil) }
+        let (events, resized, hangup) = pty.lock.withLock { () -> ([PtyIPC.Event], PtyIPC.WindowSize?, Bool) in
+          guard let i = pty.controls.firstIndex(where: { $0.id == session.id }) else { return ([], nil, false) }
           defer {
             pty.controls[i].events.removeAll()
             pty.controls[i].resized = nil
+            pty.controls[i].hangup = false
           }
-          return (pty.controls[i].events, pty.controls[i].resized)
+          return (pty.controls[i].events, pty.controls[i].resized, pty.controls[i].hangup)
         }
         for e in events { try PtyIPC.ControlEventSender.sendEvent(e, on: s.connection) }
         if let resized { try PtyIPC.ControlEventSender.sendResized(resized, on: s.connection) }
+        if hangup { try PtyIPC.ControlEventSender.sendHangup(on: s.connection) }
       }
       session.id = id
-      pty.lock.withLock { pty.controls.append((id, [], nil)) }
+      pty.lock.withLock { pty.controls.append((id, [], nil, false)) }
       var made: PtyIPC.Client? = nil
       let control = channel.a
       var control2: Handle? = consume control

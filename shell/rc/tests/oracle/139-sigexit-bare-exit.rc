@@ -1,0 +1,3 @@
+fn sigexit { echo bye; ~ a b }
+echo hi
+exit

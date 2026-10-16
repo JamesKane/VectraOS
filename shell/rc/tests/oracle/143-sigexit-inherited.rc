@@ -1,0 +1,3 @@
+fn sigexit { echo bye }
+$rcoracle -c 'echo in'
+echo out

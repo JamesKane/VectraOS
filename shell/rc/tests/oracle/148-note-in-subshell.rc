@@ -1,0 +1,3 @@
+fn sigint { echo caught; status=handler }
+@{ kill -INT $pid; echo in; exit 3 }
+echo $status

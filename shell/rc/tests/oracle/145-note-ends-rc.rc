@@ -1,0 +1,4 @@
+fn sigexit { echo not run }
+echo before
+kill -TERM $pid
+echo never

@@ -74,6 +74,9 @@ public protocol RcSystem: AnyObject {
   /// background command that isn't one program (9front forks it). Nil if
   /// the system can't, and it runs in the foreground.
   func spawn(_ body: @escaping @Sendable () -> Void) -> RcJob?
+  /// The notes that came for rc since it last asked, by the names of
+  /// their functions (9front's Signame: sigint, sighup, sigquit ...).
+  func takeNotes() -> [String]
   /// `rfork`'s namespace letters: rc's namespace from now on a copy of
   /// itself (n), or empty (N, `clean`), and sealed (m: nothing mounted
   /// from elsewhere, its programs' too); whether it could.
@@ -82,6 +85,7 @@ public protocol RcSystem: AnyObject {
 
 extension RcSystem {
   public var processID: UInt64 { 1 }
+  public func takeNotes() -> [String] { [] }
   /// A namespace shared with no one is a copy already.
   public func forkNamespace(clean: Bool, seal: Bool) -> Bool { !clean && !seal }
   public func spawn(_ body: @escaping @Sendable () -> Void) -> RcJob? { nil }
@@ -151,9 +155,24 @@ struct RcError: Error {
   var message: String
 }
 
-/// `exit`, unwinding to the top.
+/// `exit`, unwinding to the top (or to where 9front would have forked).
 struct RcExit: Error {
   var status: String
+}
+
+/// An interrupt with no sigint of rc's own, unwinding an interactive rc
+/// to its reading loop (9front's dotrap).
+struct RcInterrupt: Error {}
+
+/// What the notes taken at a prompt did (Rc.takeNotes).
+public enum RcNotes: Sendable {
+  /// None came, or their functions ran.
+  case none
+  /// An interrupt (or quit) with no function of its own: the line being
+  /// typed is abandoned.
+  case interrupted
+  /// One rc exits for (its status is rc's).
+  case exit
 }
 
 public final class Rc {
@@ -181,6 +200,21 @@ public final class Rc {
   /// streams `rfork F` took away: no command sees them again.
   var scopes: [[Int32: RcStream]] = []
   var revoked: [RcStream] = []
+  /// Whether rc reads commands typed to it (an interrupt abandons the
+  /// line, not rc). A main sets it.
+  public var interactive = false
+  /// How deep rc is in what 9front forks (a subshell, a backquote, a
+  /// pipeline's builtin stage; a background job's copy for good): there
+  /// an `exit` ends only that, sigexit isn't run, and notes wait for rc.
+  var forked = 0
+  /// Whether sigexit has run (it runs once).
+  var trapped = false
+  /// The descriptors rc was run with, which sigexit and the notes'
+  /// functions get (9front starts them with no redirections).
+  var base: [Int32: RcStream] = [:]
+  /// The local variables in force (an assignment before a command, a for
+  /// loop's), innermost last, with what each hides.
+  var locals: [(name: String, saved: [String]?)] = []
 
   /// `name` is $0: the script's path, or rc for a line given (9front's
   /// execcmds sets it to its argv[0]).
@@ -211,6 +245,7 @@ public final class Rc {
 
   /// `body`, its errors said and its `exit` taken: false after one.
   func perform(_ given: [Int32: RcStream], _ body: () throws -> Void) -> Bool {
+    base = given
     do {
       try body()
       return true
@@ -226,8 +261,75 @@ public final class Rc {
       report(e, live(given))
       return true
     } catch {
-      return true
+      return true  // an interrupt: the next line
     }
+  }
+
+  /// rc's input has ended: sigexit, if rc has one (9front's Xexit at the
+  /// end of rcmain). The status is rc's after it.
+  public func end() { _ = perform(base) { _ = try trapExit() } }
+
+  /// `name` set to `v` while `body` runs (9front's Xlocal), then as it was.
+  func local<R>(_ name: String, _ v: [String]?, _ body: () throws -> R) rethrows -> R {
+    locals.append((name, variables[name]))
+    variables[name] = v
+    defer { variables[name] = locals.removeLast().saved }
+    return try body()
+  }
+
+  /// `body` with the global variables, not the locals in force (9front
+  /// starts sigexit and the notes' functions with no locals), then the
+  /// locals again.
+  func globally<R>(_ body: () throws -> R) rethrows -> R {
+    let shadowed = locals.map { ($0.name, variables[$0.name]) }
+    for l in locals.reversed() { variables[l.name] = l.saved }
+    defer { for (name, v) in shadowed { variables[name] = v } }
+    return try body()
+  }
+
+  // MARK: Notes
+
+  /// sigexit, as 9front's Xexit runs it: once, in rc itself (not where it
+  /// forks), $* as it is, with the descriptors rc was run with. Whether
+  /// it ran.
+  func trapExit() throws -> Bool {
+    guard forked == 0, !trapped, functions["sigexit"] != nil else { return false }
+    trapped = true
+    let arguments = variables["*"] ?? []
+    _ = try globally { try call(["sigexit"] + arguments, live(base)) }
+    return true
+  }
+
+  /// The notes that came, as 9front's dotrap takes them between commands:
+  /// each one's function if rc has it (its status stands); else an
+  /// interrupt or quit abandons what an interactive rc is doing, sigwinch
+  /// is nothing, and any other ends rc (without sigexit, as Exit does).
+  /// Within a fork they wait for rc.
+  func notes() throws {
+    guard forked == 0 else { return }
+    for note in system.takeNotes() {
+      if functions[note] != nil {
+        let arguments = variables["*"] ?? []
+        _ = try globally { try call([note] + arguments, live(base)) }
+      } else if note == "sigwinch" {
+        continue
+      } else if (note == "sigint" || note == "sigquit") && interactive {
+        throw RcInterrupt()
+      } else {
+        trapped = true
+        throw RcExit(status: status)
+      }
+    }
+  }
+
+  /// The notes that came while rc waited for input (a main calls it at
+  /// its prompt), with the descriptors rc runs with.
+  public func takeNotes(fds: [Int32: RcStream]) -> RcNotes {
+    var interrupted = false
+    let goOn = perform(fds) {
+      do { try notes() } catch is RcInterrupt { interrupted = true }
+    }
+    return !goOn ? .exit : interrupted ? .interrupted : .none
   }
 
   /// Runs a script line by line (Parser.lines); a syntax error is thrown
@@ -259,10 +361,16 @@ public final class Rc {
   }
 
   /// -e (9front's Xeflag): a command that failed outside a condition
-  /// ends rc, its status kept.
+  /// ends rc, its status kept. Xeflag calls Xexit, which runs sigexit and
+  /// then Xeflag again: a sigexit leaving a true status lets rc go on.
   func exitIfFailed(_ s: String? = nil) throws {
     let s = s ?? status
-    if flags.contains("e") && inCondition == 0 && !Rc.isTrue(s) { throw RcExit(status: s) }
+    guard flags.contains("e") && inCondition == 0 && !Rc.isTrue(s) else { return }
+    if try trapExit() {
+      if ok() { return }
+      throw RcExit(status: status)
+    }
+    throw RcExit(status: s)
   }
 
   /// -x: a simple command's words on fd 2 before it runs.
@@ -625,7 +733,10 @@ public final class Rc {
       if !pendingPipes.isEmpty { finish(pendingPipes.map { $0.stream }, pendingPipes.map { $0.job }) }
       pendingPipes = []
     }
+    // Notes between commands, as 9front takes them between instructions.
+    try notes()
     try executeChecked(c, fds)
+    try notes()
   }
 
   /// The pipes words just made, for a command: their ends put in `io` at
@@ -644,12 +755,16 @@ public final class Rc {
   /// runs one (a pipeline's builtin or function stage).
   func containedCall(_ argv: [String], _ io: [Int32: RcStream], _ opened: [RcStream], _ sides: [RcJob]) throws {
     defer { finish(opened, sides) }
+    forked += 1
+    defer { forked -= 1 }
     do {
       trace(argv, io)
       if let job = try call(argv, io) { setStatus(job.wait()) }
       try exitIfFailed()
     } catch let e as RcError {
       report(e, io)
+    } catch let e as RcExit {
+      setStatus(e.status)
     }
   }
 
@@ -661,12 +776,17 @@ public final class Rc {
 
   /// Runs `c` where 9front would fork it (a backquote, a builtin's or
   /// function's pipeline stage, a background job): an error ends it
-  /// alone, said on fd 2, its status `error`.
+  /// alone, said on fd 2, its status `error`; an `exit` ends it alone,
+  /// its status the exit's.
   func contained(_ c: Command, _ fds: [Int32: RcStream]) throws {
+    forked += 1
+    defer { forked -= 1 }
     do {
       try executeChecked(c, fds)
     } catch let e as RcError {
       report(e, fds)
+    } catch let e as RcExit {
+      setStatus(e.status)
     }
   }
 
@@ -719,10 +839,7 @@ public final class Rc {
         variables[name] = v
         return
       }
-      let saved = variables[name]
-      variables[name] = v
-      defer { variables[name] = saved }
-      try execute(body, fds)
+      try local(name, v) { try execute(body, fds) }
     case .pipeline(let stages, let pipeFds):
       try pipeline(stages, pipeFds, fds)
     case .subshell(let c):
@@ -773,6 +890,7 @@ public final class Rc {
         let child = Rc(system: system)
         (child.variables, child.functions, child.ifNotPending, child.flags) = (variables, functions, ifNotPending, flags)
         (child.published, child.hidden, child.revoked) = (published, hidden, revoked)
+        child.forked = 1  // for good: its exit is its own, notes are rc's
         let work = Unchecked((child, c, quiet))
         if let job = system.spawn({
           let (child, c, fds) = work.value
@@ -803,11 +921,11 @@ public final class Rc {
     case .forIn(let name, let list, let body):
       let items = try list.map { try $0.flatMap { try value($0, fds) } } ?? (variables["*"] ?? [])
       // Its variable is local to the loop (9front's Xlocal).
-      let outer = variables[name]
-      defer { variables[name] = outer }
-      for item in items {
-        variables[name] = [item]
-        try execute(body, fds)
+      try local(name, variables[name]) {
+        for item in items {
+          variables[name] = [item]
+          try execute(body, fds)
+        }
       }
     case .whileDo(let condition, let body):
       while true {
@@ -1018,7 +1136,13 @@ public final class Rc {
       fds[1]?.write(Array((rc.system.directory + "\n").utf8))
       rc.setStatus("")
     },
-    "exit": { rc, argv, _ in throw RcExit(status: argv.count > 1 ? argv[1] : rc.status) },
+    // sigexit first (9front's Xexit), then exit runs again: `exit N` exits
+    // N whatever sigexit did, a bare `exit` with sigexit's status.
+    "exit": { rc, argv, _ in
+      if argv.count > 1 { rc.setStatus(argv[1]) }
+      _ = try rc.trapExit()
+      throw RcExit(status: argv.count > 1 ? argv[1] : rc.status)
+    },
     "eval": { rc, argv, fds in
       let c = try Parser.parse(argv.dropFirst().joined(separator: " "))
       try rc.execute(c, fds)

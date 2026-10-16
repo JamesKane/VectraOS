@@ -1,0 +1,7 @@
+#flags: -e
+fn sigexit { echo bye $status }
+~ a b
+echo rc goes on, sigexit being true
+fn sigexit { echo bye again }
+~ a b
+echo never

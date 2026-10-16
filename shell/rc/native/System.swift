@@ -349,6 +349,10 @@ final class CroiSystem: RcSystem {
 
   var directory: String { FDIO.currentDirectory }
 
+  /// The pty's notes, when rc is on one (Terminal.swift): croi has no
+  /// others.
+  func takeNotes() -> [String] { Terminal.current?.takeNotes() ?? [] }
+
   /// rfork n, N and m: rc's namespace (FDIO's, which its programs get) a
   /// clone of itself or a new empty one, sealed as before (Plan 9's
   /// noattach is inherited), then sealed if asked.

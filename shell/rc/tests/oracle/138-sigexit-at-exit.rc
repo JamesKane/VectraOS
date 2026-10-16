@@ -1,0 +1,5 @@
+fn sigexit { echo bye $status $x $*; ~ a b }
+x=global
+fn f { x=local { exit 3 } }
+f arg
+echo never

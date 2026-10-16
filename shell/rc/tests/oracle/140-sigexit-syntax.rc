@@ -1,0 +1,4 @@
+fn sigexit { echo bye $status }
+echo a
+syntax error (
+echo b

@@ -12,8 +12,10 @@ the other side of (Sys's `StreamParts`: a starter adds them to a Startup
 as they are), and `Control`: the mode, the window's size, and the events
 the keys make (`interrupt`, `quit`, and `end` for a controller that takes
 ends with `takeEnds`; otherwise ^D on an empty line ends the program's
-stdin). A ring has one writer, so a pty has one client: a shell on it
-relays to its programs (rc does, `shell/rc/native/Terminal.swift`).
+stdin), and `hangup` when the terminal goes (its keys end; version 2).
+rc on a pty takes them as notes: `sigint`, `sigquit`, `sighup`. A ring
+has one writer, so a pty has one client: a shell on it relays to its
+programs (rc does, `shell/rc/native/Terminal.swift`).
 
 The line discipline (`lib/LineDiscipline.swift`, lifted from todhchai as
 it was, tested alone by PtyTests): canonical mode with echo, erase by

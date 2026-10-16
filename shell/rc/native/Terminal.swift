@@ -7,10 +7,11 @@
 // to whoever has the terminal: the last program lent it (a foreground
 // program given rc's own stdin: its stdin ring), else rc. The pty's events
 // are rc's to act on: ^D (rc takes ends) ends that program's input, or
-// rc's own when no program has the terminal; ^C and ^\ kill the programs
-// that have it (croi has no signals: a shell kills its foreground job).
-// Input typed while a program has the terminal is that program's, read or
-// not.
+// rc's own when no program has the terminal. ^C, ^\ and the terminal's
+// going are notes (sigint, sigquit, sighup): croi has no signals, so rc
+// kills the programs that have the terminal (a note's default for them)
+// and takes the note itself between commands (Rc.notes). Input typed
+// while a program has the terminal is that program's, read or not.
 
 import IPC
 import Sys
@@ -24,6 +25,8 @@ final class Terminal: @unchecked Sendable {
   /// What came for rc, and whether its input has ended.
   var buffer: [UInt8] = []
   var ended = false
+  /// The notes that came for rc, not yet taken.
+  var notes: [String] = []
   /// The programs lent the terminal (their stdin rings and processes),
   /// the last the one input goes to.
   var lent: [(ring: ChildStream, process: Owned)] = []
@@ -68,14 +71,24 @@ final class Terminal: @unchecked Sendable {
     bump()
   }
 
+  /// A note for rc, then the programs that have the terminal killed (rc
+  /// finds the note there once their wait ends).
+  func note(_ name: String) {
+    let processes = lock.withLock { () -> [Owned] in
+      notes.append(name)
+      return lent.map { $0.process }
+    }
+    bump()
+    for p in processes { p.with { h in try? kill(h) } }
+  }
+
   /// The pty's events, as its controller.
   func listen(_ channel: consuming Handle) {
     var control = PtyIPC.ControlClient(channel: channel)
     guard (try? control.takeEnds(true)) != nil else { return }
     while let event = try? control.nextEvent() {
-      guard case .event(let e) = event else { continue }
-      switch e {
-      case .end:
+      switch event {
+      case .event(.end):
         // The program's input's end, or rc's.
         if let to = lock.withLock({ lent.last }) {
           writing.withLock { _ = try? to.ring.closeInput() }
@@ -84,20 +97,32 @@ final class Terminal: @unchecked Sendable {
           lock.withLock { ended = true }
           bump()
         }
-      case .interrupt, .quit:
-        for p in lock.withLock({ lent.map { $0.process } }) { p.with { h in try? kill(h) } }
+      case .event(.interrupt): note("sigint")
+      case .event(.quit): note("sigquit")
+      case .hangup: note("sighup")
+      default: continue
       }
     }
   }
 
-  /// rc's next input, waiting until some comes; nil at its end.
-  func read() -> [UInt8]? {
+  /// The notes that came, taken.
+  func takeNotes() -> [String] {
+    lock.withLock {
+      defer { notes = [] }
+      return notes
+    }
+  }
+
+  /// rc's next input, waiting until some comes; nil at its end. With
+  /// `notes`, empty when a note came first (for rc to take at its prompt).
+  func read(notes wake: Bool = false) -> [UInt8]? {
     while true {
-      let (bytes, end, generation) = lock.withLock { () -> ([UInt8], Bool, UInt32) in
+      let (bytes, end, noted, generation) = lock.withLock { () -> ([UInt8], Bool, Bool, UInt32) in
         defer { buffer = [] }
-        return (buffer, ended, word.pointee)
+        return (buffer, ended, !notes.isEmpty, word.pointee)
       }
       if !bytes.isEmpty { return bytes }
+      if wake && noted { return [] }
       if end { return nil }
       try? Futex.wait(word, current: generation)
     }

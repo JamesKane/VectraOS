@@ -82,7 +82,14 @@ final class Machine: RcSystem {
     return true
   }
 
-  static let programs = ["cat", "upper", "wc", "false", "env"]
+  /// Notes sent to rc (by `notify NAME`), not yet taken.
+  var notes: [String] = []
+  func takeNotes() -> [String] {
+    defer { notes = [] }
+    return notes
+  }
+
+  static let programs = ["cat", "upper", "wc", "false", "env", "notify"]
   /// Its programs are /bin's.
   func executable(_ path: String) -> Bool { path.hasPrefix("/bin/") && Machine.programs.contains(String(path.dropFirst(5))) }
 
@@ -104,6 +111,7 @@ final class Machine: RcSystem {
       case "wc": fds[1]?.write(Array("\(input().filter { $0 == 0x0A }.count)\n".utf8))
       case "false": return "1"
       case "env": fds[1]?.write(Array(environment.map { $0 + "\n" }.joined().utf8))
+      case "notify": notes += argv.dropFirst()
       default: break
       }
       return ""
@@ -294,4 +302,42 @@ func files(_ paths: [String]) -> Machine {
   let bad = rc("rfork x; echo $status; rfork e n; echo $status")
   #expect(bad.out == "rfork usage\nrfork usage\n" && bad.err == "Usage: rfork [fnesFNEm]\n" + "Usage: rfork [fnesFNEm]\n")
   #expect(rc("whatis rfork").out == "builtin rfork\n")
+}
+
+/// Notes (9front's dotrap) where the oracle can't reach: an interactive
+/// rc abandons its line at an interrupt and reads the next, a function
+/// for the note runs instead, and at a prompt the notes are taken there.
+@Test func notesInAnInteractiveRc() {
+  let m = Machine()
+  let shell = Rc(system: m)
+  shell.interactive = true
+  let out = MemoryStream(), err = MemoryStream()
+  let fds: [Int32: RcStream] = [0: MemoryStream(), 1: out, 2: err]
+  #expect(shell.run("echo a; notify sigint; echo never", fds: fds))
+  #expect(shell.run("fn sigint { echo caught }; notify sigint; echo goes on", fds: fds))
+  #expect(out.text == "a\ncaught\ngoes on\n")
+  // At a prompt: an interrupt with no function, then a hangup's.
+  shell.functions["sigint"] = nil
+  m.notes = ["sigint"]
+  #expect(shell.takeNotes(fds: fds) == .interrupted)
+  m.notes = ["sighup"]
+  #expect(shell.takeNotes(fds: fds) == .exit)
+  // Not interactive, an interrupt ends rc, without sigexit.
+  let script = rc("fn sigexit { echo bye }; echo a; notify sigint; echo never", m)
+  #expect(script.out == "a\n")
+  // Inside a fork, notes wait for rc, and an exit there is the fork's;
+  // the function's status stands.
+  let forked = rc("fn sigint { echo caught; status=handler }; @{ notify sigint; echo in; exit 3 }; echo $status", m)
+  #expect(forked.out == "in\ncaught\nhandler\n")
+}
+
+/// sigexit as rc's input ends (a main calls `end`), once.
+@Test func sigexitAtTheEnd() {
+  let shell = Rc(system: Machine())
+  let out = MemoryStream()
+  let fds: [Int32: RcStream] = [0: MemoryStream(), 1: out, 2: MemoryStream()]
+  #expect(shell.run("fn sigexit { echo bye $status }; ~ a b", fds: fds))
+  shell.end()
+  shell.end()
+  #expect(out.text == "bye no match\n" && shell.status == "")
 }

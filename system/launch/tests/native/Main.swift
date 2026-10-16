@@ -145,7 +145,31 @@ func rcOnPty(_ rc: ProgramEntry, _ ns: Namespace, job: borrowing Handle, bootfs:
       sleep(until: Clock.monotonic() + 500_000_000)  // cat started
       try keys.write([0x03])
       check(contains(readUntil(screen, Array("% ".utf8)), Array("% ".utf8)), "^C kills the program, and rc prompts")
+      // Notes (9front's): ^C is sigint. With no function for it, the rest
+      // of the line is abandoned; at the prompt, the line being typed.
+      try keys.write(Array("cat; echo a^b\r".utf8))
+      _ = readUntil(screen, Array("a^b\r\n".utf8))
+      sleep(until: Clock.monotonic() + 500_000_000)  // cat started
+      try keys.write([0x03])
+      check(!contains(readUntil(screen, Array("% ".utf8)), Array("\r\nab\r\n".utf8)), "^C abandons the rest of rc's line")
+      try keys.write(Array("echo never".utf8) + [0x03])
+      let reprompted = readUntil(screen, Array("^C\r\n% ".utf8))
+      try keys.write(Array("echo b\r".utf8))
+      let interrupted = reprompted + readUntil(screen, Array("\r\nb\r\n% ".utf8))
+      check(contains(interrupted, Array("echo b\r\nb\r\n% ".utf8)) && !contains(interrupted, Array("\r\nnever\r\n".utf8)),
+            "^C at rc's prompt drops the line typed")
+      // With a sigint function, it runs, and the line goes on; sigexit runs
+      // as rc exits.
+      try keys.write(Array("fn sigint { echo caught }; fn sigexit { echo bye }\r".utf8))
+      _ = readUntil(screen, Array("}\r\n% ".utf8))
+      try keys.write(Array("cat; echo a^c\r".utf8))
+      _ = readUntil(screen, Array("a^c\r\n".utf8))
+      sleep(until: Clock.monotonic() + 500_000_000)  // cat started
+      try keys.write([0x03])
+      check(contains(readUntil(screen, Array("ac\r\n% ".utf8)), Array("caught\r\nac\r\n% ".utf8)),
+            "rc runs its sigint for ^C")
       try keys.write(Array("exit ''\r".utf8))  // $status is the killed cat's
+      check(contains(readUntil(screen, Array("bye\r\n".utf8)), Array("bye\r\n".utf8)), "rc runs its sigexit")
       _ = try process.wait(for: Signals.terminated, deadline: Clock.monotonic() + 5_000_000_000)
       check(try Process.info(process).returnCode == 0, "rc on a pty exits")
       _ = consume thread
@@ -270,6 +294,13 @@ func runPty(_ ns: Namespace) {
         // ^D on an empty line, no controller taking it: the program's end.
         try keys.write([0x04])
         check((try? input.read(deadline: Clock.monotonic() + 5_000_000_000)) == [], "a pty's ^D ends its program's stdin")
+        // The terminal goes (its keys end): the control hears it hang up.
+        try keys.end(deadline: Clock.monotonic() + 5_000_000_000)
+        if case .hangup = try control.nextEvent(deadline: Clock.monotonic() + 5_000_000_000) {
+          check(true, "a pty's going is a hangup for the control")
+        } else {
+          check(false, "a pty's going is a hangup for the control")
+        }
       }
     }
   } catch {

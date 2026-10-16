@@ -72,6 +72,30 @@ final class Job: RcJob {
 final class LinuxSystem: RcSystem {
   var processID: UInt64 { UInt64(getpid()) }
 
+  /// Signals as notes, by the names 9front's unix rc gives them (its
+  /// Trapinit): each caught and counted, and taken between commands. Not
+  /// SIGPIPE, which rcport ignores: its pump threads write to pipes.
+  static let signalNames: [(Int32, String)] = [
+    (SIGINT, "sigint"), (SIGTERM, "sigterm"), (SIGHUP, "sighup"), (SIGQUIT, "sigquit"),
+    (SIGUSR1, "sigusr1"), (SIGUSR2, "sigusr2"), (SIGBUS, "sigbus"), (SIGWINCH, "sigwinch"),
+  ]
+
+  func catchSignals() {
+    _ = caught  // made before a handler can use it
+    for (n, _) in Self.signalNames { signal(n) { caught[Int($0)] &+= 1 } }
+  }
+
+  func takeNotes() -> [String] {
+    var out: [String] = []
+    for (n, name) in Self.signalNames {
+      while caught[Int(n)] > 0 {
+        caught[Int(n)] &-= 1
+        out.append(name)
+      }
+    }
+    return out
+  }
+
   /// A thread, waited for by a semaphore.
   final class ThreadJob: RcJob {
     let done = DispatchSemaphore(value: 0)
@@ -218,12 +242,15 @@ final class LinuxSystem: RcSystem {
 @main
 struct Main {
   static func main() {
-    signal(SIGPIPE, SIG_IGN)
     guard let a = RcArguments(Array(CommandLine.arguments.dropFirst())) else {
       FileHandle.standardError.write((RcArguments.usage + "\n").data(using: .utf8)!)
       exit(1)
     }
-    let rc = Rc(system: LinuxSystem(), arguments: a.rest)
+    let system = LinuxSystem()
+    signal(SIGPIPE, SIG_IGN)
+    system.catchSignals()
+    let rc = Rc(system: system, arguments: a.rest)
+    rc.interactive = a.flags.contains("i")
     rc.take(a, name: CommandLine.arguments[0])
     var env: [String] = []
     var e = environ
@@ -233,6 +260,7 @@ struct Main {
     }
     rc.variables["path"] = nil
     rc.take(environment: env)
+    rc.functions["sigexit"] = nil  // rcmain's `fn sigexit`: not one inherited
     // rcmain.unix's, where the environment gave none.
     if (rc.variables["home"] ?? []).isEmpty { rc.variables["home"] = rc.variables["HOME"] }
     if (rc.variables["path"] ?? []).isEmpty || a.flags.contains("p") {
@@ -241,15 +269,18 @@ struct Main {
     let fds: [Int32: RcStream] = [0: FdStream(0, keep: true), 1: FdStream(1, keep: true), 2: FdStream(2, keep: true)]
     // As rcmain.unix: -c's command, else stdin if there's no file, else
     // `. $*` (no -i here: the oracle's stdin is empty).
+    let ran: Bool
     if let c = a.command {
-      rc.run(c, fds: fds)
+      ran = rc.run(c, fds: fds)
     } else if let file = a.rest.first {
-      rc.run(file: file, arguments: Array(a.rest.dropFirst()), fds: fds)
+      ran = rc.run(file: file, arguments: Array(a.rest.dropFirst()), fds: fds)
     } else {
       var text: [UInt8] = []
       while let b = fds[0]!.read() { text += b }
-      rc.run(String(decoding: text, as: UTF8.self), fds: fds)
+      ran = rc.run(String(decoding: text, as: UTF8.self), fds: fds)
     }
+    // The end of rcmain: sigexit, unless rc exited already.
+    if ran { rc.end() }
     exit(rc.status.allSatisfy { $0 == "|" } ? 0 : 1)
   }
 }
@@ -259,3 +290,10 @@ func cloexecPipe(_ p: inout [Int32]) {
   _ = fcntl(p[0], F_SETFD, FD_CLOEXEC)
   _ = fcntl(p[1], F_SETFD, FD_CLOEXEC)
 }
+
+/// Signals caught, by number, not yet taken (a signal handler only adds).
+nonisolated(unsafe) let caught: UnsafeMutablePointer<sig_atomic_t> = {
+  let p = UnsafeMutablePointer<sig_atomic_t>.allocate(capacity: 65)
+  p.initialize(repeating: 0, count: 65)
+  return p
+}()

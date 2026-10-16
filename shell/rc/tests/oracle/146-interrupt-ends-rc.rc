@@ -1,0 +1,3 @@
+echo before
+kill -INT $pid
+echo never

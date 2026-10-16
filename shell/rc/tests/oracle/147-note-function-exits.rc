@@ -1,0 +1,4 @@
+fn sigexit { echo bye $status }
+fn sigint { echo caught; exit 6 }
+kill -INT $pid
+echo never

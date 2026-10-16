@@ -1,0 +1,7 @@
+fn sigexit { echo bye $#* $y }
+@{ exit 2 }; ~ $status 0 || echo the subshell exited
+x=`{ echo a; exit 3 }; echo $x
+{ echo in the background; exit 5 } & wait
+y=1 { echo local }
+* = (p q)
+echo end

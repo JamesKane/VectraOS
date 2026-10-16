@@ -318,13 +318,31 @@ work, in order:
      Its limits: a namespace is the process's, so `rfork n` in a `&`
      block is rc's too (as `cd` is); `F` leaves the streams open until
      their owners close them, and rc reading a terminal reads on; a
-     sealed namespace with nothing in it reaches a child unsealed.
+     sealed namespace with nothing in it reaches a child unsealed;
+     notes as 9front's dotrap takes them, between commands: a note's
+     function runs (its status stands, with the globals and $*), else an
+     interrupt or quit abandons an interactive rc's line (at a prompt,
+     the line being typed) and any other ends rc; `sigexit` where 9front
+     runs it (at `exit`, at the end of input, under `-e`, where a true
+     sigexit lets rc go on), once, not in a fork, not after `exec` or a
+     note, and not inherited (rcmain's `fn sigexit`); `exit` in a
+     subshell, backquote or pipeline stage ends only that (it ended rc).
+     rcport takes Linux's signals as notes, so the oracle checks them;
+     on the device the pty is their source (^C sigint, ^\\ sigquit, the
+     terminal's going sighup, a `hangup` event in its Control, version
+     2), rc killing the programs that have the terminal before it takes
+     the note. Their limits: croi has no notes between processes, so
+     nothing else can send rc one (no `kill`, no alarm), and a
+     foreground program that doesn't have the terminal isn't killed by
+     ^C; a hangup races the end of rc's stdin, so sighup may not
+     run.
    - **Wrong semantics:** a compound command run with `&` shares rc's
      directory (one per process), so a `cd` in it moves rc too, and its
-     namespace (`rfork n` or `N`).
-   - **Missing pieces:** notes (`sigint`, `sigexit`); a real
-     `$apid`; `/bin` in the namespace (the device's rc alone sees
-     bootfs's programs there).
+     namespace (`rfork n` or `N`). `-e` is judged as a command runs, not as
+     its line is compiled, so `flag e +` reaches the rest of its own
+     line (9front's doesn't).
+   - **Missing pieces:** a real `$apid`; `/bin` in the namespace (the
+     device's rc alone sees bootfs's programs there).
    - **Commands:** nothing streams; unknown flags are ignored, not
      refused; statuses are `1`, not Plan 9's strings; `ls` adds `/` and
      has its own `-l` and multi-directory layout; `touch` doesn't update

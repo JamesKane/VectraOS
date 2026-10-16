@@ -1,0 +1,2 @@
+fn sigexit { echo bye; exit 4; echo never }
+echo hi
