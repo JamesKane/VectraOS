@@ -63,6 +63,12 @@ macpro-ethernet	component	macpro6-1	amd64	planned	yes	open	D52	-	-	-	-	the chip 
 pc-12700kf	platform	-	amd64	research	-	-	D52,D62	yes	-	-	-	MSI MS-7D25, i7-12700KF, RX 6750 XT; available for bring-up; docs/boards/pc-12700kf/
 pc-igc	component	pc-12700kf	amd64	research	yes	-	D15	-	-	-	-	Intel I225/I226 2.5 GbE, the V3 link's NIC here
 pc-rx6750xt	component	pc-12700kf	amd64	research	no	-	D62	-	-	-	-	Radeon RX 6750 XT (Navi 22, RDNA 2); resizable BAR to check
+pc-9700x	platform	-	amd64	research	-	-	D52,D62	yes	-	-	-	brimstone, the development host: ASRock B650E, Ryzen 7 9700X; boots only when scheduled, driven from the Mac Studio or another Fedora box; docs/boards/pc-9700x/
+pc9-console	component	pc-9700x	amd64	research	yes	-	D2	-	-	-	-	no serial port: a GOP text console (V4 item 5) or a PCIe serial card
+pc9-amdvi	component	pc-9700x	amd64	research	no	-	D2	-	-	-	-	AMD-Vi with interrupt remapping (croi's K12b, so far QEMU only)
+pc9-rtl8125	component	pc-9700x	amd64	research	yes	-	D15	-	-	-	-	Killer E3000 2.5 GbE (Realtek RTL8125 family), the V3 link's NIC here
+pc9-radeon-610m	component	pc-9700x	amd64	research	no	-	D62	-	-	-	-	integrated RDNA 2 GPU, UMA
+pc9-rtx5070ti	component	pc-9700x	amd64	research	no	-	D62	-	-	-	-	GeForce RTX 5070 Ti (Blackwell), discrete; the boot display
 cix-sky1	platform	-	arm64	research	-	-	D53	yes	-	-	-	Orange Pi 6 Plus and Radxa Orion O6; docs/boards/orangepi-6-plus/ (research pass 2026-10-16)
 sky1-mali-g720	component	cix-sky1	arm64	research	no	-	D62	-	-	-	-	Mali-G720
 orangepi-5-plus	platform	-	arm64	research	-	-	D5	yes	-	-	-	Orange Pi 5 Plus (RK3588), on hand; DT as shipped, ACPI through community EDK2; docs/boards/orangepi-5-plus/
@@ -73,4 +79,4 @@ hailo-8	component	-	all	research	no	-	D5	-	-	-	-	M.2 accelerator, after the acce
 qemu-cheri-rv64	platform	-	rv64	research	-	-	-	deferred	-	-	-	CHERI-RISC-V on QEMU-CHERI, a roadmap research track
 gpu-amd	component	-	amd64	planned	no	open	D62	-	-	-	-	RDNA2 or newer, the desktop track's first driver; first device pc-rx6750xt
 gpu-intel	component	-	amd64	planned	no	open	D62	-	-	-	-	Xe or newer
-gpu-nvidia	component	-	amd64	planned	no	open	D62	-	-	-	-	Turing or newer
+gpu-nvidia	component	-	amd64	planned	no	open	D62	-	-	-	-	Turing or newer; first device pc9-rtx5070ti
