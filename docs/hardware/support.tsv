@@ -64,7 +64,7 @@ pc-12700kf	platform	-	amd64	research	-	-	D52,D62	yes	-	-	-	MSI PRO Z690-A DDR4, 
 pc-console	component	pc-12700kf	amd64	research	yes	-	D2	-	-	-	-	COM1 at 0x3f8 per DBGP and DBG2; whether the board's header is wired is unchecked
 pc-vtd	component	pc-12700kf	amd64	research	no	-	D2	-	-	-	-	VT-d, one DRHD (INCLUDE_ALL) with interrupt remapping (croi's K12a, so far QEMU only)
 pc-igc	component	pc-12700kf	amd64	research	yes	-	D15	-	-	-	-	Intel I225-V 2.5 GbE (rev 03), the V3 link's NIC here
-pc-rx6750xt	component	pc-12700kf	amd64	research	no	-	D62	-	-	-	-	Radeon RX 6750 XT (Navi 22, RDNA 2); resizable BAR capable, off in firmware (256 MiB BAR0)
+pc-rx6750xt	component	pc-12700kf	amd64	research	no	-	D62	-	-	-	-	Radeon RX 6750 XT (Navi 22, RDNA 2); resizable BAR on (16 GiB BAR0), D56's with-BAR case
 pc-9700x	platform	-	amd64	research	-	-	D52,D62	yes	-	-	-	brimstone, the development host: ASRock B650E, Ryzen 7 9700X; boots only when scheduled, driven from the Mac Studio or another Fedora box; docs/boards/pc-9700x/
 pc9-console	component	pc-9700x	amd64	research	yes	-	D2	-	-	-	-	no serial port: a GOP text console (V4 item 5) or a PCIe serial card
 pc9-amdvi	component	pc-9700x	amd64	research	no	-	D2	-	-	-	-	AMD-Vi with interrupt remapping (croi's K12b, so far QEMU only)

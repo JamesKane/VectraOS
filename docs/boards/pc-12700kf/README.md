@@ -36,8 +36,8 @@ document or the machine.
 - **Firmware:** UEFI with ACPI (machine): APIC, DSDT, 10 SSDTs, FACP,
   FIDT, HPET, MCFG, DMAR, DBGP, DBG2, VFCT, TPM2, BGRT (two), FPDT, LPIT,
   NHLT, PHAT, UEFI, WSMT. **No SPCR.** The BIOS is the board's first
-  release (1.00, 2021); newer ones exist (memory) and may be what enables
-  resizable BAR.
+  release (1.00, 2021); newer ones exist (memory). It has the resizable
+  BAR option (owner enabled it, 2026-10-16).
 - **CPU baseline:** Alder Lake is a superset of D52's `-march=ivybridge`:
   AVX2, FMA, BMI1/2, SHA, VAES, VPCLMULQDQ, GFNI, IBT, PKU (machine).
   **No AVX-512** (machine), as D52 allows. Hybrid cores, so per-CPU
@@ -54,11 +54,20 @@ document or the machine.
   this would be its first hardware. FreeBSD attached no DMAR unit
   (nothing in `dmesg.boot`).
 - **GPU:** RDNA 2 is todhchai's stated floor, so the RX 6750 XT is the
-  first device behind D62's desktop AMD row. **Resizable BAR is off:**
-  the card has the capability (ecap `0x15`), but BAR0 is 256 MiB
-  (machine), so today it is D56's "discrete, without BAR" case, like the
-  Mac Pro, until the firmware enables it. The card also offers PASID
-  (machine).
+  first device behind D62's desktop AMD row. **Resizable BAR is on**
+  (owner, 2026-10-16): BAR0 is 16 GiB at `0x40_0000_0000`, BAR2 256 MiB
+  at `0x44_0000_0000`, and `amdgpu` reports `VRAM RAM=12272M,
+  BAR=16384M`, so all of VRAM is CPU-visible (machine). It was 256 MiB
+  before. So this is D56's "discrete, with BAR" case, beside the Mac
+  Pro's "without BAR"; turning the option off gives the other case on
+  the same card. The card also offers PASID (machine).
+- **FreeBSD's write-combining fails on the large BAR:** since the
+  change, every boot logs `amdgpu_bo_init: Unable to set WC memtype for
+  the aperture base`, absent from the 256 MiB boots before it (machine,
+  `/var/log/messages`). That is FreeBSD's DRM port, not the hardware:
+  croi maps write-combining per page through the PAT (boot.md), so the
+  aperture's size doesn't limit it. Worth checking when our driver maps
+  VRAM, all the same.
 - **Network:** the V3 link here needs an `igc` driver (I225-V) in the net
   class.
 - **Thermals:** an ordinary desktop with the board's own fan control, so
@@ -70,8 +79,9 @@ Better than the AMD machines'. Both DBGP and DBG2 describe a full 16550
 at I/O port `0x3f8`, COM1 (machine: DBGP interface type 0; DBG2 port
 type `0x8000`, subtype 0, with namepath `.`). croi's loader falls back
 to COM1 on PCs, which is the same port. But FreeBSD attached no `uart`,
-and the DSDT has no `PNP0501` device, so whether a COM header is wired
-on the board is unconfirmed (memory: the PRO Z690-A has a JCOM1 header).
+so whether a COM header is wired on the board is unconfirmed (memory:
+the PRO Z690-A has a JCOM1 header). Whether the DSDT describes a
+`PNP0501` device is unknown until it can be disassembled.
 If it is, a header cable gives a console from the first boot.
 
 ## Ground rules
@@ -84,7 +94,6 @@ If it is, a header cable gives a console from the first boot.
 
 - Whether a COM header is wired (a cable on JCOM1, then a byte to
   `0x3f8`).
-- The firmware's resizable BAR (Above 4G decoding and Re-Size BAR) and
-  VT-d options, and whether BIOS 1.00 has them.
+- The firmware's VT-d option (resizable BAR is on, above).
 - The DSDT, which FreeBSD's `iasl` failed to disassemble here (exit
   status 255).
