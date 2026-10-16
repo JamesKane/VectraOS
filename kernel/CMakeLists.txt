@@ -254,6 +254,18 @@ croi_user_program(${_ipc_test} PIE SYS IPC SWIFT ${_ipc_tests}/native/Main.swift
 # namespaces and /srv; the boot-node test starts it.
 set(_node_test ${CMAKE_CURRENT_BINARY_DIR}/nodetest.elf)
 croi_user_program(${_node_test} PIE SYS SWIFT ${PROJECT_SOURCE_DIR}/system/node/tests/native/Main.swift)
+# bin/launcher (V2): bootfs's programs started by bootfs's manifests;
+# with them, the launcher's boot test: bin/launch-service (services a and
+# b) and bin/launch-test, its client (the boot-launch test).
+set(_launch ${PROJECT_SOURCE_DIR}/system/launch)
+set(_launcher ${CMAKE_CURRENT_BINARY_DIR}/launcher.elf)
+croi_user_program(${_launcher} PIE SYS SWIFT ${_launch}/launcher/Main.swift)
+set(_launch_service ${CMAKE_CURRENT_BINARY_DIR}/launchservice.elf)
+croi_user_program(${_launch_service} PIE SYS SWIFT ${_launch}/tests/native/Service.swift
+                  ${_launch}/tests/TreeService.swift)
+set(_launch_test ${CMAKE_CURRENT_BINARY_DIR}/launchtest.elf)
+croi_user_program(${_launch_test} PIE SYS SWIFT ${_launch}/tests/native/Main.swift)
+set(_manifests ${_launch}/tests/native/manifests)
 # Tier 1's programs (D47), when the *-vectraos toolchain has been built.
 include(${PROJECT_SOURCE_DIR}/cmake/Tier1.cmake)
 croi_tier1(_tier1_bootfs _tier1_files)
@@ -262,9 +274,14 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs.img
           bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_test}
           lib/libdltest.so=${_dl_c} lib/libdlswift.so=${_dl_swift} bin/trace-test=${_trace_test} bin/ipc-test=${_ipc_test}
-          bin/node-test=${_node_test}
+          bin/node-test=${_node_test} bin/launcher=${_launcher} bin/launch-service=${_launch_service}
+          bin/launch-test=${_launch_test} etc/manifests/a.manifest=${_manifests}/a.manifest
+          etc/manifests/b.manifest=${_manifests}/b.manifest
+          etc/manifests/launch-test.manifest=${_manifests}/launch-test.manifest
           ${_tier1_bootfs}
   DEPENDS ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_trace_test} ${_ipc_test} ${_node_test}
+          ${_launcher} ${_launch_service} ${_launch_test} ${_manifests}/a.manifest ${_manifests}/b.manifest
+          ${_manifests}/launch-test.manifest
           ${_tier1_files} vx ${VX}
   COMMENT "Building bootfs")
 add_custom_target(bootfs DEPENDS ${CMAKE_BINARY_DIR}/bootfs.img)

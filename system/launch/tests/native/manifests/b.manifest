@@ -1,0 +1,6 @@
+# Uses a, and reads a's status through its own /svc.
+service b
+program launch-service
+export
+use a
+arg /svc/a/status

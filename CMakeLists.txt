@@ -144,11 +144,17 @@ add_test(NAME boot-lean
 set_tests_properties(boot-lean PROPERTIES TIMEOUT 120)
 
 # A bootfs program's own boot (V2): userboot starts bin/<name> instead of
-# m2, self-tests off, and the test passes when it exits with 0.
+# m2, self-tests off, and the test passes when it exits with 0. Words after
+# the name go on the command line (userboot passes them to the program as
+# its environment).
 function(croi_boot_program_test test name)
+  list(JOIN ARGN " " _extra)
+  if(_extra)
+    set(_extra " ${_extra}")
+  endif()
   set(_esp ${CMAKE_BINARY_DIR}/esp-${test})
   file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/cmdline-${test}
-       CONTENT "${CROI_CMDLINE} userboot.next=bin/${name}${_shutdown} croi.selftest=off\n")
+       CONTENT "${CROI_CMDLINE} userboot.next=bin/${name}${_shutdown} croi.selftest=off${_extra}\n")
   add_custom_target(esp-${test} ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${CROI_ESP_DIR} ${_esp}
     COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/cmdline-${test} ${_esp}/croi/cmdline
@@ -166,6 +172,9 @@ croi_boot_program_test(sys sys-test)
 croi_boot_program_test(dl dl-test)
 croi_boot_program_test(ipc ipc-test)
 croi_boot_program_test(node node-test)
+# The launcher (V2's item 4): bootfs's manifests, run until bin/launch-test
+# ends; it exits with its code.
+croi_boot_program_test(launch launcher launcher.until=launch-test)
 croi_boot_program_test(trace trace-test)
 add_test(NAME trace-collect
   COMMAND ${VX} trace collect ${CMAKE_BINARY_DIR}/qemu-trace/console.log ${CMAKE_BINARY_DIR}/trace)

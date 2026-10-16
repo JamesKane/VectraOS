@@ -454,3 +454,6 @@ system/node/lib/Namespace.swift	todhchai	527ff94	system/node/lib/Namespace.swift
 system/node/lib/Srv.swift	todhchai	527ff94	system/node/lib/Srv.swift
 system/node/tests/NodeTests.swift	todhchai	527ff94	system/node/tests/NodeTests.swift
 system/node/tests/NamespaceTests.swift	todhchai	527ff94	system/node/tests/NamespaceTests.swift
+system/launch/lib/Manifest.swift	todhchai	527ff94	system/launch/lib/Manifest.swift
+system/launch/lib/Launcher.swift	todhchai	527ff94	system/launch/lib/Launcher.swift
+system/launch/tests/LaunchTests.swift	todhchai	527ff94	system/launch/tests/LaunchTests.swift

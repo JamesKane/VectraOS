@@ -22,7 +22,14 @@ enum : uint32_t {
   CROI_PA_VMO_EXECUTABLE = 0x14,
   CROI_PA_VMO_BOOTDATA = 0x1A,  // read-only ZBI container of firmware items (zbi.h)
   CROI_PA_VMO_BOOTFS = 0x1B,
+  // A Node channel in the process's namespace (Fuchsia's PA_NS_DIR, D65); the
+  // argument's bits 0-11 index the names table for its path, 12-13 its union
+  // placement (0 replace, 1 before, 2 after), and bit 14 marks it for creating.
+  CROI_PA_NS_DIR = 0x20,
   CROI_PA_FD = 0x30,              // argument: the fd (1: stdout, a debuglog)
+  // The server end of the process's own Node tree, its export (Fuchsia's
+  // PA_DIRECTORY_REQUEST, D65).
+  CROI_PA_DIRECTORY_REQUEST = 0x3B,
   CROI_PA_RESOURCE = 0x3F,        // argument 0: the root resource
   // Each kind's ranged root (Zircon's; userboot gets them all).
   CROI_PA_MMIO_RESOURCE = 0x50,
@@ -38,6 +45,7 @@ enum : uint32_t {
   // The userland's, above USER0 (the kernel gives none of them):
   CROI_PA_TRACE_REGION = 0xF1,  // a process's trace region, a VMO (system/trace)
   CROI_PA_DEVICE = 0xF2,        // a driver host's device resources; the argument says which
+  CROI_PA_SRV_BOARD = 0xF3,     // the session board, to post to /srv (system/node, D65)
 };
 
 // Zircon's PA_HND(type, arg).

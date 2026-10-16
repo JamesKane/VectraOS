@@ -173,8 +173,15 @@ work, in order:
    as batches (D64): operations on a current node, the first failure
    ending the batch, at most one handle back, and a mount taking the
    rest of a batch; NodeTree, namespaces and /srv on top, checked hosted
-   and natively (`bin/node-test`, boot-node). Next: the launcher, and
-   bulk `read`/`write` opening a ring.
+   and natively (`bin/node-test`, boot-node). The launcher is lifted
+   (`system/launch`), its core: manifests, a job and a process per
+   service loaded from bootfs, restarts, and each process's namespace
+   handed in its Startup, PA_NS_DIR handles named in processargs's
+   names table (D65), with no Startup protocol; checked hosted
+   (LaunchTests) and natively (boot-launch: `bin/launcher` runs bootfs's
+   manifests until `bin/launch-test`, which reads every
+   `/svc/*/status` and follows a restart, ends). Next: bulk
+   `read`/`write` opening a ring, then the exit test with rc.
 5. **Time (D48).** Clock objects are cut: the time service publishes UTC
    in a read-only seqlock page that the launcher hands every process at
    start.

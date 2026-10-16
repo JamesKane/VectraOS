@@ -1,0 +1,7 @@
+# The launcher's boot test (boot-launch): a service that is restarted
+# whenever it ends.
+service a
+program launch-service
+export
+restart always
+arg first

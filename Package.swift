@@ -73,6 +73,11 @@ let ipc: [Target] = [
   .target(name: "Node", dependencies: ["IPC"], path: "system/node/lib", swiftSettings: tier0),
   .testTarget(name: "NodeTests", dependencies: ["Node", "IPC", "IDL"], path: "system/node/tests",
               exclude: ["native"], swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+  // The launcher (system/launch, V2): manifests, a job and a process per
+  // service, each process's namespace as its Startup (D65), restarts.
+  .target(name: "Launch", dependencies: ["Node", "IPC"], path: "system/launch/lib", swiftSettings: tier0),
+  .testTarget(name: "LaunchTests", dependencies: ["Launch", "Node", "IPC"], path: "system/launch/tests",
+              exclude: ["native"], swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
 ]
 
 let package = Package(

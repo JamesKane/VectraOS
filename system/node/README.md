@@ -11,7 +11,9 @@ thread with `IPCDispatcher` (system/ipc/runtime); change the tree from any
 thread and watchers hear. A process's `Namespace` (system/node/lib) maps paths
 to unions of Node channels, resolved in the client; `SrvBoard` is the
 session's `/srv`. idlc's outputs for Node and the board are in
-`system/node/idl`.
+`system/node/idl`. A process reads its namespace from its Startup
+(`Startup.swift`: `Namespace(startup)`, D65): PA_NS_DIR handles named in
+processargs's names table, which a launcher adds with `mount`.
 
 ## Batches
 

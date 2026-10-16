@@ -168,15 +168,14 @@ public enum ResourceKind: UInt32, Sendable {
     }
   }
 
+  /// The kind `name` names (not `root`), compared as bytes: a String
+  /// switch needs Unicode tables tier 0 lacks.
   public init?(name: String) {
-    switch name {
-    case "mmio": self = .mmio
-    case "irq": self = .irq
-    case "ioport": self = .ioport
-    case "smc": self = .smc
-    case "system": self = .system
-    default: return nil
+    for kind in [ResourceKind.mmio, .irq, .ioport, .smc, .system] where name.utf8.elementsEqual(kind.name.utf8) {
+      self = kind
+      return
     }
+    return nil
   }
 }
 
@@ -205,6 +204,13 @@ public enum HandleType {
   public static var traceRegion: UInt32 { CROI_PA_TRACE_REGION }
   /// A driver host's device resources; the argument says which.
   public static var device: UInt32 { CROI_PA_DEVICE }
+  /// A Node channel in the namespace; its argument indexes the names table
+  /// (Namespace's Startup, D65).
+  public static var nsDir: UInt32 { CROI_PA_NS_DIR }
+  /// The server end of the process's own Node tree.
+  public static var export: UInt32 { CROI_PA_DIRECTORY_REQUEST }
+  /// The session board, to post to /srv.
+  public static var srvBoard: UInt32 { CROI_PA_SRV_BOARD }
 
   /// An info word: the type, and the argument in bits 16-31.
   public static func info(_ type: UInt32, _ argument: UInt32 = 0) -> UInt32 { croi_pa_hnd(type, argument) }

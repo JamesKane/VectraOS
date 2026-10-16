@@ -319,7 +319,8 @@ endfunction()
 # start's views), Ld (system/ld: dlopen, over Loader), the trace (Ring,
 # TraceFormat, Trace, TraceSession), IPC (system/ipc: IPCWire, and IPC, the runtime
 # @IPCLibrary's code calls; the macro is CROI_IPC_PLUGIN) and Node
-# (system/node: the protocol, NodeTree, namespaces and /srv), Embedded
+# (system/node: the protocol, NodeTree, namespaces and /srv) and Launch
+# (system/launch: manifests and the launcher, D65), Embedded
 # Swift, into ${CROI_USER_SYS_DIR} (their .swiftmodule files) and
 # ${CROI_USER_SYS} (libsys.a). Programs built with SYS import them.
 # Static-PIE code, which fixed-address programs link too.
@@ -356,6 +357,7 @@ function(croi_user_sys)
   file(GLOB _ipc_wire CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/system/ipc/wire/*.swift)
   file(GLOB _ipc CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/system/ipc/runtime/*.swift)
   file(GLOB _node CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/system/node/lib/*.swift)
+  file(GLOB _launch CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/system/launch/lib/*.swift)
   file(GLOB _headers ${CROI_FLOOR_DIR}/include/* ${PROJECT_SOURCE_DIR}/user/include/croi/*.h
        ${PROJECT_SOURCE_DIR}/kernel/include/*.h)
   add_custom_command(OUTPUT ${_dir}/libsys.a
@@ -384,12 +386,14 @@ function(croi_user_sys)
             -emit-module-path ${_dir}/IPC.swiftmodule -c ${_ipc} -o ${_dir}/ipc.o
     COMMAND ${_swiftc} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros" -module-name Node -emit-module
             -emit-module-path ${_dir}/Node.swiftmodule -c ${_node} -o ${_dir}/node.o
+    COMMAND ${_swiftc} -module-name Launch -emit-module -emit-module-path ${_dir}/Launch.swiftmodule
+            -c ${_launch} -o ${_dir}/launch.o
     COMMAND ${CMAKE_COMMAND} -E rm -f ${_dir}/libsys.a
     COMMAND ${CMAKE_AR} rcs ${_dir}/libsys.a ${_dir}/sysabi.o ${_dir}/loader.o ${_dir}/sys.o ${_dir}/libsys.o ${_dir}/ld.o
             ${_dir}/ring.o ${_dir}/traceformat.o ${_dir}/trace.o ${_dir}/tracesession.o
-            ${_dir}/ipcwire.o ${_dir}/ipc.o ${_dir}/node.o
+            ${_dir}/ipcwire.o ${_dir}/ipc.o ${_dir}/node.o ${_dir}/launch.o
     DEPENDS ${_abi} ${_loader} ${_api} ${_lib} ${_ld} ${_ring} ${_trace_format} ${_trace_writer} ${_trace_session} ${_ipc_wire}
-            ${_ipc} ${_node}
+            ${_ipc} ${_node} ${_launch}
             ${_headers} vx ${CROI_IPC_PLUGIN}
     COMMENT "Building Sys")
   set(CROI_USER_SYS_DIR ${_dir} PARENT_SCOPE)

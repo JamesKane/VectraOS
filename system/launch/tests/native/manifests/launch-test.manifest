@@ -1,0 +1,6 @@
+# The client the boot runs to its end (launcher.until=launch-test).
+service launch-test
+program launch-test
+use a
+use b
+launcher
