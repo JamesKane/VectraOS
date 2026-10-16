@@ -24,8 +24,10 @@ public enum Commands {
 
   public static let names = ["ls", "cat", "mkdir", "rm", "mv", "cp", "touch"]
 
-  /// Runs command `name` with `args`, from directory `pwd`.
-  public static func run(_ name: String, _ args: [String], pwd: String, in ns: Namespace) -> Result {
+  /// Runs command `name` with `args`, from directory `pwd`; `stdin`, if
+  /// given, reads the next bytes of its input (nil at its end).
+  public static func run(_ name: String, _ args: [String], pwd: String, in ns: Namespace,
+                         stdin: (() -> [UInt8]?)? = nil) -> Result {
     var r = Result()
     let (flags, paths) = options(args)
     let at = paths.map { resolve($0, from: pwd) }
@@ -54,6 +56,10 @@ public enum Commands {
         }
       }
     case "cat":
+      // No files: stdin, to its end (9front's cat).
+      if at.isEmpty, let stdin {
+        while let bytes = stdin() { r.output += bytes }
+      }
       for (i, path) in at.enumerated() {
         guard var n = try? ns.open(path), let bytes = try? n.readAll() else {
           complain("\(paths[i]): can't read")

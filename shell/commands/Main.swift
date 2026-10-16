@@ -21,7 +21,11 @@ import VectraOSLibc
       exit(1)
     }
     let name = argv0.split(separator: "/").last.map(String.init) ?? argv0
-    let r = Commands.run(name, Array(start.args.dropFirst()), pwd: start.value("PWD") ?? "/", in: ns)
+    let r = Commands.run(name, Array(start.args.dropFirst()), pwd: start.value("PWD") ?? "/", in: ns, stdin: {
+      var buffer = [UInt8](repeating: 0, count: 4096)
+      let n = unsafe buffer.withUnsafeMutableBytes { unsafe td_stdin_read($0.baseAddress!, $0.count) }
+      return n > 0 ? Array(buffer[..<n]) : nil
+    })
     unsafe r.output.withUnsafeBytes { b in
       if let p = unsafe b.baseAddress, unsafe !b.isEmpty { unsafe td_stdout_write(p, b.count) }
     }

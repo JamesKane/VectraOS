@@ -38,7 +38,6 @@
 69-notfound	linux	not-found status text (Linux oracle: 1)
 73-assign-list-var	port	$a=val (computed name) unsupported
 75-while-false-status	port	while resets $status to ''
-77-redir-order	port	>[2=1] after >file dups the original fd 1
 81-tilde-quoted	port	quoted / variable pattern chars active in ~ and case
 82-paren-caret	port	port accepts word( list ) (9front: syntax error)
 90-undefined	port	concat error not fatal in port

@@ -88,3 +88,11 @@ func text(_ r: Commands.Result) -> String { String(decoding: r.output, as: UTF8.
   #expect(Commands.date(0) == "1970-01-01 00:00")
   #expect(Commands.date(1_792_163_875_000_000_000) == "2026-10-16 15:17")
 }
+
+@Test func catWithNoFilesCopiesStdin() throws {
+  let rig = try Rig()
+  defer { rig.stop() }
+  var chunks: [[UInt8]] = [Array("one\n".utf8), Array("two\n".utf8)]
+  let r = Commands.run("cat", [], pwd: "/t", in: rig.ns, stdin: { chunks.isEmpty ? nil : chunks.removeFirst() })
+  #expect(text(r) == "one\ntwo\n" && r.status == 0)
+}

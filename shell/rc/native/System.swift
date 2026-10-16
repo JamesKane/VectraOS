@@ -40,10 +40,19 @@ final class Owned: @unchecked Sendable {
 }
 
 /// One end of a pipe: a channel end of rc's own. Writes go as messages,
-/// reads wait for one; the other end's closing is the end.
-final class PipeStream: RcStream {
+/// reads wait for one; the other end's closing is the end. Its holders are
+/// counted: rc, which drops its hold once the program writing the pipe is
+/// started, and that program's relay, which writes on until the program's
+/// output ends. The channel end closes with the last (a channel handle
+/// can't be duplicated: an endpoint has one reader, as in Zircon).
+final class PipeStream: RcStream, @unchecked Sendable {
   let owned: Owned
+  let lock = Lock()
+  var holders = 1
   init(_ h: consuming Handle) { owned = Owned(h) }
+
+  /// One more holder, which will `close` it once.
+  func hold() { lock.withLock { holders += 1 } }
 
   func write(_ bytes: [UInt8]) {
     var at = 0
@@ -70,7 +79,14 @@ final class PipeStream: RcStream {
     } ?? nil
   }
 
-  func close() { owned.close() }
+  /// Drops a hold: the last closes the channel end.
+  func close() {
+    let last = lock.withLock { () -> Bool in
+      holders -= 1
+      return holders == 0
+    }
+    if last { owned.close() }
+  }
 }
 
 /// One of fdio's files.
@@ -163,18 +179,31 @@ final class CroiSystem: RcSystem {
       let stdio = try ChildStdio(for: startup)
       let process = try Process.create(job: job, name: argv[0])
       _ = try Process.start(process, entry: entry, startup)
+      /// A relay's stream: a pipe held for as long as the relay runs (rc
+      /// drops its own hold once the program is started), anything else
+      /// rc's.
       final class Box: @unchecked Sendable {
         let stdio: ChildStdio
         let stream: RcStream?
+        let own: Bool
         init(_ s: ChildStdio, _ r: RcStream?) {
           stdio = s
-          stream = r
+          if let pipe = r as? PipeStream {
+            pipe.hold()
+            stream = pipe
+            own = true
+          } else {
+            stream = r
+            own = false
+          }
         }
+        func done() { if own { stream?.close() } }
       }
       var relays: [Owned] = []
       // Into the child: its stdin's stream, then the end (none for rc's own).
       let input = Box(stdio, fds[0] is Standard ? nil : fds[0])
       if let r = Self.relay({
+        defer { input.done() }
         if let stream = input.stream {
           while let bytes = stream.read() {
             if (try? input.stdio.write(bytes)) == nil { return }
@@ -185,6 +214,7 @@ final class CroiSystem: RcSystem {
       // Out of it: its stdout (and stderr) into fd 1's stream, to its end.
       let output = Box(stdio, fds[1])
       if let r = Self.relay({
+        defer { output.done() }
         while let bytes = try? output.stdio.read(), !bytes.isEmpty { output.stream?.write(bytes) }
       }) { relays.append(r) }
       return Job(process: process, stdio: stdio, relays: relays)

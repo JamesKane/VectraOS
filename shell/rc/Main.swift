@@ -60,7 +60,7 @@ final class Standard: RcStream {
     if args.first == "-c" {
       let shell = Rc(system: system, arguments: Array(args.dropFirst(2)))
       shell.run(args.count > 1 ? args[1] : "", fds: fds)
-      exit(shell.status.isEmpty ? 0 : 1)
+      exit(shell.succeeded ? 0 : 1)
     }
     let shell = Rc(system: system, arguments: args)
     args.removeAll()
@@ -90,7 +90,7 @@ final class Standard: RcStream {
         } else if let more = input.read() {
           pending += more
         } else {
-          exit(shell.status.isEmpty ? 0 : 1)  // the end of input
+          exit(shell.succeeded ? 0 : 1)  // the end of input
         }
       }
       text += String(decoding: line!, as: UTF8.self)
@@ -101,7 +101,7 @@ final class Standard: RcStream {
       }
       let script = text
       text = ""
-      if !shell.run(script, fds: fds) { exit(shell.status.isEmpty ? 0 : Int32(shell.status) ?? 1) }
+      if !shell.run(script, fds: fds) { exit(shell.succeeded ? 0 : Int32(shell.status) ?? 1) }
     }
   }
 }

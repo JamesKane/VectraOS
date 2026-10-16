@@ -20,9 +20,9 @@ under `vx ci` and every budget it introduces has a running check
     calling conventions in its LLVM.
   - Byte streams (item 6) are begun: the ring's byte-stream mode, stdio
     on it, FDIO, and rc with its commands. An audit against 9front
-    (2026-10-16) found rc and the commands far from complete, and
-    program-to-program pipelines broken on the device (item 6 lists
-    the gaps). The pty is not started.
+    (2026-10-16) found rc and the commands far from complete (item 6
+    lists the gaps; `vx rc-oracle` checks rc against 9front's, D70).
+    The pty is not started.
   - Not started: drivers (item 7), and the console and the router
     (item 8).
   - Exit: `cat /svc/*/status` run by rc passes (amd64, arm64). Still
@@ -262,13 +262,12 @@ work, in order:
    About half of rc(1) works; the commands cover about 40% of 9front's
    options, and rc's base set of programs is about a quarter there.
    Left, the most-hit first:
-   - **Pipelines on the device:** rc closes a pipe's writer end just
-     after starting the program that writes it (`Interpreter.swift`'s
-     pipeline), which is the end its relay writes to, so a program
-     piped into anything loses its output.
-   - **Redirections:** `>[n=m]` after `>f` copies the old descriptor
-     (`redirect` reads `fds[to]`); a program's fd 2 is its stdout and
-     fds over 2 are dropped; redirection streams are never closed.
+   - **Fixed since (2026-10-16):** pipelines on the device (a relay
+     now holds the pipe's end with rc; boot-launch runs a pipeline of
+     programs), `>[n=m]` after `>f` (left to right, as 9front), and
+     `cat` with no files reading stdin.
+   - **Redirections:** a program's fd 2 is its stdout and fds over 2
+     are dropped; redirection streams are never closed.
    - **Missing syntax:** here documents (a script holding one runs no
      line, as the whole script is parsed first), `@{}`, ranges
      `$x(n-m)`, `[~...]` and a bare `~`, `!` or `@` as words, `<>`,
@@ -286,13 +285,12 @@ work, in order:
      (`sigint`, `sigexit`); `$0`, `$pid`, `$path`, `$cflag`, a real
      `$apid`; the environment's lists and functions; `rc -c` keeping
      `exit N`; the prompt only when interactive.
-   - **Commands:** `cat` with no arguments doesn't read stdin, and
-     nothing streams; unknown flags are ignored, not refused; statuses
-     are `1`, not Plan 9's strings; `ls` adds `/` and has its own `-l`
-     and multi-directory layout; `touch` doesn't update an existing
-     file; `rm -f`, `cp -x`, `mv`'s fallback and most flags are missing;
-     no `test`, `read`, `grep`, `sed`, `wc`, `sort`, `tail`, `tr`,
-     `sleep`, `kill`, `ps`, `date`, `ns`, `bind`, `mount`.
+   - **Commands:** nothing streams; unknown flags are ignored, not
+     refused; statuses are `1`, not Plan 9's strings; `ls` adds `/` and
+     has its own `-l` and multi-directory layout; `touch` doesn't update
+     an existing file; `rm -f`, `cp -x`, `mv`'s fallback and most
+     flags are missing; no `test`, `read`, `grep`, `sed`, `wc`, `sort`,
+     `tail`, `tr`, `sleep`, `kill`, `ps`, `date`, `ns`, `bind`, `mount`.
    - The pty (a child given rc's own stdin reads an empty one until it
      shares a terminal).
 7. **Drivers:** PCI, ACPI (the AML interpreter), devmgr, the driver host,

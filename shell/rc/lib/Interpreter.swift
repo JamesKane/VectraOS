@@ -125,6 +125,8 @@ public final class Rc {
   }
 
   public var status: String { (variables["status"] ?? [""]).joined(separator: "|") }
+  /// Whether the status is true: every stage's empty (9front's truestatus).
+  public var succeeded: Bool { (variables["status"] ?? [""]).allSatisfy { $0.isEmpty } }
 
   /// Runs a script's text with these descriptors; its status, or nil
   /// after `exit` (the status in $status).
@@ -303,7 +305,7 @@ public final class Rc {
         if case .read = r.kind { mode = .read } else if case .append = r.kind { mode = .append } else { mode = .write }
         guard let s = system.open(names[0], mode) else { throw RcError(message: "can't open " + names[0]) }
         out[fd] = s
-      case .duplicate(let fd, let to): out[fd] = fds[to]
+      case .duplicate(let fd, let to): out[fd] = out[to]  // left to right, as 9front does
       case .close(let fd): out[fd] = nil
       }
     }

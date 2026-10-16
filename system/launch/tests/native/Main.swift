@@ -63,22 +63,14 @@ func lastNumber(_ text: String) -> Int64? {
   return digits > 0 ? n : nil
 }
 
-/// rc's `cat /svc/*/status`, checked against the statuses read here.
-func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
-  guard let job = start.take(HandleType.info(HandleType.jobDefault)),
-    let bootfs = start.take(HandleType.info(HandleType.vmoBootfs)), let files = try? ProgramEntry.bootfs(bootfs)
-  else { return check(false, "a job and bootfs to start rc with") }
-  guard let rc = files.first(where: { same($0.name, "bin/rc") }) else {
-    print("launch-test: no bin/rc (tier 1 isn't built here): rc's check skipped")
-    return
-  }
-  // The glob's order: the names' bytes.
-  let sorted = names.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
-  var expected: [UInt8] = []
-  for name in sorted { expected += Array((readText(ns, "/svc/" + name + "/status") ?? "").utf8) }
+/// rc from bootfs, given this process's /svc, a job and bootfs for its
+/// programs, and stdio: `script` run by `rc -c`, which must write
+/// `expected` and exit 0.
+func rcRuns(_ rc: ProgramEntry, _ script: String, _ expected: [UInt8], _ ns: Namespace, job: borrowing Handle,
+            bootfs: borrowing Handle, _ name: StaticString) {
   do throws(Status) {
-    let startup = Startup(args: ["rc", "-c", "cat /svc/*/status"])
-    guard let svc = try? ns.connect("/svc") else { return check(false, "/svc for rc") }
+    let startup = Startup(args: ["rc", "-c", script])
+    guard let svc = try? ns.connect("/svc") else { return check(false, name) }
     startup.mount(svc, at: "/svc")
     startup.add(try Job.create(parent: job), info: HandleType.info(HandleType.jobDefault))
     startup.add(try bootfs.duplicate(), info: HandleType.info(HandleType.vmoBootfs))
@@ -89,13 +81,34 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
     let out = try stdio.readAll(deadline: Clock.monotonic() + 10_000_000_000)
     _ = try process.wait(for: Signals.terminated, deadline: Clock.monotonic() + 5_000_000_000)
     let code = try Process.info(process).returnCode
-    print("launch-test: rc -c 'cat /svc/*/status' wrote \(out.count) bytes, exited \(code)")
-    check(code == 0 && out == expected, "rc runs cat /svc/*/status")
+    print("launch-test: rc -c '\(script)' wrote \(out.count) bytes, exited \(code)")
+    check(code == 0 && out == expected, name)
     _ = consume thread
   } catch {
-    check(false, "rc runs cat /svc/*/status")
+    check(false, name)
     print("launch-test: rc: \(error.rawValue)")
   }
+}
+
+/// rc's `cat /svc/*/status` (V2's exit test), and a pipeline of programs
+/// (each a child of rc's, rc relaying between them), checked against the
+/// statuses read here.
+func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
+  guard let job = start.take(HandleType.info(HandleType.jobDefault)),
+    let bootfs = start.take(HandleType.info(HandleType.vmoBootfs)), let files = try? ProgramEntry.bootfs(bootfs)
+  else { return check(false, "a job and bootfs to start rc with") }
+  guard let rc = files.first(where: { same($0.name, "bin/rc") }) else {
+    print("launch-test: no bin/rc (tier 1 isn't built here): rc's checks skipped")
+    return
+  }
+  // The glob's order: the names' bytes.
+  let sorted = names.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
+  var all: [UInt8] = []
+  for name in sorted { all += Array((readText(ns, "/svc/" + name + "/status") ?? "").utf8) }
+  rcRuns(rc, "cat /svc/*/status", all, ns, job: job, bootfs: bootfs, "rc runs cat /svc/*/status")
+  let ab = Array(((readText(ns, "/svc/a/status") ?? "") + (readText(ns, "/svc/b/status") ?? "")).utf8)
+  rcRuns(rc, "cat /svc/a/status /svc/b/status | cat | cat", ab, ns, job: job, bootfs: bootfs,
+         "rc pipes program to program")
   _ = consume bootfs
 }
 
