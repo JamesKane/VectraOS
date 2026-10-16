@@ -360,6 +360,9 @@ function(croi_user_sys)
   file(GLOB _ipc CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/system/ipc/runtime/*.swift)
   file(GLOB _node CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/system/node/lib/*.swift)
   file(GLOB _launch CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/system/launch/lib/*.swift)
+  # ACPI (drivers/bus/acpi, D74): the tables and the AML interpreter, linked
+  # only by what imports it (devmgr, bin/acpi-test).
+  file(GLOB _acpi CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/bus/acpi/lib/*.swift)
   file(GLOB _headers ${CROI_FLOOR_DIR}/include/* ${PROJECT_SOURCE_DIR}/user/include/croi/*.h
        ${PROJECT_SOURCE_DIR}/kernel/include/*.h)
   add_custom_command(OUTPUT ${_dir}/libsys.a
@@ -390,12 +393,14 @@ function(croi_user_sys)
             -emit-module-path ${_dir}/Node.swiftmodule -c ${_node} -o ${_dir}/node.o
     COMMAND ${_swiftc} -module-name Launch -emit-module -emit-module-path ${_dir}/Launch.swiftmodule
             -c ${_launch} -o ${_dir}/launch.o
+    COMMAND ${_swiftc} -module-name TDACPI -emit-module -emit-module-path ${_dir}/TDACPI.swiftmodule
+            -c ${_acpi} -o ${_dir}/acpi.o
     COMMAND ${CMAKE_COMMAND} -E rm -f ${_dir}/libsys.a
     COMMAND ${CMAKE_AR} rcs ${_dir}/libsys.a ${_dir}/sysabi.o ${_dir}/loader.o ${_dir}/sys.o ${_dir}/libsys.o ${_dir}/ld.o
             ${_dir}/ring.o ${_dir}/traceformat.o ${_dir}/trace.o ${_dir}/tracesession.o
-            ${_dir}/ipcwire.o ${_dir}/ipc.o ${_dir}/node.o ${_dir}/launch.o
+            ${_dir}/ipcwire.o ${_dir}/ipc.o ${_dir}/node.o ${_dir}/launch.o ${_dir}/acpi.o
     DEPENDS ${_abi} ${_loader} ${_api} ${_lib} ${_ld} ${_ring} ${_trace_format} ${_trace_writer} ${_trace_session} ${_ipc_wire}
-            ${_ipc} ${_node} ${_launch}
+            ${_ipc} ${_node} ${_launch} ${_acpi}
             ${_headers} vx ${CROI_IPC_PLUGIN}
     COMMENT "Building Sys")
   set(CROI_USER_SYS_DIR ${_dir} PARENT_SCOPE)

@@ -24,8 +24,8 @@ under `vx ci` and every budget it introduces has a running check
     lists the gaps; `vx rc-oracle` checks rc against 9front's, D70).
     The pty runs on rings, and rc runs on one, sharing the terminal
     with the programs it runs.
-  - Scoped, not started: drivers (item 7, D74: todhchai's, ported,
-    in five steps). Not started: the console and the router (item 8).
+  - Begun: drivers (item 7, D74: todhchai's, ported, in five steps;
+    7a, the AML interpreter, done). Not started: the console and the router (item 8).
   - Exit: `cat /svc/*/status` run by rc passes (amd64, arm64). Still
     open: spawn → main < 200 µs, and the first recorded bench history.
 - **V3 onward** are not started (V4's boards have research passes).
@@ -394,10 +394,20 @@ work, in order:
    (`object_bind`, acks in arrays) and the one ring, with real IOMMUs,
    ACPI platform devices beside PCI ones, and the runtime's MMIO
    accessors. In order:
-   - **7a, the AML interpreter** (todhchai's bus/acpi, about 4,900 lines
-     with tests): hosted over its corpus of QEMU's tables (amd64 q35, pc
-     and microvm; arm64 and rv64 virt) with its fuzzer. It replaces
-     userboot's `\_S5` byte scan (Power.swift).
+   - **7a, the AML interpreter, done (2026-10-16):** todhchai's
+     bus/acpi (`drivers/bus/acpi`, TDACPI, about 4,900 lines with tests)
+     lifted, with its corpus tool (`vx acpi fetch-qemu|import|list`,
+     `.cache/acpi`): ACPITests' 54 hosted, over QEMU 11.1.2's tables for
+     q35, pc, microvm and arm64 and rv64 virt, with its fuzzer; its
+     corpus floors set from QEMU's tables alone (todhchai's counted this
+     machine's too, which `sudo vx acpi import` adds). Natively,
+     `bin/acpi-test` (boot-acpi, every arch) loads the boot's own tables
+     from the boot data, runs load-time code, initializes the devices and
+     decodes a PCI host bridge's `_CRS` and `_PRT`, and on amd64 `\_S5`
+     and the CMOS clock's ports. Moved to 7c: userboot's `\_S5` byte scan
+     (Power.swift) goes when devmgr owns the namespace (userboot stays
+     the kernel's small first process), and the interpreter's budgets
+     (todhchai's acpi-bench) come with devmgr, where it runs for real.
    - **7b, PCI over ECAM** (bus/pci): config space, enumeration, BARs,
      capabilities, from the MCFG.
    - **7c, devmgr and the driver host:** devmgr reads the boot data, loads

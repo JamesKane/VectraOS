@@ -14,6 +14,7 @@
 //   vx loc [--check]          lines per component, and the size budgets
 //   vx hardware [--check]     the hardware support list (HardwareCommand.swift)
 //   vx rc-oracle [CASE...]    our rc against 9front's (RcOracleCommand.swift, D70)
+//   vx acpi import|fetch-qemu|list  the AML interpreter's corpus (ACPICommand.swift, D74)
 //   vx ci [--no-bench]        host tests, rc against 9front's, every arch's
 //                             build and tests, the size budgets, then the
 //                             bench (advisory)
@@ -72,6 +73,7 @@ case "bench": exit(benchCommand(args) ? 0 : 1)
 case "loc": exit(locCommand(args) ? 0 : 1)
 case "hardware": exit(hardwareCommand(args) ? 0 : 1)
 case "rc-oracle": exit(rcOracleCommand(args) ? 0 : 1)
+case "acpi": exit(acpiCommand(args) ? 0 : 1)
 case "ci": exit(ci(args) ? 0 : 1)
-default: fail("unknown command \(command); vx has build, test, boot, bench, trace, loc, hardware, rc-oracle and ci")
+default: fail("unknown command \(command); vx has build, test, boot, bench, trace, loc, hardware, rc-oracle, acpi and ci")
 }

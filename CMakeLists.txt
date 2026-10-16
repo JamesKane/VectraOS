@@ -172,6 +172,7 @@ croi_boot_program_test(sys sys-test)
 croi_boot_program_test(dl dl-test)
 croi_boot_program_test(ipc ipc-test)
 croi_boot_program_test(node node-test)
+croi_boot_program_test(acpi acpi-test)
 # The launcher (V2's item 4): bootfs's manifests, run until bin/launch-test
 # ends; it exits with its code.
 croi_boot_program_test(launch launcher launcher.until=launch-test)

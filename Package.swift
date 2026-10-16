@@ -103,6 +103,11 @@ let ipc: [Target] = [
   .target(name: "Launch", dependencies: ["Node", "IPC"], path: "system/launch/lib", swiftSettings: tier0),
   .testTarget(name: "LaunchTests", dependencies: ["Launch", "Node", "IPC"], path: "system/launch/tests",
               exclude: ["native"], swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+  // ACPI (drivers/bus/acpi, V2 item 7a, D74): its tables and our AML
+  // interpreter, todhchai's; tier 0. Its tests run over a corpus of
+  // firmware tables out of the tree (vx acpi).
+  .target(name: "TDACPI", path: "drivers/bus/acpi/lib", swiftSettings: tier0),
+  .testTarget(name: "ACPITests", dependencies: ["TDACPI"], path: "drivers/bus/acpi/tests", exclude: ["native"]),
 ]
 
 let package = Package(
@@ -196,7 +201,7 @@ let package = Package(
     .testTarget(name: "LdTests", dependencies: ["Ld", "Elf"], path: "system/ld/tests", exclude: ["native"]),
     .target(name: "Hardware", path: "tools/hardware/lib"),
     .testTarget(name: "HardwareTests", dependencies: ["Hardware"], path: "tools/hardware/tests"),
-    .executableTarget(name: "vx", dependencies: ["Bench", "Hardware", "ImageFormats", "TraceFormat", "TraceReader"], path: "tools/vx"),
+    .executableTarget(name: "vx", dependencies: ["Bench", "Hardware", "ImageFormats", "TDACPI", "TraceFormat", "TraceReader"], path: "tools/vx"),
   ] + ipc,
   cLanguageStandard: .gnu2x
 )

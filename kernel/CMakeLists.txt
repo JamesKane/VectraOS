@@ -254,6 +254,10 @@ croi_user_program(${_ipc_test} PIE SYS IPC SWIFT ${_ipc_tests}/native/Main.swift
 # namespaces and /srv; the boot-node test starts it.
 set(_node_test ${CMAKE_CURRENT_BINARY_DIR}/nodetest.elf)
 croi_user_program(${_node_test} PIE SYS SWIFT ${PROJECT_SOURCE_DIR}/system/node/tests/native/Main.swift)
+# bin/acpi-test (V2 item 7a, D74): the AML interpreter on this boot's own
+# firmware tables; the boot-acpi test starts it.
+set(_acpi_test ${CMAKE_CURRENT_BINARY_DIR}/acpitest.elf)
+croi_user_program(${_acpi_test} PIE SYS SWIFT ${PROJECT_SOURCE_DIR}/drivers/bus/acpi/tests/native/Main.swift)
 # bin/launcher (V2): bootfs's programs started by bootfs's manifests;
 # with them, the launcher's boot test: bin/launch-service (services a and
 # b) and bin/launch-test, its client (the boot-launch test).
@@ -297,14 +301,14 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs.img
           bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_test}
           lib/libdltest.so=${_dl_c} lib/libdlswift.so=${_dl_swift} bin/trace-test=${_trace_test} bin/ipc-test=${_ipc_test}
-          bin/node-test=${_node_test} bin/launcher=${_launcher} bin/launch-service=${_launch_service}
+          bin/node-test=${_node_test} bin/acpi-test=${_acpi_test} bin/launcher=${_launcher} bin/launch-service=${_launch_service}
           bin/launch-test=${_launch_test} etc/manifests/a.manifest=${_manifests}/a.manifest
           etc/manifests/b.manifest=${_manifests}/b.manifest
           etc/manifests/launch-test.manifest=${_launch_test_manifest} ${_time_bootfs}
           bin/pty=${_pty} etc/manifests/pty.manifest=${_manifests}/pty.manifest
           bin/bootfs=${_bootfs_service} etc/manifests/bootfs.manifest=${_manifests}/bootfs.manifest
           ${_tier1_bootfs}
-  DEPENDS ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_trace_test} ${_ipc_test} ${_node_test}
+  DEPENDS ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_trace_test} ${_ipc_test} ${_node_test} ${_acpi_test}
           ${_launcher} ${_launch_service} ${_launch_test} ${_manifests}/a.manifest ${_manifests}/b.manifest
           ${_launch_test_manifest} ${_time} ${_manifests}/time.manifest ${_pty} ${_manifests}/pty.manifest
           ${_bootfs_service} ${_manifests}/bootfs.manifest
