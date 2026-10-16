@@ -184,6 +184,7 @@ public final class Launcher: @unchecked Sendable {
       }
       if m.programsLine != 0 && locked({ grantableBootfs }) == 0 { throw m.error(m.programsLine, "no bootfs to grant") }
       if m.librariesLine != 0 && locked({ grantableBootfs }) == 0 { throw m.error(m.librariesLine, "no bootfs to grant") }
+      if m.bootfsLine != 0 && locked({ grantableBootfs }) == 0 { throw m.error(m.bootfsLine, "no bootfs to grant") }
       if m.bootDataLine != 0 && locked({ grantableBootData }) == 0 {
         throw m.error(m.bootDataLine, "no boot data to grant")
       }
@@ -320,10 +321,10 @@ public final class Launcher: @unchecked Sendable {
       startup.add(raw: try duplicate(locked({ grantableBootData }), m.bootDataLine),
                   info: HandleType.info(HandleType.vmoBootData))
     }
-    // `programs`: bootfs and a job; `libraries`: bootfs, for dlopen's lib/
-    // (once, if `programs` gave it).
-    if m.programsLine != 0 || m.librariesLine != 0 {
-      startup.add(raw: try duplicate(locked({ grantableBootfs }), max(m.programsLine, m.librariesLine)),
+    // `programs`: bootfs and a job; `libraries`: bootfs, for dlopen's lib/;
+    // `bootfs`: bootfs, to serve (once, whichever gave it).
+    if m.programsLine != 0 || m.librariesLine != 0 || m.bootfsLine != 0 {
+      startup.add(raw: try duplicate(locked({ grantableBootfs }), max(m.programsLine, m.librariesLine, m.bootfsLine)),
                   info: HandleType.info(HandleType.vmoBootfs))
     }
     if m.programsLine != 0 {

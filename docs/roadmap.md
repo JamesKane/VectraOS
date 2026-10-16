@@ -335,14 +335,19 @@ work, in order:
      nothing else can send rc one (no `kill`, no alarm), and a
      foreground program that doesn't have the terminal isn't killed by
      ^C; a hangup races the end of rc's stdin, so sighup may not
-     run.
+     run; /bin in the namespace (D71): Node's `memory` (version 3) gives
+     a file as a VMO, to run if its server allows, the bootfs service
+     (`services/bootfs`, every arch) serves the boot image as a tree, a
+     manifest mounts its bin/ at /bin (`mount /bin bootfs/bin`), and rc
+     starts what its namespace holds, needing a job and no bootfs (an rc
+     it starts too); `ls /bin` lists it for any program, and `rfork N`
+     takes it away. launch-test lists /bin and starts rc from it.
    - **Wrong semantics:** a compound command run with `&` shares rc's
      directory (one per process), so a `cd` in it moves rc too, and its
      namespace (`rfork n` or `N`). `-e` is judged as a command runs, not as
      its line is compiled, so `flag e +` reaches the rest of its own
      line (9front's doesn't).
-   - **Missing pieces:** a real `$apid`; `/bin` in the namespace (the
-     device's rc alone sees bootfs's programs there).
+   - **Missing pieces:** a real `$apid`.
    - **Commands:** nothing streams; unknown flags are ignored, not
      refused; statuses are `1`, not Plan 9's strings; `ls` adds `/` and
      has its own `-l` and multi-directory layout; `touch` doesn't update

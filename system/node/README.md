@@ -39,6 +39,16 @@ serves it on its dispatcher (watching the doorbell), through the same
 code as a batch's reads and writes; `NodeBulkChannel` splits a read or
 write of any size into chunks, a slot's worth in flight.
 
+## Memory
+
+A file's contents can be had as a VMO (D71, Node's `memory`, version 3),
+as Fuchsia's `GetBackingMemory`: to read or map, never to write, and with
+`executable`, to start a process or load a library from, which only a
+server whose files may run gives. NodeTree's memory files
+(`tree.memory(path, vmo, size:, executable:)`) give their VMO; any other
+file a copy that can't run. `Namespace.memory(path, executable:)` asks
+for one: a program in /bin (the bootfs service's) starts so.
+
 Names are compared and split as bytes (`NodeIPC.same`, `NodeIPC.names`):
 String's `==` and `split` need Unicode tables tier 0 doesn't link.
 todhchai's delegated directories (`NodeTree.delegate`) were left behind

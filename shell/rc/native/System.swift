@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // rc's machine on croi (M6j part 2c; V2: on rings, D46): its programs are
-// bootfs's `bin/`, started in a job of its own, each with its descriptors
+// its namespace's (D71: /bin, the bootfs service's), started in a job of its own, each with its descriptors
 // (Sys's ChildStdio: a ring per descriptor, one way) and rc's namespace in
 // its Startup (D65). A child gets each descriptor rc's table has for it,
 // fd 2 and any above it too (up to td_stdio.h's limits); one writer per
@@ -146,24 +146,16 @@ final class Job: RcJob {
   }
 }
 
-/// rc's machine. Its programs are bootfs's `bin/NAME`, which rc finds as
-/// `/bin/NAME` ($path is Plan 9's `(. /bin)`; the namespace has no /bin
-/// yet, so only rc sees them there). A file starting `#!` runs as a
-/// kernel's exec runs one: its interpreter, an argument if the line has
-/// one, the file, then the rest. A child that is rc (a script's
-/// interpreter, or rc run by name) is given what a manifest's `programs`
-/// gives: a job under rc's and bootfs, until /bin is a directory of the
-/// namespace's.
+/// rc's machine. A program is a file of its namespace that gives memory to
+/// run (Node's `memory`, D71): /bin's, the bootfs service's, as $path is
+/// Plan 9's `(. /bin)`. A file starting `#!` runs as a kernel's exec runs
+/// one: its interpreter, an argument if the line has one, the file, then
+/// the rest. A child that is rc (a script's interpreter, or rc run by
+/// name) is given a job under rc's, to start its own.
 final class CroiSystem: RcSystem {
   let job: Handle
-  let bootfs: Owned
-  let programs: [(name: String, entry: ProgramEntry)]
 
-  init(job: consuming Handle, bootfs: consuming Handle, programs: [(name: String, entry: ProgramEntry)]) {
-    self.job = job
-    self.bootfs = Owned(bootfs)
-    self.programs = programs
-  }
+  init(job: consuming Handle) { self.job = job }
 
   func open(_ path: String, _ mode: RcOpen) -> RcStream? {
     let flags: Int32
@@ -207,11 +199,11 @@ final class CroiSystem: RcSystem {
     return (n, "/dev/fd/\(n)")
   }
 
-  /// The program at `path`: bootfs's `bin/NAME` at `/bin/NAME`.
-  func program(_ path: String) -> (name: String, entry: ProgramEntry)? {
-    guard path.hasPrefix("/bin/") else { return nil }
-    let name = path.dropFirst(5)
-    return programs.first { $0.name == name }
+  /// The program at `path`: its file's memory, to run, if the namespace's
+  /// server gives it.
+  func program(_ path: String) -> NodeIPC.Memory? {
+    guard let ns = FDIO.namespace, case .success(let full) = FDIO.realPath(path) else { return nil }
+    return try? ns.memory(full, executable: true)
   }
 
   /// A script's `#!` line: its interpreter and the argument after it, if
@@ -226,17 +218,8 @@ final class CroiSystem: RcSystem {
     return (first, words.count > 1 ? words.dropFirst().joined(separator: " ") : nil)
   }
 
-  /// Another handle to bootfs, for a child rc.
-  func duplicateBootfs() -> Handle? {
-    let raw = bootfs.with { h -> UInt32 in
-      guard let d = try? h.duplicate() else { return 0 }
-      return d.release()
-    } ?? 0
-    return raw == 0 ? nil : Handle(raw: raw)
-  }
-
   func executable(_ path: String) -> Bool {
-    if program(path) != nil { return true }
+    if program(path) != nil { return true }  // (its memory closed)
     guard let i = interpreter(path) else { return false }
     return program(i.path) != nil
   }
@@ -248,16 +231,18 @@ final class CroiSystem: RcSystem {
   }
 
   func start(_ path: String, _ argv: [String], fds: [Int32: RcStream], environment: [String]) -> RcJob? {
-    if let p = program(path) { return start(p, argv, fds: fds, environment: environment) }
-    guard let i = interpreter(path), let p = program(i.path) else { return nil }
+    if let m = program(path) { return start(path, m, argv, fds: fds, environment: environment) }
+    guard let i = interpreter(path), let m = program(i.path) else { return nil }
     let args = [i.path] + (i.argument.map { [$0] } ?? []) + [path] + argv.dropFirst()
-    return start(p, args, fds: fds, environment: environment)
+    return start(i.path, m, args, fds: fds, environment: environment)
   }
 
-  func start(_ program: (name: String, entry: ProgramEntry), _ argv: [String], fds: [Int32: RcStream],
+  /// Starts the program at `path`, from its memory.
+  func start(_ path: String, _ memory: borrowing NodeIPC.Memory, _ argv: [String], fds: [Int32: RcStream],
              environment: [String]) -> RcJob?
   {
-    let entry = program.entry
+    let name = String(path.split(separator: "/").last ?? Substring(path))
+    let entry = ProgramEntry(image: memory.vmo.raw, offset: 0, length: Int(memory.size), name: name)
     // rc's (Environment.swift), with its directory as PWD (M6m: the file
     // commands' paths are rc's).
     let env = environment.filter { !$0.hasPrefix("PWD=") } + ["PWD=" + FDIO.currentDirectory]
@@ -269,10 +254,7 @@ final class CroiSystem: RcSystem {
       }
     }
     do throws(Status) {
-      if program.name == "rc", let b = duplicateBootfs() {
-        startup.add(try Sys.Job.create(parent: job), info: HandleType.info(HandleType.jobDefault))
-        startup.add(b, info: HandleType.info(HandleType.vmoBootfs))
-      }
+      if name == "rc" { startup.add(try Sys.Job.create(parent: job), info: HandleType.info(HandleType.jobDefault)) }
       // Each of its descriptors, as many as a child takes: one it reads
       // if its stream is a source (or it is fd 0), one it writes if not.
       let given = fds.filter { $0.key >= 0 && $0.key < Int32(TD_STDIO_FD_LIMIT) }.sorted { $0.key < $1.key }

@@ -9,7 +9,7 @@
 
 import IPC
 
-@IPCLibrary(id: "todhchai.node", version: 2)
+@IPCLibrary(id: "todhchai.node", version: 3)
 public enum NodeIPC {
   public enum NodeError: Int32, IPCErrorCode, Sendable {
     case notFound = 1
@@ -212,6 +212,18 @@ public enum NodeIPC {
     }
   }
 
+  /// A file's contents as memory (Fuchsia's GetBackingMemory): a VMO to
+  /// read or map, never to write, its first `size` bytes the file's.
+  public struct Memory: ~Copyable {
+    public var vmo: Handle
+    public var size: UInt64
+
+    public init(vmo: consuming Handle, size: UInt64) {
+      self.vmo = vmo
+      self.size = size
+    }
+  }
+
   public protocol Node {
     /// Runs `ops` (at most 32) in order on a current node, which starts at
     /// this channel's; `walk` and `create` move it. A single operation is a
@@ -220,6 +232,10 @@ public enum NodeIPC {
     /// Attaches a ring pair for bulk reads and writes of this channel's
     /// node (D67): one a channel, gone when the channel closes.
     @since(2) func attach(_ bulk: consuming Bulk) throws(NodeError)
+    /// This channel's node's contents as memory (a file's); `executable`, a
+    /// VMO a process can be started from or a library loaded from, which
+    /// only a service whose files may run gives (`denied` otherwise).
+    @since(3) func memory(executable: Bool) throws(NodeError) -> Memory
     @event func changed(_ change: Change)
   }
 }

@@ -9,8 +9,8 @@
 // found along $path; it takes 9front's flags (RcArguments) and prompts
 // only when interactive (-i, or a terminal without -I). Its exit code is
 // its status: 0 if true, a number as itself, else 1. Its programs are
-// bootfs's `bin/` (its Startup's bootfs and job: a manifest's `programs`),
-// its files fdio's, its namespace its Startup's (D65). On a terminal
+// its namespace's (/bin: D71), started in its Startup's job, its files
+// fdio's, its namespace its Startup's (D65). On a terminal
 // (`TERM` in its environment) it says its directory before a prompt when
 // it changed, as OSC 7 (file://PATH): Terminal routes a word from the
 // screen from there (M6k).
@@ -57,16 +57,11 @@ final class Standard: RcStream {
 @main struct RcMain {
   static func main() {
     let start = Startup.current
-    guard let job = start.take(HandleType.info(HandleType.jobDefault)),
-      let bootfs = start.take(HandleType.info(HandleType.vmoBootfs)), let files = try? ProgramEntry.bootfs(bootfs)
-    else {
-      print("rc: no job or bootfs to start programs from (its manifest's `programs`)")
+    guard let job = start.take(HandleType.info(HandleType.jobDefault)) else {
+      print("rc: no job to start programs in (its manifest's `programs`)")
       exit(1)
     }
-    var programs: [(name: String, entry: ProgramEntry)] = []
-    for f in files where f.name.hasPrefix("bin/") { programs.append((String(f.name.dropFirst(4)), f)) }
-    // bootfs stays open all along: programs load from it.
-    run(CroiSystem(job: job, bootfs: bootfs, programs: programs))
+    run(CroiSystem(job: job))
   }
 
   static func run(_ system: CroiSystem) {

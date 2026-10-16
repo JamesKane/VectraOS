@@ -37,6 +37,9 @@ the path again reaches the new one.
 manifests bootfs's `etc/manifests/*.manifest`, and `launcher.until=SERVICE`
 on the kernel's command line makes it exit with that service's code.
 Programs load through Sys's `Process.start`, userboot's loader (D65).
+The bootfs service (`services/bootfs`, D71) serves the image as a tree; a
+manifest that starts programs mounts its bin/ at /bin (`mount /bin
+bootfs/bin`), and starts what it finds there.
 
 ## Tests
 

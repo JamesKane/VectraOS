@@ -273,6 +273,10 @@ set(_time ${CMAKE_CURRENT_BINARY_DIR}/time.elf)
 croi_user_program(${_time} PIE SYS SWIFT ${PROJECT_SOURCE_DIR}/services/time/Main.swift
                   ${PROJECT_SOURCE_DIR}/services/time/lib/RTC.swift)
 set(_time_bootfs bin/time=${_time})
+# bin/bootfs (D71): the boot image as a tree, on every arch; manifests
+# mount its bin/ at /bin.
+set(_bootfs_service ${CMAKE_CURRENT_BINARY_DIR}/bootfs.elf)
+croi_user_program(${_bootfs_service} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/bootfs/Main.swift)
 # bin/pty (D46): the pty service, on every arch; launch-test runs rc on one.
 set(_pty_src ${PROJECT_SOURCE_DIR}/services/pty)
 set(_pty ${CMAKE_CURRENT_BINARY_DIR}/pty.elf)
@@ -298,10 +302,12 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
           etc/manifests/b.manifest=${_manifests}/b.manifest
           etc/manifests/launch-test.manifest=${_launch_test_manifest} ${_time_bootfs}
           bin/pty=${_pty} etc/manifests/pty.manifest=${_manifests}/pty.manifest
+          bin/bootfs=${_bootfs_service} etc/manifests/bootfs.manifest=${_manifests}/bootfs.manifest
           ${_tier1_bootfs}
   DEPENDS ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_trace_test} ${_ipc_test} ${_node_test}
           ${_launcher} ${_launch_service} ${_launch_test} ${_manifests}/a.manifest ${_manifests}/b.manifest
           ${_launch_test_manifest} ${_time} ${_manifests}/time.manifest ${_pty} ${_manifests}/pty.manifest
+          ${_bootfs_service} ${_manifests}/bootfs.manifest
           ${_tier1_files} vx ${VX}
   COMMENT "Building bootfs")
 add_custom_target(bootfs DEPENDS ${CMAKE_BINARY_DIR}/bootfs.img)

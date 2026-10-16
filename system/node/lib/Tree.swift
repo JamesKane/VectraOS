@@ -30,6 +30,9 @@ public final class TreeNode: @unchecked Sendable {
     case text(read: @Sendable () -> String, write: (@Sendable (String) throws(NodeError) -> Void)?)
     /// Another service's node: a batch that walks into it goes on there.
     case remote(Remote)
+    /// A file whose contents are a VMO's first bytes (a boot image's file):
+    /// read by mapping it, and given as memory as it is.
+    case memory(Backing)
     /// A typed protocol: opening it gets a channel `connect` serves.
     case service(connect: (consuming Handle) throws(Status) -> Void)
   }
@@ -63,7 +66,7 @@ public final class TreeNode: @unchecked Sendable {
   var kind: NodeIPC.NodeKind {
     switch content {
     case .directory, .remote: .directory
-    case .bytes, .text: .file
+    case .bytes, .text, .memory: .file
     case .service: .service
     }
   }
@@ -94,6 +97,54 @@ final class Remote: @unchecked Sendable {
     defer { mutex.unlock() }
     return try client.batch(ops, open: open)
   }
+}
+
+/// A memory file's VMO, the tree's: its first `size` bytes are the file,
+/// and `executable` says whether it may be given to run.
+public final class Backing: @unchecked Sendable {
+  let vmo: Handle
+  let size: UInt64
+  let executable: Bool
+
+  init(_ vmo: consuming Handle, size: UInt64, executable: Bool) {
+    self.vmo = vmo
+    self.size = size
+    self.executable = executable
+  }
+
+  /// `max` bytes from `offset`, at most to its end.
+  func read(offset: UInt64, max: Int) throws(NodeError) -> [UInt8] {
+    guard offset < size else { return [] }
+    let start = Int(offset) & ~(Self.page - 1), end = Swift.min(Int(size), Int(offset) + max)
+    do throws(Status) {
+      let m = try VMO.map(vmo, offset: start, length: (end - start + Self.page - 1) & ~(Self.page - 1), writable: false)
+      return m.read(at: Int(offset) - start, count: end - Int(offset))
+    } catch {
+      throw .io
+    }
+  }
+
+  /// Another handle to it, to read and map, and to run if `executable`
+  /// (only if the tree said it may, and its handle can).
+  func share(executable: Bool) throws(NodeError) -> NodeIPC.Memory {
+    guard !executable || self.executable else { throw .denied }
+    let have: Rights
+    do throws(Status) { have = try vmo.info().rights } catch { throw .io }
+    guard !executable || have.contains(.execute) else { throw .denied }
+    do throws(Status) {
+      return NodeIPC.Memory(vmo: try vmo.duplicate(have.intersection(Backing.rights(executable))), size: size)
+    } catch {
+      throw .io
+    }
+  }
+
+  /// What a client's handle may do: never write.
+  static func rights(_ executable: Bool) -> Rights {
+    Rights(rawValue: Rights.basic.rawValue | Rights.read.rawValue | Rights.map.rawValue | Rights.getProperty.rawValue
+      | (executable ? Rights.execute.rawValue : 0))
+  }
+
+  static let page = 4096
 }
 
 /// A session watching a node; it goes once the session has closed.
@@ -171,6 +222,14 @@ public final class NodeTree: @unchecked Sendable {
   @discardableResult
   public func file(_ path: String, _ bytes: [UInt8], writable: Bool = false) -> TreeNode {
     place(path, .bytes(bytes, writable: writable))
+  }
+
+  /// A file whose contents are `vmo`'s first `size` bytes, read only, given
+  /// as memory to read or map, and to run if `executable` (a boot image's
+  /// programs).
+  @discardableResult
+  public func memory(_ path: String, _ vmo: consuming Handle, size: UInt64, executable: Bool) -> TreeNode {
+    place(path, .memory(Backing(vmo, size: size, executable: executable)))
   }
 
   /// A text leaf: `read` renders it on every read; `write`, if given, takes
@@ -473,7 +532,10 @@ struct Session: NodeIPC.NodeHandler {
 
   func stat(_ node: TreeNode, _ fields: UInt32) -> NodeIPC.Stat {
     var size: UInt64 = 0
-    if fields & NodeIPC.Fields.size != 0, case .bytes(let b, _) = node.content { size = UInt64(b.count) }
+    if fields & NodeIPC.Fields.size != 0 {
+      if case .bytes(let b, _) = node.content { size = UInt64(b.count) }
+      if case .memory(let m) = node.content { size = m.size }
+    }
     return NodeIPC.Stat(
       qid: node.qid, name: node.name, size: size,
       modified: fields & NodeIPC.Fields.modified != 0 ? node.modified : 0,
@@ -520,6 +582,32 @@ struct Session: NodeIPC.NodeHandler {
     }
     end.bulk = server
     _ = server.serve()  // what came before the attach
+  }
+
+  /// This session's node's contents as memory: a memory file's VMO as it
+  /// is (to run only if the tree said it may), any other file's copied
+  /// into a new VMO, which can't run.
+  func memory(executable: Bool) throws(NodeError) -> NodeIPC.Memory {
+    let content = try tree.locked { () throws(NodeError) in try live(node).content }
+    let bytes: [UInt8]
+    switch content {
+    case .memory(let m): return try m.share(executable: executable)
+    case .directory, .remote: throw .isDirectory
+    case .service: throw .unsupported
+    case .bytes(let b, _): bytes = b
+    case .text(let render, _): bytes = Array(render().utf8)
+    }
+    guard !executable else { throw .denied }
+    do throws(Status) {
+      let vmo = try VMO.create(size: Swift.max(bytes.count, 1))
+      if !bytes.isEmpty {
+        let m = try VMO.map(vmo, length: (bytes.count + Backing.page - 1) & ~(Backing.page - 1))
+        m.write(bytes, at: 0)
+      }
+      return NodeIPC.Memory(vmo: try vmo.replace(Backing.rights(false)), size: UInt64(bytes.count))
+    } catch {
+      throw .io
+    }
   }
 
   func watch(_ node: TreeNode, since seq: UInt64) throws(NodeError) -> UInt64 {
@@ -578,6 +666,7 @@ extension NodeTree {
     case .service: throw .unsupported
     case .bytes(let b, _): bytes = b
     case .text(let render, _): bytes = Array(render().utf8)  // outside the lock: it's the service's code
+    case .memory(let m): return try m.read(offset: offset, max: Swift.min(Int(max), limit))
     }
     guard offset < UInt64(bytes.count) else { return [] }
     let start = Int(offset)
@@ -592,7 +681,7 @@ extension NodeTree {
     switch content {
     case .directory, .remote:
       throw .isDirectory
-    case .service:
+    case .service, .memory:
       throw .unsupported
     case .text(_, let write):
       guard let write else { throw .unsupported }

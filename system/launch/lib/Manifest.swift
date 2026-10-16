@@ -18,6 +18,7 @@
 //     programs                # it starts programs from bootfs, in a job under its own
 //     bootdata                # firmware's boot data (croi's ZBI items: RSDP, framebuffer, memory)
 //     libraries               # it loads shared objects (dlopen) from bootfs's lib/ (M5k)
+//     bootfs                  # the boot image itself, read only (the bootfs service, which serves it)
 //     launcher                # the launcher's tree at /svc/launcher: status, and ctl (`kill SERVICE`)
 //     clock                   # it sets UTC: the UTC page, writable (the time service, D48)
 //
@@ -123,6 +124,8 @@ public struct Manifest: Sendable {
   public var programsLine = 0
   /// `libraries`: its line, or 0.
   public var librariesLine = 0
+  /// `bootfs`: its line, or 0.
+  public var bootfsLine = 0
   /// `bootdata`: its line, or 0.
   public var bootDataLine = 0
   /// `launcher`: its line, or 0. The launcher's own tree at /svc/launcher,
@@ -240,6 +243,9 @@ public struct Manifest: Sendable {
       } else if `is`(directive, "libraries") {
         try count(0...0)
         librariesLine = lineNumber
+      } else if `is`(directive, "bootfs") {
+        try count(0...0)
+        bootfsLine = lineNumber
       } else if `is`(directive, "launcher") {
         try count(0...0)
         launcherLine = lineNumber

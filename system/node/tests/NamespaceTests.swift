@@ -172,3 +172,34 @@ func failure<R>(_ body: () throws(NamespaceError) -> R) -> NamespaceError? {
   #expect(failure { () throws(NamespaceError) in try ns.open("/srv/gone/status") } == .notFound)
   #expect(try names(ns, "/srv").isEmpty)
 }
+
+/// Node's `memory` (version 3): a memory file's VMO given to read or map,
+/// to run only if its tree says so; any other file copied into a VMO that
+/// can't run; a directory none.
+@Test func filesAsMemory() throws {
+  let s = try Service()
+  defer { s.stop() }
+  let script = Array("#!/bin/rc\necho hi\n".utf8)
+  let vmo = try VMO.create(size: 4096)
+  try VMO.map(vmo, length: 4096).write(script, at: 0)
+  s.tree.memory("bin/program", try vmo.duplicate(), size: UInt64(script.count), executable: true)
+  s.tree.memory("lib/data", vmo, size: 5, executable: false)
+  s.tree.file("etc/motd", Array("hello".utf8))
+  s.start()
+  let ns = Namespace()
+  try ns.mount(s.channel(), at: "/")
+  #expect(try text(ns, "/bin/program") == "#!/bin/rc\necho hi\n")
+  #expect(try text(ns, "/lib/data") == "#!/bi")
+  func contents(_ m: borrowing NodeIPC.Memory) throws -> [UInt8] {
+    try VMO.map(m.vmo, length: 4096, writable: false).read(at: 0, count: Int(m.size))
+  }
+  // (Hosted VMOs can't run, so a program's is read here; launch-test runs
+  // one from /bin.)
+  let program = try ns.memory("/bin/program", executable: false)
+  #expect(try contents(program) == script)
+  #expect(failure { () throws(NamespaceError) in _ = try ns.memory("/lib/data", executable: true) } == .node(.denied))
+  let motd = try ns.memory("/etc/motd", executable: false)
+  #expect(try contents(motd) == Array("hello".utf8))
+  #expect(failure { () throws(NamespaceError) in _ = try ns.memory("/etc/motd", executable: true) } == .node(.denied))
+  #expect(failure { () throws(NamespaceError) in _ = try ns.memory("/etc", executable: false) } == .node(.isDirectory))
+}

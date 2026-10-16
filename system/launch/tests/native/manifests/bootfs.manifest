@@ -1,0 +1,8 @@
+# The boot image as a tree (D71): its programs, libraries and files, read
+# only. Manifests mount its bin/ at /bin.
+service bootfs
+program bootfs
+bootfs
+export
+early
+restart on-failure

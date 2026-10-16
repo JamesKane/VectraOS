@@ -64,17 +64,17 @@ func lastNumber(_ text: String) -> Int64? {
   return digits > 0 ? n : nil
 }
 
-/// rc from bootfs, given this process's /svc, a job and bootfs for its
-/// programs, and stdio: `script` run by `rc -c`, which must write
-/// `expected` and exit 0.
+/// rc from /bin, given this process's /svc and /bin (its programs, the
+/// bootfs service's: D71), a job, and stdio: `script` run by `rc -c`,
+/// which must write `expected` and exit 0.
 func rcRuns(_ rc: ProgramEntry, _ script: String, _ expected: [UInt8], _ ns: Namespace, job: borrowing Handle,
-            bootfs: borrowing Handle, _ name: StaticString) {
+            _ name: StaticString) {
   do throws(Status) {
     let startup = Startup(args: ["rc", "-c", script])
-    guard let svc = try? ns.connect("/svc") else { return check(false, name) }
+    guard let svc = try? ns.connect("/svc"), let bin = try? ns.connect("/bin") else { return check(false, name) }
     startup.mount(svc, at: "/svc")
+    startup.mount(bin, at: "/bin")
     startup.add(try Job.create(parent: job), info: HandleType.info(HandleType.jobDefault))
-    startup.add(try bootfs.duplicate(), info: HandleType.info(HandleType.vmoBootfs))
     // stdin, stdout, and a stderr of its own (D46: a ring per descriptor).
     let stdio = try ChildStdio(for: startup, descriptors: [(0, true), (1, false), (2, false)])
     let process = try Process.create(job: job, name: "rc")
@@ -98,7 +98,7 @@ func rcRuns(_ rc: ProgramEntry, _ script: String, _ expected: [UInt8], _ ns: Nam
 /// end as its descriptors 0 to 2 and its Control, typed to here. It
 /// prompts, runs a line, lends the terminal to a program reading it
 /// (cat, ended by ^D), and exits.
-func rcOnPty(_ rc: ProgramEntry, _ ns: Namespace, job: borrowing Handle, bootfs: borrowing Handle) {
+func rcOnPty(_ rc: ProgramEntry, _ ns: Namespace, job: borrowing Handle) {
   guard let channel = try? ns.connect("/svc/pty/pty") else { return check(false, "/svc/pty/pty for rc") }
   var factory = PtyIPC.FactoryClient(channel: channel)
   do {
@@ -109,10 +109,12 @@ func rcOnPty(_ rc: ProgramEntry, _ ns: Namespace, job: borrowing Handle, bootfs:
       let screen = try AttachedStream(s.parts(childReads: true))
       var dev = PtyIPC.DeviceClient(channel: device)
       let startup = Startup(args: ["rc"])
-      guard let svc = try? ns.connect("/svc") else { return check(false, "rc on a pty: /svc") }
+      guard let svc = try? ns.connect("/svc"), let bin = try? ns.connect("/bin") else {
+        return check(false, "rc on a pty: /svc and /bin")
+      }
       startup.mount(svc, at: "/svc")
+      startup.mount(bin, at: "/bin")
       startup.add(try Job.create(parent: job), info: HandleType.info(HandleType.jobDefault))
-      startup.add(try bootfs.duplicate(), info: HandleType.info(HandleType.vmoBootfs))
       try dev.client().take {
         (i: consuming PtyIPC.Descriptor, o: consuming PtyIPC.Descriptor, e: consuming PtyIPC.Descriptor,
          c: consuming Handle) in
@@ -184,55 +186,61 @@ func rcOnPty(_ rc: ProgramEntry, _ ns: Namespace, job: borrowing Handle, bootfs:
 /// (each a child of rc's, rc relaying between them), checked against the
 /// statuses read here.
 func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
-  guard let job = start.take(HandleType.info(HandleType.jobDefault)),
-    let bootfs = start.take(HandleType.info(HandleType.vmoBootfs)), let files = try? ProgramEntry.bootfs(bootfs)
-  else { return check(false, "a job and bootfs to start rc with") }
-  guard let rc = files.first(where: { same($0.name, "bin/rc") }) else {
-    print("launch-test: no bin/rc (tier 1 isn't built here): rc's checks skipped")
+  guard let job = start.take(HandleType.info(HandleType.jobDefault)) else { return check(false, "a job to start rc in") }
+  // /bin is the bootfs service's (D71): what's there, and rc from it.
+  let listed = (try? ns.list("/bin", fields: 0))?.map { $0.name } ?? []
+  check(listed.contains { same($0, "launch-test") } && listed.contains { same($0, "pty") }, "/bin lists bootfs's programs")
+  guard let memory = try? ns.memory("/bin/rc", executable: true) else {
+    print("launch-test: no /bin/rc (tier 1 isn't built here): rc's checks skipped")
     return
   }
+  let rc = ProgramEntry(image: memory.vmo.raw, offset: 0, length: Int(memory.size), name: "rc")
   // The glob's order: the names' bytes.
   let sorted = names.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
   var all: [UInt8] = []
   for name in sorted { all += Array((readText(ns, "/svc/" + name + "/status") ?? "").utf8) }
-  rcRuns(rc, "cat /svc/*/status", all, ns, job: job, bootfs: bootfs, "rc runs cat /svc/*/status")
+  rcRuns(rc, "cat /svc/*/status", all, ns, job: job, "rc runs cat /svc/*/status")
   let ab = Array(((readText(ns, "/svc/a/status") ?? "") + (readText(ns, "/svc/b/status") ?? "")).utf8)
-  rcRuns(rc, "cat /svc/a/status /svc/b/status | cat | cat", ab, ns, job: job, bootfs: bootfs,
+  rcRuns(rc, "cat /svc/a/status /svc/b/status | cat | cat", ab, ns, job: job,
          "rc pipes program to program")
-  rcRuns(rc, "x=b; cat <<EOF\na $x c\nEOF", Array("a b c\n".utf8), ns, job: job, bootfs: bootfs,
+  rcRuns(rc, "x=b; cat <<EOF\na $x c\nEOF", Array("a b c\n".utf8), ns, job: job,
          "rc gives a program a here document")
   rcRuns(rc, "{ cat /svc/a/status } & wait", Array((readText(ns, "/svc/a/status") ?? "").utf8), ns, job: job,
-         bootfs: bootfs, "rc runs a compound command in the background")
-  // Programs by $path: /bin/NAME is bootfs's bin/NAME; an rc started by
-  // rc can start programs too, and its exit code is its status.
+         "rc runs a compound command in the background")
+  // Programs by $path: /bin/NAME is its namespace's (the bootfs
+  // service's bin/NAME, D71), which ls lists and rfork N takes away; an
+  // rc started by rc can start programs too, and its exit code is its
+  // status.
   let a = Array((readText(ns, "/svc/a/status") ?? "").utf8)
-  rcRuns(rc, "/bin/cat /svc/a/status", a, ns, job: job, bootfs: bootfs, "rc runs a program by its path")
-  rcRuns(rc, "path=() whatis cat || echo none", Array("none\n".utf8), ns, job: job, bootfs: bootfs,
+  rcRuns(rc, "/bin/cat /svc/a/status", a, ns, job: job, "rc runs a program by its path")
+  rcRuns(rc, "path=() whatis cat || echo none", Array("none\n".utf8), ns, job: job,
          "rc finds nothing on an empty $path")
+  rcRuns(rc, "for (p in `{ls /bin}) if (~ $p rc) echo listed; rfork N; whatis cat || echo gone", Array("listed\ngone\n".utf8),
+         ns, job: job, "rc's programs are its namespace's /bin")
   rcRuns(rc, "rc -c 'cat /svc/a/status'; rc -c 'exit 3'; echo $status", a + Array("3\n".utf8), ns, job: job,
-         bootfs: bootfs, "rc runs rc, which runs programs and exits with its status")
+         "rc runs rc, which runs programs and exits with its status")
   rcRuns(rc, "rc -e -c 'echo a; ~ a b; echo never'; echo $status", Array("a\n1\n".utf8), ns, job: job,
-         bootfs: bootfs, "rc -e stops at a command that fails")
+         "rc -e stops at a command that fails")
   rcRuns(rc, "x=(a 'b c'); fn f { echo f $* }; rc -c 'echo $#x; f z'", Array("2\nf z\n".utf8), ns, job: job,
-         bootfs: bootfs, "rc passes rc its lists and functions")
+         "rc passes rc its lists and functions")
   // Split at : alone, the status keeps its newline.
   rcRuns(rc, "x=(a b); n=x; echo $$n; echo `:{cat /svc/a/status}", Array("a b\na first\n\n".utf8), ns, job: job,
-         bootfs: bootfs, "rc takes $$x and `split{}")
+         "rc takes $$x and `split{}")
   // Descriptors of their own (D46): a program's stderr apart from its
   // stdout, fds above 2, and <{} as /dev/fd/N.
   rcRuns(rc, "x=`{cat /nope}; echo $#x; y=`{cat /nope >[2=1]}; ~ $#y 0 || echo caught", Array("0\ncaught\n".utf8),
-         ns, job: job, bootfs: bootfs, "rc gives a program a stderr of its own")
-  rcRuns(rc, "cat /dev/fd/3 <[3]/svc/a/status", a, ns, job: job, bootfs: bootfs, "rc gives a program fd 3")
-  rcRuns(rc, "cat <{cat /svc/a/status} <{echo two}", a + Array("two\n".utf8), ns, job: job, bootfs: bootfs,
+         ns, job: job, "rc gives a program a stderr of its own")
+  rcRuns(rc, "cat /dev/fd/3 <[3]/svc/a/status", a, ns, job: job, "rc gives a program fd 3")
+  rcRuns(rc, "cat <{cat /svc/a/status} <{echo two}", a + Array("two\n".utf8), ns, job: job,
          "rc runs <{} on the device")
-  // rfork: n a copy of rc's namespace, N an empty one (its programs' too),
-  // E what was given hidden, F every descriptor gone.
-  rcRuns(rc, "rfork n; cat /svc/a/status; rfork N; cat /svc/a/status || echo gone; rc -c 'cat /svc/a/status || echo also'",
-         a + Array("gone\nalso\n".utf8), ns, job: job, bootfs: bootfs, "rc's rfork n and N")
+  // rfork: n a copy of rc's namespace, N an empty one (/bin gone with it,
+  // so nothing runs), E what was given hidden, F every descriptor gone.
+  rcRuns(rc, "rfork n; cat /svc/a/status; rfork N; cat /svc/a/status || echo gone", a + Array("gone\n".utf8), ns,
+         job: job, "rc's rfork n and N")
   rcRuns(rc, "x=1; rc -c 'echo $x'; rfork E; rc -c 'echo $#x'; x=2; rc -c 'echo $x'; echo a; {rfork F; echo b}; echo c; exit ''",
-         Array("1\n0\n2\na\n".utf8), ns, job: job, bootfs: bootfs, "rc's rfork E and F")
-  rcOnPty(rc, ns, job: job, bootfs: bootfs)
-  _ = consume bootfs
+         Array("1\n0\n2\na\n".utf8), ns, job: job, "rc's rfork E and F")
+  rcOnPty(rc, ns, job: job)
+  _ = consume memory  // rc is started from it until here
 }
 
 /// What `s` gives until it has `want` in it, its end, or 5 s.
@@ -319,7 +327,8 @@ func runPty(_ ns: Namespace) {
       print("launch-test: FAILED: no namespace")
       Process.exit(code: 1)
     }
-    check(ns.mountPoints.count == 1 && same(ns.mountPoints[0], "/svc"), "the namespace is /svc alone")
+    check(ns.mountPoints.count == 2 && same(ns.mountPoints[0], "/bin") && same(ns.mountPoints[1], "/svc"),
+          "the namespace is /bin and /svc")
 
     // cat /svc/*/status
     let names = ((try? ns.list("/svc")) ?? []).map { $0.name }
@@ -357,8 +366,8 @@ func runPty(_ ns: Namespace) {
       }
     #endif
 
-    // rc runs `cat /svc/*/status` (V2's exit test): rc from bootfs, given
-    // this process's /svc, a job and bootfs for its programs, and stdio;
+    // rc runs `cat /svc/*/status` (V2's exit test): rc from /bin, given
+    // this process's /svc and /bin, a job, and stdio;
     // what it writes is every status, in the glob's order. Tier 1: not on
     // rv64 yet.
     runPty(ns)

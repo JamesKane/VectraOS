@@ -248,6 +248,17 @@ public final class Namespace: @unchecked Sendable {
     throw failure
   }
 
+  /// The file at `path` as memory (Node's `memory`): to read or map, and
+  /// with `executable`, to run (a program in /bin).
+  public func memory(_ path: String, executable: Bool) throws(NamespaceError) -> NodeIPC.Memory {
+    var client = try open(path)
+    do throws(NodeIPC.NodeClient.Failure) {
+      return try client.memory(executable: executable)
+    } catch {
+      throw NamespaceError(error)
+    }
+  }
+
   /// The entries at `path`: the union's members' listings merged, the
   /// first member's entry winning a name, then mount points below it.
   public func list(_ path: String, fields: UInt32 = NodeIPC.Fields.all) throws(NamespaceError) -> [NodeIPC.Stat] {
