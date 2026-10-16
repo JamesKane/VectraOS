@@ -26,6 +26,7 @@
 //   vx mkbootfs OUT.img NAME=FILE...
 //   vx check-pixels FILE.ppm X,Y,R,G,B...
 //   vx qemu-monitor SOCKET COMMAND...         (MonitorCommand.swift)
+//   vx mathgen OUT.swift                      libm's constants (MathgenCommand.swift)
 
 import FoundationEssentials
 import Glibc
@@ -49,6 +50,7 @@ case "mkbootfs": exit(mkbootfsCommand(args) ? 0 : 1)
 case "check-pixels": exit(checkPixelsCommand(args) ? 0 : 1)
 case "qemu-monitor": exit(qemuMonitorCommand(args) ? 0 : 1)
 case "trace": exit(traceCommand(args) ? 0 : 1)
+case "mathgen": exit(mathgenCommand(args) ? 0 : 1)
 default: break
 }
 

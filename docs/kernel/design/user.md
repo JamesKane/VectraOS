@@ -175,9 +175,11 @@ syscalls 110-111):
   runtime since D49: `_start` reads the bootstrap message,
   `td_startup_take`, stdout line-buffered into debuglog records, a
   size-class heap over 1 MiB VMO chunks in the root VMAR, threads' blocks
-  and ELF TLS, a port per thread for its waits and sleeps; plus lib/rt).
+  and ELF TLS, a port per thread for its waits and sleeps; plus lib/rt's
+  stack guard and 128-bit division) and the libc (libc.a, below).
   Swift user code imports `CroiRuntime` (user/include/module.modulemap:
-  syscall.h, and the floor's td_floor.h and td_native.h); the floor
+  syscall.h, the floor's td_floor.h and td_native.h, and the libc's
+  headers); the floor
   imports `CroiSyscall`; the ABI headers it reaches are module
   `CroiAbi` in kernel/include (which CKernel re-exports through abi.h), so
   user code never builds the kernel's private headers. The headers are the
@@ -202,6 +204,23 @@ syscalls 110-111):
   bootfs (the boot-sys test, `userboot.next=bin/sys-test`). Not yet
   natively: `Process.start` (the loader comes with the launcher, V2's
   item 4).
+- The libc (system/libc, todhchai's, V2): ISO C and POSIX in Swift
+  (string, stdlib, stdio's printf family, strtod, ctype, libm), its C
+  side for what Swift can't be (variadics, va_list, struct and long
+  double returns, errno's `_Thread_local`), and its pthreads over the
+  floor's threads and futexes. `croi_user_floor` builds three runtime-free
+  Embedded modules in import order, LibC, Floor (getenv is LibC's) and
+  PThread, into libfloor.a and libc.a, which every user program links:
+  `mem*` and `strlen` are the libc's (lib/rt's stay the kernel's and
+  the loader's). Its headers are user code's (`runtime.h` includes them).
+  SwiftPM builds it hosted: `swift test`'s LibCTests and PThreadTests
+  compare it with glibc. Natively the `libc` suite (LibcSuite.swift, its
+  C side LibcSuite.c: printf's family can't be called from Embedded
+  Swift, which has no `withVaList`) checks the exports, each arch's long
+  double (x87's on amd64, binary128's elsewhere), the pthreads and ELF
+  TLS. It found the floor copying a static PIE's TLS image from its
+  unrelocated p_vaddr (`findTLS` now adds the load bias): no program had
+  initialized TLS before. libm's constants are `vx mathgen`'s.
 
 ## bootfs and userboot (K8b)
 

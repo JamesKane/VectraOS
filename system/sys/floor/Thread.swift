@@ -53,16 +53,28 @@ public enum ThreadBlock {
   #endif
 
   /// The program's TLS segment, from its own program headers (mapped in its
-  /// first segment: `__ehdr_start`).
+  /// first segment: `__ehdr_start`). Its image's address is p_vaddr plus
+  /// the load bias, which the segment mapping the header (file offset 0)
+  /// gives: 0 for a fixed-address program, the random base for a static
+  /// PIE (V2: the floor took p_vaddr alone, so a PIE's first initialized
+  /// `_Thread_local` faulted every thread start).
   static func findTLS() {
     guard let header = unsafe td_image_header() else { return }
     let phoff = unsafe Int(header.load(fromByteOffset: 32, as: UInt64.self))
     let entry = unsafe Int(header.load(fromByteOffset: 54, as: UInt16.self))
     let count = unsafe Int(header.load(fromByteOffset: 56, as: UInt16.self))
+    var bias: UInt = 0
+    for i in 0..<count {
+      let ph = unsafe header + phoff + i * entry
+      // PT_LOAD at file offset 0: the header's own segment.
+      if unsafe ph.load(as: UInt32.self) == 1 && ph.load(fromByteOffset: 8, as: UInt64.self) == 0 {
+        bias = unsafe UInt(bitPattern: header) &- UInt(ph.load(fromByteOffset: 16, as: UInt64.self))
+      }
+    }
     for i in 0..<count {
       let ph = unsafe header + phoff + i * entry
       guard unsafe ph.load(as: UInt32.self) == 7 else { continue }  // PT_TLS
-      tls = unsafe (UInt(ph.load(fromByteOffset: 16, as: UInt64.self)),
+      tls = unsafe (bias &+ UInt(ph.load(fromByteOffset: 16, as: UInt64.self)),
                            Int(ph.load(fromByteOffset: 32, as: UInt64.self)),
                            Int(ph.load(fromByteOffset: 40, as: UInt64.self)),
                            max(1, Int(ph.load(fromByteOffset: 48, as: UInt64.self))))

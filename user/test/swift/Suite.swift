@@ -60,6 +60,8 @@ enum Suite {
             PortRingSuite.run()
         } else if requested("floor") {
             FloorSuite.run()
+        } else if requested("libc") {
+            LibcSuite.run()
         } else if requested("idle") {
             IdleSuite.run()
         } else if requested("interrupts") {

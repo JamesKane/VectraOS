@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: BSD-3-Clause
+//
+// Our libc as a clang module (M6e): SwiftTodhchaiLibc, which Swift's
+// platform module (TodhchaiLibc, the toolchain's stdlib) re-exports, as
+// Glibc does SwiftGlibc. Clang finds it beside the headers in tier 1's
+// sysroot. <assert.h> is textual: each inclusion follows NDEBUG anew.
+// <limits.h> is textual too: clang's own <limits.h> (its _Builtin_limits
+// module) reaches it by #include_next, so this module mustn't own it (that
+// made a cycle, SwiftTodhchaiLibc -> _Builtin_limits -> SwiftTodhchaiLibc,
+// which only a clean build of the stdlib showed). Its limits live in
+// <bits/limits.h>, which the module owns, so Swift sees them.
+
+module SwiftTodhchaiLibc [system] {
+  textual header "assert.h"
+  header "bits/limits.h"
+  header "ctype.h"
+  header "dirent.h"
+  header "dlfcn.h"
+  header "elf.h"
+  header "errno.h"
+  header "fcntl.h"
+  header "fts.h"
+  header "inttypes.h"
+  textual header "limits.h"
+  header "link.h"
+  header "math.h"
+  header "pthread.h"
+  header "sched.h"
+  header "stdio.h"
+  header "stdlib.h"
+  header "string.h"
+  header "strings.h"
+  header "sys/param.h"
+  header "sys/stat.h"
+  header "sys/types.h"
+  header "time.h"
+  header "unistd.h"
+  header "wchar.h"
+  export *
+}

@@ -104,8 +104,12 @@ work, in order:
    them), waits and thread starts go through the floor, and SysHost has
    V1's model (object_bind, counters as the one event), checked hosted
    by SysTests and natively by `bin/sys-test` (boot-sys). The native
-   loader (`Process.start`) comes with the launcher (item 4). libc, ld
-   and the trace session come next.
+   loader (`Process.start`) comes with the launcher (item 4). The libc is
+   lifted: every user program links it (libc.a, its pthreads over the
+   floor), `runtime.h` takes its headers, `swift test` compares it with
+   glibc, and the `libc` suite checks it natively on each arch (which
+   found the floor misplacing a static PIE's TLS image). ld and the trace
+   session come next.
 3. **Tier 1 (D47).** todhchai's `*-todhchai` toolchain, built from the
    pinned Swift 6.4.0 and LLVM sources with its patch series, and tier 1's
    sysroot (libc, pthreads, libc++, the Swift runtime, FoundationEssentials).

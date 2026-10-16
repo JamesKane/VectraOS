@@ -30,21 +30,29 @@ endfunction()
 
 # User programs (K8a): ELF executables linked at 0x1000000 with the floor
 # (system/sys/floor, D49: entry and processargs, stdout over debuglog, the
-# heap, threads' blocks and TLS; lib/rt's mem*, stack guard and 128-bit
-# division), from C and/or Embedded Swift sources. The kernel loads them
+# heap, threads' blocks and TLS; lib/rt's stack guard and 128-bit
+# division) and the libc (system/libc: mem*, stdio, pthreads), from C
+# and/or Embedded Swift sources. The kernel loads them
 # (ProgramLoader), userboot from bootfs (K8b).
 set(CROI_FLOOR_DIR ${PROJECT_SOURCE_DIR}/system/sys/floor)
 set(CROI_USER_COMMON_CFLAGS --target=${CROI_CLANG_TRIPLE} ${CROI_USER_CFLAGS} -std=c23 -O2 -ffreestanding
     -fno-omit-frame-pointer -ffunction-sections -fdata-sections -fno-pic -fno-pie
-    -I${PROJECT_SOURCE_DIR}/user/include -I${PROJECT_SOURCE_DIR}/kernel/include -I${CROI_FLOOR_DIR}/include)
+    -I${PROJECT_SOURCE_DIR}/user/include -I${PROJECT_SOURCE_DIR}/system/libc/include
+    -I${PROJECT_SOURCE_DIR}/kernel/include -I${CROI_FLOOR_DIR}/include)
 
-# croi_user_floor(): builds the floor once per tree, ${CROI_USER_FLOOR}.
+# croi_user_floor(): builds the floor and the libc once per tree:
+# ${CROI_USER_FLOOR} (libfloor.a) and ${CROI_USER_LIBC} (libc.a, its
+# pthreads in it, as glibc's are). Three Embedded modules, in the order
+# they import each other: LibC (system/libc, V2: the functions under their
+# C names, with native/'s C), the Floor, which takes getenv from it, and
+# PThread, over the Floor's threads and futexes. All three are
+# runtime-free (-no-allocations: they run beneath tier 1's full Swift too,
+# M6c). The libc is static-PIE code, which fixed-address programs link too.
 function(croi_user_floor)
   set(_dir ${CMAKE_BINARY_DIR}/user-floor)
+  set(_libc ${PROJECT_SOURCE_DIR}/system/libc)
   set(_c_sources
     ${CROI_FLOOR_DIR}/runtime.c
-    ${PROJECT_SOURCE_DIR}/system/libc/native/errno.c
-    ${PROJECT_SOURCE_DIR}/lib/rt/string.c
     ${PROJECT_SOURCE_DIR}/lib/rt/int128.c
     ${PROJECT_SOURCE_DIR}/lib/rt/stack_protector.c)
   set(_entry ${CROI_FLOOR_DIR}/entry/${CROI_ARCH}.S)
@@ -52,16 +60,61 @@ function(croi_user_floor)
     ${CROI_FLOOR_DIR}/Start.swift ${CROI_FLOOR_DIR}/Stdout.swift ${CROI_FLOOR_DIR}/Heap.swift
     ${CROI_FLOOR_DIR}/Thread.swift ${CROI_FLOOR_DIR}/Threads.swift ${CROI_FLOOR_DIR}/Posix.swift
     ${CROI_FLOOR_DIR}/Waits.swift)
-  file(GLOB _headers ${CROI_FLOOR_DIR}/include/* ${PROJECT_SOURCE_DIR}/user/include/croi/*.h
-       ${PROJECT_SOURCE_DIR}/kernel/include/*.h)
-  # Two flavors: fixed-address (ET_EXEC programs) and -fPIE (static PIEs,
-  # K11b), libfloor.a and libfloor-pie.a.
+  set(_libc_swift
+    ${_libc}/string/Memory.swift ${_libc}/string/Strings.swift ${_libc}/string/Strerror.swift
+    ${_libc}/stdlib/Stdlib.swift ${_libc}/stdlib/Strtod.swift ${_libc}/stdlib/Errno.swift
+    ${_libc}/stdio/Format.swift ${_libc}/stdio/Decimal.swift ${_libc}/ctype/Ctype.swift
+    ${_libc}/math/Exact.swift ${_libc}/math/Transcendental.swift ${_libc}/math/generated/Constants.swift
+    ${_libc}/native/Exports.swift)
+  set(_libc_c ${_libc}/native/errno.c ${_libc}/native/stdio.c ${_libc}/native/stdlib.c)
+  set(_pthread_swift
+    ${_libc}/pthread/lib/Condition.swift ${_libc}/pthread/lib/Keys.swift ${_libc}/pthread/lib/Mutex.swift
+    ${_libc}/pthread/lib/Once.swift ${_libc}/pthread/lib/RWLock.swift ${_libc}/pthread/lib/Threads.swift
+    ${_libc}/pthread/lib/Words.swift ${_libc}/pthread/platform/floor/Platform.swift
+    ${_libc}/pthread/native/Exports.swift)
+  file(GLOB_RECURSE _headers ${CROI_FLOOR_DIR}/include/* ${PROJECT_SOURCE_DIR}/user/include/croi/*.h
+       ${PROJECT_SOURCE_DIR}/kernel/include/*.h ${_libc}/include/* ${_libc}/native/include/*
+       ${_libc}/pthread/c/include/*)
+  set(_swiftc ${CMAKE_Swift_COMPILER} -target ${CROI_SWIFT_TRIPLE}
+      -enable-experimental-feature Embedded -enable-experimental-feature Extern
+      -parse-as-library -strict-memory-safety -wmo -Osize -Xfrontend -no-allocations
+      -Xfrontend -function-sections -I ${_dir})
+
+  # The libc: PIE code, its module beside the floor's.
+  set(_xcc)
+  foreach(_f ${CROI_USER_CFLAGS} -fPIE -std=c23 -fno-omit-frame-pointer -I${_libc}/native/include
+             -I${_libc}/pthread/c/include -I${PROJECT_SOURCE_DIR}/user/include -I${PROJECT_SOURCE_DIR}/kernel/include
+             -I${CROI_FLOOR_DIR}/include)
+    list(APPEND _xcc -Xcc ${_f})
+  endforeach()
+  set(_libc_objects ${_dir}/libc-swift.o)
+  # No loop in it may become a call to the functions it defines.
+  set(_libc_commands COMMAND ${_swiftc} -Xllvm -disable-loop-idiom-all ${_xcc} -module-name LibC
+      -emit-module -emit-module-path ${_dir}/LibC.swiftmodule -c ${_libc_swift} -o ${_dir}/libc-swift.o)
+  foreach(_source ${_libc_c})
+    get_filename_component(_name ${_source} NAME_WE)
+    list(APPEND _libc_commands COMMAND ${CMAKE_C_COMPILER} ${CROI_USER_COMMON_CFLAGS} -fPIE -fstack-protector-strong
+         -I${_libc}/include -I${_libc}/native/include -c ${_source} -o ${_dir}/libc-${_name}.o)
+    list(APPEND _libc_objects ${_dir}/libc-${_name}.o)
+  endforeach()
+  add_custom_command(OUTPUT ${_dir}/LibC.swiftmodule ${_libc_objects}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${_dir}
+    ${_libc_commands}
+    DEPENDS ${_libc_swift} ${_libc_c} ${_headers}
+    COMMENT "Building the libc")
+
+  # Two flavors of the floor: fixed-address (ET_EXEC programs) and -fPIE
+  # (static PIEs, K11b), libfloor.a and libfloor-pie.a. The first emits
+  # its module, for PThread.
   foreach(_flavor "" "-pie")
     set(_objects)
     set(_commands)
     set(_code)
+    set(_module)
     if(_flavor STREQUAL "-pie")
       set(_code -fPIE)
+    else()
+      set(_module -emit-module -emit-module-path ${_dir}/Floor.swiftmodule)
     endif()
     foreach(_source ${_c_sources} ${_entry})
       get_filename_component(_name ${_source} NAME_WE)
@@ -74,29 +127,42 @@ function(croi_user_floor)
                                     -c ${_source} -o ${_object})
       list(APPEND _objects ${_object})
     endforeach()
-    # The floor's Swift: one Embedded module, runtime-free (-no-allocations:
-    # it runs beneath tier 1's full Swift too, M6c).
     set(_xcc)
-    foreach(_f ${CROI_USER_CFLAGS} ${_code} -std=c23 -fno-omit-frame-pointer -I${PROJECT_SOURCE_DIR}/user/include
+    foreach(_f ${CROI_USER_CFLAGS} ${_code} -std=c23 -fno-omit-frame-pointer -I${_libc}/native/include -I${PROJECT_SOURCE_DIR}/user/include
                -I${PROJECT_SOURCE_DIR}/kernel/include -I${CROI_FLOOR_DIR}/include)
       list(APPEND _xcc -Xcc ${_f})
     endforeach()
-    list(APPEND _commands COMMAND ${CMAKE_Swift_COMPILER} -target ${CROI_SWIFT_TRIPLE}
-         -enable-experimental-feature Embedded -enable-experimental-feature Extern
-         -parse-as-library -strict-memory-safety -wmo -Osize -Xfrontend -no-allocations
-         -Xfrontend -function-sections -module-name Floor ${_xcc}
+    list(APPEND _commands COMMAND ${_swiftc} ${_xcc} -module-name Floor ${_module}
          -c ${_swift_sources} -o ${_dir}/floor-swift${_flavor}.o)
     list(APPEND _objects ${_dir}/floor-swift${_flavor}.o)
-    add_custom_command(OUTPUT ${_dir}/libfloor${_flavor}.a
+    set(_outputs ${_dir}/libfloor${_flavor}.a)
+    if(_module)
+      list(APPEND _outputs ${_dir}/Floor.swiftmodule)
+    endif()
+    add_custom_command(OUTPUT ${_outputs}
       COMMAND ${CMAKE_COMMAND} -E make_directory ${_dir}
       ${_commands}
       COMMAND ${CMAKE_COMMAND} -E rm -f ${_dir}/libfloor${_flavor}.a
       COMMAND ${CMAKE_AR} rcs ${_dir}/libfloor${_flavor}.a ${_objects}
-      DEPENDS ${_c_sources} ${_entry} ${_swift_sources} ${_headers}
+      DEPENDS ${_c_sources} ${_entry} ${_swift_sources} ${_headers} ${_dir}/LibC.swiftmodule
       COMMENT "Building the floor${_flavor}")
   endforeach()
+
+  # The pthreads, over the floor; then libc.a.
+  set(_xcc)
+  foreach(_f ${CROI_USER_CFLAGS} -fPIE -std=c23 -fno-omit-frame-pointer -I${_libc}/pthread/c/include -I${_libc}/native/include
+             -I${PROJECT_SOURCE_DIR}/user/include -I${PROJECT_SOURCE_DIR}/kernel/include -I${CROI_FLOOR_DIR}/include)
+    list(APPEND _xcc -Xcc ${_f})
+  endforeach()
+  add_custom_command(OUTPUT ${_dir}/libc.a
+    COMMAND ${_swiftc} ${_xcc} -module-name PThread -c ${_pthread_swift} -o ${_dir}/pthread-swift.o
+    COMMAND ${CMAKE_COMMAND} -E rm -f ${_dir}/libc.a
+    COMMAND ${CMAKE_AR} rcs ${_dir}/libc.a ${_libc_objects} ${_dir}/pthread-swift.o
+    DEPENDS ${_pthread_swift} ${_libc_objects} ${_dir}/Floor.swiftmodule ${_headers}
+    COMMENT "Building the pthreads")
   set(CROI_USER_FLOOR ${_dir}/libfloor.a PARENT_SCOPE)
   set(CROI_USER_FLOOR_PIE ${_dir}/libfloor-pie.a PARENT_SCOPE)
+  set(CROI_USER_LIBC ${_dir}/libc.a PARENT_SCOPE)
 endfunction()
 
 #   croi_user_program(<out.elf> [PIE] [EXPORT_DYNAMIC] [SYS] [SOURCES <c>...] [SWIFT <swift>...] [STACK <bytes>])
@@ -147,15 +213,16 @@ function(croi_user_program output)
   endforeach()
   if(U_SWIFT)
     # The user-mode flags (not the kernel's -mno-sse and friends); C
-    # declarations come from user/include/module.modulemap (CroiRuntime)
-    # and the floor's (system/sys/floor/include).
+    # declarations come from user/include/module.modulemap (CroiRuntime),
+    # the floor's (system/sys/floor/include) and the libc's.
     set(_xcc)
     foreach(_f ${CROI_USER_CFLAGS} ${_cpie} -std=c23 -fno-omit-frame-pointer -I${PROJECT_SOURCE_DIR}/user/include
+               -I${PROJECT_SOURCE_DIR}/system/libc/include
                -I${PROJECT_SOURCE_DIR}/kernel/include -I${CROI_FLOOR_DIR}/include)
       list(APPEND _xcc -Xcc ${_f})
     endforeach()
     list(APPEND _commands COMMAND ${CMAKE_Swift_COMPILER} -target ${CROI_SWIFT_TRIPLE}
-         -enable-experimental-feature Embedded -enable-experimental-feature Lifetimes
+         -enable-experimental-feature Embedded -enable-experimental-feature Lifetimes -enable-experimental-feature Extern
          -parse-as-library -strict-memory-safety -Werror StrictMemorySafety -wmo -Osize
          -Xfrontend -function-sections -module-name ${_name} ${_sys_flags} ${_xcc}
          -c ${U_SWIFT} -o ${_dir}/${_name}-swift.o)
@@ -167,8 +234,8 @@ function(croi_user_program output)
     ${_dynamic_commands}
     COMMAND ${CMAKE_LINKER} ${_link} -e _start -zseparate-loadable-segments
             -zmax-page-size=4096 -znoexecstack -zstack-size=${U_STACK} --gc-sections --build-id=sha1
-            ${_objects} ${_sys_libs} ${_runtime} ${_dynamic_inputs} -o ${output}
-    DEPENDS ${U_SOURCES} ${U_SWIFT} ${_sys_libs} ${_runtime} ${PROJECT_SOURCE_DIR}/user/include/module.modulemap
+            ${_objects} ${_sys_libs} ${_runtime} ${CROI_USER_LIBC} ${_dynamic_inputs} -o ${output}
+    DEPENDS ${U_SOURCES} ${U_SWIFT} ${_sys_libs} ${_runtime} ${CROI_USER_LIBC} ${PROJECT_SOURCE_DIR}/user/include/module.modulemap
     COMMENT "Building user program ${_name}")
 endfunction()
 
@@ -182,6 +249,7 @@ function(croi_user_sys)
   set(_sys ${PROJECT_SOURCE_DIR}/system/sys)
   set(_xcc)
   foreach(_f ${CROI_USER_CFLAGS} -fPIE -std=c23 -fno-omit-frame-pointer -I${PROJECT_SOURCE_DIR}/user/include
+             -I${PROJECT_SOURCE_DIR}/system/libc/include
              -I${PROJECT_SOURCE_DIR}/kernel/include -I${CROI_FLOOR_DIR}/include)
     list(APPEND _xcc -Xcc ${_f})
   endforeach()

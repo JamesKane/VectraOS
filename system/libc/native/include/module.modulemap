@@ -1,0 +1,4 @@
+module TDStdioShim {
+  header "td_stdio_shim.h"
+  export *
+}

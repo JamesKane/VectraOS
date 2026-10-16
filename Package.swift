@@ -68,7 +68,25 @@ let package = Package(
             swiftSettings: tier0 + c23),
     .testTarget(name: "SysTests", dependencies: ["Sys", "SysHost"], path: "system/sys/tests", exclude: ["native"],
                 swiftSettings: c23),
-    .executableTarget(name: "vx", dependencies: ["Bench", "ImageFormats", "TraceFormat", "TraceReader"], path: "tools/vx"),
+    // Our libc (system/libc, V2), tier 0, tested against the host's glibc.
+    // native/ exports the functions under their C names: CMake's build
+    // only. Optimized in debug builds too: its value-generic conversions
+    // run unspecialized at -Onone, several times slower, and its tests run
+    // millions of them. errno is glibc's hosted (Errno.swift).
+    .target(name: "LibC", path: "system/libc", exclude: ["README.md", "native", "tests", "pthread", "include"],
+            swiftSettings: tier0 + [.enableExperimentalFeature("Extern"), .unsafeFlags(["-O"], .when(configuration: .debug))]),
+    .target(name: "TDFloat128", path: "system/libc/tests/float128"),  // glibc's binary128, for the tests
+    .testTarget(name: "LibCTests", dependencies: ["LibC", "TDFloat128"], path: "system/libc/tests",
+                exclude: ["float128"]),
+    // Its pthreads, a module of their own: natively over the floor
+    // (CMake), hosted over Sys, for the tests that compare them with glibc's.
+    .target(name: "TDAtomic", path: "system/libc/pthread/c"),
+    .target(name: "PThread", dependencies: ["Sys", "TDAtomic"], path: "system/libc/pthread",
+            exclude: ["c", "native", "tests", "platform/floor"], sources: ["lib", "platform/hosted"],
+            swiftSettings: tier0 + c23),
+    .testTarget(name: "PThreadTests", dependencies: ["PThread", "Sys"], path: "system/libc/pthread/tests",
+                swiftSettings: c23),
+    .executableTarget(name: "vx",dependencies: ["Bench", "ImageFormats", "TraceFormat", "TraceReader"], path: "tools/vx"),
   ],
   cLanguageStandard: .gnu2x
 )

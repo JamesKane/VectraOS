@@ -79,12 +79,10 @@ enum FloorSuite {
     /// process's koid.
     static func posix() {
         check(unsafe __errno_location() != nil, "errno has a home")
-        var ts = InlineArray<2, Int64>(repeating: 0)
+        var ts = timespec()
         let before = td_monotonic()
-        check(unsafe withUnsafeMutablePointer(to: &ts) { p in
-            unsafe clock_gettime(1, UnsafeMutableRawPointer(p).assumingMemoryBound(to: Int64.self))
-        } == 0, "clock_gettime(CLOCK_MONOTONIC)")
-        let now = ts[0] * 1_000_000_000 + ts[1]
+        check(unsafe clock_gettime(CLOCK_MONOTONIC, &ts) == 0, "clock_gettime(CLOCK_MONOTONIC)")
+        let now = Int64(ts.tv_sec) * 1_000_000_000 + Int64(ts.tv_nsec)
         check(now >= before && now <= td_monotonic(), "is monotonic time")
         var basic = croi_info_handle_basic_t()
         check(Sys.call(CROI_SYS_OBJECT_GET_INFO, UInt64(td_runtime_process_self), UInt64(CROI_INFO_HANDLE_BASIC),

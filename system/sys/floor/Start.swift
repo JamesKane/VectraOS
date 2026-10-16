@@ -18,6 +18,7 @@
 // the floor is VectraOS's one user runtime (D49).
 
 import CroiSyscall
+import LibC
 import TDNative
 
 /// What the runtime keeps for Sys (system/sys/backend/native): this process's
@@ -235,18 +236,10 @@ func strings(_ m: UnsafeMutablePointer<UInt8>, _ size: Int, _ offset: UInt32, _ 
   exit(-1)
 }
 
-/// getenv (C23 §7.24.4.6) under its C name, over the process's environment:
-/// the value of its first `name=value` entry.
+/// getenv (C23 §7.24.4.6) under its C name, over the process's environment.
 @c(getenv) public func exportedGetenv(_ name: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>? {
   guard let env = unsafe environ else { return nil }
-  var i = 0
-  while let entry = unsafe env[i] {
-    i += 1
-    var n = 0
-    while unsafe name[n] != 0 && entry[n] == name[n] { n += 1 }
-    if unsafe name[n] == 0 && entry[n] == 0x3D { return unsafe entry + n + 1 }  // '='
-  }
-  return nil
+  return unsafe LibC.getenv(name, in: UnsafePointer(env))
 }
 
 /// The program's argv and argc, for a runtime that asks (Swift's

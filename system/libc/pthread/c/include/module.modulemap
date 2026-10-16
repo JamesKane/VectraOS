@@ -1,0 +1,4 @@
+module TDAtomic {
+  header "td_atomic.h"
+  export *
+}
