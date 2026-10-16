@@ -72,6 +72,26 @@ final class Job: RcJob {
 final class LinuxSystem: RcSystem {
   var processID: UInt64 { UInt64(getpid()) }
 
+  /// A thread, waited for by a semaphore.
+  final class ThreadJob: RcJob {
+    let done = DispatchSemaphore(value: 0)
+    func wait() -> String {
+      done.wait()
+      done.signal()
+      return ""
+    }
+  }
+
+  func spawn(_ body: @escaping @Sendable () -> Void) -> RcJob? {
+    let job = ThreadJob()
+    let done = job.done
+    Thread.detachNewThread {
+      body()
+      done.signal()
+    }
+    return job
+  }
+
   let searchPath = [".", "/bin", "/usr/bin", "/usr/local/bin"]
 
   func resolve(_ name: String) -> String? {

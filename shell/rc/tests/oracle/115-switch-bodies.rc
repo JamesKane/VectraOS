@@ -1,7 +1,6 @@
 switch(a){
 case a
-	echo one & echo two
-	wait
+	echo one & wait; echo two
 case b
 	echo never
 }

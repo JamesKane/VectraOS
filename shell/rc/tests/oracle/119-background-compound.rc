@@ -1,0 +1,9 @@
+x=1
+{ x=2; echo in $x } & wait
+echo out $x
+fn f { echo f ran }
+f & wait
+if(true) echo if bg & wait
+~ $#apid 1 && echo apid
+{ exit 3 } & wait
+echo still here

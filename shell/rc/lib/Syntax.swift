@@ -442,12 +442,15 @@ public struct Parser {
       if stops.contains(peek) { break }
       if peek == .end { throw RcSyntaxError(message: "unfinished", incomplete: true) }
       var c = try andOr()
-      if peek == .ampersand {
+      let background = peek == .ampersand
+      if background {
         at += 1
         c = .background(c)
       }
       if !commands.isEmpty { newlines.append(newline) }
       commands.append(c)
+      // `a & b`: another command may follow a & on its line.
+      if background { continue }
       guard peek == .semicolon || peek == .newline || peek == .ampersand || stops.contains(peek) else {
         throw RcSyntaxError(message: "unexpected \(peek)")
       }

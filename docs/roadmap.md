@@ -287,11 +287,14 @@ work, in order:
      line; a `&` in a switch case (it hung the parser); `(` straight after
      a word and `=` outside an assignment refused, as 9front does; an
      assignment's name a word (`$a=v`); `builtin`; `whatis` printing a
-     function as 9front's pcmd does.
+     function as 9front's pcmd does; `&` on a compound command (a thread
+     in a copy of rc's variables and functions), and a command after `&`
+     on its line.
    - **Redirections:** a program's fd 2 is its stdout and fds over 2
      are dropped; redirection streams are never closed.
    - **Missing syntax:** `<>`, `<{}`, `>{}`, `$$x`, `` `split{} ``.
-   - **Wrong semantics:** `&` on a compound command runs in the foreground.
+   - **Wrong semantics:** a compound command run with `&` shares rc's
+     directory (one per process), so a `cd` in it moves rc too.
    - **Missing pieces:** `rc file`, `#!`, `$path` and absolute paths;
      the flags but `-c`; `exec`, `flag`, `rfork`; notes
      (`sigint`, `sigexit`); `$path`, `$cflag`, a real

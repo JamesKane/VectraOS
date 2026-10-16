@@ -230,6 +230,19 @@ final class CroiSystem: RcSystem {
 
   var directory: String { FDIO.currentDirectory }
 
+  /// A thread of rc's, joined by its job.
+  final class ThreadJob: RcJob {
+    let thread: Owned
+    init(_ thread: Owned) { self.thread = thread }
+    func wait() -> String {
+      thread.with { h in try? Thread.join(h) }
+      thread.close()
+      return ""
+    }
+  }
+
+  func spawn(_ body: @escaping @Sendable () -> Void) -> RcJob? { Self.relay(body).map { ThreadJob($0) } }
+
   /// rc's koid, which croi never reuses.
   var processID: UInt64 { (try? Process.current().info().koid) ?? 1 }
 

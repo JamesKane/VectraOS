@@ -54,10 +54,15 @@ public protocol RcSystem: AnyObject {
   func setAttribute(_ path: String, _ name: String, _ value: AttributeText?) -> Bool
   /// rc's own process's number ($pid).
   var processID: UInt64 { get }
+  /// Runs `body` on a thread of its own, its job waiting for it: a
+  /// background command that isn't one program (9front forks it). Nil if
+  /// the system can't, and it runs in the foreground.
+  func spawn(_ body: @escaping @Sendable () -> Void) -> RcJob?
 }
 
 extension RcSystem {
   public var processID: UInt64 { 1 }
+  public func spawn(_ body: @escaping @Sendable () -> Void) -> RcJob? { nil }
 
   /// Whether `path` names something: its directory's listing holds its
   /// last name (globbing keeps a path ending in literal names only so).
@@ -549,7 +554,22 @@ public final class Rc {
         }
         setStatus("")
       } else {
-        try contained(c, fds)
+        // Anything else as a fork would run it: on a thread, in a copy of
+        // rc's variables and functions (the directory is still the
+        // process's: a `cd` in it is everyone's).
+        let child = Rc(system: system)
+        (child.variables, child.functions, child.ifNotPending) = (variables, functions, ifNotPending)
+        let work = Unchecked((child, c, fds))
+        if let job = system.spawn({
+          let (child, c, fds) = work.value
+          do { try child.contained(c, fds) } catch {}
+        }) {
+          background.append(job)
+          variables["apid"] = [String(background.count)]
+          setStatus("")
+        } else {
+          try contained(c, fds)
+        }
       }
     case .brace(let c, let redirs): try execute(c, try redirect(redirs, fds))
     case .ifThen(let condition, let body):
@@ -812,4 +832,10 @@ extension Substring {
     }
     return nil
   }
+}
+
+/// A value handed to a thread that alone uses it from then on.
+struct Unchecked<T>: @unchecked Sendable {
+  var value: T
+  init(_ value: T) { self.value = value }
 }

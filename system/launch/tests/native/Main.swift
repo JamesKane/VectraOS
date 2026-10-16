@@ -111,6 +111,8 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
          "rc pipes program to program")
   rcRuns(rc, "x=b; cat <<EOF\na $x c\nEOF", Array("a b c\n".utf8), ns, job: job, bootfs: bootfs,
          "rc gives a program a here document")
+  rcRuns(rc, "{ cat /svc/a/status } & wait", Array((readText(ns, "/svc/a/status") ?? "").utf8), ns, job: job,
+         bootfs: bootfs, "rc runs a compound command in the background")
   _ = consume bootfs
 }
 
