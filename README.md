@@ -42,16 +42,19 @@ This repository joins three earlier projects, and when two of them solved the sa
 
 ## Status: setting up
 
-**V0 is done (2026-10-15): the croi kernel boots and passes its self-tests on amd64, arm64 and rv64 in QEMU.** V1, the setup-engine kernel, is under way: `object_bind` has landed and the syscall cuts are under way: 154 calls down to 96 so far, on the way to 91 ([docs/syscall-audit.md](docs/syscall-audit.md)).
+**V0 is done (2026-10-15): the croi kernel boots and passes its self-tests on amd64, arm64 and rv64 in QEMU.** V1, the setup-engine kernel, has made its cuts: 154 calls down to 91, the audit's target ([docs/syscall-audit.md](docs/syscall-audit.md)), with `object_bind`, batched hot calls and the one ring in place. V2, the userland base, is under way: todhchai's userland lifted onto the cut kernel.
 
 What runs today:
 
 - a capability microkernel after Zircon, on three architectures, with KASLR, W^X, PAC and BTI, SMP, scheduling contexts, VMOs and the pager, channels, ports and futexes, user-space driver objects (IRQs, MSIs, DMA) and IOMMU support (VT-d, AMD-Vi, SMMUv3, the RISC-V IOMMU);
 - a UEFI loader that boots it through UEFI and ACPI alone;
-- `vx`, the one front door: build, test, boot, bench, trace, loc and CI;
+- the one ring, in Swift and C and checked by a model checker, carrying port packets, the debuglog, trace records and stdio;
+- a userland on it: the floor (the one user runtime), libc and `dlopen`, Sys, typed IPC, the Node protocol with bulk transfers on ring pairs, the launcher, and rc;
+- tier 1: C, C++ and full Swift programs, built by the `*-vectraos` toolchain, on amd64 and arm64;
+- `vx`, the one front door: build, test, boot, bench, trace, loc, hardware and CI;
 - boot and size budgets reported on every run, judged against this machine's history.
 
-The road ahead ([docs/roadmap.md](docs/roadmap.md)): the one ring and the cut-down kernel (V1), the userland base (V2), the bring-up link (V3), the Radxa Dragon Q8B (V4), Taisce on disk (V5), the desktop (V6), the swarm (V7), compute (V8), and Wasm and games (V9).
+The road ahead ([docs/roadmap.md](docs/roadmap.md)): the one ring and the cut-down kernel (V1), the userland base (V2), the bring-up link (V3), the first boards: the Orange Pi 6 Plus (V4), the Orange Pi RV2 (V4b) and an AMD desktop (V4c), then Taisce on disk (V5), the desktop (V6), the swarm (V7), compute, starting with the Radxa Dragon Q8B (V8), and Wasm and games (V9). What runs where, and how sure we are of it, is [docs/hardware/](docs/hardware/).
 
 ## Build it
 
@@ -61,6 +64,7 @@ swift build --product vx && .build/debug/vx ci   # everything vx ci checks
 .build/debug/vx boot rv64                        # boot interactively (Ctrl-A x quits)
 .build/debug/vx bench                            # boot budgets under KVM (advisory)
 .build/debug/vx loc                              # size budgets
+.build/debug/vx hardware                         # the hardware support list
 ```
 
 You need Swift 6.4.0 through swiftly (pinned by `.swift-version`, with its bundled clang, lld and llvm-objcopy), CMake, Ninja, bash, and QEMU with edk2 from `/usr/share/edk2`. Nothing else.
@@ -76,6 +80,8 @@ You need Swift 6.4.0 through swiftly (pinned by `.swift-version`, with its bundl
 | [docs/provenance.md](docs/provenance.md) | Which code comes from which repository, and why |
 | [docs/decisions/](docs/decisions/) | The dated decision log |
 | [docs/roadmap.md](docs/roadmap.md) | The milestones and their exit criteria |
+| [docs/hardware/](docs/hardware/) | What runs where, at what support level (research to supported), and the evidence for each (D66) |
+| [docs/boards/](docs/boards/) | One notebook per board and PC: its facts, sources and what to check on the machine |
 | [docs/syscall-audit.md](docs/syscall-audit.md) | V1's audit: which calls stay, which go, and what replaces them |
 | [docs/trace-format.md](docs/trace-format.md) | The trace format the budgets are read from |
 | [docs/design/storyboard/](docs/design/storyboard/) | The desktop storyboard ([live canvas](https://claude.ai/artifact/BcQQLDod1qqmgwVzabeTPX)): the Platinum Indigo look, D24 |
