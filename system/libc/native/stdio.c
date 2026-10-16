@@ -5,9 +5,10 @@
 // family) and the va_list readers the Swift formatter
 // (system/libc/stdio/Format.swift) takes its arguments through, and the
 // three standard streams, over the floor's (system/sys/floor/Stdout.swift):
-// stdout as lines and stderr at once, to the debuglog; stdin through a
-// buffer, empty until byte streams come (V2's item 6, D46). fopen has no
-// files to open yet (tier 1's files are the fs service's, from Swift).
+// stdout as lines and stderr at once, to the stdout ring or the debuglog;
+// stdin through a buffer, from the stdin ring (D46). fopen has no files
+// to open yet: FDIO's open and read are POSIX's, but no FILE streams
+// over them.
 
 #include <errno.h>
 #include <stdarg.h>

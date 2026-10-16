@@ -216,7 +216,14 @@ work, in order:
    the end mark at exit through them, and Sys's `ChildStdio` is the
    parent's side. A process given none writes stdout to the debuglog as
    before. sys-test checks it (its child echoes 20 KB; a child whose
-   parent goes sees its stdin end). Next: `pipe()` and the pty.
+   parent goes sees its stdin end). FDIO is lifted (`system/fdio`,
+   tier 1, with the fs protocol's client side, `services/fs`): POSIX's
+   file calls over the namespace's Node trees, checked hosted over a
+   NodeTree (FDIOTests) and natively through its C names
+   (`bin/fdio-test`, amd64 and arm64); what needs the fs protocol waits
+   for Taisce (V3), and the libc has no FILE streams over files yet.
+   Next: rc (tier 1), its pipes as relays between children's stdio, and
+   the pty.
 7. **Drivers:** PCI, ACPI (the AML interpreter), devmgr, the driver host,
    the virtio library and virtio-input. Each driver binds its interrupt
    with `object_bind` and acks in arrays. The block class's ring (TDBR)

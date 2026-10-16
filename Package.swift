@@ -76,6 +76,14 @@ let ipc: [Target] = [
   // The time service's RTC reading (services/time, D48): its registers as UTC.
   .target(name: "RTC", path: "services/time/lib", swiftSettings: tier0),
   .testTarget(name: "RTCTests", dependencies: ["RTC"], path: "services/time/tests"),
+  // The fs protocol's client side (services/fs, V2: FDIO's; the service
+  // comes with Taisce, V3).
+  .target(name: "Fs", dependencies: ["Node", "IPC"], path: "services/fs/lib", swiftSettings: tier0),
+  // FDIO (system/fdio, V2): POSIX descriptors over the namespace, tier 1's
+  // files; hosted, over a namespace a test installs.
+  .target(name: "FDIO", dependencies: ["Fs", "Node", "IPC"], path: "system/fdio",
+          exclude: ["native", "tests", "README.md"], sources: ["lib", "hosted"], swiftSettings: tier0),
+  .testTarget(name: "FDIOTests", dependencies: ["FDIO", "Node", "IPC"], path: "system/fdio/tests", exclude: ["native"]),
   // The launcher (system/launch, V2): manifests, a job and a process per
   // service, each process's namespace as its Startup (D65), restarts.
   .target(name: "Launch", dependencies: ["Node", "IPC"], path: "system/launch/lib", swiftSettings: tier0),

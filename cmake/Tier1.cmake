@@ -113,7 +113,16 @@ function(croi_tier1 bootfs_var depends_var)
   # archive), after those it uses, from the same sources as tier 0's.
   set(_lib ${_out}/lib)
   function(croi_tier1_library name)
-    cmake_parse_arguments(T "" "" "SOURCES;USES;INCLUDES" ${ARGN})
+    cmake_parse_arguments(T "" "" "SOURCES;USES;INCLUDES;CSOURCES" ${ARGN})
+    # C sources: by the *-vectraos clang, into the same archive.
+    set(_c_steps)
+    foreach(_c ${T_CSOURCES})
+      get_filename_component(_stem ${_c} NAME_WE)
+      list(APPEND _c_steps
+        COMMAND ${_clang} -ffunction-sections -c ${PROJECT_SOURCE_DIR}/${_c} -o ${_lib}/${name}-${_stem}.o
+        COMMAND ${_toolchain_bin}/llvm-ar r ${_lib}/lib${name}.a ${_lib}/${name}-${_stem}.o)
+    endforeach()
+    list(TRANSFORM T_CSOURCES PREPEND ${PROJECT_SOURCE_DIR}/)
     list(TRANSFORM T_INCLUDES PREPEND -I${PROJECT_SOURCE_DIR}/)
     list(TRANSFORM T_SOURCES PREPEND ${PROJECT_SOURCE_DIR}/)
     set(_uses ${T_USES})
@@ -125,10 +134,11 @@ function(croi_tier1 bootfs_var depends_var)
               -I ${_lib} ${T_INCLUDES} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros"
               -emit-library -static -emit-module -module-name ${name} -emit-module-path ${_lib}/${name}.swiftmodule
               -o ${_lib}/lib${name}.a ${T_SOURCES}
+      ${_c_steps}
       # swiftc keeps an unchanged module's time, but -O inlines across
       # modules: what uses this library is rebuilt whenever it is.
       COMMAND ${CMAKE_COMMAND} -E touch ${_lib}/${name}.swiftmodule
-      DEPENDS swift-stdlib ${_swift_core} ${T_SOURCES} ${_uses} ${_sysroot}/usr/lib/libsys.a ${CROI_IPC_PLUGIN}
+      DEPENDS swift-stdlib ${_swift_core} ${T_SOURCES} ${T_CSOURCES} ${_uses} ${_sysroot}/usr/lib/libsys.a ${CROI_IPC_PLUGIN}
       COMMENT "${name} for tier 1, by the *-vectraos swiftc")
   endfunction()
   set(_sys system/sys)
@@ -153,7 +163,16 @@ function(croi_tier1 bootfs_var depends_var)
   croi_tier1_library(IPC SOURCES ${_ipc_t1} USES IPCWire Sys Trace INCLUDES system/trace/c/include)
   croi_tier1_library(Node SOURCES ${_node_t1} USES IPC Ring INCLUDES system/trace/c/include)
   croi_tier1_library(Launch SOURCES ${_launch_t1} USES Node INCLUDES system/trace/c/include)
-  set(_t1_libs SysABI Loader Ring Sys LibSys TraceFormat Trace IPCWire IPC Node Launch)
+  # FDIO (system/fdio): POSIX's files over the namespace, the fs protocol's
+  # client side with it (services/fs).
+  croi_tier1_library(Fs SOURCES services/fs/lib/Fs.swift services/fs/lib/Client.swift services/fs/lib/Listing.swift
+                     USES Node INCLUDES system/trace/c/include)
+  croi_tier1_library(FDIO SOURCES system/fdio/lib/FDIO.swift system/fdio/lib/Walk.swift
+                                  system/fdio/native/Startup.swift system/fdio/native/Exports.swift
+                                  system/fdio/native/Fts.swift
+                     CSOURCES system/fdio/native/open.c
+                     USES Fs Node INCLUDES system/trace/c/include)
+  set(_t1_libs SysABI Loader Ring Sys LibSys TraceFormat Trace IPCWire IPC Node Launch Fs FDIO)
   set(_t1_archives ${_t1_libs})
   list(TRANSFORM _t1_archives PREPEND ${_lib}/lib)
   list(TRANSFORM _t1_archives APPEND .a)
@@ -169,7 +188,14 @@ function(croi_tier1 bootfs_var depends_var)
             ${PROJECT_SOURCE_DIR}/system/node/tests/native/Main.swift -o ${_out}/node-test-t1
     DEPENDS ${_t1_archives} ${PROJECT_SOURCE_DIR}/system/node/tests/native/Main.swift
     COMMENT "node-test for tier 1")
-  set(_programs floor-hello cxx-hello swift-hello swift-start swift-async foundation-test node-test-t1)
+  # fdio-test: FDIO's C names and the libc's stdio over a tree.
+  add_custom_command(OUTPUT ${_out}/fdio-test
+    COMMAND ${_swiftc} -parse-as-library -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -L ${_lib}
+            ${_t1_link} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros"
+            ${PROJECT_SOURCE_DIR}/system/fdio/tests/native/Main.swift -o ${_out}/fdio-test
+    DEPENDS ${_t1_archives} ${PROJECT_SOURCE_DIR}/system/fdio/tests/native/Main.swift
+    COMMENT "fdio-test, for tier 1")
+  set(_programs floor-hello cxx-hello swift-hello swift-start swift-async foundation-test node-test-t1 fdio-test)
   set(_entries)
   set(_files)
   foreach(_p ${_programs})

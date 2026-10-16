@@ -460,3 +460,13 @@ system/launch/tests/LaunchTests.swift	todhchai	527ff94	system/launch/tests/Launc
 services/time/lib/RTC.swift	todhchai	527ff94	services/time/lib/RTC.swift
 services/time/tests/RTCTests.swift	todhchai	527ff94	services/time/tests/RTCTests.swift
 services/time/Main.swift	todhchai	527ff94	services/time/Main.swift
+system/fdio/README.md	todhchai	527ff94	system/fdio/README.md
+system/fdio/lib/FDIO.swift	todhchai	527ff94	system/fdio/lib/FDIO.swift
+system/fdio/lib/Walk.swift	todhchai	527ff94	system/fdio/lib/Walk.swift
+system/fdio/native/Exports.swift	todhchai	527ff94	system/fdio/native/Exports.swift
+system/fdio/native/open.c	todhchai	527ff94	system/fdio/native/open.c
+system/fdio/native/Fts.swift	todhchai	527ff94	system/fdio/native/Fts.swift
+system/fdio/hosted/Startup.swift	todhchai	527ff94	system/fdio/hosted/Startup.swift
+services/fs/lib/Fs.swift	todhchai	527ff94	services/fs/lib/Fs.swift
+services/fs/lib/Client.swift	todhchai	527ff94	services/fs/lib/Client.swift
+services/fs/lib/Listing.swift	todhchai	527ff94	services/fs/lib/Listing.swift
