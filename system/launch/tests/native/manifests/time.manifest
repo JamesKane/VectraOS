@@ -1,0 +1,8 @@
+# The time service (D48), on amd64 (the CMOS's ports): it sets UTC from
+# the RTC before anything that isn't early starts.
+service time
+program time
+export
+early
+clock
+resource ioport

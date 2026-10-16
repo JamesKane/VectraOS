@@ -186,7 +186,15 @@ work, in order:
    (BulkTests) and natively (node-test). Left: the exit test, with rc.
 5. **Time (D48).** Clock objects are cut: the time service publishes UTC
    in a read-only seqlock page that the launcher hands every process at
-   start.
+   start. **Done but for two RTCs:** the page is `td_utc.h`'s (a seqlock
+   over an offset from monotonic time and an error bound), which the
+   floor maps at start (PA_VMO_UTC) so `clock_gettime(CLOCK_REALTIME)` is
+   a read with no syscall; the launcher makes it with a backstop
+   (2026-01-01) and gives a `clock` service a writable copy;
+   `services/time` is ported and sets UTC from amd64's CMOS clock
+   (RTCTests hosted; boot-launch checks every arch reads the page and
+   amd64 the RTC's time). Left: arm64's PL031 and rv64's RTC, which
+   need their ACPI discovery.
 6. **Byte streams (D46).** stdio, `pipe()` and the pty move from sockets
    to the one ring in its byte-stream mode: one writer per ring, an end
    mark for end of input, and peer death from a channel's PEER_CLOSED.

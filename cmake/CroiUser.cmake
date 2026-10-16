@@ -341,7 +341,8 @@ function(croi_user_sys)
   set(_loader ${PROJECT_SOURCE_DIR}/lib/elf/Elf/ElfImage.swift ${PROJECT_SOURCE_DIR}/user/lib/loader/Bootfs.swift
       ${PROJECT_SOURCE_DIR}/user/lib/loader/Segments.swift ${PROJECT_SOURCE_DIR}/user/lib/loader/Program.swift)
   set(_api ${_sys}/api/Handles.swift ${_sys}/api/Lock.swift ${_sys}/api/Objects.swift ${_sys}/api/Startup.swift
-      ${_sys}/backend/native/Kernel.swift ${_sys}/backend/native/Loader.swift)
+      ${_sys}/backend/native/Kernel.swift ${_sys}/backend/native/Loader.swift
+      ${_sys}/backend/native/UTC.swift)
   set(_lib ${_sys}/native/Start.swift)
   set(_ld ${PROJECT_SOURCE_DIR}/system/ld/lib/Dynamic.swift ${PROJECT_SOURCE_DIR}/system/ld/native/Linker.swift
       ${PROJECT_SOURCE_DIR}/system/ld/native/Exports.swift)

@@ -8,6 +8,7 @@
 // which a library imports from the program.
 
 #include "td_native.h"
+#include "td_utc.h"
 
 uint32_t td_runtime_process_self;
 uint32_t td_runtime_vmar_root;
@@ -15,12 +16,20 @@ uint32_t td_runtime_thread_self;
 uint64_t td_runtime_vdso_base;
 uint64_t td_runtime_vdso_clock;
 uint64_t td_runtime_vdso_topology;
+uint64_t td_runtime_utc_page;
 
 int64_t td_monotonic(void);
 
-// UTC now: the monotonic clock until the time service publishes UTC in a
-// page every process maps (D48, V2's item 5).
-int64_t td_utc_now(void) { return td_monotonic(); }
+// UTC now: the monotonic clock plus the UTC page's offset (D48), read
+// under its seqlock; the monotonic clock alone in a process given no page.
+int64_t td_utc_now(void) {
+  int64_t now = td_monotonic();
+  if (!td_runtime_utc_page) return now;
+  int64_t offset;
+  uint64_t error;
+  td_utc_read((const td_utc_page_t *)(uintptr_t)td_runtime_utc_page, &offset, &error);
+  return now + offset;
+}
 
 // C's environment (POSIX's environ): the floor's start points it at the
 // processargs message's strings (Start.swift).

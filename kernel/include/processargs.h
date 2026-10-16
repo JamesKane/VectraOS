@@ -30,6 +30,10 @@ enum : uint32_t {
   // The server end of the process's own Node tree, its export (Fuchsia's
   // PA_DIRECTORY_REQUEST, D65).
   CROI_PA_DIRECTORY_REQUEST = 0x3B,
+  // The UTC page (D48), a VMO the time service writes: argument 0 read only,
+  // which the floor maps for clock_gettime; argument 1 writable, the time
+  // service's. Fuchsia's PA_CLOCK_UTC was this type.
+  CROI_PA_VMO_UTC = 0x40,
   CROI_PA_RESOURCE = 0x3F,        // argument 0: the root resource
   // Each kind's ranged root (Zircon's; userboot gets them all).
   CROI_PA_MMIO_RESOURCE = 0x50,

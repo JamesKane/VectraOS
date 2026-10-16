@@ -231,6 +231,15 @@ func strings(_ m: UnsafeMutablePointer<UInt8>, _ size: Int, _ offset: UInt32, _ 
   _ = ProcessStart.take(info(CROI_PA_VMAR_ROOT))
   Runtime.processSelf = ProcessStart.take(info(CROI_PA_PROC_SELF)) ?? 0
   Runtime.threadSelf = ProcessStart.take(info(CROI_PA_THREAD_SELF)) ?? 0
+  // The UTC page, mapped read only for td_utc_now (D48); the mapping keeps
+  // it. Argument 1, a writable one, stays the time service's.
+  if let utc = ProcessStart.take(info(CROI_PA_VMO_UTC)) {
+    var mapped: UInt64 = 0
+    if unsafe croi_vmar_map(td_runtime_vmar_root, UInt32(CROI_VM_PERM_READ), 0, utc, 0, 4096, &mapped) == 0 {
+      td_runtime_utc_page = mapped
+    }
+    _ = croi_handle_close(utc)
+  }
 
   // The program's initializers (a full Swift runtime registers its metadata
   // from them), then its main.

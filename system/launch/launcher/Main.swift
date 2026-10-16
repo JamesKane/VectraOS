@@ -13,6 +13,11 @@ import Launch
 import Node
 import Sys
 
+/// UTC's backstop: the earliest it may read (2026-01-01T00:00:00Z, in ns),
+/// until the time service sets it (D48). Fuchsia's is its build's time;
+/// ours is moved forward now and then.
+let utcBackstop: Int64 = 1_767_225_600 * 1_000_000_000
+
 func fail(_ what: String) -> Never {
   print("launcher: \(what)")
   Process.exit(code: 1)
@@ -65,6 +70,13 @@ func dropping(_ prefix: StaticString, _ name: String) -> String? {
     }
     if let copy = try? bootfs.duplicate() { launcher.allow(bootfs: copy) }
     if let data = start.take(HandleType.info(HandleType.vmoBootData)) { launcher.allow(bootData: data) }
+    // The UTC page (D48): every process reads it, the time service (`clock`)
+    // writes it; until then it reads the backstop.
+    do throws(Status) {
+      launcher.allow(utcPage: try UTCPage.create(backstop: utcBackstop))
+    } catch {
+      print("launcher: no UTC page: \(error.rawValue)")
+    }
     do throws(LaunchError) {
       try launcher.start(manifests)
     } catch {

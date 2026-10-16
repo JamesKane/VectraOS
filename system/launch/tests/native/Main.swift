@@ -6,7 +6,8 @@
 // (launcher.until=launch-test, the boot-launch test). It reads its
 // namespace from its Startup (D65), reads every /svc/*/status, reaches a
 // through b, kills a through /svc/launcher/ctl and reaches its next
-// instance by the same paths. It exits 0 if every check passed.
+// instance by the same paths, and reads UTC from the page every process
+// is given (D48), the RTC's on amd64. It exits 0 if every check passed.
 
 import Node
 import Sys
@@ -47,6 +48,21 @@ func hasLine(_ text: String, _ line: StaticString) -> Bool {
   return false
 }
 
+/// The last word of `text`, as a decimal number.
+func lastNumber(_ text: String) -> Int64? {
+  var n: Int64 = 0, digits = 0
+  for b in text.utf8 {
+    if b >= 0x30 && b <= 0x39 {
+      n = n * 10 + Int64(b - 0x30)
+      digits += 1
+    } else if b == 0x20 {
+      n = 0
+      digits = 0
+    }
+  }
+  return digits > 0 ? n : nil
+}
+
 @main struct LaunchTest {
   static func main() {
     let start = Startup.current
@@ -61,7 +77,12 @@ func hasLine(_ text: String, _ line: StaticString) -> Bool {
 
     // cat /svc/*/status
     let names = ((try? ns.list("/svc")) ?? []).map { $0.name }
-    check(names.count == 3 && names.contains { same($0, "a") } && names.contains { same($0, "b") }
+    #if arch(x86_64)
+      let expected = 4  // and the time service
+    #else
+      let expected = 3
+    #endif
+    check(names.count == expected && names.contains { same($0, "a") } && names.contains { same($0, "b") }
             && names.contains { same($0, "launcher") }, "/svc holds what the manifest uses")
     for name in names {
       let status = readText(ns, "/svc/" + name + "/status")
@@ -73,6 +94,21 @@ func hasLine(_ text: String, _ line: StaticString) -> Bool {
     let status = readText(ns, "/svc/launcher/status") ?? ""
     check(hasLine(status, "a running restarts 0") && hasLine(status, "b running restarts 0")
             && hasLine(status, "launch-test running restarts 0"), "the launcher's status")
+
+    // UTC (D48): the page every process maps, at least the launcher's
+    // backstop; on amd64, the RTC's reading, which the time service set.
+    let backstop: Int64 = 1_767_225_600 * 1_000_000_000
+    let utc = Clock.realtime()
+    check(utc >= backstop, "UTC reads the page, at least its backstop")
+    #if arch(x86_64)
+      let time = readText(ns, "/svc/time/status") ?? ""
+      check(time.utf8.starts(with: "set from rtc ".utf8), "the time service set UTC from the RTC")
+      if let set = lastNumber(time) {
+        check(utc >= set && utc - set < 60_000_000_000, "UTC follows the RTC's reading")
+      } else {
+        check(false, "UTC follows the RTC's reading")
+      }
+    #endif
 
     // A crash, as the launcher's ctl makes one: a restarts (`restart always`).
     if var ctl = try? ns.open("/svc/launcher/ctl") {

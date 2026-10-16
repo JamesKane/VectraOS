@@ -1,0 +1,8 @@
+# The client the boot runs to its end (launcher.until=launch-test); CMake
+# adds `use time` where the time service runs (amd64).
+service launch-test
+program launch-test
+use a
+use b
+launcher
+@CROI_LAUNCH_TEST_USES@

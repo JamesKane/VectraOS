@@ -266,6 +266,19 @@ croi_user_program(${_launch_service} PIE SYS SWIFT ${_launch}/tests/native/Servi
 set(_launch_test ${CMAKE_CURRENT_BINARY_DIR}/launchtest.elf)
 croi_user_program(${_launch_test} PIE SYS SWIFT ${_launch}/tests/native/Main.swift)
 set(_manifests ${_launch}/tests/native/manifests)
+# bin/time (D48): UTC from the RTC, on amd64, which alone has the CMOS's
+# ports; elsewhere it publishes nothing, so only amd64's bootfs runs it.
+set(_time ${CMAKE_CURRENT_BINARY_DIR}/time.elf)
+croi_user_program(${_time} PIE SYS SWIFT ${PROJECT_SOURCE_DIR}/services/time/Main.swift
+                  ${PROJECT_SOURCE_DIR}/services/time/lib/RTC.swift)
+set(_time_bootfs bin/time=${_time})
+set(CROI_LAUNCH_TEST_USES "")
+if(CROI_ARCH STREQUAL amd64)
+  list(APPEND _time_bootfs etc/manifests/time.manifest=${_manifests}/time.manifest)
+  set(CROI_LAUNCH_TEST_USES "use time")
+endif()
+set(_launch_test_manifest ${CMAKE_CURRENT_BINARY_DIR}/launch-test.manifest)
+configure_file(${_manifests}/launch-test.manifest.in ${_launch_test_manifest} @ONLY)
 # Tier 1's programs (D47), when the *-vectraos toolchain has been built.
 include(${PROJECT_SOURCE_DIR}/cmake/Tier1.cmake)
 croi_tier1(_tier1_bootfs _tier1_files)
@@ -277,11 +290,11 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
           bin/node-test=${_node_test} bin/launcher=${_launcher} bin/launch-service=${_launch_service}
           bin/launch-test=${_launch_test} etc/manifests/a.manifest=${_manifests}/a.manifest
           etc/manifests/b.manifest=${_manifests}/b.manifest
-          etc/manifests/launch-test.manifest=${_manifests}/launch-test.manifest
+          etc/manifests/launch-test.manifest=${_launch_test_manifest} ${_time_bootfs}
           ${_tier1_bootfs}
   DEPENDS ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_trace_test} ${_ipc_test} ${_node_test}
           ${_launcher} ${_launch_service} ${_launch_test} ${_manifests}/a.manifest ${_manifests}/b.manifest
-          ${_manifests}/launch-test.manifest
+          ${_launch_test_manifest} ${_time} ${_manifests}/time.manifest
           ${_tier1_files} vx ${VX}
   COMMENT "Building bootfs")
 add_custom_target(bootfs DEPENDS ${CMAKE_BINARY_DIR}/bootfs.img)

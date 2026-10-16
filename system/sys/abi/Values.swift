@@ -211,6 +211,9 @@ public enum HandleType {
   public static var export: UInt32 { CROI_PA_DIRECTORY_REQUEST }
   /// The session board, to post to /srv.
   public static var srvBoard: UInt32 { CROI_PA_SRV_BOARD }
+  /// The UTC page (D48): argument 0 read only (the floor maps it), 1
+  /// writable (the time service's).
+  public static var vmoUTC: UInt32 { CROI_PA_VMO_UTC }
 
   /// An info word: the type, and the argument in bits 16-31.
   public static func info(_ type: UInt32, _ argument: UInt32 = 0) -> UInt32 { croi_pa_hnd(type, argument) }

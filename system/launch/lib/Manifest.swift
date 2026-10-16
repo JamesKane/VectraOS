@@ -19,14 +19,17 @@
 //     bootdata                # firmware's boot data (croi's ZBI items: RSDP, framebuffer, memory)
 //     libraries               # it loads shared objects (dlopen) from bootfs's lib/ (M5k)
 //     launcher                # the launcher's tree at /svc/launcher: status, and ctl (`kill SERVICE`)
+//     clock                   # it sets UTC: the UTC page, writable (the time service, D48)
 //
+// Every process is given the UTC page to read (D48), if the launcher has
+// one; `clock` gives it writable too.
 // `resource`, `programs` and `bootdata` are what devmgr is given (M3g,
 // M3h): the launcher's own ranged root resource of the kind, bootfs with a
 // job, so that it can start driver hosts, and the boot data. A launcher
 // that has none to give refuses them.
 //
 // Not lifted yet (V2): `seal`, per-client services and their `grant`,
-// apps, scripting and `clock` (D65).
+// apps and scripting (D65).
 //
 // Anything wrong stops the launch with its file and line: Plan 9 ignores
 // errors in namespace files, and sandboxes come out quietly wrong.
@@ -125,6 +128,8 @@ public struct Manifest: Sendable {
   /// `launcher`: its line, or 0. The launcher's own tree at /svc/launcher,
   /// whose `ctl` ends a service as a crash would (tests of restarts).
   public var launcherLine = 0
+  /// `clock`: its line, or 0.
+  public var clockLine = 0
   /// `early`: started first (the console, for its budget).
   public var early = false
   public var serviceLine = 0
@@ -238,6 +243,9 @@ public struct Manifest: Sendable {
       } else if `is`(directive, "launcher") {
         try count(0...0)
         launcherLine = lineNumber
+      } else if `is`(directive, "clock") {
+        try count(0...0)
+        clockLine = lineNumber
       } else if `is`(directive, "early") {
         try count(0...0)
         early = true

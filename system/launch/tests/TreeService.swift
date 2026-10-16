@@ -7,6 +7,9 @@
 // - `svc`: what its /svc lists;
 // - `peer`: the text at the path its second argument names, read through
 //   its namespace each time;
+// - `utc`: the UTC pages it was given (hosted: natively the floor maps
+//   the one to read): `read` for argument 0, `write` for 1, with `!` if
+//   the rights aren't those;
 // - `ctl`: `exit CODE` ends it; `post NAME` posts its tree to /srv.
 // Bytes, not String comparisons: tier 0 has no Unicode tables.
 
@@ -57,6 +60,14 @@ func treeService(_ start: Startup) -> Never {
     let tree = NodeTree(dispatcher: dispatcher)
     let board = TreeBoard()
     board.client = start.board()
+    var utc: [String] = []
+    for (argument, wanted) in [(UInt32(0), false), (1, true)] {
+      guard let page = start.take(HandleType.info(HandleType.vmoUTC, argument)) else { continue }
+      let writable = ((try? page.info().rights) ?? []).contains(.write)
+      utc.append((argument == 0 ? "read" : "write") + (writable == wanted ? "" : "!"))
+    }
+    let pages = utc.joined(separator: " ") + "\n"
+    tree.text("utc", read: { pages })
     tree.text("status", read: { args.joined(separator: " ") + "\n" })
     tree.text("ns", read: { ns.mountPoints.joined(separator: " ") + "\n" })
     tree.text("svc", read: { ((try? ns.list("/svc").map { $0.name }) ?? []).joined(separator: " ") + "\n" })

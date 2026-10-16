@@ -214,3 +214,24 @@ func launchError(_ files: [(String, String)]) -> String {
                        ("c.m", "service c\nprogram tree\nearly\n")].map { try Manifest(file: $0.0, text: $0.1) }
   #expect(try launchOrder(manifests, programs: ["tree"]).map { $0.service } == ["c", "a", "b"])
 }
+
+/// The UTC page (D48): every process is given it to read, and one whose
+/// manifest says `clock` writable too; a launcher without one refuses
+/// `clock`.
+@Test func everyProcessReadsUTCAndClockWritesIt() throws {
+  #expect(launchError([("t.m", "service t\nprogram tree\nclock\n")]) == "t.m:3: no UTC page to grant")
+  let l = try launcher()
+  defer { l.stop() }
+  l.allow(utcPage: try VMO.create(size: 4096))
+  try l.start([
+    ("t.m", "service t\nprogram tree\nexport\nclock\n"),
+    ("a.m", "service a\nprogram tree\nexport\n"),
+  ])
+  #expect(try read(l, "t", "utc") == "read write\n")
+  #expect(try read(l, "a", "utc") == "read\n")
+  // Without a page, nothing.
+  let bare = try launcher()
+  defer { bare.stop() }
+  try bare.start([("a.m", "service a\nprogram tree\nexport\n")])
+  #expect(try read(bare, "a", "utc") == "\n")
+}
