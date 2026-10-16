@@ -1,0 +1,13 @@
+i=outer
+for (i in 1 2) echo $i
+echo after $i
+x=v
+whatis x
+whatis nothing-here
+echo status $status
+echo a\
+b
+fn g { echo $#0 }
+g
+cd /nonexistent/dir
+echo $status

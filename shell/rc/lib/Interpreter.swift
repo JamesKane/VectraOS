@@ -52,9 +52,13 @@ public protocol RcSystem: AnyObject {
   /// Sets one (typed as `AttributeText.parse` reads the text), or removes
   /// it (nil); whether it could.
   func setAttribute(_ path: String, _ name: String, _ value: AttributeText?) -> Bool
+  /// rc's own process's number ($pid).
+  var processID: UInt64 { get }
 }
 
 extension RcSystem {
+  public var processID: UInt64 { 1 }
+
   /// Whether `path` names something: its directory's listing holds its
   /// last name (globbing keeps a path ending in literal names only so).
   public func accessible(_ path: String) -> Bool {
@@ -129,9 +133,13 @@ public final class Rc {
   /// Whether an `if` has run whose `if not` should (9front's ifnot).
   var ifNotPending = false
 
-  public init(system: RcSystem, arguments: [String] = []) {
+  /// `name` is $0: the script's path, or rc for a line given (9front's
+  /// execcmds sets it to its argv[0]).
+  public init(system: RcSystem, name: String = "rc", arguments: [String] = []) {
     self.system = system
     variables["*"] = arguments
+    variables["0"] = [name]
+    variables["pid"] = [String(system.processID)]
   }
 
   public var status: String { (variables["status"] ?? [""]).joined(separator: "|") }
@@ -548,6 +556,9 @@ public final class Rc {
       if ifNotPending { try execute(body, fds) }
     case .forIn(let name, let list, let body):
       let items = try list.map { try $0.flatMap { try value($0, fds) } } ?? (variables["*"] ?? [])
+      // Its variable is local to the loop (9front's Xlocal).
+      let outer = variables[name]
+      defer { variables[name] = outer }
       for item in items {
         variables[name] = [item]
         try execute(body, fds)
@@ -649,7 +660,7 @@ public final class Rc {
         rc.setStatus("")
       } else {
         fds[2]?.write(Array(("cd: " + target + ": not found\n").utf8))
-        rc.setStatus("cd failed")
+        rc.setStatus("can't cd")
       }
     },
     "echo": { rc, argv, fds in
@@ -711,20 +722,26 @@ public final class Rc {
       rc.setStatus("")
     },
     "whatis": { rc, argv, fds in
+      // As 9front's execwhatis: a variable, then a function, a builtin or a
+      // program; a name that is none of them only sets the status.
+      rc.setStatus("")
       for name in argv.dropFirst() {
-        if let v = rc.variables[name] {
-          fds[1]?.write(Array((name + "=(" + v.map(Rc.quote).joined(separator: " ") + ")\n").utf8))
-        } else if rc.functions[name] != nil {
+        // One word bare, several in parentheses; an empty list is unset.
+        let v = rc.variables[name].flatMap { $0.isEmpty ? nil : $0 }
+        if let v {
+          let text = v.count == 1 ? Rc.quote(v[0]) : "(" + v.map(Rc.quote).joined(separator: " ") + ")"
+          fds[1]?.write(Array((name + "=" + text + "\n").utf8))
+        }
+        if rc.functions[name] != nil {
           fds[1]?.write(Array(("fn " + name + "\n").utf8))
         } else if builtins[name] != nil {
           fds[1]?.write(Array(("builtin " + name + "\n").utf8))
         } else if rc.system.exists(name) {
           fds[1]?.write(Array((name + "\n").utf8))
-        } else {
-          fds[2]?.write(Array((name + ": not found\n").utf8))
+        } else if v == nil {
+          rc.setStatus("not found")
         }
       }
-      rc.setStatus("")
     },
     "wait": { rc, _, _ in
       for job in rc.background { _ = job.wait() }

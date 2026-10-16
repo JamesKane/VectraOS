@@ -280,16 +280,18 @@ work, in order:
      as 9front's globdir (dot files matched, a literal tail kept only if
      it exists, the matches sorted by bytes); `~`, `!` and `@` as word
      characters (keywords only alone at a command's start, as 9front's
-     klook), and `@` subshells.
+     klook), and `@` subshells; `$0` and `$pid`, `for`'s variable local
+     to the loop, `\`-newline inside a word, `cd`'s and `whatis`'s
+     statuses and `whatis`'s forms (all but a function's body).
    - **Redirections:** a program's fd 2 is its stdout and fds over 2
      are dropped; redirection streams are never closed.
-   - **Missing syntax:** `<>`, `<{}`, `>{}`, `$$x`, `` `split{} ``,
-     `\`-newline inside a word.
+   - **Missing syntax:** `<>`, `<{}`, `>{}`, `$$x`, `` `split{} ``.
    - **Wrong semantics:** `&` on a compound command runs in the foreground; a `&`
      in a switch case hangs the parser.
    - **Missing pieces:** `rc file`, `#!`, `$path` and absolute paths;
      the flags but `-c`; `builtin`, `exec`, `flag`, `rfork`; notes
-     (`sigint`, `sigexit`); `$0`, `$pid`, `$path`, `$cflag`, a real
+     (`sigint`, `sigexit`); `whatis` printing a function's body;
+     `$path`, `$cflag`, a real
      `$apid`; the environment's lists and functions; `rc -c` keeping
      `exit N`; the prompt only when interactive.
    - **Commands:** nothing streams; unknown flags are ignored, not

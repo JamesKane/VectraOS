@@ -70,6 +70,8 @@ final class Job: RcJob {
 }
 
 final class LinuxSystem: RcSystem {
+  var processID: UInt64 { UInt64(getpid()) }
+
   let searchPath = [".", "/bin", "/usr/bin", "/usr/local/bin"]
 
   func resolve(_ name: String) -> String? {
@@ -207,8 +209,9 @@ struct Main {
       FileHandle.standardError.write("usage: rcport file | -c text [args]\n".data(using: .utf8)!)
       exit(2)
     }
-    let text: String
+    let text: String, name: String
     if args[0] == "-c" {
+      name = "rc"
       text = args.count > 1 ? args[1] : ""
       args.removeFirst(min(2, args.count))
     } else {
@@ -217,9 +220,10 @@ struct Main {
         exit(2)
       }
       text = String(decoding: d, as: UTF8.self)
+      name = args[0]
       args.removeFirst()
     }
-    let rc = Rc(system: LinuxSystem(), arguments: args)
+    let rc = Rc(system: LinuxSystem(), name: name, arguments: args)
     rc.run(text, fds: [0: FdStream(0, keep: true), 1: FdStream(1, keep: true), 2: FdStream(2, keep: true)])
     exit(rc.status.allSatisfy { $0 == "|" } ? 0 : 1)
   }

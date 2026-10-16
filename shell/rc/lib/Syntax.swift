@@ -148,6 +148,10 @@ struct Lexer {
 
   /// ~, ! and @ are word characters: a word that is just one of them is a
   /// keyword only at a command's start (9front's klook).
+  /// Whether a backslash-newline starts at `i`: outside quotes, a space
+  /// (9front's getnext), so it ends a word.
+  func continues(_ i: Int) -> Bool { s[i] == "\\" && i + 1 < s.count && s[i + 1] == "\n" }
+
   static func isWordChar(_ c: Unicode.Scalar) -> Bool {
     !" \t\n;&|^$=`'{}()<>#".unicodeScalars.contains(c)
   }
@@ -185,7 +189,7 @@ struct Lexer {
         tag = Array(text.unicodeScalars)
         quoted = true
       } else {
-        while i < s.count, Lexer.isWordChar(s[i]) {
+        while i < s.count, Lexer.isWordChar(s[i]), !continues(i) {
           tag.append(s[i])
           i += 1
         }
@@ -286,7 +290,7 @@ struct Lexer {
       return .word(.variable(name, index: nil), spaced: spaced)
     default:
       var text = ""
-      while i < s.count, Lexer.isWordChar(s[i]) {
+      while i < s.count, Lexer.isWordChar(s[i]), !continues(i) {
         text.unicodeScalars.append(s[i])
         i += 1
       }

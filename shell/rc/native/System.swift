@@ -230,6 +230,9 @@ final class CroiSystem: RcSystem {
 
   var directory: String { FDIO.currentDirectory }
 
+  /// rc's koid, which croi never reuses.
+  var processID: UInt64 { (try? Process.current().info().koid) ?? 1 }
+
   // Attributes, through the fs service (M6j, `attr`): Node's stat lists
   // them; the Attributes calls (a file's and a directory's alike) change
   // them.
