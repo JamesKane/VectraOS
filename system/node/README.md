@@ -49,6 +49,15 @@ server whose files may run gives. NodeTree's memory files
 file a copy that can't run. `Namespace.memory(path, executable:)` asks
 for one: a program in /bin (the bootfs service's) starts so.
 
+## wstat
+
+A node can be changed as Plan 9's wstat changes one (D73, Node's
+`wstat`, version 4): renamed in its directory, given a time, or a file
+cut or grown, each field of `Wstat` given or left nil, all of it done or
+none. NodeTree lets a client rename and time the nodes it made and size
+the files it may write. `Namespace.wstat(path, change)` asks; the
+shell's touch, mv and cp use it.
+
 Names are compared and split as bytes (`NodeIPC.same`, `NodeIPC.names`):
 String's `==` and `split` need Unicode tables tier 0 doesn't link.
 todhchai's delegated directories (`NodeTree.delegate`) were left behind

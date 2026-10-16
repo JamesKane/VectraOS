@@ -27,7 +27,8 @@ public enum NamespaceError: Error, Equatable, Sendable {
   /// The service broke the protocol.
   case wire(WireError)
 
-  init(_ e: NodeIPC.NodeClient.Failure) {
+  /// A Node client's failure, as a namespace says it.
+  public init(_ e: NodeIPC.NodeClient.Failure) {
     switch e {
     case .remote(.notFound): self = .notFound
     case .remote(let n): self = .node(n)
@@ -254,6 +255,17 @@ public final class Namespace: @unchecked Sendable {
     var client = try open(path)
     do throws(NodeIPC.NodeClient.Failure) {
       return try client.memory(executable: executable)
+    } catch {
+      throw NamespaceError(error)
+    }
+  }
+
+  /// Changes the node at `path` (Node's `wstat`, Plan 9's): renames it in
+  /// its directory, sets its time, or cuts or grows a file.
+  public func wstat(_ path: String, _ change: NodeIPC.Wstat) throws(NamespaceError) {
+    var client = try open(path)
+    do throws(NodeIPC.NodeClient.Failure) {
+      try client.wstat(change)
     } catch {
       throw NamespaceError(error)
     }

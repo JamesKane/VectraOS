@@ -21,6 +21,13 @@ int64_t td_monotonic(void);
 
 // Ends the process with `code`: the exit handlers, then stdout written out.
 __attribute__((__noreturn__)) void td_exit(int64_t code);
+// Ends the process saying why, as Plan 9's exits (D72): `message` (nil or
+// empty: success) written, NUL-terminated and cut to TD_EXITS_MAX bytes
+// with the NUL, to the status page its parent gave (CROI_PA_VMO_STATUS),
+// if any; then td_exit with 0 for none, a number below 256 as itself
+// (what a code says alone), any other 1.
+enum : uint64_t { TD_EXITS_MAX = 128 };  // Plan 9's ERRMAX
+__attribute__((__noreturn__)) void td_exits(const char *message);
 
 // The handle the process was started with whose processargs info is
 // `info`, the caller's from then on; 0 if there was none or it was taken.

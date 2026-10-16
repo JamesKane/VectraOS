@@ -7,8 +7,8 @@
 // has parses, and runs it; `rc -c COMMAND` runs one, and `rc FILE ARG...`
 // runs a script ($0 the file, $* the rest: a `#!/bin/rc` script's too),
 // found along $path; it takes 9front's flags (RcArguments) and prompts
-// only when interactive (-i, or a terminal without -I). Its exit code is
-// its status: 0 if true, a number as itself, else 1. Its programs are
+// only when interactive (-i, or a terminal without -I). It ends with its
+// status as its exit string (D72: none if true). Its programs are
 // its namespace's (/bin: D71), started in its Startup's job, its files
 // fdio's, its namespace its Startup's (D65). On a terminal
 // (`TERM` in its environment) it says its directory before a prompt when
@@ -90,11 +90,11 @@ final class Standard: RcStream {
     shell.interactive = a.flags.contains("i")
     if let c = a.command {
       if shell.run(c, fds: fds) { shell.end() }
-      exit(exitCode(shell))
+      exits(shell)
     }
     if let file = a.rest.first, !a.flags.contains("i") {
       if shell.run(file: file, arguments: Array(a.rest.dropFirst()), fds: fds) { shell.end() }
-      exit(exitCode(shell))
+      exits(shell)
     }
     // Lines from stdin: prompted when interactive (-i, or a terminal's,
     // `TERM` set, without -I), as rcmain has it.
@@ -131,7 +131,7 @@ final class Standard: RcStream {
           // line being typed, as 9front's Xrdcmds does (with no newline of
           // rc's: the pty has echoed ^C and one).
           switch shell.takeNotes(fds: fds) {
-          case .exit: exit(exitCode(shell))
+          case .exit: exits(shell)
           case .interrupted:
             (pending, text) = ([], "")
             continue reading
@@ -139,7 +139,7 @@ final class Standard: RcStream {
           }
         } else {
           shell.end()  // the end of input
-          exit(exitCode(shell))
+          exits(shell)
         }
       }
       text += String(decoding: line!, as: UTF8.self)
@@ -150,17 +150,16 @@ final class Standard: RcStream {
       }
       let script = text
       text = ""
-      if !shell.run(script, fds: fds) { exit(exitCode(shell)) }
+      if !shell.run(script, fds: fds) { exits(shell) }
     }
   }
 }
 
-/// rc's exit code: 0 if its status is true, a status that is a number
-/// as itself (what Job.wait gives a parent rc back), any other 1.
-func exitCode(_ shell: Rc) -> Int32 {
-  if shell.succeeded { return 0 }
-  if let n = Int32(shell.status), n > 0, n < 256 { return n }
-  return 1
+/// Ends rc with its status as its exit string, as 9front's rc does
+/// (D72): none if it is true.
+func exits(_ shell: Rc) -> Never {
+  let status = shell.succeeded ? "" : (shell.status.isEmpty ? "false" : shell.status)
+  status.withCString { td_exits($0) }
 }
 
 /// A path for a URL: what isn't unreserved or `/` as %XX.

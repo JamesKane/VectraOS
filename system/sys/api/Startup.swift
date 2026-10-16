@@ -95,3 +95,26 @@ public final class Startup: @unchecked Sendable {
     return nil
   }
 }
+
+/// A child's exit string, Plan 9's exits (D72): a page given in its
+/// Startup (HandleType.vmoStatus), which the child's td_exits writes as it
+/// ends, NUL-terminated; the parent reads it once the child has ended.
+public struct ExitString: ~Copyable {
+  /// Its longest, with its NUL (Plan 9's ERRMAX).
+  public static let max = 128
+  let page: Handle
+
+  /// A page for the child `startup` starts.
+  public init(for startup: Startup) throws(Status) {
+    let page = try VMO.create(size: 4096)
+    startup.add(try page.duplicate(), info: HandleType.info(HandleType.vmoStatus))
+    self.page = page
+  }
+
+  /// What the child said: "" if it said nothing (or isn't done).
+  public func read() -> String {
+    guard let m = try? VMO.map(page, length: 4096, writable: false) else { return "" }
+    let bytes = m.read(at: 0, count: Self.max)
+    return String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
+  }
+}

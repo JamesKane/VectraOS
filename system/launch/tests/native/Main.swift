@@ -219,12 +219,17 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
          Array("number\nfailed\n".utf8) + a, ns, job: job, "rc's $apid is a job's koid, which wait takes")
   rcRuns(rc, "path=() whatis cat || echo none", Array("none\n".utf8), ns, job: job,
          "rc finds nothing on an empty $path")
-  rcRuns(rc, "for (p in `{ls /bin}) if (~ $p rc) echo listed; rfork N; whatis cat || echo gone", Array("listed\ngone\n".utf8),
+  rcRuns(rc, "for (p in `{ls /bin}) if (~ $p /bin/rc) echo listed; rfork N; whatis cat || echo gone", Array("listed\ngone\n".utf8),
          ns, job: job, "rc's programs are its namespace's /bin")
-  rcRuns(rc, "rc -c 'cat /svc/a/status'; rc -c 'exit 3'; echo $status", a + Array("3\n".utf8), ns, job: job,
-         "rc runs rc, which runs programs and exits with its status")
-  rcRuns(rc, "rc -e -c 'echo a; ~ a b; echo never'; echo $status", Array("a\n1\n".utf8), ns, job: job,
-         "rc -e stops at a command that fails")
+  // A program's status is Plan 9's wait message (D72): its name, its koid,
+  // and the exit string it ended with.
+  rcRuns(rc, "rc -c 'cat /svc/a/status'; rc -c 'exit 3'; ~ $status 'rc '[0-9]*': 3' && echo said", a + Array("said\n".utf8),
+         ns, job: job, "rc runs rc, which runs programs and exits with its status")
+  rcRuns(rc, "rc -e -c 'echo a; ~ a b; echo never'; ~ $status 'rc '[0-9]*': no match' && echo stopped",
+         Array("a\nstopped\n".utf8), ns, job: job, "rc -e stops at a command that fails")
+  rcRuns(rc, "x=`{ls /nope >[2=1]}; ~ $status 'ls '[0-9]*': errors' && echo $x; x=`{cat /svc/a/status /nope >[2=1]}; ~ $status 'cat '[0-9]*': can''t open /nope: file does not exist: ''/nope''' && echo fatal; x=`{ls -z >[2=1]}; ~ $status 'ls '[0-9]*': usage' && echo usage",
+         Array("ls: /nope: file does not exist: '/nope'\nfatal\nusage\n".utf8), ns, job: job,
+         "the commands say what 9front's do, and end with their exit strings")
   rcRuns(rc, "x=(a 'b c'); fn f { echo f $* }; rc -c 'echo $#x; f z'", Array("2\nf z\n".utf8), ns, job: job,
          "rc passes rc its lists and functions")
   // Split at : alone, the status keeps its newline.

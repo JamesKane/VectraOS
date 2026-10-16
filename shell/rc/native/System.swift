@@ -121,21 +121,30 @@ final class FileStream: RcStream {
   }
 }
 
-/// A started program, its stdio, and the threads relaying it.
+/// A started program, its stdio, the threads relaying it, and its exit
+/// string's page (D72).
 final class Job: RcJob {
   let process: Owned
   let stdio: ChildStdio
   var relays: [Owned]
+  let said: ExitString
+  /// Its name, as Plan 9's kernel keeps a process's text.
+  let name: String
   /// Its process's koid ($apid).
   let id: UInt64
   /// Its stdin, while it has the terminal (Terminal.swift).
   var lent: ChildStream? = nil
-  init(process: consuming Handle, stdio: ChildStdio, relays: [Owned]) {
+  init(process: consuming Handle, name: String, stdio: ChildStdio, relays: [Owned], said: consuming ExitString) {
     id = (try? process.info().koid) ?? 0
     self.process = Owned(process)
+    self.name = name
     self.stdio = stdio
     self.relays = relays
+    self.said = said
   }
+  /// Its status as Plan 9's wait message gives it: "" if it succeeded,
+  /// else `name pid: why`, why its exit string (or, if it said none, its
+  /// code, or `killed`).
   func wait() -> String {
     let code = process.with { p -> Int64 in
       _ = try? p.wait(for: Signals.terminated)
@@ -145,7 +154,9 @@ final class Job: RcJob {
     lent = nil
     for t in relays { t.with { h in try? Thread.join(h) } }
     relays.removeAll()
-    return code == 0 ? "" : String(code)
+    var why = said.read()
+    if why.isEmpty && code != 0 { why = code == -1024 ? "killed" : String(code) }  // TASK_RETCODE_SYSCALL_KILL
+    return why.isEmpty ? "" : name + " " + String(id) + ": " + why
   }
 }
 
@@ -307,7 +318,8 @@ final class CroiSystem: RcSystem {
       let given = fds.filter { $0.key >= 0 && $0.key < Int32(TD_STDIO_FD_LIMIT) }.sorted { $0.key < $1.key }
         .prefix(Int(TD_STDIO_FDS))
       let stdio = try ChildStdio(for: startup, descriptors: given.map { ($0.key, $0.value.source ?? ($0.key == 0)) })
-      let process = try Process.create(job: shared.job, name: argv[0])
+      let said = try ExitString(for: startup)
+      let process = try Process.create(job: shared.job, name: name)
       _ = try Process.start(process, entry: entry, startup)
       /// A relay's stream: a pipe held for as long as the relay runs (rc
       /// drops its own hold once the program is started), anything else
@@ -360,7 +372,7 @@ final class CroiSystem: RcSystem {
           }) { relays.append(r) }
         }
       }
-      let job = Job(process: process, stdio: stdio, relays: relays)
+      let job = Job(process: process, name: name, stdio: stdio, relays: relays, said: said)
       if let lend {
         job.lent = lend
         Terminal.current?.lend(lend, process: job.process)

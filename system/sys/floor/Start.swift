@@ -276,6 +276,35 @@ func strings(_ m: UnsafeMutablePointer<UInt8>, _ size: Int, _ offset: UInt32, _ 
 @c public func td_monotonic() -> Int64 { Runtime.monotonic() }
 
 @c public func td_exit(_ code: Int64) -> Never { exit(code) }
+
+// td_floor.h's, its TD_EXITS_MAX 128 (the floor sees td_native.h alone).
+@c public func td_exits(_ message: UnsafePointer<CChar>?) -> Never {
+  var length = 0
+  if let m = unsafe message { while length < 127, unsafe m[length] != 0 { length += 1 } }
+  guard length > 0, let m = unsafe message else { exit(0) }
+  if let page = ProcessStart.take(info(CROI_PA_VMO_STATUS)) {
+    var mapped: UInt64 = 0
+    let perms = UInt32(CROI_VM_PERM_READ) | UInt32(CROI_VM_PERM_WRITE)
+    if unsafe croi_vmar_map(td_runtime_vmar_root, perms, 0, page, 0, 4096, &mapped) == 0,
+      let to = unsafe UnsafeMutablePointer<CChar>(bitPattern: UInt(mapped))
+    {
+      for i in 0..<length { unsafe to[i] = m[i] }
+      unsafe to[length] = 0
+    }
+    _ = croi_handle_close(page)
+  }
+  // A number says itself as a code too.
+  var code: Int64 = 0
+  for i in 0..<length {
+    let c = unsafe m[i]
+    guard c >= 0x30, c <= 0x39, code < 256 else {
+      code = 256
+      break
+    }
+    code = code * 10 + Int64(c - 0x30)
+  }
+  exit(code > 0 && code < 256 ? code : 1)
+}
 @c public func td_startup_take(_ info: UInt32) -> UInt32 { ProcessStart.take(info) ?? 0 }
 @c public func td_startup_count() -> Int { ProcessStart.handleCount }
 @c public func td_startup_info(_ i: Int) -> UInt32 { ProcessStart.remaining(i) ?? 0 }

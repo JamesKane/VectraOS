@@ -359,13 +359,24 @@ work, in order:
      compiles it, per line read and per function as defined, so `flag e
      +` reaches the next line, not the rest of its own.
    - **rc(1) as the audit read it:** nothing named is left; what's left
-     is the pty's and the commands', below.
-   - **Commands:** nothing streams; unknown flags are ignored, not
-     refused; statuses are `1`, not Plan 9's strings; `ls` adds `/` and
-     has its own `-l` and multi-directory layout; `touch` doesn't update
-     an existing file; `rm -f`, `cp -x`, `mv`'s fallback and most
-     flags are missing; no `test`, `read`, `grep`, `sed`, `wc`, `sort`,
-     `tail`, `tr`, `sleep`, `kill`, `ps`, `date`, `ns`, `bind`, `mount`.
+     is the pty's and the missing commands, below.
+   - **Commands, as 9front's (2026-10-16):** ls, cat, mkdir, rm, mv, cp
+     and touch each take 9front's flags (any other a usage message), say
+     its messages in Plan 9's words (`file does not exist: 'f'`), and
+     stream their output; ls lists as 9front's (no `/` without -F, a
+     named directory's entries under its name, -l's columns, -dnpqQrstu);
+     cat stops at the first file it can't open; rm -f, cp -x, mv's rename
+     within a directory and its copy elsewhere; touch sets an existing
+     file's time (-c, -t). Exit strings (D72): a page in a child's
+     Startup that td_exits writes, so `$status` is Plan 9's wait message
+     (`ls 1234: errors`), and rc ends with its status. Node's `wstat`
+     (D73, version 4) renames, times and cuts. CommandsTests checks each
+     against 9front's source; launch-test, the exit strings on the
+     device. Left out, as Node has none: modes, owners and access times
+     (ls -l shows `d-rwxr-xr-x`, `--rw-r--r--`, owner `none`).
+   - **Commands still missing:** `test`, `read`, `grep`, `sed`, `wc`,
+     `sort`, `tail`, `tr`, `sleep`, `kill`, `ps`, `date`, `ns`, `bind`,
+     `mount`.
    - **The pty, done (2026-10-16):** `services/pty` on rings (D46): a
      terminal opens one at /svc/pty/pty and gets its keys and screen
      as descriptors, the client end is a program's fds 0 to 2 and the

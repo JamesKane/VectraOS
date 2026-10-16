@@ -217,6 +217,9 @@ public enum HandleType {
   /// A pty's Control (services/pty): the program started with it is a
   /// shell controlling the pty its descriptors 0 to 2 are.
   public static var ptyControl: UInt32 { CROI_PA_PTY_CONTROL }
+  /// A page the process writes its exit string to, as it ends (Plan 9's
+  /// exits, D72): ExitString is the parent's side, td_exits the child's.
+  public static var vmoStatus: UInt32 { CROI_PA_VMO_STATUS }
 
   /// An info word: the type, and the argument in bits 16-31.
   public static func info(_ type: UInt32, _ argument: UInt32 = 0) -> UInt32 { croi_pa_hnd(type, argument) }

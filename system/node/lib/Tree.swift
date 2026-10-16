@@ -37,7 +37,7 @@ public final class TreeNode: @unchecked Sendable {
     case service(connect: (consuming Handle) throws(Status) -> Void)
   }
 
-  public let name: String
+  public internal(set) var name: String
   let path: UInt64
   var version: UInt32 = 0
   var content: Content
@@ -650,6 +650,40 @@ struct Session: NodeIPC.NodeHandler {
       guard at.removable else { throw .denied }
       guard at.children.isEmpty else { throw .notEmpty }
       return tree.removeLocked(at)
+    }
+    tree.wake(woken)
+  }
+
+  /// This session's node changed, as Plan 9's wstat: checked whole, then
+  /// done whole. A client's node may be renamed and given a time; a
+  /// writable file, a size.
+  func wstat(_ change: NodeIPC.Wstat) throws(NodeError) {
+    if let name = change.name, !NodeIPC.isValidName(name) { throw .badName }
+    let woken = try tree.locked { () throws(NodeError) -> [Watcher] in
+      let at = try live(node)
+      if change.name != nil || change.modified != nil { guard at.removable, let _ = at.parent else { throw .denied } }
+      if let size = change.size {
+        guard case .bytes(_, let writable) = at.content else { throw at.kind == .directory ? .isDirectory : .unsupported }
+        guard writable else { throw .unsupported }
+        guard size <= UInt64(Int32.max) else { throw .invalid }
+      }
+      if let name = change.name, !NodeIPC.same(name, at.name), at.parent?.child(name) != nil { throw .exists }
+      var woken: [Watcher] = []
+      if let size = change.size, case .bytes(var bytes, let writable) = at.content {
+        if bytes.count > Int(size) { bytes.removeSubrange(Int(size)...) } else { bytes += [UInt8](repeating: 0, count: Int(size) - bytes.count) }
+        at.content = .bytes(bytes, writable: writable)
+      }
+      if let name = change.name, !NodeIPC.same(name, at.name), let parent = at.parent {
+        // Its directory hears one name go and another come.
+        woken += tree.notifyLocked(parent, .removed, at.name)
+        at.name = name
+        parent.version &+= 1
+        parent.modified = realtime()
+        woken += tree.notifyLocked(parent, .created, name)
+      }
+      woken += tree.modifiedLocked(at)
+      if let modified = change.modified { at.modified = modified }
+      return woken
     }
     tree.wake(woken)
   }

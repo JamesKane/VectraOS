@@ -9,7 +9,7 @@
 
 import IPC
 
-@IPCLibrary(id: "todhchai.node", version: 3)
+@IPCLibrary(id: "todhchai.node", version: 4)
 public enum NodeIPC {
   public enum NodeError: Int32, IPCErrorCode, Sendable {
     case notFound = 1
@@ -224,6 +224,23 @@ public enum NodeIPC {
     }
   }
 
+  /// What wstat changes, Plan 9's: each field given, nil left as it is
+  /// (nulldir's "don't touch").
+  public struct Wstat: Equatable, Sendable {
+    /// A new name in its directory (no other there of that name).
+    public var name: String?
+    /// Nanoseconds since the Unix epoch.
+    public var modified: Int64?
+    /// A file's new length: cut, or grown with zeros.
+    public var size: UInt64?
+
+    public init(name: String? = nil, modified: Int64? = nil, size: UInt64? = nil) {
+      self.name = name
+      self.modified = modified
+      self.size = size
+    }
+  }
+
   public protocol Node {
     /// Runs `ops` (at most 32) in order on a current node, which starts at
     /// this channel's; `walk` and `create` move it. A single operation is a
@@ -236,6 +253,10 @@ public enum NodeIPC {
     /// VMO a process can be started from or a library loaded from, which
     /// only a service whose files may run gives (`denied` otherwise).
     @since(3) func memory(executable: Bool) throws(NodeError) -> Memory
+    /// Changes this channel's node, as Plan 9's wstat: all of `change` or
+    /// none of it. Renaming and setting the time need a node a client may
+    /// remove; the size, a file it may write.
+    @since(4) func wstat(_ change: Wstat) throws(NodeError)
     @event func changed(_ change: Change)
   }
 }

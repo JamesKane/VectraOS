@@ -203,3 +203,33 @@ func failure<R>(_ body: () throws(NamespaceError) -> R) -> NamespaceError? {
   #expect(failure { () throws(NamespaceError) in _ = try ns.memory("/etc/motd", executable: true) } == .node(.denied))
   #expect(failure { () throws(NamespaceError) in _ = try ns.memory("/etc", executable: false) } == .node(.isDirectory))
 }
+
+@Test func wstatRenamesTimesAndCuts() throws {
+  let s = try Service()
+  defer { s.stop() }
+  s.tree.directory("box", allowsCreate: true)
+  s.tree.file("etc/motd", Array("hello".utf8))
+  s.start()
+  let ns = Namespace()
+  try ns.mount(s.channel(), at: "/")
+  var f = try ns.create("/box/a", kind: .file)
+  try f.write(offset: 0, Array("abcdef".utf8))
+  _ = try ns.create("/box/b", kind: .file)
+  // A client's file: renamed in its directory, given a time, cut and grown.
+  try ns.wstat("/box/a", NodeIPC.Wstat(name: "c", modified: 1_000_000_000, size: 3))
+  #expect(try ns.list("/box").map(\.name).sorted() == ["b", "c"])
+  var c = try ns.open("/box/c")
+  let st = try c.stat()
+  #expect(st.modified == 1_000_000_000 && st.size == 3)
+  #expect(try text(ns, "/box/c") == "abc")
+  try ns.wstat("/box/c", NodeIPC.Wstat(size: 5))
+  #expect(try c.readAll() == Array("abc".utf8) + [0, 0])
+  // All or none: a name taken, and nothing else changed.
+  #expect(failure { () throws(NamespaceError) in try ns.wstat("/box/c", NodeIPC.Wstat(name: "b", size: 0)) } == .node(.exists))
+  #expect(try c.stat().size == 5)
+  #expect(failure { () throws(NamespaceError) in try ns.wstat("/box/c", NodeIPC.Wstat(name: "x/y")) } == .node(.badName))
+  // The service's own nodes: not the client's to rename or cut.
+  #expect(failure { () throws(NamespaceError) in try ns.wstat("/etc/motd", NodeIPC.Wstat(name: "m")) } == .node(.denied))
+  #expect(failure { () throws(NamespaceError) in try ns.wstat("/etc/motd", NodeIPC.Wstat(size: 0)) } == .node(.unsupported))
+  #expect(failure { () throws(NamespaceError) in try ns.wstat("/box", NodeIPC.Wstat(size: 0)) } == .node(.isDirectory))
+}
