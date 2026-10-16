@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // rc's machine on croi (M6j part 2c; V2: on rings, D46): its programs are
-// bootfs's `bin/`, started in a job of its own, each with stdio of its own
-// (Sys's ChildStdio: its stdin and stdout rings) and rc's namespace in its
-// Startup (D65). One writer per ring: rc relays, a thread a direction,
-// between a child's rings and the streams its descriptors name (a pipe, a
-// file, a backquote's capture, rc's own stdout). A pipe is a channel pair
-// of rc's own, its writer's closing its reader's end. A child's stderr is
-// its stdout (the floor's), so `>[2]` goes with fd 1; a child given rc's
-// own stdin reads an empty one, since a relay would take the terminal's
-// next line from rc (the pty shares a terminal, V2's item 6).
+// bootfs's `bin/`, started in a job of its own, each with its descriptors
+// (Sys's ChildStdio: a ring per descriptor, one way) and rc's namespace in
+// its Startup (D65). A child gets each descriptor rc's table has for it,
+// fd 2 and any above it too (up to td_stdio.h's limits); one writer per
+// ring: rc relays, a thread a descriptor, between a child's ring and the
+// stream rc's descriptor names (a pipe, a file, a backquote's capture,
+// rc's own). A pipe is a channel pair of rc's own, its writer's closing
+// its reader's end. A child given rc's own stdin reads an empty one, since
+// a relay would take the terminal's next line from rc (the pty shares a
+// terminal, V2's item 6). <{} and >{} name a pipe's end /dev/fd/N, N one
+// of rc's numbers (32 to 63), which the child is given at N.
 
 import FDIO
 import Fs
@@ -17,6 +19,7 @@ import IPC
 import Node
 import Rc
 import Sys
+import TDNative
 
 /// A handle a class keeps: lent out by `with`, closed by `close` (or its
 /// end). Its number is kept, not a `Handle?`: a class's noncopyable
@@ -49,7 +52,12 @@ final class PipeStream: RcStream, @unchecked Sendable {
   let owned: Owned
   let lock = Lock()
   var holders = 1
-  init(_ h: consuming Handle) { owned = Owned(h) }
+  /// Its reading end (a program given it reads it).
+  let source: Bool?
+  init(_ h: consuming Handle, reads: Bool) {
+    owned = Owned(h)
+    source = reads
+  }
 
   /// One more holder, which will `close` it once.
   func hold() { lock.withLock { holders += 1 } }
@@ -92,7 +100,11 @@ final class PipeStream: RcStream, @unchecked Sendable {
 /// One of fdio's files.
 final class FileStream: RcStream {
   var fd: Int32
-  init(_ fd: Int32) { self.fd = fd }
+  let source: Bool?
+  init(_ fd: Int32, reads: Bool?) {
+    self.fd = fd
+    source = reads
+  }
   func write(_ bytes: [UInt8]) {
     guard fd >= 0 else { return }
     bytes.withUnsafeBytes { b in _ = FDIO.write(fd, b) }
@@ -157,13 +169,38 @@ final class CroiSystem: RcSystem {
     case .write: flags = OpenFlags.writeOnly | OpenFlags.create | OpenFlags.truncate
     case .append: flags = OpenFlags.writeOnly | OpenFlags.create | OpenFlags.append
     }
+    // /dev/fd/N: one of rc's own numbered streams (<{}), or a descriptor
+    // rc was started with.
+    if let n = FDIO.descriptorPath(path) {
+      if let s = lock.withLock({ numbered[n] }) { return s }
+      if n < 3 || td_stdio_has(n, nil) { return Standard(n) }
+    }
     guard case .success(let fd) = FDIO.open(path, flags: flags) else { return nil }
-    return FileStream(fd)
+    return FileStream(fd, reads: mode == .read ? true : mode == .readWrite ? nil : false)
   }
 
   func pipe() -> (RcStream, RcStream) {
-    guard let ends = try? Channel.create() else { return (PipeStream(Handle(raw: 0)), PipeStream(Handle(raw: 0))) }
-    return (PipeStream(ends.a), PipeStream(ends.b))
+    guard let ends = try? Channel.create() else {
+      return (PipeStream(Handle(raw: 0), reads: true), PipeStream(Handle(raw: 0), reads: false))
+    }
+    return (PipeStream(ends.a, reads: true), PipeStream(ends.b, reads: false))
+  }
+
+  /// Streams <{} and >{} named, by number.
+  let lock = Lock()
+  var numbered: [Int32: RcStream] = [:]
+  var nextNumber: Int32 = 32
+
+  /// A number for `s` (32 to 63, round again: below td_stdio.h's limit
+  /// and above what a script names), its path /dev/fd/N.
+  func descriptor(_ s: RcStream) -> (fd: Int32, path: String)? {
+    let n = lock.withLock { () -> Int32 in
+      let n = nextNumber
+      nextNumber = n == 63 ? 32 : n + 1
+      numbered[n] = s
+      return n
+    }
+    return (n, "/dev/fd/\(n)")
   }
 
   /// The program at `path`: bootfs's `bin/NAME` at `/bin/NAME`.
@@ -232,18 +269,22 @@ final class CroiSystem: RcSystem {
         startup.add(try Sys.Job.create(parent: job), info: HandleType.info(HandleType.jobDefault))
         startup.add(b, info: HandleType.info(HandleType.vmoBootfs))
       }
-      let stdio = try ChildStdio(for: startup)
+      // Each of its descriptors, as many as a child takes: one it reads
+      // if its stream is a source (or it is fd 0), one it writes if not.
+      let given = fds.filter { $0.key >= 0 && $0.key < Int32(TD_STDIO_FD_LIMIT) }.sorted { $0.key < $1.key }
+        .prefix(Int(TD_STDIO_FDS))
+      let stdio = try ChildStdio(for: startup, descriptors: given.map { ($0.key, $0.value.source ?? ($0.key == 0)) })
       let process = try Process.create(job: job, name: argv[0])
       _ = try Process.start(process, entry: entry, startup)
       /// A relay's stream: a pipe held for as long as the relay runs (rc
       /// drops its own hold once the program is started), anything else
       /// rc's.
       final class Box: @unchecked Sendable {
-        let stdio: ChildStdio
+        let ring: ChildStream
         let stream: RcStream?
         let own: Bool
-        init(_ s: ChildStdio, _ r: RcStream?) {
-          stdio = s
+        init(_ ring: ChildStream, _ r: RcStream?) {
+          self.ring = ring
           if let pipe = r as? PipeStream {
             pipe.hold()
             stream = pipe
@@ -256,23 +297,30 @@ final class CroiSystem: RcSystem {
         func done() { if own { stream?.close() } }
       }
       var relays: [Owned] = []
-      // Into the child: its stdin's stream, then the end (none for rc's own).
-      let input = Box(stdio, fds[0] is Standard ? nil : fds[0])
-      if let r = Self.relay({
-        defer { input.done() }
-        if let stream = input.stream {
-          while let bytes = stream.read() {
-            if (try? input.stdio.write(bytes)) == nil { return }
-          }
+      for (fd, stream) in given {
+        guard let ring = stdio.stream(fd) else { continue }
+        if ring.childReads {
+          // Into the child: the stream, then the end (none for rc's own
+          // stdin).
+          let input = Box(ring, (stream as? Standard)?.fd == 0 ? nil : stream)
+          if let r = Self.relay({
+            defer { input.done() }
+            if let s = input.stream {
+              while let bytes = s.read() {
+                if (try? input.ring.write(bytes)) == nil { return }
+              }
+            }
+            try? input.ring.closeInput()
+          }) { relays.append(r) }
+        } else {
+          // Out of it, into the stream, to its end.
+          let output = Box(ring, stream)
+          if let r = Self.relay({
+            defer { output.done() }
+            while let bytes = try? output.ring.read(), !bytes.isEmpty { output.stream?.write(bytes) }
+          }) { relays.append(r) }
         }
-        try? input.stdio.closeInput()
-      }) { relays.append(r) }
-      // Out of it: its stdout (and stderr) into fd 1's stream, to its end.
-      let output = Box(stdio, fds[1])
-      if let r = Self.relay({
-        defer { output.done() }
-        while let bytes = try? output.stdio.read(), !bytes.isEmpty { output.stream?.write(bytes) }
-      }) { relays.append(r) }
+      }
       return Job(process: process, stdio: stdio, relays: relays)
     } catch {
       return nil

@@ -7,8 +7,8 @@
 // record. Before stdout is set up, or if the process was started with
 // neither, writes go nowhere.
 //
-// stderr is stdout's, flushed. stdin is the stdin ring, or empty without
-// one.
+// stderr is its own ring when the parent gave fd 2, stdout's (flushed)
+// otherwise. stdin is the stdin ring, or empty without one.
 
 import CroiSyscall
 import Synchronization
@@ -72,8 +72,14 @@ enum Stdout {
 
 @c public func td_stdout_flush() { Stdout.flush() }
 
-/// stderr's bytes: stdout's, flushed.
+/// stderr's bytes: fd 2's ring if the process has one (stdout flushed
+/// first, to keep their order), else stdout's, flushed.
 @c public func td_stderr_write(_ bytes: UnsafeRawPointer, _ n: Int) {
+  if unsafe td_stdio_has(2, nil) {
+    Stdout.flush()
+    _ = unsafe td_stdio_write_fd(2, bytes, UInt64(n))
+    return
+  }
   unsafe td_stdout_write(bytes, n)
   Stdout.flush()
 }

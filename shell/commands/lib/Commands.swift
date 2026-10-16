@@ -25,9 +25,11 @@ public enum Commands {
   public static let names = ["ls", "cat", "mkdir", "rm", "mv", "cp", "touch"]
 
   /// Runs command `name` with `args`, from directory `pwd`; `stdin`, if
-  /// given, reads the next bytes of its input (nil at its end).
+  /// given, reads the next bytes of its input (nil at its end), and
+  /// `descriptor` the next of descriptor N's, for a path /dev/fd/N (rc's
+  /// <{}).
   public static func run(_ name: String, _ args: [String], pwd: String, in ns: Namespace,
-                         stdin: (() -> [UInt8]?)? = nil) -> Result {
+                         stdin: (() -> [UInt8]?)? = nil, descriptor: ((Int32) -> [UInt8]?)? = nil) -> Result {
     var r = Result()
     let (flags, paths) = options(args)
     let at = paths.map { resolve($0, from: pwd) }
@@ -61,6 +63,10 @@ public enum Commands {
         while let bytes = stdin() { r.output += bytes }
       }
       for (i, path) in at.enumerated() {
+        if paths[i].hasPrefix("/dev/fd/"), let fd = Int32(paths[i].dropFirst(8)), let descriptor {
+          while let bytes = descriptor(fd) { r.output += bytes }
+          continue
+        }
         guard var n = try? ns.open(path), let bytes = try? n.readAll() else {
           complain("\(paths[i]): can't read")
           continue

@@ -20,6 +20,15 @@ public protocol RcStream: AnyObject {
   /// The next bytes, or nil at the end.
   func read() -> [UInt8]?
   func close()
+  /// Whether a program given it reads it (a file opened to read, a pipe's
+  /// reading end, a here document), or writes it; nil: as its descriptor
+  /// says (0 read, any other written). For systems that pass descriptors
+  /// one way (the device's rings, D46).
+  var source: Bool? { get }
+}
+
+extension RcStream {
+  public var source: Bool? { nil }
 }
 
 /// A program the system started, not yet waited for.
@@ -117,7 +126,11 @@ public final class MemoryStream: RcStream {
   public var bytes: [UInt8] = []
   var at = 0
   public var closed = false
-  public init(_ bytes: [UInt8] = []) { self.bytes = bytes }
+  public let source: Bool?
+  public init(_ bytes: [UInt8] = [], source: Bool? = nil) {
+    self.bytes = bytes
+    self.source = source
+  }
   public func write(_ b: [UInt8]) { bytes += b }
   public func read() -> [UInt8]? {
     guard at < bytes.count else { return nil }
@@ -314,7 +327,7 @@ public final class Rc {
     case .backquote(let c, let split):
       // Split at any character of split's strings, or of $ifs.
       let separators = try split.map { try value($0, fds, glob: false) } ?? (variables["ifs"] ?? [" \t\n"])
-      let captured = MemoryStream()
+      let captured = MemoryStream(source: false)
       var inner = fds
       inner[1] = captured
       try conditionally { try contained(c, inner) }
@@ -579,7 +592,7 @@ public final class Rc {
         out[fd] = s
       case .here(let fd, let quoted):
         guard case .literal(let body, _)? = r.target else { throw RcError(message: "bad here document") }
-        out[fd] = MemoryStream(Array((quoted ? body : hereSubstituted(body)).utf8))
+        out[fd] = MemoryStream(Array((quoted ? body : hereSubstituted(body)).utf8), source: true)
       case .duplicate(let fd, let to): out[fd] = out[to]  // left to right, as 9front does
       case .close(let fd): out[fd] = nil
       }

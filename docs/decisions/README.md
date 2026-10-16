@@ -58,7 +58,7 @@ in a new file, and a line in the index below.
 - [D43. The one ring: Ring.swift, ring.h, and RingCheck on both](D043-one-ring-ringcheck.md) — 2026-10-15, decided
 - [D44. Ports as rings: CROI_PORT_RING](D044-ports-as-rings-croi-port-ring.md) — 2026-10-15, decided
 - [D45. One ABI: lifted code includes VectraOS's headers](D045-one-abi-lifted-code.md) — 2026-10-15, decided
-- [D46. Byte streams on the one ring](D046-byte-streams-one-ring.md) — 2026-10-15, decided
+- [D46. Byte streams on the one ring](D046-byte-streams-one-ring.md) — 2026-10-15, decided; amended 2026-10-16
 - [D47. Tier 1: the *-vectraos toolchain comes with V2](D047-tier-one-vectraos-toolchain.md) — 2026-10-15, decided; amended 2026-10-16
 - [D48. Time: UTC in a page the time service writes](D048-time-utc-page.md) — 2026-10-15, decided
 - [D49. The floor is the one user runtime](D049-floor-user-runtime.md) — 2026-10-15, decided

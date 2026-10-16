@@ -310,10 +310,11 @@ public enum FDIO {
 
   static func add(_ d: Description) -> Result<Int32, Errno> {
     state.withLock { s in
-      for fd in 3..<s.table.count where s.table[fd] == nil {
+      for fd in 3..<s.table.count where s.table[fd] == nil && !inherited(Int32(fd)) {
         s.table[fd] = d
         return .success(Int32(fd))
       }
+      while inherited(Int32(s.table.count)) { s.table.append(nil) }
       guard s.table.count < maxDescriptors else { return .failure(Errno.tooMany) }
       s.table.append(d)
       return .success(Int32(s.table.count - 1))
@@ -326,6 +327,9 @@ public enum FDIO {
 
   /// open: a descriptor for the node at `path`.
   public static func open(_ path: String, flags: Int32, mode: UInt32 = 0o644) -> Result<Int32, Errno> {
+    // /dev/fd/N: descriptor N itself, one the process was started with
+    // (no dup yet: closing it closes N).
+    if let n = descriptorPath(path), n < 3 || inherited(n) { return .success(n) }
     let access = flags & OpenFlags.accessMode
     guard access != OpenFlags.accessMode else { return .failure(Errno.invalid) }
     var client: NodeIPC.NodeClient
@@ -365,6 +369,12 @@ public enum FDIO {
       }
     }
     return add(d)
+  }
+
+  /// N, for a path /dev/fd/N.
+  public static func descriptorPath(_ path: String) -> Int32? {
+    guard path.hasPrefix("/dev/fd/") else { return nil }
+    return Int32(path.dropFirst(8))
   }
 
   /// close.

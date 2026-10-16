@@ -1,69 +1,65 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// A child's stdio, its parent's side (D46, td_stdio.h): two byte-stream
-// rings in one VMO (the child's stdin, which this side writes, and its
-// stdout, which this side reads), a doorbell each way, and a channel whose
-// closing is the end of both. Made for a child's Startup, whose floor
-// attaches the other side (stdio.c). One writer per ring: whoever shares a
-// terminal relays (rc, the pty).
+// A child's descriptors, its parent's side (D46, td_stdio.h): each one a
+// byte-stream ring in a VMO of its own, one way (the child reads it and
+// this side writes, or the other way), with a doorbell each way and a
+// channel whose closing is its end. Made for a child's Startup, whose
+// floor attaches the other side (stdio.c). One writer per ring: whoever
+// shares a terminal relays (rc, the pty).
 
 import Ring
 import TDNative
 
-@safe public final class ChildStdio: @unchecked Sendable {
+/// One of a child's descriptors.
+@safe public final class ChildStream: @unchecked Sendable {
+  public let fd: Int32
+  /// The child reads it: this side writes.
+  public let childReads: Bool
   let mapping: Mapping
-  var input: NativeRing
-  var output: NativeRing
+  var ring: NativeRing
   let childBell: Handle
   let parentBell: Handle
-  let channel: Handle
-  /// Waits for this side's doorbell or the child's end: one a direction,
-  /// so stdin's writer and stdout's reader may be threads of their own.
-  let inPort: Handle
-  let outPort: Handle
+  var channel: Handle?
+  /// Waits for this side's doorbell or the child's end of it.
+  let port: Handle
   /// The child has gone (its end of the channel closed).
   public private(set) var gone = false
 
   static let bellKey: UInt64 = 1, goneKey: UInt64 = 2
 
-  /// Makes the rings, doorbells and channel, and adds the child's parts
-  /// to `startup` (CROI_PA_STDIO).
-  public init(for startup: Startup) throws(Status) {
-    let size = Int(TD_STDIO_SIZE), inAt = Int(TD_STDIO_IN), outAt = Int(TD_STDIO_OUT)
-    let slotSize = Int(TD_STDIO_SLOT_SIZE), slots = Int(TD_STDIO_SLOTS)
+  /// Makes the ring, doorbells and channel, and adds the child's parts to
+  /// `startup` (CROI_PA_STDIO, td_stdio_arg(fd, part)).
+  init(fd: Int32, childReads: Bool, for startup: Startup) throws(Status) {
+    self.fd = fd
+    self.childReads = childReads
+    let size = Int(TD_STDIO_RING_SIZE), slotSize = Int(TD_STDIO_SLOT_SIZE), slots = Int(TD_STDIO_SLOTS)
     let vmo = try VMO.create(size: size)
     mapping = try VMO.map(vmo, length: size)
     let base = unsafe mapping.address
-    guard unsafe NativeRing.create(base + inAt, size: outAt - inAt, slotSize: slotSize, count: slots,
-                                   format: TD_STDIO_FORMAT, flags: RingLayout.byteStream),
-      unsafe NativeRing.create(base + outAt, size: size - outAt, slotSize: slotSize, count: slots,
-                               format: TD_STDIO_FORMAT, flags: RingLayout.byteStream),
-      let input = unsafe NativeRing(attaching: base + inAt, size: outAt - inAt, producer: true, slotSize: slotSize,
-                                    format: TD_STDIO_FORMAT, flags: RingLayout.byteStream),
-      let output = unsafe NativeRing(attaching: base + outAt, size: size - outAt, producer: false,
-                                     slotSize: slotSize, format: TD_STDIO_FORMAT, flags: RingLayout.byteStream)
+    guard unsafe NativeRing.create(base, size: size, slotSize: slotSize, count: slots, format: TD_STDIO_FORMAT,
+                                   flags: RingLayout.byteStream),
+      let ring = unsafe NativeRing(attaching: base, size: size, producer: childReads, slotSize: slotSize,
+                                   format: TD_STDIO_FORMAT, flags: RingLayout.byteStream)
     else { throw .internal }
-    self.input = input
-    self.output = output
+    self.ring = ring
     childBell = try Counter.create()
     parentBell = try Counter.create()
     let ends = try Channel.create()
-    channel = ends.a
-    inPort = try Port.create()
-    outPort = try Port.create()
-    var forIn = [Binding.changes(parentBell.raw, key: Self.bellKey),
-                 Binding.signals(channel.raw, Signals.peerClosed, key: Self.goneKey)]
-    var forOut = forIn
-    guard try Port.bind(inPort, &forIn) == 2, try Port.bind(outPort, &forOut) == 2 else { throw .internal }
-    func part(_ p: UInt32) -> UInt32 { HandleType.info(CROI_PA_STDIO, p) }
-    startup.add(vmo, info: part(TD_STDIO_VMO))
+    let mine = ends.a
+    port = try Port.create()
+    var bindings = [Binding.changes(parentBell.raw, key: Self.bellKey),
+                    Binding.signals(mine.raw, Signals.peerClosed, key: Self.goneKey)]
+    guard try Port.bind(port, &bindings) == 2 else { throw .internal }
+    channel = consume mine
+    func part(_ p: UInt32) -> UInt32 { HandleType.info(CROI_PA_STDIO, td_stdio_arg(UInt32(fd), p)) }
+    startup.add(vmo, info: part(childReads ? TD_STDIO_VMO_IN : TD_STDIO_VMO_OUT))
     startup.add(try childBell.duplicate(), info: part(TD_STDIO_CHILD_BELL))
     startup.add(try parentBell.duplicate(), info: part(TD_STDIO_PARENT_BELL))
     startup.add(ends.b, info: part(TD_STDIO_CHANNEL))
   }
 
-  /// Sleeps for `ring` on `port` as it says to, until `deadline`.
-  func sleep(_ ring: inout NativeRing, on port: borrowing Handle, deadline: Int64) throws(Status) {
+  /// Sleeps for the ring on the port as it says to, until `deadline`.
+  func sleep(deadline: Int64) throws(Status) {
     defer { ring.endSleep() }
     guard !gone, ring.prepareSleep() else { return }
     let packet = try Port.wait(port, deadline: deadline)
@@ -72,47 +68,51 @@ import TDNative
 
   func ringChild(_ wake: Bool) { if wake { try? Counter.add(childBell, 1) } }
 
-  /// Writes all of `bytes` to the child's stdin, waiting while it is full;
-  /// `peerClosed` if the child has gone.
+  /// Writes all of `bytes` (a descriptor the child reads), waiting while
+  /// its ring is full; `peerClosed` if the child has gone.
   public func write(_ bytes: [UInt8], deadline: Int64 = infiniteDeadline) throws(Status) {
+    guard childReads else { throw .badState }
     var done = 0
     while done < bytes.count {
       guard !gone else { throw .peerClosed }
       let (written, wake) = unsafe bytes.withUnsafeBytes {
-        unsafe input.write(bytes: $0.baseAddress! + done, count: bytes.count - done)
+        unsafe ring.write(bytes: $0.baseAddress! + done, count: bytes.count - done)
       }
       ringChild(wake)
       done += written
-      if written == 0 { try sleep(&input, on: inPort, deadline: deadline) }
+      if written == 0 { try sleep(deadline: deadline) }
     }
   }
 
-  /// The end of the child's stdin.
+  /// Its end (a descriptor the child reads): the child reads its end
+  /// after what was written.
   public func closeInput(deadline: Int64 = infiniteDeadline) throws(Status) {
+    guard childReads else { throw .badState }
     while true {
       guard !gone else { throw .peerClosed }
-      let (done, wake) = input.writeEnd()
+      let (done, wake) = ring.writeEnd()
       ringChild(wake)
       if done { return }
-      try sleep(&input, on: inPort, deadline: deadline)
+      try sleep(deadline: deadline)
     }
   }
 
-  /// The child's next stdout, up to `max` bytes, waiting until some come
-  /// (`timedOut` at `deadline`): empty at its end, or once the child has
-  /// gone and what it wrote has been read.
+  /// What the child wrote next (a descriptor it writes), up to `max`
+  /// bytes, waiting until some come (`timedOut` at `deadline`): empty at
+  /// its end, or once the child has gone and what it wrote has been read.
   public func read(max: Int = 4096, deadline: Int64 = infiniteDeadline) throws(Status) -> [UInt8] {
+    guard !childReads else { throw .badState }
     var buffer = [UInt8](repeating: 0, count: max)
     while true {
-      let (got, ended, wake) = unsafe buffer.withUnsafeMutableBytes { unsafe output.read(bytes: $0.baseAddress!, max: max) }
+      let (got, ended, wake) = unsafe buffer.withUnsafeMutableBytes { unsafe ring.read(bytes: $0.baseAddress!, max: max) }
       ringChild(wake)
-      if got > 0 || ended || output.broken { return Array(buffer[..<got]) }
+      if got > 0 || ended || ring.broken { return Array(buffer[..<got]) }
       if gone { return [] }
-      try sleep(&output, on: outPort, deadline: deadline)
+      try sleep(deadline: deadline)
     }
   }
 
-  /// Everything the child writes to stdout, until its end.
+  /// Everything the child writes to it, until its end.
   public func readAll(deadline: Int64 = infiniteDeadline) throws(Status) -> [UInt8] {
     var out: [UInt8] = []
     while true {
@@ -120,5 +120,54 @@ import TDNative
       if chunk.isEmpty { return out }
       out += chunk
     }
+  }
+
+  /// This side's end of it: a child writing it sees it gone (its writes
+  /// dropped), one reading it its end.
+  public func hangUp() { channel = nil }
+}
+
+/// A child's descriptors: by default stdin (fd 0, which the child reads)
+/// and stdout (fd 1, which it writes; its stderr goes there too).
+@safe public final class ChildStdio: @unchecked Sendable {
+  public let streams: [ChildStream]
+
+  /// Makes each descriptor in `descriptors` and adds its parts to
+  /// `startup`.
+  public init(for startup: Startup, descriptors: [(fd: Int32, childReads: Bool)] = [(0, true), (1, false)])
+    throws(Status)
+  {
+    var streams: [ChildStream] = []
+    for d in descriptors { streams.append(try ChildStream(fd: d.fd, childReads: d.childReads, for: startup)) }
+    self.streams = streams
+  }
+
+  /// Descriptor `fd`, if the child was given it.
+  public func stream(_ fd: Int32) -> ChildStream? { streams.first { $0.fd == fd } }
+
+  /// The child has gone: its stdout's end of the channel closed (or its
+  /// first descriptor's, without one).
+  public var gone: Bool { (stream(1) ?? streams.first)?.gone ?? true }
+
+  // stdin's and stdout's, as before descriptors were each their own.
+
+  public func write(_ bytes: [UInt8], deadline: Int64 = infiniteDeadline) throws(Status) {
+    guard let s = stream(0) else { throw .badState }
+    try s.write(bytes, deadline: deadline)
+  }
+
+  public func closeInput(deadline: Int64 = infiniteDeadline) throws(Status) {
+    guard let s = stream(0) else { throw .badState }
+    try s.closeInput(deadline: deadline)
+  }
+
+  public func read(max: Int = 4096, deadline: Int64 = infiniteDeadline) throws(Status) -> [UInt8] {
+    guard let s = stream(1) else { throw .badState }
+    return try s.read(max: max, deadline: deadline)
+  }
+
+  public func readAll(deadline: Int64 = infiniteDeadline) throws(Status) -> [UInt8] {
+    guard let s = stream(1) else { throw .badState }
+    return try s.readAll(deadline: deadline)
   }
 }

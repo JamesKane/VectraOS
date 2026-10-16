@@ -5,3 +5,6 @@
 import Node
 
 func processNamespace() -> Namespace? { nil }
+
+/// No descriptors are inherited hosted.
+func inherited(_ fd: Int32) -> Bool { false }

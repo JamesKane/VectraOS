@@ -10,6 +10,7 @@
 import LibSys
 import Sys
 import TDFloor
+import TDNative
 
 nonisolated(unsafe) var failures = 0
 nonisolated(unsafe) var checks = 0
@@ -48,6 +49,7 @@ struct SysTest {
     if args.count == 2 {
       if same(args[1], "stdio") { stdioChild() }
       if same(args[1], "hangup") { hangupChild() }
+      if same(args[1], "descriptors") { descriptorsChild() }
       childMain()
     }
     do throws(Status) {
@@ -414,6 +416,43 @@ struct SysTest {
     _ = try hung.wait(for: Signals.terminated, deadline: soon(5000))
     check(try Process.info(hung).returnCode == 6 && dropped == nil, "a child sees its parent go as its stdin's end")
     _ = consume thread2
+
+    // A ring per descriptor: stderr on fd 2's, and fds 3 (written) and 4
+    // (read) beside stdin and stdout.
+    let many = try Process.create(job: job, name: "sys-test-descriptors")
+    let third = Startup(args: ["sys-test", "descriptors"])
+    let fds = try ChildStdio(for: third, descriptors: [(0, true), (1, false), (2, false), (3, false), (4, true)])
+    let thread3 = try Process.start(many, entry: me, third)
+    try fds.stream(4)!.write(Array("four".utf8), deadline: soon(5000))
+    try fds.stream(4)!.closeInput(deadline: soon(5000))
+    try fds.closeInput(deadline: soon(5000))
+    let three = try fds.stream(3)!.readAll(deadline: soon(5000))
+    let err = try fds.stream(2)!.readAll(deadline: soon(5000))
+    let printed = try fds.readAll(deadline: soon(5000))
+    _ = try many.wait(for: Signals.terminated, deadline: soon(5000))
+    check(printed == Array("out\n".utf8) && err == Array("err\n".utf8), "stderr on a ring of its own")
+    check(three == Array("three four".utf8), "a child's fds 3 and 4 on rings, each ended")
+    check(try Process.info(many).returnCode == 8, "and that child ran to its end")
+    _ = consume thread3
+  }
+
+  /// A descriptors child: stdout, stderr, and fd 3 saying what fd 4 held.
+  static func descriptorsChild() -> Never {
+    print("out")
+    let err = Array("err\n".utf8)
+    unsafe err.withUnsafeBytes { unsafe td_stderr_write($0.baseAddress!, $0.count) }
+    var reads = false
+    guard unsafe td_stdio_has(4, &reads), reads, unsafe td_stdio_has(3, &reads), !reads else { Process.exit(code: 1) }
+    var four: [UInt8] = []
+    var buffer = [UInt8](repeating: 0, count: 100)
+    while true {
+      let n = unsafe buffer.withUnsafeMutableBytes { unsafe td_stdio_read_fd(4, $0.baseAddress!, UInt64($0.count)) }
+      if n <= 0 { break }
+      four += buffer[..<Int(n)]
+    }
+    let three = Array("three ".utf8) + four
+    _ = unsafe three.withUnsafeBytes { unsafe td_stdio_write_fd(3, $0.baseAddress!, UInt64($0.count)) }
+    Process.exit(code: 8)
   }
 
   /// A stdio child: echoes its stdin after saying how much there was.

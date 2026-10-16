@@ -19,17 +19,23 @@ import LibSys
 import Rc
 import Sys
 import TDFloor
+import TDNative
 import VectraOSLibc
 
 /// A descriptor of the process's own (the floor's: a ring, or the
-/// debuglog).
+/// debuglog): 0 to 2, or one above it was started with (D46).
 final class Standard: RcStream {
   let fd: Int32
   init(_ fd: Int32) { self.fd = fd }
+  /// fd 0, or one above 2 it was given to read.
+  var source: Bool? {
+    var reads = false
+    return fd == 0 || (fd > 2 && td_stdio_has(fd, &reads) && reads)
+  }
   func write(_ bytes: [UInt8]) {
     bytes.withUnsafeBytes { b in
       guard let p = b.baseAddress, !b.isEmpty else { return }
-      if fd == 2 { td_stderr_write(p, b.count) } else {
+      if fd == 2 { td_stderr_write(p, b.count) } else if fd > 2 { _ = td_stdio_write_fd(fd, p, UInt64(b.count)) } else {
         td_stdout_write(p, b.count)
         td_stdout_flush()
       }
@@ -37,10 +43,12 @@ final class Standard: RcStream {
   }
   func read() -> [UInt8]? {
     var buffer = [UInt8](repeating: 0, count: 1024)
-    let n = buffer.withUnsafeMutableBytes { b in td_stdin_read(b.baseAddress!, b.count) }
+    let n = buffer.withUnsafeMutableBytes { b in
+      fd > 2 ? Int(td_stdio_read_fd(fd, b.baseAddress!, UInt64(b.count))) : td_stdin_read(b.baseAddress!, b.count)
+    }
     return n > 0 ? Array(buffer[0..<n]) : nil
   }
-  func close() {}
+  func close() { if fd > 2 { td_stdio_end_fd(fd) } }
 }
 
 @main struct RcMain {
@@ -59,7 +67,9 @@ final class Standard: RcStream {
   }
 
   static func run(_ system: CroiSystem) {
-    let fds: [Int32: RcStream] = [0: Standard(0), 1: Standard(1), 2: Standard(2)]
+    // 0 to 2, and any above it was started with.
+    var fds: [Int32: RcStream] = [0: Standard(0), 1: Standard(1), 2: Standard(2)]
+    for n in 3..<Int32(TD_STDIO_FD_LIMIT) where td_stdio_has(n, nil) { fds[n] = Standard(n) }
     let argv = Arguments.strings
     guard let a = RcArguments(Array(argv.dropFirst())) else {
       fds[2]!.write(Array((RcArguments.usage + "\n").utf8))

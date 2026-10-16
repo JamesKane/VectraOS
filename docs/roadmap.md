@@ -302,11 +302,10 @@ work, in order:
      as 9front's unix rc keeps it (lists joined by ^A, functions as
      `#()fn name {...}`; taken at start, functions not with `-p`), one
      encoding for every system; `$$x` (a variable's name a word), `<>`,
-     `<{}` and `>{}` (paths /dev/fd/N where a system has them: not the
-     device yet), `` `split{} ``, and a command's words evaluated with its
-     redirections in place.
-   - **Redirections:** a program's fd 2 is its stdout and fds over 2
-     are dropped (the device).
+     `<{}` and `>{}` (paths /dev/fd/N), `` `split{} ``, and a command's
+     words evaluated with its redirections in place; on the device, a
+     program given each of rc's descriptors, a ring each (D46, amended:
+     its own stderr, fds above 2, `/dev/fd/N` in FDIO and cat).
    - **Wrong semantics:** a compound command run with `&` shares rc's
      directory (one per process), so a `cd` in it moves rc too.
    - **Missing pieces:** `rfork`; notes (`sigint`, `sigexit`); a real

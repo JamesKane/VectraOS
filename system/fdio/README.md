@@ -17,7 +17,10 @@ errno as Linux sets it (our libc's `<fcntl.h>`, `<sys/stat.h>`,
 (`system/fdio/native`: the C names; `open` is C, being variadic) whose
 namespace is the process's Startup's (D65) unless `FDIO.install` gave
 one; `VectraOSLibc` wraps `open` and the `S_IF*` constants as Glibc
-does. No permissions, owners, links or times beyond the modification
+does. Descriptors 0 to 2, and any above them the process was started
+with, are the floor's rings (D46): read and written by number, never
+reused for a file, and opened again as `/dev/fd/N` (N itself: no dup
+yet). No permissions, owners, links or times beyond the modification
 time. A file unlinked or replaced while open stops working (Linux keeps
 it until closed: the fs service has no orphans yet).
 

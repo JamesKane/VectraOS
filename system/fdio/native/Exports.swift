@@ -4,11 +4,13 @@
 // <fcntl.h>, <unistd.h>, <sys/stat.h>, <dirent.h>, <stdio.h> and
 // <stdlib.h>, for tier 1's programs: errno set as POSIX says. open is
 // variadic, so C's (open.c) calls td_fdio_open. Descriptors 0 to 2 are the
-// floor's: the stdio rings the process was started with (D46), else an
-// empty stdin and the debuglog (the floor's own write is weak and gives
-// way to this one).
+// floor's: the rings the process was started with (D46), else an empty
+// stdin and the debuglog (the floor's own write is weak and gives way to
+// this one); so is any above 2 it was started with, a ring of its own,
+// whose close writes its end.
 
 import TDFloor
+import TDNative
 import VectraOSLibc
 
 /// A call's result as C returns it: the value, or -1 with errno set.
@@ -40,12 +42,21 @@ func path(_ p: UnsafePointer<CChar>?) -> String? {
 
 @c(close) public func fdioClose(_ fd: Int32) -> Int32 {
   if fd >= 0 && fd <= 2 { return 0 }
+  if inherited(fd) {
+    td_stdio_end_fd(fd)
+    return 0
+  }
   return Int32(posix(FDIO.close(fd)) { 0 })
 }
 
 @c(read) public func fdioRead(_ fd: Int32, _ buffer: UnsafeMutableRawPointer?, _ count: Int) -> Int {
   guard count > 0 else { return 0 }
   if fd == 0, let buffer = unsafe buffer { return unsafe td_stdin_read(buffer, count) }  // the floor's
+  if fd > 2, inherited(fd), let buffer = unsafe buffer {
+    let got = unsafe td_stdio_read_fd(fd, buffer, UInt64(count))
+    if got < 0 { errno = Errno.badDescriptor.code }
+    return Int(got)
+  }
   guard let buffer = unsafe buffer else {
     errno = Errno.invalid.code
     return -1
@@ -74,6 +85,13 @@ func path(_ p: UnsafePointer<CChar>?) -> String? {
   }
   if fd == 2 {
     unsafe td_stderr_write(buffer, count)
+    return count
+  }
+  if fd > 2, inherited(fd) {
+    guard unsafe td_stdio_write_fd(fd, buffer, UInt64(count)) else {
+      errno = Errno.badDescriptor.code
+      return -1
+    }
     return count
   }
   return unsafe posix(FDIO.write(fd, UnsafeRawBufferPointer(start: buffer, count: count))) { $0 }

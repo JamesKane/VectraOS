@@ -11,6 +11,7 @@ import LibSys
 import Node
 import Sys
 import TDFloor
+import TDNative
 import VectraOSLibc
 
 @main struct Command {
@@ -25,6 +26,13 @@ import VectraOSLibc
       var buffer = [UInt8](repeating: 0, count: 4096)
       let n = unsafe buffer.withUnsafeMutableBytes { unsafe td_stdin_read($0.baseAddress!, $0.count) }
       return n > 0 ? Array(buffer[..<n]) : nil
+    }, descriptor: { fd in
+      // fd 0, or one it was started with that it reads (D46).
+      var reads = false
+      guard fd == 0 || (unsafe td_stdio_has(fd, &reads) && reads) else { return nil }
+      var buffer = [UInt8](repeating: 0, count: 4096)
+      let n = unsafe buffer.withUnsafeMutableBytes { unsafe td_stdio_read_fd(fd, $0.baseAddress!, UInt64($0.count)) }
+      return n > 0 ? Array(buffer[..<Int(n)]) : nil
     })
     unsafe r.output.withUnsafeBytes { b in
       if let p = unsafe b.baseAddress, unsafe !b.isEmpty { unsafe td_stdout_write(p, b.count) }

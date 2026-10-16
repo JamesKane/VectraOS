@@ -74,14 +74,17 @@ func rcRuns(_ rc: ProgramEntry, _ script: String, _ expected: [UInt8], _ ns: Nam
     startup.mount(svc, at: "/svc")
     startup.add(try Job.create(parent: job), info: HandleType.info(HandleType.jobDefault))
     startup.add(try bootfs.duplicate(), info: HandleType.info(HandleType.vmoBootfs))
-    let stdio = try ChildStdio(for: startup)
+    // stdin, stdout, and a stderr of its own (D46: a ring per descriptor).
+    let stdio = try ChildStdio(for: startup, descriptors: [(0, true), (1, false), (2, false)])
     let process = try Process.create(job: job, name: "rc")
     let thread = try Process.start(process, entry: rc, startup)
     try stdio.closeInput(deadline: Clock.monotonic() + 5_000_000_000)
     let out = try stdio.readAll(deadline: Clock.monotonic() + 10_000_000_000)
+    let err = try stdio.stream(2)!.readAll(deadline: Clock.monotonic() + 5_000_000_000)
     _ = try process.wait(for: Signals.terminated, deadline: Clock.monotonic() + 5_000_000_000)
     let code = try Process.info(process).returnCode
     print("launch-test: rc -c '\(script)' wrote \(out.count) bytes, exited \(code)")
+    if !err.isEmpty { print("launch-test:   its stderr: \(String(decoding: err, as: UTF8.self))") }
     check(code == 0 && out == expected, name)
     _ = consume thread
   } catch {
@@ -128,6 +131,13 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
   // Split at : alone, the status keeps its newline.
   rcRuns(rc, "x=(a b); n=x; echo $$n; echo `:{cat /svc/a/status}", Array("a b\na first\n\n".utf8), ns, job: job,
          bootfs: bootfs, "rc takes $$x and `split{}")
+  // Descriptors of their own (D46): a program's stderr apart from its
+  // stdout, fds above 2, and <{} as /dev/fd/N.
+  rcRuns(rc, "x=`{cat /nope}; echo $#x; y=`{cat /nope >[2=1]}; ~ $#y 0 || echo caught", Array("0\ncaught\n".utf8),
+         ns, job: job, bootfs: bootfs, "rc gives a program a stderr of its own")
+  rcRuns(rc, "cat /dev/fd/3 <[3]/svc/a/status", a, ns, job: job, bootfs: bootfs, "rc gives a program fd 3")
+  rcRuns(rc, "cat <{cat /svc/a/status} <{echo two}", a + Array("two\n".utf8), ns, job: job, bootfs: bootfs,
+         "rc runs <{} on the device")
   _ = consume bootfs
 }
 
