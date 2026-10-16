@@ -143,6 +143,9 @@ public final class Rc {
     } catch let e as RcExit {
       variables["status"] = [e.status]
       return false
+    } catch let e as RcError {
+      report(e, fds)
+      return true
     } catch {
       return true
     }
@@ -224,7 +227,7 @@ public final class Rc {
       let captured = MemoryStream()
       var inner = fds
       inner[1] = captured
-      try execute(c, inner)
+      try contained(c, inner)
       let ifs = Set((variables["ifs"] ?? [" \t\n"]).joined().unicodeScalars)
       var out: [String] = [], current = ""
       for u in captured.text.unicodeScalars {
@@ -432,13 +435,25 @@ public final class Rc {
     return out
   }
 
-  func execute(_ c: Command, _ fds: [Int32: RcStream]) throws {
+  /// Runs `c`. A runtime error (a bad concatenation, a file that won't
+  /// open) unwinds to `run`, as 9front's Xerror does to its input loop:
+  /// a script stops; a line typed is abandoned.
+  func execute(_ c: Command, _ fds: [Int32: RcStream]) throws { try executeChecked(c, fds) }
+
+  /// Runs `c` where 9front would fork it (a backquote, a builtin's or
+  /// function's pipeline stage, a background job): an error ends it
+  /// alone, said on fd 2, its status `error`.
+  func contained(_ c: Command, _ fds: [Int32: RcStream]) throws {
     do {
       try executeChecked(c, fds)
     } catch let e as RcError {
-      fds[2]?.write(Array(("rc: " + e.message + "\n").utf8))
-      setStatus("error")
+      report(e, fds)
     }
+  }
+
+  func report(_ e: RcError, _ fds: [Int32: RcStream]) {
+    fds[2]?.write(Array(("rc: " + e.message + "\n").utf8))
+    setStatus("error")
   }
 
   func executeChecked(_ c: Command, _ fds: [Int32: RcStream]) throws {
@@ -486,7 +501,7 @@ public final class Rc {
         }
         setStatus("")
       } else {
-        try execute(c, fds)
+        try contained(c, fds)
       }
     case .brace(let c, let redirs): try execute(c, try redirect(redirs, fds))
     case .ifThen(let condition, let body):
@@ -584,7 +599,7 @@ public final class Rc {
     }
     var statuses: [String] = Array(repeating: "", count: stages.count)
     for (k, stage) in stages.enumerated() where !started[k] {
-      try execute(stage, ios[k])
+      try contained(stage, ios[k])
       statuses[k] = status
       if k < pipes.count { pipes[k].1.close() }
     }

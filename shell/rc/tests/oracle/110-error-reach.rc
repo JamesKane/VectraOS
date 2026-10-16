@@ -1,0 +1,7 @@
+x=`{echo in; echo a^()}
+echo after backquote $x
+fn f { echo a^() }
+f | cat
+echo after pipeline stage
+cat < /nonexistent/file
+echo never

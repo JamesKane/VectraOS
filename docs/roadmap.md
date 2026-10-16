@@ -274,13 +274,15 @@ work, in order:
      global, `x=1 y=2 cmd` local to the command, a whole pipeline);
      `if not` after an inner `if`, and `if`/`for`/`while` bodies taking
      `|`, `&&` and `||` (9front's precedence); patterns in `~` and
-     `switch` active only where written unquoted, their subjects joined.
+     `switch` active only where written unquoted, their subjects joined;
+     runtime errors stopping a script (contained where 9front forks: a
+     backquote, a pipeline's builtin stage, a background job).
    - **Redirections:** a program's fd 2 is its stdout and fds over 2
      are dropped; redirection streams are never closed.
    - **Missing syntax:** `@{}`, `[~...]` and a bare `~`, `!` or `@` as
      words, `<>`, `<{}`, `>{}`, `$$x`, `` `split{} ``,
      `\`-newline inside a word.
-   - **Wrong semantics:** concatenation errors don't stop a script; globs keep paths that don't exist and skip
+   - **Wrong semantics:** globs keep paths that don't exist and skip
      dot files; `&` on a compound command runs in the foreground; a `&`
      in a switch case hangs the parser.
    - **Missing pieces:** `rc file`, `#!`, `$path` and absolute paths;
