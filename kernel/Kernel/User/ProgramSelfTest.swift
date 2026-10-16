@@ -155,10 +155,11 @@ enum ProgramSelfTest {
     static func runSuites(_ console: Uart) {
         // The idle suite first: the others' deadline context bounds every
         // CPU's wake latency below its deep state's.
-        let suites: InlineArray<9, StaticString> = ["swift.suite=idle\0", "swift.suite=bind\0", "swift.suite=vmo\0",
-                                                    "swift.suite=futex\0", "swift.suite=channel\0",
-                                                    "swift.suite=objects\0", "swift.suite=counters\0",
-                                                    "swift.suite=time\0", "swift.suite=memory\0"]
+        let suites: InlineArray<10, StaticString> = ["swift.suite=idle\0", "swift.suite=bind\0", "swift.suite=vmo\0",
+                                                     "swift.suite=futex\0", "swift.suite=channel\0",
+                                                     "swift.suite=objects\0", "swift.suite=counters\0",
+                                                     "swift.suite=time\0", "swift.suite=memory\0",
+                                                     "swift.suite=ring\0"]
         let before = ProcessSelfTest.Counts()
         runOrPanic(console, suites[0])
         let context: SchedContext

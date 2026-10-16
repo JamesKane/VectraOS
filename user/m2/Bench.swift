@@ -62,6 +62,9 @@ enum Bench {
         var counterWakeMedian: UInt64 = 0  // ns (K10a)
         var counterWakeP99: UInt64 = 0
         var wakeErrorP99: UInt64 = 0     // ns
+        var ringPer1000Slots: UInt64 = 0  // ns (D43)
+        var ringRoundTrip: UInt64 = 0     // ns, mean
+        var ringKicks: UInt64 = 0         // doorbells rung while both sides were busy
     }
 
     static var cpus: (client: UInt64, waiter: UInt64, sleeper: UInt64) { (1 << 1, 1 << 2, 1 << 3) }
@@ -81,6 +84,11 @@ enum Bench {
         if profilePortWake { try portWakeProfile() }
         (results.counterWakeMedian, results.counterWakeP99) = try counterWake(resource: resource, thread: thread)
         results.wakeErrorP99 = try wakeError(resource: resource, thread: thread)
+        let (per1000, throughputKicks) = try ringThroughput(resource: resource, thread: thread)
+        let (roundTrip, roundTripKicks) = try ringRoundTrip(resource: resource, thread: thread)
+        results.ringPer1000Slots = per1000
+        results.ringRoundTrip = roundTrip
+        results.ringKicks = throughputKicks + roundTripKicks
         return results
     }
 

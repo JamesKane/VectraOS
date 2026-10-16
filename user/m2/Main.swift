@@ -154,6 +154,8 @@ struct M2 {
         print("m2: channel_call round trip, one core, deadline donation: \(r.channelCall) ns (budget \(budgets.channelCall), ceiling \(channelCallCeiling))")
         print("m2: port wake from another core: median \(r.portWakeMedian) ns, p99 \(r.portWakeP99) ns (budget \(budgets.portWake))")
         print("m2: wake error, real-time intent: p99 \(r.wakeErrorP99 / 1000) us (budget \(budgets.wakeErrorP99 / 1000))")
+        print("m2: ring across cores, 64-byte slots: \(r.ringPer1000Slots) ns per 1000 slots, round trip \(r.ringRoundTrip) ns, "
+              + "\(r.ringKicks) doorbell(s) rung")
         var missed = 0
         func budget(_ name: String, _ value: UInt64, unit: String = "ns", limit: UInt64? = nil, target: UInt64? = nil) {
             var line = "m2: budget name=\(name) value=\(value) unit=\(unit)"
@@ -170,6 +172,11 @@ struct M2 {
         budget("counter.wake_median", r.counterWakeMedian, limit: budgets.portWake)
         budget("counter.wake_p99", r.counterWakeP99)
         budget("timer.wake_error_p99", r.wakeErrorP99, limit: budgets.wakeErrorP99)
+        // D43: ≥ 100 M slots/s (10 µs per 1000), submit + complete < 300 ns,
+        // and no doorbell while both sides are busy (ring_kicks = 0).
+        budget("ring.per_1000_slots", r.ringPer1000Slots, limit: 10_000)
+        budget("ring.round_trip", r.ringRoundTrip, limit: 300)
+        budget("ring.kicks", r.ringKicks, unit: "count", limit: 1)
         if let spawned = environmentNumber("croi.spawn_ns="), entered > spawned {
             print("m2: spawn to main \((entered - spawned) / 1000) us (budget \(spawnToMainLimit / 1000))")
             budget("process.spawn_to_main", entered - spawned, limit: spawnToMainLimit)

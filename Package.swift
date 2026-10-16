@@ -9,6 +9,8 @@
 
 import PackageDescription
 
+let unchecked: [SwiftSetting] = [.unsafeFlags(["-enforce-exclusivity=unchecked"])]
+
 let package = Package(
   name: "vectraos",
   products: [
@@ -21,6 +23,22 @@ let package = Package(
     .testTarget(name: "BenchTests", dependencies: ["Bench"], path: "tools/bench/tests"),
     .target(name: "ImageFormats", path: "tools/image/lib"),
     .testTarget(name: "ImageFormatsTests", dependencies: ["ImageFormats"], path: "tools/image/tests"),
+    // The one ring (D43): Ring.swift, ring.h through CRing, and RingCheck,
+    // the model checker that runs both (CRingChecked: ring.h on its hooks).
+    // Code that runs on RingCheck's coroutines has no runtime exclusivity
+    // checks: their record of accesses is a list in stack order, which
+    // switching stacks breaks.
+    .target(name: "Ring", path: "lib/ring/Ring", swiftSettings: unchecked),
+    .target(name: "RingCheckContext", path: "lib/ring/check/context"),
+    .target(name: "RingCheck", dependencies: ["Ring", "RingCheckContext"], path: "lib/ring/check/Checker",
+            swiftSettings: unchecked),
+    .target(name: "CRing", path: "lib/ring/tests/CRing"),
+    .target(name: "CRingChecked", path: "lib/ring/tests/CRingChecked"),
+    .testTarget(name: "RingTests", dependencies: ["Ring", "CRing"], path: "lib/ring/tests/Native",
+                swiftSettings: [.unsafeFlags(["-Xcc", "-std=gnu23"])]),
+    .testTarget(name: "RingCheckTests", dependencies: ["Ring", "RingCheck", "CRingChecked"],
+                path: "lib/ring/tests/Model", swiftSettings: unchecked + [.unsafeFlags(["-Xcc", "-std=gnu23"])]),
     .executableTarget(name: "vx", dependencies: ["Bench", "ImageFormats", "TraceFormat", "TraceReader"], path: "tools/vx"),
-  ]
+  ],
+  cLanguageStandard: .gnu2x
 )

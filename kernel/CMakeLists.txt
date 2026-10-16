@@ -192,7 +192,8 @@ set(_swift_test_sources ${_user_dir}/test/swift/Main.swift ${_user_dir}/test/swi
     ${_user_dir}/test/swift/CounterSuite.swift ${_user_dir}/test/swift/TimeSuite.swift
     ${_user_dir}/test/swift/InterruptSuite.swift
     ${_user_dir}/test/swift/MemorySuite.swift
-    ${_user_dir}/test/swift/IdleSuite.swift)
+    ${_user_dir}/test/swift/IdleSuite.swift ${_user_dir}/test/swift/RingSuite.swift
+    ${PROJECT_SOURCE_DIR}/lib/ring/Ring/Ring.swift ${PROJECT_SOURCE_DIR}/lib/ring/Ring/RingMemory.swift)
 set(_swift_test ${CMAKE_CURRENT_BINARY_DIR}/swifttest.elf)
 croi_user_program(${_swift_test} PIE SWIFT ${_swift_test_sources})
 # The same as a fixed-address program with a dynamic section and no
@@ -213,7 +214,9 @@ set_source_files_properties(userprogram.S PROPERTIES
 # bootfs (K8b): the programs userboot can start, in Zircon's bootfs format
 # (vx mkbootfs), served on the ESP as \croi\bootfs.img.
 set(_m2 ${CMAKE_CURRENT_BINARY_DIR}/m2.elf)
-croi_user_program(${_m2} PIE SWIFT ${_user_dir}/m2/Main.swift ${_user_dir}/m2/Sys.swift ${_user_dir}/m2/Bench.swift)
+croi_user_program(${_m2} PIE SWIFT ${_user_dir}/m2/Main.swift ${_user_dir}/m2/Sys.swift ${_user_dir}/m2/Bench.swift
+                  ${_user_dir}/m2/RingBench.swift ${PROJECT_SOURCE_DIR}/lib/ring/Ring/Ring.swift
+                  ${PROJECT_SOURCE_DIR}/lib/ring/Ring/RingMemory.swift)
 set(CROI_BOOTFS_IMAGE ${CMAKE_BINARY_DIR}/bootfs.img PARENT_SCOPE)
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs.img

@@ -29,6 +29,9 @@ extension Rule {
     "power.shutdown_kernel": (0.50, 1e-3),
     "power.log_drain": (0.50, 20e-3),
     "idle.wakeups": (0.0, 0.5),
+    "ring.per_1000_slots": (0.25, 2e-6),
+    "ring.round_trip": (0.25, 50e-9),
+    "ring.kicks": (0.0, 0.5),
   ]
 
   /// The rule for a measurement, by name.

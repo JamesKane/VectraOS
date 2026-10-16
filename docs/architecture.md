@@ -68,9 +68,11 @@ Every bulk path uses one ring layout. It lives in a VMO that both sides map.
 
 ```
 offset 0     producer cursor  (u64, written by producer, release)
+offset 8     producer waiting (u32: it sleeps until its doorbell rings)
 offset 128   consumer cursor  (u64, written by consumer, release)
-offset 256   header: magic, version, slot size, slot count (power of 2),
-             format descriptor, flags
+offset 136   consumer waiting (u32)
+offset 256   header: magic, version, flags, slot size (multiple of 8),
+             slot count (power of 2), format descriptor
 offset 384+  slots[count]     (fixed size; payloads in the IPC wire format
                                or raw bytes, per the format descriptor)
 ```
@@ -82,14 +84,20 @@ offset 384+  slots[count]     (fixed size; payloads in the IPC wire format
   **The consumer** load-acquires the producer cursor, reads the slot, then
   store-releases the consumer cursor.
 - **Doorbells** are kernel counters, signalled only when the other side has
-  declared that it is waiting. While both sides are busy, the ring costs no
-  syscalls; the `ring_kicks = 0` budget checks this.
+  declared that it is waiting: a side about to sleep sets its waiting
+  word, fences and looks again; the other fences after moving its cursor
+  and rings only if the word is set. While both sides are busy, the ring
+  costs no syscalls; the `ring_kicks = 0` budget checks this.
+- **OVERWRITE** (a header flag, D38): the producer never waits and
+  readers keep their own cursors; each slot starts with its sequence,
+  which a reader checks before and after its copy.
 - **Large payloads** travel by reference. A slot carries the offset and
   length within a shared data VMO, as in sDDF's available and free queues.
   A request/response service uses a pair of rings, SQ and CQ.
 - **Implementations:** one in Swift and one C23 header, `ring.h`, for
-  C-side drivers. Both are tested against the same model checker. The model
-  test comes from NeoVectra's `lib/vx-ring`.
+  C-side drivers (`lib/ring/`, D43). Both are tested against the same model
+  checker, RingCheck, which runs the real code of each. The model test
+  comes from NeoVectra's `lib/vx-ring`.
 
 ## 4. The control plane: the Node protocol
 

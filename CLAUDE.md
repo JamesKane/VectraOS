@@ -82,7 +82,8 @@ test_report into the test call (D35), vmo_get_size and
 process_info into info topics (D36), vmo_read and vmo_write (D37), 92
 syscalls (`docs/syscall-audit.md`). The hot calls take arrays:
 handle_duplicate (D39), the wakes (D40), channel reads and writes (D41)
-and the VMAR calls (D42). debuglog_read waits for the one ring (D38).
+and the VMAR calls (D42). The one ring is in Swift and `ring.h`, both
+model-checked by RingCheck (D43); debuglog_read waits for item 5 (D38).
 - **Done:** croi imported, passing on amd64, arm64 and rv64; todhchai's
   Judge, History, trace format and reader lifted; `vx` with build, test,
   boot, bench, trace, loc and ci.

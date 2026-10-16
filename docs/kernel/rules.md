@@ -91,6 +91,8 @@ machine's history:
 - `lib/pagetables/` Page-table formats + generic builder (loader and kernel).
 - `lib/rt/`   Freestanding C runtime the compilers call (mem*, stack guard).
 - `lib/elf/`  `ElfImage`: ELF parsing and loading (loader, kernel, userboot).
+- `lib/ring/` The one ring (D43): `ring.h` (format and C), `Ring/` (Swift),
+              `check/` (RingCheck, the model checker), `tests/` (host).
 - `user/`     User space: the runtime (`user/lib/runtime`), headers
               (`user/include`, module `CroiRuntime`), vDSO, test programs.
 - `ld/image.ld` Shared linker script: one PT_LOAD per permission (W^X).
