@@ -65,7 +65,10 @@ pc-igc	component	pc-12700kf	amd64	research	yes	-	D15	-	-	-	-	Intel I225/I226 2.5
 pc-rx6750xt	component	pc-12700kf	amd64	research	no	-	D62	-	-	-	-	Radeon RX 6750 XT (Navi 22, RDNA 2); resizable BAR to check
 cix-sky1	platform	-	arm64	research	-	-	D53	yes	-	-	-	Orange Pi 6 Plus and Radxa Orion O6; docs/boards/orangepi-6-plus/ (research pass 2026-10-16)
 sky1-mali-g720	component	cix-sky1	arm64	research	no	-	D62	-	-	-	-	Mali-G720
-rk3588	platform	-	arm64	research	-	-	D5	yes	-	-	-	DT-only, so it needs its own decision
+orangepi-5-plus	platform	-	arm64	research	-	-	D5	yes	-	-	-	Orange Pi 5 Plus (RK3588), on hand; DT as shipped, ACPI through community EDK2; docs/boards/orangepi-5-plus/
+opi5p-uart2	component	orangepi-5-plus	arm64	research	yes	-	D5	-	-	-	-	UART2 at 0xfeb50000, 1.5 Mbaud, a 16550 with 32-bit registers
+opi5p-its	component	orangepi-5-plus	arm64	research	yes	-	D5	-	-	-	-	GIC-600 ITS: erratum RK3588001, tables non-shareable (croi's ITS needs the fix)
+opi5p-rtl8125	component	orangepi-5-plus	arm64	research	yes	-	D15	-	-	-	-	two Realtek 2.5 GbE on PCIe 2.0 x1, the V3 link's NIC here
 hailo-8	component	-	all	research	no	-	D5	-	-	-	-	M.2 accelerator, after the accelerator protocol
 qemu-cheri-rv64	platform	-	rv64	research	-	-	-	deferred	-	-	-	CHERI-RISC-V on QEMU-CHERI, a roadmap research track
 gpu-amd	component	-	amd64	planned	no	open	D62	-	-	-	-	RDNA2 or newer, the desktop track's first driver; first device pc-rx6750xt

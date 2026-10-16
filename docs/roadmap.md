@@ -375,7 +375,9 @@ write prefix.
 - Halide-style algorithm/schedule split in VXCompute.
 - hetIR-style checkpoint and migration of accelerator work across swarm
   nodes.
-- RK3588 (DT-only, so it needs an ADR) and the Hailo-8 over M.2.
+- RK3588, on the Orange Pi 5 Plus (on hand), and the Hailo-8 over M.2.
+  Shipped with DT, but a community EDK2 gives it ACPI, so using that
+  firmware needs a decision, not a DT path (`docs/boards/orangepi-5-plus/`).
 
 ## Known issues
 

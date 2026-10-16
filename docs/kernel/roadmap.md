@@ -1174,6 +1174,17 @@ from Zircon, see docs/kernel/zircon-divergences.md.
 - Board bring-up: handoff v4 board rules, GIC erratum checks; the
   watchdog and SError paths unverified on hardware; SError delivery to
   the faulting process.
+- ITS shareability (found 2026-10-16, docs/boards/orangepi-5-plus/):
+  `Its.swift` writes the ITS's device, collection and command tables and
+  each redistributor's `PROPBASER`/`PENDBASER` as inner shareable,
+  write-back, and never reads them back. A GIC that can't snoop (the
+  RK3588's GIC-600, Rockchip erratum RK3588001, ITS IIDR `0x0201743b`;
+  Linux's `its_enable_rk3588001`) then reads stale tables and loses MSIs.
+  Fix as Linux does: read the shareability back after each write; where
+  the GIC downgraded it, or an IIDR quirk says so, clean the tables and
+  every command to memory before the GIC reads them (or map them
+  non-cacheable). It lands with the GIC erratum checks, tested in QEMU by
+  forcing the non-shareable path.
 - Budgets: channel_call's 1 µs target (~1.4 µs under KVM).
 - VRAM in the memory budget (D57, proposed, before V6): VMOs backed by a
   discrete GPU's memory, whose backing a driver can evict to RAM, or the
