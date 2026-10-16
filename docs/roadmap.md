@@ -313,11 +313,11 @@ work, in order:
      bit 15), `E` hiding from programs what was given and unchanged
      since (Plan 9's Updenv), `F` taking away every descriptor; `e`,
      `f` and `s` ask nothing (rc's environment and descriptors are
-     shared with no one; notes are still missing). 9front's unix rc has
+     shared with no one; croi has no note groups). 9front's unix rc has
      no rfork, so RcTests and launch-test check it, not the oracle.
-     Its limits: a namespace is the process's, so `rfork n` in a `&`
-     block is rc's too (as `cd` is); `F` leaves the streams open until
-     their owners close them, and rc reading a terminal reads on; a
+     Its limits (a fork's `rfork n` is its own since, below): `F`
+     leaves the streams open until their owners close them, and rc
+     reading a terminal reads on; a
      sealed namespace with nothing in it reaches a child unsealed;
      notes as 9front's dotrap takes them, between commands: a note's
      function runs (its status stands, with the globals and $*), else an
@@ -346,14 +346,20 @@ work, in order:
      compound's thread koid; on Linux a pid), `wait PID` waiting for that
      job and taking its status (one rc didn't start, or waited for
      already: nothing), a bare `wait` leaving the status as it was, and a
-     compound's job its status (it was always true).
-   - **Wrong semantics:** a compound command run with `&` shares rc's
-     directory (one per process), so a `cd` in it moves rc too, and its
-     namespace (`rfork n` or `N`). `-e` is judged as a command runs, not as
-     its line is compiled, so `flag e +` reaches the rest of its own
-     line (9front's doesn't).
-   - **Missing pieces:** none left in rc(1) that the audit named; what is
-     left is the wrong semantics above and the commands below.
+     compound's job its status (it was always true); where 9front forks (a
+     backquote, a subshell, a pipeline's earlier stages, `&`, `<{}`), a
+     copy of rc on a fork of its system: its variables, functions, flags
+     and directory its own (they leaked into rc, and a `cd` in a background
+     compound moved rc), its namespace shared until it does `rfork n`, as
+     a Plan 9 fork's, while a pipeline's last stage runs in rc (what it
+     sets stays; its `exit` or error is rc's, which a stage contained);
+     on the device each rc keeps its own directory and namespace and gives
+     FDIO absolute paths (FDIO.open takes a namespace), and `/` with
+     nothing mounted there is a directory (`cd /` failed); `-e` as 9front
+     compiles it, per line read and per function as defined, so `flag e
+     +` reaches the next line, not the rest of its own.
+   - **rc(1) as the audit read it:** nothing named is left; what's left
+     is the pty's and the commands', below.
    - **Commands:** nothing streams; unknown flags are ignored, not
      refused; statuses are `1`, not Plan 9's strings; `ls` adds `/` and
      has its own `-l` and multi-directory layout; `touch` doesn't update

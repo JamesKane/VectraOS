@@ -1,0 +1,11 @@
+mkdir sub
+x=`{y=1; cd sub; fn h {echo h}}
+echo y $y; whatis h || echo no h
+ls -d sub >/dev/null && echo the backquote stayed
+cd sub | cat; ls -d sub >/dev/null && echo the stage stayed
+fn f {z=2; cd sub}; f | f | cat; echo z $z; ls -d sub >/dev/null && echo the stages stayed
+@{cd sub; w=4}; echo w $w; ls -d sub >/dev/null && echo the subshell stayed
+{cd sub; v=3} & wait; echo v $v; ls -d sub >/dev/null && echo the background stayed
+cat <{cd sub; u=5; echo in}; echo u $u; ls -d sub >/dev/null && echo the pipe word stayed
+{flag x +} | cat; flag x || echo no flag
+echo | cd sub; ls -d ../sub >/dev/null && echo the last stage moved rc

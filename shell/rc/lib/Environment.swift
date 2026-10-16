@@ -49,6 +49,7 @@ extension Rc {
         else { continue }
         functions[name] = body
         published.functions[name] = body
+        if flags.contains("e") { definedUnderE.insert(name) }  // read now (finit)
         continue
       }
       guard let eq = e.firstIndex(of: "="), !e[..<eq].contains("("), eq != e.startIndex else { continue }

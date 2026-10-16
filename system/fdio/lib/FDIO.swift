@@ -254,8 +254,9 @@ public enum FDIO {
     }
   }
 
-  static func resolve(_ path: String) -> Result<(Namespace, String), Errno> {
-    guard let ns = namespace else { return .failure(Errno.noEntry) }
+  /// `path` cleaned, in `given` (or the process's namespace).
+  static func resolve(_ path: String, in given: Namespace? = nil) -> Result<(Namespace, String), Errno> {
+    guard let ns = given ?? namespace else { return .failure(Errno.noEntry) }
     return clean(path).map { (ns, $0) }
   }
 
@@ -282,8 +283,8 @@ public enum FDIO {
 
   /// The node at `path`. A path ending in "/" must name a directory
   /// (ENOTDIR otherwise), as POSIX's pathname resolution has it.
-  static func open(node path: String) -> Result<NodeIPC.NodeClient, Errno> {
-    switch resolve(path) {
+  static func open(node path: String, in given: Namespace? = nil) -> Result<NodeIPC.NodeClient, Errno> {
+    switch resolve(path, in: given) {
     case .failure(let e): return .failure(e)
     case .success(let (ns, p)):
       var client: NodeIPC.NodeClient
@@ -331,20 +332,23 @@ public enum FDIO {
     state.withLock { s in fd >= 0 && Int(fd) < s.table.count ? s.table[Int(fd)] : nil }
   }
 
-  /// open: a descriptor for the node at `path`.
-  public static func open(_ path: String, flags: Int32, mode: UInt32 = 0o644) -> Result<Int32, Errno> {
+  /// open: a descriptor for the node at `path`, in `namespace` if given (a
+  /// shell's fork resolves in its own: rc's `rfork n`), else the process's.
+  public static func open(_ path: String, flags: Int32, mode: UInt32 = 0o644, in namespace: Namespace? = nil)
+    -> Result<Int32, Errno>
+  {
     // /dev/fd/N: descriptor N itself, one the process was started with
     // (no dup yet: closing it closes N).
     if let n = descriptorPath(path), n < 3 || inherited(n) { return .success(n) }
     let access = flags & OpenFlags.accessMode
     guard access != OpenFlags.accessMode else { return .failure(Errno.invalid) }
     var client: NodeIPC.NodeClient
-    switch open(node: path) {
+    switch open(node: path, in: namespace) {
     case .success(let c):
       if flags & OpenFlags.create != 0 && flags & OpenFlags.exclusive != 0 { return .failure(Errno.exists) }
       client = c
     case .failure(Errno.noEntry) where flags & OpenFlags.create != 0:
-      guard case .success(let (ns, p)) = resolve(path) else { return .failure(Errno.noEntry) }
+      guard case .success(let (ns, p)) = resolve(path, in: namespace) else { return .failure(Errno.noEntry) }
       if flags & OpenFlags.directory != 0 { return .failure(Errno.invalid) }
       do throws(NamespaceError) {
         client = try ns.create(p, kind: .file)

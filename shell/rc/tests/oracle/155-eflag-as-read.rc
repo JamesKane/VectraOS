@@ -1,0 +1,8 @@
+fn before { ~ a b; echo a body read before -e goes on }
+flag e +; ~ a b; echo the rest of its line goes on
+before
+x=`{~ a b; echo in}; echo the backquote goes on $x
+fn after { ~ a b; echo never }
+echo defined under -e
+after
+echo never

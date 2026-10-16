@@ -1,0 +1,3 @@
+fn f {z=2}; echo | f; echo z $z
+echo | { y=3 }; echo y $y
+echo | exit 3; echo never

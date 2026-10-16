@@ -155,10 +155,59 @@ final class Job: RcJob {
 /// one: its interpreter, an argument if the line has one, the file, then
 /// the rest. A child that is rc (a script's interpreter, or rc run by
 /// name) is given a job under rc's, to start its own.
+///
+/// Where 9front forks (a backquote, a subshell, a pipeline's earlier
+/// stage, `&`, <{}), rc runs a copy of itself on a fork of this: its own
+/// directory, and its namespace shared until it does `rfork n`, as a Plan 9
+/// fork's are. Paths are resolved here against them, and FDIO given them
+/// absolute (its directory and namespace are the process's).
 final class CroiSystem: RcSystem {
-  let job: Handle
+  /// What rc and its forks share: the job programs start in, and the
+  /// streams numbered for <{} and >{}.
+  final class Shared: @unchecked Sendable {
+    let job: Handle
+    let lock = Lock()
+    var numbered: [Int32: RcStream] = [:]
+    var nextNumber: Int32 = 32
+    init(job: consuming Handle) { self.job = job }
+  }
+  let shared: Shared
+  /// This rc's directory and namespace.
+  var cwd: String
+  var namespace: Namespace?
 
-  init(job: consuming Handle) { self.job = job }
+  init(job: consuming Handle) {
+    shared = Shared(job: job)
+    cwd = FDIO.currentDirectory
+    namespace = FDIO.namespace
+  }
+
+  init(_ shared: Shared, cwd: String, namespace: Namespace?) {
+    self.shared = shared
+    self.cwd = cwd
+    self.namespace = namespace
+  }
+
+  /// A fork's: the same namespace (until it forks its own), its own
+  /// directory.
+  func fork() -> RcSystem { CroiSystem(shared, cwd: cwd, namespace: namespace) }
+
+  /// `path` absolute against this directory, and cleaned.
+  func full(_ path: String) -> String? {
+    guard !path.isEmpty else { return nil }
+    let abs = path.hasPrefix("/") ? path : (cwd == "/" ? "/" + path : cwd + "/" + path)
+    guard let names = try? Namespace.clean(abs) else { return nil }
+    return "/" + names.joined(separator: "/")
+  }
+
+  /// The node at `path`'s kind, if it's there: a path with mount points
+  /// below it and nothing mounted there (/ itself) a directory, as the
+  /// namespace lists it.
+  func kind(_ path: String) -> NodeIPC.NodeKind? {
+    guard let namespace, let p = full(path) else { return nil }
+    if var c = try? namespace.open(p) { return (try? c.stat(fields: 0))?.qid.kind }
+    return (try? namespace.list(p, fields: 0)) != nil ? .directory : nil
+  }
 
   func open(_ path: String, _ mode: RcOpen) -> RcStream? {
     let flags: Int32
@@ -171,10 +220,10 @@ final class CroiSystem: RcSystem {
     // /dev/fd/N: one of rc's own numbered streams (<{}), or a descriptor
     // rc was started with.
     if let n = FDIO.descriptorPath(path) {
-      if let s = lock.withLock({ numbered[n] }) { return s }
+      if let s = shared.lock.withLock({ shared.numbered[n] }) { return s }
       if n < 3 || td_stdio_has(n, nil) { return Standard(n) }
     }
-    guard case .success(let fd) = FDIO.open(path, flags: flags) else { return nil }
+    guard let p = full(path), case .success(let fd) = FDIO.open(p, flags: flags, in: namespace) else { return nil }
     return FileStream(fd, reads: mode == .read ? true : mode == .readWrite ? nil : false)
   }
 
@@ -185,18 +234,13 @@ final class CroiSystem: RcSystem {
     return (PipeStream(ends.a, reads: true), PipeStream(ends.b, reads: false))
   }
 
-  /// Streams <{} and >{} named, by number.
-  let lock = Lock()
-  var numbered: [Int32: RcStream] = [:]
-  var nextNumber: Int32 = 32
-
   /// A number for `s` (32 to 63, round again: below td_stdio.h's limit
   /// and above what a script names), its path /dev/fd/N.
   func descriptor(_ s: RcStream) -> (fd: Int32, path: String)? {
-    let n = lock.withLock { () -> Int32 in
-      let n = nextNumber
-      nextNumber = n == 63 ? 32 : n + 1
-      numbered[n] = s
+    let n = shared.lock.withLock { () -> Int32 in
+      let n = shared.nextNumber
+      shared.nextNumber = n == 63 ? 32 : n + 1
+      shared.numbered[n] = s
       return n
     }
     return (n, "/dev/fd/\(n)")
@@ -205,8 +249,8 @@ final class CroiSystem: RcSystem {
   /// The program at `path`: its file's memory, to run, if the namespace's
   /// server gives it.
   func program(_ path: String) -> NodeIPC.Memory? {
-    guard let ns = FDIO.namespace, case .success(let full) = FDIO.realPath(path) else { return nil }
-    return try? ns.memory(full, executable: true)
+    guard let namespace, let p = full(path) else { return nil }
+    return try? namespace.memory(p, executable: true)
   }
 
   /// A script's `#!` line: its interpreter and the argument after it, if
@@ -248,22 +292,22 @@ final class CroiSystem: RcSystem {
     let entry = ProgramEntry(image: memory.vmo.raw, offset: 0, length: Int(memory.size), name: name)
     // rc's (Environment.swift), with its directory as PWD (M6m: the file
     // commands' paths are rc's).
-    let env = environment.filter { !$0.hasPrefix("PWD=") } + ["PWD=" + FDIO.currentDirectory]
+    let env = environment.filter { !$0.hasPrefix("PWD=") } + ["PWD=" + cwd]
     let startup = Startup(args: argv, environment: env)
     // rc's namespace, each mount point's root again, sealed if it is.
-    if let ns = FDIO.namespace {
+    if let ns = namespace {
       for p in ns.mountPoints {
         if let node = try? ns.connect(p) { startup.mount(node, at: p, sealed: ns.sealed) }
       }
     }
     do throws(Status) {
-      if name == "rc" { startup.add(try Sys.Job.create(parent: job), info: HandleType.info(HandleType.jobDefault)) }
+      if name == "rc" { startup.add(try Sys.Job.create(parent: shared.job), info: HandleType.info(HandleType.jobDefault)) }
       // Each of its descriptors, as many as a child takes: one it reads
       // if its stream is a source (or it is fd 0), one it writes if not.
       let given = fds.filter { $0.key >= 0 && $0.key < Int32(TD_STDIO_FD_LIMIT) }.sorted { $0.key < $1.key }
         .prefix(Int(TD_STDIO_FDS))
       let stdio = try ChildStdio(for: startup, descriptors: given.map { ($0.key, $0.value.source ?? ($0.key == 0)) })
-      let process = try Process.create(job: job, name: argv[0])
+      let process = try Process.create(job: shared.job, name: argv[0])
       _ = try Process.start(process, entry: entry, startup)
       /// A relay's stream: a pipe held for as long as the relay runs (rc
       /// drops its own hold once the program is started), anything else
@@ -328,21 +372,22 @@ final class CroiSystem: RcSystem {
   }
 
   func changeDirectory(_ path: String) -> Bool {
-    if case .success = FDIO.changeDirectory(path) { return true }
-    return false
+    guard kind(path) == .directory, let p = full(path) else { return false }
+    cwd = p
+    return true
   }
 
-  var directory: String { FDIO.currentDirectory }
+  var directory: String { cwd }
 
   /// The pty's notes, when rc is on one (Terminal.swift): croi has no
   /// others.
   func takeNotes() -> [String] { Terminal.current?.takeNotes() ?? [] }
 
-  /// rfork n, N and m: rc's namespace (FDIO's, which its programs get) a
+  /// rfork n, N and m: this rc's namespace (which its programs get) a
   /// clone of itself or a new empty one, sealed as before (Plan 9's
   /// noattach is inherited), then sealed if asked.
   func forkNamespace(clean: Bool, seal: Bool) -> Bool {
-    guard let ns = FDIO.namespace else { return false }
+    guard let ns = namespace else { return false }
     let next: Namespace
     if clean {
       next = Namespace(sealed: ns.sealed)
@@ -351,7 +396,7 @@ final class CroiSystem: RcSystem {
       next = copy
     }
     if seal { next.seal() }
-    FDIO.replace(next)
+    namespace = next
     return true
   }
 
@@ -383,8 +428,8 @@ final class CroiSystem: RcSystem {
   // them; the Attributes calls (a file's and a directory's alike) change
   // them.
   func node(_ path: String) -> Handle? {
-    guard let ns = FDIO.namespace, case .success(let full) = FDIO.realPath(path) else { return nil }
-    return try? ns.connect(full)
+    guard let namespace, let p = full(path) else { return nil }
+    return try? namespace.connect(p)
   }
 
   func attributes(_ path: String) -> [(name: String, value: AttributeText)]? {
@@ -419,11 +464,7 @@ final class CroiSystem: RcSystem {
   }
 
   func list(_ directory: String) -> [String]? {
-    guard case .success(let d) = FDIO.openDirectory(directory) else { return nil }
-    var names: [String] = []
-    while let e = d.read() {
-      if e.name != "." && e.name != ".." { names.append(e.name) }
-    }
-    return names
+    guard let namespace, let p = full(directory), let entries = try? namespace.list(p, fields: 0) else { return nil }
+    return entries.map { $0.name }
   }
 }

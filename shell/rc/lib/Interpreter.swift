@@ -78,6 +78,9 @@ public protocol RcSystem: AnyObject {
   /// the system can't, and it runs in the foreground.
   /// (Its job's status is what `body` returns.)
   func spawn(_ body: @escaping @Sendable () -> String) -> RcJob?
+  /// The system for a fork of rc (where 9front forks): its own directory,
+  /// and its namespace shared until it forks its own (`rfork n`).
+  func fork() -> RcSystem
   /// The notes that came for rc since it last asked, by the names of
   /// their functions (9front's Signame: sigint, sighup, sigquit ...).
   func takeNotes() -> [String]
@@ -90,6 +93,8 @@ public protocol RcSystem: AnyObject {
 extension RcSystem {
   public var processID: UInt64 { 1 }
   public func takeNotes() -> [String] { [] }
+  /// A system with nothing a process holds alone is its forks'.
+  public func fork() -> RcSystem { self }
   /// A namespace shared with no one is a copy already.
   public func forkNamespace(clean: Bool, seal: Bool) -> Bool { !clean && !seal }
   public func spawn(_ body: @escaping @Sendable () -> String) -> RcJob? { nil }
@@ -189,6 +194,12 @@ public final class Rc {
   var ifNotPending = false
   /// rc's flags (RcArguments: -e, -x, -v, -s ...), and `flag`'s.
   public var flags: Set<Character> = []
+  /// Whether the code running was read under -e (9front compiles Xeflag in
+  /// as it reads a line, a function's body as it's defined): `flag e +`
+  /// reaches the next line, not the rest of its own. And the functions
+  /// defined under it.
+  var eflag = false
+  var definedUnderE: Set<String> = []
   /// How many conditions rc is inside (an if's or while's, the left of
   /// && or ||, a backquote, a pipeline's earlier stages): -e stops rc
   /// only outside them.
@@ -291,6 +302,17 @@ public final class Rc {
     return try body()
   }
 
+  /// A copy of rc where 9front forks: its variables, functions and flags,
+  /// a fork of its system, and its exits its own (notes and sigexit rc's).
+  func fork() -> Rc {
+    let child = Rc(system: system.fork())
+    (child.variables, child.functions, child.ifNotPending, child.flags) = (variables, functions, ifNotPending, flags)
+    (child.published, child.hidden, child.revoked) = (published, hidden, revoked)
+    (child.inCondition, child.eflag, child.definedUnderE) = (inCondition, eflag, definedUnderE)
+    child.forked = 1
+    return child
+  }
+
   // MARK: Notes
 
   /// sigexit, as 9front's Xexit runs it: once, in rc itself (not where it
@@ -342,7 +364,10 @@ public final class Rc {
     // -v: each line on fd 2 as it's read; -s: a false status on fd 2
     // before the next is (9front's lexer and Xrdcmds).
     let (lines, sources, error) = Parser.lines(text)
+    let outer = eflag
+    defer { eflag = outer }
     for (c, source) in zip(lines, sources) {
+      eflag = flags.contains("e")  // as this line is read
       if flags.contains("v") { live(fds)[2]?.write(Array(source.utf8)) }
       try execute(c, fds)
       if flags.contains("s") && !ok() {
@@ -369,7 +394,7 @@ public final class Rc {
   /// then Xeflag again: a sigexit leaving a true status lets rc go on.
   func exitIfFailed(_ s: String? = nil) throws {
     let s = s ?? status
-    guard flags.contains("e") && inCondition == 0 && !Rc.isTrue(s) else { return }
+    guard eflag && inCondition == 0 && !Rc.isTrue(s) else { return }
     if try trapExit() {
       if ok() { return }
       throw RcExit(status: status)
@@ -457,7 +482,11 @@ public final class Rc {
       let captured = MemoryStream(source: false)
       var inner = fds
       inner[1] = captured
-      try conditionally { try contained(c, inner) }
+      // In a fork (9front's Xbackq), not under -e; its status rc's.
+      let child = fork()
+      child.inCondition += 1
+      try child.contained(c, inner)
+      setStatus(child.status)
       let ifs = Set(separators.joined().unicodeScalars)
       var out: [String] = [], current = ""
       for u in captured.text.unicodeScalars {
@@ -481,8 +510,7 @@ public final class Rc {
         writer.close()
         throw RcError(message: (output ? ">" : "<") + "{} needs paths for pipes, which this system hasn't")
       }
-      let child = Rc(system: system)
-      (child.variables, child.functions, child.flags) = (variables, functions, flags)
+      let child = fork()
       var side = fds
       side[output ? 0 : 1] = theirs
       let work = Unchecked((child, c, side, theirs))
@@ -848,14 +876,10 @@ public final class Rc {
     case .pipeline(let stages, let pipeFds):
       try pipeline(stages, pipeFds, fds)
     case .subshell(let c):
-      // As a fork leaves its parent: rc's variables, functions and
-      // directory as they were, the subshell's status kept.
-      let saved = (variables, functions, ifNotPending, system.directory)
-      try contained(c, fds)
-      let status = variables["status"]
-      (variables, functions, ifNotPending) = (saved.0, saved.1, saved.2)
-      if system.directory != saved.3 { _ = system.changeDirectory(saved.3) }
-      variables["status"] = status
+      // In a fork (9front's Xsubshell), waited for: its status rc's.
+      let child = fork()
+      try child.contained(c, fds)
+      setStatus(child.status)
       try exitIfFailed()
     case .not(let c):
       try execute(c, fds)
@@ -889,13 +913,8 @@ public final class Rc {
         }
         setStatus("")
       } else {
-        // Anything else as a fork would run it: on a thread, in a copy of
-        // rc's variables and functions (the directory is still the
-        // process's: a `cd` in it is everyone's).
-        let child = Rc(system: system)
-        (child.variables, child.functions, child.ifNotPending, child.flags) = (variables, functions, ifNotPending, flags)
-        (child.published, child.hidden, child.revoked) = (published, hidden, revoked)
-        child.forked = 1  // for good: its exit is its own, notes are rc's
+        // Anything else in a fork, on a thread.
+        let child = fork()
         let work = Unchecked((child, c, quiet))
         if let job = system.spawn({
           let (child, c, fds) = work.value
@@ -958,6 +977,7 @@ public final class Rc {
     case .function(let name, let body):
       functions[name] = body
       if body == nil { functions[name] = nil }
+      if eflag && body != nil { definedUnderE.insert(name) } else { definedUnderE.remove(name) }
     }
   }
 
@@ -969,9 +989,9 @@ public final class Rc {
     if let body = functions[name] {
       // -e within a body as where it was defined (9front compiles it
       // then), not as where it's called.
-      let outer = inCondition
-      inCondition = 0
-      defer { inCondition = outer }
+      let outer = (inCondition, eflag)
+      (inCondition, eflag) = (0, definedUnderE.contains(name))
+      defer { (inCondition, eflag) = outer }
       let saved = variables["*"]
       variables["*"] = Array(argv.dropFirst())
       defer { variables["*"] = saved }
@@ -1061,14 +1081,24 @@ public final class Rc {
       }
     }
     var statuses: [String] = Array(repeating: "", count: stages.count)
-    // -e looks at the last stage alone (9front runs it in rc, the others
-    // forked).
+    // 9front's Xpipe: the last stage runs in rc (what it sets stays, an
+    // exit or error is rc's), each before it in a fork.
     let last = stages.count - 1
     for (k, stage) in stages.enumerated() where !started[k] {
-      let run = { () throws -> Void in
-        if let p = prepared[k] { try self.containedCall(p.argv, p.io, p.opened, p.sides) } else { try self.contained(stage, ios[k]) }
+      if k == last {
+        if let p = prepared[k] {
+          defer { finish(p.opened, p.sides) }
+          trace(p.argv, p.io)
+          if let job = try call(p.argv, p.io) { setStatus(job.wait()) }
+          try exitIfFailed()
+        } else {
+          try executeChecked(stage, ios[k])
+        }
+      } else {
+        let child = fork()
+        if let p = prepared[k] { try child.containedCall(p.argv, p.io, p.opened, p.sides) } else { try child.contained(stage, ios[k]) }
+        setStatus(child.status)
       }
-      if k == last { try run() } else { try conditionally(run) }
       statuses[k] = status
       if k < pipes.count { pipes[k].1.close() }
     }
@@ -1151,6 +1181,10 @@ public final class Rc {
     },
     "eval": { rc, argv, fds in
       let c = try Parser.parse(argv.dropFirst().joined(separator: " "))
+      // Read now, under -e as it is now.
+      let outer = rc.eflag
+      rc.eflag = rc.flags.contains("e")
+      defer { rc.eflag = outer }
       try rc.execute(c, fds)
     },
     "shift": { rc, argv, _ in

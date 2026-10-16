@@ -73,6 +73,25 @@ final class Job: RcJob {
 final class LinuxSystem: RcSystem {
   var processID: UInt64 { UInt64(getpid()) }
 
+  /// This rc's directory: a fork of rc (where 9front forks; here a copy on
+  /// a thread, or in rc) has its own, so paths are made absolute here and
+  /// a program started there.
+  var cwd: String
+
+  init() {
+    var buf = [CChar](repeating: 0, count: 4096)
+    cwd = getcwd(&buf, buf.count) != nil ? String(cString: buf) : "/"
+  }
+
+  init(cwd: String) { self.cwd = cwd }
+
+  func fork() -> RcSystem { LinuxSystem(cwd: cwd) }
+
+  /// `path` against this directory.
+  func absolute(_ path: String) -> String {
+    path.hasPrefix("/") || path.isEmpty ? path : (cwd == "/" ? "/" : cwd + "/") + path
+  }
+
   /// Signals as notes, by the names 9front's unix rc gives them (its
   /// Trapinit): each caught and counted, and taken between commands. Not
   /// SIGPIPE, which rcport ignores: its pump threads write to pipes.
@@ -126,7 +145,8 @@ final class LinuxSystem: RcSystem {
   }
 
   /// 9front unix.c's Executable: a file it may run, not a directory.
-  func executable(_ path: String) -> Bool {
+  func executable(_ relative: String) -> Bool {
+    let path = absolute(relative)
     var s = stat()
     return access(path, X_OK) == 0 && stat(path, &s) == 0 && (s.st_mode & S_IFMT) != S_IFDIR
   }
@@ -139,7 +159,7 @@ final class LinuxSystem: RcSystem {
     case .readWrite: flags = O_RDWR  // 9front unix.c's Open: no create
     case .append: flags = O_WRONLY | O_CREAT | O_APPEND
     }
-    let fd = Glibc.open(path, flags | O_CLOEXEC, 0o666)
+    let fd = Glibc.open(absolute(path), flags | O_CLOEXEC, 0o666)
     return fd < 0 ? nil : FdStream(fd)
   }
 
@@ -159,6 +179,7 @@ final class LinuxSystem: RcSystem {
   func start(_ path: String, _ argv: [String], fds: [Int32: RcStream], environment: [String]) -> RcJob? {
     var actions = posix_spawn_file_actions_t()
     posix_spawn_file_actions_init(&actions)
+    posix_spawn_file_actions_addchdir_np(&actions, cwd)
     defer { posix_spawn_file_actions_destroy(&actions) }
     var parentClose: [Int32] = []
     var pumpsToStart: [() -> Void] = []
@@ -211,7 +232,7 @@ final class LinuxSystem: RcSystem {
       cEnv.forEach { free($0) }
     }
     var pid: pid_t = 0
-    let rcode = posix_spawn(&pid, path, &actions, &attr, cArgs, cEnv)
+    let rcode = posix_spawn(&pid, absolute(path), &actions, &attr, cArgs, cEnv)
     for fd in parentClose { _ = Glibc.close(fd) }
     if rcode != 0 { return nil }
     let job = Job(pid: pid)
@@ -226,16 +247,21 @@ final class LinuxSystem: RcSystem {
     return job
   }
 
-  func changeDirectory(_ path: String) -> Bool { chdir(path) == 0 }
-
-  var directory: String {
-    var buf = [CChar](repeating: 0, count: 4096)
-    guard getcwd(&buf, buf.count) != nil else { return "/" }
-    return String(cString: buf)
+  /// cd: this rc's directory, the path made real (as chdir and getcwd).
+  func changeDirectory(_ path: String) -> Bool {
+    var s = stat()
+    guard stat(absolute(path), &s) == 0, (s.st_mode & S_IFMT) == S_IFDIR, let real = realpath(absolute(path), nil) else {
+      return false
+    }
+    defer { free(real) }
+    cwd = String(cString: real)
+    return true
   }
 
+  var directory: String { cwd }
+
   func list(_ directory: String) -> [String]? {
-    guard let d = opendir(directory) else { return nil }
+    guard let d = opendir(absolute(directory)) else { return nil }
     defer { closedir(d) }
     var names: [String] = []
     while let e = readdir(d) {

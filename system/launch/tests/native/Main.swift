@@ -237,6 +237,11 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
   rcRuns(rc, "cat /dev/fd/3 <[3]/svc/a/status", a, ns, job: job, "rc gives a program fd 3")
   rcRuns(rc, "cat <{cat /svc/a/status} <{echo two}", a + Array("two\n".utf8), ns, job: job,
          "rc runs <{} on the device")
+  // Where 9front forks, a copy of rc on a system of its own: a cd there is
+  // its own (a pipeline's earlier stage, a subshell, a backquote, `&`),
+  // and its programs start there; the last stage runs in rc.
+  rcRuns(rc, "cd /svc; cat a/status; cd /; {cd /svc} | cat; @{cd /svc}; x=`{cd /svc}; {cd /svc; cat a/status} & wait; pwd; echo | cd /svc; pwd",
+         a + a + Array("/\n/svc\n".utf8), ns, job: job, "rc's forks have directories of their own")
   // rfork: n a copy of rc's namespace, N an empty one (/bin gone with it,
   // so nothing runs), E what was given hidden, F every descriptor gone.
   rcRuns(rc, "rfork n; cat /svc/a/status; rfork N; cat /svc/a/status || echo gone", a + Array("gone\n".utf8), ns,
