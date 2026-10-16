@@ -690,7 +690,12 @@ public final class Rc {
         newline = false
         args.removeFirst()
       }
-      fds[1]?.write(Array((args.joined(separator: " ") + (newline ? "\n" : "")).utf8))
+      // As 9front's echo: fd 1 closed is a write error.
+      guard let out = fds[1] else {
+        fds[2]?.write(Array("echo: write error: fd 1 closed\n".utf8))
+        return rc.setStatus("write error")
+      }
+      out.write(Array((args.joined(separator: " ") + (newline ? "\n" : "")).utf8))
       rc.setStatus("")
     },
     // attr FILE: its attributes, a line each; attr FILE NAME: one's value;
