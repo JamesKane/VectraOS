@@ -282,7 +282,9 @@ work, in order:
      characters (keywords only alone at a command's start, as 9front's
      klook), and `@` subshells; `$0` and `$pid`, `for`'s variable local
      to the loop, `\`-newline inside a word, `cd`'s and `whatis`'s
-     statuses and `whatis`'s forms (all but a function's body).
+     statuses and `whatis`'s forms (all but a function's body); scripts
+     parsed and run a line at a time, so a syntax error stops one at its
+     line.
    - **Redirections:** a program's fd 2 is its stdout and fds over 2
      are dropped; redirection streams are never closed.
    - **Missing syntax:** `<>`, `<{}`, `>{}`, `$$x`, `` `split{} ``.

@@ -13,8 +13,6 @@
 51-builtin	port	builtin missing
 52-whatis	port	whatis fn prints no body
 61-background	port	compound & runs in foreground
-63-syntax-brace	port	whole-script parse: earlier lines don't run
-64-syntax-paren	port	whole-script parse: earlier lines don't run
 65-syntax-eq	port	= in arguments accepted (and split into its own word)
 69-notfound	linux	not-found status text (Linux oracle: 1)
 73-assign-list-var	port	$a=val (computed name) unsupported

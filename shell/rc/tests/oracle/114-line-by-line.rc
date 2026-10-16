@@ -1,0 +1,12 @@
+fn f {
+	echo in f
+}
+f; echo semi &&
+	echo continued
+cat <<EOF
+body
+EOF
+echo a | 
+	cat
+echo 'unterminated
+echo never

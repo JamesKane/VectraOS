@@ -151,8 +151,7 @@ public final class Rc {
   @discardableResult
   public func run(_ text: String, fds: [Int32: RcStream]) -> Bool {
     do {
-      let c = try Parser.parse(text)
-      try execute(c, fds)
+      try runLines(text, fds)
       return true
     } catch let e as RcSyntaxError {
       fds[2]?.write(Array((e.description + "\n").utf8))
@@ -167,6 +166,14 @@ public final class Rc {
     } catch {
       return true
     }
+  }
+
+  /// Runs a script line by line (Parser.lines); a syntax error is thrown
+  /// once the lines before it have run.
+  func runLines(_ text: String, _ fds: [Int32: RcStream]) throws {
+    let (lines, error) = Parser.lines(text)
+    for c in lines { try execute(c, fds) }
+    if let error { throw error }
   }
 
   /// 9front's truestatus: nothing but `|` and `0`.
@@ -759,7 +766,7 @@ public final class Rc {
       let saved = rc.variables["*"]
       rc.variables["*"] = Array(argv.dropFirst(2))
       defer { rc.variables["*"] = saved }
-      try rc.execute(try Parser.parse(String(decoding: text, as: UTF8.self)), fds)
+      try rc.runLines(String(decoding: text, as: UTF8.self), fds)
     },
   ]
 

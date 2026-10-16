@@ -336,29 +336,70 @@ public struct Parser {
 
   /// Parses a whole script (or one line typed).
   public static func parse(_ text: String) throws(RcSyntaxError) -> Command {
-    var lexer = Lexer(text)
-    var p = Parser()
-    while true {
-      let t = try lexer.next()
-      p.tokens.append(t)
-      if t == .end { break }
-    }
-    // Here documents: each body in its redirection's place, read by now
-    // (the input ending inside one leaves the text unfinished).
-    guard lexer.pending.isEmpty else { throw RcSyntaxError(message: "unfinished here document", incomplete: true) }
-    for k in p.tokens.indices {
-      if case .hereBody(let index) = p.tokens[k] {
-        p.tokens[k] = .word(.literal(lexer.bodies[index], quoted: true), spaced: true)
-      }
-    }
+    var (p, lexError) = tokens(text)
+    if let lexError { throw lexError }
     do throws(RcSyntaxError) {
       return try p.list(until: [.end])
     } catch {
-      // Failing at the text's end: unfinished, not wrong.
-      var e = error
-      if p.at >= p.tokens.count - 1 { e.incomplete = true }
-      throw e
+      throw p.judged(error)
     }
+  }
+
+  /// A script's lines, as 9front reads them (`rc: line '\n'`): each
+  /// parsed alone, so a syntax error stops the script at its line, the
+  /// lines before it still run. The error, if any, comes after them.
+  public static func lines(_ text: String) -> (lines: [Command], error: RcSyntaxError?) {
+    var (p, lexError) = tokens(text)
+    var lines: [Command] = []
+    while true {
+      while p.peek == .newline || p.peek == .semicolon { p.at += 1 }
+      if p.peek == .end { return (lines, lexError) }
+      do throws(RcSyntaxError) {
+        lines.append(try p.list(until: [.newline, .end]))
+      } catch {
+        // A line cut short by a lexing error is that error.
+        return (lines, lexError ?? p.judged(error))
+      }
+    }
+  }
+
+  /// The text's tokens, each here document's body in its redirection's
+  /// place, and the error that ended the lexing early, if one did (the
+  /// tokens then stop there).
+  static func tokens(_ text: String) -> (Parser, RcSyntaxError?) {
+    var lexer = Lexer(text)
+    var p = Parser()
+    var lexError: RcSyntaxError? = nil
+    do throws(RcSyntaxError) {
+      while true {
+        let t = try lexer.next()
+        p.tokens.append(t)
+        if t == .end { break }
+      }
+    } catch {
+      // The line it cut short goes too: none of it runs.
+      lexError = error
+      while let last = p.tokens.last, last != .newline { p.tokens.removeLast() }
+      p.tokens.append(.end)
+    }
+    // The input ending inside a here document leaves the text unfinished.
+    if lexError == nil && !lexer.pending.isEmpty {
+      lexError = RcSyntaxError(message: "unfinished here document", incomplete: true)
+    }
+    for k in p.tokens.indices {
+      if case .hereBody(let index) = p.tokens[k] {
+        let body = index < lexer.bodies.count ? lexer.bodies[index] : ""
+        p.tokens[k] = .word(.literal(body, quoted: true), spaced: true)
+      }
+    }
+    return (p, lexError)
+  }
+
+  /// Failing at the text's end: unfinished, not wrong.
+  func judged(_ error: RcSyntaxError) -> RcSyntaxError {
+    var e = error
+    if at >= tokens.count - 1 { e.incomplete = true }
+    return e
   }
 
   var peek: Token { tokens[at] }
@@ -375,7 +416,7 @@ public struct Parser {
   mutating func list(until stops: [Token]) throws(RcSyntaxError) -> Command {
     var commands: [Command] = []
     while true {
-      while peek == .newline || peek == .semicolon { at += 1 }
+      while (peek == .newline && !stops.contains(.newline)) || peek == .semicolon { at += 1 }
       if stops.contains(peek) { break }
       if peek == .end { throw RcSyntaxError(message: "unfinished", incomplete: true) }
       var c = try andOr()
