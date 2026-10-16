@@ -1,0 +1,3 @@
+echo before
+wait 1 2
+echo never

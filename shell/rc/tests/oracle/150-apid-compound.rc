@@ -1,0 +1,4 @@
+{ ~ a b } & x=$apid
+~ $x [0-9]* && ! ~ $x $pid && echo a number of its own
+wait $x; ~ $status '' || echo its status
+{ echo in } & wait $apid; ~ $status '' 0 && echo true

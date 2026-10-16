@@ -1,0 +1,12 @@
+echo $#apid
+ls >/dev/null &
+~ $apid [0-9]* && echo a number
+~ $apid $pid || echo not rc
+sleep 0.2 & a=$apid
+sleep 0.1 & b=$apid
+~ $a $b || echo each its own
+wait $a
+false & wait $apid; ~ $status '' || echo false waited for
+false & ~ a b; wait; echo $status
+status=kept; wait 12345678; echo $status
+true & y=$apid; wait $y; ~ a b; wait $y; echo twice $status

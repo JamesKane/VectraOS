@@ -56,6 +56,7 @@ final class Job: RcJob {
   let done = DispatchSemaphore(value: 0)
   var pumpCount = 0
   var result: String?
+  var id: UInt64 { UInt64(pid) }
   init(pid: pid_t) { self.pid = pid }
   func wait() -> String {
     if let result { return result }
@@ -96,22 +97,30 @@ final class LinuxSystem: RcSystem {
     return out
   }
 
-  /// A thread, waited for by a semaphore.
-  final class ThreadJob: RcJob {
+  /// A thread, waited for by a semaphore, its status what it returned; its
+  /// id ($apid) one above any Linux pid (pid_max is at most 2^22), as a
+  /// fork's would be its own.
+  final class ThreadJob: RcJob, @unchecked Sendable {
     let done = DispatchSemaphore(value: 0)
+    nonisolated(unsafe) static var last: UInt64 = 1 << 32
+    let id: UInt64
+    init() {
+      ThreadJob.last += 1
+      id = ThreadJob.last
+    }
+    var status = ""
     func wait() -> String {
       done.wait()
       done.signal()
-      return ""
+      return status
     }
   }
 
-  func spawn(_ body: @escaping @Sendable () -> Void) -> RcJob? {
+  func spawn(_ body: @escaping @Sendable () -> String) -> RcJob? {
     let job = ThreadJob()
-    let done = job.done
     Thread.detachNewThread {
-      body()
-      done.signal()
+      job.status = body()
+      job.done.signal()
     }
     return job
   }

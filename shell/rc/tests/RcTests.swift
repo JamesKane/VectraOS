@@ -50,7 +50,14 @@ final class Machine: RcSystem {
 
   final class Job: RcJob {
     let body: () -> String
-    init(_ body: @escaping () -> String) { self.body = body }
+    /// Numbered from 100, a job a number.
+    nonisolated(unsafe) static var last: UInt64 = 99
+    let id: UInt64
+    init(_ body: @escaping () -> String) {
+      self.body = body
+      Job.last += 1
+      id = Job.last
+    }
     func wait() -> String { body() }
   }
 

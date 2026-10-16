@@ -126,9 +126,12 @@ final class Job: RcJob {
   let process: Owned
   let stdio: ChildStdio
   var relays: [Owned]
+  /// Its process's koid ($apid).
+  let id: UInt64
   /// Its stdin, while it has the terminal (Terminal.swift).
   var lent: ChildStream? = nil
   init(process: consuming Handle, stdio: ChildStdio, relays: [Owned]) {
+    id = (try? process.info().koid) ?? 0
     self.process = Owned(process)
     self.stdio = stdio
     self.relays = relays
@@ -352,18 +355,26 @@ final class CroiSystem: RcSystem {
     return true
   }
 
-  /// A thread of rc's, joined by its job.
-  final class ThreadJob: RcJob {
-    let thread: Owned
-    init(_ thread: Owned) { self.thread = thread }
+  /// A thread of rc's, joined by its job, its status what it returned;
+  /// its koid is $apid.
+  final class ThreadJob: RcJob, @unchecked Sendable {
+    var thread: Owned? = nil
+    var id: UInt64 = 0
+    var status = ""
     func wait() -> String {
-      thread.with { h in try? Thread.join(h) }
-      thread.close()
-      return ""
+      thread?.with { h in try? Thread.join(h) }
+      thread?.close()
+      return status
     }
   }
 
-  func spawn(_ body: @escaping @Sendable () -> Void) -> RcJob? { Self.relay(body).map { ThreadJob($0) } }
+  func spawn(_ body: @escaping @Sendable () -> String) -> RcJob? {
+    let job = ThreadJob()
+    guard let thread = Self.relay({ job.status = body() }) else { return nil }
+    job.id = thread.with { h in (try? h.info().koid) ?? 0 } ?? 0
+    job.thread = thread
+    return job
+  }
 
   /// rc's koid, which croi never reuses.
   var processID: UInt64 { (try? Process.current().info().koid) ?? 1 }

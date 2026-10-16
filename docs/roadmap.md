@@ -341,13 +341,19 @@ work, in order:
      manifest mounts its bin/ at /bin (`mount /bin bootfs/bin`), and rc
      starts what its namespace holds, needing a job and no bootfs (an rc
      it starts too); `ls /bin` lists it for any program, and `rfork N`
-     takes it away. launch-test lists /bin and starts rc from it.
+     takes it away. launch-test lists /bin and starts rc from it; `$apid`
+     a background job's own number (a program's process koid, a forked
+     compound's thread koid; on Linux a pid), `wait PID` waiting for that
+     job and taking its status (one rc didn't start, or waited for
+     already: nothing), a bare `wait` leaving the status as it was, and a
+     compound's job its status (it was always true).
    - **Wrong semantics:** a compound command run with `&` shares rc's
      directory (one per process), so a `cd` in it moves rc too, and its
      namespace (`rfork n` or `N`). `-e` is judged as a command runs, not as
      its line is compiled, so `flag e +` reaches the rest of its own
      line (9front's doesn't).
-   - **Missing pieces:** a real `$apid`.
+   - **Missing pieces:** none left in rc(1) that the audit named; what is
+     left is the wrong semantics above and the commands below.
    - **Commands:** nothing streams; unknown flags are ignored, not
      refused; statuses are `1`, not Plan 9's strings; `ls` adds `/` and
      has its own `-l` and multi-directory layout; `touch` doesn't update

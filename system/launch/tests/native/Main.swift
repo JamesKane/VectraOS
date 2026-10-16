@@ -213,6 +213,10 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
   // status.
   let a = Array((readText(ns, "/svc/a/status") ?? "").utf8)
   rcRuns(rc, "/bin/cat /svc/a/status", a, ns, job: job, "rc runs a program by its path")
+  // $apid: a background job's koid (a program's process, a compound's
+  // thread), which `wait` takes, the job's status then rc's.
+  rcRuns(rc, "{ ~ a b } & x=$apid; ~ $x [0-9]* && ! ~ $x $pid && echo number; wait $x; ~ $status '' || echo failed; cat /svc/a/status & wait $apid",
+         Array("number\nfailed\n".utf8) + a, ns, job: job, "rc's $apid is a job's koid, which wait takes")
   rcRuns(rc, "path=() whatis cat || echo none", Array("none\n".utf8), ns, job: job,
          "rc finds nothing on an empty $path")
   rcRuns(rc, "for (p in `{ls /bin}) if (~ $p rc) echo listed; rfork N; whatis cat || echo gone", Array("listed\ngone\n".utf8),

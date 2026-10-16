@@ -33,6 +33,9 @@ extension RcStream {
 
 /// A program the system started, not yet waited for.
 public protocol RcJob: AnyObject {
+  /// Its number, as $apid gives it and `wait` takes it: the process's (or
+  /// the thread's that runs a forked command), never another's.
+  var id: UInt64 { get }
   /// Its status: '' for success, else its exit code (or why it couldn't run).
   func wait() -> String
 }
@@ -73,7 +76,8 @@ public protocol RcSystem: AnyObject {
   /// Runs `body` on a thread of its own, its job waiting for it: a
   /// background command that isn't one program (9front forks it). Nil if
   /// the system can't, and it runs in the foreground.
-  func spawn(_ body: @escaping @Sendable () -> Void) -> RcJob?
+  /// (Its job's status is what `body` returns.)
+  func spawn(_ body: @escaping @Sendable () -> String) -> RcJob?
   /// The notes that came for rc since it last asked, by the names of
   /// their functions (9front's Signame: sigint, sighup, sigquit ...).
   func takeNotes() -> [String]
@@ -88,7 +92,7 @@ extension RcSystem {
   public func takeNotes() -> [String] { [] }
   /// A namespace shared with no one is a copy already.
   public func forkNamespace(clean: Bool, seal: Bool) -> Bool { !clean && !seal }
-  public func spawn(_ body: @escaping @Sendable () -> Void) -> RcJob? { nil }
+  public func spawn(_ body: @escaping @Sendable () -> String) -> RcJob? { nil }
   public func descriptor(_ s: RcStream) -> (fd: Int32, path: String)? { nil }
 
   /// Whether `path` names something: its directory's listing holds its
@@ -179,7 +183,7 @@ public final class Rc {
   public let system: RcSystem
   public var variables: [String: [String]] = ["status": [""], "ifs": [" \t\n"]]
   public var functions: [String: Command] = [:]
-  /// Programs started in the background (`&`), by $apid.
+  /// Programs started in the background (`&`), by $apid (their ids).
   var background: [RcJob] = []
   /// Whether an `if` has run whose `if not` should (9front's ifnot).
   var ifNotPending = false
@@ -486,6 +490,7 @@ public final class Rc {
         let (child, c, side, theirs) = work.value
         do { try child.contained(c, side) } catch {}
         theirs.close()
+        return child.status
       }) else {
         reader.close()
         writer.close()
@@ -878,7 +883,7 @@ public final class Rc {
         trace(argv, io)
         if let job = system.start(path, argv, fds: io, environment: environmentForStart()) {
           background.append(Closing(job, opened, then: sides))
-          variables["apid"] = [String(background.count)]
+          variables["apid"] = [String(job.id)]
         } else {
           finish(opened, sides)
         }
@@ -895,9 +900,10 @@ public final class Rc {
         if let job = system.spawn({
           let (child, c, fds) = work.value
           do { try child.contained(c, fds) } catch {}
+          return child.status
         }) {
           background.append(job)
-          variables["apid"] = [String(background.count)]
+          variables["apid"] = [String(job.id)]
           setStatus("")
         } else {
           try contained(c, fds)
@@ -1221,10 +1227,17 @@ public final class Rc {
       if letters.contains("F") { rc.revokeDescriptors(fds) }
       rc.setStatus("")
     },
-    "wait": { rc, _, _ in
-      for job in rc.background { _ = job.wait() }
-      rc.background.removeAll()
-      rc.setStatus("")
+    // wait [pid] (9front's execwait): every background job, its status
+    // left as it was; or the one $apid named, its status rc's (one rc
+    // didn't start, or waited for already: nothing).
+    "wait": { rc, argv, _ in
+      guard argv.count <= 2 else { throw RcError(message: "Usage: wait [pid]") }
+      guard argv.count == 2 else {
+        for job in rc.background { _ = job.wait() }
+        return rc.background.removeAll()
+      }
+      guard let id = UInt64(argv[1]), let i = rc.background.firstIndex(where: { $0.id == id }) else { return }
+      rc.setStatus(rc.background.remove(at: i).wait())
     },
     // . [-biq] file [arg ...], as 9front's execdot: the file found along
     // $path; one that won't open an error (-q: nothing at all).
@@ -1292,6 +1305,7 @@ final class Closing: RcJob {
   let job: RcJob
   let streams: [RcStream]
   let then: [RcJob]
+  var id: UInt64 { job.id }
   init(_ job: RcJob, _ streams: [RcStream], then: [RcJob] = []) {
     self.job = job
     self.streams = streams
