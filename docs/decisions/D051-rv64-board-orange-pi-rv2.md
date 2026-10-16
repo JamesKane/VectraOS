@@ -32,3 +32,14 @@ from Linux's `k1.dtsi` and FreeBSD's SpacemiT support).
   and a loader that reads the DTB and fills the handoff, so the kernel
   never sees DT. A kernel DT path is not a candidate. The owner decides
   before V4b starts; until then, nothing assumes either answer.
+- **Research for that decision (2026-10-16):** the ACPI candidate has
+  parts to build on (`docs/boards/orangepi-rv2/`, "Toward ACPI
+  firmware"). SpacemiT ships EDK2 for a K1 board (the MUSE Pi Pro;
+  DT only, no ACPI yet) and full static ACPI tables for its K3, and
+  upstream EDK2's `DynamicTablesPkg` makes a RISC-V MADT and RHCT from a
+  DT, once its PLIC parser accepts the K1's compatible string. That
+  candidate is an RV2 port of the K1 EDK2, with tables generated or
+  written from the K3's, built on the host and flashed to SPI NOR as a
+  firmware artifact. U-Boot makes no RISC-V tables of its own. The
+  loader candidate stays the fallback if the port stalls on the board's
+  FSBL or SPI NOR layout.

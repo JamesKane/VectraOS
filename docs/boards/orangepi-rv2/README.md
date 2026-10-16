@@ -13,6 +13,9 @@ hardware documentation, as AbyssBSD's notes are for the Q8B.
 |---|---|---|
 | Linux (`../linux`) | `24a19b953e2a` (2026-10-11) | `arch/riscv/boot/dts/spacemit/k1.dtsi`, `k1-orangepi-rv2.dts`, `Documentation/devicetree/bindings/*/spacemit,*` |
 | FreeBSD (`../freebsd-src`) | `fe90f180047b` (2026-10-13) | `sys/riscv/include/cpu.h`, `sys/riscv/riscv/identcpu.c`, `sys/riscv/spacemit/`, `sys/dev/clk/spacemit/` |
+| SpacemiT EDK2, K1 (gitee `bianbu-linux/edk2-platforms`, branch `k1`) | `1bad7a5` (2025-10-09) | `Platform/Spacemit/K1/MUSE-Pi-Pro/`, `Silicon/Spacemit/Include/IndustryStandard/Acpi66Temp.h` |
+| SpacemiT EDK2, K3 (github `spacemit-com/edk2-platforms`, branch `k3`) | `0b8b7182d8a2` (2026-09-30) | `Platform/Spacemit/K3/AcpiTables/` |
+| EDK2 (github `tianocore/edk2`) | `27cb976bba49` (2026-10-01) | `DynamicTablesPkg/Library/Acpi/RiscV/`, `DynamicTablesPkg/Library/FdtHwInfoParserLib/RiscV/` |
 
 ## CPU
 
@@ -100,6 +103,45 @@ the clock units and the SDHCI only (`files.spacemit`); Linux has the rest.
   K1, so no ACPI tables are known to exist for it.
 - **VectraOS is ACPI-only** (architecture §2). How the RV2 meets that is
   open in D51. Until it is decided, nothing here assumes either answer.
+
+### Toward ACPI firmware (research, 2026-10-16)
+
+No one ships ACPI tables for the K1, but the parts to make them exist:
+
+- **SpacemiT's K1 EDK2 port** targets the MUSE Pi Pro, another K1 board.
+  Its chain is FSBL (from U-Boot SPL; it trains DDR and loads the rest),
+  OpenSBI (`FW_DYNAMIC`), then EDK2 in S-mode, all from SPI NOR. The
+  firmware is a FIT `.itb` holding the EDK2 `.fd` and a DTB, and it
+  boots GRUB from the EDK2 shell. Its Readme says it has no ACPI yet and
+  passes the DTB. The groundwork is there: `Acpi66Temp.h` defines the
+  ACPI 6.6 MADT PLIC structure (type `0x1B`), and the FV rules have an
+  `ACPITABLE` section. Bianbu's guide (July 2025) says only SPI NOR
+  boards can boot UEFI. An RV2 port is a board `.dsc` and the RV2's DT,
+  if the RV2's FSBL and SPI NOR layout take an EDK2 payload.
+- **SpacemiT's K3 EDK2 port has a full static table set**: MADT, RHCT,
+  PPTT, SPCR, MCFG and FADT, and a DSDT with CPUs, UART, USB, PCI and the
+  APLIC. It is a template for K1 tables. The K3 has AIA, so the K1's MADT
+  replaces the IMSIC and APLIC entries with one PLIC entry (`0xe000_0000`,
+  159 sources), and its RHCT carries the RVA22 ISA string, the Zicbom
+  block size (64) and Sv39.
+- **Upstream EDK2 can make the tables from the DT at boot.**
+  `DynamicTablesPkg` has RISC-V MADT and RHCT generators, an SSDT for the
+  PLIC and APLIC, and a serial-port fixup, fed by `FdtHwInfoParserLib`'s
+  RISC-V parser (still being fixed in September and October 2026). Its
+  PLIC parser accepts only `"riscv,plic0"`, and the K1's PLIC is
+  `"spacemit,k1-plic", "sifive,plic-1.0.0"`, so this path needs that
+  string added (a patch) or the DT's compatible changed.
+- **U-Boot is the weaker path.** Its RISC-V ACPI passes through the
+  tables QEMU supplies; nothing found shows it making a MADT or RHCT for
+  real hardware. Mainline U-Boot's K1 support was still a patch series
+  (v2) in May 2026.
+- **The specs are settled.** ACPI 6.6 has the RISC-V MADT entries
+  (RINTC, PLIC, APLIC, IMSIC) and the RHCT, and the RISC-V BRS 1.0 boot
+  spec was ratified in August 2025. K1 tables would use only standard
+  structures.
+- **Still unknown:** whether the K1's DesignWare PCIe works through MCFG's
+  ECAM without quirks, and whether SpacemiT's DT bindings for the clocks,
+  resets and pins need `_DSD` in the DSDT or can stay with the drivers.
 - **To verify on the board:** that the shipped U-Boot runs a UEFI
   application (`bootefi`) and passes the memory map, and whether its SBI
   implements HSM (to start the other harts), SRST (reset and power off)
