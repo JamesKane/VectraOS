@@ -470,3 +470,9 @@ system/fdio/hosted/Startup.swift	todhchai	527ff94	system/fdio/hosted/Startup.swi
 services/fs/lib/Fs.swift	todhchai	527ff94	services/fs/lib/Fs.swift
 services/fs/lib/Client.swift	todhchai	527ff94	services/fs/lib/Client.swift
 services/fs/lib/Listing.swift	todhchai	527ff94	services/fs/lib/Listing.swift
+shell/rc/lib/Interpreter.swift	todhchai	527ff94	shell/rc/lib/Interpreter.swift
+shell/rc/lib/Syntax.swift	todhchai	527ff94	shell/rc/lib/Syntax.swift
+shell/rc/tests/RcTests.swift	todhchai	527ff94	shell/rc/tests/RcTests.swift
+shell/rc/Main.swift	todhchai	527ff94	shell/rc/Main.swift
+shell/rc/native/System.swift	todhchai	527ff94	shell/rc/native/System.swift
+shell/commands/lib/Commands.swift	todhchai	527ff94	shell/commands/lib/Commands.swift

@@ -195,6 +195,30 @@ function(croi_tier1 bootfs_var depends_var)
             ${PROJECT_SOURCE_DIR}/system/fdio/tests/native/Main.swift -o ${_out}/fdio-test
     DEPENDS ${_t1_archives} ${PROJECT_SOURCE_DIR}/system/fdio/tests/native/Main.swift
     COMMENT "fdio-test, for tier 1")
+  # rc, the shell (shell/rc), and its file commands (shell/commands): one
+  # program, each command its name in bootfs. No boot tests of their own:
+  # the launcher's (bin/launch-test) runs rc.
+  file(GLOB _rc_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/shell/rc/lib/*.swift)
+  croi_tier1_library(Rc SOURCES ${_rc_t1})
+  croi_tier1_library(Commands SOURCES shell/commands/lib/Commands.swift USES Fs Node INCLUDES system/trace/c/include)
+  add_custom_command(OUTPUT ${_out}/rc
+    COMMAND ${_swiftc} -parse-as-library -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -L ${_lib}
+            -lRc ${_t1_link} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros"
+            ${PROJECT_SOURCE_DIR}/shell/rc/Main.swift ${PROJECT_SOURCE_DIR}/shell/rc/native/System.swift
+            -o ${_out}/rc
+    DEPENDS ${_lib}/libRc.a ${_t1_archives} ${PROJECT_SOURCE_DIR}/shell/rc/Main.swift
+            ${PROJECT_SOURCE_DIR}/shell/rc/native/System.swift
+    COMMENT "rc, for tier 1")
+  add_custom_command(OUTPUT ${_out}/commands
+    COMMAND ${_swiftc} -parse-as-library -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -L ${_lib}
+            -lCommands ${_t1_link} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros"
+            ${PROJECT_SOURCE_DIR}/shell/commands/Main.swift -o ${_out}/commands
+    DEPENDS ${_lib}/libCommands.a ${_t1_archives} ${PROJECT_SOURCE_DIR}/shell/commands/Main.swift
+    COMMENT "the shell's file commands, for tier 1")
+  set(_shell_entries bin/rc=${_out}/rc)
+  foreach(_c ls cat mkdir rm mv cp touch)
+    list(APPEND _shell_entries bin/${_c}=${_out}/commands)
+  endforeach()
   set(_programs floor-hello cxx-hello swift-hello swift-start swift-async foundation-test node-test-t1 fdio-test)
   set(_entries)
   set(_files)
@@ -202,6 +226,8 @@ function(croi_tier1 bootfs_var depends_var)
     list(APPEND _entries bin/${_p}=${_out}/${_p})
     list(APPEND _files ${_out}/${_p})
   endforeach()
+  list(APPEND _entries ${_shell_entries})
+  list(APPEND _files ${_out}/rc ${_out}/commands)
   add_custom_target(tier1 ALL DEPENDS ${_files})
   set(${bootfs_var} ${_entries} PARENT_SCOPE)
   set(${depends_var} ${_files} PARENT_SCOPE)

@@ -17,8 +17,10 @@ import TDNative
   let childBell: Handle
   let parentBell: Handle
   let channel: Handle
-  /// Waits for this side's doorbell or the child's end.
-  let port: Handle
+  /// Waits for this side's doorbell or the child's end: one a direction,
+  /// so stdin's writer and stdout's reader may be threads of their own.
+  let inPort: Handle
+  let outPort: Handle
   /// The child has gone (its end of the channel closed).
   public private(set) var gone = false
 
@@ -47,10 +49,12 @@ import TDNative
     parentBell = try Counter.create()
     let ends = try Channel.create()
     channel = ends.a
-    port = try Port.create()
-    var bindings = [Binding.changes(parentBell.raw, key: Self.bellKey),
-                    Binding.signals(channel.raw, Signals.peerClosed, key: Self.goneKey)]
-    guard try Port.bind(port, &bindings) == 2 else { throw .internal }
+    inPort = try Port.create()
+    outPort = try Port.create()
+    var forIn = [Binding.changes(parentBell.raw, key: Self.bellKey),
+                 Binding.signals(channel.raw, Signals.peerClosed, key: Self.goneKey)]
+    var forOut = forIn
+    guard try Port.bind(inPort, &forIn) == 2, try Port.bind(outPort, &forOut) == 2 else { throw .internal }
     func part(_ p: UInt32) -> UInt32 { HandleType.info(CROI_PA_STDIO, p) }
     startup.add(vmo, info: part(TD_STDIO_VMO))
     startup.add(try childBell.duplicate(), info: part(TD_STDIO_CHILD_BELL))
@@ -58,8 +62,8 @@ import TDNative
     startup.add(ends.b, info: part(TD_STDIO_CHANNEL))
   }
 
-  /// Sleeps for `ring` as it says to, until `deadline`.
-  func sleep(_ ring: inout NativeRing, deadline: Int64) throws(Status) {
+  /// Sleeps for `ring` on `port` as it says to, until `deadline`.
+  func sleep(_ ring: inout NativeRing, on port: borrowing Handle, deadline: Int64) throws(Status) {
     defer { ring.endSleep() }
     guard !gone, ring.prepareSleep() else { return }
     let packet = try Port.wait(port, deadline: deadline)
@@ -79,7 +83,7 @@ import TDNative
       }
       ringChild(wake)
       done += written
-      if written == 0 { try sleep(&input, deadline: deadline) }
+      if written == 0 { try sleep(&input, on: inPort, deadline: deadline) }
     }
   }
 
@@ -90,7 +94,7 @@ import TDNative
       let (done, wake) = input.writeEnd()
       ringChild(wake)
       if done { return }
-      try sleep(&input, deadline: deadline)
+      try sleep(&input, on: inPort, deadline: deadline)
     }
   }
 
@@ -104,7 +108,7 @@ import TDNative
       ringChild(wake)
       if got > 0 || ended || output.broken { return Array(buffer[..<got]) }
       if gone { return [] }
-      try sleep(&output, deadline: deadline)
+      try sleep(&output, on: outPort, deadline: deadline)
     }
   }
 

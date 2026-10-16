@@ -188,7 +188,8 @@ work, in order:
    `/svc/*/status` and follows a restart, ends). Bulk reads and writes go on an SQ/CQ ring pair and a data
    VMO the client makes and attaches to a node (Node 2's `attach`, D67):
    NodeTree serves them, `NodeBulkChannel` is the client, checked hosted
-   (BulkTests) and natively (node-test). Left: the exit test, with rc.
+   (BulkTests) and natively (node-test). The exit test passes (item 6's
+   rc).
 5. **Time (D48).** Clock objects are cut: the time service publishes UTC
    in a read-only seqlock page that the launcher hands every process at
    start. **Done but for two RTCs:** the page is `td_utc.h`'s (a seqlock
@@ -222,8 +223,14 @@ work, in order:
    NodeTree (FDIOTests) and natively through its C names
    (`bin/fdio-test`, amd64 and arm64); what needs the fs protocol waits
    for Taisce (V3), and the libc has no FILE streams over files yet.
-   Next: rc (tier 1), its pipes as relays between children's stdio, and
-   the pty.
+   rc is lifted (`shell/rc`, tier 1) with its file commands
+   (`shell/commands`, tier 1 with it): each child gets stdio of its own
+   and rc's namespace in its Startup, rc relays between children's rings
+   and its streams, and its pipes are channel pairs of its own; RcTests
+   and CommandsTests (over a NodeTree) hosted, and boot-launch's
+   launch-test runs `rc -c 'cat /svc/*/status'` (amd64 and arm64).
+   Left: the pty (a child given rc's own stdin reads an empty one until
+   it shares a terminal), and `>[2]` apart from stdout.
 7. **Drivers:** PCI, ACPI (the AML interpreter), devmgr, the driver host,
    the virtio library and virtio-input. Each driver binds its interrupt
    with `object_bind` and acks in arrays. The block class's ring (TDBR)
@@ -234,7 +241,8 @@ work, in order:
    rc and `cat`.
 
 **Exit:**
-- `cat /svc/*/status` works, run by rc in a native test.
+- `cat /svc/*/status` works, run by rc in a native test. **Done**
+  (boot-launch, amd64 and arm64; rv64 when tier 1 is).
 - The first boot budget history is recorded (`vx bench --record`, on a
   quiet machine), on the kernel as V1 left it (D17).
 - spawn → main < 200 µs.

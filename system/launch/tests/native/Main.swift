@@ -63,6 +63,42 @@ func lastNumber(_ text: String) -> Int64? {
   return digits > 0 ? n : nil
 }
 
+/// rc's `cat /svc/*/status`, checked against the statuses read here.
+func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
+  guard let job = start.take(HandleType.info(HandleType.jobDefault)),
+    let bootfs = start.take(HandleType.info(HandleType.vmoBootfs)), let files = try? ProgramEntry.bootfs(bootfs)
+  else { return check(false, "a job and bootfs to start rc with") }
+  guard let rc = files.first(where: { same($0.name, "bin/rc") }) else {
+    print("launch-test: no bin/rc (tier 1 isn't built here): rc's check skipped")
+    return
+  }
+  // The glob's order: the names' bytes.
+  let sorted = names.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
+  var expected: [UInt8] = []
+  for name in sorted { expected += Array((readText(ns, "/svc/" + name + "/status") ?? "").utf8) }
+  do throws(Status) {
+    let startup = Startup(args: ["rc", "-c", "cat /svc/*/status"])
+    guard let svc = try? ns.connect("/svc") else { return check(false, "/svc for rc") }
+    startup.mount(svc, at: "/svc")
+    startup.add(try Job.create(parent: job), info: HandleType.info(HandleType.jobDefault))
+    startup.add(try bootfs.duplicate(), info: HandleType.info(HandleType.vmoBootfs))
+    let stdio = try ChildStdio(for: startup)
+    let process = try Process.create(job: job, name: "rc")
+    let thread = try Process.start(process, entry: rc, startup)
+    try stdio.closeInput(deadline: Clock.monotonic() + 5_000_000_000)
+    let out = try stdio.readAll(deadline: Clock.monotonic() + 10_000_000_000)
+    _ = try process.wait(for: Signals.terminated, deadline: Clock.monotonic() + 5_000_000_000)
+    let code = try Process.info(process).returnCode
+    print("launch-test: rc -c 'cat /svc/*/status' wrote \(out.count) bytes, exited \(code)")
+    check(code == 0 && out == expected, "rc runs cat /svc/*/status")
+    _ = consume thread
+  } catch {
+    check(false, "rc runs cat /svc/*/status")
+    print("launch-test: rc: \(error.rawValue)")
+  }
+  _ = consume bootfs
+}
+
 @main struct LaunchTest {
   static func main() {
     let start = Startup.current
@@ -109,6 +145,12 @@ func lastNumber(_ text: String) -> Int64? {
         check(false, "UTC follows the RTC's reading")
       }
     #endif
+
+    // rc runs `cat /svc/*/status` (V2's exit test): rc from bootfs, given
+    // this process's /svc, a job and bootfs for its programs, and stdio;
+    // what it writes is every status, in the glob's order. Tier 1: not on
+    // rv64 yet.
+    runRc(start, ns, names)
 
     // A crash, as the launcher's ctl makes one: a restarts (`restart always`).
     if var ctl = try? ns.open("/svc/launcher/ctl") {

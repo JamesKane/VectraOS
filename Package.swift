@@ -84,6 +84,13 @@ let ipc: [Target] = [
   .target(name: "FDIO", dependencies: ["Fs", "Node", "IPC"], path: "system/fdio",
           exclude: ["native", "tests", "README.md"], sources: ["lib", "hosted"], swiftSettings: tier0),
   .testTarget(name: "FDIOTests", dependencies: ["FDIO", "Node", "IPC"], path: "system/fdio/tests", exclude: ["native"]),
+  // rc, the shell (shell/rc, V2: tier 1 natively): its grammar and
+  // evaluation, over a system.
+  .target(name: "Rc", path: "shell/rc/lib"),
+  .testTarget(name: "RcTests", dependencies: ["Rc"], path: "shell/rc/tests"),
+  // The shell's file commands (shell/commands, V2: tier 1 natively, with rc).
+  .target(name: "Commands", dependencies: ["Fs", "Node", "IPC"], path: "shell/commands/lib"),
+  .testTarget(name: "CommandsTests", dependencies: ["Commands", "Node", "IPC"], path: "shell/commands/tests"),
   // The launcher (system/launch, V2): manifests, a job and a process per
   // service, each process's namespace as its Startup (D65), restarts.
   .target(name: "Launch", dependencies: ["Node", "IPC"], path: "system/launch/lib", swiftSettings: tier0),
