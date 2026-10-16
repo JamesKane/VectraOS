@@ -540,7 +540,7 @@ public final class Rc {
     case .background(let c):
       // A program runs on; anything else runs here first (rc forks it).
       if case .simple(let words, let redirs) = c, let argv = try? words.flatMap({ try value($0, fds) }),
-        let first = argv.first, functions[first] == nil, Rc.builtins[first] == nil
+        let first = argv.first, functions[first] == nil, Rc.builtins[first] == nil, first != "builtin"
       {
         let io = try redirect(redirs, fds)
         if let job = system.start(argv, fds: io, environment: environment) {
@@ -612,6 +612,17 @@ public final class Rc {
       try execute(body, fds)
       return nil
     }
+    // builtin cmd: cmd as a builtin or a program, never a function.
+    if name == "builtin" {
+      guard argv.count > 1 else { throw RcError(message: "builtin: empty argument list") }
+      return try command(Array(argv.dropFirst()), fds)
+    }
+    return try command(argv, fds)
+  }
+
+  /// A builtin or a program, by its name.
+  func command(_ argv: [String], _ fds: [Int32: RcStream]) throws -> RcJob? {
+    let name = argv[0]
     if let builtin = Rc.builtins[name] {
       try builtin(self, argv, fds)
       return nil

@@ -1,0 +1,7 @@
+fn ls { echo not ls }
+ls
+builtin ls /nonexistent-dir >[2]/dev/null || echo ls ran
+fn echo { builtin echo [$*] }
+echo x | cat
+builtin
+echo never

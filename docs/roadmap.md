@@ -286,13 +286,13 @@ work, in order:
      parsed and run a line at a time, so a syntax error stops one at its
      line; a `&` in a switch case (it hung the parser); `(` straight after
      a word and `=` outside an assignment refused, as 9front does; an
-     assignment's name a word (`$a=v`).
+     assignment's name a word (`$a=v`); `builtin`.
    - **Redirections:** a program's fd 2 is its stdout and fds over 2
      are dropped; redirection streams are never closed.
    - **Missing syntax:** `<>`, `<{}`, `>{}`, `$$x`, `` `split{} ``.
    - **Wrong semantics:** `&` on a compound command runs in the foreground.
    - **Missing pieces:** `rc file`, `#!`, `$path` and absolute paths;
-     the flags but `-c`; `builtin`, `exec`, `flag`, `rfork`; notes
+     the flags but `-c`; `exec`, `flag`, `rfork`; notes
      (`sigint`, `sigexit`); `whatis` printing a function's body;
      `$path`, `$cflag`, a real
      `$apid`; the environment's lists and functions; `rc -c` keeping
