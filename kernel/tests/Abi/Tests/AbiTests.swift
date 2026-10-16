@@ -7,6 +7,7 @@
 import CroiAbi
 @testable import KernelAbi
 import Testing
+import TraceFormat
 
 let statuses: [(Status, Int64)] = [
   (.internalError, CROI_ERR_INTERNAL), (.notSupported, CROI_ERR_NOT_SUPPORTED),
@@ -40,4 +41,24 @@ let objectTypes: [(ObjectType, UInt32)] = [
   for (type, value) in objectTypes { #expect(type.rawValue == value, "\(type)") }
   let cases = (0...255).filter { ObjectType(rawValue: UInt32($0)) != nil }
   #expect(cases.count == objectTypes.count, "an ObjectType case object.h doesn't have")
+}
+
+/// The trace format's constants (TraceFormat, the readers' and writers')
+/// are trace.h's (D50): one ring header, slot and format for kernel and
+/// user rings.
+@Test func traceRingsAreTheHeaders() {
+  #expect(TraceFormat.ringHeaderSize == Int(CROI_TRACE_RING_HEADER))
+  #expect(TraceFormat.ringHeaderSize == MemoryLayout<croi_trace_ring_t>.size)
+  #expect(TraceFormat.slotSize == MemoryLayout<croi_trace_slot_t>.size)
+  #expect(TraceFormat.recordSize == MemoryLayout<croi_trace_record_t>.size)
+  #expect(TraceFormat.ringFormat == UInt64(CROI_TRACE_RING_FORMAT))
+  #expect(TraceFormat.ringMagic == UInt32(CROI_TRACE_RING_MAGIC))
+  #expect(TraceFormat.recordsPerPage == Int(CROI_TRACE_RECORDS_PER_PAGE))
+  let offsets: [(Int, PartialKeyPath<croi_trace_ring_t>)] = [
+    (TraceFormat.ringFrequency, \.frequency), (TraceFormat.ringSession, \.session),
+    (TraceFormat.ringDropped, \.drops), (TraceFormat.ringFirstDrop, \.first_drop),
+    (TraceFormat.ringLastDrop, \.last_drop), (TraceFormat.ringMode, \.mode), (TraceFormat.ringCPU, \.cpu),
+    (TraceFormat.ringMagicOffset, \.magic), (TraceFormat.ringTid, \.thread),
+  ]
+  for (offset, field) in offsets { #expect(MemoryLayout<croi_trace_ring_t>.offset(of: field) == offset) }
 }

@@ -1,0 +1,4 @@
+module TDTraceCPU {
+  header "td_trace_cpu.h"
+  export *
+}

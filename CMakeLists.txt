@@ -154,9 +154,16 @@ function(croi_boot_program_test test name)
             ${CROI_ARCH} ${_esp} ${CMAKE_BINARY_DIR}/qemu-${test} ${CROI_EDK2_DIR})
   set_tests_properties(boot-${test} PROPERTIES TIMEOUT 120)
 endfunction()
-# Sys over the kernel (bin/sys-test) and dlopen (bin/dl-test).
+# Sys over the kernel (bin/sys-test), dlopen (bin/dl-test) and a trace
+# session (bin/trace-test), whose export vx trace collect then reads from
+# the boot's console (qemu.sh keeps it).
 croi_boot_program_test(sys sys-test)
 croi_boot_program_test(dl dl-test)
+croi_boot_program_test(trace trace-test)
+add_test(NAME trace-collect
+  COMMAND ${VX} trace collect ${CMAKE_BINARY_DIR}/qemu-trace/console.log ${CMAKE_BINARY_DIR}/trace)
+set_tests_properties(boot-trace PROPERTIES FIXTURES_SETUP trace-console)
+set_tests_properties(trace-collect PROPERTIES FIXTURES_REQUIRED trace-console)
 
 if(CROI_ARCH STREQUAL arm64 OR CROI_ARCH STREQUAL rv64)
   # Guest time from instruction counts (QEMU -icount; sleep=off skips idle

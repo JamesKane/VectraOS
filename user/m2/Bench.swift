@@ -36,10 +36,19 @@ enum Tracing {
             try Sys.check("sizing a ring", unsafe croi_vmo_size(handles[i], &size))
             try Sys.check("mapping a ring", unsafe croi_vmar_map(td_runtime_vmar_root, UInt32(CROI_VM_PERM_READ),
                                                      0, handles[i], 0, size, &base))
-            let ring = unsafe UnsafePointer<croi_trace_ring_t>(bitPattern: UInt(base))!.pointee
-            frequency = ring.frequency
-            let first = unsafe UnsafePointer<croi_trace_record_t>(bitPattern: UInt(base) + 4096)!
-            for j in 0..<Int(min(ring.head, ring.capacity)) { records.append(unsafe first[j]) }
+            // A trace ring (D50): its header, then a one ring read as an
+            // OVERWRITE ring's reader does (read-only: it keeps its cursor).
+            frequency = unsafe UnsafePointer<croi_trace_ring_t>(bitPattern: UInt(base))!.pointee.frequency
+            let at = unsafe UnsafeMutableRawPointer(bitPattern: UInt(base) + UInt(CROI_TRACE_RING_HEADER))!
+            guard var reader = unsafe NativeRing(attaching: at, size: Int(size) - Int(CROI_TRACE_RING_HEADER),
+                                                 producer: false, slotSize: MemoryLayout<croi_trace_slot_t>.size,
+                                                 format: UInt64(CROI_TRACE_RING_FORMAT), flags: RingLayout.overwrite)
+            else { throw Failure(what: "reading a ring", status: Int64(CROI_ERR_BAD_STATE)) }
+            var slot = croi_trace_slot_t()
+            var dropped: UInt64 = 0
+            while unsafe withUnsafeMutableBytes(of: &slot, { unsafe reader.read(to: $0.baseAddress!, dropped: &dropped) }) {
+                records.append(slot.record)
+            }
             _ = croi_vmar_unmap(td_runtime_vmar_root, base, size)
         }
         return (records, frequency)

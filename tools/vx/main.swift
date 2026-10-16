@@ -10,7 +10,7 @@
 //                             this machine's history (BenchCommand.swift)
 //   vx bench --zircon [--rounds N] [--only CONFIG,...] [--logs DIR]
 //                             the same budgets against Zircon's (ZirconCommand.swift)
-//   vx trace print|summary|diff FILE...
+//   vx trace collect|print|summary|diff ...
 //   vx loc [--check]          lines per component, and the size budgets
 //   vx ci [--no-bench]        host tests, every arch's build and tests, the
 //                             size budgets, then the bench (advisory)

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// vx trace: reads traces (docs/trace-format.md). Recording comes back
-// with the trace writer (V2); until then the boot's budgets are its
-// console lines.
+// vx trace: reads traces (docs/trace-format.md), and collects the ones a
+// guest's TraceSession exported over its console (system/trace/session).
 //
+//   vx trace collect CONSOLE DIR     the console's td-trace files, as DIR/NAME.trace
 //   vx trace print FILE...           every record, merged by time
 //   vx trace summary FILE...         zones per name: count, total, p50, p99, max
 //   vx trace diff A B                summaries side by side, B against A
@@ -32,9 +32,28 @@ func traceFiles(_ paths: [String]) -> [String] {
 }
 
 func traceCommand(_ args: [String]) -> Bool {
-  guard let sub = args.first else { fail("usage: vx trace print|summary|diff FILE...") }
+  guard let sub = args.first else { fail("usage: vx trace collect|print|summary|diff FILE...") }
   let rest = Array(args.dropFirst())
   switch sub {
+  case "collect":
+    guard rest.count == 2 else { fail("vx trace collect CONSOLE DIR") }
+    guard let data = FileManager.default.contents(atPath: rest[0]) else { fail("can't read \(rest[0])") }
+    let lines = String(decoding: data, as: UTF8.self).split(whereSeparator: \.isNewline).map(String.init)
+    switch TraceExport.reassemble(lines) {
+    case .success(let files):
+      guard !files.isEmpty else { fail("\(rest[0]) carries no traces") }
+      try? FileManager.default.removeItem(atPath: rest[1])
+      try? FileManager.default.createDirectory(atPath: rest[1], withIntermediateDirectories: true)
+      for f in files {
+        guard (try? Data(f.bytes).write(to: URL(filePath: "\(rest[1])/\(f.name).trace"))) != nil else {
+          fail("can't write \(rest[1])/\(f.name).trace")
+        }
+      }
+      say("vx trace: \(files.count) trace file(s) in \(rest[1]) (vx trace summary \(rest[1]))")
+      return true
+    case .failure(let damage):
+      fail("\(rest[0]): the trace is damaged: \(damage.description)")
+    }
   case "print":
     for path in traceFiles(rest) {
       let t = readTrace(path)

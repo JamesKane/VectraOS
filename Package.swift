@@ -25,7 +25,16 @@ let package = Package(
   ],
   targets: [
     .target(name: "TraceFormat", path: "system/trace/format"),
-    .target(name: "TraceReader", dependencies: ["TraceFormat"], path: "system/trace/reader"),
+    .target(name: "TraceReader", dependencies: ["TraceFormat", "Ring"], path: "system/trace/reader"),
+    // The trace writer (system/trace, V2): hosted over a file
+    // ($TODHCHAI_TRACE); natively over the region its process is given
+    // (CMake). Its C side: the cycle counter, a thread-local pointer and
+    // atomics on shared memory.
+    .target(name: "TDTraceCPU", path: "system/trace/c"),
+    .target(name: "Trace", dependencies: ["TraceFormat", "Ring", "TDTraceCPU"], path: "system/trace/writer",
+            exclude: ["native"], swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+    .testTarget(name: "TraceTests", dependencies: ["Trace", "TraceReader"], path: "system/trace/tests",
+                exclude: ["native"]),
     .target(name: "Bench", path: "tools/bench/lib"),
     .testTarget(name: "BenchTests", dependencies: ["Bench"], path: "tools/bench/tests"),
     .target(name: "ImageFormats", path: "tools/image/lib"),
@@ -52,7 +61,7 @@ let package = Package(
     // KernelAbi is Status.swift alone, through a link.
     .target(name: "KernelAbi", dependencies: ["CroiAbi"], path: "kernel/tests/Abi/KernelAbi",
             swiftSettings: c23),
-    .testTarget(name: "AbiTests", dependencies: ["KernelAbi", "CroiAbi"], path: "kernel/tests/Abi/Tests",
+    .testTarget(name: "AbiTests", dependencies: ["KernelAbi", "CroiAbi", "TraceFormat"], path: "kernel/tests/Abi/Tests",
                 swiftSettings: c23),
     // Sys (system/sys, V2): what services use to reach the kernel. SysABI
     // is the ABI's values as Sys's types (from CroiAbi, D45); SysHost the

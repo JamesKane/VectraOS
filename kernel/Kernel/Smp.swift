@@ -23,8 +23,10 @@ struct PerCpu: ~Copyable {
     let timerQueue: UInt64
     /// Placement (filled from the PPTT by the boot CPU; coreType by itself).
     var topology = CpuTopology()
-    /// This CPU's trace ring (Trace), or 0, and whether it is mid-record.
+    /// This CPU's trace ring (Trace, D50): its header's address, or 0; the
+    /// one ring's writer; and whether it is mid-record.
     var traceRing: UInt64 = 0
+    var traceWriter: NativeRing? = nil
     /// The running thread's trace id (kept by the scheduler at each switch).
     var traceThread: UInt32 = 0
     let traceWriting = Atomic<Bool>(false)

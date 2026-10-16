@@ -484,10 +484,16 @@ Todhchai M4's shutdown):
 ## Trace
 
 Trace (Kernel/Trace/, include/trace.h; roadmap "Trace", K3 part):
-per-CPU rings (header page + power-of-two records of 32 bytes,
-`croi_trace_record_t`: raw counter time, kind, CPU, thread trace id
-`task << 12 | thread`, two words), written only by their own CPU with
-interrupts masked, no lock; oneshot (drop + count) or circular. Probes are
+per-CPU trace rings, written only by their own CPU with interrupts
+masked, no lock. Since V2 (D50) each is a 128-byte trace header
+(`croi_trace_ring_t`: frequency, session, drops, mode, CPU) then a one
+ring, OVERWRITE, of 40-byte slots (`croi_trace_slot_t`: the ring's
+sequence, then `croi_trace_record_t`: raw counter time, kind, CPU, thread
+trace id `task << 12 | thread`, two words), written through the CPU's
+`PerCpu.traceWriter` (`Ring.write(from:)`, as the debuglog), read back
+through a Ring reader (`forEachRecord`, m2, user space); oneshot (the
+writer stops at the slot count and counts drops) or circular.
+`trace_configure`'s pages still mean 128 records each. Probes are
 `Trace.event(category, kind, a, b)`, inlined: the mask
 (`croi_trace_mask`, a C global in kernel/trace.c because Swift globals
 initialize lazily and would add a guard) is one relaxed load and a branch;
@@ -497,6 +503,6 @@ Categories now: `sched` (switch, wake with the waker, block, preempt with a
 reason, migrate, overrun) and `irq` (enter/exit). The self-test reports
 an enabled event's cost (budget `trace.probe_enabled`, limit 30 ns,
 enforced as "Timing discipline" says; `Budgets.timingIsReal` is the
-CPUID check), ~18 ns under KVM. amd64 `arch_percpu` is a %gs-relative load of the
+CPUID check), ~21 ns under KVM (18 ns before D50: roadmap, known issues). amd64 `arch_percpu` is a %gs-relative load of the
 record's `self` field (CROI_PERCPU_SELF), not rdmsr; GS points at a
 zeroed dummy record until a CPU has its own.

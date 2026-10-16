@@ -95,21 +95,42 @@ enum : uint32_t {
   CROI_TRACE_CIRCULAR = 1,  // overwrite the oldest
 };
 
-// A CPU's ring: this header page, then `capacity` records (a power of
-// two). `head` counts records ever written: the newest is at
-// (head - 1) & (capacity - 1). Only that CPU writes, with interrupts
-// masked; a record is complete before `head` moves past it.
+// A trace ring (D50): this header, then at +CROI_TRACE_RING_HEADER a one
+// ring (ring.h), OVERWRITE, of croi_trace_slot_t slots, format
+// CROI_TRACE_RING_FORMAT. Its producer is a CPU (the kernel's rings: one
+// a CPU, written with interrupts masked) or a thread (a user region's,
+// docs/trace-format.md). The ring's cursor counts records ever written;
+// ONESHOT stops once it reaches the slot count, and counts drops here.
 typedef struct {
-  uint64_t head;
-  uint64_t capacity;
+  uint64_t frequency;   // counter Hz
+  uint64_t session;     // bumped by every start (a region's: its start)
   uint64_t drops;
   uint64_t first_drop;  // counter values of the first and last drop
   uint64_t last_drop;
-  uint64_t frequency;   // counter Hz
-  uint64_t session;     // bumped by every start
   uint32_t mode;
-  uint32_t cpu;
+  uint32_t cpu;         // a thread's ring: 0xffffffff
+  uint32_t magic;       // CROI_TRACE_RING_MAGIC
+  uint32_t thread;      // a thread's ring: its id; a CPU's: 0
+  uint64_t reserved[9];
 } croi_trace_ring_t;
+
+static_assert(sizeof(croi_trace_ring_t) == 128);
+
+// A slot: the ring's sequence, then the record.
+typedef struct {
+  uint64_t sequence;
+  croi_trace_record_t record;
+} croi_trace_slot_t;
+
+static_assert(sizeof(croi_trace_slot_t) == 40);
+
+enum : uint32_t {
+  CROI_TRACE_RING_HEADER = 128,       // the one ring's offset in a trace ring
+  CROI_TRACE_RING_MAGIC = 0x676e6972,  // "ring"
+  CROI_TRACE_RING_FORMAT = 0x32435254,  // "TRC2": trace records, version 2
+  // trace_configure's pages: CROI_TRACE_RECORDS_PER_PAGE records a page.
+  CROI_TRACE_RECORDS_PER_PAGE = 128,
+};
 
 extern uint32_t croi_trace_mask;
 

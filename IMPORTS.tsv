@@ -355,3 +355,12 @@ system/ld/native/Linker.swift	todhchai	527ff94	system/ld/native/Linker.swift
 system/ld/tests/LdTests.swift	todhchai	527ff94	system/ld/tests/LdTests.swift
 system/ld/tests/native/dltest.c	todhchai	527ff94	tests/native/dl/dltest.c
 system/ld/tests/native/DlSwift.swift	todhchai	527ff94	tests/native/dl/DlSwift.swift
+system/trace/writer/Trace.swift	todhchai	527ff94	system/trace/writer/Trace.swift
+system/trace/writer/native/Region.swift	todhchai	527ff94	system/trace/writer/native/Region.swift
+system/trace/writer/host/Region.swift	todhchai	527ff94	system/trace/writer/host/Region.swift
+system/trace/c/td_trace_cpu.c	todhchai	527ff94	system/trace/c/td_trace_cpu.c
+system/trace/c/include/td_trace_cpu.h	todhchai	527ff94	system/trace/c/include/td_trace_cpu.h
+system/trace/c/include/module.modulemap	todhchai	527ff94	system/trace/c/include/module.modulemap
+system/trace/session/Session.swift	todhchai	527ff94	system/trace/session/Session.swift
+system/trace/tests/TraceTests.swift	todhchai	527ff94	system/trace/tests/TraceTests.swift
+system/trace/tests/TraceSetTests.swift	todhchai	527ff94	system/trace/tests/TraceSetTests.swift

@@ -185,7 +185,7 @@ function(croi_user_program output)
   set(_sys_flags)
   set(_sys_libs)
   if(U_SYS)
-    set(_sys_flags -I ${CROI_USER_SYS_DIR})
+    set(_sys_flags -I ${CROI_USER_SYS_DIR} -Xcc -I${PROJECT_SOURCE_DIR}/system/trace/c/include)
     set(_sys_libs ${CROI_USER_SYS})
   endif()
   get_filename_component(_name ${output} NAME_WE)
@@ -263,7 +263,7 @@ function(croi_user_library output)
   set(_sys_flags)
   set(_sys_depends)
   if(U_SYS)
-    set(_sys_flags -I ${CROI_USER_SYS_DIR})
+    set(_sys_flags -I ${CROI_USER_SYS_DIR} -Xcc -I${PROJECT_SOURCE_DIR}/system/trace/c/include)
     set(_sys_depends ${CROI_USER_SYS})
   endif()
   set(_objects)
@@ -299,8 +299,9 @@ endfunction()
 
 # croi_user_sys(): builds Sys once per tree (system/sys, V2): its modules
 # SysABI, Sys (the API over the native backend), LibSys (the start's
-# views) and Ld (system/ld: dlopen, over croi's ELF and bootfs readers
-# and user/lib/loader's segments), Embedded Swift, into ${CROI_USER_SYS_DIR} (their .swiftmodule
+# views), Ld (system/ld: dlopen, over croi's ELF and bootfs readers and
+# user/lib/loader's segments) and the trace (Ring, TraceFormat, Trace,
+# TraceSession), Embedded Swift, into ${CROI_USER_SYS_DIR} (their .swiftmodule
 # files) and ${CROI_USER_SYS} (libsys.a). Programs built with SYS import
 # them. Static-PIE code, which fixed-address programs link too.
 function(croi_user_sys)
@@ -309,7 +310,8 @@ function(croi_user_sys)
   set(_xcc)
   foreach(_f ${CROI_USER_CFLAGS} -fPIE -std=c23 -fno-omit-frame-pointer -I${PROJECT_SOURCE_DIR}/user/include
              -I${PROJECT_SOURCE_DIR}/system/libc/include
-             -I${PROJECT_SOURCE_DIR}/kernel/include -I${CROI_FLOOR_DIR}/include)
+             -I${PROJECT_SOURCE_DIR}/kernel/include -I${CROI_FLOOR_DIR}/include
+             -I${PROJECT_SOURCE_DIR}/system/trace/c/include)
     list(APPEND _xcc -Xcc ${_f})
   endforeach()
   set(_swiftc ${CMAKE_Swift_COMPILER} -target ${CROI_SWIFT_TRIPLE} -enable-experimental-feature Embedded
@@ -322,6 +324,15 @@ function(croi_user_sys)
   set(_ld ${PROJECT_SOURCE_DIR}/system/ld/lib/Dynamic.swift ${PROJECT_SOURCE_DIR}/system/ld/native/Linker.swift
       ${PROJECT_SOURCE_DIR}/system/ld/native/Exports.swift ${PROJECT_SOURCE_DIR}/lib/elf/Elf/ElfImage.swift
       ${PROJECT_SOURCE_DIR}/user/lib/loader/Bootfs.swift ${PROJECT_SOURCE_DIR}/user/lib/loader/Segments.swift)
+  # The trace (system/trace, D50): the one ring, the format, the writer
+  # over the region a process is given (td_trace_cpu.h's inline counter
+  # and atomics; a thread's ring pointer is the floor's thread block's,
+  # so td_trace_cpu.c is the hosted build's) and the session.
+  set(_trace ${PROJECT_SOURCE_DIR}/system/trace)
+  set(_ring ${PROJECT_SOURCE_DIR}/lib/ring/Ring/Ring.swift ${PROJECT_SOURCE_DIR}/lib/ring/Ring/RingMemory.swift)
+  set(_trace_format ${_trace}/format/Format.swift)
+  set(_trace_writer ${_trace}/writer/Trace.swift ${_trace}/writer/native/Region.swift)
+  set(_trace_session ${_trace}/session/Session.swift)
   file(GLOB _headers ${CROI_FLOOR_DIR}/include/* ${PROJECT_SOURCE_DIR}/user/include/croi/*.h
        ${PROJECT_SOURCE_DIR}/kernel/include/*.h)
   add_custom_command(OUTPUT ${_dir}/libsys.a
@@ -334,9 +345,19 @@ function(croi_user_sys)
             -c ${_lib} -o ${_dir}/libsys.o
     COMMAND ${_swiftc} -module-name Ld -emit-module -emit-module-path ${_dir}/Ld.swiftmodule
             -c ${_ld} -o ${_dir}/ld.o
+    COMMAND ${_swiftc} -module-name Ring -emit-module -emit-module-path ${_dir}/Ring.swiftmodule
+            -c ${_ring} -o ${_dir}/ring.o
+    COMMAND ${_swiftc} -module-name TraceFormat -emit-module -emit-module-path ${_dir}/TraceFormat.swiftmodule
+            -c ${_trace_format} -o ${_dir}/traceformat.o
+    COMMAND ${_swiftc} -module-name Trace -emit-module -emit-module-path ${_dir}/Trace.swiftmodule
+            -c ${_trace_writer} -o ${_dir}/trace.o
+    COMMAND ${_swiftc} -module-name TraceSession -emit-module -emit-module-path ${_dir}/TraceSession.swiftmodule
+            -c ${_trace_session} -o ${_dir}/tracesession.o
     COMMAND ${CMAKE_COMMAND} -E rm -f ${_dir}/libsys.a
     COMMAND ${CMAKE_AR} rcs ${_dir}/libsys.a ${_dir}/sysabi.o ${_dir}/sys.o ${_dir}/libsys.o ${_dir}/ld.o
-    DEPENDS ${_abi} ${_api} ${_lib} ${_ld} ${_headers}
+            ${_dir}/ring.o ${_dir}/traceformat.o ${_dir}/trace.o ${_dir}/tracesession.o
+    DEPENDS ${_abi} ${_api} ${_lib} ${_ld} ${_ring} ${_trace_format} ${_trace_writer} ${_trace_session}
+            ${_headers}
     COMMENT "Building Sys")
   set(CROI_USER_SYS_DIR ${_dir} PARENT_SCOPE)
   set(CROI_USER_SYS ${_dir}/libsys.a PARENT_SCOPE)

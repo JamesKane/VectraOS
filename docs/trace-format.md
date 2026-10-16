@@ -1,7 +1,7 @@
-# The trace format, version 1
+# The trace format, version 2
 
-How Todhchai's processes record what they do, so `td trace`, `td bench`
-and the debugger can read it ([performance.md](performance.md) §3–§4).
+How processes record what they do, so `vx trace`, `vx bench` and the
+debugger can read it ([performance.md](performance.md) §3–§4).
 `system/trace` (`Trace`) writes it and `system/trace/reader` reads it. This file
 is the contract. Records share croi's kernel trace layout (croi
 requirement 18; NeoVectra ADR-0049, studied), so kernel and user records
@@ -88,7 +88,7 @@ All offsets are from the region's start.
 | Offset | Size | Field |
 |---|---|---|
 | 0 | 4 | magic: `"tdtr"` (0x72746474) |
-| 4 | 4 | version: 1 |
+| 4 | 4 | version: 2 |
 | 8 | 8 | `counter_hz`: the cycle counter's frequency, calibrated at start |
 | 16 | 8 | `start`: the counter when recording began |
 | 24 | 4 | process id |
@@ -108,33 +108,41 @@ All offsets are from the region's start.
 entry's offset within the table. Entries are appended and never change.
 
 **Rings** follow, one per thread that has written. A thread claims the next
-ring the first time it writes. Each ring is a 128-byte header, then
-records. The header's first 64 bytes are croi's kernel ring header
-(`croi_trace_ring_t`, confirmed with croi on 2026-10-09), so one reader
-handles kernel and user rings:
+ring the first time it writes. Each is a *trace ring* (version 2, D50): a
+128-byte trace header, then a one ring (architecture §3, `lib/ring`) in
+the rest of the ring's bytes. The kernel's rings are the same, one a CPU
+(croi's `croi_trace_ring_t`, `kernel/include/trace.h`), so one reader
+handles kernel and user rings.
+
+The trace header:
 
 | Offset | Size | Field |
 |---|---|---|
-| 0 | 8 | `head`: records ever written (atomic) |
-| 8 | 8 | capacity, in records: a power of two |
+| 0 | 8 | `frequency`: the counter's Hz, as in the region header |
+| 8 | 8 | `session`: the region's `start`, so rings from one recording go together |
 | 16 | 8 | records dropped (oneshot, when full) |
 | 24 | 8 | the time of the first drop |
 | 32 | 8 | the time of the last drop |
-| 40 | 8 | `frequency`: the counter's Hz, as in the region header |
-| 48 | 8 | `session`: the region's `start`, so rings from one recording go together |
-| 56 | 4 | mode: 0 oneshot, 1 circular |
-| 60 | 4 | cpu: `0xffffffff` for a thread's ring |
-| 64 | 4 | magic: `"ring"` (0x676e6972) |
-| 68 | 4 | the thread's `tid` |
-| 72 | 56 | reserved, zero |
+| 40 | 4 | mode: 0 oneshot, 1 circular |
+| 44 | 4 | cpu: `0xffffffff` for a thread's ring |
+| 48 | 4 | magic: `"ring"` (0x676e6972) |
+| 52 | 4 | the thread's `tid` (0 for a CPU's ring) |
+| 56 | 72 | reserved, zero |
 
-The newest record is at `(head - 1) & (capacity - 1)`. In circular mode
-the oldest that can still be valid is at `head - capacity`.
+The one ring is an OVERWRITE ring (D44) of 40-byte slots, its format
+descriptor `"TRC2"` (0x32435254): each slot is the ring's u64 sequence,
+then a record. Its slot count is a power of two, as many as fit. Only the
+owning thread (or CPU) writes, so writing takes no lock: it marks the
+slot's sequence all ones, writes the record, sets the sequence to the
+slot's cursor, and publishes its cursor (`Ring.write(from:)`). A
+circular ring overwrites the oldest; a oneshot one stops once its cursor
+reaches the slot count and counts what it drops in the trace header.
 
-Only the owning thread writes a ring, so writing takes no lock. It stores
-the record, then publishes `head` with a release store. A reader loads
-`head` with acquire, and in circular mode skips the oldest sixteenth,
-which the writer may be overwriting (NeoVectra's rule).
+A reader keeps its cursor to itself (`Ring.read(to:dropped:)`): it starts
+at the producer's cursor less the slot count (0 if fewer were written),
+keeps a slot only if its sequence was its cursor before and after the
+copy, and counts the rest as dropped. A circular ring's oldest slot may
+be mid-overwrite; the sequence says so, so no slack is needed.
 
 ## Categories
 
@@ -145,41 +153,45 @@ load of the mask and one predictable branch. User categories: bit 0
 
 ## Recording on Linux
 
-`td trace record -o DIR [-c CATEGORIES] [--circular] -- PROGRAM ARGS`
-runs a program with `TODHCHAI_TRACE=DIR` set. Each process that uses
-`Trace` then writes `DIR/<pid>.trace`. `td trace print`, `td trace -s`
-(per-name counts and percentiles) and `td trace -d` (two traces compared)
+A program that uses `Trace` with `TODHCHAI_TRACE=DIR` set writes
+`DIR/<pid>.trace` (`TODHCHAI_TRACE_CATEGORIES`, `TODHCHAI_TRACE_CIRCULAR`
+choose what and how): the hosted writer, `system/trace/writer/host`, which
+`swift test`'s TraceTests use. `vx trace print`, `vx trace summary` (per
+name: counts and percentiles) and `vx trace diff` (two traces compared)
 read the files.
 
-## Recording on croi (M3f)
+## Recording on croi (M3f; V2)
 
 Natively a process doesn't make its region: whoever traces it does
 (`TraceSession`, `system/trace/session`), and hands it to the process as a
-VMO in processargs (`PA_USER1`, `ProcessArgs.traceRegion`). The session
-writes the header, so `counter_hz` is croi's (its rings' `frequency`), and
-`start` is croi's trace session. The process maps the region on its first
-trace name and writes rings as on Linux; a thread finds its ring through
-its thread block (libsys, `ThreadBlock`, croi's per-thread FS base,
-`TPIDR_EL0` or `tp`). A region's process id is `0xF0000` plus its number
-in the session: croi names threads by an internal task id user space
-can't read yet, so user and kernel records join through flow ids, not
-thread ids.
+VMO in processargs (`PA_TRACE_REGION`, `ProcessArgs.traceRegion`). The
+session writes the header, so `counter_hz` is croi's (its rings'
+`frequency`), and `start` is croi's trace session. The process maps the
+region on its first trace name (or takes it with `Trace.start(region:)`)
+and writes rings as on Linux; a thread finds its ring through its thread
+block (the floor's, slot 8: croi's per-thread FS base, `TPIDR_EL0` or
+`tp`). A region's process id is `0xF0000` plus its number in the session:
+croi names threads by an internal task id user space can't read yet, so
+user and kernel records join through flow ids, not thread ids.
 
 The session also starts croi's kernel trace (`trace_configure`, with the
 tracing or root resource) and maps each CPU's ring. When it ends it writes
-every file compacted (the strings used, each ring's records from 0) and
-the kernel's rings as `kernel.trace` (process 0, a ring a CPU, `cpu` set,
-no strings). Until croi has a device to the host (virtio, M3h), the files
-leave through the debuglog in base64:
+every file compacted (the strings used; each ring's records, read as a
+reader reads them, written into a fresh ring from sequence 0) and the
+kernel's rings as `kernel.trace` (process 0, a ring a CPU, `cpu` set, no
+strings). Until croi has a device to the host (virtio), the files leave
+through the debuglog in base64:
 
     td-trace NAME OFFSET BASE64        (120 bytes a line)
     td-trace NAME OFFSET zero COUNT    (a run of zeros)
     td-trace NAME end SIZE
 
 paced below the console's rate (about 110 KB/s under KVM: croi's debuglog
-drops records when its console dumper falls 512 behind). `td boot`
-reassembles them into `bench/out/boot/<arch>/trace/` and fails the boot if
-a piece is missing. `td trace summary DIR` then reads that directory as
-one timeline as well as file by file: each call's commonest path through
-the client, croi's CHANNEL_WRITE, CHANNEL_READ and DONATE, and the server,
-with the median time to each step.
+drops records when its console dumper falls 512 behind). `vx trace collect
+CONSOLE DIR` reassembles them from a boot's console (a test boot keeps it
+as `qemu-*/console.log`) and fails if a piece is missing. `vx trace
+summary DIR` then reads that directory as one timeline as well as file by
+file: each call's commonest path through the client, croi's
+CHANNEL_WRITE, CHANNEL_READ and DONATE, and the server, with the median
+time to each step. The boot-trace test (`bin/trace-test`, then
+trace-collect) records and collects one.

@@ -90,7 +90,9 @@ debuglog (D38) and for ports made with CROI_PORT_RING (D44).
   Judge, History, trace format and reader lifted; `vx` with build, test,
   boot, bench, trace, loc and ci.
 - **Also done:** croi's Python tools rewritten in Swift and removed.
-- **Still to do:** a trace producer (V2).
+- **Also done in V2:** the trace producer: the kernel and `Trace` write trace
+  rings on the one ring (D50), recorded by a session and collected by
+  `vx trace collect`.
 
 Milestones run in order, and each puts the next one's dependencies in
 place. Board bring-up (V4) waits for V3, the bring-up link: SSH, warm

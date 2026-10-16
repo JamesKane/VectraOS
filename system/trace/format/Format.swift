@@ -1,15 +1,25 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // The trace format (docs/trace-format.md): its constants, shared by the
-// writer and the reader.
+// writer and the reader. Version 2 (D50): each ring is a trace header,
+// then a one ring (lib/ring) of slots that are the ring's sequence and a
+// record.
 
 public enum TraceFormat {
-  public static let version: UInt32 = 1
+  public static let version: UInt32 = 2
   public static let regionMagic: UInt32 = 0x7274_6474  // "tdtr"
   public static let ringMagic: UInt32 = 0x676e_6972  // "ring"
   public static let headerSize = 4096
+  /// A trace ring's header: the one ring follows it.
   public static let ringHeaderSize = 128
   public static let recordSize = 32
+  /// A slot: the ring's u64 sequence, then a record.
+  public static let slotSize = 40
+  /// The one ring's format descriptor for trace slots (trace.h's
+  /// CROI_TRACE_RING_FORMAT, "TRC2").
+  public static let ringFormat: UInt64 = 0x3243_5254
+  /// trace.h's CROI_TRACE_RECORDS_PER_PAGE: trace_configure's pages.
+  public static let recordsPerPage = 128
 
   // Region header offsets.
   public static let counterHz = 8
@@ -25,18 +35,17 @@ public enum TraceFormat {
   public static let flags = 76
   public static let categories = 80
 
-  // Ring header offsets: the first 64 bytes are croi's croi_trace_ring_t.
-  public static let ringHead = 0
-  public static let ringCapacity = 8
+  // Trace ring header offsets: croi's croi_trace_ring_t, kernel and user
+  // rings alike.
+  public static let ringFrequency = 0
+  public static let ringSession = 8
   public static let ringDropped = 16
   public static let ringFirstDrop = 24
   public static let ringLastDrop = 32
-  public static let ringFrequency = 40
-  public static let ringSession = 48
-  public static let ringMode = 56
-  public static let ringCPU = 60
-  public static let ringMagicOffset = 64
-  public static let ringTid = 68
+  public static let ringMode = 40
+  public static let ringCPU = 44
+  public static let ringMagicOffset = 48
+  public static let ringTid = 52
 
   public static let flagCircular: UInt32 = 1
 }

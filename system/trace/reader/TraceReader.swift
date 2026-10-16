@@ -2,7 +2,9 @@
 
 // Reads trace regions (docs/trace-format.md): every ring's records, merged
 // by time, with names resolved; summaries per name; mark pairs for budgets.
+// A ring is read as any OVERWRITE ring's reader reads it (lib/ring, D50).
 
+import Ring
 import TraceFormat
 
 /// One record, read back.
@@ -71,26 +73,35 @@ public struct TraceFile: Sendable {
     for i in 0..<claimed {
       let ring = ringsAt + i * ringSize
       guard u32(ring + TraceFormat.ringMagicOffset) == TraceFormat.ringMagic else { continue }
-      let capacity = u64(ring + TraceFormat.ringCapacity)
-      guard capacity > 0, capacity & (capacity - 1) == 0,
-        TraceFormat.ringHeaderSize + Int(capacity) * TraceFormat.recordSize <= ringSize
-      else { throw .malformed("ring \(i)'s capacity") }
-      let head = u64(ring + TraceFormat.ringHead)
       dropped += u64(ring + TraceFormat.ringDropped)
-      // Oneshot rings stop at capacity. A wrapped circular ring holds the
-      // newest `capacity`, of which the oldest sixteenth may be mid-overwrite.
-      let first = head > capacity ? head - capacity + capacity / 16 : 0
-      for n in first..<head {
-        let r = ring + TraceFormat.ringHeaderSize + Int(n & (capacity - 1)) * TraceFormat.recordSize
-        records.append(TraceRecord(
-          time: u64(r), kind: bytes.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: r + 8, as: UInt16.self) },
-          cpu: bytes.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: r + 10, as: UInt16.self) },
-          tid: u32(r + 12), a: u64(r + 16), b: u64(r + 24)))
-      }
+      try Self.readRing(bytes[(ring + TraceFormat.ringHeaderSize)..<(ring + ringSize)], index: i, into: &records,
+                        dropped: &dropped)
     }
     records.sort { $0.time < $1.time }
     self.records = records
     self.dropped = dropped
+  }
+
+  /// The records in a trace ring's one ring (`bytes`, the ring's own),
+  /// oldest first, read as any OVERWRITE ring's reader reads them: a
+  /// record being overwritten (a circular ring) is skipped and counted.
+  static func readRing(_ bytes: ArraySlice<UInt8>, index: Int, into records: inout [TraceRecord],
+                       dropped: inout UInt64) throws(TraceReadError) {
+    let size = bytes.count
+    let memory = UnsafeMutableRawPointer.allocate(byteCount: max(size, 8), alignment: 128)
+    defer { memory.deallocate() }
+    bytes.withUnsafeBytes { memory.copyMemory(from: $0.baseAddress!, byteCount: size) }
+    guard var reader = NativeRing(attaching: memory, size: size, producer: false, slotSize: TraceFormat.slotSize,
+                                  format: TraceFormat.ringFormat, flags: RingLayout.overwrite)
+    else { throw .malformed("ring \(index) isn't a trace ring") }
+    let slot = UnsafeMutableRawPointer.allocate(byteCount: TraceFormat.slotSize, alignment: 8)
+    defer { slot.deallocate() }
+    while reader.read(to: slot, dropped: &dropped) {
+      records.append(TraceRecord(
+        time: slot.load(fromByteOffset: 8, as: UInt64.self), kind: slot.load(fromByteOffset: 16, as: UInt16.self),
+        cpu: slot.load(fromByteOffset: 18, as: UInt16.self), tid: slot.load(fromByteOffset: 20, as: UInt32.self),
+        a: slot.load(fromByteOffset: 24, as: UInt64.self), b: slot.load(fromByteOffset: 32, as: UInt64.self)))
+    }
   }
 
   /// A name id's text.

@@ -241,6 +241,18 @@ syscalls 110-111):
   readers were dropped for croi's (`docs/provenance.md`). `swift test`'s
   LdTests link a shared object for each machine and relocate it hosted;
   `bin/dl-test` (boot-dl) loads a C library and a Swift one natively.
+- The trace (system/trace, todhchai's, V2, D50): `Trace`, the writer (a
+  region a process is given as PA_TRACE_REGION; each thread claims a trace
+  ring in it, a header and a one ring it writes through Ring.swift, its
+  pointer in the floor's thread block slot 8), and `TraceSession`, which
+  starts the kernel's trace, makes regions, and exports every ring
+  compacted over the console (td-trace lines) for `vx trace collect`.
+  Natively they are modules of libsys.a (Ring, TraceFormat, Trace,
+  TraceSession); hosted, `swift test`'s TraceTests record into files and
+  reassemble an export. `bin/trace-test` (boot-trace) records the kernel's
+  IPC category and itself, checks that its FLOW steps and the kernel's
+  CHANNEL_WRITE and CHANNEL_READ share a flow id, and exports; the
+  trace-collect test reassembles that from the console qemu.sh keeps.
 
 ## bootfs and userboot (K8b)
 

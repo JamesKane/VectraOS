@@ -5,8 +5,10 @@
 #
 # The ESP directory is served as a virtual FAT drive. Writable firmware
 # variable stores are copied into <work-dir> on first use. With --test the
-# run is headless and console output is copied to stdout; it succeeds as
-# soon as a line containing <text> appears and fails after a timeout. With
+# run is headless and console output is copied to stdout and to
+# <work-dir>/console.log (vx trace collect reads the traces in it); it
+# succeeds as soon as a line containing <text> appears and fails after a
+# timeout. With
 # --exits (test mode only) the run goes on after that line until QEMU exits
 # by itself (a guest power-off, or a reset: test runs pass -no-reboot), and
 # fails if it doesn't within the timeout. With
@@ -126,6 +128,8 @@ qemu+=(-m 512M -smp 4 -net none "${disk[@]}" -device virtio-rng-pci)
 
 if [[ -n $expect ]]; then
   monitor=(-monitor none)
+  console=$work/console.log
+  : > "$console"
   if [[ -n $screendump || -n $registers_on ]]; then
     socket=$work/monitor.sock
     rm -f "$socket"
@@ -139,7 +143,7 @@ if [[ -n $expect ]]; then
   kaslr_image=()
   status=1
   while IFS= read -r line <&"${vm[0]}"; do
-    printf '%s\n' "$line"
+    printf '%s\n' "$line"; printf '%s\n' "$line" >> "$console"
     # KASLR: where the kernel runs, so backtraces can name link addresses.
     if [[ $line =~ kaslr:\ image\ (0x[0-9a-f]+)-(0x[0-9a-f]+),\ link\ (0x[0-9a-f]+) ]]; then
       kaslr_image=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}")
@@ -172,7 +176,7 @@ if [[ -n $expect ]]; then
     echo "qemu.sh: '$expect' not seen" >&2
   elif [[ -n $exits ]]; then
     # The rest of the console, until QEMU exits (EOF) or the timeout kills it.
-    while IFS= read -r line <&"${vm[0]}"; do printf '%s\n' "$line"; done
+    while IFS= read -r line <&"${vm[0]}"; do printf '%s\n' "$line"; printf '%s\n' "$line" >> "$console"; done
     wait "$pid" 2>/dev/null && exited=0 || exited=$?
     if (( exited != 0 )); then
       echo "qemu.sh: QEMU didn't exit by itself (status $exited)" >&2

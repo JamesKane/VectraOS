@@ -113,7 +113,14 @@ work, in order:
    ELF and bootfs readers (todhchai's are dropped) and userboot's segment
    mapping, now shared (`user/lib/loader`); LdTests check the linker's
    core hosted on each machine's objects, and `bin/dl-test` (boot-dl) a C
-   and a Swift library natively. The trace session comes next.
+   and a Swift library natively. The trace session is lifted, and with it
+   the trace rings move onto the one ring (D50): the kernel's
+   per-CPU rings and `Trace`'s per-thread ones are trace headers over
+   OVERWRITE rings, written and read through Ring.swift; the format is
+   version 2. `bin/trace-test` (boot-trace) records the kernel and
+   itself, checks the flow they share, and exports both; `vx trace
+   collect` (trace-collect) reassembles them from the console. Item 2
+   is done but for the native loader (item 4).
 3. **Tier 1 (D47).** todhchai's `*-todhchai` toolchain, built from the
    pinned Swift 6.4.0 and LLVM sources with its patch series, and tier 1's
    sysroot (libc, pthreads, libc++, the Swift runtime, FoundationEssentials).
@@ -314,7 +321,14 @@ write prefix.
      because the native keyring needs Radharc for its prompt.
 
    V3 lifts from a pinned commit of that branch. It either waits for d4/d5
-   or does them here; IMPORTS.tsv records the commit either way.
+. **`trace.probe_enabled` rose from 18 to 21 ns under KVM, accepted
+   (2026-10-16).** D50 put the trace rings on the one ring, whose
+   OVERWRITE protocol costs each record a sequence mark, a release fence
+   and the sequence's store besides the record and the cursor. `vx bench
+   --compare 801b3f6` measured 21.0 ns against 18.0 ns in every one of 5
+   interleaved runs; the limit stays 30 ns, met. A cheaper write (filling
+   the slot in place instead of copying a built record, fewer checks of
+   the CPU's writer) is worth trying before a probe-heavy budget needs it.
 
 ## Open questions
 

@@ -100,7 +100,8 @@ machine's history:
               is the floor (`system/sys/floor`, D49).
 - `system/`   The userland lifted from todhchai (V2): `sys/` is the floor,
               Sys (the typed API, its hosted kernel SysHost) and their
-              tests; `libc/` the libc and its pthreads; `ld/` dlopen.
+              tests; `libc/` the libc and its pthreads; `ld/` dlopen;
+              `trace/` the trace format, reader, writer and session.
 - `ld/image.ld` Shared linker script: one PT_LOAD per permission (W^X).
 - `cmake/`    Toolchain file, per-arch settings, `croi_image()` helper.
 

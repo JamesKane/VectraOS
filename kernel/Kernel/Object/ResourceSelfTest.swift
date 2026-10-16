@@ -85,7 +85,7 @@ enum ResourceSelfTest {
         Scheduler.setAspace(UserAspacePointer(address: aspace))
         defer { Scheduler.setAspace(nil) }
         var value: UInt64 = 0
-        guard unsafe arch_user_load_u64(ringAt + 40, &value) == 0 else { return 1 }  // croi_trace_ring_t.frequency
+        guard unsafe arch_user_load_u64(ringAt, &value) == 0 else { return 1 }  // croi_trace_ring_t.frequency
         frequencySeen.store(value, ordering: .relaxed)
         return arch_user_store_u64(ringAt, 0) == -1 ? 0 : 2  // read-only
     }
