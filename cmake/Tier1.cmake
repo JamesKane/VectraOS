@@ -4,14 +4,15 @@
 # build/<arch>/sysroot: the floor as libsys.a, the libc as libc.a, the
 # libc's headers and the floor's C interface (cmake/sysroot.cmake);
 # libc++, libc++abi and libunwind (cmake/cxx.cmake); the Swift runtime and
-# standard library (tools/toolchain/build_stdlib.sh). amd64 only so far:
-# the other machines need compiler-rt's builtins built for them.
+# standard library (tools/toolchain/build_stdlib.sh), with compiler-rt's
+# builtins (tools/toolchain/build_builtins.sh). amd64 and arm64 so far:
+# riscv64 waits for Swift's calling conventions in its LLVM.
 #
 #   croi_tier1(BOOTFS_VAR DEPENDS_VAR)
 # Sets BOOTFS_VAR to the bootfs entries (bin/NAME=FILE) of tier 1's test
 # programs and DEPENDS_VAR to their files; both empty when the toolchain
-# hasn't been built (.cache/toolchain/out/bin/swiftc) or the arch has no
-# tier 1 yet.
+# or its builtins haven't been built (.cache/toolchain/out/bin/swiftc,
+# tools/toolchain/build_builtins.sh).
 
 include(${PROJECT_SOURCE_DIR}/cmake/cxx.cmake)
 
@@ -19,11 +20,15 @@ function(croi_tier1 bootfs_var depends_var)
   set(${bootfs_var} "" PARENT_SCOPE)
   set(${depends_var} "" PARENT_SCOPE)
   set(_toolchain_bin ${PROJECT_SOURCE_DIR}/.cache/toolchain/out/bin)
-  set(_builtins ${CROI_TOOLCHAIN_DIR}/usr/lib/clang/21/lib/linux/libclang_rt.builtins-x86_64.a)
-  if(NOT CROI_ARCH STREQUAL amd64 OR NOT EXISTS ${_toolchain_bin}/swiftc OR NOT EXISTS ${_builtins})
+  set(_machine ${CMAKE_SYSTEM_PROCESSOR})  # x86_64, aarch64, riscv64
+  set(_triple ${_machine}-unknown-vectraos)
+  set(_builtins ${_toolchain_bin}/../lib/clang/21/lib/${_triple}/libclang_rt.builtins.a)
+  # Not riscv64 yet: its LLVM has no Swift calling conventions (clang
+  # rejects swiftcall, which the runtime's C++ uses; no guaranteed tail
+  # calls for swifttailcc), docs/roadmap.md.
+  if(_machine STREQUAL riscv64 OR NOT EXISTS ${_toolchain_bin}/swiftc OR NOT EXISTS ${_builtins})
     return()
   endif()
-  set(_triple x86_64-unknown-vectraos)
   set(_sysroot ${CMAKE_BINARY_DIR}/sysroot)
   set(_out ${CMAKE_BINARY_DIR}/tier1)
   set(_src ${PROJECT_SOURCE_DIR}/user/tier1)
@@ -34,12 +39,12 @@ function(croi_tier1 bootfs_var depends_var)
   # The sysroot: the floor (fixed-address, as tier 1 links ET_EXEC), the libc.
   add_custom_command(OUTPUT ${_sysroot}/usr/lib/libsys.a ${_sysroot}/usr/lib/libc.a
     COMMAND ${CMAKE_COMMAND} -DFLOOR=${CROI_USER_FLOOR} -DLIBC=${CROI_USER_LIBC} -DBUILTINS=${_builtins}
-            -DHEADERS=${PROJECT_SOURCE_DIR}/system/libc/include -DFLOOR_HEADER=${_floor_include}/td_floor.h
+            -DHEADERS=${PROJECT_SOURCE_DIR}/system/libc/include -DFLOOR_HEADERS=${_floor_include}
             -DCROI_HEADERS=${PROJECT_SOURCE_DIR}/user/include/croi -DKERNEL_HEADERS=${PROJECT_SOURCE_DIR}/kernel/include
             -DOBJCOPY=${CMAKE_OBJCOPY} -DAR=${CMAKE_AR} -DOUT=${_sysroot} -P ${PROJECT_SOURCE_DIR}/cmake/sysroot.cmake
-    DEPENDS ${CROI_USER_FLOOR} ${CROI_USER_LIBC} ${PROJECT_SOURCE_DIR}/cmake/sysroot.cmake ${_libc_headers}
+    DEPENDS ${CROI_USER_FLOOR} ${CROI_USER_LIBC} ${_builtins} ${PROJECT_SOURCE_DIR}/cmake/sysroot.cmake ${_libc_headers}
             ${PROJECT_SOURCE_DIR}/user/include/croi/syscall.h ${PROJECT_SOURCE_DIR}/kernel/include/module.modulemap
-            ${_floor_include}/td_floor.h
+            ${_floor_include}/td_floor.h ${_floor_include}/td_native.h
     COMMENT "Tier 1's sysroot")
   add_custom_target(sysroot ALL DEPENDS ${_sysroot}/usr/lib/libsys.a)
 
@@ -61,10 +66,10 @@ function(croi_tier1 bootfs_var depends_var)
   # Swift: the runtime and standard library (ninja inside decides what's
   # stale), then swift-hello (a library module and a program), swift-start
   # and swift-async.
-  set(_static ${_sysroot}/usr/lib/swift_static/vectraos/x86_64)
+  set(_static ${_sysroot}/usr/lib/swift_static/vectraos/${_machine})
   set(_swift_core ${_static}/libswiftCore.a ${_static}/libswift_Concurrency.a ${_static}/libswiftSynchronization.a)
   add_custom_target(swift-stdlib ALL
-    COMMAND ${PROJECT_SOURCE_DIR}/tools/toolchain/build_stdlib.sh x86_64
+    COMMAND ${PROJECT_SOURCE_DIR}/tools/toolchain/build_stdlib.sh ${_machine}
     BYPRODUCTS ${_swift_core}
     DEPENDS cxx
     COMMENT "Tier 1's Swift runtime and standard library (tools/toolchain/build_stdlib.sh)")
@@ -85,8 +90,7 @@ function(croi_tier1 bootfs_var depends_var)
     DEPENDS swift-stdlib ${_swift_core} ${_src}/Start.swift ${_sysroot}/usr/lib/libsys.a
     COMMENT "swift-start, the smallest full Swift program")
   add_custom_command(OUTPUT ${_out}/swift-async
-    COMMAND ${_swiftc} -parse-as-library -I ${_floor_include} -I ${PROJECT_SOURCE_DIR}/user/include
-            -I ${PROJECT_SOURCE_DIR}/kernel/include ${_src}/Async.swift -o ${_out}/swift-async
+    COMMAND ${_swiftc} -parse-as-library ${_src}/Async.swift -o ${_out}/swift-async
     DEPENDS swift-stdlib ${_swift_core} ${_src}/Async.swift ${_sysroot}/usr/lib/libsys.a
     COMMENT "swift-async, Swift concurrency on croi")
   set(_programs floor-hello cxx-hello swift-hello swift-start swift-async)
@@ -99,4 +103,6 @@ function(croi_tier1 bootfs_var depends_var)
   add_custom_target(tier1 ALL DEPENDS ${_files})
   set(${bootfs_var} ${_entries} PARENT_SCOPE)
   set(${depends_var} ${_files} PARENT_SCOPE)
+  # The top level boots each (CMakeLists.txt).
+  set_property(GLOBAL PROPERTY CROI_TIER1_PROGRAMS ${_programs})
 endfunction()

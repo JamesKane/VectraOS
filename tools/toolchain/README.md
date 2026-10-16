@@ -32,10 +32,15 @@ tools/toolchain/build_stage_t1.sh       # LLVM: clang, lld (X86, AArch64, RISCV)
 tools/toolchain/build_stage_t1_swift.sh # the Swift compiler (host Swift 6.3.1 builds it)
 tools/toolchain/build_stage_t1_driver.sh # swift-driver, installed as swiftc
 tools/toolchain/smoke-clang.sh && tools/toolchain/smoke-swiftc.sh
+tools/toolchain/build_builtins.sh      # compiler-rt's builtins, all three triples
 ```
 
-Then the arch's tree (`vx build amd64`; `cmake/Tier1.cmake`, amd64 only
-so far) builds tier 1's sysroot (`build/amd64/sysroot`) and runtime
+compiler-rt's builtins for the three triples come next
+(`build_builtins.sh`, a minute: freestanding, into the toolchain's
+resource directory). Then the arch's tree (`vx build amd64`;
+`cmake/Tier1.cmake`, amd64 and arm64 so far: riscv64's LLVM has no
+Swift calling conventions yet) builds tier 1's sysroot
+(`build/<arch>/sysroot`) and runtime
 libraries with this toolchain: libc++,
 libc++abi and libunwind (`cmake/cxx.cmake`, M6d), and the Swift runtime
 and standard library (`build_stdlib.sh`, M6e: two minutes from scratch,

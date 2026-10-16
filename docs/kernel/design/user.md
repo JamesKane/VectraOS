@@ -256,13 +256,18 @@ syscalls 110-111):
 - Tier 1 (D47): programs in C, C++ and full Swift, built by the
   `*-vectraos` toolchain (`tools/toolchain`: the series renamed from
   todhchai's, its sources and builds in `.cache/toolchain`, outside the
-  tree) against `build/<arch>/sysroot` (`cmake/Tier1.cmake`; amd64 only so
-  far, for compiler-rt's builtins): the floor as libsys.a and the libc as
+  tree) against `build/<arch>/sysroot` (`cmake/Tier1.cmake`; amd64 and arm64
+  so far, rv64 waiting for Swift's calling conventions in its LLVM): the
+  floor as libsys.a and the libc as
   libc.a with their `swift_*` symbols made local, the libc's headers and
-  module map (SwiftVectraOSLibc), the floor's td_floor.h, and the ABI
-  headers it includes (croi/syscall.h and the CroiAbi module's, which are
+  module map (SwiftVectraOSLibc), the floor's td_floor.h and td_native.h, and the ABI
+  headers they include (croi/syscall.h and the CroiAbi module's, which are
   why those spell their layout checks `_Static_assert`: the runtime's C
-  shims are gnu11); then libc++, libc++abi and libunwind
+  shims are gnu11), with the floor's modules (CroiAbi, CroiSyscall,
+  TDFloor, TDNative) in the sysroot's own module map, so a program
+  builds against the sysroot alone (the tree's `kernel/include` on a
+  search path puts croi's time.h before the libc's); compiler-rt's
+  builtins (`build_builtins.sh`, freestanding); then libc++, libc++abi and libunwind
   (`cmake/cxx.cmake`) and the Swift runtime and standard library
   (`build_stdlib.sh`). The tree builds as before without the toolchain.
   Tier 1 programs link `ET_EXEC` at 0x1000000 (the clang driver's croi

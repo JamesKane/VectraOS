@@ -165,12 +165,11 @@ add_test(NAME trace-collect
 set_tests_properties(boot-trace PROPERTIES FIXTURES_SETUP trace-console)
 set_tests_properties(trace-collect PROPERTIES FIXTURES_REQUIRED trace-console)
 # Tier 1 (D47): each test program of the *-vectraos toolchain, booted
-# (cmake/Tier1.cmake builds them when the toolchain is there; amd64 only).
-if(CROI_ARCH STREQUAL amd64 AND EXISTS ${CMAKE_SOURCE_DIR}/.cache/toolchain/out/bin/swiftc)
-  foreach(_t1 floor-hello cxx-hello swift-hello swift-start swift-async)
-    croi_boot_program_test(${_t1} ${_t1})
-  endforeach()
-endif()
+# (cmake/Tier1.cmake builds them when the toolchain and its builtins are there).
+get_property(_tier1_programs GLOBAL PROPERTY CROI_TIER1_PROGRAMS)
+foreach(_t1 ${_tier1_programs})
+  croi_boot_program_test(${_t1} ${_t1})
+endforeach()
 
 if(CROI_ARCH STREQUAL arm64 OR CROI_ARCH STREQUAL rv64)
   # Guest time from instruction counts (QEMU -icount; sleep=off skips idle
