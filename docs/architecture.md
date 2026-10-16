@@ -98,6 +98,9 @@ offset 384+  slots[count]     (fixed size; payloads in the IPC wire format
   C-side drivers (`lib/ring/`, D43). Both are tested against the same model
   checker, RingCheck, which runs the real code of each. The model test
   comes from NeoVectra's `lib/vx-ring`.
+- **The kernel as producer:** the debuglog, in OVERWRITE mode (D38), and
+  ports made with CROI_PORT_RING, whose packets it writes into a ring the
+  reader drains with no syscall; port_wait is that reader's sleep (D44).
 
 ## 4. The control plane: the Node protocol
 

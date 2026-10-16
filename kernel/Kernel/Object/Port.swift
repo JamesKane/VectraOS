@@ -89,6 +89,13 @@ struct PortObject: ~Copyable {
     let bindToInterrupt: Bool
     var interruptHead: UInt64 = 0
     var interruptTail: UInt64 = 0
+    /// D44: a port made with CROI_PORT_RING delivers its packets into the
+    /// one ring, in a pinned page of a contiguous VMO the reader maps and
+    /// the kernel writes through the physmap. The queue above holds what
+    /// the ring has no room for yet (packets lock).
+    var ring: NativeRing? = nil
+    var hasRing = false
+    var ringVmo: UInt64 = 0
     /// K13e: the objects with async waits to this port, once per observer
     /// (port_cancel with source 0 finds them here). Under `packetsLock`; an entry
     /// means an observer is registered, so the object is alive (objects
@@ -119,16 +126,57 @@ enum Ports {
     /// `QueuedPacket.source` of an interrupt object's packet.
     static var interruptOwned: UInt64 { ~0 }
 
+    static var ringSlots: Int { Int(CROI_PORT_RING_SLOTS) }
+    static var ringFormat: UInt64 { UInt64(CROI_PORT_RING_FORMAT) }
+    static var packetSize: Int { MemoryLayout<PortPacket>.size }
+    /// The ring VMO's rights: the reader maps it read-write (its cursor is
+    /// in it), and can't resize it or change its cache policy.
+    static var ringRights: Rights { .basic | .read | .write | .map | .getProperty }
+
     static func create(options: UInt64 = 0) throws(Status) -> ObjectPointer {
-        guard options & ~UInt64(CROI_PORT_BIND_TO_INTERRUPT) == 0 else { throw .invalidArgs }
-        guard let object = Objects.allocate(PortObject(bindToInterrupt: options != 0)) else { throw .noMemory }
+        let known = UInt64(CROI_PORT_BIND_TO_INTERRUPT) | UInt64(CROI_PORT_RING)
+        guard options & ~known == 0 else { throw .invalidArgs }
+        let interrupts = options & UInt64(CROI_PORT_BIND_TO_INTERRUPT) != 0
+        guard let object = Objects.allocate(PortObject(bindToInterrupt: interrupts)) else { throw .noMemory }
         return object
+    }
+
+    /// D44: gives a new port its ring; the ring's VMO object, for the
+    /// creator's handle. The page is pinned, so it is never decommitted
+    /// or lent while the kernel writes it.
+    static func makeRing(_ object: ObjectPointer) throws(Status) -> ObjectPointer {
+        let page = KernelLayout.pageSize
+        let vmo = try vmStatus { () throws(VmError) -> Vmo in try Vmo(contiguous: page) }
+        guard case .contiguous(let phys) = vmo.record.pointee.kind else { panic("port: ring VMO") }
+        let vmoObject = try VmoObject.wrap(vmo.record)
+        do throws(VmError) {
+            try vmo.pin(offset: 0, size: page)
+        } catch {
+            vmoObject.release()
+            throw error.status
+        }
+        let base = unsafe UnsafeMutableRawPointer(bitPattern: UInt(KernelLayout.physmap(phys)))!
+        guard unsafe NativeRing.create(base, size: Int(page), slotSize: packetSize, count: ringSlots,
+                                       format: ringFormat) else { panic("port: making a ring") }
+        let port = PortPointer(object: object)
+        port.pointee.ring = unsafe NativeRing(attaching: base, size: Int(page), producer: true, slotSize: packetSize,
+                                              format: ringFormat)
+        port.pointee.hasRing = true
+        port.pointee.ringVmo = vmo.keep().address  // the port's reference
+        return vmoObject
     }
 
     static func destroy(_ object: ObjectPointer) {
         let port = PortPointer(object: object)
         while let (_, record) = pop(port) {
             if let record { release(record) }
+        }
+        if port.pointee.hasRing {
+            let vmo = VmoPointer(address: port.pointee.ringVmo)
+            try? Vmo.withBorrowed(vmo) { (v: borrowing Vmo) throws(VmError) in
+                v.unpin(offset: 0, size: KernelLayout.pageSize)
+            }
+            vmo.release()
         }
         port.pointee.waiters.deallocate()
         Objects.free(object, as: PortObject.self)
@@ -150,6 +198,11 @@ enum Ports {
             port.pointee.tail = record.address
             port.pointee.queued += 1
         }
+        // D44: into the ring now, if it has room, so a busy reader needs no
+        // syscall. Not under the scheduler lock: a delivered record goes
+        // back to its source, which may free it. (`hasRing` is set before
+        // the port has a handle, and never changes.)
+        if port.pointee.hasRing, !schedulerLocked { deliver(port) }
         if schedulerLocked {
             Scheduler.wakeOne(port.pointee.waiters, lending: lending)
         } else {
@@ -185,23 +238,76 @@ enum Ports {
     /// The next packet (interrupts first), copied under the lock, and its
     /// record if it needs `release` (an interrupt's stays its object's).
     private static func pop(_ port: PortPointer) -> (PortPacket, QueuedPacketPointer?)? {
-        port.pointee.packetsLock.withLock { () -> (PortPacket, QueuedPacketPointer?)? in
-            if port.pointee.interruptHead != 0 {
-                let record = QueuedPacketPointer(address: port.pointee.interruptHead)
-                port.pointee.interruptHead = record.pointee.next
-                if port.pointee.interruptHead == 0 { port.pointee.interruptTail = 0 }
-                record.pointee.interruptQueued = false
-                port.pointee.queued -= 1
-                return (record.pointee.packet, nil)
-            }
-            guard port.pointee.head != 0 else { return nil }
-            let record = QueuedPacketPointer(address: port.pointee.head)
-            port.pointee.head = record.pointee.next
-            if port.pointee.head == 0 { port.pointee.tail = 0 }
+        port.pointee.packetsLock.withLock { () -> (PortPacket, QueuedPacketPointer?)? in popLocked(port) }
+    }
+
+    /// `pop` with the packets lock held; `interruptsOnly` leaves the main
+    /// queue alone.
+    private static func popLocked(_ port: PortPointer,
+                                  interruptsOnly: Bool = false) -> (PortPacket, QueuedPacketPointer?)? {
+        if port.pointee.interruptHead != 0 {
+            let record = QueuedPacketPointer(address: port.pointee.interruptHead)
+            port.pointee.interruptHead = record.pointee.next
+            if port.pointee.interruptHead == 0 { port.pointee.interruptTail = 0 }
+            record.pointee.interruptQueued = false
             port.pointee.queued -= 1
-            if record.isUserPacket { port.pointee.userQueued -= 1 }
-            return (record.pointee.packet, record)
+            return (record.pointee.packet, nil)
         }
+        guard port.pointee.head != 0, !interruptsOnly else { return nil }
+        let record = QueuedPacketPointer(address: port.pointee.head)
+        port.pointee.head = record.pointee.next
+        if port.pointee.head == 0 { port.pointee.tail = 0 }
+        port.pointee.queued -= 1
+        if record.isUserPacket { port.pointee.userQueued -= 1 }
+        return (record.pointee.packet, record)
+    }
+
+    /// Records delivered into a ring, handed back once the packets lock
+    /// drops (`release` takes the source's lock, and may free).
+    struct Released: ~Copyable {
+        var records = InlineArray<8, UInt64>(repeating: 0)
+        var count = 0
+        var full: Bool { count == 8 }
+
+        mutating func add(_ record: QueuedPacketPointer) {
+            records[count] = record.address
+            count += 1
+        }
+
+        consuming func release() {
+            for i in 0..<count { Ports.release(QueuedPacketPointer(address: records[i])) }
+        }
+    }
+
+    /// D44: delivers what the ring has room for, a batch of records at a
+    /// time. Not under the scheduler lock.
+    private static func deliver(_ port: PortPointer) {
+        while true {
+            var released = Released()
+            port.pointee.packetsLock.withLock { deliverLocked(port, &released) }
+            let more = released.full
+            released.release()
+            if !more { return }
+        }
+    }
+
+    /// D44: moves queued packets (interrupts first) into the port's ring
+    /// while it has room and `released` has room for their records.
+    /// Nothing if the port has no ring, or its reader broke it. Packets
+    /// lock held.
+    private static func deliverLocked(_ port: PortPointer, _ released: inout Released,
+                                      interruptsOnly: Bool = false) {
+        guard port.pointee.hasRing else { return }
+        let space = port.pointee.ring!.space()
+        var delivered: UInt64 = 0
+        while delivered < space, !released.full,
+              let (packet, record) = popLocked(port, interruptsOnly: interruptsOnly) {
+            var copy = packet
+            unsafe withUnsafeBytes(of: &copy) { unsafe port.pointee.ring!.put(delivered, from: $0.baseAddress!) }
+            if let record { released.add(record) }
+            delivered += 1
+        }
+        if delivered > 0 { _ = port.pointee.ring!.publish(delivered) }
     }
 
     /// Queues an interrupt object's packet with `timestamp` and wakes a
@@ -224,6 +330,11 @@ enum Ports {
             }
             port.pointee.interruptTail = record.address
             port.pointee.queued += 1
+            // D44: an interrupt's record stays its object's, so it can go
+            // into the ring from any context.
+            var none = Released()
+            deliverLocked(port, &none, interruptsOnly: true)
+            none.release()
             return true
         }
         if queued {
@@ -263,7 +374,7 @@ enum Ports {
     }
 
     /// Frees a dequeued record, or hands it back to its kernel source.
-    private static func release(_ record: QueuedPacketPointer) {
+    fileprivate static func release(_ record: QueuedPacketPointer) {
         if record.pointee.source != 0 {
             PacketSourcePointer(address: record.pointee.source).dequeued()
         } else {
@@ -311,6 +422,7 @@ enum Ports {
                      leeway: UInt64 = 0) throws(Status) -> PortPacket {
         let ref = try table.get(handle, type: .port, rights: .read)
         let port = PortPointer(object: ref.object)
+        guard !port.pointee.hasRing else { throw .invalidArgs }  // its packets are the ring's (D44)
         var popped: (PortPacket, QueuedPacketPointer?)? = nil
         Scheduler.locked {
             while true {
@@ -327,6 +439,56 @@ enum Ports {
         if let record { release(record) }
         return packet
     }
+
+    /// port_wait on a ring port (D44, count 0): delivers what is queued,
+    /// then waits until the ring isn't empty, until `deadline` (timedOut)
+    /// give or take `leeway`. BAD_STATE once the reader has broken the
+    /// ring (its cursor ran past the kernel's); INVALID_ARGS for a port
+    /// with no ring.
+    static func waitRing(_ table: borrowing HandleTable, _ handle: UInt32, deadline: UInt64,
+                         leeway: UInt64 = 0) throws(Status) {
+        let ref = try table.get(handle, type: .port, rights: .read)
+        let port = PortPointer(object: ref.object)
+        guard port.pointee.hasRing else { throw .invalidArgs }
+        var timedOut = false
+        while true {
+            deliver(port)
+            var outcome = RingWait.again
+            Scheduler.locked {
+                let state = port.pointee.packetsLock.withLock { () -> RingWait in
+                    let space = port.pointee.ring!.space()
+                    if port.pointee.ring!.isBroken() { return .broken }
+                    if space < UInt64(ringSlots) { return .ready }
+                    // Queued, and the ring has room: deliver it, outside
+                    // the scheduler lock.
+                    return port.pointee.queued > 0 ? .again : .empty
+                }
+                guard state == .empty else {
+                    outcome = state
+                    return
+                }
+                if timedOut {
+                    outcome = .timedOut
+                    return
+                }
+                let result = Scheduler.block(on: port.pointee.waiters, deadline: deadline, leeway: leeway,
+                                             interruptible: true)
+                if result == .interrupted {
+                    outcome = .timedOut
+                } else if result == .timedOut {
+                    timedOut = true
+                }
+            }
+            switch outcome {
+            case .ready: return
+            case .broken: throw .badState
+            case .timedOut: throw .timedOut
+            default: continue
+            }
+        }
+    }
+
+    private enum RingWait { case again, empty, ready, broken, timedOut }
 
     /// port_wait's packets after its first (D40): the next one, without
     /// waiting; nil if the port is empty.
@@ -601,4 +763,10 @@ struct PacketSource: ~Copyable {
         unsafe heap.free(UnsafeMutableRawPointer(raw))
         port.release()
     }
+}
+
+extension Ring {
+    /// `broken` through a port's optional ring: a read through `!`
+    /// would consume it, a mutating call doesn't.
+    fileprivate mutating func isBroken() -> Bool { broken }
 }

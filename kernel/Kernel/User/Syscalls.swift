@@ -290,10 +290,38 @@ enum Syscalls {
             return try duplicateHandles(table, items: a[0], count: a[1])
         case 22:  // object_bind(port, items, count): returns how many were bound
             return try Bind.call(table, port: handle, items: a[1], count: a[2])
-        case 31:  // port_create
+        case 31:  // port_create(options, out): with CROI_PORT_RING, out[1] is the ring's VMO (D44)
             try Policy.check(UInt32(CROI_POL_NEW_PORT))
-            try check(a[1], MemoryLayout<UInt32>.size)
-            try put(try table.add(try Ports.create(options: a[0]), rights: PortObject.defaultRights), a[1])
+            let ring = a[0] & UInt64(CROI_PORT_RING) != 0
+            try check(a[1], MemoryLayout<UInt32>.size * (ring ? 2 : 1))
+            let port = try Ports.create(options: a[0])
+            var vmo: ObjectPointer? = nil
+            if ring {
+                do throws(Status) {
+                    vmo = try Ports.makeRing(port)
+                } catch {
+                    port.release()
+                    throw error
+                }
+            }
+            let portHandle: UInt32
+            do throws(Status) {
+                portHandle = try table.add(port, rights: PortObject.defaultRights)
+            } catch {
+                port.release()
+                vmo?.release()
+                throw error
+            }
+            if let vmo {
+                do throws(Status) {
+                    try put(try table.add(vmo, rights: Ports.ringRights), a[1] + 4)
+                } catch {
+                    vmo.release()
+                    try? table.close(portHandle)
+                    throw error
+                }
+            }
+            try put(portHandle, a[1])
         case 32:  // port_queue(port, packets, count): returns how many were queued (D40)
             return try queuePackets(table, handle, packets: a[1], count: a[2])
         case 33:  // port_wait(port, deadline, packets, count, leeway): returns how many it took (D40)
@@ -522,11 +550,16 @@ enum Syscalls {
     }
 
     /// port_wait (D40): waits for the first packet, then takes up to
-    /// `count` in all without waiting again; how many it took.
+    /// `count` in all without waiting again; how many it took. With a
+    /// count of 0, a ring port's wait for its ring (D44).
     private static func waitPackets(_ table: borrowing HandleTable, _ port: UInt32, deadline: UInt64,
                                     packets: UInt64, count: UInt64, leeway: UInt64) throws(Status) -> Int64 {
         let size = UInt64(MemoryLayout<PortPacket>.size)
-        guard count > 0, count <= UInt64(CROI_PORT_MAX_PACKETS) else { throw .invalidArgs }
+        if count == 0 {
+            try Ports.waitRing(table, port, deadline: deadline, leeway: leeway)
+            return 0
+        }
+        guard count <= UInt64(CROI_PORT_MAX_PACKETS) else { throw .invalidArgs }
         try check(packets, Int(count * size))
         try putPacket(try Ports.wait(table, port, deadline: deadline, leeway: leeway), packets)
         var taken: UInt64 = 1

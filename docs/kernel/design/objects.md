@@ -593,3 +593,27 @@ returns how many succeeded.
   are the one-item forms. Userboot maps a program's segments in one call
   (`mapSegments`).
 - Tests: the `vmo` suite's `vmarBatches`.
+
+## Ports as rings (V1, D44)
+
+A port made with CROI_PORT_RING (port.h) delivers its packets into the
+one ring (lib/ring, architecture §3): port_create writes the port's
+handle and its ring VMO's. `Ports.makeRing` (Object/Port.swift) makes a
+one-page contiguous VMO, pins it (so it is never decommitted or lent,
+and its cache policy stays), formats 64 slots of 48-byte packets, and
+keeps a producer `Ring` in the port, writing through the physmap.
+- The port's queue is the overflow. `enqueue` links the packet as
+  before, then `deliverLocked` moves queued packets, interrupts first,
+  into the ring while it has room; their records go back to their
+  sources (`Released`, up to eight a batch) once the packets lock drops.
+  Under the scheduler lock a packet only queues. `queueInterrupt`
+  delivers interrupts' packets, which need no handing back, from any
+  context.
+- `waitRing` is port_wait with a count of 0: it delivers what fits, and
+  blocks on the port's waiters until the ring isn't empty (as `wait`
+  does until the queue isn't). A reader's cursor past the kernel's
+  breaks the ring: port_wait then says BAD_STATE, and packets stay
+  queued until the port goes. `wait` refuses a ring port.
+- Coalescing, port_cancel and the observer and packet limits act on the
+  queue; a delivered packet is the reader's.
+- Tests: the `portring` suite.

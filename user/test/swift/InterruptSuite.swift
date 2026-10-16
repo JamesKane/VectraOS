@@ -102,8 +102,8 @@ enum InterruptSuite {
     /// edges wait for the ack; then the wake latency from the fire's time.
     static func rtc(_ root: borrowing Handle) {
         var raw: UInt32 = 0
-        check(Sys.call(CROI_SYS_PORT_CREATE, 2, Sys.address(&raw)) == Status.invalidArgs,
-              "port options: BIND_TO_INTERRUPT only")
+        check(Sys.call(CROI_SYS_PORT_CREATE, 4, Sys.address(&raw)) == Status.invalidArgs,
+              "port options: BIND_TO_INTERRUPT and RING only")
         let port = Port(options: UInt64(CROI_PORT_BIND_TO_INTERRUPT))
         let device = Rtc(root)
 

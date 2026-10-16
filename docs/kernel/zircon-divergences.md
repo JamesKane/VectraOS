@@ -129,6 +129,13 @@ matches the pinned tree where upstream docs or expectations say otherwise).
   Kind: deliberate (batch first, principle 12). Impact: callers of
   zx_port_queue, zx_port_wait, zx_counter_add and zx_interrupt_ack,
   through the C wrappers.
+- **Ports as rings** (V1, D44) — a port made with CROI_PORT_RING also
+  hands out a VMO holding the one ring, into which the kernel writes its
+  packets; the reader drains it with no syscall, and port_wait with a
+  count of 0 waits for it (a ring port refuses a count). A packet in the
+  ring can't be cancelled. Zircon has no such port. Kind: deliberate
+  (D19: nodes for control, rings for bulk). Impact: none for Zircon's
+  calls on other ports, except that port_create's option 2 is taken.
 - **channel_read and channel_write take arrays** (V1, D41) — each item
   is one message to or from one channel, with its own options, sizes
   and status; the call goes on past a failed item and returns how many

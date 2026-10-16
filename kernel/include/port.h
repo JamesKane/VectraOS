@@ -25,8 +25,21 @@
 // after the deadline, never before it (principle 10), so that timers
 // coalesce; a thread with a deadline profile always gets zero leeway. A
 // wait on a port nothing is bound to is the one sleep (V1 cut nanosleep
-// and timer objects, D25). Both are interim forms: ports become rings
-// (D19). croi_port_queue and croi_port_wait in syscall.h take one packet.
+// and timer objects, D25). croi_port_queue and croi_port_wait in syscall.h
+// take one packet.
+//
+// Ports as rings (D19, D44). port_create(CROI_PORT_RING, uint32_t out[2])
+// makes a port whose packets the kernel writes into the one ring
+// (lib/ring/ring.h): out[0] is the port, out[1] its ring's VMO (READ,
+// WRITE, MAP; one page, CROI_PORT_RING_SLOTS slots of croi_port_packet_t,
+// format CROI_PORT_RING_FORMAT). The reader maps it read-write, attaches
+// as the consumer and drains it with no syscall; packets the ring has no
+// room for wait in the port, and go in as the reader frees slots (at the
+// next packet, or port_wait). port_wait(port, deadline, nullptr, 0,
+// leeway) is the reader's sleep: it returns 0 once the ring isn't empty,
+// and BAD_STATE once the reader has broken it. A ring port refuses
+// port_wait with a count; any other port refuses a count of 0. A packet
+// in the ring is the reader's: port_cancel no longer reaches it.
 #pragma once
 #include <stdint.h>
 
@@ -50,6 +63,8 @@ enum : uint32_t {
 
   CROI_BIND_MAX_ITEMS = 64,
   CROI_PORT_MAX_PACKETS = 64,  // port_queue and port_wait at once (D40)
+  CROI_PORT_RING = 1u << 1,    // port_create: deliver into a ring (D44)
+  CROI_PORT_RING_SLOTS = 64,   // its packets: 384 + 64 * 48 bytes, one page
 
   // Port packet types (croi_port_packet_t.type). The kernel events' are in
   // their headers: CROI_PKT_TYPE_INTERRUPT, _COUNTER, _BUDGET_OVERRUN,
@@ -57,6 +72,10 @@ enum : uint32_t {
   CROI_PKT_TYPE_USER = 0,    // port_queue's
   CROI_PKT_TYPE_SIGNAL = 1,  // SIGNALS: payload[0] trigger | observed << 32, [1] count, [2] time
   CROI_PKT_TYPE_COUNTER_CHANGE = 0x83,  // CHANGE: [1] the value, [2] count, [3] time
+};
+
+enum : uint64_t {
+  CROI_PORT_RING_FORMAT = 0x54524f50,  // "PORT": a ring of croi_port_packet_t (D44)
 };
 
 typedef struct {

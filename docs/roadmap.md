@@ -54,8 +54,10 @@ The work, in order:
    (D42).
 4. **Done (D43):** the one ring (architecture §3) in Swift and as `ring.h`,
    with RingCheck, a model checker that runs both. Doorbells are counters.
-5. Ports become rings (D19). **Done (D38, 91 calls):** the debuglog is a
-   read-only ring, in the ring's OVERWRITE mode, and debuglog_read is cut.
+5. **Done (D38, D44; 91 calls):** ports become rings (D19): a port made
+   with CROI_PORT_RING delivers its packets into the one ring, drained
+   with no syscall (D44); the debuglog is a read-only ring, in the ring's
+   OVERWRITE mode, and debuglog_read is cut (D38).
 6. Close the `channel_call` < 1 µs open item.
 
 **Exit:**

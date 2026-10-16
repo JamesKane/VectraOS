@@ -84,8 +84,8 @@ debuglog_read, the debuglog now a read-only ring (D38): 91 syscalls, the
 audit's target (`docs/syscall-audit.md`). The hot calls take arrays:
 handle_duplicate (D39), the wakes (D40), channel reads and writes (D41)
 and the VMAR calls (D42). The one ring is in Swift and `ring.h`, both
-model-checked by RingCheck (D43); the debuglog is its first kernel
-producer (D38).
+model-checked by RingCheck (D43); the kernel produces it for the
+debuglog (D38) and for ports made with CROI_PORT_RING (D44).
 - **Done:** croi imported, passing on amd64, arm64 and rv64; todhchai's
   Judge, History, trace format and reader lifted; `vx` with build, test,
   boot, bench, trace, loc and ci.

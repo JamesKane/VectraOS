@@ -55,6 +55,8 @@ enum Suite {
             RingSuite.run()
         } else if requested("debuglog") {
             DebuglogSuite.run()
+        } else if requested("portring") {
+            PortRingSuite.run()
         } else if requested("idle") {
             IdleSuite.run()
         } else if requested("interrupts") {
