@@ -1,0 +1,550 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: James Kane <jkane@tds.net>
+Date: Mon, 12 Oct 2026 04:26:39 -0500
+Subject: [PATCH 09/14] [VectraOS] Concurrency with VectraOS's global and main
+ executors
+
+SWIFT_CONCURRENCY_GLOBAL_EXECUTOR=vectraos: PlatformExecutorVectraOS.swift's
+factory gives a default executor of one worker thread per CPU croi runs
+(td_cpu_count) and a main executor the main thread runs once the async
+main hands it over, over VectraOSGlobalExecutor.cpp (adapted from
+swift-on-vectra's): ready jobs in priority buckets, delayed ones by
+deadline on the monotonic clock, under our pthreads' mutex, with the
+threads sleeping on a croi port (td_port_wait) until a wake packet or
+the soonest deadline. Clock.cpp takes the POSIX clock branches; Actor.cpp
+skips <sys/syscall.h>, which it doesn't use; the frontend imports
+_Concurrency implicitly for *-vectraos.
+---
+ lib/Frontend/Frontend.cpp                     |   2 +
+ stdlib/public/Concurrency/Actor.cpp           |   2 +-
+ stdlib/public/Concurrency/CMakeLists.txt      |  15 +-
+ stdlib/public/Concurrency/Clock.cpp           |  14 +-
+ .../PlatformExecutorVectraOS.swift            | 136 +++++++++++
+ .../Concurrency/VectraOSGlobalExecutor.cpp    | 228 ++++++++++++++++++
+ 6 files changed, 388 insertions(+), 9 deletions(-)
+ create mode 100644 stdlib/public/Concurrency/PlatformExecutorVectraOS.swift
+ create mode 100644 stdlib/public/Concurrency/VectraOSGlobalExecutor.cpp
+
+diff --git a/lib/Frontend/Frontend.cpp b/lib/Frontend/Frontend.cpp
+index 03bd75f7..80e7caa3 100644
+--- a/lib/Frontend/Frontend.cpp
++++ b/lib/Frontend/Frontend.cpp
+@@ -1169,6 +1169,8 @@ static bool shouldImportConcurrencyByDefault(const llvm::Triple &target) {
+     return true;
+   if (target.isOSLinux())
+     return true;
++  if (target.isOSVectraOS())
++    return true;
+ #if SWIFT_IMPLICIT_CONCURRENCY_IMPORT
+   if (target.isOSWASI())
+     return true;
+diff --git a/stdlib/public/Concurrency/Actor.cpp b/stdlib/public/Concurrency/Actor.cpp
+index 15633073..9dfe220e 100644
+--- a/stdlib/public/Concurrency/Actor.cpp
++++ b/stdlib/public/Concurrency/Actor.cpp
+@@ -72,7 +72,7 @@
+ #include <unwind.h>
+ #endif
+ 
+-#if defined(__ELF__)
++#if defined(__ELF__) && !defined(__vectraos__)
+ #include <sys/syscall.h>
+ #endif
+ 
+diff --git a/stdlib/public/Concurrency/CMakeLists.txt b/stdlib/public/Concurrency/CMakeLists.txt
+index d93b9a63..d9ba12af 100644
+--- a/stdlib/public/Concurrency/CMakeLists.txt
++++ b/stdlib/public/Concurrency/CMakeLists.txt
+@@ -49,7 +49,8 @@ if("${SWIFT_CONCURRENCY_GLOBAL_EXECUTOR}" STREQUAL "dispatch")
+   endif()
+ elseif("${SWIFT_CONCURRENCY_GLOBAL_EXECUTOR}" STREQUAL "singlethreaded" OR
+        "${SWIFT_CONCURRENCY_GLOBAL_EXECUTOR}" STREQUAL "hooked" OR
+-       "${SWIFT_CONCURRENCY_GLOBAL_EXECUTOR}" STREQUAL "none")
++       "${SWIFT_CONCURRENCY_GLOBAL_EXECUTOR}" STREQUAL "none" OR
++       "${SWIFT_CONCURRENCY_GLOBAL_EXECUTOR}" STREQUAL "vectraos")
+   list(APPEND SWIFT_RUNTIME_CONCURRENCY_C_FLAGS
+     "-DSWIFT_CONCURRENCY_ENABLE_DISPATCH=0")
+ else()
+@@ -180,6 +181,7 @@ set(SWIFT_RUNTIME_CONCURRENCY_SWIFT_SOURCES
+   PlatformExecutorWindows.swift
+   PlatformExecutorOpenBSD.swift
+   PlatformExecutorFreeBSD.swift
++  PlatformExecutorVectraOS.swift
+   Result+AsyncInit.swift
+ )
+ 
+@@ -202,6 +204,15 @@ if("${SWIFT_CONCURRENCY_GLOBAL_EXECUTOR}" STREQUAL "dispatch")
+   if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+     list(APPEND SWIFT_RUNTIME_CONCURRENCY_NONEMBEDDED_C_SOURCES CFExecutor.cpp)
+   endif()
++elseif("${SWIFT_CONCURRENCY_GLOBAL_EXECUTOR}" STREQUAL "vectraos")
++  # VectraOS: a thread per CPU sleeping on croi ports
++  # (PlatformExecutorVectraOS.swift)
++  set(SWIFT_RUNTIME_CONCURRENCY_EXECUTOR_SOURCES
++    VectraOSGlobalExecutor.cpp
++  )
++  set(SWIFT_RUNTIME_CONCURRENCY_NONEMBEDDED_SWIFT_SOURCES
++    ExecutorImpl.swift
++  )
+ elseif("${SWIFT_CONCURRENCY_GLOBAL_EXECUTOR}" STREQUAL "singlethreaded")
+   set(SWIFT_RUNTIME_CONCURRENCY_NONEMBEDDED_SWIFT_SOURCES
+     ExecutorImpl.swift
+@@ -215,6 +226,7 @@ else()
+ endif()
+ 
+ set(LLVM_OPTIONAL_SOURCES
++  VectraOSGlobalExecutor.cpp
+   DispatchGlobalExecutor.cpp
+   CooperativeGlobalExecutor.cpp
+   DispatchGlobalExecutor.cpp
+@@ -255,6 +267,7 @@ add_swift_target_library(swift_Concurrency ${SWIFT_STDLIB_LIBRARY_BUILD_TYPES} I
+   SWIFT_MODULE_DEPENDS_LINUX Glibc
+   SWIFT_MODULE_DEPENDS_LINUX_STATIC Musl
+   SWIFT_MODULE_DEPENDS_FREEBSD Glibc
++  SWIFT_MODULE_DEPENDS_VECTRAOS VectraOSLibc
+   SWIFT_MODULE_DEPENDS_OPENBSD Glibc
+   SWIFT_MODULE_DEPENDS_CYGWIN Glibc
+   SWIFT_MODULE_DEPENDS_HAIKU Glibc
+diff --git a/stdlib/public/Concurrency/Clock.cpp b/stdlib/public/Concurrency/Clock.cpp
+index 2d1e297b..7b00496a 100644
+--- a/stdlib/public/Concurrency/Clock.cpp
++++ b/stdlib/public/Concurrency/Clock.cpp
+@@ -52,7 +52,7 @@ void swift_get_time(
+       clock_gettime(CLOCK_BOOTTIME, &continuous);
+ #elif defined(__APPLE__)
+       clock_gettime(CLOCK_MONOTONIC_RAW, &continuous);
+-#elif (defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__wasi__))
++#elif (defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__wasi__) || defined(__vectraos__))
+       clock_gettime(CLOCK_MONOTONIC, &continuous);
+ #elif defined(_WIN32)
+       // This needs to match what swift-corelibs-libdispatch does
+@@ -85,7 +85,7 @@ void swift_get_time(
+       clock_gettime(CLOCK_MONOTONIC, &suspending);
+ #elif defined(__APPLE__)
+       clock_gettime(CLOCK_UPTIME_RAW, &suspending);
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__vectraos__)
+       clock_gettime(CLOCK_MONOTONIC, &suspending);
+ #elif (defined(__OpenBSD__) || defined(__FreeBSD__))
+       clock_gettime(CLOCK_UPTIME, &suspending);
+@@ -115,7 +115,7 @@ void swift_get_time(
+       return;
+     case swift_clock_id_wall:
+       struct timespec wall;
+-#if defined(__linux__) || defined(__APPLE__) || defined(__wasi__) || defined(__OpenBSD__) || defined(__FreeBSD__)
++#if defined(__linux__) || defined(__APPLE__) || defined(__wasi__) || defined(__vectraos__) || defined(__OpenBSD__) || defined(__FreeBSD__)
+       clock_gettime(CLOCK_REALTIME, &wall);
+ #elif defined(_WIN32)
+       // This needs to match what swift-corelibs-libdispatch does
+@@ -155,7 +155,7 @@ switch (clock_id) {
+       clock_getres(CLOCK_BOOTTIME, &continuous);
+ #elif defined(__APPLE__)
+       clock_getres(CLOCK_MONOTONIC_RAW, &continuous);
+-#elif (defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__wasi__))
++#elif (defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__wasi__) || defined(__vectraos__))
+       clock_getres(CLOCK_MONOTONIC, &continuous);
+ #elif defined(_WIN32)
+       continuous.tv_sec = 0;
+@@ -178,7 +178,7 @@ switch (clock_id) {
+       clock_getres(CLOCK_MONOTONIC_RAW, &suspending);
+ #elif defined(__APPLE__)
+       clock_getres(CLOCK_UPTIME_RAW, &suspending);
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__vectraos__)
+       clock_getres(CLOCK_MONOTONIC, &suspending);
+ #elif (defined(__OpenBSD__) || defined(__FreeBSD__))
+       clock_getres(CLOCK_UPTIME, &suspending);
+@@ -199,7 +199,7 @@ switch (clock_id) {
+     }
+     case swift_clock_id_wall: {
+       struct timespec wall;
+-#if defined(__linux__) || defined(__APPLE__) || defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__wasi__)
++#if defined(__linux__) || defined(__APPLE__) || defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__wasi__) || defined(__vectraos__)
+       clock_getres(CLOCK_REALTIME, &wall);
+ #elif defined(_WIN32)
+       wall.tv_sec = 0;
+@@ -239,7 +239,7 @@ void swift_sleep(
+     (void)QueryInterruptTimePrecise(&now);
+     delay = deadline - now;
+   }
+-#elif defined(__linux__) || defined(__APPLE__) || defined(__wasi__) \
++#elif defined(__linux__) || defined(__APPLE__) || defined(__wasi__) || defined(__vectraos__) \
+   || defined(__OpenBSD__) || defined(__FreeBSD__)
+   struct timespec ts;
+   ts.tv_sec = seconds;
+diff --git a/stdlib/public/Concurrency/PlatformExecutorVectraOS.swift b/stdlib/public/Concurrency/PlatformExecutorVectraOS.swift
+new file mode 100644
+index 00000000..1f6976f8
+--- /dev/null
++++ b/stdlib/public/Concurrency/PlatformExecutorVectraOS.swift
+@@ -0,0 +1,136 @@
++//===--- PlatformExecutorVectraOS.swift -----------------------------------===//
++//
++// VectraOS's executors (SWIFT_CONCURRENCY_GLOBAL_EXECUTOR=vectraos): the
++// default executor runs jobs on one thread per CPU croi runs, the main
++// executor on the main thread, both over VectraOSGlobalExecutor.cpp, whose
++// threads sleep on croi ports. Adapted from swift-on-vectra's.
++//
++//===----------------------------------------------------------------------===//
++
++#if !$Embedded && os(VectraOS)
++
++import Swift
++
++@available(StdlibDeploymentTarget 6.3, *)
++@_silgen_name("swift_vectraosMainRun")
++internal func _vectraosMainRun() -> Never
++
++@available(StdlibDeploymentTarget 6.3, *)
++@_silgen_name("swift_vectraosEnqueueMain")
++internal func _vectraosEnqueueMain(_ job: UnownedJob)
++
++@available(StdlibDeploymentTarget 6.3, *)
++@_silgen_name("swift_vectraosEnqueueGlobal")
++internal func _vectraosEnqueueGlobal(_ job: UnownedJob)
++
++@available(StdlibDeploymentTarget 6.3, *)
++@_silgen_name("swift_vectraosEnqueueWithDeadline")
++internal func _vectraosEnqueueWithDeadline(_ global: CBool,
++                                           _ sec: CLongLong,
++                                           _ nsec: CLongLong,
++                                           _ tsec: CLongLong,
++                                           _ tnsec: CLongLong,
++                                           _ clock: CInt,
++                                           _ job: UnownedJob)
++
++@available(StdlibDeploymentTarget 6.3, *)
++@_silgen_name("swift_vectraosOnMainThread")
++internal func _vectraosOnMainThread() -> Bool
++
++@available(StdlibDeploymentTarget 6.3, *)
++final class VectraOSMainExecutor: RunLoopExecutor, SchedulingExecutor,
++                                  @unchecked Sendable {
++  var running = false
++
++  public init() {}
++
++  public func run() throws {
++    if running {
++      fatalError("VectraOSMainExecutor does not support recursion")
++    }
++    running = true
++    _vectraosMainRun()
++  }
++
++  public func stop() {
++    fatalError("VectraOSMainExecutor cannot be stopped")
++  }
++
++  public func enqueue<C: Clock>(_ job: consuming ExecutorJob,
++                                at instant: C.Instant,
++                                tolerance: C.Duration? = nil,
++                                clock: C) {
++    _vectraosEnqueue(job, at: instant, tolerance: tolerance, clock: clock,
++                     global: false)
++  }
++}
++
++@available(StdlibDeploymentTarget 6.3, *)
++extension VectraOSMainExecutor: SerialExecutor {
++  public func enqueue(_ job: consuming ExecutorJob) {
++    _vectraosEnqueueMain(UnownedJob(job))
++  }
++
++  public func checkIsolated() {
++    if !_vectraosOnMainThread() {
++      fatalError("Incorrect actor executor assumption; expected the main thread")
++    }
++  }
++}
++
++@available(StdlibDeploymentTarget 6.3, *)
++extension VectraOSMainExecutor: MainExecutor {}
++
++@available(StdlibDeploymentTarget 6.3, *)
++final class VectraOSGlobalTaskExecutor: TaskExecutor, SchedulingExecutor,
++                                        @unchecked Sendable {
++  public init() {}
++
++  public func enqueue(_ job: consuming ExecutorJob) {
++    _vectraosEnqueueGlobal(UnownedJob(job))
++  }
++
++  public func enqueue<C: Clock>(_ job: consuming ExecutorJob,
++                                at instant: C.Instant,
++                                tolerance: C.Duration? = nil,
++                                clock: C) {
++    _vectraosEnqueue(job, at: instant, tolerance: tolerance, clock: clock,
++                     global: true)
++  }
++}
++
++@_spi(ExperimentalCustomExecutors)
++@available(StdlibDeploymentTarget 6.3, *)
++public struct PlatformExecutorFactory: ExecutorFactory {
++  public static let mainExecutor: any MainExecutor = VectraOSMainExecutor()
++  public static let defaultExecutor: any TaskExecutor
++    = VectraOSGlobalTaskExecutor()
++}
++
++// An instant on a clock the core knows (continuous or suspending) as
++// seconds and nanoseconds, as DispatchExecutor.swift converts them.
++@available(StdlibDeploymentTarget 6.3, *)
++fileprivate func _vectraosEnqueue<C: Clock>(
++  _ job: consuming ExecutorJob,
++  at instant: C.Instant,
++  tolerance: C.Duration?,
++  clock: C,
++  global: Bool
++) {
++  let clockID: _ClockID
++  let seconds: Int64, nanoseconds: Int64
++  if let continuous = clock as? ContinuousClock {
++    (clockID, seconds, nanoseconds)
++      = continuous.timestamp(for: instant as! ContinuousClock.Instant)
++  } else if let suspending = clock as? SuspendingClock {
++    (clockID, seconds, nanoseconds)
++      = suspending.timestamp(for: instant as! SuspendingClock.Instant)
++  } else {
++    fatalError("Cannot schedule on an unknown clock")
++  }
++  _vectraosEnqueueWithDeadline(CBool(global),
++                               CLongLong(seconds), CLongLong(nanoseconds),
++                               0, -1, clockID.rawValue, UnownedJob(job))
++}
++
++#endif // !$Embedded && os(VectraOS)
+diff --git a/stdlib/public/Concurrency/VectraOSGlobalExecutor.cpp b/stdlib/public/Concurrency/VectraOSGlobalExecutor.cpp
+new file mode 100644
+index 00000000..1a555b23
+--- /dev/null
++++ b/stdlib/public/Concurrency/VectraOSGlobalExecutor.cpp
+@@ -0,0 +1,228 @@
++//===--- VectraOSGlobalExecutor.cpp - VectraOS's executors ----------------===//
++//
++// The global and main executors' core on VectraOS
++// (SWIFT_CONCURRENCY_GLOBAL_EXECUTOR=vectraos), which
++// PlatformExecutorVectraOS.swift wraps: one worker thread per CPU croi runs,
++// started on the first job, takes ready jobs, highest priority first, and
++// jobs whose deadline has passed; the main thread runs the main queue once
++// the program's async main hands it over. There is no libdispatch.
++//
++// Each queue's threads sleep on a croi port (the floor's td_floor.h), until
++// a packet or the soonest deadline: enqueueing a job queues a wake packet
++// when a sleeper has none coming, and a port, unlike a condition variable,
++// keeps a wake queued before its sleeper got there. Its lock is our
++// pthreads' mutex, over croi's futexes.
++//
++// A job's schedulerPrivate holds the next job in its queue ([0]) and, for a
++// delayed one, its deadline on the monotonic clock in nanoseconds ([1]). The
++// continuous and suspending clocks are both that clock on croi (Clock.cpp).
++//
++// Adapted from swift-on-vectra's VectraOSGlobalExecutor.cpp.
++//
++//===----------------------------------------------------------------------===//
++
++#include "swift/Runtime/Debug.h"
++#include "swift/Threading/Thread.h"
++
++#include "Error.h"
++#include "ExecutorImpl.h"
++
++#include <pthread.h>
++#include <stdint.h>
++#include <td_floor.h>
++#include <time.h>
++
++namespace {
++
++constexpr int Buckets = SwiftJobPriorityBucketCount;
++
++struct JobList {
++  SwiftJob *head = nullptr, *tail = nullptr;
++};
++
++SwiftJob *&nextOf(SwiftJob *job) {
++  return reinterpret_cast<SwiftJob *&>(job->schedulerPrivate[0]);
++}
++
++int64_t deadlineOf(SwiftJob *job) {
++  return int64_t(reinterpret_cast<uintptr_t>(job->schedulerPrivate[1]));
++}
++
++void push(JobList &list, SwiftJob *job) {
++  nextOf(job) = nullptr;
++  if (list.tail)
++    nextOf(list.tail) = job;
++  else
++    list.head = job;
++  list.tail = job;
++}
++
++SwiftJob *pop(JobList &list) {
++  SwiftJob *job = list.head;
++  if (job) {
++    list.head = nextOf(job);
++    if (!list.head)
++      list.tail = nullptr;
++  }
++  return job;
++}
++
++int64_t monotonicNow() {
++  struct timespec ts;
++  clock_gettime(CLOCK_MONOTONIC, &ts);
++  return int64_t(ts.tv_sec) * 1'000'000'000 + ts.tv_nsec;
++}
++
++[[noreturn]] void fail(const char *what) {
++  swift::swift_Concurrency_fatalError(0, "Fatal error: %s\n", what);
++}
++
++// Ready jobs by priority bucket and delayed jobs by deadline, under one
++// lock, and the port its threads sleep on.
++struct Queue {
++  pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
++  uint32_t port = 0;
++  unsigned sleeping = 0; // threads in td_port_wait, or about to be
++  unsigned wakes = 0;    // wake packets queued and not yet taken
++  JobList ready[Buckets];
++  SwiftJob *delayed = nullptr; // sorted by deadline, soonest first
++
++  void init() {
++    if (td_port_create(&port) != 0)
++      fail("cannot make the executor's port");
++  }
++
++  // With the lock held: a sleeper woken, if every sleeper's wake isn't
++  // already queued.
++  void wakeOne() {
++    if (sleeping <= wakes)
++      return;
++    td_port_packet_t packet = {};
++    if (td_port_queue(port, &packet) != 0)
++      fail("cannot wake the executor's threads");
++    wakes++;
++  }
++
++  // With the lock held.
++  void makeReady(SwiftJob *job) {
++    push(ready[swift_priority_getBucketIndex(swift_job_getPriority(job))], job);
++  }
++
++  // With the lock held: whether the soonest deadline changed.
++  bool addDelayed(SwiftJob *job, int64_t deadline) {
++    job->schedulerPrivate[1] = reinterpret_cast<void *>(uintptr_t(deadline));
++    SwiftJob **at = &delayed;
++    while (*at && deadlineOf(*at) <= deadline)
++      at = &nextOf(*at);
++    nextOf(job) = *at;
++    *at = job;
++    return at == &delayed;
++  }
++
++  // With the lock held: the next job to run, its deadline's jobs made ready
++  // first, sleeping until there is one.
++  SwiftJob *take() {
++    for (;;) {
++      int64_t now = monotonicNow();
++      while (delayed && deadlineOf(delayed) <= now) {
++        SwiftJob *job = delayed;
++        delayed = nextOf(job);
++        makeReady(job);
++      }
++      for (auto &list : ready)
++        if (SwiftJob *job = pop(list))
++          return job;
++      int64_t deadline = delayed ? deadlineOf(delayed) : INT64_MAX;
++      sleeping++;
++      pthread_mutex_unlock(&lock);
++      td_port_packet_t packet;
++      int32_t status = td_port_wait(port, deadline, &packet);
++      pthread_mutex_lock(&lock);
++      sleeping--;
++      if (status == 0 && packet.type == 0 && packet.key == 0 && wakes > 0)
++        wakes--;
++    }
++  }
++};
++
++Queue globalQueue, mainQueue;
++pthread_once_t started = PTHREAD_ONCE_INIT;
++
++void *worker(void *) {
++  pthread_mutex_lock(&globalQueue.lock);
++  for (;;) {
++    SwiftJob *job = globalQueue.take();
++    pthread_mutex_unlock(&globalQueue.lock);
++    swift_job_run(job, swift_executor_generic());
++    pthread_mutex_lock(&globalQueue.lock);
++  }
++  return nullptr;
++}
++
++void start() {
++  globalQueue.init();
++  mainQueue.init();
++  size_t cpus = td_cpu_count();
++  if (cpus == 0)
++    cpus = 1;
++  for (size_t i = 0; i < cpus; i++) {
++    pthread_t thread;
++    if (pthread_create(&thread, nullptr, worker, nullptr) != 0)
++      fail("cannot start the executor's threads");
++    pthread_detach(thread);
++  }
++}
++
++void enqueue(Queue &q, SwiftJob *job) {
++  pthread_once(&started, start);
++  pthread_mutex_lock(&q.lock);
++  q.makeReady(job);
++  q.wakeOne();
++  pthread_mutex_unlock(&q.lock);
++}
++
++} // namespace
++
++extern "C" SWIFT_CC(swift) void swift_vectraosEnqueueGlobal(SwiftJob *job) {
++  enqueue(globalQueue, job);
++}
++
++extern "C" SWIFT_CC(swift) void swift_vectraosEnqueueMain(SwiftJob *job) {
++  enqueue(mainQueue, job);
++}
++
++// A job to run at `sec`.`nsec` on `clock` (both the monotonic clock here);
++// the leeway is not used.
++extern "C" SWIFT_CC(swift) void swift_vectraosEnqueueWithDeadline(
++    bool global, long long sec, long long nsec, long long tsec,
++    long long tnsec, int clock, SwiftJob *job) {
++  (void)tsec, (void)tnsec, (void)clock;
++  pthread_once(&started, start);
++  Queue &q = global ? globalQueue : mainQueue;
++  int64_t deadline = sec < 0 ? 0
++                     : sec >= INT64_MAX / 1'000'000'000
++                         ? INT64_MAX
++                         : int64_t(sec) * 1'000'000'000 + int64_t(nsec);
++  pthread_mutex_lock(&q.lock);
++  // A new soonest deadline: a sleeper wakes to sleep until it instead.
++  if (q.addDelayed(job, deadline))
++    q.wakeOne();
++  pthread_mutex_unlock(&q.lock);
++}
++
++// The main thread runs the main queue, for good: the program ends when its
++// main task does.
++extern "C" SWIFT_CC(swift) [[noreturn]] void swift_vectraosMainRun() {
++  pthread_once(&started, start);
++  pthread_mutex_lock(&mainQueue.lock);
++  for (;;) {
++    SwiftJob *job = mainQueue.take();
++    pthread_mutex_unlock(&mainQueue.lock);
++    swift_job_run(job, swift_task_getMainExecutorImpl());
++    pthread_mutex_lock(&mainQueue.lock);
++  }
++}
++
++extern "C" SWIFT_CC(swift) bool swift_vectraosOnMainThread() {
++  return swift::Thread::onMainThread();
++}

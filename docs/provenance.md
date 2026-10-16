@@ -47,7 +47,7 @@ The actions in the tables:
 | drivers: bus/PCI/ACPI, virtio | Lift | V2 | |
 | `services/router` (plumber) | Lift | V2 | |
 | `services/console`, `services/time`, `shell/commands` | Port | V2 | The console reads the debuglog ring (D38); UTC is a page (D48) |
-| `tools/toolchain` (the `*-todhchai` series) and tier 1's sysroot | Lift | V2 | Tier 1 for FDIO and rc (D47) |
+| `tools/toolchain` (the `*-todhchai` series, renamed `*-vectraos`) and tier 1's sysroot | Lift | V2 | Tier 1 for FDIO and rc (D47) |
 | `fs/taisce` and `services/fs` | Lift | V3 (RAM disk), V5 (on disk) | The one FS (D8). V3's file copies land in it. Replace its use of the `Synchronization` module in tier 0. |
 | `services/radharc`, desktop shell (Tracker, Deskbar) | Port | V6 | Add the tile and space workspace modes (D9). The look is Platinum Indigo (D24), not `desktop.md` §6's neon. |
 | `ui`, `text`, `graphics` (Vulkan/Venus), `codecs` | Lift | V6 | |

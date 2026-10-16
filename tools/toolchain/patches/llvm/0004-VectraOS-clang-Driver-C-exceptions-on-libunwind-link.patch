@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: James Kane <kanej1973@gmail.com>
+Date: Sun, 11 Oct 2026 19:29:52 -0500
+Subject: [PATCH 4/4] [VectraOS] clang Driver: C++ exceptions on, libunwind
+ linked, --eh-frame-hdr
+
+The C++ runtime now has its unwinder (VectraOS's M6d): C++ exceptions are
+on by default again (0003 had them off), a C++ link adds -lunwind after
+libc++abi, and every link but -r keeps an .eh_frame_hdr, which libunwind
+finds through dl_iterate_phdr's PT_GNU_EH_FRAME.
+---
+ clang/lib/Driver/ToolChains/Clang.cpp    | 8 ++------
+ clang/lib/Driver/ToolChains/VectraOS.cpp | 7 ++++++-
+ 2 files changed, 8 insertions(+), 7 deletions(-)
+
+diff --git a/clang/lib/Driver/ToolChains/Clang.cpp b/clang/lib/Driver/ToolChains/Clang.cpp
+index e19386e1f..060440ef4 100644
+--- a/clang/lib/Driver/ToolChains/Clang.cpp
++++ b/clang/lib/Driver/ToolChains/Clang.cpp
+@@ -193,13 +193,9 @@ static bool addExceptionArgs(const ArgList &Args, types::ID InputType,
+   }
+ 
+   if (types::isCXX(InputType)) {
+-    // Disable C++ EH by default on XCore and PS4/PS5. VectraOS: off until
+-    // its C++ runtime has an unwinder (libunwind, M6 step 6f2a); until then
+-    // libc++'s inline throws would need __cxa_throw and a personality
+-    // routine that libc++abi does not provide.
++    // Disable C++ EH by default on XCore and PS4/PS5.
+     bool CXXExceptionsEnabled = Triple.getArch() != llvm::Triple::xcore &&
+-                                !Triple.isPS() && !Triple.isDriverKit() &&
+-                                !Triple.isOSVectraOS();
++                                !Triple.isPS() && !Triple.isDriverKit();
+     Arg *ExceptionArg = Args.getLastArg(
+         options::OPT_fcxx_exceptions, options::OPT_fno_cxx_exceptions,
+         options::OPT_fexceptions, options::OPT_fno_exceptions);
+diff --git a/clang/lib/Driver/ToolChains/VectraOS.cpp b/clang/lib/Driver/ToolChains/VectraOS.cpp
+index 9020d1010..136944bea 100644
+--- a/clang/lib/Driver/ToolChains/VectraOS.cpp
++++ b/clang/lib/Driver/ToolChains/VectraOS.cpp
+@@ -56,6 +56,10 @@ void vectraos::Linker::ConstructJob(Compilation &C, const JobAction &JA,
+   CmdArgs.push_back("noexecstack");
+   CmdArgs.push_back("-z");
+   CmdArgs.push_back("now");
++  // The unwinder finds a function's unwind table through .eh_frame_hdr
++  // (PT_GNU_EH_FRAME, by dl_iterate_phdr).
++  if (!Relocatable)
++    CmdArgs.push_back("--eh-frame-hdr");
+ 
+   if (Relocatable) {
+     CmdArgs.push_back("-r");
+@@ -162,9 +166,10 @@ void VectraOS::addLibCxxIncludePaths(const ArgList &DriverArgs,
+ 
+ void VectraOS::AddCXXStdlibLibArgs(const ArgList &Args,
+                                  ArgStringList &CmdArgs) const {
+-  // libc++ and libc++abi, static, with no unwinder.
++  // libc++, libc++abi and LLVM's libunwind (exceptions), static.
+   CmdArgs.push_back("-lc++");
+   CmdArgs.push_back("-lc++abi");
++  CmdArgs.push_back("-lunwind");
+ }
+ 
+ Tool *VectraOS::buildLinker() const { return new tools::vectraos::Linker(*this); }

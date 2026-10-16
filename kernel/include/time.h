@@ -31,7 +31,7 @@ typedef struct {
   uint64_t ns_mult;
 } croi_time_page_t;
 
-static_assert(sizeof(croi_time_page_t) == 40);
+_Static_assert(sizeof(croi_time_page_t) == 40);
 
 // The raw counter, ordered against surrounding instructions.
 uint64_t arch_counter_read(void);

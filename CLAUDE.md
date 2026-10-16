@@ -36,6 +36,11 @@ anything that a decision covers.
   for its build steps (elf2efi, mkbootfs, check-pixels)
   and builds it with SwiftPM first, so nothing outside the Swift toolchain,
   CMake, Ninja, QEMU and bash is needed. There is no Python.
+- Tier 1 (C, C++ and full Swift programs, D47) needs the `*-vectraos`
+  toolchain, built from source by `tools/toolchain` into `.cache/toolchain`
+  (its README: hours of build and several GB of links, so warn the other
+  sessions and cap `LINK_JOBS`). Without it, the tree builds and tests as
+  before; with it, `cmake/Tier1.cmake` adds tier 1's sysroot and programs.
 
 ## Imported code
 

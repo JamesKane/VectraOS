@@ -97,4 +97,4 @@ typedef struct {
   uint64_t payload[4];  // signal packets: trigger | observed << 32, count, timestamp
 } croi_port_packet_t;
 
-static_assert(sizeof(croi_port_packet_t) == 48);
+_Static_assert(sizeof(croi_port_packet_t) == 48);

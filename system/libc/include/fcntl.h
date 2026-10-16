@@ -29,7 +29,7 @@ int open(const char *path, int flags, ...);
 int creat(const char *path, mode_t mode);
 
 // open, not variadic: Swift can't call a variadic function, so the
-// platform module's open (TodhchaiLibc) calls this.
+// platform module's open (VectraOSLibc) calls this.
 static inline int __td_open(const char *path, int flags, mode_t mode) { return open(path, flags, mode); }
 
 #ifdef __cplusplus

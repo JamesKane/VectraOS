@@ -1,0 +1,309 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: James Kane <kanej1973@gmail.com>
+Date: Sun, 11 Oct 2026 20:36:17 -0500
+Subject: [PATCH 06/14] [VectraOS] no Float80 on VectraOS
+
+Swift on VectraOS has no Float80 (decided 2026-10-11), so that a program
+means the same on its three machines: arm64 and riscv64 can't have it,
+and x86_64's would need a long double libm. CLongDouble isn't defined;
+long double stays C's (VectraOS's libc has strtold and printf's %L).
+---
+ stdlib/public/ClangOverlays/float.swift.gyb          |  2 +-
+ .../FloatingPointDifferentiation.swift.gyb           |  4 ++--
+ .../Differentiation/TgmathDerivatives.swift.gyb      |  4 ++--
+ stdlib/public/Platform/tgmath.swift.gyb              | 12 ++++++------
+ stdlib/public/core/BuiltinMath.swift                 |  2 +-
+ stdlib/public/core/CTypes.swift                      |  4 ++++
+ stdlib/public/core/FloatingPoint.swift               |  4 ++--
+ stdlib/public/core/FloatingPointParsing.swift.gyb    |  2 +-
+ stdlib/public/core/FloatingPointToString.swift       |  4 ++--
+ stdlib/public/core/FloatingPointTypes.swift.gyb      |  6 +++---
+ stdlib/public/core/IntegerTypes.swift.gyb            |  2 +-
+ stdlib/public/core/Mirrors.swift                     |  2 +-
+ stdlib/public/core/Policy.swift                      |  2 +-
+ stdlib/public/core/VarArgs.swift                     |  2 +-
+ 14 files changed, 28 insertions(+), 24 deletions(-)
+
+diff --git a/stdlib/public/ClangOverlays/float.swift.gyb b/stdlib/public/ClangOverlays/float.swift.gyb
+index e9901489..c714b37f 100644
+--- a/stdlib/public/ClangOverlays/float.swift.gyb
++++ b/stdlib/public/ClangOverlays/float.swift.gyb
+@@ -18,7 +18,7 @@ public let FLT_RADIX = Double.radix
+ 
+ %for type, prefix in [('Float', 'FLT'), ('Double', 'DBL'), ('Float80', 'LDBL')]:
+ % if type == "Float80":
+-#if !os(Android) && !os(WASI) && !os(Windows) && !$Embedded && (arch(i386) || arch(x86_64))
++#if !os(Android) && !os(WASI) && !os(Windows) && !os(VectraOS) && !$Embedded && (arch(i386) || arch(x86_64))
+ % end
+ //  Where does the 1 come from? C counts the usually-implicit leading
+ //  significand bit, but Swift does not. Neither is really right or wrong.
+diff --git a/stdlib/public/Differentiation/FloatingPointDifferentiation.swift.gyb b/stdlib/public/Differentiation/FloatingPointDifferentiation.swift.gyb
+index 713eaad0..e1f4d11b 100644
+--- a/stdlib/public/Differentiation/FloatingPointDifferentiation.swift.gyb
++++ b/stdlib/public/Differentiation/FloatingPointDifferentiation.swift.gyb
+@@ -26,7 +26,7 @@ def Availability(bits):
+ }%
+ 
+ % if bits == 80:
+-#if !(os(Windows) || os(Android) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
++#if !(os(Windows) || os(Android) || os(VectraOS) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
+ % end
+ % if bits == 16:
+ #if !os(macOS) && !(os(iOS) && targetEnvironment(macCatalyst))
+@@ -63,7 +63,7 @@ extension ${Self} {
+   }%
+   
+   % if other_bits == 80:
+-  #if !(os(Windows) || os(Android) || $Embedded) && (arch(i386) || arch(x86_64))
++  #if !(os(Windows) || os(Android) || os(VectraOS) || $Embedded) && (arch(i386) || arch(x86_64))
+   % end
+   % if other_bits == 16:
+   #if !os(macOS) && !(os(iOS) && targetEnvironment(macCatalyst))
+diff --git a/stdlib/public/Differentiation/TgmathDerivatives.swift.gyb b/stdlib/public/Differentiation/TgmathDerivatives.swift.gyb
+index 206bd5f1..e595ab56 100644
+--- a/stdlib/public/Differentiation/TgmathDerivatives.swift.gyb
++++ b/stdlib/public/Differentiation/TgmathDerivatives.swift.gyb
+@@ -149,7 +149,7 @@ func _${derivative_kind}Trunc${generic_signature} (
+ %  linear_map_kind = 'differential' if derivative_kind == 'jvp' else 'pullback'
+ %  for T in ['Float', 'Double', 'Float80']:
+ %    if T == 'Float80':
+-#if !(os(Windows) || os(Android) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
++#if !(os(Windows) || os(Android) || os(VectraOS) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
+ %    end
+ @inlinable
+ @derivative(of: exp)
+@@ -290,7 +290,7 @@ func _${derivative_kind}Erfc(_ x: ${T}) -> (value: ${T}, ${linear_map_kind}: (${
+ // Binary functions
+ %for T in ['Float', 'Double', 'Float80']:
+ %  if T == 'Float80':
+-#if !(os(Windows) || os(Android) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
++#if !(os(Windows) || os(Android) || os(VectraOS) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
+ %  end
+ @inlinable
+ @derivative(of: pow)
+diff --git a/stdlib/public/Platform/tgmath.swift.gyb b/stdlib/public/Platform/tgmath.swift.gyb
+index f5f83cd8..e2529420 100644
+--- a/stdlib/public/Platform/tgmath.swift.gyb
++++ b/stdlib/public/Platform/tgmath.swift.gyb
+@@ -222,7 +222,7 @@ def TypedBinaryFunctions():
+ // Note these do not have a corresponding LLVM intrinsic
+ % for T, CT, f, ufunc in TypedUnaryFunctions():
+ %  if T == 'Float80':
+-#if (arch(i386) || arch(x86_64)) && !(os(Windows) || os(Android) || ($Embedded && !os(Linux)))
++#if (arch(i386) || arch(x86_64)) && !(os(Windows) || os(Android) || os(VectraOS) || ($Embedded && !os(Linux)))
+ %  end
+ @_transparent
+ public func ${ufunc}(_ x: ${T}) -> ${T} {
+@@ -241,7 +241,7 @@ public func ${ufunc}(_ x: ${T}) -> ${T} {
+ % for ufunc in UnaryIntrinsicFunctions:
+ %  for T, CT, f in OverlayFloatTypes():
+ %   if T == 'Float80':
+-#if (arch(i386) || arch(x86_64)) && !(os(Windows) || os(Android) || ($Embedded && !os(Linux)))
++#if (arch(i386) || arch(x86_64)) && !(os(Windows) || os(Android) || os(VectraOS) || ($Embedded && !os(Linux)))
+ %   end
+ @_transparent
+ public func ${ufunc}(_ x: ${T}) -> ${T} {
+@@ -257,7 +257,7 @@ public func ${ufunc}(_ x: ${T}) -> ${T} {
+ 
+ % for T, CT, f, bfunc in TypedBinaryFunctions():
+ %  if T == 'Float80':
+-#if (arch(i386) || arch(x86_64)) && !(os(Windows) || os(Android) || ($Embedded && !os(Linux)))
++#if (arch(i386) || arch(x86_64)) && !(os(Windows) || os(Android) || os(VectraOS) || ($Embedded && !os(Linux)))
+ %  end
+ @_transparent
+ public func ${bfunc}(_ lhs: ${T}, _ rhs: ${T}) -> ${T} {
+@@ -272,7 +272,7 @@ public func ${bfunc}(_ lhs: ${T}, _ rhs: ${T}) -> ${T} {
+ % # This is AllFloatTypes not OverlayFloatTypes because of the tuple return.
+ % for T, CT, f in AllFloatTypes():
+ %  if T == 'Float80':
+-#if (arch(i386) || arch(x86_64)) && !(os(Windows) || os(Android) || os(OpenBSD) || ($Embedded && !os(Linux)))
++#if (arch(i386) || arch(x86_64)) && !(os(Windows) || os(Android) || os(VectraOS) || os(OpenBSD) || ($Embedded && !os(Linux)))
+ %  else:
+ //  lgamma not available on Windows, apparently?
+ #if !os(Windows)
+@@ -290,7 +290,7 @@ public func lgamma(_ x: ${T}) -> (${T}, Int) {
+ % # This is AllFloatTypes not OverlayFloatTypes because of the tuple return.
+ % for T, CT, f in AllFloatTypes():
+ %  if T == 'Float80':
+-#if (arch(i386) || arch(x86_64)) && !(os(Windows) || os(Android) || ($Embedded && !os(Linux)))
++#if (arch(i386) || arch(x86_64)) && !(os(Windows) || os(Android) || os(VectraOS) || ($Embedded && !os(Linux)))
+ %  end
+ @_transparent
+ public func remquo(_ x: ${T}, _ y: ${T}) -> (${T}, Int) {
+@@ -306,7 +306,7 @@ public func remquo(_ x: ${T}, _ y: ${T}) -> (${T}, Int) {
+ 
+ % for T, CT, f in OverlayFloatTypes():
+ %  if T == 'Float80':
+-#if (arch(i386) || arch(x86_64)) && !(os(Windows) || os(Android) || ($Embedded && !os(Linux)))
++#if (arch(i386) || arch(x86_64)) && !(os(Windows) || os(Android) || os(VectraOS) || ($Embedded && !os(Linux)))
+ %  end
+ @available(swift, deprecated: 4.2/*, obsoleted: 5.1*/, message:
+            "use ${T}(nan: ${T}.RawSignificand).")
+diff --git a/stdlib/public/core/BuiltinMath.swift b/stdlib/public/core/BuiltinMath.swift
+index 443cced3..e89ff12b 100644
+--- a/stdlib/public/core/BuiltinMath.swift
++++ b/stdlib/public/core/BuiltinMath.swift
+@@ -113,7 +113,7 @@ public func _rint(_ x: Double) -> Double {
+ 
+ // Float80 Intrinsics (80 bits)
+ 
+-#if !(os(Windows) || os(Android) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
++#if !(os(Windows) || os(Android) || os(VectraOS) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
+ @_transparent
+ public func _cos(_ x: Float80) -> Float80 {
+   return Float80(Builtin.int_cos_FPIEEE80(x._value))
+diff --git a/stdlib/public/core/CTypes.swift b/stdlib/public/core/CTypes.swift
+index 6a7978cf..59ed5ad6 100644
+--- a/stdlib/public/core/CTypes.swift
++++ b/stdlib/public/core/CTypes.swift
+@@ -119,6 +119,10 @@ public typealias CLongDouble = Double
+ #if arch(x86_64) || arch(i386)
+ public typealias CLongDouble = Float80
+ #endif
++#elseif os(VectraOS)
++// On VectraOS (tier 1 on croi), Swift has no Float80, so that a program
++// means the same on all three machines: long double (x87's on x86_64,
++// binary128 on arm64 and riscv64) is C's alone.
+ #elseif $Embedded
+ #if arch(x86_64) || arch(i386)
+ public typealias CLongDouble = Double
+diff --git a/stdlib/public/core/FloatingPoint.swift b/stdlib/public/core/FloatingPoint.swift
+index 084a36bb..e9c55b4b 100644
+--- a/stdlib/public/core/FloatingPoint.swift
++++ b/stdlib/public/core/FloatingPoint.swift
+@@ -1522,7 +1522,7 @@ public protocol BinaryFloatingPoint: FloatingPoint, ExpressibleByFloatLiteral {
+   /// - Parameter value: A floating-point value to be converted.
+   init(_ value: Double)
+ 
+-#if !(os(Windows) || os(Android) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
++#if !(os(Windows) || os(Android) || os(VectraOS) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
+   /// Creates a new instance from the given value, rounded to the closest
+   /// possible representation.
+   ///
+@@ -1933,7 +1933,7 @@ extension BinaryFloatingPoint {
+         significandBitPattern:
+           UInt64(truncatingIfNeeded: value.significandBitPattern))
+       self = Self(value_)
+-#if !(os(Windows) || os(Android) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
++#if !(os(Windows) || os(Android) || os(VectraOS) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
+     case (15, 63):
+       let value_ = value as? Float80 ?? Float80(
+         sign: value.sign,
+diff --git a/stdlib/public/core/FloatingPointParsing.swift.gyb b/stdlib/public/core/FloatingPointParsing.swift.gyb
+index d279b260..683909df 100644
+--- a/stdlib/public/core/FloatingPointParsing.swift.gyb
++++ b/stdlib/public/core/FloatingPointParsing.swift.gyb
+@@ -48,7 +48,7 @@ internal func _isspace_clocale(_ u: UTF16.CodeUnit) -> Bool {
+ %   Self = floatName(bits)
+ 
+ % if bits == 80:
+-#if !(os(Windows) || os(Android) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
++#if !(os(Windows) || os(Android) || os(VectraOS) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
+ % elif bits == 16:
+ #if !((os(macOS) || targetEnvironment(macCatalyst)) && arch(x86_64))
+ % end
+diff --git a/stdlib/public/core/FloatingPointToString.swift b/stdlib/public/core/FloatingPointToString.swift
+index 3afebaf4..b528c592 100644
+--- a/stdlib/public/core/FloatingPointToString.swift
++++ b/stdlib/public/core/FloatingPointToString.swift
+@@ -1191,7 +1191,7 @@ internal func _Float64ToASCII(
+ // Float80 is only available on Intel x86/x86_64 processors on certain operating systems
+ // This matches the condition for the Float80 type
+ 
+-#if !(os(Windows) || os(Android) || ($Embedded && !os(Linux) && !(os(macOS) || os(iOS) || os(watchOS) || os(tvOS)))) && (arch(i386) || arch(x86_64))
++#if !(os(Windows) || os(Android) || os(VectraOS) || ($Embedded && !os(Linux) && !(os(macOS) || os(iOS) || os(watchOS) || os(tvOS)))) && (arch(i386) || arch(x86_64))
+ 
+ // Support Legacy ABI on top of new implementation
+ @_silgen_name("swift_float80ToString")
+@@ -1395,7 +1395,7 @@ internal func _Float128ToASCII(
+ //
+ // ================================================================
+ 
+-#if !(os(Windows) || os(Android) || ($Embedded && !os(Linux) && !(os(macOS) || os(iOS) || os(watchOS) || os(tvOS)))) && (arch(i386) || arch(x86_64))
++#if !(os(Windows) || os(Android) || os(VectraOS) || ($Embedded && !os(Linux) && !(os(macOS) || os(iOS) || os(watchOS) || os(tvOS)))) && (arch(i386) || arch(x86_64))
+ 
+ fileprivate func _backend_256bit(
+   buffer: inout MutableRawSpan,
+diff --git a/stdlib/public/core/FloatingPointTypes.swift.gyb b/stdlib/public/core/FloatingPointTypes.swift.gyb
+index 6eaba82b..a2033a18 100644
+--- a/stdlib/public/core/FloatingPointTypes.swift.gyb
++++ b/stdlib/public/core/FloatingPointTypes.swift.gyb
+@@ -68,7 +68,7 @@ else:
+ }%
+ 
+ % if bits == 80:
+-#if !(os(Windows) || os(Android) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
++#if !(os(Windows) || os(Android) || os(VectraOS) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
+ % elif bits == 16:
+ #if !((os(macOS) || targetEnvironment(macCatalyst)) && arch(x86_64))
+ % end
+@@ -932,7 +932,7 @@ extension ${Self}: _ExpressibleByBuiltinIntegerLiteral, ExpressibleByIntegerLite
+ }
+ 
+ % if bits != 80:
+-#if !(os(Windows) || os(Android) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
++#if !(os(Windows) || os(Android) || os(VectraOS) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
+ % end
+ 
+ % builtinFloatLiteralBits = 80
+@@ -1139,7 +1139,7 @@ extension ${Self} {
+ %   That = src_type.stdlib_name
+ 
+ %   if srcBits == 80:
+-#if !(os(Windows) || os(Android) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
++#if !(os(Windows) || os(Android) || os(VectraOS) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
+ %   elif srcBits == 16:
+ #if !((os(macOS) || targetEnvironment(macCatalyst)) && arch(x86_64))
+ %   end
+diff --git a/stdlib/public/core/IntegerTypes.swift.gyb b/stdlib/public/core/IntegerTypes.swift.gyb
+index 96eec3a9..c0a32f0f 100644
+--- a/stdlib/public/core/IntegerTypes.swift.gyb
++++ b/stdlib/public/core/IntegerTypes.swift.gyb
+@@ -128,7 +128,7 @@ public struct ${Self}
+ %     (lower, upper) = getFtoIBounds(floatBits=FloatBits, intBits=int(bits), signed=signed)
+ 
+ %     if FloatType == 'Float80':
+-#if !(os(Windows) || os(Android) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
++#if !(os(Windows) || os(Android) || os(VectraOS) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
+ %     elif FloatType == 'Float16':
+ #if !((os(macOS) || targetEnvironment(macCatalyst)) && arch(x86_64))
+ %     end
+diff --git a/stdlib/public/core/Mirrors.swift b/stdlib/public/core/Mirrors.swift
+index 7b57fbaf..51955202 100644
+--- a/stdlib/public/core/Mirrors.swift
++++ b/stdlib/public/core/Mirrors.swift
+@@ -252,7 +252,7 @@ extension Int: _CustomPlaygroundQuickLookable {
+   }
+ }
+ 
+-#if !(os(Windows) || os(Android) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
++#if !(os(Windows) || os(Android) || os(VectraOS) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
+ extension Float80: CustomReflectable {
+   /// A mirror that reflects the Float80 instance.
+   public var customMirror: Mirror {
+diff --git a/stdlib/public/core/Policy.swift b/stdlib/public/core/Policy.swift
+index f487021b..87e802a7 100644
+--- a/stdlib/public/core/Policy.swift
++++ b/stdlib/public/core/Policy.swift
+@@ -168,7 +168,7 @@ public typealias StringLiteralType = String
+ //===----------------------------------------------------------------------===//
+ // Default types for unconstrained number literals
+ //===----------------------------------------------------------------------===//
+-#if !(os(Windows) || os(Android) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
++#if !(os(Windows) || os(Android) || os(VectraOS) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
+ public typealias _MaxBuiltinFloatType = Builtin.FPIEEE80
+ #else
+ public typealias _MaxBuiltinFloatType = Builtin.FPIEEE64
+diff --git a/stdlib/public/core/VarArgs.swift b/stdlib/public/core/VarArgs.swift
+index 10de0a42..50f406b9 100644
+--- a/stdlib/public/core/VarArgs.swift
++++ b/stdlib/public/core/VarArgs.swift
+@@ -420,7 +420,7 @@ extension Double: _CVarArgPassedAsDouble, _CVarArgAligned {
+   }
+ }
+ 
+-#if !(os(Windows) || os(Android) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
++#if !(os(Windows) || os(Android) || os(VectraOS) || ($Embedded && !os(Linux) && !os(anyAppleOS))) && (arch(i386) || arch(x86_64))
+ extension Float80: CVarArg, _CVarArgAligned {
+   /// Transform `self` into a series of machine words that can be
+   /// appropriately interpreted by C varargs.

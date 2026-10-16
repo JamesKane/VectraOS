@@ -70,7 +70,7 @@ typedef struct {
   uint64_t cpu_mask[8];  // zx_cpu_set_t: bit n is CPU n
 } croi_profile_info_t;
 
-static_assert(sizeof(croi_profile_info_t) == 96);
+_Static_assert(sizeof(croi_profile_info_t) == 96);
 
 // thread_bind_overrun_port(thread, port, key) (croi's, K10d, ext 3):
 // MANAGE_THREAD on a thread with a deadline profile of its own (from

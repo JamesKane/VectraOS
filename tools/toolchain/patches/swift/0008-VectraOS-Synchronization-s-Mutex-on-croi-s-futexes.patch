@@ -1,0 +1,76 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: James Kane <jkane@tds.net>
+Date: Mon, 12 Oct 2026 04:26:39 -0500
+Subject: [PATCH 08/14] [VectraOS] Synchronization's Mutex on croi's futexes
+
+Linux's futex Mutex serves VectraOS: _SynchronizationShims waits and
+wakes through the floor's td_futex_wait and td_futex_wake (td_floor.h,
+in the sysroot), whose word is Linux's; croi's BAD_STATE is EAGAIN to
+the Mutex. LinuxImpl.swift imports nothing on VectraOS.
+---
+ .../swift/shims/_SynchronizationShims.h       | 20 ++++++++++++++++++-
+ stdlib/public/Synchronization/CMakeLists.txt  |  5 ++---
+ .../Synchronization/Mutex/LinuxImpl.swift     |  2 ++
+ 3 files changed, 23 insertions(+), 4 deletions(-)
+
+diff --git a/stdlib/public/SwiftShims/swift/shims/_SynchronizationShims.h b/stdlib/public/SwiftShims/swift/shims/_SynchronizationShims.h
+index 545ea1f9..69d865c7 100644
+--- a/stdlib/public/SwiftShims/swift/shims/_SynchronizationShims.h
++++ b/stdlib/public/SwiftShims/swift/shims/_SynchronizationShims.h
+@@ -50,7 +50,25 @@ static inline __swift_uint32_t _swift_stdlib_futex_wake(
+   return errno;
+ }
+ 
+-#endif // defined(__linux__)
++#elif defined(__vectraos__)
++#include <td_floor.h>
++
++// VectraOS's futexes: croi's, through the floor (td_floor.h), whose word
++// is Linux's. croi's BAD_STATE (the word had already changed) is Linux's
++// EAGAIN to the Mutex, which retries.
++static inline __swift_uint32_t _swift_stdlib_futex_wait(
++    __swift_uint32_t *addr, __swift_uint32_t expected) {
++  __swift_int32_t status = td_futex_wait(addr, expected, INT64_MAX);
++  return status == 0 ? 0 : status == -20 ? 11 : (__swift_uint32_t)-status;
++}
++
++static inline __swift_uint32_t _swift_stdlib_futex_wake(
++    __swift_uint32_t *addr, __swift_uint32_t count) {
++  td_futex_wake(addr, count);
++  return 0;
++}
++
++#endif // defined(__linux__) || defined(__vectraos__)
+ 
+ #if defined(__FreeBSD__)
+ #include <sys/types.h>
+diff --git a/stdlib/public/Synchronization/CMakeLists.txt b/stdlib/public/Synchronization/CMakeLists.txt
+index c0775431..6f93306a 100644
+--- a/stdlib/public/Synchronization/CMakeLists.txt
++++ b/stdlib/public/Synchronization/CMakeLists.txt
+@@ -126,10 +126,9 @@ add_swift_target_library(swiftSynchronization ${SWIFT_STDLIB_LIBRARY_BUILD_TYPES
+     ${SWIFT_SYNCHRONIZATION_OPENBSD_SOURCES}
+   SWIFT_SOURCES_DEPENDS_FREESTANDING
+     Mutex/MutexUnavailable.swift
+-  # VectraOS: atomics now; Mutex over croi's futexes comes with concurrency
+-  # (VectraOS's M6f).
++  # VectraOS: Linux's futex Mutex over croi's futexes (_SynchronizationShims).
+   SWIFT_SOURCES_DEPENDS_VECTRAOS
+-    Mutex/MutexUnavailable.swift
++    ${SWIFT_SYNCHRONIZATION_LINUX_SOURCES}
+ 
+   SWIFT_MODULE_DEPENDS_OSX
+     ${SWIFT_SYNCHRONIZATION_DARWIN_DEPENDENCIES}
+diff --git a/stdlib/public/Synchronization/Mutex/LinuxImpl.swift b/stdlib/public/Synchronization/Mutex/LinuxImpl.swift
+index 3f89b119..f09b773d 100644
+--- a/stdlib/public/Synchronization/Mutex/LinuxImpl.swift
++++ b/stdlib/public/Synchronization/Mutex/LinuxImpl.swift
+@@ -20,6 +20,8 @@ import _SynchronizationShims
+ import Android
+ #elseif canImport(Musl)
+ import Musl
++#elseif os(VectraOS)
++// Nothing from the C library: the futexes are _SynchronizationShims'.
+ #else
+ import Glibc
+ #endif

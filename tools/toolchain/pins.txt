@@ -1,0 +1,16 @@
+# The upstream sources: repository, the tag fetch-upstream.sh clones, and the
+# commit that tag resolved to when pinned (Swift 6.4.0's release and the
+# siblings its update-checkout scheme names, as swift-on-vectra pinned them).
+# fetch-upstream.sh refuses a clone whose commit differs. Regenerate: --pin
+cmark                                  swift-6.4.0-RELEASE    924936d0427cb25a61169739a7660230bffa6ea6
+llbuild                                swift-6.4.0-RELEASE    ab6421207b9e4971c94e97c5832a3d8a4cae9092
+llvm-project                           swift-6.4.0-RELEASE    903b9faaae5c43ecc9b7e33f8db9c94c7429374a
+swift                                  swift-6.4.0-RELEASE    b8189d766d86ad7fc8106787d6ce9e402f38dd72
+swift-argument-parser                  1.6.1                  309a47b2b1d9b5e991f36961c983ecec72275be3
+swift-collections                      1.1.6                  c11818f3cae0780656baa430b49e7f163f08dffd
+swift-driver                           swift-6.4.0-RELEASE    174567a5681a9a949bcd52f821deb8fa65105434
+swift-experimental-string-processing   swift-6.4.0-RELEASE    bf9cd9a0cfb0481f0825509aeb81ff3135bac250
+swift-foundation                       swift-6.4.0-RELEASE    3b9d8f42b7923a7c1ae9ce20f3b05d1facac334e
+swift-syntax                           swift-6.4.0-RELEASE    050f1a346fbbac0ca2cfb15a95274f7bd1cf0ccf
+swift-toolchain-sqlite                 1.0.9                  c0ecc1e0fd1b4fbc38db1efa6113bc12c2a4e559
+swift-tools-support-core               swift-6.4.0-RELEASE    d45c8b38d2824498b7863d3d5f0227937a53c177

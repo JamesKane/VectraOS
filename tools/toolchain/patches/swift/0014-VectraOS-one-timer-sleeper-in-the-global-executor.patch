@@ -1,0 +1,134 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: James Kane <jkane@tds.net>
+Date: Mon, 12 Oct 2026 07:53:33 -0500
+Subject: [PATCH 14/14] [VectraOS] one timer sleeper in the global executor
+
+One idle thread waits for the soonest deadline (the timer sleeper), the
+rest for a packet alone, so a deadline wakes one thread, not all of them
+(each a migration in croi, then contention for the queue's lock). A
+deadline set from one of the queue's own threads wakes no one: that
+thread takes the role when its job ends. A sooner deadline revokes the
+holder (a generation number) and wakes a sleeper to take it up; a thread
+leaving with a job while deadlines wait and no one holds the role wakes
+one to. Suggested by croi; 50 back-to-back sleeps cost about 330 context
+switches rather than 515, the median lateness the same (VectraOS's M6f).
+---
+ .../Concurrency/VectraOSGlobalExecutor.cpp    | 52 +++++++++++++++++--
+ 1 file changed, 47 insertions(+), 5 deletions(-)
+
+diff --git a/stdlib/public/Concurrency/VectraOSGlobalExecutor.cpp b/stdlib/public/Concurrency/VectraOSGlobalExecutor.cpp
+index fd22b379..b1c3ff1c 100644
+--- a/stdlib/public/Concurrency/VectraOSGlobalExecutor.cpp
++++ b/stdlib/public/Concurrency/VectraOSGlobalExecutor.cpp
+@@ -7,8 +7,9 @@
+ // jobs whose deadline has passed; the main thread runs the main queue once
+ // the program's async main hands it over. There is no libdispatch.
+ //
+-// Each queue's threads sleep on a croi port (the floor's td_floor.h), until
+-// a packet or the soonest deadline: enqueueing a job queues a wake packet
++// Each queue's threads sleep on a croi port (the floor's td_floor.h), one of
++// them (the timer sleeper) until the soonest deadline, the rest until a
++// packet: enqueueing a job queues a wake packet
+ // when a sleeper has none coming, and a port, unlike a condition variable,
+ // keeps a wake queued before its sleeper got there. Its lock is our
+ // pthreads' mutex, over croi's futexes. The global queue's port is the
+@@ -87,6 +88,13 @@ struct Queue {
+   uint32_t port = 0;
+   unsigned sleeping = 0; // threads in td_port_wait, or about to be
+   unsigned wakes = 0;    // wake packets queued and not yet taken
++  // One sleeper waits for the soonest deadline (the timer sleeper), the
++  // rest for a packet alone, so a deadline wakes one thread, not all of
++  // them (each a migration in croi, then contention here). `timerGen`
++  // names the current holder; bumping it revokes the role (a sooner
++  // deadline came, and a woken sleeper takes the role up with it).
++  bool timerHeld = false;
++  uint64_t timerGen = 0;
+   JobList ready[Buckets];
+   SwiftJob *delayed = nullptr; // sorted by deadline, soonest first
+ 
+@@ -99,6 +107,20 @@ struct Queue {
+       fail("cannot make the executor's port");
+   }
+ 
++  // With the lock held: a sooner deadline. A holder of the timer role
++  // waits for a later one: it's revoked and a sleeper woken to take it up.
++  // Without one, the caller's own thread takes it if it's this queue's
++  // (it's running a job, and comes back here after), else a sleeper does.
++  void newDeadline(bool ownThread) {
++    if (timerHeld) {
++      timerHeld = false;
++      timerGen++;
++      wakeOne();
++    } else if (!ownThread) {
++      wakeOne();
++    }
++  }
++
+   // With the lock held: a sleeper woken, if every sleeper's wake isn't
+   // already queued.
+   void wakeOne() {
+@@ -137,9 +159,21 @@ struct Queue {
+         makeReady(job);
+       }
+       for (auto &list : ready)
+-        if (SwiftJob *job = pop(list))
++        if (SwiftJob *job = pop(list)) {
++          // Off to run a job with deadlines pending and no one waiting for
++          // them: a sleeper takes the timer role.
++          if (delayed && !timerHeld)
++            wakeOne();
+           return job;
+-      int64_t deadline = delayed ? deadlineOf(delayed) : INT64_MAX;
++        }
++      // The timer sleeper, if no one is; else wait for a packet alone.
++      int64_t deadline = INT64_MAX;
++      uint64_t gen = 0;
++      if (delayed && !timerHeld) {
++        timerHeld = true;
++        gen = ++timerGen;
++        deadline = deadlineOf(delayed);
++      }
+       sleeping++;
+       pthread_mutex_unlock(&lock);
+       td_port_packet_t packet;
+@@ -152,6 +186,8 @@ struct Queue {
+       }
+       pthread_mutex_lock(&lock);
+       sleeping--;
++      if (gen != 0 && gen == timerGen)
++        timerHeld = false;  // still ours: given up, to be taken again
+       if (status == 0 && packet.type == 0 && packet.key == 0 && wakes > 0)
+         wakes--;
+     }
+@@ -159,9 +195,14 @@ struct Queue {
+ };
+ 
+ Queue globalQueue, mainQueue;
++
++// The queue the calling thread runs (a worker's, or the main thread's once
++// it runs the main queue), or null.
++thread_local Queue *runningQueue = nullptr;
+ pthread_once_t started = PTHREAD_ONCE_INIT;
+ 
+ void *worker(void *) {
++  runningQueue = &globalQueue;
+   pthread_mutex_lock(&globalQueue.lock);
+   for (;;) {
+     SwiftJob *job = globalQueue.take();
+@@ -219,7 +260,7 @@ extern "C" SWIFT_CC(swift) void swift_vectraosEnqueueWithDeadline(
+   pthread_mutex_lock(&q.lock);
+   // A new soonest deadline: a sleeper wakes to sleep until it instead.
+   if (q.addDelayed(job, deadline))
+-    q.wakeOne();
++    q.newDeadline(runningQueue == &q);
+   pthread_mutex_unlock(&q.lock);
+ }
+ 
+@@ -227,6 +268,7 @@ extern "C" SWIFT_CC(swift) void swift_vectraosEnqueueWithDeadline(
+ // main task does.
+ extern "C" SWIFT_CC(swift) [[noreturn]] void swift_vectraosMainRun() {
+   pthread_once(&started, start);
++  runningQueue = &mainQueue;
+   pthread_mutex_lock(&mainQueue.lock);
+   for (;;) {
+     SwiftJob *job = mainQueue.take();

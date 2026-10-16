@@ -5,7 +5,7 @@
 // started with, its arguments and its environment, as Swift values.
 // Embedded Swift has no CommandLine. Over the floor's C interface
 // (td_floor.h), so that tier 1's full Swift builds it too (M6e); tier 1's
-// LibSys will re-export its platform's C library (TodhchaiLibc, D47).
+// LibSys will re-export its platform's C library (VectraOSLibc, D47).
 
 import TDFloor
 import TDNative

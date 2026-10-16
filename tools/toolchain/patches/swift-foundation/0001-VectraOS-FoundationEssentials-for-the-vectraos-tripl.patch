@@ -1,0 +1,1042 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: James Kane <jkane@tds.net>
+Date: Mon, 12 Oct 2026 06:40:29 -0500
+Subject: [PATCH] [VectraOS] FoundationEssentials for the *-vectraos triples
+
+Essentials only (SWIFTFOUNDATION_ESSENTIALS_ONLY, after swift-on-vectra's
+switch: no ICU, nothing fetched), with VectraOS's C library through its
+platform module, VectraOSLibc, and files through its POSIX calls (fdio
+over VectraOS's fs service):
+
+- Each C library import gains a VectraOSLibc branch; TARGET_OS_VECTRAOS.
+- Where WASI lacks what VectraOS lacks too, VectraOS joins its gates: no
+  users or groups, no extended attributes, no file system attributes
+  (statvfs), no sendfile, no fchown, no sticky bit, the current time zone
+  GMT until a time service; NO_C_LOCALE, NO_LOCALIZATION and NO_TZFILE
+  are the build's (one locale, no zone files yet).
+- No mmap yet: files are read; times aren't set (the fs service keeps
+  them): setAttributes with a modification date is featureUnsupported,
+  and a copy keeps the new node's.
+- uuid.c: randomness from getentropy (croi's CPRNG), the monotonic clock,
+  and a UUID's string parsed directly (no sscanf yet); _CStdlib.h skips
+  <tgmath.h>, which needs <complex.h>.
+- Date.description computes the civil date itself (no gmtime_r or
+  strftime yet).
+---
+ CMakeLists.txt                                | 10 ++++-
+ Sources/CMakeLists.txt                        |  4 +-
+ .../Calendar/Calendar.swift                   |  2 +
+ .../Calendar/Calendar_Gregorian.swift         |  2 +
+ .../CodableUtilities.swift                    |  2 +
+ .../Data/Data+Base64.swift                    |  2 +
+ .../Data/Data+Reading.swift                   | 10 ++++-
+ .../Data/Data+Writing.swift                   |  2 +
+ Sources/FoundationEssentials/Data/Data.swift  | 14 ++++++-
+ .../Data/DataProtocol.swift                   |  2 +
+ .../Data/Representations/Data+Inline.swift    |  2 +
+ .../Data/Representations/DataStorage.swift    |  2 +
+ Sources/FoundationEssentials/Date.swift       | 24 ++++++++++++
+ .../Decimal/Decimal+Math.swift                |  2 +
+ .../Decimal/Decimal.swift                     |  2 +
+ .../Error/CocoaError+FilePath.swift           |  2 +
+ .../Error/ErrorCodes+POSIX.swift              |  2 +
+ .../FileManager/FileManager+Basics.swift      |  2 +
+ .../FileManager/FileManager+Directories.swift |  2 +
+ .../FileManager/FileManager+Files.swift       | 25 +++++++++----
+ .../FileManager+SymbolicLinks.swift           |  2 +
+ .../FileManager/FileManager+Utilities.swift   |  4 +-
+ .../FileOperations+Enumeration.swift          |  4 +-
+ .../FileManager/FileOperations.swift          | 13 +++++--
+ ...yInteger+NumericStringRepresentation.swift |  2 +
+ .../JSON/JSON5Scanner.swift                   |  2 +
+ .../JSON/JSONDecoder.swift                    |  2 +
+ .../JSON/JSONScanner.swift                    |  2 +
+ .../Locale/Locale+Components.swift            |  2 +
+ Sources/FoundationEssentials/Platform.swift   |  7 +++-
+ .../ProcessInfo/ProcessInfo.swift             |  8 ++--
+ .../PropertyList/OpenStepPlist.swift          |  2 +
+ .../String/String+Path.swift                  |  6 ++-
+ .../String/StringProtocol+Essentials.swift    |  2 +
+ .../TimeZone/TimeZone.swift                   |  2 +
+ .../TimeZone/TimeZone_Cache.swift             |  7 +++-
+ .../FoundationEssentials/URL/URL_Impl.swift   |  2 +
+ .../FoundationEssentials/_ThreadLocal.swift   | 10 +++--
+ .../include/_CShimsTargetConditionals.h       |  6 +++
+ Sources/_FoundationCShims/include/_CStdlib.h  |  7 ++--
+ .../_FoundationCShims/include/string_shims.h  |  3 +-
+ Sources/_FoundationCShims/uuid.c              | 37 ++++++++++++++++++-
+ 42 files changed, 209 insertions(+), 38 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 367ab35..05afec4 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -88,7 +88,15 @@ else()
+         GIT_REPOSITORY https://github.com/apple/swift-collections.git
+         GIT_TAG 1.1.6)
+ endif()
+-FetchContent_MakeAvailable(SwiftFoundationICU SwiftCollections)
++# [VectraOS] FoundationEssentials alone, with no ICU (and so no
++# FoundationInternationalization), fetched from nowhere (after
++# swift-on-vectra's switch).
++option(SWIFTFOUNDATION_ESSENTIALS_ONLY "Build FoundationEssentials only (no ICU, no FoundationInternationalization)" NO)
++if(SWIFTFOUNDATION_ESSENTIALS_ONLY)
++    FetchContent_MakeAvailable(SwiftCollections)
++else()
++    FetchContent_MakeAvailable(SwiftFoundationICU SwiftCollections)
++endif()
+ 
+ list(APPEND CMAKE_MODULE_PATH ${SwiftFoundation_SOURCE_DIR}/cmake/modules)
+ 
+diff --git a/Sources/CMakeLists.txt b/Sources/CMakeLists.txt
+index ef235c4..e3e07ff 100644
+--- a/Sources/CMakeLists.txt
++++ b/Sources/CMakeLists.txt
+@@ -14,4 +14,6 @@
+ 
+ add_subdirectory(_FoundationCShims)
+ add_subdirectory(FoundationEssentials)
+-add_subdirectory(FoundationInternationalization)
++if(NOT SWIFTFOUNDATION_ESSENTIALS_ONLY)
++    add_subdirectory(FoundationInternationalization)
++endif()
+diff --git a/Sources/FoundationEssentials/Calendar/Calendar.swift b/Sources/FoundationEssentials/Calendar/Calendar.swift
+index 1d5d680..d09dc0c 100644
+--- a/Sources/FoundationEssentials/Calendar/Calendar.swift
++++ b/Sources/FoundationEssentials/Calendar/Calendar.swift
+@@ -16,6 +16,8 @@ internal import os
+ @preconcurrency import Bionic
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+ #elseif canImport(CRT)
+diff --git a/Sources/FoundationEssentials/Calendar/Calendar_Gregorian.swift b/Sources/FoundationEssentials/Calendar/Calendar_Gregorian.swift
+index 1727a5e..6dd5973 100644
+--- a/Sources/FoundationEssentials/Calendar/Calendar_Gregorian.swift
++++ b/Sources/FoundationEssentials/Calendar/Calendar_Gregorian.swift
+@@ -16,6 +16,8 @@ internal import os
+ @preconcurrency import Bionic
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+ #elseif canImport(CRT)
+diff --git a/Sources/FoundationEssentials/CodableUtilities.swift b/Sources/FoundationEssentials/CodableUtilities.swift
+index 4c270ee..31bb28b 100644
+--- a/Sources/FoundationEssentials/CodableUtilities.swift
++++ b/Sources/FoundationEssentials/CodableUtilities.swift
+@@ -16,6 +16,8 @@ import Darwin
+ @preconcurrency import Bionic
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #endif
+ 
+ //===----------------------------------------------------------------------===//
+diff --git a/Sources/FoundationEssentials/Data/Data+Base64.swift b/Sources/FoundationEssentials/Data/Data+Base64.swift
+index e85a82c..9eb5e82 100644
+--- a/Sources/FoundationEssentials/Data/Data+Base64.swift
++++ b/Sources/FoundationEssentials/Data/Data+Base64.swift
+@@ -16,6 +16,8 @@ import Darwin
+ import Bionic
+ #elseif canImport(Glibc)
+ import Glibc
++#elseif canImport(VectraOSLibc)
++import VectraOSLibc
+ #elseif canImport(Musl)
+ import Musl
+ #elseif os(Windows)
+diff --git a/Sources/FoundationEssentials/Data/Data+Reading.swift b/Sources/FoundationEssentials/Data/Data+Reading.swift
+index 9ccf4ed..a184442 100644
+--- a/Sources/FoundationEssentials/Data/Data+Reading.swift
++++ b/Sources/FoundationEssentials/Data/Data+Reading.swift
+@@ -22,6 +22,8 @@ import Darwin
+ @preconcurrency import Android
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+ #elseif os(Windows)
+@@ -340,7 +342,13 @@ internal func readBytesFromFile(path inPath: borrowing some FileSystemRepresenta
+     let fileSize = min(Int(clamping: filestat.st_size), maxLength ?? Int.max)
+     let fileType = mode_t(filestat.st_mode) & S_IFMT
+ #if !NO_FILESYSTEM
++#if os(VectraOS)
++    // No mmap yet: files are read (fdio's mapping, over the fs service's
++    // File.map, is for later).
++    let shouldMap = false
++#else
+     let shouldMap = shouldMapFileDescriptor(fd, path: inPath, options: options)
++#endif
+ #else
+     let shouldMap = false
+ #endif
+@@ -390,7 +398,7 @@ internal func readBytesFromFile(path inPath: borrowing some FileSystemRepresenta
+         localProgress?.totalUnitCount = 1
+         localProgress?.completedUnitCount = 1
+     } else if shouldMap {
+-#if !NO_FILESYSTEM
++#if !NO_FILESYSTEM && !os(VectraOS)
+ #if canImport(Android)
+         let bytes = mmap(nil, Int(fileSize), PROT_READ, MAP_PRIVATE, fd, 0)
+         if bytes == UnsafeMutableRawPointer(bitPattern: -1) {
+diff --git a/Sources/FoundationEssentials/Data/Data+Writing.swift b/Sources/FoundationEssentials/Data/Data+Writing.swift
+index 8c7f616..6589648 100644
+--- a/Sources/FoundationEssentials/Data/Data+Writing.swift
++++ b/Sources/FoundationEssentials/Data/Data+Writing.swift
+@@ -26,6 +26,8 @@ import Darwin
+ import unistd
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+ #elseif os(Windows)
+diff --git a/Sources/FoundationEssentials/Data/Data.swift b/Sources/FoundationEssentials/Data/Data.swift
+index 2fc4d1d..65fdc32 100644
+--- a/Sources/FoundationEssentials/Data/Data.swift
++++ b/Sources/FoundationEssentials/Data/Data.swift
+@@ -32,6 +32,14 @@
+ @usableFromInline let memset = Glibc.memset
+ @usableFromInline let memcpy = Glibc.memcpy
+ @usableFromInline let memcmp = Glibc.memcmp
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
++@usableFromInline let calloc = VectraOSLibc.calloc
++@usableFromInline let malloc = VectraOSLibc.malloc
++@usableFromInline let free = VectraOSLibc.free
++@usableFromInline let memset = VectraOSLibc.memset
++@usableFromInline let memcpy = VectraOSLibc.memcpy
++@usableFromInline let memcmp = VectraOSLibc.memcmp
+ #elseif canImport(Musl)
+ @usableFromInline let calloc = Musl.calloc
+ @usableFromInline let malloc = Musl.malloc
+@@ -79,6 +87,8 @@ internal func malloc_good_size(_ size: Int) -> Int {
+ 
+ #if canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+ #elseif canImport(ucrt)
+@@ -98,8 +108,8 @@ import func WinSDK.UnmapViewOfFile
+ internal func __DataInvokeDeallocatorUnmap(_ mem: UnsafeMutableRawPointer, _ length: Int) {
+ #if os(Windows)
+     _ = UnmapViewOfFile(mem)
+-#elseif canImport(C)
+-    free(mem)
++#elseif canImport(C) || os(VectraOS)
++    free(mem)  // VectraOS: nothing is mapped yet
+ #else
+     munmap(mem, length)
+ #endif
+diff --git a/Sources/FoundationEssentials/Data/DataProtocol.swift b/Sources/FoundationEssentials/Data/DataProtocol.swift
+index 11ca328..886b1d0 100644
+--- a/Sources/FoundationEssentials/Data/DataProtocol.swift
++++ b/Sources/FoundationEssentials/Data/DataProtocol.swift
+@@ -14,6 +14,8 @@
+ import Darwin
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+ #elseif canImport(ucrt)
+diff --git a/Sources/FoundationEssentials/Data/Representations/Data+Inline.swift b/Sources/FoundationEssentials/Data/Representations/Data+Inline.swift
+index dec13ca..dd74bf1 100644
+--- a/Sources/FoundationEssentials/Data/Representations/Data+Inline.swift
++++ b/Sources/FoundationEssentials/Data/Representations/Data+Inline.swift
+@@ -16,6 +16,8 @@
+ import Darwin
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+ #elseif canImport(ucrt)
+diff --git a/Sources/FoundationEssentials/Data/Representations/DataStorage.swift b/Sources/FoundationEssentials/Data/Representations/DataStorage.swift
+index c645c5c..9b7557d 100644
+--- a/Sources/FoundationEssentials/Data/Representations/DataStorage.swift
++++ b/Sources/FoundationEssentials/Data/Representations/DataStorage.swift
+@@ -14,6 +14,8 @@
+ import Darwin
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+ #elseif canImport(ucrt)
+diff --git a/Sources/FoundationEssentials/Date.swift b/Sources/FoundationEssentials/Date.swift
+index 45b4844..4b2411f 100644
+--- a/Sources/FoundationEssentials/Date.swift
++++ b/Sources/FoundationEssentials/Date.swift
+@@ -16,6 +16,8 @@ import Darwin
+ @preconcurrency import Bionic
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+ #elseif canImport(WinSDK)
+@@ -282,6 +284,27 @@ extension Date : CustomDebugStringConvertible, CustomStringConvertible, CustomRe
+             return unavailable
+         }
+ 
++#if os(VectraOS)
++        // VectraOS's C library has no gmtime_r or strftime yet: the civil
++        // date from the days since the epoch (Howard Hinnant's algorithm).
++        let seconds = Int64(self.timeIntervalSince1970.rounded(.down))
++        let days = seconds >= 0 ? seconds / 86_400 : (seconds - 86_399) / 86_400
++        let secondOfDay = seconds - days * 86_400
++        let z = days + 719_468
++        let era = (z >= 0 ? z : z - 146_096) / 146_097
++        let doe = z - era * 146_097
++        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365
++        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
++        let mp = (5 * doy + 2) / 153
++        let day = doy - (153 * mp + 2) / 5 + 1
++        let month = mp < 10 ? mp + 3 : mp - 9
++        let year = yoe + era * 400 + (month <= 2 ? 1 : 0)
++        func two(_ v: Int64) -> String { v < 10 ? "0\(v)" : "\(v)" }
++        var y = "\(abs(year))"
++        while y.utf8.count < 4 { y = "0" + y }
++        return (year < 0 ? "-" : "") + y + "-\(two(month))-\(two(day)) \(two(secondOfDay / 3600)):"
++            + "\(two(secondOfDay / 60 % 60)):\(two(secondOfDay % 60)) +0000"
++#else
+         var info = tm()
+ #if os(Windows)
+         var time = __time64_t(self.timeIntervalSince1970)
+@@ -310,6 +333,7 @@ extension Date : CustomDebugStringConvertible, CustomStringConvertible, CustomRe
+ 
+             return result
+         }
++#endif
+     }
+ #endif // !FOUNDATION_FRAMEWORK
+ 
+diff --git a/Sources/FoundationEssentials/Decimal/Decimal+Math.swift b/Sources/FoundationEssentials/Decimal/Decimal+Math.swift
+index e6509b0..0486a59 100644
+--- a/Sources/FoundationEssentials/Decimal/Decimal+Math.swift
++++ b/Sources/FoundationEssentials/Decimal/Decimal+Math.swift
+@@ -16,6 +16,8 @@ import Darwin
+ @preconcurrency import Bionic
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+ #elseif canImport(CRT)
+diff --git a/Sources/FoundationEssentials/Decimal/Decimal.swift b/Sources/FoundationEssentials/Decimal/Decimal.swift
+index 82a5dfa..ac691b8 100644
+--- a/Sources/FoundationEssentials/Decimal/Decimal.swift
++++ b/Sources/FoundationEssentials/Decimal/Decimal.swift
+@@ -14,6 +14,8 @@
+ import Darwin
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #elseif canImport(ucrt)
+ import ucrt
+ #endif
+diff --git a/Sources/FoundationEssentials/Error/CocoaError+FilePath.swift b/Sources/FoundationEssentials/Error/CocoaError+FilePath.swift
+index 8e4922b..5f79dc0 100644
+--- a/Sources/FoundationEssentials/Error/CocoaError+FilePath.swift
++++ b/Sources/FoundationEssentials/Error/CocoaError+FilePath.swift
+@@ -19,6 +19,8 @@ import Darwin
+ @preconcurrency import Android
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+ #elseif os(Windows)
+diff --git a/Sources/FoundationEssentials/Error/ErrorCodes+POSIX.swift b/Sources/FoundationEssentials/Error/ErrorCodes+POSIX.swift
+index 0d178f2..a0aaffe 100644
+--- a/Sources/FoundationEssentials/Error/ErrorCodes+POSIX.swift
++++ b/Sources/FoundationEssentials/Error/ErrorCodes+POSIX.swift
+@@ -14,6 +14,8 @@
+ @preconcurrency import Android
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc 
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+ #elseif canImport(Darwin)
+diff --git a/Sources/FoundationEssentials/FileManager/FileManager+Basics.swift b/Sources/FoundationEssentials/FileManager/FileManager+Basics.swift
+index 96ea0d2..1f7dd50 100644
+--- a/Sources/FoundationEssentials/FileManager/FileManager+Basics.swift
++++ b/Sources/FoundationEssentials/FileManager/FileManager+Basics.swift
+@@ -16,6 +16,8 @@ import Darwin
+ @preconcurrency import Android
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+ #elseif os(Windows)
+diff --git a/Sources/FoundationEssentials/FileManager/FileManager+Directories.swift b/Sources/FoundationEssentials/FileManager/FileManager+Directories.swift
+index 36bda2f..9ea6e2e 100644
+--- a/Sources/FoundationEssentials/FileManager/FileManager+Directories.swift
++++ b/Sources/FoundationEssentials/FileManager/FileManager+Directories.swift
+@@ -23,6 +23,8 @@ import Darwin
+ import unistd
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+ #elseif os(Windows)
+diff --git a/Sources/FoundationEssentials/FileManager/FileManager+Files.swift b/Sources/FoundationEssentials/FileManager/FileManager+Files.swift
+index 3aa048a..b08261d 100644
+--- a/Sources/FoundationEssentials/FileManager/FileManager+Files.swift
++++ b/Sources/FoundationEssentials/FileManager/FileManager+Files.swift
+@@ -22,6 +22,8 @@ import Darwin
+ import posix_filesystem
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ internal import _FoundationCShims
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+@@ -176,7 +178,7 @@ extension stat {
+             .ownerAccountID : _writeFileAttributePrimitive(st_uid, as: UInt.self),
+             .groupOwnerAccountID : _writeFileAttributePrimitive(st_gid, as: UInt.self)
+         ]
+-        #if !os(WASI)
++        #if !os(WASI) && !os(VectraOS)
+         if let userName = Platform.name(forUID: st_uid) {
+             result[.ownerAccountName] = userName
+         }
+@@ -462,7 +464,7 @@ extension _FileManagerImpl {
+             parent = fileManager.currentDirectoryPath
+         }
+ 
+-#if os(Windows) || os(WASI)
++#if os(Windows) || os(WASI) || os(VectraOS)
+         return fileManager.isWritableFile(atPath: parent) && fileManager.isWritableFile(atPath: path)
+ #else
+         guard fileManager.isWritableFile(atPath: parent),
+@@ -485,7 +487,7 @@ extension _FileManagerImpl {
+ #endif
+     }
+ 
+-#if !os(Windows) && !os(WASI) && !os(OpenBSD)
++#if !os(Windows) && !os(WASI) && !os(OpenBSD) && !os(VectraOS)
+     private func _extendedAttribute(_ key: UnsafePointer<CChar>, at path: UnsafePointer<CChar>, followSymlinks: Bool) throws -> Data? {
+         #if canImport(Darwin)
+         var size = getxattr(path, key, nil, 0, 0, followSymlinks ? 0 : XATTR_NOFOLLOW)
+@@ -647,7 +649,7 @@ extension _FileManagerImpl {
+             
+             var attributes = statAtPath.fileAttributes
+             try? Self._catInfo(for: URL(filePath: path, directoryHint: .isDirectory), statInfo: statAtPath, into: &attributes)
+-            #if !os(WASI) && !os(OpenBSD)
++            #if !os(WASI) && !os(OpenBSD) && !os(VectraOS)
+             if let extendedAttrs = try? _extendedAttributes(at: fsRep, followSymlinks: false) {
+                 attributes[._extendedAttributes] = extendedAttrs
+             }
+@@ -713,8 +715,8 @@ extension _FileManagerImpl {
+                 ]
+             }
+         }
+-#elseif os(WASI)
+-        // WASI does not support file system attributes
++#elseif os(WASI) || os(VectraOS)
++        // WASI does not support file system attributes (nor VectraOS yet: no statvfs)
+         return [:]
+ #else
+         try fileManager.withFileSystemRepresentation(for: path) { rep in
+@@ -936,7 +938,7 @@ extension _FileManagerImpl {
+             let groupID = _readFileAttributePrimitive(attributes[.groupOwnerAccountID], as: UInt.self)
+             
+             if user != nil || userID != nil || group != nil || groupID != nil {
+-                #if os(WASI)
++                #if os(WASI) || os(VectraOS)
+                 // WASI does not have the concept of users or groups
+                 throw CocoaError.errorWithFilePath(.featureUnsupported, path)
+                 #else
+@@ -953,7 +955,7 @@ extension _FileManagerImpl {
+             try Self._setCatInfoAttributes(attributes, path: path)
+             
+             if let extendedAttrs = attributes[.init("NSFileExtendedAttributes")] as? [String : Data] {
+-                #if os(WASI) || os(OpenBSD)
++                #if os(WASI) || os(OpenBSD) || os(VectraOS)
+                 // WASI does not support extended attributes
+                 throw CocoaError.errorWithFilePath(.featureUnsupported, path)
+                 #elseif canImport(Android)
+@@ -964,6 +966,12 @@ extension _FileManagerImpl {
+             }
+             
+             if let date = attributes[.modificationDate] as? Date {
++                #if os(VectraOS)
++                // VectraOS's fs service keeps a node's times itself: nothing
++                // sets them (no utimes).
++                _ = date
++                throw CocoaError.errorWithFilePath(.featureUnsupported, path)
++                #else
+                 let (isecs, fsecs) = modf(date.timeIntervalSince1970)
+                 if let tv_sec = time_t(exactly: isecs),
+                    let tv_usec = suseconds_t(exactly: round(fsecs * 1000000.0)) {
+@@ -979,6 +987,7 @@ extension _FileManagerImpl {
+                         }
+                     }
+                 }
++                #endif
+             }
+             
+             // Remove write permissions if it has been requested. This must be done before setting the immutable bit.
+diff --git a/Sources/FoundationEssentials/FileManager/FileManager+SymbolicLinks.swift b/Sources/FoundationEssentials/FileManager/FileManager+SymbolicLinks.swift
+index 5e3b643..e69317e 100644
+--- a/Sources/FoundationEssentials/FileManager/FileManager+SymbolicLinks.swift
++++ b/Sources/FoundationEssentials/FileManager/FileManager+SymbolicLinks.swift
+@@ -17,6 +17,8 @@ import Darwin
+ import unistd
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+ #elseif os(Windows)
+diff --git a/Sources/FoundationEssentials/FileManager/FileManager+Utilities.swift b/Sources/FoundationEssentials/FileManager/FileManager+Utilities.swift
+index d882a67..09c1000 100644
+--- a/Sources/FoundationEssentials/FileManager/FileManager+Utilities.swift
++++ b/Sources/FoundationEssentials/FileManager/FileManager+Utilities.swift
+@@ -27,6 +27,8 @@ import Darwin
+ @preconcurrency import Android
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ internal import _FoundationCShims
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+@@ -178,7 +180,7 @@ extension _FileManagerImpl {
+         #endif
+     }
+ 
+-#if !os(Windows) && !os(WASI) && !os(OpenBSD)
++#if !os(Windows) && !os(WASI) && !os(OpenBSD) && !os(VectraOS)
+     static func _setAttribute(_ key: UnsafePointer<CChar>, value: Data, at path: UnsafePointer<CChar>, followSymLinks: Bool) throws {
+         try value.withUnsafeBytes { buffer in
+             #if canImport(Darwin)
+diff --git a/Sources/FoundationEssentials/FileManager/FileOperations+Enumeration.swift b/Sources/FoundationEssentials/FileManager/FileOperations+Enumeration.swift
+index dbbb062..b7da3ec 100644
+--- a/Sources/FoundationEssentials/FileManager/FileOperations+Enumeration.swift
++++ b/Sources/FoundationEssentials/FileManager/FileOperations+Enumeration.swift
+@@ -120,6 +120,8 @@ import posix_filesystem.dirent
+ internal import _FoundationCShims
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ internal import _FoundationCShims
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+@@ -337,7 +339,7 @@ extension Sequence<_FTSSequence.Element> {
+ struct _POSIXDirectoryContentsSequence: Sequence {
+     #if canImport(Darwin)
+     typealias DirectoryEntryPtr = UnsafeMutablePointer<DIR>
+-    #elseif canImport(Android) || canImport(Glibc) || canImport(Musl) || os(WASI)
++    #elseif canImport(Android) || canImport(Glibc) || canImport(Musl) || os(WASI) || canImport(VectraOSLibc)
+     typealias DirectoryEntryPtr = OpaquePointer
+     #endif
+     
+diff --git a/Sources/FoundationEssentials/FileManager/FileOperations.swift b/Sources/FoundationEssentials/FileManager/FileOperations.swift
+index 8f52e8e..7de8b3c 100644
+--- a/Sources/FoundationEssentials/FileManager/FileOperations.swift
++++ b/Sources/FoundationEssentials/FileManager/FileOperations.swift
+@@ -16,6 +16,8 @@ import Darwin
+ @preconcurrency import Android
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+ #elseif os(Windows)
+@@ -932,7 +934,7 @@ enum _FileOperations {
+         }
+         var current: off_t = 0
+         
+-        #if os(WASI) || os(OpenBSD)
++        #if os(WASI) || os(OpenBSD) || os(VectraOS)
+         // WASI doesn't have sendfile, so we need to do it in user space with read/write
+         try withUnsafeTemporaryAllocation(of: UInt8.self, capacity: chunkSize) { buffer in
+             while current < total {
+@@ -969,7 +971,7 @@ enum _FileOperations {
+     
+     #if !canImport(Darwin)
+     private static func _copyDirectoryMetadata(srcFD: CInt, srcPath: @autoclosure () -> String, dstFD: CInt, dstPath: @autoclosure () -> String, delegate: some LinkOrCopyDelegate) throws {
+-        #if !os(WASI) && !os(Android) && !os(OpenBSD)
++        #if !os(WASI) && !os(Android) && !os(OpenBSD) && !os(VectraOS)
+         // Copy extended attributes
+         #if os(FreeBSD)
+         // FreeBSD uses the `extattr_*` calls for setting extended attributes. Unlike like, the namespace for the extattrs are not determined by prefix of the attribute
+@@ -1045,14 +1047,16 @@ enum _FileOperations {
+         #endif
+         var statInfo = stat()
+         if fstat(srcFD, &statInfo) == 0 {
+-            #if !os(WASI) // WASI doesn't have fchown for now
++            #if !os(WASI) && !os(VectraOS) // WASI doesn't have fchown for now (nor VectraOS: no owners)
+             // Copy owner/group
+             if fchown(dstFD, statInfo.st_uid, statInfo.st_gid) != 0 {
+                 try delegate.throwIfNecessary(errno, srcPath(), dstPath())
+             }
+             #endif
+             
+-            // Copy modification date
++            // Copy modification date (not on VectraOS: the fs service keeps
++            // a node's times itself)
++            #if !os(VectraOS)
+             let value = statInfo.st_mtim
+             var tv = (value, value)
+             try withUnsafePointer(to: &tv) {
+@@ -1062,6 +1066,7 @@ enum _FileOperations {
+                     }
+                 }
+             }
++            #endif
+             
+             #if !os(WASI) // WASI doesn't have fchmod for now
+             // Copy permissions
+diff --git a/Sources/FoundationEssentials/Formatting/BinaryInteger+NumericStringRepresentation.swift b/Sources/FoundationEssentials/Formatting/BinaryInteger+NumericStringRepresentation.swift
+index aa03a8c..dfc2a0d 100644
+--- a/Sources/FoundationEssentials/Formatting/BinaryInteger+NumericStringRepresentation.swift
++++ b/Sources/FoundationEssentials/Formatting/BinaryInteger+NumericStringRepresentation.swift
+@@ -16,6 +16,8 @@ import Darwin
+ @preconcurrency import Bionic
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+ #elseif os(Windows)
+diff --git a/Sources/FoundationEssentials/JSON/JSON5Scanner.swift b/Sources/FoundationEssentials/JSON/JSON5Scanner.swift
+index 091b6b7..80e2043 100644
+--- a/Sources/FoundationEssentials/JSON/JSON5Scanner.swift
++++ b/Sources/FoundationEssentials/JSON/JSON5Scanner.swift
+@@ -16,6 +16,8 @@ import Darwin
+ @preconcurrency import Android
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+ #elseif os(Windows)
+diff --git a/Sources/FoundationEssentials/JSON/JSONDecoder.swift b/Sources/FoundationEssentials/JSON/JSONDecoder.swift
+index db8362d..b4d3d2b 100644
+--- a/Sources/FoundationEssentials/JSON/JSONDecoder.swift
++++ b/Sources/FoundationEssentials/JSON/JSONDecoder.swift
+@@ -14,6 +14,8 @@
+ import Darwin
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #endif
+ 
+ #if !NO_JSON_FOUNDATION_SPECIALIZATION
+diff --git a/Sources/FoundationEssentials/JSON/JSONScanner.swift b/Sources/FoundationEssentials/JSON/JSONScanner.swift
+index b6abdd7..2dc42f8 100644
+--- a/Sources/FoundationEssentials/JSON/JSONScanner.swift
++++ b/Sources/FoundationEssentials/JSON/JSONScanner.swift
+@@ -57,6 +57,8 @@
+ import Darwin
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #endif // canImport(Darwin)
+ 
+ #if !NO_JSON_FOUNDATION_SPECIALIZATION
+diff --git a/Sources/FoundationEssentials/Locale/Locale+Components.swift b/Sources/FoundationEssentials/Locale/Locale+Components.swift
+index fa91bbf..a77d9ea 100644
+--- a/Sources/FoundationEssentials/Locale/Locale+Components.swift
++++ b/Sources/FoundationEssentials/Locale/Locale+Components.swift
+@@ -12,6 +12,8 @@
+ 
+ #if canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #endif
+ 
+ extension Locale {
+diff --git a/Sources/FoundationEssentials/Platform.swift b/Sources/FoundationEssentials/Platform.swift
+index f99e36f..f757fdc 100644
+--- a/Sources/FoundationEssentials/Platform.swift
++++ b/Sources/FoundationEssentials/Platform.swift
+@@ -36,6 +36,9 @@ fileprivate let _pageSize: Int = Int(getpagesize())
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
+ fileprivate let _pageSize: Int = Int(getpagesize())
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
++fileprivate let _pageSize: Int = Int(getpagesize())
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+ fileprivate let _pageSize: Int = Int(getpagesize())
+@@ -128,7 +131,7 @@ private let _cachedUGIDs: (uid_t, gid_t) = {
+ }()
+ #endif
+ 
+-#if !os(Windows) && !os(WASI)
++#if !os(Windows) && !os(WASI) && !os(VectraOS)
+ extension Platform {
+     private static var ROOT_USER: UInt32 { 0 }
+     static func getUGIDs(allowEffectiveRootUID: Bool = true) -> (uid: UInt32, gid: UInt32) {
+@@ -273,7 +276,7 @@ extension Platform {
+         // FIXME: bionic implements this as `return 0;` and does not expose the
+         // function via headers. We should be able to shim this and use the call
+         // if it is available.
+-#if !canImport(Android) && !os(WASI)
++#if !canImport(Android) && !os(WASI) && !os(VectraOS)
+         guard issetugid() == 0 else { return nil }
+ #endif
+         if let value = getenv(name) {
+diff --git a/Sources/FoundationEssentials/ProcessInfo/ProcessInfo.swift b/Sources/FoundationEssentials/ProcessInfo/ProcessInfo.swift
+index 528ada5..3cb32d6 100644
+--- a/Sources/FoundationEssentials/ProcessInfo/ProcessInfo.swift
++++ b/Sources/FoundationEssentials/ProcessInfo/ProcessInfo.swift
+@@ -20,6 +20,8 @@ import Darwin
+ import unistd
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+ #elseif os(Windows)
+@@ -189,8 +191,8 @@ final class _ProcessInfo: Sendable {
+             return username
+         }
+         return ""
+-#elseif os(WASI)
+-        // WASI does not have user concept
++#elseif os(WASI) || os(VectraOS)
++        // WASI does not have user concept (nor VectraOS)
+         return ""
+ #elseif os(Windows)
+         var dwSize: DWORD = 0
+@@ -223,7 +225,7 @@ final class _ProcessInfo: Sendable {
+             return fullName
+         }
+         return ""
+-#elseif os(WASI)
++#elseif os(WASI) || os(VectraOS)
+         return ""
+ #elseif os(Windows)
+         var ulLength: ULONG = 0
+diff --git a/Sources/FoundationEssentials/PropertyList/OpenStepPlist.swift b/Sources/FoundationEssentials/PropertyList/OpenStepPlist.swift
+index d1ae58c..549455f 100644
+--- a/Sources/FoundationEssentials/PropertyList/OpenStepPlist.swift
++++ b/Sources/FoundationEssentials/PropertyList/OpenStepPlist.swift
+@@ -16,6 +16,8 @@ import Darwin
+ @preconcurrency import Bionic
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+ #elseif os(WASI)
+diff --git a/Sources/FoundationEssentials/String/String+Path.swift b/Sources/FoundationEssentials/String/String+Path.swift
+index f851270..91dcade 100644
+--- a/Sources/FoundationEssentials/String/String+Path.swift
++++ b/Sources/FoundationEssentials/String/String+Path.swift
+@@ -16,6 +16,8 @@ internal import os
+ @preconcurrency import Android
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+ #elseif os(Windows)
+@@ -388,7 +390,7 @@ extension String {
+             return envVar.standardizingPath
+         }
+         
+-        #if !os(WASI) // WASI does not have user concept
++        #if !os(WASI) && !os(VectraOS) // WASI does not have user concept (nor VectraOS)
+         // Next, attempt to find the home directory via getpwuid
+         // We use the real UID instead of the EUID here when the EUID is the root user (i.e. a process has called seteuid(0))
+         // In this instance, we historically do this to ensure a stable home directory location for processes that call seteuid(0)
+@@ -457,7 +459,7 @@ extension String {
+         if let envVar = Platform.getEnvSecure("CFFIXED_USER_HOME") {
+             return envVar.standardizingPath
+         }
+-        #if !os(WASI) // WASI does not have user concept
++        #if !os(WASI) && !os(VectraOS) // WASI does not have user concept (nor VectraOS)
+         // Next, attempt to find the home directory via getpwnam
+         return Platform.homeDirectory(forUserName: user)?.standardizingPath
+         #else
+diff --git a/Sources/FoundationEssentials/String/StringProtocol+Essentials.swift b/Sources/FoundationEssentials/String/StringProtocol+Essentials.swift
+index 59ba892..2d453d0 100644
+--- a/Sources/FoundationEssentials/String/StringProtocol+Essentials.swift
++++ b/Sources/FoundationEssentials/String/StringProtocol+Essentials.swift
+@@ -17,6 +17,8 @@ internal import _ForSwiftFoundation
+ import Darwin
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #endif
+ 
+ internal import _FoundationCShims
+diff --git a/Sources/FoundationEssentials/TimeZone/TimeZone.swift b/Sources/FoundationEssentials/TimeZone/TimeZone.swift
+index b910a5e..6371fb6 100644
+--- a/Sources/FoundationEssentials/TimeZone/TimeZone.swift
++++ b/Sources/FoundationEssentials/TimeZone/TimeZone.swift
+@@ -14,6 +14,8 @@
+ import Darwin
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #endif
+ 
+ internal import _FoundationCShims
+diff --git a/Sources/FoundationEssentials/TimeZone/TimeZone_Cache.swift b/Sources/FoundationEssentials/TimeZone/TimeZone_Cache.swift
+index f12234b..35ca0ec 100644
+--- a/Sources/FoundationEssentials/TimeZone/TimeZone_Cache.swift
++++ b/Sources/FoundationEssentials/TimeZone/TimeZone_Cache.swift
+@@ -16,6 +16,8 @@ import Darwin
+ import unistd
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+ #elseif canImport(ucrt)
+@@ -139,9 +141,10 @@ struct TimeZoneCache : Sendable, ~Copyable {
+                     return TimeZone(inner: result)
+                 }
+             }
+-#elseif os(WASI)
++#elseif os(WASI) || os(VectraOS)
+             // WASI doesn't provide a way to get the current timezone for now, so
+-            // just return the default GMT timezone.
++            // just return the default GMT timezone (VectraOS: until its time
++            // service, M6g).
+ #else
+             let buffer = UnsafeMutableBufferPointer<CChar>.allocate(capacity: Int(PATH_MAX + 1))
+             defer { buffer.deallocate() }
+diff --git a/Sources/FoundationEssentials/URL/URL_Impl.swift b/Sources/FoundationEssentials/URL/URL_Impl.swift
+index 91ed72c..fee06bc 100644
+--- a/Sources/FoundationEssentials/URL/URL_Impl.swift
++++ b/Sources/FoundationEssentials/URL/URL_Impl.swift
+@@ -16,6 +16,8 @@ import Darwin
+ @preconcurrency import Android
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+ #elseif os(Windows)
+diff --git a/Sources/FoundationEssentials/_ThreadLocal.swift b/Sources/FoundationEssentials/_ThreadLocal.swift
+index c5110a4..ca17df8 100644
+--- a/Sources/FoundationEssentials/_ThreadLocal.swift
++++ b/Sources/FoundationEssentials/_ThreadLocal.swift
+@@ -15,6 +15,8 @@ import Darwin
+ @preconcurrency import Bionic
+ #elseif canImport(Glibc)
+ @preconcurrency import Glibc
++#elseif canImport(VectraOSLibc)
++@preconcurrency import VectraOSLibc
+ #elseif canImport(Musl)
+ @preconcurrency import Musl
+ #elseif canImport(WinSDK)
+@@ -26,7 +28,7 @@ internal import threads
+ #endif
+ 
+ struct _ThreadLocal {
+-#if canImport(Darwin) || canImport(Bionic) || canImport(Glibc) || canImport(Musl)
++#if canImport(Darwin) || canImport(Bionic) || canImport(Glibc) || canImport(Musl) || canImport(VectraOSLibc)
+     fileprivate typealias PlatformKey = pthread_key_t
+ #elseif USE_TSS
+     fileprivate typealias PlatformKey = tss_t
+@@ -40,7 +42,7 @@ struct _ThreadLocal {
+         fileprivate let key: PlatformKey
+         
+         init() {
+-#if canImport(Darwin) || canImport(Bionic) || canImport(Glibc) || canImport(Musl)
++#if canImport(Darwin) || canImport(Bionic) || canImport(Glibc) || canImport(Musl) || canImport(VectraOSLibc)
+             var key = PlatformKey()
+             pthread_key_create(&key, nil)
+             self.key = key
+@@ -58,7 +60,7 @@ struct _ThreadLocal {
+     
+     private static subscript(_ key: PlatformKey) -> UnsafeMutableRawPointer? {
+         get {
+-#if canImport(Darwin) || canImport(Bionic) || canImport(Glibc) || canImport(Musl)
++#if canImport(Darwin) || canImport(Bionic) || canImport(Glibc) || canImport(Musl) || canImport(VectraOSLibc)
+             pthread_getspecific(key)
+ #elseif USE_TSS
+             tss_get(key)
+@@ -70,7 +72,7 @@ struct _ThreadLocal {
+         }
+         
+         set {
+-#if canImport(Darwin) || canImport(Bionic) || canImport(Glibc) || canImport(Musl)
++#if canImport(Darwin) || canImport(Bionic) || canImport(Glibc) || canImport(Musl) || canImport(VectraOSLibc)
+             pthread_setspecific(key, newValue)
+ #elseif USE_TSS
+             tss_set(key, newValue)
+diff --git a/Sources/_FoundationCShims/include/_CShimsTargetConditionals.h b/Sources/_FoundationCShims/include/_CShimsTargetConditionals.h
+index 37d651b..21fbd7c 100644
+--- a/Sources/_FoundationCShims/include/_CShimsTargetConditionals.h
++++ b/Sources/_FoundationCShims/include/_CShimsTargetConditionals.h
+@@ -47,6 +47,12 @@
+ #define TARGET_OS_WASI 0
+ #endif
+ 
++#if defined(__vectraos__)
++#define TARGET_OS_VECTRAOS 1
++#else
++#define TARGET_OS_VECTRAOS 0
++#endif
++
+ #if defined(__ANDROID__)
+ #define TARGET_OS_ANDROID 1
+ #else
+diff --git a/Sources/_FoundationCShims/include/_CStdlib.h b/Sources/_FoundationCShims/include/_CStdlib.h
+index f462ba1..f5b67b0 100644
+--- a/Sources/_FoundationCShims/include/_CStdlib.h
++++ b/Sources/_FoundationCShims/include/_CStdlib.h
+@@ -105,7 +105,8 @@
+ #include <string.h>
+ #endif
+ 
+-#if !defined(_WIN32)
++// VectraOS's C library has no <complex.h>, which clang's <tgmath.h> needs.
++#if !defined(_WIN32) && !defined(__vectraos__)
+ #if __has_include(<tgmath.h>)
+ #include <tgmath.h>
+ #endif
+@@ -152,8 +153,8 @@
+ #ifndef TZDEFAULT
+ #define TZDEFAULT    "/etc/localtime"
+ #endif /* !defined TZDEFAULT */
+-#elif TARGET_OS_WINDOWS || TARGET_OS_WASI
+-/* not required */
++#elif TARGET_OS_WINDOWS || TARGET_OS_WASI || TARGET_OS_VECTRAOS
++/* not required (VectraOS: no time zone database yet) */
+ #else
+ #error "possibly define TZDIR and TZDEFAULT for this platform"
+ #endif /* TARGET_OS_MAC || TARGET_OS_LINUX || TARGET_OS_BSD */
+diff --git a/Sources/_FoundationCShims/include/string_shims.h b/Sources/_FoundationCShims/include/string_shims.h
+index c9078e7..196e935 100644
+--- a/Sources/_FoundationCShims/include/string_shims.h
++++ b/Sources/_FoundationCShims/include/string_shims.h
+@@ -29,7 +29,8 @@
+ extern "C" {
+ #endif
+ 
+-#if !TARGET_OS_WINDOWS && !TARGET_OS_MAC
++// VectraOS's C library has the C locale alone (NO_C_LOCALE).
++#if !TARGET_OS_WINDOWS && !TARGET_OS_MAC && !TARGET_OS_VECTRAOS
+ inline static int _stringshims_LC_ALL_MASK() {
+     return LC_ALL_MASK;
+ }
+diff --git a/Sources/_FoundationCShims/uuid.c b/Sources/_FoundationCShims/uuid.c
+index 1b382cd..414e40f 100644
+--- a/Sources/_FoundationCShims/uuid.c
++++ b/Sources/_FoundationCShims/uuid.c
+@@ -87,7 +87,7 @@ INTERNAL void _foundation_uuid_unparse_upper(const uuid_t uu, uuid_string_t out)
+ #include <stdint.h>
+ #include <string.h>
+ #include <fcntl.h>
+-#if defined(__unix__) || (defined(__APPLE__) && defined(__MACH__))
++#if defined(__unix__) || (defined(__APPLE__) && defined(__MACH__)) || defined(__vectraos__)
+ #include <unistd.h>
+ #elif defined(_WIN32)
+ #include <io.h>
+@@ -97,7 +97,7 @@ INTERNAL void _foundation_uuid_unparse_upper(const uuid_t uu, uuid_string_t out)
+ #endif
+ #include <stdio.h>
+ 
+-#if TARGET_OS_LINUX || TARGET_OS_BSD || TARGET_OS_WASI
++#if TARGET_OS_LINUX || TARGET_OS_BSD || TARGET_OS_WASI || TARGET_OS_VECTRAOS
+ #include <time.h>
+ 
+ static inline void nanotime(struct timespec *tv) {
+@@ -124,6 +124,12 @@ static inline void read_random(void *buffer, unsigned numBytes) {
+     BCryptGenRandom(NULL, buffer, numBytes,
+                     BCRYPT_RNG_USE_ENTROPY_IN_BUFFER | BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+ }
++#elif TARGET_OS_VECTRAOS
++// croi's CPRNG, through the floor's getentropy (a UUID is 16 bytes, well
++// under its 256).
++static inline void read_random(void *buffer, unsigned numBytes) {
++    getentropy(buffer, numBytes);
++}
+ #elif TARGET_OS_WASI
+ #include <sys/random.h>
+ 
+@@ -221,6 +227,32 @@ int _foundation_uuid_is_null(const uuid_t uu)
+     return !memcmp(uu, UUID_NULL, sizeof(uuid_t));
+ }
+ 
++#if TARGET_OS_VECTRAOS
++// VectraOS's C library has no sscanf yet: the 36 characters read directly,
++// two hex digits a byte with dashes after the 4th, 6th, 8th and 10th, and
++// nothing after.
++static int _foundation_uuid_hex(char c) {
++    if (c >= '0' && c <= '9') return c - '0';
++    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
++    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
++    return -1;
++}
++
++int _foundation_uuid_parse(const uuid_string_t in, uuid_t uu)
++{
++    int at = 0;
++    for (int i = 0; i < 16; i++) {
++        if (i == 4 || i == 6 || i == 8 || i == 10) {
++            if (in[at++] != '-') return -1;
++        }
++        int hi = _foundation_uuid_hex(in[at]), lo = hi < 0 ? -1 : _foundation_uuid_hex(in[at + 1]);
++        if (hi < 0 || lo < 0) return -1;
++        uu[i] = (unsigned char)(hi << 4 | lo);
++        at += 2;
++    }
++    return in[at] == '\0' ? 0 : -1;
++}
++#else
+ int _foundation_uuid_parse(const uuid_string_t in, uuid_t uu)
+ {
+     int n = 0;
+@@ -239,6 +271,7 @@ int _foundation_uuid_parse(const uuid_string_t in, uuid_t uu)
+     
+     return (n != 36 || in[n] != '\0' ? -1 : 0);
+ }
++#endif
+ 
+ void _foundation_uuid_unparse_lower(const uuid_t uu, uuid_string_t out) {
+     snprintf(out,

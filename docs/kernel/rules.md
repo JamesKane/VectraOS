@@ -96,8 +96,11 @@ machine's history:
               `check/` (RingCheck, the model checker), `tests/` (host).
 - `user/`     User space: headers (`user/include`, modules `CroiSyscall`
               and `CroiRuntime`), vDSO, test programs, `lib/loader` (bootfs
-              and ELF segments, userboot's and dlopen's). Their runtime
-              is the floor (`system/sys/floor`, D49).
+              and ELF segments, userboot's and dlopen's), `tier1/` (tier
+              1's test programs, D47). Their runtime is the floor
+              (`system/sys/floor`, D49).
+- `tools/toolchain/` The `*-vectraos` toolchain's series and build
+              scripts (D47); sources and builds in `.cache/toolchain`.
 - `system/`   The userland lifted from todhchai (V2): `sys/` is the floor,
               Sys (the typed API, its hosted kernel SysHost) and their
               tests; `libc/` the libc and its pthreads; `ld/` dlopen;

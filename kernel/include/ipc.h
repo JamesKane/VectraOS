@@ -41,7 +41,7 @@ typedef struct {
   uint32_t reserved;  // 0
 } croi_handle_duplicate_item_t;
 
-static_assert(sizeof(croi_handle_duplicate_item_t) == 24);
+_Static_assert(sizeof(croi_handle_duplicate_item_t) == 24);
 
 // zx_info_handle_count_t.
 typedef struct {
@@ -96,7 +96,7 @@ typedef struct {
   uint32_t reserved;     // 0
 } croi_channel_write_item_t;
 
-static_assert(sizeof(croi_channel_write_item_t) == 40);
+_Static_assert(sizeof(croi_channel_write_item_t) == 40);
 
 typedef struct {
   uint32_t channel;
@@ -111,7 +111,7 @@ typedef struct {
   uint32_t reserved;        // 0
 } croi_channel_read_item_t;
 
-static_assert(sizeof(croi_channel_read_item_t) == 48);
+_Static_assert(sizeof(croi_channel_read_item_t) == 48);
 
 // zx_info_handle_basic_t.
 typedef struct {

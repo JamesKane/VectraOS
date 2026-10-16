@@ -114,7 +114,7 @@ typedef struct {
   uint64_t reserved[9];
 } croi_trace_ring_t;
 
-static_assert(sizeof(croi_trace_ring_t) == 128);
+_Static_assert(sizeof(croi_trace_ring_t) == 128);
 
 // A slot: the ring's sequence, then the record.
 typedef struct {
@@ -122,7 +122,7 @@ typedef struct {
   croi_trace_record_t record;
 } croi_trace_slot_t;
 
-static_assert(sizeof(croi_trace_slot_t) == 40);
+_Static_assert(sizeof(croi_trace_slot_t) == 40);
 
 enum : uint32_t {
   CROI_TRACE_RING_HEADER = 128,       // the one ring's offset in a trace ring

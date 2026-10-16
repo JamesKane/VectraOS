@@ -1,0 +1,146 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: James Kane <kanej1973@gmail.com>
+Date: Sun, 11 Oct 2026 20:36:17 -0500
+Subject: [PATCH 03/14] [VectraOS] the VECTRAOS stdlib SDK
+
+The standard library cross-compiled for the *-unknown-vectraos triples
+(tier 1 on croi): configure_sdk_unix(VectraOS) for x86_64, aarch64 and
+riscv64, each machine's sysroot from SWIFT_VECTRAOS_<arch>_SYSROOT_PATH
+(VectraOS's native build: the floor as libsys.a, its libc with its
+pthreads, libc++); the pthreads threading package, the default; static
+linking, with static-executable-args.lnk naming the runtime, libc++,
+libc++abi and libunwind (the clang driver adds libsys, libc and libm); and
+the SWIFT_MODULE_DEPENDS_VECTRAOS and SWIFT_SOURCES_DEPENDS_VECTRAOS
+dispatch in AddSwiftStdlib.
+---
+ CMakeLists.txt                                     | 10 ++++++++++
+ cmake/modules/SwiftConfigureSDK.cmake              | 14 +++++++++++++-
+ stdlib/cmake/modules/AddSwiftStdlib.cmake          | 12 ++++++++++++
+ .../Resources/vectraos/static-executable-args.lnk  |  7 +++++++
+ 4 files changed, 42 insertions(+), 1 deletion(-)
+ create mode 100644 stdlib/public/Resources/vectraos/static-executable-args.lnk
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index c47789bc..ad5225c1 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1400,6 +1400,16 @@ if(swift_build_wasm AND NOT "${SWIFT_HOST_VARIANT_SDK}" STREQUAL "WASI")
+   configure_sdk_unix(WASI wasm32)
+ endif()
+ 
++# Should we cross-compile the standard library for VectraOS (tier 1 on
++# croi: static programs over VectraOS's libc, its pthreads and libc++)?
++is_sdk_requested(VECTRAOS swift_build_vectraos)
++if(swift_build_vectraos AND NOT "${SWIFT_HOST_VARIANT_SDK}" STREQUAL "VECTRAOS")
++  if("${SWIFT_SDK_VECTRAOS_ARCHITECTURES}" STREQUAL "")
++    set(SWIFT_SDK_VECTRAOS_ARCHITECTURES "x86_64")
++  endif()
++  configure_sdk_unix(VectraOS "${SWIFT_SDK_VECTRAOS_ARCHITECTURES}")
++endif()
++
+ if("${SWIFT_SDKS}" STREQUAL "")
+   set(SWIFT_SDKS "${SWIFT_CONFIGURED_SDKS}")
+ endif()
+diff --git a/cmake/modules/SwiftConfigureSDK.cmake b/cmake/modules/SwiftConfigureSDK.cmake
+index 008ff5be..c7860d92 100644
+--- a/cmake/modules/SwiftConfigureSDK.cmake
++++ b/cmake/modules/SwiftConfigureSDK.cmake
+@@ -331,7 +331,8 @@ macro(configure_sdk_unix name architectures)
+   if("${prefix}" STREQUAL "LINUX"
+       OR "${prefix}" STREQUAL "LINUX_STATIC"
+       OR "${prefix}" STREQUAL "EMSCRIPTEN"
+-      OR "${prefix}" STREQUAL "WASI")
++      OR "${prefix}" STREQUAL "WASI"
++      OR "${prefix}" STREQUAL "VECTRAOS")
+     set(SWIFT_SDK_${prefix}_STATIC_LINKING_SUPPORTED TRUE)
+   else()
+     set(SWIFT_SDK_${prefix}_STATIC_LINKING_SUPPORTED FALSE)
+@@ -477,6 +478,17 @@ macro(configure_sdk_unix name architectures)
+         endif()
+       elseif("${prefix}" STREQUAL "EMSCRIPTEN")
+         set(SWIFT_SDK_EMSCRIPTEN_ARCH_${arch}_TRIPLE "${arch}-unknown-emscripten")
++      elseif("${prefix}" STREQUAL "VECTRAOS")
++        if(NOT arch MATCHES "^(x86_64|aarch64|riscv64)$")
++          message(FATAL_ERROR "unsupported arch for VectraOS: ${arch}")
++        endif()
++        set(SWIFT_SDK_VECTRAOS_ARCH_${arch}_TRIPLE "${arch}-unknown-vectraos")
++        # Tier 1's sysroot for the machine (VectraOS's native build: the
++        # floor as libsys.a, its libc, libc++), from the build script.
++        if("${SWIFT_VECTRAOS_${arch}_SYSROOT_PATH}" STREQUAL "")
++          message(FATAL_ERROR "SWIFT_VECTRAOS_${arch}_SYSROOT_PATH must be VectraOS's ${arch} sysroot")
++        endif()
++        set(SWIFT_SDK_VECTRAOS_ARCH_${arch}_PATH "${SWIFT_VECTRAOS_${arch}_SYSROOT_PATH}")
+       elseif("${prefix}" STREQUAL "LINUX_STATIC")
+         set(SWIFT_SDK_LINUX_STATIC_ARCH_${arch}_TRIPLE "${arch}-swift-linux-musl")
+         set(SWIFT_SDK_LINUX_STATIC_ARCH_${arch}_PATH "${SWIFT_MUSL_PATH}/${arch}")
+diff --git a/stdlib/cmake/modules/AddSwiftStdlib.cmake b/stdlib/cmake/modules/AddSwiftStdlib.cmake
+index d5384106..502c5cec 100644
+--- a/stdlib/cmake/modules/AddSwiftStdlib.cmake
++++ b/stdlib/cmake/modules/AddSwiftStdlib.cmake
+@@ -2060,6 +2060,8 @@ function(add_swift_target_library name)
+         SWIFT_MODULE_DEPENDS_ANDROID
+         SWIFT_MODULE_DEPENDS_CYGWIN
+         SWIFT_MODULE_DEPENDS_FREEBSD
++    SWIFT_MODULE_DEPENDS_VECTRAOS
++        SWIFT_MODULE_DEPENDS_VECTRAOS
+         SWIFT_MODULE_DEPENDS_FREESTANDING
+         SWIFT_MODULE_DEPENDS_OPENBSD
+         SWIFT_MODULE_DEPENDS_HAIKU
+@@ -2084,6 +2086,7 @@ function(add_swift_target_library name)
+         SWIFT_SOURCES_DEPENDS_VISIONOS
+         SWIFT_SOURCES_DEPENDS_FREESTANDING
+         SWIFT_SOURCES_DEPENDS_FREEBSD
++        SWIFT_SOURCES_DEPENDS_VECTRAOS
+         SWIFT_SOURCES_DEPENDS_OPENBSD
+         SWIFT_SOURCES_DEPENDS_LINUX
+         SWIFT_SOURCES_DEPENDS_LINUX_STATIC
+@@ -2281,6 +2284,9 @@ function(add_swift_target_library name)
+     elseif(sdk STREQUAL "FREEBSD")
+       list(APPEND swiftlib_module_depends_flattened
+            ${SWIFTLIB_SWIFT_MODULE_DEPENDS_FREEBSD})
++    elseif(sdk STREQUAL "VECTRAOS")
++      list(APPEND swiftlib_module_depends_flattened
++           ${SWIFTLIB_SWIFT_MODULE_DEPENDS_VECTRAOS})
+     elseif(sdk STREQUAL "OPENBSD")
+       list(APPEND swiftlib_module_depends_flattened
+            ${SWIFTLIB_SWIFT_MODULE_DEPENDS_OPENBSD})
+@@ -2383,6 +2389,8 @@ function(add_swift_target_library name)
+       list(APPEND sources ${SWIFTLIB_SWIFT_SOURCES_DEPENDS_FREESTANDING})
+     elseif(sdk STREQUAL "FREEBSD")
+       list(APPEND sources ${SWIFTLIB_SWIFT_SOURCES_DEPENDS_FREEBSD})
++    elseif(sdk STREQUAL "VECTRAOS")
++      list(APPEND sources ${SWIFTLIB_SWIFT_SOURCES_DEPENDS_VECTRAOS})
+     elseif(sdk STREQUAL "OPENBSD")
+       list(APPEND sources ${SWIFTLIB_SWIFT_SOURCES_DEPENDS_OPENBSD})
+     elseif(sdk STREQUAL "LINUX" OR sdk STREQUAL "ANDROID")
+@@ -3194,6 +3202,7 @@ function(add_swift_target_executable name)
+     SWIFT_MODULE_DEPENDS_ANDROID
+     SWIFT_MODULE_DEPENDS_CYGWIN
+     SWIFT_MODULE_DEPENDS_FREEBSD
++    SWIFT_MODULE_DEPENDS_VECTRAOS
+     SWIFT_MODULE_DEPENDS_FREESTANDING
+     SWIFT_MODULE_DEPENDS_OPENBSD
+     SWIFT_MODULE_DEPENDS_HAIKU
+@@ -3298,6 +3307,9 @@ function(add_swift_target_executable name)
+     elseif(sdk STREQUAL "FREEBSD")
+       list(APPEND swiftexe_module_depends_flattened
+         ${SWIFTEXE_TARGET_SWIFT_MODULE_DEPENDS_FREEBSD})
++    elseif(sdk STREQUAL "VECTRAOS")
++      list(APPEND swiftexe_module_depends_flattened
++        ${SWIFTEXE_TARGET_SWIFT_MODULE_DEPENDS_VECTRAOS})
+     elseif(sdk STREQUAL "OPENBSD")
+       list(APPEND swiftexe_module_depends_flattened
+         ${SWIFTEXE_TARGET_SWIFT_MODULE_DEPENDS_OPENBSD})
+diff --git a/stdlib/public/Resources/vectraos/static-executable-args.lnk b/stdlib/public/Resources/vectraos/static-executable-args.lnk
+new file mode 100644
+index 00000000..262e29aa
+--- /dev/null
++++ b/stdlib/public/Resources/vectraos/static-executable-args.lnk
+@@ -0,0 +1,7 @@
++-static
++-lswiftCore
++-lc++
++-lc++abi
++-lunwind
++-Xlinker
++--gc-sections

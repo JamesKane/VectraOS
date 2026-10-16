@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: James Kane <kanej1973@gmail.com>
+Date: Sun, 11 Oct 2026 20:36:17 -0500
+Subject: [PATCH 04/14] [VectraOS] VectraOSLibc, the platform module
+
+The platform module of VectraOS's tier 1: a Swift overlay re-exporting the
+clang module SwiftVectraOSLibc, which VectraOS's libc ships beside its
+headers (module.modulemap in the sysroot's usr/include, found by clang:
+no ClangImporter mapping), with errno. No tgmath yet: VectraOS's libm has
+what printing and parsing need, not all of C's.
+---
+ stdlib/public/Platform/CMakeLists.txt     | 14 ++++++++++++++
+ stdlib/public/Platform/VectraOSLibc.swift | 15 +++++++++++++++
+ 2 files changed, 29 insertions(+)
+ create mode 100644 stdlib/public/Platform/VectraOSLibc.swift
+
+diff --git a/stdlib/public/Platform/CMakeLists.txt b/stdlib/public/Platform/CMakeLists.txt
+index c185e423..177980c2 100644
+--- a/stdlib/public/Platform/CMakeLists.txt
++++ b/stdlib/public/Platform/CMakeLists.txt
+@@ -64,6 +64,20 @@ add_swift_target_library(swiftWASILibc ${SWIFT_STDLIB_LIBRARY_BUILD_TYPES} IS_SD
+     INSTALL_IN_COMPONENT sdk-overlay
+     DEPENDS wasilibc_modulemap)
+ 
++# VectraOS (tier 1 on croi): its own libc, whose headers carry the clang
++# module (SwiftVectraOSLibc, in the sysroot's usr/include). No tgmath yet:
++# its libm has the functions printing and parsing need, not all of C's.
++add_swift_target_library(swiftVectraOSLibc ${SWIFT_STDLIB_LIBRARY_BUILD_TYPES} IS_SDK_OVERLAY
++    VectraOSLibc.swift
++
++    SWIFT_COMPILE_FLAGS
++      ${SWIFT_RUNTIME_SWIFT_COMPILE_FLAGS}
++      ${SWIFT_STANDARD_LIBRARY_SWIFT_FLAGS}
++      ${swift_platform_compile_flags}
++    LINK_FLAGS "${SWIFT_RUNTIME_SWIFT_LINK_FLAGS}"
++    TARGET_SDKS VECTRAOS
++    INSTALL_IN_COMPONENT sdk-overlay)
++
+ add_swift_target_library(swiftCRT ${SWIFT_STDLIB_LIBRARY_BUILD_TYPES} IS_SDK_OVERLAY
+     ucrt.swift
+     ${swift_platform_sources}
+diff --git a/stdlib/public/Platform/VectraOSLibc.swift b/stdlib/public/Platform/VectraOSLibc.swift
+new file mode 100644
+index 00000000..82191d4a
+--- /dev/null
++++ b/stdlib/public/Platform/VectraOSLibc.swift
+@@ -0,0 +1,15 @@
++//===--- VectraOSLibc.swift -----------------------------------------------===//
++//
++// The platform module of VectraOS's tier 1 (on croi): its C library, with
++// what the C headers say in macros Swift can't import.
++//
++//===----------------------------------------------------------------------===//
++
++@_exported import SwiftVectraOSLibc // Clang module
++
++/// The calling thread's error number (errno.h's macro over
++/// __errno_location).
++public var errno: Int32 {
++  get { return __errno_location().pointee }
++  set { __errno_location().pointee = newValue }
++}

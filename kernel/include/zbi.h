@@ -89,6 +89,6 @@ typedef struct {
   uint32_t format;  // CROI_ZBI_PIXEL_FORMAT_*
 } croi_zbi_swfb_t;
 
-static_assert(sizeof(croi_zbi_header_t) == 32);
-static_assert(sizeof(croi_zbi_mem_range_t) == 24);
-static_assert(sizeof(croi_zbi_swfb_t) == 24);
+_Static_assert(sizeof(croi_zbi_header_t) == 32);
+_Static_assert(sizeof(croi_zbi_mem_range_t) == 24);
+_Static_assert(sizeof(croi_zbi_swfb_t) == 24);

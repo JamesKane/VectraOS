@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
-// Our libc as a clang module (M6e): SwiftTodhchaiLibc, which Swift's
-// platform module (TodhchaiLibc, the toolchain's stdlib) re-exports, as
+// Our libc as a clang module (M6e): SwiftVectraOSLibc, which Swift's
+// platform module (VectraOSLibc, the toolchain's stdlib) re-exports, as
 // Glibc does SwiftGlibc. Clang finds it beside the headers in tier 1's
 // sysroot. <assert.h> is textual: each inclusion follows NDEBUG anew.
 // <limits.h> is textual too: clang's own <limits.h> (its _Builtin_limits
 // module) reaches it by #include_next, so this module mustn't own it (that
-// made a cycle, SwiftTodhchaiLibc -> _Builtin_limits -> SwiftTodhchaiLibc,
+// made a cycle, SwiftVectraOSLibc -> _Builtin_limits -> SwiftVectraOSLibc,
 // which only a clean build of the stdlib showed). Its limits live in
 // <bits/limits.h>, which the module owns, so Swift sees them.
 
-module SwiftTodhchaiLibc [system] {
+module SwiftVectraOSLibc [system] {
   textual header "assert.h"
   header "bits/limits.h"
   header "ctype.h"

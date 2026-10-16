@@ -51,7 +51,7 @@ typedef struct {
   char name[32];
 } croi_info_resource_t;
 
-static_assert(sizeof(croi_info_resource_t) == 56);
+_Static_assert(sizeof(croi_info_resource_t) == 56);
 
 // object_get_info(resource, CROI_INFO_CPU_STATS) (K10f): Zircon's
 // zx_info_cpu_stats_t per CPU, on a handle to the INFO system resource (or
@@ -88,7 +88,7 @@ typedef struct {
   uint64_t idle_energy_consumption_nj;
 } croi_info_cpu_stats_t;
 
-static_assert(sizeof(croi_info_cpu_stats_t) == 144);
+_Static_assert(sizeof(croi_info_cpu_stats_t) == 144);
 
 // object_get_info(resource, CROI_INFO_KMEM_STATS): Zircon's
 // zx_info_kmem_stats_t, on a handle to the INFO system resource (or root).
@@ -137,8 +137,8 @@ typedef struct {
   uint64_t other_bytes;
 } croi_info_kmem_stats_v1_t;
 
-static_assert(sizeof(croi_info_kmem_stats_t) == 152);
-static_assert(sizeof(croi_info_kmem_stats_v1_t) == 72);
+_Static_assert(sizeof(croi_info_kmem_stats_t) == 152);
+_Static_assert(sizeof(croi_info_kmem_stats_v1_t) == 72);
 
 // smc_call (K13i; Zircon's zx_smc_call, arm64 only): an SMCCC call through
 // the FADT's conduit (SMC or HVC) with an SMC resource covering the

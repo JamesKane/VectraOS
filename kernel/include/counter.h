@@ -41,4 +41,4 @@ typedef struct {
   int64_t amount;
 } croi_counter_add_item_t;
 
-static_assert(sizeof(croi_counter_add_item_t) == 16);
+_Static_assert(sizeof(croi_counter_add_item_t) == 16);

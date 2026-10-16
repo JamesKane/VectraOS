@@ -1,0 +1,141 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: James Kane <jameskane@ieee.org>
+Date: Mon, 5 Oct 2026 10:50:05 -0500
+Subject: [PATCH] [VectraOS] the vectraos triple; static linking by default
+
+The Swift-language driver, Swift 6.4's default (the C++ driver in
+swift-frontend is deprecated), learns *-vectraos:
+  - Triple: the vectraos OS, parsed from "vectraos", and
+    staticallyLinksByDefault, true for vectraos only
+  - the platform name "vectraos", on GenericUnixToolchain
+  - -static-executable (for executables) and -static-stdlib default to
+    staticallyLinksByDefault, where the link is built and where the
+    driver picks the static resource directory (which reads the triple
+    from -target: it is needed before the frontend's target information
+    exists)
+  - DWARF 5 by default for vectraos, as clang's VectraOS toolchain
+
+The same as the swift patches do for the C++ driver. Adapted from
+swift-on-vectra's patch for *-vectraos.
+---
+ Sources/SwiftDriver/Driver/Driver.swift              | 11 ++++++++---
+ .../Jobs/GenericUnixToolchain+LinkerSupport.swift    |  5 +++--
+ .../Toolchains/GenericUnixToolchain.swift            |  5 +++++
+ Sources/SwiftDriver/Utilities/Triple+Platforms.swift |  2 ++
+ Sources/SwiftDriver/Utilities/Triple.swift           | 12 ++++++++++++
+ 5 files changed, 30 insertions(+), 5 deletions(-)
+
+diff --git a/Sources/SwiftDriver/Driver/Driver.swift b/Sources/SwiftDriver/Driver/Driver.swift
+index 9b386e9..3419bca 100644
+--- a/Sources/SwiftDriver/Driver/Driver.swift
++++ b/Sources/SwiftDriver/Driver/Driver.swift
+@@ -987,12 +987,17 @@ public struct Driver {
+       try Self.applyWorkingDirectory(specifiedWorkingDir, to: &self.parsedOptions)
+     }
+ 
++    // The target info that names the triple needs this, so read the target
++    // from the arguments.
++    let staticByDefault = parsedOptions.getLastArgument(.target).map {
++      Triple($0.asSingle, normalizing: true).staticallyLinksByDefault
++    } ?? false
+     let staticExecutable = parsedOptions.hasFlag(positive: .staticExecutable,
+                                                  negative: .noStaticExecutable,
+-                                                 default: false)
++                                                 default: staticByDefault)
+     let staticStdlib = parsedOptions.hasFlag(positive: .staticStdlib,
+                                              negative: .noStaticStdlib,
+-                                             default: false)
++                                             default: staticByDefault)
+     self.useStaticResourceDir = staticExecutable || staticStdlib
+ 
+     // Build the toolchain and determine target information.
+@@ -3606,7 +3611,7 @@ extension Triple {
+       return DarwinToolchain.self
+     case .linux:
+       return GenericUnixToolchain.self
+-    case .freeBSD, .haiku, .openbsd:
++    case .freeBSD, .haiku, .openbsd, .vectraos:
+       return GenericUnixToolchain.self
+     case .wasi:
+       return WebAssemblyToolchain.self
+diff --git a/Sources/SwiftDriver/Jobs/GenericUnixToolchain+LinkerSupport.swift b/Sources/SwiftDriver/Jobs/GenericUnixToolchain+LinkerSupport.swift
+index 7724d4a..63ba088 100644
+--- a/Sources/SwiftDriver/Jobs/GenericUnixToolchain+LinkerSupport.swift
++++ b/Sources/SwiftDriver/Jobs/GenericUnixToolchain+LinkerSupport.swift
+@@ -94,10 +94,11 @@ extension GenericUnixToolchain {
+ 
+       let staticStdlib = parsedOptions.hasFlag(positive: .staticStdlib,
+                                                negative: .noStaticStdlib,
+-                                                   default: false)
++                                               default: targetTriple.staticallyLinksByDefault)
+       let staticExecutable = parsedOptions.hasFlag(positive: .staticExecutable,
+                                                    negative: .noStaticExecutable,
+-                                                  default: false)
++                                                   default: targetTriple.staticallyLinksByDefault
++                                                     && linkerOutputType == .executable)
+       let clangTool: Tool = cxxCompatEnabled ? .clangxx : .clang
+       var clangPath = try getToolPath(clangTool)
+       if let toolsDirPath = parsedOptions.getLastArgument(.toolsDirectory) {
+diff --git a/Sources/SwiftDriver/Toolchains/GenericUnixToolchain.swift b/Sources/SwiftDriver/Toolchains/GenericUnixToolchain.swift
+index c402c1c..3f25058 100644
+--- a/Sources/SwiftDriver/Toolchains/GenericUnixToolchain.swift
++++ b/Sources/SwiftDriver/Toolchains/GenericUnixToolchain.swift
+@@ -60,6 +60,11 @@ public final class GenericUnixToolchain: Toolchain {
+     self.toolDirectory = toolDirectory
+   }
+ 
++  public func getDefaultDwarfVersion(targetTriple: Triple) -> UInt8 {
++    // The VectraOS debugger reads DWARF 5 only.
++    return targetTriple.os == .vectraos ? 5 : 4
++  }
++
+   public func makeLinkerOutputFilename(moduleName: String, type: LinkOutputType) -> String {
+     switch type {
+     case .executable: return moduleName
+diff --git a/Sources/SwiftDriver/Utilities/Triple+Platforms.swift b/Sources/SwiftDriver/Utilities/Triple+Platforms.swift
+index 94a9dc8..ac9be49 100644
+--- a/Sources/SwiftDriver/Utilities/Triple+Platforms.swift
++++ b/Sources/SwiftDriver/Utilities/Triple+Platforms.swift
+@@ -406,6 +406,8 @@ extension Triple {
+       return "haiku"
+     case .wasi:
+       return "wasi"
++    case .vectraos:
++      return "vectraos"
+     case .noneOS:
+       return nil
+ 
+diff --git a/Sources/SwiftDriver/Utilities/Triple.swift b/Sources/SwiftDriver/Utilities/Triple.swift
+index 2bd3a62..f811a85 100644
+--- a/Sources/SwiftDriver/Utilities/Triple.swift
++++ b/Sources/SwiftDriver/Utilities/Triple.swift
+@@ -1126,6 +1126,7 @@ extension Triple {
+     case emscripten
+     case visionos = "xros"
+     case firmware
++    case vectraos
+     case noneOS // 'OS' suffix purely to avoid name clash with Optional.none
+ 
+     var name: String {
+@@ -1168,6 +1169,8 @@ extension Triple {
+         return .win32
+       case _ where os.hasPrefix("haiku"):
+         return .haiku
++      case _ where os.hasPrefix("vectraos"):
++        return .vectraos
+       case _ where os.hasPrefix("minix"):
+         return .minix
+       case _ where os.hasPrefix("rtems"):
+@@ -1881,3 +1884,12 @@ extension Triple {
+     self.isFullyStaticLinux
+   }
+ }
++
++extension Triple {
++  /// Whether images for this target link the Swift runtime statically unless
++  /// told otherwise (-no-static-stdlib), and executables link fully
++  /// statically (-no-static-executable). VectraOS has no dynamic loader yet.
++  public var staticallyLinksByDefault: Bool {
++    os == .vectraos
++  }
++}

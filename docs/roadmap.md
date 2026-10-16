@@ -121,10 +121,19 @@ work, in order:
    itself, checks the flow they share, and exports both; `vx trace
    collect` (trace-collect) reassembles them from the console. Item 2
    is done but for the native loader (item 4).
-3. **Tier 1 (D47).** todhchai's `*-todhchai` toolchain, built from the
+3. **Tier 1 (D47).** The `*-vectraos` toolchain (todhchai's, renamed), built from the
    pinned Swift 6.4.0 and LLVM sources with its patch series, and tier 1's
    sysroot (libc, pthreads, libc++, the Swift runtime, FoundationEssentials).
-   FDIO and rc need it.
+   FDIO and rc need it. **Begun:** the series is lifted and renamed (`tools/toolchain`,
+   D47 as amended), built from the pinned sources (LLVM, the Swift
+   compiler, swift-driver; their smoke tests pass for all three
+   triples), and amd64's tier 1 runs on croi: the sysroot (the floor, the
+   libc, the ABI headers), libc++, libc++abi and libunwind, the Swift
+   runtime and standard library, and five boot tests (`user/tier1`: C,
+   C++, full Swift, a library module, concurrency on croi's executors).
+   Left: arm64 and rv64 (compiler-rt's builtins, built for them), and
+   FoundationEssentials (`build_foundation.sh` is lifted; its test needs
+   FDIO).
 4. **The control plane** (`system/ipc`, `node`, `launch`). The dispatcher
    binds each channel once, PERSISTENT, and reads and replies in arrays.
    Node messages become batches (D18): a request is an array of

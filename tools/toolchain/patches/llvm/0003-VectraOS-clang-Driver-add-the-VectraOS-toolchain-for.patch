@@ -1,0 +1,384 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: James Kane <jameskane@ieee.org>
+Date: Sun, 4 Oct 2026 22:00:37 -0500
+Subject: [PATCH 3/4] [VectraOS] clang Driver: add the VectraOS toolchain for
+ croi's programs
+
+Adds clang/lib/Driver/ToolChains/VectraOS.{h,cpp}: a Generic_ELF-derived
+toolchain for the *-vectraos triple, with its own linker tool, adapted
+from swift-on-vectra's toolchain for *-vectraos.
+
+VectraOS's tier 1 programs reach croi through libsys, with no POSIX
+library beneath them, and are linked as VectraOS links its tier 0
+programs (cmake/croi.cmake). So, by default:
+
+  - static, non-PIE ET_EXEC at --image-base=0x1000000, entered at
+    _start, -z separate-loadable-segments, -z stack-size=262144; -pie is
+    refused; -shared links nothing by default (a library dlopen loads
+    takes libc, libsys and Sys from its program)
+  - tier 1's start file, crt1.o, first when the sysroot has one
+  - --build-id=sha1, -z max-page-size=0x1000, -z noexecstack, -z now
+  - default libraries: -lc++ -lc++abi for C++, then libsys and
+    VectraOS's libc and libm, grouped since they call each other
+    (-lsys -lc -lm), then -lclang_rt.builtins
+  - one sysroot: <sysroot>/usr/include, <sysroot>/usr/include/c++/v1,
+    <sysroot>/usr/lib; no GCC discovery, multilib or multiarch
+  - DWARF 5 by default
+  - frame pointers in every function, leaf functions included on
+    AArch64, since VectraOS's tracer and debugger walk them
+  - compiler-rt, libc++, asynchronous unwind tables; C++ exceptions off
+    until the C++ runtime has an unwinder (M6d)
+---
+ clang/lib/Driver/CMakeLists.txt            |   1 +
+ clang/lib/Driver/Driver.cpp                |   4 +
+ clang/lib/Driver/ToolChains/Clang.cpp      |   8 +-
+ clang/lib/Driver/ToolChains/CommonArgs.cpp |   3 +
+ clang/lib/Driver/ToolChains/VectraOS.cpp   | 170 +++++++++++++++++++++
+ clang/lib/Driver/ToolChains/VectraOS.h     |  93 +++++++++++
+ 6 files changed, 277 insertions(+), 2 deletions(-)
+ create mode 100644 clang/lib/Driver/ToolChains/VectraOS.cpp
+ create mode 100644 clang/lib/Driver/ToolChains/VectraOS.h
+
+diff --git a/clang/lib/Driver/CMakeLists.txt b/clang/lib/Driver/CMakeLists.txt
+index fd6e31ed1..7cf4b825d 100644
+--- a/clang/lib/Driver/CMakeLists.txt
++++ b/clang/lib/Driver/CMakeLists.txt
+@@ -84,6 +84,7 @@ add_clang_library(clangDriver
+   ToolChains/SYCL.cpp
+   ToolChains/TCE.cpp
+   ToolChains/UEFI.cpp
++  ToolChains/VectraOS.cpp
+   ToolChains/VEToolchain.cpp
+   ToolChains/WebAssembly.cpp
+   ToolChains/XCore.cpp
+diff --git a/clang/lib/Driver/Driver.cpp b/clang/lib/Driver/Driver.cpp
+index 6df26c20a..155222aee 100644
+--- a/clang/lib/Driver/Driver.cpp
++++ b/clang/lib/Driver/Driver.cpp
+@@ -49,6 +49,7 @@
+ #include "ToolChains/Solaris.h"
+ #include "ToolChains/TCE.h"
+ #include "ToolChains/UEFI.h"
++#include "ToolChains/VectraOS.h"
+ #include "ToolChains/VEToolchain.h"
+ #include "ToolChains/WebAssembly.h"
+ #include "ToolChains/XCore.h"
+@@ -6839,6 +6840,9 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
+     case llvm::Triple::Haiku:
+       TC = std::make_unique<toolchains::Haiku>(*this, Target, Args);
+       break;
++    case llvm::Triple::VectraOS:
++      TC = std::make_unique<toolchains::VectraOS>(*this, Target, Args);
++      break;
+     case llvm::Triple::Darwin:
+     case llvm::Triple::MacOSX:
+     case llvm::Triple::IOS:
+diff --git a/clang/lib/Driver/ToolChains/Clang.cpp b/clang/lib/Driver/ToolChains/Clang.cpp
+index 060440ef4..e19386e1f 100644
+--- a/clang/lib/Driver/ToolChains/Clang.cpp
++++ b/clang/lib/Driver/ToolChains/Clang.cpp
+@@ -193,9 +193,13 @@ static bool addExceptionArgs(const ArgList &Args, types::ID InputType,
+   }
+ 
+   if (types::isCXX(InputType)) {
+-    // Disable C++ EH by default on XCore and PS4/PS5.
++    // Disable C++ EH by default on XCore and PS4/PS5. VectraOS: off until
++    // its C++ runtime has an unwinder (libunwind, M6 step 6f2a); until then
++    // libc++'s inline throws would need __cxa_throw and a personality
++    // routine that libc++abi does not provide.
+     bool CXXExceptionsEnabled = Triple.getArch() != llvm::Triple::xcore &&
+-                                !Triple.isPS() && !Triple.isDriverKit();
++                                !Triple.isPS() && !Triple.isDriverKit() &&
++                                !Triple.isOSVectraOS();
+     Arg *ExceptionArg = Args.getLastArg(
+         options::OPT_fcxx_exceptions, options::OPT_fno_cxx_exceptions,
+         options::OPT_fexceptions, options::OPT_fno_exceptions);
+diff --git a/clang/lib/Driver/ToolChains/CommonArgs.cpp b/clang/lib/Driver/ToolChains/CommonArgs.cpp
+index 38b809623..340a38b02 100644
+--- a/clang/lib/Driver/ToolChains/CommonArgs.cpp
++++ b/clang/lib/Driver/ToolChains/CommonArgs.cpp
+@@ -151,6 +151,9 @@ static bool useFramePointerForTargetByDefault(const llvm::opt::ArgList &Args,
+ }
+ 
+ static bool useLeafFramePointerForTargetByDefault(const llvm::Triple &Triple) {
++  // VectraOS's debugger and profiler walk frame pointers in every function.
++  if (Triple.isOSVectraOS())
++    return true;
+   if (Triple.isAArch64() || Triple.isPS() || Triple.isVE() ||
+       (Triple.isAndroid() && !Triple.isARM()))
+     return false;
+diff --git a/clang/lib/Driver/ToolChains/VectraOS.cpp b/clang/lib/Driver/ToolChains/VectraOS.cpp
+new file mode 100644
+index 000000000..9020d1010
+--- /dev/null
++++ b/clang/lib/Driver/ToolChains/VectraOS.cpp
+@@ -0,0 +1,170 @@
++//===--- VectraOS.cpp - VectraOS ToolChain Implementations --------*- C++ -*-===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++#include "VectraOS.h"
++#include "clang/Driver/CommonArgs.h"
++#include "clang/Driver/Compilation.h"
++#include "clang/Driver/Options.h"
++#include "llvm/Support/Path.h"
++#include "llvm/Support/VirtualFileSystem.h"
++
++using namespace clang::driver;
++using namespace clang::driver::tools;
++using namespace clang::driver::toolchains;
++using namespace clang;
++using namespace llvm::opt;
++
++void vectraos::Linker::ConstructJob(Compilation &C, const JobAction &JA,
++                                  const InputInfo &Output,
++                                  const InputInfoList &Inputs,
++                                  const ArgList &Args,
++                                  const char *LinkingOutput) const {
++  const auto &ToolChain = static_cast<const VectraOS &>(getToolChain());
++  const Driver &D = ToolChain.getDriver();
++  const bool Shared = Args.hasArg(options::OPT_shared);
++  const bool Relocatable = Args.hasArg(options::OPT_r);
++  ArgStringList CmdArgs;
++
++  // Silence warnings for options that mean nothing to a static link.
++  Args.ClaimAllArgs(options::OPT_g_Group);
++  Args.ClaimAllArgs(options::OPT_emit_llvm);
++  Args.ClaimAllArgs(options::OPT_w);
++  Args.ClaimAllArgs(options::OPT_static);
++  Args.ClaimAllArgs(options::OPT_rdynamic);
++  Args.claimAllArgs(options::OPT_pthread, options::OPT_pthreads);
++
++  if (Args.hasArg(options::OPT_pie))
++    D.Diag(diag::err_drv_unsupported_opt_for_target)
++        << "-pie" << ToolChain.getTriple().str();
++
++  if (!D.SysRoot.empty())
++    CmdArgs.push_back(Args.MakeArgString("--sysroot=" + D.SysRoot));
++
++  // The system's ABI facts: 4 KiB pages, no executable stack, every symbol
++  // bound at load (there is no lazy binding), and a build id, which the
++  // debugger's index keys on. These match how the system links its own
++  // programs.
++  CmdArgs.push_back("--build-id=sha1");
++  CmdArgs.push_back("-z");
++  CmdArgs.push_back("max-page-size=0x1000");
++  CmdArgs.push_back("-z");
++  CmdArgs.push_back("noexecstack");
++  CmdArgs.push_back("-z");
++  CmdArgs.push_back("now");
++
++  if (Relocatable) {
++    CmdArgs.push_back("-r");
++  } else if (Shared) {
++    // A shared object for dlopen (system/ld), which takes libc, libsys and
++    // Sys from the program that loads it: it links nothing by default.
++    CmdArgs.push_back("-shared");
++  } else {
++    // croi's programs: static ET_EXEC at the user address its loaders
++    // place them (userboot and the launcher take ET_EXEC), each segment on
++    // pages of its own, with the stack PT_GNU_STACK asks for. As VectraOS's
++    // tier 0 programs are linked (cmake/croi.cmake).
++    CmdArgs.push_back("-static");
++    CmdArgs.push_back("-e");
++    CmdArgs.push_back("_start");
++    CmdArgs.push_back("--image-base=0x1000000");
++    CmdArgs.push_back("-z");
++    CmdArgs.push_back("separate-loadable-segments");
++    CmdArgs.push_back("-z");
++    CmdArgs.push_back("stack-size=262144");
++  }
++
++  assert((Output.isFilename() || Output.isNothing()) && "Invalid output.");
++  if (Output.isFilename()) {
++    CmdArgs.push_back("-o");
++    CmdArgs.push_back(Output.getFilename());
++  }
++
++  // Tier 1's start file (crt1.o: _start, processargs, the heap and TLS,
++  // in C over croi's calls), first when the sysroot has one.
++  if (!Shared && !Relocatable &&
++      !Args.hasArg(options::OPT_nostdlib, options::OPT_nostartfiles)) {
++    std::string Crt1 = ToolChain.GetFilePath("crt1.o");
++    if (D.getVFS().exists(Crt1))
++      CmdArgs.push_back(Args.MakeArgString(Crt1));
++  }
++
++  Args.addAllArgs(CmdArgs, {options::OPT_L, options::OPT_T_Group,
++                            options::OPT_s, options::OPT_t, options::OPT_u});
++  ToolChain.AddFilePathLibArgs(Args, CmdArgs);
++
++  if (D.isUsingLTO())
++    addLTOOptions(ToolChain, Args, CmdArgs, Output, Inputs,
++                  D.getLTOMode() == LTOK_Thin);
++
++  addLinkerCompressDebugSectionsOption(ToolChain, Args, CmdArgs);
++  AddLinkerInputs(ToolChain, Inputs, Args, CmdArgs, JA);
++
++  // A program's default libraries: libc++ and libc++abi for C++, then
++  // libsys (croi's calls for tier 1) and VectraOS's libc and libm, which
++  // call each other, then compiler-rt's builtins.
++  if (!Shared && !Relocatable &&
++      !Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs)) {
++    if (D.CCCIsCXX() && ToolChain.ShouldLinkCXXStdlib(Args))
++      ToolChain.AddCXXStdlibLibArgs(Args, CmdArgs);
++    Args.ClaimAllArgs(options::OPT_stdlib_EQ);
++
++    CmdArgs.push_back("--start-group");
++    CmdArgs.push_back("-lsys");
++    CmdArgs.push_back("-lc");
++    CmdArgs.push_back("-lm");
++    CmdArgs.push_back("--end-group");
++    CmdArgs.push_back("-lclang_rt.builtins");
++  }
++
++  const char *Exec = Args.MakeArgString(ToolChain.GetLinkerPath());
++  C.addCommand(std::make_unique<Command>(JA, *this,
++                                         ResponseFileSupport::AtFileCurCP(),
++                                         Exec, CmdArgs, Inputs, Output));
++}
++
++VectraOS::VectraOS(const Driver &D, const llvm::Triple &Triple,
++               const ArgList &Args)
++    : Generic_ELF(D, Triple, Args) {
++  // One sysroot, searched once: no multilib or multiarch directories.
++  getFilePaths().push_back(concat(D.SysRoot, "/usr/lib"));
++}
++
++void VectraOS::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
++                                       ArgStringList &CC1Args) const {
++  const Driver &D = getDriver();
++
++  if (DriverArgs.hasArg(options::OPT_nostdinc))
++    return;
++
++  if (!DriverArgs.hasArg(options::OPT_nobuiltininc)) {
++    SmallString<128> Dir(D.ResourceDir);
++    llvm::sys::path::append(Dir, "include");
++    addSystemInclude(DriverArgs, CC1Args, Dir.str());
++  }
++
++  if (DriverArgs.hasArg(options::OPT_nostdlibinc))
++    return;
++
++  addExternCSystemInclude(DriverArgs, CC1Args,
++                          concat(D.SysRoot, "/usr/include"));
++}
++
++void VectraOS::addLibCxxIncludePaths(const ArgList &DriverArgs,
++                                   ArgStringList &CC1Args) const {
++  addSystemInclude(DriverArgs, CC1Args,
++                   concat(getDriver().SysRoot, "/usr/include/c++/v1"));
++}
++
++void VectraOS::AddCXXStdlibLibArgs(const ArgList &Args,
++                                 ArgStringList &CmdArgs) const {
++  // libc++ and libc++abi, static, with no unwinder.
++  CmdArgs.push_back("-lc++");
++  CmdArgs.push_back("-lc++abi");
++}
++
++Tool *VectraOS::buildLinker() const { return new tools::vectraos::Linker(*this); }
+diff --git a/clang/lib/Driver/ToolChains/VectraOS.h b/clang/lib/Driver/ToolChains/VectraOS.h
+new file mode 100644
+index 000000000..90fb7ba25
+--- /dev/null
++++ b/clang/lib/Driver/ToolChains/VectraOS.h
+@@ -0,0 +1,93 @@
++//===--- VectraOS.h - VectraOS ToolChain Implementations ----------*- C++ -*-===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++#ifndef LLVM_CLANG_LIB_DRIVER_TOOLCHAINS_VECTRAOS_H
++#define LLVM_CLANG_LIB_DRIVER_TOOLCHAINS_VECTRAOS_H
++
++#include "Gnu.h"
++#include "clang/Driver/Driver.h"
++#include "clang/Driver/ToolChain.h"
++
++namespace clang {
++namespace driver {
++namespace tools {
++
++/// Links VectraOS's tier 1 programs with ld.lld: static, not position
++/// independent, at croi's user address, entered at crt1.o's _start.
++namespace vectraos {
++class LLVM_LIBRARY_VISIBILITY Linker final : public Tool {
++public:
++  Linker(const ToolChain &TC) : Tool("vectraos::Linker", "ld.lld", TC) {}
++
++  bool hasIntegratedCPP() const override { return false; }
++  bool isLinkJob() const override { return true; }
++
++  void ConstructJob(Compilation &C, const JobAction &JA,
++                    const InputInfo &Output, const InputInfoList &Inputs,
++                    const llvm::opt::ArgList &TCArgs,
++                    const char *LinkingOutput) const override;
++};
++} // end namespace vectraos
++} // end namespace tools
++
++namespace toolchains {
++
++/// The *-vectraos triple: VectraOS's tier 1 programs on croi, a microkernel
++/// with Zircon's object model. Programs reach croi through libsys, with no
++/// POSIX library beneath them; the C library is VectraOS's, ISO C and the
++/// POSIX it chooses. One sysroot, no GCC discovery, no multilib; shared
++/// objects are loaded with dlopen into static programs.
++class LLVM_LIBRARY_VISIBILITY VectraOS : public Generic_ELF {
++public:
++  VectraOS(const Driver &D, const llvm::Triple &Triple,
++         const llvm::opt::ArgList &Args);
++
++  bool HasNativeLLVMSupport() const override { return true; }
++  bool IsMathErrnoDefault() const override { return false; }
++  bool IsObjCNonFragileABIDefault() const override { return true; }
++
++  // Programs are static and not position independent, as VectraOS's own
++  // build links them; shared objects are compiled -fPIC explicitly.
++  bool isPICDefault() const override { return false; }
++  bool isPIEDefault(const llvm::opt::ArgList &Args) const override {
++    return false;
++  }
++  bool isPICDefaultForced() const override { return false; }
++
++  // DWARF 5, the version VectraOS's debug-info reader takes.
++  unsigned GetDefaultDwarfVersion() const override { return 5; }
++
++  const char *getDefaultLinker() const override { return "ld.lld"; }
++  RuntimeLibType GetDefaultRuntimeLibType() const override {
++    return ToolChain::RLT_CompilerRT;
++  }
++  CXXStdlibType GetDefaultCXXStdlibType() const override {
++    return ToolChain::CST_Libcxx;
++  }
++  UnwindTableLevel
++  getDefaultUnwindTableLevel(const llvm::opt::ArgList &Args) const override {
++    return UnwindTableLevel::Asynchronous;
++  }
++
++  void
++  AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs,
++                            llvm::opt::ArgStringList &CC1Args) const override;
++  void addLibCxxIncludePaths(const llvm::opt::ArgList &DriverArgs,
++                             llvm::opt::ArgStringList &CC1Args) const override;
++  void AddCXXStdlibLibArgs(const llvm::opt::ArgList &Args,
++                           llvm::opt::ArgStringList &CmdArgs) const override;
++
++protected:
++  Tool *buildLinker() const override;
++};
++
++} // end namespace toolchains
++} // end namespace driver
++} // end namespace clang
++
++#endif // LLVM_CLANG_LIB_DRIVER_TOOLCHAINS_VECTRAOS_H

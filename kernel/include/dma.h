@@ -112,8 +112,8 @@ typedef struct {
   uint64_t window_size;   //   window_base + window_size); size 0: none set
 } croi_bti_properties_t;
 
-static_assert(sizeof(croi_info_bti_t) == 32);
-static_assert(sizeof(croi_bti_properties_t) == 24);
+_Static_assert(sizeof(croi_info_bti_t) == 32);
+_Static_assert(sizeof(croi_bti_properties_t) == 24);
 
 // Zircon's zx_iommu_desc_intel_t and its parts (zircon/syscalls/iommu.h).
 enum : uint8_t {
@@ -145,9 +145,9 @@ typedef struct {
   // croi_iommu_desc_intel_scope_t scopes[]; then the reserved memory.
 } croi_iommu_desc_intel_t;
 
-static_assert(sizeof(croi_iommu_desc_intel_scope_t) == 8);
-static_assert(sizeof(croi_iommu_desc_intel_reserved_memory_t) == 24);
-static_assert(sizeof(croi_iommu_desc_intel_t) == 16);
+_Static_assert(sizeof(croi_iommu_desc_intel_scope_t) == 8);
+_Static_assert(sizeof(croi_iommu_desc_intel_reserved_memory_t) == 24);
+_Static_assert(sizeof(croi_iommu_desc_intel_t) == 16);
 
 // croi's AMD-Vi descriptor (CROI_IOMMU_TYPE_AMD).
 typedef struct {
@@ -165,5 +165,5 @@ typedef struct {
   uint8_t _reserved[4];
 } croi_iommu_desc_amd_t;
 
-static_assert(sizeof(croi_iommu_desc_amd_unity_t) == 24);
-static_assert(sizeof(croi_iommu_desc_amd_t) == 16);
+_Static_assert(sizeof(croi_iommu_desc_amd_unity_t) == 24);
+_Static_assert(sizeof(croi_iommu_desc_amd_t) == 16);

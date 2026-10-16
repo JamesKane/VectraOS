@@ -242,11 +242,15 @@ croi_user_library(${_dl_swift} SYS SWIFT ${_ld_tests}/DlSwift.swift)
 # and exported; the boot-trace test starts it.
 set(_trace_test ${CMAKE_CURRENT_BINARY_DIR}/tracetest.elf)
 croi_user_program(${_trace_test} PIE SYS SWIFT ${PROJECT_SOURCE_DIR}/system/trace/tests/native/Main.swift)
+# Tier 1's programs (D47), when the *-vectraos toolchain has been built.
+include(${PROJECT_SOURCE_DIR}/cmake/Tier1.cmake)
+croi_tier1(_tier1_bootfs _tier1_files)
 set(CROI_BOOTFS_IMAGE ${CMAKE_BINARY_DIR}/bootfs.img PARENT_SCOPE)
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs.img
           bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_test}
           lib/libdltest.so=${_dl_c} lib/libdlswift.so=${_dl_swift} bin/trace-test=${_trace_test}
-  DEPENDS ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_trace_test} vx ${VX}
+          ${_tier1_bootfs}
+  DEPENDS ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_trace_test} ${_tier1_files} vx ${VX}
   COMMENT "Building bootfs")
 add_custom_target(bootfs DEPENDS ${CMAKE_BINARY_DIR}/bootfs.img)

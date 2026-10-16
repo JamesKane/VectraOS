@@ -1,0 +1,224 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: James Kane <jameskane@ieee.org>
+Date: Mon, 5 Oct 2026 06:07:11 -0500
+Subject: [PATCH 02/14] [VectraOS] the driver links vectraos images statically
+ by default
+
+VectraOS's programs are static ET_EXEC (shared objects are loaded with
+dlopen into them). The driver's GenericUnix link asked clang for Linux's
+shape: -pie, an rpath to the runtime and a dynamic -lswiftCore; clang's
+VectraOS toolchain refuses -pie.
+
+  - ToolChain gains two platform defaults, staticExecutableByDefault()
+    and staticStdlibByDefault() (both false), and helpers that read
+    -static-executable and -static-stdlib against them, used wherever
+    the driver read those flags: the frontend's
+    -use-static-resource-dir, immediate mode, and the GenericUnix link
+    (PIE, rpath, the static-executable and static-stdlib link files).
+  - A VectraOS toolchain (a GenericUnix) sets both: executables link
+    fully static, other images link the runtime statically.
+    -no-static-executable and -no-static-stdlib still override them.
+
+No other platform's behaviour changes. Adapted from swift-on-vectra's
+patch for *-vectraos.
+---
+ include/swift/Driver/ToolChain.h | 18 ++++++++++++++++++
+ lib/Driver/Driver.cpp            | 10 +++-------
+ lib/Driver/ToolChains.cpp        | 18 ++++++++++++++----
+ lib/Driver/ToolChains.h          | 18 ++++++++++++++++--
+ lib/Driver/UnixToolChains.cpp    | 24 ++++++++++--------------
+ 5 files changed, 61 insertions(+), 27 deletions(-)
+
+diff --git a/include/swift/Driver/ToolChain.h b/include/swift/Driver/ToolChain.h
+index 415b608d..8cd9f985 100644
+--- a/include/swift/Driver/ToolChain.h
++++ b/include/swift/Driver/ToolChain.h
+@@ -256,9 +256,27 @@ protected:
+   void addPluginArguments(const llvm::opt::ArgList &Args,
+                           llvm::opt::ArgStringList &Arguments) const;
+ 
++  /// Whether executables link everything statically, the Swift runtime
++  /// included, unless -no-static-executable is given. For platforms with no
++  /// dynamic loader.
++  virtual bool staticExecutableByDefault() const { return false; }
++
++  /// Whether other images link the Swift runtime statically unless
++  /// -no-static-stdlib is given.
++  virtual bool staticStdlibByDefault() const { return false; }
++
+ public:
+   virtual ~ToolChain() = default;
+ 
++  /// Whether an image links as a static executable: -static-executable, or
++  /// this platform's default for executables.
++  bool linksStaticExecutable(const llvm::opt::ArgList &Args,
++                             bool isExecutable) const;
++
++  /// Whether an image links the Swift runtime statically: -static-stdlib, or
++  /// this platform's default.
++  bool linksStaticStdlib(const llvm::opt::ArgList &Args) const;
++
+   const Driver &getDriver() const { return D; }
+   const llvm::Triple &getTriple() const { return Triple; }
+ 
+diff --git a/lib/Driver/Driver.cpp b/lib/Driver/Driver.cpp
+index e5515aaa..caf1c3da 100644
+--- a/lib/Driver/Driver.cpp
++++ b/lib/Driver/Driver.cpp
+@@ -453,9 +453,7 @@ Driver::buildToolChain(const llvm::opt::InputArgList &ArgList) {
+   case llvm::Triple::WASI:
+     return std::make_unique<toolchains::WebAssembly>(*this, target);
+   case llvm::Triple::VectraOS:
+-    // GenericUnix links through clang, whose VectraOS toolchain knows the
+-    // *-vectraos link: static, entered at libvx's _start.
+-    return std::make_unique<toolchains::GenericUnix>(*this, target);
++    return std::make_unique<toolchains::VectraOS>(*this, target);
+   case llvm::Triple::UnknownOS:
+     return std::make_unique<toolchains::GenericUnix>(*this, target);
+   default:
+@@ -2018,10 +2016,8 @@ bool Driver::handleImmediateArgs(const ArgList &Args, const ToolChain &TC) {
+       commandLine.push_back(resourceDirArg->getValue());
+     }
+ 
+-    if (Args.hasFlag(options::OPT_static_executable,
+-                     options::OPT_no_static_executable, false) ||
+-        Args.hasFlag(options::OPT_static_stdlib, options::OPT_no_static_stdlib,
+-                     false)) {
++    if (TC.linksStaticExecutable(Args, /*isExecutable=*/true) ||
++        TC.linksStaticStdlib(Args)) {
+       commandLine.push_back("-use-static-resource-dir");
+     }
+ 
+diff --git a/lib/Driver/ToolChains.cpp b/lib/Driver/ToolChains.cpp
+index 3364493c..bf0b29fa 100644
+--- a/lib/Driver/ToolChains.cpp
++++ b/lib/Driver/ToolChains.cpp
+@@ -728,10 +728,8 @@ ToolChain::constructInvocation(const CompileJobAction &job,
+     Arguments.push_back("-track-system-dependencies");
+   }
+ 
+-  if (context.Args.hasFlag(options::OPT_static_executable,
+-                           options::OPT_no_static_executable, false) ||
+-      context.Args.hasFlag(options::OPT_static_stdlib,
+-                           options::OPT_no_static_stdlib, false)) {
++  if (linksStaticExecutable(context.Args, /*isExecutable=*/true) ||
++      linksStaticStdlib(context.Args)) {
+     Arguments.push_back("-use-static-resource-dir");
+   }
+ 
+@@ -1744,3 +1742,15 @@ bool ToolChain::sanitizerRuntimeLibExists(const ArgList &args,
+                           sanitizerRuntimeLibName(sanitizerName, shared));
+   return llvm::sys::fs::exists(sanitizerLibPath.str());
+ }
++
++bool ToolChain::linksStaticExecutable(const llvm::opt::ArgList &Args,
++                                      bool isExecutable) const {
++  return Args.hasFlag(options::OPT_static_executable,
++                      options::OPT_no_static_executable,
++                      isExecutable && staticExecutableByDefault());
++}
++
++bool ToolChain::linksStaticStdlib(const llvm::opt::ArgList &Args) const {
++  return Args.hasFlag(options::OPT_static_stdlib, options::OPT_no_static_stdlib,
++                      staticStdlibByDefault());
++}
+diff --git a/lib/Driver/ToolChains.h b/lib/Driver/ToolChains.h
+index 018913ab..91f80d97 100644
+--- a/lib/Driver/ToolChains.h
++++ b/lib/Driver/ToolChains.h
+@@ -158,8 +158,8 @@ protected:
+   /// and to not provide a specific linker otherwise.
+   virtual std::string getDefaultLinker() const;
+ 
+-  bool addRuntimeRPath(const llvm::Triple &T,
+-                       const llvm::opt::ArgList &Args) const;
++  bool addRuntimeRPath(const llvm::Triple &T, const llvm::opt::ArgList &Args,
++                       bool isExecutable) const;
+ 
+   InvocationInfo constructInvocation(const DynamicLinkJobAction &job,
+                                      const JobContext &context) const override;
+@@ -201,6 +201,20 @@ public:
+   ~OpenBSD() = default;
+ };
+ 
++/// VectraOS has no dynamic loader yet: executables link everything
++/// statically, other images link the Swift runtime statically, and clang's
++/// VectraOS toolchain supplies the rest of the native link.
++class LLVM_LIBRARY_VISIBILITY VectraOS : public GenericUnix {
++protected:
++  bool staticExecutableByDefault() const override { return true; }
++  bool staticStdlibByDefault() const override { return true; }
++
++public:
++  VectraOS(const Driver &D, const llvm::Triple &Triple)
++      : GenericUnix(D, Triple) {}
++  ~VectraOS() = default;
++};
++
+ class LLVM_LIBRARY_VISIBILITY FreeBSD : public GenericUnix {
+ protected:
+   std::string getDefaultLinker() const override;
+diff --git a/lib/Driver/UnixToolChains.cpp b/lib/Driver/UnixToolChains.cpp
+index 3f328e2a..4df8c2d9 100644
+--- a/lib/Driver/UnixToolChains.cpp
++++ b/lib/Driver/UnixToolChains.cpp
+@@ -93,18 +93,17 @@ std::string toolchains::GenericUnix::getDefaultLinker() const {
+ }
+ 
+ bool toolchains::GenericUnix::addRuntimeRPath(const llvm::Triple &T,
+-                                              const llvm::opt::ArgList &Args) const {
++                                              const llvm::opt::ArgList &Args,
++                                              bool isExecutable) const {
+   // If we are building a static executable, do not add a rpath for the runtime
+   // as it is a static binary and the loader will not be invoked.
+-  if (Args.hasFlag(options::OPT_static_executable,
+-                   options::OPT_no_static_executable, false))
++  if (linksStaticExecutable(Args, isExecutable))
+     return false;
+ 
+   // If we are building with a static standard library, do not add a rpath for
+   // the runtime because the runtime will be part of the binary and the rpath is
+   // no longer necessary.
+-  if (Args.hasFlag(options::OPT_static_stdlib, options::OPT_no_static_stdlib,
+-                   false))
++  if (linksStaticStdlib(Args))
+     return false;
+ 
+   // FIXME: We probably shouldn't be adding an rpath here unless we know ahead
+@@ -188,10 +187,9 @@ toolchains::GenericUnix::constructInvocation(const DynamicLinkJobAction &job,
+     Arguments.push_back(context.Args.MakeArgString(A->getValue()));
+   }
+ 
+-  if (getTriple().getObjectFormat() == llvm::Triple::ELF &&
+-      job.getKind() == LinkKind::Executable &&
+-      !context.Args.hasFlag(options::OPT_static_executable,
+-                            options::OPT_no_static_executable, false)) {
++  const bool isExecutable = job.getKind() == LinkKind::Executable;
++  if (getTriple().getObjectFormat() == llvm::Triple::ELF && isExecutable &&
++      !linksStaticExecutable(context.Args, isExecutable)) {
+     Arguments.push_back("-pie");
+   }
+ 
+@@ -209,11 +207,9 @@ toolchains::GenericUnix::constructInvocation(const DynamicLinkJobAction &job,
+   bool staticExecutable = false;
+   bool staticStdlib = false;
+ 
+-  if (context.Args.hasFlag(options::OPT_static_executable,
+-                           options::OPT_no_static_executable, false)) {
++  if (linksStaticExecutable(context.Args, isExecutable)) {
+     staticExecutable = true;
+-  } else if (context.Args.hasFlag(options::OPT_static_stdlib,
+-                                  options::OPT_no_static_stdlib, false)) {
++  } else if (linksStaticStdlib(context.Args)) {
+     staticStdlib = true;
+   }
+ 
+@@ -221,7 +217,7 @@ toolchains::GenericUnix::constructInvocation(const DynamicLinkJobAction &job,
+   getRuntimeLibraryPaths(RuntimeLibPaths, context.Args, context.OI.SDKPath,
+                          /*Shared=*/!(staticExecutable || staticStdlib));
+ 
+-  if (addRuntimeRPath(getTriple(), context.Args)) {
++  if (addRuntimeRPath(getTriple(), context.Args, isExecutable)) {
+     for (auto path : RuntimeLibPaths) {
+       Arguments.push_back("-Xlinker");
+       Arguments.push_back("-rpath");

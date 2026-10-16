@@ -1,0 +1,83 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: James Kane <jkane@tds.net>
+Date: Mon, 12 Oct 2026 06:40:29 -0500
+Subject: [PATCH 12/14] [VectraOS] Observation over our pthreads
+
+Observation's lock takes Glibc's pthread mutex path on VectraOS, whose
+C library has pthreads (VectraOSLibc), and the module depends on it
+(VectraOS's M6g: FoundationEssentials' ProgressManager imports it).
+---
+ .../Observation/Sources/Observation/CMakeLists.txt   |  1 +
+ .../Observation/Sources/Observation/Locking.swift    | 12 +++++++-----
+ 2 files changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/stdlib/public/Observation/Sources/Observation/CMakeLists.txt b/stdlib/public/Observation/Sources/Observation/CMakeLists.txt
+index 77bed79d..9ba7a9a4 100644
+--- a/stdlib/public/Observation/Sources/Observation/CMakeLists.txt
++++ b/stdlib/public/Observation/Sources/Observation/CMakeLists.txt
+@@ -35,6 +35,7 @@ add_swift_target_library(swiftObservation ${SWIFT_STDLIB_LIBRARY_BUILD_TYPES} IS
+   SWIFT_MODULE_DEPENDS _Concurrency
+   SWIFT_MODULE_DEPENDS_ANDROID Android
+   SWIFT_MODULE_DEPENDS_LINUX Glibc
++  SWIFT_MODULE_DEPENDS_VECTRAOS VectraOSLibc
+   SWIFT_MODULE_DEPENDS_LINUX_STATIC Musl
+   SWIFT_MODULE_DEPENDS_FREEBSD Glibc
+   SWIFT_MODULE_DEPENDS_OPENBSD Glibc
+diff --git a/stdlib/public/Observation/Sources/Observation/Locking.swift b/stdlib/public/Observation/Sources/Observation/Locking.swift
+index 6171465a..90e0166c 100644
+--- a/stdlib/public/Observation/Sources/Observation/Locking.swift
++++ b/stdlib/public/Observation/Sources/Observation/Locking.swift
+@@ -19,6 +19,8 @@
+ import Darwin.os.lock
+ #elseif canImport(Glibc)
+ import Glibc
++#elseif canImport(VectraOSLibc)
++import VectraOSLibc // our pthreads
+ #elseif canImport(Musl)
+ import Musl
+ #elseif canImport(WinSDK)
+@@ -33,7 +35,7 @@ import Android
+ internal struct Lock {
+   #if canImport(Darwin.os.lock)
+   typealias Primitive = os_unfair_lock
+-  #elseif canImport(Glibc) || canImport(Musl) || canImport(Bionic)
++  #elseif canImport(Glibc) || canImport(Musl) || canImport(Bionic) || canImport(VectraOSLibc)
+   #if os(FreeBSD) || os(OpenBSD)
+   // BSD libc does not annotate the nullability of pthread APIs.
+   // We should replace this with the appropriate API note in the platform
+@@ -61,7 +63,7 @@ internal struct Lock {
+   fileprivate static func initialize(_ platformLock: PlatformLock) {
+     #if canImport(Darwin.os.lock)
+     platformLock.initialize(to: os_unfair_lock())
+-    #elseif canImport(Glibc) || canImport(Musl) || canImport(Bionic)
++    #elseif canImport(Glibc) || canImport(Musl) || canImport(Bionic) || canImport(VectraOSLibc)
+     let result = pthread_mutex_init(platformLock, nil)
+     precondition(result == 0, "pthread_mutex_init failed")
+     #elseif canImport(WinSDK)
+@@ -74,7 +76,7 @@ internal struct Lock {
+   }
+ 
+   fileprivate static func deinitialize(_ platformLock: PlatformLock) {
+-    #if canImport(Glibc) || canImport(Musl) || canImport(Bionic)
++    #if canImport(Glibc) || canImport(Musl) || canImport(Bionic) || canImport(VectraOSLibc)
+     let result = pthread_mutex_destroy(platformLock)
+     precondition(result == 0, "pthread_mutex_destroy failed")
+     #endif
+@@ -84,7 +86,7 @@ internal struct Lock {
+   fileprivate static func lock(_ platformLock: PlatformLock) {
+     #if canImport(Darwin.os.lock)
+     os_unfair_lock_lock(platformLock)
+-    #elseif canImport(Glibc) || canImport(Musl) || canImport(Bionic)
++    #elseif canImport(Glibc) || canImport(Musl) || canImport(Bionic) || canImport(VectraOSLibc)
+     pthread_mutex_lock(platformLock)
+     #elseif canImport(WinSDK)
+     AcquireSRWLockExclusive(platformLock)
+@@ -97,7 +99,7 @@ internal struct Lock {
+   fileprivate static func unlock(_ platformLock: PlatformLock) {
+     #if canImport(Darwin.os.lock)
+     os_unfair_lock_unlock(platformLock)
+-    #elseif canImport(Glibc) || canImport(Musl) || canImport(Bionic)
++    #elseif canImport(Glibc) || canImport(Musl) || canImport(Bionic) || canImport(VectraOSLibc)
+     let result = pthread_mutex_unlock(platformLock)
+     precondition(result == 0, "pthread_mutex_unlock failed")
+     #elseif canImport(WinSDK)

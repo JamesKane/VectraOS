@@ -57,7 +57,7 @@ typedef struct {
   uint32_t reserved;     // 0
 } croi_vmar_map_item_t;
 
-static_assert(sizeof(croi_vmar_map_item_t) == 48);
+_Static_assert(sizeof(croi_vmar_map_item_t) == 48);
 
 typedef struct {
   uint64_t addr;
@@ -66,7 +66,7 @@ typedef struct {
   int32_t status;        // out: 0, or why this range failed
 } croi_vmar_range_t;
 
-static_assert(sizeof(croi_vmar_range_t) == 24);
+_Static_assert(sizeof(croi_vmar_range_t) == 24);
 
 enum : int64_t {  // return codes of processes the kernel ended (Zircon's)
   CROI_TASK_RETCODE_SYSCALL_KILL = -1024,
@@ -244,7 +244,7 @@ typedef struct {
   uint64_t mem_fractional_scaled_shared_bytes;  // 63-bit fixed point; 1 << 63 is a byte
 } croi_info_task_stats_t;
 
-static_assert(sizeof(croi_info_task_stats_t) == 40);
+_Static_assert(sizeof(croi_info_task_stats_t) == 40);
 
 // object_get_info(thread, CROI_INFO_THREAD_TRACE) (croi's, K10d; INSPECT):
 // the id croi's trace records name the thread by (task << 12 | index), so
@@ -276,7 +276,7 @@ typedef struct {
   uint32_t reserved;
 } croi_info_thread_trace_t;
 
-static_assert(sizeof(croi_info_thread_trace_t) == 8);
+_Static_assert(sizeof(croi_info_thread_trace_t) == 8);
 
 // job_set_cpu_reservation(job, resource, cpu_mask) (croi's, K10d, ext 8):
 // the CPUs in the mask run only threads of this job and its descendants,

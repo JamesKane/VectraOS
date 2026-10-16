@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: James Kane <jkane@tds.net>
+Date: Mon, 12 Oct 2026 06:40:29 -0500
+Subject: [PATCH 13/14] [VectraOS] VectraOSLibc: POSIXErrorCode and the file
+ types
+
+POSIXError.swift's Linux enumeration (our libc has Linux's numbers) in
+VectraOSLibc, and the rest of <sys/stat.h>'s S_IF types and the set-ID
+and sticky bits as mode_t (VectraOS's M6g: FoundationEssentials).
+---
+ stdlib/public/Platform/CMakeLists.txt     | 1 +
+ stdlib/public/Platform/POSIXError.swift   | 2 +-
+ stdlib/public/Platform/VectraOSLibc.swift | 8 ++++++++
+ 3 files changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/stdlib/public/Platform/CMakeLists.txt b/stdlib/public/Platform/CMakeLists.txt
+index 177980c2..a3786b5f 100644
+--- a/stdlib/public/Platform/CMakeLists.txt
++++ b/stdlib/public/Platform/CMakeLists.txt
+@@ -69,6 +69,7 @@ add_swift_target_library(swiftWASILibc ${SWIFT_STDLIB_LIBRARY_BUILD_TYPES} IS_SD
+ # its libm has the functions printing and parsing need, not all of C's.
+ add_swift_target_library(swiftVectraOSLibc ${SWIFT_STDLIB_LIBRARY_BUILD_TYPES} IS_SDK_OVERLAY
+     VectraOSLibc.swift
++    POSIXError.swift
+ 
+     SWIFT_COMPILE_FLAGS
+       ${SWIFT_RUNTIME_SWIFT_COMPILE_FLAGS}
+diff --git a/stdlib/public/Platform/POSIXError.swift b/stdlib/public/Platform/POSIXError.swift
+index b379fac5..beab92fe 100644
+--- a/stdlib/public/Platform/POSIXError.swift
++++ b/stdlib/public/Platform/POSIXError.swift
+@@ -10,7 +10,7 @@
+ //
+ //===----------------------------------------------------------------------===//
+ 
+-#if os(Linux) || os(Android)
++#if os(Linux) || os(Android) || os(VectraOS)
+ 
+ /// Enumeration describing POSIX error codes.
+ public enum POSIXErrorCode: Int32, Sendable {
+diff --git a/stdlib/public/Platform/VectraOSLibc.swift b/stdlib/public/Platform/VectraOSLibc.swift
+index 6f6cf3cf..d505f077 100644
+--- a/stdlib/public/Platform/VectraOSLibc.swift
++++ b/stdlib/public/Platform/VectraOSLibc.swift
+@@ -34,9 +34,17 @@ public func open(
+ }
+ 
+ public var S_IFMT: mode_t   { return mode_t(0o170000) }
++public var S_IFIFO: mode_t  { return mode_t(0o010000) }
++public var S_IFCHR: mode_t  { return mode_t(0o020000) }
+ public var S_IFDIR: mode_t  { return mode_t(0o040000) }
++public var S_IFBLK: mode_t  { return mode_t(0o060000) }
+ public var S_IFREG: mode_t  { return mode_t(0o100000) }
+ public var S_IFLNK: mode_t  { return mode_t(0o120000) }
++public var S_IFSOCK: mode_t { return mode_t(0o140000) }
++
++public var S_ISUID: mode_t  { return mode_t(0o004000) }
++public var S_ISGID: mode_t  { return mode_t(0o002000) }
++public var S_ISVTX: mode_t  { return mode_t(0o001000) }
+ 
+ public var S_IRWXU: mode_t  { return mode_t(0o000700) }
+ public var S_IRUSR: mode_t  { return mode_t(0o000400) }

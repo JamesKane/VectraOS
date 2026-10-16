@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: James Kane <jkane@tds.net>
+Date: Mon, 12 Oct 2026 05:42:38 -0500
+Subject: [PATCH 11/14] [VectraOS] VectraOSLibc: open and the S_IF constants
+
+open, which is variadic in C, over our <fcntl.h>'s __td_open; the
+<sys/stat.h> mode constants as mode_t, as Glibc's overlay gives them
+(VectraOS's M6g: files through fdio).
+---
+ stdlib/public/Platform/VectraOSLibc.swift | 37 +++++++++++++++++++++++
+ 1 file changed, 37 insertions(+)
+
+diff --git a/stdlib/public/Platform/VectraOSLibc.swift b/stdlib/public/Platform/VectraOSLibc.swift
+index 82191d4a..6f6cf3cf 100644
+--- a/stdlib/public/Platform/VectraOSLibc.swift
++++ b/stdlib/public/Platform/VectraOSLibc.swift
+@@ -13,3 +13,40 @@ public var errno: Int32 {
+   get { return __errno_location().pointee }
+   set { __errno_location().pointee = newValue }
+ }
++
++//===----------------------------------------------------------------------===//
++// fcntl.h and sys/stat.h (VectraOS's M6g: files through fdio)
++//===----------------------------------------------------------------------===//
++
++public func open(
++  _ path: UnsafePointer<CChar>,
++  _ oflag: Int32
++) -> Int32 {
++  return __td_open(path, oflag, 0)
++}
++
++public func open(
++  _ path: UnsafePointer<CChar>,
++  _ oflag: Int32,
++  _ mode: mode_t
++) -> Int32 {
++  return __td_open(path, oflag, mode)
++}
++
++public var S_IFMT: mode_t   { return mode_t(0o170000) }
++public var S_IFDIR: mode_t  { return mode_t(0o040000) }
++public var S_IFREG: mode_t  { return mode_t(0o100000) }
++public var S_IFLNK: mode_t  { return mode_t(0o120000) }
++
++public var S_IRWXU: mode_t  { return mode_t(0o000700) }
++public var S_IRUSR: mode_t  { return mode_t(0o000400) }
++public var S_IWUSR: mode_t  { return mode_t(0o000200) }
++public var S_IXUSR: mode_t  { return mode_t(0o000100) }
++public var S_IRWXG: mode_t  { return mode_t(0o000070) }
++public var S_IRGRP: mode_t  { return mode_t(0o000040) }
++public var S_IWGRP: mode_t  { return mode_t(0o000020) }
++public var S_IXGRP: mode_t  { return mode_t(0o000010) }
++public var S_IRWXO: mode_t  { return mode_t(0o000007) }
++public var S_IROTH: mode_t  { return mode_t(0o000004) }
++public var S_IWOTH: mode_t  { return mode_t(0o000002) }
++public var S_IXOTH: mode_t  { return mode_t(0o000001) }

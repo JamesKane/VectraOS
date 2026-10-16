@@ -253,6 +253,22 @@ syscalls 110-111):
   IPC category and itself, checks that its FLOW steps and the kernel's
   CHANNEL_WRITE and CHANNEL_READ share a flow id, and exports; the
   trace-collect test reassembles that from the console qemu.sh keeps.
+- Tier 1 (D47): programs in C, C++ and full Swift, built by the
+  `*-vectraos` toolchain (`tools/toolchain`: the series renamed from
+  todhchai's, its sources and builds in `.cache/toolchain`, outside the
+  tree) against `build/<arch>/sysroot` (`cmake/Tier1.cmake`; amd64 only so
+  far, for compiler-rt's builtins): the floor as libsys.a and the libc as
+  libc.a with their `swift_*` symbols made local, the libc's headers and
+  module map (SwiftVectraOSLibc), the floor's td_floor.h, and the ABI
+  headers it includes (croi/syscall.h and the CroiAbi module's, which are
+  why those spell their layout checks `_Static_assert`: the runtime's C
+  shims are gnu11); then libc++, libc++abi and libunwind
+  (`cmake/cxx.cmake`) and the Swift runtime and standard library
+  (`build_stdlib.sh`). The tree builds as before without the toolchain.
+  Tier 1 programs link `ET_EXEC` at 0x1000000 (the clang driver's croi
+  link line, patch llvm 0003) and start at the floor's `_start`. The
+  boot tests: floor-hello, cxx-hello, swift-hello, swift-start and
+  swift-async (`user/tier1`).
 
 ## bootfs and userboot (K8b)
 

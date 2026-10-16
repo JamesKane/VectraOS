@@ -71,7 +71,7 @@ typedef struct {
   uint32_t interrupt_count;  // ids with an interrupt object
 } croi_info_msi_t;
 
-static_assert(sizeof(croi_info_msi_t) == 24);
+_Static_assert(sizeof(croi_info_msi_t) == 24);
 
 // interrupt_ack(croi_interrupt_ack_item_t *items, count) (D40) re-arms
 // each item's bound interrupt (WRITE): an IRQ thread serving several
@@ -86,4 +86,4 @@ typedef struct {
   int32_t status;      // out: 0, or why this item failed
 } croi_interrupt_ack_item_t;
 
-static_assert(sizeof(croi_interrupt_ack_item_t) == 8);
+_Static_assert(sizeof(croi_interrupt_ack_item_t) == 8);

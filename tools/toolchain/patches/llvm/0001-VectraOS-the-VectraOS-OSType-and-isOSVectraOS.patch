@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: James Kane <jameskane@ieee.org>
+Date: Mon, 25 May 2026 21:08:51 -0500
+Subject: [PATCH 1/4] [VectraOS] the VectraOS OSType and isOSVectraOS()
+
+Adds Triple::VectraOS to the OSType enum (as the new tail of the list,
+updating LastOSType), its name "vectraos" in getOSTypeName() and
+parseOS(), and isOSVectraOS() beside isOSFreeBSD() and the rest.
+
+*-unknown-vectraos is VectraOS's tier 1 user space on croi; croi's
+kernel and VectraOS's tier 0 keep *-none-elf. Adapted from
+swift-on-vectra's patch for *-vectraos.
+---
+ llvm/include/llvm/TargetParser/Triple.h | 7 ++++++-
+ llvm/lib/TargetParser/Triple.cpp        | 2 ++
+ 2 files changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/llvm/include/llvm/TargetParser/Triple.h b/llvm/include/llvm/TargetParser/Triple.h
+index f183f49f1..106da4adc 100644
+--- a/llvm/include/llvm/TargetParser/Triple.h
++++ b/llvm/include/llvm/TargetParser/Triple.h
+@@ -245,7 +245,8 @@ public:
+     Serenity,
+     Vulkan, // Vulkan SPIR-V
+     Firmware,
+-    LastOSType = Firmware
++    VectraOS, // VectraOS userland triple (kernel uses *-none-elf)
++    LastOSType = VectraOS
+   };
+   enum EnvironmentType {
+     UnknownEnvironment,
+@@ -643,6 +644,10 @@ public:
+     return getOS() == Triple::FreeBSD;
+   }
+ 
++  bool isOSVectraOS() const {
++    return getOS() == Triple::VectraOS;
++  }
++
+   bool isOSFuchsia() const {
+     return getOS() == Triple::Fuchsia;
+   }
+diff --git a/llvm/lib/TargetParser/Triple.cpp b/llvm/lib/TargetParser/Triple.cpp
+index 76abb531a..5749c5ba2 100644
+--- a/llvm/lib/TargetParser/Triple.cpp
++++ b/llvm/lib/TargetParser/Triple.cpp
+@@ -325,6 +325,7 @@ StringRef Triple::getOSTypeName(OSType Kind) {
+   case Vulkan: return "vulkan";
+   case Firmware:
+     return "firmware";
++  case VectraOS: return "vectraos";
+   }
+ 
+   llvm_unreachable("Invalid OSType");
+@@ -722,6 +723,7 @@ static Triple::OSType parseOS(StringRef OSName) {
+     .StartsWith("serenity", Triple::Serenity)
+     .StartsWith("vulkan", Triple::Vulkan)
+     .StartsWith("firmware", Triple::Firmware)
++    .StartsWith("vectraos", Triple::VectraOS)
+     .Default(Triple::UnknownOS);
+ }
+ 

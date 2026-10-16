@@ -1,0 +1,71 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: James Kane <jameskane@ieee.org>
+Date: Mon, 25 May 2026 20:09:52 -0500
+Subject: [PATCH 01/14] [VectraOS] the vectraos OS triple
+
+swiftc accepts *-vectraos:
+  - lib/Basic/LangOptions.cpp: "VectraOS" among the supported
+    conditional-compilation OSes, so `#if os(VectraOS)` parses, and the
+    Triple::VectraOS case in setPlatformConditionValue
+  - lib/Basic/Platform.cpp: Triple::VectraOS is the "vectraos" platform
+  - lib/Driver/Driver.cpp: Triple::VectraOS routes to a GenericUnix
+    toolchain, which links through clang's VectraOS toolchain
+
+The stdlib and its platform module for the triple come later (M6e).
+Adapted from swift-on-vectra's patch for *-vectraos.
+---
+ lib/Basic/LangOptions.cpp | 4 ++++
+ lib/Basic/Platform.cpp    | 2 ++
+ lib/Driver/Driver.cpp     | 4 ++++
+ 3 files changed, 10 insertions(+)
+
+diff --git a/lib/Basic/LangOptions.cpp b/lib/Basic/LangOptions.cpp
+index ac7f9bdb..ae892fbd 100644
+--- a/lib/Basic/LangOptions.cpp
++++ b/lib/Basic/LangOptions.cpp
+@@ -88,6 +88,7 @@ static const SupportedConditionalValue SupportedConditionalCompilationOSs[] = {
+   "Haiku",
+   "WASI",
+   "Emscripten",
++  "VectraOS",
+   "none",
+ };
+ 
+@@ -561,6 +562,9 @@ std::pair<bool, bool> LangOptions::setTarget(llvm::Triple triple) {
+   case llvm::Triple::OpenBSD:
+     addPlatformConditionValue(PlatformConditionKind::OS, "OpenBSD");
+     break;
++  case llvm::Triple::VectraOS:
++    addPlatformConditionValue(PlatformConditionKind::OS, "VectraOS");
++    break;
+   case llvm::Triple::Win32:
+     if (Target.getEnvironment() == llvm::Triple::Cygnus)
+       addPlatformConditionValue(PlatformConditionKind::OS, "Cygwin");
+diff --git a/lib/Basic/Platform.cpp b/lib/Basic/Platform.cpp
+index 6c7ace63..1499bcb9 100644
+--- a/lib/Basic/Platform.cpp
++++ b/lib/Basic/Platform.cpp
+@@ -267,6 +267,8 @@ StringRef swift::getPlatformNameForTriple(const llvm::Triple &triple) {
+     return "freebsd";
+   case llvm::Triple::OpenBSD:
+     return "openbsd";
++  case llvm::Triple::VectraOS:
++    return "vectraos";
+   case llvm::Triple::Win32:
+     switch (triple.getEnvironment()) {
+     case llvm::Triple::Cygnus:
+diff --git a/lib/Driver/Driver.cpp b/lib/Driver/Driver.cpp
+index 332f7899..e5515aaa 100644
+--- a/lib/Driver/Driver.cpp
++++ b/lib/Driver/Driver.cpp
+@@ -452,6 +452,10 @@ Driver::buildToolChain(const llvm::opt::InputArgList &ArgList) {
+     return std::make_unique<toolchains::GenericUnix>(*this, target);
+   case llvm::Triple::WASI:
+     return std::make_unique<toolchains::WebAssembly>(*this, target);
++  case llvm::Triple::VectraOS:
++    // GenericUnix links through clang, whose VectraOS toolchain knows the
++    // *-vectraos link: static, entered at libvx's _start.
++    return std::make_unique<toolchains::GenericUnix>(*this, target);
+   case llvm::Triple::UnknownOS:
+     return std::make_unique<toolchains::GenericUnix>(*this, target);
+   default:

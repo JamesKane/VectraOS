@@ -42,7 +42,7 @@ typedef struct {
   uint64_t tid;        // and thread koid
 } croi_log_record_t;
 
-static_assert(sizeof(croi_log_record_t) + CROI_LOG_RECORD_DATA_MAX == CROI_LOG_RECORD_MAX);
+_Static_assert(sizeof(croi_log_record_t) + CROI_LOG_RECORD_DATA_MAX == CROI_LOG_RECORD_MAX);
 
 // object_get_info(log, CROI_INFO_DEBUGLOG) (croi's, K10d; any log handle):
 // how far the console dumper has got, for writers that pace themselves to
@@ -58,4 +58,4 @@ typedef struct {
   uint64_t printed;
 } croi_info_debuglog_t;
 
-static_assert(sizeof(croi_info_debuglog_t) == 16);
+_Static_assert(sizeof(croi_info_debuglog_t) == 16);

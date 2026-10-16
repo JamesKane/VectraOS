@@ -1,0 +1,71 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: James Kane <jkane@tds.net>
+Date: Mon, 12 Oct 2026 05:11:23 -0500
+Subject: [PATCH 10/14] [VectraOS] the global executor fires port waiters
+
+The global queue's threads sleep on the process's executor port (the
+floor's td_executor_port) rather than a port of their own, and a packet
+on it whose key is a td_port_waiter's address is that waiter's: the
+thread that took it calls its fire, unlocked, before taking the lock
+again. So an async wait (object_wait_async to that port, keyed by a
+waiter) resumes its task with no thread blocked on the handle: Sys's
+Handle.wait(until:) (VectraOS's M6f).
+---
+ .../Concurrency/VectraOSGlobalExecutor.cpp    | 23 +++++++++++++++----
+ 1 file changed, 18 insertions(+), 5 deletions(-)
+
+diff --git a/stdlib/public/Concurrency/VectraOSGlobalExecutor.cpp b/stdlib/public/Concurrency/VectraOSGlobalExecutor.cpp
+index 1a555b23..fd22b379 100644
+--- a/stdlib/public/Concurrency/VectraOSGlobalExecutor.cpp
++++ b/stdlib/public/Concurrency/VectraOSGlobalExecutor.cpp
+@@ -11,7 +11,10 @@
+ // a packet or the soonest deadline: enqueueing a job queues a wake packet
+ // when a sleeper has none coming, and a port, unlike a condition variable,
+ // keeps a wake queued before its sleeper got there. Its lock is our
+-// pthreads' mutex, over croi's futexes.
++// pthreads' mutex, over croi's futexes. The global queue's port is the
++// process's executor port (td_executor_port): a packet on it whose key is
++// a td_port_waiter's is fired on the thread that took it, so an async wait
++// on a handle resumes its task with no thread blocked on it.
+ //
+ // A job's schedulerPrivate holds the next job in its queue ([0]) and, for a
+ // delayed one, its deadline on the monotonic clock in nanoseconds ([1]). The
+@@ -87,8 +90,12 @@ struct Queue {
+   JobList ready[Buckets];
+   SwiftJob *delayed = nullptr; // sorted by deadline, soonest first
+ 
+-  void init() {
+-    if (td_port_create(&port) != 0)
++  void init(bool executorPort) {
++    if (executorPort)
++      port = td_executor_port();
++    else if (td_port_create(&port) != 0)
++      port = 0;
++    if (port == 0)
+       fail("cannot make the executor's port");
+   }
+ 
+@@ -137,6 +144,12 @@ struct Queue {
+       pthread_mutex_unlock(&lock);
+       td_port_packet_t packet;
+       int32_t status = td_port_wait(port, deadline, &packet);
++      // A waiter's packet: fired here, unlocked (it resumes a task, which
++      // enqueues).
++      if (status == 0 && packet.key != 0) {
++        auto waiter = reinterpret_cast<td_port_waiter_t *>(uintptr_t(packet.key));
++        waiter->fire(waiter, &packet);
++      }
+       pthread_mutex_lock(&lock);
+       sleeping--;
+       if (status == 0 && packet.type == 0 && packet.key == 0 && wakes > 0)
+@@ -160,8 +173,8 @@ void *worker(void *) {
+ }
+ 
+ void start() {
+-  globalQueue.init();
+-  mainQueue.init();
++  globalQueue.init(true);
++  mainQueue.init(false);
+   size_t cpus = td_cpu_count();
+   if (cpus == 0)
+     cpus = 1;

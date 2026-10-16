@@ -1,6 +1,9 @@
 // The ABI headers shared with user space (user/include/croi/syscall.h
 // includes them), a module of their own so user Swift code can import
-// them without the kernel's private ones.
+// them without the kernel's private ones. Tier 1's sysroot carries them
+// (cmake/sysroot.cmake), where C before C23 includes them too (the Swift
+// runtime's shims): their layout checks are _Static_assert, which C11 to
+// C23 and C++ all take, not C23's static_assert.
 module CroiAbi {
   header "object.h"
   header "task.h"

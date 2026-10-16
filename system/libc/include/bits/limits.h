@@ -3,7 +3,7 @@
 // POSIX's limits (M6g), in our libc's own module: <limits.h> is textual
 // (clang's <limits.h> reaches it by #include_next, so our module can't own
 // it), and a textual header's macros belong to whoever includes it, so
-// Swift would never see them through TodhchaiLibc. Here, they're ours.
+// Swift would never see them through VectraOSLibc. Here, they're ours.
 
 #ifndef TD_BITS_LIMITS_H
 #define TD_BITS_LIMITS_H
