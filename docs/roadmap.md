@@ -204,7 +204,14 @@ work, in order:
    (a stream through two slots, about 200,000 states each; a relaxed
    publish caught), ByteStreamTests on the host (each implementation
    feeding the other across threads) and the `ring` suite on each arch.
-   Next: stdio on it, then `pipe()` and the pty.
+   stdio is on it: a parent gives a child its stdin and stdout rings in
+   one VMO, a doorbell each way and a channel for its end
+   (CROI_PA_STDIO, `td_stdio.h`); the floor attaches them at start
+   (`stdio.c`, over ring.h) and writes its lines, reads stdin and puts
+   the end mark at exit through them, and Sys's `ChildStdio` is the
+   parent's side. A process given none writes stdout to the debuglog as
+   before. sys-test checks it (its child echoes 20 KB; a child whose
+   parent goes sees its stdin end). Next: `pipe()` and the pty.
 7. **Drivers:** PCI, ACPI (the AML interpreter), devmgr, the driver host,
    the virtio library and virtio-input. Each driver binds its interrupt
    with `object_bind` and acks in arrays. The block class's ring (TDBR)

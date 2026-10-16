@@ -1,5 +1,6 @@
 module TDNative {
   header "td_native.h"
+  header "td_stdio.h"
   export *
 }
 module TDFloor {

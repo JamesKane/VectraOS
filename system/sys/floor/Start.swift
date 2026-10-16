@@ -118,6 +118,7 @@ public enum ProcessStart {
 public func exit(_ code: Int64) -> Never {
   td_run_exit_handlers()
   Stdout.flush()
+  td_stdio_end()
   _ = croi_syscall(CROI_SYS_PROCESS_EXIT, UInt64(bitPattern: code), 0, 0, 0, 0)
   while true {}
 }
@@ -231,6 +232,8 @@ func strings(_ m: UnsafeMutablePointer<UInt8>, _ size: Int, _ offset: UInt32, _ 
   _ = ProcessStart.take(info(CROI_PA_VMAR_ROOT))
   Runtime.processSelf = ProcessStart.take(info(CROI_PA_PROC_SELF)) ?? 0
   Runtime.threadSelf = ProcessStart.take(info(CROI_PA_THREAD_SELF)) ?? 0
+  // stdio, if the parent gave it (D46): stdout and stdin on rings.
+  td_stdio_start()
   // The UTC page, mapped read only for td_utc_now (D48); the mapping keeps
   // it. Argument 1, a writable one, stays the time service's.
   if let utc = ProcessStart.take(info(CROI_PA_VMO_UTC)) {

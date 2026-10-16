@@ -38,7 +38,7 @@ set(CROI_FLOOR_DIR ${PROJECT_SOURCE_DIR}/system/sys/floor)
 set(CROI_USER_COMMON_CFLAGS --target=${CROI_CLANG_TRIPLE} ${CROI_USER_CFLAGS} -std=c23 -O2 -ffreestanding
     -fno-omit-frame-pointer -ffunction-sections -fdata-sections -fno-pic -fno-pie
     -I${PROJECT_SOURCE_DIR}/user/include -I${PROJECT_SOURCE_DIR}/system/libc/include
-    -I${PROJECT_SOURCE_DIR}/kernel/include -I${CROI_FLOOR_DIR}/include)
+    -I${PROJECT_SOURCE_DIR}/kernel/include -I${CROI_FLOOR_DIR}/include -I${PROJECT_SOURCE_DIR}/lib/ring)
 
 # croi_user_floor(): builds the floor and the libc once per tree:
 # ${CROI_USER_FLOOR} (libfloor.a) and ${CROI_USER_LIBC} (libc.a, its
@@ -53,6 +53,7 @@ function(croi_user_floor)
   set(_libc ${PROJECT_SOURCE_DIR}/system/libc)
   set(_c_sources
     ${CROI_FLOOR_DIR}/runtime.c
+    ${CROI_FLOOR_DIR}/stdio.c
     ${PROJECT_SOURCE_DIR}/lib/rt/int128.c
     ${PROJECT_SOURCE_DIR}/lib/rt/stack_protector.c)
   set(_entry ${CROI_FLOOR_DIR}/entry/${CROI_ARCH}.S)
@@ -342,7 +343,7 @@ function(croi_user_sys)
       ${PROJECT_SOURCE_DIR}/user/lib/loader/Segments.swift ${PROJECT_SOURCE_DIR}/user/lib/loader/Program.swift)
   set(_api ${_sys}/api/Handles.swift ${_sys}/api/Lock.swift ${_sys}/api/Objects.swift ${_sys}/api/Startup.swift
       ${_sys}/backend/native/Kernel.swift ${_sys}/backend/native/Loader.swift
-      ${_sys}/backend/native/UTC.swift)
+      ${_sys}/backend/native/UTC.swift ${_sys}/backend/native/Stdio.swift)
   set(_lib ${_sys}/native/Start.swift)
   set(_ld ${PROJECT_SOURCE_DIR}/system/ld/lib/Dynamic.swift ${PROJECT_SOURCE_DIR}/system/ld/native/Linker.swift
       ${PROJECT_SOURCE_DIR}/system/ld/native/Exports.swift)
@@ -367,14 +368,14 @@ function(croi_user_sys)
             -c ${_abi} -o ${_dir}/sysabi.o
     COMMAND ${_swiftc} -module-name Loader -emit-module -emit-module-path ${_dir}/Loader.swiftmodule
             -c ${_loader} -o ${_dir}/loader.o
+    COMMAND ${_swiftc} -module-name Ring -emit-module -emit-module-path ${_dir}/Ring.swiftmodule
+            -c ${_ring} -o ${_dir}/ring.o
     COMMAND ${_swiftc} -module-name Sys -emit-module -emit-module-path ${_dir}/Sys.swiftmodule
             -c ${_api} -o ${_dir}/sys.o
     COMMAND ${_swiftc} -module-name LibSys -emit-module -emit-module-path ${_dir}/LibSys.swiftmodule
             -c ${_lib} -o ${_dir}/libsys.o
     COMMAND ${_swiftc} -module-name Ld -emit-module -emit-module-path ${_dir}/Ld.swiftmodule
             -c ${_ld} -o ${_dir}/ld.o
-    COMMAND ${_swiftc} -module-name Ring -emit-module -emit-module-path ${_dir}/Ring.swiftmodule
-            -c ${_ring} -o ${_dir}/ring.o
     COMMAND ${_swiftc} -module-name TraceFormat -emit-module -emit-module-path ${_dir}/TraceFormat.swiftmodule
             -c ${_trace_format} -o ${_dir}/traceformat.o
     COMMAND ${_swiftc} -module-name Trace -emit-module -emit-module-path ${_dir}/Trace.swiftmodule

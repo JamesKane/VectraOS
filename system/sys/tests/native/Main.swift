@@ -9,6 +9,7 @@
 
 import LibSys
 import Sys
+import TDFloor
 
 nonisolated(unsafe) var failures = 0
 nonisolated(unsafe) var checks = 0
@@ -43,7 +44,12 @@ func same(_ string: String, _ text: StaticString) -> Bool {
 @main
 struct SysTest {
   static func main() {
-    if Startup.current.args.count == 2 { childMain() }
+    let args = Startup.current.args
+    if args.count == 2 {
+      if same(args[1], "stdio") { stdioChild() }
+      if same(args[1], "hangup") { hangupChild() }
+      childMain()
+    }
     do throws(Status) {
       try handles()
       try channels()
@@ -362,6 +368,7 @@ struct SysTest {
     check(report?.bytes == [1, 1, 1, 1], "it was given its arguments, environment, names and handles")
     check(statusOf { () throws(Status) in try Process.start(process, entry: me, Startup()) } == .badState,
           "a process starts once")
+    try stdio(job, me)
     _ = consume thread
     _ = consume bootfs
   }
@@ -377,6 +384,60 @@ struct SysTest {
     let handlesOK: UInt8 = startup.infos.isEmpty ? 1 : 0  // the floor took its own
     try? Channel.write(report, bytes: [argsOK, envOK, namesOK, handlesOK])
     Process.exit(code: 7)
+  }
+
+  /// The child's stdio on rings (D46): what it reads from its stdin comes
+  /// back on its stdout after a line saying how much, then the end; a
+  /// child whose parent closes its stdio sees its stdin end.
+  static func stdio(_ job: borrowing Handle, _ me: ProgramEntry) throws(Status) {
+    var pattern = [UInt8](repeating: 0, count: 20_000)
+    for i in pattern.indices { pattern[i] = UInt8(truncatingIfNeeded: i &* 7 &+ i >> 8) }
+    let process = try Process.create(job: job, name: "sys-test-stdio")
+    let startup = Startup(args: ["sys-test", "stdio"])
+    let stdio = try ChildStdio(for: startup)
+    let thread = try Process.start(process, entry: me, startup)
+    try stdio.write(pattern, deadline: soon(5000))
+    try stdio.closeInput(deadline: soon(5000))
+    let out = try stdio.readAll(deadline: soon(5000))
+    _ = try process.wait(for: Signals.terminated, deadline: soon(5000))
+    var expected = Array("got 20000 bytes\n".utf8)
+    expected += pattern
+    check(out == expected, "a child's stdin and stdout on rings, ended")
+    check(try Process.info(process).returnCode == 5, "and it ran to its end")
+    _ = consume thread
+
+    let hung = try Process.create(job: job, name: "sys-test-hangup")
+    let other = Startup(args: ["sys-test", "hangup"])
+    var dropped: ChildStdio? = try ChildStdio(for: other)
+    let thread2 = try Process.start(hung, entry: me, other)
+    dropped = nil  // its parent's side gone: the child's stdin ends
+    _ = try hung.wait(for: Signals.terminated, deadline: soon(5000))
+    check(try Process.info(hung).returnCode == 6 && dropped == nil, "a child sees its parent go as its stdin's end")
+    _ = consume thread2
+  }
+
+  /// A stdio child: echoes its stdin after saying how much there was.
+  static func stdioChild() -> Never {
+    let all = readStdin()
+    print("got \(all.count) bytes")
+    unsafe all.withUnsafeBytes { unsafe td_stdout_write($0.baseAddress!, $0.count) }
+    Process.exit(code: 5)
+  }
+
+  /// A stdio child whose parent goes: reads stdin to its end, exits 6.
+  static func hangupChild() -> Never {
+    _ = readStdin()
+    Process.exit(code: 6)
+  }
+
+  static func readStdin() -> [UInt8] {
+    var all: [UInt8] = []
+    var buffer = [UInt8](repeating: 0, count: 1000)
+    while true {
+      let n = unsafe buffer.withUnsafeMutableBytes { unsafe td_stdin_read($0.baseAddress!, $0.count) }
+      if n <= 0 { return all }
+      all += buffer[..<n]
+    }
   }
 
   static func random() throws(Status) {

@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// stdout over croi's debuglog: Embedded Swift's print writes through
-// putchar, and each line goes out as one debuglog record (at most 216
-// bytes; a longer line is split). Before stdout is set up, or if the
-// process was started without one, writes go nowhere.
+// stdout: Embedded Swift's print writes through putchar, a line at a time
+// (at most 216 bytes; a longer line is split). A process its parent gave
+// stdio (D46, td_stdio.h) writes its lines, newlines and all, into its
+// stdout ring (stdio.c); any other writes each line as one debuglog
+// record. Before stdout is set up, or if the process was started with
+// neither, writes go nowhere.
 //
-// stderr is stdout's, flushed, and stdin is empty: V1 cut the sockets that
-// carried descriptors 0-2 (D21), and byte streams come on the ring (D46,
-// V2's item 6).
+// stderr is stdout's, flushed. stdin is the stdin ring, or empty without
+// one.
 
 import CroiSyscall
 import Synchronization
@@ -17,13 +18,14 @@ enum Stdout {
   static let recordMax = 216
 
   nonisolated(unsafe) static var log: UInt32 = 0
-  nonisolated(unsafe) static var line = InlineArray<216, UInt8>(repeating: 0)
+  /// A line, and room for its newline.
+  nonisolated(unsafe) static var line = InlineArray<217, UInt8>(repeating: 0)
   nonisolated(unsafe) static var count = 0
   static let lock = RuntimeLock()
 
   static func put(_ byte: UInt8) {
     if byte == UInt8(ascii: "\n") {
-      flushLocked()  // a debuglog record is a line
+      flushLocked(line: true)  // a debuglog record is a line
       return
     }
     line[count] = byte
@@ -39,7 +41,17 @@ enum Stdout {
 
   static func flush() { lock.locked { flushLocked() } }
 
-  static func flushLocked() {
+  /// Writes out what's buffered; `ended`: a line ends there (the ring
+  /// carries its newline; a debuglog record is a line).
+  static func flushLocked(line ended: Bool = false) {
+    if ended { line[count] = UInt8(ascii: "\n") }
+    let ringed = unsafe withUnsafePointer(to: &line) { p in
+      unsafe td_stdio_write(UnsafeRawPointer(p), UInt64(count + (ended ? 1 : 0)))
+    }
+    if ringed {
+      count = 0
+      return
+    }
     guard count > 0 else { return }
     if log != 0 {
       unsafe withUnsafePointer(to: &line) { p in
@@ -66,10 +78,12 @@ enum Stdout {
   Stdout.flush()
 }
 
-/// stdin's bytes: none yet, so 0 (its end), stdout flushed first.
+/// stdin's bytes: its ring's (0 at its end), or none without one; stdout
+/// flushed first.
 @c public func td_stdin_read(_ buffer: UnsafeMutableRawPointer, _ n: Int) -> Int {
   Stdout.flush()
-  return 0
+  let got = unsafe td_stdio_read(buffer, UInt64(n))
+  return got < 0 ? 0 : Int(got)
 }
 
 @c public func putchar(_ c: Int32) -> Int32 {

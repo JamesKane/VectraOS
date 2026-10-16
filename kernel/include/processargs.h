@@ -50,6 +50,7 @@ enum : uint32_t {
   CROI_PA_TRACE_REGION = 0xF1,  // a process's trace region, a VMO (system/trace)
   CROI_PA_DEVICE = 0xF2,        // a driver host's device resources; the argument says which
   CROI_PA_SRV_BOARD = 0xF3,     // the session board, to post to /srv (system/node, D65)
+  CROI_PA_STDIO = 0xF4,         // stdio on rings (D46): the argument says which part (td_stdio.h)
 };
 
 // Zircon's PA_HND(type, arg).
