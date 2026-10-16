@@ -150,7 +150,12 @@ work, in order:
    Node messages become batches (D18): a request is an array of
    operations, a later one may use an earlier one's result, and bulk
    `read`/`write` opens a ring. Userboot starts the launcher, which builds
-   each process's `/svc`.
+   each process's `/svc`. **Begun:** IPC is lifted (`system/ipc`,
+   `docs/wire-format.md`, idlc) and passes hosted on V1's Sys: the dispatcher binds ONCE (for
+   now), the tests pass counters where they passed events, and the C
+   side (`td_wire.h`, idlc's headers) is on V1's calls, a call being one
+   `channel_call` as in Swift. Next: IPC natively, and the dispatcher
+   binding each channel once, PERSISTENT, reading and replying in arrays.
 5. **Time (D48).** Clock objects are cut: the time service publishes UTC
    in a read-only seqlock page that the launcher hands every process at
    start.

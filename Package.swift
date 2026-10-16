@@ -7,6 +7,7 @@
 // CMake runs vx's build steps (elf2efi, mkbootfs, check-pixels),
 // building it here first.
 
+import CompilerPluginSupport
 import PackageDescription
 
 let unchecked: [SwiftSetting] = [.unsafeFlags(["-enforce-exclusivity=unchecked"])]
@@ -18,10 +19,66 @@ let tier0: [SwiftSetting] = [
   .unsafeFlags(["-Werror", "StrictMemorySafety"]),
 ]
 
+// What C reaches V1's calls through: croi/syscall.h, and the kernel's ABI
+// headers it includes by quoted names.
+let abiHeaders = CSetting.unsafeFlags([
+  "-I", "\(Context.packageDirectory)/user/include", "-iquote", "\(Context.packageDirectory)/kernel/include",
+])
+
+// A target list of its own: one literal of them all is too much for the
+// type checker.
+let ipc: [Target] = [
+  // IPC (system/ipc, V2): the wire format (D6, docs/wire-format.md),
+  // @IPCLibrary (the macro, and the runtime its generated code calls,
+  // over Sys), and idlc (C headers, docs and API baselines from the same
+  // protocol files). Echo is the test protocol and its server.
+  .target(name: "IPCWire", path: "system/ipc/wire", swiftSettings: tier0),
+  .testTarget(name: "IPCWireTests", dependencies: ["IPCWire"], path: "system/ipc/tests/wire",
+              swiftSettings: tier0),
+  .target(name: "IPCModel", dependencies: [
+    "IPCWire", .product(name: "SwiftSyntax", package: "swift-syntax"),
+    .product(name: "SwiftParser", package: "swift-syntax"),
+  ], path: "system/ipc/model"),
+  .macro(name: "IPCMacros", dependencies: [
+    "IPCModel",
+    .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
+    .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
+  ], path: "system/ipc/macros"),
+  .testTarget(name: "IPCMacrosTests", dependencies: [
+    "IPCMacros",
+    .product(name: "SwiftSyntaxMacrosGenericTestSupport", package: "swift-syntax"),
+  ], path: "system/ipc/tests/macros"),
+  .target(name: "IDL", dependencies: [
+    "IPCModel", .product(name: "SwiftParser", package: "swift-syntax"),
+  ], path: "system/ipc/idl"),
+  .executableTarget(name: "idlc", dependencies: ["IDL"], path: "tools/idlc"),
+  .target(name: "IPC", dependencies: ["IPCWire", "Sys", "Trace", "IPCMacros"], path: "system/ipc/runtime",
+          swiftSettings: tier0),
+  // td_wire.h: the wire format in C, over V1's calls (croi/syscall.h, whose
+  // quoted includes find the kernel's ABI headers; -iquote keeps its
+  // time.h from the host's <time.h>). Hosted, only the codec runs: the C
+  // client's calls run natively.
+  .target(name: "TDWire", path: "system/ipc/c",
+          cSettings: [abiHeaders]),
+  .target(name: "IDLCTests", dependencies: ["TDWire"], path: "system/ipc/tests/c", exclude: ["generated"],
+          cSettings: [.headerSearchPath("generated"), abiHeaders]),
+  .testTarget(name: "IDLTests", dependencies: ["IDL", "IDLCTests", "IPC", "Echo"], path: "system/ipc/tests/idl",
+              swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+  .target(name: "Echo", dependencies: ["IPC"], path: "system/ipc/tests/echo",
+          swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+  .testTarget(name: "IPCTests", dependencies: ["IPC", "Echo"], path: "system/ipc/tests/runtime",
+              swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
+]
+
 let package = Package(
   name: "vectraos",
   products: [
     .executable(name: "vx", targets: ["vx"]),
+  ],
+  dependencies: [
+    // Host toolchain under D4, not code on the device: the release matching
+    // the Swift 6.4 compiler, for the @IPCLibrary macro and idlc.
+    .package(url: "https://github.com/swiftlang/swift-syntax.git", exact: "604.0.0"),
   ],
   targets: [
     .target(name: "TraceFormat", path: "system/trace/format"),
@@ -103,6 +160,6 @@ let package = Package(
     .target(name: "Ld", path: "system/ld", exclude: ["native", "tests"], sources: ["lib"], swiftSettings: tier0),
     .testTarget(name: "LdTests", dependencies: ["Ld", "Elf"], path: "system/ld/tests", exclude: ["native"]),
     .executableTarget(name: "vx", dependencies: ["Bench", "ImageFormats", "TraceFormat", "TraceReader"], path: "tools/vx"),
-  ],
+  ] + ipc,
   cLanguageStandard: .gnu2x
 )

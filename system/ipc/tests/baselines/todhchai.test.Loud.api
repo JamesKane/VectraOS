@@ -1,0 +1,14 @@
+# API baseline for todhchai.test.Loud, written by idlc. Commit it; idlc checks changes against it.
+protocol todhchai.test.Loud version 3
+compose todhchai.test.Echo
+method carry call since 3 params (Carried) result Carried throws - from todhchai.test.Echo
+method many call since 3 params ([Shaped],[[UInt32]],[Point]?) result [Shaped] throws - from todhchai.test.Echo
+method note oneway since 1 params (UInt64,Bool) result - throws - from todhchai.test.Echo
+method noted call since 2 params () result UInt64 throws - from todhchai.test.Echo
+method optionals call since 3 params (String?,[UInt8]?,Point?,Handle?) result Handle? throws - from todhchai.test.Echo
+method reflect call since 3 params (Shaped) result Shaped throws - from todhchai.test.Echo
+method say call since 1 params (String,UInt32) result String throws EchoError from todhchai.test.Echo
+method shout call since 1 params (String) result String throws -
+method shouted event since 1 params (String) result - throws -
+method swap call since 1 params (Handle) result Handle throws - from todhchai.test.Echo
+method ticked event since 1 params (UInt32,String) result - throws - from todhchai.test.Echo

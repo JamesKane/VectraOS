@@ -36,6 +36,12 @@ anything that a decision covers.
   for its build steps (elf2efi, mkbootfs, check-pixels)
   and builds it with SwiftPM first, so nothing outside the Swift toolchain,
   CMake, Ninja, QEMU and bash is needed. There is no Python.
+- SwiftPM's one dependency is swift-syntax (the IPC macro and idlc,
+  host-only under D4), pinned `exact:` in `Package.swift`; `Package.resolved`
+  isn't tracked. Without network, point SwiftPM at a local clone with
+  `swift package config set-mirror --original
+  https://github.com/swiftlang/swift-syntax.git --mirror PATH` (kept in the
+  untracked `.swiftpm/`).
 - Tier 1 (C, C++ and full Swift programs, D47) needs the `*-vectraos`
   toolchain, built from source by `tools/toolchain` into `.cache/toolchain`
   (its README: hours of build and several GB of links, so warn the other

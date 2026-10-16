@@ -1,0 +1,15 @@
+# API baseline for todhchai.test.Echo, written by idlc. Commit it; idlc checks changes against it.
+protocol todhchai.test.Echo version 3
+struct Carried (String,Handle,Handle?,Shaped?)
+struct Point (Int32,Int32)
+enum Shape UInt8 (1,2,7)
+struct Shaped (Shape,Point,String?,[String],[Point],UInt16?,[UInt8],Bool)
+method carry call since 3 params (Carried) result Carried throws -
+method many call since 3 params ([Shaped],[[UInt32]],[Point]?) result [Shaped] throws -
+method note oneway since 1 params (UInt64,Bool) result - throws -
+method noted call since 2 params () result UInt64 throws -
+method optionals call since 3 params (String?,[UInt8]?,Point?,Handle?) result Handle? throws -
+method reflect call since 3 params (Shaped) result Shaped throws -
+method say call since 1 params (String,UInt32) result String throws EchoError
+method swap call since 1 params (Handle) result Handle throws -
+method ticked event since 1 params (UInt32,String) result - throws -

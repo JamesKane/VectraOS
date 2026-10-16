@@ -6,3 +6,5 @@ bench/out/
 .build/
 bench/history/*.local.tsv
 .claude/
+.swiftpm/
+Package.resolved
