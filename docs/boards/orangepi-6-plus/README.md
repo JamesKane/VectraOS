@@ -1,0 +1,234 @@
+# Orange Pi 6 Plus (CIX P1 / Sky1)
+
+A research pass (2026-10-16), not a board decision. The CIX Sky1 is a
+research row in `docs/hardware/support.tsv` and D53 checks arm64's
+baseline against it. AbyssBSD now runs FreeBSD 16-CURRENT on this board
+through ACPI, from its NVMe, with the platform, the GPU, the NPU and the
+video codec working. This file reads those notes for what VectraOS would
+meet on the board. The same SoC is in the Radxa Orion O6.
+
+Facts come from the sources below and are marked with them. Facts marked
+**(memory)** are not yet checked against a document or the machine; **On
+the machine** lists what to read first. Code is not lifted from these
+sources (D4). AbyssBSD's and Linux's drivers are read as hardware
+documentation only (provenance.md).
+
+| Source | Commit or date | Paths |
+|---|---|---|
+| AbyssBSD (`../AbyssBSD`) | `bfc0b05` (2026-10-09) | `docs/boards/orangepi-6-plus/README.md`, `gpu.md`, `npu.md`, `vpu.md` |
+| croi's notes (this tree) | — | `docs/kernel/roadmap.md` "Review: board requirements (2026-10-09)", `design/boot.md` "Bring-up aids", `design/iommu.md` |
+
+## The short version
+
+- **The firmware is what the kernel already expects:** UEFI and complete
+  SystemReady ACPI, written for an OS, not routed through Windows' PEP as
+  on the Q8B. Power domains are ACPI power resources, clocks are AML
+  methods calling SCMI, CPU performance is `_CPC`, idle is `_LPI`
+  (AbyssBSD).
+- **EL2 is ours:** no vendor hypervisor. UEFI enters at EL2 with VHE, and
+  nothing polices the SMMUs (AbyssBSD). croi drops EL2 to EL1 already
+  (`boot-smoke-el2`).
+- **Most of its first-boot path exists in croi, tested in QEMU:** the
+  DBG2 PL011 console, GICv3 with ITS, SMMUv3, PCIe ECAM, the SBSA
+  watchdog's Sky1 refresh method, SVE state.
+- **Two croi defaults are wrong here** and need board rules (handoff v4,
+  roadmap "Board bring-up"): the watchdog's refresh, and the SMMUs that
+  firmware leaves on. See Bring-up hazards.
+- **New drivers for the V3 link:** an RTL8126 driver in the net class, and
+  NVMe (which V4 needs anyway).
+
+## CPU
+
+- **12 cores, Armv9.2:** 4 Cortex-A720 up to 2.6 GHz, 4 A720 at 2.5 GHz, 4
+  A520. PSCI 1.1 over SMC, PPTT, 6 frequency domains of 2 cores (AbyssBSD).
+  FreeBSD found CPUs 0-1 and 6-11 to be the A720s and 2-5 the A520s.
+- **Against D53's baseline** (`armv8.2-a+fp16+dotprod+rcpc`): met, from the
+  cores' architecture (D53). **Still open:** whether this licensee fitted
+  the crypto instructions (AES, PMULL, SHA). No Sky1 `cpuinfo` or ID
+  register dump is in any tree; AbyssBSD's survey output is not committed
+  yet.
+- **SVE:** present (AbyssBSD restores the vector length across core
+  power-down). croi saves SVE and SME state with per-thread vector lengths
+  (cpu.md, K3).
+- **Capacity:** croi takes a core-type default until the power service sets
+  it from `_CPC` (roadmap's review: AML stays in user space).
+
+## Firmware and boot
+
+- **UEFI 1.3 (2025-11-13), ACPI only:** APIC, GTDT, IORT, MCFG, PCCT, PPTT,
+  SDEI, DBG2, CSRT, a DSDT and two SSDTs (AbyssBSD). DMI says "CIX Phecda
+  Board", the reference design's name.
+- **No SPCR.** DBG2 names COM2, an SBSA UART (`ARMH0011`, PL011) at
+  `0x40d0000`. croi's loader takes SPCR, then DBG2, so it should fall
+  through to it (boot.md; test `boot-dbg2-console`).
+- **Serial header:** the 10-pin debug header is **3.3 V**, so a common
+  USB-TTL adapter works (unlike the Q8B's 1.8 V). UART2 is pin 1 TX, pin 3
+  RX, pin 5 GND: COM2, the firmware's and the kernel's log. UART4 (the
+  power-management firmware's log), UART5 (the secure element) and UART6
+  (POST codes) share the header (AbyssBSD).
+- **GOP framebuffer:** 1920×1080 at `0x84800000` (AbyssBSD).
+- **DSDT bug:** it names `I2C0.UXC0`–`UXC3`, which don't exist
+  (`AE_NOT_FOUND` at load). V2's AML interpreter must tolerate it, as
+  Linux and FreeBSD do.
+- **Mainline Linux goes DT-first** for Sky1 (`acpi=off`), but the firmware
+  provides no DTB (AbyssBSD). We follow the firmware's ACPI, as AbyssBSD does.
+
+## Interrupts, timers, idle
+
+- **GICv3 with ITS (GICv4.1), 512 SPIs** (AbyssBSD). Linux applies the
+  workaround for **Arm erratum 2941627**. Neither FreeBSD nor croi has
+  examined it; croi's "GIC erratum checks keyed on IIDR" is an open
+  roadmap item.
+- **Generic timer at 1 GHz** (FreeBSD's timecounter). It **stops in
+  `_LPI`'s power-down states**, and the GTDT has no memory-mapped timer.
+  The always-on timer is CIX's GPT (`CIXH1007`, 25 MHz), the one Linux
+  broadcasts with (AbyssBSD). croi idles in WFI only until KP's idle
+  governor exists, so its timers keep running. KP's "board timer such as
+  the Sky1's GPT" is this device.
+- **`_LPI` states:** LPI-0 WFI; LPI-1 core power-down (PSCI `0x10000`,
+  360 µs exit); LPI-2 cluster power-down (`0x1010000`, 500 µs). The
+  firmware leaves the context-lost flag clear on both power-down states,
+  so read the PSCI state's type bit instead (AbyssBSD).
+- **SBSA watchdog** (GTDT, architecture version 1): refresh frame
+  `0x16008000`, control `0x16003000`. **A write to the refresh frame does
+  not refresh it;** writing `WOR` does (AbyssBSD).
+
+## IOMMU, PCIe and DMA
+
+- **Two SMMUv3:** `0xb010000` for PCIe, and `0xb1b0000` for the display
+  (DPU0/1), the NPU, AEU0 and others. The IORT has RMRs (AbyssBSD). The
+  firmware leaves them enabled (roadmap K12d).
+- **Memory type matters:** FreeBSD's SMMUv3 driver mapped DMA as Device
+  memory, and the NPU ran ten times slower. Normal memory by the device's
+  coherency fixed it: write-back if coherent, non-cacheable for the NPU
+  (AbyssBSD). This is the BTI per-device memory type on croi's list
+  ("Normal WB or Normal NC, never Device").
+- **Event-queue interrupt storm:** reported on Linux for this board; a fix
+  is at github.com/ErcinDedeoglu/orangepi-6plus-cix-sky1-smmu-fix (cited
+  by AbyssBSD).
+- **PCIe:** ECAM (MCFG), three `PNP0A08` root ports (CIX `1f6c:0001`).
+  The generic ACPI host works (AbyssBSD).
+- **NVMe:** Micron 2550 (`1344:5416`) with a host memory buffer, behind
+  the SMMU; relaxed ordering off (AbyssBSD).
+- **Ethernet:** two Realtek RTL8126 5 GbE (`10ec:8126`, rev 2) on PCIe
+  (AbyssBSD). This is the board's V3-link NIC: a new net-class driver.
+- **USB:** ten xHCI hosts, which firmware puts in host mode and describes
+  as standard `PNP0D10`. The Cadence dual-role controllers behind them
+  aren't needed for host mode (AbyssBSD).
+
+## Power, clocks, thermal
+
+- **SCMI v2.0, two transports** (AbyssBSD gpu.md):
+  - **Over SMC** for power domains: SiP function `0xc2000001`, shared
+    memory at `0x84380000`, to TF-A. croi's plan has an SMC resource
+    scoped by function-ID range, because an OEN-scoped one (Zircon's)
+    would grant every SiP call (roadmap's review).
+  - **Over CIX mailboxes** for clocks and performance: ACPI `CIXHA006`,
+    shared memory at the start of mailbox 6 (`0x06590000`, `CIXHA004`),
+    doorbell at `+0x80`, polled; mailbox 7 (`0x065a0000`) carries the
+    platform's messages. The AML's own SCMI agent (`\_SB.PMMX.CLK*`)
+    answers NOT_FOUND for every clock, so use the agent Linux uses.
+- **CPU frequency:** `_CPC` with the desired-performance register in
+  SystemMemory (the SCMI fastchannel, e.g. `0x659009c`), delivered and
+  reference counters from the AMU, perf 2520–8192 for 800–2600 MHz. The
+  firmware rounds requests up to operating points (AbyssBSD). In croi this
+  is the power service's job, and KP's frequency floor.
+- **Thermal:** 13 ACPI thermal zones (`_TMP`), about 42 °C idle, passive
+  from 85 °C, critical at 98 °C. The little cluster has no zone, and
+  critical shutdown is untested (AbyssBSD). All AML, so V2's interpreter
+  and the power service handle it. Until then nothing in VectraOS cools
+  this board except the firmware.
+
+## GPU and display
+
+- **Immortalis-G720 MC10:** GPU_ID `0xc870` (architecture 12.8), 10 shader
+  cores, a CSF GPU whose firmware (`mali_csffw.bin`, interface v3.13)
+  schedules command streams. ACPI `CIXH5000`. It has its own MMU, not an
+  SMMU (AbyssBSD gpu.md). The firmware blob is part of the hardware; its
+  provenance would go in `firmware/README.md`, as the Q8B's does.
+- **Bring-up order is strict:** SCMI power domain 21 over SMC, then the
+  `gpu_top`/`gpu_core` clocks over the mailbox, then the power resource's
+  `_ON`, then the reset at `0x16000000`, then Q-channel gating. A GPU
+  register read before all five raises an SError, and the board then
+  needs a power cycle. Resource 0 (`0x15000000`) is CIX's RCSU, not the
+  GPU; only `0x218` and `0x304` may be read (AbyssBSD).
+- **Coherency:** the DSDT says coherent (`_CCA` 1), but CIX's kernel runs
+  the GPU on ACE-Lite with non-cacheable mappings, because the display
+  controller doesn't snoop (AbyssBSD).
+- **DVFS:** SCMI performance domain 0, 72–1000 MHz (AbyssBSD).
+- **Against D62's floor** (buffer device address, bindless descriptors in
+  GPU memory, timeline semaphores, dynamic rendering): Mesa's panvk
+  exposes all four on Valhall and later, and descriptors live in memory
+  **(memory)**. To be checked against Arm's architecture documentation
+  before D62's board list names it.
+- **Display:** five Arm China Linlon DP controllers (`CIXH5010`, komeda
+  under Linux) and a Trilinear DP transmitter. HDMI comes from DP-4
+  through a PS185 that gives no EDID (AbyssBSD). V6 would start on the
+  GOP framebuffer, as on every board.
+
+## Accelerators and the rest
+
+- **NPU: Arm China Zhouyi X2,** 30 TOPS (`CIXH4000`, `CIXH4010` ×3): one
+  cluster of three cores, 4 MB of GM, DVFS through SCMI performance domain
+  8. CIX's user stack (`libnoe`, ONNX Runtime's provider) is binary, which
+  D4 rules out on the device. Arm China's user-mode driver 4.1.0 is open
+  source (AbyssBSD npu.md). A first-party V8 backend would need the
+  command format documented or read from that source as reference.
+- **Video codec:** Arm Mali-V (Linlon v5276), four cores, run by firmware
+  (`CIXH3010`; AbyssBSD vpu.md).
+- **Audio:** HDA (`CIXH6020`, `0x70c0000`) with a Realtek ALC269VC; I2S
+  ×4 and an audio DSP unused (AbyssBSD).
+- **Also on the board:** a TPM (`MSFT0101`), OP-TEE (`CIXHA022`), DMA-350
+  controllers, Cadence I²C ×7 and GPIO, an RX8900 RTC. UEFI's runtime
+  clock works (FreeBSD's `efirtc`).
+
+## Bring-up hazards for croi
+
+1. **The watchdog would reset the board about 30 s after boot.** croi
+   arms the GTDT's watchdog by default (30 s timeout, refreshed every 5
+   s) through the refresh frame, which doesn't refresh on the Sky1.
+   `SbsaWatchdog.RefreshMethod` has the WOR write, but only a board rule
+   selects it, and board rules (handoff v4) don't exist yet. Until they
+   do, boot with `croi.watchdog=off`.
+2. **The SMMUs are refused.** croi refuses an SMMUv3 that firmware left
+   enabled (`CR0.SMMUEN`, BAD_STATE), which was right for the Q8B's
+   hypervisor-policed unit. On the Sky1 nothing polices them; taking them
+   over needs a board rule and the IORT's RMRs as identity maps (roadmap
+   K12d, "Not yet"). Until then, devices run on whatever firmware left
+   configured. croi's SMMUv3 also lacks two-level stream tables, which
+   matters if the PCIe unit's stream ids are wide (on the machine).
+3. **The GPU's power-up order** (above): getting it wrong costs an SError
+   and a power cycle. croi panics on any kernel SError and doesn't yet
+   deliver one to the faulting process. The GPU driver's first probe
+   should follow AbyssBSD's order exactly.
+
+## Against the Q8B
+
+What each board needs before V3's link runs on it:
+
+| Need | Orange Pi 6 Plus | Radxa Dragon Q8B (V4) |
+|---|---|---|
+| Console | PL011 through DBG2: in croi, tested in QEMU | Qualcomm GENI UART: written ahead in V3, model test only |
+| Serial adapter | 3.3 V | 1.8 V |
+| EL2 | ours | Qualcomm's hypervisor |
+| SMMU | board rule to take over firmware-enabled units, with RMRs | leave alone: policed by the hypervisor |
+| Watchdog | board rule (WOR refresh), or off | not read for this table |
+| Network | RTL8126: new driver | TC956x (XGMAC2, XPCS, QCA8081): new driver, DMA offset `0x10_0000_0000` |
+| Power and clocks | SCMI, `_CPC`, `_LPI`: standard, AML | Windows PEP, `qcom-gcc` |
+
+On paper the Orange Pi 6 Plus is the shorter path to V3's exit on
+hardware. D5 still makes the Q8B the first board and D16 runs milestones
+in order; this pass changes neither. Making the Sky1 a board would take a
+decision of its own.
+
+## On the machine
+
+- `/proc/cpuinfo` under Ubuntu, or the ID registers: settles D53's crypto
+  question. (2026-10-16: ssh to the board's Ubuntu address was refused,
+  probably because it was running FreeBSD.)
+- The SMMUs' state as firmware leaves them: `CR0`, the stream table's
+  format and size, the stream id width, and what the RMRs cover.
+- GICD_IIDR, and whether erratum 2941627 applies to this GIC revision.
+- Whether croi's loader finds DBG2's COM2 without `loader.console=dbg2`.
+- The RTL8126's revision and PHY, against the Linux and FreeBSD drivers.
+- Whether a fan is fitted and controllable, before any thermal test.

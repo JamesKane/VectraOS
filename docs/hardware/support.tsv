@@ -60,7 +60,7 @@ macpro6-1	platform	-	amd64	planned	-	open	D52,D63	yes	fan-fail-safe	-	-	Mac Pro 
 macpro-smc-fan	component	macpro6-1	amd64	planned	yes	open	D63	-	fan-fail-safe	-	-	Apple SMC fan control; a missing sensor reads as hot
 macpro-d700	component	macpro6-1	amd64	planned	no	open	D63	-	fan-fail-safe	-	-	two FirePro D700 (Tahiti, GCN 1.0); VBIOS from VFCT, matched by bus
 macpro-ethernet	component	macpro6-1	amd64	planned	yes	open	D52	-	-	-	-	the chip is read on the machine
-cix-sky1	platform	-	arm64	research	-	-	D53	yes	-	-	-	Orange Pi 6 Plus and Radxa Orion O6; checked against arm64's baseline
+cix-sky1	platform	-	arm64	research	-	-	D53	yes	-	-	-	Orange Pi 6 Plus and Radxa Orion O6; docs/boards/orangepi-6-plus/ (research pass 2026-10-16)
 sky1-mali-g720	component	cix-sky1	arm64	research	no	-	D62	-	-	-	-	Mali-G720
 rk3588	platform	-	arm64	research	-	-	D5	yes	-	-	-	DT-only, so it needs its own decision
 hailo-8	component	-	all	research	no	-	D5	-	-	-	-	M.2 accelerator, after the accelerator protocol
