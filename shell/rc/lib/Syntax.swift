@@ -644,7 +644,16 @@ public struct Parser {
         while true {
           while peek == .newline || peek == .semicolon { at += 1 }
           if peek == .rightBrace || keyword("case") { break }
-          body.append(try andOr())
+          if peek == .end { throw RcSyntaxError(message: "unfinished", incomplete: true) }
+          let c = try andOr()
+          if peek == .ampersand {
+            at += 1
+            body.append(.background(c))
+            continue
+          }
+          body.append(c)
+          guard peek == .semicolon || peek == .newline || peek == .rightBrace || keyword("case")
+          else { throw RcSyntaxError(message: "unexpected \(peek)") }
         }
         cases.append((patterns, body))
       }

@@ -1,0 +1,10 @@
+switch(a){
+case a
+	echo one & echo two
+	wait
+case b
+	echo never
+}
+switch(b){case a; echo no; case b; echo b}
+switch(c){case c; echo c } x
+echo after
