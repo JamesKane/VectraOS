@@ -24,8 +24,8 @@ under `vx ci` and every budget it introduces has a running check
     lists the gaps; `vx rc-oracle` checks rc against 9front's, D70).
     The pty runs on rings, and rc runs on one, sharing the terminal
     with the programs it runs.
-  - Not started: drivers (item 7), and the console and the router
-    (item 8).
+  - Scoped, not started: drivers (item 7, D74: todhchai's, ported,
+    in five steps). Not started: the console and the router (item 8).
   - Exit: `cat /svc/*/status` run by rc passes (amd64, arm64). Still
     open: spawn → main < 200 µs, and the first recorded bench history.
 - **V3 onward** are not started (V4's boards have research passes).
@@ -226,8 +226,11 @@ work, in order:
    (2026-01-01) and gives a `clock` service a writable copy;
    `services/time` is ported and sets UTC from amd64's CMOS clock
    (RTCTests hosted; boot-launch checks every arch reads the page and
-   amd64 the RTC's time). Left: arm64's PL031 and rv64's RTC, which
-   need their ACPI discovery.
+   amd64 the RTC's time). Left: arm64's PL031 and rv64's RTC. QEMU's
+   virt ACPI tables list neither (todhchai's corpus, 2026-10-16), and on
+   ACPI machines Linux reads them through UEFI's runtime GetTime, which
+   croi never calls after ExitBootServices: their discovery is still to
+   choose (a board rule, or a table of our own).
 6. **Byte streams (D46).** stdio, `pipe()` and the pty move from sockets
    to the one ring in its byte-stream mode: one writer per ring, an end
    mark for end of input, and peer death from a channel's PEER_CLOSED.
@@ -387,11 +390,39 @@ work, in order:
      program's input (rc's own when none has it), ^C kills it.
      launch-test types to a pty and to rc on one. Left: input typed
      while a program has the terminal is that program's, read or not.
-7. **Drivers:** PCI, ACPI (the AML interpreter), devmgr, the driver host,
-   the virtio library and virtio-input. Each driver binds its interrupt
-   with `object_bind` and acks in arrays. The block class's ring (TDBR)
-   moves to the one ring when virtio-blk comes with Taisce (V3); the net
-   class's (TDFR) with N1 (V3).
+7. **Drivers (D74):** todhchai's, lifted and ported to V1's ABI
+   (`object_bind`, acks in arrays) and the one ring, with real IOMMUs,
+   ACPI platform devices beside PCI ones, and the runtime's MMIO
+   accessors. In order:
+   - **7a, the AML interpreter** (todhchai's bus/acpi, about 4,900 lines
+     with tests): hosted over its corpus of QEMU's tables (amd64 q35, pc
+     and microvm; arm64 and rv64 virt) with its fuzzer. It replaces
+     userboot's `\_S5` byte scan (Power.swift).
+   - **7b, PCI over ECAM** (bus/pci): config space, enumeration, BARs,
+     capabilities, from the MCFG.
+   - **7c, devmgr and the driver host:** devmgr reads the boot data, loads
+     the ACPI namespace, enumerates PCI and the ACPI platform devices,
+     routes INTx through `_PRT`, and matches `driver.manifest` records
+     (todhchai's order); each device's host is started through the
+     launcher with its resources as `CROI_PA_DEVICE` handles: BARs or
+     `_CRS` ranges, its interrupts bound with `object_bind`, and a BTI on
+     its IOMMU, narrowed. The first driver is QEMU's `edu` (an interrupt
+     and DMA through the IOMMU, every arch); the first platform device,
+     amd64's CMOS clock (PNP0B00, its `_CRS` ports), listed in devmgr's
+     status. MMIO through `croi_mmio_*`, widened to 8-64 bits.
+   - **7d, the virtio library and virtio-input:** the modern virtio-pci
+     transport and split queues; the input class on the one ring (its
+     TDIR format goes, as the syscall audit has it); QEMU gains a
+     `virtio-keyboard-pci` on every arch. MSI-X where the kernel has MSI
+     (amd64, arm64's ITS, rv64's AIA), INTx on rv64's PLIC, both tested.
+   - **7e, only if it comes cheaply:** the console's input, virtio-input
+     into a pty (V2's exit, below).
+   **Exit:** on every arch devmgr binds edu and virtio-input, a key
+   injected through QEMU's monitor reaches a reader of the input class,
+   and edu's DMA goes through the IOMMU. Not here: virtio-mmio, legacy
+   virtio and 0xCF8 access (nothing here needs them); the block class
+   (TDBR) moves to the one ring with virtio-blk and Taisce (V3), the net
+   class (TDFR) with N1 (V3).
 8. **Services and the shell:** the console (it reads the debuglog ring,
    D38; the Radharc handoff waits for V6), the router (plumber), the pty
    (done, with item 6),

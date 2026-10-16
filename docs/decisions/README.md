@@ -86,3 +86,4 @@ in a new file, and a line in the index below.
 - [D71. Programs come from the namespace: Node's `memory`, and bootfs served at /bin](D071-programs-from-the-namespace.md) — 2026-10-16, decided
 - [D72. A process says why it ended: an exit string on a status page, Plan 9's exits](D072-exit-strings.md) — 2026-10-16, decided
 - [D73. Node gains wstat: a node renamed in its directory, given a time, or cut](D073-node-wstat.md) — 2026-10-16, decided
+- [D74. Drivers as todhchai's, ported to V1: real IOMMUs, ACPI platform devices, the runtime's MMIO accessors](D074-drivers-scope.md) — 2026-10-16, decided
