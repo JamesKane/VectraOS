@@ -1,0 +1,122 @@
+# Mac Pro (Late 2013, MacPro6,1), dual FirePro D700
+
+The amd64 baseline machine (D52) and the desktop track's first discrete
+GPUs (D62, D63). The test unit is the dual D700 model. Its CPU and both
+GPUs share one thermal core and one fan, and it overheats unless power and
+fan management are close to flawless. Thermal safety (below) comes before
+everything else on this machine.
+
+Facts read from other trees and pages are marked with their source. Facts
+marked **(memory)** are not yet checked against a document or the machine;
+**On the machine** lists what bring-up must read first. Code is not lifted
+from these sources (D4); Linux is read as hardware documentation only
+(provenance.md).
+
+| Source | Commit or date | Paths |
+|---|---|---|
+| Linux (`../linux`) | `24a19b953e2a` (2026-10-11) | `drivers/hwmon/applesmc.c`, `drivers/gpu/drm/amd/pm/legacy-dpm/si_dpm.c`, `drivers/gpu/drm/amd/amdgpu/amdgpu_bios.c`, `gfx_v6_0.c` and siblings (firmware names) |
+| digital951/D700macpro (GPL-2.0, read only) | 2026-10 | README: the D700s' stuck clocks and VBIOS selection |
+| CrystalIDEA, "Optimizing thermals on Mac Pro 2013" | blog | the SMC's fan curve under macOS |
+
+## CPU
+
+Xeon E5 v2 (Ivy Bridge-EP). The SIMD baseline is D52's
+`-march=ivybridge`. P-states come from ACPI; Ivy Bridge has no HWP
+(memory).
+
+## GPUs: two FirePro D700
+
+- **Tahiti XT, GCN 1.0** (Linux: `CHIP_TAHITI`, GFX6, "Southern Islands").
+  6 GB GDDR5 each (memory).
+- **One drives the displays; the other has no outputs** (D700macpro calls
+  them the display GPU and the other GPU). So a frame rendered on the
+  second GPU must reach the first: D56's multi-GPU case on one machine.
+- **Against D62's floor** (D63): GPU pointers through `addr64` buffer
+  instructions or synthesized descriptors, since GCN 1.0 has no FLAT
+  instructions (LLVM's AMDGPU docs: FLAT is Sea Islands and later);
+  descriptors always loaded from memory by scalar loads, so heaps are
+  native (memory); no DCC (GCN 3 and later), while CMASK, FMASK and HTILE
+  still need decompression on some transitions (memory). AMD published
+  the Southern Islands ISA manual (memory), which a driver of ours needs
+  under principle 28.
+- **VRAM is probably not CPU-writable in full:** no resizable BAR on
+  Tahiti (memory), which makes this D56's "discrete, without BAR" machine.
+- **Video BIOS from ACPI:** the PowerPlay tables come from the VBIOS, and
+  on the Mac the VBIOS images are in the ACPI VFCT table. Linux matches an
+  image to a GPU by vendor and device ID, then PCI slot and function, then
+  bus number, falling back to identity when the bus differs
+  (`amdgpu_acpi_vfct_match`). The two D700s are the same device, so that
+  fallback can hand both GPUs the first image (`113-C3861XA-028` and
+  `113-C3861XB-028`, D700macpro): match the exact bus first, and refuse
+  rather than guess when two images could match.
+- **Firmware** (Linux's `MODULE_FIRMWARE`): `tahiti_pfp`, `_me`, `_ce`,
+  `_rlc`, `_mc` and `_smc`. Firmware is part of the hardware; its
+  provenance goes in `firmware/README.md` as the Q8B's does.
+
+## Power and thermals
+
+Three controllers, one heatsink.
+
+### The Apple SMC: the fan
+
+- **Interface** (`applesmc.c`): data port `0x300`, command port `0x304`;
+  four-character keys. Linux finds it by SMBIOS (`DMI_PRODUCT_NAME`
+  "MacPro"). We are ACPI-only, so the DSDT's description of the SMC is
+  what we use (an `APP0001` device with those ports, memory; on the
+  machine).
+- **Fan keys:** `FNum` (count), `F0Ac` actual speed, `F0Mn` minimum (rw),
+  `F0Mx` maximum, `F0Sf` safe speed (not on every model), `F0Tg` target
+  (rw only in manual mode), `FS! ` the manual-mode bitmask.
+- **Its automatic curve reacts late.** CrystalIDEA measured the fan
+  starting to climb only once temperatures passed 80 °C, and a fixed
+  1,500 RPM ran about 9 °C cooler. Linux's `mbpfan` reads only CPU
+  temperatures.
+- **One report** (iFixit) has a GPU die sensor reading 0 and the SMC
+  running the fan high in response. Treat a missing sensor as hot.
+
+### The GPUs' own SMC: clocks, voltage, throttling
+
+- Each D700's DPM runs on its own microcontroller (`tahiti_smc`),
+  configured from the VBIOS's PowerPlay tables. Without DPM the GPU stays
+  at its boot clocks, which is the thermally safe state.
+- **The HARDWAREDC trap.** The D700s' PowerPlay tables set
+  `ATOM_PP_PLATFORM_CAP_HARDWAREDC` (AC/DC switching signalled by GPIO)
+  and carry a 300 MHz core, 150 MHz memory DC ("battery") state. Linux
+  set `PPSMC_SYSTEMFLAG_GPIO_DC` for any such GPU, so the D700s never
+  left the DC state. The fix (Timur Kristóf, 2026-09-23) sets it only for
+  mobile GPUs (`AMD_IS_MOBILITY`, `si_dpm.c`); after it, D700macpro saw
+  850 MHz core and 1,370 MHz memory. A desktop GPU's DC capability is
+  ignored.
+- **Thermal protection:** `CG_THERMAL_CTRL`'s DPM event source and
+  `CG_THERMAL_INT`'s high and low interrupts (`si_dpm.c`). The GPU's own
+  throttle stays enabled whatever else runs.
+- **Evidence so far is thin:** D700macpro's peak was 79 °C in a
+  10-second test. No long-load result is published.
+
+### The CPU
+
+ACPI P-states and C-states, under the same power service.
+
+## Rules for this machine (D63)
+
+1. The SMC stays on its automatic curve. VectraOS writes only `F0Mn`,
+   the minimum, so if the power service or the kernel dies, the SMC still
+   rules above the floor: the failure is louder, not hotter. Manual mode
+   (`FS! `, `F0Tg`) needs a decision of its own, with a watchdog that
+   hands the fan back.
+2. One power service holds the combined budget for the CPU and both GPUs.
+3. No D700 runs above its boot clocks until the soak budgets pass.
+4. A GPU whose temperature can't be read is treated as at its limit.
+
+## On the machine
+
+Read before any driver work, into this file:
+- `lspci -vv`: each D700's device ID, its bus, the BAR sizes, and the
+  PCIe link width and speed.
+- The DSDT and the VFCT table (`acpidump`): the SMC's device and ports,
+  and each VBIOS image's bus, slot and function.
+- The SMC's key list (`applesmc` under Linux): which `T…` keys are the
+  GPU dies, VRAM and the thermal core, and whether `F0Sf` exists.
+- A 30-minute full-load run under Linux with D700macpro's fixes, logging
+  the GPU and CPU temperatures and the fan speed. This is the baseline our
+  soak budgets are judged against.
