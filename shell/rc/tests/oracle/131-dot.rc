@@ -1,0 +1,7 @@
+echo 'echo in s $0 $*' > s.rc
+. ./s.rc a b
+path=(.) . s.rc c
+. -q nonexistent.rc
+echo after -q
+. nonexistent.rc
+echo never

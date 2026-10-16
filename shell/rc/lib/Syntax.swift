@@ -351,6 +351,9 @@ struct Lexer {
 public struct Parser {
   var tokens: [Token] = []
   var at = 0
+  /// The text, and where in it each token ends (a line's source, for -v).
+  var source: [Unicode.Scalar] = []
+  var ends: [Int] = []
 
   /// Parses a whole script (or one line typed).
   public static func parse(_ text: String) throws(RcSyntaxError) -> Command {
@@ -366,17 +369,24 @@ public struct Parser {
   /// A script's lines, as 9front reads them (`rc: line '\n'`): each
   /// parsed alone, so a syntax error stops the script at its line, the
   /// lines before it still run. The error, if any, comes after them.
-  public static func lines(_ text: String) -> (lines: [Command], error: RcSyntaxError?) {
+  /// Each line's source comes with it: the text from the end of the line
+  /// before through its own newline (blank lines and comments before it
+  /// too).
+  public static func lines(_ text: String) -> (lines: [Command], sources: [String], error: RcSyntaxError?) {
     var (p, lexError) = tokens(text)
-    var lines: [Command] = []
+    var lines: [Command] = [], sources: [String] = []
+    var from = 0
     while true {
       while p.peek == .newline || p.peek == .semicolon { p.at += 1 }
-      if p.peek == .end { return (lines, lexError) }
+      if p.peek == .end { return (lines, sources, lexError) }
       do throws(RcSyntaxError) {
         lines.append(try p.list(until: [.newline, .end]))
+        let to = p.ends[p.at]
+        sources.append(String(String.UnicodeScalarView(p.source[from..<to])))
+        from = to
       } catch {
         // A line cut short by a lexing error is that error.
-        return (lines, lexError ?? p.judged(error))
+        return (lines, sources, lexError ?? p.judged(error))
       }
     }
   }
@@ -387,18 +397,24 @@ public struct Parser {
   static func tokens(_ text: String) -> (Parser, RcSyntaxError?) {
     var lexer = Lexer(text)
     var p = Parser()
+    p.source = lexer.s
     var lexError: RcSyntaxError? = nil
     do throws(RcSyntaxError) {
       while true {
         let t = try lexer.next()
         p.tokens.append(t)
+        p.ends.append(lexer.i)
         if t == .end { break }
       }
     } catch {
       // The line it cut short goes too: none of it runs.
       lexError = error
-      while let last = p.tokens.last, last != .newline { p.tokens.removeLast() }
+      while let last = p.tokens.last, last != .newline {
+        p.tokens.removeLast()
+        p.ends.removeLast()
+      }
       p.tokens.append(.end)
+      p.ends.append(p.ends.last ?? 0)
     }
     // The input ending inside a here document leaves the text unfinished.
     if lexError == nil && !lexer.pending.isEmpty {

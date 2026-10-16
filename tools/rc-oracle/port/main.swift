@@ -212,29 +212,26 @@ final class LinuxSystem: RcSystem {
 struct Main {
   static func main() {
     signal(SIGPIPE, SIG_IGN)
-    var args = Array(CommandLine.arguments.dropFirst())
-    guard !args.isEmpty else {
-      FileHandle.standardError.write("usage: rcport file | -c text [args]\n".data(using: .utf8)!)
-      exit(2)
+    guard let a = RcArguments(Array(CommandLine.arguments.dropFirst())) else {
+      FileHandle.standardError.write((RcArguments.usage + "\n").data(using: .utf8)!)
+      exit(1)
     }
-    let text: String, name: String
-    if args[0] == "-c" {
-      name = "rc"
-      text = args.count > 1 ? args[1] : ""
-      args.removeFirst(min(2, args.count))
-    } else {
-      guard let d = FileManager.default.contents(atPath: args[0]) else {
-        FileHandle.standardError.write("rcport: can't open \(args[0])\n".data(using: .utf8)!)
-        exit(2)
-      }
-      text = String(decoding: d, as: UTF8.self)
-      name = args[0]
-      args.removeFirst()
-    }
-    let rc = Rc(system: LinuxSystem(), name: name, arguments: args)
+    let rc = Rc(system: LinuxSystem(), arguments: a.rest)
+    rc.take(a, name: CommandLine.arguments[0])
     // rcmain.unix's, as the oracle's rc has it.
     rc.variables["path"] = [".", "/bin", "/usr/bin", "/usr/local/bin"]
-    rc.run(text, fds: [0: FdStream(0, keep: true), 1: FdStream(1, keep: true), 2: FdStream(2, keep: true)])
+    let fds: [Int32: RcStream] = [0: FdStream(0, keep: true), 1: FdStream(1, keep: true), 2: FdStream(2, keep: true)]
+    // As rcmain.unix: -c's command, else stdin if there's no file, else
+    // `. $*` (no -i here: the oracle's stdin is empty).
+    if let c = a.command {
+      rc.run(c, fds: fds)
+    } else if let file = a.rest.first {
+      rc.run(file: file, arguments: Array(a.rest.dropFirst()), fds: fds)
+    } else {
+      var text: [UInt8] = []
+      while let b = fds[0]!.read() { text += b }
+      rc.run(String(decoding: text, as: UTF8.self), fds: fds)
+    }
     exit(rc.status.allSatisfy { $0 == "|" } ? 0 : 1)
   }
 }

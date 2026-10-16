@@ -140,6 +140,12 @@ public final class Rc {
   var background: [RcJob] = []
   /// Whether an `if` has run whose `if not` should (9front's ifnot).
   var ifNotPending = false
+  /// rc's flags (RcArguments: -e, -x, -v, -s ...), and `flag`'s.
+  public var flags: Set<Character> = []
+  /// How many conditions rc is inside (an if's or while's, the left of
+  /// && or ||, a backquote, a pipeline's earlier stages): -e stops rc
+  /// only outside them.
+  var inCondition = 0
 
   /// `name` is $0: the script's path, or rc for a line given (9front's
   /// execcmds sets it to its argv[0]).
@@ -159,9 +165,19 @@ public final class Rc {
   /// Runs a script's text with these descriptors; its status, or nil
   /// after `exit` (the status in $status).
   @discardableResult
-  public func run(_ text: String, fds: [Int32: RcStream]) -> Bool {
+  public func run(_ text: String, fds: [Int32: RcStream]) -> Bool { perform(fds) { try runLines(text, fds) } }
+
+  /// Runs a script as `. file args` does, as rc FILE does (rcmain's
+  /// `. $*`): found along $path, $0 the file and $* the rest. As run.
+  @discardableResult
+  public func run(file: String, arguments: [String], fds: [Int32: RcStream]) -> Bool {
+    perform(fds) { try Rc.builtins["."]!(self, [".", file] + arguments, fds) }
+  }
+
+  /// `body`, its errors said and its `exit` taken: false after one.
+  func perform(_ fds: [Int32: RcStream], _ body: () throws -> Void) -> Bool {
     do {
-      try runLines(text, fds)
+      try body()
       return true
     } catch let e as RcSyntaxError {
       fds[2]?.write(Array((e.description + "\n").utf8))
@@ -181,13 +197,42 @@ public final class Rc {
   /// Runs a script line by line (Parser.lines); a syntax error is thrown
   /// once the lines before it have run.
   func runLines(_ text: String, _ fds: [Int32: RcStream]) throws {
-    let (lines, error) = Parser.lines(text)
-    for c in lines { try execute(c, fds) }
+    // -v: each line on fd 2 as it's read; -s: a false status on fd 2
+    // before the next is (9front's lexer and Xrdcmds).
+    let (lines, sources, error) = Parser.lines(text)
+    for (c, source) in zip(lines, sources) {
+      if flags.contains("v") { fds[2]?.write(Array(source.utf8)) }
+      try execute(c, fds)
+      if flags.contains("s") && !ok() {
+        let words = (variables["status"] ?? []).map(Rc.quote).joined(separator: " ")
+        fds[2]?.write(Array(("status=" + words + "\n").utf8))
+      }
+    }
     if let error { throw error }
   }
 
   /// 9front's truestatus: nothing but `|` and `0`.
-  func ok() -> Bool { status.allSatisfy { $0 == "|" || $0 == "0" } }
+  func ok() -> Bool { Rc.isTrue(status) }
+  static func isTrue(_ s: String) -> Bool { s.allSatisfy { $0 == "|" || $0 == "0" } }
+
+  /// `body` as a condition: 9front compiles one with eflag off.
+  func conditionally(_ body: () throws -> Void) rethrows {
+    inCondition += 1
+    defer { inCondition -= 1 }
+    try body()
+  }
+
+  /// -e (9front's Xeflag): a command that failed outside a condition
+  /// ends rc, its status kept.
+  func exitIfFailed(_ s: String? = nil) throws {
+    let s = s ?? status
+    if flags.contains("e") && inCondition == 0 && !Rc.isTrue(s) { throw RcExit(status: s) }
+  }
+
+  /// -x: a simple command's words on fd 2 before it runs.
+  func trace(_ argv: [String], _ fds: [Int32: RcStream]) {
+    if flags.contains("x") { fds[2]?.write(Array((argv.map(Rc.quote).joined(separator: " ") + "\n").utf8)) }
+  }
 
   // MARK: Words
 
@@ -262,7 +307,7 @@ public final class Rc {
       let captured = MemoryStream()
       var inner = fds
       inner[1] = captured
-      try contained(c, inner)
+      try conditionally { try contained(c, inner) }
       let ifs = Set((variables["ifs"] ?? [" \t\n"]).joined().unicodeScalars)
       var out: [String] = [], current = ""
       for u in captured.text.unicodeScalars {
@@ -529,7 +574,9 @@ public final class Rc {
         setStatus("")
         return
       }
+      trace(argv, io)
       if let job = try call(argv, io) { setStatus(job.wait()) }
+      try exitIfFailed()
     case .assign(let nameWord, let w, let body):
       let names = try value(nameWord, fds, glob: false)
       guard names.count == 1, let name = names.first else { throw RcError(message: "variable name not singleton!") }
@@ -553,14 +600,15 @@ public final class Rc {
       (variables, functions, ifNotPending) = (saved.0, saved.1, saved.2)
       if system.directory != saved.3 { _ = system.changeDirectory(saved.3) }
       variables["status"] = status
+      try exitIfFailed()
     case .not(let c):
       try execute(c, fds)
       setStatus(ok() ? "false" : "")
     case .and(let a, let b):
-      try execute(a, fds)
+      try conditionally { try execute(a, fds) }
       if ok() { try execute(b, fds) }
     case .or(let a, let b):
-      try execute(a, fds)
+      try conditionally { try execute(a, fds) }
       if !ok() { try execute(b, fds) }
     case .background(let c):
       // A program found runs on; anything else (a program not found says
@@ -571,6 +619,7 @@ public final class Rc {
       {
         var opened: [RcStream] = []
         let io = try redirect(redirs, fds, opened: &opened)
+        trace(argv, io)
         if let job = system.start(path, argv, fds: io, environment: environment) {
           background.append(Closing(job, opened))
           variables["apid"] = [String(background.count)]
@@ -583,7 +632,7 @@ public final class Rc {
         // rc's variables and functions (the directory is still the
         // process's: a `cd` in it is everyone's).
         let child = Rc(system: system)
-        (child.variables, child.functions, child.ifNotPending) = (variables, functions, ifNotPending)
+        (child.variables, child.functions, child.ifNotPending, child.flags) = (variables, functions, ifNotPending, flags)
         let work = Unchecked((child, c, fds))
         if let job = system.spawn({
           let (child, c, fds) = work.value
@@ -603,7 +652,7 @@ public final class Rc {
     case .ifThen(let condition, let body):
       // 9front's ifnot: set by an if, cleared once a true one's body has
       // run (so an if inside that body can't leave it set).
-      try execute(condition, fds)
+      try conditionally { try execute(condition, fds) }
       ifNotPending = true
       if ok() {
         try execute(body, fds)
@@ -624,7 +673,7 @@ public final class Rc {
       while true {
         // An empty condition is true (9front's Xsettrue); a failing one's
         // status is the loop's.
-        if condition == .empty { setStatus("") } else { try execute(condition, fds) }
+        if condition == .empty { setStatus("") } else { try conditionally { try execute(condition, fds) } }
         guard ok() else { break }
         try execute(body, fds)
       }
@@ -641,6 +690,7 @@ public final class Rc {
       let s = try self.subject(subject, fds)
       let ps = try pats.flatMap { try patterns($0, fds) }
       setStatus(ps.contains { Rc.matches($0, s) } ? "" : "no match")
+      try exitIfFailed()
     case .function(let name, let body):
       functions[name] = body
       if body == nil { functions[name] = nil }
@@ -654,6 +704,11 @@ public final class Rc {
   func call(_ argv: [String], _ fds: [Int32: RcStream]) throws -> RcJob? {
     let name = argv[0]
     if let body = functions[name] {
+      // -e within a body as where it was defined (9front compiles it
+      // then), not as where it's called.
+      let outer = inCondition
+      inCondition = 0
+      defer { inCondition = outer }
       let saved = variables["*"]
       variables["*"] = Array(argv.dropFirst())
       defer { variables["*"] = saved }
@@ -672,17 +727,18 @@ public final class Rc {
   /// makepath): a name starting /, ./ or ../ (or one of . and ..) as
   /// written, any other along $path (an empty element: as written); the
   /// first the system can start.
-  func resolve(_ name: String) -> String? {
+  func resolve(_ name: String) -> String? { candidates(name).first { system.executable($0) } }
+
+  /// The paths `name` is looked for at, in order (searchpath, makepath).
+  func candidates(_ name: String) -> [String] {
     let bare = !(name.isEmpty || name.hasPrefix("/") || name == "." || name == ".." || name.hasPrefix("./")
       || name.hasPrefix("../"))
     let dirs = bare ? (variables["path"] ?? [""]) : [""]
-    for dir in dirs.isEmpty ? [""] : dirs {
+    return (dirs.isEmpty ? [""] : dirs).map { dir in
       var d = Substring(dir)
       while d.hasSuffix("/") { d = d.dropLast() }
-      let path = dir.isEmpty ? name : String(d) + "/" + name
-      if system.executable(path) { return path }
+      return dir.isEmpty ? name : String(d) + "/" + name
     }
-    return nil
   }
 
   /// A builtin or a program, by its name.
@@ -721,6 +777,7 @@ public final class Rc {
       {
         var opened: [RcStream] = []
         let io = try redirect(redirs, ios[k], opened: &opened)
+        trace(argv, io)
         jobs[k] = system.start(path, argv, fds: io, environment: environment).map { Closing($0, opened) }
         if jobs[k] == nil { for s in opened { s.close() } }
         started[k] = true
@@ -728,8 +785,11 @@ public final class Rc {
       }
     }
     var statuses: [String] = Array(repeating: "", count: stages.count)
+    // -e looks at the last stage alone (9front runs it in rc, the others
+    // forked).
+    let last = stages.count - 1
     for (k, stage) in stages.enumerated() where !started[k] {
-      try contained(stage, ios[k])
+      if k == last { try contained(stage, ios[k]) } else { try conditionally { try contained(stage, ios[k]) } }
       statuses[k] = status
       if k < pipes.count { pipes[k].1.close() }
     }
@@ -737,6 +797,7 @@ public final class Rc {
     // One string, left to right, a | after each non-empty part (9front's
     // concstatus, as its pipeline nests: false|true is `1|`, true|false `1`).
     setStatus(statuses.dropFirst().reduce(statuses[0]) { ($0.isEmpty ? "" : $0 + "|") + $1 })
+    if started[last] { try exitIfFailed(statuses[last]) }
   }
 
   // MARK: Builtins
@@ -836,22 +897,60 @@ public final class Rc {
         }
       }
     },
+    // flag f [+-]: whether f is set, or set it (9front's execflag).
+    "flag": { rc, argv, _ in
+      let usage = RcError(message: "Usage: flag [letter] [+-]")
+      guard argv.count == 2 || argv.count == 3, let letter = argv[1].first else { throw usage }
+      if argv.count == 2 { return rc.setStatus(rc.flags.contains(letter) ? "" : "flag not set") }
+      guard argv[1].count == 1, argv[2] == "+" || argv[2] == "-" else { throw usage }
+      if argv[2] == "+" { rc.flags.insert(letter) } else { rc.flags.remove(letter) }
+      rc.setStatus("")
+    },
+    // exec cmd: cmd in rc's place. A system can't replace rc, so rc runs
+    // it and exits with its status; one not found ends rc too (9front's
+    // execexec).
+    "exec": { rc, argv, fds in
+      guard argv.count > 1 else { throw RcError(message: "exec: empty argument list") }
+      let name = argv[1], args = Array(argv.dropFirst())
+      if let builtin = Rc.builtins[name] {
+        try builtin(rc, args, fds)
+      } else if let path = rc.resolve(name), let job = rc.system.start(path, args, fds: fds, environment: rc.environment) {
+        rc.setStatus(job.wait())
+      } else {
+        fds[2]?.write(Array((name + ": not found\n").utf8))
+        rc.setStatus("not found")
+      }
+      throw RcExit(status: rc.status)
+    },
     "wait": { rc, _, _ in
       for job in rc.background { _ = job.wait() }
       rc.background.removeAll()
       rc.setStatus("")
     },
+    // . [-biq] file [arg ...], as 9front's execdot: the file found along
+    // $path; one that won't open an error (-q: nothing at all).
     ".": { rc, argv, fds in
-      guard argv.count > 1, let s = rc.system.open(argv[1], .read) else {
-        fds[2]?.write(Array((".: can't open " + (argv.count > 1 ? argv[1] : "") + "\n").utf8))
-        rc.setStatus("can't open")
-        return
+      var args = argv.dropFirst(), quiet = false
+      while let a = args.first, a.hasPrefix("-") {
+        args.removeFirst()
+        if a == "--" { break }
+        for c in a.dropFirst() {
+          guard "biq".contains(c) else { throw RcError(message: "Usage: . [-biq] file [arg ...]") }
+          if c == "q" { quiet = true }
+        }
+      }
+      guard let file = args.first else { throw RcError(message: "Usage: . [-biq] file [arg ...]") }
+      guard let s = rc.candidates(file).lazy.compactMap({ rc.system.open($0, .read) }).first else {
+        if quiet { return }
+        throw RcError(message: ". can't open: " + file)
       }
       var text: [UInt8] = []
       while let b = s.read() { text += b }
-      let saved = rc.variables["*"]
-      rc.variables["*"] = Array(argv.dropFirst(2))
-      defer { rc.variables["*"] = saved }
+      s.close()
+      // $0 the file and $* the rest, for the script's run.
+      let saved = (rc.variables["*"], rc.variables["0"])
+      (rc.variables["*"], rc.variables["0"]) = (Array(args.dropFirst()), [file])
+      defer { (rc.variables["*"], rc.variables["0"]) = saved }
       try rc.runLines(String(decoding: text, as: UTF8.self), fds)
     },
   ]

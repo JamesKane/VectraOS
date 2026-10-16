@@ -1,0 +1,14 @@
+#flags: -e
+false | true; echo after a pipeline ending true
+! true; echo after a true !
+if(false) echo no; echo after an if
+false && echo no; echo 'after &&'
+true || false; echo 'after ||'
+x=`{false}; echo after a backquote
+while(false) echo no; echo after a while
+fn f { echo in f }
+if(! f) echo no; echo after a function as a condition
+flag e && echo e is set
+flag z || echo z is not
+fn g { false; echo never in g }
+if(g) echo never; echo never after

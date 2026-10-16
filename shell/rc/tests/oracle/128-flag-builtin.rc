@@ -1,0 +1,8 @@
+flag e && echo never
+flag e +
+flag e && echo e set
+flag e -
+false; echo after false
+flag e +
+false
+echo never

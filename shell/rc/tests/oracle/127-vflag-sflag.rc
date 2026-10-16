@@ -1,0 +1,5 @@
+#flags: -v -s
+echo one
+# a comment
+false
+echo two

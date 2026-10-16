@@ -16,7 +16,8 @@ Our rc (`shell/rc`) checked against 9front's (D70).
 - The cases are `shell/rc/tests/oracle/*.rc`, each run through both
   shells in a fresh directory under `.build/rc-oracle/work` (there with
   its stdout and stderr), stdin empty. Their stdout, exit status and
-  whether they wrote to stderr must agree.
+  whether they wrote to stderr must agree. A case whose first line is
+  `#flags: -e -x` (a comment to rc) is run with those flags.
 - `shell/rc/tests/oracle/known.tsv` names the cases that differ today:
   `port`, a gap to fix (docs/roadmap.md, V2 item 6), or `linux`, an
   artefact of the oracle on Linux. A new divergence fails, and so does a

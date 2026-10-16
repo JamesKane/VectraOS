@@ -1,0 +1,4 @@
+#flags: -e
+echo before
+true | false
+echo never

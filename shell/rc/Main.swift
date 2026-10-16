@@ -5,8 +5,10 @@
 // parent's), or with the debuglog alone: it prompts with $prompt(1) (or
 // $prompt(2) inside an unfinished construct), reads lines until what it
 // has parses, and runs it; `rc -c COMMAND` runs one, and `rc FILE ARG...`
-// runs a script ($0 the file, $* the rest: a `#!/bin/rc` script's too).
-// Its exit code is its status: 0 if true, a number as itself, else 1. Its programs are
+// runs a script ($0 the file, $* the rest: a `#!/bin/rc` script's too),
+// found along $path; it takes 9front's flags (RcArguments) and prompts
+// only when interactive (-i, or a terminal without -I). Its exit code is
+// its status: 0 if true, a number as itself, else 1. Its programs are
 // bootfs's `bin/` (its Startup's bootfs and job: a manifest's `programs`),
 // its files fdio's, its namespace its Startup's (D65). On a terminal
 // (`TERM` in its environment) it says its directory before a prompt when
@@ -57,35 +59,35 @@ final class Standard: RcStream {
   }
 
   static func run(_ system: CroiSystem) {
-    var args = Array(Arguments.strings.dropFirst())
     let fds: [Int32: RcStream] = [0: Standard(0), 1: Standard(1), 2: Standard(2)]
-    if args.first == "-c" {
-      let shell = Rc(system: system, arguments: Array(args.dropFirst(2)))
-      shell.run(args.count > 1 ? args[1] : "", fds: fds)
+    let argv = Arguments.strings
+    guard let a = RcArguments(Array(argv.dropFirst())) else {
+      fds[2]!.write(Array((RcArguments.usage + "\n").utf8))
+      exit(1)
+    }
+    let shell = Rc(system: system, arguments: a.rest)
+    shell.take(a, name: argv.first ?? "rc")
+    shell.variables["home"] = ["/"]
+    // -l: a login rc, Plan 9's profile first.
+    if a.flags.contains("l") { shell.run(". -q /lib/profile", fds: fds) }
+    if let c = a.command {
+      shell.run(c, fds: fds)
       exit(exitCode(shell))
     }
-    if let file = args.first {
-      let shell = Rc(system: system, name: file, arguments: Array(args.dropFirst()))
-      guard let s = system.open(file, .read) else {
-        fds[2]!.write(Array(("rc: can't open " + file + "\n").utf8))
-        exit(1)
-      }
-      var text: [UInt8] = []
-      while let b = s.read() { text += b }
-      s.close()
-      shell.run(String(decoding: text, as: UTF8.self), fds: fds)
+    if let file = a.rest.first, !a.flags.contains("i") {
+      shell.run(file: file, arguments: Array(a.rest.dropFirst()), fds: fds)
       exit(exitCode(shell))
     }
-    let shell = Rc(system: system, arguments: args)
-    args.removeAll()
+    // Lines from stdin: prompted when interactive (-i, or a terminal's,
+    // `TERM` set, without -I), as rcmain has it.
+    let terminal = Environment.value("TERM") != nil
+    let interactive = a.flags.contains("i") || (terminal && !a.flags.contains("I"))
     // A starting directory (M6l: Terminal opened here by Tracker's add-on).
     if let d = Environment.value("PWD"), !d.isEmpty { _ = system.changeDirectory(d) }
     shell.variables["prompt"] = ["% ", "\t"]
-    shell.variables["home"] = ["/"]
     var pending: [UInt8] = []
     var text = ""
     let input = fds[0]!
-    let terminal = Environment.value("TERM") != nil
     var told = ""
     while true {
       if terminal && text.isEmpty && system.directory != told {
@@ -94,7 +96,7 @@ final class Standard: RcStream {
       }
       let prompt = shell.variables["prompt"] ?? ["% "]
       let p = text.isEmpty || prompt.count < 2 ? (prompt.first ?? "") : prompt[1]
-      fds[1]!.write(Array(p.utf8))
+      if interactive { fds[1]!.write(Array(p.utf8)) }
       // A line.
       var line: [UInt8]? = nil
       while line == nil {

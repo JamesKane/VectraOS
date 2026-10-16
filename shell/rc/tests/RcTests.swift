@@ -244,3 +244,17 @@ func files(_ paths: [String]) -> Machine {
   _ = rc("attr Keyboard Note:Text hello there", m)
   #expect(rc("attr Keyboard Note:Text", m).out == "hello there\n")
 }
+
+/// rc's command line, as 9front's getflags reads it.
+@Test func argumentsReadAs9frontsGetflags() {
+  let grouped = RcArguments(["-ex", "-c", "echo hi", "a", "b"])
+  #expect(grouped?.flags == ["e", "x", "c"] && grouped?.command == "echo hi" && grouped?.rest == ["a", "b"])
+  // -c's value: the rest of its group, or the next argument.
+  #expect(RcArguments(["-ecfalse"])?.command == "false")
+  // The first argument not starting with -, or - alone, ends the flags.
+  #expect(RcArguments(["file", "-e"])?.flags == [] && RcArguments(["file", "-e"])?.rest == ["file", "-e"])
+  #expect(RcArguments(["-", "-e"])?.rest == ["-", "-e"])
+  // An unknown letter, one given twice, or -c without a value: nil.
+  #expect(RcArguments(["-q"]) == nil && RcArguments(["-ee"]) == nil && RcArguments(["-c"]) == nil)
+  #expect(RcArguments([])?.rest == [])
+}

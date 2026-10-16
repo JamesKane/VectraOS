@@ -121,6 +121,8 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
          "rc finds nothing on an empty $path")
   rcRuns(rc, "rc -c 'cat /svc/a/status'; rc -c 'exit 3'; echo $status", a + Array("3\n".utf8), ns, job: job,
          bootfs: bootfs, "rc runs rc, which runs programs and exits with its status")
+  rcRuns(rc, "rc -e -c 'echo a; ~ a b; echo never'; echo $status", Array("a\n1\n".utf8), ns, job: job,
+         bootfs: bootfs, "rc -e stops at a command that fails")
   _ = consume bootfs
 }
 

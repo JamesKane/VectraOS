@@ -5,7 +5,8 @@
 // tools/rc-oracle/9front by the toolchain's clang, and through rcport (our
 // rc on Linux, tools/rc-oracle/port), each in a fresh directory with an
 // empty stdin; their stdout, exit status and whether they wrote to stderr
-// must agree. known.tsv names the cases that differ today: one that differs
+// must agree. A case whose first line is `#flags: -e -x` runs with those
+// flags in both. known.tsv names the cases that differ today: one that differs
 // and isn't named fails, and so does one named that now agrees, so the
 // list stays exactly what is left. Everything goes to .build/rc-oracle.
 
@@ -84,6 +85,14 @@ func runCase(_ shell: [String], _ script: String, in directory: String) -> Outco
   return Outcome(stdout: bytes(out), status: code, wroteErrors: !bytes(err).isEmpty)
 }
 
+/// A case's flags: the words of a first line `#flags: ...`.
+func caseFlags(_ script: String) -> [String] {
+  guard let text = try? String(contentsOfFile: script, encoding: .utf8),
+    let first = text.split(separator: "\n", maxSplits: 1).first, first.hasPrefix("#flags:")
+  else { return [] }
+  return first.dropFirst(7).split(separator: " ").map(String.init)
+}
+
 /// known.tsv: case, kind and why, for each case that differs today.
 func knownDivergences() -> [String: (kind: String, why: String)] {
   guard let text = try? String(contentsOfFile: "\(oracleCases)/known.tsv", encoding: .utf8) else { return [:] }
@@ -119,9 +128,10 @@ func rcOracleCommand(_ args: [String]) -> Bool {
   var matched = 0, expected = 0, failures: [String] = []
   for name in cases {
     let script = "\(cwd)/\(oracleCases)/\(name).rc"
-    let theirs = runCase(["\(cwd)/\(oracle)", "-m", "\(cwd)/\(oracleSources)/rcmain.unix"], script,
+    let flags = caseFlags(script)
+    let theirs = runCase(["\(cwd)/\(oracle)", "-m", "\(cwd)/\(oracleSources)/rcmain.unix"] + flags, script,
                          in: "\(cwd)/\(oracleOut)/work/9front/\(name)")
-    let ours = runCase(["\(cwd)/\(rcport)"], script, in: "\(cwd)/\(oracleOut)/work/port/\(name)")
+    let ours = runCase(["\(cwd)/\(rcport)"] + flags, script, in: "\(cwd)/\(oracleOut)/work/port/\(name)")
     let same = theirs == ours
     switch (same, known[name]) {
     case (true, nil): matched += 1
