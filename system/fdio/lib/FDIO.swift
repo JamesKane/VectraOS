@@ -216,6 +216,12 @@ public enum FDIO {
     }
   }
 
+  /// Makes `namespace` the one paths resolve in from now on, the current
+  /// directory's path kept (rc's `rfork n` and `N`: Plan 9's dot stays).
+  public static func replace(_ namespace: Namespace) {
+    state.withLock { $0.installed = namespace }
+  }
+
   /// The namespace paths resolve in.
   public static var namespace: Namespace? {
     state.withLock { s in

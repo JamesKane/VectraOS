@@ -75,7 +75,14 @@ final class Machine: RcSystem {
     return (m, m)
   }
 
-  static let programs = ["cat", "upper", "wc", "false"]
+  /// rfork's namespace changes (clean, seal), as asked.
+  var forks: [(clean: Bool, seal: Bool)] = []
+  func forkNamespace(clean: Bool, seal: Bool) -> Bool {
+    forks.append((clean, seal))
+    return true
+  }
+
+  static let programs = ["cat", "upper", "wc", "false", "env"]
   /// Its programs are /bin's.
   func executable(_ path: String) -> Bool { path.hasPrefix("/bin/") && Machine.programs.contains(String(path.dropFirst(5))) }
 
@@ -96,6 +103,7 @@ final class Machine: RcSystem {
       case "upper": fds[1]?.write(input().map { $0 >= 0x61 && $0 <= 0x7A ? $0 - 0x20 : $0 })
       case "wc": fds[1]?.write(Array("\(input().filter { $0 == 0x0A }.count)\n".utf8))
       case "false": return "1"
+      case "env": fds[1]?.write(Array(environment.map { $0 + "\n" }.joined().utf8))
       default: break
       }
       return ""
@@ -257,4 +265,33 @@ func files(_ paths: [String]) -> Machine {
   // An unknown letter, one given twice, or -c without a value: nil.
   #expect(RcArguments(["-q"]) == nil && RcArguments(["-ee"]) == nil && RcArguments(["-c"]) == nil)
   #expect(RcArguments([])?.rest == [])
+}
+
+/// rfork, as 9front's execrfork: its letters, E hiding what programs were
+/// given and what hasn't changed since, F taking away every descriptor,
+/// n, N and m the system's.
+@Test func rforkAs9frontsExecrfork() {
+  func given(_ out: String, _ names: [String]) -> [String] {
+    out.split(separator: "\n").map(String.init).filter { l in names.contains { l.hasPrefix($0 + "=") || l.hasPrefix("#()fn " + $0 + " ") } }
+  }
+  // E: a and f went to env before it, so they're hidden after it; b was set
+  // since, and c is set after it, as is a again.
+  let e = rc("a=1; fn f {echo}; env >/dev/x; b=2; rfork E; c=3; env; echo --; a=4; env")
+  let both = e.out.split(separator: "--\n", omittingEmptySubsequences: false).map(String.init)
+  #expect(both.count == 2)
+  #expect(given(both[0], ["a", "b", "c", "f"]) == ["b=2", "c=3"])
+  #expect(given(both[1], ["a", "b", "c", "f"]) == ["a=4", "b=2", "c=3"])
+  // F: nothing after it has a descriptor, within its block or after it,
+  // but what's opened since.
+  let m = Machine()
+  let f = rc("echo before; {rfork F; echo in; echo there >/home/x}; echo after", m)
+  #expect(f.out == "before\n" && f.err.isEmpty && m.files["/home/x"] == Array("there\n".utf8))
+  // n, N and m go to the system; e, f and s ask nothing of it.
+  let ns = Machine()
+  _ = rc("rfork; rfork n; rfork Nm; rfork efs", ns)
+  #expect(ns.forks.map { "\($0.clean) \($0.seal)" } == ["false false", "false false", "true true"])
+  // A letter it doesn't know, or two arguments: its usage.
+  let bad = rc("rfork x; echo $status; rfork e n; echo $status")
+  #expect(bad.out == "rfork usage\nrfork usage\n" && bad.err == "Usage: rfork [fnesFNEm]\n" + "Usage: rfork [fnesFNEm]\n")
+  #expect(rc("whatis rfork").out == "builtin rfork\n")
 }

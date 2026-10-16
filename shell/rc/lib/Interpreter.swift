@@ -74,10 +74,16 @@ public protocol RcSystem: AnyObject {
   /// background command that isn't one program (9front forks it). Nil if
   /// the system can't, and it runs in the foreground.
   func spawn(_ body: @escaping @Sendable () -> Void) -> RcJob?
+  /// `rfork`'s namespace letters: rc's namespace from now on a copy of
+  /// itself (n), or empty (N, `clean`), and sealed (m: nothing mounted
+  /// from elsewhere, its programs' too); whether it could.
+  func forkNamespace(clean: Bool, seal: Bool) -> Bool
 }
 
 extension RcSystem {
   public var processID: UInt64 { 1 }
+  /// A namespace shared with no one is a copy already.
+  public func forkNamespace(clean: Bool, seal: Bool) -> Bool { !clean && !seal }
   public func spawn(_ body: @escaping @Sendable () -> Void) -> RcJob? { nil }
   public func descriptor(_ s: RcStream) -> (fd: Int32, path: String)? { nil }
 
@@ -167,6 +173,14 @@ public final class Rc {
   /// The pipes <{} and >{} words just made: rc's end, at its own number,
   /// and its command's job. The command they're words of takes them.
   var pendingPipes: [(fd: Int32, stream: RcStream, job: RcJob)] = []
+  /// The environment last given to a program (or taken at start), and what
+  /// `rfork E` hid of it (Environment.swift).
+  var published: (variables: [String: [String]], functions: [String: Command]) = ([:], [:])
+  var hidden: (variables: [String: [String]], functions: [String: Command]) = ([:], [:])
+  /// The descriptors of the commands being run, outermost first, and the
+  /// streams `rfork F` took away: no command sees them again.
+  var scopes: [[Int32: RcStream]] = []
+  var revoked: [RcStream] = []
 
   /// `name` is $0: the script's path, or rc for a line given (9front's
   /// execcmds sets it to its argv[0]).
@@ -196,11 +210,12 @@ public final class Rc {
   }
 
   /// `body`, its errors said and its `exit` taken: false after one.
-  func perform(_ fds: [Int32: RcStream], _ body: () throws -> Void) -> Bool {
+  func perform(_ given: [Int32: RcStream], _ body: () throws -> Void) -> Bool {
     do {
       try body()
       return true
     } catch let e as RcSyntaxError {
+      let fds = live(given)
       fds[2]?.write(Array((e.description + "\n").utf8))
       variables["status"] = ["syntax error"]
       return true
@@ -208,7 +223,7 @@ public final class Rc {
       variables["status"] = [e.status]
       return false
     } catch let e as RcError {
-      report(e, fds)
+      report(e, live(given))
       return true
     } catch {
       return true
@@ -222,11 +237,11 @@ public final class Rc {
     // before the next is (9front's lexer and Xrdcmds).
     let (lines, sources, error) = Parser.lines(text)
     for (c, source) in zip(lines, sources) {
-      if flags.contains("v") { fds[2]?.write(Array(source.utf8)) }
+      if flags.contains("v") { live(fds)[2]?.write(Array(source.utf8)) }
       try execute(c, fds)
       if flags.contains("s") && !ok() {
         let words = (variables["status"] ?? []).map(Rc.quote).joined(separator: " ")
-        fds[2]?.write(Array(("status=" + words + "\n").utf8))
+        live(fds)[2]?.write(Array(("status=" + words + "\n").utf8))
       }
     }
     if let error { throw error }
@@ -655,12 +670,29 @@ public final class Rc {
     }
   }
 
+  /// `fds` without what `rfork F` took away.
+  func live(_ fds: [Int32: RcStream]) -> [Int32: RcStream] {
+    revoked.isEmpty ? fds : fds.filter { s in !revoked.contains { $0 === s.value } }
+  }
+
+  /// rfork F: every descriptor of the commands being run, and `fds`, gone
+  /// (Plan 9's clean descriptor table, its redirections undone with it).
+  /// Their streams stay open until their owners close them.
+  func revokeDescriptors(_ fds: [Int32: RcStream]) {
+    for s in (scopes + [fds]).flatMap({ $0.values }) where !revoked.contains(where: { $0 === s }) {
+      revoked.append(s)
+    }
+  }
+
   func report(_ e: RcError, _ fds: [Int32: RcStream]) {
     fds[2]?.write(Array(("rc: " + e.message + "\n").utf8))
     setStatus("error")
   }
 
-  func executeChecked(_ c: Command, _ fds: [Int32: RcStream]) throws {
+  func executeChecked(_ c: Command, _ given: [Int32: RcStream]) throws {
+    let fds = live(given)
+    scopes.append(fds)
+    defer { scopes.removeLast() }
     switch c {
     case .empty: break
     case .sequence(let cs, _): for c in cs { try execute(c, fds) }
@@ -727,7 +759,7 @@ public final class Rc {
         var io = try redirect(redirs, quiet, opened: &opened)
         let sides = takePipes(&io, &opened)
         trace(argv, io)
-        if let job = system.start(path, argv, fds: io, environment: environmentStrings) {
+        if let job = system.start(path, argv, fds: io, environment: environmentForStart()) {
           background.append(Closing(job, opened, then: sides))
           variables["apid"] = [String(background.count)]
         } else {
@@ -740,6 +772,7 @@ public final class Rc {
         // process's: a `cd` in it is everyone's).
         let child = Rc(system: system)
         (child.variables, child.functions, child.ifNotPending, child.flags) = (variables, functions, ifNotPending, flags)
+        (child.published, child.hidden, child.revoked) = (published, hidden, revoked)
         let work = Unchecked((child, c, quiet))
         if let job = system.spawn({
           let (child, c, fds) = work.value
@@ -854,7 +887,7 @@ public final class Rc {
       try builtin(self, argv, fds)
       return nil
     }
-    guard let path = resolve(name), let job = system.start(path, argv, fds: fds, environment: environmentStrings) else {
+    guard let path = resolve(name), let job = system.start(path, argv, fds: fds, environment: environmentForStart()) else {
       fds[2]?.write(Array((name + ": not found\n").utf8))
       setStatus("not found")
       return nil
@@ -895,7 +928,7 @@ public final class Rc {
       let sides = takePipes(&io, &opened)
       if functions[first] == nil, Rc.builtins[first] == nil, first != "builtin", let path = resolve(first) {
         trace(argv, io)
-        jobs[k] = system.start(path, argv, fds: io, environment: environmentStrings).map { Closing($0, opened, then: sides) }
+        jobs[k] = system.start(path, argv, fds: io, environment: environmentForStart()).map { Closing($0, opened, then: sides) }
         if jobs[k] == nil { finish(opened, sides) }
         started[k] = true
         if k < pipes.count { pipes[k].1.close() }
@@ -1036,13 +1069,33 @@ public final class Rc {
       let name = argv[1], args = Array(argv.dropFirst())
       if let builtin = Rc.builtins[name] {
         try builtin(rc, args, fds)
-      } else if let path = rc.resolve(name), let job = rc.system.start(path, args, fds: fds, environment: rc.environmentStrings) {
+      } else if let path = rc.resolve(name), let job = rc.system.start(path, args, fds: fds, environment: rc.environmentForStart()) {
         rc.setStatus(job.wait())
       } else {
         fds[2]?.write(Array((name + ": not found\n").utf8))
         rc.setStatus("not found")
       }
       throw RcExit(status: rc.status)
+    },
+    // rfork [nNeEsfFm] (9front's execrfork; none: ens). The namespace is
+    // the system's: n a copy, N an empty one, m sealed. The environment
+    // and descriptors are rc's, and each program it starts gets a copy of
+    // both, shared with no one: e and f are always so. E hides what's set
+    // already, F takes away every descriptor. s waits for notes.
+    "rfork": { rc, argv, fds in
+      let letters = argv.count == 1 ? "ens" : argv.count == 2 ? argv[1] : nil
+      guard let letters, letters.allSatisfy({ "nNeEsfFm".contains($0) }) else {
+        fds[2]?.write(Array("Usage: rfork [fnesFNEm]\n".utf8))
+        return rc.setStatus("rfork usage")
+      }
+      let clean = letters.contains("N"), seal = letters.contains("m")
+      if (clean || seal || letters.contains("n")) && !rc.system.forkNamespace(clean: clean, seal: seal) {
+        fds[2]?.write(Array("rc: rfork failed\n".utf8))
+        return rc.setStatus("rfork failed")
+      }
+      if letters.contains("E") { rc.hideEnvironment() }
+      if letters.contains("F") { rc.revokeDescriptors(fds) }
+      rc.setStatus("")
     },
     "wait": { rc, _, _ in
       for job in rc.background { _ = job.wait() }

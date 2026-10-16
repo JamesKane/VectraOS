@@ -262,10 +262,10 @@ final class CroiSystem: RcSystem {
     // commands' paths are rc's).
     let env = environment.filter { !$0.hasPrefix("PWD=") } + ["PWD=" + FDIO.currentDirectory]
     let startup = Startup(args: argv, environment: env)
-    // rc's namespace, each mount point's root again.
+    // rc's namespace, each mount point's root again, sealed if it is.
     if let ns = FDIO.namespace {
       for p in ns.mountPoints {
-        if let node = try? ns.connect(p) { startup.mount(node, at: p) }
+        if let node = try? ns.connect(p) { startup.mount(node, at: p, sealed: ns.sealed) }
       }
     }
     do throws(Status) {
@@ -348,6 +348,23 @@ final class CroiSystem: RcSystem {
   }
 
   var directory: String { FDIO.currentDirectory }
+
+  /// rfork n, N and m: rc's namespace (FDIO's, which its programs get) a
+  /// clone of itself or a new empty one, sealed as before (Plan 9's
+  /// noattach is inherited), then sealed if asked.
+  func forkNamespace(clean: Bool, seal: Bool) -> Bool {
+    guard let ns = FDIO.namespace else { return false }
+    let next: Namespace
+    if clean {
+      next = Namespace(sealed: ns.sealed)
+    } else {
+      guard let copy = try? ns.clone() else { return false }
+      next = copy
+    }
+    if seal { next.seal() }
+    FDIO.replace(next)
+    return true
+  }
 
   /// A thread of rc's, joined by its job.
   final class ThreadJob: RcJob {

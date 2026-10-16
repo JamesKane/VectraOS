@@ -307,10 +307,22 @@ work, in order:
      `<{}` and `>{}` (paths /dev/fd/N), `` `split{} ``, and a command's
      words evaluated with its redirections in place; on the device, a
      program given each of rc's descriptors, a ring each (D46, amended:
-     its own stderr, fds above 2, `/dev/fd/N` in FDIO and cat).
+     its own stderr, fds above 2, `/dev/fd/N` in FDIO and cat);
+     `rfork` as 9front's execrfork: `n` a clone of rc's namespace, `N` an
+     empty one, `m` sealed (a Startup now carries the seal, PA_NS_DIR
+     bit 15), `E` hiding from programs what was given and unchanged
+     since (Plan 9's Updenv), `F` taking away every descriptor; `e`,
+     `f` and `s` ask nothing (rc's environment and descriptors are
+     shared with no one; notes are still missing). 9front's unix rc has
+     no rfork, so RcTests and launch-test check it, not the oracle.
+     Its limits: a namespace is the process's, so `rfork n` in a `&`
+     block is rc's too (as `cd` is); `F` leaves the streams open until
+     their owners close them, and rc reading a terminal reads on; a
+     sealed namespace with nothing in it reaches a child unsealed.
    - **Wrong semantics:** a compound command run with `&` shares rc's
-     directory (one per process), so a `cd` in it moves rc too.
-   - **Missing pieces:** `rfork`; notes (`sigint`, `sigexit`); a real
+     directory (one per process), so a `cd` in it moves rc too, and its
+     namespace (`rfork n` or `N`).
+   - **Missing pieces:** notes (`sigint`, `sigexit`); a real
      `$apid`; `/bin` in the namespace (the device's rc alone sees
      bootfs's programs there).
    - **Commands:** nothing streams; unknown flags are ignored, not

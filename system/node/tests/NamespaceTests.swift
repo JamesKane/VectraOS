@@ -124,6 +124,15 @@ func failure<R>(_ body: () throws(NamespaceError) -> R) -> NamespaceError? {
   let open = Namespace()
   try open.mount(a.channel(), at: "/a")
   #expect(!(try open.clone()).sealed)
+
+  // Through a Startup too (a parent says so on its entries).
+  let sealedStart = Startup(), openStart = Startup()
+  sealedStart.mount(try a.channel(), at: "/svc/a", sealed: true)
+  openStart.mount(try a.channel(), at: "/svc/a")
+  let given = try Namespace(sealedStart)
+  let unsealed = try Namespace(openStart)
+  #expect(given.sealed && !unsealed.sealed)
+  #expect(try text(given, "/svc/a/f") == "a")
 }
 
 @Test func theSrvBoardFindsPostedServices() throws {

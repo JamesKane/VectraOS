@@ -13,21 +13,23 @@ import IPC
 
 extension Startup {
   /// A namespace entry's info word: `index` into the names table, the
-  /// union placement and whether it is marked for creating.
-  static func nsInfo(_ index: Int, _ placement: Namespace.Placement, _ create: Bool) -> UInt32 {
+  /// union placement, whether it is marked for creating, and whether the
+  /// namespace is sealed (any entry says so for all).
+  static func nsInfo(_ index: Int, _ placement: Namespace.Placement, _ create: Bool, _ sealed: Bool) -> UInt32 {
     let p: UInt32 = switch placement {
     case .replace: 0
     case .before: 1
     case .after: 2
     }
-    return HandleType.info(HandleType.nsDir, UInt32(index) | p << 12 | (create ? 1 << 14 : 0))
+    return HandleType.info(HandleType.nsDir, UInt32(index) | p << 12 | (create ? 1 << 14 : 0) | (sealed ? 1 << 15 : 0))
   }
 
-  /// Adds `channel` (a Node channel) to the namespace at `path`.
+  /// Adds `channel` (a Node channel) to the namespace at `path`; `sealed`:
+  /// the namespace is (Namespace.seal: Plan 9's RFNOMNT, inherited).
   public func mount(_ channel: consuming Handle, at path: String, _ placement: Namespace.Placement = .replace,
-                    create: Bool = false) {
+                    create: Bool = false, sealed: Bool = false) {
     names.append(path)
-    add(channel, info: Self.nsInfo(names.count - 1, placement, create))
+    add(channel, info: Self.nsInfo(names.count - 1, placement, create, sealed))
   }
 
   /// The channel to serve this process's own Node tree on, once.
@@ -42,10 +44,12 @@ extension Startup {
 
 extension Namespace {
   /// The namespace `startup` gives: each PA_NS_DIR handle mounted at its
-  /// name, in the order given (a union's members in theirs).
+  /// name, in the order given (a union's members in theirs), sealed if
+  /// one says so.
   public convenience init(_ startup: Startup) throws(NamespaceError) {
     self.init()
     let names = startup.names
+    let sealed = startup.infos.contains { $0 & 0xFF == HandleType.nsDir && ($0 >> 16) & (1 << 15) != 0 }
     for info in startup.infos where info & 0xFF == HandleType.nsDir {
       let argument = info >> 16, index = Int(argument & 0xFFF)
       guard index < names.count, let channel = startup.take(info) else { throw .badPath }
@@ -56,5 +60,6 @@ extension Namespace {
       }
       try mount(channel, at: names[index], placement, create: argument & (1 << 14) != 0)
     }
+    if sealed { seal() }
   }
 }

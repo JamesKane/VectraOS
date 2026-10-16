@@ -201,6 +201,12 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
   rcRuns(rc, "cat /dev/fd/3 <[3]/svc/a/status", a, ns, job: job, bootfs: bootfs, "rc gives a program fd 3")
   rcRuns(rc, "cat <{cat /svc/a/status} <{echo two}", a + Array("two\n".utf8), ns, job: job, bootfs: bootfs,
          "rc runs <{} on the device")
+  // rfork: n a copy of rc's namespace, N an empty one (its programs' too),
+  // E what was given hidden, F every descriptor gone.
+  rcRuns(rc, "rfork n; cat /svc/a/status; rfork N; cat /svc/a/status || echo gone; rc -c 'cat /svc/a/status || echo also'",
+         a + Array("gone\nalso\n".utf8), ns, job: job, bootfs: bootfs, "rc's rfork n and N")
+  rcRuns(rc, "x=1; rc -c 'echo $x'; rfork E; rc -c 'echo $#x'; x=2; rc -c 'echo $x'; echo a; {rfork F; echo b}; echo c; exit ''",
+         Array("1\n0\n2\na\n".utf8), ns, job: job, bootfs: bootfs, "rc's rfork E and F")
   rcOnPty(rc, ns, job: job, bootfs: bootfs)
   _ = consume bootfs
 }

@@ -24,7 +24,8 @@ enum : uint32_t {
   CROI_PA_VMO_BOOTFS = 0x1B,
   // A Node channel in the process's namespace (Fuchsia's PA_NS_DIR, D65); the
   // argument's bits 0-11 index the names table for its path, 12-13 its union
-  // placement (0 replace, 1 before, 2 after), and bit 14 marks it for creating.
+  // placement (0 replace, 1 before, 2 after), bit 14 marks it for creating, and
+  // bit 15 seals the namespace (Plan 9's RFNOMNT; on any entry, for them all).
   CROI_PA_NS_DIR = 0x20,
   CROI_PA_FD = 0x30,              // argument: the fd (1: stdout, a debuglog)
   // The server end of the process's own Node tree, its export (Fuchsia's
