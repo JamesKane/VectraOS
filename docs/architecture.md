@@ -60,7 +60,9 @@ The syscall count is published and capped. The cap only ever goes down
 
 The kernel stays ACPI-only. The Q8B's firmware provides UEFI and ACPI, and
 AbyssBSD boots it that way, so no devicetree path is needed for the first
-hardware target. A DT-only board later would need its own ADR.
+hardware target. A DT-only board later would need its own ADR. The rv64
+board, the Orange Pi RV2, is one: its firmware gives a devicetree, and
+how it meets ACPI-only is open in D51.
 
 ## 3. The data plane: one ring
 

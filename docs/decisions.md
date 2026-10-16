@@ -1148,3 +1148,103 @@ rings would join at V2. They join it now, as the trace session lands.
 - **Rejected:** keeping the trace layout and calling it a ring (a second
   format); slots of 32 bytes with the sequence in the record's `time`
   (it changes the record D10 fixed, and every reader with it).
+
+## D51. The rv64 board: Orange Pi RV2 (Ky X1), and RVA22 as rv64's baseline (2026-10-16, decided; firmware open)
+
+rv64 has run only in QEMU, and no board was named for it. The owner has
+an Orange Pi RV2 on hand. Its SoC, sold as the Ky X1, is the SpacemiT K1:
+8 X60 harts that implement RVA22 with V (`docs/boards/orangepi-rv2/`,
+from Linux's `k1.dtsi` and FreeBSD's SpacemiT support).
+- **The RV2 is the rv64 board** (owner's call). It comes after the Q8B,
+  which stays the first board (D5): roadmap V4b, on V3's link.
+- **RVA22 is rv64's baseline** (owner's call): RVA22S64 for the kernel
+  and the loader, RVA22U64 for user code. Code may assume what the
+  profile makes mandatory (Zba, Zbb, Zbs, Zicbom, Zicbop, Zicboz,
+  Zihintpause, Zfhmin, Svpbmt, Svinval among them) and probes for what it
+  leaves optional (V, Sstc, Sscofpmf, Svnapot, Sv48, Ssaia, an IOMMU).
+  RVA23 would exclude the K1 (no Zcb, Zfa, Zawrs, Zvbb).
+- **What follows in code,** each its own change, not this entry:
+  `cmake/arch/rv64.cmake`'s `-march` (today `rv64imac_zicsr_zifencei`,
+  "RVA20-ish") and the user flags take the profile's extensions; QEMU's
+  rv64 runs use `-cpu rva22s64` as the floor beside `-cpu max`; the
+  Svpbmt fallback and `boot-smoke-no-svpbmt` (`-cpu rv64`) go, since no
+  baseline hart lacks Svpbmt; the loader refuses a hart whose ISA string
+  is below the profile and says which extension is missing.
+- **The K1 lands on paths the kernel already has:** Sv39, the PLIC (no
+  AIA) and the SBI timer. What it lacks needs board work: no IOMMU (DMA
+  through BTIs without one, with per-bus windows and an offset above the
+  2 GiB hole), and PCIe MSIs through DesignWare's MSI block instead of
+  IMSICs.
+- **Open: the firmware path.** The shipped chain (FSBL, OpenSBI, U-Boot)
+  gives a devicetree, and no ACPI tables are known for the K1. The kernel
+  is ACPI-only (architecture §2), which says a DT-only board needs its own
+  decision. The candidates are firmware that provides ACPI (EDK2 or
+  U-Boot's EFI, with K1 tables we write and ship as a firmware artifact)
+  and a loader that reads the DTB and fills the handoff, so the kernel
+  never sees DT. A kernel DT path is not a candidate. The owner decides
+  before V4b starts; until then, nothing assumes either answer.
+
+## D52. amd64's baseline: the 2013 Mac Pro's (Ivy Bridge) (2026-10-16, decided)
+
+D51 set rv64's baseline; amd64 had none beyond x86-64 with SSE2
+(`CROI_USER_CFLAGS` is empty). The owner's call: the SIMD level of the
+2013 Mac Pro or newer. Its Xeon E5 v2 is Ivy Bridge-EP, so the baseline
+is clang's `-march=ivybridge`: SSE4.2, POPCNT, AVX, F16C, PCLMUL, RDRAND,
+FSGSBASE and XSAVEOPT (from the bundled clang's predefined macros).
+Every later Mac Pro, and any x86 since Haswell, is a superset.
+- **AVX is the SIMD floor, not AVX2.** Ivy Bridge has 256-bit float AVX
+  but no AVX2, FMA, BMI1/2, LZCNT or MOVBE, so `x86-64-v3` is out. Those,
+  AES-NI (absent from clang's `ivybridge` though every Mac Pro has it) and
+  AVX-512 stay run-time options.
+- **User code** builds with `-march=ivybridge` and may assume AVX. Code
+  that checks for AVX at run time today stops checking.
+- **The kernel is unchanged:** no SIMD or FP state (`-mgeneral-regs-only`,
+  `-mno-sse`). It already saves user AVX state with XSAVEOPT (user.md,
+  K6d). The loader refuses a CPU without the baseline's CPUID bits and
+  says which is missing.
+- **QEMU:** `-cpu IvyBridge` becomes the floor run beside `-cpu max`
+  (both have AVX under TCG; whether TCG covers every bit of the model is
+  checked when the run is added). The bench's `-cpu host` is unaffected.
+- **What follows in code,** each its own change: `cmake/arch/amd64.cmake`'s
+  user flags, the loader's check, the floor run in `tools/qemu.sh` and
+  `vx ci`, and user.md's "AVX is a run-time option".
+- **arm64 is not covered** by this entry; its baseline is still open.
+
+## D53. arm64's baseline: the Q8B's Armv8.2-A, checked against the CIX Sky1 (2026-10-16, decided)
+
+D51 and D52 set rv64's and amd64's baselines. The owner's call for
+arm64: the Q8B's level (D5), cross-referenced with the CIX Sky1 (the
+Orange Pi 6 Plus and Radxa Orion O6, in croi's board review and
+AbyssBSD's `docs/boards/orangepi-6-plus/`).
+- **The two boards.** The Q8B's Cortex-X1C and A78C report, under Linux
+  (AbyssBSD's `radxa-dragon-q8b/dumps/linux/cpuinfo.txt`): fp, asimd,
+  aes, pmull, sha1, sha2, crc32, atomics, fphp, asimdhp, asimdrdm, lrcpc,
+  dcpop, asimddp, uscat, ilrcpc, flagm, paca and pacg. No BTI, no SVE.
+  The Sky1's Cortex-A720 and A520 are Armv9.2-A (Linux's
+  `arch/arm64/boot/dts/cix/sky1.dtsi`; the bundled clang's `-mcpu`
+  definitions add SVE2, BF16, I8MM, BTI and MTE), so they cover
+  everything above except the crypto instructions, which are a licensee
+  option on those cores. No Sky1 `cpuinfo` is in any tree yet.
+- **The baseline is `-march=armv8.2-a+fp16+dotprod+rcpc`:** LSE atomics,
+  FP16 arithmetic, the dot product and LDAPR. Both boards have each of
+  them. RCpc is Armv8.3's, kept because both have it and Swift's acquire
+  loads use it.
+- **Run-time options:** AES, PMULL and SHA (until a Sky1 dump shows
+  them; then a new entry may add them), the Armv8.4 extras the Q8B also
+  has (LRCPC2, FlagM, LSE2), SVE and SVE2, BF16, I8MM and MTE (Sky1
+  only), and BTI, whose landing pads stay in user code
+  (`-mbranch-protection=bti`, hint space) and are enforced where the CPU
+  has it, as now (hardening.md, K14r). PAuth is on both; the kernel's
+  pac-ret stays in hint space.
+- **The kernel is unchanged:** `-mgeneral-regs-only`, no FP or SIMD. The
+  loader refuses a CPU without the baseline's ID register fields
+  (`ID_AA64ISAR0_EL1` atomics, dot product, `ID_AA64PFR0_EL1` FP and
+  AdvSIMD half precision, `ID_AA64ISAR1_EL1` LRCPC) and says which is
+  missing.
+- **QEMU:** `-cpu cortex-a76` (Armv8.2 with FP16, the dot product and
+  RCpc) becomes the floor run beside `-cpu max`.
+- **What follows in code,** each its own change: `cmake/arch/arm64.cmake`'s
+  user flags, the loader's check, and the floor run in `tools/qemu.sh` and
+  `vx ci`.
+- **To do:** a Sky1 `cpuinfo` (or its ID registers) in AbyssBSD's board
+  notes, which settles the crypto question.

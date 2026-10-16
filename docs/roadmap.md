@@ -244,6 +244,28 @@ stick and a walk.
 - The native suite passes on the board through the serial budget scrape.
 - Q8B power-on → console, and warm-boot turnaround, are within budget.
 
+## V4b. Orange Pi RV2 (rv64)
+
+The rv64 board (D51), after the Q8B and on the same V3 link. Its facts
+are in `docs/boards/orangepi-rv2/`. It starts once the firmware path
+(D51's open question) is decided and rv64 builds and tests against RVA22
+in QEMU (`-cpu rva22s64`).
+
+1. **Console first:** the loader and kernel print through UART0, a
+   16550-style UART at `0xd401_7000` with 32-bit registers 4 bytes apart.
+2. **The platform:** 8 harts through SBI HSM, the PLIC, the SBI timer,
+   and DMA within each bus's window, with no IOMMU.
+3. **Ethernet:** a K1 EMAC driver in the net class (RGMII, Motorcomm
+   PHYs), whose bus reaches only the first 4 GiB of DRAM.
+4. **The V3 link on the board,** as for the Q8B.
+5. **Then the rest:** eMMC and microSD (SDHCI, below 2 GiB), PCIe with a
+   DesignWare MSI backend, USB 3 for HID, and the P1 PMIC's reset.
+
+**Exit:**
+- V3's exit commands pass against the board.
+- The native suite passes on the board through the serial budget scrape.
+- RV2 power-on → console, and warm-boot turnaround, are within budget.
+
 ## V5. Taisce on disk
 
 - Taisce's volumes on virtio-blk, then NVMe (V3 lifted the service on a

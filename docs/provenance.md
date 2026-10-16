@@ -83,3 +83,14 @@ The actions in the tables:
 
 Linux-derived code from AbyssBSD's LinuxKPI ports is *not* used. Those notes
 are read only as hardware documentation.
+
+## Linux and FreeBSD (hardware reference only)
+
+| Part | Action | Milestone |
+|---|---|---|
+| Linux `arch/riscv/boot/dts/spacemit/k1*.dts*` and the `spacemit,*` bindings (the RV2's SoC, memory, buses and devices) | Design | V4b |
+| Linux `drivers/net/ethernet/spacemit/k1_emac.c`, `drivers/mmc/host/sdhci-of-k1.c`, `drivers/pci/controller/dwc/pcie-spacemit-k1.c` (register behavior) | Design | V4b |
+| FreeBSD `sys/riscv/spacemit/`, `sys/dev/clk/spacemit/`, the X60's ids in `cpu.h` | Design | V4b |
+
+No code is lifted from either (D4). `docs/boards/orangepi-rv2/` records
+what was read and at which commit.

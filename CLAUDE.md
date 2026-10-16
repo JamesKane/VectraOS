@@ -101,7 +101,12 @@ debuglog (D38) and for ports made with CROI_PORT_RING (D44).
 
 Milestones run in order, and each puts the next one's dependencies in
 place. Board bring-up (V4) waits for V3, the bring-up link: SSH, warm
-boot and the GENI console. See `docs/roadmap.md`.
+boot and the GENI console. The rv64 board, the Orange Pi RV2 (Ky X1 =
+SpacemiT K1, RVA22 as rv64's baseline), follows the Q8B as V4b (D51,
+`docs/boards/orangepi-rv2/`). amd64's baseline is the 2013 Mac Pro's
+Ivy Bridge (`-march=ivybridge`: AVX, no AVX2 or FMA; D52); arm64's is
+the Q8B's, `armv8.2-a+fp16+dotprod+rcpc`, which the CIX Sky1 also
+meets (D53). See `docs/roadmap.md`.
 
 ## Kernel rules
 
