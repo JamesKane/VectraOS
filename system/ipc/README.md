@@ -23,3 +23,14 @@ A public library's structs that other modules build need an explicit
 public memberwise `init` (labels as the fields, in order). The test library's outputs live in `system/ipc/tests/{c/generated,docs,baselines}`.
 Calls go through `channel_call` and record FLOW records with croi's flow
 ids (category `ipc`).
+
+## Tests
+
+`swift test` runs them hosted (`tests/wire`, `tests/macros`, `tests/idl`,
+`tests/runtime`, over SysHost); `bin/ipc-test` (`tests/native`, the
+boot-ipc test) runs Echo, Loud, the C client and the dispatcher on each
+arch. Natively IPCWire and IPC are modules of Sys (`croi_user_sys`), and a
+program that declares an `@IPCLibrary` is built with `croi_user_program
+... IPC`, which loads the macro's plugin from SwiftPM's build
+(`CROI_IPC_PLUGIN`). Tier 0 links no Unicode tables, so Echo's and
+ipc-test's strings are compared and cased as bytes.

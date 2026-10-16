@@ -15,9 +15,13 @@ find_program(CROI_SWIFT swift REQUIRED)
 set(VX ${CMAKE_SOURCE_DIR}/.build/debug/vx)
 add_custom_target(vx
   COMMAND ${CROI_SWIFT} build --product vx
+  # @IPCLibrary's plugin (IPCMacros), for the user programs that expand it
+  # (croi_user_sys, croi_user_program IPC): building IPC builds it.
+  COMMAND ${CROI_SWIFT} build --target IPC
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-  BYPRODUCTS ${VX}
-  COMMENT "Building vx (SwiftPM)")
+  BYPRODUCTS ${VX} ${CMAKE_SOURCE_DIR}/.build/debug/IPCMacros
+  COMMENT "Building vx and IPCMacros (SwiftPM)")
+set(CROI_IPC_PLUGIN ${CMAKE_SOURCE_DIR}/.build/debug/IPCMacros)
 
 set(CROI_EDK2_DIR /usr/share/edk2 CACHE PATH "edk2 firmware images for QEMU")
 set(CROI_CMDLINE "croi.test=1" CACHE STRING "Kernel command line written to the ESP (\\croi\\cmdline)")
@@ -154,11 +158,12 @@ function(croi_boot_program_test test name)
             ${CROI_ARCH} ${_esp} ${CMAKE_BINARY_DIR}/qemu-${test} ${CROI_EDK2_DIR})
   set_tests_properties(boot-${test} PROPERTIES TIMEOUT 120)
 endfunction()
-# Sys over the kernel (bin/sys-test), dlopen (bin/dl-test) and a trace
-# session (bin/trace-test), whose export vx trace collect then reads from
-# the boot's console (qemu.sh keeps it).
+# Sys over the kernel (bin/sys-test), dlopen (bin/dl-test), IPC
+# (bin/ipc-test) and a trace session (bin/trace-test), whose export vx
+# trace collect then reads from the boot's console (qemu.sh keeps it).
 croi_boot_program_test(sys sys-test)
 croi_boot_program_test(dl dl-test)
+croi_boot_program_test(ipc ipc-test)
 croi_boot_program_test(trace trace-test)
 add_test(NAME trace-collect
   COMMAND ${VX} trace collect ${CMAKE_BINARY_DIR}/qemu-trace/console.log ${CMAKE_BINARY_DIR}/trace)

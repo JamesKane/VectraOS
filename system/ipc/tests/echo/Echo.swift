@@ -114,14 +114,16 @@ public struct EchoImpl: TestIPC.EchoHandler {
   }
 }
 
-/// Starts a server on its own thread; it sends one event, then serves.
 /// Echo's methods, and shouting.
 public struct LoudImpl: TestIPC.LoudHandler {
   var echo = EchoImpl()
 
   public init() {}
 
-  public mutating func shout(_ text: String) -> String { text.uppercased() }
+  /// ASCII only: tier 0 links no Unicode case tables.
+  public mutating func shout(_ text: String) -> String {
+    String(decoding: text.utf8.map { $0 >= 0x61 && $0 <= 0x7a ? $0 - 0x20 : $0 }, as: UTF8.self)
+  }
 
   public mutating func say(_ text: String, times: UInt32) throws(EchoError) -> String { try echo.say(text, times: times) }
   public mutating func note(_ value: UInt64, loud: Bool) { echo.note(value, loud: loud) }
@@ -136,33 +138,5 @@ public struct LoudImpl: TestIPC.LoudHandler {
     -> Handle?
   {
     echo.optionals(text, bytes: bytes, point: point, handle: handle)
-  }
-}
-
-/// Serves Loud, after sending one event of Echo's and one of its own.
-public func startLoudServer(_ raw: UInt32) -> Task<IPCError<Never>?, Never> {
-  Task.detached {
-    var server = TestIPC.LoudServer(channel: Handle(raw: raw), impl: LoudImpl())
-    do throws(IPCError<Never>) {
-      try TestIPC.EchoEventSender.sendTicked(1, label: "composed", on: server.connection)
-      try server.sendShouted("hey")
-      try server.serve()
-      return nil
-    } catch {
-      return error
-    }
-  }
-}
-
-public func startServer(_ raw: UInt32) -> Task<IPCError<Never>?, Never> {
-  Task.detached {
-    var server = TestIPC.EchoServer(channel: Handle(raw: raw), impl: EchoImpl())
-    do throws(IPCError<Never>) {
-      try server.sendTicked(7, label: "first")
-      try server.serve()
-      return nil
-    } catch {
-      return error
-    }
   }
 }

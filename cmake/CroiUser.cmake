@@ -165,10 +165,13 @@ function(croi_user_floor)
   set(CROI_USER_LIBC ${_dir}/libc.a PARENT_SCOPE)
 endfunction()
 
-#   croi_user_program(<out.elf> [PIE] [EXPORT_DYNAMIC] [SYS] [SOURCES <c>...] [SWIFT <swift>...] [STACK <bytes>])
-# SYS: the program imports Sys (croi_user_sys).
+#   croi_user_program(<out.elf> [PIE] [EXPORT_DYNAMIC] [SYS] [IPC] [SOURCES <c>...] [SWIFT <swift>...]
+#                     [INCLUDES <dir>...] [STACK <bytes>])
+# SYS: the program imports Sys (croi_user_sys). IPC: it declares an
+# @IPCLibrary (the macro's plugin, CROI_IPC_PLUGIN) or its C includes
+# td_wire.h. INCLUDES: more header directories, for C and Swift's clang.
 function(croi_user_program output)
-  cmake_parse_arguments(U "PIE;EXPORT_DYNAMIC;SYS" "STACK" "SOURCES;SWIFT" ${ARGN})
+  cmake_parse_arguments(U "PIE;EXPORT_DYNAMIC;SYS;IPC" "STACK" "SOURCES;SWIFT;INCLUDES" ${ARGN})
   # PIE: a static PIE (K11b), linked at 0, loaded at a random base by
   # croi's loaders, which apply its R_*_RELATIVE relocations.
   set(_cpie)
@@ -188,6 +191,17 @@ function(croi_user_program output)
     set(_sys_flags -I ${CROI_USER_SYS_DIR} -Xcc -I${PROJECT_SOURCE_DIR}/system/trace/c/include)
     set(_sys_libs ${CROI_USER_SYS})
   endif()
+  set(_includes)
+  set(_ipc_flags)
+  set(_ipc_depends)
+  if(U_IPC)
+    list(APPEND U_INCLUDES ${PROJECT_SOURCE_DIR}/system/ipc/c/include)
+    set(_ipc_flags -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros")
+    set(_ipc_depends vx ${CROI_IPC_PLUGIN})
+  endif()
+  foreach(_i ${U_INCLUDES})
+    list(APPEND _includes -I${_i})
+  endforeach()
   get_filename_component(_name ${output} NAME_WE)
   set(_dir ${CMAKE_CURRENT_BINARY_DIR}/${_name}.dir)
   # EXPORT_DYNAMIC: a dynamic section with no relocations (a program that
@@ -217,7 +231,7 @@ function(croi_user_program output)
   set(_commands)
   foreach(_source ${U_SOURCES})
     get_filename_component(_base ${_source} NAME_WE)
-    list(APPEND _commands COMMAND ${CMAKE_C_COMPILER} ${CROI_USER_COMMON_CFLAGS} ${_cpie} -fstack-protector-strong
+    list(APPEND _commands COMMAND ${CMAKE_C_COMPILER} ${CROI_USER_COMMON_CFLAGS} ${_cpie} -fstack-protector-strong ${_includes}
                                   -c ${_source} -o ${_dir}/${_base}.o)
     list(APPEND _objects ${_dir}/${_base}.o)
   endforeach()
@@ -228,13 +242,13 @@ function(croi_user_program output)
     set(_xcc)
     foreach(_f ${CROI_USER_CFLAGS} ${_cpie} -std=c23 -fno-omit-frame-pointer -I${PROJECT_SOURCE_DIR}/user/include
                -I${PROJECT_SOURCE_DIR}/system/libc/include
-               -I${PROJECT_SOURCE_DIR}/kernel/include -I${CROI_FLOOR_DIR}/include)
+               -I${PROJECT_SOURCE_DIR}/kernel/include -I${CROI_FLOOR_DIR}/include ${_includes})
       list(APPEND _xcc -Xcc ${_f})
     endforeach()
     list(APPEND _commands COMMAND ${CMAKE_Swift_COMPILER} -target ${CROI_SWIFT_TRIPLE}
          -enable-experimental-feature Embedded -enable-experimental-feature Lifetimes -enable-experimental-feature Extern
          -parse-as-library -strict-memory-safety -Werror StrictMemorySafety -wmo -Osize
-         -Xfrontend -function-sections -module-name ${_name} ${_sys_flags} ${_xcc}
+         -Xfrontend -function-sections -module-name ${_name} ${_sys_flags} ${_ipc_flags} ${_xcc}
          -c ${U_SWIFT} -o ${_dir}/${_name}-swift.o)
     list(APPEND _objects ${_dir}/${_name}-swift.o)
   endif()
@@ -246,7 +260,8 @@ function(croi_user_program output)
             -zmax-page-size=4096 -znoexecstack -zstack-size=${U_STACK} --gc-sections --build-id=sha1
             ${_objects} ${_sys_libs} ${_whole} ${_runtime} ${CROI_USER_LIBC} ${_whole_end} ${_dynamic_inputs}
             -o ${output}
-    DEPENDS ${U_SOURCES} ${U_SWIFT} ${_sys_libs} ${_runtime} ${CROI_USER_LIBC} ${PROJECT_SOURCE_DIR}/user/include/module.modulemap
+    DEPENDS ${U_SOURCES} ${U_SWIFT} ${_sys_libs} ${_runtime} ${CROI_USER_LIBC} ${_ipc_depends}
+            ${PROJECT_SOURCE_DIR}/user/include/module.modulemap
     COMMENT "Building user program ${_name}")
 endfunction()
 
@@ -300,10 +315,12 @@ endfunction()
 # croi_user_sys(): builds Sys once per tree (system/sys, V2): its modules
 # SysABI, Sys (the API over the native backend), LibSys (the start's
 # views), Ld (system/ld: dlopen, over croi's ELF and bootfs readers and
-# user/lib/loader's segments) and the trace (Ring, TraceFormat, Trace,
-# TraceSession), Embedded Swift, into ${CROI_USER_SYS_DIR} (their .swiftmodule
-# files) and ${CROI_USER_SYS} (libsys.a). Programs built with SYS import
-# them. Static-PIE code, which fixed-address programs link too.
+# user/lib/loader's segments), the trace (Ring, TraceFormat, Trace,
+# TraceSession) and IPC (system/ipc: IPCWire, and IPC, the runtime
+# @IPCLibrary's code calls; the macro is CROI_IPC_PLUGIN), Embedded
+# Swift, into ${CROI_USER_SYS_DIR} (their .swiftmodule files) and
+# ${CROI_USER_SYS} (libsys.a). Programs built with SYS import them.
+# Static-PIE code, which fixed-address programs link too.
 function(croi_user_sys)
   set(_dir ${CMAKE_BINARY_DIR}/user-sys)
   set(_sys ${PROJECT_SOURCE_DIR}/system/sys)
@@ -333,6 +350,8 @@ function(croi_user_sys)
   set(_trace_format ${_trace}/format/Format.swift)
   set(_trace_writer ${_trace}/writer/Trace.swift ${_trace}/writer/native/Region.swift)
   set(_trace_session ${_trace}/session/Session.swift)
+  file(GLOB _ipc_wire CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/system/ipc/wire/*.swift)
+  file(GLOB _ipc CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/system/ipc/runtime/*.swift)
   file(GLOB _headers ${CROI_FLOOR_DIR}/include/* ${PROJECT_SOURCE_DIR}/user/include/croi/*.h
        ${PROJECT_SOURCE_DIR}/kernel/include/*.h)
   add_custom_command(OUTPUT ${_dir}/libsys.a
@@ -353,11 +372,16 @@ function(croi_user_sys)
             -c ${_trace_writer} -o ${_dir}/trace.o
     COMMAND ${_swiftc} -module-name TraceSession -emit-module -emit-module-path ${_dir}/TraceSession.swiftmodule
             -c ${_trace_session} -o ${_dir}/tracesession.o
+    COMMAND ${_swiftc} -module-name IPCWire -emit-module -emit-module-path ${_dir}/IPCWire.swiftmodule
+            -c ${_ipc_wire} -o ${_dir}/ipcwire.o
+    COMMAND ${_swiftc} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros" -module-name IPC -emit-module
+            -emit-module-path ${_dir}/IPC.swiftmodule -c ${_ipc} -o ${_dir}/ipc.o
     COMMAND ${CMAKE_COMMAND} -E rm -f ${_dir}/libsys.a
     COMMAND ${CMAKE_AR} rcs ${_dir}/libsys.a ${_dir}/sysabi.o ${_dir}/sys.o ${_dir}/libsys.o ${_dir}/ld.o
             ${_dir}/ring.o ${_dir}/traceformat.o ${_dir}/trace.o ${_dir}/tracesession.o
-    DEPENDS ${_abi} ${_api} ${_lib} ${_ld} ${_ring} ${_trace_format} ${_trace_writer} ${_trace_session}
-            ${_headers}
+            ${_dir}/ipcwire.o ${_dir}/ipc.o
+    DEPENDS ${_abi} ${_api} ${_lib} ${_ld} ${_ring} ${_trace_format} ${_trace_writer} ${_trace_session} ${_ipc_wire} ${_ipc}
+            ${_headers} vx ${CROI_IPC_PLUGIN}
     COMMENT "Building Sys")
   set(CROI_USER_SYS_DIR ${_dir} PARENT_SCOPE)
   set(CROI_USER_SYS ${_dir}/libsys.a PARENT_SCOPE)
