@@ -12,6 +12,7 @@
 //                             the same budgets against Zircon's (ZirconCommand.swift)
 //   vx trace collect|print|summary|diff ...
 //   vx loc [--check]          lines per component, and the size budgets
+//   vx hardware [--check]     the hardware support list (HardwareCommand.swift)
 //   vx ci [--no-bench]        host tests, every arch's build and tests, the
 //                             size budgets, then the bench (advisory)
 //
@@ -40,7 +41,7 @@ func arches(_ args: [String]) -> [String] {
 
 var args = Array(CommandLine.arguments.dropFirst())
 guard let command = args.first else {
-  fail("usage: vx build|test|boot|bench|trace|loc|ci [options]")
+  fail("usage: vx build|test|boot|bench|trace|loc|hardware|ci [options]")
 }
 args.removeFirst()
 
@@ -67,6 +68,7 @@ case "boot":
   exit(run(["ninja", "-C", "build/\(arch)", "run"], log: nil).ok ? 0 : 1)
 case "bench": exit(benchCommand(args) ? 0 : 1)
 case "loc": exit(locCommand(args) ? 0 : 1)
+case "hardware": exit(hardwareCommand(args) ? 0 : 1)
 case "ci": exit(ci(args) ? 0 : 1)
-default: fail("unknown command \(command); vx has build, test, boot, bench, trace, loc and ci")
+default: fail("unknown command \(command); vx has build, test, boot, bench, trace, loc, hardware and ci")
 }

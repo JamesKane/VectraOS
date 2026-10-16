@@ -67,6 +67,7 @@ CMake/Ninja builds the images, with one tree per arch under `build/<arch>/`.
     .build/debug/vx boot rv64                        # boot interactively (Ctrl-A x quits)
     .build/debug/vx bench                            # boot budgets under KVM (advisory)
     .build/debug/vx loc                              # size budgets
+    .build/debug/vx hardware                         # the hardware support list (D66)
 
 - Each step's output goes to `build/vx/<step>.log`. On failure, vx shows
   the log's tail.
@@ -112,7 +113,8 @@ SpacemiT K1, RVA22 as rv64's baseline), follows the Q8B as V4b (D51,
 `docs/boards/orangepi-rv2/`). amd64's baseline is the 2013 Mac Pro's
 Ivy Bridge (`-march=ivybridge`: AVX, no AVX2 or FMA; D52); arm64's is
 the Q8B's, `armv8.2-a+fp16+dotprod+rcpc`, which the CIX Sky1 also
-meets (D53). See `docs/roadmap.md`.
+meets (D53). See `docs/roadmap.md`. What runs where, and at what level
+(research to supported), is `docs/hardware/` (D66).
 
 ## Kernel rules
 

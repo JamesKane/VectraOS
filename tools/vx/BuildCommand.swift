@@ -54,6 +54,7 @@ func ci(_ args: [String]) -> Bool {
   var ok = step("host-test", ["swift", "test"])
   for arch in allArches { ok = build(arch) && test(arch) && ok }
   ok = locCommand(["--check"]) && ok
+  ok = hardwareCommand(["--check"]) && ok
   if bench {
     if FileManager.default.fileExists(atPath: "/dev/kvm") {
       _ = benchCommand([])  // advisory on a shared machine (docs/performance.md)

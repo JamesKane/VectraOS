@@ -279,6 +279,8 @@ stick and a walk.
 - V3's exit commands pass against the board.
 - The native suite passes on the board through the serial budget scrape.
 - Q8B power-on → console, and warm-boot turnaround, are within budget.
+- The Q8B and its required components are experimental in
+  `docs/hardware/support.tsv` (D66).
 
 ## V4b. Orange Pi RV2 (rv64)
 
@@ -301,6 +303,8 @@ in QEMU (`-cpu rva22s64`).
 - V3's exit commands pass against the board.
 - The native suite passes on the board through the serial budget scrape.
 - RV2 power-on → console, and warm-boot turnaround, are within budget.
+- The RV2 and its required components are experimental in
+  `docs/hardware/support.tsv` (D66).
 
 ## V5. Taisce on disk
 

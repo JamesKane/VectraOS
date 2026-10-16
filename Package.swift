@@ -169,7 +169,9 @@ let package = Package(
     .target(name: "Elf", path: "lib/elf/Elf", swiftSettings: tier0),
     .target(name: "Ld", path: "system/ld", exclude: ["native", "tests"], sources: ["lib"], swiftSettings: tier0),
     .testTarget(name: "LdTests", dependencies: ["Ld", "Elf"], path: "system/ld/tests", exclude: ["native"]),
-    .executableTarget(name: "vx", dependencies: ["Bench", "ImageFormats", "TraceFormat", "TraceReader"], path: "tools/vx"),
+    .target(name: "Hardware", path: "tools/hardware/lib"),
+    .testTarget(name: "HardwareTests", dependencies: ["Hardware"], path: "tools/hardware/tests"),
+    .executableTarget(name: "vx", dependencies: ["Bench", "Hardware", "ImageFormats", "TraceFormat", "TraceReader"], path: "tools/vx"),
   ] + ipc,
   cLanguageStandard: .gnu2x
 )
