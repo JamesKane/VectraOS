@@ -298,7 +298,8 @@ stick and a walk.
    from the first boot. This needs a 1.8 V USB-serial adapter on the
    40-pin header: pin 6 GND, pin 8 TX (gpio63), pin 10 RX (gpio64). Never
    connect it to the 3-pin header by USB-C, which is 12–20 V power in.
-2. **The platform:** GIC with ITS, SMP across the heterogeneous cores,
+2. **The platform:** GIC with ITS, SMP across the heterogeneous cores
+   (D68's kernel half lands before V4, in QEMU),
    PCIe segment 4 behind UEFI's TC9563 switch, and the SMMUv3 under the
    hypervisor's rules (AbyssBSD's `lessons.md`).
 3. **Ethernet:** a TC956x driver (XGMAC2, XPCS, QCA8081 PHY) in the net
