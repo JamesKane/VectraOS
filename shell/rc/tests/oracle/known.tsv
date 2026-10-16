@@ -5,7 +5,6 @@
 # KIND: port, a gap in our rc to fix (docs/roadmap.md, V2 item 6); or
 # linux, an artefact of running 9front's rc on Linux (numeric statuses,
 # GNU programs), which never matches.
-03-subscript	port	port accepts $#x(9) (9front: syntax error, aborts)
 27-fn	linux	not-found status text (Linux oracle: 1)
 30-status-fail	linux	Linux oracle: success status is 0
 31-status-pipeline	linux	Linux oracle: success is 0, so false|true is 1|0 (Plan 9, and we: 1|)
@@ -13,7 +12,4 @@
 51-builtin	port	builtin missing
 52-whatis	port	whatis fn prints no body
 61-background	port	compound & runs in foreground
-65-syntax-eq	port	= in arguments accepted (and split into its own word)
 69-notfound	linux	not-found status text (Linux oracle: 1)
-73-assign-list-var	port	$a=val (computed name) unsupported
-82-paren-caret	port	port accepts word( list ) (9front: syntax error)

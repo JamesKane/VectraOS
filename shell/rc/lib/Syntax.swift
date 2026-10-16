@@ -49,8 +49,10 @@ public struct Redirection: Equatable, Sendable {
 public indirect enum Command: Equatable, Sendable {
   /// A command and its words, redirected.
   case simple([Word], [Redirection])
-  /// name=value, alone (`body` nil) or for one command.
-  case assign(String, Word, body: Command?)
+  /// name=value, alone (`body` nil) or for one command. The name is a
+  /// word (9front's `first`: `$a=v` sets the variable $a names), one
+  /// string when it runs.
+  case assign(Word, Word, body: Command?)
   /// Stages, each one's fd 1 (or the given one) into the next's 0.
   case pipeline([Command], fds: [Int32])
   case not(Command)
@@ -203,7 +205,19 @@ struct Lexer {
     case "^": return one(.caret)
     case "{": return one(.leftBrace)
     case "}": return one(.rightBrace)
-    case "(": return one(.leftParen)
+    case "(":
+      // Straight after a word, ( is 9front's SUB: a subscript, which only
+      // $name takes (lexed with it), so anywhere else it's an error. A
+      // keyword (if, while, ...) isn't a word: `if(c)` is a paren.
+      if i > 0, Lexer.isWordChar(s[i - 1]) || s[i - 1] == "'" {
+        var k = i
+        while k > 0, Lexer.isWordChar(s[k - 1]) { k -= 1 }
+        let word = String(String.UnicodeScalarView(s[k..<i]))
+        let keyword = s[i - 1] != "'" && (k == 0 || (s[k - 1] != "$" && s[k - 1] != "#"))
+          && ["for", "in", "while", "if", "not", "switch", "fn", "~", "!", "@"].contains(word)
+        if !keyword { throw RcSyntaxError(message: "( after a word") }
+      }
+      return one(.leftParen)
     case ")": return one(.rightParen)
     case "=": return one(.equals)
     case "`": return one(.backquote)
@@ -459,10 +473,16 @@ public struct Parser {
     return try pipeline()
   }
 
-  /// Whether `name=` starts here.
-  var atAssignment: Bool {
-    guard case .word(.literal(_, quoted: false), _) = peek else { return false }
-    return tokens[at + 1] == .equals
+  /// The name of an assignment starting here (a word, then =), taken.
+  mutating func assignmentName() -> Word? {
+    guard case .word = peek else { return nil }
+    let start = at
+    if let name = try? word(), peek == .equals {
+      at += 1
+      return name
+    }
+    at = start
+    return nil
   }
 
   /// name=value ..., then a command or nothing (9front's `assign cmd`,
@@ -472,9 +492,8 @@ public struct Parser {
   mutating func assignments(then command: (inout Parser) throws(RcSyntaxError) -> Command)
     throws(RcSyntaxError) -> Command?
   {
-    var assigns: [(String, Word)] = []
-    while atAssignment, case .word(.literal(let name, _), _) = peek {
-      at += 2
+    var assigns: [(Word, Word)] = []
+    while let name = assignmentName() {
       assigns.append((name, try word() ?? .list([])))
     }
     guard !assigns.isEmpty else { return nil }
@@ -682,11 +701,8 @@ public struct Parser {
         redirs.append(r)
       } else if let w = try word() {
         words.append(w)
-      } else if peek == .equals {
-        // = in an argument is a literal.
-        at += 1
-        words.append(.literal("=", quoted: false))
       } else {
+        // = outside an assignment is an error, as in 9front: quote it.
         break
       }
     }

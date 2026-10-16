@@ -1,0 +1,11 @@
+'q'=1; echo q $q
+b=x; a$b=2; echo ax $ax
+n=v; $n=3 echo local $v; echo global $v
+if(true) echo kw paren
+while(false) echo no
+for(i in 1) echo for $i
+switch(a){case a; echo switch}
+echo a'='b
+l=(a b)
+$l=4
+echo after not singleton

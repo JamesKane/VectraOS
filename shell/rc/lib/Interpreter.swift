@@ -505,7 +505,9 @@ public final class Rc {
         return
       }
       if let job = try call(argv, io) { setStatus(job.wait()) }
-    case .assign(let name, let w, let body):
+    case .assign(let nameWord, let w, let body):
+      let names = try value(nameWord, fds, glob: false)
+      guard names.count == 1, let name = names.first else { throw RcError(message: "variable name not singleton!") }
       let v = try value(w, fds)
       guard let body else {
         variables[name] = v
