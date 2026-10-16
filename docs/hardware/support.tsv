@@ -32,19 +32,19 @@ virtio-input	component	qemu-q35,qemu-virt-arm64,qemu-virt-rv64	all	planned	no	V2
 virtio-net	component	qemu-q35,qemu-virt-arm64,qemu-virt-rv64	all	planned	no	V3	D15	-	-	-	-	the V3 link's network in QEMU; required once V3 lands
 virtio-blk	component	qemu-q35,qemu-virt-arm64,qemu-virt-rv64	all	planned	no	V3	D8	-	-	-	-	with Taisce
 virtio-gpu	component	qemu-q35,qemu-virt-arm64,qemu-virt-rv64	all	planned	no	V6	D55	-	-	-	-	Loinnir through Venus until a native driver
-radxa-q8b	platform	-	arm64	planned	-	V4	D5	yes	-	-	-	Radxa Dragon Q8B; docs/boards and AbyssBSD's notes
-q8b-geni-uart	component	radxa-q8b	arm64	planned	yes	V3	D15	-	-	-	-	GENI UART, written ahead in V3 with a register-model test; development once it lands
-q8b-smp	component	radxa-q8b	arm64	planned	yes	V4	D5	-	-	-	-	heterogeneous cores
-q8b-gic-its	component	radxa-q8b	arm64	planned	yes	V4	D5	-	-	-	-	GIC with ITS
-q8b-timer	component	radxa-q8b	arm64	planned	yes	V4	D5	-	-	-	-	generic timer
-q8b-smmuv3	component	radxa-q8b	arm64	planned	no	V4	D5	-	-	-	-	SMMUv3 under the hypervisor's rules
-q8b-tc956x	component	radxa-q8b	arm64	planned	yes	V4	D5	-	-	-	-	TC956x Ethernet (XGMAC2, XPCS, QCA8081); DMA offset 0x10_0000_0000
-q8b-nvme	component	radxa-q8b	arm64	planned	no	V4	D5	-	-	-	-	NVMe behind the TC9563 switch
-q8b-gcc	component	radxa-q8b	arm64	planned	no	V4	D5	-	-	-	-	qcom-gcc clocks
-q8b-gop	component	radxa-q8b	arm64	planned	no	V4	D5	-	-	-	-	GOP framebuffer text console
-q8b-usb-hid	component	radxa-q8b	arm64	planned	no	V4	D5	-	-	-	-	USB for HID
-q8b-adreno-690	component	radxa-q8b	arm64	planned	no	V6	D62	-	-	-	-	display in V6, compute in V8
-q8b-cdsp	component	radxa-q8b	arm64	planned	no	V8	D5	-	-	-	-	Hexagon CDSP through a first-party FastRPC driver
+radxa-q8b	platform	-	arm64	planned	-	V8	D5,D69	yes	-	-	-	Radxa Dragon Q8B; moved to V8 by D69 (the CDSP and Adreno need it); docs/boards and AbyssBSD's notes
+q8b-geni-uart	component	radxa-q8b	arm64	planned	yes	V8	D15,D69	-	-	-	-	GENI UART, with a register-level model test (QEMU has no GENI), in V8 (D69)
+q8b-smp	component	radxa-q8b	arm64	planned	yes	V8	D5,D69	-	-	-	-	heterogeneous cores
+q8b-gic-its	component	radxa-q8b	arm64	planned	yes	V8	D5,D69	-	-	-	-	GIC with ITS
+q8b-timer	component	radxa-q8b	arm64	planned	yes	V8	D5,D69	-	-	-	-	generic timer
+q8b-smmuv3	component	radxa-q8b	arm64	planned	no	V8	D5,D69	-	-	-	-	SMMUv3 under the hypervisor's rules
+q8b-tc956x	component	radxa-q8b	arm64	planned	yes	V8	D5,D69	-	-	-	-	TC956x Ethernet (XGMAC2, XPCS, QCA8081); DMA offset 0x10_0000_0000
+q8b-nvme	component	radxa-q8b	arm64	planned	no	V8	D5,D69	-	-	-	-	NVMe behind the TC9563 switch
+q8b-gcc	component	radxa-q8b	arm64	planned	no	V8	D5,D69	-	-	-	-	qcom-gcc clocks
+q8b-gop	component	radxa-q8b	arm64	planned	no	V8	D5,D69	-	-	-	-	GOP framebuffer text console
+q8b-usb-hid	component	radxa-q8b	arm64	planned	no	V8	D5,D69	-	-	-	-	USB for HID
+q8b-adreno-690	component	radxa-q8b	arm64	planned	no	open	D62,D69	-	-	-	-	display reordered in its own entry (D69), compute in V8
+q8b-cdsp	component	radxa-q8b	arm64	planned	no	V8	D5,D69	-	-	-	-	Hexagon CDSP through a first-party FastRPC driver
 orangepi-rv2	platform	-	rv64	planned	-	V4b	D51	deferred	-	-	-	Orange Pi RV2 (Ky X1 = SpacemiT K1); firmware path open (D51)
 rv2-uart0	component	orangepi-rv2	rv64	planned	yes	V4b	D51	-	-	-	-	16550-style UART at 0xd401_7000, 32-bit registers
 rv2-smp	component	orangepi-rv2	rv64	planned	yes	V4b	D51	-	-	-	-	8 harts through SBI HSM
@@ -71,13 +71,23 @@ pc9-amdvi	component	pc-9700x	amd64	research	no	-	D2	-	-	-	-	AMD-Vi with interrup
 pc9-rtl8125	component	pc-9700x	amd64	research	yes	-	D15	-	-	-	-	Killer E3000 2.5 GbE (Realtek RTL8125 family), the V3 link's NIC here
 pc9-radeon-610m	component	pc-9700x	amd64	research	no	-	D62	-	-	-	-	integrated RDNA 2 GPU, UMA
 pc9-rtx5070ti	component	pc-9700x	amd64	research	no	-	D62	-	-	-	-	GeForce RTX 5070 Ti (Blackwell), discrete; the boot display
-pc-7900x	platform	-	amd64	research	-	-	D52,D62	yes	-	-	-	the AMD tower at 192.168.0.30 (no name): Gigabyte X870E, Ryzen 9 7900X; not the development host, boots when the owner frees it; docs/boards/pc-7900x/
-pc7-console	component	pc-7900x	amd64	research	yes	-	D2	-	-	-	-	no serial port: a GOP text console (V4 item 5) or a PCIe serial card
-pc7-amdvi	component	pc-7900x	amd64	research	no	-	D2	-	-	-	-	AMD-Vi with interrupt remapping (croi's K12b, so far QEMU only)
-pc7-rtl8125	component	pc-7900x	amd64	research	yes	-	D15	-	-	-	-	Realtek RTL8125 2.5 GbE, the V3 link's NIC here
+pc-7900x	platform	-	amd64	planned	-	V4c	D52,D62,D69	yes	-	-	-	the AMD tower at 192.168.0.30 (no name): Gigabyte X870E, Ryzen 9 7900X; amd64's first board, V4c (D69); boots when the owner frees it; docs/boards/pc-7900x/
+pc7-console	component	pc-7900x	amd64	planned	yes	V4c	D2,D69	-	-	-	-	no serial port: a GOP text console (V4 item 5) or a PCIe serial card
+pc7-amdvi	component	pc-7900x	amd64	planned	no	V4c	D2,D69	-	-	-	-	AMD-Vi with interrupt remapping (croi's K12b, so far QEMU only)
+pc7-rtl8125	component	pc-7900x	amd64	planned	yes	V4c	D15,D69	-	-	-	-	Realtek RTL8125 2.5 GbE, the V3 link's NIC here
 pc7-radeon-610m	component	pc-7900x	amd64	research	no	-	D62	-	-	-	-	integrated RDNA 2 GPU (Raphael), UMA
 pc7-rtx4070	component	pc-7900x	amd64	research	no	-	D62	-	-	-	-	GeForce RTX 4070 (Ada), discrete, resizable BAR on
-cix-sky1	platform	-	arm64	research	-	-	D53	yes	-	-	-	Orange Pi 6 Plus and Radxa Orion O6; docs/boards/orangepi-6-plus/ (research pass 2026-10-16)
+cix-sky1	platform	-	arm64	planned	-	V4	D53,D69	yes	-	-	-	Orange Pi 6 Plus, the first board (V4, D69); the Radxa Orion O6 is the same SoC; docs/boards/orangepi-6-plus/
+sky1-pl011	component	cix-sky1	arm64	planned	yes	V4	D69	-	-	-	-	PL011 COM2 through DBG2 (no SPCR), 3.3 V debug header
+sky1-smp	component	cix-sky1	arm64	planned	yes	V4	D68,D69	-	-	-	-	12 cores in three tiers (A720 at 2.6 and 2.5 GHz, A520)
+sky1-gic-its	component	cix-sky1	arm64	planned	yes	V4	D69	-	-	-	-	GICv3 with ITS (GICv4.1), 512 SPIs; erratum 2941627 to check
+sky1-timer	component	cix-sky1	arm64	planned	yes	V4	D69	-	-	-	-	generic timer
+sky1-rtl8126	component	cix-sky1	arm64	planned	yes	V4	D15,D69	-	-	-	-	two Realtek RTL8126 5 GbE, the V3 link's NIC here; the RTL8125/8126 family driver
+sky1-watchdog	component	cix-sky1	arm64	planned	no	V4	D69	-	-	-	-	SBSA watchdog: refreshed only by WOR, a board rule; croi.watchdog=off until then
+sky1-smmuv3	component	cix-sky1	arm64	planned	no	V4	D69	-	-	-	-	two SMMUv3 left enabled by firmware: a board rule takes them over with the IORT's RMRs
+sky1-nvme	component	cix-sky1	arm64	planned	no	V4	D69	-	-	-	-	NVMe (Micron 2550, host memory buffer) behind the SMMU
+sky1-gop	component	cix-sky1	arm64	planned	no	V4	D69	-	-	-	-	GOP framebuffer text console, 1920x1080
+sky1-usb-hid	component	cix-sky1	arm64	planned	no	V4	D69	-	-	-	-	xHCI for HID
 sky1-mali-g720	component	cix-sky1	arm64	research	no	-	D62	-	-	-	-	Mali-G720
 orangepi-5-plus	platform	-	arm64	research	-	-	D5	yes	-	-	-	Orange Pi 5 Plus (RK3588), on hand; DT as shipped, ACPI through community EDK2; docs/boards/orangepi-5-plus/
 opi5p-uart2	component	orangepi-5-plus	arm64	research	yes	-	D5	-	-	-	-	UART2 at 0xfeb50000, 1.5 Mbaud, a 16550 with 32-bit registers

@@ -282,11 +282,6 @@ three arches, so the board meets a tested path.
   - It goes through `SYSTEM_POWERCTL` as a new command, so no new syscall
     and the ceiling holds.
   - `vx remote boot HOST` does the copy and the call in one step.
-- **The GENI console, written ahead:** a polled driver for the Qualcomm
-  GENI UART in the loader and the kernel's early console (SPCR interface
-  type 0x13). AbyssBSD's `uart_dev_qcom_geni.c` is the reference. QEMU has
-  no GENI, so a register-level model test covers it here and the board
-  proves it in V4.
 
 **Exit, in QEMU on amd64, arm64 and rv64, under `vx ci`:**
 - `ssh` gives rc.
@@ -296,43 +291,51 @@ three arches, so the board meets a tested path.
 - No listener without `--ssh`.
 - The bring-up budgets are green.
 
-## V4. Radxa Dragon Q8B
+## V4. Orange Pi 6 Plus (CIX Sky1)
 
-Attempted only once V0 to V3 are done. The board work then starts with
-V3's link, so every later step is a rebuild and `vx remote boot`, not a
-stick and a walk.
+The first board (D69, replacing D5's Q8B). Attempted only once V0 to V3
+are done. The board work then starts with V3's link, so every later step
+is a rebuild and `vx remote boot`, not a stick and a walk. Its facts are
+in `docs/boards/orangepi-6-plus/`.
 
-1. **Console first:** the loader and kernel print through the GENI UART
-   from the first boot. This needs a 1.8 V USB-serial adapter on the
-   40-pin header: pin 6 GND, pin 8 TX (gpio63), pin 10 RX (gpio64). Never
-   connect it to the 3-pin header by USB-C, which is 12–20 V power in.
-2. **The platform:** GIC with ITS, SMP across the heterogeneous cores
-   (D68's kernel half lands before V4, in QEMU),
-   PCIe segment 4 behind UEFI's TC9563 switch, and the SMMUv3 under the
-   hypervisor's rules (AbyssBSD's `lessons.md`).
-3. **Ethernet:** a TC956x driver (XGMAC2, XPCS, QCA8081 PHY) in the net
-   class, after AbyssBSD's `tcx` driver and `ethernet-tc956x.md`. Note the
-   DMA address offset of `0x10_0000_0000`.
+1. **Console first:** the loader and kernel print through COM2, the
+   PL011 that DBG2 names (there is no SPCR), as `boot-dbg2-console` does
+   in QEMU. A 3.3 V USB-serial adapter on the 10-pin debug header: pin 1
+   TX, pin 3 RX, pin 5 GND. The first boot reads the ID registers, which
+   settles D53's crypto question.
+2. **The platform:** GICv3 with ITS (and erratum 2941627, if this GIC
+   revision has it), SMP across three core tiers (D68's kernel half
+   lands before V4, in QEMU), and PCIe through the generic ACPI host.
+   Boot with `croi.watchdog=off` until a board rule selects the SBSA
+   watchdog's `WOR` refresh, and leave the two SMMUv3 as firmware set
+   them until a board rule takes them over with the IORT's RMRs (board
+   rules are handoff v4).
+3. **Ethernet:** an RTL8126 driver in the net class, written for the
+   Realtek RTL8125/8126 family, which V4c, brimstone and the Orange Pi 5
+   Plus also use.
 4. **The V3 link on the board:** `ssh`, `scp`, `log -f` and `vx remote
-   boot` against the Q8B.
-5. **Then the rest:** NVMe, `qcom-gcc`, a GOP framebuffer text console,
-   and USB for HID.
+   boot` against the Orange Pi 6 Plus.
+5. **Then the rest:** NVMe, the board rules (the watchdog's refresh, the
+   SMMU takeover), a GOP framebuffer text console, and USB for HID. The
+   GPU's first probe follows AbyssBSD's power-up order exactly: a wrong
+   order costs an SError and a power cycle.
 
 `firmware/README.md` lists each blob's provenance.
 
 **Exit:**
 - V3's exit commands pass against the board.
 - The native suite passes on the board through the serial budget scrape.
-- Q8B power-on → console, and warm-boot turnaround, are within budget.
-- The Q8B and its required components are experimental in
+- Orange Pi 6 Plus power-on → console, and warm-boot turnaround, are
+  within budget.
+- The Orange Pi 6 Plus and its required components are experimental in
   `docs/hardware/support.tsv` (D66).
 
 ## V4b. Orange Pi RV2 (rv64)
 
-The rv64 board (D51), after the Q8B and on the same V3 link. Its facts
-are in `docs/boards/orangepi-rv2/`. It starts once the firmware path
-(D51's open question) is decided and rv64 builds and tests against RVA22
-in QEMU (`-cpu rva22s64`).
+The rv64 board (D51), after V4's board (D69) and on the same V3 link.
+Its facts are in `docs/boards/orangepi-rv2/`. It starts once the
+firmware path (D51's open question) is decided and rv64 builds and tests
+against RVA22 in QEMU (`-cpu rva22s64`).
 
 1. **Console first:** the loader and kernel print through UART0, a
    16550-style UART at `0xd401_7000` with 32-bit registers 4 bytes apart.
@@ -340,7 +343,7 @@ in QEMU (`-cpu rva22s64`).
    and DMA within each bus's window, with no IOMMU.
 3. **Ethernet:** a K1 EMAC driver in the net class (RGMII, Motorcomm
    PHYs), whose bus reaches only the first 4 GiB of DRAM.
-4. **The V3 link on the board,** as for the Q8B.
+4. **The V3 link on the board,** as for V4's.
 5. **Then the rest:** eMMC and microSD (SDHCI, below 2 GiB), PCIe with a
    DesignWare MSI backend, USB 3 for HID, and the P1 PMIC's reset.
 
@@ -349,6 +352,32 @@ in QEMU (`-cpu rva22s64`).
 - The native suite passes on the board through the serial budget scrape.
 - RV2 power-on → console, and warm-boot turnaround, are within budget.
 - The RV2 and its required components are experimental in
+  `docs/hardware/support.tsv` (D66).
+
+## V4c. The AMD tower (amd64)
+
+amd64's first board (D69): the Ryzen 9 7900X tower, after V4b and on
+the same V3 link and Realtek driver. Its facts are in
+`docs/boards/pc-7900x/`. It boots from a USB stick only, when the owner
+frees the machine; its disks hold other work.
+
+1. **Console first:** the board has no serial port (no SPCR, DBG2 or
+   16550), so the console is a GOP framebuffer text console (V4's item
+   5), or a PCIe serial card whose address the loader is told.
+2. **The platform:** xAPIC as firmware leaves it, the LAPIC one-shot
+   timer (no TSC-deadline on AMD), and AMD-Vi with interrupt remapping:
+   croi's K12b, tested so far only in QEMU.
+3. **Ethernet:** the RTL8125, through V4's Realtek family driver.
+4. **The V3 link on the board,** as for V4's.
+5. **Then the rest:** NVMe and xHCI for HID. The Radeon 610M (RDNA 2)
+   waits for D62's desktop track.
+
+**Exit:**
+- V3's exit commands pass against the board.
+- The native suite passes on the board through the console budget
+  scrape.
+- Power-on → console, and warm-boot turnaround, are within budget.
+- The tower and its required components are experimental in
   `docs/hardware/support.tsv` (D66).
 
 ## V5. Taisce on disk
@@ -370,10 +399,13 @@ write prefix.
   [desktop storyboard](https://claude.ai/artifact/BcQQLDod1qqmgwVzabeTPX)
   ([sources](design/storyboard/)).
 - SDK, with a reference app in ≤ 12 calls.
-- Adreno 690 display, after ADR-0019's plan.
+- Native display on the board: Adreno 690 was planned here (ADR-0019)
+  while the Q8B was the first board. The board's own display path is
+  reordered in its own entry (D69); until then V6 runs on the GOP
+  framebuffer on the Orange Pi 6 Plus.
 
 **Exit:**
-- The desktop budgets are green on QEMU and on the Q8B.
+- The desktop budgets are green on QEMU and on the Orange Pi 6 Plus.
 - The mode-switch budget is green.
 
 ## V7. Edge: 9gate and the swarm
@@ -386,11 +418,28 @@ write prefix.
 
 **Exit:**
 - Linux `v9fs` mounts a VectraOS export and passes conformance.
-- A PC mounts the Q8B's `/dev`.
+- A PC mounts the Orange Pi 6 Plus's `/dev`.
 - The LAN budgets are green.
 
 ## V8. Compute
 
+- **The Q8B's bring-up first** (D69: it moved here from V4, since the CDSP
+  and the Adreno need it), on V3's link:
+  - Console: the loader and kernel print through the GENI UART (SPCR
+    interface type 0x13), a polled driver after AbyssBSD's
+    `uart_dev_qcom_geni.c`, with a register-level model test, since QEMU
+    has no GENI. It needs a 1.8 V USB-serial adapter on the 40-pin
+    header: pin 6 GND, pin 8 TX (gpio63), pin 10 RX (gpio64). Never
+    connect it to the 3-pin header by USB-C, which is 12–20 V power in.
+  - The platform: GIC with ITS, SMP across the A78C and X1C clusters,
+    PCIe segment 4 behind UEFI's TC9563 switch, and the SMMUv3 under the
+    hypervisor's rules (AbyssBSD's `lessons.md`).
+  - Ethernet: a TC956x driver (XGMAC2, XPCS, QCA8081 PHY) in the net
+    class, after AbyssBSD's `tcx` driver and `ethernet-tc956x.md`, with
+    the DMA address offset of `0x10_0000_0000`.
+  - The V3 link on the board, then NVMe, `qcom-gcc` and USB for HID.
+  - The Q8B and its required components become experimental in
+    `docs/hardware/support.tsv` (D66).
 - The `/dev/accel` protocol, `.vxm` artifacts, the `vxc` host compiler
   (ONNX/StableHLO → TOSA) and the CPU TOSA executor.
 - The CDSP backend on the Q8B: a first-party FastRPC driver following
@@ -410,7 +459,7 @@ write prefix.
 
 **Exit:**
 - A Wasm build of a small Bevy or Godot sample runs at its frame budget on
-  the Q8B.
+  the Orange Pi 6 Plus.
 
 ## Research tracks (unscheduled)
 
@@ -469,9 +518,11 @@ write prefix.
 5. `space` mode: is it plain free placement with spatial memory, or also a
    pannable, zoomable canvas larger than the screen? Decided in V6 against a
    reference workflow.
-6. A hardware watchdog on the Q8B, so that a hang becomes a reboot into
-   the stick's known-good kernel instead of a walk. Does the firmware
-   expose WDAT or an SBSA watchdog? Check in V4.
+6. A hardware watchdog on V4's board, so that a hang becomes a reboot
+   into the stick's known-good kernel instead of a walk. The Orange Pi 6
+   Plus has an SBSA watchdog in its GTDT that refreshes only through
+   `WOR` (D69): a board rule selects it. Whether the Q8B's firmware
+   exposes WDAT or an SBSA watchdog is checked in V8.
 7. UEFI network boot (todhchai N1f), for recovering from a kernel that
    won't come up at all. Not chosen for V3 (D15); revisit if V4's hangs
    are frequent.

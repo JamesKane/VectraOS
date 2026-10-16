@@ -1,11 +1,12 @@
 # Orange Pi 6 Plus (CIX P1 / Sky1)
 
-A research pass (2026-10-16), not a board decision. The CIX Sky1 is a
-research row in `docs/hardware/support.tsv` and D53 checks arm64's
-baseline against it. AbyssBSD now runs FreeBSD 16-CURRENT on this board
-through ACPI, from its NVMe, with the platform, the GPU, the NPU and the
-video codec working. This file reads those notes for what VectraOS would
-meet on the board. The same SoC is in the Radxa Orion O6.
+A research pass (2026-10-16). Since D69 (2026-10-16) this is the first
+board, V4's, and the CIX Sky1 is planned in `docs/hardware/support.tsv`;
+D53 checks arm64's baseline against it. AbyssBSD now runs FreeBSD
+16-CURRENT on this board through ACPI, from its NVMe, with the platform,
+the GPU, the NPU and the video codec working. This file reads those
+notes for what VectraOS would meet on the board. The same SoC is in the
+Radxa Orion O6.
 
 Facts come from the sources below and are marked with them. Facts marked
 **(memory)** are not yet checked against a document or the machine; **On
@@ -206,7 +207,7 @@ documentation only (provenance.md).
 
 What each board needs before V3's link runs on it:
 
-| Need | Orange Pi 6 Plus | Radxa Dragon Q8B (V4) |
+| Need | Orange Pi 6 Plus (V4 since D69) | Radxa Dragon Q8B (V8 since D69) |
 |---|---|---|
 | Console | PL011 through DBG2: in croi, tested in QEMU | Qualcomm GENI UART: written ahead in V3, model test only |
 | Serial adapter | 3.3 V | 1.8 V |
@@ -217,9 +218,8 @@ What each board needs before V3's link runs on it:
 | Power and clocks | SCMI, `_CPC`, `_LPI`: standard, AML | Windows PEP, `qcom-gcc` |
 
 On paper the Orange Pi 6 Plus is the shorter path to V3's exit on
-hardware. D5 still makes the Q8B the first board and D16 runs milestones
-in order; this pass changes neither. Making the Sky1 a board would take a
-decision of its own.
+hardware. When this pass was written, D5 made the Q8B the first board;
+D69 has since made this board V4's and moved the Q8B to V8.
 
 ## On the machine
 

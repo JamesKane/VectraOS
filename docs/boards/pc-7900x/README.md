@@ -1,11 +1,11 @@
 # PC: Gigabyte X870E AORUS ELITE WIFI7, Ryzen 9 7900X
 
-A research pass (2026-10-16), not a board decision. This is the AMD
-tower on the local network (192.168.0.30). It has no name of its own
-(its Linux hostname is `fedora`); it runs whatever workloads are needed
-when it is powered up. Unlike brimstone (`docs/boards/pc-9700x/`), it is
-not the development host, so booting it into VectraOS stops nothing
-else.
+A research pass (2026-10-16). Since D69 it is amd64's first board,
+V4c. This is the AMD tower on the local network (192.168.0.30). It has
+no name of its own (its Linux hostname is `fedora`); it runs whatever
+workloads are needed when it is powered up. Unlike brimstone
+(`docs/boards/pc-9700x/`), it is not the development host, so booting it
+into VectraOS stops nothing else.
 
 Facts were read over SSH under Fedora 44 (Linux 7.2.7), without root,
 from `/sys`, `/proc/cpuinfo`, `lspci` and the kernel log, on 2026-10-16.

@@ -1,4 +1,4 @@
-# D69. The first board is the Orange Pi 6 Plus; the Q8B moves to V8 (2026-10-16, proposed; replaces D5's choice)
+# D69. The first board is the Orange Pi 6 Plus; the Q8B moves to V8 (2026-10-16, decided; replaces D5's choice)
 
 D5 chose the Radxa Dragon Q8B as the first hardware because AbyssBSD
 ran it under ACPI with its NPU working. Since then the corpus has grown
