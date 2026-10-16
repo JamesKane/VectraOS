@@ -147,7 +147,12 @@ work, in order:
    patch series and a Swift ABI for riscv64, then a rebuild, to decide
    (deferred, 2026-10-16: rv64 stays tier 0 until rc or FDIO needs it
    there); and FoundationEssentials' FileManager checks, which come back
-   to `user/tier1/Foundation.swift` with fdio.
+   to `user/tier1/Foundation.swift` with fdio. Tier 0's libraries build for tier 1
+   from the same sources (`croi_tier1_library` in `cmake/Tier1.cmake`:
+   SysABI, Loader, Ring, Sys, LibSys, the trace, IPCWire, IPC with its
+   macro, Node and Launch), and `bin/node-test-t1` is node-test as full
+   Swift over them (boot-node-test-t1, amd64 and arm64): what FDIO and
+   rc (item 6) are built on.
 4. **The control plane** (`system/ipc`, `node`, `launch`). The dispatcher
    binds each channel once, PERSISTENT, and reads and replies in arrays.
    Node messages become batches (D18): a request is an array of

@@ -45,7 +45,8 @@ function(croi_tier1 bootfs_var depends_var)
             -DOBJCOPY=${CMAKE_OBJCOPY} -DAR=${CMAKE_AR} -DOUT=${_sysroot} -P ${PROJECT_SOURCE_DIR}/cmake/sysroot.cmake
     DEPENDS ${CROI_USER_FLOOR} ${CROI_USER_LIBC} ${_builtins} ${PROJECT_SOURCE_DIR}/cmake/sysroot.cmake ${_libc_headers}
             ${PROJECT_SOURCE_DIR}/user/include/croi/syscall.h ${PROJECT_SOURCE_DIR}/kernel/include/module.modulemap
-            ${_floor_include}/td_floor.h ${_floor_include}/td_native.h
+            ${_floor_include}/td_floor.h ${_floor_include}/td_native.h ${_floor_include}/td_utc.h
+            ${_floor_include}/td_stdio.h ${PROJECT_SOURCE_DIR}/user/include/croi/runtime.h
     COMMENT "Tier 1's sysroot")
   add_custom_target(sysroot ALL DEPENDS ${_sysroot}/usr/lib/libsys.a)
 
@@ -107,7 +108,68 @@ function(croi_tier1 bootfs_var depends_var)
     COMMAND ${_swiftc} -parse-as-library ${_src}/Foundation.swift -o ${_out}/foundation-test
     DEPENDS swift-foundation ${_foundation} ${_src}/Foundation.swift ${_sysroot}/usr/lib/libsys.a
     COMMENT "foundation-test, FoundationEssentials on croi")
-  set(_programs floor-hello cxx-hello swift-hello swift-start swift-async foundation-test)
+  # Tier 0's libraries for tier 1 (V2's item 6: rc and FDIO are tier 1):
+  # each built by the *-vectraos swiftc into tier1/lib (its module and
+  # archive), after those it uses, from the same sources as tier 0's.
+  set(_lib ${_out}/lib)
+  function(croi_tier1_library name)
+    cmake_parse_arguments(T "" "" "SOURCES;USES;INCLUDES" ${ARGN})
+    list(TRANSFORM T_INCLUDES PREPEND -I${PROJECT_SOURCE_DIR}/)
+    list(TRANSFORM T_SOURCES PREPEND ${PROJECT_SOURCE_DIR}/)
+    set(_uses ${T_USES})
+    list(TRANSFORM _uses PREPEND ${_lib}/)
+    list(TRANSFORM _uses APPEND .swiftmodule)
+    add_custom_command(OUTPUT ${_lib}/lib${name}.a ${_lib}/${name}.swiftmodule
+      COMMAND ${CMAKE_COMMAND} -E make_directory ${_lib}
+      COMMAND ${_swiftc} -parse-as-library -wmo -strict-memory-safety -enable-experimental-feature Lifetimes
+              -I ${_lib} ${T_INCLUDES} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros"
+              -emit-library -static -emit-module -module-name ${name} -emit-module-path ${_lib}/${name}.swiftmodule
+              -o ${_lib}/lib${name}.a ${T_SOURCES}
+      # swiftc keeps an unchanged module's time, but -O inlines across
+      # modules: what uses this library is rebuilt whenever it is.
+      COMMAND ${CMAKE_COMMAND} -E touch ${_lib}/${name}.swiftmodule
+      DEPENDS swift-stdlib ${_swift_core} ${T_SOURCES} ${_uses} ${_sysroot}/usr/lib/libsys.a ${CROI_IPC_PLUGIN}
+      COMMENT "${name} for tier 1, by the *-vectraos swiftc")
+  endfunction()
+  set(_sys system/sys)
+  croi_tier1_library(SysABI SOURCES ${_sys}/abi/Values.swift)
+  croi_tier1_library(Loader SOURCES lib/elf/Elf/ElfImage.swift user/lib/loader/Bootfs.swift
+                                    user/lib/loader/Segments.swift user/lib/loader/Program.swift)
+  croi_tier1_library(Ring SOURCES lib/ring/Ring/Ring.swift lib/ring/Ring/RingMemory.swift)
+  croi_tier1_library(Sys SOURCES ${_sys}/api/Handles.swift ${_sys}/api/Lock.swift ${_sys}/api/Objects.swift
+                                 ${_sys}/api/Startup.swift ${_sys}/backend/native/Kernel.swift
+                                 ${_sys}/backend/native/Loader.swift ${_sys}/backend/native/UTC.swift
+                                 ${_sys}/backend/native/Stdio.swift
+                     USES SysABI Loader Ring)
+  croi_tier1_library(LibSys SOURCES ${_sys}/native/Start.swift USES Sys)
+  croi_tier1_library(TraceFormat SOURCES system/trace/format/Format.swift)
+  croi_tier1_library(Trace SOURCES system/trace/writer/Trace.swift system/trace/writer/native/Region.swift
+                     USES TraceFormat Ring Sys LibSys INCLUDES system/trace/c/include)
+  file(GLOB _ipc_wire_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/system/ipc/wire/*.swift)
+  file(GLOB _ipc_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/system/ipc/runtime/*.swift)
+  file(GLOB _node_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/system/node/lib/*.swift)
+  file(GLOB _launch_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/system/launch/lib/*.swift)
+  croi_tier1_library(IPCWire SOURCES ${_ipc_wire_t1})
+  croi_tier1_library(IPC SOURCES ${_ipc_t1} USES IPCWire Sys Trace INCLUDES system/trace/c/include)
+  croi_tier1_library(Node SOURCES ${_node_t1} USES IPC Ring INCLUDES system/trace/c/include)
+  croi_tier1_library(Launch SOURCES ${_launch_t1} USES Node INCLUDES system/trace/c/include)
+  set(_t1_libs SysABI Loader Ring Sys LibSys TraceFormat Trace IPCWire IPC Node Launch)
+  set(_t1_archives ${_t1_libs})
+  list(TRANSFORM _t1_archives PREPEND ${_lib}/lib)
+  list(TRANSFORM _t1_archives APPEND .a)
+  set(_t1_link ${_t1_libs})
+  list(REVERSE _t1_link)
+  list(TRANSFORM _t1_link PREPEND -l)
+  # node-test, as full Swift: what bin/node-test checks, on tier 1's
+  # builds of Sys, IPC (its macro's code), Node and the rings.
+  add_custom_command(OUTPUT ${_out}/node-test-t1
+    COMMAND ${_swiftc} -parse-as-library -strict-memory-safety -enable-experimental-feature Lifetimes
+            -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -L ${_lib} ${_t1_link}
+            -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros"
+            ${PROJECT_SOURCE_DIR}/system/node/tests/native/Main.swift -o ${_out}/node-test-t1
+    DEPENDS ${_t1_archives} ${PROJECT_SOURCE_DIR}/system/node/tests/native/Main.swift
+    COMMENT "node-test for tier 1")
+  set(_programs floor-hello cxx-hello swift-hello swift-start swift-async foundation-test node-test-t1)
   set(_entries)
   set(_files)
   foreach(_p ${_programs})

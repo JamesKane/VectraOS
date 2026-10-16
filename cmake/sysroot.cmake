@@ -40,7 +40,8 @@ if(EXISTS "${BUILTINS}")
   file(COPY_FILE ${BUILTINS} ${OUT}/usr/lib/libclang_rt.builtins.a)
 endif()
 file(COPY ${HEADERS}/ DESTINATION ${OUT}/usr/include FILES_MATCHING PATTERN "*.h")
-file(COPY ${FLOOR_HEADERS}/td_floor.h DESTINATION ${OUT}/usr/include)
+file(COPY ${FLOOR_HEADERS}/td_floor.h ${FLOOR_HEADERS}/td_utc.h ${FLOOR_HEADERS}/td_stdio.h
+     DESTINATION ${OUT}/usr/include)
 # td_native.h includes the kernel's shared.h beside it; here, beside
 # syscall.h.
 file(READ ${FLOOR_HEADERS}/td_native.h _native)
@@ -52,6 +53,9 @@ write_if_different(${OUT}/usr/include/td_native.h "${_native}")
 # Mutex include td_floor.h).
 file(MAKE_DIRECTORY ${OUT}/usr/include/croi)
 file(COPY ${CROI_HEADERS}/syscall.h DESTINATION ${OUT}/usr/include/croi)
+# runtime.h too (CroiRuntime), for tier 1's builds of tier 0's libraries
+# (Loader's segments).
+file(COPY ${CROI_HEADERS}/runtime.h DESTINATION ${OUT}/usr/include/croi)
 file(READ ${KERNEL_HEADERS}/module.modulemap _map)
 string(REGEX MATCH "module CroiAbi {[^}]*}" _abi "${_map}")
 string(REGEX MATCHALL "header \"[^\"]+\"" _lines "${_abi}")
@@ -75,12 +79,18 @@ module CroiSyscall {
   header \"croi/syscall.h\"
   export *
 }
+module CroiRuntime {
+  header \"croi/runtime.h\"
+  export *
+}
 module TDFloor {
   header \"td_floor.h\"
+  header \"td_utc.h\"
   export *
 }
 module TDNative {
   header \"td_native.h\"
+  header \"td_stdio.h\"
   export *
 }
 ")
