@@ -1,0 +1,7 @@
+mkdir -p b/z a/y c
+touch b/z/2 a/y/1 a/.dot c/3 a/y/.h
+echo */*
+echo ?/?/?
+echo */nope
+echo a/*
+echo */y/*

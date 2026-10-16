@@ -55,6 +55,16 @@ public protocol RcSystem: AnyObject {
 }
 
 extension RcSystem {
+  /// Whether `path` names something: its directory's listing holds its
+  /// last name (globbing keeps a path ending in literal names only so).
+  public func accessible(_ path: String) -> Bool {
+    let names = path.split(separator: "/", omittingEmptySubsequences: false)
+    guard let last = names.last, !last.isEmpty else { return list(path) != nil }
+    let parent = names.dropLast().joined(separator: "/")
+    let dir = parent.isEmpty ? (path.hasPrefix("/") ? "/" : directory) : parent
+    return list(dir)?.contains(String(last)) ?? false
+  }
+
   public func attributes(_ path: String) -> [(name: String, value: AttributeText)]? { nil }
   public func setAttribute(_ path: String, _ name: String, _ value: AttributeText?) -> Bool { false }
 }
@@ -343,29 +353,41 @@ public final class Rc {
   }
 
   /// A pattern's matches among the files, directory by directory, sorted.
+  /// As 9front's globdir: each component with a pattern character matches
+  /// a directory's entries (`.` and `..` only by a pattern starting with
+  /// `.`; other dot files by any), the literal ones between are appended,
+  /// and a path that ends in literal ones is kept only if it exists. The
+  /// matches sorted by their bytes (globsort).
   func expand(_ pattern: String) -> [String] {
     let absolute = pattern.hasPrefix("/")
     let parts = pattern.split(separator: "/").map(String.init)
     var found: [String] = [absolute ? "/" : ""]
-    for (n, part) in parts.enumerated() {
-      let last = n == parts.count - 1
+    var literalTail = false, globbed = false
+    for part in parts {
       var next: [String] = []
+      let isPattern = part.contains(where: { "*?[".contains($0) })
       for base in found {
-        if !part.contains(where: { "*?[".contains($0) }) {
+        guard isPattern else {
           next.append(join(base, part))
           continue
         }
         let dir = base.isEmpty ? system.directory : base
-        for name in (system.list(dir) ?? []).sorted() where Rc.matches(part, name) {
-          if name.hasPrefix(".") && !part.hasPrefix(".") { continue }
+        for name in system.list(dir) ?? [] where Rc.matches(part, name) {
+          if (name == "." || name == "..") && !part.hasPrefix(".") { continue }
           next.append(join(base, name))
         }
       }
       found = next
       if found.isEmpty { return [] }
-      _ = last
+      if isPattern {
+        globbed = true
+        literalTail = false
+      } else if globbed {
+        literalTail = true
+      }
     }
-    return found
+    if literalTail { found = found.filter { system.accessible($0) } }
+    return found.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
   }
 
   func join(_ base: String, _ name: String) -> String {

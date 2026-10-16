@@ -16,9 +16,7 @@
 30-status-fail	linux	Linux oracle: success status is 0
 31-status-pipeline	linux	Linux oracle: success is 0, so false|true is 1|0 (Plan 9, and we: 1|)
 36-redir-close	port	builtin echo to closed fd succeeds
-42-glob-star	port	* skips dotfiles
 44-glob-class	port	[~a-c] syntax error
-46-glob-dirs	port	glob yields nonexistent paths (d3/x/f)
 51-builtin	port	builtin missing
 52-whatis	port	whatis fn prints no body
 55-cd-pwd	port	cd failure status/message text

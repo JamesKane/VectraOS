@@ -276,14 +276,15 @@ work, in order:
      `|`, `&&` and `||` (9front's precedence); patterns in `~` and
      `switch` active only where written unquoted, their subjects joined;
      runtime errors stopping a script (contained where 9front forks: a
-     backquote, a pipeline's builtin stage, a background job).
+     backquote, a pipeline's builtin stage, a background job); globbing
+     as 9front's globdir (dot files matched, a literal tail kept only if
+     it exists, the matches sorted by bytes).
    - **Redirections:** a program's fd 2 is its stdout and fds over 2
      are dropped; redirection streams are never closed.
    - **Missing syntax:** `@{}`, `[~...]` and a bare `~`, `!` or `@` as
      words, `<>`, `<{}`, `>{}`, `$$x`, `` `split{} ``,
      `\`-newline inside a word.
-   - **Wrong semantics:** globs keep paths that don't exist and skip
-     dot files; `&` on a compound command runs in the foreground; a `&`
+   - **Wrong semantics:** `&` on a compound command runs in the foreground; a `&`
      in a switch case hangs the parser.
    - **Missing pieces:** `rc file`, `#!`, `$path` and absolute paths;
      the flags but `-c`; `builtin`, `exec`, `flag`, `rfork`; notes
