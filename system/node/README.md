@@ -15,7 +15,7 @@ session's `/srv`. idlc's outputs for Node and the board are in
 
 ## Batches
 
-A Node message is a batch (D18, D55): `batch(ops, open:)` runs operations
+A Node message is a batch (D18, D64): `batch(ops, open:)` runs operations
 (`walk`, `stat`, `readdir`, `read`, `write`, `watch`, `create`, `remove`,
 a union) in order on a current node that starts at the channel's, and
 `walk` and `create` move it. It stops at the first failure, returning the

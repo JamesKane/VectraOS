@@ -74,7 +74,7 @@ You need Swift 6.4.0 through swiftly (pinned by `.swift-version`, with its bundl
 | [docs/architecture.md](docs/architecture.md) | How the layers fit: kernel, the ring, the Node protocol, the swarm, Taisce, the desktop, compute, Wasm |
 | [docs/performance.md](docs/performance.md) | The budgets and how they are enforced |
 | [docs/provenance.md](docs/provenance.md) | Which code comes from which repository, and why |
-| [docs/decisions.md](docs/decisions.md) | The dated decision log |
+| [docs/decisions/](docs/decisions/) | The dated decision log |
 | [docs/roadmap.md](docs/roadmap.md) | The milestones and their exit criteria |
 | [docs/syscall-audit.md](docs/syscall-audit.md) | V1's audit: which calls stay, which go, and what replaces them |
 | [docs/trace-format.md](docs/trace-format.md) | The trace format the budgets are read from |

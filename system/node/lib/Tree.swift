@@ -13,7 +13,7 @@
 //     try dispatcher.run()
 //
 // Batches are served on the dispatcher's thread, an operation at a time on
-// a current node (D55); one that walks into another service's node (a
+// a current node (D64); one that walks into another service's node (a
 // mount) hands it the rest of the batch. The service may change the tree
 // from any thread; watchers hear of it. Names are compared as bytes
 // (NodeIPC.same).

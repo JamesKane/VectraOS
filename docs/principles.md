@@ -1,7 +1,7 @@
 # Principles
 
 These rules are normative. A change that breaks one needs a dated entry in
-[decisions.md](decisions.md) explaining why. They merge NeoVectra's thirteen
+[decisions/](decisions/) explaining why. They merge NeoVectra's thirteen
 rules (`NeoVectra/docs/00-overview.md` §2) with todhchai's twenty-nine
 principles (`todhchai/docs/principles.md`). Where the two disagreed, the
 decision log says which side won.

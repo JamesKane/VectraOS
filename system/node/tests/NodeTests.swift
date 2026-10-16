@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// Node over the tree helper (N0c), in batches (D55): walks, stat, reads and
+// Node over the tree helper (N0c), in batches (D64): walks, stat, reads and
 // writes, text leaves, paging, watches, create and remove, service nodes
 // and mounts.
 

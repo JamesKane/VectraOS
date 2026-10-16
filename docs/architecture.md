@@ -109,7 +109,7 @@ offset 384+  slots[count]     (fixed size; payloads in the IPC wire format
 The protocol is todhchai's (D3). Every service exposes a 9P-shaped node tree
 with `walk`, `stat`, `readdir`, `read`, `write`, `watch`, `create` and
 `remove`, sent as batches: one message runs several on a current node, as
-NFSv4's COMPOUND does (D18, D55). Typed interfaces are declared in Swift
+NFSv4's COMPOUND does (D18, D64). Typed interfaces are declared in Swift
 with `@IPCLibrary`, which generates zero-allocation Embedded-safe stubs.
 `idlc` emits the C headers and enforces ABI baselines. Cancellation follows
 Plan 9's Tflush rule.

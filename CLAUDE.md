@@ -2,7 +2,7 @@
 
 VectraOS is a capability microkernel OS for edge hardware, written in
 Embedded Swift 6.4 with C23 where necessary. Read `docs/principles.md`
-before designing anything. Read `docs/decisions.md` before changing
+before designing anything. Read `docs/decisions/` before changing
 anything that a decision covers.
 
 ## The rules that most often matter

@@ -3,7 +3,7 @@
 // The Node protocol (architecture §4): every service is a browsable tree.
 // A channel to a node is like a 9P fid. Shaped like 9P, but channels
 // already give what 9P's fids, tags, version and attach exist for, and a
-// message is a batch (D18, D55): operations run in order on a current
+// message is a batch (D18, D64): operations run in order on a current
 // node, as NFSv4's COMPOUND does, so walking to a file, stat-ing it and
 // reading it is one call.
 

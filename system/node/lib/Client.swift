@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // Conveniences for Node clients: paths, whole reads, text and listings,
-// each one batch (D55). A path is relative to the client's node ("a/b/c";
+// each one batch (D64). A path is relative to the client's node ("a/b/c";
 // "" is the node itself), and a batch walks it first.
 
 import IPC

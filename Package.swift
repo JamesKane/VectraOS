@@ -69,7 +69,7 @@ let ipc: [Target] = [
   .testTarget(name: "IPCTests", dependencies: ["IPC", "Echo"], path: "system/ipc/tests/runtime",
               swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
   // Node (system/node, V2): the protocol every service serves, batched
-  // (D18, D55), the tree helper that serves it, namespaces and /srv.
+  // (D18, D64), the tree helper that serves it, namespaces and /srv.
   .target(name: "Node", dependencies: ["IPC"], path: "system/node/lib", swiftSettings: tier0),
   .testTarget(name: "NodeTests", dependencies: ["Node", "IPC", "IDL"], path: "system/node/tests",
               exclude: ["native"], swiftSettings: [.enableExperimentalFeature("Lifetimes")]),

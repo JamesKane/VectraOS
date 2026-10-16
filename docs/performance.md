@@ -18,7 +18,7 @@ the budgets the edge vision needs.
    *both* the rule's tolerance and its absolute floor. It also fails if it
    passes the rule's hard limit.
 4. **No budget is loosened in the same change that would otherwise fail it.**
-   Loosening one is a dated entry in decisions.md.
+   Loosening one is a dated entry in docs/decisions/.
 
 ## 2. Mechanism
 
