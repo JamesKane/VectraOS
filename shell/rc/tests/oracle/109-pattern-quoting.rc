@@ -1,0 +1,10 @@
+~ abc '*' && echo 1 wrong; ~ abc * && echo 1 right
+x='*'; ~ abc $x && echo 2 wrong; ~ '*' $x && echo 2 right
+~ abc a'*' && echo 3 wrong; ~ 'a*' a'*' && echo 3 right
+~ (a b) 'a b' && echo 4 joined
+~ $nothing '' && echo 5 empty
+~ ab a^? && echo 6 caret
+l=(a b)
+switch($l){case 'a b'; echo 7 joined case; case *; echo 7 wrong}
+switch($nothing){case ''; echo 8 empty case; case *; echo 8 wrong}
+p='[ab]'; switch(a){case $p; echo 9 wrong; case [ab]; echo 9 class}

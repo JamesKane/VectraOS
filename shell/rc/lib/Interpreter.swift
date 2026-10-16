@@ -252,11 +252,67 @@ public final class Rc {
 
   /// rc's patterns: * any string, ? any character, [abc] [a-z] [~a] one
   /// of a class; matched against a whole string.
-  public static func matches(_ pattern: String, _ s: String) -> Bool {
-    let p = Array(pattern.unicodeScalars), t = Array(s.unicodeScalars)
+  /// A pattern as written: each scalar, and whether it may act as a
+  /// pattern character (9front's GLOB marks: only those written unquoted
+  /// do; a quoted one, or one from a variable's value, is itself).
+  struct Pattern {
+    var scalars: [Unicode.Scalar] = []
+    var active: [Bool] = []
+    init(_ s: String, active: Bool) {
+      scalars = Array(s.unicodeScalars)
+      self.active = Array(repeating: active, count: scalars.count)
+    }
+    static func + (a: Pattern, b: Pattern) -> Pattern {
+      var p = a
+      p.scalars += b.scalars
+      p.active += b.active
+      return p
+    }
+  }
+
+  /// A word's patterns (for ~ and case): its strings, each scalar marked
+  /// as written (concatenated as `value` does, with its errors).
+  func patterns(_ w: Word, _ fds: [Int32: RcStream]) throws -> [Pattern] {
+    switch w {
+    case .literal(let s, let quoted): return [Pattern(s, active: !quoted)]
+    case .list(let items): return try items.flatMap { try patterns($0, fds) }
+    case .concat(let pieces):
+      var acc: [Pattern]? = nil
+      for piece in pieces {
+        let v = try patterns(piece, fds)
+        guard let a = acc else {
+          acc = v
+          continue
+        }
+        if a.isEmpty || v.isEmpty { throw RcError(message: "null list in concatenation") }
+        if a.count == 1 {
+          acc = v.map { a[0] + $0 }
+        } else if v.count == 1 {
+          acc = a.map { $0 + v[0] }
+        } else if a.count == v.count {
+          acc = zip(a, v).map { $0 + $1 }
+        } else {
+          throw RcError(message: "mismatched list lengths in concatenation")
+        }
+      }
+      return acc ?? []
+    default: return try value(w, fds, glob: false).map { Pattern($0, active: false) }
+    }
+  }
+
+  /// A subject as ~ and switch take it: its strings joined by spaces, one
+  /// string (9front's Xqw; none is the empty string).
+  func subject(_ w: Word, _ fds: [Int32: RcStream]) throws -> String {
+    try value(w, fds).joined(separator: " ")
+  }
+
+  public static func matches(_ pattern: String, _ s: String) -> Bool { matches(Pattern(pattern, active: true), s) }
+
+  static func matches(_ pattern: Pattern, _ s: String) -> Bool {
+    let p = pattern.scalars, on = pattern.active, t = Array(s.unicodeScalars)
     func m(_ i: Int, _ j: Int) -> Bool {
       if i == p.count { return j == t.count }
-      switch p[i] {
+      switch on[i] ? p[i] : "\u{0}" {
       case "*":
         for k in j...t.count where m(i + 1, k) { return true }
         return false
@@ -459,19 +515,18 @@ public final class Rc {
         try execute(body, fds)
       }
     case .switchOn(let subject, let cases):
-      let s = try value(subject, fds)
-      guard s.count == 1 else { throw RcError(message: "switch needs one string") }
+      let s = try self.subject(subject, fds)
       for k in cases {
-        let patterns = try k.patterns.flatMap { try value($0, fds, glob: false) }
-        if patterns.contains(where: { Rc.matches($0, s[0]) }) {
+        let ps = try k.patterns.flatMap { try patterns($0, fds) }
+        if ps.contains(where: { Rc.matches($0, s) }) {
           for c in k.body { try execute(c, fds) }
           return
         }
       }
-    case .match(let subject, let patterns):
-      let s = try value(subject, fds)
-      let ps = try patterns.flatMap { try value($0, fds, glob: false) }
-      setStatus(s.contains { str in ps.contains { Rc.matches($0, str) } } ? "" : "no match")
+    case .match(let subject, let pats):
+      let s = try self.subject(subject, fds)
+      let ps = try pats.flatMap { try patterns($0, fds) }
+      setStatus(ps.contains { Rc.matches($0, s) } ? "" : "no match")
     case .function(let name, let body):
       functions[name] = body
       if body == nil { functions[name] = nil }
