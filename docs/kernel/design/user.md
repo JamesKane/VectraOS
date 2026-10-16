@@ -221,6 +221,26 @@ syscalls 110-111):
   TLS. It found the floor copying a static PIE's TLS image from its
   unrelocated p_vaddr (`findTLS` now adds the load bias): no program had
   initialized TLS before. libm's constants are `vx mathgen`'s.
+- dlopen (system/ld, todhchai's, V2): `Ld`, the dynamic linker's core
+  (`Dynamic.swift`, pure: dynamic tags, GNU and SysV hash lookup, RELA
+  relocations bound at load; no TLS, IFUNCs or copy relocations), and
+  natively `dlopen`/`dlsym`/`dlclose`/`dlerror` (`<dlfcn.h>`), built as
+  module Ld in `croi_user_sys` (libsys.a). A library is bootfs's
+  `lib/NAME` (`croi_user_library`: PIC, linked with only its own code):
+  its segments mapped as userboot maps a program's (`user/lib/loader`'s
+  Segments and Bootfs, shared since V2, over lib/elf's ElfImage, which
+  gained a machine parameter, PT_TLS and a public PT_DYNAMIC), relocated
+  against the program's exports and the libraries before it, RELRO
+  protected, initializers run; never unloaded. A host is an
+  EXPORT_DYNAMIC program: the floor and the libc linked whole and
+  exported (one heap), Sys and Ld kept out of its exports
+  (`--exclude-libs=libsys.a`): a library compiles in what it uses of Sys,
+  and exported they would keep code needing the Unicode tables (String's
+  `==`; only amd64's Embedded toolchain has them) or the hasher's seed,
+  which is also why Ld compares names as bytes. todhchai's ELF and bootfs
+  readers were dropped for croi's (`docs/provenance.md`). `swift test`'s
+  LdTests link a shared object for each machine and relocate it hosted;
+  `bin/dl-test` (boot-dl) loads a C library and a Swift one natively.
 
 ## bootfs and userboot (K8b)
 

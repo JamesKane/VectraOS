@@ -230,7 +230,7 @@ user/m2/Sys.swift	croi	dc4cf67	user/m2/Sys.swift
 user/test/swift/Main.swift	croi	dc4cf67	user/test/swift/Main.swift
 user/test/user.ld	croi	dc4cf67	user/test/user.ld
 user/test/usertest.c	croi	dc4cf67	user/test/usertest.c
-user/userboot/Bootfs.swift	croi	dc4cf67	user/userboot/Bootfs.swift
+user/lib/loader/Bootfs.swift	croi	dc4cf67	user/userboot/Bootfs.swift
 user/userboot/Main.swift	croi	dc4cf67	user/userboot/Main.swift
 user/userboot/Power.swift	croi	dc4cf67	user/userboot/Power.swift
 user/vdso/header.S	croi	dc4cf67	user/vdso/header.S
@@ -349,3 +349,9 @@ system/libc/tests/MathTests.swift	todhchai	527ff94	system/libc/tests/MathTests.s
 system/libc/tests/StdlibTests.swift	todhchai	527ff94	system/libc/tests/StdlibTests.swift
 system/libc/tests/StrtodTests.swift	todhchai	527ff94	system/libc/tests/StrtodTests.swift
 tools/vx/MathgenCommand.swift	todhchai	527ff94	tools/mathgen/main.swift
+system/ld/lib/Dynamic.swift	todhchai	527ff94	system/ld/lib/Dynamic.swift
+system/ld/native/Exports.swift	todhchai	527ff94	system/ld/native/Exports.swift
+system/ld/native/Linker.swift	todhchai	527ff94	system/ld/native/Linker.swift
+system/ld/tests/LdTests.swift	todhchai	527ff94	system/ld/tests/LdTests.swift
+system/ld/tests/native/dltest.c	todhchai	527ff94	tests/native/dl/dltest.c
+system/ld/tests/native/DlSwift.swift	todhchai	527ff94	tests/native/dl/DlSwift.swift

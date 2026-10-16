@@ -108,8 +108,12 @@ work, in order:
    lifted: every user program links it (libc.a, its pthreads over the
    floor), `runtime.h` takes its headers, `swift test` compares it with
    glibc, and the `libc` suite checks it natively on each arch (which
-   found the floor misplacing a static PIE's TLS image). ld and the trace
-   session come next.
+   found the floor misplacing a static PIE's TLS image). ld is ported:
+   dlopen loads bootfs's lib/ into an EXPORT_DYNAMIC program over croi's
+   ELF and bootfs readers (todhchai's are dropped) and userboot's segment
+   mapping, now shared (`user/lib/loader`); LdTests check the linker's
+   core hosted on each machine's objects, and `bin/dl-test` (boot-dl) a C
+   and a Swift library natively. The trace session comes next.
 3. **Tier 1 (D47).** todhchai's `*-todhchai` toolchain, built from the
    pinned Swift 6.4.0 and LLVM sources with its patch series, and tier 1's
    sysroot (libc, pthreads, libc++, the Swift runtime, FoundationEssentials).

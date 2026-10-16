@@ -14,10 +14,7 @@ import CroiRuntime
 /// machine off or resets it.
 @main
 struct Userboot {
-    struct Failure: Error {
-        let what: StaticString
-        let status: Int64
-    }
+    typealias Failure = LoadFailure
 
     static var defaultNext: StaticString { "bin/launcher" }
     static var defaultStackSize: UInt64 { 256 * 1024 }
@@ -99,20 +96,8 @@ struct Userboot {
             delta = target.base &- elf.base
         }
         let fileBytes = image.extracting(Int(file.offset)..<Int(file.offset + file.length))
-        do {
-            // Every segment in one vmar_map (D42), all or nothing; the
-            // segments' own VMOs are closed once mapped (the mappings keep them).
-            var items: [croi_vmar_map_item_t] = []
-            var made: [UInt32] = []
-            defer { for vmo in made { _ = croi_handle_close(vmo) } }
-            for i in 0..<elf.segmentCount {
-                if let item = try load(elf.segments[i], of: elf, file: file, fileBytes: fileBytes, bootfs: bootfs,
-                                       bootfsBase: bootfsBase, vmarBase: target.base, delta: delta, made: &made) {
-                    items.append(item)
-                }
-            }
-            try mapSegments(&items, into: target.vmar)
-        }
+        try Segments.map(elf, file: file, fileBytes: fileBytes, source: bootfs, sourceBase: bootfsBase,
+                         into: target.vmar, vmarBase: target.base, delta: delta, relocate: true)
         if let relro = elf.relro {  // relocated: read only from here on
             try call("protecting its RELRO", croi_vmar_protect(target.vmar, UInt32(CROI_VM_PERM_READ),
                                                  relro.start &+ delta, relro.end - relro.start))
@@ -226,94 +211,6 @@ struct Userboot {
             guard status == -26 else { throw Failure(what: "placing it", status: status) }  // ALREADY_EXISTS: again
         }
         throw Failure(what: "placing it", status: CROI_ERR_NO_MEMORY)
-    }
-
-    /// Maps one PT_LOAD segment of the program at `file` in bootfs, at its
-    /// address plus `delta`: one that is all file (read-only code and data)
-    /// straight from the bootfs VMO's pages; anything else as a K11a child
-    /// of the file's range (pages copied at first touch, the part past the
-    /// file's bytes zeroed), with the static PIE's relocations written in.
-    /// Maps `items` into `vmar` in one call: all of them, or the first
-    /// failure's status.
-    static func mapSegments(_ items: inout [croi_vmar_map_item_t], into vmar: UInt32) throws(Failure) {
-        guard !items.isEmpty else { return }
-        guard items.count <= Int(CROI_VMAR_MAX_ITEMS) else { throw Failure(what: "counting its segments", status: CROI_ERR_INVALID_ARGS) }
-        let mapped = unsafe items.withUnsafeMutableBufferPointer { buffer in
-            unsafe sys(CROI_SYS_VMAR_MAP, UInt64(vmar), UInt64(UInt(bitPattern: buffer.baseAddress)),
-                       UInt64(buffer.count))
-        }
-        try call("mapping its segments",
-                 mapped < 0 ? mapped : mapped == items.count ? 0 : Int64(items[Int(mapped)].status))
-    }
-
-    /// A segment's vmar_map item: the bootfs VMO itself for a read-only
-    /// segment it holds as is; otherwise a VMO of its own, filled and
-    /// relocated, added to `made`. Nil for an empty segment.
-    static func load(_ segment: ElfImage.Segment, of elf: ElfImage, file: Bootfs.File, fileBytes: RawSpan,
-                     bootfs: UInt32, bootfsBase: UInt64, vmarBase: UInt64, delta: UInt64,
-                     made: inout [UInt32]) throws(Failure) -> croi_vmar_map_item_t? {
-        let size = (segment.memsz + pageSize - 1) & ~(pageSize - 1)
-        guard size > 0 else { return nil }
-        let runAddress = segment.vaddr &+ delta
-        guard runAddress >= vmarBase else { throw Failure(what: "placing a segment", status: CROI_ERR_INVALID_ARGS) }
-        var options = UInt32(CROI_VM_SPECIFIC)
-        if segment.readable { options |= UInt32(CROI_VM_PERM_READ) }
-        if segment.writable { options |= UInt32(CROI_VM_PERM_WRITE) }
-        if segment.executable { options |= UInt32(CROI_VM_PERM_EXECUTE) }
-        // K14r: a program built with BTI landing pads runs on guarded pages.
-        if segment.executable, elf.branchTargets { options |= UInt32(CROI_VM_PERM_GUARDED) }
-        var relocations = 0
-        do throws(ElfImage.Error) {
-            try elf.forEachRelocation(in: fileBytes) { (target, _) throws(ElfImage.Error) in
-                if target >= segment.vaddr, target - segment.vaddr < size { relocations += 1 }
-            }
-        } catch {
-            throw Failure(what: "reading its relocations", status: CROI_ERR_INVALID_ARGS)
-        }
-        let fileOffset = file.offset + segment.offset
-        func item(_ vmo: UInt32, _ offset: UInt64) -> croi_vmar_map_item_t {
-            croi_vmar_map_item_t(vmo: vmo, options: options, vmar_offset: runAddress - vmarBase, vmo_offset: offset,
-                                 len: size, addr: 0, status: 1, reserved: 0)
-        }
-        if !segment.writable, segment.filesz == segment.memsz, relocations == 0 { return item(bootfs, fileOffset) }
-        var vmo: UInt32 = 0
-        if fileOffset % pageSize == 0 {
-            try call("making a segment", sys(UInt64(CROI_SYS_VMO_CREATE_CHILD), UInt64(bootfs),
-                                             UInt64(CROI_VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE), fileOffset, size,
-                                             address(&vmo)))
-            if segment.filesz < size {
-                try call("zeroing a segment's tail", sys(UInt64(CROI_SYS_VMO_OP_RANGE), UInt64(vmo),
-                                                          UInt64(CROI_VMO_OP_ZERO), segment.filesz,
-                                                          size - segment.filesz, 0, 0))
-            }
-        } else {
-            try call("making a segment", sys(CROI_SYS_VMO_CREATE, size, 0, address(&vmo)))
-        }
-        made.append(vmo)
-        // A misaligned segment's bytes and the relocations are written
-        // through a mapping of our own (V1 cut vmo_write, D37).
-        let copied = fileOffset % pageSize != 0
-        if copied || relocations > 0 {
-            let own = td_runtime_vmar_root
-            var scratch: UInt64 = 0
-            let rw = UInt32(CROI_VM_PERM_READ | CROI_VM_PERM_WRITE)
-            try call("mapping a segment to fill", unsafe croi_vmar_map(own, rw, 0, vmo, 0, size, &scratch))
-            defer { _ = croi_vmar_unmap(own, scratch, size) }
-            let bytes = unsafe UnsafeMutableRawPointer(bitPattern: UInt(scratch))!
-            if copied {
-                unsafe bytes.copyMemory(from: UnsafeRawPointer(bitPattern: UInt(bootfsBase + fileOffset))!,
-                                        byteCount: Int(segment.filesz))
-            }
-            do throws(ElfImage.Error) {
-                try elf.forEachRelocation(in: fileBytes) { (target, addend) throws(ElfImage.Error) in
-                    guard target >= segment.vaddr, target - segment.vaddr < size else { return }
-                    unsafe bytes.storeBytes(of: delta &+ addend, toByteOffset: Int(target - segment.vaddr), as: UInt64.self)
-                }
-            } catch {
-                throw Failure(what: "reading its relocations", status: CROI_ERR_INVALID_ARGS)
-            }
-        }
-        return item(vmo, 0)
     }
 
     /// The processargs message (processargs.h): header, handle infos,

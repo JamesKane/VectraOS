@@ -191,17 +191,27 @@ function(croi_user_program output)
   get_filename_component(_name ${output} NAME_WE)
   set(_dir ${CMAKE_CURRENT_BINARY_DIR}/${_name}.dir)
   # EXPORT_DYNAMIC: a dynamic section with no relocations (a program that
-  # hosts dlopen'd libraries); the loaders take it as a symbol table.
+  # hosts dlopen'd libraries); the loaders take it as a symbol table. Its
+  # runtime (the floor and the libc) is linked whole, so a library finds
+  # any of it there: one heap, one of everything. Sys and Ld
+  # (SYS) are linked as needed and not exported (--exclude-libs): a library
+  # compiles in what it uses of Sys, and exported, their unused functions
+  # would stay, some needing the Unicode tables (String's ==), which only
+  # amd64's Embedded toolchain has, or the hasher's seed.
   # (lld makes a dynamic section for a non-PIC executable only when a
   # shared object is linked: an empty one, --as-needed, so no DT_NEEDED.)
   set(_dynamic_commands)
   set(_dynamic_inputs)
+  set(_whole)
+  set(_whole_end)
   if(U_EXPORT_DYNAMIC)
-    set(_link --image-base=0x1000000 --export-dynamic --no-dynamic-linker)
+    set(_link --image-base=0x1000000 --export-dynamic --exclude-libs=libsys.a --no-dynamic-linker)
     set(_dynamic_commands
         COMMAND ${CMAKE_C_COMPILER} --target=${CROI_CLANG_TRIPLE} -c -x c /dev/null -o ${_dir}/empty.o
         COMMAND ${CMAKE_LINKER} -shared -soname=libempty.so ${_dir}/empty.o -o ${_dir}/libempty.so)
     set(_dynamic_inputs --as-needed ${_dir}/libempty.so)
+    set(_whole --whole-archive)
+    set(_whole_end --no-whole-archive)
   endif()
   set(_objects)
   set(_commands)
@@ -234,14 +244,63 @@ function(croi_user_program output)
     ${_dynamic_commands}
     COMMAND ${CMAKE_LINKER} ${_link} -e _start -zseparate-loadable-segments
             -zmax-page-size=4096 -znoexecstack -zstack-size=${U_STACK} --gc-sections --build-id=sha1
-            ${_objects} ${_sys_libs} ${_runtime} ${CROI_USER_LIBC} ${_dynamic_inputs} -o ${output}
+            ${_objects} ${_sys_libs} ${_whole} ${_runtime} ${CROI_USER_LIBC} ${_whole_end} ${_dynamic_inputs}
+            -o ${output}
     DEPENDS ${U_SOURCES} ${U_SWIFT} ${_sys_libs} ${_runtime} ${CROI_USER_LIBC} ${PROJECT_SOURCE_DIR}/user/include/module.modulemap
     COMMENT "Building user program ${_name}")
 endfunction()
 
+#   croi_user_library(<lib<name>.so> [SYS] [SOURCES <c>...] [SWIFT <swift>...])
+# A shared object for dlopen (system/ld), for bootfs's lib/: position-
+# independent code linked with only its own sources. What it uses of the
+# libc, the floor and (SYS) Sys it takes from the program that loads it,
+# an EXPORT_DYNAMIC one. Its Swift module is named after it.
+function(croi_user_library output)
+  cmake_parse_arguments(U "SYS" "" "SOURCES;SWIFT" ${ARGN})
+  get_filename_component(_name ${output} NAME_WE)
+  string(REGEX REPLACE "^lib" "" _module ${_name})
+  set(_dir ${CMAKE_CURRENT_BINARY_DIR}/${_name}.dir)
+  set(_sys_flags)
+  set(_sys_depends)
+  if(U_SYS)
+    set(_sys_flags -I ${CROI_USER_SYS_DIR})
+    set(_sys_depends ${CROI_USER_SYS})
+  endif()
+  set(_objects)
+  set(_commands)
+  foreach(_source ${U_SOURCES})
+    get_filename_component(_base ${_source} NAME_WE)
+    list(APPEND _commands COMMAND ${CMAKE_C_COMPILER} ${CROI_USER_COMMON_CFLAGS} -fPIC -fstack-protector-strong
+                                  -c ${_source} -o ${_dir}/${_base}.o)
+    list(APPEND _objects ${_dir}/${_base}.o)
+  endforeach()
+  if(U_SWIFT)
+    set(_xcc)
+    foreach(_f ${CROI_USER_CFLAGS} -fPIC -std=c23 -fno-omit-frame-pointer -I${PROJECT_SOURCE_DIR}/user/include
+               -I${PROJECT_SOURCE_DIR}/system/libc/include
+               -I${PROJECT_SOURCE_DIR}/kernel/include -I${CROI_FLOOR_DIR}/include)
+      list(APPEND _xcc -Xcc ${_f})
+    endforeach()
+    list(APPEND _commands COMMAND ${CMAKE_Swift_COMPILER} -target ${CROI_SWIFT_TRIPLE}
+         -enable-experimental-feature Embedded -enable-experimental-feature Lifetimes -enable-experimental-feature Extern
+         -parse-as-library -strict-memory-safety -Werror StrictMemorySafety -wmo -Osize
+         -Xfrontend -function-sections -module-name ${_module} ${_sys_flags} ${_xcc}
+         -c ${U_SWIFT} -o ${_dir}/${_name}-swift.o)
+    list(APPEND _objects ${_dir}/${_name}-swift.o)
+  endif()
+  add_custom_command(OUTPUT ${output}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${_dir}
+    ${_commands}
+    COMMAND ${CMAKE_LINKER} -shared -soname=${_name}.so -zseparate-loadable-segments -zmax-page-size=4096
+            -znoexecstack -ztext --gc-sections --build-id=sha1 ${_objects} -o ${output}
+    DEPENDS ${U_SOURCES} ${U_SWIFT} ${_sys_depends} ${PROJECT_SOURCE_DIR}/user/include/module.modulemap
+    COMMENT "Building user library ${_name}")
+endfunction()
+
 # croi_user_sys(): builds Sys once per tree (system/sys, V2): its modules
-# SysABI, Sys (the API over the native backend) and LibSys (the start's
-# views), Embedded Swift, into ${CROI_USER_SYS_DIR} (their .swiftmodule
+# SysABI, Sys (the API over the native backend), LibSys (the start's
+# views) and Ld (system/ld: dlopen, over croi's ELF and bootfs readers
+# and user/lib/loader's segments), Embedded Swift, into ${CROI_USER_SYS_DIR} (their .swiftmodule
 # files) and ${CROI_USER_SYS} (libsys.a). Programs built with SYS import
 # them. Static-PIE code, which fixed-address programs link too.
 function(croi_user_sys)
@@ -260,6 +319,9 @@ function(croi_user_sys)
   set(_api ${_sys}/api/Handles.swift ${_sys}/api/Lock.swift ${_sys}/api/Objects.swift
       ${_sys}/backend/native/Kernel.swift)
   set(_lib ${_sys}/native/Start.swift)
+  set(_ld ${PROJECT_SOURCE_DIR}/system/ld/lib/Dynamic.swift ${PROJECT_SOURCE_DIR}/system/ld/native/Linker.swift
+      ${PROJECT_SOURCE_DIR}/system/ld/native/Exports.swift ${PROJECT_SOURCE_DIR}/lib/elf/Elf/ElfImage.swift
+      ${PROJECT_SOURCE_DIR}/user/lib/loader/Bootfs.swift ${PROJECT_SOURCE_DIR}/user/lib/loader/Segments.swift)
   file(GLOB _headers ${CROI_FLOOR_DIR}/include/* ${PROJECT_SOURCE_DIR}/user/include/croi/*.h
        ${PROJECT_SOURCE_DIR}/kernel/include/*.h)
   add_custom_command(OUTPUT ${_dir}/libsys.a
@@ -270,9 +332,11 @@ function(croi_user_sys)
             -c ${_api} -o ${_dir}/sys.o
     COMMAND ${_swiftc} -module-name LibSys -emit-module -emit-module-path ${_dir}/LibSys.swiftmodule
             -c ${_lib} -o ${_dir}/libsys.o
+    COMMAND ${_swiftc} -module-name Ld -emit-module -emit-module-path ${_dir}/Ld.swiftmodule
+            -c ${_ld} -o ${_dir}/ld.o
     COMMAND ${CMAKE_COMMAND} -E rm -f ${_dir}/libsys.a
-    COMMAND ${CMAKE_AR} rcs ${_dir}/libsys.a ${_dir}/sysabi.o ${_dir}/sys.o ${_dir}/libsys.o
-    DEPENDS ${_abi} ${_api} ${_lib} ${_headers}
+    COMMAND ${CMAKE_AR} rcs ${_dir}/libsys.a ${_dir}/sysabi.o ${_dir}/sys.o ${_dir}/libsys.o ${_dir}/ld.o
+    DEPENDS ${_abi} ${_api} ${_lib} ${_ld} ${_headers}
     COMMENT "Building Sys")
   set(CROI_USER_SYS_DIR ${_dir} PARENT_SCOPE)
   set(CROI_USER_SYS ${_dir}/libsys.a PARENT_SCOPE)

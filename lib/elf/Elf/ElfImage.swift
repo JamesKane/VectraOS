@@ -1,15 +1,16 @@
 /// An ELF64 image for this architecture, little endian, as croi loads
 /// them: the loader (the kernel, a static PIE), the kernel (userboot, a
-/// static executable) and userboot (programs from bootfs). Page-aligned
-/// PT_LOAD segments, sorted and not overlapping, never writable and
-/// executable; static PIEs may carry R_*_RELATIVE relocations only.
-/// PT_GNU_RELRO must lie in one writable PT_LOAD; loaders make its pages
-/// read only once they have written the relocations. Parsing reads only
-/// through bounds-checked loads.
+/// static executable), userboot (programs from bootfs) and dlopen (shared
+/// objects from bootfs, system/ld: their segments and dynamic section;
+/// Ld relocates them). Page-aligned PT_LOAD segments, sorted and not
+/// overlapping, never writable and executable; static PIEs may carry
+/// R_*_RELATIVE relocations only. PT_GNU_RELRO must lie in one writable
+/// PT_LOAD; loaders make its pages read only once they have written the
+/// relocations. Parsing reads only through bounds-checked loads.
 public struct ElfImage {
     public enum Kind: UInt16 {
         case executable = 2  // ET_EXEC: runs at its link address
-        case pie = 3         // ET_DYN: a static PIE
+        case pie = 3         // ET_DYN: a static PIE, or a shared object
     }
 
     public struct Segment {
@@ -34,20 +35,37 @@ public struct ElfImage {
         }
     }
 
+    /// e_machine values: x86-64, AArch64, RISC-V.
+    public enum Machine {
+        public static var amd64: UInt16 { 62 }
+        public static var arm64: UInt16 { 183 }
+        public static var rv64: UInt16 { 243 }
+    }
+
+    /// This architecture's, which parsing expects unless told otherwise
+    /// (a host tool or test reading another's objects).
     #if arch(x86_64)
-    static var machine: UInt16 { 62 }
-    static var relativeRelocation: UInt32 { 8 }
+    public static var machine: UInt16 { Machine.amd64 }
     #elseif arch(arm64)
-    static var machine: UInt16 { 183 }
-    static var relativeRelocation: UInt32 { 1027 }
+    public static var machine: UInt16 { Machine.arm64 }
     #elseif arch(riscv64)
-    static var machine: UInt16 { 243 }
-    static var relativeRelocation: UInt32 { 3 }
+    public static var machine: UInt16 { Machine.rv64 }
     #endif
+
+    /// R_*_RELATIVE for the image's machine.
+    var relativeRelocation: UInt32 {
+        switch machine {
+        case Machine.amd64: 8
+        case Machine.arm64: 1027
+        default: 3
+        }
+    }
 
     public static var pageSize: UInt64 { 4096 }
 
     public let kind: Kind
+    /// e_machine: this architecture's unless parsed for another.
+    public let machine: UInt16
     /// Entry point (link-time virtual address).
     public private(set) var entry: UInt64 = 0
     /// Lowest PT_LOAD address: where the image is linked to run.
@@ -67,8 +85,12 @@ public struct ElfImage {
     /// object was built with BTI landing pads (GNU_PROPERTY_AARCH64_FEATURE_1_AND,
     /// bit 0), so loaders map its executable segments guarded.
     public private(set) var branchTargets = false
-    /// PT_DYNAMIC address, if any.
-    private var dynamic: UInt64?
+    /// PT_DYNAMIC address, if any (a shared object's, for a dynamic
+    /// linker to read).
+    public private(set) var dynamic: UInt64?
+    /// Whether it has a PT_TLS segment (a shared object with one can't be
+    /// loaded yet).
+    public private(set) var tls = false
 
     /// Whether the property notes in [offset, +length) set the AArch64 BTI
     /// feature: NT_GNU_PROPERTY_TYPE_0 notes named "GNU", whose properties
@@ -108,7 +130,7 @@ public struct ElfImage {
         #endif
     }
 
-    public init(parsing file: RawSpan) throws(Error) {
+    public init(parsing file: RawSpan, machine: UInt16 = ElfImage.machine) throws(Error) {
         let truncated = Error("truncated ELF header")
         guard try file.elfRead(UInt32.self, at: 0, else: truncated) == 0x464C_457F,  // "\x7fELF"
               try file.elfRead(UInt8.self, at: 4, else: truncated) == 2,              // ELFCLASS64
@@ -118,9 +140,10 @@ public struct ElfImage {
             throw Error("neither an executable nor a static PIE")
         }
         self.kind = kind
-        guard try file.elfRead(UInt16.self, at: 18, else: truncated) == Self.machine else {
+        guard try file.elfRead(UInt16.self, at: 18, else: truncated) == machine else {
             throw Error("built for another architecture")
         }
+        self.machine = machine
         entry = try file.elfRead(UInt64.self, at: 24, else: truncated)
         let phoff = try file.elfRead(UInt64.self, at: 32, else: truncated)
         let phentsize = UInt64(try file.elfRead(UInt16.self, at: 54, else: truncated))
@@ -133,6 +156,7 @@ public struct ElfImage {
         for i in 0..<phnum {
             let ph = phoff &+ i &* phentsize
             let type = try file.elfRead(UInt32.self, at: ph, else: badPhdr)
+            if type == 7 { tls = true }  // PT_TLS
             if type == 2 {  // PT_DYNAMIC
                 dynamic = try file.elfRead(UInt64.self, at: ph + 16, else: badPhdr)
             }
@@ -269,7 +293,7 @@ public struct ElfImage {
             entry += relaEntry
             let type = UInt32(truncatingIfNeeded: info)
             if type == 0 { continue }
-            guard type == Self.relativeRelocation else { throw Error("unsupported relocation type") }
+            guard type == relativeRelocation else { throw Error("unsupported relocation type") }
             guard target >= base, target - base <= size - 8 else { throw badReloc }
             try body(target, addend)
         }
@@ -341,7 +365,7 @@ public struct ElfImage {
 
             let type = UInt32(truncatingIfNeeded: info)
             if type == 0 { continue }
-            guard type == Self.relativeRelocation else { throw Error("unsupported relocation type") }
+            guard type == relativeRelocation else { throw Error("unsupported relocation type") }
             guard target >= base, target - base <= size - 8 else { throw badReloc }
             image.storeBytes(of: (runAddress &- base &+ addend).littleEndian,
                              toByteOffset: Int(target - base), as: UInt64.self)

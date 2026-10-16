@@ -42,6 +42,8 @@ The actions in the tables:
 | `system/ipc` (wire, `@IPCLibrary`), `idlc` | Lift | V2 | The control plane (D3) |
 | `system/node`, namespaces, `/srv` | Lift | V2 | |
 | `system/launch` (manifests), `system/sys`, `system/libc`, `system/fdio` | Port | V2 | Onto V1's ABI through its headers (D45); stdio and pipes on rings (D46) |
+| `system/ld` (dlopen) | Port | V2 | Its core (`Dynamic.swift`) as is; its loader onto croi's ELF and bootfs readers and userboot's segment mapping (`user/lib/loader`) |
+| `system/elf`, `system/bootfs` (readers) | Drop | V2 | croi's win: `lib/elf`'s ElfImage (the kernel's, the loader's, userboot's) and userboot's Bootfs, allocation-free over spans. The launcher's loader (V2's item 4) uses them too |
 | drivers: bus/PCI/ACPI, virtio | Lift | V2 | |
 | `services/router` (plumber) | Lift | V2 | |
 | `services/console`, `services/time`, `shell/commands` | Port | V2 | The console reads the debuglog ring (D38); UTC is a page (D48) |

@@ -139,19 +139,24 @@ add_test(NAME boot-lean
           ${CROI_ARCH} ${_esp_lean} ${CMAKE_BINARY_DIR}/qemu-lean ${CROI_EDK2_DIR})
 set_tests_properties(boot-lean PROPERTIES TIMEOUT 120)
 
-# Sys over the kernel (V2): userboot starts bin/sys-test instead of m2,
-# self-tests off.
-set(_esp_sys ${CMAKE_BINARY_DIR}/esp-sys)
-file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/cmdline-sys
-     CONTENT "${CROI_CMDLINE} userboot.next=bin/sys-test${_shutdown} croi.selftest=off\n")
-add_custom_target(esp-sys ALL
-  COMMAND ${CMAKE_COMMAND} -E copy_directory ${CROI_ESP_DIR} ${_esp_sys}
-  COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/cmdline-sys ${_esp_sys}/croi/cmdline
-  DEPENDS esp)
-add_test(NAME boot-sys
-  COMMAND ${CROI_QEMU} --test "userboot: bin/sys-test exited with 0" ${CROI_EXITS}
-          ${CROI_ARCH} ${_esp_sys} ${CMAKE_BINARY_DIR}/qemu-sys ${CROI_EDK2_DIR})
-set_tests_properties(boot-sys PROPERTIES TIMEOUT 120)
+# A bootfs program's own boot (V2): userboot starts bin/<name> instead of
+# m2, self-tests off, and the test passes when it exits with 0.
+function(croi_boot_program_test test name)
+  set(_esp ${CMAKE_BINARY_DIR}/esp-${test})
+  file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/cmdline-${test}
+       CONTENT "${CROI_CMDLINE} userboot.next=bin/${name}${_shutdown} croi.selftest=off\n")
+  add_custom_target(esp-${test} ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CROI_ESP_DIR} ${_esp}
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/cmdline-${test} ${_esp}/croi/cmdline
+    DEPENDS esp)
+  add_test(NAME boot-${test}
+    COMMAND ${CROI_QEMU} --test "userboot: bin/${name} exited with 0" ${CROI_EXITS}
+            ${CROI_ARCH} ${_esp} ${CMAKE_BINARY_DIR}/qemu-${test} ${CROI_EDK2_DIR})
+  set_tests_properties(boot-${test} PROPERTIES TIMEOUT 120)
+endfunction()
+# Sys over the kernel (bin/sys-test) and dlopen (bin/dl-test).
+croi_boot_program_test(sys sys-test)
+croi_boot_program_test(dl dl-test)
 
 if(CROI_ARCH STREQUAL arm64 OR CROI_ARCH STREQUAL rv64)
   # Guest time from instruction counts (QEMU -icount; sleep=off skips idle

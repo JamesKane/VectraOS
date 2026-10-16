@@ -86,7 +86,14 @@ let package = Package(
             swiftSettings: tier0 + c23),
     .testTarget(name: "PThreadTests", dependencies: ["PThread", "Sys"], path: "system/libc/pthread/tests",
                 swiftSettings: c23),
-    .executableTarget(name: "vx",dependencies: ["Bench", "ImageFormats", "TraceFormat", "TraceReader"], path: "tools/vx"),
+    // ELF images as croi loads them (lib/elf: the kernel's, the loader's
+    // and userboot's) and the dynamic linker's core (system/ld, V2), tested
+    // hosted on shared objects linked for each machine; natively, dlopen
+    // over them is CMake's (croi_user_sys).
+    .target(name: "Elf", path: "lib/elf/Elf", swiftSettings: tier0),
+    .target(name: "Ld", path: "system/ld", exclude: ["native", "tests"], sources: ["lib"], swiftSettings: tier0),
+    .testTarget(name: "LdTests", dependencies: ["Ld", "Elf"], path: "system/ld/tests", exclude: ["native"]),
+    .executableTarget(name: "vx", dependencies: ["Bench", "ImageFormats", "TraceFormat", "TraceReader"], path: "tools/vx"),
   ],
   cLanguageStandard: .gnu2x
 )

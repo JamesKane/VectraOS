@@ -207,11 +207,12 @@ set(_swift_test_exec ${CMAKE_CURRENT_BINARY_DIR}/swifttestexec.elf)
 croi_user_program(${_swift_test_exec} EXPORT_DYNAMIC SOURCES ${_user_dir}/test/swift/LibcSuite.c
   SWIFT ${_swift_test_sources})
 # userboot (K8b), carried in the kernel image like Zircon's; it shares
-# lib/elf's sources with the kernel and loader.
+# lib/elf's sources with the kernel and loader, and user/lib/loader's
+# (bootfs, segments) with dlopen (system/ld).
 set(_userboot ${CMAKE_CURRENT_BINARY_DIR}/userboot.elf)
 croi_user_program(${_userboot} PIE
-  SWIFT ${_user_dir}/userboot/Main.swift ${_user_dir}/userboot/Bootfs.swift
-        ${_user_dir}/userboot/Power.swift
+  SWIFT ${_user_dir}/userboot/Main.swift ${_user_dir}/userboot/Power.swift
+        ${_user_dir}/lib/loader/Bootfs.swift ${_user_dir}/lib/loader/Segments.swift
         ${PROJECT_SOURCE_DIR}/lib/elf/Elf/ElfImage.swift)
 set_source_files_properties(userprogram.S PROPERTIES
   OBJECT_DEPENDS "${_user_bin};${_vdso_bin};${_swift_test};${_swift_test_exec};${_userboot}"
@@ -228,10 +229,20 @@ croi_user_program(${_m2} PIE SWIFT ${_user_dir}/m2/Main.swift ${_user_dir}/m2/Sy
 croi_user_sys()
 set(_sys_test ${CMAKE_CURRENT_BINARY_DIR}/systest.elf)
 croi_user_program(${_sys_test} PIE SYS SWIFT ${PROJECT_SOURCE_DIR}/system/sys/tests/native/Main.swift)
+# bin/dl-test (V2): dlopen, a dlopen host loading lib/libdltest.so (C) and
+# lib/libdlswift.so (Embedded Swift over Sys); the boot-dl test starts it.
+set(_ld_tests ${PROJECT_SOURCE_DIR}/system/ld/tests/native)
+set(_dl_test ${CMAKE_CURRENT_BINARY_DIR}/dltest.elf)
+croi_user_program(${_dl_test} EXPORT_DYNAMIC SYS SWIFT ${_ld_tests}/Main.swift)
+set(_dl_c ${CMAKE_CURRENT_BINARY_DIR}/libdltest.so)
+croi_user_library(${_dl_c} SOURCES ${_ld_tests}/dltest.c)
+set(_dl_swift ${CMAKE_CURRENT_BINARY_DIR}/libdlswift.so)
+croi_user_library(${_dl_swift} SYS SWIFT ${_ld_tests}/DlSwift.swift)
 set(CROI_BOOTFS_IMAGE ${CMAKE_BINARY_DIR}/bootfs.img PARENT_SCOPE)
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs.img
-          bin/m2=${_m2} bin/sys-test=${_sys_test}
-  DEPENDS ${_m2} ${_sys_test} vx ${VX}
+          bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_test}
+          lib/libdltest.so=${_dl_c} lib/libdlswift.so=${_dl_swift}
+  DEPENDS ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} vx ${VX}
   COMMENT "Building bootfs")
 add_custom_target(bootfs DEPENDS ${CMAKE_BINARY_DIR}/bootfs.img)

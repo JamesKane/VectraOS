@@ -90,15 +90,17 @@ machine's history:
 - `lib/fmt/`  `TextOutput`: allocation-free text formatting for both images.
 - `lib/pagetables/` Page-table formats + generic builder (loader and kernel).
 - `lib/rt/`   Freestanding C runtime the compilers call (mem*, stack guard).
-- `lib/elf/`  `ElfImage`: ELF parsing and loading (loader, kernel, userboot).
+- `lib/elf/`  `ElfImage`: ELF parsing and loading (loader, kernel, userboot,
+              dlopen).
 - `lib/ring/` The one ring (D43): `ring.h` (format and C), `Ring/` (Swift),
               `check/` (RingCheck, the model checker), `tests/` (host).
 - `user/`     User space: headers (`user/include`, modules `CroiSyscall`
-              and `CroiRuntime`), vDSO, test programs. Their runtime is
-              the floor (`system/sys/floor`, D49).
+              and `CroiRuntime`), vDSO, test programs, `lib/loader` (bootfs
+              and ELF segments, userboot's and dlopen's). Their runtime
+              is the floor (`system/sys/floor`, D49).
 - `system/`   The userland lifted from todhchai (V2): `sys/` is the floor,
               Sys (the typed API, its hosted kernel SysHost) and their
-              tests; `libc/` the libc and its pthreads.
+              tests; `libc/` the libc and its pthreads; `ld/` dlopen.
 - `ld/image.ld` Shared linker script: one PT_LOAD per permission (W^X).
 - `cmake/`    Toolchain file, per-arch settings, `croi_image()` helper.
 

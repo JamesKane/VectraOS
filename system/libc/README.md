@@ -50,4 +50,4 @@ variant II on amd64, I on arm64 and rv64, where the thread block is the 64
 bytes below the thread pointer); the `libc` suite checks it. Swift code
 still has none.
 
-dlopen (M5k) is `system/ld`, which comes next in V2's item 2.
+dlopen (M5k) is `system/ld` (`docs/kernel/design/user.md`, "dlopen").

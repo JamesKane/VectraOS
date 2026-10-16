@@ -5,7 +5,7 @@
 // bootfs). Every symbol is bound at load (RTLD_NOW's behaviour, whichever
 // flag), into the global scope (RTLD_GLOBAL's), and nothing is unloaded:
 // dlclose only counts. A program that loads libraries is linked to export
-// its symbols (CMake's todhchai_dlopen_host).
+// its symbols (croi_user_program's EXPORT_DYNAMIC).
 
 #ifndef TD_DLFCN_H
 #define TD_DLFCN_H

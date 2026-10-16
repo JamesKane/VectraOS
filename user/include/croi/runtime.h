@@ -29,6 +29,7 @@ static inline void croi_mmio_write32(uint64_t address, uint32_t value) { *(volat
 // The C library (system/libc, V2), through its own headers: what the
 // compilers and the Embedded Swift runtime call (mem*, the floor's heap)
 // and the rest, pthreads included.
+#include <dlfcn.h>
 #include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
