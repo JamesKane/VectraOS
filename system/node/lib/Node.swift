@@ -1,0 +1,233 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
+// The Node protocol (architecture §4): every service is a browsable tree.
+// A channel to a node is like a 9P fid. Shaped like 9P, but channels
+// already give what 9P's fids, tags, version and attach exist for, and a
+// message is a batch (D18, D55): operations run in order on a current
+// node, as NFSv4's COMPOUND does, so walking to a file, stat-ing it and
+// reading it is one call.
+
+import IPC
+
+@IPCLibrary(id: "todhchai.node", version: 1)
+public enum NodeIPC {
+  public enum NodeError: Int32, IPCErrorCode, Sendable {
+    case notFound = 1
+    case notDirectory
+    case isDirectory
+    case exists
+    case denied
+    /// A name that is empty, ".", longer than 255 bytes, or holds "/" or NUL.
+    case badName
+    /// More than 16 names in one walk.
+    case tooManyNames
+    case notEmpty
+    /// The node doesn't do that (writing a read-only leaf, creating in a
+    /// directory that doesn't allow it).
+    case unsupported
+    /// What was written isn't valid for the node (a ctl leaf's command).
+    case invalid
+    case io
+    /// More than 32 operations in one batch.
+    case tooManyOps
+  }
+
+  public enum NodeKind: UInt8, Sendable {
+    case file = 1
+    case directory
+    /// A service's typed protocol: opening it gives a channel that speaks
+    /// that protocol, not Node (architecture §4).
+    case service
+  }
+
+  /// A node's identity: `path` is unique in its tree and never reused;
+  /// `version` changes when its contents do. For cache validation.
+  public struct Qid: Equatable, Sendable {
+    public var path: UInt64
+    public var version: UInt32
+    public var kind: NodeKind
+
+    public init(path: UInt64, version: UInt32, kind: NodeKind) {
+      self.path = path
+      self.version = version
+      self.kind = kind
+    }
+  }
+
+  /// A typed attribute, Taisce's way: `kind` is Taisce's AttributeKind
+  /// (string 1, int64, uint64, double, time, bool, bytes, ref, type), and
+  /// `value` its encoding (integers little-endian).
+  public struct Attribute: Equatable, Sendable {
+    public var name: String
+    public var kind: UInt8
+    public var value: [UInt8]
+
+    public init(name: String, kind: UInt8, value: [UInt8]) {
+      self.name = name
+      self.kind = kind
+      self.value = value
+    }
+  }
+
+  /// What stat and readdir report. Fields not asked for are zero or empty.
+  public struct Stat: Equatable, Sendable {
+    public var qid: Qid
+    public var name: String
+    public var size: UInt64
+    /// Nanoseconds since the Unix epoch; 0 if unknown.
+    public var modified: Int64
+    public var attributes: [Attribute]
+
+    public init(qid: Qid, name: String, size: UInt64, modified: Int64, attributes: [Attribute]) {
+      self.qid = qid
+      self.name = name
+      self.size = size
+      self.modified = modified
+      self.attributes = attributes
+    }
+  }
+
+  public struct DirBatch: Equatable, Sendable {
+    public var entries: [Stat]
+    /// The cursor to continue from.
+    public var next: UInt64
+    public var done: Bool
+
+    public init(entries: [Stat], next: UInt64, done: Bool) {
+      self.entries = entries
+      self.next = next
+      self.done = done
+    }
+  }
+
+  public enum ChangeKind: UInt8, Sendable {
+    case created = 1
+    case removed
+    case modified
+    /// Changes were missed: look again.
+    case overflow
+  }
+
+  /// A change to a watched node (`node`, its qid's path): to a directory's
+  /// entry `name`, or to the file itself.
+  public struct Change: Equatable, Sendable {
+    public var seq: UInt64
+    public var node: UInt64
+    public var kind: ChangeKind
+    public var name: String
+
+    public init(seq: UInt64, node: UInt64, kind: ChangeKind, name: String) {
+      self.seq = seq
+      self.node = node
+      self.kind = kind
+      self.name = name
+    }
+  }
+
+  /// One operation of a batch, on the current node.
+  public enum Op: Equatable, Sendable {
+    /// Moves the current node down `names` (at most 16; "..": the parent).
+    /// Every name must be there. No names: stays.
+    case walk(names: [String])
+    case stat(fields: UInt32)
+    case readdir(cursor: UInt64, max: UInt32, fields: UInt32)
+    case read(offset: UInt64, max: UInt32)
+    case write(offset: UInt64, data: [UInt8])
+    /// Sends `changed` events for the current node on this channel from
+    /// now on, first replaying those after `since` (0: none).
+    case watch(since: UInt64)
+    /// Makes `name` in the current directory, and moves there.
+    case create(name: String, kind: NodeKind)
+    /// Removes the current node; operations after it on it fail.
+    case remove
+  }
+
+  /// What an operation gave, in the order of the batch.
+  public enum Outcome: Equatable, Sendable {
+    /// A qid for each name walked.
+    case walked([Qid])
+    case stat(Stat)
+    case dir(DirBatch)
+    case data([UInt8])
+    case wrote(UInt32)
+    /// The current sequence number.
+    case watching(UInt64)
+    case created(Qid)
+    case removed
+  }
+
+  /// Which operation failed (from 0; the count of operations: the open
+  /// itself), and its NodeError's code.
+  public struct Failure: Equatable, Sendable {
+    public var index: UInt32
+    public var code: Int32
+
+    public init(index: UInt32, code: Int32) {
+      self.index = index
+      self.code = code
+    }
+  }
+
+  /// A batch's reply: the results of the operations done, which stop at
+  /// the first that fails, and with `open`, if all were done, a channel to
+  /// the current node (for a service node, one that speaks its protocol).
+  public struct Reply: ~Copyable {
+    public var results: [Outcome]
+    public var failure: Failure?
+    public var node: Handle?
+
+    public init(results: [Outcome], failure: Failure?, node: consuming Handle?) {
+      self.results = results
+      self.failure = failure
+      self.node = node
+    }
+  }
+
+  public protocol Node {
+    /// Runs `ops` (at most 32) in order on a current node, which starts at
+    /// this channel's; `walk` and `create` move it. A single operation is a
+    /// batch of one.
+    func batch(_ ops: [Op], open: Bool) -> Reply
+    @event func changed(_ change: Change)
+  }
+}
+
+extension NodeIPC {
+  /// What stat and readdir fill in beyond the qid and name.
+  public enum Fields {
+    public static let size: UInt32 = 1 << 0
+    public static let modified: UInt32 = 1 << 1
+    public static let attributes: UInt32 = 1 << 2
+    public static let all: UInt32 = 0b111
+  }
+
+  /// The most names one walk takes.
+  public static let maxWalk = 16
+  /// The most operations one batch takes.
+  public static let maxOps = 32
+  /// The most bytes one read or write moves.
+  public static let maxIO = 32_768
+
+  /// Whether `name` may name a node. (Bytes compared: String's `==`
+  /// needs Unicode tables tier 0 doesn't link.)
+  public static func isValidName(_ name: String) -> Bool {
+    let utf8 = name.utf8
+    return !utf8.isEmpty && utf8.count <= 255 && !(utf8.count == 1 && utf8.first == 0x2E) && !utf8.contains(0x2F)
+      && !utf8.contains(0)
+  }
+
+  /// The names of a path ("a/b/c"), split at its "/" bytes, empty ones
+  /// dropped. (String's `split` breaks Characters, which needs the Unicode
+  /// tables tier 0 doesn't link.)
+  public static func names(_ path: String) -> [String] {
+    path.utf8.split(separator: 0x2F).map { String(decoding: $0, as: UTF8.self) }
+  }
+
+  /// Whether two names are the same bytes.
+  public static func same(_ a: String, _ b: String) -> Bool { a.utf8.elementsEqual(b.utf8) }
+}
+
+extension NodeIPC.Failure {
+  /// The error, as NodeError (`io` for a code it doesn't know).
+  public var error: NodeIPC.NodeError { NodeIPC.NodeError(rawValue: code) ?? .io }
+}

@@ -166,7 +166,12 @@ work, in order:
    (Sys's `Channel.read` and `Channel.write` take the arrays, D41).
    Watches are PERSISTENT too, and `unwatch` runs on the dispatcher's
    thread, as `wake` does.
-   Next: Node's batches (D18) and the launcher.
+   The wire format gains unions (D54), and Node is lifted (`system/node`)
+   as batches (D55): operations on a current node, the first failure
+   ending the batch, at most one handle back, and a mount taking the
+   rest of a batch; NodeTree, namespaces and /srv on top, checked hosted
+   and natively (`bin/node-test`, boot-node). Next: the launcher, and
+   bulk `read`/`write` opening a ring.
 5. **Time (D48).** Clock objects are cut: the time service publishes UTC
    in a read-only seqlock page that the launcher hands every process at
    start.

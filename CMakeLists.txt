@@ -159,11 +159,13 @@ function(croi_boot_program_test test name)
   set_tests_properties(boot-${test} PROPERTIES TIMEOUT 120)
 endfunction()
 # Sys over the kernel (bin/sys-test), dlopen (bin/dl-test), IPC
-# (bin/ipc-test) and a trace session (bin/trace-test), whose export vx
-# trace collect then reads from the boot's console (qemu.sh keeps it).
+# (bin/ipc-test), Node (bin/node-test) and a trace session
+# (bin/trace-test), whose export vx trace collect then reads from the
+# boot's console (qemu.sh keeps it).
 croi_boot_program_test(sys sys-test)
 croi_boot_program_test(dl dl-test)
 croi_boot_program_test(ipc ipc-test)
+croi_boot_program_test(node node-test)
 croi_boot_program_test(trace trace-test)
 add_test(NAME trace-collect
   COMMAND ${VX} trace collect ${CMAKE_BINARY_DIR}/qemu-trace/console.log ${CMAKE_BINARY_DIR}/trace)

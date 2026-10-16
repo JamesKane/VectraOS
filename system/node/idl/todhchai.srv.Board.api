@@ -1,0 +1,4 @@
+# API baseline for todhchai.srv.Board, written by idlc. Commit it; idlc checks changes against it.
+protocol todhchai.srv.Board version 1
+method post call since 1 params (String,Handle) result - throws BoardError
+method withdraw call since 1 params (String) result - throws BoardError

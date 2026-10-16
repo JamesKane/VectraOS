@@ -1,0 +1,314 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
+// A process's namespace (architecture §4): paths to Node channels. There is
+// no global root: `/svc/<name>` holds the services a process was granted,
+// `/data` its own directory, `/vol/<name>` the volumes it may see, `/srv`
+// its session's board. Following Plan 9, a path can hold a union of
+// channels, each mounted before, after or replacing what is there, one
+// marked for creating in. Unions are resolved here, in the client.
+
+import IPC
+
+public enum NamespaceError: Error, Equatable, Sendable {
+  /// A path that isn't absolute or holds a bad name.
+  case badPath
+  /// Nothing is mounted where the path leads.
+  case notFound
+  /// The namespace is sealed: it can't attach a new channel.
+  case sealed
+  /// A union holds at most `Namespace.maxUnion` channels.
+  case unionFull
+  /// No member of the union may be created in.
+  case cantCreate
+  /// The service answered with an error.
+  case node(NodeIPC.NodeError)
+  /// The channel failed.
+  case transport(Status)
+  /// The service broke the protocol.
+  case wire(WireError)
+
+  init(_ e: NodeIPC.NodeClient.Failure) {
+    switch e {
+    case .remote(.notFound): self = .notFound
+    case .remote(let n): self = .node(n)
+    case .transport(let s): self = .transport(s)
+    case .wire(let w): self = .wire(w)
+    }
+  }
+}
+
+public final class Namespace: @unchecked Sendable {
+  public enum Placement: Sendable {
+    /// The new channel alone.
+    case replace
+    /// Looked in first.
+    case before
+    /// Looked in last.
+    case after
+  }
+
+  /// One channel of a union: calls on it go one at a time.
+  final class Member: @unchecked Sendable {
+    let mutex = Lock()
+    var client: NodeIPC.NodeClient
+    let create: Bool
+
+    init(_ client: consuming NodeIPC.NodeClient, create: Bool) {
+      self.client = client
+      self.create = create
+    }
+
+    func use<R: ~Copyable>(_ body: (inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) -> R)
+      throws(NodeIPC.NodeClient.Failure) -> R
+    {
+      mutex.lock()
+      defer { mutex.unlock() }
+      return try body(&client)
+    }
+
+    /// A new client at `names` below this member's node (none: a clone).
+    func open(_ names: [String]) throws(NodeIPC.NodeClient.Failure) -> NodeIPC.NodeClient {
+      try use { (c: inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) in
+        try c.open(names.joined(separator: "/"))
+      }
+    }
+  }
+
+  /// Whether two paths have the same names, as bytes.
+  func samePath(_ a: [String], _ b: [String]) -> Bool {
+    a.count == b.count && zip(a, b).allSatisfy { NodeIPC.same($0, $1) }
+  }
+
+  struct Mount {
+    var path: [String]
+    var members: [Member]
+  }
+
+  /// The most channels one union holds.
+  public static let maxUnion = 8
+
+  let mutex = Lock()
+  var mounts: [Mount] = []
+  public private(set) var sealed: Bool
+
+  public init(sealed: Bool = false) {
+    self.sealed = sealed
+  }
+
+  func locked<R, E: Error>(_ body: () throws(E) -> R) throws(E) -> R {
+    mutex.lock()
+    defer { mutex.unlock() }
+    return try body()
+  }
+
+  /// A path's names, cleaned as Plan 9 does: "." dropped, ".." taking off
+  /// the name before it (and nothing at the root).
+  public static func clean(_ path: String) throws(NamespaceError) -> [String] {
+    guard path.utf8.first == 0x2F else { throw .badPath }
+    var names: [String] = []
+    for part in NodeIPC.names(path) {
+      let name = part
+      if NodeIPC.same(name, ".") { continue }
+      if NodeIPC.same(name, "..") {
+        _ = names.popLast()
+        continue
+      }
+      guard NodeIPC.isValidName(name) else { throw .badPath }
+      names.append(name)
+    }
+    return names
+  }
+
+  // MARK: Changing it
+
+  /// Seals the namespace: from now on it can't attach a channel received
+  /// from elsewhere (`mount`), though it can still rearrange what it holds
+  /// (`bind`). Children inherit the seal. Plan 9's RFNOMNT.
+  public func seal() { locked { sealed = true } }
+
+  /// Attaches `channel` (a Node channel) at `path`. `create` marks it as
+  /// where new files go in a union.
+  public func mount(_ channel: consuming Handle, at path: String, _ placement: Placement = .replace,
+                    create: Bool = false) throws(NamespaceError) {
+    let names = try Self.clean(path)
+    let member = Member(NodeIPC.NodeClient(channel: channel), create: create)
+    try locked { () throws(NamespaceError) in
+      guard !sealed else { throw .sealed }
+      try add(member, at: names, placement)
+    }
+  }
+
+  /// Binds what `source` names now at `path` too: Plan 9's bind. Allowed in
+  /// a sealed namespace, since it attaches nothing new.
+  public func bind(_ source: String, at path: String, _ placement: Placement = .replace,
+                   create: Bool = false) throws(NamespaceError) {
+    let names = try Self.clean(path)
+    let member = Member(try open(source), create: create)
+    try locked { () throws(NamespaceError) in try add(member, at: names, placement) }
+  }
+
+  /// Under the lock.
+  func add(_ member: Member, at names: [String], _ placement: Placement) throws(NamespaceError) {
+    guard let i = mounts.firstIndex(where: { samePath($0.path, names) }) else {
+      mounts.append(Mount(path: names, members: [member]))
+      return
+    }
+    switch placement {
+    case .replace: mounts[i].members = [member]
+    case .before, .after:
+      guard mounts[i].members.count < Self.maxUnion else { throw .unionFull }
+      if placement == .before { mounts[i].members.insert(member, at: 0) } else { mounts[i].members.append(member) }
+    }
+  }
+
+  /// Takes away everything mounted at `path`.
+  public func unmount(_ path: String) throws(NamespaceError) {
+    let names = try Self.clean(path)
+    try locked { () throws(NamespaceError) in
+      guard let i = mounts.firstIndex(where: { samePath($0.path, names) }) else { throw .notFound }
+      mounts.remove(at: i)
+    }
+  }
+
+  /// The paths something is mounted at, sorted by their bytes.
+  public var mountPoints: [String] {
+    locked {
+      mounts.map { "/" + $0.path.joined(separator: "/") }.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
+    }
+  }
+
+  /// A namespace for a child: the same mounts, each a new channel to the
+  /// same node, sealed if this one is.
+  public func clone() throws(NamespaceError) -> Namespace {
+    let copy = Namespace(sealed: locked { sealed })
+    for m in locked({ mounts }) {
+      var members: [Member] = []
+      for member in m.members {
+        do throws(NodeIPC.NodeClient.Failure) {
+          members.append(Member(try member.open([]), create: member.create))
+        } catch {
+          throw NamespaceError(error)
+        }
+      }
+      copy.mounts.append(Mount(path: m.path, members: members))
+    }
+    return copy
+  }
+
+  // MARK: Using it
+
+  /// The mount `names` lead into (the longest mounted prefix) and the rest.
+  func resolve(_ names: [String]) -> (members: [Member], rest: [String])? {
+    locked {
+      var best: Mount?
+      for m in mounts where m.path.count <= names.count && samePath(Array(names.prefix(m.path.count)), m.path) {
+        if best == nil || m.path.count > best!.path.count { best = m }
+      }
+      guard let best else { return nil }
+      return (best.members, Array(names.dropFirst(best.path.count)))
+    }
+  }
+
+  /// Where `path` leads: the mount it falls in (its path, as "/a/b") and
+  /// the names below it. Two paths in the same mount share its tree, so a
+  /// rename between them is one call on the mount's directory.
+  public func locate(_ path: String) throws(NamespaceError) -> (mount: String, rest: [String]) {
+    let names = try Self.clean(path)
+    return try locked { () throws(NamespaceError) -> (mount: String, rest: [String]) in
+      var best: Mount?
+      for m in mounts where m.path.count <= names.count && samePath(Array(names.prefix(m.path.count)), m.path) {
+        if best == nil || m.path.count > best!.path.count { best = m }
+      }
+      guard let best else { throw .notFound }
+      return ("/" + best.path.joined(separator: "/"), Array(names.dropFirst(best.path.count)))
+    }
+  }
+
+  /// A channel to the service node at `path`, which speaks its typed
+  /// protocol (`/svc/block/device`).
+  public func connect(_ path: String) throws(NamespaceError) -> Handle {
+    try open(path).takeChannel()
+  }
+
+  /// A channel to the node at `path`: from the first member of its union
+  /// that has it.
+  public func open(_ path: String) throws(NamespaceError) -> NodeIPC.NodeClient {
+    let names = try Self.clean(path)
+    guard let (members, rest) = resolve(names) else { throw .notFound }
+    var failure = NamespaceError.notFound
+    for member in members {
+      do throws(NodeIPC.NodeClient.Failure) {
+        return try member.open(rest)
+      } catch {
+        failure = NamespaceError(error)
+        // A miss tries the next member; anything else is the answer.
+        if failure != .notFound { throw failure }
+      }
+    }
+    throw failure
+  }
+
+  /// The entries at `path`: the union's members' listings merged, the
+  /// first member's entry winning a name, then mount points below it.
+  public func list(_ path: String, fields: UInt32 = NodeIPC.Fields.all) throws(NamespaceError) -> [NodeIPC.Stat] {
+    let names = try Self.clean(path)
+    var entries: [NodeIPC.Stat] = []
+    var found = false
+    if let (members, rest) = resolve(names) {
+      for member in members {
+        do throws(NodeIPC.NodeClient.Failure) {
+          // A walk and a page of the listing in one batch.
+          let page = try member.use { (c: inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) in
+            try c.list(rest.joined(separator: "/"), fields: fields)
+          }
+          found = true
+          for e in page where !entries.contains(where: { NodeIPC.same($0.name, e.name) }) {
+            entries.append(e)
+          }
+        } catch {
+          let e = NamespaceError(error)
+          if e != .notFound { throw e }
+        }
+      }
+    }
+    // Mount points below the path show as directories.
+    let below = locked {
+      mounts.filter { $0.path.count > names.count && samePath(Array($0.path.prefix(names.count)), names) }
+        .map { $0.path[names.count] }
+    }
+    for name in below where !entries.contains(where: { NodeIPC.same($0.name, name) }) {
+      found = true
+      entries.append(NodeIPC.Stat(qid: NodeIPC.Qid(path: 0, version: 0, kind: .directory), name: name, size: 0,
+                                  modified: 0, attributes: []))
+    }
+    guard found || names.isEmpty else { throw .notFound }
+    return entries
+  }
+
+  /// Creates a node at `path` and opens it: at a union's mount point, in
+  /// its member marked for creating; deeper, where the parent is.
+  public func create(_ path: String, kind: NodeIPC.NodeKind) throws(NamespaceError) -> NodeIPC.NodeClient {
+    let names = try Self.clean(path)
+    guard let name = names.last else { throw .badPath }
+    let parent = Array(names.dropLast())
+    guard let (members, rest) = resolve(parent) else { throw .notFound }
+    // At the mount point, in the member marked for creating; deeper, in the
+    // first member whose walk to the parent succeeds. A walk and the create
+    // are one batch.
+    let candidates = rest.isEmpty ? members.filter { $0.create } : members
+    guard !candidates.isEmpty else { throw .cantCreate }
+    let at = rest.joined(separator: "/")
+    var failure = NamespaceError.notFound
+    for member in candidates {
+      do throws(NodeIPC.NodeClient.Failure) {
+        return try member.use { (c: inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) in
+          try c.create(name, kind: kind, in: at)
+        }
+      } catch {
+        failure = NamespaceError(error)
+        if failure != .notFound { throw failure }
+      }
+    }
+    throw failure
+  }
+}

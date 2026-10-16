@@ -447,3 +447,10 @@ system/ipc/wire/Header.swift	todhchai	527ff94	system/ipc/wire/Header.swift
 system/ipc/wire/Limits.swift	todhchai	527ff94	system/ipc/wire/Limits.swift
 system/ipc/wire/Ordinal.swift	todhchai	527ff94	system/ipc/wire/Ordinal.swift
 tools/idlc/main.swift	todhchai	527ff94	tools/idlc/main.swift
+system/node/README.md	todhchai	527ff94	system/node/README.md
+system/node/lib/Node.swift	todhchai	527ff94	system/node/lib/Node.swift
+system/node/lib/Tree.swift	todhchai	527ff94	system/node/lib/Tree.swift
+system/node/lib/Namespace.swift	todhchai	527ff94	system/node/lib/Namespace.swift
+system/node/lib/Srv.swift	todhchai	527ff94	system/node/lib/Srv.swift
+system/node/tests/NodeTests.swift	todhchai	527ff94	system/node/tests/NodeTests.swift
+system/node/tests/NamespaceTests.swift	todhchai	527ff94	system/node/tests/NamespaceTests.swift

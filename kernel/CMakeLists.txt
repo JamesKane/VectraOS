@@ -250,6 +250,10 @@ set(_ipc_test ${CMAKE_CURRENT_BINARY_DIR}/ipctest.elf)
 croi_user_program(${_ipc_test} PIE SYS IPC SWIFT ${_ipc_tests}/native/Main.swift ${_ipc_tests}/echo/Echo.swift
                   SOURCES ${_ipc_tests}/c/idl_c_tests.c
                   INCLUDES ${_ipc_tests}/c/include ${_ipc_tests}/c/generated)
+# bin/node-test (V2): Node over the kernel, batches, mounts, watches,
+# namespaces and /srv; the boot-node test starts it.
+set(_node_test ${CMAKE_CURRENT_BINARY_DIR}/nodetest.elf)
+croi_user_program(${_node_test} PIE SYS SWIFT ${PROJECT_SOURCE_DIR}/system/node/tests/native/Main.swift)
 # Tier 1's programs (D47), when the *-vectraos toolchain has been built.
 include(${PROJECT_SOURCE_DIR}/cmake/Tier1.cmake)
 croi_tier1(_tier1_bootfs _tier1_files)
@@ -258,7 +262,9 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs.img
           bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_test}
           lib/libdltest.so=${_dl_c} lib/libdlswift.so=${_dl_swift} bin/trace-test=${_trace_test} bin/ipc-test=${_ipc_test}
+          bin/node-test=${_node_test}
           ${_tier1_bootfs}
-  DEPENDS ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_trace_test} ${_ipc_test} ${_tier1_files} vx ${VX}
+  DEPENDS ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_trace_test} ${_ipc_test} ${_node_test}
+          ${_tier1_files} vx ${VX}
   COMMENT "Building bootfs")
 add_custom_target(bootfs DEPENDS ${CMAKE_BINARY_DIR}/bootfs.img)
