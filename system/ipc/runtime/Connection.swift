@@ -153,6 +153,9 @@ func epitaphStatus(_ message: IPCMessage) -> Status {
 public struct IPCServerConnection: ~Copyable {
   public let channel: Handle
   let channelID: UInt64
+  /// Where its replies and events go while a dispatcher serves it, which
+  /// writes them all in one array; nil: straight to the channel.
+  var outbox: IPCOutbox? = nil
 
   public init(channel: consuming Handle) {
     channelID = IPC.channelID(channel)
@@ -181,18 +184,24 @@ public struct IPCServerConnection: ~Copyable {
       } catch .transport(.peerClosed) {
         return nil
       }
-      let header = try ipcWire(Never.self) { () throws(WireError) in try message.header() }
-      switch header.kind {
-      case .request:
-        return (header, message)
-      case .cancel:
-        // Requests are served one at a time, so a cancelled one has already
-        // been answered: nothing more is owed (docs/wire-format.md).
-        continue
-      default:
-        message.closeHandles()
-        throw .wire(.unexpectedMessage)
-      }
+      if let header = try request(in: message) { return (header, message) }
+    }
+  }
+
+  /// A message's header if it is a request; nil for a cancel. Requests are
+  /// served one at a time, so a cancelled one has already been answered:
+  /// nothing more is owed (docs/wire-format.md). Anything else breaks the
+  /// protocol.
+  public func request(in message: IPCMessage) throws(IPCError<Never>) -> MessageHeader? {
+    let header = try ipcWire(Never.self) { () throws(WireError) in try message.header() }
+    switch header.kind {
+    case .request:
+      return header
+    case .cancel:
+      return nil
+    default:
+      message.closeHandles()
+      throw .wire(.unexpectedMessage)
     }
   }
 
@@ -204,9 +213,14 @@ public struct IPCServerConnection: ~Copyable {
     }
   }
 
-  /// Sends a message: a reply or an event.
+  /// Sends a message: a reply or an event. Served by a dispatcher, it
+  /// goes in the dispatcher's next array write.
   public func send(_ message: IPCMessage) throws(IPCError<Never>) {
-    try IPC.send(message, on: channel, Never.self)
+    if let outbox {
+      outbox.append(message, to: channel.raw)
+    } else {
+      try IPC.send(message, on: channel, Never.self)
+    }
   }
 
   /// Answers a call with an error code.

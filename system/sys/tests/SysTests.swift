@@ -229,6 +229,45 @@ func positive(_ port: borrowing Handle, key: UInt64, persistent: Bool = false, e
   return c
 }
 
+/// channel_write and channel_read in arrays (D41): going on past an item
+/// that fails (its handles consumed), a message larger than the read slot,
+/// an empty channel, and more items than one call takes, in order.
+@Test func channelsReadAndWriteInArrays() throws {
+  let one = try Channel.create(), two = try Channel.create(), three = try Channel.create()
+  let counter = try Counter.create()
+  let lost = try counter.duplicate().release()
+  let big = [UInt8](repeating: 9, count: Channel.readSlot + 1000)
+  var out = [Channel.Outgoing(channel: one.a.raw, bytes: [1, 2, 3], handles: [try counter.duplicate().release()]),
+             Channel.Outgoing(channel: two.a.raw, bytes: big),
+             Channel.Outgoing(channel: 0x7FFF_FFF0, bytes: [4], handles: [lost])]
+  #expect(try Channel.write(&out) == 2)
+  #expect(out.map { $0.status } == [.ok, .ok, .badHandle])
+  #expect(statusOf { () throws(Status) in try Handle(raw: lost).info() } == .badHandle)
+
+  var reads = [Channel.Incoming(channel: one.b.raw), Channel.Incoming(channel: two.b.raw),
+               Channel.Incoming(channel: three.b.raw)]
+  #expect(try Channel.read(&reads) == 2)
+  #expect(reads[0].message?.bytes == [1, 2, 3] && reads[0].message?.handles.count == 1)
+  let moved = Handle(raw: reads[0].message!.handles[0])
+  #expect(try moved.info().koid == counter.info().koid)
+  #expect(reads[1].message?.bytes == big)
+  #expect(reads[2].status == .shouldWait && reads[2].message == nil)
+
+  let count = Int(CROI_CHANNEL_MAX_ITEMS) + 6
+  var many = (0..<count).map { Channel.Outgoing(channel: three.a.raw, bytes: [UInt8($0)]) }
+  #expect(try Channel.write(&many) == count)
+  var back = (0..<count).map { _ in Channel.Incoming(channel: three.b.raw) }
+  #expect(try Channel.read(&back) == count)
+  #expect(back.map { $0.message?.bytes ?? [] } == (0..<count).map { [UInt8($0)] })
+
+  let pair = try Channel.create()
+  let writer = pair.a, reader = pair.b
+  _ = consume writer
+  var closed = [Channel.Incoming(channel: reader.raw)]
+  _ = try Channel.read(&closed)
+  #expect(closed[0].status == .peerClosed)
+}
+
 @Test func bindOnceQueuesOnePacket() throws {
   let port = try Port.create()
   let c = try positive(port, key: 42)

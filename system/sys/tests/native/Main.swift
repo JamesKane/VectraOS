@@ -46,6 +46,7 @@ struct SysTest {
     do throws(Status) {
       try handles()
       try channels()
+      try channelArrays()
       try bindings()
       try waits()
       try mappings()
@@ -108,6 +109,54 @@ struct SysTest {
     try Thread.join(server)
     check(statusOf { () throws(Status) in try Channel.call(a, bytes: [0, 0, 0, 0], deadline: soon()) }
             == .peerClosed, "a call sees the peer gone")
+  }
+
+  /// channel_write and channel_read in arrays (D41): a message larger
+  /// than the read slot, a failed item that still consumes its handle, an
+  /// empty channel, and more items than one call takes, in order.
+  static func channelArrays() throws(Status) {
+    let one = try Channel.create(), two = try Channel.create(), three = try Channel.create()
+    let counter = try Counter.create()
+    let lost = try counter.duplicate().release()
+    let big = [UInt8](repeating: 9, count: Channel.readSlot + 1000)
+    var out = [Channel.Outgoing(channel: one.a.raw, bytes: [1, 2, 3], handles: [try counter.duplicate().release()]),
+               Channel.Outgoing(channel: two.a.raw, bytes: big),
+               Channel.Outgoing(channel: 0x7fff_fff0, bytes: [4], handles: [lost])]
+    check(try Channel.write(&out) == 2, "a write array: two of three")
+    check(out[0].status == .ok && out[1].status == .ok && out[2].status == .badHandle, "each item's status")
+    check(statusOf { () throws(Status) in try Handle(raw: lost).info() } == .badHandle,
+          "a failed item's handles are consumed")
+
+    var reads = [Channel.Incoming(channel: one.b.raw), Channel.Incoming(channel: two.b.raw),
+                 Channel.Incoming(channel: three.b.raw)]
+    check(try Channel.read(&reads) == 2, "a read array: two of three")
+    check(reads[0].message?.bytes == [1, 2, 3] && reads[0].message?.handles.count == 1, "a message and its handle")
+    if let h = reads[0].message?.handles.first {
+      let moved = Handle(raw: h)
+      check((try moved.info().koid) == (try counter.info().koid), "the handle is the same object")
+    }
+    check(reads[1].message?.bytes == big, "a message larger than the slot, read again")
+    check(reads[2].status == .shouldWait && reads[2].message == nil, "an empty channel's item")
+
+    // More than CROI_CHANNEL_MAX_ITEMS, all to one channel: in order.
+    let count = Int(CROI_CHANNEL_MAX_ITEMS) + 6
+    var many = (0..<count).map { Channel.Outgoing(channel: three.a.raw, bytes: [UInt8($0)]) }
+    check(try Channel.write(&many) == count, "a write array longer than one call")
+    var back = (0..<count).map { _ in Channel.Incoming(channel: three.b.raw) }
+    check(try Channel.read(&back) == count, "a read array longer than one call")
+    check(back.indices.allSatisfy { back[$0].message?.bytes == [UInt8($0)] }, "in order")
+    var drained = [Channel.Incoming(channel: three.b.raw)]
+    _ = try Channel.read(&drained)
+    check(drained[0].status == .shouldWait, "drained")
+
+    let pair = try Channel.create()
+    let writer = pair.a, reader = pair.b
+    _ = consume writer
+    var closed = [Channel.Incoming(channel: reader.raw)]
+    _ = try Channel.read(&closed)
+    check(closed[0].status == .peerClosed, "an empty channel whose peer is gone")
+    _ = consume one
+    _ = consume two
   }
 
   static func bindings() throws(Status) {

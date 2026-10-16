@@ -851,7 +851,10 @@ channel: its batch is the Node operations in its message (D18, V2).
 - **Callers:** syscall.h's `croi_channel_read` and `croi_channel_write`
   are the one-message forms; usertest.c, the C runtime's bootstrap read,
   m2 and userboot use them, and the suites `Sys.readChannel` and
-  `Sys.writeChannel`.
+  `Sys.writeChannel`. V2: Sys takes the arrays (`Channel.read(&items)`,
+  `Channel.write(&items)`, any count, CROI_CHANNEL_MAX_ITEMS to a call),
+  and the IPC dispatcher reads its ready channels and writes their
+  replies and events with them, a round at a time.
 - **Tests:** the channel suite's `batches`: three writes, the middle one
   to a channel whose peer is gone (two done, PEER_CLOSED, its handle
   consumed); three reads (one message, one too small with the size it

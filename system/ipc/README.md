@@ -24,6 +24,18 @@ public memberwise `init` (labels as the fields, in order). The test library's ou
 Calls go through `channel_call` and record FLOW records with croi's flow
 ids (category `ipc`).
 
+## The dispatcher
+
+`IPCDispatcher` serves many channels, and watches other objects, from one
+thread. Each is bound to its port once, PERSISTENT: a packet comes when a
+signal rises, so the dispatcher reads a channel until it would block,
+and a watch's handler clears what it was told of. A wakeup takes up to 64
+packets, then serves in rounds: one `channel_read` array for every ready
+channel, each server handling its message (generated `handle(_:)`), and one
+`channel_write` array for every reply and event they sent (the
+connection's outbox). `wake`, `unwatch` and `stop` are packets too, so
+servers are only touched on the dispatcher's thread.
+
 ## Tests
 
 `swift test` runs them hosted (`tests/wire`, `tests/macros`, `tests/idl`,

@@ -65,6 +65,12 @@ enum Kernel {
       throw (error as? HostKernel.ReadError)?.status ?? .invalidArgs
     }
   }
+  static func channelWrite(_ items: UnsafeMutableBufferPointer<ChannelWriteItem>) throws(Status) -> Int {
+    try unsafe k.channelWrite(items: items)
+  }
+  static func channelRead(_ items: UnsafeMutableBufferPointer<ChannelReadItem>) throws(Status) -> Int {
+    try unsafe k.channelRead(items: items)
+  }
   static func channelCall(_ h: UInt32, _ bytes: [UInt8], _ handles: [UInt32], _ deadline: Int64) throws(Status)
     -> Channel.Message
   {

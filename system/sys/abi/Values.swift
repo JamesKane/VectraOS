@@ -269,3 +269,9 @@ extension croi_bind_item_t {
 
 /// A counter_add item (counter.h's croi_counter_add_item_t).
 public typealias CounterAdd = croi_counter_add_item_t
+
+/// A channel_write item (ipc.h's croi_channel_write_item_t, D41).
+public typealias ChannelWriteItem = croi_channel_write_item_t
+
+/// A channel_read item (ipc.h's croi_channel_read_item_t, D41).
+public typealias ChannelReadItem = croi_channel_read_item_t

@@ -311,7 +311,7 @@ struct IPCTest {
     let counter = try Counter.create()
     let seen = Tally()
     let mine = Held(try counter.duplicate())
-    try d.watch(try counter.duplicate(), signals: Signals.positive) { (_: UInt32) -> Bool in
+    let watchID = try d.watch(try counter.duplicate(), signals: Signals.positive) { (_: UInt32) -> Bool in
       // Take what was added, so the counter is no longer positive.
       if let n = try? Counter.read(mine.handle), n > 0 {
         try? Counter.add(mine.handle, -n)
@@ -340,16 +340,50 @@ struct IPCTest {
       check(false, "dispatcher: a wake runs on the dispatcher's thread")
     }
 
-    // The watch is armed again after each packet.
+    // The binding is PERSISTENT: each rise is a packet, with no re-arming.
     try Counter.add(counter, 3)
     check(eventually { seen.value.load(ordering: .relaxed) == 3 }, "dispatcher: a watched counter")
     try Counter.add(counter, 4)
     check(eventually { seen.value.load(ordering: .relaxed) == 7 }, "dispatcher: watched again")
 
+    // Requests queued faster than they are served: one packet, coalesced,
+    // and the dispatcher reads until the channel would block.
+    var sent = true
+    for n in 1...40 as ClosedRange<UInt64> where (try? c.client.note(n, loud: false)) == nil { sent = false }
+    check(sent && (try? c.client.noted()) == 820, "dispatcher: forty one-way requests, drained")
+
+    // More servers than one wakeup takes packets for: a one-way request
+    // to each, as fast as they go, then a call to each.
+    var many: [UInt32] = []
+    for _ in 0..<(Int(CROI_CHANNEL_MAX_ITEMS) + 6) {
+      let ends = try Channel.create()
+      try d.add(TestIPC.EchoServer(channel: ends.b, impl: EchoImpl()))
+      many.append(ends.a.release())
+    }
+    for (i, raw) in many.enumerated() {
+      var client = TestIPC.EchoClient(channel: Handle(raw: raw))
+      try? client.note(UInt64(i), loud: true)
+      _ = client.takeConnection().takeChannel().release()
+    }
+    var replied = 0
+    for (i, raw) in many.enumerated() {
+      var client = TestIPC.EchoClient(channel: Handle(raw: raw))
+      if (try? client.noted()) == UInt64(2 * i) { replied += 1 }
+    }
+    check(replied == many.count, "dispatcher: seventy servers, each answers")
+    check(eventually { d.count == 4 }, "dispatcher: their servers go with their clients")
+
     // A client that goes takes its server with it; the others stay.
     _ = consume a
     check(eventually { d.count == 3 }, "dispatcher: a closed channel's server is dropped")
-    check((try? c.client.noted()) == 0, "dispatcher: the others still serve")
+    check((try? c.client.noted()) == 820, "dispatcher: the others still serve")
+
+    // An unwatched counter calls its handler no more.
+    d.unwatch(watchID)
+    check(eventually { d.count == 2 }, "dispatcher: unwatch drops the watch")
+    try Counter.add(counter, 5)
+    sleep(until: soon(20))
+    check(seen.value.load(ordering: .relaxed) == 7, "dispatcher: and its handler")
 
     d.stop()
     let joined = (try? Thread.join(thread)) != nil

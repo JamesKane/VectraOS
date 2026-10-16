@@ -709,6 +709,57 @@ public final class HostKernel: @unchecked Sendable {
     return needed
   }
 
+  /// channel_write's array (D41): one message to each item's channel,
+  /// going on past one that fails, each item's status written back; how
+  /// many succeeded. Every item's handles are consumed.
+  public func channelWrite(items: UnsafeMutableBufferPointer<croi_channel_write_item_t>) throws(Status) -> Int {
+    guard items.count > 0, items.count <= Int(CROI_CHANNEL_MAX_ITEMS) else { throw .invalidArgs }
+    var done = 0
+    for i in items.indices {
+      let item = items[i]
+      let bytes = item.num_bytes == 0 ? [] : Array(UnsafeRawBufferPointer(
+        start: UnsafeRawPointer(bitPattern: UInt(item.bytes)), count: Int(item.num_bytes)))
+      let handles = item.num_handles == 0 ? [] : Array(UnsafeBufferPointer(
+        start: UnsafePointer<UInt32>(bitPattern: UInt(item.handles)), count: Int(item.num_handles)))
+      do throws(Status) {
+        try channelWrite(item.channel, bytes: bytes, handles: handles)
+        items[i].status = 0
+        done += 1
+      } catch {
+        items[i].status = error.rawValue
+      }
+    }
+    return done
+  }
+
+  /// channel_read's array (D41): one message from each item's channel into
+  /// its buffers, going on past one that fails (`shouldWait`, or
+  /// `bufferTooSmall` with the sizes it needs), each item's status and
+  /// sizes written back; how many succeeded.
+  public func channelRead(items: UnsafeMutableBufferPointer<croi_channel_read_item_t>) throws(Status) -> Int {
+    guard items.count > 0, items.count <= Int(CROI_CHANNEL_MAX_ITEMS) else { throw .invalidArgs }
+    var done = 0
+    for i in items.indices {
+      let item = items[i]
+      let bytes = UnsafeMutableRawBufferPointer(
+        start: UnsafeMutableRawPointer(bitPattern: UInt(item.bytes)), count: Int(item.num_bytes))
+      let handles = UnsafeMutableBufferPointer(
+        start: UnsafeMutablePointer<UInt32>(bitPattern: UInt(item.handles)), count: Int(item.num_handles))
+      do throws(ReadError) {
+        let got = try channelRead(item.channel, bytes: bytes, handles: handles)
+        items[i].actual_bytes = UInt32(got.byteCount)
+        items[i].actual_handles = UInt32(got.handleCount)
+        items[i].status = 0
+        done += 1
+      } catch {
+        items[i].actual_bytes = UInt32(error.needed.byteCount)
+        items[i].actual_handles = UInt32(error.needed.handleCount)
+        items[i].status = error.status.rawValue
+      }
+    }
+    return done
+  }
+
   /// A message read whole: its bytes, and its handles now the caller's.
   public struct Message: Sendable {
     public var bytes: [UInt8]

@@ -39,6 +39,167 @@ public enum Channel {
     try Kernel.channelRead(channel.raw)
   }
 
+  /// An item's buffer address: `offset` bytes into `base`, or 0 for an
+  /// empty buffer (whose base may be nil).
+  static func itemAddress(_ base: UnsafeRawPointer?, _ offset: Int) -> UInt64 {
+    guard let base = unsafe base else { return 0 }
+    return unsafe UInt64(UInt(bitPattern: base + offset))
+  }
+
+  /// A message for `write(_:)`'s array, and how its write went.
+  public struct Outgoing: Sendable {
+    public var channel: UInt32
+    public var bytes: [UInt8]
+    public var handles: [UInt32]
+    /// After the write: `.ok`, or why this one failed.
+    public var status: Status = .ok
+
+    public init(channel: UInt32, bytes: [UInt8], handles: [UInt32] = []) {
+      self.channel = channel
+      self.bytes = bytes
+      self.handles = handles
+    }
+  }
+
+  /// channel_write's array (D41): one message to each item's channel,
+  /// CROI_CHANNEL_MAX_ITEMS to a call, going on past one that fails; each
+  /// item's status set, and how many succeeded. A server replies to every
+  /// request it read at once. Every item's handles are consumed, as
+  /// `write`'s are, even when the call throws.
+  @discardableResult
+  public static func write(_ items: inout [Outgoing]) throws(Status) -> Int {
+    var done = 0
+    var start = 0
+    while start < items.count {
+      let end = Swift.min(start + Int(CROI_CHANNEL_MAX_ITEMS), items.count)
+      do throws(Status) {
+        done += try writeChunk(&items, start..<end)
+      } catch {
+        // Nothing of this chunk or the rest was taken: close their handles.
+        for i in start..<items.count { for h in items[i].handles { Sys.close(raw: h) } }
+        throw error
+      }
+      start = end
+    }
+    return done
+  }
+
+  /// One channel_write: the chunk's messages copied into one buffer each
+  /// for bytes and handles, which the items point into for the call.
+  static func writeChunk(_ items: inout [Outgoing], _ chunk: Range<Int>) throws(Status) -> Int {
+    var bytes: [UInt8] = []
+    var handles: [UInt32] = []
+    for i in chunk {
+      bytes.append(contentsOf: items[i].bytes)
+      handles.append(contentsOf: items[i].handles)
+    }
+    var raw = [ChannelWriteItem](repeating: ChannelWriteItem(), count: chunk.count)
+    let r = unsafe bytes.withUnsafeBytes { b in
+      unsafe handles.withUnsafeBufferPointer { h in
+        var byteOffset = 0, handleOffset = 0
+        for (k, i) in chunk.enumerated() {
+          let n = items[i].bytes.count, m = items[i].handles.count
+          raw[k] = unsafe ChannelWriteItem(
+            channel: items[i].channel, options: 0, bytes: itemAddress(b.baseAddress, byteOffset),
+            handles: itemAddress(h.baseAddress, handleOffset * 4), num_bytes: UInt32(n),
+            num_handles: UInt32(m), status: 0, reserved: 0)
+          byteOffset += n
+          handleOffset += m
+        }
+        return unsafe raw.withUnsafeMutableBufferPointer { rb in
+          unsafe Result(catching: { () throws(Status) -> Int in try unsafe Kernel.channelWrite(rb) })
+        }
+      }
+    }
+    let done = try r.get()
+    for (k, i) in chunk.enumerated() { items[i].status = Status(result: Int64(raw[k].status)) }
+    return done
+  }
+
+  /// A read for `read(_:)`'s array: the channel, then its message or why
+  /// there was none (`shouldWait`: nothing queued; `peerClosed`: nothing
+  /// queued and the other end gone).
+  public struct Incoming: Sendable {
+    public var channel: UInt32
+    public var message: Message?
+    public var status: Status = .ok
+
+    public init(channel: UInt32) { self.channel = channel }
+  }
+
+  /// How many bytes `read(_:)` gives each item at first: a message that
+  /// doesn't fit is read again, at its size, in a second call.
+  public static var readSlot: Int { 1024 }
+
+  /// channel_read's array (D41): the next message from each item's
+  /// channel, CROI_CHANNEL_MAX_ITEMS to a call, going on past one that has
+  /// none; each item's message or status set, and how many were read. A
+  /// server reads every channel its port reported at once. Messages
+  /// larger than `readSlot` take a second call, which reads only those.
+  @discardableResult
+  public static func read(_ items: inout [Incoming]) throws(Status) -> Int {
+    var done = 0
+    var start = 0
+    while start < items.count {
+      let end = Swift.min(start + Int(CROI_CHANNEL_MAX_ITEMS), items.count)
+      var pending = Array(start..<end)
+      var room = [(bytes: Int, handles: Int)](repeating: (readSlot, maxHandles), count: pending.count)
+      while !pending.isEmpty {
+        let (read, short) = try readOnce(&items, pending, room)
+        done += read
+        pending = short.map { $0.index }
+        room = short.map { $0.room }
+      }
+      start = end
+    }
+    return done
+  }
+
+  /// One channel_read for `indices`, each with `room`: how many were read,
+  /// and the items whose message needs more room (it stays queued).
+  static func readOnce(_ items: inout [Incoming], _ indices: [Int], _ room: [(bytes: Int, handles: Int)])
+    throws(Status) -> (Int, [(index: Int, room: (bytes: Int, handles: Int))])
+  {
+    let byteTotal = room.reduce(0) { $0 + $1.bytes }, handleTotal = room.reduce(0) { $0 + $1.handles }
+    // Trivial values: uninitialized until the read fills them.
+    var bytes = unsafe [UInt8](unsafeUninitializedCapacity: byteTotal) { _, k in k = byteTotal }
+    var handles = unsafe [UInt32](unsafeUninitializedCapacity: handleTotal) { _, k in k = handleTotal }
+    var raw = [ChannelReadItem](repeating: ChannelReadItem(), count: indices.count)
+    let r = unsafe bytes.withUnsafeMutableBytes { b in
+      unsafe handles.withUnsafeMutableBufferPointer { h in
+        var byteOffset = 0, handleOffset = 0
+        for (k, i) in indices.enumerated() {
+          raw[k] = unsafe ChannelReadItem(
+            channel: items[i].channel, options: 0, bytes: itemAddress(b.baseAddress, byteOffset),
+            handles: itemAddress(h.baseAddress, handleOffset * 4), num_bytes: UInt32(room[k].bytes),
+            num_handles: UInt32(room[k].handles), actual_bytes: 0, actual_handles: 0, status: 0, reserved: 0)
+          byteOffset += room[k].bytes
+          handleOffset += room[k].handles
+        }
+        return unsafe raw.withUnsafeMutableBufferPointer { rb in
+          unsafe Result(catching: { () throws(Status) -> Int in try unsafe Kernel.channelRead(rb) })
+        }
+      }
+    }
+    let done = try r.get()
+    var short: [(index: Int, room: (bytes: Int, handles: Int))] = []
+    var byteOffset = 0, handleOffset = 0
+    for (k, i) in indices.enumerated() {
+      let status = Status(result: Int64(raw[k].status))
+      items[i].status = status
+      if status == .ok {
+        let n = Int(raw[k].actual_bytes), m = Int(raw[k].actual_handles)
+        items[i].message = Message(bytes: Array(bytes[byteOffset..<byteOffset + n]),
+                                   handles: Array(handles[handleOffset..<handleOffset + m]))
+      } else if status == .bufferTooSmall {
+        short.append((i, (Int(raw[k].actual_bytes), Int(raw[k].actual_handles))))
+      }
+      byteOffset += room[k].bytes
+      handleOffset += room[k].handles
+    }
+    return (done, short)
+  }
+
   /// channel_call: writes the message (its first four bytes become the
   /// kernel's txid) and waits until `deadline` for the reply that echoes
   /// it, which comes to this caller alone.

@@ -152,15 +152,21 @@ work, in order:
    `read`/`write` opens a ring. Userboot starts the launcher, which builds
    each process's `/svc`. **Begun:** IPC is lifted (`system/ipc`,
    `docs/wire-format.md`, idlc) and passes hosted on V1's Sys: the
-   dispatcher binds ONCE (for now), the tests pass counters where they
-   passed events, and the C side (`td_wire.h`, idlc's headers) is on V1's
-   calls, a call being one `channel_call` as in Swift. IPC runs natively
+   tests pass counters where they passed events, and the C side
+   (`td_wire.h`, idlc's headers) is on V1's calls, a call being one
+   `channel_call` as in Swift. IPC runs natively
    on each arch: IPCWire and IPC are built into Sys (the macro's plugin
    from SwiftPM), and `bin/ipc-test` (boot-ipc) checks Echo's Swift and C
    clients against Swift servers on threads, Loud's composition, and the
    dispatcher serving three channels and a watched counter from one
-   thread. Next: the dispatcher binding each channel once, PERSISTENT,
-   reading and replying in arrays.
+   thread. The dispatcher binds each channel once, PERSISTENT, and drains
+   it: a wakeup takes up to 64 packets, reads every ready channel in one
+   `channel_read` array, and writes every reply and event in one
+   `channel_write` array, round after round until each would block
+   (Sys's `Channel.read` and `Channel.write` take the arrays, D41).
+   Watches are PERSISTENT too, and `unwatch` runs on the dispatcher's
+   thread, as `wake` does.
+   Next: Node's batches (D18) and the launcher.
 5. **Time (D48).** Clock objects are cut: the time service publishes UTC
    in a read-only seqlock page that the launcher hands every process at
    start.

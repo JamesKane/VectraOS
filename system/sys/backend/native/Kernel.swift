@@ -171,6 +171,20 @@ enum Kernel {
     }
   }
 
+  /// channel_write's array (D41): how many items succeeded.
+  static func channelWrite(_ items: UnsafeMutableBufferPointer<ChannelWriteItem>) throws(Status) -> Int {
+    let r = unsafe croi_syscall(CROI_SYS_CHANNEL_WRITE, address(items.baseAddress), UInt64(items.count), 0, 0, 0)
+    try check(r)
+    return Int(r)
+  }
+
+  /// channel_read's array (D41): how many items succeeded.
+  static func channelRead(_ items: UnsafeMutableBufferPointer<ChannelReadItem>) throws(Status) -> Int {
+    let r = unsafe croi_syscall(CROI_SYS_CHANNEL_READ, address(items.baseAddress), UInt64(items.count), 0, 0, 0)
+    try check(r)
+    return Int(r)
+  }
+
   /// channel_call with croi_channel_call_args_t.
   static func channelCall(_ h: UInt32, _ bytes: [UInt8], _ handles: [UInt32], _ deadline: Int64) throws(Status)
     -> Channel.Message
