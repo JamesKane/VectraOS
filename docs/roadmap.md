@@ -168,7 +168,8 @@ work, in order:
    `remove` and `rename` were), so Foundation links without files.
    Left: rv64, whose LLVM has none of Swift's calling conventions (clang
    rejects `swiftcall`, which the runtime's C++ uses, and the backend has
-   no guaranteed tail calls for `swifttailcc` nor Swift's registers): a
+   no guaranteed tail calls for `swifttailcc` nor Swift's registers;
+   `tools/toolchain/riscv64.md` has upstream's state and the cost): a
    patch series and a Swift ABI for riscv64, then a rebuild, to decide
    (deferred, 2026-10-16: rv64 stays tier 0 until rc or FDIO needs it
    there); and FoundationEssentials' FileManager checks, which come back

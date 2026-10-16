@@ -39,7 +39,7 @@ compiler-rt's builtins for the three triples come next
 (`build_builtins.sh`, a minute: freestanding, into the toolchain's
 resource directory). Then the arch's tree (`vx build amd64`;
 `cmake/Tier1.cmake`, amd64 and arm64 so far: riscv64's LLVM has no
-Swift calling conventions yet) builds tier 1's sysroot
+Swift calling conventions yet, `riscv64.md`) builds tier 1's sysroot
 (`build/<arch>/sysroot`) and runtime
 libraries with this toolchain: libc++,
 libc++abi and libunwind (`cmake/cxx.cmake`, M6d), and the Swift runtime
