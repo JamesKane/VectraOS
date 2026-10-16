@@ -29,7 +29,7 @@ public protocol RcJob: AnyObject {
 }
 
 public enum RcOpen: Sendable {
-  case read, write, append
+  case read, write, append, readWrite
 }
 
 /// What rc needs of the machine.
@@ -46,6 +46,9 @@ public protocol RcSystem: AnyObject {
   /// Whether `path` names a program the system can start (9front's
   /// Executable).
   func executable(_ path: String) -> Bool
+  /// The number and path of a pipe's end `s`, for <{} and >{} (Linux's
+  /// /dev/fd/N); nil if the system has no such paths.
+  func descriptor(_ s: RcStream) -> (fd: Int32, path: String)?
   func changeDirectory(_ path: String) -> Bool
   var directory: String { get }
   /// The names in `directory` (for globbing).
@@ -67,6 +70,7 @@ public protocol RcSystem: AnyObject {
 extension RcSystem {
   public var processID: UInt64 { 1 }
   public func spawn(_ body: @escaping @Sendable () -> Void) -> RcJob? { nil }
+  public func descriptor(_ s: RcStream) -> (fd: Int32, path: String)? { nil }
 
   /// Whether `path` names something: its directory's listing holds its
   /// last name (globbing keeps a path ending in literal names only so).
@@ -147,6 +151,9 @@ public final class Rc {
   /// && or ||, a backquote, a pipeline's earlier stages): -e stops rc
   /// only outside them.
   var inCondition = 0
+  /// The pipes <{} and >{} words just made: rc's end, at its own number,
+  /// and its command's job. The command they're words of takes them.
+  var pendingPipes: [(fd: Int32, stream: RcStream, job: RcJob)] = []
 
   /// `name` is $0: the script's path, or rc for a line given (9front's
   /// execcmds sets it to its argv[0]).
@@ -269,14 +276,14 @@ public final class Rc {
         return found.isEmpty ? [s] : found
       }
       return [s]
-    case .variable(let name, let index):
-      let all = lookup(name)
+    case .variable(let nameWord, let index):
+      let all = lookup(try name(nameWord, fds))
       guard let index else { return all }
       var out: [String] = []
       for s in try index.flatMap({ try value($0, fds) }) { out += Self.subscripted(all, s) }
       return out
-    case .count(let name): return [String(lookup(name).count)]
-    case .joined(let name): return [lookup(name).joined(separator: " ")]
+    case .count(let nameWord): return [String(lookup(try name(nameWord, fds)).count)]
+    case .joined(let nameWord): return [lookup(try name(nameWord, fds)).joined(separator: " ")]
     case .list(let items): return try items.flatMap { try value($0, fds) }
     case .concat(let pieces):
       var acc: [String]? = nil
@@ -304,12 +311,14 @@ public final class Rc {
         return out.flatMap { let f = expand($0); return f.isEmpty ? [$0] : f }
       }
       return out
-    case .backquote(let c):
+    case .backquote(let c, let split):
+      // Split at any character of split's strings, or of $ifs.
+      let separators = try split.map { try value($0, fds, glob: false) } ?? (variables["ifs"] ?? [" \t\n"])
       let captured = MemoryStream()
       var inner = fds
       inner[1] = captured
       try conditionally { try contained(c, inner) }
-      let ifs = Set((variables["ifs"] ?? [" \t\n"]).joined().unicodeScalars)
+      let ifs = Set(separators.joined().unicodeScalars)
       var out: [String] = [], current = ""
       for u in captured.text.unicodeScalars {
         if ifs.contains(u) {
@@ -321,7 +330,43 @@ public final class Rc {
       }
       if !current.isEmpty { out.append(current) }
       return out
+    case .pipe(let c, let output):
+      // 9front's Xpipefd: c runs alongside, in a copy of rc's state, its
+      // stdout (<{}) or stdin (>{}) the pipe; the word is the path of
+      // rc's end, which the command this word is in gets at that number.
+      let (reader, writer) = system.pipe()
+      let (mine, theirs) = output ? (writer, reader) : (reader, writer)
+      guard let d = system.descriptor(mine) else {
+        reader.close()
+        writer.close()
+        throw RcError(message: (output ? ">" : "<") + "{} needs paths for pipes, which this system hasn't")
+      }
+      let child = Rc(system: system)
+      (child.variables, child.functions, child.flags) = (variables, functions, flags)
+      var side = fds
+      side[output ? 0 : 1] = theirs
+      let work = Unchecked((child, c, side, theirs))
+      guard let job = system.spawn({
+        let (child, c, side, theirs) = work.value
+        do { try child.contained(c, side) } catch {}
+        theirs.close()
+      }) else {
+        reader.close()
+        writer.close()
+        throw RcError(message: "can't run " + (output ? ">" : "<") + "{}")
+      }
+      pendingPipes.append((d.fd, mine, job))
+      return [d.path]
     }
+  }
+
+  /// A variable's name: a literal as it is, any other word its one
+  /// string ($$x).
+  func name(_ w: Word, _ fds: [Int32: RcStream]) throws -> String {
+    if case .literal(let s, _) = w { return s }
+    let v = try value(w, fds, glob: false)
+    guard v.count == 1 else { throw RcError(message: "variable name not singleton!") }
+    return v[0]
   }
 
   func lookup(_ name: String) -> [String] {
@@ -519,11 +564,12 @@ public final class Rc {
     defer { opened += mine }
     for r in redirs {
       switch r.kind {
-      case .read(let fd), .write(let fd), .append(let fd):
+      case .read(let fd), .write(let fd), .append(let fd), .readWrite(let fd):
         let names = try value(r.target!, fds)
         guard names.count == 1 else { throw RcError(message: "redirection needs one file") }
         let mode: RcOpen
-        if case .read = r.kind { mode = .read } else if case .append = r.kind { mode = .append } else { mode = .write }
+        if case .read = r.kind { mode = .read } else if case .append = r.kind { mode = .append }
+        else if case .readWrite = r.kind { mode = .readWrite } else { mode = .write }
         guard let s = system.open(names[0], mode) else {
           for s in mine { s.close() }
           mine = []
@@ -544,7 +590,46 @@ public final class Rc {
   /// Runs `c`. A runtime error (a bad concatenation, a file that won't
   /// open) unwinds to `run`, as 9front's Xerror does to its input loop:
   /// a script stops; a line typed is abandoned.
-  func execute(_ c: Command, _ fds: [Int32: RcStream]) throws { try executeChecked(c, fds) }
+  func execute(_ c: Command, _ fds: [Int32: RcStream]) throws {
+    defer {
+      // Pipes made by words no command took (an assignment's, a for
+      // list's): done with.
+      if !pendingPipes.isEmpty { finish(pendingPipes.map { $0.stream }, pendingPipes.map { $0.job }) }
+      pendingPipes = []
+    }
+    try executeChecked(c, fds)
+  }
+
+  /// The pipes words just made, for a command: their ends put in `io` at
+  /// their own numbers and added to `opened`, their commands' jobs
+  /// returned, to wait for once those ends are closed.
+  func takePipes(_ io: inout [Int32: RcStream], _ opened: inout [RcStream]) -> [RcJob] {
+    defer { pendingPipes = [] }
+    for p in pendingPipes {
+      io[p.fd] = p.stream
+      opened.append(p.stream)
+    }
+    return pendingPipes.map { $0.job }
+  }
+
+  /// A simple command whose words are evaluated already, run as contained
+  /// runs one (a pipeline's builtin or function stage).
+  func containedCall(_ argv: [String], _ io: [Int32: RcStream], _ opened: [RcStream], _ sides: [RcJob]) throws {
+    defer { finish(opened, sides) }
+    do {
+      trace(argv, io)
+      if let job = try call(argv, io) { setStatus(job.wait()) }
+      try exitIfFailed()
+    } catch let e as RcError {
+      report(e, io)
+    }
+  }
+
+  /// A command's streams closed, then its pipes' commands waited for.
+  func finish(_ streams: [RcStream], _ jobs: [RcJob]) {
+    for s in streams { s.close() }
+    for j in jobs { _ = j.wait() }
+  }
 
   /// Runs `c` where 9front would fork it (a backquote, a builtin's or
   /// function's pipeline stage, a background job): an error ends it
@@ -567,10 +652,13 @@ public final class Rc {
     case .empty: break
     case .sequence(let cs, _): for c in cs { try execute(c, fds) }
     case .simple(let words, let redirs):
-      var opened: [RcStream] = []
-      defer { for s in opened { s.close() } }
-      let io = try redirect(redirs, fds, opened: &opened)
-      let argv = try words.flatMap { try value($0, fds) }
+      var opened: [RcStream] = [], sides: [RcJob] = []
+      defer { finish(opened, sides) }
+      var io = try redirect(redirs, fds, opened: &opened)
+      // Its words with its redirections in place, as 9front orders them: a
+      // backquote reads the redirected stdin, a <{} gets them too.
+      let argv = try words.flatMap { try value($0, io) }
+      sides = takePipes(&io, &opened)
       guard !argv.isEmpty else {
         setStatus("")
         return
@@ -619,13 +707,14 @@ public final class Rc {
         let path = resolve(first)
       {
         var opened: [RcStream] = []
-        let io = try redirect(redirs, fds, opened: &opened)
+        var io = try redirect(redirs, fds, opened: &opened)
+        let sides = takePipes(&io, &opened)
         trace(argv, io)
         if let job = system.start(path, argv, fds: io, environment: environmentStrings) {
-          background.append(Closing(job, opened))
+          background.append(Closing(job, opened, then: sides))
           variables["apid"] = [String(background.count)]
         } else {
-          for s in opened { s.close() }
+          finish(opened, sides)
         }
         setStatus("")
       } else {
@@ -769,19 +858,32 @@ public final class Rc {
     }
     // Programs first; then the rest in order, each one's write end closed
     // once it's done (its reader's end of input).
+    // A simple stage's words are evaluated once, with its redirections in
+    // place (as .simple does): a program starts now, a builtin or function
+    // runs below with those words. One whose files or words fail runs
+    // below as it is, to say so.
     var jobs: [RcJob?] = Array(repeating: nil, count: stages.count)
     var started = Array(repeating: false, count: stages.count)
+    var prepared: [(argv: [String], io: [Int32: RcStream], opened: [RcStream], sides: [RcJob])?] =
+      Array(repeating: nil, count: stages.count)
     for (k, stage) in stages.enumerated() {
-      if case .simple(let words, let redirs) = stage, let argv = try? words.flatMap({ try value($0, ios[k]) }),
-        let first = argv.first, functions[first] == nil, Rc.builtins[first] == nil, let path = resolve(first)
-      {
-        var opened: [RcStream] = []
-        let io = try redirect(redirs, ios[k], opened: &opened)
+      guard case .simple(let words, let redirs) = stage else { continue }
+      var opened: [RcStream] = []
+      guard var io = try? redirect(redirs, ios[k], opened: &opened) else { continue }
+      guard let argv = try? words.flatMap({ try value($0, io) }), let first = argv.first else {
+        finish(opened + pendingPipes.map { $0.stream }, pendingPipes.map { $0.job })
+        pendingPipes = []
+        continue
+      }
+      let sides = takePipes(&io, &opened)
+      if functions[first] == nil, Rc.builtins[first] == nil, first != "builtin", let path = resolve(first) {
         trace(argv, io)
-        jobs[k] = system.start(path, argv, fds: io, environment: environmentStrings).map { Closing($0, opened) }
-        if jobs[k] == nil { for s in opened { s.close() } }
+        jobs[k] = system.start(path, argv, fds: io, environment: environmentStrings).map { Closing($0, opened, then: sides) }
+        if jobs[k] == nil { finish(opened, sides) }
         started[k] = true
         if k < pipes.count { pipes[k].1.close() }
+      } else {
+        prepared[k] = (argv, io, opened, sides)
       }
     }
     var statuses: [String] = Array(repeating: "", count: stages.count)
@@ -789,7 +891,10 @@ public final class Rc {
     // forked).
     let last = stages.count - 1
     for (k, stage) in stages.enumerated() where !started[k] {
-      if k == last { try contained(stage, ios[k]) } else { try conditionally { try contained(stage, ios[k]) } }
+      let run = { () throws -> Void in
+        if let p = prepared[k] { try self.containedCall(p.argv, p.io, p.opened, p.sides) } else { try self.contained(stage, ios[k]) }
+      }
+      if k == last { try run() } else { try conditionally(run) }
       statuses[k] = status
       if k < pipes.count { pipes[k].1.close() }
     }
@@ -988,16 +1093,20 @@ struct Unchecked<T>: @unchecked Sendable {
 }
 
 /// A job that closes the streams its redirections opened once it ends.
+/// (And then waits for its <{} and >{} commands.)
 final class Closing: RcJob {
   let job: RcJob
   let streams: [RcStream]
-  init(_ job: RcJob, _ streams: [RcStream]) {
+  let then: [RcJob]
+  init(_ job: RcJob, _ streams: [RcStream], then: [RcJob] = []) {
     self.job = job
     self.streams = streams
+    self.then = then
   }
   func wait() -> String {
     let status = job.wait()
     for s in streams { s.close() }
+    for j in then { _ = j.wait() }
     return status
   }
 }

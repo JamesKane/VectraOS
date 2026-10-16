@@ -1,0 +1,8 @@
+x=`:{echo -n a:b::c}
+echo $#x $x
+y=`''{echo a b}
+echo $#y
+ifs=(:) z=`{echo -n p:q}
+echo $#z
+w=`{echo '  spaced   out  '}
+echo $#w $w

@@ -103,10 +103,18 @@ final class LinuxSystem: RcSystem {
     switch mode {
     case .read: flags = O_RDONLY
     case .write: flags = O_WRONLY | O_CREAT | O_TRUNC
+    case .readWrite: flags = O_RDWR  // 9front unix.c's Open: no create
     case .append: flags = O_WRONLY | O_CREAT | O_APPEND
     }
     let fd = Glibc.open(path, flags | O_CLOEXEC, 0o666)
     return fd < 0 ? nil : FdStream(fd)
+  }
+
+  /// A pipe's end as /dev/fd/N, N its own number (rc gives it to the
+  /// command at that number).
+  func descriptor(_ s: RcStream) -> (fd: Int32, path: String)? {
+    guard let f = s as? FdStream, f.fd >= 0 else { return nil }
+    return (f.fd, "/dev/fd/\(f.fd)")
   }
 
   func pipe() -> (RcStream, RcStream) {

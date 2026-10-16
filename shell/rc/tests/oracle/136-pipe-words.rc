@@ -1,0 +1,12 @@
+cat <{echo one} <{echo two}
+cmp <{echo a} <{echo a} && echo same
+cmp -s <{echo a} <{echo b} || echo differ
+. <{echo echo sourced}
+x=<{echo assigned}
+echo hi | tee >{cat} >/dev/null
+wait
+fn f { cat $1 }
+f <{echo through a function}
+echo <{true} | sed 's/[0-9][0-9]*/N/'
+echo from-file > g
+echo `{cat} <g

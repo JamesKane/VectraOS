@@ -21,13 +21,16 @@ extension Rc {
   static func text(_ w: Word, _ depth: Int = 0) -> String {
     switch w {
     case .literal(let s, let isQuoted): return isQuoted ? quoted(s) : s
-    case .variable(let name, nil): return "$" + name
-    case .variable(let name, let index?): return "$" + name + "(" + index.map { text($0, depth) }.joined(separator: " ") + ")"
-    case .count(let name): return "$#" + name
-    case .joined(let name): return "$\"" + name
+    case .variable(let name, nil): return "$" + text(name, depth)
+    case .variable(let name, let index?):
+      return "$" + text(name, depth) + "(" + index.map { text($0, depth) }.joined(separator: " ") + ")"
+    case .count(let name): return "$#" + text(name, depth)
+    case .joined(let name): return "$\"" + text(name, depth)
     case .concat(let pieces): return pieces.map { text($0, depth) }.joined(separator: "^")
     case .list(let items): return "(" + items.map { text($0, depth) }.joined(separator: " ") + ")"
-    case .backquote(let c): return "`" + brace(c, depth)
+    case .backquote(let c, let split): return "`" + (split.map { text($0, depth) } ?? "") + brace(c, depth)
+    // pcmd's PIPEFD, as a redirection: a space before it.
+    case .pipe(let c, let output): return (output ? " >" : " <") + brace(c, depth)
     }
   }
 
@@ -43,6 +46,7 @@ extension Rc {
     case .read(let fd): return " <" + (fd != 0 ? "[\(fd)]" : "") + target
     case .write(let fd): return " >" + (fd != 1 ? "[\(fd)]" : "") + target
     case .append(let fd): return " >>" + (fd != 1 ? "[\(fd)]" : "") + target
+    case .readWrite(let fd): return " <>" + (fd != 0 ? "[\(fd)]" : "") + target
     case .duplicate(let fd, let to): return ">[\(fd)=\(to)]"
     case .close(let fd): return ">[\(fd)=]"
     case .here(let fd, _):

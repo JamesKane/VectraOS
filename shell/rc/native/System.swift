@@ -153,6 +153,7 @@ final class CroiSystem: RcSystem {
     let flags: Int32
     switch mode {
     case .read: flags = OpenFlags.readOnly
+    case .readWrite: flags = OpenFlags.readWrite
     case .write: flags = OpenFlags.writeOnly | OpenFlags.create | OpenFlags.truncate
     case .append: flags = OpenFlags.writeOnly | OpenFlags.create | OpenFlags.append
     }

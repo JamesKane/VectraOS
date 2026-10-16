@@ -59,7 +59,7 @@ final class Machine: RcSystem {
   func open(_ path: String, _ mode: RcOpen) -> RcStream? {
     let p = absolute(path)
     switch mode {
-    case .read: return files[p].map { File(self, p, $0) }
+    case .read, .readWrite: return files[p].map { File(self, p, $0) }
     case .write:
       files[p] = []
       return File(self, p, [])

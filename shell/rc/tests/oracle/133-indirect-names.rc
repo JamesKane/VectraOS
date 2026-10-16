@@ -1,0 +1,13 @@
+a=(one two three)
+n=a
+echo $$n
+echo $#$n
+echo $"$n
+'odd name'=quoted
+echo $'odd name'
+m=n
+echo $$$m
+l=(a n)
+echo $$l
+echo $$n(2)
+echo never

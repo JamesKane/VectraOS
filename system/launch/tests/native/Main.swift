@@ -125,6 +125,9 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
          bootfs: bootfs, "rc -e stops at a command that fails")
   rcRuns(rc, "x=(a 'b c'); fn f { echo f $* }; rc -c 'echo $#x; f z'", Array("2\nf z\n".utf8), ns, job: job,
          bootfs: bootfs, "rc passes rc its lists and functions")
+  // Split at : alone, the status keeps its newline.
+  rcRuns(rc, "x=(a b); n=x; echo $$n; echo `:{cat /svc/a/status}", Array("a b\na first\n\n".utf8), ns, job: job,
+         bootfs: bootfs, "rc takes $$x and `split{}")
   _ = consume bootfs
 }
 

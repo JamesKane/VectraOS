@@ -1,0 +1,7 @@
+echo hello > f
+cat <>f
+cat <>[0]f
+echo more <>[1]f
+cat f
+cat <>nonexistent
+echo never

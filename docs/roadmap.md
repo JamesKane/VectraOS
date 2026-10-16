@@ -301,10 +301,12 @@ work, in order:
      and `$rcname`, and the prompt only when interactive; the environment
      as 9front's unix rc keeps it (lists joined by ^A, functions as
      `#()fn name {...}`; taken at start, functions not with `-p`), one
-     encoding for every system.
+     encoding for every system; `$$x` (a variable's name a word), `<>`,
+     `<{}` and `>{}` (paths /dev/fd/N where a system has them: not the
+     device yet), `` `split{} ``, and a command's words evaluated with its
+     redirections in place.
    - **Redirections:** a program's fd 2 is its stdout and fds over 2
      are dropped (the device).
-   - **Missing syntax:** `<>`, `<{}`, `>{}`, `$$x`, `` `split{} ``.
    - **Wrong semantics:** a compound command run with `&` shares rc's
      directory (one per process), so a `cd` in it moves rc too.
    - **Missing pieces:** `rfork`; notes (`sigint`, `sigexit`); a real

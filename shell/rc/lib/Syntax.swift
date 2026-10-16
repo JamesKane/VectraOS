@@ -15,18 +15,24 @@
 public indirect enum Word: Equatable, Sendable {
   /// A string; `quoted` ones aren't globbed.
   case literal(String, quoted: Bool)
-  /// $name, or $name(subscripts).
-  case variable(String, index: [Word]?)
+  /// $name, or $name(subscripts). The name is a word (9front's `'$'
+  /// word`): a literal, or $x for the variable $x names, or a quoted one;
+  /// one string when it's evaluated.
+  case variable(Word, index: [Word]?)
   /// $#name: how many strings it holds.
-  case count(String)
+  case count(Word)
   /// $"name: its strings joined by spaces, one string.
-  case joined(String)
+  case joined(Word)
   /// Pieces joined by ^.
   case concat([Word])
   /// (a b c): the strings of each.
   case list([Word])
-  /// `{command}: its output, split at spaces, tabs and newlines.
-  case backquote(Command)
+  /// `{command}, or `split{command}: its output, split at any character
+  /// of $ifs (or of split's strings).
+  case backquote(Command, split: Word?)
+  /// <{command} or >{command}: a path naming a pipe to or from it, run
+  /// alongside (`output`: the command reads what's written there).
+  case pipe(Command, output: Bool)
 }
 
 public struct Redirection: Equatable, Sendable {
@@ -34,6 +40,7 @@ public struct Redirection: Equatable, Sendable {
     case read(fd: Int32)  // <
     case write(fd: Int32)  // >
     case append(fd: Int32)  // >>
+    case readWrite(fd: Int32)  // <>
     case duplicate(fd: Int32, to: Int32)  // >[fd=to]
     case close(fd: Int32)  // >[fd=]
     /// <<tag: the lines after the command's, up to one that is only the
@@ -244,13 +251,15 @@ struct Lexer {
       return .pipe([1])
     case "<", ">":
       let append = c == ">" && i + 1 < s.count && s[i + 1] == ">"
-      i += append ? 2 : 1
+      let both = c == "<" && i + 1 < s.count && s[i + 1] == ">"
+      i += append || both ? 2 : 1
       var fd: Int32 = c == "<" ? 0 : 1
       if i < s.count, s[i] == "[" {
         let (a, b, dup) = try bracketDup()
         fd = a ?? fd
         if dup { return .redirect(b.map { .duplicate(fd: fd, to: $0) } ?? .close(fd: fd)) }
       }
+      if both { return .redirect(.readWrite(fd: fd)) }
       return .redirect(c == "<" ? .read(fd: fd) : append ? .append(fd: fd) : .write(fd: fd))
     case "'":
       i += 1
@@ -280,18 +289,28 @@ struct Lexer {
         kind = 2
         i += 1
       }
-      // A name: letters, digits and _, or * (the arguments).
-      var name = ""
-      while i < s.count, s[i].properties.isAlphabetic || s[i].properties.numericType != nil || s[i] == "_"
-        || (s[i] == "*" && name.isEmpty)
-      {
-        name.unicodeScalars.append(s[i])
-        i += 1
-        if name == "*" { break }
+      // A name: letters, digits and _, or * (the arguments); or a word of
+      // its own, $x or a quoted one ($$x: the variable $x names).
+      let sp = spaced
+      let nameWord: Word
+      if i < s.count, s[i] == "$" || s[i] == "'" {
+        guard case .word(let w, _) = try next() else { throw RcSyntaxError(message: "$ without a name") }
+        nameWord = w
+      } else {
+        var name = ""
+        while i < s.count, s[i].properties.isAlphabetic || s[i].properties.numericType != nil || s[i] == "_"
+          || (s[i] == "*" && name.isEmpty)
+        {
+          name.unicodeScalars.append(s[i])
+          i += 1
+          if name == "*" { break }
+        }
+        guard !name.isEmpty else { throw RcSyntaxError(message: "$ without a name") }
+        nameWord = .literal(name, quoted: false)
       }
-      guard !name.isEmpty else { throw RcSyntaxError(message: "$ without a name") }
-      if kind == 1 { return .word(.count(name), spaced: spaced) }
-      if kind == 2 { return .word(.joined(name), spaced: spaced) }
+      spaced = sp
+      if kind == 1 { return .word(.count(nameWord), spaced: spaced) }
+      if kind == 2 { return .word(.joined(nameWord), spaced: spaced) }
       // A subscript: $x(1 2), with no space before the parenthesis.
       if i < s.count, s[i] == "(" {
         i += 1
@@ -303,9 +322,9 @@ struct Lexer {
           guard case .word(let w, _) = t else { throw RcSyntaxError(message: "bad subscript") }
           subs.append(w)
         }
-        return .word(.variable(name, index: subs), spaced: sp)
+        return .word(.variable(nameWord, index: subs), spaced: sp)
       }
-      return .word(.variable(name, index: nil), spaced: spaced)
+      return .word(.variable(nameWord, index: nil), spaced: spaced)
     default:
       var text = ""
       while i < s.count, Lexer.isWordChar(s[i]), !continues(i) {
@@ -549,20 +568,42 @@ public struct Parser {
     return stages.count == 1 ? stages[0] : .pipeline(stages, fds: fds)
   }
 
+  /// Whether `<{` or `>{` starts here: a word (9front's `REDIR brace`).
+  var startsPipeWord: Bool {
+    guard case .redirect(let kind) = peek, tokens[at + 1] == .leftBrace else { return false }
+    switch kind {
+    case .read(fd: 0), .write(fd: 1): return true
+    default: return false
+    }
+  }
+
   /// A word, joining pieces that touch (free carets) and ^.
   mutating func word() throws(RcSyntaxError) -> Word? {
     var pieces: [Word] = []
     func piece() throws(RcSyntaxError) -> Word? {
+      if startsPipeWord, case .redirect(let kind) = peek {
+        at += 2
+        let c = try list(until: [.rightBrace])
+        try expect(.rightBrace, "}")
+        return .pipe(c, output: kind != .read(fd: 0))
+      }
       switch peek {
       case .word(let w, _):
         at += 1
         return w
       case .backquote:
+        // `{...}, or `split{...} (split a word of its own).
         at += 1
+        var split: Word? = nil
+        if peek != .leftBrace {
+          guard case .word(let w, _) = peek else { throw RcSyntaxError(message: "{ after `") }
+          at += 1
+          split = w
+        }
         try expect(.leftBrace, "{ after `")
         let c = try list(until: [.rightBrace])
         try expect(.rightBrace, "}")
-        return .backquote(c)
+        return .backquote(c, split: split)
       case .leftParen:
         at += 1
         var items: [Word] = []
@@ -604,7 +645,7 @@ public struct Parser {
   }
 
   mutating func redirection() throws(RcSyntaxError) -> Redirection? {
-    guard case .redirect(let kind) = peek else { return nil }
+    guard case .redirect(let kind) = peek, !startsPipeWord else { return nil }
     at += 1
     switch kind {
     case .duplicate, .close: return Redirection(kind: kind, target: nil)
