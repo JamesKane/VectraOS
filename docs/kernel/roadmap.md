@@ -1026,6 +1026,20 @@ THREAD, VMO, maps, handle table) and the NAME property.
   timer.wake_error_p99 -18%, port wake -12%, irq wait -10%. Left for
   Todhchai: one timer sleeper instead of a herd (each extra wake migrates
   by IPI, ~2.6 us).
+- **V1 item 6: channel_call, part 3** (2026-10-15, a one-hour box; no
+  change kept). KVM, quiet host: about 1.33 µs first event to last.
+  m2's IPC profile: the server's loop is already two syscalls a call,
+  the reply's write and the read that takes the next request, since
+  the write switches straight to the deadline caller on the same core
+  and the server resumes only once the next call is queued. The two
+  switches are the largest steps (~200 and ~230 ns, XSAVEOPT and
+  XRSTOR included); the five heap operations a call (two messages, a
+  call record) are ~11% of samples, and the heap's path is already
+  lean. Tried and reverted: a read item reporting the messages left, so
+  a server stops at 0 (+18% interleaved: the server then waits on its
+  port before each read, where the read had found the next request).
+  The 1 µs needs fewer switches or a cheaper one, not trimming, as
+  K14m found; under KVM the 1.6 µs limit stays the guard (2026-10-10).
 - **K14m: channel_call, part 2.** **Done** (2026-10-12): out-pointer
   checks inside the mapping a thread's last check found skip the address
   space's lock while its `mapGeneration` holds (three checks per call

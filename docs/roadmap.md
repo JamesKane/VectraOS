@@ -58,7 +58,10 @@ The work, in order:
    with CROI_PORT_RING delivers its packets into the one ring, drained
    with no syscall (D44); the debuglog is a read-only ring, in the ring's
    OVERWRITE mode, and debuglog_read is cut (D38).
-6. Close the `channel_call` < 1 µs open item.
+6. **Closed (2026-10-15):** the `channel_call` < 1 µs open item. It is a
+   hardware target; under KVM (about 1.3 µs) m2's 1.6 µs limit guards it.
+   Reaching 1 µs needs fewer switches a call or a cheaper switch, not
+   trimming (docs/kernel/roadmap.md, V1 item 6).
 
 **Exit:**
 - The kernel and IPC budgets are green.

@@ -42,7 +42,7 @@ against croi.
 | Budget | Limit |
 |---|---|
 | null syscall | < 100 ns |
-| `channel_call` round trip, with deadline donation | < 1 µs (croi is at about 1.45 µs today; open item) |
+| `channel_call` round trip, with deadline donation | < 1 µs on hardware (KVM: about 1.3 µs, held under 1.6 µs; V1 item 6) |
 | cross-core port wake | < 2 µs |
 | ring submit + complete, both sides busy (`ring.round_trip`, `ring.kicks`) | < 300 ns, `ring_kicks` = 0 |
 | uncontended futex | 0 syscalls |
