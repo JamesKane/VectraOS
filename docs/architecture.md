@@ -117,9 +117,10 @@ Plan 9's Tflush rule.
 - **Namespaces** are per process, map paths to channels, and have no global
   root. Bind and union are resolved on the client side. A sealed namespace is
   the sandbox.
-- **Rings are negotiated as nodes.** A client opens `…/ring` on a service and
-  receives a VMO handle and a counter handle. That exchange is the only way
-  a ring comes to exist.
+- **Rings are attached to nodes.** A client makes a ring pair and its data
+  VMO and attaches them, with their doorbell counters, to a node its
+  channel is at (Node's `attach`, D67). That exchange is the only way a
+  ring comes to exist between a client and a service.
 - **Discovery:** each service directory has `.help` and `.schema` nodes.
 
 ## 5. The network: 9gate and the swarm

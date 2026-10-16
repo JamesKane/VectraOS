@@ -79,3 +79,4 @@ in a new file, and a line in the index below.
 - [D64. Node's batch: operations on a current node](D064-node-batch-current-node.md) — 2026-10-16, decided
 - [D65. A process's start is its processargs; todhchai's Startup protocol is not lifted](D065-start-is-processargs.md) — 2026-10-16, proposed
 - [D66. Hardware support levels, each with its check](D066-hardware-support-levels.md) — 2026-10-16, decided
+- [D67. Bulk Node reads and writes: an SQ/CQ ring pair and a data VMO the client makes](D067-node-bulk-sq-cq.md) — 2026-10-16, decided

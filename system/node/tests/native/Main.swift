@@ -5,10 +5,10 @@
 // stat, read and open in one call; the first failure and its index; the
 // operation limit; create, write, read and remove), ctl leaves, a mount
 // that takes the rest of a batch and goes with its service, watches set
-// by a batch, namespaces and their unions, and /srv's board. Services run
-// on dispatcher threads of their own. userboot starts it
-// (userboot.next=bin/node-test, the boot-node test); it exits 0 if every
-// check passed.
+// by a batch, namespaces and their unions, /srv's board, and bulk reads
+// and writes on a ring pair (D67). Services run on dispatcher threads of
+// their own. userboot starts it (userboot.next=bin/node-test, the
+// boot-node test); it exits 0 if every check passed.
 
 import IPC
 import LibSys
@@ -101,6 +101,7 @@ struct NodeTest {
       try watches()
       try namespaces()
       try board()
+      try bulk()
     } catch {
       print("node-test: FAILED: a call threw \(error.rawValue)")
       failures += 1
@@ -246,6 +247,34 @@ struct NodeTest {
     }
     a.end()
     b.end()
+  }
+
+  /// Bulk reads and writes on a ring pair (D67): megabytes through the
+  /// rings, a batch seeing what they wrote, the end of a file, an error in
+  /// its completion, and the pair gone with its channel.
+  static func bulk() throws(Status) {
+    let s = try Service()
+    s.tree.file("data/big", [], writable: true)
+    try s.start()
+    var root = try s.connect()
+    do throws(Client.Failure) {
+      var big = try NodeBulkChannel(try root.open("data/big"), slots: 8, dataSize: 64 * 1024)
+      var pattern = [UInt8](repeating: 0, count: 2 * 1024 * 1024 + 77)
+      for i in pattern.indices { pattern[i] = UInt8(truncatingIfNeeded: i &* 7 &+ i >> 9) }
+      check((try? big.write(at: 0, pattern)) == pattern.count, "bulk: megabytes written through the rings")
+      check((try? big.read(at: 0, count: pattern.count)) == pattern, "bulk: and read back")
+      check((try? root.read("data/big", offset: 1_000_000, max: 8)) == Array(pattern[1_000_000..<1_000_008]),
+            "bulk: a batch sees what the rings wrote")
+      var hello = try NodeBulkChannel(try root.open("data/hello"), slots: 2, dataSize: 4096)
+      check((try? hello.read(at: 7, count: 100)) == bytes("world"), "bulk: a read stops at the end")
+      check(remoteError { () throws(Client.Failure) in try hello.write(at: 0, [1]) } == .unsupported,
+            "bulk: an error comes back in its completion")
+    } catch {
+      check(false, "bulk: a call failed")
+    }
+    _ = consume root
+    s.end()
+    check(s.dispatcher.count == 0, "bulk: the pairs went with their channels")
   }
 
   static func board() throws(Status) {

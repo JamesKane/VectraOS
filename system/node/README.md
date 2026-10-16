@@ -28,6 +28,17 @@ through a mount is still one call from the client. The client's helpers
 (`Client.swift`: `open`, `stat`, `read`, `readText`, `list`, `create`...)
 each take a path and make one batch of it.
 
+## Bulk
+
+Past a batch's 32 KiB, a client attaches a ring pair to a node (D67,
+`Bulk.swift`): one VMO it makes, holding an SQ ring, a CQ ring and a data
+area, with a doorbell counter each way, handed over with Node's `attach`.
+An SQ entry reads or writes a range of the node into or out of a range of
+the data area; its CQ entry gives the status and bytes moved. NodeTree
+serves it on its dispatcher (watching the doorbell), through the same
+code as a batch's reads and writes; `NodeBulkChannel` splits a read or
+write of any size into chunks, a slot's worth in flight.
+
 Names are compared and split as bytes (`NodeIPC.same`, `NodeIPC.names`):
 String's `==` and `split` need Unicode tables tier 0 doesn't link.
 todhchai's delegated directories (`NodeTree.delegate`) were left behind

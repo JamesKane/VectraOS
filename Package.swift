@@ -70,7 +70,7 @@ let ipc: [Target] = [
               swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
   // Node (system/node, V2): the protocol every service serves, batched
   // (D18, D64), the tree helper that serves it, namespaces and /srv.
-  .target(name: "Node", dependencies: ["IPC"], path: "system/node/lib", swiftSettings: tier0),
+  .target(name: "Node", dependencies: ["IPC", "Ring"], path: "system/node/lib", swiftSettings: tier0),
   .testTarget(name: "NodeTests", dependencies: ["Node", "IPC", "IDL"], path: "system/node/tests",
               exclude: ["native"], swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
   // The launcher (system/launch, V2): manifests, a job and a process per

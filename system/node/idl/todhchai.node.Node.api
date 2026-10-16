@@ -1,6 +1,7 @@
 # API baseline for todhchai.node.Node, written by idlc. Commit it; idlc checks changes against it.
-protocol todhchai.node.Node version 1
+protocol todhchai.node.Node version 2
 struct Attribute (String,UInt8,[UInt8])
+struct Bulk (Handle,Handle,Handle,UInt32,UInt32,UInt64,UInt64,UInt64)
 struct Change (UInt64,UInt64,ChangeKind,String)
 enum ChangeKind UInt8 (1,2,3,4)
 struct DirBatch ([Stat],UInt64,Bool)
@@ -11,5 +12,6 @@ union Outcome (([Qid]),(Stat),(DirBatch),([UInt8]),(UInt32),(UInt64),(Qid),())
 struct Qid (UInt64,UInt32,NodeKind)
 struct Reply ([Outcome],Failure?,Handle?)
 struct Stat (Qid,String,UInt64,Int64,[Attribute])
+method attach call since 2 params (Bulk) result - throws NodeError
 method batch call since 1 params ([Op],Bool) result Reply throws -
 method changed event since 1 params (Change) result - throws -

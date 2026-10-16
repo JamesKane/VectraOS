@@ -116,11 +116,17 @@ final class SessionState: @unchecked Sendable {
 final class SessionEnd: @unchecked Sendable {
   let tree: NodeTree
   let state: SessionState
+  /// Its ring pair for bulk reads and writes, if one is attached (D67):
+  /// the dispatcher's watch of its doorbell holds it.
+  var bulk: BulkServer?
   init(_ tree: NodeTree, _ state: SessionState) {
     self.tree = tree
     self.state = state
   }
-  deinit { tree.locked { state.closed = true } }
+  deinit {
+    tree.locked { state.closed = true }
+    if let bulk { tree.dispatcher.unwatch(bulk.watch) }
+  }
 }
 
 public final class NodeTree: @unchecked Sendable {
@@ -363,9 +369,9 @@ struct Session: NodeIPC.NodeHandler {
         case .readdir(let cursor, let max, let fields):
           results.append(.dir(try readdir(at, cursor: cursor, max: max, fields: fields)))
         case .read(let offset, let max):
-          results.append(.data(try read(at, offset: offset, max: max)))
+          results.append(.data(try tree.read(at, offset: offset, max: max)))
         case .write(let offset, let data):
-          results.append(.wrote(try write(at, offset: offset, data)))
+          results.append(.wrote(try tree.write(at, offset: offset, data)))
         case .watch(let since):
           results.append(.watching(try watch(at, since: since)))
         case .create(let name, let kind):
@@ -492,46 +498,28 @@ struct Session: NodeIPC.NodeHandler {
     }
   }
 
-  func read(_ node: TreeNode, offset: UInt64, max: UInt32) throws(NodeError) -> [UInt8] {
-    let content = try tree.locked { () throws(NodeError) in try live(node).content }
-    let bytes: [UInt8]
-    switch content {
-    case .directory, .remote: throw .isDirectory
-    case .service: throw .unsupported
-    case .bytes(let b, _): bytes = b
-    case .text(let render, _): bytes = Array(render().utf8)  // outside the lock: it's the service's code
-    }
-    guard offset < UInt64(bytes.count) else { return [] }
-    let start = Int(offset)
-    return Array(bytes[start..<Swift.min(bytes.count, start + Swift.min(Int(max), NodeIPC.maxIO))])
-  }
-
-  func write(_ node: TreeNode, offset: UInt64, _ data: [UInt8]) throws(NodeError) -> UInt32 {
-    guard data.count <= NodeIPC.maxIO else { throw .invalid }
-    let content = try tree.locked { () throws(NodeError) in try live(node).content }
-    switch content {
-    case .directory, .remote:
-      throw .isDirectory
-    case .service:
-      throw .unsupported
-    case .text(_, let write):
-      guard let write else { throw .unsupported }
-      guard let command = String(validating: data, as: UTF8.self) else { throw .invalid }
-      try write(command)
-    case .bytes:
-      let woken = try tree.locked { () throws(NodeError) -> [Watcher] in
-        guard case .bytes(var bytes, let writable) = node.content, !node.detached else { throw .notFound }
-        guard writable else { throw .unsupported }
-        guard offset <= UInt64(bytes.count) + UInt64(NodeIPC.maxIO) else { throw .invalid }
-        let start = Int(offset)
-        if bytes.count < start + data.count { bytes += [UInt8](repeating: 0, count: start + data.count - bytes.count) }
-        bytes.replaceSubrange(start..<(start + data.count), with: data)
-        node.content = .bytes(bytes, writable: writable)
-        return tree.modifiedLocked(node)
+  /// Attaches a ring pair for bulk reads and writes of this session's
+  /// node (D67), each up to the data area's size, by the same code as a
+  /// batch's.
+  mutating func attach(_ bulk: consuming NodeIPC.Bulk) throws(NodeError) {
+    guard end.bulk == nil else { throw .exists }
+    let tree = self.tree, at = node
+    let io: BulkServer.IO = { op, offset, buffer throws(NodeError) in
+      if op == NodeBulk.read {
+        let bytes = try tree.read(at, offset: offset, max: UInt32(buffer.count), limit: buffer.count)
+        unsafe bytes.withUnsafeBytes { unsafe buffer.baseAddress!.copyMemory(from: $0.baseAddress!, byteCount: $0.count) }
+        return UInt32(bytes.count)
       }
-      tree.wake(woken)
+      return try tree.write(at, offset: offset, unsafe Array(UnsafeRawBufferPointer(buffer)), limit: buffer.count)
     }
-    return UInt32(data.count)
+    guard let server = unsafe BulkServer(bulk, io: io), let bell = try? server.serverBell.duplicate() else { throw .invalid }
+    do throws(Status) {
+      server.watch = try tree.dispatcher.watch(bell, signals: Signals.positive) { _ in server.serve() }
+    } catch {
+      throw .io
+    }
+    end.bulk = server
+    _ = server.serve()  // what came before the attach
   }
 
   func watch(_ node: TreeNode, since seq: UInt64) throws(NodeError) -> UInt64 {
@@ -576,5 +564,59 @@ struct Session: NodeIPC.NodeHandler {
       return tree.removeLocked(at)
     }
     tree.wake(woken)
+  }
+}
+
+// Reads and writes of a node's contents: a batch's, and a ring pair's (D67),
+// which holds the tree, not a session.
+extension NodeTree {
+  func read(_ node: TreeNode, offset: UInt64, max: UInt32, limit: Int = NodeIPC.maxIO) throws(NodeError) -> [UInt8] {
+    let content = try locked { () throws(NodeError) in try live(node).content }
+    let bytes: [UInt8]
+    switch content {
+    case .directory, .remote: throw .isDirectory
+    case .service: throw .unsupported
+    case .bytes(let b, _): bytes = b
+    case .text(let render, _): bytes = Array(render().utf8)  // outside the lock: it's the service's code
+    }
+    guard offset < UInt64(bytes.count) else { return [] }
+    let start = Int(offset)
+    return Array(bytes[start..<Swift.min(bytes.count, start + Swift.min(Int(max), limit))])
+  }
+
+  func write(_ node: TreeNode, offset: UInt64, _ data: [UInt8], limit: Int = NodeIPC.maxIO) throws(NodeError)
+    -> UInt32
+  {
+    guard data.count <= limit else { throw .invalid }
+    let content = try locked { () throws(NodeError) in try live(node).content }
+    switch content {
+    case .directory, .remote:
+      throw .isDirectory
+    case .service:
+      throw .unsupported
+    case .text(_, let write):
+      guard let write else { throw .unsupported }
+      guard let command = String(validating: data, as: UTF8.self) else { throw .invalid }
+      try write(command)
+    case .bytes:
+      let woken = try locked { () throws(NodeError) -> [Watcher] in
+        guard case .bytes(var bytes, let writable) = node.content, !node.detached else { throw .notFound }
+        guard writable else { throw .unsupported }
+        guard offset <= UInt64(bytes.count) + UInt64(limit) else { throw .invalid }
+        let start = Int(offset)
+        if bytes.count < start + data.count { bytes += [UInt8](repeating: 0, count: start + data.count - bytes.count) }
+        bytes.replaceSubrange(start..<(start + data.count), with: data)
+        node.content = .bytes(bytes, writable: writable)
+        return modifiedLocked(node)
+      }
+      wake(woken)
+    }
+    return UInt32(data.count)
+  }
+
+  /// The node, if it is still in the tree (under the lock).
+  func live(_ node: TreeNode) throws(NodeError) -> TreeNode {
+    guard !node.detached else { throw .notFound }
+    return node
   }
 }

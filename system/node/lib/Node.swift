@@ -9,7 +9,7 @@
 
 import IPC
 
-@IPCLibrary(id: "todhchai.node", version: 1)
+@IPCLibrary(id: "todhchai.node", version: 2)
 public enum NodeIPC {
   public enum NodeError: Int32, IPCErrorCode, Sendable {
     case notFound = 1
@@ -183,11 +183,43 @@ public enum NodeIPC {
     }
   }
 
+  /// A ring pair for bulk reads and writes of a node (D67), made by the
+  /// client: in `memory`, an SQ ring at 0 (`sqSlots` entries of
+  /// `NodeBulk.sqEntry` bytes), a CQ ring at `cqOffset` (`cqSlots` of
+  /// `NodeBulk.cqEntry`) and `dataSize` bytes of data at `dataOffset`. The
+  /// client rings `serverBell` (a counter) when the server sleeps, and the
+  /// server rings `clientBell`.
+  public struct Bulk: ~Copyable {
+    public var memory: Handle
+    public var serverBell: Handle
+    public var clientBell: Handle
+    public var sqSlots: UInt32
+    public var cqSlots: UInt32
+    public var cqOffset: UInt64
+    public var dataOffset: UInt64
+    public var dataSize: UInt64
+
+    public init(memory: consuming Handle, serverBell: consuming Handle, clientBell: consuming Handle,
+                sqSlots: UInt32, cqSlots: UInt32, cqOffset: UInt64, dataOffset: UInt64, dataSize: UInt64) {
+      self.memory = memory
+      self.serverBell = serverBell
+      self.clientBell = clientBell
+      self.sqSlots = sqSlots
+      self.cqSlots = cqSlots
+      self.cqOffset = cqOffset
+      self.dataOffset = dataOffset
+      self.dataSize = dataSize
+    }
+  }
+
   public protocol Node {
     /// Runs `ops` (at most 32) in order on a current node, which starts at
     /// this channel's; `walk` and `create` move it. A single operation is a
     /// batch of one.
     func batch(_ ops: [Op], open: Bool) -> Reply
+    /// Attaches a ring pair for bulk reads and writes of this channel's
+    /// node (D67): one a channel, gone when the channel closes.
+    @since(2) func attach(_ bulk: consuming Bulk) throws(NodeError)
     @event func changed(_ change: Change)
   }
 }

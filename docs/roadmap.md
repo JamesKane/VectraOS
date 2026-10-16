@@ -180,8 +180,10 @@ work, in order:
    names table (D65), with no Startup protocol; checked hosted
    (LaunchTests) and natively (boot-launch: `bin/launcher` runs bootfs's
    manifests until `bin/launch-test`, which reads every
-   `/svc/*/status` and follows a restart, ends). Next: bulk
-   `read`/`write` opening a ring, then the exit test with rc.
+   `/svc/*/status` and follows a restart, ends). Bulk reads and writes go on an SQ/CQ ring pair and a data
+   VMO the client makes and attaches to a node (Node 2's `attach`, D67):
+   NodeTree serves them, `NodeBulkChannel` is the client, checked hosted
+   (BulkTests) and natively (node-test). Left: the exit test, with rc.
 5. **Time (D48).** Clock objects are cut: the time service publishes UTC
    in a read-only seqlock page that the launcher hands every process at
    start.
