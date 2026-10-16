@@ -502,6 +502,15 @@ public final class Rc {
       try execute(body, fds)
     case .pipeline(let stages, let pipeFds):
       try pipeline(stages, pipeFds, fds)
+    case .subshell(let c):
+      // As a fork leaves its parent: rc's variables, functions and
+      // directory as they were, the subshell's status kept.
+      let saved = (variables, functions, ifNotPending, system.directory)
+      try contained(c, fds)
+      let status = variables["status"]
+      (variables, functions, ifNotPending) = (saved.0, saved.1, saved.2)
+      if system.directory != saved.3 { _ = system.changeDirectory(saved.3) }
+      variables["status"] = status
     case .not(let c):
       try execute(c, fds)
       setStatus(ok() ? "false" : "")

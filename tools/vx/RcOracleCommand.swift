@@ -120,8 +120,8 @@ func rcOracleCommand(_ args: [String]) -> Bool {
   for name in cases {
     let script = "\(cwd)/\(oracleCases)/\(name).rc"
     let theirs = runCase(["\(cwd)/\(oracle)", "-m", "\(cwd)/\(oracleSources)/rcmain.unix"], script,
-                         in: "\(cwd)/\(oracleOut)/work/\(name).9front")
-    let ours = runCase(["\(cwd)/\(rcport)"], script, in: "\(cwd)/\(oracleOut)/work/\(name).port")
+                         in: "\(cwd)/\(oracleOut)/work/9front/\(name)")
+    let ours = runCase(["\(cwd)/\(rcport)"], script, in: "\(cwd)/\(oracleOut)/work/port/\(name)")
     let same = theirs == ours
     switch (same, known[name]) {
     case (true, nil): matched += 1
@@ -133,7 +133,7 @@ func rcOracleCommand(_ args: [String]) -> Bool {
       if theirs.stdout != ours.stdout { how.append("stdout") }
       if theirs.status != ours.status { how.append("status \(theirs.status) vs \(ours.status)") }
       if theirs.wroteErrors != ours.wroteErrors { how.append("stderr \(theirs.wroteErrors) vs \(ours.wroteErrors)") }
-      failures.append("\(name): differs from 9front (\(how.joined(separator: ", "))): \(oracleOut)/work/\(name).*")
+      failures.append("\(name): differs from 9front (\(how.joined(separator: ", "))): \(oracleOut)/work/{9front,port}/\(name).*")
     }
   }
   for f in failures { say("vx: rc-oracle: \(f)") }

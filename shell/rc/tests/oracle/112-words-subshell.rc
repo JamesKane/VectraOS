@@ -1,0 +1,10 @@
+echo ~ a~b !x @y [~z]
+x=out
+@{ x=in; fn g { echo g }; echo inside $x }
+echo outside $x
+g
+@ false
+echo status $status
+! @{ true }
+echo status $status
+~ a [~b] && echo class

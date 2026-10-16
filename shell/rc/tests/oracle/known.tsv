@@ -8,15 +8,11 @@
 03-subscript	port	port accepts $#x(9) (9front: syntax error, aborts)
 11-continuation	port	backslash-newline inside a word not a space
 15-for-in	port	9front makes for variable local; port leaves it set
-21-tilde	port	[~a-c] lexes ~ as a token: syntax error
-25-subshell	port	@{...} unsupported
-26-subshell-cd	port	@{...} unsupported
 27-fn	linux	not-found status text (Linux oracle: 1)
 29-dollar0	port	$0 unset
 30-status-fail	linux	Linux oracle: success status is 0
 31-status-pipeline	linux	Linux oracle: success is 0, so false|true is 1|0 (Plan 9, and we: 1|)
 36-redir-close	port	builtin echo to closed fd succeeds
-44-glob-class	port	[~a-c] syntax error
 51-builtin	port	builtin missing
 52-whatis	port	whatis fn prints no body
 55-cd-pwd	port	cd failure status/message text

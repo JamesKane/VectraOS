@@ -54,6 +54,9 @@ public indirect enum Command: Equatable, Sendable {
   /// Stages, each one's fd 1 (or the given one) into the next's 0.
   case pipeline([Command], fds: [Int32])
   case not(Command)
+  /// @ cmd: run as if forked: what it changes (variables, functions, the
+  /// directory) is undone after.
+  case subshell(Command)
   case and(Command, Command)
   case or(Command, Command)
   case sequence([Command])
@@ -93,8 +96,8 @@ enum Token: Equatable {
   /// A word's piece, and whether a space came before it (free carets
   /// join pieces with none).
   case word(Word, spaced: Bool)
-  case semicolon, newline, ampersand, pipe([Int32]), andAnd, orOr, bang, caret
-  case leftBrace, rightBrace, leftParen, rightParen, equals, tilde, backquote
+  case semicolon, newline, ampersand, pipe([Int32]), andAnd, orOr, caret
+  case leftBrace, rightBrace, leftParen, rightParen, equals, backquote
   case redirect(Redirection.Kind)
   /// A here document's body, read after its line: `Lexer.bodies`' index.
   case hereBody(Int)
@@ -143,8 +146,10 @@ struct Lexer {
     }
   }
 
+  /// ~, ! and @ are word characters: a word that is just one of them is a
+  /// keyword only at a command's start (9front's klook).
   static func isWordChar(_ c: Unicode.Scalar) -> Bool {
-    !" \t\n;&|^$=`'{}()<>#~".unicodeScalars.contains(c)
+    !" \t\n;&|^$=`'{}()<>#".unicodeScalars.contains(c)
   }
 
   mutating func next() throws(RcSyntaxError) -> Token {
@@ -197,9 +202,7 @@ struct Lexer {
     case "(": return one(.leftParen)
     case ")": return one(.rightParen)
     case "=": return one(.equals)
-    case "~": return one(.tilde)
     case "`": return one(.backquote)
-    case "!": return one(.bang)
     case "&":
       if i + 1 < s.count, s[i + 1] == "&" {
         i += 2
@@ -396,9 +399,14 @@ public struct Parser {
   }
 
   mutating func notCommand() throws(RcSyntaxError) -> Command {
-    if peek == .bang {
+    if keyword("!") {
       at += 1
       return .not(try notCommand())
+    }
+    // @ cmd: a subshell (9front's SUBSHELL, with BANG's precedence).
+    if keyword("@") {
+      at += 1
+      return .subshell(try notCommand())
     }
     if let assigned = try assignments(then: { (p: inout Parser) throws(RcSyntaxError) in try p.notCommand() }) {
       return assigned
@@ -531,7 +539,7 @@ public struct Parser {
       while let r = try redirection() { redirs.append(r) }
       return .brace(c, redirs)
     }
-    if peek == .tilde {
+    if keyword("~") {
       at += 1
       guard let subject = try word() else { throw RcSyntaxError(message: "~ without a subject") }
       var patterns: [Word] = []

@@ -278,11 +278,12 @@ work, in order:
      runtime errors stopping a script (contained where 9front forks: a
      backquote, a pipeline's builtin stage, a background job); globbing
      as 9front's globdir (dot files matched, a literal tail kept only if
-     it exists, the matches sorted by bytes).
+     it exists, the matches sorted by bytes); `~`, `!` and `@` as word
+     characters (keywords only alone at a command's start, as 9front's
+     klook), and `@` subshells.
    - **Redirections:** a program's fd 2 is its stdout and fds over 2
      are dropped; redirection streams are never closed.
-   - **Missing syntax:** `@{}`, `[~...]` and a bare `~`, `!` or `@` as
-     words, `<>`, `<{}`, `>{}`, `$$x`, `` `split{} ``,
+   - **Missing syntax:** `<>`, `<{}`, `>{}`, `$$x`, `` `split{} ``,
      `\`-newline inside a word.
    - **Wrong semantics:** `&` on a compound command runs in the foreground; a `&`
      in a switch case hangs the parser.
