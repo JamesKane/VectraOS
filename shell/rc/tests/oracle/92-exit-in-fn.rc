@@ -1,0 +1,3 @@
+fn f { echo in; exit; echo no }
+f
+echo after

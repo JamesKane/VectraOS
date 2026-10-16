@@ -257,6 +257,8 @@ work, in order:
    **Audit against 9front (2026-10-16):** rc read against rc(1) and its
    source, and 100 scripts run through both it and 9front's rc (built
    for Linux): 61 match, 36 differ through the port, 3 through Linux.
+   The scripts are a standing check now (D70: `vx rc-oracle`, in `vx ci`;
+   `shell/rc/tests/oracle`, its `known.tsv` the gaps still open).
    About half of rc(1) works; the commands cover about 40% of 9front's
    options, and rc's base set of programs is about a quarter there.
    Left, the most-hit first:

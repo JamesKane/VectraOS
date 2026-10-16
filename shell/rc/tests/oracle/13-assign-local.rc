@@ -1,0 +1,5 @@
+x=outer
+x=inner echo $x
+fn show { echo $x }
+x=inner show
+show

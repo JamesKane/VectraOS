@@ -1,0 +1,5 @@
+mkdir g
+touch g/a g/b g/c g/d
+echo g/[a-c]
+echo g/[~a-c]
+echo g/[bd]

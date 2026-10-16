@@ -1,0 +1,3 @@
+fn f { echo in-f }
+f > fout
+cat fout

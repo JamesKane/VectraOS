@@ -1,0 +1,4 @@
+fn gen { echo x; echo y; echo z }
+gen | wc -l
+fn up { tr a-z A-Z }
+echo abc | up

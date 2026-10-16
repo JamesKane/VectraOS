@@ -1,0 +1,4 @@
+fn f {
+	while (! ~ $#* 0) { echo $1; shift }
+}
+f a b c

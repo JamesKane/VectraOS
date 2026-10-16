@@ -82,3 +82,4 @@ in a new file, and a line in the index below.
 - [D67. Bulk Node reads and writes: an SQ/CQ ring pair and a data VMO the client makes](D067-node-bulk-sq-cq.md) — 2026-10-16, decided
 - [D68. The scheduler places by capacity and topology; thermal limits reach it as capacity](D068-capacity-aware-thermal-scheduling.md) — 2026-10-16, proposed; the cpu_set_info merge decided
 - [D69. The first board is the Orange Pi 6 Plus; the Q8B moves to V8](D069-first-board-orange-pi-6-plus.md) — 2026-10-16, decided; replaces D5's choice
+- [D70. rc is checked against 9front's rc, a host-only oracle](D070-rc-checked-against-9front.md) — 2026-10-16, decided

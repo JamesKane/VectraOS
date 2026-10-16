@@ -1,0 +1,2 @@
+echo hello | tr a-z A-Z | rev
+printf 'b\na\nc\n' | sort | head -2

@@ -1,0 +1,5 @@
+false
+echo $status
+true
+~ $status ''
+echo empty $status

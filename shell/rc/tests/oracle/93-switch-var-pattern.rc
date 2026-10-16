@@ -1,0 +1,7 @@
+p=b*
+switch (bar) {
+case $p
+	echo varpat
+case *
+	echo default
+}

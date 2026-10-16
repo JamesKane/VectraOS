@@ -1,0 +1,1 @@
+ls /nonexistent |[2] wc -l

@@ -1,0 +1,4 @@
+x=`{printf 'a:b c'}
+echo $#x
+ifs=: x=`{printf 'a:b c'}
+echo $#x

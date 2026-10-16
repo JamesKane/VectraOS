@@ -1,0 +1,5 @@
+x=`{echo a b c}
+echo $#x $x
+y=`{printf 'l1\nl2 w\n'}
+echo $#y
+echo `{echo nested `{echo inner}}

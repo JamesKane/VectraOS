@@ -1,0 +1,5 @@
+echo -n a
+echo -n b
+echo
+echo -n
+echo end

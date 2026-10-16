@@ -1,0 +1,5 @@
+echo 'line1
+line2'
+x='a
+b'
+echo $#x

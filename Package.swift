@@ -84,6 +84,9 @@ let ipc: [Target] = [
   .target(name: "FDIO", dependencies: ["Fs", "Node", "IPC"], path: "system/fdio",
           exclude: ["native", "tests", "README.md"], sources: ["lib", "hosted"], swiftSettings: tier0),
   .testTarget(name: "FDIOTests", dependencies: ["FDIO", "Node", "IPC"], path: "system/fdio/tests", exclude: ["native"]),
+  // rcport: our rc on Linux, which `vx rc-oracle` checks against 9front's (D70).
+  .executableTarget(name: "rcport", dependencies: ["Rc"], path: "tools/rc-oracle/port",
+                    swiftSettings: [.swiftLanguageMode(.v5)]),
   // rc, the shell (shell/rc, V2: tier 1 natively): its grammar and
   // evaluation, over a system.
   .target(name: "Rc", path: "shell/rc/lib"),

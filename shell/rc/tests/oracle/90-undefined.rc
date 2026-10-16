@@ -1,0 +1,3 @@
+echo $#undefined
+echo x$undefined^y
+echo after

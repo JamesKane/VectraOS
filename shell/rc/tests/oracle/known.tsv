@@ -1,0 +1,46 @@
+# Known divergences between our rc and 9front's on this corpus (D70): a
+# case named here differs today, and `vx rc-oracle` fails if it starts to
+# match (take its line out) or if any case not named here differs.
+#   CASE <tab> KIND <tab> WHY
+# KIND: port, a gap in our rc to fix (docs/roadmap.md, V2 item 6); or
+# linux, an artefact of running 9front's rc on Linux (numeric statuses,
+# GNU programs), which never matches.
+03-subscript	port	port accepts $#x(9) (9front: syntax error, aborts)
+04-range	port	no subscript ranges $x(2-4) $x(3-)
+07-concat-mismatch	port	concat error not fatal in port
+08-concat-null	port	concat error not fatal in port
+11-continuation	port	backslash-newline inside a word not a space
+15-for-in	port	9front makes for variable local; port leaves it set
+17-while	port	ranges ($x(2-)) missing
+18-while-shift	port	while resets $status to ''
+21b-tilde-noneg	port	~ subject is whole list; quoted pattern still a pattern
+21-tilde	port	[~a-c] lexes ~ as a token: syntax error
+25-subshell	port	@{...} unsupported
+26-subshell-cd	port	@{...} unsupported
+27-fn	linux	not-found status text (Linux oracle: 1)
+29-dollar0	port	$0 unset
+30-status-fail	linux	Linux oracle: success status is 0
+31-status-pipeline	port	$status is a list, not one |-joined string (+ Linux 0)
+36-redir-close	port	builtin echo to closed fd succeeds
+37-heredoc	port	<< here documents unsupported
+38-heredoc-quoted	port	<< here documents unsupported
+42-glob-star	port	* skips dotfiles
+44-glob-class	port	[~a-c] syntax error
+46-glob-dirs	port	glob yields nonexistent paths (d3/x/f)
+51-builtin	port	builtin missing
+52-whatis	port	whatis fn prints no body
+55-cd-pwd	port	cd failure status/message text
+60-pid	port	$pid unset
+61-background	port	compound & runs in foreground
+63-syntax-brace	port	whole-script parse: earlier lines don't run
+64-syntax-paren	port	whole-script parse: earlier lines don't run
+65-syntax-eq	port	= in arguments accepted (and split into its own word)
+69-notfound	linux	not-found status text (Linux oracle: 1)
+73-assign-list-var	port	$a=val (computed name) unsupported
+75-while-false-status	port	while resets $status to ''
+77-redir-order	port	>[2=1] after >file dups the original fd 1
+81-tilde-quoted	port	quoted / variable pattern chars active in ~ and case
+82-paren-caret	port	port accepts word( list ) (9front: syntax error)
+90-undefined	port	concat error not fatal in port
+93-switch-var-pattern	port	pattern chars from a variable active in case
+99-fn-delete-status	port	whatis of missing name: stderr message, status ''

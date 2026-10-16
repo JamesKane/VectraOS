@@ -1,0 +1,7 @@
+echo 'hello world'
+echo 'it''s'
+echo ''
+x=''
+echo $#x
+echo 'a;b|c&d'
+echo '#not a comment'

@@ -1,0 +1,2 @@
+! echo a | grep b
+echo $status

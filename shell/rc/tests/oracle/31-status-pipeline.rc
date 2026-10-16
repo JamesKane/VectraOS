@@ -1,0 +1,4 @@
+false | false
+echo $status
+false | true
+echo $status

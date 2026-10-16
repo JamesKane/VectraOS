@@ -1,0 +1,4 @@
+mkdir -p d1/x d2/x d3
+touch d1/x/f d2/x/f
+echo d*/x/f
+echo */x

@@ -1,0 +1,2 @@
+if (~ $#pid 1) echo has pid
+if (~ $pid [0-9]*) echo numeric

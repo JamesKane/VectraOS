@@ -52,6 +52,7 @@ func ci(_ args: [String]) -> Bool {
     }
   }
   var ok = step("host-test", ["swift", "test"])
+  ok = rcOracleCommand([]) && ok  // rc against 9front's (D70)
   for arch in allArches { ok = build(arch) && test(arch) && ok }
   ok = locCommand(["--check"]) && ok
   ok = hardwareCommand(["--check"]) && ok

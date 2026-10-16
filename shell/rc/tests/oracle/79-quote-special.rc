@@ -1,0 +1,4 @@
+echo 'a b'^c
+echo a'^'b
+echo '$x'
+echo '`{}'

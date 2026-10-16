@@ -1,0 +1,4 @@
+x=world
+cat <<'END'
+hello $x
+END

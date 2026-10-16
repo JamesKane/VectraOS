@@ -1,0 +1,2 @@
+fn f { for (i) echo arg $i }
+f one two three

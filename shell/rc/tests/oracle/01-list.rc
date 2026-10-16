@@ -1,0 +1,7 @@
+x=(a b c)
+echo $x
+echo $#x
+y=()
+echo $#y
+z=(a (b c) ((d)))
+echo $z $#z

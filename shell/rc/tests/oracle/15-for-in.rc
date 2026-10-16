@@ -1,0 +1,6 @@
+for (i in a b c) echo $i
+for (i in) echo never
+x=(1 2)
+for (i in $x x) { echo -n $i' ' }
+echo
+echo last $i

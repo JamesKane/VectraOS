@@ -13,8 +13,10 @@
 //   vx trace collect|print|summary|diff ...
 //   vx loc [--check]          lines per component, and the size budgets
 //   vx hardware [--check]     the hardware support list (HardwareCommand.swift)
-//   vx ci [--no-bench]        host tests, every arch's build and tests, the
-//                             size budgets, then the bench (advisory)
+//   vx rc-oracle [CASE...]    our rc against 9front's (RcOracleCommand.swift, D70)
+//   vx ci [--no-bench]        host tests, rc against 9front's, every arch's
+//                             build and tests, the size budgets, then the
+//                             bench (advisory)
 //
 // ARCH is amd64, arm64 or rv64; none means all three (amd64 for boot).
 // Run these from the repository root. Build vx first and run its binary,
@@ -41,7 +43,7 @@ func arches(_ args: [String]) -> [String] {
 
 var args = Array(CommandLine.arguments.dropFirst())
 guard let command = args.first else {
-  fail("usage: vx build|test|boot|bench|trace|loc|hardware|ci [options]")
+  fail("usage: vx build|test|boot|bench|trace|loc|hardware|rc-oracle|ci [options]")
 }
 args.removeFirst()
 
@@ -69,6 +71,7 @@ case "boot":
 case "bench": exit(benchCommand(args) ? 0 : 1)
 case "loc": exit(locCommand(args) ? 0 : 1)
 case "hardware": exit(hardwareCommand(args) ? 0 : 1)
+case "rc-oracle": exit(rcOracleCommand(args) ? 0 : 1)
 case "ci": exit(ci(args) ? 0 : 1)
-default: fail("unknown command \(command); vx has build, test, boot, bench, trace, loc, hardware and ci")
+default: fail("unknown command \(command); vx has build, test, boot, bench, trace, loc, hardware, rc-oracle and ci")
 }

@@ -1,0 +1,6 @@
+x=(a b c d e)
+echo $x(2)
+echo $x(1 3 5)
+echo $x(5 1)
+echo $x(9)
+echo $#x(9)

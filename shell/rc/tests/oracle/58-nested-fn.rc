@@ -1,0 +1,6 @@
+fn outer {
+	fn inner { echo inner $1 }
+	inner $1
+}
+outer x
+inner y

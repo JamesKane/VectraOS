@@ -1,0 +1,3 @@
+ls /nonexistent >[2] err
+echo $status
+wc -l < err

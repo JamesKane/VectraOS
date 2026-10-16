@@ -1,0 +1,4 @@
+{ echo a; echo b } > out
+cat out
+{ echo c
+echo d } | wc -l

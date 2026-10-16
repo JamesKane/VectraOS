@@ -1,0 +1,4 @@
+ls /nonexistent >[2=1] > f2 >[2]/dev/null
+wc -l < f2
+{ ls /nonexistent >[2=1] > f3 } >[2]/dev/null
+wc -l < f3

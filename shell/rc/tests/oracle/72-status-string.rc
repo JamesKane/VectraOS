@@ -1,0 +1,3 @@
+fn fail { status=custom }
+fail
+echo $status

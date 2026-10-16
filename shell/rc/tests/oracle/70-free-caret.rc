@@ -1,0 +1,7 @@
+x=foo
+echo $x^bar
+echo $x'bar'
+echo 'pre'$x
+y=(a b)
+echo $y'.o'
+echo -$y-

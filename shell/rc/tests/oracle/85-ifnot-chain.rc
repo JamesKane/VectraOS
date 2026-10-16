@@ -1,0 +1,9 @@
+if (false) {
+	echo a
+}
+if not {
+	echo b
+}
+if (false) echo c
+if not if (true) echo d
+if not echo e

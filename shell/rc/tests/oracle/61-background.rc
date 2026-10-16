@@ -1,0 +1,4 @@
+{ sleep 0.3; echo bg-chain } &
+echo fg
+wait
+echo waited

@@ -1,0 +1,9 @@
+~ abc a*; echo $status
+~ abc b*; echo $status
+~ abc x y abc; echo $status
+~ (a b) c b; echo $status
+~ abc '*'; echo $status
+~ '*' '*'; echo $status
+~ b [a-c]; echo $status
+~ d [a-c]; echo $status
+~ ab ??; echo $status

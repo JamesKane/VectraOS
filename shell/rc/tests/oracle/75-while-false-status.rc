@@ -1,0 +1,4 @@
+while (false) echo never
+echo $status
+for (i in a) false
+echo $status

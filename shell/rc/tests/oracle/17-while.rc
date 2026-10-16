@@ -1,0 +1,6 @@
+x=(a b c)
+while (! ~ $#x 0) {
+	echo $x(1)
+	x=$x(2-)
+}
+echo done

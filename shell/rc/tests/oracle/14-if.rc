@@ -1,0 +1,5 @@
+if (true) echo yes
+if (false) echo no
+if not echo notyes
+if (~ a a) { echo match }
+if not echo bad

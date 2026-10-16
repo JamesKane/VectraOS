@@ -1,0 +1,8 @@
+ifs=:
+x=`{echo -n a:b:c}
+echo $#x $x
+ifs='
+'
+y=`{printf 'one two\nthree\n'}
+echo $#y
+echo $y(1)

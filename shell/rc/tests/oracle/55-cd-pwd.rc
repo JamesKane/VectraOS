@@ -1,0 +1,7 @@
+mkdir -p a/b
+cd a/b
+pwd | sed 's,.*/\(a/b\)$,\1,'
+cd ..
+pwd | sed 's,.*/,,'
+cd /nonexistent
+echo $status

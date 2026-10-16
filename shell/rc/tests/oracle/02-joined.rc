@@ -1,0 +1,6 @@
+x=(a b   c)
+echo $"x
+y=$"x
+echo $#y
+e=()
+echo $#e $"e

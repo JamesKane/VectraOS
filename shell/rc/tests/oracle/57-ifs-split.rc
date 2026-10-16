@@ -1,0 +1,3 @@
+ifs=(, ' ')
+x=`{echo -n 'a,b c'}
+echo $#x

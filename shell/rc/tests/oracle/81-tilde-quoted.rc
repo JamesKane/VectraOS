@@ -1,0 +1,10 @@
+~ abc '*'; echo q $status
+x='*'
+~ abc $x; echo v $status
+~ 'a*' 'a*'; echo lit $status
+switch (abc) {
+case '*'
+	echo quoted-star
+case *
+	echo star
+}

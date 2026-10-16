@@ -1,0 +1,7 @@
+fn greet { echo hello $1 }
+greet world
+fn greet { echo hi $* }
+greet a b
+fn greet
+greet x
+echo $status

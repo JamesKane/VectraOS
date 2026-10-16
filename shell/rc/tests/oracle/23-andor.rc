@@ -1,0 +1,6 @@
+true && echo t1
+false && echo f1
+false || echo f2
+true || echo t2
+false || false || echo f3
+true && false || echo mixed

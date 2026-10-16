@@ -67,6 +67,7 @@ CMake/Ninja builds the images, with one tree per arch under `build/<arch>/`.
     .build/debug/vx boot rv64                        # boot interactively (Ctrl-A x quits)
     .build/debug/vx bench                            # boot budgets under KVM (advisory)
     .build/debug/vx loc                              # size budgets
+    .build/debug/vx rc-oracle                        # our rc against 9front's (D70)
     .build/debug/vx hardware                         # the hardware support list (D66)
 
 - Each step's output goes to `build/vx/<step>.log`. On failure, vx shows

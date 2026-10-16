@@ -1,0 +1,6 @@
+a=(1 2 3)
+echo pre^$a
+echo $a^post
+echo pre$a.c
+x=foo
+echo $x.c $x^.c

@@ -1,0 +1,5 @@
+x=(a 'b c')
+whatis x
+fn f { echo hi }
+whatis f
+whatis cd

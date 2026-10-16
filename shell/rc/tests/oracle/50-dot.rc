@@ -1,0 +1,3 @@
+echo 'echo sourced $1; y=from-dot' > inc.rc
+. inc.rc arg
+echo $y

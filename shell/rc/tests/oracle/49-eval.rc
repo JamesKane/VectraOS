@@ -1,0 +1,4 @@
+cmd='echo evaluated; x=5'
+eval $cmd
+echo $x
+eval echo '$x'

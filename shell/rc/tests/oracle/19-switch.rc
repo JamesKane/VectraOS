@@ -1,0 +1,12 @@
+for (w in apple banana cherry date x.c) {
+	switch ($w) {
+	case a*
+		echo A $w
+	case b* c*
+		echo BC $w
+	case *.c
+		echo C $w
+	case *
+		echo other $w
+	}
+}

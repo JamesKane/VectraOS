@@ -1,0 +1,5 @@
+fn echo { builtin echo wrapped $* }
+echo hi
+fn cd { builtin cd $1; echo cd-wrapped }
+mkdir -p sd
+cd sd

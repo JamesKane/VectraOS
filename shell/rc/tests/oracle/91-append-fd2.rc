@@ -1,0 +1,3 @@
+ls /nonexistent >>[2] e
+ls /nonexistent >>[2] e
+wc -l < e

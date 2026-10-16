@@ -1,0 +1,4 @@
+echo nothing*here
+echo 'g/*'
+x=*.nomatch
+echo $x

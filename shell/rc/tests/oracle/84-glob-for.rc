@@ -1,0 +1,2 @@
+mkdir g; touch g/x g/y
+for (f in g/*) echo file $f

@@ -1,0 +1,2 @@
+{ echo out; ls /nonexistent } > both >[2=1]
+wc -l < both

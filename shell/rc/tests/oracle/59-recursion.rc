@@ -1,0 +1,8 @@
+fn count {
+	if (! ~ $#* 0) {
+		echo $#*
+		shift
+		count $*
+	}
+}
+count a b c d

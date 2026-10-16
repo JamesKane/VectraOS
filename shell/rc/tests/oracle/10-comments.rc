@@ -1,0 +1,4 @@
+echo a # comment
+# whole line
+echo b#c
+echo 'd' #e

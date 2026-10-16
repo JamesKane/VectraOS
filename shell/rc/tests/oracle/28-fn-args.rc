@@ -1,0 +1,6 @@
+fn f { echo $#* $* $2 }
+f a b c
+f
+*=(x y)
+echo $*
+echo $1

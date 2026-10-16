@@ -1,0 +1,5 @@
+switch (zz) {
+case a
+	echo a
+}
+echo after

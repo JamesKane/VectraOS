@@ -1,0 +1,6 @@
+x=world
+cat <<END
+hello $x
+line two
+END
+echo after

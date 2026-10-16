@@ -1,0 +1,3 @@
+sleep 0 &
+if (~ $#apid 1) echo has apid
+wait

@@ -1,0 +1,4 @@
+fn f { echo f }
+fn f
+whatis f
+echo $status

@@ -1,0 +1,4 @@
+mkdir g
+touch g/apple g/banana g/cherry g/.hidden
+echo g/*
+echo g/*a*
