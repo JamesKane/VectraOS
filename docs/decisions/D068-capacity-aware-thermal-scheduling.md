@@ -1,4 +1,4 @@
-# D68. The scheduler places by capacity and topology; thermal limits reach it as capacity (2026-10-16, proposed)
+# D68. The scheduler places by capacity and topology; thermal limits reach it as capacity (2026-10-16, proposed; the cpu_set_info merge decided)
 
 croi's scheduler (K3, `docs/kernel/design/cpu.md`) gives each CPU a
 capacity, charges deadline budgets in capacity-scaled time and admits
@@ -82,7 +82,8 @@ it runs. This entry extends K3; it is not a new scheduler.
   IDLE_STATES (today's call, per CPU) and CAPACITY (an array of CPU,
   original, sustained, available; any field may be "unchanged"). One
   call updates every CPU a thermal event touched (principle 12). The
-  syscall count doesn't change. This merge is part of this decision.
+  syscall count doesn't change. This merge is decided (owner,
+  2026-10-16); the rest of this entry is proposed.
 - **Thermal policy stays in the power service.** It reads the sources
   and decides capacities; the kernel only applies them. Per source:
   - Q8B: EPSS's `domain_state` level (it drops when LMh throttles) and
