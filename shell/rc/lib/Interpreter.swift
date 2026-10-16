@@ -125,8 +125,8 @@ public final class Rc {
   }
 
   public var status: String { (variables["status"] ?? [""]).joined(separator: "|") }
-  /// Whether the status is true: every stage's empty (9front's truestatus).
-  public var succeeded: Bool { (variables["status"] ?? [""]).allSatisfy { $0.isEmpty } }
+  /// Whether the status is true (9front's truestatus).
+  public var succeeded: Bool { ok() }
 
   /// Runs a script's text with these descriptors; its status, or nil
   /// after `exit` (the status in $status).
@@ -148,7 +148,8 @@ public final class Rc {
     }
   }
 
-  func ok() -> Bool { status.allSatisfy { $0 == "|" } }
+  /// 9front's truestatus: nothing but `|` and `0`.
+  func ok() -> Bool { status.allSatisfy { $0 == "|" || $0 == "0" } }
 
   // MARK: Words
 
@@ -446,11 +447,12 @@ public final class Rc {
       }
     case .whileDo(let condition, let body):
       while true {
-        try execute(condition, fds)
+        // An empty condition is true (9front's Xsettrue); a failing one's
+        // status is the loop's.
+        if condition == .empty { setStatus("") } else { try execute(condition, fds) }
         guard ok() else { break }
         try execute(body, fds)
       }
-      setStatus("")
     case .switchOn(let subject, let cases):
       let s = try value(subject, fds)
       guard s.count == 1 else { throw RcError(message: "switch needs one string") }
@@ -527,7 +529,9 @@ public final class Rc {
       if k < pipes.count { pipes[k].1.close() }
     }
     for (k, job) in jobs.enumerated() { if let job { statuses[k] = job.wait() } }
-    variables["status"] = statuses
+    // One string, left to right, a | after each non-empty part (9front's
+    // concstatus, as its pipeline nests: false|true is `1|`, true|false `1`).
+    setStatus(statuses.dropFirst().reduce(statuses[0]) { ($0.isEmpty ? "" : $0 + "|") + $1 })
   }
 
   // MARK: Builtins

@@ -10,7 +10,6 @@
 08-concat-null	port	concat error not fatal in port
 11-continuation	port	backslash-newline inside a word not a space
 15-for-in	port	9front makes for variable local; port leaves it set
-18-while-shift	port	while resets $status to ''
 21b-tilde-noneg	port	~ subject is whole list; quoted pattern still a pattern
 21-tilde	port	[~a-c] lexes ~ as a token: syntax error
 25-subshell	port	@{...} unsupported
@@ -18,7 +17,7 @@
 27-fn	linux	not-found status text (Linux oracle: 1)
 29-dollar0	port	$0 unset
 30-status-fail	linux	Linux oracle: success status is 0
-31-status-pipeline	port	$status is a list, not one |-joined string (+ Linux 0)
+31-status-pipeline	linux	Linux oracle: success is 0, so false|true is 1|0 (Plan 9, and we: 1|)
 36-redir-close	port	builtin echo to closed fd succeeds
 42-glob-star	port	* skips dotfiles
 44-glob-class	port	[~a-c] syntax error
@@ -33,7 +32,6 @@
 65-syntax-eq	port	= in arguments accepted (and split into its own word)
 69-notfound	linux	not-found status text (Linux oracle: 1)
 73-assign-list-var	port	$a=val (computed name) unsupported
-75-while-false-status	port	while resets $status to ''
 81-tilde-quoted	port	quoted / variable pattern chars active in ~ and case
 82-paren-caret	port	port accepts word( list ) (9front: syntax error)
 90-undefined	port	concat error not fatal in port

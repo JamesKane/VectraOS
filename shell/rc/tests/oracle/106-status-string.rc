@@ -1,0 +1,8 @@
+false|false; echo $#status $status
+if(true|true) echo true pipeline
+if(false|false) echo wrong; if not echo false pipeline
+x=(a b c)
+while(! ~ $#x 0) x=$x(2-)
+echo after while $#status
+while(false) echo never
+echo $status

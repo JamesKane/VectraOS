@@ -191,8 +191,10 @@ func files(_ paths: [String]) -> Machine {
 @Test func pipelinesAndStatus() {
   #expect(rc("echo hello | upper").out == "HELLO\n")
   #expect(rc("{ echo a; echo b; echo c } | cat | wc").out == "3\n")
-  // A pipeline's status: each stage's (echo then sets its own).
-  #expect(rc("false | cat; echo $#status $status").out == "2 1 \n")
+  // A pipeline's status: one string, a | after each non-empty part
+  // (9front's concstatus).
+  #expect(rc("false | cat; echo $#status $status").out == "1 1|\n")
+  #expect(rc("echo a | false; echo $status").out == "1\n")
   #expect(rc("nonesuch").err == "nonesuch: not found\n")
 }
 
