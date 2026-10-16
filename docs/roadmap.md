@@ -131,15 +131,20 @@ work, in order:
    builtins (`build_builtins.sh`, ours on every machine, in place of
    Swift 6.4.0's prebuilt x86_64 archive), the sysroot (the floor, the
    libc, the ABI headers and the floor's modules), libc++, libc++abi
-   and libunwind, the Swift runtime and standard library, and five boot
-   tests (`user/tier1`: C,
-   C++, full Swift, a library module, concurrency on croi's executors).
+   and libunwind, the Swift runtime and standard library,
+   FoundationEssentials (`build_foundation.sh`), and six boot tests
+   (`user/tier1`: C, C++, full Swift, a library module, concurrency on
+   croi's executors, and FoundationEssentials: Codable's JSON and
+   property lists, URLs, dates, Decimal, UUIDs, ProcessInfo). Until fdio,
+   the libc's file calls are weak and fail (`native/files.c`, as
+   `remove` and `rename` were), so Foundation links without files.
    Left: rv64, whose LLVM has none of Swift's calling conventions (clang
    rejects `swiftcall`, which the runtime's C++ uses, and the backend has
    no guaranteed tail calls for `swifttailcc` nor Swift's registers): a
-   patch series and a Swift ABI for riscv64, then a rebuild, to decide;
-   and FoundationEssentials (`build_foundation.sh` is lifted; its test needs
-   FDIO).
+   patch series and a Swift ABI for riscv64, then a rebuild, to decide
+   (deferred, 2026-10-16: rv64 stays tier 0 until rc or FDIO needs it
+   there); and FoundationEssentials' FileManager checks, which come back
+   to `user/tier1/Foundation.swift` with fdio.
 4. **The control plane** (`system/ipc`, `node`, `launch`). The dispatcher
    binds each channel once, PERSISTENT, and reads and replies in arrays.
    Node messages become batches (D18): a request is an array of

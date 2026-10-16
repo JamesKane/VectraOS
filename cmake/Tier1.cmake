@@ -4,9 +4,10 @@
 # build/<arch>/sysroot: the floor as libsys.a, the libc as libc.a, the
 # libc's headers and the floor's C interface (cmake/sysroot.cmake);
 # libc++, libc++abi and libunwind (cmake/cxx.cmake); the Swift runtime and
-# standard library (tools/toolchain/build_stdlib.sh), with compiler-rt's
-# builtins (tools/toolchain/build_builtins.sh). amd64 and arm64 so far:
-# riscv64 waits for Swift's calling conventions in its LLVM.
+# standard library (tools/toolchain/build_stdlib.sh) and FoundationEssentials
+# (build_foundation.sh), with compiler-rt's builtins (build_builtins.sh).
+# amd64 and arm64 so far: riscv64 waits for Swift's calling conventions in
+# its LLVM.
 #
 #   croi_tier1(BOOTFS_VAR DEPENDS_VAR)
 # Sets BOOTFS_VAR to the bootfs entries (bin/NAME=FILE) of tier 1's test
@@ -93,7 +94,20 @@ function(croi_tier1 bootfs_var depends_var)
     COMMAND ${_swiftc} -parse-as-library ${_src}/Async.swift -o ${_out}/swift-async
     DEPENDS swift-stdlib ${_swift_core} ${_src}/Async.swift ${_sysroot}/usr/lib/libsys.a
     COMMENT "swift-async, Swift concurrency on croi")
-  set(_programs floor-hello cxx-hello swift-hello swift-start swift-async)
+  # FoundationEssentials (tools/toolchain/build_foundation.sh, after the
+  # stdlib, into the same place), then foundation-test.
+  set(_foundation ${_static}/libFoundationEssentials.a ${_static}/lib_FoundationCShims.a
+      ${_static}/lib_FoundationCollections.a)
+  add_custom_target(swift-foundation ALL
+    COMMAND ${PROJECT_SOURCE_DIR}/tools/toolchain/build_foundation.sh ${_machine}
+    BYPRODUCTS ${_foundation}
+    DEPENDS swift-stdlib
+    COMMENT "Tier 1's FoundationEssentials (tools/toolchain/build_foundation.sh)")
+  add_custom_command(OUTPUT ${_out}/foundation-test
+    COMMAND ${_swiftc} -parse-as-library ${_src}/Foundation.swift -o ${_out}/foundation-test
+    DEPENDS swift-foundation ${_foundation} ${_src}/Foundation.swift ${_sysroot}/usr/lib/libsys.a
+    COMMENT "foundation-test, FoundationEssentials on croi")
+  set(_programs floor-hello cxx-hello swift-hello swift-start swift-async foundation-test)
   set(_entries)
   set(_files)
   foreach(_p ${_programs})

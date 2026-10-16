@@ -272,8 +272,11 @@ syscalls 110-111):
   (`build_stdlib.sh`). The tree builds as before without the toolchain.
   Tier 1 programs link `ET_EXEC` at 0x1000000 (the clang driver's croi
   link line, patch llvm 0003) and start at the floor's `_start`. The
-  boot tests: floor-hello, cxx-hello, swift-hello, swift-start and
-  swift-async (`user/tier1`).
+  boot tests: floor-hello, cxx-hello, swift-hello, swift-start,
+  swift-async and foundation-test (`user/tier1`). FoundationEssentials
+  (`build_foundation.sh`) links before fdio because the libc's file calls
+  are weak and fail (`system/libc/native/files.c`); fdio's strong ones
+  will win.
 
 ## bootfs and userboot (K8b)
 

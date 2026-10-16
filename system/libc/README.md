@@ -25,7 +25,9 @@ tests' `TDFloat128` shim; `TODHCHAI_STRTOLD_CASES`), and what libc++
 needs: `<ctype.h>`, `<inttypes.h>`, the rest of the integer conversions,
 `qsort`, `bsearch`, `strerror_r`, errno set from Swift (`stdlib/Errno.swift`,
 `__errno_location`: glibc's hosted, so the tests compare it). Struct
-returns and `strtold` are C (`native/stdlib.c`). LibC is compiled `-O` in
+returns and `strtold` are C (`native/stdlib.c`). The file calls are weak
+and fail (`native/files.c`, ENOENT for a path, EBADF for a descriptor,
+`getcwd` gives "/") until tier 1's fdio defines them. LibC is compiled `-O` in
 SwiftPM's debug builds too (unspecialized value generics are slow). Their constants are computed by
 `vx mathgen` (`tools/vx/MathgenCommand.swift`); after changing it,
 regenerate and commit:
