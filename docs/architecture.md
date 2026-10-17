@@ -96,8 +96,8 @@ offset 384+  slots[count]     (fixed size; payloads in the IPC wire format
 - **BYTE_STREAM** (a header flag, D46): each slot is a length, flags and
   that many bytes, so a writer puts any amount and a reader takes any
   amount (a slot in more than one read, each byte copied out once); the
-  end of input is a slot flagged END, after the last bytes. stdio, pipes
-  and the pty use it.
+  end of input is a slot flagged END, after the last bytes. stdio and
+  pipes use it.
 - **Large payloads** travel by reference. A slot carries the offset and
   length within a shared data VMO, as in sDDF's available and free queues.
   A request/response service uses a pair of rings, SQ and CQ.

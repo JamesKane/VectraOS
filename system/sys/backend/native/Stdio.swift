@@ -5,7 +5,7 @@
 // this side writes, or the other way), with a doorbell each way and a
 // channel whose closing is its end. Made for a child's Startup, whose
 // floor attaches the other side (stdio.c). One writer per ring: whoever
-// shares a terminal relays (rc, the pty).
+// shares a terminal relays (rc).
 
 import Ring
 import TDNative
@@ -34,7 +34,7 @@ import TDNative
   }
 
   /// Makes the ring, doorbells and channel; `give` takes the child's side
-  /// (into a Startup, or over IPC: a pty's).
+  /// (into a Startup, or over IPC).
   public init(fd: Int32 = -1, childReads: Bool, give: (consuming StreamParts) -> Void) throws(Status) {
     self.fd = fd
     self.childReads = childReads
@@ -178,8 +178,8 @@ import TDNative
 /// One descriptor's child side, to hand over (D46, td_stdio.h): its ring's
 /// VMO, the child's doorbell (which the child waits on), the parent's
 /// (which it rings), and the channel whose closing ends it. It goes into a
-/// Startup as a descriptor (`Startup.add(_:fd:)`), over IPC (a pty's
-/// client end), or is attached in Swift (`AttachedStream`).
+/// Startup as a descriptor (`Startup.add(_:fd:)`), over IPC, or is
+/// attached in Swift (`AttachedStream`).
 public struct StreamParts: ~Copyable {
   public var vmo: Handle
   public var childBell: Handle
@@ -221,8 +221,7 @@ extension Startup {
 }
 
 /// A descriptor's child side, attached in Swift (what the floor's stdio.c
-/// does for a process's own): a service that was handed one, as a
-/// terminal is a pty's.
+/// does for a process's own): a service that was handed one.
 @safe public final class AttachedStream: @unchecked Sendable {
   /// This side reads it (else writes it).
   public let reads: Bool

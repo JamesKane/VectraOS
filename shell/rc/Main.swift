@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // bin/rc (M6j part 2c): the shell on croi, in full Swift (tier 1). Started
-// with stdio rings as its descriptors 0-2 (D46: a terminal's pty, or its
-// parent's), with none and a /dev/cons (the console's shell, kbdfs's), or
-// with the debuglog alone: it prompts with $prompt(1) (or
+// with stdio rings as its descriptors 0-2 (D46: its parent's), with none
+// and a /dev/cons (its terminal: kbdfs's for the console's shell, the
+// terminal's in a cpu session), or with the debuglog alone: it prompts with $prompt(1) (or
 // $prompt(2) inside an unfinished construct), reads lines until what it
 // has parses, and runs it; `rc -c COMMAND` runs one, and `rc FILE ARG...`
 // runs a script ($0 the file, $* the rest: a `#!/bin/rc` script's too),
@@ -44,7 +44,7 @@ final class Standard: RcStream {
     }
   }
   func read() -> [UInt8]? {
-    // On a pty, stdin is the terminal's, which rc shares with its
+    // On a terminal, stdin is its /dev/cons, which rc shares with its
     // programs (Terminal.swift).
     if fd == 0, let t = Terminal.current { return t.read() }
     var buffer = [UInt8](repeating: 0, count: 1024)
@@ -76,15 +76,12 @@ final class Standard: RcStream {
       fds[2]!.write(Array((RcArguments.usage + "\n").utf8))
       exit(1)
     }
-    // On a pty, its controller (CROI_PA_PTY_CONTROL), sharing it.
-    if let control = Startup.current.take(HandleType.info(HandleType.ptyControl)) {
-      Terminal.current = Terminal(control: control)
-    } else if !td_stdio_has(0, nil) && !td_stdio_has(1, nil),
+    if !td_stdio_has(0, nil) && !td_stdio_has(1, nil),
       case .success(let input) = FDIO.open("/dev/cons", flags: OpenFlags.readOnly),
       case .success(let output) = FDIO.open("/dev/cons", flags: OpenFlags.writeOnly)
     {
-      // On the console: no stdio, and a /dev/cons, its terminal for 0 to
-      // 2, as Plan 9's init opens #c/cons (Terminal.swift).
+      // No stdio, and a /dev/cons: its terminal for 0 to 2, as Plan 9's
+      // init opens #c/cons (Terminal.swift).
       Terminal.current = Terminal(cons: input)
       fds[1] = FileStream(output, reads: false)
       fds[2] = FileStream(output, reads: false)
@@ -139,9 +136,8 @@ final class Standard: RcStream {
             pending += more
             continue
           }
-          // Notes came while rc waited (on a pty): an interrupt drops the
-          // line being typed, as 9front's Xrdcmds does (with no newline of
-          // rc's: the pty has echoed ^C and one).
+          // Notes came while rc waited: an interrupt drops the unfinished
+          // command, as 9front's Xrdcmds does (with no newline of rc's).
           switch shell.takeNotes(fds: fds) {
           case .exit: exits(shell)
           case .interrupted:

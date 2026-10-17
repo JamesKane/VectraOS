@@ -281,8 +281,7 @@ set(_launch_service ${CMAKE_CURRENT_BINARY_DIR}/launchservice.elf)
 croi_user_program(${_launch_service} PIE SYS SWIFT ${_launch}/tests/native/Service.swift
                   ${_launch}/tests/TreeService.swift)
 set(_launch_test ${CMAKE_CURRENT_BINARY_DIR}/launchtest.elf)
-croi_user_program(${_launch_test} PIE SYS IPC SWIFT ${_launch}/tests/native/Main.swift
-                  ${PROJECT_SOURCE_DIR}/services/pty/lib/Protocol.swift)
+croi_user_program(${_launch_test} PIE SYS IPC SWIFT ${_launch}/tests/native/Main.swift)
 set(_manifests ${_launch}/tests/native/manifests)
 # bin/time (D48): UTC from the RTC, on amd64, which alone has the CMOS's
 # ports; elsewhere it publishes nothing, so only amd64's bootfs runs it.
@@ -294,11 +293,6 @@ set(_time_bootfs bin/time=${_time})
 # mount its bin/ at /bin.
 set(_bootfs_service ${CMAKE_CURRENT_BINARY_DIR}/bootfs.elf)
 croi_user_program(${_bootfs_service} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/bootfs/Main.swift)
-# bin/pty (D46): the pty service, on every arch; launch-test runs rc on one.
-set(_pty_src ${PROJECT_SOURCE_DIR}/services/pty)
-set(_pty ${CMAKE_CURRENT_BINARY_DIR}/pty.elf)
-croi_user_program(${_pty} PIE SYS IPC SWIFT ${_pty_src}/Main.swift ${_pty_src}/lib/Protocol.swift ${_pty_src}/lib/Server.swift
-                  ${_pty_src}/lib/LineDiscipline.swift)
 # bin/devmgr and its drivers (V2 item 7c, D74): every arch. etc/drivers is
 # every drivers/**/driver.manifest, in path order (DevMgrTests checks the
 # same set has no two drivers sharing a rule).
@@ -391,7 +385,6 @@ set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_te
           bin/launch-test=${_launch_test} etc/manifests/a.manifest=${_manifests}/a.manifest
           etc/manifests/b.manifest=${_manifests}/b.manifest
           etc/manifests/launch-test.manifest=${_launch_test_manifest} ${_time_bootfs}
-          bin/pty=${_pty} etc/manifests/pty.manifest=${_manifests}/pty.manifest
           bin/bootfs=${_bootfs_service} etc/manifests/bootfs.manifest=${_manifests}/bootfs.manifest
           bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} bin/virtio-net=${_virtio_net} etc/drivers=${_drivers_index}
           etc/manifests/devmgr.manifest=${_devmgr_manifest}
@@ -409,7 +402,7 @@ set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_te
           ${_tier1_bootfs})
 set(_bootfs_depends ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_trace_test} ${_ipc_test} ${_node_test} ${_acpi_test} ${_pci_test}
           ${_launcher} ${_launch_service} ${_launch_test} ${_manifests}/a.manifest ${_manifests}/b.manifest
-          ${_launch_test_manifest} ${_time} ${_manifests}/time.manifest ${_pty} ${_manifests}/pty.manifest
+          ${_launch_test_manifest} ${_time} ${_manifests}/time.manifest
           ${_bootfs_service} ${_manifests}/bootfs.manifest
           ${_devmgr} ${_edu} ${_virtio_input} ${_virtio_net} ${_drivers_index} ${_devmgr_manifest}
           ${_kbdfs} ${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest

@@ -1,7 +1,7 @@
 # The client the boot runs to its end (launcher.until=launch-test); CMake
 # adds `use time` where the time service runs (amd64). `programs`: it
 # starts rc (tier 1: amd64 and arm64) to run `cat /svc/*/status`, and runs
-# it on a pty (`use pty`); /bin is the bootfs service's (D71).
+# it on a terminal of its own; /bin is the bootfs service's (D71).
 # /dev is kbdfs's, then devmgr's device directories (D82, D83); the
 # manual is bootfs's lib/man (D86), which rc's man reads.
 # Its /env from its `env` lines, and /svc/env for rc's groups (D81).
@@ -13,7 +13,6 @@ service launch-test
 program launch-test
 use a
 use b
-use pty
 use devmgr
 use net
 use cs

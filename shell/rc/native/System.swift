@@ -9,9 +9,9 @@
 // stream rc's descriptor names (a pipe, a file, a backquote's capture,
 // rc's own). A pipe is a channel pair of rc's own, its writer's closing
 // its reader's end. A child given rc's own stdin reads an empty one, since
-// a relay would take the terminal's next line from rc (the pty, and the
-// console's /dev/cons, share a terminal: Terminal.swift, which lends it to
-// the program instead). <{} and >{} name a pipe's end /dev/fd/N, N one
+// a relay would take the terminal's next line from rc (rc on a /dev/cons
+// shares its terminal: Terminal.swift, which lends it to the program
+// instead). <{} and >{} name a pipe's end /dev/fd/N, N one
 // of rc's numbers (32 to 63), which the child is given at N.
 
 import FDIO
@@ -357,7 +357,7 @@ final class CroiSystem: RcSystem {
       var lend: ChildStream? = nil
       for (fd, stream) in given {
         guard let ring = stdio.stream(fd) else { continue }
-        // rc's own stdin on a pty: the terminal, lent (no relay).
+        // rc's own stdin on a terminal: lent (no relay).
         if fd == 0, (stream as? Standard)?.fd == 0, Terminal.current != nil {
           lend = ring
           continue
@@ -403,9 +403,8 @@ final class CroiSystem: RcSystem {
 
   var directory: String { cwd }
 
-  /// The pty's notes, when rc is on one (Terminal.swift), and those posted
-  /// to rc (NoteQueue, D87).
-  func takeNotes() -> [String] { (Terminal.current?.takeNotes() ?? []) + NoteQueue.shared.take() }
+  /// The notes posted to rc (NoteQueue, D87).
+  func takeNotes() -> [String] { NoteQueue.shared.take() }
 
   /// `body` given this rc's job, which stays rc's (Shared's).
   func withJob(_ body: (borrowing Handle) throws(Status) -> Handle) throws(Status) -> Handle {

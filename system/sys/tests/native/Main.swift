@@ -434,8 +434,8 @@ struct SysTest {
     check(try Process.info(many).returnCode == 8, "and that child ran to its end")
     _ = consume thread3
 
-    // A descriptor's child side handed over and attached in Swift (a
-    // pty's terminal end), each way.
+    // A descriptor's child side handed over and attached in Swift,
+    // each way.
     var reader: AttachedStream? = nil, writer: AttachedStream? = nil
     let to = try ChildStream(childReads: true) { (p: consuming StreamParts) in reader = try? AttachedStream(p) }
     let from = try ChildStream(childReads: false) { (p: consuming StreamParts) in writer = try? AttachedStream(p) }

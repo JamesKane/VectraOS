@@ -216,9 +216,6 @@ public enum HandleType {
   /// The UTC page (D48): argument 0 read only (the floor maps it), 1
   /// writable (the time service's).
   public static var vmoUTC: UInt32 { CROI_PA_VMO_UTC }
-  /// A pty's Control (services/pty): the program started with it is a
-  /// shell controlling the pty its descriptors 0 to 2 are.
-  public static var ptyControl: UInt32 { CROI_PA_PTY_CONTROL }
   /// A page the process writes its exit string to, as it ends (Plan 9's
   /// exits, D72): ExitString is the parent's side, td_exits the child's.
   public static var vmoStatus: UInt32 { CROI_PA_VMO_STATUS }

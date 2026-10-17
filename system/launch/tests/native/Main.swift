@@ -518,92 +518,121 @@ func rcRuns(_ rc: ProgramEntry, _ script: String, _ expected: [UInt8], _ ns: Nam
   }
 }
 
-/// rc on a pty, as a terminal runs it (D46): rc given the pty's client
-/// end as its descriptors 0 to 2 and its Control, typed to here. It
-/// prompts, runs a line, lends the terminal to a program reading it
-/// (cat, ended by ^D), and exits.
-func rcOnPty(_ rc: ProgramEntry, _ ns: Namespace, job: borrowing Handle) {
-  guard let channel = try? ns.connect("/svc/pty/pty") else { return check(false, "/svc/pty/pty for rc") }
-  var factory = PtyIPC.FactoryClient(channel: channel)
-  do {
-    let opened = try factory.open(size: PtyIPC.WindowSize(columns: 80, rows: 24))
-    try opened.take {
-      (k: consuming PtyIPC.Descriptor, s: consuming PtyIPC.Descriptor, device: consuming Handle) throws in
-      let keys = try AttachedStream(k.parts(childReads: false))
-      let screen = try AttachedStream(s.parts(childReads: true))
-      var dev = PtyIPC.DeviceClient(channel: device)
-      let startup = Startup(args: ["rc"])
-      guard let svc = try? ns.connect("/svc"), let bin = try? ns.connect("/bin") else {
-        return check(false, "rc on a pty: /svc and /bin")
-      }
-      startup.mount(svc, at: "/svc")
-      startup.mount(bin, at: "/bin")
-      if let env = try? ns.connect("/svc/env/new") { startup.mount(env, at: "/env") }
-      startup.add(try Job.create(parent: job), info: HandleType.info(HandleType.jobDefault))
-      try dev.client().take {
-        (i: consuming PtyIPC.Descriptor, o: consuming PtyIPC.Descriptor, e: consuming PtyIPC.Descriptor,
-         c: consuming Handle) in
-        startup.add(i.parts(childReads: true), fd: 0)
-        startup.add(o.parts(childReads: false), fd: 1)
-        startup.add(e.parts(childReads: false), fd: 2)
-        startup.add(c, info: HandleType.info(HandleType.ptyControl))
-      }
-      let process = try Process.create(job: job, name: "rc")
-      let thread = try Process.start(process, entry: rc, startup)
-      check(contains(readUntil(screen, Array("% ".utf8)), Array("% ".utf8)), "rc on a pty prompts")
-      try keys.write(Array("echo hi\r".utf8))
-      check(contains(readUntil(screen, Array("hi\r\n% ".utf8)), Array("echo hi\r\nhi\r\n% ".utf8)),
-            "rc on a pty runs a typed line")
-      // A program given rc's stdin has the terminal while it runs.
-      try keys.write(Array("cat\r".utf8))
-      _ = readUntil(screen, Array("cat\r\n".utf8))
-      sleep(until: Clock.monotonic() + 500_000_000)  // cat started
-      try keys.write(Array("typed\r".utf8))
-      let echoed = readUntil(screen, Array("typed\r\n".utf8))
-      // ^D: cat's input ends, and it writes what it read (the commands
-      // write at their end: nothing streams yet), then rc prompts.
-      try keys.write([0x04])
-      let after = readUntil(screen, Array("% ".utf8))
-      check(contains(echoed + after, Array("typed\r\ntyped\r\n% ".utf8)), "rc lends the terminal to the program it runs")
-      check(contains(after, Array("% ".utf8)), "^D ends the program's input, not rc's")
-      // ^C: rc kills the program that has the terminal.
-      try keys.write(Array("cat\r".utf8))
-      _ = readUntil(screen, Array("cat\r\n".utf8))
-      sleep(until: Clock.monotonic() + 500_000_000)  // cat started
-      try keys.write([0x03])
-      check(contains(readUntil(screen, Array("% ".utf8)), Array("% ".utf8)), "^C kills the program, and rc prompts")
-      // Notes (9front's): ^C is sigint. With no function for it, the rest
-      // of the line is abandoned; at the prompt, the line being typed.
-      try keys.write(Array("cat; echo a^b\r".utf8))
-      _ = readUntil(screen, Array("a^b\r\n".utf8))
-      sleep(until: Clock.monotonic() + 500_000_000)  // cat started
-      try keys.write([0x03])
-      check(!contains(readUntil(screen, Array("% ".utf8)), Array("\r\nab\r\n".utf8)), "^C abandons the rest of rc's line")
-      try keys.write(Array("echo never".utf8) + [0x03])
-      let reprompted = readUntil(screen, Array("^C\r\n% ".utf8))
-      try keys.write(Array("echo b\r".utf8))
-      let interrupted = reprompted + readUntil(screen, Array("\r\nb\r\n% ".utf8))
-      check(contains(interrupted, Array("echo b\r\nb\r\n% ".utf8)) && !contains(interrupted, Array("\r\nnever\r\n".utf8)),
-            "^C at rc's prompt drops the line typed")
-      // With a sigint function, it runs, and the line goes on; sigexit runs
-      // as rc exits.
-      try keys.write(Array("fn sigint { echo caught }; fn sigexit { echo bye }\r".utf8))
-      _ = readUntil(screen, Array("}\r\n% ".utf8))
-      try keys.write(Array("cat; echo a^c\r".utf8))
-      _ = readUntil(screen, Array("a^c\r\n".utf8))
-      sleep(until: Clock.monotonic() + 500_000_000)  // cat started
-      try keys.write([0x03])
-      check(contains(readUntil(screen, Array("ac\r\n% ".utf8)), Array("caught\r\nac\r\n% ".utf8)),
-            "rc runs its sigint for ^C")
-      try keys.write(Array("exit ''\r".utf8))  // $status is the killed cat's
-      check(contains(readUntil(screen, Array("bye\r\n".utf8)), Array("bye\r\n".utf8)), "rc runs its sigexit")
-      _ = try process.wait(for: Signals.terminated, deadline: Clock.monotonic() + 5_000_000_000)
-      check(try Process.info(process).returnCode == 0, "rc on a pty exits")
-      _ = consume thread
+/// A terminal of this test's own, as a window is (D75): a cons file in a
+/// tree served here, which its program finds at /dev/cons. A read takes
+/// a line typed (waiting for one), an empty one ^D's end; a write is shown.
+final class TestTerminal: @unchecked Sendable {
+  let dispatcher: IPCDispatcher
+  let tree: NodeTree
+  var cons: TreeNode?
+  let typed = Locked<[[UInt8]]>([])
+  let shown = Locked<[UInt8]>([])
+
+  init() throws(Status) {
+    dispatcher = try IPCDispatcher()
+    tree = NodeTree(dispatcher: dispatcher)
+    let typed = self.typed, shown = self.shown
+    cons = tree.stream("cons", NodeStream(
+      take: { max in
+        typed.withLock { (t: inout [[UInt8]]) -> [UInt8]? in t.isEmpty ? nil : Array(t.removeFirst().prefix(max)) }
+      },
+      write: { (bytes: [UInt8]) throws(NodeError) -> UInt32? in
+        shown.withLock { $0 += bytes }
+        return UInt32(bytes.count)
+      }))
+    let d = dispatcher
+    _ = try Thread.spawn { try? d.run() }.release()
+  }
+
+  /// A channel to its tree, to mount at /dev.
+  func channel() throws(Status) -> Handle {
+    let ends = try Channel.create()
+    try tree.serve(ends.b)
+    return ends.a
+  }
+
+  /// A line typed; "" is ^D.
+  func type(_ line: String) {
+    typed.withLock { $0.append(Array(line.utf8)) }
+    if let cons { tree.ready(cons) }
+  }
+
+  /// What it has shown since the last time, once that holds `want`, or
+  /// after 5 s.
+  func shown(until want: String) -> [UInt8] {
+    let end = Clock.monotonic() + 5_000_000_000
+    while !contains(shown.withLock { $0 }, Array(want.utf8)) && Clock.monotonic() < end {
+      sleep(until: Clock.monotonic() + 10_000_000)
     }
+    return shown.withLock { (s: inout [UInt8]) -> [UInt8] in
+      defer { s = [] }
+      return s
+    }
+  }
+
+  deinit { dispatcher.stop() }
+}
+
+/// rc on a terminal's /dev/cons, as on the console or in a cpu session:
+/// started with no descriptors, it takes /dev/cons as its terminal. It
+/// prompts, runs a line, lends the terminal to a program reading it (cat,
+/// ended by ^D), takes interrupts posted to its note group (killing the
+/// program, abandoning the rest of the line, or running its sigint), and
+/// runs its sigexit as it exits.
+func rcOnCons(_ rc: ProgramEntry, _ ns: Namespace, job: borrowing Handle) {
+  do {
+    let terminal = try TestTerminal()
+    let startup = Startup(args: ["rc"])
+    guard let svc = try? ns.connect("/svc"), let bin = try? ns.connect("/bin") else {
+      return check(false, "rc on a cons: /svc and /bin")
+    }
+    startup.mount(svc, at: "/svc")
+    startup.mount(bin, at: "/bin")
+    startup.mount(try terminal.channel(), at: "/dev")
+    if let env = try? ns.connect("/svc/env/new") { startup.mount(env, at: "/env") }
+    // Its own note group, which its programs share.
+    let group = try Job.create(parent: job)
+    startup.add(try group.duplicate(), info: HandleType.info(HandleType.jobDefault))
+    let process = try Process.create(job: group, name: "rc")
+    let pid = try process.info().koid
+    let thread = try Process.start(process, entry: rc, startup)
+    func interrupt() {
+      sleep(until: Clock.monotonic() + 500_000_000)  // cat started
+      if var g = try? ns.open("/proc/\(pid)/notepg") { try? g.writeText("interrupt") }
+    }
+    func shows(_ bytes: [UInt8], _ text: String) -> Bool { contains(bytes, Array(text.utf8)) }
+    check(shows(terminal.shown(until: "% "), "% "), "rc on a cons prompts")
+    terminal.type("echo hi\n")
+    check(shows(terminal.shown(until: "hi\n% "), "hi\n% "), "rc on a cons runs a typed line")
+    // A program given rc's stdin has the terminal while it runs; ^D ends
+    // its input (it writes what it read at its end), not rc's.
+    terminal.type("cat\n")
+    sleep(until: Clock.monotonic() + 500_000_000)  // cat started
+    terminal.type("typed\n")
+    terminal.type("")
+    check(shows(terminal.shown(until: "typed\n% "), "typed\n% "), "rc lends the terminal to the program it runs, until ^D")
+    // An interrupt kills the program that has the terminal.
+    terminal.type("cat\n")
+    interrupt()
+    check(shows(terminal.shown(until: "% "), "% "), "an interrupt kills the program, and rc prompts")
+    // With no sigint function the rest of the line is abandoned.
+    terminal.type("cat; echo a^b\n")
+    interrupt()
+    check(!shows(terminal.shown(until: "% "), "ab\n"), "an interrupt abandons the rest of rc's line")
+    // With one, it runs, and the line goes on; sigexit runs as rc exits.
+    terminal.type("fn sigint { echo caught }; fn sigexit { echo bye }\n")
+    _ = terminal.shown(until: "% ")
+    terminal.type("cat; echo a^c\n")
+    interrupt()
+    check(shows(terminal.shown(until: "ac\n% "), "caught\nac\n% "), "rc runs its sigint for an interrupt")
+    terminal.type("exit ''\n")  // $status is the killed cat's
+    check(shows(terminal.shown(until: "bye\n"), "bye\n"), "rc runs its sigexit")
+    _ = try process.wait(for: Signals.terminated, deadline: Clock.monotonic() + 5_000_000_000)
+    check(try Process.info(process).returnCode == 0, "rc on a cons exits")
+    _ = consume thread
   } catch {
-    print("launch-test: rc on a pty: \(error)")
-    check(false, "rc on a pty")
+    print("launch-test: rc on a cons: \(error)")
+    check(false, "rc on a cons")
   }
 }
 
@@ -614,7 +643,7 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
   guard let job = start.take(HandleType.info(HandleType.jobDefault)) else { return check(false, "a job to start rc in") }
   // /bin is the bootfs service's (D71): what's there, and rc from it.
   let listed = (try? ns.list("/bin", fields: 0))?.map { $0.name } ?? []
-  check(listed.contains { same($0, "launch-test") } && listed.contains { same($0, "pty") }, "/bin lists bootfs's programs")
+  check(listed.contains { same($0, "launch-test") } && listed.contains { same($0, "launcher") }, "/bin lists bootfs's programs")
   guard let memory = try? ns.memory("/bin/rc", executable: true) else {
     print("launch-test: no /bin/rc (tier 1 isn't built here): rc's checks skipped")
     return
@@ -696,82 +725,14 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
     rcRuns(rc, "x=`{ps -a}; ~ $#x 0 && echo none; kill launch-test", Array("@{echo kill>/proc/\(koid)/note} # launch-test\n".utf8), ns,
            job: job, "rc runs ps and kill over /proc")
   }
-  rcOnPty(rc, ns, job: job)
+  rcOnCons(rc, ns, job: job)
   _ = consume memory  // rc is started from it until here
-}
-
-/// What `s` gives until it has `want` in it, its end, or 5 s.
-func readUntil(_ s: AttachedStream, _ want: [UInt8]) -> [UInt8] {
-  var seen: [UInt8] = []
-  let end = Clock.monotonic() + 5_000_000_000
-  while !contains(seen, want) {
-    guard let more = try? s.read(deadline: end), !more.isEmpty else { break }
-    seen += more
-  }
-  return seen
 }
 
 func contains(_ bytes: [UInt8], _ part: [UInt8]) -> Bool {
   guard part.count <= bytes.count else { return part.isEmpty }
   for i in 0...(bytes.count - part.count) where Array(bytes[i..<(i + part.count)]) == part { return true }
   return false
-}
-
-/// A pty from /svc/pty/pty (D46): this process its terminal and its
-/// program both, each side's rings attached here.
-func runPty(_ ns: Namespace) {
-  guard let channel = try? ns.connect("/svc/pty/pty") else { return check(false, "/svc/pty/pty") }
-  var factory = PtyIPC.FactoryClient(channel: channel)
-  do {
-    let opened = try factory.open(size: PtyIPC.WindowSize(columns: 80, rows: 24))
-    try opened.take {
-      (k: consuming PtyIPC.Descriptor, s: consuming PtyIPC.Descriptor, device: consuming Handle) throws in
-      let keys = try AttachedStream(k.parts(childReads: false))
-      let screen = try AttachedStream(s.parts(childReads: true))
-      var dev = PtyIPC.DeviceClient(channel: device)
-      let client = try dev.client()
-      try client.take {
-        (i: consuming PtyIPC.Descriptor, o: consuming PtyIPC.Descriptor, e: consuming PtyIPC.Descriptor,
-         c: consuming Handle) throws in
-        let input = try AttachedStream(i.parts(childReads: true))
-        let output = try AttachedStream(o.parts(childReads: false))
-        let errors = try AttachedStream(e.parts(childReads: false))
-        var control = PtyIPC.ControlClient(channel: c)
-        check(try control.mode().canonical && control.windowSize() == PtyIPC.WindowSize(columns: 80, rows: 24),
-              "a pty's program sees its mode and the window's size")
-        // Keys: echoed to the screen (CR NL), a line to the program.
-        try keys.write(Array("hello\r".utf8))
-        check(readUntil(input, Array("\n".utf8)) == Array("hello\n".utf8), "a pty gives its program a typed line")
-        check(readUntil(screen, Array("\r\n".utf8)) == Array("hello\r\n".utf8), "and echoes it to the terminal")
-        // Output and errors: CR NL on the screen.
-        try output.write(Array("out\n".utf8))
-        check(readUntil(screen, Array("\r\n".utf8)) == Array("out\r\n".utf8), "a pty shows its program's output")
-        try errors.write(Array("err\n".utf8))
-        check(readUntil(screen, Array("\r\n".utf8)) == Array("err\r\n".utf8), "and its errors")
-        // ^C: the control hears it.
-        try keys.write([0x03])
-        if case .event(.interrupt) = try control.nextEvent(deadline: Clock.monotonic() + 5_000_000_000) {
-          check(true, "a pty's ^C is an interrupt for the control")
-        } else {
-          check(false, "a pty's ^C is an interrupt for the control")
-        }
-        _ = readUntil(screen, Array("^C\r\n".utf8))
-        // ^D on an empty line, no controller taking it: the program's end.
-        try keys.write([0x04])
-        check((try? input.read(deadline: Clock.monotonic() + 5_000_000_000)) == [], "a pty's ^D ends its program's stdin")
-        // The terminal goes (its keys end): the control hears it hang up.
-        try keys.end(deadline: Clock.monotonic() + 5_000_000_000)
-        if case .hangup = try control.nextEvent(deadline: Clock.monotonic() + 5_000_000_000) {
-          check(true, "a pty's going is a hangup for the control")
-        } else {
-          check(false, "a pty's going is a hangup for the control")
-        }
-      }
-    }
-  } catch {
-    print("launch-test: a pty: \(error)")
-    check(false, "a pty opened, typed to and shown")
-  }
 }
 
 @main struct LaunchTest {
@@ -801,12 +762,12 @@ func runPty(_ ns: Namespace) {
     // cat /svc/*/status
     let names = ((try? ns.list("/svc")) ?? []).map { $0.name }
     #if arch(x86_64)
-      let expected = 11  // and the time service
+      let expected = 10  // and the time service
     #else
-      let expected = 10
+      let expected = 9
     #endif
     check(names.count == expected && names.contains { same($0, "a") } && names.contains { same($0, "b") }
-            && names.contains { same($0, "launcher") } && names.contains { same($0, "pty") }
+            && names.contains { same($0, "launcher") }
             && names.contains { same($0, "devmgr") } && names.contains { same($0, "env") }
             && names.contains { same($0, "net") } && names.contains { same($0, "cs") }
             && names.contains { same($0, "dns") } && names.contains { same($0, "9gate") },
@@ -842,7 +803,6 @@ func runPty(_ ns: Namespace) {
     // this process's /svc and /bin, a job, and stdio;
     // what it writes is every status, in the glob's order. Tier 1: not on
     // rv64 yet.
-    runPty(ns)
     runRc(start, ns, names)
 
     // A crash, as the launcher's ctl makes one: a restarts (`restart always`).

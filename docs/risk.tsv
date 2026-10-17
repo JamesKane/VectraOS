@@ -63,7 +63,6 @@ shell/rc/	all	RcTests	boot-launch,boot-cpu	man,rc-oracle
 shell/commands/	all	CommandsTests	boot-launch	man
 services/	all	-	boot-launch	man
 services/time/	all	RTCTests	boot-launch	man
-services/pty/	all	PtyTests	boot-launch	man
 services/kbdfs/	all	KbdfsTests	boot-launch	man
 services/proc/	all	ProcTests	boot-launch,boot-cpu	man
 services/console/	all	ConsoleTests	boot-launch	man

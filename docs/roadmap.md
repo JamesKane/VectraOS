@@ -49,7 +49,7 @@ under `vx ci` and every budget it introduces has a running check
   console's shell (rc on kbdfs's /dev/cons, D97), done (2026-10-17);
   9gate (the codec, Noise IK, export and import, and the service at
   /svc/9gate), factotum holding its key, and cpu (the server and
-  `vx cpu`) done; the pty's removal next.
+  `vx cpu`) done, and the pty gone (2026-10-17).
   **V4 onward** are not started (V6's boards have research passes);
   V10, the Ghost, is proposed (D90), and V11 to V16, the native
   applications and Studio, are proposed (D95, D96).
@@ -790,7 +790,12 @@ meets a tested path.
   with Delete (amd64, arm64: rc is tier 1). Page: shell(8).
 - **The pty goes** (D77): with cpu's session and the console both serving
   `/dev/cons`, nothing needs it; `services/pty`, rc's terminal relay and
-  `CROI_PA_PTY_CONTROL` are removed (services/pty/README.md).
+  `CROI_PA_PTY_CONTROL` are removed.
+  - **Done (2026-10-17):** the pty's service, protocol, pages and
+    handle type are gone, and rc's Control path with them: rc has a
+    terminal only as `/dev/cons`, its interrupts notes to its group.
+    launch-test runs rc on a cons of its own (a window's, as cpu's and
+    the console's are) in place of a pty, and `man/missing` is empty.
 - **Files:** copies land in Taisce on a RAM-backed block device. Lifting
   Taisce's service here means bring-up uses the one file system, not a
   second RAM-only one (D8). Durability on disk is V4's.
@@ -818,7 +823,8 @@ meets a tested path.
 
 - **The manual (D86):** V3's pieces arrive with their pages (`cpu(8)`, `vx-cpu(1)`,
   `net(3)`, `proc(4)`, 9P2000's messages in section 5, the board tools),
-  and the pty's two rows leave `man/missing` with the pty.
+  and the pty's two rows leave `man/missing` with the pty (done:
+  2026-10-17).
 
 **Exit, in QEMU on amd64, arm64 and rv64, under `vx ci`:**
 - `vx cpu` gives rc with the dev terminal's `/dev/cons`, and ^C

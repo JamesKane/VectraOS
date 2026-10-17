@@ -110,7 +110,7 @@ with bulk rings, the launcher), time (but for two RTCs) and the
 environment as /env (D81). Begun: tier 1 (amd64 and arm64), and byte
 streams (the ring's byte-stream mode, stdio, FDIO, rc and its
 commands, which an audit against 9front found
-far from complete, and the pty, with rc on one), and drivers (D74:
+far from complete), and drivers (D74:
 ACPI, PCI, devmgr with edu's DMA through each IOMMU, virtio, virtio-input and
 kbdfs's /dev/kbd and /dev/cons, D83:
 item 7's exit met). Done: the console and the plumber (item 8, D85), and the manual (item 9, D86). V2's exit test `cat /svc/*/status` passes, run by

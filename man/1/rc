@@ -21,7 +21,7 @@ A script starting `#!` is run by the interpreter it names, as `exec` would.
 Otherwise `rc` reads standard input.
 
 `rc` prompts, with `$prompt(1)` for a command and `$prompt(2)` while one is unfinished, only when it is interactive: when `-i` is given, or when it is on a terminal and `-I` is not.
-It is on a terminal when `$TERM` is set, when it was started on a pty, or when it is on the console.
+It is on a terminal when `$TERM` is set, or when it has taken `/dev/cons` as its terminal (below).
 A command that is typed incomplete (an open brace or quote, a condition without its body) is continued on the next line.
 
 When `rc` ends, its status is its exit string: none if the status is true, else `$status` (`false` if that is empty).
@@ -401,9 +401,8 @@ On a terminal, `rc` also tells the terminal its directory when that has changed,
 
 A note is a named event that comes for `rc`.
 The names are those of the functions that handle it: `sigint`, `sigquit` and `sighup`, and `sigexit`, which is not a note but comes when `rc` ends.
-On a pty, ^C is `sigint`, ^\ is `sigquit`, and the terminal's going is `sighup`.
-`rc` kills the programs that have the terminal when one comes, then takes the note itself between two commands.
-On the console, Delete is an `interrupt` note that kbdfs(4) posts to its note group, which `rc` and the programs it runs are in: it ends those that do not take notes, and comes to `rc` as `sigint`.
+Whatever serves `rc`'s `/dev/cons` posts its interrupts to its note group, which `rc` and the programs it runs are in: on the console, kbdfs(4) posts `interrupt` for Delete; in a cpu session, cpu(8) posts `interrupt` for the terminal's ^C and `hangup` when the terminal goes.
+A note ends the programs that do not take notes, and comes to `rc` as `sigint` for `interrupt`, `sighup` for `hangup` and `sigquit` for `quit`, which `rc` takes between two commands.
 A note posted to `rc` through proc(4), as kill(1) posts one, comes the same way; there is no alarm.
 
 When a note comes:
@@ -417,7 +416,7 @@ Notes wait while `rc` is in a copy of itself (a subshell, a backquote, a stage o
 `fn sigexit` runs when `rc` ends, once: at `exit`, at the end of input, with `-e` when a command fails; but not in a copy, after `exec` or after a note ended `rc`, and not if inherited, since it is removed when `rc` starts.
 The status after it is `rc`'s own; `exit n` still ends with `n`.
 
-A program has the terminal when `rc` gave it its own standard input on a pty or the console, and then typed lines go to it, and ^D ends its input; with none, they go to `rc`.
+A program has the terminal when `rc` gave it its own standard input on a terminal, and then typed lines go to it, and ^D ends its input; with none, they go to `rc`.
 
 @node programs How programs are found
 
@@ -442,8 +441,10 @@ The commands on the device besides the builtins are ls(1), cat(1), cp(1), mv(1),
 
 @node device On the device
 
-On the device `rc` is started with a pty's client end as descriptors 0 to 2 (or a parent's descriptors, or the debuglog alone), and a job to start programs in.
-Started with no descriptors and a `/dev/cons` in its namespace, as the console's shell is (the `shell` service, in kbdfs's note group), `rc` opens `/dev/cons` as its terminal: it reads typed lines from it, and its output and its programs' go to the console.
+On the device `rc` is started with a parent's descriptors 0 to 2 (or the debuglog alone), or with none, and a job to start programs in.
+Started with no descriptors and a `/dev/cons` in its namespace, `rc` opens `/dev/cons` as its terminal: it reads typed lines from it, a line a read and an empty read the end of input, and its output and its programs' go to it.
+The console's shell is one (the `shell` service, shell(8), on kbdfs's `/dev/cons`), and a cpu session's `rc` another (cpu(8), on the remote terminal's).
+There is no pty: the terminal edits its lines and echoes them.
 Without the job it prints a message and exits.
 
 Where Plan 9's rcmain would set them, `rc` sets `$home` to `/` if unset, `$path` to `. /bin`, `$prompt` to a percent sign and a space, with a tab for a continuation line, and `$ifs` to space, tab and newline.

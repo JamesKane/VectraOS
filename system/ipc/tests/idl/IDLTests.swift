@@ -47,7 +47,8 @@ func echoProtocol() throws -> ProtocolModel {
 
 /// The manual's section 5 is idlc's: each protocol's page, as idlc writes it.
 @Test func sectionFivePagesMatchIdlc() throws {
-  for source in ["system/node/lib/Node.swift", "system/node/lib/Srv.swift", "services/pty/lib/Protocol.swift"] {
+  for source in ["system/node/lib/Node.swift", "system/node/lib/Srv.swift", "system/node/lib/Clients.swift",
+                 "services/factotum/lib/Protocol.swift"] {
     let interface = try scan([(source, try read(source))])
     for (library, p) in interface.protocols {
       let composed = try interface.composedMethods(p, in: library)

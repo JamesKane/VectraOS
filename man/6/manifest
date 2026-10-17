@@ -72,12 +72,14 @@ A launcher with no resource, bootfs or boot data to give refuses a manifest that
 
 # EXAMPLES
 
-The pty service, restarted whenever it fails:
+The plumber, which serves its tree, starts programs from `/bin`, and is restarted whenever it fails:
 
 ```text
-service pty
-program pty
+service plumber
+program plumber
 export
+programs
+mount /bin bootfs/bin
 restart on-failure
 ```
 

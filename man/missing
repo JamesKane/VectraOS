@@ -3,5 +3,3 @@
 # isn't here, and on anything here that now has a page or no longer
 # needs one, so the list only shrinks: a change that adds something
 # adds its page, not a row.
-program	pty
-service	pty

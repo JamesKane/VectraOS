@@ -8,7 +8,7 @@
 import IPCModel
 
 /// The page's name: the protocol's id after its first part, lower case,
-/// a `-` for each `.`; `todhchai.pty.Control` is `pty-control`, and a
+/// a `-` for each `.`; `todhchai.auth.AuthSession` is `auth-authsession`, and a
 /// protocol named as its library, `todhchai.node.Node`, is `node`.
 public func manPageName(_ p: ProtocolModel) -> String {
   var parts = p.id.split(separator: ".").dropFirst().map { $0.lowercased() }

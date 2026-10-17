@@ -53,7 +53,7 @@ The actions in the tables:
 | `shell/terminal`, as `shell/rio` (D75) | Port | V5 | Rio's text window inside Radharc, serving `/dev/cons`; `TerminalCore` as `vt`, a program in a window; the router's route as plumbing from the window's directory. |
 | `ui`, `text`, `graphics` (Vulkan/Venus), `codecs` | Lift | V5 | `graphics` changes on the way in: D55-D62 (memory by intent for both memory models, one sync mechanism, shader layouts from the IDL; F-106 not lifted) |
 | N1 (`n1` branch): `crypto`, `services/net`'s stack (serving `/net`; NetRing and NetIPC not lifted, D79), `drivers/net` (class + virtio-net) | Lift | V3 | The bring-up link (D15, D77): the stack and crypto under 9gate's core and Noise IK, brought forward from V7. `services/sshd` and SFTP are not lifted (D77). |
-| `rc`, the pty service, the launcher's `/dev/bin` union (N1e) | Lift | V2–V3 | rc is the one shell. The pty's line discipline as it was, its server and protocol on rings (D46); temporary, ejected in V3 for Plan 9's `/dev/cons` (D77, services/pty/README.md) |
+| `rc`, the pty service, the launcher's `/dev/bin` union (N1e) | Lift | V2–V3 | rc is the one shell. The pty's line discipline as it was, its server and protocol on rings (D46); temporary, and ejected in V3 (2026-10-17) for Plan 9's `/dev/cons` (D77) |
 | principle 17 and `CodeModule` (architecture §16, sdk.md §11), principle 27 | Design | V5, V9 | Hot reload and plug-ins as processes (D92, `docs/plugins.md`) |
 | `ui/core` (`Theme`, `UIQuad`) and the Neon Tab look (desktop.md §6) | Port | V5 | Themes as data over roles, not hue-named tokens; Neon Tab ships as a theme, not the default (D91, `docs/theming.md`) |
 | `sdk/` and macros (`@AudioRenderer`) | Lift | V5 | |
