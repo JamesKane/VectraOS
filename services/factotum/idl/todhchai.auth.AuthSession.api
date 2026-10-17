@@ -1,0 +1,8 @@
+# API baseline for todhchai.auth.AuthSession, written by idlc. Commit it; idlc checks changes against it.
+protocol todhchai.auth.AuthSession version 1
+struct Step (StepKind,[UInt8],String,String,String,[UInt8])
+enum StepKind UInt8 (1,2,3,4,5)
+method answered event since 1 params () result - throws -
+method failure call since 1 params () result String throws -
+method feed call since 1 params ([UInt8]) result - throws AuthError
+method next call since 1 params () result Step throws AuthError

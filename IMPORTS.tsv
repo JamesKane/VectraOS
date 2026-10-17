@@ -645,3 +645,15 @@ services/net/tests/NetTests.swift	todhchai	527ff94	services/net/tests/NetTests.s
 services/net/tests/IPv6Tests.swift	todhchai	527ff94	services/net/tests/IPv6Tests.swift
 services/net/tests/UDPTests.swift	todhchai	527ff94	services/net/tests/UDPTests.swift
 services/net/tests/TCPTests.swift	todhchai	527ff94	services/net/tests/TCPTests.swift
+services/factotum/lib/Base64.swift	todhchai	527ff94	services/keyring/lib/Base64.swift
+services/factotum/lib/Signer.swift	todhchai	527ff94	services/keyring/lib/Signer.swift
+services/factotum/lib/Protocol.swift	todhchai	527ff94	services/keyring/lib/Protocol.swift
+services/factotum/lib/Keys.swift	todhchai	527ff94	services/keyring/lib/Keys.swift
+services/factotum/lib/Session.swift	todhchai	527ff94	services/keyring/lib/Session.swift
+services/factotum/lib/Server.swift	todhchai	527ff94	services/keyring/lib/Server.swift
+services/factotum/lib/Scram.swift	todhchai	527ff94	services/keyring/lib/Scram.swift
+services/factotum/tests/KeyringTests.swift	todhchai	527ff94	services/keyring/tests/KeyringTests.swift
+services/factotum/tests/ServerTests.swift	todhchai	527ff94	services/keyring/tests/ServerTests.swift
+services/factotum/idl/todhchai.auth.Keyring.api	todhchai	527ff94	services/keyring/idl/todhchai.auth.Keyring.api
+services/factotum/idl/todhchai.auth.AuthSession.api	todhchai	527ff94	services/keyring/idl/todhchai.auth.AuthSession.api
+services/factotum/README.md	todhchai	527ff94	services/keyring/README.md
