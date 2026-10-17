@@ -595,10 +595,10 @@ func runPty(_ ns: Namespace) {
 
 /// The services' resident memory (V2's exit: < 32 MiB), from the
 /// launcher's `memory`: each service's private and scaled-shared bytes,
-/// with what it started, summed over every service but this one (a test, not a service) and the
-/// launcher's own, after the checks above have used them. The bench judges
-/// the budget (vx bench's services boot); here, only that the launcher
-/// says it for each.
+/// with what it started, summed over every service but this one (a test,
+/// not a service) and the launcher's own, after the checks above have
+/// used them. The bench judges the budget (vx bench's services boot);
+/// here, only that the launcher says it for each.
 func servicesMemory(_ ns: Namespace) {
   guard let text = readText(ns, "/svc/launcher/memory") else { return check(false, "the launcher's memory reads") }
   var total: UInt64 = 0, lines = 0

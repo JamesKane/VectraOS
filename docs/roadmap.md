@@ -39,8 +39,8 @@ under `vx ci` and every budget it introduces has a running check
     the first pages and the backlog, done.
   - Exit: `cat /svc/*/status` run by rc passes (amd64, arm64), spawn →
     main is 79 µs (< 200 µs), and the first bench history is recorded
-    (2026-10-16, cd3eb6d). Still open: services RSS < 32 MiB (no budget
-    yet) and the manual (D86).
+    (2026-10-16, cd3eb6d), and the services hold 3.7 MiB (< 32 MiB,
+    `services.rss`). Still open: the manual (D86).
 - **V3 onward** are not started (V6's boards have research passes).
 
 ## V0. Ground — done 2026-10-15
@@ -600,7 +600,14 @@ work, in order:
   µs, 0 kicks, round trip 201 to 146 ns).
 - spawn → main < 200 µs. **Done** (79 µs recorded; 68-133 µs
   interleaved).
-- Services RSS < 32 MiB.
+- Services RSS < 32 MiB. **Done** (`services.rss`, 2026-10-16, 2e1ea8d:
+  3.7 MiB on amd64, 3.5 MiB on arm64). Each service with what it started
+  (its job's tree), private bytes plus its share of shared pages, from
+  the launcher's `memory`, judged by vx bench's services boot. Accepted
+  in the open with it: the self-tests' boot again (4.3 s against a
+  median still holding V0's 2.4 s), and `port.wake_p99`, 14.7 µs against
+  9.1 µs (+61%; within its rule in the run before, and a p99 with a wide
+  spread), open: to check interleaved and fix if it is real.
 - `man man` prints its page from bootfs, `vx man --check` passes under
   `vx ci`, and `man/missing` lists only what V0 to V2 left (D86).
 - An interactive console (virtio-input into the console's `/dev/cons`)
