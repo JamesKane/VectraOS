@@ -44,8 +44,7 @@ under `vx ci` and every budget it introduces has a running check
     main is 79 µs (< 200 µs), and the first bench history is recorded
     (2026-10-16, cd3eb6d), and the services hold 3.7 MiB (< 32 MiB,
     `services.rss`), and the manual is written (D86).
-- **V3** is under way, on the `v3` branch: notes and /proc done
-  (2026-10-17). **V4 onward** are not started (V6's boards have research
+- **V3** is under way: notes and /proc done (2026-10-17). **V4 onward** are not started (V6's boards have research
   passes).
 
 ## V0. Ground — done 2026-10-15
