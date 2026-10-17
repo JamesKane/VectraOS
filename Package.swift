@@ -76,8 +76,8 @@ let ipc: [Target] = [
   // The time service's RTC reading (services/time, D48): its registers as UTC.
   .target(name: "RTC", path: "services/time/lib", swiftSettings: tier0),
   .testTarget(name: "RTCTests", dependencies: ["RTC"], path: "services/time/tests"),
-  // The fs protocol's client side (services/fs, V2: FDIO's; the service
-  // comes with Taisce, V3).
+  // The fs protocol and its client side (services/fs/lib): FDIO's, and the
+  // fs service's (services/fs/server, below).
   .target(name: "Fs", dependencies: ["Node", "IPC"], path: "services/fs/lib", swiftSettings: tier0),
   // FDIO (system/fdio, V2): POSIX descriptors over the namespace, tier 1's
   // files; hosted, over a namespace a test installs.
@@ -131,6 +131,12 @@ let ipc: [Target] = [
   .target(name: "Taisce", dependencies: ["TDUnicode", "TDCrypto"], path: "fs/taisce/lib", swiftSettings: tier0),
   .target(name: "TaisceHost", dependencies: ["Taisce"], path: "fs/taisce/host"),
   .testTarget(name: "TaisceTests", dependencies: ["Taisce", "TaisceHost"], path: "fs/taisce/tests/core"),
+  // The fs service's volume (services/fs/server, fs(4)): Taisce on a
+  // disk's partition over Node, served as the fs protocol's Directory and
+  // File.
+  .target(name: "FsServer", dependencies: ["Fs", "IPC", "Node", "Sys", "Taisce"], path: "services/fs/server",
+          swiftSettings: tier0),
+  .testTarget(name: "FsTests", dependencies: ["Fs", "FsServer", "IPC", "Node", "Sys", "Taisce"], path: "services/fs/tests"),
   // PCI over ECAM (drivers/bus/pci, V2 item 7b, D74): configuration space,
   // enumeration, BARs and capabilities, todhchai's; ECAM's registers
   // through the runtime's accessors (CroiMMIO, croi/mmio.h).

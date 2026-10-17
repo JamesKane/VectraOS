@@ -1,0 +1,8 @@
+# ramdisk (ramdisk(4)): a disk of 64 MiB in memory, sd(3)'s directory
+# sdZ0, which fs(4) keeps its volume on. What is written to it lasts as
+# long as it runs: a reboot loses it.
+service ramdisk
+program ramdisk
+arg 64M
+export
+restart on-failure

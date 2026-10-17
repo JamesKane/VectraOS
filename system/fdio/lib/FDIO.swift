@@ -90,6 +90,7 @@ public struct Errno: Error, Equatable, Sendable {
     case .noSpace, .tooLarge: return noSpace
     case .readOnly: return readOnly
     case .io, .cold: return io
+    case .unsupported: return notSupported
     }
   }
 }

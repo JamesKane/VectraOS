@@ -49,7 +49,8 @@ under `vx ci` and every budget it introduces has a running check
   console's shell (rc on kbdfs's /dev/cons, D97), done (2026-10-17);
   9gate (the codec, Noise IK, export and import, and the service at
   /svc/9gate), factotum holding its key, and cpu (the server and
-  `vx cpu`) done, and the pty gone (2026-10-17).
+  `vx cpu`) done, the pty gone, and Taisce serving /data on a RAM
+  disk (2026-10-17).
   **V4 onward** are not started (V6's boards have research passes);
   V10, the Ghost, is proposed (D90), and V11 to V16, the native
   applications and Studio, are proposed (D95, D96).
@@ -799,6 +800,23 @@ meets a tested path.
 - **Files:** copies land in Taisce on a RAM-backed block device. Lifting
   Taisce's service here means bring-up uses the one file system, not a
   second RAM-only one (D8). Durability on disk is V4's.
+  - **Done (2026-10-17):** TDUnicode (with ucdgen and the UCD's data)
+    and Taisce's engine lifted unchanged, built in tier 0. `ramdisk`
+    (ramdisk(4)) serves a 64 MiB disk as 9front's `sdZ0/{ctl,data}`,
+    `data` a NodeTree file written in place over a VMO. `fs` (fs(4),
+    `services/fs/server`) keeps a volume on it, formatted at first:
+    the volume's channels on a dispatcher of its own, answering our
+    batch Node and the fs protocol's attributes, renames, resize and
+    sync; groups commit a second after a change (a committer thread,
+    asleep while none is due). Queries, live queries, indices, mapped
+    files and whole listings answer `unsupported` until V4. Manifests
+    mount the volume at `/data` for creating in: the console's shell,
+    cpu sessions and launch-test. FsTests (hosted) and launch-test
+    (rc's cp, mv, mkdir and rm there; a commit; the file found again
+    after fs restarts) check it, and boot-cpu copies a file from
+    `/mnt/term` to `/data`. rc now gives its programs its whole
+    namespace (unions, and the `create` mark), not each mount's first
+    member.
 - **Push and run** (todhchai N1e): the launcher finds programs in a
   writable `/dev/bin` over bootfs's `bin`, so `vx cpu board -c 'cp
   /mnt/term/PATH/prog /dev/bin && restart prog'` runs a new build

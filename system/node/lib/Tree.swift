@@ -108,28 +108,54 @@ final class Remote: @unchecked Sendable {
 }
 
 /// A memory file's VMO, the tree's: its first `size` bytes are the file,
-/// and `executable` says whether it may be given to run.
+/// and `executable` says whether it may be given to run. A writable one
+/// (a disk's) is mapped once, and written in place; its size is fixed.
 public final class Backing: @unchecked Sendable {
   let vmo: Handle
   let size: UInt64
   let executable: Bool
+  /// A writable file's whole VMO, mapped.
+  let mapped: Mapping?
+  let writable: Bool
 
   init(_ vmo: consuming Handle, size: UInt64, executable: Bool) {
     self.vmo = vmo
     self.size = size
     self.executable = executable
+    mapped = nil
+    writable = false
+  }
+
+  /// A writable one, which can't run.
+  init(writable vmo: consuming Handle, size: UInt64) throws(Status) {
+    mapped = try VMO.map(vmo, length: (Int(size) + Self.page - 1) & ~(Self.page - 1))
+    writable = true
+    self.vmo = vmo
+    self.size = size
+    executable = false
   }
 
   /// `max` bytes from `offset`, at most to its end.
   func read(offset: UInt64, max: Int) throws(NodeError) -> [UInt8] {
     guard offset < size else { return [] }
     let start = Int(offset) & ~(Self.page - 1), end = Swift.min(Int(size), Int(offset) + max)
+    if let bytes = mapped?.read(at: Int(offset), count: end - Int(offset)) { return bytes }
     do throws(Status) {
       let m = try VMO.map(vmo, offset: start, length: (end - start + Self.page - 1) & ~(Self.page - 1), writable: false)
       return m.read(at: Int(offset) - start, count: end - Int(offset))
     } catch {
       throw .io
     }
+  }
+
+  /// Writes `data` at `offset`, as much as fits before its end (none at
+  /// or past it, as a disk's partition): how much it wrote.
+  func write(offset: UInt64, _ data: [UInt8]) throws(NodeError) -> UInt32 {
+    guard writable else { throw .unsupported }
+    guard offset < size else { return 0 }
+    let n = Swift.min(data.count, Int(size - offset))
+    mapped?.write(n == data.count ? data : Array(data[..<n]), at: Int(offset))
+    return UInt32(n)
   }
 
   /// Another handle to it, to read and map, and to run if `executable`
@@ -275,6 +301,14 @@ public final class NodeTree: @unchecked Sendable {
   @discardableResult
   public func memory(_ path: String, _ vmo: consuming Handle, size: UInt64, executable: Bool) -> TreeNode {
     place(path, .memory(Backing(vmo, size: size, executable: executable)))
+  }
+
+  /// A file of `vmo`'s first `size` bytes that clients may write in place
+  /// but not grow, nor run: a disk's (ramdisk(4)). Its memory is given
+  /// read only.
+  @discardableResult
+  public func memory(_ path: String, writable vmo: consuming Handle, size: UInt64) throws(Status) -> TreeNode {
+    place(path, .memory(try Backing(writable: vmo, size: size)))
   }
 
   /// A text leaf: `read` renders it on every read; `write`, if given, takes
@@ -818,8 +852,12 @@ extension NodeTree {
     switch content {
     case .directory, .remote:
       throw .isDirectory
-    case .service, .memory:
+    case .service:
       throw .unsupported
+    case .memory(let m):
+      let n = try m.write(offset: offset, data)
+      wake(locked { modifiedLocked(node) })
+      return n
     case .stream(let s):
       guard let write = s.write else { throw .unsupported }
       return try write(data) ?? 0  // not waiting: mid-batch

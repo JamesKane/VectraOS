@@ -1,0 +1,67 @@
+page fs 4
+summary the file system: a Taisce volume
+names fs
+src services/fs/Main.swift services/fs/server/Service.swift services/fs/server/Sessions.swift services/fs/server/Device.swift
+keys file system taisce volume data disk commit sync attribute
+
+# SYNOPSIS
+
+```text
+fs [--format LABEL] PARTITION
+
+status
+volume/...
+```
+
+# DESCRIPTION
+
+The fs service serves a Taisce volume, the one file system, kept on a disk's partition in its namespace: the manifest's is ramdisk(4)'s `/dev/sdZ0/data`.
+With `--format`, a partition that holds no volume gets a new one labelled `LABEL`; otherwise one that holds none is an error.
+
+Its tree holds:
+
+: `status`
+  The volume's label, its device, the last committed transaction group (`txg`), the channels open on it (`sessions`), the groups committed since it started (`commits`), and its blocks, free blocks and block size.
+: `volume`
+  The volume's root directory: walks go on into the volume.
+
+Manifests mount the volume at `/data` for creating in, `mount /data fs/volume create` (manifest(6)), so that `cp`, `mkdir` and `>` make files there.
+The console's shell, cpu(8)'s sessions and the launcher's test have it.
+
+The volume speaks node(5): walks, stats, listings, reads, writes, creating files and directories, removing them, and wstat's rename within a directory, modification time and length.
+A file's channel keeps the file while it is open: removed, it is gone from its directory, and is freed when its last channel closes.
+`memory` gives a copy of a file's bytes, which can't run.
+It speaks the fs protocol too, which fdio's truncation, rename and sync use: typed attributes, listings with them, renames between directories, a file's resize, and sync.
+
+Every change is in memory at once.
+A transaction group commits a second after the first change since the last, sooner when many blocks wait, and at once on a directory's sync; a file's sync writes the intent log instead.
+Watchers hear of a change as it is made in memory, so they may hear of one a crash then loses.
+
+# EXAMPLES
+
+Copy a build from the dev machine in a cpu session:
+
+```rc
+cp /mnt/term/root/tmp/prog /data/prog
+```
+
+# FILES
+
+: `etc/manifests/fs.manifest`
+  In bootfs: its partition, and the label it formats with.
+
+# SEE ALSO
+
+ramdisk(4), node(5), manifest(6), cpu(8)
+
+# DIAGNOSTICS
+
+fs prints why it stopped, `no partition PATH` or `no volume on PATH`, and exits 1.
+A call the service doesn't do yet fails with `unsupported`.
+
+# BUGS
+
+Queries, live queries, indices, mapped files and whole listings fail with `unsupported`, as does a ring for bulk reads and writes.
+There are no permissions, owners or symbolic links over Node.
+On ramdisk(4)'s disk nothing survives a reboot.
+A namespace that mounted the volume holds the channel of the fs that served it: after fs restarts it fails until mounted again, while `/svc/fs/volume` reaches the new one.

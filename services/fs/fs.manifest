@@ -1,0 +1,9 @@
+# fs (fs(4)): a Taisce volume on ramdisk(4)'s disk, made if the disk
+# holds none (D8). Manifests mount the volume at /data, for creating in:
+# `mount /data fs/volume create`.
+service fs
+program fs
+arg --format data /dev/sdZ0/data
+export
+mount /dev/sdZ0 ramdisk/sdZ0
+restart on-failure

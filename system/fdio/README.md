@@ -21,14 +21,15 @@ does. Descriptors 0 to 2, and any above them the process was started
 with, are the floor's rings (D46): read and written by number, never
 reused for a file, and opened again as `/dev/fd/N` (N itself: no dup
 yet). No permissions, owners, links or times beyond the modification
-time. A file unlinked or replaced while open stops working (Linux keeps
-it until closed: the fs service has no orphans yet).
+time. On fs(4)'s volume (/data) an open file outlives its name, as on
+Linux; on other services' trees it stops working.
 
-Here (V2) there is no fs service yet: FDIO reaches services' trees over
-Node (opens, reads, writes, listings, directories), and what needs the fs
-protocol (truncating, renaming, syncing) fails until Taisce (V3).
+FDIO reaches services' trees over Node (opens, reads, writes, listings,
+directories), and what needs the fs protocol (truncating, renaming,
+syncing) works where the server speaks it, fs(4)'s volume, and fails
+elsewhere.
 `FDIOTests` checks it hosted over a NodeTree; todhchai's comparison with
-Linux over a volume comes with Taisce. Natively `bin/fdio-test` checks
+Linux over a volume isn't lifted yet. Natively `bin/fdio-test` checks
 the C names (boot-fdio-test, amd64 and arm64). Tier 1 modules are built
 by `croi_tier1_library` (`cmake/Tier1.cmake`, `CSOURCES` for C). The
 libc has no FILE streams over files yet (`fopen`).

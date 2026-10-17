@@ -204,6 +204,30 @@ func failure<R>(_ body: () throws(NamespaceError) -> R) -> NamespaceError? {
   #expect(failure { () throws(NamespaceError) in _ = try ns.memory("/etc", executable: false) } == .node(.isDirectory))
 }
 
+/// A writable memory file (ramdisk(4)'s data): written in place, short at
+/// its end, never grown or cut, its memory given read only.
+@Test func aDiskFileIsWrittenInPlace() throws {
+  let s = try Service()
+  defer { s.stop() }
+  let vmo = try VMO.create(size: 8192)
+  try s.tree.memory("sd/data", writable: vmo, size: 8192)
+  s.start()
+  let ns = Namespace()
+  try ns.mount(s.channel(), at: "/")
+  var d = try ns.open("/sd/data")
+  #expect(try d.stat().size == 8192)
+  #expect(try d.write(offset: 4096, Array("block".utf8)) == 5)
+  #expect(try d.read(offset: 4096, max: 5) == Array("block".utf8))
+  #expect(try d.read(offset: 0, max: 4) == [0, 0, 0, 0])
+  #expect(try d.write(offset: 8190, Array("tail".utf8)) == 2)
+  #expect(try d.write(offset: 8192, Array("past".utf8)) == 0)
+  #expect(try d.read(offset: 8188, max: 16) == [0, 0, UInt8(ascii: "t"), UInt8(ascii: "a")])
+  #expect(failure { () throws(NamespaceError) in try ns.wstat("/sd/data", NodeIPC.Wstat(size: 4096)) } != nil)
+  let m = try ns.memory("/sd/data", executable: false)
+  #expect(try VMO.map(m.vmo, offset: 4096, length: 4096, writable: false).read(at: 0, count: 5) == Array("block".utf8))
+  #expect(throws: Status.self) { _ = try VMO.map(m.vmo, length: 4096, writable: true) }
+}
+
 @Test func wstatRenamesTimesAndCuts() throws {
   let s = try Service()
   defer { s.stop() }

@@ -37,6 +37,8 @@ public enum FsIPC {
     /// No whole listing is kept for it (wholeListing): list it in batches,
     /// which keep one.
     case cold
+    /// The service doesn't do that yet.
+    case unsupported
   }
 
   /// A typed attribute: `kind` is Taisce's AttributeKind (string 1, int64,
@@ -65,6 +67,15 @@ public enum FsIPC {
     /// Nanoseconds since the Unix epoch.
     public var modified: Int64
     public var attributes: [Attribute]
+
+    public init(name: String, node: UInt64, kind: UInt8, size: UInt64, modified: Int64, attributes: [Attribute]) {
+      self.name = name
+      self.node = node
+      self.kind = kind
+      self.size = size
+      self.modified = modified
+      self.attributes = attributes
+    }
   }
 
   public struct Listing: Equatable, Sendable {
@@ -72,6 +83,12 @@ public enum FsIPC {
     /// The cursor to continue from.
     public var next: UInt64
     public var done: Bool
+
+    public init(entries: [Entry], next: UInt64, done: Bool) {
+      self.entries = entries
+      self.next = next
+      self.done = done
+    }
   }
 
   /// A node a query matched, and a path to it from the volume's root.

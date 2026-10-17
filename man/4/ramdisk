@@ -1,0 +1,57 @@
+page ramdisk 4
+summary a disk in memory, as Plan 9's storage device directory
+names ramdisk
+src services/ramdisk/Main.swift system/node/lib/Tree.swift
+keys disk block ramdisk sd partition geometry memory
+
+# SYNOPSIS
+
+```text
+ramdisk SIZE
+
+sdZ0/ctl
+sdZ0/data
+status
+```
+
+# DESCRIPTION
+
+The ramdisk service is a disk in memory, served as Plan 9's storage device directory for one unit, `sdZ0`, as 9front's RAM disk names it.
+`SIZE` is in bytes, or with `K`, `M` or `G` (binary); it must be a whole number of 4096-byte sectors.
+The disk's pages are taken as they are first written, so an empty disk costs nothing.
+
+: `sdZ0/ctl`
+  Reads as Plan 9's `sd` ctl does: `inquiry ramdisk0`, `geometry` with the number of sectors and the sector size, `alignment 4096 0`, and `part data 0` with the number of sectors.
+: `sdZ0/data`
+  The whole disk, its length the disk's.
+  A read or write at any offset moves bytes in place; a write that runs past the end is cut short there, and one at or past it writes nothing.
+  The file can't be grown or cut, and its memory is given to read only.
+: `status`
+  The disk's name, unit and size.
+
+The manifest gives it 64 MiB.
+fs(4) mounts `sdZ0` at `/dev/sdZ0` and keeps its volume on `data`.
+
+# EXAMPLES
+
+```rc
+% cat /svc/ramdisk/sdZ0/ctl
+inquiry ramdisk0
+geometry 16384 4096
+alignment 4096 0
+part data 0 16384
+```
+
+# FILES
+
+: `etc/manifests/ramdisk.manifest`
+  In bootfs: the service and its size.
+
+# SEE ALSO
+
+fs(4), manifest(6)
+
+# BUGS
+
+What the disk holds lasts as long as the service: a reboot, or the service's restart, gives an empty disk.
+`ctl` takes no commands, so there is no `part` or `delpart`, and there is no `raw`.

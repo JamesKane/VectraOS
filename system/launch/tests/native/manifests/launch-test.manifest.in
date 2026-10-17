@@ -7,6 +7,8 @@
 # Its /env from its `env` lines, and /svc/env for rc's groups (D81).
 # /proc is proc's (D79); /net, devmgr's ether(3) directories (D82),
 # then net's protocols, cs and dns (D79). 9gate at /svc (D77, D78).
+# /data is fs's volume, on the RAM disk; both at /svc too, to read the
+# disk's ctl and find the volume again after fs restarts (D8).
 # The console at /mnt/console, not /svc: its status changes as the log
 # grows, which `cat /svc/*/status` would race.
 service launch-test
@@ -18,6 +20,8 @@ use net
 use cs
 use dns
 use 9gate
+use ramdisk
+use fs
 use env
 env LAUNCH_TEST=yes
 mount /bin bootfs/bin
@@ -31,6 +35,7 @@ mount /net dns/net after
 mount /mnt/console console
 mount /mnt/plumb plumber
 mount /proc proc
+mount /data fs/volume create
 launcher
 programs
 @CROI_LAUNCH_TEST_USES@

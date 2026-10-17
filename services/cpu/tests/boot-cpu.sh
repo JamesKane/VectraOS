@@ -7,7 +7,8 @@
 #   boot-cpu.sh VX PORT WORK
 #
 # First a command: rc -c reads the dev machine's file through
-# /mnt/term/root, writes one there, and lists /mnt/term/dev. Then an
+# /mnt/term/root, writes one there, lists /mnt/term/dev, and copies the
+# file to fs(4)'s volume at /data and reads it back. Then an
 # interactive rc: `cat` waits on the terminal, ^C (SIGINT to vx) interrupts
 # it, and the next line still runs; the end of input ends the session.
 
@@ -34,13 +35,14 @@ fail() {
 # 1. A command, with the terminal's files.
 out=$work/command.out
 timeout 30 "$vx" cpu --key "$key" -k "$node" -r "$root" \
-  -c 'cat /mnt/term/root/motd; echo made by rc >/mnt/term/root/out; ls /mnt/term/dev' "127.0.0.1!$port" \
+  -c 'cat /mnt/term/root/motd; echo made by rc >/mnt/term/root/out; ls /mnt/term/dev; cp /mnt/term/root/motd /data/motd && echo copied: `{cat /data/motd}' "127.0.0.1!$port" \
   < /dev/null > "$out" || fail "vx cpu -c failed" "$out"
 tr -d '\r' < "$out" > "$out.lf"
 grep -qx 'from the dev machine' "$out.lf" || fail "rc didn't read /mnt/term/root/motd" "$out"
 grep -q 'cons' "$out.lf" && grep -q 'cpunote' "$out.lf" || fail "rc didn't list /mnt/term/dev" "$out"
 [[ $(cat "$root/out" 2>/dev/null) == 'made by rc' ]] || fail "rc didn't write /mnt/term/root/out" "$out"
-echo "boot-cpu: rc -c ran with the terminal's files"
+grep -qx 'copied: from the dev machine' "$out.lf" || fail "rc didn't copy the file to /data" "$out"
+echo "boot-cpu: rc -c ran with the terminal's files, and copied one to /data"
 
 # 2. An interactive rc, interrupted.
 in=$work/in

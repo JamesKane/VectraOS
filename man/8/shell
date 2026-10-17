@@ -32,6 +32,7 @@ mount /net cs/net after
 mount /net dns/net after
 mount /proc proc
 mount /mnt/plumb plumber
+mount /data fs/volume create
 restart always
 ```
 
@@ -49,7 +50,7 @@ typed lines come back
 
 # SEE ALSO
 
-rc(1), kbdfs(4), console(4), proc(4), manifest(6), launcher(8)
+rc(1), kbdfs(4), console(4), fs(4), proc(4), manifest(6), launcher(8)
 
 # BUGS
 

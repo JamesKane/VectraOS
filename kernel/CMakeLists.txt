@@ -336,6 +336,14 @@ set(_9gate_manifest ${PROJECT_SOURCE_DIR}/services/9gate/9gate/9gate.manifest)
 set(_factotum ${CMAKE_CURRENT_BINARY_DIR}/factotum.elf)
 croi_user_program(${_factotum} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/factotum/Main.swift)
 set(_factotum_manifest ${PROJECT_SOURCE_DIR}/services/factotum/factotum.manifest)
+# bin/ramdisk (ramdisk(4)): a disk in memory, sd(3)'s directory; and
+# bin/fs (fs(4)), a Taisce volume on it (D8).
+set(_ramdisk ${CMAKE_CURRENT_BINARY_DIR}/ramdisk.elf)
+croi_user_program(${_ramdisk} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/ramdisk/Main.swift)
+set(_ramdisk_manifest ${PROJECT_SOURCE_DIR}/services/ramdisk/ramdisk.manifest)
+set(_fs ${CMAKE_CURRENT_BINARY_DIR}/fsservice.elf)  # its module's name, fs, would differ from Fs only by case
+croi_user_program(${_fs} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/fs/Main.swift)
+set(_fs_manifest ${PROJECT_SOURCE_DIR}/services/fs/fs.manifest)
 # bin/cpu (D77): the cpu server, only in the cpu images below.
 set(_cpu ${CMAKE_CURRENT_BINARY_DIR}/cpu.elf)
 croi_user_program(${_cpu} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/cpu/Main.swift)
@@ -399,6 +407,8 @@ set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_te
           lib/ndb/local=${_ndb}/db/local lib/ndb/common=${_ndb}/db/common
           bin/9gate=${_9gate} etc/manifests/9gate.manifest=${_9gate_manifest}
           bin/factotum=${_factotum} etc/manifests/factotum.manifest=${_factotum_manifest}
+          bin/ramdisk=${_ramdisk} etc/manifests/ramdisk.manifest=${_ramdisk_manifest}
+          bin/fs=${_fs} etc/manifests/fs.manifest=${_fs_manifest}
           ${_tier1_bootfs})
 set(_bootfs_depends ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_trace_test} ${_ipc_test} ${_node_test} ${_acpi_test} ${_pci_test}
           ${_launcher} ${_launch_service} ${_launch_test} ${_manifests}/a.manifest ${_manifests}/b.manifest
@@ -412,6 +422,7 @@ set(_bootfs_depends ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_tra
           ${_net} ${PROJECT_SOURCE_DIR}/services/net/net.manifest
           ${_cs} ${_ndb}/cs/cs.manifest ${_dns} ${_ndb}/dns/dns.manifest ${_ndb}/db/local ${_ndb}/db/common
           ${_9gate} ${_9gate_manifest} ${_factotum} ${_factotum_manifest}
+          ${_ramdisk} ${_ramdisk_manifest} ${_fs} ${_fs_manifest}
           ${_man_files} ${_man_index} ${_tier1_files} vx ${VX})
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs.img ${_bootfs_entries}

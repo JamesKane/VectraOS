@@ -1,0 +1,92 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
+// Taisce's BlockDevice over a disk's partition (D82): sd(3)'s `data`,
+// read and written over Node, a batch moving up to 32 pieces of maxIO
+// bytes (a MiB). Its length is the partition's, in Taisce's blocks.
+
+import IPC
+import Node
+import Sys
+import Taisce
+
+/// The partition's channel, shared by copies of the device (Taisce copies
+/// devices; the channel is one).
+final class Partition {
+  var client: NodeIPC.NodeClient
+  init(_ client: consuming NodeIPC.NodeClient) { self.client = client }
+}
+
+public struct NodeDevice: BlockDevice {
+  let partition: Partition
+  public let blockSize = Layout.blockSize
+  public let blockCount: UInt64
+
+  /// A device over `channel`, a partition's file.
+  public init(_ channel: consuming Handle) throws(TaisceError) {
+    var client = NodeIPC.NodeClient(channel: channel)
+    let size: UInt64
+    do throws(NodeIPC.NodeClient.Failure) { size = try client.stat(fields: NodeIPC.Fields.size).size } catch {
+      throw .io(5)  // EIO
+    }
+    blockCount = size / UInt64(Layout.blockSize)
+    partition = Partition(client)
+  }
+
+  /// The pieces of `count` blocks from `block`, at most a batch's worth
+  /// each time `body` is called.
+  func pieces(_ block: UInt64, count: Int, _ body: ([(offset: UInt64, length: Int)]) throws(TaisceError) -> Void)
+    throws(TaisceError)
+  {
+    guard count >= 0, block <= blockCount, UInt64(count) <= blockCount - block else { throw .outOfRange }
+    var offset = block * UInt64(blockSize)
+    var left = count * blockSize
+    var batch: [(offset: UInt64, length: Int)] = []
+    while left > 0 {
+      let n = Swift.min(left, NodeIPC.maxIO)
+      batch.append((offset, n))
+      offset += UInt64(n)
+      left -= n
+      if batch.count == NodeIPC.maxOps || left == 0 {
+        try body(batch)
+        batch = []
+      }
+    }
+  }
+
+  func run(_ ops: [NodeIPC.Op]) throws(TaisceError) -> [NodeIPC.Outcome] {
+    do throws(NodeIPC.NodeClient.Failure) { return try partition.client.run(ops).results } catch { throw .io(5) }
+  }
+
+  public mutating func read(_ block: UInt64, count: Int) throws(TaisceError) -> [UInt8] {
+    var out: [UInt8] = []
+    out.reserveCapacity(count * blockSize)
+    try pieces(block, count: count) { (batch) throws(TaisceError) in
+      let results = try run(batch.map { .read(offset: $0.offset, max: UInt32($0.length)) })
+      for (r, piece) in zip(results, batch) {
+        guard case .data(let d) = r, d.count == piece.length else { throw .io(5) }
+        out += d
+      }
+    }
+    return out
+  }
+
+  public mutating func write(_ block: UInt64, _ bytes: [UInt8]) throws(TaisceError) {
+    guard bytes.count % blockSize == 0 else { throw .outOfRange }
+    var at = 0
+    try pieces(block, count: bytes.count / blockSize) { (batch) throws(TaisceError) in
+      var ops: [NodeIPC.Op] = []
+      for piece in batch {
+        ops.append(.write(offset: piece.offset, data: Array(bytes[at..<(at + piece.length)])))
+        at += piece.length
+      }
+      let results = try run(ops)
+      for (r, piece) in zip(results, batch) {
+        guard case .wrote(let n) = r, Int(n) == piece.length else { throw .io(5) }
+      }
+    }
+  }
+
+  /// Nothing to do: a write is done when its reply comes (a RAM disk has
+  /// no cache to flush).
+  public mutating func flush() throws(TaisceError) {}
+}

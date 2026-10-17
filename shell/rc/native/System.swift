@@ -314,12 +314,9 @@ final class CroiSystem: RcSystem {
     // rc's forks share the group with their own directories.
     try? namespace?.setEnvironment("PWD", Array(cwd.utf8) + [0])
     let startup = Startup(args: argv)
-    // rc's namespace, each mount point's root again, sealed if it is.
-    if let ns = namespace {
-      for p in ns.mountPoints {
-        if let node = try? ns.connect(p) { startup.mount(node, at: p, sealed: ns.sealed) }
-      }
-    }
+    // rc's namespace whole: each union's members in their order, those
+    // marked for creating so marked, sealed if it is.
+    if let ns = namespace { try? startup.mount(ns) }
     do throws(Status) {
       if name == "rc" {
         startup.add(try withJob { (j: borrowing Handle) throws(Status) in try Sys.Job.create(parent: j) },

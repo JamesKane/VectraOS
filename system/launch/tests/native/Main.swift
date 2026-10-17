@@ -485,9 +485,9 @@ func lastNumber(_ text: String) -> Int64? {
 
 /// rc from /bin, given this process's /svc and /bin (its programs, the
 /// bootfs service's: D71), an environment group of its own (D81), a job,
-/// and stdio: `script` run by `rc -c`,
-/// which must write `expected` and exit 0.
-func rcRuns(_ rc: ProgramEntry, _ script: String, _ expected: [UInt8], _ ns: Namespace, job: borrowing Handle,
+/// and stdio, and with `data` this process's /data: `script` run by
+/// `rc -c`, which must write `expected` and exit 0.
+func rcRuns(_ rc: ProgramEntry, _ script: String, _ expected: [UInt8], _ ns: Namespace, job: borrowing Handle, data: Bool = false,
             _ name: StaticString) {
   do throws(Status) {
     let startup = Startup(args: ["rc", "-c", script])
@@ -498,6 +498,7 @@ func rcRuns(_ rc: ProgramEntry, _ script: String, _ expected: [UInt8], _ ns: Nam
     guard let env = try? ns.connect("/svc/env/new") else { return check(false, name) }
     startup.mount(env, at: "/env")  // a group of its own (D81)
     if let proc = try? ns.connect("/proc") { startup.mount(proc, at: "/proc") }
+    if data, let volume = try? ns.connect("/data") { startup.mount(volume, at: "/data", create: true) }  // fs(4)'s volume
     startup.add(try Job.create(parent: job), info: HandleType.info(HandleType.jobDefault))
     // stdin, stdout, and a stderr of its own (D46: a ring per descriptor).
     let stdio = try ChildStdio(for: startup, descriptors: [(0, true), (1, false), (2, false)])
@@ -725,6 +726,10 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
     rcRuns(rc, "x=`{ps -a}; ~ $#x 0 && echo none; kill launch-test", Array("@{echo kill>/proc/\(koid)/note} # launch-test\n".utf8), ns,
            job: job, "rc runs ps and kill over /proc")
   }
+  // Files on fs(4)'s volume (D8): made, copied, moved, listed and removed.
+  rcRuns(rc, "echo hello >/data/x; cp /data/x /data/y; mv /data/y /data/z; mkdir /data/d; cp /data/z /data/d; ls /data /data/d; cat /data/d/z; rm /data/x /data/z /data/d/z; rm /data/d; ls /data",
+         Array("/data/d\n/data/x\n/data/z\n/data/d/z\nhello\n".utf8), ns, job: job, data: true,
+         "rc makes, copies, moves and removes files on /data")
   rcOnCons(rc, ns, job: job)
   _ = consume memory  // rc is started from it until here
 }
@@ -745,11 +750,11 @@ func contains(_ bytes: [UInt8], _ part: [UInt8]) -> Bool {
       print("launch-test: FAILED: no namespace")
       Process.exit(code: 1)
     }
-    check(ns.mountPoints.count == 9 && same(ns.mountPoints[0], "/bin") && same(ns.mountPoints[1], "/dev")
-            && same(ns.mountPoints[2], "/env") && same(ns.mountPoints[3], "/lib/man")
-            && same(ns.mountPoints[4], "/mnt/console") && same(ns.mountPoints[5], "/mnt/plumb")
-            && same(ns.mountPoints[6], "/net") && same(ns.mountPoints[7], "/proc") && same(ns.mountPoints[8], "/svc"),
-          "the namespace is /bin, /dev, /env, /lib/man, /mnt/console, /mnt/plumb, /net, /proc and /svc")
+    check(ns.mountPoints.count == 10 && same(ns.mountPoints[0], "/bin") && same(ns.mountPoints[1], "/data")
+            && same(ns.mountPoints[2], "/dev") && same(ns.mountPoints[3], "/env") && same(ns.mountPoints[4], "/lib/man")
+            && same(ns.mountPoints[5], "/mnt/console") && same(ns.mountPoints[6], "/mnt/plumb")
+            && same(ns.mountPoints[7], "/net") && same(ns.mountPoints[8], "/proc") && same(ns.mountPoints[9], "/svc"),
+          "the namespace is /bin, /data, /dev, /env, /lib/man, /mnt/console, /mnt/plumb, /net, /proc and /svc")
     environment(ns)
 
     // devmgr first: its status is still growing until it has bound.
@@ -762,15 +767,16 @@ func contains(_ bytes: [UInt8], _ part: [UInt8]) -> Bool {
     // cat /svc/*/status
     let names = ((try? ns.list("/svc")) ?? []).map { $0.name }
     #if arch(x86_64)
-      let expected = 10  // and the time service
+      let expected = 12  // and the time service
     #else
-      let expected = 9
+      let expected = 11
     #endif
     check(names.count == expected && names.contains { same($0, "a") } && names.contains { same($0, "b") }
             && names.contains { same($0, "launcher") }
             && names.contains { same($0, "devmgr") } && names.contains { same($0, "env") }
             && names.contains { same($0, "net") } && names.contains { same($0, "cs") }
-            && names.contains { same($0, "dns") } && names.contains { same($0, "9gate") },
+            && names.contains { same($0, "dns") } && names.contains { same($0, "9gate") }
+            && names.contains { same($0, "fs") } && names.contains { same($0, "ramdisk") },
           "/svc holds what the manifest uses")
     // env is the launcher's groups (D81), with no status.
     for name in names where !same(name, "env") {
@@ -821,6 +827,7 @@ func contains(_ bytes: [UInt8], _ part: [UInt8]) -> Bool {
     check(readText(ns, "/svc/a/status").map { same($0, "a first\n") } ?? false, "the new a, by the same path")
     check(readText(ns, "/svc/b/peer").map { same($0, "a first\n") } ?? false, "and through b")
 
+    files(ns)
     procs(ns)
     servicesMemory(ns)
     print("launch-test: \(checks - failures) of \(checks) checks passed")
@@ -829,6 +836,45 @@ func contains(_ bytes: [UInt8], _ part: [UInt8]) -> Bool {
 }
 
 /// The services' resident memory (V2's exit: < 32 MiB), from the
+/// fs(4)'s volume at /data (D8), on ramdisk(4)'s disk: a file written and
+/// read back, committed within the volume's delay, and there again
+/// through /svc/fs/volume once fs has restarted, the disk kept.
+func files(_ ns: Namespace) {
+  let ctl = readText(ns, "/svc/ramdisk/sdZ0/ctl") ?? ""
+  check(hasLine(ctl, "inquiry ramdisk0") && hasLine(ctl, "geometry 16384 4096") && hasLine(ctl, "part data 0 16384"),
+        "the RAM disk says its geometry, as sd(3)'s ctl")
+  check(hasLine(readText(ns, "/svc/fs/status") ?? "", "volume data"), "fs serves the volume it made, labelled data")
+  /// The groups fs has committed, from its status's `commits` line.
+  func commits() -> Int64 {
+    let status = readText(ns, "/svc/fs/status") ?? ""
+    for line in status.utf8.split(separator: 0x0A) where line.starts(with: "commits ".utf8) {
+      return lastNumber(String(decoding: line, as: UTF8.self)) ?? -1
+    }
+    return -1
+  }
+  let before = commits()
+  var made = false
+  if var f = try? ns.create("/data/kept", kind: .file), (try? f.writeText("kept\n")) != nil { made = true }
+  check(made && (readText(ns, "/data/kept").map { same($0, "kept\n") } ?? false), "a file on /data reads back")
+  let deadline = Clock.monotonic() + 5_000_000_000
+  while commits() <= before && Clock.monotonic() < deadline { sleep(until: Clock.monotonic() + 50_000_000) }
+  check(before >= 0 && commits() > before, "the volume commits within its delay")
+  if var ctl = try? ns.open("/svc/launcher/ctl") {
+    check((try? ctl.writeText("kill fs")) != nil, "ctl kills fs")
+  } else {
+    check(false, "ctl kills fs")
+  }
+  var restarted = false
+  let again = Clock.monotonic() + 5_000_000_000
+  while !restarted && Clock.monotonic() < again {
+    restarted = hasLine(readText(ns, "/svc/launcher/status") ?? "", "fs running restarts 1")
+    if !restarted { sleep(until: Clock.monotonic() + 10_000_000) }
+  }
+  check(restarted, "fs restarted")
+  check(readText(ns, "/svc/fs/volume/kept").map { same($0, "kept\n") } ?? false,
+        "the new fs finds the file on the disk the RAM disk kept")
+}
+
 /// launcher's `memory`: each service's private and scaled-shared bytes,
 /// with what it started, summed over every service but this one (a test,
 /// not a service) and the launcher's own, after the checks above have

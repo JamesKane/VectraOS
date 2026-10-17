@@ -94,4 +94,5 @@ launcher(8), driver(6) for devmgr's drivers
 
 # BUGS
 
-There are no per-client services, and no `seal` or `grant` to limit what a service passes on.
+There is no `seal` to limit what a service passes on.
+A `mount` holds a channel to the instance that was running when the process started: once that service restarts, it fails until the process is started again, while `use` reaches the new one.

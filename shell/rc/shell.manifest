@@ -2,6 +2,7 @@
 # which it takes as its terminal, its output on the console. In kbdfs's
 # note group, so Delete interrupts it and what it runs (D87). A new one
 # when it ends (^D). Where tier 1 is built (rc is full Swift, D47).
+# fs(4)'s volume at /data.
 service shell
 program rc
 notegroup kbdfs
@@ -17,4 +18,5 @@ mount /net cs/net after
 mount /net dns/net after
 mount /proc proc
 mount /mnt/plumb plumber
+mount /data fs/volume create
 restart always

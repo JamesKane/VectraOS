@@ -1,0 +1,39 @@
+page ucdgen 1
+summary turn the Unicode Character Database into TDUnicode's tables
+src tools/ucdgen/main.swift text/unicode/gen/UCDGen.swift text/unicode/gen/Segmentation.swift
+keys unicode ucd normalization nfc case folding segmentation tables
+
+# SYNOPSIS
+
+```usage
+ucdgen datadir output.swift
+```
+
+# DESCRIPTION
+
+`ucdgen` reads the Unicode Character Database's files from <datadir> (`data/unicode` in the tree) and writes the tables TDUnicode searches: canonical combining classes, decompositions, compositions, case folding and uppercasing to <output.swift>, and the grapheme, word and line break properties to `SegmentationTables.swift` beside it.
+It runs on the dev machine and is built by SwiftPM (`.build/debug/ucdgen`).
+The tree's copies are in `text/unicode/lib/generated`, and UnicodeTests fails when they differ from what `ucdgen` would write.
+
+It reads `UnicodeData.txt`, `CompositionExclusions.txt`, `CaseFolding.txt` and `SpecialCasing.txt` for the first, and `GraphemeBreakProperty.txt`, `WordBreakProperty.txt`, `LineBreak.txt`, `DerivedCoreProperties.txt`, `EastAsianWidth.txt` and `emoji-data.txt` for the second.
+Normalization follows UAX #15, case folding takes CaseFolding's full mappings (statuses C and F), and uppercasing takes UnicodeData's simple mappings, replaced by SpecialCasing's unconditional ones.
+Each table is sorted, for a binary search.
+The outputs say they are generated and not to be edited.
+It prints `ucdgen: Unicode <version>: <n> decompositions, <n> composites, <n> foldings`.
+
+# EXAMPLES
+
+After new UCD files are copied into `data/unicode`:
+
+```rc
+% .build/debug/ucdgen data/unicode text/unicode/lib/generated/Tables.swift
+```
+
+# SEE ALSO
+
+vx(1)
+
+# DIAGNOSTICS
+
+With the wrong number of arguments it prints its usage and exits 2.
+A file it can't read prints `ucdgen: can't read` and the path, and one it can't write `ucdgen: can't write` and the error; either exits 1.

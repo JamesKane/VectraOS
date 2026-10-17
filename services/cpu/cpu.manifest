@@ -3,7 +3,8 @@
 # It listens on tcp!*!17019 through /net, for calls from on the link, and
 # runs its handshakes through factotum, granted the node's noise-ik key
 # and nothing else (D75). Each session's rc gets this namespace, with the
-# terminal's tree at /mnt/term, in a job of its own under `programs`.
+# terminal's tree at /mnt/term, in a job of its own under `programs`;
+# fs(4)'s volume at /data is where files copied from it land.
 service cpu
 program cpu
 programs
@@ -20,4 +21,5 @@ mount /net cs/net after
 mount /net dns/net after
 mount /proc proc
 mount /mnt/plumb plumber
+mount /data fs/volume create
 restart on-failure
