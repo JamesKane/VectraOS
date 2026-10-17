@@ -1,0 +1,162 @@
+page pthread 2
+summary threads, mutexes, condition variables, read-write locks, once and thread-specific data
+names pthread pthread_create pthread_join pthread_detach pthread_self pthread_equal pthread_exit pthread_attr_init pthread_attr_destroy pthread_attr_setdetachstate pthread_attr_getdetachstate pthread_attr_setstacksize pthread_attr_getstacksize pthread_mutexattr_init pthread_mutexattr_destroy pthread_mutexattr_settype pthread_mutexattr_gettype pthread_mutex_init pthread_mutex_destroy pthread_mutex_lock pthread_mutex_trylock pthread_mutex_timedlock pthread_mutex_unlock pthread_condattr_init pthread_condattr_destroy pthread_condattr_setclock pthread_condattr_getclock pthread_cond_init pthread_cond_destroy pthread_cond_wait pthread_cond_timedwait pthread_cond_signal pthread_cond_broadcast pthread_rwlock_init pthread_rwlock_destroy pthread_rwlock_rdlock pthread_rwlock_tryrdlock pthread_rwlock_wrlock pthread_rwlock_trywrlock pthread_rwlock_unlock pthread_once pthread_key_create pthread_key_delete pthread_getspecific pthread_setspecific
+src system/libc/include/pthread.h system/libc/pthread/lib/Threads.swift system/libc/pthread/lib/Mutex.swift system/libc/pthread/lib/Condition.swift system/libc/pthread/lib/RWLock.swift system/libc/pthread/lib/Once.swift system/libc/pthread/lib/Keys.swift system/libc/pthread/lib/Words.swift system/libc/pthread/native/Exports.swift
+keys thread mutex lock condition variable rwlock once key tls futex
+lang c
+
+# SYNOPSIS
+
+```c
+#include <pthread.h>
+
+typedef uintptr_t pthread_t;
+typedef uint32_t pthread_key_t;
+typedef uint32_t pthread_once_t;
+typedef struct { uint32_t __detached, __stack; } pthread_attr_t;
+typedef struct { uint32_t __type; } pthread_mutexattr_t;
+typedef struct { uint32_t __clock; } pthread_condattr_t;
+typedef struct { uint32_t __unused; } pthread_rwlockattr_t;
+typedef struct { uint32_t __word, __type, __owner, __count, __spare[4]; }
+  pthread_mutex_t;
+typedef struct { uint32_t __seq, __clock, __spare[6]; } pthread_cond_t;
+typedef struct { uint32_t __state, __seq, __spare[6]; } pthread_rwlock_t;
+
+int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
+                   void *(*start)(void *), void *arg);
+int pthread_join(pthread_t thread, void **result);
+int pthread_detach(pthread_t thread);
+pthread_t pthread_self(void);
+int pthread_equal(pthread_t a, pthread_t b);
+__attribute__((__noreturn__)) void pthread_exit(void *result);
+
+int pthread_attr_init(pthread_attr_t *attr);
+int pthread_attr_destroy(pthread_attr_t *attr);
+int pthread_attr_setdetachstate(pthread_attr_t *attr, int state);
+int pthread_attr_getdetachstate(const pthread_attr_t *attr, int *state);
+int pthread_attr_setstacksize(pthread_attr_t *attr, size_t size);
+int pthread_attr_getstacksize(const pthread_attr_t *attr, size_t *size);
+
+int pthread_mutexattr_init(pthread_mutexattr_t *attr);
+int pthread_mutexattr_destroy(pthread_mutexattr_t *attr);
+int pthread_mutexattr_settype(pthread_mutexattr_t *attr, int type);
+int pthread_mutexattr_gettype(const pthread_mutexattr_t *attr, int *type);
+
+int pthread_mutex_init(pthread_mutex_t *mutex,
+                       const pthread_mutexattr_t *attr);
+int pthread_mutex_destroy(pthread_mutex_t *mutex);
+int pthread_mutex_lock(pthread_mutex_t *mutex);
+int pthread_mutex_trylock(pthread_mutex_t *mutex);
+int pthread_mutex_timedlock(pthread_mutex_t *mutex,
+                            const struct timespec *abstime);
+int pthread_mutex_unlock(pthread_mutex_t *mutex);
+
+int pthread_condattr_init(pthread_condattr_t *attr);
+int pthread_condattr_destroy(pthread_condattr_t *attr);
+int pthread_condattr_setclock(pthread_condattr_t *attr, clockid_t clock);
+int pthread_condattr_getclock(const pthread_condattr_t *attr,
+                              clockid_t *clock);
+
+int pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr);
+int pthread_cond_destroy(pthread_cond_t *cond);
+int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex);
+int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
+                           const struct timespec *abstime);
+int pthread_cond_signal(pthread_cond_t *cond);
+int pthread_cond_broadcast(pthread_cond_t *cond);
+
+int pthread_rwlock_init(pthread_rwlock_t *lock,
+                        const pthread_rwlockattr_t *attr);
+int pthread_rwlock_destroy(pthread_rwlock_t *lock);
+int pthread_rwlock_rdlock(pthread_rwlock_t *lock);
+int pthread_rwlock_tryrdlock(pthread_rwlock_t *lock);
+int pthread_rwlock_wrlock(pthread_rwlock_t *lock);
+int pthread_rwlock_trywrlock(pthread_rwlock_t *lock);
+int pthread_rwlock_unlock(pthread_rwlock_t *lock);
+
+int pthread_once(pthread_once_t *once, void (*init)(void));
+
+int pthread_key_create(pthread_key_t *key, void (*destructor)(void *));
+int pthread_key_delete(pthread_key_t key);
+void *pthread_getspecific(pthread_key_t key);
+int pthread_setspecific(pthread_key_t key, const void *value);
+```
+
+# DESCRIPTION
+
+The functions follow POSIX and return 0 on success or an error number; none sets `errno`.
+Threads are croi's threads, and the locks are built on futexes.
+The layouts of the types are the library's own, and an all-zero object is a default one: `PTHREAD_MUTEX_INITIALIZER`, `PTHREAD_COND_INITIALIZER` and `PTHREAD_RWLOCK_INITIALIZER` are zeros, and `PTHREAD_ONCE_INIT` is 0.
+
+## Threads
+
+`pthread_create` starts a thread running `start(arg)` and stores its identifier in <thread>.
+A `pthread_t` is the address of the thread's record.
+The thread ends when <start> returns, its value being the result, or when it calls `pthread_exit`; its thread-specific data destructors then run.
+<attr> may be null.
+Creation fails with `EAGAIN` if there is no memory or no thread can be made.
+
+`pthread_join` waits for the thread to end, stores its result in <result> if that is not null, and frees the thread.
+It fails with `ESRCH` for a null identifier, `EDEADLK` for the calling thread itself, and `EINVAL` for a detached thread and for a thread that `pthread_create` did not start (the main thread, or one made by Sys).
+A thread is joined once; a second join uses freed memory.
+
+`pthread_detach` lets a thread free itself when it ends, or frees it now if it has ended; `EINVAL` if it is already detached or was not started by `pthread_create`.
+`pthread_self` returns the calling thread's identifier; a thread `pthread_create` did not start gets one the first time it asks.
+`pthread_equal` returns 1 if the identifiers are equal and 0 if not.
+
+An attribute object holds the detach state (`PTHREAD_CREATE_JOINABLE`, the default, or `PTHREAD_CREATE_DETACHED`; `EINVAL` otherwise) and a stack size.
+`pthread_attr_setstacksize` fails with `EINVAL` below 16384 bytes.
+The size is only recorded: every thread has a stack of the same size, 256 KiB, and `pthread_attr_getstacksize` returns 256 KiB for an object that was not set.
+
+## Mutexes
+
+The types, `PTHREAD_MUTEX_NORMAL` (0, the default), `PTHREAD_MUTEX_RECURSIVE` (1) and `PTHREAD_MUTEX_ERRORCHECK` (2), are set in an attribute object with `pthread_mutexattr_settype`, which fails with `EINVAL` for any other number.
+`pthread_mutex_lock` sleeps until the mutex is free.
+Locking an error-checking mutex the thread holds fails with `EDEADLK`; a recursive mutex counts the locks (`EAGAIN` if the count would overflow).
+A normal mutex locked twice by its owner deadlocks.
+`pthread_mutex_trylock` fails with `EBUSY` instead of waiting.
+`pthread_mutex_timedlock` waits until <abstime>, an absolute time on `CLOCK_REALTIME`, and fails with `ETIMEDOUT`, or with `EINVAL` if the nanoseconds are out of range.
+`pthread_mutex_unlock` of a recursive or error-checking mutex the thread does not hold fails with `EPERM`; of a normal mutex it is not checked.
+`pthread_mutex_destroy` fails with `EBUSY` if the mutex is locked.
+
+## Condition variables
+
+`pthread_cond_wait` unlocks <mutex>, sleeps until signaled and locks it again.
+`pthread_cond_timedwait` also returns `ETIMEDOUT` at <abstime>, on the clock of the variable's attribute: `CLOCK_REALTIME` by default, or `CLOCK_MONOTONIC` set with `pthread_condattr_setclock` (any other clock is `EINVAL`).
+A wait may return without a signal, as POSIX allows.
+`pthread_cond_signal` wakes one waiter and `pthread_cond_broadcast` all; with no waiter they cost no system call.
+`pthread_cond_destroy` fails with `EBUSY` while threads wait.
+A recursive or error-checking mutex given to a wait that the thread does not hold fails with `EPERM`; for a normal mutex ownership is not checked.
+
+## Read-write locks
+
+Any number of readers, or one writer, hold a lock.
+`pthread_rwlock_rdlock` and `pthread_rwlock_wrlock` sleep until they can; `pthread_rwlock_tryrdlock` and `pthread_rwlock_trywrlock` fail with `EBUSY` instead.
+There is no preference between readers and writers: whoever gets there first.
+A read lock taken more than 2 to the 31 less 1 times fails with `EAGAIN`.
+`pthread_rwlock_unlock` fails with `EPERM` on a lock nobody holds; it does not check who holds it.
+`pthread_rwlock_destroy` fails with `EBUSY` if the lock is held.
+<attr> is accepted and ignored.
+
+## Once and thread-specific data
+
+`pthread_once` runs <init> the first time it is called with <once>, and a thread that finds another running it sleeps until it is done.
+The routine must not call `pthread_once` on the same <once>.
+
+There are `PTHREAD_KEYS_MAX` (128) keys.
+`pthread_key_create` makes one, with an optional <destructor>, and fails with `EAGAIN` when all are in use.
+A value is a thread's own, null in each until set with `pthread_setspecific`.
+At thread exit the destructor of each key with a non-null value is called with the value, repeating up to `PTHREAD_DESTRUCTOR_ITERATIONS` (4) rounds while values remain.
+`pthread_key_delete` frees the key and runs no destructor; values set under a deleted key never show through a key made in its place.
+`pthread_setspecific` and `pthread_key_delete` of a key not in use fail with `EINVAL`.
+
+# SEE ALSO
+
+time(2), sched(2)
+
+# BUGS
+
+`<pthread.h>` has no `pthread_cancel`, `pthread_kill`, `pthread_sigmask`, `pthread_atfork`, barriers, spin locks, `pthread_setname_np`, scheduling or affinity calls, `pthread_attr_setguardsize`, `pthread_attr_setstack`, `PTHREAD_STACK_MIN`, rwlock attribute functions, robust or process-shared mutexes, or priority protocols.
+`pthread_rwlock_timedrdlock` and `timedwrlock` are not there either.
+The stack size of an attribute object has no effect.
+A deadlock on a normal mutex or on a read-write lock is not detected.

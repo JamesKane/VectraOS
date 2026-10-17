@@ -1,0 +1,37 @@
+page inttypes 2
+summary format macros and integer conversions for the fixed-width types
+names inttypes imaxabs imaxdiv strtoimax strtoumax
+src system/libc/include/inttypes.h system/libc/native/Exports.swift system/libc/native/stdlib.c
+keys intmax_t PRId64 printf macros
+lang c
+
+# SYNOPSIS
+
+```c
+#include <inttypes.h>
+
+typedef struct { intmax_t quot, rem; } imaxdiv_t;
+
+intmax_t imaxabs(intmax_t j);
+imaxdiv_t imaxdiv(intmax_t numer, intmax_t denom);
+intmax_t strtoimax(const char *__restrict nptr, char **__restrict endptr,
+                   int base);
+uintmax_t strtoumax(const char *__restrict nptr, char **__restrict endptr,
+                    int base);
+```
+
+# DESCRIPTION
+
+`imaxabs` and `imaxdiv` are `llabs` and `lldiv` of stdlib(2) for `intmax_t`, which is 64 bits.
+`strtoimax` and `strtoumax` are `strtoll` and `strtoull` of stdlib(2), with the same subject sequence, `ERANGE` and `EINVAL`.
+
+The header defines the `printf` conversion macros for the 8, 16, 32 and 64-bit types, `intmax_t` and `intptr_t`, for LP64: `PRId`, `PRIi`, `PRIu`, `PRIo`, `PRIx` and `PRIX` each followed by `8`, `16`, `32`, `64`, `MAX` or `PTR`.
+The 64-bit ones, `MAX` and `PTR` use the length `l`; the others have none.
+
+# SEE ALSO
+
+stdlib(2), stdio(2)
+
+# BUGS
+
+The `scanf` macros (`SCNd32` and the rest) and the wide-character functions (`wcstoimax`, `wcstoumax`) are not defined, since there is neither `scanf` nor wide-character input.

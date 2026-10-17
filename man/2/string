@@ -1,0 +1,76 @@
+page string 2
+summary copy, compare and search memory and strings
+names string memcpy memmove memset memcmp memchr strlen strnlen strcmp strncmp strchr strrchr strcat strncpy strdup strndup strerror strerror_r
+src system/libc/include/string.h system/libc/string/Memory.swift system/libc/string/Strings.swift system/libc/string/Strerror.swift system/libc/native/stdlib.c
+keys memory string copy length duplicate error message
+lang c
+
+# SYNOPSIS
+
+```c
+#include <string.h>
+
+void *memcpy(void *__restrict d, const void *__restrict s, size_t n);
+void *memmove(void *d, const void *s, size_t n);
+void *memset(void *s, int c, size_t n);
+int memcmp(const void *a, const void *b, size_t n);
+void *memchr(const void *s, int c, size_t n);
+size_t strlen(const char *s);
+size_t strnlen(const char *s, size_t n);
+int strcmp(const char *a, const char *b);
+int strncmp(const char *a, const char *b, size_t n);
+char *strchr(const char *s, int c);
+char *strrchr(const char *s, int c);
+char *strcat(char *__restrict d, const char *__restrict s);
+char *strncpy(char *__restrict d, const char *__restrict s, size_t n);
+char *strdup(const char *s);
+char *strndup(const char *s, size_t n);
+char *strerror(int errnum);
+int strerror_r(int errnum, char *buffer, size_t size);
+```
+
+# DESCRIPTION
+
+Strings are NUL-terminated arrays of `char`, compared as `unsigned char`.
+
+## Memory
+
+`memcpy` copies <n> bytes from <s> to <d>, which must not overlap; `memmove` copies correctly when they do.
+`memset` stores the byte <c> in the first <n> bytes of <s>.
+`memcmp` compares <n> bytes of <a> and <b>, and returns the difference of the first two that differ, or zero.
+`memchr` returns a pointer to the first byte of the first <n> bytes of <s> equal to <c> (converted to an `unsigned char`), or a null pointer.
+`memcpy`, `memmove` and `memset` work a word at a time where the machine allows; on rv64 only where source and destination are alike aligned, since a misaligned word load there may trap.
+
+## Strings
+
+`strlen` returns the length of <s>, and `strnlen` the same looking at no more than <n> bytes.
+`strcmp` compares two strings and returns the difference of the first two bytes that differ (or of the terminators); `strncmp` looks at no more than <n> bytes.
+`strchr` returns a pointer to the first byte of <s> equal to <c>, and `strrchr` to the last; the terminating NUL counts, so `strchr(s, 0)` finds the end.
+Both return a null pointer if there is none.
+`strcat` appends <s> to the end of <d>, which must have room, and returns <d>.
+`strncpy` copies at most <n> bytes of <s> to <d>, padding with NULs to <n>; <d> is not terminated if <s> has <n> bytes or more.
+
+`strdup` returns a copy of <s> in memory from `malloc`, and `strndup` a copy of at most <n> bytes, always terminated.
+Each returns a null pointer if there is no memory; the caller frees the copy.
+
+## Error messages
+
+`strerror_r` writes the message for <errnum> into <buffer>, of <size> bytes, truncated and terminated.
+It is the XSI form of POSIX: it returns 0 on success, `ERANGE` if the message did not fit, and `EINVAL` for a number `<errno.h>` does not define, for which it writes `Unknown error N` (as far as it fits).
+A <size> of 0 writes nothing.
+
+`strerror` returns the same message in a buffer of 40 bytes that belongs to the calling thread and is overwritten by its next call.
+The messages are the words of POSIX's descriptions of the errors (`No such file or directory`, `Not supported`), not glibc's.
+
+# SEE ALSO
+
+strings(2), stdlib(2)
+
+# BUGS
+
+`strerror` truncates a message longer than 39 bytes: `EDOM` gives `Mathematics argument out of domain of f`, and `EOVERFLOW` gives `Value too large to be stored in data ty`.
+`strerror_r` with a large enough buffer does not.
+
+The functions do not test their arguments: a null pointer faults.
+
+`<string.h>` declares no `strstr`, `strtok`, `strcpy`, `strncat`, `strpbrk`, `strspn`, `strcspn`, `strcoll`, `strxfrm` or `memccpy`.

@@ -1,0 +1,117 @@
+page unistd 2
+summary read, write and seek descriptors, change directory, remove files and ask the system
+names unistd sysconf getpagesize gethostname getpid readlink symlink link getentropy isatty write read pread pwrite lseek close fsync ftruncate unlink rmdir access getcwd chdir
+src system/libc/include/unistd.h system/fdio/native/Exports.swift system/fdio/lib/FDIO.swift system/sys/floor/Posix.swift system/libc/native/files.c system/sys/floor/runtime.c
+keys file descriptor read write seek close unlink rmdir cwd entropy page size hostname pid
+lang c
+
+# SYNOPSIS
+
+```c
+#include <unistd.h>
+
+#define STDIN_FILENO 0
+#define STDOUT_FILENO 1
+#define STDERR_FILENO 2
+#define F_OK 0
+#define X_OK 1
+#define W_OK 2
+#define R_OK 4
+#define HOST_NAME_MAX 64
+
+ssize_t read(int fd, void *buffer, size_t count);
+ssize_t write(int fd, const void *buffer, size_t count);
+ssize_t pread(int fd, void *buffer, size_t count, off_t offset);
+ssize_t pwrite(int fd, const void *buffer, size_t count, off_t offset);
+off_t lseek(int fd, off_t offset, int whence);
+int close(int fd);
+int fsync(int fd);
+int ftruncate(int fd, off_t size);
+int isatty(int fd);
+
+int unlink(const char *path);
+int rmdir(const char *path);
+int access(const char *path, int mode);
+char *getcwd(char *buffer, size_t size);
+int chdir(const char *path);
+ssize_t readlink(const char *__restrict path, char *__restrict buffer,
+                 size_t size);
+int symlink(const char *target, const char *path);
+int link(const char *from, const char *to);
+
+long sysconf(int name);
+int getpagesize(void);
+int gethostname(char *name, size_t size);
+pid_t getpid(void);
+int getentropy(void *buffer, size_t length);
+```
+
+# DESCRIPTION
+
+Unless said otherwise a call returns its result, or -1 with `errno` set to Linux's number for the error.
+The file calls are fdio's: descriptors over the process's namespace, reached by Node and the fs protocol.
+Paths are cleaned by name (`.` and `..` are resolved lexically), and are resolved against the current directory kept by the process.
+
+## Descriptors
+
+A descriptor names a file opened by `open` (see fcntl(2)): a channel to a node of the namespace, an offset and the flags it was opened with.
+New descriptors are the lowest free number from 3, up to 1024 (then `EMFILE`).
+Descriptors 0, 1 and 2, and any above them that the process was started with, are the rings of the process's standard I/O: they are read and written by number, never reused for a file, and cannot be duplicated (there is no `dup`).
+Opening `/dev/fd/N` for such an N returns N itself.
+
+`read` reads up to <count> bytes at the descriptor's offset and advances it.
+It returns the number read, which is 0 at the end of the file and fewer than asked near it; a file that is not open for reading or a closed descriptor fails with `EBADF`, a directory with `EISDIR`.
+Descriptor 0 reads standard input.
+`pread` reads at <offset> and leaves the offset alone; a negative <offset> fails with `EINVAL`.
+A <count> of 0 returns 0 without looking at the descriptor.
+
+`write` writes <count> bytes at the descriptor's offset, or at the end of the file if it was opened with `O_APPEND`, and returns the number written, which is less than <count> only after a partial failure.
+Descriptors 1 and 2 are the process's standard output and error: the write never fails, and standard output is gathered by line as stdio(2) says.
+`pwrite` writes at <offset>.
+
+`lseek` sets the offset to <offset> from the start (`SEEK_SET`), the current offset (`SEEK_CUR`) or the end of the file (`SEEK_END`), and returns the new offset.
+A negative result, an overflow or another <whence> fails with `EINVAL`, as does `SEEK_END` on a directory.
+The descriptors 0 to 2 cannot be seeked (`EBADF`).
+
+`close` frees the descriptor; closing 0, 1 or 2 does nothing and returns 0.
+`fsync` makes what was written durable; `ftruncate` sets the file's size, and fails with `EINVAL` if the file was not opened for writing or is a directory.
+These two, like `O_TRUNC`, need the file's server to speak the fs protocol; one that does not answers with its own error.
+`isatty` always returns 0 with `errno` set to `ENOTTY`.
+
+## Names
+
+`unlink` removes a file, `EISDIR` for a directory; `rmdir` removes an empty directory, `ENOTDIR` for a file and `ENOTEMPTY` for a directory with entries, and `EBUSY` for `/`.
+`access` succeeds if the path exists, whatever the <mode> (a <mode> outside `F_OK`, `R_OK`, `W_OK` and `X_OK` is `EINVAL`): there are no permissions.
+`getcwd` writes the current directory into <buffer> of <size> bytes and returns it; it fails with `ERANGE` if it does not fit and `EINVAL` if <size> is 0.
+With a null <buffer> it returns memory from `malloc`, whatever <size>.
+The directory is `/` at first.
+`chdir` makes a directory the current one; it fails with `ENOTDIR` for a file.
+
+The namespace has no links.
+`readlink` fails with `EINVAL` for a path that exists, since it is not a link, and `ENOENT` for one that does not; `symlink` and `link` fail with `EPERM`.
+
+## The system
+
+`sysconf` answers `_SC_PAGESIZE` and `_SC_PAGE_SIZE` (4096), and `_SC_NPROCESSORS_CONF` and `_SC_NPROCESSORS_ONLN` (the processors croi runs, all online); for any other name it returns -1 with `errno` `EINVAL`.
+`getpagesize` returns 4096.
+`gethostname` writes `localhost` and a NUL into <name>; it fails with `ENAMETOOLONG` if <size> is 9 or less.
+`getpid` returns the low 32 bits of the process's koid, which croi never reuses (1 if the kernel cannot say).
+`getentropy` fills <buffer> with <length> bytes, at most 256, from croi's random number generator; more fails with `EINVAL`.
+
+# SEE ALSO
+
+fcntl(2), stat(2), dirent(2), stdio(2), stdlib(2)
+
+# DIAGNOSTICS
+
+Errors from the file calls are as Linux gives them: `ENOENT` for a name that is not there, or `ENOTDIR` where a directory on the way is a file; `EACCES` for a name a namespace seals or cannot create in; `EIO` when the server fails or does not answer; `ENAMETOOLONG`, `ENOSPC` and `EROFS` as the server says.
+A path that is empty is `ENOENT`, and one with a NUL cannot be given.
+A null path is `EINVAL`.
+
+# BUGS
+
+There are no permissions, owners, links or times beyond the modification time.
+A file unlinked or replaced while it is open stops working, where Linux keeps it until the last close.
+There is no `dup`, `dup2`, `pipe`, `fcntl`, `ioctl`, `fork`, `exec`, `sleep`, `usleep`, `getuid` or `readv`.
+
+A program built without fdio finds its file calls defined weakly to fail: a path gives `ENOENT`, a descriptor `EBADF`, `getcwd` gives `/`, and only `write` to descriptors 1 and 2 works.

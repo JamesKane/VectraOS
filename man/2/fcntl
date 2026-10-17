@@ -1,0 +1,55 @@
+page fcntl 2
+summary open and create files
+names fcntl open creat
+src system/libc/include/fcntl.h system/fdio/native/Exports.swift system/fdio/native/open.c system/fdio/lib/FDIO.swift
+keys open create file descriptor flags
+lang c
+
+# SYNOPSIS
+
+```c
+#include <fcntl.h>
+
+int open(const char *path, int flags, ...);
+int creat(const char *path, mode_t mode);
+```
+
+# DESCRIPTION
+
+`open` opens the file or directory <path> in the process's namespace and returns the lowest free descriptor from 3.
+<flags> is one of `O_RDONLY` (0), `O_WRONLY` (1) and `O_RDWR` (2), with these bits, which have Linux's values, or'd in:
+
+: `O_CREAT`
+  Create a regular file if there is none.
+  Its <mode>, the third argument, is ignored: there are no permissions.
+: `O_EXCL`
+  With `O_CREAT`, fail with `EEXIST` if the file exists.
+: `O_TRUNC`
+  Truncate a file opened for writing to zero length.
+: `O_APPEND`
+  Each write goes to the end of the file.
+: `O_DIRECTORY`
+  Fail with `ENOTDIR` if <path> is not a directory (with `O_CREAT` and no file there, `EINVAL`).
+
+`O_NONBLOCK`, `O_NOCTTY`, `O_NOFOLLOW` and `O_CLOEXEC` are defined and accepted, and do nothing.
+The access mode 3 fails with `EINVAL`.
+A directory may be opened only for reading, without `O_CREAT`; otherwise `EISDIR`.
+A directory descriptor reads nothing (`read` gives `EISDIR`) and can be given to `fstat` and `fsync`.
+For reading a directory use `opendir` of dirent(2).
+
+The name `/dev/fd/N`, for a descriptor N the process was started with (0 to 2, or one given to it), returns N itself, not a new descriptor.
+
+`creat(path, mode)` is `open` with `O_WRONLY | O_CREAT | O_TRUNC`.
+
+Both return the descriptor, or -1 with `errno` set: `ENOENT` for a missing file or directory on the path, `ENOTDIR` where a name on the way is a file, `EEXIST`, `EISDIR`, `EINVAL`, `EMFILE` when 1024 descriptors are open, `EACCES` where the namespace cannot create the name, or the error of the server.
+
+# SEE ALSO
+
+unistd(2), stat(2), dirent(2), stdio(2)
+
+# BUGS
+
+`open` takes a mode only if `O_CREAT` is given, as POSIX says, but the mode is dropped.
+`O_TRUNC` needs a file server that speaks the fs protocol.
+There is no `fcntl`, `openat`, `dup` or `O_SYNC`.
+Without fdio `open` always fails with `ENOENT`.

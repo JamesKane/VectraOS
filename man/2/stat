@@ -1,0 +1,72 @@
+page stat 2
+summary get file status, make directories
+names stat lstat fstat mkdir chmod fchmod
+src system/libc/include/sys/stat.h system/libc/include/sys/types.h system/fdio/native/Exports.swift system/fdio/lib/FDIO.swift
+keys file status mode size directory mkdir permissions
+lang c
+
+# SYNOPSIS
+
+```c
+#include <sys/stat.h>
+
+struct stat {
+  dev_t st_dev;
+  ino_t st_ino;
+  nlink_t st_nlink;
+  mode_t st_mode;
+  uid_t st_uid;
+  gid_t st_gid;
+  dev_t st_rdev;
+  off_t st_size;
+  blksize_t st_blksize;
+  blkcnt_t st_blocks;
+  struct timespec st_atim;
+  struct timespec st_mtim;
+  struct timespec st_ctim;
+};
+
+int stat(const char *__restrict path, struct stat *__restrict st);
+int lstat(const char *__restrict path, struct stat *__restrict st);
+int fstat(int fd, struct stat *st);
+int mkdir(const char *path, mode_t mode);
+int chmod(const char *path, mode_t mode);
+int fchmod(int fd, mode_t mode);
+```
+
+# DESCRIPTION
+
+`stat` fills <st> with the status of the node <path>, `fstat` with that of the open descriptor <fd>.
+`lstat` is `stat`: there are no symbolic links.
+The fields are filled from what the node says, and the file system keeps no more:
+
+| Field | Value |
+| `st_ino` | the node's qid path, unique in its tree |
+| `st_mode` | `S_IFDIR | 0755` for a directory, `S_IFREG | 0644` for a file |
+| `st_nlink` | 2 for a directory, 1 for a file |
+| `st_size` | the size in bytes |
+| `st_blksize` | 4096 |
+| `st_blocks` | the size in units of 512 bytes, rounded up |
+| `st_atim`, `st_mtim`, `st_ctim` | all the node's modification time |
+| `st_dev`, `st_uid`, `st_gid`, `st_rdev` | 0 |
+
+Only directories and regular files exist.
+`fstat` of 0, 1 or 2 describes an empty regular file.
+The header defines `S_IFMT` and the file types, `S_ISDIR`, `S_ISREG` and `S_ISLNK`, the set-id bits and the `S_IRWXU` family of permission bits, with Linux's values; `st_atime`, `st_mtime` and `st_ctime` are the seconds of the times.
+
+`mkdir` makes a directory.
+<mode> is ignored.
+It fails with `EEXIST` if the name is in use, `ENOENT` if a directory on the path is missing and `ENOTDIR` if one is a file.
+
+There are no permissions to change: `chmod` and `fchmod` succeed if the path or descriptor exists, and change nothing.
+
+All return 0, or -1 with `errno` set.
+
+# SEE ALSO
+
+fcntl(2), unistd(2), dirent(2)
+
+# BUGS
+
+There are no `umask`, `chown`, `utimes`, `mkfifo` or `mknod`, nor `S_ISCHR`, `S_ISBLK`, `S_ISFIFO` or `S_ISSOCK`.
+Without fdio every call fails: `ENOENT` for a path, `EBADF` for a descriptor.

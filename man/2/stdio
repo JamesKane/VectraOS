@@ -1,0 +1,146 @@
+page stdio 2
+summary standard streams, formatted output and character input and output
+names stdio printf fprintf snprintf sprintf vprintf vfprintf vsnprintf vsprintf fputc putc putchar fputs puts fwrite fflush fgetc getc getchar fgets fread feof ferror clearerr fopen fileno remove rename fclose flockfile funlockfile ftrylockfile
+src system/libc/include/stdio.h system/libc/native/stdio.c system/libc/stdio/Format.swift system/libc/stdio/Decimal.swift system/libc/native/Exports.swift system/fdio/native/Exports.swift
+keys printf format stream stdout stderr stdin file character line
+lang c
+
+# SYNOPSIS
+
+```c
+#include <stdio.h>
+
+typedef struct td_file FILE;
+extern FILE *stdin;
+extern FILE *stdout;
+extern FILE *stderr;
+
+int printf(const char *__restrict format, ...);
+int fprintf(FILE *__restrict f, const char *__restrict format, ...);
+int snprintf(char *__restrict s, size_t n, const char *__restrict format,
+             ...);
+int sprintf(char *__restrict s, const char *__restrict format, ...);
+int vprintf(const char *__restrict format, va_list ap);
+int vfprintf(FILE *__restrict f, const char *__restrict format, va_list ap);
+int vsnprintf(char *__restrict s, size_t n, const char *__restrict format,
+              va_list ap);
+int vsprintf(char *__restrict s, const char *__restrict format, va_list ap);
+
+int fputc(int c, FILE *f);
+int putc(int c, FILE *f);
+int putchar(int c);
+int fputs(const char *__restrict s, FILE *__restrict f);
+int puts(const char *s);
+size_t fwrite(const void *__restrict p, size_t size, size_t n,
+              FILE *__restrict f);
+int fflush(FILE *f);
+
+int fgetc(FILE *f);
+int getc(FILE *f);
+int getchar(void);
+char *fgets(char *__restrict s, int n, FILE *__restrict f);
+size_t fread(void *__restrict p, size_t size, size_t n, FILE *__restrict f);
+
+int feof(FILE *f);
+int ferror(FILE *f);
+void clearerr(FILE *f);
+FILE *fopen(const char *__restrict path, const char *__restrict mode);
+int fileno(FILE *f);
+int remove(const char *path);
+int rename(const char *from, const char *to);
+int fclose(FILE *f);
+void flockfile(FILE *f);
+void funlockfile(FILE *f);
+int ftrylockfile(FILE *f);
+```
+
+The header also defines `EOF` (-1), `BUFSIZ` (1024) and `SEEK_SET`, `SEEK_CUR` and `SEEK_END`.
+
+# DESCRIPTION
+
+There are three streams, `stdin`, `stdout` and `stderr`, with file descriptors 0, 1 and 2, and no others: a `FILE` is one of these three.
+Nothing in the library makes a stream over a file.
+
+## Output
+
+The library keeps no buffer for output: writes to `stdout` and `stderr` go straight to the runtime, which gathers `stdout` by line.
+A process started with standard output and error rings writes to them.
+Any other writes `stdout` as the process's debuglog, one record for each line; a line of more than 216 bytes is split into records of that size, and a partial line stays in the library until its newline or until `fflush`, a write to `stderr`, a read of `stdin`, or `exit`.
+`stderr` is its own ring when the process has one for descriptor 2, and `stdout`'s output flushed at once otherwise.
+Writing to `stdin` fails with `EBADF`.
+
+`printf`, `fprintf`, `vprintf` and `vfprintf` write the formatted text to a stream (`printf` to `stdout`) and return the number of bytes written.
+`snprintf` and `vsnprintf` write at most <n> bytes including the terminating NUL, and return the length the whole output has, as C99 does; with <n> of 0 they write nothing and <s> may be null.
+`sprintf` and `vsprintf` are `snprintf` and `vsnprintf` without a limit.
+The `v` forms take a `va_list` that they copy, so the caller's is left as it was.
+
+## Formats
+
+A conversion is `%`, then flags, a width, a precision and a length, then the conversion character.
+The flags are `-`, `+`, space, `#` and `0`.
+The width and the precision are numbers or `*`; a negative `*` width is `-` with its magnitude, and a negative `*` precision is none.
+The lengths are `hh`, `h`, `l`, `ll`, `j`, `z`, `t` and, for floating point, `L`.
+The conversions are:
+
+: `d i`
+  A signed decimal integer.
+: `u o x X`
+  An unsigned decimal, octal or hexadecimal integer.
+: `f F e E g G a A`
+  A `double`, or with `L` a `long double`: x87's 80-bit format on amd64, binary128 on arm64 and rv64.
+  The digits are exact: the result is the correctly rounded decimal expansion of the value, whatever its size.
+: `c`
+  A byte.
+: `s`
+  A string; a null pointer prints `(null)`, as glibc does.
+: `p`
+  A pointer, as `%#lx`; a null pointer prints `(nil)`.
+: `%`
+  A percent sign.
+
+An unknown conversion ends the formatting and the function returns -1; the text before it has been written.
+`%n`, `%b`, the wide-character conversions `%lc` and `%ls` (read as `%c` and `%s`), `%m` and positional arguments (`%1$d`) are not supported.
+
+## Input
+
+Only `stdin` can be read.
+Reading another stream fails and sets its error indicator and `errno` to `EBADF`.
+`stdin` is read through a buffer of 4096 bytes from the process's standard input ring, or is empty if the process has none; standard output is flushed before each read.
+
+`fgetc`, `getc` and `getchar` return the next byte as an `unsigned char`, or `EOF` at the end of input.
+`fgets` reads up to <n> - 1 bytes, stopping after a newline, terminates them with a NUL and returns <s>; it returns a null pointer if it read nothing.
+`fread` reads up to <n> items of <size> bytes and returns the number of whole items read.
+
+`feof` and `ferror` return the end-of-file and error indicators of a stream; `clearerr` clears both.
+The end-of-file indicator is not sticky: the next read asks the ring again.
+
+## Other calls
+
+`fputc`, `putc` and `putchar` write one byte and return it as an `unsigned char`, or `EOF` on error.
+`fputs` and `puts` write a string (`puts` adds a newline, and neither writes the terminating NUL) and return 0, or `EOF` on error.
+`fwrite` writes <size> times <n> bytes and returns <n>.
+`fflush` flushes `stdout`'s partial line whatever its argument, which may be null, and returns 0.
+`fileno` returns the descriptor, 0, 1 or 2.
+`flockfile` and `funlockfile` do nothing, and `ftrylockfile` returns 0 (the lock is taken): the streams are written whole.
+
+`remove` removes a file or an empty directory, and `rename` renames a file; they are the calls of unistd(2) and stat(2) under C's names, and fail the same way.
+A program built without the file library finds both failing with `ENOENT`.
+
+# SEE ALSO
+
+unistd(2), stdlib(2), string(2), fcntl(2), stat(2)
+
+# DIAGNOSTICS
+
+`fopen` always returns a null pointer with `errno` set to `ENOENT`, whatever the file and mode.
+`fclose` closes nothing and returns 0.
+
+# BUGS
+
+`fprintf` and `vfprintf` on `stderr` write through `stdout`'s path, not `stderr`'s: the text appears with standard output, buffered to the end of the line, and does not go to the stderr ring.
+`fputs`, `fwrite` and `fputc` on `stderr` do go to it.
+A program that needs its diagnostics on standard error uses `fwrite` or `write` of unistd(2).
+
+There are no file streams, so no `setvbuf`, `fseek`, `ftell`, `ungetc`, `scanf`, `tmpfile`, `perror` or `getline`.
+Mixing `getchar` with `read(0, ...)` loses data: the stream keeps what it read ahead.
+`fread` and `fgets` cannot tell an error from the end of input.

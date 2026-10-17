@@ -1,0 +1,55 @@
+page dirent 2
+summary read the entries of a directory
+names dirent opendir readdir rewinddir closedir
+src system/libc/include/dirent.h system/fdio/native/Exports.swift system/fdio/lib/FDIO.swift
+keys directory list entries
+lang c
+
+# SYNOPSIS
+
+```c
+#include <dirent.h>
+
+#define DT_UNKNOWN 0
+#define DT_DIR 4
+#define DT_REG 8
+
+struct dirent {
+  ino_t d_ino;
+  off_t d_off;
+  unsigned short d_reclen;
+  unsigned char d_type;
+  char d_name[256];
+};
+
+typedef struct td_dir DIR;
+
+DIR *opendir(const char *path);
+struct dirent *readdir(DIR *dir);
+void rewinddir(DIR *dir);
+int closedir(DIR *dir);
+```
+
+# DESCRIPTION
+
+`opendir` opens the directory <path> and returns a stream, or a null pointer with `errno` set (`ENOENT`, `ENOTDIR` for a file).
+The entries are listed when it is opened: `.` and `..` first, then the directory's contents, which for a union directory are the merged listing and include the mount points below it.
+The stream is not a file descriptor.
+
+`readdir` returns the next entry, or a null pointer at the end with `errno` unchanged.
+`d_ino` is the entry's qid path (0 for `..`), `d_off` the index of the next entry, `d_reclen` the size of the structure, and `d_type` `DT_DIR` or `DT_REG`.
+A name longer than 255 bytes is cut.
+The structure belongs to the stream and is overwritten by the next `readdir` on it or by `closedir`.
+Entries made or removed after `opendir` do not appear.
+
+`rewinddir` goes back to the first entry, without listing the directory again.
+`closedir` frees the stream and returns 0; a null <dir> fails with `EBADF`.
+
+# SEE ALSO
+
+fts(2), fcntl(2), stat(2)
+
+# BUGS
+
+There are no `telldir`, `seekdir`, `dirfd`, `fdopendir`, `scandir` or `readdir_r`.
+Without fdio `opendir` fails with `ENOENT`.

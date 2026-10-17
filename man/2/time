@@ -1,0 +1,61 @@
+page time 2
+summary read the clocks and sleep
+names time clock_gettime clock_getres nanosleep
+src system/libc/include/time.h system/sys/floor/Posix.swift
+keys clock timespec realtime monotonic sleep
+lang c
+
+# SYNOPSIS
+
+```c
+#include <time.h>
+
+typedef int64_t time_t;
+typedef int32_t clockid_t;
+
+struct timespec {
+  time_t tv_sec;
+  long tv_nsec;
+};
+
+time_t time(time_t *out);
+int clock_gettime(clockid_t clock, struct timespec *ts);
+int clock_getres(clockid_t clock, struct timespec *res);
+int nanosleep(const struct timespec *duration, struct timespec *remaining);
+```
+
+# DESCRIPTION
+
+`time` returns the seconds since the Unix epoch by the realtime clock, and stores them in <out> if it is not null.
+
+`clock_gettime` stores the time of <clock> in <ts>.
+The clocks, with Linux's numbers, are:
+
+| Clock | Value | Reads |
+| `CLOCK_REALTIME` | 0 | UTC, from the clock the process was given |
+| `CLOCK_MONOTONIC` | 1 | croi's monotonic clock |
+| `CLOCK_MONOTONIC_RAW` | 4 | the same |
+| `CLOCK_MONOTONIC_COARSE` | 6 | the same |
+| `CLOCK_BOOTTIME` | 7 | the same |
+
+The realtime clock is set from the machine's real-time clock by the time service.
+A process given no such clock reads the monotonic clock as realtime.
+Any other <clock>, or a null <ts>, fails with `EINVAL`.
+
+`clock_getres` stores a resolution of 1 nanosecond for each of those clocks in <res>, which may be null.
+
+`nanosleep` sleeps the calling thread for <duration> on the monotonic clock.
+A negative number of seconds, or nanoseconds outside 0 to 999999999, fails with `EINVAL`.
+Nothing interrupts the sleep, since there are no signals, so <remaining> is never written.
+A duration beyond the clock's range sleeps forever.
+
+All return 0 on success (`time` the time) and -1 with `errno` set on error.
+
+# SEE ALSO
+
+pthread(2), sched(2)
+
+# BUGS
+
+There are no calendar functions: no `localtime`, `gmtime`, `mktime`, `strftime`, `clock`, `difftime`, `sleep`, `usleep`, `clock_nanosleep` or `timespec_get`.
+The four monotonic clocks are not distinguished.

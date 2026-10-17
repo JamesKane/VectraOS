@@ -1,0 +1,27 @@
+page strings 2
+summary compare strings ignoring case
+names strings strcasecmp strncasecmp
+src system/libc/include/strings.h system/libc/string/Strings.swift
+keys compare case insensitive
+lang c
+
+# SYNOPSIS
+
+```c
+#include <strings.h>
+
+int strcasecmp(const char *s1, const char *s2);
+int strncasecmp(const char *s1, const char *s2, size_t n);
+```
+
+# DESCRIPTION
+
+`strcasecmp` compares the strings <s1> and <s2> as `strcmp` of string(2) does, after mapping each `A` to `Z` to lower case.
+`strncasecmp` compares at most <n> bytes.
+Each returns zero if the strings are equal, otherwise the difference of the first two bytes that differ, as unsigned values folded to lower case.
+
+Only ASCII letters are folded: the locale is "C".
+
+# SEE ALSO
+
+string(2), ctype(2)

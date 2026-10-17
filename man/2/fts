@@ -1,0 +1,78 @@
+page fts 2
+summary walk a file hierarchy
+names fts fts_open fts_read fts_set fts_close
+src system/libc/include/fts.h system/fdio/native/Fts.swift system/fdio/lib/Walk.swift
+keys directory tree walk traverse
+lang c
+
+# SYNOPSIS
+
+```c
+#include <fts.h>
+
+typedef struct _ftsent {
+  struct _ftsent *fts_cycle;
+  struct _ftsent *fts_parent;
+  struct _ftsent *fts_link;
+  long fts_number;
+  void *fts_pointer;
+  char *fts_accpath;
+  char *fts_path;
+  int fts_errno;
+  int fts_symfd;
+  unsigned short fts_pathlen;
+  unsigned short fts_namelen;
+  ino_t fts_ino;
+  dev_t fts_dev;
+  nlink_t fts_nlink;
+  short fts_level;
+  unsigned short fts_info;
+  unsigned short fts_flags;
+  unsigned short fts_instr;
+  struct stat *fts_statp;
+  char fts_name[1];
+} FTSENT;
+
+typedef struct {
+  FTSENT *fts_cur;
+  int fts_options;
+  void *__td_walk;
+} FTS;
+
+FTS *fts_open(char *const *paths, int options,
+              int (*compar)(const FTSENT **, const FTSENT **));
+FTSENT *fts_read(FTS *fts);
+int fts_set(FTS *fts, FTSENT *entry, int instruction);
+int fts_close(FTS *fts);
+```
+
+# DESCRIPTION
+
+These are BSD's `fts` calls, with glibc's constants and field names; the layout is the library's own.
+
+`fts_open` starts a walk of the null-terminated array <paths>.
+If <compar> is not null the roots, and the entries of each directory, are sorted by it; otherwise the roots are in the order given and a directory's entries in the order it lists them.
+`FTS_NOSTAT` in <options> leaves entries other than the roots and directories unstat'd, as `FTS_NSOK`.
+
+`fts_read` returns the next entry of the walk, depth first, or a null pointer at the end with `errno` set to 0.
+Each directory is returned twice: before its entries (`FTS_D`) and after them (`FTS_DP`).
+Files are `FTS_F`.
+A path that cannot be stat'd is `FTS_NS`, with the error in `fts_errno`; a directory that cannot be listed is `FTS_DNR` and has no `FTS_DP`.
+The entry's `fts_path` is the root as given, or the path through it; `fts_name` its last name; `fts_level` 0 for a root, then 1 and so on; `fts_statp` the status as stat(2) gives it; `fts_ino`, `fts_nlink` and `fts_accpath` from it, `fts_dev` is always 1.
+An entry stays valid until `fts_close`.
+
+`fts_set` with `FTS_SKIP` on the directory last returned leaves its entries out; its `FTS_DP` follows.
+Other <instruction> values are stored in `fts_instr` and do nothing.
+
+`fts_close` frees the walk and every entry it returned, and returns 0.
+
+# SEE ALSO
+
+dirent(2), stat(2)
+
+# BUGS
+
+There are no links to follow: `FTS_LOGICAL`, `FTS_COMFOLLOW`, `FTS_FOLLOW`, `FTS_XDEV`, `FTS_SEEDOT` and `FTS_NOCHDIR` change nothing, and `FTS_SL`, `FTS_SLNONE`, `FTS_DC` and `FTS_DEFAULT` never come.
+`fts_parent`, `fts_cycle` and `fts_link` are not filled in, and `fts_children` does not exist.
+`fts_read` never changes the current directory.
+Without fdio `fts_open` fails with `ENOENT`.

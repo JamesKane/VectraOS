@@ -1,0 +1,98 @@
+page math 2
+summary mathematical functions
+names math floor ceil trunc round roundeven rint nearbyint fabs sqrt exp exp2 log log2 log10 sin cos floorf ceilf truncf roundf roundevenf rintf nearbyintf fabsf sqrtf expf exp2f logf log2f log10f sinf cosf copysign fmod remainder copysignf fmodf remainderf fma fmaf ldexp scalbn frexp modf
+src system/libc/include/math.h system/libc/math/Exact.swift system/libc/math/Transcendental.swift system/libc/native/Exports.swift
+keys libm floating point rounding sine cosine logarithm square root
+lang c
+
+# SYNOPSIS
+
+```c
+#include <math.h>
+
+double floor(double x);
+double ceil(double x);
+double trunc(double x);
+double round(double x);
+double roundeven(double x);
+double rint(double x);
+double nearbyint(double x);
+double fabs(double x);
+double sqrt(double x);
+double exp(double x);
+double exp2(double x);
+double log(double x);
+double log2(double x);
+double log10(double x);
+double sin(double x);
+double cos(double x);
+float floorf(float x);
+float ceilf(float x);
+float truncf(float x);
+float roundf(float x);
+float roundevenf(float x);
+float rintf(float x);
+float nearbyintf(float x);
+float fabsf(float x);
+float sqrtf(float x);
+float expf(float x);
+float exp2f(float x);
+float logf(float x);
+float log2f(float x);
+float log10f(float x);
+float sinf(float x);
+float cosf(float x);
+double copysign(double x, double y);
+double fmod(double x, double y);
+double remainder(double x, double y);
+float copysignf(float x, float y);
+float fmodf(float x, float y);
+float remainderf(float x, float y);
+double fma(double x, double y, double z);
+float fmaf(float x, float y, float z);
+double ldexp(double x, int n);
+double scalbn(double x, int n);
+double frexp(double x, int *e);
+double modf(double x, double *i);
+```
+
+# DESCRIPTION
+
+The functions are C23's, on `double` and, with an `f` suffix, `float`.
+
+## Exact functions
+
+These have one right answer and give it, bit for bit as glibc does.
+`floor`, `ceil` and `trunc` round to an integer down, up and toward zero.
+`round` rounds to nearest with ties away from zero, and `roundeven` with ties to even.
+`rint` and `nearbyint` round to nearest, ties to even: there is no `<fenv.h>`, the rounding mode never changes, and neither raises the inexact exception.
+`fabs` and `copysign` act on the sign bit.
+`sqrt` is the processor's instruction, correctly rounded.
+`fmod` and `remainder` are exact; the quotient is rounded toward zero for `fmod` and to nearest, ties to even, for `remainder`.
+`fma` computes x times y plus z rounded once; `fmaf` rounds once to `float`.
+`ldexp` and `scalbn` (the radix is 2, so they are the same function) return x times 2 to the <n>, rounded once.
+`frexp` returns a significand in [0.5, 1) and stores the exponent in <e>; for zero, infinity and NaN it returns x and stores 0.
+`modf` returns the fractional part of x and stores the integer part in <i>, both with x's sign.
+`fmodf` and `remainderf` are exact too.
+
+## Transcendental functions
+
+`exp`, `exp2`, `log`, `log2`, `log10`, `sin` and `cos` are within one unit in the last place of the true value, measured against glibc; they are not always correctly rounded.
+The `float` versions (`expf`, `sinf` and the rest) compute the `double` result and round it, so they can differ from the correctly rounded `float` in rare cases.
+`exp` of a large argument is infinity, and of a very negative one zero.
+`log` of a negative number is NaN and of zero is negative infinity.
+`sin` and `cos` of an infinity are NaN.
+Large arguments to `sin` and `cos` are reduced exactly.
+
+## Header
+
+The header defines `HUGE_VAL`, `HUGE_VALF`, `INFINITY`, `NAN`, `M_PI`, `M_E`, `FP_NAN`, `FP_INFINITE`, `FP_ZERO`, `FP_SUBNORMAL`, `FP_NORMAL`, the types `float_t` and `double_t`, and the macros `isnan`, `isinf`, `isfinite`, `signbit`, `fpclassify`, `isnormal`, `isgreater`, `isgreaterequal`, `isless`, `islessequal`, `islessgreater` and `isunordered`, which are the compiler's builtins.
+
+# SEE ALSO
+
+stdlib(2)
+
+# BUGS
+
+No function sets `errno` or raises a floating-point exception, and `math_errhandling` is not defined.
+The header declares no `pow`, `tan`, `asin`, `acos`, `atan`, `atan2`, the hyperbolic functions, `cbrt`, `hypot`, `expm1`, `log1p`, `fmin`, `fmax`, `lround`, `lrint`, `nan`, `ilogb` or `logb`, no `long double` functions, and no `M_PI_2` and the other constants but `M_PI` and `M_E`.

@@ -1,0 +1,23 @@
+page sched 2
+summary yield the processor
+names sched sched_yield
+src system/libc/include/sched.h system/sys/floor/Posix.swift
+keys yield scheduler thread
+lang c
+
+# SYNOPSIS
+
+```c
+#include <sched.h>
+
+int sched_yield(void);
+```
+
+# DESCRIPTION
+
+`sched_yield` sleeps the calling thread until a deadline already past and returns 0.
+Whether that gives the processor to another thread is the scheduler's choice; the call returns at once.
+
+# BUGS
+
+There are no other `<sched.h>` functions: no priorities, policies or CPU sets.

@@ -1,0 +1,149 @@
+page stdlib 2
+summary number conversion, memory allocation, process exit, environment, sorting and integer arithmetic
+names stdlib strtol strtoll strtoul strtoull strtod strtof strtold atof atoi atol atoll malloc calloc realloc free aligned_alloc posix_memalign malloc_usable_size abort exit _Exit atexit getenv realpath mktemp mkstemp bsearch qsort abs labs llabs div ldiv lldiv
+src system/libc/include/stdlib.h system/libc/stdlib/Stdlib.swift system/libc/stdlib/Strtod.swift system/libc/native/stdlib.c system/sys/floor/Heap.swift system/sys/floor/runtime.c system/sys/floor/Start.swift system/fdio/native/Exports.swift system/fdio/native/open.c
+keys convert strtol malloc heap exit atexit getenv environment sort search qsort temporary file path
+lang c
+
+# SYNOPSIS
+
+```c
+#include <stdlib.h>
+
+typedef struct { int quot, rem; } div_t;
+typedef struct { long quot, rem; } ldiv_t;
+typedef struct { long long quot, rem; } lldiv_t;
+
+long strtol(const char *__restrict nptr, char **__restrict endptr, int base);
+long long strtoll(const char *__restrict nptr, char **__restrict endptr,
+                  int base);
+unsigned long strtoul(const char *__restrict nptr, char **__restrict endptr,
+                      int base);
+unsigned long long strtoull(const char *__restrict nptr,
+                            char **__restrict endptr, int base);
+double strtod(const char *__restrict nptr, char **__restrict endptr);
+float strtof(const char *__restrict nptr, char **__restrict endptr);
+long double strtold(const char *__restrict nptr, char **__restrict endptr);
+double atof(const char *nptr);
+int atoi(const char *nptr);
+long atol(const char *nptr);
+long long atoll(const char *nptr);
+
+void *malloc(size_t size);
+void *calloc(size_t count, size_t size);
+void *realloc(void *p, size_t size);
+void free(void *p);
+void *aligned_alloc(size_t alignment, size_t size);
+int posix_memalign(void **p, size_t alignment, size_t size);
+size_t malloc_usable_size(void *p);
+
+__attribute__((__noreturn__)) void abort(void);
+__attribute__((__noreturn__)) void exit(int status);
+__attribute__((__noreturn__)) void _Exit(int status);
+int atexit(void (*f)(void));
+char *getenv(const char *name);
+
+char *realpath(const char *__restrict path, char *__restrict resolved);
+char *mktemp(char *template_);
+int mkstemp(char *template_);
+
+void *bsearch(const void *key, const void *base, size_t n, size_t size,
+              int (*compare)(const void *, const void *));
+void qsort(void *base, size_t n, size_t size,
+           int (*compare)(const void *, const void *));
+
+int abs(int j);
+long labs(long j);
+long long llabs(long long j);
+div_t div(int numer, int denom);
+ldiv_t ldiv(long numer, long denom);
+lldiv_t lldiv(long long numer, long long denom);
+```
+
+The header also defines `EXIT_SUCCESS` and `EXIT_FAILURE`.
+
+# DESCRIPTION
+
+## Numbers
+
+`strtol`, `strtoll`, `strtoul` and `strtoull` convert the start of <nptr> to an integer.
+The subject sequence is white space (space and `\t` to `\r`), an optional sign, and digits in <base>, which is 0 or 2 to 36.
+Base 0 reads `0x` as hexadecimal, `0b` (C23) as binary, a leading `0` as octal, and otherwise decimal; bases 16 and 2 accept their own prefix.
+A prefix with no digit after it is not a prefix: `0x` converts the `0`.
+If <endptr> is not null it is set to the byte after the last one converted, or to <nptr> if nothing was converted (the result is then 0).
+A value out of range gives the limit of the type (`LONG_MIN`, `LONG_MAX` or `ULONG_MAX`) and sets `errno` to `ERANGE`.
+A <base> that is not 0 or 2 to 36 sets `errno` to `EINVAL` and converts nothing.
+The unsigned functions accept a minus sign and negate the value in the unsigned type.
+`long` and `long long` are both 64 bits.
+
+`strtod`, `strtof` and `strtold` convert a floating-point number: a decimal or hexadecimal (`0x` with an optional `p` exponent) constant, `inf` or `infinity`, or `nan` with an optional `(chars)`, in either case, after white space and an optional sign.
+The point is `.` whatever the locale.
+The result is correctly rounded to nearest, ties to even, once; `strtof` is not `strtod`'s result rounded again.
+`strtold` yields x87's 80-bit format on amd64 and binary128 on arm64 and rv64, as `long double` is.
+An overflow gives infinity, and an underflow that is inexact and gives zero or a subnormal gives that value; both set `errno` to `ERANGE`.
+
+`atof`, `atoi`, `atol` and `atoll` are `strtod` or `strtol` with base 10 and no <endptr>.
+`atoi` truncates the `long` to an `int` instead of saturating.
+
+## Memory
+
+The heap is the process's own, from virtual memory objects mapped in its root VMAR.
+Blocks of up to 128 KiB less a 16-byte header come from size classes (powers of two from 32 bytes) carved from 1 MiB chunks, and are aligned to 16 bytes; a freed block returns to its class's free list and its memory stays with the process.
+Larger blocks, and those aligned more than 16, get a mapping of their own that `free` unmaps.
+
+`malloc` returns a block of <size> bytes, or a null pointer if there is no memory; `malloc(0)` returns a block.
+`calloc` returns <count> times <size> bytes, zeroed; the product overflowing is a null pointer.
+`realloc` grows or shrinks a block, keeping its contents up to the smaller size; it is in place when the new size fits the block's usable size.
+`realloc(p, 0)` frees <p> and returns a null pointer, as glibc's does, and `realloc(NULL, n)` is `malloc(n)`.
+`free(NULL)` does nothing.
+`aligned_alloc` and `posix_memalign` take any power-of-two <alignment>; `aligned_alloc` returns a null pointer for another, and does not require <size> to be a multiple of it.
+`posix_memalign` stores the block in <p> and returns 0, or returns `ENOMEM`; it does not check that <alignment> is a power of two.
+`malloc_usable_size` returns the number of bytes a block can hold, as glibc's does: Swift's collections grow into it.
+
+## Ending the process
+
+`exit` runs the handlers registered with `atexit`, last first, writes out `stdout`, and ends the process with <status>.
+`atexit` returns 0, or -1 if the table of 64 handlers is full.
+`_Exit` ends the process at once, with no handlers run.
+`abort` writes `abort()` to standard output and executes a trap, so that the process ends as crashed; no handler is run and no signal is raised.
+
+## Environment and paths
+
+`getenv` returns the value of the variable <name> or a null pointer.
+Variables are the files of the process's `/env`, read on each call, as Plan 9's getenv(2) does; a list's elements are joined by blanks.
+The string is the caller's to read until the next `getenv` of the same name.
+A name beginning `SWIFT_` is read from the process's boot options instead.
+There is no `setenv`, `putenv` or `environ` for the program to change.
+
+`realpath` returns the absolute path of <path> with `.` and `..` resolved by name, and fails if it does not exist.
+The result goes in <resolved>, which holds `PATH_MAX` (4096) bytes, or in memory from `malloc` if <resolved> is null.
+There are no symbolic links to resolve.
+
+`mktemp` and `mkstemp` take a <template_> whose last six bytes are `XXXXXX` and replace them with letters and digits from the system's random generator, until the name is not in use (100 tries).
+`mktemp` returns the template with a name not yet in use; `mkstemp` also creates the file, opened for reading and writing with `O_EXCL`, and returns its descriptor.
+Without six trailing `X` they fail with `EINVAL`; `mktemp` then returns the template made an empty string.
+After 100 tries they fail with `EEXIST`.
+
+## Searching and sorting
+
+`bsearch` searches the sorted array <base> of <n> elements of <size> bytes for <key>, calling <compare> as C asks, and returns the element or a null pointer.
+`qsort` sorts such an array in place by <compare>.
+It is a heapsort: it allocates nothing, takes O(n log n) at worst, and is not stable.
+
+## Arithmetic
+
+`abs`, `labs` and `llabs` return the absolute value; the most negative value is returned as it is.
+`div`, `ldiv` and `lldiv` return the quotient and remainder; a zero divisor faults or traps as the hardware does.
+
+# SEE ALSO
+
+string(2), stdio(2), inttypes(2), unistd(2), fcntl(2), time(2)
+
+# BUGS
+
+`malloc` and its kin do not set `errno` when they fail, and `free` of a pointer not from the heap traps.
+Memory from small blocks is never returned to the system.
+
+`<stdlib.h>` has no `system`, `rand`, `srand`, `setenv`, `unsetenv`, `putenv`, `mblen`, `wctomb` and the like, `strtol_l`, `at_quick_exit` or `quick_exit`.
+
+A program built without the file library (rather than with fdio, which has the file calls of this page) finds `realpath` and `mktemp` failing with `ENOENT`, and `mkstemp` not defined.

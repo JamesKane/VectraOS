@@ -1,0 +1,83 @@
+page dlfcn 2
+summary load shared libraries and find symbols
+names dlfcn dlopen dlsym dlclose dlerror dl_iterate_phdr
+src system/libc/include/dlfcn.h system/libc/include/link.h system/ld/native/Exports.swift system/ld/native/Linker.swift system/sys/floor/Posix.swift
+keys dynamic linking shared object library symbol program headers
+lang c
+
+# SYNOPSIS
+
+```c
+#include <dlfcn.h>
+
+#define RTLD_LAZY 1
+#define RTLD_NOW 2
+#define RTLD_GLOBAL 0x100
+#define RTLD_LOCAL 0
+#define RTLD_DEFAULT ((void *)0)
+
+void *dlopen(const char *file, int mode);
+void *dlsym(void *handle, const char *name);
+int dlclose(void *handle);
+char *dlerror(void);
+```
+
+```c
+#include <link.h>
+
+struct dl_phdr_info {
+  Elf64_Addr dlpi_addr;
+  const char *dlpi_name;
+  const Elf64_Phdr *dlpi_phdr;
+  Elf64_Half dlpi_phnum;
+  unsigned long long dlpi_adds;
+  unsigned long long dlpi_subs;
+  size_t dlpi_tls_modid;
+  void *dlpi_tls_data;
+};
+
+int dl_iterate_phdr(int (*callback)(struct dl_phdr_info *info, size_t size,
+                                    void *data), void *data);
+```
+
+# DESCRIPTION
+
+`dlopen` loads the shared object <file> and the objects it needs, and returns a handle.
+A <file> with no `/` names the file `lib/<file>` of bootfs; one with a `/` is a path in bootfs.
+An object already loaded is found, not loaded again, and its reference count rises.
+With a null <file> it returns a handle for the program itself.
+The segments are mapped in a region of their own, the object is relocated against the program's exported symbols and the libraries loaded before it, its read-only-after-relocation segment is protected, and its initializers run.
+It returns a null pointer on failure; `dlerror` says why.
+
+<mode> is accepted and ignored.
+Every symbol is bound when the object is loaded, as `RTLD_NOW` does, and every object joins the one global scope, as `RTLD_GLOBAL` does, whichever flags are given.
+
+`dlsym` returns the address of the symbol <name>.
+With a handle from `dlopen` it looks in that object only.
+With a null <handle> (`RTLD_DEFAULT`) or the program's handle it looks in the global scope: the program, then each library in load order.
+It returns a null pointer if there is no such symbol.
+
+`dlclose` takes one reference from the object and returns 0; it returns -1 for a handle that is not an open library.
+Nothing is ever unloaded, so a closed library stays mapped and its symbols can still be found.
+
+`dlerror` returns a message for the last failure of `dlopen`, `dlsym` or `dlclose` since the last `dlerror`, such as `NAME: not found` or `NAME: undefined symbol`, and a null pointer if there has been none.
+The message is in a buffer of 256 bytes that the next call overwrites.
+
+`dl_iterate_phdr` calls <callback> with the program's `dl_phdr_info`, <size> (64) and <data>, once, and returns what the callback returns.
+`dlpi_addr` is 0, `dlpi_name` is the empty string, `dlpi_phdr` and `dlpi_phnum` are the program's own headers, and `dlpi_adds` is 1.
+Unwinders and the Swift runtime use it to find their sections.
+
+# SEE ALSO
+
+stdlib(2)
+
+# DIAGNOSTICS
+
+The failures `dlerror` reports include: the file is not in bootfs; it is not a shared object; it has thread-local storage, which a loaded object cannot yet have; there was no room to map it; a relocation type is not supported; a symbol it needs is undefined.
+For an undefined symbol the program must export its symbols, as a program built to host libraries does; the message says so otherwise.
+
+# BUGS
+
+Libraries come only from bootfs, not from the file system.
+`dl_iterate_phdr` reports the program alone, not the libraries `dlopen` has loaded.
+There are no `dladdr`, `dlinfo` or `dlvsym`, no lazy binding, no local scopes and no unloading.

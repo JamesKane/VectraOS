@@ -1,0 +1,58 @@
+page ctype 2
+summary classify and convert characters
+names ctype isalnum isalpha isblank iscntrl isdigit isgraph islower isprint ispunct isspace isupper isxdigit tolower toupper
+src system/libc/include/ctype.h system/libc/ctype/Ctype.swift
+keys character class case lower upper digit space
+lang c
+
+# SYNOPSIS
+
+```c
+#include <ctype.h>
+
+int isalnum(int c);
+int isalpha(int c);
+int isblank(int c);
+int iscntrl(int c);
+int isdigit(int c);
+int isgraph(int c);
+int islower(int c);
+int isprint(int c);
+int ispunct(int c);
+int isspace(int c);
+int isupper(int c);
+int isxdigit(int c);
+int tolower(int c);
+int toupper(int c);
+```
+
+# DESCRIPTION
+
+These functions classify a character <c>, given as the value of an `unsigned char` or as `EOF`, and map case.
+The only locale is "C", and only the 128 ASCII values belong to any class.
+Each `is` function returns 1 if <c> is in its class and 0 if not.
+
+| Function | Class |
+| `isalnum` | letters and digits |
+| `isalpha` | `A` to `Z` and `a` to `z` |
+| `isblank` | space and tab |
+| `iscntrl` | 0 to 31 and 127 |
+| `isdigit` | `0` to `9` |
+| `isgraph` | 33 to 126: printing characters but the space |
+| `islower` | `a` to `z` |
+| `isprint` | 32 to 126 |
+| `ispunct` | graphic characters that are not letters or digits |
+| `isspace` | space, and 9 to 13 (tab, newline, vertical tab, form feed, carriage return) |
+| `isupper` | `A` to `Z` |
+| `isxdigit` | `0` to `9`, `A` to `F` and `a` to `f` |
+
+`tolower` returns the lower case letter for an upper case <c>, and `toupper` the upper case letter for a lower case one.
+Any other <c> is returned unchanged.
+
+These are functions, not macros, and use no table.
+A value that is neither an `unsigned char` nor `EOF` is undefined in C; here it is in no class and maps to itself.
+Values from 128 to 255 are in no class.
+
+# SEE ALSO
+
+string(2), strings(2)
