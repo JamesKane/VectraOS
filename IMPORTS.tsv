@@ -429,8 +429,7 @@ system/ipc/tests/baselines/todhchai.test.Loud.api	todhchai	527ff94	system/ipc/te
 system/ipc/tests/c/generated/test_ipc.h	todhchai	527ff94	system/ipc/tests/c/generated/test_ipc.h
 system/ipc/tests/c/idl_c_tests.c	todhchai	527ff94	system/ipc/tests/c/idl_c_tests.c
 system/ipc/tests/c/include/idl_c_tests.h	todhchai	527ff94	system/ipc/tests/c/include/idl_c_tests.h
-system/ipc/tests/docs/Echo.md	todhchai	527ff94	system/ipc/tests/docs/Echo.md
-system/ipc/tests/docs/Loud.md	todhchai	527ff94	system/ipc/tests/docs/Loud.md
+system/ipc/tests/docs/test-loud	todhchai	527ff94	system/ipc/tests/docs/Loud.md
 system/ipc/tests/echo/Echo.swift	todhchai	527ff94	system/ipc/tests/echo/Echo.swift
 system/ipc/tests/idl/IDLTests.swift	todhchai	527ff94	system/ipc/tests/idl/IDLTests.swift
 system/ipc/tests/macros/DiagnosticTests.swift	todhchai	527ff94	system/ipc/tests/macros/DiagnosticTests.swift
