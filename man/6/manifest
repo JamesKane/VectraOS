@@ -30,6 +30,9 @@ Anything wrong stops the launch with the file and the line; nothing is skipped.
   One variable, `NAME=value`, set in the process's `/env`.
 : `export`
   The service serves a Node tree that others may use.
+  `export per-client`: it serves each client a tree of its own instead (launch-clients(5)). Its own tree is the launcher's alone: for each service that `use`s it, the launcher opens one through its `clients` node, naming that service and giving its `grant` lines, and mounts it at that service's `/svc/<name>`, so the service knows who is asking. A `mount` of a per-client service is an error, and so is a client it refuses.
+: `grant`
+  `grant <service> <words>`: what this service asks of a per-client service it `use`s, one line each, given to that service as the words after its name (factotum's key patterns, say). Granting what isn't per-client, or what it doesn't `use`, is an error.
 : `use`
   A service's tree, granted at `/svc/<name>`, reconnected when that service restarts.
   `use <service> as <name>` grants it under another name.

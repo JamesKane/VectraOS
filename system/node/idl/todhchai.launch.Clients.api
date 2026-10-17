@@ -1,0 +1,3 @@
+# API baseline for todhchai.launch.Clients, written by idlc. Commit it; idlc checks changes against it.
+protocol todhchai.launch.Clients version 1
+method open call since 1 params (String,[String],Handle) result - throws ClientsError

@@ -18,7 +18,39 @@ let exiter = ProgramEntry { start in
   Process.exit(code: args.count > 1 ? Int64(args[1]) ?? 0 : 0)
 }
 
-let programs = [("tree", treeProgram), ("exiter", exiter)]
+/// A per-client service: each client's tree has `who`, the client's name
+/// and its grants, as the launcher gave them; a grant `refuse` is
+/// refused. Its own tree has `ctl` (`exit CODE`).
+let perClient = ProgramEntry { start in
+  do throws(Status) {
+    let dispatcher = try IPCDispatcher()
+    let tree = NodeTree(dispatcher: dispatcher)
+    tree.service("clients") { (channel: consuming Handle) throws(Status) in
+      try dispatcher.add(LaunchIPC.ClientsServer(channel: channel, impl: Clients(dispatcher: dispatcher)))
+    }
+    tree.text("ctl", read: { "" }, write: { (command: String) throws(NodeError) in
+      if NodeIPC.same(command, "exit 3") { Process.exit(code: 3) }
+      throw .invalid
+    })
+    guard let export = start.export() else { Process.exit(code: 98) }
+    try tree.serve(export)
+    try dispatcher.run()
+  } catch {
+    Process.exit(code: 99)
+  }
+}
+
+struct Clients: LaunchIPC.ClientsHandler {
+  let dispatcher: IPCDispatcher
+  func open(client: String, grants: [String], node: consuming Handle) throws(LaunchIPC.ClientsError) {
+    guard !grants.contains("refuse") else { throw .refused }
+    let tree = NodeTree(dispatcher: dispatcher)
+    tree.text("who", read: { "\(client) [\(grants.joined(separator: "|"))]\n" })
+    do throws(Status) { try tree.serve(node) } catch { throw .refused }
+  }
+}
+
+let programs = [("tree", treeProgram), ("exiter", exiter), ("per-client", perClient)]
 
 func launcher() throws -> Launcher { try Launcher(programs: programs, rootJob: try Job.root()) }
 
@@ -55,7 +87,7 @@ func launchError(_ files: [(String, String)]) -> String {
   #expect(launchError([("a.m", "service a\n")]) == "a.m: no 'program'")
   #expect(launchError([("a.m", "service a\nprogram tree\nrestart sometimes\n")])
     == "a.m:3: 'restart' takes never, on-failure or always")
-  #expect(launchError([("a.m", "service a\nprogram tree\nexport now\n")]) == "a.m:3: 'export' takes 0 arguments")
+  #expect(launchError([("a.m", "service a\nprogram tree\nexport now\n")]) == "a.m:3: 'export' takes nothing, or 'per-client'")
   #expect(launchError([("a.m", "service a\nprogram tree\nmount data a\n")]) == "a.m:3: bad path 'data'")
   #expect(launchError([("a.m", "service a\nprogram tree\nmount /data a sideways\n")])
     == "a.m:3: unknown mount option 'sideways'")
@@ -273,4 +305,36 @@ func launchError(_ files: [(String, String)]) -> String {
   #expect(l.env.count == 2)
   #expect(launchError([("e.m", "service env\nprogram tree\n")]) == "e.m:1: 'env' is the launcher's, not a service")
   #expect(launchError([("f.m", "service f\nprogram tree\nmount /e env\n")]) == "f.m:3: env is granted with `use env`")
+}
+
+@Test func aPerClientServiceKnowsWhoUsesIt() throws {
+  let l = try launcher()
+  defer { l.stop() }
+  try l.start([
+    ("p.m", "service p\nprogram per-client\nexport per-client\nrestart always\n"),
+    ("a.m", "service a\nprogram tree\nexport\nuse p\ngrant p admin\ngrant p proto=noise-ik\narg /svc/p/who\n"),
+    ("b.m", "service b\nprogram tree\nexport\nuse p as keys\narg /svc/keys/who\n"),
+  ])
+  #expect(try read(l, "a", "peer") == "a [admin|proto=noise-ik]\n")
+  #expect(try read(l, "b", "peer") == "b []\n")
+  // Restarted, it's opened again for each.
+  var root = try l.open("p")
+  var ctl = try root.open("ctl")
+  _ = try? ctl.writeText("exit 3")
+  #expect(waitFor(l, "p running restarts 1"))
+  #expect(try read(l, "a", "peer") == "a [admin|proto=noise-ik]\n")
+}
+
+@Test func perClientGrantsFailLoudly() {
+  let p = ("p.m", "service p\nprogram per-client\nexport per-client\n")
+  #expect(launchError([p, ("a.m", "service a\nprogram tree\nmount /keys p\n")])
+            == "a.m:3: service 'p' serves each client its own tree: 'use' it")
+  #expect(launchError([p, ("a.m", "service a\nprogram tree\ngrant p admin\n")])
+            == "a.m:3: 'grant p' without 'use p'")
+  #expect(launchError([("q.m", "service q\nprogram tree\nexport\n"), ("a.m", "service a\nprogram tree\nuse q\ngrant q admin\n")])
+            == "a.m:4: service 'q' doesn't serve each client its own tree")
+  #expect(launchError([p, ("a.m", "service a\nprogram tree\nuse p\ngrant p refuse\n")])
+            == "a.m:3: service 'p' refused this service's tree")
+  #expect(launchError([("q.m", "service q\nprogram tree\nexport private\n")])
+            == "q.m:3: 'export' takes nothing, or 'per-client'")
 }

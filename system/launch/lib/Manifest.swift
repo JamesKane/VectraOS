@@ -8,6 +8,8 @@
 //     arg --cache 64          # arguments, in order
 //     env NAME=value          # a variable of its /env (D81)
 //     export                  # it serves a Node tree others may use
+//     export per-client       # it serves each client its own tree, through its `clients` node (LaunchIPC.Clients)
+//     grant factotum proto=noise-ik   # words for a per-client service's tree of this one (each line one grant)
 //     use block               # granted at /svc/block
 //     use radharc-1 as display   # granted at /svc/display
 //     use env                 # /svc/env, the launcher's: its `new` makes an environment group
@@ -33,8 +35,7 @@
 // job, so that it can start driver hosts, and the boot data. A launcher
 // that has none to give refuses them.
 //
-// Not lifted yet (V2): `seal`, per-client services and their `grant`,
-// apps and scripting (D65).
+// Not lifted yet (V2): `seal`, apps and scripting (D65).
 //
 // Its lines are directives (Directives, D86): anything wrong stops the
 // launch with its file and line.
@@ -88,6 +89,12 @@ public struct Manifest: Sendable {
   public var args: [String] = []
   public var environment: [String] = []
   public var exports = false
+  /// `export per-client`: others reach it only through trees it serves
+  /// each of them (LaunchIPC.Clients).
+  public var perClient = false
+  /// `grant SERVICE WORDS`: what this service asks of a per-client
+  /// service it uses, a line each.
+  public var grantLines: [(service: String, words: String, line: Int)] = []
   public var grants: [Grant] = []
   public var srv = false
   public var restart = RestartPolicy.never
@@ -126,7 +133,7 @@ public struct Manifest: Sendable {
   public static let directives: [StaticString] = [
     "service", "program", "arg", "env", "export", "use", "mount", "srv", "restart", "resource", "programs",
     "bootdata", "debuglog", "libraries", "bootfs", "launcher", "clock", "early", "jobs",
-    "notegroup",
+    "notegroup", "grant",
   ]
 
   public init(file: String, text: String) throws(LaunchError) {
@@ -163,8 +170,16 @@ public struct Manifest: Sendable {
         }
         environment.append(rest[0])
       } else if `is`(directive, "export") {
-        try count(0...0)
+        guard rest.isEmpty || (rest.count == 1 && `is`(rest[0], "per-client")) else {
+          throw error(lineNumber, "'export' takes nothing, or 'per-client'")
+        }
         exports = true
+        perClient = !rest.isEmpty
+      } else if `is`(directive, "grant") {
+        guard rest.count >= 2, NodeIPC.isValidName(rest[0]) else {
+          throw error(lineNumber, "'grant' takes a service and what it grants")
+        }
+        grantLines.append((rest[0], rest.dropFirst().joined(separator: " "), lineNumber))
       } else if `is`(directive, "use") {
         guard rest.count == 1 || (rest.count == 3 && `is`(rest[1], "as")) else {
           throw error(lineNumber, "'use' takes a service, and 'as NAME'")
@@ -284,6 +299,18 @@ public func launchOrder(_ manifests: [Manifest], programs: [String]) throws(Laun
       }
       guard let target = named(g.service) else { throw m.error(g.line, "no service '\(g.service)'") }
       guard target.exports else { throw m.error(g.line, "service '\(g.service)' exports nothing") }
+      // A per-client service's own tree is the launcher's alone.
+      if target.perClient && !g.viaSvc {
+        throw m.error(g.line, "service '\(g.service)' serves each client its own tree: 'use' it")
+      }
+    }
+    for g in m.grantLines {
+      guard m.grants.contains(where: { $0.viaSvc && NodeIPC.same($0.service, g.service) }) else {
+        throw m.error(g.line, "'grant \(g.service)' without 'use \(g.service)'")
+      }
+      guard let target = named(g.service), target.perClient else {
+        throw m.error(g.line, "service '\(g.service)' doesn't serve each client its own tree")
+      }
     }
     if !m.noteGroup.isEmpty {
       guard named(m.noteGroup) != nil else { throw m.error(m.noteGroupLine, "no service '\(m.noteGroup)'") }

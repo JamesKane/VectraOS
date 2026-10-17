@@ -52,8 +52,9 @@ public final class Launcher: @unchecked Sendable {
     /// Its /svc tree, if it uses any service.
     var svc: NodeTree?
     /// The /svc trees of the services that use it, and its name there, to
-    /// remount after a restart.
-    var usedBy: [(svc: NodeTree, name: String)] = []
+    /// remount after a restart; for a per-client service, the client and
+    /// its grants, to open its tree again.
+    var usedBy: [(svc: NodeTree, name: String, client: String, grants: [String])] = []
     var state = "not started"
     var instances = 0
     var restarts: [Int64] = []
@@ -293,6 +294,15 @@ public final class Launcher: @unchecked Sendable {
   /// The service a manifest names.
   func service(_ name: String) -> Service? { locked { services.first { NodeIPC.same($0.manifest.service, name) } } }
 
+  /// A per-client service's tree for `client`: its `clients` node serves
+  /// it on a new channel, given `client`'s grants. nil if refused.
+  static func clientTree(_ export: Export, client: String, grants: [String]) -> Handle? {
+    guard let ch = try? export.open(["clients"]), let ends = try? Channel.create() else { return nil }
+    var clients = LaunchIPC.ClientsClient(channel: ch)
+    guard (try? clients.open(client: client, grants: grants, node: ends.b)) != nil else { return nil }
+    return ends.a
+  }
+
   /// A service's /svc tree: a forwarding node for each service it uses.
   func buildSvc(_ s: Service) throws(LaunchError) {
     let svc = NodeTree(dispatcher: dispatcher)
@@ -300,12 +310,20 @@ public final class Launcher: @unchecked Sendable {
       guard let target = service(g.service), let export = locked({ target.export }) else {
         throw s.manifest.error(g.line, "service '\(g.service)' isn't running")
       }
-      do throws(NodeIPC.NodeClient.Failure) {
-        svc.mount(g.name, try export.open([]), removeWhenGone: false)
-      } catch {
-        throw s.manifest.error(g.line, "service '\(g.service)' doesn't answer")
+      let grants = s.manifest.grantLines.filter { NodeIPC.same($0.service, g.service) }.map { $0.words }
+      if target.manifest.perClient {
+        guard let tree = Self.clientTree(export, client: s.manifest.service, grants: grants) else {
+          throw s.manifest.error(g.line, "service '\(g.service)' refused this service's tree")
+        }
+        svc.mount(g.name, tree, removeWhenGone: false)
+      } else {
+        do throws(NodeIPC.NodeClient.Failure) {
+          svc.mount(g.name, try export.open([]), removeWhenGone: false)
+        } catch {
+          throw s.manifest.error(g.line, "service '\(g.service)' doesn't answer")
+        }
       }
-      locked { target.usedBy.append((svc, g.name)) }
+      locked { target.usedBy.append((svc, g.name, s.manifest.service, grants)) }
     }
     // `use env`: the launcher's own (its `new`), not a service.
     for g in s.manifest.grants where g.viaSvc && NodeIPC.same(g.service, "env") {
@@ -378,7 +396,7 @@ public final class Launcher: @unchecked Sendable {
     if let export {
       do throws(NodeIPC.NodeClient.Failure) { _ = try export.open([]) } catch { isReady = false }
     }
-    let users = locked { () -> [(svc: NodeTree, name: String)] in
+    let users = locked { () -> [(svc: NodeTree, name: String, client: String, grants: [String])] in
       if s.instances == instance && s.process != nil { s.state = isReady ? "running" : "failed" }
       return s.usedBy
     }
@@ -387,8 +405,12 @@ public final class Launcher: @unchecked Sendable {
     }
     // Those using it reach the new instance from now on.
     guard let export else { return }
-    for (svc, name) in users {
-      if let channel = try? export.open([]) { svc.mount(name, channel, removeWhenGone: false) }
+    for (svc, name, client, grants) in users {
+      if m.perClient {
+        if let tree = Self.clientTree(export, client: client, grants: grants) { svc.mount(name, tree, removeWhenGone: false) }
+      } else if let channel = try? export.open([]) {
+        svc.mount(name, channel, removeWhenGone: false)
+      }
     }
   }
 

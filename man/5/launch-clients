@@ -1,0 +1,42 @@
+page launch-clients 5
+summary the todhchai.launch.Clients protocol
+names launch-clients todhchai.launch.Clients
+src system/node/lib/Clients.swift
+
+# SYNOPSIS
+
+```text
+protocol todhchai.launch.Clients version 1
+call open(client: String, grants: [String], node: Handle) throws(ClientsError)
+```
+
+# DESCRIPTION
+
+Protocol `todhchai.launch.Clients`, version 1, of library `LaunchIPC`, its messages in the one wire format (wire(6)).
+
+| Method | Kind | Since | Ordinal |
+| `open` | call | 1 | `0x373ca86f2fda6dda` |
+
+: `open`
+  Serves `client`'s tree on `node` (the server's end of a Node
+  channel), as its manifest's `grant` lines for this service ask.
+
+@node layouts Message layouts
+
+## open
+
+Request body, 40 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `client` | String (bytes out of line) |
+| 16 | 16 | `grants` | [String] (16-byte elements out of line) |
+| 32 | 4 | `node` | Handle (in the handle array) |
+
+Reply body: empty.
+
+@node types Types
+
+## errors ClientsError
+
+| Case | Code |
+| `refused` | 1 |
