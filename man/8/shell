@@ -1,0 +1,58 @@
+page shell 8
+summary the console's shell: rc on the keyboard and the screen
+src shell/rc/shell.manifest shell/rc/Main.swift shell/rc/native/Terminal.swift
+keys console shell rc terminal keyboard interrupt delete login
+
+# DESCRIPTION
+
+The `shell` service is rc(1) on the console: what is typed at the keyboard reaches it through kbdfs(4)'s `/dev/cons`, and what it and its programs write is shown by console(4).
+It is Plan 9's boot console, where `rc` reads and writes `#c/cons`.
+
+The launcher starts `rc` with no descriptors, and `rc` takes `/dev/cons` as its terminal: it prompts, reads a line at a time, and gives a program it runs the terminal while that program has its standard input.
+kbdfs edits the line being typed and echoes it to the console.
+`^D` on an empty line ends the input of the program that has the terminal, or else `rc`'s; `rc` then exits, and the launcher starts a new one.
+
+The service is in kbdfs's note group, so Delete interrupts it: kbdfs throws away the line being typed and posts `interrupt` to the group, which ends the program `rc` is running, and `rc` prompts again.
+
+Its manifest:
+
+```text
+service shell
+program rc
+notegroup kbdfs
+programs
+use env
+mount /bin bootfs/bin
+mount /lib/man bootfs/lib/man
+mount /dev kbdfs
+mount /dev devmgr/dev after
+mount /net devmgr/net
+mount /net net/net after
+mount /net cs/net after
+mount /net dns/net after
+mount /proc proc
+mount /mnt/plumb plumber
+restart always
+```
+
+It runs where `rc` is built, which needs the full Swift toolchain.
+
+# EXAMPLES
+
+```rc
+% ls /svc
+% cat
+typed lines come back
+(Delete)
+%
+```
+
+# SEE ALSO
+
+rc(1), kbdfs(4), console(4), proc(4), manifest(6), launcher(8)
+
+# BUGS
+
+The log and the shell share the screen: a log record is drawn where the cursor is, in the middle of a line being typed.
+Lines typed while a program has the terminal are that program's, whether it reads them or not.
+There is no scrollback.

@@ -70,7 +70,8 @@ public struct TextGrid: Sendable {
   }
 
   /// Writes UTF-8 text: printable characters at the cursor, wrapping at
-  /// the right edge; \n, \r, \t and backspace move it; other controls and
+  /// the right edge; \n, \r and \t move it, backspace erases the character
+  /// before it (Plan 9's screen does, as kbdfs's echo needs); other controls and
   /// ANSI escape sequences (ESC [ ... final) are dropped. Invalid bytes
   /// show as U+FFFD.
   public mutating func write(_ bytes: [UInt8]) {
@@ -119,7 +120,11 @@ public struct TextGrid: Sendable {
       // To the next stop, or the last column (a tab doesn't wrap).
       let stop = min(column + 8 - column % 8, columns - 1)
       while column < stop { put(0x20) }
-    case 0x08: if column > 0 { column -= 1 }
+    case 0x08:
+      guard column > 0 else { break }
+      column -= 1
+      put(0x20)
+      column -= 1
     case 0x1B: escape = .started
     case 0x20...0x7E: put(UInt32(b))
     default: break

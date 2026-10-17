@@ -54,5 +54,5 @@ stay (D46): fds 0 to 2 are still byte rings, with the window on the
 other end. Tier 1's POSIX programs that ask for termios or `isatty`
 see a window through `/dev/consctl`, the libc mapping them as Plan 9's
 APE does (D80). When: V3 (D77), once cpu's
-session and the console serve `/dev/cons`; until then, don't build new
+session and the console serve `/dev/cons` (the console does: D97); until then, don't build new
 things on the pty's Control or its modes.

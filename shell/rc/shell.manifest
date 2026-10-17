@@ -1,0 +1,20 @@
+# The console's shell: rc started with no stdio and kbdfs's /dev/cons,
+# which it takes as its terminal, its output on the console. In kbdfs's
+# note group, so Delete interrupts it and what it runs (D87). A new one
+# when it ends (^D). Where tier 1 is built (rc is full Swift, D47).
+service shell
+program rc
+notegroup kbdfs
+programs
+use env
+mount /bin bootfs/bin
+mount /lib/man bootfs/lib/man
+mount /dev kbdfs
+mount /dev devmgr/dev after
+mount /net devmgr/net
+mount /net net/net after
+mount /net cs/net after
+mount /net dns/net after
+mount /proc proc
+mount /mnt/plumb plumber
+restart always

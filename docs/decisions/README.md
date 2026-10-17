@@ -109,3 +109,4 @@ in a new file, and a line in the index below.
 - [D94. A write to a full stream waits, as a read of an empty one does](D094-stream-writes-wait.md) — 2026-10-17, decided; extends D84 and D93
 - [D95. Native applications: what both NeoVectra and todhchai planned, our code speaking existing standards](D095-native-applications.md) — 2026-10-17, proposed
 - [D96. Studio: streaming for creators, on capture, rings and existing ingest protocols](D096-studio-streaming-for-creators.md) — 2026-10-17, proposed
+- [D97. The console's shell is rc on kbdfs's /dev/cons, in kbdfs's note group](D097-console-shell.md) — 2026-10-17, decided; extends D77, D83, D87

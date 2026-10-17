@@ -6,8 +6,8 @@
 // as it comes: it reads the debuglog's ring (`debuglog`, D38) from the
 // oldest record kept, each record a line as croi's console prints it,
 // warnings amber and errors magenta. Text written to its `write` leaf is
-// shown too. What's typed at the keyboard is kbdfs's (D83): its echo and
-// cons's writes reach the log, and so the screen.
+// shown too: kbdfs (D83) writes its echo and what is written to its cons
+// there, so the console is the window of the shell on it (rc, `shell`).
 //
 // Radharc takes the framebuffer from it in V5 (the `handoff` service,
 // todhchai's M4c), which comes with Radharc.

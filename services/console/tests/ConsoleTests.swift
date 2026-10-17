@@ -47,6 +47,12 @@ func rows(_ g: TextGrid) -> [String] { (0..<g.rows).map { g.text($0) } }
   #expect(g.dirty.allSatisfy { $0 })
 }
 
+@Test func backspaceErases() {
+  var g = TextGrid(columns: 6, rows: 1)
+  g.write(Array("ab\u{8}\u{8}\u{8}c".utf8))  // a third does nothing at the left edge
+  #expect(rows(g) == ["c"] && g.column == 1)
+}
+
 @Test func gridDropsEscapesAndReplacesBadUTF8() {
   var g = TextGrid(columns: 20, rows: 2)
   g.write(Array("\u{1B}[1;32mok\u{1B}[0m".utf8))

@@ -229,14 +229,17 @@ func console(_ ns: Namespace) {
 /// The keyboard (V2 item 7d, D83): virtio-input bound, MSI-X where the
 /// kernel has MSIs and INTx on rv64's PLIC, pushing its keys to kbdfs. Keys
 /// typed through QEMU's monitor (qemu.sh's `qemu: sendkey`) come out of
-/// kbdfs's /dev/cons as a cooked line, then, with /dev/kbd open, as kbd's
-/// `k`, `c` and `K` messages. Each read waits for its keys (D84).
+/// kbdfs's /dev/cons as a cooked line (to the console's shell where rc is
+/// built), then, with /dev/kbd open, as kbd's `k`, `c` and `K` messages.
+/// Each read waits for its keys (D84).
 func keyboard(_ ns: Namespace, _ status: String) {
   let bound = line(status, startingWith: "pci-00:11.0 1af4:1052 ") ?? ""
   check(holds(bound, " virtio-input-00:11.0 running dma "), "virtio-input is bound")
 
-  // cons: a line, cooked.
-  if var cons = try? ns.open("/dev/cons") {
+  if (try? ns.memory("/bin/rc", executable: true)) != nil {
+    consoleShell(ns)  // cons is the shell's
+  } else if var cons = try? ns.open("/dev/cons") {
+    // cons: a line, cooked.
     cons.connection.timeout = 20_000_000_000
     print("qemu: sendkey h i ret")
     var typed: [UInt8] = []
@@ -275,6 +278,49 @@ func keyboard(_ ns: Namespace, _ status: String) {
     check(holds(driver, "interrupt MSI-X"), "virtio-input on MSI-X")
   #endif
   check(holds(driver, "keys to /dev/kbin") && holds(driver, ", refused 0\n"), "its keys go to kbdfs")
+}
+
+/// The console's shell (shell/rc/shell.manifest): rc on kbdfs's /dev/cons,
+/// in kbdfs's note group. A line typed runs, its output on the console; a
+/// program run has the terminal until Delete interrupts it, and rc reads
+/// the next line. Where rc is built (tier 1).
+func consoleShell(_ ns: Namespace) {
+  check(hasLine(readText(ns, "/svc/launcher/status") ?? "", "shell running restarts 0"), "the console's shell runs")
+  check(screenRow(ns, "console shell", typing: "e c h o spc c o n s o l e spc s h e l l ret"),
+        "a line typed to the shell runs, on the console")
+  // cat, started, has the terminal; Delete ends it, and rc reads on.
+  let cats = processes(ns, named: "cat").count
+  print("qemu: sendkey c a t ret")
+  let deadline = Clock.monotonic() + 10_000_000_000
+  while processes(ns, named: "cat").count <= cats && Clock.monotonic() < deadline {
+    sleep(until: Clock.monotonic() + 20_000_000)
+  }
+  check(processes(ns, named: "cat").count > cats, "the shell starts cat")
+  print("qemu: sendkey delete")
+  check(screenRow(ns, "back", typing: "e c h o spc b a c k ret"), "Delete interrupts cat, and the shell reads on")
+  check(processes(ns, named: "cat").count == cats, "cat is gone")
+}
+
+/// Whether the console shows `row` as a row of its own within 10 s, after
+/// `typing` keys.
+func screenRow(_ ns: Namespace, _ row: StaticString, typing: String) -> Bool {
+  print("qemu: sendkey \(typing)")
+  let deadline = Clock.monotonic() + 10_000_000_000
+  while Clock.monotonic() < deadline {
+    if hasLine(readText(ns, "/mnt/console/screen") ?? "", row) { return true }
+    sleep(until: Clock.monotonic() + 20_000_000)
+  }
+  print("launch-test: the console's screen:\n\(readText(ns, "/mnt/console/screen") ?? "")")
+  return false
+}
+
+/// The pids of /proc's running processes called `name`.
+func processes(_ ns: Namespace, named name: String) -> [String] {
+  let prefix = Array(name.utf8) + [0x20]
+  return ((try? ns.list("/proc")) ?? []).map({ $0.name }).filter { n in
+    guard let status = readText(ns, "/proc/" + n + "/status") else { return false }
+    return Array(status.utf8.prefix(prefix.count)) == prefix
+  }
 }
 
 /// The network's device (V3, D82): virtio-net bound at slot 0x12, its

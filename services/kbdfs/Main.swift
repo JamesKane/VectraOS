@@ -10,6 +10,12 @@
 //   kbin      usages pushed by drivers: a usage, then 1 pressed or 0 released
 //   kbdin     `k`, `K`, `c`, `r` and `R` messages typed for someone else
 // Everything runs on its dispatcher's thread, the Keyboard's state with it.
+//
+// What's written to cons, and cooking's echo, go to the console's `write`,
+// mounted at /mnt/console (the debuglog where there's none). Kdel typed
+// to a cooked cons posts `interrupt` to kbdfs's own note group through
+// /proc, as 9front's intrproc does: manifests put the console's shell in
+// it (`notegroup kbdfs`). kbdfs takes its notes and ignores interrupts.
 
 import IPC
 import Kbdfs
@@ -21,18 +27,46 @@ func fail(_ what: String) -> Never {
   Process.exit(code: 2)
 }
 
-/// The console's output: what's written to cons, and cooking's echo. The
-/// console (V2 item 8) shows the debuglog; until it reads cons's writes
-/// itself, they go there.
-func show(_ bytes: [UInt8]) { print(String(decoding: bytes, as: UTF8.self), terminator: "") }
+/// The console's `write`, opened again after a failure (a restart); the
+/// debuglog while there's none.
+final class Screen: @unchecked Sendable {
+  let namespace: Namespace?
+  let lock = Lock()
+  var write: NodeIPC.NodeClient?
+  init(_ namespace: Namespace?) { self.namespace = namespace }
+
+  func show(_ bytes: [UInt8]) {
+    let shown = lock.withLock { () -> Bool in
+      for _ in 0..<2 {
+        if write == nil { write = try? namespace?.open("/mnt/console/write") }
+        if (try? write?.write(offset: 0, bytes)) != nil { return true }
+        write = nil
+      }
+      return false
+    }
+    if !shown { print(String(decoding: bytes, as: UTF8.self), terminator: "") }
+  }
+}
 
 @main struct KbdfsService {
   static func main() {
     let start = Startup.current
+    let namespace = try? Namespace(start)
+    let screen = Screen(namespace)
     let dispatcher: IPCDispatcher
     do throws(Status) { dispatcher = try IPCDispatcher() } catch { fail("can't make a dispatcher") }
     let tree = NodeTree(dispatcher: dispatcher)
-    let keyboard = Keyboard(echo: show)
+    // Its note group's /proc/N/notepg: N its own pid.
+    let notepg = ((try? Process.current().info().koid)?.description).map { "/proc/\($0)/notepg" }
+    try? Note.notify { $0.utf8.elementsEqual("interrupt".utf8) }  // bytes: tier 0 has no Unicode tables
+    let keyboard = Keyboard(echo: { screen.show($0) }, interrupt: {
+      // Off the dispatcher's thread: proc posts to every process in the
+      // group, kbdfs's own among them.
+      guard let notepg, let namespace else { return }
+      _ = try? Thread.spawn {
+        if var group = try? namespace.open(notepg) { _ = try? group.writeText("interrupt") }
+      }.release()
+    })
     let lock = Lock()  // the Keyboard's: the closures below run on the dispatcher's thread
 
     var kbd: TreeNode?
@@ -50,7 +84,7 @@ func show(_ bytes: [UInt8]) { print(String(decoding: bytes, as: UTF8.self), term
     cons = tree.stream("cons", NodeStream(
       take: { keyboard.takeCons($0) },
       write: { (data: [UInt8]) throws(NodeError) -> UInt32 in
-        show(data)
+        screen.show(data)
         return UInt32(data.count)
       }))
     tree.stream("consctl", NodeStream(

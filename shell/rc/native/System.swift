@@ -9,8 +9,9 @@
 // stream rc's descriptor names (a pipe, a file, a backquote's capture,
 // rc's own). A pipe is a channel pair of rc's own, its writer's closing
 // its reader's end. A child given rc's own stdin reads an empty one, since
-// a relay would take the terminal's next line from rc (the pty shares a
-// terminal, V2's item 6). <{} and >{} name a pipe's end /dev/fd/N, N one
+// a relay would take the terminal's next line from rc (the pty, and the
+// console's /dev/cons, share a terminal: Terminal.swift, which lends it to
+// the program instead). <{} and >{} name a pipe's end /dev/fd/N, N one
 // of rc's numbers (32 to 63), which the child is given at N.
 
 import FDIO
@@ -561,9 +562,13 @@ final class NoteQueue: @unchecked Sendable {
     try? Note.notify { [self] note in
       guard let t = Self.traps.first(where: { note.hasPrefix($0.note) }) else { return false }
       lock.withLock { if t.trap != "sigint" || !pending.contains("sigint") { pending.append(t.trap) } }
+      Terminal.current?.bump()  // rc waiting for a line on the console
       return true
     }
   }
+
+  /// Whether notes wait to be taken.
+  var waiting: Bool { lock.withLock { !pending.isEmpty } }
 
   func take() -> [String] {
     lock.withLock {

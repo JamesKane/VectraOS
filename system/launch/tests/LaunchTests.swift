@@ -215,6 +215,23 @@ func launchError(_ files: [(String, String)]) -> String {
   #expect(try launchOrder(manifests, programs: ["tree"]).map { $0.service } == ["c", "a", "b"])
 }
 
+/// `notegroup` makes a service's job under another's, which starts first
+/// (the console's shell in kbdfs's group): one service named, not itself.
+@Test func aNoteGroupIsAnotherServicesJob() throws {
+  let manifests = try [("s.m", "service s\nprogram tree\nnotegroup k\n"), ("k.m", "service k\nprogram tree\n")]
+    .map { try Manifest(file: $0.0, text: $0.1) }
+  #expect(try launchOrder(manifests, programs: ["tree"]).map { $0.service } == ["k", "s"])
+  #expect(launchError([("s.m", "service s\nprogram tree\nnotegroup k\n")]) == "s.m:3: no service 'k'")
+  #expect(launchError([("s.m", "service s\nprogram tree\nnotegroup s\n")])
+    == "s.m:3: 'notegroup' names the service itself")
+  #expect(launchError([("s.m", "service s\nprogram tree\nnotegroup\n")]) == "s.m:3: 'notegroup' takes 1 argument")
+  let l = try launcher()
+  defer { l.stop() }
+  try l.start([(path: "s.m", text: "service s\nprogram tree\nexport\nnotegroup k\n"),
+               (path: "k.m", text: "service k\nprogram tree\nexport\n")])
+  #expect(waitFor(l, "s running restarts 0") && waitFor(l, "k running restarts 0"))
+}
+
 /// The UTC page (D48): every process is given it to read, and one whose
 /// manifest says `clock` writable too; a launcher without one refuses
 /// `clock`.

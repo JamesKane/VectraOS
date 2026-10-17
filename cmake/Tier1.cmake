@@ -228,7 +228,8 @@ function(croi_tier1 bootfs_var depends_var)
             ${PROJECT_SOURCE_DIR}/shell/commands/Main.swift -o ${_out}/commands
     DEPENDS ${_lib}/libCommands.a ${_lib}/libGuide.a ${_t1_archives} ${PROJECT_SOURCE_DIR}/shell/commands/Main.swift
     COMMENT "the shell's file commands, for tier 1")
-  set(_shell_entries bin/rc=${_out}/rc)
+  # The console's shell (shell/rc/shell.manifest) runs rc where it's built.
+  set(_shell_entries bin/rc=${_out}/rc etc/manifests/shell.manifest=${PROJECT_SOURCE_DIR}/shell/rc/shell.manifest)
   foreach(_c ls cat mkdir rm mv cp touch man lookman sig ps kill)
     list(APPEND _shell_entries bin/${_c}=${_out}/commands)
   endforeach()
@@ -240,7 +241,7 @@ function(croi_tier1 bootfs_var depends_var)
     list(APPEND _files ${_out}/${_p})
   endforeach()
   list(APPEND _entries ${_shell_entries})
-  list(APPEND _files ${_out}/rc ${_out}/commands)
+  list(APPEND _files ${_out}/rc ${_out}/commands ${PROJECT_SOURCE_DIR}/shell/rc/shell.manifest)
   add_custom_target(tier1 ALL DEPENDS ${_files})
   set(${bootfs_var} ${_entries} PARENT_SCOPE)
   set(${depends_var} ${_files} PARENT_SCOPE)

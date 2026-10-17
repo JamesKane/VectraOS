@@ -15,6 +15,7 @@
 //     srv                     # the session board, at /srv
 //     restart on-failure      # never (the default), on-failure or always
 //     early                   # started before every service not marked early
+//     notegroup kbdfs         # its job under kbdfs's: in its note group (the console's shell)
 //     resource mmio           # a kind of hardware: mmio, irq, ioport, smc or system
 //     programs                # it starts programs from bootfs, in a job under its own
 //     jobs                    # the launcher's job, holding every service and what each starts (proc's, D79)
@@ -111,6 +112,11 @@ public struct Manifest: Sendable {
   public var clockLine = 0
   /// `early`: started first (the console, for its budget).
   public var early = false
+  /// `notegroup SERVICE`: its job made under that service's, so a note
+  /// posted to that service's note group reaches it too (kbdfs's
+  /// interrupt, the console's shell). Empty for its own.
+  public var noteGroup = ""
+  public var noteGroupLine = 0
   public var serviceLine = 0
 
   /// "file:line: message"
@@ -120,6 +126,7 @@ public struct Manifest: Sendable {
   public static let directives: [StaticString] = [
     "service", "program", "arg", "env", "export", "use", "mount", "srv", "restart", "resource", "programs",
     "bootdata", "debuglog", "libraries", "bootfs", "launcher", "clock", "early", "jobs",
+    "notegroup",
   ]
 
   public init(file: String, text: String) throws(LaunchError) {
@@ -243,6 +250,12 @@ public struct Manifest: Sendable {
       } else if `is`(directive, "early") {
         try count(0...0)
         early = true
+      } else if `is`(directive, "notegroup") {
+        try count(1...1)
+        guard noteGroup.isEmpty else { throw error(lineNumber, "a second 'notegroup'") }
+        guard NodeIPC.isValidName(rest[0]) else { throw error(lineNumber, "bad service name '\(rest[0])'") }
+        noteGroup = rest[0]
+        noteGroupLine = lineNumber
       }
     }
     guard !service.isEmpty else { throw LaunchError("\(file): no 'service'") }
@@ -272,6 +285,12 @@ public func launchOrder(_ manifests: [Manifest], programs: [String]) throws(Laun
       guard let target = named(g.service) else { throw m.error(g.line, "no service '\(g.service)'") }
       guard target.exports else { throw m.error(g.line, "service '\(g.service)' exports nothing") }
     }
+    if !m.noteGroup.isEmpty {
+      guard named(m.noteGroup) != nil else { throw m.error(m.noteGroupLine, "no service '\(m.noteGroup)'") }
+      guard !NodeIPC.same(m.noteGroup, m.service) else {
+        throw m.error(m.noteGroupLine, "'notegroup' names the service itself")
+      }
+    }
   }
   var order: [Manifest] = []
   func visit(_ m: Manifest, _ path: [String]) throws(LaunchError) {
@@ -283,6 +302,8 @@ public func launchOrder(_ manifests: [Manifest], programs: [String]) throws(Laun
     for g in m.grants where !NodeIPC.same(g.service, m.service) && !NodeIPC.same(g.service, "env") {
       try visit(named(g.service)!, path + [m.service])
     }
+    // Its note group's job is made first.
+    if !m.noteGroup.isEmpty { try visit(named(m.noteGroup)!, path + [m.service]) }
     if m.grants.contains(where: { NodeIPC.same($0.service, m.service) }) {
       throw m.error(m.serviceLine, "services depend on each other: \(m.service) → \(m.service)")
     }

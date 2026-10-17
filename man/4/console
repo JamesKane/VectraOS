@@ -17,11 +17,11 @@ The line is amber for a warning and magenta for an error, and green otherwise.
 
 The log is a ring of 512 records of 256 bytes, read from the oldest kept.
 If the console falls behind, the ring overwrites records it has not read, and `status` counts them as dropped.
-Text that was typed is echoed by kbdfs(4) into the log, and so appears here.
+kbdfs(4) writes what is typed, and what is written to its `cons`, to `write`, so the console is the terminal of the shell on it, `rc` (rc(1)), and its programs; their text and the log share the screen.
 
 A grid takes UTF-8.
 It writes a printable character at the cursor, wrapping at the right edge, and scrolls when the cursor leaves the bottom.
-A newline, a carriage return, a tab (to the next multiple of eight columns) and a backspace move the cursor; other control characters and ANSI escape sequences (`ESC [` to its final byte) are dropped.
+A newline, a carriage return and a tab (to the next multiple of eight columns) move the cursor, and a backspace erases the character before it; other control characters and ANSI escape sequences (`ESC [` to its final byte) are dropped.
 A byte that is not UTF-8 is drawn as U+FFFD, and a character the font lacks, Spleen having no U+FFFD, as a question mark.
 
 The manifest asks for what the console needs:
@@ -55,7 +55,7 @@ Without a linear framebuffer of 32-bit pixels in the boot data it exits with a m
 
 # SEE ALSO
 
-kbdfs(4), manifest(6), launcher(8), intro(4)
+kbdfs(4), rc(1), manifest(6), launcher(8), intro(4)
 
 # BUGS
 

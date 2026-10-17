@@ -7,7 +7,7 @@ mount its tree before `/dev`:
 | File | What it does |
 |---|---|
 | `kbd` | `k` and `K` messages with the keys held (unshifted), on each press and release; `c` with the character typed. While it is open, cons hears nothing. |
-| `cons` | What was typed: lines cooked (^H a character, ^W a word, ^U the line, ^D the end of input), or runes as they come once raw. Writes go to the console. |
+| `cons` | What was typed: lines cooked (^H a character, ^W a word, ^U the line, ^D the end of input, Delete the line and an `interrupt` to kbdfs's note group), or runes as they come once raw. Writes, and the echo, go to the console's `write` (`/mnt/console`). |
 | `consctl` | `rawon`, `rawoff`; raw lasts while it is open. |
 | `kbmap` | The keymap, `layer usage rune` lines, 11 characters a field. Layers are 9front's but the escaped ones (none, shift, altgr, ctl, shiftaltgr, mod4, altgrmod4); a US map is built in. |
 | `kbin` | Usages from drivers: a usage of the keyboard page, then 1 pressed or 0 released. |
@@ -21,7 +21,6 @@ streams, the server holding the call (D84).
 monitor and reads both files on every arch.
 
 Not yet, against 9front's: Alt's compose sequences, the `c` repeat at
-the repeat rate (USB keyboards repeat in software), Kdel's interrupt
-note (notes come in V3: it flushes the line), Ctl-Alt-Del's reboot
+the repeat rate (USB keyboards repeat in software), Ctl-Alt-Del's reboot
 (`/dev/reboot`, V3), kbmap's OTRUNC reset, and per-writer key state on
 `kbin` (every keyboard shares the modifiers held).

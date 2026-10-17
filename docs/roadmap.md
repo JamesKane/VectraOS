@@ -45,8 +45,9 @@ under `vx ci` and every budget it introduces has a running check
     (2026-10-16, cd3eb6d), and the services hold 3.7 MiB (< 32 MiB,
     `services.rss`), and the manual is written (D86).
 - **V3** is under way: notes and /proc, crypto, the net class, the
-  stack serving /net with dial(2), and cs and dns for names, done
-  (2026-10-17); 9P2000 over Noise IK next.
+  stack serving /net with dial(2), cs and dns for names, and the
+  console's shell (rc on kbdfs's /dev/cons, D97), done (2026-10-17);
+  9P2000 over Noise IK next.
   **V4 onward** are not started (V6's boards have research passes);
   V10, the Ghost, is proposed (D90), and V11 to V16, the native
   applications and Studio, are proposed (D95, D96).
@@ -721,6 +722,16 @@ meets a tested path.
     `start` (a process's namespace and descriptors are its own, and the
     kernel keeps neither its children nor its start time), and `ns` the
     command with them.
+- **The console's shell (D97), done (2026-10-17):** the console's half
+  of D77's condition, which V2's item 8 left unjoined. The `shell`
+  service runs rc with no stdio; rc opens kbdfs's `/dev/cons` as its
+  terminal and lends it to its foreground program as on a pty. kbdfs
+  writes cons's writes and its echo to the console's `write` (the
+  debuglog only without one), and Delete posts `interrupt` to kbdfs's
+  own note group through `/proc`, which the shell is in by its
+  manifest's new `notegroup kbdfs`. launch-test types a line to the
+  shell and finds its output on the screen, then interrupts `cat`
+  with Delete (amd64, arm64: rc is tier 1). Page: shell(8).
 - **The pty goes** (D77): with cpu's session and the console both serving
   `/dev/cons`, nothing needs it; `services/pty`, rc's terminal relay and
   `CROI_PA_PTY_CONTROL` are removed (services/pty/README.md).

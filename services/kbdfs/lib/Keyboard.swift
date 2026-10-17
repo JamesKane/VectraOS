@@ -6,12 +6,12 @@
 // `k` and `K` messages (keyproc); a key's rune goes to kbd's readers as a
 // `c` message while kbd is open, else to cons, raw or cooked (ctlproc);
 // cooking erases a character (^H), a word (^W) or the line (^U), ends a
-// line at a newline and the input at ^D (lineproc). Reads take queued
-// messages as reqproc gives them: kbd's whole and NUL-terminated, as
-// many as fit; cons's bytes, up to an end of input. Not yet: Alt's
-// compose sequences (runeproc), the `c` repeat (USB keyboards repeat in
-// software), Kdel's interrupt note (notes come in V3: Kdel flushes the
-// line) and Ctl-Alt-Del's reboot (/dev/reboot, V3).
+// line at a newline and the input at ^D, and Kdel flushes the line and
+// interrupts (lineproc). Reads take queued messages as reqproc gives
+// them: kbd's whole and NUL-terminated, as many as fit; cons's bytes, up
+// to an end of input. Not yet: Alt's compose sequences (runeproc), the
+// `c` repeat (USB keyboards repeat in software) and Ctl-Alt-Del's reboot
+// (/dev/reboot, V3).
 
 public final class Keyboard: @unchecked Sendable {
   struct Modifiers {
@@ -39,8 +39,14 @@ public final class Keyboard: @unchecked Sendable {
   var consTaken = 0
   /// What the console shows: cooking's echo.
   let echo: ([UInt8]) -> Void
+  /// Kdel typed to a cooked cons: the interrupt note, for kbdfs's note
+  /// group (intrproc).
+  let interrupt: () -> Void
 
-  public init(echo: @escaping ([UInt8]) -> Void = { _ in }) { self.echo = echo }
+  public init(echo: @escaping ([UInt8]) -> Void = { _ in }, interrupt: @escaping () -> Void = {}) {
+    self.echo = echo
+    self.interrupt = interrupt
+  }
 
   // MARK: Keys
 
@@ -124,8 +130,9 @@ public final class Keyboard: @unchecked Sendable {
   /// lineproc: the line being typed, edited, then given to cons whole.
   func cook(_ r: UInt32) {
     switch r {
-    case KeyRune.del, 0:  // interrupt (no notes until V3) or flush
+    case KeyRune.del, 0:  // interrupt, or flush
       line = []
+      if r == KeyRune.del { interrupt() }
     case KeyRune.bs, KeyRune.nack, KeyRune.etb:
       while let last = line.last {
         line.removeLast()

@@ -42,6 +42,9 @@ Anything wrong stops the launch with the file and the line; nothing is skipped.
   `never` (the default), `on-failure` or `always`.
 : `early`
   Started before every service not marked early.
+: `notegroup`
+  `notegroup <service>`: the service's job is made under that service's, which starts first, so a note posted to that service's note group (proc(4)'s `notepg`) reaches it and what it starts too.
+  The console's shell is in kbdfs(4)'s, whose Delete interrupts it.
 : `resource`
   One kind of hardware: `mmio`, `irq`, `ioport`, `smc` or `system`, a range of the launcher's own root resource of that kind.
 : `programs`

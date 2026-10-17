@@ -7,6 +7,7 @@ keys keyboard keys cons kbd consctl kbmap kbin kbdin input raw cooked
 
 kbdfs turns the keys that keyboard drivers push to it into the text a program reads, as 9front's kbdfs does.
 A manifest mounts its tree at `/dev`, before whatever else is there.
+Its own manifest mounts the console at `/mnt/console` and proc(4) at `/proc`, for the echo and the interrupt.
 A keyboard driver (virtio-input(3) is one) writes each key it sees to `kbin`; kbdfs makes a rune of it by the keymap and the modifiers held, and gives the rune to the program reading `cons`, or to the one reading `kbd`.
 A read of `kbd` or `cons` waits until there is something to return.
 
@@ -28,13 +29,13 @@ Cooked, kbdfs holds the line being typed and echoes it to the console.
 `^H` erases the last character, `^W` the last word and `^U` the whole line; the keys erase on the console with a backspace each.
 The line is given to a read when a newline is typed, or at 256 characters.
 `^D` gives the line so far, without a newline; typed on an empty line it gives an end of input, which a read returns as nothing, once.
-Delete throws away the line being typed.
+Delete throws away the line being typed and posts an `interrupt` note to kbdfs's note group, through proc(4)'s `notepg`: the console's shell, `rc`, is in it, with what it runs (see manifest(6)'s `notegroup`).
+kbdfs takes its own notes and ignores the interrupt.
 A read that asks for less than the line gets it in parts.
 
-Raw, each rune is given to a read as it is typed, with no echo and no editing.
+Raw, each rune is given to a read as it is typed, with no echo and no editing; Delete is a rune like the others.
 
-A write to `cons` is shown on the console.
-It reaches the system log, and so the screen.
+A write to `cons` is shown on the console, as the echo is: kbdfs writes both to the console's `write`, at `/mnt/console` in its namespace, or to the system log while there is none.
 While `kbd` is open, `cons` hears nothing: the runes go to `kbd`.
 
 ## kbd
@@ -94,7 +95,7 @@ A write is messages ending in NUL: `r<rune>` presses and `R<rune>` releases the 
 
 # SEE ALSO
 
-console(4), virtio-input(3), devmgr(8), manifest(6), intro(4)
+console(4), proc(4), rc(1), virtio-input(3), devmgr(8), manifest(6), intro(4)
 
 # DIAGNOSTICS
 
@@ -103,7 +104,6 @@ A write that kbdfs cannot make sense of fails as invalid: to `consctl` one that 
 # BUGS
 
 The Alt key does not compose characters, and a held key does not repeat.
-Delete does not interrupt the program reading: it throws away the line being typed.
 Control-Alt-Delete does not reboot.
 A write of `kbmap` does not clear the map first.
 The modifiers held are kept for all keyboards together, not for each.

@@ -1,7 +1,12 @@
 # kbdfs (D83): the keyboard and the console, after 9front's kbdfs(8).
 # Keyboard drivers push their keys to its kbin (devmgr gives each its
-# own channel); manifests mount its tree before /dev.
+# own channel); manifests mount its tree before /dev. What's written to
+# its cons, and its echo, go to the console's write; Delete posts
+# `interrupt` to its note group through /proc, which the console's shell
+# is in (`notegroup kbdfs`).
 service kbdfs
 program kbdfs
 export
+mount /mnt/console console
+mount /proc proc
 restart on-failure

@@ -198,8 +198,10 @@ public final class Launcher: @unchecked Sendable {
   /// once among them. Where the stats can't be read (hosted), none.
   public var memory: String {
     var lines = locked { () -> [String] in
-      services.compactMap { s -> String? in
-        let (processes, stats) = Self.memory(of: s.job)
+      // A service in another's note group is counted once, as itself.
+      let own = services.compactMap { s -> UInt64? in s.manifest.noteGroup.isEmpty ? nil : try? s.job.info().koid }
+      return services.compactMap { s -> String? in
+        let (processes, stats) = Self.memory(of: s.job, skipping: own)
         return processes > 0 ? Self.memoryLine(s.manifest.service, processes, stats) : nil
       }
     }
@@ -209,9 +211,9 @@ public final class Launcher: @unchecked Sendable {
     return lines.joined()
   }
 
-  /// The memory of `job`'s processes and of its child jobs', summed; how
-  /// many processes said.
-  static func memory(of job: borrowing Handle) -> (processes: Int, stats: TaskStats) {
+  /// The memory of `job`'s processes and of its child jobs' but those
+  /// `skipping` names, summed; how many processes said.
+  static func memory(of job: borrowing Handle, skipping: [UInt64] = []) -> (processes: Int, stats: TaskStats) {
     var sum = TaskStats(mapped: 0, privateBytes: 0, shared: 0, scaledShared: 0)
     var processes = 0
     func add(_ s: TaskStats) {
@@ -225,9 +227,9 @@ public final class Launcher: @unchecked Sendable {
       add(s)
       processes += 1
     }
-    for koid in (try? Job.children(job)) ?? [] {
+    for koid in (try? Job.children(job)) ?? [] where !skipping.contains(koid) {
       guard let child = try? job.child(koid) else { continue }
-      let (n, s) = memory(of: child)
+      let (n, s) = memory(of: child, skipping: skipping)
       add(s)
       processes += n
     }
@@ -264,7 +266,11 @@ public final class Launcher: @unchecked Sendable {
     for m in order {
       let service: Service
       do throws(Status) {
-        service = Service(m, index: services.count, job: try Job.create(parent: job))
+        // Under its note group's job (`notegroup`, started first), or the
+        // launcher's.
+        let group = locked { services.first { !m.noteGroup.isEmpty && NodeIPC.same($0.manifest.service, m.noteGroup) } }
+        let made = if let group { try Job.create(parent: group.job) } else { try Job.create(parent: job) }
+        service = Service(m, index: services.count, job: made)
         // Named after its service (not every kernel can).
         try? service.job.setName(m.service)
       } catch {

@@ -51,6 +51,18 @@ let shiftRune = String(Character(Unicode.Scalar(KeyRune.shift)!))
   #expect(k.takeCons(64) == nil)
 }
 
+@Test func kdelFlushesTheLineAndInterrupts() {
+  var interrupts = 0
+  let k = Keyboard(interrupt: { interrupts += 1 })
+  press(k, 0x0B, 0x4C, 0x0C, 0x28)  // h Delete i Enter
+  #expect(interrupts == 1)
+  #expect(k.takeCons(64) == Array("i\n".utf8))
+  // Raw, Delete is a rune like any other.
+  #expect(k.control("rawon"))
+  press(k, 0x4C)
+  #expect(interrupts == 1 && k.takeCons(64) == [0x7F])
+}
+
 @Test func rawConsAndKbdTakeRunesAsTheyCome() {
   let k = Keyboard()
   #expect(k.control("rawon") && k.raw)

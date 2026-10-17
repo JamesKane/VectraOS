@@ -2,7 +2,8 @@
 
 // bin/rc (M6j part 2c): the shell on croi, in full Swift (tier 1). Started
 // with stdio rings as its descriptors 0-2 (D46: a terminal's pty, or its
-// parent's), or with the debuglog alone: it prompts with $prompt(1) (or
+// parent's), with none and a /dev/cons (the console's shell, kbdfs's), or
+// with the debuglog alone: it prompts with $prompt(1) (or
 // $prompt(2) inside an unfinished construct), reads lines until what it
 // has parses, and runs it; `rc -c COMMAND` runs one, and `rc FILE ARG...`
 // runs a script ($0 the file, $* the rest: a `#!/bin/rc` script's too),
@@ -15,6 +16,7 @@
 // it changed, as OSC 7 (file://PATH): Terminal routes a word from the
 // screen from there (M6k).
 
+import FDIO
 import LibSys
 import Rc
 import Sys
@@ -77,6 +79,15 @@ final class Standard: RcStream {
     // On a pty, its controller (CROI_PA_PTY_CONTROL), sharing it.
     if let control = Startup.current.take(HandleType.info(HandleType.ptyControl)) {
       Terminal.current = Terminal(control: control)
+    } else if !td_stdio_has(0, nil) && !td_stdio_has(1, nil),
+      case .success(let input) = FDIO.open("/dev/cons", flags: OpenFlags.readOnly),
+      case .success(let output) = FDIO.open("/dev/cons", flags: OpenFlags.writeOnly)
+    {
+      // On the console: no stdio, and a /dev/cons, its terminal for 0 to
+      // 2, as Plan 9's init opens #c/cons (Terminal.swift).
+      Terminal.current = Terminal(cons: input)
+      fds[1] = FileStream(output, reads: false)
+      fds[2] = FileStream(output, reads: false)
     }
     let shell = Rc(system: system, arguments: a.rest)
     shell.take(a, name: argv.first ?? "rc")

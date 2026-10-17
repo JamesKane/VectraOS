@@ -8,8 +8,9 @@
 that croi's boot data names (write-combining) and shows the system log,
 read from the debuglog's ring (D38: its manifest's `debuglog` grants the
 ring and its doorbell), plus what is written to its `write` leaf;
-`screen` reads back the grid. What's typed is kbdfs's (D83): its echo
-reaches the log, and so the screen. Radharc's handoff comes with Radharc
+`screen` reads back the grid. kbdfs (D83) writes its echo and its
+cons's writes there, so the shell on the console (`shell/rc/shell.manifest`)
+shows here. Radharc's handoff comes with Radharc
 (V5). launch-test mounts it at `/mnt/console` and finds a line it logged
 on the screen.
 `services/console/lib` (tier 0) is the text grid and renderer, in the desktop's

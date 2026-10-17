@@ -8,7 +8,8 @@ Section 8 holds what an administrator runs or configures: booting, the services 
 
 The loader boots croi, the kernel, from UEFI, with the boot image, bootfs, beside it.
 The kernel starts userboot, which starts launcher(8); the launcher starts every service bootfs's manifests name, and devmgr(8), one of them, starts the drivers.
+The console's shell, shell(8), is rc(1) on the keyboard and the screen.
 
 # SEE ALSO
 
-launcher(8), devmgr(8), manifest(6)
+launcher(8), devmgr(8), shell(8), manifest(6)

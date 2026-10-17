@@ -12,7 +12,15 @@
 // kills the programs that have the terminal (a note's default for them)
 // and takes the note itself between commands (Rc.notes). Input typed
 // while a program has the terminal is that program's, read or not.
+//
+// rc on the console: started with no stdio and a /dev/cons (kbdfs's, the
+// console's shell), rc opens it as its terminal (Plan 9's init does) and
+// reads it as it reads a pty, lending it the same way. A read of nothing
+// is ^D's end, of the program that has the terminal or else of rc. Its
+// interrupt is kbdfs's note to rc's note group (D87), which kills the
+// programs that have the terminal; rc's own reads wake for it.
 
+import FDIO
 import IPC
 import Sys
 import TDFloor
@@ -44,6 +52,13 @@ final class Terminal: @unchecked Sendable {
     _ = try? Thread.spawn { self.listen(Handle(raw: raw)) }
   }
 
+  /// The console's: `cons`, an fdio descriptor of /dev/cons, read.
+  init(cons: Int32) {
+    word = UnsafeMutablePointer<UInt32>.allocate(capacity: 1)
+    word.initialize(to: 0)
+    _ = try? Thread.spawn { self.readConsole(cons) }
+  }
+
   func bump() {
     _ = lock.withLock { word.pointee &+= 1 }
     Futex.wake(word, count: Int.max)
@@ -59,6 +74,30 @@ final class Terminal: @unchecked Sendable {
     }
     lock.withLock { ended = true }
     bump()
+  }
+
+  /// /dev/cons, a line a read, to rc's end or an error: an empty read is
+  /// ^D's end.
+  func readConsole(_ cons: Int32) {
+    var buffer = [UInt8](repeating: 0, count: 1024)
+    while !lock.withLock({ ended }) {
+      guard case .success(let n) = buffer.withUnsafeMutableBytes({ b in FDIO.read(cons, into: b) }) else { break }
+      if n > 0 { give(Array(buffer[0..<n])) } else { end() }
+    }
+    lock.withLock { ended = true }
+    bump()
+  }
+
+  /// The end of the input of the program that has the terminal, or else
+  /// of rc's.
+  func end() {
+    if let to = lock.withLock({ lent.last }) {
+      writing.withLock { _ = try? to.ring.closeInput() }
+      reclaim(to.ring)
+    } else {
+      lock.withLock { ended = true }
+      bump()
+    }
   }
 
   /// Bytes for whoever has the terminal.
@@ -88,15 +127,7 @@ final class Terminal: @unchecked Sendable {
     guard (try? control.takeEnds(true)) != nil else { return }
     while let event = try? control.nextEvent() {
       switch event {
-      case .event(.end):
-        // The program's input's end, or rc's.
-        if let to = lock.withLock({ lent.last }) {
-          writing.withLock { _ = try? to.ring.closeInput() }
-          reclaim(to.ring)
-        } else {
-          lock.withLock { ended = true }
-          bump()
-        }
+      case .event(.end): end()
       case .event(.interrupt): note("sigint")
       case .event(.quit): note("sigquit")
       case .hangup: note("sighup")
@@ -119,7 +150,7 @@ final class Terminal: @unchecked Sendable {
     while true {
       let (bytes, end, noted, generation) = lock.withLock { () -> ([UInt8], Bool, Bool, UInt32) in
         defer { buffer = [] }
-        return (buffer, ended, !notes.isEmpty, word.pointee)
+        return (buffer, ended, !notes.isEmpty || NoteQueue.shared.waiting, word.pointee)
       }
       if !bytes.isEmpty { return bytes }
       if wake && noted { return [] }
