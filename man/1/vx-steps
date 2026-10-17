@@ -1,0 +1,81 @@
+page vx-steps 1
+summary the build steps CMake runs
+names vx-steps vx-elf2efi vx-mkbootfs vx-check-pixels vx-qemu-monitor vx-mathgen
+src tools/vx/ImageCommands.swift tools/vx/MonitorCommand.swift tools/vx/MathgenCommand.swift tools/image/lib
+keys efi pe bootfs image ppm screendump monitor libm constants
+
+# SYNOPSIS
+
+```usage
+vx elf2efi in.elf out.efi
+vx mkbootfs out.img name=file ...
+vx check-pixels file.ppm x,y,r,g,b ...
+vx qemu-monitor socket command ...
+vx mathgen [out.swift]
+```
+
+# DESCRIPTION
+
+These commands are steps of the build.
+CMake and `tools/qemu.sh` run them, from any directory; each reads and writes only the paths it is given.
+
+## elf2efi
+
+`vx elf2efi` converts the loader, linked as an ELF static PIE, to a PE32+ EFI application, because LLVM has no RISC-V COFF backend.
+The input must be a little-endian ELF64 of type `ET_DYN` for x86-64, AArch64 or RISC-V, linked at address 0, with page-aligned `PT_LOAD` segments at or above 0x1000, leaving room for the PE headers.
+No segment may be both writable and executable.
+Every dynamic relocation must be the arch's `R_*_RELATIVE`; each becomes a base relocation of type `IMAGE_REL_BASED_DIR64` that the firmware applies when it loads the image.
+Anything else is refused with a message such as `unsupported dynamic relocation type 7`.
+
+## mkbootfs
+
+`vx mkbootfs` writes a boot image in the format of bootfs(6).
+Each argument after <out.img> is `name=file`: the file's contents are stored under <name>, which is non-empty, doesn't start with `/` and is at most 255 bytes.
+Names must be distinct.
+Files with the same contents share one copy.
+
+## check-pixels
+
+`vx check-pixels` reads a binary PPM (`P6`, 8 bits a channel, as QEMU's `screendump` writes) and compares pixels.
+Each <x,y,r,g,b> expects the pixel at column x, row y to be the colour r, g, b.
+It prints a line for each pixel that is off the screen or different, then `<width>x<height>: ok` or `<width>x<height>: FAILED`.
+It exits 0 only if every pixel matched.
+
+## qemu-monitor
+
+`vx qemu-monitor` connects to QEMU's human monitor on the Unix <socket>, sends the rest of its arguments as one command line, waits for the `(qemu) ` prompt, and prints the reply.
+It waits at most 10 seconds for any one read, and 200 ms at the end for QEMU to finish writing any file the command made, as `screendump` does.
+
+The command `backtrace [start end link]` is its own.
+For every CPU it prints the program counter and the return addresses along the frame-pointer chain (rbp on amd64, x29 on arm64), at most 24 deep, read through the monitor with that CPU's page tables.
+With the kernel's randomised placement, give <start> and <end> of the kernel image and its <link> address (the numbers of the kernel's `kaslr:` console line, in hex): addresses inside the image are then printed as link addresses, which `llvm-symbolizer` can read against `build/<arch>/kernel/kernel.elf`.
+On arm64 the pointer-authentication bits of a return address are cleared first.
+
+## mathgen
+
+`vx mathgen` computes the constants the libm needs, and writes them as Swift to <out.swift>, `Constants.swift` by default.
+The tree's copy is `system/libc/math/generated/Constants.swift`.
+π comes from Machin's formula, ln 2 and ln 10 from atanh series, each as a fixed-point integer of 1600 fraction bits; 2/π by long division.
+From them it writes correctly rounded doubles, the Cody and Waite splits that argument reduction needs (a high part with trailing zeros, so a product with it is exact, and the remainder), and the first 1216 fraction bits of 2/π, in hex, for Payne and Hanek reduction of large arguments.
+It prints `vx mathgen: wrote <path>`.
+
+# EXAMPLES
+
+```rc
+% vx mkbootfs boot.img bin/hello=hello
+% vx qemu-monitor /tmp/mon.sock screendump /tmp/screen.ppm
+% vx check-pixels /tmp/screen.ppm 0,0,0,0,0
+```
+
+# SEE ALSO
+
+vx(1), bootfs(6)
+
+# DIAGNOSTICS
+
+Each step names itself in its message: `mkbootfs: bad entry <arg> (want name=file)`, `elf2efi: <file>: <reason>`, `qemu-monitor: can't connect to <socket>`.
+`vx` exits 1 after any of them.
+
+# BUGS
+
+`qemu-monitor` sends its command and reads to the next prompt; a command whose reply contains the text `(qemu) ` ends the read early.

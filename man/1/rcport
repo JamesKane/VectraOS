@@ -1,0 +1,40 @@
+page rcport 1
+summary our rc as a program on Linux
+src tools/rc-oracle/port/main.swift shell/rc/lib
+keys rc shell linux oracle host
+
+# SYNOPSIS
+
+```usage
+rcport [-srdiIlxebpvV] [-c command] [-m rcmain] [file [arg ...]]
+```
+
+# DESCRIPTION
+
+`rcport` is the library of our rc (`shell/rc/lib`) with a system layer for Linux, so that rc scripts can run on the dev machine.
+Its only use is vx-rc-oracle(1), which runs each test case through it and through 9front's rc and compares them.
+What it cannot show is the device's own system layer, which the boot tests check.
+
+The arguments are rc's, and its flags are those of the usage line below.
+The command runs the text of `-c` if given; else the script <file> with the <arg>s, which are `$*`; else the text read from standard input.
+It exits 0 if rc's final status is empty (success) and 1 otherwise.
+Like 9front's `rc` on Unix, it starts with:
+
+- `path` as `. /bin /usr/bin /usr/local/bin` unless the environment has one, and `/bin` alone with `-p`;
+- `home` from `HOME` when the environment has none;
+- the environment's variables, a list's words separated by byte 1, as 9front's rc keeps them.
+
+Streams are file descriptors and pipes are operating system pipes.
+A program is looked up along `path` and started with `posix_spawn`.
+An in-memory stream, such as a backquote's capture, is joined to a child through a pipe and a thread that pumps it.
+A fork of rc, which on 9front is a process, is a thread here.
+The signals `sigint`, `sigterm`, `sighup`, `sigquit`, `sigusr1`, `sigusr2`, `sigbus` and `sigwinch` arrive as the notes of those names, taken between commands; `SIGPIPE` is ignored.
+At its end rc runs `sigexit`, unless it has exited already.
+
+# SEE ALSO
+
+vx-rc-oracle(1), rc(1)
+
+# DIAGNOSTICS
+
+With flags that don't read, it prints `usage: rc [-srdiIlxebpvV] [-c command] [-m rcmain] [file [arg ...]]` and exits 1.

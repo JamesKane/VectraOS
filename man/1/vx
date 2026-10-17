@@ -1,0 +1,64 @@
+page vx 1
+summary the dev machine's front door: build, test, boot and check the tree
+src tools/vx/main.swift tools/vx/BuildCommand.swift tools/vx/Run.swift
+keys dev build tools commands overview
+host
+
+# SYNOPSIS
+
+```usage
+vx command [argument ...]
+```
+
+# DESCRIPTION
+
+`vx` is the one command a developer runs on the dev machine.
+SwiftPM builds it; it starts CMake, Ninja, QEMU and the other tools, and builds, tests, boots and checks the tree with them.
+Run it from the repository's root, after building it first, so that the builds it starts don't wait on SwiftPM's lock:
+
+```rc
+% swift build --product vx && .build/debug/vx ci
+```
+
+Its commands are:
+
+| Command | Does | Page |
+| `build [arch ...]` | configure and build each arch's tree | vx-build(1) |
+| `test [arch ...]` | build, then run each arch's QEMU tests | vx-build(1) |
+| `boot [arch]` | build and boot interactively | vx-build(1) |
+| `bench` | the boot budgets, judged against this machine's history | vx-bench(1) |
+| `trace` | collect, print and summarise traces | vx-trace(1) |
+| `loc` | lines per component, and the size budgets | vx-loc(1) |
+| `man` | read and check the manual | vx-man(1) |
+| `hardware` | the hardware support list | vx-hardware(1) |
+| `rc-oracle` | our rc against 9front's | vx-rc-oracle(1) |
+| `acpi` | the corpus of firmware tables | vx-acpi(1) |
+| `ci` | everything above that checks, in order | vx-ci(1) |
+| `elf2efi`, `mkbootfs`, `check-pixels`, `qemu-monitor`, `mathgen` | build steps | vx-steps(1) |
+
+An <arch> is `amd64`, `arm64` or `rv64`.
+Any other word is refused with the three names.
+The build steps and `trace` run from any directory; every other command refuses to run unless the current directory holds `Package.swift` and `CMakePresets.json`.
+
+A step that `vx` runs for you writes its output to `build/vx/<step>.log` and shows only the last 30 lines if it fails.
+After each step `vx` prints a line such as `vx: amd64-build ok (41 s)`.
+Every command exits 0 on success and 1 on failure.
+
+# FILES
+
+: `build/<arch>/`
+  The CMake tree of each arch.
+: `build/vx/<step>.log`
+  The output of each step.
+
+# SEE ALSO
+
+vx-build(1), vx-ci(1), vx-steps(1), vx-man(1)
+
+# DIAGNOSTICS
+
+`vx: unknown command <name>; ...` for a word it doesn't know, and `vx: run vx <command> from the repository root` outside the root.
+
+# BUGS
+
+The usage message given when no command is named leaves `acpi` out of its list, and the message for an unknown command leaves `man` out of its.

@@ -1,0 +1,63 @@
+page idlc 1
+summary generate C headers, protocol pages and API baselines from IPC libraries
+src tools/idlc/main.swift system/ipc/idl system/ipc/README.md
+keys ipc idl protocol baseline header interface compose
+
+# SYNOPSIS
+
+```usage
+idlc [--c-out dir] [--man-out dir]
+     [--baseline dir [--update-baseline]] [--with file] ... file ...
+```
+
+# DESCRIPTION
+
+`idlc` reads Swift files that declare libraries with `@IPCLibrary`: an enum holding structs, enums, unions and protocols, from which the macro generates each protocol's client, handler, server and events.
+It reads the same declarations the macro does, and writes what the C side and the reviewers need.
+It runs on the dev machine and is built by SwiftPM (`.build/debug/idlc`).
+The messages' layout is in wire(6).
+
+For each library in the <file>s it writes, to the directory given with `--c-out`, a C header `<library>.h`, the library's name in snake case.
+For each protocol it writes, to `--man-out`, the protocol's page of the manual, section 5.
+With `--baseline` it also checks each protocol against its recorded API in `<dir>/<protocol id>.api`.
+
+: `--c-out` <dir>
+  Write the C headers to <dir>.
+: `--man-out` <dir>
+  Write each protocol's page of the manual, section 5, to <dir>.
+: `--baseline` <dir>
+  Compare each protocol with its baseline in <dir>.
+  A protocol with no baseline file is an error unless `--update-baseline` is given.
+: `--update-baseline`
+  Record the baseline: write a protocol's file when it has none, or when the change keeps it compatible.
+  A change that breaks the recorded API is never recorded.
+: `--with` <file>
+  Read <file> only so that a protocol may compose its protocols (`protocol Directory: NodeIPC.Node`); nothing is written for it.
+  It may be repeated.
+
+A change is compatible when a client built against the recorded API still works.
+The baseline notes each protocol's id and version, each type's shape and each method's signature.
+These break it: a changed protocol id; a lower version; a type, such as an enum or struct, whose shape changed, including the order of an enum's values or a union's cases; a removed method or one whose signature changed; a composed protocol dropped.
+A method added after the recorded version must say `@since(n)` with n above the recorded version, and adding any method requires the protocol's version to go up.
+Each problem is printed as `<protocol id>: <problem>`.
+`idlc` exits 1 if any protocol breaks its baseline.
+
+# EXAMPLES
+
+Check a library against its baselines, then record a change that is compatible:
+
+```rc
+% .build/debug/idlc --c-out out/c --man-out out/man \
+    --baseline out/base Lib.swift
+% .build/debug/idlc --c-out out/c --man-out out/man \
+    --baseline out/base --update-baseline Lib.swift
+```
+
+# SEE ALSO
+
+wire(6)
+
+# DIAGNOSTICS
+
+`no input files`; `unknown option <arg>`; `can't read <path>`; `no @IPCLibrary libraries in <files>`; `<id> has no baseline at <path>; run with --update-baseline to record one`; `<path> is not a baseline`.
+Errors from reading the declarations, such as two methods whose ordinals collide, or composed methods whose names or ordinals collide, are printed and stop it.

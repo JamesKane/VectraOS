@@ -1,0 +1,46 @@
+page fontgen 1
+summary turn BDF fonts into the console's Swift font table
+src tools/fontgen/main.swift text/fonts/gen/FontGen.swift
+keys font bdf spleen console glyph bitmap
+
+# SYNOPSIS
+
+```usage
+fontgen output.swift fontdir
+```
+
+# DESCRIPTION
+
+`fontgen` reads the fonts `spleen-8x16.bdf` and `spleen-16x32.bdf` from <fontdir> (`data/fonts/spleen` in the tree) and writes <output.swift>, a Swift source that declares them as `Font.spleen8x16` and `Font.spleen16x32` for the console's `Font` type (`services/console/lib`).
+It runs on the dev machine and is built by SwiftPM (`.build/debug/fontgen`).
+The tree's copy of the output is `services/console/lib/generated/Spleen.swift`.
+
+The BDF is Adobe's Glyph Bitmap Distribution Format.
+For each font `fontgen` takes the cell size from `FONTBOUNDINGBOX`, and for each glyph its `ENCODING`, `BBX` and `BITMAP`.
+It places the glyph in the cell by the font's baseline.
+Glyphs with no encoding (`ENCODING -1`) are left out, and the rest are sorted by code point.
+
+Each glyph is stored as rows of `(width + 7) / 8` bytes, top row first, the leftmost pixel in the high bit, so that a glyph of an 8 by 16 cell is 16 bytes and one of a 16 by 32 cell is 64.
+A font is written as two arrays: `codepoints`, in order, and `bitmaps`, one line of bytes for each glyph.
+The output starts with the fonts' license and notice, which stay with the data, and says it is generated and not to be edited.
+It prints `fontgen: spleen8x16 <n> glyphs, spleen16x32 <n> glyphs`.
+
+# EXAMPLES
+
+```rc
+% .build/debug/fontgen \
+    services/console/lib/generated/Spleen.swift data/fonts/spleen
+```
+
+# SEE ALSO
+
+vx(1)
+
+# DIAGNOSTICS
+
+With the wrong number of arguments it prints `usage: fontgen OUTPUT.swift data/fonts/spleen` and exits 2.
+A font it cannot read or parse prints `fontgen:` and the error, such as `malformed(line: 3, "glyph 65 leaves its cell")`, and exits 1.
+
+# BUGS
+
+The two fonts and the license text are fixed in the program: it converts no other font.

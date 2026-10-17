@@ -1,0 +1,47 @@
+page vx-hardware 1
+summary print and check the hardware support list
+src tools/vx/HardwareCommand.swift tools/hardware/lib/Support.swift
+keys hardware support levels boards platform component qemu
+
+# SYNOPSIS
+
+```usage
+vx hardware [--check]
+```
+
+# DESCRIPTION
+
+`vx hardware` reads `docs/hardware/support.tsv`, which has a row for each platform and each component, and `docs/hardware/runs.tsv`, the recorded passes of boards.
+`docs/hardware/README.md` defines the levels (research, planned, development, experimental, supported, deprecated, retired), the columns, and the evidence each level needs.
+The command runs from the repository's root.
+
+Without options it prints the list: a header line, then each platform with its components indented under it, and the components that belong to no single platform after a line `shared and standalone components`.
+A row shows its id, its level, its arch, the milestone that brings it up, and its notes.
+A level carries its health in parentheses when the evidence says it is not what it was: `(stale)` for a board whose last recorded pass is older than the last commit touching what it depends on, `(failing since <commit>)`, or `(no pass recorded)`.
+
+With `--check` it also checks the list, prints each problem as `vx: support.tsv:<line>: <id>: <problem>`, and exits 1 if there is any.
+It refuses:
+
+- a malformed row, or an id that appears twice;
+- a decision or milestone that doesn't exist, or a level without the evidence it needs;
+- a development row without code paths, or with paths that don't exist;
+- an experimental or supported QEMU row whose tests aren't all in its arch's ctest names, which come from the configured tree `build/<arch>` (an arch not configured is not checked);
+- an experimental or supported board without a recorded pass, and a supported board that is stale;
+- a platform above its required components, or past a gate not passed.
+
+When it succeeds it prints `vx: hardware: <n> rows, all hold`.
+
+# FILES
+
+: `docs/hardware/support.tsv`
+  The list: tab separated, its header the first line.
+: `docs/hardware/runs.tsv`
+  The recorded passes.
+
+# SEE ALSO
+
+vx(1), vx-ci(1)
+
+# DIAGNOSTICS
+
+`can't read docs/hardware/support.tsv`.

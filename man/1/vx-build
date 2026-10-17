@@ -1,0 +1,52 @@
+page vx-build 1
+summary build, test and boot the images of each arch
+names vx-build vx-test vx-boot
+src tools/vx/main.swift tools/vx/BuildCommand.swift
+keys cmake ninja qemu ctest image arch
+
+# SYNOPSIS
+
+```usage
+vx build [arch ...]
+vx test [arch ...]
+vx boot [arch]
+```
+
+# DESCRIPTION
+
+These commands drive CMake's per-arch trees, `build/<arch>/`, which the presets in `CMakePresets.json` configure.
+An <arch> is `amd64`, `arm64` or `rv64`.
+
+`vx build` configures each <arch> given, once, and builds it.
+With none it builds all three.
+A tree is configured when it has no `build.ninja`; after that only the build runs.
+
+`vx test` builds each <arch>, then runs that arch's QEMU tests with `ctest`, one arch after another and never two at once: under the load of two suites, rv64's boots outlast their timeouts.
+With no <arch> it tests `amd64` and `arm64`.
+The `rv64` suite is off by default; naming it runs it.
+It stops at the first arch whose build or tests fail, and exits 1.
+
+`vx boot` builds one <arch> (`amd64` by default) and boots it interactively in QEMU, with edk2 firmware from `/usr/share/edk2`, by running `ninja -C build/<arch> run`.
+Ctrl-A x quits QEMU.
+More than one <arch> is refused.
+
+Each step's output goes to `build/vx/<arch>-configure.log`, `<arch>-build.log` or `<arch>-test.log`.
+`vx boot`'s own run is not logged: it owns the terminal.
+
+# FILES
+
+: `build/<arch>/`
+  The CMake tree.
+: `build/vx/*.log`
+  Each step's output.
+: `CMakePresets.json`
+  The presets, one per arch.
+
+# SEE ALSO
+
+vx(1), vx-ci(1), vx-bench(1)
+
+# DIAGNOSTICS
+
+`unknown arch <name>; vx knows amd64, arm64, rv64` for any other word.
+A failed step prints `vx: <step> FAILED` and the tail of its log.

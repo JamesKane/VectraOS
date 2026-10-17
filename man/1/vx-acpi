@@ -1,0 +1,46 @@
+page vx-acpi 1
+summary keep the corpus of firmware tables the AML interpreter is tested on
+src tools/vx/ACPICommand.swift
+keys acpi aml firmware tables dsdt ssdt corpus qemu
+
+# SYNOPSIS
+
+```usage
+vx acpi import [name]
+vx acpi fetch-qemu
+vx acpi list
+```
+
+# DESCRIPTION
+
+`vx acpi` keeps a corpus of ACPI tables outside the tree, in `.cache/acpi`, one directory a machine.
+Firmware tables are vendors' binaries and QEMU's are GPL-licensed, so neither is committed.
+The tests of the AML interpreter read the corpus.
+
+: `import` [<name>]
+  Imports this machine's tables into `.cache/acpi/<name>`, <name> being the host name by default.
+  It reads `/sys/firmware/acpi/tables`, which only root can read: run it with `sudo`, and it gives what it wrote back to the user who ran `sudo`.
+  It stores each table as a file named by its signature; the SSDTs that firmware methods loaded at run time (`dynamic/`) as `dynamic-<table>`; a snapshot of the firmware memory the tables' operation regions read, taken from `/dev/mem` only in ranges that `/proc/iomem` says are firmware memory (Reserved, ACPI Non-volatile Storage or ACPI Tables) with no device inside, so reading has no side effects; `linux-devices.tsv`, Linux's view of the namespace from `/sys/bus/acpi/devices` (path, hid, uid, adr, status and modalias), which the interpreter's enumeration is checked against; and a `PROVENANCE` file.
+  It ends with `vx acpi: <n> tables, <n> memory regions and <n> devices in <dir>`.
+: `fetch-qemu`
+  Fetches the tables QEMU keeps as test data (`tests/data/acpi`) for the x86 machines q35, pc and microvm, and for arm64 and riscv64 virt, from a sparse clone of QEMU's repository at a pinned release, into `.cache/acpi/qemu-x86-q35`, `qemu-x86-pc`, `qemu-x86-microvm`, `qemu-aarch64-virt` and `qemu-riscv64-virt`.
+  It refuses a release whose commit is not the pinned one.
+  It needs the network.
+: `list`
+  Prints a line for each machine in the corpus: its count of DSDTs and SSDTs and their AML in KiB, its other tables, and whether it has Linux's device view.
+  An empty corpus says so.
+
+# FILES
+
+: `.cache/acpi/<machine>/`
+  The tables of one machine, with `PROVENANCE`.
+: `/sys/firmware/acpi/tables`
+  Where `import` reads.
+
+# SEE ALSO
+
+vx(1)
+
+# DIAGNOSTICS
+
+`can't read <table>: the tables need root. Run: sudo .build/debug/vx acpi import <name>`; `usage: vx acpi import [NAME] | fetch-qemu | list`; `QEMU <release> isn't the commit pinned`.

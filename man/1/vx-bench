@@ -1,0 +1,60 @@
+page vx-bench 1
+summary boot the budgets under KVM and judge them against this machine's history
+src tools/vx/BenchCommand.swift tools/vx/ZirconCommand.swift tools/bench/lib/Rules.swift
+keys budget performance history regression kvm compare
+
+# SYNOPSIS
+
+```usage
+vx bench [--runs n] [--record [--accept]] [--enforce] [--compare ref]
+vx bench --zircon [--rounds n] [--only config,...] [--logs dir]
+```
+
+# DESCRIPTION
+
+`vx bench` measures the budgets the kernel and the services print as `budget name=... value=... unit=... [limit=...] [target=...]` lines, and judges them.
+It needs KVM (`/dev/kvm`) and refuses to run without it: timings under TCG are not judged.
+
+It builds `amd64`, then boots its image <n> times (5 by default) in each of three profiles: `full`, the command line as built with every self-test running; `lean`, the same with `croi.selftest=off`; and `services`, the launcher and its services, from which only the `services.` budgets are taken.
+For each budget it takes the median and judges it against the median of the last five runs recorded in `bench/history/<host>.tsv`, where <host> is the machine's host name.
+A budget regresses when it rises past both the fraction and the floor that `tools/bench/lib/Rules.swift` sets for its name, or when it passes its own `limit`.
+The report goes to the terminal and to `bench/out/report.md`; each boot's console is in `bench/out/logs/`.
+It also records the load average before and after, and says so when the machine was busy (a load above a quarter of the CPUs): a regression then may be noise.
+
+By default the bench is advisory and exits 0 whatever it finds, because the machine is shared.
+
+: `--runs` <n>
+  Boot <n> times (at least 1) per profile.
+: `--enforce`
+  Exit 1 if any budget regressed or passed its limit.
+  Use it only on a quiet machine.
+: `--record`
+  Append the medians to the history file, if the machine was not busy, the tree is committed, and nothing regressed.
+  Otherwise it says why it did not.
+: `--accept`
+  With `--record`, record despite a busy machine, a dirty tree or a regression.
+  A regression recorded this way is a decision to make in the open.
+: `--compare` <ref>
+  Compare this tree with the commit <ref>.
+  It makes a git worktree of <ref> in `bench/out/compare/<sha>`, builds it, and alternates boots of the two so that both see the same machine.
+  It prints a table of the median of each budget in both, the change, and the spread over this tree's runs, and writes it to `bench/out/compare.md`.
+  Nothing is judged or recorded.
+: `--zircon`
+  Boot the kernel's `m2` budgets in four configurations interleaved, in rounds (`--rounds`, 6 by default; `--only` names the configurations, comma separated; `--logs` is a directory for the consoles): `croi`, `croi-nopoll` (idle CPUs halt at once), `zircon` and `zircon-nomitig`.
+  The Zircon ones run the parity bench of `tools/zircon-bench`, which needs a Fuchsia tree (`tools/zircon-bench/README.md`).
+  The result is each budget's median over the rounds with its range.
+
+# FILES
+
+: `bench/history/<host>.tsv`
+  The recorded medians, in seconds, or counts.
+: `bench/out/`
+  The report, the comparison and the consoles.
+
+# SEE ALSO
+
+vx(1), vx-ci(1), vx-trace(1)
+
+# DIAGNOSTICS
+
+`needs KVM (/dev/kvm): TCG timings aren't judged`; `<label> <profile> boot <n> didn't finish; see <log>` when a boot does not reach its end; `--runs needs a number >= 1`.

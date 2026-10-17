@@ -1,0 +1,64 @@
+page bootfs 6
+summary the boot image: a directory of files, page aligned
+src tools/image/lib/Bootfs.swift user/lib/loader/Bootfs.swift
+keys boot image bootfs mkbootfs directory initial files
+
+# SYNOPSIS
+
+```text
+header (16)  directory entries (dirsize)  padding to a page  file data
+```
+
+# DESCRIPTION
+
+The boot image is one file, `\croi\bootfs.img` on the boot volume, that the loader hands to the kernel and that the first process finds its programs in.
+vx-steps(1) writes it (`vx mkbootfs`).
+It holds named files and no directories: a name is a path such as `bin/ls`.
+All integers are little-endian.
+
+## Header
+
+| Offset | Size | Field |
+| 0 | 4 | magic, 0xA56D3FF9 |
+| 4 | 4 | `dirsize`: the bytes of directory entries that follow |
+| 8 | 4 | reserved, 0 |
+| 12 | 4 | reserved, 0 |
+
+## Directory
+
+The entries follow the header, at offset 16 and together `dirsize` bytes.
+Each is:
+
+| Offset | Size | Field |
+| 0 | 4 | `name_len`: the name's length with its terminating NUL, 1 to 256 |
+| 4 | 4 | `data_len`: the file's length in bytes |
+| 8 | 4 | `data_off`: the file's offset from the start of the image, a multiple of 4096 |
+| 12 | `name_len` | the name, UTF-8, ending in a NUL |
+
+An entry is padded with zeros so that its total length, `12 + name_len` rounded up, is a multiple of 4; the next begins there.
+
+## Data
+
+The directory is padded with zeros to a page (4096 bytes), where the file data starts.
+Each file whose contents are new is placed at the next page after the one before, and padded with zeros to a whole page.
+Files with identical contents share one copy, and their entries have the same `data_off`: the names of a program that is several names, such as `bin/ls` and `bin/cat`, point at one binary.
+A file of length 0 takes no space.
+
+The writer refuses an empty name, one that starts with `/`, one longer than 255 bytes, and a name that appears twice.
+
+## Reading
+
+A reader checks the magic and that `16 + dirsize` lies within the image.
+For each entry it reads it checks that `name_len` is 1 to 256, that the entry lies within the directory, that `data_off` is a multiple of 4096, and that `data_off + data_len` lies within the image.
+It compares a name byte by byte with the entry's `name_len - 1` bytes.
+A bad header is `badHeader`, a bad entry `badEntry`, and a name not in the directory `notFound`.
+The lookup goes through the entries in order and does not check for duplicates, so the first of two equal names wins.
+Listing every file fails whole on the first bad entry.
+
+# SEE ALSO
+
+vx-steps(1), manifest(6)
+
+# DIAGNOSTICS
+
+`vx mkbootfs` refuses with `bad name "<name>" (want a name not starting with /)`, `name too long: <name>` or `duplicate names`.

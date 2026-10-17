@@ -1,0 +1,155 @@
+page trace 6
+summary the trace format: regions of rings of 32-byte records
+src system/trace/format/Format.swift system/trace/reader system/trace/session/Session.swift docs/trace-format.md
+keys trace zone flow mark counter ring region td-trace record category
+
+# SYNOPSIS
+
+```text
+region = header (4096) strings rings
+ring   = trace header (128) one ring of 40-byte slots
+slot   = sequence (u64) record (32)
+```
+
+# DESCRIPTION
+
+A traced process records what it does into a region of memory.
+vx-trace(1) and the other readers read it back, alone or merged with the kernel's records into one timeline.
+This is version 2.
+All integers are little-endian; offsets are from the start of what is named.
+
+@node record The record
+
+Every record is 32 bytes:
+
+| Offset | Size | Field | Meaning |
+| 0 | 8 | `time` | the raw cycle counter (TSC, `CNTVCT_EL0`, rv64 `time`), ticking at `counter_hz`, not nanoseconds |
+| 8 | 2 | `kind` | what the record is |
+| 10 | 2 | `cpu` | the CPU where known, else `0xffff` |
+| 12 | 4 | `tid` | the thread: the process number shifted left 12 bits, or the thread index |
+| 16 | 8 | `a` | by kind |
+| 24 | 8 | `b` | by kind |
+
+Kinds `0x0000` to `0x3fff` are the kernel's categories, `0x4000` to `0x7fff` user space's, and `0x8000` to `0xffff` are reserved.
+User kinds:
+
+| Kind | Name | `time` | `a` | `b` |
+| `0x4001` | MARK | when | first 8 bytes of a label | the next 8 |
+| `0x4002` | ZONE | start | end, in ticks | name id |
+| `0x4003` | FLOW | when | flow id | name id |
+| `0x4004` | COUNTER | when | name id | the value, two's complement |
+
+A zone is written once, when it ends, so a crash loses only the zones still open; zones on a thread nest by time.
+A mark's label is UTF-8, NUL padded, at most 16 bytes.
+A flow joins records across threads and processes.
+
+The kernel's channel records, in its IPC category, are kind 80 (channel write; `a` the flow id, `b` the bytes in the low 32 bits and the handles above), 81 (channel read, the same) and 82 (donation: `a` the flow id, `b` the caller's trace id).
+
+## Flow ids for IPC
+
+Both ends of an IPC call compute the flow id from what they share, so nothing travels with the message.
+Let `channel_id` be the smaller of the channel's koid and its peer's, and `txid` the message's first 4 bytes (0 if it is shorter).
+In 64-bit wrapping arithmetic:
+
+```text
+z = channel_id * 0x9E3779B97F4A7C15 + txid
+z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9
+z = (z ^ (z >> 27)) * 0x94D049BB133111EB
+flow = z ^ (z >> 31)
+```
+
+A call and its reply share one flow, because the reply echoes the transaction id (wire(6)).
+A ring uses the same function with the ring VMO's koid and the slot's sequence number.
+
+@node region The region
+
+A region begins with a 4096-byte header:
+
+| Offset | Size | Field |
+| 0 | 4 | magic, `"tdtr"` (0x72746474) |
+| 4 | 4 | version, 2 |
+| 8 | 8 | `counter_hz`, the counter's frequency |
+| 16 | 8 | `start`, the counter when recording began |
+| 24 | 4 | process id |
+| 28 | 4 | ring count |
+| 32 | 8 | ring size in bytes, header included |
+| 40 | 8 | the string table's offset |
+| 48 | 8 | the string table's size |
+| 56 | 8 | bytes of the string table used (atomic) |
+| 64 | 8 | the first ring's offset |
+| 72 | 4 | rings claimed so far (atomic) |
+| 76 | 4 | flags: bit 0, circular; else one-shot |
+| 80 | 8 | the categories enabled |
+| 88 | 4008 | reserved, zero |
+
+## The string table
+
+Names are entries of a 4-byte length, then the UTF-8 bytes, padded to a multiple of 4.
+A name's id is its entry's offset in the table.
+Entries are appended and never change.
+A reader that meets an id with no entry shows `#<id>`.
+
+## Rings
+
+Rings follow, one for each thread that has written; a thread claims the next ring when it first writes.
+A ring is a 128-byte trace header, then a one ring (the format of `lib/ring`, magic `"VRNG"`) in the rest of the ring's bytes.
+The kernel's rings, one for each CPU, are the same.
+The trace header:
+
+| Offset | Size | Field |
+| 0 | 8 | `frequency`: the counter's Hz |
+| 8 | 8 | `session`: the region's `start` |
+| 16 | 8 | records dropped (one-shot, when full) |
+| 24 | 8 | time of the first drop |
+| 32 | 8 | time of the last drop |
+| 40 | 4 | mode: 0 one-shot, 1 circular |
+| 44 | 4 | cpu: `0xffffffff` for a thread's ring |
+| 48 | 4 | magic, `"ring"` (0x676e6972) |
+| 52 | 4 | the thread's `tid`, 0 for a CPU's ring |
+| 56 | 72 | reserved, zero |
+
+The one ring is an overwrite ring of 40-byte slots with the format descriptor `"TRC2"` (0x32435254).
+Each slot is the ring's u64 sequence, then a record.
+The slot count is a power of two, as many as fit.
+Only the owning thread or CPU writes, without a lock: it sets the slot's sequence to all ones, writes the record, sets the sequence to the slot's cursor, and publishes its cursor.
+A circular ring overwrites its oldest records; a one-shot ring stops when the cursor reaches the slot count, and counts what it drops in the header.
+
+A reader keeps its own cursor.
+It starts at the writer's cursor less the slot count (0 if fewer were written), keeps a slot only if its sequence equalled its cursor before and after the copy, and counts the rest as dropped.
+A reader skips a ring whose magic is not `"ring"`, and merges all the rings' records by `time`.
+
+## Categories
+
+The categories enabled are a 64-bit mask, and a disabled trace point costs one load and one branch.
+The user categories are bit 0 `app`, 1 `frame`, 2 `audio`, 3 `input`, 4 `ipc`, 5 `io` and 6 `mark`; the rest are reserved.
+
+@node export Files and the console
+
+A recording on the host is a file, `<pid>.trace`, in the directory the environment variable `TODHCHAI_TRACE` names, mapped shared so that it survives the process.
+`TODHCHAI_TRACE_CATEGORIES` (a comma separated list of the names above) and `TODHCHAI_TRACE_CIRCULAR` (set for circular) choose what and how.
+
+On croi a trace session makes the region and gives the process a VMO of it.
+Its process id is `0xF0000` plus its number in the session.
+When it ends, the session writes each region compacted (the strings used, and each ring's records in order from sequence 0) and the kernel's rings as `kernel.trace` (process 0, a ring a CPU, no strings).
+The files leave through the debuglog, in lines:
+
+```text
+td-trace NAME OFFSET BASE64
+td-trace NAME OFFSET zero COUNT
+td-trace NAME end SIZE
+```
+
+A BASE64 line carries up to 120 bytes at OFFSET; a `zero` line a run of COUNT zero bytes at OFFSET, used for runs of 120 or more; the `end` line gives the file's size.
+Lines are paced to the console's rate, and the debuglog drops records if its console falls behind, which `vx trace collect` reports as a missing piece.
+
+# SEE ALSO
+
+vx-trace(1), wire(6)
+
+# DIAGNOSTICS
+
+A reader refuses a file with the wrong magic (`notATrace`), a version other than 2 (`unsupportedVersion`), a zero `counter_hz`, a string table or rings that run past the end, or a ring that is not a trace ring.
+
+# BUGS
+
+User and kernel records join through flow ids and not thread ids, because user space cannot read the kernel's thread names.

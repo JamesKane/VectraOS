@@ -1,0 +1,41 @@
+page vx-loc 1
+summary count lines per component and check the size budgets
+src tools/vx/LocCommand.swift
+keys size budget lines syscall ceiling imports
+
+# SYNOPSIS
+
+```usage
+vx loc [--check]
+```
+
+# DESCRIPTION
+
+`vx loc` counts the lines of the files git lists for the tree (tracked, and untracked but not ignored) in these languages: Swift, C (`.c`, `.h`), assembly (`.S`), Python, shell, CMake and linker scripts.
+It prints a Markdown table of lines by component (a file's first directory; `(root)` for files at the top) and language, split into first-party lines and imported lines, the latter being those of files named in `IMPORTS.tsv`.
+It then prints the number of syscalls the C ABI defines, against its ceiling, and the Swift lines of each library with a ceiling of its own, against that.
+It runs from the repository's root.
+
+With `--check` it also fails, exit status 1, if:
+
+- the syscalls, the `CROI_SYS_` names in `user/include/croi/syscall.h`, exceed the ceiling, 91;
+- a library with a ceiling has more Swift lines than it: `system/guide/lib/`, the manual's parser and renderer, has 1500;
+- device code (under `user/`, `lib/`, `system/`, `services/`, `drivers/` or `shell/`) makes a call by number, as `syscall(3, ...)` or `Sys.call(` followed by a digit, instead of by the ABI's name, or mentions `td_syscall`;
+- `IMPORTS.tsv` names a file that isn't in the tree.
+
+Each failure is reported with its place.
+
+# FILES
+
+: `IMPORTS.tsv`
+  The imported files, one a row.
+: `user/include/croi/syscall.h`
+  The syscall numbers.
+
+# SEE ALSO
+
+vx(1), vx-ci(1)
+
+# DIAGNOSTICS
+
+`<n> syscalls, over the ceiling of <c>`, `<path>:<line>: a call by number; name it from the ABI headers`, `IMPORTS.tsv names <path>, which isn't in the tree`.

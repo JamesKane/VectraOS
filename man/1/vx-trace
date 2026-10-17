@@ -1,0 +1,47 @@
+page vx-trace 1
+summary collect, print and summarise traces
+src tools/vx/TraceCommand.swift system/trace/reader
+keys trace zone flow percentile console td-trace
+
+# SYNOPSIS
+
+```usage
+vx trace collect console dir
+vx trace print file ...
+vx trace summary file ...
+vx trace diff a b
+```
+
+# DESCRIPTION
+
+`vx trace` reads files in the format of trace(6).
+A <file> may be a directory, which stands for the `.trace` files in it, sorted by name.
+It runs from any directory.
+
+: `collect` <console> <dir>
+  Reads the text of a boot's console, finds the `td-trace` lines that a trace session exported through the debuglog, and rebuilds the files they carry as `<dir>/<name>.trace`.
+  It removes <dir> first.
+  The lines are in trace(6).
+  It fails, naming the piece, if one is missing (the console drops lines when it falls behind), if a file has no end line, or if a rebuilt file doesn't read as a trace; and it fails if the console carries no traces.
+  A line sent twice is taken once.
+: `print` <file> ...
+  For each file a line `# <path>: process <id>, <n> records, <n> dropped`, then every record, merged by time, as time since the recording began, a tab, `thread <tid>`, a tab, and the record: `zone <name> <duration>`, `mark <label>`, `flow <name> id <id>`, `counter <name> = <value>`, or `kind 0x<kind> a <a> b <b>` for any other kind.
+  Times are shown with a unit.
+: `summary` <file> ...
+  For each file a table of zones by name: count, total, median (p50), 99th percentile (p99) and maximum of their durations.
+  A second table follows when the file has flows: each flow's count, the step counts it was seen with, and its median, p99 and maximum span, from its first record to its last.
+  If records were dropped it says how many.
+  When a named directory holds `kernel.trace`, the directory is also read as one timeline of a recording on croi: a table of each call's commonest path through client, kernel and server, with the median time to each step.
+: `diff` <a> <b>
+  A table of every zone name in either file with the p50 and p99 of each, and the change of p99 from <a> to <b> as a percentage.
+  A name absent from a file counts as having no zones there.
+
+The tables are in Markdown.
+
+# SEE ALSO
+
+vx(1), trace(6), vx-bench(1)
+
+# DIAGNOSTICS
+
+`can't read <path>`; `<path>: <error>` when a file isn't a trace (`notATrace`, `unsupportedVersion(n)`, `malformed(...)`); `<console>: the trace is damaged: <reason>`.

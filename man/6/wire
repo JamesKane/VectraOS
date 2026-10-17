@@ -1,0 +1,130 @@
+page wire 6
+summary the IPC wire format: messages on channels
+src system/ipc/wire docs/wire-format.md
+keys ipc message protocol header ordinal fnv epitaph cancel encoding fidl
+
+# SYNOPSIS
+
+```text
+message = header (16 bytes) body
+body    = inline part, then out-of-line data
+```
+
+# DESCRIPTION
+
+Clients and servers of the protocols that idlc(1) reads speak this format over channels, in any language.
+`system/ipc/wire` implements it in Swift and the C encoders that `idlc` writes implement it in C.
+This is version 1.
+
+A message is a byte array of at most 65,536 bytes, and a side array of at most 64 handles.
+The length of the bytes is a multiple of 8.
+All integers are little-endian.
+A receiver treats a message as untrusted and checks all of what follows; a message that fails any check is rejected whole.
+
+@node header The header
+
+Every message starts with 16 bytes:
+
+| Offset | Size | Field |
+| 0 | 4 | transaction id |
+| 4 | 1 | kind |
+| 5 | 1 | wire version, 1 |
+| 6 | 2 | flags |
+| 8 | 8 | method ordinal |
+
+A receiver rejects a header whose version is not 1, whose kind is not in the table, or whose flags set any bit but the two defined below.
+
+| Kind | Value | Transaction id | Body |
+| request | 1 | nonzero for a call, 0 for a one-way request | the method's arguments |
+| reply | 2 | the request's | the method's result, or none if canceled |
+| event | 3 | 0 | the event's arguments |
+| cancel | 4 | the request to cancel | none |
+| epitaph | 5 | 0 | the closing status |
+
+The flags are defined on replies only:
+
+| Bit | Name | Means |
+| 0 | `canceled` | the request was cancelled, and the reply has no body |
+| 1 | `error` | the call failed, and the body is the error |
+
+Every other bit is zero.
+
+## Transaction ids
+
+A call goes through `channel_call`, which writes an id of the kernel's own into the first four bytes, with bit 31 set, and delivers the reply that echoes it to the caller alone.
+A client that writes and reads the channel itself, as a C client may, assigns ids with bit 31 clear, so the two never collide.
+A reply that arrives after its call gave up is dropped.
+
+## Ordinals
+
+A protocol's id is its library's id and its name, joined by a dot.
+A method's ordinal is the 64-bit FNV-1a hash of the UTF-8 text `<protocol id>.<method name>`, with bit 63 cleared:
+
+```text
+hash = 0xcbf29ce484222325
+for each byte b:  hash = (hash ^ b) * 0x100000001b3   (mod 2^64)
+ordinal = hash & 0x7fffffffffffffff
+```
+
+Ordinals with bit 63 set are reserved for the system.
+The macro and `idlc` reject a protocol in which two methods' ordinals collide.
+A protocol may compose others, and a composed method keeps the ordinal of the protocol that declares it, so a client of the composed protocol works on a channel of the one that composes it.
+
+@node bodies Bodies
+
+A body is an inline part followed by out-of-line data.
+
+The inline part has a size that the method's signature fixes, rounded up to a multiple of 8.
+Each field is at an offset the generated code knows, aligned to its own size: a 4-byte integer at a multiple of 4.
+Out-of-line data follows the inline part, in the order the fields that refer to it are encoded, depth first.
+Each out-of-line object starts on an 8-byte boundary and is padded to a multiple of 8.
+Every padding byte, inline or out of line, is zero, and a receiver checks it.
+
+| Type | Inline: size, alignment | Out of line |
+| Integers, `UInt8` to `Int64` | the value: its size, its size | none |
+| `Bool` | 1 byte, 0 or 1: 1, 1 | none |
+| Enum | its raw integer: its raw type's | none |
+| Byte string `[UInt8]`, `String` | count (u64), then presence marker (u64): 16, 8 | the bytes, padded to 8 |
+| Vector `[T]` | count (u64), then presence marker (u64): 16, 8 | the elements, each T's inline size, then each element's own out-of-line data |
+| Handle | 4 bytes, 0 if absent, all ones if present: 4, 4 | none; the handle is next in the side array |
+| Struct | its fields as a body lays them out: its size, its largest field's alignment | its fields' |
+| Union | tag (u64), then presence marker (u64): 16, 8 | the case's values, laid out as a struct's fields and padded to 8, then their out-of-line data; none for a case without values |
+| `T?`, T a string, vector or handle | T's, with marker and count zero when absent | T's, when present |
+| `T?`, any other T | the presence marker (u64): 8, 8 | T's inline part padded to 8, then its out-of-line data |
+
+The presence marker is all ones (`0xffffffffffffffff`) when the value is present.
+
+- A struct's fields follow in declaration order, each aligned; its size is rounded up to its alignment.
+- A string is UTF-8, which the receiver validates.
+- An absent box, vector or string has an all-zero inline part.
+  A receiver rejects any other marker, and a nonzero count with an absent marker.
+- A vector's count may not exceed what the rest of the message can hold.
+- Enums are strict: a receiver rejects a value its enum doesn't list.
+- A union's tag is its case's place in the declaration, from 1, and a receiver rejects a tag the union doesn't list.
+  A case with values has the marker present and its values in a box; the labels are not on the wire, but their order is.
+- Vectors' elements and unions cannot carry handles, and events cannot carry handles.
+
+Handles are in the side array in the order their markers are encoded.
+A receiver rejects a message that leaves bytes or handles unconsumed.
+
+@node control Replies, epitaphs and cancels
+
+An error reply has the `error` flag and an 8-byte body: a signed 4-byte code, then 4 bytes of zero.
+Positive codes are the method's own error type, which a Swift method declared `throws(E)` takes from an `Int32`-backed enum with positive cases.
+Negative codes are the framework's, the transport's status values: a server answers a call to a method it doesn't know with `-2`.
+
+An epitaph is the last message before a channel closes.
+Its header has transaction id 0 and ordinal 0, and its body is a signed 4-byte status, then 4 bytes of zero.
+
+A cancel has the cancelled request's transaction id and ordinal, and no body: it is 16 bytes.
+After one, the server sends exactly one of the call's normal reply, or a reply with `canceled` set, the request's transaction id and ordinal, and no body; never both, and never neither, as 9P's flush.
+A client that receives a normal reply after cancelling uses it.
+
+# SEE ALSO
+
+idlc(1), trace(6)
+
+# DIAGNOSTICS
+
+The Swift decoder reports the first check a message fails: `truncated`, `tooLarge`, `unsupportedVersion`, `unknownKind`, `reservedFlags`, `outOfBounds`, `badPresence`, `nonzeroPadding`, `tooManyHandles`, `missingHandle`, `unconsumed`, `invalidUTF8`, `invalidValue` or `unexpectedMessage`.
+A length that is not a multiple of 8 is `truncated`.

@@ -1,0 +1,50 @@
+page vx-rc-oracle 1
+summary run rc's test cases through 9front's rc and through ours, and compare
+names vx-rc-oracle
+src tools/vx/RcOracleCommand.swift tools/rc-oracle shell/rc/tests/oracle
+keys rc shell oracle 9front compare conformance
+
+# SYNOPSIS
+
+```usage
+vx rc-oracle [case ...]
+```
+
+# DESCRIPTION
+
+`vx rc-oracle` checks our rc against 9front's.
+Each case is a script `shell/rc/tests/oracle/<case>.rc`.
+The command runs every case, or the cases named, through 9front's rc and through rcport(1), our rc on Linux, each in a fresh empty directory under `.build/rc-oracle/work/`, with an empty standard input and a limit of 20 seconds.
+The two must agree in what they write to standard output, in their exit status, and in whether they write anything to standard error.
+
+A case whose first line is `#flags: -e -x` runs with those flags in both shells.
+The environment variable `rcoracle` holds the shell being run, its words separated by byte 1 as rc's environment keeps lists, so that a case may run its shell again.
+
+9front's rc is built when it is missing or older than a source: the C files of `tools/rc-oracle/9front` are compiled by `clang` into `.build/rc-oracle/rc`, run with the `rcmain.unix` beside them.
+rcport is built with `swift build --product rcport`.
+
+The cases that differ are named in `shell/rc/tests/oracle/known.tsv`, each with a kind and a reason: `port`, a gap in our rc, or `linux`, an artefact of running on Linux.
+A differing case that is not named fails, and so does a named case that now agrees, so the file stays exactly what is left.
+The command prints a line for each failure, and at the end `vx: rc-oracle: <n> cases, <n> agree, <n> known divergences (<n> port, <n> linux)`.
+It exits 1 if any case failed.
+
+To add a case, write a script that prints what it checks, deterministically, with no timing races and no output that depends on the machine; run `vx rc-oracle <case>`; and either fix rc or name the case in `known.tsv` with its reason.
+
+# FILES
+
+: `shell/rc/tests/oracle/*.rc`
+  The cases.
+: `shell/rc/tests/oracle/known.tsv`
+  The known divergences: case, kind and reason, separated by tabs.
+: `tools/rc-oracle/9front`
+  9front's rc, whose C files are built for Linux.
+: `.build/rc-oracle/`
+  The built shell and each case's work directory, with both shells' output.
+
+# SEE ALSO
+
+vx(1), vx-ci(1), rcport(1), rc(1)
+
+# DIAGNOSTICS
+
+`no case <name>`; `can't build 9front's rc`, with the log `build/vx/rc-oracle-build.log`; `<case>: differs from 9front (<what>)`, with where both outputs are.

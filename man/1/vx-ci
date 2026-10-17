@@ -1,0 +1,34 @@
+page vx-ci 1
+summary run every check the tree has
+src tools/vx/BuildCommand.swift
+keys continuous integration check all
+
+# SYNOPSIS
+
+```usage
+vx ci [--no-bench]
+```
+
+# DESCRIPTION
+
+`vx ci` runs the checks that keep the tree honest, in this order, and goes on after a failure so that one run shows all of them:
+
+- the host tests, `swift test`;
+- `vx rc-oracle`, our rc against 9front's;
+- for each of `amd64`, `arm64` and `rv64`, the build; and, for `amd64` and `arm64`, that arch's QEMU tests (rv64's are off, and `vx ci` says so);
+- `vx loc --check`, the size budgets;
+- `vx man --check`, the manual, after the builds because the programs in their images need pages;
+- `vx hardware --check`, the hardware support list;
+- unless `--no-bench` is given, `vx bench` when `/dev/kvm` exists, and a line saying it was skipped when not.
+  The bench is advisory: its verdict doesn't change `vx ci`'s.
+
+It ends with `vx: ci passed` and exit status 0, or `vx: ci FAILED` and status 1.
+The build and test steps are those of vx-build(1), and their logs are in `build/vx/`.
+
+# SEE ALSO
+
+vx(1), vx-build(1), vx-bench(1), vx-loc(1), vx-man(1), vx-hardware(1), vx-rc-oracle(1)
+
+# DIAGNOSTICS
+
+`unknown option <arg>` for anything but `--no-bench`.
