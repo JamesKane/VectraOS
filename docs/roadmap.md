@@ -480,7 +480,8 @@ work, in order:
        V2's exit, when the bench boots the launcher.
      - userboot's `\_S5` byte scan stays: userboot powers off after every
        service, devmgr too, has ended, so it can't ask devmgr. It goes
-       with a power service that evaluates `\_S5` (V3's warm boot).
+       with the service that holds the power resource and serves
+       `/dev/reboot` (V3, D79), which evaluates `\_S5`.
      - D74's BTI window: devmgr narrows the address width alone; a
        window comes with a device that needs one.
      - VT-d scopes behind bridges (the kernel refuses them) and SMMUv1/v2
