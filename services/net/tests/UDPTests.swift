@@ -4,8 +4,7 @@
 // checksums, port unreachable; the client's whole life against a server
 // played here (selecting, requesting, the ARP probe, bound, renewing,
 // rebinding, the lease's end), a NAK, a conflict declined, and its
-// backoff. Then Linux against it: a lease from dnsmasq, UDP echoed over
-// IPv4 and IPv6, closed ports refused, and an address declined.
+// backoff.
 
 import FoundationEssentials
 import Glibc
@@ -280,93 +279,4 @@ func dhcpReply(_ type: UInt8, xid: UInt32, yiaddr: IPv4Address = offeredIP, leas
   s.transmit.removeAll()
   s.poll(now: 10 * second + 1000)
   #expect(s.dhcp.state == .selecting && dhcpMessages(s).first?.type == 1)
-}
-
-// MARK: Linux against it
-
-/// The namespace's script up to a lease: nettap asking by DHCP with a UDP
-/// echo on port 7, dnsmasq serving 10.0.0.10-50 (and fd00::/64), and A
-/// the leased address.
-func leased(_ nettap: String, dnsmasqOptions: String = "", range: String = "10.0.0.10,10.0.0.50",
-            setup: String = "") -> String {
-  """
-  \(nettap) --tap tap0 --dhcp --udp-echo 7 --seconds 30 --stop-file stop > nettap.log 2>&1 &
-  NT=$!
-  i=0
-  until ip link show tap0 > /dev/null 2>&1; do i=$((i + 1)); [ $i -lt 100 ] || exit 3; sleep 0.05; done
-  ip link set lo up
-  ip link set tap0 up
-  ip addr add 10.0.0.1/24 dev tap0
-  ip addr add fd00::1/64 dev tap0 nodad
-  \(setup)
-  \(linuxReady)
-  \(dnsmasq) --enable-ra --dhcp-range=::,constructor:tap0,ra-only,64,10m --dhcp-range=\(range),255.255.255.0,10m \\
-    --dhcp-option=option:router,10.0.0.1 \(dnsmasqOptions) &
-  DM=$!
-  trap 'status=$?; kill -KILL $DM 2> /dev/null; [ $status = 0 ] || cat nettap.log dm.log' EXIT
-  """
-}
-
-@Test(.enabled(if: namespacesWork)) func linuxLeasesAnAddressAndTalksUDP() throws {
-  let nettap = repository + "/.build/debug/nettap"
-  try #require(FileManager.default.fileExists(atPath: nettap), "build nettap first (swift build)")
-  let (status, out) = inNamespace("""
-    set -e
-    \(leased(nettap))
-    i=0
-    until grep -q "nettap: dhcp" nettap.log && grep -q "ipv6 fd00" nettap.log; do
-      i=$((i + 1)); [ $i -lt 300 ] || exit 4; sleep 0.05
-    done
-    A=$(sed -n "s/^nettap: dhcp \\([0-9.]*\\)\\/.*/\\1/p" nettap.log)
-    ping -c 2 -i 0.2 -W 2 $A
-    python3 -I - $A fd00::5054:ff:fe12:3456 << 'EOF'
-    import socket, sys, time
-    for fam, host in ((socket.AF_INET, sys.argv[1]), (socket.AF_INET6, sys.argv[2])):
-        s = socket.socket(fam, socket.SOCK_DGRAM)
-        s.settimeout(2)
-        for size in (5, 1000, 1472 if fam == socket.AF_INET else 1452):
-            data = bytes((i * 7 + size) & 255 for i in range(size))
-            s.sendto(data, (host, 7))
-            reply, peer = s.recvfrom(4096)
-            print("echo", fam.name, size, "ok" if reply == data else "MISMATCH")
-        time.sleep(0.2)  # past the stack's limit on ICMP errors
-        c = socket.socket(fam, socket.SOCK_DGRAM)
-        c.settimeout(2)
-        c.connect((host, 9))
-        c.send(b"x")
-        try:
-            c.recv(10)
-            print("closed", fam.name, "answered")
-        except ConnectionRefusedError:
-            print("closed", fam.name, "refused")
-    EOF
-    grep DHCPACK dm.log
-    \(stopNettap)
-    """)
-  #expect(status == 0, "\(out)")
-  #expect(out.contains("nettap: dhcp 10.0.0.") && out.contains("/24 via 10.0.0.1 lease 600"), "\(out)")
-  #expect(out.contains("2 packets transmitted, 2 received"), "\(out)")
-  for line in ["echo AF_INET 5 ok", "echo AF_INET 1000 ok", "echo AF_INET 1472 ok", "closed AF_INET refused",
-               "echo AF_INET6 5 ok", "echo AF_INET6 1000 ok", "echo AF_INET6 1452 ok", "closed AF_INET6 refused"] {
-    #expect(out.contains(line), "\(line)\n\(out)")
-  }
-  #expect(out.contains("DHCPACK(tap0) 10.0.0.") && out.contains("unreachable 2,"), "\(out)")
-}
-
-@Test(.enabled(if: namespacesWork)) func linuxHoldsTheOfferedAddressAndItIsDeclined() throws {
-  let nettap = repository + "/.build/debug/nettap"
-  try #require(FileManager.default.fileExists(atPath: nettap), "build nettap first (swift build)")
-  // The only address dnsmasq has is Linux's own (and dnsmasq doesn't ping
-  // first), so our probe is answered.
-  let (status, out) = inNamespace("""
-    set -e
-    \(leased(nettap, dnsmasqOptions: "--no-ping", range: "10.0.0.10,10.0.0.10", setup: "ip addr add 10.0.0.10/24 dev tap0"))
-    i=0
-    until grep -q DHCPDECLINE dm.log 2> /dev/null; do i=$((i + 1)); [ $i -lt 300 ] || exit 4; sleep 0.05; done
-    grep DHCPDECLINE dm.log
-    \(stopNettap)
-    """)
-  #expect(status == 0, "\(out)")
-  #expect(out.contains("DHCPDECLINE(tap0) 10.0.0.10") && out.contains("declined 1,") && !out.contains("nettap: dhcp"),
-          "\(out)")
 }

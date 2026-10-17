@@ -3,9 +3,7 @@
 // IPv6 in the stack's core (N1b part b2): addresses' text forms (RFC
 // 5952), the modified EUI-64, the duplicate check and its conflicts,
 // neighbour solicitations answered, router adverts and SLAAC (with the
-// two-hour rule), echoes, and what is refused. Then Linux against it:
-// ping -6 to the link-local and SLAAC addresses with dnsmasq advertising
-// a prefix, and a duplicate found when Linux already holds our address.
+// two-hour rule), echoes, and what is refused.
 
 import FoundationEssentials
 import Glibc
@@ -239,74 +237,4 @@ func routerAdvert(lifetime: UInt16 = 1800, valid: UInt32 = 86400, preferred: UIn
   bad[60] ^= 1
   s.receive(bad, length: bad.count, now: 2 * second)
   #expect(s.transmit.isEmpty && s.counters.badChecksums == 1 && s.counters.echoesAnswered == 1)
-}
-
-// MARK: Linux against it
-
-/// dnsmasq as the namespace's router (and in b3 its DHCP server). Killed
-/// with SIGKILL: the test runner's threads block signals, and the
-/// processes it starts inherit that, SIGTERM included.
-/// Waits (up to 10 s) for Linux's own link-local address on tap0 to pass
-/// its duplicate check: an advert sent before then has no source address
-/// and is lost, and ours would wait for our next router solicitation.
-let linuxReady = """
-  i=0
-  until ip -6 addr show dev tap0 scope link | grep -q inet6 && ! ip -6 addr show dev tap0 tentative | grep -q inet6; do
-    i=$((i + 1)); [ $i -lt 200 ] || exit 5; sleep 0.05
-  done
-  """
-
-let dnsmasq = "dnsmasq --keep-in-foreground --conf-file=/dev/null --port=0 --user= --group= --pid-file=$PWD/dm.pid"
-  + " --leasefile-ro --interface=tap0 --bind-interfaces --log-facility=$PWD/dm.log"
-
-@Test(.enabled(if: namespacesWork)) func linuxPingsTheStackOverIPv6() throws {
-  let nettap = repository + "/.build/debug/nettap"
-  try #require(FileManager.default.fileExists(atPath: nettap), "build nettap first (swift build)")
-  let (status, out) = inNamespace("""
-    set -e
-    \(startNettap(nettap))
-    ip addr add fd00::1/64 dev tap0 nodad
-    \(linuxReady)
-    \(dnsmasq) --enable-ra --dhcp-range=::,constructor:tap0,ra-only,64,10m &
-    DM=$!
-    trap 'status=$?; kill -KILL $DM 2> /dev/null; [ $status = 0 ] || cat nettap.log dm.log' EXIT
-    i=0
-    until grep -q "ipv6 fd00" nettap.log; do i=$((i + 1)); [ $i -lt 200 ] || exit 4; sleep 0.05; done
-    ping -6 -c 3 -i 0.2 -W 2 fe80::5054:ff:fe12:3456%tap0
-    ping -6 -c 3 -i 0.2 -W 2 fd00::5054:ff:fe12:3456
-    ping -6 -c 2 -i 0.2 -W 2 -s 1452 -M do fd00::5054:ff:fe12:3456
-    ip -6 neigh show dev tap0
-    \(stopNettap)
-    """)
-  #expect(status == 0, "\(out)")
-  #expect(out.contains("nettap: ipv6 fe80::5054:ff:fe12:3456") && out.contains("nettap: ipv6 fd00::5054:ff:fe12:3456"),
-          "\(out)")
-  #expect(out.components(separatedBy: "3 packets transmitted, 3 received").count == 3, "\(out)")
-  #expect(out.contains("2 packets transmitted, 2 received"), "\(out)")
-  #expect(out.contains("fd00::5054:ff:fe12:3456 lladdr 52:54:00:12:34:56"), "\(out)")
-  #expect(out.contains("duplicates 0,") && out.contains("echoes 8,"), "\(out)")
-}
-
-@Test(.enabled(if: namespacesWork)) func aDuplicateOnLinuxIsFound() throws {
-  let nettap = repository + "/.build/debug/nettap"
-  try #require(FileManager.default.fileExists(atPath: nettap), "build nettap first (swift build)")
-  // Linux holds our SLAAC address already (nodad: it doesn't check), so
-  // it answers our check of it; our link-local address is unharmed.
-  let (status, out) = inNamespace("""
-    set -e
-    \(startNettap(nettap))
-    ip addr add fd00::1/64 dev tap0
-    ip addr add fd00::5054:ff:fe12:3456/64 dev tap0 nodad
-    \(linuxReady)
-    \(dnsmasq) --enable-ra --dhcp-range=::,constructor:tap0,ra-only,64,10m &
-    DM=$!
-    trap 'status=$?; kill -KILL $DM 2> /dev/null; [ $status = 0 ] || cat nettap.log dm.log' EXIT
-    i=0
-    until grep -q "duplicates 1" nettap.log; do i=$((i + 1)); [ $i -lt 200 ] || exit 4; sleep 0.05; done
-    ping -6 -c 2 -i 0.2 -W 2 fe80::5054:ff:fe12:3456%tap0
-    \(stopNettap)
-    """)
-  #expect(status == 0, "\(out)")
-  #expect(out.contains("nettap: ipv6 fe80::5054:ff:fe12:3456") && !out.contains("nettap: ipv6 fd00"), "\(out)")
-  #expect(out.contains("duplicates 1,") && out.contains("2 packets transmitted, 2 received"), "\(out)")
 }

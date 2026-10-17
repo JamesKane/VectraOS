@@ -67,6 +67,7 @@ services/kbdfs/	all	KbdfsTests	boot-launch	man
 services/proc/	all	ProcTests	boot-launch	man
 services/console/	all	ConsoleTests	boot-launch	man
 services/plumber/	all	PlumberTests	boot-launch	man
+services/net/	all	NetTests	boot-launch	man
 drivers/	all	DevMgrTests	boot-launch,boot-pci	man
 drivers/bus/acpi/	all	ACPITests	boot-acpi,boot-launch	man
 drivers/bus/pci/	all	PCITests	boot-pci,boot-launch	man

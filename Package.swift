@@ -147,6 +147,9 @@ let ipc: [Target] = [
   // The net class (D82): a NIC as Plan 9's ether(3) directory.
   .target(name: "NetClass", dependencies: ["Node", "IPC", "Sys"], path: "drivers/net/lib", swiftSettings: tier0),
   .testTarget(name: "NetClassTests", dependencies: ["NetClass", "Node", "IPC", "Sys"], path: "drivers/net/tests"),
+  // The network stack (D79): one interface's protocols, no I/O of its own.
+  .target(name: "Net", dependencies: ["TDCrypto"], path: "services/net/lib", swiftSettings: tier0),
+  .testTarget(name: "NetTests", dependencies: ["Net"], path: "services/net/tests"),
   // kbdfs (D83): the keyboard and the console, after 9front's.
   .target(name: "Kbdfs", path: "services/kbdfs/lib", swiftSettings: tier0),
   .testTarget(name: "KbdfsTests", dependencies: ["Kbdfs"], path: "services/kbdfs/tests"),

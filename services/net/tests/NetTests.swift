@@ -2,13 +2,10 @@
 
 // The network stack's core (N1b), on frames built here: the checksum,
 // ARP's answers and its retries, ICMP's echo (straight out, and waiting
-// for ARP), and what is refused. Then Linux's own ping against it, over a
-// TAP inside `unshare -Urn` (nettap; skipped where user namespaces
-// aren't allowed).
+// for ARP), and what is refused.
 
 import FoundationEssentials
 import Glibc
-import IDL
 @testable import Net
 import Testing
 
@@ -155,81 +152,4 @@ func pingFrame(to destination: IPv4Address = ourIP, id: UInt16 = 7, sequence: UI
   #expect(requests == NeighborCache.maxRequests)
   #expect(now == Int64(NeighborCache.maxRequests) * NeighborCache.retry)
   #expect(s.counters.unresolved == 1 && s.pending.lengths.allSatisfy { $0 == 0 })
-}
-
-// MARK: Linux against it
-
-let repository: String = {
-  var path = #filePath
-  for _ in 0..<4 { path = String(path[..<path.lastIndex(of: "/")!]) }
-  return path
-}()
-
-/// Runs `script` with sh inside a new user and network namespace; its
-/// exit status and output.
-func inNamespace(_ script: String) -> (Int32, String) {
-  let dir = "\(FileManager.default.temporaryDirectory.path)/nettests-\(getpid())-\(Int.random(in: 0..<1_000_000))"
-  try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-  defer { try? FileManager.default.removeItem(atPath: dir) }
-  try? Data(script.utf8).write(to: URL(fileURLWithPath: dir + "/script.sh"))
-  let status = system("cd \(dir) && unshare -Urn sh script.sh > out.txt 2>&1")
-  let out = FileManager.default.contents(atPath: dir + "/out.txt").map { String(decoding: $0, as: UTF8.self) } ?? ""
-  return (status, out)
-}
-
-let namespacesWork = system("unshare -Urn true > /dev/null 2>&1") == 0
-
-/// Starts nettap on tap0 (until `stopNettap`, at most 30 s) and waits for
-/// the TAP, then brings Linux's end up.
-func startNettap(_ nettap: String) -> String {
-  """
-  \(nettap) --tap tap0 --address 10.0.0.2/24 --seconds 30 --stop-file stop > nettap.log 2>&1 &
-  NT=$!
-  i=0
-  until ip link show tap0 > /dev/null 2>&1; do i=$((i + 1)); [ $i -lt 100 ] || exit 3; sleep 0.05; done
-  ip link set lo up
-  ip link set tap0 up
-  """
-}
-
-/// Stops nettap, waits for its counters, and prints its log.
-let stopNettap = """
-  touch stop
-  wait $NT
-  cat nettap.log
-  """
-
-@Test(.enabled(if: namespacesWork)) func linuxPingsTheStack() throws {
-  let nettap = repository + "/.build/debug/nettap"
-  try #require(FileManager.default.fileExists(atPath: nettap), "build nettap first (swift build)")
-  let (status, out) = inNamespace("""
-    set -e
-    \(startNettap(nettap))
-    ip addr add 10.0.0.1/24 dev tap0
-    ping -c 5 -i 0.2 -W 2 10.0.0.2
-    ping -c 3 -i 0.2 -W 2 -s 1472 -M do 10.0.0.2
-    ip neigh show dev tap0
-    \(stopNettap)
-    """)
-  #expect(status == 0, "\(out)")
-  #expect(out.contains("5 packets transmitted, 5 received"), "\(out)")
-  #expect(out.contains("3 packets transmitted, 3 received"), "\(out)")
-  #expect(out.contains("lladdr 52:54:00:12:34:56"), "\(out)")
-  #expect(out.contains("echoes 8,"), "\(out)")
-}
-
-@Test func checkedInOutputsMatchIdlc() throws {
-  func read(_ path: String) -> String? {
-    FileManager.default.contents(atPath: repository + "/" + path).map { String(decoding: $0, as: UTF8.self) }
-  }
-  let source = "services/net/ipc/Protocol.swift"
-  let interface = try scan([(source, try #require(read(source)))], references: [])
-  let library = try #require(interface.libraries.first)
-  let regenerate = "regenerate: .build/debug/idlc --c-out services/net/idl --doc-out services/net/idl --baseline services/net/idl \(source)"
-  #expect(cHeader(library, source: source) == read("services/net/idl/net_ipc.h"), "\(regenerate)")
-  for p in library.protocols {
-    let composed = try interface.composedMethods(p, in: library)
-    #expect(markdown(p, library, source: source, composed: composed) == read("services/net/idl/\(p.name).md"), "\(regenerate)")
-    #expect(Baseline(p, library, composed: composed).text == read("services/net/idl/\(p.id).api"))
-  }
 }

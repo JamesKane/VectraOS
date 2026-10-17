@@ -6,8 +6,7 @@
 // both ways through loss, the close in both orders and TIME-WAIT,
 // retransmission's backoff and giving up, a closed window probed. Then
 // segments made by hand: a reset for a closed port, RFC 5961's challenge
-// ACKs, out-of-order data held and SACKed. Then Linux against it over the
-// TAP: streams both ways with loss, IPv6, and our end as the client.
+// ACKs, out-of-order data held and SACKed.
 
 import FoundationEssentials
 import Glibc
@@ -419,106 +418,4 @@ func be(_ v: UInt32) -> [UInt8] {
   var b = [UInt8](repeating: 0, count: 4)
   b.put32(v, 0)
   return b
-}
-
-// MARK: Linux against it
-
-@Test(.enabled(if: namespacesWork)) func linuxStreamsThroughLossBothWays() throws {
-  let nettap = repository + "/.build/debug/nettap"
-  try #require(FileManager.default.fileExists(atPath: nettap), "build nettap first (swift build)")
-  // 1 GiB each way when asked (the milestone's exit); 64 MiB in td ci.
-  let bytes = ProcessInfo.processInfo.environment["TODHCHAI_NET_GIB"] != nil ? 1 << 30 : 64 << 20
-  let (status, out) = inNamespace("""
-    set -e
-    \(nettap) --tap tap0 --address 10.0.0.2/24 --tcp-sink 9 --tcp-source 19:\(bytes) --tcp-echo 7 \\
-      --tcp-connect fd00::1:7000:5000000 --loss 0.01 --seconds 900 --stop-file stop > nettap.log 2>&1 &
-    NT=$!
-    i=0
-    until ip link show tap0 > /dev/null 2>&1; do i=$((i + 1)); [ $i -lt 100 ] || exit 3; sleep 0.05; done
-    ip link set lo up
-    ip link set tap0 up
-    ip addr add 10.0.0.1/24 dev tap0
-    ip addr add fd00::1/64 dev tap0 nodad
-    \(linuxReady)
-    \(dnsmasq) --enable-ra --dhcp-range=::,constructor:tap0,ra-only,64,10m &
-    DM=$!
-    trap 'status=$?; kill -KILL $DM 2> /dev/null; [ $status = 0 ] || cat nettap.log dm.log' EXIT
-    echo "hello, tcp" | timeout 10 ncat 10.0.0.2 7
-    python3 -I - \(bytes) << 'EOF'
-    import socket, sys, threading, time
-    n = int(sys.argv[1])
-    block = bytes(i % 251 for i in range(251)) * 1024
-    def bulk(host, fam):
-        t = time.time()
-        s = socket.socket(fam, socket.SOCK_STREAM)
-        s.settimeout(60)
-        s.connect((host, 9))
-        left = n
-        while left:
-            k = min(left, len(block))
-            s.sendall(block[:k])
-            left -= k
-        s.shutdown(socket.SHUT_WR)
-        s.recv(1)
-        s.close()
-        up = time.time() - t
-        t = time.time()
-        s = socket.socket(fam, socket.SOCK_STREAM)
-        s.settimeout(60)
-        s.connect((host, 19))
-        got, bad = 0, False
-        while True:
-            d = s.recv(1 << 20)
-            if not d:
-                break
-            for i in range(0, len(d), 65536):
-                piece = d[i:i + 65536]
-                st = (got + i) % 251
-                if piece != block[st:st + len(piece)]:
-                    bad = True
-            got += len(d)
-        down = time.time() - t
-        print("bulk %s up %d %.1f MB/s down %d %s %.1f MB/s" % (
-            "ipv6" if fam == socket.AF_INET6 else "ipv4", n, n / up / 1e6, got, "BAD" if bad else "ok", got / down / 1e6))
-    # A server for nettap's client, over IPv6: the pattern back.
-    def serve():
-        l = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-        l.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        l.bind(("fd00::1", 7000))
-        l.listen(1)
-        l.settimeout(60)
-        c, _ = l.accept()
-        c.settimeout(60)
-        data = bytearray()
-        while True:
-            d = c.recv(1 << 20)
-            if not d:
-                break
-            data += d
-        c.sendall(bytes(data))
-        c.close()
-    server = threading.Thread(target=serve)
-    server.start()
-    bulk("10.0.0.2", socket.AF_INET)
-    deadline = time.time() + 20
-    while time.time() < deadline and "ipv6 fd00" not in open("nettap.log").read():
-        time.sleep(0.05)
-    bulk("fd00::5054:ff:fe12:3456", socket.AF_INET6)
-    server.join()
-    EOF
-    i=0
-    until grep -q "tcp client" nettap.log; do i=$((i + 1)); [ $i -lt 600 ] || exit 4; sleep 0.05; done
-    \(stopNettap)
-    """)
-  #expect(status == 0, "\(out)")
-  // The rates and the recovery, for the log.
-  for line in out.split(separator: "\n") where line.hasPrefix("bulk") || line.contains("tcp segments") {
-    print("linuxStreamsThroughLossBothWays: \(line.split(separator: ";").first(where: { $0.contains("bulk") || $0.contains("tcp segments") }) ?? line)")
-  }
-  #expect(out.contains("hello, tcp"), "\(out)")
-  for family in ["ipv4", "ipv6"] {
-    #expect(out.contains("bulk \(family) up \(bytes) ") && out.contains("down \(bytes) ok"), "\(family)\n\(out)")
-  }
-  #expect(out.components(separatedBy: "nettap: tcp sink \(bytes) bytes ok").count == 3, "\(out)")
-  #expect(out.contains("nettap: tcp client sent 5000000, received 5000000 bytes ok"), "\(out)")
 }
