@@ -45,7 +45,8 @@ under `vx ci` and every budget it introduces has a running check
     (2026-10-16, cd3eb6d), and the services hold 3.7 MiB (< 32 MiB,
     `services.rss`), and the manual is written (D86).
 - **V3** is under way: notes and /proc, and crypto, done (2026-10-17).
-  **V4 onward** are not started (V6's boards have research passes).
+  **V4 onward** are not started (V6's boards have research passes);
+  V10, the Ghost, is proposed (D90).
 
 ## V0. Ground — done 2026-10-15
 
@@ -947,6 +948,27 @@ frees the machine; its disks hold other work.
 **Exit:**
 - A Wasm build of a small Bevy or Godot sample runs at its frame budget on
   the Orange Pi 6 Plus.
+
+## V10. The Ghost (D90, proposed)
+
+The opt-in, local-first agent (`docs/ghost.md`), on V3's `/net` and
+factotum, V4's Taisce, V5's trusted path, V7's swarm and V8's
+accelerators. Earlier milestones design in what it needs
+(`docs/ghost.md` §11): effect classes in `.schema`, structured
+failures, a Taisce origin attribute, non-realtime GPU queues, and the
+executor's decoding ops in V8's `.vxm` format.
+
+1. Watchers, signatures and insights, with no model.
+2. The CPU runner and local models, as `.vxm` from `vxc`.
+3. The GPU and NPU runners, and placement.
+4. Evolution and automation (and the time trigger, `docs/ghost.md` §13).
+5. Frontier providers, with a first-party TLS 1.3 client.
+
+**Exit:**
+- On the Orange Pi 6 Plus, a planted driver failure yields a cited
+  insight from a local model, whose fix runs and undoes.
+- An automation the Ghost wrote runs with the Ghost disabled.
+- The Ghost's budgets (`docs/ghost.md` §10) are green.
 
 ## Research tracks (unscheduled)
 
