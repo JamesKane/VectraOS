@@ -382,7 +382,14 @@ work, in order:
      (ls -l shows `d-rwxr-xr-x`, `--rw-r--r--`, owner `none`).
    - **Commands still missing:** `test`, `read`, `grep`, `sed`, `wc`,
      `sort`, `tail`, `tr`, `sleep`, `kill`, `ps`, `date`, `ns`, `bind`,
-     `mount`.
+     `mount`. `ps`, `kill` and `ns` are Plan 9's, over `/proc` (V3, D79);
+     `date` reads `/dev/time` (D79).
+   - **The environment as `/env` (D81):** an env service serves a tree
+     per environment group, the launcher hands it as a mount, and rc
+     stores variables as Plan 9's rc does (NUL-separated lists,
+     `/env/'fn#NAME'`), so `rfork e` and `E` make and copy groups; the
+     Startup's environment list and the Unix port's ^A encoding go on
+     the device (the oracle keeps them on Linux).
    - **The pty, done (2026-10-16):** `services/pty` on rings (D46): a
      terminal opens one at /svc/pty/pty and gets its keys and screen
      as descriptors, the client end is a program's fds 0 to 2 and the
@@ -476,7 +483,9 @@ work, in order:
        without regions.
    - **7d, the virtio library and virtio-input:** the modern virtio-pci
      transport and split queues; the input class on the one ring (its
-     TDIR format goes, as the syscall audit has it); QEMU gains a
+     TDIR format goes, as the syscall audit has it), served as 9front's
+     `/dev/kbd`, `/dev/mouse` and `/dev/mousectl` (D82: their records
+     the ring's, read plainly or attached); QEMU gains a
      `virtio-keyboard-pci` on every arch. MSI-X where the kernel has MSI
      (amd64, arm64's ITS, rv64's AIA), INTx on rv64's PLIC, both tested.
    - **7e, only if it comes cheaply:** the console's input, virtio-input
@@ -511,12 +520,21 @@ a new kernel without the USB stick, all through one Plan 9 cpu session
 (D77). All of it works in QEMU first, on all three arches, so the board
 meets a tested path.
 
-- **Network:** lift todhchai's N1 work: crypto, `services/net` (Ethernet,
-  ARP, IPv4/IPv6, DHCP, TCP over NetRing), the net driver class and
-  virtio-net. Not its sshd or SFTP (D77).
-- **9gate's core, from V7:** the 9P2000.L codec, export and import, over
-  Noise IK (`Noise_IK_25519_ChaChaPoly_SHA256`, on N1's crypto). Linux
-  `v9fs` conformance, the VectraOS extensions and the swarm stay V7's.
+- **Network:** lift todhchai's N1 work: crypto, `services/net`'s stack
+  (Ethernet, ARP, IPv4/IPv6, DHCP, TCP), the net driver class and
+  virtio-net. Not its sshd or SFTP (D77), and not NetRing or `NetIPC`
+  (D79): the stack serves Plan 9's `/net` (`/net/tcp/clone`, per
+  connection `ctl`, `data`, `listen`, `local`, `remote`, `status`;
+  `/net/udp`, `/net/ipifc`, `/net/iproute`), `data`'s bulk on the one
+  ring through Node's `attach` (D67), and `/net/cs` and `/net/dns` for
+  names; Sys gains `dial("tcp!host!port")`, `announce`, `listen` and
+  `accept`. The net class serves `/net/etherN` (D82), which the stack
+  opens.
+- **9gate's core, from V7:** the 9P2000 codec (D78: Plan 9's dialect,
+  string owners, our extensions negotiated as `9P2000.vx`), export and
+  import, over Noise IK (`Noise_IK_25519_ChaChaPoly_SHA256`, on N1's
+  crypto). Linux `v9fs` conformance, the extensions themselves and the
+  swarm stay V7's.
 - **factotum** (todhchai's keyring, D75) holds the node's Noise IK
   static key (`proto=noise-ik`), made on first use; neither 9gate nor
   cpu holds it.
@@ -531,6 +549,11 @@ meets a tested path.
   - A test checks that a normal image has no listener.
 - **Notes between processes** in croi, so the terminal's interrupt
   reaches rc (and its foreground program) as a note, as cpu forwards it.
+  Programs post them through `/proc` (D79): a proc service serves
+  `/proc/N/{status,ctl,note,notepg,ns,fd,args,wait}` from the kernel's
+  info topics and process handles, the kernel's side a right on a
+  process handle (the ceiling holds). `ps`, `kill` and `ns` are Plan
+  9's over it, and `notepg` gives rc's `rfork` its note groups.
 - **The pty goes** (D77): with cpu's session and the console both serving
   `/dev/cons`, nothing needs it; `services/pty`, rc's terminal relay and
   `CROI_PA_PTY_CONTROL` are removed (services/pty/README.md).
@@ -540,12 +563,17 @@ meets a tested path.
 - **Push and run** (todhchai N1e): the launcher finds programs in a
   writable `/dev/bin` over bootfs's `bin`, so `vx cpu board -c 'cp
   /mnt/term/PATH/prog /dev/bin && restart prog'` runs a new build
-  without a reboot.
-- **Board tools:** `log -f` (the debuglog's node, streamed), `ps`,
-  `kill`, `restart`, `trace`, `poweroff`, `reboot`.
+  without a reboot; `restart` writes `restart prog` to
+  `/svc/launcher/ctl` (D79).
+- **Board tools, rc scripts over ctl files (D79):** `log -f` (`cat
+  /dev/kprint`), `ps`, `kill`, `restart`, `trace`, `poweroff`, `reboot`
+  and `warmboot`; `/dev/reboot`, served over `SYSTEM_POWERCTL` by the
+  service holding the power resource, takes `reboot`, `poweroff` and
+  `warmboot KERNEL BOOTFS`.
 - **Warm boot:** `warmboot /mnt/term/PATH/kernel.elf
-  /mnt/term/PATH/bootfs.img`, in a cpu session, hands off to a new
-  kernel and bootfs held in memory. No firmware, no stick.
+  /mnt/term/PATH/bootfs.img`, in a cpu session, writes the line to
+  `/dev/reboot`, which hands off to a new kernel and bootfs held in
+  memory. No firmware, no stick.
   - The kernel reuses the loader's ELF, page-table and handoff code
     (`lib/elf`, `lib/pagetables`, `lib/handoff`): it parks the other CPUs,
     builds a handoff from the one it booted with, and enters the new
@@ -562,11 +590,16 @@ meets a tested path.
 - `vx remote boot` round-trips to a new kernel and is back on cpu.
 - No listener without `--cpu`.
 - No pty in the tree.
+- `kill` over `/proc` ends a program, and `ps` and `ns` read it.
+- A cpu session dials out through the terminal's `/net`, bound from
+  `/mnt/term/net` (D79).
 - The bring-up budgets are green.
 
 ## V4. Taisce on disk
 
-- Taisce's volumes on virtio-blk (V3 lifted the service on a RAM disk).
+- Taisce's volumes on virtio-blk, through the block class's
+  `/dev/sdXX/data` and its partitions (D82; V3 lifted the service on a
+  RAM disk).
   NVMe comes with each board (V6, V6c), since the boards now follow
   (D76).
 - Attributes, indices and live queries over the Node protocol.
@@ -698,10 +731,12 @@ frees the machine; its disks hold other work.
 
 ## V7. Edge: 9gate and the swarm
 
-- 9gate as the translator for Linux and 9front, on V3's 9P2000.L core
-  and Noise IK (D77): Linux `v9fs` and 9front mount an export unchanged.
+- 9gate toward Linux and 9front, on V3's 9P2000 core and Noise IK (D77,
+  D78): 9front mounts an export unchanged, and Linux `v9fs` mounts it as
+  9P2000, the translator speaking `.L` only where `v9fs`'s conformance
+  needs it (which messages, decided here).
 - VectraOS↔VectraOS extensions for attributes, queries, leases and ring
-  bridging.
+  bridging, negotiated as `9P2000.vx` (D78).
 - Swarm node roles and `/swarm/pool`.
 - **cpu between VectraOS nodes** (D75), on V3's server (D77): `cpu -h
   NODE` from a node's terminal, the remote rc's text that window's, and
@@ -748,7 +783,8 @@ frees the machine; its disks hold other work.
 ## V9. Wasm and games
 
 - `wasmd`, interpreter first, then AOT through `vxc`.
-- WASI over nodes and rings.
+- WASI over nodes and rings, a guest ABI under D80's rule: mapped onto
+  Plan 9's interfaces, its shapes in nothing native.
 - A reference game: a frame-loop intent, input and audio rings, Vulkan.
 
 **Exit:**

@@ -90,3 +90,8 @@ in a new file, and a line in the index below.
 - [D75. The terminal is rio's window, remote sessions are Plan 9's cpu, and the keyring becomes factotum](D075-cpu-and-factotum.md) — 2026-10-16, decided
 - [D76. Taisce on disk and the desktop come before the boards](D076-taisce-and-desktop-before-boards.md) — 2026-10-16, decided; amends D16
 - [D77. The bring-up link is Plan 9's cpu, not SSH](D077-bring-up-link-is-cpu.md) — 2026-10-16, decided; supersedes D15's protocol, amends D75
+- [D78. 9gate's core dialect is 9P2000, not 9P2000.L](D078-9p2000-core-dialect.md) — 2026-10-16, decided; amends D77
+- [D79. V3's interfaces are Plan 9's: /net with dial strings, /proc with notes, and ctl files](D079-v3-interfaces-net-proc-ctl.md) — 2026-10-16, decided
+- [D80. POSIX is tier 1's APE, and nothing else's](D080-posix-is-tier1-ape.md) — 2026-10-16, decided
+- [D81. The environment is /env](D081-environment-is-env.md) — 2026-10-16, decided
+- [D82. Driver classes are Plan 9's device directories for control, the one ring for bulk](D082-device-directories.md) — 2026-10-16, decided

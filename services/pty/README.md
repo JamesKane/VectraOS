@@ -51,8 +51,8 @@ rc's relay of the terminal to its foreground program
 have no pty either: Plan 9's cpu imports the terminal's `/dev/cons`, from
 the dev machine's `vx cpu` in V3 and between our nodes (D75, D77). The rings
 stay (D46): fds 0 to 2 are still byte rings, with the window on the
-other end. Open: how tier 1's POSIX programs that ask for termios or
-`isatty` see a window (the libc mapping them onto `/dev/consctl`, as
-Plan 9's APE does, is the likely answer). When: V3 (D77), once cpu's
+other end. Tier 1's POSIX programs that ask for termios or `isatty`
+see a window through `/dev/consctl`, the libc mapping them as Plan 9's
+APE does (D80). When: V3 (D77), once cpu's
 session and the console serve `/dev/cons`; until then, don't build new
 things on the pty's Control or its modes.

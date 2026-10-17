@@ -127,16 +127,26 @@ Plan 9's Tflush rule.
   channel is at (Node's `attach`, D67). That exchange is the only way a
   ring comes to exist between a client and a service.
 - **Discovery:** each service directory has `.help` and `.schema` nodes.
+- **The system's interfaces are Plan 9's trees**, not Unix's calls:
+  `/net` with dial strings and `/net/cs` (D79), `/proc` for processes and
+  their notes (D79), `/env` per environment group (D81), a device
+  directory per driver class (`/net/etherN`, `/dev/sdXX`, `/dev/kbd`;
+  D82), and ctl files for power and restarts (`/dev/reboot`,
+  `/svc/launcher/ctl`; D79). POSIX exists only in tier 1's libc, over
+  these (D80, Plan 9's APE).
 
 ## 5. The network: 9gate and the swarm
 
 `9gate` is a translator service, and it is the only thing that speaks
-9P2000.L. It works in both directions:
+9P. Its dialect is Plan 9's 9P2000 (D78), with string owners and no
+numeric ids. It works in both directions:
 - **Export.** It serves a chosen subtree of the namespace to the network.
-  Linux `v9fs` and 9front mount it unchanged.
-- **Import.** It mounts a remote 9P2000.L server as a node subtree.
+  9front mounts it unchanged, and Linux `v9fs` mounts it as 9P2000, with
+  `.L` spoken toward Linux only where `v9fs` needs it.
+- **Import.** It mounts a remote 9P server as a node subtree.
 
-Between VectraOS peers, 9gate negotiates extension messages:
+Between VectraOS peers, 9gate negotiates extension messages
+(`9P2000.vx`, D78):
 - typed attributes and queries, so Taisce works remotely;
 - leases and notifications, for `watch`;
 - remote rings. These are bridged by 9gate as a stream: local ring → 9P
@@ -159,7 +169,7 @@ which never see a long-term key.
 During development, the dev machine reaches a node through the same cpu
 session, brought forward to V3: `vx cpu NODE` (Swift, in vx) exports
 the dev machine's tree to the node's rc at `/mnt/term`, over 9gate's
-9P2000.L core and Noise IK. Copies are `cp` from `/mnt/term`, logs are
+9P2000 core (D78) and Noise IK. Copies are `cp` from `/mnt/term`, logs are
 the debuglog's node, and `warmboot` (a `SYSTEM_POWERCTL` command) loads
 a new kernel and bootfs from `/mnt/term` into memory, with no firmware
 involved. There is no SSH (D77).
