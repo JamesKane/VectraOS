@@ -736,7 +736,8 @@ write prefix.
      first use); where keys persist across boots waits for V5.
 
    V3 lifts from a pinned commit of that branch. It either waits for d4/d5
-. **`trace.probe_enabled` rose from 18 to 21 ns under KVM, accepted
+   or does them here; IMPORTS.tsv records the commit either way.
+3. **`trace.probe_enabled` rose from 18 to 21 ns under KVM, accepted
    (2026-10-16).** D50 put the trace rings on the one ring, whose
    OVERWRITE protocol costs each record a sequence mark, a release fence
    and the sequence's store besides the record and the cursor. `vx bench
