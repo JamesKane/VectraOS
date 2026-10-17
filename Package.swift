@@ -150,6 +150,10 @@ let ipc: [Target] = [
   // The network stack (D79): one interface's protocols, no I/O of its own.
   .target(name: "Net", dependencies: ["TDCrypto"], path: "services/net/lib", swiftSettings: tier0),
   .testTarget(name: "NetTests", dependencies: ["Net"], path: "services/net/tests"),
+  // /net's protocols over it, as Plan 9's ip(3) (D79).
+  .target(name: "IP", dependencies: ["Net", "Node", "IPC", "Sys"], path: "services/net/ip", exclude: ["tests"],
+          swiftSettings: tier0),
+  .testTarget(name: "IPTests", dependencies: ["IP", "Net", "Node", "IPC", "Sys"], path: "services/net/ip/tests"),
   // kbdfs (D83): the keyboard and the console, after 9front's.
   .target(name: "Kbdfs", path: "services/kbdfs/lib", swiftSettings: tier0),
   .testTarget(name: "KbdfsTests", dependencies: ["Kbdfs"], path: "services/kbdfs/tests"),

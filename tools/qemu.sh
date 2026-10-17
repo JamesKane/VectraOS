@@ -133,10 +133,11 @@ esac
 # bypasses it otherwise, taking the driver's I/O addresses as physical).
 # virtio-net (D82): devmgr's virtio-net at slot 0x12, the same way (and
 # modern only: QEMU won't put a transitional device behind the IOMMU), on
-# QEMU's user network, which reaches nothing outside (restrict=on); no
-# option ROM (romfile=), so the firmware doesn't try to boot from it.
+# QEMU's user network, which reaches nothing outside (restrict=on) but an
+# echo, cat, at 10.0.2.100!7 for boot-launch to dial; no option ROM
+# (romfile=), so the firmware doesn't try to boot from it.
 qemu+=(-m 512M -smp 4 -net none "${disk[@]}" -device virtio-rng-pci -device virtio-keyboard-pci,addr=0x11,iommu_platform=on
-       -netdev user,id=net0,restrict=on -device virtio-net-pci,netdev=net0,addr=0x12,disable-legacy=on,iommu_platform=on,romfile=)
+       -netdev user,id=net0,restrict=on,guestfwd=tcp:10.0.2.100:7-cmd:cat -device virtio-net-pci,netdev=net0,addr=0x12,disable-legacy=on,iommu_platform=on,romfile=)
 
 if [[ -n $expect ]]; then
   console=$work/console.log

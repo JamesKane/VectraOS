@@ -1,0 +1,127 @@
+page ip 4
+summary the network stack: TCP, UDP and IP over an Ethernet device, served at /net
+names ip net tcp udp
+src services/net/Main.swift services/net/ip/IP.swift services/net/ip/Files.swift services/net/lib/Stack.swift services/net/lib/TCP.swift services/net/lib/UDP.swift services/net/lib/DHCP.swift services/net/net.manifest
+keys network tcp udp ip ipv4 ipv6 dhcp arp route socket conversation clone announce listen connect
+
+# SYNOPSIS
+
+```text
+/net/tcp/clone
+/net/tcp/stats
+/net/tcp/<n>/ctl
+/net/tcp/<n>/data
+/net/tcp/<n>/err
+/net/tcp/<n>/listen
+/net/tcp/<n>/local
+/net/tcp/<n>/remote
+/net/tcp/<n>/status
+/net/udp/...
+/net/ipifc/stats
+/net/ipifc/0/ctl
+/net/ipifc/0/status
+/net/ipifc/0/local
+/net/iproute
+/net/arp
+/net/ipselftab
+/net/ndb
+```
+
+# DESCRIPTION
+
+The net service is the network stack, Plan 9's ip device as a service: IPv4 and IPv6 over one Ethernet device, with TCP and UDP above them, served as files.
+Its manifest runs `net /net/ether0`, the first device devmgr(8) binds (ether(3)), and mounts devmgr's `net` at `/net` for it; the service serves its files at `net` in its tree, which a manifest mounts after the devices: `mount /net net/net after`.
+dial(2) is how a program uses them.
+
+`net` takes `-a` <address>`/`<prefix> and `-g` <gateway> before the device to configure IPv4.
+Without them it asks for an address by DHCP (RFC 2131), probing the address it is offered by ARP before taking it, and renews the lease as it runs out; it says `net: 10.0.2.15/24 by DHCP` on the console when it has one.
+IPv6 starts on the link-local address the device's address gives, checked for duplicates, then takes routers' adverts and an address in each prefix they advertise.
+The stack answers ARP, neighbour solicitations and pings, sends with a TTL of 64, and drops fragments: it neither sends nor reassembles them.
+
+All addresses are written as Plan 9 writes them: IPv4 dotted, IPv6 as RFC 5952 has it, `::` for none, and an address and port as <address>`!`<port>.
+
+## Conversations
+
+`tcp` and `udp` each have a `clone` and up to 32 conversations, numbered from 0, each a directory made the first time it is used.
+Opening `clone` takes the first conversation not in use and gives a channel to its `ctl`; reading that channel gives the conversation's number.
+A conversation stays in use while its `ctl`, `data` or `listen` is open, and when the last closes it is ended: a TCP connection closed gracefully, or reset if data it received was left unread; a listener closed, and the calls to it not yet taken reset; a UDP endpoint closed.
+
+`ctl` takes these lines:
+
+: `connect` <address>`!`<port> [<local>]
+  Calls <address>.
+  For TCP the write waits until the handshake has ended, and fails if it did not succeed; `err` then says why: `connection refused`, `connection timed out`.
+  The local port is the stack's choice, from 49152 up; UDP takes <local> if given.
+: `announce` [<address>`!`]<port>
+  Takes calls to <port> on any address of ours; <address>, `*` or one of ours, is accepted and not otherwise used.
+  Port 0 or `*` is a free one, from 49152 up.
+: `hangup`
+  TCP: ends the connection with a reset.
+: `close`
+  TCP: sends what was written, then the end of the stream; reads go on until the peer's end.
+: `headers`
+  UDP: each datagram read and written begins with a 52-byte record, as Plan 9's `Udphdr`: the remote address (16 bytes), the local address (16), the interface's address (16), the remote port and the local port (2 each, big-endian).
+  A datagram is written to the record's remote address and port.
+: `keepalive`, `ttl`, `tos`, `ignoreadvice`, `bind`
+  Accepted, and do nothing.
+
+Any other line is refused.
+
+`data` is the conversation's bytes.
+On TCP a read returns what has arrived, and waits until something has; it returns nothing at the stream's end.
+A write takes what the connection's 64 KiB send buffer has room for and waits while it has none; a write after the connection has ended fails.
+On UDP each read is one datagram, and on a connected conversation only those from the address and port it connected to; each write is one datagram.
+Both can be read and written through the one ring (node(5)).
+
+A program waits for a call by opening `listen` in an announced TCP conversation and reading it: the read waits for a call and returns its conversation's number.
+The channel holds that new conversation as its ctl would, until it is closed.
+
+`local` and `remote` read as <address>`!`<port>.
+`status` reads as the state, Plan 9's name for it (`Closed`, `Listen`, `Syn_sent`, `Established`, `Close_wait`, ...), then `qin` <n>, the bytes or datagrams waiting to be read, and `qout` <n>, the bytes not yet acknowledged.
+UDP's state is `Open` or `Closed`.
+`err` is why the conversation last failed.
+A protocol's `stats` counts its segments or datagrams, a name and a number a line.
+
+## The interface
+
+`ipifc/0` is the one interface, on the device.
+Its `status` is Plan 9's: a line beginning `device /net/ether0 maxtu 1514`, with `pktin` and `pktout` counting frames, then an address a line, each its address, mask, network, and valid and preferred lifetimes in milliseconds, a lease's or `4294967295` for none.
+Its `ctl` takes `add` <address> <mask> (or `try`), which gives the interface that IPv4 address, and `remove` <address> <mask>, which takes it away.
+A mask is dotted, `255.255.255.0`, or a prefix, `/24`, and IPv4's prefixes print as IPv6's, so a /24 is `/120`.
+`local` lists its addresses.
+
+`iproute` reads as one route a line: target, mask, next hop, type (`4`, `4i` on the link, `4u` our address, `6...` the same for IPv6), tag, interface, and source and its mask.
+The routes follow from the interface's addresses, the gateway and IPv6's routers; writing `add 0 0` <gateway> sets IPv4's default route and `del 0 0` removes it.
+
+`arp` reads as the neighbour cache, a line each: `ether`, `OK` or `WAIT`, the address, the device address in hex once known, and our address it was found from.
+`ipselftab` lists the addresses taken as ours, with their types.
+`ndb` is what DHCP gave, as ipconfig writes it for cs and dns: `ip=`, `ipmask=` and `ipgw=` on a line, then a `dns=` line for each name server; empty until there is an address.
+
+# EXAMPLES
+
+A session's addresses:
+
+```rc
+% cat /net/ndb
+ip=10.0.2.15 ipmask=255.255.255.0 ipgw=10.0.2.2
+	dns=10.0.2.3
+```
+
+# FILES
+
+: `/svc/net/status`
+  The service's device and its address.
+: `/svc/net/net`
+  The protocols' directory, to mount after the devices at `/net`.
+
+# SEE ALSO
+
+dial(2), ether(3), node(5), manifest(6), devmgr(8)
+
+# BUGS
+
+There is one interface, on one device, and no loopback: a program can't call its own machine's address.
+`ipifc/clone`, `bind`, `unbind` and the router advertisement settings are refused, and so are routes but the default.
+UDP's `listen` takes no calls: an announced conversation without `headers` reads datagrams from anyone and can't write.
+TCP sends no keepalives and no urgent data, and keeps no timestamps.
+There is no `cs` or `dns` yet: dial strings take numbers.

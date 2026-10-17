@@ -320,6 +320,9 @@ croi_user_program(${_virtio_input} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drive
 set(_virtio_net ${CMAKE_CURRENT_BINARY_DIR}/virtionet.elf)
 croi_user_program(${_virtio_net} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/net/virtio-net/Main.swift
                   ${PROJECT_SOURCE_DIR}/drivers/net/virtio-net/lib/NetBackend.swift)
+# bin/net (D79): the network stack, /net's protocols, every arch.
+set(_net ${CMAKE_CURRENT_BINARY_DIR}/net.elf)
+croi_user_program(${_net} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/net/Main.swift)
 file(GLOB_RECURSE _driver_manifests CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/*/driver.manifest)
 list(SORT _driver_manifests)
 set(_drivers_index ${CMAKE_CURRENT_BINARY_DIR}/drivers.index)
@@ -377,6 +380,7 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
           bin/plumber=${_plumber} etc/manifests/plumber.manifest=${PROJECT_SOURCE_DIR}/services/plumber/plumber.manifest
           ${_man_bootfs} lib/man/index=${_man_index}
           bin/proc=${_proc} etc/manifests/proc.manifest=${PROJECT_SOURCE_DIR}/services/proc/proc.manifest
+          bin/net=${_net} etc/manifests/net.manifest=${PROJECT_SOURCE_DIR}/services/net/net.manifest
           ${_tier1_bootfs}
   DEPENDS ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_trace_test} ${_ipc_test} ${_node_test} ${_acpi_test} ${_pci_test}
           ${_launcher} ${_launch_service} ${_launch_test} ${_manifests}/a.manifest ${_manifests}/b.manifest
@@ -387,6 +391,7 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
           ${_console} ${PROJECT_SOURCE_DIR}/services/console/console.manifest
           ${_plumber} ${PROJECT_SOURCE_DIR}/services/plumber/plumber.manifest
           ${_proc} ${PROJECT_SOURCE_DIR}/services/proc/proc.manifest
+          ${_net} ${PROJECT_SOURCE_DIR}/services/net/net.manifest
           ${_man_files} ${_man_index} ${_tier1_files} vx ${VX}
   COMMENT "Building bootfs")
 add_custom_target(bootfs DEPENDS ${CMAKE_BINARY_DIR}/bootfs.img)

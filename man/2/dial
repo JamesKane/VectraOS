@@ -1,0 +1,76 @@
+page dial 2
+summary make and take network calls through /net
+names dial Namespace.dial Namespace.announce Namespace.listen Namespace.accept Namespace.reject DialError NetConnection
+names NetAnnouncement NetCall
+src system/node/lib/Dial.swift
+keys network call connect announce listen accept reject tcp udp address
+lang swift
+
+# SYNOPSIS
+
+```swift
+struct DialError: Error { var reason: String }
+
+struct NetConnection: ~Copyable {
+  var ctl: NodeIPC.NodeClient
+  var data: NodeIPC.NodeClient
+  let dir: String
+}
+struct NetAnnouncement: ~Copyable {
+  var ctl: NodeIPC.NodeClient
+  let dir: String
+}
+struct NetCall: ~Copyable {
+  var ctl: NodeIPC.NodeClient
+  let dir: String
+}
+
+extension Namespace {
+  func dial(_ address: String, local: String? = nil) throws(DialError)
+    -> NetConnection
+  func announce(_ address: String) throws(DialError) -> NetAnnouncement
+  func listen(_ announced: borrowing NetAnnouncement) throws(DialError)
+    -> NetCall
+  func accept(_ call: consuming NetCall) throws(DialError)
+    -> NetConnection
+  func reject(_ call: consuming NetCall)
+}
+```
+
+# DESCRIPTION
+
+These are Plan 9's dial(2), over the files a namespace's `/net` has (ip(4)).
+An address is a dial string, <network>`!`<host>`!`<service>: `tcp!10.0.2.100!7`.
+The network is `tcp` or `udp`, and `net` means `tcp`; the host and the service are numbers.
+
+`dial` opens the network's `clone`, writes `connect` <host>`!`<service> to the conversation's `ctl`, and opens its `data`.
+It returns once the connection is established, with the conversation's `ctl`, its `data` and its directory, `/net/tcp/4`.
+For UDP, `local` is the port to send from.
+
+`announce` takes calls to an address; its host is `*`, or an address of ours.
+The announcement lasts while its `ctl` is open.
+`listen` waits for a call to it and returns the call's directory and a channel that holds the call; `accept` opens the call's `data`, and `reject` hangs it up.
+
+A failure is a `DialError` whose `reason` is the conversation's `err` when it has one, `connection refused` for instance, or names the file that failed.
+
+# EXAMPLES
+
+Echo every call to port 7, one at a time:
+
+```swift
+let a = try ns.announce("tcp!*!7")
+while true {
+  var c = try ns.accept(try ns.listen(a))
+  while let bytes = try? c.data.read(offset: 0, max: 8192), !bytes.isEmpty {
+    _ = try? c.data.write(offset: 0, bytes)
+  }
+}
+```
+
+# SEE ALSO
+
+ip(4), node(5)
+
+# BUGS
+
+There is no connection server: hosts and services must be numbers, and `dial` doesn't try a host's addresses in turn.

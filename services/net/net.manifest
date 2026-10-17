@@ -1,0 +1,10 @@
+# net (D79): the network stack over the first Ethernet device, devmgr's
+# /net/ether0, serving /net's protocols at net/, which manifests mount
+# after the devices at /net. DHCP gives it its address.
+service net
+program net
+arg /net/ether0
+use devmgr
+mount /net devmgr/net
+export
+restart on-failure

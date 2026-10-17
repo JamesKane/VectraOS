@@ -336,6 +336,47 @@ func network(_ ns: Namespace, _ status: String) {
   check(ringReplied, "and through the one ring on /net/ether0's data")
   _ = consume data
   _ = consume ctl
+  stack(ns)
+}
+
+/// The stack on /net/ether0 (D79): DHCP's lease from QEMU, then a dial of
+/// the echo QEMU forwards 10.0.2.100!7 to (cat), a stream through it both
+/// plainly and through the one ring.
+func stack(_ ns: Namespace) {
+  var lease = ""
+  let deadline = Clock.monotonic() + 30_000_000_000
+  while Clock.monotonic() < deadline {
+    lease = readText(ns, "/net/ndb") ?? ""
+    if !lease.isEmpty { break }
+    Sys.sleep(until: Clock.monotonic() + 50_000_000)
+  }
+  // QEMU's restricted network gives no router or name servers.
+  check(lease.utf8.elementsEqual("ip=10.0.2.15 ipmask=255.255.255.0\n".utf8), "/net/ndb: DHCP's lease")
+  check(holds(readText(ns, "/net/ipifc/0/status") ?? "", "device /net/ether0 "), "/net/ipifc/0/status: the device")
+  guard var c = try? ns.dial("tcp!10.0.2.100!7") else { return check(false, "dial tcp!10.0.2.100!7") }
+  check(holds(readText(ns, c.dir + "/remote") ?? "", "10.0.2.100!7\n"), "dial tcp!10.0.2.100!7")
+  c.data.connection.timeout = 20_000_000_000
+  let sent = (0..<16384).map { UInt8(truncatingIfNeeded: $0 % 251) }
+  var at = 0
+  while at < sent.count, let n = try? c.data.write(offset: 0, Array(sent[at..<min(at + 4096, sent.count)])), n > 0 {
+    at += Int(n)
+  }
+  var echoed: [UInt8] = []
+  while echoed.count < sent.count, let bytes = try? c.data.read(offset: 0, max: 8192), !bytes.isEmpty {
+    echoed += bytes
+  }
+  check(echoed == sent, "16 KiB echoed through /net/tcp")
+  // The same through the one ring: written whole, read a take at a time.
+  var ringEchoed: [UInt8] = []
+  if let channel = try? ns.open(c.dir + "/data"), var ring = try? NodeBulkChannel(channel, slots: 4, dataSize: 16 * 1024) {
+    ring.timeout = 20_000_000_000
+    if (try? ring.put(sent)) != nil {
+      while ringEchoed.count < sent.count, let bytes = try? ring.take(max: 8192), !bytes.isEmpty { ringEchoed += bytes }
+    }
+  }
+  check(ringEchoed == sent, "and through the one ring on its data")
+  check(holds(readText(ns, c.dir + "/status") ?? "", "Established "), "the connection is established")
+  _ = consume c
 }
 
 /// The last word of `text`, as a decimal number.
@@ -670,13 +711,14 @@ func runPty(_ ns: Namespace) {
     // cat /svc/*/status
     let names = ((try? ns.list("/svc")) ?? []).map { $0.name }
     #if arch(x86_64)
-      let expected = 7  // and the time service
+      let expected = 8  // and the time service
     #else
-      let expected = 6
+      let expected = 7
     #endif
     check(names.count == expected && names.contains { same($0, "a") } && names.contains { same($0, "b") }
             && names.contains { same($0, "launcher") } && names.contains { same($0, "pty") }
-            && names.contains { same($0, "devmgr") } && names.contains { same($0, "env") },
+            && names.contains { same($0, "devmgr") } && names.contains { same($0, "env") }
+            && names.contains { same($0, "net") },
           "/svc holds what the manifest uses")
     // env is the launcher's groups (D81), with no status.
     for name in names where !same(name, "env") {

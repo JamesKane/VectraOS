@@ -377,6 +377,11 @@ function(croi_user_sys)
   file(GLOB _input CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/input/lib/*.swift)
   # The net class, ether(3)'s directory (drivers/net/lib, D82).
   file(GLOB _netclass CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/net/lib/*.swift)
+  # The crypto (D89), the network stack (services/net/lib) and /net's
+  # protocols over it (services/net/ip, D79).
+  file(GLOB _crypto CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/crypto/lib/*.swift)
+  file(GLOB _net CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/services/net/lib/*.swift)
+  file(GLOB _ip CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/services/net/ip/*.swift)
   # kbdfs's keyboard and console (services/kbdfs/lib, D83).
   file(GLOB _kbdfs CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/services/kbdfs/lib/*.swift)
   # The console's grid, renderer and font (services/console/lib, V2 item 8).
@@ -433,6 +438,12 @@ function(croi_user_sys)
             -c ${_input} -o ${_dir}/input.o
     COMMAND ${_swiftc} -module-name NetClass -emit-module -emit-module-path ${_dir}/NetClass.swiftmodule
             -c ${_netclass} -o ${_dir}/netclass.o
+    COMMAND ${_swiftc} -module-name TDCrypto -emit-module -emit-module-path ${_dir}/TDCrypto.swiftmodule
+            -c ${_crypto} -o ${_dir}/tdcrypto.o
+    COMMAND ${_swiftc} -module-name Net -emit-module -emit-module-path ${_dir}/Net.swiftmodule
+            -c ${_net} -o ${_dir}/net.o
+    COMMAND ${_swiftc} -module-name IP -emit-module -emit-module-path ${_dir}/IP.swiftmodule
+            -c ${_ip} -o ${_dir}/ip.o
     COMMAND ${_swiftc} -module-name Kbdfs -emit-module -emit-module-path ${_dir}/Kbdfs.swiftmodule
             -c ${_kbdfs} -o ${_dir}/kbdfs.o
     COMMAND ${_swiftc} -module-name Console -emit-module -emit-module-path ${_dir}/Console.swiftmodule
@@ -445,9 +456,9 @@ function(croi_user_sys)
     COMMAND ${CMAKE_AR} rcs ${_dir}/libsys.a ${_dir}/sysabi.o ${_dir}/loader.o ${_dir}/sys.o ${_dir}/libsys.o ${_dir}/ld.o
             ${_dir}/ring.o ${_dir}/traceformat.o ${_dir}/trace.o ${_dir}/tracesession.o
             ${_dir}/ipcwire.o ${_dir}/ipc.o ${_dir}/node.o ${_dir}/directives.o ${_dir}/guide.o ${_dir}/launch.o ${_dir}/acpi.o ${_dir}/pci.o
-            ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o ${_dir}/netclass.o ${_dir}/kbdfs.o ${_dir}/console.o ${_dir}/plumber.o ${_dir}/proc.o
+            ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o ${_dir}/netclass.o ${_dir}/tdcrypto.o ${_dir}/net.o ${_dir}/ip.o ${_dir}/kbdfs.o ${_dir}/console.o ${_dir}/plumber.o ${_dir}/proc.o
     DEPENDS ${_abi} ${_loader} ${_api} ${_lib} ${_ld} ${_ring} ${_trace_format} ${_trace_writer} ${_trace_session} ${_ipc_wire}
-            ${_ipc} ${_node} ${_directives} ${_guide} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr} ${_virtio} ${_input} ${_netclass} ${_kbdfs} ${_console} ${_plumber} ${_proc}
+            ${_ipc} ${_node} ${_directives} ${_guide} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr} ${_virtio} ${_input} ${_netclass} ${_crypto} ${_net} ${_ip} ${_kbdfs} ${_console} ${_plumber} ${_proc}
             ${_headers} vx ${CROI_IPC_PLUGIN}
     COMMENT "Building Sys")
   set(CROI_USER_SYS_DIR ${_dir} PARENT_SCOPE)
