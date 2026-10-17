@@ -95,3 +95,4 @@ in a new file, and a line in the index below.
 - [D80. POSIX is tier 1's APE, and nothing else's](D080-posix-is-tier1-ape.md) — 2026-10-16, decided
 - [D81. The environment is /env](D081-environment-is-env.md) — 2026-10-16, decided
 - [D82. Driver classes are Plan 9's device directories for control, the one ring for bulk](D082-device-directories.md) — 2026-10-16, decided
+- [D83. Keyboards are 9front's kbdfs, keyed by HID usages: drivers push them to kbin, kbdfs gives runes and the console](D083-keyboards-are-kbdfs.md) — 2026-10-17, decided; amends D82
