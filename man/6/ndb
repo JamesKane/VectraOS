@@ -1,0 +1,81 @@
+page ndb 6
+summary the network database: hosts, networks and services
+src services/ndb/lib/Database.swift services/ndb/lib/Local.swift services/ndb/db/local services/ndb/db/common
+keys network database ndb host name address service port ipnet ipinfo dns cs
+
+# SYNOPSIS
+
+```text
+/lib/ndb/local
+/lib/ndb/common
+/net/ndb
+```
+
+# DESCRIPTION
+
+The network database is what cs and dns (ndb(8)) know of this machine's networks: its hosts, their names and addresses, the networks and what they share, and the services' ports.
+It is text, Plan 9's ndb: entries of attribute=value pairs.
+
+An entry begins on a line at the left margin and goes on over the indented lines after it.
+Pairs are separated by spaces or tabs.
+A value with white space or `#` in it is quoted: `vendor="a b"`.
+An attribute may have no value (`flag`).
+`#` begins a comment, which lasts to the end of its line; a comment at the margin doesn't end an entry.
+
+```text
+sys=gate ip=10.0.2.2
+	dom=gate.lab
+ipnet=lab ip=10.0.2.0 ipmask=255.255.255.0
+	ipgw=10.0.2.2 dns=10.0.2.3
+tcp=echo port=7
+```
+
+The database is the file cs and dns are given, `/lib/ndb/local` unless `-f` names another.
+If it has a `database` entry, that entry's `file=` pairs name the files the database is made of, in order, the file itself among them; a file that can't be read is left out.
+The files are read when cs and dns start and again on `refresh` (ndb(8)).
+After them comes `/net/ndb`, what DHCP gave the stack (ip(4)), read each time it is needed.
+
+The attributes cs and dns use:
+
+: `sys`
+  A host's name, one word.
+: `dom`
+  A host's domain name, which dns is asked about.
+: `ip`
+  An address, IPv4 or IPv6; on a network's entry, the network's.
+: `ipnet`
+  Names a network: the entry's `ip` and `ipmask` are its address and mask.
+  A network's other attributes apply to every host on it that lacks them.
+: `ipmask`
+  A network's mask, dotted (`255.255.255.0`) or a prefix (`/24`); without one, IPv4's class gives it, or IPv6's /64.
+: `ipgw`
+  The network's gateway.
+: `dns`
+  A name server, for dns to ask.
+: `auth`, and any other
+  Asked for by `$attr` in a dial string (ndb(8)).
+: `tcp`, `udp`
+  A service's name, with its `port`.
+
+An address's attributes (Plan 9's ipinfo) are taken first from the entries with its `ip`, then each one still missing from the most specific network holding the address that has it.
+
+`/lib/ndb/local` holds this machine's networks; as shipped, QEMU's user network as tools/qemu.sh starts it: `qemu-gateway` at 10.0.2.2, and `qemu-echo` at 10.0.2.100, which it forwards to `cat` on the dev machine.
+`/lib/ndb/common` holds the services, IANA's and Plan 9's (`9fs`, `rcpu`, `exportfs`).
+
+# FILES
+
+: `/lib/ndb/local`
+  The database's first file, in bootfs.
+: `/lib/ndb/common`
+  The services.
+: `/net/ndb`
+  What DHCP gave: `ip`, `ipmask`, `ipgw` and `dns`.
+
+# SEE ALSO
+
+dial(2), ip(4), ndb(8)
+
+# BUGS
+
+There are no hash files: every lookup reads the entries in order, which suits a database of tens of entries, not thousands.
+The files are in bootfs, so changing them means a new boot image.

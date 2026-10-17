@@ -1,0 +1,10 @@
+# dns (D79): the resolver, /net/dns, serving it at net/, which manifests
+# mount after the stack's files at /net. It asks the name servers /net/ndb
+# and the database at /lib/ndb give, through the stack.
+service dns
+program dns
+use net
+mount /net net/net
+mount /lib/ndb bootfs/lib/ndb
+export
+restart on-failure

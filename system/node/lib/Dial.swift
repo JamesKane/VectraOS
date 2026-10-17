@@ -3,8 +3,10 @@
 // Plan 9's dial(2) over a namespace's /net (D79): `dial`, `announce`,
 // `listen`, `accept` and `reject`, with dial strings, `tcp!10.0.2.2!7`.
 // Each is the files ip(3) serves: a clone opened for a conversation, a
-// ctl line, the conversation's data. A network's `net` is `tcp`. Hosts
-// and services are numbers here; names are /net/cs's to translate.
+// ctl line, the conversation's data. /net/cs translates a dial string
+// into the clone files and addresses to call, names and all, and `dial`
+// tries each until one answers; with no /net/cs, the network (`net` is
+// `tcp`), host and service are used as they are, numbers.
 //
 //     var c = try ns.dial("tcp!10.0.2.2!7")
 //     _ = try c.data.write(offset: 0, Array("hello".utf8))
@@ -47,10 +49,23 @@ extension Namespace {
   /// Dials `address` (`net!host!service`): the connection, once
   /// established. `local`, a port, is UDP's own.
   public func dial(_ address: String, local: String? = nil) throws(DialError) -> NetConnection {
-    let (proto, host, service) = try Namespace.split(address)
-    var c = try clone(proto)
+    var failure = DialError("can't translate address")
+    for (clone, destination) in try translate(address) {
+      do throws(DialError) {
+        return try call(clone, destination, local: local)
+      } catch {
+        failure = error
+      }
+    }
+    throw failure
+  }
+
+  /// Calls `destination` through a conversation of the network whose
+  /// clone is `clone`.
+  func call(_ clone: String, _ destination: String, local: String?) throws(DialError) -> NetConnection {
+    var c = try self.clone(clone)
     let dir = c.dir
-    let command = "connect \(host)!\(service)" + (local.map { " " + $0 } ?? "")
+    let command = "connect \(destination)" + (local.map { " " + $0 } ?? "")
     do throws(NodeIPC.NodeClient.Failure) {
       try c.ctl.writeText(command)
     } catch {
@@ -63,10 +78,10 @@ extension Namespace {
   /// Announces `address` (`net!*!service`, or a host of ours): calls to it
   /// come through `listen`.
   public func announce(_ address: String) throws(DialError) -> NetAnnouncement {
-    let (proto, host, service) = try Namespace.split(address)
-    var a = try clone(proto)
+    guard let first = try translate(address).first else { throw DialError("can't translate address") }
+    var a = try self.clone(first.0)
     do throws(NodeIPC.NodeClient.Failure) {
-      try a.ctl.writeText("announce \(host)!\(service)")
+      try a.ctl.writeText("announce \(first.1)")
     } catch {
       throw DialError(reason(a.dir, error))
     }
@@ -85,7 +100,7 @@ extension Namespace {
     guard !number.isEmpty, let slash = announced.dir.utf8.lastIndex(of: 0x2F) else {
       throw DialError("listen hungup")
     }
-    return NetCall(ctl: listen, dir: String(announced.dir[..<slash]) + "/" + number)
+    return NetCall(ctl: listen, dir: String(decoding: announced.dir.utf8[..<slash], as: UTF8.self) + "/" + number)
   }
 
   /// Takes `call`: its data opened.
@@ -102,17 +117,45 @@ extension Namespace {
     _ = consume call
   }
 
-  /// A new conversation of `proto`: its ctl and directory.
-  func clone(_ proto: String) throws(DialError) -> NetAnnouncement {
-    var ctl = try netOpen("/net/\(proto)/clone")
+  /// A new conversation from the clone file at `path`: its ctl and
+  /// directory.
+  func clone(_ path: String) throws(DialError) -> NetAnnouncement {
+    var ctl = try netOpen(path)
     let number: String
     do throws(NodeIPC.NodeClient.Failure) {
       number = try ctl.readText()
     } catch {
-      throw DialError("/net/\(proto)/clone: \(error)")
+      throw DialError("\(path): \(error)")
     }
-    guard !number.isEmpty else { throw DialError("/net/\(proto)/clone: no conversation") }
-    return NetAnnouncement(ctl: ctl, dir: "/net/\(proto)/\(number)")
+    guard !number.isEmpty, let slash = path.utf8.lastIndex(of: 0x2F) else {
+      throw DialError("\(path): no conversation")
+    }
+    return NetAnnouncement(ctl: ctl, dir: String(decoding: path.utf8[..<slash], as: UTF8.self) + "/" + number)
+  }
+
+  /// Where to call `address`: each clone file and the address to write
+  /// its conversation's ctl, as /net/cs gives them; with no /net/cs, the
+  /// network's clone and the host and service as they are.
+  func translate(_ address: String) throws(DialError) -> [(String, String)] {
+    let (proto, host, service) = try Namespace.split(address)
+    guard var cs = try? open("/net/cs") else { return [("/net/\(proto)/clone", "\(host)!\(service)")] }
+    do throws(NodeIPC.NodeClient.Failure) {
+      _ = try cs.write(offset: 0, Array((address.utf8.first == 0x21 ? "net" + address : address).utf8))
+    } catch {
+      switch error {
+      case .remote(.notFound): throw DialError("can't translate address")
+      case .remote(.invalid): throw DialError("can't translate service")
+      case .remote(.io): throw DialError("temporary problem: dns failure")
+      default: throw DialError("/net/cs: \(error)")
+      }
+    }
+    var out: [(String, String)] = []
+    while let reply = try? cs.read(offset: 0, max: 256), !reply.isEmpty {
+      guard let space = reply.firstIndex(of: 0x20) else { continue }
+      out.append((String(decoding: reply[..<space], as: UTF8.self),
+                  String(decoding: reply[(space + 1)...], as: UTF8.self)))
+    }
+    return out
   }
 
   func netOpen(_ path: String) throws(DialError) -> NodeIPC.NodeClient {

@@ -19,10 +19,15 @@ import IPC
 /// channel opened at it. Its closures run on the tree's dispatcher.
 public final class NodeStreamChannel: @unchecked Sendable {
   let take: (Int) -> [UInt8]?
+  /// The channel's own writes (a query to /net/cs, its answers read on
+  /// the same channel), as the stream's `write`; nil: the stream's.
+  let write: (([UInt8]) throws(NodeError) -> UInt32?)?
   let closed: () -> Void
 
-  public init(take: @escaping (Int) -> [UInt8]?, closed: @escaping () -> Void = {}) {
+  public init(take: @escaping (Int) -> [UInt8]?, write: (([UInt8]) throws(NodeError) -> UInt32?)? = nil,
+              closed: @escaping () -> Void = {}) {
     self.take = take
+    self.write = write
     self.closed = closed
   }
 }
@@ -98,7 +103,7 @@ extension NodeTree {
       let reply: NodeIPC.Reply
       do throws(NodeError) {
         guard !node.detached else { throw .notFound }
-        guard let n = try stream.write?(w.data) else { break }
+        guard let n = try (state.channel?.write ?? stream.write)?(w.data) else { break }
         reply = NodeIPC.Reply(results: [.wrote(n)], failure: nil, node: nil)
       } catch {
         reply = NodeIPC.Reply(results: [], failure: NodeIPC.Failure(index: 0, code: error.rawValue), node: nil)
@@ -131,7 +136,7 @@ extension NodeTree {
   func writeOrHold(_ node: TreeNode, _ stream: NodeStream, _ data: [UInt8], _ state: SessionState) throws(NodeError)
     -> UInt32?
   {
-    guard let write = stream.write else { throw .unsupported }
+    guard let write = state.channel?.write ?? stream.write else { throw .unsupported }
     guard data.count <= NodeIPC.maxIO else { throw .invalid }
     _ = try locked { () throws(NodeError) in try live(node) }
     locked { if !node.waiting.contains(where: { $0 === state }) { node.waiting.append(state) } }
@@ -167,7 +172,7 @@ extension NodeTree {
   {
     let content = try locked { () throws(NodeError) in try live(node).content }
     guard case .stream(let stream) = content else { return try write(node, offset: offset, data, limit: limit) }
-    guard let write = stream.write else { throw .unsupported }
+    guard let write = state.channel?.write ?? stream.write else { throw .unsupported }
     guard data.count <= limit else { throw .invalid }
     locked { if !node.waiting.contains(where: { $0 === state }) { node.waiting.append(state) } }
     return try write(data)

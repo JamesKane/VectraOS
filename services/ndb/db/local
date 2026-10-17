@@ -1,0 +1,12 @@
+# The network database (ndb(6)): this machine's networks and hosts. cs
+# and dns read it as /lib/ndb/local; what DHCP gives is /net/ndb.
+database=
+	file=/lib/ndb/local
+	file=/lib/ndb/common
+
+# QEMU's user network, as tools/qemu.sh starts it: its gateway, and a
+# forward to the dev machine's cat (TCP port 7).
+ipnet=qemu ip=10.0.2.0 ipmask=255.255.255.0
+	ipgw=10.0.2.2
+sys=qemu-gateway ip=10.0.2.2
+sys=qemu-echo ip=10.0.2.100

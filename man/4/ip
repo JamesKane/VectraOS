@@ -31,7 +31,7 @@ keys network tcp udp ip ipv4 ipv6 dhcp arp route socket conversation clone annou
 
 The net service is the network stack, Plan 9's ip device as a service: IPv4 and IPv6 over one Ethernet device, with TCP and UDP above them, served as files.
 Its manifest runs `net /net/ether0`, the first device devmgr(8) binds (ether(3)), and mounts devmgr's `net` at `/net` for it; the service serves its files at `net` in its tree, which a manifest mounts after the devices: `mount /net net/net after`.
-dial(2) is how a program uses them.
+dial(2) is how a program uses them, with names translated by cs and dns, which serve `/net/cs` and `/net/dns` (ndb(8)).
 
 `net` takes `-a` <address>`/`<prefix> and `-g` <gateway> before the device to configure IPv4.
 Without them it asks for an address by DHCP (RFC 2131), probing the address it is offered by ARP before taking it, and renews the lease as it runs out; it says `net: 10.0.2.15/24 by DHCP` on the console when it has one.
@@ -116,7 +116,7 @@ ip=10.0.2.15 ipmask=255.255.255.0 ipgw=10.0.2.2
 
 # SEE ALSO
 
-dial(2), ether(3), node(5), manifest(6), devmgr(8)
+dial(2), ether(3), node(5), manifest(6), ndb(6), devmgr(8), ndb(8)
 
 # BUGS
 
@@ -124,4 +124,3 @@ There is one interface, on one device, and no loopback: a program can't call its
 `ipifc/clone`, `bind`, `unbind` and the router advertisement settings are refused, and so are routes but the default.
 UDP's `listen` takes no calls: an announced conversation without `headers` reads datagrams from anyone and can't write.
 TCP sends no keepalives and no urgent data, and keeps no timestamps.
-There is no `cs` or `dns` yet: dial strings take numbers.

@@ -6,7 +6,8 @@
 // while held leaves nothing behind. Through the ring (D93), a read waits
 // too, a write behind it is answered first, and a channel's own stream
 // reads its own bytes. A write to a full stream waits until it has room
-// (D94), plainly and through the ring, its bytes in order.
+// (D94), plainly and through the ring, its bytes in order. A channel's own
+// stream takes its own writes too: a query, and its answer read back.
 
 import Glibc
 import IPC
@@ -361,4 +362,40 @@ final class Pipe: @unchecked Sendable {
   done.store(true, ordering: .relaxed)
   _ = try reader.wait(for: Signals.terminated, deadline: Clock.monotonic() + 2_000_000_000)
   #expect(got.withLock { $0 } + pipe.drain() == sent)
+}
+
+/// A query a channel writes and reads the answer to on its own (/net/cs):
+/// each channel's write is its own, held until its answer is ready.
+@Test func aPerChannelStreamTakesEachChannelsOwnWrites() throws {
+  let service = try Service()
+  let answers = Locked<[Int: [UInt8]]>([:])
+  let next = Atomic<Int>(0)
+  let node = Locked<TreeNode?>(nil)
+  let cs = service.tree.stream("cs", NodeStream(perChannel: {
+    let id = next.add(1, ordering: .relaxed).oldValue
+    var asked = false
+    return NodeStreamChannel(take: { _ in
+      answers.withLock { $0.removeValue(forKey: id) } ?? []
+    }, write: { (data: [UInt8]) throws(NodeError) -> UInt32? in
+      // Answered later, as a lookup would be: held until then.
+      if answers.withLock({ $0[id] != nil }) { return UInt32(data.count) }
+      guard !asked else { return nil }
+      asked = true
+      _ = try? later(30_000_000) {
+        answers.withLock { $0[id] = data.map { $0 &- 0x20 } }
+        service.tree.ready(node.withLock { $0! })
+      }.release()
+      return nil
+    })
+  }))
+  node.withLock { $0 = cs }
+  service.start()
+  defer { service.stop() }
+  var root = try service.connect()
+  var a = try root.open("cs")
+  var b = try root.open("cs")
+  #expect(try a.write(offset: 0, Array("abc".utf8)) == 3)
+  #expect(try b.write(offset: 0, Array("xyz".utf8)) == 3)
+  #expect(try b.read(offset: 0, max: 64) == Array("XYZ".utf8))
+  #expect(try a.read(offset: 0, max: 64) == Array("ABC".utf8))
 }

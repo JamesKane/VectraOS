@@ -44,8 +44,9 @@ under `vx ci` and every budget it introduces has a running check
     main is 79 µs (< 200 µs), and the first bench history is recorded
     (2026-10-16, cd3eb6d), and the services hold 3.7 MiB (< 32 MiB,
     `services.rss`), and the manual is written (D86).
-- **V3** is under way: notes and /proc, crypto, the net class and the
-  stack serving /net with dial(2), done (2026-10-17); cs and dns next.
+- **V3** is under way: notes and /proc, crypto, the net class, the
+  stack serving /net with dial(2), and cs and dns for names, done
+  (2026-10-17); 9P2000 over Noise IK next.
   **V4 onward** are not started (V6's boards have research passes);
   V10, the Ghost, is proposed (D90), and V11 to V16, the native
   applications and Studio, are proposed (D95, D96).
@@ -673,9 +674,19 @@ meets a tested path.
     `dial`, `announce`, `listen`, `accept` and `reject` on a Namespace
     (Node's, as Sys sits below it). IPTests runs two stacks back to
     back; boot-launch takes QEMU's lease and echoes 16 KiB through a
-    forward to `cat`, plainly and through the ring. Left: bridge and
-    bypass; one interface and no loopback (ip(4)'s BUGS). Next:
-    `/net/cs` and `/net/dns`.
+    forward to `cat`, plainly and through the ring. Then names, as
+    Plan 9's ndb(8) (services/ndb): cs at /net/cs, translating dial
+    strings by the database (ndb(6), /lib/ndb/local and common in
+    bootfs, then /net/ndb) and dns; dns at /net/dns, a resolver asking
+    the name servers DHCP and the database give, over UDP and, when
+    truncated, TCP, its answers kept for their TTL; both answer each
+    channel's query on a thread of its own, the write held (a stream
+    channel's own write, Node's); dial(2) tries each address cs gives.
+    NdbTests runs cs and dns on one stack against a name server on the
+    other; boot-launch translates and dials `tcp!qemu-echo!echo`. Left:
+    bridge and bypass; one interface and no loopback (ip(4)'s BUGS); dns
+    serves no zones and asks no root servers, and QEMU's restricted
+    network gives the boot tests no name server (ndb(8)'s BUGS).
 - **9gate's core, from V7:** the 9P2000 codec (D78: Plan 9's dialect,
   string owners, our extensions negotiated as `9P2000.vx`), export and
   import, over Noise IK (`Noise_IK_25519_ChaChaPoly_SHA256`, on N1's

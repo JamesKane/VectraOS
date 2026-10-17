@@ -339,9 +339,9 @@ func network(_ ns: Namespace, _ status: String) {
   stack(ns)
 }
 
-/// The stack on /net/ether0 (D79): DHCP's lease from QEMU, then a dial of
-/// the echo QEMU forwards 10.0.2.100!7 to (cat), a stream through it both
-/// plainly and through the one ring.
+/// The stack on /net/ether0 (D79): DHCP's lease from QEMU, cs and dns,
+/// then a dial by name of the echo QEMU forwards 10.0.2.100!7 to (cat), a
+/// stream through it both plainly and through the one ring.
 func stack(_ ns: Namespace) {
   var lease = ""
   let deadline = Clock.monotonic() + 30_000_000_000
@@ -353,8 +353,16 @@ func stack(_ ns: Namespace) {
   // QEMU's restricted network gives no router or name servers.
   check(lease.utf8.elementsEqual("ip=10.0.2.15 ipmask=255.255.255.0\n".utf8), "/net/ndb: DHCP's lease")
   check(holds(readText(ns, "/net/ipifc/0/status") ?? "", "device /net/ether0 "), "/net/ipifc/0/status: the device")
-  guard var c = try? ns.dial("tcp!10.0.2.100!7") else { return check(false, "dial tcp!10.0.2.100!7") }
-  check(holds(readText(ns, c.dir + "/remote") ?? "", "10.0.2.100!7\n"), "dial tcp!10.0.2.100!7")
+  // Names: cs by the database (/lib/ndb/local's QEMU entries), and dns
+  // with no name server to ask.
+  let cs = ask(ns, "/net/cs", "tcp!qemu-echo!echo")
+  check(cs.answers.count == 1 && same(cs.answers[0], "/net/tcp/clone 10.0.2.100!7"), "/net/cs translates by the database")
+  // A name not in the database is dns's to find, and dns has no server.
+  check(ask(ns, "/net/cs", "tcp!nowhere!echo").failure == .io, "/net/cs: a name only dns could find")
+  check(ask(ns, "/net/cs", "tcp!qemu-echo!nosuch").failure == .invalid, "/net/cs: a service it can't translate")
+  check(ask(ns, "/net/dns", "example.com ip").failure == .io, "/net/dns: no name server, a dns failure")
+  guard var c = try? ns.dial("tcp!qemu-echo!echo") else { return check(false, "dial tcp!qemu-echo!echo") }
+  check(holds(readText(ns, c.dir + "/remote") ?? "", "10.0.2.100!7\n"), "dial tcp!qemu-echo!echo")
   c.data.connection.timeout = 20_000_000_000
   let sent = (0..<16384).map { UInt8(truncatingIfNeeded: $0 % 251) }
   var at = 0
@@ -377,6 +385,21 @@ func stack(_ ns: Namespace) {
   check(ringEchoed == sent, "and through the one ring on its data")
   check(holds(readText(ns, c.dir + "/status") ?? "", "Established "), "the connection is established")
   _ = consume c
+}
+
+/// A query of /net/cs or /net/dns: its answers, one a read, or why its
+/// write failed.
+func ask(_ ns: Namespace, _ file: String, _ query: String) -> (answers: [String], failure: NodeIPC.NodeError?) {
+  guard var f = try? ns.open(file) else { return ([], .notFound) }
+  do throws(NodeIPC.NodeClient.Failure) {
+    _ = try f.write(offset: 0, Array(query.utf8))
+  } catch {
+    if case .remote(let code) = error { return ([], code) }
+    return ([], .io)
+  }
+  var answers: [String] = []
+  while let bytes = try? f.read(offset: 0, max: 1024), !bytes.isEmpty { answers.append(String(decoding: bytes, as: UTF8.self)) }
+  return (answers, nil)
 }
 
 /// The last word of `text`, as a decimal number.
@@ -711,14 +734,15 @@ func runPty(_ ns: Namespace) {
     // cat /svc/*/status
     let names = ((try? ns.list("/svc")) ?? []).map { $0.name }
     #if arch(x86_64)
-      let expected = 8  // and the time service
+      let expected = 10  // and the time service
     #else
-      let expected = 7
+      let expected = 9
     #endif
     check(names.count == expected && names.contains { same($0, "a") } && names.contains { same($0, "b") }
             && names.contains { same($0, "launcher") } && names.contains { same($0, "pty") }
             && names.contains { same($0, "devmgr") } && names.contains { same($0, "env") }
-            && names.contains { same($0, "net") },
+            && names.contains { same($0, "net") } && names.contains { same($0, "cs") }
+            && names.contains { same($0, "dns") },
           "/svc holds what the manifest uses")
     // env is the launcher's groups (D81), with no status.
     for name in names where !same(name, "env") {

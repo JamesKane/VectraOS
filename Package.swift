@@ -154,6 +154,9 @@ let ipc: [Target] = [
   .target(name: "IP", dependencies: ["Net", "Node", "IPC", "Sys"], path: "services/net/ip", exclude: ["tests"],
           swiftSettings: tier0),
   .testTarget(name: "IPTests", dependencies: ["IP", "Net", "Node", "IPC", "Sys"], path: "services/net/ip/tests"),
+  // Names (D79): the network database, cs and dns, as Plan 9's ndb(8).
+  .target(name: "Ndb", dependencies: ["Net", "Node", "IPC", "Sys"], path: "services/ndb/lib", swiftSettings: tier0),
+  .testTarget(name: "NdbTests", dependencies: ["Ndb", "IP", "Net", "Node", "IPC", "Sys"], path: "services/ndb/tests"),
   // kbdfs (D83): the keyboard and the console, after 9front's.
   .target(name: "Kbdfs", path: "services/kbdfs/lib", swiftSettings: tier0),
   .testTarget(name: "KbdfsTests", dependencies: ["Kbdfs"], path: "services/kbdfs/tests"),

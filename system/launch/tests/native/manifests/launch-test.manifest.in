@@ -6,7 +6,7 @@
 # manual is bootfs's lib/man (D86), which rc's man reads.
 # Its /env from its `env` lines, and /svc/env for rc's groups (D81).
 # /proc is proc's (D79); /net, devmgr's ether(3) directories (D82),
-# then net's protocols (D79).
+# then net's protocols, cs and dns (D79).
 # The console at /mnt/console, not /svc: its status changes as the log
 # grows, which `cat /svc/*/status` would race.
 service launch-test
@@ -16,6 +16,8 @@ use b
 use pty
 use devmgr
 use net
+use cs
+use dns
 use env
 env LAUNCH_TEST=yes
 mount /bin bootfs/bin
@@ -24,6 +26,8 @@ mount /dev kbdfs
 mount /dev devmgr/dev after
 mount /net devmgr/net
 mount /net net/net after
+mount /net cs/net after
+mount /net dns/net after
 mount /mnt/console console
 mount /mnt/plumb plumber
 mount /proc proc

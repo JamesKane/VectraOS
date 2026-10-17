@@ -323,6 +323,13 @@ croi_user_program(${_virtio_net} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers
 # bin/net (D79): the network stack, /net's protocols, every arch.
 set(_net ${CMAKE_CURRENT_BINARY_DIR}/net.elf)
 croi_user_program(${_net} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/net/Main.swift)
+# bin/cs and bin/dns (D79): names, /net/cs and /net/dns, with the database
+# at lib/ndb.
+set(_cs ${CMAKE_CURRENT_BINARY_DIR}/cs.elf)
+croi_user_program(${_cs} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/ndb/cs/Main.swift)
+set(_dns ${CMAKE_CURRENT_BINARY_DIR}/dns.elf)
+croi_user_program(${_dns} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/ndb/dns/Main.swift)
+set(_ndb ${PROJECT_SOURCE_DIR}/services/ndb)
 file(GLOB_RECURSE _driver_manifests CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/*/driver.manifest)
 list(SORT _driver_manifests)
 set(_drivers_index ${CMAKE_CURRENT_BINARY_DIR}/drivers.index)
@@ -381,6 +388,9 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
           ${_man_bootfs} lib/man/index=${_man_index}
           bin/proc=${_proc} etc/manifests/proc.manifest=${PROJECT_SOURCE_DIR}/services/proc/proc.manifest
           bin/net=${_net} etc/manifests/net.manifest=${PROJECT_SOURCE_DIR}/services/net/net.manifest
+          bin/cs=${_cs} etc/manifests/cs.manifest=${_ndb}/cs/cs.manifest
+          bin/dns=${_dns} etc/manifests/dns.manifest=${_ndb}/dns/dns.manifest
+          lib/ndb/local=${_ndb}/db/local lib/ndb/common=${_ndb}/db/common
           ${_tier1_bootfs}
   DEPENDS ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_trace_test} ${_ipc_test} ${_node_test} ${_acpi_test} ${_pci_test}
           ${_launcher} ${_launch_service} ${_launch_test} ${_manifests}/a.manifest ${_manifests}/b.manifest
@@ -392,6 +402,7 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
           ${_plumber} ${PROJECT_SOURCE_DIR}/services/plumber/plumber.manifest
           ${_proc} ${PROJECT_SOURCE_DIR}/services/proc/proc.manifest
           ${_net} ${PROJECT_SOURCE_DIR}/services/net/net.manifest
+          ${_cs} ${_ndb}/cs/cs.manifest ${_dns} ${_ndb}/dns/dns.manifest ${_ndb}/db/local ${_ndb}/db/common
           ${_man_files} ${_man_index} ${_tier1_files} vx ${VX}
   COMMENT "Building bootfs")
 add_custom_target(bootfs DEPENDS ${CMAKE_BINARY_DIR}/bootfs.img)

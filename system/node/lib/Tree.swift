@@ -498,6 +498,8 @@ struct Session: NodeIPC.NodeHandler {
               return NodeIPC.Reply(results: [], failure: nil, node: nil)
             }
             results.append(.wrote(n))
+          } else if at === node, let write = state.channel?.write {
+            results.append(.wrote(try write(data) ?? 0))  // not waiting: mid-batch
           } else {
             results.append(.wrote(try tree.write(at, offset: offset, data)))
           }

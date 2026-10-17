@@ -40,25 +40,26 @@ extension Namespace {
 # DESCRIPTION
 
 These are Plan 9's dial(2), over the files a namespace's `/net` has (ip(4)).
-An address is a dial string, <network>`!`<host>`!`<service>: `tcp!10.0.2.100!7`.
-The network is `tcp` or `udp`, and `net` means `tcp`; the host and the service are numbers.
+An address is a dial string, <network>`!`<host>`!`<service>: `tcp!qemu-echo!echo`, `tcp!10.0.2.100!7`.
 
-`dial` opens the network's `clone`, writes `connect` <host>`!`<service> to the conversation's `ctl`, and opens its `data`.
+`dial` writes the address to `/net/cs` (ndb(8)), which translates names, `net` among them, into clone files and addresses to call, and tries each in turn until one answers: it opens the clone, writes `connect` and the address to the conversation's `ctl`, and opens its `data`.
 It returns once the connection is established, with the conversation's `ctl`, its `data` and its directory, `/net/tcp/4`.
+Without `/net/cs`, the network is `tcp` or `udp`, `net` meaning `tcp`, and the host and service must be numbers.
 For UDP, `local` is the port to send from.
 
-`announce` takes calls to an address; its host is `*`, or an address of ours.
+`announce` takes calls to an address, translated the same way; its host is `*`, or an address of ours.
 The announcement lasts while its `ctl` is open.
 `listen` waits for a call to it and returns the call's directory and a channel that holds the call; `accept` opens the call's `data`, and `reject` hangs it up.
 
-A failure is a `DialError` whose `reason` is the conversation's `err` when it has one, `connection refused` for instance, or names the file that failed.
+A failure is a `DialError` whose `reason` is the conversation's `err` when it has one, `connection refused` for instance, or cs's: `can't translate address`, `can't translate service`, `temporary problem: dns failure`; or it names the file that failed.
+When every address fails, the reason is the last one's.
 
 # EXAMPLES
 
-Echo every call to port 7, one at a time:
+Echo every call to the echo port, one at a time:
 
 ```swift
-let a = try ns.announce("tcp!*!7")
+let a = try ns.announce("tcp!*!echo")
 while true {
   var c = try ns.accept(try ns.listen(a))
   while let bytes = try? c.data.read(offset: 0, max: 8192), !bytes.isEmpty {
@@ -69,8 +70,8 @@ while true {
 
 # SEE ALSO
 
-ip(4), node(5)
+ip(4), node(5), ndb(6), ndb(8)
 
 # BUGS
 
-There is no connection server: hosts and services must be numbers, and `dial` doesn't try a host's addresses in turn.
+`dial` tries a host's addresses one after another, never at once, so an address that doesn't answer delays the next by TCP's whole timeout.

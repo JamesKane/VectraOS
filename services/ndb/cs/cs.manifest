@@ -1,0 +1,12 @@
+# cs (D79): the connection server, /net/cs, serving it at net/, which
+# manifests mount after the stack's files at /net. It reaches the stack
+# and dns through its own /net, and reads the database at /lib/ndb.
+service cs
+program cs
+use net
+use dns
+mount /net net/net
+mount /net dns/net after
+mount /lib/ndb bootfs/lib/ndb
+export
+restart on-failure

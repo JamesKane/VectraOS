@@ -53,7 +53,7 @@ system/libc/	all	LibCTests,PThreadTests	boot-smoke,boot-launch,boot-floor-hello,
 system/ld/	all	LdTests	boot-dl,boot-swift-hello,boot-foundation-test	man
 system/trace/	all	TraceTests	boot-trace,trace-collect,boot-smoke	man
 system/ipc/	all	IPCWireTests,IPCMacrosTests,IDLTests,IPCTests	boot-ipc,boot-node,boot-launch	man
-system/node/	all	NodeTests,IDLTests,IPTests	boot-node,boot-node-test-t1,boot-launch	man
+system/node/	all	NodeTests,IDLTests,IPTests,NdbTests	boot-node,boot-node-test-t1,boot-launch	man
 system/fdio/	all	FDIOTests	boot-fdio-test,boot-launch	man
 system/launch/	all	LaunchTests	boot-launch	man
 system/directives/	all	DirectivesTests,LaunchTests,DevMgrTests,GuideTests,ManualTests	boot-launch	man
@@ -67,7 +67,8 @@ services/kbdfs/	all	KbdfsTests	boot-launch	man
 services/proc/	all	ProcTests	boot-launch	man
 services/console/	all	ConsoleTests	boot-launch	man
 services/plumber/	all	PlumberTests	boot-launch	man
-services/net/	all	NetTests,IPTests	boot-launch	man
+services/ndb/	all	NdbTests	boot-launch	man
+services/net/	all	NetTests,IPTests,NdbTests	boot-launch	man
 drivers/	all	DevMgrTests	boot-launch,boot-pci	man
 drivers/bus/acpi/	all	ACPITests	boot-acpi,boot-launch	man
 drivers/bus/pci/	all	PCITests	boot-pci,boot-launch	man

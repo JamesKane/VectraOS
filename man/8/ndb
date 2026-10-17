@@ -1,0 +1,124 @@
+page ndb 8
+summary cs and dns: the connection server and the resolver, /net/cs and /net/dns
+names ndb cs dns
+src services/ndb/cs/Main.swift services/ndb/dns/Main.swift services/ndb/lib/CS.swift services/ndb/lib/DNS.swift services/ndb/lib/Resolver.swift services/ndb/lib/Message.swift services/ndb/lib/Queries.swift services/ndb/cs/cs.manifest services/ndb/dns/dns.manifest
+keys network names dns domain resolver connection server cs dial translate address service port lookup cache
+
+# SYNOPSIS
+
+```text
+cs [-f file]
+dns [-f file]
+
+/net/cs
+/net/dns
+```
+
+# DESCRIPTION
+
+cs and dns are Plan 9's, as services: cs translates dial strings into where to call, and dns looks names up in the domain name system for it.
+Each serves one file at `net` in its tree, which a manifest mounts after the stack's files (ip(4)):
+
+```text
+use net
+use cs
+use dns
+mount /net net/net after
+mount /net cs/net after
+mount /net dns/net after
+```
+
+dial(2) asks `/net/cs`; programs rarely open either file themselves.
+Both read the network database (ndb(6)), `/lib/ndb/local` or the `-f` file, through their own namespace, as they reach the stack's `/net`.
+
+Each file is asked the same way: a write is one query, and each read after it takes one answer, until a read returns nothing.
+The write waits until the query is answered, and fails if it has no answer.
+A channel's queries are its own, and each is answered on a thread of its own, so a slow one holds up no other.
+Writing `refresh` to either reads the database's files again; dns also drops what it has kept.
+
+## cs
+
+A query is a dial string, `[`<network>`!]`<host>`!`<service>, and each answer a clone file and what to write to its conversation's `ctl` after `connect` or `announce`:
+
+```rc
+% echo -n tcp!qemu-echo!echo >[1=0] ... /net/cs
+/net/tcp/clone 10.0.2.100!7
+```
+
+The network `net` is each network `/net` has that a call may use: `tcp`.
+For `tcp`, `udp`, `icmp` and `icmpv6`, cs translates the host and the service; any other network's are passed on as they are (`/net/ether0/clone ff!0806`).
+A fourth field is passed on after the port.
+
+The host is
+: an address
+  IPv4 or IPv6, used as it is; `[`<address>`]` too.
+: `*`
+  Any address of ours, for `announce`: the answer is the port alone, `/net/tcp/clone 7`.
+: `$`<attr>
+  Each value of <attr> the database gives our addresses (ndb(6)), looked up in turn: `tcp!$auth!rcpu`.
+: a domain name
+  One with a dot: asked of dns first, then looked up in the database (`dom=`).
+: any other name
+  Looked up in the database (`sys=`); failing that, its `dom` is asked of dns, then the name itself.
+
+The service is a port, `*`, or a name the database gives a port for the network (`tcp=echo port=7`).
+
+An address of a version this machine has none of is left out, and one on a network of ours comes first.
+At most 20 answers are given.
+dns is asked for IPv4's addresses (`ip`) and, if this machine has an IPv6 address that isn't link-local, IPv6's (`ipv6`).
+
+A query beginning `!` asks the database itself.
+`!`<attr>`=`<value> [<attr>`=`<value> ...] answers with the lines of the first entry that has every pair, a value `*` matching any; `!ipinfo` [<attr>`=`<value>] <attr> ... answers with the attributes' values for an address, ours if no pair is given, on one line.
+
+The write fails `notFound` when the host can't be translated or nothing matches, `invalid` when the service can't be or the query is malformed, and `io` when dns failed; dial(2) says `can't translate address`, `can't translate service` and `temporary problem: dns failure`.
+
+## dns
+
+A query is a name and a type, `plan9.io ip`, and each answer one record, its owner, type, a tab and its data:
+
+```text
+plan9.io ip	45.33.21.187
+```
+
+A query beginning `!` reads the records as ndb pairs instead, `dom=plan9.io ip=45.33.21.187`, as cs asks.
+A name ending in a dot has it dropped; an address asked for its `ptr` is asked by its reverse name (`15.2.0.10.in-addr.arpa`).
+
+The types are `ip` (A), `ipv6` (AAAA), `cname`, `ns`, `mx`, `ptr`, `soa`, `txt`, `hinfo`, `srv`, `all` (or `any`), and any type's number.
+A CNAME is followed: the records answer for the name it leads to.
+
+dns is a resolver: it asks the name servers `/net/ndb` gives, then those the database gives our addresses (`dns=`), to recurse for it.
+Each is asked in turn, three rounds, waiting 1, 2 and then 4 seconds; a reply that is truncated is asked again over TCP.
+Records are kept for their TTL, a day at most; a name that doesn't exist, or has no records of the type, is kept as such for its zone's SOA minimum, or a minute.
+
+The write fails `notFound` when the name doesn't exist (`name does not exist`) or has no records of the type (`resource does not exist`), `io` when no server answered or every one failed (`dns failure`), and `invalid` when the query is malformed or its type unknown.
+
+# EXAMPLES
+
+A dial by name:
+
+```swift
+var c = try ns.dial("tcp!qemu-echo!echo")
+```
+
+# FILES
+
+: `/svc/cs/net`
+  cs's file, `cs`, to mount after the stack's at `/net`.
+: `/svc/cs/status`
+  The database's file.
+: `/svc/dns/net`
+  dns's file, `dns`, to mount after the stack's at `/net`.
+: `/svc/dns/status`
+  The name servers dns would ask now, or `none`.
+
+# SEE ALSO
+
+dial(2), ip(4), ndb(6), manifest(6)
+
+# BUGS
+
+dns only resolves: it serves no zones and answers no other machine's queries, it asks from no root servers when it has no name server, and it checks no signatures (DNSSEC).
+QEMU's restricted network gives no name server, so in the boot tests dns can only fail.
+A failure is a code, not Plan 9's error text, so dial(2) says why in the code's words.
+A `!` query of cs looks only in the database, never asks dns, and `@`<attr> is taken as <attr>.
+cs serves `/net` alone; Plan 9's `-x` for another network's mount point, and its `add`, `ipv4`, `ipv6` and `debug` ctl lines, are not taken.
