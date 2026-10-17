@@ -23,7 +23,7 @@ under `vx ci` and every budget it introduces has a running check
     (2026-10-16) found rc and the commands far from complete (item 6
     lists the gaps; `vx rc-oracle` checks rc against 9front's, D70).
     The pty runs on rings, and rc runs on one, sharing the terminal
-    with the programs it runs.
+    with the programs it runs; it is temporary, and goes in V3 (D77).
   - Begun: drivers (item 7, D74: todhchai's, ported, in five steps;
     7a, the AML interpreter, 7b, PCI over ECAM, and 7c, devmgr and the
     driver host with edu's interrupt and DMA through each IOMMU, done; 7c's
@@ -480,7 +480,7 @@ work, in order:
      `virtio-keyboard-pci` on every arch. MSI-X where the kernel has MSI
      (amd64, arm64's ITS, rv64's AIA), INTx on rv64's PLIC, both tested.
    - **7e, only if it comes cheaply:** the console's input, virtio-input
-     into a pty (V2's exit, below).
+     into the console's `/dev/cons`, with no pty (V2's exit, below).
    **Exit:** on every arch devmgr binds edu and virtio-input, a key
    injected through QEMU's monitor reaches a reader of the input class,
    and edu's DMA goes through the IOMMU. Not here: virtio-mmio, legacy
@@ -489,9 +489,9 @@ work, in order:
    class (TDFR) with N1 (V3).
 8. **Services and the shell:** the console (it reads the debuglog ring,
    D38; the Radharc handoff waits for V5), the router (plumber), the pty
-   (done, with item 6; temporary, to be ejected for Plan 9's `/dev/cons`
-   as rio serves it: services/pty/README.md),
-   rc and `cat`.
+   (done, with item 6; temporary: it goes in V3, D77, once cpu's session
+   and the console serve `/dev/cons`: services/pty/README.md),
+   rc and `cat`. The console serves `/dev/cons` for its keyboard itself.
 
 **Exit:**
 - `cat /svc/*/status` works, run by rc in a native test. **Done**
@@ -500,51 +500,68 @@ work, in order:
   quiet machine), on the kernel as V1 left it (D17).
 - spawn → main < 200 µs.
 - Services RSS < 32 MiB.
-- An interactive console (virtio-input into a pty in the console) if it
-  comes cheaply; otherwise V3's SSH session is the first interactive rc.
+- An interactive console (virtio-input into the console's `/dev/cons`)
+  if it comes cheaply; otherwise V3's cpu session is the first
+  interactive rc.
 
-## V3. Bring-up link (D15)
+## V3. Bring-up link (D15, D77)
 
 A shell, file copies and log streaming from the dev machine, plus booting
-a new kernel without the USB stick. All of it works in QEMU first, on all
-three arches, so the board meets a tested path.
+a new kernel without the USB stick, all through one Plan 9 cpu session
+(D77). All of it works in QEMU first, on all three arches, so the board
+meets a tested path.
 
 - **Network:** lift todhchai's N1 work: crypto, `services/net` (Ethernet,
   ARP, IPv4/IPv6, DHCP, TCP over NetRing), the net driver class and
-  virtio-net.
-- **SSH:** lift `services/sshd` (transport, public-key auth, `exec`,
-  `shell` through rc, SFTP v3) and todhchai's keyring, as factotum (D75),
-  which holds the host key. The session serves rc's `/dev/cons` itself,
-  with no pty: asked for one, it echoes and edits lines as a window would.
-  Between VectraOS nodes, cpu replaces `shell` in V7; SSH stays the
-  bring-up link (D15).
-  - Off unless the image is built with `vx boot --ssh [PUBKEY]`.
-  - Listens on-link only; public keys only.
+  virtio-net. Not its sshd or SFTP (D77).
+- **9gate's core, from V7:** the 9P2000.L codec, export and import, over
+  Noise IK (`Noise_IK_25519_ChaChaPoly_SHA256`, on N1's crypto). Linux
+  `v9fs` conformance, the VectraOS extensions and the swarm stay V7's.
+- **factotum** (todhchai's keyring, D75) holds the node's Noise IK
+  static key (`proto=noise-ik`), made on first use; neither 9gate nor
+  cpu holds it.
+- **cpu:** the node's cpu server, and `vx cpu NODE [-c CMD]` on the dev
+  machine (Swift, in vx; tested against the server in `swift test`).
+  The client exports the dev machine's tree, which rc on the node sees
+  at `/mnt/term`, with its `/dev/cons` over the node's: the dev terminal
+  stays in cooked mode and edits lines, and there is no pty on either
+  side.
+  - Off unless the image is built with `vx boot --cpu PUBKEY`.
+  - Listens on-link only; only the pinned dev machine's key.
   - A test checks that a normal image has no listener.
+- **Notes between processes** in croi, so the terminal's interrupt
+  reaches rc (and its foreground program) as a note, as cpu forwards it.
+- **The pty goes** (D77): with cpu's session and the console both serving
+  `/dev/cons`, nothing needs it; `services/pty`, rc's terminal relay and
+  `CROI_PA_PTY_CONTROL` are removed (services/pty/README.md).
 - **Files:** copies land in Taisce on a RAM-backed block device. Lifting
   Taisce's service here means bring-up uses the one file system, not a
   second RAM-only one (D8). Durability on disk is V4's.
 - **Push and run** (todhchai N1e): the launcher finds programs in a
-  writable `/dev/bin` over bootfs's `bin`, so `scp prog board:/dev/bin/ &&
-  ssh board restart prog` runs a new build without a reboot.
-- **Board tools:** `log -f` (the debuglog, streamed), `ps`, `kill`,
-  `restart`, `trace`, `poweroff`, `reboot`.
-- **Warm boot:** `ssh board warmboot kernel.elf bootfs.img` hands off to a
-  new kernel and bootfs held in memory. No firmware, no stick.
+  writable `/dev/bin` over bootfs's `bin`, so `vx cpu board -c 'cp
+  /mnt/term/PATH/prog /dev/bin && restart prog'` runs a new build
+  without a reboot.
+- **Board tools:** `log -f` (the debuglog's node, streamed), `ps`,
+  `kill`, `restart`, `trace`, `poweroff`, `reboot`.
+- **Warm boot:** `warmboot /mnt/term/PATH/kernel.elf
+  /mnt/term/PATH/bootfs.img`, in a cpu session, hands off to a new
+  kernel and bootfs held in memory. No firmware, no stick.
   - The kernel reuses the loader's ELF, page-table and handoff code
     (`lib/elf`, `lib/pagetables`, `lib/handoff`): it parks the other CPUs,
     builds a handoff from the one it booted with, and enters the new
     kernel as the loader would.
   - It goes through `SYSTEM_POWERCTL` as a new command, so no new syscall
     and the ceiling holds.
-  - `vx remote boot HOST` does the copy and the call in one step.
+  - `vx remote boot HOST` does the session and the call in one step.
 
 **Exit, in QEMU on amd64, arm64 and rv64, under `vx ci`:**
-- `ssh` gives rc.
-- `scp` of a program to `/dev/bin`, then run it.
+- `vx cpu` gives rc with the dev terminal's `/dev/cons`, and ^C
+  interrupts its foreground program.
+- A program copied from `/mnt/term` to `/dev/bin`, then run.
 - `log -f` streams while a test runs.
-- `vx remote boot` round-trips to a new kernel and is back on SSH.
-- No listener without `--ssh`.
+- `vx remote boot` round-trips to a new kernel and is back on cpu.
+- No listener without `--cpu`.
+- No pty in the tree.
 - The bring-up budgets are green.
 
 ## V4. Taisce on disk
@@ -571,8 +588,8 @@ write prefix.
   Radharc: each window serves its programs' `/dev/cons`, `/dev/consctl`
   and `wctl`, edits their input itself (hold mode, `rawon`), and plumbs
   a selection from its directory. `TerminalCore` becomes `vt`, a program
-  in a window for tier 1 programs that want xterm. The pty goes once the
-  console serves `/dev/cons` too (services/pty/README.md).
+  in a window for tier 1 programs that want xterm. The pty is gone by
+  then (V3, D77).
 - In QEMU only (D76): GOP or ramfb, then virtio-gpu. The desktop on a
   board comes with the board (V6).
 
@@ -605,8 +622,8 @@ in `docs/boards/orangepi-6-plus/`.
 3. **Ethernet:** an RTL8126 driver in the net class, written for the
    Realtek RTL8125/8126 family, which V6c, brimstone and the Orange Pi 5
    Plus also use.
-4. **The V3 link on the board:** `ssh`, `scp`, `log -f` and `vx remote
-   boot` against the Orange Pi 6 Plus.
+4. **The V3 link on the board:** `vx cpu`, a copy from `/mnt/term`,
+   `log -f` and `vx remote boot` against the Orange Pi 6 Plus.
 5. **Then the rest:** NVMe, with Taisce's volumes on it (V4's), the
    board rules (the watchdog's refresh, the SMMU takeover), a GOP
    framebuffer text console, and USB for HID. The GPU's first probe
@@ -681,19 +698,14 @@ frees the machine; its disks hold other work.
 
 ## V7. Edge: 9gate and the swarm
 
-- 9P2000.L codec and translator, with export and import, on V3's stack.
-- Noise IK transport, on V3's crypto.
+- 9gate as the translator for Linux and 9front, on V3's 9P2000.L core
+  and Noise IK (D77): Linux `v9fs` and 9front mount an export unchanged.
 - VectraOS↔VectraOS extensions for attributes, queries, leases and ring
   bridging.
 - Swarm node roles and `/swarm/pool`.
-- **cpu and factotum (D75):** factotum gains Noise IK's static key
-  (`proto=noise-ik`), the node's identity, so 9gate never holds it;
-  `cpu -h NODE [-c CMD]` runs rc on another node with the terminal's tree at
-  `/mnt/term` and its `/dev/cons` over the node's, rc's fds 0 to 2 rings
-  bridged by 9gate to the terminal's window, and the terminal's
-  interrupt forwarded as a note (croi's notes between processes come
-  first). With the window's `/dev/cons` (V5), this is the pty's last
-  user gone (services/pty/README.md).
+- **cpu between VectraOS nodes** (D75), on V3's server (D77): `cpu -h
+  NODE` from a node's terminal, the remote rc's text that window's, and
+  each node's identity its factotum's Noise IK key.
 
 **Exit:**
 - Linux `v9fs` mounts a VectraOS export and passes conformance.
@@ -774,14 +786,16 @@ frees the machine; its disks hold other work.
    branch:
    - **Done:** crypto, the stack hosted and native, sshd hosted with SFTP,
      the net class, virtio-net.
-   - **Left:** sshd on croi (d4), rc on a pty (d5), push and run (N1e).
-   - **Open there:** a decision on where a headless boot's host key lives,
-     because the native keyring needs Radharc for its prompt. D75 settles
+   - **Left:** push and run (N1e). sshd on croi (d4) and rc on a pty (d5)
+     are no longer needed: V3's link is cpu (D77).
+   - **Open there:** a decision on where a headless boot's key lives (now
+     its Noise IK static key, D77), because the native keyring needs
+     Radharc for its prompt. D75 settles
      the prompt (a headless factotum asks no one and makes the key on
      first use); where keys persist across boots waits for V4.
 
-   V3 lifts from a pinned commit of that branch. It either waits for d4/d5
-   or does them here; IMPORTS.tsv records the commit either way.
+   V3 lifts crypto, the stack, the net class and virtio-net from a pinned
+   commit of that branch; IMPORTS.tsv records the commit.
 3. **`trace.probe_enabled` rose from 18 to 21 ns under KVM, accepted
    (2026-10-16).** D50 put the trace rings on the one ring, whose
    OVERWRITE protocol costs each record a sequence mark, a release fence
@@ -795,7 +809,7 @@ frees the machine; its disks hold other work.
 
 1. Host tests: SwiftPM plus CTest, as todhchai does, or CTest only (D11).
    Decided in V0.
-2. ~~The shell~~: todhchai's rc, because V3's SSH sessions run it (D15).
+2. ~~The shell~~: todhchai's rc, because V3's cpu sessions run it (D15, D77).
 3. A dedicated transport for remote ring bridging, versus 9P reads and
    writes (V7).
 4. Whether the CDSP accepts unsigned first-party Hexagon code on the Q8B's

@@ -32,8 +32,8 @@ discipline is Unix's tty (termios's cooked and raw modes, kept in a
 service between the terminal and the program), and we mean to eject it
 for Plan 9's approach, as rio does it:
 - **The window is the terminal.** Whatever shows a program's text (a
-  rio window in Radharc, V5, D75; before then the console and sshd's
-  session) is the other side of the program's fds 0 to 2 itself, with
+  rio window in Radharc, V5, D75; before then the console, and a
+  cpu session's terminal, D77) is the other side of the program's fds 0 to 2 itself, with
   no pty between them, and serves `/dev/cons` and `/dev/consctl` in the
   program's namespace, as rio serves each window's.
 - **Editing is the window's.** Text is edited in the window, anywhere
@@ -48,11 +48,11 @@ for Plan 9's approach, as rio does it:
 What goes with it: `services/pty` (its line discipline, server and IDL),
 rc's relay of the terminal to its foreground program
 (`shell/rc/native/Terminal.swift`), and `CROI_PA_PTY_CONTROL`. Remote sessions
-have no pty either: sshd's session serves `/dev/cons` itself (V3), and
-between VectraOS nodes Plan 9's cpu imports the terminal's (V7, D75). The rings
+have no pty either: Plan 9's cpu imports the terminal's `/dev/cons`, from
+the dev machine's `vx cpu` in V3 and between our nodes (D75, D77). The rings
 stay (D46): fds 0 to 2 are still byte rings, with the window on the
 other end. Open: how tier 1's POSIX programs that ask for termios or
 `isatty` see a window (the libc mapping them onto `/dev/consctl`, as
-Plan 9's APE does, is the likely answer). The ejection needs a decision
-of its own before code moves; until then, don't build new things on the
-pty's Control or its modes.
+Plan 9's APE does, is the likely answer). When: V3 (D77), once cpu's
+session and the console serve `/dev/cons`; until then, don't build new
+things on the pty's Control or its modes.

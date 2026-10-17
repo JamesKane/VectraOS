@@ -72,7 +72,7 @@ root, from `/sys`, `/proc/cpuinfo`, `lspci` and the kernel log, on
   owner schedules them, never from a session on the machine itself.
 - **Its bring-up is driven from another machine** (owner, 2026-10-16): the
   Mac Studio, or another AMD Fedora box on the network, builds the images
-  and, once V3's link exists, holds the SSH session and `vx remote boot`.
+  and, once V3's link exists, holds the `vx cpu` session and `vx remote boot`.
   - **The Fedora box works as it is:** the same toolchain (swiftly,
     `.swift-version`), CMake, Ninja, QEMU and edk2.
   - **The Mac Studio needs work first:** `vx` and `idlc` import Glibc in

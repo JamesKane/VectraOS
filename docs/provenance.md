@@ -52,10 +52,10 @@ The actions in the tables:
 | `services/radharc`, desktop shell (Tracker, Deskbar) | Port | V5 | Add the tile and space workspace modes (D9). The look is Platinum Indigo (D24), not `desktop.md` §6's neon. |
 | `shell/terminal`, as `shell/rio` (D75) | Port | V5 | Rio's text window inside Radharc, serving `/dev/cons`; `TerminalCore` as `vt`, a program in a window; the router's route as plumbing from the window's directory. |
 | `ui`, `text`, `graphics` (Vulkan/Venus), `codecs` | Lift | V5 | `graphics` changes on the way in: D55-D62 (memory by intent for both memory models, one sync mechanism, shader layouts from the IDL; F-106 not lifted) |
-| N1 (`n1` branch): `crypto`, `services/net` (+ NetRing, NetIPC), `drivers/net` (class + virtio-net), `services/sshd` (+ SFTP) | Lift | V3 | The bring-up link (D15). The stack and crypto are also 9gate's and Noise's base in V7. |
-| `rc`, the pty service, the launcher's `/dev/bin` union (N1e) | Lift | V2–V3 | rc is the one shell. The pty's line discipline as it was, its server and protocol on rings (D46); temporary, to be ejected for Plan 9's `/dev/cons` as rio serves it (services/pty/README.md) |
+| N1 (`n1` branch): `crypto`, `services/net` (+ NetRing, NetIPC), `drivers/net` (class + virtio-net) | Lift | V3 | The bring-up link (D15, D77): the stack and crypto under 9gate's core and Noise IK, brought forward from V7. `services/sshd` and SFTP are not lifted (D77). |
+| `rc`, the pty service, the launcher's `/dev/bin` union (N1e) | Lift | V2–V3 | rc is the one shell. The pty's line discipline as it was, its server and protocol on rings (D46); temporary, ejected in V3 for Plan 9's `/dev/cons` (D77, services/pty/README.md) |
 | `sdk/` and macros (`@AudioRenderer`) | Lift | V5 | |
-| `services/keyring`, as `services/factotum` (D75) | Lift | V3 | sshd's host key now; Noise IK's static key, the swarm identity, in V7. Already after Plan 9's factotum; renamed, its AuthIPC sessions kept. A headless factotum asks no one (D75); keys persist with Taisce on disk (V4). |
+| `services/keyring`, as `services/factotum` (D75) | Lift | V3 | Noise IK's static key, the node's identity, from V3 (D77). Already after Plan 9's factotum; renamed, its AuthIPC sessions kept. A headless factotum asks no one (D75); keys persist with Taisce on disk (V4). |
 
 ## NeoVectra (C23 with third-party dependencies)
 

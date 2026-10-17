@@ -67,13 +67,13 @@ against croi.
 
 | Budget | Limit |
 |---|---|
-| warm boot: `vx remote boot` → SSH answering again, QEMU KVM | < 2 s |
+| warm boot: `vx remote boot` → cpu answering again, QEMU KVM | < 2 s |
 | warm boot on the Q8B | < 5 s |
-| `scp` of 64 MiB to the board, virtio-net under KVM | ≥ 100 MB/s |
-| `scp` on the Q8B over 2.5 GbE | ≥ 100 MB/s (debug builds: tracked, no limit until V6 sets one) |
-| `ssh` keystroke → echo, on-link | < 5 ms p99 |
+| a 64 MiB copy from `/mnt/term` to the board, virtio-net under KVM | ≥ 100 MB/s |
+| the same copy on the Q8B over 2.5 GbE | ≥ 100 MB/s (debug builds: tracked, no limit until V6 sets one) |
+| `vx cpu`: a line sent → the program's reply on the dev terminal, on-link | < 5 ms p99 |
 | `log -f` lag: debuglog write → dev machine | < 50 ms p99 |
-| a normal (non-`--ssh`) image's listening TCP ports | 0 |
+| a normal (non-`--cpu`) image's listening TCP ports | 0 |
 
 ### Files (V4)
 

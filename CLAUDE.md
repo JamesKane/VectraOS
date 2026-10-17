@@ -96,7 +96,7 @@ ACPI, PCI and devmgr, whose edu driver does DMA through each IOMMU). V2's exit t
 rc. `docs/roadmap.md` opens with where things stand; keep it current.
 
 Milestones run in order, and each puts the next one's dependencies in
-place. Board bring-up (V6) waits for V3, the bring-up link (SSH and
+place. Board bring-up (V6) waits for V3, the bring-up link (cpu and
 warm boot), and for Taisce on disk (V4) and the desktop (V5), both
 finished in QEMU (D76). The first board is the Orange Pi 6 Plus (CIX Sky1, D69,
 `docs/boards/orangepi-6-plus/`); the Q8B moved to V8, whose CDSP and

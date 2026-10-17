@@ -89,3 +89,4 @@ in a new file, and a line in the index below.
 - [D74. Drivers as todhchai's, ported to V1: real IOMMUs, ACPI platform devices, the runtime's MMIO accessors](D074-drivers-scope.md) — 2026-10-16, decided
 - [D75. The terminal is rio's window, remote sessions are Plan 9's cpu, and the keyring becomes factotum](D075-cpu-and-factotum.md) — 2026-10-16, decided
 - [D76. Taisce on disk and the desktop come before the boards](D076-taisce-and-desktop-before-boards.md) — 2026-10-16, decided; amends D16
+- [D77. The bring-up link is Plan 9's cpu, not SSH](D077-bring-up-link-is-cpu.md) — 2026-10-16, decided; supersedes D15's protocol, amends D75

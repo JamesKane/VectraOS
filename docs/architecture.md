@@ -147,31 +147,26 @@ The transport is first-party Noise IK over TCP. The swarm design follows
 NeoVectra's docs/02 §6: node roles (terminal, CPU, accelerator, file, auth),
 `/swarm/pool` leases for accelerators, and remote `/dev/accel`.
 
-The CPU role is Plan 9's cpu (D75): `cpu -h NODE` runs rc on another
-node with the terminal's tree at `/mnt/term` and its `/dev/cons` bound
+The CPU role is Plan 9's cpu (D75; from V3, D77): `cpu -h NODE` runs rc
+on another node with the terminal's tree at `/mnt/term` and its `/dev/cons` bound
 over the node's, so neither side has a pty. The auth role is factotum
 (D75: todhchai's keyring, under Plan 9's name): it holds every key,
 Noise IK's static key among them, and runs the protocols for programs,
 which never see a long-term key.
 
-### Bring-up access (D15)
+### Bring-up access (D15, D77)
 
-During development, the network also carries SSH. Its pieces are lifted
-from todhchai's N1:
-- an SSH server (`exec`, `shell` through rc, SFTP), with keys from
-  factotum; its session serves rc's `/dev/cons` itself, with no pty;
-- the network stack's TCP;
-- the shared crypto.
+During development, the dev machine reaches a node through the same cpu
+session, brought forward to V3: `vx cpu NODE` (Swift, in vx) exports
+the dev machine's tree to the node's rc at `/mnt/term`, over 9gate's
+9P2000.L core and Noise IK. Copies are `cp` from `/mnt/term`, logs are
+the debuglog's node, and `warmboot` (a `SYSTEM_POWERCTL` command) loads
+a new kernel and bootfs from `/mnt/term` into memory, with no firmware
+involved. There is no SSH (D77).
 
-It is a development tool, not a system mechanism:
-- It is off unless the image is built with `--ssh`.
-- It listens only on-link and accepts public keys only.
-- No local service speaks SSH.
-
-9gate is still the only way a namespace crosses the network. SSH gives a
-person a shell and file copies; 9gate gives programs a namespace.
-`warmboot` (a `SYSTEM_POWERCTL` command) lets that shell replace the
-running kernel and bootfs from memory, with no firmware involved.
+The listener is a development tool, not a system mechanism:
+- It is off unless the image is built with `--cpu PUBKEY`.
+- It listens only on-link and accepts only the pinned dev machine's key.
 
 ## 6. Storage: Taisce
 
