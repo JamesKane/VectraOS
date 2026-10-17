@@ -110,3 +110,5 @@ in a new file, and a line in the index below.
 - [D95. Native applications: what both NeoVectra and todhchai planned, our code speaking existing standards](D095-native-applications.md) — 2026-10-17, proposed
 - [D96. Studio: streaming for creators, on capture, rings and existing ingest protocols](D096-studio-streaming-for-creators.md) — 2026-10-17, proposed
 - [D97. The console's shell is rc on kbdfs's /dev/cons, in kbdfs's note group](D097-console-shell.md) — 2026-10-17, decided; extends D77, D83, D87
+- [D98. A ring's doorbell lends its ringer's profile, until the woken side blocks](D098-ring-doorbells-lend.md) — 2026-10-17, proposed; extends K10c's lending
+- [D99. The launcher answers memory pressure by ending services in bands; a service may start on first use and end when idle](D099-pressure-and-on-demand-services.md) — 2026-10-17, proposed; extends D31
