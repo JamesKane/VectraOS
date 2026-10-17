@@ -106,7 +106,7 @@ commands, which an audit against 9front found
 far from complete, and the pty, with rc on one), and drivers (D74:
 ACPI, PCI, devmgr with edu's DMA through each IOMMU, virtio, virtio-input and
 kbdfs's /dev/kbd and /dev/cons, D83:
-item 7's exit met). Done: the console and the plumber (item 8, D85). V2's exit test `cat /svc/*/status` passes, run by
+item 7's exit met). Done: the console and the plumber (item 8, D85), and the manual (item 9, D86). V2's exit test `cat /svc/*/status` passes, run by
 rc. `docs/roadmap.md` opens with where things stand; keep it current.
 
 Milestones run in order, and each puts the next one's dependencies in

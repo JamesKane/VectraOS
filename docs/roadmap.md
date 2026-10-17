@@ -4,7 +4,7 @@ Each milestone has exit criteria. A milestone is done when its criteria pass
 under `vx ci` and every budget it introduces has a running check
 (principle 13).
 
-## Where things stand (2026-10-16)
+## Where things stand (2026-10-17)
 
 - **V0** is done (2026-10-15).
 - **V1**'s work is done: the cuts (91 syscalls, the audit's target), the
@@ -34,15 +34,16 @@ under `vx ci` and every budget it introduces has a running check
     done; their budgets come at V2's exit).
   - Done: the console and the plumber (item 8, D85).
   - Done: the environment as `/env` (item 6, D81).
-  - Begun: the manual (item 9, D86): 9a, guide's parser and renderer
-    and the one directive reader; 9b, `vx man` and its check, with
-    the first pages and the backlog; 9c, `man`, `lookman` and `sig`
-    on the device over bootfs's `/lib/man`; and 9d, section 5 from
-    idlc and the services' trees checked against their pages, done.
+  - Done: the manual (item 9, D86): guide's parser and renderer and
+    the one directive reader, `vx man` and its check, `man`, `lookman`
+    and `sig` on the device over bootfs's `/lib/man`, section 5 from
+    idlc, the services' trees checked against their pages, and the
+    backlog written (110 pages; `man/missing` holds only the pty,
+    which goes in V3).
   - Exit: `cat /svc/*/status` run by rc passes (amd64, arm64), spawn →
     main is 79 µs (< 200 µs), and the first bench history is recorded
     (2026-10-16, cd3eb6d), and the services hold 3.7 MiB (< 32 MiB,
-    `services.rss`). Still open: the manual (D86).
+    `services.rss`), and the manual is written (D86).
 - **V3 onward** are not started (V6's boards have research passes).
 
 ## V0. Ground — done 2026-10-15
@@ -565,7 +566,7 @@ work, in order:
      waiting (D84). launch-test sends a URL to web's reader, is refused a
      message no rule takes, and appends a rule whose `plumb client` starts
      `cat`, which reads the held message onto the console.
-9. **The manual (D86),** in four steps:
+9. **The manual (D86),** in five steps, done (2026-10-17):
    - 9a, **done (2026-10-17).** `system/guide`: the guide parser and its
      text renderer (Swift, tier 0 and host), host tests and a fuzz test;
      `system/directives`, the one directive reader, onto which the
@@ -598,6 +599,12 @@ work, in order:
      a FILES path under `/svc/SERVICE/` claims a file, every claimed file
      exists, and a claimed service's files are all documented (D86's
      note). `launcher(8)` is the first such page.
+   - 9e, **done (2026-10-17).** The backlog written, in six reviewed
+     waves (rc, Sys, the services with devmgr and virtio-input, the
+     dev-machine tools and three formats, the C library, the 91
+     syscalls): 623 rows out of `man/missing`, 110 pages in all.
+     `man/missing` holds only the pty's two rows, which go with the
+     pty in V3 (D77).
 
 **Exit:**
 - `cat /svc/*/status` works, run by rc in a native test. **Done**
@@ -625,6 +632,7 @@ work, in order:
   spread), open: to check interleaved and fix if it is real.
 - `man man` prints its page from bootfs, `vx man --check` passes under
   `vx ci`, and `man/missing` lists only what V0 to V2 left (D86).
+  **Done** (2026-10-17): it lists only the pty, which V3 removes.
 - An interactive console (virtio-input into the console's `/dev/cons`)
   if it comes cheaply; otherwise V3's cpu session is the first
   interactive rc.
@@ -700,8 +708,7 @@ meets a tested path.
 
 - **The manual (D86):** V3's pieces arrive with their pages (`cpu(1)`,
   `net(3)`, `proc(4)`, 9P2000's messages in section 5, the board tools),
-  and the backlog is written down in waves, each reviewed and committed,
-  as NeoVectra's was.
+  and the pty's two rows leave `man/missing` with the pty.
 
 **Exit, in QEMU on amd64, arm64 and rv64, under `vx ci`:**
 - `vx cpu` gives rc with the dev terminal's `/dev/cons`, and ^C
