@@ -1,0 +1,74 @@
+page noise 2
+summary Noise IK handshakes and sessions
+names noise Noise NoiseKey StaticKey Handshake Session CipherState Frame Deframer
+src services/9gate/noise/Noise.swift services/9gate/noise/Frame.swift
+keys noise ik handshake transport encryption x25519 chacha20 poly1305 sha256 session key
+lang swift
+
+# SYNOPSIS
+
+```swift
+import Noise
+
+protocol NoiseKey {
+  var publicKey: [UInt8] { get }
+  func dh(_ peer: [UInt8]) -> [UInt8]?
+}
+struct StaticKey: NoiseKey { init(privateKey: [UInt8]) }
+
+struct Handshake<Key: NoiseKey> {
+  init(initiator key: Key, remote: [UInt8], ephemeral: [UInt8],
+       prologue: [UInt8] = [])
+  init(responder key: Key, ephemeral: [UInt8], prologue: [UInt8] = [])
+  let initiator: Bool
+  var remoteStatic: [UInt8]? { get }
+  var complete: Bool { get }
+  var hash: [UInt8] { get }
+  mutating func split() -> Session?
+  mutating func write(_ payload: [UInt8] = []) -> [UInt8]?
+  mutating func read(_ message: [UInt8]) -> [UInt8]?
+}
+
+struct Session {
+  let hash: [UInt8]
+  mutating func seal(_ plaintext: [UInt8]) -> [UInt8]?
+  mutating func open(_ message: [UInt8]) -> [UInt8]?
+}
+
+enum Frame { static func wrap(_ message: [UInt8]) -> [UInt8] }
+struct Deframer {
+  mutating func push(_ bytes: [UInt8])
+  mutating func next() -> [UInt8]?
+}
+```
+
+# DESCRIPTION
+
+This is the Noise Protocol Framework's `Noise_IK_25519_ChaChaPoly_SHA256`: X25519, ChaCha20-Poly1305 and SHA-256, in the IK pattern.
+The initiator knows the responder's static public key before it starts; its own static key travels in its first message, encrypted, so the responder learns who is calling.
+
+```text
+<- s
+...
+-> e, es, s, ss
+<- e, ee, se
+```
+
+A static key is a `NoiseKey`: its public half, and Diffie-Hellman of its private half with a peer's public key, nil when the result is all zeros.
+The handshake never needs the private half otherwise, so a key held elsewhere, by a key server, serves as well as a `StaticKey` held in memory.
+<ephemeral> is a fresh private key, 32 random bytes, for each handshake; <prologue> is bytes both sides must agree on, which the handshake hash covers.
+
+The initiator `write`s the first message and `read`s the reply; the responder `read`s the first, which gives it `remoteStatic`, the caller's key, to judge before it `write`s the reply.
+Each message carries a payload, encrypted after the first DH, and returned by `read`.
+A call out of turn, a message that doesn't decrypt, or a message past 65535 bytes returns nil and ends the handshake: every later call returns nil, and `split` gives nothing.
+When both messages are done, `complete` is true, `hash` is the handshake hash, the same on both sides, which names the session, and `split` gives a `Session` with a key each way, once: a second call returns nil, so no two sessions share keys and nonces.
+
+`seal` encrypts at most 65519 bytes (`Noise.maxPayload`) into one transport message, 16 bytes longer; `open` decrypts the peer's next one.
+Messages must be opened in the order they were sealed: one replayed, reordered, changed or sealed by this side is refused with nil, and a refusal doesn't advance the count.
+After 2⁶⁴ − 1 messages one way, `seal` refuses.
+
+On a byte stream, `Frame.wrap` puts a message's length before it, 16-bit big-endian, and a `Deframer` takes the stream's bytes as they come and gives back whole messages.
+
+# SEE ALSO
+
+fcall(2), 9p(5)

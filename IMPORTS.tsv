@@ -617,6 +617,13 @@ crypto/oracles/9front/tsmemcmp.c	9front	228167f32	sys/src/libsec/port/tsmemcmp.c
 crypto/oracles/9front/libsec.h	9front	228167f32	sys/include/libsec.h
 crypto/oracles/9front/LICENSE	9front	228167f32	lib/legal/mit
 crypto/oracles/9front/NOTICE	9front	228167f32	lib/legal/NOTICE
+services/9gate/oracles/9front/convM2S.c	9front	228167f32	sys/src/libc/9sys/convM2S.c
+services/9gate/oracles/9front/convS2M.c	9front	228167f32	sys/src/libc/9sys/convS2M.c
+services/9gate/oracles/9front/convD2M.c	9front	228167f32	sys/src/libc/9sys/convD2M.c
+services/9gate/oracles/9front/convM2D.c	9front	228167f32	sys/src/libc/9sys/convM2D.c
+services/9gate/oracles/9front/fcall.h	9front	228167f32	sys/include/fcall.h
+services/9gate/oracles/9front/LICENSE	9front	228167f32	lib/legal/mit
+services/9gate/oracles/9front/NOTICE	9front	228167f32	lib/legal/NOTICE
 drivers/net/virtio-net/Main.swift	todhchai	527ff94	drivers/net/virtio-net/Main.swift
 drivers/net/virtio-net/driver.manifest	todhchai	527ff94	drivers/net/virtio-net/driver.manifest
 drivers/net/virtio-net/lib/NetBackend.swift	todhchai	527ff94	drivers/net/virtio-net/lib/NetBackend.swift

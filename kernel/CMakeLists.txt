@@ -189,6 +189,9 @@ croi_user_binary(${_vdso_bin} PIC
 croi_user_floor()
 # The crypto (D89), whose suite checks it as Embedded Swift on the target.
 file(GLOB _crypto_sources CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/crypto/lib/*.swift)
+# 9gate's codec and Noise IK (D77, D78), the same for theirs.
+file(GLOB _gate_sources CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/services/9gate/p9/*.swift
+     ${PROJECT_SOURCE_DIR}/services/9gate/noise/*.swift)
 # Its suites (Suite.swift): one file each, run with swift.suite=<name>.
 set(_swift_test_sources ${_user_dir}/test/swift/Main.swift ${_user_dir}/test/swift/Suite.swift
     ${_user_dir}/test/swift/BindSuite.swift ${_user_dir}/test/swift/VmoSuite.swift
@@ -202,6 +205,7 @@ set(_swift_test_sources ${_user_dir}/test/swift/Main.swift ${_user_dir}/test/swi
     ${_user_dir}/test/swift/FloorSuite.swift ${_user_dir}/test/swift/LibcSuite.swift
     ${_user_dir}/test/swift/NoteSuite.swift
     ${_user_dir}/test/swift/CryptoSuite.swift ${_crypto_sources}
+    ${_user_dir}/test/swift/GateSuite.swift ${_gate_sources}
     ${_user_dir}/lib/image/Image.swift
     ${PROJECT_SOURCE_DIR}/lib/ring/Ring/Ring.swift ${PROJECT_SOURCE_DIR}/lib/ring/Ring/RingMemory.swift)
 set(_swift_test ${CMAKE_CURRENT_BINARY_DIR}/swifttest.elf)

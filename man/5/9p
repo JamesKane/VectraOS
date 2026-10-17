@@ -1,0 +1,78 @@
+page 9p 5
+summary the 9P2000 file protocol between nodes
+names 9p 9P2000 9P2000.vx
+src services/9gate/p9/Fcall.swift services/9gate/p9/Dir.swift services/9gate/p9/Version.swift
+keys 9p 9p2000 protocol network file version attach walk open read write clunk stat wstat flush
+
+# SYNOPSIS
+
+```text
+size[4] Tversion tag[2] msize[4] version[s]
+size[4] Rversion tag[2] msize[4] version[s]
+size[4] Tauth tag[2] afid[4] uname[s] aname[s]
+size[4] Rauth tag[2] aqid[13]
+size[4] Tattach tag[2] fid[4] afid[4] uname[s] aname[s]
+size[4] Rattach tag[2] qid[13]
+size[4] Rerror tag[2] ename[s]
+size[4] Tflush tag[2] oldtag[2]
+size[4] Rflush tag[2]
+size[4] Twalk tag[2] fid[4] newfid[4] nwname[2] nwname*(wname[s])
+size[4] Rwalk tag[2] nwqid[2] nwqid*(wqid[13])
+size[4] Topen tag[2] fid[4] mode[1]
+size[4] Ropen tag[2] qid[13] iounit[4]
+size[4] Tcreate tag[2] fid[4] name[s] perm[4] mode[1]
+size[4] Rcreate tag[2] qid[13] iounit[4]
+size[4] Tread tag[2] fid[4] offset[8] count[4]
+size[4] Rread tag[2] count[4] data[count]
+size[4] Twrite tag[2] fid[4] offset[8] count[4] data[count]
+size[4] Rwrite tag[2] count[4]
+size[4] Tclunk tag[2] fid[4]
+size[4] Rclunk tag[2]
+size[4] Tremove tag[2] fid[4]
+size[4] Rremove tag[2]
+size[4] Tstat tag[2] fid[4]
+size[4] Rstat tag[2] stat[n]
+size[4] Twstat tag[2] fid[4] stat[n]
+size[4] Rwstat tag[2]
+```
+
+# DESCRIPTION
+
+Between nodes, files are served in Plan 9's 9P2000, as intro(5) of Plan 9 gives it; on one node, the Node protocol serves them (node(5)).
+A client sends T-messages and a server answers each with its R-message, or with Rerror, under the request's tag.
+Numbers are little-endian; a string, `[s]`, is a count[2] and that many bytes of UTF-8, holding no NUL; a qid, `[13]`, is type[1], version[4] and path[8].
+A stat, `stat[n]`, is a count[2] and a stat's bytes, which begin with their own size[2]:
+
+```text
+size[2] type[2] dev[4] qid[13] mode[4] atime[4] mtime[4] length[8]
+name[s] uid[s] gid[s] muid[s]
+```
+
+Owners are strings, and there are no numeric ids: who may do what is decided by keys and capabilities, not by a uid.
+
+| Type | Number |
+| Tversion, Rversion | 100, 101 |
+| Tauth, Rauth | 102, 103 |
+| Tattach, Rattach | 104, 105 |
+| Rerror | 107 (there is no Terror, 106) |
+| Tflush, Rflush | 108, 109 |
+| Twalk, Rwalk | 110, 111 |
+| Topen, Ropen | 112, 113 |
+| Tcreate, Rcreate | 114, 115 |
+| Tread, Rread | 116, 117 |
+| Twrite, Rwrite | 118, 119 |
+| Tclunk, Rclunk | 120, 121 |
+| Tremove, Rremove | 122, 123 |
+| Tstat, Rstat | 124, 125 |
+| Twstat, Rwstat | 126, 127 |
+
+A connection begins with Tversion, its tag `NOTAG` (65535).
+Ours is `9P2000.vx`: a VectraOS server answers it, and the extensions it names are new message types, never changes to these.
+A server answers `9P2000` for any other 9P2000 dialect, `9P2000.L` and `9P2000.u` among them, and `unknown` for anything else; a client that asked for `9P2000.vx` and got `9P2000` speaks plain 9P2000.
+The msize is the smaller of the two sides', at least 256; a read or write carries at most <msize> − 24 bytes.
+
+A message is refused when its bytes are not exactly one message: a size that is not its own, a field that doesn't fit, a byte past its last field, more than 16 names or qids in a walk, an unknown type, or a string holding a NUL or bytes that are not UTF-8.
+
+# SEE ALSO
+
+fcall(2), noise(2), node(5), intro(5)

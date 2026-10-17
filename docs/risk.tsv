@@ -44,6 +44,7 @@ crypto/README.md	-	-	-	-
 data/blake3/	-	CryptoTests	-	-
 data/nist-cavp/	-	CryptoTests	-	-
 data/wycheproof/	-	CryptoTests	-	-
+data/noise/	-	GateTests	-	-
 user/m2/	all	-	boot-smoke,boot-smoke-kvm,boot-lean,boot-lean-icount	-
 user/test/	all	-	boot-smoke,boot-smoke-kvm,framebuffer-pixels	-
 user/tier1/	all	-	boot-floor-hello,boot-cxx-hello,boot-swift-hello,boot-swift-start,boot-swift-async,boot-foundation-test,boot-node-test-t1,boot-fdio-test	-
@@ -69,6 +70,9 @@ services/console/	all	ConsoleTests	boot-launch	man
 services/plumber/	all	PlumberTests	boot-launch	man
 services/ndb/	all	NdbTests	boot-launch	man
 services/net/	all	NetTests,IPTests,NdbTests	boot-launch	man
+services/9gate/	all	GateTests	boot-smoke	man
+services/9gate/oracles/	-	GateTests	-	-
+services/9gate/tests/	-	GateTests	-	-
 drivers/	all	DevMgrTests	boot-launch,boot-pci	man
 drivers/bus/acpi/	all	ACPITests	boot-acpi,boot-launch	man
 drivers/bus/pci/	all	PCITests	boot-pci,boot-launch	man

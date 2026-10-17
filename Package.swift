@@ -157,6 +157,13 @@ let ipc: [Target] = [
   // Names (D79): the network database, cs and dns, as Plan 9's ndb(8).
   .target(name: "Ndb", dependencies: ["Net", "Node", "IPC", "Sys"], path: "services/ndb/lib", swiftSettings: tier0),
   .testTarget(name: "NdbTests", dependencies: ["Ndb", "IP", "Net", "Node", "IPC", "Sys"], path: "services/ndb/tests"),
+  // 9gate (D77, D78): 9P2000's codec, and Noise IK, its transport. 9front's
+  // fcall(2) is the codec's oracle, host only, as libsec is crypto's (D89).
+  .target(name: "NineP", path: "services/9gate/p9", swiftSettings: tier0),
+  .target(name: "Noise", dependencies: ["TDCrypto"], path: "services/9gate/noise", swiftSettings: tier0),
+  .target(name: "FcallOracle", path: "services/9gate/oracles/9front", exclude: ["LICENSE", "NOTICE"],
+          cSettings: [.headerSearchPath("."), .unsafeFlags(["-std=gnu99", "-fms-extensions", "-w"])]),
+  .testTarget(name: "GateTests", dependencies: ["NineP", "Noise", "FcallOracle"], path: "services/9gate/tests"),
   // kbdfs (D83): the keyboard and the console, after 9front's.
   .target(name: "Kbdfs", path: "services/kbdfs/lib", swiftSettings: tier0),
   .testTarget(name: "KbdfsTests", dependencies: ["Kbdfs"], path: "services/kbdfs/tests"),

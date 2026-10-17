@@ -62,6 +62,8 @@ enum Suite {
             NoteSuite.run()
         } else if requested("crypto") {
             CryptoSuite.run()
+        } else if requested("gate") {
+            GateSuite.run()
         } else if requested("floor") {
             FloorSuite.run()
         } else if requested("libc") {

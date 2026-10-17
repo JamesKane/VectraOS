@@ -47,7 +47,8 @@ under `vx ci` and every budget it introduces has a running check
 - **V3** is under way: notes and /proc, crypto, the net class, the
   stack serving /net with dial(2), cs and dns for names, and the
   console's shell (rc on kbdfs's /dev/cons, D97), done (2026-10-17);
-  9P2000 over Noise IK next.
+  9gate's 9P2000 codec and Noise IK begun (the codec and the handshake
+  done), 9gate's export and import next.
   **V4 onward** are not started (V6's boards have research passes);
   V10, the Ghost, is proposed (D90), and V11 to V16, the native
   applications and Studio, are proposed (D95, D96).
@@ -693,6 +694,17 @@ meets a tested path.
   import, over Noise IK (`Noise_IK_25519_ChaChaPoly_SHA256`, on N1's
   crypto). Linux `v9fs` conformance, the extensions themselves and the
   swarm stay V7's.
+  - **Done (2026-10-17):** the codec (services/9gate/p9, fcall(2),
+    9p(5)): every 9P2000 message and stat, strict on what it reads,
+    equal by bytes, and Tversion's answer; GateTests checks it against
+    9front's fcall(2), vendored unchanged as its oracle, host only (D89's
+    pattern). Noise IK (services/9gate/noise, noise(2)): the handshake
+    over a `NoiseKey`, whose one operation, DH with the static key, is
+    what factotum will run; sessions; and length-framed messages on a
+    stream; replayed through cacophony's and snow's vectors (data/noise).
+    Both run on the target in the gate suite. Left: 9gate itself (export
+    and import over a dialed, framed session; the prologue and payloads),
+    factotum's key, and `vx cpu`.
 - **factotum** (todhchai's keyring, D75) holds the node's Noise IK
   static key (`proto=noise-ik`), made on first use; neither 9gate nor
   cpu holds it.

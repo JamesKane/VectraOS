@@ -1,0 +1,97 @@
+page fcall 2
+summary read and write 9P2000 messages and stats
+names fcall Message Fcall FcallType Qid QidType OpenMode Dir DirMode Version NineP
+src services/9gate/p9/Fcall.swift services/9gate/p9/Dir.swift services/9gate/p9/Version.swift
+keys 9p 9p2000 message stat qid version codec protocol
+lang swift
+
+# SYNOPSIS
+
+```swift
+import NineP
+
+struct Qid { var type: UInt8; var version: UInt32; var path: UInt64 }
+
+enum Fcall {
+  case tversion(msize: UInt32, version: String)
+  case rversion(msize: UInt32, version: String)
+  case tauth(afid: UInt32, uname: String, aname: String)
+  case rauth(aqid: Qid)
+  case tattach(fid: UInt32, afid: UInt32, uname: String, aname: String)
+  case rattach(qid: Qid)
+  case rerror(ename: String)
+  case tflush(oldtag: UInt16)
+  case rflush
+  case twalk(fid: UInt32, newfid: UInt32, names: [String])
+  case rwalk(qids: [Qid])
+  case topen(fid: UInt32, mode: UInt8)
+  case ropen(qid: Qid, iounit: UInt32)
+  case tcreate(fid: UInt32, name: String, perm: UInt32, mode: UInt8)
+  case rcreate(qid: Qid, iounit: UInt32)
+  case tread(fid: UInt32, offset: UInt64, count: UInt32)
+  case rread(data: [UInt8])
+  case twrite(fid: UInt32, offset: UInt64, data: [UInt8])
+  case rwrite(count: UInt32)
+  case tclunk(fid: UInt32)
+  case rclunk
+  case tremove(fid: UInt32)
+  case rremove
+  case tstat(fid: UInt32)
+  case rstat(stat: [UInt8])
+  case twstat(fid: UInt32, stat: [UInt8])
+  case rwstat
+  var type: UInt8 { get }
+  var isRequest: Bool { get }
+}
+
+struct Message {
+  var tag: UInt16
+  var fcall: Fcall
+  init(tag: UInt16, _ fcall: Fcall)
+  func encode() -> [UInt8]?
+  static func decode(_ bytes: [UInt8]) -> Message?
+  static func size(_ prefix: [UInt8]) -> Int?
+}
+
+struct Dir {
+  var type: UInt16, dev: UInt32, qid: Qid, mode: UInt32
+  var atime: UInt32, mtime: UInt32, length: UInt64
+  var name: String, uid: String, gid: String, muid: String
+  static var unchanged: Dir { get }
+  func encode() -> [UInt8]?
+  static func decode(_ bytes: [UInt8]) -> Dir?
+  static func decodeAll(_ bytes: [UInt8]) -> [Dir]?
+}
+
+enum Version {
+  static func answer(_ version: String, msize: UInt32, ours: UInt32,
+                     extended: Bool = true) -> (version: String, msize: UInt32)?
+  static func dialect(_ version: String) -> String?
+}
+```
+
+# DESCRIPTION
+
+These are Plan 9's fcall(2) conversions, in Swift: a `Message` is a tag and an `Fcall`, one case a message type of 9p(5), with that type's fields.
+`FcallType` names the type numbers; `QidType`, `OpenMode` and `DirMode` the bits of a qid's type, an open's mode and a stat's mode; `NineP` the protocol's constants: `noTag`, `noFid`, `maxWalk` (16), `ioHeader` (24, so a read or write carries <msize> − 24 bytes), `minMessage` and the version strings.
+
+`encode` gives a message's bytes, its size first.
+It returns nil for what can't be sent: a string or stat past 65535 bytes, a walk of more than 16 names or qids.
+
+`decode` reads one message from exactly its bytes.
+It refuses, with nil, bytes that are not exactly one message: a size that isn't theirs, a field that doesn't fit, a byte after the last field, a walk past 16, a type that doesn't exist (Terror, 106, among them), and a string that holds a NUL or isn't UTF-8.
+On a stream, `size` reads the size the next message announces from its first four bytes, so a reader knows how many to wait for.
+
+A `Dir` is a stat, its owners strings.
+Rstat and Twstat carry a stat's bytes as `Dir.encode` gives them; a directory's Rread carries whole ones, back to back, which `decodeAll` reads.
+`Dir.unchanged` is Twstat's template: every number all ones and every string empty, so a Twstat changes only the fields set in it.
+
+Two messages, or two stats, are equal when their bytes are: a name is its bytes in 9P, so a name composed and the same decomposed are two names.
+
+`Version.answer` is the server's half of Tversion: the dialect it speaks of the one asked, `9P2000.vx` (ours, when `extended`) or `9P2000` (for any other suffix, `9P2000.L` and `9P2000.u` among them) or `unknown`, and the smaller msize; nil when that msize is below `minMessage`.
+A decoded message holds copies of its strings and data, not views of the buffer.
+`dialect` names the dialect a version string asks for, or nil if it isn't 9P2000's.
+
+# SEE ALSO
+
+9p(5), noise(2)
