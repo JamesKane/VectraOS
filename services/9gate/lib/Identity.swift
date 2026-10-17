@@ -16,9 +16,9 @@ public struct Identity: Sendable {
   public let publicKey: [UInt8]
   /// Answers a caller on `raw`: the sealed stream and the caller's key,
   /// once `accept` has taken it.
-  let respond: @Sendable (ByteStream, [UInt8], @escaping ([UInt8]) -> Bool) throws(GateError) -> (ByteStream, [UInt8])
+  public let respond: @Sendable (ByteStream, [UInt8], @escaping ([UInt8]) -> Bool) throws(GateError) -> (ByteStream, [UInt8])
   /// Calls the node whose key is `remote` on `raw`.
-  let initiate: @Sendable (ByteStream, [UInt8], [UInt8]) throws(GateError) -> ByteStream
+  public let initiate: @Sendable (ByteStream, [UInt8], [UInt8]) throws(GateError) -> ByteStream
 
   /// A key held in memory; `random` gives each handshake's ephemeral key.
   public static func local(_ key: StaticKey, random: @escaping @Sendable () -> [UInt8]) -> Identity {

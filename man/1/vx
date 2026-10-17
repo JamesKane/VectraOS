@@ -25,7 +25,8 @@ Its commands are:
 | Command | Does | Page |
 | `build [arch ...]` | configure and build each arch's tree | vx-build(1) |
 | `test [arch ...]` | build, then run each arch's QEMU tests, or only what a change risks | vx-build(1) |
-| `boot [arch]` | build and boot interactively | vx-build(1) |
+| `boot [arch] [--cpu [key]]` | build and boot interactively, with a cpu server if asked | vx-build(1) |
+| `cpu` | rc on a node, with this terminal | vx-cpu(1) |
 | `bench` | the boot budgets, judged against this machine's history | vx-bench(1) |
 | `trace` | collect, print and summarise traces | vx-trace(1) |
 | `loc` | lines per component, and the size budgets | vx-loc(1) |
@@ -38,7 +39,7 @@ Its commands are:
 
 An <arch> is `amd64`, `arm64` or `rv64`.
 Any other word is refused with the three names.
-The build steps and `trace` run from any directory; every other command refuses to run unless the current directory holds `Package.swift` and `CMakePresets.json`.
+The build steps, `trace` and `cpu` run from any directory; every other command refuses to run unless the current directory holds `Package.swift` and `CMakePresets.json`.
 
 A step that `vx` runs for you writes its output to `build/vx/<step>.log` and shows only the last 30 lines if it fails.
 After each step `vx` prints a line such as `vx: amd64-build ok (41 s)`.
@@ -53,7 +54,7 @@ Every command exits 0 on success and 1 on failure.
 
 # SEE ALSO
 
-vx-build(1), vx-ci(1), vx-steps(1), vx-man(1)
+vx-build(1), vx-cpu(1), vx-ci(1), vx-steps(1), vx-man(1)
 
 # DIAGNOSTICS
 

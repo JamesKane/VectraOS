@@ -1,0 +1,76 @@
+page cpu 8
+summary the cpu server: rc for the pinned terminal, over Noise IK
+src services/cpu/Main.swift services/cpu/lib/Server.swift services/cpu/protocol/Protocol.swift services/cpu/cpu.manifest
+keys cpu remote session shell terminal mnt term listen noise bring-up 17019
+
+# SYNOPSIS
+
+```text
+tcp!*!17019
+/lib/cpu/terminal
+```
+
+# DESCRIPTION
+
+The cpu server runs rc(1) for a terminal on another machine, as Plan 9's cpu server does: rc on this node, its terminal the caller's, with the caller's files at `/mnt/term`.
+The caller is vx-cpu(1) on the dev machine.
+
+It is only in an image built with `vx boot --cpu` (vx-build(1)), which puts the terminal's public key, 64 hex digits, at bootfs's `lib/cpu/terminal`; no other image runs it, and nothing else listens on its port.
+It announces `tcp!*!17019` through its namespace's `/net` (ip(4)) and prints `cpu: listening on tcp!*!17019, key` and this node's public key, the key a terminal names to reach it.
+
+A call is taken only from the link: its address must fall in a route of `/net/iproute` that reaches it without a router (type `4i` or `6i`), so a call that came through a gateway is refused.
+The call is then sealed by Noise IK (noise(2)) with the prologue `cpu` and empty payloads, the caller the initiator, through factotum's `proto=noise-ik` key (factotum(4)), the same key 9gate(4) uses: cpu's manifest grants it that and nothing else.
+A caller whose key isn't the pinned terminal's gets no reply.
+
+The terminal's first message is the command record, `size[4] command[size]` (little-endian, at most 8192 bytes): the command for `rc -c`, or empty for an interactive rc (`rc -i`).
+The connection then carries 9P2000 (9p(5)) the other way: the terminal serves its tree and the server imports it (gate(2)), as Plan 9's cpu does with exportfs.
+
+rc starts in a namespace of its own: the server's, with the terminal's tree at `/mnt/term`, its `dev/cons` bound over `/dev/cons`, and a new environment group at `/env`.
+It has no descriptors, so it takes `/dev/cons` as its terminal (shell(8)).
+It runs in a job of its own, its note group, under the server's.
+Each note the terminal sends, read from `/mnt/term/dev/cpunote`, is written to `/proc/`<pid>`/notepg` for rc's pid (proc(4)), so ^C on the terminal interrupts what rc is running.
+If the terminal goes, rc's group is sent `hangup`.
+When rc ends, whatever it left running in its job is killed, the server prints how it ended, and it hangs up.
+
+Each session is a thread of its own; sessions run at the same time.
+
+Its manifest:
+
+```text
+service cpu
+program cpu
+programs
+use env
+use factotum
+grant factotum proto=noise-ik
+mount /bin bootfs/bin
+mount /lib/man bootfs/lib/man
+mount /lib/cpu bootfs/lib/cpu
+mount /dev devmgr/dev
+mount /net devmgr/net
+mount /net net/net after
+mount /net cs/net after
+mount /net dns/net after
+mount /proc proc
+mount /mnt/plumb plumber
+restart on-failure
+```
+
+# FILES
+
+: `/lib/cpu/terminal`
+  The terminal's public key, in hex.
+
+# SEE ALSO
+
+vx-cpu(1), vx-build(1), rc(1), gate(2), noise(2), factotum(4), ip(4), proc(4), 9p(5), shell(8)
+
+# DIAGNOSTICS
+
+Each call is a line on the console: `cpu: session from` <address>, and `ended` with rc's exit string; `cpu: refused` <address>`: not on the link`, or `: caller refused` for another terminal's key.
+Without `/lib/cpu/terminal` it prints that the image wasn't built with `--cpu`, and exits.
+
+# BUGS
+
+One terminal's key: a node takes no other caller.
+A program can't be run straight from `/mnt/term`, since an imported file gives no memory to map; copy it first.

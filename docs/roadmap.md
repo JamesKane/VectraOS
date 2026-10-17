@@ -48,7 +48,8 @@ under `vx ci` and every budget it introduces has a running check
   stack serving /net with dial(2), cs and dns for names, and the
   console's shell (rc on kbdfs's /dev/cons, D97), done (2026-10-17);
   9gate (the codec, Noise IK, export and import, and the service at
-  /svc/9gate) and factotum holding its key done; cpu next.
+  /svc/9gate), factotum holding its key, and cpu (the server and
+  `vx cpu`) done; the pty's removal next.
   **V4 onward** are not started (V6's boards have research passes);
   V10, the Ghost, is proposed (D90), and V11 to V16, the native
   applications and Studio, are proposed (D95, D96).
@@ -742,6 +743,24 @@ meets a tested path.
   - Off unless the image is built with `vx boot --cpu PUBKEY`.
   - Listens on-link only; only the pinned dev machine's key.
   - A test checks that a normal image has no listener.
+  - **Done (2026-10-17):** `services/cpu` (cpu(8)), its own service
+    beside 9gate, using gate(2)'s Identity and Import: `tcp!*!17019`,
+    calls only from an on-link route (`/net/iproute`'s `i` types),
+    Noise IK through factotum with the prologue `cpu`, only the key at
+    bootfs's `lib/cpu/terminal`; a command record, then 9P2000 the
+    other way; rc in a job of its own (its note group) with the
+    terminal's tree at `/mnt/term`, its `dev/cons` over `/dev/cons`,
+    a new `/env`, and the terminal's notes from `dev/cpunote` posted
+    to `/proc/N/notepg`. `vx cpu` (tools/cpu, vx-cpu(1)) serves
+    drawterm's layout, the owner's choice: `dev/cons`, `dev/cpunote`
+    (^C) and `root/`, the dev machine's files; its key is
+    `~/.config/vectraos/cpu.key`. The node's key, one boot's until
+    keys are kept on disk, is on its console. `vx boot --cpu [KEY]`
+    boots the cpu image (the only one with bin/cpu, its manifest and
+    the key) with port 17019 forwarded; boot-cpu runs `vx cpu` into
+    the test image (a command with the terminal's files, then ^C
+    interrupting `cat`), CpuTests runs both ends in `swift test`, and
+    boot-launch checks that a normal image has no listener on 17019.
 - **Notes between processes** in croi, so the terminal's interrupt
   reaches rc (and its foreground program) as a note, as cpu forwards it.
   Programs post them through `/proc` (D79): a proc service serves
@@ -797,7 +816,7 @@ meets a tested path.
     and the ceiling holds.
   - `vx remote boot HOST` does the session and the call in one step.
 
-- **The manual (D86):** V3's pieces arrive with their pages (`cpu(1)`,
+- **The manual (D86):** V3's pieces arrive with their pages (`cpu(8)`, `vx-cpu(1)`,
   `net(3)`, `proc(4)`, 9P2000's messages in section 5, the board tools),
   and the pty's two rows leave `man/missing` with the pty.
 

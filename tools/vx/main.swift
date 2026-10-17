@@ -8,7 +8,12 @@
 //   vx test --changed [REF] [--plan]
 //                             only what the change since REF risks (TestCommand.swift, D88)
 //   vx test --check           risk.tsv against the tree: names exist, every test has a row
-//   vx boot [ARCH]            build and boot interactively (Ctrl-A x quits)
+//   vx boot [ARCH] [--cpu [KEY]]
+//                             build and boot interactively (Ctrl-A x quits); with
+//                             --cpu, the launcher and a cpu server for KEY
+//                             (this terminal's by default) on localhost!17019
+//   vx cpu -k NODEKEY [-r ROOT] [-c CMD] NODE
+//                             rc on a node, with this terminal (CpuCommand.swift, D77)
 //   vx bench [--runs N] [--record [--accept]] [--enforce] [--compare REF]
 //                             the boot budgets under KVM, judged against
 //                             this machine's history (BenchCommand.swift)
@@ -58,7 +63,7 @@ func arches(_ args: [String]) -> [String] {
 
 var args = Array(CommandLine.arguments.dropFirst())
 guard let command = args.first else {
-  fail("usage: vx build|test|boot|bench|trace|loc|man|hardware|rc-oracle|acpi|ci [options]")
+  fail("usage: vx build|test|boot|cpu|bench|trace|loc|man|hardware|rc-oracle|acpi|ci [options]")
 }
 args.removeFirst()
 
@@ -69,6 +74,7 @@ case "check-pixels": exit(checkPixelsCommand(args) ? 0 : 1)
 case "qemu-monitor": exit(qemuMonitorCommand(args) ? 0 : 1)
 case "trace": exit(traceCommand(args) ? 0 : 1)
 case "mathgen": exit(mathgenCommand(args) ? 0 : 1)
+case "cpu": exit(cpuCommand(args) ? 0 : 1)
 default: break
 }
 
@@ -79,10 +85,7 @@ else { fail("run vx \(command) from the repository root") }
 switch command {
 case "build": exit(arches(args).allSatisfy { build($0) } ? 0 : 1)
 case "test": exit(testCommand(args) ? 0 : 1)
-case "boot":
-  let arch = arches(args).first!
-  guard args.count <= 1, build(arch) else { exit(1) }
-  exit(run(["ninja", "-C", "build/\(arch)", "run"], log: nil).ok ? 0 : 1)
+case "boot": exit(bootCommand(args) ? 0 : 1)
 case "bench": exit(benchCommand(args) ? 0 : 1)
 case "loc": exit(locCommand(args) ? 0 : 1)
 case "man": exit(manCommand(args) ? 0 : 1)
@@ -90,5 +93,5 @@ case "hardware": exit(hardwareCommand(args) ? 0 : 1)
 case "rc-oracle": exit(rcOracleCommand(args) ? 0 : 1)
 case "acpi": exit(acpiCommand(args) ? 0 : 1)
 case "ci": exit(ci(args) ? 0 : 1)
-default: fail("unknown command \(command); vx has build, test, boot, bench, trace, loc, man, hardware, rc-oracle, acpi and ci")
+default: fail("unknown command \(command); vx has build, test, boot, cpu, bench, trace, loc, man, hardware, rc-oracle, acpi and ci")
 }

@@ -136,9 +136,17 @@ func documentedTrees(_ ns: Namespace) {
 }
 
 /// 9gate (D77, D78): this node's key, 32 bytes in hex; nothing listening
-/// or imported until its ctl says so (a normal image has no listener);
-/// and a line it can't take refused.
+/// or imported until its ctl says so; and a line it can't take refused.
+/// A normal image has no listener: no cpu server announces its port (D77).
 func gate(_ ns: Namespace) {
+  guard let tcp = try? ns.list("/net/tcp") else { return check(false, "/net/tcp lists its conversations") }
+  let conversations = tcp.map { $0.name }.filter { n in
+    !n.utf8.isEmpty && n.utf8.allSatisfy { (0x30...0x39).contains($0) }
+  }
+  check(!conversations.contains { n in
+    holds(readText(ns, "/net/tcp/\(n)/local") ?? "", "!17019")
+      && line(readText(ns, "/net/tcp/\(n)/status") ?? "", startingWith: "Listen") != nil
+  }, "no cpu server listens in a normal image")
   let key = Array((readText(ns, "/svc/9gate/key") ?? "").utf8)
   let digit = { (b: UInt8) in (0x30...0x39).contains(b) || (0x61...0x66).contains(b) }
   check(key.count == 65 && key[64] == 0x0A && key[..<64].allSatisfy(digit), "9gate's key is 32 bytes in hex")

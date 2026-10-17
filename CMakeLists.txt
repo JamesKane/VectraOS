@@ -68,6 +68,25 @@ add_custom_target(run
   COMMAND ${CROI_QEMU} ${CROI_ARCH} ${CROI_ESP_DIR} ${CMAKE_BINARY_DIR}/qemu ${CROI_EDK2_DIR}
   DEPENDS esp USES_TERMINAL)
 
+# The cpu images' ESPs (D77): the launcher and every service, a cpu
+# server among them (kernel/CMakeLists.txt's bootfs-cpu*.img). run-cpu is
+# vx boot --cpu's, the node's port 17019 on localhost's; boot-cpu, below,
+# boots the tests' one.
+function(croi_cpu_esp name bootfs)
+  set(_esp ${CMAKE_BINARY_DIR}/esp-${name})
+  file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/cmdline-${name}
+       CONTENT "${CROI_CMDLINE} userboot.next=bin/launcher croi.selftest=off\n")
+  add_custom_target(esp-${name} ${ARGN}
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CROI_ESP_DIR} ${_esp}
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/cmdline-${name} ${_esp}/croi/cmdline
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/${bootfs}.img ${_esp}/croi/bootfs.img)
+  add_dependencies(esp-${name} esp ${bootfs})
+endfunction()
+croi_cpu_esp(cpu bootfs-cpu)
+add_custom_target(run-cpu
+  COMMAND ${CROI_QEMU} --forward 17019:17019 ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-cpu ${CMAKE_BINARY_DIR}/qemu ${CROI_EDK2_DIR}
+  DEPENDS esp-cpu USES_TERMINAL)
+
 enable_testing()
 # Boot tests wait for userboot to report that the program it started from
 # bootfs exited cleanly (userboot starts after the kernel's self-tests and
@@ -177,6 +196,21 @@ croi_boot_program_test(pci pci-test)
 # The launcher (V2's item 4): bootfs's manifests, run until bin/launch-test
 # ends; it exits with its code.
 croi_boot_program_test(launch launcher launcher.until=launch-test)
+# cpu (D77): the tests' terminal (services/cpu/tests/boot-cpu.sh) calls the
+# node's cpu server with vx cpu, through a port of its own for each arch,
+# and runs rc there, which tier 1 builds.
+get_property(_tier1_built GLOBAL PROPERTY CROI_TIER1_PROGRAMS)
+if(_tier1_built)
+  croi_cpu_esp(cpu-test bootfs-cpu-test ALL)
+  set(_cpu_port_amd64 27019)
+  set(_cpu_port_arm64 27020)
+  set(_cpu_port_rv64 27021)
+  add_test(NAME boot-cpu
+    COMMAND ${CROI_QEMU} --test "cpu: listening on" --forward ${_cpu_port_${CROI_ARCH}}:17019
+            --then "${CMAKE_SOURCE_DIR}/services/cpu/tests/boot-cpu.sh ${VX} ${_cpu_port_${CROI_ARCH}} ${CMAKE_BINARY_DIR}/qemu-cpu"
+            ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-cpu-test ${CMAKE_BINARY_DIR}/qemu-cpu ${CROI_EDK2_DIR})
+  set_tests_properties(boot-cpu PROPERTIES TIMEOUT 150)
+endif()
 croi_boot_program_test(trace trace-test)
 add_test(NAME trace-collect
   COMMAND ${VX} trace collect ${CMAKE_BINARY_DIR}/qemu-trace/console.log ${CMAKE_BINARY_DIR}/trace)

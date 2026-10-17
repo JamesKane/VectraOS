@@ -176,6 +176,16 @@ let ipc: [Target] = [
           path: "services/factotum/lib", swiftSettings: tier0),
   .testTarget(name: "FactotumTests", dependencies: ["Factotum", "Noise", "Node", "IPC", "Sys"],
               path: "services/factotum/tests"),
+  // cpu (D77): the session's wire, which the node's server and vx cpu share,
+  // and vx cpu's side, the terminal: its tree in 9P2000, host only.
+  .target(name: "CpuProtocol", path: "services/cpu/protocol", swiftSettings: tier0),
+  .target(name: "CpuTerminal", dependencies: ["CpuProtocol", "NineP", "Noise"], path: "tools/cpu/lib"),
+  // The node's cpu server (services/cpu), tested against vx cpu's terminal.
+  .target(name: "CpuServer", dependencies: ["CpuProtocol", "Gate", "IPC", "Net", "NineP", "Node", "Sys"],
+          path: "services/cpu/lib", swiftSettings: tier0),
+  .testTarget(name: "CpuTests", dependencies: ["CpuProtocol", "CpuServer", "CpuTerminal", "Gate", "IPC", "Node", "Noise",
+                                              "Sys"],
+              path: "services/cpu/tests"),
   // kbdfs (D83): the keyboard and the console, after 9front's.
   .target(name: "Kbdfs", path: "services/kbdfs/lib", swiftSettings: tier0),
   .testTarget(name: "KbdfsTests", dependencies: ["Kbdfs"], path: "services/kbdfs/tests"),
@@ -295,7 +305,7 @@ let package = Package(
       .product(name: "SwiftSyntax", package: "swift-syntax"),
     ], path: "tools/man/lib"),
     .testTarget(name: "ManualTests", dependencies: ["Manual", "Guide"], path: "tools/man/tests"),
-    .executableTarget(name: "vx", dependencies: ["Bench", "Guide", "Hardware", "ImageFormats", "Manual", "Risk", "TDACPI", "TraceFormat",
+    .executableTarget(name: "vx", dependencies: ["Bench", "CpuTerminal", "Guide", "Hardware", "ImageFormats", "Manual", "Risk", "TDACPI", "TraceFormat",
                                                  "TraceReader"], path: "tools/vx"),
   ] + ipc,
   cLanguageStandard: .gnu2x

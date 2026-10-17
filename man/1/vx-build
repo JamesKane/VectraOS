@@ -1,8 +1,8 @@
 page vx-build 1
 summary build, test and boot the images of each arch
 names vx-build vx-test vx-boot
-src tools/vx/main.swift tools/vx/BuildCommand.swift tools/vx/TestCommand.swift tools/risk/lib/Risk.swift
-keys cmake ninja qemu ctest image arch risk changed
+src tools/vx/main.swift tools/vx/BuildCommand.swift tools/vx/TestCommand.swift tools/risk/lib/Risk.swift tools/vx/CpuCommand.swift
+keys cmake ninja qemu ctest image arch risk changed cpu
 
 # SYNOPSIS
 
@@ -11,7 +11,7 @@ vx build [arch ...]
 vx test [arch ...] [--only test,...]
 vx test --changed [ref] [--plan]
 vx test --check
-vx boot [arch]
+vx boot [arch] [--cpu [key]]
 ```
 
 # DESCRIPTION
@@ -32,6 +32,9 @@ It stops at the first arch whose build or tests fail, and exits 1.
 `vx boot` builds one <arch> (`amd64` by default) and boots it interactively in QEMU, with edk2 firmware from `/usr/share/edk2`, by running `ninja -C build/<arch> run`.
 Ctrl-A x quits QEMU.
 More than one <arch> is refused.
+With `--cpu` it boots the cpu image instead: the launcher and every service, with a cpu server (cpu(8)) for the terminal whose public key is <key>, 64 hex digits, or this terminal's own (vx-cpu(1)) without one.
+The key goes to `build/<arch>/cpu/terminal`, which the image carries as `lib/cpu/terminal`, and the node's port 17019 is forwarded from 17019 on 127.0.0.1, so `vx cpu -k` <node-key> `localhost` reaches it; the node's key is on its console, in the cpu server's `listening` line.
+No other image has a cpu server.
 
 `vx test --changed` runs only what a change puts at risk.
 The change is every file that differs from where the tree left <ref> (`main` by default): committed, staged, unstaged and untracked.

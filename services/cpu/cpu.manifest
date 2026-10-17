@@ -1,0 +1,23 @@
+# cpu (D77): the node's cpu server (cpu(8)), only in an image built with
+# vx boot --cpu KEY, which puts the terminal's key at lib/cpu/terminal.
+# It listens on tcp!*!17019 through /net, for calls from on the link, and
+# runs its handshakes through factotum, granted the node's noise-ik key
+# and nothing else (D75). Each session's rc gets this namespace, with the
+# terminal's tree at /mnt/term, in a job of its own under `programs`.
+service cpu
+program cpu
+programs
+use env
+use factotum
+grant factotum proto=noise-ik
+mount /bin bootfs/bin
+mount /lib/man bootfs/lib/man
+mount /lib/cpu bootfs/lib/cpu
+mount /dev devmgr/dev
+mount /net devmgr/net
+mount /net net/net after
+mount /net cs/net after
+mount /net dns/net after
+mount /proc proc
+mount /mnt/plumb plumber
+restart on-failure

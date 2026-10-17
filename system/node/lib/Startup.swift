@@ -32,6 +32,21 @@ extension Startup {
     add(channel, info: Self.nsInfo(names.count - 1, placement, create, sealed))
   }
 
+  /// Adds `namespace` whole, for a child: each mount point, and each
+  /// member of a union in its order, a new channel to the same node,
+  /// sealed if `namespace` is.
+  public func mount(_ namespace: Namespace) throws(NamespaceError) {
+    let sealed = namespace.sealed
+    for m in namespace.locked({ namespace.mounts }) {
+      for (i, member) in m.members.enumerated() {
+        let client: NodeIPC.NodeClient
+        do throws(NodeIPC.NodeClient.Failure) { client = try member.open([]) } catch { throw NamespaceError(error) }
+        mount(client.takeChannel(), at: "/" + m.path.joined(separator: "/"), i == 0 ? .replace : .after,
+              create: member.create, sealed: sealed)
+      }
+    }
+  }
+
   /// The channel to serve this process's own Node tree on, once.
   public func export() -> Handle? { take(HandleType.info(HandleType.export)) }
 

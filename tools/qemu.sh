@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Boot a croi EFI system partition under QEMU with edk2 firmware.
 #
-#   qemu.sh [--test <text>] [--exits] [--screendump <file.ppm>] [--registers-on <text>] [--iommu intel|amd] <amd64|arm64|rv64> <esp-dir> <work-dir> <edk2-dir> [qemu args...]
+#   qemu.sh [--test <text>] [--exits] [--then <command>] [--forward <host>:<guest>] [--screendump <file.ppm>] [--registers-on <text>] [--iommu intel|amd] <amd64|arm64|rv64> <esp-dir> <work-dir> <edk2-dir> [qemu args...]
 #
 # The ESP directory is served as a virtual FAT drive. Writable firmware
 # variable stores are copied into <work-dir> on first use. With --test the
@@ -23,6 +23,11 @@
 # KEYS` sends each of KEYS (QEMU's key names, separated by spaces) through
 # the monitor's sendkey, to the keyboard the guest's driver last activated
 # (V2 7d: launch-test's key through virtio-input).
+# With --then (test mode only), once the line is seen the command runs on
+# the host, the line in $QEMU_LINE, while the console goes on being copied;
+# the run succeeds if the command does (boot-cpu: vx cpu into the guest).
+# --forward connects TCP port <host> on 127.0.0.1 to the guest's port
+# <guest> (vx boot --cpu, boot-cpu).
 
 set -euo pipefail
 
@@ -35,6 +40,8 @@ screendump=
 registers_on=
 iommu=intel
 aia=
+then=
+forward=
 while [[ ${1:-} == --* ]]; do
   case $1 in
     --test) expect=${2:?--test needs the text to wait for}; shift 2 ;;
@@ -43,6 +50,8 @@ while [[ ${1:-} == --* ]]; do
     --registers-on) registers_on=${2:?--registers-on needs the text to wait for}; shift 2 ;;
     --iommu) iommu=${2:?--iommu needs intel or amd}; shift 2 ;;
     --aia) aia=1; shift ;;
+    --then) then=${2:?--then needs a command}; shift 2 ;;
+    --forward) forward=${2:?--forward needs host:guest}; shift 2 ;;
     *) echo "qemu.sh: unknown option $1" >&2; exit 2 ;;
   esac
 done
@@ -136,8 +145,10 @@ esac
 # QEMU's user network, which reaches nothing outside (restrict=on) but an
 # echo, cat, at 10.0.2.100!7 for boot-launch to dial; no option ROM
 # (romfile=), so the firmware doesn't try to boot from it.
+netdev=user,id=net0,restrict=on,guestfwd=tcp:10.0.2.100:7-cmd:cat
+[[ -n $forward ]] && netdev+=,hostfwd=tcp:127.0.0.1:${forward%%:*}-:${forward#*:}
 qemu+=(-m 512M -smp 4 -net none "${disk[@]}" -device virtio-rng-pci -device virtio-keyboard-pci,addr=0x11,iommu_platform=on
-       -netdev user,id=net0,restrict=on,guestfwd=tcp:10.0.2.100:7-cmd:cat -device virtio-net-pci,netdev=net0,addr=0x12,disable-legacy=on,iommu_platform=on,romfile=)
+       -netdev "$netdev" -device virtio-net-pci,netdev=net0,addr=0x12,disable-legacy=on,iommu_platform=on,romfile=)
 
 if [[ -n $expect ]]; then
   console=$work/console.log
@@ -190,9 +201,24 @@ if [[ -n $expect ]]; then
         rm -f "$screendump"
         "$vx" qemu-monitor "$socket" screendump "$screendump" || status=1
       fi
+      if [[ -n $then ]]; then
+        # The console goes on being copied meanwhile, so the guest never
+        # waits for it to be read.
+        ( while IFS= read -r l <&"$out"; do printf '%s\n' "$l"; printf '%s\n' "$l" >> "$console"; done ) &
+        drain=$!
+        QEMU_LINE=$line bash -c "$then" || status=2
+        kill "$drain" 2>/dev/null || true
+      fi
       break
     fi
   done
+  if (( status == 2 )); then
+    echo "qemu.sh: '$then' failed" >&2
+    status=1
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    exit $status
+  fi
   if (( status != 0 )); then
     echo "qemu.sh: '$expect' not seen" >&2
   elif [[ -n $exits ]]; then

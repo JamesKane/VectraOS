@@ -342,6 +342,9 @@ set(_9gate_manifest ${PROJECT_SOURCE_DIR}/services/9gate/9gate/9gate.manifest)
 set(_factotum ${CMAKE_CURRENT_BINARY_DIR}/factotum.elf)
 croi_user_program(${_factotum} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/factotum/Main.swift)
 set(_factotum_manifest ${PROJECT_SOURCE_DIR}/services/factotum/factotum.manifest)
+# bin/cpu (D77): the cpu server, only in the cpu images below.
+set(_cpu ${CMAKE_CURRENT_BINARY_DIR}/cpu.elf)
+croi_user_program(${_cpu} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/cpu/Main.swift)
 file(GLOB_RECURSE _driver_manifests CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/*/driver.manifest)
 list(SORT _driver_manifests)
 set(_drivers_index ${CMAKE_CURRENT_BINARY_DIR}/drivers.index)
@@ -382,9 +385,7 @@ add_custom_command(OUTPUT ${_man_index}
 include(${PROJECT_SOURCE_DIR}/cmake/Tier1.cmake)
 croi_tier1(_tier1_bootfs _tier1_files)
 set(CROI_BOOTFS_IMAGE ${CMAKE_BINARY_DIR}/bootfs.img PARENT_SCOPE)
-add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
-  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs.img
-          bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_test}
+set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_test}
           lib/libdltest.so=${_dl_c} lib/libdlswift.so=${_dl_swift} bin/trace-test=${_trace_test} bin/ipc-test=${_ipc_test}
           bin/node-test=${_node_test} bin/acpi-test=${_acpi_test} bin/pci-test=${_pci_test} bin/launcher=${_launcher} bin/launch-service=${_launch_service}
           bin/launch-test=${_launch_test} etc/manifests/a.manifest=${_manifests}/a.manifest
@@ -405,8 +406,8 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
           lib/ndb/local=${_ndb}/db/local lib/ndb/common=${_ndb}/db/common
           bin/9gate=${_9gate} etc/manifests/9gate.manifest=${_9gate_manifest}
           bin/factotum=${_factotum} etc/manifests/factotum.manifest=${_factotum_manifest}
-          ${_tier1_bootfs}
-  DEPENDS ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_trace_test} ${_ipc_test} ${_node_test} ${_acpi_test} ${_pci_test}
+          ${_tier1_bootfs})
+set(_bootfs_depends ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_trace_test} ${_ipc_test} ${_node_test} ${_acpi_test} ${_pci_test}
           ${_launcher} ${_launch_service} ${_launch_test} ${_manifests}/a.manifest ${_manifests}/b.manifest
           ${_launch_test_manifest} ${_time} ${_manifests}/time.manifest ${_pty} ${_manifests}/pty.manifest
           ${_bootfs_service} ${_manifests}/bootfs.manifest
@@ -418,6 +419,31 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
           ${_net} ${PROJECT_SOURCE_DIR}/services/net/net.manifest
           ${_cs} ${_ndb}/cs/cs.manifest ${_dns} ${_ndb}/dns/dns.manifest ${_ndb}/db/local ${_ndb}/db/common
           ${_9gate} ${_9gate_manifest} ${_factotum} ${_factotum_manifest}
-          ${_man_files} ${_man_index} ${_tier1_files} vx ${VX}
+          ${_man_files} ${_man_index} ${_tier1_files} vx ${VX})
+add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
+  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs.img ${_bootfs_entries}
+  DEPENDS ${_bootfs_depends}
   COMMENT "Building bootfs")
 add_custom_target(bootfs DEPENDS ${CMAKE_BINARY_DIR}/bootfs.img)
+# The cpu images (D77): bootfs and the cpu server, its manifest and the
+# key of the terminal it answers (lib/cpu/terminal), which no other image
+# has. bootfs-cpu-test.img pins the tests' terminal (boot-cpu);
+# bootfs-cpu.img the key vx boot --cpu writes to cpu/terminal.
+# Without the launcher's own test and its services, which judge a normal
+# image.
+set(_cpu_image_entries ${_bootfs_entries})
+list(FILTER _cpu_image_entries EXCLUDE REGEX "^(bin/launch-test|etc/manifests/(launch-test|a|b)\\.manifest)=")
+set(_cpu_entries bin/cpu=${_cpu} etc/manifests/cpu.manifest=${PROJECT_SOURCE_DIR}/services/cpu/cpu.manifest)
+set(_cpu_test_key ${PROJECT_SOURCE_DIR}/services/cpu/tests/terminal.pub)
+add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-cpu-test.img
+  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-cpu-test.img ${_cpu_image_entries} ${_cpu_entries}
+          lib/cpu/terminal=${_cpu_test_key}
+  DEPENDS ${_bootfs_depends} ${_cpu} ${PROJECT_SOURCE_DIR}/services/cpu/cpu.manifest ${_cpu_test_key}
+  COMMENT "Building bootfs for boot-cpu")
+add_custom_target(bootfs-cpu-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-cpu-test.img)
+add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-cpu.img
+  COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-cpu.img ${_cpu_image_entries} ${_cpu_entries}
+          lib/cpu/terminal=${CMAKE_BINARY_DIR}/cpu/terminal
+  DEPENDS ${_bootfs_depends} ${_cpu} ${PROJECT_SOURCE_DIR}/services/cpu/cpu.manifest ${CMAKE_BINARY_DIR}/cpu/terminal
+  COMMENT "Building bootfs for vx boot --cpu")
+add_custom_target(bootfs-cpu DEPENDS ${CMAKE_BINARY_DIR}/bootfs-cpu.img)

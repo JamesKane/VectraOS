@@ -168,7 +168,7 @@ public final class GateService: @unchecked Sendable {
   /// A conversation as a stream: reads on one data channel, writes on
   /// another, hung up through its ctl. They are opened anew by its
   /// directory before `c`'s close: the last channel to close ends it.
-  static func stream(_ ns: Namespace, _ c: consuming NetConnection) -> ByteStream? {
+  public static func stream(_ ns: Namespace, _ c: consuming NetConnection) -> ByteStream? {
     let dir = c.dir
     guard let reader = try? ns.open(dir + "/data"), let writer = try? ns.open(dir + "/data"),
           let control = try? ns.open(dir + "/ctl")
@@ -182,7 +182,7 @@ public final class GateService: @unchecked Sendable {
     })
   }
 
-  static func text(_ e: GateError) -> String {
+  public static func text(_ e: GateError) -> String {
     switch e {
     case .closed: "connection closed"
     case .protocolError(let why): why
