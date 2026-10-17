@@ -12,7 +12,7 @@ drivers/
   devmgr/        bin/devmgr (Main.swift), its library (lib/: firmware, IOMMUs,
                  routing, grants, the match index) and its manifest
   virtio/        Virtio: the modern transport, split queues, devices' configurations (7d)
-  block/virtio-blk/lib/  VirtioBlk: virtio-blk's request format (its class comes in V3)
+  block/virtio-blk/lib/  VirtioBlk: virtio-blk's request format (its class comes in V4, D76)
   input/         the input class: lib/ (InputDevice: Device, its events on the one ring), idl/
     virtio-input/  keyboards, mice and tablets (7d)
   test/edu/      QEMU's edu device: the first driver, devmgr's test
