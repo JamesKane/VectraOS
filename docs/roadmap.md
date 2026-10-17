@@ -451,7 +451,8 @@ work, in order:
    class (TDFR) with N1 (V3).
 8. **Services and the shell:** the console (it reads the debuglog ring,
    D38; the Radharc handoff waits for V6), the router (plumber), the pty
-   (done, with item 6),
+   (done, with item 6; temporary, to be ejected for Plan 9's `/dev/cons`
+   as rio serves it: services/pty/README.md),
    rc and `cat`.
 
 **Exit:**

@@ -24,3 +24,33 @@ CR NL. The server (`lib/Server.swift`) runs a thread for each ring it
 reads, its IPC on the dispatcher's. launch-test (boot-launch) types to a
 pty as its terminal and program both, and, where tier 1 is built, to rc
 on one.
+
+## Temporary: the pty goes for Plan 9's way
+
+The pty is a stopgap, lifted so rc had a terminal in V2. Its line
+discipline is Unix's tty (termios's cooked and raw modes, kept in a
+service between the terminal and the program), and we mean to eject it
+for Plan 9's approach, as rio does it:
+- **The window is the terminal.** Whatever shows a program's text (a
+  Radharc terminal window in V6; before then the console and sshd's
+  session) is the other side of the program's fds 0 to 2 itself, with
+  no pty between them, and serves `/dev/cons` and `/dev/consctl` in the
+  program's namespace, as rio serves each window's.
+- **Editing is the window's.** Text is edited in the window, anywhere
+  before the last newline, and a line goes to the program when it is
+  sent; `rawon` and `rawoff` written to `/dev/consctl` take the place of
+  raw and cooked modes. No line discipline, no termios state, no CR NL
+  translation in a service.
+- **Interrupts are notes.** The window posts `interrupt` to its
+  programs, as rio does on DEL, in place of the pty's Control events.
+  This waits for notes between processes, which croi doesn't have yet.
+
+What goes with it: `services/pty` (its line discipline, server and IDL),
+rc's relay of the terminal to its foreground program
+(`shell/rc/native/Terminal.swift`), and `CROI_PA_PTY_CONTROL`. The rings
+stay (D46): fds 0 to 2 are still byte rings, with the window on the
+other end. Open: how tier 1's POSIX programs that ask for termios or
+`isatty` see a window (the libc mapping them onto `/dev/consctl`, as
+Plan 9's APE does, is the likely answer). The ejection needs a decision
+of its own before code moves; until then, don't build new things on the
+pty's Control or its modes.

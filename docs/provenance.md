@@ -52,7 +52,7 @@ The actions in the tables:
 | `services/radharc`, desktop shell (Tracker, Deskbar) | Port | V6 | Add the tile and space workspace modes (D9). The look is Platinum Indigo (D24), not `desktop.md` §6's neon. |
 | `ui`, `text`, `graphics` (Vulkan/Venus), `codecs` | Lift | V6 | `graphics` changes on the way in: D55-D62 (memory by intent for both memory models, one sync mechanism, shader layouts from the IDL; F-106 not lifted) |
 | N1 (`n1` branch): `crypto`, `services/net` (+ NetRing, NetIPC), `drivers/net` (class + virtio-net), `services/sshd` (+ SFTP) | Lift | V3 | The bring-up link (D15). The stack and crypto are also 9gate's and Noise's base in V7. |
-| `rc`, the pty service, the launcher's `/dev/bin` union (N1e) | Lift | V2–V3 | rc is the one shell. The pty's line discipline as it was, its server and protocol on rings (D46) |
+| `rc`, the pty service, the launcher's `/dev/bin` union (N1e) | Lift | V2–V3 | rc is the one shell. The pty's line discipline as it was, its server and protocol on rings (D46); temporary, to be ejected for Plan 9's `/dev/cons` as rio serves it (services/pty/README.md) |
 | `sdk/` and macros (`@AudioRenderer`) | Lift | V6 | |
 | `services/keyring` | Lift | V3 | sshd's host key now; swarm identity in V7. Its native prompt needs Radharc, so a headless boot needs a decision (roadmap, known issues). |
 
