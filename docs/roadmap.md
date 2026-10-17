@@ -34,7 +34,8 @@ under `vx ci` and every budget it introduces has a running check
     done; their budgets come at V2's exit).
   - Done: the console and the plumber (item 8, D85).
   - Done: the environment as `/env` (item 6, D81).
-  - Proposed: the manual (item 9, D86).
+  - Begun: the manual (item 9, D86): 9a, guide's parser and renderer
+    and the one directive reader, done.
   - Exit: `cat /svc/*/status` run by rc passes (amd64, arm64), spawn →
     main is 79 µs (< 200 µs), and the first bench history is recorded
     (2026-10-16, cd3eb6d). Still open: services RSS < 32 MiB (no budget
@@ -563,10 +564,12 @@ work, in order:
      message no rule takes, and appends a rule whose `plumb client` starts
      `cat`, which reads the held message onto the console.
 9. **The manual (D86),** in four steps:
-   - 9a. `system/guide`: the guide parser and its text renderer (Swift,
-     tier 0 and host), host tests and a fuzz target; the one directive
-     reader, onto which the launcher's and devmgr's manifests move;
-     `vx loc`'s 1,500-line budget for it.
+   - 9a, **done (2026-10-17).** `system/guide`: the guide parser and its
+     text renderer (Swift, tier 0 and host), host tests and a fuzz test;
+     `system/directives`, the one directive reader, onto which the
+     launcher's and devmgr's manifests moved; `vx loc`'s 1,500-line
+     ceiling for it. The body's `@node` and `@guide` lines are
+     directives too (D86's amendment).
    - 9b. `vx man TITLE` and `vx man --check` (in `vx ci`), the index
      (`lib/man/index`, TSV), and `man/missing` holding everything V0 to
      V2 left undocumented. First pages: `guide(6)`, `man(1)`,

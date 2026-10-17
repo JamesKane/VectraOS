@@ -5,8 +5,9 @@
 //   vx loc            lines per component, by language, and how many came
 //                     from croi, todhchai or NeoVectra (IMPORTS.tsv)
 //   vx loc --check    also fails if the syscall count is over its ceiling,
-//                     IMPORTS.tsv names a file that isn't here, or code
-//                     makes a call by number rather than the ABI's name
+//                     a library is over its size ceiling, IMPORTS.tsv
+//                     names a file that isn't here, or code makes a call
+//                     by number rather than the ABI's name
 
 import FoundationEssentials
 import Glibc
@@ -14,6 +15,13 @@ import Glibc
 /// The syscall ceiling. It only ever goes down (D2): lowering it is part
 /// of the change that removes the calls; raising it is a decision entry.
 let syscallCeiling = 91
+
+/// Libraries with a ceiling of their own: Swift lines under a directory,
+/// each set by the decision that made the library. Lowering one is part
+/// of any change; raising it is a decision entry.
+let sizeCeilings: [(directory: String, lines: Int, decision: String)] = [
+  ("system/guide/lib/", 1500, "D86"),  // the manual's parser and renderer
+]
 
 private let languages: [(suffix: String, name: String)] = [
   (".swift", "Swift"), (".c", "C"), (".h", "C"), (".S", "asm"), (".py", "Python"), (".sh", "shell"),
@@ -75,10 +83,14 @@ func locCommand(_ args: [String]) -> Bool {
 
   // component -> language -> (first-party lines, imported lines)
   var table: [String: [String: (ours: Int, theirs: Int)]] = [:]
+  var ceilingLines = [Int](repeating: 0, count: sizeCeilings.count)
   for path in listing.split(separator: "\n").map(String.init) {
     guard let language = languages.first(where: { path.hasSuffix($0.suffix) })?.name,
           let data = FileManager.default.contents(atPath: path) else { continue }
     let lines = data.count { $0 == UInt8(ascii: "\n") }
+    for (i, c) in sizeCeilings.enumerated() where path.hasPrefix(c.directory) && language == "Swift" {
+      ceilingLines[i] += lines
+    }
     let component = path.contains("/") ? String(path.split(separator: "/").first!) : "(root)"
     var entry = table[component, default: [:]][language, default: (0, 0)]
     if imported[path] != nil { entry.theirs += lines } else { entry.ours += lines }
@@ -97,12 +109,19 @@ func locCommand(_ args: [String]) -> Bool {
   out += "| **all** | | **\(ours)** | **\(theirs)** | **\(ours + theirs)** |\n"
   let syscalls = syscallCount()
   out += "\nSyscalls: \(syscalls) (ceiling \(syscallCeiling)).\n"
+  for (i, c) in sizeCeilings.enumerated() {
+    out += "\(c.directory): \(ceilingLines[i]) lines (ceiling \(c.lines), \(c.decision)).\n"
+  }
   say(out)
 
   guard check else { return true }
   var ok = true
   if syscalls > syscallCeiling {
     complain("\(syscalls) syscalls, over the ceiling of \(syscallCeiling)")
+    ok = false
+  }
+  for (i, c) in sizeCeilings.enumerated() where ceilingLines[i] > c.lines {
+    complain("\(c.directory) has \(ceilingLines[i]) lines, over its ceiling of \(c.lines) (\(c.decision))")
     ok = false
   }
   for place in abiViolations(listing.split(separator: "\n").map(String.init)) {

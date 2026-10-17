@@ -21,6 +21,7 @@
 // level any driver matches at decides; two drivers there is an error and
 // neither runs. td refuses an index in which two drivers share a rule.
 
+import Directives
 import PCI
 
 /// A rule a driver matches devices by.
@@ -81,18 +82,18 @@ public struct DriverIndex: Sendable {
 
   public init(drivers: [DriverManifest]) { self.drivers = drivers }
 
-  /// Manifests, one after another (a driver starts at its `driver` line).
-  /// Manifests, one after another (a driver starts at its `driver` line).
-  /// Read as bytes: String's comparisons and splits need Unicode tables
-  /// tier 0 doesn't link.
+  /// The directives a driver's manifest takes (driver(6)).
+  public static let directives: [StaticString] = ["driver", "class", "fallback", "dma-bits", "match"]
+
+  /// Manifests, one after another (a driver starts at its `driver` line),
+  /// read as directives (D86).
   public init(text: String, file: String) throws(IndexError) {
-    var line = 0
-    for raw in Self.lines(Array(text.utf8)) {
-      line += 1
-      let content = raw.prefix { $0 != UInt8(ascii: "#") }
-      let words = Self.words(Array(content))
-      guard let directive = words.first else { continue }
-      let rest = Array(words.dropFirst())
+    let read: [Directive]
+    do throws(DirectiveError) { read = try Directives.read(Array(text.utf8), file: file, known: Self.directives) } catch {
+      throw IndexError(error.description)
+    }
+    for d in read {
+      let line = d.line, directive = d.name, rest = d.arguments
       func fail(_ what: String) -> IndexError { IndexError("\(file):\(line): \(what)") }
       if same(directive, "driver") {
         guard rest.count == 1, !rest[0].isEmpty else { throw fail("'driver' takes a program's name") }
@@ -116,40 +117,9 @@ public struct DriverIndex: Sendable {
         guard rest.count == 2 else { throw fail("'match' takes a kind and an id") }
         guard let rule = Self.rule(rest[0], rest[1]) else { throw fail("bad match '\(rest[0]) \(rest[1])'") }
         drivers[i].rules.append(rule)
-      } else {
-        throw fail("unknown directive '\(directive)'")
       }
     }
     for d in drivers where d.rules.isEmpty { throw IndexError("\(d.origin): driver '\(d.name)' matches nothing") }
-  }
-
-  /// `bytes`' lines, the last one even if it doesn't end in a newline.
-  static func lines(_ bytes: [UInt8]) -> [[UInt8]] {
-    var out: [[UInt8]] = [], current: [UInt8] = []
-    for b in bytes {
-      if b == 0x0A {
-        out.append(current)
-        current = []
-      } else {
-        current.append(b)
-      }
-    }
-    out.append(current)
-    return out
-  }
-
-  /// A line's words, between spaces and tabs.
-  static func words(_ line: [UInt8]) -> [String] {
-    var out: [String] = [], current: [UInt8] = []
-    for b in line + [0x20] {
-      if b == 0x20 || b == 0x09 {
-        if !current.isEmpty { out.append(String(decoding: current, as: UTF8.self)) }
-        current = []
-      } else {
-        current.append(b)
-      }
-    }
-    return out
   }
 
   /// `digits` as a number in `radix` (10 or 16), if they are all digits.

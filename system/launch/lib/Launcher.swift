@@ -17,6 +17,7 @@
 // dispatcher's: a restart waits on the restarting service, which needs the
 // dispatcher to answer for its /svc.
 
+import Directives
 import IPC
 import Node
 
@@ -467,7 +468,7 @@ public final class Launcher: @unchecked Sendable {
       let nodes = [
         tree.text("status", read: { [self] in status }),
         tree.text("ctl", read: { "" }, write: { [self] text throws(NodeError) in
-          let words = words(Array(text.utf8))
+          let words = Directives.words(Array(text.utf8))
           guard words.count == 2, `is`(words[0], "kill") else { throw .invalid }
           do throws(LaunchError) { try kill(words[1]) } catch { throw .notFound }
         }),

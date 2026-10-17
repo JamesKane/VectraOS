@@ -34,12 +34,13 @@
 // Not lifted yet (V2): `seal`, per-client services and their `grant`,
 // apps and scripting (D65).
 //
-// Anything wrong stops the launch with its file and line: Plan 9 ignores
-// errors in namespace files, and sandboxes come out quietly wrong.
+// Its lines are directives (Directives, D86): anything wrong stops the
+// launch with its file and line.
 //
 // Names and words are compared as bytes (`NodeIPC.same`): String's `==`
 // and `split` need Unicode tables tier 0 lacks.
 
+import Directives
 import Node
 import Sys
 
@@ -60,38 +61,6 @@ public enum RestartPolicy: Sendable {
 /// Whether `s` is `literal`, as bytes.
 func `is`(_ s: String, _ literal: StaticString) -> Bool {
   unsafe s.utf8.elementsEqual(UnsafeBufferPointer(start: literal.utf8Start, count: literal.utf8CodeUnitCount))
-}
-
-/// `text`'s lines, as bytes (a CR before the LF dropped).
-func lines(_ text: String) -> [[UInt8]] {
-  var out: [[UInt8]] = [], line: [UInt8] = []
-  for b in text.utf8 {
-    if b == 0x0A {
-      if line.last == 0x0D { line.removeLast() }
-      out.append(line)
-      line = []
-    } else {
-      line.append(b)
-    }
-  }
-  if !line.isEmpty { out.append(line) }
-  return out
-}
-
-/// A line's words: split at spaces and tabs, a `#` and what follows dropped.
-func words(_ line: [UInt8]) -> [String] {
-  var out: [String] = [], word: [UInt8] = []
-  for b in line {
-    if b == 0x23 { break }  // #
-    if b == 0x20 || b == 0x09 {
-      if !word.isEmpty { out.append(String(decoding: word, as: UTF8.self)) }
-      word = []
-    } else {
-      word.append(b)
-    }
-  }
-  if !word.isEmpty { out.append(String(decoding: word, as: UTF8.self)) }
-  return out
 }
 
 public struct Manifest: Sendable {
@@ -144,14 +113,20 @@ public struct Manifest: Sendable {
   /// "file:line: message"
   func error(_ line: Int, _ message: String) -> LaunchError { LaunchError("\(file):\(line): \(message)") }
 
+  /// The directives a manifest takes (manifest(6)).
+  public static let directives: [StaticString] = [
+    "service", "program", "arg", "env", "export", "use", "mount", "srv", "restart", "resource", "programs",
+    "bootdata", "debuglog", "libraries", "bootfs", "launcher", "clock", "early",
+  ]
+
   public init(file: String, text: String) throws(LaunchError) {
     self.file = file
-    var lineNumber = 0
-    for raw in lines(text) {
-      lineNumber += 1
-      let words = words(raw)
-      guard let directive = words.first else { continue }
-      let rest = Array(words.dropFirst())
+    let read: [Directive]
+    do throws(DirectiveError) { read = try Directives.read(Array(text.utf8), file: file, known: Self.directives) } catch {
+      throw LaunchError(error.description)
+    }
+    for d in read {
+      let lineNumber = d.line, directive = d.name, rest = d.arguments
       if service.isEmpty && !`is`(directive, "service") { throw error(lineNumber, "'service' must come first") }
       func count(_ n: ClosedRange<Int>) throws(LaunchError) {
         guard n.contains(rest.count) else {
@@ -262,8 +237,6 @@ public struct Manifest: Sendable {
       } else if `is`(directive, "early") {
         try count(0...0)
         early = true
-      } else {
-        throw error(lineNumber, "unknown directive '\(directive)'")
       }
     }
     guard !service.isEmpty else { throw LaunchError("\(file): no 'service'") }

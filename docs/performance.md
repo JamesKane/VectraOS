@@ -125,4 +125,5 @@ todhchai had no enforcement for principle 10. Here it is a budget.
 |---|---|
 | syscall count | published; the ceiling is set at V1 and only goes down |
 | first-party lines per component | published by `vx loc`; growth beyond 10% in one change needs a reason in the commit |
+| the manual's parser and renderer (`system/guide/lib`) | ≤ 1,500 Swift lines (D86; `vx loc --check`) |
 | `swift_retain`/`swift_release` symbols in tier-0 images | 0 (croi's `CheckNoArc`) |

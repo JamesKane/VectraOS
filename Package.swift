@@ -98,9 +98,17 @@ let ipc: [Target] = [
   // The shell's file commands (shell/commands, V2: tier 1 natively, with rc).
   .target(name: "Commands", dependencies: ["Fs", "Node", "IPC"], path: "shell/commands/lib"),
   .testTarget(name: "CommandsTests", dependencies: ["Commands", "Node", "IPC"], path: "shell/commands/tests"),
+  // Directives (D86): the one record format, one directive a line: the
+  // launcher's manifests, drivers' and the manual's page headers.
+  .target(name: "Directives", path: "system/directives/lib", swiftSettings: tier0),
+  .testTarget(name: "DirectivesTests", dependencies: ["Directives"], path: "system/directives/tests"),
+  // guide (D86): the manual's page format, its parser and its renderer for
+  // a terminal; the one reader of pages.
+  .target(name: "Guide", dependencies: ["Directives"], path: "system/guide/lib", swiftSettings: tier0),
+  .testTarget(name: "GuideTests", dependencies: ["Guide"], path: "system/guide/tests"),
   // The launcher (system/launch, V2): manifests, a job and a process per
   // service, each process's namespace as its Startup (D65), restarts.
-  .target(name: "Launch", dependencies: ["Node", "IPC"], path: "system/launch/lib", swiftSettings: tier0),
+  .target(name: "Launch", dependencies: ["Directives", "Node", "IPC"], path: "system/launch/lib", swiftSettings: tier0),
   .testTarget(name: "LaunchTests", dependencies: ["Launch", "Node", "IPC"], path: "system/launch/tests",
               exclude: ["native"], swiftSettings: [.enableExperimentalFeature("Lifetimes")]),
   // ACPI (drivers/bus/acpi, V2 item 7a, D74): its tables and our AML
@@ -117,7 +125,7 @@ let ipc: [Target] = [
   // devmgr and the driver host (V2 item 7c, D74): todhchai's, its BTIs on
   // the machine's IOMMUs and its registers through CroiMMIO.
   .target(name: "DriverHost", dependencies: ["CroiMMIO", "Sys"], path: "drivers/host", swiftSettings: tier0),
-  .target(name: "DevMgr", dependencies: ["CroiMMIO", "DriverHost", "PCI", "Sys", "TDACPI"], path: "drivers/devmgr/lib",
+  .target(name: "DevMgr", dependencies: ["CroiMMIO", "Directives", "DriverHost", "PCI", "Sys", "TDACPI"], path: "drivers/devmgr/lib",
           swiftSettings: tier0),
   .testTarget(name: "DevMgrTests", dependencies: ["DevMgr", "PCI", "Launch", "TDACPI"], path: "drivers/devmgr/tests"),
   // virtio over PCI (V2 item 7d, D74): the modern transport and split

@@ -159,11 +159,13 @@ function(croi_tier1 bootfs_var depends_var)
   file(GLOB _ipc_wire_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/system/ipc/wire/*.swift)
   file(GLOB _ipc_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/system/ipc/runtime/*.swift)
   file(GLOB _node_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/system/node/lib/*.swift)
+  file(GLOB _directives_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/system/directives/lib/*.swift)
   file(GLOB _launch_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/system/launch/lib/*.swift)
   croi_tier1_library(IPCWire SOURCES ${_ipc_wire_t1})
   croi_tier1_library(IPC SOURCES ${_ipc_t1} USES IPCWire Sys Trace INCLUDES system/trace/c/include)
   croi_tier1_library(Node SOURCES ${_node_t1} USES IPC Ring INCLUDES system/trace/c/include)
-  croi_tier1_library(Launch SOURCES ${_launch_t1} USES Node INCLUDES system/trace/c/include)
+  croi_tier1_library(Directives SOURCES ${_directives_t1})
+  croi_tier1_library(Launch SOURCES ${_launch_t1} USES Directives Node INCLUDES system/trace/c/include)
   # FDIO (system/fdio): POSIX's files over the namespace, the fs protocol's
   # client side with it (services/fs).
   croi_tier1_library(Fs SOURCES services/fs/lib/Fs.swift services/fs/lib/Client.swift services/fs/lib/Listing.swift
@@ -173,7 +175,7 @@ function(croi_tier1 bootfs_var depends_var)
                                   system/fdio/native/Fts.swift
                      CSOURCES system/fdio/native/open.c
                      USES Fs Node INCLUDES system/trace/c/include)
-  set(_t1_libs SysABI Loader Ring Sys LibSys TraceFormat Trace IPCWire IPC Node Launch Fs FDIO)
+  set(_t1_libs SysABI Loader Ring Sys LibSys TraceFormat Trace IPCWire IPC Node Directives Launch Fs FDIO)
   set(_t1_archives ${_t1_libs})
   list(TRANSFORM _t1_archives PREPEND ${_lib}/lib)
   list(TRANSFORM _t1_archives APPEND .a)

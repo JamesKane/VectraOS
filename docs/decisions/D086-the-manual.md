@@ -135,3 +135,8 @@ Not chosen:
 - **`.help` per service and `.schema` checks** (NeoVectra's 12 §6.4):
   this tree has neither. A service's FILES are checked against its live
   tree instead.
+
+Amended with V2 step 9a (2026-10-17): the body's two directives are
+directives too, `@node ID TITLE` and `@guide 1`, read by the same reader
+as the header, not NeoVectra's `@node=ID title="…"` and `@guide=1`, which
+were ndb.
