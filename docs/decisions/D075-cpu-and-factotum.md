@@ -1,4 +1,4 @@
-# D75. The terminal is rio's window, remote sessions are Plan 9's cpu, and the keyring becomes factotum (2026-10-16, proposed)
+# D75. The terminal is rio's window, remote sessions are Plan 9's cpu, and the keyring becomes factotum (2026-10-16, decided)
 
 The pty is temporary (services/pty/README.md): it goes for Plan 9's
 `/dev/cons`, served by whatever shows a program's text, as rio serves
