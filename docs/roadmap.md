@@ -39,8 +39,7 @@ under `vx ci` and every budget it introduces has a running check
   - Exit: `cat /svc/*/status` run by rc passes (amd64, arm64), spawn →
     main is 79 µs (< 200 µs), and the first bench history is recorded
     (2026-10-16, cd3eb6d). Still open: services RSS < 32 MiB (no budget
-    yet), the manual (D86), and two ring budgets that miss their limits
-    (below).
+    yet) and the manual (D86).
 - **V3 onward** are not started (V6's boards have research passes).
 
 ## V0. Ground — done 2026-10-15
@@ -587,11 +586,13 @@ work, in order:
   quiet machine), on the kernel as V1 left it (D17). **Done**
   (2026-10-16, cd3eb6d, load 1.1). Accepted in the open: the self-tests'
   boot, 4.3 s against V0's 2.4 s, since the self-tests have grown since
-  (+18% interleaved against ae7d84e alone, a 4.1-5.5 s spread). Open,
-  limits unchanged: `ring.per_1000_slots` is 27.8 µs against 10 µs and
-  `ring.kicks` 11 against 0, on the tree before /env too (29.5 µs, 21):
-  misses never recorded before, to check against Zircon (`vx bench
-  --zircon`) and fix.
+  (+18% interleaved against ae7d84e alone, a 4.1-5.5 s spread). It
+  recorded `ring.per_1000_slots` at 27.8 µs against its 10 µs limit and
+  `ring.kicks` at 11 against 0: a regression since D43 (5.7 µs, 0),
+  bisected to af28d2e, from which every user program linked the libc's
+  byte-at-a-time memcpy, which each ring slot goes through. Fixed, the
+  limits unchanged: memcpy, memmove and memset go a word at a time (7.1
+  µs, 0 kicks, round trip 201 to 146 ns).
 - spawn → main < 200 µs. **Done** (79 µs recorded; 68-133 µs
   interleaved).
 - Services RSS < 32 MiB.
