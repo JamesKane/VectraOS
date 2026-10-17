@@ -35,8 +35,11 @@ under `vx ci` and every budget it introduces has a running check
   - Done: the console and the plumber (item 8, D85).
   - Done: the environment as `/env` (item 6, D81).
   - Proposed: the manual (item 9, D86).
-  - Exit: `cat /svc/*/status` run by rc passes (amd64, arm64). Still
-    open: spawn → main < 200 µs, and the first recorded bench history.
+  - Exit: `cat /svc/*/status` run by rc passes (amd64, arm64), spawn →
+    main is 79 µs (< 200 µs), and the first bench history is recorded
+    (2026-10-16, cd3eb6d). Still open: services RSS < 32 MiB (no budget
+    yet), the manual (D86), and two ring budgets that miss their limits
+    (below).
 - **V3 onward** are not started (V6's boards have research passes).
 
 ## V0. Ground — done 2026-10-15
@@ -578,8 +581,16 @@ work, in order:
 - `cat /svc/*/status` works, run by rc in a native test. **Done**
   (boot-launch, amd64 and arm64; rv64 when tier 1 is).
 - The first boot budget history is recorded (`vx bench --record`, on a
-  quiet machine), on the kernel as V1 left it (D17).
-- spawn → main < 200 µs.
+  quiet machine), on the kernel as V1 left it (D17). **Done**
+  (2026-10-16, cd3eb6d, load 1.1). Accepted in the open: the self-tests'
+  boot, 4.3 s against V0's 2.4 s, since the self-tests have grown since
+  (+18% interleaved against ae7d84e alone, a 4.1-5.5 s spread). Open,
+  limits unchanged: `ring.per_1000_slots` is 27.8 µs against 10 µs and
+  `ring.kicks` 11 against 0, on the tree before /env too (29.5 µs, 21):
+  misses never recorded before, to check against Zircon (`vx bench
+  --zircon`) and fix.
+- spawn → main < 200 µs. **Done** (79 µs recorded; 68-133 µs
+  interleaved).
 - Services RSS < 32 MiB.
 - `man man` prints its page from bootfs, `vx man --check` passes under
   `vx ci`, and `man/missing` lists only what V0 to V2 left (D86).
