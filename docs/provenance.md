@@ -48,14 +48,14 @@ The actions in the tables:
 | `services/router` (plumber) | Lift | V2 | |
 | `services/console`, `services/time`, `shell/commands` | Port | V2 | The console reads the debuglog ring (D38); UTC is a page (D48) |
 | `tools/toolchain` (the `*-todhchai` series, renamed `*-vectraos`) and tier 1's sysroot | Lift | V2 | Tier 1 for FDIO and rc (D47) |
-| `fs/taisce` and `services/fs` | Lift | V3 (RAM disk), V5 (on disk) | The one FS (D8). V3's file copies land in it. Replace its use of the `Synchronization` module in tier 0. |
-| `services/radharc`, desktop shell (Tracker, Deskbar) | Port | V6 | Add the tile and space workspace modes (D9). The look is Platinum Indigo (D24), not `desktop.md` §6's neon. |
-| `shell/terminal`, as `shell/rio` (D75) | Port | V6 | Rio's text window inside Radharc, serving `/dev/cons`; `TerminalCore` as `vt`, a program in a window; the router's route as plumbing from the window's directory. |
-| `ui`, `text`, `graphics` (Vulkan/Venus), `codecs` | Lift | V6 | `graphics` changes on the way in: D55-D62 (memory by intent for both memory models, one sync mechanism, shader layouts from the IDL; F-106 not lifted) |
+| `fs/taisce` and `services/fs` | Lift | V3 (RAM disk), V4 (on disk) | The one FS (D8). V3's file copies land in it. Replace its use of the `Synchronization` module in tier 0. |
+| `services/radharc`, desktop shell (Tracker, Deskbar) | Port | V5 | Add the tile and space workspace modes (D9). The look is Platinum Indigo (D24), not `desktop.md` §6's neon. |
+| `shell/terminal`, as `shell/rio` (D75) | Port | V5 | Rio's text window inside Radharc, serving `/dev/cons`; `TerminalCore` as `vt`, a program in a window; the router's route as plumbing from the window's directory. |
+| `ui`, `text`, `graphics` (Vulkan/Venus), `codecs` | Lift | V5 | `graphics` changes on the way in: D55-D62 (memory by intent for both memory models, one sync mechanism, shader layouts from the IDL; F-106 not lifted) |
 | N1 (`n1` branch): `crypto`, `services/net` (+ NetRing, NetIPC), `drivers/net` (class + virtio-net), `services/sshd` (+ SFTP) | Lift | V3 | The bring-up link (D15). The stack and crypto are also 9gate's and Noise's base in V7. |
 | `rc`, the pty service, the launcher's `/dev/bin` union (N1e) | Lift | V2–V3 | rc is the one shell. The pty's line discipline as it was, its server and protocol on rings (D46); temporary, to be ejected for Plan 9's `/dev/cons` as rio serves it (services/pty/README.md) |
-| `sdk/` and macros (`@AudioRenderer`) | Lift | V6 | |
-| `services/keyring`, as `services/factotum` (D75) | Lift | V3 | sshd's host key now; Noise IK's static key, the swarm identity, in V7. Already after Plan 9's factotum; renamed, its AuthIPC sessions kept. A headless factotum asks no one (D75); keys persist with Taisce on disk (V5). |
+| `sdk/` and macros (`@AudioRenderer`) | Lift | V5 | |
+| `services/keyring`, as `services/factotum` (D75) | Lift | V3 | sshd's host key now; Noise IK's static key, the swarm identity, in V7. Already after Plan 9's factotum; renamed, its AuthIPC sessions kept. A headless factotum asks no one (D75); keys persist with Taisce on disk (V4). |
 
 ## NeoVectra (C23 with third-party dependencies)
 
@@ -65,7 +65,7 @@ The actions in the tables:
 | `lib/vx-ring` model test | Rewrite | V1 | The one ring (architecture §3) |
 | `lib/vx-9p` codec and `.def` tables | Rewrite | V7 | 9gate's 9P2000.L codec, in Swift |
 | docs/02 §6 swarm, `docs/proto/accel.md` | Design | V7–V8 | |
-| ADR-0019 (Adreno on the Q8B), ADR-0022 (remote processors), docs/22 (real hardware) | Design | V4–V8 | |
+| ADR-0019 (Adreno on the Q8B), ADR-0022 (remote processors), docs/22 (real hardware) | Design | V6–V8 | |
 | `lib/vx-net` (TCP, DHCP, DNS) | Drop | — | todhchai's `services/net` is the one network stack |
 | `lib/vx-fs` (Bε-tree) | Drop | — | Taisce wins (D8) |
 | `lib/vx-text` (sam-style structural regex) | Rewrite | later | For the editor |
@@ -77,10 +77,10 @@ The actions in the tables:
 
 | Part | Action | Milestone |
 |---|---|---|
-| `docs/boards/radxa-dragon-q8b/*` (ACPI facts, GPU and display, USB, power, NPU, lessons) | Design | V4–V8 |
-| `firmware/` blob provenance for the Q8B | Design | V4 |
-| `sys/dev/uart/uart_dev_qcom_geni.c`, `firmware-acpi-boot.md` (console pins, SPCR) | Design | V3–V4 |
-| `sys/dev/tcx/` and `ethernet-tc956x.md` (TC956x Ethernet) | Design | V4 |
+| `docs/boards/radxa-dragon-q8b/*` (ACPI facts, GPU and display, USB, power, NPU, lessons) | Design | V6–V8 |
+| `firmware/` blob provenance for the Q8B | Design | V6 |
+| `sys/dev/uart/uart_dev_qcom_geni.c`, `firmware-acpi-boot.md` (console pins, SPCR) | Design | V3–V6 |
+| `sys/dev/tcx/` and `ethernet-tc956x.md` (TC956x Ethernet) | Design | V6 |
 
 Linux-derived code from AbyssBSD's LinuxKPI ports is *not* used. Those notes
 are read only as hardware documentation.
@@ -89,9 +89,9 @@ are read only as hardware documentation.
 
 | Part | Action | Milestone |
 |---|---|---|
-| Linux `arch/riscv/boot/dts/spacemit/k1*.dts*` and the `spacemit,*` bindings (the RV2's SoC, memory, buses and devices) | Design | V4b |
-| Linux `drivers/net/ethernet/spacemit/k1_emac.c`, `drivers/mmc/host/sdhci-of-k1.c`, `drivers/pci/controller/dwc/pcie-spacemit-k1.c` (register behavior) | Design | V4b |
-| FreeBSD `sys/riscv/spacemit/`, `sys/dev/clk/spacemit/`, the X60's ids in `cpu.h` | Design | V4b |
+| Linux `arch/riscv/boot/dts/spacemit/k1*.dts*` and the `spacemit,*` bindings (the RV2's SoC, memory, buses and devices) | Design | V6b |
+| Linux `drivers/net/ethernet/spacemit/k1_emac.c`, `drivers/mmc/host/sdhci-of-k1.c`, `drivers/pci/controller/dwc/pcie-spacemit-k1.c` (register behavior) | Design | V6b |
+| FreeBSD `sys/riscv/spacemit/`, `sys/dev/clk/spacemit/`, the X60's ids in `cpu.h` | Design | V6b |
 
 No code is lifted from either (D4). `docs/boards/orangepi-rv2/` records
 what was read and at which commit.

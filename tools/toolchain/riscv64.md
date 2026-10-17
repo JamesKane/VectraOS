@@ -111,5 +111,5 @@ the device.
 
 The order, when rc or FDIO needs tier 1 on rv64: step 1, then tier 1's
 tests on rv64 to learn whether the concurrency test survives `tail`
-calls, then decide on step 2. Neither gates the RV2 (V4b): its kernel
+calls, then decide on step 2. Neither gates the RV2 (V6b): its kernel
 and tier 0 run on the fallback today.

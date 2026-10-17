@@ -1,7 +1,7 @@
 # Orange Pi 6 Plus (CIX P1 / Sky1)
 
 A research pass (2026-10-16). Since D69 (2026-10-16) this is the first
-board, V4's, and the CIX Sky1 is planned in `docs/hardware/support.tsv`;
+board, V6's, and the CIX Sky1 is planned in `docs/hardware/support.tsv`;
 D53 checks arm64's baseline against it. AbyssBSD now runs FreeBSD
 16-CURRENT on this board through ACPI, from its NVMe, with the platform,
 the GPU, the NPU and the video codec working. This file reads those
@@ -36,7 +36,7 @@ documentation only (provenance.md).
   roadmap "Board bring-up"): the watchdog's refresh, and the SMMUs that
   firmware leaves on. See Bring-up hazards.
 - **New drivers for the V3 link:** an RTL8126 driver in the net class, and
-  NVMe (which V4 needs anyway).
+  NVMe (which V6 needs anyway).
 
 ## CPU
 
@@ -164,7 +164,7 @@ documentation only (provenance.md).
   before D62's board list names it.
 - **Display:** five Arm China Linlon DP controllers (`CIXH5010`, komeda
   under Linux) and a Trilinear DP transmitter. HDMI comes from DP-4
-  through a PS185 that gives no EDID (AbyssBSD). V6 would start on the
+  through a PS185 that gives no EDID (AbyssBSD). V5 would start on the
   GOP framebuffer, as on every board.
 
 ## Accelerators and the rest
@@ -207,7 +207,7 @@ documentation only (provenance.md).
 
 What each board needs before V3's link runs on it:
 
-| Need | Orange Pi 6 Plus (V4 since D69) | Radxa Dragon Q8B (V8 since D69) |
+| Need | Orange Pi 6 Plus (first board since D69; V6 since D76) | Radxa Dragon Q8B (V8 since D69) |
 |---|---|---|
 | Console | PL011 through DBG2: in croi, tested in QEMU | Qualcomm GENI UART: written ahead in V3, model test only |
 | Serial adapter | 3.3 V | 1.8 V |
@@ -219,7 +219,7 @@ What each board needs before V3's link runs on it:
 
 On paper the Orange Pi 6 Plus is the shorter path to V3's exit on
 hardware. When this pass was written, D5 made the Q8B the first board;
-D69 has since made this board V4's and moved the Q8B to V8.
+D69 has since made this board the first (V6 since D76) and moved the Q8B to V8.
 
 ## On the machine
 

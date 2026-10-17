@@ -1,7 +1,7 @@
 # PC: Gigabyte X870E AORUS ELITE WIFI7, Ryzen 9 7900X
 
 A research pass (2026-10-16). Since D69 it is amd64's first board,
-V4c. This is the AMD tower on the local network (192.168.0.30). It has
+V6c. This is the AMD tower on the local network (192.168.0.30). It has
 no name of its own (its Linux hostname is `fedora`); it runs whatever
 workloads are needed when it is powered up. Unlike brimstone
 (`docs/boards/pc-9700x/`), it is not the development host, so booting it
@@ -84,7 +84,7 @@ Facts marked **(memory)** are not yet checked.
 The same as brimstone's: no SPCR, no DBG2, and Linux found no 16550 (the
 kernel log has no `ttyS` line). croi's loader falls back to COM1, which
 isn't there, so a boot is blind until there is a GOP text console
-(roadmap V4, item 5), a PCIe serial card whose address the loader is
+(roadmap V6, item 5), a PCIe serial card whose address the loader is
 told, or V3's link over the RTL8125. The GOP framebuffer is the RTX
 4070's while it is the boot display (memory).
 

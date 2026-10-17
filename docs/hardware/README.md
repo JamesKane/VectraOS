@@ -50,7 +50,7 @@ line.
 
 A platform's level is at most that of its required components: those its
 milestone's exit needs. On a board that is the console, SMP, interrupts,
-the timer and the network device of V3's link (V4's and V4b's exits run
+the timer and the network device of V3's link (V6's and V6b's exits run
 V3's commands against the board). On QEMU, today, it is the console,
 SMP, interrupts and the timer, which `vx ci` boots with; virtio-net joins
 them when V3 lands, since V3's exit runs in QEMU. A platform whose
@@ -83,8 +83,8 @@ shown beside it:
 
 - **Up:** the change that raises a level carries its evidence: the code
   for development, a recorded pass for experimental, the running check
-  for supported. A milestone's exit names the changes it makes (V4: the
-  Q8B to experimental; V4b: the RV2). A board becomes supported once `vx
+  for supported. A milestone's exit names the changes it makes (V6: the
+  Orange Pi 6 Plus to experimental; V6b: the RV2). A board becomes supported once `vx
   remote test` runs against it as a routine.
 - **Down:** never in the change that would fail its check (principle
   15's rule for budgets). A failing supported row is fixed, or demoted in
@@ -146,7 +146,7 @@ The rules live in `tools/hardware/lib` and are tested hosted
   `tests` lists what passed, gates included (a gate passes when a pass
   of its platform lists it). Lines starting with # are comments. It is
   written by the tool that ran the check, `vx remote test BOARD --record`
-  (V3 and V4), never by hand; until that exists there are no runs, and no
+  (V3 and V6), never by hand; until that exists there are no runs, and no
   board can rise past development.
 
 ## Open
@@ -155,4 +155,4 @@ The rules live in `tools/hardware/lib` and are tested hosted
   (D62, whose track's start is open), and the IvyBridge and cortex-a76
   floor runs (D52, D53, which name the change but not when). They are
   `open` until the roadmap places them.
-- **The RV2's firmware path** (D51) must be decided before V4b starts.
+- **The RV2's firmware path** (D51) must be decided before V6b starts.

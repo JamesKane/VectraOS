@@ -91,7 +91,7 @@ Legend: **keep**, **merge** (the call survives under a combined form),
 | 70–76, 244 | vmar allocate, map, unmap, protect, destroy, unmap_handle_close_thread_exit, op_range, map_view | keep | |
 | 77 | vmar_map_clock | cut | with clock objects |
 | 200, 201 | vmo_get/set_stream_size | cut | with streams |
-| 202–208 | pager (7 calls) | keep | reviewed again at V5, when Taisce is the user |
+| 202–208 | pager (7 calls) | keep | reviewed again at V4, when Taisce is the user |
 | 240, 241, 243 | account create, set_limit, process_set_account | keep | RSS budgets |
 | 242 | account_bind_pressure_port | merge | `object_bind` on the account |
 | 235 | system_get_event | cut (D31) | `object_bind` on the root account; its event objects go with events |

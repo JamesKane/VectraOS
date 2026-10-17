@@ -32,7 +32,7 @@ discipline is Unix's tty (termios's cooked and raw modes, kept in a
 service between the terminal and the program), and we mean to eject it
 for Plan 9's approach, as rio does it:
 - **The window is the terminal.** Whatever shows a program's text (a
-  rio window in Radharc, V6, D75; before then the console and sshd's
+  rio window in Radharc, V5, D75; before then the console and sshd's
   session) is the other side of the program's fds 0 to 2 itself, with
   no pty between them, and serves `/dev/cons` and `/dev/consctl` in the
   program's namespace, as rio serves each window's.

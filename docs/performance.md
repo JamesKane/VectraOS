@@ -63,19 +63,19 @@ against croi.
 | smallest full-Swift program, spawn → exit | < 1 ms, < 8 MiB loaded |
 | Q8B power-on → desktop *(new)* | < 3 s (firmware time is reported separately) |
 
-### Bring-up link (V3 in QEMU, V4 on the Q8B; all *new*)
+### Bring-up link (V3 in QEMU, V6 on the boards; all *new*)
 
 | Budget | Limit |
 |---|---|
 | warm boot: `vx remote boot` → SSH answering again, QEMU KVM | < 2 s |
 | warm boot on the Q8B | < 5 s |
 | `scp` of 64 MiB to the board, virtio-net under KVM | ≥ 100 MB/s |
-| `scp` on the Q8B over 2.5 GbE | ≥ 100 MB/s (debug builds: tracked, no limit until V4 sets one) |
+| `scp` on the Q8B over 2.5 GbE | ≥ 100 MB/s (debug builds: tracked, no limit until V6 sets one) |
 | `ssh` keystroke → echo, on-link | < 5 ms p99 |
 | `log -f` lag: debuglog write → dev machine | < 50 ms p99 |
 | a normal (non-`--ssh`) image's listening TCP ports | 0 |
 
-### Files (V5)
+### Files (V4)
 
 | Budget | Limit |
 |---|---|
@@ -86,7 +86,7 @@ against croi.
 | 4 lock-free readers | ≤ 1.5× the single-reader time |
 | Tracker listing 100k entries, warm | < 100 ms |
 
-### Desktop and apps (V6)
+### Desktop and apps (V5)
 
 | Budget | Limit |
 |---|---|

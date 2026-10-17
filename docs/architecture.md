@@ -216,7 +216,7 @@ it at any time:
 - **Layout policies** are Swift libraries behind one protocol. Adding a
   layout is a library, not a new mechanism.
 - **From todhchai:** tab stacking, stashing and the focus area with a live
-  periphery. Each one must earn its place against principle 1 in V6.
+  periphery. Each one must earn its place against principle 1 in V5.
 
 **Look: Platinum Indigo** (D24). The desktop is skeuomorphic in the manner
 of the 1990s and early 2000s: BeOS structure and yellow tabs, NeXT bevels

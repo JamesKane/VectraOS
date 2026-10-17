@@ -95,7 +95,7 @@ The board has no serial port the firmware knows of (no SPCR, no DBG2,
 and Linux finds no 16550). croi's loader falls back to COM1 on PCs, which
 isn't there, and croi draws only a test pattern on the framebuffer. So a
 boot here is blind until one of these exists:
-- **A GOP text console:** already planned for the Q8B (roadmap V4, item
+- **A GOP text console:** already planned for the Q8B (roadmap V6, item
   5), and useful here first. The GOP framebuffer is the RTX 5070 Ti's.
 - **A PCIe serial card** (a 16550-compatible one): the loader would need
   to be told its address, since no table describes it.
