@@ -54,6 +54,13 @@ final class NinePClient {
   func remove(_ fid: UInt32) throws(GateError)
 }
 
+struct Identity {
+  let publicKey: [UInt8]
+  static func local(_ key: StaticKey, random: () -> [UInt8]) -> Identity
+  static func factotum(_ namespace: Namespace, at path: String)
+    throws(GateError) -> Identity
+}
+
 final class Export {
   static func serve(_ stream: ByteStream, namespace: Namespace, root: String,
                     owner: String = "none", msize: UInt32 = 65560) -> GateError
@@ -77,6 +84,9 @@ A `ByteStream` is a connection's two directions and its hangup.
 `SealedStream` puts a Noise IK session (noise(2)) on a stream: `initiate` calls the responder whose static key is <remote>, and `respond` answers, giving the caller's static key to <accept> before it replies.
 A refused caller gets no reply, and either side hangs the stream up when its handshake fails.
 After the handshake, the sealed stream's bytes travel in transport messages, each framed by its length.
+
+An `Identity` is a node's Noise IK key and the handshakes run with it: `factotum` runs them through factotum's noise-ik sessions (factotum(4)) at <path>, its `auth`, so the caller never holds the key; `local` holds one in memory, its ephemeral keys from <random>.
+9gate's service (9gate(4)) seals its connections with one.
 
 `NinePClient` speaks 9P2000 on a stream.
 It asks for `9P2000.vx` and takes `9P2000`, and its msize is the smaller of <msize> and the server's.
@@ -111,7 +121,7 @@ print(try motd.readText())
 
 # SEE ALSO
 
-fcall(2), noise(2), dial(2), 9p(5), node(5)
+fcall(2), noise(2), dial(2), 9p(5), node(5), 9gate(4), factotum(4)
 
 # BUGS
 

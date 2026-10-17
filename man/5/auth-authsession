@@ -1,0 +1,99 @@
+page auth-authsession 5
+summary the todhchai.auth.AuthSession protocol
+names auth-authsession todhchai.auth.AuthSession
+src services/factotum/lib/Protocol.swift
+
+# SYNOPSIS
+
+```text
+protocol todhchai.auth.AuthSession version 1
+call next() throws(AuthError) -> Step
+call feed(message: [UInt8]) throws(AuthError)
+call failure() -> String
+event answered()
+```
+
+# DESCRIPTION
+
+Protocol `todhchai.auth.AuthSession`, version 1, of library `AuthIPC`, its messages in the one wire format (wire(6)).
+
+| Method | Kind | Since | Ordinal |
+| `next` | call | 1 | `0x67ef3e01b5a5a1ae` |
+| `feed` | call | 1 | `0x3d25bc432d1dbdbb` |
+| `failure` | call | 1 | `0x34c1621c59540ad7` |
+| `answered` | event | 1 | `0x58fe95882c6d8170` |
+
+: `failure`
+  Why the session failed (the peer's error, in words).
+: `answered`
+  The user answered what a `needKey` or `needConfirm` step asked.
+
+@node layouts Message layouts
+
+## next
+
+Request body: empty.
+
+Reply body, 88 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 88 | `result` | Step (inline) |
+
+## feed
+
+Request body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `message` | [UInt8] (bytes out of line) |
+
+Reply body: empty.
+
+## failure
+
+Request body: empty.
+
+Reply body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `result` | String (bytes out of line) |
+
+## answered
+
+Event body: empty.
+
+@node types Types
+
+## struct Step
+
+One step: its kind, and what goes with it.
+
+aligned to 8, 88 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 1 | `kind` | StepKind (UInt8) |
+| 8 | 16 | `bytes` | [UInt8] (bytes out of line) |
+| 24 | 16 | `text` | String (bytes out of line) |
+| 40 | 16 | `user` | String (bytes out of line) |
+| 56 | 16 | `peer` | String (bytes out of line) |
+| 72 | 16 | `secret` | [UInt8] (bytes out of line) |
+
+## enum StepKind
+
+UInt8; receivers reject other values.
+
+| Case | Value |
+| `send` | 1 |
+| `need` | 2 |
+| `needKey` | 3 |
+| `needConfirm` | 4 |
+| `done` | 5 |
+
+## errors AuthError
+
+| Case | Code |
+| `noKey` | 1 |
+| `denied` | 2 |
+| `notAllowed` | 3 |
+| `unsupported` | 4 |
+| `peer` | 5 |
+| `invalid` | 6 |

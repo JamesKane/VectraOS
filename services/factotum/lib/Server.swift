@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// The keyring served (M6k part k4c): its own tree's `clients` node, which
-// the launcher alone reaches (the keyring's manifest: `export
+// factotum served (D75; todhchai's keyring): its own tree's `clients`
+// node, which the launcher alone reaches (factotum's manifest: `export
 // per-client`), opens a tree for each service that uses it, named for
-// that service and scoped by its manifest's `grant keyring` lines:
+// that service and scoped by its manifest's `grant factotum` lines:
 //
-//     grant keyring proto=scram-sha-256 server=db     a pattern its
+//     grant factotum proto=noise-ik                   a pattern its
 //                                                     sessions must stay within
-//     grant keyring admin                             `ctl` too: factotum's
+//     grant factotum admin                            `ctl` too: factotum's
 //
-// A client's tree has `keyring` (AuthIPC.Keyring: its sessions, each an
+// A client's tree has `auth` (AuthIPC.Factotum: its sessions, each an
 // AuthSession on the dispatcher) and, with `admin`, `ctl` (reading lists
 // the keys with secrets hidden; writing `key ...` or `delkey ...`). A
 // session that waits on the user puts its question in `questions`, for
@@ -19,14 +19,13 @@
 // the waits it answers. Tier 0; tested hosted.
 
 import IPC
-import Launch
 import Node
 import Sys
 
-public final class KeyringState: @unchecked Sendable {
+public final class FactotumState: @unchecked Sendable {
   public let dispatcher: IPCDispatcher
   let lock = Lock()
-  let keyring: Keyring
+  let factotum: Factotum
   /// Live sessions, by the dispatcher's id for each.
   var sessions: [(id: UInt64, session: AuthSession)] = []
   /// Called (on any thread) when the questions change: the prompt looks
@@ -35,7 +34,7 @@ public final class KeyringState: @unchecked Sendable {
 
   public init(dispatcher: IPCDispatcher, nonce: @escaping () -> String, random: ((Int) -> [UInt8])? = nil) {
     self.dispatcher = dispatcher
-    keyring = Keyring(nonce: nonce, random: random)
+    factotum = Factotum(nonce: nonce, random: random)
   }
 
   func locked<R>(_ body: () throws(AuthFailure) -> R) throws(AuthFailure) -> R {
@@ -71,11 +70,11 @@ public final class KeyringState: @unchecked Sendable {
       for t in s.pattern.terms {
         if let v = t.value { attributes.append(KeyAttribute(t.name, v)) }
       }
-      if let user, !user.isEmpty, !attributes.contains(where: { $0.name == "user" }) {
+      if let user, !user.isEmpty, !attributes.contains(where: { same($0.name, "user") }) {
         attributes.append(KeyAttribute("user", user))
       }
       attributes.append(KeyAttribute("password", password, secret: true))
-      keyring.store.add(Key(attributes))
+      factotum.store.add(Key(attributes))
       return answeredByKeys()
     }) ?? []
     for w in woken { dispatcher.wake(w) }
@@ -87,7 +86,7 @@ public final class KeyringState: @unchecked Sendable {
   func answeredByKeys() -> [UInt64] {
     var woken: [UInt64] = []
     for s in sessions {
-      if case .key? = s.session.question, !keyring.store.matching(s.session.pattern).isEmpty {
+      if case .key? = s.session.question, !factotum.store.matching(s.session.pattern).isEmpty {
         s.session.keyArrived()
         woken.append(s.id)
       }
@@ -96,13 +95,13 @@ public final class KeyringState: @unchecked Sendable {
   }
 
   /// The keys, secrets hidden.
-  public var listing: String { (try? locked { keyring.store.listing }) ?? "" }
+  public var listing: String { (try? locked { factotum.store.listing }) ?? "" }
 
   /// Factotum's ctl line.
   public func control(_ line: String) throws(KeyError) -> String {
     lock.lock()
     let result: Result<String, KeyError>
-    do throws(KeyError) { result = .success(try keyring.store.control(line)) } catch { result = .failure(error) }
+    do throws(KeyError) { result = .success(try factotum.store.control(line)) } catch { result = .failure(error) }
     let woken = answeredByKeys()
     lock.unlock()
     for w in woken { dispatcher.wake(w) }
@@ -110,7 +109,7 @@ public final class KeyringState: @unchecked Sendable {
     return try result.get()
   }
 
-  /// Serves the keyring's own tree's `clients` node on `channel`.
+  /// Serves factotum's own tree's `clients` node on `channel`.
   public func serveClients(_ channel: consuming Handle) throws(Status) {
     try dispatcher.add(LaunchIPC.ClientsServer(channel: channel, impl: ClientsHandler(state: self)))
   }
@@ -120,15 +119,15 @@ public final class KeyringState: @unchecked Sendable {
     var scope: [KeyPattern] = []
     var admin = false
     for g in grants {
-      if g == "admin" { admin = true } else { scope.append(try KeyPattern(g)) }
+      if same(g, "admin") { admin = true } else { scope.append(try KeyPattern(g)) }
     }
     let tree = NodeTree(dispatcher: dispatcher)
     let app = client, frozen = scope
-    tree.service("keyring") { [self] (channel: consuming Handle) throws(Status) in
-      try dispatcher.add(AuthIPC.KeyringServer(channel: channel, impl: KeyringHandler(state: self, app: app, scope: frozen)))
+    tree.service("auth") { [self] (channel: consuming Handle) throws(Status) in
+      try dispatcher.add(AuthIPC.FactotumServer(channel: channel, impl: FactotumHandler(state: self, app: app, scope: frozen)))
     }
     if admin {
-      tree.text("ctl", read: { [self] in listing }, write: { [self] line throws(NodeError) in
+      tree.text("ctl", read: { [self] in listing }, write: { [self] (line: String) throws(NodeError) in
         do throws(KeyError) { _ = try control(line) } catch { throw .invalid }
       })
     }
@@ -143,7 +142,7 @@ public final class KeyringState: @unchecked Sendable {
     let session: AuthSession
     do throws(AuthFailure) {
       session = try locked { () throws(AuthFailure) -> AuthSession in
-        try keyring.start(pattern, role: role == .server ? .server : .client, app: app, scope: scope)
+        try factotum.start(pattern, role: role == .server ? .server : .client, app: app, scope: scope)
       }
     } catch {
       throw Self.error(error)
@@ -184,28 +183,39 @@ public final class KeyringState: @unchecked Sendable {
 }
 
 struct ClientsHandler: LaunchIPC.ClientsHandler {
-  let state: KeyringState
+  let state: FactotumState
   func open(client: String, grants: [String], node: consuming Handle) throws(LaunchIPC.ClientsError) {
     do throws(KeyError) { try state.open(client: client, grants: grants, node: node) } catch { throw .refused }
   }
 }
 
-struct KeyringHandler: AuthIPC.KeyringHandler {
-  let state: KeyringState
+struct FactotumHandler: AuthIPC.FactotumHandler {
+  let state: FactotumState
   let app: String
   let scope: [KeyPattern]
   func startSession(pattern: String, role: AuthIPC.Role, session: consuming Handle) throws(AuthIPC.AuthError) {
     try state.start(app: app, scope: scope, pattern: pattern, role: role, channel: session)
   }
+
+  func publicKey(pattern: String) throws(AuthIPC.AuthError) -> [UInt8] {
+    guard let p = try? KeyPattern(pattern) else { throw .invalid }
+    do throws(AuthFailure) {
+      return try state.locked { () throws(AuthFailure) -> [UInt8] in
+        try state.factotum.publicKey(p, app: app, scope: scope)
+      }
+    } catch {
+      throw FactotumState.error(error)
+    }
+  }
 }
 
 final class SessionHandler: AuthIPC.AuthSessionHandler {
-  let state: KeyringState
+  let state: FactotumState
   let session: AuthSession
   var id: UInt64 = 0
   var failed = ""
 
-  init(state: KeyringState, session: AuthSession) {
+  init(state: FactotumState, session: AuthSession) {
     self.state = state
     self.session = session
   }
@@ -218,11 +228,11 @@ final class SessionHandler: AuthIPC.AuthSessionHandler {
       step = try state.locked { () throws(AuthFailure) -> Step in try session.next() }
     } catch {
       if case .peer(let why) = error { failed = why }
-      throw KeyringState.error(error)
+      throw FactotumState.error(error)
     }
     func s(_ kind: AuthIPC.StepKind, bytes: [UInt8] = [], text: String = "", result: AuthResult? = nil) -> AuthIPC.Step {
-      AuthIPC.Step(kind: kind, bytes: bytes, text: text, user: result?.user ?? "", peer: result?.peer ?? "",
-                   secret: result?.secret ?? [])
+      AuthIPC.Step(kind: kind, bytes: result?.bytes ?? bytes, text: text, user: result?.user ?? "",
+                   peer: result?.peer ?? "", secret: result?.secret ?? [])
     }
     switch step {
     case .send(let b): return s(.send, bytes: b)
@@ -242,7 +252,7 @@ final class SessionHandler: AuthIPC.AuthSessionHandler {
       try state.locked { () throws(AuthFailure) in try session.feed(message) }
     } catch {
       if case .peer(let why) = error { failed = why }
-      throw KeyringState.error(error)
+      throw FactotumState.error(error)
     }
   }
 

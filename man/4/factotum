@@ -1,0 +1,58 @@
+page factotum 4
+summary keys, and the authentication protocols run with them
+names factotum
+src services/factotum/Main.swift services/factotum/lib/Server.swift services/factotum/lib/Session.swift services/factotum/lib/NoiseIK.swift
+keys key keys authentication factotum noise ik scram ed25519 password secret grant
+
+# SYNOPSIS
+
+```text
+/svc/factotum/auth
+/svc/factotum/ctl
+```
+
+# DESCRIPTION
+
+factotum holds every key and runs the authentication protocols for the services that use it, as Plan 9's does: a service passes messages between factotum and its peer and gets the result, whom it authenticated and a session's secret, never a long-term key.
+
+Each service that uses factotum gets a tree of its own (`export per-client`, manifest(6)), scoped by its manifest's `grant factotum` lines: each line but `admin` is a key pattern the service's sessions must stay within, and `admin` adds `ctl`.
+9gate's manifest says `grant factotum proto=noise-ik`: it may run Noise IK with the node's key, and nothing else.
+
+A key is attributes, as factotum's text: `key proto=scram-sha-256 server=mail user=jk !password=secret`.
+An attribute named with `!` is secret and never leaves factotum: a listing shows `!password?`, and a pattern can only ask that one is there (`password?`).
+A pattern is `name=value` and `name?` terms a key must match.
+
+: `auth`
+  The protocol todhchai.auth.Factotum (auth-factotum(5)): `startSession` starts a session of auth-authsession(5) for a pattern and a role, which the service steps with `next` and `feed`; `publicKey` gives the public half of an ed25519 or noise-ik key, made if need be.
+: `ctl`
+  With `admin`: reading lists the keys, secrets hidden, a line each; writing `key` <attributes> adds one (replacing a key with the same public attributes), and `delkey` <pattern> deletes those it matches.
+
+The protocols:
+
+: `proto=noise-ik`
+  Noise IK (noise(2)) with the node's key, X25519's, `key proto=noise-ik !private=`<base64>, made from the kernel's CPRNG when none matches.
+  The service first feeds the handshake's parameters: as responder (`server`) the prologue, as initiator (`client`) the responder's public key and the prologue.
+  Then it passes the handshake's messages; when done, `user` is this node's public key and `peer` the other's, in hex, `secret` the session's keys (`Session(secret:)`), and a responder's `bytes` its reply, which the service sends only if it accepts the caller.
+: `proto=scram-sha-256`
+  SCRAM-SHA-256 (RFC 5802, RFC 7677) in both roles, without channel binding; a server's keys are `role=server` with each user's password, `salt` and `i`.
+: `proto=ed25519`
+  Signs what the service feeds with the key, made from the CPRNG when none matches (a server role only).
+: `proto=pass`
+  Reveals a password to a client once the user allows it.
+
+factotum is headless: a session that would ask the user (`proto=pass`, a key with `confirm=always`, a key that isn't there) is refused.
+
+# FILES
+
+: `/svc/factotum/auth`
+  The service's sessions.
+: `/svc/factotum/ctl`
+  The keys, with `grant factotum admin`.
+
+# SEE ALSO
+
+auth-factotum(5), auth-authsession(5), noise(2), 9gate(4), manifest(6)
+
+# BUGS
+
+Keys live in factotum's memory: a restart loses them, and the node's noise-ik key with them, until keys are kept on disk.

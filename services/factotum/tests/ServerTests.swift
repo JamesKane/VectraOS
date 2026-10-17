@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// The keyring served (M6k part k4c), over the hosted kernel's channels:
+// factotum served (M6k part k4c), over the hosted kernel's channels:
 // trees opened per client (as the launcher opens them) with their scope
 // and `admin`'s ctl, a SCRAM exchange between two apps' sessions, a
 // `pass` session that waits on the prompt and hears `answered`, a denial,
 // a key typed into the prompt, and a session's question gone with it.
 
 import IPC
-@testable import Keyring
-import Launch
+@testable import Factotum
 import Node
 import Sys
 import Synchronization
@@ -16,13 +15,13 @@ import Testing
 
 final class Rig {
   let dispatcher: IPCDispatcher
-  let state: KeyringState
+  let state: FactotumState
   var thread: Handle?
 
   init() throws {
     dispatcher = try IPCDispatcher()
     var n = 0
-    state = KeyringState(dispatcher: dispatcher, nonce: {
+    state = FactotumState(dispatcher: dispatcher, nonce: {
       n += 1
       return "nonce\(n)"
     })
@@ -39,11 +38,11 @@ final class Rig {
     return NodeIPC.NodeClient(channel: node.a)
   }
 
-  func keyring(_ tree: inout NodeIPC.NodeClient) throws -> AuthIPC.KeyringClient {
-    AuthIPC.KeyringClient(channel: try tree.open("keyring").takeChannel())
+  func factotum(_ tree: inout NodeIPC.NodeClient) throws -> AuthIPC.FactotumClient {
+    AuthIPC.FactotumClient(channel: try tree.open("auth").takeChannel())
   }
 
-  func session(_ k: inout AuthIPC.KeyringClient, _ pattern: String, _ role: AuthIPC.Role = .client) throws
+  func session(_ k: inout AuthIPC.FactotumClient, _ pattern: String, _ role: AuthIPC.Role = .client) throws
     -> AuthIPC.AuthSessionClient
   {
     let ends = try Channel.create()
@@ -64,7 +63,7 @@ func answered(_ s: inout AuthIPC.AuthSessionClient) -> Bool {
 }
 
 /// Waits until the prompt has `n` questions.
-func questions(_ state: KeyringState, _ n: Int) -> [(id: UInt64, question: Question)] {
+func questions(_ state: FactotumState, _ n: Int) -> [(id: UInt64, question: Question)] {
   for _ in 0..<400 {
     let q = state.questions
     if q.count == n { return q }
@@ -87,7 +86,7 @@ func questions(_ state: KeyringState, _ n: Int) -> [(id: UInt64, question: Quest
   var client = try rig.tree("psql", ["proto=scram-sha-256 server=db"])
   // A tree without `admin` has no ctl.
   #expect(throws: NodeIPC.NodeClient.Failure.self) { _ = try client.open("ctl") }
-  var ck = try rig.keyring(&client), sk = try rig.keyring(&admin)
+  var ck = try rig.factotum(&client), sk = try rig.factotum(&admin)
   var c = try rig.session(&ck, "proto=scram-sha-256 server=db")
   var s = try rig.session(&sk, "proto=scram-sha-256 server=db", .server)
   #expect(try s.next().kind == .need)
@@ -103,7 +102,7 @@ func questions(_ state: KeyringState, _ n: Int) -> [(id: UInt64, question: Quest
   try c.feed(serverFinal.bytes)
   #expect(try c.next().kind == .done)
   // Outside its scope.
-  var k2 = try rig.keyring(&client)
+  var k2 = try rig.factotum(&client)
   let e = try Channel.create()
   do throws(IPCError<AuthIPC.AuthError>) {
     try k2.startSession(pattern: "proto=scram-sha-256 server=elsewhere", role: .client, session: e.b)
@@ -121,7 +120,7 @@ func questions(_ state: KeyringState, _ n: Int) -> [(id: UInt64, question: Quest
   var ctl = try admin.open("ctl")
   try ctl.writeText("key proto=pass server=mail user=jk !password=secret")
   var mail = try rig.tree("mail", [])
-  var k = try rig.keyring(&mail)
+  var k = try rig.factotum(&mail)
   // Allowed: the password, after the yes.
   var s = try rig.session(&k, "proto=pass server=mail")
   let ask = try s.next()

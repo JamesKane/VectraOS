@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// The keyring's core (M6k part k4b): factotum's keys and patterns, base64
+// factotum's core (M6k part k4b): factotum's keys and patterns, base64
 // (RFC 4648's vectors), SCRAM-SHA-256 against RFC 7677's example exchange
-// byte for byte in both roles, a client keyring against a server one, a
+// byte for byte in both roles, a client factotum against a server one, a
 // wrong password, a forged signature and malformed peers refused, and
 // the sessions' scope, confirmation and missing keys.
 
-@testable import Keyring
+@testable import Factotum
 import TDCrypto
 import Testing
 
@@ -65,14 +65,14 @@ enum RFC7677 {
   static let serverFinal = "v=6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl95G4="
 }
 
-func keyring(_ keys: [String], nonce: String) throws -> Keyring {
-  let k = Keyring(nonce: { nonce })
+func factotum(_ keys: [String], nonce: String) throws -> Factotum {
+  let k = Factotum(nonce: { nonce })
   for key in keys { k.store.add(try Key(parsing: key)) }
   return k
 }
 
 @Test func scramsClientIsRFC7677s() throws {
-  let k = try keyring(["proto=scram-sha-256 server=example user=user !password=pencil"], nonce: RFC7677.clientNonce)
+  let k = try factotum(["proto=scram-sha-256 server=example user=user !password=pencil"], nonce: RFC7677.clientNonce)
   let s = try k.start(KeyPattern("proto=scram-sha-256 server=example"), role: .client, app: "mail", scope: [])
   #expect(try s.next() == .send(bytes(RFC7677.clientFirst)))
   #expect(try s.next() == .need)
@@ -83,7 +83,7 @@ func keyring(_ keys: [String], nonce: String) throws -> Keyring {
 }
 
 @Test func scramsServerIsRFC7677s() throws {
-  let k = try keyring(["proto=scram-sha-256 role=server server=example user=user !password=pencil salt=W22ZaJ0SNY7soEsUEjb6gQ== i=4096"],
+  let k = try factotum(["proto=scram-sha-256 role=server server=example user=user !password=pencil salt=W22ZaJ0SNY7soEsUEjb6gQ== i=4096"],
                       nonce: RFC7677.serverNonce)
   let s = try k.start(KeyPattern("proto=scram-sha-256 server=example"), role: .server, app: "imapd", scope: [])
   #expect(try s.next() == .need)
@@ -119,13 +119,13 @@ func exchange(_ c: AuthSession, _ s: AuthSession) -> Result<AuthResult, AuthFail
   return .failure(.order)
 }
 
-@Test func aClientKeyringAuthenticatesToAServerKeyring() throws {
+@Test func aClientFactotumAuthenticatesToAServerFactotum() throws {
   var n = 0
   let nonces = { () -> String in
     n += 1
     return "nonce\(n)xyz"
   }
-  let server = Keyring(nonce: nonces), client = Keyring(nonce: nonces)
+  let server = Factotum(nonce: nonces), client = Factotum(nonce: nonces)
   server.store.add(try Key(parsing: "proto=scram-sha-256 role=server server=db user='a,b=c' !password=hunter2 salt=c2FsdHNhbHQ= i=4096"))
   client.store.add(try Key(parsing: "proto=scram-sha-256 server=db user='a,b=c' !password=hunter2"))
   let pattern = try KeyPattern("proto=scram-sha-256 server=db")
@@ -141,7 +141,7 @@ func exchange(_ c: AuthSession, _ s: AuthSession) -> Result<AuthResult, AuthFail
 
 @Test func aClientRefusesABadServer() throws {
   func client() throws -> AuthSession {
-    let k = try keyring(["proto=scram-sha-256 server=example user=user !password=pencil"], nonce: RFC7677.clientNonce)
+    let k = try factotum(["proto=scram-sha-256 server=example user=user !password=pencil"], nonce: RFC7677.clientNonce)
     let s = try k.start(KeyPattern("proto=scram-sha-256"), role: .client, app: "mail", scope: [])
     _ = try s.next()
     return s
@@ -172,7 +172,7 @@ func exchange(_ c: AuthSession, _ s: AuthSession) -> Result<AuthResult, AuthFail
 // MARK: Sessions
 
 @Test func passAsksEveryTimeAndRevealsOnlyOnYes() throws {
-  let k = try keyring(["proto=pass server=mail.example user=jk !password=secret"], nonce: "n")
+  let k = try factotum(["proto=pass server=mail.example user=jk !password=secret"], nonce: "n")
   let pattern = try KeyPattern("proto=pass server=mail.example")
   let s = try k.start(pattern, role: .client, app: "mail", scope: [])
   #expect(try s.next() == .needConfirm("mail wants to use the key proto=pass server=mail.example user=jk !password?"))
@@ -189,7 +189,7 @@ func exchange(_ c: AuthSession, _ s: AuthSession) -> Result<AuthResult, AuthFail
 }
 
 @Test func onceIsOncePerApp() throws {
-  let k = try keyring(["proto=scram-sha-256 server=db user=u !password=p confirm=once"], nonce: "abc")
+  let k = try factotum(["proto=scram-sha-256 server=db user=u !password=p confirm=once"], nonce: "abc")
   let pattern = try KeyPattern("proto=scram-sha-256 server=db")
   let first = try k.start(pattern, role: .client, app: "psql", scope: [])
   guard case .needConfirm = try first.next() else { Issue.record("not asked"); return }
@@ -207,7 +207,7 @@ func exchange(_ c: AuthSession, _ s: AuthSession) -> Result<AuthResult, AuthFail
 }
 
 @Test func scopeAndMissingKeys() throws {
-  let k = try keyring([], nonce: "abc")
+  let k = try factotum([], nonce: "abc")
   let scope = [try KeyPattern("proto=scram-sha-256 server=db")]
   #expect(throws: AuthFailure.notAllowed) {
     try k.start(KeyPattern("proto=scram-sha-256 server=other"), role: .client, app: "psql", scope: scope)
@@ -240,7 +240,7 @@ func hex(_ s: String) -> [UInt8] {
 }
 
 /// One signature through a session: the public key, then the signature.
-func sign(_ k: Keyring, _ pattern: String, _ data: [UInt8]) throws -> (key: [UInt8], signature: [UInt8]) {
+func sign(_ k: Factotum, _ pattern: String, _ data: [UInt8]) throws -> (key: [UInt8], signature: [UInt8]) {
   let s = try k.start(KeyPattern(pattern), role: .server, app: "sshd", scope: [KeyPattern("proto=ed25519 service=sshd")])
   guard case .send(let key) = try s.next() else { throw AuthFailure.order }
   #expect(try s.next() == .need)
@@ -253,7 +253,7 @@ func sign(_ k: Keyring, _ pattern: String, _ data: [UInt8]) throws -> (key: [UIn
 @Test func ed25519SignsWithAKeyNoAppHolds() throws {
   // RFC 8032 §7.1's first test: its key, the empty message.
   let seed = Base64.encode(hex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"))
-  let k = try keyring(["proto=ed25519 service=sshd !seed=\(seed)"], nonce: "")
+  let k = try factotum(["proto=ed25519 service=sshd !seed=\(seed)"], nonce: "")
   let (key, signature) = try sign(k, "proto=ed25519 service=sshd", [])
   #expect(key == hex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"))
   #expect(signature == hex("e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"))
@@ -272,7 +272,7 @@ func sign(_ k: Keyring, _ pattern: String, _ data: [UInt8]) throws -> (key: [UIn
 
 @Test func ed25519MakesItsKeyOnFirstUse() throws {
   var counter: UInt8 = 0
-  let k = Keyring(nonce: { "" }) { n in
+  let k = Factotum(nonce: { "" }) { n in
     counter &+= 1
     return [UInt8](repeating: counter, count: n)
   }
@@ -283,6 +283,6 @@ func sign(_ k: Keyring, _ pattern: String, _ data: [UInt8]) throws -> (key: [UIn
   let second = try sign(k, "proto=ed25519 service=sshd", [])
   #expect(second.key == first.key && counter == 1)
   // Without randomness, no key is made.
-  let none = Keyring(nonce: { "" })
+  let none = Factotum(nonce: { "" })
   #expect(throws: AuthFailure.noKey) { try sign(none, "proto=ed25519 service=sshd", []) }
 }

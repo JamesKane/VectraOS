@@ -1,0 +1,8 @@
+# factotum (D75): every key, and the protocols run with them for the
+# services that use it. Each gets a tree of its own, scoped by its
+# `grant factotum` lines: `grant factotum proto=noise-ik` lets 9gate run
+# Noise IK with the node's key, and nothing else.
+service factotum
+program factotum
+export per-client
+restart on-failure

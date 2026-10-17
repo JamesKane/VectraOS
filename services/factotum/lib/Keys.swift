@@ -5,7 +5,7 @@
 //
 //     key proto=scram-sha-256 server=mail.example user=jk !password=secret
 //
-// a name starting with `!` is secret: it never leaves the keyring (a
+// a name starting with `!` is secret: it never leaves factotum (a
 // listing shows `!password?`). `confirm=always|once|never` says whether
 // using the key asks the user first (`once`: once per app session); a
 // key's protocol has its own default (`pass`, which reveals the secret,
@@ -17,7 +17,9 @@
 //
 //     proto=scram-sha-256 server=mail.example user?
 //
-// Tier 0: the keys are an array (no Dictionary), searched in order.
+// Tier 0: the keys are an array (no Dictionary), searched in order, and
+// names and values are compared as bytes (`same`): String's == needs
+// Unicode's tables, which tier 0 links without.
 
 public struct KeyAttribute: Equatable, Sendable {
   public var name: String
@@ -36,7 +38,7 @@ public struct Key: Equatable, Sendable {
   public init(_ attributes: [KeyAttribute]) { self.attributes = attributes }
 
   /// Attribute `name`'s value, public or secret.
-  public subscript(_ name: String) -> String? { attributes.first { $0.name == name }?.value }
+  public subscript(_ name: String) -> String? { attributes.first { same($0.name, name) }?.value }
 
   public var proto: String { self["proto"] ?? "" }
 
@@ -46,7 +48,7 @@ public struct Key: Equatable, Sendable {
     attributes.map { $0.secret ? "!" + $0.name + "?" : $0.name + "=" + quoted($0.value) }.joined(separator: " ")
   }
 
-  /// The key as text, secrets included (only the keyring's own store).
+  /// The key as text, secrets included (only factotum's own store).
   public var text: String {
     attributes.map { ($0.secret ? "!" : "") + $0.name + "=" + quoted($0.value) }.joined(separator: " ")
   }
@@ -71,7 +73,7 @@ public struct KeyPattern: Equatable, Sendable {
     var terms: [Term] = []
     for word in try words(text) {
       if word.utf8.last == UInt8(ascii: "?"), !word.utf8.contains(UInt8(ascii: "=")) {
-        terms.append(Term(name: String(word.dropLast()).trimmingBang, value: nil))
+        terms.append(Term(name: String(decoding: word.utf8.dropLast(), as: UTF8.self).trimmingBang, value: nil))
       } else if let (name, value) = split(word) {
         terms.append(Term(name: name.trimmingBang, value: value))
       } else {
@@ -86,22 +88,26 @@ public struct KeyPattern: Equatable, Sendable {
   /// value, or a client could guess it one try at a time.
   public func matches(_ key: Key) -> Bool {
     terms.allSatisfy { t in
-      key.attributes.contains { $0.name == t.name && (t.value == nil || (!$0.secret && t.value == $0.value)) }
+      key.attributes.contains { same($0.name, t.name) && (t.value == nil || (!$0.secret && same(t.value, $0.value))) }
     }
   }
 
   /// Attribute `name`'s value in the pattern, if it fixes one.
-  public subscript(_ name: String) -> String? { terms.first { $0.name == name }?.value ?? nil }
+  public subscript(_ name: String) -> String? { terms.first { same($0.name, name) }?.value ?? nil }
 
   /// This pattern with `name=value` (replacing a term for `name`).
   public func with(_ name: String, _ value: String) -> KeyPattern {
-    KeyPattern(terms: terms.filter { $0.name != name } + [Term(name: name, value: value)])
+    KeyPattern(terms: terms.filter { !same($0.name, name) } + [Term(name: name, value: value)])
   }
 
   /// Whether every key this pattern matches is one `scope` allows: it
   /// fixes each of the scope's attributes to the scope's value.
   public func within(_ scope: KeyPattern) -> Bool {
-    scope.terms.allSatisfy { s in terms.contains { $0.name == s.name && $0.value != nil && (s.value == nil || $0.value == s.value) } }
+    scope.terms.allSatisfy { s in
+      terms.contains { t in
+        same(t.name, s.name) && t.value != nil && (s.value.map { same(t.value, $0) } ?? true)
+      }
+    }
   }
 
   public var text: String {
@@ -114,19 +120,20 @@ extension Key {
   /// takes it).
   public init(parsing text: String) throws(KeyError) {
     var w = try words(text)
-    if w.first == "key" { w.removeFirst() }
+    if same(w.first, "key") { w.removeFirst() }
     var attributes: [KeyAttribute] = []
     for word in w {
       guard let (name, value) = split(word) else { throw .syntax(word) }
       let secret = name.utf8.first == UInt8(ascii: "!")
-      attributes.append(KeyAttribute(secret ? String(name.dropFirst()) : name, value, secret: secret))
+      attributes.append(KeyAttribute(secret ? String(decoding: name.utf8.dropFirst(), as: UTF8.self) : name, value,
+                                     secret: secret))
     }
-    guard attributes.contains(where: { $0.name == "proto" }) else { throw .syntax("no proto") }
+    guard attributes.contains(where: { same($0.name, "proto") }) else { throw .syntax("no proto") }
     self.init(attributes)
   }
 }
 
-/// The keyring's keys, in the order they were added.
+/// factotum's keys, in the order they were added.
 public struct KeyStore: Sendable {
   public private(set) var keys: [Key] = []
   public init() {}
@@ -134,7 +141,11 @@ public struct KeyStore: Sendable {
   /// Adds a key; one with the same public attributes is replaced.
   public mutating func add(_ key: Key) {
     let pub = key.attributes.filter { !$0.secret }
-    keys.removeAll { $0.attributes.filter { !$0.secret } == pub }
+    keys.removeAll { k in
+      let other = k.attributes.filter { !$0.secret }
+      return other.count == pub.count
+        && zip(other, pub).allSatisfy { same($0.name, $1.name) && same($0.value, $1.value) }
+    }
     keys.append(key)
   }
 
@@ -157,16 +168,15 @@ public struct KeyStore: Sendable {
   public mutating func control(_ line: String) throws(KeyError) -> String {
     let w = try words(line)
     guard let verb = w.first else { return "" }
-    switch verb {
-    case "key":
+    if same(verb, "key") {
       add(try Key(parsing: line))
       return "added"
-    case "delkey":
+    }
+    if same(verb, "delkey") {
       let rest = w.dropFirst().map { quoted($0) }.joined(separator: " ")
       return "deleted \(delete(try KeyPattern(rest)))"
-    default:
-      throw .syntax(verb)
     }
+    throw .syntax(verb)
   }
 }
 
@@ -233,5 +243,11 @@ func quoted(_ v: String) -> String {
 
 extension String {
   /// Without a leading `!` (a pattern names secret attributes plainly).
-  var trimmingBang: String { utf8.first == UInt8(ascii: "!") ? String(dropFirst()) : self }
+  var trimmingBang: String { utf8.first == UInt8(ascii: "!") ? String(decoding: utf8.dropFirst(), as: UTF8.self) : self }
 }
+
+/// Whether two strings are the same bytes.
+func same(_ a: String, _ b: String) -> Bool { a.utf8.elementsEqual(b.utf8) }
+
+/// Whether an optional string is `b`'s bytes.
+func same(_ a: String?, _ b: String) -> Bool { a.map { same($0, b) } ?? false }

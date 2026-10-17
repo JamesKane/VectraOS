@@ -26,11 +26,18 @@ public func manPage(_ p: ProtocolModel, _ library: LibraryModel, source: String,
     case .event: "event"
     }
   }
+  // A signature past the manual's 80 columns (vx man --check) goes on:
+  // its throws and result on a second line, then its parameters a line
+  // each.
   func signature(_ m: Method) -> String {
-    let parameters = m.parameters.map { "\($0.name): \($0.type.swiftName)" }.joined(separator: ", ")
+    let named = m.parameters.map { "\($0.name): \($0.type.swiftName)" }
     let result = m.result.map { " -> \($0.type.swiftName)" } ?? ""
     let error = m.errorType.map { " throws(\($0))" } ?? ""
-    return "\(kind(m.kind)) \(m.name)(\(parameters))\(error)\(result)"
+    let head = "\(kind(m.kind)) \(m.name)(\(named.joined(separator: ", ")))"
+    let tail = String((error + result).drop { $0 == " " })
+    if head.count + error.count + result.count <= 80 { return head + error + result }
+    if head.count <= 80 { return head + "\n  " + tail }
+    return "\(kind(m.kind)) \(m.name)(\n" + named.map { "    " + $0 }.joined(separator: ",\n") + "\n)" + error + result
   }
   var out = """
     page \(manPageName(p)) 5

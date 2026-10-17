@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// 9gate's files (D77, D78): this node's Noise IK key, the keys that may
-// call it, its listeners, which export a subtree of its namespace to
+// 9gate's files (D77, D78): this node's Noise IK key (factotum's, D75:
+// 9gate runs each handshake through it and never holds the key), the
+// keys that may call it, its listeners, which export a subtree of its namespace to
 // trusted callers, and its imports, each a remote tree at n/NAME. Every
 // connection is sealed by Noise IK, prologue "9gate", its payloads
 // empty. Nothing listens until ctl says so.
@@ -26,9 +27,8 @@ public final class GateService: @unchecked Sendable {
 
   let tree: NodeTree
   let namespace: Namespace
-  let key: StaticKey
+  let identity: Identity
   let imports: IPCDispatcher
-  let random: @Sendable () -> [UInt8]
   let lock = Lock()
   var trusted: [[UInt8]] = []
   var listeners: [(address: String, root: String, state: String)] = []
@@ -37,18 +37,16 @@ public final class GateService: @unchecked Sendable {
 
   /// Serves 9gate's files at `path` in `tree`; `namespace` is what it
   /// dials through (its /net) and exports from; `imports` serves imported
-  /// trees (a dispatcher not the tree's). `random` gives 32 bytes for each
-  /// ephemeral key.
-  public init(tree: NodeTree, at path: String, namespace: Namespace, key: StaticKey, imports: IPCDispatcher,
-              random: @escaping @Sendable () -> [UInt8], changed: @escaping @Sendable () -> Void = {}) {
+  /// trees (a dispatcher not the tree's); `identity` runs the handshakes.
+  public init(tree: NodeTree, at path: String, namespace: Namespace, identity: Identity, imports: IPCDispatcher,
+              changed: @escaping @Sendable () -> Void = {}) {
     self.tree = tree
     self.namespace = namespace
-    self.key = key
+    self.identity = identity
     self.imports = imports
-    self.random = random
     onChange = changed
     let dir = path.isEmpty ? "" : path + "/"
-    let publicKey = hex(key.publicKey) + "\n"
+    let publicKey = hex(identity.publicKey) + "\n"
     tree.text(dir + "key", read: { publicKey })
     tree.text(dir + "status", read: { [self] in status })
     tree.text(dir + "ctl", read: { "" }, write: { [self] (line: String) throws(NodeError) in try command(line) })
@@ -127,15 +125,12 @@ public final class GateService: @unchecked Sendable {
       let c: NetConnection
       do throws(DialError) { c = try namespace.accept(call) } catch { continue }
       guard let stream = Self.stream(namespace, c) else { continue }
-      let ephemeral = random()
       do throws(Status) {
         _ = try Thread.spawn { [self] in
           // Only a trusted key gets the handshake's reply.
           let sealed: ByteStream
           do throws(GateError) {
-            sealed = try SealedStream.respond(stream, key: key, ephemeral: ephemeral, prologue: Self.prologue) {
-              caller in lock.withLock { trusted.contains(caller) }
-            }.0
+            sealed = try identity.respond(stream, Self.prologue) { [self] caller in lock.withLock { trusted.contains(caller) } }.0
           } catch { return }
           _ = Export.serve(sealed, namespace: namespace, root: root)
         }.release()
@@ -150,7 +145,6 @@ public final class GateService: @unchecked Sendable {
       guard !imported.contains(where: { NodeIPC.same($0.name, name) }) else { throw .exists }
       imported.append((name, address, "dialing"))
     }
-    let ephemeral = random()
     do throws(Status) {
       _ = try Thread.spawn { [self] in
         let c: NetConnection
@@ -159,8 +153,7 @@ public final class GateService: @unchecked Sendable {
         }
         guard let stream = Self.stream(namespace, c) else { return setImport(name, "failed: no data") }
         do throws(GateError) {
-          let sealed = try SealedStream.initiate(stream, key: key, remote: remote, ephemeral: ephemeral,
-                                                 prologue: Self.prologue)
+          let sealed = try identity.initiate(stream, remote, Self.prologue)
           let gate = Import(try NinePClient(sealed), dispatcher: imports)
           let root = try gate.attach(aname: aname)
           tree.mount(nPath + name, root)

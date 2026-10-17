@@ -1,0 +1,74 @@
+page auth-factotum 5
+summary the todhchai.auth.Factotum protocol
+names auth-factotum todhchai.auth.Factotum
+src services/factotum/lib/Protocol.swift
+
+# SYNOPSIS
+
+```text
+protocol todhchai.auth.Factotum version 1
+call startSession(pattern: String, role: Role, session: Handle)
+  throws(AuthError)
+call publicKey(pattern: String) throws(AuthError) -> [UInt8]
+```
+
+# DESCRIPTION
+
+Protocol `todhchai.auth.Factotum`, version 1, of library `AuthIPC`, its messages in the one wire format (wire(6)).
+
+| Method | Kind | Since | Ordinal |
+| `startSession` | call | 1 | `0x2dae4a6c2b85110e` |
+| `publicKey` | call | 1 | `0x6a896670786173d2` |
+
+: `startSession`
+  Starts a session for `pattern` (factotum's: `proto=scram-sha-256
+  server=mail.example user?`) in `role`: `session` is the server's
+  end of an `AuthSession`.
+: `publicKey`
+  The public half of the key `pattern` names, made if need be:
+  ed25519's and noise-ik's, for the app to give its peers.
+
+@node layouts Message layouts
+
+## startSession
+
+Request body, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `pattern` | String (bytes out of line) |
+| 16 | 1 | `role` | Role (UInt8) |
+| 20 | 4 | `session` | Handle (in the handle array) |
+
+Reply body: empty.
+
+## publicKey
+
+Request body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `pattern` | String (bytes out of line) |
+
+Reply body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `result` | [UInt8] (bytes out of line) |
+
+@node types Types
+
+## enum Role
+
+UInt8; receivers reject other values.
+
+| Case | Value |
+| `client` | 1 |
+| `server` | 2 |
+
+## errors AuthError
+
+| Case | Code |
+| `noKey` | 1 |
+| `denied` | 2 |
+| `notAllowed` | 3 |
+| `unsupported` | 4 |
+| `peer` | 5 |
+| `invalid` | 6 |

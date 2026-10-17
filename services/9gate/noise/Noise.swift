@@ -275,3 +275,19 @@ public struct Session: Sendable {
     return receive.decrypt([], message)
   }
 }
+
+extension Session {
+  /// A fresh session as bytes: the sending key, the receiving key and the
+  /// handshake hash, 96 bytes. factotum, which runs the handshake, gives
+  /// its app the session this way, and never the static key.
+  public var secret: [UInt8] { (send.key ?? []) + (receive.key ?? []) + hash }
+
+  /// The session `secret` gave, its counts at zero; nil if it isn't 96
+  /// bytes.
+  public init?(secret: [UInt8]) {
+    guard secret.count == 3 * Noise.keySize else { return nil }
+    send = CipherState(key: Array(secret[0..<32]))
+    receive = CipherState(key: Array(secret[32..<64]))
+    hash = Array(secret[64..<96])
+  }
+}

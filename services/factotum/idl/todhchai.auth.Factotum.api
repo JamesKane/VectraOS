@@ -1,0 +1,5 @@
+# API baseline for todhchai.auth.Factotum, written by idlc. Commit it; idlc checks changes against it.
+protocol todhchai.auth.Factotum version 1
+enum Role UInt8 (1,2)
+method publicKey call since 1 params (String) result [UInt8] throws AuthError
+method startSession call since 1 params (String,Role,Handle) result - throws AuthError

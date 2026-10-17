@@ -1,24 +1,20 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // bin/9gate (D77, D78): 9P2000 between nodes, over Noise IK. It serves
-// its files (9gate(4)) at the root of its tree: this node's key, made
-// from the CPRNG when it starts, the keys it trusts, its listeners and
-// its imports. It dials and announces through its namespace's /net, and
-// exports from its namespace; nothing listens until its ctl says so.
+// its files (9gate(4)) at the root of its tree: this node's key, which
+// factotum holds and runs each handshake with (D75), the keys it trusts,
+// its listeners and its imports. It dials and announces through its
+// namespace's /net, and exports from its namespace; nothing listens
+// until its ctl says so.
 
 import Gate
 import IPC
 import Node
-import Noise
 import Sys
 
 func fail(_ what: String) -> Never {
   print("9gate: \(what)")
   Process.exit(code: 1)
-}
-
-func random() -> [UInt8] {
-  do throws(Status) { return try CPRNG.draw(count: 32) } catch { fail("no random bytes") }
 }
 
 @main struct GateProgram {
@@ -37,10 +33,12 @@ func random() -> [UInt8] {
     do throws(Status) {
       _ = try Thread.spawn { try? imports.run() }.release()
     } catch { fail("can't start the imports' thread") }
+    let identity: Identity
+    do throws(GateError) { identity = try Identity.factotum(ns, at: "/svc/factotum/auth") } catch {
+      fail("no key from factotum")
+    }
     let tree = NodeTree(dispatcher: dispatcher)
-    // The key lasts one boot, until factotum holds it (D75).
-    let gate = GateService(tree: tree, at: "", namespace: ns, key: StaticKey(privateKey: random()), imports: imports,
-                           random: { random() })
+    let gate = GateService(tree: tree, at: "", namespace: ns, identity: identity, imports: imports)
     do throws(Status) {
       guard let export = start.export() else { fail("no export (its manifest's `export`)") }
       try tree.serve(export)

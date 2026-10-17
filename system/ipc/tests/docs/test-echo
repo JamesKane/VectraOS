@@ -15,7 +15,8 @@ call noted() -> UInt64
 call reflect(s: Shaped) -> Shaped
 call carry(c: Carried) -> Carried
 call many(shapes: [Shaped], nested: [[UInt32]], maybe: [Point]?) -> [Shaped]
-call optionals(text: String?, bytes: [UInt8]?, point: Point?, handle: Handle?) -> Handle?
+call optionals(text: String?, bytes: [UInt8]?, point: Point?, handle: Handle?)
+  -> Handle?
 call draw(drawing: Drawing, last: Step?) -> [Step]
 ```
 

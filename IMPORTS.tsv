@@ -652,8 +652,6 @@ services/factotum/lib/Keys.swift	todhchai	527ff94	services/keyring/lib/Keys.swif
 services/factotum/lib/Session.swift	todhchai	527ff94	services/keyring/lib/Session.swift
 services/factotum/lib/Server.swift	todhchai	527ff94	services/keyring/lib/Server.swift
 services/factotum/lib/Scram.swift	todhchai	527ff94	services/keyring/lib/Scram.swift
-services/factotum/tests/KeyringTests.swift	todhchai	527ff94	services/keyring/tests/KeyringTests.swift
+services/factotum/tests/FactotumTests.swift	todhchai	527ff94	services/keyring/tests/KeyringTests.swift
 services/factotum/tests/ServerTests.swift	todhchai	527ff94	services/keyring/tests/ServerTests.swift
-services/factotum/idl/todhchai.auth.Keyring.api	todhchai	527ff94	services/keyring/idl/todhchai.auth.Keyring.api
 services/factotum/idl/todhchai.auth.AuthSession.api	todhchai	527ff94	services/keyring/idl/todhchai.auth.AuthSession.api
-services/factotum/README.md	todhchai	527ff94	services/keyring/README.md

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // SCRAM-SHA-256 (RFC 5802, RFC 7677), both roles, without channel
-// binding (gs2 header `n,,`). The app passes the messages between the
-// keyring and its peer (an IMAP server's AUTHENTICATE, Postgres's SASL);
-// the password, the salted password and the keys never leave the keyring.
+// binding (gs2 header `n,,`). The app passes the messages between
+// factotum and its peer (an IMAP server's AUTHENTICATE, Postgres's SASL);
+// the password, the salted password and the keys never leave factotum.
 //
 //     client-first   n,,n=USER,r=CNONCE
 //     server-first   r=CNONCE+SNONCE,s=SALT,i=ITERATIONS
@@ -31,10 +31,15 @@ public struct AuthResult: Equatable, Sendable {
   public var user: String
   public var peer: String
   public var secret: [UInt8]
-  public init(user: String, peer: String, secret: [UInt8]) {
+  /// A last message for the app to send its peer, if the protocol ends
+  /// with one (noise-ik's responder: its reply, sent only if the app
+  /// accepts `peer`).
+  public var bytes: [UInt8]
+  public init(user: String, peer: String, secret: [UInt8], bytes: [UInt8] = []) {
     self.user = user
     self.peer = peer
     self.secret = secret
+    self.bytes = bytes
   }
 }
 
@@ -45,7 +50,7 @@ public enum AuthFailure: Error, Equatable, Sendable {
   case denied
   /// The pattern asks for what the app's scope doesn't allow.
   case notAllowed
-  /// A protocol or role the keyring doesn't speak.
+  /// A protocol or role factotum doesn't speak.
   case unsupported
   /// The peer broke the protocol, or failed it (a wrong proof or
   /// signature): what was wrong.
@@ -88,7 +93,7 @@ enum Scram {
       if b[i] == UInt8(ascii: "=") {
         guard i + 2 < b.count else { throw .peer("a bad user name") }
         let code = String(decoding: b[(i + 1)...(i + 2)], as: UTF8.self)
-        if code == "2C" { out.append(UInt8(ascii: ",")) } else if code == "3D" { out.append(UInt8(ascii: "=")) } else {
+        if same(code, "2C") { out.append(UInt8(ascii: ",")) } else if same(code, "3D") { out.append(UInt8(ascii: "=")) } else {
           throw .peer("a bad user name")
         }
         i += 3
@@ -202,7 +207,7 @@ struct ScramClient {
 }
 
 /// SCRAM-SHA-256's server: `lookup` gives a user's password, salt and
-/// iteration count (from the keyring's server keys).
+/// iteration count (from factotum's server keys).
 struct ScramServer {
   let lookup: (String) -> (password: [UInt8], salt: [UInt8], iterations: Int)?
   let peerName: String
@@ -260,7 +265,7 @@ struct ScramServer {
       guard let cb = Base64.decode(attrs[0].1), cb == Array("n,,".utf8) || cb == Array("y,,".utf8) else {
         throw .peer("the channel binding doesn't match")
       }
-      guard attrs[1].1 == combined else { throw .peer("the nonce doesn't match") }
+      guard same(attrs[1].1, combined) else { throw .peer("the nonce doesn't match") }
       guard let proof = Base64.decode(attrs.last!.1), proof.count == 32 else { throw .peer("a bad proof") }
       // Everything before ",p=".
       let text = String(decoding: message, as: UTF8.self)

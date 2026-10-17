@@ -164,11 +164,18 @@ let ipc: [Target] = [
   .target(name: "FcallOracle", path: "services/9gate/oracles/9front", exclude: ["LICENSE", "NOTICE"],
           cSettings: [.headerSearchPath("."), .unsafeFlags(["-std=gnu99", "-fms-extensions", "-w"])]),
   // 9gate's export and import over them (services/9gate/lib).
-  .target(name: "Gate", dependencies: ["NineP", "Noise", "Node", "IPC", "IPCWire", "Sys"], path: "services/9gate/lib",
+  .target(name: "Gate", dependencies: ["NineP", "Noise", "Factotum", "Node", "IPC", "IPCWire", "Sys"],
+          path: "services/9gate/lib",
           swiftSettings: tier0),
   .testTarget(name: "GateTests", dependencies: ["Gate", "NineP", "Noise", "FcallOracle", "IP", "Net", "Node", "IPC",
                                                "Sys"],
               path: "services/9gate/tests"),
+  // factotum (D75): todhchai's keyring, under Plan 9's name; its AuthIPC
+  // sessions, and proto=noise-ik for 9gate (D77).
+  .target(name: "Factotum", dependencies: ["TDCrypto", "Noise", "Node", "IPC", "Sys"],
+          path: "services/factotum/lib", swiftSettings: tier0),
+  .testTarget(name: "FactotumTests", dependencies: ["Factotum", "Noise", "Node", "IPC", "Sys"],
+              path: "services/factotum/tests"),
   // kbdfs (D83): the keyboard and the console, after 9front's.
   .target(name: "Kbdfs", path: "services/kbdfs/lib", swiftSettings: tier0),
   .testTarget(name: "KbdfsTests", dependencies: ["Kbdfs"], path: "services/kbdfs/tests"),

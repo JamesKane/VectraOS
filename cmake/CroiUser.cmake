@@ -389,6 +389,8 @@ function(croi_user_sys)
   file(GLOB _ninep CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/services/9gate/p9/*.swift)
   file(GLOB _noise CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/services/9gate/noise/*.swift)
   file(GLOB _gate CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/services/9gate/lib/*.swift)
+  # factotum (D75): keys, and the protocols run with them; 9gate's noise-ik.
+  file(GLOB _factotum CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/services/factotum/lib/*.swift)
   # kbdfs's keyboard and console (services/kbdfs/lib, D83).
   file(GLOB _kbdfs CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/services/kbdfs/lib/*.swift)
   # The console's grid, renderer and font (services/console/lib, V2 item 8).
@@ -457,6 +459,9 @@ function(croi_user_sys)
             -c ${_ninep} -o ${_dir}/ninep.o
     COMMAND ${_swiftc} -module-name Noise -emit-module -emit-module-path ${_dir}/Noise.swiftmodule
             -c ${_noise} -o ${_dir}/noise.o
+    COMMAND ${_swiftc} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros" -module-name Factotum -emit-module
+            -emit-module-path ${_dir}/Factotum.swiftmodule
+            -c ${_factotum} -o ${_dir}/factotum.o
     COMMAND ${_swiftc} -module-name Gate -emit-module -emit-module-path ${_dir}/Gate.swiftmodule
             -c ${_gate} -o ${_dir}/gate.o
     COMMAND ${_swiftc} -module-name Kbdfs -emit-module -emit-module-path ${_dir}/Kbdfs.swiftmodule
@@ -471,9 +476,9 @@ function(croi_user_sys)
     COMMAND ${CMAKE_AR} rcs ${_dir}/libsys.a ${_dir}/sysabi.o ${_dir}/loader.o ${_dir}/sys.o ${_dir}/libsys.o ${_dir}/ld.o
             ${_dir}/ring.o ${_dir}/traceformat.o ${_dir}/trace.o ${_dir}/tracesession.o
             ${_dir}/ipcwire.o ${_dir}/ipc.o ${_dir}/node.o ${_dir}/directives.o ${_dir}/guide.o ${_dir}/launch.o ${_dir}/acpi.o ${_dir}/pci.o
-            ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o ${_dir}/netclass.o ${_dir}/tdcrypto.o ${_dir}/net.o ${_dir}/ip.o ${_dir}/ndb.o ${_dir}/ninep.o ${_dir}/noise.o ${_dir}/gate.o ${_dir}/kbdfs.o ${_dir}/console.o ${_dir}/plumber.o ${_dir}/proc.o
+            ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o ${_dir}/netclass.o ${_dir}/tdcrypto.o ${_dir}/net.o ${_dir}/ip.o ${_dir}/ndb.o ${_dir}/ninep.o ${_dir}/noise.o ${_dir}/factotum.o ${_dir}/gate.o ${_dir}/kbdfs.o ${_dir}/console.o ${_dir}/plumber.o ${_dir}/proc.o
     DEPENDS ${_abi} ${_loader} ${_api} ${_lib} ${_ld} ${_ring} ${_trace_format} ${_trace_writer} ${_trace_session} ${_ipc_wire}
-            ${_ipc} ${_node} ${_directives} ${_guide} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr} ${_virtio} ${_input} ${_netclass} ${_crypto} ${_net} ${_ip} ${_ndb} ${_ninep} ${_noise} ${_gate} ${_kbdfs} ${_console} ${_plumber} ${_proc}
+            ${_ipc} ${_node} ${_directives} ${_guide} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr} ${_virtio} ${_input} ${_netclass} ${_crypto} ${_net} ${_ip} ${_ndb} ${_ninep} ${_noise} ${_factotum} ${_gate} ${_kbdfs} ${_console} ${_plumber} ${_proc}
             ${_headers} vx ${CROI_IPC_PLUGIN}
     COMMENT "Building Sys")
   set(CROI_USER_SYS_DIR ${_dir} PARENT_SCOPE)

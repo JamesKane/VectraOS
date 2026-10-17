@@ -48,7 +48,7 @@ under `vx ci` and every budget it introduces has a running check
   stack serving /net with dial(2), cs and dns for names, and the
   console's shell (rc on kbdfs's /dev/cons, D97), done (2026-10-17);
   9gate (the codec, Noise IK, export and import, and the service at
-  /svc/9gate) done; factotum's key next, then cpu.
+  /svc/9gate) and factotum holding its key done; cpu next.
   **V4 onward** are not started (V6's boards have research passes);
   V10, the Ghost, is proposed (D90), and V11 to V16, the native
   applications and Studio, are proposed (D95, D96).
@@ -720,10 +720,19 @@ meets a tested path.
     GateTests runs it on two stacks back to back (B imports A's export
     over TCP; an untrusted caller and a wrong server key refused);
     boot-launch checks its key, that it listens for nothing, and its files
-    against its page. Left: factotum's key, and `vx cpu`.
+    against its page.
 - **factotum** (todhchai's keyring, D75) holds the node's Noise IK
   static key (`proto=noise-ik`), made on first use; neither 9gate nor
   cpu holds it.
+  - **Done (2026-10-17):** the launcher's per-client services and their
+    `grant` lines (todhchai's, launch-clients(5)), then factotum
+    (services/factotum, factotum(4)): todhchai's keyring under Plan 9's
+    name, headless, its sessions scoped by each client's grants, and
+    `proto=noise-ik`, Noise IK run with the node's key, made from the
+    CPRNG on first use, the app passing the messages and getting the
+    session's keys. 9gate is granted `proto=noise-ik` and nothing else,
+    and runs every handshake through it (gate(2)'s `Identity`). Keys
+    last as long as factotum runs, until Taisce on disk (V4).
 - **cpu:** the node's cpu server, and `vx cpu NODE [-c CMD]` on the dev
   machine (Swift, in vx; tested against the server in `swift test`).
   The client exports the dev machine's tree, which rc on the node sees

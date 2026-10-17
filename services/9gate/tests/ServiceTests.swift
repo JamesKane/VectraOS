@@ -5,6 +5,7 @@
 // TCP and reads it through its own files. A caller A doesn't trust, and
 // a server whose key isn't the one named, are refused.
 
+import Factotum
 import Gate
 import Glibc
 import IP
@@ -78,15 +79,16 @@ final class Gate9: @unchecked Sendable {
   let key: StaticKey
   var service: GateService!
 
-  init(_ host: Host, seed: UInt8) throws {
+  /// With `factotum`, its key is factotum's, at /svc/factotum.
+  init(_ host: Host, seed: UInt8, factotum: Bool = false) throws {
     dispatcher = try IPCDispatcher()
     imports = try IPCDispatcher()
     tree = NodeTree(dispatcher: dispatcher)
     key = StaticKey(privateKey: Array(repeating: seed, count: 32))
     let counter = Atomic<UInt8>(seed)
-    service = GateService(tree: tree, at: "", namespace: host.ns, key: key, imports: imports, random: {
-      Array(repeating: counter.add(1, ordering: .relaxed).newValue, count: 32)
-    })
+    let identity = factotum ? try Identity.factotum(host.ns, at: "/svc/factotum/auth")
+      : Identity.local(key) { Array(repeating: counter.add(1, ordering: .relaxed).newValue, count: 32) }
+    service = GateService(tree: tree, at: "", namespace: host.ns, identity: identity, imports: imports)
     let d = dispatcher, i = imports
     _ = try Thread.spawn { try? d.run() }.release()
     _ = try Thread.spawn { try? i.run() }.release()
@@ -183,4 +185,50 @@ func holds(_ text: String, _ line: String) -> Bool {
   try ctl(b.ns, "import tcp!10.0.0.1!564 " + hex(ga.key.publicKey) + " a")
   #expect(soon { status(b.ns).contains("import a tcp!10.0.0.1!564 failed") }, "\(status(b.ns))")
   #expect(throws: (any Error).self) { _ = try b.ns.open("/mnt/9gate/n/a") }
+}
+
+/// factotum for a host, its tree for 9gate (granted proto=noise-ik) at
+/// /svc/factotum.
+final class Keys: @unchecked Sendable {
+  let dispatcher: IPCDispatcher
+  let state: FactotumState
+
+  init(_ host: Host) throws {
+    dispatcher = try IPCDispatcher()
+    let counter = Atomic<UInt8>(0x60)
+    state = FactotumState(dispatcher: dispatcher, nonce: { "n" }) { n in
+      Array(repeating: counter.add(1, ordering: .relaxed).newValue, count: n)
+    }
+    let d = dispatcher
+    _ = try Thread.spawn { try? d.run() }.release()
+    let clients = try Channel.create()
+    try state.serveClients(clients.b)
+    var c = LaunchIPC.ClientsClient(channel: clients.a)
+    let tree = try Channel.create()
+    try c.open(client: "9gate", grants: ["proto=noise-ik"], node: tree.b)
+    try host.ns.mount(tree.a, at: "/svc/factotum")
+  }
+
+  deinit { dispatcher.stop() }
+}
+
+@Test func gateRunsItsHandshakesThroughFactotum() throws {
+  let wire = Wire()
+  let a = try Host(mac: 0x0200_0000_000A, address: IPv4Address(10, 0, 0, 1), wire: wire, side: 0)
+  let b = try Host(mac: 0x0200_0000_000B, address: IPv4Address(10, 0, 0, 2), wire: wire, side: 1)
+  wire.hosts = [a, b]
+  try wire.start()
+  let keys = try Keys(a)
+  let ga = try Gate9(a, seed: 0x11, factotum: true), gb = try Gate9(b, seed: 0x22)
+  // A's key is factotum's, which 9gate never holds.
+  var keyFile = try a.ns.open("/mnt/9gate/key")
+  let shown = try keyFile.readText()
+  #expect(shown != hex(ga.key.publicKey) + "\n")
+  #expect(keys.state.listing == "key proto=noise-ik !private?\n")
+  try ctl(a.ns, "trust " + hex(gb.key.publicKey))
+  try ctl(a.ns, "listen tcp!*!564 /net")
+  #expect(soon { holds(status(a.ns), "listen tcp!*!564 /net listening") })
+  try ctl(b.ns, "import tcp!10.0.0.1!564 " + String(shown.utf8.prefix(64))! + " a")
+  #expect(soon { holds(status(b.ns), "import a tcp!10.0.0.1!564 ready") }, "\(status(b.ns))")
+  #expect(try b.ns.list("/mnt/9gate/n/a").map { $0.name }.contains("tcp"))
 }

@@ -1,4 +1,0 @@
-# API baseline for todhchai.auth.Keyring, written by idlc. Commit it; idlc checks changes against it.
-protocol todhchai.auth.Keyring version 1
-enum Role UInt8 (1,2)
-method startSession call since 1 params (String,Role,Handle) result - throws AuthError

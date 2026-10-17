@@ -71,6 +71,8 @@ services/plumber/	all	PlumberTests	boot-launch	man
 services/ndb/	all	NdbTests	boot-launch	man
 services/net/	all	NetTests,IPTests,NdbTests	boot-launch	man
 services/9gate/	all	GateTests	boot-smoke,boot-launch	man
+services/factotum/	all	FactotumTests,GateTests	boot-launch	man
+services/factotum/tests/	-	FactotumTests	-	-
 services/9gate/oracles/	-	GateTests	-	-
 services/9gate/tests/	-	GateTests	-	-
 drivers/	all	DevMgrTests	boot-launch,boot-pci	man

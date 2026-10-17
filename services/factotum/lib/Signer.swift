@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// proto=ed25519 (N1c): the keyring signs with a key no app holds, as
+// proto=ed25519 (N1c): factotum signs with a key no app holds, as
 // sshd's host key. A server-role session:
 //
 //     next() -> send(public key, 32 bytes)
@@ -9,10 +9,10 @@
 //     next() -> done
 //
 // The key is `key proto=ed25519 ... !seed=BASE64` (RFC 8032's 32-byte
-// private key). When none matches, the keyring makes one from its
+// private key). When none matches, factotum makes one from its
 // randomness with the pattern's attributes, so a host key exists from
 // the first connection on (until the keybag, it lasts as long as the
-// keyring runs).
+// factotum runs).
 
 import TDCrypto
 
@@ -41,9 +41,9 @@ struct Signer {
   }
 }
 
-extension Keyring {
+extension Factotum {
   /// The signing key for `pattern`: the first matching, else a new one
-  /// (when the keyring has randomness).
+  /// (when factotum has randomness).
   func signingKey(_ pattern: KeyPattern) throws(AuthFailure) -> [UInt8] {
     if let k = store.matching(pattern).first {
       guard let seed = k["seed"].flatMap({ Base64.decode($0) }), seed.count == 32 else { throw .noKey }

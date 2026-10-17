@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// The keyring's protocol (M6k part k4b; architecture §17, after Plan 9's
+// factotum's protocol (D75; todhchai's keyring, after Plan 9's
 // factotum). An app starts a session with a key pattern and a role,
 // giving the server's end of an `AuthSession` channel; it then asks the
 // session what to do (`next`) and feeds it the peer's messages (`feed`),
 // passing bytes between the session and its peer. The keys never leave
-// the keyring: the app gets the result, a session secret (or, for
+// factotum: the app gets the result, a session secret (or, for
 // `proto=pass` alone, after the user has said yes, the password).
 //
 // A step that waits on the user (`needKey`, `needConfirm`) ends with the
@@ -23,7 +23,7 @@ public enum AuthIPC {
     case denied
     /// The app's manifest doesn't allow the pattern.
     case notAllowed
-    /// A protocol or role the keyring doesn't speak.
+    /// A protocol or role factotum doesn't speak.
     case unsupported
     /// The peer broke or failed the protocol (`failure()` says how).
     case peer
@@ -68,11 +68,14 @@ public enum AuthIPC {
     }
   }
 
-  public protocol Keyring {
+  public protocol Factotum {
     /// Starts a session for `pattern` (factotum's: `proto=scram-sha-256
     /// server=mail.example user?`) in `role`: `session` is the server's
     /// end of an `AuthSession`.
     func startSession(pattern: String, role: Role, session: consuming Handle) throws(AuthError)
+    /// The public half of the key `pattern` names, made if need be:
+    /// ed25519's and noise-ik's, for the app to give its peers.
+    func publicKey(pattern: String) throws(AuthError) -> [UInt8]
   }
 
   public protocol AuthSession {
