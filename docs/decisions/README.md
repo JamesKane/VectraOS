@@ -96,3 +96,4 @@ in a new file, and a line in the index below.
 - [D81. The environment is /env](D081-environment-is-env.md) — 2026-10-16, decided
 - [D82. Driver classes are Plan 9's device directories for control, the one ring for bulk](D082-device-directories.md) — 2026-10-16, decided
 - [D83. Keyboards are 9front's kbdfs, keyed by HID usages: drivers push them to kbin, kbdfs gives runes and the console](D083-keyboards-are-kbdfs.md) — 2026-10-17, decided; amends D82
+- [D84. A Node read may wait: streams, answered when they have bytes](D084-node-reads-may-wait.md) — 2026-10-17, decided

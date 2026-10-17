@@ -68,3 +68,14 @@ until a volume service needs them.
 `swift test` runs `tests/` hosted; `bin/node-test` (`tests/native`, the
 boot-node test) runs batches, mounts, watches, namespaces and `/srv` on
 each arch.
+
+## Streams
+
+A file whose bytes come and go, as Plan 9's `/dev/cons` (D84):
+`tree.stream(path, NodeStream(take:write:opened:closed:))`. A read
+takes what is there; with nothing there, the server holds the call
+(`IPCDeferral`) until the service calls `tree.ready(node)`, and an empty
+read is the stream's end. Only a read that begins a batch at the
+channel's own node waits (an opened file's); one after walks answers
+with what is there. `StreamTests` checks both, and a held reader that
+closes.

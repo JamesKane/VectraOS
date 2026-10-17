@@ -149,6 +149,44 @@ func epitaphStatus(_ message: IPCMessage) -> Status {
   return Status(rawValue: status) ?? .peerClosed
 }
 
+/// Calls a server answers later (D84): a handler that can't answer yet,
+/// such as a read of a stream with nothing in it, holds the call, and the
+/// generated server sends no reply for it. The handler answers it later
+/// with the method's reply encoder (`_reply_<Protocol>_<method>`) and
+/// `send`, on the server's own thread (a dispatcher's `wake`), so the
+/// reply never goes to a channel that has closed meanwhile. A client that
+/// gave up first drops the late reply.
+public final class IPCDeferral: @unchecked Sendable {
+  var current: MessageHeader?
+  var held = false
+
+  public init() {}
+
+  /// Generated code: the call about to be handled.
+  public func serving(_ header: MessageHeader) {
+    current = header
+    held = false
+  }
+
+  /// Generated code, after the handler returned: whether it held the
+  /// call, and so whether the reply waits.
+  public func deferred(_ header: MessageHeader) -> Bool {
+    defer {
+      current = nil
+      held = false
+    }
+    return held
+  }
+
+  /// From a handler: the call being handled is answered later. Its header,
+  /// to answer it with; nil outside a call.
+  public func hold() -> MessageHeader? {
+    guard let current else { return nil }
+    held = true
+    return current
+  }
+}
+
 /// The server's end of a protocol. Generated `<Name>Server` types wrap one.
 public struct IPCServerConnection: ~Copyable {
   public let channel: Handle
@@ -156,6 +194,8 @@ public struct IPCServerConnection: ~Copyable {
   /// Where its replies and events go while a dispatcher serves it, which
   /// writes them all in one array; nil: straight to the channel.
   var outbox: IPCOutbox? = nil
+  /// Set by a server whose handlers may answer calls later (D84).
+  public var deferral: IPCDeferral? = nil
 
   public init(channel: consuming Handle) {
     channelID = IPC.channelID(channel)

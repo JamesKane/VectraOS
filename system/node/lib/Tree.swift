@@ -35,6 +35,8 @@ public final class TreeNode: @unchecked Sendable {
     case memory(Backing)
     /// A typed protocol: opening it gets a channel `connect` serves.
     case service(connect: (consuming Handle) throws(Status) -> Void)
+    /// Bytes that come and go: a read waits for them (D84, Stream.swift).
+    case stream(NodeStream)
   }
 
   public internal(set) var name: String
@@ -52,6 +54,8 @@ public final class TreeNode: @unchecked Sendable {
   var removable = false
   var detached = false
   var watchers: [Watcher] = []
+  /// A stream's sessions holding reads on it.
+  var waiting: [SessionState] = []
   /// The last changes watchers heard, for watch(since:); `lostThrough` is
   /// the newest one dropped from it.
   var log: [NodeIPC.Change] = []
@@ -66,7 +70,7 @@ public final class TreeNode: @unchecked Sendable {
   var kind: NodeIPC.NodeKind {
     switch content {
     case .directory, .remote: .directory
-    case .bytes, .text, .memory: .file
+    case .bytes, .text, .memory, .stream: .file
     case .service: .service
     }
   }
@@ -160,6 +164,11 @@ final class SessionState: @unchecked Sendable {
   var id: UInt64 = 0
   var pending: [NodeIPC.Change] = []
   var closed = false
+  /// Its calls held for later (D84), and the reads held: on `stream`, the
+  /// stream node the session is at.
+  let deferral = IPCDeferral()
+  var reads: [(header: MessageHeader, max: UInt32)] = []
+  var stream: TreeNode?
 }
 
 /// Held only by a session's server: when the dispatcher drops the server
@@ -177,6 +186,10 @@ final class SessionEnd: @unchecked Sendable {
   deinit {
     tree.locked { state.closed = true }
     if let bulk { tree.dispatcher.unwatch(bulk.watch) }
+    if let node = state.stream {
+      tree.locked { node.waiting.removeAll { $0 === state } }
+      if case .stream(let s) = node.content { s.closed() }
+    }
   }
 }
 
@@ -384,8 +397,14 @@ public final class NodeTree: @unchecked Sendable {
   /// Serves Node on `channel`, at `node`.
   public func serve(_ channel: consuming Handle, at node: TreeNode) throws(Status) {
     let state = SessionState()
-    let server = NodeIPC.NodeServer(channel: channel, impl: Session(tree: self, node: node, state: state, end: SessionEnd(self, state)))
+    var server = NodeIPC.NodeServer(channel: channel, impl: Session(tree: self, node: node, state: state, end: SessionEnd(self, state)))
+    server.connection.deferral = state.deferral
+    if case .stream(let s) = node.content {
+      state.stream = node
+      s.opened()
+    }
     state.id = try dispatcher.add(server) { [self] (s: inout NodeIPC.NodeServer<Session>) throws(IPCError<Never>) in
+      try answerHeldReads(state, &s)
       let changes = locked { () -> [NodeIPC.Change] in
         defer { state.pending = [] }
         return state.pending
@@ -428,7 +447,15 @@ struct Session: NodeIPC.NodeHandler {
         case .readdir(let cursor, let max, let fields):
           results.append(.dir(try readdir(at, cursor: cursor, max: max, fields: fields)))
         case .read(let offset, let max):
-          results.append(.data(try tree.read(at, offset: offset, max: max)))
+          if i == 0, at === node, case .stream(let s) = at.content {
+            // A read that waits (D84): held, the reply sent later.
+            guard let bytes = tree.readOrHold(at, s, max: max, state) else {
+              return NodeIPC.Reply(results: [], failure: nil, node: nil)
+            }
+            results.append(.data(bytes))
+          } else {
+            results.append(.data(try tree.read(at, offset: offset, max: max)))
+          }
         case .write(let offset, let data):
           results.append(.wrote(try tree.write(at, offset: offset, data)))
         case .watch(let since):
@@ -593,7 +620,7 @@ struct Session: NodeIPC.NodeHandler {
     switch content {
     case .memory(let m): return try m.share(executable: executable)
     case .directory, .remote: throw .isDirectory
-    case .service: throw .unsupported
+    case .service, .stream: throw .unsupported
     case .bytes(let b, _): bytes = b
     case .text(let render, _): bytes = Array(render().utf8)
     }
@@ -701,6 +728,7 @@ extension NodeTree {
     case .bytes(let b, _): bytes = b
     case .text(let render, _): bytes = Array(render().utf8)  // outside the lock: it's the service's code
     case .memory(let m): return try m.read(offset: offset, max: Swift.min(Int(max), limit))
+    case .stream(let s): return s.take(Swift.min(Int(max), limit)) ?? []  // not waiting: mid-batch, or a ring's
     }
     guard offset < UInt64(bytes.count) else { return [] }
     let start = Int(offset)
@@ -717,6 +745,9 @@ extension NodeTree {
       throw .isDirectory
     case .service, .memory:
       throw .unsupported
+    case .stream(let s):
+      guard let write = s.write else { throw .unsupported }
+      return try write(data)
     case .text(_, let write):
       guard let write else { throw .unsupported }
       guard let command = String(validating: data, as: UTF8.self) else { throw .invalid }
