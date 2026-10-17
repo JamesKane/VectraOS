@@ -125,6 +125,12 @@ let ipc: [Target] = [
   .target(name: "UCDGen", path: "text/unicode/gen"),
   .executableTarget(name: "ucdgen", dependencies: ["UCDGen"], path: "tools/ucdgen"),
   .testTarget(name: "UnicodeTests", dependencies: ["TDUnicode", "UCDGen"], path: "text/unicode/tests"),
+  // Taisce (fs/taisce, D8), todhchai's: the one file system's engine,
+  // tier 0. TaisceHost is its devices on the host (an image file), for
+  // its tests; its FUSE mount isn't lifted.
+  .target(name: "Taisce", dependencies: ["TDUnicode", "TDCrypto"], path: "fs/taisce/lib", swiftSettings: tier0),
+  .target(name: "TaisceHost", dependencies: ["Taisce"], path: "fs/taisce/host"),
+  .testTarget(name: "TaisceTests", dependencies: ["Taisce", "TaisceHost"], path: "fs/taisce/tests/core"),
   // PCI over ECAM (drivers/bus/pci, V2 item 7b, D74): configuration space,
   // enumeration, BARs and capabilities, todhchai's; ECAM's registers
   // through the runtime's accessors (CroiMMIO, croi/mmio.h).

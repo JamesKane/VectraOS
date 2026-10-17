@@ -85,7 +85,8 @@ drivers/input/	all	InputTests	boot-launch	man
 drivers/net/	all	NetClassTests	boot-launch	man
 data/fonts/	all	-	boot-smoke,framebuffer-pixels,boot-launch	-
 text/fonts/	all	-	boot-smoke,framebuffer-pixels,boot-launch	-
-text/unicode/	-	UnicodeTests	-	-
+fs/taisce/	all	TaisceTests	-	-
+text/unicode/	all	UnicodeTests,TaisceTests	-	-
 data/unicode/	-	UnicodeTests	-	-
 tools/ucdgen/	-	UnicodeTests	-	-
 tools/vx/	all	-	boot-smoke,framebuffer-pixels,boot-trace,trace-collect,boot-launch,boot-cpu	man,loc,hardware,risk
