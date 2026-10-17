@@ -62,6 +62,11 @@ public final class Launcher: @unchecked Sendable {
     /// The forwarders of the mounts of it, and the directory each opens,
     /// to point at the new instance after a restart.
     var mountedBy: [(tree: NodeTree, name: String, subpath: [String])] = []
+    /// Its instance runs a pushed build.
+    var pushed = false
+    /// `restart` was asked for: the next end restarts it, whatever its
+    /// policy, and isn't counted against it.
+    var restartAsked = false
     var state = "not started"
     var instances = 0
     var restarts: [Int64] = []
@@ -91,6 +96,12 @@ public final class Launcher: @unchecked Sendable {
 
   /// What a manifest's `program` may name (no hashed collections in tier 0).
   let programs: [(name: String, entry: ProgramEntry)]
+  /// A pushed build of a program, looked for before bootfs's (push and
+  /// run: the launcher's own `/dev/bin`, in a cpu image). Called on the
+  /// thread that starts the service, never the dispatcher's.
+  public var pushed: (@Sendable (String) -> ProgramEntry?)?
+  /// Called with a service's name once it has answered on its export.
+  public var readied: (@Sendable (String) -> Void)?
   let dispatcher: IPCDispatcher
   let job: Handle
   let supervisor: Handle
@@ -101,7 +112,7 @@ public final class Launcher: @unchecked Sendable {
   /// The environment groups (D81): each service's /env, and /svc/env.
   public let env: EnvGroups
   var statusNode: TreeNode?
-  /// What `launcher` grants: `status`, and `ctl` (`kill SERVICE`), on a
+  /// What `launcher` grants: `status`, and `ctl` (`kill` and `restart SERVICE`), on a
   /// dispatcher and thread of its own, made when first granted (a /svc
   /// tree forwards walks to it from the launcher's dispatcher, which can't
   /// wait on itself).
@@ -192,7 +203,9 @@ public final class Launcher: @unchecked Sendable {
   /// One line a service: its name, state and restart count.
   public var status: String {
     locked {
-      services.map { "\($0.manifest.service) \($0.state) restarts \($0.instances > 0 ? $0.instances - 1 : 0)\n" }
+      services.map {
+        "\($0.manifest.service) \($0.state) restarts \($0.instances > 0 ? $0.instances - 1 : 0)\($0.pushed ? " pushed" : "")\n"
+      }
         .joined()
     }
   }
@@ -378,10 +391,19 @@ public final class Launcher: @unchecked Sendable {
     try granted(s, into: startup)
     extraStartup?(m.service, startup)
     let process = try sys { () throws(Status) in try Process.create(job: s.job, name: m.service) }
-    guard let program = programs.first(where: { NodeIPC.same($0.name, m.program) }) else {
+    // A pushed build first, then bootfs's.
+    let entry: ProgramEntry
+    var fromPush = false
+    if let p = pushed?(m.program) {
+      entry = p
+      fromPush = true
+    } else if let program = programs.first(where: { NodeIPC.same($0.name, m.program) }) {
+      entry = program.entry
+    } else {
       throw failed("no program '\(m.program)'")
     }
-    _ = try sys { () throws(Status) in try Process.start(process, entry: program.entry, startup) }
+    locked { s.pushed = fromPush }
+    _ = try sys { () throws(Status) in try Process.start(process, entry: entry, startup) }
     // The instance is recorded before its end can be seen: one that ends
     // at once is the supervisor's to mark, not ours to call running.
     let raw = process.raw
@@ -410,6 +432,7 @@ public final class Launcher: @unchecked Sendable {
     guard isReady else {
       throw LaunchError("\(m.file):\(m.serviceLine): service '\(m.service)' didn't answer on its export")
     }
+    readied?(m.service)
     // Those using it reach the new instance from now on.
     guard let export else { return }
     for (svc, name, client, grants) in users {
@@ -543,6 +566,10 @@ public final class Launcher: @unchecked Sendable {
         s.process = nil
         s.state = "exited \(code)"
         guard !stopping else { return false }
+        if s.restartAsked {
+          s.restartAsked = false
+          return true
+        }
         switch s.manifest.restart {
         case .never: return false
         case .onFailure: if code == 0 { return false }
@@ -576,9 +603,19 @@ public final class Launcher: @unchecked Sendable {
         tree.text("status", read: { [self] in status }),
         tree.text("memory", read: { [self] in memory }),
         tree.text("ctl", read: { "" }, write: { [self] text throws(NodeError) in
-          let words = Directives.words(Array(text.utf8))
-          guard words.count == 2, `is`(words[0], "kill") else { throw .invalid }
-          do throws(LaunchError) { try kill(words[1]) } catch { throw .notFound }
+          // A command a line (echo's newline ends one).
+          for line in Directives.lines(Array(text.utf8)) {
+            let words = Directives.words(line)
+            if words.isEmpty { continue }
+            guard words.count == 2 else { throw .invalid }
+            if `is`(words[0], "kill") {
+              do throws(LaunchError) { try kill(words[1]) } catch { throw .notFound }
+            } else if `is`(words[0], "restart") {
+              do throws(LaunchError) { try restart(words[1]) } catch { throw .notFound }
+            } else {
+              throw .invalid
+            }
+          }
         }),
       ]
       let thread = try Thread.spawn { try? dispatcher.run() }.release()
@@ -650,6 +687,28 @@ public final class Launcher: @unchecked Sendable {
       return ok
     }
     if !killed { throw LaunchError("no running service '\(service)'") }
+  }
+
+  /// Starts a service again whatever its restart policy says, from a
+  /// pushed build if there is one: a running one is killed first; one
+  /// that has ended, or failed, starts now. Not counted against it.
+  public func restart(_ service: String) throws(LaunchError) {
+    let raw = try locked { () throws(LaunchError) -> UInt32? in
+      guard let s = services.first(where: { NodeIPC.same($0.manifest.service, service) }) else {
+        throw LaunchError("no service '\(service)'")
+      }
+      s.restartAsked = true
+      return s.process?.raw
+    }
+    guard let s = self.service(service) else { return }
+    if let raw {
+      let p = Handle(raw: raw)  // borrowed: `process` still owns it
+      _ = try? Sys.kill(p)
+      _ = p.release()
+    } else {
+      // Not running: the supervisor starts it, as it would after an end.
+      try? Port.queue(supervisor, Packet(key: UInt64(s.index + 1)))
+    }
   }
 
   /// Ends every service and the launcher's threads.

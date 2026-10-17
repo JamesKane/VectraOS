@@ -200,6 +200,57 @@ func launchError(_ files: [(String, String)]) -> String {
                        ("b.m", "service b\nprogram tree\nuse a as launcher\n")]) == "b.m:3: bad name 'launcher'")
 }
 
+/// ctl's `restart`: a running service is started again whatever its
+/// policy, and so is one that has ended; neither counts against it.
+@Test func restartStartsAServiceWhateverItsPolicy() throws {
+  let l = try launcher()
+  defer { l.stop() }
+  try l.start([
+    ("a.m", "service a\nprogram tree\nexport\nrestart never\narg first\n"),
+    ("n.m", "service n\nprogram exiter\nrestart never\narg 0\n"),
+  ])
+  #expect(waitFor(l, "n exited 0 restarts 0"))
+  var root = NodeIPC.NodeClient(channel: try l.controlChannel())
+  var ctl = try root.open("ctl")
+  try ctl.writeText("restart a\n")  // as echo writes it
+  #expect(waitFor(l, "a running restarts 1"))
+  #expect(try read(l, "a", "status") == "a first\n")
+  try ctl.writeText("restart n")
+  #expect(waitFor(l, "n exited 0 restarts 1"))
+  #expect(throws: NodeIPC.NodeClient.Failure.self) { try ctl.writeText("restart nobody") }
+}
+
+/// Push and run: a pushed build of a program is started before bootfs's,
+/// and the status says so; without one, bootfs's again.
+@Test func aPushedBuildIsStartedBeforeBootfss() throws {
+  let l = try launcher()
+  defer { l.stop() }
+  let pushedTree = ProgramEntry { start in
+    do throws(Status) {
+      let dispatcher = try IPCDispatcher()
+      let tree = NodeTree(dispatcher: dispatcher)
+      tree.text("status", read: { "the pushed build\n" })
+      guard let export = start.export() else { Process.exit(code: 98) }
+      try tree.serve(export)
+      try dispatcher.run()
+    } catch {
+      Process.exit(code: 99)
+    }
+  }
+  let pushing = Locked(false)
+  l.pushed = { name in pushing.withLock { $0 } && name == "tree" ? pushedTree : nil }
+  try l.start([("a.m", "service a\nprogram tree\nexport\narg first\n")])
+  #expect(try read(l, "a", "status") == "a first\n")
+  pushing.withLock { $0 = true }
+  try l.restart("a")
+  #expect(waitFor(l, "a running restarts 1 pushed"))
+  #expect(try read(l, "a", "status") == "the pushed build\n")
+  pushing.withLock { $0 = false }
+  try l.restart("a")
+  #expect(waitFor(l, "a running restarts 2"))
+  #expect(try read(l, "a", "status") == "a first\n")
+}
+
 @Test func theLauncherDirectiveGrantsItsTreeAndKills() throws {
   let l = try launcher()
   defer { l.stop() }

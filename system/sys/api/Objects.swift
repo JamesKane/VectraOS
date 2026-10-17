@@ -325,6 +325,12 @@ public enum VMO {
     Handle(raw: try Kernel.vmoCreatePhysical(resource.raw, address, size))
   }
 
+  /// `vmo` again, able to run (EXECUTE added to its rights): `vmex` is the
+  /// VMEX system resource, or root. `vmo` is gone either way.
+  public static func executable(_ vmo: consuming Handle, vmex: borrowing Handle) throws(Status) -> Handle {
+    Handle(raw: try Kernel.vmoReplaceAsExecutable(vmo.release(), vmex.raw))
+  }
+
   /// Sets how the VMO's mappings are cached; only while it has none.
   public static func setCachePolicy(_ vmo: borrowing Handle, _ policy: CachePolicy) throws(Status) {
     try Kernel.vmoSetCachePolicy(vmo.raw, policy)

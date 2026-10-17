@@ -26,7 +26,7 @@ The terminal's first message is the command record, `size[4] command[size]` (lit
 The connection then carries 9P2000 (9p(5)) the other way: the terminal serves its tree and the server imports it (gate(2)), as Plan 9's cpu does with exportfs.
 
 rc starts in a namespace of its own: the server's, with the terminal's tree at `/mnt/term`, its `dev/cons` bound over `/dev/cons`, and a new environment group at `/env`.
-Its namespace has fs(4)'s volume at `/data`, where files copied from `/mnt/term` land.
+Its namespace has fs(4)'s volume at `/data`, where files copied from `/mnt/term` land, `/dev/bin`, where a program copied runs in place of bootfs's when its service restarts (launcher(8)), and the launcher's tree at `/svc/launcher`.
 It has no descriptors, so it takes `/dev/cons` as its terminal (shell(8)).
 It runs in a job of its own, its note group, under the server's.
 Each note the terminal sends, read from `/mnt/term/dev/cpunote`, is written to `/proc/`<pid>`/notepg` for rc's pid (proc(4)), so ^C on the terminal interrupts what rc is running.
@@ -55,7 +55,19 @@ mount /net dns/net after
 mount /proc proc
 mount /mnt/plumb plumber
 mount /data fs/volume create
+mount /dev/bin fs/volume/bin create
+launcher
 restart on-failure
+```
+
+# EXAMPLES
+
+From the dev machine, in the tree, run a new build of the plumber without a reboot:
+
+```rc
+% vx cpu -k $nodekey -r build/amd64/kernel -c \
+    'cp /mnt/term/root/plumber.elf /dev/bin/plumber &&
+     echo restart plumber >/svc/launcher/ctl' node
 ```
 
 # FILES

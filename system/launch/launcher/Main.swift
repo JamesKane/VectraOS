@@ -9,6 +9,8 @@
 // service ends, and exits with its return code: how a boot test runs
 // a client to its end.
 
+import Directives
+import IPC
 import Launch
 import LibSys
 import Node
@@ -22,6 +24,70 @@ let utcBackstop: Int64 = 1_767_225_600 * 1_000_000_000
 func fail(_ what: String) -> Never {
   print("launcher: \(what)")
   Process.exit(code: 1)
+}
+
+/// Push and run, where bootfs has `etc/launcher/push` (a cpu image's):
+/// its first line, `SERVICE PATH`, names a directory of that service's tree
+/// (`fs volume/bin`), made once the service has answered. A program
+/// there is started in place of bootfs's `bin/` one of its name: its
+/// bytes, given as memory, made runnable here with the VMEX resource, so
+/// no other service holds the right to make code.
+final class Push: @unchecked Sendable {
+  let service: String
+  let path: String
+  let vmex: UInt32
+  let launcher: Launcher
+  /// Each pushed build's VMO, the latest of each name, kept while
+  /// processes start from it.
+  let held = Locked<[(name: String, vmo: UInt32)]>([])
+
+  @discardableResult
+  init(_ text: String, vmex: UInt32, launcher: Launcher) {
+    // Its first line with words, `#` comments dropped.
+    let words = Directives.lines(Array(text.utf8)).map { Directives.words($0) }.first { !$0.isEmpty } ?? []
+    service = words.first ?? "fs"
+    path = words.count > 1 ? words[1] : "volume/bin"
+    self.vmex = vmex
+    self.launcher = launcher
+    print("launcher: programs pushed to \(service)/\(path) run before bootfs's")
+    launcher.readied = { [self] name in if NodeIPC.same(name, service) { made() } }
+    launcher.pushed = { [self] name in program(name) }
+  }
+
+  /// The directory, made if it isn't there.
+  func made() {
+    guard var root = try? launcher.open(service), (try? root.walk(path)) == nil else { return }
+    var names = NodeIPC.names(path)
+    guard let last = names.popLast() else { return }
+    _ = try? root.create(last, kind: .directory, in: names.joined(separator: "/"))
+  }
+
+  /// The pushed build of `name`, if there is one.
+  func program(_ name: String) -> ProgramEntry? {
+    guard NodeIPC.isValidName(name), var root = try? launcher.open(service),
+      var file = try? root.open(path + "/" + name)
+    else { return nil }
+    do throws(IPCError<NodeIPC.NodeError>) {
+      let memory = try file.memory(executable: false)
+      let size = Int(memory.size)
+      let vmex = Handle(raw: self.vmex)  // borrowed
+      var made: UInt32?
+      do throws(Status) { made = try VMO.executable(try memory.vmo.duplicate(), vmex: vmex).release() } catch {}
+      _ = vmex.release()
+      guard let image = made else { return nil }
+      let old = held.withLock { h -> UInt32? in
+        let i = h.firstIndex { NodeIPC.same($0.name, name) }
+        let old = i.map { h[$0].vmo }
+        if let i { h.remove(at: i) }
+        h.append((name, image))
+        return old
+      }
+      if let old { _ = Handle(raw: old) }  // closed: what started from it maps it still
+      return ProgramEntry(image: image, offset: 0, length: size, name: name)
+    } catch {
+      return nil
+    }
+  }
 }
 
 /// Whether `name` starts with `prefix`, and the rest (bytes).
@@ -40,16 +106,21 @@ func dropping(_ prefix: StaticString, _ name: String) -> String? {
 
     var programs: [(name: String, entry: ProgramEntry)] = []
     var manifests: [(path: String, text: String)] = []
+    var push: String?
     do throws(Status) {
       for file in try ProgramEntry.bootfs(bootfs) {
+        // Read through a mapping of its pages (V1 cut vmo_read, D37).
+        func text() throws(Status) -> String {
+          let first = file.offset & ~4095
+          let mapping = try VMO.map(bootfs, offset: first, length: file.offset + file.length - first, writable: false)
+          return String(decoding: mapping.read(at: file.offset - first, count: file.length), as: UTF8.self)
+        }
         if let name = dropping("bin/", file.name) {
           programs.append((name, file))
         } else if dropping("etc/manifests/", file.name) != nil, file.name.utf8.reversed().starts(with: ".manifest".utf8.reversed()) {
-          // Read through a mapping of its pages (V1 cut vmo_read, D37).
-          let first = file.offset & ~4095
-          let mapping = try VMO.map(bootfs, offset: first, length: file.offset + file.length - first, writable: false)
-          manifests.append((file.name, String(decoding: mapping.read(at: file.offset - first, count: file.length),
-                                              as: UTF8.self)))
+          manifests.append((file.name, try text()))
+        } else if dropping("etc/launcher/push", file.name).map({ $0.isEmpty }) ?? false {
+          push = try text()
         }
       }
     } catch {
@@ -66,9 +137,16 @@ func dropping(_ prefix: StaticString, _ name: String) -> String? {
     }
     // What manifests may grant: userboot's ranged root resources, bootfs,
     // the boot data and the debuglog.
+    var vmex: UInt32?
     for kind in [ResourceKind.mmio, .irq, .ioport, .smc, .system] {
-      if let r = start.take(HandleType.info(HandleType.resource(kind))) { launcher.allow(resource: kind, r) }
+      guard let r = start.take(HandleType.info(HandleType.resource(kind))) else { continue }
+      // Push and run's: VMEX alone, to make a pushed build runnable.
+      if kind == .system, push != nil {
+        vmex = (try? Resource.create(parent: r, kind: .system, base: SystemResource.vmex, size: 1, name: "push"))?.release()
+      }
+      launcher.allow(resource: kind, r)
     }
+    if let push, let vmex { Push(push, vmex: vmex, launcher: launcher) }
     if let copy = try? bootfs.duplicate() { launcher.allow(bootfs: copy) }
     if let data = start.take(HandleType.info(HandleType.vmoBootData)) { launcher.allow(bootData: data) }
     if let ring = start.take(HandleType.info(HandleType.vmoDebuglog)),

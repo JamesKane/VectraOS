@@ -844,6 +844,9 @@ func files(_ ns: Namespace) {
   check(hasLine(ctl, "inquiry ramdisk0") && hasLine(ctl, "geometry 16384 4096") && hasLine(ctl, "part data 0 16384"),
         "the RAM disk says its geometry, as sd(3)'s ctl")
   check(hasLine(readText(ns, "/svc/fs/status") ?? "", "volume data"), "fs serves the volume it made, labelled data")
+  // Push and run is the cpu images' alone (etc/launcher/push): here the
+  // launcher made no bin on the volume, and runs nothing from it.
+  check((try? ns.open("/svc/fs/volume/bin")) == nil, "a normal image has no /dev/bin to push to")
   /// The groups fs has committed, from its status's `commits` line.
   func commits() -> Int64 {
     let status = readText(ns, "/svc/fs/status") ?? ""

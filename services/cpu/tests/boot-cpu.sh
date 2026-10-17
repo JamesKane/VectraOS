@@ -4,16 +4,18 @@
 # node with vx cpu as the tests' terminal (terminal.key, whose public half
 # the test image pins), through the forwarded port.
 #
-#   boot-cpu.sh VX PORT WORK
+#   boot-cpu.sh VX PORT WORK PLUMBER
 #
 # First a command: rc -c reads the dev machine's file through
 # /mnt/term/root, writes one there, lists /mnt/term/dev, and copies the
-# file to fs(4)'s volume at /data and reads it back. Then an
+# file to fs(4)'s volume at /data and reads it back. Then a pushed
+# build: PLUMBER (the build's plumber.elf) copied to /dev/bin and
+# restarted through the launcher's ctl. Then an
 # interactive rc: `cat` waits on the terminal, ^C (SIGINT to vx) interrupts
 # it, and the next line still runs; the end of input ends the session.
 
 set -euo pipefail
-vx=$1 port=$2 work=$3
+vx=$1 port=$2 work=$3 plumber=$4
 here=$(cd "$(dirname "$0")" && pwd)
 key=$here/terminal.key
 
@@ -25,6 +27,7 @@ root=$work/terminal
 rm -rf "$root"
 mkdir -p "$root"
 echo 'from the dev machine' > "$root/motd"
+cp "$plumber" "$root/plumber"
 
 fail() {
   echo "boot-cpu: $1" >&2
@@ -44,7 +47,18 @@ grep -q 'cons' "$out.lf" && grep -q 'cpunote' "$out.lf" || fail "rc didn't list 
 grep -qx 'copied: from the dev machine' "$out.lf" || fail "rc didn't copy the file to /data" "$out"
 echo "boot-cpu: rc -c ran with the terminal's files, and copied one to /data"
 
-# 2. An interactive rc, interrupted.
+# 2. Push and run: the build dir's plumber copied to /dev/bin and
+# restarted through the launcher's ctl, which then says it runs the
+# pushed build; the session's /mnt/plumb reconnects to it (D100).
+out=$work/push.out
+timeout 60 "$vx" cpu --key "$key" -k "$node" -r "$root" \
+  -c 'cp /mnt/term/root/plumber /dev/bin/plumber && echo restart plumber >/svc/launcher/ctl; while(! ~ pushed `{cat /svc/launcher/status}) x=1; ls /mnt/plumb' \
+  "127.0.0.1!$port" < /dev/null > "$out" || fail "vx cpu (push) failed" "$out"
+tr -d '\r' < "$out" > "$out.lf"
+grep -qx '/mnt/plumb/rules' "$out.lf" || fail "the pushed plumber didn't answer at /mnt/plumb" "$out"
+echo "boot-cpu: a pushed plumber runs in place of bootfs's"
+
+# 3. An interactive rc, interrupted.
 in=$work/in
 out=$work/session.out
 rm -f "$in"

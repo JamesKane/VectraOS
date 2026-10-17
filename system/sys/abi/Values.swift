@@ -181,6 +181,14 @@ public enum ResourceKind: UInt32, Sendable {
   }
 }
 
+/// The system resource's ranges (resource.h's CROI_RSRC_SYSTEM_*_BASE),
+/// each one wide: a child of the system resource for one of them grants
+/// that and nothing else.
+public enum SystemResource {
+  /// Making a VMO executable (VMO.executable).
+  public static var vmex: UInt64 { UInt64(CROI_RSRC_SYSTEM_VMEX_BASE) }
+}
+
 /// Processargs handle types (processargs.h's CROI_PA_*) that a process
 /// passes on to the ones it starts: the low byte of an info word, whose
 /// bits 16-31 are an argument.

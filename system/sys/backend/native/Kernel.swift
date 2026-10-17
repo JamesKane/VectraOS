@@ -261,6 +261,12 @@ enum Kernel {
     try out(UInt32(0)) { croi_syscall(CROI_SYS_VMO_CREATE_PHYSICAL, UInt64(resource), address, UInt64(pages(size)), $0, 0) }
   }
 
+  /// vmo_replace_as_executable: `vmo` (gone either way) with EXECUTE added,
+  /// `vmex` the VMEX system resource or root.
+  static func vmoReplaceAsExecutable(_ vmo: UInt32, _ vmex: UInt32) throws(Status) -> UInt32 {
+    try out(UInt32(0)) { croi_syscall(CROI_SYS_VMO_REPLACE_AS_EXECUTABLE, UInt64(vmo), UInt64(vmex), $0, 0, 0) }
+  }
+
   static func vmoSetCachePolicy(_ h: UInt32, _ policy: VMO.CachePolicy) throws(Status) {
     try check(croi_syscall(CROI_SYS_VMO_SET_CACHE_POLICY, UInt64(h), UInt64(policy.rawValue), 0, 0, 0))
   }

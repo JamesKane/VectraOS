@@ -93,6 +93,7 @@ enum Kernel {
     throw .notSupported
   }
   static func vmoSetCachePolicy(_ h: UInt32, _ policy: VMO.CachePolicy) throws(Status) { throw .notSupported }
+  static func vmoReplaceAsExecutable(_ vmo: UInt32, _ vmex: UInt32) throws(Status) -> UInt32 { throw .notSupported }
   static func resourceCreate(_ parent: UInt32, _ options: UInt32, _ base: UInt64, _ size: UInt64, _ name: String)
     throws(Status) -> UInt32
   { throw .notSupported }

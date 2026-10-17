@@ -827,6 +827,18 @@ meets a tested path.
   /mnt/term/PATH/prog /dev/bin && restart prog'` runs a new build
   without a reboot; `restart` writes `restart prog` to
   `/svc/launcher/ctl` (D79).
+  - **Done (2026-10-17):** a cpu image's bootfs carries
+    `etc/launcher/push` (`fs volume/bin`): once fs answers, the launcher
+    makes `bin` on its volume, which cpu sessions mount at `/dev/bin`,
+    and starts a service from a program there in place of bootfs's,
+    making its bytes runnable itself (`VMO.executable`, with a VMEX
+    resource it carves from its system resource), so no other service
+    holds that right; `status` marks it `pushed`. The launcher's ctl
+    takes `restart NAME` (whatever the policy, not counted) and a
+    command a line. LaunchTests check restart and a pushed build first;
+    boot-cpu pushes the build's plumber, restarts it, and finds
+    `/mnt/plumb` answering; launch-test checks a normal image has no
+    `bin` to push to. The `restart` script is the board tools'.
 - **Board tools, rc scripts over ctl files (D79):** `log -f` (`cat
   /dev/kprint`), `ps`, `kill`, `restart`, `trace`, `poweroff`, `reboot`
   and `warmboot`; `/dev/reboot`, served over `SYSTEM_POWERCTL` by the

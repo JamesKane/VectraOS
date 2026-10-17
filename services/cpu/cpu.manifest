@@ -4,7 +4,9 @@
 # runs its handshakes through factotum, granted the node's noise-ik key
 # and nothing else (D75). Each session's rc gets this namespace, with the
 # terminal's tree at /mnt/term, in a job of its own under `programs`;
-# fs(4)'s volume at /data is where files copied from it land.
+# fs(4)'s volume at /data is where files copied from it land, and
+# /dev/bin its bin, where a program copied runs in place of bootfs's on
+# `echo restart NAME >/svc/launcher/ctl` (launcher(8), push and run).
 service cpu
 program cpu
 programs
@@ -22,4 +24,6 @@ mount /net dns/net after
 mount /proc proc
 mount /mnt/plumb plumber
 mount /data fs/volume create
+mount /dev/bin fs/volume/bin create
+launcher
 restart on-failure

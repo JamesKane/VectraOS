@@ -1,0 +1,3 @@
+# Push and run (launcher(8)): programs copied to fs's volume/bin run
+# in place of bootfs's, in the cpu images, which alone carry this file.
+fs volume/bin

@@ -437,17 +437,18 @@ add_custom_target(bootfs DEPENDS ${CMAKE_BINARY_DIR}/bootfs.img)
 # image.
 set(_cpu_image_entries ${_bootfs_entries})
 list(FILTER _cpu_image_entries EXCLUDE REGEX "^(bin/launch-test|etc/manifests/(launch-test|a|b)\\.manifest)=")
-set(_cpu_entries bin/cpu=${_cpu} etc/manifests/cpu.manifest=${PROJECT_SOURCE_DIR}/services/cpu/cpu.manifest)
+set(_cpu_entries bin/cpu=${_cpu} etc/manifests/cpu.manifest=${PROJECT_SOURCE_DIR}/services/cpu/cpu.manifest
+          etc/launcher/push=${PROJECT_SOURCE_DIR}/system/launch/launcher/push)
 set(_cpu_test_key ${PROJECT_SOURCE_DIR}/services/cpu/tests/terminal.pub)
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-cpu-test.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-cpu-test.img ${_cpu_image_entries} ${_cpu_entries}
           lib/cpu/terminal=${_cpu_test_key}
-  DEPENDS ${_bootfs_depends} ${_cpu} ${PROJECT_SOURCE_DIR}/services/cpu/cpu.manifest ${_cpu_test_key}
+  DEPENDS ${_bootfs_depends} ${_cpu} ${PROJECT_SOURCE_DIR}/services/cpu/cpu.manifest ${PROJECT_SOURCE_DIR}/system/launch/launcher/push ${_cpu_test_key}
   COMMENT "Building bootfs for boot-cpu")
 add_custom_target(bootfs-cpu-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-cpu-test.img)
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-cpu.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-cpu.img ${_cpu_image_entries} ${_cpu_entries}
           lib/cpu/terminal=${CMAKE_BINARY_DIR}/cpu/terminal
-  DEPENDS ${_bootfs_depends} ${_cpu} ${PROJECT_SOURCE_DIR}/services/cpu/cpu.manifest ${CMAKE_BINARY_DIR}/cpu/terminal
+  DEPENDS ${_bootfs_depends} ${_cpu} ${PROJECT_SOURCE_DIR}/services/cpu/cpu.manifest ${PROJECT_SOURCE_DIR}/system/launch/launcher/push ${CMAKE_BINARY_DIR}/cpu/terminal
   COMMENT "Building bootfs for vx boot --cpu")
 add_custom_target(bootfs-cpu DEPENDS ${CMAKE_BINARY_DIR}/bootfs-cpu.img)

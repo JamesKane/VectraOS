@@ -21,20 +21,26 @@ Each `mount` of a service is given with a forwarder of the launcher's, which it 
 What was open in the old instance stays closed.
 A service that ends is restarted as its manifest's `restart` says; one restarted 5 times within 30 seconds is left failed.
 
+In a cpu image, whose bootfs has `etc/launcher/push`, a program can be pushed: once fs(4) answers, the launcher makes `bin` on its volume (`/dev/bin` in cpu(8)'s sessions), and starts a service from a program there of its name in place of bootfs's `bin/` one.
+It reads the file's bytes and makes them runnable itself, so no other service holds that right.
+Such an instance is marked `pushed` in `status`; removing the file and restarting the service runs bootfs's again.
+
 Given `launcher.until=<service>` on the kernel's command line, the launcher runs until that service ends, and exits with its exit code: how a boot test runs a client to its end.
 Without it, it supervises the services for good.
 
 # FILES
 
 : `/svc/launcher/status`
-  A line for each service: its name, its state (`not started`, `starting`, `running`, `failed`, or `exited` and its code) and how many times it has been restarted, as `restarts <n>`.
+  A line for each service: its name, its state (`not started`, `starting`, `running`, `failed`, or `exited` and its code) and how many times it has been restarted, as `restarts <n>`, then `pushed` if it runs a pushed build.
 : `/svc/launcher/memory`
   A line for each service, `<name> processes <n> private <p> shared <s> scaled <x>`, the bytes its processes and those it started hold, then the launcher's own as `launcher`.
   A service's resident memory is its private and scaled bytes.
 : `/svc/launcher/ctl`
-  Takes `kill <service>`, which ends the service's process as a crash would; its restart policy then applies.
+  Takes a command a line: `kill <service>` ends the service's process as a crash would, and its restart policy then applies; `restart <service>` starts it again whatever its policy, ending it first if it runs, and isn't counted against it.
 : `etc/manifests/*.manifest`
   In bootfs, the services to run.
+: `etc/launcher/push`
+  In a cpu image's bootfs: `SERVICE PATH`, where pushed programs are (`fs volume/bin`).
 
 # SEE ALSO
 
@@ -44,3 +50,4 @@ manifest(6), intro(4), intro(8)
 
 There are no apps or scripting.
 A request a process had sent when its mounted service ended is sent once more, to the new instance, so a write may be done twice.
+A pushed program runs only as a service: rc's `/bin` stays bootfs's, and a pushed build is on fs(4)'s RAM disk, gone at a reboot.
