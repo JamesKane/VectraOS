@@ -71,4 +71,4 @@ On a byte stream, `Frame.wrap` puts a message's length before it, 16-bit big-end
 
 # SEE ALSO
 
-fcall(2), 9p(5)
+fcall(2), gate(2), 9p(5)

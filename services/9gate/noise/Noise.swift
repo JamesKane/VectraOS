@@ -30,7 +30,7 @@ public protocol NoiseKey {
 }
 
 /// A key pair held in memory.
-public struct StaticKey: NoiseKey {
+public struct StaticKey: NoiseKey, Sendable {
   let privateKey: [UInt8]
   public let publicKey: [UInt8]
 

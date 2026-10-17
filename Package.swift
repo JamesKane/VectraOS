@@ -163,7 +163,11 @@ let ipc: [Target] = [
   .target(name: "Noise", dependencies: ["TDCrypto"], path: "services/9gate/noise", swiftSettings: tier0),
   .target(name: "FcallOracle", path: "services/9gate/oracles/9front", exclude: ["LICENSE", "NOTICE"],
           cSettings: [.headerSearchPath("."), .unsafeFlags(["-std=gnu99", "-fms-extensions", "-w"])]),
-  .testTarget(name: "GateTests", dependencies: ["NineP", "Noise", "FcallOracle"], path: "services/9gate/tests"),
+  // 9gate's export and import over them (services/9gate/lib).
+  .target(name: "Gate", dependencies: ["NineP", "Noise", "Node", "IPC", "IPCWire", "Sys"], path: "services/9gate/lib",
+          swiftSettings: tier0),
+  .testTarget(name: "GateTests", dependencies: ["Gate", "NineP", "Noise", "FcallOracle", "Node", "IPC", "Sys"],
+              path: "services/9gate/tests"),
   // kbdfs (D83): the keyboard and the console, after 9front's.
   .target(name: "Kbdfs", path: "services/kbdfs/lib", swiftSettings: tier0),
   .testTarget(name: "KbdfsTests", dependencies: ["Kbdfs"], path: "services/kbdfs/tests"),

@@ -1,0 +1,120 @@
+page gate 2
+summary export a namespace in 9P, import a 9P server as Node
+names gate Gate Export Import NinePClient ByteStream MessageStream SealedStream GateError
+src services/9gate/lib/Stream.swift services/9gate/lib/Client.swift services/9gate/lib/Export.swift services/9gate/lib/Import.swift
+keys 9p export import exportfs mount remote client server noise stream connection
+lang swift
+
+# SYNOPSIS
+
+```swift
+import Gate
+
+enum GateError: Error { case closed, protocolError(String), error(String) }
+
+struct ByteStream {
+  init(read: (Int) throws(GateError) -> [UInt8],
+       write: ([UInt8]) throws(GateError) -> Void, close: () -> Void)
+  static func node(read: consuming NodeIPC.NodeClient,
+                   write: consuming NodeIPC.NodeClient,
+                   close: () -> Void) -> ByteStream
+  static func channel(_ end: consuming Handle) -> ByteStream
+}
+
+enum SealedStream {
+  static func initiate<Key: NoiseKey>(_ raw: ByteStream, key: Key,
+      remote: [UInt8], ephemeral: [UInt8], prologue: [UInt8])
+      throws(GateError) -> ByteStream
+  static func respond<Key: NoiseKey>(_ raw: ByteStream, key: Key,
+      ephemeral: [UInt8], prologue: [UInt8], accept: ([UInt8]) -> Bool)
+      throws(GateError) -> (ByteStream, [UInt8])
+}
+
+final class NinePClient {
+  init(_ stream: ByteStream, msize: UInt32 = 65560) throws(GateError)
+  let version: String
+  var iounit: UInt32 { get }
+  func fid() -> UInt32
+  func rpc(_ request: Fcall) throws(GateError) -> Fcall
+  func attach(_ fid: UInt32, uname: String, aname: String)
+    throws(GateError) -> Qid
+  func walk(_ fid: UInt32, _ newfid: UInt32, _ names: [String])
+    throws(GateError) -> [Qid]
+  func open(_ fid: UInt32, mode: UInt8)
+    throws(GateError) -> (qid: Qid, iounit: UInt32)
+  func create(_ fid: UInt32, name: String, perm: UInt32, mode: UInt8)
+    throws(GateError) -> Qid
+  func read(_ fid: UInt32, offset: UInt64, count: UInt32)
+    throws(GateError) -> [UInt8]
+  func write(_ fid: UInt32, offset: UInt64, _ data: [UInt8])
+    throws(GateError) -> UInt32
+  func stat(_ fid: UInt32) throws(GateError) -> Dir
+  func wstat(_ fid: UInt32, _ dir: Dir) throws(GateError)
+  func clunk(_ fid: UInt32)
+  func remove(_ fid: UInt32) throws(GateError)
+}
+
+final class Export {
+  static func serve(_ stream: ByteStream, namespace: Namespace, root: String,
+                    owner: String = "none", msize: UInt32 = 65560) -> GateError
+}
+
+final class Import {
+  init(_ client: NinePClient, dispatcher: IPCDispatcher)
+  func attach(aname: String = "", uname: String = "none")
+    throws(GateError) -> Handle
+}
+```
+
+# DESCRIPTION
+
+These are Plan 9's exportfs and import, between Node (node(5)) and 9P2000 (9p(5)), over any byte stream.
+
+A `ByteStream` is a connection's two directions and its hangup.
+`node` makes one of a file read and written as a stream, a TCP conversation's `data` (ip(4)): reads on one channel to it and writes on another, since each may wait, and `close` what hangs it up, writing `hangup` to its `ctl`.
+`channel` makes one of a channel's end; closing it closes the end.
+
+`SealedStream` puts a Noise IK session (noise(2)) on a stream: `initiate` calls the responder whose static key is <remote>, and `respond` answers, giving the caller's static key to <accept> before it replies.
+A refused caller gets no reply, and either side hangs the stream up when its handshake fails.
+After the handshake, the sealed stream's bytes travel in transport messages, each framed by its length.
+
+`NinePClient` speaks 9P2000 on a stream.
+It asks for `9P2000.vx` and takes `9P2000`, and its msize is the smaller of <msize> and the server's.
+Any thread may call at once: each call has a tag of its own, and a reader thread hands each reply to its caller as it comes.
+An Rerror is `GateError.error` with the server's text; a stream that ends fails every call waiting, and every call after, with `closed`.
+Fids are the caller's: `fid` gives a free one, and `clunk` and `remove` give it back.
+
+`Export.serve` serves <root> of a namespace in 9P2000 on a stream until the stream ends, then hangs it up and returns why.
+Each fid is a channel to its file, found by its path under <root> through the namespace, so what the namespace mounts under <root> is served, and `..` at <root> stays there.
+A walk that finds its first names and not the rest is a short walk, as 9P's is.
+Reads and writes are answered on threads of their own, so a read that waits, a console's, holds up nothing else; other requests are answered in order.
+A directory's read gives whole stats, from offset 0 or from where the last read ended.
+Node has no owners or permissions: every file is <owner>'s, a directory's mode is `DMDIR|0775` and a file's `0664`, and a wstat may change only the name, the modification time and the length.
+Tauth is refused: the stream's Noise key says who is calling.
+Node's errors are sent as Plan 9's strings: `file does not exist`, `permission denied`, `file already exists`, `not a directory`, `directory not empty`, `i/o error` and the rest.
+
+`Import.attach` attaches to the server's tree <aname> and returns a channel that serves it as Node, to mount in a namespace.
+Each channel opened from it is a fid of its own on the server, clunked when the channel closes.
+A batch is answered on a thread of its own, its reply held until the server has answered, so a read of a remote file that waits holds up no other channel.
+The server's error strings come back as Node's errors; one it doesn't know is `io`.
+
+# EXAMPLES
+
+Import a node's tree over an established, sealed stream, and read a file:
+
+```swift
+let gate = Import(try NinePClient(stream), dispatcher: dispatcher)
+try ns.mount(try gate.attach(), at: "/n/node")
+var motd = try ns.open("/n/node/lib/motd")
+print(try motd.readText())
+```
+
+# SEE ALSO
+
+fcall(2), noise(2), dial(2), 9p(5), node(5)
+
+# BUGS
+
+A Tflush waits for the request it names to finish: Node can't take back a read that waits, so flushing one waits until it is answered.
+
+An imported tree can't be watched, give its files as memory, or take a ring pair: those fail `unsupported`.

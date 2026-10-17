@@ -94,4 +94,4 @@ A decoded message holds copies of its strings and data, not views of the buffer.
 
 # SEE ALSO
 
-9p(5), noise(2)
+gate(2), noise(2), 9p(5)

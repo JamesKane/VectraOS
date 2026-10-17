@@ -47,8 +47,8 @@ under `vx ci` and every budget it introduces has a running check
 - **V3** is under way: notes and /proc, crypto, the net class, the
   stack serving /net with dial(2), cs and dns for names, and the
   console's shell (rc on kbdfs's /dev/cons, D97), done (2026-10-17);
-  9gate's 9P2000 codec and Noise IK begun (the codec and the handshake
-  done), 9gate's export and import next.
+  9gate begun (the codec, Noise IK, and export and import over a stream
+  done), 9gate's service next.
   **V4 onward** are not started (V6's boards have research passes);
   V10, the Ghost, is proposed (D90), and V11 to V16, the native
   applications and Studio, are proposed (D95, D96).
@@ -702,9 +702,18 @@ meets a tested path.
     over a `NoiseKey`, whose one operation, DH with the static key, is
     what factotum will run; sessions; and length-framed messages on a
     stream; replayed through cacophony's and snow's vectors (data/noise).
-    Both run on the target in the gate suite. Left: 9gate itself (export
-    and import over a dialed, framed session; the prologue and payloads),
-    factotum's key, and `vx cpu`.
+    Both run on the target in the gate suite.
+  - **Done (2026-10-17):** export and import (services/9gate/lib, gate(2)):
+    a 9P client whose calls run at once from any threads; a namespace's
+    subtree served in 9P, walked by path through the namespace (its mounts
+    seen, `..` stopping at the root), reads and writes on threads of their
+    own; and a 9P server served as Node to mount, each batch on a thread
+    with its reply held (D84), so a remote read that waits holds up no
+    other channel; over any byte stream, a /net conversation's or a
+    channel's, sealed by Noise IK or not. GateTests exports a tree, reads
+    it as 9P, and imports it back through a namespace. Left: the 9gate
+    service (listening and dialing over /net, the prologue, which keys it
+    takes), factotum's key, and `vx cpu`.
 - **factotum** (todhchai's keyring, D75) holds the node's Noise IK
   static key (`proto=noise-ik`), made on first use; neither 9gate nor
   cpu holds it.
