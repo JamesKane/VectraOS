@@ -118,6 +118,13 @@ let ipc: [Target] = [
   .target(name: "LibsecOracle", path: "crypto/oracles/9front", exclude: ["LICENSE", "NOTICE"],
           cSettings: [.headerSearchPath("."), .unsafeFlags(["-std=gnu99", "-fms-extensions", "-w"])]),
   .testTarget(name: "CryptoTests", dependencies: ["TDCrypto", "LibsecOracle"], path: "crypto/tests"),
+  // Unicode (text/unicode, todhchai's): normalization, case folding and
+  // segmentation over tables ucdgen writes from data/unicode; tier 0.
+  // Taisce's attribute names and caseless keys are its first users.
+  .target(name: "TDUnicode", path: "text/unicode/lib", swiftSettings: tier0),
+  .target(name: "UCDGen", path: "text/unicode/gen"),
+  .executableTarget(name: "ucdgen", dependencies: ["UCDGen"], path: "tools/ucdgen"),
+  .testTarget(name: "UnicodeTests", dependencies: ["TDUnicode", "UCDGen"], path: "text/unicode/tests"),
   // PCI over ECAM (drivers/bus/pci, V2 item 7b, D74): configuration space,
   // enumeration, BARs and capabilities, todhchai's; ECAM's registers
   // through the runtime's accessors (CroiMMIO, croi/mmio.h).

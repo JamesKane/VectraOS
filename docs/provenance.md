@@ -49,6 +49,7 @@ The actions in the tables:
 | `services/console`, `services/time`, `shell/commands` | Port | V2 | The console reads the debuglog ring (D38); UTC is a page (D48) |
 | `tools/toolchain` (the `*-todhchai` series, renamed `*-vectraos`) and tier 1's sysroot | Lift | V2 | Tier 1 for FDIO and rc (D47) |
 | `fs/taisce` and `services/fs` | Lift | V3 (RAM disk), V4 (on disk) | The one FS (D8). V3's file copies land in it. Replace its use of the `Synchronization` module in tier 0. |
+| `text/unicode` (TDUnicode), `tools/ucdgen`, `data/unicode` | Lift | V3 | Ahead of the rest of `text` (V5): Taisce's attribute names are NFC, and its caseless keys case-folded. Lifted whole, segmentation too. |
 | `services/radharc`, desktop shell (Tracker, Deskbar) | Port | V5 | Add the tile and space workspace modes (D9). The look is Platinum Indigo (D24), not `desktop.md` §6's neon. |
 | `shell/terminal`, as `shell/rio` (D75) | Port | V5 | Rio's text window inside Radharc, serving `/dev/cons`; `TerminalCore` as `vt`, a program in a window; the router's route as plumbing from the window's directory. |
 | `ui`, `text`, `graphics` (Vulkan/Venus), `codecs` | Lift | V5 | `graphics` changes on the way in: D55-D62 (memory by intent for both memory models, one sync mechanism, shader layouts from the IDL; F-106 not lifted) |
