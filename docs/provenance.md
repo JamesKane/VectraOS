@@ -58,6 +58,9 @@ The actions in the tables:
 | `ui/core` (`Theme`, `UIQuad`) and the Neon Tab look (desktop.md §6) | Port | V5 | Themes as data over roles, not hue-named tokens; Neon Tab ships as a theme, not the default (D91, `docs/theming.md`) |
 | `sdk/` and macros (`@AudioRenderer`) | Lift | V5 | |
 | `services/keyring`, as `services/factotum` (D75) | Lift | V3 | Noise IK's static key, the node's identity, from V3 (D77). Already after Plan 9's factotum; renamed, its AuthIPC sessions kept. A headless factotum asks no one (D75); keys persist with Taisce on disk (V4). |
+| `docs/browser.md`, `docs/research/communications.md`, `docs/research/office-suite.md`, Edit, Mail and People (desktop.md, sdk.md) | Design | V11–V13 | The applications both projects planned (D95, `docs/apps.md`): the browser's engine and its stages; one sync service per protocol, apps as live queries; ODF, not a native format |
+| `codecs` translators beyond V5's, Player and the music library (desktop.md) | Port | V14 | Decoders checked against host oracles after D89 (`docs/apps.md` §7) |
+| Radharc's `capture` and the Recorder (desktop.md) | Design | V5, V15 | Per-window capture and the lamp in V5; the Recorder is Studio with a file output (D96, `docs/studio.md`) |
 
 ## NeoVectra (C23 with third-party dependencies)
 
@@ -71,9 +74,10 @@ The actions in the tables:
 | docs/03 §6.1 and ADR-0056 (the hot-reload host, code images), 01 §6.6, §7.4 and ADR-0043 (plug-ins as processes, seals and leases, live update) | Design | V5, V9 | D92, `docs/plugins.md`; Lua (ADR-0015) not carried |
 | docs/03 §5.4 (reactive tokens), §9.1 (`vx-magic`, `vx-next`), §9.5 (the trusted path) | Design | V5 | Radharc's theme tree; Indigo Magic and NeXT themes (D91) |
 | docs/03 §8 (`aid`), docs/18 §4 (verbs as tools), ADR-0029 (broad grants) | Design | V10 (proposed) | The Ghost (D90, `docs/ghost.md`); its vendored runtimes and `auditfs` dropped (D4, principle 1) |
+| docs/07 (native apps: the protocol stance and table, `webfs`, adapters), docs/17 (Page, Sheet, Stage, Jukebox, Photos), docs/08 (`hx`) | Design | V11–V14 | D95, `docs/apps.md`; NetSurf's libraries, vendored decoders, tree-sitter and Lua user functions not carried (D4, D92); Paint, Draw, Notes, Reminders, Stickies and printing wait for decisions |
 | `lib/vx-net` (TCP, DHCP, DNS) | Drop | — | todhchai's `services/net` is the one network stack |
 | `lib/vx-fs` (Bε-tree) | Drop | — | Taisce wins (D8) |
-| `lib/vx-text` (sam-style structural regex) | Rewrite | later | For the editor |
+| `lib/vx-text` (sam-style structural regex) | Rewrite | V11 | For the editor (D95) |
 | `vxui`, `winsrv`, `wm.lua` | Drop | — | Radharc and todhchai's UI win. Lua is third-party (D4). |
 | `third_party/*` (Limine, musl, ACPICA, Lua, Monocypher, stb) | Drop | — | D4 |
 | `rc` shell (`lib/vx-rc`) | Drop | — | todhchai's rc is the one shell (D15) |

@@ -47,7 +47,8 @@ under `vx ci` and every budget it introduces has a running check
 - **V3** is under way: notes and /proc, crypto, the net class and the
   stack serving /net with dial(2), done (2026-10-17); cs and dns next.
   **V4 onward** are not started (V6's boards have research passes);
-  V10, the Ghost, is proposed (D90).
+  V10, the Ghost, is proposed (D90), and V11 to V16, the native
+  applications and Studio, are proposed (D95, D96).
 
 ## V0. Ground — done 2026-10-15
 
@@ -1005,6 +1006,111 @@ executor's decoding ops in V8's `.vxm` format.
   insight from a local model, whose fix runs and undoes.
 - An automation the Ghost wrote runs with the Ghost disabled.
 - The Ghost's budgets (`docs/ghost.md` §10) are green.
+
+## V11–V16. Native applications (D95, D96, proposed)
+
+The applications that both NeoVectra and todhchai planned
+(`docs/apps.md`), under one axiom: the web is hypermedia content,
+not an application delivery device, so applications are native and
+the browser runs nothing it fetches. Each is our own code speaking
+existing protocols and formats, as a stated profile within a line
+ceiling that the milestone sets as its first step (`vx loc --check`);
+every exit below includes its components within their ceilings. A
+protocol is a service that keeps standard files in Taisce, and an
+application is a live query plus that service's node. Each
+milestone adds the kits its applications need, grown from those
+applications (principle 22). Studio may move up to follow V14
+directly; that is the owner's call (`docs/apps.md` §9).
+
+### V11. Reading and writing
+
+- **The browser:** its own engine, from the WHATWG specifications,
+  with a stated CSS profile and no JavaScript: links and forms are its
+  only interactivity. It also reads Gemini, Gopher and CommonMark.
+  `webfs` serves HTTP/1.1 over V10's TLS 1.3.
+- **The editor:** Acme's architecture, sam's structural regular
+  expressions, LSP to language servers on the developer's host over
+  cpu (none on the device, D4), and Git written first-party.
+- **The debugger and trace viewer:** DWARF 5, through `/proc`.
+- **Translators** for images, fuzzed and checked against host oracles
+  (D89's pattern).
+
+**Exit:** the browser renders the manual and a reference set of
+documents within its page budget, and the editor edits, builds and
+debugs a VectraOS program over cpu.
+
+### V12. Communications
+
+In this order: feeds (Atom, RSS), mail (IMAP4rev2, SMTP, MIME), contacts
+and calendar (CardDAV, CalDAV), chat (IRCv3, then XMPP with OMEMO), and
+social (ActivityPub, then AT Protocol and Nostr). Each protocol is one
+service per account, with its keys held by factotum.
+
+**Exit:**
+- Each service interoperates with a reference server run on the host.
+- An idle inbox costs no wakeups.
+- No application process holds a socket or a key.
+
+### V13. Documents
+
+Write, Sheet and Show save ODF as their own format, with OpenFormula
+for formulas. OOXML, CSV, Markdown and EPUB come in through
+translators, and output is tagged PDF. One typesetter, one formula
+engine and one PDF writer serve all three, and the browser's printing
+too. There are no macros.
+
+**Exit:** each application round-trips the ODF conformance documents
+it claims, and opens a reference set of OOXML files.
+
+### V14. Media
+
+- **The media pipeline** is processes on rings, shown in the patch bay.
+- **Decoders:**
+  - images: PNG, JPEG, GIF, WebP, AVIF;
+  - audio: FLAC, Opus, Vorbis, MP3;
+  - video: AV1 and VP9 in software, then H.264 and HEVC on each
+    board's video unit (the Sky1's Mali-V).
+- **Containers:** Matroska and WebM, MP4, Ogg.
+- **Applications:** the player, music and photos.
+
+**Exit:**
+- 1080p60 AV1 plays on the Orange Pi 6 Plus with no CPU pixel copy and
+  no dropped frame.
+- Every decoder matches its oracle.
+
+### V15. Studio (D96)
+
+Streaming and recording for creators (`docs/studio.md`):
+
+- capture, game, camera (UVC), audio and remote sources;
+- scenes in Taisce;
+- a realtime mixer;
+- hardware encoders first, with Opus and AV1 in software;
+- outputs to RTMP(S) and Enhanced RTMP, SRT, WHIP and HLS;
+- recordings and a replay buffer.
+
+The Recorder is Studio with a file as its only output.
+
+**Exit:**
+- An hour's 1080p60 stream from the Orange Pi 6 Plus to an RTMP server
+  and to its own HLS origin at once drops no frame and makes no CPU
+  pixel copy.
+- The reference game holds its frame budget while being streamed.
+- Studio's budgets are green.
+
+### V16. Calls and remote windows
+
+- Voice and video calls on WebRTC's media path only (ICE, DTLS-SRTP,
+  RTP; no data channels or SCTP)
+  and Opus, reusing V15's encoders and WHIP's stack. Signalling is
+  XMPP's Jingle, through V12's service.
+- Remote windows across the swarm as encoded surface streams, which
+  also show a web application running on another machine (D95), with the
+  latency target an open question (NeoVectra 02 §9).
+
+**Exit:** a call between two VectraOS nodes, and one with a standard
+WebRTC peer, within the latency budget; a remote window on the LAN
+under its frame budget.
 
 ## Research tracks (unscheduled)
 
