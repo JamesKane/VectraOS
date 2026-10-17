@@ -1,0 +1,53 @@
+page srv-board 5
+summary the todhchai.srv.Board protocol
+names srv-board todhchai.srv.Board
+src system/node/lib/Srv.swift
+
+# SYNOPSIS
+
+```text
+protocol todhchai.srv.Board version 1
+call post(name: String, node: Handle) throws(BoardError)
+call withdraw(name: String) throws(BoardError)
+```
+
+# DESCRIPTION
+
+Protocol `todhchai.srv.Board`, version 1, of library `SrvIPC`, its messages in the one wire format (wire(6)).
+
+| Method | Kind | Since | Ordinal |
+| `post` | call | 1 | `0x4cc8abd3ab346a3c` |
+| `withdraw` | call | 1 | `0x75e0ca23bc8dd6a0` |
+
+: `post`
+  Posts `node` (a Node channel) as `name`.
+
+@node layouts Message layouts
+
+## post
+
+Request body, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `name` | String (bytes out of line) |
+| 16 | 4 | `node` | Handle (in the handle array) |
+
+Reply body: empty.
+
+## withdraw
+
+Request body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `name` | String (bytes out of line) |
+
+Reply body: empty.
+
+@node types Types
+
+## errors BoardError
+
+| Case | Code |
+| `exists` | 1 |
+| `notFound` | 2 |
+| `badName` | 3 |

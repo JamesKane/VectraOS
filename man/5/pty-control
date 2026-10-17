@@ -1,0 +1,128 @@
+page pty-control 5
+summary the todhchai.pty.Control protocol
+names pty-control todhchai.pty.Control
+src services/pty/lib/Protocol.swift
+
+# SYNOPSIS
+
+```text
+protocol todhchai.pty.Control version 2
+call mode() -> Mode
+call setMode(mode: Mode)
+call windowSize() -> WindowSize
+call takeEnds(yes: Bool)
+event event(event: Event)
+event resized(size: WindowSize)
+event hangup()
+```
+
+# DESCRIPTION
+
+The program's side.
+
+Protocol `todhchai.pty.Control`, version 2, of library `PtyIPC`, its messages in the one wire format (wire(6)).
+
+| Method | Kind | Since | Ordinal |
+| `mode` | call | 1 | `0x65cb3588b290aca0` |
+| `setMode` | call | 1 | `0x534df026b98fd96a` |
+| `windowSize` | call | 1 | `0x4e85e1db1a4cc96e` |
+| `takeEnds` | call | 1 | `0x5187e30fc19b171e` |
+| `event` | event | 1 | `0x36d42bb0d0fc53c5` |
+| `resized` | event | 1 | `0x1e22cc312ea29001` |
+| `hangup` | event | 2 | `0x3ce1415031c6db5e` |
+
+: `takeEnds`
+  Whether the controller takes ^D as an `end` event (a shell, whose
+  own input goes on), or the pty ends the program's stdin (the
+  default).
+: `hangup`
+  The terminal has gone (its keys ended): Plan 9's hangup note.
+
+@node layouts Message layouts
+
+## mode
+
+Request body: empty.
+
+Reply body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `result` | Mode (inline) |
+
+## setMode
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `mode` | Mode (inline) |
+
+Reply body: empty.
+
+## windowSize
+
+Request body: empty.
+
+Reply body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 8 | `result` | WindowSize (inline) |
+
+## takeEnds
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 1 | `yes` | Bool |
+
+Reply body: empty.
+
+## event
+
+Event body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 1 | `event` | Event (UInt8) |
+
+## resized
+
+Event body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 8 | `size` | WindowSize (inline) |
+
+## hangup
+
+Event body: empty.
+
+@node types Types
+
+## struct WindowSize
+
+aligned to 4, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `columns` | UInt32 |
+| 4 | 4 | `rows` | UInt32 |
+
+## struct Mode
+
+termios's flags the discipline knows (TerminalMode's).
+
+aligned to 1, 4 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 1 | `canonical` | Bool |
+| 1 | 1 | `echo` | Bool |
+| 2 | 1 | `signals` | Bool |
+| 3 | 1 | `outputCRLF` | Bool |
+
+## enum Event
+
+What a key made, for the program's controller.
+
+UInt8; receivers reject other values.
+
+| Case | Value |
+| `interrupt` | 1 |
+| `quit` | 2 |
+| `end` | 3 |

@@ -1,0 +1,43 @@
+page launcher 8
+summary start and supervise the system's services
+src system/launch/launcher/Main.swift system/launch/lib/Launcher.swift system/launch/lib/Manifest.swift
+keys services manifest restart svc supervise
+
+# SYNOPSIS
+
+```text
+userboot.next=bin/launcher [launcher.until=service]
+```
+
+# DESCRIPTION
+
+The launcher is the program userboot starts.
+It reads every manifest in bootfs's `etc/manifests/` (manifest(6)), checks them against each other, and starts each service in a job and a process of its own, given only what its manifest grants: its arguments, its `/env`, the trees it uses at `/svc` and where it mounts them, and any hardware, boot data or debuglog its manifest asks for.
+A service starts after every service it uses has answered on its tree; services marked `early` start first.
+Any error in a manifest stops the launch, with its file and line.
+
+A process's `/svc` holds only the services it uses, each forwarding to the service's current process, so after a restart opening the path again reaches the new one.
+A service that ends is restarted as its manifest's `restart` says; one restarted 5 times within 30 seconds is left failed.
+
+Given `launcher.until=<service>` on the kernel's command line, the launcher runs until that service ends, and exits with its exit code: how a boot test runs a client to its end.
+Without it, it supervises the services for good.
+
+# FILES
+
+: `/svc/launcher/status`
+  A line for each service: its name, its state (`not started`, `starting`, `running`, `failed`, or `exited` and its code) and how many times it has been restarted, as `restarts <n>`.
+: `/svc/launcher/memory`
+  A line for each service, `<name> processes <n> private <p> shared <s> scaled <x>`, the bytes its processes and those it started hold, then the launcher's own as `launcher`.
+  A service's resident memory is its private and scaled bytes.
+: `/svc/launcher/ctl`
+  Takes `kill <service>`, which ends the service's process as a crash would; its restart policy then applies.
+: `etc/manifests/*.manifest`
+  In bootfs, the services to run.
+
+# SEE ALSO
+
+manifest(6), intro(4), intro(8)
+
+# BUGS
+
+There are no per-client services, and no apps or scripting.

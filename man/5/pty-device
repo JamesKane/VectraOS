@@ -1,0 +1,89 @@
+page pty-device 5
+summary the todhchai.pty.Device protocol
+names pty-device todhchai.pty.Device
+src services/pty/lib/Protocol.swift
+
+# SYNOPSIS
+
+```text
+protocol todhchai.pty.Device version 2
+call setWindowSize(size: WindowSize)
+call client() throws(PtyError) -> Client
+```
+
+# DESCRIPTION
+
+The terminal's side.
+
+Protocol `todhchai.pty.Device`, version 2, of library `PtyIPC`, its messages in the one wire format (wire(6)).
+
+| Method | Kind | Since | Ordinal |
+| `setWindowSize` | call | 1 | `0x78abcf91ec99b1e7` |
+| `client` | call | 1 | `0x32a9ec21168ef7c9` |
+
+: `client`
+  The client end (once: a ring has one writer, so a shell on it
+  relays for its children).
+
+@node layouts Message layouts
+
+## setWindowSize
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 8 | `size` | WindowSize (inline) |
+
+Reply body: empty.
+
+## client
+
+Request body: empty.
+
+Reply body, 56 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 52 | `result` | Client (inline) |
+
+@node types Types
+
+## struct WindowSize
+
+aligned to 4, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `columns` | UInt32 |
+| 4 | 4 | `rows` | UInt32 |
+
+## struct Descriptor
+
+One descriptor's child side (StreamParts): its ring's VMO, the
+child's doorbell and the pty's, and the channel whose closing ends
+it. Which way it goes is its place's.
+
+Moves (carries handles); aligned to 4, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `vmo` | Handle (in the handle array) |
+| 4 | 4 | `childBell` | Handle (in the handle array) |
+| 8 | 4 | `parentBell` | Handle (in the handle array) |
+| 12 | 4 | `channel` | Handle (in the handle array) |
+
+## struct Client
+
+The client end: a program's descriptors 0 (it reads), 1 and 2 (it
+writes), and `Control`.
+
+Moves (carries handles); aligned to 4, 52 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `input` | Descriptor (inline) |
+| 16 | 16 | `output` | Descriptor (inline) |
+| 32 | 16 | `errors` | Descriptor (inline) |
+| 48 | 4 | `control` | Handle (in the handle array) |
+
+## errors PtyError
+
+| Case | Code |
+| `invalid` | 1 |
+| `unavailable` | 2 |

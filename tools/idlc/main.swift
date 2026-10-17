@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // idlc: reads Swift files that declare @IPCLibrary libraries and writes a C
-// header for each library, and for each of its protocols a Markdown
-// reference page and an API baseline checked against the recorded one
-// (architecture §4).
+// header for each library, and for each of its protocols a page of the
+// manual (section 5, D86) and an API baseline checked against the
+// recorded one (architecture §4).
 //
-//   idlc [--c-out DIR] [--doc-out DIR] [--baseline DIR [--update-baseline]] [--with FILE]... FILE...
+//   idlc [--c-out DIR] [--man-out DIR] [--baseline DIR [--update-baseline]] [--with FILE]... FILE...
+//
+// --man-out is the manual's section 5 directory, man/5.
 //
 // --with reads a library only so FILE's protocols can compose its
 // protocols (`protocol Directory: NodeIPC.Node`); nothing is written for it.
@@ -36,7 +38,7 @@ func need(_ value: String?, _ message: String) -> String {
 func join(_ dir: String, _ name: String) -> String { dir.hasSuffix("/") ? dir + name : dir + "/" + name }
 
 var cOut: String?
-var docOut: String?
+var manOut: String?
 var baselineDir: String?
 var updateBaseline = false
 var files: [String] = []
@@ -45,7 +47,7 @@ var args = CommandLine.arguments.dropFirst()
 while let arg = args.popFirst() {
   switch arg {
   case "--c-out": cOut = need(args.popFirst(), "--c-out needs a directory")
-  case "--doc-out": docOut = need(args.popFirst(), "--doc-out needs a directory")
+  case "--man-out": manOut = need(args.popFirst(), "--man-out needs a directory")
   case "--baseline": baselineDir = need(args.popFirst(), "--baseline needs a directory")
   case "--update-baseline": updateBaseline = true
   case "--with": withFiles.append(need(args.popFirst(), "--with needs a file"))
@@ -84,7 +86,7 @@ for l in interface.libraries {
 for (l, p) in interface.protocols {
   let composed: [Interface.ComposedMethod]
   do { composed = try interface.composedMethods(p, in: l) } catch { fail(error.description) }
-  if let docOut { save(markdown(p, l, source: source, composed: composed), to: docOut, "\(p.name).md") }
+  if let manOut { save(manPage(p, l, source: source, composed: composed), to: manOut, manPageName(p)) }
   if let baselineDir {
     let path = join(baselineDir, "\(p.id).api")
     let new = Baseline(p, l, composed: composed)

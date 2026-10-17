@@ -3,7 +3,6 @@
 # isn't here, and on anything here that now has a page or no longer
 # needs one, so the list only shrinks: a change that adds something
 # adds its page, not a row.
-program	launcher
 program	time
 program	pty
 program	bootfs
@@ -618,11 +617,6 @@ libc	rmdir
 libc	access
 libc	getcwd
 libc	chdir
-protocol	todhchai.pty.Control
-protocol	todhchai.pty.Device
-protocol	todhchai.pty.Factory
-protocol	todhchai.node.Node
-protocol	todhchai.srv.Board
 service	devmgr
 driver	virtio-input
 service	console

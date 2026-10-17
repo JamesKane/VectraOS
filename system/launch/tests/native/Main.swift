@@ -7,8 +7,10 @@
 // namespace from its Startup (D65), reads every /svc/*/status, reaches a
 // through b, kills a through /svc/launcher/ctl and reaches its next
 // instance by the same paths, and reads UTC from the page every process
-// is given (D48), the RTC's on amd64. It exits 0 if every check passed.
+// is given (D48), the RTC's on amd64, and checks the services' trees
+// against their pages' FILES (D86). It exits 0 if every check passed.
 
+import Guide
 import IPC
 import Node
 import Sys
@@ -72,6 +74,61 @@ func line(_ text: String, startingWith prefix: StaticString) -> String? {
     }
   }
   return nil
+}
+
+/// The services' trees against the manual (D86): every page in /lib/man
+/// whose FILES names a path under /svc/SERVICE/ claims that file. Each
+/// claimed file exists, and a service any page claims has each of its
+/// files documented, none more. A path with a parameter, such as
+/// /svc/x/<name>, claims nothing.
+func documentedTrees(_ ns: Namespace) {
+  guard let index = readText(ns, "/lib/man/index") else { return check(false, "the manual's index") }
+  var pages: [String] = []
+  for row in index.utf8.split(separator: 0x0A).dropFirst() {
+    let f = row.split(separator: 0x09, omittingEmptySubsequences: false)
+    guard f.count == 6, f[3].isEmpty else { continue }
+    let path = "/lib/man/" + String(decoding: f[2], as: UTF8.self) + "/" + String(decoding: f[1], as: UTF8.self)
+    if !pages.contains(where: { $0.utf8.elementsEqual(path.utf8) }) { pages.append(path) }
+  }
+  var claimed: [(service: String, file: String, path: String)] = []
+  for path in pages {
+    guard let text = readText(ns, path), let page = try? Page(Array(text.utf8), file: path) else {
+      print("launch-test: \(path) can't be read")
+      check(false, "every page in the index reads")
+      continue
+    }
+    var files = false
+    for b in page.blocks {
+      if b.kind == .heading || b.kind == .node { files = b.kind == .heading && b.text == Array("FILES".utf8) }
+      guard files, b.kind == .definition, let spans = try? Inline.spans(b.text) else { continue }
+      for s in spans where s.kind == .literal && s.text.starts(with: Array("/svc/".utf8)) && !s.text.contains(0x3C) {
+        let parts = s.text.split(separator: 0x2F).map { String(decoding: $0, as: UTF8.self) }
+        guard parts.count >= 3 else { continue }
+        claimed.append((parts[1], parts[2], String(decoding: s.text, as: UTF8.self)))
+      }
+    }
+  }
+  var services: [String] = []
+  for c in claimed {
+    if (try? ns.open(c.path)) == nil {
+      print("launch-test: \(c.path) is documented and isn't there")
+      check(false, "every documented file is in its tree")
+    }
+    if !services.contains(where: { $0.utf8.elementsEqual(c.service.utf8) }) { services.append(c.service) }
+  }
+  for service in services {
+    for entry in (try? ns.list("/svc/" + service)) ?? [] {
+      let documented = claimed.contains {
+        $0.service.utf8.elementsEqual(service.utf8) && $0.file.utf8.elementsEqual(entry.name.utf8)
+      }
+      if !documented {
+        print("launch-test: /svc/\(service)/\(entry.name) is in its tree and on no page")
+        check(false, "every file in a documented tree is documented")
+      }
+    }
+  }
+  print("launch-test: the manual documents \(claimed.count) files of \(services.count) trees")
+  check(!claimed.isEmpty, "the manual documents a tree")
 }
 
 /// devmgr (V2 item 7c, D74), once it has bound what it binds: edu, bound
@@ -532,6 +589,7 @@ func runPty(_ ns: Namespace) {
     devices(ns)
     console(ns)
     plumbing(ns)
+    documentedTrees(ns)
 
     // cat /svc/*/status
     let names = ((try? ns.list("/svc")) ?? []).map { $0.name }

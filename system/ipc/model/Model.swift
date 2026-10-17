@@ -61,6 +61,8 @@ public indirect enum WireType: Equatable, Sendable {
 /// the struct's alignment.
 public struct StructModel: Sendable {
   public var name: String
+  /// Its `///` comment, the slashes taken off; empty without one.
+  public var doc = ""
   /// Declared `~Copyable`: required when it carries handles.
   public var isCopyable: Bool
   public var fields: [(name: String, swiftType: String, type: WireType)]
@@ -72,6 +74,7 @@ public struct StructModel: Sendable {
 /// doesn't list.
 public struct EnumModel: Sendable {
   public var name: String
+  public var doc = ""
   public var rawType: String
   public var size: Int
   public var cases: [(name: String, value: Int64)]
@@ -84,6 +87,7 @@ public struct EnumModel: Sendable {
 /// copyable, so vectors can hold it.
 public struct UnionModel: Sendable {
   public var name: String
+  public var doc = ""
   public var cases: [UnionCase]
 }
 
@@ -235,6 +239,8 @@ public enum MethodKind: Sendable {
 /// A method of a protocol.
 public struct Method: Sendable {
   public var name: String
+  /// Its `///` comment, the slashes taken off; empty without one.
+  public var doc = ""
   public var kind: MethodKind
   public var since: Int
   public var parameters: [Parameter]
@@ -251,6 +257,8 @@ public struct Method: Sendable {
 /// A protocol of the library.
 public struct ProtocolModel: Sendable {
   public var name: String
+  /// Its `///` comment, the slashes taken off; empty without one.
+  public var doc = ""
   /// The library's id and the protocol's name: "todhchai.node.Node".
   public var id: String
   public var version: Int

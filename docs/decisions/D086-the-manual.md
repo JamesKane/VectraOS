@@ -146,3 +146,10 @@ clean. It says what the system does, its limits and its known bugs, and
 never which milestone, step, decision or source repository added or
 changed it; that history is in git and `docs/`. CLAUDE.md carries the
 rule.
+
+The owner's call with step 9d (2026-10-17): the check of the services'
+trees against their pages runs in boot-launch's launch-test, the one
+boot with services running, rather than as a suite in `user/test/swift`
+(D20), whose boot runs none. A FILES term naming a path under
+`/svc/SERVICE/` claims that file; each claimed file must exist, and a
+service any page claims must have each of its files documented.

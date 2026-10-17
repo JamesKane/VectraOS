@@ -36,8 +36,9 @@ under `vx ci` and every budget it introduces has a running check
   - Done: the environment as `/env` (item 6, D81).
   - Begun: the manual (item 9, D86): 9a, guide's parser and renderer
     and the one directive reader; 9b, `vx man` and its check, with
-    the first pages and the backlog; and 9c, `man`, `lookman` and `sig`
-    on the device over bootfs's `/lib/man`, done.
+    the first pages and the backlog; 9c, `man`, `lookman` and `sig`
+    on the device over bootfs's `/lib/man`; and 9d, section 5 from
+    idlc and the services' trees checked against their pages, done.
   - Exit: `cat /svc/*/status` run by rc passes (amd64, arm64), spawn →
     main is 79 µs (< 200 µs), and the first bench history is recorded
     (2026-10-16, cd3eb6d), and the services hold 3.7 MiB (< 32 MiB,
@@ -590,8 +591,13 @@ work, in order:
      files once, so the commands' ten names share one binary: the boot
      image fell from 185 to 95 MB on amd64 (arm64's had grown past what
      its memory suite allows at rest).
-   - 9d. idlc writes section 5's pages in place of its Markdown; a suite
-     (D20) checks each exported tree against its page's FILES.
+   - 9d, **done (2026-10-17).** idlc writes section 5's pages
+     (`--man-out man/5`), in place of its Markdown, with the protocols'
+     `///` comments as their prose: `node(5)`, `srv-board(5)` and pty's
+     three. boot-launch checks the services' trees against their pages:
+     a FILES path under `/svc/SERVICE/` claims a file, every claimed file
+     exists, and a claimed service's files are all documented (D86's
+     note). `launcher(8)` is the first such page.
 
 **Exit:**
 - `cat /svc/*/status` works, run by rc in a native test. **Done**

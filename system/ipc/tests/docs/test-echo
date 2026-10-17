@@ -1,0 +1,259 @@
+page test-echo 5
+summary the todhchai.test.Echo protocol
+names test-echo todhchai.test.Echo
+src system/ipc/tests/echo/Echo.swift
+
+# SYNOPSIS
+
+```text
+protocol todhchai.test.Echo version 4
+call say(text: String, times: UInt32) throws(EchoError) -> String
+one-way note(value: UInt64, loud: Bool)
+event ticked(n: UInt32, label: String)
+call swap(handle: Handle) -> Handle
+call noted() -> UInt64
+call reflect(s: Shaped) -> Shaped
+call carry(c: Carried) -> Carried
+call many(shapes: [Shaped], nested: [[UInt32]], maybe: [Point]?) -> [Shaped]
+call optionals(text: String?, bytes: [UInt8]?, point: Point?, handle: Handle?) -> Handle?
+call draw(drawing: Drawing, last: Step?) -> [Step]
+```
+
+# DESCRIPTION
+
+Protocol `todhchai.test.Echo`, version 4, of library `TestIPC`, its messages in the one wire format (wire(6)).
+
+| Method | Kind | Since | Ordinal |
+| `say` | call | 1 | `0x1458fe169955bc11` |
+| `note` | one-way | 1 | `0x7f3c7972a2f37c0a` |
+| `ticked` | event | 1 | `0x53575540a2eeba3a` |
+| `swap` | call | 1 | `0x3fadbf66bdd581a9` |
+| `noted` | call | 2 | `0x273ecbcae3bc6eea` |
+| `reflect` | call | 3 | `0x8d6588691420523` |
+| `carry` | call | 3 | `0x7397b96e84c0b7cd` |
+| `many` | call | 3 | `0x55aaef8b58009fb1` |
+| `optionals` | call | 3 | `0x1bc1b45678c999e7` |
+| `draw` | call | 4 | `0x4caddac69a19f0d8` |
+
+@node layouts Message layouts
+
+## say
+
+Request body, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `text` | String (bytes out of line) |
+| 16 | 4 | `times` | UInt32 |
+
+Reply body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `result` | String (bytes out of line) |
+
+## note
+
+Request body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 8 | `value` | UInt64 |
+| 8 | 1 | `loud` | Bool |
+
+## ticked
+
+Event body, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `n` | UInt32 |
+| 8 | 16 | `label` | String (bytes out of line) |
+
+## swap
+
+Request body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `handle` | Handle (in the handle array) |
+
+Reply body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `result` | Handle (in the handle array) |
+
+## noted
+
+Request body: empty.
+
+Reply body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 8 | `result` | UInt64 |
+
+## reflect
+
+Request body, 96 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 96 | `s` | Shaped (inline) |
+
+Reply body, 96 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 96 | `result` | Shaped (inline) |
+
+## carry
+
+Request body, 32 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 32 | `c` | Carried (inline) |
+
+Reply body, 32 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 32 | `result` | Carried (inline) |
+
+## many
+
+Request body, 48 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `shapes` | [Shaped] (96-byte elements out of line) |
+| 16 | 16 | `nested` | [[UInt32]] (16-byte elements out of line) |
+| 32 | 16 | `maybe` | [Point]? (8-byte elements out of line), absent: zero |
+
+Reply body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `result` | [Shaped] (96-byte elements out of line) |
+
+## optionals
+
+Request body, 48 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `text` | String? (bytes out of line), absent: zero |
+| 16 | 16 | `bytes` | [UInt8]? (bytes out of line), absent: zero |
+| 32 | 8 | `point` | Point? (boxed out of line) |
+| 40 | 4 | `handle` | Handle? (in the handle array), absent: zero |
+
+Reply body, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `result` | Handle? (in the handle array), absent: zero |
+
+## draw
+
+Request body, 56 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 48 | `drawing` | Drawing (inline) |
+| 48 | 8 | `last` | Step? (boxed out of line) |
+
+Reply body, 16 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `result` | [Step] (16-byte elements out of line) |
+
+@node types Types
+
+## struct Point
+
+aligned to 4, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 4 | `x` | Int32 |
+| 4 | 4 | `y` | Int32 |
+
+## struct Shaped
+
+One of everything copyable.
+
+aligned to 8, 96 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 1 | `shape` | Shape (UInt8) |
+| 4 | 8 | `at` | Point (inline) |
+| 16 | 16 | `label` | String? (bytes out of line), absent: zero |
+| 32 | 16 | `tags` | [String] (16-byte elements out of line) |
+| 48 | 16 | `path` | [Point] (8-byte elements out of line) |
+| 64 | 8 | `weight` | UInt16? (boxed out of line) |
+| 72 | 16 | `data` | [UInt8] (bytes out of line) |
+| 88 | 1 | `flag` | Bool |
+
+## struct Carried
+
+A struct that carries handles, so it moves.
+
+Moves (carries handles); aligned to 8, 32 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `name` | String (bytes out of line) |
+| 16 | 4 | `handle` | Handle (in the handle array) |
+| 20 | 4 | `spare` | Handle? (in the handle array), absent: zero |
+| 24 | 8 | `inner` | Shaped? (boxed out of line) |
+
+## struct Drawing
+
+A union inline in a struct, and in a vector.
+
+aligned to 8, 48 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `name` | String (bytes out of line) |
+| 16 | 16 | `first` | Step (its case's values out of line) |
+| 32 | 16 | `rest` | [Step] (16-byte elements out of line) |
+
+## union Step
+
+A union: a drawing's step, one case of each kind of value.
+
+16 bytes inline: the tag (UInt64), then a box's presence marker; the case's values out of line, absent for a case that carries none. Receivers reject other tags.
+
+| Tag | Case |
+| 1 | `move` |
+| 2 | `label` |
+| 3 | `path` |
+| 4 | `style` |
+| 5 | `shaped` |
+| 6 | `clear` |
+
+`move`'s values, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 8 | `v0` | Point (inline) |
+
+`label`'s values, 32 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `v0` | String (bytes out of line) |
+| 16 | 8 | `v1` | Point (inline) |
+| 24 | 8 | `v2` | UInt16? (boxed out of line) |
+
+`path`'s values, 24 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 16 | `v0` | [Point] (8-byte elements out of line) |
+| 16 | 1 | `v1` | Bool |
+
+`style`'s values, 8 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 1 | `v0` | Shape (UInt8) |
+
+`shaped`'s values, 96 bytes inline:
+
+| Offset | Size | Field | Type |
+| 0 | 96 | `v0` | Shaped (inline) |
+
+## enum Shape
+
+UInt8; receivers reject other values.
+
+| Case | Value |
+| `circle` | 1 |
+| `square` | 2 |
+| `triangle` | 7 |
+
+## errors EchoError
+
+| Case | Code |
+| `tooLong` | 1 |

@@ -34,14 +34,27 @@ func echoProtocol() throws -> ProtocolModel {
   let source = "system/ipc/tests/echo/Echo.swift"
   #expect(cHeader(library, source: source) == (try read("system/ipc/tests/c/generated/test_ipc.h")),
           "regenerate: .build/debug/idlc --c-out system/ipc/tests/c/generated \(source)")
-  #expect(markdown(echo, library, source: source) == (try read("system/ipc/tests/docs/Echo.md")))
+  #expect(manPage(echo, library, source: source) == (try read("system/ipc/tests/docs/test-echo")),
+          "regenerate: .build/debug/idlc --man-out system/ipc/tests/docs \(source)")
   #expect(Baseline(echo, library).text == (try read("system/ipc/tests/baselines/todhchai.test.Echo.api")))
   #expect(library.errors.first?.cases.first?.code == 1)
   let interface = try echoInterface()
   let loud = try #require(library.protocols.first { $0.name == "Loud" })
   let composed = try interface.composedMethods(loud, in: library)
-  #expect(markdown(loud, library, source: source, composed: composed) == (try read("system/ipc/tests/docs/Loud.md")))
+  #expect(manPage(loud, library, source: source, composed: composed) == (try read("system/ipc/tests/docs/test-loud")))
   #expect(Baseline(loud, library, composed: composed).text == (try read("system/ipc/tests/baselines/todhchai.test.Loud.api")))
+}
+
+/// The manual's section 5 is idlc's: each protocol's page, as idlc writes it.
+@Test func sectionFivePagesMatchIdlc() throws {
+  for source in ["system/node/lib/Node.swift", "system/node/lib/Srv.swift", "services/pty/lib/Protocol.swift"] {
+    let interface = try scan([(source, try read(source))])
+    for (library, p) in interface.protocols {
+      let composed = try interface.composedMethods(p, in: library)
+      #expect(manPage(p, library, source: source, composed: composed) == (try? read("man/5/\(manPageName(p))")),
+              "regenerate: .build/debug/idlc --man-out man/5 \(source)")
+    }
+  }
 }
 
 // MARK: C and Swift agree on the bytes

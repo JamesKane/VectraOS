@@ -160,7 +160,9 @@ public struct LibraryModel: Sendable {
       }
     }
     guard !cases.isEmpty else { throw ModelError("union '\(name)' has no cases") }
-    return UnionModel(name: name, cases: cases)
+    var model = UnionModel(name: name, cases: cases)
+    model.doc = docComment(e)
+    return model
   }
 
   /// Case values as written, or the previous one plus 1 (from 0), as Swift
@@ -208,7 +210,9 @@ public struct LibraryModel: Sendable {
         : value >= 0 && (bits == 64 || value < 1 << bits)
       if !fits { throw ModelError("enum '\(e.name.text)': case '\(name)' doesn't fit in \(raw)") }
     }
-    return EnumModel(name: e.name.text, rawType: raw, size: size, cases: cases)
+    var model = EnumModel(name: e.name.text, rawType: raw, size: size, cases: cases)
+    model.doc = docComment(e)
+    return model
   }
 
   static func errorEnum(_ e: EnumDeclSyntax) throws(ModelError) -> ErrorEnumModel {
@@ -261,7 +265,9 @@ public struct LibraryModel: Sendable {
         throw ModelError("struct '\(name)': decoding uses the memberwise initializer, so declare others in an extension")
       }
     }
-    return StructModel(name: name, isCopyable: copyable, fields: fields)
+    var model = StructModel(name: name, isCopyable: copyable, fields: fields)
+    model.doc = docComment(s)
+    return model
   }
 
   /// Lays out every struct, those it holds inline first.
@@ -352,6 +358,7 @@ public struct LibraryModel: Sendable {
     }
     var model = ProtocolModel(name: p.name.text, id: protocolID, version: version, methods: methods)
     model.composes = composes
+    model.doc = docComment(p)
     return model
   }
 
@@ -419,8 +426,26 @@ public struct LibraryModel: Sendable {
     var m = Method(
       name: name, kind: kind, since: since, parameters: parameters, result: result,
       errorType: errorType, ordinal: ordinal(protocolID: protocolID, method: name))
+    m.doc = docComment(f)
     m.request = Layout(parameters.map { ("a_\($0.name)", $0.type) }, types: types)
     m.reply = Layout(result.map { [("r", $0.1)] } ?? [], types: types)
     return m
   }
+}
+
+/// A declaration's `///` comment: its lines, each without its slashes and
+/// the space after them, joined by newlines; empty without one.
+func docComment(_ node: some SyntaxProtocol) -> String {
+  var lines: [String] = []
+  for piece in node.leadingTrivia {
+    switch piece {
+    case .docLineComment(let text):
+      var line = text.dropFirst(3)
+      if line.first == " " { line = line.dropFirst() }
+      lines.append(String(line))
+    case .newlines, .spaces, .tabs, .carriageReturns, .carriageReturnLineFeeds: break
+    default: lines = []  // another comment between: not this declaration's
+    }
+  }
+  return lines.joined(separator: "\n")
 }

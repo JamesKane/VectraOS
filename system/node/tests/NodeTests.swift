@@ -398,9 +398,8 @@ func nextChange(_ c: inout Client, ms: Int64 = 2000) -> NodeIPC.Change? {
   for (source, header) in [("system/node/lib/Node.swift", "node_ipc.h"), ("system/node/lib/Srv.swift", "srv_ipc.h")] {
     let interface = try scan([(source, try #require(read(source)))])
     let (library, p) = try #require(interface.protocols.first)
-    let regenerate = "regenerate: .build/debug/idlc --c-out system/node/idl --doc-out system/node/idl \(source)"
+    let regenerate = "regenerate: .build/debug/idlc --c-out system/node/idl \(source)"
     #expect(cHeader(library, source: source) == read("system/node/idl/\(header)"), "\(regenerate)")
-    #expect(markdown(p, library, source: source) == read("system/node/idl/\(p.name).md"), "\(regenerate)")
     #expect(Baseline(p, library).text == read("system/node/idl/\(p.id).api"))
   }
 }

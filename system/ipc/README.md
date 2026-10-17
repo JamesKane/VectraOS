@@ -11,7 +11,7 @@ protocol's client, handler, server and events inside it.
 After changing one, regenerate its C header (one per library), its
 protocols' pages and baselines, and commit them:
 
-    .build/debug/idlc --c-out DIR --doc-out DIR --baseline DIR FILE      # check
+    .build/debug/idlc --c-out DIR --man-out man/5 --baseline DIR FILE    # check
     .build/debug/idlc ... --update-baseline FILE                         # record
 
 `idlc` exits 1 if the change would break a client of the recorded
