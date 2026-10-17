@@ -103,3 +103,4 @@ in a new file, and a line in the index below.
 - [D88. During a milestone, test what a change risks; the full suite closes the milestone](D088-risk-based-testing.md) — 2026-10-17, decided
 - [D89. Crypto is todhchai's whole library, checked against 9front's libsec on the host](D089-crypto-oracle.md) — 2026-10-17, decided; extends D70
 - [D90. The Ghost: an opt-in, local-first agent built from the namespace's own mechanisms](D090-the-ghost.md) — 2026-10-17, proposed
+- [D91. Themes are data over one vocabulary; Platinum Indigo is the default, not the only look](D091-themes.md) — 2026-10-17, proposed; extends D24

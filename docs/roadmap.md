@@ -770,6 +770,13 @@ write prefix.
 - The Platinum Indigo look (D24), after the
   [desktop storyboard](https://claude.ai/artifact/BcQQLDod1qqmgwVzabeTPX)
   ([sources](design/storyboard/)).
+- **Themes (D91, proposed; `docs/theming.md`):** the theme file, its
+  parser and `theme check`; roles, materials and parts, with `UIQuad`
+  extended for bevels, gradients and patterns; Radharc's theme tree and
+  the resolved theme in a shared VMO; a theme per workspace. Platinum
+  Indigo is built on these seams as any theme is, with High contrast and
+  Neon Tab beside it; Graphite, Indigo Magic and NeXT follow if time
+  allows, or with V6's board.
 - SDK, with a reference app in ≤ 12 calls.
 - **rio (D75):** todhchai's Terminal ported as rio's text window inside
   Radharc: each window serves its programs' `/dev/cons`, `/dev/consctl`
@@ -785,8 +792,12 @@ write prefix.
   board comes with the board (V6).
 
 **Exit:**
-- The desktop budgets are green on QEMU.
-- The mode-switch budget is green.
+- The desktop budgets are green on QEMU, under Platinum Indigo and
+  under Neon Tab.
+- The mode-switch budget is green, and so is `theme.switch` between
+  those two themes.
+- The kit frame's pixel tests pass for each shipped theme at 100%, 150%,
+  200% and 300%, and every shipped theme passes `theme check`.
 - rc runs in a rio window with no pty and no escape sequences; `vt`
   in one runs a tier 1 program that wants xterm.
 
