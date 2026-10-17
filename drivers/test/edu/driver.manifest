@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# QEMU's edu teaching device (docs/specs/edu.rst in QEMU): the first
+# driver, which proves a host gets its device and only it (M3g).
+driver edu
+class test
+match pci 1234:11e8
+dma-bits 28        # edu's DMA mask

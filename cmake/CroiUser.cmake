@@ -365,6 +365,9 @@ function(croi_user_sys)
   file(GLOB _acpi CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/bus/acpi/lib/*.swift)
   # PCI over ECAM (drivers/bus/pci, D74): devmgr and bin/pci-test.
   file(GLOB _pci CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/bus/pci/lib/*.swift)
+  # The driver host's library and devmgr's (drivers/host, drivers/devmgr/lib, D74).
+  file(GLOB _driver_host CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/host/*.swift)
+  file(GLOB _devmgr CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/devmgr/lib/*.swift)
   file(GLOB _headers ${CROI_FLOOR_DIR}/include/* ${PROJECT_SOURCE_DIR}/user/include/croi/*.h
        ${PROJECT_SOURCE_DIR}/kernel/include/*.h)
   add_custom_command(OUTPUT ${_dir}/libsys.a
@@ -399,12 +402,17 @@ function(croi_user_sys)
             -c ${_acpi} -o ${_dir}/acpi.o
     COMMAND ${_swiftc} -module-name PCI -emit-module -emit-module-path ${_dir}/PCI.swiftmodule
             -c ${_pci} -o ${_dir}/pci.o
+    COMMAND ${_swiftc} -module-name DriverHost -emit-module -emit-module-path ${_dir}/DriverHost.swiftmodule
+            -c ${_driver_host} -o ${_dir}/driverhost.o
+    COMMAND ${_swiftc} -module-name DevMgr -emit-module -emit-module-path ${_dir}/DevMgr.swiftmodule
+            -c ${_devmgr} -o ${_dir}/devmgr.o
     COMMAND ${CMAKE_COMMAND} -E rm -f ${_dir}/libsys.a
     COMMAND ${CMAKE_AR} rcs ${_dir}/libsys.a ${_dir}/sysabi.o ${_dir}/loader.o ${_dir}/sys.o ${_dir}/libsys.o ${_dir}/ld.o
             ${_dir}/ring.o ${_dir}/traceformat.o ${_dir}/trace.o ${_dir}/tracesession.o
             ${_dir}/ipcwire.o ${_dir}/ipc.o ${_dir}/node.o ${_dir}/launch.o ${_dir}/acpi.o ${_dir}/pci.o
+            ${_dir}/driverhost.o ${_dir}/devmgr.o
     DEPENDS ${_abi} ${_loader} ${_api} ${_lib} ${_ld} ${_ring} ${_trace_format} ${_trace_writer} ${_trace_session} ${_ipc_wire}
-            ${_ipc} ${_node} ${_launch} ${_acpi} ${_pci}
+            ${_ipc} ${_node} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr}
             ${_headers} vx ${CROI_IPC_PLUGIN}
     COMMENT "Building Sys")
   set(CROI_USER_SYS_DIR ${_dir} PARENT_SCOPE)

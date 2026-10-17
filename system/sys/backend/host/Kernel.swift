@@ -112,7 +112,9 @@ enum Kernel {
     throw .notSupported
   }
   static func interruptSetAffinity(_ h: UInt32, _ cpus: UInt64) throws(Status) { throw .notSupported }
-  static func iommuCreateStub(_ resource: UInt32) throws(Status) -> UInt32 { throw .notSupported }
+  static func iommuCreate(_ resource: UInt32, _ type: UInt32, _ descriptor: [UInt8]) throws(Status) -> UInt32 {
+    throw .notSupported
+  }
   static func btiCreate(_ iommu: UInt32, _ id: UInt64) throws(Status) -> UInt32 { throw .notSupported }
   static func btiSetProperties(_ bti: UInt32, _ p: DMA.Properties) throws(Status) { throw .notSupported }
   static func vmoCreateContiguous(_ bti: UInt32, _ size: Int, _ alignmentLog2: UInt32) throws(Status) -> UInt32 {

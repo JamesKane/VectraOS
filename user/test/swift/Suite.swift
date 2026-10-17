@@ -64,6 +64,8 @@ enum Suite {
             LibcSuite.run()
         } else if requested("idle") {
             IdleSuite.run()
+        } else if requested("dma") {
+            DmaSuite.run()
         } else if requested("interrupts") {
             InterruptSuite.run()  // run on its own (ProcessSelfTest.runInterrupts)
         } else {

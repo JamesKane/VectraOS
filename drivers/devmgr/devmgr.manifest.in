@@ -1,0 +1,14 @@
+# devmgr (V2 item 7c, D74): the firmware's tables from the boot data,
+# ACPI's namespace, PCI over the MCFG's ECAM, the IOMMUs, and a driver host
+# for each device a rule binds, given that device's MMIO, I/O ports,
+# interrupt and BTI. CMake adds `resource ioport` on amd64, which alone
+# has I/O ports; the system resource names the IOMMUs and allocates MSIs.
+service devmgr
+program devmgr
+resource mmio
+resource irq
+resource system
+@CROI_DEVMGR_IOPORT@
+bootdata
+programs
+export

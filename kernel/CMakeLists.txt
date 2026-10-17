@@ -192,7 +192,7 @@ set(_swift_test_sources ${_user_dir}/test/swift/Main.swift ${_user_dir}/test/swi
     ${_user_dir}/test/swift/FutexSuite.swift ${_user_dir}/test/swift/ChannelSuite.swift
     ${_user_dir}/test/swift/ObjectSuite.swift
     ${_user_dir}/test/swift/CounterSuite.swift ${_user_dir}/test/swift/TimeSuite.swift
-    ${_user_dir}/test/swift/InterruptSuite.swift
+    ${_user_dir}/test/swift/InterruptSuite.swift ${_user_dir}/test/swift/DmaSuite.swift
     ${_user_dir}/test/swift/MemorySuite.swift
     ${_user_dir}/test/swift/IdleSuite.swift ${_user_dir}/test/swift/RingSuite.swift
     ${_user_dir}/test/swift/DebuglogSuite.swift ${_user_dir}/test/swift/PortRingSuite.swift
@@ -290,6 +290,26 @@ set(_pty_src ${PROJECT_SOURCE_DIR}/services/pty)
 set(_pty ${CMAKE_CURRENT_BINARY_DIR}/pty.elf)
 croi_user_program(${_pty} PIE SYS IPC SWIFT ${_pty_src}/Main.swift ${_pty_src}/lib/Protocol.swift ${_pty_src}/lib/Server.swift
                   ${_pty_src}/lib/LineDiscipline.swift)
+# bin/devmgr and its drivers (V2 item 7c, D74): every arch. etc/drivers is
+# every drivers/**/driver.manifest, in path order (DevMgrTests checks the
+# same set has no two drivers sharing a rule).
+set(_devmgr ${CMAKE_CURRENT_BINARY_DIR}/devmgr.elf)
+croi_user_program(${_devmgr} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/devmgr/Main.swift)
+set(_edu ${CMAKE_CURRENT_BINARY_DIR}/edu.elf)
+croi_user_program(${_edu} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/test/edu/Main.swift)
+file(GLOB_RECURSE _driver_manifests CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/*/driver.manifest)
+list(SORT _driver_manifests)
+set(_drivers_index ${CMAKE_CURRENT_BINARY_DIR}/drivers.index)
+add_custom_command(OUTPUT ${_drivers_index}
+  COMMAND ${CMAKE_COMMAND} -E cat ${_driver_manifests} > ${_drivers_index}
+  DEPENDS ${_driver_manifests}
+  COMMENT "Collecting the drivers' match records")
+set(CROI_DEVMGR_IOPORT "")
+if(CROI_ARCH STREQUAL amd64)
+  set(CROI_DEVMGR_IOPORT "resource ioport")
+endif()
+set(_devmgr_manifest ${CMAKE_CURRENT_BINARY_DIR}/devmgr.manifest)
+configure_file(${PROJECT_SOURCE_DIR}/drivers/devmgr/devmgr.manifest.in ${_devmgr_manifest} @ONLY)
 set(CROI_LAUNCH_TEST_USES "")
 if(CROI_ARCH STREQUAL amd64)
   list(APPEND _time_bootfs etc/manifests/time.manifest=${_manifests}/time.manifest)
@@ -311,11 +331,14 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
           etc/manifests/launch-test.manifest=${_launch_test_manifest} ${_time_bootfs}
           bin/pty=${_pty} etc/manifests/pty.manifest=${_manifests}/pty.manifest
           bin/bootfs=${_bootfs_service} etc/manifests/bootfs.manifest=${_manifests}/bootfs.manifest
+          bin/devmgr=${_devmgr} bin/edu=${_edu} etc/drivers=${_drivers_index}
+          etc/manifests/devmgr.manifest=${_devmgr_manifest}
           ${_tier1_bootfs}
   DEPENDS ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_trace_test} ${_ipc_test} ${_node_test} ${_acpi_test} ${_pci_test}
           ${_launcher} ${_launch_service} ${_launch_test} ${_manifests}/a.manifest ${_manifests}/b.manifest
           ${_launch_test_manifest} ${_time} ${_manifests}/time.manifest ${_pty} ${_manifests}/pty.manifest
           ${_bootfs_service} ${_manifests}/bootfs.manifest
+          ${_devmgr} ${_edu} ${_drivers_index} ${_devmgr_manifest}
           ${_tier1_files} vx ${VX}
   COMMENT "Building bootfs")
 add_custom_target(bootfs DEPENDS ${CMAKE_BINARY_DIR}/bootfs.img)

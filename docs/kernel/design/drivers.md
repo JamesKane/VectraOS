@@ -231,6 +231,15 @@ syscalls 150-156; Todhchai item 14 without an IOMMU):
   reference to the BTI); bti_release_quarantine unpins them. A BTI that
   dies with quarantined PMTs leaves them pinned for good and says so in
   the debuglog (Zircon's orphan). PMT state changes under the BTI lock.
+- A PMT holds its BTI from bti_pin until the PMT is destroyed (or
+  quarantine hands it over: `PmtObject.holdsBti`), not until unpin.
+  pmt_unpin closes the PMT's handle after unpinning, and that close
+  takes the BTI's lock, so a BTI whose last handle had gone (a driver
+  host's PinnedMemory closes its BTI before its regions) was freed by
+  the unpin and the close took its freed lock: "spinlock: holder isn't
+  a CPU", found with devmgr's edu driver (V2 7c). The `dma` suite
+  (user/test/swift/DmaSuite.swift) unpins after the BTI's last handle
+  closes.
 - croi's BTI properties (`bti_set_properties`, 156; CROI_INFO_BTI_
   PROPERTIES 0x10000): address width, window and memory type. Narrowing
   only (ACCESS_DENIED on a widening), the memory type only while nothing

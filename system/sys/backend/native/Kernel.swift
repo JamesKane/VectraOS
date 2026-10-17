@@ -389,12 +389,13 @@ enum Kernel {
 
   // MARK: DMA
 
-  /// iommu_create(STUB): its descriptor is one byte (zx_iommu_desc_stub_t).
-  static func iommuCreateStub(_ resource: UInt32) throws(Status) -> UInt32 {
-    var desc: UInt8 = 0
-    return try out(UInt32(0)) { p in
-      unsafe withUnsafeMutablePointer(to: &desc) { d in
-        unsafe croi_syscall(CROI_SYS_IOMMU_CREATE, UInt64(resource), UInt64(CROI_IOMMU_TYPE_STUB), address(d), 1, p)
+  /// iommu_create: the descriptor's bytes as dma.h lays them out for `type`
+  /// (a stub's is one byte, zx_iommu_desc_stub_t).
+  static func iommuCreate(_ resource: UInt32, _ type: UInt32, _ descriptor: [UInt8]) throws(Status) -> UInt32 {
+    try out(UInt32(0)) { p in
+      unsafe descriptor.withUnsafeBytes { d in
+        unsafe croi_syscall(CROI_SYS_IOMMU_CREATE, UInt64(resource), UInt64(type), address(d.baseAddress),
+                            UInt64(d.count), p)
       }
     }
   }

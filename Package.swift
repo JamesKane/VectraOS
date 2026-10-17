@@ -114,6 +114,12 @@ let ipc: [Target] = [
   .systemLibrary(name: "CroiMMIO", path: "user/include"),
   .target(name: "PCI", dependencies: ["CroiMMIO"], path: "drivers/bus/pci/lib", swiftSettings: tier0),
   .testTarget(name: "PCITests", dependencies: ["PCI", "TDACPI"], path: "drivers/bus/pci/tests", exclude: ["native"]),
+  // devmgr and the driver host (V2 item 7c, D74): todhchai's, its BTIs on
+  // the machine's IOMMUs and its registers through CroiMMIO.
+  .target(name: "DriverHost", dependencies: ["CroiMMIO", "Sys"], path: "drivers/host", swiftSettings: tier0),
+  .target(name: "DevMgr", dependencies: ["CroiMMIO", "DriverHost", "PCI", "Sys", "TDACPI"], path: "drivers/devmgr/lib",
+          swiftSettings: tier0),
+  .testTarget(name: "DevMgrTests", dependencies: ["DevMgr", "PCI", "Launch", "TDACPI"], path: "drivers/devmgr/tests"),
 ]
 
 let package = Package(

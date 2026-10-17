@@ -91,7 +91,8 @@ the floor, Sys, the libc, ld, the trace, the control plane (IPC, Node
 with bulk rings, the launcher) and time (but for two RTCs). Begun: tier
 1 (amd64 and arm64), and byte streams (the ring's byte-stream mode,
 stdio, FDIO, rc and its commands, which an audit against 9front found
-far from complete, and the pty, with rc on one). V2's exit test `cat /svc/*/status` passes, run by
+far from complete, and the pty, with rc on one), and drivers (D74:
+ACPI, PCI and devmgr, whose edu driver does DMA through each IOMMU). V2's exit test `cat /svc/*/status` passes, run by
 rc. `docs/roadmap.md` opens with where things stand; keep it current.
 
 Milestones run in order, and each puts the next one's dependencies in

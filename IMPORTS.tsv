@@ -530,3 +530,15 @@ drivers/bus/pci/lib/Config.swift	todhchai	527ff94	drivers/bus/pci/lib/Config.swi
 drivers/bus/pci/lib/ECAM.swift	todhchai	527ff94	drivers/bus/pci/lib/ECAM.swift
 drivers/bus/pci/lib/Enumerate.swift	todhchai	527ff94	drivers/bus/pci/lib/Enumerate.swift
 drivers/bus/pci/tests/PCITests.swift	todhchai	527ff94	drivers/bus/pci/tests/PCITests.swift
+drivers/host/DMA.swift	todhchai	527ff94	drivers/host/DMA.swift
+drivers/host/Device.swift	todhchai	527ff94	drivers/host/Device.swift
+drivers/host/Registers.swift	todhchai	527ff94	drivers/host/Registers.swift
+drivers/devmgr/lib/Devices.swift	todhchai	527ff94	drivers/devmgr/lib/Devices.swift
+drivers/devmgr/lib/Firmware.swift	todhchai	527ff94	drivers/devmgr/lib/Firmware.swift
+drivers/devmgr/lib/Grants.swift	todhchai	527ff94	drivers/devmgr/lib/Grants.swift
+drivers/devmgr/lib/Index.swift	todhchai	527ff94	drivers/devmgr/lib/Index.swift
+drivers/devmgr/lib/Routing.swift	todhchai	527ff94	drivers/devmgr/lib/Routing.swift
+drivers/devmgr/tests/DevMgrTests.swift	todhchai	527ff94	drivers/devmgr/tests/DevMgrTests.swift
+drivers/devmgr/tests/MachineHostTests.swift	todhchai	527ff94	drivers/devmgr/tests/MachineHostTests.swift
+drivers/test/edu/Main.swift	todhchai	527ff94	drivers/test/edu/Main.swift
+drivers/test/edu/driver.manifest	todhchai	527ff94	drivers/test/edu/driver.manifest

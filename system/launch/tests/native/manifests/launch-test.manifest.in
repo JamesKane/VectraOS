@@ -7,6 +7,7 @@ program launch-test
 use a
 use b
 use pty
+use devmgr
 mount /bin bootfs/bin
 launcher
 programs

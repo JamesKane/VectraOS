@@ -59,6 +59,13 @@ struct PmtObject: ~Copyable {
     var iova: UInt64 = 0
     var state = State.live
     var next: UInt64 = 0
+    /// Whether it still holds its reference to `bti`: from bti_pin until it
+    /// is destroyed, or until quarantine hands it to the BTI. Not dropped at
+    /// unpin: closing the PMT's handle afterwards (pmt_unpin consumes it)
+    /// takes the BTI's lock, and an unpin may drop the BTI's last reference
+    /// (V2 7c: a driver that closed its BTI before unpinning panicked the
+    /// kernel on the freed BTI's lock).
+    var holdsBti = true
 
     /// ZX_DEFAULT_PMT_RIGHTS: it can't be duplicated or sent.
     static var defaultRights: Rights { .inspect }
@@ -365,7 +372,8 @@ enum Dma {
     }
 
     /// pmt_unpin (and failure paths of bti_pin): the pages go back to the
-    /// VMO's control; the PMT drops its BTI. Its handle is closed after.
+    /// VMO's control. Its handle is closed after; the PMT keeps its BTI
+    /// until it is destroyed (`holdsBti`).
     static func unpin(_ pmt: ObjectPointer) throws(Status) {
         let p = PmtPointer(object: pmt)
         let bti = p.pointee.bti
@@ -375,7 +383,6 @@ enum Dma {
             BtiPointer(object: bti).pointee.livePins -= 1
         }
         release(p, domain: BtiPointer(object: bti).pointee.domain)
-        bti.release()
     }
 
     /// A PMT's handle was closed: if it is still pinned, the BTI takes it
@@ -391,6 +398,7 @@ enum Dma {
             b.pointee.quarantine = pmt.address
             b.pointee.quarantined += 1
             b.pointee.livePins -= 1
+            p.pointee.holdsBti = false  // the BTI now holds the PMT
             pmt.retain()  // the list's
             return true
         }
@@ -435,7 +443,10 @@ enum Dma {
     static func destroyPmt(_ object: ObjectPointer) {
         // Live PMTs are quarantined when their handle closes, so only
         // unpinned ones get here.
-        guard PmtPointer(object: object).pointee.state == .unpinned else { panic("pmt: destroyed while pinned") }
+        let p = PmtPointer(object: object)
+        guard p.pointee.state == .unpinned else { panic("pmt: destroyed while pinned") }
+        let bti = p.pointee.holdsBti ? p.pointee.bti : nil
         Objects.free(object, as: PmtObject.self)
+        bti?.release()  // may destroy the BTI (and detach its domain)
     }
 }

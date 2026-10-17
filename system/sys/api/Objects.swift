@@ -641,10 +641,31 @@ public enum DMA {
   /// The system resource's base that grants making an IOMMU.
   public static var iommuSystemBase: UInt64 { UInt64(CROI_RSRC_SYSTEM_IOMMU_BASE) }
 
+  /// iommu_create's types (dma.h): which kind of unit a descriptor names.
+  public enum IOMMUType: UInt32, Sendable {
+    case stub = 0
+    /// VT-d: croi_iommu_desc_intel_t, its scopes and reserved memory.
+    case intel = 1
+    /// SMMUv3 (and v1/v2): the register base alone.
+    case armSMMU = 2
+    /// AMD-Vi: croi_iommu_desc_amd_t and its unity ranges.
+    case amd = 0x10000
+    /// The RISC-V IOMMU: the register base alone.
+    case riscv = 0x10001
+  }
+
+  /// The unit `descriptor` names, the bytes dma.h lays out for `type`: the
+  /// kernel checks it against firmware's tables and turns translation on.
+  /// A device it covers is claimed by `bti`; what it doesn't cover,
+  /// OUT_OF_RANGE.
+  public static func iommu(resource: borrowing Handle, type: IOMMUType, descriptor: [UInt8]) throws(Status) -> Handle {
+    Handle(raw: try Kernel.iommuCreate(resource.raw, type.rawValue, descriptor))
+  }
+
   /// The stub IOMMU: no translation. Its BTIs are a trust decision that
   /// the kernel logs.
   public static func stubIOMMU(resource: borrowing Handle) throws(Status) -> Handle {
-    Handle(raw: try Kernel.iommuCreateStub(resource.raw))
+    try iommu(resource: resource, type: .stub, descriptor: [0])
   }
 
   /// A BTI for the device with `id` (a PCI device's bus, device and

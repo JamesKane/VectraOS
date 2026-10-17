@@ -49,6 +49,61 @@ func hasLine(_ text: String, _ line: StaticString) -> Bool {
   return false
 }
 
+/// Whether `text` holds `part` anywhere (bytes: Embedded String has no
+/// contains).
+func holds(_ text: String, _ part: StaticString) -> Bool {
+  let t = Array(text.utf8)
+  let p = unsafe Array(UnsafeBufferPointer(start: part.utf8Start, count: part.utf8CodeUnitCount))
+  guard p.count <= t.count else { return false }
+  for i in 0...(t.count - p.count) where Array(t[i..<i + p.count]) == p { return true }
+  return false
+}
+
+/// The line of `text` that starts with `prefix`, if there is one.
+func line(_ text: String, startingWith prefix: StaticString) -> String? {
+  let p = unsafe Array(UnsafeBufferPointer(start: prefix.utf8Start, count: prefix.utf8CodeUnitCount))
+  var current: [UInt8] = []
+  for b in text.utf8 {
+    if b == 0x0A {
+      if current.starts(with: p) { return String(decoding: current, as: UTF8.self) }
+      current = []
+    } else {
+      current.append(b)
+    }
+  }
+  return nil
+}
+
+/// devmgr (V2 item 7c, D74), once it has bound what it binds: edu, bound
+/// with a BTI on the machine's IOMMU, its driver's findings (its registers,
+/// interrupt and DMA through that BTI); every IOMMU taken; on amd64 the
+/// CMOS clock among ACPI's platform devices.
+func devices(_ ns: Namespace) {
+  var status = ""
+  let deadline = Clock.monotonic() + 30_000_000_000
+  while Clock.monotonic() < deadline {
+    status = readText(ns, "/svc/devmgr/status") ?? ""
+    if line(status, startingWith: "bound ") != nil { break }
+    sleep(until: Clock.monotonic() + 20_000_000)
+  }
+  print("launch-test: /svc/devmgr/status: \(status)")
+  check(line(status, startingWith: "bound ") != nil, "devmgr binds its drivers")
+  let edu = line(status, startingWith: "pci-00:10.0 1234:11e8 00.ff.00 edu-00:10.0 running dma ") ?? ""
+  check(!edu.isEmpty && !holds(edu, "passthrough") && !holds(edu, "dma none"), "edu is bound, its BTI on the IOMMU")
+  let iommus = readText(ns, "/svc/devmgr/iommus") ?? ""
+  print("launch-test: /svc/devmgr/iommus: \(iommus)")
+  check(holds(iommus, " ok\n") && !holds(iommus, "refused"), "devmgr names the IOMMUs to the kernel")
+  let driver = readText(ns, "/svc/devmgr/drivers/edu-00:10.0/status") ?? ""
+  print("launch-test: edu: \(driver)")
+  check(driver.utf8.starts(with: "edu 1.0, live, 10! = 3628800, config 1234:11e8, bars 0, confined, irq ".utf8),
+        "edu's registers, configuration space and confinement")
+  check(holds(driver, " level-") && holds(driver, " 100 taken"), "edu's interrupt, routed through _PRT")
+  check(holds(driver, "dma 4096 bytes there and back") && !holds(driver, "FAILED"), "edu's DMA through its BTI")
+  #if arch(x86_64)
+    check(holds(status, " PNP0B00 - - unbound"), "the CMOS clock, a platform device")
+  #endif
+}
+
 /// The last word of `text`, as a decimal number.
 func lastNumber(_ text: String) -> Int64? {
   var n: Int64 = 0, digits = 0
@@ -344,15 +399,19 @@ func runPty(_ ns: Namespace) {
     check(ns.mountPoints.count == 2 && same(ns.mountPoints[0], "/bin") && same(ns.mountPoints[1], "/svc"),
           "the namespace is /bin and /svc")
 
+    // devmgr first: its status is still growing until it has bound.
+    devices(ns)
+
     // cat /svc/*/status
     let names = ((try? ns.list("/svc")) ?? []).map { $0.name }
     #if arch(x86_64)
-      let expected = 5  // and the time service
+      let expected = 6  // and the time service
     #else
-      let expected = 4
+      let expected = 5
     #endif
     check(names.count == expected && names.contains { same($0, "a") } && names.contains { same($0, "b") }
-            && names.contains { same($0, "launcher") } && names.contains { same($0, "pty") },
+            && names.contains { same($0, "launcher") } && names.contains { same($0, "pty") }
+            && names.contains { same($0, "devmgr") },
           "/svc holds what the manifest uses")
     for name in names {
       let status = readText(ns, "/svc/" + name + "/status")

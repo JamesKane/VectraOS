@@ -25,7 +25,9 @@ under `vx ci` and every budget it introduces has a running check
     The pty runs on rings, and rc runs on one, sharing the terminal
     with the programs it runs.
   - Begun: drivers (item 7, D74: todhchai's, ported, in five steps;
-    7a, the AML interpreter, and 7b, PCI over ECAM, done). Not started: the console and the router (item 8).
+    7a, the AML interpreter, 7b, PCI over ECAM, and 7c, devmgr and the
+    driver host with edu's interrupt and DMA through each IOMMU, done; 7c's
+    budgets wait for the bench to boot the launcher). Not started: the console and the router (item 8).
   - Exit: `cat /svc/*/status` run by rc passes (amd64, arm64). Still
     open: spawn → main < 200 µs, and the first recorded bench history.
 - **V3 onward** are not started (V4's boards have research passes).
@@ -425,17 +427,52 @@ work, in order:
      walks; QEMU's virtio devices are transitional (1af4:1001, 1005), so
      a modern-only transport (7d) takes them by their modern capabilities
      or QEMU gives `disable-legacy=on`.
-   - **7c, devmgr and the driver host:** devmgr reads the boot data, loads
-     the ACPI namespace, enumerates PCI and the ACPI platform devices,
-     routes INTx through `_PRT`, and matches `driver.manifest` records
-     (todhchai's order); each device's host is started through the
-     launcher with its resources as `CROI_PA_DEVICE` handles: BARs or
-     `_CRS` ranges, its interrupts bound with `object_bind`, and a BTI on
-     its IOMMU, narrowed. The first driver is QEMU's `edu` (an interrupt
-     and DMA through the IOMMU, every arch); the first platform device,
-     amd64's CMOS clock (PNP0B00, its `_CRS` ports), listed in devmgr's
-     status. MMIO through `croi_mmio_*` (croi/mmio.h, 8-64 bits since 7b),
-     with the driver host's `Registers` over them.
+   - **7c, devmgr and the driver host, done but for its budgets
+     (2026-10-17):** todhchai's devmgr (`drivers/devmgr`: bin/devmgr and
+     DevMgr) and driver host (`drivers/host`, DriverHost) lifted and
+     ported, with `bin/edu` (`drivers/test/edu`). devmgr reads the boot
+     data's tables, loads ACPI's namespace with its regions over the
+     machine, enumerates PCI over ECAM (each bus's 1 MiB mapped as it is
+     walked: `ECAMWindows`), routes INTx through `_PRT`, lists ACPI's
+     present devices with their `_CRS` (amd64's CMOS clock, PNP0B00, among
+     them, unbound: the time service has its ports) and matches bootfs's
+     `etc/drivers` (every `driver.manifest`, collected by CMake) in
+     todhchai's order, its parser on bytes for tier 0. It names each IOMMU
+     the tables describe to the kernel (TDACPI's DMAR, IVRS, IORT and
+     RIMT; DevMgr's IOMMUs.swift builds iommu_create's descriptors; Sys
+     gains `DMA.iommu`), and a device's BTI comes from the first unit that
+     covers it, narrowed to its `dma-bits`; the stub only where none does,
+     which its status says. Each host starts through devmgr's own
+     Launcher (which gains `extraStartupHandles`) with its BARs or `_CRS`
+     ranges, configuration space, interrupt, MSI allocation and BTI as
+     `CROI_PA_DEVICE` handles; it waits on its interrupt through a bound
+     port (`InterruptPort`) and reaches registers through `Registers` over
+     `croi_mmio_*`. devmgr serves its tree at once (status, iommus,
+     enumeration, acpi, drivers/SERVICE) and ends its status with `bound
+     N`. edu proves its registers, configuration space and confinement to
+     its BAR, 100 INTx interrupts, and 4 KiB of DMA there and back through
+     PinnedMemory at an I/O address of its IOMMU: VT-d, SMMUv3 and the
+     RISC-V IOMMU (launch-test's devmgr checks, every arch; DevMgrTests'
+     11 hosted, over q35's DMAR and IVRS, arm64's IORT and tables built
+     for an INCLUDE_PCI_ALL unit, reserved memory and a PCIe RISC-V
+     IOMMU). Found on the way, a kernel bug: pmt_unpin dropped the PMT's
+     BTI before closing its handle, whose close takes the BTI's lock, so
+     a driver that closed its BTI first panicked the kernel (fixed, with
+     the `dma` suite; docs/kernel/design/drivers.md). Not done, and why:
+     - The budgets moved here from 7a (todhchai's acpi-bench: loading the
+       DSDT, `_STA` across every device). devmgr reports both in its
+       `acpi` node, but `vx bench` boots m2, not the launcher, so a
+       `budget` line from devmgr would have no running check; they wait
+       for the bench to boot the launcher.
+     - userboot's `\_S5` byte scan stays: userboot powers off after every
+       service, devmgr too, has ended, so it can't ask devmgr. It goes
+       with a power service that evaluates `\_S5` (V3's warm boot).
+     - D74's BTI window: devmgr narrows the address width alone; a
+       window comes with a device that needs one.
+     - VT-d scopes behind bridges (the kernel refuses them) and SMMUv1/v2
+       (their stream match pairs are a board's) give no BTI yet; the HPET's
+       `_INI` fails on q35 (the kernel keeps its page), as todhchai's did
+       without regions.
    - **7d, the virtio library and virtio-input:** the modern virtio-pci
      transport and split queues; the input class on the one ring (its
      TDIR format goes, as the syscall audit has it); QEMU gains a
