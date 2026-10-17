@@ -5,7 +5,8 @@
 // wait; the stream hears its channels come and go; a reader that closes
 // while held leaves nothing behind. Through the ring (D93), a read waits
 // too, a write behind it is answered first, and a channel's own stream
-// reads its own bytes.
+// reads its own bytes. A write to a full stream waits until it has room
+// (D94), plainly and through the ring, its bytes in order.
 
 import Glibc
 import IPC
@@ -270,4 +271,94 @@ func later(_ delay: Int64, _ body: @escaping @Sendable () -> Void) throws -> Han
   #expect(try a.take(max: 64) == Array("msg".utf8))
   #expect(try b.read(offset: 0, max: 64) == Array("msg".utf8))
   _ = try poster.wait(for: Signals.terminated, deadline: Clock.monotonic() + 2_000_000_000)
+}
+
+/// A stream of `capacity` bytes: a write takes what fits, and waits while
+/// nothing does.
+final class Pipe: @unchecked Sendable {
+  let lock = Lock()
+  let capacity: Int
+  var bytes: [UInt8] = []
+  init(capacity: Int) { self.capacity = capacity }
+
+  var stream: NodeStream {
+    NodeStream(take: { max in
+      self.lock.withLock {
+        guard !self.bytes.isEmpty else { return nil }
+        let n = min(max, self.bytes.count)
+        defer { self.bytes.removeFirst(n) }
+        return Array(self.bytes[..<n])
+      }
+    }, write: { (data: [UInt8]) throws(NodeError) -> UInt32? in
+      self.lock.withLock {
+        let n = min(data.count, self.capacity - self.bytes.count)
+        guard n > 0 else { return nil }
+        self.bytes += data[..<n]
+        return UInt32(n)
+      }
+    })
+  }
+
+  /// Takes everything there.
+  func drain() -> [UInt8] {
+    lock.withLock {
+      defer { bytes = [] }
+      return bytes
+    }
+  }
+}
+
+@Test func aWriteToAFullStreamWaitsUntilItHasRoom() throws {
+  let service = try Service()
+  let pipe = Pipe(capacity: 4)
+  let node = service.tree.stream("pipe", pipe.stream)
+  service.start()
+  defer { service.stop() }
+  var root = try service.connect()
+  var file = try root.open("pipe")
+  // Room for some: the write takes what fits.
+  #expect(try file.write(offset: 0, Array("abcdef".utf8)) == 4)
+  // None: it waits until the stream has room.
+  let drained = Locked<[UInt8]>([])
+  let reader = try later(50_000_000) {
+    drained.withLock { $0 = pipe.drain() }
+    service.tree.ready(node)
+  }
+  let start = Clock.monotonic()
+  #expect(try file.write(offset: 0, Array("ef".utf8)) == 2)
+  #expect(Clock.monotonic() - start >= 40_000_000)
+  #expect(drained.withLock { $0 } == Array("abcd".utf8))
+  #expect(pipe.drain() == Array("ef".utf8))
+  _ = try reader.wait(for: Signals.terminated, deadline: Clock.monotonic() + 2_000_000_000)
+  // A write after a walk doesn't wait: what fits, maybe nothing.
+  #expect(try root.write("pipe", offset: 0, Array("12345".utf8)) == 4)
+  #expect(try root.write("pipe", offset: 0, Array("6".utf8)) == 0)
+}
+
+@Test func aRingPutWaitsForRoomAndKeepsItsOrder() throws {
+  let service = try Service()
+  let pipe = Pipe(capacity: 1000)
+  let node = service.tree.stream("pipe", pipe.stream)
+  service.start()
+  defer { service.stop() }
+  var root = try service.connect()
+  var ring = try NodeBulkChannel(try root.open("pipe"), slots: 4, dataSize: 16 * 1024)
+  ring.timeout = 2_000_000_000
+  let sent = (0..<20_000).map { UInt8(truncatingIfNeeded: $0 % 251) }
+  // A reader that drains the stream now and then, as a link would.
+  let got = Locked<[UInt8]>([])
+  let done = Atomic<Bool>(false)
+  let reader = try Thread.spawn {
+    while !done.load(ordering: .relaxed) {
+      Sys.sleep(until: Clock.monotonic() + 2_000_000)
+      let bytes = pipe.drain()
+      got.withLock { $0 += bytes }
+      service.tree.ready(node)
+    }
+  }
+  try ring.put(sent)
+  #expect(soon { got.withLock { $0.count } + pipe.lock.withLock { pipe.bytes.count } == sent.count })
+  done.store(true, ordering: .relaxed)
+  _ = try reader.wait(for: Signals.terminated, deadline: Clock.monotonic() + 2_000_000_000)
+  #expect(got.withLock { $0 } + pipe.drain() == sent)
 }

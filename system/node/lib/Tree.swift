@@ -168,10 +168,11 @@ final class SessionState: @unchecked Sendable {
   var id: UInt64 = 0
   var pending: [NodeIPC.Change] = []
   var closed = false
-  /// Its calls held for later (D84), and the reads held: on `stream`, the
-  /// stream node the session is at.
+  /// Its calls held for later (D84), and the reads and writes held (D94):
+  /// on `stream`, the stream node the session is at.
   let deferral = IPCDeferral()
   var reads: [(header: MessageHeader, max: UInt32)] = []
+  var writes: [(header: MessageHeader, data: [UInt8])] = []
   var stream: TreeNode?
   /// Its own stream, at a stream whose channels each read their own.
   var channel: NodeStreamChannel?
@@ -436,7 +437,7 @@ public final class NodeTree: @unchecked Sendable {
       if let open = s.perChannel { state.channel = open() } else { s.opened() }
     }
     state.id = try dispatcher.add(server) { [self] (s: inout NodeIPC.NodeServer<Session>) throws(IPCError<Never>) in
-      try answerHeldReads(state, &s)
+      try answerHeld(state, &s)
       state.bulk?.answerHeld()
       settle(state)
       let changes = locked { () -> [NodeIPC.Change] in
@@ -491,7 +492,15 @@ struct Session: NodeIPC.NodeHandler {
             results.append(.data(try tree.read(at, offset: offset, max: max)))
           }
         case .write(let offset, let data):
-          results.append(.wrote(try tree.write(at, offset: offset, data)))
+          if i == 0, at === node, case .stream(let s) = at.content {
+            // A write that waits (D94): held, the reply sent later.
+            guard let n = try tree.writeOrHold(at, s, data, state) else {
+              return NodeIPC.Reply(results: [], failure: nil, node: nil)
+            }
+            results.append(.wrote(n))
+          } else {
+            results.append(.wrote(try tree.write(at, offset: offset, data)))
+          }
         case .watch(let since):
           results.append(.watching(try watch(at, since: since)))
         case .create(let name, let kind):
@@ -656,7 +665,7 @@ struct Session: NodeIPC.NodeHandler {
         unsafe bytes.withUnsafeBytes { unsafe buffer.baseAddress!.copyMemory(from: $0.baseAddress!, byteCount: $0.count) }
         return UInt32(bytes.count)
       }
-      return try tree.write(at, offset: offset, unsafe Array(UnsafeRawBufferPointer(buffer)), limit: buffer.count)
+      return try tree.ringWrite(at, state, offset: offset, unsafe Array(UnsafeRawBufferPointer(buffer)), limit: buffer.count)
     }
     guard let server = unsafe BulkServer(bulk, io: io), let bell = try? server.serverBell.duplicate() else { throw .invalid }
     do throws(Status) {
@@ -811,7 +820,7 @@ extension NodeTree {
       throw .unsupported
     case .stream(let s):
       guard let write = s.write else { throw .unsupported }
-      return try write(data)
+      return try write(data) ?? 0  // not waiting: mid-batch
     case .text(_, let write):
       guard let write else { throw .unsupported }
       guard let command = String(validating: data, as: UTF8.self) else { throw .invalid }

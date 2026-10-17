@@ -32,8 +32,9 @@ Protocol `todhchai.node.Node`, version 4, of library `NodeIPC`, its messages in 
 : `attach`
   Attaches a ring pair for bulk reads and writes of this channel's
   node: one a channel, gone when the channel closes. A read of a
-  stream waits until it has bytes, as a plain read does, so
-  completions may come out of order; each says which entry it ends.
+  stream waits until it has bytes, and a write until it has room, as
+  plain ones do, so completions may come out of order; each says
+  which entry it ends.
 : `memory`
   This channel's node's contents as memory (a file's); `executable`, a
   VMO a process can be started from or a library loaded from, which

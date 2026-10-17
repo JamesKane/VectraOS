@@ -131,6 +131,8 @@ public enum NodeIPC {
     case walk(names: [String])
     case stat(fields: UInt32)
     case readdir(cursor: UInt64, max: UInt32, fields: UInt32)
+    /// At a stream, a read that begins a batch on a channel opened there
+    /// waits until the stream has bytes; a write, until it has room.
     case read(offset: UInt64, max: UInt32)
     case write(offset: UInt64, data: [UInt8])
     /// Sends `changed` events for the current node on this channel from
@@ -248,8 +250,9 @@ public enum NodeIPC {
     func batch(_ ops: [Op], open: Bool) -> Reply
     /// Attaches a ring pair for bulk reads and writes of this channel's
     /// node: one a channel, gone when the channel closes. A read of a
-    /// stream waits until it has bytes, as a plain read does, so
-    /// completions may come out of order; each says which entry it ends.
+    /// stream waits until it has bytes, and a write until it has room, as
+    /// plain ones do, so completions may come out of order; each says
+    /// which entry it ends.
     @since(2) func attach(_ bulk: consuming Bulk) throws(NodeError)
     /// This channel's node's contents as memory (a file's); `executable`, a
     /// VMO a process can be started from or a library loaded from, which

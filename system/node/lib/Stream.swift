@@ -3,11 +3,12 @@
 // Streams (D84): a file whose bytes come and go, as Plan 9's /dev/cons,
 // /dev/kbd and /net's listen do. A read takes what is there; if nothing
 // is, it waits until there is, the server holding the call (IPCDeferral)
-// and answering it when the stream says it is ready. Only a read that
-// begins a batch on a channel opened at the stream waits, which is how an
-// opened file reads: one later in a batch, after walks, may have come
-// through a mount whose service forwards batches in its own thread, so it
-// answers with what is there, maybe nothing. The stream's service learns
+// and answering it when the stream says it is ready. A write the stream
+// can take none of waits the same way, until it can (D94). Only a read or
+// write that begins a batch on a channel opened at the stream waits, which
+// is how an opened file reads and writes: one later in a batch, after
+// walks, may have come through a mount whose service forwards batches in
+// its own thread, so it answers with what is there, maybe nothing. The stream's service learns
 // when a channel opened at it comes and goes (`opened`, `closed`), as
 // Plan 9's device files do (`rawon` lasts while consctl is open).
 
@@ -31,14 +32,15 @@ public final class NodeStream: @unchecked Sendable {
   /// Up to `max` bytes, taking them; nil if there are none yet (a read
   /// waits), empty at the stream's end.
   let take: (Int) -> [UInt8]?
-  /// A write's bytes, and how many were taken; nil: not writable.
-  let write: (([UInt8]) throws(NodeError) -> UInt32)?
+  /// A write's bytes, and how many were taken, or nil if none can be yet
+  /// (the write waits, D94); no closure: not writable.
+  let write: (([UInt8]) throws(NodeError) -> UInt32?)?
   let opened: () -> Void
   let closed: () -> Void
   /// Each channel's own stream, if its readers don't share one.
   let perChannel: (() -> NodeStreamChannel)?
 
-  public init(take: @escaping (Int) -> [UInt8]?, write: (([UInt8]) throws(NodeError) -> UInt32)? = nil,
+  public init(take: @escaping (Int) -> [UInt8]?, write: (([UInt8]) throws(NodeError) -> UInt32?)? = nil,
               opened: @escaping () -> Void = {}, closed: @escaping () -> Void = {}) {
     self.take = take
     self.write = write
@@ -50,7 +52,7 @@ public final class NodeStream: @unchecked Sendable {
   /// A stream each channel opened at it reads on its own: `open` makes the
   /// channel's (it is told when the channel goes).
   public init(perChannel open: @escaping () -> NodeStreamChannel,
-              write: (([UInt8]) throws(NodeError) -> UInt32)? = nil) {
+              write: (([UInt8]) throws(NodeError) -> UInt32?)? = nil) {
     take = { _ in [] }
     self.write = write
     opened = {}
@@ -66,17 +68,18 @@ extension NodeTree {
     place(path, .stream(stream))
   }
 
-  /// The stream at `node` may have bytes for its waiting readers: each
-  /// session with a read held on it tries again, on the dispatcher's
-  /// thread. Any thread may call it.
+  /// The stream at `node` may have bytes for its waiting readers, or room
+  /// for its waiting writers: each session with a call held on it tries
+  /// again, on the dispatcher's thread. Any thread may call it.
   public func ready(_ node: TreeNode) {
     let sessions = locked { node.waiting.map { $0.id } }
     for id in sessions { dispatcher.wake(id) }
   }
 
-  /// Answers the reads `state` holds that its stream can now (on the
-  /// dispatcher's thread, from the session's wake).
-  func answerHeldReads(_ state: SessionState, _ s: inout NodeIPC.NodeServer<Session>) throws(IPCError<Never>) {
+  /// Answers the reads and writes `state` holds that its stream can now,
+  /// each in the order they came (on the dispatcher's thread, from the
+  /// session's wake).
+  func answerHeld(_ state: SessionState, _ s: inout NodeIPC.NodeServer<Session>) throws(IPCError<Never>) {
     guard let node = state.stream, case .stream(let stream) = node.content else { return }
     var i = 0
     while i < state.reads.count {
@@ -89,6 +92,19 @@ extension NodeTree {
       state.reads.remove(at: i)
       let reply = NodeIPC.Reply(results: [.data(bytes)], failure: nil, node: nil)
       try s.connection.send(try NodeIPC._reply_Node_batch(reply, to: r.header))
+    }
+    // Writes in order: one that still can't go holds up those behind it.
+    while let w = state.writes.first {
+      let reply: NodeIPC.Reply
+      do throws(NodeError) {
+        guard !node.detached else { throw .notFound }
+        guard let n = try stream.write?(w.data) else { break }
+        reply = NodeIPC.Reply(results: [.wrote(n)], failure: nil, node: nil)
+      } catch {
+        reply = NodeIPC.Reply(results: [], failure: NodeIPC.Failure(index: 0, code: error.rawValue), node: nil)
+      }
+      state.writes.removeFirst()
+      try s.connection.send(try NodeIPC._reply_Node_batch(reply, to: w.header))
     }
     settle(state)
   }
@@ -108,6 +124,25 @@ extension NodeTree {
     state.reads.append((header, UInt32(limit)))
     return nil
   }
+
+  /// A write beginning a batch at a stream (D94): how many bytes it took,
+  /// or nil once the call is held for later (no room yet, or writes held
+  /// before it).
+  func writeOrHold(_ node: TreeNode, _ stream: NodeStream, _ data: [UInt8], _ state: SessionState) throws(NodeError)
+    -> UInt32?
+  {
+    guard let write = stream.write else { throw .unsupported }
+    guard data.count <= NodeIPC.maxIO else { throw .invalid }
+    _ = try locked { () throws(NodeError) in try live(node) }
+    locked { if !node.waiting.contains(where: { $0 === state }) { node.waiting.append(state) } }
+    if state.writes.isEmpty, let n = try write(data) {
+      settle(state)
+      return n
+    }
+    guard let header = state.deferral.hold() else { return 0 }
+    state.writes.append((header, data))
+    return nil
+  }
 }
 
 extension NodeTree {
@@ -124,10 +159,25 @@ extension NodeTree {
     return (state.channel?.take ?? stream.take)(max)
   }
 
-  /// Drops the session from its stream's waiters once it holds no read,
+  /// A ring's write of `node` (D94): the bytes a stream took, or nil to
+  /// hold the write until it has room, the session a waiter first; any
+  /// other node written at once.
+  func ringWrite(_ node: TreeNode, _ state: SessionState, offset: UInt64, _ data: [UInt8], limit: Int)
+    throws(NodeError) -> UInt32?
+  {
+    let content = try locked { () throws(NodeError) in try live(node).content }
+    guard case .stream(let stream) = content else { return try write(node, offset: offset, data, limit: limit) }
+    guard let write = stream.write else { throw .unsupported }
+    guard data.count <= limit else { throw .invalid }
+    locked { if !node.waiting.contains(where: { $0 === state }) { node.waiting.append(state) } }
+    return try write(data)
+  }
+
+  /// Drops the session from its stream's waiters once it holds no call,
   /// plain or through its ring.
   func settle(_ state: SessionState) {
-    guard let node = state.stream, state.reads.isEmpty, state.bulk?.held.isEmpty ?? true else { return }
+    guard let node = state.stream, state.reads.isEmpty, state.writes.isEmpty, state.bulk?.held.isEmpty ?? true
+    else { return }
     locked { node.waiting.removeAll { $0 === state } }
   }
 }

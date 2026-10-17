@@ -33,10 +33,11 @@ public enum NodeBulk {
 
 /// A ring pair attached to a session's node, drained on the dispatcher's
 /// thread whenever its doorbell rings. `io` reads or writes the node; a
-/// read of a stream with nothing there is held, and answered when the
-/// stream is ready (`answerHeld`, D93).
+/// read of a stream with nothing there, or a write it has no room for, is
+/// held, and answered when the stream is ready (`answerHeld`, D93, D94).
 @safe final class BulkServer: @unchecked Sendable {
-  /// The bytes moved, or nil: a read with nothing there yet, to hold.
+  /// The bytes moved, or nil: a read with nothing there yet, or a write
+  /// with no room yet, to hold.
   typealias IO = (_ op: UInt32, _ offset: UInt64, _ data: UnsafeMutableRawBufferPointer) throws(NodeIPC.NodeError)
     -> UInt32?
 
@@ -51,8 +52,9 @@ public enum NodeBulk {
   let io: IO
   /// The dispatcher's watch of the doorbell, once made.
   var watch: UInt64 = 0
-  /// Reads held, in the order they came: at most the SQ's slots.
-  var held: [(tag: UInt64, offset: UInt64, at: UInt64, length: UInt64)] = []
+  /// Reads and writes held, in the order they came: at most the SQ's
+  /// slots.
+  var held: [(op: UInt32, tag: UInt64, offset: UInt64, at: UInt64, length: UInt64)] = []
   let sqSlots: Int
 
   /// Validates and maps what the client attached. Nil if it doesn't hold
@@ -83,7 +85,7 @@ public enum NodeBulk {
     unsafe self.io = io
   }
 
-  /// Answers the reads held, in order, while the stream gives bytes and
+  /// Answers the reads and writes held, in order, while the stream can and
   /// the CQ has room; then serves what the SQ holds while the CQ has room,
   /// and sleeps on whichever stopped it. False once either ring is
   /// broken: the pair is done.
@@ -120,23 +122,36 @@ public enum NodeBulk {
     }
   }
 
-  /// Answers held reads, oldest first, until one still finds nothing (the
-  /// ones after it read the same stream) or the CQ is full. On the
-  /// dispatcher's thread: the session's wake, when its stream is ready.
+  /// Answers held reads and writes, each oldest first, until one still
+  /// can't go (those of its kind after it wait on the same stream) or the
+  /// CQ is full. On the dispatcher's thread: the session's wake, when its
+  /// stream is ready.
   func answerHeld() {
     guard !held.isEmpty, !cq.broken else { return }
     var answered: UInt64 = 0
     let room = cq.space()
-    while answered < room, let h = held.first {
+    var readsWait = false, writesWait = false
+    var i = 0
+    while answered < room, i < held.count {
+      let h = held[i]
+      let isRead = h.op == NodeBulk.read
+      if isRead ? readsWait : writesWait {
+        i += 1
+        continue
+      }
       let buffer = unsafe UnsafeMutableRawBufferPointer(start: data + Int(h.at), count: Int(h.length))
       let status: Int32, count: UInt32
       do throws(NodeIPC.NodeError) {
-        guard let n = unsafe try io(NodeBulk.read, h.offset, buffer) else { break }
+        guard let n = unsafe try io(h.op, h.offset, buffer) else {
+          if isRead { readsWait = true } else { writesWait = true }
+          i += 1
+          continue
+        }
         (status, count) = (0, n)
       } catch {
         (status, count) = (error.rawValue, 0)
       }
-      held.removeFirst()
+      held.remove(at: i)
       complete(answered, h.tag, status, count)
       answered += 1
     }
@@ -152,8 +167,9 @@ public enum NodeBulk {
   }
 
   /// One SQ entry, checked against the data area: its tag, status and
-  /// bytes moved, or nil for a read held (nothing there yet). A read past
-  /// the SQ's slots in held reads is refused.
+  /// bytes moved, or nil for an entry held (a read with nothing there yet,
+  /// a write with no room). One past the SQ's slots in held entries is
+  /// refused.
   func handle(_ e: [UInt8]) -> (UInt64, Int32, UInt32)? {
     func u64(_ at: Int) -> UInt64 {
       var v: UInt64 = 0
@@ -166,14 +182,11 @@ public enum NodeBulk {
     }
     let buffer = unsafe UnsafeMutableRawBufferPointer(start: data + Int(at), count: Int(length))
     do throws(NodeIPC.NodeError) {
-      // Reads wait behind those held: a stream's bytes come in order.
-      if op == NodeBulk.read, !held.isEmpty {
-        guard held.count < sqSlots else { return (tag, NodeIPC.NodeError.invalid.rawValue, 0) }
-        held.append((tag, offset, at, length))
-        return nil
-      }
-      if let n = unsafe try io(op, offset, buffer) { return (tag, 0, n) }
-      held.append((tag, offset, at, length))
+      // Reads wait behind reads held, writes behind writes: a stream's
+      // bytes come and go in order.
+      if !held.contains(where: { $0.op == op }), let n = unsafe try io(op, offset, buffer) { return (tag, 0, n) }
+      guard held.count < sqSlots else { return (tag, NodeIPC.NodeError.invalid.rawValue, 0) }
+      held.append((op, tag, offset, at, length))
       return nil
     } catch {
       return (tag, error.rawValue, 0)
@@ -276,6 +289,20 @@ public enum NodeBulk {
     let wave = submitWave(NodeBulk.read, at: 0, remaining: min(max, chunk))
     let done = try complete(wave)
     return unsafe Array(UnsafeRawBufferPointer(start: data, count: Int(done.first?.1 ?? 0)))
+  }
+
+  /// Writes all of `bytes` to a stream (D94), a chunk an entry, one entry
+  /// at a time: a stream takes what it has room for, and waits while it
+  /// has none, so a second entry in flight could go before the rest of
+  /// the first.
+  public mutating func put(_ bytes: [UInt8]) throws(Failure) {
+    var sent = 0
+    while sent < bytes.count {
+      let length = min(chunk, bytes.count - sent)
+      unsafe bytes.withUnsafeBytes { unsafe data.copyMemory(from: $0.baseAddress! + sent, byteCount: length) }
+      let wave = submitWave(NodeBulk.write, at: 0, remaining: length)
+      sent += Int(try complete(wave).first?.1 ?? 0)
+    }
   }
 
   /// Writes `bytes` at `offset`; how many went.
