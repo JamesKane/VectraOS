@@ -73,7 +73,7 @@ stdlib(2)
 
 # DIAGNOSTICS
 
-The failures `dlerror` reports include: the file is not in bootfs; it is not a shared object; it has thread-local storage, which a loaded object cannot yet have; there was no room to map it; a relocation type is not supported; a symbol it needs is undefined.
+The failures `dlerror` reports include: the file is not in bootfs; it is not a shared object; it has thread-local storage, which a loaded object cannot have; there was no room to map it; a relocation type is not supported; a symbol it needs is undefined.
 For an undefined symbol the program must export its symbols, as a program built to host libraries does; the message says so otherwise.
 
 # BUGS

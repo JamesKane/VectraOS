@@ -58,7 +58,3 @@ vx-build(1), vx-ci(1), vx-steps(1), vx-man(1)
 # DIAGNOSTICS
 
 `vx: unknown command <name>; ...` for a word it doesn't know, and `vx: run vx <command> from the repository root` outside the root.
-
-# BUGS
-
-The usage message given when no command is named leaves `acpi` out of its list, and the message for an unknown command leaves `man` out of its.

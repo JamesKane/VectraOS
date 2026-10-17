@@ -54,7 +54,7 @@ func arches(_ args: [String]) -> [String] {
 
 var args = Array(CommandLine.arguments.dropFirst())
 guard let command = args.first else {
-  fail("usage: vx build|test|boot|bench|trace|loc|man|hardware|rc-oracle|ci [options]")
+  fail("usage: vx build|test|boot|bench|trace|loc|man|hardware|rc-oracle|acpi|ci [options]")
 }
 args.removeFirst()
 
@@ -86,5 +86,5 @@ case "hardware": exit(hardwareCommand(args) ? 0 : 1)
 case "rc-oracle": exit(rcOracleCommand(args) ? 0 : 1)
 case "acpi": exit(acpiCommand(args) ? 0 : 1)
 case "ci": exit(ci(args) ? 0 : 1)
-default: fail("unknown command \(command); vx has build, test, boot, bench, trace, loc, hardware, rc-oracle, acpi and ci")
+default: fail("unknown command \(command); vx has build, test, boot, bench, trace, loc, man, hardware, rc-oracle, acpi and ci")
 }

@@ -488,7 +488,6 @@ The status of `rc` is its exit string, as above.
 
 # BUGS
 
-`rc` is checked against 9front's by running the same scripts through both; the cases that differ are only those where Linux's numeric exit statuses or its programs show.
 Where it is not 9front's:
 
 - There are no `limit`, `umask` or `newpgrp`, and `whatis` with no arguments prints nothing: 9front lists every variable and function.
@@ -499,4 +498,4 @@ Where it is not 9front's:
 - A foreground program that does not have the terminal is not killed by ^C, and a hangup races the end of `rc`'s input, so `sighup` may not run.
 - Input at the terminal has no line editing or history of `rc`'s own, and `$prompt` is not taken from the environment.
 - A program that is given `rc`'s own standard input when that is not a terminal reads nothing.
-- Few commands exist: `test`, `read`, `grep`, `sed`, `wc`, `sort`, `tail`, `tr`, `sleep`, `kill`, `ps`, `date`, `ns`, `bind` and `mount` are not on the device, so many of 9front's scripts need them added.
+- Few commands exist: `test`, `read`, `grep`, `sed`, `wc`, `sort`, `tail`, `tr`, `sleep`, `kill`, `ps`, `date`, `ns`, `bind` and `mount` are not on the device.

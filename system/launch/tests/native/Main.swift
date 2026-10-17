@@ -80,7 +80,8 @@ func line(_ text: String, startingWith prefix: StaticString) -> String? {
 /// whose FILES names a path under /svc/SERVICE/ claims that file. Each
 /// claimed file exists, and a service any page claims has each of its
 /// files documented, none more. A path with a parameter, such as
-/// /svc/x/<name>, claims nothing.
+/// /svc/x/<name>, claims nothing, and a service this machine doesn't run
+/// is passed over.
 func documentedTrees(_ ns: Namespace) {
   guard let index = readText(ns, "/lib/man/index") else { return check(false, "the manual's index") }
   var pages: [String] = []
@@ -108,6 +109,9 @@ func documentedTrees(_ ns: Namespace) {
       }
     }
   }
+  // Only what this machine runs: the time service, say, runs on amd64 alone.
+  let running = ((try? ns.list("/svc")) ?? []).map { $0.name }
+  claimed = claimed.filter { c in running.contains { $0.utf8.elementsEqual(c.service.utf8) } }
   var services: [String] = []
   for c in claimed {
     if (try? ns.open(c.path)) == nil {

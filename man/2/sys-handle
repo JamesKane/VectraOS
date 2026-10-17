@@ -55,7 +55,7 @@ It is `~Copyable`, so exactly one value owns each handle, and the handle is clos
 `raw` is the handle's number in the process's table, as the kernel and messages see it.
 The functions that take an object take it `borrowing`, so a call never takes the handle away.
 
-`init(raw:)` takes ownership of a raw handle, such as one read from a message.
+`init(raw:)` takes ownership of a raw handle, such as one read from a message; it trusts the number, so two values made from one number close the handle twice.
 It does not check the number.
 `release` gives up ownership without closing: the handle stays open and the caller is responsible for it, usually by writing the number into a message with `Channel.write`; see sys-channel(2).
 
@@ -99,7 +99,3 @@ Take them apart with `let a = ends.a`.
 # SEE ALSO
 
 sys-channel(2), sys-port(2), sys-clock(2), sys-process(2), handle_close(2), handle_duplicate(2), object_get_info(2), object_bind(2)
-
-# BUGS
-
-`Handle.init(raw:)` trusts its argument: two values made from the same number close the handle twice.
