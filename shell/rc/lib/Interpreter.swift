@@ -97,6 +97,9 @@ public protocol RcSystem: AnyObject {
   /// `rfork e`: rc's environment group from now on a copy of itself, or
   /// (E, `clean`) a new empty one; whether it could.
   func forkEnvironment(clean: Bool) -> Bool
+  /// `rfork s`: what rc starts from now on in a note group of its own;
+  /// whether it could.
+  func forkNoteGroup() -> Bool
 }
 
 extension RcSystem {
@@ -111,6 +114,7 @@ extension RcSystem {
   public func environmentFiles() -> [(name: String, bytes: [UInt8])]? { nil }
   public func setEnvironmentFile(_ name: String, _ bytes: [UInt8]) {}
   public func forkEnvironment(clean: Bool) -> Bool { false }
+  public func forkNoteGroup() -> Bool { true }
 
   /// Whether `path` names something: its directory's listing holds its
   /// last name (globbing keeps a path ending in literal names only so).
@@ -1262,7 +1266,8 @@ public final class Rc {
     // empty one; with strings, each program rc starts gets a copy shared
     // with no one, so e is always so, and E hides what's set already. The
     // descriptors are rc's, each program given a copy: f is always so, F
-    // takes away every descriptor. s waits for notes.
+    // takes away every descriptor. s gives rc a new note group, the
+    // system's (a job of its own for what it starts, proc(4)).
     "rfork": { rc, argv, fds in
       let letters = argv.count == 1 ? "ens" : argv.count == 2 ? argv[1] : nil
       guard let letters, letters.allSatisfy({ "nNeEsfFm".contains($0) }) else {
@@ -1282,6 +1287,10 @@ public final class Rc {
         return rc.setStatus("rfork failed")
       }
       if !rc.environmentInFiles, cleanEnvironment { rc.hideEnvironment() }
+      if letters.contains("s") && !rc.system.forkNoteGroup() {
+        fds[2]?.write(Array("rc: rfork failed\n".utf8))
+        return rc.setStatus("rfork failed")
+      }
       if letters.contains("F") { rc.revokeDescriptors(fds) }
       rc.setStatus("")
     },

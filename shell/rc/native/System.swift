@@ -173,35 +173,41 @@ final class Job: RcJob {
 /// fork's are. Paths are resolved here against them, and FDIO given them
 /// absolute (its directory and namespace are the process's).
 final class CroiSystem: RcSystem {
-  /// What rc and its forks share: the job programs start in, and the
-  /// streams numbered for <{} and >{}.
+  /// What rc and its forks share: the job programs start in, the jobs
+  /// `rfork s` made (kept while rc lives), and the streams numbered for
+  /// <{} and >{}.
   final class Shared: @unchecked Sendable {
     let job: Handle
+    var groups: [UInt32] = []
     let lock = Lock()
     var numbered: [Int32: RcStream] = [:]
     var nextNumber: Int32 = 32
     init(job: consuming Handle) { self.job = job }
   }
   let shared: Shared
-  /// This rc's directory and namespace.
+  /// This rc's directory and namespace, and the job its programs start in:
+  /// its note group (proc(4)'s notepg), a new one after `rfork s`.
   var cwd: String
   var namespace: Namespace?
+  var job: UInt32
 
   init(job: consuming Handle) {
     shared = Shared(job: job)
     cwd = FDIO.currentDirectory
     namespace = FDIO.namespace
+    self.job = shared.job.raw
   }
 
-  init(_ shared: Shared, cwd: String, namespace: Namespace?) {
+  init(_ shared: Shared, cwd: String, namespace: Namespace?, job: UInt32) {
     self.shared = shared
     self.cwd = cwd
     self.namespace = namespace
+    self.job = job
   }
 
   /// A fork's: the same namespace (until it forks its own), its own
   /// directory.
-  func fork() -> RcSystem { CroiSystem(shared, cwd: cwd, namespace: namespace) }
+  func fork() -> RcSystem { CroiSystem(shared, cwd: cwd, namespace: namespace, job: job) }
 
   /// `path` absolute against this directory, and cleaned.
   func full(_ path: String) -> String? {
@@ -314,14 +320,17 @@ final class CroiSystem: RcSystem {
       }
     }
     do throws(Status) {
-      if name == "rc" { startup.add(try Sys.Job.create(parent: shared.job), info: HandleType.info(HandleType.jobDefault)) }
+      if name == "rc" {
+        startup.add(try withJob { (j: borrowing Handle) throws(Status) in try Sys.Job.create(parent: j) },
+                    info: HandleType.info(HandleType.jobDefault))
+      }
       // Each of its descriptors, as many as a child takes: one it reads
       // if its stream is a source (or it is fd 0), one it writes if not.
       let given = fds.filter { $0.key >= 0 && $0.key < Int32(TD_STDIO_FD_LIMIT) }.sorted { $0.key < $1.key }
         .prefix(Int(TD_STDIO_FDS))
       let stdio = try ChildStdio(for: startup, descriptors: given.map { ($0.key, $0.value.source ?? ($0.key == 0)) })
       let said = try ExitString(for: startup)
-      let process = try Process.create(job: shared.job, name: name)
+      let process = try withJob { (j: borrowing Handle) throws(Status) in try Process.create(job: j, name: name) }
       _ = try Process.start(process, entry: entry, startup)
       /// A relay's stream: a pipe held for as long as the relay runs (rc
       /// drops its own hold once the program is started), anything else
@@ -393,9 +402,34 @@ final class CroiSystem: RcSystem {
 
   var directory: String { cwd }
 
-  /// The pty's notes, when rc is on one (Terminal.swift): croi has no
-  /// others.
-  func takeNotes() -> [String] { Terminal.current?.takeNotes() ?? [] }
+  /// The pty's notes, when rc is on one (Terminal.swift), and those posted
+  /// to rc (NoteQueue, D87).
+  func takeNotes() -> [String] { (Terminal.current?.takeNotes() ?? []) + NoteQueue.shared.take() }
+
+  /// `body` given this rc's job, which stays rc's (Shared's).
+  func withJob(_ body: (borrowing Handle) throws(Status) -> Handle) throws(Status) -> Handle {
+    let j = Handle(raw: job)
+    let made: Handle
+    do throws(Status) {
+      made = try body(j)
+    } catch {
+      _ = j.release()
+      throw error
+    }
+    _ = j.release()
+    return made
+  }
+
+  /// rfork s: what rc starts from now on starts in a new job under the
+  /// one it used, a note group of its own.
+  func forkNoteGroup() -> Bool {
+    guard let group = try? withJob({ (j: borrowing Handle) throws(Status) in try Sys.Job.create(parent: j) }) else {
+      return false
+    }
+    job = group.release()
+    shared.lock.withLock { shared.groups.append(job) }
+    return true
+  }
 
   /// rfork n, N and m: this rc's namespace (which its programs get) a
   /// clone of itself or a new empty one, sealed as before (Plan 9's
@@ -506,5 +540,35 @@ final class CroiSystem: RcSystem {
   func list(_ directory: String) -> [String]? {
     guard let namespace, let p = full(directory), let entries = try? namespace.list(p, fields: 0) else { return nil }
     return entries.map { $0.name }
+  }
+}
+
+/// rc's notes (D87), as 9front's notifyf takes them: a note starting with
+/// one of syssigname's is kept for rc as its trap's name (`interrupt` as
+/// `sigint`), an interrupt only if none waits already; any other ends rc,
+/// a note's default.
+final class NoteQueue: @unchecked Sendable {
+  static let shared = NoteQueue()
+  static let traps: [(note: String, trap: String)] = [
+    ("hangup", "sighup"), ("interrupt", "sigint"), ("quit", "sigquit"), ("alarm", "sigalrm"), ("kill", "sigkill"),
+    ("sys: fp: ", "sigfpe"), ("term", "sigterm"),
+  ]
+  let lock = Lock()
+  var pending: [String] = []
+
+  /// From now on rc takes its notes.
+  func start() {
+    try? Note.notify { [self] note in
+      guard let t = Self.traps.first(where: { note.hasPrefix($0.note) }) else { return false }
+      lock.withLock { if t.trap != "sigint" || !pending.contains("sigint") { pending.append(t.trap) } }
+      return true
+    }
+  }
+
+  func take() -> [String] {
+    lock.withLock {
+      defer { pending = [] }
+      return pending
+    }
   }
 }

@@ -61,6 +61,7 @@ final class Standard: RcStream {
       print("rc: no job to start programs in (its manifest's `programs`)")
       exit(1)
     }
+    NoteQueue.shared.start()  // its notes (D87)
     run(CroiSystem(job: job))
   }
 

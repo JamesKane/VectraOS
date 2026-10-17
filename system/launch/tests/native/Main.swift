@@ -495,6 +495,10 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
   // reach rc's group, which it shares (D81).
   rcRuns(rc, "x=1; rfork e; rc -c 'echo $x; y=2; rc -c true'; cat /env/y", Array("1\n2\0".utf8), ns, job: job,
          "rc's rfork e, and the group its programs share")
+  // A note posted to rc through /proc runs its sigint function (D87), at
+  // its next look between commands.
+  rcRuns(rc, "fn sigint {caught=yes}; echo interrupt >/proc/$pid/note; while(! ~ $caught yes) x=`{ls /proc}; echo caught",
+         Array("caught\n".utf8), ns, job: job, "rc takes a note through /proc")
   // ps and kill over /proc (D79): kill names this process's note.
   if let me = try? Process.current(), let koid = try? me.info().koid {
     rcRuns(rc, "x=`{ps -a}; ~ $#x 0 && echo none; kill launch-test", Array("@{echo kill>/proc/\(koid)/note} # launch-test\n".utf8), ns,

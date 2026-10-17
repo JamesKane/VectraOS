@@ -44,7 +44,9 @@ under `vx ci` and every budget it introduces has a running check
     main is 79 µs (< 200 µs), and the first bench history is recorded
     (2026-10-16, cd3eb6d), and the services hold 3.7 MiB (< 32 MiB,
     `services.rss`), and the manual is written (D86).
-- **V3 onward** are not started (V6's boards have research passes).
+- **V3** is under way, on the `v3` branch: notes and /proc done
+  (2026-10-17). **V4 onward** are not started (V6's boards have research
+  passes).
 
 ## V0. Ground — done 2026-10-15
 
@@ -678,6 +680,16 @@ meets a tested path.
   info topics and process handles, the kernel's side a right on a
   process handle (the ceiling holds). `ps`, `kill` and `ns` are Plan
   9's over it, and `notepg` gives rc's `rfork` its note groups.
+  - **Done (2026-10-17):** notes in the kernel (D87: a queue of five on
+    each process, posted and taken as a property under a NOTE right, an
+    untaken note killing), Sys's `Note`, the proc service (`jobs`
+    grants it the launcher's job; status, args, ctl's kill, note and
+    notepg, a note group a job), `ps` and `kill`, rc taking its notes
+    as 9front's notifyf does, and `rfork s` a new job. Pages: note(2),
+    proc(4), ps(1), kill(1). Left: `ns`, `fd`, `wait`, `stop` and
+    `start` (a process's namespace and descriptors are its own, and the
+    kernel keeps neither its children nor its start time), and `ns` the
+    command with them.
 - **The pty goes** (D77): with cpu's session and the console both serving
   `/dev/cons`, nothing needs it; `services/pty`, rc's terminal relay and
   `CROI_PA_PTY_CONTROL` are removed (services/pty/README.md).
