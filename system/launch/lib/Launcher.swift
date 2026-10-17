@@ -104,6 +104,8 @@ public final class Launcher: @unchecked Sendable {
   var grantableResources: [(kind: ResourceKind, handle: UInt32)] = []
   var grantableBootfs: UInt32 = 0
   var grantableBootData: UInt32 = 0
+  /// The debuglog's ring and doorbell, which `debuglog` grants (D38).
+  var grantableDebuglog: (ring: UInt32, counter: UInt32) = (0, 0)
   /// The UTC page (D48): every process is given it to read, a `clock`
   /// service writable.
   var utcPage: UInt32 = 0
@@ -133,6 +135,7 @@ public final class Launcher: @unchecked Sendable {
     for r in grantableResources { close(raw: r.handle) }
     if grantableBootfs != 0 { close(raw: grantableBootfs) }
     if grantableBootData != 0 { close(raw: grantableBootData) }
+    if grantableDebuglog.ring != 0 { close(raw: [grantableDebuglog.ring, grantableDebuglog.counter]) }
     if utcPage != 0 { close(raw: utcPage) }
   }
 
@@ -152,6 +155,13 @@ public final class Launcher: @unchecked Sendable {
   public func allow(bootData: consuming Handle) {
     let raw = bootData.release()
     locked { grantableBootData = raw }
+  }
+
+  /// The debuglog's ring and its doorbell, which manifests may grant with
+  /// `debuglog` (D38): reading it is holding them.
+  public func allow(debuglog ring: consuming Handle, counter: consuming Handle) {
+    let r = ring.release(), c = counter.release()
+    locked { grantableDebuglog = (r, c) }
   }
 
   /// The UTC page (D48), which every process is given to read and one whose
@@ -192,6 +202,9 @@ public final class Launcher: @unchecked Sendable {
       if m.bootfsLine != 0 && locked({ grantableBootfs }) == 0 { throw m.error(m.bootfsLine, "no bootfs to grant") }
       if m.bootDataLine != 0 && locked({ grantableBootData }) == 0 {
         throw m.error(m.bootDataLine, "no boot data to grant")
+      }
+      if m.debuglogLine != 0 && locked({ grantableDebuglog.ring }) == 0 {
+        throw m.error(m.debuglogLine, "no debuglog to grant")
       }
       if m.clockLine != 0 && locked({ utcPage }) == 0 { throw m.error(m.clockLine, "no UTC page to grant") }
     }
@@ -307,7 +320,7 @@ public final class Launcher: @unchecked Sendable {
     }
   }
 
-  /// The handles `resource`, `bootdata`, `programs`, `libraries` and
+  /// The handles `resource`, `bootdata`, `debuglog`, `programs`, `libraries` and
   /// `clock` grant an instance of `s`: duplicates of the launcher's, a new
   /// job under the service's, and the UTC page every process reads.
   func granted(_ s: Service, into startup: Startup) throws(LaunchError) {
@@ -322,6 +335,11 @@ public final class Launcher: @unchecked Sendable {
     for r in m.resources {
       let raw = locked { grantableResources.first { $0.kind == r.kind }!.handle }
       startup.add(raw: try duplicate(raw, r.line), info: HandleType.info(HandleType.resource(r.kind)))
+    }
+    if m.debuglogLine != 0 {
+      let d = locked { grantableDebuglog }
+      startup.add(raw: try duplicate(d.ring, m.debuglogLine), info: HandleType.info(HandleType.vmoDebuglog))
+      startup.add(raw: try duplicate(d.counter, m.debuglogLine), info: HandleType.info(HandleType.debuglogCounter))
     }
     if m.bootDataLine != 0 {
       startup.add(raw: try duplicate(locked({ grantableBootData }), m.bootDataLine),

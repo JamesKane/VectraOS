@@ -549,3 +549,14 @@ drivers/virtio/lib/Devices.swift	todhchai	527ff94	drivers/virtio/lib/Devices.swi
 drivers/virtio/tests/VirtioTests.swift	todhchai	527ff94	drivers/virtio/tests/VirtioTests.swift
 drivers/block/virtio-blk/lib/Block.swift	todhchai	527ff94	drivers/block/virtio-blk/lib/Block.swift
 drivers/input/virtio-input/driver.manifest	todhchai	527ff94	drivers/input/virtio-input/driver.manifest
+services/console/lib/Console.swift	todhchai	527ff94	services/console/lib/Console.swift
+services/console/lib/Font.swift	todhchai	527ff94	services/console/lib/Font.swift
+services/console/lib/generated/Spleen.swift	todhchai	527ff94	services/console/lib/generated/Spleen.swift
+services/console/tests/ConsoleTests.swift	todhchai	527ff94	services/console/tests/ConsoleTests.swift
+services/console/README.md	todhchai	527ff94	services/console/README.md
+data/fonts/spleen/LICENSE	todhchai	527ff94	data/fonts/spleen/LICENSE
+data/fonts/spleen/PROVENANCE.md	todhchai	527ff94	data/fonts/spleen/PROVENANCE.md
+data/fonts/spleen/spleen-16x32.bdf	todhchai	527ff94	data/fonts/spleen/spleen-16x32.bdf
+data/fonts/spleen/spleen-8x16.bdf	todhchai	527ff94	data/fonts/spleen/spleen-8x16.bdf
+text/fonts/gen/FontGen.swift	todhchai	527ff94	text/fonts/gen/FontGen.swift
+tools/fontgen/main.swift	todhchai	527ff94	tools/fontgen/main.swift

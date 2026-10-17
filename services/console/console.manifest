@@ -1,0 +1,11 @@
+# The console (V2 item 8): the system's log on the framebuffer the boot
+# data names (a physical VMO under its MMIO resource), read from the
+# debuglog's ring (D38). Early, so it shows the boot from the start.
+service console
+program console
+resource mmio
+bootdata
+debuglog
+export
+early
+restart on-failure

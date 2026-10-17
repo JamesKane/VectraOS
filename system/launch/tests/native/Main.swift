@@ -105,6 +105,24 @@ func devices(_ ns: Namespace) {
   keyboard(ns, status)
 }
 
+/// The console (V2 item 8): the log on the framebuffer. A line logged here
+/// shows on its screen soon after (its title has scrolled off by then).
+func console(_ ns: Namespace) {
+  print("launch-test: on the console")
+  var screen = ""
+  let deadline = Clock.monotonic() + 10_000_000_000
+  while Clock.monotonic() < deadline {
+    screen = readText(ns, "/mnt/console/screen") ?? ""
+    if holds(screen, "> launch-test: on the console") { break }
+    sleep(until: Clock.monotonic() + 20_000_000)
+  }
+  check(holds(screen, "> launch-test: on the console"), "a line logged shows on the console")
+  let status = readText(ns, "/mnt/console/status") ?? ""
+  print("launch-test: /mnt/console/status: \(status)")
+  check(holds(status, "framebuffer ") && !holds(status, "records 0 ") && !holds(status, "frames 0 "),
+        "the console reads the debuglog and draws it")
+}
+
 /// The keyboard (V2 item 7d, D83): virtio-input bound, MSI-X where the
 /// kernel has MSIs and INTx on rv64's PLIC, pushing its keys to kbdfs. Keys
 /// typed through QEMU's monitor (qemu.sh's `qemu: sendkey`) come out of
@@ -448,11 +466,13 @@ func runPty(_ ns: Namespace) {
       print("launch-test: FAILED: no namespace")
       Process.exit(code: 1)
     }
-    check(ns.mountPoints.count == 3 && same(ns.mountPoints[0], "/bin") && same(ns.mountPoints[1], "/dev")
-            && same(ns.mountPoints[2], "/svc"), "the namespace is /bin, /dev and /svc")
+    check(ns.mountPoints.count == 4 && same(ns.mountPoints[0], "/bin") && same(ns.mountPoints[1], "/dev")
+            && same(ns.mountPoints[2], "/mnt/console") && same(ns.mountPoints[3], "/svc"),
+          "the namespace is /bin, /dev, /mnt/console and /svc")
 
     // devmgr first: its status is still growing until it has bound.
     devices(ns)
+    console(ns)
 
     // cat /svc/*/status
     let names = ((try? ns.list("/svc")) ?? []).map { $0.name }

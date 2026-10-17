@@ -17,6 +17,7 @@
 //     resource mmio           # a kind of hardware: mmio, irq, ioport, smc or system
 //     programs                # it starts programs from bootfs, in a job under its own
 //     bootdata                # firmware's boot data (croi's ZBI items: RSDP, framebuffer, memory)
+//     debuglog                # the debuglog's ring and its doorbell, to read (D38; the console's)
 //     libraries               # it loads shared objects (dlopen) from bootfs's lib/ (M5k)
 //     bootfs                  # the boot image itself, read only (the bootfs service, which serves it)
 //     launcher                # the launcher's tree at /svc/launcher: status, and ctl (`kill SERVICE`)
@@ -128,6 +129,8 @@ public struct Manifest: Sendable {
   public var bootfsLine = 0
   /// `bootdata`: its line, or 0.
   public var bootDataLine = 0
+  /// `debuglog`: its line, or 0.
+  public var debuglogLine = 0
   /// `launcher`: its line, or 0. The launcher's own tree at /svc/launcher,
   /// whose `ctl` ends a service as a crash would (tests of restarts).
   public var launcherLine = 0
@@ -240,6 +243,9 @@ public struct Manifest: Sendable {
       } else if `is`(directive, "bootdata") {
         try count(0...0)
         bootDataLine = lineNumber
+      } else if `is`(directive, "debuglog") {
+        try count(0...0)
+        debuglogLine = lineNumber
       } else if `is`(directive, "libraries") {
         try count(0...0)
         librariesLine = lineNumber

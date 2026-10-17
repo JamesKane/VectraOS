@@ -373,6 +373,8 @@ function(croi_user_sys)
   file(GLOB _input CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/input/lib/*.swift)
   # kbdfs's keyboard and console (services/kbdfs/lib, D83).
   file(GLOB _kbdfs CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/services/kbdfs/lib/*.swift)
+  # The console's grid, renderer and font (services/console/lib, V2 item 8).
+  file(GLOB_RECURSE _console CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/services/console/lib/*.swift)
   file(GLOB _headers ${CROI_FLOOR_DIR}/include/* ${PROJECT_SOURCE_DIR}/user/include/croi/*.h
        ${PROJECT_SOURCE_DIR}/kernel/include/*.h)
   add_custom_command(OUTPUT ${_dir}/libsys.a
@@ -417,13 +419,15 @@ function(croi_user_sys)
             -c ${_input} -o ${_dir}/input.o
     COMMAND ${_swiftc} -module-name Kbdfs -emit-module -emit-module-path ${_dir}/Kbdfs.swiftmodule
             -c ${_kbdfs} -o ${_dir}/kbdfs.o
+    COMMAND ${_swiftc} -module-name Console -emit-module -emit-module-path ${_dir}/Console.swiftmodule
+            -c ${_console} -o ${_dir}/console.o
     COMMAND ${CMAKE_COMMAND} -E rm -f ${_dir}/libsys.a
     COMMAND ${CMAKE_AR} rcs ${_dir}/libsys.a ${_dir}/sysabi.o ${_dir}/loader.o ${_dir}/sys.o ${_dir}/libsys.o ${_dir}/ld.o
             ${_dir}/ring.o ${_dir}/traceformat.o ${_dir}/trace.o ${_dir}/tracesession.o
             ${_dir}/ipcwire.o ${_dir}/ipc.o ${_dir}/node.o ${_dir}/launch.o ${_dir}/acpi.o ${_dir}/pci.o
-            ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o ${_dir}/kbdfs.o
+            ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o ${_dir}/kbdfs.o ${_dir}/console.o
     DEPENDS ${_abi} ${_loader} ${_api} ${_lib} ${_ld} ${_ring} ${_trace_format} ${_trace_writer} ${_trace_session} ${_ipc_wire}
-            ${_ipc} ${_node} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr} ${_virtio} ${_input} ${_kbdfs}
+            ${_ipc} ${_node} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr} ${_virtio} ${_input} ${_kbdfs} ${_console}
             ${_headers} vx ${CROI_IPC_PLUGIN}
     COMMENT "Building Sys")
   set(CROI_USER_SYS_DIR ${_dir} PARENT_SCOPE)

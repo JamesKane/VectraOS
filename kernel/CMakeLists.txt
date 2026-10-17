@@ -297,6 +297,9 @@ set(_devmgr ${CMAKE_CURRENT_BINARY_DIR}/devmgr.elf)
 croi_user_program(${_devmgr} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/devmgr/Main.swift)
 set(_edu ${CMAKE_CURRENT_BINARY_DIR}/edu.elf)
 croi_user_program(${_edu} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/test/edu/Main.swift)
+# bin/console (V2 item 8): the log on the framebuffer, every arch.
+set(_console ${CMAKE_CURRENT_BINARY_DIR}/console.elf)
+croi_user_program(${_console} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/console/Main.swift)
 # bin/kbdfs (D83): the keyboard and the console, every arch.
 set(_kbdfs ${CMAKE_CURRENT_BINARY_DIR}/kbdfs.elf)
 croi_user_program(${_kbdfs} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/kbdfs/Main.swift)
@@ -339,6 +342,7 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
           bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} etc/drivers=${_drivers_index}
           etc/manifests/devmgr.manifest=${_devmgr_manifest}
           bin/kbdfs=${_kbdfs} etc/manifests/kbdfs.manifest=${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
+          bin/console=${_console} etc/manifests/console.manifest=${PROJECT_SOURCE_DIR}/services/console/console.manifest
           ${_tier1_bootfs}
   DEPENDS ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_trace_test} ${_ipc_test} ${_node_test} ${_acpi_test} ${_pci_test}
           ${_launcher} ${_launch_service} ${_launch_test} ${_manifests}/a.manifest ${_manifests}/b.manifest
@@ -346,6 +350,7 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
           ${_bootfs_service} ${_manifests}/bootfs.manifest
           ${_devmgr} ${_edu} ${_virtio_input} ${_drivers_index} ${_devmgr_manifest}
           ${_kbdfs} ${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
+          ${_console} ${PROJECT_SOURCE_DIR}/services/console/console.manifest
           ${_tier1_files} vx ${VX}
   COMMENT "Building bootfs")
 add_custom_target(bootfs DEPENDS ${CMAKE_BINARY_DIR}/bootfs.img)

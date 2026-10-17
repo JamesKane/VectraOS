@@ -220,6 +220,10 @@ public enum HandleType {
   /// A page the process writes its exit string to, as it ends (Plan 9's
   /// exits, D72): ExitString is the parent's side, td_exits the child's.
   public static var vmoStatus: UInt32 { CROI_PA_VMO_STATUS }
+  /// The debuglog (D38): its ring, read only, and its doorbell, the counter
+  /// holding the ring's producer cursor. Holding them is the right to read.
+  public static var vmoDebuglog: UInt32 { CROI_PA_VMO_DEBUGLOG }
+  public static var debuglogCounter: UInt32 { CROI_PA_DEBUGLOG_COUNTER }
 
   /// An info word: the type, and the argument in bits 16-31.
   public static func info(_ type: UInt32, _ argument: UInt32 = 0) -> UInt32 { croi_pa_hnd(type, argument) }

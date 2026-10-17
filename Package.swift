@@ -133,6 +133,13 @@ let ipc: [Target] = [
   // kbdfs (D83): the keyboard and the console, after 9front's.
   .target(name: "Kbdfs", path: "services/kbdfs/lib", swiftSettings: tier0),
   .testTarget(name: "KbdfsTests", dependencies: ["Kbdfs"], path: "services/kbdfs/tests"),
+  // The console (V2 item 8): its text grid and renderer, and fontgen,
+  // which writes its font from data/fonts/spleen (third-party data, D4's
+  // data not code).
+  .target(name: "FontGen", path: "text/fonts/gen"),
+  .executableTarget(name: "fontgen", dependencies: ["FontGen"], path: "tools/fontgen"),
+  .target(name: "Console", path: "services/console/lib", swiftSettings: tier0),
+  .testTarget(name: "ConsoleTests", dependencies: ["Console", "FontGen"], path: "services/console/tests"),
 ]
 
 let package = Package(

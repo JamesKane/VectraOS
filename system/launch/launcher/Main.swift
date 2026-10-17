@@ -63,13 +63,18 @@ func dropping(_ prefix: StaticString, _ name: String) -> String? {
     } catch {
       fail("can't start: \(error.rawValue)")
     }
-    // What manifests may grant: userboot's ranged root resources, bootfs
-    // and the boot data.
+    // What manifests may grant: userboot's ranged root resources, bootfs,
+    // the boot data and the debuglog.
     for kind in [ResourceKind.mmio, .irq, .ioport, .smc, .system] {
       if let r = start.take(HandleType.info(HandleType.resource(kind))) { launcher.allow(resource: kind, r) }
     }
     if let copy = try? bootfs.duplicate() { launcher.allow(bootfs: copy) }
     if let data = start.take(HandleType.info(HandleType.vmoBootData)) { launcher.allow(bootData: data) }
+    if let ring = start.take(HandleType.info(HandleType.vmoDebuglog)),
+      let counter = start.take(HandleType.info(HandleType.debuglogCounter))
+    {
+      launcher.allow(debuglog: ring, counter: counter)
+    }
     // The UTC page (D48): every process reads it, the time service (`clock`)
     // writes it; until then it reads the backstop.
     do throws(Status) {
