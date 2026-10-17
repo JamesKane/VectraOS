@@ -72,6 +72,7 @@ enum : int64_t {  // return codes of processes the kernel ended (Zircon's)
   CROI_TASK_RETCODE_SYSCALL_KILL = -1024,
   CROI_TASK_RETCODE_POLICY_KILL = -1026,
   CROI_TASK_RETCODE_EXCEPTION_KILL = -1028,
+  CROI_TASK_RETCODE_NOTE_KILL = -1030,  // croi's (D87): a note it didn't take ended it
 };
 
 enum : uint32_t {  // signals
@@ -79,6 +80,22 @@ enum : uint32_t {  // signals
   CROI_SIGNAL_THREAD_RUNNING = 1u << 4,
   CROI_SIGNAL_JOB_NO_JOBS = 1u << 4,
   CROI_SIGNAL_JOB_NO_PROCESSES = 1u << 5,
+  CROI_SIGNAL_PROCESS_NOTE = 1u << 5,  // croi's (D87): a note is waiting to be taken
+};
+
+// Notes (D87, Plan 9's): text posted to a process with object_set_property
+// (process, CROI_PROP_NOTE, text, size), which needs CROI_RIGHT_NOTE. A
+// process that set CROI_PROP_NOTIFY (uint32_t 1) on its own handle queues
+// them, CROI_SIGNAL_PROCESS_NOTE while any wait, and takes each with
+// object_get_property(itself, CROI_PROP_NOTE): NUL-terminated, SHOULD_WAIT
+// when none. A full queue refuses with SHOULD_WAIT. One that didn't set
+// it is killed by the first (CROI_TASK_RETCODE_NOTE_KILL), and the note
+// it died of reads from its handle (GET_PROPERTY) once it is dead.
+enum : uint32_t {
+  CROI_PROP_NOTE = 19,
+  CROI_PROP_NOTIFY = 20,
+  CROI_NOTE_MAX = 128,  // with its NUL (Plan 9's ERRMAX)
+  CROI_NOTE_QUEUE = 5,  // Plan 9's NNOTE
 };
 
 // Exceptions (K7d; Zircon's). A message on an exception channel is a

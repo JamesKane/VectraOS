@@ -58,6 +58,8 @@ enum Suite {
             DebuglogSuite.run()
         } else if requested("portring") {
             PortRingSuite.run()
+        } else if requested("notes") {
+            NoteSuite.run()
         } else if requested("floor") {
             FloorSuite.run()
         } else if requested("libc") {

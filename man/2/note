@@ -1,0 +1,58 @@
+page note 2
+summary post, take and handle notes
+names note Note Note.max Note.post Note.diedOf Note.notify
+src system/sys/api/Objects.swift kernel/Kernel/Object/Notes.swift
+keys note interrupt notify process
+lang swift
+
+# SYNOPSIS
+
+```swift
+public enum Note {
+  public static var max: Int
+  public static func post(_ text: String, to process: borrowing Handle)
+    throws(Status)
+  public static func diedOf(_ process: borrowing Handle) -> String?
+  public static func notify(
+    _ handler: @escaping @Sendable (String) -> Bool) throws(Status)
+}
+```
+
+# DESCRIPTION
+
+A note is a short text posted to a process, as in Plan 9: `interrupt` when the terminal's interrupt key is typed, `hangup` when its connection goes, `kill`.
+Notes are posted through `/proc`, whose service holds the process handles (D79); a program writes to `/proc/<pid>/note` and rarely calls `post` itself.
+
+A process that hasn't called `notify` dies of the first note posted to it, with the note as its exit string.
+One that has gets each note in its handler, oldest first, on a thread `notify` starts; if the handler returns false, the process ends with that note as its exit string, as it would have without one.
+
+: `max`
+  The longest a note may be, 127 bytes; a note has at least one byte and no NUL.
+: `post`
+  Posts <text> to <process>.
+  The handle needs the right to post notes, which a process's creator's handle has.
+  It throws `shouldWait` when five notes already wait, Plan 9's limit, and `badState` when the process isn't running.
+: `diedOf`
+  The note <process> died of, once it has ended; nil if it ended any other way.
+: `notify`
+  From now on this process takes its notes, each given to <handler>.
+  A process calls it once.
+
+# EXAMPLES
+
+rc keeps the interrupt for its loop to see, and lets its foreground program die of it:
+
+```swift
+try Note.notify { note in
+  pending.append(note)
+  return true
+}
+```
+
+# SEE ALSO
+
+rc(1), intro(2)
+
+# BUGS
+
+A call the process is blocked in isn't interrupted: its handler runs beside it.

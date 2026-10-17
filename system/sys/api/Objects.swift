@@ -895,6 +895,44 @@ public struct ProcessInfo: Equatable, Sendable {
   }
 }
 
+/// Notes (D87): Plan 9's, text posted to a process (`interrupt`, `hangup`,
+/// `kill`). A process that hasn't asked for its notes dies of the first,
+/// with it as its exit string; one that has gets each in its handler.
+public enum Note {
+  /// The longest note, in bytes (Plan 9's ERRMAX, less its NUL).
+  public static var max: Int { 127 }
+
+  /// Posts `text` to `process`, which needs the handle's NOTE right (the
+  /// proc service's, D79). `shouldWait` if five wait already, `badState`
+  /// if it isn't running.
+  public static func post(_ text: String, to process: borrowing Handle) throws(Status) {
+    try Kernel.postNote(process.raw, text)
+  }
+
+  /// The note `process` died of, once it has ended; nil if it ended
+  /// otherwise.
+  public static func diedOf(_ process: borrowing Handle) -> String? { try? Kernel.note(process.raw) }
+
+  /// From now on this process takes its notes: each, oldest first, given
+  /// to `handler` on a thread of its own. When the handler returns false,
+  /// the process ends with the note as its exit string, as with no
+  /// handler (Plan 9's NDFLT). Once a process.
+  public static func notify(_ handler: @escaping @Sendable (String) -> Bool) throws(Status) {
+    let me = try Process.current().release()  // the thread's, for good
+    try Kernel.setNotify(me, true)
+    _ = try Thread.spawn {
+      while true {
+        let process = Handle(raw: me)
+        _ = try? process.wait(for: Signals.note)
+        _ = process.release()
+        while let note = try? Kernel.note(me) {
+          if !handler(note) { Kernel.exits(note) }
+        }
+      }
+    }.release()
+  }
+}
+
 /// Processes: a handle table and threads. Natively an address space too.
 public enum Process {
   public static func create(job: borrowing Handle, name: String) throws(Status) -> Handle {

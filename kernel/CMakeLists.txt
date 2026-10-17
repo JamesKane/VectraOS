@@ -57,6 +57,7 @@ add_library(kernel-swift OBJECT
   Kernel/Object/ContentSize.swift
   Kernel/Object/Pager.swift
   Kernel/Object/Names.swift
+  Kernel/Object/Notes.swift
   Kernel/Object/Debug.swift
   Kernel/Object/HardwareDebug.swift
   Kernel/Object/Futex.swift
@@ -197,6 +198,7 @@ set(_swift_test_sources ${_user_dir}/test/swift/Main.swift ${_user_dir}/test/swi
     ${_user_dir}/test/swift/IdleSuite.swift ${_user_dir}/test/swift/RingSuite.swift
     ${_user_dir}/test/swift/DebuglogSuite.swift ${_user_dir}/test/swift/PortRingSuite.swift
     ${_user_dir}/test/swift/FloorSuite.swift ${_user_dir}/test/swift/LibcSuite.swift
+    ${_user_dir}/test/swift/NoteSuite.swift
     ${_user_dir}/lib/image/Image.swift
     ${PROJECT_SOURCE_DIR}/lib/ring/Ring/Ring.swift ${PROJECT_SOURCE_DIR}/lib/ring/Ring/RingMemory.swift)
 set(_swift_test ${CMAKE_CURRENT_BINARY_DIR}/swifttest.elf)

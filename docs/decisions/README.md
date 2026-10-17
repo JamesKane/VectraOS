@@ -99,3 +99,4 @@ in a new file, and a line in the index below.
 - [D84. A Node read may wait: streams, answered when they have bytes](D084-node-reads-may-wait.md) — 2026-10-17, decided
 - [D85. The router is Plan 9's plumber: plumber(4)'s files](D085-the-router-is-plumber.md) — 2026-10-17, decided
 - [D86. The system is documented by its manual: Plan 9's sections, NeoVectra's guide format, headers as directives](D086-the-manual.md) — 2026-10-17, proposed
+- [D87. Notes are a queue on the process, posted and taken as a property; untaken, a note kills](D087-notes-in-the-kernel.md) — 2026-10-17, decided

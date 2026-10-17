@@ -544,6 +544,41 @@ enum Kernel {
     return unsafe withUnsafeBytes(of: &r) { b in unsafe String(decoding: b.prefix { $0 != 0 }, as: UTF8.self) }
   }
 
+  /// object_set_property(NOTE): posts a note (D87).
+  static func postNote(_ h: UInt32, _ text: String) throws(Status) {
+    let bytes = Array(text.utf8)
+    let r = unsafe bytes.withUnsafeBytes { b in
+      unsafe croi_syscall(CROI_SYS_OBJECT_SET_PROPERTY, UInt64(h), UInt64(CROI_PROP_NOTE), address(b.baseAddress),
+                          UInt64(b.count), 0)
+    }
+    try check(r)
+  }
+
+  /// object_get_property(NOTE): the process's own next note, or the one
+  /// another died of.
+  static func note(_ h: UInt32) throws(Status) -> String {
+    var r = try out(InlineArray<128, UInt8>(repeating: 0)) {
+      croi_syscall(CROI_SYS_OBJECT_GET_PROPERTY, UInt64(h), UInt64(CROI_PROP_NOTE), $0, 128, 0)
+    }
+    return unsafe withUnsafeBytes(of: &r) { b in unsafe String(decoding: b.prefix { $0 != 0 }, as: UTF8.self) }
+  }
+
+  /// object_set_property(NOTIFY) on the process's own handle.
+  static func setNotify(_ h: UInt32, _ on: Bool) throws(Status) {
+    var value: UInt32 = on ? 1 : 0
+    let r = unsafe withUnsafeBytes(of: &value) { b in
+      unsafe croi_syscall(CROI_SYS_OBJECT_SET_PROPERTY, UInt64(h), UInt64(CROI_PROP_NOTIFY), address(b.baseAddress), 4, 0)
+    }
+    try check(r)
+  }
+
+  /// Ends the process with `message` as its exit string (td_exits, D72).
+  static func exits(_ message: String) -> Never {
+    var bytes = Array(message.utf8.prefix(127))
+    bytes.append(0)
+    unsafe bytes.withUnsafeBytes { unsafe td_exits($0.baseAddress!.assumingMemoryBound(to: CChar.self)) }
+  }
+
   /// object_set_property(NAME): up to 31 bytes and a NUL.
   static func setName(_ h: UInt32, _ name: String) throws(Status) {
     var bytes = Array(name.utf8.prefix(31))

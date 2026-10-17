@@ -89,6 +89,8 @@ public enum Signals {
   public static var terminated: UInt32 { CROI_SIGNAL_TASK_TERMINATED }
   /// A thread is running.
   public static var threadRunning: UInt32 { CROI_SIGNAL_THREAD_RUNNING }
+  /// A process has a note waiting to be taken (D87).
+  public static var note: UInt32 { CROI_SIGNAL_PROCESS_NOTE }
   /// A counter's value is above zero, or not.
   public static var positive: UInt32 { CROI_COUNTER_POSITIVE }
   public static var nonPositive: UInt32 { CROI_COUNTER_NON_POSITIVE }

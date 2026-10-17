@@ -75,6 +75,8 @@ struct Rights: BitFlags {
     static var getPolicy: Rights { Rights(rawValue: CROI_RIGHT_GET_POLICY) }
     static var setPolicy: Rights { Rights(rawValue: CROI_RIGHT_SET_POLICY) }
     static var signal: Rights { Rights(rawValue: CROI_RIGHT_SIGNAL) }
+    /// croi's (D87): post notes to a process.
+    static var note: Rights { Rights(rawValue: CROI_RIGHT_NOTE) }
     static var wait: Rights { Rights(rawValue: CROI_RIGHT_WAIT) }
     static var inspect: Rights { Rights(rawValue: CROI_RIGHT_INSPECT) }
     static var manageJob: Rights { Rights(rawValue: CROI_RIGHT_MANAGE_JOB) }
@@ -105,6 +107,8 @@ enum Signals {
     /// Job: no child jobs (signal 4) / no child processes (signal 5).
     static var jobNoJobs: UInt32 { CROI_SIGNAL_JOB_NO_JOBS }
     static var jobNoProcesses: UInt32 { CROI_SIGNAL_JOB_NO_PROCESSES }
+    /// Process: a note waits to be taken (croi's, D87; signal 5).
+    static var processNote: UInt32 { CROI_SIGNAL_PROCESS_NOTE }
 }
 
 /// zx_obj_type_t.

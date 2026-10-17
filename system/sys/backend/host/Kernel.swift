@@ -130,6 +130,10 @@ enum Kernel {
   static func child(_ h: UInt32, _ koid: UInt64, _ rights: UInt32) throws(Status) -> UInt32 { throw .notSupported }
   static func name(_ h: UInt32) throws(Status) -> String { throw .notSupported }
   static func setName(_ h: UInt32, _ name: String) throws(Status) { throw .notSupported }
+  static func postNote(_ h: UInt32, _ text: String) throws(Status) { throw .notSupported }
+  static func note(_ h: UInt32) throws(Status) -> String { throw .notSupported }
+  static func setNotify(_ h: UInt32, _ on: Bool) throws(Status) { throw .notSupported }
+  static func exits(_ message: String) -> Never { k.exit(code: message.isEmpty ? 0 : 1) }
   static func threadState(_ h: UInt32) throws(Status) -> UInt32 { throw .notSupported }
   static func koids(_ h: UInt32, _ topic: UInt32) throws(Status) -> [UInt64] { throw .notSupported }
   static func handleTable(_ h: UInt32) throws(Status) -> [HandleEntry] { throw .notSupported }

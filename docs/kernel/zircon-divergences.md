@@ -431,3 +431,8 @@ matches the pinned tree where upstream docs or expectations say otherwise).
 - Display system resource (base 16).
 - Memory accounts and pressure packets (ext 6) — kernel-only today.
 - `croi.kill_watch=1` — lockup report after task_kill.
+- Notes (V3, D87) — Plan 9's: a queue of five texts on each process,
+  posted with `object_set_property(CROI_PROP_NOTE)` under
+  `CROI_RIGHT_NOTE`, taken by a process that set `CROI_PROP_NOTIFY`, with
+  `CROI_SIGNAL_PROCESS_NOTE`; one that didn't is killed
+  (`CROI_TASK_RETCODE_NOTE_KILL`) and keeps the note. Zircon has none.

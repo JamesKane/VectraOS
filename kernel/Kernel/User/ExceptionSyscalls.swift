@@ -66,6 +66,19 @@ extension Syscalls {
                 try put(ContentSize.of(vmo), a[2])
                 return
             }
+            if a[1] == UInt64(CROI_PROP_NOTE) {  // D87: its own next note, or another's death
+                guard a[3] >= UInt64(CROI_NOTE_MAX) else { throw .bufferTooSmall }
+                try check(a[2], Int(CROI_NOTE_MAX))
+                let process = try table.get(handle, type: .process, rights: .getProperty)
+                var text = process.object.address == currentProcess.address
+                    ? try Notes.take(process.object) : try Notes.diedOf(process.object)
+                var span = text.mutableSpan
+                let failed = span.withUnsafeMutableBytes {
+                    unsafe UserCopy.to(a[2], UnsafeRawPointer($0.baseAddress!), UInt64(CROI_NOTE_MAX))
+                }
+                guard failed == 0 else { throw .invalidArgs }
+                return
+            }
             if a[1] == UInt64(CROI_PROP_EXCEPTION_STRATEGY) {  // K13g
                 guard a[3] >= 4 else { throw .bufferTooSmall }
                 try check(a[2], 4)
@@ -105,6 +118,21 @@ extension Syscalls {
                 guard copied == 0 else { throw .invalidArgs }
                 let ref = try table.get(handle, type: .vmo, rights: .setProperty | .write)
                 try ContentSize.set(VmoPointer(address: UnsafeVmoObject(ref.object).vmo), value)
+                return
+            }
+            if a[1] == UInt64(CROI_PROP_NOTE) {  // D87: post a note
+                let process = try table.get(handle, type: .process, rights: .note)
+                try Notes.post(process.object, try Notes.fromUser(a[2], a[3]))
+                return
+            }
+            if a[1] == UInt64(CROI_PROP_NOTIFY) {  // D87: the caller's own process takes its notes
+                guard a[3] >= 4 else { throw .bufferTooSmall }
+                var on: UInt32 = 0
+                let copied = withUnsafeMutableBytes(of: &on) { unsafe UserCopy.from($0.baseAddress!, a[2], 4) }
+                guard copied == 0, on <= 1 else { throw .invalidArgs }
+                let process = try table.get(handle, type: .process, rights: .setProperty)
+                guard process.object.address == currentProcess.address else { throw .accessDenied }
+                Notes.setNotify(process.object, on == 1)
                 return
             }
             if a[1] == UInt64(CROI_PROP_EXCEPTION_STRATEGY) {  // K13g: the process debugger's only
@@ -206,6 +234,11 @@ extension Syscalls {
         default:
             throw .notSupported
         }
+    }
+
+    /// The calling thread's process.
+    private static var currentProcess: ObjectPointer {
+        ThreadObjectPointer(object: ObjectPointer(address: Scheduler.current.pointee.object)).pointee.process
     }
 
     #if arch(x86_64)

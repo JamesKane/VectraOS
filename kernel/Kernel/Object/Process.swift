@@ -97,10 +97,17 @@ struct ProcessObject: ~Copyable {
     var reservation: UInt32 = 0
     /// The kernel's end of its exception channel (retained), or 0.
     var exceptionChannel: UInt64 = 0
+    /// D87: notes posted and not yet taken, oldest first; whether it takes
+    /// them (CROI_PROP_NOTIFY) or dies of the first; and the note it died
+    /// of (empty if it died otherwise).
+    var notes = InlineArray<5, NoteText>(repeating: NoteText(repeating: 0))
+    var noteCount = 0
+    var notify = false
+    var diedOf = NoteText(repeating: 0)
 
     static var defaultRights: Rights {
         .basic | .read | .write | .getProperty | .setProperty | .enumerate | .destroy | .signal | .manageProcess
-            | .manageThread
+            | .manageThread | .note
     }
 }
 
@@ -205,6 +212,8 @@ enum TaskReturnCode {
     static var syscallKill: Int64 { -1024 }
     static var policyKill: Int64 { -1026 }
     static var exceptionKill: Int64 { -1028 }
+    /// croi's (D87): a note it hadn't asked to take.
+    static var noteKill: Int64 { -1030 }
 }
 
 // MARK: Operations

@@ -51,6 +51,7 @@ enum : uint32_t {  // rights
   CROI_RIGHT_GET_POLICY = 1u << 10,
   CROI_RIGHT_SET_POLICY = 1u << 11,
   CROI_RIGHT_SIGNAL = 1u << 12,
+  CROI_RIGHT_NOTE = 1u << 13,  // croi's (D87): post notes to a process
   CROI_RIGHT_WAIT = 1u << 14,
   CROI_RIGHT_INSPECT = 1u << 15,
   CROI_RIGHT_MANAGE_JOB = 1u << 16,

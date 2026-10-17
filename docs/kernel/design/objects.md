@@ -632,3 +632,20 @@ keeps a producer `Ring` in the port, writing through the physmap.
 - Coalescing, port_cancel and the observer and packet limits act on the
   queue; a delivered packet is the reader's.
 - Tests: the `portring` suite.
+
+## Notes (V3, D87)
+
+Plan 9's notes, for `/proc/N/note` (D79). `ProcessObject` gains a queue
+of five 128-byte texts, `notify` and `diedOf`; `Kernel/Object/Notes.swift`
+posts, takes and reads them under the process's object lock, and sets
+`CROI_SIGNAL_PROCESS_NOTE` while the queue isn't empty. Posting is
+`object_set_property(CROI_PROP_NOTE)` and needs the new
+`CROI_RIGHT_NOTE` (bit 13, in a process's default rights); taking is
+`object_get_property(CROI_PROP_NOTE)` on the caller's own process, and
+the same property on another process reads the note it died of.
+`CROI_PROP_NOTIFY` is only the caller's own. A note posted to a process
+without `notify` stores itself as `diedOf` and kills the process with
+`CROI_TASK_RETCODE_NOTE_KILL` (`Processes.kill`, after the lock drops).
+A blocked call is not interrupted. Tests: `user/test/swift/NoteSuite.swift`
+(the queue, its limit and order, the signal, refusals, and the kill of a
+child held at its start by a job debugger).
