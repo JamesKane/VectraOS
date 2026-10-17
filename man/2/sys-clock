@@ -1,0 +1,43 @@
+page sys-clock 2
+summary Sys time: the clocks, sleeping and the thread's own word
+names sys-clock Clock Clock.monotonic Clock.realtime ThreadSlot ThreadSlot.value
+names Sys.sleep
+src system/sys/api/Handles.swift system/sys/backend/native/Kernel.swift
+keys time clock monotonic realtime sleep deadline utc thread local
+lang swift
+
+# SYNOPSIS
+
+```swift
+enum Clock {
+  static func monotonic() -> Int64
+  static func realtime() -> Int64
+}
+
+enum ThreadSlot {
+  static var value: UInt { get set }
+}
+
+func sleep(until deadline: Int64)
+```
+
+# DESCRIPTION
+
+`Clock.monotonic` returns nanoseconds on the monotonic clock.
+It is the time base of every deadline in Sys: the `deadline` arguments of `Handle.wait`, `Port.wait`, `Channel.call`, `Futex.wait` and `Counter.wait` are values of this clock, and `infiniteDeadline` is a deadline that never passes.
+
+`Clock.realtime` returns nanoseconds since the Unix epoch, for timestamps that people read.
+It follows UTC once the time service has published a UTC page; until then it returns the monotonic clock.
+
+`sleep(until:)` suspends the calling thread until `deadline`.
+It is a wait on the thread's own port with a deadline and nothing bound to it.
+It has no result.
+
+`ThreadSlot.value` is one word that belongs to the calling thread.
+A runtime keeps its per-thread record there; the C library keeps its thread record in it.
+It reads as 0 until set.
+It is stored in the thread's block, which the thread pointer addresses.
+
+# SEE ALSO
+
+sys-handle(2), sys-port(2), sys-lock(2)

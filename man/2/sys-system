@@ -1,0 +1,102 @@
+page sys-system 2
+summary Sys system information: memory and CPU counts, power, the debuglog, random bytes
+names sys-system KMemStats KMemStats.total KMemStats.free KMemStats.wired KMemStats.heap
+names KMemStats.heapFree KMemStats.vmo KMemStats.mmu KMemStats.ipc
+names KMemStats.other KMemStats.init KMemStats.used KMemStats.read
+names CPUStats CPUStats.cpu CPUStats.online CPUStats.idleTime
+names CPUStats.contextSwitches CPUStats.interrupts CPUStats.timerInterrupts
+names CPUStats.timers CPUStats.syscalls CPUStats.rescheduleIPIs
+names CPUStats.genericIPIs CPUStats.systemBase CPUStats.read CPUStats.wakeups
+names Power Power.reboot Debuglog Debuglog.waitForConsole CPRNG CPRNG.draw
+src system/sys/api/Objects.swift system/sys/backend/native/Kernel.swift
+keys memory stats cpu reboot power debuglog random entropy cprng wakeups
+lang swift
+
+# SYNOPSIS
+
+```swift
+struct KMemStats: Equatable, Sendable {
+  var total: UInt64
+  var free: UInt64
+  var wired: UInt64
+  var heap: UInt64
+  var heapFree: UInt64
+  var vmo: UInt64
+  var mmu: UInt64
+  var ipc: UInt64
+  var other: UInt64
+  init(total: UInt64, free: UInt64, wired: UInt64, heap: UInt64,
+       heapFree: UInt64, vmo: UInt64, mmu: UInt64, ipc: UInt64,
+       other: UInt64)
+  var used: UInt64 { get }
+  static func read(_ resource: borrowing Handle) throws(Status) -> KMemStats
+}
+
+struct CPUStats: Equatable, Sendable {
+  var cpu: UInt32
+  var online: Bool
+  var idleTime: Int64
+  var contextSwitches: UInt64
+  var interrupts: UInt64
+  var timerInterrupts: UInt64
+  var timers: UInt64
+  var syscalls: UInt64
+  var rescheduleIPIs: UInt64
+  var genericIPIs: UInt64
+  static var systemBase: UInt64 { get }
+  static func read(_ resource: borrowing Handle, max: Int = 64)
+    throws(Status) -> [CPUStats]
+  var wakeups: UInt64 { get }
+}
+
+enum Power {
+  static func reboot(_ resource: borrowing Handle) throws(Status)
+}
+
+enum Debuglog {
+  @discardableResult
+  static func waitForConsole(deadline: Int64) -> Bool
+}
+
+enum CPRNG {
+  static func draw(count: Int) throws(Status) -> [UInt8]
+}
+```
+
+# DESCRIPTION
+
+## Memory
+
+`KMemStats.read` returns a snapshot of the kernel's memory, in bytes, from `object_get_info(2)` on the resource passed.
+That is the system resource that grants information (see `CPUStats.systemBase`).
+`total` and `free` are the RAM the kernel manages and what is free of it; `wired`, `vmo`, `mmu`, `ipc` and `other` are bytes in use by kind, and `heap` and `heapFree` are the kernel heap's total and free bytes.
+`used` is `total - free`, or 0 if `free` is larger.
+
+## CPUs
+
+`CPUStats.read` returns one record for each CPU, up to `max`, from the same resource.
+`systemBase` is the base of the system resource that grants reading them.
+A record holds the CPU's number, whether it is online, the nanoseconds it has been idle, and counts since boot: context switches, device and other interrupts, timer interrupts, timer callbacks run, system calls, and reschedule and generic inter-processor interrupts.
+`wakeups` is the sum of the four interrupt counts, which on an idle machine are the times the CPU woke.
+
+## Power
+
+`Power.reboot` restarts the machine, given the power system resource.
+It does not return if it succeeds.
+It is `system_powerctl(2)`.
+
+## Debuglog
+
+The debuglog is the kernel's log, a ring that every process's standard output writes to.
+`waitForConsole` waits until the console has printed every record written up to the time of the call, or until the monotonic `deadline` (see sys-clock(2)).
+It returns true once caught up, and false if the deadline came first, or if there is no console to ask.
+It polls every 10 ms.
+
+## Random bytes
+
+`CPRNG.draw` returns `count` bytes from the kernel's cryptographic random number generator, for keys, nonces and the like.
+It draws in pieces of at most 256 bytes, the limit of `cprng_draw(2)`, and throws the first failure.
+
+# SEE ALSO
+
+sys-resource(2), sys-clock(2), object_get_info(2), system_powerctl(2), cprng_draw(2)

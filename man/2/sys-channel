@@ -1,0 +1,102 @@
+page sys-channel 2
+summary Sys channels: messages of bytes and handles
+names sys-channel Channel Channel.maxBytes Channel.maxHandles Channel.create
+names Channel.Message Channel.Message.bytes Channel.Message.handles
+names Channel.Message.init Channel.write Channel.read Channel.Outgoing
+names Channel.Outgoing.channel Channel.Outgoing.bytes Channel.Outgoing.handles
+names Channel.Outgoing.status Channel.Outgoing.init Channel.Incoming
+names Channel.Incoming.channel Channel.Incoming.message
+names Channel.Incoming.status Channel.Incoming.init Channel.readSlot
+names Channel.call
+src system/sys/api/Objects.swift system/sys/backend/native/Kernel.swift
+keys channel message ipc write read call reply batch
+lang swift
+
+# SYNOPSIS
+
+```swift
+enum Channel {
+  static var maxBytes: Int { get }
+  static var maxHandles: Int { get }
+  static var readSlot: Int { get }
+
+  static func create() throws(Status) -> Ends
+
+  struct Message: Sendable {
+    var bytes: [UInt8]
+    var handles: [UInt32]
+    init(bytes: [UInt8], handles: [UInt32])
+  }
+
+  static func write(_ channel: borrowing Handle, bytes: [UInt8],
+                    handles: [UInt32] = []) throws(Status)
+  static func read(_ channel: borrowing Handle) throws(Status) -> Message
+
+  struct Outgoing: Sendable {
+    var channel: UInt32
+    var bytes: [UInt8]
+    var handles: [UInt32]
+    var status: Status = .ok
+    init(channel: UInt32, bytes: [UInt8], handles: [UInt32] = [])
+  }
+
+  struct Incoming: Sendable {
+    var channel: UInt32
+    var message: Message?
+    var status: Status = .ok
+    init(channel: UInt32)
+  }
+
+  @discardableResult
+  static func write(_ items: inout [Outgoing]) throws(Status) -> Int
+  @discardableResult
+  static func read(_ items: inout [Incoming]) throws(Status) -> Int
+
+  static func call(_ channel: borrowing Handle, bytes: [UInt8],
+                   handles: [UInt32] = [],
+                   deadline: Int64 = infiniteDeadline) throws(Status)
+    -> Message
+}
+```
+
+# DESCRIPTION
+
+A channel is a pair of ends; a message written to one end is read from the other.
+A message is bytes and handles.
+`create` returns the two ends as an `Ends`.
+A message holds at most `maxBytes` bytes (65536) and `maxHandles` handles (64).
+
+A `Message` is what a read returns.
+The handles in it are raw numbers, now in this process's table and this process's to close or to wrap in `Handle(raw:)`; see sys-handle(2).
+
+`write(_:bytes:handles:)` queues a message on the peer of `channel`.
+The handles listed are moved into the message, and are consumed even if the write fails.
+`read(_:)` returns the next message, or throws `shouldWait` if none is queued, and `peerClosed` if none is queued and the other end is gone.
+A message of any size is read whole.
+To wait for one, bind the channel's readable signal to a port, or use `Handle.wait`.
+They are `channel_write(2)` and `channel_read(2)`.
+
+## Batches
+
+`write(_:)` with an array sends one message to the channel of each `Outgoing` item in a single call, in chunks of at most 64 items.
+It goes on past an item that fails, sets each item's `status`, and returns how many succeeded.
+Every item's handles are consumed, even when the call throws.
+A server answers all the requests it has read at once this way.
+
+`read(_:)` with an array reads the next message from the channel of each `Incoming` item, in chunks of at most 64 items.
+It goes on past a channel with nothing queued.
+Each item gets its `message`, or a `status` saying why it has none (`shouldWait`, `peerClosed`), and the call returns how many messages were read.
+Each message is first read into `readSlot` bytes (1024); a message that is larger stays queued and is read again, at its own size, in a second call.
+A server reads every channel its port reported at once this way.
+
+## Calls
+
+`call` writes a message to `channel` and waits for the reply, until `deadline` (see sys-clock(2)).
+The first four bytes of the request become the kernel's transaction id; the reply that echoes it comes to this caller alone.
+It throws `timedOut` at the deadline.
+The reply may be as large as a channel message can be.
+It is `channel_call(2)`.
+
+# SEE ALSO
+
+sys-handle(2), sys-port(2), channel_create(2), channel_write(2), channel_read(2), channel_call(2)

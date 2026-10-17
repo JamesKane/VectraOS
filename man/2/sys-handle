@@ -1,0 +1,105 @@
+page sys-handle 2
+summary Sys handles: owning, duplicating, naming, waiting and closing
+names sys-handle Handle Handle.raw Handle.init Handle.release Handle.duplicate
+names Handle.replace Handle.info Handle.child Handle.name Handle.setName
+names Handle.wait Handle.bind HandleInfo HandleInfo.koid HandleInfo.rights
+names HandleInfo.type HandleInfo.relatedKoid HandleInfo.init Ends Ends.a Ends.b
+names Sys.close Sys.wait
+src system/sys/api/Handles.swift system/sys/backend/native/Kernel.swift
+keys handle close duplicate replace rights koid wait signals release
+lang swift
+
+# SYNOPSIS
+
+```swift
+struct Handle: ~Copyable {
+  let raw: UInt32
+  init(raw: UInt32)
+  consuming func release() -> UInt32
+  func duplicate(_ rights: Rights = .sameRights) throws(Status) -> Handle
+  consuming func replace(_ rights: Rights) throws(Status) -> Handle
+  func info() throws(Status) -> HandleInfo
+  func child(_ koid: UInt64, rights: Rights = .sameRights)
+    throws(Status) -> Handle
+  func name() throws(Status) -> String
+  func setName(_ name: String) throws(Status)
+  func wait(for signals: UInt32, deadline: Int64 = infiniteDeadline)
+    throws(Status) -> UInt32
+  func bind(port: borrowing Handle, key: UInt64, signals: UInt32,
+            persistent: Bool = false, edge: Bool = false) throws(Status)
+}
+
+struct HandleInfo: Equatable, Sendable {
+  var koid: UInt64
+  var rights: Rights
+  var type: UInt32
+  var relatedKoid: UInt64
+  init(koid: UInt64, rights: Rights, type: UInt32, relatedKoid: UInt64)
+}
+
+struct Ends: ~Copyable {
+  var a: Handle
+  var b: Handle
+}
+
+func close(raw: UInt32)
+func close(raw handles: [UInt32])
+func wait(_ object: borrowing Handle, for signals: UInt32,
+          deadline: Int64 = infiniteDeadline) throws(Status) -> UInt32
+```
+
+# DESCRIPTION
+
+A `Handle` is a handle this process owns.
+It is `~Copyable`, so exactly one value owns each handle, and the handle is closed when the value is dropped.
+`raw` is the handle's number in the process's table, as the kernel and messages see it.
+The functions that take an object take it `borrowing`, so a call never takes the handle away.
+
+`init(raw:)` takes ownership of a raw handle, such as one read from a message.
+It does not check the number.
+`release` gives up ownership without closing: the handle stays open and the caller is responsible for it, usually by writing the number into a message with `Channel.write`; see sys-channel(2).
+
+`duplicate` makes another handle to the same object with `rights`, which must be a subset of this handle's; the default, `Rights.sameRights`, keeps them all.
+It needs the handle to have the duplicate right.
+`replace` does the same to a handle it consumes: the result has `rights`, and the original is gone whether the call succeeds or not.
+It does not need the duplicate right.
+Both are `handle_duplicate(2)`, one item at a time.
+
+`info` returns a `HandleInfo`: the object's koid, the handle's rights, the object's type (a value of `ObjectType`) and, for a channel, the koid of the peer in `relatedKoid`.
+It is `object_get_info(2)` with the basic handle topic.
+
+`child` returns a handle to a child of the object by its koid: a job's child job or process, or a process's thread.
+This handle needs the enumerate right, and `rights` must be a subset of the handle's own.
+It throws `notFound` for a koid that is not a live child.
+It is `object_get_child(2)`.
+
+`name` reads the object's name and `setName` sets it, through `object_get_property(2)` and `object_set_property(2)`.
+Processes, threads, jobs and VMOs have names.
+A name is at most 31 bytes; `setName` keeps the first 31 bytes of a longer one.
+
+`wait(for:deadline:)` blocks the calling thread until the object asserts one of `signals` or the monotonic time `deadline` (nanoseconds, see sys-clock(2)) passes, and returns the signals observed.
+It throws `timedOut` at the deadline.
+The wait is a one-shot binding on the calling thread's own port, so it needs no port of the caller's.
+The top-level `wait(_:for:deadline:)` is the same call written as a function.
+
+`bind` arranges for packets to arrive on `port`, with `key`, when the object asserts one of `signals`; see sys-port(2).
+By default it delivers once.
+With `persistent`, a packet comes at every event that leaves a signal asserted, and events are coalesced while a packet is unread.
+With `edge`, no packet comes at once for a signal already asserted.
+It is `object_bind(2)`.
+
+`close(raw:)` closes a raw handle that no `Handle` owns, such as one read from a message that is being dropped.
+Given an array, it closes them all in one call; zeros in the array are skipped.
+It has no result.
+`Handle` closes its own handle when dropped through the same call.
+
+An `Ends` is the pair of handles a call made, a channel's two ends from `Channel.create`.
+Take them apart with `let a = ends.a`.
+
+# SEE ALSO
+
+sys-channel(2), sys-port(2), sys-clock(2), sys-process(2), handle_close(2), handle_duplicate(2), object_get_info(2), object_bind(2)
+
+# BUGS
+
+`Handle.init(raw:)` trusts its argument: two values made from the same number close the handle twice.

@@ -1,0 +1,41 @@
+page sys-profile 2
+summary Sys scheduling profiles
+names sys-profile Profile Profile.systemBase Profile.deadline Profile.apply Profile.lend
+src system/sys/api/Objects.swift system/sys/backend/native/Kernel.swift
+keys profile deadline scheduling admission capacity period
+lang swift
+
+# SYNOPSIS
+
+```swift
+enum Profile {
+  static var systemBase: UInt64 { get }
+
+  static func deadline(resource: borrowing Handle, capacity: Int64,
+                       deadline: Int64, period: Int64) throws(Status)
+    -> Handle
+  static func apply(_ profile: borrowing Handle, to thread: borrowing Handle)
+    throws(Status) -> UInt32
+  static func lend(_ profile: borrowing Handle, from object: borrowing Handle)
+    throws(Status)
+}
+```
+
+# DESCRIPTION
+
+A scheduling profile gives a thread a priority or a deadline.
+A deadline profile promises `capacity` nanoseconds of CPU time in every `period` nanoseconds, finished within `deadline` nanoseconds of the start of the period.
+The values must satisfy 50 microseconds <= `capacity` <= `deadline` <= `period`.
+Making one needs the profile system resource, whose base is `systemBase`.
+
+`deadline` makes a deadline profile (`profile_create(2)`).
+The kernel admits it or refuses it with a reason.
+
+`apply` applies `profile` to `thread`.
+It returns 0, or the reason word with which admission refused a deadline profile (the kernel's `CROI_ADMISSION_*` values).
+`lend` makes an interrupt object or a counter lend `profile`'s deadline to each thread it wakes, until that thread next blocks.
+Both are `object_set_profile(2)`.
+
+# SEE ALSO
+
+sys-process(2), sys-interrupt(2), sys-counter(2), profile_create(2), object_set_profile(2)

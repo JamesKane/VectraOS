@@ -1,0 +1,94 @@
+page sys-interrupt 2
+summary Sys interrupts: device interrupts, MSI and affinity
+names sys-interrupt Interrupt Interrupt.Mode Interrupt.packetType Interrupt.create
+names Interrupt.bind Interrupt.ack Interrupt.msiSystemBase
+names Interrupt.msiAllocate Interrupt.msi Interrupt.msiInfo
+names Interrupt.setAffinity MSIInfo MSIInfo.targetAddress MSIInfo.targetData
+names MSIInfo.baseIRQ MSIInfo.count MSIInfo.interrupts
+src system/sys/api/Objects.swift system/sys/backend/native/Kernel.swift
+keys interrupt irq msi msix affinity gsi intid
+lang swift
+
+# SYNOPSIS
+
+```swift
+enum Interrupt {
+  enum Mode: UInt32, Sendable {
+    case `default` = 0
+    case edgeLow = 2
+    case edgeHigh = 4
+    case levelLow = 6
+    case levelHigh = 8
+  }
+
+  static var packetType: UInt32 { get }
+  static var msiSystemBase: UInt64 { get }
+
+  static func create(resource: borrowing Handle, number: UInt32,
+                     mode: Mode = .default) throws(Status) -> Handle
+  static func bind(_ interrupt: borrowing Handle, port: borrowing Handle,
+                   key: UInt64) throws(Status)
+
+  @discardableResult
+  static func ack(_ interrupts: [UInt32], statuses: inout [Status])
+    throws(Status) -> Int
+  static func ack(_ interrupt: borrowing Handle) throws(Status)
+
+  static func msiAllocate(resource: borrowing Handle, count: Int)
+    throws(Status) -> Handle
+  static func msi(allocation: borrowing Handle, id: UInt32,
+                  vmo: borrowing Handle, offset: Int, msix: Bool)
+    throws(Status) -> Handle
+  static func msiInfo(_ allocation: borrowing Handle) throws(Status)
+    -> MSIInfo
+  static func setAffinity(_ interrupt: borrowing Handle, cpus: UInt64)
+    throws(Status)
+}
+
+struct MSIInfo: Equatable, Sendable {
+  var targetAddress: UInt64
+  var targetData: UInt32
+  var baseIRQ: UInt32
+  var count: UInt32
+  var interrupts: UInt32
+}
+```
+
+# DESCRIPTION
+
+An interrupt object stands for a device's interrupt, identified by its number: a GSI on amd64 and rv64, an INTID on arm64.
+It is made under an interrupt resource that covers the number (see sys-resource(2)).
+The way to wait for one is a port bound to it: packets arrive until `ack` re-arms the interrupt, and a level-triggered interrupt stays masked from when it fires until it is acknowledged.
+
+`create` makes the interrupt object for `number`.
+`mode` says how the line signals: `default` is what firmware says (on amd64, the MADT's overrides, else edge-high for ISA and level-low for PCI), and the others set the polarity and trigger.
+It is `interrupt_create(2)`.
+
+`bind` sends packets to `port` with `key` when the interrupt fires.
+A port that interrupts may be bound to is made with `Port.create(bindToInterrupt: true)`.
+A packet has type `packetType`, and `payload.0` is the time stamp.
+See sys-port(2).
+
+`ack(_:statuses:)` re-arms several interrupts in one call, given their raw handle numbers.
+An interrupt thread acknowledges every vector it has handled at once.
+It writes each interrupt's status to `statuses` and returns how many succeeded.
+`ack(_:)` re-arms one and throws that status if it failed.
+It is `interrupt_ack(2)`.
+
+`setAffinity` routes the interrupt to one of the CPUs in the mask `cpus`, bit n being CPU n (`interrupt_set_affinity(2)`).
+
+## MSI
+
+`msiAllocate` allocates `count` contiguous message-signalled interrupt vectors, a power of two up to 32, under the system resource whose base is `msiSystemBase`.
+It works on amd64 only.
+`msi` makes the interrupt object for vector `id` of an allocation.
+With `msix` true, `vmo` holds the device's MSI-X table at `offset`, as physical uncached memory, and the kernel programs and masks entry `id`.
+With `msix` false, `vmo` is the function's configuration space and `offset` is where the MSI capability is.
+`msiInfo` returns what a device must write to raise the allocation's interrupts: interrupt id n writes `targetData + n` to `targetAddress`.
+`baseIRQ` and `count` describe the allocation, and `interrupts` is how many of its ids have an interrupt object.
+A driver for a plain MSI capability programs the function from these values.
+These are `msi_allocate(2)` and `msi_create(2)`.
+
+# SEE ALSO
+
+sys-port(2), sys-resource(2), sys-vmo(2), sys-dma(2), interrupt_create(2), interrupt_ack(2), msi_allocate(2), msi_create(2)

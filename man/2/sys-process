@@ -1,0 +1,163 @@
+page sys-process 2
+summary Sys jobs, processes and threads
+names sys-process Job Job.create Job.children Job.processes TaskStats TaskStats.mapped
+names TaskStats.privateBytes TaskStats.shared TaskStats.scaledShared
+names TaskStats.init TaskStats.resident ThreadState ThreadState.rawValue
+names ThreadState.init ThreadState.text TaskRuntime TaskRuntime.cpuTime
+names TaskRuntime.queueTime TaskRuntime.pageFaultTime
+names TaskRuntime.lockContentionTime TaskRuntime.init HandleEntry
+names HandleEntry.type HandleEntry.value HandleEntry.rights HandleEntry.koid
+names HandleEntry.relatedKoid HandleEntry.init ProcessInfo
+names ProcessInfo.returnCode ProcessInfo.started ProcessInfo.exited
+names ProcessInfo.init Process Process.create Process.start Process.exit
+names Process.current Process.info Process.stats Process.runtime
+names Process.threads Process.handles Thread Thread.create Thread.state
+names Thread.runtime Thread.start Thread.spawn Thread.exit Thread.join
+names Sys.kill
+src system/sys/api/Objects.swift system/sys/backend/native/Kernel.swift
+keys job process thread task kill exit join spawn stats runtime koid
+lang swift
+
+# SYNOPSIS
+
+```swift
+enum Job {
+  static func create(parent: borrowing Handle) throws(Status) -> Handle
+  static func children(_ job: borrowing Handle) throws(Status) -> [UInt64]
+  static func processes(_ job: borrowing Handle) throws(Status) -> [UInt64]
+}
+
+enum Process {
+  static func create(job: borrowing Handle, name: String) throws(Status)
+    -> Handle
+  static func start(_ process: borrowing Handle, entry: ProgramEntry,
+                    _ startup: Startup) throws(Status) -> Handle
+  static func exit(code: Int64) -> Never
+  static func current() throws(Status) -> Handle
+  static func info(_ process: borrowing Handle) throws(Status)
+    -> ProcessInfo
+  static func stats(_ process: borrowing Handle) throws(Status)
+    -> TaskStats
+  static func runtime(_ process: borrowing Handle) throws(Status)
+    -> TaskRuntime
+  static func threads(_ process: borrowing Handle) throws(Status)
+    -> [UInt64]
+  static func handles(_ process: borrowing Handle) throws(Status)
+    -> [HandleEntry]
+}
+
+enum Thread {
+  static func create(process: borrowing Handle) throws(Status) -> Handle
+  static func state(_ thread: borrowing Handle) throws(Status)
+    -> ThreadState
+  static func runtime(_ thread: borrowing Handle) throws(Status)
+    -> TaskRuntime
+  static func start(_ thread: borrowing Handle,
+                    _ body: @escaping @Sendable () -> Void) throws(Status)
+  static func spawn(_ body: @escaping @Sendable () -> Void) throws(Status)
+    -> Handle
+  static func exit() -> Never
+  static func join(_ thread: borrowing Handle) throws(Status)
+}
+
+func kill(_ task: borrowing Handle) throws(Status)
+
+struct ProcessInfo: Equatable, Sendable {
+  var returnCode: Int64
+  var started: Bool
+  var exited: Bool
+  init(returnCode: Int64, started: Bool, exited: Bool)
+}
+
+struct TaskStats: Equatable, Sendable {
+  var mapped: UInt64
+  var privateBytes: UInt64
+  var shared: UInt64
+  var scaledShared: UInt64
+  init(mapped: UInt64, privateBytes: UInt64, shared: UInt64,
+       scaledShared: UInt64)
+  var resident: UInt64 { get }
+}
+
+struct TaskRuntime: Equatable, Sendable {
+  var cpuTime: Int64
+  var queueTime: Int64
+  var pageFaultTime: Int64
+  var lockContentionTime: Int64
+  init(cpuTime: Int64, queueTime: Int64, pageFaultTime: Int64,
+       lockContentionTime: Int64)
+}
+
+struct ThreadState: Equatable, Sendable {
+  var rawValue: UInt32
+  init(rawValue: UInt32)
+  var text: String { get }
+}
+
+struct HandleEntry: Equatable, Sendable {
+  var type: UInt32
+  var value: UInt32
+  var rights: UInt32
+  var koid: UInt64
+  var relatedKoid: UInt64
+  init(type: UInt32, value: UInt32, rights: UInt32, koid: UInt64,
+       relatedKoid: UInt64)
+}
+```
+
+# DESCRIPTION
+
+Jobs form the tree that processes live in; a process has a handle table and threads and, on croi, an address space.
+Each object is reached through a `Handle` (see sys-handle(2)), and each is identified system-wide by a koid.
+A job, process or thread asserts `Signals.terminated` when it has ended; `Thread.join` waits for it.
+
+## Jobs
+
+`Job.create` makes a child of `parent` (`job_create(2)`).
+`children` and `processes` list the koids of a job's child jobs and its processes.
+They need the enumerate right.
+`Handle.child` turns a koid into a handle.
+
+## Processes
+
+`Process.create` makes a process named `name` in `job` and returns its handle (`process_create(2)`).
+It has no threads yet.
+
+`Process.start` starts it: the process's first thread runs `entry`, given `startup`, and the handles in `startup` move into the process whether it starts or not.
+`entry` is an ELF image that the process is loaded from, and `startup` becomes its bootstrap message; see sys-startup(2).
+Sys adds the process's own handles, its root VMAR and a debuglog for its standard output to what the process receives, and gives it its name as `argv[0]` if `startup` has no arguments.
+`start` returns the handle of the first thread.
+It is `process_start(2)`.
+
+`Process.exit` ends the calling process with `code`; it does not return.
+`current` returns a new handle to the calling process, with the same rights.
+`info` returns a `ProcessInfo`: whether it has `started` and `exited`, and its `returnCode`.
+
+`stats` returns its memory in bytes: what is `mapped`; what is committed in VMOs that only this process maps (`privateBytes`); what is committed in VMOs that other processes map too (`shared`); and this process's share of those, each shared range divided by the number of processes that map it (`scaledShared`).
+Device memory counts for nothing.
+`resident` is `privateBytes + scaledShared`: what the process holds without counting a shared page twice.
+`stats` throws `badState` once the process has ended.
+
+`runtime` returns the time its threads have spent, in nanoseconds: on a CPU (`cpuTime`), ready and waiting for one (`queueTime`), in page faults and in lock contention.
+`threads` lists its threads' koids, and needs the enumerate right.
+`handles` returns its handle table, which needs the inspect, manage-process and manage-thread rights: each entry gives a handle's `value` (number), `rights`, its object's `type` (an `ObjectType`) and `koid`, and for a channel the peer's koid in `relatedKoid`.
+
+## Threads
+
+`Thread.create` makes a thread in `process`; `start` runs `body` on it, and the thread exits when `body` returns.
+The floor gives the thread a stack of its own, which is unmapped when it ends.
+`spawn` does both in the calling process and returns the thread's handle: `join` it, or drop it to let the thread run on alone.
+`Thread.exit` ends the calling thread at once; whatever it was running does not return, and its stack is reclaimed as for a thread whose body returned.
+`join` waits until the thread has ended.
+
+`state` returns a `ThreadState`, from the thread's info: the low byte of `rawValue` is the state and the next byte says what a blocked thread waits on.
+`text` renders it as "new", "running", "suspended", "dying", "dead", or "blocked" followed by a colon and the cause (exception, futex, port, channel or pager), or plain "blocked", or "unknown".
+`runtime` is as for a process, for one thread.
+
+## Killing
+
+`kill` kills a job, with everything under it, or a process, or a thread (`task_kill(2)`).
+
+# SEE ALSO
+
+sys-handle(2), sys-startup(2), sys-profile(2), sys-lock(2), job_create(2), process_create(2), process_start(2), thread_create(2), thread_start(2), task_kill(2), process_exit(2), thread_exit(2)

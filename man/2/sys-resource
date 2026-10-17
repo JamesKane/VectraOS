@@ -1,0 +1,61 @@
+page sys-resource 2
+summary Sys resources and I/O ports: the right to hardware ranges
+names sys-resource Resource Resource.create Resource.info ResourceInfo ResourceInfo.kind
+names ResourceInfo.flags ResourceInfo.base ResourceInfo.size ResourceInfo.name
+names ResourceInfo.init IOPorts IOPorts.request IOPorts.release IOPorts.read
+names IOPorts.write
+src system/sys/api/Objects.swift system/sys/backend/native/Kernel.swift
+keys resource mmio irq ioport hardware range
+lang swift
+
+# SYNOPSIS
+
+```swift
+enum Resource {
+  static func create(parent: borrowing Handle, kind: ResourceKind,
+                     base: UInt64, size: UInt64, name: String,
+                     exclusive: Bool = false) throws(Status) -> Handle
+  static func info(_ resource: borrowing Handle) throws(Status)
+    -> ResourceInfo
+}
+
+struct ResourceInfo: Equatable, Sendable {
+  var kind: UInt32
+  var flags: UInt32
+  var base: UInt64
+  var size: UInt64
+  var name: String
+  init(kind: UInt32, flags: UInt32, base: UInt64, size: UInt64,
+       name: String)
+}
+
+enum IOPorts {
+  static func request(_ resource: borrowing Handle, base: UInt16,
+                      count: UInt16) throws(Status)
+  static func release(_ resource: borrowing Handle, base: UInt16,
+                      count: UInt16) throws(Status)
+  static func read(_ port: UInt16, width: Int) -> UInt32
+  static func write(_ port: UInt16, width: Int, _ value: UInt32)
+}
+```
+
+# DESCRIPTION
+
+A resource is the right to a range of hardware: MMIO addresses, interrupts, I/O ports, or a system capability.
+A child resource lies inside its parent's range.
+The launcher hands each service the ranged roots its manifest grants; see manifest(6).
+
+`create` makes a resource of `kind` covering `size` from `base` inside `parent`'s range, with `name`.
+With `exclusive`, no other resource may overlap it; this works only from a ranged root.
+It is `resource_create(2)`.
+
+`info` returns the resource's `kind` and `flags`, its `base`, its `size` (0 for a kind's ranged root) and its `name`.
+
+`IOPorts` is for amd64.
+A process may use the I/O ports it has requested, with an I/O port resource that covers them; any other port access faults.
+`request` and `release` take `count` ports from `base` (`ioports_request(2)`, `ioports_release(2)`).
+`read` executes `in` and `write` executes `out`, of `width` 1, 2 or 4 bytes.
+
+# SEE ALSO
+
+sys-vmo(2), sys-interrupt(2), sys-dma(2), manifest(6), resource_create(2), ioports_request(2)

@@ -1,0 +1,55 @@
+page sys-startup 2
+summary Sys startup: what a process starts with, and its exit string
+names sys-startup Startup Startup.args Startup.names Startup.init Startup.current
+names Startup.add Startup.take Startup.infos ExitString ExitString.max
+names ExitString.init ExitString.read
+src system/sys/api/Startup.swift system/sys/backend/native/Kernel.swift
+keys startup arguments argv handles bootstrap processargs exits status
+lang swift
+
+# SYNOPSIS
+
+```swift
+final class Startup: @unchecked Sendable {
+  var args: [String]
+  var names: [String]
+  init(args: [String] = [], names: [String] = [])
+  static var current: Startup { get }
+  func add(_ handle: consuming Handle, info: UInt32)
+  func add(raw: UInt32, info: UInt32)
+  func take(_ info: UInt32) -> Handle?
+  var infos: [UInt32] { get }
+}
+
+struct ExitString: ~Copyable {
+  static let max: Int
+  init(for startup: Startup) throws(Status)
+  func read() -> String
+}
+```
+
+# DESCRIPTION
+
+A `Startup` is what a process starts with, one message: its arguments, with the program's name first; its handles, each with an info word, which is a handle type and an argument; and a table of names.
+A parent builds one and passes it to `Process.start`, which moves it into the new process; see sys-process(2).
+It carries no environment: a process's environment is the tree at its `/env`.
+
+`args` are the arguments.
+`names` is the names table that the argument of a namespace-directory handle indexes; it makes up the process's namespace.
+`init` makes a `Startup` with the arguments and names given and no handles.
+
+`add(_:info:)` moves a handle in to go with `info`; `add(raw:info:)` does the same for a raw handle that the caller no longer owns.
+`take` returns the handle that was given with `info`, owned by the caller from then on, or nil if there was none or it has been taken.
+`infos` lists the info words of the handles not yet taken, in order.
+
+`current` is the calling process's own `Startup`: what it was started with.
+Its handles are the process's handle table, and `take` and `infos` read it.
+
+An `ExitString` is a child's exit string, as Plan 9's `exits`: a page of memory the parent gives the child in its `Startup`, which the child writes as it ends, NUL-terminated.
+`init(for:)` makes the page and adds a duplicate to `startup`.
+`read` returns what the child said, or "" if it said nothing or has not finished; call it once the child has ended.
+`max` is the longest string, 128 bytes with the NUL.
+
+# SEE ALSO
+
+sys-process(2), sys-handle(2), sys-vmo(2)

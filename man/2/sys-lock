@@ -1,0 +1,63 @@
+page sys-lock 2
+summary Sys locks and futexes
+names sys-lock Lock Lock.init Lock.lock Lock.unlock Lock.withLock Futex Futex.waits
+names Futex.wakes Futex.wait Futex.wake Locked Locked.init Locked.withLock
+src system/sys/api/Lock.swift system/sys/backend/native/Kernel.swift
+keys mutex lock futex wait wake atomic
+lang swift
+
+# SYNOPSIS
+
+```swift
+final class Lock: @unchecked Sendable {
+  init()
+  func lock()
+  func unlock()
+  func withLock<R, E: Error>(_ body: () throws(E) -> R) throws(E) -> R
+}
+
+enum Futex {
+  static let waits: Atomic<Int>
+  static let wakes: Atomic<Int>
+  static func wait(_ address: UnsafeMutablePointer<UInt32>, current: UInt32,
+                   deadline: Int64 = infiniteDeadline) throws(Status)
+  static func wake(_ address: UnsafeMutablePointer<UInt32>, count: Int)
+}
+
+final class Locked<Value>: @unchecked Sendable {
+  init(_ value: Value)
+  func withLock<R, E: Error>(_ body: (inout Value) throws(E) -> R)
+    throws(E) -> R
+}
+```
+
+# DESCRIPTION
+
+A `Lock` is a mutual exclusion lock built on futexes.
+It is not recursive.
+Its state is one word in the object: 0 free, 1 held, 2 held with a thread possibly waiting.
+`lock` takes a free lock with one atomic operation and no kernel call.
+If the lock is held, it marks the word 2 and sleeps on it with `Futex.wait`, and tries again when woken.
+`unlock` sets the word to 0 and, if it was 2, wakes one waiter with `Futex.wake`.
+An uncontended lock therefore makes no kernel call in either direction.
+`withLock` locks, runs `body`, and unlocks when it ends, by return or by throw, and returns what the body returns.
+
+The lock does not lend priority to the thread holding it.
+
+`Futex.wait` puts the calling thread to sleep while the 32-bit word at `address` holds `current`, until a wake or the monotonic `deadline` (see sys-clock(2)).
+If the word already holds something else it throws `badState`; at the deadline, `timedOut`.
+`Futex.wake` wakes up to `count` threads sleeping on `address`.
+They are `futex_wait(2)` and `futex_wake(2)`.
+`waits` and `wakes` count the calls this process has made to each; a lock that is never contended makes none.
+
+`Locked` holds a value that one thread at a time may touch.
+`withLock` runs `body` with the value `inout` under a `Lock`.
+It exists because the standard library's `Mutex` is not available where Sys runs.
+
+# SEE ALSO
+
+sys-clock(2), futex_wait(2), futex_wake(2)
+
+# BUGS
+
+`Lock` does not do priority inheritance, though the kernel's futexes take an owner: the lock leaves the owner unset.

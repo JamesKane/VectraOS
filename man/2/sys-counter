@@ -1,0 +1,57 @@
+page sys-counter 2
+summary Sys counters: values that holders add to and wait on
+names sys-counter Counter Counter.packetType Counter.changePacketType Counter.create
+names Counter.add Counter.read Counter.wait
+src system/sys/api/Objects.swift system/sys/backend/native/Kernel.swift
+keys counter fence doorbell add wait
+lang swift
+
+# SYNOPSIS
+
+```swift
+enum Counter {
+  static var packetType: UInt32 { get }
+  static var changePacketType: UInt32 { get }
+
+  static func create() throws(Status) -> Handle
+
+  @discardableResult
+  static func add(_ items: inout [CounterAdd]) throws(Status) -> Int
+  static func add(_ counter: borrowing Handle, _ amount: Int64)
+    throws(Status)
+
+  static func read(_ counter: borrowing Handle) throws(Status) -> Int64
+
+  static func wait(_ counter: borrowing Handle, until value: Int64,
+                   deadline: Int64 = infiniteDeadline) throws(Status)
+}
+```
+
+# DESCRIPTION
+
+A counter is a signed 64-bit value that its holders add to.
+It asserts `Signals.positive` or `Signals.nonPositive` according to its sign.
+It is waited on at a value, as a fence, or at every add, as a doorbell.
+
+`create` returns a counter.
+It is `counter_create(2)`.
+
+`add` adds an amount to a counter.
+With an array of `CounterAdd`, each item holds a counter handle and an amount; the call goes on past an item that fails, writes each item's status back, and returns how many succeeded.
+A service rings the doorbells of all its clients in one call this way.
+With one counter and an amount, it throws the item's status if the add failed; `outOfRange` means the sum would overflow, and the value is unchanged.
+It is `counter_add(2)`.
+
+`read` returns the current value (`counter_read(2)`).
+
+`wait(until:)` returns once the value is at least `value`, or throws `timedOut` at the monotonic `deadline`.
+It is a binding on the calling thread's own port.
+
+To receive packets instead of blocking, bind the counter to a port with `Binding` (see sys-port(2)).
+A packet of type `packetType` reports a counter reaching a value: `payload.0` is the value waited for, `payload.1` the value reached and `payload.2` the time.
+A packet of type `changePacketType` reports adds: `payload.1` is the value, `payload.2` the number of adds coalesced and `payload.3` the time.
+A counter can lend a scheduling profile to the threads it wakes; see sys-profile(2).
+
+# SEE ALSO
+
+sys-port(2), sys-profile(2), sys-handle(2), counter_create(2), counter_add(2), counter_read(2)

@@ -1,0 +1,73 @@
+page sys-port 2
+summary Sys ports: queues of packets, and bindings to them
+names sys-port Port Port.create Port.bind Port.queue Port.wait Port.cancel
+src system/sys/api/Objects.swift system/sys/backend/native/Kernel.swift
+keys port packet queue bind cancel wait event
+lang swift
+
+# SYNOPSIS
+
+```swift
+enum Port {
+  static func create() throws(Status) -> Handle
+  static func create(bindToInterrupt: Bool) throws(Status) -> Handle
+
+  @discardableResult
+  static func bind(_ port: borrowing Handle, _ items: inout [Binding])
+    throws(Status) -> Int
+  static func bind(_ port: borrowing Handle, _ item: Binding)
+    throws(Status)
+
+  @discardableResult
+  static func queue(_ port: borrowing Handle, _ packets: [Packet])
+    throws(Status) -> Int
+  static func queue(_ port: borrowing Handle, _ packet: Packet)
+    throws(Status)
+
+  static func wait(_ port: borrowing Handle,
+                   deadline: Int64 = infiniteDeadline, max: Int)
+    throws(Status) -> [Packet]
+  static func wait(_ port: borrowing Handle,
+                   deadline: Int64 = infiniteDeadline)
+    throws(Status) -> Packet
+
+  static func cancel(_ port: borrowing Handle, source: borrowing Handle,
+                     key: UInt64) throws(Status)
+  static func cancel(_ port: borrowing Handle, key: UInt64) throws(Status)
+}
+```
+
+# DESCRIPTION
+
+A port is a queue of packets.
+Packets come to it from user space, with `queue`, and from objects bound to it: a channel that becomes readable, a process that ends, an interrupt, a counter that reaches a value.
+Waiting for an object is waiting on a port: `Handle.wait` and `sleep(until:)` do it on the calling thread's own port.
+A packet (`Packet`) has a key, a type, a status and a payload of 32 bytes.
+
+`create()` returns a new port.
+`create(bindToInterrupt: true)` returns a port that interrupt objects may be bound to.
+It is `port_create(2)`.
+
+`bind` binds objects to `port` as `object_bind(2)` does.
+Each `Binding` names an object, the signals or value or interrupt to watch, and the key its packets carry.
+With an array, `bind` binds the items in order, stops at the first that fails, writes each item's status back, and returns how many were bound.
+With one item, it throws that item's status if the bind failed.
+`Handle.bind` and `Interrupt.bind` build the binding for the common cases.
+
+`queue` puts user packets on the port in order.
+It stops at the first that cannot go, which is `shouldWait` when the port holds too many, and returns how many were queued.
+With one packet it throws on failure.
+It is `port_queue(2)`.
+
+`wait` returns the next packet, or with `max` up to `max` packets, at least 1 and at most 64.
+It waits until the monotonic `deadline` (see sys-clock(2)) for the first and throws `timedOut` then; the others it returns are those already queued.
+It is `port_wait(2)`.
+
+`cancel` undoes the bindings to `port` with `key` that were made through `source`, and drops their queued packets.
+Without `source` it undoes every binding with `key` and drops every queued packet with it, user packets too.
+It throws `notFound` if there were none.
+It is `port_cancel(2)`.
+
+# SEE ALSO
+
+sys-handle(2), sys-channel(2), sys-interrupt(2), sys-counter(2), sys-clock(2), port_create(2), object_bind(2), port_queue(2), port_wait(2), port_cancel(2)

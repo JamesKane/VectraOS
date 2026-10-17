@@ -1,0 +1,94 @@
+page sys-dma 2
+summary Sys DMA: IOMMUs, bus transaction initiators and pinned memory
+names sys-dma DMA DMA.Pin DMA.Pin.rawValue DMA.Pin.init DMA.Pin.read DMA.Pin.write
+names DMA.Pin.execute DMA.Pin.compress DMA.Pin.contiguous DMA.Properties
+names DMA.Properties.addressBits DMA.Properties.coherent
+names DMA.Properties.windowBase DMA.Properties.windowSize
+names DMA.Properties.init DMA.iommuSystemBase DMA.IOMMUType DMA.iommu
+names DMA.stubIOMMU DMA.bti DMA.setProperties DMA.contiguousVMO DMA.pin
+names DMA.unpin DMA.releaseQuarantine
+src system/sys/api/Objects.swift system/sys/backend/native/Kernel.swift
+keys dma iommu bti pmt pin device address quarantine
+lang swift
+
+# SYNOPSIS
+
+```swift
+enum DMA {
+  struct Pin: OptionSet, Sendable {
+    let rawValue: UInt32
+    init(rawValue: UInt32)
+    static var read: Pin { get }
+    static var write: Pin { get }
+    static var execute: Pin { get }
+    static var compress: Pin { get }
+    static var contiguous: Pin { get }
+  }
+
+  struct Properties: Equatable, Sendable {
+    var addressBits: UInt32
+    var coherent: Bool
+    var windowBase: UInt64
+    var windowSize: UInt64
+    init(addressBits: UInt32 = 64, coherent: Bool = true,
+         windowBase: UInt64 = 0, windowSize: UInt64 = 0)
+  }
+
+  enum IOMMUType: UInt32, Sendable {
+    case stub = 0
+    case intel = 1
+    case armSMMU = 2
+    case amd = 0x10000
+    case riscv = 0x10001
+  }
+
+  static var iommuSystemBase: UInt64 { get }
+
+  static func iommu(resource: borrowing Handle, type: IOMMUType,
+                    descriptor: [UInt8]) throws(Status) -> Handle
+  static func stubIOMMU(resource: borrowing Handle) throws(Status)
+    -> Handle
+  static func bti(iommu: borrowing Handle, id: UInt64) throws(Status)
+    -> Handle
+  static func setProperties(_ bti: borrowing Handle, _ p: Properties)
+    throws(Status)
+  static func contiguousVMO(bti: borrowing Handle, size: Int,
+                            alignmentLog2: UInt32 = 0) throws(Status)
+    -> Handle
+  static func pin(_ bti: borrowing Handle, _ vmo: borrowing Handle,
+                  offset: Int, size: Int, options: Pin, count: Int)
+    throws(Status) -> (pmt: UInt32, addresses: [UInt64])
+  static func unpin(pmt: UInt32) throws(Status)
+  static func releaseQuarantine(_ bti: borrowing Handle) throws(Status)
+}
+```
+
+# DESCRIPTION
+
+A device that does DMA reaches memory through an IOMMU.
+Each device has a bus transaction initiator (BTI) under its IOMMU, and memory is pinned through the BTI for the device to use: the pages stay put until unpinned.
+Through the stub IOMMU, which does no translation, a device address is the physical address.
+
+`iommu` makes the IOMMU unit that `descriptor` names, under the system resource whose base is `iommuSystemBase`.
+`type` selects the layout of the descriptor, as `dma.h` defines it: `intel` is VT-d with its scopes and reserved memory, `amd` is AMD-Vi with its unity ranges, and `armSMMU` and `riscv` are the register base alone.
+The kernel checks the descriptor against firmware's tables and turns translation on.
+A device the unit does not cover is refused with `outOfRange` when its BTI is made.
+`stubIOMMU` makes the stub; a BTI under it is a decision to trust the device, and the kernel logs it.
+It is `iommu_create(2)`.
+
+`bti` makes the BTI for the device with `id`, by convention a PCI device's bus, device and function (`bti_create(2)`).
+`setProperties` sets the BTI's DMA properties and can only narrow them: device addresses are below 2 to the power `addressBits`, and, when `windowSize` is not 0, inside `windowBase` up to `windowBase + windowSize`; `coherent` says whether the memory is coherent (`bti_set_properties(2)`).
+
+`contiguousVMO` makes a VMO of `size` bytes contiguous in device address space and inside the BTI's properties, aligned to 2 to the power `alignmentLog2` (`vmo_create_contiguous(2)`).
+
+`pin` pins `size` bytes of `vmo` from `offset`, which is page aligned, with the permissions in `options`, and returns a pinned memory token (`pmt`) and the device addresses of the memory.
+`count` is how many addresses to expect: one with `contiguous`, otherwise one for each page.
+It is `bti_pin(2)`.
+`unpin` unpins and consumes the token (`pmt_unpin(2)`).
+A token closed while pinned is quarantined, its pages kept from reuse; `releaseQuarantine` releases the BTI's quarantined pages (`bti_release_quarantine(2)`).
+
+`Pin` holds the `bti_pin` options: `read`, `write` and `execute` permissions, `compress`, and `contiguous`.
+
+# SEE ALSO
+
+sys-vmo(2), sys-resource(2), sys-interrupt(2), iommu_create(2), bti_create(2), bti_pin(2), pmt_unpin(2)

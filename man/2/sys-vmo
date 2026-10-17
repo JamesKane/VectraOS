@@ -1,0 +1,82 @@
+page sys-vmo 2
+summary Sys VMOs and mappings: memory that handles share
+names sys-vmo VMO VMO.CachePolicy VMO.create VMO.size VMO.ChildOptions
+names VMO.ChildOptions.slice VMO.ChildOptions.snapshotAtLeastOnWrite
+names VMO.ChildOptions.noWrite VMO.zeroChildren VMO.child VMO.physical
+names VMO.setCachePolicy VMO.map Mapping Mapping.address Mapping.length
+names Mapping.load Mapping.store Mapping.read Mapping.write
+src system/sys/api/Objects.swift system/sys/backend/native/Kernel.swift
+keys vmo memory map mapping child slice snapshot cache physical mmio
+lang swift
+
+# SYNOPSIS
+
+```swift
+enum VMO {
+  enum CachePolicy: UInt32, Sendable {
+    case cached = 0
+    case uncached = 1
+    case uncachedDevice = 2
+    case writeCombining = 3
+  }
+
+  enum ChildOptions {
+    static var slice: UInt32 { get }
+    static var snapshotAtLeastOnWrite: UInt32 { get }
+    static var noWrite: UInt32 { get }
+  }
+
+  static var zeroChildren: UInt32 { get }
+
+  static func create(size: Int) throws(Status) -> Handle
+  static func size(_ vmo: borrowing Handle) throws(Status) -> Int
+  static func child(_ vmo: borrowing Handle, options: UInt32,
+                    offset: UInt64, size: Int) throws(Status) -> Handle
+  static func physical(resource: borrowing Handle, address: UInt64,
+                       size: Int) throws(Status) -> Handle
+  static func setCachePolicy(_ vmo: borrowing Handle,
+                             _ policy: CachePolicy) throws(Status)
+  static func map(_ vmo: borrowing Handle, offset: Int = 0, length: Int,
+                  writable: Bool = true) throws(Status) -> Mapping
+}
+
+struct Mapping: ~Copyable {
+  let address: UnsafeMutableRawPointer
+  let length: Int
+  func load<T: FixedWidthInteger>(_: T.Type, at offset: Int) -> T
+  func store<T: FixedWidthInteger>(_ value: T, at offset: Int)
+  func read(at offset: Int, count: Int) -> [UInt8]
+  func write(_ bytes: [UInt8], at offset: Int)
+}
+```
+
+# DESCRIPTION
+
+A virtual memory object (VMO) is memory that handles share.
+A process reaches a VMO's bytes through a mapping; there are no calls to read or write a VMO directly.
+
+`create` returns a VMO of `size` bytes, rounded up to whole pages, zeroed (`vmo_create(2)`).
+`size` returns its size.
+
+`child` makes a child of `vmo` (`vmo_create_child(2)`).
+`options` is one of the values of `ChildOptions`.
+A `slice` shares the parent's pages (and, for a physical VMO, its cache policy), and while any slice or a mapping of it lives, the parent does not assert `zeroChildren`.
+`snapshotAtLeastOnWrite` and `noWrite` are the kernel's other child options.
+`zeroChildren` is the VMO signal that means it has no children: none was made, or the last one's last handle and mapping are gone.
+Wait for it with `Handle.wait`; see sys-handle(2).
+
+`physical` makes a VMO over physical memory, `address` and `size` page aligned, which an MMIO resource passed as `resource` must cover (`vmo_create_physical(2)`).
+Its mappings are uncached device memory unless the cache policy is changed before the first.
+`setCachePolicy` sets how the VMO's mappings are cached, one of `CachePolicy`; it works only while the VMO has no mappings (`vmo_set_cache_policy(2)`).
+
+`map` maps `length` bytes of the VMO from `offset`, a multiple of the page size, into this process, writable unless `writable` is false.
+The `Mapping` unmaps itself when dropped.
+It keeps the VMO alive.
+Its `address` and `length` locate the memory.
+The accessors check their range with a precondition and so trap on an offset outside the mapping.
+`load` and `store` read or write one integer at a byte offset, with no alignment needed.
+`read` copies `count` bytes out, and `write` copies a byte array in.
+
+# SEE ALSO
+
+sys-handle(2), sys-resource(2), sys-dma(2), vmo_create(2), vmo_create_child(2), vmo_create_physical(2), vmo_set_cache_policy(2)
