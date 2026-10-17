@@ -247,6 +247,9 @@ let package = Package(
     .testTarget(name: "LdTests", dependencies: ["Ld", "Elf"], path: "system/ld/tests", exclude: ["native"]),
     .target(name: "Hardware", path: "tools/hardware/lib"),
     .testTarget(name: "HardwareTests", dependencies: ["Hardware"], path: "tools/hardware/tests"),
+    // Risk-based testing (D88): docs/risk.tsv, vx test --changed.
+    .target(name: "Risk", path: "tools/risk/lib"),
+    .testTarget(name: "RiskTests", dependencies: ["Risk"], path: "tools/risk/tests"),
     // The manual on the dev machine (D86): its pages, index and backlog, and
     // the check against the code (vx man).
     .target(name: "Manual", dependencies: [
@@ -254,7 +257,7 @@ let package = Package(
       .product(name: "SwiftSyntax", package: "swift-syntax"),
     ], path: "tools/man/lib"),
     .testTarget(name: "ManualTests", dependencies: ["Manual", "Guide"], path: "tools/man/tests"),
-    .executableTarget(name: "vx", dependencies: ["Bench", "Guide", "Hardware", "ImageFormats", "Manual", "TDACPI", "TraceFormat",
+    .executableTarget(name: "vx", dependencies: ["Bench", "Guide", "Hardware", "ImageFormats", "Manual", "Risk", "TDACPI", "TraceFormat",
                                                  "TraceReader"], path: "tools/vx"),
   ] + ipc,
   cLanguageStandard: .gnu2x

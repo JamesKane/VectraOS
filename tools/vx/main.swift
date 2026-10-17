@@ -3,7 +3,11 @@
 // vx: the one front door (principle 25, D11). After todhchai's td.
 //
 //   vx build [ARCH...]        configure (once) and build each arch's tree
-//   vx test [ARCH...]         build, then each arch's QEMU tests, one arch at a time
+//   vx test [ARCH...] [--only TEST,...]
+//                             build, then each arch's QEMU tests, one arch at a time
+//   vx test --changed [REF] [--plan]
+//                             only what the change since REF risks (TestCommand.swift, D88)
+//   vx test --check           risk.tsv against the tree: names exist, every test has a row
 //   vx boot [ARCH]            build and boot interactively (Ctrl-A x quits)
 //   vx bench [--runs N] [--record [--accept]] [--enforce] [--compare REF]
 //                             the boot budgets under KVM, judged against
@@ -74,7 +78,7 @@ else { fail("run vx \(command) from the repository root") }
 
 switch command {
 case "build": exit(arches(args).allSatisfy { build($0) } ? 0 : 1)
-case "test": exit((args.isEmpty ? testedArches : arches(args)).allSatisfy { build($0) && test($0) } ? 0 : 1)
+case "test": exit(testCommand(args) ? 0 : 1)
 case "boot":
   let arch = arches(args).first!
   guard args.count <= 1, build(arch) else { exit(1) }

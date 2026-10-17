@@ -35,7 +35,7 @@ private func milestoneNames() -> [String] {
 }
 
 /// An arch's ctest names, from its configured tree.
-private func ctestNames(_ arch: String) -> [String]? {
+func ctestNames(_ arch: String) -> [String]? {
   guard FileManager.default.fileExists(atPath: "build/\(arch)/CTestTestfile.cmake"),
         let listing = capture(["ctest", "-N", "--test-dir", "build/\(arch)"]) else { return nil }
   return listing.split(whereSeparator: \.isNewline).compactMap { line in

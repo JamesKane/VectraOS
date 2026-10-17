@@ -59,6 +59,7 @@ func ci(_ args: [String]) -> Bool {
   ok = locCommand(["--check"]) && ok
   ok = manCommand(["--check"]) && ok  // after the builds: their images' programs need pages (D86)
   ok = hardwareCommand(["--check"]) && ok
+  ok = riskCheck() && ok  // after the builds: their trees name the tests (D88)
   if bench {
     if FileManager.default.fileExists(atPath: "/dev/kvm") {
       _ = benchCommand([])  // advisory on a shared machine (docs/performance.md)

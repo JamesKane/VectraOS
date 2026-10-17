@@ -1,14 +1,16 @@
 page vx-build 1
 summary build, test and boot the images of each arch
 names vx-build vx-test vx-boot
-src tools/vx/main.swift tools/vx/BuildCommand.swift
-keys cmake ninja qemu ctest image arch
+src tools/vx/main.swift tools/vx/BuildCommand.swift tools/vx/TestCommand.swift tools/risk/lib/Risk.swift
+keys cmake ninja qemu ctest image arch risk changed
 
 # SYNOPSIS
 
 ```usage
 vx build [arch ...]
-vx test [arch ...]
+vx test [arch ...] [--only test,...]
+vx test --changed [ref] [--plan]
+vx test --check
 vx boot [arch]
 ```
 
@@ -25,13 +27,34 @@ A tree is configured when it has no `build.ninja`; after that only the build run
 With no <arch> it tests `amd64` and `arm64`.
 The `rv64` suite is off by default; naming it runs it.
 It stops at the first arch whose build or tests fail, and exits 1.
+`--only` runs just the named `ctest` tests of each <arch>, after its build; a name an arch doesn't have is reported and skipped.
 
 `vx boot` builds one <arch> (`amd64` by default) and boots it interactively in QEMU, with edk2 firmware from `/usr/share/edk2`, by running `ninja -C build/<arch> run`.
 Ctrl-A x quits QEMU.
 More than one <arch> is refused.
 
+`vx test --changed` runs only what a change puts at risk.
+The change is every file that differs from where the tree left <ref> (`main` by default): committed, staged, unstaged and untracked.
+Each file's row in `docs/risk.tsv` names what it risks; the longest path matching the file wins, and a file with no row risks everything.
+The plan is the union of the rows: the SwiftPM test targets, run by one `swift test --filter`; each arch to build, with its `ctest` tests or its whole suite; and the checks among `vx man --check`, `vx loc --check`, `vx hardware --check`, `vx rc-oracle` and `vx test --check`.
+`vx` prints the plan, then runs it, and exits 1 if any part fails.
+An arch whose suite is off by default is built, not tested.
+`--plan` prints the plan and runs nothing.
+This is the test run for work in progress; the full suite, `vx ci`, is the one that judges a milestone.
+
+`vx test --check` checks `docs/risk.tsv` against the tree: every path in it exists, every test target is in `Package.swift`, every test name is one of its arches' `ctest` tests, and every test target and every test of `amd64` and `arm64` is named by some row (a row of `all` names nothing).
+An arch whose tree isn't configured has its names left unchecked, and says so.
+`vx ci` runs it.
+
 Each step's output goes to `build/vx/<arch>-configure.log`, `<arch>-build.log` or `<arch>-test.log`.
 `vx boot`'s own run is not logged: it owns the terminal.
+
+## risk.tsv
+
+A tab-separated file; `#` starts a comment line, and the first other line names the columns: `path`, `arches`, `host`, `boots`, `checks`.
+A <path> ending in `/` is a directory, and matches every file under it; any other is one file.
+<arches> is a comma list of arches, or `all` for `amd64` and `arm64`; <host>, SwiftPM test targets, or `all` for every one; <boots>, `ctest` names, or `all` for each arch's whole suite; <checks>, names among `man`, `loc`, `hardware`, `rc-oracle` and `risk`.
+`-` is none.
 
 # FILES
 
@@ -41,6 +64,8 @@ Each step's output goes to `build/vx/<arch>-configure.log`, `<arch>-build.log` o
   Each step's output.
 : `CMakePresets.json`
   The presets, one per arch.
+: `docs/risk.tsv`
+  What a change under each path risks.
 
 # SEE ALSO
 
@@ -49,4 +74,6 @@ vx(1), vx-ci(1), vx-bench(1)
 # DIAGNOSTICS
 
 `unknown arch <name>; vx knows amd64, arm64, rv64` for any other word.
+`<file> has no row in docs/risk.tsv: everything runs` for each changed file the map doesn't cover.
+`vx test --check` prints `docs/risk.tsv:<line>: <path>: ` and the problem for each, then `vx: risk: <n> problems`.
 A failed step prints `vx: <step> FAILED` and the tail of its log.

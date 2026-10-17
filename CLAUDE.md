@@ -70,6 +70,7 @@ Imported files stay byte-identical to their source when imported, so
 CMake/Ninja builds the images, with one tree per arch under `build/<arch>/`.
 
     swift build --product vx && .build/debug/vx ci   # everything vx ci checks
+    .build/debug/vx test --changed                   # only what the change risks (D88)
     .build/debug/vx test arm64                       # one arch: build + QEMU tests
     .build/debug/vx boot rv64                        # boot interactively (Ctrl-A x quits)
     .build/debug/vx bench                            # boot budgets under KVM (advisory)
@@ -80,6 +81,12 @@ CMake/Ninja builds the images, with one tree per arch under `build/<arch>/`.
 
 - Each step's output goes to `build/vx/<step>.log`. On failure, vx shows
   the log's tail.
+- **Test what a change risks; the full suite closes a milestone** (D88).
+  During a milestone, run `vx test --changed` (`--plan` to see it first),
+  not the full suite after each step. `docs/risk.tsv` maps paths to the
+  tests they risk: a new test or test target gets its row in the same
+  change (`vx test --check`, in `vx ci`), and a map that missed
+  something is fixed in the map. `vx ci` on every arch is the exit.
 - `vx test` runs one arch's suite after another, never two at once: under
   that load, rv64 TCG tests such as `boot-aia` exceed their timeouts.
 - rv64's suite is off in `vx test` and `vx ci` until full Swift (tier 1)

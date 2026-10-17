@@ -1,0 +1,92 @@
+# docs/risk.tsv (D88): what a change under each path puts at risk, for
+# `vx test --changed`. The longest path matching a file wins; a file with
+# no row risks everything. Columns: a path (a directory ends in /); the
+# arches to build (all: amd64's and arm64's; another arch named is built,
+# not tested); the SwiftPM test targets; the ctest names; vx's checks
+# (man, loc, hardware, rc-oracle, risk). - is none, all is everything. Every
+# test target and ctest name is named by some row (vx ci checks), so a new
+# test gets a place here. The full suite, `vx ci`, closes a milestone.
+path	arches	host	boots	checks
+CMakeLists.txt	all	-	all	-
+CMakePresets.json	all	-	all	-
+cmake/	all	-	all	-
+ld/	all	-	all	-
+boot/	all	-	all	-
+tools/qemu.sh	all	-	all	-
+lib/handoff/	all	-	all	-
+lib/pagetables/	all	-	all	-
+lib/rt/	all	-	all	-
+user/include/	all	AbiTests	all	-
+user/userboot/	all	-	all	-
+user/vdso/	all	-	all	-
+user/lib/	all	LdTests	all	-
+Package.swift	-	all	-	-
+kernel/	all	AbiTests	boot-smoke,boot-smoke-kvm,boot-lean,boot-sys,boot-launch,boot-reboot,boot-oom	-
+kernel/include/	all	AbiTests,SysTests	boot-smoke,boot-smoke-kvm,boot-lean,boot-sys,boot-launch,boot-reboot,boot-oom,boot-ipc,boot-node	-
+kernel/tests/	-	AbiTests	-	-
+kernel/arch/amd64/	amd64	AbiTests	all	-
+kernel/arch/arm64/	arm64	AbiTests	all	-
+kernel/arch/rv64/	rv64	-	-	-
+kernel/Kernel/Acpi/	all	-	boot-smoke,boot-smoke-kvm,boot-lean,boot-sys,boot-launch,boot-reboot,boot-oom,boot-acpi,boot-dbg2-console	-
+kernel/Kernel/Iommu/	all	-	boot-smoke,boot-amd-iommu,boot-amd-iommu-xt,boot-intremap-off,boot-launch	-
+kernel/Kernel/Irq/	all	-	boot-smoke,boot-smoke-apic-oneshot,boot-intremap-off,boot-lean,boot-launch	-
+kernel/Kernel/Time/	all	-	boot-smoke,boot-smoke-apic-oneshot,boot-smoke-kvm,boot-lean,boot-lean-icount	-
+kernel/Kernel/Sched/	all	-	boot-smoke,boot-smoke-kvm,boot-lean,boot-sys,boot-launch,boot-reboot,boot-oom,boot-smoke-apic-oneshot,boot-lean-icount	-
+kernel/Kernel/Trace/	all	AbiTests	boot-smoke,boot-smoke-kvm,boot-trace,trace-collect	-
+kernel/Kernel/Vm/	all	-	boot-smoke,boot-smoke-kvm,boot-lean,boot-sys,boot-launch,boot-reboot,boot-oom	-
+lib/elf/	all	LdTests	boot-smoke,boot-lean,boot-dl,boot-swift-hello	-
+lib/fmt/	all	-	boot-smoke,boot-lean,boot-smoke-el2	-
+lib/ring/	all	RingTests,RingCheckTests	boot-smoke,boot-ipc,boot-node,boot-launch,boot-trace	-
+user/m2/	all	-	boot-smoke,boot-smoke-kvm,boot-lean,boot-lean-icount	-
+user/test/	all	-	boot-smoke,boot-smoke-kvm,framebuffer-pixels	-
+user/tier1/	all	-	boot-floor-hello,boot-cxx-hello,boot-swift-hello,boot-swift-start,boot-swift-async,boot-foundation-test,boot-node-test-t1,boot-fdio-test	-
+tools/toolchain/	all	-	boot-floor-hello,boot-cxx-hello,boot-swift-hello,boot-swift-start,boot-swift-async,boot-foundation-test,boot-node-test-t1,boot-fdio-test	-
+system/sys/	all	SysTests,AbiTests	boot-sys,boot-smoke,boot-dl,boot-node,boot-launch	man
+system/libc/	all	LibCTests,PThreadTests	boot-smoke,boot-launch,boot-floor-hello,boot-cxx-hello,boot-swift-hello,boot-swift-start,boot-swift-async,boot-foundation-test,boot-node-test-t1,boot-fdio-test	man
+system/ld/	all	LdTests	boot-dl,boot-swift-hello,boot-foundation-test	man
+system/trace/	all	TraceTests	boot-trace,trace-collect,boot-smoke	man
+system/ipc/	all	IPCWireTests,IPCMacrosTests,IDLTests,IPCTests	boot-ipc,boot-node,boot-launch	man
+system/node/	all	NodeTests	boot-node,boot-node-test-t1,boot-launch	man
+system/fdio/	all	FDIOTests	boot-fdio-test,boot-launch	man
+system/launch/	all	LaunchTests	boot-launch	man
+system/directives/	all	DirectivesTests,LaunchTests,DevMgrTests,GuideTests,ManualTests	boot-launch	man
+system/guide/	all	GuideTests,ManualTests	boot-launch	man
+shell/rc/	all	RcTests	boot-launch	man,rc-oracle
+shell/commands/	all	CommandsTests	boot-launch	man
+services/	all	-	boot-launch	man
+services/time/	all	RTCTests	boot-launch	man
+services/pty/	all	PtyTests	boot-launch	man
+services/kbdfs/	all	KbdfsTests	boot-launch	man
+services/proc/	all	ProcTests	boot-launch	man
+services/console/	all	ConsoleTests	boot-launch	man
+services/plumber/	all	PlumberTests	boot-launch	man
+drivers/	all	DevMgrTests	boot-launch,boot-pci	man
+drivers/bus/acpi/	all	ACPITests	boot-acpi,boot-launch	man
+drivers/bus/pci/	all	PCITests	boot-pci,boot-launch	man
+drivers/devmgr/	all	DevMgrTests	boot-launch	man
+drivers/virtio/	all	VirtioTests	boot-launch	man
+drivers/input/	all	InputTests	boot-launch	man
+data/fonts/	all	-	boot-smoke,framebuffer-pixels,boot-launch	-
+text/fonts/	all	-	boot-smoke,framebuffer-pixels,boot-launch	-
+tools/vx/	all	-	boot-smoke,framebuffer-pixels,boot-trace,trace-collect,boot-launch	man,loc,hardware,risk
+tools/image/	all	ImageFormatsTests	boot-smoke,boot-lean,boot-launch	man
+tools/idlc/	all	IDLTests	boot-ipc,boot-launch	man
+tools/fontgen/	all	-	boot-smoke,framebuffer-pixels	-
+tools/bench/	-	BenchTests	-	-
+tools/zircon-bench/	-	-	-	-
+tools/hardware/	-	HardwareTests	-	hardware
+tools/man/	-	ManualTests	-	man
+tools/rc-oracle/	-	RcTests	-	rc-oracle
+tools/risk/	-	RiskTests	-	risk
+man/	-	-	-	man
+docs/	-	-	-	-
+docs/risk.tsv	-	-	-	risk
+docs/hardware/	-	-	-	hardware
+docs/decisions/	-	-	-	hardware
+docs/roadmap.md	-	-	-	hardware
+bench/	-	-	-	-
+CLAUDE.md	-	-	-	-
+README.md	-	-	-	-
+LICENSE	-	-	-	-
+IMPORTS.tsv	-	-	-	-
+.gitignore	-	-	-	-

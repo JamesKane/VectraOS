@@ -24,7 +24,7 @@ Its commands are:
 
 | Command | Does | Page |
 | `build [arch ...]` | configure and build each arch's tree | vx-build(1) |
-| `test [arch ...]` | build, then run each arch's QEMU tests | vx-build(1) |
+| `test [arch ...]` | build, then run each arch's QEMU tests, or only what a change risks | vx-build(1) |
 | `boot [arch]` | build and boot interactively | vx-build(1) |
 | `bench` | the boot budgets, judged against this machine's history | vx-bench(1) |
 | `trace` | collect, print and summarise traces | vx-trace(1) |

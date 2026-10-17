@@ -1,6 +1,6 @@
 page vx-ci 1
 summary run every check the tree has
-src tools/vx/BuildCommand.swift
+src tools/vx/BuildCommand.swift tools/vx/TestCommand.swift
 keys continuous integration check all
 
 # SYNOPSIS
@@ -19,6 +19,7 @@ vx ci [--no-bench]
 - `vx loc --check`, the size budgets;
 - `vx man --check`, the manual, after the builds because the programs in their images need pages;
 - `vx hardware --check`, the hardware support list;
+- `vx test --check`, the map of what each path's change risks, after the builds because their trees name the tests;
 - unless `--no-bench` is given, `vx bench` when `/dev/kvm` exists, and a line saying it was skipped when not.
   The bench is advisory: its verdict doesn't change `vx ci`'s.
 
