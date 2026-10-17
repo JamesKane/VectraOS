@@ -1,0 +1,51 @@
+page null 2
+summary the empty call, and the call test boots use
+names null test
+src user/include/croi/syscall.h kernel/Kernel/User/Syscalls.swift
+keys empty benchmark test report
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_NULL */
+int64_t null(void);
+/* CROI_SYS_TEST */
+int64_t test(uint64_t op, ...);
+```
+
+# DESCRIPTION
+
+`null` takes no arguments, touches nothing and returns 0.
+It is the cost of entering and leaving the kernel; the null-call budget measures it.
+
+`test` is for test boots.
+It fails with `CROI_ERR_NOT_SUPPORTED` unless the kernel was booted with `croi.debug_syscalls=on` or `croi.test=1` on its command line.
+Its first argument <op> picks the operation; the others are that operation's.
+It needs no handle.
+It exists for the kernel's self-tests and the tests of user space, and an operation may reboot the machine, evict memory or sign with a kernel key, so a program has no use for it.
+The operations are:
+
+| op | Arguments | Does |
+| 0 | | returns 1 if the calling thread's effective profile is a deadline one, else 0 |
+| 1 | | binds the caller to the deadline context a kernel self-test provided (`CROI_ERR_BAD_STATE` if none) |
+| 2 | | unbinds it |
+| 3, 4 | | returns the start or the deadline of the caller's current period |
+| 5 | | returns the CPU number the caller runs on |
+| 6 | count | runs <count> aging passes of the reclaimer |
+| 7 | target, min age, ignore hint | evicts pages and returns how many |
+| 8 | oom, critical, warning, hysteresis, delay | sets the memory watermarks, or with 0 restores the command line's |
+| 9 | | returns the free memory in bytes |
+| 10 | | returns the CPU of the context the caller borrowed, or -1 |
+| 11 | value, modifier | arm64: returns the kernel key's pointer authentication signature of <value> |
+| 12 | | arm64: returns 1 if guarded pages are in use |
+| 13 | interrupt handle, time | fires the interrupt object at <time>, as its device would |
+| 14 | value | hands <value> to the kernel's side of a self-test (`CROI_TEST_REPORT`) |
+
+Any other <op> fails with `CROI_ERR_INVALID_ARGS`.
+
+# SEE ALSO
+
+syscall(2), trace(2)

@@ -1,0 +1,58 @@
+page task 2
+summary kill and suspend threads, processes and jobs
+names task task_kill task_suspend
+src user/include/croi/syscall.h kernel/include/task.h kernel/Kernel/User/TaskSyscalls.swift kernel/Kernel/User/DebugSyscalls.swift kernel/Kernel/Object/Debug.swift kernel/Kernel/Object/Process.swift
+keys kill suspend resume token terminate debugger
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_TASK_KILL */
+int64_t task_kill(uint32_t task);
+/* CROI_SYS_TASK_SUSPEND */
+int64_t task_suspend(uint32_t task, uint32_t *token);
+```
+
+# DESCRIPTION
+
+A task is a thread, a process or a job.
+
+## task_kill
+
+`task_kill` ends <task>, which needs DESTROY.
+A handle of any other type is `CROI_ERR_WRONG_TYPE`.
+The call returns when the kill is under way, not when it is done; the task's handle asserts `CROI_SIGNAL_TASK_TERMINATED` once it is.
+
+Killing a thread marks it: an interruptible wait it is in ends, and the thread exits on its way back to user mode.
+Killing a process kills each of its threads, and the process has the return code `CROI_TASK_RETCODE_SYSCALL_KILL` unless it already had one.
+A process that never started is torn down at once.
+Killing a job kills its processes and child jobs, recursively; the job can make no more.
+The return codes of processes the kernel ended itself are `CROI_TASK_RETCODE_POLICY_KILL` (a job's policy) and `CROI_TASK_RETCODE_EXCEPTION_KILL` (an exception nothing handled).
+
+## task_suspend
+
+`task_suspend` stops <task>, a thread or a process, and writes to <token> a handle to a suspend token.
+<task> needs WRITE.
+The token has TRANSFER and INSPECT, and the task runs again when the token's last handle is closed.
+Suspensions count: a task suspended twice needs both tokens closed.
+Suspending a process suspends each of its threads once, and threads started afterwards start suspended.
+
+A suspended thread parks on its way back to user mode, with its registers in a frame that thread_read_state(2) and thread_write_state(2) reach, and asserts `CROI_THREAD_SUSPENDED`; it asserts `CROI_THREAD_RUNNING` otherwise.
+A thread blocked in port_wait(2) or futex_wait(2) is woken, and the call is made again when the thread resumes.
+A thread in another wait, such as channel_call(2), parks when the wait ends.
+
+The caller's own thread or process is `CROI_ERR_NOT_SUPPORTED`.
+A thread that has ended, or a process that is not running or not yet started, is `CROI_ERR_BAD_STATE`; any other type of handle is `CROI_ERR_WRONG_TYPE`.
+
+# SEE ALSO
+
+syscall(2), process(2), thread(2), job(2), exception(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE` and `CROI_ERR_ACCESS_DENIED` as for any handle; see syscall(2).
+`CROI_ERR_NO_MEMORY`: no memory for the token.
+

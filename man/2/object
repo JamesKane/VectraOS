@@ -1,0 +1,129 @@
+page object 2
+summary ask an object about itself: info, properties and children
+names object object_get_info object_get_property object_set_property object_get_child
+src user/include/croi/syscall.h kernel/include/object.h kernel/include/task.h kernel/include/vmo.h kernel/Kernel/User/InfoTopics.swift kernel/Kernel/User/ExceptionSyscalls.swift kernel/Kernel/User/IpcSyscalls.swift
+keys koid info topic property name child inspect
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_OBJECT_GET_INFO */
+int64_t object_get_info(uint32_t handle, uint32_t topic, void *buffer,
+                        uint64_t buffer_size, uint64_t *actual,
+                        uint64_t *avail);
+/* CROI_SYS_OBJECT_GET_PROPERTY */
+int64_t object_get_property(uint32_t handle, uint32_t property, void *value,
+                            uint64_t size);
+/* CROI_SYS_OBJECT_SET_PROPERTY */
+int64_t object_set_property(uint32_t handle, uint32_t property,
+                            const void *value, uint64_t size);
+/* CROI_SYS_OBJECT_GET_CHILD */
+int64_t object_get_child(uint32_t parent, uint64_t koid, uint32_t rights,
+                         uint32_t *out);
+
+int64_t croi_vmo_size(uint32_t vmo, uint64_t *size);
+```
+
+# DESCRIPTION
+
+## object_get_info
+
+`object_get_info` copies the answer to <topic> about the object behind <handle> into <buffer>.
+The topics are in the table; the structures are in `<croi/syscall.h>` and the headers it includes.
+Most topics need the INSPECT right.
+
+A topic that returns one record needs <buffer_size> to hold it, else the call fails with `CROI_ERR_BUFFER_TOO_SMALL`.
+A topic that returns a list fills as many records as fit and never fails for size.
+The task and VMO topics marked "counts" below write the number of records written through <actual> and the number there are through <avail>, when those pointers are not null.
+For a one-record topic both are 1 (and <actual> is 0 on `CROI_ERR_BUFFER_TOO_SMALL`).
+The other topics ignore both pointers; pass null.
+Pass <topic> as given: a topic that has grown carries a version in bits 31:28, and the shorter, older versions are accepted too.
+
+| Topic | On | Right | Answer |
+| `CROI_INFO_HANDLE_BASIC` | any handle | none | `croi_info_handle_basic_t`: koid, the handle's rights, type, the peer's koid for a channel |
+| `CROI_INFO_HANDLE_COUNT` | any handle | INSPECT | `croi_info_handle_count_t`: handles to the object, in every table and in messages in flight |
+| `CROI_INFO_PROCESS` | process | INSPECT | return code, start time, flags (started, exited, debugger attached); counts |
+| `CROI_INFO_PROCESS_THREADS` | process | ENUMERATE | koids of its threads; counts |
+| `CROI_INFO_PROCESS_MAPS` | process | INSPECT | the address space as `croi_info_maps_t`, depth first; counts |
+| `CROI_INFO_PROCESS_VMOS` | process | INSPECT | `croi_info_vmo_t` for each VMO it holds or maps; counts |
+| `CROI_INFO_TASK_STATS` | process | INSPECT | mapped, private, shared and scaled-shared bytes (`CROI_ERR_BAD_STATE` once it is gone) |
+| `CROI_INFO_HANDLE_TABLE` | process | INSPECT, MANAGE_PROCESS, MANAGE_THREAD | `croi_info_handle_extended_t` for each of its handles; counts |
+| `CROI_INFO_THREAD` | thread | INSPECT | state, the kind of exception channel it waits on, affinity mask; counts |
+| `CROI_INFO_THREAD_EXCEPTION_REPORT` | thread | INSPECT | the report of the exception it is in (`CROI_ERR_BAD_STATE` if none); counts |
+| `CROI_INFO_THREAD_STATS` | thread | INSPECT | run time and last CPU (`CROI_ERR_BAD_STATE` once dead); counts |
+| `CROI_INFO_THREAD_TRACE` | thread | INSPECT | the id trace records name it by |
+| `CROI_INFO_TASK_RUNTIME` | thread, process, job | INSPECT | CPU time and queue time; a process's and a job's include their dead children; counts |
+| `CROI_INFO_JOB` | job | INSPECT | return code, exited, debugger attached; counts |
+| `CROI_INFO_JOB_CHILDREN` | job | ENUMERATE | koids of child jobs; counts |
+| `CROI_INFO_JOB_PROCESSES` | job | ENUMERATE | koids of child processes; counts |
+| `CROI_INFO_VMO` | VMO | none | `croi_info_vmo_t`; counts |
+| `CROI_INFO_VMAR` | VMAR | INSPECT | `croi_info_vmar_t`: base and length |
+| `CROI_INFO_VMAR_JIT` | VMAR | INSPECT | whether it is a reservation or a JIT one, and the mechanism |
+| `CROI_INFO_BTI` | BTI | INSPECT | `croi_info_bti_t` |
+| `CROI_INFO_BTI_PROPERTIES` | BTI | INSPECT | `croi_bti_properties_t` |
+| `CROI_INFO_MSI` | MSI allocation | INSPECT | `croi_info_msi_t` |
+| `CROI_INFO_RESOURCE` | resource | INSPECT | `croi_info_resource_t`: kind, flags, base, size, name |
+| `CROI_INFO_MEMORY_ACCOUNT` | account | INSPECT | `croi_info_memory_account_t` |
+| `CROI_INFO_DEBUGLOG` | log | none | `croi_info_debuglog_t`: records written, and printed to the console |
+| `CROI_INFO_CPU_STATS` | INFO resource | see below | `croi_info_cpu_stats_t` for each CPU |
+| `CROI_INFO_KMEM_STATS` | INFO resource | see below | `croi_info_kmem_stats_t`: the kernel's memory |
+| `CROI_INFO_CPU_IDLE_STATES` | INFO resource | see below | `croi_idle_state_stats_t` for each CPU and state; counts |
+
+The last three need <handle> to be a resource(2) that grants the INFO system resource (`CROI_RSRC_SYSTEM_INFO_BASE`), or the root resource.
+`CROI_INFO_CPU_STATS` returns how many records it wrote as the result of the call, as many as fit in <buffer_size>, and fails with `CROI_ERR_BUFFER_TOO_SMALL` if none fits.
+It fills the CPU number, the online flag, idle time, context switches, yields, interrupts, timer interrupts, timers run, syscalls and IPIs; the other fields are 0.
+`CROI_INFO_KMEM_STATS` fills total, free, wired, heap, VMO, page table, other and the reclaim figures; the others are 0.
+A topic the kernel does not know is `CROI_ERR_NOT_SUPPORTED`.
+
+`croi_vmo_size` reads a VMO's size through `CROI_INFO_VMO`.
+
+## object_get_property, object_set_property
+
+The properties are:
+
+| Property | Value | On | Right |
+| `CROI_PROP_NAME` | `char[32]` | process, thread, job, VMO, BTI; a resource's name is read only | GET_PROPERTY, SET_PROPERTY |
+| `CROI_PROP_VMO_CONTENT_SIZE` | `uint64_t` | an anonymous or pager VMO | GET_PROPERTY; SET_PROPERTY and WRITE |
+| `CROI_PROP_REGISTER_FS` | `uint64_t` | amd64: the calling thread's own handle | GET_PROPERTY, SET_PROPERTY |
+| `CROI_PROP_REGISTER_GS` | `uint64_t` | amd64: the calling thread's own handle | GET_PROPERTY, SET_PROPERTY |
+| `CROI_PROP_EXCEPTION_STATE` | `uint32_t` | an exception | GET_PROPERTY, SET_PROPERTY |
+| `CROI_PROP_EXCEPTION_STRATEGY` | `uint32_t` | an exception | GET_PROPERTY, SET_PROPERTY |
+
+A name is at most 31 bytes, cut at the first NUL.
+To get it, <size> must be at least 32.
+To set it, up to 31 bytes of <size> are read.
+The name of a dead thread is `CROI_ERR_BAD_STATE`, and an object of another type is `CROI_ERR_WRONG_TYPE`.
+
+The content size of a VMO is byte-granular and at most the VMO's size.
+Setting it zeroes what lies between the smaller of the old and new size and the end of the VMO, and past the VMO's size is `CROI_ERR_OUT_OF_RANGE`.
+Other kinds of VMO give `CROI_ERR_NOT_SUPPORTED`.
+
+The FS and GS bases are the user thread-local-storage bases.
+They can only be read or written on the calling thread's own handle (`CROI_ERR_ACCESS_DENIED` for another thread, `CROI_ERR_WRONG_TYPE` for a handle that is not a thread), and a base must be a user address.
+On arm64 and rv64 the thread pointer register is user-writable, and these properties are `CROI_ERR_NOT_SUPPORTED`.
+
+The exception properties are those of exception(2).
+
+Except when a name is set, <size> must hold the value (`CROI_ERR_BUFFER_TOO_SMALL`).
+Any other property is `CROI_ERR_NOT_SUPPORTED`.
+
+## object_get_child
+
+`object_get_child` writes to <out> a handle to the child of <parent> whose koid is <koid>: a job's child job or child process, or a process's thread.
+<parent> needs ENUMERATE.
+<rights> is `CROI_RIGHT_SAME_RIGHTS`, for the parent handle's rights, or a subset of them (`CROI_ERR_ACCESS_DENIED` otherwise).
+A koid that is not a live child is `CROI_ERR_NOT_FOUND`: a dead thread, process or job is not found.
+A parent of another type is `CROI_ERR_WRONG_TYPE`.
+
+# SEE ALSO
+
+syscall(2), handle(2), process(2), thread(2), job(2), vmo(2), exception(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE`, `CROI_ERR_WRONG_TYPE` and `CROI_ERR_ACCESS_DENIED` as for any handle; see syscall(2).
+`CROI_ERR_INVALID_ARGS`: a pointer that cannot be written, or a name pointer of 0.
+

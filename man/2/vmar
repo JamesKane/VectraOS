@@ -1,0 +1,199 @@
+page vmar 2
+summary virtual memory address regions: allocate, map, unmap and protect
+names vmar vmar_allocate vmar_map vmar_unmap vmar_protect vmar_destroy vmar_unmap_handle_close_thread_exit vmar_op_range vmar_map_view
+src user/include/croi/syscall.h kernel/include/task.h kernel/include/vmo.h kernel/Kernel/User/TaskSyscalls.swift kernel/Kernel/Vm/UserAspace.swift
+keys address space region map unmap protect jit reservation view guard
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_VMAR_ALLOCATE: parent | options << 32 */
+int64_t vmar_allocate(uint64_t parent_options, uint64_t offset, uint64_t size,
+                      uint32_t *out_child, uint64_t *out_addr);
+/* CROI_SYS_VMAR_MAP */
+int64_t vmar_map(uint32_t vmar, croi_vmar_map_item_t *items, uint64_t count);
+/* CROI_SYS_VMAR_UNMAP */
+int64_t vmar_unmap(uint32_t vmar, croi_vmar_range_t *ranges, uint64_t count);
+/* CROI_SYS_VMAR_PROTECT */
+int64_t vmar_protect(uint32_t vmar, croi_vmar_range_t *ranges, uint64_t count);
+/* CROI_SYS_VMAR_DESTROY */
+int64_t vmar_destroy(uint32_t vmar);
+/* CROI_SYS_VMAR_UNMAP_HANDLE_CLOSE_THREAD_EXIT */
+int64_t vmar_unmap_handle_close_thread_exit(uint32_t vmar,
+                                            uint64_t addr,
+                                            uint64_t len,
+                                            uint32_t close_handle);
+/* CROI_SYS_VMAR_OP_RANGE */
+int64_t vmar_op_range(uint32_t vmar, uint32_t op, uint64_t addr, uint64_t len,
+                      uint64_t buffer, uint64_t buffer_size);
+/* CROI_SYS_VMAR_MAP_VIEW: vmar | perms << 32 */
+int64_t vmar_map_view(uint64_t vmar_perms, uint64_t vmar_offset, uint32_t vmo,
+                      uint64_t vmo_offset, uint64_t len);
+
+int64_t croi_vmar_map(uint32_t vmar, uint32_t options, uint64_t vmar_offset,
+                      uint32_t vmo, uint64_t vmo_offset, uint64_t len,
+                      uint64_t *addr);
+int64_t croi_vmar_unmap(uint32_t vmar, uint64_t addr, uint64_t len);
+int64_t croi_vmar_protect(uint32_t vmar, uint32_t options, uint64_t addr,
+                          uint64_t len);
+```
+
+# DESCRIPTION
+
+A process's address space is a tree of regions (VMARs).
+Every process has a root VMAR spanning the user part of the address space; its handle has TRANSFER, INSPECT, READ, WRITE and EXECUTE.
+A region holds mappings of VMOs and sub-regions.
+All addresses and lengths here are multiples of the page size.
+Mappings are placed first fit with an unmapped guard page on each side, or at an address the caller names.
+No mapping is writable and executable at once except in a JIT reservation.
+
+## vmar_allocate
+
+`vmar_allocate` creates a sub-region of the VMAR <parent> and writes its handle to <out_child> and its base address to <out_addr>.
+The call's first argument packs the handle and the options: <parent> in the low 32 bits and the options in the high 32.
+The options are:
+
+: `CROI_VM_CAN_MAP_READ`, `CROI_VM_CAN_MAP_WRITE`, `CROI_VM_CAN_MAP_EXECUTE`
+  What may be mapped in the region.
+  The parent's handle must have the matching rights (`CROI_ERR_ACCESS_DENIED`).
+  The child's handle has TRANSFER, INSPECT and DESTROY, and READ, WRITE and EXECUTE as asked.
+: `CROI_VM_SPECIFIC`
+  Place it at <offset> bytes from the parent's base.
+  Without it <offset> must be 0 and the region is placed first fit.
+: `CROI_VM_RESERVATION`
+  A region that holds views only (vmar_map_view), no mappings and no sub-regions.
+  An unviewed page faults.
+: `CROI_VM_JIT`
+  A reservation for generated code.
+  On amd64 with protection keys it gets a key of its own and its views may be readable, writable and executable together, with writes opened per thread by WRPKRU.
+  Elsewhere, or when the keys are used up, it is views only and never read-write-execute.
+  object_get_info(2) `CROI_INFO_VMAR_JIT` tells which.
+
+<size> must be a nonzero multiple of the page size.
+A range already in use is `CROI_ERR_ALREADY_EXISTS`; no room is `CROI_ERR_NO_MEMORY`; a parent that is a reservation, or any option not listed, is `CROI_ERR_INVALID_ARGS`.
+
+## vmar_map
+
+`vmar_map` maps up to 64 items into <vmar>, in order, each a `croi_vmar_map_item_t` of 48 bytes:
+
+```c
+typedef struct {
+  uint32_t vmo;
+  uint32_t options;      // CROI_VM_PERM_* and placement
+  uint64_t vmar_offset;
+  uint64_t vmo_offset;
+  uint64_t len;
+  uint64_t addr;         // out: where it was mapped
+  int32_t status;        // out: 0, or why this item failed
+  uint32_t reserved;     // 0
+} croi_vmar_map_item_t;
+```
+
+It stops at the first item that fails, because a program's segments are all or nothing.
+It returns how many it mapped and writes each processed item's <status> and, on success, <addr>.
+<options> is `CROI_VM_PERM_READ`, `CROI_VM_PERM_WRITE` and `CROI_VM_PERM_EXECUTE` in some combination (at least one), with:
+
+: `CROI_VM_SPECIFIC`
+  Map at <vmar_offset> from the VMAR's base, in a range wholly inside it and free.
+  Without it <vmar_offset> must be 0.
+: `CROI_VM_REQUIRE_NON_RESIZABLE`
+  `CROI_ERR_NOT_SUPPORTED` if the VMO is resizable.
+: `CROI_VM_ALLOW_FAULTS`
+  Accepted and ignored.
+: `CROI_VM_PERM_GUARDED`
+  On arm64 with branch target identification, an executable mapping is a guarded page.
+  Accepted and ignored elsewhere.
+
+The VMAR's handle needs READ, WRITE and EXECUTE for the permissions asked, and the VMO's handle needs MAP and the same.
+The mapping's permissions can later be raised by vmar_protect only up to the rights of the VMO's handle.
+Writable with executable is `CROI_ERR_INVALID_ARGS`, as is a misaligned or empty range and a range the VMO does not hold.
+A VMAR that is a reservation refuses the call.
+`CROI_ERR_ALREADY_EXISTS` is a range in use, `CROI_ERR_NO_MEMORY` no room.
+
+`croi_vmar_map` maps one and returns 0, the item's status or the call's; it writes the address to <addr> unless it is null.
+
+## vmar_unmap, vmar_protect
+
+Both take up to 64 ranges, each a `croi_vmar_range_t` of 24 bytes:
+
+```c
+typedef struct {
+  uint64_t addr;
+  uint64_t len;
+  uint32_t options;      // protect: CROI_VM_PERM_*; unmap: 0
+  int32_t status;        // out: 0, or why this range failed
+} croi_vmar_range_t;
+```
+
+Each range is done on its own: a range that fails does not stop the next.
+The calls return how many succeeded and write each range's <status>.
+
+`vmar_unmap` removes the mappings in the range; a mapping that crosses an edge is trimmed and one that spans the range is split.
+The range must lie inside the VMAR.
+<options> must be 0.
+Regions stay.
+
+`vmar_protect` changes the permissions of everything mapped in the range, which must be mapped throughout (`CROI_ERR_NOT_FOUND`), splitting mappings at the edges.
+The VMAR's handle needs the rights for the new permissions.
+Permissions beyond what the mapping was allowed are `CROI_ERR_ACCESS_DENIED`; writable with executable is `CROI_ERR_INVALID_ARGS`.
+
+`croi_vmar_unmap` and `croi_vmar_protect` do one range and return 0, the range's status or the call's.
+
+## vmar_destroy
+
+`vmar_destroy` removes a region, its sub-regions and everything mapped in them.
+The handle needs DESTROY.
+The root VMAR cannot be destroyed (`CROI_ERR_ACCESS_DENIED`).
+
+## vmar_unmap_handle_close_thread_exit
+
+`vmar_unmap_handle_close_thread_exit` is how a thread frees its own stack and ends.
+It unmaps [<addr>, <addr> + <len>) of <vmar> as vmar_unmap does, closes the handle <close_handle>, and exits the calling thread.
+It does not return on success.
+If unmapping fails it returns that status with the handle still open.
+If <close_handle> cannot be closed, the thread takes an undefined-instruction exception (exception(2)); if a handler resumes it, the call returns `CROI_ERR_BAD_HANDLE`.
+The unmap may take the caller's own stack, so after it the thread runs no user code again.
+
+## vmar_op_range
+
+`vmar_op_range` does <op> on the mappings in [<addr>, <addr> + <len>), <len> rounded up to a page and not 0.
+<buffer> and <buffer_size> must be 0.
+
+| op | Right on the VMAR | Does |
+| `CROI_VMAR_OP_COMMIT` | WRITE | commits the pages |
+| `CROI_VMAR_OP_DECOMMIT` | WRITE | frees the pages of anonymous VMOs |
+| `CROI_VMAR_OP_ZERO` | WRITE | zeroes the range |
+| `CROI_VMAR_OP_MAP_RANGE` | READ | enters the pages that are present in the page tables, so they do not fault |
+| `CROI_VMAR_OP_PREFETCH` | READ | asks the pager for the pages |
+| `CROI_VMAR_OP_DONT_NEED` | none | the hint of vmo(2) |
+| `CROI_VMAR_OP_ALWAYS_NEED` | none | the hint of vmo(2) |
+
+The range must be mapped throughout (`CROI_ERR_BAD_STATE` if there is a gap) and lie inside the VMAR (`CROI_ERR_OUT_OF_RANGE`).
+The mappings must have the permissions the op needs (`CROI_ERR_ACCESS_DENIED`).
+Commit, decommit and prefetch work only on the VMAR's own mappings, not those of sub-regions; the other ops reach sub-regions if the handle has OP_CHILDREN.
+Otherwise a mapping in a sub-region is `CROI_ERR_INVALID_ARGS`.
+The first error stops the call, with the earlier pieces done.
+Any other op is `CROI_ERR_INVALID_ARGS`.
+
+## vmar_map_view
+
+`vmar_map_view` shows [<vmo_offset>, <vmo_offset> + <len>) of a VMO at <vmar_offset> in a reservation, replacing whatever views were there, atomically: other threads see the old view or the new one, never a hole.
+The first argument packs the handle and the permissions: <vmar> in the low 32 bits and `CROI_VM_PERM_*` in the high 32.
+The VMAR must be a reservation, and the range inside it (`CROI_ERR_INVALID_ARGS`).
+Rights are as for vmar_map; the VMO's handle also gives the ceiling for a later vmar_protect.
+Writable with executable is allowed only in a JIT reservation that has a protection key.
+An executable view needs a VMO handle with EXECUTE; see vmo(2).
+vmar_unmap and vmar_protect work on the views of a reservation, and the range stays reserved.
+
+# SEE ALSO
+
+syscall(2), vmo(2), process(2), thread(2), object(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE`, `CROI_ERR_WRONG_TYPE` and `CROI_ERR_ACCESS_DENIED` as for any handle; see syscall(2).
+`CROI_ERR_BAD_STATE`: the address space is gone because its process died.
+

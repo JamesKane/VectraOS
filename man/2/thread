@@ -1,0 +1,87 @@
+page thread 2
+summary create, start and end threads, and read their registers
+names thread thread_create thread_start thread_exit thread_read_state thread_write_state
+src user/include/croi/syscall.h kernel/include/task.h kernel/Kernel/User/TaskSyscalls.swift kernel/Kernel/User/ExceptionSyscalls.swift kernel/Kernel/Object/Process.swift kernel/Kernel/Object/Exception.swift
+keys thread registers state debug single step exit start
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_THREAD_CREATE */
+int64_t thread_create(uint32_t process, const char *name, uint64_t name_len,
+                      uint64_t options, uint32_t *out);
+/* CROI_SYS_THREAD_START */
+int64_t thread_start(uint32_t thread, uint64_t entry, uint64_t stack,
+                     uint64_t arg1, uint64_t arg2);
+/* CROI_SYS_THREAD_EXIT */
+int64_t thread_exit(int64_t code);
+/* CROI_SYS_THREAD_READ_STATE */
+int64_t thread_read_state(uint32_t thread, uint32_t kind, void *buffer,
+                          uint64_t size);
+/* CROI_SYS_THREAD_WRITE_STATE */
+int64_t thread_write_state(uint32_t thread, uint32_t kind, const void *buffer,
+                           uint64_t size);
+```
+
+# DESCRIPTION
+
+A thread is one flow of control in a process, with its own registers and stack.
+
+## thread_create
+
+`thread_create` makes a thread in <process>, which needs MANAGE_THREAD, and writes its handle to <out>.
+<name> and <name_len> are as for process_create(2); <options> must be 0.
+The handle has the basic rights and READ, WRITE, GET_PROPERTY, SET_PROPERTY, DESTROY, SIGNAL and MANAGE_THREAD.
+The thread does not run until it is started.
+A process that has ended is `CROI_ERR_BAD_STATE`.
+
+## thread_start
+
+`thread_start` starts <thread>, which needs MANAGE_THREAD, at user address <entry> with stack pointer <stack>.
+The process must already be running: its first thread is started by process_start(2).
+The thread starts with <arg1> in its first argument register, <arg2> in the second and the vDSO's base address in the third.
+A thread already started, or a process not running, is `CROI_ERR_BAD_STATE`; an <entry> that is not a user address is `CROI_ERR_INVALID_ARGS`.
+A thread that starts while its process is suspended starts suspended.
+
+## thread_exit
+
+`thread_exit` ends the calling thread.
+It needs no handle and does not return.
+<code> is not kept.
+If it is the process's last running thread, the process ends.
+The thread's handle asserts `CROI_SIGNAL_TASK_TERMINATED`.
+
+## thread_read_state, thread_write_state
+
+These read and write the registers of a thread that is stopped: suspended (task_suspend(2)) or waiting in an exception (exception(2)).
+Any other thread is `CROI_ERR_BAD_STATE`.
+Reading needs READ on the thread's handle, writing needs WRITE.
+<kind> picks the state:
+
+: `CROI_THREAD_STATE_GENERAL_REGS`
+  A `croi_thread_state_general_regs_t`, the registers in the order of the architecture's layout in `<croi/syscall.h>`.
+  Reading needs <size> at least its size (`CROI_ERR_BUFFER_TOO_SMALL`), writing exactly its size (`CROI_ERR_INVALID_ARGS`).
+  A write changes only the flags user code may set (the arithmetic flags on amd64, NZCV on arm64).
+  On amd64 `fs_base` and `gs_base` must be user addresses.
+: `CROI_THREAD_STATE_DEBUG_REGS`
+  A `croi_thread_state_debug_regs_t`: the debug registers on amd64 (DR0 to DR3 must be 0 or user addresses; DR6 and DR7 keep only their user bits) and the breakpoint and watchpoint registers on arm64, whose counts and the last watchpoint hit are read only.
+  On rv64 there is nothing and a write is ignored.
+: `CROI_THREAD_STATE_SINGLE_STEP`
+  A `uint32_t`: 1 if the thread executes one instruction when it resumes, 0 if not.
+  Not available on rv64.
+
+Writing the debug registers or single-step needs the kernel booted with `croi.debug_syscalls=on` (or a test boot), else `CROI_ERR_NOT_SUPPORTED`.
+Any other <kind> is `CROI_ERR_INVALID_ARGS`.
+
+# SEE ALSO
+
+syscall(2), process(2), task(2), exception(2), futex(2), profile(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE`, `CROI_ERR_WRONG_TYPE` and `CROI_ERR_ACCESS_DENIED` as for any handle; see syscall(2).
+`CROI_ERR_NO_MEMORY`: no memory for the thread.
+

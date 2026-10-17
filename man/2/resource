@@ -1,0 +1,78 @@
+page resource 2
+summary resources: the right to touch a range of hardware or a privileged service
+names resource resource_create
+src user/include/croi/syscall.h kernel/include/resource.h kernel/Kernel/Object/Resource.swift kernel/Kernel/User/DriverSyscalls.swift
+keys mmio irq ioport smc system root privilege hardware authority
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_RESOURCE_CREATE: parent | options << 32 */
+int64_t resource_create(uint64_t parent_options, uint64_t base, uint64_t size,
+                        const char *name, uint64_t name_size, uint32_t *out);
+```
+
+# DESCRIPTION
+
+A resource is the authority for privileged operations over a range of one kind of space.
+Calls that touch hardware or a privileged service take a handle to a resource that grants what they touch: vmo_create_physical(2) a range of MMIO, interrupt_create(2) an IRQ, ioports_request(2) I/O ports, smc_call(2) a function id, and others a system resource.
+Resources only narrow: a process holding one makes smaller ones with `resource_create`, and hands them out.
+The first process receives the root resource, which grants every kind.
+
+The kinds are:
+
+| Kind | Value | The range |
+| `CROI_RSRC_KIND_MMIO` | 0 | physical addresses |
+| `CROI_RSRC_KIND_IRQ` | 1 | interrupt numbers |
+| `CROI_RSRC_KIND_IOPORT` | 2 | I/O ports (amd64 only) |
+| `CROI_RSRC_KIND_ROOT` | 3 | the root resource; it cannot be created |
+| `CROI_RSRC_KIND_SMC` | 4 | SMCCC function ids (arm64 only) |
+| `CROI_RSRC_KIND_SYSTEM` | 5 | a system service, <base> its number and <size> 1 |
+
+A resource of size 0 is its kind's ranged root: it grants any range its kind allows.
+The system resources, by <base>:
+
+| Base | Name | Gates |
+| 1 | `CROI_RSRC_SYSTEM_VMEX_BASE` | vmo_replace_as_executable |
+| 3 | `CROI_RSRC_SYSTEM_INFO_BASE` | the CPU and kernel memory statistics of object_get_info |
+| 4 | `CROI_RSRC_SYSTEM_CPU_BASE` | job_set_cpu_reservation |
+| 5 | `CROI_RSRC_SYSTEM_POWER_BASE` | system_powerctl, cpu_set_idle_states |
+| 8 | `CROI_RSRC_SYSTEM_IOMMU_BASE` | iommu_create |
+| 10 | `CROI_RSRC_SYSTEM_PROFILE_BASE` | profile_create |
+| 11 | `CROI_RSRC_SYSTEM_MSI_BASE` | msi_allocate |
+| 14 | `CROI_RSRC_SYSTEM_TRACING_BASE` | trace_configure, pmu_configure sampling |
+| 17 | `CROI_RSRC_SYSTEM_MEMORY_BASE` | account_create |
+
+The others (0, 2, 6, 7, 13, 15) can be made but no call checks them.
+
+## resource_create
+
+`resource_create` writes to <out> a handle to a new resource that is a part of the resource <parent>.
+The first argument packs the parent handle (low 32 bits; it needs WRITE) and the options (high 32): the kind in the low 16 bits and `CROI_RSRC_FLAG_EXCLUSIVE` (0x10000) above it.
+The new resource covers [<base>, <base> + <size>) of the kind; <size> must not be 0.
+<name> and <name_size> give a name, at most 31 bytes.
+The handle has TRANSFER, DUPLICATE, INSPECT, WRITE and GET_PROPERTY.
+
+The parent must grant the range, else `CROI_ERR_ACCESS_DENIED`.
+Physical memory (RAM and firmware's), the registers the kernel drives itself, and on amd64 the I/O ports it uses cannot be granted by any resource, the root included.
+On arm64 neither can the PSCI calls that change CPU or system state, which are the kernel's.
+A parent that is not a ranged root and is exclusive, or an exclusive child of one, is `CROI_ERR_INVALID_ARGS`.
+An exclusive resource may not overlap another resource of the same kind, nor may another overlap it; if it would, the call fails with `CROI_ERR_NOT_FOUND`.
+A range outside the kind's space is `CROI_ERR_NOT_FOUND`, and a kind this architecture lacks is `CROI_ERR_BAD_STATE`.
+An unknown kind, a flag other than EXCLUSIVE, the kind ROOT, a base and size that wrap, and a size of 0 are `CROI_ERR_INVALID_ARGS`.
+
+The kind, flags, range and name of a resource are read with object_get_info(2) `CROI_INFO_RESOURCE`.
+
+# SEE ALSO
+
+syscall(2), ioports(2), interrupt(2), msi(2), iommu(2), smc(2), system(2), trace(2), account(2), profile(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE`, `CROI_ERR_WRONG_TYPE` and `CROI_ERR_ACCESS_DENIED` as for any handle; see syscall(2).
+A resource of the wrong kind given to a call is `CROI_ERR_WRONG_TYPE`, and one that does not cover the range is `CROI_ERR_OUT_OF_RANGE`.
+`CROI_ERR_NO_MEMORY`: no memory.
+

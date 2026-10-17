@@ -1,0 +1,142 @@
+page syscall 2
+summary how croi's system calls are made, and what they return
+src user/include/croi/syscall.h kernel/include/object.h kernel/Kernel/User/Syscalls.swift
+keys system calls kernel abi statuses rights handles registers batch
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+int64_t croi_syscall(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
+                     uint64_t a3, uint64_t a4);
+int64_t croi_syscall6(uint64_t number, uint64_t a0, uint64_t a1, uint64_t a2,
+                      uint64_t a3, uint64_t a4, uint64_t a5);
+```
+
+# DESCRIPTION
+
+croi has 91 system calls.
+Each is a number, `CROI_SYS_<NAME>` in `<croi/syscall.h>`, and up to six integer arguments.
+`croi_syscall` makes a call of up to five arguments and `croi_syscall6` one of six.
+The pages of this section give each call's arguments in the order the kernel reads them, as a declaration with the call's own name; the declarations are not C functions.
+The few that have a C wrapper in the header say so.
+
+The number goes in `rax` (amd64), `x16` (arm64) or `a7` (rv64).
+The arguments go in the first six integer argument registers: `rdi`, `rsi`, `rdx`, `r10`, `r8`, `r9` on amd64, `x0` to `x5` on arm64, `a0` to `a5` on rv64.
+The result comes back in `rax`, `x0` or `a0`.
+
+A call that needs more values than registers packs two into one argument, written `a | b << 32`: the low 32 bits are the first and the high 32 bits the second.
+A pointer argument is a user address.
+An out-parameter is a pointer the kernel writes through.
+
+## Results
+
+The result is an `int64_t`.
+Zero is success, or for a call that returns a count or a value, that count or value.
+A negative result is a status:
+
+| Status | Value | Means |
+| `CROI_OK` | 0 | success |
+| `CROI_ERR_INTERNAL` | -1 | a fault in the kernel |
+| `CROI_ERR_NOT_SUPPORTED` | -2 | not for this object, option or architecture |
+| `CROI_ERR_NO_RESOURCES` | -3 | a fixed resource is used up |
+| `CROI_ERR_NO_MEMORY` | -4 | the kernel is out of memory, or an account's limit is reached |
+| `CROI_ERR_INVALID_ARGS` | -10 | an argument is malformed, or an out-parameter is not writable |
+| `CROI_ERR_BAD_HANDLE` | -11 | the handle is not in the caller's table |
+| `CROI_ERR_WRONG_TYPE` | -12 | the handle is of another type of object |
+| `CROI_ERR_OUT_OF_RANGE` | -14 | a size, offset or count is outside what the object holds |
+| `CROI_ERR_BUFFER_TOO_SMALL` | -15 | the buffer is too small for the answer |
+| `CROI_ERR_BAD_STATE` | -20 | the object is not in a state that allows the call |
+| `CROI_ERR_TIMED_OUT` | -21 | the deadline passed |
+| `CROI_ERR_SHOULD_WAIT` | -22 | there is nothing to read, or no room to write |
+| `CROI_ERR_CANCELED` | -23 | the wait ended before it finished |
+| `CROI_ERR_PEER_CLOSED` | -24 | the other end of the channel is gone |
+| `CROI_ERR_NOT_FOUND` | -25 | there is no such thing |
+| `CROI_ERR_ALREADY_EXISTS` | -26 | there is one already |
+| `CROI_ERR_ALREADY_BOUND` | -27 | it is bound to something already |
+| `CROI_ERR_UNAVAILABLE` | -28 | not available now |
+| `CROI_ERR_ACCESS_DENIED` | -30 | a right is missing, or the caller may not |
+| `CROI_ERR_IO` | -40 | the device or pager failed |
+| `CROI_ERR_IO_DATA_INTEGRITY` | -42 | the pager found the data corrupt |
+| `CROI_ERR_FILE_BIG` | -53 | a pager reports the file too big |
+| `CROI_ERR_NO_SPACE` | -54 | a pager reports no space |
+
+The last three are statuses a pager may give a page it cannot supply; see pager(2).
+A call number the kernel does not have fails with `CROI_ERR_NOT_SUPPORTED`.
+
+## Handles and rights
+
+A process refers to a kernel object by a handle, a 32-bit value in its own table.
+Zero is never a handle.
+A handle carries rights, and a call names the rights it needs of each handle it takes.
+A handle not in the table is `CROI_ERR_BAD_HANDLE`; one of the wrong type of object is `CROI_ERR_WRONG_TYPE`; one without the right is `CROI_ERR_ACCESS_DENIED`.
+The pages say which right each call needs.
+A call that needs a resource takes a handle to a resource(2) of the right kind and range.
+
+| Right | Bit | Right | Bit |
+| `CROI_RIGHT_DUPLICATE` | 0 | `CROI_RIGHT_GET_POLICY` | 10 |
+| `CROI_RIGHT_TRANSFER` | 1 | `CROI_RIGHT_SET_POLICY` | 11 |
+| `CROI_RIGHT_READ` | 2 | `CROI_RIGHT_SIGNAL` | 12 |
+| `CROI_RIGHT_WRITE` | 3 | `CROI_RIGHT_WAIT` | 14 |
+| `CROI_RIGHT_EXECUTE` | 4 | `CROI_RIGHT_INSPECT` | 15 |
+| `CROI_RIGHT_MAP` | 5 | `CROI_RIGHT_MANAGE_JOB` | 16 |
+| `CROI_RIGHT_GET_PROPERTY` | 6 | `CROI_RIGHT_MANAGE_PROCESS` | 17 |
+| `CROI_RIGHT_SET_PROPERTY` | 7 | `CROI_RIGHT_MANAGE_THREAD` | 18 |
+| `CROI_RIGHT_ENUMERATE` | 8 | `CROI_RIGHT_APPLY_PROFILE` | 19 |
+| `CROI_RIGHT_DESTROY` | 9 | `CROI_RIGHT_OP_CHILDREN` | 21 |
+| `CROI_RIGHT_ATTACH_VMO` | 23 | `CROI_RIGHT_MANAGE_VMO` | 24 |
+| `CROI_RIGHT_RESIZE` | 22 | `CROI_RIGHT_CHARGE` | 25 |
+| `CROI_RIGHT_SAME_RIGHTS` | 31 | | |
+
+`CROI_RIGHTS_BASIC` is TRANSFER, DUPLICATE, WAIT and INSPECT.
+`CROI_RIGHT_SAME_RIGHTS` is not a right: handle_duplicate(2) reads it as "the rights the handle has".
+
+The type of an object is one of:
+
+| Type | Value | Type | Value |
+| `CROI_OBJ_TYPE_PROCESS` | 1 | `CROI_OBJ_TYPE_RESOURCE` | 15 |
+| `CROI_OBJ_TYPE_THREAD` | 2 | `CROI_OBJ_TYPE_JOB` | 17 |
+| `CROI_OBJ_TYPE_VMO` | 3 | `CROI_OBJ_TYPE_VMAR` | 18 |
+| `CROI_OBJ_TYPE_CHANNEL` | 4 | `CROI_OBJ_TYPE_IOMMU` | 23 |
+| `CROI_OBJ_TYPE_PORT` | 6 | `CROI_OBJ_TYPE_BTI` | 24 |
+| `CROI_OBJ_TYPE_INTERRUPT` | 9 | `CROI_OBJ_TYPE_PROFILE` | 25 |
+| `CROI_OBJ_TYPE_LOG` | 12 | `CROI_OBJ_TYPE_PMT` | 26 |
+| `CROI_OBJ_TYPE_SUSPEND_TOKEN` | 27 | `CROI_OBJ_TYPE_PAGER` | 28 |
+| `CROI_OBJ_TYPE_EXCEPTION` | 29 | `CROI_OBJ_TYPE_MSI` | 32 |
+| `CROI_OBJ_TYPE_COUNTER` | 34 | `CROI_OBJ_TYPE_MEMORY_ACCOUNT` | 49 |
+
+Every object has a koid, a 64-bit number unique for the life of the system, that object_get_info(2) reports.
+
+## Batches
+
+A call that is often made many times takes an array of items and a count, and does the whole array in one trap.
+handle_duplicate, object_bind, port_queue, port_wait, channel_write, channel_read, counter_add, interrupt_ack, vmar_map, vmar_unmap and vmar_protect work this way.
+Each item has an `int32_t status` field.
+A count of 0, or one past the call's limit (64 items for every one of them), or an array the kernel cannot read or write, fails the whole call with a negative status before any item is done.
+Otherwise the call returns how many items succeeded and writes each processed item's status back.
+Some calls stop at the first item that fails, and the later items are not touched; the others go on past a failure.
+Each page says which.
+A caller that wants to know why an item failed reads its `status`.
+
+## User memory
+
+The kernel reads and writes user memory only through checked copies.
+A pointer into memory that is not mapped, or not writable for an out-parameter, makes the call fail with `CROI_ERR_INVALID_ARGS`; it never crashes the kernel.
+A call checks every out-parameter before it changes anything, so a call that fails for a bad pointer has not created a handle or moved a message.
+
+## Deadlines
+
+A deadline is an absolute time on the monotonic clock in nanoseconds, the clock the vDSO reads.
+`UINT64_MAX` is no deadline.
+A wait never returns early for its deadline.
+
+## Policy
+
+A job's policy can deny or kill on the calls that create things (vmo_create, channel_create, port_create, process_create, pager_create) and on use of a bad handle.
+See job(2).
+
+# SEE ALSO
+
+null(2), handle(2), object(2), port(2), channel(2), vmo(2), vmar(2), process(2), thread(2), job(2), task(2), exception(2), futex(2), counter(2), pager(2), interrupt(2), msi(2), iommu(2), bti(2), resource(2), ioports(2), debuglog(2), profile(2), account(2), cprng(2), system(2), smc(2), trace(2), pmu(2)

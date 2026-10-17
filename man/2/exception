@@ -1,0 +1,68 @@
+page exception 2
+summary exception channels: handle the faults of a thread, a process or a job
+names exception task_create_exception_channel exception_get_thread exception_get_process
+src user/include/croi/syscall.h kernel/include/task.h kernel/Kernel/User/ExceptionSyscalls.swift kernel/Kernel/Object/Exception.swift
+keys fault exception handler debugger channel policy report breakpoint
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_TASK_CREATE_EXCEPTION_CHANNEL */
+int64_t task_create_exception_channel(uint32_t task, uint64_t options,
+                                      uint32_t *out);
+/* CROI_SYS_EXCEPTION_GET_THREAD */
+int64_t exception_get_thread(uint32_t exception, uint32_t *out);
+/* CROI_SYS_EXCEPTION_GET_PROCESS */
+int64_t exception_get_process(uint32_t exception, uint32_t *out);
+```
+
+# DESCRIPTION
+
+When a user thread faults, or a job's policy raises an exception, the kernel offers it to exception channels in order: the thread's, its process's, then each job up the tree.
+Each offer is a message on the channel: a `croi_exception_info_t` (process koid, thread koid, type) and one handle to an exception object.
+The faulting thread waits, in a wait that a kill ends, until the last handle to the exception object is closed.
+It then does what the object's state says:
+
+| State | Value | The thread |
+| `CROI_EXCEPTION_STATE_TRY_NEXT` | 0 | is offered to the next channel (the state at first) |
+| `CROI_EXCEPTION_STATE_HANDLED` | 1 | resumes, with any registers the handler wrote with thread_write_state(2) |
+| `CROI_EXCEPTION_STATE_THREAD_EXIT` | 2 | exits |
+
+With no channel left the process is killed, with return code `CROI_TASK_RETCODE_EXCEPTION_KILL`.
+A channel whose user end is closed is skipped.
+
+The exception types are `CROI_EXCP_GENERAL`, `CROI_EXCP_FATAL_PAGE_FAULT`, `CROI_EXCP_UNDEFINED_INSTRUCTION`, `CROI_EXCP_SW_BREAKPOINT`, `CROI_EXCP_HW_BREAKPOINT`, `CROI_EXCP_UNALIGNED_ACCESS` and `CROI_EXCP_POLICY_ERROR`.
+A debugger channel also gets `CROI_EXCP_THREAD_STARTING`, `CROI_EXCP_THREAD_EXITING` (no registers, and the reply is ignored) and, on a job, `CROI_EXCP_PROCESS_STARTING`.
+While a thread is in an exception, object_get_info(2) `CROI_INFO_THREAD_EXCEPTION_REPORT` gives its `croi_exception_report_t`, and thread_read_state(2) its registers.
+
+The state is read and set as the property `CROI_PROP_EXCEPTION_STATE` (a `uint32_t`) of the exception object with object_get_property(2) and object_set_property(2).
+`CROI_PROP_EXCEPTION_STRATEGY` (`CROI_EXCEPTION_STRATEGY_FIRST_CHANCE` 0 or `_SECOND_CHANCE` 1) says whether a debugger sees the exception before the other handlers or after them; it can be set only on an exception that went to a debugger channel (`CROI_ERR_BAD_STATE` otherwise).
+The handle to the exception has TRANSFER, DUPLICATE, WAIT, INSPECT, GET_PROPERTY and SET_PROPERTY.
+
+## task_create_exception_channel
+
+`task_create_exception_channel` makes a channel for the exceptions of <task>, a thread, a process or a job, and writes the user end to <out>; the task keeps the other.
+The handle <task> needs INSPECT, DUPLICATE, TRANSFER and MANAGE_THREAD, and for a process or job also ENUMERATE.
+The channel's handle has TRANSFER, WAIT and READ.
+<options> is 0 or `CROI_EXCEPTION_CHANNEL_DEBUGGER`, which makes a debugger channel: it also gets a process's start and each thread's start and exit.
+A thread has no debugger channel (`CROI_ERR_INVALID_ARGS`).
+A task has one channel of each kind while the user end is open (`CROI_ERR_ALREADY_BOUND`); a job may have up to `CROI_EXCEPTION_CHANNEL_JOB_DEBUGGER_MAX_COUNT` (32) debugger channels.
+The job's policy for new channels applies.
+
+## exception_get_thread, exception_get_process
+
+These write to <out> a handle to the thread that took the exception, or its process, with the full rights of a thread or process.
+The handle <exception> must be an exception object; it needs no right.
+
+# SEE ALSO
+
+syscall(2), thread(2), task(2), job(2), process(2), channel(2), object(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE`, `CROI_ERR_WRONG_TYPE` and `CROI_ERR_ACCESS_DENIED` as for any handle; see syscall(2).
+`CROI_ERR_BAD_STATE`: a process that has ended has no debugger channel to make.
+

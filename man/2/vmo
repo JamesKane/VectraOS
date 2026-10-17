@@ -1,0 +1,159 @@
+page vmo 2
+summary virtual memory objects: create, derive, resize and operate on them
+names vmo vmo_create vmo_create_child vmo_op_range vmo_set_cache_policy vmo_create_physical vmo_replace_as_executable vmo_set_size
+src user/include/croi/syscall.h kernel/include/vmo.h kernel/include/cache.h kernel/Kernel/Object/VmoObject.swift kernel/Kernel/User/DriverSyscalls.swift
+keys memory vmo child slice snapshot commit decommit cache physical executable resize discardable
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_VMO_CREATE */
+int64_t vmo_create(uint64_t size, uint64_t options, uint32_t *out,
+                   uint32_t account);
+/* CROI_SYS_VMO_CREATE_CHILD */
+int64_t vmo_create_child(uint32_t vmo, uint64_t options, uint64_t offset,
+                         uint64_t size, uint32_t *out, uint32_t account);
+/* CROI_SYS_VMO_OP_RANGE */
+int64_t vmo_op_range(uint32_t vmo, uint32_t op, uint64_t offset, uint64_t size,
+                     void *buffer, uint64_t buffer_size);
+/* CROI_SYS_VMO_SET_CACHE_POLICY */
+int64_t vmo_set_cache_policy(uint32_t vmo, uint32_t policy);
+/* CROI_SYS_VMO_CREATE_PHYSICAL */
+int64_t vmo_create_physical(uint32_t mmio, uint64_t paddr, uint64_t size,
+                            uint32_t *out);
+/* CROI_SYS_VMO_REPLACE_AS_EXECUTABLE */
+int64_t vmo_replace_as_executable(uint32_t vmo, uint32_t vmex, uint32_t *out);
+/* CROI_SYS_VMO_SET_SIZE */
+int64_t vmo_set_size(uint32_t vmo, uint64_t size);
+```
+
+# DESCRIPTION
+
+A VMO (virtual memory object) is a run of pages that a process maps into its address space with vmar_map(2), or reads and writes by operations on it.
+Its size is a whole number of pages.
+The pages of an ordinary VMO are zero-filled and committed when first touched.
+A VMO has a content size, a byte count no larger than its size, that object_get_property(2) reads and writes.
+The signal `CROI_VMO_ZERO_CHILDREN` is asserted while the VMO has no children; a child clears it, and it is set again once the last child is gone, which is after the child's last handle and last mapping.
+
+## vmo_create
+
+`vmo_create` writes a handle to a new VMO of <size> bytes to <out>.
+<size> is rounded up to a page; if it was not a multiple of a page, it is the content size.
+The handle has TRANSFER, DUPLICATE, WAIT, INSPECT, READ, WRITE, MAP, GET_PROPERTY, SET_PROPERTY and SIGNAL.
+<options> is any of:
+
+: `CROI_VMO_CREATE_RESIZABLE`
+  vmo_set_size may change its size, and the handle also has RESIZE.
+: `CROI_VMO_CREATE_DISCARDABLE`
+  The kernel may take the pages back while the VMO is unlocked; see vmo_op_range below.
+: `CROI_VMO_CREATE_UNBOUNDED`
+  The VMO is as large as a VMO can be, and <size> is its content size.
+  It cannot be combined with RESIZABLE (`CROI_ERR_INVALID_ARGS`).
+: `CROI_VMO_CHARGE_TO`
+  The pages are charged to the account whose handle is the fourth argument, <account>, which needs CHARGE.
+
+Without CHARGE_TO the pages are charged to the account of the calling process, if it has one; account(2).
+A size too large is `CROI_ERR_OUT_OF_RANGE`; any other option is `CROI_ERR_INVALID_ARGS`.
+The job's policy for new VMOs applies.
+
+## vmo_create_child
+
+`vmo_create_child` writes a handle to a child of <vmo> to <out>.
+The handle <vmo> needs DUPLICATE and READ.
+<size> is rounded up to a page, and as in vmo_create a size that is not a multiple of a page is the child's content size.
+<options> picks one kind, with any of RESIZABLE and NO_WRITE as far as the kind allows:
+
+: `CROI_VMO_CHILD_SNAPSHOT`, `CROI_VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE`, `CROI_VMO_CHILD_SNAPSHOT_MODIFIED`
+  A copy-on-write snapshot of [<offset>, <offset> + <size>) of the parent.
+  The first is isolated from the parent both ways; the second copies each page in at the child's first touch of it.
+  Not under a pager VMO for the first.
+: `CROI_VMO_CHILD_SLICE`
+  The same pages, at an offset, page aligned and wholly inside the parent (`CROI_ERR_INVALID_ARGS` otherwise).
+  It may be of an anonymous VMO that is not resizable, or of a physical or contiguous one, with the parent's cache policy.
+  A slice of a slice is a slice of the root.
+  It must be given alone.
+: `CROI_VMO_CHILD_REFERENCE`
+  Another handle-able name for the parent itself, with <offset> and <size> 0.
+  `CROI_VMO_CHILD_RESIZABLE` with it needs RESIZE on the parent's handle and the parent resizable.
+  A physical VMO has no reference (`CROI_ERR_NOT_SUPPORTED`).
+
+`CROI_VMO_CHILD_NO_WRITE` with RESIZABLE is `CROI_ERR_INVALID_ARGS`.
+A discardable parent is `CROI_ERR_NOT_SUPPORTED`.
+A kind not listed, or two kinds at once, is `CROI_ERR_INVALID_ARGS`.
+The child's handle has the rights of <vmo>'s less RESIZE, plus RESIZE for a RESIZABLE child, plus GET_PROPERTY and SET_PROPERTY.
+NO_WRITE also removes WRITE; without it a snapshot gains WRITE and loses EXECUTE, which is how a loader keeps code executable.
+A snapshot is charged to the calling process's account, or with `CROI_VMO_CHARGE_TO` to the account in <account>.
+A slice of a physical or contiguous VMO with CHARGE_TO is charged its whole size and never evicted, which is how device-local memory is budgeted.
+A reference owns no pages and takes none.
+
+## vmo_op_range
+
+`vmo_op_range` does <op> on [<offset>, <offset> + <size>) of the VMO.
+A range beyond the VMO is `CROI_ERR_OUT_OF_RANGE`.
+Commit, prefetch and the hints round the range out to pages; the others work on the bytes given.
+
+| op | Right | Does |
+| `CROI_VMO_OP_COMMIT` | WRITE | commits the pages, reading them from the pager first if there is one |
+| `CROI_VMO_OP_DECOMMIT` | WRITE | frees the pages; <offset> and <size> page aligned. Anonymous VMOs free them; a contiguous VMO lends them to the system; a physical one is `CROI_ERR_NOT_SUPPORTED` |
+| `CROI_VMO_OP_ZERO` | WRITE | zeroes the bytes; `CROI_ERR_NOT_SUPPORTED` for a physical VMO |
+| `CROI_VMO_OP_PREFETCH` | READ | asks the pager for the pages; no effect on a VMO no pager backs |
+| `CROI_VMO_OP_CACHE_SYNC` | READ | makes written code visible to instruction fetch; <size> not 0 |
+| `CROI_VMO_OP_CACHE_CLEAN` | READ | writes cached lines back; <size> not 0 |
+| `CROI_VMO_OP_CACHE_CLEAN_INVALIDATE` | READ | writes back and drops cached lines; <size> not 0 |
+| `CROI_VMO_OP_CACHE_INVALIDATE` | | `CROI_ERR_NOT_SUPPORTED` |
+| `CROI_VMO_OP_LOCK` | READ or WRITE | locks a discardable VMO, all of it; writes a `croi_vmo_lock_state_t` to <buffer> (<buffer_size> at least its 32 bytes) whose `discarded_size` is the VMO's size if the kernel had taken its pages, else 0 |
+| `CROI_VMO_OP_TRY_LOCK` | READ or WRITE | as LOCK but `CROI_ERR_UNAVAILABLE` if the pages were taken; writes nothing |
+| `CROI_VMO_OP_UNLOCK` | READ or WRITE | unlocks; `CROI_ERR_BAD_STATE` if it was not locked |
+| `CROI_VMO_OP_DONT_NEED` | none | hints that a pager VMO's pages may be evicted first |
+| `CROI_VMO_OP_ALWAYS_NEED` | none | hints that a pager VMO's pages should stay |
+
+The lock operations are `CROI_ERR_NOT_SUPPORTED` on a VMO that is not discardable, and need <offset> 0 and <size> the VMO's size (`CROI_ERR_OUT_OF_RANGE`).
+While a discardable VMO is locked the kernel keeps its pages.
+Once taken, they are gone, every access fails with `CROI_ERR_NOT_FOUND` and a LOCK is how a program learns it.
+The hints are ignored on a VMO no pager backs.
+An op not listed is `CROI_ERR_INVALID_ARGS`.
+A missing right is `CROI_ERR_ACCESS_DENIED`.
+
+## vmo_set_cache_policy
+
+`vmo_set_cache_policy` sets the memory type later mappings of the VMO use.
+The handle needs MAP.
+<policy> is `CROI_CACHE_POLICY_CACHED`, `CROI_CACHE_POLICY_UNCACHED` or `CROI_CACHE_POLICY_UNCACHED_DEVICE` (the last two both give device memory) or `CROI_CACHE_POLICY_WRITE_COMBINING`; another is `CROI_ERR_INVALID_ARGS`.
+Committed pages are cleaned and invalidated first.
+It fails with `CROI_ERR_BAD_STATE` while the VMO is mapped or pinned, has children, is a slice or reference, or is backed by a pager or discardable (these stay cached).
+Memory the firmware owns can only be cached, and a change is `CROI_ERR_ACCESS_DENIED`.
+
+## vmo_create_physical
+
+`vmo_create_physical` writes to <out> a handle to a VMO of the physical range [<paddr>, <paddr> + <size>).
+<mmio> is a resource(2) of kind MMIO that grants the range, <paddr> and <size> are page aligned and <size> is not 0.
+The VMO is uncached device memory, with the rights of vmo_create's handle.
+RAM and the registers the kernel uses itself cannot be granted: they are `CROI_ERR_ACCESS_DENIED`.
+The job's policy for new VMOs applies.
+
+## vmo_replace_as_executable
+
+`vmo_replace_as_executable` consumes the handle <vmo>, whether or not it succeeds, and writes to <out> a handle to the same VMO with EXECUTE added.
+<vmex> is a resource(2) that grants the VMEX system resource.
+Without EXECUTE a VMO cannot be mapped executable.
+
+## vmo_set_size
+
+`vmo_set_size` changes the size of a resizable anonymous VMO to <size>, rounded up to a page.
+The handle needs WRITE and RESIZE.
+The content size becomes <size> exactly, and the bytes between it and the end of its last page read as zero.
+It fails with `CROI_ERR_UNAVAILABLE` for a VMO that is not resizable or is physical or contiguous, `CROI_ERR_OUT_OF_RANGE` for a size too large, and `CROI_ERR_BAD_STATE` when pinned pages would be cut off.
+
+# SEE ALSO
+
+syscall(2), vmar(2), bti(2), pager(2), account(2), object(2), resource(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE`, `CROI_ERR_WRONG_TYPE` and `CROI_ERR_ACCESS_DENIED` as for any handle; see syscall(2).
+`CROI_ERR_NO_MEMORY`: no memory for the pages, or an account's limit.
+`CROI_ERR_INVALID_ARGS`: a bad option, or an unwritable <out>.
+

@@ -1,0 +1,80 @@
+page system 2
+summary power control and idle states
+names system system_powerctl cpu_set_idle_states
+src user/include/croi/syscall.h kernel/include/power.h kernel/Kernel/Power.swift kernel/Kernel/Sched/Idle.swift
+keys power shutdown reboot reset idle cstate mwait psci cpu off
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_SYSTEM_POWERCTL */
+int64_t system_powerctl(uint32_t power, uint32_t cmd,
+                        const croi_system_powerctl_arg_t *arg);
+/* CROI_SYS_CPU_SET_IDLE_STATES */
+int64_t cpu_set_idle_states(uint32_t power, uint64_t cpu,
+                            const croi_idle_state_t *states, uint64_t count);
+```
+
+# DESCRIPTION
+
+Both calls need <power>, a resource(2) that grants the POWER system resource.
+
+## system_powerctl
+
+`system_powerctl` does the command <cmd>.
+`CROI_SYSTEM_POWERCTL_REBOOT` and `CROI_SYSTEM_POWERCTL_SHUTDOWN` stop every other CPU, wait up to 100 ms for the debuglog to reach the console, and reset or turn off the machine.
+They return only on failure.
+
+| Architecture | Reboot | Shutdown |
+| amd64 | the FADT's reset register, then port 0xCF9, then the 8042 | `CROI_ERR_NOT_SUPPORTED`; use `CROI_SYSTEM_POWERCTL_ACPI_TRANSITION_S_STATE` |
+| arm64 | PSCI SYSTEM_RESET | PSCI SYSTEM_OFF |
+| rv64 | SBI SRST, cold reboot | SBI SRST |
+
+On amd64 `CROI_SYSTEM_POWERCTL_ACPI_TRANSITION_S_STATE` takes an <arg> (a `croi_system_powerctl_arg_t`, 12 bytes) whose `acpi_transition_s_state` holds `target_s_state`, `sleep_type_a` and `sleep_type_b`.
+Only state 5, soft off, is entered; it shuts the machine down.
+The sleep types come from the `_S5` object of the DSDT, which only an AML interpreter in user space can read.
+A target from 1 to 4 is `CROI_ERR_NOT_SUPPORTED`, outside 1 to 5 or a sleep type above 7 is `CROI_ERR_INVALID_ARGS`.
+The command is `CROI_ERR_NOT_SUPPORTED` on other architectures.
+
+The other commands (enable and disable CPUs, power limits, reboot to bootloader or recovery, and acknowledging a kernel-initiated reboot) are `CROI_ERR_NOT_SUPPORTED`; any other value is `CROI_ERR_INVALID_ARGS`.
+<arg> is read only for the S-state command.
+
+## cpu_set_idle_states
+
+`cpu_set_idle_states` installs the table of idle states of CPU <cpu>: <count> (at most `CROI_IDLE_STATES_MAX`, 8) entries of
+
+```c
+typedef struct {
+  uint64_t exit_latency_ns;
+  uint64_t target_residency_ns;
+  uint64_t param;
+  uint32_t method;  // CROI_IDLE_METHOD_*
+  uint32_t flags;   // CROI_IDLE_FLAG_*
+} croi_idle_state_t;
+```
+
+The power service installs each CPU's table from what the device manager read from ACPI (_CST, _LPI).
+<method> is `CROI_IDLE_METHOD_HALT` (hlt or wfi with the given latencies), `CROI_IDLE_METHOD_MWAIT` (amd64; <param> is the MWAIT hint) or `CROI_IDLE_METHOD_PSCI` (arm64; <param> is the power_state of CPU_SUSPEND).
+A method the CPU lacks is `CROI_ERR_NOT_SUPPORTED`.
+Exit latencies must not decrease along the table, and <flags> may hold only `CROI_IDLE_FLAG_TIMER_STOPS` and `CROI_IDLE_FLAG_CONTEXT_LOST`; <cpu> must exist and <count> be at most 8 (`CROI_ERR_INVALID_ARGS`).
+A <count> of 0 returns the CPU to halt only.
+A new table replaces the old at once.
+
+When a CPU goes idle the kernel enters the deepest state whose target residency fits before the CPU's next timer and whose exit latency fits the wake-latency bound, the tightest deadline admitted on that CPU (or of an interrupt routed to it that has a deadline profile).
+It does not predict.
+A state flagged TIMER_STOPS or CONTEXT_LOST is kept in the table but not entered.
+object_get_info(2) `CROI_INFO_CPU_IDLE_STATES` on the INFO resource gives, for every CPU and state, a `croi_idle_state_stats_t`: entries, residency, how often the state was left for a shallower one because its exit latency was over the bound (`demoted`), and how often it fitted but could not be entered (`skipped`).
+
+# SEE ALSO
+
+syscall(2), resource(2), object(2), job(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE`, `CROI_ERR_WRONG_TYPE` and `CROI_ERR_ACCESS_DENIED` as for any handle; see syscall(2).
+`CROI_ERR_OUT_OF_RANGE`: the resource does not grant POWER; `CROI_ERR_WRONG_TYPE` if it is of another kind.
+`CROI_ERR_NO_MEMORY`: no memory for the table.
+

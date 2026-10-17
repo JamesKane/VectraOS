@@ -1,0 +1,86 @@
+page interrupt 2
+summary device interrupts delivered as port packets
+names interrupt interrupt_create interrupt_ack interrupt_set_affinity
+src user/include/croi/syscall.h kernel/include/interrupt.h kernel/Kernel/User/DriverSyscalls.swift kernel/Kernel/Object/InterruptObject.swift
+keys irq gsi intid driver level edge ack affinity
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_INTERRUPT_CREATE */
+int64_t interrupt_create(uint32_t irq, uint64_t number, uint32_t options,
+                         uint32_t *out);
+/* CROI_SYS_INTERRUPT_ACK */
+int64_t interrupt_ack(croi_interrupt_ack_item_t *items, uint64_t count);
+/* CROI_SYS_INTERRUPT_SET_AFFINITY */
+int64_t interrupt_set_affinity(uint32_t interrupt, uint64_t cpu_mask);
+
+int64_t croi_interrupt_ack(uint32_t interrupt);
+```
+
+# DESCRIPTION
+
+An interrupt object stands for one device interrupt.
+A driver binds it to a port with object_bind(2) (`CROI_BIND_INTERRUPT`, to a port made with `CROI_PORT_BIND_TO_INTERRUPT`), and each time the interrupt fires, one `CROI_PKT_TYPE_INTERRUPT` packet arrives with the time in nanoseconds in payload[0].
+The interrupt then waits to be acknowledged: a further firing meanwhile only records its time, and is delivered at the acknowledgment.
+A level-triggered interrupt is masked at the controller when it fires and unmasked on the acknowledgment, so it cannot storm while the driver works.
+An interrupt that fires before it is bound is delivered at the binding.
+Closing the last handle destroys the interrupt.
+
+## interrupt_create
+
+`interrupt_create` writes to <out> a handle to an interrupt object for <number>.
+<irq> is a resource(2) of kind IRQ that covers <number>, or the root resource.
+<number> is the interrupt's GSI on amd64 (an I/O APIC pin), its INTID on arm64 (a GICv3 SPI, 32 and up) and its source on the PLIC on rv64.
+<options> is any of:
+
+: `CROI_INTERRUPT_REMAP_IRQ`
+  <number> is an ISA IRQ, which the MADT's overrides map to a GSI (amd64).
+: `CROI_INTERRUPT_MODE_DEFAULT`, `_EDGE_LOW`, `_EDGE_HIGH`, `_LEVEL_LOW`, `_LEVEL_HIGH`
+  The trigger mode.
+  The default is what firmware says (on amd64 the MADT overrides, else ISA edge-high and PCI level-low).
+  `CROI_INTERRUPT_MODE_EDGE_BOTH` is `CROI_ERR_NOT_SUPPORTED`.
+: `CROI_INTERRUPT_TIMESTAMP_MONO`
+  Accepted: the times are monotonic anyway.
+
+Another option, or a number the controller does not have, is `CROI_ERR_INVALID_ARGS`.
+The interrupt is routed to the boot CPU and unmasked.
+The handle has the basic rights, READ, WRITE and SIGNAL.
+
+## interrupt_ack
+
+`interrupt_ack` acknowledges each of up to 64 bound interrupts, each item a `croi_interrupt_ack_item_t`:
+
+```c
+typedef struct {
+  uint32_t interrupt;  // the interrupt's handle
+  int32_t status;      // out: 0, or why this item failed
+} croi_interrupt_ack_item_t;
+```
+
+Each handle needs WRITE.
+An interrupt not bound to a port is `CROI_ERR_BAD_STATE`; one destroyed is `CROI_ERR_CANCELED`.
+Items are all done.
+The call returns how many succeeded and writes each item's <status>.
+`croi_interrupt_ack` acknowledges one and returns 0, the item's status or the call's.
+
+## interrupt_set_affinity
+
+`interrupt_set_affinity` routes the interrupt to the lowest-numbered CPU of <cpu_mask> (bit n is CPU n) that takes interrupts and is not reserved to another job (job(2)).
+Until it is called the interrupt goes to the boot CPU.
+The handle needs WRITE.
+No usable CPU in the mask is `CROI_ERR_INVALID_ARGS`; an interrupt that cannot be moved to a CPU is `CROI_ERR_NOT_SUPPORTED`.
+
+# SEE ALSO
+
+syscall(2), port(2), msi(2), resource(2), profile(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE`, `CROI_ERR_WRONG_TYPE` and `CROI_ERR_ACCESS_DENIED` as for any handle; see syscall(2).
+`CROI_ERR_ALREADY_BOUND`: another interrupt object holds <number>.
+`CROI_ERR_NO_MEMORY`: no memory.
+

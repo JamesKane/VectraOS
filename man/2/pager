@@ -1,0 +1,131 @@
+page pager 2
+summary pagers: VMOs whose pages a user process supplies
+names pager pager_create pager_create_vmo pager_detach_vmo pager_supply_pages pager_op_range pager_query_dirty_ranges pager_query_vmo_stats
+src user/include/croi/syscall.h kernel/include/vmo.h kernel/Kernel/User/PagerSyscalls.swift kernel/Kernel/Object/Pager.swift
+keys page fault file cache dirty writeback supply detach
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_PAGER_CREATE */
+int64_t pager_create(uint64_t options, uint32_t *out);
+/* CROI_SYS_PAGER_CREATE_VMO */
+int64_t pager_create_vmo(uint32_t pager, uint64_t options, uint32_t port,
+                         uint64_t key, uint64_t size, uint32_t *out);
+/* CROI_SYS_PAGER_DETACH_VMO */
+int64_t pager_detach_vmo(uint32_t pager, uint32_t vmo);
+/* CROI_SYS_PAGER_SUPPLY_PAGES */
+int64_t pager_supply_pages(uint32_t pager, uint32_t vmo, uint64_t offset,
+                           uint64_t length, uint32_t aux_vmo,
+                           uint64_t aux_offset);
+/* CROI_SYS_PAGER_OP_RANGE */
+int64_t pager_op_range(uint32_t pager, uint32_t op, uint32_t vmo,
+                       uint64_t offset, uint64_t length, uint64_t data);
+/* CROI_SYS_PAGER_QUERY_DIRTY_RANGES: pager | vmo << 32 */
+int64_t pager_query_dirty_ranges(uint64_t pager_vmo, uint64_t offset,
+                                 uint64_t length,
+                                 croi_vmo_dirty_range_t *buffer,
+                                 uint64_t buffer_size, uint64_t out[2]);
+/* CROI_SYS_PAGER_QUERY_VMO_STATS */
+int64_t pager_query_vmo_stats(uint32_t pager, uint32_t vmo, uint64_t options,
+                              croi_pager_vmo_stats_t *buffer,
+                              uint64_t buffer_size);
+```
+
+# DESCRIPTION
+
+A pager VMO is a VMO whose pages come from a process, the pager: a file service, say, whose VMOs are files.
+When a page the VMO lacks is needed, because a thread faulted on it, or a commit, a pin or a read through a child reaches it, the kernel queues a request on the VMO's port and the needing thread waits until the pager supplies the page.
+The request is a `CROI_PKT_TYPE_PAGE_REQUEST` packet (port(2)) with the key given at creation, and in its payload the command `CROI_PAGER_VMO_READ`, `CROI_PAGER_VMO_DIRTY` or `CROI_PAGER_VMO_COMPLETE` in the low 16 bits of payload[0] (flags above), the offset in payload[1] and the length in payload[2].
+Requests that overlap are joined, so the pager gets one packet for a range.
+Pages supplied are clean; a clean page is mapped read only, so the first write faults.
+
+With `CROI_VMO_TRAP_DIRTY` the first write to a clean page also asks the pager, with a `CROI_PAGER_VMO_DIRTY` request, and waits for the pager's `CROI_PAGER_OP_DIRTY`.
+Without it the page is simply marked dirty.
+A pager writes dirty pages back with `CROI_PAGER_OP_WRITEBACK_BEGIN` and `_END`.
+A page of a pager VMO that is clean may be evicted by the kernel under memory pressure; the pager is asked again when it is needed.
+
+The calls that take a VMO need it to be backed by the pager given (`CROI_ERR_INVALID_ARGS` otherwise).
+
+## pager_create
+
+`pager_create` writes a handle to a new pager to <out>.
+<options> must be 0.
+The handle has INSPECT, TRANSFER, ATTACH_VMO and MANAGE_VMO.
+The job's policy for new pagers applies.
+When the last handle to a pager closes, every VMO it backs is detached.
+
+## pager_create_vmo
+
+`pager_create_vmo` writes to <out> a handle to a VMO of <size> bytes backed by <pager>, which needs ATTACH_VMO.
+Requests are queued on <port>, which needs WRITE, with key <key>.
+<options> is any of `CROI_VMO_RESIZABLE`, `CROI_VMO_UNBOUNDED` (as for vmo(2)) and `CROI_VMO_TRAP_DIRTY`; `CROI_VMO_DISCARDABLE` and anything else is `CROI_ERR_INVALID_ARGS`.
+The handle has the rights of a vmo_create handle, with RESIZE if the VMO is resizable.
+The job's policy for new VMOs applies.
+
+## pager_detach_vmo
+
+`pager_detach_vmo` ends the pager's service of <vmo>.
+The pager handle needs ATTACH_VMO and MANAGE_VMO, the VMO's WRITE.
+Every thread waiting for a page is woken with `CROI_ERR_BAD_STATE`, clean pages are dropped, and a `CROI_PAGER_VMO_COMPLETE` request is queued once.
+The same happens when the VMO's last reference goes.
+Dirty pages stay, for the pager to write back.
+
+## pager_supply_pages
+
+`pager_supply_pages` moves the pages of [<aux_offset>, <aux_offset> + <length>) of <aux_vmo> into [<offset>, <offset> + <length>) of <vmo>, where the VMO has none.
+The pager handle needs MANAGE_VMO, <vmo> WRITE and <aux_vmo> READ and WRITE.
+<offset>, <length> and <aux_offset> are page aligned.
+<aux_vmo> must be an anonymous VMO that is no one's child and no pager's (`CROI_ERR_NOT_SUPPORTED`) with the range inside it (`CROI_ERR_OUT_OF_RANGE`) and no page pinned (`CROI_ERR_BAD_STATE`).
+The pages are moved, not copied: <aux_vmo> loses them; where it had none, zeros are supplied.
+Threads waiting for them go on.
+A detached VMO is `CROI_ERR_BAD_STATE`.
+
+## pager_op_range
+
+`pager_op_range` does <op> on [<offset>, <offset> + <length>) of <vmo>, both page aligned and inside the VMO (`CROI_ERR_OUT_OF_RANGE`).
+The pager handle needs MANAGE_VMO and <vmo> WRITE.
+
+: `CROI_PAGER_OP_FAIL`
+  Fails the requests in the range: <data> is the status the waiting threads get, one of `CROI_ERR_IO`, `CROI_ERR_IO_DATA_INTEGRITY`, `CROI_ERR_BAD_STATE`, `CROI_ERR_NO_SPACE` or `CROI_ERR_BUFFER_TOO_SMALL` (else `CROI_ERR_INVALID_ARGS`).
+: `CROI_PAGER_OP_DIRTY`
+  Answers a dirty request: marks the pages dirty, and releases the waiting threads.
+  <data> is 0.
+  Every page must be present (`CROI_ERR_NOT_FOUND`).
+  The VMO must have been made with TRAP_DIRTY (`CROI_ERR_NOT_SUPPORTED`).
+: `CROI_PAGER_OP_WRITEBACK_BEGIN`
+  The dirty pages in the range await clean, and are unmapped so that a write meanwhile dirties them again.
+  <data> is 0, or `CROI_VMO_DIRTY_RANGE_IS_ZERO` when the pager writes the range as zeros.
+: `CROI_PAGER_OP_WRITEBACK_END`
+  The pages still awaiting clean become clean.
+  <data> is 0.
+
+Any other <op> is `CROI_ERR_NOT_SUPPORTED`.
+
+## pager_query_dirty_ranges
+
+`pager_query_dirty_ranges` writes to <buffer> the runs of pages in [<offset>, <offset> + <length>) that are not clean, in order, each a `croi_vmo_dirty_range_t` of 24 bytes (offset, length and options, `CROI_VMO_DIRTY_RANGE_IS_ZERO` for grown space never written).
+The range is rounded out to pages.
+The first argument packs the pager handle in its low 32 bits, which needs MANAGE_VMO, and the VMO's in its high 32, which needs READ.
+As many runs are written as <buffer_size> holds.
+<out>, if not null, receives two `uint64_t`: how many were written and how many there are.
+
+## pager_query_vmo_stats
+
+`pager_query_vmo_stats` writes a `croi_pager_vmo_stats_t` to <buffer>, whose `modified` field is `CROI_PAGER_VMO_STATS_MODIFIED` if the VMO has been written since the last reset.
+<buffer_size> must hold it (`CROI_ERR_BUFFER_TOO_SMALL`).
+<options> is 0 or `CROI_PAGER_RESET_VMO_STATS`, which clears the flag.
+The pager handle needs MANAGE_VMO and the VMO READ.
+
+# SEE ALSO
+
+syscall(2), vmo(2), port(2), vmar(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE`, `CROI_ERR_WRONG_TYPE` and `CROI_ERR_ACCESS_DENIED` as for any handle; see syscall(2).
+`CROI_ERR_NO_MEMORY`: no memory.
+

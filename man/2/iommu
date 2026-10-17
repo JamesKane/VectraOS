@@ -1,0 +1,58 @@
+page iommu 2
+summary IOMMU objects, which put a device behind address translation
+names iommu iommu_create
+src user/include/croi/syscall.h kernel/include/dma.h kernel/Kernel/User/DmaSyscalls.swift kernel/Kernel/Object/Dma.swift
+keys dma vt-d amd-vi smmu iommu requester descriptor
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_IOMMU_CREATE */
+int64_t iommu_create(uint32_t iommu, uint32_t type, const void *desc,
+                     uint64_t desc_size, uint32_t *out);
+```
+
+# DESCRIPTION
+
+`iommu_create` writes to <out> a handle to an IOMMU object for the unit that the descriptor <desc> of <desc_size> bytes (at most `CROI_IOMMU_MAX_DESC_LEN`, 4096) names.
+<iommu> is a resource(2) that grants the IOMMU system resource.
+The handle has the basic rights but not WAIT.
+A BTI is made from it with bti_create(2); the BTI is what a driver pins memory through.
+
+<type> picks the kind of unit and the descriptor:
+
+: `CROI_IOMMU_TYPE_STUB`
+  No unit.
+  The descriptor is one byte.
+  Its BTIs do no translation: bti_pin returns physical addresses, and a device behind one can reach all memory.
+  Making such a BTI is a trust decision, so the kernel writes a warning to the debuglog with the process and BTI id.
+: `CROI_IOMMU_TYPE_INTEL`
+  Intel VT-d, on amd64: a `croi_iommu_desc_intel_t` for one remapping unit, followed by its device scopes and its reserved memory regions, as the DMAR table of ACPI lists them.
+  `register_base` must be one the kernel's own DMAR lists (`CROI_ERR_NOT_FOUND`), and a unit has one object (`CROI_ERR_ALREADY_BOUND`).
+  Creating it turns translation on, with every device behind it in pass-through so drivers still on stub BTIs keep working.
+  Only endpoint scopes one hop from the host bridge are accepted; bridge scopes are `CROI_ERR_NOT_SUPPORTED`.
+: `CROI_IOMMU_TYPE_AMD`
+  AMD-Vi, on amd64: a `croi_iommu_desc_amd_t` for one unit, the register base of an IVRS IVHD (`CROI_ERR_NOT_FOUND` otherwise), followed by its unity ranges (`croi_iommu_desc_amd_unity_t`: firmware's DMA, identity mapped for the devices they name).
+  The unit covers its whole segment but itself.
+  Faults are logged.
+: `CROI_IOMMU_TYPE_ARM_SMMU`
+  An Arm SMMU, on arm64: the descriptor is the unit's register base, 8 bytes, of an IORT SMMU node (`CROI_ERR_NOT_FOUND` otherwise).
+  For an SMMUv3 a unit that firmware left enabled is `CROI_ERR_BAD_STATE`.
+  For an SMMUv1 or v2 firmware owns the unit, so the kernel uses only free stream match entries and context banks; a unit firmware left disabled is `CROI_ERR_NOT_SUPPORTED`.
+: `CROI_IOMMU_TYPE_RISCV`
+  The RISC-V IOMMU, on rv64: `{ uint64_t register_base; }` of an ACPI RIMT node (`CROI_ERR_NOT_FOUND` otherwise; `CROI_ERR_BAD_STATE` if firmware left it translating).
+
+A type for another architecture is `CROI_ERR_NOT_SUPPORTED`; an unknown type, or a descriptor of the wrong size, is `CROI_ERR_INVALID_ARGS`.
+
+# SEE ALSO
+
+syscall(2), bti(2), resource(2), msi(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE`, `CROI_ERR_WRONG_TYPE` and `CROI_ERR_ACCESS_DENIED` as for any handle; see syscall(2).
+`CROI_ERR_NO_MEMORY`: no memory.
+

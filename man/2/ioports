@@ -1,0 +1,41 @@
+page ioports 2
+summary allow a process the use of I/O ports
+names ioports ioports_request ioports_release
+src user/include/croi/syscall.h kernel/Kernel/User/IoPorts.swift
+keys io port amd64 in out driver
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_IOPORTS_REQUEST */
+int64_t ioports_request(uint32_t ioport, uint64_t io_addr, uint64_t len);
+/* CROI_SYS_IOPORTS_RELEASE */
+int64_t ioports_release(uint32_t ioport, uint64_t io_addr, uint64_t len);
+```
+
+# DESCRIPTION
+
+On amd64, `ioports_request` lets the calling process execute `in` and `out` on the <len> ports from <io_addr>, and `ioports_release` takes that back.
+<ioport> is a resource(2) of kind IOPORT that grants the range.
+Each process has a permission bitmap; a port the process has not asked for faults.
+A change reaches every CPU before the call returns.
+The ports are 0 to 0xFFFF; <len> must not be 0 and the range must lie inside them (`CROI_ERR_INVALID_ARGS`).
+Releasing ports never requested is not an error.
+
+On arm64 and rv64 the calls are `CROI_ERR_NOT_SUPPORTED`.
+
+# SEE ALSO
+
+syscall(2), resource(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE` as for any handle; see syscall(2).
+`CROI_ERR_WRONG_TYPE`: the resource is not of kind IOPORT.
+`CROI_ERR_OUT_OF_RANGE`: it does not grant the range.
+`CROI_ERR_ACCESS_DENIED`: the range includes ports the kernel owns.
+`CROI_ERR_NO_MEMORY`: no memory for the bitmap.
+

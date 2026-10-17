@@ -1,0 +1,72 @@
+page account 2
+summary memory accounts: a budget for the memory a process commits
+names account account_create account_set_limit process_set_account
+src user/include/croi/syscall.h kernel/include/account.h kernel/Kernel/Object/AccountObject.swift kernel/Kernel/Vm/MemoryAccount.swift
+keys memory limit budget pressure charge rss
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_ACCOUNT_CREATE: warning | critical << 32 */
+int64_t account_create(uint32_t resource, uint64_t limit,
+                       uint64_t warning_critical, uint32_t *out);
+/* CROI_SYS_ACCOUNT_SET_LIMIT */
+int64_t account_set_limit(uint32_t account, uint64_t limit);
+/* CROI_SYS_PROCESS_SET_ACCOUNT */
+int64_t process_set_account(uint32_t process, uint32_t account);
+```
+
+# DESCRIPTION
+
+A memory account is one budget, in bytes, for the memory a process commits, CPU or GPU alike.
+Anonymous VMOs charge their pages as they are committed; contiguous and device-local VMOs charge their whole size at once and are never evicted.
+A commit past the limit fails: a call gets `CROI_ERR_NO_MEMORY`, and a page fault is a fatal page fault, the process's exception.
+Kernel memory (handles, channels, stacks) and page tables are not charged.
+
+A new process charges its creator's account, unless `process_set_account` replaces it.
+What the process creates charges it: vmo_create(2), the snapshots of vmo_create_child(2) and vmo_create_contiguous(2).
+`CROI_VMO_CHARGE_TO` charges another account instead, a handle with CHARGE (a client's, sent to the service that allocates for it).
+A VMO keeps the account it was charged to wherever its handles go.
+A process with no account is not accounted.
+
+An account has up to two pressure levels, a warning and a critical one, as percentages of the limit.
+A level is entered at its threshold and left below 80% of it.
+object_bind(2) `CROI_BIND_PRESSURE` queues a `CROI_PKT_TYPE_MEMORY_PRESSURE` packet at every change of level (port(2)).
+object_get_info(2) `CROI_INFO_MEMORY_ACCOUNT` gives the limit, the bytes charged, the thresholds, the level (`CROI_MEMORY_LEVEL_NORMAL`, `_WARNING`, `_CRITICAL`) and how many times it entered pressure.
+
+The system has a root account, whose handle a process is given at startup.
+Its level is the memory watchdog's, from the free memory against the watermarks the kernel was booted with, and it has two more levels, `CROI_MEMORY_LEVEL_IMMINENT_OUT_OF_MEMORY` and `CROI_MEMORY_LEVEL_OUT_OF_MEMORY`, after which the machine reboots.
+Its limit is the RAM and its charge the RAM in use.
+Its handle has WRITE, for binding, but not CHARGE.
+
+## account_create
+
+`account_create` writes to <out> a handle to a new account of <limit> bytes.
+<resource> is a resource(2) that grants the MEMORY system resource.
+The low 32 bits of the third argument are the warning level in percent and the high 32 the critical level; 0 turns a level off, and more than 100 is `CROI_ERR_INVALID_ARGS`.
+The handle has the basic rights, WRITE and CHARGE.
+
+## account_set_limit
+
+`account_set_limit` sets the limit.
+The handle needs WRITE.
+A limit below what is charged is `CROI_ERR_BAD_STATE`.
+The root account's is `CROI_ERR_NOT_SUPPORTED`.
+
+## process_set_account
+
+`process_set_account` makes <account>, which needs CHARGE, the account of <process>, which needs WRITE.
+It must be done before the process starts (`CROI_ERR_BAD_STATE` after).
+
+# SEE ALSO
+
+syscall(2), vmo(2), bti(2), process(2), port(2), resource(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE`, `CROI_ERR_WRONG_TYPE` and `CROI_ERR_ACCESS_DENIED` as for any handle; see syscall(2).
+`CROI_ERR_NO_MEMORY`: no memory.
+

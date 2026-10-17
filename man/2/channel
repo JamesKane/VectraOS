@@ -1,0 +1,147 @@
+page channel 2
+summary channels: two-ended message pipes that carry bytes and handles
+names channel channel_create channel_write channel_read channel_call
+src user/include/croi/syscall.h kernel/include/ipc.h kernel/Kernel/User/IpcSyscalls.swift kernel/Kernel/Object/Channel.swift
+keys message ipc call reply txid transfer handles
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_CHANNEL_CREATE */
+int64_t channel_create(uint64_t options, uint32_t *out0, uint32_t *out1);
+/* CROI_SYS_CHANNEL_WRITE */
+int64_t channel_write(croi_channel_write_item_t *items, uint64_t count);
+/* CROI_SYS_CHANNEL_READ */
+int64_t channel_read(croi_channel_read_item_t *items, uint64_t count);
+/* CROI_SYS_CHANNEL_CALL */
+int64_t channel_call(uint32_t channel, uint64_t options, uint64_t deadline,
+                     croi_channel_call_args_t *args, uint32_t *actual_bytes,
+                     uint32_t *actual_handles);
+
+int64_t croi_channel_write(uint32_t channel, uint32_t options,
+                           const void *bytes,
+                           uint32_t num_bytes, const uint32_t *handles,
+                           uint32_t num_handles);
+int64_t croi_channel_read(uint32_t channel, uint32_t options, void *bytes,
+                          uint32_t *handles, uint32_t num_bytes,
+                          uint32_t num_handles, uint32_t *actual_bytes,
+                          uint32_t *actual_handles);
+```
+
+# DESCRIPTION
+
+A channel has two ends, each a handle.
+A message written to one end is read from the other, in order.
+A message is up to `CROI_CHANNEL_MAX_BYTES` (65536) bytes and `CROI_CHANNEL_MAX_HANDLES` (64) handles; the handles move from the writer's table to the reader's.
+A message with more of either is `CROI_ERR_OUT_OF_RANGE`.
+Channels carry control and the transfer of handles; bulk data goes by shared memory and rings (vmo(2), port(2)).
+
+An end asserts `CROI_SIGNAL_READABLE` when messages wait, `CROI_SIGNAL_WRITABLE` when it can be written and `CROI_SIGNAL_PEER_CLOSED` once the other end is gone; bind them to a port with object_bind(2).
+object_get_info(2) gives the koid of the other end.
+
+## channel_create
+
+`channel_create` writes handles to the two ends to <out0> and <out1>.
+<options> must be 0.
+Each end has TRANSFER, WAIT, INSPECT, READ, WRITE and SIGNAL, but not DUPLICATE.
+The job's policy for new channels applies.
+
+## channel_write
+
+`channel_write` writes a message for each of up to 64 items, each a `croi_channel_write_item_t` of 40 bytes:
+
+```c
+typedef struct {
+  uint32_t channel;
+  uint32_t options;      // 0
+  uint64_t bytes;        // const void *
+  uint64_t handles;      // const uint32_t *: consumed
+  uint32_t num_bytes;
+  uint32_t num_handles;
+  int32_t status;        // out: 0, or why this item failed
+  uint32_t reserved;     // 0
+} croi_channel_write_item_t;
+```
+
+The channel needs WRITE.
+Each handle listed needs TRANSFER (`CROI_ERR_ACCESS_DENIED`) and may not be the channel written to (`CROI_ERR_NOT_SUPPORTED`).
+The handles are removed from the caller's table whether or not the item succeeds, unless the list itself cannot be read.
+Items are all done: a failed one does not stop the later ones.
+The call returns how many succeeded and writes each item's <status>.
+An item whose channel's other end is closed has `CROI_ERR_PEER_CLOSED`.
+A nonzero <options> or <reserved> is `CROI_ERR_INVALID_ARGS`.
+Writing to an end whose peer holds more than 3500 unread messages still succeeds, and raises a policy exception (job(2)).
+
+The first four bytes of a message are its transaction id, if it has four.
+A message written to the peer of a channel that has a `channel_call` pending, whose first four bytes are that call's id, is the reply to the call and goes to the caller, not the queue.
+
+`croi_channel_write` writes one message and returns the item's status or the call's.
+
+## channel_read
+
+`channel_read` reads a message for each of up to 64 items, each a `croi_channel_read_item_t` of 48 bytes:
+
+```c
+typedef struct {
+  uint32_t channel;
+  uint32_t options;         // 0 or CROI_CHANNEL_READ_MAY_DISCARD
+  uint64_t bytes;           // void *
+  uint64_t handles;         // uint32_t *
+  uint32_t num_bytes;       // the capacities
+  uint32_t num_handles;
+  uint32_t actual_bytes;    // out: the message's size, read or not
+  uint32_t actual_handles;
+  int32_t status;           // out: 0, or why this item failed
+  uint32_t reserved;        // 0
+} croi_channel_read_item_t;
+```
+
+The channel needs READ.
+The next message is copied to <bytes> and its handles are added to the caller's table, their values written to <handles>, each with the rights it had.
+<actual_bytes> and <actual_handles> are set to the message's size on success and on `CROI_ERR_BUFFER_TOO_SMALL`.
+A message larger than the capacities stays queued, unless <options> is `CROI_CHANNEL_READ_MAY_DISCARD`, which drops it.
+Any other option is `CROI_ERR_NOT_SUPPORTED`.
+With no message the item fails with `CROI_ERR_SHOULD_WAIT`, or `CROI_ERR_PEER_CLOSED` if the other end is closed; messages written before the close are read first.
+Items are all done.
+The call returns how many succeeded.
+
+`croi_channel_read` reads one and returns the item's status or the call's.
+
+## channel_call
+
+`channel_call` writes a request and waits for its reply.
+<channel> needs READ and WRITE and <options> must be 0.
+The kernel sets the first four bytes of the request, which must be at least four bytes long (`CROI_ERR_INVALID_ARGS`), to a transaction id of its own, with the top bit set, and returns the reply whose first four bytes are the same.
+<args> describes the request and the room for the reply:
+
+```c
+typedef struct {
+  uint64_t wr_bytes;    // const void *
+  uint64_t wr_handles;  // const uint32_t *
+  uint64_t rd_bytes;    // void *
+  uint64_t rd_handles;  // uint32_t *
+  uint32_t wr_num_bytes;
+  uint32_t wr_num_handles;
+  uint32_t rd_num_bytes;
+  uint32_t rd_num_handles;
+} croi_channel_call_args_t;
+```
+
+The request's handles are consumed as for `channel_write`, except that an unreadable <args> consumes none.
+The reply's sizes are written to <actual_bytes> and <actual_handles>; a reply that does not fit the capacities is dropped and the call fails with `CROI_ERR_BUFFER_TOO_SMALL`.
+The call waits until <deadline> (`CROI_ERR_TIMED_OUT`), or until the other end closes (`CROI_ERR_PEER_CLOSED`), or until the caller is killed (`CROI_ERR_CANCELED`).
+While the caller waits, the thread that read the request runs with the caller's scheduling parameters, until it replies.
+
+# SEE ALSO
+
+syscall(2), handle(2), port(2), job(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE`, `CROI_ERR_WRONG_TYPE` and `CROI_ERR_ACCESS_DENIED` as for any handle; see syscall(2).
+`CROI_ERR_NO_MEMORY`: no memory for the message.
+`CROI_ERR_INVALID_ARGS`: a bad count (0 or over 64), a pointer that cannot be read or written, or options that must be 0.
+

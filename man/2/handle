@@ -1,0 +1,69 @@
+page handle 2
+summary close and duplicate handles
+names handle handle_close handle_duplicate
+src user/include/croi/syscall.h kernel/include/ipc.h kernel/Kernel/User/IpcSyscalls.swift kernel/Kernel/Object/HandleTable.swift
+keys close duplicate replace rights consume
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_HANDLE_CLOSE */
+int64_t handle_close(const uint32_t *handles, uint64_t count);
+/* CROI_SYS_HANDLE_DUPLICATE */
+int64_t handle_duplicate(croi_handle_duplicate_item_t *items, uint64_t count);
+
+int64_t croi_handle_close(uint32_t handle);
+int64_t croi_handle_duplicate(uint32_t handle, uint32_t rights, uint32_t *out,
+                              uint32_t options);
+```
+
+# DESCRIPTION
+
+`handle_close` closes <count> handles, the values read from the array <handles>.
+A value of 0 is skipped.
+The handles are read and closed 64 at a time.
+A value that is not a handle is remembered, the rest are still closed, and the call then fails with `CROI_ERR_BAD_HANDLE`.
+An array that cannot be read stops the call at that chunk with `CROI_ERR_INVALID_ARGS`; the chunks before it are closed.
+It returns 0 otherwise.
+Closing a handle drops its reference to the object, which is destroyed when the last reference goes.
+Bindings and waits made through the handle (port(2)) end.
+Closing the handle of a PMT without unpinning it quarantines its pages; see bti(2).
+`croi_handle_close` closes one.
+
+`handle_duplicate` makes a new handle in the caller's table for each of up to 64 items:
+
+```c
+typedef struct {
+  uint32_t handle;    // the handle to duplicate
+  uint32_t rights;    // a subset of its rights, or CROI_RIGHT_SAME_RIGHTS
+  uint32_t options;   // 0 or CROI_HANDLE_DUPLICATE_CONSUME
+  uint32_t out;       // out: the new handle
+  int32_t status;     // out: 0, or why this item failed
+  uint32_t reserved;  // 0
+} croi_handle_duplicate_item_t;
+```
+
+With <options> 0 the handle needs `CROI_RIGHT_DUPLICATE`, and stays.
+With `CROI_HANDLE_DUPLICATE_CONSUME` the handle is replaced: it needs no DUPLICATE right and is closed, even when the item fails.
+Either way <rights> must be a subset of the handle's, or `CROI_RIGHT_SAME_RIGHTS` for all of them; anything else is `CROI_ERR_INVALID_ARGS`.
+An <options> other than those two, or a nonzero <reserved>, is `CROI_ERR_INVALID_ARGS`.
+Items are done in order and the call stops at the first that fails.
+It returns how many succeeded; each processed item has its <status> and, on success, its <out> written.
+This is how a program narrows the rights of a handle before it sends it.
+
+`croi_handle_duplicate` does one item and returns 0, the item's status or the call's.
+
+# SEE ALSO
+
+syscall(2), object(2), channel(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE`: a handle is not in the table.
+`CROI_ERR_ACCESS_DENIED`: no DUPLICATE right.
+`CROI_ERR_INVALID_ARGS`: a bad option, rights beyond the handle's, a count of 0 or over 64, or an unreadable array.
+`CROI_ERR_NO_RESOURCES`: the handle table is full.
+

@@ -1,0 +1,83 @@
+page trace 2
+summary control the kernel's event trace
+names trace trace_configure
+src user/include/croi/syscall.h kernel/include/trace.h kernel/Kernel/Object/VmoObject.swift kernel/Kernel/Trace/Trace.swift
+keys trace ring events scheduler records mark sample profile
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_TRACE_CONFIGURE */
+int64_t trace_configure(uint32_t tracing, uint32_t op, uint64_t a, uint64_t b,
+                        uint64_t c, uint64_t sample_hz);
+```
+
+# DESCRIPTION
+
+The kernel records events (context switches, interrupts, system calls, channel messages and the rest) into one ring per CPU.
+`trace_configure` starts and stops the recording and hands out the rings.
+It takes six arguments, so it is made with `croi_syscall6`.
+<tracing> is a resource(2) that grants the TRACING system resource; every operation needs it.
+<op> is one of:
+
+: `CROI_TRACE_OP_START`
+  Starts recording the categories in <a>, discarding what was recorded.
+  <b> is the size of each CPU's ring in pages, from 1 to 4096, rounded up to a power of two; a page holds `CROI_TRACE_RECORDS_PER_PAGE` (128) records.
+  <c> is the mode: `CROI_TRACE_ONESHOT` stops recording on a CPU when its ring is full and counts the drops; `CROI_TRACE_CIRCULAR` overwrites the oldest.
+  <sample_hz> is the rate of the tick sampler, if `CROI_TRACE_SAMPLE` is on; 0 means `CROI_SAMPLE_DEFAULT_HZ` (1000).
+  A bad <b>, <c> or <sample_hz> is `CROI_ERR_INVALID_ARGS`; no memory for the rings is `CROI_ERR_NO_MEMORY`.
+: `CROI_TRACE_OP_STOP`
+  Stops recording; it returns when no CPU is part way through a record.
+: `CROI_TRACE_OP_REWIND`
+  Stops, and empties the rings.
+: `CROI_TRACE_OP_MARK`
+  Records a mark of 16 bytes, <a> and <b>, of the caller's choosing (kind `CROI_TK_MARK`), if the mark category is on.
+: `CROI_TRACE_OP_RINGS`
+  Writes a handle to each CPU's ring to the array of `uint32_t` at <a>, whose capacity <b> must be at least the number of CPUs (`CROI_ERR_BUFFER_TOO_SMALL`), and returns the number of handles.
+  Each handle is a VMO with READ, MAP and GET_PROPERTY, the basic rights too, and no WRITE.
+  Before the first START there are no rings (`CROI_ERR_BAD_STATE`).
+
+Any other <op> is `CROI_ERR_INVALID_ARGS`.
+
+The categories are bits of <a>:
+
+| Category | Bit | Records |
+| `CROI_TRACE_SCHED` | 0 | switches, wakeups, blocks, preemptions, migrations, overruns |
+| `CROI_TRACE_IRQ` | 1 | interrupt entry and exit |
+| `CROI_TRACE_VM` | 2 | page faults and commits |
+| `CROI_TRACE_IPC` | 3 | channel writes and reads, and the donation of a call |
+| `CROI_TRACE_FUTEX` | 4 | futex waits and wakes |
+| `CROI_TRACE_SYSCALL` | 5 | the entry and exit of every system call |
+| `CROI_TRACE_SAMPLE` | 6 | samples of the running thread's program counter and frames |
+| `CROI_TRACE_MARK` | 7 | marks |
+
+A ring is a `croi_trace_ring_t` header of 128 bytes (counter frequency, session, drops, mode) followed at `CROI_TRACE_RING_HEADER` by a ring of the format of ring.h, overwrite mode, format `CROI_TRACE_RING_FORMAT`.
+A reader maps it and reads it as any ring; it stops the trace first for a steady view.
+Each slot is a `croi_trace_slot_t`, the ring's sequence number and a record of 32 bytes:
+
+```c
+typedef struct {
+  uint64_t time;     // the counter's raw value; the header has its Hz
+  uint16_t kind;
+  uint16_t cpu;
+  uint32_t thread;   // task << 12 | thread index; the kernel's are task 0
+  uint64_t a;
+  uint64_t b;
+} croi_trace_record_t;
+```
+
+The kernel's kinds are below 0x4000; 0x4000 to 0x7fff belong to user space's own trace rings, so the two merge into one timeline.
+object_get_info(2) `CROI_INFO_THREAD_TRACE` gives the id a thread is named by.
+The flow id that joins the write and the read of a channel message is `croi_flow_id` in `<croi/syscall.h>`.
+
+# SEE ALSO
+
+syscall(2), pmu(2), resource(2), vmar(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE`, `CROI_ERR_WRONG_TYPE` and `CROI_ERR_OUT_OF_RANGE` as for any resource; see resource(2).
+

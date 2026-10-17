@@ -1,0 +1,118 @@
+page bti 2
+summary bus transaction initiators: pin memory for a device's DMA
+names bti bti_create bti_pin bti_release_quarantine pmt_unpin vmo_create_contiguous bti_set_properties
+src user/include/croi/syscall.h kernel/include/dma.h kernel/Kernel/User/DmaSyscalls.swift kernel/Kernel/Object/Dma.swift
+keys dma pin pmt iova contiguous quarantine window address bits device
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_BTI_CREATE */
+int64_t bti_create(uint32_t iommu, uint32_t options, uint64_t bti_id,
+                   uint32_t *out);
+/* CROI_SYS_BTI_PIN: bti | options << 32, vmo | addrs_count << 32 */
+int64_t bti_pin(uint64_t bti_options, uint64_t vmo_count, uint64_t offset,
+                uint64_t size, uint64_t *addrs, uint32_t *pmt);
+/* CROI_SYS_BTI_RELEASE_QUARANTINE */
+int64_t bti_release_quarantine(uint32_t bti);
+/* CROI_SYS_PMT_UNPIN */
+int64_t pmt_unpin(uint32_t pmt);
+/* CROI_SYS_VMO_CREATE_CONTIGUOUS: alignment_log2 | account << 32 */
+int64_t vmo_create_contiguous(uint32_t bti, uint64_t size,
+                              uint64_t alignment_log2_account, uint32_t *out);
+/* CROI_SYS_BTI_SET_PROPERTIES */
+int64_t bti_set_properties(uint32_t bti,
+                           const croi_bti_properties_t *properties);
+```
+
+# DESCRIPTION
+
+A BTI (bus transaction initiator) is one device's identity as a source of DMA.
+A driver pins the pages of a VMO through it, and gets the addresses the device must use for them.
+Behind an IOMMU (iommu(2)) the device has a domain of its own: the addresses are I/O virtual addresses from the BTI's window, and only pinned pages are reachable.
+When the last reference to such a BTI goes, the device is blocked, not returned to pass-through.
+With no IOMMU (the stub) the addresses are physical.
+
+## bti_create
+
+`bti_create` writes to <out> a handle to a BTI for the device <bti_id> of <iommu>.
+<options> must be 0.
+The meaning of <bti_id> depends on the unit: on VT-d and AMD-Vi, `bus << 8 | device << 3 | function`, in the unit's scope (`CROI_ERR_OUT_OF_RANGE` otherwise); on an SMMUv3 and the RISC-V IOMMU the PCI requester id, which the firmware's tables map to the device (`CROI_ERR_OUT_OF_RANGE` if it does not reach the unit); on an SMMUv1 or v2 the stream match pairs, `value | mask << 16` (15 bits each) with a second pair in bits 32 to 62 and bit 63 set, which must be the pairs the platform expects; overlapping a valid entry is `CROI_ERR_ALREADY_BOUND` and none free `CROI_ERR_NO_RESOURCES`; on the stub it is only a name.
+The handle has the basic rights but not WAIT, and READ, WRITE, GET_PROPERTY, SET_PROPERTY and MAP.
+
+## bti_pin
+
+`bti_pin` pins [<offset>, <offset> + <size>) of a VMO and writes the device addresses to <addrs> and a handle to a PMT (a pinned memory token) to <pmt>.
+The first argument packs the BTI handle (low 32 bits, needs MAP) and the options (high 32); the second packs the VMO handle (low 32, needs MAP, and READ for a device that reads, WRITE for one that writes) and the number of addresses <addrs> holds (high 32).
+<offset> and <size> are page aligned and <size> is not 0.
+The options are:
+
+: `CROI_BTI_PERM_READ`, `CROI_BTI_PERM_WRITE`, `CROI_BTI_PERM_EXECUTE`
+  What the device does.
+  READ and WRITE need the same rights on the VMO's handle; EXECUTE needs READ.
+: `CROI_BTI_COMPRESS`
+  One address for each run of pages that is contiguous for the device (here every page: the minimum contiguity is a page).
+: `CROI_BTI_CONTIGUOUS`
+  One address for the whole range; the VMO must be contiguous.
+
+The two together, or any other option, is `CROI_ERR_INVALID_ARGS`.
+The number of addresses must be exactly the number of pages, or 1 with CONTIGUOUS, else `CROI_ERR_INVALID_ARGS`.
+Pages outside the BTI's address width or window are `CROI_ERR_OUT_OF_RANGE`.
+The pages stay committed and in place until the token is unpinned.
+The PMT handle has INSPECT only: it cannot be duplicated or sent.
+
+## pmt_unpin
+
+`pmt_unpin` unpins the pages of a PMT, takes them away from the device (unmapped, with the IOMMU's caches invalidated) and consumes the handle.
+A token already unpinned is `CROI_ERR_BAD_STATE`.
+
+Closing a PMT handle with handle_close(2) without unpinning quarantines its pages, because the device may still be writing them.
+They stay pinned until `bti_release_quarantine`.
+A BTI whose last reference goes with pages quarantined leaves them pinned for good, and logs it.
+
+## bti_release_quarantine
+
+`bti_release_quarantine` unpins and frees every quarantined token of the BTI, which needs WRITE.
+Call it only when the device is known to be quiet.
+
+## vmo_create_contiguous
+
+`vmo_create_contiguous` writes to <out> a handle to a VMO of <size> bytes of physically contiguous memory, allocated within the BTI's address width and window, and with the BTI's memory type as its cache policy (coherent: cached; non-coherent: uncached).
+The BTI handle needs MAP.
+<size> is a nonzero multiple of the page size.
+The low 32 bits of the third argument are the alignment as a power of two, at least 12 (0 means 12; less, or 64 and over, is `CROI_ERR_INVALID_ARGS`); the high 32 may be an account handle, with CHARGE, to charge the whole size to, else the calling process's account is charged.
+The handle has the rights of a vmo_create(2) handle.
+No such memory is `CROI_ERR_NO_MEMORY`; a contiguous VMO can be pinned with CONTIGUOUS.
+The job's policy for new VMOs applies.
+
+## bti_set_properties
+
+`bti_set_properties` narrows the BTI's DMA properties, which the handle needs SET_PROPERTY to do.
+object_get_info(2) `CROI_INFO_BTI_PROPERTIES` reads them.
+
+```c
+typedef struct {
+  uint32_t address_bits;  // device addresses are below 2^address_bits (64: any)
+  uint32_t memory_type;   // CROI_BTI_MEMORY_COHERENT or _NONCOHERENT
+  uint64_t window_base;   // device addresses are in [window_base,
+  uint64_t window_size;   //   window_base + window_size); size 0: none set
+} croi_bti_properties_t;
+```
+
+A driver cannot widen what the device manager gave it: a larger <address_bits> or a window outside the present one is `CROI_ERR_ACCESS_DENIED`.
+<address_bits> is from 12 to 64 and <memory_type> one of the two, else `CROI_ERR_INVALID_ARGS`.
+The memory type changes only while nothing is pinned or quarantined (`CROI_ERR_BAD_STATE`).
+Without an IOMMU the window is a check on physical addresses.
+
+# SEE ALSO
+
+syscall(2), iommu(2), vmo(2), account(2), resource(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE`, `CROI_ERR_WRONG_TYPE` and `CROI_ERR_ACCESS_DENIED` as for any handle; see syscall(2).
+`CROI_ERR_NO_MEMORY`: no memory.
+

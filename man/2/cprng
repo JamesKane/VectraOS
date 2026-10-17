@@ -1,0 +1,30 @@
+page cprng 2
+summary the kernel's random bytes
+names cprng cprng_draw cprng_add_entropy
+src user/include/croi/syscall.h kernel/Kernel/Random.swift
+keys random entropy crypto rng
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_CPRNG_DRAW */
+int64_t cprng_draw(void *buffer, uint64_t length);
+/* CROI_SYS_CPRNG_ADD_ENTROPY */
+int64_t cprng_add_entropy(const void *buffer, uint64_t length);
+```
+
+# DESCRIPTION
+
+`cprng_draw` fills <buffer> with <length> bytes from the kernel's cryptographic generator, a ChaCha keystream, and then replaces the generator's key.
+`cprng_add_entropy` mixes <length> bytes of <buffer> into the generator's state.
+Neither needs a handle.
+
+<length> is at most `CROI_CPRNG_MAX_LEN` (256), else `CROI_ERR_INVALID_ARGS`; a buffer that cannot be written or read is `CROI_ERR_INVALID_ARGS` as well.
+Both return 0.
+
+# SEE ALSO
+
+syscall(2)

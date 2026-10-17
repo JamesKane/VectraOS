@@ -1,0 +1,57 @@
+page pmu 2
+summary performance counters: per-thread counts and overflow sampling
+names pmu pmu_configure
+src user/include/croi/syscall.h kernel/include/pmu.h kernel/Kernel/Trace/Pmu.swift kernel/Kernel/User/Syscalls.swift
+keys performance monitoring counter cycles instructions sampling profile
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_PMU_CONFIGURE */
+int64_t pmu_configure(uint32_t tracing, uint32_t op, uint64_t a, uint64_t b);
+```
+
+# DESCRIPTION
+
+`pmu_configure` drives the processor's performance monitoring unit: Intel's architectural performance monitoring or AMD's core counters on amd64, PMUv3 on arm64, the SBI PMU on rv64.
+<op> picks the operation, <a> and <b> are its arguments, and <tracing> is a resource(2) that grants the TRACING system resource where the operation says so.
+
+An event is a generic one, `CROI_PMU_CYCLES` (0), `CROI_PMU_INSTRUCTIONS` (1), `CROI_PMU_CACHE_MISSES` (2) or `CROI_PMU_BRANCH_MISSES` (3), or the architecture's own event code with `CROI_PMU_RAW` (bit 31) set.
+
+: `CROI_PMU_OP_INFO`
+  Writes a `croi_pmu_info_t` to the address <a>: the kind of unit (`CROI_PMU_KIND_NONE`, `_INTEL`, `_AMD`, `_ARM`, `_SBI`), the number of counters the kernel may use, a bitmask of the generic events supported (bit n is event n) and whether overflow sampling is available.
+  It needs no resource.
+: `CROI_PMU_OP_SAMPLE_START`
+  Samples every thread on every CPU: each <b> occurrences of the event <a>, the running thread's program counter and frames are recorded in the trace (trace(2), category `CROI_TRACE_SAMPLE`) with source 1 plus the event, or 0xFF for a raw event.
+  It needs the resource.
+  <b> must be from 1000 to below half the counter's range, and the event supported (`CROI_ERR_INVALID_ARGS`); a unit that cannot sample is `CROI_ERR_NOT_SUPPORTED`.
+  It replaces a sampling already on.
+: `CROI_PMU_OP_SAMPLE_STOP`
+  Stops sampling.
+  It needs the resource.
+: `CROI_PMU_OP_THREAD_START`
+  Counts events for the calling thread, from zero.
+  <a> is the number of events, 1 to `CROI_PMU_THREAD_EVENTS` (4) (else `CROI_ERR_INVALID_ARGS`), and <b> the address of that many `uint32_t` events.
+  It needs no resource.
+  A machine with no unit, or an event it lacks, is `CROI_ERR_NOT_SUPPORTED`.
+  Starting again replaces the counts.
+: `CROI_PMU_OP_THREAD_READ`
+  Writes four `uint64_t` to the address <a>: the counts so far, in the order of the events given.
+  `CROI_ERR_BAD_STATE` if counting was not started.
+: `CROI_PMU_OP_THREAD_STOP`
+  Stops counting and discards the counts.
+
+Any other <op> is `CROI_ERR_INVALID_ARGS`.
+
+# SEE ALSO
+
+syscall(2), trace(2), resource(2)
+
+# DIAGNOSTICS
+
+For the operations that need the resource: `CROI_ERR_BAD_HANDLE`, `CROI_ERR_WRONG_TYPE` and `CROI_ERR_OUT_OF_RANGE` as for any resource; see resource(2).
+`CROI_ERR_INVALID_ARGS`: an unwritable or unreadable address.
+

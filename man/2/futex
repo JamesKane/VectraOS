@@ -1,0 +1,49 @@
+page futex 2
+summary wait on a word of memory, and wake the waiters
+names futex futex_wait futex_wake
+src user/include/croi/syscall.h kernel/Kernel/User/SyncSyscalls.swift kernel/Kernel/Object/Futex.swift
+keys lock mutex wait wake owner priority inheritance
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_FUTEX_WAIT */
+int64_t futex_wait(uint32_t *value, uint32_t current, uint32_t new_owner,
+                   uint64_t deadline);
+/* CROI_SYS_FUTEX_WAKE */
+int64_t futex_wake(uint32_t *value, uint64_t count);
+```
+
+# DESCRIPTION
+
+A futex is a 32-bit word in user memory that threads of one process wait on.
+The kernel keeps nothing for it until a thread waits; locks are built on it so that they cost no call while uncontended.
+The futex is named by the address of the word in the caller's address space.
+<value> must be 4-byte aligned and inside user memory (`CROI_ERR_INVALID_ARGS`).
+
+`futex_wait` blocks the calling thread if the word at <value> is <current>, and returns `CROI_ERR_BAD_STATE` at once if it is not.
+It returns 0 when woken by `futex_wake`, `CROI_ERR_TIMED_OUT` at <deadline> and `CROI_ERR_CANCELED` if the thread is killed.
+If the word is paged out it is paged in first.
+A suspension (task_suspend(2)) of the waiting thread ends the wait and the call is made again when the thread resumes.
+
+<new_owner> is a handle to a thread, or 0 for none.
+A thread named as the owner runs with the scheduling parameters of the threads that wait, while it holds the futex, so a lock's holder is not kept off the CPU by lower-priority threads.
+The handle needs no particular right.
+The caller itself as owner is `CROI_ERR_INVALID_ARGS`.
+A thread that is not running has nothing to lend to, and is no owner.
+The futex has no owner after a `futex_wake`, and once its last waiter has gone.
+The only call that takes a handle is the one with an owner; with <new_owner> 0 the call works in any process.
+
+`futex_wake` wakes up to <count> threads waiting on <value>, the longest waiting first, and clears the futex's owner.
+It returns 0, whether or not any thread was waiting; it does not report how many woke.
+
+# SEE ALSO
+
+syscall(2), thread(2), task(2), profile(2)
+
+# BUGS
+
+`futex_wake` does not return the number of threads it woke.

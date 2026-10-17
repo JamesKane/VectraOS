@@ -1,0 +1,84 @@
+page process 2
+summary create, start and end processes, and reach into their memory
+names process process_create process_start process_exit process_read_memory process_write_memory
+src user/include/croi/syscall.h kernel/include/task.h kernel/Kernel/User/TaskSyscalls.swift kernel/Kernel/User/DebugSyscalls.swift kernel/Kernel/Object/Process.swift kernel/Kernel/Object/Debug.swift
+keys process start exit debugger memory read write job vdso
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_PROCESS_CREATE */
+int64_t process_create(uint32_t job, const char *name, uint64_t name_len,
+                       uint64_t options, uint32_t *out_process,
+                       uint32_t *out_vmar);
+/* CROI_SYS_PROCESS_START */
+int64_t process_start(uint32_t process, uint32_t thread, uint64_t entry,
+                      uint64_t stack, uint32_t arg1, uint64_t arg2);
+/* CROI_SYS_PROCESS_EXIT */
+int64_t process_exit(int64_t code);
+/* CROI_SYS_PROCESS_READ_MEMORY */
+int64_t process_read_memory(uint32_t process, uint64_t vaddr, void *buffer,
+                            uint64_t size, uint64_t *actual);
+/* CROI_SYS_PROCESS_WRITE_MEMORY */
+int64_t process_write_memory(uint32_t process, uint64_t vaddr,
+                             const void *buffer, uint64_t size,
+                             uint64_t *actual);
+```
+
+# DESCRIPTION
+
+A process is an address space, a table of handles and a set of threads.
+It belongs to a job.
+Its life has three steps: `process_create` makes it, with an address space the vDSO is already mapped into and no threads; the caller loads it by mapping VMOs into the root VMAR (vmar(2)), makes its first thread with thread_create(2) and starts that with `process_start`; the process ends when its last thread ends, or on `process_exit`, or task_kill(2).
+A process ends with a return code that object_get_info(2) reports (`CROI_INFO_PROCESS`).
+When it ends its handles are closed and its address space is destroyed, and its handle asserts `CROI_SIGNAL_TASK_TERMINATED`.
+
+## process_create
+
+`process_create` makes a process in <job>, which needs MANAGE_PROCESS.
+<name> and <name_len> give its name, at most 32 bytes (`CROI_ERR_INVALID_ARGS` if longer), of which 31 are kept.
+<options> must be 0.
+The handle written to <out_process> has the rights of a process: the basic ones, READ, WRITE, GET_PROPERTY, SET_PROPERTY, ENUMERATE, DESTROY, SIGNAL, MANAGE_PROCESS and MANAGE_THREAD.
+The handle written to <out_vmar> is the process's root VMAR, with TRANSFER, INSPECT, READ, WRITE and EXECUTE.
+The process is charged to the creator's memory account (account(2)).
+The job's policy for new processes applies.
+A job that has been killed is `CROI_ERR_BAD_STATE`.
+
+## process_start
+
+`process_start` starts <process> by running its first thread, <thread>, at user address <entry> with the stack pointer <stack>.
+Both handles need WRITE, and the thread must belong to the process (`CROI_ERR_ACCESS_DENIED` otherwise).
+The process must not have started (`CROI_ERR_BAD_STATE`), the thread must not have started, and <entry> must be a user address (`CROI_ERR_INVALID_ARGS`).
+<arg1> is a handle in the caller's table, or 0; with TRANSFER it is moved into the new process's table, and its value there is what the thread sees.
+The thread starts with that value in its first argument register, <arg2> in the second and the base address of the vDSO in the third.
+The handle stays in the new process even when the start fails.
+
+## process_exit
+
+`process_exit` ends the calling thread's process with return code <code>: it kills every other thread and then the caller.
+It needs no handle and does not return.
+
+## process_read_memory, process_write_memory
+
+These copy bytes between the caller and a process, for a debugger.
+They work inside the one mapping at <vaddr> (`CROI_ERR_NOT_FOUND` if none), clamped to its end and its VMO's end; if nothing could be moved the call fails with `CROI_ERR_OUT_OF_RANGE`.
+<size> is from 1 to 64 MiB and <buffer> is not 0.
+The number of bytes moved is written to <actual>, if it is not null.
+Reading needs READ and WRITE on the process handle; writing needs WRITE and fails with `CROI_ERR_NOT_SUPPORTED` unless the kernel was booted with `croi.debug_syscalls=on` (a test boot allows it as well).
+A write into a mapping that is not writable first gives the process a private copy of the range, so a breakpoint never reaches the VMO behind it.
+Code written is made visible to instruction fetch.
+The vDSO cannot be written (`CROI_ERR_ACCESS_DENIED`), nor can memory that is not ordinary cached memory (`CROI_ERR_BAD_STATE`).
+A page a pager backs is requested from the pager.
+
+# SEE ALSO
+
+syscall(2), thread(2), job(2), task(2), vmar(2), exception(2), account(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE`, `CROI_ERR_WRONG_TYPE` and `CROI_ERR_ACCESS_DENIED` as for any handle; see syscall(2).
+`CROI_ERR_NO_MEMORY`: no memory for the process.
+

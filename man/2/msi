@@ -1,0 +1,65 @@
+page msi 2
+summary message-signalled interrupts: allocate vectors, make interrupt objects
+names msi msi_allocate msi_create
+src user/include/croi/syscall.h kernel/include/interrupt.h kernel/Kernel/User/DriverSyscalls.swift kernel/Kernel/Object/MsiObject.swift
+keys msi msi-x pci vector driver its imsic
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_MSI_ALLOCATE */
+int64_t msi_allocate(uint32_t msi, uint64_t count, uint32_t *out);
+/* CROI_SYS_MSI_CREATE */
+int64_t msi_create(uint32_t allocation, uint32_t options, uint32_t id,
+                   uint32_t vmo, uint64_t vmo_offset, uint32_t *out);
+```
+
+# DESCRIPTION
+
+A PCI function signals an interrupt by writing a message to an address.
+`msi_allocate` reserves vectors for such messages and `msi_create` turns one of them into an interrupt object, which is used as interrupt(2) describes: bound to a port, acknowledged, moved with interrupt_set_affinity.
+An MSI is masked while it is delivered and unmasked on the acknowledgment.
+
+## msi_allocate
+
+`msi_allocate` writes to <out> a handle to an allocation of <count> contiguous vectors, on the boot CPU, aligned to <count>.
+<msi> is a resource(2) that grants the MSI system resource.
+<count> is a power of two from 1 to 32 (`CROI_ERR_INVALID_ARGS` otherwise).
+The handle has the basic rights.
+No vectors left is `CROI_ERR_NO_RESOURCES`.
+It is `CROI_ERR_NOT_SUPPORTED` on arm64 without a GICv3 ITS and on rv64 without AIA.
+
+object_get_info(2) `CROI_INFO_MSI` on the allocation gives a `croi_info_msi_t`: what the device must write.
+The device writes `target_data` plus <id> to `target_addr` for the interrupt <id>.
+With interrupt remapping the address is in the remappable format and names the kernel's entry for id 0, and the data is 0.
+
+## msi_create
+
+`msi_create` writes to <out> a handle to an interrupt object for vector <id> of <allocation>.
+<vmo> needs MAP and must be a physical VMO with uncached device memory (vmo_create_physical(2)) over the function's configuration space or MSI-X table, else `CROI_ERR_INVALID_ARGS`.
+<options> is 0 or `CROI_MSI_MODE_MSI_X`:
+
+: 0
+  <vmo> holds the function's configuration space, and <vmo_offset> is the MSI capability in it (its first byte must be 5).
+  The driver programs the capability from the info above.
+  The kernel only masks the vector, through per-vector masking if the capability has it.
+: `CROI_MSI_MODE_MSI_X`
+  <vmo> holds the MSI-X table at <vmo_offset>.
+  The kernel programs and masks entry <id>, and moves it when the interrupt's affinity changes.
+
+An <id> not below the allocation's count, a range outside <vmo>, or an option other than those is `CROI_ERR_INVALID_ARGS`.
+An <id> that has an interrupt object already is `CROI_ERR_ALREADY_BOUND`.
+The handle has the rights of an interrupt handle.
+
+# SEE ALSO
+
+syscall(2), interrupt(2), vmo(2), iommu(2), resource(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE`, `CROI_ERR_WRONG_TYPE` and `CROI_ERR_ACCESS_DENIED` as for any handle; see syscall(2).
+`CROI_ERR_NO_MEMORY`: no memory.
+

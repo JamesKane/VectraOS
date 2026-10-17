@@ -1,0 +1,174 @@
+page port 2
+summary ports: the one wait, and the binding of event sources to them
+names port port_create port_queue port_wait port_cancel object_bind
+src user/include/croi/syscall.h kernel/include/port.h kernel/Kernel/Object/Port.swift kernel/Kernel/Object/Bind.swift kernel/Kernel/Object/Wait.swift kernel/Kernel/User/Syscalls.swift
+keys wait packet bind signal ring event sleep deadline leeway
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_PORT_CREATE */
+int64_t port_create(uint64_t options, uint32_t *out);
+/* CROI_SYS_PORT_QUEUE */
+int64_t port_queue(uint32_t port, const croi_port_packet_t *packets,
+                   uint64_t count);
+/* CROI_SYS_PORT_WAIT */
+int64_t port_wait(uint32_t port, uint64_t deadline, croi_port_packet_t *packets,
+                  uint64_t count, uint64_t leeway);
+/* CROI_SYS_PORT_CANCEL */
+int64_t port_cancel(uint32_t port, uint32_t source, uint64_t key);
+/* CROI_SYS_OBJECT_BIND */
+int64_t object_bind(uint32_t port, croi_bind_item_t *items, uint64_t count);
+
+int64_t croi_port_queue(uint32_t port, const croi_port_packet_t *packet);
+int64_t croi_port_wait(uint32_t port, uint64_t deadline,
+                       croi_port_packet_t *packet, uint64_t leeway);
+```
+
+# DESCRIPTION
+
+A port is the one thing a thread waits on.
+Event sources (signals on any object, counters, interrupts, deadline overruns, memory pressure) are bound to a port with `object_bind`, and each event arrives as a packet that `port_wait` takes.
+A wait on a port nothing is bound to, with a deadline, is a sleep.
+
+A packet is 48 bytes:
+
+```c
+typedef struct {
+  uint64_t key;
+  uint32_t type;
+  int32_t status;
+  uint64_t payload[4];
+} croi_port_packet_t;
+```
+
+The <key> is the one given when the packet's source was bound, or queued.
+The <type> says what <payload> holds:
+
+| Type | Value | From | Payload |
+| `CROI_PKT_TYPE_USER` | 0 | port_queue | the caller's |
+| `CROI_PKT_TYPE_SIGNAL` | 1 | a SIGNALS binding | [0] the trigger in the low 32 bits and the observed signals in the high, [1] count (persistent), [2] time (with TIMESTAMP) |
+| `CROI_PKT_TYPE_INTERRUPT` | 7 | an interrupt | [0] the time in ns |
+| `CROI_PKT_TYPE_PAGE_REQUEST` | 9 | a pager VMO | [0] the command in the low 16 bits and flags above, [1] offset, [2] length |
+| `CROI_PKT_TYPE_BUDGET_OVERRUN` | 0x80 | an overrun binding | [1] the context's total overruns, [2] since the packet was last read |
+| `CROI_PKT_TYPE_MEMORY_PRESSURE` | 0x81 | a pressure binding | [0] limit, [1] bytes charged, [2] changes since last read, [3] level |
+| `CROI_PKT_TYPE_COUNTER` | 0x82 | a VALUE binding | [0] the value waited for, [1] the value reached, [2] time in ns |
+| `CROI_PKT_TYPE_COUNTER_CHANGE` | 0x83 | a CHANGE binding | [1] the value, [2] count, [3] time in ns |
+
+## port_create
+
+`port_create` writes a handle to a new port to <out>.
+It has READ, WRITE, TRANSFER and DUPLICATE, but not WAIT: nothing waits on a port.
+<options> is any of:
+
+: `CROI_PORT_BIND_TO_INTERRUPT`
+  The port may be bound to interrupts (INTERRUPT bindings).
+: `CROI_PORT_RING`
+  The port delivers into a ring.
+  <out> then holds two handles, `out[0]` the port and `out[1]` a VMO of one page (READ, WRITE, MAP) that holds the ring.
+
+Another option is `CROI_ERR_INVALID_ARGS`.
+The job's policy for new ports applies.
+
+A ring port's ring is the ring of ring.h: `CROI_PORT_RING_SLOTS` (64) slots of `croi_port_packet_t`, format `CROI_PORT_RING_FORMAT`.
+The reader maps the VMO read-write, attaches as the ring's consumer and takes packets from it with no call.
+Packets the ring has no room for wait in the port and go in as the reader frees slots, at the next packet or the next `port_wait`.
+A packet in the ring is the reader's: `port_cancel` no longer reaches it.
+
+## port_queue
+
+`port_queue` queues up to <count> (1 to 64) user packets, read from <packets>, on a port with WRITE.
+The type of each is made `CROI_PKT_TYPE_USER`.
+It stops at the first packet that cannot be queued and returns how many it queued; if the first fails it fails with that status.
+A port holds at most 4096 user packets; one more fails with `CROI_ERR_SHOULD_WAIT`, and raises a policy exception (job(2)) as well.
+
+`croi_port_queue` queues one and returns 0 or the status.
+
+## port_wait
+
+`port_wait` waits on a port with READ until it holds a packet, or until <deadline>, and writes up to <count> (1 to 64) packets to <packets>.
+It takes the first packet, waiting for it if there is none, and then as many more as are already there, with no further wait.
+It returns how many it took.
+At the deadline with the port still empty it fails with `CROI_ERR_TIMED_OUT`.
+The wait may end up to <leeway> nanoseconds after the deadline, never before it, so that timers can coalesce; a thread with a deadline profile always gets none.
+A wait that a suspension (task(2)) interrupts is made again when the thread resumes.
+
+On a ring port <count> must be 0 and <packets> is not used: the call delivers what is queued, then waits until the ring is not empty and returns 0.
+It fails with `CROI_ERR_BAD_STATE` once the reader has broken the ring (its cursor passed the kernel's).
+A ring port refuses a count other than 0, and any other port refuses 0, with `CROI_ERR_INVALID_ARGS`.
+
+`croi_port_wait` takes one packet and returns 0 or the status.
+
+## port_cancel
+
+`port_cancel` needs WRITE on the port.
+With <source> a handle (it needs WAIT), it removes the bindings made through that handle to this port under <key>, and the packets of them still queued.
+With <source> 0 it removes, whatever the source, every binding to the port with <key> and every queued user packet with it; the packets of interrupts and other kernel sources are not removed.
+If nothing was removed the call fails with `CROI_ERR_NOT_FOUND`.
+Closing a handle (handle(2)) removes the SIGNALS, VALUE and CHANGE bindings made through it.
+
+## object_bind
+
+`object_bind` binds up to 64 event sources to a port with WRITE, in order.
+Each item is:
+
+```c
+typedef struct {
+  uint32_t handle;    // the event source
+  uint32_t options;   // a kind | flags
+  uint64_t key;       // the packets' key
+  uint64_t trigger;   // SIGNALS: the signals; VALUE: the value; else 0
+  int32_t status;     // out: 0, or why this item failed
+  uint32_t reserved;  // 0
+} croi_bind_item_t;
+```
+
+A nonzero <reserved> is `CROI_ERR_INVALID_ARGS`.
+The call stops at the first item that fails, writes the status of each item it processed and returns how many were bound.
+A bad port, a bad pointer or a count of 0 or over 64 fails the call before anything is bound.
+The low byte of <options> is the kind, and the flags are or-ed in:
+
+: `CROI_BIND_SIGNALS`
+  Any object with the WAIT right.
+  <trigger> is a mask of signals.
+  Once (no PERSISTENT): one packet when any of the signals is asserted, at once if one is.
+  With `CROI_BIND_PERSISTENT`: a packet each time one of them rises, and at binding if one is already set.
+  A persistent packet is coalesced while it waits to be read, and payload[1] counts the rises; the reader takes packets until the object would block.
+: `CROI_BIND_VALUE`
+  A counter (counter(2)) with WAIT and READ, once.
+  <trigger> is a signed value; one packet when the counter is at least that, at once if it is.
+  `CROI_BIND_PERSISTENT` is refused.
+: `CROI_BIND_CHANGE`
+  A counter with WAIT and READ, persistent: a packet at every add.
+  It is the doorbell of a ring.
+: `CROI_BIND_INTERRUPT`
+  An interrupt (interrupt(2)) with READ, persistent, to a port made with `CROI_PORT_BIND_TO_INTERRUPT` (`CROI_ERR_WRONG_TYPE` otherwise).
+  An interrupt binds to one port at a time (`CROI_ERR_ALREADY_BOUND`).
+: `CROI_BIND_OVERRUN`
+  A thread with MANAGE_THREAD and a deadline profile, or an interrupt with WRITE and a handed-off context (profile(2)), persistent: a packet each period the budget runs out, coalesced.
+  A thread or interrupt without such a context is `CROI_ERR_BAD_STATE`.
+  Binding again replaces the port.
+: `CROI_BIND_PRESSURE`
+  A memory account (account(2)) with WRITE, persistent: a packet at every change of pressure level, coalesced, and one at once unless the level is normal.
+
+The kinds other than SIGNALS and VALUE need `CROI_BIND_PERSISTENT` and a <trigger> of 0.
+The flags are `CROI_BIND_PERSISTENT`, `CROI_BIND_EDGE` (SIGNALS: no packet at once for a signal already set) and `CROI_BIND_TIMESTAMP` (SIGNALS: payload[2] is the time of the event).
+Any other flag is `CROI_ERR_INVALID_ARGS`.
+
+The signals an object asserts are in `<croi/syscall.h>`: for a channel `CROI_SIGNAL_READABLE`, `CROI_SIGNAL_WRITABLE` and `CROI_SIGNAL_PEER_CLOSED`; for a process, thread or job `CROI_SIGNAL_TASK_TERMINATED` and the running, no-jobs and no-processes signals; for a VMO `CROI_VMO_ZERO_CHILDREN`; for a counter `CROI_COUNTER_POSITIVE` and `CROI_COUNTER_NON_POSITIVE`.
+
+A port counts its bindings: past 50000 a binding still succeeds and raises a policy exception.
+
+# SEE ALSO
+
+syscall(2), counter(2), interrupt(2), channel(2), pager(2), profile(2), account(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE`, `CROI_ERR_WRONG_TYPE` and `CROI_ERR_ACCESS_DENIED` as for any handle; see syscall(2).
+`CROI_ERR_INVALID_ARGS`: bad options or counts as above, or an unwritable <out> or <packets>.
+`CROI_ERR_NO_MEMORY`: no memory for a packet.
+

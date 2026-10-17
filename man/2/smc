@@ -1,0 +1,55 @@
+page smc 2
+summary make an SMCCC call to firmware
+names smc smc_call
+src user/include/croi/syscall.h kernel/include/resource.h kernel/Kernel/User/SmcSyscalls.swift
+keys arm64 psci secure monitor firmware smccc hvc
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_SMC_CALL */
+int64_t smc_call(uint32_t smc, const croi_smc_parameters_t *parameters,
+                 croi_smc_result_t *result);
+```
+
+# DESCRIPTION
+
+On arm64, `smc_call` makes an SMC Calling Convention call into firmware, through the conduit the FADT names: an SMC instruction, or HVC where firmware runs at EL2.
+<smc> is a resource(2) of kind SMC that covers the function id.
+
+The call reads <parameters>:
+
+```c
+typedef struct {
+  uint32_t func_id;
+  uint8_t padding1[4];
+  uint64_t arg1, arg2, arg3, arg4, arg5, arg6;
+  uint16_t client_id;
+  uint16_t secure_os_id;
+  uint8_t padding2[4];
+} croi_smc_parameters_t;
+```
+
+`func_id` goes in w0, `arg1` to `arg6` in x1 to x6, and `secure_os_id << 16 | client_id` in w7.
+The results are written to <result>, a `croi_smc_result_t` of `arg0` to `arg3` (x0 to x3) and `arg6` (x6, a session id for some implementations).
+<parameters> and <result> must not be null (`CROI_ERR_INVALID_ARGS`).
+
+A resource grants the function ids in its range.
+The PSCI calls that change CPU or system state belong to the kernel and no resource grants them: CPU_SUSPEND, CPU_OFF, CPU_ON, MIGRATE, SYSTEM_OFF, SYSTEM_RESET, SYSTEM_SUSPEND and the rest of that family, in either calling convention.
+A function id outside the resource is `CROI_ERR_OUT_OF_RANGE`; one the kernel keeps is `CROI_ERR_ACCESS_DENIED`; a resource of another kind is `CROI_ERR_WRONG_TYPE`.
+
+With `croi.smccc_qcom=on` on the kernel's command line, a yielding call (bit 31 of the function id clear) follows Qualcomm's resume protocol, one at a time: while x0 says INTERRUPTED (1) the kernel calls again with function id 1 and x6 the session id it returned.
+
+On other architectures the call is `CROI_ERR_NOT_SUPPORTED`.
+
+# SEE ALSO
+
+syscall(2), resource(2), system(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE` as for any handle; see syscall(2).
+

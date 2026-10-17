@@ -1,0 +1,93 @@
+page job 2
+summary jobs: groups of processes with a policy and a CPU reservation
+names job job_create job_set_policy job_set_cpu_reservation
+src user/include/croi/syscall.h kernel/include/task.h kernel/Kernel/User/TaskSyscalls.swift kernel/Kernel/User/ExceptionSyscalls.swift kernel/Kernel/Object/Exception.swift kernel/Kernel/Object/Process.swift
+keys job policy deny kill reservation cpu mask
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_JOB_CREATE */
+int64_t job_create(uint32_t parent, uint64_t options, uint32_t *out);
+/* CROI_SYS_JOB_SET_POLICY */
+int64_t job_set_policy(uint32_t job, uint32_t options, uint32_t topic,
+                       const croi_policy_basic_t *policy, uint64_t count);
+/* CROI_SYS_JOB_SET_CPU_RESERVATION */
+int64_t job_set_cpu_reservation(uint32_t job, uint32_t cpu, uint64_t cpu_mask);
+```
+
+# DESCRIPTION
+
+Jobs form a tree.
+A job holds processes and child jobs; the root job is the ancestor of all.
+A job's policy limits what its processes may do, and its processes and child jobs end with it (task_kill(2)).
+The handle of a job asserts `CROI_SIGNAL_JOB_NO_JOBS` while it has no child job and `CROI_SIGNAL_JOB_NO_PROCESSES` while it has no process.
+
+## job_create
+
+`job_create` makes a child job of <parent>, which needs MANAGE_JOB, and writes its handle to <out>.
+<options> must be 0.
+The child starts with its parent's policy and CPU reservation.
+Its handle has the basic rights and READ, WRITE, GET_PROPERTY, SET_PROPERTY, GET_POLICY, SET_POLICY, ENUMERATE, DESTROY, SIGNAL, MANAGE_JOB, MANAGE_PROCESS and MANAGE_THREAD.
+A parent that has been killed is `CROI_ERR_BAD_STATE`.
+
+## job_set_policy
+
+`job_set_policy` sets the action for each of up to 16 conditions, read from <policy>, an array of
+
+```c
+typedef struct {
+  uint32_t condition;
+  uint32_t policy;
+} croi_policy_basic_t;
+```
+
+The job needs SET_POLICY, <topic> must be 0 and <count> at most 16 (`CROI_ERR_OUT_OF_RANGE`).
+It is `CROI_ERR_BAD_STATE` once the job has a child, so a policy is set before anything is created under it.
+<options> is `CROI_JOB_POL_RELATIVE`, which skips a condition the job already restricts differently, or `CROI_JOB_POL_ABSOLUTE`, which fails with `CROI_ERR_ALREADY_EXISTS` for one.
+A <condition> is:
+
+| Condition | Value | Applies to |
+| `CROI_POL_BAD_HANDLE` | 0 | a call given a handle that is not in the table |
+| `CROI_POL_NEW_ANY` | 3 | sets all of the five NEW conditions below |
+| `CROI_POL_NEW_VMO` | 4 | vmo_create, vmo_create_physical, vmo_create_contiguous, pager_create_vmo |
+| `CROI_POL_NEW_CHANNEL` | 5 | channel_create, task_create_exception_channel |
+| `CROI_POL_NEW_PORT` | 8 | port_create |
+| `CROI_POL_NEW_PROCESS` | 12 | process_create |
+| `CROI_POL_NEW_PAGER` | 14 | pager_create |
+
+and the <policy> is an action:
+
+| Action | Value | Does |
+| `CROI_POL_ACTION_ALLOW` | 0 | nothing |
+| `CROI_POL_ACTION_DENY` | 1 | the call fails with `CROI_ERR_ACCESS_DENIED` |
+| `CROI_POL_ACTION_ALLOW_EXCEPTION` | 2 | raises a policy exception in the caller and lets the call go on |
+| `CROI_POL_ACTION_DENY_EXCEPTION` | 3 | raises the exception and fails the call |
+| `CROI_POL_ACTION_KILL` | 4 | kills the process, with return code `CROI_TASK_RETCODE_POLICY_KILL` |
+
+The policy applies to the calls made by the processes of the job.
+A condition or action not listed is `CROI_ERR_INVALID_ARGS`.
+A policy exception is `CROI_EXCP_POLICY_ERROR` (exception(2)); if no handler handles it the process is killed.
+With `CROI_POL_BAD_HANDLE` the call that used the bad handle still returns `CROI_ERR_BAD_HANDLE`.
+
+## job_set_cpu_reservation
+
+`job_set_cpu_reservation` reserves the CPUs in <cpu_mask> (bit n is CPU n) for the job: they run only threads of this job and its descendants, and no other threads, timers or routed interrupts.
+It needs SET_POLICY on <job> and <cpu> a resource(2) that grants the CPU system resource.
+It is `CROI_ERR_BAD_STATE` while the job has children or when an ancestor holds a reservation.
+The boot CPU cannot be reserved (`CROI_ERR_INVALID_ARGS`); a CPU another job holds is `CROI_ERR_ALREADY_BOUND`; a CPU with deadline reservations admitted for others is `CROI_ERR_NO_RESOURCES`.
+A <cpu_mask> of 0 releases the reservation.
+Destroying the job releases it too.
+
+# SEE ALSO
+
+syscall(2), process(2), task(2), exception(2), profile(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE`, `CROI_ERR_WRONG_TYPE` and `CROI_ERR_ACCESS_DENIED` as for any handle; see syscall(2).
+`CROI_ERR_NO_MEMORY`: no memory for the job.
+

@@ -1,0 +1,82 @@
+page profile 2
+summary scheduling profiles: priority, CPU mask and deadlines
+names profile profile_create object_set_profile
+src user/include/croi/syscall.h kernel/include/profile.h kernel/Kernel/Object/ProfileObject.swift
+keys scheduler deadline priority affinity admission budget cpu mask handoff
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_PROFILE_CREATE */
+int64_t profile_create(uint32_t resource, uint64_t options,
+                       const croi_profile_info_t *info, uint32_t *out);
+/* CROI_SYS_OBJECT_SET_PROFILE */
+int64_t object_set_profile(uint32_t target, uint32_t profile, uint64_t options,
+                           uint32_t *refusal);
+```
+
+# DESCRIPTION
+
+A profile says how a thread is scheduled: a priority, which sets its weight among ordinary threads, or deadline parameters, which give it a guaranteed share of a CPU, and optionally a mask of the CPUs it may run on.
+Threads are fair by default.
+
+## profile_create
+
+`profile_create` writes to <out> a handle to a profile described by <info>.
+<resource> is a resource(2) that grants the PROFILE system resource.
+<options> must be 0.
+The handle has TRANSFER, DUPLICATE, INSPECT and APPLY_PROFILE.
+
+```c
+typedef struct {
+  uint32_t flags;
+  union {
+    struct { int32_t priority; };
+    croi_sched_deadline_params_t deadline_params;  // see below
+  };
+  uint64_t cpu_mask[8];  // bit n is CPU n
+} croi_profile_info_t;
+```
+
+<flags> is a combination of `CROI_PROFILE_INFO_FLAG_PRIORITY`, `CROI_PROFILE_INFO_FLAG_DEADLINE` and `CROI_PROFILE_INFO_FLAG_CPU_MASK`.
+Priority and deadline are alternatives; no flags, or both, is `CROI_ERR_INVALID_ARGS`, and an unknown flag is `CROI_ERR_NOT_SUPPORTED`.
+A priority is from `CROI_PRIORITY_LOWEST` (0) through `CROI_PRIORITY_DEFAULT` (16) to `CROI_PRIORITY_HIGHEST` (31).
+Deadline parameters are in nanoseconds, with 50 microseconds <= capacity <= relative_deadline <= period <= 10 seconds: in each period the thread gets up to <capacity> of CPU time and finishes by <relative_deadline>.
+A CPU mask is read from its first word, up to 64 CPUs, and must not be 0.
+
+## object_set_profile
+
+`object_set_profile` applies <profile>, which needs APPLY_PROFILE, to <target>.
+<target> is:
+
+: a thread
+  It needs MANAGE_THREAD, and must be running (`CROI_ERR_BAD_STATE` before it starts or after it ends).
+  <options> must be 0.
+  A priority profile sets the thread's weight, a deadline profile admits the thread as a scheduling context of its own, and a CPU mask sets its affinity.
+  Applying again replaces the profile.
+: an interrupt or a counter
+  It needs WRITE, and the profile must be a deadline one (`CROI_ERR_INVALID_ARGS`).
+  The object then lends that deadline to each thread its packets wake from a port: the thread runs on it from its wakeup, with a period starting there, until it next blocks.
+  No admission is made; the lent deadline joins the thread's own.
+: an interrupt, with `CROI_PROFILE_HANDOFF` in <options>
+  A deadline profile that the interrupt owns as an admitted context.
+  The thread its packet wakes runs on it at once, on its CPU, until it blocks again, and every wakeup shares the context's budget for the period.
+  A thread that spends it has an overrun counted and carries on with its own profile; see `CROI_BIND_OVERRUN` in port(2).
+  Lending replaces a handoff and the reverse.
+
+Admission can refuse a deadline profile with `CROI_ERR_NO_RESOURCES`.
+If <refusal> is not null, a `uint32_t` is written to it with why: `CROI_ADMISSION_ACCEPTED` (0), `CROI_ADMISSION_NO_ELIGIBLE_CPU` (the mask leaves no usable CPU), `CROI_ADMISSION_CPU_OVERLOADED` (every eligible CPU is full; the CPU number is in bits 8 and up of the word) or `CROI_ADMISSION_ACCOUNT_EXHAUSTED`.
+Bad parameters are `CROI_ERR_INVALID_ARGS`.
+
+# SEE ALSO
+
+syscall(2), thread(2), job(2), port(2), counter(2), interrupt(2), resource(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE`, `CROI_ERR_WRONG_TYPE` and `CROI_ERR_ACCESS_DENIED` as for any handle; see syscall(2).
+`CROI_ERR_NO_MEMORY`: no memory.
+

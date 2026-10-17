@@ -1,0 +1,61 @@
+page counter 2
+summary counters: a signed value to add to, read and wait on
+names counter counter_create counter_add counter_read
+src user/include/croi/syscall.h kernel/include/counter.h kernel/Kernel/User/CounterSyscalls.swift kernel/Kernel/Object/Counter.swift
+keys doorbell fence event signal value wait
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_COUNTER_CREATE */
+int64_t counter_create(uint64_t options, uint32_t *out);
+/* CROI_SYS_COUNTER_ADD */
+int64_t counter_add(croi_counter_add_item_t *items, uint64_t count);
+/* CROI_SYS_COUNTER_READ */
+int64_t counter_read(uint32_t counter, int64_t *value);
+
+int64_t croi_counter_add(uint32_t counter, int64_t amount);
+```
+
+# DESCRIPTION
+
+A counter holds a signed 64-bit value, 0 when created.
+It asserts `CROI_COUNTER_POSITIVE` while the value is above 0 and `CROI_COUNTER_NON_POSITIVE` while it is not.
+It is the one event object: the doorbell that wakes the other side of a ring, the fence a frame waits on.
+A program waits on one with object_bind(2): `CROI_BIND_VALUE` queues a packet once the counter reaches a value, `CROI_BIND_CHANGE` one at every add, and `CROI_BIND_SIGNALS` on the two signals above.
+A counter given a deadline profile by object_set_profile(2) lends it to each thread that its packets wake.
+
+`counter_create` writes a handle to a new counter to <out>.
+<options> must be 0.
+The handle has the basic rights, READ, WRITE and SIGNAL.
+
+`counter_add` adds <amount> to the counter of each of up to 64 items:
+
+```c
+typedef struct {
+  uint32_t counter;  // the counter's handle
+  int32_t status;    // out: 0, or why this item failed
+  int64_t amount;
+} croi_counter_add_item_t;
+```
+
+Each counter handle needs READ and WRITE (the result reveals the value).
+Items are all done: a failed one, such as a counter that would overflow, which is `CROI_ERR_OUT_OF_RANGE` and unchanged, does not stop the later ones; a service ringing every client's doorbell rings the rest when one client has gone.
+The call returns how many succeeded and writes each item's <status>.
+`croi_counter_add` adds to one counter and returns 0, the item's status or the call's.
+
+`counter_read` writes the value to <value>, which must not be null.
+The handle needs READ.
+
+# SEE ALSO
+
+syscall(2), port(2), profile(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE`, `CROI_ERR_WRONG_TYPE` and `CROI_ERR_ACCESS_DENIED` as for any handle; see syscall(2).
+`CROI_ERR_INVALID_ARGS`: a bad count, options other than 0, or a pointer that cannot be written.
+

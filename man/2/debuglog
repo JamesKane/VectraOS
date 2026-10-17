@@ -1,0 +1,51 @@
+page debuglog 2
+summary write records to the kernel's log
+names debuglog debuglog_create debuglog_write
+src user/include/croi/syscall.h kernel/include/log.h kernel/Kernel/Object/DebugLog.swift
+keys log console ring record print
+lang c
+
+# SYNOPSIS
+
+```c
+#include <croi/syscall.h>
+
+/* CROI_SYS_DEBUGLOG_CREATE */
+int64_t debuglog_create(uint32_t resource, uint32_t options, uint32_t *out);
+/* CROI_SYS_DEBUGLOG_WRITE */
+int64_t debuglog_write(uint32_t log, uint32_t options, const void *text,
+                       uint64_t length);
+```
+
+# DESCRIPTION
+
+The debuglog is a ring of 512 records of 256 bytes (`CROI_LOG_RING_SLOTS`, `CROI_LOG_RECORD_MAX`), the oldest overwritten when it is full.
+The kernel and every process write to it.
+A record is a `croi_log_record_t` followed by its text: a sequence number, the length, the severity, flags, a monotonic timestamp in nanoseconds, and the koids of the writing process and thread (0 for the kernel).
+A kernel thread copies each record to the console as `[sssss.mmm] pid:tid> text`, so a writer never waits for the UART.
+
+Readers do not call the kernel.
+The ring is a VMO that a process maps read only, with the ring format `CROI_LOG_RING_FORMAT`, and a counter holding the number of records written, which a caught-up reader binds with `CROI_BIND_VALUE` at its cursor plus one (port(2), counter(2)).
+Both are in the startup handles of a process that is given them.
+object_get_info(2) `CROI_INFO_DEBUGLOG` on a log handle reports how many records have been written and how many the console has finished with, for writers that pace themselves to the console.
+
+`debuglog_create` writes to <out> a handle to a log.
+<resource> and <options> must both be 0 (`CROI_ERR_INVALID_ARGS`): a log can only write, so it needs no authority.
+The handle has the basic rights, WRITE and SIGNAL.
+
+`debuglog_write` appends a record of <length> bytes of <text> to the log.
+The handle needs WRITE.
+<options> is 0 or `CROI_LOG_LOCAL`, which is stored in the record's flags; anything else is `CROI_ERR_INVALID_ARGS`.
+Text longer than `CROI_LOG_RECORD_DATA_MAX` (216) bytes is cut to that length without an error.
+The severity of a record from a process is `CROI_LOG_INFO`.
+The call returns 0.
+
+# SEE ALSO
+
+syscall(2), port(2), counter(2), vmo(2)
+
+# DIAGNOSTICS
+
+`CROI_ERR_BAD_HANDLE`, `CROI_ERR_WRONG_TYPE` and `CROI_ERR_ACCESS_DENIED` as for any handle; see syscall(2).
+`CROI_ERR_INVALID_ARGS`: a bad option, or text that cannot be read.
+
