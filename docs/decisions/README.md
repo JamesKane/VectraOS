@@ -106,3 +106,4 @@ in a new file, and a line in the index below.
 - [D91. Themes are data over one vocabulary; Platinum Indigo is the default, not the only look](D091-themes.md) — 2026-10-17, proposed; extends D24
 - [D92. Hot reload is a program's own code in its own process; a plug-in is a process; both compiled, in any language](D092-plugins-and-hot-reload.md) — 2026-10-17, proposed
 - [D93. A ring read of a stream waits, as a plain read does](D093-ring-reads-wait.md) — 2026-10-17, decided; amends D67, extends D84
+- [D94. A write to a full stream waits, as a read of an empty one does](D094-stream-writes-wait.md) — 2026-10-17, decided; extends D84 and D93
