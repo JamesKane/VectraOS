@@ -1,0 +1,62 @@
+page console 4
+summary the framebuffer console, showing the system log
+src services/console/Main.swift services/console/lib/Console.swift services/console/lib/Font.swift
+keys screen framebuffer log text terminal display
+
+# DESCRIPTION
+
+The console shows the system log on the screen.
+It maps the framebuffer that the firmware gave the boot (written with write combining), reads the log as it is written, and draws each record as a line of text.
+A manifest mounts its tree at `/mnt/console`.
+
+Text is a grid of cells.
+The font is Spleen, 16 by 32 pixels on a screen 2560 pixels wide or more and 8 by 16 on a smaller one, and the grid is as many cells as fit.
+The first line it draws names the screen and the grid.
+Each log record is drawn as the kernel's console prints it, `[sssss.mmm] ppppp:ttttt> text`, the time in seconds and milliseconds since the kernel started and the process and thread that logged it.
+The line is amber for a warning and magenta for an error, and green otherwise.
+
+The log is a ring of 512 records of 256 bytes, read from the oldest kept.
+If the console falls behind, the ring overwrites records it has not read, and `status` counts them as dropped.
+Text that was typed is echoed by kbdfs(4) into the log, and so appears here.
+
+A grid takes UTF-8.
+It writes a printable character at the cursor, wrapping at the right edge, and scrolls when the cursor leaves the bottom.
+A newline, a carriage return, a tab (to the next multiple of eight columns) and a backspace move the cursor; other control characters and ANSI escape sequences (`ESC [` to its final byte) are dropped.
+A byte that is not UTF-8 is drawn as U+FFFD, and a character the font lacks, Spleen having no U+FFFD, as a question mark.
+
+The manifest asks for what the console needs:
+
+```text
+service console
+program console
+resource mmio
+bootdata
+debuglog
+export
+early
+restart on-failure
+```
+
+`resource mmio` and `bootdata` give it the framebuffer, which the boot data names, and `debuglog` the log's ring and its doorbell.
+It starts early, to show the boot from its start.
+Without a linear framebuffer of 32-bit pixels in the boot data it exits with a message; without the log it runs, and the log is not shown.
+
+# FILES
+
+: `/mnt/console/status`
+  Read only.
+  The framebuffer (`framebuffer <w>x<h> stride <s> <format>`, the stride in pixels and the format `rgbx888` or `bgr888x`), the font (`font spleen <w>x<h>`), when the first frame was drawn (`first frame <n> ns`, on the monotonic clock, which starts with the kernel), the grid (`grid <columns>x<rows>`), the records shown and dropped (`records <n> dropped <n>`) and the frames drawn and the time spent drawing them (`frames <n> drawing <n> us`), a line each.
+: `/mnt/console/screen`
+  Read only.
+  The grid's text, a line for each row, trailing spaces dropped.
+: `/mnt/console/write`
+  Text written here is shown at the cursor, in the ink color, a pale blue, and drawn as soon as it is written.
+  Reads give nothing.
+
+# SEE ALSO
+
+kbdfs(4), manifest(6), launcher(8), intro(4)
+
+# BUGS
+
+There is no scrollback: the screen holds the last rows only.

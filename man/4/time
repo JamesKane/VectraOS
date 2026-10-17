@@ -1,0 +1,57 @@
+page time 4
+summary the time service, UTC from the real-time clock
+src services/time/Main.swift services/time/lib/RTC.swift
+keys clock utc rtc cmos date
+
+# DESCRIPTION
+
+The time service sets the system's UTC.
+On amd64 it reads the PC's real-time clock once, as it starts, and publishes that time in the UTC page the launcher gave it to write; every process maps the page, and `clock_gettime(CLOCK_REALTIME)` reads it.
+On the other architectures it finds no real-time clock to read, publishes nothing, and UTC stays at the launcher's starting value.
+
+The clock is read through the CMOS ports 0x70 and 0x71.
+The service waits out an update in progress, then reads the registers again until two readings agree (at most six).
+It takes the registers as the clock's status register says they are kept, binary or BCD and a 24-hour or 12-hour clock, and the year from the century register, 0x32, where there is one and as 20YY where there is not.
+The machine's clock is taken to be UTC.
+The time is published with an error of one second, the clock's resolution.
+A reading that is no date (a month 13, a 30th of February) is refused.
+
+The manifest (manifest(6)) of a machine that has the clock:
+
+```text
+service time
+program time
+export
+early
+clock
+resource ioport
+```
+
+`early` starts it before the services that read the time, `clock` gives it the UTC page to write and `resource ioport` the ports.
+The service prints a line to the log when it has set the time, and exits with an error, saying why, if it has no page, no ports, a clock that says no date, or cannot write the page.
+
+# EXAMPLES
+
+On a machine whose clock reads 9:15:30 on 12 October 2026, reading `/svc/time/status` gives a line like this:
+
+```rc
+% cat /svc/time/status
+set from rtc 2026-10-12T09:15:30Z utc 1791796530000000000
+```
+
+# FILES
+
+: `/svc/time/status`
+  What the service did: on amd64, `set from rtc `, the date it read as `YYYY-MM-DDThh:mm:ssZ`, ` utc ` and the same time as nanoseconds since 1970; elsewhere `no rtc`.
+  A line, ended by a newline.
+
+# SEE ALSO
+
+manifest(6), launcher(8), cat(1)
+
+# BUGS
+
+It reads the clock once.
+UTC drifts from the clock afterwards, and the service never writes the clock back.
+
+Only amd64's clock is read; on the other machines `status` says `no rtc`.

@@ -1,0 +1,123 @@
+page plumber 4
+summary the plumber, which routes messages to ports by rules
+src services/plumber/Main.swift services/plumber/lib/Plumber.swift services/plumber/lib/Rules.swift services/plumber/lib/Message.swift services/plumber/lib/Defaults.swift
+keys plumb message rules port send route
+
+# DESCRIPTION
+
+The plumber routes messages between programs, as Plan 9's does.
+A program that has something another should open, such as a file name or a URL, writes a message to `send`; the plumber chooses a port by its rules, and the program that reads the port gets the message.
+A manifest mounts its tree at `/mnt/plumb`.
+
+A message is the `plumb(6)` format, six lines and then data:
+
+```text
+src
+dst
+wdir
+type
+attr
+ndata
+<ndata bytes of data>
+```
+
+`src` is the sender, `dst` the port wanted (the plumber sets it to the port chosen), `wdir` the sender's directory, `type` such as `text`, `attr` pairs `name=value` apart by blanks (a value holding a blank, a quote or an equals sign is quoted with `'`, a quote inside doubled), and `ndata` the number of bytes of data that follow, which are the last line's.
+A message is one write; it is refused if the bytes after the sixth line are not `ndata`.
+
+## Rules
+
+A ruleset is lines up to a blank one: patterns, then actions.
+The first ruleset in force whose patterns all hold takes the message, and its actions apply.
+`#` starts a comment.
+A line `NAME=value` outside a ruleset defines `$NAME` for the rulesets after it.
+Words are split at blanks, and `'` quotes one (`''` for a quote inside).
+
+A pattern is an object, a verb and one argument.
+The objects are `src`, `dst`, `wdir`, `type`, `data`, `attr` and `arg`.
+
+: `is`
+  The field equals the argument.
+  A `type` argument ending in `*` is a prefix: `type is image/*`.
+  `attr is name=value` holds if the message has that attribute.
+: `matches`
+  The argument is a regular expression, as Plan 9's `regexp(6)` has them (literals, `.`, classes `[a-z]`, `[^a-z]`, `*`, `+`, `?`, `|`, groups, `^`, `$`), that the whole field must match.
+  Its groups are `$1` to `$9`, and the whole match `$0`.
+: `isfile`, `isdir`
+  The argument, taken against `wdir` if it is not an absolute path, names a file or a directory.
+  It is then `$file` or `$dir`.
+: `set`
+  The field becomes the argument.
+  `attr set` replaces all the attributes.
+: `add`, `delete`
+  `attr add name=value` adds or replaces an attribute, and `attr delete name` removes one.
+
+The arguments of a pattern and of the actions may use `$0` to `$9`, `$src`, `$dst`, `$wdir`, `$type`, `$data`, `$file`, `$dir` and the `NAME`s defined.
+
+The actions:
+
+: `plumb to PORT`
+  The message goes to the port.
+  A ruleset needs one.
+: `plumb client APP ARG ...`
+  If no one reads the port, start APP with the arguments and hold the message until the port is opened.
+: `plumb start APP ARG ...`
+  If no one reads the port, start APP and drop the message.
+
+The rules in force when the plumber starts send a compiler's `file:line` and a text file's name to `edit` (the first adds an `addr` attribute), a URL to `web`, a `mailto:` address to `mail`, and an `image/` type to `image`.
+
+## Ports
+
+A port is a file for each `plumb to` in the rules, made when the rules are read and never taken away.
+Each channel open on a port gets its own copy of every message sent to it after the open.
+A read returns one message, or as much of it as the read asks for, the rest on the next read, and waits if there is none.
+
+When a message is sent to a port nobody has open, `plumb client` starts the program and holds the message for the first channel to open the port; at most 32 are held, the oldest dropped.
+`plumb start` starts the program and drops the message.
+With neither, the write to `send` fails.
+A program is started from `/bin`, never through a shell, and is given the plumber's tree at `/mnt/plumb` and the plumber's `/bin`.
+The plumber logs each message it routes or refuses, and each program it starts.
+
+# EXAMPLES
+
+A ruleset to write to `rules`: text beginning `hello` goes to a port `greet`, and if no one reads it `cat` is started to read it.
+
+```text
+type is text
+data matches 'hello .*'
+plumb to greet
+plumb client cat /mnt/plumb/greet
+```
+
+# FILES
+
+: `/mnt/plumb/send`
+  Write a message here to have it routed.
+  The write is refused with `invalid` if the bytes are not a message, `notFound` if no ruleset takes it, and `io` if the port has no reader and the ruleset starts nothing, or the program could not be started.
+  Reads give nothing.
+: `/mnt/plumb/rules`
+  Reads give the rules in force.
+  A write adds its rules as a ruleset after them; the whole set is parsed again, and if there is an error in it the write is refused as `invalid` and the rules stay as they were.
+: `/mnt/plumb/edit`
+  A port of the rules in force at the start: files and `file:line` places.
+: `/mnt/plumb/web`
+  A port of those rules: URLs.
+: `/mnt/plumb/mail`
+  A port of those rules: `mailto:` addresses.
+: `/mnt/plumb/image`
+  A port of those rules: images.
+  A ruleset added to `rules` makes a file for each port it names that is new.
+
+# SEE ALSO
+
+manifest(6), launcher(8), intro(4)
+
+# DIAGNOSTICS
+
+A rule that is wrong is refused, and the plumber's log says why with the line, such as `plumber: rules refused: rules:3: no verb foo`; a message refused is in the log as `plumber: refused:` and why.
+
+# BUGS
+
+`isfile` and `isdir` never hold: the plumber is not told what files there are.
+A message is never taken by a ruleset that needs a file, which includes the first two of the rules it starts with.
+
+A write to `rules` cannot remove a rule.

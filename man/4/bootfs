@@ -1,0 +1,49 @@
+page bootfs 4
+summary the boot image as a tree of read only files
+src services/bootfs/Main.swift
+keys boot image programs libraries bin etc lib
+
+# DESCRIPTION
+
+The bootfs service serves the boot image, which the loader put in memory beside the kernel, as a tree of files.
+Each file of the image is there at its path in the image: the programs in `bin/`, the shared objects in `lib/`, the manifests in `etc/manifests/`, the drivers' match records in `etc/drivers`, the manual in `man/`, and the rest.
+A file of no length is an empty file.
+Every other file is a read only copy-on-write child of the image's memory, so a read or a map sees the image's bytes and nothing can write them.
+Node gives the file as memory (`memory`), which a process maps; the image's programs and libraries may also be run from it.
+
+A manifest (manifest(6)) mounts the tree's `bin/` at `/bin`, so that a process starts a program by finding it there:
+
+```text
+mount /bin bootfs/bin
+```
+
+The service is started with the boot image itself, which only a manifest's `bootfs` directive gives; it exits with a message, and the launcher restarts it, if it has none.
+Its own manifest is
+
+```text
+service bootfs
+program bootfs
+bootfs
+export
+early
+restart on-failure
+```
+
+The service is early because the services that follow run from it.
+
+# FILES
+
+: `bin/<name>`
+  A program of the image.
+: `lib/<name>`
+  A shared object.
+: `etc/manifests/<name>.manifest`
+  A service's manifest.
+: `etc/drivers`
+  The drivers' match records, all in one file.
+: `status`
+  `serving <n> files`, a line, <n> the number of files in the image.
+
+# SEE ALSO
+
+manifest(6), launcher(8), driver(6), intro(4)

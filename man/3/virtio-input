@@ -1,0 +1,43 @@
+page virtio-input 3
+summary the virtio input driver: keyboards, mice and tablets
+src drivers/input/virtio-input/Main.swift drivers/input/virtio-input/driver.manifest drivers/input/lib/Usages.swift
+keys keyboard mouse tablet evdev virtio input
+
+# DESCRIPTION
+
+virtio-input drives a virtio input device (Virtual I/O Device 1.2, section 5.8): a keyboard, mouse or tablet, as QEMU provides them.
+devmgr(8) starts one for each device that matches its record (driver(6)):
+
+```text
+driver virtio-input
+class input
+match pci 1af4:1052
+```
+
+The driver asks the device for its name, ids and the types of events it sends, and names it a keyboard if it sends key events, a mouse if relative motion, a tablet if absolute motion, the last of those it finds.
+It reads the device's events from a queue of up to 64 eight-byte buffers, which the device writes through the device's own DMA: the driver refuses a device that does not let the IOMMU translate its addresses (a virtio device must offer `ACCESS_PLATFORM`; QEMU's does with `iommu_platform=on`).
+The device's interrupt is MSI-X where devmgr gave the driver an MSI vector, else INTx, and with INTx the driver also polls the queue every 50 ms against a lost interrupt.
+
+An event is a type, a code and a value, as Linux's evdev has them.
+The driver turns a key press or release (value 1 or 0; a held key's repeat, value 2, is ignored) into the HID usage of the same key, and ends a batch when the device sends a report event (`SYN_REPORT`).
+A batch is one write of two byte records, a usage and 1 or 0, to `/dev/kbin`, the channel devmgr gives drivers of the `input` class to kbdfs(4).
+Keys with no usage in the table (evdev codes 0 to 127 are known) are dropped.
+Mouse and tablet events are read and dropped.
+
+# FILES
+
+The driver's tree is served in devmgr(8)'s, at `drivers/virtio-input-<address>`.
+
+: `status`
+  Read only.
+  Lines as the driver set itself up: `interrupt MSI-X` or `interrupt INTx`; `capabilities` and the virtio capabilities found; `name`, `kind` (`keyboard`, `mouse`, `tablet` or `other`) and `events` (the event types, as numbers); `keys to /dev/kbin`, or `no /dev/kbin: keys go nowhere`; `event queue <n> buffers`.
+  If setup failed, `FAILED: status <n>`, with a line before it saying why when the device bypasses the IOMMU.
+  Then the counts: `events read <n>, keys to kbdfs <n> in <n> batches, refused <n>` and `interrupts <n> polls <n>`; refused counts keys kbdfs's `kbin` did not take.
+
+# SEE ALSO
+
+kbdfs(4), devmgr(8), driver(6), intro(3)
+
+# BUGS
+
+Mice and tablets are not served: their events are dropped.

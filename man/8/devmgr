@@ -1,0 +1,102 @@
+page devmgr 8
+summary the device manager, which finds devices and runs their drivers
+src drivers/devmgr/Main.swift drivers/devmgr/lib/Index.swift drivers/devmgr/lib/Grants.swift drivers/devmgr/lib/IOMMUs.swift drivers/devmgr/lib/Routing.swift drivers/devmgr/lib/Firmware.swift drivers/devmgr/lib/Devices.swift drivers/devmgr/devmgr.manifest.in
+keys devices drivers pci acpi iommu dma bind host status
+
+# DESCRIPTION
+
+devmgr finds the machine's devices and runs a driver for each one that a driver claims.
+It is a service, started by launcher(8) from a manifest (manifest(6)) that gives it the machine's memory-mapped, interrupt and, on amd64, I/O port resources, the system resource, the firmware's boot data, and `programs`, bootfs and a job to run the drivers in.
+
+It works in this order.
+
+- It reads the firmware's tables from the boot data and loads the ACPI namespace: the DSDT and SSDTs, run with an interpreter whose regions lie over the machine, and `_INI`.
+  It tells the firmware that the interrupt controller is the APIC.
+  It reads `_STA` of every device and, of those present, the hardware id, compatible ids and `_CRS`.
+- It finds the PCI functions by walking the configuration space of segment 0 through the ECAM window of the MCFG table.
+- It names each IOMMU the DMAR, IVRS, IORT or RIMT tables describe to the kernel.
+- It reads the drivers' match records, `etc/drivers` in bootfs (driver(6)), and matches every PCI function and every present ACPI device against them.
+  A device with no match is `unbound`; one with two drivers tied at the deciding level is `ambiguous`, and neither runs.
+- For each bound PCI function it turns on decoding of the function's memory and I/O ranges.
+  Bus mastering is left to the driver.
+- It runs each bound device's driver as a service of its own, called `<driver>-<device>` (`edu-00:10.0`), with the manifest `export` and `restart on-failure`, so that a driver that fails is restarted.
+  The device is named `pci-<bus>:<device>.<function>`, or `acpi-` and its namespace path without the leading backslash.
+
+A driver's process is given its device's resources and nothing else.
+A PCI function's driver gets a resource for each memory or I/O range of its BARs, one for its 4 KiB of configuration space, the interrupt its pin is routed to by `_PRT` (for a function on the root bus), a single MSI-X or MSI vector if the function has the capability and the kernel can make one, and a bus transaction initiator (BTI) for its DMA on the IOMMU that covers the function, narrowed to the driver's `dma-bits`.
+Where no IOMMU covers it, the BTI is the stub's, which lets the device reach all of memory, and `status` says so.
+An ACPI device's driver gets the memory and I/O ranges and the first interrupt its `_CRS` names.
+A driver whose class is `input` is also given a channel to kbdfs(4)'s `kbin`, at `/dev/kbin`.
+
+devmgr serves its tree at once, before it has finished, so that `status` grows as it goes and ends with `bound <n>` when it is done.
+Each driver's own tree is mounted under `drivers`.
+
+The manifest:
+
+```text
+service devmgr
+program devmgr
+resource mmio
+resource irq
+resource system
+resource ioport
+bootdata
+mount /dev/kbin kbdfs/kbin
+programs
+export
+```
+
+`resource ioport` is there on amd64 only.
+A manifest that uses devmgr typically mounts its `dev` at `/dev`, after kbdfs's.
+
+A machine devmgr cannot use stops it with a message: no ACPI tables in the boot data, no MCFG table, a driver index in error (the file and line are given), or no bootfs or job.
+
+# EXAMPLES
+
+The devices and what became of them:
+
+```rc
+% cat /svc/devmgr/status
+```
+
+# FILES
+
+: `/svc/devmgr/status`
+  A line for each device, ACPI's and PCI's: the device's name, its ids, its class, the driver service, its state, `dma` and where its DMA goes, such as `pci-00:10.0 1234:11e8 00.ff.00 edu-00:10.0 running dma <where>`.
+  The ids are the PCI vendor and device in hexadecimal, or the ACPI hardware id or `-`.
+  The class is the PCI class, subclass and programming interface, or `-`.
+  The driver service is `-` where there is none.
+  The state is `unbound`, `ambiguous: ` and the drivers tied, `not started`, `running` or `failed`.
+  DMA is `-` before a device is given its resources, `none` where it has no BTI, the IOMMU's name (`VT-d fed90000`) where it has one, `passthrough: no IOMMU covers it` for the stub, or the IOMMU's name and `refused it:` and why.
+  When devmgr has finished, the last line is `bound <n>`, the number of drivers running.
+: `/svc/devmgr/iommus`
+  A line for each IOMMU unit, `<name> ok` or `<name> refused <n>`; `no system resource: no DMA`, and `no IOMMU: DMA is passthrough (WARNING)` where there is none.
+  `not yet` until devmgr gets there.
+: `/svc/devmgr/enumeration`
+  How many PCI functions it found, in how many microseconds, and the buses it mapped.
+  `not yet` until then.
+: `/svc/devmgr/acpi`
+  The tables read, the time to load the namespace, run `_INI` and `_STA`, `_PIC` and `_PRT`, with the failures, and the pages of physical memory mapped.
+  `not yet` until then.
+: `/svc/devmgr/dev`
+  A directory for the devices' classes, to mount at `/dev`.
+  It is empty: no driver serves a class directory yet.
+: `/svc/devmgr/drivers`
+  A directory of the drivers' own trees, one for each driver service that is running: `drivers/edu-00:10.0/status`.
+
+# SEE ALSO
+
+driver(6), manifest(6), launcher(8), intro(3), virtio-input(3), kbdfs(4)
+
+# DIAGNOSTICS
+
+devmgr prints to the log what it found, `devmgr: <n> PCI functions, <n> ACPI devices, <n> IOMMUs; <n> to bind`, and `devmgr: bound <n>` when it is done, and why any driver could not be started.
+An error that stops it begins `devmgr:`.
+
+# BUGS
+
+Only PCI segment 0 is read.
+A function's interrupt is routed only if it is on the root bus; one behind a bridge has none.
+A function gets one MSI vector.
+
+The IOMMUs: VT-d devices behind bridges, AMD-Vi exclusion ranges and SMMUv1 and v2 are not handled, and a device they would cover has no BTI on an IOMMU.

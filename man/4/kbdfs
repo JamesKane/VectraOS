@@ -1,0 +1,109 @@
+page kbdfs 4
+summary the keyboard and the console, /dev/kbd and /dev/cons
+src services/kbdfs/Main.swift services/kbdfs/lib/Keyboard.swift services/kbdfs/lib/Keymap.swift
+keys keyboard keys cons kbd consctl kbmap kbin kbdin input raw cooked
+
+# DESCRIPTION
+
+kbdfs turns the keys that keyboard drivers push to it into the text a program reads, as 9front's kbdfs does.
+A manifest mounts its tree at `/dev`, before whatever else is there.
+A keyboard driver (virtio-input(3) is one) writes each key it sees to `kbin`; kbdfs makes a rune of it by the keymap and the modifiers held, and gives the rune to the program reading `cons`, or to the one reading `kbd`.
+A read of `kbd` or `cons` waits until there is something to return.
+
+## Keys
+
+A key is a HID usage of the keyboard page.
+Its rune comes from the keymap's layer for the modifiers held: `altgrmod4` for AltGr with the Mod4 key, `mod4`, `shiftaltgr`, `shift`, `altgr`, `ctl`, or else `none`; the first three apply only to keys that have a rune in that layer.
+The keymap is a US keyboard.
+As in 9front's, Enter is a newline, Backspace is `^H`, Delete is the key Kdel, and CapsLock is Ctl.
+The keypad moves the cursor (Home, End, the arrows and the others) until NumLock is pressed, then types digits.
+The keys that are not characters, such as the arrows and the function keys, are runes of Unicode's private use area, as in Plan 9's keyboard.h.
+
+## cons
+
+A read of `cons` returns what was typed, in UTF-8, and waits if nothing has been.
+Typing is cooked unless raw mode is on.
+
+Cooked, kbdfs holds the line being typed and echoes it to the console.
+`^H` erases the last character, `^W` the last word and `^U` the whole line; the keys erase on the console with a backspace each.
+The line is given to a read when a newline is typed, or at 256 characters.
+`^D` gives the line so far, without a newline; typed on an empty line it gives an end of input, which a read returns as nothing, once.
+Delete throws away the line being typed.
+A read that asks for less than the line gets it in parts.
+
+Raw, each rune is given to a read as it is typed, with no echo and no editing.
+
+A write to `cons` is shown on the console.
+It reaches the system log, and so the screen.
+While `kbd` is open, `cons` hears nothing: the runes go to `kbd`.
+
+## kbd
+
+A read of `kbd` returns messages, each ending in a NUL byte, as many whole ones as fit the read.
+`kbd` has its messages only while it is open.
+
+: `k<keys>`
+  A key went down.
+  <keys> are the keys held, in the order pressed, each as the rune of the key without the modifiers, so Shift and `a` held is the Shift rune and `a`.
+: `K<keys>`
+  A key was released; <keys> are those still held.
+: `c<rune>`
+  The rune typed.
+
+## consctl
+
+A write of `rawon` to `consctl` turns raw mode on, and `rawoff` turns it off.
+A write that begins with neither is refused as invalid.
+Raw mode lasts only as long as a channel is open on `consctl`; when the last closes, the console is cooked again.
+Turning raw mode on gives the line typed so far to `cons` at once.
+`consctl` reads as empty.
+
+## kbmap
+
+A read of `kbmap` returns the keymap, a line for each rune of each layer, `layer usage rune`, the three fields right aligned to 11 characters.
+The layers are `none`, `shift`, `altgr`, `ctl`, `shiftaltgr`, `mod4` and `altgrmod4`.
+A write sets runes, a line each in the same form.
+The layer may be a name or a number; the usage is a number below 256; the rune is a number (decimal, `0x` hexadecimal, a leading `0` octal), `'` and a character, or `^` and a letter for a control character.
+Blank lines and lines starting `#` are skipped.
+The first line that is not understood stops the write with an error, the lines before it kept.
+
+## kbin and kbdin
+
+`kbin` is for keyboard drivers.
+A write is any number of two byte records: a usage, then 1 for pressed or 0 for released.
+A keyboard driver gets its own channel to `kbin` from devmgr(8), at `/dev/kbin` in the driver's namespace.
+All the keyboards share the modifiers held.
+
+`kbdin` is for a program that types for someone else.
+A write is messages ending in NUL: `r<rune>` presses and `R<rune>` releases the key that types the rune; `c<rune>` types it; any other message, such as `k<keys>`, goes to the readers of `kbd` as it is, if it is open.
+
+# FILES
+
+: `/dev/kbd`
+  The keys held and typed, as messages.
+: `/dev/cons`
+  What was typed, as lines or runes; writes go to the console.
+: `/dev/consctl`
+  `rawon` and `rawoff`.
+: `/dev/kbmap`
+  The keymap, read and written as text.
+: `/dev/kbin`
+  Usages from keyboard drivers.
+: `/dev/kbdin`
+  Messages typed for someone else.
+
+# SEE ALSO
+
+console(4), virtio-input(3), devmgr(8), manifest(6), intro(4)
+
+# DIAGNOSTICS
+
+A write that kbdfs cannot make sense of fails as invalid: to `consctl` one that begins with neither `rawon` nor `rawoff`, to `kbmap` a line that is not a rune of a layer.
+
+# BUGS
+
+The Alt key does not compose characters, and a held key does not repeat.
+Delete does not interrupt the program reading: it throws away the line being typed.
+Control-Alt-Delete does not reboot.
+A write of `kbmap` does not clear the map first.
+The modifiers held are kept for all keyboards together, not for each.
