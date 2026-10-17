@@ -18,14 +18,14 @@ virt-arm64-smmuv3	component	qemu-virt-arm64	arm64	supported	no	V0	D2	-	-	boot-sm
 virt-arm64-el2	component	qemu-virt-arm64	arm64	supported	no	V0	D2	-	-	boot-smoke-el2	-	entry at EL2, dropped to EL1
 virt-arm64-ramfb	component	qemu-virt-arm64	arm64	supported	no	V0	D2	-	-	framebuffer-pixels	-	ramfb as the GOP framebuffer
 qemu-virt-arm64-a76	platform	-	arm64	planned	-	open	D53	yes	-	-	-	-cpu cortex-a76, the floor run beside -cpu max
-qemu-virt-rv64	platform	-	rv64	supported	-	V0	D2	deferred	-	vx test rv64	-	QEMU virt, ACPI, -cpu max, edk2; tier 1 deferred (D47)
-virt-rv64-console	component	qemu-virt-rv64	rv64	supported	yes	V0	D2	-	-	boot-smoke	-	serial console
-virt-rv64-smp	component	qemu-virt-rv64	rv64	supported	yes	V0	D2	-	-	boot-smoke	-	4 harts
-virt-rv64-plic	component	qemu-virt-rv64	rv64	supported	yes	V0	D2	-	-	boot-smoke	-	PLIC
-virt-rv64-aia	component	qemu-virt-rv64	rv64	supported	no	V0	D2	-	-	boot-aia	-	APLIC and IMSICs
-virt-rv64-timer	component	qemu-virt-rv64	rv64	supported	yes	V0	D2	-	-	boot-smoke	-	SBI timer, or Sstc where the hart has it
-virt-rv64-iommu	component	qemu-virt-rv64	rv64	supported	no	V0	D2	-	-	boot-smoke,boot-riscv-iommu-base	-	RISC-V IOMMU, with and without interrupt remapping
-virt-rv64-ramfb	component	qemu-virt-rv64	rv64	supported	no	V0	D2	-	-	framebuffer-pixels	-	ramfb as the GOP framebuffer
+qemu-virt-rv64	platform	-	rv64	experimental	-	V0	D2	deferred	-	vx test rv64	d45240e 2026-10-17	QEMU virt, ACPI, -cpu max, edk2; tier 1 deferred (D47); vx ci tests it no longer until full Swift (tier 1) runs on rv64 (2026-10-17)
+virt-rv64-console	component	qemu-virt-rv64	rv64	experimental	yes	V0	D2	-	-	boot-smoke	d45240e 2026-10-17	serial console
+virt-rv64-smp	component	qemu-virt-rv64	rv64	experimental	yes	V0	D2	-	-	boot-smoke	d45240e 2026-10-17	4 harts
+virt-rv64-plic	component	qemu-virt-rv64	rv64	experimental	yes	V0	D2	-	-	boot-smoke	d45240e 2026-10-17	PLIC
+virt-rv64-aia	component	qemu-virt-rv64	rv64	experimental	no	V0	D2	-	-	boot-aia	d45240e 2026-10-17	APLIC and IMSICs
+virt-rv64-timer	component	qemu-virt-rv64	rv64	experimental	yes	V0	D2	-	-	boot-smoke	d45240e 2026-10-17	SBI timer, or Sstc where the hart has it
+virt-rv64-iommu	component	qemu-virt-rv64	rv64	experimental	no	V0	D2	-	-	boot-smoke,boot-riscv-iommu-base	d45240e 2026-10-17	RISC-V IOMMU, with and without interrupt remapping
+virt-rv64-ramfb	component	qemu-virt-rv64	rv64	experimental	no	V0	D2	-	-	framebuffer-pixels	d45240e 2026-10-17	ramfb as the GOP framebuffer
 qemu-virt-rv64-no-svpbmt	platform	-	rv64	deprecated	-	V6b	D51	deferred	-	boot-smoke-no-svpbmt	-	-cpu rv64, without Svpbmt; goes when RVA22 becomes the baseline
 qemu-virt-rv64-rva22	platform	-	rv64	planned	-	V6b	D51	deferred	-	-	-	-cpu rva22s64, the floor run beside -cpu max
 virtio-input	component	qemu-q35,qemu-virt-arm64,qemu-virt-rv64	all	planned	no	V2	D2	-	-	-	-	roadmap V2 item 7

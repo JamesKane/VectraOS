@@ -53,7 +53,9 @@ func ci(_ args: [String]) -> Bool {
   }
   var ok = step("host-test", ["swift", "test"])
   ok = rcOracleCommand([]) && ok  // rc against 9front's (D70)
-  for arch in allArches { ok = build(arch) && test(arch) && ok }
+  // Every arch builds; rv64's suite is off until full Swift runs there.
+  for arch in allArches { ok = build(arch) && (!testedArches.contains(arch) || test(arch)) && ok }
+  for arch in allArches where !testedArches.contains(arch) { say("vx: \(arch)-test skipped: off until full Swift runs there") }
   ok = locCommand(["--check"]) && ok
   ok = hardwareCommand(["--check"]) && ok
   if bench {

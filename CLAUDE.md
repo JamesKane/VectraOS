@@ -74,6 +74,9 @@ CMake/Ninja builds the images, with one tree per arch under `build/<arch>/`.
   the log's tail.
 - `vx test` runs one arch's suite after another, never two at once: under
   that load, rv64 TCG tests such as `boot-aia` exceed their timeouts.
+- rv64's suite is off in `vx test` and `vx ci` until full Swift (tier 1)
+  runs there (2026-10-17); rv64 still builds, and `vx test rv64` runs it.
+  Its QEMU rows in docs/hardware are experimental meanwhile.
 - `vx bench` judges against `bench/history/<host>.tsv`, which holds
   seconds or counts. It is advisory on a shared machine. Record only on a
   quiet machine with a committed tree.

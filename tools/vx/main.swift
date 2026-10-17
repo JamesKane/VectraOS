@@ -16,10 +16,12 @@
 //   vx rc-oracle [CASE...]    our rc against 9front's (RcOracleCommand.swift, D70)
 //   vx acpi import|fetch-qemu|list  the AML interpreter's corpus (ACPICommand.swift, D74)
 //   vx ci [--no-bench]        host tests, rc against 9front's, every arch's
-//                             build and tests, the size budgets, then the
+//                             build, amd64's and arm64's tests, the size budgets, then the
 //                             bench (advisory)
 //
-// ARCH is amd64, arm64 or rv64; none means all three (amd64 for boot).
+// ARCH is amd64, arm64 or rv64; none means all three (amd64 for boot), but
+// for test, which runs amd64's and arm64's suites (rv64's is off until full
+// Swift runs there; name it to run it).
 // Run these from the repository root. Build vx first and run its binary,
 // so the builds it starts don't wait on SwiftPM's lock:
 //   swift build --product vx && .build/debug/vx ci
@@ -36,6 +38,11 @@ import FoundationEssentials
 import Glibc
 
 let allArches = ["amd64", "arm64", "rv64"]
+/// The arches whose QEMU suites `vx test` and `vx ci` run by default. rv64
+/// builds but isn't tested until full Swift (tier 1) runs there: its
+/// LLVM lacks Swift's calling conventions (roadmap, item 3). `vx test rv64`
+/// still runs it.
+let testedArches = ["amd64", "arm64"]
 
 func arches(_ args: [String]) -> [String] {
   for a in args where !allArches.contains(a) { fail("unknown arch \(a); vx knows \(allArches.joined(separator: ", "))") }
@@ -64,7 +71,7 @@ else { fail("run vx \(command) from the repository root") }
 
 switch command {
 case "build": exit(arches(args).allSatisfy { build($0) } ? 0 : 1)
-case "test": exit(arches(args).allSatisfy { build($0) && test($0) } ? 0 : 1)
+case "test": exit((args.isEmpty ? testedArches : arches(args)).allSatisfy { build($0) && test($0) } ? 0 : 1)
 case "boot":
   let arch = arches(args).first!
   guard args.count <= 1, build(arch) else { exit(1) }

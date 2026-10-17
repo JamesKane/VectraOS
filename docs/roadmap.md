@@ -17,7 +17,10 @@ under `vx ci` and every budget it introduces has a running check
   - Done but for arm64's and rv64's RTCs: time (item 5).
   - Tier 1 (item 3) runs on amd64 and arm64, with tier 0's libraries,
     FDIO, rc and the commands built for it; rv64 waits for Swift's
-    calling conventions in its LLVM.
+    calling conventions in its LLVM. Until it does, rv64's QEMU suite is off in
+    `vx test` and `vx ci` (the owner's call, 2026-10-17): it still builds,
+    `vx test rv64` runs it, and its QEMU rows are experimental, last
+    passing in full at d45240e.
   - Byte streams (item 6) are begun: the ring's byte-stream mode, stdio
     on it, FDIO, and rc with its commands. An audit against 9front
     (2026-10-16) found rc and the commands far from complete (item 6
