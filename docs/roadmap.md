@@ -813,6 +813,10 @@ meets a tested path.
 - Crash, shadow-model and query fuzzers run in CI.
 - Taisce's pages (`taisce(4)`, its query language in section 6); the
   manual installed on a volume, bound over bootfs's `/lib/man`.
+- **Designs to write when V4 starts** (placeholders):
+  - Where Taisce's S2 lands (todhchai M9: snapshots as dated
+    directories, send and receive, per-volume encryption with its own
+    AES-XTS): in V4, or a later milestone named here.
 
 **Exit:** the file budgets are green, and the crash harness passes every
 write prefix.
@@ -852,6 +856,32 @@ write prefix.
   page from any window.
 - In QEMU only (D76): GOP or ramfb, then virtio-gpu. The desktop on a
   board comes with the board (V6).
+- **Designs to write when V5 starts** (placeholders; each adopts a donor
+  design rather than starting fresh):
+  - Device suspend in devmgr's protocol: runtime suspend is the
+    driver's call, with an autosuspend delay (todhchai architecture
+    §8). Before more drivers are written against the protocol.
+  - One trusted prompt for grants, with the powerbox file chooser and a
+    place to see and revoke grants (todhchai `desktop.md`, architecture
+    §17).
+  - The clipboard and drag and drop (todhchai's drawer; NeoVectra's
+    typed snarf): the clipboard outlives its source.
+  - Settings: todhchai's "Preferences are Be's", and the Settings app
+    `docs/apps.md` §2 places in this shell.
+  - Several outputs: arrangement, hotplug and a window crossing a scale
+    boundary (NeoVectra's EDID names; todhchai's n/120 scale).
+  - Colour: buffers are sRGB unless tagged, blended in linear light and
+    converted to each output's primaries by a 3×3 matrix from its EDID.
+    HDR, ICC profiles and calibration are out of scope.
+  - The touchpad (todhchai's libinput replacement, its quirks as data).
+    Touchscreens and pens are out of scope.
+  - Notifications (todhchai's toasts in the periphery; NeoVectra's
+    slips), one service for applications and the system.
+  - The lock screen and login on the trusted path (todhchai), for D80's
+    one user.
+  - Third-party data on the device: whether D4 allows fonts (D24's
+    Archivo and IBM Plex) and tzdata as data, with their licences
+    recorded. Then local time over D48's UTC.
 
 **Exit:**
 - The desktop budgets are green on QEMU, under Platinum Indigo and
@@ -902,6 +932,15 @@ in `docs/boards/orangepi-6-plus/`.
    ADR-0019).
 
 `firmware/README.md` lists each blob's provenance.
+
+**Designs to write when V6 starts** (placeholders):
+- Firmware as part of the hardware: distributed as FreeBSD does, a
+  package per device, installed only for hardware that is present.
+  Amends D4's list; says where packages are hosted and who signs them.
+- The power service's thermal half, which todhchai's M10 had for the
+  Sky1: the SCMI service, CPPC, ACPI thermal, and a tested
+  critical-temperature shutdown, so the desktop on the board is not
+  cooled by firmware alone. Battery waits for a developer with a laptop.
 
 **Exit:**
 - V3's exit commands pass against the board.
@@ -1022,6 +1061,13 @@ frees the machine; its disks hold other work.
 - A reference game: a frame-loop intent, input and audio rings, Vulkan.
 - Record and replay over the hot-reload state block (D92), and Wasm
   plug-ins: a `wasmd` process serving a host's plug-in interface.
+- **Designs to write when V9 starts** (placeholders, from the NeoDarwin
+  API study, carried by both donors):
+  - Game controllers: one HID gamepad class with per-family drivers and
+    a controller database as data (F-214; todhchai SDK §6, NeoVectra's
+    `/dev/input/gamepads`).
+  - Variable refresh and tearing for the frame intent (todhchai's game
+    mode).
 
 **Exit:**
 - A Wasm build of a small Bevy or Godot sample runs at its frame budget on
@@ -1043,6 +1089,10 @@ executor's decoding ops in V8's `.vxm` format.
 3. The GPU and NPU runners, and placement.
 4. Evolution and automation (and the time trigger, `docs/ghost.md` §13).
 5. Frontier providers, with a first-party TLS 1.3 client.
+
+**Designs to write when V10 starts** (placeholder): the ciphers TLS 1.3
+needs that D89's library lacks (AES-GCM, P-256 and RSA signatures),
+checked against libsec as D89's are.
 
 **Exit:**
 - On the Orange Pi 6 Plus, a planted driver failure yields a cited
@@ -1075,6 +1125,10 @@ directly; that is the owner's call (`docs/apps.md` §9).
   expressions, LSP to language servers on the developer's host over
   cpu (none on the device, D4), and Git written first-party.
 - **The debugger and trace viewer:** DWARF 5, through `/proc`.
+  Design to write when V11 starts (placeholder): crash records, from
+  todhchai M7's debugd (post-mortem attach to a held crashed process)
+  and NeoVectra's `/tmp/crash/N`, and a kernel panic record that
+  survives a reboot.
 - **Translators** for images, fuzzed and checked against host oracles
   (D89's pattern).
 
@@ -1167,6 +1221,27 @@ under its frame budget.
 - A stretch goal: the Mac mini (M4, base), from Asahi Linux's facts and
   reverse engineering. No UEFI or ACPI, 16 KiB DART pages, and Asahi is
   at early bring-up on the M4 (`docs/boards/macmini-m4/`).
+
+## Designs waiting for a trigger
+
+Placeholders with no milestone yet. Each design is written when its
+trigger arrives, not before.
+
+| Design | Trigger | Start from |
+|---|---|---|
+| System updates and rollback; secure and measured boot | Before others install the system | todhchai M9 (atomic updates on Taisce S2); NeoVectra 06 (ESP slots, trial boot), whose boot chain was Limine |
+| USB beyond HID: mass storage, audio, networking; exFAT read | Daily use of the desktop | todhchai's xHCI classes |
+| Network management: several interfaces, firewall, VPN, NTP, mDNS/DNS-SD | Daily use of the desktop | NeoVectra's trusted networks |
+| Wi-Fi and Bluetooth | A desktop with a radio is a target (the SBCs have none) | Nothing in any donor |
+| Battery and laptop power | A developer with a laptop to build and test on | todhchai architecture §8 (profiles) |
+| MIPI cameras | VectraOS is a usable desktop; for makers | V15's UVC capture |
+| RDP or VNC | Managing mixed fleets | `cpu` and V16's remote windows |
+| Printing and scanning | Undecided | NeoVectra's driverless IPP Everywhere and eSCL |
+
+Out of scope: accessibility beyond the High contrast theme (D91),
+unless funded with a team; localization beyond English and its close
+cousins; touchscreens and pens; HDR and colour calibration. Hosting VMs
+is a non-goal: VectraOS boots on hardware.
 
 ## Known issues
 
