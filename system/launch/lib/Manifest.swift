@@ -21,7 +21,7 @@
 //     debuglog                # the debuglog's ring and its doorbell, to read (D38; the console's)
 //     libraries               # it loads shared objects (dlopen) from bootfs's lib/ (M5k)
 //     bootfs                  # the boot image itself, read only (the bootfs service, which serves it)
-//     launcher                # the launcher's tree at /svc/launcher: status, and ctl (`kill SERVICE`)
+//     launcher                # the launcher's tree at /svc/launcher: status, memory, and ctl (`kill SERVICE`)
 //     clock                   # it sets UTC: the UTC page, writable (the time service, D48)
 //
 // Every process is given the UTC page to read (D48), if the launcher has

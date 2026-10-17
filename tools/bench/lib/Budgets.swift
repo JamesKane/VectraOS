@@ -3,7 +3,7 @@
 // The budget lines a boot prints (kernel/Kernel/Trace/Budgets.swift, m2),
 // read into Judge's units.
 
-/// One budget line from a boot, in Judge's units: seconds, or the count.
+/// One budget line from a boot, in Judge's units: seconds, the count, or bytes.
 public struct Reported: Equatable {
   public var value: Double
   public var limit: Double?
@@ -32,14 +32,15 @@ public func parseBudgets(_ text: String) -> [String: Reported] {
       fields[word[..<eq]] = word[word.index(after: eq)...]
     }
     guard let name = fields["name"], let value = fields["value"].flatMap({ UInt64($0) }) else { continue }
-    let count = fields["unit"] == "count"
+    // ns, kept as seconds; a count and bytes as they are.
+    let unit: Rule.Unit = fields["unit"] == "count" ? .count : fields["unit"] == "bytes" ? .bytes : .seconds
     // Divided, not multiplied by 1e-9: 1000 ns is then exactly the double 1e-6.
-    let perUnit = count ? 1.0 : 1e9
+    let perUnit = unit == .seconds ? 1e9 : 1.0
     found[String(name)] = Reported(
       value: Double(value) / perUnit,
       limit: fields["limit"].flatMap { UInt64($0) }.map { Double($0 == 0 ? 0 : $0 - 1) / perUnit },
       target: fields["target"].flatMap { UInt64($0) }.map { Double($0) / perUnit },
-      unit: count ? .count : .seconds)
+      unit: unit)
   }
   return found
 }

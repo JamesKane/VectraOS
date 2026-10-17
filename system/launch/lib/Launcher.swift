@@ -189,6 +189,54 @@ public final class Launcher: @unchecked Sendable {
     }
   }
 
+  /// What each service holds of memory (TASK_STATS, in bytes) with what it
+  /// started (its job's tree: devmgr's driver hosts, the plumber's
+  /// programs), a line each, `NAME processes N private P shared S scaled
+  /// X`, then the launcher's own as `launcher`. The services' resident
+  /// memory is the sum of their private and scaled-shared bytes (V2's
+  /// exit: services.rss), so a page they share, such as bootfs's, counts
+  /// once among them. Where the stats can't be read (hosted), none.
+  public var memory: String {
+    var lines = locked { () -> [String] in
+      services.compactMap { s -> String? in
+        let (processes, stats) = Self.memory(of: s.job)
+        return processes > 0 ? Self.memoryLine(s.manifest.service, processes, stats) : nil
+      }
+    }
+    if let me = try? Process.current(), let stats = try? Process.stats(me) {
+      lines.append(Self.memoryLine("launcher", 1, stats))
+    }
+    return lines.joined()
+  }
+
+  /// The memory of `job`'s processes and of its child jobs', summed; how
+  /// many processes said.
+  static func memory(of job: borrowing Handle) -> (processes: Int, stats: TaskStats) {
+    var sum = TaskStats(mapped: 0, privateBytes: 0, shared: 0, scaledShared: 0)
+    var processes = 0
+    func add(_ s: TaskStats) {
+      sum.mapped += s.mapped
+      sum.privateBytes += s.privateBytes
+      sum.shared += s.shared
+      sum.scaledShared += s.scaledShared
+    }
+    for koid in (try? Job.processes(job)) ?? [] {
+      guard let p = try? job.child(koid), let s = try? Process.stats(p) else { continue }
+      add(s)
+      processes += 1
+    }
+    for koid in (try? Job.children(job)) ?? [] {
+      guard let child = try? job.child(koid) else { continue }
+      let (n, s) = memory(of: child)
+      add(s)
+      processes += n
+    }
+    return (processes, sum)
+  }
+
+  static func memoryLine(_ name: String, _ processes: Int, _ s: TaskStats) -> String {
+    "\(name) processes \(processes) private \(s.privateBytes) shared \(s.shared) scaled \(s.scaledShared)\n"
+  }
   // MARK: Starting
 
   /// Reads the manifests and starts every service, each after those it
@@ -467,6 +515,7 @@ public final class Launcher: @unchecked Sendable {
       // Strong captures (no unowned in tier 0): stop() removes the leaves.
       let nodes = [
         tree.text("status", read: { [self] in status }),
+        tree.text("memory", read: { [self] in memory }),
         tree.text("ctl", read: { "" }, write: { [self] text throws(NodeError) in
           let words = Directives.words(Array(text.utf8))
           guard words.count == 2, `is`(words[0], "kill") else { throw .invalid }

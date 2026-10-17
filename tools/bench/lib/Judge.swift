@@ -19,11 +19,11 @@ public struct Rule: Sendable {
   /// A hard target: worse than it fails whatever the history says (above
   /// it, or for a rate below it).
   public var limit: Double? = nil
-  /// What the values are: seconds, a count of something, or a rate.
+  /// What the values are: seconds, a count of something, bytes, or a rate.
   public var unit: Unit = .seconds
 
   public enum Unit: Sendable, Equatable {
-    case seconds, count
+    case seconds, count, bytes
     /// Higher is better; the name it's shown with ("MB/s").
     case rate(String)
   }
@@ -60,6 +60,7 @@ public struct Rule: Sendable {
     switch unit {
     case .seconds: formatValue(v)
     case .count: v == v.rounded() ? String(Int(v)) : String(Double(Int(v * 10)) / 10)
+    case .bytes: v >= 1_048_576 ? "\(Double(Int(v / 1_048_576 * 10)) / 10) MiB" : v >= 1024 ? "\(Int(v / 1024)) KiB" : "\(Int(v)) B"
     case .rate(let name):
       // Three significant figures or so: "412 MB/s", "41.2", "0.65".
       (v >= 100 ? String(Int(v.rounded())) : v >= 10 ? String(Double(Int((v * 10).rounded())) / 10)

@@ -587,7 +587,41 @@ func runPty(_ ns: Namespace) {
     check(readText(ns, "/svc/a/status").map { same($0, "a first\n") } ?? false, "the new a, by the same path")
     check(readText(ns, "/svc/b/peer").map { same($0, "a first\n") } ?? false, "and through b")
 
+    servicesMemory(ns)
     print("launch-test: \(checks - failures) of \(checks) checks passed")
     Process.exit(code: failures == 0 ? 0 : 1)
   }
+}
+
+/// The services' resident memory (V2's exit: < 32 MiB), from the
+/// launcher's `memory`: each service's private and scaled-shared bytes,
+/// with what it started, summed over every service but this one (a test, not a service) and the
+/// launcher's own, after the checks above have used them. The bench judges
+/// the budget (vx bench's services boot); here, only that the launcher
+/// says it for each.
+func servicesMemory(_ ns: Namespace) {
+  guard let text = readText(ns, "/svc/launcher/memory") else { return check(false, "the launcher's memory reads") }
+  var total: UInt64 = 0, lines = 0
+  for line in text.utf8.split(separator: 0x0A) {
+    let words = line.split(separator: 0x20).map { Array($0) }
+    guard words.count == 9, let privateBytes = decimal(words[4]), let scaled = decimal(words[8]) else {
+      return check(false, "the launcher's memory lines")
+    }
+    lines += 1
+    print("launch-test: memory \(String(decoding: line, as: UTF8.self))")
+    if words[0] != Array("launch-test".utf8) { total += privateBytes + scaled }
+  }
+  check(lines >= 5 && total > 0, "the launcher says each service's memory")
+  print("launch-test: budget name=services.rss value=\(total) unit=bytes limit=33554432")
+}
+
+/// `bytes` as a decimal number, if they are one.
+func decimal(_ bytes: [UInt8]) -> UInt64? {
+  guard !bytes.isEmpty else { return nil }
+  var n: UInt64 = 0
+  for b in bytes {
+    guard b >= 0x30 && b <= 0x39 else { return nil }
+    n = n * 10 + UInt64(b - 0x30)
+  }
+  return n
 }

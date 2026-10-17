@@ -10,7 +10,7 @@ extension Rule {
   /// The kernel's and m2's boot budgets (croi's tools/bench.py RULES,
   /// sized from what the same tree measured under KVM on a shared
   /// machine, 2026-10-10: channel_call 1.39-1.42 µs quiet, 1.8-2.2 µs with
-  /// a build running). Floors in seconds, or in the count.
+  /// a build running). Floors in seconds, or in the count or bytes.
   static let boot: [String: (tolerance: Double, floor: Double)] = [
     "syscall.null": (0.25, 10e-9),
     "ipc.channel_call": (0.15, 150e-9),
@@ -32,6 +32,9 @@ extension Rule {
     "ring.per_1000_slots": (0.25, 2e-6),
     "ring.round_trip": (0.25, 50e-9),
     "ring.kicks": (0.0, 0.5),
+    // The services' resident memory (V2's exit, < 32 MiB), from the
+    // services boot: bootfs and heaps, steady to a few pages.
+    "services.rss": (0.10, 1_048_576),
   ]
 
   /// The rule for a measurement, by name.

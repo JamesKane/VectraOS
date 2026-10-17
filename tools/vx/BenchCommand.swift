@@ -25,6 +25,9 @@ import Glibc
 private let out = "bench/out"
 private let historyDir = "bench/history"
 private let done = "userboot: bin/m2 exited with"
+/// The services boot's (boot-launch's): the launcher, run until
+/// launch-test ends, which reports the services' memory (services.rss).
+private let servicesDone = "userboot: bin/launcher exited with"
 
 private func edk2Dir(_ build: String) -> String {
   guard let cache = try? String(contentsOfFile: "\(build)/CMakeCache.txt", encoding: .utf8) else { return "/usr/share/edk2" }
@@ -34,13 +37,20 @@ private func edk2Dir(_ build: String) -> String {
   return "/usr/share/edk2"
 }
 
-/// One boot of `tree`'s amd64 build in `profile`; its budgets.
+/// One boot of `tree`'s amd64 build in `profile`; its budgets. "full" and
+/// "lean" boot m2 (with and without the self-tests), "services" the
+/// launcher and its services, as boot-launch does (none from a tree too
+/// old to have it).
 private func boot(tree: String, profile: String, label: String, index: Int, anyExit: Bool = false) -> [String: Reported] {
   let build = "\(tree)/build/amd64"
+  let services = profile == "services"
+  let source = services ? "\(build)/esp-launch" : "\(build)/esp"
+  if services && !FileManager.default.fileExists(atPath: source) { return [:] }
+  let marker = services ? servicesDone : done
   let esp = "\(out)/esp/\(label)-\(profile)"
   removeTree(esp)
   makeDirectory("\(out)/esp")
-  do { try FileManager.default.copyItem(atPath: "\(build)/esp", toPath: esp) } catch { fail("can't copy \(build)/esp: \(error)") }
+  do { try FileManager.default.copyItem(atPath: source, toPath: esp) } catch { fail("can't copy \(source): \(error)") }
   let cmdlinePath = "\(esp)/croi/cmdline"
   guard let cmdline = try? String(contentsOfFile: cmdlinePath, encoding: .utf8) else { fail("no \(cmdlinePath)") }
   var words = cmdline.split(whereSeparator: \.isWhitespace).map(String.init)
@@ -52,19 +62,21 @@ private func boot(tree: String, profile: String, label: String, index: Int, anyE
   let log = "\(out)/logs/\(label)-\(profile)-\(index).log"
   removeTree(log)
   let exits = words.contains { $0.hasPrefix("userboot.shutdown=") } ? ["--exits"] : []
-  let r = run(["\(tree)/tools/qemu.sh", "--test", done] + exits
+  let r = run(["\(tree)/tools/qemu.sh", "--test", marker] + exits
               + ["amd64", esp, work, edk2Dir(build), "-accel", "kvm", "-cpu", "host"], log: log)
   let console = (try? String(contentsOfFile: log, encoding: .utf8)) ?? ""
-  if !r.ok || (!anyExit && !console.contains("\(done) 0")) {
+  if !r.ok || (!anyExit && !console.contains("\(marker) 0")) {
     fail("\(label) \(profile) boot \(index) didn't finish; see \(log)")
   }
-  return parseBudgets(console)
+  // The services boot's own, not more of the kernel's boot budgets.
+  let budgets = parseBudgets(console)
+  return services ? budgets.filter { $0.key.hasPrefix("services.") } : budgets
 }
 
 private func collect(tree: String, label: String, runs: Int, into values: inout [String: [Double]],
                      meta: inout [String: Reported], index: Int? = nil, anyExit: Bool = false) {
   for i in index.map({ [$0] }) ?? Array(0..<runs) {
-    for profile in ["full", "lean"] {
+    for profile in ["full", "lean", "services"] {
       for (name, b) in boot(tree: tree, profile: profile, label: label, index: i, anyExit: anyExit) {
         values[name, default: []].append(b.value)
         meta[name] = b
@@ -139,7 +151,7 @@ func benchCommand(_ args: [String]) -> Bool {
   let loadBefore = loadAverage()
   if let compareRef { return compare(compareRef, runs: runs, loadBefore: loadBefore) }
 
-  say("vx bench: \(runs) runs × (full, lean) boots of build/amd64 under KVM")
+  say("vx bench: \(runs) runs × (full, lean, services) boots of build/amd64 under KVM")
   var values: [String: [Double]] = [:]
   var meta: [String: Reported] = [:]
   collect(tree: ".", label: "this", runs: runs, into: &values, meta: &meta)

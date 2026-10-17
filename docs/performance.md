@@ -57,7 +57,7 @@ against croi.
 | kernel → console | < 100 ms |
 | spawn → main | < 200 µs |
 | shutdown | < 500 ms |
-| services RSS | < 32 MiB |
+| services RSS (`services.rss`: each service and what it started, private plus its share of shared pages, from the launcher's `memory`; vx bench's services boot) | < 32 MiB |
 | idle desktop wakeups over 60 s | 0 |
 | idle desktop RSS | < 256 MiB |
 | smallest full-Swift program, spawn → exit | < 1 ms, < 8 MiB loaded |
