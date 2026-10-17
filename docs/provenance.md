@@ -72,6 +72,7 @@ The actions in the tables:
 | `vxui`, `winsrv`, `wm.lua` | Drop | — | Radharc and todhchai's UI win. Lua is third-party (D4). |
 | `third_party/*` (Limine, musl, ACPICA, Lua, Monocypher, stb) | Drop | — | D4 |
 | `rc` shell (`lib/vx-rc`) | Drop | — | todhchai's rc is the one shell (D15) |
+| docs/12-manual.md, ADR-0028, `lib/vx-guide`, `man/` | Rewrite | V2–V3 | The manual (D86): guide's body grammar kept, its ndb header replaced by directives; section 7, the intros, `guide(6)` and `man(1)` rewritten; pages for dropped code not carried |
 
 ## AbyssBSD (FreeBSD fork, hardware reference only)
 

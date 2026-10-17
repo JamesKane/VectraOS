@@ -33,6 +33,7 @@ under `vx ci` and every budget it introduces has a running check
     virtio, virtio-input and kbdfs's /dev/kbd and /dev/cons (D83, D84),
     done; their budgets come at V2's exit).
   - Done: the console and the plumber (item 8, D85).
+  - Proposed: the manual (item 9, D86).
   - Exit: `cat /svc/*/status` run by rc passes (amd64, arm64). Still
     open: spawn → main < 200 µs, and the first recorded bench history.
 - **V3 onward** are not started (V6's boards have research passes).
@@ -554,6 +555,20 @@ work, in order:
      waiting (D84). launch-test sends a URL to web's reader, is refused a
      message no rule takes, and appends a rule whose `plumb client` starts
      `cat`, which reads the held message onto the console.
+9. **The manual (D86),** in four steps:
+   - 9a. `system/guide`: the guide parser and its text renderer (Swift,
+     tier 0 and host), host tests and a fuzz target; the one directive
+     reader, onto which the launcher's and devmgr's manifests move;
+     `vx loc`'s 1,500-line budget for it.
+   - 9b. `vx man TITLE` and `vx man --check` (in `vx ci`), the index
+     (`lib/man/index`, TSV), and `man/missing` holding everything V0 to
+     V2 left undocumented. First pages: `guide(6)`, `man(1)`,
+     `manifest(6)` and the eight `intro` pages.
+   - 9c. `man`, `lookman` and `sig` on the device; bootfs carries
+     `lib/man/`, and launch-test's manifest mounts it. Usage messages
+     are generated from pages, starting with rc's commands.
+   - 9d. idlc writes section 5's pages in place of its Markdown; a suite
+     (D20) checks each exported tree against its page's FILES.
 
 **Exit:**
 - `cat /svc/*/status` works, run by rc in a native test. **Done**
@@ -562,6 +577,8 @@ work, in order:
   quiet machine), on the kernel as V1 left it (D17).
 - spawn → main < 200 µs.
 - Services RSS < 32 MiB.
+- `man man` prints its page from bootfs, `vx man --check` passes under
+  `vx ci`, and `man/missing` lists only what V0 to V2 left (D86).
 - An interactive console (virtio-input into the console's `/dev/cons`)
   if it comes cheaply; otherwise V3's cpu session is the first
   interactive rc.
@@ -635,6 +652,11 @@ meets a tested path.
     and the ceiling holds.
   - `vx remote boot HOST` does the session and the call in one step.
 
+- **The manual (D86):** V3's pieces arrive with their pages (`cpu(1)`,
+  `net(3)`, `proc(4)`, 9P2000's messages in section 5, the board tools),
+  and the backlog is written down in waves, each reviewed and committed,
+  as NeoVectra's was.
+
 **Exit, in QEMU on amd64, arm64 and rv64, under `vx ci`:**
 - `vx cpu` gives rc with the dev terminal's `/dev/cons`, and ^C
   interrupts its foreground program.
@@ -647,6 +669,10 @@ meets a tested path.
 - A cpu session dials out through the terminal's `/net`, bound from
   `/mnt/term/net` (D79).
 - The bring-up budgets are green.
+- `man/missing` is empty: every program, call, protocol, tree and format
+  through V3 has a page, and "fully documented" stays an exit criterion
+  of every milestone after. `man rc` and the check pass meet D86's
+  budgets.
 
 ## V4. Taisce on disk
 
@@ -657,6 +683,8 @@ meets a tested path.
   (D76).
 - Attributes, indices and live queries over the Node protocol.
 - Crash, shadow-model and query fuzzers run in CI.
+- Taisce's pages (`taisce(4)`, its query language in section 6); the
+  manual installed on a volume, bound over bootfs's `/lib/man`.
 
 **Exit:** the file budgets are green, and the crash harness passes every
 write prefix.
@@ -676,6 +704,10 @@ write prefix.
   a selection from its directory. `TerminalCore` becomes `vt`, a program
   in a window for tier 1 programs that want xterm. The pty is gone by
   then (V3, D77).
+- **The manual as hypertext (D86):** a guide viewer in Radharc with
+  AmigaGuide's Contents, Index, Retrace and Browse, its links live and
+  never running anything; the plumber's rule for `name(N)` (D85) opens a
+  page from any window.
 - In QEMU only (D76): GOP or ramfb, then virtio-gpu. The desktop on a
   board comes with the board (V6).
 
