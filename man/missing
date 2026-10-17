@@ -143,14 +143,14 @@ sys	HandleInfo.init
 sys	Ends
 sys	Ends.a
 sys	Ends.b
-sys	close
-sys	wait
+sys	Sys.close
+sys	Sys.wait
 sys	Clock
 sys	Clock.monotonic
 sys	Clock.realtime
 sys	ThreadSlot
 sys	ThreadSlot.value
-sys	sleep
+sys	Sys.sleep
 sys	Lock
 sys	Lock.init
 sys	Lock.lock
@@ -366,7 +366,7 @@ sys	Thread.start
 sys	Thread.spawn
 sys	Thread.exit
 sys	Thread.join
-sys	kill
+sys	Sys.kill
 sys	Startup
 sys	Startup.args
 sys	Startup.names

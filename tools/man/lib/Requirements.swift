@@ -49,7 +49,12 @@ public enum Requirements {
     for n in hostTools(root: root) { add(Requirement(.host, n)) }
     for n in syscalls(read(root, "user/include/croi/syscall.h")) { add(Requirement(.syscall, n)) }
     for f in files where f.hasPrefix("system/sys/api/") && f.hasSuffix(".swift") {
-      for n in publicNames(read(root, f)) { add(Requirement(.sys, n)) }
+      // A top-level function or variable is named as `Sys.close`: libc's
+      // close shares section 2.
+      for n in publicNames(read(root, f)) {
+        let top = !n.contains(".") && n.first.map { $0.isLowercase } == true
+        add(Requirement(.sys, top ? "Sys." + n : n))
+      }
     }
     for f in files where f.hasPrefix("system/libc/include/") && f.hasSuffix(".h") {
       for n in cFunctions(read(root, f)) { add(Requirement(.libc, n)) }
