@@ -63,9 +63,9 @@ The actions in the tables:
 |---|---|---|---|
 | Rule 13 and the design rules | Design | V0 | Folded into principles.md |
 | `lib/vx-ring` model test | Rewrite | V1 | The one ring (architecture §3) |
-| `lib/vx-9p` codec and `.def` tables | Rewrite | V7 | 9gate's 9P2000.L codec, in Swift |
+| `lib/vx-9p` codec and `.def` tables | Rewrite | V3 | 9gate's 9P2000 codec, in Swift (D77, D78) |
 | docs/02 §6 swarm, `docs/proto/accel.md` | Design | V7–V8 | |
-| ADR-0019 (Adreno on the Q8B), ADR-0022 (remote processors), docs/22 (real hardware) | Design | V6–V8 | |
+| ADR-0019 (Adreno on the Q8B), ADR-0022 (remote processors), docs/22 (real hardware) | Design | V8 | The Q8B moved to V8 (D69) |
 | `lib/vx-net` (TCP, DHCP, DNS) | Drop | — | todhchai's `services/net` is the one network stack |
 | `lib/vx-fs` (Bε-tree) | Drop | — | Taisce wins (D8) |
 | `lib/vx-text` (sam-style structural regex) | Rewrite | later | For the editor |
@@ -77,10 +77,11 @@ The actions in the tables:
 
 | Part | Action | Milestone |
 |---|---|---|
-| `docs/boards/radxa-dragon-q8b/*` (ACPI facts, GPU and display, USB, power, NPU, lessons) | Design | V6–V8 |
-| `firmware/` blob provenance for the Q8B | Design | V6 |
-| `sys/dev/uart/uart_dev_qcom_geni.c`, `firmware-acpi-boot.md` (console pins, SPCR) | Design | V3–V6 |
-| `sys/dev/tcx/` and `ethernet-tc956x.md` (TC956x Ethernet) | Design | V6 |
+| `docs/boards/radxa-dragon-q8b/*` (ACPI facts, GPU and display, USB, power, NPU, lessons) | Design | V8 |
+| `docs/boards/orangepi-6-plus/*` (the board, `gpu.md`, `npu.md`, `vpu.md`; at `bfc0b05`) | Design | V6 |
+| `firmware/` blob provenance for the Q8B | Design | V8 |
+| `sys/dev/uart/uart_dev_qcom_geni.c`, `firmware-acpi-boot.md` (console pins, SPCR) | Design | V8 |
+| `sys/dev/tcx/` and `ethernet-tc956x.md` (TC956x Ethernet) | Design | V8 |
 
 Linux-derived code from AbyssBSD's LinuxKPI ports is *not* used. Those notes
 are read only as hardware documentation.
