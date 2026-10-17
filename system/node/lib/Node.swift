@@ -247,7 +247,9 @@ public enum NodeIPC {
     /// batch of one.
     func batch(_ ops: [Op], open: Bool) -> Reply
     /// Attaches a ring pair for bulk reads and writes of this channel's
-    /// node (D67): one a channel, gone when the channel closes.
+    /// node: one a channel, gone when the channel closes. A read of a
+    /// stream waits until it has bytes, as a plain read does, so
+    /// completions may come out of order; each says which entry it ends.
     @since(2) func attach(_ bulk: consuming Bulk) throws(NodeError)
     /// This channel's node's contents as memory (a file's); `executable`, a
     /// VMO a process can be started from or a library loaded from, which

@@ -661,9 +661,9 @@ meets a tested path.
     CryptoSuite checking it as Embedded Swift on each arch; and the net
     class, Plan 9's ether(3) directory (drivers/net/lib), with virtio-net
     under it, which devmgr binds at /net/etherN; boot-launch sends an
-    ARP request to QEMU's gateway and reads its reply. Left: a ring read
-    of `data` doesn't wait (D67's ring answers at once), and bridge and
-    bypass. Next: the stack serving `/net`.
+    ARP request to QEMU's gateway and reads its reply, plainly and
+    through the one ring, whose reads of a stream now wait (D93). Left:
+    bridge and bypass. Next: the stack serving `/net`.
 - **9gate's core, from V7:** the 9P2000 codec (D78: Plan 9's dialect,
   string owners, our extensions negotiated as `9P2000.vx`), export and
   import, over Noise IK (`Noise_IK_25519_ChaChaPoly_SHA256`, on N1's

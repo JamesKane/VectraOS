@@ -3,11 +3,13 @@
 // Streams (D84): a read of a stream with nothing in it waits, the server
 // holding the call until the stream is ready; a read mid-batch doesn't
 // wait; the stream hears its channels come and go; a reader that closes
-// while held leaves nothing behind.
+// while held leaves nothing behind. Through the ring (D93), a read waits
+// too, a write behind it is answered first, and a channel's own stream
+// reads its own bytes.
 
 import Glibc
 import IPC
-import Node
+@testable import Node
 import Synchronization
 import Sys
 import Testing
@@ -182,4 +184,90 @@ final class Fanout: @unchecked Sendable {
   live.withLock { $0 = ["3"] }
   let names = try root.readdir(cursor: 0, max: 64).entries.map { $0.name }
   #expect(names == ["3"])
+}
+
+/// Runs `body` on a thread of its own after `delay` nanoseconds.
+func later(_ delay: Int64, _ body: @escaping @Sendable () -> Void) throws -> Handle {
+  try Thread.spawn {
+    Sys.sleep(until: Clock.monotonic() + delay)
+    body()
+  }
+}
+
+@Test func aRingReadOfAnEmptyStreamWaitsUntilItIsReady() throws {
+  let service = try Service()
+  let q = Queue()
+  let node = service.tree.stream("feed", q.stream)
+  service.start()
+  defer { service.stop() }
+  var root = try service.connect()
+  var ring = try NodeBulkChannel(try root.open("feed"), slots: 4, dataSize: 16 * 1024)
+  ring.timeout = Int64.max
+
+  // Something there: the read takes it at once.
+  q.lock.withLock { q.bytes = Array("ab".utf8) }
+  #expect(try ring.take(max: 64) == Array("ab".utf8))
+
+  // Nothing: the read waits until the stream is ready, a frame's worth
+  // each.
+  let feeder = try later(50_000_000) {
+    q.lock.withLock { q.bytes = Array("frame".utf8) }
+    service.tree.ready(node)
+  }
+  let start = Clock.monotonic()
+  #expect(try ring.take(max: 64) == Array("frame".utf8))
+  #expect(Clock.monotonic() - start >= 40_000_000)
+  _ = try feeder.wait(for: Signals.terminated, deadline: Clock.monotonic() + 2_000_000_000)
+
+  // A write goes on while a read is held, and an ended stream reads empty.
+  let ender = try later(50_000_000) {
+    q.lock.withLock { q.ended = true }
+    service.tree.ready(node)
+  }
+  #expect(try ring.write(at: 0, Array("out".utf8)) == 3)
+  #expect(q.lock.withLock { q.written } == Array("out".utf8))
+  #expect(try ring.take(max: 64) == [])
+  _ = try ender.wait(for: Signals.terminated, deadline: Clock.monotonic() + 2_000_000_000)
+}
+
+@Test func aHeldRingReadDoesntHoldUpAWriteBehindIt() throws {
+  let service = try Service()
+  let q = Queue()
+  let node = service.tree.stream("feed", q.stream)
+  service.start()
+  defer { service.stop() }
+  var root = try service.connect()
+  var ring = try NodeBulkChannel(try root.open("feed"), slots: 4, dataSize: 16 * 1024)
+  ring.timeout = 2_000_000_000
+  // A read and a write in one wave: the write's completion comes first,
+  // the read's once the stream is ready.
+  let read = ring.submitWave(NodeBulk.read, at: 0, remaining: 64)
+  let feeder = try later(50_000_000) {
+    #expect(soon { q.lock.withLock { q.written } == Array("w".utf8) })
+    q.lock.withLock { q.bytes = Array("r".utf8) }
+    service.tree.ready(node)
+  }
+  #expect(try ring.write(at: 0, Array("w".utf8)) == 1)
+  let done = try ring.complete(read)
+  #expect(done.count == 1 && done[0].1 == 1)
+  _ = try feeder.wait(for: Signals.terminated, deadline: Clock.monotonic() + 2_000_000_000)
+}
+
+@Test func aPerChannelStreamReadsItsOwnThroughTheRing() throws {
+  let service = try Service()
+  let fan = Fanout()
+  let node = service.tree.stream("port", fan.stream)
+  service.start()
+  defer { service.stop() }
+  var root = try service.connect()
+  var a = try NodeBulkChannel(try root.open("port"), slots: 2, dataSize: 8192)
+  var b = try root.open("port")
+  #expect(soon { fan.lock.withLock { fan.queues.count } == 2 })
+  let poster = try later(50_000_000) {
+    fan.post(Array("msg".utf8))
+    service.tree.ready(node)
+  }
+  #expect(try a.take(max: 64) == Array("msg".utf8))
+  #expect(try b.read(offset: 0, max: 64) == Array("msg".utf8))
+  _ = try poster.wait(for: Signals.terminated, deadline: Clock.monotonic() + 2_000_000_000)
 }

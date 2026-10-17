@@ -175,6 +175,9 @@ final class SessionState: @unchecked Sendable {
   var stream: TreeNode?
   /// Its own stream, at a stream whose channels each read their own.
   var channel: NodeStreamChannel?
+  /// Its ring pair, if one is attached: reads it holds wait on the stream
+  /// too (D93).
+  var bulk: BulkServer?
 }
 
 /// Held only by a session's server: when the dispatcher drops the server
@@ -197,6 +200,7 @@ final class SessionEnd: @unchecked Sendable {
     }
     if last { tree.lastClosed?() }
     if let bulk { tree.dispatcher.unwatch(bulk.watch) }
+    state.bulk = nil
     if let node = state.stream {
       tree.locked { node.waiting.removeAll { $0 === state } }
       if let channel = state.channel { channel.closed() } else if case .stream(let s) = node.content { s.closed() }
@@ -433,6 +437,8 @@ public final class NodeTree: @unchecked Sendable {
     }
     state.id = try dispatcher.add(server) { [self] (s: inout NodeIPC.NodeServer<Session>) throws(IPCError<Never>) in
       try answerHeldReads(state, &s)
+      state.bulk?.answerHeld()
+      settle(state)
       let changes = locked { () -> [NodeIPC.Change] in
         defer { state.pending = [] }
         return state.pending
@@ -643,10 +649,10 @@ struct Session: NodeIPC.NodeHandler {
   /// batch's.
   mutating func attach(_ bulk: consuming NodeIPC.Bulk) throws(NodeError) {
     guard end.bulk == nil else { throw .exists }
-    let tree = self.tree, at = node
+    let tree = self.tree, at = node, state = self.state
     let io: BulkServer.IO = { op, offset, buffer throws(NodeError) in
       if op == NodeBulk.read {
-        let bytes = try tree.read(at, offset: offset, max: UInt32(buffer.count), limit: buffer.count)
+        guard let bytes = try tree.ringRead(at, state, offset: offset, max: buffer.count) else { return nil }
         unsafe bytes.withUnsafeBytes { unsafe buffer.baseAddress!.copyMemory(from: $0.baseAddress!, byteCount: $0.count) }
         return UInt32(bytes.count)
       }
@@ -654,12 +660,18 @@ struct Session: NodeIPC.NodeHandler {
     }
     guard let server = unsafe BulkServer(bulk, io: io), let bell = try? server.serverBell.duplicate() else { throw .invalid }
     do throws(Status) {
-      server.watch = try tree.dispatcher.watch(bell, signals: Signals.positive) { _ in server.serve() }
+      server.watch = try tree.dispatcher.watch(bell, signals: Signals.positive) { _ in
+        let live = server.serve()
+        tree.settle(state)
+        return live
+      }
     } catch {
       throw .io
     }
     end.bulk = server
+    state.bulk = server
     _ = server.serve()  // what came before the attach
+    tree.settle(state)
   }
 
   /// This session's node's contents as memory: a memory file's VMO as it

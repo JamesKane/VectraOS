@@ -53,7 +53,7 @@ system/libc/	all	LibCTests,PThreadTests	boot-smoke,boot-launch,boot-floor-hello,
 system/ld/	all	LdTests	boot-dl,boot-swift-hello,boot-foundation-test	man
 system/trace/	all	TraceTests	boot-trace,trace-collect,boot-smoke	man
 system/ipc/	all	IPCWireTests,IPCMacrosTests,IDLTests,IPCTests	boot-ipc,boot-node,boot-launch	man
-system/node/	all	NodeTests	boot-node,boot-node-test-t1,boot-launch	man
+system/node/	all	NodeTests,IDLTests	boot-node,boot-node-test-t1,boot-launch	man
 system/fdio/	all	FDIOTests	boot-fdio-test,boot-launch	man
 system/launch/	all	LaunchTests	boot-launch	man
 system/directives/	all	DirectivesTests,LaunchTests,DevMgrTests,GuideTests,ManualTests	boot-launch	man

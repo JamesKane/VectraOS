@@ -319,6 +319,21 @@ func network(_ ns: Namespace, _ status: String) {
   let stats = readText(ns, "/net/ether0/stats") ?? ""
   print("launch-test: /net/ether0/stats: \(stats)")
   check(holds(stats, "link: 1\n") && !holds(stats, "\nout: 0\n"), "/net/ether0/stats: the link up, a frame out")
+  // The same through the one ring (D93): each take waits for a frame.
+  var ringReplied = false
+  if let channel = try? ns.open("/net/ether0/\(number)/data"), var ring = try? NodeBulkChannel(channel, slots: 4, dataSize: 16 * 1024) {
+    ring.timeout = 20_000_000_000
+    if (try? ring.write(at: 0, request)) == request.count {
+      for _ in 0..<4 {
+        guard let f = try? ring.take(max: 2048), f.count >= 42 else { break }
+        if f[20] == 0, f[21] == 2, Array(f[28..<32]) == gateway, Array(f[32..<38]) == mac {
+          ringReplied = true
+          break
+        }
+      }
+    }
+  }
+  check(ringReplied, "and through the one ring on /net/ether0's data")
   _ = consume data
   _ = consume ctl
 }

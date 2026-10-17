@@ -90,7 +90,7 @@ extension NodeTree {
       let reply = NodeIPC.Reply(results: [.data(bytes)], failure: nil, node: nil)
       try s.connection.send(try NodeIPC._reply_Node_batch(reply, to: r.header))
     }
-    if state.reads.isEmpty { locked { node.waiting.removeAll { $0 === state } } }
+    settle(state)
   }
 
   /// A read beginning a batch at a stream: its bytes, or nil once the call
@@ -101,11 +101,33 @@ extension NodeTree {
     // session, whose wake runs after this call on the same thread.
     locked { if !node.waiting.contains(where: { $0 === state }) { node.waiting.append(state) } }
     if let bytes = (state.channel?.take ?? stream.take)(limit) {
-      if state.reads.isEmpty { locked { node.waiting.removeAll { $0 === state } } }
+      settle(state)
       return bytes
     }
     guard let header = state.deferral.hold() else { return [] }
     state.reads.append((header, UInt32(limit)))
     return nil
+  }
+}
+
+extension NodeTree {
+  /// A ring's read of `node` (D93): a stream's bytes, or nil to hold the
+  /// read until it is ready, the session a waiter first (as `readOrHold`);
+  /// any other node's contents at once. Empty: the stream ended.
+  func ringRead(_ node: TreeNode, _ state: SessionState, offset: UInt64, max: Int) throws(NodeError) -> [UInt8]? {
+    let content = try locked { () throws(NodeError) in try live(node).content }
+    guard case .stream(let stream) = content else {
+      return try read(node, offset: offset, max: UInt32(Swift.min(max, Int(UInt32.max))), limit: max)
+    }
+    locked { if !node.waiting.contains(where: { $0 === state }) { node.waiting.append(state) } }
+    if node.detached { return [] }
+    return (state.channel?.take ?? stream.take)(max)
+  }
+
+  /// Drops the session from its stream's waiters once it holds no read,
+  /// plain or through its ring.
+  func settle(_ state: SessionState) {
+    guard let node = state.stream, state.reads.isEmpty, state.bulk?.held.isEmpty ?? true else { return }
+    locked { node.waiting.removeAll { $0 === state } }
   }
 }

@@ -88,4 +88,3 @@ virtio-net(3), devmgr(8), intro(3)
 # BUGS
 
 `bridge`, `bypass` and `scanbs` are refused: there is no bridging and no wireless.
-Through the one ring, a read of `data` doesn't wait: it returns nothing when no frame is there.
