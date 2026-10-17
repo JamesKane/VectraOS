@@ -207,7 +207,11 @@ function(croi_tier1 bootfs_var depends_var)
   # the launcher's (bin/launch-test) runs rc.
   file(GLOB _rc_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/shell/rc/lib/*.swift)
   croi_tier1_library(Rc SOURCES ${_rc_t1})
-  croi_tier1_library(Commands SOURCES shell/commands/lib/Commands.swift USES Fs Node INCLUDES system/trace/c/include)
+  file(GLOB _guide_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/system/guide/lib/*.swift)
+  croi_tier1_library(Guide SOURCES ${_guide_t1} USES Directives)
+  croi_tier1_library(Commands SOURCES shell/commands/lib/Commands.swift shell/commands/lib/ManPages.swift
+                                      shell/commands/lib/Usage.swift
+                     USES Fs Node Guide INCLUDES system/trace/c/include)
   add_custom_command(OUTPUT ${_out}/rc
     COMMAND ${_swiftc} -parse-as-library -enable-experimental-feature Lifetimes -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -L ${_lib}
             -lRc ${_t1_link} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros"
@@ -220,12 +224,12 @@ function(croi_tier1 bootfs_var depends_var)
     COMMENT "rc, for tier 1")
   add_custom_command(OUTPUT ${_out}/commands
     COMMAND ${_swiftc} -parse-as-library -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -L ${_lib}
-            -lCommands ${_t1_link} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros"
+            -lCommands -lGuide ${_t1_link} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros"
             ${PROJECT_SOURCE_DIR}/shell/commands/Main.swift -o ${_out}/commands
-    DEPENDS ${_lib}/libCommands.a ${_t1_archives} ${PROJECT_SOURCE_DIR}/shell/commands/Main.swift
+    DEPENDS ${_lib}/libCommands.a ${_lib}/libGuide.a ${_t1_archives} ${PROJECT_SOURCE_DIR}/shell/commands/Main.swift
     COMMENT "the shell's file commands, for tier 1")
   set(_shell_entries bin/rc=${_out}/rc)
-  foreach(_c ls cat mkdir rm mv cp touch)
+  foreach(_c ls cat mkdir rm mv cp touch man lookman sig)
     list(APPEND _shell_entries bin/${_c}=${_out}/commands)
   endforeach()
   set(_programs floor-hello cxx-hello swift-hello swift-start swift-async foundation-test node-test-t1 fdio-test)

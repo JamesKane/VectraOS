@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // The shell's file commands (M6m part m5): ls, cat, mkdir, rm, mv, cp and
-// touch, each a small program (shell/commands/Main.swift, by its name)
+// touch, and the manual's man, lookman and sig (ManPages.swift), each a small program (shell/commands/Main.swift, by its name)
 // over this library, each as 9front's (sys/src/cmd/NAME.c): its flags
 // (ARGBEGIN's; any other a usage message), its messages (an error's
 // words Plan 9's, `%r`), and its exit string (Plan 9's exits, D72: "" if
@@ -47,7 +47,7 @@ public enum Commands {
     public var status = ""
   }
 
-  public static let names = ["ls", "cat", "mkdir", "rm", "mv", "cp", "touch"]
+  public static let names = ["ls", "cat", "mkdir", "rm", "mv", "cp", "touch", "man", "lookman", "sig"]
 
   /// Runs command `name` with `args` from directory `pwd`: its exit string.
   public static func run(_ name: String, _ args: [String], pwd: String, in ns: Namespace, _ io: IO) -> String {
@@ -60,6 +60,9 @@ public enum Commands {
     case "mv": return c.mv(args)
     case "cp": return c.cp(args)
     case "touch": return c.touch(args)
+    case "man": return c.man(args)
+    case "lookman": return c.lookman(args)
+    case "sig": return c.sig(args)
     default:
       io.err(name + ": not a command")
       return "not a command"
@@ -209,7 +212,8 @@ struct Command {
 
   func at(_ path: String) -> String { Commands.resolve(path, from: pwd) }
   func complain(_ s: String) { io.err(s) }
-  func usage(_ lines: String...) -> String {
+  /// A usage message (Usage, from the command's page) said, and its exit string.
+  func usage(_ lines: [String]) -> String {
     for l in lines { io.err(l) }
     return "usage"
   }
@@ -283,7 +287,7 @@ struct Command {
 
   func ls(_ args: [String]) -> String {
     let a = Flags(args)
-    if a.unknown("FdlmnpqQrstTu") != nil { return usage("usage: ls [-dlmnpqrstuFQT] [file ...]") }
+    if a.unknown("FdlmnpqQrstTu") != nil { return usage(Usage.ls) }
     let now = Clock.realtime()
     var pending: [Entry] = []
     var failed = false
@@ -470,7 +474,7 @@ struct Command {
 
   func mkdir(_ args: [String]) -> String {
     let a = Flags(args, valued: "m")
-    let usage = "usage: mkdir [-p] [-m mode] dir..."
+    let usage = Usage.mkdir
     if a.unknown("mp") != nil { return self.usage(usage) }
     if let m = a.value("m") {
       // Node keeps no modes: checked, as 9front's, and not kept.
@@ -517,7 +521,7 @@ struct Command {
 
   func rm(_ args: [String]) -> String {
     let a = Flags(args)
-    if a.unknown("rf") != nil { return usage("usage: rm [-fr] file ...") }
+    if a.unknown("rf") != nil { return usage(Usage.rm) }
     let quiet = a.has("f")
     var last = ""
     func err(_ f: String, _ e: NamespaceError) {
@@ -586,8 +590,7 @@ struct Command {
 
   func mv(_ args: [String]) -> String {
     guard args.count >= 2 else {
-      complain("usage: mv fromfile tofile")
-      complain("\t  mv fromfile ... todir")
+      _ = usage(Usage.mv)
       return "bad usage"
     }
     let names = args.map(cleanname)
@@ -714,11 +717,7 @@ struct Command {
 
   func cp(_ args: [String]) -> String {
     let a = Flags(args)
-    guard a.unknown("gux") == nil, a.rest.count >= 2 else {
-      complain("usage:\tcp [-gux] fromfile tofile")
-      complain("\tcp [-x] fromfile ... todir")
-      return "usage"
-    }
+    guard a.unknown("gux") == nil, a.rest.count >= 2 else { return usage(Usage.cp) }
     let to = a.rest[a.rest.count - 1]
     let todir = (try? stat(to))?.qid.kind == .directory
     if a.rest.count > 2 && !todir {
@@ -785,7 +784,7 @@ struct Command {
 
   func touch(_ args: [String]) -> String {
     let a = Flags(args, valued: "t")
-    let usage = "usage: touch [-c] [-t time] files"
+    let usage = Usage.touch
     if a.unknown("ct") != nil || a.rest.isEmpty { return self.usage(usage) }
     var now = Clock.realtime() / 1_000_000_000
     if let t = a.value("t") {

@@ -241,6 +241,7 @@ func rcRuns(_ rc: ProgramEntry, _ script: String, _ expected: [UInt8], _ ns: Nam
     guard let svc = try? ns.connect("/svc"), let bin = try? ns.connect("/bin") else { return check(false, name) }
     startup.mount(svc, at: "/svc")
     startup.mount(bin, at: "/bin")
+    if let man = try? ns.connect("/lib/man") { startup.mount(man, at: "/lib/man") }  // the manual (D86)
     guard let env = try? ns.connect("/svc/env/new") else { return check(false, name) }
     startup.mount(env, at: "/env")  // a group of its own (D81)
     startup.add(try Job.create(parent: job), info: HandleType.info(HandleType.jobDefault))
@@ -410,6 +411,11 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
   rcRuns(rc, "x=`{cat /nope}; echo $#x; y=`{cat /nope >[2=1]}; ~ $#y 0 || echo caught", Array("0\ncaught\n".utf8),
          ns, job: job, "rc gives a program a stderr of its own")
   rcRuns(rc, "cat /dev/fd/3 <[3]/svc/a/status", a, ns, job: job, "rc gives a program fd 3")
+  // The manual, from bootfs (D86): a page found by name, one by its key,
+  // and a page printed whole.
+  rcRuns(rc, "man -w lookman; lookman launcher service; x=`{man 6 manifest}; ~ $x(1) 'MANIFEST(6)' && echo page",
+         Array("/lib/man/1/man\nman 6 manifest # the launcher's service manifests\npage\n".utf8), ns, job: job,
+         "rc runs man, lookman and a page")
   rcRuns(rc, "cat <{cat /svc/a/status} <{echo two}", a + Array("two\n".utf8), ns, job: job,
          "rc runs <{} on the device")
   // Where 9front forks, a copy of rc on a system of its own: a cd there is
@@ -515,10 +521,11 @@ func runPty(_ ns: Namespace) {
       print("launch-test: FAILED: no namespace")
       Process.exit(code: 1)
     }
-    check(ns.mountPoints.count == 6 && same(ns.mountPoints[0], "/bin") && same(ns.mountPoints[1], "/dev")
-            && same(ns.mountPoints[2], "/env") && same(ns.mountPoints[3], "/mnt/console")
-            && same(ns.mountPoints[4], "/mnt/plumb") && same(ns.mountPoints[5], "/svc"),
-          "the namespace is /bin, /dev, /env, /mnt/console, /mnt/plumb and /svc")
+    check(ns.mountPoints.count == 7 && same(ns.mountPoints[0], "/bin") && same(ns.mountPoints[1], "/dev")
+            && same(ns.mountPoints[2], "/env") && same(ns.mountPoints[3], "/lib/man")
+            && same(ns.mountPoints[4], "/mnt/console") && same(ns.mountPoints[5], "/mnt/plumb")
+            && same(ns.mountPoints[6], "/svc"),
+          "the namespace is /bin, /dev, /env, /lib/man, /mnt/console, /mnt/plumb and /svc")
     environment(ns)
 
     // devmgr first: its status is still growing until it has bound.

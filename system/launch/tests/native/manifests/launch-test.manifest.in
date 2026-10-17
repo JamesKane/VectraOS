@@ -2,7 +2,8 @@
 # adds `use time` where the time service runs (amd64). `programs`: it
 # starts rc (tier 1: amd64 and arm64) to run `cat /svc/*/status`, and runs
 # it on a pty (`use pty`); /bin is the bootfs service's (D71).
-# /dev is kbdfs's, then devmgr's device directories (D82, D83).
+# /dev is kbdfs's, then devmgr's device directories (D82, D83); the
+# manual is bootfs's lib/man (D86), which rc's man reads.
 # Its /env from its `env` lines, and /svc/env for rc's groups (D81).
 # The console at /mnt/console, not /svc: its status changes as the log
 # grows, which `cat /svc/*/status` would race.
@@ -15,6 +16,7 @@ use devmgr
 use env
 env LAUNCH_TEST=yes
 mount /bin bootfs/bin
+mount /lib/man bootfs/lib/man
 mount /dev kbdfs
 mount /dev devmgr/dev after
 mount /mnt/console console

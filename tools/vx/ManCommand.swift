@@ -8,6 +8,8 @@
 //                                        code (Manual's Check), run by vx ci
 //   vx man --missing                     rows for what has no page and no row
 //   vx man --index FILE                  the index, as TSV
+//   vx man --usage                       writes the usage messages the
+//                                        pages give (Manual's usageFiles)
 //
 // Programs are required from each arch's built boot image
 // (build/ARCH/bootfs.img); with none built, they aren't checked.
@@ -34,6 +36,19 @@ func manCommand(_ args: [String]) -> Bool {
     }
     print(MissingRow.tsv(wanted), terminator: "")
     return true
+  case "--usage":
+    var ok = true
+    for u in usageFiles {
+      let commands = Requirements.strings(named: "names", in: Requirements.read(".", u.commands))
+      switch UsageMessages.swift(manual, commands: commands) {
+      case .success(let text):
+        ok = FileManager.default.createFile(atPath: u.path, contents: Data(text.utf8)) && ok
+      case .failure(let m):
+        complain("\(u.path): no section 1 page with a usage fence for \(m.names.joined(separator: ", "))")
+        ok = false
+      }
+    }
+    return ok
   case "--index":
     guard args.count == 2 else { fail("usage: vx man --index FILE") }
     return FileManager.default.createFile(atPath: args[1], contents: Data(manual.indexTSV.utf8))

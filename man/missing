@@ -13,13 +13,6 @@ program	kbdfs
 program	console
 program	plumber
 program	rc
-program	ls
-program	cat
-program	mkdir
-program	rm
-program	mv
-program	cp
-program	touch
 host	vx
 host	vx-elf2efi
 host	vx-mkbootfs

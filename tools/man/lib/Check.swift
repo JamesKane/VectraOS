@@ -11,6 +11,7 @@
 // - Everything that needs a page (Requirements) has one, or a row in
 //   man/missing; no row is for something that has a page or needs none.
 // - A format's page defines every directive in its table.
+// - Each generated file of usage messages is what the pages say.
 
 import FoundationEssentials
 import Guide
@@ -20,7 +21,8 @@ let plan9Headings = ["SYNOPSIS", "DESCRIPTION", "EXAMPLES", "FILES", "SEE ALSO",
 
 public enum Check {
   /// Every problem, "where: what", in the order found.
-  public static func run(_ manual: Manual, requirements: [Requirement], root: String) -> [String] {
+  public static func run(_ manual: Manual, requirements: [Requirement], root: String,
+                         usage: [UsageFile] = usageFiles) -> [String] {
     var problems = manual.refused
     let index = manual.index
     for p in manual.pages {
@@ -59,6 +61,17 @@ public enum Check {
       let source = Requirements.read(root, f.source)
       for d in Requirements.directives(source) where !terms.contains("`\(d)`") {
         problems.append("\(p.path): no definition of `\(d)`, a directive in \(f.source)")
+      }
+    }
+    for u in usage {
+      let commands = Requirements.strings(named: "names", in: Requirements.read(root, u.commands))
+      switch UsageMessages.swift(manual, commands: commands) {
+      case .failure(let m):
+        for n in m.names { problems.append("\(u.path): no section 1 page with a usage fence for \(n)") }
+      case .success(let text):
+        if Requirements.read(root, u.path) != text {
+          problems.append("\(u.path): not what the pages say; vx man --usage writes it")
+        }
       }
     }
     return problems

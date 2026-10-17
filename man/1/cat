@@ -1,0 +1,30 @@
+page cat 1
+summary catenate files
+src shell/commands/lib/Commands.swift
+keys concatenate print read
+
+# SYNOPSIS
+
+```usage
+cat [file ...]
+```
+
+# DESCRIPTION
+
+`cat` reads each <file> in order and writes its bytes to standard output.
+With no <file>, it reads standard input to its end.
+A <file> named `/dev/fd/<n>` is the process's descriptor <n>, as rc's `<{...}` gives one.
+
+# EXAMPLES
+
+```rc
+% cat /svc/*/status
+```
+
+# SEE ALSO
+
+ls(1), rc(1)
+
+# DIAGNOSTICS
+
+`cat` stops at the first <file> it can't open or read, and that error is its exit string, such as `can't open x: file does not exist: 'x'`.

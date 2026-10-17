@@ -55,7 +55,7 @@ Anything wrong stops the launch with the file and the line; nothing is skipped.
 : `bootfs`
   The boot image itself, read only, for the service that serves it.
 : `launcher`
-  The launcher's own tree at `/svc/launcher`: `status`, and `ctl`, which takes `kill <service>`.
+  The launcher's own tree at `/svc/launcher`: `status`; `memory`, a line for each service, `<name> processes <n> private <p> shared <s> scaled <x>` in bytes over its processes and those it started, then the launcher's own; and `ctl`, which takes `kill <service>`.
 : `clock`
   The UTC page, writable: the service sets the system's time.
 

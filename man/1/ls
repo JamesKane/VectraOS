@@ -1,0 +1,64 @@
+page ls 1
+summary list contents of directory
+src shell/commands/lib/Commands.swift
+keys directory files list
+
+# SYNOPSIS
+
+```usage
+ls [-dlmnpqrstuFQT] [file ...]
+```
+
+# DESCRIPTION
+
+For each directory argument, `ls` lists the contents of the directory; for each other <file>, it repeats its name.
+With no <file>, it lists the current directory.
+Names are sorted as bytes, each directory's contents on their own, and a name with a space or one of rc's special characters is quoted as rc would quote it.
+When more than one <file> is given, each name is shown with its path.
+
+: `-d`
+  If an argument is a directory, list it, not its contents.
+: `-l`
+  List in long format: the mode, the device, the owner and group, the size in bytes and the time the file was last changed.
+: `-m`
+  Print the name of the user who last changed the file before each name.
+: `-n`
+  Don't sort.
+: `-p`
+  Print only the last element of each path.
+: `-q`
+  Print each file's qid, its path, version and type, before its name.
+: `-r`
+  Reverse the order of the sort.
+: `-s`
+  Print each file's size in kilobytes before its name.
+: `-t`
+  Sort by the time the file was last changed, newest first.
+: `-u`
+  Accepted, for the time of the last access: it shows the time of the last change.
+: `-F`
+  Add `/` after each directory's name.
+: `-Q`
+  Don't quote names.
+: `-T`
+  Print `-` before each name, for a file that isn't temporary.
+
+A time within the last six months is shown as the month, day and time of day; an older one, or one in the future, as the month, day and year.
+
+# EXAMPLES
+
+```rc
+% ls -F /svc
+```
+
+# SEE ALSO
+
+cat(1), rc(1)
+
+# DIAGNOSTICS
+
+The exit string is `errors` if a <file> couldn't be listed, each one reported, such as `ls: x: file does not exist: 'x'`.
+
+# BUGS
+
+Files have no modes, owners or devices: `-l` shows every directory as `d-rwxr-xr-x` and every file as `--rw-r--r--`, the device as `M 0` and the owner and group as `none`, and `-m` shows `[none]`.

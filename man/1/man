@@ -1,0 +1,61 @@
+page man 1
+summary print or find pages of the manual
+names man lookman sig
+src shell/commands/lib/ManPages.swift system/guide/lib/Render.swift
+keys manual help index declaration
+
+# SYNOPSIS
+
+```usage
+man [-tw] [section ...] title [node]
+lookman key ...
+sig name ...
+```
+
+# DESCRIPTION
+
+`man` prints the page of the manual that documents <title>, from `/lib/man`, refilled to 80 columns and indented as Plan 9's pages are.
+It looks in each <section> given, in order, or in sections 1 to 8, and prints the first page it finds.
+A page is found by any name it documents, so `man lookman` prints this page.
+With a <node>, it prints that node of the page alone.
+NAME is made from the page's header and SOURCE from its sources.
+There is no pager: the terminal scrolls.
+
+: `-t`
+  Print the page's contents instead: its headings, and each node's id and title with the node's headings under it.
+: `-w`
+  Print the page's path instead.
+
+`lookman` prints a line for each page whose names, summary or keys hold every <key> as a word, in any case: the `man` command that shows the page, and its summary.
+
+`sig` prints the declarations of each <name> from the SYNOPSIS of the section 2 page that documents it, for pasting into code.
+A name such as `Handle.close` is found by its page and printed by its last part.
+
+# EXAMPLES
+
+```rc
+% man 6 guide fences
+% man -w manifest
+/lib/man/6/manifest
+% lookman manifest
+man 6 manifest # the launcher's service manifests
+```
+
+# FILES
+
+: `/lib/man/<section>/<page>`
+  The pages, in guide(6).
+: `/lib/man/index`
+  The index: a row for each name a page documents and for each node, a tab between its fields: the name, the page, its section, the node, the summary and the page's keys.
+
+# SEE ALSO
+
+guide(6), intro(1), vx-man(1) on the dev machine
+
+# DIAGNOSTICS
+
+`man` exits with `no manual page for <title>` when no page documents it, `lookman` with `no match` when no page matches, and `sig` with `no declaration` when a name has none.
+
+# BUGS
+
+The width is always 80 columns: the terminal's own isn't known.

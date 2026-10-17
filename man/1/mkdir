@@ -1,0 +1,32 @@
+page mkdir 1
+summary make a directory
+src shell/commands/lib/Commands.swift
+keys directory create
+
+# SYNOPSIS
+
+```usage
+mkdir [-p] [-m mode] dir...
+```
+
+# DESCRIPTION
+
+`mkdir` makes each directory <dir>.
+A <dir> that exists already is an error.
+
+: `-p`
+  Make each missing directory on the way to <dir> first, and say nothing of one that exists.
+: `-m`
+  The directory's mode, in octal, at most `777`.
+
+# SEE ALSO
+
+rm(1), ls(1)
+
+# DIAGNOSTICS
+
+The exit string is `error` if a <dir> couldn't be made, each one reported, such as `mkdir: box already exists`.
+
+# BUGS
+
+Directories have no modes: `-m`'s <mode> is checked and not kept.

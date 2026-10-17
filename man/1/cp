@@ -1,0 +1,36 @@
+page cp 1
+summary copy files
+src shell/commands/lib/Commands.swift
+keys copy
+
+# SYNOPSIS
+
+```usage
+cp [-gux] fromfile tofile
+cp [-x] fromfile ... todir
+```
+
+# DESCRIPTION
+
+`cp` copies <fromfile> to <tofile>, or each <fromfile> into the directory <todir> under its last name.
+A <tofile> that exists is cut to nothing and written; one that doesn't is made.
+Directories aren't copied.
+
+: `-x`
+  Keep each file's time of last change.
+: `-g`
+  Accepted, for keeping the group.
+: `-u`
+  Accepted, for keeping the owner.
+
+# SEE ALSO
+
+mv(1), cat(1)
+
+# DIAGNOSTICS
+
+The exit string is `errors` if a file couldn't be copied, each one reported, such as `cp: a and b are the same file`, and `bad usage` for several files copied to what isn't a directory.
+
+# BUGS
+
+Files have no owners or groups, so `-g` and `-u` do nothing.

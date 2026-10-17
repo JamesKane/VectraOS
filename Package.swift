@@ -96,7 +96,7 @@ let ipc: [Target] = [
   .target(name: "Rc", path: "shell/rc/lib"),
   .testTarget(name: "RcTests", dependencies: ["Rc"], path: "shell/rc/tests"),
   // The shell's file commands (shell/commands, V2: tier 1 natively, with rc).
-  .target(name: "Commands", dependencies: ["Fs", "Node", "IPC"], path: "shell/commands/lib"),
+  .target(name: "Commands", dependencies: ["Fs", "Guide", "Node", "IPC"], path: "shell/commands/lib"),
   .testTarget(name: "CommandsTests", dependencies: ["Commands", "Node", "IPC"], path: "shell/commands/tests"),
   // Directives (D86): the one record format, one directive a line: the
   // launcher's manifests, drivers' and the manual's page headers.

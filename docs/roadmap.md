@@ -35,8 +35,9 @@ under `vx ci` and every budget it introduces has a running check
   - Done: the console and the plumber (item 8, D85).
   - Done: the environment as `/env` (item 6, D81).
   - Begun: the manual (item 9, D86): 9a, guide's parser and renderer
-    and the one directive reader, and 9b, `vx man` and its check, with
-    the first pages and the backlog, done.
+    and the one directive reader; 9b, `vx man` and its check, with
+    the first pages and the backlog; and 9c, `man`, `lookman` and `sig`
+    on the device over bootfs's `/lib/man`, done.
   - Exit: `cat /svc/*/status` run by rc passes (amd64, arm64), spawn →
     main is 79 µs (< 200 µs), and the first bench history is recorded
     (2026-10-16, cd3eb6d), and the services hold 3.7 MiB (< 32 MiB,
@@ -578,9 +579,17 @@ work, in order:
      protocols, services, drivers and formats). First pages:
      `guide(6)`, `manifest(6)`, `driver(6)`, `vx-man(1)` and the eight
      `intro` pages. `man(1)` comes with `man` itself, in 9c.
-   - 9c. `man(1)`, and `man`, `lookman` and `sig` on the device; bootfs carries
-     `lib/man/`, and launch-test's manifest mounts it. Usage messages
-     are generated from pages, starting with rc's commands.
+   - 9c, **done (2026-10-17).** `man`, `lookman` and `sig` on the
+     device, in the shell's commands (tier 1); bootfs carries
+     `lib/man/` and its index, launch-test's manifest mounts it at
+     `/lib/man`, and rc runs `man` and `lookman` there in boot-launch.
+     The commands' usage messages are generated from their pages
+     (`shell/commands/lib/Usage.swift`, `vx man --usage`, kept in step
+     by `vx man --check`). Pages: `man(1)`, and `ls`, `cat`, `mkdir`,
+     `rm`, `mv`, `cp` and `touch`. `vx mkbootfs` now stores identical
+     files once, so the commands' ten names share one binary: the boot
+     image fell from 185 to 95 MB on amd64 (arm64's had grown past what
+     its memory suite allows at rest).
    - 9d. idlc writes section 5's pages in place of its Markdown; a suite
      (D20) checks each exported tree against its page's FILES.
 

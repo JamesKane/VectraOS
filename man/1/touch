@@ -1,0 +1,27 @@
+page touch 1
+summary set a file's time of last change
+src shell/commands/lib/Commands.swift
+keys time create
+
+# SYNOPSIS
+
+```usage
+touch [-c] [-t time] files
+```
+
+# DESCRIPTION
+
+`touch` sets the time each file was last changed to now, making the file if it doesn't exist.
+
+: `-c`
+  Don't make a file that doesn't exist; it is an error.
+: `-t`
+  Use <time>, in seconds since 1970 UTC, instead of now: in decimal, in hexadecimal after `0x`, or in octal after `0`.
+
+# SEE ALSO
+
+ls(1)
+
+# DIAGNOSTICS
+
+The exit string is `touch` if a file couldn't be changed or made, each one reported, such as `touch: x: cannot create: permission denied`.

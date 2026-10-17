@@ -15,6 +15,17 @@ import Testing
   #expect(Bootfs.names([0, 1, 2]) == [])
 }
 
+@Test func bootfsKeepsOneCopyOfTheSameContents() throws {
+  let program = [UInt8](repeating: 9, count: 5000)
+  let image = try Bootfs.image([("bin/ls", program), ("etc/x", [1]), ("bin/cat", program)])
+  #expect(image.count == 4096 + 8192 + 4096)  // the program once, then etc/x
+  // Each entry's offset: ls at 4096, x after the program, cat at ls's.
+  let first = 16, second = first + 20, third = second + 20
+  #expect(image.u32(first + 8) == 4096 && image.u32(second + 8) == 4096 + 8192 && image.u32(third + 8) == 4096)
+  #expect(image.u32(third + 4) == 5000)
+  #expect(Bootfs.names(image) == ["bin/ls", "etc/x", "bin/cat"])
+}
+
 @Test func bootfsRefusesBadNames() {
   #expect(throws: FormatError.self) { try Bootfs.image([("/abs", [])]) }
   #expect(throws: FormatError.self) { try Bootfs.image([("a", []), ("a", [])]) }

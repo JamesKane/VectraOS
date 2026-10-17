@@ -26,6 +26,8 @@ public struct IndexRow: Sendable, Equatable {
   public var node: String
   /// The page's summary, or the node's title.
   public var summary: String
+  /// The page's keys, a space between; none for a node.
+  public var keys: String = ""
 }
 
 public struct Manual: Sendable {
@@ -72,7 +74,8 @@ public struct Manual: Sendable {
     for p in pages {
       let h = p.page.header
       for n in h.names {
-        rows.append(IndexRow(name: n, page: h.page, section: h.section, node: "", summary: h.summary))
+        rows.append(IndexRow(name: n, page: h.page, section: h.section, node: "", summary: h.summary,
+                             keys: h.keys.joined(separator: " ")))
       }
       for b in p.page.blocks where b.kind == .node {
         let id = String(decoding: b.node, as: UTF8.self)
@@ -85,8 +88,8 @@ public struct Manual: Sendable {
 
   /// The index as TSV, a header row first.
   public var indexTSV: String {
-    var out = "name\tpage\tsection\tnode\tsummary\n"
-    for r in index { out += "\(r.name)\t\(r.page)\t\(r.section)\t\(r.node)\t\(r.summary)\n" }
+    var out = "name\tpage\tsection\tnode\tsummary\tkeys\n"
+    for r in index { out += "\(r.name)\t\(r.page)\t\(r.section)\t\(r.node)\t\(r.summary)\t\(r.keys)\n" }
     return out
   }
 

@@ -328,6 +328,22 @@ if(CROI_ARCH STREQUAL amd64)
 endif()
 set(_launch_test_manifest ${CMAKE_CURRENT_BINARY_DIR}/launch-test.manifest)
 configure_file(${_manifests}/launch-test.manifest.in ${_launch_test_manifest} @ONLY)
+# The manual (D86): man/'s pages at lib/man/, with the index vx writes
+# from them; manifests mount it at /lib/man.
+file(GLOB _man_pages RELATIVE ${PROJECT_SOURCE_DIR}/man CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/man/[1-8]/*)
+list(SORT _man_pages)
+set(_man_bootfs)
+set(_man_files)
+foreach(_p ${_man_pages})
+  list(APPEND _man_bootfs lib/man/${_p}=${PROJECT_SOURCE_DIR}/man/${_p})
+  list(APPEND _man_files ${PROJECT_SOURCE_DIR}/man/${_p})
+endforeach()
+set(_man_index ${CMAKE_CURRENT_BINARY_DIR}/man.index)
+add_custom_command(OUTPUT ${_man_index}
+  COMMAND ${VX} man --index ${_man_index}
+  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+  DEPENDS ${_man_files} vx ${VX}
+  COMMENT "Indexing the manual")
 # Tier 1's programs (D47), when the *-vectraos toolchain has been built.
 include(${PROJECT_SOURCE_DIR}/cmake/Tier1.cmake)
 croi_tier1(_tier1_bootfs _tier1_files)
@@ -347,6 +363,7 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
           bin/kbdfs=${_kbdfs} etc/manifests/kbdfs.manifest=${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
           bin/console=${_console} etc/manifests/console.manifest=${PROJECT_SOURCE_DIR}/services/console/console.manifest
           bin/plumber=${_plumber} etc/manifests/plumber.manifest=${PROJECT_SOURCE_DIR}/services/plumber/plumber.manifest
+          ${_man_bootfs} lib/man/index=${_man_index}
           ${_tier1_bootfs}
   DEPENDS ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_trace_test} ${_ipc_test} ${_node_test} ${_acpi_test} ${_pci_test}
           ${_launcher} ${_launch_service} ${_launch_test} ${_manifests}/a.manifest ${_manifests}/b.manifest
@@ -356,6 +373,6 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
           ${_kbdfs} ${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
           ${_console} ${PROJECT_SOURCE_DIR}/services/console/console.manifest
           ${_plumber} ${PROJECT_SOURCE_DIR}/services/plumber/plumber.manifest
-          ${_tier1_files} vx ${VX}
+          ${_man_files} ${_man_index} ${_tier1_files} vx ${VX}
   COMMENT "Building bootfs")
 add_custom_target(bootfs DEPENDS ${CMAKE_BINARY_DIR}/bootfs.img)

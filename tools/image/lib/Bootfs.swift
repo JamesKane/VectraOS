@@ -8,6 +8,8 @@
 // two reserved words), then directory entries (name_len with the NUL,
 // data_len, data_off, the name, padded to 4 bytes), then each file at a
 // page-aligned offset from the start of the image, zero padded to a page.
+// Files with the same contents share one copy: a multi-call program's
+// names (bin/ls, bin/cat, ...) all point at the one binary.
 
 public enum Bootfs {
   public static let magic: UInt32 = 0xA56D_3FF9
@@ -30,13 +32,21 @@ public enum Bootfs {
     var offset = align(16 + dirsize, page)
     var directory: [UInt8] = []
     var data: [UInt8] = []
-    for (name, f) in zip(names, files) {
+    var stored: [(file: Int, offset: Int)] = []  // each copy written: which file, and where
+    for (i, (name, f)) in zip(names, files).enumerated() {
+      let at: Int
+      if let copy = stored.first(where: { files[$0.file].contents == f.contents }) {
+        at = copy.offset
+      } else {
+        at = offset
+        stored.append((i, offset))
+        data += f.contents + [UInt8](repeating: 0, count: align(f.contents.count, page) - f.contents.count)
+        offset += align(f.contents.count, page)
+      }
       directory.append32(UInt32(name.count))
       directory.append32(UInt32(f.contents.count))
-      directory.append32(UInt32(offset))
+      directory.append32(UInt32(at))
       directory += name + [UInt8](repeating: 0, count: align(12 + name.count, 4) - 12 - name.count)
-      data += f.contents + [UInt8](repeating: 0, count: align(f.contents.count, page) - f.contents.count)
-      offset += align(f.contents.count, page)
     }
     var image: [UInt8] = []
     image.append32(magic)

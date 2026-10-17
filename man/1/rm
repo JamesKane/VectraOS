@@ -1,0 +1,28 @@
+page rm 1
+summary remove files
+src shell/commands/lib/Commands.swift
+keys delete remove directory
+
+# SYNOPSIS
+
+```usage
+rm [-fr] file ...
+```
+
+# DESCRIPTION
+
+`rm` removes each <file>.
+A directory is removed only if it is empty, unless `-r` is given.
+
+: `-f`
+  Say nothing of a <file> that can't be removed.
+: `-r`
+  Remove a directory and everything in it, its files and then its directories, depth first.
+
+# SEE ALSO
+
+mkdir(1), mv(1)
+
+# DIAGNOSTICS
+
+The exit string is the last error, such as `directory not empty`, or empty if each <file> was removed; with `-f`, it is always empty.

@@ -82,21 +82,21 @@ let ls = ("man/1/ls", "page ls 1\nsummary list\nnames ls lc\n\n# DESCRIPTION\n\n
                  missing: "program\tcat\n")
   let required = [Requirement(.program, "ls"), Requirement(.program, "lc"), Requirement(.program, "cat"),
                   Requirement(.format, "guide")]
-  #expect(Check.run(m, requirements: required, root: "/nonexistent") == [])
+  #expect(Check.run(m, requirements: required, root: "/nonexistent", usage: []) == [])
   #expect(m.lookup("lc")?.path == "man/1/ls")
   #expect(m.indexTSV == """
-    name\tpage\tsection\tnode\tsummary
-    ls\tls\t1\t\tlist
-    lc\tls\t1\t\tlist
-    guide\tguide\t6\t\tformat
-    fences\tguide\t6\tfences\tFences
+    name\tpage\tsection\tnode\tsummary\tkeys
+    ls\tls\t1\t\tlist\t
+    lc\tls\t1\t\tlist\t
+    guide\tguide\t6\t\tformat\t
+    fences\tguide\t6\tfences\tFences\t
 
     """)
 }
 
 @Test func theBacklogOnlyShrinks() {
   let m = manual([ls], missing: "program\tls\nprogram\tgone\n")
-  #expect(Check.run(m, requirements: [Requirement(.program, "ls"), Requirement(.program, "new")], root: "/") == [
+  #expect(Check.run(m, requirements: [Requirement(.program, "ls"), Requirement(.program, "new")], root: "/", usage: []) == [
     "man/1/ls:7: cat(1) is no page",
     "man/1/ls:7: guide(6)#fences is no page",
     "no page for program new (section 1, 3, 4, 8), and no row in man/missing",
@@ -109,7 +109,7 @@ let ls = ("man/1/ls", "page ls 1\nsummary list\nnames ls lc\n\n# DESCRIPTION\n\n
   let page = "page x 1\nsummary s \n\n# BUGS\n\n# SYNOPSIS\n\n# Notes\n\n```\n\tok in a fence\n" + String(repeating: "y", count: 81)
     + "\n```\n\ta tab\n"
   let m = manual([("man/2/x", page), ("man/1/y", "page y 1\nsummary s\nnames x\n\n#  \n")])
-  #expect(Check.run(m, requirements: [], root: "/") == [
+  #expect(Check.run(m, requirements: [], root: "/", usage: []) == [
     "man/1/y:5: an empty heading",
     "man/2/x:2: a trailing space",
     "man/2/x:12: a fence's line past 80 columns",
@@ -118,4 +118,23 @@ let ls = ("man/1/ls", "page ls 1\nsummary list\nnames ls lc\n\n# DESCRIPTION\n\n
     "man/2/x:8: a heading is in capitals",
     "man/2/x: its header says x(1), so it belongs at man/1/x",
   ])
+}
+
+@Test func usageMessagesFromPages() {
+  let m = manual([("man/1/mv", "page mv 1\nsummary move\nnames mv mvx\n\n# SYNOPSIS\n\n```usage\nmv a b\nmvx c\nmv a ... dir\n```\n")])
+  guard case .success(let text) = UsageMessages.swift(m, commands: ["mv"]) else {
+    Issue.record("no usage")
+    return
+  }
+  #expect(text.hasSuffix("""
+    enum Usage {
+      static let mv = ["usage: mv a b", "       mv a ... dir"]
+    }
+
+    """))
+  guard case .failure(let missing) = UsageMessages.swift(m, commands: ["mv", "cp"]) else {
+    Issue.record("cp has no page")
+    return
+  }
+  #expect(missing.names == ["cp"])
 }

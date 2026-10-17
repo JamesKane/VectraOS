@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// bin/ls, cat, mkdir, rm, mv, cp, touch (M6m part m5): the shell's file
-// commands, one program each from this file, its command its name (rc's
+// bin/ls, cat, mkdir, rm, mv, cp, touch (M6m part m5) and man, lookman and
+// sig (D86): the shell's commands, one program each from this file, its command its name (rc's
 // argv[0]); the work is Commands' (lib/Commands.swift), from rc's
 // directory (PWD), in the namespace its Startup gives (D65). Output goes
 // to stdout as it comes, complaints to stderr, and its exit string is

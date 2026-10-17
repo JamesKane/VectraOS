@@ -75,7 +75,8 @@ public enum Requirements {
     return out
   }
 
-  static func read(_ root: String, _ path: String) -> String {
+  /// A file of the tree, as text; empty if it can't be read.
+  public static func read(_ root: String, _ path: String) -> String {
     FileManager.default.contents(atPath: "\(root)/\(path)").map { String(decoding: $0, as: UTF8.self) } ?? ""
   }
 
@@ -208,12 +209,20 @@ public enum Requirements {
 
   /// A format's directive table: the strings of the file's `static let
   /// directives` array.
-  public static func directives(_ source: String) -> [String] {
+  public static func directives(_ source: String) -> [String] { strings(named: "directives", in: source) }
+
+  /// The strings of the array literal a file's `let NAME` holds.
+  public static func strings(named name: String, in source: String) -> [String] {
     var out: [String] = []
     final class Finder: SyntaxVisitor {
+      let name: String
       var found: [String] = []
+      init(_ name: String) {
+        self.name = name
+        super.init(viewMode: .sourceAccurate)
+      }
       override func visit(_ node: VariableDeclSyntax) -> SyntaxVisitorContinueKind {
-        for b in node.bindings where b.pattern.trimmedDescription == "directives" {
+        for b in node.bindings where b.pattern.trimmedDescription == name {
           guard let array = b.initializer?.value.as(ArrayExprSyntax.self) else { continue }
           for e in array.elements {
             if let s = e.expression.as(StringLiteralExprSyntax.self) { found.append(s.segments.trimmedDescription) }
@@ -222,7 +231,7 @@ public enum Requirements {
         return .skipChildren
       }
     }
-    let f = Finder(viewMode: .sourceAccurate)
+    let f = Finder(name)
     f.walk(Parser.parse(source: source))
     out = f.found
     return out

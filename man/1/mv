@@ -1,0 +1,29 @@
+page mv 1
+summary move files
+src shell/commands/lib/Commands.swift
+keys rename move
+
+# SYNOPSIS
+
+```usage
+mv fromfile tofile
+mv fromfile ... todir
+```
+
+# DESCRIPTION
+
+`mv` moves <fromfile> to <tofile>, or each <fromfile> into the directory <todir> under its own name.
+A <tofile> that exists is replaced.
+Two directories given alone is a rename of the first to the second's name.
+
+Within one directory, a move is a rename.
+Between directories of one volume that can rename across them, it is that volume's rename.
+Otherwise a file is copied, its time kept where the target allows, and the original removed; a directory can't be moved that way.
+
+# SEE ALSO
+
+cp(1), rm(1)
+
+# DIAGNOSTICS
+
+The exit string is `bad usage` for too few names or several moved to what isn't a directory, `failure` if a move failed, and `mv` if a target couldn't be removed to make way, after which nothing more is moved.
