@@ -398,3 +398,20 @@ func files(_ paths: [String]) -> Machine {
   // Where there are no files (Linux), strings.
   #expect(!Rc(system: Machine(), arguments: []).takeEnvironmentFiles())
 }
+
+/// A stream whose writes all fail, as a ctl file refusing a command does.
+final class RefusingStream: RcStream {
+  func write(_ bytes: [UInt8]) {}
+  func written(_ bytes: [UInt8]) -> String? { "file does not exist" }
+  func read() -> [UInt8]? { nil }
+  func close() {}
+}
+
+/// echo's failed write is 9front's: said on stderr, and its status.
+@Test func echoSaysWhenItsWriteFails() {
+  let shell = Rc(system: Machine(), arguments: [])
+  let out = MemoryStream(), err = MemoryStream()
+  shell.run("echo restart nobody >[1=3]; echo $status", fds: [0: MemoryStream(), 1: out, 2: err, 3: RefusingStream()])
+  #expect(out.text == "write error\n")
+  #expect(err.text == "echo: write error: file does not exist\n")
+}

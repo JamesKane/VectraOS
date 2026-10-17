@@ -17,6 +17,9 @@
 /// A descriptor's stream.
 public protocol RcStream: AnyObject {
   func write(_ bytes: [UInt8])
+  /// Writes `bytes`, and says why it failed if it did (Plan 9's error
+  /// string), for echo, which reports it as 9front's does.
+  func written(_ bytes: [UInt8]) -> String?
   /// The next bytes, or nil at the end.
   func read() -> [UInt8]?
   func close()
@@ -29,6 +32,11 @@ public protocol RcStream: AnyObject {
 
 extension RcStream {
   public var source: Bool? { nil }
+  /// A stream whose writes can't fail says nothing.
+  public func written(_ bytes: [UInt8]) -> String? {
+    write(bytes)
+    return nil
+  }
 }
 
 /// A program the system started, not yet waited for.
@@ -1152,7 +1160,10 @@ public final class Rc {
         fds[2]?.write(Array("echo: write error: fd 1 closed\n".utf8))
         return rc.setStatus("write error")
       }
-      out.write(Array((args.joined(separator: " ") + (newline ? "\n" : "")).utf8))
+      if let why = out.written(Array((args.joined(separator: " ") + (newline ? "\n" : "")).utf8)) {
+        fds[2]?.write(Array(("echo: write error: " + why + "\n").utf8))
+        return rc.setStatus("write error")
+      }
       rc.setStatus("")
     },
     // attr FILE: its attributes, a line each; attr FILE NAME: one's value;

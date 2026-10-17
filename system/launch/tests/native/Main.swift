@@ -726,6 +726,11 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
     rcRuns(rc, "x=`{ps -a}; ~ $#x 0 && echo none; kill launch-test", Array("@{echo kill>/proc/\(koid)/note} # launch-test\n".utf8), ns,
            job: job, "rc runs ps and kill over /proc")
   }
+  // A write a file refuses, as the launcher's ctl refuses a service it
+  // doesn't know: echo says so, as 9front's does, and fails.
+  rcRuns(rc, "echo restart nobody >[2=1] >/svc/launcher/ctl; ~ $status 'write error' && echo failed",
+         Array("echo: write error: file does not exist\nfailed\n".utf8), ns, job: job,
+         "rc's echo says when its write fails")
   // Files on fs(4)'s volume (D8): made, copied, moved, listed and removed.
   rcRuns(rc, "echo hello >/data/x; cp /data/x /data/y; mv /data/y /data/z; mkdir /data/d; cp /data/z /data/d; ls /data /data/d; cat /data/d/z; rm /data/x /data/z /data/d/z; rm /data/d; ls /data",
          Array("/data/d\n/data/x\n/data/z\n/data/d/z\nhello\n".utf8), ns, job: job, data: true,

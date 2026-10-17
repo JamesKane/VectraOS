@@ -106,9 +106,20 @@ final class FileStream: RcStream {
     self.fd = fd
     source = reads
   }
-  func write(_ bytes: [UInt8]) {
-    guard fd >= 0 else { return }
-    bytes.withUnsafeBytes { b in _ = FDIO.write(fd, b) }
+  func write(_ bytes: [UInt8]) { _ = written(bytes) }
+  /// All of `bytes`, or why not: fdio's error as Plan 9 words it.
+  func written(_ bytes: [UInt8]) -> String? {
+    guard fd >= 0 else { return Errno.badDescriptor.text }
+    var done = 0
+    while done < bytes.count {
+      let r = bytes[done...].withUnsafeBytes { b in FDIO.write(fd, b) }
+      switch r {
+      case .success(let n) where n > 0: done += n
+      case .success: return Errno.io.text
+      case .failure(let e): return e.text
+      }
+    }
+    return nil
   }
   func read() -> [UInt8]? {
     guard fd >= 0 else { return nil }

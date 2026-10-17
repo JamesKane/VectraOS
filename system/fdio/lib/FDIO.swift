@@ -28,6 +28,24 @@ public struct Errno: Error, Equatable, Sendable {
   public let code: Int32
   public init(_ code: Int32) { self.code = code }
 
+  /// What Plan 9's error string says, as rc and the commands print it.
+  public var text: String {
+    switch code {
+    case 2: "file does not exist"
+    case 9: "fd out of range or not open"
+    case 1, 13, 95: "permission denied"
+    case 17: "file already exists"
+    case 20: "not a directory"
+    case 21: "file is a directory"
+    case 22: "bad arg in system call"
+    case 28: "file system full"
+    case 30: "file system read only"
+    case 36: "file name too long"
+    case 39: "directory not empty"
+    default: "i/o error"
+    }
+  }
+
   public static let notPermitted = Errno(1)  // EPERM
   public static let noEntry = Errno(2)  // ENOENT
   public static let io = Errno(5)  // EIO

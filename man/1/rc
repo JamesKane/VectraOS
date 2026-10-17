@@ -339,7 +339,7 @@ Every builtin sets `$status`, true unless it says. A function of the same name h
 : `echo [-n] [arg ...]`
   Writes its arguments, separated by spaces, and then a newline.
   `-n`, as the first argument only, leaves out the newline.
-  It is a write error (`write error`) if descriptor 1 is closed.
+  A write that fails, or descriptor 1 closed, prints `echo: write error:` and why on descriptor 2, and its status is `write error`.
 : `eval [arg ...]`
   Joins its arguments with spaces and runs the result as commands.
 : `exec command [arg ...]`
