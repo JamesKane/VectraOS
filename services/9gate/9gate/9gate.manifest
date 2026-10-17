@@ -1,0 +1,12 @@
+# 9gate (D77, D78): 9P2000 between nodes over Noise IK, its files at its
+# export (9gate(4)). It dials and announces through /net, the stack's and
+# cs's, and exports from its own namespace. Nothing listens until a
+# client's ctl line says so.
+service 9gate
+program 9gate
+use net
+use cs
+mount /net net/net
+mount /net cs/net after
+export
+restart on-failure

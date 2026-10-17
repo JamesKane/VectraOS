@@ -166,7 +166,8 @@ let ipc: [Target] = [
   // 9gate's export and import over them (services/9gate/lib).
   .target(name: "Gate", dependencies: ["NineP", "Noise", "Node", "IPC", "IPCWire", "Sys"], path: "services/9gate/lib",
           swiftSettings: tier0),
-  .testTarget(name: "GateTests", dependencies: ["Gate", "NineP", "Noise", "FcallOracle", "Node", "IPC", "Sys"],
+  .testTarget(name: "GateTests", dependencies: ["Gate", "NineP", "Noise", "FcallOracle", "IP", "Net", "Node", "IPC",
+                                               "Sys"],
               path: "services/9gate/tests"),
   // kbdfs (D83): the keyboard and the console, after 9front's.
   .target(name: "Kbdfs", path: "services/kbdfs/lib", swiftSettings: tier0),

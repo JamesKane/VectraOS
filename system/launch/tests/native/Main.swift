@@ -135,6 +135,18 @@ func documentedTrees(_ ns: Namespace) {
   check(!claimed.isEmpty, "the manual documents a tree")
 }
 
+/// 9gate (D77, D78): this node's key, 32 bytes in hex; nothing listening
+/// or imported until its ctl says so (a normal image has no listener);
+/// and a line it can't take refused.
+func gate(_ ns: Namespace) {
+  let key = Array((readText(ns, "/svc/9gate/key") ?? "").utf8)
+  let digit = { (b: UInt8) in (0x30...0x39).contains(b) || (0x61...0x66).contains(b) }
+  check(key.count == 65 && key[64] == 0x0A && key[..<64].allSatisfy(digit), "9gate's key is 32 bytes in hex")
+  check(readText(ns, "/svc/9gate/status").map { $0.isEmpty } ?? false, "9gate listens for nothing until told")
+  guard var ctl = try? ns.open("/svc/9gate/ctl") else { return check(false, "9gate's ctl") }
+  check((try? ctl.writeText("listen")) == nil, "9gate's ctl refuses a line it can't take")
+}
+
 /// devmgr (V2 item 7c, D74), once it has bound what it binds: edu, bound
 /// with a BTI on the machine's IOMMU, its driver's findings (its registers,
 /// interrupt and DMA through that BTI); every IOMMU taken; on amd64 the
@@ -775,20 +787,21 @@ func runPty(_ ns: Namespace) {
     devices(ns)
     console(ns)
     plumbing(ns)
+    gate(ns)
     documentedTrees(ns)
 
     // cat /svc/*/status
     let names = ((try? ns.list("/svc")) ?? []).map { $0.name }
     #if arch(x86_64)
-      let expected = 10  // and the time service
+      let expected = 11  // and the time service
     #else
-      let expected = 9
+      let expected = 10
     #endif
     check(names.count == expected && names.contains { same($0, "a") } && names.contains { same($0, "b") }
             && names.contains { same($0, "launcher") } && names.contains { same($0, "pty") }
             && names.contains { same($0, "devmgr") } && names.contains { same($0, "env") }
             && names.contains { same($0, "net") } && names.contains { same($0, "cs") }
-            && names.contains { same($0, "dns") },
+            && names.contains { same($0, "dns") } && names.contains { same($0, "9gate") },
           "/svc holds what the manifest uses")
     // env is the launcher's groups (D81), with no status.
     for name in names where !same(name, "env") {

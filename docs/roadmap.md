@@ -47,8 +47,8 @@ under `vx ci` and every budget it introduces has a running check
 - **V3** is under way: notes and /proc, crypto, the net class, the
   stack serving /net with dial(2), cs and dns for names, and the
   console's shell (rc on kbdfs's /dev/cons, D97), done (2026-10-17);
-  9gate begun (the codec, Noise IK, and export and import over a stream
-  done), 9gate's service next.
+  9gate (the codec, Noise IK, export and import, and the service at
+  /svc/9gate) done; factotum's key next, then cpu.
   **V4 onward** are not started (V6's boards have research passes);
   V10, the Ghost, is proposed (D90), and V11 to V16, the native
   applications and Studio, are proposed (D95, D96).
@@ -711,9 +711,16 @@ meets a tested path.
     with its reply held (D84), so a remote read that waits holds up no
     other channel; over any byte stream, a /net conversation's or a
     channel's, sealed by Noise IK or not. GateTests exports a tree, reads
-    it as 9P, and imports it back through a namespace. Left: the 9gate
-    service (listening and dialing over /net, the prologue, which keys it
-    takes), factotum's key, and `vx cpu`.
+    it as 9P, and imports it back through a namespace.
+  - **Done (2026-10-17):** the 9gate service (services/9gate/9gate,
+    9gate(4)): this node's key (from the CPRNG, one boot), `trust`,
+    `listen` and `import` in its ctl, imports at n/NAME served on a
+    dispatcher of their own; every connection sealed by Noise IK with the
+    prologue `9gate` and empty payloads; nothing listens until told.
+    GateTests runs it on two stacks back to back (B imports A's export
+    over TCP; an untrusted caller and a wrong server key refused);
+    boot-launch checks its key, that it listens for nothing, and its files
+    against its page. Left: factotum's key, and `vx cpu`.
 - **factotum** (todhchai's keyring, D75) holds the node's Noise IK
   static key (`proto=noise-ik`), made on first use; neither 9gate nor
   cpu holds it.

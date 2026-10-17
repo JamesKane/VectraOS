@@ -70,7 +70,7 @@ services/console/	all	ConsoleTests	boot-launch	man
 services/plumber/	all	PlumberTests	boot-launch	man
 services/ndb/	all	NdbTests	boot-launch	man
 services/net/	all	NetTests,IPTests,NdbTests	boot-launch	man
-services/9gate/	all	GateTests	boot-smoke	man
+services/9gate/	all	GateTests	boot-smoke,boot-launch	man
 services/9gate/oracles/	-	GateTests	-	-
 services/9gate/tests/	-	GateTests	-	-
 drivers/	all	DevMgrTests	boot-launch,boot-pci	man
