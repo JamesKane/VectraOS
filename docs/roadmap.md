@@ -31,7 +31,8 @@ under `vx ci` and every budget it introduces has a running check
     7a, the AML interpreter, 7b, PCI over ECAM, and 7c, devmgr and the
     driver host with edu's interrupt and DMA through each IOMMU, and 7d,
     virtio, virtio-input and kbdfs's /dev/kbd and /dev/cons (D83, D84),
-    done; their budgets come at V2's exit). Not started: the console and the router (item 8).
+    done; their budgets come at V2's exit).
+  - Done: the console and the plumber (item 8, D85).
   - Exit: `cat /svc/*/status` run by rc passes (amd64, arm64). Still
     open: spawn → main < 200 µs, and the first recorded bench history.
 - **V3 onward** are not started (V6's boards have research passes).
@@ -531,11 +532,28 @@ work, in order:
    virtio and 0xCF8 access (nothing here needs them); the block class
    (TDBR) moves to the one ring with virtio-blk and Taisce (V3), the net
    class (TDFR) with N1 (V3).
-8. **Services and the shell:** the console (it reads the debuglog ring,
-   D38; the Radharc handoff waits for V5), the router (plumber), the pty
-   (done, with item 6; temporary: it goes in V3, D77, once cpu's session
-   and the console serve `/dev/cons`: services/pty/README.md),
-   rc and `cat`. The console serves `/dev/cons` for its keyboard itself.
+8. **Services and the shell, done (2026-10-17):** the console, the
+   plumber, the pty (done, with item 6; temporary: it goes in V3, D77, once
+   cpu's session serves `/dev/cons` too: services/pty/README.md), and rc
+   and `cat` (item 6). kbdfs serves `/dev/cons` for the keyboard (D83).
+   - **The console** (`services/console`, todhchai's, ported): the GOP
+     framebuffer from the boot data, the system log read from the
+     debuglog's ring (D38) as an OVERWRITE reader waiting on its counter,
+     a `write` leaf and `screen` read back; manifests gain `debuglog`, which
+     grants the ring and its doorbell. Its font is Spleen, third-party
+     data under its own licence with its PROVENANCE (D4 covers code that
+     runs), checked against fontgen's table (ConsoleTests). Radharc's
+     handoff comes with Radharc (V5). launch-test mounts it at
+     `/mnt/console` (not /svc, whose `cat /svc/*/status` its growing
+     status would race) and finds a line it logged on the screen.
+   - **The plumber** (`services/plumber`, D85): plumber(4)'s `send`,
+     `rules` and port files at `/mnt/plumb`, plumb(6)'s messages,
+     todhchai's rules engine and regexp (ported to bytes for tier 0, with
+     `plumb client` beside `plumb start`); each channel open on a port its
+     own copy, through Node's per-channel streams, and a port's read
+     waiting (D84). launch-test sends a URL to web's reader, is refused a
+     message no rule takes, and appends a rule whose `plumb client` starts
+     `cat`, which reads the held message onto the console.
 
 **Exit:**
 - `cat /svc/*/status` works, run by rc in a native test. **Done**

@@ -140,6 +140,9 @@ let ipc: [Target] = [
   .executableTarget(name: "fontgen", dependencies: ["FontGen"], path: "tools/fontgen"),
   .target(name: "Console", path: "services/console/lib", swiftSettings: tier0),
   .testTarget(name: "ConsoleTests", dependencies: ["Console", "FontGen"], path: "services/console/tests"),
+  // The plumber (V2 item 8, D85): plumber(4)'s files, todhchai's rules.
+  .target(name: "Plumber", path: "services/plumber/lib", swiftSettings: tier0),
+  .testTarget(name: "PlumberTests", dependencies: ["Plumber"], path: "services/plumber/tests"),
 ]
 
 let package = Package(

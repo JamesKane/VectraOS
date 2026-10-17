@@ -105,6 +105,38 @@ func devices(_ ns: Namespace) {
   keyboard(ns, status)
 }
 
+
+/// The plumber (V2 item 8, D85): plumber(4)'s files at /mnt/plumb. A URL
+/// written to send reaches web's reader, rewritten to its port; a message
+/// no rule takes is refused; and a rule appended to rules whose `plumb
+/// client` starts cat (tier 1's: not rv64 yet) has its message held until
+/// cat opens the port, then printed by cat to the log, on the console.
+func plumbing(_ ns: Namespace) {
+  func message(_ data: String) -> [UInt8] { Array("launch-test\n\n/\ntext\n\n\(data.utf8.count)\n\(data)".utf8) }
+  guard var web = try? ns.open("/mnt/plumb/web"), var send = try? ns.open("/mnt/plumb/send") else {
+    return check(false, "the plumber's send and web")
+  }
+  web.connection.timeout = 10_000_000_000
+  check((try? send.write(offset: 0, message("https://vectra-os.org"))) != nil, "send takes a URL")
+  let got = (try? web.read(offset: 0, max: 8192)) ?? []
+  check(got == Array("launch-test\nweb\n/\ntext\n\n21\nhttps://vectra-os.org".utf8), "web's reader gets it")
+  check((try? send.write(offset: 0, message("nothing takes this"))) == nil, "a message no rule takes is refused")
+  #if !arch(riscv64)
+    guard var rules = try? ns.open("/mnt/plumb/rules") else { return check(false, "the plumber's rules") }
+    let rule = "type is text\ndata matches 'hello .*'\nplumb to greet\nplumb client cat /mnt/plumb/greet\n"
+    check((try? rules.writeText(rule)) != nil, "a rule appended")
+    check((try? send.write(offset: 0, message("hello from the plumber"))) != nil, "its message held, cat started")
+    var screen = ""
+    let deadline = Clock.monotonic() + 10_000_000_000
+    while Clock.monotonic() < deadline {
+      screen = readText(ns, "/mnt/console/screen") ?? ""
+      if holds(screen, "hello from the plumber") { break }
+      sleep(until: Clock.monotonic() + 20_000_000)
+    }
+    check(holds(screen, "hello from the plumber"), "cat read the held message from its port")
+  #endif
+}
+
 /// The console (V2 item 8): the log on the framebuffer. A line logged here
 /// shows on its screen soon after (its title has scrolled off by then).
 func console(_ ns: Namespace) {
@@ -466,13 +498,14 @@ func runPty(_ ns: Namespace) {
       print("launch-test: FAILED: no namespace")
       Process.exit(code: 1)
     }
-    check(ns.mountPoints.count == 4 && same(ns.mountPoints[0], "/bin") && same(ns.mountPoints[1], "/dev")
-            && same(ns.mountPoints[2], "/mnt/console") && same(ns.mountPoints[3], "/svc"),
-          "the namespace is /bin, /dev, /mnt/console and /svc")
+    check(ns.mountPoints.count == 5 && same(ns.mountPoints[0], "/bin") && same(ns.mountPoints[1], "/dev")
+            && same(ns.mountPoints[2], "/mnt/console") && same(ns.mountPoints[3], "/mnt/plumb")
+            && same(ns.mountPoints[4], "/svc"), "the namespace is /bin, /dev, /mnt/console, /mnt/plumb and /svc")
 
     // devmgr first: its status is still growing until it has bound.
     devices(ns)
     console(ns)
+    plumbing(ns)
 
     // cat /svc/*/status
     let names = ((try? ns.list("/svc")) ?? []).map { $0.name }

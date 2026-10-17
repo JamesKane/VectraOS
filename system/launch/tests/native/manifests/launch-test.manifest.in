@@ -15,6 +15,7 @@ mount /bin bootfs/bin
 mount /dev kbdfs
 mount /dev devmgr/dev after
 mount /mnt/console console
+mount /mnt/plumb plumber
 launcher
 programs
 @CROI_LAUNCH_TEST_USES@

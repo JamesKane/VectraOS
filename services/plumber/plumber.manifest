@@ -1,0 +1,9 @@
+# The plumber (V2 item 8, D85): plumber(4)'s send, rules and ports,
+# mounted at /mnt/plumb. It starts what `plumb client` and `plumb start`
+# name from /bin (`programs`: bootfs and a job).
+service plumber
+program plumber
+export
+programs
+mount /bin bootfs/bin
+restart on-failure

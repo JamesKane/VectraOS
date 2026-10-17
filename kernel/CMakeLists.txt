@@ -297,6 +297,9 @@ set(_devmgr ${CMAKE_CURRENT_BINARY_DIR}/devmgr.elf)
 croi_user_program(${_devmgr} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/devmgr/Main.swift)
 set(_edu ${CMAKE_CURRENT_BINARY_DIR}/edu.elf)
 croi_user_program(${_edu} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/test/edu/Main.swift)
+# bin/plumber (V2 item 8, D85): plumber(4)'s files, every arch.
+set(_plumber ${CMAKE_CURRENT_BINARY_DIR}/plumber.elf)
+croi_user_program(${_plumber} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/plumber/Main.swift)
 # bin/console (V2 item 8): the log on the framebuffer, every arch.
 set(_console ${CMAKE_CURRENT_BINARY_DIR}/console.elf)
 croi_user_program(${_console} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/console/Main.swift)
@@ -343,6 +346,7 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
           etc/manifests/devmgr.manifest=${_devmgr_manifest}
           bin/kbdfs=${_kbdfs} etc/manifests/kbdfs.manifest=${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
           bin/console=${_console} etc/manifests/console.manifest=${PROJECT_SOURCE_DIR}/services/console/console.manifest
+          bin/plumber=${_plumber} etc/manifests/plumber.manifest=${PROJECT_SOURCE_DIR}/services/plumber/plumber.manifest
           ${_tier1_bootfs}
   DEPENDS ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_trace_test} ${_ipc_test} ${_node_test} ${_acpi_test} ${_pci_test}
           ${_launcher} ${_launch_service} ${_launch_test} ${_manifests}/a.manifest ${_manifests}/b.manifest
@@ -351,6 +355,7 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
           ${_devmgr} ${_edu} ${_virtio_input} ${_drivers_index} ${_devmgr_manifest}
           ${_kbdfs} ${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
           ${_console} ${PROJECT_SOURCE_DIR}/services/console/console.manifest
+          ${_plumber} ${PROJECT_SOURCE_DIR}/services/plumber/plumber.manifest
           ${_tier1_files} vx ${VX}
   COMMENT "Building bootfs")
 add_custom_target(bootfs DEPENDS ${CMAKE_BINARY_DIR}/bootfs.img)

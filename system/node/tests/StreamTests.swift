@@ -113,3 +113,44 @@ func soon(_ done: () -> Bool) -> Bool {
   var next = try root.open("cons")
   #expect(try next.read(offset: 0, max: 8) == [7])
 }
+
+/// Each channel's own queue: what a plumber's port gives each reader.
+final class Fanout: @unchecked Sendable {
+  let lock = Lock()
+  var queues: [Locked<[UInt8]>] = []
+  let closes = Atomic<Int>(0)
+
+  var stream: NodeStream {
+    NodeStream(perChannel: {
+      let q = Locked<[UInt8]>([])
+      self.lock.withLock { self.queues.append(q) }
+      return NodeStreamChannel(take: { max in
+        q.withLock { bytes -> [UInt8]? in
+          if bytes.isEmpty { return nil }
+          defer { bytes.removeFirst(min(max, bytes.count)) }
+          return Array(bytes.prefix(max))
+        }
+      }, closed: { self.closes.add(1, ordering: .relaxed) })
+    })
+  }
+
+  func post(_ b: [UInt8]) { lock.withLock { for q in queues { q.withLock { $0 += b } } } }
+}
+
+@Test func aPerChannelStreamGivesEachReaderItsOwnCopy() throws {
+  let service = try Service()
+  let fan = Fanout()
+  let node = service.tree.stream("port", fan.stream)
+  service.start()
+  defer { service.stop() }
+  var root = try service.connect()
+  var a = try root.open("port")
+  var b = try root.open("port")
+  #expect(soon { fan.lock.withLock { fan.queues.count } == 2 })
+  fan.post(Array("msg".utf8))
+  service.tree.ready(node)
+  #expect(try a.read(offset: 0, max: 64) == Array("msg".utf8))
+  #expect(try b.read(offset: 0, max: 64) == Array("msg".utf8))
+  _ = consume a
+  #expect(soon { fan.closes.load(ordering: .relaxed) == 1 })
+}

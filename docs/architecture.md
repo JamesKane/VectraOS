@@ -8,7 +8,7 @@
  SDK                               VX (core) · VXUI · VXCompute · VXData
  ───────────────────────────────────────────────────────────────────
  services (Embedded Swift, tier 0) namespace · launch · devmgr · Taisce
-                                   Radharc · router · net · 9gate · accel
+                                   Radharc · plumber · net · 9gate · accel
  drivers (user processes)          virtio · nvme · uart · qcom-* · adreno · cdsp
  ───────────────────────────────────────────────────────────────────
  control plane: Node protocol over channels   data plane: SPSC rings in VMOs
@@ -267,7 +267,7 @@ boot/       UEFI loader                         ← croi/boot
 kernel/     kernel + arch                        ← croi/kernel
 lib/        handoff, elf, pagetables, fmt, rt, ring
 system/     ipc, node, ns, launch, trace, libc   ← todhchai/system
-services/   radharc, router, net, 9gate, accel, wasmd
+services/   radharc, plumber, net, 9gate, accel, wasmd
 drivers/    virtio, nvme, uart, qcom-*, adreno, cdsp
 fs/taisce/                                       ← todhchai/fs/taisce
 sdk/        VX, VXUI, VXCompute, VXData, macros

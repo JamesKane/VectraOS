@@ -45,7 +45,7 @@ The actions in the tables:
 | `system/ld` (dlopen) | Port | V2 | Its core (`Dynamic.swift`) as is; its loader onto croi's ELF and bootfs readers and userboot's segment mapping (`user/lib/loader`) |
 | `system/elf`, `system/bootfs` (readers) | Drop | V2 | croi's win: `lib/elf`'s ElfImage (the kernel's, the loader's, userboot's) and userboot's Bootfs, allocation-free over spans. The launcher's loader (V2's item 4) uses them too |
 | drivers: bus/PCI/ACPI, virtio | Lift | V2 | |
-| `services/router` (plumber) | Lift | V2 | |
+| `services/router`, as `services/plumber` (D85) | Port | V2 | plumber(4)'s files at /mnt/plumb; its rules engine and regexp lifted, its typed RouterIPC not |
 | `services/console`, `services/time`, `shell/commands` | Port | V2 | The console reads the debuglog ring (D38); UTC is a page (D48) |
 | `tools/toolchain` (the `*-todhchai` series, renamed `*-vectraos`) and tier 1's sysroot | Lift | V2 | Tier 1 for FDIO and rc (D47) |
 | `fs/taisce` and `services/fs` | Lift | V3 (RAM disk), V4 (on disk) | The one FS (D8). V3's file copies land in it. Replace its use of the `Synchronization` module in tier 0. |

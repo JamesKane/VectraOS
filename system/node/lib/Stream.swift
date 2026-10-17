@@ -13,6 +13,19 @@
 
 import IPC
 
+/// One channel's own stream, for a stream whose readers each get their own
+/// copy (a plumber's port): what `NodeStream(perChannel:)` makes for each
+/// channel opened at it. Its closures run on the tree's dispatcher.
+public final class NodeStreamChannel: @unchecked Sendable {
+  let take: (Int) -> [UInt8]?
+  let closed: () -> Void
+
+  public init(take: @escaping (Int) -> [UInt8]?, closed: @escaping () -> Void = {}) {
+    self.take = take
+    self.closed = closed
+  }
+}
+
 /// What a stream node does. Its closures run on the tree's dispatcher.
 public final class NodeStream: @unchecked Sendable {
   /// Up to `max` bytes, taking them; nil if there are none yet (a read
@@ -22,6 +35,8 @@ public final class NodeStream: @unchecked Sendable {
   let write: (([UInt8]) throws(NodeError) -> UInt32)?
   let opened: () -> Void
   let closed: () -> Void
+  /// Each channel's own stream, if its readers don't share one.
+  let perChannel: (() -> NodeStreamChannel)?
 
   public init(take: @escaping (Int) -> [UInt8]?, write: (([UInt8]) throws(NodeError) -> UInt32)? = nil,
               opened: @escaping () -> Void = {}, closed: @escaping () -> Void = {}) {
@@ -29,6 +44,18 @@ public final class NodeStream: @unchecked Sendable {
     self.write = write
     self.opened = opened
     self.closed = closed
+    perChannel = nil
+  }
+
+  /// A stream each channel opened at it reads on its own: `open` makes the
+  /// channel's (it is told when the channel goes).
+  public init(perChannel open: @escaping () -> NodeStreamChannel,
+              write: (([UInt8]) throws(NodeError) -> UInt32)? = nil) {
+    take = { _ in [] }
+    self.write = write
+    opened = {}
+    closed = {}
+    perChannel = open
   }
 }
 
@@ -54,7 +81,8 @@ extension NodeTree {
     var i = 0
     while i < state.reads.count {
       let r = state.reads[i]
-      guard let bytes = node.detached ? [] : stream.take(Int(r.max)) else {
+      let take = state.channel?.take ?? stream.take
+      guard let bytes = node.detached ? [] : take(Int(r.max)) else {
         i += 1
         continue
       }
@@ -72,7 +100,7 @@ extension NodeTree {
     // A waiter first, then a look: a `ready` between the two wakes the
     // session, whose wake runs after this call on the same thread.
     locked { if !node.waiting.contains(where: { $0 === state }) { node.waiting.append(state) } }
-    if let bytes = stream.take(limit) {
+    if let bytes = (state.channel?.take ?? stream.take)(limit) {
       if state.reads.isEmpty { locked { node.waiting.removeAll { $0 === state } } }
       return bytes
     }

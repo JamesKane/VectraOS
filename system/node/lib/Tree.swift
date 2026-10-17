@@ -169,6 +169,8 @@ final class SessionState: @unchecked Sendable {
   let deferral = IPCDeferral()
   var reads: [(header: MessageHeader, max: UInt32)] = []
   var stream: TreeNode?
+  /// Its own stream, at a stream whose channels each read their own.
+  var channel: NodeStreamChannel?
 }
 
 /// Held only by a session's server: when the dispatcher drops the server
@@ -188,7 +190,7 @@ final class SessionEnd: @unchecked Sendable {
     if let bulk { tree.dispatcher.unwatch(bulk.watch) }
     if let node = state.stream {
       tree.locked { node.waiting.removeAll { $0 === state } }
-      if case .stream(let s) = node.content { s.closed() }
+      if let channel = state.channel { channel.closed() } else if case .stream(let s) = node.content { s.closed() }
     }
   }
 }
@@ -401,7 +403,7 @@ public final class NodeTree: @unchecked Sendable {
     server.connection.deferral = state.deferral
     if case .stream(let s) = node.content {
       state.stream = node
-      s.opened()
+      if let open = s.perChannel { state.channel = open() } else { s.opened() }
     }
     state.id = try dispatcher.add(server) { [self] (s: inout NodeIPC.NodeServer<Session>) throws(IPCError<Never>) in
       try answerHeldReads(state, &s)
@@ -728,7 +730,8 @@ extension NodeTree {
     case .bytes(let b, _): bytes = b
     case .text(let render, _): bytes = Array(render().utf8)  // outside the lock: it's the service's code
     case .memory(let m): return try m.read(offset: offset, max: Swift.min(Int(max), limit))
-    case .stream(let s): return s.take(Swift.min(Int(max), limit)) ?? []  // not waiting: mid-batch, or a ring's
+    case .stream(let s):  // not waiting: mid-batch, or a ring's; a channel's own stream has no channel here
+      return s.perChannel == nil ? s.take(Swift.min(Int(max), limit)) ?? [] : []
     }
     guard offset < UInt64(bytes.count) else { return [] }
     let start = Int(offset)

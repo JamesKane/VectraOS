@@ -560,3 +560,5 @@ data/fonts/spleen/spleen-16x32.bdf	todhchai	527ff94	data/fonts/spleen/spleen-16x
 data/fonts/spleen/spleen-8x16.bdf	todhchai	527ff94	data/fonts/spleen/spleen-8x16.bdf
 text/fonts/gen/FontGen.swift	todhchai	527ff94	text/fonts/gen/FontGen.swift
 tools/fontgen/main.swift	todhchai	527ff94	tools/fontgen/main.swift
+services/plumber/lib/Regex.swift	todhchai	527ff94	services/router/lib/Regex.swift
+services/plumber/tests/RulesTests.swift	todhchai	527ff94	services/router/tests/RouterTests.swift
