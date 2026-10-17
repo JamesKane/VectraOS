@@ -11,6 +11,10 @@ drivers/
   host/          DriverHost: DeviceResources, Registers, InterruptPort, PinnedMemory
   devmgr/        bin/devmgr (Main.swift), its library (lib/: firmware, IOMMUs,
                  routing, grants, the match index) and its manifest
+  virtio/        Virtio: the modern transport, split queues, devices' configurations (7d)
+  block/virtio-blk/lib/  VirtioBlk: virtio-blk's request format (its class comes in V3)
+  input/         the input class: lib/ (InputDevice: Device, its events on the one ring), idl/
+    virtio-input/  keyboards, mice and tablets (7d)
   test/edu/      QEMU's edu device: the first driver, devmgr's test
 ```
 
@@ -57,6 +61,27 @@ where its DMA goes, then `bound N` once it is done), `iommus`,
 `enumeration` and `acpi` (the tables, and how long loading, `_INI`,
 `_STA` and `_PRT` took).
 
+## The input class
+
+An input driver serves `device` (`InputDeviceIPC.Device`, `drivers/input/lib`):
+`info`, and `open`, whose argument is a ring the reader made
+(`InputReader(slots:)` makes one and `events()` hands it over). Its events
+go there, a slot each (when, evdev type, code, value), each batch ending
+at SYN_REPORT; the driver never waits for its reader and drops what
+doesn't fit, counting it (`InputWriter`). virtio-input reads its device's
+event queue on MSI-X where the kernel has MSIs, else INTx.
+
+## virtio
+
+`PCIDevice` opens a virtio device from its grants: the vendor
+capabilities, the BARs they name mapped, the common and device
+configurations as `Device`. `negotiate` takes VERSION_1 and ACCESS_PLATFORM:
+a driver's addresses are its BTI's, which the IOMMU translates, so a
+device that bypasses it (QEMU's virtio without `iommu_platform=on`) would
+DMA to the wrong memory, and a driver refuses one. `SplitQueue` fences
+(`croi_dma_barrier`) between a slot and the index that publishes it, and
+`PCIDevice.notify` before telling the device.
+
 ## Driver hosts
 
 A host is given its device's resources as `CROI_PA_DEVICE` startup
@@ -76,8 +101,9 @@ a library target in both builds if it has a `lib/`.
 
 ## Tests
 
-`swift test`: ACPITests, PCITests and DevMgrTests (the match index, the
+`swift test`: ACPITests, PCITests, DevMgrTests, VirtioTests and InputTests (the match index, the
 manifest directives, q35's regions and routes, the IOMMU descriptors and
 a platform device's `_CRS`). Natively: `bin/acpi-test` (boot-acpi),
 `bin/pci-test` (boot-pci), and devmgr itself in boot-launch, where
-launch-test checks devmgr's status and edu's findings on every arch.
+launch-test checks devmgr's status, edu's findings and a key typed
+through QEMU's monitor (qemu.sh's `qemu: sendkey`) on every arch.

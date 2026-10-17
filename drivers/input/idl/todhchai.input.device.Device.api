@@ -1,0 +1,6 @@
+# API baseline for todhchai.input.device.Device, written by idlc. Commit it; idlc checks changes against it.
+protocol todhchai.input.device.Device version 2
+struct DeviceInfo (String,UInt8,UInt16,UInt16)
+struct Events (Handle,Handle,UInt32)
+method info call since 1 params () result DeviceInfo throws -
+method open call since 1 params (Events) result - throws InputError

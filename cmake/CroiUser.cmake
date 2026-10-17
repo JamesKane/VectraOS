@@ -368,6 +368,9 @@ function(croi_user_sys)
   # The driver host's library and devmgr's (drivers/host, drivers/devmgr/lib, D74).
   file(GLOB _driver_host CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/host/*.swift)
   file(GLOB _devmgr CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/devmgr/lib/*.swift)
+  # virtio and the input class (drivers/virtio/lib, drivers/input/lib, D74).
+  file(GLOB _virtio CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/virtio/lib/*.swift)
+  file(GLOB _input CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/input/lib/*.swift)
   file(GLOB _headers ${CROI_FLOOR_DIR}/include/* ${PROJECT_SOURCE_DIR}/user/include/croi/*.h
        ${PROJECT_SOURCE_DIR}/kernel/include/*.h)
   add_custom_command(OUTPUT ${_dir}/libsys.a
@@ -406,13 +409,17 @@ function(croi_user_sys)
             -c ${_driver_host} -o ${_dir}/driverhost.o
     COMMAND ${_swiftc} -module-name DevMgr -emit-module -emit-module-path ${_dir}/DevMgr.swiftmodule
             -c ${_devmgr} -o ${_dir}/devmgr.o
+    COMMAND ${_swiftc} -module-name Virtio -emit-module -emit-module-path ${_dir}/Virtio.swiftmodule
+            -c ${_virtio} -o ${_dir}/virtio.o
+    COMMAND ${_swiftc} -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros" -module-name InputDevice -emit-module
+            -emit-module-path ${_dir}/InputDevice.swiftmodule -c ${_input} -o ${_dir}/input.o
     COMMAND ${CMAKE_COMMAND} -E rm -f ${_dir}/libsys.a
     COMMAND ${CMAKE_AR} rcs ${_dir}/libsys.a ${_dir}/sysabi.o ${_dir}/loader.o ${_dir}/sys.o ${_dir}/libsys.o ${_dir}/ld.o
             ${_dir}/ring.o ${_dir}/traceformat.o ${_dir}/trace.o ${_dir}/tracesession.o
             ${_dir}/ipcwire.o ${_dir}/ipc.o ${_dir}/node.o ${_dir}/launch.o ${_dir}/acpi.o ${_dir}/pci.o
-            ${_dir}/driverhost.o ${_dir}/devmgr.o
+            ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o
     DEPENDS ${_abi} ${_loader} ${_api} ${_lib} ${_ld} ${_ring} ${_trace_format} ${_trace_writer} ${_trace_session} ${_ipc_wire}
-            ${_ipc} ${_node} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr}
+            ${_ipc} ${_node} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr} ${_virtio} ${_input}
             ${_headers} vx ${CROI_IPC_PLUGIN}
     COMMENT "Building Sys")
   set(CROI_USER_SYS_DIR ${_dir} PARENT_SCOPE)

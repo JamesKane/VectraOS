@@ -17,3 +17,24 @@ static inline void croi_mmio_write8(uint64_t address, uint8_t value) { *(volatil
 static inline void croi_mmio_write16(uint64_t address, uint16_t value) { *(volatile uint16_t *)address = value; }
 static inline void croi_mmio_write32(uint64_t address, uint32_t value) { *(volatile uint32_t *)address = value; }
 static inline void croi_mmio_write64(uint64_t address, uint64_t value) { *(volatile uint64_t *)address = value; }
+
+// A barrier between memory a device reads or writes by DMA and the
+// accesses around it: every load and store before it, to memory or to
+// registers, is seen by the device before any after it (Linux's mb() for
+// devices). virtio's rings need one between filling a slot and publishing
+// its index, before notifying the device, and between reading the
+// device's index and the slots it covers. Inline assembly, which Swift
+// can't express. Outer shareable on arm64, so the device's observer
+// counts; rv64 orders device I/O with memory too; amd64's stores are
+// already ordered, and mfence orders loads with them.
+static inline void croi_dma_barrier(void) {
+#if defined(__x86_64__)
+  __asm__ volatile("mfence" ::: "memory");
+#elif defined(__aarch64__)
+  __asm__ volatile("dmb osh" ::: "memory");
+#elif defined(__riscv)
+  __asm__ volatile("fence iorw, iorw" ::: "memory");
+#else
+#error "croi_dma_barrier: an unknown architecture"
+#endif
+}

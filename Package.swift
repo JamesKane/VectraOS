@@ -120,6 +120,16 @@ let ipc: [Target] = [
   .target(name: "DevMgr", dependencies: ["CroiMMIO", "DriverHost", "PCI", "Sys", "TDACPI"], path: "drivers/devmgr/lib",
           swiftSettings: tier0),
   .testTarget(name: "DevMgrTests", dependencies: ["DevMgr", "PCI", "Launch", "TDACPI"], path: "drivers/devmgr/tests"),
+  // virtio over PCI (V2 item 7d, D74): the modern transport and split
+  // queues, todhchai's; virtio-blk's request format, which its tests'
+  // model drives the rings through (the block class comes in V3).
+  .target(name: "Virtio", dependencies: ["CroiMMIO", "DriverHost", "Sys"], path: "drivers/virtio/lib",
+          swiftSettings: tier0),
+  .target(name: "VirtioBlk", dependencies: ["Virtio"], path: "drivers/block/virtio-blk/lib", swiftSettings: tier0),
+  .testTarget(name: "VirtioTests", dependencies: ["Virtio", "VirtioBlk"], path: "drivers/virtio/tests"),
+  // The input class (V2 item 7d): its protocol and its events on the one ring.
+  .target(name: "InputDevice", dependencies: ["IPC", "Ring", "Sys"], path: "drivers/input/lib", swiftSettings: tier0),
+  .testTarget(name: "InputTests", dependencies: ["InputDevice", "IPC"], path: "drivers/input/tests"),
 ]
 
 let package = Package(

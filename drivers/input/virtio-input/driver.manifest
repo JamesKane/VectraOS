@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# virtio-input: keyboards, mice and tablets (M3k, M4a).
+driver virtio-input
+class input
+match pci 1af4:1052

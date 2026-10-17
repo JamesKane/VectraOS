@@ -19,6 +19,10 @@
 # --iommu picks amd64's IOMMU (default intel; QEMU takes one at a time),
 # or on rv64 `base` for an IOMMU without MSI_FLAT. --aia (rv64): the APLIC and
 # IMSICs instead of the PLIC (K12i).
+# In test mode the guest may type: a console line holding `qemu: sendkey
+# KEYS` sends each of KEYS (QEMU's key names, separated by spaces) through
+# the monitor's sendkey, to the keyboard the guest's driver last activated
+# (V2 7d: launch-test's key through virtio-input).
 
 set -euo pipefail
 
@@ -124,25 +128,31 @@ case $arch in
 esac
 
 # virtio-rng: edk2 offers EFI_RNG_PROTOCOL over it, the CPRNG's seed (K11b).
-qemu+=(-m 512M -smp 4 -net none "${disk[@]}" -device virtio-rng-pci)
+# virtio-keyboard (V2 7d): devmgr's virtio-input, at slot 0x11 on every
+# machine, after edu, through the IOMMU (iommu_platform: QEMU's virtio
+# bypasses it otherwise, taking the driver's I/O addresses as physical).
+qemu+=(-m 512M -smp 4 -net none "${disk[@]}" -device virtio-rng-pci -device virtio-keyboard-pci,addr=0x11,iommu_platform=on)
 
 if [[ -n $expect ]]; then
-  monitor=(-monitor none)
   console=$work/console.log
   : > "$console"
-  if [[ -n $screendump || -n $registers_on ]]; then
-    socket=$work/monitor.sock
-    rm -f "$socket"
-    monitor=(-monitor "unix:$socket,server=on,wait=off")
-  fi
+  # The monitor: screendumps, backtraces and the guest's keys.
+  socket=$work/monitor.sock
+  # A Unix socket's path is under 108 bytes; a deep work dir's may not be.
+  (( ${#socket} < 100 )) || socket=$(mktemp -u "${TMPDIR:-/tmp}/qemu-monitor.XXXXXX")
+  rm -f "$socket"
+  monitor=(-monitor "unix:$socket,server=on,wait=off")
   # A guest power-off pauses QEMU instead of ending it, so the screen can
   # still be read once the line is seen.
   [[ -n $screendump ]] && monitor+=(-action shutdown=pause)
   coproc vm { exec timeout 90 "${qemu[@]}" -display none -serial stdio "${monitor[@]}" -no-reboot "$@" 2>&1; }
   pid=$vm_PID  # bash unsets vm_PID when the coproc ends
+  # Its output, kept: bash unsets vm as well when it sees the coproc change
+  # state, which a monitor command run meanwhile made it see on rv64.
+  exec {out}<&"${vm[0]}"
   kaslr_image=()
   status=1
-  while IFS= read -r line <&"${vm[0]}"; do
+  while IFS= read -r line <&"$out"; do
     printf '%s\n' "$line"; printf '%s\n' "$line" >> "$console"
     # KASLR: where the kernel runs, so backtraces can name link addresses.
     if [[ $line =~ kaslr:\ image\ (0x[0-9a-f]+)-(0x[0-9a-f]+),\ link\ (0x[0-9a-f]+) ]]; then
@@ -157,6 +167,11 @@ if [[ -n $expect ]]; then
           break
         fi
       done
+    fi
+    # The guest asks for keys: each through the monitor's sendkey.
+    if [[ $line =~ qemu:\ sendkey\ (.+)$ ]]; then
+      keys=${BASH_REMATCH[1]%$'\r'}
+      for key in $keys; do "$vx" qemu-monitor "$socket" sendkey "$key" > /dev/null || true; done
     fi
     # The guest turned itself off without the line: no point waiting.
     if [[ $line == "croi kernel: powering off"* || $line == "croi kernel: rebooting"* ]] &&
@@ -176,7 +191,7 @@ if [[ -n $expect ]]; then
     echo "qemu.sh: '$expect' not seen" >&2
   elif [[ -n $exits ]]; then
     # The rest of the console, until QEMU exits (EOF) or the timeout kills it.
-    while IFS= read -r line <&"${vm[0]}"; do printf '%s\n' "$line"; printf '%s\n' "$line" >> "$console"; done
+    while IFS= read -r line <&"$out"; do printf '%s\n' "$line"; printf '%s\n' "$line" >> "$console"; done
     wait "$pid" 2>/dev/null && exited=0 || exited=$?
     if (( exited != 0 )); then
       echo "qemu.sh: QEMU didn't exit by itself (status $exited)" >&2

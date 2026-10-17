@@ -297,6 +297,8 @@ set(_devmgr ${CMAKE_CURRENT_BINARY_DIR}/devmgr.elf)
 croi_user_program(${_devmgr} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/devmgr/Main.swift)
 set(_edu ${CMAKE_CURRENT_BINARY_DIR}/edu.elf)
 croi_user_program(${_edu} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/test/edu/Main.swift)
+set(_virtio_input ${CMAKE_CURRENT_BINARY_DIR}/virtioinput.elf)
+croi_user_program(${_virtio_input} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/input/virtio-input/Main.swift)
 file(GLOB_RECURSE _driver_manifests CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/*/driver.manifest)
 list(SORT _driver_manifests)
 set(_drivers_index ${CMAKE_CURRENT_BINARY_DIR}/drivers.index)
@@ -331,14 +333,14 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
           etc/manifests/launch-test.manifest=${_launch_test_manifest} ${_time_bootfs}
           bin/pty=${_pty} etc/manifests/pty.manifest=${_manifests}/pty.manifest
           bin/bootfs=${_bootfs_service} etc/manifests/bootfs.manifest=${_manifests}/bootfs.manifest
-          bin/devmgr=${_devmgr} bin/edu=${_edu} etc/drivers=${_drivers_index}
+          bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} etc/drivers=${_drivers_index}
           etc/manifests/devmgr.manifest=${_devmgr_manifest}
           ${_tier1_bootfs}
   DEPENDS ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_trace_test} ${_ipc_test} ${_node_test} ${_acpi_test} ${_pci_test}
           ${_launcher} ${_launch_service} ${_launch_test} ${_manifests}/a.manifest ${_manifests}/b.manifest
           ${_launch_test_manifest} ${_time} ${_manifests}/time.manifest ${_pty} ${_manifests}/pty.manifest
           ${_bootfs_service} ${_manifests}/bootfs.manifest
-          ${_devmgr} ${_edu} ${_drivers_index} ${_devmgr_manifest}
+          ${_devmgr} ${_edu} ${_virtio_input} ${_drivers_index} ${_devmgr_manifest}
           ${_tier1_files} vx ${VX}
   COMMENT "Building bootfs")
 add_custom_target(bootfs DEPENDS ${CMAKE_BINARY_DIR}/bootfs.img)

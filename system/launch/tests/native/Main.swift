@@ -11,6 +11,7 @@
 
 import IPC
 import Node
+import InputDevice
 import Sys
 
 nonisolated(unsafe) var failures = 0
@@ -102,6 +103,39 @@ func devices(_ ns: Namespace) {
   #if arch(x86_64)
     check(holds(status, " PNP0B00 - - unbound"), "the CMOS clock, a platform device")
   #endif
+  keyboard(ns, status)
+}
+
+/// The keyboard (V2 item 7d): virtio-input bound, MSI-X where the kernel
+/// has MSIs and INTx on rv64's PLIC; a reader of the input class opens its
+/// ring, asks qemu.sh to type `a` through QEMU's monitor, and reads KEY_A
+/// (30) pressed and released, each batch ending in SYN_REPORT.
+func keyboard(_ ns: Namespace, _ status: String) {
+  let bound = line(status, startingWith: "pci-00:11.0 1af4:1052 ") ?? ""
+  check(holds(bound, " virtio-input-00:11.0 running dma "), "virtio-input is bound")
+  let path = "/svc/devmgr/drivers/virtio-input-00:11.0/"
+  guard let channel = try? ns.connect(path + "device") else { return check(false, "the keyboard's device") }
+  var device = InputDeviceIPC.DeviceClient(channel: channel)
+  check((try? device.info())?.kind == 1, "it is a keyboard")
+  guard var reader = try? InputReader(slots: 64), let events = try? reader.events(), (try? device.open(events)) != nil
+  else { return check(false, "the keyboard opens a reader's ring") }
+  print("qemu: sendkey a")
+  var seen: [InputEvent] = []
+  let deadline = Clock.monotonic() + 20_000_000_000
+  while Clock.monotonic() < deadline, !seen.contains(where: { $0.type == 1 && $0.code == 30 && $0.value == 0 }) {
+    seen += (try? reader.read(deadline: deadline)) ?? []
+  }
+  let driver = readText(ns, path + "status") ?? ""
+  print("launch-test: virtio-input: \(driver)")
+  #if arch(riscv64)
+    check(holds(driver, "interrupt INTx"), "virtio-input on INTx (the PLIC)")
+  #else
+    check(holds(driver, "interrupt MSI-X"), "virtio-input on MSI-X")
+  #endif
+  check(seen.contains { $0.type == 1 && $0.code == 30 && $0.value == 1 }
+          && seen.contains { $0.type == 1 && $0.code == 30 && $0.value == 0 },
+        "a key typed through QEMU's monitor reaches the reader")
+  check(seen.last?.endsBatch == true && seen.allSatisfy { $0.time > 0 }, "in batches ending at SYN_REPORT, timed")
 }
 
 /// The last word of `text`, as a decimal number.

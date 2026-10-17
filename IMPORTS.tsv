@@ -542,3 +542,10 @@ drivers/devmgr/tests/DevMgrTests.swift	todhchai	527ff94	drivers/devmgr/tests/Dev
 drivers/devmgr/tests/MachineHostTests.swift	todhchai	527ff94	drivers/devmgr/tests/MachineHostTests.swift
 drivers/test/edu/Main.swift	todhchai	527ff94	drivers/test/edu/Main.swift
 drivers/test/edu/driver.manifest	todhchai	527ff94	drivers/test/edu/driver.manifest
+drivers/virtio/lib/Transport.swift	todhchai	527ff94	drivers/virtio/lib/Transport.swift
+drivers/virtio/lib/Queue.swift	todhchai	527ff94	drivers/virtio/lib/Queue.swift
+drivers/virtio/lib/PCI.swift	todhchai	527ff94	drivers/virtio/lib/PCI.swift
+drivers/virtio/lib/Devices.swift	todhchai	527ff94	drivers/virtio/lib/Devices.swift
+drivers/virtio/tests/VirtioTests.swift	todhchai	527ff94	drivers/virtio/tests/VirtioTests.swift
+drivers/block/virtio-blk/lib/Block.swift	todhchai	527ff94	drivers/block/virtio-blk/lib/Block.swift
+drivers/input/virtio-input/driver.manifest	todhchai	527ff94	drivers/input/virtio-input/driver.manifest
