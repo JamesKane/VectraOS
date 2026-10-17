@@ -32,7 +32,7 @@ discipline is Unix's tty (termios's cooked and raw modes, kept in a
 service between the terminal and the program), and we mean to eject it
 for Plan 9's approach, as rio does it:
 - **The window is the terminal.** Whatever shows a program's text (a
-  Radharc terminal window in V6; before then the console and sshd's
+  rio window in Radharc, V6, D75; before then the console and sshd's
   session) is the other side of the program's fds 0 to 2 itself, with
   no pty between them, and serves `/dev/cons` and `/dev/consctl` in the
   program's namespace, as rio serves each window's.
@@ -47,7 +47,9 @@ for Plan 9's approach, as rio does it:
 
 What goes with it: `services/pty` (its line discipline, server and IDL),
 rc's relay of the terminal to its foreground program
-(`shell/rc/native/Terminal.swift`), and `CROI_PA_PTY_CONTROL`. The rings
+(`shell/rc/native/Terminal.swift`), and `CROI_PA_PTY_CONTROL`. Remote sessions
+have no pty either: sshd's session serves `/dev/cons` itself (V3), and
+between VectraOS nodes Plan 9's cpu imports the terminal's (V7, D75). The rings
 stay (D46): fds 0 to 2 are still byte rings, with the window on the
 other end. Open: how tier 1's POSIX programs that ask for termios or
 `isatty` see a window (the libc mapping them onto `/dev/consctl`, as

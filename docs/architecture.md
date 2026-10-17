@@ -147,12 +147,19 @@ The transport is first-party Noise IK over TCP. The swarm design follows
 NeoVectra's docs/02 §6: node roles (terminal, CPU, accelerator, file, auth),
 `/swarm/pool` leases for accelerators, and remote `/dev/accel`.
 
+The CPU role is Plan 9's cpu (D75): `cpu -h NODE` runs rc on another
+node with the terminal's tree at `/mnt/term` and its `/dev/cons` bound
+over the node's, so neither side has a pty. The auth role is factotum
+(D75: todhchai's keyring, under Plan 9's name): it holds every key,
+Noise IK's static key among them, and runs the protocols for programs,
+which never see a long-term key.
+
 ### Bring-up access (D15)
 
 During development, the network also carries SSH. Its pieces are lifted
 from todhchai's N1:
-- an SSH server (`exec`, `shell` through rc, SFTP), with keys from the
-  keyring;
+- an SSH server (`exec`, `shell` through rc, SFTP), with keys from
+  factotum; its session serves rc's `/dev/cons` itself, with no pty;
 - the network stack's TCP;
 - the shared crypto.
 
@@ -186,6 +193,11 @@ gefs-style FS is not carried forward (D8).
 The compositor is todhchai's Radharc: a retained layer tree, present credits,
 late latching, and the ability to run nested. The window list is a node
 (`/svc/windows`) with typed `wctl` verbs.
+
+**Text windows are rio's** (D75). The terminal is Plan 9's rio window,
+not an xterm: it serves its programs' `/dev/cons` and `/dev/consctl`,
+edits their input itself, and shows plain text. Radharc stays the
+window manager; `vt` runs in a window for programs that want xterm.
 
 **Workspaces.** Each workspace has exactly one mode, and the user can switch
 it at any time:

@@ -475,8 +475,11 @@ three arches, so the board meets a tested path.
   ARP, IPv4/IPv6, DHCP, TCP over NetRing), the net driver class and
   virtio-net.
 - **SSH:** lift `services/sshd` (transport, public-key auth, `exec`,
-  `shell` through rc on a pty, SFTP v3) and the keyring that holds the host
-  key.
+  `shell` through rc, SFTP v3) and todhchai's keyring, as factotum (D75),
+  which holds the host key. The session serves rc's `/dev/cons` itself,
+  with no pty: asked for one, it echoes and edits lines as a window would.
+  Between VectraOS nodes, cpu replaces `shell` in V7; SSH stays the
+  bring-up link (D15).
   - Off unless the image is built with `vx boot --ssh [PUBKEY]`.
   - Listens on-link only; public keys only.
   - A test checks that a normal image has no listener.
@@ -614,6 +617,12 @@ write prefix.
   [desktop storyboard](https://claude.ai/artifact/BcQQLDod1qqmgwVzabeTPX)
   ([sources](design/storyboard/)).
 - SDK, with a reference app in ≤ 12 calls.
+- **rio (D75):** todhchai's Terminal ported as rio's text window inside
+  Radharc: each window serves its programs' `/dev/cons`, `/dev/consctl`
+  and `wctl`, edits their input itself (hold mode, `rawon`), and plumbs
+  a selection from its directory. `TerminalCore` becomes `vt`, a program
+  in a window for tier 1 programs that want xterm. The pty goes once the
+  console serves `/dev/cons` too (services/pty/README.md).
 - Native display on the board: Adreno 690 was planned here (ADR-0019)
   while the Q8B was the first board. The board's own display path is
   reordered in its own entry (D69); until then V6 runs on the GOP
@@ -622,6 +631,8 @@ write prefix.
 **Exit:**
 - The desktop budgets are green on QEMU and on the Orange Pi 6 Plus.
 - The mode-switch budget is green.
+- rc runs in a rio window with no pty and no escape sequences; `vt`
+  in one runs a tier 1 program that wants xterm.
 
 ## V7. Edge: 9gate and the swarm
 
@@ -630,10 +641,21 @@ write prefix.
 - VectraOS↔VectraOS extensions for attributes, queries, leases and ring
   bridging.
 - Swarm node roles and `/swarm/pool`.
+- **cpu and factotum (D75):** factotum gains Noise IK's static key
+  (`proto=noise-ik`), the node's identity, so 9gate never holds it;
+  `cpu -h NODE [-c CMD]` runs rc on another node with the terminal's tree at
+  `/mnt/term` and its `/dev/cons` over the node's, rc's fds 0 to 2 rings
+  bridged by 9gate to the terminal's window, and the terminal's
+  interrupt forwarded as a note (croi's notes between processes come
+  first). With the window's `/dev/cons` (V6), this is the pty's last
+  user gone (services/pty/README.md).
 
 **Exit:**
 - Linux `v9fs` mounts a VectraOS export and passes conformance.
 - A PC mounts the Orange Pi 6 Plus's `/dev`.
+- `cpu -h` from one VectraOS node to another gives rc with the
+  terminal's `/dev/cons`, authenticated through both nodes' factotums,
+  with no pty on either side.
 - The LAN budgets are green.
 
 ## V8. Compute
@@ -709,7 +731,9 @@ write prefix.
      the net class, virtio-net.
    - **Left:** sshd on croi (d4), rc on a pty (d5), push and run (N1e).
    - **Open there:** a decision on where a headless boot's host key lives,
-     because the native keyring needs Radharc for its prompt.
+     because the native keyring needs Radharc for its prompt. D75 settles
+     the prompt (a headless factotum asks no one and makes the key on
+     first use); where keys persist across boots waits for V5.
 
    V3 lifts from a pinned commit of that branch. It either waits for d4/d5
 . **`trace.probe_enabled` rose from 18 to 21 ns under KVM, accepted
