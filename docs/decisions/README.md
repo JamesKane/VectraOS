@@ -112,3 +112,4 @@ in a new file, and a line in the index below.
 - [D97. The console's shell is rc on kbdfs's /dev/cons, in kbdfs's note group](D097-console-shell.md) — 2026-10-17, decided; extends D77, D83, D87
 - [D98. A ring's doorbell lends its ringer's profile, until the woken side blocks](D098-ring-doorbells-lend.md) — 2026-10-17, proposed; extends K10c's lending
 - [D99. The launcher answers memory pressure by ending services in bands; a service may start on first use and end when idle](D099-pressure-and-on-demand-services.md) — 2026-10-17, proposed; extends D31
+- [D100. A service's mount reconnects through the launcher's forwarder](D100-mounts-reconnect.md) — 2026-10-17, decided; extends D65, enables D99

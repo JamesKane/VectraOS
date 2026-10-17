@@ -64,4 +64,4 @@ A call the service doesn't do yet fails with `unsupported`.
 Queries, live queries, indices, mapped files and whole listings fail with `unsupported`, as does a ring for bulk reads and writes.
 There are no permissions, owners or symbolic links over Node.
 On ramdisk(4)'s disk nothing survives a reboot.
-A namespace that mounted the volume holds the channel of the fs that served it: after fs restarts it fails until mounted again, while `/svc/fs/volume` reaches the new one.
+Files open when fs restarts stay closed; `/data` itself reconnects to the new fs (launcher(8)).

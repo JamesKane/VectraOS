@@ -26,23 +26,34 @@ extension Startup {
 
   /// Adds `channel` (a Node channel) to the namespace at `path`; `sealed`:
   /// the namespace is (Namespace.seal: Plan 9's RFNOMNT, inherited).
+  /// `reconnect`, the launcher's forwarder for a service's mount, goes
+  /// with it as PA_NS_RECONNECT.
   public func mount(_ channel: consuming Handle, at path: String, _ placement: Namespace.Placement = .replace,
-                    create: Bool = false, sealed: Bool = false) {
+                    create: Bool = false, sealed: Bool = false, reconnect: consuming Handle? = nil) {
     names.append(path)
-    add(channel, info: Self.nsInfo(names.count - 1, placement, create, sealed))
+    let info = Self.nsInfo(names.count - 1, placement, create, sealed)
+    add(channel, info: info)
+    if let reconnect { add(reconnect, info: HandleType.info(HandleType.nsReconnect, info >> 16)) }
   }
 
   /// Adds `namespace` whole, for a child: each mount point, and each
-  /// member of a union in its order, a new channel to the same node,
-  /// sealed if `namespace` is.
+  /// member of a union in its order, a new channel to the same node (and
+  /// a forwarder of its own, where one reconnects), sealed if `namespace`
+  /// is.
   public func mount(_ namespace: Namespace) throws(NamespaceError) {
     let sealed = namespace.sealed
     for m in namespace.locked({ namespace.mounts }) {
       for (i, member) in m.members.enumerated() {
         let client: NodeIPC.NodeClient
-        do throws(NodeIPC.NodeClient.Failure) { client = try member.open([]) } catch { throw NamespaceError(error) }
+        var forwarder: Handle? = nil
+        do throws(NodeIPC.NodeClient.Failure) {
+          forwarder = try member.forwarder()
+          client = try member.open([])
+        } catch {
+          throw NamespaceError(error)
+        }
         mount(client.takeChannel(), at: "/" + m.path.joined(separator: "/"), i == 0 ? .replace : .after,
-              create: member.create, sealed: sealed)
+              create: member.create, sealed: sealed, reconnect: forwarder)
       }
     }
   }
@@ -59,8 +70,9 @@ extension Startup {
 
 extension Namespace {
   /// The namespace `startup` gives: each PA_NS_DIR handle mounted at its
-  /// name, in the order given (a union's members in theirs), sealed if
-  /// one says so.
+  /// name, in the order given (a union's members in theirs), with the
+  /// PA_NS_RECONNECT of the same argument if there is one, sealed if one
+  /// says so.
   public convenience init(_ startup: Startup) throws(NamespaceError) {
     self.init()
     let names = startup.names
@@ -73,7 +85,8 @@ extension Namespace {
       case 2: .after
       default: .replace
       }
-      try mount(channel, at: names[index], placement, create: argument & (1 << 14) != 0)
+      try mount(channel, at: names[index], placement, create: argument & (1 << 14) != 0,
+                reconnect: startup.take(HandleType.info(HandleType.nsReconnect, argument)))
     }
     if sealed { seal() }
   }

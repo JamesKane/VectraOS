@@ -154,6 +154,30 @@ func launchError(_ files: [(String, String)]) -> String {
   #expect(try read(l, "b", "peer") == "a first\n")
 }
 
+/// A mount's channel is to the instance that was running; when it
+/// closes, the namespace reconnects through the launcher's forwarder to
+/// the new one (PA_NS_RECONNECT).
+@Test func aMountReconnectsWhenItsServiceRestarts() throws {
+  let l = try launcher()
+  defer { l.stop() }
+  try l.start([
+    ("a.m", "service a\nprogram tree\nexport\nrestart always\narg first\n"),
+    ("b.m", "service b\nprogram tree\nexport\nmount /a a\narg /a/status\n"),
+  ])
+  #expect(try read(l, "b", "peer") == "a first\n")
+  var held = try l.open("a")
+  var ctl = try held.open("ctl")
+  _ = try? ctl.writeText("exit 3")
+  #expect(waitFor(l, "a running restarts 1"))
+  #expect(try read(l, "b", "peer") == "a first\n")
+  // And again: the forwarder follows each new instance.
+  var again = try l.open("a")
+  var ctl2 = try again.open("ctl")
+  _ = try? ctl2.writeText("exit 3")
+  #expect(waitFor(l, "a running restarts 2"))
+  #expect(try read(l, "b", "peer") == "a first\n")
+}
+
 @Test func useAsNamesTheServiceInSvcAndFollowsItsRestarts() throws {
   let l = try launcher()
   defer { l.stop() }

@@ -209,6 +209,10 @@ public enum HandleType {
   /// A Node channel in the namespace; its argument indexes the names table
   /// (Namespace's Startup, D65).
   public static var nsDir: UInt32 { CROI_PA_NS_DIR }
+  /// The launcher's forwarder for a namespace entry that is a service's
+  /// mount, its argument the entry's: it reconnects the entry when the
+  /// service restarts.
+  public static var nsReconnect: UInt32 { CROI_PA_NS_RECONNECT }
   /// The server end of the process's own Node tree.
   public static var export: UInt32 { CROI_PA_DIRECTORY_REQUEST }
   /// The session board, to post to /srv.

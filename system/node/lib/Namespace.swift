@@ -53,18 +53,53 @@ public final class Namespace: @unchecked Sendable {
     let mutex = Lock()
     var client: NodeIPC.NodeClient
     let create: Bool
+    /// The launcher's forwarder for a service's mount: a batch that walks
+    /// nowhere and opens gives a channel to the service's current
+    /// instance; one with no operations, another forwarder.
+    var reconnect: NodeIPC.NodeClient?
+    let reconnects: Bool
 
-    init(_ client: consuming NodeIPC.NodeClient, create: Bool) {
+    init(_ client: consuming NodeIPC.NodeClient, create: Bool, reconnect: consuming NodeIPC.NodeClient? = nil) {
       self.client = client
       self.create = create
+      reconnects = reconnect != nil
+      self.reconnect = reconnect
     }
 
+    /// `body` on the member's channel; if that channel has closed (its
+    /// service ended) and the member can reconnect, once more on a new
+    /// one to the service's current instance.
     func use<R: ~Copyable>(_ body: (inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) -> R)
       throws(NodeIPC.NodeClient.Failure) -> R
     {
       mutex.lock()
       defer { mutex.unlock() }
-      return try body(&client)
+      do throws(NodeIPC.NodeClient.Failure) {
+        return try body(&client)
+      } catch {
+        guard case .transport = error, reconnectLocked() else { throw error }
+        return try body(&client)
+      }
+    }
+
+    /// A new channel to the service's current instance, through the
+    /// forwarder (under the lock).
+    func reconnectLocked() -> Bool {
+      guard reconnects else { return false }
+      do throws(NodeIPC.NodeClient.Failure) {
+        client = try NodeIPC.NodeClient(try reconnect!.run([.walk(names: [])], open: true))
+        return true
+      } catch {
+        return false
+      }
+    }
+
+    /// Another forwarder, for a child's member, if this one has one.
+    func forwarder() throws(NodeIPC.NodeClient.Failure) -> Handle? {
+      guard reconnects else { return nil }
+      mutex.lock()
+      defer { mutex.unlock() }
+      return try NodeIPC.NodeClient(try reconnect!.run([], open: true)).takeChannel()
     }
 
     /// A new client at `names` below this member's node (none: a clone).
@@ -72,6 +107,14 @@ public final class Namespace: @unchecked Sendable {
       try use { (c: inout NodeIPC.NodeClient) throws(NodeIPC.NodeClient.Failure) in
         try c.open(names.joined(separator: "/"))
       }
+    }
+  }
+
+  /// A client of `channel`, if there is one.
+  static func client(_ channel: consuming Handle?) -> NodeIPC.NodeClient? {
+    switch consume channel {
+    case .some(let c): NodeIPC.NodeClient(channel: c)
+    case .none: nil
     }
   }
 
@@ -128,11 +171,13 @@ public final class Namespace: @unchecked Sendable {
   public func seal() { locked { sealed = true } }
 
   /// Attaches `channel` (a Node channel) at `path`. `create` marks it as
-  /// where new files go in a union.
+  /// where new files go in a union. `reconnect`, the launcher's forwarder
+  /// for a service's mount, gives a new channel once `channel` closes.
   public func mount(_ channel: consuming Handle, at path: String, _ placement: Placement = .replace,
-                    create: Bool = false) throws(NamespaceError) {
+                    create: Bool = false, reconnect: consuming Handle? = nil) throws(NamespaceError) {
     let names = try Self.clean(path)
-    let member = Member(NodeIPC.NodeClient(channel: channel), create: create)
+    let forwarder = Self.client(reconnect)
+    let member = Member(NodeIPC.NodeClient(channel: channel), create: create, reconnect: forwarder)
     try locked { () throws(NamespaceError) in
       guard !sealed else { throw .sealed }
       try add(member, at: names, placement)
@@ -179,14 +224,16 @@ public final class Namespace: @unchecked Sendable {
   }
 
   /// A namespace for a child: the same mounts, each a new channel to the
-  /// same node, sealed if this one is.
+  /// same node (and a forwarder of its own, where one reconnects), sealed
+  /// if this one is.
   public func clone() throws(NamespaceError) -> Namespace {
     let copy = Namespace(sealed: locked { sealed })
     for m in locked({ mounts }) {
       var members: [Member] = []
       for member in m.members {
         do throws(NodeIPC.NodeClient.Failure) {
-          members.append(Member(try member.open([]), create: member.create))
+          let forwarder = Self.client(try member.forwarder())
+          members.append(Member(try member.open([]), create: member.create, reconnect: forwarder))
         } catch {
           throw NamespaceError(error)
         }

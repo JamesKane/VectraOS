@@ -817,6 +817,11 @@ meets a tested path.
     `/mnt/term` to `/data`. rc now gives its programs its whole
     namespace (unions, and the `create` mark), not each mount's first
     member.
+  - **Done (2026-10-17):** mounts reconnect (D100): each `mount` of a
+    service comes with a forwarder of the launcher's
+    (`CROI_PA_NS_RECONNECT`), through which a namespace finds the
+    service's new instance once its channel closes, so `/data` survives
+    fs's restarts and D99's on-demand services can be mounted.
 - **Push and run** (todhchai N1e): the launcher finds programs in a
   writable `/dev/bin` over bootfs's `bin`, so `vx cpu board -c 'cp
   /mnt/term/PATH/prog /dev/bin && restart prog'` runs a new build

@@ -38,7 +38,8 @@ Anything wrong stops the launch with the file and the line; nothing is skipped.
   `use <service> as <name>` grants it under another name.
   `use env` grants `/svc/env`, the launcher's own, whose `new` makes an environment group.
 : `mount`
-  `mount <path> <service>[/<sub>] [before|after] [create]`: a service's tree, or a directory of it, at <path>, alone or in a union before or after what is there, made if `create` is given.
+  `mount <path> <service>[/<sub>] [before|after] [create]`: a service's tree, or a directory of it, at <path>, alone or in a union before or after what is there, marked for creating in if `create` is given.
+  It reconnects to the service when it restarts (launcher(8)).
 : `srv`
   The session's board, at `/srv`, to post to and find others by.
 : `restart`
@@ -95,4 +96,3 @@ launcher(8), driver(6) for devmgr's drivers
 # BUGS
 
 There is no `seal` to limit what a service passes on.
-A `mount` holds a channel to the instance that was running when the process started: once that service restarts, it fails until the process is started again, while `use` reaches the new one.

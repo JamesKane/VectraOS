@@ -873,6 +873,8 @@ func files(_ ns: Namespace) {
   check(restarted, "fs restarted")
   check(readText(ns, "/svc/fs/volume/kept").map { same($0, "kept\n") } ?? false,
         "the new fs finds the file on the disk the RAM disk kept")
+  check(readText(ns, "/data/kept").map { same($0, "kept\n") } ?? false,
+        "/data reconnects to the new fs (PA_NS_RECONNECT)")
 }
 
 /// launcher's `memory`: each service's private and scaled-shared bytes,

@@ -17,6 +17,8 @@ A service starts after every service it uses has answered on its tree; services 
 Any error in a manifest stops the launch, with its file and line.
 
 A process's `/svc` holds only the services it uses, each forwarding to the service's current process, so after a restart opening the path again reaches the new one.
+Each `mount` of a service is given with a forwarder of the launcher's, which it points at each new instance: when the service restarts, the process's namespace finds its channel closed and reconnects through the forwarder, and a child given that namespace gets a forwarder of its own.
+What was open in the old instance stays closed.
 A service that ends is restarted as its manifest's `restart` says; one restarted 5 times within 30 seconds is left failed.
 
 Given `launcher.until=<service>` on the kernel's command line, the launcher runs until that service ends, and exits with its exit code: how a boot test runs a client to its end.
@@ -40,4 +42,5 @@ manifest(6), intro(4), intro(8)
 
 # BUGS
 
-There are no per-client services, and no apps or scripting.
+There are no apps or scripting.
+A request a process had sent when its mounted service ended is sent once more, to the new instance, so a write may be done twice.

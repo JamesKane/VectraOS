@@ -55,6 +55,13 @@ public final class Launcher: @unchecked Sendable {
     /// remount after a restart; for a per-client service, the client and
     /// its grants, to open its tree again.
     var usedBy: [(svc: NodeTree, name: String, client: String, grants: [String])] = []
+    /// Its mounts' forwarders, made at its first start: a node for each
+    /// `mount` of a service, which its namespace reconnects through
+    /// (PA_NS_RECONNECT) when that service restarts.
+    var forwarders: NodeTree?
+    /// The forwarders of the mounts of it, and the directory each opens,
+    /// to point at the new instance after a restart.
+    var mountedBy: [(tree: NodeTree, name: String, subpath: [String])] = []
     var state = "not started"
     var instances = 0
     var restarts: [Int64] = []
@@ -412,6 +419,10 @@ public final class Launcher: @unchecked Sendable {
         svc.mount(name, channel, removeWhenGone: false)
       }
     }
+    // And the namespaces that mount it reconnect to it.
+    for (tree, name, subpath) in locked({ s.mountedBy }) {
+      if let channel = try? export.open(subpath) { tree.mount(name, channel, removeWhenGone: false) }
+    }
   }
 
   /// The handles `resource`, `bootdata`, `debuglog`, `programs`, `libraries` and
@@ -481,16 +492,31 @@ public final class Launcher: @unchecked Sendable {
         throw m.error(m.serviceLine, "can't serve /svc: \(error.rawValue)")
       }
     }
-    for g in m.grants where !g.viaSvc {
+    let forwarders = locked { () -> NodeTree in
+      if let tree = s.forwarders { return tree }
+      let tree = NodeTree(dispatcher: dispatcher)
+      s.forwarders = tree
+      return tree
+    }
+    for (i, g) in m.grants.enumerated() where !g.viaSvc {
       guard let target = service(g.service), let export = locked({ target.export }) else {
         throw m.error(g.line, "service '\(g.service)' isn't running")
       }
-      do throws(NodeIPC.NodeClient.Failure) {
-        guard g.subpath.count <= NodeIPC.maxWalk else { throw .remote(.tooManyNames) }
-        startup.mount(try export.open(g.subpath), at: g.path, g.placement, create: g.create)
-      } catch {
-        throw m.error(g.line, "can't open '\(([g.service] + g.subpath).joined(separator: "/"))'")
+      let what = "can't open '\(([g.service] + g.subpath).joined(separator: "/"))'"
+      guard g.subpath.count <= NodeIPC.maxWalk else { throw m.error(g.line, what) }
+      // Its forwarder, made once and pointed at each new instance.
+      let name = "\(i)"
+      if forwarders.node(name) == nil {
+        guard let channel = try? export.open(g.subpath) else { throw m.error(g.line, what) }
+        forwarders.mount(name, channel, removeWhenGone: false)
+        locked { target.mountedBy.append((forwarders, name, g.subpath)) }
       }
+      guard let node = forwarders.node(name), let ends = try? Channel.create(),
+        (try? forwarders.serve(ends.b, at: node)) != nil, let channel = try? export.open(g.subpath)
+      else {
+        throw m.error(g.line, what)
+      }
+      startup.mount(channel, at: g.path, g.placement, create: g.create, reconnect: ends.a)
     }
     if m.srv {
       do throws(Status) {

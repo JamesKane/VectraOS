@@ -27,6 +27,10 @@ enum : uint32_t {
   // placement (0 replace, 1 before, 2 after), bit 14 marks it for creating, and
   // bit 15 seals the namespace (Plan 9's RFNOMNT; on any entry, for them all).
   CROI_PA_NS_DIR = 0x20,
+  // The launcher's forwarder for a PA_NS_DIR entry that is a service's mount,
+  // with the same argument: a new channel to the service's current instance
+  // once the entry's closes (it restarted).
+  CROI_PA_NS_RECONNECT = 0x21,
   CROI_PA_FD = 0x30,              // argument: the fd (1: stdout, a debuglog)
   // The server end of the process's own Node tree, its export (Fuchsia's
   // PA_DIRECTORY_REQUEST, D65).
