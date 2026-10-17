@@ -12,11 +12,14 @@
 //                             the same budgets against Zircon's (ZirconCommand.swift)
 //   vx trace collect|print|summary|diff ...
 //   vx loc [--check]          lines per component, and the size budgets
+//   vx man [-w] [SECTION] TITLE [NODE] | --check | --missing | --index FILE
+//                             the manual (ManCommand.swift, D86)
 //   vx hardware [--check]     the hardware support list (HardwareCommand.swift)
 //   vx rc-oracle [CASE...]    our rc against 9front's (RcOracleCommand.swift, D70)
 //   vx acpi import|fetch-qemu|list  the AML interpreter's corpus (ACPICommand.swift, D74)
 //   vx ci [--no-bench]        host tests, rc against 9front's, every arch's
-//                             build, amd64's and arm64's tests, the size budgets, then the
+//                             build, amd64's and arm64's tests, the size budgets, the
+//                             manual's check, then the
 //                             bench (advisory)
 //
 // ARCH is amd64, arm64 or rv64; none means all three (amd64 for boot), but
@@ -51,7 +54,7 @@ func arches(_ args: [String]) -> [String] {
 
 var args = Array(CommandLine.arguments.dropFirst())
 guard let command = args.first else {
-  fail("usage: vx build|test|boot|bench|trace|loc|hardware|rc-oracle|ci [options]")
+  fail("usage: vx build|test|boot|bench|trace|loc|man|hardware|rc-oracle|ci [options]")
 }
 args.removeFirst()
 
@@ -78,6 +81,7 @@ case "boot":
   exit(run(["ninja", "-C", "build/\(arch)", "run"], log: nil).ok ? 0 : 1)
 case "bench": exit(benchCommand(args) ? 0 : 1)
 case "loc": exit(locCommand(args) ? 0 : 1)
+case "man": exit(manCommand(args) ? 0 : 1)
 case "hardware": exit(hardwareCommand(args) ? 0 : 1)
 case "rc-oracle": exit(rcOracleCommand(args) ? 0 : 1)
 case "acpi": exit(acpiCommand(args) ? 0 : 1)

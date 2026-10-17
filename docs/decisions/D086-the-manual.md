@@ -140,3 +140,9 @@ Amended with V2 step 9a (2026-10-17): the body's two directives are
 directives too, `@node ID TITLE` and `@guide 1`, read by the same reader
 as the header, not NeoVectra's `@node=ID title="…"` and `@guide=1`, which
 were ndb.
+
+The owner's direction with step 9b (2026-10-17): a page's text stays
+clean. It says what the system does, its limits and its known bugs, and
+never which milestone, step, decision or source repository added or
+changed it; that history is in git and `docs/`. CLAUDE.md carries the
+rule.

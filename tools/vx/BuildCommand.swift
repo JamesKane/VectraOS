@@ -57,6 +57,7 @@ func ci(_ args: [String]) -> Bool {
   for arch in allArches { ok = build(arch) && (!testedArches.contains(arch) || test(arch)) && ok }
   for arch in allArches where !testedArches.contains(arch) { say("vx: \(arch)-test skipped: off until full Swift runs there") }
   ok = locCommand(["--check"]) && ok
+  ok = manCommand(["--check"]) && ok  // after the builds: their images' programs need pages (D86)
   ok = hardwareCommand(["--check"]) && ok
   if bench {
     if FileManager.default.fileExists(atPath: "/dev/kvm") {

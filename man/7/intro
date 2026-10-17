@@ -1,0 +1,17 @@
+page intro 7
+summary introduction to concepts
+keys concepts section
+
+# DESCRIPTION
+
+Section 7 holds what a reader needs before the reference pages make sense: how the system is put together, rather than what one program does.
+
+VectraOS is a capability system.
+A process holds handles, and can reach only what its handles reach: the kernel's objects, and the services whose trees its namespace was given.
+Its namespace is built for it by the launcher from its manifest, Plan 9's way, so what a process can see is what it was granted.
+
+The design itself, and why each part is as it is, is in the tree's `docs/`; once a part ships, its page here is the authority on what it does.
+
+# SEE ALSO
+
+intro(4), manifest(6)

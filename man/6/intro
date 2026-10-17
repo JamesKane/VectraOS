@@ -1,0 +1,17 @@
+page intro 6
+summary introduction to file formats
+keys formats section
+
+# DESCRIPTION
+
+Section 6 holds the formats of files and messages: what a program reads or writes, byte by byte or line by line.
+
+Records are written in one format, directives: one a line, a name and then its words, split at spaces and tabs, with `#` starting a comment, as in manifest(6), driver(6) and the header of guide(6).
+A program that reads directives stops at anything it doesn't know, with the file and the line, rather than skipping it.
+Tables are TSV, a tab between fields.
+
+A format whose reader has a table of directives has a page that defines every one of them.
+
+# SEE ALSO
+
+guide(6), manifest(6), driver(6)

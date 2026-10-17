@@ -1,0 +1,17 @@
+page intro 4
+summary introduction to services and their trees
+keys services trees svc section
+
+# DESCRIPTION
+
+Section 4 holds the services: the programs that serve a tree of files to others, and what each file of the tree does.
+
+A service runs because a manifest names it (manifest(6)), and the launcher starts it with what the manifest grants.
+A process reaches the services it was granted at `/svc/<name>`, or wherever its manifest mounts them, and works with their files as it does with any: a walk, an open, a read and a write, in the Node protocol.
+Many trees have a `status` file to read and a `ctl` file that takes commands, a line each, as Plan 9's do.
+
+A page's FILES lists every file of the tree, and its DESCRIPTION what each one does.
+
+# SEE ALSO
+
+manifest(6), launcher(8), intro(5)

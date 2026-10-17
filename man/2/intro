@@ -1,0 +1,21 @@
+page intro 2
+summary introduction to the system's calls and libraries
+keys sys syscalls libc section
+
+# DESCRIPTION
+
+Section 2 holds the interfaces a program is written against.
+
+- Sys, the typed API in Swift through which services reach the kernel: handles and the objects behind them, channels, processes and their startup.
+  Its pages are marked `lang swift`.
+- The syscalls, croi's, which Sys and the C library are built on.
+  There are 91.
+  Each is named as in `user/include/croi/syscall.h`, lower case: `channel_write`, `handle_close`.
+- The C library, for C programs: the functions its headers declare, as C23 and POSIX name them.
+  Its pages are marked `lang c`.
+
+A page documents a group of names a caller uses together, and every name in the group finds it.
+
+# SEE ALSO
+
+intro(1), intro(5)

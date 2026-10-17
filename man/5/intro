@@ -1,0 +1,15 @@
+page intro 5
+summary introduction to the protocols
+keys protocols node wire idl section
+
+# DESCRIPTION
+
+Section 5 holds the protocols processes speak over channels.
+
+On one node, every service is reached through the Node protocol: a client walks, opens, reads and writes a tree's files, in batches, and attaches the one ring to a file for bulk data.
+Each protocol is declared in Swift and encoded in the one wire format, which idlc describes for C, and its page gives each method's ordinal and message layout.
+Between nodes, files are served in 9P2000.
+
+# SEE ALSO
+
+wire(6), intro(2), intro(4)

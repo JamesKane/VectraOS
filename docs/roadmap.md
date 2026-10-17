@@ -35,7 +35,8 @@ under `vx ci` and every budget it introduces has a running check
   - Done: the console and the plumber (item 8, D85).
   - Done: the environment as `/env` (item 6, D81).
   - Begun: the manual (item 9, D86): 9a, guide's parser and renderer
-    and the one directive reader, done.
+    and the one directive reader, and 9b, `vx man` and its check, with
+    the first pages and the backlog, done.
   - Exit: `cat /svc/*/status` run by rc passes (amd64, arm64), spawn →
     main is 79 µs (< 200 µs), and the first bench history is recorded
     (2026-10-16, cd3eb6d). Still open: services RSS < 32 MiB (no budget
@@ -569,11 +570,15 @@ work, in order:
      launcher's and devmgr's manifests moved; `vx loc`'s 1,500-line
      ceiling for it. The body's `@node` and `@guide` lines are
      directives too (D86's amendment).
-   - 9b. `vx man TITLE` and `vx man --check` (in `vx ci`), the index
-     (`lib/man/index`, TSV), and `man/missing` holding everything V0 to
-     V2 left undocumented. First pages: `guide(6)`, `man(1)`,
-     `manifest(6)` and the eight `intro` pages.
-   - 9c. `man`, `lookman` and `sig` on the device; bootfs carries
+   - 9b, **done (2026-10-17).** `vx man TITLE` and `vx man --check` (in
+     `vx ci`, after the builds), the index (`vx man --index`, TSV), and
+     `man/missing` holding everything V0 to V2 left undocumented: 638
+     rows (programs, `vx`'s commands and the host tools, the 91
+     syscalls, Sys's public declarations, libc's functions, the
+     protocols, services, drivers and formats). First pages:
+     `guide(6)`, `manifest(6)`, `driver(6)`, `vx-man(1)` and the eight
+     `intro` pages. `man(1)` comes with `man` itself, in 9c.
+   - 9c. `man(1)`, and `man`, `lookman` and `sig` on the device; bootfs carries
      `lib/man/`, and launch-test's manifest mounts it. Usage messages
      are generated from pages, starting with rc's commands.
    - 9d. idlc writes section 5's pages in place of its Markdown; a suite

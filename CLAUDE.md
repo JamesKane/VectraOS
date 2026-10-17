@@ -20,6 +20,13 @@ anything that a decision covers.
   compilers only to produce our artifact formats.
 - **C23 only where Swift can't reach.** Each C file says why in its header
   comment.
+- **A change to behaviour changes its page** (D86), in the same commit:
+  `man/<section>/<page>`, in guide(6). Something new comes with its page,
+  never a row in `man/missing`, and `vx man --check` (run by `vx ci`)
+  fails otherwise. Keep the text clean: a page says what the system does,
+  its limits, and its known bugs (BUGS). It never says which milestone,
+  step, decision or source repository added or changed it; that history
+  is in git and `docs/`.
 - **New tests are Embedded Swift** (D20): a suite file in `user/test/swift/`
   with named checks, run by `ProgramSelfTest.runSuites`. Don't add to
   `user/test/usertest.c`. When a change touches one of its tests, move
@@ -67,6 +74,7 @@ CMake/Ninja builds the images, with one tree per arch under `build/<arch>/`.
     .build/debug/vx boot rv64                        # boot interactively (Ctrl-A x quits)
     .build/debug/vx bench                            # boot budgets under KVM (advisory)
     .build/debug/vx loc                              # size budgets
+    .build/debug/vx man TITLE                        # the manual (D86); --check
     .build/debug/vx rc-oracle                        # our rc against 9front's (D70)
     .build/debug/vx hardware                         # the hardware support list (D66)
 

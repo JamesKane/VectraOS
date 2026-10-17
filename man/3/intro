@@ -1,0 +1,14 @@
+page intro 3
+summary introduction to devices and drivers
+keys devices drivers dev section
+
+# DESCRIPTION
+
+Section 3 holds the devices: each class of device and the directory it serves under `/dev`, and each driver.
+
+devmgr(8) finds the machine's devices, through ACPI and PCI, and starts a driver for each one a driver's match records claim (driver(6)), in a host process of its own that is given that device's registers, interrupts and DMA and nothing else.
+A driver serves its device as files, Plan 9's way: control and small reads and writes through files such as `/dev/kbd`, bulk data through the one ring.
+
+# SEE ALSO
+
+driver(6), devmgr(8), intro(4)

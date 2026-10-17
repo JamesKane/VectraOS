@@ -1,0 +1,76 @@
+page vx-man 1
+summary read and check the manual on the dev machine
+src tools/vx/ManCommand.swift tools/man/lib
+keys manual index missing coverage
+host
+
+# SYNOPSIS
+
+```usage
+vx man [-w] [section] title [node]
+vx man --check
+vx man --missing
+vx man --index file
+```
+
+# DESCRIPTION
+
+`vx man` reads the manual in the tree, `man/<section>/<page>`, before an image boots.
+It runs from the repository's root.
+
+With a <title>, it prints the page that documents that name, in the first section that has one, or in <section>; with a <node> too, that node of the page alone.
+The page is refilled to `$COLUMNS` columns, or 80, and indented as Plan 9's pages are, NAME made from the header and SOURCE from its `src`.
+With `-w` it prints the page's path instead.
+
+: `--check`
+  Checks the manual against itself and against the code, as `vx ci` does after its builds, and fails if anything is wrong.
+: `--missing`
+  Prints rows for what needs a page and has neither a page nor a row in `man/missing`.
+: `--index`
+  Writes the index to <file>.
+
+## What the check checks
+
+- Every page parses (guide(6)) and lives at the path its header names.
+- The house rules: no trailing spaces, no tabs outside fences, fences within 80 columns, headings in capitals and Plan 9's in Plan 9's order.
+- No two pages give the same name in one section.
+- Every link resolves: to a page through the index, to a node of it, or to a page `man/missing` promises.
+- Everything that needs a page has one: each program in a built boot image's `bin/` (in section 1, 3, 4 or 8), each `vx` command and host tool (1 or 8), each syscall, public declaration of Sys and function a libc header declares (2), each driver (3), service (4 or 8), IDL protocol (5) and format (6), and each section's intro.
+  The boot's own test programs need none.
+- A format with a directive table, such as manifest(6), defines every directive in it.
+- `man/missing` lists only what needs a page and has none.
+
+## The backlog
+
+`man/missing` holds what needs a page and has none: a row each, its kind and its name, a tab between.
+The check fails on anything undocumented that isn't there, on a row whose page now exists, and on a row for something that no longer needs one, so the list only shrinks.
+A change that adds something adds its page, not a row.
+
+# EXAMPLES
+
+```rc
+% vx man 6 guide fences
+% vx man -w driver
+man/6/driver
+```
+
+# FILES
+
+: `man/<section>/<page>`
+  The pages.
+: `man/missing`
+  The backlog.
+: `build/<arch>/bootfs.img`
+  The boot images whose programs need pages; with none built, programs aren't checked.
+
+# SEE ALSO
+
+guide(6), intro(1)
+
+# DIAGNOSTICS
+
+Each problem is a line, `where: what`, such as `man/6/driver:12: a trailing space`; `--check` then prints how many it found and exits 1 if any.
+
+# BUGS
+
+`man`, `lookman` and `sig` don't run on VectraOS itself, and bootfs doesn't carry the pages: the manual is read on the dev machine only.

@@ -1,0 +1,62 @@
+page driver 6
+summary a driver's match records
+src drivers/devmgr/lib/Index.swift
+keys devmgr match pci acpi
+
+# SYNOPSIS
+
+```text
+driver NAME
+class CLASS
+match KIND ID
+[directive ...]
+```
+
+# DESCRIPTION
+
+Each driver's directory holds a `driver.manifest`, which tells devmgr(8) which devices the driver serves.
+The build collects every one into bootfs's `etc/drivers`, and devmgr matches each device it finds against them as data.
+
+A driver's manifest is directives, one a line; `#` and what follows it are a comment.
+Several drivers may follow one another in one file, each starting at its `driver` line.
+
+: `driver`
+  The driver's program: bootfs's `bin/<name>`.
+  It comes first.
+: `class`
+  Its function class, such as `input` or `audio`.
+: `match`
+  A rule the driver matches devices by.
+  The kinds are `pci <vendor>:<device>`, `pci-class <cc>.<ss>` or `<cc>.<ss>.<pp>` with a programming interface, `acpi <hid>` and `acpi-compatible <cid>`, in hexadecimal where they are numbers.
+  A driver needs one at least.
+: `fallback`
+  A generic driver: any other driver's match wins over its.
+: `dma-bits`
+  How many bits of address its device can reach by DMA, 12 to 64.
+
+devmgr matches in levels: exact ids first (a PCI vendor and device, an ACPI hardware id), then compatible ids in the order the device lists them, then classes, a programming interface before none, then the fallback drivers' rules in the same order.
+The first level any driver matches at decides.
+Two drivers matching at it is an error, and neither runs.
+
+# EXAMPLES
+
+```text
+driver virtio-input
+class input
+match pci 1af4:1052
+```
+
+# FILES
+
+: `drivers/**/driver.manifest`
+  In the tree, each driver's.
+: `etc/drivers`
+  In bootfs, all of them, in path order.
+
+# SEE ALSO
+
+devmgr(8), manifest(6)
+
+# DIAGNOSTICS
+
+Errors name the file and the line, such as `'dma-bits' takes 12 to 64`; a driver with no `match` is refused as matching nothing.

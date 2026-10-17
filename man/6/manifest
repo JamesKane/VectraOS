@@ -1,0 +1,87 @@
+page manifest 6
+summary the launcher's service manifests
+src system/launch/lib/Manifest.swift
+keys launcher service grant namespace
+
+# SYNOPSIS
+
+```text
+service NAME
+program NAME
+[directive ...]
+```
+
+# DESCRIPTION
+
+A manifest tells launcher(8) how to run one service: what program runs, what the process is given, and what it serves.
+The launcher reads every manifest in bootfs's `etc/manifests/`, checks them against each other, and starts the services in an order in which each comes after what it uses.
+
+A manifest is directives, one a line, read as every directive file is: a name, then words split at spaces and tabs; `#` and what follows it are a comment, and blank lines are skipped.
+`service` comes first.
+Anything wrong stops the launch with the file and the line; nothing is skipped.
+
+: `service`
+  The service's name, one word, unique among the manifests.
+: `program`
+  What runs: bootfs's `bin/<name>`.
+: `arg`
+  Arguments for the program, in order; each `arg` line adds its words.
+: `env`
+  One variable, `NAME=value`, set in the process's `/env`.
+: `export`
+  The service serves a Node tree that others may use.
+: `use`
+  A service's tree, granted at `/svc/<name>`, reconnected when that service restarts.
+  `use <service> as <name>` grants it under another name.
+  `use env` grants `/svc/env`, the launcher's own, whose `new` makes an environment group.
+: `mount`
+  `mount <path> <service>[/<sub>] [before|after] [create]`: a service's tree, or a directory of it, at <path>, alone or in a union before or after what is there, made if `create` is given.
+: `srv`
+  The session's board, at `/srv`, to post to and find others by.
+: `restart`
+  `never` (the default), `on-failure` or `always`.
+: `early`
+  Started before every service not marked early.
+: `resource`
+  One kind of hardware: `mmio`, `irq`, `ioport`, `smc` or `system`, a range of the launcher's own root resource of that kind.
+: `programs`
+  bootfs with a job, to start programs from.
+: `bootdata`
+  The firmware's boot data: the RSDP, the framebuffer, the memory map.
+: `debuglog`
+  The debuglog's ring and its doorbell, to read.
+: `libraries`
+  Shared objects from bootfs's `lib/`, to load.
+: `bootfs`
+  The boot image itself, read only, for the service that serves it.
+: `launcher`
+  The launcher's own tree at `/svc/launcher`: `status`, and `ctl`, which takes `kill <service>`.
+: `clock`
+  The UTC page, writable: the service sets the system's time.
+
+Every process is given the UTC page to read, whether or not its manifest asks.
+A launcher with no resource, bootfs or boot data to give refuses a manifest that asks for one.
+
+# EXAMPLES
+
+The pty service, restarted whenever it fails:
+
+```text
+service pty
+program pty
+export
+restart on-failure
+```
+
+# FILES
+
+: `etc/manifests/*.manifest`
+  In bootfs, the manifests the launcher reads.
+
+# SEE ALSO
+
+launcher(8), driver(6) for devmgr's drivers
+
+# BUGS
+
+There are no per-client services, and no `seal` or `grant` to limit what a service passes on.

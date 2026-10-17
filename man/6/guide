@@ -1,0 +1,183 @@
+page guide 6
+summary the manual's page format
+src system/guide/lib/Page.swift system/guide/lib/Inline.swift system/guide/lib/Render.swift
+keys manual page format amigaguide
+
+# SYNOPSIS
+
+```text
+page NAME SECTION
+summary ...
+[names ...] [src ...] [keys ...] [lang swift|c|rc] [host]
+
+# HEADING
+
+Paragraph text, with `literal`, <param>, name(N) and {label|target}.
+
+@node ID TITLE
+```
+
+# DESCRIPTION
+
+A page of the manual is one UTF-8 file in guide, the format this page describes.
+It holds a header, then a body of lines, each line's kind decided by how it begins, so a reader needs no more than the current line and whether it is inside a fence.
+The page reads well with `cat`; vx-man(1) refills it to the terminal's width.
+Every reader of the format parses it with `system/guide`, and nothing else does.
+
+The parser is strict.
+What it doesn't know it refuses, with the file and the line, and it never guesses: a typo in a directive, a fence's kind or a link's target is an error, not a page shown wrongly.
+A page that isn't UTF-8 is refused too.
+
+A page may start with the line `@guide 1`.
+It names the version of the format; a page without it is version 1, permanently.
+A later version is a new number, and a parser refuses one it doesn't know.
+
+@node header The header
+
+The header is directives, as a manifest(6) is: one a line, a name and then words, `#` starting a comment.
+It ends at the first blank line.
+
+: `page`
+  The page's name and its section, `1` to `8`.
+  The name is lower case: a letter or digit, then letters, digits, `.`, `_`, `+` or `-`.
+  It is also the file's name, `man/<section>/<name>`.
+  It comes first.
+: `summary`
+  The rest of the line: one line for NAME and the index, with no full stop.
+: `names`
+  Every name the page documents, besides its own when it gives none: each is an index entry and a link target.
+  It may repeat.
+: `src`
+  The paths in the tree that SOURCE lists.
+: `keys`
+  More words to find the page by.
+: `lang`
+  `swift`, `c` or `rc`: the language of a section 2 page's interface.
+: `host`
+  The page's program runs on the dev machine, not on VectraOS.
+
+`page` and `summary` are required, and `page`, `summary`, `lang` and `host` come once.
+The author never writes NAME or SOURCE: they are made from the header, and a heading of either is refused.
+
+@node blocks Blocks
+
+A body line is one of these, by how it starts:
+
+| Start | Is |
+| (blank) | the end of a paragraph, list item or definition |
+| `# ` | a section heading |
+| `## ` | a subsection heading |
+| `- ` | a list item |
+| `: ` | a definition's term, described by the indented lines after it |
+| two spaces | a continuation of the list item or definition above |
+| `|` | a table row; the first row of a run is the header |
+| ```` ``` ```` | a fence |
+| `@` | a directive |
+| anything else | paragraph text, its lines joined and refilled |
+
+Headings are in capitals, and Plan 9's keep Plan 9's order: SYNOPSIS, DESCRIPTION, EXAMPLES, FILES, SEE ALSO, DIAGNOSTICS, BUGS.
+A heading of the author's own is in capitals too.
+A line starting `#` that isn't `# ` or `## ` is an error.
+
+There is no nesting.
+A list item holds no list and a definition no fence; a page that wants more structure wants a node.
+A continuation line with nothing above to continue is an error.
+
+A table row's cells are separated by `|`; a `|` inside a literal belongs to its cell, and the row's last `|` may be left off.
+A run of rows is one table, its columns as wide as their widest cells.
+
+@node fences Fences
+
+A line of three backticks, followed by a kind or by nothing, opens a fence; a line of three backticks alone closes it.
+What lies between is shown exactly as written, never refilled, and must fit 80 columns.
+A fence that is never closed is an error.
+The kinds are:
+
+: `usage`
+  A command's synopsis in Plan 9's notation: the command and its flags literal, every other word a parameter, `[ ]` optional and `...` repeated.
+: `swift`
+  Swift: declarations in a section 2 SYNOPSIS, or example code.
+: `c`
+  C: declarations in a section 2 SYNOPSIS, or example code.
+: `rc`
+  A transcript or a script; lines starting with `%` and a space are typed, the others are output.
+: `text`
+  Anything: a diagram, a table of bytes.
+  A fence with no kind is the same.
+
+Any other kind is an error.
+
+@node inline Text inside a line
+
+Four things are special in headings, paragraphs, list items, definitions and table cells, and nothing else is:
+
+: `` `cat -u` ``
+  A literal: what is typed, a file's name, code.
+  A literal opened by <n> backticks closes at the next run of exactly <n>, so one containing a backtick is opened by more; with two or more, one space just inside each end is dropped, so a literal may start with a backtick.
+  An unclosed literal is an error.
+: `<file>`
+  A parameter: `<`, a letter, then letters, digits, `.`, `_` or `-`, then `>`.
+: `rc(1)`
+  A link to a page: a name followed by a section number in parentheses.
+: `{label|target}`, `{target}`
+  A link with words of its own, or to a node, or out of the manual.
+  It is shown as `label (target)`, or as the target alone.
+
+A link's target is `name(N)`, `name(N)#node`, `#node` for a node of the same page, or a URL whose scheme is `https:`, `gemini:` or `gopher:`.
+Any other target, and a `{` with no `}`, is an error.
+A literal `{`, a `<word>` that is not a parameter, or a `name(2)` that is not a link goes inside backticks.
+There is no emphasis.
+
+@node nodes Nodes
+
+A page is one node unless it says otherwise.
+A line `@node <id> <title>` starts a node, its id lower-case letters, digits and `-`, unique in the page, and its title, the rest of the line, what a contents list shows.
+Text before the first node is the main node, which every page has, and which holds SYNOPSIS and DESCRIPTION.
+
+Reading order is the file's order, so a page split into nodes still prints, greps and pipes as one text: `vx man guide` prints every node, and `vx man guide fences` prints one.
+Nodes are for long pages; a short page has none.
+
+`@node` is the only directive in the body, and `@guide` is allowed only on the first line.
+
+# EXAMPLES
+
+A page, whole:
+
+```text
+page cat 1
+summary concatenate files
+src shell/commands/lib/Commands.swift
+
+# SYNOPSIS
+
+```
+
+followed by a `usage` fence holding `cat [file ...]`, then:
+
+```text
+# DESCRIPTION
+
+`cat` reads each <file> in order and writes it to standard
+output. With no <file> it reads standard input.
+
+# SEE ALSO
+
+ls(1)
+```
+
+# FILES
+
+: `man/<section>/<page>`
+  The pages, in the tree.
+
+# SEE ALSO
+
+vx-man(1), manifest(6)
+
+# DIAGNOSTICS
+
+The parser reports the first error it meets with its file and line, such as `man/1/cat:4: a fence kind guide doesn't know`, and stops.
+
+# BUGS
+
+A fence cannot show a line of three backticks alone, since that line closes it; the example above is split in two for that reason.

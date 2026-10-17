@@ -1,0 +1,33 @@
+page intro 1
+summary introduction to commands
+keys commands section
+
+# DESCRIPTION
+
+Section 1 holds the commands a person runs: rc(1), the shell, and the programs it starts, such as ls(1) and cat(1), and the tools on the dev machine, marked `host` in their headers, such as `vx` and its commands.
+
+A command's SYNOPSIS is in Plan 9's notation.
+The command and its flags are literal; every other word is a parameter, `[ ]` encloses what is optional, and `...` follows what may repeat.
+Its usage message is the same line.
+
+The programs a running system has are the files of its `/bin`, which a manifest binds from the boot image's `bin/`.
+A program that serves a tree is documented in section 4, a driver in section 3, and one an administrator runs in section 8.
+
+## How the manual is laid out
+
+| Section | Holds |
+| 1 | commands |
+| 2 | Sys, the syscalls and the C library |
+| 3 | devices and their drivers |
+| 4 | services and the trees they serve |
+| 5 | protocols |
+| 6 | file formats |
+| 7 | concepts |
+| 8 | administration |
+
+A page is found by any name it documents, and a name followed by a section in parentheses, such as guide(6), is a link to the page.
+The pages are written in guide(6) and read with vx-man(1).
+
+# SEE ALSO
+
+intro(2), intro(4), intro(8)
