@@ -582,11 +582,11 @@ func runPty(_ ns: Namespace) {
       print("launch-test: FAILED: no namespace")
       Process.exit(code: 1)
     }
-    check(ns.mountPoints.count == 7 && same(ns.mountPoints[0], "/bin") && same(ns.mountPoints[1], "/dev")
+    check(ns.mountPoints.count == 8 && same(ns.mountPoints[0], "/bin") && same(ns.mountPoints[1], "/dev")
             && same(ns.mountPoints[2], "/env") && same(ns.mountPoints[3], "/lib/man")
             && same(ns.mountPoints[4], "/mnt/console") && same(ns.mountPoints[5], "/mnt/plumb")
-            && same(ns.mountPoints[6], "/svc"),
-          "the namespace is /bin, /dev, /env, /lib/man, /mnt/console, /mnt/plumb and /svc")
+            && same(ns.mountPoints[6], "/proc") && same(ns.mountPoints[7], "/svc"),
+          "the namespace is /bin, /dev, /env, /lib/man, /mnt/console, /mnt/plumb, /proc and /svc")
     environment(ns)
 
     // devmgr first: its status is still growing until it has bound.
@@ -656,6 +656,7 @@ func runPty(_ ns: Namespace) {
     check(readText(ns, "/svc/a/status").map { same($0, "a first\n") } ?? false, "the new a, by the same path")
     check(readText(ns, "/svc/b/peer").map { same($0, "a first\n") } ?? false, "and through b")
 
+    procs(ns)
     servicesMemory(ns)
     print("launch-test: \(checks - failures) of \(checks) checks passed")
     Process.exit(code: failures == 0 ? 0 : 1)
@@ -693,4 +694,45 @@ func decimal(_ bytes: [UInt8]) -> UInt64? {
     n = n * 10 + UInt64(b - 0x30)
   }
   return n
+}
+
+/// /proc (D79): a directory for each process under the launcher's job,
+/// with Plan 9's status line; a note posted through it kills a process
+/// that doesn't take notes (D87), which the launcher then restarts.
+func procs(_ ns: Namespace) {
+  let names = ((try? ns.list("/proc")) ?? []).map { $0.name }
+  check(names.count >= 8, "/proc lists the services' processes")
+  /// The koid of the process whose status starts with `service` and a blank.
+  func koid(_ service: String) -> String? {
+    let prefix = Array(service.utf8) + [0x20]
+    for n in ((try? ns.list("/proc")) ?? []).map({ $0.name }) {
+      guard let status = readText(ns, "/proc/" + n + "/status") else { continue }
+      if Array(status.utf8.prefix(prefix.count)) == prefix && hasWord(status, "Running") { return n }
+    }
+    return nil
+  }
+  guard let a = koid("a") else { return check(false, "/proc has a's status") }
+  let status = readText(ns, "/proc/" + a + "/status") ?? ""
+  print("launch-test: /proc/\(a)/status: \(status)")
+  check(status.utf8.count == 27 + 1 + 27 + 1 + 11 + 9 * 12 + 1, "its status is Plan 9's line")
+  check(readText(ns, "/proc/" + a + "/args").map { same($0, "a") } ?? false, "its args")
+  if var note = try? ns.open("/proc/" + a + "/note") {
+    check((try? note.writeText("interrupt\n")) != nil, "a note posted through /proc")
+  } else {
+    check(false, "a note posted through /proc")
+  }
+  var restarted = false
+  let deadline = Clock.monotonic() + 5_000_000_000
+  while !restarted && Clock.monotonic() < deadline {
+    restarted = hasLine(readText(ns, "/svc/launcher/status") ?? "", "a running restarts 2")
+    if !restarted { sleep(until: Clock.monotonic() + 10_000_000) }
+  }
+  check(restarted, "kills it, and a restarts")
+  check(readText(ns, "/proc/" + a + "/status") == nil, "its directory goes with it")
+}
+
+/// Whether `text` holds `word` between blanks.
+func hasWord(_ text: String, _ word: String) -> Bool {
+  let w = Array(word.utf8)
+  return text.utf8.split(separator: 0x20).contains { Array($0) == w }
 }

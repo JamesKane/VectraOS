@@ -141,6 +141,9 @@ let ipc: [Target] = [
   // kbdfs (D83): the keyboard and the console, after 9front's.
   .target(name: "Kbdfs", path: "services/kbdfs/lib", swiftSettings: tier0),
   .testTarget(name: "KbdfsTests", dependencies: ["Kbdfs"], path: "services/kbdfs/tests"),
+  // /proc (V3, D79): a directory a process, notes posted through it (D87).
+  .target(name: "Proc", dependencies: ["Node", "IPC"], path: "services/proc/lib", swiftSettings: tier0),
+  .testTarget(name: "ProcTests", dependencies: ["Proc", "Node", "IPC"], path: "services/proc/tests"),
   // The console (V2 item 8): its text grid and renderer, and fontgen,
   // which writes its font from data/fonts/spleen (third-party data, D4's
   // data not code).

@@ -45,7 +45,7 @@ struct JobObject: ~Copyable {
 
     static var defaultRights: Rights {
         .basic | .read | .write | .getProperty | .setProperty | .getPolicy | .setPolicy | .enumerate | .destroy | .signal
-            | .manageJob | .manageProcess | .manageThread
+            | .manageJob | .manageProcess | .manageThread | .note  // D87: passed to its processes' handles
     }
 }
 

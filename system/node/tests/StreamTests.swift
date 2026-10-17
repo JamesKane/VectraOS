@@ -154,3 +154,32 @@ final class Fanout: @unchecked Sendable {
   _ = consume a
   #expect(soon { fan.closes.load(ordering: .relaxed) == 1 })
 }
+
+/// A directory whose entries come and go (/proc's): its refresh runs
+/// before a walk passes through it, and before a listing of it, so both
+/// see what is there now; a refresh under it runs too.
+@Test func aRefreshingDirectoryIsCurrentForWalksAndListings() throws {
+  let service = try Service()
+  let tree = service.tree
+  let live = Locked<[String]>(["1"])
+  tree.refresh("") {
+    let want = live.withLock { $0 }
+    for name in want where tree.node(name) == nil {
+      tree.directory(name)
+      tree.text(name + "/status", read: { name + "\n" })
+    }
+    for child in ["1", "2", "3"] where !want.contains(child) {
+      if let n = tree.node(child) { tree.remove(n) }
+    }
+  }
+  service.start()
+  defer { service.stop() }
+  var root = try service.connect()
+  #expect(try root.readText("1/status") == "1\n")
+  live.withLock { $0 = ["2", "3"] }
+  #expect(try root.readText("2/status") == "2\n")  // made by the walk
+  #expect(throws: (any Error).self) { _ = try root.readText("1/status") }  // gone
+  live.withLock { $0 = ["3"] }
+  let names = try root.readdir(cursor: 0, max: 64).entries.map { $0.name }
+  #expect(names == ["3"])
+}

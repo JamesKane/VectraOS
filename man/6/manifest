@@ -46,6 +46,8 @@ Anything wrong stops the launch with the file and the line; nothing is skipped.
   One kind of hardware: `mmio`, `irq`, `ioport`, `smc` or `system`, a range of the launcher's own root resource of that kind.
 : `programs`
   bootfs with a job, to start programs from.
+: `jobs`
+  The launcher's own job, which holds every service and what each starts, to see and act on them: proc(4)'s.
 : `bootdata`
   The firmware's boot data: the RSDP, the framebuffer, the memory map.
 : `debuglog`

@@ -1,0 +1,71 @@
+page proc 4
+summary running processes and their notes
+names proc
+src services/proc/Main.swift services/proc/lib/Proc.swift
+keys process status note kill ps
+
+# SYNOPSIS
+
+```text
+/proc/<pid>/status
+/proc/<pid>/args
+/proc/<pid>/ctl
+/proc/<pid>/note
+/proc/<pid>/notepg
+```
+
+# DESCRIPTION
+
+The proc service serves a directory for each process under the job its manifest grants with `jobs` (manifest(6)): the launcher's, which holds every service and everything each one starts.
+A directory is named by the process's koid, its pid here, and the tree is brought up to date as it is walked or listed, so a process that has ended is gone from it.
+Manifests mount it at `/proc`.
+
+Each process's directory holds:
+
+: `status`
+  One line, as Plan 9's: the process's name, its user and its state, padded to 27, 27 and 11 columns, then nine numbers of 11: milliseconds in user mode, in the system and in real time, the same three for its children, its memory in KiB, and its base and current priority.
+  The state is `New` before it starts, `Running` while it runs.
+  The memory is what the process alone holds plus its share of what it shares.
+: `args`
+  Its name.
+: `ctl`
+  Takes `kill`, which ends the process.
+: `note`
+  A note written here is posted to the process (note(2)): a process that takes its notes gets it, and one that doesn't dies of it.
+  A trailing newline is dropped, so `echo interrupt` posts `interrupt`.
+: `notepg`
+  A note written here is posted to the process's note group: every process in its job and in the jobs under that.
+
+# EXAMPLES
+
+Interrupt process 5636:
+
+```rc
+echo interrupt >/proc/5636/note
+```
+
+# FILES
+
+: `/proc/<pid>/status`
+  The process's status line.
+: `/proc/<pid>/args`
+  Its name.
+: `/proc/<pid>/ctl`
+  Commands: `kill`.
+: `/proc/<pid>/note`
+  Notes for the process.
+: `/proc/<pid>/notepg`
+  Notes for its note group.
+
+# SEE ALSO
+
+note(2), manifest(6), intro(4)
+
+# DIAGNOSTICS
+
+A write to `note` fails when five notes already wait, or the process has ended; a write to `ctl` fails for any command but `kill`.
+
+# BUGS
+
+Plan 9's `ns`, `fd`, `wait`, `mem` and `regs` aren't served, and `ctl` takes neither `stop` nor `start`: a process's namespace and descriptors live in the process, and the kernel keeps neither its children nor its start time, so real time reads 0, as do system time and the priorities.
+`args` is the name alone, for the same reason.

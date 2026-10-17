@@ -649,3 +649,6 @@ without `notify` stores itself as `diedOf` and kills the process with
 A blocked call is not interrupted. Tests: `user/test/swift/NoteSuite.swift`
 (the queue, its limit and order, the signal, refusals, and the kill of a
 child held at its start by a job debugger).
+A job's default rights carry `CROI_RIGHT_NOTE` too, so the holder of a
+job reaches its processes with it through `object_get_child` (the proc
+service, by the launcher's job).

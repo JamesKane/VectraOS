@@ -424,6 +424,11 @@ public final class Launcher: @unchecked Sendable {
         throw m.error(m.programsLine, "can't make a job: \(error.rawValue)")
       }
     }
+    // `jobs`: the launcher's own job, every service's and what each starts
+    // under it (proc's, D79), as argument 1 of PA_JOB_DEFAULT.
+    if m.jobsLine != 0 {
+      startup.add(raw: try duplicate(job.raw, m.jobsLine), info: HandleType.info(HandleType.jobDefault, 1))
+    }
     // The UTC page: to read, and with `clock`, to write.
     let utc = locked { utcPage }
     if utc != 0 {

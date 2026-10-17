@@ -21,7 +21,7 @@ public enum Note {
 # DESCRIPTION
 
 A note is a short text posted to a process, as in Plan 9: `interrupt` when the terminal's interrupt key is typed, `hangup` when its connection goes, `kill`.
-Notes are posted through `/proc`, whose service holds the process handles (D79); a program writes to `/proc/<pid>/note` and rarely calls `post` itself.
+Notes are posted through proc(4), whose service holds the process handles; a program writes to `/proc/<pid>/note` and rarely calls `post` itself.
 
 A process that hasn't called `notify` dies of the first note posted to it, with the note as its exit string.
 One that has gets each note in its handler, oldest first, on a thread `notify` starts; if the handler returns false, the process ends with that note as its exit string, as it would have without one.
@@ -51,7 +51,7 @@ try Note.notify { note in
 
 # SEE ALSO
 
-rc(1), intro(2)
+proc(4), rc(1), intro(2)
 
 # BUGS
 

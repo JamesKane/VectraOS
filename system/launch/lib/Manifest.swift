@@ -17,6 +17,7 @@
 //     early                   # started before every service not marked early
 //     resource mmio           # a kind of hardware: mmio, irq, ioport, smc or system
 //     programs                # it starts programs from bootfs, in a job under its own
+//     jobs                    # the launcher's job, holding every service and what each starts (proc's, D79)
 //     bootdata                # firmware's boot data (croi's ZBI items: RSDP, framebuffer, memory)
 //     debuglog                # the debuglog's ring and its doorbell, to read (D38; the console's)
 //     libraries               # it loads shared objects (dlopen) from bootfs's lib/ (M5k)
@@ -93,6 +94,8 @@ public struct Manifest: Sendable {
   public var resources: [(kind: ResourceKind, line: Int)] = []
   /// `programs`: its line, or 0.
   public var programsLine = 0
+  /// `jobs`: its line, or 0.
+  public var jobsLine = 0
   /// `libraries`: its line, or 0.
   public var librariesLine = 0
   /// `bootfs`: its line, or 0.
@@ -116,7 +119,7 @@ public struct Manifest: Sendable {
   /// The directives a manifest takes (manifest(6)).
   public static let directives: [StaticString] = [
     "service", "program", "arg", "env", "export", "use", "mount", "srv", "restart", "resource", "programs",
-    "bootdata", "debuglog", "libraries", "bootfs", "launcher", "clock", "early",
+    "bootdata", "debuglog", "libraries", "bootfs", "launcher", "clock", "early", "jobs",
   ]
 
   public init(file: String, text: String) throws(LaunchError) {
@@ -216,6 +219,9 @@ public struct Manifest: Sendable {
       } else if `is`(directive, "programs") {
         try count(0...0)
         programsLine = lineNumber
+      } else if `is`(directive, "jobs") {
+        try count(0...0)
+        jobsLine = lineNumber
       } else if `is`(directive, "bootdata") {
         try count(0...0)
         bootDataLine = lineNumber

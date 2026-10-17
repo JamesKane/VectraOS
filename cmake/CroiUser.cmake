@@ -381,6 +381,8 @@ function(croi_user_sys)
   file(GLOB_RECURSE _console CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/services/console/lib/*.swift)
   # The plumber's rules and ports (services/plumber/lib, D85).
   file(GLOB _plumber CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/services/plumber/lib/*.swift)
+  # /proc's files (services/proc/lib, D79).
+  file(GLOB _proc CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/services/proc/lib/*.swift)
   file(GLOB _headers ${CROI_FLOOR_DIR}/include/* ${PROJECT_SOURCE_DIR}/user/include/croi/*.h
        ${PROJECT_SOURCE_DIR}/kernel/include/*.h)
   add_custom_command(OUTPUT ${_dir}/libsys.a
@@ -433,13 +435,15 @@ function(croi_user_sys)
             -c ${_console} -o ${_dir}/console.o
     COMMAND ${_swiftc} -module-name Plumber -emit-module -emit-module-path ${_dir}/Plumber.swiftmodule
             -c ${_plumber} -o ${_dir}/plumber.o
+    COMMAND ${_swiftc} -module-name Proc -emit-module -emit-module-path ${_dir}/Proc.swiftmodule
+            -c ${_proc} -o ${_dir}/proc.o
     COMMAND ${CMAKE_COMMAND} -E rm -f ${_dir}/libsys.a
     COMMAND ${CMAKE_AR} rcs ${_dir}/libsys.a ${_dir}/sysabi.o ${_dir}/loader.o ${_dir}/sys.o ${_dir}/libsys.o ${_dir}/ld.o
             ${_dir}/ring.o ${_dir}/traceformat.o ${_dir}/trace.o ${_dir}/tracesession.o
             ${_dir}/ipcwire.o ${_dir}/ipc.o ${_dir}/node.o ${_dir}/directives.o ${_dir}/guide.o ${_dir}/launch.o ${_dir}/acpi.o ${_dir}/pci.o
-            ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o ${_dir}/kbdfs.o ${_dir}/console.o ${_dir}/plumber.o
+            ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o ${_dir}/kbdfs.o ${_dir}/console.o ${_dir}/plumber.o ${_dir}/proc.o
     DEPENDS ${_abi} ${_loader} ${_api} ${_lib} ${_ld} ${_ring} ${_trace_format} ${_trace_writer} ${_trace_session} ${_ipc_wire}
-            ${_ipc} ${_node} ${_directives} ${_guide} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr} ${_virtio} ${_input} ${_kbdfs} ${_console} ${_plumber}
+            ${_ipc} ${_node} ${_directives} ${_guide} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr} ${_virtio} ${_input} ${_kbdfs} ${_console} ${_plumber} ${_proc}
             ${_headers} vx ${CROI_IPC_PLUGIN}
     COMMENT "Building Sys")
   set(CROI_USER_SYS_DIR ${_dir} PARENT_SCOPE)

@@ -60,6 +60,10 @@ public final class TreeNode: @unchecked Sendable {
   /// the newest one dropped from it.
   var log: [NodeIPC.Change] = []
   var lostThrough: UInt64 = 0
+  /// A directory whose entries come and go (/proc's): run, outside the
+  /// tree's lock, before a walk passes through it and before a listing
+  /// of it starts, to bring its children up to date.
+  var refresh: (@Sendable () -> Void)?
 
   init(name: String, path: UInt64, content: Content) {
     self.name = name
@@ -243,6 +247,15 @@ public final class NodeTree: @unchecked Sendable {
     let node = place(path, .directory(allowsCreate: allowsCreate))
     locked { if case .directory = node.content { node.content = .directory(allowsCreate: allowsCreate) } }
     return node
+  }
+
+  /// Runs `body` before each walk through, and each listing of, the
+  /// directory at `path` ("" for the root), whose entries come and go:
+  /// `body` adds and removes them. The strong capture is the tree's for
+  /// good (no weak references in tier 0).
+  public func refresh(_ path: String, _ body: @escaping @Sendable () -> Void) {
+    let node = path.isEmpty ? root : directory(path)
+    locked { node.refresh = body }
   }
 
   /// A file holding `bytes`.
@@ -510,6 +523,27 @@ struct Session: NodeIPC.NodeHandler {
   func walk(_ names: [String], from start: TreeNode) throws(NodeError) -> ([NodeIPC.Qid], TreeNode, [String]) {
     guard names.count <= NodeIPC.maxWalk else { throw .tooManyNames }
     guard names.allSatisfy({ NodeIPC.same($0, "..") || NodeIPC.isValidName($0) }) else { throw .badName }
+    // The directories it passes through that refresh, brought up to date
+    // first (each before what it holds is looked at).
+    var hooks: [@Sendable () -> Void] = []
+    var known: [TreeNode] = []
+    repeat {
+      hooks = []
+      tree.locked {
+        var at: TreeNode? = start
+        for name in [""] + names {
+          guard let node = at, !node.detached else { break }
+          if !name.isEmpty { at = NodeIPC.same(name, "..") ? node.parent : node.child(name) }
+          if !name.isEmpty, at == nil { break }
+          if let n = name.isEmpty ? node : at, let r = n.refresh, !known.contains(where: { $0 === n }) {
+            known.append(n)
+            hooks.append(r)
+            break  // what's past it may change
+          }
+        }
+      }
+      for h in hooks { h() }
+    } while !hooks.isEmpty
     return try tree.locked { () throws(NodeError) -> ([NodeIPC.Qid], TreeNode, [String]) in
       var at = try live(start)
       var qids: [NodeIPC.Qid] = []
@@ -585,7 +619,9 @@ struct Session: NodeIPC.NodeHandler {
   }
 
   func readdir(_ node: TreeNode, cursor: UInt64, max: UInt32, fields: UInt32) throws(NodeError) -> NodeIPC.DirBatch {
-    try tree.locked { () throws(NodeError) in
+    // A listing's first page sees the directory brought up to date.
+    if cursor == 0, let refresh = tree.locked({ node.refresh }) { refresh() }
+    return try tree.locked { () throws(NodeError) in
       let at = try live(node)
       guard at.kind == .directory else { throw .notDirectory }
       var entries: [NodeIPC.Stat] = []
