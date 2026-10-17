@@ -1,4 +1,4 @@
-# D86. The system is documented by its manual: Plan 9's sections, NeoVectra's guide format, headers as directives (2026-10-16, proposed)
+# D86. The system is documented by its manual: Plan 9's sections, NeoVectra's guide format, headers as directives (2026-10-17, proposed)
 
 VectraOS has no manual. What a program, call, service or format does is
 in its code, in its decision and in `docs/`, which say why and what was
