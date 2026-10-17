@@ -208,6 +208,19 @@ private func compare(_ ref: String, runs: Int, loadBefore: Double) -> Bool {
     makeDirectory("\(out)/compare")
     guard step("compare-worktree", ["git", "worktree", "add", "--detach", tree, sha]) else { return false }
   }
+  // This tree's SwiftPM configuration (its swift-syntax mirror), which git
+  // doesn't track: without it, the worktree's build clones from GitHub, and
+  // offline it waits for good.
+  let config = ".swiftpm/configuration"
+  if FileManager.default.fileExists(atPath: config) {
+    makeDirectory("\(tree)/.swiftpm")
+    try? FileManager.default.removeItem(atPath: "\(tree)/\(config)")
+    do {
+      try FileManager.default.copyItem(atPath: config, toPath: "\(tree)/\(config)")
+    } catch {
+      fail("can't copy \(config) to \(tree): \(error)")
+    }
+  }
   say("vx bench: building \(sha) in \(tree)")
   if !FileManager.default.fileExists(atPath: "\(tree)/build/amd64/build.ninja") {
     guard step("compare-\(sha)-configure", ["cmake", "-S", tree, "--preset", "amd64"]) else { return false }
