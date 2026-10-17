@@ -88,6 +88,15 @@ public protocol RcSystem: AnyObject {
   /// itself (n), or empty (N, `clean`), and sealed (m: nothing mounted
   /// from elsewhere, its programs' too); whether it could.
   func forkNamespace(clean: Bool, seal: Bool) -> Bool
+  /// The environment as files (D81), where the system keeps it so: each
+  /// file of /env, its name and what it holds. Nil where it doesn't
+  /// (Linux), and rc gives its programs strings (Environment.swift).
+  func environmentFiles() -> [(name: String, bytes: [UInt8])]?
+  /// Writes /env's `name` (created if need be, cut to `bytes`).
+  func setEnvironmentFile(_ name: String, _ bytes: [UInt8])
+  /// `rfork e`: rc's environment group from now on a copy of itself, or
+  /// (E, `clean`) a new empty one; whether it could.
+  func forkEnvironment(clean: Bool) -> Bool
 }
 
 extension RcSystem {
@@ -99,6 +108,9 @@ extension RcSystem {
   public func forkNamespace(clean: Bool, seal: Bool) -> Bool { !clean && !seal }
   public func spawn(_ body: @escaping @Sendable () -> String) -> RcJob? { nil }
   public func descriptor(_ s: RcStream) -> (fd: Int32, path: String)? { nil }
+  public func environmentFiles() -> [(name: String, bytes: [UInt8])]? { nil }
+  public func setEnvironmentFile(_ name: String, _ bytes: [UInt8]) {}
+  public func forkEnvironment(clean: Bool) -> Bool { false }
 
   /// Whether `path` names something: its directory's listing holds its
   /// last name (globbing keeps a path ending in literal names only so).
@@ -208,9 +220,11 @@ public final class Rc {
   /// and its command's job. The command they're words of takes them.
   var pendingPipes: [(fd: Int32, stream: RcStream, job: RcJob)] = []
   /// The environment last given to a program (or taken at start), and what
-  /// `rfork E` hid of it (Environment.swift).
+  /// `rfork E` hid of it where there are no files (Environment.swift).
   var published: (variables: [String: [String]], functions: [String: Command]) = ([:], [:])
   var hidden: (variables: [String: [String]], functions: [String: Command]) = ([:], [:])
+  /// Whether the environment is /env's files (D81).
+  var environmentInFiles = false
   /// The descriptors of the commands being run, outermost first, and the
   /// streams `rfork F` took away: no command sees them again.
   var scopes: [[Int32: RcStream]] = []
@@ -308,6 +322,7 @@ public final class Rc {
     let child = Rc(system: system.fork())
     (child.variables, child.functions, child.ifNotPending, child.flags) = (variables, functions, ifNotPending, flags)
     (child.published, child.hidden, child.revoked) = (published, hidden, revoked)
+    child.environmentInFiles = environmentInFiles
     (child.inCondition, child.eflag, child.definedUnderE) = (inCondition, eflag, definedUnderE)
     child.forked = 1
     return child
@@ -1242,10 +1257,12 @@ public final class Rc {
       throw RcExit(status: rc.status)
     },
     // rfork [nNeEsfFm] (9front's execrfork; none: ens). The namespace is
-    // the system's: n a copy, N an empty one, m sealed. The environment
-    // and descriptors are rc's, and each program it starts gets a copy of
-    // both, shared with no one: e and f are always so. E hides what's set
-    // already, F takes away every descriptor. s waits for notes.
+    // the system's: n a copy, N an empty one, m sealed. So is the
+    // environment group, where it is /env's files (D81): e a copy, E an
+    // empty one; with strings, each program rc starts gets a copy shared
+    // with no one, so e is always so, and E hides what's set already. The
+    // descriptors are rc's, each program given a copy: f is always so, F
+    // takes away every descriptor. s waits for notes.
     "rfork": { rc, argv, fds in
       let letters = argv.count == 1 ? "ens" : argv.count == 2 ? argv[1] : nil
       guard let letters, letters.allSatisfy({ "nNeEsfFm".contains($0) }) else {
@@ -1257,7 +1274,14 @@ public final class Rc {
         fds[2]?.write(Array("rc: rfork failed\n".utf8))
         return rc.setStatus("rfork failed")
       }
-      if letters.contains("E") { rc.hideEnvironment() }
+      let cleanEnvironment = letters.contains("E")
+      if rc.environmentInFiles, cleanEnvironment || letters.contains("e"),
+        !rc.system.forkEnvironment(clean: cleanEnvironment)
+      {
+        fds[2]?.write(Array("rc: rfork failed\n".utf8))
+        return rc.setStatus("rfork failed")
+      }
+      if !rc.environmentInFiles, cleanEnvironment { rc.hideEnvironment() }
       if letters.contains("F") { rc.revokeDescriptors(fds) }
       rc.setStatus("")
     },

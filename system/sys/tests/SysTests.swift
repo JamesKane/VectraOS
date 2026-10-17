@@ -729,7 +729,7 @@ enum DispatchlessParallel {
   let job = try Job.create(parent: root)
   let process = try Process.create(job: job, name: "given")
   let ends = try Channel.create(), counter = try Counter.create()
-  let startup = Startup(args: ["given", "x"], environment: ["A=1", "B=two"], names: ["/svc"])
+  let startup = Startup(args: ["given", "x"], names: ["/svc"])
   startup.add(ends.b, info: HandleType.info(HandleType.user0))
   try Counter.add(counter, 5)
   startup.add(try counter.duplicate(), info: HandleType.info(0x20, 0))
@@ -737,7 +737,7 @@ enum DispatchlessParallel {
     let report = s.take(HandleType.info(HandleType.user0))!
     var counted: Int64 = -2
     if let c = s.take(HandleType.info(0x20, 0)) { counted = (try? Counter.read(c)) ?? -1 }
-    let ok = s.args == ["given", "x"] && s.value("B") == "two" && s.value("C") == nil && s.names == ["/svc"]
+    let ok = s.args == ["given", "x"] && s.names == ["/svc"]
       && s.infos.isEmpty
     try? Channel.write(report, bytes: [ok ? 1 : 0, UInt8(truncatingIfNeeded: counted)])
   }, startup)

@@ -81,11 +81,11 @@ func launchError(_ files: [(String, String)]) -> String {
   ])
   #expect(try read(l, "a", "status") == "a hello there\n")
   #expect(try read(l, "b", "peer") == "a hello there\n")
-  #expect(try read(l, "b", "ns") == "/svc\n")
+  #expect(try read(l, "b", "ns") == "/env /svc\n")
   #expect(try read(l, "b", "svc") == "a\n")  // only what it uses
-  #expect(try read(l, "c", "ns") == "\n")
+  #expect(try read(l, "c", "ns") == "/env\n")
   #expect(try read(l, "d", "peer") == "a hello there\n")
-  #expect(try read(l, "d", "ns") == "/data\n")
+  #expect(try read(l, "d", "ns") == "/data /env\n")
   #expect(l.status == "a running restarts 0\nb running restarts 0\nc running restarts 0\nd running restarts 0\n")
 }
 
@@ -98,7 +98,7 @@ func launchError(_ files: [(String, String)]) -> String {
     ("u.m", "service u\nprogram tree\nexport\nmount /u a\nmount /u b before\narg /u/status\n"),
   ])
   #expect(try read(l, "u", "peer") == "b from-b\n")  // b's, mounted before a's
-  #expect(try read(l, "u", "ns") == "/u\n")
+  #expect(try read(l, "u", "ns") == "/env /u\n")
 }
 
 @Test func aRestartedServiceIsReachedAgainThroughSvc() throws {
@@ -188,7 +188,7 @@ func launchError(_ files: [(String, String)]) -> String {
   var ctl = try p.open("ctl")
   try ctl.writeText("post editor")
   #expect(try read(l, "q", "peer") == "p\n")
-  #expect(try read(l, "q", "ns") == "/srv\n")
+  #expect(try read(l, "q", "ns") == "/env /srv\n")
 }
 
 /// `resource`, `programs` and `bootdata` (M3g) grant only what the
@@ -234,4 +234,26 @@ func launchError(_ files: [(String, String)]) -> String {
   defer { bare.stop() }
   try bare.start([("a.m", "service a\nprogram tree\nexport\n")])
   #expect(try read(bare, "a", "utc") == "\n")
+}
+
+/// The environment (D81): each service's /env from its manifest's `env`
+/// lines, a group of its own; `use env`'s /svc/env/new makes another, and
+/// a group goes when its last channel closes; `env` is the launcher's.
+@Test func everyServiceHasItsOwnEnvironment() throws {
+  let l = try launcher()
+  defer { l.stop() }
+  try l.start([
+    ("a.m", "service a\nprogram tree\nexport\nenv GREETING=hello\n"),
+    ("b.m", "service b\nprogram tree\nexport\nuse env\n"),
+  ])
+  #expect(try read(l, "a", "env") == "hello\n")
+  #expect(try read(l, "b", "env") == "none\n")  // its own group, not a's
+  #expect(try read(l, "b", "newenv") == "one|two|\n")
+  #expect(try read(l, "a", "newenv") == "no /svc/env\n")  // not granted
+  // Each service's group, and the one newenv made has gone with its channels.
+  let deadline = Clock.monotonic() + 2_000_000_000
+  while l.env.count != 2 && Clock.monotonic() < deadline { sleep(until: Clock.monotonic() + 5_000_000) }
+  #expect(l.env.count == 2)
+  #expect(launchError([("e.m", "service env\nprogram tree\n")]) == "e.m:1: 'env' is the launcher's, not a service")
+  #expect(launchError([("f.m", "service f\nprogram tree\nmount /e env\n")]) == "f.m:3: env is granted with `use env`")
 }

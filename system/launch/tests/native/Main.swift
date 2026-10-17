@@ -137,6 +137,15 @@ func plumbing(_ ns: Namespace) {
   #endif
 }
 
+/// Its /env (D81): a group of its own, its manifest's `env` lines in it,
+/// each a list of one word ended by a NUL; written and read back.
+func environment(_ ns: Namespace) {
+  check(ns.environment("LAUNCH_TEST").map { $0.count == 1 && same($0[0], "yes") } ?? false,
+        "its /env holds its manifest's env lines")
+  try? ns.setEnvironment("words", Array("a\u{0}b c\u{0}".utf8))
+  check(ns.getenv("words").map { same($0, "a b c") } ?? false, "a variable written to /env reads back")
+}
+
 /// The console (V2 item 8): the log on the framebuffer. A line logged here
 /// shows on its screen soon after (its title has scrolled off by then).
 func console(_ ns: Namespace) {
@@ -222,7 +231,8 @@ func lastNumber(_ text: String) -> Int64? {
 }
 
 /// rc from /bin, given this process's /svc and /bin (its programs, the
-/// bootfs service's: D71), a job, and stdio: `script` run by `rc -c`,
+/// bootfs service's: D71), an environment group of its own (D81), a job,
+/// and stdio: `script` run by `rc -c`,
 /// which must write `expected` and exit 0.
 func rcRuns(_ rc: ProgramEntry, _ script: String, _ expected: [UInt8], _ ns: Namespace, job: borrowing Handle,
             _ name: StaticString) {
@@ -231,6 +241,8 @@ func rcRuns(_ rc: ProgramEntry, _ script: String, _ expected: [UInt8], _ ns: Nam
     guard let svc = try? ns.connect("/svc"), let bin = try? ns.connect("/bin") else { return check(false, name) }
     startup.mount(svc, at: "/svc")
     startup.mount(bin, at: "/bin")
+    guard let env = try? ns.connect("/svc/env/new") else { return check(false, name) }
+    startup.mount(env, at: "/env")  // a group of its own (D81)
     startup.add(try Job.create(parent: job), info: HandleType.info(HandleType.jobDefault))
     // stdin, stdout, and a stderr of its own (D46: a ring per descriptor).
     let stdio = try ChildStdio(for: startup, descriptors: [(0, true), (1, false), (2, false)])
@@ -271,6 +283,7 @@ func rcOnPty(_ rc: ProgramEntry, _ ns: Namespace, job: borrowing Handle) {
       }
       startup.mount(svc, at: "/svc")
       startup.mount(bin, at: "/bin")
+      if let env = try? ns.connect("/svc/env/new") { startup.mount(env, at: "/env") }
       startup.add(try Job.create(parent: job), info: HandleType.info(HandleType.jobDefault))
       try dev.client().take {
         (i: consuming PtyIPC.Descriptor, o: consuming PtyIPC.Descriptor, e: consuming PtyIPC.Descriptor,
@@ -410,6 +423,10 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
          job: job, "rc's rfork n and N")
   rcRuns(rc, "x=1; rc -c 'echo $x'; rfork E; rc -c 'echo $#x'; x=2; rc -c 'echo $x'; echo a; {rfork F; echo b}; echo c; exit ''",
          Array("1\n0\n2\na\n".utf8), ns, job: job, "rc's rfork E and F")
+  // rfork e: a copy of the group, what's in it kept; a child's changes
+  // reach rc's group, which it shares (D81).
+  rcRuns(rc, "x=1; rfork e; rc -c 'echo $x; y=2; rc -c true'; cat /env/y", Array("1\n2\0".utf8), ns, job: job,
+         "rc's rfork e, and the group its programs share")
   rcOnPty(rc, ns, job: job)
   _ = consume memory  // rc is started from it until here
 }
@@ -498,9 +515,11 @@ func runPty(_ ns: Namespace) {
       print("launch-test: FAILED: no namespace")
       Process.exit(code: 1)
     }
-    check(ns.mountPoints.count == 5 && same(ns.mountPoints[0], "/bin") && same(ns.mountPoints[1], "/dev")
-            && same(ns.mountPoints[2], "/mnt/console") && same(ns.mountPoints[3], "/mnt/plumb")
-            && same(ns.mountPoints[4], "/svc"), "the namespace is /bin, /dev, /mnt/console, /mnt/plumb and /svc")
+    check(ns.mountPoints.count == 6 && same(ns.mountPoints[0], "/bin") && same(ns.mountPoints[1], "/dev")
+            && same(ns.mountPoints[2], "/env") && same(ns.mountPoints[3], "/mnt/console")
+            && same(ns.mountPoints[4], "/mnt/plumb") && same(ns.mountPoints[5], "/svc"),
+          "the namespace is /bin, /dev, /env, /mnt/console, /mnt/plumb and /svc")
+    environment(ns)
 
     // devmgr first: its status is still growing until it has bound.
     devices(ns)
@@ -510,15 +529,16 @@ func runPty(_ ns: Namespace) {
     // cat /svc/*/status
     let names = ((try? ns.list("/svc")) ?? []).map { $0.name }
     #if arch(x86_64)
-      let expected = 6  // and the time service
+      let expected = 7  // and the time service
     #else
-      let expected = 5
+      let expected = 6
     #endif
     check(names.count == expected && names.contains { same($0, "a") } && names.contains { same($0, "b") }
             && names.contains { same($0, "launcher") } && names.contains { same($0, "pty") }
-            && names.contains { same($0, "devmgr") },
+            && names.contains { same($0, "devmgr") } && names.contains { same($0, "env") },
           "/svc holds what the manifest uses")
-    for name in names {
+    // env is the launcher's groups (D81), with no status.
+    for name in names where !same(name, "env") {
       let status = readText(ns, "/svc/" + name + "/status")
       check(status != nil, "each /svc/*/status reads")
       if let status { print("launch-test: /svc/\(name)/status: \(status)") }

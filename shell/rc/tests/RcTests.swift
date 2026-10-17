@@ -89,6 +89,27 @@ final class Machine: RcSystem {
     return true
   }
 
+  /// /env's files (D81), when it has them: its group's directory in
+  /// `files`, a new one for each rfork e or E.
+  var envGroup: String? = nil
+  var groups = 0
+  func environmentFiles() -> [(name: String, bytes: [UInt8])]? {
+    guard let g = envGroup else { return nil }
+    return files.filter { $0.key.hasPrefix(g + "/") }.map { (String($0.key.dropFirst(g.count + 1)), $0.value) }
+      .sorted { $0.name < $1.name }
+  }
+  func setEnvironmentFile(_ name: String, _ bytes: [UInt8]) {
+    if let g = envGroup { files[g + "/" + name] = bytes }
+  }
+  func forkEnvironment(clean: Bool) -> Bool {
+    guard let g = envGroup else { return false }
+    groups += 1
+    let next = "/env\(groups)"
+    if !clean { for (p, b) in files where p.hasPrefix(g + "/") { files[next + p.dropFirst(g.count)] = b } }
+    envGroup = next
+    return true
+  }
+
   /// Notes sent to rc (by `notify NAME`), not yet taken.
   var notes: [String] = []
   func takeNotes() -> [String] {
@@ -347,4 +368,33 @@ func files(_ paths: [String]) -> Machine {
   shell.end()
   shell.end()
   #expect(out.text == "bye no match\n" && shell.status == "")
+}
+
+/// The environment as /env's files (D81), as Plan 9's rc keeps it: read at
+/// start (a list's words each ended by a NUL, functions from `fn#NAME`),
+/// what changed written before a program starts, and rfork's E an empty
+/// group that gets only what changes after, e a copy.
+@Test func theEnvironmentIsEnvsFiles() {
+  let m = Machine()
+  m.envGroup = "/env"
+  m.files["/env/list"] = Array("a\0b c\0\0".utf8)
+  m.files["/env/fn#f"] = Array("fn f {echo hi}\n".utf8)
+  m.files["/env/empty"] = []
+  let shell = Rc(system: m, arguments: [])
+  #expect(shell.takeEnvironmentFiles())
+  let out = MemoryStream(), err = MemoryStream()
+  let run = { (script: String) in shell.run(script, fds: [0: MemoryStream(), 1: out, 2: err]) }
+  run("echo $#list $list(2) $#empty; f; x=(1 2); fn g {echo}; list=(); false")
+  #expect(out.text == "3 b c 0\nhi\n" && err.text == "")
+  #expect(m.files["/env/x"] == Array("1\u{0}2\u{0}".utf8))
+  let whatis = rc("fn g {echo}; whatis g").out  // its text as whatis prints it
+  #expect(m.files["/env/fn#g"].map { String(decoding: $0, as: UTF8.self) } == whatis)
+  #expect(m.files["/env/list"] == [])  // emptied, never removed
+  #expect(m.files["/env/fn#f"] == Array("fn f {echo hi}\n".utf8))  // unchanged, not rewritten
+  run("rfork E; y=3; false")
+  #expect(m.envGroup == "/env1" && m.files["/env1/y"] == Array("3\u{0}".utf8) && m.files["/env1/x"] == nil)
+  run("rfork e; false")
+  #expect(m.envGroup == "/env2" && m.files["/env2/y"] == Array("3\u{0}".utf8))
+  // Where there are no files (Linux), strings.
+  #expect(!Rc(system: Machine(), arguments: []).takeEnvironmentFiles())
 }

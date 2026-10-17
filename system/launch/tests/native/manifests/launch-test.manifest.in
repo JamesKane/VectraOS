@@ -3,6 +3,7 @@
 # starts rc (tier 1: amd64 and arm64) to run `cat /svc/*/status`, and runs
 # it on a pty (`use pty`); /bin is the bootfs service's (D71).
 # /dev is kbdfs's, then devmgr's device directories (D82, D83).
+# Its /env from its `env` lines, and /svc/env for rc's groups (D81).
 # The console at /mnt/console, not /svc: its status changes as the log
 # grows, which `cat /svc/*/status` would race.
 service launch-test
@@ -11,6 +12,8 @@ use a
 use b
 use pty
 use devmgr
+use env
+env LAUNCH_TEST=yes
 mount /bin bootfs/bin
 mount /dev kbdfs
 mount /dev devmgr/dev after

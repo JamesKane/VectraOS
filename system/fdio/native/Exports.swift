@@ -9,6 +9,8 @@
 // this one); so is any above 2 it was started with, a ring of its own,
 // whose close writes its end.
 
+import Node
+import Sys
 import TDFloor
 import TDNative
 import VectraOSLibc
@@ -375,4 +377,31 @@ final class OpenDirectory {
   }
   unsafe Unmanaged<OpenDirectory>.fromOpaque(UnsafeRawPointer(dir)).release()
   return 0
+}
+
+
+/// getenv (C23 §7.24.4.6, open.c's) from the process's /env (D81), as
+/// Plan 9's getenv(2) reads it: a list's elements joined by blanks. Read on each
+/// call; the string stays the caller's until the next getenv of `name`.
+@c(td_fdio_getenv) public func fdioGetenv(_ name: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>? {
+  guard let name = unsafe name, let value = FDIO.namespace?.getenv(unsafe String(cString: name)) else { return nil }
+  let bytes = Array(value.utf8)
+  let copy = UnsafeMutablePointer<CChar>.allocate(capacity: bytes.count + 1)
+  for (i, b) in bytes.enumerated() { unsafe copy[i] = CChar(bitPattern: b) }
+  unsafe copy[bytes.count] = 0
+  let key = unsafe String(cString: name)
+  let old = Environment.lock.withLock { () -> UnsafeMutablePointer<CChar>? in
+    let i = unsafe Environment.given.firstIndex { $0.name.utf8.elementsEqual(key.utf8) }
+    let old = unsafe i.map { unsafe Environment.given.remove(at: $0).value }
+    unsafe Environment.given.append((key, copy))
+    return unsafe old
+  }
+  unsafe old?.deallocate()
+  return unsafe copy
+}
+
+/// What getenv gave, each name's last.
+enum Environment {
+  static let lock = Lock()
+  nonisolated(unsafe) static var given: [(name: String, value: UnsafeMutablePointer<CChar>)] = []
 }

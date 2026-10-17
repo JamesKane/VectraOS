@@ -79,7 +79,7 @@ final class Standard: RcStream {
     }
     let shell = Rc(system: system, arguments: a.rest)
     shell.take(a, name: argv.first ?? "rc")
-    shell.take(environment: Environment.strings)
+    shell.takeEnvironmentFiles()  // its /env (D81)
     shell.functions["sigexit"] = nil  // rcmain's `fn sigexit`: not one inherited
     // Plan 9's rcmain's, where the environment gave none.
     if (shell.variables["home"] ?? []).isEmpty { shell.variables["home"] = ["/"] }
@@ -98,11 +98,11 @@ final class Standard: RcStream {
     }
     // Lines from stdin: prompted when interactive (-i, or a terminal's,
     // `TERM` set, without -I), as rcmain has it.
-    let terminal = Environment.value("TERM") != nil
+    let terminal = shell.variables["TERM"] != nil
     let interactive = a.flags.contains("i") || ((terminal || Terminal.current != nil) && !a.flags.contains("I"))
     shell.interactive = interactive
     // A starting directory (M6l: Terminal opened here by Tracker's add-on).
-    if let d = Environment.value("PWD"), !d.isEmpty { _ = system.changeDirectory(d) }
+    if let d = shell.variables["PWD"]?.first, !d.isEmpty { _ = system.changeDirectory(d) }
     shell.variables["prompt"] = ["% ", "\t"]
     var pending: [UInt8] = []
     var text = ""

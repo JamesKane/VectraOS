@@ -180,11 +180,15 @@ function(croi_tier1 bootfs_var depends_var)
   set(_t1_link ${_t1_libs})
   list(REVERSE _t1_link)
   list(TRANSFORM _t1_link PREPEND -l)
+  # node-test-t1 links no FDIO: its getenv (D81) would pull in the rest,
+  # which needs the libc.
+  set(_t1_node_link ${_t1_link})
+  list(REMOVE_ITEM _t1_node_link -lFDIO)
   # node-test, as full Swift: what bin/node-test checks, on tier 1's
   # builds of Sys, IPC (its macro's code), Node and the rings.
   add_custom_command(OUTPUT ${_out}/node-test-t1
     COMMAND ${_swiftc} -parse-as-library -strict-memory-safety -enable-experimental-feature Lifetimes
-            -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -L ${_lib} ${_t1_link}
+            -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -L ${_lib} ${_t1_node_link}
             -load-plugin-executable "${CROI_IPC_PLUGIN}\#IPCMacros"
             ${PROJECT_SOURCE_DIR}/system/node/tests/native/Main.swift -o ${_out}/node-test-t1
     DEPENDS ${_t1_archives} ${PROJECT_SOURCE_DIR}/system/node/tests/native/Main.swift

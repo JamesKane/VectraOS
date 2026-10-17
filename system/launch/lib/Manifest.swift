@@ -6,10 +6,11 @@
 //     service fs              # first: the service's name
 //     program fs              # what runs (natively bootfs's bin/NAME; hosted, a registered program)
 //     arg --cache 64          # arguments, in order
-//     env NAME=value          # the process's environment
+//     env NAME=value          # a variable of its /env (D81)
 //     export                  # it serves a Node tree others may use
 //     use block               # granted at /svc/block
 //     use radharc-1 as display   # granted at /svc/display
+//     use env                 # /svc/env, the launcher's: its `new` makes an environment group
 //     mount /data fs/data/me after create   # PATH SERVICE[/SUB] [before|after] [create]
 //     srv                     # the session board, at /srv
 //     restart on-failure      # never (the default), on-failure or always
@@ -279,10 +280,16 @@ public func launchOrder(_ manifests: [Manifest], programs: [String]) throws(Laun
     if let other = manifests[..<i].first(where: { NodeIPC.same($0.service, m.service) }) {
       throw m.error(m.serviceLine, "service '\(m.service)' is also defined at \(other.file):\(other.serviceLine)")
     }
+    // env is the launcher's (D81): granted with `use env`, never a service.
+    if NodeIPC.same(m.service, "env") { throw m.error(m.serviceLine, "'env' is the launcher's, not a service") }
     guard programs.contains(where: { NodeIPC.same($0, m.program) }) else {
       throw m.error(m.programLine, "no program '\(m.program)'")
     }
     for g in m.grants {
+      if NodeIPC.same(g.service, "env") {
+        guard g.viaSvc else { throw m.error(g.line, "env is granted with `use env`") }
+        continue
+      }
       guard let target = named(g.service) else { throw m.error(g.line, "no service '\(g.service)'") }
       guard target.exports else { throw m.error(g.line, "service '\(g.service)' exports nothing") }
     }
@@ -294,7 +301,7 @@ public func launchOrder(_ manifests: [Manifest], programs: [String]) throws(Laun
       let cycle = (path[start...] + [m.service]).joined(separator: " → ")
       throw m.error(m.serviceLine, "services depend on each other: \(cycle)")
     }
-    for g in m.grants where !NodeIPC.same(g.service, m.service) {
+    for g in m.grants where !NodeIPC.same(g.service, m.service) && !NodeIPC.same(g.service, "env") {
       try visit(named(g.service)!, path + [m.service])
     }
     if m.grants.contains(where: { NodeIPC.same($0.service, m.service) }) {

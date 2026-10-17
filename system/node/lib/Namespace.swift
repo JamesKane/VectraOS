@@ -271,6 +271,56 @@ public final class Namespace: @unchecked Sendable {
     }
   }
 
+  /// Variable `name` of this namespace's /env (D81): its elements, each
+  /// stored followed by a NUL as Plan 9's rc stores them; nil if there is
+  /// none (or no /env).
+  public func environment(_ name: String) -> [String]? {
+    guard NodeIPC.isValidName(name), var c = try? open("/env/" + name), let bytes = try? c.readAll() else {
+      return nil
+    }
+    var elements: [String] = [], current: [UInt8] = []
+    for b in bytes {
+      if b == 0 {
+        elements.append(String(decoding: current, as: UTF8.self))
+        current = []
+      } else {
+        current.append(b)
+      }
+    }
+    if !current.isEmpty { elements.append(String(decoding: current, as: UTF8.self)) }
+    return elements
+  }
+
+  /// Variable `name` as Plan 9's getenv(2) gives it: its elements joined
+  /// by blanks.
+  public func getenv(_ name: String) -> String? { environment(name)?.joined(separator: " ") }
+
+  /// Sets /env's `name` (D81) to `bytes`, its whole contents: made if need
+  /// be, cut first if not.
+  public func setEnvironment(_ name: String, _ bytes: [UInt8]) throws(NamespaceError) {
+    guard NodeIPC.isValidName(name) else { throw .badPath }
+    var file: NodeIPC.NodeClient
+    var made = false
+    if let old = try? open("/env/" + name) {
+      file = old
+    } else {
+      var root = try open("/env")
+      do throws(NodeIPC.NodeClient.Failure) { file = try root.create(name, kind: .file) } catch { throw NamespaceError(error) }
+      made = true
+    }
+    do throws(NodeIPC.NodeClient.Failure) {
+      if !made { try file.wstat(NodeIPC.Wstat(size: 0)) }
+      var at = 0
+      while at < bytes.count {
+        let n = Swift.min(bytes.count - at, NodeIPC.maxIO)
+        _ = try file.write(offset: UInt64(at), Array(bytes[at..<at + n]))
+        at += n
+      }
+    } catch {
+      throw NamespaceError(error)
+    }
+  }
+
   /// The entries at `path`: the union's members' listings merged, the
   /// first member's entry winning a name, then mount points below it.
   public func list(_ path: String, fields: UInt32 = NodeIPC.Fields.all) throws(NamespaceError) -> [NodeIPC.Stat] {

@@ -32,7 +32,8 @@ int64_t td_utc_now(void) {
 }
 
 // C's environment (POSIX's environ): the floor's start points it at the
-// processargs message's strings (Start.swift).
+// processargs message's strings (Start.swift), the kernel's boot options
+// for the programs userboot starts and empty for the rest (D81).
 char **environ;
 
 // The program's initializers, which C, C++ and a full Swift runtime (its
@@ -164,3 +165,9 @@ void td_cpuid(uint32_t leaf, uint32_t sub, uint32_t *out) {
   (void)sub;
 #endif
 }
+
+// getenv (C23 §7.24.4.6) over environ: the kernel's boot options, for the
+// programs userboot starts (Start.swift's td_boot_getenv). Weak: a tier 1
+// program's fdio gives the getenv that reads its /env (D81).
+char *td_boot_getenv(const char *name);
+__attribute__((weak)) char *getenv(const char *name) { return td_boot_getenv(name); }

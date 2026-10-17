@@ -33,6 +33,7 @@ under `vx ci` and every budget it introduces has a running check
     virtio, virtio-input and kbdfs's /dev/kbd and /dev/cons (D83, D84),
     done; their budgets come at V2's exit).
   - Done: the console and the plumber (item 8, D85).
+  - Done: the environment as `/env` (item 6, D81).
   - Proposed: the manual (item 9, D86).
   - Exit: `cat /svc/*/status` run by rc passes (amd64, arm64). Still
     open: spawn → main < 200 µs, and the first recorded bench history.
@@ -390,12 +391,15 @@ work, in order:
      `sort`, `tail`, `tr`, `sleep`, `kill`, `ps`, `date`, `ns`, `bind`,
      `mount`. `ps`, `kill` and `ns` are Plan 9's, over `/proc` (V3, D79);
      `date` reads `/dev/time` (D79).
-   - **The environment as `/env` (D81):** an env service serves a tree
-     per environment group, the launcher hands it as a mount, and rc
-     stores variables as Plan 9's rc does (NUL-separated lists,
-     `/env/'fn#NAME'`), so `rfork e` and `E` make and copy groups; the
-     Startup's environment list and the Unix port's ^A encoding go on
-     the device (the oracle keeps them on Linux).
+   - **The environment as `/env` (D81), done (2026-10-16):** the launcher
+     serves a tree per environment group, each service's made from its
+     manifest's `env` lines and mounted at its `/env`, and `use env`
+     grants `/svc/env/new` for more. rc stores variables as Plan 9's rc
+     does (NUL-separated lists, `/env/'fn#NAME'`), its programs sharing
+     its group, `rfork e` copying it and `E` starting an empty one.
+     Sys's Startup carries no environment, and the Unix port's ^A
+     encoding stays on Linux (the oracle's). Tier 1's getenv reads
+     `/env`. Left: tier 1's `environ`, which isn't built from `/env`.
    - **The pty, done (2026-10-16):** `services/pty` on rings (D46): a
      terminal opens one at /svc/pty/pty and gets its keys and screen
      as descriptors, the client end is a program's fds 0 to 2 and the

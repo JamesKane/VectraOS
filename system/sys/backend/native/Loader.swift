@@ -97,7 +97,7 @@ extension Kernel {
     let bytes = { (s: String) in Array(s.utf8) }
     let args = startup.args.isEmpty ? [bytes(program.name)] : startup.args.map(bytes)
     let message = Program.processArgs(infos: given.map { $0.info }, args: args,
-                                      environment: startup.environment.map(bytes), names: startup.names.map(bytes))
+                                      environment: [], names: startup.names.map(bytes))
     let ends = try channelCreate()
     defer { close(ends.0) }
     let raws = given.map { $0.handle }
@@ -108,22 +108,14 @@ extension Kernel {
                             UInt64(ends.1), 0))
   }
 
-  /// The process's own Startup: its arguments, environment and names as
+  /// The process's own Startup: its arguments and names as
   /// the floor kept them, its handles the floor's table.
   static let currentStartup: Startup = {
     var argc: Int32 = 0
     let args = unsafe strings(td_argv(&argc), Int(argc))
     var count: Int32 = 0
     let names = unsafe strings(td_startup_names(&count), Int(count))
-    var environment: [String] = []
-    if let env = unsafe environ {
-      var i = 0
-      while let p = unsafe env[i] {
-        environment.append(unsafe string(p))
-        i += 1
-      }
-    }
-    return Startup(args: args, environment: environment, names: names, floor: true)
+    return Startup(args: args, names: names, floor: true)
   }()
 
   static func startupTake(_ info: UInt32) -> UInt32? {

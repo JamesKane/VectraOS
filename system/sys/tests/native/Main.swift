@@ -361,13 +361,13 @@ struct SysTest {
     check(programs.contains { same($0.name, "bin/ipc-test") }, "bootfs's files listed")
     let process = try Process.create(job: job, name: "sys-test-child")
     let ends = try Channel.create()
-    let startup = Startup(args: ["sys-test", "child"], environment: ["SYS_TEST=child"], names: ["/svc"])
+    let startup = Startup(args: ["sys-test", "child"], names: ["/svc"])
     startup.add(ends.b, info: HandleType.info(HandleType.user0))
     let thread = try Process.start(process, entry: me, startup)
     _ = try process.wait(for: Signals.terminated, deadline: soon(5000))
     check(try Process.info(process).returnCode == 7, "a child loaded from bootfs ran and exited with its code")
     let report = try? Channel.read(ends.a)
-    check(report?.bytes == [1, 1, 1, 1], "it was given its arguments, environment, names and handles")
+    check(report?.bytes == [1, 1, 1], "it was given its arguments, names and handles")
     check(statusOf { () throws(Status) in try Process.start(process, entry: me, Startup()) } == .badState,
           "a process starts once")
     try stdio(job, me)
@@ -380,11 +380,10 @@ struct SysTest {
     let startup = Startup.current
     let args = startup.args
     let argsOK: UInt8 = args.count == 2 && same(args[1], "child") ? 1 : 0
-    let envOK: UInt8 = startup.value("SYS_TEST").map { same($0, "child") } ?? false ? 1 : 0
     let namesOK: UInt8 = startup.names.count == 1 && same(startup.names[0], "/svc") ? 1 : 0
     guard let report = startup.take(HandleType.info(HandleType.user0)) else { Process.exit(code: 1) }
     let handlesOK: UInt8 = startup.infos.isEmpty ? 1 : 0  // the floor took its own
-    try? Channel.write(report, bytes: [argsOK, envOK, namesOK, handlesOK])
+    try? Channel.write(report, bytes: [argsOK, namesOK, handlesOK])
     Process.exit(code: 7)
   }
 

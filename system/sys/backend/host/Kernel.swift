@@ -174,14 +174,13 @@ enum Kernel {
   static func processCreate(_ job: UInt32, _ name: String) throws(Status) -> UInt32 { try k.processCreate(job: job, name: name) }
   static func threadCreate(_ process: UInt32) throws(Status) -> UInt32 { try k.threadCreate(process: process) }
   /// The handles move into the process, and its entry gets a Startup of
-  /// their numbers there (hosted processes share the host's environment
-  /// too, but a Startup's is what it was given).
+  /// their numbers there.
   static func processStart(_ process: UInt32, _ thread: UInt32, _ entry: ProgramEntry, _ startup: Startup,
                            _ handles: [(info: UInt32, handle: UInt32)]) throws(Status) {
-    let (args, environment, names) = (startup.args, startup.environment, startup.names)
+    let (args, names) = (startup.args, startup.names)
     let infos = handles.map { $0.info }
     try k.threadStart(thread, args: handles.map { $0.handle }) { raws in
-      let given = Startup(args: args, environment: environment, names: names)
+      let given = Startup(args: args, names: names)
       for (info, raw) in zip(infos, raws) { given.add(raw: raw, info: info) }
       entry.body(given)
     }

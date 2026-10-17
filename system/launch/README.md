@@ -12,12 +12,14 @@ views, per-client services, `seal` and power control are not lifted
 yet.
 
 A process's start is its Startup (D65): its arguments (its service's name
-first), its environment, and its namespace as PA_NS_DIR handles, each a
-Node channel named in processargs's names table, with its union placement
-and `create` in the info word. An exporting service is given its export's
-server end, and with `srv`, `/srv` and the board to post to it. Every
-process is given the UTC page to read (D48), which the floor maps; a
-`clock` service gets it writable too. A service reads it first thing:
+first) and its namespace as PA_NS_DIR handles, each a Node channel named
+in processargs's names table, with its union placement and `create` in
+the info word. Its environment is its `/env` (D81): a group the launcher
+serves, made from its manifest's `env` lines; `use env` grants
+`/svc/env`, whose `new` makes another. An exporting service is given its
+export's server end, and with `srv`, `/srv` and the board to post to
+it. Every process is given the UTC page to read (D48), which the floor
+maps; a `clock` service gets it writable too. A service reads it first thing:
 
     let start = Startup.current
     let ns = try Namespace(start)

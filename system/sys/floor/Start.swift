@@ -256,8 +256,8 @@ func strings(_ m: UnsafeMutablePointer<UInt8>, _ size: Int, _ offset: UInt32, _ 
   exit(-1)
 }
 
-/// getenv (C23 §7.24.4.6) under its C name, over the process's environment.
-@c(getenv) public func exportedGetenv(_ name: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>? {
+/// getenv over environ (the boot options): runtime.c's weak getenv.
+@c(td_boot_getenv) public func bootGetenv(_ name: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>? {
   guard let env = unsafe environ else { return nil }
   return unsafe LibC.getenv(name, in: UnsafePointer(env))
 }

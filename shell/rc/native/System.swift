@@ -301,10 +301,12 @@ final class CroiSystem: RcSystem {
   {
     let name = String(path.split(separator: "/").last ?? Substring(path))
     let entry = ProgramEntry(image: memory.vmo.raw, offset: 0, length: Int(memory.size), name: name)
-    // rc's (Environment.swift), with its directory as PWD (M6m: the file
-    // commands' paths are rc's).
-    let env = environment.filter { !$0.hasPrefix("PWD=") } + ["PWD=" + cwd]
-    let startup = Startup(args: argv, environment: env)
+    // Its environment is rc's group, at the /env of rc's namespace (D81),
+    // rc's variables written there already; its directory there as $PWD
+    // (M6m: the file commands' paths are rc's), written each time, since
+    // rc's forks share the group with their own directories.
+    try? namespace?.setEnvironment("PWD", Array(cwd.utf8) + [0])
+    let startup = Startup(args: argv)
     // rc's namespace, each mount point's root again, sealed if it is.
     if let ns = namespace {
       for p in ns.mountPoints {
@@ -408,6 +410,32 @@ final class CroiSystem: RcSystem {
       next = copy
     }
     if seal { next.seal() }
+    namespace = next
+    return true
+  }
+
+  /// /env's files (D81): none if rc was given no /env.
+  func environmentFiles() -> [(name: String, bytes: [UInt8])]? {
+    guard let ns = namespace, let entries = try? ns.list("/env") else { return [] }
+    return entries.compactMap { e in
+      guard var c = try? ns.open("/env/" + e.name), let bytes = try? c.readAll() else { return nil }
+      return (e.name, bytes)
+    }
+  }
+
+  func setEnvironmentFile(_ name: String, _ bytes: [UInt8]) { try? namespace?.setEnvironment(name, bytes) }
+
+  /// rfork e and E: a new group from /svc/env's `new` (the launcher's,
+  /// D81), mounted at /env, with e what the group held copied into it. The
+  /// group is in rc's namespace, so this makes the namespace rc's own, as
+  /// `rfork n` does.
+  func forkEnvironment(clean: Bool) -> Bool {
+    guard let ns = namespace, let next = try? ns.clone(), let group = try? ns.connect("/svc/env/new") else {
+      return false
+    }
+    let copied = clean ? [] : environmentFiles() ?? []
+    guard (try? next.mount(group, at: "/env")) != nil else { return false }
+    for f in copied { try? next.setEnvironment(f.name, f.bytes) }
     namespace = next
     return true
   }

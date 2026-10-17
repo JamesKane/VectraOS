@@ -91,9 +91,10 @@ target (`docs/syscall-audit.md`, D20-D38), the hot calls batched
 (D39-D42), the one ring in Swift and `ring.h` with RingCheck (D43), ports
 and the debuglog as rings (D38, D44). V2 is under way. Done: the one ABI,
 the floor, Sys, the libc, ld, the trace, the control plane (IPC, Node
-with bulk rings, the launcher) and time (but for two RTCs). Begun: tier
-1 (amd64 and arm64), and byte streams (the ring's byte-stream mode,
-stdio, FDIO, rc and its commands, which an audit against 9front found
+with bulk rings, the launcher), time (but for two RTCs) and the
+environment as /env (D81). Begun: tier 1 (amd64 and arm64), and byte
+streams (the ring's byte-stream mode, stdio, FDIO, rc and its
+commands, which an audit against 9front found
 far from complete, and the pty, with rc on one), and drivers (D74:
 ACPI, PCI, devmgr with edu's DMA through each IOMMU, virtio, virtio-input and
 kbdfs's /dev/kbd and /dev/cons, D83:

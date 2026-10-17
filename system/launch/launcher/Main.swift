@@ -10,6 +10,7 @@
 // a client to its end.
 
 import Launch
+import LibSys
 import Node
 import Sys
 
@@ -90,7 +91,7 @@ func dropping(_ prefix: StaticString, _ name: String) -> String? {
     print("launcher: started")
     for line in lines(launcher.status) { print("launcher:   \(line)") }
 
-    guard let until = start.value("launcher.until") else {
+    guard let until = BootOptions.value("launcher.until") else {
       // Supervises for good.
       while true { sleep(until: Int64.max) }
     }

@@ -70,6 +70,17 @@ func treeService(_ start: Startup) -> Never {
     tree.text("utc", read: { pages })
     tree.text("status", read: { args.joined(separator: " ") + "\n" })
     tree.text("ns", read: { ns.mountPoints.joined(separator: " ") + "\n" })
+    // Its environment (D81): `env` reads $GREETING from its /env, `newenv`
+    // a variable written into a group /svc/env's `new` makes.
+    tree.text("env", read: { (ns.getenv("GREETING") ?? "none") + "\n" })
+    tree.text("newenv", read: {
+      guard var group = try? ns.open("/svc/env/new"), var x = try? group.create("x", kind: .file, in: "") else {
+        return "no /svc/env\n"
+      }
+      _ = try? x.write(offset: 0, Array("one\0two\0".utf8))
+      guard var again = try? group.open("x"), let bytes = try? again.readAll() else { return "unread\n" }
+      return String(decoding: bytes.map { $0 == 0 ? UInt8(ascii: "|") : $0 }, as: UTF8.self) + "\n"
+    })
     tree.text("svc", read: { ((try? ns.list("/svc").map { $0.name }) ?? []).joined(separator: " ") + "\n" })
     tree.text("peer", read: {
       guard args.count > 1 else { return "" }

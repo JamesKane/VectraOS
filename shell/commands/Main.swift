@@ -43,7 +43,8 @@ import VectraOSLibc
       let n = unsafe buffer.withUnsafeMutableBytes { unsafe td_stdio_read_fd(fd, $0.baseAddress!, UInt64($0.count)) }
       return n > 0 ? Array(buffer[..<Int(n)]) : nil
     })
-    let status = Commands.run(name, Array(start.args.dropFirst()), pwd: start.value("PWD") ?? "/", in: ns, io)
+    // Its directory: rc's $PWD, in /env (D81).
+    let status = Commands.run(name, Array(start.args.dropFirst()), pwd: ns.getenv("PWD") ?? "/", in: ns, io)
     unsafe status.withCString { unsafe td_exits($0) }
   }
 }

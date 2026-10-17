@@ -1,16 +1,22 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// rc's environment, as 9front's unix rc keeps it (mkenv, Vinit, finit): a
+// rc's environment, two ways. On VectraOS it is /env's files (D81), as
+// Plan 9's rc keeps it (plan9.c's Vinit and Updenv): a variable's file
+// holds each of its words followed by a NUL, a function's (`fn#name`)
+// `fn name {body}`. rc reads them all at start and, before it starts a
+// program, writes what changed since it last did; its programs share its
+// group, unless `rfork e` gave it a copy or `E` an empty one, into which
+// it writes only what changes from then on.
+//
+// Where there are no files (Linux: rc's host build and the oracle, D70),
+// it is strings, as 9front's unix rc keeps it (mkenv, Vinit, finit): a
 // variable with a value is `name=` its words joined by ^A (\u{1}), a
 // function `#()fn name {body}` (its text as whatis prints it), sorted. The
-// one encoding on every system, the device's and Linux's: a system passes
-// the strings to a program as they are, and an rc it starts reads them
-// back as lists and functions.
-//
-// `rfork E` empties Plan 9's /env, and rc writes there only what changed
-// since it last did (Updenv, before each fork). So what was given to the
-// last program started (or taken at start) and hasn't changed since is
-// hidden from programs from then on, until it's set to something else.
+// system passes the strings to a program as they are, and an rc it starts
+// reads them back as lists and functions. There, `rfork E` is emulated:
+// what was given to the last program started (or taken at start) and
+// hasn't changed since is hidden from programs from then on, until it's
+// set to something else, as an empty group would leave it.
 
 extension Rc {
   /// The environment for a program rc starts: every variable that has a
@@ -24,12 +30,59 @@ extension Rc {
   }
 
   /// The environment for a program about to start (Updenv): as
-  /// environmentStrings, and what it holds now published.
+  /// environmentStrings, and what it holds now published. With files, they
+  /// are written instead, and the strings are none.
   func environmentForStart() -> [String] {
+    if environmentInFiles {
+      updateEnvironmentFiles()
+      return []
+    }
     hidden.variables = hidden.variables.filter { variables[$0.key] == $0.value }
     hidden.functions = hidden.functions.filter { functions[$0.key] == $0.value }
     published = (variables, functions)
     return environmentStrings
+  }
+
+  /// Updenv with files: each variable and function that changed since it
+  /// was last published written (one unset, empty), as addenv does.
+  func updateEnvironmentFiles() {
+    for name in Set(variables.keys).union(published.variables.keys).sorted()
+    where variables[name] != published.variables[name] {
+      system.setEnvironmentFile(name, (variables[name] ?? []).flatMap { Array($0.utf8) + [0] })
+    }
+    for name in Set(functions.keys).union(published.functions.keys).sorted()
+    where functions[name] != published.functions[name] {
+      let text = functions[name].map { "fn " + Rc.quote(name) + " " + Rc.brace($0, 0) + "\n" } ?? ""
+      system.setEnvironmentFile("fn#" + name, Array(text.utf8))
+    }
+    published = (variables, functions)
+  }
+
+  /// Takes /env's files, where the system has them (Vinit, and rcmain's
+  /// `. /env/fn#*`): a variable a file not empty, its words each ended by a
+  /// NUL, and its functions, but not with -p, and not what rc sets itself.
+  /// Whether it had files: from then on, rc keeps its environment there.
+  /// Call it after `take(_:name:)`, which sets -p.
+  @discardableResult
+  public func takeEnvironmentFiles() -> Bool {
+    guard let files = system.environmentFiles() else { return false }
+    environmentInFiles = true
+    for f in files where !f.bytes.isEmpty {
+      if f.name.hasPrefix("fn#") {
+        guard !flags.contains("p"), case .function(let name, let body)? = try? Parser.parse(String(decoding: f.bytes, as: UTF8.self))
+        else { continue }
+        functions[name] = body
+        published.functions[name] = body
+        if flags.contains("e") { definedUnderE.insert(name) }
+        continue
+      }
+      if ["*", "0", "pid", "status"].contains(f.name) { continue }
+      var words = f.bytes.split(separator: 0, omittingEmptySubsequences: false).map { String(decoding: $0, as: UTF8.self) }
+      if f.bytes.last == 0 { words.removeLast() }
+      variables[f.name] = words
+      published.variables[f.name] = words
+    }
+    return true
   }
 
   /// rfork E: what's published and unchanged hidden.

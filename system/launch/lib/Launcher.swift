@@ -89,6 +89,8 @@ public final class Launcher: @unchecked Sendable {
   public let board: SrvBoard
   /// The launcher's own tree: `status`.
   public let tree: NodeTree
+  /// The environment groups (D81): each service's /env, and /svc/env.
+  public let env: EnvGroups
   var statusNode: TreeNode?
   /// What `launcher` grants: `status`, and `ctl` (`kill SERVICE`), on a
   /// dispatcher and thread of its own, made when first granted (a /svc
@@ -125,6 +127,7 @@ public final class Launcher: @unchecked Sendable {
     job = try Job.create(parent: rootJob)
     supervisor = try Port.create()
     board = SrvBoard(dispatcher: dispatcher)
+    env = try EnvGroups()
     tree = NodeTree(dispatcher: dispatcher)
     // A strong capture (Embedded Swift has no unowned): stop() removes the
     // leaf, which ends the cycle.
@@ -227,6 +230,7 @@ public final class Launcher: @unchecked Sendable {
   func startThreads() {
     guard !running else { return }
     running = true
+    try? env.start()
     dispatcherThread = (try? Thread.spawn { [self] in try? dispatcher.run() })?.release() ?? 0
     supervisorThread = (try? Thread.spawn { [self] in supervise() })?.release() ?? 0
   }
@@ -237,7 +241,7 @@ public final class Launcher: @unchecked Sendable {
   /// A service's /svc tree: a forwarding node for each service it uses.
   func buildSvc(_ s: Service) throws(LaunchError) {
     let svc = NodeTree(dispatcher: dispatcher)
-    for g in s.manifest.grants where g.viaSvc {
+    for g in s.manifest.grants where g.viaSvc && !NodeIPC.same(g.service, "env") {
       guard let target = service(g.service), let export = locked({ target.export }) else {
         throw s.manifest.error(g.line, "service '\(g.service)' isn't running")
       }
@@ -247,6 +251,16 @@ public final class Launcher: @unchecked Sendable {
         throw s.manifest.error(g.line, "service '\(g.service)' doesn't answer")
       }
       locked { target.usedBy.append((svc, g.name)) }
+    }
+    // `use env`: the launcher's own (its `new`), not a service.
+    for g in s.manifest.grants where g.viaSvc && NodeIPC.same(g.service, "env") {
+      do throws(Status) {
+        let ends = try Channel.create()
+        try env.tree.serve(ends.b)
+        svc.mount(g.name, ends.a, removeWhenGone: false)
+      } catch {
+        throw s.manifest.error(g.line, "can't serve /svc/\(g.name): \(error.rawValue)")
+      }
     }
     if s.manifest.launcherLine != 0 {
       do throws(Status) {
@@ -270,7 +284,10 @@ public final class Launcher: @unchecked Sendable {
       do throws(Status) { return try body() } catch { throw failed("\(error.rawValue)") }
     }
     // Its name first, as argv[0].
-    let startup = Startup(args: [m.service] + m.args, environment: m.environment)
+    // Its environment is its /env (D81), made from its manifest's `env`
+    // lines; the Startup carries none.
+    let startup = Startup(args: [m.service] + m.args)
+    startup.mount(try sys { () throws(Status) in try env.channel(EnvGroups.variables(m.environment)) }, at: "/env")
     var export: Export?
     if m.exports {
       let ends = try sys { () throws(Status) in try Channel.create() }

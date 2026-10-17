@@ -52,8 +52,11 @@ public enum Arguments {
   }
 }
 
-/// The environment the process was started with (`name=value` strings).
-public enum Environment {
+/// The kernel's boot options (`name=value` strings), which it gives
+/// userboot as its environment and userboot gives the program it starts:
+/// the launcher's, and the self-tests'. Another process's environment is
+/// its /env (D81), and this is empty.
+public enum BootOptions {
   public static var strings: [String] {
     var out: [String] = []
     guard let env = unsafe environ else { return out }

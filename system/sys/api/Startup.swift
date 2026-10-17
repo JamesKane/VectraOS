@@ -1,17 +1,20 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // What a process starts with: Zircon's processargs, one message. Its
-// arguments (its name first), its environment, its handles (each with an
-// info word: a HandleType and an argument), and the names table, which a
-// PA_NS_DIR handle's argument indexes: its namespace (the launcher's,
-// D65). A parent builds one and `Process.start` moves it in; natively it
+// arguments (its name first), its handles (each with an info word: a
+// HandleType and an argument), and the names table, which a PA_NS_DIR
+// handle's argument indexes: its namespace (the launcher's, D65). A parent builds one and `Process.start` moves it in; natively it
 // is the new process's bootstrap message, and the process reads its own
 // as `Startup.current` (the floor's, which LibSys's views share); hosted,
 // the program's entry is given it.
+//
+// It carries no environment: a process's is the tree at its /env, a mount
+// like any other (D81). The processargs message's environment list holds
+// only the kernel's boot options, which userboot passes to the program it
+// starts (Sys's `BootOptions`).
 
 public final class Startup: @unchecked Sendable {
   public var args: [String]
-  public var environment: [String]
   public var names: [String]
   /// Handles moved in, not yet taken (raw: an Array can't hold a Handle).
   var handles: [(info: UInt32, handle: UInt32)] = []
@@ -19,16 +22,14 @@ public final class Startup: @unchecked Sendable {
   let floor: Bool
   let mutex = Lock()
 
-  public init(args: [String] = [], environment: [String] = [], names: [String] = []) {
+  public init(args: [String] = [], names: [String] = []) {
     self.args = args
-    self.environment = environment
     self.names = names
     floor = false
   }
 
-  init(args: [String], environment: [String], names: [String], floor: Bool) {
+  init(args: [String], names: [String], floor: Bool) {
     self.args = args
-    self.environment = environment
     self.names = names
     self.floor = floor
   }
@@ -82,18 +83,6 @@ public final class Startup: @unchecked Sendable {
     }
   }
 
-  /// The value of the environment's `name`: its first entry's (compared
-  /// as bytes).
-  public func value(_ name: String) -> String? {
-    let key = Array(name.utf8)
-    for e in environment {
-      let bytes = Array(e.utf8)
-      if bytes.count > key.count, bytes[key.count] == 0x3D, Array(bytes[..<key.count]) == key {
-        return String(decoding: bytes[(key.count + 1)...], as: UTF8.self)
-      }
-    }
-    return nil
-  }
 }
 
 /// A child's exit string, Plan 9's exits (D72): a page given in its

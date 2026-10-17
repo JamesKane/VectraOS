@@ -186,7 +186,12 @@ final class SessionEnd: @unchecked Sendable {
     self.state = state
   }
   deinit {
-    tree.locked { state.closed = true }
+    let last = tree.locked { () -> Bool in
+      state.closed = true
+      tree.sessions -= 1
+      return tree.sessions == 0
+    }
+    if last { tree.lastClosed?() }
     if let bulk { tree.dispatcher.unwatch(bulk.watch) }
     if let node = state.stream {
       tree.locked { node.waiting.removeAll { $0 === state } }
@@ -203,9 +208,16 @@ public final class NodeTree: @unchecked Sendable {
   var seq: UInt64 = 0
   static let logLength = 64
 
-  public init(dispatcher: IPCDispatcher) {
+  /// Its channels open (sessions), and what runs when the last closes.
+  var sessions = 0
+  /// Called (on the dispatcher's thread) when the last channel served
+  /// from this tree closes: an env group goes then (D81).
+  public var lastClosed: (() -> Void)?
+
+  /// `rootAllowsCreate`: clients may create in its root (an env group's).
+  public init(dispatcher: IPCDispatcher, rootAllowsCreate: Bool = false) {
     self.dispatcher = dispatcher
-    root = TreeNode(name: "", path: 1, content: .directory(allowsCreate: false))
+    root = TreeNode(name: "", path: 1, content: .directory(allowsCreate: rootAllowsCreate))
   }
 
   /// Breaks the parent links, so the nodes go with the tree.
@@ -399,6 +411,7 @@ public final class NodeTree: @unchecked Sendable {
   /// Serves Node on `channel`, at `node`.
   public func serve(_ channel: consuming Handle, at node: TreeNode) throws(Status) {
     let state = SessionState()
+    locked { sessions += 1 }
     var server = NodeIPC.NodeServer(channel: channel, impl: Session(tree: self, node: node, state: state, end: SessionEnd(self, state)))
     server.connection.deferral = state.deferral
     if case .stream(let s) = node.content {
