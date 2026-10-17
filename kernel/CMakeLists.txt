@@ -344,6 +344,8 @@ set(_ramdisk_manifest ${PROJECT_SOURCE_DIR}/services/ramdisk/ramdisk.manifest)
 set(_fs ${CMAKE_CURRENT_BINARY_DIR}/fsservice.elf)  # its module's name, fs, would differ from Fs only by case
 croi_user_program(${_fs} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/fs/Main.swift)
 set(_fs_manifest ${PROJECT_SOURCE_DIR}/services/fs/fs.manifest)
+# The board tools (D79): rc scripts over ctl files.
+set(_scripts ${PROJECT_SOURCE_DIR}/shell/scripts)
 # bin/cpu (D77): the cpu server, only in the cpu images below.
 set(_cpu ${CMAKE_CURRENT_BINARY_DIR}/cpu.elf)
 croi_user_program(${_cpu} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/cpu/Main.swift)
@@ -409,6 +411,8 @@ set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_te
           bin/factotum=${_factotum} etc/manifests/factotum.manifest=${_factotum_manifest}
           bin/ramdisk=${_ramdisk} etc/manifests/ramdisk.manifest=${_ramdisk_manifest}
           bin/fs=${_fs} etc/manifests/fs.manifest=${_fs_manifest}
+          bin/log=${_scripts}/log bin/restart=${_scripts}/restart bin/reboot=${_scripts}/reboot
+          bin/poweroff=${_scripts}/poweroff
           ${_tier1_bootfs})
 set(_bootfs_depends ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_trace_test} ${_ipc_test} ${_node_test} ${_acpi_test} ${_pci_test}
           ${_launcher} ${_launch_service} ${_launch_test} ${_manifests}/a.manifest ${_manifests}/b.manifest
@@ -423,6 +427,7 @@ set(_bootfs_depends ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_tra
           ${_cs} ${_ndb}/cs/cs.manifest ${_dns} ${_ndb}/dns/dns.manifest ${_ndb}/db/local ${_ndb}/db/common
           ${_9gate} ${_9gate_manifest} ${_factotum} ${_factotum_manifest}
           ${_ramdisk} ${_ramdisk_manifest} ${_fs} ${_fs_manifest}
+          ${_scripts}/log ${_scripts}/restart ${_scripts}/reboot ${_scripts}/poweroff
           ${_man_files} ${_man_index} ${_tier1_files} vx ${VX})
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs.img ${_bootfs_entries}

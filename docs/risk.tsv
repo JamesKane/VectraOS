@@ -61,11 +61,12 @@ system/directives/	all	DirectivesTests,LaunchTests,DevMgrTests,GuideTests,Manual
 system/guide/	all	GuideTests,ManualTests	boot-launch	man
 shell/rc/	all	RcTests	boot-launch,boot-cpu	man,rc-oracle
 shell/commands/	all	CommandsTests	boot-launch	man
+shell/scripts/	all	-	boot-launch,boot-cpu	man
 services/	all	-	boot-launch	man
 services/time/	all	RTCTests	boot-launch	man
 services/kbdfs/	all	KbdfsTests	boot-launch	man
 services/proc/	all	ProcTests	boot-launch,boot-cpu	man
-services/console/	all	ConsoleTests	boot-launch	man
+services/console/	all	ConsoleTests	boot-launch,boot-cpu	man
 services/plumber/	all	PlumberTests	boot-launch	man
 services/ndb/	all	NdbTests	boot-launch	man
 services/net/	all	NetTests,IPTests,NdbTests	boot-launch,boot-cpu	man
@@ -82,7 +83,7 @@ services/9gate/tests/	-	GateTests	-	-
 drivers/	all	DevMgrTests	boot-launch,boot-pci	man
 drivers/bus/acpi/	all	ACPITests	boot-acpi,boot-launch	man
 drivers/bus/pci/	all	PCITests	boot-pci,boot-launch	man
-drivers/devmgr/	all	DevMgrTests	boot-launch	man
+drivers/devmgr/	all	DevMgrTests	boot-launch,boot-cpu	man
 drivers/virtio/	all	VirtioTests	boot-launch	man
 drivers/input/	all	InputTests	boot-launch	man
 drivers/net/	all	NetClassTests	boot-launch	man

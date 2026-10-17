@@ -17,6 +17,8 @@
 //            (monotonic time, which starts at kernel entry), records shown
 //   screen   the grid's text, a line a row
 //   write    text written here is shown (ink)
+//   kprint   the log as text, read from its oldest line kept and then as
+//            it comes (`log -f`; manifests mount it at /dev/kprint)
 
 import Console
 import IPC
@@ -97,6 +99,49 @@ func framebuffer(_ bootData: borrowing Handle) -> (base: UInt64, width: Int, hei
 }
 
 /// The grid, shared by the log's thread and the tree's.
+/// The log as text for `kprint` (D79's `log -f`): its last `limit` bytes
+/// of lines, each record's as the screen shows it, and where they start
+/// in all the log has had, so each reader keeps its own place.
+final class Kept: @unchecked Sendable {
+  let lock = Lock()
+  var bytes: [UInt8] = []
+  /// The offset of `bytes[0]` in the whole log.
+  var start: UInt64 = 0
+  /// Told when lines come (the tree's `ready` for the stream).
+  var added: (@Sendable () -> Void)?
+  static let limit = 65536
+
+  func append(_ line: [UInt8]) {
+    let tell = lock.withLock { () -> (@Sendable () -> Void)? in
+      bytes += line
+      if bytes.count > Self.limit {
+        let cut = bytes.count - Self.limit
+        bytes.removeFirst(cut)
+        start += UInt64(cut)
+      }
+      return added
+    }
+    tell?()
+  }
+
+  /// A reader from the oldest line kept: up to `max` bytes from its place
+  /// (moved up to what is kept, if the log has passed it), nil when it
+  /// has read everything so far (its read waits).
+  func reader() -> NodeStreamChannel {
+    var at = lock.withLock { start }
+    return NodeStreamChannel(take: { [self] max in
+      lock.withLock { () -> [UInt8]? in
+        if at < start { at = start }
+        let end = start + UInt64(bytes.count)
+        guard at < end else { return nil }
+        let from = Int(at - start), n = Swift.min(max, Int(end - at))
+        at += UInt64(n)
+        return Array(bytes[from..<(from + n)])
+      }
+    })
+  }
+}
+
 final class Shared: @unchecked Sendable {
   let lock = Lock()
   var grid: TextGrid
@@ -155,6 +200,7 @@ final class Shared: @unchecked Sendable {
     let renderer = unsafe Renderer(unsafe: mapping.address + Int(fb.base - pageBase), width: fb.width,
                                    height: fb.height, stride: fb.stride, format: format, font: font)
     let shared = Shared(renderer)
+    let kept = Kept()
     let title = "VectraOS console: \(fb.width)x\(fb.height), \(shared.grid.columns)x\(shared.grid.rows) cells of Spleen \(font.width)x\(font.height)\n"
     shared.lock.withLock {
       shared.show(2, Array(title.utf8))
@@ -197,6 +243,7 @@ final class Shared: @unchecked Sendable {
                 shared.dropped += dropped
                 shared.draw()
               }
+              kept.append(records.flatMap { $0.line })
             }
             _ = try? Counter.wait(counter, until: Int64(ring.position) + 1)
             withExtendedLifetime(ringMapping) {}
@@ -223,6 +270,10 @@ final class Shared: @unchecked Sendable {
     tree.text("screen", read: {
       shared.lock.withLock { (0..<shared.grid.rows).map { shared.grid.text($0) + "\n" }.joined() }
     })
+    // kprint: the log as text, from the oldest line kept, each reader
+    // waiting for more once it has read all there is (D84).
+    let kprint = tree.stream("kprint", NodeStream(perChannel: { kept.reader() }))
+    kept.lock.withLock { kept.added = { tree.ready(kprint) } }
     tree.text("write", read: { "" }, write: { (text: String) throws(NodeError) in
       shared.lock.withLock {
         shared.show(1, Array(text.utf8))

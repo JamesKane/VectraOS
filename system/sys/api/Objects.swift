@@ -441,6 +441,21 @@ public enum Power {
   public static func reboot(_ resource: borrowing Handle) throws(Status) {
     try Kernel.powerctl(resource.raw, CROI_SYSTEM_POWERCTL_REBOOT)
   }
+
+  /// Turns the machine off: never returns if it can. amd64 needs ACPI's
+  /// \_S5 sleep types (`sleepTypes`, from an AML interpreter); arm64 and
+  /// rv64 ask the firmware (PSCI, SBI) and need none.
+  public static func poweroff(_ resource: borrowing Handle, sleepTypes: (UInt8, UInt8)?) throws(Status) {
+    #if arch(x86_64)
+      guard let (a, b) = sleepTypes else { throw .notSupported }
+      try Kernel.powerctlS5(resource.raw, a, b)
+    #else
+      try Kernel.powerctl(resource.raw, CROI_SYSTEM_POWERCTL_SHUTDOWN)
+    #endif
+  }
+
+  /// The system resource's base that grants power control.
+  public static var systemBase: UInt64 { UInt64(CROI_RSRC_SYSTEM_POWER_BASE) }
 }
 
 /// A CPU's counts since boot (croi_info_cpu_stats_t, the fields the kernel

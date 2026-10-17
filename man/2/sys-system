@@ -7,9 +7,10 @@ names CPUStats CPUStats.cpu CPUStats.online CPUStats.idleTime
 names CPUStats.contextSwitches CPUStats.interrupts CPUStats.timerInterrupts
 names CPUStats.timers CPUStats.syscalls CPUStats.rescheduleIPIs
 names CPUStats.genericIPIs CPUStats.systemBase CPUStats.read CPUStats.wakeups
-names Power Power.reboot Debuglog Debuglog.waitForConsole CPRNG CPRNG.draw
+names Power Power.reboot Power.poweroff Power.systemBase Debuglog Debuglog.waitForConsole
+names CPRNG CPRNG.draw
 src system/sys/api/Objects.swift system/sys/backend/native/Kernel.swift
-keys memory stats cpu reboot power debuglog random entropy cprng wakeups
+keys memory stats cpu reboot poweroff power debuglog random entropy cprng wakeups
 lang swift
 
 # SYNOPSIS
@@ -51,6 +52,9 @@ struct CPUStats: Equatable, Sendable {
 
 enum Power {
   static func reboot(_ resource: borrowing Handle) throws(Status)
+  static func poweroff(_ resource: borrowing Handle,
+                       sleepTypes: (UInt8, UInt8)?) throws(Status)
+  static var systemBase: UInt64 { get }
 }
 
 enum Debuglog {
@@ -82,8 +86,10 @@ A record holds the CPU's number, whether it is online, the nanoseconds it has be
 ## Power
 
 `Power.reboot` restarts the machine, given the power system resource.
-It does not return if it succeeds.
-It is `system_powerctl(2)`.
+`Power.poweroff` turns it off: on amd64 with ACPI's `\_S5` sleep types, `sleepTypes`, which an AML interpreter evaluates (devmgr(8)), failing with `notSupported` without them; on arm64 and rv64 through the firmware, needing none.
+Neither returns if it succeeds.
+Both are `system_powerctl(2)`.
+`Power.systemBase` is the system resource's base for the power resource, to make one from the system resource (sys-resource(2)).
 
 ## Debuglog
 

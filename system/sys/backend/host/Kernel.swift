@@ -146,6 +146,7 @@ enum Kernel {
   static func cpuStats(_ resource: UInt32, max: Int) throws(Status) -> [CPUStats] { throw .notSupported }
   static func kmemStats(_ resource: UInt32) throws(Status) -> KMemStats { throw .notSupported }
   static func powerctl(_ resource: UInt32, _ command: UInt32) throws(Status) { throw .notSupported }
+  static func powerctlS5(_ resource: UInt32, _ a: UInt8, _ b: UInt8) throws(Status) { throw .notSupported }
   static func profileCreate(_ resource: UInt32, deadline: (Int64, Int64, Int64)) throws(Status) -> UInt32 {
     throw .notSupported
   }

@@ -1,0 +1,40 @@
+page log 1
+summary the system's log, as it comes
+src shell/scripts/log services/console/Main.swift
+keys log debuglog kprint follow kernel messages
+
+# SYNOPSIS
+
+```usage
+log [-f]
+```
+
+# DESCRIPTION
+
+`log` prints the system's log: the kernel's and every process's records, a line each as the console shows them, `[seconds.ms] pid:tid> text`.
+It starts from the oldest line console(4) keeps, the last 64 KiB, and then prints each record as it comes, until it is interrupted.
+`-f` is accepted and changes nothing: the log always follows.
+
+It is an rc script, `cat /dev/kprint`.
+
+# EXAMPLES
+
+In a cpu session, the node's log on the dev machine's terminal; ^C ends it:
+
+```rc
+% log
+```
+
+# FILES
+
+: `/dev/kprint`
+  The log as text, console(4)'s `kprint`.
+
+# SEE ALSO
+
+console(4), cpu(8)
+
+# BUGS
+
+There is no way to print only what is kept and stop.
+A reader too slow for the log skips what console(4) has stopped keeping.

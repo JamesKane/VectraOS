@@ -77,11 +77,11 @@ The devices and what became of them:
   How many PCI functions it found, in how many microseconds, and the buses it mapped.
   `not yet` until then.
 : `/svc/devmgr/acpi`
-  The tables read, the time to load the namespace, run `_INI` and `_STA`, `_PIC` and `_PRT`, with the failures, and the pages of physical memory mapped.
+  The tables read, the time to load the namespace, run `_INI` and `_STA`, `_PIC` and `_PRT`, with the failures, `\_S5` and its sleep types (or `no \_S5`), and the pages of physical memory mapped.
   `not yet` until then.
 : `/svc/devmgr/dev`
-  A directory for the devices' classes, to mount at `/dev`.
-  It is empty: no driver serves a class directory yet.
+  A directory for the devices' classes, to mount at `/dev`; no driver serves a class directory yet.
+  It holds `reboot`, which takes a command a line, `reboot` or `poweroff`, through the power resource devmgr makes from its system resource, and refuses anything else (reboot(8)).
 : `/svc/devmgr/net`
   The Ethernet devices, `ether0` and on, each a driver's ether(3) directory; to mount at `/net`.
 : `/svc/devmgr/drivers`
@@ -89,7 +89,7 @@ The devices and what became of them:
 
 # SEE ALSO
 
-driver(6), manifest(6), launcher(8), intro(3), virtio-input(3), virtio-net(3), ether(3), kbdfs(4)
+driver(6), manifest(6), launcher(8), reboot(8), intro(3), virtio-input(3), virtio-net(3), ether(3), kbdfs(4)
 
 # DIAGNOSTICS
 

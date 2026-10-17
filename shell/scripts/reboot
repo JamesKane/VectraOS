@@ -1,0 +1,3 @@
+#!/bin/rc
+# reboot (reboot(8)): restarts the machine, through devmgr's /dev/reboot.
+echo reboot >/dev/reboot

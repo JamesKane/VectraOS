@@ -44,7 +44,7 @@ Without it, it supervises the services for good.
 
 # SEE ALSO
 
-manifest(6), intro(4), intro(8)
+manifest(6), restart(8), cpu(8), intro(4), intro(8)
 
 # BUGS
 

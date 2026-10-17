@@ -85,6 +85,8 @@ struct ACPIResult {
   var devices: [Device.ACPIDevice] = []
   var routes: [InterruptRoute] = []
   var summary = "no ACPI tables\n"
+  /// \_S5's sleep types, for /dev/reboot's poweroff.
+  var sleepTypes: (UInt8, UInt8)?
 }
 
 /// Loads the DSDT and SSDTs with load-time code run over the machine
@@ -120,12 +122,16 @@ func loadNamespace<C: ConfigSpace>(_ set: TableSet, host: MachineHost<C>) -> ACP
   } catch {
     routesFailed = true
   }
+  result.sleepTypes = ns.sleepTypes(host: host)
   let t5 = Clock.monotonic()
   let bytes = aml.reduce(0) { $0 + $1.length }
+  var s5 = "no \\_S5\n"
+  if let (a, b) = result.sleepTypes { s5 = "\\_S5 \(a) \(b)\n" }
   result.summary = "\(set.tables.count) tables, \(aml.count) with AML (\(bytes) bytes), \(ns.nodes.count) nodes\n"
     + "load \((t1 - t0) / 1000) us (\(loadFailures) failed), _INI \((t2 - t1) / 1000) us (\(initFailed.count) failed)\n"
     + "_STA on \(nodes.count) devices \((t3 - t2) / 1000) us, \(result.devices.count) present\n"
     + "_PIC(1) \(picFailed ? "failed" : "ok"), _PRT \(result.routes.count) routes \((t5 - t4) / 1000) us\(routesFailed ? " (failed)" : "")\n"
+    + s5
     + initFailed.map { "_INI failed: \(String(decoding: ns.path($0.device), as: UTF8.self)) \($0.error.name)\n" }.joined()
     + host.log.map { "aml: \($0)\n" }.joined()
   return result
@@ -155,14 +161,16 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     let bootfsRaw = bootfs.release()
     let ioRaw = start.take(HandleType.info(HandleType.resource(.ioport)))?.release() ?? 0
     let irqRaw = start.take(HandleType.info(HandleType.resource(.irq)))?.release() ?? 0
-    // The system resource: the IOMMUs, and the MSI resource for the hosts'
-    // allocations.
-    var iommuResource: UInt32 = 0, msiRaw: UInt32 = 0
+    // The system resource: the IOMMUs, the MSI resource for the hosts'
+    // allocations, and the power resource for /dev/reboot.
+    var iommuResource: UInt32 = 0, msiRaw: UInt32 = 0, powerRaw: UInt32 = 0
     if let system = start.take(HandleType.info(HandleType.resource(.system))) {
       iommuResource = (try? Sys.Resource.create(parent: system, kind: .system, base: DMA.iommuSystemBase, size: 1,
                                                 name: "iommu"))?.release() ?? 0
       msiRaw = (try? Sys.Resource.create(parent: system, kind: .system, base: Interrupt.msiSystemBase, size: 1,
                                          name: "msi"))?.release() ?? 0
+      powerRaw = (try? Sys.Resource.create(parent: system, kind: .system, base: Power.systemBase, size: 1,
+                                           name: "power"))?.release() ?? 0
     }
 
     // The tree, served at once.
@@ -178,6 +186,28 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     // manifests mount them at /dev and /net.
     tree.directory("dev")
     tree.directory("net")
+    // /dev/reboot (D79): a command a line, `reboot` or `poweroff`, through
+    // the power resource; poweroff on amd64 takes \_S5's sleep types,
+    // known once ACPI's namespace has loaded.
+    let sleepTypes = Locked<(UInt8, UInt8)?>(nil)
+    tree.text("dev/reboot", read: { "" }, write: { (text: String) throws(NodeError) in
+      for line in lines(text) where !line.isEmpty {
+        let power = Handle(raw: powerRaw)  // borrowed: devmgr's for its life
+        var failed: Status?
+        if same(line, "reboot") {
+          print("devmgr: rebooting, as /dev/reboot asked")
+          do throws(Status) { try Power.reboot(power) } catch { failed = error }
+        } else if same(line, "poweroff") {
+          print("devmgr: powering off, as /dev/reboot asked")
+          do throws(Status) { try Power.poweroff(power, sleepTypes: sleepTypes.withLock { $0 }) } catch { failed = error }
+        } else {
+          _ = power.release()
+          throw .invalid
+        }
+        _ = power.release()
+        if failed != nil { throw .unsupported }
+      }
+    })
     guard let export = start.export() else { fail("no export (its manifest's `export`)") }
     do throws(Status) {
       try tree.serve(export)
@@ -210,6 +240,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       readPort: ports.map { p in { p.read($0, width: $1) } }, writePort: ports.map { p in { p.write($0, width: $1, $2) } },
       config: ecam)
     let acpi = loadNamespace(tableSet, host: host)
+    sleepTypes.withLock { $0 = acpi.sleepTypes }
     let acpiSummary = "tables read in \(tablesRead / 1000) us\n" + acpi.summary
       + "physical pages mapped \(memory.mappedPages)\n"
     findings.lock.withLock { findings.acpi = acpiSummary }

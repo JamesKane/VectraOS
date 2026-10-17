@@ -23,6 +23,7 @@ mount /net cs/net after
 mount /net dns/net after
 mount /proc proc
 mount /mnt/plumb plumber
+mount /dev/kprint console/kprint
 mount /data fs/volume create
 mount /dev/bin fs/volume/bin create
 launcher

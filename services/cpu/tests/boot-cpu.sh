@@ -93,3 +93,20 @@ if kill -0 "$vx_pid" 2>/dev/null; then
 fi
 wait "$vx_pid" || fail "vx cpu failed" "$out"
 echo "boot-cpu: ^C interrupted cat, and rc went on"
+
+# 4. The board tools: restart says its usage, and poweroff turns the
+# node off through devmgr's /dev/reboot (\_S5's sleep types on amd64).
+# The session ends with the machine, so its status is not judged; the
+# kernel's line is.
+out=$work/tools.out
+timeout 20 "$vx" cpu --key "$key" -k "$node" -r "$root" -c 'restart >[2=1]; poweroff' \
+  "127.0.0.1!$port" < /dev/null > "$out" || true
+tr -d '\r' < "$out" > "$out.lf"
+grep -qx 'usage: restart service ...' "$out.lf" || fail "the restart script didn't say its usage" "$out"
+for _ in $(seq 100); do
+  grep -q 'croi kernel: powering off' "$work/console.log" && break
+  sleep 0.2
+done
+grep -q 'devmgr: powering off, as /dev/reboot asked' "$work/console.log" || fail "devmgr didn't power off" "$out"
+grep -q 'croi kernel: powering off' "$work/console.log" || fail "the node didn't power off" "$out"
+echo "boot-cpu: poweroff turned the node off"

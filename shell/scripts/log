@@ -1,0 +1,9 @@
+#!/bin/rc
+# log [-f] (log(1)): the system's log, from the oldest line the console
+# keeps, then as it comes, until interrupted. -f, tail's habit, is the
+# same: /dev/kprint always follows.
+if (! ~ $#* 0 && ! ~ $* -f) {
+	echo 'usage: log [-f]' >[1=2]
+	exit usage
+}
+cat /dev/kprint

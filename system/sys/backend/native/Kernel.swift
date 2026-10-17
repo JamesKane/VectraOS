@@ -660,6 +660,19 @@ enum Kernel {
                      other: k.other_bytes)
   }
 
+  /// ACPI_TRANSITION_S_STATE to S5 with \_S5's sleep types (amd64).
+  static func powerctlS5(_ resource: UInt32, _ a: UInt8, _ b: UInt8) throws(Status) {
+    var arg = croi_system_powerctl_arg_t()
+    arg.acpi_transition_s_state.target_s_state = 5
+    arg.acpi_transition_s_state.sleep_type_a = a
+    arg.acpi_transition_s_state.sleep_type_b = b
+    let r = unsafe withUnsafeMutablePointer(to: &arg) { p in
+      unsafe croi_syscall(CROI_SYS_SYSTEM_POWERCTL, UInt64(resource), UInt64(CROI_SYSTEM_POWERCTL_ACPI_TRANSITION_S_STATE),
+                          address(p), 0, 0)
+    }
+    try check(r)
+  }
+
   static func powerctl(_ resource: UInt32, _ command: UInt32) throws(Status) {
     var arg = croi_system_powerctl_arg_t()
     let r = unsafe withUnsafeMutablePointer(to: &arg) { a in

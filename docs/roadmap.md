@@ -844,6 +844,19 @@ meets a tested path.
   and `warmboot`; `/dev/reboot`, served over `SYSTEM_POWERCTL` by the
   service holding the power resource, takes `reboot`, `poweroff` and
   `warmboot KERNEL BOOTFS`.
+  - **Done (2026-10-17), but `trace` and `warmboot`:** `log`, `restart`,
+    `reboot` and `poweroff` are rc scripts in bootfs's `bin`
+    (`shell/scripts`; rc now runs a `#!` script that its server gives as
+    runnable memory, as bootfs's bin does); `ps` and `kill` were already
+    commands. console(4) serves `kprint` (the last 64 KiB of the log as
+    text, each reader from the oldest line, then following), mounted at
+    `/dev/kprint`. devmgr(8) serves `/dev/reboot` with a power resource
+    carved from its system resource, `reboot` and `poweroff`, and
+    evaluates `\_S5` for amd64's power-off (QEMU's q35: 0 0). launch-test
+    reads `/dev/kprint`, has `/dev/reboot` refuse a command, and runs the
+    `restart` script; boot-cpu ends by powering the node off. `trace`
+    waits for a design (where its trace goes: `/mnt/term`, for `vx
+    trace`); `warmboot` comes with Warm boot.
 - **Warm boot:** `warmboot /mnt/term/PATH/kernel.elf
   /mnt/term/PATH/bootfs.img`, in a cpu session, writes the line to
   `/dev/reboot`, which hands off to a new kernel and bootfs held in

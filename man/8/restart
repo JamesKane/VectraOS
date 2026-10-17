@@ -1,0 +1,40 @@
+page restart 8
+summary start a service again
+src shell/scripts/restart system/launch/lib/Launcher.swift
+keys service restart launcher ctl push
+
+# SYNOPSIS
+
+```usage
+restart service ...
+```
+
+# DESCRIPTION
+
+`restart` starts each service again, whatever its manifest's `restart` policy says: one that runs is ended first, and one that has ended or failed starts now.
+Such a restart isn't counted against the service's limit of restarts.
+In a cpu image, a program pushed to `/dev/bin` of the service's program's name runs in place of bootfs's (launcher(8)).
+
+It is an rc script that writes `restart` and each name to the launcher's `ctl`, at `/svc/launcher/ctl`, so its manifest must have `launcher` (manifest(6)), as cpu(8)'s does.
+
+# EXAMPLES
+
+Run a new build of the plumber, pushed from the dev machine:
+
+```rc
+% cp /mnt/term/root/plumber.elf /dev/bin/plumber
+% restart plumber
+```
+
+# FILES
+
+: `/svc/launcher/ctl`
+  The launcher's commands.
+
+# SEE ALSO
+
+launcher(8), manifest(6), cpu(8)
+
+# DIAGNOSTICS
+
+Given no service, it prints its usage and exits `usage`; for a service the launcher doesn't know, `echo: write error: file does not exist`, and its status is `write error`.

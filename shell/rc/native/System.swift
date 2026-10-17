@@ -294,8 +294,15 @@ final class CroiSystem: RcSystem {
     return (first, words.count > 1 ? words.dropFirst().joined(separator: " ") : nil)
   }
 
+  /// Whether a program's memory is a script (`#!`), which a server that
+  /// gives every file to run (bootfs's bin) gives as it does a binary.
+  static func script(_ memory: borrowing NodeIPC.Memory) -> Bool {
+    guard memory.size >= 2, let m = try? VMO.map(memory.vmo, length: 4096, writable: false) else { return false }
+    return m.read(at: 0, count: 2) == Array("#!".utf8)
+  }
+
   func executable(_ path: String) -> Bool {
-    if program(path) != nil { return true }  // (its memory closed)
+    if let m = program(path), !Self.script(m) { return true }  // (its memory closed)
     guard let i = interpreter(path) else { return false }
     return program(i.path) != nil
   }
@@ -307,7 +314,7 @@ final class CroiSystem: RcSystem {
   }
 
   func start(_ path: String, _ argv: [String], fds: [Int32: RcStream], environment: [String]) -> RcJob? {
-    if let m = program(path) { return start(path, m, argv, fds: fds, environment: environment) }
+    if let m = program(path), !Self.script(m) { return start(path, m, argv, fds: fds, environment: environment) }
     guard let i = interpreter(path), let m = program(i.path) else { return nil }
     let args = [i.path] + (i.argument.map { [$0] } ?? []) + [path] + argv.dropFirst()
     return start(i.path, m, args, fds: fds, environment: environment)

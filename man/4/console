@@ -18,6 +18,7 @@ The line is amber for a warning and magenta for an error, and green otherwise.
 The log is a ring of 512 records of 256 bytes, read from the oldest kept.
 If the console falls behind, the ring overwrites records it has not read, and `status` counts them as dropped.
 kbdfs(4) writes what is typed, and what is written to its `cons`, to `write`, so the console is the terminal of the shell on it, `rc` (rc(1)), and its programs; their text and the log share the screen.
+It keeps the last 64 KiB of the log's lines as text, for `kprint`, which manifests mount at `/dev/kprint` (log(1)).
 
 A grid takes UTF-8.
 It writes a printable character at the cursor, wrapping at the right edge, and scrolls when the cursor leaves the bottom.
@@ -52,10 +53,13 @@ Without a linear framebuffer of 32-bit pixels in the boot data it exits with a m
 : `/mnt/console/write`
   Text written here is shown at the cursor, in the ink color, a pale blue, and drawn as soon as it is written.
   Reads give nothing.
+: `/mnt/console/kprint`
+  The log as text, each record's line as the screen shows it: a reader starts at the oldest line kept and, once it has read all there is, waits for the next.
+  Each channel opened on it reads on its own; one that falls more than 64 KiB behind skips to the oldest line kept.
 
 # SEE ALSO
 
-kbdfs(4), rc(1), manifest(6), launcher(8), intro(4)
+kbdfs(4), log(1), rc(1), manifest(6), launcher(8), intro(4)
 
 # BUGS
 

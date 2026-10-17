@@ -1,0 +1,3 @@
+#!/bin/rc
+# poweroff (reboot(8)): turns the machine off, through /dev/reboot.
+echo poweroff >/dev/reboot

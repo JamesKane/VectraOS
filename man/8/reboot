@@ -1,0 +1,46 @@
+page reboot 8
+summary restart or turn off the machine
+names reboot poweroff
+src shell/scripts/reboot shell/scripts/poweroff drivers/devmgr/Main.swift drivers/devmgr/lib/Power.swift
+keys reboot poweroff shutdown power acpi s5
+
+# SYNOPSIS
+
+```usage
+reboot
+poweroff
+```
+
+# DESCRIPTION
+
+`reboot` restarts the machine, and `poweroff` turns it off.
+Neither waits for the services: what they hold in memory is lost, as in a power cut, and fs(4)'s volume keeps what it last committed.
+
+Each is an rc script that writes its name to `/dev/reboot`, which devmgr(8) serves with the power resource.
+`/dev/reboot` takes a command a line, `reboot` or `poweroff`, and refuses anything else.
+On amd64, `poweroff` takes the machine to ACPI's S5 with the sleep types devmgr's AML interpreter finds in `\_S5`; on arm64 and rv64 it asks the firmware (PSCI, SBI).
+
+# EXAMPLES
+
+From the dev machine, turn the node off:
+
+```rc
+% vx cpu -k $nodekey -c poweroff node
+```
+
+# FILES
+
+: `/dev/reboot`
+  devmgr(8)'s power commands.
+
+# SEE ALSO
+
+devmgr(8), cpu(8), sys-system(2)
+
+# DIAGNOSTICS
+
+A command `/dev/reboot` doesn't know, or one the machine refuses (`poweroff` on an amd64 machine without `\_S5`), fails its write: `echo: write error`.
+
+# BUGS
+
+`warmboot` isn't taken yet.

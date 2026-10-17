@@ -697,7 +697,7 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
   rcRuns(rc, "cat /dev/fd/3 <[3]/svc/a/status", a, ns, job: job, "rc gives a program fd 3")
   // The manual, from bootfs (D86): a page found by name, one by its key,
   // and a page printed whole.
-  rcRuns(rc, "man -w lookman; lookman launcher service; x=`{man 6 manifest}; ~ $x(1) 'MANIFEST(6)' && echo page",
+  rcRuns(rc, "man -w lookman; lookman launcher service grant; x=`{man 6 manifest}; ~ $x(1) 'MANIFEST(6)' && echo page",
          Array("/lib/man/1/man\nman 6 manifest # the launcher's service manifests\npage\n".utf8), ns, job: job,
          "rc runs man, lookman and a page")
   rcRuns(rc, "cat <{cat /svc/a/status} <{echo two}", a + Array("two\n".utf8), ns, job: job,
@@ -731,6 +731,10 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
   rcRuns(rc, "echo restart nobody >[2=1] >/svc/launcher/ctl; ~ $status 'write error' && echo failed",
          Array("echo: write error: file does not exist\nfailed\n".utf8), ns, job: job,
          "rc's echo says when its write fails")
+  // The board tools are rc scripts in /bin (D79): restart, given nothing,
+  // says how it's used.
+  rcRuns(rc, "restart >[2=1]; ~ $status *usage && echo said", Array("usage: restart service ...\nsaid\n".utf8), ns,
+         job: job, "the board tools are rc scripts in /bin")
   // Files on fs(4)'s volume (D8): made, copied, moved, listed and removed.
   rcRuns(rc, "echo hello >/data/x; cp /data/x /data/y; mv /data/y /data/z; mkdir /data/d; cp /data/z /data/d; ls /data /data/d; cat /data/d/z; rm /data/x /data/z /data/d/z; rm /data/d; ls /data",
          Array("/data/d\n/data/x\n/data/z\n/data/d/z\nhello\n".utf8), ns, job: job, data: true,
@@ -755,11 +759,12 @@ func contains(_ bytes: [UInt8], _ part: [UInt8]) -> Bool {
       print("launch-test: FAILED: no namespace")
       Process.exit(code: 1)
     }
-    check(ns.mountPoints.count == 10 && same(ns.mountPoints[0], "/bin") && same(ns.mountPoints[1], "/data")
-            && same(ns.mountPoints[2], "/dev") && same(ns.mountPoints[3], "/env") && same(ns.mountPoints[4], "/lib/man")
-            && same(ns.mountPoints[5], "/mnt/console") && same(ns.mountPoints[6], "/mnt/plumb")
-            && same(ns.mountPoints[7], "/net") && same(ns.mountPoints[8], "/proc") && same(ns.mountPoints[9], "/svc"),
-          "the namespace is /bin, /data, /dev, /env, /lib/man, /mnt/console, /mnt/plumb, /net, /proc and /svc")
+    check(ns.mountPoints.count == 11 && same(ns.mountPoints[0], "/bin") && same(ns.mountPoints[1], "/data")
+            && same(ns.mountPoints[2], "/dev") && same(ns.mountPoints[3], "/dev/kprint") && same(ns.mountPoints[4], "/env")
+            && same(ns.mountPoints[5], "/lib/man") && same(ns.mountPoints[6], "/mnt/console")
+            && same(ns.mountPoints[7], "/mnt/plumb") && same(ns.mountPoints[8], "/net") && same(ns.mountPoints[9], "/proc")
+            && same(ns.mountPoints[10], "/svc"),
+          "the namespace is /bin, /data, /dev, /dev/kprint, /env, /lib/man, /mnt/console, /mnt/plumb, /net, /proc and /svc")
     environment(ns)
 
     // devmgr first: its status is still growing until it has bound.
@@ -832,6 +837,7 @@ func contains(_ bytes: [UInt8], _ part: [UInt8]) -> Bool {
     check(readText(ns, "/svc/a/status").map { same($0, "a first\n") } ?? false, "the new a, by the same path")
     check(readText(ns, "/svc/b/peer").map { same($0, "a first\n") } ?? false, "and through b")
 
+    boardFiles(ns)
     files(ns)
     procs(ns)
     servicesMemory(ns)
@@ -841,6 +847,21 @@ func contains(_ bytes: [UInt8], _ part: [UInt8]) -> Bool {
 }
 
 /// The services' resident memory (V2's exit: < 32 MiB), from the
+/// The board tools' files (D79): /dev/kprint gives the log from its
+/// oldest line kept, the launcher's own among them; /dev/reboot refuses
+/// a command it doesn't know (and is never told one it does, here).
+func boardFiles(_ ns: Namespace) {
+  var log = ""
+  if var k = try? ns.open("/dev/kprint"), let bytes = try? k.read(offset: 0, max: 32768) {
+    log = String(decoding: bytes, as: UTF8.self)
+  }
+  check(log.utf8.split(separator: 0x0A).contains { $0.starts(with: "[".utf8) && $0.contains(0x3E) }
+          && contains(Array(log.utf8), Array("launcher: ".utf8)), "/dev/kprint gives the log as the screen shows it")
+  var refused = false
+  if var reboot = try? ns.open("/dev/reboot") { refused = (try? reboot.writeText("nonsense\n")) == nil }
+  check(refused, "/dev/reboot refuses what it doesn't know")
+}
+
 /// fs(4)'s volume at /data (D8), on ramdisk(4)'s disk: a file written and
 /// read back, committed within the volume's delay, and there again
 /// through /svc/fs/volume once fs has restarted, the disk kept.
