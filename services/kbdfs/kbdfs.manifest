@@ -1,0 +1,7 @@
+# kbdfs (D83): the keyboard and the console, after 9front's kbdfs(8).
+# Keyboard drivers push their keys to its kbin (devmgr gives each its
+# own channel); manifests mount its tree before /dev.
+service kbdfs
+program kbdfs
+export
+restart on-failure

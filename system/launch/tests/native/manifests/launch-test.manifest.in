@@ -2,6 +2,7 @@
 # adds `use time` where the time service runs (amd64). `programs`: it
 # starts rc (tier 1: amd64 and arm64) to run `cat /svc/*/status`, and runs
 # it on a pty (`use pty`); /bin is the bootfs service's (D71).
+# /dev is kbdfs's, then devmgr's device directories (D82, D83).
 service launch-test
 program launch-test
 use a
@@ -9,6 +10,8 @@ use b
 use pty
 use devmgr
 mount /bin bootfs/bin
+mount /dev kbdfs
+mount /dev devmgr/dev after
 launcher
 programs
 @CROI_LAUNCH_TEST_USES@

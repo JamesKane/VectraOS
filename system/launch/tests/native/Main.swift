@@ -11,7 +11,6 @@
 
 import IPC
 import Node
-import InputDevice
 import Sys
 
 nonisolated(unsafe) var failures = 0
@@ -106,36 +105,55 @@ func devices(_ ns: Namespace) {
   keyboard(ns, status)
 }
 
-/// The keyboard (V2 item 7d): virtio-input bound, MSI-X where the kernel
-/// has MSIs and INTx on rv64's PLIC; a reader of the input class opens its
-/// ring, asks qemu.sh to type `a` through QEMU's monitor, and reads KEY_A
-/// (30) pressed and released, each batch ending in SYN_REPORT.
+/// The keyboard (V2 item 7d, D83): virtio-input bound, MSI-X where the
+/// kernel has MSIs and INTx on rv64's PLIC, pushing its keys to kbdfs. Keys
+/// typed through QEMU's monitor (qemu.sh's `qemu: sendkey`) come out of
+/// kbdfs's /dev/cons as a cooked line, then, with /dev/kbd open, as kbd's
+/// `k`, `c` and `K` messages. Each read waits for its keys (D84).
 func keyboard(_ ns: Namespace, _ status: String) {
   let bound = line(status, startingWith: "pci-00:11.0 1af4:1052 ") ?? ""
   check(holds(bound, " virtio-input-00:11.0 running dma "), "virtio-input is bound")
-  let path = "/svc/devmgr/drivers/virtio-input-00:11.0/"
-  guard let channel = try? ns.connect(path + "device") else { return check(false, "the keyboard's device") }
-  var device = InputDeviceIPC.DeviceClient(channel: channel)
-  check((try? device.info())?.kind == 1, "it is a keyboard")
-  guard var reader = try? InputReader(slots: 64), let events = try? reader.events(), (try? device.open(events)) != nil
-  else { return check(false, "the keyboard opens a reader's ring") }
-  print("qemu: sendkey a")
-  var seen: [InputEvent] = []
-  let deadline = Clock.monotonic() + 20_000_000_000
-  while Clock.monotonic() < deadline, !seen.contains(where: { $0.type == 1 && $0.code == 30 && $0.value == 0 }) {
-    seen += (try? reader.read(deadline: deadline)) ?? []
+
+  // cons: a line, cooked.
+  if var cons = try? ns.open("/dev/cons") {
+    cons.connection.timeout = 20_000_000_000
+    print("qemu: sendkey h i ret")
+    var typed: [UInt8] = []
+    while !typed.contains(0x0A), let more = try? cons.read(offset: 0, max: 64), !more.isEmpty { typed += more }
+    check(typed == Array("hi\n".utf8), "keys typed reach /dev/cons as a line")
+  } else {
+    check(false, "keys typed reach /dev/cons as a line")
   }
-  let driver = readText(ns, path + "status") ?? ""
+
+  // kbd: what is held and what was typed.
+  if var kbd = try? ns.open("/dev/kbd") {
+    kbd.connection.timeout = 20_000_000_000
+    print("qemu: sendkey a")
+    // Enter's release, from typing the line, may come first: a K after
+    // kbd opened, as kbdfs tracks keys held whether kbd is open or not.
+    let typed = Array("ka\0ca\0K\0".utf8)
+    func seen(_ b: [UInt8]) -> Bool {
+      b.count >= typed.count && (0...(b.count - typed.count)).contains { Array(b[$0..<$0 + typed.count]) == typed }
+    }
+    var bytes: [UInt8] = []
+    while !seen(bytes), bytes.count < 64,
+      let more = try? kbd.read(offset: 0, max: 64), !more.isEmpty
+    {
+      bytes += more
+    }
+    check(seen(bytes), "/dev/kbd: a held (k), typed (c), let go (K)")
+  } else {
+    check(false, "/dev/kbd: a held (k), typed (c), let go (K)")
+  }
+
+  let driver = readText(ns, "/svc/devmgr/drivers/virtio-input-00:11.0/status") ?? ""
   print("launch-test: virtio-input: \(driver)")
   #if arch(riscv64)
     check(holds(driver, "interrupt INTx"), "virtio-input on INTx (the PLIC)")
   #else
     check(holds(driver, "interrupt MSI-X"), "virtio-input on MSI-X")
   #endif
-  check(seen.contains { $0.type == 1 && $0.code == 30 && $0.value == 1 }
-          && seen.contains { $0.type == 1 && $0.code == 30 && $0.value == 0 },
-        "a key typed through QEMU's monitor reaches the reader")
-  check(seen.last?.endsBatch == true && seen.allSatisfy { $0.time > 0 }, "in batches ending at SYN_REPORT, timed")
+  check(holds(driver, "keys to /dev/kbin") && holds(driver, ", refused 0\n"), "its keys go to kbdfs")
 }
 
 /// The last word of `text`, as a decimal number.
@@ -430,8 +448,8 @@ func runPty(_ ns: Namespace) {
       print("launch-test: FAILED: no namespace")
       Process.exit(code: 1)
     }
-    check(ns.mountPoints.count == 2 && same(ns.mountPoints[0], "/bin") && same(ns.mountPoints[1], "/svc"),
-          "the namespace is /bin and /svc")
+    check(ns.mountPoints.count == 3 && same(ns.mountPoints[0], "/bin") && same(ns.mountPoints[1], "/dev")
+            && same(ns.mountPoints[2], "/svc"), "the namespace is /bin, /dev and /svc")
 
     // devmgr first: its status is still growing until it has bound.
     devices(ns)

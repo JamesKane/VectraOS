@@ -95,7 +95,8 @@ with bulk rings, the launcher) and time (but for two RTCs). Begun: tier
 1 (amd64 and arm64), and byte streams (the ring's byte-stream mode,
 stdio, FDIO, rc and its commands, which an audit against 9front found
 far from complete, and the pty, with rc on one), and drivers (D74:
-ACPI, PCI, devmgr with edu's DMA through each IOMMU, virtio and virtio-input:
+ACPI, PCI, devmgr with edu's DMA through each IOMMU, virtio, virtio-input and
+kbdfs's /dev/kbd and /dev/cons, D83:
 item 7's exit met). V2's exit test `cat /svc/*/status` passes, run by
 rc. `docs/roadmap.md` opens with where things stand; keep it current.
 

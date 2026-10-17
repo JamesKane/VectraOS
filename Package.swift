@@ -127,9 +127,12 @@ let ipc: [Target] = [
           swiftSettings: tier0),
   .target(name: "VirtioBlk", dependencies: ["Virtio"], path: "drivers/block/virtio-blk/lib", swiftSettings: tier0),
   .testTarget(name: "VirtioTests", dependencies: ["Virtio", "VirtioBlk"], path: "drivers/virtio/tests"),
-  // The input class (V2 item 7d): its protocol and its events on the one ring.
-  .target(name: "InputDevice", dependencies: ["IPC", "Ring", "Sys"], path: "drivers/input/lib", swiftSettings: tier0),
-  .testTarget(name: "InputTests", dependencies: ["InputDevice", "IPC"], path: "drivers/input/tests"),
+  // The input class (V2 item 7d, D83): the usages keyboards push to kbdfs.
+  .target(name: "InputDevice", path: "drivers/input/lib", swiftSettings: tier0),
+  .testTarget(name: "InputTests", dependencies: ["InputDevice"], path: "drivers/input/tests"),
+  // kbdfs (D83): the keyboard and the console, after 9front's.
+  .target(name: "Kbdfs", path: "services/kbdfs/lib", swiftSettings: tier0),
+  .testTarget(name: "KbdfsTests", dependencies: ["Kbdfs"], path: "services/kbdfs/tests"),
 ]
 
 let package = Package(

@@ -24,6 +24,7 @@
 //   iommus             each unit and whether the kernel took it
 //   enumeration        how long finding the PCI functions took, buses mapped
 //   acpi               the tables, and how long loading and _STA took
+//   dev/               the classes' device directories (D82), granted as /dev
 //   drivers/SERVICE/   each driver host's own tree
 
 import DevMgr
@@ -173,6 +174,9 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     tree.text("iommus", read: { findings.lock.withLock { findings.iommus } })
     tree.text("enumeration", read: { findings.lock.withLock { findings.enumeration } })
     tree.text("acpi", read: { findings.lock.withLock { findings.acpi } })
+    // The classes' device directories (D82), bound in as their drivers come;
+    // manifests mount it at /dev.
+    tree.directory("dev")
     guard let export = start.export() else { fail("no export (its manifest's `export`)") }
     do throws(Status) {
       try tree.serve(export)
@@ -291,8 +295,14 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       fail("can't make a launcher: \(error.rawValue)")
     }
     let configBase = w.base + UInt64(ECAM.offset(bus: Int(w.startBus), device: 0, function: 0))
-    launcher.extraStartupHandles = { service in
-      guard let e = entries.first(where: { $0.service.map { s in same(s, service) } == true }) else { return [] }
+    // Its namespace: kbdfs's kbin, for keyboards (D83).
+    let namespace = try? Namespace(start)
+    launcher.extraStartup = { service, startup in
+      guard let e = entries.first(where: { $0.service.map { s in same(s, service) } == true }) else { return }
+      // An input driver pushes its keys to kbdfs (D83): its own channel to kbin.
+      if let d = e.driver, same(d.deviceClass, "input"), let kbin = try? namespace?.connect("/dev/kbin") {
+        startup.mount(kbin, at: "/dev/kbin")
+      }
       let mmio = Handle(raw: mmioRaw)
       let io: Handle? = ioRaw != 0 ? Handle(raw: ioRaw) : nil
       let irqs: Handle? = irqRaw != 0 ? Handle(raw: irqRaw) : nil
@@ -314,7 +324,7 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       if let io { _ = io.release() }
       if let irqs { _ = irqs.release() }
       if let msi { _ = msi.release() }
-      return made ?? []
+      for h in made ?? [] { startup.add(raw: h.handle, info: h.info) }
     }
     for e in entries {
       guard let program = e.program, let service = e.service else { continue }

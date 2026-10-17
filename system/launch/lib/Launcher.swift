@@ -107,11 +107,11 @@ public final class Launcher: @unchecked Sendable {
   /// The UTC page (D48): every process is given it to read, a `clock`
   /// service writable.
   var utcPage: UInt32 = 0
-  /// Handles for an instance of the named service beyond what its manifest
-  /// grants, made afresh for each instance (raw handles, given to it, and
-  /// their info words): devmgr's for a driver host's device. Set before
-  /// `start`.
-  public var extraStartupHandles: ((String) -> [(info: UInt32, handle: UInt32)])?
+  /// What an instance of the named service is given beyond its manifest's
+  /// grants, added to its Startup afresh for each instance: devmgr's for a
+  /// driver host, its device's handles and the mounts its class needs
+  /// (a keyboard's /dev/kbin, D83). Set before `start`.
+  public var extraStartup: ((String, Startup) -> Void)?
   /// The launcher's two threads (raw handles; 0 if not started).
   var dispatcherThread: UInt32 = 0
   var supervisorThread: UInt32 = 0
@@ -266,7 +266,7 @@ public final class Launcher: @unchecked Sendable {
     }
     try mounts(for: s, into: startup)
     try granted(s, into: startup)
-    for h in extraStartupHandles?(m.service) ?? [] { startup.add(raw: h.handle, info: h.info) }
+    extraStartup?(m.service, startup)
     let process = try sys { () throws(Status) in try Process.create(job: s.job, name: m.service) }
     guard let program = programs.first(where: { NodeIPC.same($0.name, m.program) }) else {
       throw failed("no program '\(m.program)'")

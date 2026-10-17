@@ -30,8 +30,8 @@ under `vx ci` and every budget it introduces has a running check
   - Begun: drivers (item 7, D74: todhchai's, ported, in five steps;
     7a, the AML interpreter, 7b, PCI over ECAM, and 7c, devmgr and the
     driver host with edu's interrupt and DMA through each IOMMU, and 7d,
-    virtio and virtio-input, done, the input class still to take D82's
-    `/dev/kbd` shape; their budgets come at V2's exit). Not started: the console and the router (item 8).
+    virtio, virtio-input and kbdfs's /dev/kbd and /dev/cons (D83, D84),
+    done; their budgets come at V2's exit). Not started: the console and the router (item 8).
   - Exit: `cat /svc/*/status` run by rc passes (amd64, arm64). Still
     open: spawn → main < 200 µs, and the first recorded bench history.
 - **V3 onward** are not started (V6's boards have research passes).
@@ -488,8 +488,7 @@ work, in order:
        (their stream match pairs are a board's) give no BTI yet; the HPET's
        `_INI` fails on q35 (the kernel keeps its page), as todhchai's did
        without regions.
-   - **7d, the virtio library and virtio-input, done but for D82's shape
-     (2026-10-17):**
+   - **7d, the virtio library and virtio-input, done (2026-10-17):**
      todhchai's virtio library (`drivers/virtio/lib`, Virtio: the modern
      transport, split queues, the devices' configurations) and
      virtio-input lifted; VirtioTests' 6 hosted, byte-identical (with
@@ -501,27 +500,30 @@ work, in order:
      virtio-input refuses a device without it: QEMU's virtio bypasses the
      IOMMU unless `iommu_platform=on`, taking a driver's I/O addresses as
      physical (found here: the queue read and wrote whatever lay at them).
-     The input class (`drivers/input/lib`, InputDevice): `Device`'s `info`
-     and `open`, whose argument is a ring the reader made (one of the one
-     ring's, 16-byte slots: time, evdev type, code, value), its events
-     there and not on the channel, so todhchai's version 1 events and its
-     TDIR ring both go; the driver never waits for a reader, dropping and
-     counting what doesn't fit (InputTests' 4 hosted, the protocol and the
-     ring). QEMU has `virtio-keyboard-pci` at slot 0x11 on every arch, and
-     qemu.sh types for the guest: a console line `qemu: sendkey KEYS`
-     sends them through the monitor (now open in every test run, its
-     socket's path kept short; its output read from a descriptor of its
-     own, as bash dropped the coproc's after a monitor command on rv64).
-     launch-test opens the keyboard's ring and reads KEY_A pressed and
-     released: through MSI-X on amd64 and arm64, INTx on rv64's PLIC.
-     **Still to do for D82** (decided after this was built): the class is
-     to be 9front's `/dev/kbd`, `/dev/mouse` and `/dev/mousectl`, its
-     records Plan 9's (kbd's `k`/`K`/`c` lines, mouse's `m` records), read
-     plainly or through the one ring attached with Node's `attach` (D67),
-     bound into `/dev` by devmgr. The typed `InputDeviceIPC` and its evdev
-     slots go; the virtio library, the driver and qemu.sh's keys stay.
-   - **7e, only if it comes cheaply:** the console's input, virtio-input
-     into the console's `/dev/cons`, with no pty (V2's exit, below).
+     The input class, after D82, D83 and D84: keyboards push HID usages
+     to kbdfs's `kbin` (`drivers/input/lib`: evdev's codes to usages for
+     virtio-input; devmgr mounts kbin into each input host's namespace),
+     and kbdfs (`services/kbdfs`, ours after 9front's kbdfs(8), D4) serves
+     `/dev/kbd` (`k`, `K`, `c`), `/dev/cons` and `/dev/consctl` (cooked
+     lines with ^H, ^W, ^U and ^D, `rawon`), `/dev/kbmap` (by usage, 9front's
+     layers but the escaped ones, a US map built in), `kbin` and `kbdin`
+     (KbdfsTests' 6 hosted); its reads wait until there are keys, Node's
+     streams with calls held by the server (D84, StreamTests). devmgr's
+     tree has `dev` for the classes' directories, which manifests mount
+     after kbdfs at `/dev`. QEMU has `virtio-keyboard-pci` at slot 0x11 on
+     every arch, and qemu.sh types for the guest: a console line `qemu:
+     sendkey KEYS` sends them through the monitor (now open in every test
+     run, its socket's path kept short; its output read from a descriptor
+     of its own, as bash dropped the coproc's after a monitor command on
+     rv64). launch-test types `h i ret` and reads "hi\n" from `/dev/cons`,
+     then `a` and reads `ka`, `ca`, `K` from `/dev/kbd`: through MSI-X on
+     amd64 and arm64, INTx on rv64's PLIC. The first version's typed
+     `InputDeviceIPC`, its evdev slots and `open`, went. Not yet: mice
+     (the mouse service, V5), kbdfs's compose sequences, the `c` repeat
+     and Kdel's interrupt note (notes, V3).
+   - **7e, the console's input, done in kbdfs (2026-10-17):** virtio-input's
+     keys reach `/dev/cons` with no pty (D83); the console that shows it
+     is item 8's.
    **Exit:** on every arch devmgr binds edu and virtio-input, a key
    injected through QEMU's monitor reaches a reader of the input class,
    and edu's DMA goes through the IOMMU. Met (2026-10-17): launch-test checks all

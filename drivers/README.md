@@ -13,7 +13,7 @@ drivers/
                  routing, grants, the match index) and its manifest
   virtio/        Virtio: the modern transport, split queues, devices' configurations (7d)
   block/virtio-blk/lib/  VirtioBlk: virtio-blk's request format (its class comes in V4, D76)
-  input/         the input class: lib/ (InputDevice: Device, its events on the one ring), idl/
+  input/         the input class: lib/ (InputDevice: evdev's codes as HID usages, D83)
     virtio-input/  keyboards, mice and tablets (7d)
   test/edu/      QEMU's edu device: the first driver, devmgr's test
 ```
@@ -63,13 +63,15 @@ where its DMA goes, then `bound N` once it is done), `iommus`,
 
 ## The input class
 
-An input driver serves `device` (`InputDeviceIPC.Device`, `drivers/input/lib`):
-`info`, and `open`, whose argument is a ring the reader made
-(`InputReader(slots:)` makes one and `events()` hands it over). Its events
-go there, a slot each (when, evdev type, code, value), each batch ending
-at SYN_REPORT; the driver never waits for its reader and drops what
-doesn't fit, counting it (`InputWriter`). virtio-input reads its device's
-event queue on MSI-X where the kernel has MSIs, else INTx.
+Keyboards are 9front's, keyed by HID usages (D83): a keyboard driver
+pushes the keyboard page's usages to kbdfs's `kbin` (`services/kbdfs`),
+each record a usage then 1 pressed or 0 released, one write a batch.
+devmgr mounts `/dev/kbin` into every host whose driver's class is
+`input`; `KeyboardUsage` (`drivers/input/lib`) turns evdev's codes,
+which virtio-input reports, into usages. kbdfs makes runes of them and
+serves `/dev/kbd` and `/dev/cons`. Mice come with the mouse service
+(V5). virtio-input reads its device's event queue on MSI-X where the
+kernel has MSIs, else INTx.
 
 ## virtio
 
