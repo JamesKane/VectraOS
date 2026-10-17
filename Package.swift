@@ -108,6 +108,12 @@ let ipc: [Target] = [
   // firmware tables out of the tree (vx acpi).
   .target(name: "TDACPI", path: "drivers/bus/acpi/lib", swiftSettings: tier0),
   .testTarget(name: "ACPITests", dependencies: ["TDACPI"], path: "drivers/bus/acpi/tests", exclude: ["native"]),
+  // PCI over ECAM (drivers/bus/pci, V2 item 7b, D74): configuration space,
+  // enumeration, BARs and capabilities, todhchai's; ECAM's registers
+  // through the runtime's accessors (CroiMMIO, croi/mmio.h).
+  .systemLibrary(name: "CroiMMIO", path: "user/include"),
+  .target(name: "PCI", dependencies: ["CroiMMIO"], path: "drivers/bus/pci/lib", swiftSettings: tier0),
+  .testTarget(name: "PCITests", dependencies: ["PCI", "TDACPI"], path: "drivers/bus/pci/tests", exclude: ["native"]),
 ]
 
 let package = Package(

@@ -10,3 +10,10 @@ module CroiRuntime {
   header "croi/runtime.h"
   export *
 }
+
+// Device registers alone (croi/mmio.h): what libraries that touch them
+// import, hosted as well as on the device.
+module CroiMMIO {
+  header "croi/mmio.h"
+  export *
+}

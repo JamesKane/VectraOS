@@ -17,14 +17,8 @@
 #include "td_floor.h"
 #include "td_native.h"
 
-// Device registers, for drivers and the interrupts suite: volatile
-// accesses, which Swift can't express. Port I/O is the floor's
-// (td_port_in, td_port_out: amd64).
-static inline uint8_t croi_mmio_read8(uint64_t address) { return *(volatile uint8_t *)address; }
-static inline uint16_t croi_mmio_read16(uint64_t address) { return *(volatile uint16_t *)address; }
-static inline uint32_t croi_mmio_read32(uint64_t address) { return *(volatile uint32_t *)address; }
-static inline void croi_mmio_write16(uint64_t address, uint16_t value) { *(volatile uint16_t *)address = value; }
-static inline void croi_mmio_write32(uint64_t address, uint32_t value) { *(volatile uint32_t *)address = value; }
+// Device registers (croi/mmio.h, its own module CroiMMIO too).
+#include "mmio.h"
 
 // The C library (system/libc, V2), through its own headers: what the
 // compilers and the Embedded Swift runtime call (mem*, the floor's heap)

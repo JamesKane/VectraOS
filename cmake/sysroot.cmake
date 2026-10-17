@@ -54,8 +54,9 @@ write_if_different(${OUT}/usr/include/td_native.h "${_native}")
 file(MAKE_DIRECTORY ${OUT}/usr/include/croi)
 file(COPY ${CROI_HEADERS}/syscall.h DESTINATION ${OUT}/usr/include/croi)
 # runtime.h too (CroiRuntime), for tier 1's builds of tier 0's libraries
-# (Loader's segments).
-file(COPY ${CROI_HEADERS}/runtime.h DESTINATION ${OUT}/usr/include/croi)
+# (Loader's segments), and the device registers' mmio.h it includes
+# (CroiMMIO).
+file(COPY ${CROI_HEADERS}/runtime.h ${CROI_HEADERS}/mmio.h DESTINATION ${OUT}/usr/include/croi)
 file(READ ${KERNEL_HEADERS}/module.modulemap _map)
 string(REGEX MATCH "module CroiAbi {[^}]*}" _abi "${_map}")
 string(REGEX MATCHALL "header \"[^\"]+\"" _lines "${_abi}")
@@ -81,6 +82,10 @@ module CroiSyscall {
 }
 module CroiRuntime {
   header \"croi/runtime.h\"
+  export *
+}
+module CroiMMIO {
+  header \"croi/mmio.h\"
   export *
 }
 module TDFloor {

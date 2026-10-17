@@ -526,3 +526,7 @@ drivers/bus/acpi/tests/RobustnessTests.swift	todhchai	527ff94	drivers/bus/acpi/t
 drivers/bus/acpi/tests/TableTests.swift	todhchai	527ff94	drivers/bus/acpi/tests/TableTests.swift
 tools/vx/ACPICommand.swift	todhchai	527ff94	tools/td/ACPICommand.swift
 drivers/bus/acpi/A0.md	todhchai	527ff94	docs/milestones/A0.md
+drivers/bus/pci/lib/Config.swift	todhchai	527ff94	drivers/bus/pci/lib/Config.swift
+drivers/bus/pci/lib/ECAM.swift	todhchai	527ff94	drivers/bus/pci/lib/ECAM.swift
+drivers/bus/pci/lib/Enumerate.swift	todhchai	527ff94	drivers/bus/pci/lib/Enumerate.swift
+drivers/bus/pci/tests/PCITests.swift	todhchai	527ff94	drivers/bus/pci/tests/PCITests.swift

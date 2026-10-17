@@ -25,7 +25,7 @@ under `vx ci` and every budget it introduces has a running check
     The pty runs on rings, and rc runs on one, sharing the terminal
     with the programs it runs.
   - Begun: drivers (item 7, D74: todhchai's, ported, in five steps;
-    7a, the AML interpreter, done). Not started: the console and the router (item 8).
+    7a, the AML interpreter, and 7b, PCI over ECAM, done). Not started: the console and the router (item 8).
   - Exit: `cat /svc/*/status` run by rc passes (amd64, arm64). Still
     open: spawn → main < 200 µs, and the first recorded bench history.
 - **V3 onward** are not started (V4's boards have research passes).
@@ -408,8 +408,23 @@ work, in order:
      (Power.swift) goes when devmgr owns the namespace (userboot stays
      the kernel's small first process), and the interpreter's budgets
      (todhchai's acpi-bench) come with devmgr, where it runs for real.
-   - **7b, PCI over ECAM** (bus/pci): config space, enumeration, BARs,
-     capabilities, from the MCFG.
+   - **7b, PCI over ECAM, done (2026-10-16):** todhchai's bus/pci
+     (`drivers/bus/pci`, PCI) lifted: configuration space, enumeration
+     across bridges, BARs sized with decoding off and restored, capability
+     lists, all bounded against firmware loops; its ECAM through the
+     runtime's accessors, now `croi/mmio.h` (module CroiMMIO, 8-64 bits,
+     which `runtime.h` includes and the host's tests import) instead of
+     `_Volatile`. PCITests' 6 hosted, over a model and q35's MCFG.
+     Natively, `bin/pci-test` (boot-pci, every arch) maps the MCFG's
+     window from the boot's tables (its base is bus 0's, so the buses
+     start `startBus` MiB in, which todhchai's devmgr didn't add) and
+     finds the host bridge, edu (its 1 MiB BAR, MSI), virtio-blk and
+     virtio-rng (vendor capabilities, MSI-X, 64-bit BARs), rv64's IOMMU,
+     and the same again on a second pass. For 7c: mapping all 256 buses'
+     window takes 145 ms under arm64 TCG, so devmgr maps the buses it
+     walks; QEMU's virtio devices are transitional (1af4:1001, 1005), so
+     a modern-only transport (7d) takes them by their modern capabilities
+     or QEMU gives `disable-legacy=on`.
    - **7c, devmgr and the driver host:** devmgr reads the boot data, loads
      the ACPI namespace, enumerates PCI and the ACPI platform devices,
      routes INTx through `_PRT`, and matches `driver.manifest` records
@@ -419,7 +434,8 @@ work, in order:
      its IOMMU, narrowed. The first driver is QEMU's `edu` (an interrupt
      and DMA through the IOMMU, every arch); the first platform device,
      amd64's CMOS clock (PNP0B00, its `_CRS` ports), listed in devmgr's
-     status. MMIO through `croi_mmio_*`, widened to 8-64 bits.
+     status. MMIO through `croi_mmio_*` (croi/mmio.h, 8-64 bits since 7b),
+     with the driver host's `Registers` over them.
    - **7d, the virtio library and virtio-input:** the modern virtio-pci
      transport and split queues; the input class on the one ring (its
      TDIR format goes, as the syscall audit has it); QEMU gains a

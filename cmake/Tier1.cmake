@@ -47,6 +47,7 @@ function(croi_tier1 bootfs_var depends_var)
             ${PROJECT_SOURCE_DIR}/user/include/croi/syscall.h ${PROJECT_SOURCE_DIR}/kernel/include/module.modulemap
             ${_floor_include}/td_floor.h ${_floor_include}/td_native.h ${_floor_include}/td_utc.h
             ${_floor_include}/td_stdio.h ${PROJECT_SOURCE_DIR}/user/include/croi/runtime.h
+            ${PROJECT_SOURCE_DIR}/user/include/croi/mmio.h
     COMMENT "Tier 1's sysroot")
   add_custom_target(sysroot ALL DEPENDS ${_sysroot}/usr/lib/libsys.a)
 
