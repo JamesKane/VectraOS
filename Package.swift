@@ -144,6 +144,9 @@ let ipc: [Target] = [
   // The input class (V2 item 7d, D83): the usages keyboards push to kbdfs.
   .target(name: "InputDevice", path: "drivers/input/lib", swiftSettings: tier0),
   .testTarget(name: "InputTests", dependencies: ["InputDevice"], path: "drivers/input/tests"),
+  // The net class (D82): a NIC as Plan 9's ether(3) directory.
+  .target(name: "NetClass", dependencies: ["Node", "IPC", "Sys"], path: "drivers/net/lib", swiftSettings: tier0),
+  .testTarget(name: "NetClassTests", dependencies: ["NetClass", "Node", "IPC", "Sys"], path: "drivers/net/tests"),
   // kbdfs (D83): the keyboard and the console, after 9front's.
   .target(name: "Kbdfs", path: "services/kbdfs/lib", swiftSettings: tier0),
   .testTarget(name: "KbdfsTests", dependencies: ["Kbdfs"], path: "services/kbdfs/tests"),

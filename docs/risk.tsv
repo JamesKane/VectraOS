@@ -73,6 +73,7 @@ drivers/bus/pci/	all	PCITests	boot-pci,boot-launch	man
 drivers/devmgr/	all	DevMgrTests	boot-launch	man
 drivers/virtio/	all	VirtioTests	boot-launch	man
 drivers/input/	all	InputTests	boot-launch	man
+drivers/net/	all	NetClassTests	boot-launch	man
 data/fonts/	all	-	boot-smoke,framebuffer-pixels,boot-launch	-
 text/fonts/	all	-	boot-smoke,framebuffer-pixels,boot-launch	-
 tools/vx/	all	-	boot-smoke,framebuffer-pixels,boot-trace,trace-collect,boot-launch	man,loc,hardware,risk

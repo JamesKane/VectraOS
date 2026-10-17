@@ -27,6 +27,7 @@ A PCI function's driver gets a resource for each memory or I/O range of its BARs
 Where no IOMMU covers it, the BTI is the stub's, which lets the device reach all of memory, and `status` says so.
 An ACPI device's driver gets the memory and I/O ranges and the first interrupt its `_CRS` names.
 A driver whose class is `input` is also given a channel to kbdfs(4)'s `kbin`, at `/dev/kbin`.
+A driver whose class is `net` serves an `ether` directory in its tree (ether(3)), which devmgr binds in its `net` directory as `ether0`, `ether1` and so on, in the order the drivers start.
 
 devmgr serves its tree at once, before it has finished, so that `status` grows as it goes and ends with `bound <n>` when it is done.
 Each driver's own tree is mounted under `drivers`.
@@ -47,7 +48,7 @@ export
 ```
 
 `resource ioport` is there on amd64 only.
-A manifest that uses devmgr typically mounts its `dev` at `/dev`, after kbdfs's.
+A manifest that uses devmgr typically mounts its `dev` at `/dev`, after kbdfs's, and its `net` at `/net`.
 
 A machine devmgr cannot use stops it with a message: no ACPI tables in the boot data, no MCFG table, a driver index in error (the file and line are given), or no bootfs or job.
 
@@ -81,12 +82,14 @@ The devices and what became of them:
 : `/svc/devmgr/dev`
   A directory for the devices' classes, to mount at `/dev`.
   It is empty: no driver serves a class directory yet.
+: `/svc/devmgr/net`
+  The Ethernet devices, `ether0` and on, each a driver's ether(3) directory; to mount at `/net`.
 : `/svc/devmgr/drivers`
   A directory of the drivers' own trees, one for each driver service that is running: `drivers/edu-00:10.0/status`.
 
 # SEE ALSO
 
-driver(6), manifest(6), launcher(8), intro(3), virtio-input(3), kbdfs(4)
+driver(6), manifest(6), launcher(8), intro(3), virtio-input(3), virtio-net(3), ether(3), kbdfs(4)
 
 # DIAGNOSTICS
 

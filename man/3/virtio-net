@@ -1,0 +1,40 @@
+page virtio-net 3
+summary the virtio network driver
+src drivers/net/virtio-net/Main.swift drivers/net/virtio-net/lib/NetBackend.swift drivers/net/virtio-net/driver.manifest
+keys ethernet network nic virtio net
+
+# DESCRIPTION
+
+virtio-net drives a virtio network device (Virtual I/O Device 1.2, section 5.1), as QEMU provides them, and serves it as an Ethernet device, ether(3).
+devmgr(8) starts one for each device that matches its records (driver(6)):
+
+```text
+driver virtio-net
+class net
+match pci 1af4:1041
+match pci 1af4:1000
+```
+
+The driver asks the device for its address, its link's state and its MTU, and for nothing else: no offloads, checksums or multiple queues.
+A device with no address of its own gets `020000000001`; one with no MTU, 1500.
+It keeps a receive queue full of 2 KiB buffers and sends from a transmit queue of as many, at most 128 each, which the device reads and writes through its own DMA: the driver refuses a device that does not let the IOMMU translate its addresses (a virtio device must offer `ACCESS_PLATFORM`; QEMU's does with `iommu_platform=on`).
+The device's interrupt is MSI-X where devmgr gave the driver an MSI vector, else INTx, and with INTx the driver also polls the queues every 50 ms against a lost interrupt.
+A frame written when every transmit buffer is with the device is not sent, and counts as an output error.
+
+# FILES
+
+The driver's tree is served in devmgr(8)'s, at `drivers/virtio-net-<address>`.
+
+: `ether`
+  The device's ether(3) directory, which devmgr binds at `/net/etherN`.
+: `status`
+  Read only.
+  `mac`, `mtu`, `link` (`up` or `down`), `features` (those in use, in hex) and `interrupt` (`MSI-X` or `INTx`), a line each; then the counts: `received <n> transmitted <n> dropped <n> unsent <n>` and `interrupts <n> polls <n>`.
+  `dropped` counts frames too short or too long; `unsent`, frames with no transmit buffer free.
+  If setup failed, `FAILED: status <n>`, with a line before it saying why when the device bypasses the IOMMU.
+
+`ether`'s `ifstats` reads as the counts' first line.
+
+# SEE ALSO
+
+ether(3), devmgr(8), driver(6), intro(3)

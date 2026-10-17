@@ -5,7 +5,7 @@
 # /dev is kbdfs's, then devmgr's device directories (D82, D83); the
 # manual is bootfs's lib/man (D86), which rc's man reads.
 # Its /env from its `env` lines, and /svc/env for rc's groups (D81).
-# /proc is proc's (D79).
+# /proc is proc's (D79); /net, devmgr's ether(3) directories (D82).
 # The console at /mnt/console, not /svc: its status changes as the log
 # grows, which `cat /svc/*/status` would race.
 service launch-test
@@ -20,6 +20,7 @@ mount /bin bootfs/bin
 mount /lib/man bootfs/lib/man
 mount /dev kbdfs
 mount /dev devmgr/dev after
+mount /net devmgr/net
 mount /mnt/console console
 mount /mnt/plumb plumber
 mount /proc proc

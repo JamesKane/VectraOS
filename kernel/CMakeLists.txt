@@ -316,6 +316,10 @@ set(_kbdfs ${CMAKE_CURRENT_BINARY_DIR}/kbdfs.elf)
 croi_user_program(${_kbdfs} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/services/kbdfs/Main.swift)
 set(_virtio_input ${CMAKE_CURRENT_BINARY_DIR}/virtioinput.elf)
 croi_user_program(${_virtio_input} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/input/virtio-input/Main.swift)
+# bin/virtio-net (D82): the net class over virtio-net, ether(3)'s directory.
+set(_virtio_net ${CMAKE_CURRENT_BINARY_DIR}/virtionet.elf)
+croi_user_program(${_virtio_net} PIE SYS IPC SWIFT ${PROJECT_SOURCE_DIR}/drivers/net/virtio-net/Main.swift
+                  ${PROJECT_SOURCE_DIR}/drivers/net/virtio-net/lib/NetBackend.swift)
 file(GLOB_RECURSE _driver_manifests CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/*/driver.manifest)
 list(SORT _driver_manifests)
 set(_drivers_index ${CMAKE_CURRENT_BINARY_DIR}/drivers.index)
@@ -366,7 +370,7 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
           etc/manifests/launch-test.manifest=${_launch_test_manifest} ${_time_bootfs}
           bin/pty=${_pty} etc/manifests/pty.manifest=${_manifests}/pty.manifest
           bin/bootfs=${_bootfs_service} etc/manifests/bootfs.manifest=${_manifests}/bootfs.manifest
-          bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} etc/drivers=${_drivers_index}
+          bin/devmgr=${_devmgr} bin/edu=${_edu} bin/virtio-input=${_virtio_input} bin/virtio-net=${_virtio_net} etc/drivers=${_drivers_index}
           etc/manifests/devmgr.manifest=${_devmgr_manifest}
           bin/kbdfs=${_kbdfs} etc/manifests/kbdfs.manifest=${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
           bin/console=${_console} etc/manifests/console.manifest=${PROJECT_SOURCE_DIR}/services/console/console.manifest
@@ -378,7 +382,7 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs.img
           ${_launcher} ${_launch_service} ${_launch_test} ${_manifests}/a.manifest ${_manifests}/b.manifest
           ${_launch_test_manifest} ${_time} ${_manifests}/time.manifest ${_pty} ${_manifests}/pty.manifest
           ${_bootfs_service} ${_manifests}/bootfs.manifest
-          ${_devmgr} ${_edu} ${_virtio_input} ${_drivers_index} ${_devmgr_manifest}
+          ${_devmgr} ${_edu} ${_virtio_input} ${_virtio_net} ${_drivers_index} ${_devmgr_manifest}
           ${_kbdfs} ${PROJECT_SOURCE_DIR}/services/kbdfs/kbdfs.manifest
           ${_console} ${PROJECT_SOURCE_DIR}/services/console/console.manifest
           ${_plumber} ${PROJECT_SOURCE_DIR}/services/plumber/plumber.manifest

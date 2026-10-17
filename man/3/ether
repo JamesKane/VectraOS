@@ -1,0 +1,91 @@
+page ether 3
+summary Ethernet devices: the net class's directory
+src drivers/net/lib/Ether.swift
+keys ethernet network nic frame packet net class clone conversation
+
+# SYNOPSIS
+
+```text
+/net/ether0/clone
+/net/ether0/addr
+/net/ether0/stats
+/net/ether0/ifstats
+/net/ether0/N/ctl
+/net/ether0/N/data
+/net/ether0/N/type
+/net/ether0/N/stats
+/net/ether0/N/ifstats
+```
+
+# DESCRIPTION
+
+Each Ethernet device is a directory, as Plan 9's ether(3) has it: a driver of the `net` class serves it, and devmgr(8) binds the first at `/net/ether0`, the next at `/net/ether1`, and so on.
+
+The device has eight conversations, numbered from 0, each a directory of its own made the first time it is used.
+Opening `clone` takes the first conversation not in use and gives a channel to its `ctl`; reading that channel gives the conversation's number.
+A conversation stays in use while its `ctl` or `data` is open, and when the last of those closes it is reset: its type 0, not promiscuous, its frames dropped.
+
+`ctl` takes these commands, one a write:
+
+: `connect` <type>
+  Take frames of Ethernet type <type>, a number in C's notation (`0x800` for IPv4, `0x806` for ARP, `0x86dd` for IPv6).
+  A positive type another conversation has connected to is refused.
+  `-1` takes frames of every type; `-2` takes every frame as a header record (below), with no length or time.
+: `promiscuous`
+  Take frames sent to other hosts too.
+: `headersonly`
+  Take, for each frame, a 64-byte record: the frame's first 64 bytes, its length in bytes 58 and 59 and the milliseconds since boot in bytes 60 to 63, big-endian.
+: `addmulti` <address>, `delmulti` <address>, `remmulti` <address>
+  Take, or stop taking, frames sent to the multicast <address>, 12 hex digits with or without colons.
+: `nonblocking`
+  Accepted; writes never wait.
+
+Any other command is refused.
+Reading `ctl` gives the conversation's number, as `type` gives its type: right-justified in 11 columns and followed by a blank, as a 32-bit unsigned number (so `-1` reads `4294967295`).
+
+Each read of `data` returns one frame, the 14-byte header (destination, source, type) and its payload, without the checksum; a read shorter than the frame gets its start and loses the rest.
+A read waits until a frame comes.
+A conversation holds up to 64 frames; frames past that are dropped and counted as soft overflows.
+A conversation takes the frames of its type sent to the device's address, to the broadcast address, or to a multicast address it added, and, if promiscuous, every frame of its type.
+
+Each write to `data` is one frame, header included, of 60 to 1514 bytes; the source address in it is replaced by the device's.
+A frame written to the broadcast or a multicast address is also given to the device's conversations of its type, as one received would be.
+
+`addr` reads as the device's address, 12 hex digits.
+`stats`, in the device's directory and in each conversation's, reads as Plan 9's lines:
+
+```text
+in: 4
+link: 1
+out: 2
+crc errs: 0
+overflows: 0
+soft overflows: 0
+framing errs: 0
+buffer errs: 0
+output errs: 0
+prom: 0
+mbps: 1000
+addr: 525400123456
+```
+
+`in` and `out` count frames; `overflows` counts frames the device lost for want of a buffer, `output errs` frames the driver couldn't send, `prom` the promiscuous conversations.
+`ifstats` is the driver's own text.
+
+# EXAMPLES
+
+The first device's address:
+
+```rc
+% cat /net/ether0/addr
+525400123456
+```
+
+# SEE ALSO
+
+virtio-net(3), devmgr(8), intro(3)
+
+# BUGS
+
+`bridge`, `bypass` and `scanbs` are refused: there is no bridging and no wireless.
+Through the one ring, a read of `data` doesn't wait: it returns nothing when no frame is there.

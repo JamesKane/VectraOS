@@ -175,8 +175,9 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     tree.text("enumeration", read: { findings.lock.withLock { findings.enumeration } })
     tree.text("acpi", read: { findings.lock.withLock { findings.acpi } })
     // The classes' device directories (D82), bound in as their drivers come;
-    // manifests mount it at /dev.
+    // manifests mount them at /dev and /net.
     tree.directory("dev")
+    tree.directory("net")
     guard let export = start.export() else { fail("no export (its manifest's `export`)") }
     do throws(Status) {
       try tree.serve(export)
@@ -326,12 +327,21 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
       if let msi { _ = msi.release() }
       for h in made ?? [] { startup.add(raw: h.handle, info: h.info) }
     }
+    var ethers = 0
     for e in entries {
       guard let program = e.program, let service = e.service else { continue }
       let manifest = "service \(service)\nprogram \(program)\nexport\nrestart on-failure\n"
       do throws(LaunchError) {
         try launcher.start([(path: "devmgr/\(service)", text: manifest)])
         _ = tree.mount("drivers/\(service)", try launcher.channel(to: service))
+        // A NIC's ether(3) directory, at net/etherN (D82).
+        if let d = e.driver, same(d.deviceClass, "net") {
+          var host = NodeIPC.NodeClient(channel: try launcher.channel(to: service))
+          if let ether = try? host.open("ether") {
+            _ = tree.mount("net/ether\(ethers)", ether.takeChannel())
+            ethers += 1
+          }
+        }
         findings.lock.withLock { e.state = "running" }
       } catch {
         findings.lock.withLock { e.state = "failed" }

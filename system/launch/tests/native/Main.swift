@@ -164,6 +164,7 @@ func devices(_ ns: Namespace) {
     check(holds(status, " PNP0B00 - - unbound"), "the CMOS clock, a platform device")
   #endif
   keyboard(ns, status)
+  network(ns, status)
 }
 
 
@@ -274,6 +275,52 @@ func keyboard(_ ns: Namespace, _ status: String) {
     check(holds(driver, "interrupt MSI-X"), "virtio-input on MSI-X")
   #endif
   check(holds(driver, "keys to /dev/kbin") && holds(driver, ", refused 0\n"), "its keys go to kbdfs")
+}
+
+/// The network's device (V3, D82): virtio-net bound at slot 0x12, its
+/// ether(3) directory at /net/ether0. An ARP request for QEMU's gateway
+/// (10.0.2.2), written to a conversation of ARP's type, and the gateway's
+/// reply read from it: a frame each way through the device. The request
+/// itself comes back first, as a broadcast written does in Plan 9.
+func network(_ ns: Namespace, _ status: String) {
+  check(holds(status, " virtio-net-00:12.0 running dma "), "virtio-net is bound")
+  let addr = Array((readText(ns, "/net/ether0/addr") ?? "").utf8)
+  check(addr.count == 12, "/net/ether0/addr is an address")
+  var mac: [UInt8] = []
+  for i in stride(from: 0, to: addr.count - 1, by: 2) {
+    mac.append(UInt8(String(decoding: addr[i..<(i + 2)], as: UTF8.self), radix: 16) ?? 0)
+  }
+  guard mac.count == 6, var ctl = try? ns.open("/net/ether0/clone") else {
+    check(false, "an ARP reply from the gateway through /net/ether0")
+    return
+  }
+  let number = String(decoding: ((try? ctl.readAll()) ?? []).filter { $0 != 0x20 }, as: UTF8.self)
+  let connected = (try? ctl.writeText("connect 0x806")) != nil
+  guard connected, var data = try? ns.open("/net/ether0/\(number)/data") else {
+    check(false, "an ARP reply from the gateway through /net/ether0")
+    return
+  }
+  data.connection.timeout = 20_000_000_000
+  let us: [UInt8] = [10, 0, 2, 15], gateway: [UInt8] = [10, 0, 2, 2]
+  var request: [UInt8] = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF] + mac + [0x08, 0x06]
+  request += [0, 1, 0x08, 0x00, 6, 4, 0, 1] + mac + us + [0, 0, 0, 0, 0, 0] + gateway
+  request += [UInt8](repeating: 0, count: 60 - request.count)
+  let sent = (try? data.write(offset: 0, request)) != nil
+  var replied = false
+  for _ in 0..<4 {
+    guard sent, let f = try? data.read(offset: 0, max: 2048), f.count >= 42 else { break }
+    // A reply (op 2) from the gateway, to us.
+    if f[20] == 0, f[21] == 2, Array(f[28..<32]) == gateway, Array(f[32..<38]) == mac {
+      replied = true
+      break
+    }
+  }
+  check(replied, "an ARP reply from the gateway through /net/ether0")
+  let stats = readText(ns, "/net/ether0/stats") ?? ""
+  print("launch-test: /net/ether0/stats: \(stats)")
+  check(holds(stats, "link: 1\n") && !holds(stats, "\nout: 0\n"), "/net/ether0/stats: the link up, a frame out")
+  _ = consume data
+  _ = consume ctl
 }
 
 /// The last word of `text`, as a decimal number.
@@ -592,11 +639,11 @@ func runPty(_ ns: Namespace) {
       print("launch-test: FAILED: no namespace")
       Process.exit(code: 1)
     }
-    check(ns.mountPoints.count == 8 && same(ns.mountPoints[0], "/bin") && same(ns.mountPoints[1], "/dev")
+    check(ns.mountPoints.count == 9 && same(ns.mountPoints[0], "/bin") && same(ns.mountPoints[1], "/dev")
             && same(ns.mountPoints[2], "/env") && same(ns.mountPoints[3], "/lib/man")
             && same(ns.mountPoints[4], "/mnt/console") && same(ns.mountPoints[5], "/mnt/plumb")
-            && same(ns.mountPoints[6], "/proc") && same(ns.mountPoints[7], "/svc"),
-          "the namespace is /bin, /dev, /env, /lib/man, /mnt/console, /mnt/plumb, /proc and /svc")
+            && same(ns.mountPoints[6], "/net") && same(ns.mountPoints[7], "/proc") && same(ns.mountPoints[8], "/svc"),
+          "the namespace is /bin, /dev, /env, /lib/man, /mnt/console, /mnt/plumb, /net, /proc and /svc")
     environment(ns)
 
     // devmgr first: its status is still growing until it has bound.

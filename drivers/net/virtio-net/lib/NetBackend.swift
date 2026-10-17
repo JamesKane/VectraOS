@@ -1,21 +1,19 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-// The net class over virtio-net (N1d; Virtual I/O Device 1.2 §5.1): the
-// receive queue (0) kept full of buffers the device writes, the transmit
-// queue (1) fed from the frame ring, each buffer a 2 KiB slot of memory
+// The net class over virtio-net (N1d, D82; Virtual I/O Device 1.2 §5.1):
+// the receive queue (0) kept full of buffers the device writes, the
+// transmit queue (1) fed a frame a write, each buffer a 2 KiB slot of memory
 // the device reaches (a `DMAMemory`, as virtio-blk's backend has it). A
 // buffer is the 12-byte virtio_net_hdr (all zero: no offloads were
 // negotiated, so none are asked for or reported) and then the frame.
 //
-// Two threads drive it: the dispatcher's, kicked by the net service
-// (`transmit`), and the interrupt's (`serviceInterrupt`: frames received
-// go to the ring, transmit buffers done are free again, and what the ring
-// still holds goes out). One lock covers the queues; the ring's own is
-// taken inside it, never the other way round.
+// Two threads drive it: the dispatcher's, a frame written to a
+// conversation's data (`transmit`), and the interrupt's
+// (`serviceInterrupt`: frames received go to the class, and transmit
+// buffers done are free again). One lock covers the queues; frames are
+// given to the class after it drops.
 
 import DriverHost
-import FrameRing
-import NetDevice
 import Sys
 import Virtio
 
@@ -40,12 +38,15 @@ import Virtio
   let transmitAddress: UInt, transmitBus: UInt64
   /// Transmit buffers not with the device, by index.
   var transmitFree: [Int]
-  var scratch = [UInt8](repeating: 0, count: FrameRing.maxFrame)
+  /// The largest frame, its header included (no FCS).
+  public static var maxFrame: Int { 1514 }
 
   public private(set) var received = 0
   public private(set) var transmitted = 0
-  /// Frames received with no ring open, or too short to hold the header.
+  /// Frames too short to hold the header, or too long; and frames not
+  /// sent for want of a free buffer.
   public private(set) var dropped = 0
+  public private(set) var unsent = 0
 
   /// Negotiates (the MAC address, link status, MTU), sets up both queues
   /// (`queueSize` entries, at most the device's), posts every receive
@@ -98,11 +99,6 @@ import Virtio
     notify.write(receiveNotify, width: 2, UInt64(Self.receiveQueue))
   }
 
-  /// The device's MAC address and MTU, for the protocol.
-  public var info: NetDeviceIPC.DeviceInfo {
-    NetDeviceIPC.DeviceInfo(mac: mac.reduce(UInt64(0)) { $0 << 8 | UInt64($1) }, mtu: mtu)
-  }
-
   /// The link's state: the device's, or up if it doesn't say.
   public var linkUp: Bool { features & Network.Feature.status == 0 || Network.config(device).status.map { $0 & 1 != 0 } ?? true }
 
@@ -111,72 +107,59 @@ import Virtio
                                deviceWrites: true)])
   }
 
-  /// What the device did since the last call: received frames delivered
-  /// to `ring` (or dropped without one) and their buffers posted again,
-  /// transmit buffers freed, and then `transmit`.
-  public func serviceInterrupt(_ ring: NetDeviceRing?) {
-    lock.withLock {
+  /// What the device did since the last call: each received frame given
+  /// to `deliver` (after the lock drops) and its buffer posted again, and
+  /// transmit buffers freed.
+  public func serviceInterrupt(_ deliver: ([UInt8]) -> Void) {
+    let frames = lock.withLock { () -> [[UInt8]] in
+      var frames: [[UInt8]] = []
       let done = receive.completed()
-      if !done.isEmpty {
-        var frames: [(slot: Int, count: Int)] = []
-        for d in done {
-          let slot = Int((d.address &- receiveBus) / UInt64(Self.bufferSize))
-          guard slot >= 0, slot < receive.layout.size else { continue }
-          let n = Int(d.written) - Self.headerSize
-          if n > 0, n <= FrameRing.maxFrame { frames.append((slot, n)) } else { dropped += 1 }
-          post(slot)
-        }
-        if let ring {
-          _ = ring.withServer { (s: inout FrameRingServer) throws(FrameRing.Corrupt) in
-            for f in frames {
-              let at = unsafe UnsafeRawPointer(bitPattern: receiveAddress + UInt(f.slot * Self.bufferSize + Self.headerSize))!
-              scratch.withUnsafeMutableBytes { unsafe $0.baseAddress!.copyMemory(from: at, byteCount: f.count) }
-              _ = try s.deliver(scratch, count: f.count)
-            }
-          }
-          received += frames.count
+      for d in done {
+        let slot = Int((d.address &- receiveBus) / UInt64(Self.bufferSize))
+        guard slot >= 0, slot < receive.layout.size else { continue }
+        let n = Int(d.written) - Self.headerSize
+        if n > 0, n <= Self.maxFrame {
+          let at = unsafe UnsafeRawPointer(bitPattern: receiveAddress + UInt(slot * Self.bufferSize + Self.headerSize))!
+          frames.append(unsafe Array(UnsafeRawBufferPointer(start: at, count: n)))
         } else {
-          dropped += frames.count
+          dropped += 1
         }
-        notify.write(receiveNotify, width: 2, UInt64(Self.receiveQueue))
+        post(slot)
       }
+      if !done.isEmpty { notify.write(receiveNotify, width: 2, UInt64(Self.receiveQueue)) }
+      received += frames.count
       for d in transmit.completed() {
         let slot = Int((d.address &- transmitBus) / UInt64(Self.bufferSize))
         if slot >= 0, slot < transmit.layout.size { transmitFree.append(slot) }
       }
-      if let ring { pump(ring) }
+      return frames
     }
+    for f in frames { deliver(f) }
   }
 
-  /// Takes frames from `ring` to the transmit queue (the dispatcher's
-  /// thread, when the service kicks).
-  public func transmit(_ ring: NetDeviceRing) { lock.withLock { pump(ring) } }
-
-  /// Under the lock: frames out while buffers are free; when the ring is
-  /// empty, idle (unless more came). When the buffers run out the driver
-  /// stays awake, and the interrupt for the next one done goes on.
-  func pump(_ ring: NetDeviceRing) {
-    while true {
-      var queued = 0
-      let more = ring.withServer { (s: inout FrameRingServer) throws(FrameRing.Corrupt) -> Bool in
-        while let slot = transmitFree.last {
-          guard let n = try s.take(into: &scratch) else { return false }
-          transmitFree.removeLast()
-          let at = unsafe UnsafeMutableRawPointer(bitPattern: transmitAddress + UInt(slot * Self.bufferSize))!
-          unsafe at.initializeMemory(as: UInt8.self, repeating: 0, count: Self.headerSize)
-          scratch.withUnsafeBytes { unsafe (at + Self.headerSize).copyMemory(from: $0.baseAddress!, byteCount: n) }
-          _ = transmit.submit([Buffer(address: transmitBus + UInt64(slot * Self.bufferSize),
-                                      length: UInt32(Self.headerSize + n), deviceWrites: false)])
-          queued += 1
-        }
-        return true
+  /// Sends `frame` (the dispatcher's thread, a write to a conversation's
+  /// data); false if every transmit buffer is with the device. A busy
+  /// device's buffers come back with its next interrupt.
+  public func transmit(_ frame: [UInt8]) -> Bool {
+    guard frame.count <= Self.maxFrame else { return false }
+    return lock.withLock {
+      // Done buffers first: an interrupt may not have come yet.
+      for d in transmit.completed() {
+        let slot = Int((d.address &- transmitBus) / UInt64(Self.bufferSize))
+        if slot >= 0, slot < transmit.layout.size { transmitFree.append(slot) }
       }
-      if queued > 0 {
-        transmitted += queued
-        notify.write(transmitNotify, width: 2, UInt64(Self.transmitQueue))
+      guard let slot = transmitFree.popLast() else {
+        unsent += 1
+        return false
       }
-      guard let more, !more else { return }  // the session ended, or no buffers
-      guard ring.prepareToIdle() else { return }
+      let at = unsafe UnsafeMutableRawPointer(bitPattern: transmitAddress + UInt(slot * Self.bufferSize))!
+      unsafe at.initializeMemory(as: UInt8.self, repeating: 0, count: Self.headerSize)
+      frame.withUnsafeBytes { unsafe (at + Self.headerSize).copyMemory(from: $0.baseAddress!, byteCount: frame.count) }
+      _ = transmit.submit([Buffer(address: transmitBus + UInt64(slot * Self.bufferSize),
+                                  length: UInt32(Self.headerSize + frame.count), deviceWrites: false)])
+      transmitted += 1
+      notify.write(transmitNotify, width: 2, UInt64(Self.transmitQueue))
+      return true
     }
   }
 }
