@@ -778,6 +778,13 @@ write prefix.
   Neon Tab beside it; Graphite, Indigo Magic and NeXT follow if time
   allows, or with V6's board.
 - SDK, with a reference app in ≤ 12 calls.
+- **Hot reload and plug-ins (D92, proposed; `docs/plugins.md`),** before
+  the SDK builds on the loader: `system/ld` opens a code image as a
+  fresh copy at a new address, never unmapped, and links objects with
+  TLS; the SDK's host template, its state block at a fixed address and
+  `@HotState`. `tile`'s layout policies are the first plug-in point,
+  built as plug-in processes from the start rather than libraries in
+  Radharc.
 - **rio (D75):** todhchai's Terminal ported as rio's text window inside
   Radharc: each window serves its programs' `/dev/cons`, `/dev/consctl`
   and `wctl`, edits their input itself (hold mode, `rawon`), and plumbs
@@ -800,6 +807,9 @@ write prefix.
   200% and 300%, and every shipped theme passes `theme check`.
 - rc runs in a rio window with no pty and no escape sequences; `vt`
   in one runs a tier 1 program that wants xterm.
+- The SDK's reference app hot reloads from the dev machine, through the
+  cpu session's `/mnt/term`, within `reload.module_10k`; a layout policy
+  is replaced live with no frame missed (`plugin.replace`).
 
 ## V6. Orange Pi 6 Plus (CIX Sky1)
 
@@ -955,10 +965,14 @@ frees the machine; its disks hold other work.
 - WASI over nodes and rings, a guest ABI under D80's rule: mapped onto
   Plan 9's interfaces, its shapes in nothing native.
 - A reference game: a frame-loop intent, input and audio rings, Vulkan.
+- Record and replay over the hot-reload state block (D92), and Wasm
+  plug-ins: a `wasmd` process serving a host's plug-in interface.
 
 **Exit:**
 - A Wasm build of a small Bevy or Godot sample runs at its frame budget on
   the Orange Pi 6 Plus.
+- The reference game runs with hot reload and looped replay, with no
+  frame missed at a reload (`reload.frames_missed`).
 
 ## V10. The Ghost (D90, proposed)
 

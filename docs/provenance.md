@@ -54,6 +54,7 @@ The actions in the tables:
 | `ui`, `text`, `graphics` (Vulkan/Venus), `codecs` | Lift | V5 | `graphics` changes on the way in: D55-D62 (memory by intent for both memory models, one sync mechanism, shader layouts from the IDL; F-106 not lifted) |
 | N1 (`n1` branch): `crypto`, `services/net`'s stack (serving `/net`; NetRing and NetIPC not lifted, D79), `drivers/net` (class + virtio-net) | Lift | V3 | The bring-up link (D15, D77): the stack and crypto under 9gate's core and Noise IK, brought forward from V7. `services/sshd` and SFTP are not lifted (D77). |
 | `rc`, the pty service, the launcher's `/dev/bin` union (N1e) | Lift | V2–V3 | rc is the one shell. The pty's line discipline as it was, its server and protocol on rings (D46); temporary, ejected in V3 for Plan 9's `/dev/cons` (D77, services/pty/README.md) |
+| principle 17 and `CodeModule` (architecture §16, sdk.md §11), principle 27 | Design | V5, V9 | Hot reload and plug-ins as processes (D92, `docs/plugins.md`) |
 | `ui/core` (`Theme`, `UIQuad`) and the Neon Tab look (desktop.md §6) | Port | V5 | Themes as data over roles, not hue-named tokens; Neon Tab ships as a theme, not the default (D91, `docs/theming.md`) |
 | `sdk/` and macros (`@AudioRenderer`) | Lift | V5 | |
 | `services/keyring`, as `services/factotum` (D75) | Lift | V3 | Noise IK's static key, the node's identity, from V3 (D77). Already after Plan 9's factotum; renamed, its AuthIPC sessions kept. A headless factotum asks no one (D75); keys persist with Taisce on disk (V4). |
@@ -67,6 +68,7 @@ The actions in the tables:
 | `lib/vx-9p` codec and `.def` tables | Rewrite | V3 | 9gate's 9P2000 codec, in Swift (D77, D78) |
 | docs/02 §6 swarm, `docs/proto/accel.md` | Design | V7–V8 | |
 | ADR-0019 (Adreno on the Q8B), ADR-0022 (remote processors), docs/22 (real hardware) | Design | V8 | The Q8B moved to V8 (D69) |
+| docs/03 §6.1 and ADR-0056 (the hot-reload host, code images), 01 §6.6, §7.4 and ADR-0043 (plug-ins as processes, seals and leases, live update) | Design | V5, V9 | D92, `docs/plugins.md`; Lua (ADR-0015) not carried |
 | docs/03 §5.4 (reactive tokens), §9.1 (`vx-magic`, `vx-next`), §9.5 (the trusted path) | Design | V5 | Radharc's theme tree; Indigo Magic and NeXT themes (D91) |
 | docs/03 §8 (`aid`), docs/18 §4 (verbs as tools), ADR-0029 (broad grants) | Design | V10 (proposed) | The Ghost (D90, `docs/ghost.md`); its vendored runtimes and `auditfs` dropped (D4, principle 1) |
 | `lib/vx-net` (TCP, DHCP, DNS) | Drop | — | todhchai's `services/net` is the one network stack |

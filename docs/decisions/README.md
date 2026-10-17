@@ -104,3 +104,4 @@ in a new file, and a line in the index below.
 - [D89. Crypto is todhchai's whole library, checked against 9front's libsec on the host](D089-crypto-oracle.md) — 2026-10-17, decided; extends D70
 - [D90. The Ghost: an opt-in, local-first agent built from the namespace's own mechanisms](D090-the-ghost.md) — 2026-10-17, proposed
 - [D91. Themes are data over one vocabulary; Platinum Indigo is the default, not the only look](D091-themes.md) — 2026-10-17, proposed; extends D24
+- [D92. Hot reload is a program's own code in its own process; a plug-in is a process; both compiled, in any language](D092-plugins-and-hot-reload.md) — 2026-10-17, proposed

@@ -218,8 +218,9 @@ it at any time:
   window's document or app, following Be's `_trk/windframe`.
 - **Mixing modes.** Any number of workspaces of either mode can exist, per
   output. A window moved between workspaces takes the target's mode.
-- **Layout policies** are Swift libraries behind one protocol. Adding a
-  layout is a library, not a new mechanism.
+- **Layout policies** are plug-in processes behind one interface (D92,
+  proposed; `docs/plugins.md`). Adding a layout is a plug-in, not a new
+  mechanism, and a layout that crashes leaves Radharc running.
 - **From todhchai:** tab stacking, stashing and the focus area with a live
   periphery. Each one must earn its place against principle 1 in V5.
 
