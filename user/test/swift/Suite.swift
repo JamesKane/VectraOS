@@ -60,6 +60,8 @@ enum Suite {
             PortRingSuite.run()
         } else if requested("notes") {
             NoteSuite.run()
+        } else if requested("crypto") {
+            CryptoSuite.run()
         } else if requested("floor") {
             FloorSuite.run()
         } else if requested("libc") {

@@ -5,12 +5,12 @@
 // Carlo test, data/nist-cavp), Project Wycheproof's (data/wycheproof:
 // valid and invalid tags, truncated tags, RFC 7914's PBKDF2 cases), FIPS
 // 180-4's constants computed again, the padding's boundaries fed in
-// pieces, and the host's OpenSSL on random inputs (architecture §17).
+// pieces, and 9front's libsec on random inputs (architecture §17).
 // TODHCHAI_CRYPTO_CASES=N runs N random cases a function instead of 300.
 
 import FoundationEssentials
 import Glibc
-import OpenSSLOracle
+import LibsecOracle
 import TDCrypto
 import Testing
 
@@ -182,7 +182,7 @@ func wycheproof<C: Decodable>(_ name: String, _: C.Type) -> Wycheproof<C> {
   #expect(!constantTimeEqual([1, 2], [1, 3]) && !constantTimeEqual([1], [1, 0]))
 }
 
-// MARK: Against OpenSSL
+// MARK: Against libsec
 
 struct Generator: RandomNumberGenerator {
   var state: UInt64
@@ -197,21 +197,21 @@ struct Generator: RandomNumberGenerator {
 
 func bytes(_ n: Int, _ g: inout Generator) -> [UInt8] { (0..<n).map { _ in UInt8.random(in: 0...255, using: &g) } }
 
-@Test func sameAsOpenSSLOnRandomInputs() {
+@Test func sameAsLibsecOnRandomInputs() {
   var g = Generator(state: 0x5348_4132_3536)
   for i in 0..<randomCases {
     let message = bytes(Int.random(in: 0...(i % 10 == 0 ? 5000 : 300), using: &g), &g)
     let key = bytes(Int.random(in: 0...(i % 7 == 0 ? 200 : 64), using: &g), &g)
     var digest = [UInt8](repeating: 0, count: 32), tag = [UInt8](repeating: 0, count: 32)
-    #expect(td_openssl_sha256(message, message.count, &digest) == 0)
+    #expect(libsec_sha256(message, message.count, &digest) == 0)
     #expect(SHA256.hash(message) == digest, "SHA-256, case \(i)")
-    #expect(td_openssl_hmac_sha256(key, key.count, message, message.count, &tag) == 0)
+    #expect(libsec_hmac_sha256(key, key.count, message, message.count, &tag) == 0)
     #expect(HMACSHA256.authenticate(message, key: key) == tag, "HMAC, case \(i)")
     if i % 10 == 0 {
       let salt = bytes(Int.random(in: 0...40, using: &g), &g)
       let iterations = Int.random(in: 1...300, using: &g), length = Int.random(in: 1...100, using: &g)
       var dk = [UInt8](repeating: 0, count: length)
-      #expect(td_openssl_pbkdf2_sha256(key, key.count, salt, salt.count, Int32(iterations), &dk, length) == 0)
+      #expect(libsec_pbkdf2_sha256(key, key.count, salt, salt.count, Int32(iterations), &dk, length) == 0)
       #expect(PBKDF2.sha256(password: key, salt: salt, iterations: iterations, length: length) == dk,
               "PBKDF2, case \(i)")
     }

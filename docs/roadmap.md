@@ -44,8 +44,8 @@ under `vx ci` and every budget it introduces has a running check
     main is 79 µs (< 200 µs), and the first bench history is recorded
     (2026-10-16, cd3eb6d), and the services hold 3.7 MiB (< 32 MiB,
     `services.rss`), and the manual is written (D86).
-- **V3** is under way: notes and /proc done (2026-10-17). **V4 onward** are not started (V6's boards have research
-  passes).
+- **V3** is under way: notes and /proc, and crypto, done (2026-10-17).
+  **V4 onward** are not started (V6's boards have research passes).
 
 ## V0. Ground — done 2026-10-15
 
@@ -655,6 +655,10 @@ meets a tested path.
   names; Sys gains `dial("tcp!host!port")`, `announce`, `listen` and
   `accept`. The net class serves `/net/etherN` (D82), which the stack
   opens.
+  - **Done (2026-10-17):** crypto, todhchai's whole library (D89), with
+    9front's libsec as its tests' oracle in place of OpenSSL, and
+    CryptoSuite checking it as Embedded Swift on each arch. Next: the net
+    class and virtio-net, then the stack serving `/net`.
 - **9gate's core, from V7:** the 9P2000 codec (D78: Plan 9's dialect,
   string owners, our extensions negotiated as `9P2000.vx`), export and
   import, over Noise IK (`Noise_IK_25519_ChaChaPoly_SHA256`, on N1's

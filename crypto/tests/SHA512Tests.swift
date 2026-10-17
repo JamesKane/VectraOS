@@ -2,11 +2,11 @@
 
 // SHA-512 (N1a): against NIST CAVP's byte vectors (every short and long
 // message, and the Monte Carlo test, data/nist-cavp), the padding's
-// boundaries fed in pieces, and the host's OpenSSL on random inputs.
+// boundaries fed in pieces, and 9front's libsec on random inputs.
 // (Its constants are checked through the vectors: computing 64-bit
 // fractions of cube roots again needs wider integers than the test has.)
 
-import OpenSSLOracle
+import LibsecOracle
 import TDCrypto
 import Testing
 
@@ -62,12 +62,12 @@ import Testing
     + "de0ff244877ea60a4cb0432ce577c31beb009c5c2c49aa2e4eadb217ad8cc09b")
 }
 
-@Test func sha512MatchesOpenSSL() {
+@Test func sha512MatchesLibsec() {
   var g = SystemRandomNumberGenerator()
   for _ in 0..<randomCases {
     let bytes = (0..<Int.random(in: 0...600, using: &g)).map { _ in UInt8.random(in: 0...255, using: &g) }
     var theirs = [UInt8](repeating: 0, count: 64)
-    #expect(td_openssl_sha512(bytes, bytes.count, &theirs) == 0)
+    #expect(libsec_sha512(bytes, bytes.count, &theirs) == 0)
     #expect(SHA512.hash(bytes) == theirs)
   }
 }

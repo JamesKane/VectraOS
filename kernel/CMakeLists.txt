@@ -187,6 +187,8 @@ croi_user_binary(${_vdso_bin} PIC
   LINKER_SCRIPT ${_user_dir}/vdso/vdso.ld
   INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/include)
 croi_user_floor()
+# The crypto (D89), whose suite checks it as Embedded Swift on the target.
+file(GLOB _crypto_sources CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/crypto/lib/*.swift)
 # Its suites (Suite.swift): one file each, run with swift.suite=<name>.
 set(_swift_test_sources ${_user_dir}/test/swift/Main.swift ${_user_dir}/test/swift/Suite.swift
     ${_user_dir}/test/swift/BindSuite.swift ${_user_dir}/test/swift/VmoSuite.swift
@@ -199,6 +201,7 @@ set(_swift_test_sources ${_user_dir}/test/swift/Main.swift ${_user_dir}/test/swi
     ${_user_dir}/test/swift/DebuglogSuite.swift ${_user_dir}/test/swift/PortRingSuite.swift
     ${_user_dir}/test/swift/FloorSuite.swift ${_user_dir}/test/swift/LibcSuite.swift
     ${_user_dir}/test/swift/NoteSuite.swift
+    ${_user_dir}/test/swift/CryptoSuite.swift ${_crypto_sources}
     ${_user_dir}/lib/image/Image.swift
     ${PROJECT_SOURCE_DIR}/lib/ring/Ring/Ring.swift ${PROJECT_SOURCE_DIR}/lib/ring/Ring/RingMemory.swift)
 set(_swift_test ${CMAKE_CURRENT_BINARY_DIR}/swifttest.elf)

@@ -3,11 +3,11 @@
 // X25519 and its field (N1a): RFC 7748's examples (a scalar product, the
 // iterated test to 1000, §6.1's exchange), every Wycheproof X25519 case
 // (data/wycheproof: twist points, non-canonical values, small orders),
-// the host's OpenSSL on random keys, and the field's arithmetic checked
+// 9front's libsec on random keys, and the field's arithmetic checked
 // directly (inverses, and the bytes of values around p).
 
 import FoundationEssentials
-import OpenSSLOracle
+import LibsecOracle
 @testable import TDCrypto
 import Testing
 
@@ -63,13 +63,13 @@ struct X25519Case: Decodable {
   #expect(n == 518 && zeros > 0)
 }
 
-@Test func x25519MatchesOpenSSL() {
+@Test func x25519MatchesLibsec() {
   var g = SystemRandomNumberGenerator()
   func bytes(_ n: Int) -> [UInt8] { (0..<n).map { _ in UInt8.random(in: 0...255, using: &g) } }
   for _ in 0..<min(randomCases, 100) {
     let mine = bytes(32), theirs = X25519.publicKey(bytes(32))
     var out = [UInt8](repeating: 0, count: 32)
-    #expect(td_openssl_x25519(mine, theirs, &out) == 0)
+    #expect(libsec_x25519(mine, theirs, &out) == 0)
     #expect(X25519.scalarMult(mine, theirs) == out)
   }
 }

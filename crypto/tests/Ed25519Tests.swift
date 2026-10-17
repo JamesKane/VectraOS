@@ -2,12 +2,12 @@
 
 // Ed25519 and its group (N1a): RFC 8032's examples, every Wycheproof
 // Ed25519 case (data/wycheproof: S at and past L, non-canonical and
-// altered R, truncated and padded signatures), the host's OpenSSL on
-// random keys and messages, the scalars mod L against a long division,
-// and the curve's constants and laws checked directly.
+// altered R, truncated and padded signatures), its own signatures on
+// random keys and messages (libsec has no Ed25519), the scalars mod L
+// against a long division, and the curve's constants and laws checked
+// directly.
 
 import FoundationEssentials
-import OpenSSLOracle
 @testable import TDCrypto
 import Testing
 
@@ -65,24 +65,19 @@ struct Ed25519Group: Decodable {
   #expect(valid == 88 && invalid == 63)
 }
 
-@Test func ed25519MatchesOpenSSL() {
+@Test func ed25519VerifiesItsOwnSignatures() {
   var g = SystemRandomNumberGenerator()
   func bytes(_ n: Int) -> [UInt8] { (0..<n).map { _ in UInt8.random(in: 0...255, using: &g) } }
   for _ in 0..<min(randomCases, 100) {
     let seed = bytes(32), message = bytes(Int.random(in: 0...300, using: &g))
     let pk = Ed25519.publicKey(seed: seed)
     let signature = Ed25519.sign(message, seed: seed)
-    var theirs = [UInt8](repeating: 0, count: 64)
-    #expect(td_openssl_ed25519_sign(seed, message, message.count, &theirs) == 0)
-    #expect(signature == theirs)
-    #expect(td_openssl_ed25519_verify(pk, message, message.count, signature) == 1)
     #expect(Ed25519.verify(signature, of: message, publicKey: pk))
-    // One bit changed anywhere in the signature: both refuse it.
+    // One bit changed anywhere in the signature: refused.
     var bad = signature
     let bit = Int.random(in: 0..<512, using: &g)
     bad[bit >> 3] ^= UInt8(1 << (bit & 7))
     #expect(!Ed25519.verify(bad, of: message, publicKey: pk))
-    #expect(td_openssl_ed25519_verify(pk, message, message.count, bad) == 0)
   }
 }
 

@@ -116,6 +116,12 @@ let ipc: [Target] = [
   // firmware tables out of the tree (vx acpi).
   .target(name: "TDACPI", path: "drivers/bus/acpi/lib", swiftSettings: tier0),
   .testTarget(name: "ACPITests", dependencies: ["TDACPI"], path: "drivers/bus/acpi/tests", exclude: ["native"]),
+  // Cryptography, ours (D89): tier 0, optimized even in debug builds (every
+  // Taisce block is hashed). 9front's libsec is the tests' oracle, host only.
+  .target(name: "TDCrypto", path: "crypto/lib", swiftSettings: tier0 + [.unsafeFlags(["-O"])]),
+  .target(name: "LibsecOracle", path: "crypto/oracles/9front", exclude: ["LICENSE", "NOTICE"],
+          cSettings: [.headerSearchPath("."), .unsafeFlags(["-std=gnu99", "-fms-extensions", "-w"])]),
+  .testTarget(name: "CryptoTests", dependencies: ["TDCrypto", "LibsecOracle"], path: "crypto/tests"),
   // PCI over ECAM (drivers/bus/pci, V2 item 7b, D74): configuration space,
   // enumeration, BARs and capabilities, todhchai's; ECAM's registers
   // through the runtime's accessors (CroiMMIO, croi/mmio.h).
