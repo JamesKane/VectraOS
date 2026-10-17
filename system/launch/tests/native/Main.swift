@@ -305,6 +305,7 @@ func rcRuns(_ rc: ProgramEntry, _ script: String, _ expected: [UInt8], _ ns: Nam
     if let man = try? ns.connect("/lib/man") { startup.mount(man, at: "/lib/man") }  // the manual (D86)
     guard let env = try? ns.connect("/svc/env/new") else { return check(false, name) }
     startup.mount(env, at: "/env")  // a group of its own (D81)
+    if let proc = try? ns.connect("/proc") { startup.mount(proc, at: "/proc") }
     startup.add(try Job.create(parent: job), info: HandleType.info(HandleType.jobDefault))
     // stdin, stdout, and a stderr of its own (D46: a ring per descriptor).
     let stdio = try ChildStdio(for: startup, descriptors: [(0, true), (1, false), (2, false)])
@@ -494,6 +495,11 @@ func runRc(_ start: Startup, _ ns: Namespace, _ names: [String]) {
   // reach rc's group, which it shares (D81).
   rcRuns(rc, "x=1; rfork e; rc -c 'echo $x; y=2; rc -c true'; cat /env/y", Array("1\n2\0".utf8), ns, job: job,
          "rc's rfork e, and the group its programs share")
+  // ps and kill over /proc (D79): kill names this process's note.
+  if let me = try? Process.current(), let koid = try? me.info().koid {
+    rcRuns(rc, "x=`{ps -a}; ~ $#x 0 && echo none; kill launch-test", Array("@{echo kill>/proc/\(koid)/note} # launch-test\n".utf8), ns,
+           job: job, "rc runs ps and kill over /proc")
+  }
   rcOnPty(rc, ns, job: job)
   _ = consume memory  // rc is started from it until here
 }

@@ -1,0 +1,43 @@
+page ps 1
+summary process status
+src shell/commands/lib/Processes.swift
+keys process status pid
+
+# SYNOPSIS
+
+```usage
+ps [-anpr]
+```
+
+# DESCRIPTION
+
+`ps` prints a line for each process in `/proc` (proc(4)), in order of pid, as Plan 9's does: its user, its pid, the minutes and seconds it has run in user mode and in the system, its memory in KiB, its state, and its name.
+
+: `-a`
+  Its arguments in place of its name.
+: `-n`
+  A column for its note group, after the pid.
+: `-p`
+  Its base and current priorities, before its memory.
+: `-r`
+  The time since it started, after the pid.
+
+# EXAMPLES
+
+```rc
+% ps
+none            5636    0:00   0:00      115K Running  a
+```
+
+# FILES
+
+: `/proc/<pid>/status`
+  What each line is made from.
+
+# SEE ALSO
+
+kill(1), proc(4)
+
+# BUGS
+
+The note group, the system time, the real time and the priorities aren't kept (proc(4)): `-n` prints `?`, and the others print 0.

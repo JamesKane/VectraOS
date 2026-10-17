@@ -222,3 +222,29 @@ func text(_ r: Commands.Result) -> String { String(decoding: r.output, as: UTF8.
   #expect(Commands.asciitime(0, now: now) == "Jan  1  1970")  // over six months before
   #expect(Commands.asciitime(now - 3 * 86_400_000_000_000, now: now) == "Oct 13 15:17")
 }
+
+/// ps and kill over a /proc of Plan 9 status lines: ps.c's columns, by
+/// pid, with -r's real time and -a's args; kill's rc commands.
+@Test func psAndKillReadProc() throws {
+  let rig = try Rig()
+  defer { rig.stop() }
+  let proc = NodeTree(dispatcher: rig.dispatcher)
+  func status(_ name: String, user: UInt64, real: UInt64) -> String {
+    func n(_ v: UInt64) -> String { String(repeating: " ", count: 11 - String(v).count) + String(v) }
+    return name + String(repeating: " ", count: 27 - name.count) + " none" + String(repeating: " ", count: 23)
+      + " Running    " + [user, 0, real, 0, 0, 0, 96, 0, 0].map { " " + n($0) }.joined() + "\n"
+  }
+  let cat = status("cat", user: 0, real: 2000), rc = status("rc", user: 65000, real: 3_700_000)
+  proc.text("12/status", read: { cat })
+  proc.text("5/status", read: { rc })
+  proc.text("5/args", read: { "rc -i" })
+  let ends = try Channel.create()
+  try proc.serve(ends.b)
+  try rig.ns.mount(ends.a, at: "/proc")
+
+  #expect(text(rig.run("ps")) == "none              5    1:05   0:00       96K Running  rc\n"
+            + "none             12    0:00   0:00       96K Running  cat\n")
+  #expect(text(rig.run("ps", "-ra")).hasPrefix("none              5     1:01:40    1:05   0:00       96K Running  rc -i\n"))
+  #expect(text(rig.run("kill", "rc")) == "@{echo kill>/proc/5/note} # rc\n")
+  #expect(text(rig.run("kill", "nothing")) == "")
+}

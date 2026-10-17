@@ -15,4 +15,6 @@ enum Usage {
   static let man = ["usage: man [-tw] [section ...] title [node]"]
   static let lookman = ["usage: lookman key ..."]
   static let sig = ["usage: sig name ..."]
+  static let ps = ["usage: ps [-anpr]"]
+  static let kill = ["usage: kill name ..."]
 }

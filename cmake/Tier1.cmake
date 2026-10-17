@@ -210,7 +210,7 @@ function(croi_tier1 bootfs_var depends_var)
   file(GLOB _guide_t1 RELATIVE ${PROJECT_SOURCE_DIR} CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/system/guide/lib/*.swift)
   croi_tier1_library(Guide SOURCES ${_guide_t1} USES Directives)
   croi_tier1_library(Commands SOURCES shell/commands/lib/Commands.swift shell/commands/lib/ManPages.swift
-                                      shell/commands/lib/Usage.swift
+                                      shell/commands/lib/Usage.swift shell/commands/lib/Processes.swift
                      USES Fs Node Guide INCLUDES system/trace/c/include)
   add_custom_command(OUTPUT ${_out}/rc
     COMMAND ${_swiftc} -parse-as-library -enable-experimental-feature Lifetimes -I ${_lib} -I ${PROJECT_SOURCE_DIR}/system/trace/c/include -L ${_lib}
@@ -229,7 +229,7 @@ function(croi_tier1 bootfs_var depends_var)
     DEPENDS ${_lib}/libCommands.a ${_lib}/libGuide.a ${_t1_archives} ${PROJECT_SOURCE_DIR}/shell/commands/Main.swift
     COMMENT "the shell's file commands, for tier 1")
   set(_shell_entries bin/rc=${_out}/rc)
-  foreach(_c ls cat mkdir rm mv cp touch man lookman sig)
+  foreach(_c ls cat mkdir rm mv cp touch man lookman sig ps kill)
     list(APPEND _shell_entries bin/${_c}=${_out}/commands)
   endforeach()
   set(_programs floor-hello cxx-hello swift-hello swift-start swift-async foundation-test node-test-t1 fdio-test)

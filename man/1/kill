@@ -1,0 +1,31 @@
+page kill 1
+summary print commands to kill processes
+src shell/commands/lib/Processes.swift
+keys process kill note
+
+# SYNOPSIS
+
+```usage
+kill name ...
+```
+
+# DESCRIPTION
+
+`kill` prints, for each process whose name is one of the <name>s, the rc command that kills it: an `echo kill` to its `note` in `/proc` (proc(4)), followed by a comment naming it.
+It kills nothing itself; piping its output to rc does, as in Plan 9.
+
+# EXAMPLES
+
+```rc
+% kill a
+@{echo kill>/proc/5636/note} # a
+% kill a | rc
+```
+
+# SEE ALSO
+
+ps(1), proc(4), rc(1)
+
+# BUGS
+
+Plan 9's `kill` is an rc script over `sed`; this system has no `sed` yet, so it is a program that prints what the script would.

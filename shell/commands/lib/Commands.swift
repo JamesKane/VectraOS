@@ -47,7 +47,7 @@ public enum Commands {
     public var status = ""
   }
 
-  public static let names = ["ls", "cat", "mkdir", "rm", "mv", "cp", "touch", "man", "lookman", "sig"]
+  public static let names = ["ls", "cat", "mkdir", "rm", "mv", "cp", "touch", "man", "lookman", "sig", "ps", "kill"]
 
   /// Runs command `name` with `args` from directory `pwd`: its exit string.
   public static func run(_ name: String, _ args: [String], pwd: String, in ns: Namespace, _ io: IO) -> String {
@@ -63,6 +63,8 @@ public enum Commands {
     case "man": return c.man(args)
     case "lookman": return c.lookman(args)
     case "sig": return c.sig(args)
+    case "ps": return c.ps(args)
+    case "kill": return c.kill(args)
     default:
       io.err(name + ": not a command")
       return "not a command"
