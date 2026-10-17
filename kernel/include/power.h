@@ -26,6 +26,11 @@ enum : uint32_t {
   CROI_SYSTEM_POWERCTL_REBOOT_RECOVERY = 7,
   CROI_SYSTEM_POWERCTL_SHUTDOWN = 8,
   CROI_SYSTEM_POWERCTL_ACK_KERNEL_INITIATED_REBOOT = 9,
+  // croi's (D101): a warm boot into the kernel ELF and bootfs held in the
+  // VMOs arg.warmboot names, each as long as its content size; a command
+  // line VMO of 0 (or an empty one) keeps the running kernel's. Returns
+  // only on a refusal (a bad ELF, no memory for the copies).
+  CROI_SYSTEM_POWERCTL_WARMBOOT = 10,
 };
 
 // zx_system_powerctl_arg_t: 12 bytes, 4-aligned.
@@ -42,6 +47,11 @@ typedef struct {
       uint8_t clamp;
       uint8_t enable;
     } x86_power_limit;
+    struct {
+      uint32_t kernel_vmo;   // READ
+      uint32_t bootfs_vmo;   // READ
+      uint32_t cmdline_vmo;  // READ, or 0
+    } warmboot;
   };
 } croi_system_powerctl_arg_t;
 

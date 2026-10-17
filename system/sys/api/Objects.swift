@@ -325,6 +325,12 @@ public enum VMO {
     Handle(raw: try Kernel.vmoCreatePhysical(resource.raw, address, size))
   }
 
+  /// Sets how many of its bytes `vmo` holds (its content size): at most
+  /// its size; the bytes past it read as zero.
+  public static func setContentSize(_ vmo: borrowing Handle, _ size: UInt64) throws(Status) {
+    try Kernel.setContentSize(vmo.raw, size)
+  }
+
   /// `vmo` again, able to run (EXECUTE added to its rights): `vmex` is the
   /// VMEX system resource, or root. `vmo` is gone either way.
   public static func executable(_ vmo: consuming Handle, vmex: borrowing Handle) throws(Status) -> Handle {
@@ -452,6 +458,23 @@ public enum Power {
     #else
       try Kernel.powerctl(resource.raw, CROI_SYSTEM_POWERCTL_SHUTDOWN)
     #endif
+  }
+
+  /// Warm boot (D101): the kernel hands off to the kernel ELF and bootfs
+  /// in `kernel` and `bootfs`, each as long as its content size, with the
+  /// command line in `cmdline`. Never returns if it can; a bad ELF or too
+  /// little memory for the copies is refused with nothing stopped. amd64
+  /// only so far (notSupported elsewhere).
+  public static func warmboot(_ resource: borrowing Handle, kernel: borrowing Handle, bootfs: borrowing Handle,
+                              cmdline: borrowing Handle) throws(Status) {
+    try Kernel.powerctlWarmboot(resource.raw, kernel.raw, bootfs.raw, cmdline.raw)
+  }
+
+  /// Warm boot with this boot's command line.
+  public static func warmboot(_ resource: borrowing Handle, kernel: borrowing Handle, bootfs: borrowing Handle)
+    throws(Status)
+  {
+    try Kernel.powerctlWarmboot(resource.raw, kernel.raw, bootfs.raw, 0)
   }
 
   /// The system resource's base that grants power control.

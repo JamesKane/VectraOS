@@ -596,6 +596,28 @@ enum Kernel {
     try check(r)
   }
 
+  /// object_set_property(VMO_CONTENT_SIZE).
+  static func setContentSize(_ h: UInt32, _ size: UInt64) throws(Status) {
+    var value = size
+    let r = unsafe withUnsafeBytes(of: &value) { b in
+      unsafe croi_syscall(CROI_SYS_OBJECT_SET_PROPERTY, UInt64(h), UInt64(CROI_PROP_VMO_CONTENT_SIZE),
+                          address(b.baseAddress), UInt64(b.count), 0)
+    }
+    try check(r)
+  }
+
+  /// system_powerctl(WARMBOOT) with its three VMOs (D101).
+  static func powerctlWarmboot(_ resource: UInt32, _ kernel: UInt32, _ bootfs: UInt32, _ cmdline: UInt32) throws(Status) {
+    var arg = croi_system_powerctl_arg_t()
+    arg.warmboot.kernel_vmo = kernel
+    arg.warmboot.bootfs_vmo = bootfs
+    arg.warmboot.cmdline_vmo = cmdline
+    let r = unsafe withUnsafeMutablePointer(to: &arg) { p in
+      unsafe croi_syscall(CROI_SYS_SYSTEM_POWERCTL, UInt64(resource), UInt64(CROI_SYSTEM_POWERCTL_WARMBOOT), address(p), 0, 0)
+    }
+    try check(r)
+  }
+
   static func threadState(_ h: UInt32) throws(Status) -> UInt32 {
     try getInfo(h, CROI_INFO_THREAD, croi_info_thread_t()).state
   }

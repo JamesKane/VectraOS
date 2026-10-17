@@ -3,7 +3,7 @@ summary Sys VMOs and mappings: memory that handles share
 names sys-vmo VMO VMO.CachePolicy VMO.create VMO.size VMO.ChildOptions
 names VMO.ChildOptions.slice VMO.ChildOptions.snapshotAtLeastOnWrite
 names VMO.ChildOptions.noWrite VMO.zeroChildren VMO.child VMO.physical
-names VMO.executable VMO.setCachePolicy VMO.map Mapping Mapping.address Mapping.length
+names VMO.executable VMO.setContentSize VMO.setCachePolicy VMO.map Mapping Mapping.address Mapping.length
 names Mapping.load Mapping.store Mapping.read Mapping.write
 src system/sys/api/Objects.swift system/sys/backend/native/Kernel.swift
 keys vmo memory map mapping child slice snapshot cache physical mmio
@@ -34,6 +34,8 @@ enum VMO {
                     offset: UInt64, size: Int) throws(Status) -> Handle
   static func physical(resource: borrowing Handle, address: UInt64,
                        size: Int) throws(Status) -> Handle
+  static func setContentSize(_ vmo: borrowing Handle,
+                             _ size: UInt64) throws(Status)
   static func executable(_ vmo: consuming Handle,
                          vmex: borrowing Handle) throws(Status) -> Handle
   static func setCachePolicy(_ vmo: borrowing Handle,
@@ -69,6 +71,8 @@ Wait for it with `Handle.wait`; see sys-handle(2).
 
 `physical` makes a VMO over physical memory, `address` and `size` page aligned, which an MMIO resource passed as `resource` must cover (`vmo_create_physical(2)`).
 Its mappings are uncached device memory unless the cache policy is changed before the first.
+`setContentSize` sets how many bytes `vmo` holds, at most its size: what a reader of its contents takes as its length (a warm boot's images, sys-system(2)); the bytes past it read as zero.
+
 `executable` returns `vmo` able to run, its rights and `EXECUTE` (`vmo_replace_as_executable(2)`): `vmex` is a resource for the system resource's `SystemResource.vmex`, or the root resource.
 `vmo` is gone whether it succeeds or not.
 The launcher alone holds one, to start pushed builds (launcher(8)).

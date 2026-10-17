@@ -131,6 +131,10 @@ enum Kernel {
   static func child(_ h: UInt32, _ koid: UInt64, _ rights: UInt32) throws(Status) -> UInt32 { throw .notSupported }
   static func name(_ h: UInt32) throws(Status) -> String { throw .notSupported }
   static func setName(_ h: UInt32, _ name: String) throws(Status) { throw .notSupported }
+  static func setContentSize(_ h: UInt32, _ size: UInt64) throws(Status) { throw .notSupported }
+  static func powerctlWarmboot(_ resource: UInt32, _ kernel: UInt32, _ bootfs: UInt32, _ cmdline: UInt32) throws(Status) {
+    throw .notSupported
+  }
   static func postNote(_ h: UInt32, _ text: String) throws(Status) { throw .notSupported }
   static func note(_ h: UInt32) throws(Status) -> String { throw .notSupported }
   static func setNotify(_ h: UInt32, _ on: Bool) throws(Status) { throw .notSupported }

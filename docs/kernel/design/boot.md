@@ -123,3 +123,48 @@ Boot budgets, K9f (Kernel/Trace/Budgets.swift, BootOptions.swift's
   while every amd64 user page fault waited for an all-CPU shootdown.
 - `irq.wait_wake_median` (target 5 µs, a hardware budget; ~12 µs under
   KVM, where the wakeup IPI exits).
+
+## Warm boot (D101)
+
+`system_powerctl(WARMBOOT)` (`Kernel/WarmBoot.swift`) does the loader's
+work from inside the kernel and then its jump. At boot, before the PMM
+reclaims the handoff, `WarmBoot.capture` copies the firmware's memory map
+and the command line into pages of their own; `bootHandoff` keeps the
+rest (RSDP, SMBIOS, framebuffer, UART, the EFI system table).
+
+The call, with three VMOs (kernel ELF, bootfs, command line, each as long
+as its content size), fails before stopping anything: the ELF is copied
+into a contiguous run and checked (`lib/elf`), loaded and relocated into
+another at a new KASLR base (from the CPRNG, in no 2 MiB of the running
+image, or the link address with `croi.kaslr=off` in the new command line);
+the bootfs is copied into a third; a fourth holds the handoff, its range
+table, the command line and the boot page tables (`lib/pagetables`'s
+builder over a bump pool: RAM identity mapped RWX, the image W^X, the
+UART, and the running kernel's `arch_warmboot_enter` page at its own
+address). The new map is the saved one with KERNEL, HANDOFF and BOOTFS
+freed and the three new runs overlaid; the handoff is the boot's with the
+new image, bootfs, map, command line and 32 bytes of fresh entropy.
+
+Then the calling thread moves to CPU 0 (its affinity set, a short sleep:
+a wakeup migrates), since the new kernel's boot CPU must be firmware's
+(the APIC's BSP bit, CPU 0's record; started as an AP, it corrupted the
+new kernel). `Power.leave` drains the debuglog and stops the other CPUs
+(each turning KVM's PV EOI off before halting, so KVM stops writing a page
+the new kernel may reuse), this CPU does the same, VT-d (one enable at a
+time; queued invalidation only with a wait descriptor last) and AMD-Vi go
+off, and `arch_warmboot_enter` loads the new tables, toggles CR4.PGE to
+drop the old kernel's global TLB entries, and jumps with the handoff in
+%rdi. `power.warmboot_kernel` is reported (about 20 ms under KVM, from the
+call to the jump, without the drain).
+
+The new kernel boots as from the loader and can't tell the difference.
+`ElfImage.load` zeroes the image before copying segments in, so `.bss` is
+zero whichever memory it lands in (the loader had relied on QEMU's zeroed
+RAM: AllocatePages doesn't zero).
+
+Tests: boot-warmboot (amd64) runs `bin/warmboot-test`, which warm-boots
+into its own build's kernel (bootfs-warmboot.img holds it) and bootfs
+with `warmboot.second=1`; its second boot exits 0. Not yet: arm64 (PSCI
+CPU_OFF for the other CPUs, the MMU and caches around the switch), rv64
+(SBI HSM). Devices doing DMA are the caller's to stop (devmgr clears bus
+mastering).

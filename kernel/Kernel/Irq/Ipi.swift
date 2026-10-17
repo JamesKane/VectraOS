@@ -180,6 +180,11 @@ enum Ipi {
         }
         if pending & report != 0 { unsafe reportHere(percpu) }
         if pending & stop != 0 {
+            // Nothing of this CPU's keeps writing memory once it stops:
+            // a warm boot's next kernel takes it all (D101).
+            #if arch(x86_64)
+            LocalApic.quiesceThisCpu()
+            #endif
             stopped.add(1, ordering: .releasing)
             arch_halt()
         }

@@ -227,6 +227,12 @@ public struct ElfImage {
     /// relocations for running at virtual address `runAddress`.
     public func load(from file: RawSpan, into image: inout MutableRawSpan, runningAt runAddress: UInt64) throws(Error) {
         guard UInt64(image.byteCount) >= size else { throw Error("image buffer too small") }
+        // Zeros first: each segment's bytes past its file's (.bss), and the
+        // gaps between segments. The memory isn't zeroed for us: firmware's
+        // AllocatePages and the PMM's runs hold what they last held.
+        image.withUnsafeMutableBytes { dst in
+            unsafe dst.baseAddress!.initializeMemory(as: UInt8.self, repeating: 0, count: Int(size))
+        }
         for i in 0..<segmentCount {
             let segment = segments[i]
             let destination = Int(segment.vaddr - base)

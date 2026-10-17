@@ -26,6 +26,12 @@ enum Amdvi {
     nonisolated(unsafe) static var unitCount = 0
     static let unitsLock = Mutex()
 
+    /// Every unit off, as firmware leaves it (warm boot, D101).
+    /// Interrupts masked, no lock: nothing else runs.
+    static func turnOff() {
+        for i in 0..<unitCount { AmdviUnitPointer(address: units[i]).write64(control, 0) }
+    }
+
     // MARK: Registers (offsets)
 
     static var deviceTableBase: UInt64 { 0x00 }

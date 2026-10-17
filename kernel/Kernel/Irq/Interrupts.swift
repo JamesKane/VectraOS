@@ -234,6 +234,12 @@ enum LocalApic {
         write(svr, (1 << 8) | spuriousVector)  // APIC software enable
     }
 
+    /// KVM's PV EOI off on this CPU, so the hypervisor stops writing its
+    /// word into a page the next kernel may reuse (warm boot, D101).
+    static func quiesceThisCpu() {
+        if pvEoiPage != 0 { arch_wrmsr(0x4B56_4D04, 0) }  // MSR_KVM_PV_EOI_EN
+    }
+
     static func endOfInterrupt() {
         // KVM said it needs none. Tested and cleared in one instruction:
         // KVM may clear the bit itself at any VM exit (another interrupt

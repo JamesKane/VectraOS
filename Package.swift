@@ -281,7 +281,7 @@ let package = Package(
     .target(name: "Sys", dependencies: ["SysABI", "SysHost"], path: "system/sys",
             exclude: ["abi", "host", "tests", "floor", "native", "backend/native"], sources: ["api", "backend/host"],
             swiftSettings: tier0 + c23),
-    .testTarget(name: "SysTests", dependencies: ["Sys", "SysHost"], path: "system/sys/tests", exclude: ["native"],
+    .testTarget(name: "SysTests", dependencies: ["Sys", "SysHost"], path: "system/sys/tests", exclude: ["native", "warmboot"],
                 swiftSettings: c23),
     // Our libc (system/libc, V2), tier 0, tested against the host's glibc.
     // native/ exports the functions under their C names: CMake's build

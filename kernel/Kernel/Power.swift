@@ -100,6 +100,23 @@ enum Power {
         try Resources.check(table, UInt32(truncatingIfNeeded: a[0]), system: UInt64(CROI_RSRC_SYSTEM_POWER_BASE))
         let command = UInt32(truncatingIfNeeded: a[1])
         var argument = croi_system_powerctl_arg_t()
+        if command == UInt32(CROI_SYSTEM_POWERCTL_WARMBOOT) {
+            guard unsafe UserCopy.from(&argument, a[2], UInt64(MemoryLayout<croi_system_powerctl_arg_t>.size)) == 0 else {
+                throw .invalidArgs
+            }
+            // The references keep the VMOs alive while they are copied.
+            let w = argument.warmboot
+            let kernel = try table.get(w.kernel_vmo, type: .vmo, rights: .read)
+            let bootfs = try table.get(w.bootfs_vmo, type: .vmo, rights: .read)
+            let kernelVmo = VmoPointer(address: UnsafeVmoObject(kernel.object).vmo)
+            let bootfsVmo = VmoPointer(address: UnsafeVmoObject(bootfs.object).vmo)
+            if w.cmdline_vmo == 0 {
+                try WarmBoot.boot(kernel: kernelVmo, bootfs: bootfsVmo, cmdline: nil, started: started)
+            }
+            let cmdline = try table.get(w.cmdline_vmo, type: .vmo, rights: .read)
+            try WarmBoot.boot(kernel: kernelVmo, bootfs: bootfsVmo,
+                              cmdline: VmoPointer(address: UnsafeVmoObject(cmdline.object).vmo), started: started)
+        }
         if command == UInt32(CROI_SYSTEM_POWERCTL_ACPI_TRANSITION_S_STATE) {
             guard unsafe UserCopy.from(&argument, a[2], UInt64(MemoryLayout<croi_system_powerctl_arg_t>.size)) == 0 else {
                 throw .invalidArgs
@@ -163,8 +180,10 @@ enum Power {
         #endif
     }
 
-    /// Lets the debuglog drain, stops the other CPUs, reports and does it.
-    private static func halt(_ action: Action, started: UInt64) -> Never {
+    /// Lets the debuglog drain (up to 100 ms), then masks interrupts on
+    /// this CPU for good and stops the others: when draining began and
+    /// ended, and how many other CPUs stopped. No coming back.
+    static func leave() -> (draining: UInt64, drained: UInt64, stopped: Int) {
         let draining = Clock.now()
         let written = DebugLog.progress.written
         let patience = Clock.now() + 100_000_000
@@ -177,7 +196,13 @@ enum Power {
         // there).
         DebugLog.quiet.store(true, ordering: .releasing)
         _ = arch_interrupts_save()  // masked from here on
-        _ = Ipi.stopOthers(patience: 50_000_000)
+        let stopped = Ipi.stopOthers(patience: 50_000_000)
+        return (draining, drained, stopped)
+    }
+
+    /// Lets the debuglog drain, stops the other CPUs, reports and does it.
+    private static func halt(_ action: Action, started: UInt64) -> Never {
+        let (draining, drained, _) = leave()
         // The kernel's own part, without waiting for the console: that
         // depends on how much log is still queued (m2's last lines take
         // ~20 ms through a KVM serial port, a byte per exit), so it is

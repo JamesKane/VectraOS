@@ -193,6 +193,23 @@ croi_boot_program_test(ipc ipc-test)
 croi_boot_program_test(node node-test)
 croi_boot_program_test(acpi acpi-test)
 croi_boot_program_test(pci pci-test)
+# Warm boot (D101): bin/warmboot-test warm-boots into this build's kernel
+# (bootfs-warmboot.img holds it) with the same bootfs, and its second boot
+# exits 0. amd64 only so far.
+if(CROI_ARCH STREQUAL amd64)
+  set(_esp_warmboot ${CMAKE_BINARY_DIR}/esp-warmboot)
+  file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/cmdline-warmboot
+       CONTENT "${CROI_CMDLINE} userboot.next=bin/warmboot-test${_shutdown} croi.selftest=off\n")
+  add_custom_target(esp-warmboot ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CROI_ESP_DIR} ${_esp_warmboot}
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/cmdline-warmboot ${_esp_warmboot}/croi/cmdline
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/bootfs-warmboot.img ${_esp_warmboot}/croi/bootfs.img
+    DEPENDS esp bootfs-warmboot)
+  add_test(NAME boot-warmboot
+    COMMAND ${CROI_QEMU} --test "userboot: bin/warmboot-test exited with 0" ${CROI_EXITS}
+            ${CROI_ARCH} ${_esp_warmboot} ${CMAKE_BINARY_DIR}/qemu-warmboot ${CROI_EDK2_DIR})
+  set_tests_properties(boot-warmboot PROPERTIES TIMEOUT 120)
+endif()
 # The launcher (V2's item 4): bootfs's manifests, run until bin/launch-test
 # ends; it exits with its code.
 croi_boot_program_test(launch launcher launcher.until=launch-test)

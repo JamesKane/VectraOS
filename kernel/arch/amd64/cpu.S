@@ -610,3 +610,39 @@ arch_debug_features:
     xor     %eax, %eax
     ret
 .size arch_debug_features, . - arch_debug_features
+
+// --- Warm boot (D101) ---------------------------------------------------------
+
+// [[noreturn]] void arch_warmboot_enter(root=%rdi, root_high=%rsi,
+//                                       entry=%rdx, handoff=%rcx)
+// The loader's croi_arch_enter_kernel from inside the kernel: interrupts
+// masked, the new boot page tables loaded, the global TLB entries the old
+// kernel left flushed (CR4.PGE toggled), and the new kernel entered with the
+// handoff's physical address in %rdi. Alone in a page-aligned section, which
+// the new tables map at this same address, so the instructions after the
+// CR3 load are still there.
+.section .text.arch_warmboot_enter, "ax", @progbits
+.balign 4096
+.globl arch_warmboot_enter
+.type arch_warmboot_enter, @function
+arch_warmboot_enter:
+    cli
+    mov     %rdi, %cr3
+    mov     %cr4, %rax
+    mov     %rax, %r8
+    and     $~(1 << 7), %rax        // PGE off: every global entry goes
+    mov     %rax, %cr4
+    mov     %r8, %cr4
+    mov     %rcx, %rdi
+    jmp     *%rdx
+.size arch_warmboot_enter, . - arch_warmboot_enter
+
+// uint64_t arch_warmboot_address(void): where arch_warmboot_enter is, its
+// page's start, for the new tables to map.
+.section .text.arch_warmboot_address, "ax", @progbits
+.globl arch_warmboot_address
+.type arch_warmboot_address, @function
+arch_warmboot_address:
+    lea     arch_warmboot_enter(%rip), %rax
+    ret
+.size arch_warmboot_address, . - arch_warmboot_address

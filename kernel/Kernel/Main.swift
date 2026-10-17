@@ -111,6 +111,7 @@ func kernel_main(_ handoffAddress: UInt64) -> Never {
     }
     reportMemory(allocator, to: console)
     BootOptions.capture(handoff)  // before the handoff memory is reclaimed
+    WarmBoot.capture(handoff, &allocator)  // the memory map and cmdline, for a warm boot (D101)
     SelfTests.configure()
     // The loader randomizes unless told not to (croi.kaslr=off).
     if SelfTests.enabled, !BootOptions.has("croi.kaslr=off"), !KernelLayout.randomized {

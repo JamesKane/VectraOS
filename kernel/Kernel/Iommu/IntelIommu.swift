@@ -38,6 +38,29 @@ enum Vtd {
     /// Held across binding, which builds tables and waits on hardware.
     static let unitsLock = Mutex()
 
+    /// Every unit's translation, interrupt remapping and queued
+    /// invalidation off, as firmware leaves them (warm boot, D101: the
+    /// next kernel's tables replace ours). Interrupts masked, no lock:
+    /// nothing else runs.
+    static func turnOff() {
+        // One enable at a time, each waited for, as the spec has commands
+        // go (a single write of 0 left QEMU's status set).
+        for i in 0..<unitCount {
+            let unit = VtdUnitPointer(address: units[i])
+            for bit in [translationEnable, interruptRemappingEnable, queuedInvalidationEnable] as InlineArray<3, UInt32>
+            where unit.read32(globalStatus) & bit != 0 {
+                // Queued invalidation goes off only with the queue empty and
+                // a wait descriptor last (QEMU checks both).
+                if bit == queuedInvalidationEnable { try? unit.waitLocked() }
+                do throws(Status) { try unit.command(bit, on: false) } catch {
+                    panicConsole?.write("iommu: VT-d left on for the next kernel: ")
+                    panicConsole?.write(hex: UInt64(bit))
+                    panicConsole?.write("\n")
+                }
+            }
+        }
+    }
+
     // MARK: Registers (offsets)
 
     static var capabilityRegister: UInt64 { 0x08 }

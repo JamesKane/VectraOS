@@ -36,6 +36,15 @@ uint32_t arch_cpu_core_type(void);
 // `root_high` into TTBR1.
 void arch_load_page_tables(uint64_t root, uint64_t root_high);
 
+// Assembly (arch/<arch>/cpu.S): warm boot's jump (D101), the loader's
+// croi_arch_enter_kernel contract from inside the kernel. `root` and
+// `root_high` are the new kernel's boot page tables, which must map this
+// function's page where it is now; `entry` the new kernel's entry, and
+// `handoff` the physical address of its handoff. Interrupts are masked.
+[[noreturn]] void arch_warmboot_enter(uint64_t root, uint64_t root_high, uint64_t entry, uint64_t handoff);
+// Where arch_warmboot_enter is: the start of its page, which holds it alone.
+uint64_t arch_warmboot_address(void);
+
 // --- CPU ----------------------------------------------------------------------
 //
 // Assembly (arch/<arch>/cpu.S).
