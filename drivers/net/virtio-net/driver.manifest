@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# virtio-net, modern and transitional (M3k), serving the net class (N1d).
+driver virtio-net
+class net
+match pci 1af4:1041
+match pci 1af4:1000
