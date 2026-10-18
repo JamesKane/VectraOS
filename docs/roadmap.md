@@ -868,7 +868,7 @@ meets a tested path.
   - It goes through `SYSTEM_POWERCTL` as a new command, so no new syscall
     and the ceiling holds.
   - `vx remote boot HOST` does the session and the call in one step.
-  - **Done on amd64 and arm64 (2026-10-17, D101), but `vx remote boot`:** the kernel's
+  - **Done on amd64 and arm64 (2026-10-17, D101):** the kernel's
     `system_powerctl(WARMBOOT)` over three VMOs (WarmBoot.swift, boot.md's
     "Warm boot"); devmgr stages them in `/dev/warm/{kernel,bootfs,cmdline}`
     (NodeTree's growable memory files), clears bus mastering and asks; the
@@ -883,6 +883,21 @@ meets a tested path.
     ended first, the ITS and SMMUv3 off, the trampoline at its physical
     address with the MMU off) passes the same tests. rv64 waits for its
     suite.
+  - `vx remote boot` (vx-remote(1)): the cpu image carries the node's key,
+    vx's `node.key`, as factotum's `lib/factotum/keys` (each image has
+    the file, empty but in cpu images), so the terminal knows it before
+    the node boots and the node keeps it across a warm boot; `vx cpu`
+    needs no `-k` for such a node. The node's private key is then in the
+    image, in plain (cpu(8) BUGS), the user's choice for bring-up. vx
+    takes the copies as done when the node reads the bootfs to its end
+    (rc's output reaches the terminal through a ring, which a fast warm
+    boot leaves undrained, so `warmboot: handing over` can be lost; under
+    KVM it always was), dials again with overlapping probes, and knows
+    the new boot by its empty `/dev/warm/kernel`. boot-cpu warm-boots
+    through it on amd64 and arm64. Under KVM, by hand (amd64, five runs):
+    back on cpu 1.42 s after the copies, against 2 s; the copies at 22
+    MB/s (2.4 MB/s under TCG), against the 100 MB/s budget, which is
+    open. Neither is judged by `vx bench` yet: it boots no cpu node.
 
 - **The manual (D86):** V3's pieces arrive with their pages (`cpu(8)`, `vx-cpu(1)`,
   `net(3)`, `proc(4)`, 9P2000's messages in section 5, the board tools),
@@ -1393,6 +1408,21 @@ is a non-goal: VectraOS boots on hardware.
    interleaved runs; the limit stays 30 ns, met. A cheaper write (filling
    the slot in place instead of copying a built record, fewer checks of
    the CPU's writer) is worth trying before a probe-heavy budget needs it.
+
+4. **The cpu server stops listening under a burst of calls**
+   (2026-10-17, open). Found by `vx remote boot`'s first probing, 16
+   dials at once of 5 s each, which QEMU's port forward queued while the
+   node warm-booted and handed the new boot together: in about 1 boot in
+   4 the new boot's cpu server took three sessions, then logged `cpu:
+   can't listen: /net/tcp/0/listen: transport status -24` (peerClosed: the
+   net service closed the open) and exited, and nothing listened again
+   for the 2 minutes after, though cpu's manifest says `restart
+   on-failure`. The net service itself went on. Not yet diagnosed: why
+   net closes the open, and why the launcher didn't restart cpu. vx now
+   dials at most 4 at once, 1 s each, and hasn't hit it since (amd64, 13
+   boots); a board's link takes calls from anything on it, so it needs
+   fixing before V6. Dial errors now print their reason
+   (`NamespaceError.text`), which is how this one was read.
 
 ## Open questions
 

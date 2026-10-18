@@ -26,15 +26,21 @@ public enum CpuTerminal {
   }
 }
 
-/// The terminal's static key: 32 random bytes in a file only its owner
-/// may read, made the first time.
+/// The terminal's static key, and the node's: 32 random bytes in a file
+/// only its owner may read, made the first time.
 public enum TerminalKey {
-  /// Where vx keeps it: $XDG_CONFIG_HOME/vectraos/cpu.key, or under
-  /// ~/.config.
-  public static var defaultPath: String {
+  /// Where vx keeps the terminal's: $XDG_CONFIG_HOME/vectraos/cpu.key, or
+  /// under ~/.config.
+  public static var defaultPath: String { directory + "/cpu.key" }
+
+  /// The node's, beside it: vx builds it into the cpu images it makes
+  /// (factotum's lib/factotum/keys), so it knows the key they answer with.
+  public static var nodePath: String { directory + "/node.key" }
+
+  static var directory: String {
     let env = ProcessInfo.processInfo.environment
     let config = env["XDG_CONFIG_HOME"].flatMap { $0.isEmpty ? nil : $0 } ?? ((env["HOME"] ?? "") + "/.config")
-    return config + "/vectraos/cpu.key"
+    return config + "/vectraos"
   }
 
   public static func load(_ path: String = defaultPath) throws(TerminalError) -> StaticKey {

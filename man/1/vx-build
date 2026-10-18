@@ -33,7 +33,7 @@ It stops at the first arch whose build or tests fail, and exits 1.
 Ctrl-A x quits QEMU.
 More than one <arch> is refused.
 With `--cpu` it boots the cpu image instead: the launcher and every service, with a cpu server (cpu(8)) for the terminal whose public key is <key>, 64 hex digits, or this terminal's own (vx-cpu(1)) without one.
-The key goes to `build/<arch>/cpu/terminal`, which the image carries as `lib/cpu/terminal`, and the node's port 17019 is forwarded from 17019 on 127.0.0.1, so `vx cpu -k` <node-key> `localhost` reaches it; the node's key is on its console, in the cpu server's `listening` line.
+The key goes to `build/<arch>/cpu/terminal`, which the image carries as `lib/cpu/terminal`, and vx's node key (vx-cpu(1)) to `build/<arch>/cpu/keys`, which it carries as factotum's `lib/factotum/keys`; the node's port 17019 is forwarded from 17019 on 127.0.0.1, so `vx cpu localhost` reaches it.
 No other image has a cpu server.
 
 `vx test --changed` runs only what a change puts at risk.

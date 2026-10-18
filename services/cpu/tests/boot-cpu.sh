@@ -2,7 +2,8 @@
 # boot-cpu's terminal (D77): run by qemu.sh --then once the node's cpu
 # server says `cpu: listening on ..., key KEY` ($QEMU_LINE), it calls the
 # node with vx cpu as the tests' terminal (terminal.key, whose public half
-# the test image pins), through the forwarded port.
+# the test image pins), through the forwarded port. KEY must be node.pub,
+# the public half of the node key the image gives factotum (node.keys).
 #
 #   boot-cpu.sh VX PORT WORK PLUMBER ARCH KERNEL BOOTFS
 #
@@ -22,6 +23,7 @@ key=$here/terminal.key
 node=${QEMU_LINE##*key }
 node=${node:0:64}
 [[ $node =~ ^[0-9a-f]{64}$ ]] || { echo "boot-cpu: no node key in: $QEMU_LINE" >&2; exit 1; }
+[[ $node == "$(cat "$here/node.pub")" ]] || { echo "boot-cpu: the node's key isn't its image's: $QEMU_LINE" >&2; exit 1; }
 
 root=$work/terminal
 rm -rf "$root"
@@ -96,31 +98,29 @@ fi
 wait "$vx_pid" || fail "vx cpu failed" "$out"
 echo "boot-cpu: ^C interrupted cat, and rc went on"
 
-# 4. Warm boot (D101, amd64 and arm64): the node handed to the build's own
-# kernel and this image's bootfs from /mnt/term, with an option that says
-# so; the new boot's cpu server answers again, with a key of its own.
+# 4. Warm boot (D101, amd64 and arm64): vx remote boot hands the node
+# to the build's own kernel and this image's bootfs, with an option that
+# says so, and waits for the new boot's cpu server, which has the same
+# key, the image's.
 if [[ $arch == amd64 || $arch == arm64 ]]; then
   out=$work/warmboot.out
-  timeout 60 "$vx" cpu --key "$key" -k "$node" -r "$root" \
-    -c "warmboot /mnt/term/root/kernel.elf /mnt/term/root/bootfs.img 'croi.test=1' 'croi.selftest=off' 'userboot.next=bin/launcher' 'warmboot.second=1'" \
-    "127.0.0.1!$port" < /dev/null > "$out" || true
-  again=
-  for _ in $(seq 150); do
-    again=$(grep -a 'cpu: listening on' "$work/console.log" | sed -n 2p)
-    [[ -n $again ]] && break
-    sleep 0.2
-  done
-  [[ -n $again ]] || fail "the node didn't come back from a warm boot" "$out"
+  timeout 120 "$vx" remote boot --key "$key" -k "$node" --kernel "$kernel" --bootfs "$bootfs" "127.0.0.1!$port" \
+    'croi.test=1' 'croi.selftest=off' 'userboot.next=bin/launcher' 'warmboot.second=1' \
+    < /dev/null > "$out" 2>&1 || fail "vx remote boot failed" "$out"
+  tr -d '\r' < "$out" > "$out.lf"
+  grep -q '^vx remote boot: back on cpu' "$out.lf" || fail "vx remote boot didn't find the new boot" "$out"
+  grep -q '  budget name=remote.warmboot value=' "$out.lf" || fail "vx remote boot didn't time it" "$out"
   grep -q 'devmgr: warm boot, as /dev/reboot asked' "$work/console.log" || fail "devmgr didn't warm-boot" "$out"
   grep -q 'warmboot.second=1' "$work/console.log" || fail "the new boot hasn't the command line given" "$out"
-  node=${again##*key }
-  node=${node:0:64}
+  again=$(grep -a 'cpu: listening on' "$work/console.log" | sed -n 2p)
+  [[ ${again##*key } == "$node"* ]] || fail "the new boot's key isn't the image's" "$out"
   out=$work/after.out
   timeout 30 "$vx" cpu --key "$key" -k "$node" -r "$root" -c 'echo back after a warm boot' "127.0.0.1!$port" \
     < /dev/null > "$out" || fail "vx cpu after the warm boot failed" "$out"
   tr -d '\r' < "$out" > "$out.lf"
   grep -qx 'back after a warm boot' "$out.lf" || fail "rc didn't run after the warm boot" "$out"
-  echo "boot-cpu: a warm boot came back with its cpu server"
+  echo "boot-cpu: vx remote boot came back with its cpu server"
+  grep '^vx remote boot: \|  budget ' "$work/warmboot.out.lf" || true
 fi
 
 # 5. The board tools: restart says its usage, and poweroff turns the

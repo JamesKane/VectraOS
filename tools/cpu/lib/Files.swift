@@ -75,11 +75,15 @@ public final class TerminalTree: @unchecked Sendable {
   let root: String
   let console: Console
   let user: String
+  /// Called with a host file's names below `root` when a read of it gets
+  /// nothing, at its end: vx remote boot's sign the copies are done.
+  let readToEnd: (@Sendable ([String]) -> Void)?
 
   /// The tree with the dev machine's files from `root`, and `console`.
-  public init(root: String, console: Console) {
+  public init(root: String, console: Console, readToEnd: (@Sendable ([String]) -> Void)? = nil) {
     self.root = root.count > 1 && root.hasSuffix("/") ? String(root.dropLast()) : root
     self.console = console
+    self.readToEnd = readToEnd
     user = ProcessInfo.processInfo.environment["USER"] ?? "none"
   }
 

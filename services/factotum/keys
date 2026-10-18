@@ -1,0 +1,3 @@
+# factotum's keys at start (factotum(4)): a factotum key line each, as
+# its ctl takes them. A normal image has none; vx boot --cpu's image has
+# the node's noise-ik key, which its terminal knows.

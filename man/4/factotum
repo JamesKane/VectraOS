@@ -1,7 +1,7 @@
 page factotum 4
 summary keys, and the authentication protocols run with them
 names factotum
-src services/factotum/Main.swift services/factotum/lib/Server.swift services/factotum/lib/Session.swift services/factotum/lib/NoiseIK.swift
+src services/factotum/Main.swift services/factotum/keys services/factotum/lib/Server.swift services/factotum/lib/Session.swift services/factotum/lib/NoiseIK.swift
 keys key keys authentication factotum noise ik scram ed25519 password secret grant
 
 # SYNOPSIS
@@ -42,17 +42,23 @@ The protocols:
 
 factotum is headless: a session that would ask the user (`proto=pass`, a key with `confirm=always`, a key that isn't there) is refused.
 
+It starts with the keys in bootfs's `lib/factotum/keys`, a ctl line each (`key` <attributes>), blank lines and `#` lines skipped; it says how many it loaded, and a line it refuses by its number alone, since the line may hold a secret.
+A normal image's file has none; a cpu image vx makes has the node's noise-ik key (cpu(8)).
+
 # FILES
 
 : `/svc/factotum/auth`
   The service's sessions.
 : `/svc/factotum/ctl`
   The keys, with `grant factotum admin`.
+: `/lib/factotum/keys`
+  The keys it starts with, bootfs's.
 
 # SEE ALSO
 
-auth-factotum(5), auth-authsession(5), noise(2), 9gate(4), manifest(6)
+auth-factotum(5), auth-authsession(5), noise(2), 9gate(4), cpu(8), manifest(6)
 
 # BUGS
 
-Keys live in factotum's memory: a restart loses them, and the node's noise-ik key with them, until keys are kept on disk.
+Keys live in factotum's memory: a restart loses those added since it started, and a node's noise-ik key made since, until keys are kept on disk.
+The keys in `lib/factotum/keys` are in plain, in the image.

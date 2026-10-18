@@ -63,7 +63,7 @@ func arches(_ args: [String]) -> [String] {
 
 var args = Array(CommandLine.arguments.dropFirst())
 guard let command = args.first else {
-  fail("usage: vx build|test|boot|cpu|bench|trace|loc|man|hardware|rc-oracle|acpi|ci [options]")
+  fail("usage: vx build|test|boot|cpu|remote|bench|trace|loc|man|hardware|rc-oracle|acpi|ci [options]")
 }
 args.removeFirst()
 
@@ -75,6 +75,7 @@ case "qemu-monitor": exit(qemuMonitorCommand(args) ? 0 : 1)
 case "trace": exit(traceCommand(args) ? 0 : 1)
 case "mathgen": exit(mathgenCommand(args) ? 0 : 1)
 case "cpu": exit(cpuCommand(args) ? 0 : 1)
+case "remote": exit(remoteCommand(args) ? 0 : 1)
 default: break
 }
 
@@ -93,5 +94,5 @@ case "hardware": exit(hardwareCommand(args) ? 0 : 1)
 case "rc-oracle": exit(rcOracleCommand(args) ? 0 : 1)
 case "acpi": exit(acpiCommand(args) ? 0 : 1)
 case "ci": exit(ci(args) ? 0 : 1)
-default: fail("unknown command \(command); vx has build, test, boot, cpu, bench, trace, loc, man, hardware, rc-oracle, acpi and ci")
+default: fail("unknown command \(command); vx has build, test, boot, cpu, remote, bench, trace, loc, man, hardware, rc-oracle, acpi and ci")
 }

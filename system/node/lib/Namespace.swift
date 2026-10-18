@@ -36,6 +36,20 @@ public enum NamespaceError: Error, Equatable, Sendable {
     case .wire(let w): self = .wire(w)
     }
   }
+
+  /// What went wrong, for a log line (Embedded Swift prints no enum).
+  public var text: String {
+    switch self {
+    case .badPath: "bad path"
+    case .notFound: "not found"
+    case .sealed: "namespace sealed"
+    case .unionFull: "union full"
+    case .cantCreate: "can't create"
+    case .node(let n): "node error \(n.rawValue)"
+    case .transport(let s): "transport status \(s.rawValue)"
+    case .wire: "protocol error"
+    }
+  }
 }
 
 public final class Namespace: @unchecked Sendable {

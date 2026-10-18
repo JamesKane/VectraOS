@@ -159,7 +159,7 @@ extension Namespace {
   }
 
   func netOpen(_ path: String) throws(DialError) -> NodeIPC.NodeClient {
-    do throws(NamespaceError) { return try open(path) } catch { throw DialError("\(path): \(error)") }
+    do throws(NamespaceError) { return try open(path) } catch { throw DialError("\(path): \(error.text)") }
   }
 
   /// What the conversation's err says went wrong, or the failure itself.

@@ -29,6 +29,29 @@ func nonce() -> String {
   return String(decoding: random(24).map { alphabet[Int($0 & 63)] }, as: UTF8.self)
 }
 
+/// The image's keys, /lib/factotum/keys: a ctl line each, `#` lines and
+/// blank ones skipped. A line refused is said, by its number only (it may
+/// hold a secret), and the rest still load.
+func loadKeys(_ start: Startup, into state: FactotumState) {
+  let ns: Namespace
+  do throws(NamespaceError) { ns = try Namespace(start) } catch { fail("no namespace") }
+  var file: NodeIPC.NodeClient
+  do throws(NamespaceError) { file = try ns.open("/lib/factotum/keys") } catch { fail("no /lib/factotum/keys") }
+  let text: String
+  do throws(NodeIPC.NodeClient.Failure) { text = try file.readText() } catch { fail("can't read /lib/factotum/keys") }
+  var loaded = 0
+  for (i, line) in text.utf8.split(separator: 0x0A, omittingEmptySubsequences: false).enumerated() {
+    guard let first = line.first(where: { $0 != 0x20 && $0 != 0x09 }), first != UInt8(ascii: "#") else { continue }
+    do throws(KeyError) {
+      _ = try state.control(String(decoding: line, as: UTF8.self))
+      loaded += 1
+    } catch {
+      print("factotum: /lib/factotum/keys:\(i + 1): refused")
+    }
+  }
+  if loaded > 0 { print("factotum: \(loaded) key\(loaded == 1 ? "" : "s") from /lib/factotum/keys") }
+}
+
 @main struct FactotumProgram {
   static func main() {
     let start = Startup.current
@@ -45,6 +68,7 @@ func nonce() -> String {
         }
       }
     }
+    loadKeys(start, into: state)
     let tree = NodeTree(dispatcher: dispatcher)
     tree.service("clients") { (channel: consuming Handle) throws(Status) in try state.serveClients(channel) }
     tree.text("status", read: { "keys \(state.listing.utf8.split(separator: 0x0A).count)\n" })

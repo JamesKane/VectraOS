@@ -17,6 +17,7 @@ The caller is vx-cpu(1) on the dev machine.
 
 It is only in an image built with `vx boot --cpu` (vx-build(1)), which puts the terminal's public key, 64 hex digits, at bootfs's `lib/cpu/terminal`; no other image runs it, and nothing else listens on its port.
 It announces `tcp!*!17019` through its namespace's `/net` (ip(4)) and prints `cpu: listening on tcp!*!17019, key` and this node's public key, the key a terminal names to reach it.
+That key is factotum's, which a cpu image vx makes gives it in `lib/factotum/keys` (factotum(4)), vx's node key: a terminal knows it before the node boots, and the node keeps it across a warm boot (vx-remote(1)).
 
 A call is taken only from the link: its address must fall in a route of `/net/iproute` that reaches it without a router (type `4i` or `6i`), so a call that came through a gateway is refused.
 The call is then sealed by Noise IK (noise(2)) with the prologue `cpu` and empty payloads, the caller the initiator, through factotum's `proto=noise-ik` key (factotum(4)), the same key 9gate(4) uses: cpu's manifest grants it that and nothing else.
@@ -66,7 +67,7 @@ restart on-failure
 From the dev machine, in the tree, run a new build of the plumber without a reboot:
 
 ```rc
-% vx cpu -k $nodekey -r build/amd64/kernel -c \
+% vx cpu -r build/amd64/kernel -c \
     'cp /mnt/term/root/plumber.elf /dev/bin/plumber &&
      echo restart plumber >/svc/launcher/ctl' node
 ```
@@ -75,10 +76,12 @@ From the dev machine, in the tree, run a new build of the plumber without a rebo
 
 : `/lib/cpu/terminal`
   The terminal's public key, in hex.
+: `/lib/factotum/keys`
+  factotum's, in a cpu image: the node's private key.
 
 # SEE ALSO
 
-vx-cpu(1), vx-build(1), rc(1), gate(2), noise(2), factotum(4), fs(4), ip(4), proc(4), 9p(5), shell(8)
+vx-cpu(1), vx-build(1), vx-remote(1), rc(1), gate(2), noise(2), factotum(4), fs(4), ip(4), proc(4), 9p(5), shell(8)
 
 # DIAGNOSTICS
 
@@ -88,4 +91,5 @@ Without `/lib/cpu/terminal` it prints that the image wasn't built with `--cpu`, 
 # BUGS
 
 One terminal's key: a node takes no other caller.
+The node's private key is in the image, in plain, where every service granted the whole bootfs (`programs`, `libraries` or `bootfs`, manifest(6)) can read it, as can whoever has the image or the disk it boots from.
 A program can't be run straight from `/mnt/term`, since an imported file gives no memory to map; copy it first.

@@ -159,7 +159,7 @@ public final class CpuServer: @unchecked Sendable {
       if let group = try? ns.connect("/svc/env/new") { try ns.mount(group, at: "/env") }
       return ns
     } catch {
-      throw .protocolError("namespace: \(error)")
+      throw .protocolError("namespace: \(error.text)")
     }
   }
 

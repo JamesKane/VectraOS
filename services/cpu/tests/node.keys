@@ -1,0 +1,2 @@
+# boot-cpu's node key (factotum(4)), as tests/terminal.key is its terminal's.
+key proto=noise-ik !private=aBwfZ3m4sh3kotyUb1xkYdxi3tgbcbdxH5zDaCN3J80=

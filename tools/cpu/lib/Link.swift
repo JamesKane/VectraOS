@@ -28,8 +28,10 @@ public struct Link: Sendable {
     self.close = close
   }
 
-  /// Dials `host` (a name or address) at `port`.
-  public static func tcp(_ host: String, port: Int) throws(TerminalError) -> Link {
+  /// Dials `host` (a name or address) at `port`. With a `timeout`, in
+  /// seconds, the dial and each read and write give up after it, a read
+  /// as if the node had hung up: for a node that may not be there yet.
+  public static func tcp(_ host: String, port: Int, timeout: Double? = nil) throws(TerminalError) -> Link {
     var hints = addrinfo()
     hints.ai_family = AF_UNSPEC
     hints.ai_socktype = Int32(SOCK_STREAM.rawValue)
@@ -44,6 +46,13 @@ public struct Link: Sendable {
     while let a = each {
       let fd = socket(a.pointee.ai_family, a.pointee.ai_socktype, a.pointee.ai_protocol)
       if fd >= 0 {
+        if let timeout {
+          // Linux's connect keeps to the send timeout.
+          var t = timeval(tv_sec: Int(timeout), tv_usec: Int((timeout - Double(Int(timeout))) * 1_000_000))
+          let size = socklen_t(MemoryLayout<timeval>.size)
+          setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &t, size)
+          setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &t, size)
+        }
         if connect(fd, a.pointee.ai_addr, a.pointee.ai_addrlen) == 0 { return descriptor(fd) }
         why = String(cString: strerror(errno))
         Glibc.close(fd)

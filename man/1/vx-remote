@@ -1,0 +1,59 @@
+page vx-remote 1
+summary hand a node to a new kernel and bootfs from the dev machine
+src tools/vx/RemoteCommand.swift tools/cpu/lib/Remote.swift
+keys remote boot warm warmboot kexec kernel bootfs cpu bring-up reload
+host
+
+# SYNOPSIS
+
+```usage
+vx remote boot [arch] [--kernel file] [--bootfs file] [-k nodekey]
+               [--key file] node [option ...]
+```
+
+# DESCRIPTION
+
+`vx remote boot` warm-boots a node from the dev machine, in one step: it opens a cpu session (vx-cpu(1)) to <node>, runs warmboot(8) there on a kernel and bootfs from this machine, and waits until the new boot's cpu server answers.
+Without `--kernel` and `--bootfs` it first builds <arch> (`amd64` if none is given) and its cpu image, `build/<arch>/bootfs-cpu.img`, as `vx boot --cpu` would (vx-build(1)), with this terminal's key and vx's node key, and sends `build/<arch>/kernel/kernel.elf` and that image.
+The node sees the two files, and nothing else of this machine's, at `/mnt/term/root/kernel.elf` and `/mnt/term/root/bootfs.img`, links to them in a directory of their own under `$TMPDIR`, removed afterwards.
+With both given it runs anywhere; to build, it runs from the repository root.
+The <option>s are the new boot's command line; without any it keeps the node's.
+
+warmboot copies the images, prints `warmboot: handing over` and asks devmgr for the warm boot (reboot(8)).
+Once the node has read the bootfs to its end `vx remote boot` dials it again every 200 ms, at most four dials at once, each given 1 s; if the kernel refuses, warmboot prints `warmboot: refused` after the reason, and `vx remote boot` ends.
+A node that answers is the new boot when its `/dev/warm/kernel` is empty, as only a fresh boot's is.
+Both boots answer with the node key vx built in (cpu(8)), so `-k` is needed only for an image with another; `--key` names this terminal's key file, as for vx-cpu(1).
+
+It prints how long the copies took and how long after them the new boot's cpu server answered, with that as a budget line, `budget name=remote.warmboot` in nanoseconds, against 2 s.
+
+# EXAMPLES
+
+Boot amd64 with a cpu server, then, from another terminal, rebuild and hand the node to the new build:
+
+```rc
+% vx boot --cpu
+```
+
+```rc
+% vx remote boot localhost
+vx remote boot: localhost into kernel.elf and bootfs-cpu.img
+warmboot: handing over
+vx remote boot: 107.9 MB copied in 4.81 s (22.4 MB/s)
+vx remote boot: back on cpu 1.42 s after the copies
+  budget name=remote.warmboot value=1417994356 unit=ns limit=2000000000
+```
+
+# SEE ALSO
+
+vx-cpu(1), vx-build(1), reboot(8), cpu(8), devmgr(8)
+
+# DIAGNOSTICS
+
+`vx: remote: the node refused the warm boot` with rc's reason above it; `warmboot ended before the copies were done` when a copy failed, and `without a warm boot` when it failed after them; `no new boot's cpu server on the node 120 s after the copies` when none came back.
+It exits 0 when the new boot answers, 1 otherwise.
+
+# BUGS
+
+The images cross the link at about 22 MB/s under KVM and 2 MB/s without, against a budget of 100 MB/s: a 100 MB cpu image takes 5 s, or most of a minute.
+rc's output on the node reaches this terminal through a ring, so its last lines before the warm boot, `warmboot: handing over` among them, may be lost with the old kernel.
+The 2 s budget is printed, not judged: `vx bench` doesn't run it yet.

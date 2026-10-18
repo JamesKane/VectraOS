@@ -2,7 +2,8 @@
 # warmboot KERNEL BOOTFS [OPTION ...] (reboot(8)): the machine handed to
 # another kernel and bootfs without the firmware, through devmgr's
 # /dev/warm and /dev/reboot (D101); the options, if any, its command line
-# (none: this boot's).
+# (none: this boot's). It says when the copies are done and it hands
+# over, and if the kernel refuses, which vx remote boot waits for.
 if (~ $#* 0 1) {
 	echo 'usage: warmboot kernel bootfs [option ...]' >[1=2]
 	exit usage
@@ -11,4 +12,8 @@ cp $1 /dev/warm/kernel || exit copy
 cp $2 /dev/warm/bootfs || exit copy
 shift 2
 echo -n $* >/dev/warm/cmdline
-echo warmboot >/dev/reboot
+echo 'warmboot: handing over'
+if (! echo warmboot >/dev/reboot) {
+	echo 'warmboot: refused'
+	exit refused
+}

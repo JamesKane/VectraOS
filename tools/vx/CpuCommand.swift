@@ -3,10 +3,11 @@
 // vx cpu: a cpu session on a node (D77, vx-cpu(1)): rc there, with this
 // terminal's /dev/cons and its files at /mnt/term (tools/cpu).
 //
-//   vx cpu -k NODEKEY [-r ROOT] [-c COMMAND] [--key FILE] NODE
+//   vx cpu [-k NODEKEY] [-r ROOT] [-c COMMAND] [--key FILE] NODE
 //   vx cpu --show-key [--key FILE]
 //
-// NODE is a host, host!port or tcp!host!port (port 17019 if none).
+// NODE is a host, host!port or tcp!host!port (port 17019 if none). The
+// node's key is by default the one vx builds into its cpu images.
 
 import CpuProtocol
 import CpuTerminal
@@ -14,7 +15,7 @@ import FoundationEssentials
 import Glibc
 import Noise
 
-private let usage = "usage: vx cpu -k NODEKEY [-r ROOT] [-c COMMAND] [--key FILE] NODE | vx cpu --show-key [--key FILE]"
+private let usage = "usage: vx cpu [-k NODEKEY] [-r ROOT] [-c COMMAND] [--key FILE] NODE | vx cpu --show-key [--key FILE]"
 
 /// NODE's host and port.
 func cpuAddress(_ node: String) -> (host: String, port: Int)? {
@@ -26,8 +27,18 @@ func cpuAddress(_ node: String) -> (host: String, port: Int)? {
   return (host, port)
 }
 
+/// -k's 64 hex digits, or the public half of the node key vx builds into
+/// its cpu images.
+func nodeKey(_ given: String?, _ command: String) -> [UInt8] {
+  if let given {
+    guard let k = unhex(given), k.count == Noise.keySize else { fail("\(command): -k takes 64 hex digits") }
+    return k
+  }
+  do throws(TerminalError) { return try TerminalKey.load(TerminalKey.nodePath).publicKey } catch { fail("\(command): \(error)") }
+}
+
 func cpuCommand(_ args: [String]) -> Bool {
-  var nodeKey: [UInt8]?
+  var given: String?
   var root = "/", command = "", keyPath = TerminalKey.defaultPath
   var showKey = false
   var node: String?
@@ -35,8 +46,8 @@ func cpuCommand(_ args: [String]) -> Bool {
   while let a = rest.popFirst() {
     switch a {
     case "-k":
-      guard let k = rest.popFirst().flatMap(unhex), k.count == Noise.keySize else { fail("cpu: -k takes 64 hex digits") }
-      nodeKey = k
+      guard let k = rest.popFirst() else { fail(usage) }
+      given = k
     case "-r":
       guard let r = rest.popFirst() else { fail(usage) }
       root = r
@@ -60,9 +71,7 @@ func cpuCommand(_ args: [String]) -> Bool {
     return true
   }
   guard let node, let (host, port) = cpuAddress(node) else { fail(usage) }
-  guard let nodeKey else {
-    fail("cpu: the node's key is -k KEY, from its console's `cpu: listening on ..., key KEY`")
-  }
+  let nodeKey = nodeKey(given, "cpu")
   guard let d = opendir(root) else { fail("cpu: \(root): not a directory") }
   closedir(d)
   do throws(TerminalError) {
@@ -76,10 +85,37 @@ func cpuCommand(_ args: [String]) -> Bool {
   return true
 }
 
+/// Writes the keys bootfs-cpu.img takes, each only if it changed, so the
+/// image isn't rebuilt: cpu/terminal, the terminal's public key, and
+/// cpu/keys, factotum's line for the node's key (TerminalKey.nodePath).
+func writeCpuKeys(_ target: String, terminal: [UInt8], command: String) {
+  _ = nodeKey(nil, command)  // made if it isn't there
+  guard let node = FileManager.default.contents(atPath: TerminalKey.nodePath) else {
+    fail("\(command): can't read \(TerminalKey.nodePath)")
+  }
+  let dir = "build/\(target)/cpu"
+  makeDirectory(dir)
+  let files = [
+    ("terminal", hex(terminal) + "\n"),
+    ("keys", "key proto=noise-ik !private=\(node.base64EncodedString())\n"),
+  ]
+  for (name, text) in files {
+    let file = dir + "/" + name
+    if (try? String(contentsOfFile: file, encoding: .utf8)) == text { continue }
+    let fd = open(file, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0o600)
+    guard fd >= 0 else { fail("\(command): can't write \(file)") }
+    let bytes = Array(text.utf8)
+    let n = bytes.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+    close(fd)
+    guard n == bytes.count else { fail("\(command): can't write \(file)") }
+  }
+}
+
 /// vx boot [ARCH] [--cpu [KEY]]: builds the arch and boots it. With
 /// --cpu, the cpu image (bootfs-cpu.img, D77) boots the launcher with a
 /// cpu server for the terminal whose key is KEY (this terminal's by
-/// default), its port 17019 forwarded from localhost's.
+/// default), with the node key vx keeps, its port 17019 forwarded from
+/// localhost's.
 func bootCommand(_ args: [String]) -> Bool {
   var rest = args[...], arch: String?, cpu: [UInt8]?
   while let a = rest.popFirst() {
@@ -98,12 +134,7 @@ func bootCommand(_ args: [String]) -> Bool {
   let target = arch ?? "amd64"
   guard build(target) else { return false }
   guard let cpu else { return run(["ninja", "-C", "build/\(target)", "run"], log: nil).ok }
-  // The key, rewritten only if it changed, so the image isn't rebuilt.
-  let dir = "build/\(target)/cpu", file = dir + "/terminal", text = hex(cpu) + "\n"
-  makeDirectory(dir)
-  if (try? String(contentsOfFile: file, encoding: .utf8)) != text {
-    guard (try? text.write(toFile: file, atomically: true, encoding: .utf8)) != nil else { fail("boot: can't write \(file)") }
-  }
-  say("vx boot: a cpu server for \(hex(cpu)); its console says the node's key, for vx cpu -k KEY localhost")
+  writeCpuKeys(target, terminal: cpu, command: "boot")
+  say("vx boot: a cpu server for \(hex(cpu)), as \(hex(nodeKey(nil, "boot"))): vx cpu localhost")
   return run(["ninja", "-C", "build/\(target)", "run-cpu"], log: nil).ok
 }

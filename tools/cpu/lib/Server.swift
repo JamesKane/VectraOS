@@ -184,6 +184,7 @@ public final class TerminalServer: @unchecked Sendable {
         var buffer = [UInt8](repeating: 0, count: n)
         let got = buffer.withUnsafeMutableBytes { pread(f.fd, $0.baseAddress, n, off_t(offset)) }
         guard got >= 0 else { throw Refusal.errno() }
+        if got == 0, case .host(let names) = f.place { tree.readToEnd?(names) }
         return .rread(data: Array(buffer[0..<got]))
       }
     case .twrite(let fid, let offset, let data):

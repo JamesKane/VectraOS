@@ -416,6 +416,7 @@ set(_bootfs_entries bin/m2=${_m2} bin/sys-test=${_sys_test} bin/dl-test=${_dl_te
           lib/ndb/local=${_ndb}/db/local lib/ndb/common=${_ndb}/db/common
           bin/9gate=${_9gate} etc/manifests/9gate.manifest=${_9gate_manifest}
           bin/factotum=${_factotum} etc/manifests/factotum.manifest=${_factotum_manifest}
+          lib/factotum/keys=${PROJECT_SOURCE_DIR}/services/factotum/keys
           bin/ramdisk=${_ramdisk} etc/manifests/ramdisk.manifest=${_ramdisk_manifest}
           bin/fs=${_fs} etc/manifests/fs.manifest=${_fs_manifest}
           bin/log=${_scripts}/log bin/restart=${_scripts}/restart bin/reboot=${_scripts}/reboot
@@ -432,7 +433,7 @@ set(_bootfs_depends ${_m2} ${_sys_test} ${_dl_test} ${_dl_c} ${_dl_swift} ${_tra
           ${_proc} ${PROJECT_SOURCE_DIR}/services/proc/proc.manifest
           ${_net} ${PROJECT_SOURCE_DIR}/services/net/net.manifest
           ${_cs} ${_ndb}/cs/cs.manifest ${_dns} ${_ndb}/dns/dns.manifest ${_ndb}/db/local ${_ndb}/db/common
-          ${_9gate} ${_9gate_manifest} ${_factotum} ${_factotum_manifest}
+          ${_9gate} ${_9gate_manifest} ${_factotum} ${_factotum_manifest} ${PROJECT_SOURCE_DIR}/services/factotum/keys
           ${_ramdisk} ${_ramdisk_manifest} ${_fs} ${_fs_manifest}
           ${_scripts}/log ${_scripts}/restart ${_scripts}/reboot ${_scripts}/poweroff ${_scripts}/warmboot
           ${_man_files} ${_man_index} ${_tier1_files} vx ${VX})
@@ -449,26 +450,30 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-warmboot.img
   DEPENDS ${_bootfs_depends} kernel
   COMMENT "Building bootfs for boot-warmboot")
 add_custom_target(bootfs-warmboot DEPENDS ${CMAKE_BINARY_DIR}/bootfs-warmboot.img)
-# The cpu images (D77): bootfs and the cpu server, its manifest and the
-# key of the terminal it answers (lib/cpu/terminal), which no other image
-# has. bootfs-cpu-test.img pins the tests' terminal (boot-cpu);
-# bootfs-cpu.img the key vx boot --cpu writes to cpu/terminal.
+# The cpu images (D77): bootfs and the cpu server, its manifest, the key
+# of the terminal it answers (lib/cpu/terminal) and the node's own key,
+# which the terminal knows (lib/factotum/keys), which no other image has.
+# bootfs-cpu-test.img has the tests' keys (boot-cpu); bootfs-cpu.img the
+# ones vx boot --cpu writes to cpu/terminal and cpu/keys.
 # Without the launcher's own test and its services, which judge a normal
 # image.
 set(_cpu_image_entries ${_bootfs_entries})
-list(FILTER _cpu_image_entries EXCLUDE REGEX "^(bin/launch-test|etc/manifests/(launch-test|a|b)\\.manifest)=")
+list(FILTER _cpu_image_entries EXCLUDE REGEX "^(bin/launch-test|etc/manifests/(launch-test|a|b)\\.manifest|lib/factotum/keys)=")
 set(_cpu_entries bin/cpu=${_cpu} etc/manifests/cpu.manifest=${PROJECT_SOURCE_DIR}/services/cpu/cpu.manifest
           etc/launcher/push=${PROJECT_SOURCE_DIR}/system/launch/launcher/push)
 set(_cpu_test_key ${PROJECT_SOURCE_DIR}/services/cpu/tests/terminal.pub)
+set(_cpu_test_node ${PROJECT_SOURCE_DIR}/services/cpu/tests/node.keys)
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-cpu-test.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-cpu-test.img ${_cpu_image_entries} ${_cpu_entries}
-          lib/cpu/terminal=${_cpu_test_key}
-  DEPENDS ${_bootfs_depends} ${_cpu} ${PROJECT_SOURCE_DIR}/services/cpu/cpu.manifest ${PROJECT_SOURCE_DIR}/system/launch/launcher/push ${_cpu_test_key}
+          lib/cpu/terminal=${_cpu_test_key} lib/factotum/keys=${_cpu_test_node}
+  DEPENDS ${_bootfs_depends} ${_cpu} ${PROJECT_SOURCE_DIR}/services/cpu/cpu.manifest ${PROJECT_SOURCE_DIR}/system/launch/launcher/push
+          ${_cpu_test_key} ${_cpu_test_node}
   COMMENT "Building bootfs for boot-cpu")
 add_custom_target(bootfs-cpu-test DEPENDS ${CMAKE_BINARY_DIR}/bootfs-cpu-test.img)
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bootfs-cpu.img
   COMMAND ${VX} mkbootfs ${CMAKE_BINARY_DIR}/bootfs-cpu.img ${_cpu_image_entries} ${_cpu_entries}
-          lib/cpu/terminal=${CMAKE_BINARY_DIR}/cpu/terminal
-  DEPENDS ${_bootfs_depends} ${_cpu} ${PROJECT_SOURCE_DIR}/services/cpu/cpu.manifest ${PROJECT_SOURCE_DIR}/system/launch/launcher/push ${CMAKE_BINARY_DIR}/cpu/terminal
+          lib/cpu/terminal=${CMAKE_BINARY_DIR}/cpu/terminal lib/factotum/keys=${CMAKE_BINARY_DIR}/cpu/keys
+  DEPENDS ${_bootfs_depends} ${_cpu} ${PROJECT_SOURCE_DIR}/services/cpu/cpu.manifest ${PROJECT_SOURCE_DIR}/system/launch/launcher/push
+          ${CMAKE_BINARY_DIR}/cpu/terminal ${CMAKE_BINARY_DIR}/cpu/keys
   COMMENT "Building bootfs for vx boot --cpu")
 add_custom_target(bootfs-cpu DEPENDS ${CMAKE_BINARY_DIR}/bootfs-cpu.img)
