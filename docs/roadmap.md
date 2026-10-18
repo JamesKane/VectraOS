@@ -951,7 +951,19 @@ meets a tested path.
     round trips more than any one CPU (net has 27% of one over 2 s of
     copies). The profile's top now: the kernel's spin locks under net's
     port calls (10%), swift_release in net (6%), the cpu server's
-    unmapping (KernelAspace.free and UserAspace.unmap, 7%). Also open:
+    unmapping (KernelAspace.free and UserAspace.unmap, 7%). Nor is it
+    the reads in flight: the import reading 8 or 16 blocks ahead in
+    place of 4 left the copy as it was (0.52-0.54 s), and 32 hung one
+    copy until its 60 s timeout (not looked into: 4 stays). Per byte,
+    not per session (an empty session is 50 ms; 64 MiB takes twice 32
+    MiB's time), and the node's own copy, `cp` from one /dev/warm file
+    to another, no network at all, is 64 MiB in 0.59-0.66 s, about
+    100 MB/s: a file's bytes go as Node messages of 32 KiB (`maxIO`)
+    over its channel, a read and a write each, some 150 µs a pair, of
+    which copying the bytes is a few. The link can't pass 100 MB/s while
+    a node's file I/O can't; the next step is file data on the bulk
+    rings (Node has them; only streams use them), or far cheaper
+    messages. Also open:
     the first call after a cold boot waits about 6 s, its SYN lost and
     sent again.
 
