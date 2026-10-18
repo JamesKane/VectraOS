@@ -901,6 +901,16 @@ meets a tested path.
 - A cpu session dials out through the terminal's `/net`, bound from
   `/mnt/term/net` (D79).
 - The bring-up budgets are green.
+  Accepted in the open (2026-10-17, d24fe84): `services.rss`, 10.8
+  MiB against the 3.7 MiB recorded at V2's exit, within its 32 MiB
+  limit. Interleaved against 917d4e3 (the cpu server) it was 9.9 MiB
+  there, so most of the rise came with V3's first services (net, dns,
+  cs, factotum, 9gate, cpu, proc) and 0.9 MiB (+10%) with Taisce,
+  ramdisk, kprint and the board tools. The self-tests' boot read 5.5 s
+  against 4.3 s in a sequential run but 8% faster than 917d4e3
+  interleaved: the machine, not the tree. `vx bench --compare` built the
+  other tree without tier 1 (its toolchain is untracked), so its
+  services boot failed launch-test; it links this tree's now.
 - `man/missing` is empty: every program, call, protocol, tree and format
   through V3 has a page, and "fully documented" stays an exit criterion
   of every milestone after. `man rc` and the check pass meet D86's

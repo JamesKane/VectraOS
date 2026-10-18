@@ -233,10 +233,23 @@ private func compare(_ ref: String, runs: Int, loadBefore: Double) -> Bool {
       fail("can't copy \(config) to \(tree): \(error)")
     }
   }
-  say("vx bench: building \(sha) in \(tree)")
-  if !FileManager.default.fileExists(atPath: "\(tree)/build/amd64/build.ninja") {
-    guard step("compare-\(sha)-configure", ["cmake", "-S", tree, "--preset", "amd64"]) else { return false }
+  // This tree's tier 1 toolchain, also untracked: without it the other
+  // tree builds without tier 1's programs (no /bin/cat), and its services
+  // boot fails launch-test. Configured each time, as tier 1 is found then.
+  let toolchain = ".cache/toolchain"
+  if FileManager.default.fileExists(atPath: toolchain),
+    !FileManager.default.fileExists(atPath: "\(tree)/\(toolchain)")
+  {
+    makeDirectory("\(tree)/.cache")
+    let target = URL(fileURLWithPath: toolchain).resolvingSymlinksInPath().path
+    do {
+      try FileManager.default.createSymbolicLink(atPath: "\(tree)/\(toolchain)", withDestinationPath: target)
+    } catch {
+      fail("can't link \(toolchain) into \(tree): \(error)")
+    }
   }
+  say("vx bench: building \(sha) in \(tree)")
+  guard step("compare-\(sha)-configure", ["cmake", "-S", tree, "--preset", "amd64"]) else { return false }
   guard step("compare-\(sha)-build", ["cmake", "--build", "\(tree)/build/amd64"]) else { return false }
 
   say("vx bench: \(runs) interleaved runs, this tree (\(commit())) and \(sha)")
