@@ -868,6 +868,18 @@ meets a tested path.
   - It goes through `SYSTEM_POWERCTL` as a new command, so no new syscall
     and the ceiling holds.
   - `vx remote boot HOST` does the session and the call in one step.
+  - **Done on amd64 (2026-10-17, D101), but `vx remote boot`:** the kernel's
+    `system_powerctl(WARMBOOT)` over three VMOs (WarmBoot.swift, boot.md's
+    "Warm boot"); devmgr stages them in `/dev/warm/{kernel,bootfs,cmdline}`
+    (NodeTree's growable memory files), clears bus mastering and asks; the
+    `warmboot` script copies the images there. boot-warmboot warm-boots a
+    test image into itself; boot-cpu warm-boots the node from `vx cpu`
+    into its own build and finds the cpu server again. Found on the way:
+    `ElfImage.load` left `.bss` unzeroed (the loader's latent bug, hidden by
+    QEMU's zeroed RAM), virtio never turned bus mastering on (firmware
+    had), and the new kernel's boot CPU must be firmware's. Copying a
+    100 MB bootfs over the cpu link takes about 50 s (2 MB/s): the link's
+    throughput is to be looked at. arm64 next.
 
 - **The manual (D86):** V3's pieces arrive with their pages (`cpu(8)`, `vx-cpu(1)`,
   `net(3)`, `proc(4)`, 9P2000's messages in section 5, the board tools),

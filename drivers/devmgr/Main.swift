@@ -186,10 +186,24 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     // manifests mount them at /dev and /net.
     tree.directory("dev")
     tree.directory("net")
-    // /dev/reboot (D79): a command a line, `reboot` or `poweroff`, through
-    // the power resource; poweroff on amd64 takes \_S5's sleep types,
-    // known once ACPI's namespace has loaded.
+    // /dev/reboot (D79): a command a line, `reboot`, `poweroff` or
+    // `warmboot`, through the power resource; poweroff on amd64 takes \_S5's
+    // sleep types, known once ACPI's namespace has loaded. A warm boot
+    // (D101) takes the images written to /dev/warm, with every PCI
+    // function's bus mastering off first (put back if the kernel refuses).
     let sleepTypes = Locked<(UInt8, UInt8)?>(nil)
+    let busMastering = Locked<(stop: @Sendable () -> Void, restore: @Sendable () -> Void)?>(nil)
+    var staged: [(node: TreeNode, vmo: UInt32)] = []
+    for (name, capacity) in [("kernel", UInt64(64) << 20), ("bootfs", UInt64(512) << 20), ("cmdline", UInt64(4096))] {
+      do throws(Status) {
+        let vmo = try VMO.create(size: Int(capacity))
+        let node = try tree.memory("dev/warm/" + name, growable: try vmo.duplicate(), capacity: capacity)
+        staged.append((node, vmo.release()))
+      } catch {
+        print("devmgr: no /dev/warm/\(name): \(error.rawValue)")
+      }
+    }
+    let warm = staged
     tree.text("dev/reboot", read: { "" }, write: { (text: String) throws(NodeError) in
       for line in lines(text) where !line.isEmpty {
         let power = Handle(raw: powerRaw)  // borrowed: devmgr's for its life
@@ -200,12 +214,14 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
         } else if same(line, "poweroff") {
           print("devmgr: powering off, as /dev/reboot asked")
           do throws(Status) { try Power.poweroff(power, sleepTypes: sleepTypes.withLock { $0 }) } catch { failed = error }
+        } else if same(line, "warmboot") {
+          failed = warmboot(power, warm, tree, busMastering.withLock { $0 })
         } else {
           _ = power.release()
           throw .invalid
         }
         _ = power.release()
-        if failed != nil { throw .unsupported }
+        if let failed { throw failed == .invalidArgs ? .invalid : .unsupported }
       }
     })
     guard let export = start.export() else { fail("no export (its manifest's `export`)") }
@@ -249,6 +265,20 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
     // The PCI functions.
     let t1 = Clock.monotonic()
     let functions = enumerate(ecam, bus: w.startBus)
+    // For a warm boot: each function's command register with Bus Master
+    // Enable (bit 2) cleared, and put back as it was.
+    let addresses = functions.map { $0.address }
+    let saved = Locked<[UInt16]>([])
+    busMastering.withLock {
+      $0 = (stop: {
+        saved.withLock { s in
+          s = addresses.map { ecam.read16($0, 4) }
+          for (a, command) in zip(addresses, s) { ecam.write16(a, 4, command & ~(1 << 2)) }
+        }
+      }, restore: {
+        saved.withLock { s in for (a, command) in zip(addresses, s) { ecam.write16(a, 4, command) } }
+      })
+    }
     let enumerated = Clock.monotonic() - t1
     let enumeration = "\(functions.count) functions in \(enumerated / 1000) us, \(ecam.mappedBuses) buses mapped\n"
     findings.lock.withLock { findings.enumeration = enumeration }
@@ -386,6 +416,46 @@ func read(_ bootfs: borrowing Handle, _ file: ProgramEntry) -> [UInt8]? {
 }
 
 /// `text`'s lines (bytes: String's split needs Unicode tables).
+/// /dev/reboot's `warmboot` (D101): the images in /dev/warm (kernel and
+/// bootfs, and the command line if one was written), each VMO's content
+/// size its file's length, with bus mastering off on every PCI function
+/// (`busMastering`, once enumerated), back on if the kernel refuses. Why
+/// it failed, if it returned.
+func warmboot(_ power: borrowing Handle, _ warm: [(node: TreeNode, vmo: UInt32)], _ tree: NodeTree,
+              _ busMastering: (stop: @Sendable () -> Void, restore: @Sendable () -> Void)?) -> Status? {
+  guard warm.count == 3 else { return .notSupported }
+  let lengths = warm.map { tree.length($0.node) ?? 0 }
+  guard lengths[0] > 0, lengths[1] > 0 else { return .invalidArgs }  // nothing staged
+  for (i, w) in warm.enumerated() where lengths[i] > 0 {
+    let vmo = Handle(raw: w.vmo)  // borrowed: devmgr's
+    let set = refusal { () throws(Status) in try VMO.setContentSize(vmo, lengths[i]) }
+    _ = vmo.release()
+    if let set { return set }
+  }
+  print("devmgr: warm boot, as /dev/reboot asked: kernel \(lengths[0]) bytes, bootfs \(lengths[1]) bytes")
+  busMastering?.stop()
+  let kernel = Handle(raw: warm[0].vmo), bootfs = Handle(raw: warm[1].vmo), cmdline = Handle(raw: warm[2].vmo)
+  let failed = refusal { () throws(Status) in
+    if lengths[2] > 0 {
+      try Power.warmboot(power, kernel: kernel, bootfs: bootfs, cmdline: cmdline)
+    } else {
+      try Power.warmboot(power, kernel: kernel, bootfs: bootfs)
+    }
+  }
+  _ = kernel.release()
+  _ = bootfs.release()
+  _ = cmdline.release()
+  busMastering?.restore()
+  print("devmgr: the kernel refused the warm boot: \(failed?.rawValue ?? 0)")
+  return failed ?? .internal
+}
+
+/// What `body` threw, if it did.
+func refusal(_ body: () throws(Status) -> Void) -> Status? {
+  do throws(Status) { try body() } catch { return error }
+  return nil
+}
+
 func lines(_ text: String) -> [String] {
   var out: [String] = [], line: [UInt8] = []
   for b in text.utf8 {

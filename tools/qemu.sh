@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Boot a croi EFI system partition under QEMU with edk2 firmware.
 #
-#   qemu.sh [--test <text>] [--exits] [--then <command>] [--forward <host>:<guest>] [--screendump <file.ppm>] [--registers-on <text>] [--iommu intel|amd] <amd64|arm64|rv64> <esp-dir> <work-dir> <edk2-dir> [qemu args...]
+#   qemu.sh [--test <text>] [--exits] [--then <command>] [--forward <host>:<guest>] [--timeout <seconds>] [--screendump <file.ppm>] [--registers-on <text>] [--iommu intel|amd] <amd64|arm64|rv64> <esp-dir> <work-dir> <edk2-dir> [qemu args...]
 #
 # The ESP directory is served as a virtual FAT drive. Writable firmware
 # variable stores are copied into <work-dir> on first use. With --test the
@@ -28,6 +28,8 @@
 # the run succeeds if the command does (boot-cpu: vx cpu into the guest).
 # --forward connects TCP port <host> on 127.0.0.1 to the guest's port
 # <guest> (vx boot --cpu, boot-cpu).
+# --timeout ends QEMU after <seconds> in test mode (90 by default; boot-cpu,
+# which copies a bootfs over the link to warm-boot, needs more).
 
 set -euo pipefail
 
@@ -35,6 +37,7 @@ set -euo pipefail
 vx="${VX:-$(cd "$(dirname "$0")/.." && pwd)/.build/debug/vx}"
 
 expect=
+limit=90
 exits=
 screendump=
 registers_on=
@@ -52,6 +55,7 @@ while [[ ${1:-} == --* ]]; do
     --aia) aia=1; shift ;;
     --then) then=${2:?--then needs a command}; shift 2 ;;
     --forward) forward=${2:?--forward needs host:guest}; shift 2 ;;
+    --timeout) limit=${2:?--timeout needs seconds}; shift 2 ;;
     *) echo "qemu.sh: unknown option $1" >&2; exit 2 ;;
   esac
 done
@@ -162,7 +166,7 @@ if [[ -n $expect ]]; then
   # A guest power-off pauses QEMU instead of ending it, so the screen can
   # still be read once the line is seen.
   [[ -n $screendump ]] && monitor+=(-action shutdown=pause)
-  coproc vm { exec timeout 90 "${qemu[@]}" -display none -serial stdio "${monitor[@]}" -no-reboot "$@" 2>&1; }
+  coproc vm { exec timeout "$limit" "${qemu[@]}" -display none -serial stdio "${monitor[@]}" -no-reboot "$@" 2>&1; }
   pid=$vm_PID  # bash unsets vm_PID when the coproc ends
   # Its output, kept: bash unsets vm as well when it sees the coproc change
   # state, which a monitor command run meanwhile made it see on rv64.

@@ -223,10 +223,10 @@ if(_tier1_built)
   set(_cpu_port_arm64 27020)
   set(_cpu_port_rv64 27021)
   add_test(NAME boot-cpu
-    COMMAND ${CROI_QEMU} --test "cpu: listening on" --forward ${_cpu_port_${CROI_ARCH}}:17019
-            --then "${CMAKE_SOURCE_DIR}/services/cpu/tests/boot-cpu.sh ${VX} ${_cpu_port_${CROI_ARCH}} ${CMAKE_BINARY_DIR}/qemu-cpu ${CMAKE_BINARY_DIR}/kernel/plumber.elf"
+    COMMAND ${CROI_QEMU} --test "cpu: listening on" --forward ${_cpu_port_${CROI_ARCH}}:17019 --timeout 240
+            --then "${CMAKE_SOURCE_DIR}/services/cpu/tests/boot-cpu.sh ${VX} ${_cpu_port_${CROI_ARCH}} ${CMAKE_BINARY_DIR}/qemu-cpu ${CMAKE_BINARY_DIR}/kernel/plumber.elf ${CROI_ARCH} $<TARGET_FILE:kernel> ${CMAKE_BINARY_DIR}/bootfs-cpu-test.img"
             ${CROI_ARCH} ${CMAKE_BINARY_DIR}/esp-cpu-test ${CMAKE_BINARY_DIR}/qemu-cpu ${CROI_EDK2_DIR})
-  set_tests_properties(boot-cpu PROPERTIES TIMEOUT 150)
+  set_tests_properties(boot-cpu PROPERTIES TIMEOUT 300)
 endif()
 croi_boot_program_test(trace trace-test)
 add_test(NAME trace-collect

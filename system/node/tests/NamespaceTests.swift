@@ -228,6 +228,30 @@ func failure<R>(_ body: () throws(NamespaceError) -> R) -> NamespaceError? {
   #expect(throws: Status.self) { _ = try VMO.map(m.vmo, length: 4096, writable: true) }
 }
 
+/// A growable memory file (/dev/warm's): as long as its highest write, a
+/// gap zeros, cut and regrown by wstat without an older write showing
+/// through, short at its capacity.
+@Test func aGrowableFileFollowsItsWrites() throws {
+  let s = try Service()
+  defer { s.stop() }
+  let node = try s.tree.memory("warm/kernel", growable: try VMO.create(size: 8192), capacity: 8192)
+  s.start()
+  let ns = Namespace()
+  try ns.mount(s.channel(), at: "/")
+  var f = try ns.open("/warm/kernel")
+  #expect(try f.stat().size == 0)
+  #expect(try f.write(offset: 0, Array("head".utf8)) == 4)
+  #expect(try f.write(offset: 8, Array("tail".utf8)) == 4)
+  #expect(try f.stat().size == 12 && s.tree.length(node) == 12)
+  #expect(try f.readAll() == Array("head".utf8) + [0, 0, 0, 0] + Array("tail".utf8))
+  try ns.wstat("/warm/kernel", NodeIPC.Wstat(size: 2))
+  try ns.wstat("/warm/kernel", NodeIPC.Wstat(size: 6))
+  #expect(try f.readAll() == Array("he".utf8) + [0, 0, 0, 0])
+  #expect(try f.write(offset: 8190, Array("over".utf8)) == 2)
+  #expect(try f.stat().size == 8192)
+  #expect(failure { () throws(NamespaceError) in try ns.wstat("/warm/kernel", NodeIPC.Wstat(size: 8193)) } != nil)
+}
+
 @Test func wstatRenamesTimesAndCuts() throws {
   let s = try Service()
   defer { s.stop() }

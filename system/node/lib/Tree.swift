@@ -109,30 +109,60 @@ final class Remote: @unchecked Sendable {
 
 /// A memory file's VMO, the tree's: its first `size` bytes are the file,
 /// and `executable` says whether it may be given to run. A writable one
-/// (a disk's) is mapped once, and written in place; its size is fixed.
+/// is mapped once and written in place: a disk's, whose size is fixed, or
+/// a growable one (a staged image's), which is as long as its highest
+/// write, up to its VMO's `capacity`, and cut by wstat.
 public final class Backing: @unchecked Sendable {
   let vmo: Handle
-  let size: UInt64
+  let capacity: UInt64
   let executable: Bool
   /// A writable file's whole VMO, mapped.
   let mapped: Mapping?
   let writable: Bool
+  let growable: Bool
+  let lock = Lock()
+  /// A growable file's length.
+  var length: UInt64
+
+  /// Its length now.
+  var size: UInt64 { growable ? lock.withLock { length } : capacity }
 
   init(_ vmo: consuming Handle, size: UInt64, executable: Bool) {
     self.vmo = vmo
-    self.size = size
+    capacity = size
+    length = size
     self.executable = executable
     mapped = nil
     writable = false
+    growable = false
   }
 
-  /// A writable one, which can't run.
-  init(writable vmo: consuming Handle, size: UInt64) throws(Status) {
+  /// A writable one, which can't run: `size` bytes, or with `growable`,
+  /// none yet and up to `size`.
+  init(writable vmo: consuming Handle, size: UInt64, growable: Bool = false) throws(Status) {
     mapped = try VMO.map(vmo, length: (Int(size) + Self.page - 1) & ~(Self.page - 1))
     writable = true
+    self.growable = growable
     self.vmo = vmo
-    self.size = size
+    capacity = size
+    length = growable ? 0 : size
     executable = false
+  }
+
+  /// A growable file cut (or grown, with zeros) to `size`.
+  func resize(_ size: UInt64) throws(NodeError) {
+    guard growable else { throw .unsupported }
+    guard size <= capacity else { throw .invalid }
+    lock.withLock {
+      if size > length { zeroLocked(length, size) }
+      length = size
+    }
+  }
+
+  /// Zeros [from, to) of a growable file's VMO (under the lock).
+  func zeroLocked(_ from: UInt64, _ to: UInt64) {
+    guard to > from else { return }
+    mapped?.write([UInt8](repeating: 0, count: Int(to - from)), at: Int(from))
   }
 
   /// `max` bytes from `offset`, at most to its end.
@@ -152,9 +182,19 @@ public final class Backing: @unchecked Sendable {
   /// or past it, as a disk's partition): how much it wrote.
   func write(offset: UInt64, _ data: [UInt8]) throws(NodeError) -> UInt32 {
     guard writable else { throw .unsupported }
-    guard offset < size else { return 0 }
-    let n = Swift.min(data.count, Int(size - offset))
-    mapped?.write(n == data.count ? data : Array(data[..<n]), at: Int(offset))
+    guard offset < capacity else { return 0 }
+    let n = Swift.min(data.count, Int(capacity - offset))
+    let bytes = n == data.count ? data : Array(data[..<n])
+    guard growable else {
+      mapped?.write(bytes, at: Int(offset))
+      return UInt32(n)
+    }
+    // Past the end: what lies between is zeros, never an older write's.
+    lock.withLock {
+      if offset > length { zeroLocked(length, offset) }
+      mapped?.write(bytes, at: Int(offset))
+      length = Swift.max(length, offset + UInt64(n))
+    }
     return UInt32(n)
   }
 
@@ -309,6 +349,20 @@ public final class NodeTree: @unchecked Sendable {
   @discardableResult
   public func memory(_ path: String, writable vmo: consuming Handle, size: UInt64) throws(Status) -> TreeNode {
     place(path, .memory(try Backing(writable: vmo, size: size)))
+  }
+
+  /// A file of memory that clients write, as long as its highest write, up
+  /// to `capacity` bytes of `vmo`, and cut by wstat: an image staged to
+  /// hand on (/dev/warm, D101). Its memory is given read only.
+  @discardableResult
+  public func memory(_ path: String, growable vmo: consuming Handle, capacity: UInt64) throws(Status) -> TreeNode {
+    place(path, .memory(try Backing(writable: vmo, size: capacity, growable: true)))
+  }
+
+  /// A memory file's length, if `node` is one.
+  public func length(_ node: TreeNode) -> UInt64? {
+    guard case .memory(let m) = locked({ node.content }) else { return nil }
+    return m.size
   }
 
   /// A text leaf: `read` renders it on every read; `write`, if given, takes
@@ -798,12 +852,19 @@ struct Session: NodeIPC.NodeHandler {
       let at = try live(node)
       if change.name != nil || change.modified != nil { guard at.removable, let _ = at.parent else { throw .denied } }
       if let size = change.size {
-        guard case .bytes(_, let writable) = at.content else { throw at.kind == .directory ? .isDirectory : .unsupported }
-        guard writable else { throw .unsupported }
-        guard size <= UInt64(Int32.max) else { throw .invalid }
+        if case .memory(let m) = at.content {
+          // A growable memory file's length.
+          guard m.growable else { throw .unsupported }
+          guard size <= m.capacity else { throw .invalid }
+        } else {
+          guard case .bytes(_, let writable) = at.content else { throw at.kind == .directory ? .isDirectory : .unsupported }
+          guard writable else { throw .unsupported }
+          guard size <= UInt64(Int32.max) else { throw .invalid }
+        }
       }
       if let name = change.name, !NodeIPC.same(name, at.name), at.parent?.child(name) != nil { throw .exists }
       var woken: [Watcher] = []
+      if let size = change.size, case .memory(let m) = at.content { try m.resize(size) }
       if let size = change.size, case .bytes(var bytes, let writable) = at.content {
         if bytes.count > Int(size) { bytes.removeSubrange(Int(size)...) } else { bytes += [UInt8](repeating: 0, count: Int(size) - bytes.count) }
         at.content = .bytes(bytes, writable: writable)

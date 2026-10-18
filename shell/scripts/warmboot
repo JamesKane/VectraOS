@@ -1,0 +1,14 @@
+#!/bin/rc
+# warmboot KERNEL BOOTFS [OPTION ...] (reboot(8)): the machine handed to
+# another kernel and bootfs without the firmware, through devmgr's
+# /dev/warm and /dev/reboot (D101); the options, if any, its command line
+# (none: this boot's).
+if (~ $#* 0 1) {
+	echo 'usage: warmboot kernel bootfs [option ...]' >[1=2]
+	exit usage
+}
+cp $1 /dev/warm/kernel || exit copy
+cp $2 /dev/warm/bootfs || exit copy
+shift 2
+echo -n $* >/dev/warm/cmdline
+echo warmboot >/dev/reboot

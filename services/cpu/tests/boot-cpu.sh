@@ -4,7 +4,7 @@
 # node with vx cpu as the tests' terminal (terminal.key, whose public half
 # the test image pins), through the forwarded port.
 #
-#   boot-cpu.sh VX PORT WORK PLUMBER
+#   boot-cpu.sh VX PORT WORK PLUMBER ARCH KERNEL BOOTFS
 #
 # First a command: rc -c reads the dev machine's file through
 # /mnt/term/root, writes one there, lists /mnt/term/dev, and copies the
@@ -15,7 +15,7 @@
 # it, and the next line still runs; the end of input ends the session.
 
 set -euo pipefail
-vx=$1 port=$2 work=$3 plumber=$4
+vx=$1 port=$2 work=$3 plumber=$4 arch=$5 kernel=$6 bootfs=$7
 here=$(cd "$(dirname "$0")" && pwd)
 key=$here/terminal.key
 
@@ -28,6 +28,8 @@ rm -rf "$root"
 mkdir -p "$root"
 echo 'from the dev machine' > "$root/motd"
 cp "$plumber" "$root/plumber"
+cp "$kernel" "$root/kernel.elf"
+cp "$bootfs" "$root/bootfs.img"
 
 fail() {
   echo "boot-cpu: $1" >&2
@@ -94,7 +96,34 @@ fi
 wait "$vx_pid" || fail "vx cpu failed" "$out"
 echo "boot-cpu: ^C interrupted cat, and rc went on"
 
-# 4. The board tools: restart says its usage, and poweroff turns the
+# 4. Warm boot (D101, amd64 so far): the node handed to the build's own
+# kernel and this image's bootfs from /mnt/term, with an option that says
+# so; the new boot's cpu server answers again, with a key of its own.
+if [[ $arch == amd64 ]]; then
+  out=$work/warmboot.out
+  timeout 60 "$vx" cpu --key "$key" -k "$node" -r "$root" \
+    -c "warmboot /mnt/term/root/kernel.elf /mnt/term/root/bootfs.img 'croi.test=1' 'croi.selftest=off' 'userboot.next=bin/launcher' 'warmboot.second=1'" \
+    "127.0.0.1!$port" < /dev/null > "$out" || true
+  again=
+  for _ in $(seq 150); do
+    again=$(grep -a 'cpu: listening on' "$work/console.log" | sed -n 2p)
+    [[ -n $again ]] && break
+    sleep 0.2
+  done
+  [[ -n $again ]] || fail "the node didn't come back from a warm boot" "$out"
+  grep -q 'devmgr: warm boot, as /dev/reboot asked' "$work/console.log" || fail "devmgr didn't warm-boot" "$out"
+  grep -q 'warmboot.second=1' "$work/console.log" || fail "the new boot hasn't the command line given" "$out"
+  node=${again##*key }
+  node=${node:0:64}
+  out=$work/after.out
+  timeout 30 "$vx" cpu --key "$key" -k "$node" -r "$root" -c 'echo back after a warm boot' "127.0.0.1!$port" \
+    < /dev/null > "$out" || fail "vx cpu after the warm boot failed" "$out"
+  tr -d '\r' < "$out" > "$out.lf"
+  grep -qx 'back after a warm boot' "$out.lf" || fail "rc didn't run after the warm boot" "$out"
+  echo "boot-cpu: a warm boot came back with its cpu server"
+fi
+
+# 5. The board tools: restart says its usage, and poweroff turns the
 # node off through devmgr's /dev/reboot (\_S5's sleep types on amd64).
 # The session ends with the machine, so its status is not judged; the
 # kernel's line is.

@@ -81,7 +81,7 @@ The devices and what became of them:
   `not yet` until then.
 : `/svc/devmgr/dev`
   A directory for the devices' classes, to mount at `/dev`; no driver serves a class directory yet.
-  It holds `reboot`, which takes a command a line, `reboot` or `poweroff`, through the power resource devmgr makes from its system resource, and refuses anything else (reboot(8)).
+  It holds `reboot`, which takes a command a line, `reboot`, `poweroff` or `warmboot`, through the power resource devmgr makes from its system resource, and refuses anything else, and `warm`, whose `kernel`, `bootfs` and `cmdline` hold what a warm boot takes, each as long as its last write; before a warm boot devmgr turns bus mastering off on every PCI function, and back on if the kernel refuses (reboot(8)).
 : `/svc/devmgr/net`
   The Ethernet devices, `ether0` and on, each a driver's ether(3) directory; to mount at `/net`.
 : `/svc/devmgr/drivers`

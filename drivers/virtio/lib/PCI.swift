@@ -107,6 +107,10 @@ public final class PCIDevice {
       return BARWindow(b, base: Int(c.offset))
     }
     guard let common = window(.common) else { throw .notSupported }
+    // Bus mastering on (command bit 2): the queues are DMA. Firmware turns
+    // it on only for the devices it used, and a warm boot's devmgr turned
+    // it off for every one (D101).
+    config.store16(4, config.load16(4) | 0x4)
     // A device with no configuration of its own gets an empty window.
     let device = window(.device) ?? common
     notify = window(.notify)
