@@ -140,7 +140,34 @@ extension NodeSession {
     service.changed()
   }
 
-  mutating func attach(_ bulk: consuming NodeIPC.Bulk) throws(NodeError) { throw .unsupported }
+  /// A ring for the channel's file (D103): each entry read or written on
+  /// the dispatcher's thread, the volume's, and answered at once.
+  mutating func attach(_ bulk: consuming NodeIPC.Bulk) throws(NodeError) {
+    guard session.ring == nil else { throw .exists }
+    let service = self.service, ino = self.ino
+    session.ring = unsafe try NodeRing(bulk, dispatcher: service.dispatcher) { op, offset, data, done in
+      do throws(NodeError) {
+        if op == NodeBulk.read {
+          let bytes = try service.node { (s: FsService) throws(TaisceError) in
+            guard try s.fs.stat(ino).type != .directory else { throw .isDirectory }
+            return try s.fs.read(ino, offset: offset, count: data.count)
+          }
+          unsafe bytes.withUnsafeBytes { b in unsafe data.baseAddress!.copyMemory(from: b.baseAddress!, byteCount: b.count) }
+          done(.success(UInt32(bytes.count)))
+        } else {
+          let bytes = unsafe Array(UnsafeRawBufferPointer(data))
+          try service.node { (s: FsService) throws(TaisceError) in
+            guard try s.fs.stat(ino).type != .directory else { throw .isDirectory }
+            try s.fs.write(ino, offset: offset, bytes, now: FsService.now)
+          }
+          service.changed()
+          done(.success(UInt32(bytes.count)))
+        }
+      } catch {
+        done(.failure(error))
+      }
+    }
+  }
 
   /// The file's bytes copied into a VMO, which can't run.
   func memory(executable: Bool) throws(NodeError) -> NodeIPC.Memory {

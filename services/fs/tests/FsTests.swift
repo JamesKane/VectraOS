@@ -233,3 +233,36 @@ func refusal(_ body: () throws(IPCError<FsIPC.FsError>) -> Void) -> FsIPC.FsErro
   var f = FsIPC.FileClient(channel: try v.ns.connect("/data/f"))
   #expect(refusal { () throws(IPCError<FsIPC.FsError>) in _ = try f.map() } == .unsupported)
 }
+
+/// A file's bulk through the volume (D103): its channel's ring, the disk's
+/// below it, the same bytes after a remount.
+@Test func aFilesBulkGoesOnTheRings() throws {
+  let disk = try Disk(blocks: 4096)
+  let bytes = (0..<(3 << 20) + 4321).map { UInt8(truncatingIfNeeded: $0 &* 5 &+ $0 >> 14) }
+  do {
+    let v = try Volume(disk)
+    var out = NodeFile(try v.ns.create("/data/big", kind: .file))
+    var at = 0
+    while at < bytes.count {
+      let n = Swift.min(NodeFile.preferredIO, bytes.count - at)
+      try out.write(offset: UInt64(at), Array(bytes[at..<at + n]))
+      at += n
+    }
+    try out.finish()
+    let wrote = out.onRing
+    #expect(wrote)
+    var d = FsIPC.DirectoryClient(channel: try v.root())
+    try d.sync()
+  }
+  let v = try Volume(disk)
+  var file = NodeFile(try v.ns.open("/data/big"))
+  var back: [UInt8] = []
+  while true {
+    let b = try file.read(offset: UInt64(back.count), max: NodeFile.preferredIO)
+    if b.isEmpty { break }
+    back += b
+  }
+  let read = file.onRing
+  #expect(read)
+  #expect(back == bytes)
+}

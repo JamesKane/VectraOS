@@ -17,6 +17,8 @@ volume/...
 
 The fs service serves a Taisce volume, the one file system, kept on a disk's partition in its namespace: the manifest's is ramdisk(4)'s `/dev/sdZ0/data`.
 With `--format`, a partition that holds no volume gets a new one labelled `LABEL`; otherwise one that holds none is an error.
+It reads and writes the partition through the partition channel's ring (nodefile(2)), each read and write waited for; through batches of messages if the disk won't attach one.
+A file's channel takes a ring too, as a client moving its bulk attaches (`cp`, FDIO): each entry is read or written as a batch's would be, and answered at once.
 
 Its tree holds:
 
@@ -61,7 +63,7 @@ A call the service doesn't do yet fails with `unsupported`.
 
 # BUGS
 
-Queries, live queries, indices, mapped files and whole listings fail with `unsupported`, as does a ring for bulk reads and writes.
+Queries, live queries, indices, mapped files and whole listings fail with `unsupported`.
 There are no permissions, owners or symbolic links over Node.
 On ramdisk(4)'s disk nothing survives a reboot.
 Files open when fs restarts stay closed; `/data` itself reconnects to the new fs (launcher(8)).

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // Taisce's BlockDevice over a disk's partition (D82): sd(3)'s `data`,
-// read and written over Node, a batch moving up to 32 pieces of maxIO
+// read and written on the partition channel's ring (D103), each read and
+// write waited for, up to the ring's entries under way; or, if the disk
+// won't attach one, over Node, a batch moving up to 32 pieces of maxIO
 // bytes (a MiB). Its length is the partition's, in Taisce's blocks.
 
 import IPC
@@ -12,8 +14,15 @@ import Taisce
 /// The partition's channel, shared by copies of the device (Taisce copies
 /// devices; the channel is one).
 final class Partition {
+  static let slots = 16
+  static let dataSize = 16 * 131072
   var client: NodeIPC.NodeClient
-  init(_ client: consuming NodeIPC.NodeClient) { self.client = client }
+  var ring: NodeBulkChannel?
+
+  init(_ client: consuming NodeIPC.NodeClient) {
+    self.client = client
+    ring = try? NodeBulkChannel(attachingTo: &self.client, slots: Self.slots, dataSize: Self.dataSize)
+  }
 }
 
 public struct NodeDevice: BlockDevice {
@@ -58,6 +67,16 @@ public struct NodeDevice: BlockDevice {
   }
 
   public mutating func read(_ block: UInt64, count: Int) throws(TaisceError) -> [UInt8] {
+    if partition.ring != nil {
+      guard count >= 0, block <= blockCount, UInt64(count) <= blockCount - block else { throw .outOfRange }
+      let n = count * blockSize
+      let bytes: [UInt8]
+      do throws(NodeBulkChannel.Failure) { bytes = try partition.ring!.read(at: block * UInt64(blockSize), count: n) } catch {
+        throw .io(5)
+      }
+      guard bytes.count == n else { throw .io(5) }
+      return bytes
+    }
     var out: [UInt8] = []
     out.reserveCapacity(count * blockSize)
     try pieces(block, count: count) { (batch) throws(TaisceError) in
@@ -72,6 +91,16 @@ public struct NodeDevice: BlockDevice {
 
   public mutating func write(_ block: UInt64, _ bytes: [UInt8]) throws(TaisceError) {
     guard bytes.count % blockSize == 0 else { throw .outOfRange }
+    if partition.ring != nil {
+      let count = bytes.count / blockSize
+      guard block <= blockCount, UInt64(count) <= blockCount - block else { throw .outOfRange }
+      let n: Int
+      do throws(NodeBulkChannel.Failure) { n = try partition.ring!.write(at: block * UInt64(blockSize), bytes) } catch {
+        throw .io(5)
+      }
+      guard n == bytes.count else { throw .io(5) }
+      return
+    }
     var at = 0
     try pieces(block, count: bytes.count / blockSize) { (batch) throws(TaisceError) in
       var ops: [NodeIPC.Op] = []

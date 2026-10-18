@@ -987,6 +987,13 @@ meets a tested path.
     MB/s budget; `vx remote boot`'s copies 118-126 MB/s (were 61), back
     on cpu 1.62-1.64 s (1.42 s this morning, inside the 2 s budget; not
     looked into). boot-cpu reports `remote.copy` (TCG: not judged).
+  - **Step 3 done (2026-10-18), and with it D103:** fs(4)'s sessions
+    serve `attach` (NodeRing, each entry done at once on the volume's
+    thread), and its disk is read and written on the partition's ring
+    (ramdisk(4) is a NodeTree). Under KVM, 64 MiB copied into /data is
+    0.32-0.35 s with the session and out of it 0.18-0.30 s; with the
+    rings off (a scratch build), 0.87-1.07 s each way. The export alone
+    stays on messages (D103, amended).
     Also open:
     the first call after a cold boot waits about 6 s, its SYN lost and
     sent again.

@@ -328,6 +328,8 @@ final class FsSession {
   /// Set when its server goes: watchers drop it then (no weak references
   /// in tier 0).
   var closed = false
+  /// Its ring, if one is attached (D103).
+  var ring: NodeRing?
 
   init(ino: UInt64, service: FsService, file: Bool) {
     self.ino = ino
@@ -346,7 +348,10 @@ final class FsSession {
 final class FsSessionEnd {
   let session: FsSession
   init(_ session: FsSession) { self.session = session }
-  deinit { session.service.ended(session) }
+  deinit {
+    session.ring?.close()
+    session.service.ended(session)
+  }
 }
 
 /// Rings `bell` `delay` after each request: a thread, asleep in the
