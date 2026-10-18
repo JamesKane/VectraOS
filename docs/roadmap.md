@@ -1409,20 +1409,30 @@ is a non-goal: VectraOS boots on hardware.
    the slot in place instead of copying a built record, fewer checks of
    the CPU's writer) is worth trying before a probe-heavy budget needs it.
 
-4. **The cpu server stops listening under a burst of calls**
-   (2026-10-17, open). Found by `vx remote boot`'s first probing, 16
-   dials at once of 5 s each, which QEMU's port forward queued while the
-   node warm-booted and handed the new boot together: in about 1 boot in
-   4 the new boot's cpu server took three sessions, then logged `cpu:
-   can't listen: /net/tcp/0/listen: transport status -24` (peerClosed: the
-   net service closed the open) and exited, and nothing listened again
-   for the 2 minutes after, though cpu's manifest says `restart
-   on-failure`. The net service itself went on. Not yet diagnosed: why
-   net closes the open, and why the launcher didn't restart cpu. vx now
-   dials at most 4 at once, 1 s each, and hasn't hit it since (amd64, 13
-   boots); a board's link takes calls from anything on it, so it needs
-   fixing before V6. Dial errors now print their reason
-   (`NamespaceError.text`), which is how this one was read.
+4. ~~**The cpu server stops listening under a burst of calls**~~ **Fixed
+   2026-10-17.** Found by `vx remote boot`'s first probing (16 dials at
+   once, 5 s each, which QEMU's port forward handed the new boot
+   together), then reproduced with 16 bare calls that hang up at once.
+   Two bugs, one hiding the other, both silent until the launcher logged
+   ends and the kernel logged limit kills:
+   - net was killed by the kernel, past its port's 4096 user packets
+     (`PORT_TOO_MANY_PACKETS`): NodeTree readies every waiting session of
+     each live conversation each time the stack settles, a frame or a
+     request, and each `IPCDispatcher.wake` queued a packet. A wake now
+     queues one only if none is waiting to be taken. ipc-test wakes a
+     server 10,000 times before its dispatcher runs: one wake, where the
+     old code was killed.
+   - Nothing restarted it: the launcher's bootfs entries borrow bootfs's
+     handle, which its `main` closed after its last use (a duplicate), so
+     only images with `launcher.until`, which kept it to the end,
+     restarted a bootfs program. In a cpu image no service could restart,
+     and cpu, whose net was gone, couldn't either. The Launcher now holds
+     the image.
+   boot-cpu restarts net and sends 32 bare calls, and the cpu server
+   answers after each; five bursts of 64 under KVM leave it answering.
+   The launcher now logs each end (`exited`, `restarted`, `didn't
+   restart:` and why), the kernel each process killed past a limit, and
+   dial errors their reason. vx's probing stays at 4 dials at once.
 
 ## Open questions
 

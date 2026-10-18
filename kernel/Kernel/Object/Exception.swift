@@ -603,7 +603,18 @@ enum Policy {
         switch unsafe Exceptions.raise(UInt32(CROI_EXCP_POLICY_ERROR), frame: frame, synthCode: code) {
         case .resume: break
         case .exitThread: Scheduler.locked { Scheduler.interrupt(me) }
-        case .unhandled: killProcess(TaskReturnCode.exceptionKill)
+        case .unhandled:
+            // Said, as nothing else would: the process just ends.
+            let (pid, tid) = DebugLogs.writerKoids()
+            KernelLog.write(UInt8(CROI_LOG_WARNING)) { out in
+                out.write("policy: process ")
+                out.write(decimal: pid)
+                out.write(" killed, its thread ")
+                out.write(decimal: tid)
+                out.write(" past a limit, code ")
+                out.write(decimal: UInt64(code))
+            }
+            killProcess(TaskReturnCode.exceptionKill)
         }
     }
 

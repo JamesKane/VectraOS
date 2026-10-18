@@ -74,6 +74,9 @@ public final class IPCDispatcher: @unchecked Sendable {
     /// A watch's: given the signals observed; false when it is done.
     let observe: ((UInt32) -> Bool)?
     let wake: () throws(IPCError<Never>) -> Void
+    /// A wake packet is queued for it and not yet taken (under the
+    /// entries' lock): another `wake` meanwhile queues nothing.
+    var woken = false
 
     init(server object: UInt32, handle: @escaping (IPCMessage) throws(IPCError<Never>) -> Void,
          wake: @escaping () throws(IPCError<Never>) -> Void) {
@@ -213,9 +216,23 @@ public final class IPCDispatcher: @unchecked Sendable {
     return id
   }
 
-  /// Asks the dispatcher to run server `id`'s wake.
+  /// Asks the dispatcher to run server `id`'s wake, once however often
+  /// it is asked before the dispatcher takes it: a wake says "look
+  /// again", and a stream readied for every waiting session each time a
+  /// service settles (net's, per frame) otherwise queued packets faster
+  /// than one thread takes them, past the port's limit, which kills.
   public func wake(_ id: UInt64) {
-    try? Port.queue(port, Packet(key: id))
+    let queue = entries.withLock { e -> Bool in
+      guard let entry = e[id], !entry.woken else { return false }
+      entry.woken = true
+      return true
+    }
+    guard queue else { return }
+    do throws(Status) {
+      try Port.queue(port, Packet(key: id))
+    } catch {
+      entries.withLock { e in e[id]?.woken = false }
+    }
   }
 
   /// Makes `run` return, once it has served what it was woken for.
@@ -249,7 +266,11 @@ public final class IPCDispatcher: @unchecked Sendable {
             stopping = true
           } else if packet.payload.0 == Self.removal {
             remove(packet.key)
-          } else if let entry = entries.withLock({ $0[packet.key] }) {
+          } else if let entry = entries.withLock({ e -> Entry? in
+            // Taken: a wake asked for from here on is queued again.
+            e[packet.key]?.woken = false
+            return e[packet.key]
+          }) {
             outbox.key = packet.key
             do throws(IPCError<Never>) { try entry.wake() } catch { remove(packet.key) }
           }

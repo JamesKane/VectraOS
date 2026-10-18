@@ -84,6 +84,7 @@ A packet in the ring is the reader's: `port_cancel` no longer reaches it.
 The type of each is made `CROI_PKT_TYPE_USER`.
 It stops at the first packet that cannot be queued and returns how many it queued; if the first fails it fails with that status.
 A port holds at most 4096 user packets; one more fails with `CROI_ERR_SHOULD_WAIT`, and raises a policy exception (job(2)) as well.
+A process that doesn't handle it is killed, its exit code `CROI_TASK_RETCODE_EXCEPTION_KILL`, and the kernel logs `policy: process` <pid> `killed, its thread` <tid> `past a limit, code 17`.
 
 `croi_port_queue` queues one and returns 0 or the status.
 

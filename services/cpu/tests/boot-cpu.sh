@@ -98,6 +98,32 @@ fi
 wait "$vx_pid" || fail "vx cpu failed" "$out"
 echo "boot-cpu: ^C interrupted cat, and rc went on"
 
+# 3b. Supervision: net, a bootfs program, restarted through the
+# launcher's ctl, comes back (its program's bootfs held for it), and so do
+# the cpu server's calls through it; then a burst of calls that hang up at
+# once leaves the server answering (net's wakes coalesced: each queued,
+# they passed the port's limit, which killed net).
+out=$work/supervise.out
+timeout 30 "$vx" cpu --key "$key" -k "$node" -r "$root" -c 'echo restart net >/svc/launcher/ctl' \
+  "127.0.0.1!$port" < /dev/null > "$out" 2>&1 || true
+for _ in $(seq 60); do
+  timeout 20 "$vx" cpu --key "$key" -k "$node" -r "$root" -c 'cat /svc/launcher/status' "127.0.0.1!$port" \
+    < /dev/null 2>/dev/null | tr -d '\r' > "$out" || true
+  grep -qx 'net running restarts 1' "$out" && break
+  sleep 0.5
+done
+! grep -a "didn't restart" "$work/console.log" || fail "a service didn't restart" "$out"
+grep -qx 'net running restarts 1' "$out" || fail "net didn't come back" "$out"
+for _ in $(seq 32); do (exec 3<>"/dev/tcp/127.0.0.1/$port"; exec 3>&-) 2>/dev/null & done
+wait
+out=$work/burst.out
+timeout 30 "$vx" cpu --key "$key" -k "$node" -r "$root" -c 'echo after the burst' "127.0.0.1!$port" \
+  < /dev/null > "$out" || fail "vx cpu after a burst of calls failed" "$out"
+tr -d '\r' < "$out" > "$out.lf"
+grep -qx 'after the burst' "$out.lf" || fail "rc didn't run after a burst of calls" "$out"
+! grep -aq 'policy: process' "$work/console.log" || fail "a process was killed past a limit" "$out"
+echo "boot-cpu: net restarted, and the cpu server answers after it and after a burst of calls"
+
 # 4. Warm boot (D101, amd64 and arm64): vx remote boot hands the node
 # to the build's own kernel and this image's bootfs, with an option that
 # says so, and waits for the new boot's cpu server, which has the same

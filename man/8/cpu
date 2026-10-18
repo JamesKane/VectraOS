@@ -87,6 +87,7 @@ vx-cpu(1), vx-build(1), vx-remote(1), rc(1), gate(2), noise(2), factotum(4), fs(
 
 Each call is a line on the console: `cpu: session from` <address>, and `ended` with rc's exit string; `cpu: refused` <address>`: not on the link`, or `: caller refused` for another terminal's key.
 Without `/lib/cpu/terminal` it prints that the image wasn't built with `--cpu`, and exits.
+When the net service ends, so does the cpu server's announcement: it prints `can't listen` and exits, and the launcher starts it again once net is back; its sessions, whose connections were net's, end with it.
 
 # BUGS
 

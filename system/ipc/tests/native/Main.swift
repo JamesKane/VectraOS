@@ -5,7 +5,7 @@
 // Swift client and a server on a thread of its own, composition (Loud),
 // the C client (td_wire.h and idlc's test_ipc.h, idl_c_tests.c) against a
 // Swift server, and the dispatcher serving several channels and a watched
-// counter from one thread. userboot starts it (userboot.next=bin/ipc-test,
+// counter from one thread, its wakes coalesced. userboot starts it (userboot.next=bin/ipc-test,
 // the boot-ipc test); it exits 0 if every check passed.
 
 import LibSys
@@ -121,6 +121,7 @@ struct IPCTest {
       try composition()
       try cClient()
       try dispatcher()
+      try wakes()
     } catch {
       print("ipc-test: FAILED: a call threw \(error.rawValue)")
       failures += 1
@@ -302,6 +303,32 @@ struct IPCTest {
       (s: inout TestIPC.EchoServer<EchoImpl>) throws(IPCError<Never>) in try s.sendTicked(9, label: "woken")
     }
     return Dispatched(id: id, client: TestIPC.EchoClient(channel: ends.a))
+  }
+
+  /// Wakes asked for faster than the dispatcher takes them: more than a
+  /// port's 4096 user packets, before it runs, queue one, which runs the
+  /// wake once (each queued, unhandled, the port's limit killed the
+  /// process); one asked for after it ran runs again.
+  static func wakes() throws(Status) {
+    let d = try IPCDispatcher()
+    let ends = try Channel.create()
+    let woken = Tally()
+    let id = try d.add(TestIPC.EchoServer(channel: ends.b, impl: EchoImpl())) {
+      (_: inout TestIPC.EchoServer<EchoImpl>) throws(IPCError<Never>) in woken.value.add(1, ordering: .relaxed)
+    }
+    let client = ends.a  // held, or its server would go
+    for _ in 0..<10_000 { d.wake(id) }
+    let outcome = Outcome()
+    let thread = try Thread.spawn { outcome.finish((try? d.run()) != nil) }
+    check(eventually { woken.value.load(ordering: .relaxed) == 1 }, "wakes: ten thousand before a run, one wake")
+    sleep(until: soon(20))
+    check(woken.value.load(ordering: .relaxed) == 1, "wakes: and no more")
+    d.wake(id)
+    check(eventually { woken.value.load(ordering: .relaxed) == 2 }, "wakes: one asked for after it ran, runs")
+    d.stop()
+    check((try? Thread.join(thread)) != nil && outcome.ok, "wakes: stop ends run")
+    d.removeAll()
+    _ = consume client
   }
 
   /// Whether `client`'s say comes back `times` long.

@@ -129,9 +129,13 @@ func dropping(_ prefix: StaticString, _ name: String) -> String? {
     guard !manifests.isEmpty else { fail("no manifests in bootfs (etc/manifests)") }
     print("launcher: \(programs.count) program(s), \(manifests.count) manifest(s) in bootfs")
 
+    // The programs' entries borrow bootfs: the launcher holds it, for
+    // restarts long after (its last use here was once a duplicate, after
+    // which it closed, and no bootfs program could start again).
+    let grantable = try? bootfs.duplicate()
     let launcher: Launcher
     do throws(Status) {
-      launcher = try Launcher(programs: programs, rootJob: job)
+      launcher = try Launcher(programs: programs, image: bootfs, rootJob: job)
     } catch {
       fail("can't start: \(error.rawValue)")
     }
@@ -147,7 +151,7 @@ func dropping(_ prefix: StaticString, _ name: String) -> String? {
       launcher.allow(resource: kind, r)
     }
     if let push, let vmex { Push(push, vmex: vmex, launcher: launcher) }
-    if let copy = try? bootfs.duplicate() { launcher.allow(bootfs: copy) }
+    if let copy = grantable { launcher.allow(bootfs: copy) }
     if let data = start.take(HandleType.info(HandleType.vmoBootData)) { launcher.allow(bootData: data) }
     if let ring = start.take(HandleType.info(HandleType.vmoDebuglog)),
       let counter = start.take(HandleType.info(HandleType.debuglogCounter))
@@ -156,6 +160,7 @@ func dropping(_ prefix: StaticString, _ name: String) -> String? {
     }
     // The UTC page (D48): every process reads it, the time service (`clock`)
     // writes it; until then it reads the backstop.
+    launcher.log = { line in print("launcher: \(line)") }
     do throws(Status) {
       launcher.allow(utcPage: try UTCPage.create(backstop: utcBackstop))
     } catch {
@@ -183,7 +188,6 @@ func dropping(_ prefix: StaticString, _ name: String) -> String? {
     for line in lines(launcher.status) { print("launcher:   \(line)") }
     print("launcher: shutting down")
     launcher.stop()
-    _ = consume bootfs
     Process.exit(code: code)
   }
 

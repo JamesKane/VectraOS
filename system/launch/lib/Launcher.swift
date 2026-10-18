@@ -96,12 +96,16 @@ public final class Launcher: @unchecked Sendable {
 
   /// What a manifest's `program` may name (no hashed collections in tier 0).
   let programs: [(name: String, entry: ProgramEntry)]
+  /// The VMO the programs' entries borrow, held for as long as they are.
+  let image: Handle?
   /// A pushed build of a program, looked for before bootfs's (push and
   /// run: the launcher's own `/dev/bin`, in a cpu image). Called on the
   /// thread that starts the service, never the dispatcher's.
   public var pushed: (@Sendable (String) -> ProgramEntry?)?
   /// Called with a service's name once it has answered on its export.
   public var readied: (@Sendable (String) -> Void)?
+  /// A line for the log: a service that exited, and what was done.
+  public var log: (@Sendable (String) -> Void)?
   let dispatcher: IPCDispatcher
   let job: Handle
   let supervisor: Handle
@@ -141,8 +145,13 @@ public final class Launcher: @unchecked Sendable {
   var supervisorThread: UInt32 = 0
   var running = false
 
-  public init(programs: [(name: String, entry: ProgramEntry)], rootJob: borrowing Handle) throws(Status) {
+  /// `image`, if given, is the VMO the programs' entries borrow (bootfs),
+  /// held while the launcher lives, so a service restarts from it however
+  /// long after.
+  public init(programs: [(name: String, entry: ProgramEntry)], image: consuming Handle? = nil,
+              rootJob: borrowing Handle) throws(Status) {
     self.programs = programs
+    self.image = image
     dispatcher = try IPCDispatcher()
     job = try Job.create(parent: rootJob)
     supervisor = try Port.create()
@@ -373,24 +382,24 @@ public final class Launcher: @unchecked Sendable {
       self.locked { s.state = "failed" }
       return LaunchError("\(m.file):\(m.serviceLine): can't start '\(m.service)': \(what)")
     }
-    func sys<R: ~Copyable>(_ body: () throws(Status) -> R) throws(LaunchError) -> R {
-      do throws(Status) { return try body() } catch { throw failed("\(error.rawValue)") }
+    func sys<R: ~Copyable>(_ what: String, _ body: () throws(Status) -> R) throws(LaunchError) -> R {
+      do throws(Status) { return try body() } catch { throw failed("\(what): \(error.rawValue)") }
     }
     // Its name first, as argv[0].
     // Its environment is its /env (D81), made from its manifest's `env`
     // lines; the Startup carries none.
     let startup = Startup(args: [m.service] + m.args)
-    startup.mount(try sys { () throws(Status) in try env.channel(EnvGroups.variables(m.environment)) }, at: "/env")
+    startup.mount(try sys("its /env") { () throws(Status) in try env.channel(EnvGroups.variables(m.environment)) }, at: "/env")
     var export: Export?
     if m.exports {
-      let ends = try sys { () throws(Status) in try Channel.create() }
+      let ends = try sys("its export") { () throws(Status) in try Channel.create() }
       startup.add(ends.b, info: HandleType.info(HandleType.export))
       export = Export(ends.a)
     }
     try mounts(for: s, into: startup)
     try granted(s, into: startup)
     extraStartup?(m.service, startup)
-    let process = try sys { () throws(Status) in try Process.create(job: s.job, name: m.service) }
+    let process = try sys("process_create") { () throws(Status) in try Process.create(job: s.job, name: m.service) }
     // A pushed build first, then bootfs's.
     let entry: ProgramEntry
     var fromPush = false
@@ -403,7 +412,7 @@ public final class Launcher: @unchecked Sendable {
       throw failed("no program '\(m.program)'")
     }
     locked { s.pushed = fromPush }
-    _ = try sys { () throws(Status) in try Process.start(process, entry: entry, startup) }
+    _ = try sys("process_start") { () throws(Status) in try Process.start(process, entry: entry, startup) }
     // The instance is recorded before its end can be seen: one that ends
     // at once is the supervisor's to mark, not ours to call running.
     let raw = process.raw
@@ -583,7 +592,13 @@ public final class Launcher: @unchecked Sendable {
         }
         return true
       }
-      if restart { try? launch(s) }
+      let name = s.manifest.service
+      if !restart {
+        log?("\(name) exited \(code)")
+        continue
+      }
+      log?("\(name) exited \(code), restarted")
+      do throws(LaunchError) { try launch(s) } catch { log?("\(name) didn't restart: \(error.description)") }
     }
   }
 

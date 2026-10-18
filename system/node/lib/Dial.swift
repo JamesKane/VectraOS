@@ -95,7 +95,7 @@ extension Namespace {
     do throws(NodeIPC.NodeClient.Failure) {
       number = try listen.readText()
     } catch {
-      throw DialError("listen: \(error)")
+      throw DialError("listen: \(NamespaceError(error).text)")
     }
     guard !number.isEmpty, let slash = announced.dir.utf8.lastIndex(of: 0x2F) else {
       throw DialError("listen hungup")
@@ -125,7 +125,7 @@ extension Namespace {
     do throws(NodeIPC.NodeClient.Failure) {
       number = try ctl.readText()
     } catch {
-      throw DialError("\(path): \(error)")
+      throw DialError("\(path): \(NamespaceError(error).text)")
     }
     guard !number.isEmpty, let slash = path.utf8.lastIndex(of: 0x2F) else {
       throw DialError("\(path): no conversation")
@@ -146,7 +146,7 @@ extension Namespace {
       case .remote(.notFound): throw DialError("can't translate address")
       case .remote(.invalid): throw DialError("can't translate service")
       case .remote(.io): throw DialError("temporary problem: dns failure")
-      default: throw DialError("/net/cs: \(error)")
+      default: throw DialError("/net/cs: \(NamespaceError(error).text)")
       }
     }
     var out: [(String, String)] = []
@@ -166,7 +166,7 @@ extension Namespace {
   func reason(_ dir: String, _ error: NodeIPC.NodeClient.Failure) -> String {
     var err = try? netOpen(dir + "/err")
     let text = (try? err?.readText()) ?? ""
-    return text.isEmpty ? "\(error)" : text
+    return text.isEmpty ? NamespaceError(error).text : text
   }
 
   /// A dial string's network (`net` is TCP), host and service.
