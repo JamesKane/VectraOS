@@ -44,15 +44,17 @@ under `vx ci` and every budget it introduces has a running check
     main is 79 µs (< 200 µs), and the first bench history is recorded
     (2026-10-16, cd3eb6d), and the services hold 3.7 MiB (< 32 MiB,
     `services.rss`), and the manual is written (D86).
-- **V3** is under way: notes and /proc, crypto, the net class, the
+- **V3** is done on amd64 and arm64 (2026-10-18): its exit passes under
+  `vx ci` (fcf08a2) and its bench history is recorded (V3's exit, below).
+  rv64's waits for tier 1 there, as its suite does: without it rv64 has
+  no rc, so no cpu server. Notes and /proc, crypto, the net class, the
   stack serving /net with dial(2), cs and dns for names, and the
-  console's shell (rc on kbdfs's /dev/cons, D97), done (2026-10-17);
-  9gate (the codec, Noise IK, export and import, and the service at
-  /svc/9gate), factotum holding its key, and cpu (the server and
-  `vx cpu`) done, the pty gone, and Taisce serving /data on a RAM
-  disk (2026-10-17); warm boot and `vx remote boot` on amd64 and arm64
-  (D101), the cpu link three times faster, and `trace`, a profile of
-  the node (D102), done (2026-10-18).
+  console's shell (rc on kbdfs's /dev/cons, D97); 9gate (the codec,
+  Noise IK, export and import, and the service at /svc/9gate),
+  factotum holding its key, and cpu (the server and `vx cpu`), the pty
+  gone, and Taisce serving /data on a RAM disk; warm boot and `vx
+  remote boot` (D101), the cpu link on rings (D103), `trace`, a
+  profile of the node (D102), and the terminal's /net (D104).
   **V4 onward** are not started (V6's boards have research passes);
   V10, the Ghost, is proposed (D90), and V11 to V16, the native
   applications and Studio, are proposed (D95, D96).
@@ -648,7 +650,7 @@ work, in order:
   if it comes cheaply; otherwise V3's cpu session is the first
   interactive rc.
 
-## V3. Bring-up link (D15, D77)
+## V3. Bring-up link (D15, D77) — done 2026-10-18 on amd64 and arm64
 
 A shell, file copies and log streaming from the dev machine, plus booting
 a new kernel without the USB stick, all through one Plan 9 cpu session

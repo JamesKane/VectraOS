@@ -114,7 +114,11 @@ far from complete), and drivers (D74:
 ACPI, PCI, devmgr with edu's DMA through each IOMMU, virtio, virtio-input and
 kbdfs's /dev/kbd and /dev/cons, D83:
 item 7's exit met). Done: the console and the plumber (item 8, D85), and the manual (item 9, D86). V2's exit test `cat /svc/*/status` passes, run by
-rc. `docs/roadmap.md` opens with where things stand; keep it current.
+rc. V3, the bring-up link, is done on amd64 and arm64 (2026-10-18): cpu
+and `vx cpu` with the terminal's files and /net, warm boot and `vx
+remote boot`, the link on rings (D103), `trace` (D102); rv64's waits
+for tier 1 there. `docs/roadmap.md` opens with where things stand; keep
+it current.
 
 Milestones run in order, and each puts the next one's dependencies in
 place. Board bring-up (V6) waits for V3, the bring-up link (cpu and
