@@ -1050,6 +1050,12 @@ meets a tested path.
   interleaved: the machine, not the tree. `vx bench --compare` built the
   other tree without tier 1 (its toolchain is untracked), so its
   services boot failed launch-test; it links this tree's now.
+  Accepted in the open again (2026-10-18): `services.rss` at 11.9
+  MiB, +1.05 MiB in every one of four runs interleaved against
+  01b3437, nearly all of it bootfs (+0.95 MB): NodeTree maps a
+  read-only memory file once to serve its ring (D103), so the
+  image's pages it was already holding count as mapped by it.
+  `ring.kicks` was missed in both trees (known issue 8).
 - `man/missing` is empty: every program, call, protocol, tree and format
   through V3 has a page, and "fully documented" stays an exit criterion
   of every milestone after. `man rc` and the check pass meet D86's
@@ -1582,6 +1588,14 @@ is a non-goal: VectraOS boots on hardware.
    it all did; nothing on the console. The next 21 boots to the same
    step passed. Where in the script (the sleep, the stop, or the copies
    to /mnt/term through the import's ring) is not known.
+
+8. **m2's `ring.kicks` misses its limit** (2026-10-18): 0-8 in most
+   full and lean boots under KVM, against `limit=1` (none). Interleaved
+   with 01b3437 it read the same there (0-8 in both profiles), so no
+   change since; the 0 recorded at 2e1ea8d and 01b3437 were medians
+   that happened to be 0. Whether the ring's consumer kicks when it
+   needn't, or the count includes kicks a busy host forces, is not
+   looked into; the limit stands.
 
 ## Open questions
 

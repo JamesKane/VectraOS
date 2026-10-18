@@ -38,6 +38,7 @@ By default the bench is advisory and exits 0 whatever it finds, because the mach
 : `--compare` <ref>
   Compare this tree with the commit <ref>.
   It makes a git worktree of <ref> in `bench/out/compare/<sha>`, builds it, and alternates boots of the two so that both see the same machine.
+  A boot of either tree that doesn't finish is left out, and said so, rather than ending the comparison.
   It prints a table of the median of each budget in both, the change, and the spread over this tree's runs, and writes it to `bench/out/compare.md`.
   Nothing is judged or recorded.
 : `--zircon`

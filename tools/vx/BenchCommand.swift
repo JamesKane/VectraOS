@@ -49,7 +49,8 @@ private func edk2Dir(_ build: String) -> String {
 /// launcher and its services, as boot-launch does, "cpu" the cpu node
 /// with boot-cpu.sh as its terminal (none from a tree too old to have
 /// them).
-private func boot(tree: String, profile: String, label: String, index: Int, anyExit: Bool = false) -> [String: Reported] {
+private func boot(tree: String, profile: String, label: String, index: Int, anyExit: Bool = false,
+                  skipFailed: Bool = false) -> [String: Reported] {
   let build = "\(tree)/build/amd64"
   let services = profile == "services", cpu = profile == "cpu"
   let source = services ? "\(build)/esp-launch" : cpu ? "\(build)/esp-cpu-test" : "\(build)/esp"
@@ -85,7 +86,10 @@ private func boot(tree: String, profile: String, label: String, index: Int, anyE
   let console = (try? String(contentsOfFile: log, encoding: .utf8)) ?? ""
   // The cpu boot ends when its terminal does, which says if it failed.
   if !r.ok || (!anyExit && !cpu && !console.contains("\(marker) 0")) {
-    fail("\(label) \(profile) boot \(index) didn't finish; see \(log)")
+    // A comparison goes on without it: an older tree has older bugs.
+    guard skipFailed else { fail("\(label) \(profile) boot \(index) didn't finish; see \(log)") }
+    say("vx bench: \(label) \(profile) boot \(index) didn't finish, left out; see \(log)")
+    return [:]
   }
   // The services' and the cpu link's own, not more of the kernel's boot
   // budgets.
@@ -95,10 +99,12 @@ private func boot(tree: String, profile: String, label: String, index: Int, anyE
 }
 
 private func collect(tree: String, label: String, runs: Int, into values: inout [String: [Double]],
-                     meta: inout [String: Reported], index: Int? = nil, anyExit: Bool = false) {
+                     meta: inout [String: Reported], index: Int? = nil, anyExit: Bool = false,
+                     skipFailed: Bool = false) {
   for i in index.map({ [$0] }) ?? Array(0..<runs) {
     for profile in ["full", "lean", "services", "cpu"] {
-      for (name, b) in boot(tree: tree, profile: profile, label: label, index: i, anyExit: anyExit) {
+      for (name, b) in boot(tree: tree, profile: profile, label: label, index: i, anyExit: anyExit,
+                                   skipFailed: skipFailed) {
         values[name, default: []].append(b.value)
         meta[name] = b
       }
@@ -277,11 +283,11 @@ private func compare(_ ref: String, runs: Int, loadBefore: Double) -> Bool {
   var here: [String: [Double]] = [:], there: [String: [Double]] = [:]
   var meta: [String: Reported] = [:]
   for i in 0..<runs {
-    collect(tree: ".", label: "this", runs: runs, into: &here, meta: &meta, index: i, anyExit: true)
-    collect(tree: tree, label: sha, runs: runs, into: &there, meta: &meta, index: i, anyExit: true)
+    collect(tree: ".", label: "this", runs: runs, into: &here, meta: &meta, index: i, anyExit: true, skipFailed: true)
+    collect(tree: tree, label: sha, runs: runs, into: &there, meta: &meta, index: i, anyExit: true, skipFailed: true)
   }
   var text = "# Comparison: this tree (\(commit())) against \(sha)\n\n"
-    + "Median of \(runs) interleaved boots per profile. Load average \(oneDecimal(loadBefore)) before, "
+    + "Median of \(runs) interleaved boots per profile, less any that didn't finish. Load average \(oneDecimal(loadBefore)) before, "
     + "\(oneDecimal(loadAverage())) after.\n\n"
     + "| Budget | This tree | \(sha) | Change | Spread here (min-max) |\n|---|---:|---:|---:|---|\n"
   for name in Set(here.keys).union(there.keys).sorted() {
