@@ -1063,6 +1063,13 @@ meets a tested path.
   read-only memory file once to serve its ring (D103), so the
   image's pages it was already holding count as mapped by it.
   `ring.kicks` was missed in both trees (known issue 8).
+  Recorded (2026-10-18, fcf08a2, a quiet machine): every budget within
+  its limit, `services.rss` at 11.9 MiB taken in the open, and the
+  first records of `node.file_copy` (95.6 ms), `remote.first_call`
+  (53.8 ms), `remote.copy` (491.5 ms) and `remote.warmboot` (621.3
+  ms). The warm boot's return came in two kinds: 0.42-0.43 s in two of
+  the five boots, 0.62-0.67 s in three, not looked into (the recorded
+  median is the slower).
 - `man/missing` is empty: every program, call, protocol, tree and format
   through V3 has a page, and "fully documented" stays an exit criterion
   of every milestone after. `man rc` and the check pass meet D86's
