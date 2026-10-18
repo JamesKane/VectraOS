@@ -305,7 +305,15 @@ func keyboard(_ ns: Namespace, _ status: String) {
 /// program run has the terminal until Delete interrupts it, and rc reads
 /// the next line. Where rc is built (tier 1).
 func consoleShell(_ ns: Namespace) {
-  check(hasLine(readText(ns, "/svc/launcher/status") ?? "", "shell running restarts 0"), "the console's shell runs")
+  // It may start after this test does (manifests start in dependency
+  // order): wait for it, as under KVM this comes first.
+  var running = false
+  let shellDeadline = Clock.monotonic() + 5_000_000_000
+  while !running && Clock.monotonic() < shellDeadline {
+    running = hasLine(readText(ns, "/svc/launcher/status") ?? "", "shell running restarts 0")
+    if !running { sleep(until: Clock.monotonic() + 10_000_000) }
+  }
+  check(running, "the console's shell runs")
   check(screenRow(ns, "console shell", typing: "e c h o spc c o n s o l e spc s h e l l ret"),
         "a line typed to the shell runs, on the console")
   // cat, started, has the terminal; Delete ends it, and rc reads on.
