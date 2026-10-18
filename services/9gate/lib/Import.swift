@@ -542,7 +542,13 @@ final class ImportEnd: @unchecked Sendable {
   init(_ state: ImportState) { self.state = state }
 
   deinit {
-    state.lock.withLock { state.ring }?.close()
+    // Taken from the state, not only closed: its entries' closure holds
+    // the state, which held the import, its 9P link and the link's stream
+    // for good.
+    state.lock.withLock { () -> NodeRing? in
+      defer { state.ring = nil }
+      return state.ring
+    }?.close()
     let fids = state.lock.withLock { [state.fid] + [state.ioFid, state.dirFid].compactMap { $0 } }
     state.gate.clunkLater(fids)
   }

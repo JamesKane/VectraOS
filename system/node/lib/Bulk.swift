@@ -295,7 +295,9 @@ public final class NodeRing: @unchecked Sendable {
     _ = server.serve()  // what came before the attach
   }
 
-  /// Stops serving it: entries still under way finish into nothing.
+  /// Stops serving it: entries still under way finish into nothing. The
+  /// ring keeps its `start`, so a holder that `start` captures drops the
+  /// ring too, or the two keep each other.
   public func close() { dispatcher.unwatch(server.watch) }
 }
 

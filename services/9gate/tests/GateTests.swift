@@ -281,3 +281,45 @@ final class Shared: @unchecked Sendable {
   var local = try i.exported.namespace.open("/notes")
   #expect(try local.readAll() == bytes)
 }
+
+/// An import whose channels attached rings goes with its last channel,
+/// as a cpu session's import of /mnt/term does at the session's end: the
+/// ring held what it served (a cycle), so each session's import, its 9P
+/// link and the link's TCP conversation were kept, until net had none
+/// left for a call.
+@Test(arguments: [false, true]) func anImportGoesWithItsChannels(ring: Bool) throws {
+  let exported = try Exported()
+  let bytes = (0..<(1 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 7) }
+  exported.tree.file("big", bytes)
+  let dispatcher = try IPCDispatcher()
+  let d = dispatcher
+  _ = try Thread.spawn { try? d.run() }.release()
+  defer { dispatcher.stop() }
+  weak var held: Import?
+  do {
+    let gate = Import(try NinePClient(exported.client), dispatcher: dispatcher)
+    held = gate
+    let mounted = Namespace()
+    try mounted.mount(try gate.attach(), at: "/n/remote")
+    var file = NodeFile(try mounted.open("/n/remote/big"))
+    var back: [UInt8] = []
+    while ring || back.isEmpty {
+      let b = try file.read(offset: UInt64(back.count), max: NodeFile.preferredIO)
+      if b.isEmpty { break }
+      back += b
+    }
+    let onRing = file.onRing
+    #expect(onRing == ring)
+    #expect(back == Array(bytes.prefix(back.count)))
+    _ = consume file
+    try mounted.unmount("/n/remote")
+  }
+  var kept = true
+  for _ in 0..<300 {
+    kept = held != nil
+    if !kept { break }
+    Sys.sleep(until: Clock.monotonic() + 10_000_000)
+  }
+  #expect(!kept)
+}
+
