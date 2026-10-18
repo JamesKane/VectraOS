@@ -1,4 +1,4 @@
-# D106. The block class: one sd library over a disk's requests, virtio-blk under it, flush through ctl (2026-10-18, proposed; extends D82, D105)
+# D106. The block class: one sd library over a disk's requests, virtio-blk under it, flush through ctl (2026-10-18, decided; extends D82, D105)
 
 D82 gives the block class sd(3)'s directory, `/dev/sdXX/{ctl,raw,data}` and a
 file per partition, with bulk on the one ring. D105 puts it first in V4.

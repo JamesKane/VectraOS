@@ -37,9 +37,12 @@ func fail(_ what: String) -> Never {
     do throws(NamespaceError) { ns = try Namespace(start) } catch { fail("no namespace") }
     let channel: Handle
     do throws(NamespaceError) { channel = try ns.open(path).takeChannel() } catch { fail("no partition \(path)") }
+    // The unit's ctl beside it, where its barriers go as `flush` (D106).
+    let unit = path.utf8.lastIndex(of: 0x2F).map { String(decoding: path.utf8[..<$0], as: UTF8.self) } ?? "."
+    let ctl = try? ns.open(unit + "/ctl").takeChannel()
     var fs: FileSystem<NodeDevice>
     do throws(TaisceError) {
-      let device = try NodeDevice(channel)
+      let device = try NodeDevice(channel, ctl: ctl)
       do throws(TaisceError) {
         fs = try FileSystem.mount(device)
       } catch .notAVolume where label != nil {

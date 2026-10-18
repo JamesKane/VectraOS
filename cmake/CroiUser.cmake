@@ -375,6 +375,8 @@ function(croi_user_sys)
   # virtio and the input class (drivers/virtio/lib, drivers/input/lib, D74).
   file(GLOB _virtio CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/virtio/lib/*.swift)
   file(GLOB _input CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/input/lib/*.swift)
+  # The block class, sd(3)'s directory (drivers/block/lib, D106).
+  file(GLOB _sd CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/block/lib/*.swift)
   # The net class, ether(3)'s directory (drivers/net/lib, D82).
   file(GLOB _netclass CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/drivers/net/lib/*.swift)
   # The crypto (D89), the network stack (services/net/lib) and /net's
@@ -454,6 +456,8 @@ function(croi_user_sys)
             -c ${_virtio} -o ${_dir}/virtio.o
     COMMAND ${_swiftc} -module-name InputDevice -emit-module -emit-module-path ${_dir}/InputDevice.swiftmodule
             -c ${_input} -o ${_dir}/input.o
+    COMMAND ${_swiftc} -module-name Sd -emit-module -emit-module-path ${_dir}/Sd.swiftmodule
+            -c ${_sd} -o ${_dir}/sd.o
     COMMAND ${_swiftc} -module-name NetClass -emit-module -emit-module-path ${_dir}/NetClass.swiftmodule
             -c ${_netclass} -o ${_dir}/netclass.o
     COMMAND ${_swiftc} -module-name TDCrypto -emit-module -emit-module-path ${_dir}/TDCrypto.swiftmodule
@@ -497,9 +501,9 @@ function(croi_user_sys)
     COMMAND ${CMAKE_AR} rcs ${_dir}/libsys.a ${_dir}/sysabi.o ${_dir}/loader.o ${_dir}/sys.o ${_dir}/libsys.o ${_dir}/ld.o
             ${_dir}/ring.o ${_dir}/traceformat.o ${_dir}/trace.o ${_dir}/tracesession.o
             ${_dir}/ipcwire.o ${_dir}/ipc.o ${_dir}/node.o ${_dir}/directives.o ${_dir}/guide.o ${_dir}/launch.o ${_dir}/acpi.o ${_dir}/pci.o
-            ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o ${_dir}/netclass.o ${_dir}/tdcrypto.o ${_dir}/net.o ${_dir}/ip.o ${_dir}/ndb.o ${_dir}/ninep.o ${_dir}/noise.o ${_dir}/factotum.o ${_dir}/gate.o ${_dir}/cpuprotocol.o ${_dir}/cpuserver.o ${_dir}/tdunicode.o ${_dir}/taisce.o ${_dir}/fs.o ${_dir}/fsserver.o ${_dir}/kbdfs.o ${_dir}/console.o ${_dir}/plumber.o ${_dir}/proc.o
+            ${_dir}/driverhost.o ${_dir}/devmgr.o ${_dir}/virtio.o ${_dir}/input.o ${_dir}/sd.o ${_dir}/netclass.o ${_dir}/tdcrypto.o ${_dir}/net.o ${_dir}/ip.o ${_dir}/ndb.o ${_dir}/ninep.o ${_dir}/noise.o ${_dir}/factotum.o ${_dir}/gate.o ${_dir}/cpuprotocol.o ${_dir}/cpuserver.o ${_dir}/tdunicode.o ${_dir}/taisce.o ${_dir}/fs.o ${_dir}/fsserver.o ${_dir}/kbdfs.o ${_dir}/console.o ${_dir}/plumber.o ${_dir}/proc.o
     DEPENDS ${_abi} ${_loader} ${_api} ${_lib} ${_ld} ${_ring} ${_trace_format} ${_trace_writer} ${_trace_session} ${_ipc_wire}
-            ${_ipc} ${_node} ${_directives} ${_guide} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr} ${_virtio} ${_input} ${_netclass} ${_crypto} ${_net} ${_ip} ${_ndb} ${_ninep} ${_noise} ${_factotum} ${_gate} ${_cpu_protocol} ${_cpu_server} ${_unicode} ${_taisce} ${_fs} ${_fs_server} ${_kbdfs} ${_console} ${_plumber} ${_proc}
+            ${_ipc} ${_node} ${_directives} ${_guide} ${_launch} ${_acpi} ${_pci} ${_driver_host} ${_devmgr} ${_virtio} ${_input} ${_sd} ${_netclass} ${_crypto} ${_net} ${_ip} ${_ndb} ${_ninep} ${_noise} ${_factotum} ${_gate} ${_cpu_protocol} ${_cpu_server} ${_unicode} ${_taisce} ${_fs} ${_fs_server} ${_kbdfs} ${_console} ${_plumber} ${_proc}
             ${_headers} vx ${CROI_IPC_PLUGIN}
     COMMENT "Building Sys")
   set(CROI_USER_SYS_DIR ${_dir} PARENT_SCOPE)

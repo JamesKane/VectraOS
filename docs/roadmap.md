@@ -1090,6 +1090,15 @@ V4 puts it on a disk, serves its queries, and measures it (D105):
    lifted from todhchai, under the sd files. Taisce's barriers are the
    device's flushes, which the crash harness models. NVMe comes with
    each board (V6, V6c; D76).
+   - **The library done (2026-10-18, D106):** `Sd` (drivers/block/lib)
+     serves a Disk's unit directory, sd(3): ctl (and its `flush`),
+     `data` and GPT's partitions, each on the ring with requests
+     answered as the disk ends them. ramdisk(4) and FsTests' disk are on
+     it; fs(4)'s barriers are the unit's `flush`. BlockTests check the
+     files and bounds, out-of-order answers, a flush only after the
+     writes before it, and that Taisce's writes and barriers reach the
+     disk block for block as its crash harness records them. Next:
+     virtio-blk under it, and boot-block.
 2. **Taisce on it, across reboots.** fs(4) on a virtio-blk disk that
    `vx` builds (`mkfs` and `fsck`, lifted from todhchai's tools). A
    boot test writes, then reads back after a cold boot and a warm one.

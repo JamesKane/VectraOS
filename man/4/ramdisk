@@ -16,16 +16,16 @@ status
 
 # DESCRIPTION
 
-The ramdisk service is a disk in memory, served as Plan 9's storage device directory for one unit, `sdZ0`, as 9front's RAM disk names it.
+The ramdisk service is a disk in memory, served as Plan 9's storage device directory for one unit, `sdZ0`, as 9front's RAM disk names it (sd(3)).
 `SIZE` is in bytes, or with `K`, `M` or `G` (binary); it must be a whole number of 4096-byte sectors.
 The disk's pages are taken as they are first written, so an empty disk costs nothing.
 
 : `sdZ0/ctl`
   Reads as Plan 9's `sd` ctl does: `inquiry ramdisk0`, `geometry` with the number of sectors and the sector size, `alignment 4096 0`, and `part data 0` with the number of sectors.
+  It takes `flush`, which it answers at once: the disk has no cache.
 : `sdZ0/data`
-  The whole disk, its length the disk's.
-  A read or write at any offset moves bytes in place; a write that runs past the end is cut short there, and one at or past it writes nothing.
-  The file can't be grown or cut, and its memory is given to read only.
+  The whole disk, its length the disk's, read anywhere and written in whole 4096-byte sectors, as sd(3) has it.
+  The file can't be grown or cut.
 : `status`
   The disk's name, unit and size.
 
@@ -49,9 +49,9 @@ part data 0 16384
 
 # SEE ALSO
 
-fs(4), manifest(6)
+sd(3), fs(4), manifest(6)
 
 # BUGS
 
 What the disk holds lasts as long as the service: a reboot, or the service's restart, gives an empty disk.
-`ctl` takes no commands, so there is no `part` or `delpart`, and there is no `raw`.
+A disk starts empty, so it has no partitions until something writes a partition table, and it reads that only when it starts (sd(3)).

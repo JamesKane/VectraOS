@@ -136,7 +136,8 @@ let ipc: [Target] = [
   // File.
   .target(name: "FsServer", dependencies: ["Fs", "IPC", "Node", "Sys", "Taisce"], path: "services/fs/server",
           swiftSettings: tier0),
-  .testTarget(name: "FsTests", dependencies: ["Fs", "FsServer", "IPC", "Node", "Sys", "Taisce"], path: "services/fs/tests"),
+  .testTarget(name: "FsTests", dependencies: ["Fs", "FsServer", "IPC", "Node", "Sd", "Sys", "Taisce"],
+              path: "services/fs/tests"),
   // PCI over ECAM (drivers/bus/pci, V2 item 7b, D74): configuration space,
   // enumeration, BARs and capabilities, todhchai's; ECAM's registers
   // through the runtime's accessors (CroiMMIO, croi/mmio.h).
@@ -159,6 +160,10 @@ let ipc: [Target] = [
   // The input class (V2 item 7d, D83): the usages keyboards push to kbdfs.
   .target(name: "InputDevice", path: "drivers/input/lib", swiftSettings: tier0),
   .testTarget(name: "InputTests", dependencies: ["InputDevice"], path: "drivers/input/tests"),
+  // The block class (D82, D106): a disk as Plan 9's sd(3) directory.
+  .target(name: "Sd", dependencies: ["Node", "IPC", "Sys"], path: "drivers/block/lib", swiftSettings: tier0),
+  .testTarget(name: "BlockTests", dependencies: ["Sd", "FsServer", "Taisce", "Node", "IPC", "Sys"],
+              path: "drivers/block/tests"),
   // The net class (D82): a NIC as Plan 9's ether(3) directory.
   .target(name: "NetClass", dependencies: ["Node", "IPC", "Sys"], path: "drivers/net/lib", swiftSettings: tier0),
   .testTarget(name: "NetClassTests", dependencies: ["NetClass", "Node", "IPC", "Sys"], path: "drivers/net/tests"),

@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // bin/ramdisk SIZE (ramdisk(4)): a disk in memory, served as sd(3)'s
-// directory for its kind (D82), 9front's sdram's: `sdZ0/ctl` says its
-// geometry and `sdZ0/data` is the disk, a VMO of SIZE bytes (K, M or G:
-// binary) written in place, its pages taken as they are first written.
-// The disk lasts as long as the service: fs(4)'s restarts find their
-// volume, a reboot doesn't.
+// directory for its kind by the block class (D82, D106), as 9front's
+// sdram names it, sdZ0: a VMO of SIZE bytes (K, M or G: binary) in
+// 4096-byte sectors, its pages taken as they are first written. The disk
+// lasts as long as the service: fs(4)'s restarts find their volume, a
+// reboot doesn't.
 
 import IPC
 import Node
+import Sd
 import Sys
 
 func fail(_ what: String) -> Never {
@@ -41,10 +42,16 @@ func size(_ text: String) -> UInt64? {
     do throws(Status) {
       let dispatcher = try IPCDispatcher()
       let tree = NodeTree(dispatcher: dispatcher)
-      try tree.memory("sdZ0/data", writable: try VMO.create(size: Int(bytes)), size: bytes)
-      tree.text("sdZ0/ctl", read: {
-        "inquiry ramdisk0\ngeometry \(sectors) \(sector)\nalignment \(sector) 0\npart data 0 \(sectors)\n"
-      })
+      let disk = try MemoryDisk(name: "ramdisk0", try VMO.create(size: Int(bytes)), sectors: sectors,
+                                sectorSize: Int(sector))
+      // The unit on a dispatcher of its own: the tree waits on its thread
+      // for a mount's answers.
+      let disks = try IPCDispatcher()
+      let unit = SdUnit(disk, dispatcher: disks)
+      _ = try Thread.spawn {
+        do throws(Status) { try disks.run() } catch { fail("the disk's dispatcher: \(error)") }
+      }.release()
+      _ = tree.mount("sdZ0", try unit.channel())
       tree.text("status", read: { "ramdisk0 sdZ0 \(bytes) bytes\n" })
       guard let export = start.export() else { fail("no export (its manifest's `export`)") }
       try tree.serve(export)

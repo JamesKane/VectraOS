@@ -12,6 +12,7 @@ import Fs
 import FsServer
 import IPC
 import Node
+import Sd
 import Sys
 import Taisce
 import Testing
@@ -30,23 +31,27 @@ final class Running: @unchecked Sendable {
   func stop() { dispatcher.stop() }
 }
 
-/// A RAM disk of `blocks` blocks: its partition's tree.
+/// A RAM disk of `blocks` blocks, as ramdisk(4) serves it: the block
+/// class's unit (D106) over memory.
 final class Disk: @unchecked Sendable {
-  let tree: NodeTree
+  let unit: SdUnit
   let running: Running
 
   init(blocks: Int = 2048) throws {
     let dispatcher = try IPCDispatcher()
-    tree = NodeTree(dispatcher: dispatcher)
-    try tree.memory("sdZ0/data", writable: try VMO.create(size: blocks * 4096), size: UInt64(blocks * 4096))
+    let memory = try MemoryDisk(name: "ramdisk0", try VMO.create(size: blocks * 4096), sectors: UInt64(blocks),
+                                sectorSize: 4096)
+    unit = SdUnit(memory, dispatcher: dispatcher)
     running = Running(dispatcher)
   }
 
-  func partition() throws -> Handle {
-    let ends = try Channel.create()
-    try tree.serve(ends.b, at: tree.node("sdZ0/data")!)
-    return ends.a
+  /// A file of the unit's: `data`, or `ctl`.
+  func open(_ name: String) throws -> Handle {
+    var dir = NodeIPC.NodeClient(channel: try unit.channel())
+    return try dir.open(name).takeChannel()
   }
+
+  func partition() throws -> Handle { try open("data") }
 
   deinit { running.stop() }
 }
@@ -59,7 +64,7 @@ final class Volume: @unchecked Sendable {
   let ns = Namespace()
 
   init(_ disk: Disk) throws {
-    let device = try NodeDevice(try disk.partition())
+    let device = try NodeDevice(try disk.partition(), ctl: try disk.open("ctl"))
     var fs: FileSystem<NodeDevice>
     do {
       fs = try FileSystem.mount(device)

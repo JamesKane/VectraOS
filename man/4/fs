@@ -18,6 +18,7 @@ volume/...
 The fs service serves a Taisce volume, the one file system, kept on a disk's partition in its namespace: the manifest's is ramdisk(4)'s `/dev/sdZ0/data`.
 With `--format`, a partition that holds no volume gets a new one labelled `LABEL`; otherwise one that holds none is an error.
 It reads and writes the partition through the partition channel's ring (nodefile(2)), each read and write waited for; through batches of messages if the disk won't attach one.
+Each barrier the volume needs (before and after a group's commit, and an intent log's write) is a `flush` written to the disk's `ctl`, beside the partition (sd(3)).
 A file's channel takes a ring too, as a client moving its bulk attaches (`cp`, FDIO): each entry is read or written as a batch's would be, and answered at once.
 
 Its tree holds:
@@ -54,7 +55,7 @@ cp /mnt/term/root/tmp/prog /data/prog
 
 # SEE ALSO
 
-ramdisk(4), node(5), manifest(6), cpu(8)
+sd(3), ramdisk(4), node(5), manifest(6), cpu(8)
 
 # DIAGNOSTICS
 

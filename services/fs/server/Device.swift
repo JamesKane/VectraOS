@@ -4,7 +4,9 @@
 // read and written on the partition channel's ring (D103), each read and
 // write waited for, up to the ring's entries under way; or, if the disk
 // won't attach one, over Node, a batch moving up to 32 pieces of maxIO
-// bytes (a MiB). Its length is the partition's, in Taisce's blocks.
+// bytes (a MiB). Its length is the partition's, in Taisce's blocks. Its
+// barrier is the unit's ctl's `flush` (D106): every write before it was
+// answered, so the flush makes them all durable.
 
 import IPC
 import Node
@@ -18,9 +20,12 @@ final class Partition {
   static let dataSize = 16 * 131072
   var client: NodeIPC.NodeClient
   var ring: NodeBulkChannel?
+  /// The unit's ctl, if the disk has one: where a flush goes.
+  var ctl: NodeIPC.NodeClient?
 
-  init(_ client: consuming NodeIPC.NodeClient) {
+  init(_ client: consuming NodeIPC.NodeClient, ctl: consuming NodeIPC.NodeClient?) {
     self.client = client
+    self.ctl = ctl
     ring = try? NodeBulkChannel(attachingTo: &self.client, slots: Self.slots, dataSize: Self.dataSize)
   }
 }
@@ -30,15 +35,21 @@ public struct NodeDevice: BlockDevice {
   public let blockSize = Layout.blockSize
   public let blockCount: UInt64
 
-  /// A device over `channel`, a partition's file.
-  public init(_ channel: consuming Handle) throws(TaisceError) {
+  /// A device over `channel`, a partition's file, flushed through `ctl`,
+  /// its unit's (none: a disk with nothing to flush).
+  public init(_ channel: consuming Handle, ctl: consuming Handle? = nil) throws(TaisceError) {
     var client = NodeIPC.NodeClient(channel: channel)
     let size: UInt64
     do throws(NodeIPC.NodeClient.Failure) { size = try client.stat(fields: NodeIPC.Fields.size).size } catch {
       throw .io(5)  // EIO
     }
     blockCount = size / UInt64(Layout.blockSize)
-    partition = Partition(client)
+    let control: NodeIPC.NodeClient?
+    switch consume ctl {
+    case .some(let h): control = NodeIPC.NodeClient(channel: h)
+    case .none: control = nil
+    }
+    partition = Partition(client, ctl: control)
   }
 
   /// The pieces of `count` blocks from `block`, at most a batch's worth
@@ -115,7 +126,13 @@ public struct NodeDevice: BlockDevice {
     }
   }
 
-  /// Nothing to do: a write is done when its reply comes (a RAM disk has
-  /// no cache to flush).
-  public mutating func flush() throws(TaisceError) {}
+  /// The unit's `flush`: the writes before it, each answered already,
+  /// made durable.
+  public mutating func flush() throws(TaisceError) {
+    do throws(NodeIPC.NodeClient.Failure) {
+      _ = try partition.ctl?.write(offset: 0, Array("flush".utf8))
+    } catch {
+      throw .io(5)  // EIO
+    }
+  }
 }

@@ -1,0 +1,54 @@
+page sd 3
+summary disks: the block class's directory
+src drivers/block/lib/Sd.swift
+keys disk block storage sd partition gpt sector flush ctl block class
+
+# SYNOPSIS
+
+```text
+/dev/sdXX/ctl
+/dev/sdXX/data
+/dev/sdXX/NAME
+```
+
+# DESCRIPTION
+
+Each disk is a directory, as Plan 9's sd(3) has it: a disk service, or a driver of the `block` class, serves it, named for its kind and unit (ramdisk(4)'s is `sdZ0`).
+
+: `ctl`
+  Reads as Plan 9's: `inquiry` and the disk's name, `geometry` with the number of sectors and the sector size, `alignment` with the sector size and 0, and a `part` <name> <start> <end> line for each partition, `data` first, <end> the sector after its last.
+  It takes `flush`: what was written and answered before it is made durable (the device's cache flushed); on a disk with no cache, it is answered at once.
+: `data`
+  The whole disk, its length the disk's.
+: <name>
+  A partition, from the disk's GUID partition table, read when the disk is first served: a file named by the partition's name.
+  A partition whose name a file can't have, or with none, is `part`<n>, its entry's number; a second of one name, or one named `data` or `ctl`, has the number after it.
+  A disk with no GUID partition table has only `data`.
+
+A read of `data` or a partition may start anywhere and be any length; it is cut at the partition's end.
+A write must be whole sectors, at a sector's start, or it fails with `bad arg in system call`; one that runs past the partition's end is cut short there, and one at or past it writes nothing.
+On a read-only disk a write fails with `permission denied`.
+Each read and write is answered when the disk has done it, so a `flush` after them covers them all.
+
+`data` and each partition take a ring (node(5)), as a client moving its bulk attaches: each entry is a request to the disk, and entries are answered in the order the disk ends them.
+
+# EXAMPLES
+
+```rc
+% cat /dev/sdZ0/ctl
+inquiry ramdisk0
+geometry 16384 4096
+alignment 4096 0
+part data 0 16384
+% echo flush >/dev/sdZ0/ctl
+```
+
+# SEE ALSO
+
+ramdisk(4), fs(4), devmgr(8), node(5)
+
+# BUGS
+
+`ctl` takes only `flush`: there is no `part` or `delpart`, and the partition table is read once, when the disk is first served.
+The partition table's checksums aren't checked.
+There is no `raw`.
