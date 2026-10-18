@@ -15,7 +15,7 @@ vx bench --zircon [--rounds n] [--only config,...] [--logs dir]
 `vx bench` measures the budgets the kernel and the services print as `budget name=... value=... unit=... [limit=...] [target=...]` lines, and judges them.
 It needs KVM (`/dev/kvm`) and refuses to run without it: timings under TCG are not judged.
 
-It builds `amd64`, then boots its image <n> times (5 by default) in each of four profiles: `full`, the command line as built with every self-test running; `lean`, the same with `croi.selftest=off`; `services`, the launcher and its services, from which only the `services.` budgets are taken; and `cpu`, the cpu node with boot-cpu's terminal calling it through port 27119, from which only the `remote.` budgets are taken: the first call after the boot, a 64 MiB copy from `/mnt/term` and a warm boot's return (vx-remote(1)).
+It builds `amd64`, then boots its image <n> times (5 by default) in each of four profiles: `full`, the command line as built with every self-test running; `lean`, the same with `croi.selftest=off`; `services`, the launcher and its services, from which only the `services.` and `node.` budgets are taken; and `cpu`, the cpu node with boot-cpu's terminal calling it through port 27119, from which only the `remote.` budgets are taken: the first call after the boot, a 64 MiB copy from `/mnt/term` and a warm boot's return (vx-remote(1)).
 A profile whose image the build lacks is skipped.
 For each budget it takes the median and judges it against the median of the last five runs recorded in `bench/history/<host>.tsv`, where <host> is the machine's host name.
 A budget regresses when it rises past both the fraction and the floor that `tools/bench/lib/Rules.swift` sets for its name, or when it passes its own `limit`.

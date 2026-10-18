@@ -28,7 +28,8 @@ private let out = "bench/out"
 private let historyDir = "bench/history"
 private let done = "userboot: bin/m2 exited with"
 /// The services boot's (boot-launch's): the launcher, run until
-/// launch-test ends, which reports the services' memory (services.rss).
+/// launch-test ends, which reports the services' memory (services.rss)
+/// and a copy between two of a tree's files (node.file_copy).
 private let servicesDone = "userboot: bin/launcher exited with"
 /// The cpu boot's (boot-cpu's): its server listening, when boot-cpu.sh
 /// calls it, as the terminal, through a port of the bench's own.
@@ -89,7 +90,7 @@ private func boot(tree: String, profile: String, label: String, index: Int, anyE
   // The services' and the cpu link's own, not more of the kernel's boot
   // budgets.
   let budgets = parseBudgets(console)
-  if services { return budgets.filter { $0.key.hasPrefix("services.") } }
+  if services { return budgets.filter { $0.key.hasPrefix("services.") || $0.key.hasPrefix("node.") } }
   return cpu ? budgets.filter { $0.key.hasPrefix("remote.") } : budgets
 }
 
